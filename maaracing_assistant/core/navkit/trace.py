@@ -25,7 +25,9 @@ from typing import Any, Mapping
 
 __all__ = ["FrameTrace", "TraceWriter", "json_safe"]
 
-_SESSION_RE = re.compile(r"^session_(\d{8}_\d{6})$")
+# 会话目录名统一形态：与 debug 截图会话同为 YYYYMMDD_HHMMSS；
+# `session_` 前缀为历史独立 trace 会话的遗留形态，保持可读（写侧不再生成）。
+_SESSION_RE = re.compile(r"^(?:session_)?\d{8}_\d{6}$")
 
 
 def json_safe(value: Any) -> Any:
@@ -113,8 +115,9 @@ class TraceWriter:
     两种落点模式：
     - 传入 `session_dir`（既有会话目录，如 debug 帧的 `<ts>/`）：trace.jsonl 直接
       写进该目录，与 raw 帧同会话对齐；prune 不触碰外部会话目录。
-    - 未传 `session_dir`：在 `root` 下自建 `session_YYYYMMDD_HHMMSS/` 子目录
-      （无 debug 会话时的独立 trace 会话），prune 按 keep_sessions 清理。
+    - 未传 `session_dir`：在 `root` 下自建 `YYYYMMDD_HHMMSS/` 子目录（无 debug
+      会话时的独立 trace 会话，与截图会话同名形态、以无 `raw/` 区分），prune 按
+      keep_sessions 清理。
     """
 
     def __init__(self, root: str | Path, *, keep_sessions: int = 10,
@@ -128,9 +131,12 @@ class TraceWriter:
             self.session_dir.mkdir(parents=True, exist_ok=True)
         else:
             if session_name is None:
-                session_name = "session_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+                session_name = datetime.now().strftime("%Y%m%d_%H%M%S")
             if not _SESSION_RE.match(session_name):
-                raise ValueError("session_name 必须形如 session_YYYYMMDD_HHMMSS")
+                raise ValueError(
+                    "session_name 必须形如 YYYYMMDD_HHMMSS"
+                    "（遗留形态 session_YYYYMMDD_HHMMSS 仍可读）"
+                )
             self.session_dir = self.root / session_name
             self.session_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.session_dir / "trace.jsonl"
@@ -153,14 +159,25 @@ class TraceWriter:
         self.prune()
 
     def prune(self) -> list[Path]:
-        """保留最近 keep_sessions 个 `session_YYYYMMDD_HHMMSS` 目录，返回删除项。"""
-        sessions = sorted(
-            [p for p in self.root.iterdir() if p.is_dir() and _SESSION_RE.match(p.name)],
-            key=lambda p: p.name,
-            reverse=True,
-        )
+        """保留最近 keep_sessions 个独立 trace 会话（含当前会话），返回删除项。
+
+        候选须同时满足：名称符合会话形态（含遗留 `session_` 前缀）、目录内有
+        `trace.jsonl`、目录内**没有** `raw/`——有 raw/ 的是 debug 截图会话，
+        trace 清理永不触碰；当前写入会话即使落入超额区间也永不删除。
+        """
+        candidates = []
+        for p in self.root.iterdir():
+            if not p.is_dir() or not _SESSION_RE.match(p.name):
+                continue
+            if (p / "raw").exists() or not (p / "trace.jsonl").is_file():
+                continue
+            candidates.append(p)
+        candidates.sort(key=lambda p: p.name.removeprefix("session_"), reverse=True)
+        current = self.session_dir.resolve()
         removed: list[Path] = []
-        for old in sessions[self.keep_sessions:]:
+        for old in candidates[self.keep_sessions:]:
+            if old.resolve() == current:
+                continue
             try:
                 shutil.rmtree(old)
                 removed.append(old)

@@ -31,8 +31,16 @@ class TestSessionBrowser:
         (raw / "0001_raw.jpg").write_bytes(b"x")
         (raw / "0002_raw.png").write_bytes(b"x")
         (raw / "not_raw.txt").write_text("nope", encoding="utf-8")   # 非法 raw 名
-        # 无 raw/ 子目录的会话不算合法会话
+        # 既无 raw/ 也无 trace.jsonl 的空目录不算合法会话
         (root / "20260101_000000").mkdir()
+        # 独立 trace 会话（无图，仅决策流水）：新契约入列
+        trace_only = root / "20260202_000000"
+        trace_only.mkdir()
+        (trace_only / "trace.jsonl").write_text("{}\n", encoding="utf-8")
+        # 遗留 session_ 前缀形态：保持可读
+        legacy = root / "session_20260303_000000"
+        legacy.mkdir()
+        (legacy / "trace.jsonl").write_text("{}\n", encoding="utf-8")
         (root / "not_a_session").mkdir(parents=True)
         (root / "not_a_session" / "raw").mkdir()
         return root
@@ -40,7 +48,17 @@ class TestSessionBrowser:
     def test_list_sessions_only_valid(self, layout):
         from tools.navkit.core.session import SessionBrowser
         b = SessionBrowser(layout)
-        assert b.list_sessions() == ["20260812_183611"]  # 无 raw/ 或无合法名的被排除
+        # 无 raw 且无 trace 的空目录、非法名被排除；含二者任一即入列，按时间戳降序
+        assert b.list_sessions() == [
+            "20260812_183611", "session_20260303_000000", "20260202_000000",
+        ]
+
+    def test_has_frames_distinguishes_trace_only(self, layout):
+        from tools.navkit.core.session import SessionBrowser
+        b = SessionBrowser(layout)
+        assert b.has_frames("20260812_183611") is True    # 截图会话
+        assert b.has_frames("20260202_000000") is False   # 纯决策流水会话
+        assert b.has_frames("not_a_session") is False     # 非法名恒 False
 
     def test_list_raw_filters_by_whitelist(self, layout):
         from tools.navkit.core.session import SessionBrowser

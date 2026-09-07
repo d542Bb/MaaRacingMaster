@@ -6,7 +6,9 @@
 供任何模块的调试浏览器复用。不从属于 treasure/racing 的任何内容知识。
 
 三个契约（迁移自 NavKit 控制台/server.py 的白名单，保持严格防护语义）：
-- 会话名必须是 `%8d_%6d` 形态的目录（如 `20260812_183611`），且其下含 `raw/` 子目录。
+- 会话目录名必须是 `YYYYMMDD_HHMMSS` 形态（如 `20260812_183611`），与
+  `core/navkit/trace.py` 写侧同形；`session_` 前缀为遗留独立 trace 会话形态，
+  保持可读。含 `raw/` 的是截图会话，仅含 `trace.jsonl` 的是纯决策会话。
 - raw 帧文件名必须是 `NNNN_raw.{png,jpg,jpeg,webp}`（原始抓帧格式由模块决定，这里同时放行）。
 - 一切路径解析均以 `is_relative_to` 严格限定在会话 raw 目录内，防同前缀目录绕过 / 目录穿越。
 """
@@ -16,8 +18,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# 会话目录名（debug/<module>/<会话>/），如 20260812_183611
-SESSION_RE = re.compile(r"^\d{8}_\d{6}$")
+# 会话目录名（debug/<module>/<会话>/），如 20260812_183611；
+# 兼容遗留 session_ 前缀形态（navkit 独立 trace 会话的历史命名）
+SESSION_RE = re.compile(r"^(?:session_)?\d{8}_\d{6}$")
 # raw 帧文件名；同时放行 png/jpg/webp，后端按扩展名回推真实文件（避免换格式改白名单）
 RAW_RE = re.compile(r"^\d{4}_raw\.(png|jpg|jpeg|webp)$")
 # 模板名（模块资源目录内 .png）
@@ -59,14 +62,25 @@ class SessionBrowser:
 
     # ---- 会话 ----
     def list_sessions(self) -> list[str]:
-        """列会话名（降序，含 raw/ 子目录的才算是合法会话）。"""
+        """列会话名（按时间戳降序）。
+
+        截图会话（含 `raw/`）与独立 trace 会话（仅含 `trace.jsonl`）都是合法
+        会话；两者皆无的空目录/非法名被排除。遗留 `session_` 前缀目录与新命名
+        混合时按去掉前缀后的时间戳排序。
+        """
         if not self.debug_root.is_dir():
             return []
         return sorted(
             (p.name for p in self.debug_root.iterdir()
-             if p.is_dir() and SESSION_RE.match(p.name) and (p / "raw").is_dir()),
+             if p.is_dir() and SESSION_RE.match(p.name)
+             and ((p / "raw").is_dir() or (p / "trace.jsonl").is_file())),
+            key=lambda n: n.removeprefix("session_"),
             reverse=True,
         )
+
+    def has_frames(self, session: str) -> bool:
+        """会话是否含截图帧目录 raw/（False = 纯决策流水会话）。"""
+        return bool(SESSION_RE.match(session)) and (self.debug_root / session / "raw").is_dir()
 
     # ---- raw 帧 ----
     def _raw_dir(self, session: str) -> Path | None:
