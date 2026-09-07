@@ -18,7 +18,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 _PROJ = Path(__file__).resolve().parents[2]
@@ -71,6 +73,45 @@ def discover_modules() -> list[str]:
     return found
 
 
+def check_schedule(assets_path: Path) -> list[str]:
+    """D1 轻校验：同目录 `schedule.json` 存在即校验活动时间窗，缺失不强制
+    （永久玩法模块没有此文件）。GUI 直读意味着格式错误要拖到运行时才暴露，
+    它不能成为唯一没有守卫的真源。
+
+    格式：{"activity_window": {"start": "YYYY-MM-DD HH:MM", "end": "..."}}
+    """
+    sched = assets_path.parent / "schedule.json"
+    if not sched.is_file():
+        return []
+    try:
+        data = json.loads(sched.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"schedule.json 不可解析: {exc}"]
+    window = data.get("activity_window") if isinstance(data, dict) else None
+    if not isinstance(window, dict):
+        return ["schedule.json 缺 activity_window 对象"]
+    errors: list[str] = []
+    fmt = "%Y-%m-%d %H:%M"
+    start = end = None
+    for key in ("start", "end"):
+        raw = window.get(key)
+        if not isinstance(raw, str):
+            errors.append(f"activity_window.{key} 缺失或非字符串")
+            continue
+        try:
+            parsed = datetime.strptime(raw, fmt)
+        except ValueError:
+            errors.append(f"activity_window.{key}={raw!r} 不符合 {fmt} 格式")
+            continue
+        if key == "start":
+            start = parsed
+        else:
+            end = parsed
+    if start is not None and end is not None and start > end:
+        errors.append("activity_window.start 晚于 end")
+    return errors
+
+
 def compile_one(module: str, *, check: bool) -> int:
     assets_path, out_path, image_dir = paths_for(module)
     if not assets_path.is_file():
@@ -80,6 +121,11 @@ def compile_one(module: str, *, check: bool) -> int:
     # 追加语义下 core 段由 Assets.load 恒定前置，这里只供模块目录；global 无模块目录。
     explicit_dirs = () if module == "global" else (image_dir,)
     assets = Assets.load(assets_path, module=module, image_dirs=explicit_dirs)
+    schedule_errors = check_schedule(assets_path)
+    if schedule_errors:
+        for err in schedule_errors:
+            print(f"[compile_routes:{module}] schedule: {err}", file=sys.stderr)
+        return 1
     if not assets.routes:
         # 无 routes 段（global：只载页名/锚点）不产生成物，validate-only 直接通过。
         # 该判定必须在 check/写盘分支之前——check 首判 `not out_path.exists()`，

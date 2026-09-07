@@ -399,6 +399,51 @@ class Assets:
         """全部锚点 id（文档顺序）。"""
         return tuple(self.anchors)
 
+    # ---------------- 合并（跨文档，G2）----------------
+
+    def merge(self, global_assets: "Assets") -> "Assets":
+        """并入 global 资产，返回新实例（单向可见：self 可见 global，global 不见 self）。
+
+        契约（§〇 I-1/I-3/I-4）：
+        - 锚点同名时保留模块版（是否合法由校验层 W07 裁决，merge 不做合法性判断）；
+        - `pages` 取并集，同名页以模块侧为准；
+        - global 锚点 id 并入 `stages.global_anchors`——`compile_detection` 的
+          detect_anchors 入集条件依赖此项，不同步 = 引用了等于没引用（不变量 I-1）；
+        - `owner` 保持文档原值、`_module` 仍是模块名（保 W04/E02 判定输入不变，I-4）；
+        - `transitions/routes/stage_defs/match` 等一律取模块侧，global 不反向渗透。
+        """
+        if global_assets.module != OWNER_GLOBAL:
+            raise ValueError(
+                f"merge 需要 owner=global 的资产集，收到 module={global_assets.module!r}"
+            )
+        if self.module == OWNER_GLOBAL:
+            raise ValueError("global 资产不参与再合并（单向可见）")
+        anchors = dict(global_assets.anchors)
+        anchors.update(self.anchors)
+        pages = dict(global_assets.pages)
+        pages.update(self.pages)
+        global_anchors = tuple(dict.fromkeys(
+            (*self.global_anchors, *global_assets.global_anchors)
+        ))
+        return Assets(
+            module=self.module,
+            declared_module=self.declared_module,
+            reference_size=self.reference_size,
+            match=self.match,
+            pages=pages,
+            anchors=anchors,
+            stage_order=self.stage_order,
+            global_anchors=global_anchors,
+            stage_defs=self.stage_defs,
+            transitions=self.transitions,
+            routes=self.routes,
+            render=self.render,
+            trace=self.trace,
+            policies=self.policies,
+            source_path=self.source_path,
+            image_dirs=self.image_dirs,
+        )
+
     def referenced_templates(self) -> tuple[str, ...]:
         """全部被引用的模板图名（去重、文档顺序）。"""
         seen: set[str] = set()

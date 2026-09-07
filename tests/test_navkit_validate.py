@@ -594,19 +594,22 @@ def test_w06_duplicate_order_within_page():
 
 
 def test_w07_override_must_be_explicit():
+    """同名规则已通电为 E 级（OPEN-6 定案 b）：未声明的隐式覆盖阻断启动。"""
     d = doc()
     global_doc = doc()
     global_doc["_module"] = "global"
     g_assets = Assets.from_document(global_doc, module="global")
     report = validate(d, global_assets=g_assets)
-    assert "W07" in warn_codes(report)
+    assert "W07" in err_codes(report)
+    assert not report.ok
 
-    # 显式声明 _override 后不再告警
+    # 显式声明 _override 后不再报错
     d2 = doc()
     for anchor in d2["anchors"].values():
         anchor["_override"] = True
     report2 = validate(d2, global_assets=g_assets)
-    assert "W07" not in warn_codes(report2)
+    assert "W07" not in err_codes(report2)
+    assert report2.ok
 
 
 # ------------------------------------------------------------------

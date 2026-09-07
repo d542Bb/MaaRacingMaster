@@ -159,3 +159,62 @@ def test_main_all_fails_without_plugin_module(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cr, "CORE_RES", tmp_path)
     assert _run_main(monkeypatch, ["global"]) == 1
     assert "反断言失败" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------
+# schedule.json 轻校验（D1/N5）
+# ------------------------------------------------------------------
+
+
+def _write_schedule(assets_dir: Path, window: dict) -> None:
+    (assets_dir / "schedule.json").write_text(
+        json.dumps({"activity_window": window}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def test_schedule_missing_is_optional(tmp_path):
+    assert cr.check_schedule(tmp_path / "config" / "x_assets.json") == []
+
+
+def test_schedule_valid_window_passes(tmp_path):
+    _write_schedule(tmp_path, {"start": "2026-08-06 05:00", "end": "2026-09-03 23:04"})
+    assert cr.check_schedule(tmp_path / "x_assets.json") == []
+
+
+def test_schedule_bad_format_and_inverted_window(tmp_path):
+    _write_schedule(tmp_path, {"start": "2026/08/06", "end": "2026-09-03 23:04"})
+    errs = cr.check_schedule(tmp_path / "x_assets.json")
+    assert any("不符合" in e for e in errs)
+
+    _write_schedule(tmp_path, {"start": "2026-09-03 23:04", "end": "2026-08-06 05:00"})
+    assert any("晚于" in e for e in cr.check_schedule(tmp_path / "x_assets.json"))
+
+
+def test_schedule_unparsable_and_missing_fields(tmp_path):
+    (tmp_path / "schedule.json").write_text("{broken", encoding="utf-8")
+    assert any("不可解析" in e for e in cr.check_schedule(tmp_path / "x_assets.json"))
+
+    _write_schedule(tmp_path, {"start": "2026-08-06 05:00"})
+    errs = cr.check_schedule(tmp_path / "x_assets.json")
+    assert any("end" in e for e in errs)
+
+
+def test_compile_one_fails_on_bad_schedule(tmp_path, monkeypatch, capsys):
+    """schedule 坏档在 check/写盘之前拦截，退出码 1。"""
+    assets_dir = tmp_path / "config"
+    assets_dir.mkdir()
+    doc = {
+        "_schema_ver": 3, "_module": "global",
+        "reference_size": [1280, 720],
+        "match": {"scales": [1.0], "threshold": 0.75, "margin_default": 0.01},
+        "pages": {}, "stages": {"order": [], "global_anchors": []}, "routes": {},
+    }
+    (assets_dir / "global_assets.json").write_text(
+        json.dumps(doc), encoding="utf-8"
+    )
+    _write_schedule(assets_dir, {"start": "2026-09-03 23:04", "end": "2026-08-06 05:00"})
+    monkeypatch.setattr(cr, "GLOBAL_ASSETS", assets_dir / "global_assets.json")
+    monkeypatch.setattr(cr, "CORE_RES", tmp_path)
+    assert cr.compile_one("global", check=True) == 1
+    assert "schedule" in capsys.readouterr().err

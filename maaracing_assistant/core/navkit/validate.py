@@ -727,14 +727,16 @@ def _check_warnings(assets: Assets, global_assets: Assets | None) -> list[Issue]
                     )
                 )
 
-    # W07：模块覆盖了 global 同名资产但未显式声明 _override
+    # W07：模块覆盖了 global 同名资产但未显式声明 _override（OPEN-6 已定 b：
+    # 同名规则通电为 E 级——未声明的隐式覆盖属真源冲突，阻断启动而非告警）。
+    # 生产侧在接线 global_assets 前命中数为 0，升级零爆炸半径。
     if global_assets is not None:
         for aid, anchor in assets.anchors.items():
             if aid in global_assets.anchors and not anchor.override:
                 issues.append(
                     Issue(
                         "W07",
-                        LEVEL_WARNING,
+                        LEVEL_ERROR,
                         f"anchors.{aid}",
                         f"与 global 同名资产冲突但未声明 _override: true",
                     )

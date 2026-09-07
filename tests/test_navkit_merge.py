@@ -1,0 +1,228 @@
+# -*- coding: utf-8 -*-
+"""Assets.merge 跨文档契约（G2）与锚点规范化签名（D2）单测。
+
+merge 契约（§〇 I-1/I-3/I-4 + G0 断言）：
+- 单向可见、同名保留模块版、pages 并集模块优先、global_anchors 同步并入；
+- global 锚点入 detect_anchors 且 stage_priority 与同 order 模块锚点等值（不加权）；
+- owner/_module 判定输入不变。
+
+签名契约（D2）：影响匹配结果的字段变更 → 签名变；注释/label/order/量化精度内
+的 rect 抖动 → 签名不变；threshold/scales 取继承后有效值。
+"""
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+import pytest
+
+from maaracing_assistant.core.navkit import (
+    Assets,
+    anchor_signature,
+    compile_detection,
+    validate_assets,
+)
+
+MODULE = "demo"
+
+_GLOBAL_DOC: dict[str, Any] = {
+    "_schema_ver": 3,
+    "_module": "global",
+    "reference_size": [1280, 720],
+    "match": {"scales": [1.0], "threshold": 0.75, "margin_default": 0.01},
+    "pages": {"hall": {"label": "游戏大厅"}, "shared": {"label": "global 版"}},
+    "anchors": {
+        "hall_race_btn": {
+            "kind": "template", "owner": "global", "page": "hall",
+            "label": "比赛按钮", "rect": [0.1, 0.1, 0.3, 0.3],
+            "templates": ["hall_race_btn.png"], "order": 10,
+        },
+    },
+    "stages": {"order": [], "global_anchors": ["hall_race_btn"]},
+    "routes": {},
+}
+
+_MODULE_DOC: dict[str, Any] = {
+    "_schema_ver": 3,
+    "_module": MODULE,
+    "reference_size": [1280, 720],
+    "match": {"scales": [1.0], "threshold": 0.75, "margin_default": 0.01},
+    "pages": {"activity": {"label": "活动页"}, "shared": {"label": "模块版"}},
+    "anchors": {
+        "entry_card": {
+            "kind": "template", "owner": MODULE, "page": "activity",
+            "label": "入口卡", "rect": [0.4, 0.4, 0.6, 0.6],
+            "templates": ["entry_card.png"], "order": 10,
+        },
+    },
+    "stages": {"order": ["活动页"], "global_anchors": []},
+    "routes": {},
+}
+
+
+def _global() -> Assets:
+    return Assets.from_document(copy.deepcopy(_GLOBAL_DOC), module="global")
+
+
+def _module() -> Assets:
+    return Assets.from_document(copy.deepcopy(_MODULE_DOC), module=MODULE)
+
+
+# ------------------------------------------------------------------
+# merge 契约
+# ------------------------------------------------------------------
+
+
+def test_merge_single_direction_and_immutability():
+    g, m = _global(), _module()
+    merged = m.merge(g)
+    assert set(merged.anchors) == {"hall_race_btn", "entry_card"}
+    assert merged.module == MODULE
+    # 源对象不被污染（返回新实例）
+    assert set(g.anchors) == {"hall_race_btn"}
+    assert set(m.anchors) == {"entry_card"}
+    assert m.global_anchors == ()
+
+
+def test_merge_owner_and_module_preserved():
+    """I-4：owner 保持文档原值、_module 仍是模块名（W04/E02 判定输入不变）。"""
+    merged = _module().merge(_global())
+    assert merged.anchors["hall_race_btn"].owner == "global"
+    assert merged.anchors["entry_card"].owner == MODULE
+    assert merged.declared_module == MODULE
+    assert merged.module == MODULE
+
+
+def test_merge_global_anchors_synced():
+    """I-1：global 锚点 id 必须并入 stages.global_anchors，
+    否则 compile_detection 的入集条件收不到它（引用了等于没引用）。"""
+    merged = _module().merge(_global())
+    assert merged.global_anchors == ("hall_race_btn",)
+
+
+def test_merge_global_anchor_enters_detect_anchors():
+    """G0 断言①：合并后 global 模板锚点 ∈ detect_anchors ∩ plan.global_anchors。"""
+    plan = compile_detection(_module().merge(_global()))
+    assert "hall_race_btn" in plan.detect_anchors
+    assert "hall_race_btn" in plan.global_anchors
+
+
+def test_merge_priority_no_boost():
+    """G0 断言②：全局不加权——同 order 的 global 与模块锚点 stage_priority 等值。"""
+    plan = compile_detection(_module().merge(_global()))
+    g_prio = plan.spec["hall_race_btn"].stage_priority
+    m_prio = plan.spec["entry_card"].stage_priority
+    assert g_prio == m_prio == 1000 - 10
+
+
+def test_merge_module_wins_on_same_id():
+    m_doc = copy.deepcopy(_MODULE_DOC)
+    m_doc["anchors"]["hall_race_btn"] = {
+        "kind": "template", "owner": MODULE, "page": "activity",
+        "label": "模块覆盖版", "rect": [0.7, 0.7, 0.9, 0.9],
+        "templates": ["override.png"], "_override": True,
+    }
+    merged = Assets.from_document(m_doc, module=MODULE).merge(_global())
+    assert merged.anchors["hall_race_btn"].label == "模块覆盖版"
+    assert merged.anchors["hall_race_btn"].owner == MODULE
+
+
+def test_merge_pages_union_module_wins():
+    merged = _module().merge(_global())
+    assert set(merged.pages) == {"hall", "activity", "shared"}
+    assert merged.pages["shared"]["label"] == "模块版"
+
+
+def test_merge_module_side_only_sections():
+    merged = _module().merge(_global())
+    assert dict(merged.routes) == dict(_module().routes)
+    assert tuple(merged.stage_order) == tuple(_module().stage_order)
+
+
+def test_validate_cross_doc_closure_via_merge():
+    """跨文档引用闭合：模块 transitions 引用 global 锚点——
+    未合并校验报 E12（目标悬空），合并后闭合且不引入新错误。"""
+    m_doc = copy.deepcopy(_MODULE_DOC)
+    m_doc["transitions"] = [{"stage": "*", "on": "hall_race_btn", "to": "活动页"}]
+    m = Assets.from_document(m_doc, module=MODULE)
+
+    unmerged = validate_assets(m)
+    assert "E12" in {i.code for i in unmerged.errors}
+
+    merged = validate_assets(m.merge(_global()))
+    merged_errs = {i.code for i in merged.errors}
+    assert not merged_errs & {"E11", "E12"}
+
+
+def test_merge_rejects_non_global_argument():
+    with pytest.raises(ValueError, match="owner=global"):
+        _module().merge(_module())
+
+
+def test_merge_rejects_global_self_merge():
+    with pytest.raises(ValueError, match="单向可见"):
+        _global().merge(_global())
+
+
+# ------------------------------------------------------------------
+# 锚点规范化签名（D2）
+# ------------------------------------------------------------------
+
+
+def test_signature_is_stable():
+    m = _module()
+    assert anchor_signature(m, "entry_card") == anchor_signature(m, "entry_card")
+
+
+def test_signature_changes_with_matching_fields():
+    m = _module()
+    base = anchor_signature(m, "entry_card")
+
+    changed = copy.deepcopy(_MODULE_DOC)
+    changed["anchors"]["entry_card"]["threshold"] = 0.6
+    assert anchor_signature(Assets.from_document(changed, module=MODULE),
+                            "entry_card") != base
+
+    changed = copy.deepcopy(_MODULE_DOC)
+    changed["anchors"]["entry_card"].setdefault(
+        "arbitration", {"margin": 0.0, "round_from_template": False}
+    )["template_thresholds"] = {"entry_card.png": 0.6}
+    assert anchor_signature(Assets.from_document(changed, module=MODULE),
+                            "entry_card") != base
+
+    changed = copy.deepcopy(_MODULE_DOC)
+    changed["anchors"]["entry_card"]["scales"] = [0.9, 1.0]
+    assert anchor_signature(Assets.from_document(changed, module=MODULE),
+                            "entry_card") != base
+
+    changed = copy.deepcopy(_MODULE_DOC)
+    changed["anchors"]["entry_card"]["rect"] = [0.401, 0.4, 0.6, 0.6]
+    assert anchor_signature(Assets.from_document(changed, module=MODULE),
+                            "entry_card") != base
+
+
+def test_signature_stable_across_non_matching_fields():
+    """注释/label/order/第 5 位小数的 rect 抖动不影响匹配行为，签名不变。"""
+    m = _module()
+    base = anchor_signature(m, "entry_card")
+
+    changed = copy.deepcopy(_MODULE_DOC)
+    changed["anchors"]["entry_card"]["label"] = "改个显示名"
+    changed["anchors"]["entry_card"]["order"] = 99
+    changed["anchors"]["entry_card"]["comment"] = "格式化说明"
+    changed["anchors"]["entry_card"]["rect"] = [0.40001, 0.4, 0.6, 0.6]
+    assert anchor_signature(Assets.from_document(changed, module=MODULE),
+                            "entry_card") == base
+
+
+def test_signature_threshold_scales_use_effective_values():
+    """threshold/scales 取继承后有效值：锚点未声明时落 match 唯一口径，
+    match 口径变更 → 有效值变更 → 签名必须跟着变。"""
+    m = _module()
+    assert m.anchors["entry_card"].threshold is None
+    base = anchor_signature(m, "entry_card")
+
+    changed = copy.deepcopy(_MODULE_DOC)
+    changed["match"]["threshold"] = 0.8
+    assert anchor_signature(Assets.from_document(changed, module=MODULE),
+                            "entry_card") != base

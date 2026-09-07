@@ -64,6 +64,7 @@ from .compile_detect import (
     compile_detection,
 )
 from .trace import FrameTrace, TraceWriter, json_safe
+from .signature import anchor_signature
 from .compile_route import compile_routes, compile_routes_json, generated_header
 from .policy import (
     ALGO_FIELDS,
@@ -151,6 +152,7 @@ __all__ = [
     # compile_route
     "compile_routes",
     "compile_routes_json",
+    "anchor_signature",
     "generated_header",
     # policy（P1）
     "POLICIES_SCHEMA_VER",
