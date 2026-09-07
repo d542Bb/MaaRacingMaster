@@ -10,12 +10,14 @@ function fmtTs(ms) {
 }
 
 // 会话回放：真实会话/帧列表 + 决策流水时间轴
+// traceRows 为全量兜底（会话切换瞬间的旧值）；正常展示按当前会话单独拉取。
 export default function ReplayView({ traceRows }) {
   const [sessions, setSessions] = useState([]);
   const [session, setSession] = useState(null);
   const [images, setImages] = useState([]);
   const [image, setImage] = useState(null);
   const [err, setErr] = useState(null);
+  const [sessionTrace, setSessionTrace] = useState(null);
 
   useEffect(() => {
     api.sessions().then(list => {
@@ -26,18 +28,18 @@ export default function ReplayView({ traceRows }) {
 
   useEffect(() => {
     if (!session) return;
-    setImages([]); setImage(null);
+    setImages([]); setImage(null); setSessionTrace(null);
     api.images(session).then(list => {
       setImages(list);
       if (list.length) setImage(list[Math.min(2, list.length - 1)]);
     }).catch(e => setErr(String(e)));
+    api.traceFor(session).then(setSessionTrace).catch(() => setSessionTrace([]));
   }, [session]);
 
   if (err) return <Banner type="danger" closeIcon={null} description={`会话数据加载失败：${err}`} />;
 
-  // 决策流水行内含 frame 序号，无法直接映射会话目录（trace.jsonl 按会话落盘但行内无会话名），
-  // 这里展示全量最近 30 行作为流水概览
-  const rows = (traceRows || []).slice(-30).reverse();
+  // 决策流水按当前会话过滤（trace.jsonl 按会话落盘，行内无会话名，靠文件归属对应）
+  const rows = (sessionTrace ?? (traceRows || []).slice(-30)).slice(-30).reverse();
 
   return (
     <div className="replay-view">

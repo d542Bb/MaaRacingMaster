@@ -14,6 +14,7 @@ export const api = {
   graph: () => j('/api/graph'),
   assets: () => j('/api/assets'),
   trace: () => j('/api/trace'),
+  traceFor: (session) => j(`/api/trace?session=${encodeURIComponent(session)}`),
 };
 
 // 保存整份 document：非 2xx 也要读 body（400 时 report/error 携带 P 码，
