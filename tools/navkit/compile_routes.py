@@ -29,6 +29,7 @@ if str(_PROJ) not in sys.path:
 
 from maaracing_assistant.core.navkit import (
     CORE_IMAGE_DIR,
+    OWNER_GLOBAL,
     Assets,
     compile_routes_json,  # noqa: E402
 )
@@ -112,6 +113,15 @@ def check_schedule(assets_path: Path) -> list[str]:
     return errors
 
 
+def _load_global_assets() -> Assets | None:
+    """加载 core 侧 global 资产段（若文件已建立）。经模块级 `GLOBAL_ASSETS` 读取，
+    令测试的 monkeypatch 生效；文件不存在（过渡期）返回 None，merge 侧按无 global 处理。
+    """
+    if not GLOBAL_ASSETS.is_file():
+        return None
+    return Assets.load(GLOBAL_ASSETS, module=OWNER_GLOBAL)
+
+
 def compile_one(module: str, *, check: bool) -> int:
     assets_path, out_path, image_dir = paths_for(module)
     if not assets_path.is_file():
@@ -132,6 +142,14 @@ def compile_one(module: str, *, check: bool) -> int:
         # 不产生成物的资产会在这里被误报失败。
         print(f"[compile_routes:{module}] 无 routes 段，跳过编译（不产生成物）")
         return 0
+    # 路由侧并入 global（G3，贴 MAA 的 baseTask 式引用）：模块路由可引用 global 锚点
+    # （如 speedrush 入口链点大厅 hall_race_btn）。merge 单向可见、只增 global 锚点、
+    # source_path 不变 → 不引用 global 的既有模块（如 treasure）重编译逐字节不变；
+    # 检测路径（detector/compile_detection）不经此函数，局内逐帧等价回归不受影响。
+    if module != OWNER_GLOBAL:
+        global_assets = _load_global_assets()
+        if global_assets is not None:
+            assets = assets.merge(global_assets)
     generated = compile_routes_json(assets)
     if check:
         if not out_path.exists() or out_path.read_text(encoding="utf-8") != generated:
@@ -141,7 +159,11 @@ def compile_one(module: str, *, check: bool) -> int:
         return 0
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(generated, encoding="utf-8")
-    print(f"[compile_routes:{module}] 已写入 {out_path.relative_to(_PROJ)}")
+    try:
+        shown = out_path.relative_to(_PROJ)
+    except ValueError:
+        shown = out_path
+    print(f"[compile_routes:{module}] 已写入 {shown}")
     return 0
 
 

@@ -91,7 +91,14 @@ def assets_path_for(module: str) -> Path:
     """资产真源路径：plugins/<module>/resources/config/<module>_assets.json。
 
     目录与文件名都按模块名派生，避免接入新模块时写出错位文件名。
+    global 是 core 侧固定段（与 tools/navkit/compile_routes.paths_for 同形），
+    真源落在 core/resources/config/global_assets.json，不在 plugins 下。
     """
+    if module == "global":
+        return (
+            _PROJ_ROOT / "maaracing_assistant" / "core" / "resources" / "config"
+            / "global_assets.json"
+        )
     return _PROJ_ROOT / "maaracing_assistant" / "plugins" / module / "resources" / "config" / f"{module}_assets.json"
 
 

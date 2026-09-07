@@ -12,6 +12,7 @@ merge 契约（§〇 I-1/I-3/I-4 + G0 断言）：
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from maaracing_assistant.core.navkit import (
     compile_detection,
     validate_assets,
 )
+from tools.navkit import compile_routes as cr
 
 MODULE = "demo"
 
@@ -240,3 +242,112 @@ def test_signature_threshold_scales_use_effective_values():
     changed["match"]["threshold"] = 0.8
     assert anchor_signature(Assets.from_document(changed, module=MODULE),
                             "entry_card") != base
+
+
+# ------------------------------------------------------------------
+# 路由侧 merge 通电（G3）：compile_one 编译前先并入 global
+# ------------------------------------------------------------------
+
+
+def _write_route_doc_referencing_global(cfg_dir: Path) -> None:
+    """demo 模块：入口路由点击 global 的 hall_race_btn、confirm 自有 entry_card。
+    锚点 hall_race_btn 不在模块内，只有编译前 merge global 才能解析。"""
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "_schema_ver": 3,
+        "_module": MODULE,
+        "reference_size": [1280, 720],
+        "match": {"scales": [1.0], "threshold": 0.75, "margin_default": 0.01},
+        "pages": {"activity": {"label": "活动页"}},
+        "anchors": {
+            "entry_card": {
+                "kind": "template", "owner": MODULE, "page": "activity",
+                "label": "入口卡", "rect": [0.4, 0.4, 0.6, 0.6],
+                "templates": ["entry_card.png"], "order": 10,
+            },
+        },
+        "stages": {"order": ["活动页"], "global_anchors": []},
+        "transitions": [],
+        "routes": {
+            "to_detail": {
+                "start_stage": "活动页",
+                "steps": [
+                    {"target": "hall_race_btn", "action": "click",
+                     "confirm": "entry_card", "timeout_ms": 45000, "rate_limit_ms": 600},
+                ],
+            }
+        },
+    }
+    (cfg_dir / f"{MODULE}_assets.json").write_text(
+        json.dumps(doc, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+@pytest.fixture
+def _demo_plugins(tmp_path, monkeypatch):
+    """把 compile_routes 的路径常量指向 tmp：PLUGINS/（demo 模块）+ GLOBAL_ASSETS（真实样例）。"""
+    plugins = tmp_path / "plugins"
+    cfg = plugins / MODULE / "resources" / "config"
+    _write_route_doc_referencing_global(cfg)
+    g = tmp_path / "global_assets.json"
+    g.write_text(json.dumps(copy.deepcopy(_GLOBAL_DOC), ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(cr, "PLUGINS", plugins)
+    monkeypatch.setattr(cr, "GLOBAL_ASSETS", g)
+    monkeypatch.setattr(cr, "CORE_RES", tmp_path / "core_res")
+    return cfg
+
+
+def test_compile_one_resolves_global_anchor_via_route_side_merge(_demo_plugins):
+    """通电证明：路由引用 global 锚点，经 compile_one（内部先 merge）编译成功，
+    产物里对 hall_race_btn 的识别参数被正确解析（模板名来自 global 段）。"""
+    assert cr.compile_one(MODULE, check=False) == 0
+    out = (
+        cr.PLUGINS / MODULE / "resources" / "generated" / "pipeline" / f"{MODULE}_routes.json"
+    )
+    data = json.loads(out.read_text(encoding="utf-8"))
+    hall_nodes = [
+        node for node in data.values()
+        if isinstance(node, dict)
+        and node.get("custom_recognition_param", {}).get("templates") == ["hall_race_btn.png"]
+    ]
+    assert hall_nodes, "hall_race_btn 锚点应经 merge 后进入编译产物"
+
+
+def test_compile_one_fails_without_global_when_route_references_it(_demo_plugins, monkeypatch):
+    """反向：global 文件缺失（过渡期）→ 未合并 → hall_race_btn 悬空，编译按预期报错，
+    说明正是路由侧 merge 让该引用可解析，而非默默编出缺锚点的产物。"""
+    monkeypatch.setattr(cr, "GLOBAL_ASSETS", monkeypatch_tmp_missing := (_demo_plugins.parent.parent / "absent_global.json"))
+    with pytest.raises(KeyError):
+        cr.compile_one(MODULE, check=False)
+
+
+# ------------------------------------------------------------------
+# 检测侧不变量守卫（G3）：鉴宝 DetectionPlan 绝不并入 global
+# ------------------------------------------------------------------
+
+_TREASURE_ASSETS = (
+    Path(__file__).resolve().parents[1]
+    / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "config"
+    / "treasure_assets.json"
+)
+_GLOBAL_ASSETS = (
+    Path(__file__).resolve().parents[1]
+    / "maaracing_assistant" / "core" / "resources" / "config" / "global_assets.json"
+)
+
+
+def test_treasure_detection_excludes_global_anchors():
+    """鉴宝检测真源保持独占：detector 用 `Assets.load(treasure)`（不 merge）编译，
+    detect_anchors 与 global 锚点零交集——大厅锚点无 order→priority 1000，一旦并入
+    会在局内帧抢先短路、破坏 v2/v3 逐帧等价回归。本测试锁死该契约（贴 MAA：入口识别
+    属导航段，不进每帧检测环）。同时用"若误 merge 则必污染"反证本守卫有意义。"""
+    g = Assets.load(_GLOBAL_ASSETS, module="global")
+    global_ids = set(g.anchor_ids)
+
+    treasure = Assets.load(_TREASURE_ASSETS, module="treasure")
+    unmerged_detect = set(compile_detection(treasure).detect_anchors)
+    assert unmerged_detect & global_ids == set(), "鉴宝检测真源不得含任何 global 锚点"
+
+    # 反证：若误把 global 并入检测，hall 锚点确实会漏进 detect_anchors → 上断言才在守护真实风险
+    merged_detect = set(compile_detection(treasure.merge(g)).detect_anchors)
+    assert merged_detect & global_ids, "merge 后 global 锚点应进入 detect_anchors（否则守卫形同虚设）"

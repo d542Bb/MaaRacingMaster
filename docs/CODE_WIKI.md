@@ -735,6 +735,40 @@ onnx 12MB 不成量级）——要防的是"图死"（W01 管）不是"图多"�
 三概念分离"（本指南 §5.1/§5.2）；社区靠 ImageCropper 类工具 + 人工纪律，无结构化
 工作流。MRA 在其上加 regions 机器可读导出 + 校验守卫闭环。
 
+### 9.8 全局资产分层与路由侧 merge（v3 资产，2026-09-07 定案）
+
+> 分界线：**大厅本身即边界**。跨模块常驻的页面骨架（大厅底栏、设置、比赛/排位/娱乐玩法入口等）
+> 归 global，其余玩法专属内容归各自 `plugins/<id>/`。判据是"这个元素是否跨玩法长期共享"
+> （爆炸半径），**与"某个玩法是否从这个按钮进入"无关**——锚点归属由 `owner` 字段声明。
+
+**两段资产**：
+
+- global 段 = `core/resources/config/global_assets.json`（`_module: global`，页名 + 共用锚点，无 routes）。
+- 模块段 = `plugins/<id>/resources/config/<id>_assets.json`（自有锚点 + stages/transitions/routes/policies）。
+
+**单向可见合并 `Assets.merge(global)`**：模块可见 global、global 不见模块；同名锚点保留模块版；
+global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection` 的入集条件依赖此同步）；
+`owner` / `_module` 保持原值，保证 W04/E02 判定输入不变。
+
+**通电位置（关键契约）**：
+
+- **仅路由侧并入**——`tools/navkit/compile_routes.py:compile_one` 在编译模块 routes 前先
+  `assets.merge(global)`，使模块路由可 **baseTask 式引用 global 锚点**（如 speedrush 入口链点大厅
+  `hall_race_btn`）而不必各自复制一份大厅识别。不引用 global 的既有模块，重编译产物逐字节不变。
+- **检测侧绝不并入**——`detector.py` 用未合并的模块资产编译 `DetectionPlan`，`compile_detection`
+  不经 `compile_routes`。原因：global 锚点无 `order` → `stage_priority=1000`，一旦进 `detect_anchors`
+  会在局内帧抢先短路、破坏 v2/v3 逐帧等价回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
+- **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），与 MAA `activity_pool` 同构。
+
+**回归护栏（双道）**：① `compile_routes.py --all --check`（CI 步骤）——merge 接线后鉴宝产物逐字节不变即通过；
+② `tests/test_navkit_merge.py::test_treasure_detection_excludes_global_anchors`——锁死"鉴宝检测集 ∩ global
+锚点 = ∅"，并以"误 merge 必污染 detect_anchors"反证守卫有效。
+
+**控制台查看 global**：`python tools/navkit/server.py --module global`，经 `/api/assets` 查看/编辑 global 段
+（`assets_path_for("global")` 指向 core 真源）。global 是纯 v3、无 v2 rois 也无 debug 会话，其 adapter 的
+`rois_path` 落到 gitignored 用户目录缓存——**不可指回 `global_assets.json`**，否则 `main()` 的无条件
+`ensure_rois` 会用 v2 视图 JSON 往返重排该 git 跟踪文件（每次开台无谓改写真源）。
+
 ***
 
 ## 10. 已知坑点与注意事项
