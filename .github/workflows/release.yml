@@ -26,8 +26,9 @@ jobs:
           python-version: '3.11'
 
       - name: 校验 NavKit 路由编译产物（--check）
-        # 与 test.yml 同一守卫：发布物必须携带与资产源一致的编译生成物（纯标准库，零依赖）。
-        run: python tools/navkit/compile_routes.py --check
+        # 与 test.yml 同一守卫：发布物必须携带与资产源一致的编译生成物
+        # （--all 扫描全部模块资产；纯标准库，零依赖）。
+        run: python tools/navkit/compile_routes.py --all --check
 
       - name: 安装 pytest 与轻量测试依赖
         # 同 test.yml：不采用 `.[test]`（会连带安装 Windows-only 主依赖，Linux runner 装不上），

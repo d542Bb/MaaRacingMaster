@@ -32,9 +32,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: 校验 NavKit 路由编译产物（--check）
-        # 契约：treasure_routes.json 由 treasure_assets.json 编译生成，改资产必须重编译。
+        # 契约：各模块 <m>_routes.json 由 <m>_assets.json 编译生成，改资产必须重编译。
+        # --all 自动扫描 plugins/ 全部 v3 资产，新模块接入无需改动本工作流。
         # core/navkit 为纯标准库包，本步骤零依赖直接运行，防生成物与资产源漂移。
-        run: python tools/navkit/compile_routes.py --check
+        run: python tools/navkit/compile_routes.py --all --check
 
       - name: 安装 pytest 与轻量测试依赖
         # 注：不采用 `pip install -e .[test]`——会连带安装主依赖（onnxruntime-directml /

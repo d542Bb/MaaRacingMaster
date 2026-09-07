@@ -20,7 +20,9 @@
 """
 from __future__ import annotations
 
+import importlib
 import json
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,11 +52,20 @@ from maaracing_assistant.core.paths import debug_dir
 
 
 def _load_adapter(module: str):
-    """按模块名加载对应的 adapter 模块（目前仅 treasure 已适配，其余模块待接入）。"""
-    if module == "treasure":
-        from tools.navkit.adapters import treasure
-        return treasure
-    raise ValueError(f"暂不支持模块 adapter: {module!r}（当前可用: treasure）")
+    """按模块名从 `tools/navkit/adapters/` 自动发现并加载 adapter 模块。
+
+    新模块接入只需在 adapters/ 放一个 `<module>.py`（契约见 treasure.py），
+    server 核心零改动；module 必须是合法标识符，防把路径/表达式当模块名注入。
+    """
+    if not re.fullmatch(r"[A-Za-z]\w*", module):
+        raise ValueError(f"非法模块名: {module!r}")
+    adapters_dir = Path(__file__).resolve().parent / "adapters"
+    available = sorted(p.stem for p in adapters_dir.glob("*.py") if not p.stem.startswith("_"))
+    if module not in available:
+        raise ValueError(
+            f"暂不支持模块 adapter: {module!r}（当前可用: {', '.join(available) or '无'}）"
+        )
+    return importlib.import_module(f"tools.navkit.adapters.{module}")
 
 
 # ---------------------------------------------------------------------------
@@ -342,9 +353,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, 500)
 
     def _handle_trace_get(self, qs) -> None:
-        root = debug_dir() / "treasure"
+        """读决策流水：`?session=<名>` 返回该会话 trace.jsonl 行；缺省聚合全部会话。
+
+        会话根按当前模块派生（debug_dir()/module，与 adapter.session_dir 同源），
+        session 名先过白名单正则，杜绝路径注入。
+        """
+        root = debug_dir() / self.state.module_name
+        session = (qs.get("session") or [None])[0]
+        if session is None:
+            files = sorted(root.glob("*/trace.jsonl")) if root.is_dir() else []
+        else:
+            if not sessmod.SESSION_RE.match(session):
+                self._send_json({"error": "非法 session 名"}, 400)
+                return
+            files = [root / session / "trace.jsonl"]
         rows = []
-        for path in sorted(root.glob("*/trace.jsonl")):
+        for path in files:
             try:
                 rows.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
             except (OSError, ValueError):

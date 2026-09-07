@@ -32,10 +32,15 @@ from maaracing_assistant.core.navkit import (  # noqa: E402
     compile_plan,
 )
 
-DEFAULT_ASSETS = (
-    _PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "config"
-    / "treasure_assets.json"
-)
+DEFAULT_MODULE = "treasure"
+
+
+def default_assets_path(module: str) -> Path:
+    """v3 资产路径按模块名派生：plugins/<m>/resources/config/<m>_assets.json。"""
+    return (
+        _PROJ / "maaracing_assistant" / "plugins" / module / "resources" / "config"
+        / f"{module}_assets.json"
+    )
 
 
 @dataclass
@@ -79,8 +84,8 @@ class ReplayReport:
         return "\n".join(lines)
 
 
-def build_plan(assets_path: Path) -> PolicyPlan:
-    assets = Assets.load(assets_path, module="treasure")
+def build_plan(assets_path: Path, module: str) -> PolicyPlan:
+    assets = Assets.load(assets_path, module=module)
     if assets.policies is None:
         raise RuntimeError(f"{assets_path} 缺少 policies 段（决策策略缺失 = 启动失败）")
     return compile_plan(assets.policies, assets.anchors)
@@ -146,11 +151,15 @@ def replay_trace(trace_path: Path, plan: PolicyPlan) -> ReplayReport:
 def main() -> int:
     parser = argparse.ArgumentParser(description="P1 决策重放校验（记录 vs 当前 PolicyPlan）")
     parser.add_argument("--trace", type=Path, required=True, help="trace.jsonl 路径")
-    parser.add_argument("--assets", type=Path, default=DEFAULT_ASSETS, help="v3 资产路径")
+    parser.add_argument("--module", default=DEFAULT_MODULE,
+                        help=f"插件模块 ID（默认 {DEFAULT_MODULE}；决定资产缺省路径与资产归属）")
+    parser.add_argument("--assets", type=Path, default=None,
+                        help="v3 资产路径（缺省按 --module 派生）")
     args = parser.parse_args()
 
+    assets_path = args.assets if args.assets is not None else default_assets_path(args.module)
     try:
-        plan = build_plan(args.assets)
+        plan = build_plan(assets_path, args.module)
     except Exception as exc:
         print(f"[replay] 环境/数据错误：{exc}", file=sys.stderr)
         return 2
