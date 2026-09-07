@@ -10,16 +10,19 @@
                      click_mode 分派 前台鼠标 / 后台手柄导航+A / 意图不确认）
   3. 目标坐标永远来自识别框，不来自代码里写死的百分比。
 
-于是新增一个活动模块 = 往 hall.json 里加两三个节点 + 放两张模板图，
-不需要再写一遍导航匹配代码；游戏把入口挪了位置 = 换模板图或改 roi，
-不需要动 Python。
+于是新增一个活动模块的导航 = 写一份 NavKit v3 资产（见下），不需要再写一遍
+导航匹配代码；游戏把入口挪了位置 = 换模板图或改 roi，不需要动 Python。
 
-分层（用户 2026-09-05 拍板）：
-    core/resources/pipeline/hall.json        通用：大厅 → 各模块入口页
-    plugins/<id>/resources/pipeline/*.json   模块专属：入口页之后的内部导航
-两类 pipeline 加载进同一个 Resource、同一节点命名空间，模块图可直接引用
-公共节点名；两段之间由模块自己依次 run()，谁失败谁负责（公共段失败=没进对
-的页面，模块段失败=进去了但过不去）。
+导航真源（用户 2026-09-07 拍板）：
+    页面/锚点/入口链/出价策略等一切导航地图 → NavKit v3 资产
+        plugins/<id>/resources/config/<id>_assets.json   模块自己的段
+        core/resources/config/global_assets.json          跨模块共用段（大厅骨架）
+    由 core/navkit 编译与校验，经 `Assets.load` 在 Python 侧直读执行。
+
+本文件提供的是 MAA Pipeline 执行通路（`Resource.post_pipeline` + 自定义识别/动作桥），
+当前尚未接线：全仓无生产实例化点（`plugins/treasure/module.py:804` 仅类型标注；
+上方 docstring 中的用法示例不计）。留作后续把图交给框架跑的备选实现，
+新模块接入导航请走上面的 v3 资产，不要再另建一套手写入口链。
 
 资源一律留在程序目录内（便携包解压在哪资源就在哪），不往 C 盘复制。
 """
@@ -166,7 +169,10 @@ class NavGraph:
     def __init__(self, ctx):
         self.ctx = ctx
         self.image_dirs = [CORE_RES_DIR / "image"]
-        self._pipeline_dirs = [CORE_RES_DIR / "pipeline"]
+        # core 侧公共图目录按存在性纳入：导航真源已收口到 v3 资产，
+        # 没有手写公共图时不该让 load() 对着不存在的路径去 post_pipeline。
+        core_pipeline = CORE_RES_DIR / "pipeline"
+        self._pipeline_dirs = [core_pipeline] if core_pipeline.is_dir() else []
         self._resource = Resource()
         self._tasker = Tasker()
         self._resource.register_custom_recognition(RECOGNIZER_NAME, TemplateRecognizer(self))

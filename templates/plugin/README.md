@@ -75,10 +75,12 @@ templates/plugin/
 
 按活动类型从样板增补，均为现成基建：
 
-- **模板匹配 / 归一化 ROI**：`core/template_match.py`、`core/roi_config.py`；
-  ROI 校准台见 `tools/navkit/`（schema v3 资产 + 结构树）。
-- **导航跳转图**：`core/nav_graph.py`（`NavGraph` + `MRA_Template`/`MRA_Click` 桥），
-  pipeline 写法约定见 `core/resources/pipeline/hall.json` 头部注释。
+- **模板匹配 / 归一化 ROI**：`core/template_match.py`、`core/roi_config.py`。
+- **导航真源**：NavKit v3 资产 —— `plugins/<id>/resources/config/<id>_assets.json`（模块段）
+  + `core/resources/config/global_assets.json`（跨模块共用段=大厅骨架），由 `core/navkit`
+  校验与编译，运行期在 Python 侧经 `Assets.load` 直读执行；ROI/资产校准台见 `tools/navkit/`。
+- **MAA Pipeline 执行通路**：`core/nav_graph.py`（`NavGraph` + `MRA_Template`/`MRA_Click` 桥），
+  当前未接线（无生产实例化点），留作把跳转图交给框架跑的备选实现。
 - **MAA Pipeline 任务驱动**：`Resource.post_bundle(RES_DIR)` + 自定义
   `CustomAction`（参考 `core/nav_graph.py` 的桥实现与 docs/MAAFW_GUIDE.md）。
 - **目标检测**：`core/yolo_detector.py`（模型放 `resources/onnx/`，进 `REQUIRED_ASSETS`）。

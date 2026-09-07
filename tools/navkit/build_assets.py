@@ -369,7 +369,7 @@ ACCEPTED_GAPS: dict[str, str] = {
     ),
     "缺失/迁移边|routes": (
         "已排期：跨页面跳转链属 S3（compile_route + 生成物），本步只做检测真源上纸。"
-        "注：现有 hall.json 是另一套手写 pipeline，鉴宝侧无任何代码引用。"
+        "注：MAA pipeline 通路（core/nav_graph.py）未接线，鉴宝导航真源为 v3 资产。"
     ),
 }
 

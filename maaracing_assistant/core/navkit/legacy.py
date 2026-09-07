@@ -793,7 +793,7 @@ def _build_routes(
             Gap(
                 G_TRANSITION,
                 "routes",
-                "v2 没有跨页面跳转链概念（现有 hall.json 是另一套 MAA pipeline），"
+                "v2 没有跨页面跳转链概念，"
                 "routes 需由人按 §4.5 另行声明",
             )
         )

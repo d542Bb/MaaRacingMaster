@@ -1,4 +1,4 @@
-﻿# Release package assembly for MRA Windows.
+# Release package assembly for MRA Windows.
 # Output: <OutRoot>/MaaRacingAssistant-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
 #   <name>/{ mra_shell.exe + WinUI/.NET dlls, pyproject.toml,
@@ -686,6 +686,30 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     if (-not (Test-Path (Join-Path $StageRoot 'app\mscordbi.dll'))) {
         $errors.Add("PRUNING-REGRESSION: app\mscordbi.dll missing (debugger attach must be kept)")
     }
+
+    # ---------- 5.6 开发工具链不得入包（反向守卫）----------
+    # 白名单只 robocopy maaracing_assistant/，tools\（NavKit 校准台：HTTP server + 前端
+    # 构建产物，开发树 ~180MB）、tests\、docs\ 本就不该出现。此处反向断言：白名单一旦被
+    # 放宽、或有人把开发工具挪进源码包，构建当场失败，而不是静默发给用户。
+    # 注意区分：maaracing_assistant\core\navkit\ 是运行期识别/编译引擎，必须随包。
+    foreach ($rel in @('tools', 'tests', 'docs', '.github', 'scripts')) {
+        if (Test-Path (Join-Path $StageRoot $rel)) {
+            $errors.Add("DEV-TREE-LEAK: '$rel' must not be shipped")
+        }
+    }
+    Get-ChildItem $StageRoot -Recurse -Directory -Filter 'navkit' -EA SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\core\\navkit$' } |
+        ForEach-Object {
+            $errors.Add('DEV-TREE-LEAK: 校准台目录入包 -> ' +
+                $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
+        }
+    $consoleMarkers = @('compile_routes.py', 'replay_policy.py', 'graph_api.py', 'regress_stages.py')
+    Get-ChildItem $StageRoot -Recurse -File -EA SilentlyContinue |
+        Where-Object { $consoleMarkers -contains $_.Name } |
+        ForEach-Object {
+            $errors.Add('DEV-TREE-LEAK: 校准台脚本入包 -> ' +
+                $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
+        }
 }
 
 # ---------- 6. errors ----------
