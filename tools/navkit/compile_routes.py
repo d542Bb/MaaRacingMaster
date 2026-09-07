@@ -4,7 +4,7 @@
 
 用法：
     python tools/navkit/compile_routes.py                    # 默认 treasure，写盘
-    python tools/navkit/compile_routes.py --module racing    # 指定模块，写盘
+    python tools/navkit/compile_routes.py --module speedrush  # 指定模块，写盘
     python tools/navkit/compile_routes.py --all --check      # 扫描全部插件资产逐一校验
     python tools/navkit/compile_routes.py --check            # 生成物与重编译一致性校验
 
@@ -25,13 +25,28 @@ _PROJ = Path(__file__).resolve().parents[2]
 if str(_PROJ) not in sys.path:
     sys.path.insert(0, str(_PROJ))
 
-from maaracing_assistant.core.navkit import Assets, compile_routes_json  # noqa: E402
+from maaracing_assistant.core.navkit import (
+    CORE_IMAGE_DIR,
+    Assets,
+    compile_routes_json,  # noqa: E402
+)
 
 PLUGINS = _PROJ / "maaracing_assistant" / "plugins"
+CORE_RES = CORE_IMAGE_DIR.parent          # core/resources
+GLOBAL_ASSETS = CORE_RES / "config" / "global_assets.json"
 
 
 def paths_for(module: str) -> tuple[Path, Path, Path]:
-    """返回 (assets, out, image_dir) 三件套路径。"""
+    """返回 (assets, out, image_dir) 三件套路径。
+
+    global 是 core 侧固定段（只载页名/锚点，无 routes），out 仅占位、永不写盘。
+    """
+    if module == "global":
+        return (
+            GLOBAL_ASSETS,
+            CORE_RES / "generated" / "pipeline" / "global_routes.json",
+            CORE_IMAGE_DIR,
+        )
     base = PLUGINS / module / "resources"
     return (
         base / "config" / f"{module}_assets.json",
@@ -41,12 +56,18 @@ def paths_for(module: str) -> tuple[Path, Path, Path]:
 
 
 def discover_modules() -> list[str]:
-    """扫描带 v3 资产的插件模块名（文件名前缀与目录名一致才算数）。"""
+    """扫描带 v3 资产的模块名：plugins glob ∪ global 固定项。
+
+    global 恒在扫描集合内（资产文件存在即纳入），`--all` 的反断言依赖它；
+    plugins 侧文件名前缀与目录名一致才算数。
+    """
     found = []
     for assets in sorted(PLUGINS.glob("*/resources/config/*_assets.json")):
         module = assets.parent.parent.parent.name
         if assets.name == f"{module}_assets.json":
             found.append(module)
+    if GLOBAL_ASSETS.is_file():
+        found.append("global")
     return found
 
 
@@ -56,7 +77,15 @@ def compile_one(module: str, *, check: bool) -> int:
         print(f"[compile_routes:{module}] 资产不存在: {assets_path.relative_to(_PROJ)}",
               file=sys.stderr)
         return 1
-    assets = Assets.load(assets_path, module=module, image_dirs=(image_dir,))
+    # 追加语义下 core 段由 Assets.load 恒定前置，这里只供模块目录；global 无模块目录。
+    explicit_dirs = () if module == "global" else (image_dir,)
+    assets = Assets.load(assets_path, module=module, image_dirs=explicit_dirs)
+    if not assets.routes:
+        # 无 routes 段（global：只载页名/锚点）不产生成物，validate-only 直接通过。
+        # 该判定必须在 check/写盘分支之前——check 首判 `not out_path.exists()`，
+        # 不产生成物的资产会在这里被误报失败。
+        print(f"[compile_routes:{module}] 无 routes 段，跳过编译（不产生成物）")
+        return 0
     generated = compile_routes_json(assets)
     if check:
         if not out_path.exists() or out_path.read_text(encoding="utf-8") != generated:
@@ -81,12 +110,24 @@ def main() -> int:
     args = parser.parse_args()
 
     modules = discover_modules() if args.all else [args.module]
+    if args.all:
+        if not modules:
+            print("[compile_routes] plugins/ 下未发现任何 v3 资产", file=sys.stderr)
+            return 1
+        # 反断言×2：① global 资产文件在而扫描集合没有它 = 固定项被误删（条件式，
+        # 文件尚未建立时不拦）；② 固定项不得架空"至少一个真实模块段"的底线——
+        # 否则插件资产被整体误删时 --all 依旧静默通过（假绿）。
+        if GLOBAL_ASSETS.is_file() and "global" not in modules:
+            print("[compile_routes] --all 扫描集合缺少 global 固定项（反断言失败）",
+                  file=sys.stderr)
+            return 1
+        if not [m for m in modules if m != "global"]:
+            print("[compile_routes] --all 扫描集合不含任何插件模块段（反断言失败）",
+                  file=sys.stderr)
+            return 1
     rc = 0
     for module in modules:
         rc |= compile_one(module, check=args.check)
-    if args.all and not modules:
-        print("[compile_routes] plugins/ 下未发现任何 v3 资产", file=sys.stderr)
-        return 1
     return rc
 
 

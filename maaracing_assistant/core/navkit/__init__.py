@@ -30,6 +30,7 @@ from __future__ import annotations
 from .assets import (
     ANCHOR_KINDS,
     ANY_STAGE,
+    CORE_IMAGE_DIR,
     OWNER_GLOBAL,
     ROUTE_ACTIONS,
     SCHEMA_V3,
@@ -104,6 +105,7 @@ __all__ = [
     # assets
     "SCHEMA_V3",
     "ANY_STAGE",
+    "CORE_IMAGE_DIR",
     "OWNER_GLOBAL",
     "ANCHOR_KINDS",
     "ROUTE_ACTIONS",

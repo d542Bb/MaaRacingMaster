@@ -75,6 +75,14 @@ ANY_STAGE = "*"
 OWNER_GLOBAL = "global"
 """全局归属标识。`owner` 的合法取值只有 `global` 与所在模块名（E08）。"""
 
+CORE_IMAGE_DIR = Path(__file__).resolve().parents[1] / "resources" / "image"
+"""core 侧公共模板图目录（包常量定位，不变量 I-2 的 `image_dirs[0]`）。
+
+navkit 即 core 内包，`parents[1]` 恒为 `core/`，对位于 core 路径的 global 资产文档
+同样成立——不依赖"路径含 plugins/<id>/"的推断（那对 global 必然落空）。
+`image_dirs` 中 core 段恒定前置，W04 的归属判定依赖此序。
+"""
+
 ANCHOR_KINDS: frozenset[str] = frozenset({"template", "ocr", "point"})
 """锚点种类。
 
@@ -340,7 +348,10 @@ class Assets:
         """从 JSON 文件加载。
 
         `module` 缺省时从路径中的 `plugins/<id>/` 推断；推断不到则用文档里的 `_module`。
-        `image_dirs` 缺省时按 §7.3 拼 `core/resources/image` + `plugins/<id>/resources/image`。
+        `image_dirs` 缺省时按 §7.3 拼 `core/resources/image` + `plugins/<id>/resources/image`；
+        显式传入时为**追加语义**：core 段（`CORE_IMAGE_DIR`）恒定前置，传入目录作为
+        模块目录跟在后面——替换语义会让显式传参的调用点丢掉 core 段，
+        global 模板图一张都解析不到。
         """
         p = Path(path)
         with open(p, "r", encoding=encoding) as f:
@@ -358,6 +369,10 @@ class Assets:
 
         if image_dirs is None:
             image_dirs = _default_image_dirs(p, resolved_module)
+        else:
+            # 追加语义（I-2）：显式传入的是模块目录，core 段恒定前置。
+            core = (CORE_IMAGE_DIR,) if CORE_IMAGE_DIR.is_dir() else ()
+            image_dirs = core + tuple(image_dirs)
         return cls.from_document(
             doc, module=resolved_module, image_dirs=image_dirs, source_path=p
         )
@@ -710,25 +725,22 @@ def _infer_module(path: Path) -> str | None:
 
 
 def _default_image_dirs(asset_path: Path, module: str) -> tuple[Path, ...]:
-    """按 §7.3 拼默认模板图目录：`core/resources/image` 在前，模块目录在后。
+    """按 §7.3 拼默认模板图目录：core 段（`CORE_IMAGE_DIR`）恒在前，模块目录随后。
 
-    只返回**实际存在**的目录，避免把不存在的目录塞进 `image_dirs`
-    （否则 W04 "owner=global 但图只在模块目录" 会因目录缺失而误判）。
+    core 段由包常量定位、不依赖资产路径——global 文档位于 core 路径、无
+    `plugins/` 段，root 推断必然落空，此时返回**仅含 core 段的一元组**，
+    禁止返回空（否则 global 的 W01/W02/W04 全部静默失效）。
+    模块目录仍从路径中的 `plugins/<id>/` 段推断；只返回实际存在的目录，
+    避免把不存在的目录塞进 `image_dirs`（否则 W04 会因目录缺失而误判）。
     """
-    resolved = asset_path.resolve()
-    parts = resolved.parts
-    root: Path | None = None
-    for i in range(len(parts) - 1, -1, -1):
-        if parts[i] == "plugins" and i >= 1:
-            root = Path(*parts[:i])
-            break
-    if root is None:
-        return ()
     dirs: list[Path] = []
-    global_dir = root / "core" / "resources" / "image"
-    if global_dir.is_dir():
-        dirs.append(global_dir)
-    module_dir = root / "plugins" / module / "resources" / "image"
-    if module_dir.is_dir():
-        dirs.append(module_dir)
+    if CORE_IMAGE_DIR.is_dir():
+        dirs.append(CORE_IMAGE_DIR)
+    parts = asset_path.resolve().parts
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] == "plugins" and i + 1 < len(parts):
+            module_dir = Path(*parts[:i + 1]) / module / "resources" / "image"
+            if module_dir.is_dir():
+                dirs.append(module_dir)
+            break
     return tuple(dirs)
