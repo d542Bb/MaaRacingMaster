@@ -162,7 +162,7 @@ def validate_assets(
     issues.extend(_check_routes(assets, known))               # E11 E12
     issues.extend(_check_code_edges(assets, code_edges))      # E17 E18
     issues.extend(_check_compiled(assets))                    # E20
-    issues.extend(_check_templates(assets))                   # W01 W02 W04
+    issues.extend(_check_templates(assets, global_assets))    # W01 W02 W04
     issues.extend(_check_warnings(assets, global_assets))     # W03 W05 W06 W07
     issues.extend(_check_policies(assets))                    # P01-P09
 
@@ -429,18 +429,22 @@ def _check_stages(assets: Assets, known: set[str]) -> list[Issue]:
     """E12 引用闭合 / E14 防幽灵阶段 / E15 order 唯一非空 / E16 dynamic_narrow 禁伪表达式。"""
     issues: list[Issue] = []
 
-    # E15：order 非空且唯一（GUI 断点与 StageTracker 契约）
-    if not assets.stage_order:
-        issues.append(
-            Issue("E15", LEVEL_ERROR, "stages.order", "order 不得为空")
-        )
-    seen: set[str] = set()
-    for stage in assets.stage_order:
-        if stage in seen:
+    # E15：order 非空且唯一（GUI 断点与 StageTracker 契约）。
+    # global 豁免：global 是锚点/页名库，无阶段序列语义（校验剖面 §五）。
+    if assets.module != OWNER_GLOBAL:
+        if not assets.stage_order:
             issues.append(
-                Issue("E15", LEVEL_ERROR, "stages.order", f"阶段 {stage!r} 重复出现")
+                Issue("E15", LEVEL_ERROR, "stages.order", "order 不得为空")
             )
-        seen.add(stage)
+        seen: set[str] = set()
+        for stage in assets.stage_order:
+            if stage in seen:
+                issues.append(
+                    Issue("E15", LEVEL_ERROR, "stages.order", f"阶段 {stage!r} 重复出现")
+                )
+            seen.add(stage)
+    else:
+        seen: set[str] = set()
 
     # E12：global_anchors 必须指向已存在的锚点
     for name in assets.global_anchors:
@@ -629,7 +633,9 @@ def _check_compiled(assets: Assets) -> list[Issue]:
     return issues
 
 
-def _check_templates(assets: Assets) -> list[Issue]:
+def _check_templates(
+    assets: Assets, global_assets: Assets | None = None
+) -> list[Issue]:
     """W01 模板未被引用 / W02 引用了不存在的模板 / W04 归属与物理位置矛盾。"""
     issues: list[Issue] = []
     if not assets.image_dirs:
@@ -637,6 +643,10 @@ def _check_templates(assets: Assets) -> list[Issue]:
 
     on_disk = assets.template_files()
     referenced = set(assets.referenced_templates())
+    # W01 豁免：core 共享目录里的 global 模板天然不被模块文档引用，
+    # 传入 global_assets 时把它的引用集从"未引用"判定中排除。
+    if global_assets is not None:
+        referenced |= set(global_assets.referenced_templates())
 
     # W02：锚点引用的模板文件不存在
     for name in assets.referenced_templates():

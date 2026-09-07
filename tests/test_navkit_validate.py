@@ -578,6 +578,28 @@ def test_w04_not_raised_when_file_in_global(tmp_path):
     assert "W04" not in warn_codes(validate(d, image_dirs=(g, m)))
 
 
+def test_w01_excludes_global_referenced_templates(tmp_path):
+    """core 共享目录里的 global 模板天然不被模块文档引用：
+    不传 global_assets 时报 W01（噪声），传入后豁免。"""
+    g, m = _make_image_dirs(tmp_path, ["shared_global.png"], ["hall_card.png"])
+    global_doc = doc()
+    global_doc["_module"] = "global"
+    global_doc["anchors"] = {
+        "g_anchor": {
+            "kind": "template", "owner": "global", "page": "hall",
+            "label": "全局锚点", "rect": [0.1, 0.1, 0.3, 0.3],
+            "templates": ["shared_global.png"],
+        },
+    }
+    global_doc["stages"] = {"order": [], "global_anchors": ["g_anchor"]}
+    g_assets = build(global_doc, image_dirs=(g,))
+    d = doc()
+    report = validate(d, image_dirs=(g, m))
+    assert "W01" in warn_codes(report)          # shared_global.png 未被模块引用
+    report2 = validate(d, image_dirs=(g, m), global_assets=g_assets)
+    assert "W01" not in warn_codes(report2)     # global 引用集豁免
+
+
 def test_w05_stage_without_definitions():
     """允许（与运行时"未登记→回退全量检测"的既有兜底一致），只告警，不升级为 error。"""
     d = doc()

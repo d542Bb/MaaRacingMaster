@@ -12,6 +12,7 @@ merge 契约（§〇 I-1/I-3/I-4 + G0 断言）：
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -162,6 +163,19 @@ def test_merge_rejects_non_global_argument():
 def test_merge_rejects_global_self_merge():
     with pytest.raises(ValueError, match="单向可见"):
         _global().merge(_global())
+
+
+def test_real_global_doc_validates_clean():
+    """global 校验剖面（§五）：真实 global 文档 0 error 0 warning——
+    E15（order 非空）对 global 豁免；W03 不触发（global_anchors 非空）；
+    W01/W02 模板引用全闭合（真实 core 目录）。"""
+    p = (
+        Path(__file__).resolve().parents[1]
+        / "maaracing_assistant" / "core" / "resources" / "config" / "global_assets.json"
+    )
+    assets = Assets.load(p, module="global")
+    report = validate_assets(assets)
+    assert report.ok, [f"{i.code}: {i.message}" for i in report.issues]
 
 
 # ------------------------------------------------------------------

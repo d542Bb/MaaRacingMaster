@@ -1,0 +1,79 @@
+{
+  "_schema_ver": 3,
+  "_module": "global",
+  "reference_size": [
+    1280,
+    720
+  ],
+  "match": {
+    "scales": [
+      1.0
+    ],
+    "threshold": 0.75,
+    "margin_default": 0.0
+  },
+  "pages": {
+    "hall": {
+      "label": "游戏大厅"
+    }
+  },
+  "anchors": {
+    "hall_primary_tabs": {
+      "kind": "template",
+      "owner": "global",
+      "page": "hall",
+      "label": "大厅底部主标签条（车辆/工坊/角色/经营）",
+      "rect": [
+        0.0,
+        0.9014,
+        0.3609,
+        0.9736
+      ],
+      "templates": [
+        "hall_primary_tabs.png"
+      ],
+      "comment": "大厅识别主锚点：四字标签条永久不变；模板 391x34 自 720p 实拍裁剪（2026-09-07）"
+    },
+    "hall_settings": {
+      "kind": "template",
+      "owner": "global",
+      "page": "hall",
+      "label": "右上设置（三横）图标",
+      "rect": [
+        0.9211,
+        0.0278,
+        0.9664,
+        0.0944
+      ],
+      "templates": [
+        "hall_settings.png"
+      ],
+      "comment": "三横本体 44x32；已排除黄角标与绿信号图标（会变）；依赖 720p 窗口统一契约故单尺度 1.0"
+    },
+    "hall_race_btn": {
+      "kind": "template",
+      "owner": "global",
+      "page": "hall",
+      "label": "右下比赛按钮本体（红底'比赛'二字）",
+      "rect": [
+        0.8898,
+        0.8139,
+        0.9656,
+        0.9125
+      ],
+      "templates": [
+        "hall_race_btn.png"
+      ],
+      "comment": "导航锚点：speedrush 入口；「新」角标/极速狂飙开放横幅/倒计时均留在模板外"
+    }
+  },
+  "stages": {
+    "order": [],
+    "global_anchors": [
+      "hall_primary_tabs",
+      "hall_settings",
+      "hall_race_btn"
+    ]
+  },
+  "routes": {}
+}
