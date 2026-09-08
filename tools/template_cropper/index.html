@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Template Cropper — 模板图截取工具</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, "Segoe UI", sans-serif; background: #1e1e22; color: #ddd; overflow: hidden; }
+  .app { display: flex; height: 100vh; }
+  /* 左侧工具栏 */
+  .sidebar { width: 280px; background: #2a2a30; border-right: 1px solid #3a3a40; display: flex; flex-direction: column; }
+  .sidebar h2 { margin: 12px 16px 8px; font-size: 14px; color: #9cdcfe; text-transform: uppercase; letter-spacing: 1px; }
+  .sidebar .hint { margin: 0 16px 12px; font-size: 12px; color: #888; line-height: 1.5; }
+  .btn { display: block; width: calc(100% - 32px); margin: 4px 16px; padding: 8px 12px; background: #3a6ea5; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: center; }
+  .btn:hover { background: #4a7eb5; }
+  .btn.secondary { background: #444; }
+  .btn.secondary:hover { background: #555; }
+  .btn.danger { background: #a53a3a; }
+  .btn.danger:hover { background: #b54a4a; }
+  .btn:disabled { background: #555; color: #888; cursor: not-allowed; }
+  .btn-row { display: flex; gap: 8px; margin: 4px 16px; }
+  .btn-row .btn { width: auto; flex: 1; margin: 0; }
+
+  /* 区域列表 */
+  .region-list { flex: 1; overflow-y: auto; margin: 8px 12px; padding: 4px; background: #1e1e22; border-radius: 4px; }
+  .region-item { display: flex; align-items: center; padding: 6px 8px; margin-bottom: 4px; background: #2a2a30; border: 1px solid #3a3a40; border-radius: 4px; cursor: pointer; }
+  .region-item.selected { border-color: #3a6ea5; background: #2d3a4a; }
+  .region-item .color-dot { width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; flex-shrink: 0; }
+  .region-item input { flex: 1; width: 100%; min-width: 0; background: transparent; border: none; color: #ddd; font-size: 13px; padding: 2px 4px; outline: none; }
+  .region-item input:focus { background: #3a3a40; border-radius: 2px; }
+  .region-item .coords { font-size: 10px; color: #777; margin: 0 4px; white-space: nowrap; }
+  .region-item .del-btn { background: none; border: none; color: #888; cursor: pointer; padding: 2px 6px; font-size: 14px; }
+  .region-item .del-btn:hover { color: #ff6b6b; }
+
+  /* 主预览区 */
+  .main { flex: 1; display: flex; flex-direction: column; position: relative; }
+  .toolbar { padding: 8px 16px; background: #2a2a30; border-bottom: 1px solid #3a3a40; font-size: 12px; color: #888; }
+  .toolbar span { margin-right: 16px; }
+  .canvas-wrap { flex: 1; position: relative; overflow: hidden; background:
+    linear-gradient(45deg, #222 25%, transparent 25%),
+    linear-gradient(-45deg, #222 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #222 75%),
+    linear-gradient(-45deg, transparent 75%, #222 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+    background-color: #1a1a1e;
+  }
+
+  /* 图片容器：居中 + contain 缩放 */
+  .img-stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; cursor: crosshair; }
+  .img-stage img { max-width: 100%; max-height: 100%; user-select: none; -webkit-user-drag: none; pointer-events: none; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+
+  /* 选框 overlay：仅用于承载选框，自身不接收事件（事件统一由 .img-stage 处理） */
+  .overlay { position: absolute; inset: 0; pointer-events: none; }
+  .overlay .region-box {
+    position: absolute;
+    pointer-events: auto;
+    border: 2px solid;
+    background: rgba(0,0,0,0.15);
+    cursor: move;
+  }
+  .overlay .region-box .label {
+    position: absolute;
+    top: -22px;
+    left: -2px;
+    padding: 2px 6px;
+    font-size: 11px;
+    background: inherit;
+    color: #fff;
+    white-space: nowrap;
+    border-radius: 2px 2px 0 0;
+    font-weight: bold;
+  }
+  .overlay .region-box .handle {
+    position: absolute;
+    width: 10px; height: 10px;
+    background: #fff;
+    border: 1px solid #333;
+    border-radius: 2px;
+  }
+  .overlay .region-box .handle.se-n { right: -5px; bottom: -5px; cursor: se-resize; }
+  .overlay .region-box .handle.ne-n { right: -5px; top: -5px; cursor: ne-resize; }
+  .overlay .region-box .handle.sw-n { left: -5px; bottom: -5px; cursor: sw-resize; }
+  .overlay .region-box .handle.nw-n { left: -5px; top: -5px; cursor: nw-resize; }
+
+  /* 拖拽预览框 */
+  .overlay .creating-box {
+    position: absolute;
+    border: 2px dashed #ffcc00;
+    background: rgba(255,204,0,0.1);
+    pointer-events: none;
+  }
+
+  /* 拖拽提示 */
+  .drop-hint {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: #666; font-size: 14px;
+    pointer-events: none;
+  }
+  .drop-hint .big { font-size: 48px; margin-bottom: 16px; color: #444; }
+  .drop-hint.dragging { color: #ffcc00; background: rgba(255,204,0,0.05); border: 3px dashed #ffcc00; border-radius: 8px; pointer-events: none; }
+  .drop-hint.dragging .big { color: #ffcc00; }
+
+  .img-stage.drag-over .drop-hint { display: flex; }
+  .img-stage.drag-over img { opacity: 0.3; }
+
+  /* 隐藏文件输入 */
+  #fileInput { display: none; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- 左侧工具栏 -->
+  <div class="sidebar">
+    <h2>Template Cropper</h2>
+    <p class="hint">拖入或点击导入图片，在预览区拖拽框选模板区域。</p>
+    <button class="btn" id="btnImport">导入图片</button>
+    <input type="file" id="fileInput" accept="image/*">
+    <div class="btn-row">
+      <button class="btn secondary" id="btnAddRegion" disabled>手动新增</button>
+      <button class="btn danger" id="btnClearAll" disabled>清空全部</button>
+    </div>
+
+    <h2>导出</h2>
+    <div class="btn-row">
+      <button class="btn" id="btnExportImages" disabled>导出裁剪图</button>
+      <button class="btn" id="btnExportJson" disabled>导出 JSON</button>
+    </div>
+
+    <h2 style="margin-top: 8px;">已选区域 <span id="regionCount" style="color:#777;font-weight:normal;font-size:12px;">(0)</span></h2>
+    <div class="region-list" id="regionList"></div>
+  </div>
+
+  <!-- 主预览区 -->
+  <div class="main">
+    <div class="toolbar">
+      <span id="imgInfo">未加载图片</span>
+      <span style="float:right;">在图上拖拽新建选框 · 拖拽选框移动 · 拖四角调整大小 · Delete 键删除选中</span>
+    </div>
+    <div class="canvas-wrap">
+      <div class="img-stage" id="imgStage">
+        <img id="previewImg" alt="" style="display:none;">
+        <div class="overlay" id="overlay"></div>
+        <div class="drop-hint" id="dropHint">
+          <div class="big">⬇</div>
+          <div>拖拽图片到此处，或点击「导入图片」</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =======================================================================
+ * Template Cropper — 模板图截取工具
+ * 单文件 HTML 应用，纯原生 JS，无外部依赖
+ *
+ * 坐标系约定：
+ *   - 区域数据一律以「原图像素」存储（state.regions 里的 x/y/w/h）
+ *   - 鼠标/渲染坐标一律相对 .img-stage 左上角（stage 坐标）
+ *   - 两者通过 previewImg 实际渲染矩形换算，图片在 stage 中居中（contain）
+ * ===================================================================== */
+
+// ---------- 状态 ----------
+const state = {
+  image: null,           // { naturalWidth, naturalHeight, src, name }
+  regions: [],           // [{ id, name, x, y, w, h, color }] — 原图坐标
+  selectedId: null,      // 当前选中的区域
+  nameSeq: 0,            // 区域命名自增序号（避免删除后重名）
+  creating: null,        // { startX, startY, tempBox } — 创建中（stage 坐标）
+  dragging: null,        // { mode: 'move'|'nw'|'ne'|'sw'|'se', startX, startY, orig } — 编辑中
+  colors: ['#ff6b6b', '#4ecdc4', '#ffe66d', '#a8e6cf', '#ff8b94', '#6c5ce7', '#00b894', '#fd79a8'],
+  colorIdx: 0,
+};
+
+// ---------- DOM ----------
+const $ = (id) => document.getElementById(id);
+const previewImg = $('previewImg');
+const imgStage = $('imgStage');
+const overlay = $('overlay');
+const dropHint = $('dropHint');
+const fileInput = $('fileInput');
+const btnImport = $('btnImport');
+const btnAddRegion = $('btnAddRegion');
+const btnClearAll = $('btnClearAll');
+const btnExportImages = $('btnExportImages');
+const btnExportJson = $('btnExportJson');
+const regionList = $('regionList');
+const regionCount = $('regionCount');
+const imgInfo = $('imgInfo');
+
+const MIN_SIZE = 4;      // 最小边长（stage 像素），低于此值不创建区域
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+
+// ---------- 图片导入 ----------
+btnImport.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (file) loadImage(file);
+  e.target.value = '';   // 允许重复导入同一个文件
+});
+
+// 阻止浏览器在页面任意位置直接打开拖入的图片
+;['dragover', 'drop'].forEach(ev => {
+  window.addEventListener(ev, (e) => e.preventDefault());
+});
+
+;['dragenter', 'dragover'].forEach(ev => {
+  imgStage.addEventListener(ev, () => {
+    imgStage.classList.add('drag-over');
+    dropHint.classList.add('dragging');
+  });
+});
+;['dragleave'].forEach(ev => {
+  imgStage.addEventListener(ev, () => {
+    imgStage.classList.remove('drag-over');
+    dropHint.classList.remove('dragging');
+  });
+});
+imgStage.addEventListener('drop', (e) => {
+  imgStage.classList.remove('drag-over');
+  dropHint.classList.remove('dragging');
+  const dt = e.dataTransfer;
+  const file = dt && dt.files && dt.files[0];
+  if (file && file.type.startsWith('image/')) loadImage(file);
+});
+
+function loadImage(file) {
+  const reader = new FileReader();
+  reader.onerror = () => { imgInfo.textContent = '图片读取失败：' + file.name; };
+  reader.onload = (e) => {
+    const dataUrl = e.target.result;
+    const img = new Image();
+    img.onerror = () => { imgInfo.textContent = '图片解码失败：' + file.name; };
+    img.onload = () => {
+      state.image = {
+        naturalWidth: img.naturalWidth,
+        naturalHeight: img.naturalHeight,
+        src: dataUrl,
+        name: file.name
+      };
+      state.regions = [];
+      state.selectedId = null;
+      state.nameSeq = 0;
+      state.colorIdx = 0;
+      state.creating = null;
+      state.dragging = null;
+
+      previewImg.src = dataUrl;
+      previewImg.style.display = 'block';
+      dropHint.style.display = 'none';
+      imgInfo.textContent = `${file.name} — ${img.naturalWidth} × ${img.naturalHeight} px`;
+      updateUI();
+    };
+    img.src = dataUrl;
+  };
+  reader.readAsDataURL(file);
+}
+
+// ---------- 坐标映射：原图 ↔ stage ----------
+// 以 previewImg 的「实际渲染矩形」为基准（图片在 stage 中居中 contain 缩放）
+function getImageView() {
+  if (!state.image) return null;
+  const rect = previewImg.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const stageRect = imgStage.getBoundingClientRect();
+  return {
+    offsetX: rect.left - stageRect.left,   // 图片左上角在 stage 内的偏移（letterbox）
+    offsetY: rect.top - stageRect.top,
+    width: rect.width,
+    height: rect.height,
+    sx: state.image.naturalWidth / rect.width,    // 1 stage px = sx 原图 px
+    sy: state.image.naturalHeight / rect.height,
+  };
+}
+
+// stage 坐标 → 原图坐标（超出图片范围则钳制）
+function stageToImage(cx, cy) {
+  const v = getImageView();
+  if (!v) return null;
+  return {
+    x: clamp(Math.round((cx - v.offsetX) * v.sx), 0, state.image.naturalWidth),
+    y: clamp(Math.round((cy - v.offsetY) * v.sy), 0, state.image.naturalHeight)
+  };
+}
+
+// stage 坐标 → 原图坐标（不钳制，用于判断点是否落在图片内）
+function stageToImageRaw(cx, cy) {
+  const v = getImageView();
+  if (!v) return null;
+  return {
+    x: (cx - v.offsetX) * v.sx,
+    y: (cy - v.offsetY) * v.sy
+  };
+}
+
+function isInsideImage(cx, cy) {
+  const p = stageToImageRaw(cx, cy);
+  if (!p) return false;
+  return p.x >= 0 && p.y >= 0 && p.x <= state.image.naturalWidth && p.y <= state.image.naturalHeight;
+}
+
+// 原图坐标 → stage 坐标
+function imageToStage(ix, iy) {
+  const v = getImageView();
+  if (!v) return null;
+  return { x: v.offsetX + ix / v.sx, y: v.offsetY + iy / v.sy };
+}
+
+function imageSizeToStage(iw, ih) {
+  const v = getImageView();
+  if (!v) return null;
+  return { w: iw / v.sx, h: ih / v.sy };
+}
+
+// stage 局部坐标（相对于 imgStage 左上角）
+function stagePoint(e) {
+  const rect = imgStage.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+// ---------- 区域管理 ----------
+function addRegion(x, y, w, h) {
+  if (!state.image) return null;
+  if (w < 1 || h < 1) return null;
+
+  const id = Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  state.nameSeq++;
+  const region = {
+    id,
+    name: `region_${state.nameSeq}`,
+    x: Math.round(x),
+    y: Math.round(y),
+    w: Math.round(w),
+    h: Math.round(h),
+    color: state.colors[state.colorIdx % state.colors.length]
+  };
+  state.colorIdx++;
+
+  // 边界钳制
+  region.x = clamp(region.x, 0, state.image.naturalWidth - 1);
+  region.y = clamp(region.y, 0, state.image.naturalHeight - 1);
+  region.w = clamp(region.w, 1, state.image.naturalWidth - region.x);
+  region.h = clamp(region.h, 1, state.image.naturalHeight - region.y);
+
+  state.regions.push(region);
+  state.selectedId = id;
+  updateUI();
+  return region;
+}
+
+function deleteRegion(id) {
+  state.regions = state.regions.filter(r => r.id !== id);
+  if (state.selectedId === id) state.selectedId = null;
+  updateUI();
+}
+
+function getRegion(id) {
+  return state.regions.find(r => r.id === id);
+}
+
+// ---------- 交互：mousedown 统一入口 ----------
+// 事件挂在 imgStage 上：overlay 是 pointer-events:none，img 也是，
+// 只有 .region-box / .handle 会命中并从这里冒泡上来。
+imgStage.addEventListener('mousedown', (e) => {
+  if (!state.image || e.button !== 0) return;
+  if (state.creating || state.dragging) return;
+
+  const pt = stagePoint(e);
+  const handleEl = e.target.closest ? e.target.closest('.handle') : null;
+  const boxEl = e.target.closest ? e.target.closest('.region-box') : null;
+
+  if (handleEl && boxEl) {
+    // 缩放已有框
+    const region = getRegion(boxEl.dataset.id);
+    if (!region) return;
+    state.selectedId = region.id;
+    state.dragging = {
+      mode: handleEl.dataset.handle || 'se',
+      startX: pt.x, startY: pt.y,
+      orig: { x: region.x, y: region.y, w: region.w, h: region.h }
+    };
+    renderRegions();
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+
+  if (boxEl) {
+    // 移动已有框
+    const region = getRegion(boxEl.dataset.id);
+    if (!region) return;
+    state.selectedId = region.id;
+    state.dragging = {
+      mode: 'move',
+      startX: pt.x, startY: pt.y,
+      orig: { x: region.x, y: region.y, w: region.w, h: region.h }
+    };
+    renderRegions();
+    renderList();
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+
+  // 空白处：开始新建（起点必须落在图片内）
+  if (!isInsideImage(pt.x, pt.y)) {
+    if (state.selectedId) { state.selectedId = null; updateUI(); }
+    return;
+  }
+
+  if (state.selectedId) { state.selectedId = null; renderRegions(); renderList(); }
+
+  const box = document.createElement('div');
+  box.className = 'creating-box';
+  box.style.left = pt.x + 'px';
+  box.style.top = pt.y + 'px';
+  box.style.width = '0px';
+  box.style.height = '0px';
+  overlay.appendChild(box);
+
+  state.creating = { startX: pt.x, startY: pt.y, tempBox: box };
+  e.preventDefault();
+});
+
+// ---------- 全局 mousemove / mouseup ----------
+document.addEventListener('mousemove', (e) => {
+  if (state.creating) {
+    const pt = stagePoint(e);
+    const s = state.creating;
+    s.tempBox.style.left = Math.min(s.startX, pt.x) + 'px';
+    s.tempBox.style.top = Math.min(s.startY, pt.y) + 'px';
+    s.tempBox.style.width = Math.abs(pt.x - s.startX) + 'px';
+    s.tempBox.style.height = Math.abs(pt.y - s.startY) + 'px';
+  } else if (state.dragging) {
+    handleDragMove(stagePoint(e));
+  }
+});
+
+document.addEventListener('mouseup', (e) => {
+  if (state.creating) {
+    const s = state.creating;
+    const pt = stagePoint(e);
+    const w = Math.abs(pt.x - s.startX);
+    const h = Math.abs(pt.y - s.startY);
+
+    if (w >= MIN_SIZE && h >= MIN_SIZE) {
+      const p1 = stageToImage(s.startX, s.startY);
+      const p2 = stageToImage(pt.x, pt.y);
+      if (p1 && p2) {
+        addRegion(
+          Math.min(p1.x, p2.x),
+          Math.min(p1.y, p2.y),
+          Math.abs(p2.x - p1.x),
+          Math.abs(p2.y - p1.y)
+        );
+      }
+    }
+    if (s.tempBox) s.tempBox.remove();
+    state.creating = null;
+  } else if (state.dragging) {
+    state.dragging = null;
+    renderList();
+  }
+});
+
+// 鼠标移出窗口时结束操作，避免状态卡死
+window.addEventListener('blur', () => {
+  if (state.creating) {
+    if (state.creating.tempBox) state.creating.tempBox.remove();
+    state.creating = null;
+  }
+  if (state.dragging) { state.dragging = null; renderList(); }
+});
+
+function handleDragMove(pt) {
+  const d = state.dragging;
+  const region = getRegion(state.selectedId);
+  const v = getImageView();
+  if (!d || !region || !v || !state.image) return;
+
+  const W = state.image.naturalWidth;
+  const H = state.image.naturalHeight;
+
+  // stage 位移 → 原图位移
+  const dx = (pt.x - d.startX) * v.sx;
+  const dy = (pt.y - d.startY) * v.sy;
+  const o = d.orig;
+
+  if (d.mode === 'move') {
+    region.x = Math.round(clamp(o.x + dx, 0, W - o.w));
+    region.y = Math.round(clamp(o.y + dy, 0, H - o.h));
+    region.w = o.w;
+    region.h = o.h;
+  } else {
+    // 四角缩放：固定对角，拖动的角跟随鼠标（支持反向拖拽）
+    let left = o.x, top = o.y, right = o.x + o.w, bottom = o.y + o.h;
+    if (d.mode.includes('w')) left = o.x + dx;
+    if (d.mode.includes('e')) right = o.x + o.w + dx;
+    if (d.mode.includes('n')) top = o.y + dy;
+    if (d.mode.includes('s')) bottom = o.y + o.h + dy;
+
+    left = clamp(left, 0, W);
+    right = clamp(right, 0, W);
+    top = clamp(top, 0, H);
+    bottom = clamp(bottom, 0, H);
+
+    const x = Math.round(Math.min(left, right));
+    const y = Math.round(Math.min(top, bottom));
+    const w = Math.round(Math.abs(right - left));
+    const h = Math.round(Math.abs(bottom - top));
+
+    if (w >= 1 && h >= 1) {
+      region.x = x; region.y = y; region.w = w; region.h = h;
+    }
+  }
+
+  applyRegionGeometry(region);
+}
+
+// ---------- 渲染 ----------
+function renderRegions() {
+  // 清除旧框（保留创建中的临时框）
+  overlay.querySelectorAll('.region-box').forEach(n => n.remove());
+  if (!state.image) return;
+
+  for (const r of state.regions) {
+    const pos = imageToStage(r.x, r.y);
+    const size = imageSizeToStage(r.w, r.h);
+    if (!pos || !size) continue;
+
+    const box = document.createElement('div');
+    box.className = 'region-box';
+    box.dataset.id = r.id;
+    box.style.borderColor = r.color;
+    box.style.borderWidth = r.id === state.selectedId ? '3px' : '2px';
+    box.style.background = r.id === state.selectedId ? r.color + '40' : r.color + '20';
+    box.style.left = pos.x + 'px';
+    box.style.top = pos.y + 'px';
+    box.style.width = size.w + 'px';
+    box.style.height = size.h + 'px';
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.style.background = r.color;
+    label.textContent = r.name;
+    box.appendChild(label);
+
+    // 四个角 handle
+    for (const h of [{ cls: 'nw-n', dir: 'nw' }, { cls: 'ne-n', dir: 'ne' }, { cls: 'sw-n', dir: 'sw' }, { cls: 'se-n', dir: 'se' }]) {
+      const hn = document.createElement('div');
+      hn.className = 'handle ' + h.cls;
+      hn.dataset.handle = h.dir;
+      box.appendChild(hn);
+    }
+
+    overlay.appendChild(box);
+  }
+}
+
+// 拖拽过程中只更新几何信息，避免整表重建导致输入焦点丢失
+function applyRegionGeometry(r) {
+  const box = overlay.querySelector('.region-box[data-id="' + r.id + '"]');
+  if (box) {
+    const pos = imageToStage(r.x, r.y);
+    const size = imageSizeToStage(r.w, r.h);
+    if (pos && size) {
+      box.style.left = pos.x + 'px';
+      box.style.top = pos.y + 'px';
+      box.style.width = size.w + 'px';
+      box.style.height = size.h + 'px';
+    }
+  }
+  const coords = regionList.querySelector('[data-coords="' + r.id + '"]');
+  if (coords) coords.textContent = `${r.w}×${r.h}`;
+}
+
+function renderList() {
+  regionList.innerHTML = '';
+  regionCount.textContent = `(${state.regions.length})`;
+
+  for (const r of state.regions) {
+    const item = document.createElement('div');
+    item.className = 'region-item' + (r.id === state.selectedId ? ' selected' : '');
+
+    const dot = document.createElement('div');
+    dot.className = 'color-dot';
+    dot.style.background = r.color;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = r.name;
+
+    const coords = document.createElement('span');
+    coords.className = 'coords';
+    coords.dataset.coords = r.id;
+    coords.textContent = `${r.w}×${r.h}`;
+
+    const del = document.createElement('button');
+    del.className = 'del-btn';
+    del.textContent = '✕';
+    del.title = '删除该区域';
+
+    item.appendChild(dot);
+    item.appendChild(input);
+    item.appendChild(coords);
+    item.appendChild(del);
+
+    item.addEventListener('mousedown', (e) => {
+      if (e.target === input || e.target === del) return;
+      state.selectedId = r.id;
+      renderRegions();
+      renderList();
+    });
+
+    input.addEventListener('input', () => {
+      r.name = input.value;
+      const label = overlay.querySelector('.region-box[data-id="' + r.id + '"] .label');
+      if (label) label.textContent = r.name;
+    });
+
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteRegion(r.id);
+    });
+
+    regionList.appendChild(item);
+  }
+}
+
+function updateUI() {
+  renderRegions();
+  renderList();
+  const hasImg = !!state.image;
+  const hasRegion = state.regions.length > 0;
+  btnAddRegion.disabled = !hasImg;
+  btnClearAll.disabled = !hasImg || !hasRegion;
+  btnExportImages.disabled = !hasImg || !hasRegion;
+  btnExportJson.disabled = !hasImg || !hasRegion;
+}
+
+// 窗口 resize / 图片加载后重新渲染
+window.addEventListener('resize', renderRegions);
+previewImg.addEventListener('load', renderRegions);
+
+// ---------- 键盘快捷键 ----------
+document.addEventListener('keydown', (e) => {
+  const tag = document.activeElement ? document.activeElement.tagName : '';
+  const typing = tag === 'INPUT' || tag === 'TEXTAREA';
+
+  if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedId && !typing) {
+    e.preventDefault();
+    deleteRegion(state.selectedId);
+  }
+  if (e.key === 'Escape') {
+    if (state.selectedId) { state.selectedId = null; updateUI(); }
+  }
+});
+
+// ---------- 手动新增空框 ----------
+btnAddRegion.addEventListener('click', () => {
+  if (!state.image) return;
+  const w = Math.round(state.image.naturalWidth * 0.2);
+  const h = Math.round(state.image.naturalHeight * 0.2);
+  const x = Math.round((state.image.naturalWidth - w) / 2);
+  const y = Math.round((state.image.naturalHeight - h) / 2);
+  addRegion(x, y, w, h);
+});
+
+btnClearAll.addEventListener('click', () => {
+  if (confirm('确定清空全部选框？')) {
+    state.regions = [];
+    state.selectedId = null;
+    updateUI();
+  }
+});
+
+// ---------- 导出 ----------
+btnExportImages.addEventListener('click', exportImages);
+btnExportJson.addEventListener('click', exportJson);
+
+function triggerDownload(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function exportImages() {
+  if (!state.image || state.regions.length === 0) return;
+  const img = new Image();
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = () => reject(new Error('图片加载失败'));
+    img.src = state.image.src;
+  });
+
+  // 串行下载：一次性并发点击多个 <a> 会被浏览器拦截
+  for (const r of state.regions) {
+    const canvas = document.createElement('canvas');
+    canvas.width = r.w;
+    canvas.height = r.h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) continue;
+    const url = URL.createObjectURL(blob);
+    const safeName = (r.name || 'region').replace(/[\\/:*?"<>|]/g, '_');
+    triggerDownload(url, `${safeName}.png`);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+function exportJson() {
+  if (!state.image) return;
+  const baseName = state.image.name.replace(/\.[^.]+$/, '');
+  const data = {
+    source_image: state.image.name,
+    source_size: {
+      width: state.image.naturalWidth,
+      height: state.image.naturalHeight
+    },
+    exported_at: new Date().toISOString(),
+    regions: state.regions.map(r => ({
+      name: r.name,
+      x: r.x, y: r.y, w: r.w, h: r.h,
+      center: { cx: r.x + Math.round(r.w / 2), cy: r.y + Math.round(r.h / 2) },
+      color: r.color
+    }))
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  triggerDownload(url, `${baseName}_regions.json`);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+</script>
+
+</body>
+</html>
