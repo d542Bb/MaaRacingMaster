@@ -33,7 +33,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR
+from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR, v3_assets
 
 
 MATCH_THRESHOLD = 0.72  # TM_CCOEFF_NORMED（与鉴宝师匹配同一数量级）
@@ -144,6 +144,14 @@ class EggRewardRecognizer:
 
     # ---------- 加载 ----------
     def _load(self, proj: Path) -> None:
+        # v3 优先真源：读 anchors.egg（rect/templates/threshold + domain 的 _count_*_norm）。
+        # v3_assets() 为 None（NAVKIT_SOURCE=v2 / 资产缺失 / 加载失败）时落到下方 eggs 段回退。
+        assets = v3_assets()
+        if assets is not None:
+            anchor = assets.anchors.get("egg")
+            if anchor is not None:
+                self._load_v3_entry(anchor)
+                return
         path = CONFIG_DIR / "treasure_rois.json"
         data: dict = {}
         if path.exists():
@@ -189,6 +197,45 @@ class EggRewardRecognizer:
         threshold = (
             float(th)
             if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0
+            else MATCH_THRESHOLD
+        )
+        self._entry = (gray, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold)
+
+    def _load_v3_entry(self, anchor) -> None:
+        """从 v3 `anchors.egg` 锚点装配 `self._entry` + 计数区参数，语义与 v2 eggs 段路径逐字段等价。
+
+        - 计数区 `_count_*_norm`：v3 存于 `anchor.domain`，v2 存于 eggs 段顶层（同键名）。
+        - rect / templates[0] / threshold：v3 锚点直取；threshold 非法/缺省回落 `MATCH_THRESHOLD`。
+        - 模板图缺失/灰度非法 → 直接 return（`self._entry` 保持 None，`configured` 为 False）。
+        """
+        dom = anchor.domain or {}
+        try:
+            self._count_dx = float(dom.get("_count_dx_norm", COUNT_DX_DEFAULT))
+            self._count_dy = float(dom.get("_count_dy_norm", COUNT_DY_DEFAULT))
+            self._count_w = float(dom.get("_count_w_norm", COUNT_W_DEFAULT))
+            self._count_h = float(dom.get("_count_h_norm", COUNT_H_DEFAULT))
+        except (TypeError, ValueError):
+            pass
+        rect = anchor.rect.as_list()
+        if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
+            return
+        tpls = anchor.templates
+        fname = tpls[0] if isinstance(tpls, (list, tuple)) and tpls and isinstance(tpls[0], str) else ""
+        if not fname:
+            return
+        p = self.tpl_dir / fname
+        if not p.exists():
+            return
+        img = cv2.imread(str(p))
+        if img is None:
+            return
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
+            return
+        th = anchor.threshold
+        threshold = (
+            float(th)
+            if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= float(th) <= 1.0
             else MATCH_THRESHOLD
         )
         self._entry = (gray, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold)

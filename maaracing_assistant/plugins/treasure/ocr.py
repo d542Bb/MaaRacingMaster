@@ -26,7 +26,7 @@ import numpy as np
 
 from maaracing_assistant.core.logger import logger
 
-from maaracing_assistant.plugins.treasure import CONFIG_DIR
+from maaracing_assistant.plugins.treasure import CONFIG_DIR, v3_assets
 
 
 # 数字提取：千分位格式优先（"1,234,567"），其次纯数字。
@@ -222,8 +222,21 @@ class TreasureOcr:
 
     # ---------------- 配置 ----------------
     def _load_regions(self) -> dict[str, tuple[float, float, float, float]]:
-        """读取 ocr 分类的识别区域（归一化坐标，与调试台一致）。"""
+        """读取 ocr 分类的识别区域（归一化坐标，与调试台一致）。
+
+        v3 优先：筛 `kind == "ocr"` 锚点取 rect；`v3_assets()` 为 None（`NAVKIT_SOURCE=v2` /
+        资产缺失 / 加载失败）时回退 treasure_rois.json 的 ocr 段（AGENTS.md 回退约定）。
+        M0 parity 已保证每个 v2 ocr 键都有等 rect 的 v3 ocr 锚点，故 v3 分支不丢识别区。
+        """
         regions: dict[str, tuple[float, float, float, float]] = {}
+        assets = v3_assets()
+        if assets is not None:
+            for name, anchor in assets.anchors.items():
+                if anchor.kind == "ocr":
+                    r4 = anchor.rect.as_list()
+                    regions[name] = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+            logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区(v3): {', '.join(regions)}", "DEBUG")
+            return regions
         try:
             data = json.loads(self.rois_file.read_text(encoding="utf-8"))
         except Exception:

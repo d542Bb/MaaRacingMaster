@@ -499,8 +499,22 @@ class TreasureStageDetector:
         return r if 1 <= r <= 9 else None
 
     def _round_label_rect(self) -> tuple[float, float, float, float] | None:
-        """回合小字识别区域：优先 ocr.round_label_area（v2），兼容旧 round_labels 段。
-        未配置时返回 None（由 _detect_round_full 跳过该识别）。"""
+        """回合小字识别区域。
+
+        v3 优先：读 `DetectionPlan.spec["round_label_area"].rect`（`compile_detection` 把**全部**
+        锚点含 ocr 类都纳入 spec，故此 ocr 锚点在 plan 里可取）。plan 存在即认定 v3 生效：
+        有锚点返回其 rect、无锚点返回 None，**不再回读 v2 schema**（消除同矩形双真源）。
+        仅 `plan is None`（`NAVKIT_SOURCE=v2` / v3 缺失）时，才走 v2 `ocr.round_label_area`
+        兼容旧 `round_labels` 段回退（AGENTS.md 回退约定 / N-6）。未配置时返回 None。
+        """
+        if self.plan is not None:
+            spec = self.plan.spec.get("round_label_area")
+            if spec is None:
+                return None
+            r4 = list(spec.rect)
+            if len(r4) == 4:
+                return (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+            return None
         if not isinstance(self.schema, dict):
             return None
         for seg_key in ("ocr", "round_labels"):

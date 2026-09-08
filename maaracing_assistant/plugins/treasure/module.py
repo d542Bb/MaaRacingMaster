@@ -64,7 +64,7 @@ from maaracing_assistant.core.window_utils import (
     verify_frame_client,
 )
 from maaracing_assistant.core.logger import logger
-from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR
+from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR, v3_assets
 
 
 class ClickRetryExhaustedError(RuntimeError):
@@ -239,32 +239,55 @@ def _load_appraiser_templates(
     match_th = per.get("appraiser_match_threshold", _APPRAISER_MATCH_THRESHOLD)
     for prio, key, fname in _APPRAISER_TEMPLATE_DEFS:
         defs.append((prio, key, fname, search_roi, match_th))
-    try:
-        with open(CONFIG_DIR / "treasure_rois.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        seg = data.get("appraisers")
-        if isinstance(seg, dict):
-            from_json: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
-            for key, val in seg.items():
-                if not isinstance(val, dict) or key.startswith("_"):
-                    continue  # 跳过段内元数据键（如 _comment）
-                try:
-                    prio = int(val.get("prio", 999))
-                except (TypeError, ValueError):
-                    prio = 999
-                tpls = val.get("templates")
-                fname = tpls[0] if isinstance(tpls, list) and tpls and isinstance(tpls[0], str) else ""
-                rect = val.get("rect")
-                if not (isinstance(rect, list) and len(rect) == 4
-                        and all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in rect)):
-                    rect = search_roi
-                th = val.get("threshold")
-                threshold = float(th) if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0 else match_th
-                from_json.append((prio, key, fname, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold))
-            if from_json:
-                defs = from_json
-    except Exception:
-        pass  # JSON 缺失/损坏 → 保留代码常量回退
+    assets = v3_assets()
+    if assets is not None:
+        # v3 优先真源：_APPRAISER_TEMPLATE_DEFS 供「有哪些鉴宝师」身份，rect/threshold/prio 逐卡取
+        # v3 锚点（prio↔order）；缺锚点或非 template 时回退该卡代码默认值（search_roi/match_th/prio_default）。
+        v3_defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
+        for prio_default, key, fname_default in _APPRAISER_TEMPLATE_DEFS:
+            anchor = assets.anchors.get(key)
+            if anchor is None or anchor.kind != "template":
+                v3_defs.append((prio_default, key, fname_default, search_roi, match_th))
+                continue
+            try:
+                prio = int(anchor.order) if anchor.order is not None else prio_default
+            except (TypeError, ValueError):
+                prio = prio_default
+            tpls = anchor.templates
+            fname = (tpls[0] if tpls and isinstance(tpls[0], str) else "") or fname_default
+            r4 = anchor.rect.as_list()
+            rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+            threshold = float(anchor.threshold) if anchor.threshold is not None else match_th
+            v3_defs.append((prio, key, fname, rect, threshold))
+        if v3_defs:
+            defs = v3_defs
+    else:
+        try:
+            with open(CONFIG_DIR / "treasure_rois.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            seg = data.get("appraisers")
+            if isinstance(seg, dict):
+                from_json: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
+                for key, val in seg.items():
+                    if not isinstance(val, dict) or key.startswith("_"):
+                        continue  # 跳过段内元数据键（如 _comment）
+                    try:
+                        prio = int(val.get("prio", 999))
+                    except (TypeError, ValueError):
+                        prio = 999
+                    tpls = val.get("templates")
+                    fname = tpls[0] if isinstance(tpls, list) and tpls and isinstance(tpls[0], str) else ""
+                    rect = val.get("rect")
+                    if not (isinstance(rect, list) and len(rect) == 4
+                            and all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in rect)):
+                        rect = search_roi
+                    th = val.get("threshold")
+                    threshold = float(th) if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0 else match_th
+                    from_json.append((prio, key, fname, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold))
+                if from_json:
+                    defs = from_json
+        except Exception:
+            pass  # JSON 缺失/损坏 → 保留代码常量回退
     out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float]] = []
     for prio, key, fname, rect, threshold in defs:
         if not fname:
@@ -303,19 +326,26 @@ def _load_selected_check(
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
         return None
-    # rect：stage.appraiser_selected_check
+    # rect：v3 优先读锚点 appraiser_selected_check；缺失 / NAVKIT_SOURCE=v2 回退 treasure_rois.json stage 段
     rect: tuple[float, float, float, float] | None = None
-    rois_path = CONFIG_DIR / "treasure_rois.json"
-    if rois_path.exists():
-        try:
-            with open(rois_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            val = (data.get("stage") or {}).get("appraiser_selected_check")
-            if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
-                r4 = val["rect"]
-                rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-        except Exception:
-            rect = None
+    assets = v3_assets()
+    if assets is not None:
+        anchor = assets.anchors.get("appraiser_selected_check")
+        if anchor is not None:
+            r4 = anchor.rect.as_list()
+            rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+    else:
+        rois_path = CONFIG_DIR / "treasure_rois.json"
+        if rois_path.exists():
+            try:
+                with open(rois_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                val = (data.get("stage") or {}).get("appraiser_selected_check")
+                if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
+                    r4 = val["rect"]
+                    rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+            except Exception:
+                rect = None
     if rect is None:
         return None
     return (gray, rect)
@@ -517,17 +547,24 @@ def _load_smart_bid_btn(
     if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
         return None
     rect: tuple[float, float, float, float] | None = None
-    rois_path = CONFIG_DIR / "treasure_rois.json"
-    if rois_path.exists():
-        try:
-            with open(rois_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            val = (data.get("stage") or {}).get(_SMART_BID_KEY)
-            if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
-                r4 = val["rect"]
-                rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-        except Exception:
-            rect = None
+    assets = v3_assets()
+    if assets is not None:
+        anchor = assets.anchors.get(_SMART_BID_KEY)
+        if anchor is not None:
+            r4 = anchor.rect.as_list()
+            rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+    else:
+        rois_path = CONFIG_DIR / "treasure_rois.json"
+        if rois_path.exists():
+            try:
+                with open(rois_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                val = (data.get("stage") or {}).get(_SMART_BID_KEY)
+                if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
+                    r4 = val["rect"]
+                    rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+            except Exception:
+                rect = None
     if rect is None:
         return None
     return (gray, rect)
