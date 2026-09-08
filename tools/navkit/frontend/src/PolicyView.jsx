@@ -67,6 +67,9 @@ export default function PolicyView({ onDirtyChange }) {
     history.push('策略编辑', draft, 'draft');
     setDraft(prev => {
       const d = structuredClone(prev);
+      // 空态防御：新模块/手工裁剪的文档可能缺 policies 骨架，编辑入口先补齐再 mutate
+      if (d.policies === null || typeof d.policies !== 'object' || Array.isArray(d.policies)) d.policies = {};
+      if (!Array.isArray(d.policies.rules)) d.policies.rules = [];
       mutate(d);
       return d;
     });

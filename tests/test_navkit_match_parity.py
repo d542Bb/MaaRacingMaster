@@ -86,7 +86,7 @@ TEMPLATE_SIZES = [(24, 24), (40, 16), (16, 40)]
 class TestMatchParity:
     """两实现在同一输入上必须给出同一最优分与同一最优档。"""
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def frame(self):
         return _synthetic_frame()
 

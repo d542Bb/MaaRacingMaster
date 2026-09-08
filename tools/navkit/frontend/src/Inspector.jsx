@@ -9,7 +9,20 @@ function fmtTs(ms) {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-function TraceList({ rows }) {
+function rowTitle(r) {
+  if (r.event === 'click_result') {
+    const cr = r.click_result || {};
+    return `点击结果 → ${cr.key || '?'} ${cr.ok ? '✓' : '✗'}`;
+  }
+  if (r.event === 'intent_submitted') return `意图提交 → ${r.intent?.key || '?'}`;
+  if (r.event === 'decision') return '决策快照';
+  return r.hit_anchor || r.stage || '-';
+}
+
+function TraceList({ rows, loadFailed }) {
+  if (loadFailed) {
+    return <Empty title="决策流水加载失败" description="读取 /api/trace 未成功，刷新或重试后再看" style={{ padding: 16 }} />;
+  }
   if (!rows || rows.length === 0) {
     return <Empty title="无关联记录" description="决策流水（trace.jsonl）中没有命中该元素的帧" style={{ padding: 16 }} />;
   }
@@ -23,10 +36,12 @@ function TraceList({ rows }) {
         return (
           <Timeline.Item key={i} time={fmtTs(r.timestamp_ms)} type={type}
             extra={`frame ${r.frame}${r.round_no != null ? ` · r${r.round_no}` : ''}`}>
-            <span className="mono">{r.hit_anchor || r.stage || '-'}</span>
+            <span className="mono">{rowTitle(r)}</span>
             {scoreTxt}
             {r.click_result && r.click_result.ok === false && (
-              <Tag size="small" color="amber" style={{ marginLeft: 6 }}>点击未命中</Tag>
+              <Tag size="small" color="amber" style={{ marginLeft: 6 }}>
+                {r.click_result.device_lost ? '设备丢失' : '点击未命中'}
+              </Tag>
             )}
           </Timeline.Item>
         );
@@ -35,8 +50,8 @@ function TraceList({ rows }) {
   );
 }
 
-// 右侧检查器：详情 + Trace 两个 Tab（trace 按 stage / hit_anchor 过滤）
-export default function Inspector({ node, traceRows }) {
+// 右侧检查器：详情 + Trace 两个 Tab（trace 按 stage / hit_anchor / 事件行 key 过滤）
+export default function Inspector({ node, traceRows, traceError }) {
   if (!node) {
     return (
       <aside className="inspector">
@@ -48,7 +63,10 @@ export default function Inspector({ node, traceRows }) {
   const isStage = node.data.kind === 'stage';
   const key = isStage ? node.data.label : node.data.id;
   const rows = (traceRows || [])
-    .filter(r => isStage ? r.stage === key : (r.hit_anchor === key || r.scores?.[key] != null))
+    .filter(r => isStage
+      ? r.stage === key
+      : (r.hit_anchor === key || r.scores?.[key] != null
+        || r.click_result?.key === key || r.intent?.key === key))
     .slice(-12).reverse();
 
   const detail = isStage ? (
@@ -87,7 +105,7 @@ export default function Inspector({ node, traceRows }) {
           <div style={{ paddingTop: 10 }}>{detail}</div>
         </Tabs.TabPane>
         <Tabs.TabPane tab={`Trace${rows.length ? ` (${rows.length})` : ''}`} itemKey="trace">
-          <TraceList rows={rows} />
+          <TraceList rows={rows} loadFailed={traceError} />
         </Tabs.TabPane>
       </Tabs>
     </aside>

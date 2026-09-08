@@ -42,21 +42,31 @@ export default function App() {
   const [module, setModule] = useState(null);       // 当前编辑模块（server 端真值）
   const [moduleOptions, setModuleOptions] = useState([]);
   const [switching, setSwitching] = useState(false);
+  const [dataTick, setDataTick] = useState(0);      // trace/graph 失败后手动重试触发
+  const [traceError, setTraceError] = useState(false);
+  const [graphError, setGraphError] = useState(false);
+  const [moduleError, setModuleError] = useState(false);
 
-  // 模块切换后重拉全局数据（trace / graph 都按当前模块派生）
+  // 模块切换/重试后重拉全局数据（trace / graph 都按当前模块派生）；失败不再静默
+  // 降级成「空数据」，置错误标志供页脚与检查器如实显示
   useEffect(() => {
-    api.trace().then(setTraceRows).catch(() => setTraceRows([]));
-    api.graph().then(setGraphDoc).catch(() => setGraphDoc(null));
-  }, [module]);
+    setTraceError(false);
+    setGraphError(false);
+    api.trace().then(setTraceRows).catch(() => { setTraceRows([]); setTraceError(true); });
+    api.graph().then(setGraphDoc).catch(() => { setGraphDoc(null); setGraphError(true); });
+  }, [module, dataTick]);
 
-  useEffect(() => {
+  const fetchModules = React.useCallback(() => {
+    setModuleError(false);
     api.modules()
       .then(({ current, available }) => {
         setModule(current);
         setModuleOptions(available);
       })
-      .catch(() => setModule(null));
+      .catch(() => { setModule(null); setModuleError(true); });
   }, []);
+
+  useEffect(() => { fetchModules(); }, [fetchModules]);
 
   const lastHash = React.useRef(window.location.hash || '#/graph');
   const allowHash = React.useRef(false);
@@ -165,12 +175,17 @@ export default function App() {
           <Select
             size="small"
             value={module}
-            loading={module === null}
-            disabled={switching}
+            loading={module === null && !moduleError}
+            disabled={switching || moduleError}
             style={{ width: 120 }}
             onChange={doSwitchModule}
             optionList={moduleOptions.map((m) => ({ value: m, label: m }))}
           />
+          {moduleError && (
+            <Button size="small" type="tertiary" theme="light" onClick={fetchModules}>
+              模块列表加载失败 · 重试
+            </Button>
+          )}
           <Tag size="small" color="violet" style={{ margin: 0 }}>schema v3</Tag>
           <Button
             size="small"
@@ -210,15 +225,22 @@ export default function App() {
               {view === 'policy' && <PolicyView onDirtyChange={setPolicyDirty} />}
             </div>
             {view === 'graph' && (
-              <Inspector node={selectedNode} traceRows={traceRows} />
+              <Inspector node={selectedNode} traceRows={traceRows} traceError={traceError} />
             )}
           </Content>
 
           <Footer className="statusbar">
-            <span>{module ? `${module}_assets.json` : '…'}</span>
-            <span>{graphDoc ? `${graphDoc.nodes.length} 节点 · ${graphDoc.edges.length} 边` : '加载中…'}</span>
+            <span>{module ? `${module}_assets.json` : moduleError ? '模块未知' : '…'}</span>
+            {graphError
+              ? <span style={{ color: 'var(--semi-color-warning)' }}>路径图加载失败</span>
+              : <span>{graphDoc ? `${graphDoc.nodes.length} 节点 · 边 ${graphDoc.edges.length}（转移+路由，画布口径见路径树工具条）` : '加载中…'}</span>}
             {graphDoc && <span>孤儿 {graphDoc.orphans.length} · 未担保 {graphDoc.unguarded_points.length}</span>}
-            <span>trace {traceRows.length} 行</span>
+            {traceError
+              ? <span>
+                <span style={{ color: 'var(--semi-color-warning)' }}>trace 加载失败</span>
+                {' '}<button className="semi-button semi-button-tertiary semi-button-size-mini" style={{ cursor: 'pointer' }} onClick={() => setDataTick(t => t + 1)}>重试</button>
+              </span>
+              : <span>trace {traceRows.length} 行</span>}
             <div style={{ flex: 1 }} />
             <span>NavKit 控制台 · 构建版</span>
           </Footer>

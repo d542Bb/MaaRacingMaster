@@ -214,7 +214,13 @@ async function loadImages() {
 }
 function loadImage() {
   return new Promise((resolve) => {
-    if (!state.session || !state.image) return resolve();
+    if (!state.session || !state.image) {
+      // 会话无帧（纯 trace 会话/无 raw 目录）：必须清掉上一会话画面，
+      // 否则会对着已不属于当前会话的旧图拖框校准
+      state.img = null; state.imgW = 0; state.imgH = 0; state.matchHit = null;
+      fitCanvas();
+      return resolve();
+    }
     const img = new Image();
     img.crossOrigin = "anonymous";
     let finished = false;
@@ -450,7 +456,7 @@ function renderRoiList() {
     const item = document.createElement("div");
     item.className = "roi-item" + (key === state.selected ? " active" : "");
     item.innerHTML = `<span class="roi-dot ${dotClass}" style="background:${color}"></span>
-      <span class="roi-name">${key}</span>`;
+      <span class="roi-name">${htmlEscape(key)}</span>`;
     item.onclick = () => { state.selected = key; renderRoiList(); updatePropPanel(); draw(); };
     box.appendChild(item);
   });
@@ -471,7 +477,7 @@ function renderUnassigned() {
     list.forEach((name) => {
       const item = document.createElement("div");
       item.className = "roi-item";
-      item.innerHTML = `<span class="roi-dot dot-warn"></span><span class="roi-name">${name}</span>`;
+      item.innerHTML = `<span class="roi-dot dot-warn"></span><span class="roi-name">${htmlEscape(name)}</span>`;
       const btn = document.createElement("button");
       btn.textContent = "分配";
       btn.className = "btn";
@@ -951,12 +957,15 @@ async function runMatch() {
     return;
   }
   scoreBox.innerHTML = '<span class="spinner"></span>';
+  const cat = state.currentCat;
   try {
     const res = await apiPost("/api/match_score", {
       session: state.session, name: state.image,
       rect: r.rect, template: tpl,
     });
-    if (key !== state.selected) return;
+    // 竞态守卫带分类维度：不同分类下存在同名 key（如 session_start_match_btn），
+    // 只比 key 会把别处分类的分数画到当前面板
+    if (key !== state.selected || cat !== state.currentCat) return;
     if (res.score === -1) {
       state.matchHit = null;
       scoreBox.textContent = "SIZE 不足";

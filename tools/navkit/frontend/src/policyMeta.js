@@ -318,10 +318,36 @@ export function validateDraft(document) {
           issues.push({ level: 'error', code: 'P04', path: `${base}.when.${field}`, message: '条件字段不在 DecisionFacts 白名单', ruleIndex: i });
           continue;
         }
-        const conds = field === 'stage' && typeof spec === 'string' ? [{ op: 'eq', value: spec }] : parseWhen({ [field]: spec });
+        // stage 与后端 policy.py 逐条同构：字符串 = 稳定 ID 等值（须在 stage_map 声明）；
+        // 对象形态只接受 {prefix: 字符串}，且要求非空 stage_map；其余一律 P04/P05。
+        if (field === 'stage') {
+          const stageMap = (policies.stage_map && typeof policies.stage_map === 'object' && !Array.isArray(policies.stage_map))
+            ? policies.stage_map : {};
+          const stageIds = Object.keys(stageMap);
+          if (typeof spec === 'string') {
+            if (!stageIds.includes(spec)) {
+              issues.push({ level: 'error', code: 'P04', path: `${base}.when.stage`, message: `稳定 ID ${JSON.stringify(spec)} 未在 policies.stage_map 中声明`, ruleIndex: i });
+            }
+          } else if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
+            for (const [op, val] of Object.entries(spec)) {
+              if (op !== 'prefix') {
+                issues.push({ level: 'error', code: 'P05', path: `${base}.when.stage`, message: `stage 条件仅支持 prefix，收到 op=${JSON.stringify(op)}`, ruleIndex: i });
+              }
+              if (typeof val !== 'string') {
+                issues.push({ level: 'error', code: 'P05', path: `${base}.when.stage`, message: 'stage 前缀匹配值须为字符串', ruleIndex: i });
+              } else if (op === 'prefix' && stageIds.length === 0) {
+                issues.push({ level: 'error', code: 'P04', path: `${base}.when.stage`, message: 'stage 前缀匹配需要非空 stage_map', ruleIndex: i });
+              }
+            }
+          } else {
+            issues.push({ level: 'error', code: 'P05', path: `${base}.when.stage`, message: 'stage 条件须为字符串或 {prefix: ...}', ruleIndex: i });
+          }
+          continue;
+        }
+        const conds = parseWhen({ [field]: spec });
         for (const c of conds) {
           if (!CONTRACT_MIRROR.OP_WHITELIST.includes(c.op)) {
-            issues.push({ level: 'error', code: 'P05', path: `${base}.when.${field}`, message: `非法算子 ${JSON.stringify(c.op)}（stage 仅支持 prefix，但 prefix 恒不命中，勿用）`, ruleIndex: i });
+            issues.push({ level: 'error', code: 'P05', path: `${base}.when.${field}`, message: `非法算子 ${JSON.stringify(c.op)}`, ruleIndex: i });
           }
           if (typeof c.value === 'string' && c.value.startsWith('@')) {
             const name = c.value.slice(1);

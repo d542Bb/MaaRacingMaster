@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Tag, Banner, Spin, Descriptions } from '@douyinfe/semi-ui';
+import { Tag, Banner, Spin, Descriptions, Button } from '@douyinfe/semi-ui';
 import { api } from './api';
 import { SEMI_TAG_COLOR } from './theme';
 
@@ -7,12 +7,17 @@ import { SEMI_TAG_COLOR } from './theme';
 export default function AssetsView({ graphDoc, setView }) {
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState(null);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    setErr(null);
     api.assets().then(setDoc).catch(e => setErr(String(e)));
-  }, []);
+  }, [tick]);
 
-  if (err) return <Banner type="danger" closeIcon={null} description={`资产加载失败：${err}`} />;
+  if (err) return <Banner type="danger" closeIcon={null} bordered description={<span>
+    资产加载失败：{err}{' '}
+    <Button size="small" type="tertiary" theme="light" onClick={() => setTick(t => t + 1)}>重试</Button>
+  </span>} />;
   if (!doc) return <div className="view-loading"><Spin size="large" /></div>;
 
   const { document: d, report } = doc;

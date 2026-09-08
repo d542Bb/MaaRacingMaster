@@ -54,15 +54,18 @@ tools/navkit/
 `static/` 是入库的**成品**，克隆后直接 `server.py` 就能用控制台，全程不需要 Node。
 只有要改 UI 时才动 `frontend/`，命令都在 `tools/navkit/frontend/` 下执行：
 
-| 目的 | 命令 |
-| ------------------------- | ------------------- |
-| 装依赖（按锁精确复现） | `npm ci` |
-| 热更新开发（8801，`/api` 代理 8765） | `npm run dev` |
-| 构建并落盘到 `../static/` | `npm run build` |
+| 目的                         | 命令              |
+| -------------------------- | --------------- |
+| 装依赖（按锁精确复现）                | `npm ci`        |
+| 热更新开发（8801，`/api` 代理 8765） | `npm run dev`   |
+| 构建并落盘到 `../static/`        | `npm run build` |
 
 - **Node 版本**以 `package.json` 的 `engines.node` 为准（vite 6 要求 `^18.0.0 || ^20.0.0 || >=22.0.0`）。
+
 - `node_modules/` 与 vite 缓存不入库，靠 `package-lock.json` + `npm ci` 重建；构建产物 `static/` 入库。
+
 - `npm run dev` 期间后端仍要单独起着（`server.py`，见快速开始），vite 只负责前端并把 `/api` 转过去。
+
 - **构建产物必须与引用同一提交收口**：`npm run build` 产出新哈希名的 `static/assets/index-<hash>.js`
   并改写 `static/index.html` 的引用。提交时要让旧哈希文件同步从版本库消失
   （`git add -A tools/navkit/static`），否则会残留 `index.html` 已不引用的孤儿产物。
@@ -73,64 +76,88 @@ tools/navkit/
 ```
 模块运行 ──截图──→ %APPDATA%\MaaRacingAssistant\debug\treasure\<时间戳会话>\*.png
                           │
-调试台打开会话 ──框选/调阈值──→ 原子保存
+调试台打开会话 ──编辑（几何/模板/阈值/锚点增删）──→ preview（服务端 diff+校验+编译预演）
+                          │                              │ 确认弹窗
+                          ▼                              ▼
+             POST /api/rois | /api/assets（base_hash 乐观锁，E 级不落盘，409 防并发覆盖）
                           │
                           ▼
     plugins/treasure/resources/config/treasure_assets.json   ←—— 唯一真源（schema v3）
                           │
+        保存成功后自动重编译 → resources/generated/pipeline/treasure_routes.json
+                          │
 模块下次启动 ──加载──→ ROI / 模板列表 / 阈值立即生效
 ```
 
-- 调试台 `match_local` 与运行时 `detector._match_local` 是同一套多尺度匹配实现，
-  **调试台看到的匹配分 = 运行时的匹配分**，校准所见即所得。
+- 调试台 `match_local` 与运行时 `detector._match_local` 是同一算法的两份实现，
+  缩放档位同取资产文档 `match.scales`；`tests/test_navkit_match_parity.py`
+  锁死两实现等价，**调试台看到的匹配分 = 运行时的匹配分**，校准所见即所得。
 
 - 会话根目录必须与模块写盘目录一致（`user_data_dir()/debug/<module>`）；
   旧版 `PROJ/debug/treasure` 与用户数据目录解耦，已废弃。
 
-## ROI 文件 v2 schema 速览
+## 校准通信契约（v2 扁平 ⇄ v3 投影）
+
+校准 UI 按 v2 扁平 `{category:{key:{rect,templates,threshold,…}}}` 与 `/api/rois` 通信，
+服务端经 adapter 双向投影到 v3 `anchors`（真源只有 `treasure_assets.json`，v2 文件已退役）：
 
 ```jsonc
+// GET /api/rois 响应（投影自 v3，附 _meta 只读上下文）
 {
-  "_schema_ver": 2,
   "reference_size": [1280, 720],
-  "stage":   { "<key>": { "rect": [x1, y1, x2, y2], "templates": ["xxx.png"], "threshold": 0.9 } },
-  "actions": { "...": {} }, "ocr": { "...": {} },
-  "appraisers": { "...": {} }, "eggs": { "...": {} }
+  "stage": { "<key>": { "rect": [x1, y1, x2, y2], "templates": ["xxx.png"], "threshold": 0.9, "kind": "template", "page": "hall" } },
+  "actions": { "...": {} }, "ocr": { "...": {} }, "appraisers": { "...": {} }, "eggs": { "...": {} },
+  "_meta": { "match": { "scales": [1.0], "threshold": 0.75 }, "pages": ["hall", "..."], "stage_anchors": ["..."], "base_hash": "a1b2c3d4" }
 }
 ```
 
 - `rect` 全部为归一化坐标 \[0,1]，左上原点，`x2/y2` 为排他边界。
 
-- 分类段（stage/actions/ocr/appraisers/eggs）由各模块 adapter 声明，缺省项在首次启动时幂等补填。
+- 分类归属：`CALIB_CATALOG` 决定已知键的显示分类，目录外锚点按 `kind` 规则动态落类——投影全量遍历 `anchors`，UI 看到的即文档全部。
 
-## 重要边界：调试台是几何校准器，不是语义编辑器
+- 保存 body 可携带 `added: {cat:{key:{kind,page,rect,templates,guarded_by?}}}` 与 `deleted: ["cat.key"]`，服务端真实写回 `anchors` 段。
 
-调试台**只按 key 读写 rect/templates/threshold，不理解任何领域语义**。
+## 重要边界：Studio 编辑什么、不编辑什么
 
-- 「这个 ROI 属于哪个阶段 / 优先级 / 多模板互斥策略」= 模块代码私有
-  （鉴宝：`plugins/treasure/detector.py` 的 `_ROI_STAGE` + `module.py` 的 `_STAGE_PERCEPTION`）。
+| 对象                                                        | 入口                       | 落盘                                                                 |
+| --------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------ |
+| 锚点几何/模板/阈值（rect、templates、threshold、彩蛋计数区）                | ROI 校准页                  | `anchors.*`（preview 确认后）                                           |
+| 锚点结构（新增/删除锚点，kind/page/guarded\_by）                       | ROI 校准页                  | `anchors` 段真实增删；破坏引用闭合的删除被 E12 拦截                                  |
+| 出价策略（`policies.rules` / `policies.tuning`）                | 策略页                      | `policies` 段（stage\_map 只读）                                        |
+| 阶段编排、转移、路由（`stages` / `transitions` / `routes` / `pages`） | 手改 JSON                  | Studio 不提供编辑面；改完由保存管线自动重编译成物（routes 段手改后可跑 `compile_routes.py` 核对） |
+| 「某个锚点在阶段循环里怎么用」的运行时语义                                     | 模块代码（鉴宝：detector/module） | 不经工具，走代码 review                                                    |
 
-- 改语义 → 必须改代码（走 review）；改几何/阈值 → 调试台点两下即可，不碰代码。
+- 结构写回不是没有闸门：E05/E06/E09/E10/E12 等阻断级校验在 preview 与正式保存中
+  执行两遍，**E 级不过必不落盘**，失败明细在确认弹窗完整可见。
 
-- 语义字段在 JSON 里根本不存在，想乱也乱不起来。
+- 策略页的 JSON 高级编辑守卫仍禁止改 `anchors/stages/transitions/routes` 段——
+  锚点结构编辑面唯一属于 ROI 校准页。
 
 ## HTTP API 一览
 
 通用 GET：
 `/api/list_sessions`、`/api/list_images?session=`、`/api/list_templates`、
 `/api/template_status`（未引用/悬空模板检查）、`/api/image?session=&name=`、
-`/api/template?name=`、`/api/rois`、`/api/modules`（当前 + 可用模块清单）
+`/api/template?name=`、`/api/rois`（v3 投影 + `_meta` 上下文，含 `base_hash`）、
+`/api/assets`（文档 + 校验报告 + `base_hash`）、`/api/graph`（路径树投影）、
+`/api/trace[?session=]`（决策流水）、`/api/modules`（当前 + 可用模块清单）
 
 通用 POST：
-`/api/rois`（原子保存）、`/api/template_upload`、`/api/crop_to_template`、
-`/api/match_score`、`/api/cross_frame_test`（跨帧分数直方图 + 分位数）、
+`/api/rois`、`/api/assets` —— 均支持 `{"preview": true}`（merge+校验+编译预演，
+返回权威 `diff/report/compile/base_hash`，不落盘）；正式保存必须回带 `base_hash`，
+磁盘已变则 409 要求重新预览；保存成功即自动重编译 routes 成物（无 routes 段跳过）
+`/api/template_upload`、`/api/crop_to_template`、
+`/api/match_score`、`/api/cross_frame_test`（跨帧分数直方图 + 分位数，
+分母只计有效帧并报 `excluded_invalid`）、
+`/api/compile`（仅内存预演，不写盘）、`/api/shutdown`（结束 server 进程）、
 `/api/switch_module`（运行时切换编辑模块，原子重建 server state）
 
 treasure 领域 POST（adapter 注册）：
 `/api/ocr_recognize`（RapidOCR 单 ROI 识别 + ROI 尺寸建议）、
 `/api/eggs_recognize`（彩蛋图标匹配 + 计数 OCR）
 
-所有图片/模板 API 只接受白名单相对名；ROI 保存校验失败返回 400 不落盘。
+所有图片/模板 API 只接受白名单相对名；校验失败（E 级）返回 400 不落盘，
+`report` 为对象形态 `{ok, errors[], warnings[]}`。
 
 ## 新模块接入（以 racing 为例，共 4 步）
 
@@ -140,6 +167,8 @@ treasure 领域 POST（adapter 注册）：
    `CATEGORIES`、`make_category_defs()`、`rois_path()`、`session_dir()`
    （= `user_data_dir()/debug/racing`）、`template_dir()`，可选 `register_endpoints(state)`
    注册领域端点（复用 `adapters/treasure.py` 的写法即可）。
+   若真源是 v3 资产文档（推荐），再声明 `ROIS_SOURCE = "v3"` + `assets_path` 约定，
+   并提供 `flat_from_v3_doc` / `apply_flat_ops` 双向投影（照抄 treasure 实现即可）。
 4. `server.py` 的 `_load_adapter()` 加分支；启动脚本传 `-Module racing`。
 
 调试台 core、前端、启动脚本**零改动**。
@@ -154,5 +183,7 @@ treasure 领域 POST（adapter 注册）：
 - **模板状态检查**：`template_status` 的 `unassigned` = 模板存在但没被任何 ROI 引用；
   `dangling` = ROI 引用了但不存在的模板文件。
 
-- **测试**：`pytest tests/test_navkit_studio_core.py tests/test_navkit_studio_server.py`
+- **测试**：`pytest tests/test_navkit_studio_core.py tests/test_navkit_studio_server.py tests/test_navkit_studio_save_flow.py tests/test_navkit_match_parity.py`
+  （用仓库 `.venv` 的 Python 3.11 解释器执行）；改动资产或校准保存后用
+  `python tools/navkit/compile_routes.py --all --check` 核对生成物一致性。
 

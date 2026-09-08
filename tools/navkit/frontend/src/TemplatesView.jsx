@@ -1,17 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { Tag, Banner, Spin, Empty } from '@douyinfe/semi-ui';
+import { Tag, Banner, Spin, Empty, Button } from '@douyinfe/semi-ui';
 import { api } from './api';
 
 // 模板库：/api/template_status —— 已列出 / 未分配 / 悬空
 export default function TemplatesView() {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState(null);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    setErr(null);
     api.templateStatus().then(setSt).catch(e => setErr(String(e)));
-  }, []);
+  }, [tick]);
 
-  if (err) return <Banner type="danger" closeIcon={null} description={`模板状态加载失败：${err}`} />;
+  if (err) return <Banner type="danger" closeIcon={null} bordered description={<span>
+    模板状态加载失败：{err}{' '}
+    <Button size="small" type="tertiary" theme="light" onClick={() => setTick(t => t + 1)}>重试</Button>
+  </span>} />;
   if (!st) return <div className="view-loading"><Spin size="large" /></div>;
 
   return (
