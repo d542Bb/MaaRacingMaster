@@ -1,0 +1,5 @@
+# 统一 JSON 行尾为 LF：treasure_assets.json 等的 source_hash = sha256(read_bytes())
+# 对 CRLF/LF 字节敏感，Windows core.autocrlf=true 会把工作副本检成 CRLF，导致
+# compile_routes --check 的 source_hash 在本地假红（CI/Linux 检出 LF 则绿）。
+# 固定 eol=lf 让任何平台检出均为 LF，根治该复现性问题。
+*.json text eol=lf
