@@ -180,6 +180,9 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 # ├── logs/                                   # MRA_*.log
 # ├── framework/                              # MAA 框架自产物（maafw.log、cache）
 # └── debug/                                  # debug/<module>/<会话>/（调试台契约）
+#
+# 本机归档（gitignore）：archive/<名>/ —— 退役实现与离线探针工具的本机留存
+#   legacy_gui（旧 ttkbootstrap GUI）、cursor_refactor 探针、racing 插件、treasure_v2（v2 资产）
 ```
 
 ***
@@ -226,7 +229,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 **职责摘要**：签名剖面法识别游戏内白色圆盘光标（normal / interactive 两态）、摇杆-光标速度模型 + 闭环趋近导航、到位后确认点击（意图模式只导航不确认）；供 `core.clicker` 的「后台(手柄)」点击方式复用，与「前台(鼠标)」SendInput 同层。底座与手柄均依赖注入（复用 controller 的 `_gpad` / 模块的 capture），本模块不自建，避免手柄/截图冲突。
 
-> 算法细节（光标识别三态、连续 P 趋近、速度模型标定）源自 cursor\_refactor 探针沉淀（工具归档于 `archive/cursor_refactor/`），运行时不依赖该目录；速度模型真源为 `core/resources/stick_speed_model.json`。
+> 算法细节（光标识别三态、连续 P 趋近、速度模型标定）源自 cursor\_refactor 探针的实测沉淀；运行时不依赖探针代码，速度模型真源为 `core/resources/stick_speed_model.json`。
 
 ***
 
@@ -677,7 +680,7 @@ python -u -m maaracing_assistant.core.sidecar  # 独立调试 sidecar（等待 s
 
 ### 9.4 YOLO模型训练
 
-`tools/training/train.py` 提供 YOLO 训练→ONNX 导出链路（Ultralytics yolo11n 微调）；导出目标为归档插件目录 `archive/racing/resources/onnx/model.onnx`。当前版本不随发行包分发模型权重，含检测的插件启用时再由插件自带并声明 `REQUIRED_ASSETS`。
+`tools/training/train.py` 提供 YOLO 训练→ONNX 导出链路（Ultralytics yolo11n 微调）；导出目标为 racing 插件的归档资源目录 `archive/racing/resources/onnx/model.onnx`。当前版本不随发行包分发模型权重，含检测的插件启用时再由插件自带并声明 `REQUIRED_ASSETS`。
 
 ### 9.5 日志位置（%APPDATA%/MaaRacingAssistant/）
 
@@ -829,7 +832,7 @@ global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection
 
 ## 11. GUI 宿主选型（WinUI 3 定案）
 
-> 2026-08 定案。目标：HTML/WebView2 前端 + 原生 Windows 窗口行为（DWM 动画/系统按钮/Snap），Python 保持唯一业务后端（sidecar 模式）。**已落地**：正式 GUI 为 `apps/mra_shell/`（WinUI 3 shell + HTML 前端），旧 ttkbootstrap GUI（`gui/`、`gui_webview/`）与历史 spike 已归档至 `archive/`。
+> 2026-08 定案。目标：HTML/WebView2 前端 + 原生 Windows 窗口行为（DWM 动画/系统按钮/Snap），Python 保持唯一业务后端（sidecar 模式）。**已落地**：正式 GUI 为 `apps/mra_shell/`（WinUI 3 shell + HTML 前端），取代选型期的 ttkbootstrap GUI（`gui/`、`gui_webview/`）与三个 spike。
 
 ### 11.1 选型历程（三个 Spike 实测结论）
 
@@ -850,7 +853,7 @@ global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection
 
 - WinUI 3 未打包应用：`WindowsPackageType=None` + `WindowsAppSDKSelfContained=true`（免装 Windows App Runtime）
 
-- spike 原型：`archive/`（已归档，`prototypes/` 已迁移至 `apps/`）
+- spike 原型：实测结论沉淀于 §11.1，正式实现见 `apps/mra_shell/`（`prototypes/` 已迁入 `apps/`）
 
 ### 11.3 NuGet 网络坑（本机）
 
@@ -897,7 +900,7 @@ global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection
 
 ### 11.7 sidecar transport 契约测试（Step 2 完成）
 
-> `archive/sidecar_spike/`（已归档）：`PythonSidecar.cs` + `fake_sidecar.py` + `Program.cs`。**11/11 通过**（2026-08），正式 shell 的 transport 直接复用。
+> spike **11/11 通过**（2026-08）：由 `PythonSidecar.cs` + `fake_sidecar.py` + `Program.cs` 三件套验证下面这份 transport 契约，正式 shell 照此实现。
 
 **契约要点（C# PythonSidecar）**：
 

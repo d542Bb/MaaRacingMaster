@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 YOLO11n 训练脚本：自动训练并导出 ONNX 到归档的 racing 插件资源目录
-（archive/racing/resources/onnx/，模型随插件自包含分发，重写 racing 时从这里取用）。
+（archive/racing/resources/onnx/，racing 插件的归档资源目录；模型随插件自包含分发，重写 racing 时从这里取用）。
 
 许可证注意：本脚本用 Ultralytics 官方预训练权重 yolo11n.pt 微调导出，
 产出的 model.onnx 视为 AGPL-3.0 衍生作品（见同目录 resources/onnx/README.md）。

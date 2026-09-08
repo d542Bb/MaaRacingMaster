@@ -26,7 +26,7 @@ import numpy as np
 import cv2
 
 # core 自带的摇杆-光标速度模型（cursor_refactor 标定产物，k/deadzone/resolution）。
-# GamepadClicker(model_path=None) 时默认加载；标定工具归档于 archive/cursor_refactor/。
+# GamepadClicker(model_path=None) 时默认加载；数值由离线探针 cursor_refactor 标定得到。
 _DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "resources" / "stick_speed_model.json"
 
 

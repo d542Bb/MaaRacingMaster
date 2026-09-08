@@ -27,7 +27,7 @@ from pathlib import Path
 
 _PROJ = Path(__file__).resolve().parents[2]
 CONFIG = _PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "config"
-# M4/E1：v2 真源已退役归档到仓库根 archive/treasure_v2/（只读历史对照，不再随包、不再运行时可达）。
+# M4/E1：v2 已退役，此路径仅作只读历史对照输入（归档副本，不参与打包与运行时）。
 V2_PATH = _PROJ / "archive" / "treasure_v2" / "treasure_rois.json"
 V3_PATH = CONFIG / "treasure_assets.json"
 

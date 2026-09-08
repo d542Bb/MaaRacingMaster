@@ -41,7 +41,7 @@
 
 - **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
 
-- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/config/treasure_assets.json`（v3），detector/module/ocr/eggs 运行时不再读取 v2 文件；旧 `treasure_rois.json` 已于 M4 退役归档到仓库根 `archive/treasure_v2/`（不随包、运行时不可达）。插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR`/`v3_assets()` 统一引用，不依赖主程序 `assets/`。
+- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/config/treasure_assets.json`（v3），detector/module/ocr/eggs 一律读它，v2 的 `treasure_rois.json` 已于 M4 退役。插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR`/`v3_assets()` 统一引用，不依赖主程序 `assets/`。
 
 - **NavKit 底座**：`core/navkit` 负责 v3 资产模型、E/W 校验、DetectionPlan、路由编译、trace；`tools/navkit` 是结构树/编辑/回放控制台。固定坐标点击件不强制配模板，必须由 v3 `guarded_by` 担保（D2）。
 
@@ -212,7 +212,7 @@ v3 唯一真源：detector 从 `treasure_assets.json` 编译 `DetectionPlan`；M
 
 - 截图来源：`debug/treasure/<ts>/raw/`（支持 png/jpg/webp）
 
-**配置**：运行时唯一真源 `maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json`（schema v3：pages/anchors/stages/transitions/routes）。旧 `treasure_rois.json` 已于 M4 退役归档到仓库根 `archive/treasure_v2/`（不随包、运行时不可达）。`tools/navkit` 提供 `/api/rois`（v3 投影）、`/api/assets`、`/api/graph`、`/api/trace`、`/api/compile`。
+**配置**：运行时唯一真源 `maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json`（schema v3：pages/anchors/stages/transitions/routes）。v2 的 `treasure_rois.json` 已于 M4 退役。`tools/navkit` 提供 `/api/rois`（v3 投影）、`/api/assets`、`/api/graph`、`/api/trace`、`/api/compile`。
 
 ***
 
