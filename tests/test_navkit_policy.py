@@ -379,7 +379,10 @@ def test_policies_missing_is_startup_failure(monkeypatch, tmp_path):
     broken = tmp_path / "treasure_assets.json"
     broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
-    from maaracing_assistant.plugins.treasure import module as tm
+    try:
+        from maaracing_assistant.plugins.treasure import module as tm
+    except Exception:
+        pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 
     monkeypatch.setattr(tm, "CONFIG_DIR", tmp_path)
     monkeypatch.setenv("NAVKIT_SOURCE", "v3")
@@ -401,7 +404,10 @@ def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
     broken = tmp_path / "treasure_assets.json"
     broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
-    from maaracing_assistant.plugins.treasure import module as tm
+    try:
+        from maaracing_assistant.plugins.treasure import module as tm
+    except Exception:
+        pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 
     monkeypatch.setattr(tm, "CONFIG_DIR", tmp_path)
     monkeypatch.setenv("NAVKIT_SOURCE", "v3")
