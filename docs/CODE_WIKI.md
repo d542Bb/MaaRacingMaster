@@ -657,7 +657,7 @@ start_module(module_id, start_from)
 ```bash
 git clone https://github.com/d542Bb/MaaRacingAssistant.git
 cd MaaRacingAssistant
-python -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```

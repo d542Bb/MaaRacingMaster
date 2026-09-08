@@ -42,13 +42,16 @@
 python --version
 ```
 
-预期：`Python 3.9+`（推荐 3.11）。<3.9 会因类型语法不兼容报错。
+预期：`Python 3.11.x`。版本下限由 `pyproject.toml` 的 `requires-python = ">=3.11"` 锁死，低于 3.11 时 `pip install` 会直接拒绝安装本项目。
+
+> **多版本共存时 `python` 未必是 3.11**：Windows 上 PATH 里的 `python` 常指向另一个版本（本机即存在 3.9 与 3.11 并存）。用 `py -3.11 --version` 确认 3.11 可用，并按 B2 显式指定版本创建虚拟环境，否则 venv 会继承 PATH 上的旧版本。
 
 ### B2. 创建并激活虚拟环境
 
 ```bash
-python -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\activate
+python --version   # 应显示 3.11.x（venv 内的 python 已是所选版本）
 ```
 
 预期：命令行前缀出现 `(.venv)`，且 `.venv\Scripts\python.exe` 存在。

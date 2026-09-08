@@ -154,7 +154,7 @@ cd MaaRacingAssistant
 ### 2. 安装 Python 环境
 
 ```bash
-python -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
