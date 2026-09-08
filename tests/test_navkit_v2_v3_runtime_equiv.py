@@ -137,3 +137,33 @@ def test_round_label_rect_v2_v3_equal(force_source):
     r3 = d3._round_label_rect()
     assert r2 is not None and r3 is not None
     assert _rect_close(r2, r3), f"round_label_area rect 漂移: {r2}≠{r3}"
+
+
+def test_detector_v3_never_reads_treasure_rois(force_source):
+    """M3 / V-1：v3 DetectionPlan 生效时，detector 构造期一次都不读 treasure_rois.json。"""
+    from maaracing_assistant.plugins.treasure import detector as det
+    calls: list[str] = []
+    orig = (det._load_rois, det._load_roi_templates, det._load_schema)
+
+    def spy(name, ret):
+        def f(proj):
+            calls.append(name)
+            return ret
+        return f
+
+    det._load_rois = spy("rois", {})
+    det._load_roi_templates = spy("tpl", {})
+    det._load_schema = spy("schema", {})
+    try:
+        force_source("v3")
+        TreasureStageDetector(_PROJ)
+        assert det is not None
+        assert calls == [], f"v3 模式仍调用了 v2 加载器: {calls}"
+        calls.clear()
+        force_source("v2")
+        TreasureStageDetector(_PROJ)
+        assert "rois" in calls and "tpl" in calls and "schema" in calls, (
+            f"v2 模式应回读 treasure_rois.json，实际调用: {calls}"
+        )
+    finally:
+        det._load_rois, det._load_roi_templates, det._load_schema = orig

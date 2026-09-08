@@ -217,15 +217,14 @@ class TreasureStageDetector:
                     self.plan = compile_detection(asset_doc)
             except Exception as exc:
                 logger.log(f"[鉴宝检测器] v3 DetectionPlan 加载失败，回退 v2: {exc}", "WARNING")
-        self.ROI = _load_rois(proj)       # ← v2 回退/兼容：stage ROI
-        self.ROI_TPL = _load_roi_templates(proj)  # ← v2 回退/兼容：模板列表
-        self.schema = _load_schema(proj)  # v2 回退：回合小字等扩展读取
         self.match_scales = tuple(self.plan.scales) if self.plan is not None else MATCH_SCALES
         self.match_threshold = (
             float(self.plan.default_threshold) if self.plan is not None else MATCH_THRESHOLD
         )
-        # 保持旧模块独立匹配代码的字段形状；S1 后新检测路径只读 plan，
-        # 这些字段供尚未迁移的 appraiser/session helper 逐步切换。
+        # 保持旧模块独立匹配代码的字段形状；S1 后新检测路径只读 plan。
+        # M3：v3 DetectionPlan 生效时**不再 open(treasure_rois.json)**——ROI/模板/阈值/回合小字
+        # 全部来自 plan（compile_detection 已把含 ocr 类的全量锚点纳入 spec）。仅当 plan 缺失
+        # （NAVKIT_SOURCE=v2 或 v3 加载失败）才回读 v2 stage/schema 兜底（V-1「无可达 v2 引用」/ N-6）。
         self.match_scales = tuple(self.match_scales)
         if self.plan is not None:
             self.ROI = {
@@ -240,10 +239,15 @@ class TreasureStageDetector:
                 name: spec.threshold for name, spec in self.plan.spec.items()
                 if spec.threshold is not None
             }
+            self.schema = {}
         else:
+            self.ROI = _load_rois(proj)             # v2 回退：stage ROI（含填充 _roi_thresholds 全局）
+            self.ROI_TPL = _load_roi_templates(proj)  # v2 回退：模板列表
+            self.schema = _load_schema(proj)          # v2 回退：回合小字等扩展读取
             self.roi_thresholds = _roi_thresholds
-        # ROI 级自定义阈值（{roi_key: float|None}）：引用模块级 _roi_thresholds（_load_rois
-        # 刚填充），供外部（如 treasure_module._match_bid_smart_btn）与 detect() 同源取阈值。
+        # ROI 级自定义阈值 self.roi_thresholds：v3 由 plan.spec.threshold 供给（上方 if 分支）；
+        # v2 模式取模块级 _roi_thresholds（else 分支 _load_rois 填充）。供外部
+        # （如 treasure_module._match_bid_smart_btn）与 detect()/banner_result 同源取阈值。
         self._weak_alert_ts: dict[str, float] = {}
         # 回合小字 OCR：识别不到回合号（横幅未命中）时激活一次，用 OCR 读「第N回合」
         # 文字提取回合数。引擎懒加载、失败自动降级，detector 自身不持有也不初始化引擎。
@@ -455,13 +459,17 @@ class TreasureStageDetector:
                 best_name = t
         if best_name is None:
             return None
-        # 阈值解析与 detect() 一致：优先 per-模板（win 0.60），再 ROI 通用，最后全局
+        # 阈值解析与 detect() 一致：优先 per-模板（win 0.60），再 ROI 通用，最后全局。
+        # v3 锚点 arbitration.template_thresholds 以「无扩展名」为键，故 name 查不中再按 stem 查，
+        # 命中即来自 plan；仅 plan 缺失（v2 模式）才回退 _ROI_STAGE 常量（M3：v3 下 _ROI_STAGE 不再可达）。
         plan_spec = self.plan.spec.get("result_banner") if self.plan is not None else None
-        per_tpl_th = (
-            (plan_spec.arbitration.get("template_thresholds", {}) or {}).get(Path(best_name).name)
-            if plan_spec is not None else None
-        )
-        if per_tpl_th is None:
+        per_tpl_th = None
+        if plan_spec is not None:
+            ths = plan_spec.arbitration.get("template_thresholds", {}) or {}
+            per_tpl_th = ths.get(Path(best_name).name)
+            if per_tpl_th is None:
+                per_tpl_th = ths.get(Path(best_name).stem)
+        if per_tpl_th is None and self.plan is None:
             per_tpl_th = _ROI_STAGE["result_banner"].get("thresholds", {}).get(Path(best_name).stem)
         if per_tpl_th is not None:
             threshold = float(per_tpl_th)
