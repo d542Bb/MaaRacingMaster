@@ -140,6 +140,19 @@ def load_rois(state: StudioState) -> dict:
     return state.defs.load(state.rois_file)
 
 
+def state_flat_rois(state: StudioState) -> dict:
+    """校准显示 / 模板统计共用的「v2 扁平 ROI」来源。
+
+    声明 `ROIS_SOURCE="v3"` 且提供 `flat_from_v3_doc` 的 adapter（如 treasure）从 v3 资产
+    投影出扁平结构（校准与运行时的唯一真源一致）；其余模块回落通用 `load_rois`（读 v2 文件）。
+    """
+    proj = getattr(state.adapter, "flat_from_v3_doc", None)
+    if proj is not None and getattr(state.adapter, "ROIS_SOURCE", "v2") == "v3":
+        doc = json.loads(assets_path_for(state.module_name).read_text(encoding="utf-8"))
+        return proj(doc)
+    return load_rois(state)
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler（通用路由 + 领域端点转发）
 # ---------------------------------------------------------------------------
@@ -195,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 模板状态 ----
     def _template_status(self) -> dict:
         listed = sessmod.list_templates(self.state.tpl_dir)
-        data = load_rois(self.state)
+        data = state_flat_rois(self.state)
         referenced: dict[str, dict[str, list[str]]] = {}
         flat: set[str] = set()
         tpl_re = sessmod.TPL_RE
@@ -267,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             elif path == "/api/rois":
-                self._send_json(load_rois(self.state))
+                self._send_json(state_flat_rois(self.state))
             elif path == "/api/assets":
                 self._handle_assets_get(qs)
             elif path == "/api/graph":
@@ -299,6 +312,10 @@ class Handler(BaseHTTPRequestHandler):
 
         # ROI 原子保存
         if path == "/api/rois":
+            apply = getattr(self.state.adapter, "apply_v2flat_to_v3_doc", None)
+            if apply is not None and getattr(self.state.adapter, "ROIS_SOURCE", "v2") == "v3":
+                self._handle_rois_post_v3(body, apply)
+                return
             try:
                 self.state.defs.save_atomic(body, self.state.rois_file)
                 self._send_json({"ok": True, "path": str(self.state.rois_file)})
@@ -400,6 +417,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "report": report.text()})
         except Exception as exc:
             self._send_json({"ok": False, "error": str(exc)}, 400)
+
+    def _handle_rois_post_v3(self, body: dict, apply) -> None:
+        """校准台保存（v3 投影模式）：v2 扁平 body → merge 进 v3 锚点 → validate → 原子写 assets。
+
+        真源单一化：校准不再产生 treasure_rois.json，直接落 treasure_assets.json；
+        校验不过（E 级）不落盘并回报，避免校准写出运行时读不懂的资产。
+        """
+        path = self._assets_path()
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"ok": False, "error": f"读取 v3 资产失败: {exc}"}, 500)
+            return
+        try:
+            new_doc = apply(doc, body)
+            assets = Assets.from_document(new_doc, module=self.state.module_name)
+            report = validate_assets(assets)
+            if not report.ok:
+                self._send_json({"ok": False, "error": "v3 校验失败", "report": report.text()}, 400)
+                return
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(new_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(path)
+            self._send_json({"ok": True, "path": str(path), "report": report.text()})
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"ok": False, "error": f"保存失败: {exc}"}, 400)
 
     def _handle_compile_post(self, body: dict) -> None:
         try:
@@ -583,9 +626,12 @@ def main() -> None:
     args = parser.parse_args()
     state = build_state(args.module)
     Handler.state = state
-    ensure_rois(state)
+    projection = getattr(state.adapter, "ROIS_SOURCE", "v2") == "v3"
+    if not projection:
+        ensure_rois(state)
     print(f"NavKit[{args.module}] 已启动: http://localhost:{args.port}")
-    print(f"ROI 配置文件    : {state.rois_file}")
+    rois_src = assets_path_for(args.module) if projection else state.rois_file
+    print(f"ROI 真源        : {rois_src}")
     print(f"截图根目录      : {state.session_browser.debug_root}")
     print(f"模板目录        : {state.tpl_dir}")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

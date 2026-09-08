@@ -190,14 +190,18 @@ class TestTreasureAdapter:
         assert "eggs" in defs.categories
         assert defs.name == "treasure"
 
-    def test_rois_path_matches_runtime_config_dir(self):
-        # studio 的 ROI 落点必须与运行时读取路径（插件 CONFIG_DIR）完全同一路径，
-        # 否则校准保存后运行时读不到（断链）
+    def test_rois_source_is_v3_single_truth(self):
+        # M2-B1：校准台 ROI 真源改指 v3 资产（treasure_assets.json），与运行时读取路径一致，
+        # 不再以 treasure_rois.json 为落点（消灭「校准写 v2、运行时读 v3」的改了不生效漂移）。
         from maaracing_assistant.plugins.treasure import CONFIG_DIR
-        p = t_adapter.rois_path()
-        assert p.name == "treasure_rois.json"
-        assert "plugins" in p.parts and "treasure" in p.parts
-        assert p == CONFIG_DIR / "treasure_rois.json"
+        assert t_adapter.ROIS_SOURCE == "v3"
+        assert hasattr(t_adapter, "flat_from_v3_doc")
+        assert hasattr(t_adapter, "apply_v2flat_to_v3_doc")
+        assert (CONFIG_DIR / "treasure_assets.json").is_file()
+        # 唯一跨段改名：actions.session_start_match_btn(点击) → session_start_match_click；
+        # stage.session_start_match_btn(判定) 仍指同名 template 锚点。
+        assert t_adapter._calib_anchor_id("actions", "session_start_match_btn") == "session_start_match_click"
+        assert t_adapter._calib_anchor_id("stage", "session_start_match_btn") == "session_start_match_btn"
 
     def test_session_browser_wired_to_treasure_debug(self):
         b = t_adapter.make_session_browser()
@@ -205,3 +209,37 @@ class TestTreasureAdapter:
 
     def test_template_dir(self):
         assert t_adapter.template_dir().name == "image"
+
+    def _real_v3_doc(self):
+        from maaracing_assistant.plugins.treasure import CONFIG_DIR
+        return json.loads((CONFIG_DIR / "treasure_assets.json").read_text(encoding="utf-8"))
+
+    def test_flat_from_v3_projects_categories_from_anchors(self):
+        doc = self._real_v3_doc()
+        anchors = doc["anchors"]
+        flat = t_adapter.flat_from_v3_doc(doc)
+        assert set(t_adapter.CALIB_CATALOG) <= set(flat)
+        # stage 模板 rect 直取锚点；appraisers prio←order；actions rename 命中 click 锚点
+        assert flat["stage"]["smart_bid_btn"]["rect"] == [float(n) for n in anchors["smart_bid_btn"]["rect"]]
+        assert flat["appraisers"]["appraiser_p1_caroline"]["prio"] == anchors["appraiser_p1_caroline"]["order"]
+        assert flat["actions"]["session_start_match_btn"]["rect"] == [
+            float(n) for n in anchors["session_start_match_click"]["rect"]
+        ]
+        # eggs 段级计数来自 egg.domain
+        assert flat["eggs"]["_count_dx_norm"] == anchors["egg"]["domain"]["_count_dx_norm"]
+
+    def test_apply_v2flat_idempotent_preserves_noncalib_and_validates(self):
+        from maaracing_assistant.core.navkit import Assets, validate_assets
+        doc = self._real_v3_doc()
+        flat = t_adapter.flat_from_v3_doc(doc)
+        roundtrip = t_adapter.apply_v2flat_to_v3_doc(doc, flat)
+        for aid in ("smart_bid_btn", "egg", "appraiser_p1_caroline", "round_label_area"):
+            assert roundtrip["anchors"][aid]["rect"] == doc["anchors"][aid]["rect"], f"{aid} project→apply 不幂等"
+        # 改一个 rect → 仅该锚点变，未校准锚点不动
+        flat2 = json.loads(json.dumps(flat))
+        flat2["stage"]["smart_bid_btn"]["rect"] = [0.71, 0.77, 0.81, 0.85]
+        edited = t_adapter.apply_v2flat_to_v3_doc(doc, flat2)
+        assert edited["anchors"]["smart_bid_btn"]["rect"] == [0.71, 0.77, 0.81, 0.85]
+        assert edited["anchors"]["round_big_banner"]["rect"] == doc["anchors"]["round_big_banner"]["rect"]
+        # 编辑后文档仍能过运行时同款校验（校准不得写出读不懂的资产）
+        assert validate_assets(Assets.from_document(edited, module="treasure")).ok

@@ -72,6 +72,124 @@ def template_dir() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# M2-B1 · v2-flat ↔ v3 锚点双向投影（校准台以 v3 为唯一真源，treasure_rois.json 退役）
+# ---------------------------------------------------------------------------
+# 校准 UI 仍按 v2 扁平 {category:{key:{rect,templates,threshold}}} 契约与 /api/rois 通信；
+# 但落点改为 treasure_assets.json。M1 后运行时全读 v3，若校准仍写 v2 就会「改了不生效」——
+# 本投影消灭该漂移。adapter 声明「类别→键目录」（键名与 v3 锚点 id 同，除下方 rename）。
+ROIS_SOURCE = "v3"
+
+# 唯一跨段改名：v2 actions.session_start_match_btn(点击区，空模板) → v3 anchors.session_start_match_click
+# （与 check_v2_v3_parity.py 的 RENAME 一致；stage.session_start_match_btn 判定版另指同名 template 锚点）。
+ROIS_RENAME = {("actions", "session_start_match_btn"): "session_start_match_click"}
+
+# 类别 → 可校准键列表（从原 treasure_rois.json 冻结，53 项）。
+CALIB_CATALOG: dict[str, tuple[str, ...]] = {
+    "stage": (
+        "daily_high_banner", "egg_reward_title", "settle_title", "result_banner",
+        "smart_bid_btn", "round_big_banner", "appraiser_title", "hall_peak_appraise_card",
+        "goto_appraise_btn", "hall_session_cards", "is_matching_btn",
+        "session_start_match_btn", "appraiser_selected_check",
+    ),
+    "appraisers": ("appraiser_p1_caroline", "appraiser_p2_shotaro"),
+    "ocr": (
+        "bid_result_amount_box", "bid_player1", "bid_player2", "bid_player3", "bid_player4",
+        "player_name1", "player_name2", "player_name3", "player_name4",
+        "settle_final_price", "settle_total_price", "settle_profit", "settle_my_income",
+        "my_balance", "round_label_area", "bid_main_btn_label", "session_daily_count",
+        "daily_high_score",
+    ),
+    "eggs": ("egg",),
+    "actions": (
+        "bid_confirm_red_btn", "confirm_red_btn", "settle_collect_red_btn",
+        "session_master_badge", "session_expert_badge", "session_intern_badge",
+        "session_start_match_btn", "bid_main_red_btn",
+        "bid_numpad_1", "bid_numpad_2", "bid_numpad_3", "bid_numpad_4", "bid_numpad_5",
+        "bid_numpad_6", "bid_numpad_7", "bid_numpad_8", "bid_numpad_9", "bid_numpad_0",
+        "bid_numpad_clear",
+    ),
+}
+
+_EGGS_COUNT_KEYS = ("_count_dx_norm", "_count_dy_norm", "_count_w_norm", "_count_h_norm")
+
+
+def _calib_anchor_id(cat: str, key: str) -> str:
+    return ROIS_RENAME.get((cat, key), key)
+
+
+def flat_from_v3_doc(assets_doc: dict) -> dict:
+    """v3 资产文档 → 校准 UI 的 v2 扁平结构（rect/templates/threshold/prio + eggs 段级计数）。"""
+    anchors = assets_doc.get("anchors", {}) or {}
+    flat: dict = {
+        "_schema_ver": 2,
+        "reference_size": list(assets_doc.get("reference_size") or [1280, 720]),
+    }
+    for cat, keys in CALIB_CATALOG.items():
+        seg: dict = {}
+        for key in keys:
+            a = anchors.get(_calib_anchor_id(cat, key))
+            if not isinstance(a, dict):
+                continue
+            item: dict = {
+                "rect": [float(n) for n in (a.get("rect") or [0.0, 0.0, 0.0, 0.0])],
+                "templates": [t for t in (a.get("templates") or []) if isinstance(t, str) and t],
+            }
+            if a.get("threshold") is not None:
+                item["threshold"] = float(a["threshold"])
+            if cat == "appraisers" and a.get("order") is not None:
+                item["prio"] = int(a["order"])
+            if a.get("comment"):
+                item["comment"] = a["comment"]
+            seg[key] = item
+        if cat == "eggs":
+            dom = (anchors.get("egg") or {}).get("domain") or {}
+            for ck in _EGGS_COUNT_KEYS:
+                if ck in dom:
+                    seg[ck] = dom[ck]
+        flat[cat] = seg
+    return flat
+
+
+def apply_v2flat_to_v3_doc(assets_doc: dict, flat: dict) -> dict:
+    """校准提交的 v2 扁平结构 merge 回 v3 锚点：只改对应锚点 rect/threshold/templates/order 与
+    egg 的 domain 计数参数，**保留 v3 中未被校准触碰的其它锚点及全部非锚点段**。返回新文档（未落盘）。
+    """
+    import copy
+    doc = copy.deepcopy(assets_doc)
+    anchors = doc.setdefault("anchors", {})
+    if not isinstance(flat, dict):
+        return doc
+    for cat, keys in CALIB_CATALOG.items():
+        seg = flat.get(cat) or {}
+        if not isinstance(seg, dict):
+            continue
+        for key in keys:
+            item = seg.get(key)
+            if not isinstance(item, dict):
+                continue
+            a = anchors.get(_calib_anchor_id(cat, key))
+            if not isinstance(a, dict):
+                continue
+            rect = item.get("rect")
+            if isinstance(rect, list) and len(rect) == 4:
+                a["rect"] = [float(n) for n in rect]
+            if isinstance(item.get("templates"), list):
+                a["templates"] = [t for t in item["templates"] if isinstance(t, str) and t]
+            if item.get("threshold") is not None:
+                a["threshold"] = float(item["threshold"])
+            if cat == "appraisers" and item.get("prio") is not None:
+                a["order"] = int(item["prio"])
+        if cat == "eggs":
+            egg = anchors.get("egg")
+            if isinstance(egg, dict):
+                dom = egg.setdefault("domain", {})
+                for ck in _EGGS_COUNT_KEYS:
+                    if ck in seg:
+                        dom[ck] = float(seg[ck])
+    return doc
+
+
+# ---------------------------------------------------------------------------
 # 领域端点：OCR / 彩蛋（迁移自 NavKit 控制台/server.py；server only dispatch）
 # ---------------------------------------------------------------------------
 _ocr_instance = None
