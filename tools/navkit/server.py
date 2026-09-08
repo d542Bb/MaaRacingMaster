@@ -438,7 +438,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "v3 校验失败", "report": report.text()}, 400)
                 return
             tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(new_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.write_text(
+                json.dumps(new_doc, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
             tmp.replace(path)
             self._send_json({"ok": True, "path": str(path), "report": report.text()})
         except Exception as exc:  # noqa: BLE001

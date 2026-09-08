@@ -233,6 +233,8 @@ class TestTreasureAdapter:
         doc = self._real_v3_doc()
         flat = t_adapter.flat_from_v3_doc(doc)
         roundtrip = t_adapter.apply_v2flat_to_v3_doc(doc, flat)
+        # 强幂等：project→apply 必须与原 v3 文档逐字段完全相等（不得凭空增删字段，如给无模板锚点注入 templates:[]）
+        assert roundtrip == doc, "project→apply 非幂等：diff 见 anchors 增删字段"
         for aid in ("smart_bid_btn", "egg", "appraiser_p1_caroline", "round_label_area"):
             assert roundtrip["anchors"][aid]["rect"] == doc["anchors"][aid]["rect"], f"{aid} project→apply 不幂等"
         # 改一个 rect → 仅该锚点变，未校准锚点不动

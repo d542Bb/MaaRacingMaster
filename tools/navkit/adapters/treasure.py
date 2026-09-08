@@ -173,8 +173,11 @@ def apply_v2flat_to_v3_doc(assets_doc: dict, flat: dict) -> dict:
             rect = item.get("rect")
             if isinstance(rect, list) and len(rect) == 4:
                 a["rect"] = [float(n) for n in rect]
-            if isinstance(item.get("templates"), list):
-                a["templates"] = [t for t in item["templates"] if isinstance(t, str) and t]
+            tpls = item.get("templates")
+            if isinstance(tpls, list) and (tpls or "templates" in a):
+                # 仅在「有模板要写」或「该锚点本就建模了 templates」时写：避免把空 templates:[]
+                # 注入 ocr/point 等原本无 templates 的锚点（否则每次保存凭空多出字段、破坏幂等）。
+                a["templates"] = [t for t in tpls if isinstance(t, str) and t]
             if item.get("threshold") is not None:
                 a["threshold"] = float(item["threshold"])
             if cat == "appraisers" and item.get("prio") is not None:
