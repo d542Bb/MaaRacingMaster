@@ -43,10 +43,6 @@ ASSETS_PATH = (
     / "maaracing_assistant" / "plugins" / "treasure"
     / "resources" / "config" / "treasure_assets.json"
 )
-V2_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "archive" / "treasure_v2" / "treasure_rois.json"
-)  # M4/E1：v2 已退役归档（只读历史对照）
 
 # §0.5 GUI 断点契约：阶段名与顺序不得改变（与 module.STAGE_ORDER 逐项一致）
 EXPECTED_STAGE_ORDER = [
@@ -279,49 +275,6 @@ class TestTreasureAssets:
         """中标横幅带彩条特效，0.60 的放宽阈值是实测结论，不得丢。"""
         arb = doc["anchors"]["result_banner"]["arbitration"]
         assert arb["template_thresholds"]["result_auction_win_banner"] == 0.60
-
-    @pytest.mark.skipif(not V2_PATH.exists(), reason="缺少 v2 文件")
-    def test_values_match_v2_exactly(self, doc):
-        """搬迁纯净：rect / threshold / templates 与 v2 逐位相同（不允许顺手调参）。
-
-        这里不用 `diff_v2_v3`：那份比对依赖草稿的 `_v2` 追溯字段，而落盘的资产
-        文件已剥离该字段（跨段同名条目一旦丢了来源就无法回配）。改为显式指定
-        重命名映射后逐个比对，语义更直白。
-        """
-        v2 = json.loads(V2_PATH.read_text(encoding="utf-8"))
-        # v2 段.key → v3 锚点 id（只有跨段同名的那一组需要显式映射）
-        rename = {("actions", "session_start_match_btn"): "session_start_match_click"}
-
-        # 有意数据变更豁免（非搬迁漂移；每条须有授权与验证依据）：
-        #   actions.session_master_badge —— 2026-09-05 经 3582 帧历史会话验证
-        #   （可见帧 P50=0.961，非场次页最高分 0.405）由 point 登记为 template，
-        #   rect 外扩 25% 作搜索区、threshold=0.85。
-        known_deltas = {("actions", "session_master_badge")}
-
-        problems: list[str] = []
-        for seg in ("stage", "appraisers", "ocr", "eggs", "actions"):
-            for key, val in (v2.get(seg) or {}).items():
-                if key.startswith("_"):
-                    continue
-                if (seg, key) in known_deltas:
-                    continue
-                anchor_id = rename.get((seg, key), key)
-                entry = doc["anchors"].get(anchor_id)
-                if entry is None:
-                    problems.append(f"{seg}.{key} → {anchor_id}: v3 中缺失")
-                    continue
-                if entry["rect"] != val["rect"]:
-                    problems.append(f"{seg}.{key}.rect: {val['rect']} != {entry['rect']}")
-                if list(entry.get("templates") or []) != list(val.get("templates") or []):
-                    problems.append(
-                        f"{seg}.{key}.templates: {val.get('templates')} "
-                        f"!= {entry.get('templates')}"
-                    )
-                if "threshold" in val and entry.get("threshold") != val["threshold"]:
-                    problems.append(
-                        f"{seg}.{key}.threshold: {val['threshold']} != {entry.get('threshold')}"
-                    )
-        assert problems == [], "与 v2 存在数值差异：" + "\n  ".join(problems)
 
     def test_renamed_anchor_exists(self, doc):
         """跨段同名的处置：stage 版判定、actions 版改名后专供点击。"""

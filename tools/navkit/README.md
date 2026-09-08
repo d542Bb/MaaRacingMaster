@@ -38,8 +38,35 @@ tools/navkit/
 │   └── renderer.py      # 灰度/BGR → base64 dataURL 预览
 ├── adapters/
 │   └── treasure.py      # 鉴宝 adapter：类别清单/路径布局/缺省项/领域端点（OCR/彩蛋）
-└── static/              # 前端三件套（index.html / style.css / app.js）
+├── frontend/            # 前端工程真源（React 18 + Semi UI + vite；依赖不入库，见「改前端」节）
+│   ├── src/             # 视图与逻辑（App.jsx / *View.jsx / api.js / layout.js / theme.js …）
+│   ├── package.json     # 依赖 + 脚本（dev / build / preview）+ engines 声明
+│   ├── package-lock.json# 精确锁，npm ci 据此复现
+│   └── vite.config.js   # build.outDir = ../static；dev 端口 8801，/api 代理 8765
+└── static/              # server 伺服的成品（clone 即用，无需 Node）
+    ├── index.html       # ← vite 产物（引用 assets/index-<hash>.js）
+    ├── assets/          # ← vite 产物（哈希名 js / css）
+    └── app.js · style.css · calibrator.html   # 手写遗留页，vite 不覆盖（emptyOutDir=false）
 ```
+
+## 改前端（重建 `static/`）
+
+`static/` 是入库的**成品**，克隆后直接 `server.py` 就能用控制台，全程不需要 Node。
+只有要改 UI 时才动 `frontend/`，命令都在 `tools/navkit/frontend/` 下执行：
+
+| 目的 | 命令 |
+| ------------------------- | ------------------- |
+| 装依赖（按锁精确复现） | `npm ci` |
+| 热更新开发（8801，`/api` 代理 8765） | `npm run dev` |
+| 构建并落盘到 `../static/` | `npm run build` |
+
+- **Node 版本**以 `package.json` 的 `engines.node` 为准（vite 6 要求 `^18.0.0 || ^20.0.0 || >=22.0.0`）。
+- `node_modules/` 与 vite 缓存不入库，靠 `package-lock.json` + `npm ci` 重建；构建产物 `static/` 入库。
+- `npm run dev` 期间后端仍要单独起着（`server.py`，见快速开始），vite 只负责前端并把 `/api` 转过去。
+- **构建产物必须与引用同一提交收口**：`npm run build` 产出新哈希名的 `static/assets/index-<hash>.js`
+  并改写 `static/index.html` 的引用。提交时要让旧哈希文件同步从版本库消失
+  （`git add -A tools/navkit/static`），否则会残留 `index.html` 已不引用的孤儿产物。
+  收口自检：`static/index.html` 引用的 assets 名，应与 `git ls-files tools/navkit/static/assets` 一一对应。
 
 ## 数据流与唯一真源
 

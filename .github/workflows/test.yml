@@ -26,6 +26,26 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 仓库体积守卫（跟踪文件不得超过 5 MB）
+        # 机制：git 历史只增不减——误提交的大文件永久留在 pack 里，并随每一次
+        # clone / 每一次 CNB 镜像分发。项目规范禁止改写已推送历史，故无法事后补救，
+        # 唯一防线是在首次合入前拦住。阈值 5 MB 远低于 GitHub 的 100 MB 硬拒线，
+        # 留出余量给后续版本的增量 blob。
+        # 口径用 git ls-tree -l 的对象大小：文本按 .gitattributes 归一（LF）后的
+        # 实际入库体积计，不受 runner 上 core.autocrlf 影响。
+        run: |
+          LIMIT=$((5 * 1024 * 1024))
+          git ls-tree -r -l HEAD \
+            | awk -v max="$LIMIT" '$4 ~ /^[0-9]+$/ && $4+0 > max { printf "%12d  %s\n", $4, $NF }' \
+            > big-files.txt
+          if [ -s big-files.txt ]; then
+            echo "::error::以下跟踪文件超过 5 MB，请改为忽略（用生成脚本 + 锁文件重建）、或走 Git LFS / Release 附件承载："
+            cat big-files.txt
+            exit 1
+          fi
+          COUNT=$(git ls-files | wc -l)
+          echo "✓ ${COUNT} 个跟踪文件均 ≤ 5 MB"
+
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
