@@ -136,8 +136,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │           ├── eggs.py / renderer.py / store.py
 │           └── resources/                    # 插件专属资源（自包含）
 │               ├── image/                    # 全部鉴宝模板
-│               ├── config/treasure_assets.json # NavKit schema v3 唯一检测/路由真源
-│               └── config/treasure_rois.json # v2 回退/迁移输入（调试台兼容）
+│               ├── config/treasure_assets.json # NavKit schema v3 唯一检测/路由/ROI 真源
 │
 ├── assets/                                   # 应用级资产（插件素材已全部内聚到各自 plugins/<id>/resources/）
 │   ├── config/maa_option.json                # MAA 框架配置

@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -215,38 +214,27 @@ class TreasureOcr:
     """巅峰鉴宝 OCR 识别器（RapidOCR，懒加载 + 失败降级）"""
 
     def __init__(self, proj: Path):
-        self.rois_file = CONFIG_DIR / "treasure_rois.json"
         self._regions: dict[str, tuple[float, float, float, float]] = self._load_regions()
         self._engine = None          # RapidOCR 引擎（懒加载）
         self._engine_failed = False  # 加载失败后不再重试
 
     # ---------------- 配置 ----------------
     def _load_regions(self) -> dict[str, tuple[float, float, float, float]]:
-        """读取 ocr 分类的识别区域（归一化坐标，与调试台一致）。
+        """读取 ocr 识别区（归一化坐标）。
 
-        v3 优先：筛 `kind == "ocr"` 锚点取 rect；`v3_assets()` 为 None（`NAVKIT_SOURCE=v2` /
-        资产缺失 / 加载失败）时回退 treasure_rois.json 的 ocr 段（AGENTS.md 回退约定）。
-        M0 parity 已保证每个 v2 ocr 键都有等 rect 的 v3 ocr 锚点，故 v3 分支不丢识别区。
+        v3 唯一真源：筛 `kind == "ocr"` 锚点取 rect。E1：无 v3 资产（缺失/损坏，或显式
+        `NAVKIT_SOURCE=v2`）时**不再回读 treasure_rois.json** → 返回空 dict（OCR 区降级）。
         """
         regions: dict[str, tuple[float, float, float, float]] = {}
         assets = v3_assets()
-        if assets is not None:
-            for name, anchor in assets.anchors.items():
-                if anchor.kind == "ocr":
-                    r4 = anchor.rect.as_list()
-                    regions[name] = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-            logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区(v3): {', '.join(regions)}", "DEBUG")
+        if assets is None:
+            logger.log("[鉴宝OCR] v3 资产不可用，识别区为空（不回读 v2）", "WARNING")
             return regions
-        try:
-            data = json.loads(self.rois_file.read_text(encoding="utf-8"))
-        except Exception:
-            return regions
-        ocr = data.get("ocr") or {}
-        for key, val in ocr.items():
-            if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
-                r4 = val["rect"]
-                regions[key] = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-        logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区: {', '.join(regions)}", "DEBUG")
+        for name, anchor in assets.anchors.items():
+            if anchor.kind == "ocr":
+                r4 = anchor.rect.as_list()
+                regions[name] = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+        logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区(v3): {', '.join(regions)}", "DEBUG")
         return regions
 
     # ---------------- 引擎（懒加载） ----------------

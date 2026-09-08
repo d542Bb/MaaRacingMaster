@@ -41,7 +41,7 @@
 
 - **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
 
-- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；S1 后识别真源为 `resources/config/treasure_assets.json`（v3），旧 `treasure_rois.json` 仅作 NAVKIT\_SOURCE=v2 回退；插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR` 常量统一引用，不依赖主程序 `assets/`。
+- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/config/treasure_assets.json`（v3），detector/module/ocr/eggs 运行时不再读取 v2 文件；旧 `treasure_rois.json` 已于 M4 退役归档到仓库根 `archive/treasure_v2/`（不随包、运行时不可达）。插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR`/`v3_assets()` 统一引用，不依赖主程序 `assets/`。
 
 - **NavKit 底座**：`core/navkit` 负责 v3 资产模型、E/W 校验、DetectionPlan、路由编译、trace；`tools/navkit` 是结构树/编辑/回放控制台。固定坐标点击件不强制配模板，必须由 v3 `guarded_by` 担保（D2）。
 
@@ -156,9 +156,9 @@
 
 **核心接口**：`detect(frame_rgb) -> DetectResult`；结果支持旧式 `stage, round_no = detect(...)` 解包，同时提供 `scores`、`hit_anchor`、`active_used` 供 trace 还原。
 
-v3 默认从 `treasure_assets.json` 编译 `DetectionPlan`；`NAVKIT_SOURCE=v2` 仅用于等价回归/故障回退。模板缓存按文件 `mtime_ns + size` 失效，控制台替换模板后不会永久命中旧图。
+v3 唯一真源：detector 从 `treasure_assets.json` 编译 `DetectionPlan`；M4 后运行时不再读 `treasure_rois.json`（v2 已退役归档），v3 缺失/损坏时阶段检测降级为空（不读 v2）。模板缓存按文件 `mtime_ns + size` 失效，控制台替换模板后不会永久命中旧图。
 
-**自定义阈值**：`result_banner=0.900`、`is_matching_btn=0.900`（`treasure_rois.json` stage 段 `threshold` 字段）
+**自定义阈值**：`result_banner=0.900`、`is_matching_btn=0.900`（v3 `anchors.*.threshold` 字段；result_banner 另有 `arbitration.template_thresholds.result_auction_win_banner=0.60`）
 
 ***
 
@@ -200,7 +200,7 @@ v3 默认从 `treasure_assets.json` 编译 `DetectionPlan`；`NAVKIT_SOURCE=v2` 
 
 [tools/navkit](file:///d:/maaracing_assistant/tools/navkit)（`python tools/navkit/server.py --module treasure`）
 
-**职责**：可视化校准 `treasure_rois.json` 的 ROI（通用 server + treasure adapter，独立启动）：
+**职责**：可视化校准 ROI（通用 server + treasure adapter，独立启动）。M2-B1 后校准落点是 v3 `treasure_assets.json`（`/api/rois` GET/POST 经 adapter 双向投影到 v3 锚点，前端契约仍是 v2 扁平 shape）：
 
 - 三段分类 tab：`stage`（模板阶段检测）/ `actions`（纯 rect 按钮）/ `ocr`（识别区）/ `unassigned`（未分配模板）
 
@@ -212,7 +212,7 @@ v3 默认从 `treasure_assets.json` 编译 `DetectionPlan`；`NAVKIT_SOURCE=v2` 
 
 - 截图来源：`debug/treasure/<ts>/raw/`（支持 png/jpg/webp）
 
-**配置**：运行时 `maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json`（schema v3：pages/anchors/stages/transitions/routes）；旧 `treasure_rois.json` 为回退源/迁移输入。`tools/navkit` 提供 `/api/assets`、`/api/graph`、`/api/trace`、`/api/compile`。
+**配置**：运行时唯一真源 `maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json`（schema v3：pages/anchors/stages/transitions/routes）。旧 `treasure_rois.json` 已于 M4 退役归档到仓库根 `archive/treasure_v2/`（不随包、运行时不可达）。`tools/navkit` 提供 `/api/rois`（v3 投影）、`/api/assets`、`/api/graph`、`/api/trace`、`/api/compile`。
 
 ***
 
@@ -263,7 +263,7 @@ v3 默认从 `treasure_assets.json` 编译 `DetectionPlan`；`NAVKIT_SOURCE=v2` 
 
 ## 8. 鉴宝模板清单
 
-配置源 `treasure_rois.json`（三段：stage / actions / ocr），匹配阈值：stage 段默认 0.75，鉴宝师模板默认 0.72、对勾默认 0.62、智能出价按钮默认 0.72（均可用 JSON 逐项覆盖）：
+配置源 v3 `treasure_assets.json`（`anchors`，rect/threshold 逐项；M4 后 `treasure_rois.json` 退役归档）；匹配阈值：全局默认 0.75，鉴宝师代码回退默认 0.72（v3 已校准 0.8）、对勾默认 0.62、智能出价按钮默认 0.72（锚点 `threshold` 逐项覆盖）：
 
 | ROI 键                      | 模板文件                                                     | 阶段/用途                                                                                         | 阈值       |
 | -------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------- |
@@ -283,7 +283,7 @@ v3 默认从 `treasure_assets.json` 编译 `DetectionPlan`；`NAVKIT_SOURCE=v2` 
 
 > 注：`hall_session_cards` 曾名 `hall_start_match_btn`；`hall_peak_appraise_card` 曾名 `hall_participation_card`（v0.13.0-dev.3/4 语义化改名）。已删除 `round_label_*.png`（回合小字改 OCR）。
 >
-> ¹ `appraisers.threshold` 已在 `treasure_rois.json` 校准为 0.80（代码回退默认 `_APPRAISER_MATCH_THRESHOLD=0.72`，调试台「偏好鉴宝师」分类可逐项覆盖）。
+> ¹ 鉴宝师 `threshold` 已在 v3 `anchors.appraiser_p*.threshold` 校准为 0.80（代码回退默认 `_APPRAISER_MATCH_THRESHOLD=0.72`，控制台「偏好鉴宝师」分类可逐项覆盖）。
 
 ***
 

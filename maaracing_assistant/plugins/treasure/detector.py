@@ -18,8 +18,6 @@
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -43,55 +41,11 @@ MATCH_SCALES: tuple[float, ...] = (
 )
 
 # ============================================================
-# 搜索 ROI：从插件资源目录 plugins/treasure/resources/config/treasure_rois.json 读取
-# （调试台 tools/navkit 负责可视化校准并保存该文件）。
+# 搜索 ROI / 模板 / 阈值：v3 唯一真源 treasure_assets.json → DetectionPlan（__init__ 载入）。
 # rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时直接乘当前输入帧 W/H。
-# 注意：不提供硬编码 fallback——JSON 缺失/失败时如实报告并跳过，
-#       避免用残缺默认值掩盖真实配置导致阶段漏检。
+# M4/E1：不再提供 treasure_rois.json 读取器——v3 缺失/损坏时如实报告并跳过检测，
+#        避免用残缺默认值掩盖真实配置导致阶段漏检。_ROI_STAGE 仅保留为常量元数据（无 rect）。
 # ============================================================
-
-
-def _load_rois(proj: Path) -> dict:
-    """读取调试台保存的 ROI 配置；缺失/失败时打 WARNING 并返回空 dict（跳过全部 ROI）。
-
-    返回: {roi_key: (x1n, y1n, x2n, y2n)}
-    并在同模块 _roi_thresholds 中写入 {roi_key: threshold|None} 供 detect 使用。
-    """
-    global _roi_thresholds
-    _roi_thresholds = {}
-    path = CONFIG_DIR / "treasure_rois.json"
-    if not path.exists():
-        logger.log(f"[鉴宝检测器] 未找到 {path.name}，无法配置任何 ROI，阶段检测将跳过", "WARNING")
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        logger.log(f"[鉴宝检测器] 读取 {path.name} 失败({e})，阶段检测将跳过", "WARNING")
-        return {}
-    rois = {}
-    for key, val in data.get("stage", {}).items():
-        if isinstance(val, dict) and isinstance(val.get("rect"), list) \
-                and len(val["rect"]) == 4:
-            rois[key] = tuple(float(n) for n in val["rect"])
-            # ROI 级自定义阈值（调试台调整并保存进 JSON），缺省 None → 主程序走 MATCH_THRESHOLD 或 per-template 覆盖
-            th = val.get("threshold")
-            if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0:
-                _roi_thresholds[key] = float(th)
-            else:
-                _roi_thresholds[key] = None
-    if not rois:
-        logger.log("[鉴宝检测器] JSON 里没有可用 stage ROI，阶段检测将跳过", "WARNING")
-        return {}
-    logger.log(f"[鉴宝检测器] 已从 {path.name} 加载 {len(rois)} 个 ROI: {', '.join(rois)}", "DEBUG")
-    custom = [k for k, v in _roi_thresholds.items() if v is not None]
-    if custom:
-        logger.log(f"[鉴宝检测器] 以下 ROI 使用自定义阈值: " +
-                   ", ".join(f"{k}={_roi_thresholds[k]:.3f}" for k in custom), "DEBUG")
-    return rois
-
-
-_roi_thresholds: dict[str, float | None] = {}  # {roi_key: threshold}，由 _load_rois 填充
 
 
 @dataclass(frozen=True)
@@ -161,71 +115,33 @@ _ROI_STAGE: dict[str, dict] = {
 _ROUND_RE = re.compile(r"round(\d+)", re.IGNORECASE)
 
 
-def _load_schema(proj: Path) -> dict:
-    """读取完整 v2（或旧）schema；失败返回空 dict。"""
-    path = CONFIG_DIR / "treasure_rois.json"
-    if not path.exists():
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _load_roi_templates(proj: Path) -> dict[str, list[str]]:
-    """读取每个 ROI 的模板列表（JSON templates 数组）；缺失时返回空列表（该 ROI 跳过）。
-
-    不提供硬编码兜底：JSON 未给某 ROI 配模板时如实返回空，由 detect 跳过该 ROI，
-    避免用默认模板掩盖配置缺失导致阶段误判。"""
-    path = CONFIG_DIR / "treasure_rois.json"
-    data: dict = {}
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {}
-    stage = data.get("stage") or {}
-    out: dict[str, list[str]] = {}
-    for key in _ROI_STAGE:
-        val = stage.get(key)
-        tpls: list[str] = []
-        if isinstance(val, dict) and isinstance(val.get("templates"), list):
-            tpls = [t for t in val["templates"] if isinstance(t, str) and t]
-        out[key] = tpls
-    return out
-
-
 class TreasureStageDetector:
     """巅峰鉴宝自动阶段检测器（无状态，局部 ROI 匹配）"""
 
     def __init__(self, proj: Path, ocr=None):
         self.tpl_dir = IMAGE_DIR
         self._tpl_cache: dict[str, tuple[int, int, np.ndarray | None]] = {}
-        # S1：默认读 v3 DetectionPlan；NAVKIT_SOURCE=v2 仅作为逐帧等价回归期间的单点回退。
-        # 这里用局部导入，保持 detector 的 cv2/numpy 运行时依赖不泄漏到 navkit 包。
+        # M4/E1：v3 DetectionPlan 是**唯一真源**。加载失败或资产缺失 → plan=None，阶段检测降级为空
+        # （不再 open(treasure_rois.json)，不保留 v2 文件回退）。用局部导入，保持 detector 的
+        # cv2/numpy 运行时依赖不泄漏到纯标准库 navkit 包。
         self.plan = None
-        source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
-        if source != "v2":
-            try:
-                from maaracing_assistant.core.navkit import Assets, compile_detection
-                asset_path = CONFIG_DIR / "treasure_assets.json"
-                if asset_path.exists():
-                    asset_doc = Assets.load(asset_path, module="treasure", image_dirs=(IMAGE_DIR,))
-                    self.plan = compile_detection(asset_doc)
-            except Exception as exc:
-                logger.log(f"[鉴宝检测器] v3 DetectionPlan 加载失败，回退 v2: {exc}", "WARNING")
+        try:
+            from maaracing_assistant.core.navkit import Assets, compile_detection
+            asset_path = CONFIG_DIR / "treasure_assets.json"
+            if asset_path.exists():
+                asset_doc = Assets.load(asset_path, module="treasure", image_dirs=(IMAGE_DIR,))
+                self.plan = compile_detection(asset_doc)
+        except Exception as exc:
+            logger.log(f"[鉴宝检测器] v3 DetectionPlan 加载失败: {exc}", "WARNING")
+        if self.plan is None:
+            logger.log(
+                "[鉴宝检测器] 无可用 v3 DetectionPlan（treasure_assets.json 缺失/损坏），阶段检测跳过",
+                "WARNING",
+            )
         self.match_scales = tuple(self.plan.scales) if self.plan is not None else MATCH_SCALES
         self.match_threshold = (
             float(self.plan.default_threshold) if self.plan is not None else MATCH_THRESHOLD
         )
-        # 保持旧模块独立匹配代码的字段形状；S1 后新检测路径只读 plan。
-        # M3：v3 DetectionPlan 生效时**不再 open(treasure_rois.json)**——ROI/模板/阈值/回合小字
-        # 全部来自 plan（compile_detection 已把含 ocr 类的全量锚点纳入 spec）。仅当 plan 缺失
-        # （NAVKIT_SOURCE=v2 或 v3 加载失败）才回读 v2 stage/schema 兜底（V-1「无可达 v2 引用」/ N-6）。
-        self.match_scales = tuple(self.match_scales)
         if self.plan is not None:
             self.ROI = {
                 name: tuple(spec.rect) for name, spec in self.plan.spec.items()
@@ -239,14 +155,12 @@ class TreasureStageDetector:
                 name: spec.threshold for name, spec in self.plan.spec.items()
                 if spec.threshold is not None
             }
-            self.schema = {}
         else:
-            self.ROI = _load_rois(proj)             # v2 回退：stage ROI（含填充 _roi_thresholds 全局）
-            self.ROI_TPL = _load_roi_templates(proj)  # v2 回退：模板列表
-            self.schema = _load_schema(proj)          # v2 回退：回合小字等扩展读取
-            self.roi_thresholds = _roi_thresholds
-        # ROI 级自定义阈值 self.roi_thresholds：v3 由 plan.spec.threshold 供给（上方 if 分支）；
-        # v2 模式取模块级 _roi_thresholds（else 分支 _load_rois 填充）。供外部
+            self.ROI = {}
+            self.ROI_TPL = {}
+            self.roi_thresholds = {}
+        self.schema = {}
+        # ROI 级自定义阈值 self.roi_thresholds：来自 plan.spec.threshold。供外部
         # （如 treasure_module._match_bid_smart_btn）与 detect()/banner_result 同源取阈值。
         self._weak_alert_ts: dict[str, float] = {}
         # 回合小字 OCR：识别不到回合号（横幅未命中）时激活一次，用 OCR 读「第N回合」
@@ -371,9 +285,7 @@ class TreasureStageDetector:
             if per_tpl_th is not None:
                 threshold = float(per_tpl_th)
             else:
-                roi_th = plan_spec.threshold if plan_spec is not None else (
-                    _roi_thresholds.get(roi_key) if _roi_thresholds else None
-                )
+                roi_th = plan_spec.threshold if plan_spec is not None else None
                 threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
 
             # 弱匹配：[threshold - 0.25, threshold) 区间，便于发现「差一点命中」但低于 threshold 的情况
@@ -474,9 +386,7 @@ class TreasureStageDetector:
         if per_tpl_th is not None:
             threshold = float(per_tpl_th)
         else:
-            roi_th = plan_spec.threshold if plan_spec is not None else (
-                _roi_thresholds.get("result_banner") if _roi_thresholds else None
-            )
+            roi_th = plan_spec.threshold if plan_spec is not None else None
             threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
         if best_score < threshold:
             return None

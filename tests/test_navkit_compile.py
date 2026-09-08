@@ -45,9 +45,8 @@ ASSETS_PATH = (
 )
 V2_PATH = (
     Path(__file__).resolve().parents[1]
-    / "maaracing_assistant" / "plugins" / "treasure"
-    / "resources" / "config" / "treasure_rois.json"
-)
+    / "archive" / "treasure_v2" / "treasure_rois.json"
+)  # M4/E1：v2 已退役归档（只读历史对照）
 
 # §0.5 GUI 断点契约：阶段名与顺序不得改变（与 module.STAGE_ORDER 逐项一致）
 EXPECTED_STAGE_ORDER = [

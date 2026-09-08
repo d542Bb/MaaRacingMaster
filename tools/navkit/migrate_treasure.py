@@ -29,9 +29,8 @@ from maaracing_assistant.core.navkit import diff_v2_v3, inspect_v2, migrate_v2_t
 
 MODULE = "treasure"
 V2_PATH = (
-    _PROJ / "maaracing_assistant" / "plugins" / "treasure"
-    / "resources" / "config" / "treasure_rois.json"
-)
+    _PROJ / "archive" / "treasure_v2" / "treasure_rois.json"
+)  # M4/E1：v2 已退役归档（只读历史对照）
 IMAGE_DIR = _PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "image"
 
 

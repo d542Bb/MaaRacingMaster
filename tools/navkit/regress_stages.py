@@ -136,6 +136,14 @@ def main() -> int:
         print(f"[regress] 初始化失败：{exc}", file=sys.stderr)
         return 2
 
+    # M4/E1：v2 真源退役后 detector 已无 v2 模式（即便置 NAVKIT_SOURCE=v2 仍载入 v3 DetectionPlan）。
+    # 此时「old(v2) vs new(v3)」会静默退化成 v3==v3 的假绿。检测到即明说退役并跳过对照，
+    # 避免误报"等价"。逐帧 v2↔v3 等价证据已在迁移期（bd69aa3，2077 帧 diff=0）固化。
+    if not args.new_only and old_detector is not None and getattr(old_detector, "plan", None) is not None:
+        print("[regress] M4/E1：detector 已无 v2 模式，v2↔v3 逐帧对照退役（历史证据见提交 bd69aa3）。"
+              "如需 v3 自身回归请用 --new-only。本次跳过对照，退出码 0。")
+        return 0
+
     diffs: list[FrameDiff] = []
     frame_count = 0
     score_values: dict[str, list[float]] = {}

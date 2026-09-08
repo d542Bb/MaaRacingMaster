@@ -26,7 +26,6 @@
 """
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -144,62 +143,15 @@ class EggRewardRecognizer:
 
     # ---------- 加载 ----------
     def _load(self, proj: Path) -> None:
-        # v3 优先真源：读 anchors.egg（rect/templates/threshold + domain 的 _count_*_norm）。
-        # v3_assets() 为 None（NAVKIT_SOURCE=v2 / 资产缺失 / 加载失败）时落到下方 eggs 段回退。
+        # v3 唯一真源：读 anchors.egg（rect/templates/threshold + domain 的 _count_*_norm）。
+        # E1：无 v3 资产（缺失/损坏，或显式 NAVKIT_SOURCE=v2）时**不再回读 treasure_rois.json**，
+        # 直接保持未配置（configured=False）→ 彩蛋识别降级、奖励结算走超时点关闭。
         assets = v3_assets()
-        if assets is not None:
-            anchor = assets.anchors.get("egg")
-            if anchor is not None:
-                self._load_v3_entry(anchor)
-                return
-        path = CONFIG_DIR / "treasure_rois.json"
-        data: dict = {}
-        if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                data = {}
-        seg = data.get("eggs") if isinstance(data, dict) else None
-        if not isinstance(seg, dict):
+        if assets is None:
             return
-        # 段级计数区参数（可选）
-        try:
-            self._count_dx = float(seg.get("_count_dx_norm", COUNT_DX_DEFAULT))
-            self._count_dy = float(seg.get("_count_dy_norm", COUNT_DY_DEFAULT))
-            self._count_w = float(seg.get("_count_w_norm", COUNT_W_DEFAULT))
-            self._count_h = float(seg.get("_count_h_norm", COUNT_H_DEFAULT))
-        except (TypeError, ValueError):
-            pass
-        # 通用蛋模板（新：`egg`；兼容过渡期：若 `egg` 缺但 `egg_yellow` 在，则回退之）
-        val = seg.get("egg")
-        if not isinstance(val, dict):
-            val = seg.get("egg_yellow")
-        if not isinstance(val, dict):
-            return
-        rect = val.get("rect")
-        if not (isinstance(rect, list) and len(rect) == 4):
-            return
-        tpls = val.get("templates")
-        fname = tpls[0] if isinstance(tpls, list) and tpls and isinstance(tpls[0], str) else ""
-        if not fname:
-            return
-        p = self.tpl_dir / fname
-        if not p.exists():
-            return
-        img = cv2.imread(str(p))
-        if img is None:
-            return
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
-            return
-        th = val.get("threshold")
-        threshold = (
-            float(th)
-            if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0
-            else MATCH_THRESHOLD
-        )
-        self._entry = (gray, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold)
+        anchor = assets.anchors.get("egg")
+        if anchor is not None:
+            self._load_v3_entry(anchor)
 
     def _load_v3_entry(self, anchor) -> None:
         """从 v3 `anchors.egg` 锚点装配 `self._entry` + 计数区参数，语义与 v2 eggs 段路径逐字段等价。

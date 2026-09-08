@@ -1,169 +1,145 @@
 # -*- coding: utf-8 -*-
-"""M1 · 鉴宝运行时「v3 读出值 == 旧 v2 读出值」字段等价对照单测。
+"""鉴宝运行时 v3 读取器 · 金标回归 + V-1（运行时不得再打开 treasure_rois.json）。
 
-TREASURE_V2_V3_SINGLE_SOURCE_PLAN V-4：`regress_stages` 逐帧回归仅覆盖 stage 检测，
-对独立匹配段（appraiser / selected_check / smart_bid_btn / ocr regions / round_label / egg）
-无证明力。本文件为 M1 从 v2 切到 v3 优先的 6 个读取点，逐处证明「v3 分支读到的几何/阈值/
-优先级/领域参数 == v2 分支读到的值」，作为 N-1 行为等价的主证据。
+M0–M3 期间，本文件用 `NAVKIT_SOURCE=v2` 现读 v2 与 v3 逐字段对照，证明「切到 v3 不改值」。
+M4/E1 收口后：v2 文件读取器已从生产包移除、treasure_rois.json 归档到仓库根，无法再"现读 v2"。
+故把当初 v2==v3 已证明一致的值**固化为金标**（golden），继续锁住 6 个 v3 读取器不回退漂移，
+并用 monkeypatch `open` 断言运行时绝不触碰 treasure_rois.json（V-1「无可达 v2 引用」的行为级证明）。
 
-手法：同一份真实资产（treasure_rois.json / treasure_assets.json）下，
-分别以 `NAVKIT_SOURCE=v2` 与默认 v3 调用读取函数，比对配置派生字段。切换前必须清 `lru_cache`
-（`v3_assets` / `_perception_tuning` / `_policy_tuning` 均带缓存），否则读到缓存值污染对照。
+本文件导入 module（经 core.capabilities 拉 maa），属完整运行时测试；CI 只装 numpy+opencv-headless
+时由 importorskip 整文件跳过，dev 环境（.venv 全依赖）全跑。
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
-import maaracing_assistant.plugins.treasure as treasure
-from maaracing_assistant.plugins.treasure import CONFIG_DIR, v3_assets
-from maaracing_assistant.plugins.treasure import module as treasure_module
-from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector
-from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer
-from maaracing_assistant.plugins.treasure.ocr import TreasureOcr
+# 完整运行时依赖（module 经 core.capabilities 拉 maa/vgamepad 等，ocr/eggs 需 cv2）。
+# conftest 约定 CI 尽量避开这些重依赖：任一缺失则整文件 SKIP（不误红），dev（.venv 全依赖）全跑。
+try:
+    from maaracing_assistant.plugins.treasure import CONFIG_DIR  # noqa: E402
+    from maaracing_assistant.plugins.treasure import module as tm  # noqa: E402
+    from maaracing_assistant.plugins.treasure import ocr as toc  # noqa: E402
+    from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
+    from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer  # noqa: E402
+    _RUNTIME_OK, _RUNTIME_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
 
-RECT_TOL = 1e-9
-_PROJ = CONFIG_DIR.parent
+pytestmark = pytest.mark.skipif(
+    not _RUNTIME_OK, reason=f"运行时金标测试需要完整依赖（maa/cv2/…）：{_RUNTIME_ERR}"
+)
 
-
-def _rect_close(a, b) -> bool:
-    assert a is not None and b is not None, f"一侧 rect 为 None: {a!r} vs {b!r}"
-    assert len(a) == 4 and len(b) == 4
-    return all(abs(float(x) - float(y)) <= RECT_TOL for x, y in zip(a, b))
-
-
-@pytest.fixture
-def force_source():
-    """切换 NAVKIT_SOURCE 并清空所有相关 lru_cache，测后还原。"""
-    def _set(mode: str):
-        if mode == "v2":
-            os.environ["NAVKIT_SOURCE"] = "v2"
-        else:
-            os.environ.pop("NAVKIT_SOURCE", None)
-        v3_assets.cache_clear()
-        treasure_module._policy_tuning.cache_clear()
-        treasure_module._perception_tuning.cache_clear()
-    yield _set
-    os.environ.pop("NAVKIT_SOURCE", None)
-    v3_assets.cache_clear()
-    treasure_module._policy_tuning.cache_clear()
-    treasure_module._perception_tuning.cache_clear()
+_PROJ = CONFIG_DIR.parent if _RUNTIME_OK else None
+TOL = 1e-4  # 金标为 v2↔v3 一致值（6dp 记录），容差仅吸收浮点噪声，足以抓真实漂移
 
 
-def _appraiser_config(mode: str, force_source):
-    """_load_appraiser_templates 返回 [(prio, key, gray, rect, threshold)] → 抽配置字段（不含 gray）。"""
-    force_source(mode)
-    out = treasure_module._load_appraiser_templates(_PROJ)
-    return [(prio, key, rect, threshold) for prio, key, _gray, rect, threshold in out]
+def _close(a, b) -> bool:
+    return all(abs(float(x) - float(y)) <= TOL for x, y in zip(a, b))
 
 
-def test_appraiser_templates_v2_v3_equal(force_source):
-    v2 = _appraiser_config("v2", force_source)
-    v3 = _appraiser_config("v3", force_source)
-    assert v3, "v3 分支应读出至少一个鉴宝师"
-    by_key_v2 = {key: (prio, rect, th) for prio, key, rect, th in v2}
-    by_key_v3 = {key: (prio, rect, th) for prio, key, rect, th in v3}
-    assert set(by_key_v2) == set(by_key_v3), "v3 与 v2 的鉴宝师 key 集合应一致"
-    for key, (prio2, rect2, th2) in by_key_v2.items():
-        prio3, rect3, th3 = by_key_v3[key]
-        assert prio2 == prio3, f"{key} prio 漂移: {prio2}≠{prio3}"
-        assert _rect_close(rect2, rect3), f"{key} rect 漂移: {rect2}≠{rect3}"
-        assert abs(float(th2) - float(th3)) <= RECT_TOL, f"{key} threshold 漂移: {th2}≠{th3}"
+# ---- 金标（2026-09-08 M4/E1 收口时，v3 == 已退役 v2 的一致值）----
+GOLDEN_APPRAISERS = {
+    "appraiser_p1_caroline": {"prio": 1, "rect": [0.094617, 0.266892, 0.903443, 0.729013], "threshold": 0.8},
+    "appraiser_p2_shotaro": {"prio": 2, "rect": [0.086333, 0.265420, 0.905099, 0.733432], "threshold": 0.8},
+}
+GOLDEN_SELECTED_CHECK_RECT = [0.03, 0.26, 0.97, 0.38]
+GOLDEN_SMART_BID_RECT = [0.708148, 0.762634, 0.807407, 0.847654]
+GOLDEN_ROUND_LABEL_RECT = [0.399259, 0.152675, 0.469630, 0.195802]
+GOLDEN_EGG = {"rect": [0.300844, 0.346293, 0.701004, 0.560942], "threshold": 0.72,
+              "counts": [0.03, 0.0, 0.04, 0.03]}
+GOLDEN_OCR = {
+    "bid_result_amount_box": [0.339259, 0.650535, 0.537778, 0.726502],
+    "bid_player1": [0.149562, 0.278955, 0.274504, 0.311307],
+    "bid_player2": [0.147658, 0.440987, 0.275330, 0.478708],
+    "bid_player3": [0.150988, 0.606819, 0.275388, 0.642100],
+    "bid_player4": [0.150162, 0.772934, 0.273762, 0.809901],
+    "player_name1": [0.111283, 0.237678, 0.224111, 0.272626],
+    "player_name2": [0.108964, 0.403916, 0.230294, 0.437489],
+    "player_name3": [0.109737, 0.568779, 0.231066, 0.603727],
+    "player_name4": [0.110510, 0.733642, 0.234158, 0.765842],
+    "settle_final_price": [0.684444, 0.236708, 0.896296, 0.309053],
+    "settle_total_price": [0.682963, 0.363128, 0.895888, 0.437139],
+    "settle_profit": [0.68, 0.489547, 0.899259, 0.559259],
+    "settle_my_income": [0.685926, 0.668642, 0.908148, 0.735720],
+    "my_balance": [0.842458, 0.007525, 0.980741, 0.077284],
+    "round_label_area": [0.399259, 0.152675, 0.469630, 0.195802],
+    "bid_main_btn_label": [0.431388, 0.805286, 0.523954, 0.857562],
+    "session_daily_count": [0.079086, 0.778495, 0.181993, 0.813510],
+    "daily_high_score": [0.318998, 0.506637, 0.692456, 0.612335],
+}
 
 
-def test_selected_check_v2_v3_equal(force_source):
-    force_source("v2")
-    r2 = treasure_module._load_selected_check(_PROJ)
-    force_source("v3")
-    r3 = treasure_module._load_selected_check(_PROJ)
-    assert (r2 is None) == (r3 is None)
-    if r2 is not None:
-        assert _rect_close(r2[1], r3[1]), f"selected_check rect 漂移: {r2[1]}≠{r3[1]}"
+def test_appraiser_templates_match_golden():
+    out = tm._load_appraiser_templates(_PROJ)
+    got = {key: (prio, rect, th) for prio, key, _gray, rect, th in out}
+    assert set(got) == set(GOLDEN_APPRAISERS), f"鉴宝师键漂移: {set(got)^set(GOLDEN_APPRAISERS)}"
+    for key, g in GOLDEN_APPRAISERS.items():
+        prio, rect, th = got[key]
+        assert prio == g["prio"], f"{key} prio 漂移 {prio}"
+        assert _close(rect, g["rect"]), f"{key} rect 漂移 {rect}"
+        assert abs(th - g["threshold"]) <= TOL, f"{key} threshold 漂移 {th}"
 
 
-def test_smart_bid_btn_v2_v3_equal(force_source):
-    force_source("v2")
-    r2 = treasure_module._load_smart_bid_btn(_PROJ)
-    force_source("v3")
-    r3 = treasure_module._load_smart_bid_btn(_PROJ)
-    assert (r2 is None) == (r3 is None)
-    if r2 is not None:
-        assert _rect_close(r2[1], r3[1]), f"smart_bid_btn rect 漂移: {r2[1]}≠{r3[1]}"
+def test_selected_check_match_golden():
+    r = tm._load_selected_check(_PROJ)
+    assert r is not None
+    assert _close(r[1], GOLDEN_SELECTED_CHECK_RECT), f"selected_check rect 漂移 {r[1]}"
 
 
-def test_ocr_regions_v2_v3_equal(force_source):
-    force_source("v2")
-    o2 = TreasureOcr(_PROJ)
-    v2_regions = dict(o2._regions)
-    force_source("v3")
-    o3 = TreasureOcr(_PROJ)
-    v3_regions = dict(o3._regions)
-    assert v3_regions, "v3 分支应读出 ocr 识别区"
-    # v2 每个键都须在 v3 出现且 rect 等价（v3 可为超集，消费方按 key 取用）
-    assert set(v2_regions).issubset(set(v3_regions)), (
-        f"v3 丢失 v2 ocr 键: {set(v2_regions) - set(v3_regions)}"
+def test_smart_bid_btn_match_golden():
+    r = tm._load_smart_bid_btn(_PROJ)
+    assert r is not None
+    assert _close(r[1], GOLDEN_SMART_BID_RECT), f"smart_bid_btn rect 漂移 {r[1]}"
+
+
+def test_ocr_regions_match_golden():
+    regions = toc.TreasureOcr(_PROJ)._regions
+    for key, rect in GOLDEN_OCR.items():
+        assert key in regions, f"丢失 v3 ocr 识别区: {key}"
+        assert _close(regions[key], rect), f"ocr[{key}] rect 漂移 {regions[key]}"
+
+
+def test_round_label_rect_match_golden():
+    det = TreasureStageDetector(_PROJ)
+    assert det.plan is not None, "默认应为 v3 模式（DetectionPlan 载入）"
+    r = det._round_label_rect()
+    assert r is not None and _close(r, GOLDEN_ROUND_LABEL_RECT), f"round_label rect 漂移 {r}"
+
+
+def test_egg_entry_match_golden():
+    e = EggRewardRecognizer(_PROJ)
+    assert e.configured
+    assert _close(e._entry[1], GOLDEN_EGG["rect"]), "egg rect 漂移"
+    assert abs(float(e._entry[2]) - GOLDEN_EGG["threshold"]) <= TOL, "egg threshold 漂移"
+    got_counts = [getattr(e, a) for a in ("_count_dx", "_count_dy", "_count_w", "_count_h")]
+    assert _close(got_counts, GOLDEN_EGG["counts"]), f"egg 计数参数漂移 {got_counts}"
+
+
+def test_result_banner_per_template_threshold_from_plan():
+    det = TreasureStageDetector(_PROJ)
+    ths = det.plan.spec["result_banner"].arbitration.get("template_thresholds", {})
+    assert any(abs(ths.get(k, -1) - 0.6) <= TOL for k in ("result_auction_win_banner", "result_auction_win_banner.png")), (
+        f"result_banner win 放宽阈值未由 plan.arbitration 提供: {ths}"
     )
-    for key, rect2 in v2_regions.items():
-        assert _rect_close(rect2, v3_regions[key]), f"ocr[{key}] rect 漂移: {rect2}≠{v3_regions[key]}"
 
 
-def test_egg_entry_v2_v3_equal(force_source):
-    force_source("v2")
-    e2 = EggRewardRecognizer(_PROJ)
-    force_source("v3")
-    e3 = EggRewardRecognizer(_PROJ)
-    assert e2.configured == e3.configured
-    if e3.configured:
-        assert _rect_close(e2._entry[1], e3._entry[1]), "egg rect 漂移"
-        assert abs(float(e2._entry[2]) - float(e3._entry[2])) <= RECT_TOL, "egg threshold 漂移"
-    for attr in ("_count_dx", "_count_dy", "_count_w", "_count_h"):
-        assert abs(float(getattr(e2, attr)) - float(getattr(e3, attr))) <= RECT_TOL, (
-            f"egg 计数参数 {attr} 漂移: {getattr(e2, attr)}≠{getattr(e3, attr)}"
-        )
+def test_runtime_never_opens_treasure_rois(monkeypatch):
+    """V-1 行为级证明：构造 detector + 调全部运行时读取器，任何一次 open(treasure_rois.json) 即失败。"""
+    import builtins
 
+    real_open = builtins.open
 
-def test_round_label_rect_v2_v3_equal(force_source):
-    # v2 模式：detector.__init__ 不建 plan，_round_label_rect 走 v2 schema；
-    # v3 模式：建 DetectionPlan，走 plan.spec['round_label_area']。两条都应返回同一 rect。
-    force_source("v2")
-    d2 = TreasureStageDetector(_PROJ)
-    assert d2.plan is None, "v2 模式下 detector 不应加载 DetectionPlan"
-    r2 = d2._round_label_rect()
-    force_source("v3")
-    d3 = TreasureStageDetector(_PROJ)
-    assert d3.plan is not None, "v3 模式下 detector 应加载 DetectionPlan"
-    r3 = d3._round_label_rect()
-    assert r2 is not None and r3 is not None
-    assert _rect_close(r2, r3), f"round_label_area rect 漂移: {r2}≠{r3}"
+    def _guard(file, *args, **kwargs):
+        if "treasure_rois" in str(file):
+            raise AssertionError(f"运行时不得再打开 treasure_rois.json（v2 已退役）：{file}")
+        return real_open(file, *args, **kwargs)
 
-
-def test_detector_v3_never_reads_treasure_rois(force_source):
-    """M3 / V-1：v3 DetectionPlan 生效时，detector 构造期一次都不读 treasure_rois.json。"""
-    from maaracing_assistant.plugins.treasure import detector as det
-    calls: list[str] = []
-    orig = (det._load_rois, det._load_roi_templates, det._load_schema)
-
-    def spy(name, ret):
-        def f(proj):
-            calls.append(name)
-            return ret
-        return f
-
-    det._load_rois = spy("rois", {})
-    det._load_roi_templates = spy("tpl", {})
-    det._load_schema = spy("schema", {})
-    try:
-        force_source("v3")
-        TreasureStageDetector(_PROJ)
-        assert det is not None
-        assert calls == [], f"v3 模式仍调用了 v2 加载器: {calls}"
-        calls.clear()
-        force_source("v2")
-        TreasureStageDetector(_PROJ)
-        assert "rois" in calls and "tpl" in calls and "schema" in calls, (
-            f"v2 模式应回读 treasure_rois.json，实际调用: {calls}"
-        )
-    finally:
-        det._load_rois, det._load_roi_templates, det._load_schema = orig
+    monkeypatch.setattr(builtins, "open", _guard)
+    TreasureStageDetector(_PROJ)
+    tm._load_appraiser_templates(_PROJ)
+    tm._load_selected_check(_PROJ)
+    tm._load_smart_bid_btn(_PROJ)
+    tm._load_session_panel(_PROJ)
+    tm._load_action_centers(_PROJ)
+    toc.TreasureOcr(_PROJ)
+    EggRewardRecognizer(_PROJ)

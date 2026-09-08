@@ -27,7 +27,8 @@ from pathlib import Path
 
 _PROJ = Path(__file__).resolve().parents[2]
 CONFIG = _PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "config"
-V2_PATH = CONFIG / "treasure_rois.json"
+# M4/E1：v2 真源已退役归档到仓库根 archive/treasure_v2/（只读历史对照，不再随包、不再运行时可达）。
+V2_PATH = _PROJ / "archive" / "treasure_v2" / "treasure_rois.json"
 V3_PATH = CONFIG / "treasure_assets.json"
 
 # rect 归一化浮点逐位复制，容差给到 1e-9 仅吸收极端浮点噪声；阈值/模板必须精确。

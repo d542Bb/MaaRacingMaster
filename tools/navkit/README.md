@@ -1,7 +1,7 @@
 # NavKit 控制台
 
 模块无关的截图校准工作台：浏览模块运行时落盘的 debug 截图会话，框选/校准 ROI、裁剪模板、
-调整阈值、测试匹配分与跨帧稳定性，保存回模块的 `treasure_assets.json`（schema v3 唯一真源；旧 `treasure_rois.json` 仅作回退）。
+调整阈值、测试匹配分与跨帧稳定性，保存回模块的 `treasure_assets.json`（schema v3 唯一真源；旧 `treasure_rois.json` 已于 M4 退役归档到仓库根 `archive/treasure_v2/`）。
 
 架构 = **通用 server（`server.py`）+ 模块 adapter（`adapters/*.py`）**：
 server 只做会话浏览 / 分类读写 / 模板匹配的通用路由；领域能力（如鉴宝的 OCR、彩蛋识别）
@@ -43,7 +43,7 @@ tools/navkit/
 调试台打开会话 ──框选/调阈值──→ 原子保存
                           │
                           ▼
-    plugins/treasure/resources/config/treasure_rois.json   ←—— 唯一真源（v2 schema）
+    plugins/treasure/resources/config/treasure_assets.json   ←—— 唯一真源（schema v3）
                           │
 模块下次启动 ──加载──→ ROI / 模板列表 / 阈值立即生效
 ```

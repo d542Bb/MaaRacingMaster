@@ -37,13 +37,10 @@ from maaracing_assistant.core.navkit import (
 
 REAL_V2 = (
     Path(__file__).resolve().parents[1]
-    / "maaracing_assistant"
-    / "plugins"
-    / "treasure"
-    / "resources"
-    / "config"
+    / "archive"
+    / "treasure_v2"
     / "treasure_rois.json"
-)
+)  # M4/E1：v2 已退役归档（只读历史对照）
 
 MODULE = "treasure"
 

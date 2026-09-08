@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
@@ -103,56 +102,33 @@ def _perception_tuning() -> dict[str, Any]:
 
 
 def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
-    """读 treasure_rois.json 的动作按钮 rect → 归一化中心点 + 归一化宽高。
+    """读 v3 资产（anchors）的动作/模板 rect → 归一化中心点 + 归一化宽高。
 
-    返回 ({key: (cx, cy)}, {key: (rw, rh)})；动作按钮分布在 stage（smart_bid_btn）
-    与 actions（bid_confirm_red_btn / confirm_red_btn / settle_collect_red_btn）
-    两个分类；缺失/损坏时返回空 dict。宽高供手柄模式点击容差用（落点在框中心
+    动作按钮分布在 point 与 template 两类锚点；宽高供手柄模式点击容差用（落点在框中心
     70% 区域内即可按 A——ROI 本对标整个可交互区域，无需像素级精确到中心）。
+    E1：v3 为唯一真源，无 v3 资产时返回空 dict（不再回读 treasure_rois.json）。
     """
-    # S1：v3 为优先真源；v2 仅作 NAVKIT_SOURCE=v2 或 v3 缺失时回退。
-    source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
-    v3_path = CONFIG_DIR / "treasure_assets.json"
-    if source != "v2" and v3_path.exists():
-        try:
-            from maaracing_assistant.core.navkit import Assets
-            assets = Assets.load(v3_path, module="treasure")
-            out: dict[str, tuple[float, float]] = {}
-            sizes: dict[str, tuple[float, float]] = {}
-            for key, anchor in assets.anchors.items():
-                if anchor.kind not in ("point", "template"):
-                    continue
-                rect = anchor.rect.as_list()
-                x1, y1, x2, y2 = rect
-                out[key] = ((x1 + x2) / 2, (y1 + y2) / 2)
-                sizes[key] = (x2 - x1, y2 - y1)
-            # 兼容 module 尚未改名的消费点；v3 的物理资产 id 仍保留可审计的新名。
-            if "session_start_match_click" in out:
-                out["session_start_match_btn"] = out["session_start_match_click"]
-                sizes["session_start_match_btn"] = sizes["session_start_match_click"]
-            return out, sizes
-        except Exception as exc:
-            logger.log(f"[鉴宝] v3 actions 读取失败，回退 v2: {exc}", "WARNING")
-
-    path = CONFIG_DIR / "treasure_rois.json"
-    if not path.exists():
+    assets = v3_assets()
+    if assets is None:
         return {}, {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
+        out: dict[str, tuple[float, float]] = {}
+        sizes: dict[str, tuple[float, float]] = {}
+        for key, anchor in assets.anchors.items():
+            if anchor.kind not in ("point", "template"):
+                continue
+            rect = anchor.rect.as_list()
+            x1, y1, x2, y2 = rect
+            out[key] = ((x1 + x2) / 2, (y1 + y2) / 2)
+            sizes[key] = (x2 - x1, y2 - y1)
+        # 兼容 module 尚未改名的消费点；v3 的物理资产 id 仍保留可审计的新名。
+        if "session_start_match_click" in out:
+            out["session_start_match_btn"] = out["session_start_match_click"]
+            sizes["session_start_match_btn"] = sizes["session_start_match_click"]
+        return out, sizes
+    except Exception as exc:
+        logger.log(f"[鉴宝] v3 actions rect 读取失败: {exc}", "WARNING")
         return {}, {}
-    out = {}
-    sizes = {}
-    for cat in ("stage", "actions"):
-        for key, val in data.get(cat, {}).items():
-            rect = val.get("rect") if isinstance(val, dict) else None
-            if isinstance(rect, list) and len(rect) == 4:
-                x1, y1, x2, y2 = (float(n) for n in rect)
-                if x2 > x1 and y2 > y1:
-                    out[key] = ((x1 + x2) / 2, (y1 + y2) / 2)
-                    sizes[key] = (x2 - x1, y2 - y1)
-    return out, sizes
 
 
 # 鉴宝师搜索 ROI（归一化）：头像卡片通常分布在屏幕中部。
@@ -261,33 +237,8 @@ def _load_appraiser_templates(
             v3_defs.append((prio, key, fname, rect, threshold))
         if v3_defs:
             defs = v3_defs
-    else:
-        try:
-            with open(CONFIG_DIR / "treasure_rois.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-            seg = data.get("appraisers")
-            if isinstance(seg, dict):
-                from_json: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
-                for key, val in seg.items():
-                    if not isinstance(val, dict) or key.startswith("_"):
-                        continue  # 跳过段内元数据键（如 _comment）
-                    try:
-                        prio = int(val.get("prio", 999))
-                    except (TypeError, ValueError):
-                        prio = 999
-                    tpls = val.get("templates")
-                    fname = tpls[0] if isinstance(tpls, list) and tpls and isinstance(tpls[0], str) else ""
-                    rect = val.get("rect")
-                    if not (isinstance(rect, list) and len(rect) == 4
-                            and all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in rect)):
-                        rect = search_roi
-                    th = val.get("threshold")
-                    threshold = float(th) if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0 else match_th
-                    from_json.append((prio, key, fname, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold))
-                if from_json:
-                    defs = from_json
-        except Exception:
-            pass  # JSON 缺失/损坏 → 保留代码常量回退
+    # E1：无 v3 资产（缺失/损坏 / NAVKIT_SOURCE=v2）时保留 _APPRAISER_TEMPLATE_DEFS 代码常量兜底
+    # （全卡统一搜索区/阈值），**不再回读 treasure_rois.json**。
     out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float]] = []
     for prio, key, fname, rect, threshold in defs:
         if not fname:
@@ -326,7 +277,8 @@ def _load_selected_check(
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
         return None
-    # rect：v3 优先读锚点 appraiser_selected_check；缺失 / NAVKIT_SOURCE=v2 回退 treasure_rois.json stage 段
+    # rect：v3 唯一真源读锚点 appraiser_selected_check；E1：无 v3 时不再回读 treasure_rois.json，
+    # rect 保持 None → 本函数返回 None（选中判定自动跳过）。
     rect: tuple[float, float, float, float] | None = None
     assets = v3_assets()
     if assets is not None:
@@ -334,18 +286,6 @@ def _load_selected_check(
         if anchor is not None:
             r4 = anchor.rect.as_list()
             rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-    else:
-        rois_path = CONFIG_DIR / "treasure_rois.json"
-        if rois_path.exists():
-            try:
-                with open(rois_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                val = (data.get("stage") or {}).get("appraiser_selected_check")
-                if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
-                    r4 = val["rect"]
-                    rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-            except Exception:
-                rect = None
     if rect is None:
         return None
     return (gray, rect)
@@ -361,29 +301,13 @@ def _load_session_panel(
     缺失则返回空列表（判定降级为未匹配 → 始终先点目标场次 badge，再点开始匹配位置）。
     """
     rois: dict[str, tuple[float, float, float, float]] = {}
-    source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
-    v3_path = CONFIG_DIR / "treasure_assets.json"
-    if source != "v2" and v3_path.exists():
-        try:
-            from maaracing_assistant.core.navkit import Assets
-            assets = Assets.load(v3_path, module="treasure")
-            anchor = assets.anchors.get("session_start_match_btn")
-            if anchor is not None:
-                rois["session_start_match_btn"] = tuple(anchor.rect.as_list())
-        except Exception as exc:
-            logger.log(f"[鉴宝] v3 session panel rect 读取失败，回退 v2: {exc}", "WARNING")
-    if not rois:
-        path = CONFIG_DIR / "treasure_rois.json"
-        if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                for key, val in (data.get("stage") or {}).items():
-                    rect = val.get("rect") if isinstance(val, dict) else None
-                    if isinstance(rect, list) and len(rect) == 4:
-                        rois[key] = (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
-            except Exception:
-                pass
+    assets = v3_assets()
+    if assets is not None:
+        anchor = assets.anchors.get("session_start_match_btn")
+        if anchor is not None:
+            rois["session_start_match_btn"] = tuple(anchor.rect.as_list())
+    # E1：无 v3 资产（缺失/损坏 / NAVKIT_SOURCE=v2）→ rois 为空，判定降级为「始终先点目标 badge」，
+    # 不再回读 treasure_rois.json。
     out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]] = []
     for prio, key, fname in _SESSION_PANEL_DEFS:
         rect = rois.get(key)
@@ -553,18 +477,7 @@ def _load_smart_bid_btn(
         if anchor is not None:
             r4 = anchor.rect.as_list()
             rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-    else:
-        rois_path = CONFIG_DIR / "treasure_rois.json"
-        if rois_path.exists():
-            try:
-                with open(rois_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                val = (data.get("stage") or {}).get(_SMART_BID_KEY)
-                if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
-                    r4 = val["rect"]
-                    rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-            except Exception:
-                rect = None
+    # E1：无 v3 时不再回读 treasure_rois.json；rect 保持 None → 返回 None（面板已开判定降级依赖主按钮 OCR 兜底）。
     if rect is None:
         return None
     return (gray, rect)

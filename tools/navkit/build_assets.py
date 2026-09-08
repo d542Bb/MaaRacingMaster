@@ -41,9 +41,8 @@ from maaracing_assistant.core.navkit import (  # noqa: E402
 
 MODULE = "treasure"
 V2_PATH = (
-    _PROJ / "maaracing_assistant" / "plugins" / "treasure"
-    / "resources" / "config" / "treasure_rois.json"
-)
+    _PROJ / "archive" / "treasure_v2" / "treasure_rois.json"
+)  # M4/E1：v2 已退役归档（只读历史对照）
 IMAGE_DIR = _PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "image"
 OUT_PATH = (
     _PROJ / "maaracing_assistant" / "plugins" / "treasure"
@@ -460,13 +459,36 @@ def _strip_draft_metadata(doc: dict) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true",
-                        help="只校验现有 assets 与 v2 等价并通过校验器，不写文件")
+                        help="校验现有 v3 资产结构合法（validate_assets 无 E 级），不写文件")
+    parser.add_argument("--force-bootstrap", action="store_true",
+                        help="危险：从归档 v2 重建并覆盖 treasure_assets.json（丢失 v3 上的人工/校准编辑）")
     args = parser.parse_args()
 
-    v2 = json.loads(V2_PATH.read_text(encoding="utf-8"))
-    draft = build()          # 带 `_v2` 追溯字段的草稿
+    if args.check:
+        # M4/E1：v2 已退役归档、v3 是唯一人写真源。--check 只验 v3 自身结构合法（E 级为 0），
+        # 不再要求 v3 == migrate(v2)——那与「v3 可被人/校准台编辑」自相矛盾。
+        if not OUT_PATH.exists():
+            print(f"[build_assets] 资产文件不存在：{OUT_PATH}", file=sys.stderr)
+            return 2
+        doc = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        assets = Assets.from_document(doc, module=MODULE, image_dirs=(IMAGE_DIR,))
+        report = validate_assets(assets)
+        print(report.text())
+        if not report.ok:
+            print("[build_assets] --check 失败：v3 结构校验有 error", file=sys.stderr)
+            return 1
+        print("[build_assets] --check 通过：v3 结构合法（validate_assets 无 error）")
+        return 0
 
-    # 1) 纯搬迁校验：rect / threshold / templates 必须逐位相同（靠追溯字段回配）
+    if not args.force_bootstrap:
+        print("[build_assets] v3 为唯一人写文件，重建会覆盖 treasure_assets.json 上的人工/校准编辑。"
+              "确需一次性引导重建请显式加 --force-bootstrap。", file=sys.stderr)
+        return 2
+
+    v2 = json.loads(V2_PATH.read_text(encoding="utf-8"))
+    draft = build()          # 带 `_v2` 追溯字段的草稿（一次性引导用）
+
+    # 纯搬迁校验：rect / threshold / templates 必须逐位相同（靠追溯字段回配）
     diffs = diff_v2_v3(v2, draft)
     if diffs:
         print(f"[build_assets] 搬迁不等价，{len(diffs)} 处差异：", file=sys.stderr)
@@ -475,30 +497,17 @@ def main() -> int:
         return 1
 
     doc = _strip_draft_metadata(draft)
-
-    # 2) 校验器：E/W 全表
     assets = Assets.from_document(doc, module=MODULE, image_dirs=(IMAGE_DIR,))
     report = validate_assets(assets)
     print(report.text())
     if not report.ok:
         return 1
 
-    if args.check:
-        # 磁盘上的文件必须与本次生成结果一致（人改过就报，避免"改了没同步回语义表"）
-        if not OUT_PATH.exists():
-            print(f"[build_assets] 资产文件不存在：{OUT_PATH}", file=sys.stderr)
-            return 2
-        current = json.loads(OUT_PATH.read_text(encoding="utf-8"))
-        if current != doc:
-            print("[build_assets] --check 失败：磁盘资产与本脚本生成结果不一致。\n"
-                  "  说明有人直接改了 assets.json。请二选一：\n"
-                  "  (a) 把改动同步回本脚本的语义表后重新生成；\n"
-                  "  (b) 确认改动有效后，更新本脚本语义表并重新生成。", file=sys.stderr)
-            return 1
-        print("[build_assets] --check 通过：与 v2 等价、校验器无 error、与语义表一致")
-        return 0
-
-    OUT_PATH.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    OUT_PATH.write_text(
+        json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     print(f"\n[build_assets] 已写入 {OUT_PATH.relative_to(_PROJ)}"
           f"（{len(doc['anchors'])} 锚点 / {len(doc['transitions'])} 迁移边）")
     return 0
