@@ -51,7 +51,7 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要完整历史以生成 changelog
+          fetch-depth: 0  # 完整历史：setuptools-scm 版本推导 + changelog 兜底信源（git log）
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -100,18 +100,30 @@ jobs:
 
       - name: 生成 Changelog
         id: changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # 取「除当前 tag 外」的最新一个作为 PREV_TAG：单 tag 场景下 head -n 2|tail -n 1 会误取当前 tag
-          # 自身导致范围为空 → 用 grep -v 排除当前 tag，若为空则回退列出最近 50 条提交
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${{ steps.version.outputs.tag }}$" | head -n 1 || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            LOG=$(git log --oneline --no-decorate "$PREV_TAG".."${{ steps.version.outputs.tag }}" 2>/dev/null | head -50)
-          else
-            LOG=$(git log --oneline --no-decorate --max-count=50 2>/dev/null)
+          # 对外叙事信源为人工撰写的 docs/update_log.md 对应版本小节；git DAG 是
+          # 内部施工日志（含 M1/G2/V-1 等里程碑编号），不作为面向玩家的变更记录。
+          # 仅当日志尚未补写该小节时回退 git log 兜底，并打 warning 提示补写。
+          LOG=$(python scripts/release/extract_changelog.py "$VERSION")
+          if [ -z "$LOG" ]; then
+            echo "::warning::docs/update_log.md 缺 v${VERSION} 小节，Release 正文回退 git log，请补写日志"
+            # 取「除当前 tag 外」的最新一个作为 PREV_TAG：单 tag 场景下 head -n 2|tail -n 1 会误取当前 tag
+            # 自身导致范围为空 → 用 grep -v 排除当前 tag，若为空则回退列出最近 50 条提交
+            PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${{ steps.version.outputs.tag }}$" | head -n 1 || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              LOG=$(git log --oneline --no-decorate "$PREV_TAG".."${{ steps.version.outputs.tag }}" 2>/dev/null | head -50)
+            else
+              LOG=$(git log --oneline --no-decorate --max-count=50 2>/dev/null)
+            fi
           fi
-          echo "log<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$LOG" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          # 多行写入 GITHUB_OUTPUT；分隔符用 CHANGELOG_EOF，避免正文出现裸 EOF 行时截断
+          {
+            echo "log<<CHANGELOG_EOF"
+            echo "$LOG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 构建分发包
         run: |
