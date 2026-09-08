@@ -1,5 +1,42 @@
-# 统一 JSON 行尾为 LF：treasure_assets.json 等的 source_hash = sha256(read_bytes())
-# 对 CRLF/LF 字节敏感，Windows core.autocrlf=true 会把工作副本检成 CRLF，导致
-# compile_routes --check 的 source_hash 在本地假红（CI/Linux 检出 LF 则绿）。
-# 固定 eol=lf 让任何平台检出均为 LF，根治该复现性问题。
+# =============================================================================
+# 行尾与二进制策略
+#
+# 目标：文本文件在仓库内与工作区统一 LF，任何平台（Windows / Linux / CI）检出
+# 的字节完全一致。该不变量有硬依赖——navkit 的
+# source_hash = sha256(source_path.read_bytes()) 前 8 位，由 compile_routes
+# --check 与生成物头部比对，并挂在 test.yml 与 release.yml 的发布门禁上。
+# 实测：treasure_assets.json 若为 CRLF，source_hash 由 25767a9c 变 bb7934f1，
+# 守卫即在本地与 CI 双双报错。故行尾不得按平台默认（core.autocrlf）漂移。
+#
+# 生效方式：改本文件只影响后续 checkout/normalize，已存在的工作副本需执行一次
+# 归一（见 git add --renormalize 或等价的工作区行尾重写）才会落到位。
+# =============================================================================
+
+# 默认：git 自动识别文本；仓库与工作区均为 LF，检出不做 CRLF 转换
+* text=auto eol=lf
+
+# Windows 批处理：cmd.exe 对 LF-only 脚本的标签/续行解析不可靠，单独要求 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 资产真源的来源哈希口径依赖 LF，显式声明以防默认规则被改动时静默失效
 *.json text eol=lf
+
+# 二进制：禁止任何行尾转换与文本 diff（模板图与发行物被误转即损坏）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.pyd binary
+*.lib binary
+*.pdb binary
+*.onnx binary
+*.whl binary
+*.zip binary
+*.7z binary
+*.db binary
+*.mp4 binary
