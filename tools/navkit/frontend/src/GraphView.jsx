@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, Background, Controls, MiniMap,
   useNodesState, useEdgesState,
@@ -17,18 +17,22 @@ export default function GraphView({ traceRows, onSelectNode }) {
   const [err, setErr] = useState(null);
   const [animOn, setAnimOn] = useState(true);
   const [stats, setStats] = useState(null);
+  const [rf, setRf] = useState(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   // null = 收起；'orphans' / 'unguarded' = 展开对应书签
   const [dock, setDock] = useState(null);
+  const rfInstance = useRef(null);
 
   useEffect(() => {
     api.graph().then(d => {
       setDoc(d);
-      const { rfNodes, rfEdges, stats } = layoutGraph(d, new Set(d.orphans || []));
+      const layout = layoutGraph(d, new Set(d.orphans || []));
+      const { rfNodes, rfEdges, stats } = layout;
       setNodes(rfNodes);
       setEdges(rfEdges);
       setStats(stats);
+      setRf(layout);
     }).catch(e => setErr(String(e)));
   }, []);
 
@@ -45,20 +49,26 @@ export default function GraphView({ traceRows, onSelectNode }) {
   ].filter(c => c.items.length > 0);
   const activeCat = dockCats.find(c => c.key === dock);
 
+  useEffect(() => {
+    const fit = () => rfInstance.current?.fitView({ padding: 0.12 });
+    window.addEventListener('navkit-fit-view', fit);
+    return () => window.removeEventListener('navkit-fit-view', fit);
+  }, []);
+
   if (err) return <Banner type="danger" closeIcon={null} description={`路径树加载失败：${err}`} />;
   if (!doc) return <div className="view-loading"><Spin size="large" tip="加载 /api/graph…" /></div>;
 
   return (
     <div className="graph-view">
       <div className="graph-toolbar">
-        <Button size="small">适应视图（滚轮缩放 / 空格拖移）</Button>
+        <Button size="small" onClick={() => window.dispatchEvent(new CustomEvent('navkit-fit-view'))}>适应视图（滚轮缩放 / 空格拖移）</Button>
         <label className="toggle">
           <input type="checkbox" checked={animOn} onChange={e => setAnimOn(e.target.checked)} />
           流向高光
         </label>
         <div style={{ flex: 1 }} />
-        <span className="muted">
-          画布内 {stats.stages} 阶段 · {stats.anchors} 锚点 · {stats.transitions} 转移
+          <span className="muted">
+          画布 {stats.edges} · 通配 {stats.hiddenWildcard || 0} · 路由 {stats.hiddenRoutes || 0}
         </span>
       </div>
 
@@ -66,6 +76,7 @@ export default function GraphView({ traceRows, onSelectNode }) {
         <ReactFlow
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+          onInit={instance => { rfInstance.current = instance; }}
           nodeTypes={nodeTypes} edgeTypes={edgeTypes}
           onNodeClick={(_, n) => onSelectNode(n)}
           onPaneClick={() => onSelectNode(null)}

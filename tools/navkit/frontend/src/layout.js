@@ -70,11 +70,17 @@ export function layoutGraph(doc, excludeIds) {
     n.position = { x: pos.x - n.w / 2, y: pos.y - n.h / 2 };
   }
 
+  const transitionEdges = edges.filter(e => e.kind === 'transition');
+  const routeEdges = edges.filter(e => e.kind === 'route');
+  const hiddenWildcard = transitionEdges.filter(e => e.to === '*' || (e.to || '').startsWith('$')).length;
+  const hiddenRoutes = routeEdges.length;
   const stats = {
     stages: rfNodes.filter(n => n.type === 'stage').length,
     anchors: rfNodes.filter(n => n.type === 'anchor').length,
     edges: rfEdges.length,
-    transitions: edges.filter(e => e.kind === 'transition').length,
+    transitions: transitionEdges.length,
+    hiddenWildcard,
+    hiddenRoutes,
   };
   return { rfNodes, rfEdges, stats };
 }

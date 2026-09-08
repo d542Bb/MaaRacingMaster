@@ -2,8 +2,17 @@
 
 async function j(url) {
   const r = await fetch(url);
-  if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`);
-  return r.json();
+  const text = await r.text();
+  let body;
+  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+  if (!r.ok) {
+    const err = new Error(body?.error || `${url} → HTTP ${r.status}`);
+    err.status = r.status;
+    err.body = body;
+    throw err;
+  }
+  if (body === null) throw new Error(`${url} → 响应 JSON 解析失败`);
+  return body;
 }
 
 export const api = {
@@ -33,11 +42,24 @@ export async function switchModule(module) {
 
 // 保存整份 document：非 2xx 也要读 body（400 时 report/error 携带 P 码，
 // 通用 j() 会在 !r.ok 时 throw 并丢弃响应体，故单独实现）
-export async function saveAssets(document) {
+export async function previewAssets(document, base_hash) {
   const r = await fetch('/api/assets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ document }),
+    body: JSON.stringify({ document, base_hash, preview: true }),
+  });
+  const text = await r.text();
+  let body;
+  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+  if (body === null) throw new Error(`POST /api/assets → 响应 JSON 解析失败`);
+  return body;
+}
+
+export async function saveAssets(document, base_hash) {
+  const r = await fetch('/api/assets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document, base_hash }),
   });
   let body = null;
   try { body = await r.json(); } catch { /* 非 JSON 响应按网络错误处理 */ }

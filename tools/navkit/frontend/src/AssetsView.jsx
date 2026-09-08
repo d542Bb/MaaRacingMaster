@@ -4,7 +4,7 @@ import { api } from './api';
 import { SEMI_TAG_COLOR } from './theme';
 
 // 资产 v3：/api/assets —— schema 概览 + 校验报告 + 四段统计
-export default function AssetsView({ graphDoc }) {
+export default function AssetsView({ graphDoc, setView }) {
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState(null);
 
@@ -21,7 +21,7 @@ export default function AssetsView({ graphDoc }) {
   const transitions = d.transitions || [];
   const routes = Object.entries(d.routes || {});
   const ruleCount = (d.policies?.rules || []).length;
-  const goPolicy = () => { window.location.hash = '/policy'; };
+  const goPolicy = () => setView?.('policy');
 
   return (
     <div className="panel-view">

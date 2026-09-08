@@ -33,6 +33,7 @@ from maaracing_assistant.core.navkit import (
     Assets,
     compile_routes_json,  # noqa: E402
 )
+from tools.navkit.compile_lib import compile_and_write
 
 PLUGINS = _PROJ / "maaracing_assistant" / "plugins"
 CORE_RES = CORE_IMAGE_DIR.parent          # core/resources
@@ -123,47 +124,35 @@ def _load_global_assets() -> Assets | None:
 
 
 def compile_one(module: str, *, check: bool) -> int:
+    """CLI 适配层：编译实际委托给 compile_lib.compile_and_write。"""
     assets_path, out_path, image_dir = paths_for(module)
-    if not assets_path.is_file():
-        print(f"[compile_routes:{module}] 资产不存在: {assets_path.relative_to(_PROJ)}",
-              file=sys.stderr)
-        return 1
-    # 追加语义下 core 段由 Assets.load 恒定前置，这里只供模块目录；global 无模块目录。
-    explicit_dirs = () if module == "global" else (image_dir,)
-    assets = Assets.load(assets_path, module=module, image_dirs=explicit_dirs)
-    schedule_errors = check_schedule(assets_path)
-    if schedule_errors:
-        for err in schedule_errors:
-            print(f"[compile_routes:{module}] schedule: {err}", file=sys.stderr)
-        return 1
-    if not assets.routes:
-        # 无 routes 段（global：只载页名/锚点）不产生成物，validate-only 直接通过。
-        # 该判定必须在 check/写盘分支之前——check 首判 `not out_path.exists()`，
-        # 不产生成物的资产会在这里被误报失败。
-        print(f"[compile_routes:{module}] 无 routes 段，跳过编译（不产生成物）")
-        return 0
-    # 路由侧并入 global（G3，贴 MAA 的 baseTask 式引用）：模块路由可引用 global 锚点
-    # （如 speedrush 入口链点大厅 hall_race_btn）。merge 单向可见、只增 global 锚点、
-    # source_path 不变 → 不引用 global 的既有模块（如 treasure）重编译逐字节不变；
-    # 检测路径（detector/compile_detection）不经此函数，局内逐帧等价回归不受影响。
-    if module != OWNER_GLOBAL:
-        global_assets = _load_global_assets()
-        if global_assets is not None:
-            assets = assets.merge(global_assets)
-    generated = compile_routes_json(assets)
-    if check:
-        if not out_path.exists() or out_path.read_text(encoding="utf-8") != generated:
-            print(f"[compile_routes:{module}] 生成物与重新编译结果不一致", file=sys.stderr)
-            return 1
-        print(f"[compile_routes:{module}] --check 通过")
-        return 0
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(generated, encoding="utf-8")
     try:
-        shown = out_path.relative_to(_PROJ)
-    except ValueError:
-        shown = out_path
-    print(f"[compile_routes:{module}] 已写入 {shown}")
+        result = compile_and_write(
+            module,
+            check=check,
+            paths_for=paths_for,
+            global_assets=GLOBAL_ASSETS,
+            project_root=_PROJ,
+        )
+    except FileNotFoundError:
+        print(f"[compile_routes:{module}] 资产不存在: {assets_path.relative_to(_PROJ)}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        message = str(exc)
+        if "activity_window" in message or "schedule.json" in message:
+            message = f"schedule: {message}"
+        print(f"[compile_routes:{module}] {message}", file=sys.stderr)
+        return 1
+    if result["status"] == "skipped_no_routes":
+        print(f"[compile_routes:{module}] 无 routes 段，跳过编译（不产生成物）")
+    elif check:
+        print(f"[compile_routes:{module}] --check 通过")
+    else:
+        try:
+            shown = out_path.relative_to(_PROJ)
+        except ValueError:
+            shown = out_path
+        print(f"[compile_routes:{module}] 已写入 {shown}")
     return 0
 
 

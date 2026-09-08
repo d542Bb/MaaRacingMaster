@@ -22,7 +22,7 @@ export default function ReplayView({ traceRows }) {
   useEffect(() => {
     api.sessions().then(list => {
       setSessions(list);
-      if (list.length) setSession(list[list.length - 1]);
+      if (list.length) setSession(list[0]);
     }).catch(e => setErr(String(e)));
   }, []);
 
@@ -33,7 +33,7 @@ export default function ReplayView({ traceRows }) {
       setImages(list);
       if (list.length) setImage(list[Math.min(2, list.length - 1)]);
     }).catch(e => setErr(String(e)));
-    api.traceFor(session).then(setSessionTrace).catch(() => setSessionTrace([]));
+    api.traceFor(session).then(setSessionTrace).catch(e => setErr(`决策流水加载失败：${e.message}`));
   }, [session]);
 
   if (err) return <Banner type="danger" closeIcon={null} description={`会话数据加载失败：${err}`} />;

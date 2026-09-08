@@ -6,7 +6,8 @@ import {
 import {
   IconChevronDown, IconChevronUp, IconDelete, IconPlus, IconRefresh, IconSave, IconTick,
 } from '@douyinfe/semi-icons';
-import { api, saveAssets } from './api';
+import { api, previewAssets, saveAssets } from './api';
+import createHistory from '../../static/history.js';
 import {
   CONTRACT_MIRROR, DECISION_SOURCE_LABELS, EFFECT_LABELS, FACT_LABELS, OP_LABELS,
   TUNING_KEY_LABELS, TUNING_SECTION_LABELS, validateDraft, guardApplyJson,
@@ -32,10 +33,13 @@ export default function PolicyView({ onDirtyChange }) {
   const [jsonOpen, setJsonOpen] = useState(false);
   const [jsonText, setJsonText] = useState('');
   const [jsonErr, setJsonErr] = useState(null);
+  const [baseHash, setBaseHash] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const history = React.useMemo(() => createHistory(), []);
 
   useEffect(() => {
     api.assets()
-      .then(d => { setOriginal(d.document); setDraft(structuredClone(d.document)); setReport(d.report); })
+      .then(d => { setOriginal(d.document); setDraft(structuredClone(d.document)); setReport(d.report); setBaseHash(d.base_hash || null); })
       .catch(e => setLoadErr(String(e)));
   }, []);
 
@@ -60,6 +64,7 @@ export default function PolicyView({ onDirtyChange }) {
   const [expandedRule, setExpandedRule] = useState(null); // 手风琴：同时只展开一张卡
 
   const touchDraft = (mutate) => {
+    history.push('策略编辑', draft, 'draft');
     setDraft(prev => {
       const d = structuredClone(prev);
       mutate(d);
@@ -125,32 +130,39 @@ export default function PolicyView({ onDirtyChange }) {
     setSaveMsg(null);
   };
 
-  // 保存 → 200 后 GET roundtrip → 以 roundtrip document 重建 original/draft（守卫 B）。
-  // 之后的 dirty 判定一律以重建后的 original 为基准，避免服务端 JSON 归一化
-  // （如 1.0 → 1）让比较对象错位。400 时 draft 与 original 均完整保留。
+  const restoreDraft = next => { if (next) { setDraft(next); setDirty(true); } };
+  useEffect(() => {
+    const onKey = e => {
+      if (!(e.ctrlKey || e.metaKey) || !['z', 'y'].includes(e.key.toLowerCase())) return;
+      e.preventDefault(); restoreDraft(e.key.toLowerCase() === 'z' ? history.undo(draft) : history.redo(draft));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [draft, history]);
+
+  // 保存 → 先预览 diff/校验/编译，确认后正式保存。
   const save = async () => {
     if (!draft || saving || hasError) return;
-    setSaving(true);
-    setSaveMsg(null);
+    setSaving(true); setSaveMsg(null);
     try {
-      const res = await saveAssets(draft);
-      if (res.ok) {
-        setReport(res.report);
-        const fresh = await api.assets();
-        setOriginal(fresh.document);
-        setDraft(structuredClone(fresh.document));
-        setReport(fresh.report);
-        setDirty(false);
-        setSaveMsg({ type: 'success', text: '已保存 · 将在下次启动模块时生效' });
-      } else {
-        setSaveMsg({ type: 'error', text: res.error || `校验未通过（${(res.report?.errors || []).length} 项 error）` });
-        if (res.report) setReport(res.report);
+      const p = await previewAssets(draft, baseHash);
+      setPreview(p);
+      if (!p.ok || p.report?.errors?.length || p.compile?.error) {
+        setSaveMsg({ type: 'error', text: p.report?.errors?.join('；') || p.compile?.error || '预览未通过' });
+        return;
       }
+      const confirmed = window.confirm(`保存预览：新增 ${p.diff.added.length} · 删除 ${p.diff.removed.length} · 修改 ${p.diff.changed.length}\n编译：${p.compile.status}\n确认落盘？`);
+      if (!confirmed) return;
+      const res = await saveAssets(draft, p.base_hash || baseHash);
+      if (!res.ok) throw new Error(res.error || res.report?.errors?.join('；') || '保存失败');
+      const fresh = await api.assets();
+      setOriginal(fresh.document); setDraft(structuredClone(fresh.document));
+      setReport(fresh.report); setBaseHash(fresh.base_hash || null); setDirty(false);
+      history.marker();
+      setSaveMsg({ type: 'success', text: `已保存 · 编译 ${res.compiled || 'skipped_no_routes'}` });
     } catch (e) {
-      setSaveMsg({ type: 'error', text: String(e) });
-    } finally {
-      setSaving(false);
-    }
+      setSaveMsg({ type: 'error', text: String(e.message || e) });
+    } finally { setSaving(false); }
   };
 
   // JSON 高级编辑：打开时同步 draft 全文

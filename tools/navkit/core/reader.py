@@ -19,8 +19,12 @@ import numpy as np
 
 from tools.navkit.core import session as sessmod
 
-# 多尺度匹配缩放档（0.70×~1.30×，步长 0.05）。调试台校准的分值须在运行时同口径复现，
-# 故档位与模块运行时的 MATCH_SCALES 保持一致（牵一发动全身原则由 adapter 负责核对）。
+# 多尺度匹配缩放档兜底值（0.70×~1.30×，步长 0.05）。
+#
+# 真源是资产文档的 `match.scales`（与运行时 DetectionPlan.scales 同源）：调试台校准的
+# 分值须在运行时同口径复现，故调用方一律显式传入文档档位（见 server 的
+# `_match_scales()`）。本常量仅在文档缺 `match` 段（过渡期/空资产）时兜底，
+# 不要把它当成权威——文档改了档位而这里不改，「所见即运行时」就失效。
 MATCH_SCALES: tuple[float, ...] = (
     0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30,
 )
@@ -60,11 +64,19 @@ class TemplateStore:
         return self.load_gray(name)
 
 
-def match_local(gray_big: np.ndarray, gray_tpl: np.ndarray, rect: "list[float]") -> dict:
+def match_local(
+    gray_big: np.ndarray,
+    gray_tpl: np.ndarray,
+    rect: "list[float]",
+    scales: "tuple[float, ...] | list[float] | None" = None,
+) -> dict:
     """ROI 内多尺度模板匹配，返回全局最优（分数最高）尺度的命中框。
 
     迁移自 treasures 匹配逻辑；适配 debug 场景：返回 size_ok/score/best_scale/
     pixel_box/crop_size/tpl_size/hit_box/hit_norm/reason，供前端叠加显示。
+
+    `scales` 为待尝试的缩放档位：调用方须传资产文档 `match.scales`（运行时同口径），
+    缺省回落模块常量 `MATCH_SCALES`（仅兜底，不是真源）。
     """
     H, W = gray_big.shape[:2]
     x1n, y1n, x2n, y2n = (float(v) for v in rect)
@@ -76,7 +88,7 @@ def match_local(gray_big: np.ndarray, gray_tpl: np.ndarray, rect: "list[float]")
     th0, tw0 = gray_tpl.shape[:2]
     ch, cw = crop.shape[:2]
     best = None  # (score, scale, th_h, tw_w, mx_in_roi, my_in_roi)
-    for s in MATCH_SCALES:
+    for s in (MATCH_SCALES if scales is None else scales):
         nw = max(4, int(round(tw0 * s)))
         nh = max(4, int(round(th0 * s)))
         if nh > ch or nw > cw:

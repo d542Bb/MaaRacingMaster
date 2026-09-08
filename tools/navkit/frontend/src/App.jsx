@@ -26,8 +26,8 @@ const NAV_ITEMS = [
 
 const VIEW_KEYS = NAV_ITEMS.map(i => i.itemKey);
 // hash 路由：#/graph、#/calib…—— 网址随视图变化，但始终是同一个页签（SPA 手感）
-function viewFromHash() {
-  const h = (window.location.hash || '').replace(/^#\/?/, '');
+function viewFromHash(hash = window.location.hash) {
+  const h = (hash || '').replace(/^#\/?/, '');
   return VIEW_KEYS.includes(h) ? h : 'graph';
 }
 
@@ -37,6 +37,8 @@ export default function App() {
   const [traceRows, setTraceRows] = useState([]);
   const [graphDoc, setGraphDoc] = useState(null);
   const [policyDirty, setPolicyDirty] = useState(false);
+  const [calibDirty, setCalibDirty] = useState(false);
+  const dirty = policyDirty || calibDirty;
   const [module, setModule] = useState(null);       // 当前编辑模块（server 端真值）
   const [moduleOptions, setModuleOptions] = useState([]);
   const [switching, setSwitching] = useState(false);
@@ -56,16 +58,34 @@ export default function App() {
       .catch(() => setModule(null));
   }, []);
 
+  const lastHash = React.useRef(window.location.hash || '#/graph');
+  const allowHash = React.useRef(false);
+
   useEffect(() => {
-    const onHash = () => setViewState(viewFromHash());
+    const onHash = () => {
+      const next = viewFromHash();
+      if (dirty && !allowHash.current && next !== view) {
+        window.location.hash = lastHash.current.replace(/^#\/?/, '#/');
+        Modal.confirm({
+          title: '存在未保存编辑',
+          content: '离开当前编辑面会丢弃未保存内容，确定继续？',
+          okText: '丢弃并离开', cancelText: '留下编辑',
+          onOk: () => { allowHash.current = true; window.location.hash = '#/' + next; },
+        });
+        return;
+      }
+      allowHash.current = false;
+      lastHash.current = window.location.hash;
+      setViewState(next);
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
-  }, []);
+  }, [dirty, view]);
 
   // 切视图 = 写 hash，由 hashchange 统一驱动状态（浏览器前进/后退可用）；
   // 策略页有未保存更改时 Modal 二次确认，确认（丢弃）后才写 hash
   const setView = (key) => {
-    if (view !== 'policy' || !policyDirty) {
+    if (!dirty) {
       window.location.hash = '/' + key;
       return;
     }
@@ -74,7 +94,7 @@ export default function App() {
       content: '切换视图将丢弃未保存的更改（draft 不会被写盘）。确定离开？',
       okText: '丢弃并离开',
       cancelText: '留下继续编辑',
-      onOk: () => { window.location.hash = '/' + key; },
+      onOk: () => { allowHash.current = true; window.location.hash = '/' + key; },
     });
   };
 
@@ -93,15 +113,16 @@ export default function App() {
           setModule(next);
           setSelectedNode(null);
           setPolicyDirty(false);
+          setCalibDirty(false);
           Toast.success(`已切换到 ${next}`);
         })
         .catch((e) => Toast.error(`切换失败：${e.message}`))
         .finally(() => setSwitching(false));
     };
-    if (view === 'policy' && policyDirty) {
+    if (dirty) {
       Modal.confirm({
-        title: '策略编辑尚未保存',
-        content: `切换到模块 ${next} 将丢弃未保存的更改（draft 不会被写盘）。确定切换？`,
+      title: '存在未保存编辑',
+      content: `切换到模块 ${next} 将丢弃未保存的更改。确定切换？`,
         okText: '丢弃并切换',
         cancelText: '留下继续编辑',
         onOk: apply,
@@ -121,8 +142,14 @@ export default function App() {
       cancelText: '留下',
       okButtonProps: { type: 'danger' },
       onOk: async () => {
-        await shutdownServer();
-        Toast.success('server 已关闭，可以关闭本页面');
+        try {
+          const res = await shutdownServer();
+          if (res && res.ok === false) throw new Error(res.error || '关闭失败');
+          Toast.success('server 已关闭，可以关闭本页面');
+        } catch (e) {
+          Toast.error(`server 关闭失败：${e.message}`);
+          throw e;
+        }
         // 试一下窗口关闭——用户手动开的 tab 会被浏览器拒绝，没关系，toast 已说明
         setTimeout(() => { try { window.close(); } catch { /* noop */ } }, 200);
       },
@@ -176,10 +203,10 @@ export default function App() {
               {view === 'graph' && (
                 <GraphView traceRows={traceRows} onSelectNode={setSelectedNode} />
               )}
-              {view === 'calib' && <CalibView />}
+              {view === 'calib' && <CalibView onDirtyChange={setCalibDirty} />}
               {view === 'tpl' && <TemplatesView />}
               {view === 'replay' && <ReplayView traceRows={traceRows} />}
-              {view === 'assets' && <AssetsView graphDoc={graphDoc} />}
+              {view === 'assets' && <AssetsView setView={setView} graphDoc={graphDoc} />}
               {view === 'policy' && <PolicyView onDirtyChange={setPolicyDirty} />}
             </div>
             {view === 'graph' && (

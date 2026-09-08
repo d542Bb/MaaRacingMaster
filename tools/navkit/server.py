@@ -20,8 +20,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
+import os
 import re
 import sys
 import threading
@@ -40,9 +42,11 @@ if _PROJ_ROOT_STR not in sys.path:
 
 from tools.navkit.core import session as sessmod
 from tools.navkit.core.categories import CategoryDefs
+from tools.navkit.core import reader as readermod
 from tools.navkit.core.reader import TemplateStore, match_local
 from tools.navkit.core.renderer import bgr_to_dataurl, gray_to_dataurl
 from maaracing_assistant.core.navkit import Assets, compile_routes_json, validate_assets
+from tools.navkit.compile_lib import compile_and_write, compile_document
 from tools.navkit.graph_api import graph_document
 from maaracing_assistant.core.paths import debug_dir
 
@@ -106,6 +110,75 @@ def assets_path_for(module: str) -> Path:
     return _PROJ_ROOT / "maaracing_assistant" / "plugins" / module / "resources" / "config" / f"{module}_assets.json"
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """原子写盘：临时文件 + os.replace；tmp 名带 pid/tid，双线程并发不互相撕裂。
+
+    真源（资产 JSON）写盘的**唯一字节出口**，与 compile 共用同一形态约束：
+      - 强制 LF：Windows 下阻止 CRLF 注入真源（否则 `source_hash` 漂移、
+        `--check`/CI 双红，且每次保存都制造整文件 diff）；
+      - 调用方负责在文本末尾补换行（POSIX 文本规范，git 不报 no-newline）；
+      - 写失败路径清理 tmp，不在目录里留 `.tmp` 残骸。
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        tmp.replace(path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def dump_document(document: dict) -> str:
+    """资产文档 → 落盘文本（indent=2 + 尾换行）。与 compile 成物形态各自独立。"""
+    return json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+
+
+def document_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+
+
+def deep_diff(old, new, path=""):
+    """递归输出 added/removed/changed，作为 preview 弹窗的权威 diff。"""
+    out = {"added": [], "removed": [], "changed": []}
+    if isinstance(old, dict) and isinstance(new, dict):
+        for key in sorted(old.keys() - new.keys()):
+            out["removed"].append({"path": f"{path}.{key}".strip("."), "old": old[key]})
+        for key in sorted(new.keys() - old.keys()):
+            out["added"].append({"path": f"{path}.{key}".strip("."), "new": new[key]})
+        for key in sorted(old.keys() & new.keys()):
+            child = deep_diff(old[key], new[key], f"{path}.{key}".strip("."))
+            for kind in out:
+                out[kind].extend(child[kind])
+    elif isinstance(old, list) and isinstance(new, list):
+        for i in range(max(len(old), len(new))):
+            p = f"{path}[{i}]"
+            if i >= len(old):
+                out["added"].append({"path": p, "new": new[i]})
+            elif i >= len(new):
+                out["removed"].append({"path": p, "old": old[i]})
+            elif old[i] != new[i]:
+                child = deep_diff(old[i], new[i], p)
+                if not any(child.values()):
+                    out["changed"].append({"path": p, "old": old[i], "new": new[i]})
+                else:
+                    for kind in out:
+                        out[kind].extend(child[kind])
+    elif old != new:
+        out["changed"].append({"path": path, "old": old, "new": new})
+    return out
+
+
+def report_object(report) -> dict:
+    return {
+        "ok": report.ok,
+        "errors": [str(i) for i in report.errors],
+        "warnings": [str(i) for i in report.warnings],
+    }
+
+
 def build_state(module: str) -> StudioState:
     adapter = _load_adapter(module)
     state = StudioState(adapter)
@@ -144,16 +217,42 @@ def load_rois(state: StudioState) -> dict:
     return state.defs.load(state.rois_file)
 
 
+def flat_meta(state: StudioState, doc: dict) -> dict:
+    """校准台编辑面所需的「文档级只读上下文」（`_meta` 段，保存时被 apply 忽略）。
+
+    - `match`：运行时/调试台共用的匹配口径（档位与默认阈值）——调试台的匹配分必须按
+      这里的 `scales` 跑，才与运行时 `DetectionPlan.scales` 同口径（G1.6）；
+    - `pages`：新增锚点的 page 下拉候选；
+    - `stage_anchors`：模板类锚点 id，`guarded_by` 候选。
+    """
+    anchors = doc.get("anchors") or {}
+    return {
+        "match": doc.get("match") or {},
+        "pages": sorted((doc.get("pages") or {}).keys()),
+        "stage_anchors": sorted(
+            k for k, a in anchors.items()
+            if isinstance(a, dict) and a.get("kind") == "template"
+        ),
+        "reference_size": doc.get("reference_size") or [1280, 720],
+        "owner": state.module_name,
+        "base_hash": document_hash(assets_path_for(state.module_name)),
+    }
+
+
 def state_flat_rois(state: StudioState) -> dict:
     """校准显示 / 模板统计共用的「v2 扁平 ROI」来源。
 
     声明 `ROIS_SOURCE="v3"` 且提供 `flat_from_v3_doc` 的 adapter（如 treasure）从 v3 资产
     投影出扁平结构（校准与运行时的唯一真源一致）；其余模块回落通用 `load_rois`（读 v2 文件）。
+    v3 投影额外挂 `_meta`（文档级只读上下文，供新增锚点 UI 与匹配档位消费）。
     """
     proj = getattr(state.adapter, "flat_from_v3_doc", None)
     if proj is not None and getattr(state.adapter, "ROIS_SOURCE", "v2") == "v3":
         doc = json.loads(assets_path_for(state.module_name).read_text(encoding="utf-8"))
-        return proj(doc)
+        flat = proj(doc)
+        if isinstance(flat, dict):
+            flat["_meta"] = flat_meta(state, doc)
+        return flat
     return load_rois(state)
 
 
@@ -284,7 +383,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             elif path == "/api/rois":
-                self._send_json(state_flat_rois(self.state))
+                # 坏数据（锚点结构损坏/资产不可解析）不能让整台校准台断连：
+                # 无兜底时异常冒泡到 BaseHTTPRequestHandler 会直接断开 socket，
+                # 前端拿到的是网络错误而非可诊断的 JSON。
+                try:
+                    self._send_json(state_flat_rois(self.state))
+                except Exception as exc:  # noqa: BLE001
+                    self._send_json({"error": f"读取 ROI 投影失败: {exc}"}, 500)
+                return
             elif path == "/api/assets":
                 self._handle_assets_get(qs)
             elif path == "/api/graph":
@@ -376,12 +482,27 @@ class Handler(BaseHTTPRequestHandler):
         path = self._assets_path()
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def _match_scales(self) -> tuple[float, ...]:
+        """匹配档位真源：资产文档 `match.scales`（与运行时 `plan.scales` 同源）。
+
+        文档缺 `match` 段时回落调试台常量——那只是兜底，不是权威口径：
+        一旦文档改了档位而调试台没跟上，「校准台分数 = 运行时分数」即失效。
+        """
+        try:
+            doc = self._load_assets_doc()
+        except Exception:  # noqa: BLE001
+            return readermod.MATCH_SCALES
+        raw = (doc.get("match") or {}).get("scales")
+        if isinstance(raw, (list, tuple)) and raw:
+            return tuple(float(s) for s in raw)
+        return readermod.MATCH_SCALES
+
     def _handle_assets_get(self, qs) -> None:
         try:
             doc = self._load_assets_doc()
             assets = Assets.from_document(doc, module=self.state.module_name)
             report = validate_assets(assets)
-            self._send_json({"document": doc, "report": {"ok": report.ok, "errors": [str(i) for i in report.errors], "warnings": [str(i) for i in report.warnings]}})
+            self._send_json({"document": doc, "report": report_object(report), "base_hash": document_hash(self._assets_path())})
         except Exception as exc:
             self._send_json({"error": str(exc)}, 500)
 
@@ -419,17 +540,45 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(document, dict):
             self._send_json({"ok": False, "error": "document 必须为 object"}, 400)
             return
+        self._handle_document_save(document, body)
+
+    def _handle_document_save(self, document: dict, body: dict) -> None:
+        path = self._assets_path()
         try:
+            if body.get("base_hash") and body["base_hash"] != document_hash(path):
+                self._send_json({"ok": False, "error": "资产已被其他窗口修改，请重新预览", "base_hash": document_hash(path)}, 409)
+                return
+            old_doc = self._load_assets_doc()
             assets = Assets.from_document(document, module=self.state.module_name)
             report = validate_assets(assets)
-            if not report.ok:
-                self._send_json({"ok": False, "report": report.text()}, 400)
+            diff = deep_diff(old_doc, document)
+            try:
+                compiled = compile_document(self.state.module_name, document)
+                compile_status = compiled["status"]
+                compile_error = None
+            except Exception as exc:  # noqa: BLE001
+                compiled = {"status": "failed", "out_path": "", "output": ""}
+                compile_status = "failed"
+                compile_error = str(exc)
+            if body.get("preview"):
+                self._send_json({
+                    "ok": report.ok and compile_error is None,
+                    "diff": diff,
+                    "report": report_object(report),
+                    "compile": {"status": compile_status, "out_path": compiled.get("out_path"), "error": compile_error},
+                    "source_hash_new": hashlib.sha256(dump_document(document).encode("utf-8")).hexdigest()[:8],
+                    "base_hash": document_hash(path),
+                }, 200)
                 return
-            path = self._assets_path()
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(path)
-            self._send_json({"ok": True, "report": report.text()})
+            if not report.ok:
+                self._send_json({"ok": False, "report": report_object(report), "diff": diff}, 400)
+                return
+            if compile_error is not None:
+                self._send_json({"ok": False, "error": f"资产已校验但编译失败: {compile_error}", "report": report_object(report)}, 500)
+                return
+            atomic_write_text(path, dump_document(document))
+            compile_result = compile_and_write(self.state.module_name)
+            self._send_json({"ok": True, "path": str(path), "report": report_object(report), "compiled": compile_result["status"], "compile": compile_result})
         except Exception as exc:
             self._send_json({"ok": False, "error": str(exc)}, 400)
 
@@ -447,19 +596,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             new_doc = apply(doc, body)
+            if body.get("base_hash") and body["base_hash"] != document_hash(path):
+                self._send_json({"ok": False, "error": "资产已被其他窗口修改，请重新预览", "base_hash": document_hash(path)}, 409)
+                return
             assets = Assets.from_document(new_doc, module=self.state.module_name)
             report = validate_assets(assets)
-            if not report.ok:
-                self._send_json({"ok": False, "error": "v3 校验失败", "report": report.text()}, 400)
+            diff = deep_diff(doc, new_doc)
+            try:
+                compiled = compile_document(self.state.module_name, new_doc)
+                compile_error = None
+            except Exception as exc:  # noqa: BLE001
+                compiled = {"status": "failed", "out_path": "", "output": ""}
+                compile_error = str(exc)
+            if body.get("preview"):
+                self._send_json({
+                    "ok": report.ok and compile_error is None,
+                    "diff": diff,
+                    "report": report_object(report),
+                    "compile": {"status": compiled["status"], "out_path": compiled.get("out_path"), "error": compile_error},
+                    "source_hash_new": hashlib.sha256(dump_document(new_doc).encode("utf-8")).hexdigest()[:8],
+                    "base_hash": document_hash(path),
+                })
                 return
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(
-                json.dumps(new_doc, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-                newline="\n",
-            )
-            tmp.replace(path)
-            self._send_json({"ok": True, "path": str(path), "report": report.text()})
+            if not report.ok:
+                self._send_json({"ok": False, "error": "v3 校验失败", "report": report_object(report), "diff": diff}, 400)
+                return
+            if compile_error is not None:
+                self._send_json({"ok": False, "error": f"资产已存前校验通过但编译失败: {compile_error}", "report": report_object(report)}, 500)
+                return
+            atomic_write_text(path, dump_document(new_doc))
+            compile_result = compile_and_write(self.state.module_name)
+            self._send_json({"ok": True, "path": str(path), "report": report_object(report), "compiled": compile_result["status"], "compile": compile_result})
         except Exception as exc:  # noqa: BLE001
             self._send_json({"ok": False, "error": f"保存失败: {exc}"}, 400)
 
@@ -615,7 +782,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "图或模板不存在"}, 404)
             return
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        res = match_local(gray, g, rect)
+        res = match_local(gray, g, rect, scales=self._match_scales())
         res["crop_preview"] = ""
         res["tpl_preview"] = ""
         if res.get("size_ok"):
@@ -634,11 +801,17 @@ class Handler(BaseHTTPRequestHandler):
         if not (rect and tpl):
             self._send_json({"error": "缺 rect/template"}, 400)
             return
+        # session 缺失必须显式 400：旧实现把 None 喂给 `SESSION_RE.match(None)`
+        # 抛 TypeError，异常冒泡即断开 socket，前端只能看到网络错误。
+        session = body.get("session")
+        if not session or not isinstance(session, str):
+            self._send_json({"error": "缺 session（请先选择会话）"}, 400)
+            return
         g = self.state.template_store.load_gray(tpl)
         if g is None:
             self._send_json({"error": "模板不存在"}, 404)
             return
-        session = body.get("session")
+        scales = self._match_scales()
         scores = []
         for name in self.state.session_browser.list_raw(session):
             p = self.state.session_browser.resolve_raw(session, name)
@@ -648,13 +821,25 @@ class Handler(BaseHTTPRequestHandler):
             if img is None:
                 continue
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            s = match_local(gray, g, rect).get("score", -1.0)
+            s = match_local(gray, g, rect, scales=scales).get("score", -1.0)
             scores.append((name, s))
         if not scores:
             self._send_json({"error": "无可用帧"}, 404)
             return
         vals = [s for _, s in scores if s >= 0]
-        resp = {"total_frames": len(scores), "histogram": [], "threshold": threshold}
+        # 分母只含有效帧：score=-1 表示尺寸不足/未跑匹配，把它算进分母会让
+        # 「命中率」被无效帧稀释（分母说谎）。
+        excluded_invalid = len(scores) - len(vals)
+        resp = {
+            "total_frames": len(vals),
+            "excluded_invalid": excluded_invalid,
+            "scanned_frames": len(scores),
+            "histogram": [], "threshold": threshold,
+        }
+        if not vals:
+            resp["error"] = f"全部 {excluded_invalid} 帧尺寸不足，无有效匹配结果"
+            self._send_json(resp)
+            return
         if vals:
             v = sorted(vals)
             n = len(v)

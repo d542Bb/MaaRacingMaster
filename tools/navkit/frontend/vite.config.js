@@ -18,7 +18,13 @@ export default defineConfig({
   },
   server: {
     port: 8801,
-    proxy: { '/api': 'http://localhost:8765' },
+    proxy: {
+      '/api': 'http://localhost:8765',
+      '/calibrator.html': 'http://localhost:8765',
+      '/app.js': 'http://localhost:8765',
+      '/history.js': 'http://localhost:8765',
+      '/style.css': 'http://localhost:8765',
+    },
   },
   build: {
     outDir: '../static',

@@ -1,5 +1,41 @@
 /* 鉴宝视觉调试台前端逻辑 */
+import createHistory from "/history.js";
 "use strict";
+
+function emitDirty() {
+  parent.postMessage({ source: "navkit-calib", dirty: state.dirty }, "*");
+}
+function snapshotState() {
+  return {
+    rois: structuredClone(state.rois),
+    currentCat: state.currentCat,
+    selected: state.selected,
+    added: structuredClone(state.added),
+    deleted: structuredClone(state.deleted),
+  };
+}
+function pushHistory(label, key = "") {
+  if (state.rois) state.history.push(label, snapshotState(), key);
+}
+function restoreHistory(snapshot) {
+  if (!snapshot) return;
+  state.rois = snapshot.rois;
+  state.currentCat = snapshot.currentCat;
+  state.selected = snapshot.selected;
+  state.added = snapshot.added;
+  state.deleted = snapshot.deleted;
+  markDirty();
+  emitDirty();
+  renderCatTabs(); renderRoiList(); updatePropPanel(); draw();
+}
+function markDirty() { state.dirty = true; emitDirty(); }
+
+function runHistory(dir) {
+  const cur = snapshotState();
+  const s = dir === "undo" ? state.history.undo(cur) : state.history.redo(cur);
+  if (s) { restoreHistory(s); flash(dir === "undo" ? "已撤回" : "已重做"); }
+  else flash(dir === "undo" ? "没有可撤回的步骤" : "已是最新状态");
+}
 
 // ---------------- 全局状态 ----------------
 // 分类 tab 不硬编码，而是从 JSON 实际存在的键动态生成（见 catList()）。
@@ -39,6 +75,10 @@ const state = {
   scale: 1, offsetX: 0, offsetY: 0,
   activeTpl: {},       // {"cat/key": templateName}
   dirty: false,
+  baseHash: null,
+  added: {},
+  deleted: [],
+  history: null,
   // 画布显示设置
   showRois: "all",     // "all" 全部框 | "selected" 仅选中 | "none" 不显示
   showHit: true,       // 是否显示匹配命中位置（黄色高亮框 + 中心点）
@@ -54,6 +94,7 @@ function getRoiThreshold(roi) {
   return DEFAULT_MATCH_THRESHOLD;
 }
 
+state.history = createHistory();
 const $ = (id) => document.getElementById(id);
 const canvas = $("stage");
 const ctx = canvas.getContext("2d");
@@ -160,6 +201,7 @@ async function loadTemplates() {
 }
 async function loadRois() {
   state.rois = await apiGet("/api/rois");
+  state.baseHash = state.rois._meta?.base_hash || state.baseHash;
   state.selected = roiKeys(state.currentCat)[0] || null;
 }
 async function loadTemplateStatus() {
@@ -455,15 +497,44 @@ function dotStatus(r) {
   return "dot-ok"; // 详细状态在右侧面板
 }
 
+function markAdded(cat, name) {
+  state.added[cat] ||= {};
+  state.added[cat][name] = {
+    kind: cat === "ocr" ? "ocr" : cat === "actions" ? "point" : "template",
+    page: "",
+    rect: state.rois[cat][name].rect,
+    templates: [],
+  };
+}
+
+function deleteRoi(cat, key, { ask = true } = {}) {
+  const seg = state.rois[cat];
+  if (!seg || !seg[key]) return;
+  if (ask && !confirm(`删除 ROI「${key}」？`)) return;
+  pushHistory("删除 ROI", `delete:${cat}`);
+  if (state.added[cat] && state.added[cat][key]) {
+    // 本次会话新增、尚未落盘的项：直接取消新增，而不是记入 deleted
+    delete state.added[cat][key];
+  } else {
+    state.deleted.push(`${cat}.${key}`);
+  }
+  delete seg[key];
+  state.selected = roiKeys(cat)[0] || null;
+  markDirty();
+  renderRoiList(); updatePropPanel(); draw();
+}
+
 function addRoi() {
   const cat = state.currentCat;
   if (cat === "unassigned") return;
-  const name = prompt("输入新 ROI 名称（英文/下划线）：");
-  if (!name) return;
-  if (state.rois[cat][name]) { alert("该名称已存在"); return; }
+  const name = prompt("输入新 ROI 名称（英文/数字/下划线/连字符）：");
+  if (!name || !/^[\w-]+$/.test(name)) { if (name) alert("名称仅允许字母、数字、下划线和连字符"); return; }
+  if (Object.values(state.rois).some(seg => seg?.[name])) { alert("该名称已存在"); return; }
+  pushHistory("新增 ROI", `add:${cat}`);
   state.rois[cat][name] = { rect: [0.4, 0.4, 0.6, 0.6], templates: [] };
+  markAdded(cat, name);
   state.selected = name;
-  state.dirty = true;
+  markDirty();
   renderRoiList(); updatePropPanel(); draw();
 }
 
@@ -477,7 +548,7 @@ async function assignTemplate(name) {
   state.rois[cat][key] = { rect: [0, 0, 0, 0], templates: [name] };
   state.currentCat = cat;
   state.selected = key;
-  state.dirty = true;
+  markDirty();
   await loadTemplateStatus();
   renderCatTabs(); renderRoiList(); updatePropPanel(); draw();
 }
@@ -518,6 +589,32 @@ function updatePropPanel() {
   const selTplKey = tplKey(key);
   const isOcr = state.currentCat === "ocr"; // OCR 区域用 RapidOCR 识别，不关联模板图
   const isAction = state.currentCat === "actions"; // 动作按钮只用 rect 中心做准星目标，无模板图
+  const addedEntry = (state.added[state.currentCat] || {})[key]; // 本次新增项：需补结构字段
+  const addOpts = state.rois._meta || {};
+  const addedGroupHtml = addedEntry ? `
+    <div class="prop-group">
+      <h3>新增锚点结构</h3>
+      <label class="prop-row"><span class="k">page *</span>
+        <select id="addedPage" class="rect-input">
+          <option value="">（选择页面）</option>
+          ${(addOpts.pages || []).map(p => `<option value="${p}" ${p === addedEntry.page ? "selected" : ""}>${p}</option>`).join("")}
+        </select>
+      </label>
+      <label class="prop-row"><span class="k">kind</span>
+        <select id="addedKind" class="rect-input">
+          ${["template", "point", "ocr"].map(k => `<option value="${k}" ${k === addedEntry.kind ? "selected" : ""}>${k}</option>`).join("")}
+        </select>
+      </label>
+      <label class="prop-row" id="addedGuardRow" style="${addedEntry.kind === "point" ? "" : "display:none"}">
+        <span class="k">guarded_by *</span>
+        <select id="addedGuard" class="rect-input">
+          <option value="">（选择模板锚点作担保）</option>
+          ${(addOpts.stage_anchors || []).map(a => `<option value="${a}" ${a === addedEntry.guarded_by ? "selected" : ""}>${a}</option>`).join("")}
+        </select>
+      </label>
+      <div class="prop-row" style="color:var(--dim);font-size:12px">page/kind 决定该锚点在 v3 的归属；point 必须挂模板担保人（E10）</div>
+    </div>
+  ` : "";
 
   panel.innerHTML = `
     <div class="prop-group">
@@ -527,6 +624,7 @@ function updatePropPanel() {
       <input id="rectInput" class="rect-input" value="${rect.map(n => n.toFixed(3)).join(', ')}">
       <button id="delRoi" class="btn" style="margin-top:8px;width:100%;border-color:var(--bad);color:var(--bad)">删除 {{key}}</button>
     </div>
+    ${addedGroupHtml}
     ${isOcr ? `
     <div class="prop-group">
       <h3>OCR 识别</h3>
@@ -616,13 +714,30 @@ function updatePropPanel() {
   `;
   // 修正删除按钮文字
   panel.querySelector("#delRoi").textContent = `删除 ${key}`;
-  panel.querySelector("#delRoi").onclick = () => {
-    if (!confirm(`删除 ROI「${key}」？`)) return;
-    delete rois[key];
-    state.selected = Object.keys(rois)[0] || null;
-    state.dirty = true;
-    renderRoiList(); updatePropPanel(); draw();
-  };
+  panel.querySelector("#delRoi").onclick = () => deleteRoi(state.currentCat, key);
+
+  if (addedEntry) {
+    const pageSel = panel.querySelector("#addedPage");
+    const kindSel = panel.querySelector("#addedKind");
+    const guardSel = panel.querySelector("#addedGuard");
+    const guardRow = panel.querySelector("#addedGuardRow");
+    pageSel.onchange = () => {
+      pushHistory("设置 page", `struct:${key}:page`);
+      addedEntry.page = pageSel.value;
+      markDirty();
+    };
+    kindSel.onchange = () => {
+      pushHistory("设置 kind", `struct:${key}:kind`);
+      addedEntry.kind = kindSel.value;
+      guardRow.style.display = addedEntry.kind === "point" ? "" : "none";
+      markDirty();
+    };
+    guardSel.onchange = () => {
+      pushHistory("挂担保人", `struct:${key}:guard`);
+      addedEntry.guarded_by = guardSel.value || undefined;
+      markDirty();
+    };
+  }
 
   // 彩蛋计数区偏移：改 → 写回段级元数据并标记 dirty（保存时统一落盘）
   if (state.currentCat === "eggs" && state.rois.eggs) {
@@ -652,7 +767,7 @@ function updatePropPanel() {
         let v = parseFloat(el.value);
         if (Number.isNaN(v)) v = def;
         state.rois.eggs[metaKey] = v;
-        state.dirty = true;
+        markDirty();
         refreshPxLabels();
       };
       el.onchange = onChange;
@@ -680,13 +795,14 @@ function updatePropPanel() {
     cb.type = "checkbox";
     cb.checked = (r.templates || []).includes(t);
     cb.onchange = () => {
+      pushHistory("模板勾选", `tpl:${state.currentCat}:${key}`);
       if (cb.checked) {
         if (!r.templates) r.templates = [];
         if (!r.templates.includes(t)) r.templates.push(t);
       } else {
         r.templates = (r.templates || []).filter(x => x !== t);
       }
-      state.dirty = true;
+      markDirty();
       updatePropPanel();
       scheduleMatch();
     };
@@ -727,7 +843,7 @@ function updatePropPanel() {
         if (!r.templates) r.templates = [];
         if (!r.templates.includes(name)) r.templates.push(name);
         state.activeTpl[selTplKey] = name;
-        state.dirty = true;
+        markDirty();
         updatePropPanel();
         scheduleMatch();
       } else {
@@ -756,7 +872,7 @@ function updatePropPanel() {
         if (!r.templates) r.templates = [];
         if (!r.templates.includes(target)) r.templates.push(target);
         state.activeTpl[selTplKey] = target;
-        state.dirty = true;
+        markDirty();
         updatePropPanel();
         scheduleMatch();
       } else {
@@ -775,13 +891,10 @@ function updatePropPanel() {
     const v = Math.max(0.4, Math.min(0.99, Number(newVal)));
     if (Number.isNaN(v)) return;
     if (writeToRoi) {
-      // 仅与默认不同时写入 JSON（等于默认则删除字段，保持 JSON 整洁）
-      if (Math.abs(v - DEFAULT_MATCH_THRESHOLD) < 1e-6) {
-        if ("threshold" in r) { delete r.threshold; }
-      } else {
-        r.threshold = Number(v.toFixed(3));
-      }
-      state.dirty = true;
+      pushHistory("阈值调整", `threshold:${state.currentCat}:${key}`);
+      // 默认值也必须以数值写回，避免重置后字段删除造成回弹
+      r.threshold = Number(v.toFixed(3));
+      markDirty();
     }
     if (thrRange) thrRange.value = v.toFixed(2);
     if (thrNum) thrNum.value = v.toFixed(2);
@@ -797,7 +910,7 @@ function updatePropPanel() {
     const parts = rectInput.value.split(/[,\s]+/).map(Number);
     if (parts.length === 4 && parts.every(n => !isNaN(n))) {
       r.rect = parts.map(n => Math.min(1, Math.max(0, n)));
-      state.dirty = true;
+      markDirty();
       draw(); updatePropPanel();
       state.currentCat === "ocr" ? scheduleOcr() : scheduleMatch();
     } else {
@@ -1073,16 +1186,123 @@ function formatTestResult(results, threshold) {
   return lines.join("\n");
 }
 
-// ---------------- 保存 JSON ----------------
+// ---------------- 保存 JSON（preview → diff 确认 → 落盘） ----------------
+function collectSaveBody(preview) {
+  const added = {};
+  for (const [cat, entries] of Object.entries(state.added)) {
+    for (const [key, item] of Object.entries(entries)) {
+      const live = (state.rois[cat] || {})[key];
+      if (!live) continue; // 已被撤回/删除的项不进 body
+      added[cat] ||= {};
+      const rect = live.rect ?? item.rect;
+      const templates = Array.isArray(live.templates) ? live.templates : (item.templates || []);
+      added[cat][key] = {
+        kind: item.kind, page: item.page, label: item.label || key,
+        rect, templates,
+        ...(item.threshold ?? live.threshold) != null
+          ? { threshold: item.threshold ?? live.threshold } : {},
+        ...(item.guarded_by ? { guarded_by: item.guarded_by } : {}),
+      };
+    }
+  }
+  const deleted = state.deleted.filter(ref => {
+    const [cat, key] = ref.split(".");
+    return !state.added[cat] || !state.added[cat][key];
+  });
+  return { ...state.rois, added, deleted, base_hash: state.baseHash, preview };
+}
+
+function pendingStructureProblems() {
+  const problems = [];
+  for (const [cat, entries] of Object.entries(state.added)) {
+    for (const [key, item] of Object.entries(entries)) {
+      if (!(state.rois[cat] || {})[key]) continue;
+      if (!item.page) problems.push(`新增 ${cat}.${key}：未选择 page`);
+      if (item.kind === "point" && !item.guarded_by) problems.push(`新增 ${cat}.${key}：point 锚点必须挂模板担保人`);
+    }
+  }
+  return problems;
+}
+
+function closeSaveDialog() {
+  const el = $("saveDialog");
+  if (el) el.remove();
+}
+
+function openSaveDialog(p, onConfirm) {
+  closeSaveDialog();
+  const diff = p.diff || { added: [], removed: [], changed: [] };
+  const errors = (p.report && p.report.errors) || [];
+  const warnings = (p.report && p.report.warnings) || [];
+  const esc = htmlEscape;
+  const short = (v) => {
+    const s = JSON.stringify(v);
+    return s && s.length > 72 ? s.slice(0, 69) + "…" : String(s);
+  };
+  const rows = [
+    ...diff.added.map(d => `<div class="sd-row sd-add">＋ ${esc(d.path)} = ${esc(short(d.new))}</div>`),
+    ...diff.removed.map(d => `<div class="sd-row sd-del">－ ${esc(d.path)}（原 ${esc(short(d.old))}）</div>`),
+    ...diff.changed.map(d => `<div class="sd-row sd-chg">✳ ${esc(d.path)}：${esc(short(d.old))} → ${esc(short(d.new))}</div>`),
+  ];
+  const overlay = document.createElement("div");
+  overlay.id = "saveDialog";
+  overlay.className = "modal";
+  overlay.innerHTML = `
+    <div class="modal-body">
+      <div class="modal-head"><span>保存预览 · ＋${diff.added.length} －${diff.removed.length} ✳${diff.changed.length} · 编译 ${esc((p.compile && p.compile.status) || "?")}</span></div>
+      <div class="sd-content">
+        ${errors.length ? `<div class="sd-err">阻断校验未通过（保存被禁止）：<br>${errors.map(esc).join("<br>")}</div>` : ""}
+        ${warnings.length ? `<div class="sd-warn">告警 ${warnings.length} 条：<br>${warnings.slice(0, 8).map(esc).join("<br>")}${warnings.length > 8 ? "<br>…" : ""}</div>` : ""}
+        ${p.compile && p.compile.error ? `<div class="sd-err">编译失败：${esc(p.compile.error)}</div>` : ""}
+        ${p.compile && p.compile.status === "skipped_no_routes" ? `<div class="sd-warn">该模块无 routes 段，保存不产生成物</div>` : ""}
+        <div class="sd-list">${rows.length ? rows.join("") : '<div class="sd-row">（无字段变化）</div>'}</div>
+      </div>
+      <div class="sd-actions">
+        <button id="sdCancel" class="btn">取消</button>
+        <button id="sdOk" class="btn primary" ${p.ok ? "" : "disabled"}>确认保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  $("sdCancel").onclick = closeSaveDialog;
+  overlay.onclick = (e) => { if (e.target === overlay) closeSaveDialog(); };
+  const okBtn = $("sdOk");
+  if (okBtn && p.ok) okBtn.onclick = async () => {
+    okBtn.disabled = true;
+    try { await onConfirm(p); closeSaveDialog(); }
+    catch (e) { okBtn.disabled = false; flash("❌ 保存失败: " + e.message); }
+  };
+}
+
 $("saveBtn").onclick = async () => {
   if (!state.dirty) { flash("无改动"); return; }
+  const problems = pendingStructureProblems();
+  if (problems.length) { flash("❌ " + problems.join("；")); return; }
   $("saveBtn").disabled = true;
   try {
-    const res = await apiPost("/api/rois", state.rois);
-    if (res.ok) { state.dirty = false; flash("✅ 已保存"); await loadTemplateStatus(); }
-    else flash("❌ " + (res.error || "失败"));
+    let p;
+    try {
+      p = await apiPost("/api/rois", collectSaveBody(true));
+    } catch (e) {
+      flash("❌ 预览失败: " + e.message);
+      return;
+    }
+    await openSaveDialog(p, async () => {
+      const res = await apiPost("/api/rois", Object.assign(collectSaveBody(false),
+        { base_hash: p.base_hash || state.baseHash }));
+      if (res.ok) {
+        state.dirty = false; emitDirty();
+        state.added = {}; state.deleted = [];
+        state.history.marker();
+        flash(`✅ 已保存 · 编译 ${res.compiled || "跳过"}`);
+        await loadRois(); await loadTemplateStatus();
+        renderRoiList(); updatePropPanel(); draw();
+      } else {
+        flash("❌ " + (res.error || ((res.report && res.report.errors) || []).join("；") || "失败"));
+        throw new Error(res.error || "保存被拒绝");
+      }
+    });
   } catch (e) {
-    flash("❌ 保存失败");
+    flash("❌ 保存失败: " + e.message);
   } finally {
     $("saveBtn").disabled = false;
   }
@@ -1135,19 +1355,31 @@ function bindCanvas() {
   canvas.addEventListener("mouseup", onUp);
   canvas.addEventListener("mouseleave", onUp);
   window.addEventListener("keydown", (e) => {
+    const tag = document.activeElement && document.activeElement.tagName;
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
+      if (tag === "INPUT" || tag === "TEXTAREA") return; // 文本框内保留原生撤销
+      e.preventDefault();
+      runHistory("undo");
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) {
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      runHistory("redo");
+      return;
+    }
     if (e.key === "Delete" || e.key === "Backspace") {
-      const tag = document.activeElement && document.activeElement.tagName;
       if (tag === "INPUT" || tag === "SELECT") return;
       if (state.currentCat === "unassigned") return;
-      const rois = currentRois();
-      if (state.selected && rois[state.selected]) {
-        delete rois[state.selected];
-        state.selected = Object.keys(rois)[0] || null;
-        state.dirty = true;
-        renderRoiList(); updatePropPanel(); draw();
+      if (state.selected && currentRois()[state.selected]) {
+        deleteRoi(state.currentCat, state.selected);
       }
     }
   });
+  const undoBtn = $("undoBtn");
+  const redoBtn = $("redoBtn");
+  if (undoBtn) undoBtn.onclick = () => runHistory("undo");
+  if (redoBtn) redoBtn.onclick = () => runHistory("redo");
 }
 
 function hitTest(cx, cy) {
@@ -1184,6 +1416,7 @@ function onDown(e) {
   const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
   const hit = hitTest(cx, cy);
   if (hit) {
+    pushHistory("拖拽调整 ROI", `drag:${state.currentCat}:${hit.key}`);
     state.selected = hit.key;
     renderRoiList(); updatePropPanel();
     drag.mode = hit.zone;
@@ -1229,13 +1462,13 @@ function onMove(e) {
     r[1] = c(drag.origRect[1] + dy);
     r[2] = c(drag.origRect[2] + dx);
     r[3] = c(drag.origRect[3] + dy);
-    state.dirty = true;
+    markDirty();
     draw(); updatePropPanel();
   } else if (drag.mode === "resize") {
     const r = currentRois()[drag.key].rect;
     r[2] = c(nx);
     r[3] = c(ny);
-    state.dirty = true;
+    markDirty();
     draw(); updatePropPanel();
   }
 }
@@ -1252,10 +1485,13 @@ function onUp(e) {
     if (rx - lx > 0.01 && by - ty > 0.01) {
       const name = prompt("输入新 ROI 名称：");
       const rois = currentRois();
-      if (name && !rois[name]) {
+      if (name && /^[\w-]+$/.test(name) && !rois[name]) {
+        pushHistory("画框新增 ROI", `add:${state.currentCat}`);
         rois[name] = { rect: [lx, ty, rx, by], templates: [] };
+        markAdded(state.currentCat, name);
+        state.added[state.currentCat][name].rect = rois[name].rect;
         state.selected = name;
-        state.dirty = true;
+        markDirty();
         renderRoiList(); updatePropPanel();
       }
     }

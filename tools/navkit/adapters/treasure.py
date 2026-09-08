@@ -15,6 +15,7 @@ adapter 端点（server 转发），供 racing 等未来模块复用同一 serve
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from tools.navkit.core.categories import CategoryDefs
@@ -117,79 +118,147 @@ def _calib_anchor_id(cat: str, key: str) -> str:
     return ROIS_RENAME.get((cat, key), key)
 
 
+def _category_for_anchor(key: str, anchor: dict) -> str:
+    """把 v3 锚点投影到校准分类：已知目录优先，目录外按 kind 规则归类。"""
+    for cat, keys in CALIB_CATALOG.items():
+        if key in keys or any(_calib_anchor_id(cat, candidate) == key for candidate in keys):
+            return cat
+    if key == "egg":
+        return "eggs"
+    return "ocr" if anchor.get("kind") == "ocr" else "actions"
+
+
+def _flat_item(anchor: dict, cat: str) -> dict:
+    item: dict = {
+        "rect": [float(n) for n in (anchor.get("rect") or [0.0, 0.0, 0.0, 0.0])],
+        "templates": [t for t in (anchor.get("templates") or []) if isinstance(t, str) and t],
+        "kind": anchor.get("kind"),
+        "page": anchor.get("page"),
+    }
+    if anchor.get("threshold") is not None:
+        item["threshold"] = float(anchor["threshold"])
+    if cat == "appraisers" and anchor.get("order") is not None:
+        item["prio"] = int(anchor["order"])
+    if anchor.get("guarded_by") is not None:
+        item["guarded_by"] = anchor["guarded_by"]
+    if anchor.get("label"):
+        item["label"] = anchor["label"]
+    if anchor.get("comment"):
+        item["comment"] = anchor["comment"]
+    return item
+
+
 def flat_from_v3_doc(assets_doc: dict) -> dict:
-    """v3 资产文档 → 校准 UI 的 v2 扁平结构（rect/templates/threshold/prio + eggs 段级计数）。"""
+    """v3 资产文档 → 校准 UI 扁平结构，动态投影 anchors 全量（G2.2）。"""
     anchors = assets_doc.get("anchors", {}) or {}
     flat: dict = {
         "_schema_ver": 2,
         "reference_size": list(assets_doc.get("reference_size") or [1280, 720]),
     }
-    for cat, keys in CALIB_CATALOG.items():
-        seg: dict = {}
-        for key in keys:
-            a = anchors.get(_calib_anchor_id(cat, key))
-            if not isinstance(a, dict):
-                continue
-            item: dict = {
-                "rect": [float(n) for n in (a.get("rect") or [0.0, 0.0, 0.0, 0.0])],
-                "templates": [t for t in (a.get("templates") or []) if isinstance(t, str) and t],
-            }
-            if a.get("threshold") is not None:
-                item["threshold"] = float(a["threshold"])
-            if cat == "appraisers" and a.get("order") is not None:
-                item["prio"] = int(a["order"])
-            if a.get("comment"):
-                item["comment"] = a["comment"]
-            seg[key] = item
-        if cat == "eggs":
-            dom = (anchors.get("egg") or {}).get("domain") or {}
-            for ck in _EGGS_COUNT_KEYS:
-                if ck in dom:
-                    seg[ck] = dom[ck]
-        flat[cat] = seg
+    for cat in CATEGORIES:
+        flat[cat] = {}
+    for key, anchor in anchors.items():
+        if not isinstance(anchor, dict):
+            continue
+        cat = _category_for_anchor(key, anchor)
+        display_key = next(
+            (c_key for c_key in CALIB_CATALOG.get(cat, ()) if _calib_anchor_id(cat, c_key) == key),
+            key,
+        )
+        flat[cat][display_key] = _flat_item(anchor, cat)
+    dom = (anchors.get("egg") or {}).get("domain") or {}
+    for ck in _EGGS_COUNT_KEYS:
+        if ck in dom:
+            flat["eggs"][ck] = dom[ck]
     return flat
 
 
-def apply_v2flat_to_v3_doc(assets_doc: dict, flat: dict) -> dict:
-    """校准提交的 v2 扁平结构 merge 回 v3 锚点：只改对应锚点 rect/threshold/templates/order 与
-    egg 的 domain 计数参数，**保留 v3 中未被校准触碰的其它锚点及全部非锚点段**。返回新文档（未落盘）。
-    """
+def _split_deleted_ref(ref: str) -> tuple[str, str]:
+    if not isinstance(ref, str) or "." not in ref:
+        raise ValueError(f"deleted 项非法（需 category.key）: {ref!r}")
+    cat, key = ref.split(".", 1)
+    if cat not in CATEGORIES or not key:
+        raise ValueError(f"deleted 项非法（未知分类）: {ref!r}")
+    return cat, key
+
+
+def apply_flat_ops(assets_doc: dict, flat: dict, *, owner: str = "treasure") -> dict:
+    """应用校准扁平编辑：字段覆盖 + added 建锚点 + deleted 真删除（G2.1）。"""
     import copy
     doc = copy.deepcopy(assets_doc)
     anchors = doc.setdefault("anchors", {})
     if not isinstance(flat, dict):
-        return doc
-    for cat, keys in CALIB_CATALOG.items():
+        raise ValueError("校准提交必须是 object")
+
+    # 旧/当前条目的字段级覆盖；`_meta` 是 GET 投影上下文，不写回文档。
+    for cat in CATEGORIES:
         seg = flat.get(cat) or {}
         if not isinstance(seg, dict):
             continue
-        for key in keys:
-            item = seg.get(key)
-            if not isinstance(item, dict):
+        for key, item in seg.items():
+            if key.startswith("_") or not isinstance(item, dict):
                 continue
-            a = anchors.get(_calib_anchor_id(cat, key))
+            aid = _calib_anchor_id(cat, key)
+            a = anchors.get(aid)
             if not isinstance(a, dict):
+                # 不允许通过 flat 隐式新增；新增必须走 added，避免客户端旧快照误造锚点。
                 continue
-            rect = item.get("rect")
-            if isinstance(rect, list) and len(rect) == 4:
-                a["rect"] = [float(n) for n in rect]
-            tpls = item.get("templates")
-            if isinstance(tpls, list) and (tpls or "templates" in a):
-                # 仅在「有模板要写」或「该锚点本就建模了 templates」时写：避免把空 templates:[]
-                # 注入 ocr/point 等原本无 templates 的锚点（否则每次保存凭空多出字段、破坏幂等）。
-                a["templates"] = [t for t in tpls if isinstance(t, str) and t]
-            if item.get("threshold") is not None:
-                a["threshold"] = float(item["threshold"])
+            if isinstance(item.get("rect"), list) and len(item["rect"]) == 4:
+                a["rect"] = [float(n) for n in item["rect"]]
+            for field in ("templates", "threshold", "guarded_by", "page", "label", "kind"):
+                if field in item:
+                    if field == "templates" and isinstance(item[field], list):
+                        # 动态投影会给每项补 templates=[] 便于 UI；对原本无该字段的
+                        # ocr/point 锚点保持缺省，避免 project→apply 破坏幂等。
+                        if item[field] or "templates" in a:
+                            a[field] = [t for t in item[field] if isinstance(t, str) and t]
+                    elif field == "threshold" and item[field] is not None:
+                        a[field] = float(item[field])
+                    elif field == "guarded_by":
+                        if item[field]:
+                            a[field] = str(item[field])
+                        else:
+                            a.pop(field, None)
+                    elif field in ("page", "label", "kind") and item[field] is not None:
+                        a[field] = str(item[field])
             if cat == "appraisers" and item.get("prio") is not None:
                 a["order"] = int(item["prio"])
-        if cat == "eggs":
-            egg = anchors.get("egg")
-            if isinstance(egg, dict):
-                dom = egg.setdefault("domain", {})
-                for ck in _EGGS_COUNT_KEYS:
-                    if ck in seg:
-                        dom[ck] = float(seg[ck])
+
+    # 真删除：先做存在性检查；不存在的键作为结构错误返回 400，不静默吞掉。
+    for ref in flat.get("deleted", []) or []:
+        cat, key = _split_deleted_ref(ref)
+        aid = _calib_anchor_id(cat, key)
+        if aid not in anchors:
+            raise ValueError(f"E05 deleted.{ref}: 锚点不存在")
+        del anchors[aid]
+
+    # 真实新增：body `added` 中声明的内容原样进入 anchors（字段白名单由校验器继续兜底）。
+    added = flat.get("added") or {}
+    if not isinstance(added, dict):
+        raise ValueError("added 必须是 object")
+    for cat, entries in added.items():
+        if cat not in CATEGORIES or not isinstance(entries, dict):
+            raise ValueError(f"added.{cat}: 分类或内容非法")
+        for key, item in entries.items():
+            if not isinstance(key, str) or not re.fullmatch(r"[\w-]+", key):
+                raise ValueError(f"added.{cat}.{key}: 锚点名非法")
+            if key in anchors:
+                raise ValueError(f"E05 added.{cat}.{key}: 锚点已存在")
+            if not isinstance(item, dict):
+                raise ValueError(f"added.{cat}.{key}: 必须是 object")
+            anchor = dict(item)
+            anchor.setdefault("owner", owner)
+            anchor.setdefault("kind", "ocr" if cat == "ocr" else ("point" if cat == "actions" else "template"))
+            anchor.setdefault("page", "")
+            anchor.setdefault("label", key)
+            anchors[key] = anchor
+
     return doc
+
+
+def apply_v2flat_to_v3_doc(assets_doc: dict, flat: dict) -> dict:
+    """兼容旧调用名；实际实现统一走 `apply_flat_ops`。"""
+    return apply_flat_ops(assets_doc, flat)
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +347,7 @@ def _handle_ocr(handler, body: dict) -> None:
 
 def _handle_eggs(handler, body: dict) -> None:
     """/api/eggs_recognize：彩蛋识别（图标匹配 + 计数 OCR）。"""
+    import cv2
     import sys as _sys
     if str(PROJ) not in _sys.path:
         _sys.path.insert(0, str(PROJ))

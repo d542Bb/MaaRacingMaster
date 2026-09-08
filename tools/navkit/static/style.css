@@ -186,3 +186,16 @@ select.tpl { width: 100%; margin-top: 6px; }
 #testResult { flex: 1; overflow: auto; padding: 16px; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* 保存预览弹窗（preview diff 确认） */
+#saveDialog .modal-body { max-width: 780px; }
+.sd-content { flex: 1; overflow: auto; padding: 12px 16px; font-size: 12.5px; line-height: 1.6; }
+.sd-list { font-family: ui-monospace, Consolas, monospace; margin-top: 8px; }
+.sd-row { padding: 1px 0; word-break: break-all; }
+.sd-add { color: var(--ok); }
+.sd-del { color: var(--bad); }
+.sd-chg { color: var(--warn); }
+.sd-err { color: var(--bad); background: rgba(224, 108, 108, .08); border: 1px solid var(--bad); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+.sd-warn { color: var(--warn); background: rgba(216, 166, 87, .08); border: 1px solid rgba(216, 166, 87, .45); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+.sd-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
+.sd-actions .btn.primary:disabled { opacity: .45; cursor: not-allowed; }
