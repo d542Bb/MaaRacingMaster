@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Layout, Nav, Tag, Modal } from '@douyinfe/semi-ui';
+import { Layout, Nav, Tag, Modal, Select, Toast, Button } from '@douyinfe/semi-ui';
 import {
   IconHistogram, IconDesktop, IconImage, IconVideo, IconServer, IconEdit,
+  IconClose,
 } from '@douyinfe/semi-icons';
 import GraphView from './GraphView';
 import CalibView from './CalibView';
@@ -10,7 +11,7 @@ import ReplayView from './ReplayView';
 import AssetsView from './AssetsView';
 import PolicyView from './PolicyView';
 import Inspector from './Inspector';
-import { api } from './api';
+import { api, switchModule, shutdownServer } from './api';
 
 const { Header, Sider, Content, Footer } = Layout;
 
@@ -36,10 +37,23 @@ export default function App() {
   const [traceRows, setTraceRows] = useState([]);
   const [graphDoc, setGraphDoc] = useState(null);
   const [policyDirty, setPolicyDirty] = useState(false);
+  const [module, setModule] = useState(null);       // 当前编辑模块（server 端真值）
+  const [moduleOptions, setModuleOptions] = useState([]);
+  const [switching, setSwitching] = useState(false);
 
+  // 模块切换后重拉全局数据（trace / graph 都按当前模块派生）
   useEffect(() => {
     api.trace().then(setTraceRows).catch(() => setTraceRows([]));
     api.graph().then(setGraphDoc).catch(() => setGraphDoc(null));
+  }, [module]);
+
+  useEffect(() => {
+    api.modules()
+      .then(({ current, available }) => {
+        setModule(current);
+        setModuleOptions(available);
+      })
+      .catch(() => setModule(null));
   }, []);
 
   useEffect(() => {
@@ -64,14 +78,83 @@ export default function App() {
     });
   };
 
+  // 切换编辑模块：server 重建 StudioState；成功后以 module 为 key 重挂载全部视图
+  // （各视图内部数据自拉，key 变化即强制重置），未保存的策略 draft 同样弹确认。
+  const doSwitchModule = (next) => {
+    if (!next || next === module || switching) return;
+    const apply = () => {
+      setSwitching(true);
+      switchModule(next)
+        .then((res) => {
+          if (!res.ok) {
+            Toast.error(`切换失败：${res.error || '未知错误'}`);
+            return;
+          }
+          setModule(next);
+          setSelectedNode(null);
+          setPolicyDirty(false);
+          Toast.success(`已切换到 ${next}`);
+        })
+        .catch((e) => Toast.error(`切换失败：${e.message}`))
+        .finally(() => setSwitching(false));
+    };
+    if (view === 'policy' && policyDirty) {
+      Modal.confirm({
+        title: '策略编辑尚未保存',
+        content: `切换到模块 ${next} 将丢弃未保存的更改（draft 不会被写盘）。确定切换？`,
+        okText: '丢弃并切换',
+        cancelText: '留下继续编辑',
+        onOk: apply,
+      });
+      return;
+    }
+    apply();
+  };
+
+  // 关闭 server 进程：调 /api/shutdown → server 发 200 后会 os._exit。
+  // 手动 open 的浏览器 tab 不受 JS 控制（window.close 会被拦截），到时 toast 提示即可。
+  const doShutdown = () => {
+    Modal.confirm({
+      title: '退出 NavKit Studio',
+      content: '退出后 server 进程会自动结束。下次需要再双击 start_navkit.ps1（或 taskkill 后重起）启动。本浏览器页面可以手动关闭。',
+      okText: '退出',
+      cancelText: '留下',
+      okButtonProps: { type: 'danger' },
+      onOk: async () => {
+        await shutdownServer();
+        Toast.success('server 已关闭，可以关闭本页面');
+        // 试一下窗口关闭——用户手动开的 tab 会被浏览器拒绝，没关系，toast 已说明
+        setTimeout(() => { try { window.close(); } catch { /* noop */ } }, 200);
+      },
+    });
+  };
+
   return (
     <Layout className="app">
       <Header className="topbar">
         <div className="brand">
           <span className="brand-dot" />
           <span className="brand-name">NavKit Studio</span>
-          <Tag size="small" color="blue" style={{ margin: 0 }}>treasure</Tag>
+          <Select
+            size="small"
+            value={module}
+            loading={module === null}
+            disabled={switching}
+            style={{ width: 120 }}
+            onChange={doSwitchModule}
+            optionList={moduleOptions.map((m) => ({ value: m, label: m }))}
+          />
           <Tag size="small" color="violet" style={{ margin: 0 }}>schema v3</Tag>
+          <Button
+            size="small"
+            type="tertiary"
+            theme="light"
+            icon={<IconClose />}
+            onClick={doShutdown}
+            style={{ marginLeft: 4 }}
+          >
+            退出
+          </Button>
         </div>
         <div style={{ flex: 1 }} />
       </Header>
@@ -89,7 +172,7 @@ export default function App() {
 
         <Layout style={{ flex: 1, minHeight: 0 }}>
           <Content style={{ minHeight: 0, display: 'flex' }}>
-            <div className="content-main">
+            <div className="content-main" key={module}>
               {view === 'graph' && (
                 <GraphView traceRows={traceRows} onSelectNode={setSelectedNode} />
               )}
@@ -105,7 +188,7 @@ export default function App() {
           </Content>
 
           <Footer className="statusbar">
-            <span>treasure_assets.json</span>
+            <span>{module ? `${module}_assets.json` : '…'}</span>
             <span>{graphDoc ? `${graphDoc.nodes.length} 节点 · ${graphDoc.edges.length} 边` : '加载中…'}</span>
             {graphDoc && <span>孤儿 {graphDoc.orphans.length} · 未担保 {graphDoc.unguarded_points.length}</span>}
             <span>trace {traceRows.length} 行</span>

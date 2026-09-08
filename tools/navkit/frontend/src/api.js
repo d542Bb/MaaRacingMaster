@@ -15,7 +15,21 @@ export const api = {
   assets: () => j('/api/assets'),
   trace: () => j('/api/trace'),
   traceFor: (session) => j(`/api/trace?session=${encodeURIComponent(session)}`),
+  modules: () => j('/api/modules'),
 };
+
+// 切换编辑模块：成功返回 {ok, module, changed}，失败返回 {ok:false, error}
+export async function switchModule(module) {
+  const r = await fetch('/api/switch_module', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ module }),
+  });
+  let body = null;
+  try { body = await r.json(); } catch { /* 非 JSON 响应按网络错误处理 */ }
+  if (body === null) throw new Error(`POST /api/switch_module → HTTP ${r.status}（响应体不可解析）`);
+  return body;
+}
 
 // 保存整份 document：非 2xx 也要读 body（400 时 report/error 携带 P 码，
 // 通用 j() 会在 !r.ok 时 throw 并丢弃响应体，故单独实现）
@@ -29,4 +43,20 @@ export async function saveAssets(document) {
   try { body = await r.json(); } catch { /* 非 JSON 响应按网络错误处理 */ }
   if (body === null) throw new Error(`POST /api/assets → HTTP ${r.status}（响应体不可解析）`);
   return body; // {ok:true, report} | {ok:false, report} | {ok:false, error}
+}
+
+// 关闭 server 进程（顶栏「退出」按钮配套）：server 会先返回 200 再调 os._exit，
+// 所以正常拿到响应，也可能因 socket 已关拿不到——任何错误都按"已退出"处理。
+export async function shutdownServer() {
+  try {
+    const r = await fetch('/api/shutdown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    let body = null;
+    try { body = await r.json(); } catch { /* server may already be gone */ }
+    return body;
+  } catch {
+    return null; // 网络层失败也按已退出处理
+  }
 }

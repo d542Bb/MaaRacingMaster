@@ -766,7 +766,9 @@ global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection
 ② `tests/test_navkit_merge.py::test_treasure_detection_excludes_global_anchors`——锁死"鉴宝检测集 ∩ global
 锚点 = ∅"，并以"误 merge 必污染 detect\_anchors"反证守卫有效。
 
-**控制台查看 global**：`python tools/navkit/server.py --module global`，经 `/api/assets` 查看/编辑 global 段
+**控制台编辑 global**：控制台顶栏下拉可运行时切换编辑模块（`GET /api/modules` 列可用、
+`POST /api/switch_module` 原子重建 server state），treasure ↔ global 免重启免换端口；
+`--module global` 仅作为初始模块参数保留。global 段经 `/api/assets` 查看/编辑
 （`assets_path_for("global")` 指向 core 真源）。global 是纯 v3、无 v2 rois 也无 debug 会话，其 adapter 的
 `rois_path` 落到 gitignored 用户目录缓存——**不可指回** **`global_assets.json`**，否则 `main()` 的无条件
 `ensure_rois` 会用 v2 视图 JSON 往返重排该 git 跟踪文件（每次开台无谓改写真源）。

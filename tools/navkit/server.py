@@ -51,6 +51,12 @@ from maaracing_assistant.core.paths import debug_dir
 # ---------------------------------------------------------------------------
 
 
+def available_modules() -> list[str]:
+    """扫描 `adapters/*.py` 列出可编辑模块（与 `_load_adapter` 的发现规则一致）。"""
+    adapters_dir = Path(__file__).resolve().parent / "adapters"
+    return sorted(p.stem for p in adapters_dir.glob("*.py") if not p.stem.startswith("_"))
+
+
 def _load_adapter(module: str):
     """按模块名从 `tools/navkit/adapters/` 自动发现并加载 adapter 模块。
 
@@ -59,11 +65,9 @@ def _load_adapter(module: str):
     """
     if not re.fullmatch(r"[A-Za-z]\w*", module):
         raise ValueError(f"非法模块名: {module!r}")
-    adapters_dir = Path(__file__).resolve().parent / "adapters"
-    available = sorted(p.stem for p in adapters_dir.glob("*.py") if not p.stem.startswith("_"))
-    if module not in available:
+    if module not in available_modules():
         raise ValueError(
-            f"暂不支持模块 adapter: {module!r}（当前可用: {', '.join(available) or '无'}）"
+            f"暂不支持模块 adapter: {module!r}（当前可用: {', '.join(available_modules()) or '无'}）"
         )
     return importlib.import_module(f"tools.navkit.adapters.{module}")
 
@@ -287,6 +291,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_graph_get(qs)
             elif path == "/api/trace":
                 self._handle_trace_get(qs)
+            elif path == "/api/modules":
+                self._send_json({
+                    "current": self.state.module_name,
+                    "available": available_modules(),
+                })
             else:
                 # 领域端点（adapter 注册）
                 extra = self.state.extra_handlers.get("GET", {})
@@ -308,6 +317,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/compile":
             self._handle_compile_post(body)
+            return
+        if path == "/api/switch_module":
+            self._handle_switch_module(body)
+            return
+        if path == "/api/shutdown":
+            self._handle_shutdown()
             return
 
         # ROI 原子保存
@@ -456,6 +471,52 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "bytes": len(output.encode("utf-8")), "output": output})
         except Exception as exc:
             self._send_json({"ok": False, "error": str(exc)}, 400)
+
+    def _handle_switch_module(self, body: dict) -> None:
+        """运行时切换编辑模块：重建 StudioState 并原子替换 Handler.state。
+
+        类属性赋值是原子的，进行中的请求持旧 state 引用完成处理（单用户调试台，
+        语义可接受）；切换后各 API 端点自动路由到新模块的 adapter / 资产真源。
+        """
+        module = body.get("module", "")
+        if module == self.state.module_name:
+            self._send_json({"ok": True, "module": module, "changed": False})
+            return
+        try:
+            new_state = build_state(module)
+        except ValueError as e:
+            self._send_json({"ok": False, "error": str(e)}, 400)
+            return
+        except Exception as e:  # noqa: BLE001
+            self._send_json({"ok": False, "error": f"装配模块 {module!r} 失败: {e}"}, 500)
+            return
+        Handler.state = new_state
+        print(f"[NavKit] 已切换编辑模块 → {module}（资产真源: {assets_path_for(module)}）")
+        self._send_json({"ok": True, "module": module, "changed": True})
+
+    def _handle_shutdown(self) -> None:
+        """关闭 server 进程（顶栏「退出」按钮配套）。
+
+        handler 先发响应再异步触发 shutdown：同步调 `server.shutdown()` 会阻塞
+        当前 HTTP handler 线程，使响应无法 flush，浏览器会一直 pending。daemon
+        子线程 sleep 100ms 后再 `shutdown()` + `os._exit(0)`，确保响应确实送达
+        且监听 socket 被正确释放。`os._exit` 绕过 atexit / finally 清理（stdio
+        拦截 + ThreadingHTTPServer 自身的 shutdown 链可能 hang）。
+        """
+        import os
+        import time
+        self._send_json({"ok": True, "message": "server 正在关闭，稍后请重新启动 start_navkit.ps1"})
+
+        def _die() -> None:
+            time.sleep(0.1)  # 让响应流入 socket
+            try:
+                self.server.shutdown()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.05)
+            os._exit(0)
+
+        threading.Thread(target=_die, daemon=True).start()
 
     # ---- 通用后端实现（不依赖 adapter 领域） ----
     def _handle_template_upload(self, body: dict) -> None:
@@ -625,7 +686,8 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="NavKit")
     parser.add_argument("--module", default="treasure",
-                        help="模块 adapter 名（目前仅 treasure 已适配，其余模块待接入）")
+                        help="启动时的初始模块 adapter 名（默认 treasure；运行中可经 "
+                             "/api/switch_module 切换，可用模块见 /api/modules）")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     state = build_state(args.module)
