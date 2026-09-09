@@ -1107,8 +1107,8 @@ class TreasureModule(ActivityModule):
             runner = self._v4_runner = NavKitV4(
                 self.ctx,
                 pipeline_dirs=[
-                    repo_root / "maaracing_assistant" / "core" / "resources" / "nav",
-                    plugin_root / "resources" / "nav",
+                    repo_root / "maaracing_assistant" / "core" / "resources" / "pipeline",
+                    plugin_root / "resources" / "pipeline",
                 ],
                 image_dirs=[plugin_root / "resources" / "image"],
                 bridges=[(POLICY_ACTION_NAME, PolicyBridge(self))],

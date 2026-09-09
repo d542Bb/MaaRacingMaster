@@ -27,7 +27,9 @@ V3_ASSETS = {
     "treasure": REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "config" / "treasure_assets.json",
 }
 DEFAULT_OUT = {
-    "treasure": REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "nav",
+    # 真源目录须命名为 pipeline/（mpelb/MSE/MaaMCP 等生态工具按 ProjectInterface
+    # 惯例只索引名为 pipeline 的子目录，P3a 一手实证）。迁移器输出与其一致。
+    "treasure": REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "pipeline",
 }
 POLICY_OUT = {
     "treasure": REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "policy",
@@ -760,13 +762,13 @@ def main() -> int:
             errors += m_err
             for old, new in renames:
                 print(f"[切分] {old} → {new}")
-            core_nav = REPO / "maaracing_assistant" / "core" / "resources" / "nav"
-            dump_json(core_nav / "global.json", glob)
+            core_pipeline = REPO / "maaracing_assistant" / "core" / "resources" / "pipeline"
+            dump_json(core_pipeline / "global.json", glob)
             dump_json(out_dir / f"{args.module}.json", trea)
             # policy 表不能与节点图同目录：MaaFW 递归加载目录内所有 json，
             # policy 会被当 pipeline 解析致整目录加载失败（Q1 实验实证）。
             dump_json(POLICY_OUT[args.module] / f"{args.module}.policy.json", policy_doc)
-            print(f"[写出] core/resources/nav/global.json（{len(glob)}）+ "
+            print(f"[写出] core/resources/pipeline/global.json（{len(glob)}）+ "
                   f"{out_dir}/{args.module}.json（{len(trea)}）+ policy({POLICY_OUT[args.module]})")
             return 1 if errors else 0
         dump_json(out_dir / f"{args.module}.json", full)

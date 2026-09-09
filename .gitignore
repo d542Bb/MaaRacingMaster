@@ -99,6 +99,9 @@ cursor_refactor/__pycache__/
 # NavKit 回归/缺口报告（本地产物，git 历史与 tools/navkit/out 快照为准）
 tools/navkit/out/
 
+# NavKit 本地开发者工具（mpelb 二进制 / MPE dist 等，P3 用；不入库）
+tools/navkit/dev/
+
 # NavKit 前端工程：依赖与构建缓存（npm install / vite 产物可重建；源码在 tools/navkit/frontend/，构建产物在 static/）
 tools/navkit/frontend/node_modules/
 tools/navkit/frontend/.vite/
