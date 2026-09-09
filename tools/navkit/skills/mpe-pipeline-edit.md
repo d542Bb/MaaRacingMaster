@@ -13,7 +13,7 @@
 - **MPE 是面向「人」的画布**，用于可视化审阅、给人拖拽编辑、调试；agent 的角色是把
   真源改对 + 校验，把「要不要看图画」的判断留给用户。
 
-- MPE 满幅即 Studio（C 形态），`start studio.cmd` 拉起（起 mpelb + 开 MPE）。
+- MPE 满幅即 Studio（C 形态），`start mpe.cmd` 拉起（起 mpelb + 开 MPE）。
 
 ## 1. 真源位置与契约
 
@@ -45,7 +45,7 @@
 
 ## 3. 何时把真源交给 MPE（人的画布）
 
-- 用户要看图画 / 手动微调 / 调试 FlowScope → 让用户 `start studio.cmd`（起 mpelb
+- 用户要看图画 / 手动微调 / 调试 FlowScope → 让用户 `start mpe.cmd`（起 mpelb
   root=仓库根 + 浏览器开 MPE 满幅，文件面板自动列出真源）。
 
 - MPE 保存 round-trip 保真已验证（键序重排、Custom 归一化、`$__mpe_*` 附加键运行时
