@@ -29,6 +29,9 @@ V3_ASSETS = {
 DEFAULT_OUT = {
     "treasure": REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "nav",
 }
+POLICY_OUT = {
+    "treasure": REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "policy",
+}
 IMAGE_ROOTS = {
     "treasure": REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources",
 }
@@ -518,12 +521,14 @@ def main() -> int:
             core_nav = REPO / "maaracing_assistant" / "core" / "resources" / "nav"
             dump_json(core_nav / "global.json", glob)
             dump_json(out_dir / f"{args.module}.json", trea)
-            dump_json(out_dir / f"{args.module}.policy.json", policy_doc)
+            # policy 表不能与节点图同目录：MaaFW 递归加载目录内所有 json，
+            # policy 会被当 pipeline 解析致整目录加载失败（Q1 实验实证）。
+            dump_json(POLICY_OUT[args.module] / f"{args.module}.policy.json", policy_doc)
             print(f"[写出] core/resources/nav/global.json（{len(glob)}）+ "
-                  f"{out_dir}/{args.module}.json（{len(trea)}）+ policy")
+                  f"{out_dir}/{args.module}.json（{len(trea)}）+ policy({POLICY_OUT[args.module]})")
             return 1 if errors else 0
         dump_json(out_dir / f"{args.module}.json", full)
-        dump_json(out_dir / f"{args.module}.policy.json", policy_doc)
+        dump_json(POLICY_OUT[args.module] / f"{args.module}.policy.json", policy_doc)
         print(f"[写出] {out_dir}/{args.module}.json（{len(full)} 节点）+ {args.module}.policy.json")
         return 1 if errors else 0
     nodes, ocr = build_v4(args.module, args.page)
