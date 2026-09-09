@@ -1106,11 +1106,25 @@ class TreasureModule(ActivityModule):
         if not runner.start(self._V4_ENTRY):
             raise RuntimeError("[鉴宝][v4] 常驻图加载失败，模块终止")
         logger.log("[鉴宝][v4] 帧工作已移交 MaaFW Tasker 线程（policy 闭环桥）")
-        while self.ctx.lifecycle.running:
-            if not runner.poll():
-                logger.log("[鉴宝][v4] 常驻图已退出，尝试重启", "WARNING")
-                runner.start(self._V4_ENTRY)
-            self.ctx.lifecycle.sleep(1.0)
+        from contextlib import ExitStack
+        from maaracing_assistant.core.capabilities import BUTTON_A
+        with ExitStack() as stack:
+            # v4 常驻图永不退出：手柄租约全程持有（与 v3「跑图期间持、结束归还」
+            # 不同——桥线程点击依赖手柄，中途归还即断点击）。runner.stop() 在
+            # 租约归还前执行，确保 Tasker 线程先停。
+            if self.ctx.click_mode == "gamepad":
+                gpad = stack.enter_context(self.ctx.gamepad.acquire())
+                runner._graph._ensure_clicker().bind_gamepad(
+                    self.ctx.capture, gpad, confirm_button=BUTTON_A)
+                logger.log("[鉴宝][v4] 手柄租约已绑定（常驻持有）")
+            try:
+                while self.ctx.lifecycle.running:
+                    if not runner.poll():
+                        logger.log("[鉴宝][v4] 常驻图已退出，尝试重启", "WARNING")
+                        runner.start(self._V4_ENTRY)
+                    self.ctx.lifecycle.sleep(1.0)
+            finally:
+                runner.stop()
 
     def start(self, start_from: str | None = None) -> None:
         """启动鉴宝模块（观察模式）：持续截图 + 日志，不做任何操作"""
