@@ -407,6 +407,7 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
         "custom_action_param": {"table": f"{module}.policy.json#policy"},
         "next": [],
         "timeout": -1,
+        "rate_limit": 300,  # v4 模式帧节律（= v3 FRAME_INTERVAL_MS，桥内跑完整帧工作）
         "_policy_loop": True,
     }
     for d in dwell_names.values():

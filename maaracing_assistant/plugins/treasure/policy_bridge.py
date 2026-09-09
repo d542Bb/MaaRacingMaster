@@ -25,16 +25,22 @@ POLICY_ACTION_NAME = "MRA_Policy"
 
 
 class PolicyBridge(CustomAction):
-    """`<module>.policy_loop` 节点的动作桥：一次 run = 一帧决策段。"""
+    """`<module>.policy_loop` 节点的动作桥：一次 run = 一帧完整工作。
+
+    v4 模式下全部帧工作（stage 标注/阶段自动化/OCR/决策/点击/调试存盘）
+    都在本桥（Tasker 线程）执行——直接委托 `module._tick_once()`，与 v3
+    主循环逐位同一段代码，线程模型单线程无竞态。module 主线程退化为
+    健康守护（poll）与生命周期。
+    """
 
     def __init__(self, module: Any) -> None:
         super().__init__()
         self._module = module
 
     def run(self, context: Any, argv: Any) -> bool:
-        # 一帧决策段；custom_action_param 的 table 引用由 module 侧持有
-        # （决策栈在模块启动时已编译），桥不做二次解析。
-        self._module._decision_phase()
+        # custom_action_param 的 table 引用由 module 侧持有（决策栈在模块
+        # 启动时已编译），桥不做二次解析。
+        self._module._tick_once()
         return True
 
     def register(self, resource: Resource) -> None:

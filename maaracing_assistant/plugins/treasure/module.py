@@ -1073,6 +1073,45 @@ class TreasureModule(ActivityModule):
     def current_stage(self) -> str | None:
         return self._current_stage
 
+    # ---------------- v4 执行通路（P2a-Q4，NAVKIT_SOURCE=v4 启用） ----------------
+
+    _V4_ENTRY = "global.hall_peak_appraise_card.rhall_to_treasure.0"  # v4 图入口链头
+
+    @staticmethod
+    def _v4_enabled() -> bool:
+        """v4 通路开关：沿用 NAVKIT_SOURCE env（与 v2/v3 切换同款机制）。"""
+        import os
+        return os.environ.get("NAVKIT_SOURCE", "v3").lower() == "v4"
+
+    def _run_v4_loop(self) -> None:
+        """v4 执行通路：帧工作全部在 MaaFW Tasker 线程（PolicyBridge 桥内
+        `_tick_once`，帧节律 = policy_loop.rate_limit=300ms），本线程退化为
+        健康守护——常驻图意外退出时告警并重启。"""
+        from pathlib import Path as _Path
+        from maaracing_assistant.core.nav_graph import NavKitV4
+        from maaracing_assistant.plugins.treasure.policy_bridge import (
+            POLICY_ACTION_NAME, PolicyBridge,
+        )
+        plugin_root = _Path(__file__).resolve().parents[1]
+        repo_root = plugin_root.parents[1]
+        runner = NavKitV4(
+            self.ctx,
+            pipeline_dirs=[
+                repo_root / "maaracing_assistant" / "core" / "resources" / "nav",
+                plugin_root / "resources" / "nav",
+            ],
+            image_dirs=[plugin_root / "resources" / "image"],
+            bridges=[(POLICY_ACTION_NAME, PolicyBridge(self))],
+        )
+        if not runner.start(self._V4_ENTRY):
+            raise RuntimeError("[鉴宝][v4] 常驻图加载失败，模块终止")
+        logger.log("[鉴宝][v4] 帧工作已移交 MaaFW Tasker 线程（policy 闭环桥）")
+        while self.ctx.lifecycle.running:
+            if not runner.poll():
+                logger.log("[鉴宝][v4] 常驻图已退出，尝试重启", "WARNING")
+                runner.start(self._V4_ENTRY)
+            self.ctx.lifecycle.sleep(1.0)
+
     def start(self, start_from: str | None = None) -> None:
         """启动鉴宝模块（观察模式）：持续截图 + 日志，不做任何操作"""
         # 0. 离线模式（ctx=None 只初始化状态机）不允许启动
@@ -1209,6 +1248,9 @@ class TreasureModule(ActivityModule):
         # 不等待连续帧计数——重试失败是明确的系统性问题，应立即停止而非跳过。
         _MAIN_CRASH_RETRY_MAX = 30   # 30 帧 ≈ 9s（主循环 ~300ms/帧）
         try:
+            if self._v4_enabled:
+                self._run_v4_loop()
+                return
             while self.ctx.lifecycle.running:
                 try:
                     self._tick_once()
@@ -3441,7 +3483,8 @@ class TreasureModule(ActivityModule):
                 scores=getattr(detection, "scores", {}),
                 hit_anchor=getattr(detection, "hit_anchor", None),
                 active_used=getattr(detection, "active_used", ()),
-                plan_version="v3" if getattr(self._detector, "plan", None) is not None else "v2",
+                plan_version=("v4" if self._v4_enabled()
+                              else "v3" if getattr(self._detector, "plan", None) is not None else "v2"),
             ))
 
         # --------- 0.05 每日循环上限：连续 3 帧确认后自动停止 ---------

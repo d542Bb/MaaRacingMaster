@@ -265,6 +265,7 @@
       "table": "treasure.policy.json#policy"
     },
     "next": [],
+    "rate_limit": 300,
     "recognition": "DirectHit",
     "timeout": -1
   },
