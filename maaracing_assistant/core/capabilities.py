@@ -158,6 +158,23 @@ class CaptureAdapter:
                 pass
         return self._app._screencap()
 
+    def frame_with_age(self):
+        """带新鲜度的帧四元组 (rgb, frame_id, ts_ns, age_ms)。
+
+        v4 WgcapController 专用（帧新鲜度守卫的数据源）。WGC 缺席/异常时
+        返回 (None, 0, 0, inf)——调用方按"帧缺失"处理，不回退 MAA 截图
+        （v4 宪法：帧只从中心缓存来，回退会造成双时间线）。
+        """
+        import math
+
+        wgc = getattr(self._app, "_wgc_capture", None)
+        if wgc is not None and wgc.is_running:
+            try:
+                return wgc.get_latest_rgb()
+            except Exception:  # noqa: BLE001 —— 读帧异常按缺帧处理
+                pass
+        return (None, 0, 0, math.inf)
+
 
 class PostScreencapCapture:
     """把任何暴露 post_screencap() 的对象（如 MAA 运行时注入的 controller）包装成

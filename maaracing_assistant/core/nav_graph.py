@@ -35,6 +35,7 @@ from pathlib import Path
 
 from maa.custom_action import CustomAction
 from maa.custom_recognition import CustomRecognition
+from maa.controller import CustomController
 from maa.resource import Resource
 from maa.tasker import Tasker
 
@@ -300,3 +301,152 @@ class NavGraph:
         if self._clicker is not None:
             self._clicker.shutdown()
             self._clicker = None
+
+
+# ==================================================================
+#  v4 执行通路（P2a-Q4）：v4 真源图跑在 MaaFW Tasker 上，帧注入控制器
+# ==================================================================
+
+STALE_FRAME_MS = 500.0  # plan §4.2 帧新鲜度守卫阈值
+
+
+class FrameStaleError(RuntimeError):
+    """帧缺失或超过新鲜度阈值——框架按节点 on_error 处理，绝不拿旧帧识别。"""
+
+
+class WgcapController(CustomController):
+    """v4 帧注入控制器（宪法 6：帧只从中心缓存来，引擎永不自截帧）。
+
+    screencap() 读 CaptureAdapter 的 WGC 缓存帧（RGB→BGR 适配框架契约），
+    帧龄超过 stale_ms 抛 FrameStaleError。点击/按键等动作一律成功返回——
+    真实动作走 MRA_Click → Clicker（手柄导航协议），不经框架输入通道。
+    """
+
+    def __init__(self, capture, *, stale_ms: float = STALE_FRAME_MS):
+        super().__init__()
+        self._capture = capture
+        self._stale_ms = float(stale_ms)
+        self.last_frame_id = 0
+
+    def screencap(self):
+        import numpy as np
+
+        frame, fid, _ts, age = self._capture.frame_with_age()
+        if frame is None or age > self._stale_ms:
+            raise FrameStaleError(f"帧缺失或过期：age={age:.0f}ms > {self._stale_ms:.0f}ms")
+        self.last_frame_id = int(fid)
+        return np.ascontiguousarray(frame[:, :, ::-1])  # RGB → BGR（框架契约）
+
+    # ---- 框架要求的输入接口：真实动作走 MRA_Click，这里全部成功占位 ----
+
+    def connect(self):
+        return True
+
+    def connected(self):
+        return True
+
+    def request_uuid(self):
+        return "mra-navkit-v4"
+
+    def start_app(self, intent):
+        return True
+
+    def stop_app(self, intent):
+        return True
+
+    def click(self, x, y):
+        return True
+
+    def swipe(self, x1, y1, x2, y2, duration):
+        return True
+
+    def touch_down(self, contact, x, y, pressure):
+        return True
+
+    def touch_move(self, contact, x, y, pressure):
+        return True
+
+    def touch_up(self, contact):
+        return True
+
+    def click_key(self, keycode):
+        return True
+
+    def input_text(self, text):
+        return True
+
+    def key_down(self, keycode):
+        return True
+
+    def key_up(self, keycode):
+        return True
+
+
+class NavKitV4:
+    """v4 执行通路：v4 真源图（nav/ 节点 JSON）常驻跑在 MaaFW Tasker 上。
+
+    与 NavGraph（v3 备选通路）共享桥宿主接口（frame/click/ensure_clicker），
+    差异：①Tasker 绑 WgcapController（帧注入）而非 app 控制器；②图目录 =
+    nav/ 真源；③dwell 图常驻不退出（post_task 后框架自驱，桥内决策）。
+    业务桥（MRA_Policy 等）由 plugin 经 bridges 参数注入（宪法 3）。
+    """
+
+    def __init__(self, ctx, *, pipeline_dirs, image_dirs=(), bridges=(),
+                 stale_ms: float = STALE_FRAME_MS):
+        self.ctx = ctx
+        self._pipeline_dirs = [Path(d) for d in pipeline_dirs]
+        # 桥宿主：frame/click/ensure_clicker 复用 NavGraph；模板目录直接
+        # 挂到它的 image_dirs（TemplateRecognizer find_any 的搜索根）。
+        self._graph = NavGraph(ctx)
+        self._graph.image_dirs.extend(Path(d) for d in image_dirs)
+        self._resource = Resource()
+        self._tasker = Tasker()
+        self._controller = WgcapController(ctx.capture, stale_ms=stale_ms)
+        self._resource.register_custom_recognition(RECOGNIZER_NAME, TemplateRecognizer(self._graph))
+        self._resource.register_custom_action(ACTION_NAME, ClickAction(self._graph))
+        for name, inst in bridges:
+            if isinstance(inst, CustomAction):
+                self._resource.register_custom_action(name, inst)
+            else:
+                self._resource.register_custom_recognition(name, inst)
+        self._loaded = False
+        self._job = None
+
+    def load(self) -> bool:
+        """加载 v4 真源目录并把 Tasker 绑到帧注入控制器。重复调用无副作用。"""
+        if self._loaded:
+            return True
+        for d in self._pipeline_dirs:
+            job = self._resource.post_pipeline(str(d)).wait()
+            if job.failed:
+                logger.log(f"[v4] pipeline 加载失败: {d}", "ERROR")
+                return False
+        self._tasker.add_context_sink(PipelineLogger())
+        self._tasker.bind(self._resource, self._controller)
+        self._loaded = True
+        logger.log(f"[v4] 已加载 {len(self._pipeline_dirs)} 个真源目录（帧注入控制器）")
+        return True
+
+    def start(self, entry: str) -> bool:
+        """起跑常驻图（dwell 循环由框架自驱）。已起跑时幂等返回 True。"""
+        if not self.load():
+            return False
+        if self._job is not None and not self._job.status.done:
+            return True
+        logger.log(f"[v4] 起跑「{entry}」")
+        self._job = self._tasker.post_task(entry)
+        return True
+
+    def poll(self) -> bool:
+        """常驻图健康轮询：True = 在跑；False = 已结束/失败（调用方决定重启或告警）。"""
+        return self._job is not None and not self._job.status.done
+
+    def stop(self) -> None:
+        try:
+            self._tasker.post_stop()
+        except Exception:  # noqa: BLE001 —— 未起跑时停止是正常路径
+            pass
+
+    def shutdown(self) -> None:
+        self.stop()
+        self._graph.shutdown()
