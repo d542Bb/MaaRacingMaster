@@ -70,6 +70,10 @@ def migrate_anchor(name: str, a: dict, images: set[str], anchors_raw: dict | Non
         raise MigrateError(f"{where}: 无法翻译的 kind={kind!r}（禁止猜译）")
     rect = _check_rect(a.get("rect"), where)
     param: dict[str, Any] = {"mode": kind, "rect": rect}
+    # plan §6「默认即可彩色」：模板识别默认改 rgb（彩色），gray 仅按需显式声明。
+    # 引擎默认虽已是 rgb，显式落真源消除隐式依赖、供审计/离线脚本读取一致值。
+    if kind == "template":
+        param.setdefault("colorspace", "rgb")
     templates = a.get("templates") or []
     if kind == "template" and not templates:
         raise MigrateError(f"{where}: template 锚点无模板")

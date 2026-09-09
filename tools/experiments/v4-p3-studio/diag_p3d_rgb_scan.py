@@ -41,7 +41,7 @@ def scan() -> None:
             param = rec.get("param") if isinstance(rec.get("param"), dict) else rec
             if not isinstance(param, dict) or param.get("mode") != "template":
                 continue
-            cs = param.get("colorspace", "gray")
+            cs = param.get("colorspace", "rgb")  # plan §6：引擎默认彩色 rgb
             ca = "yes" if param.get("color_assert") else "no"
             tpls = param.get("templates", [])
             tplstr = ",".join(tpls) if isinstance(tpls, list) else str(tpls)

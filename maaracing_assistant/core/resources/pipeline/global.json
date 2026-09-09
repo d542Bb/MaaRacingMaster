@@ -5,6 +5,7 @@
     "action": "DoNothing",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
+      "colorspace": "rgb",
       "mode": "template",
       "rect": [
         0.7244444444444447,
@@ -33,6 +34,7 @@
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
+      "colorspace": "rgb",
       "mode": "template",
       "rect": [
         0.7244444444444447,
@@ -74,6 +76,7 @@
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
+      "colorspace": "rgb",
       "mode": "template",
       "rect": [
         0.7244444444444447,
@@ -104,6 +107,7 @@
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
+      "colorspace": "rgb",
       "mode": "template",
       "rect": [
         0.7603703703703705,
@@ -143,6 +147,7 @@
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
+      "colorspace": "rgb",
       "mode": "template",
       "rect": [
         0.7603703703703705,
@@ -174,6 +179,7 @@
     "action": "DoNothing",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
+      "colorspace": "rgb",
       "mode": "template",
       "rect": [
         0.7244444444444447,
@@ -205,6 +211,7 @@
     "action": "DoNothing",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
+      "colorspace": "rgb",
       "mode": "template",
       "rect": [
         0.7603703703703705,
