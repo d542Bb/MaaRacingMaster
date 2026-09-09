@@ -1,0 +1,1276 @@
+{
+  "_v3_schema_ver": 1,
+  "actuators": {
+    "treasure.appraiser_p1_caroline": {
+      "_label": "偏好鉴宝师① Caroline",
+      "_order": 1,
+      "_owner": "treasure",
+      "_page": "appraiser",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.09461708394698087,
+          0.26689248895434453,
+          0.9034425625920472,
+          0.7290132547864506
+        ],
+        "templates": [
+          "appraiser_p1_caroline.png"
+        ],
+        "threshold": 0.8
+      },
+      "recognition": "Custom"
+    },
+    "treasure.appraiser_p2_shotaro": {
+      "_label": "偏好鉴宝师② Shotaro",
+      "_order": 2,
+      "_owner": "treasure",
+      "_page": "appraiser",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.0863328424153168,
+          0.2654197349042709,
+          0.9050994108983801,
+          0.7334315169366715
+        ],
+        "templates": [
+          "appraiser_p2_shotaro.png"
+        ],
+        "threshold": 0.8
+      },
+      "recognition": "Custom"
+    },
+    "treasure.appraiser_selected_check": {
+      "_label": "鉴宝师已选中对勾",
+      "_order": 961,
+      "_owner": "treasure",
+      "_page": "appraiser",
+      "_v3": {
+        "comment": "卡片右上角黄色√，用于判定目标鉴宝师是否已被选中"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.03,
+          0.26,
+          0.97,
+          0.38
+        ],
+        "templates": [
+          "appraiser_selected_check.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_confirm_red_btn": {
+      "_label": "出价确认(红)",
+      "_order": 21,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.37789799072642977,
+          0.7611196977503006,
+          0.5479134466769706,
+          0.8482740855229264
+        ],
+        "templates": [
+          "bid_confirm_red_btn.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_main_red_btn": {
+      "_label": "出价主按钮(红)",
+      "_order": 22,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.round_big_banner",
+        "mode": "point",
+        "rect": [
+          0.38995363214837714,
+          0.792924609307917,
+          0.5641421947449768,
+          0.8647604327666152
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_0": {
+      "_label": "数字键 0",
+      "_order": 32,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.5676970633693973,
+          0.7791859866048428,
+          0.598145285935085,
+          0.8317877382792375
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_1": {
+      "_label": "数字键 1",
+      "_order": 23,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.5661514683153014,
+          0.5112828438948995,
+          0.5973724884080371,
+          0.5652584578396016
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_2": {
+      "_label": "数字键 2",
+      "_order": 24,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.6163833075734159,
+          0.512656706165207,
+          0.6460587326120556,
+          0.5652584578396016
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_3": {
+      "_label": "数字键 3",
+      "_order": 25,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.6650695517774343,
+          0.5154044307058219,
+          0.6986089644513137,
+          0.5680061823802165
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_4": {
+      "_label": "数字键 4",
+      "_order": 26,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.5676970633693972,
+          0.6005838914648806,
+          0.597372488408037,
+          0.6559333676798901
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_5": {
+      "_label": "数字键 5",
+      "_order": 27,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.61483771251932,
+          0.6005838914648807,
+          0.6476043276661515,
+          0.6559333676798901
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_6": {
+      "_label": "数字键 6",
+      "_order": 28,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.6635239567233386,
+          0.5992100291945732,
+          0.697063369397218,
+          0.6573072299501974
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_7": {
+      "_label": "数字键 7",
+      "_order": 29,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.5669242658423493,
+          0.6926326635754765,
+          0.5973724884080371,
+          0.7452344152498712
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_8": {
+      "_label": "数字键 8",
+      "_order": 30,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.6156105100463678,
+          0.6912588013051691,
+          0.6499227202472952,
+          0.7452344152498712
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_9": {
+      "_label": "数字键 9",
+      "_order": 31,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.6642967542503865,
+          0.6912588013051691,
+          0.6993817619783617,
+          0.7452344152498712
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.bid_numpad_clear": {
+      "_label": "清空键",
+      "_order": 33,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.smart_bid_btn",
+        "mode": "point",
+        "rect": [
+          0.3188562596599691,
+          0.6019577537351881,
+          0.3400309119010819,
+          0.6490640563283531
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.confirm_red_btn": {
+      "_label": "通用确认(红)",
+      "_order": 3,
+      "_owner": "treasure",
+      "_page": "appraiser",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.41341233041387615,
+          0.7762871372144943,
+          0.5865533230293664,
+          0.8523956723338485
+        ],
+        "templates": [
+          "confirm_red_btn.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.egg": {
+      "_label": "彩蛋",
+      "_order": 2,
+      "_owner": "treasure",
+      "_page": "popup",
+      "_v3": {
+        "comment": "通用蛋模板多尺度匹配 + NMS(IoU=0.5) + 中心 40% 区域 HSV 判色",
+        "domain": {
+          "_count_dx_norm": 0.03,
+          "_count_dy_norm": 0,
+          "_count_h_norm": 0.03,
+          "_count_w_norm": 0.04
+        }
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.30084448777940515,
+          0.34629322900305554,
+          0.7010041551246536,
+          0.5609418282548476
+        ],
+        "templates": [
+          "egg.png"
+        ],
+        "threshold": 0.72
+      },
+      "recognition": "Custom"
+    },
+    "treasure.session_expert_badge": {
+      "_label": "鉴宝专家场标签",
+      "_order": 8,
+      "_owner": "treasure",
+      "_page": "session",
+      "_v3": {
+        "comment": "地图上「鉴宝专家场」标签（点击切换到专家场详情卡）。rect 为占位粗估，请在调试台「Actions」分类下校准中心位置（点该标签中心即可）。"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.hall_session_cards",
+        "mode": "point",
+        "rect": [
+          0.1863214837712519,
+          0.3216898505924781,
+          0.23493044822256567,
+          0.3818478447535635
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.session_intern_badge": {
+      "_label": "鉴宝实习场标签",
+      "_order": 9,
+      "_owner": "treasure",
+      "_page": "session",
+      "_v3": {
+        "comment": "地图上「鉴宝实习场」标签（点击切换到实习场详情卡）。rect 为占位粗估，请在调试台「Actions」分类下校准中心位置（点该标签中心即可）。"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.hall_session_cards",
+        "mode": "point",
+        "rect": [
+          0.16332302936630602,
+          0.5579512278894041,
+          0.22102009273570325,
+          0.6236476043276662
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.session_master_badge": {
+      "_label": "鉴宝大师场标签",
+      "_order": 7,
+      "_owner": "treasure",
+      "_page": "session",
+      "_v3": {
+        "comment": "地图上「鉴宝大师场」标签（点击切换到大师场详情卡）。2026-09-05 经 3582 帧历史会话验证后登记为模板识别：可见帧 P50=0.961、非场次页最高分 0.405（串图安全边际 0.45）；rect 为搜索区（原点击区外扩 25%），点击目标 = 识别框中心。"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.hall_session_cards",
+        "mode": "template",
+        "rect": [
+          0.3936391551385412,
+          0.26508764727470935,
+          0.48262329840724094,
+          0.362764413721819
+        ],
+        "templates": [
+          "session_master_badge.png"
+        ],
+        "threshold": 0.85
+      },
+      "recognition": "Custom"
+    },
+    "treasure.session_start_match_btn": {
+      "_label": "开始匹配按钮（判定）",
+      "_order": 960,
+      "_owner": "treasure",
+      "_page": "session",
+      "_v3": {
+        "comment": "判定按钮是否已出现（详情卡已切到目标场次）；点击用 actions 版的同名锚点"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.7106238253585975,
+          0.7666148096283082,
+          0.8902627511591963,
+          0.8503348789283874
+        ],
+        "templates": [
+          "session_start_match_btn.png"
+        ],
+        "threshold": 0.9
+      },
+      "recognition": "Custom"
+    },
+    "treasure.session_start_match_click": {
+      "_label": "开始匹配按钮(点击区)",
+      "_order": 10,
+      "_owner": "treasure",
+      "_page": "session",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "guarded_by": "treasure.hall_session_cards",
+        "mode": "point",
+        "rect": [
+          0.7116234221598879,
+          0.7702089159311669,
+          0.8894899536321483,
+          0.8451696392680027
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.settle_collect_red_btn": {
+      "_label": "领取分红(红)",
+      "_order": 5,
+      "_owner": "treasure",
+      "_page": "payout",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.7070227259717213,
+          0.7835228118381133,
+          0.8817619783616693,
+          0.860638845955693
+        ],
+        "templates": [
+          "settle_collect_red_btn.png"
+        ]
+      },
+      "recognition": "Custom"
+    }
+  },
+  "perception": {
+    "anchors": {
+      "treasure.bid_main_btn_label": {
+        "label": "出价主按钮文字",
+        "order": 20,
+        "page": "bidding",
+        "rect": [
+          0.4313876651982379,
+          0.805286343612335,
+          0.523953744493392,
+          0.8575624082232012
+        ]
+      },
+      "treasure.bid_player1": {
+        "label": "公开报价 P1",
+        "order": 11,
+        "page": "bidding",
+        "rect": [
+          0.14956211453744492,
+          0.27895510141774954,
+          0.27450440528634357,
+          0.31130690161527164
+        ]
+      },
+      "treasure.bid_player2": {
+        "label": "公开报价 P2",
+        "order": 12,
+        "page": "bidding",
+        "rect": [
+          0.14765814977973568,
+          0.44098739990204877,
+          0.2753303964757709,
+          0.4787077826725404
+        ]
+      },
+      "treasure.bid_player3": {
+        "label": "公开报价 P3",
+        "order": 13,
+        "page": "bidding",
+        "rect": [
+          0.1509881057268722,
+          0.6068187593170778,
+          0.2753881057268722,
+          0.6421001784659194
+        ]
+      },
+      "treasure.bid_player4": {
+        "label": "公开报价 P4",
+        "order": 14,
+        "page": "bidding",
+        "rect": [
+          0.15016211453744494,
+          0.7729338182647975,
+          0.2737621145374449,
+          0.8099005084652158
+        ]
+      },
+      "treasure.bid_result_amount_box": {
+        "label": "出价输入框当前值(H)",
+        "order": 10,
+        "page": "bidding",
+        "rect": [
+          0.3392592592592592,
+          0.6505349794238683,
+          0.5377777777777778,
+          0.7265020576131688
+        ]
+      },
+      "treasure.daily_high_score": {
+        "_v3": {
+          "comment": "结算后弹窗①「今日最高积分上涨」的积分数字区域（单日最高利润刷新时出现，记录新纪录值）。rect 为占位，需在调试台「OCR」分类按实际弹窗截图校准；仅记录不影响弹窗点穿决策。"
+        },
+        "label": "今日最高积分",
+        "order": 1,
+        "page": "popup",
+        "rect": [
+          0.31899779735682826,
+          0.5066372980910425,
+          0.6924559471365639,
+          0.6123348017621145
+        ]
+      },
+      "treasure.my_balance": {
+        "label": "我的余额",
+        "order": 5,
+        "page": "session",
+        "rect": [
+          0.8424582960977064,
+          0.007524796169419368,
+          0.9807407407407407,
+          0.07728395061728395
+        ]
+      },
+      "treasure.player_name1": {
+        "label": "玩家名(槽1)",
+        "order": 15,
+        "page": "bidding",
+        "rect": [
+          0.11128284389489952,
+          0.23767817276318048,
+          0.2241112828438949,
+          0.27262579426412503
+        ]
+      },
+      "treasure.player_name2": {
+        "label": "玩家名(槽2)",
+        "order": 16,
+        "page": "bidding",
+        "rect": [
+          0.10896445131375587,
+          0.40391550747037613,
+          0.2302936630602782,
+          0.43748926670101324
+        ]
+      },
+      "treasure.player_name3": {
+        "label": "玩家名(槽3)",
+        "order": 17,
+        "page": "bidding",
+        "rect": [
+          0.10973724884080371,
+          0.5687789799072643,
+          0.23106646058732613,
+          0.6037266014082088
+        ]
+      },
+      "treasure.player_name4": {
+        "label": "玩家名(槽4)",
+        "order": 18,
+        "page": "bidding",
+        "rect": [
+          0.11051004636785161,
+          0.7336424523441525,
+          0.23415765069551778,
+          0.7658423493044823
+        ]
+      },
+      "treasure.round_label_area": {
+        "label": "回合小字区域",
+        "order": 19,
+        "page": "bidding",
+        "rect": [
+          0.39925925925925926,
+          0.15267489711934157,
+          0.4696296296296296,
+          0.19580246913580246
+        ]
+      },
+      "treasure.session_daily_count": {
+        "_v3": {
+          "comment": "场次选择页左下角「日已参与次数 X/50场」区域（只取数字那行，不包标签）。用于每日循环次数上限判断：OCR 读到 X ≥ 上限 就不再点「开始匹配」。"
+        },
+        "label": "今日已参与场次",
+        "order": 6,
+        "page": "session",
+        "rect": [
+          0.07908590308370045,
+          0.7784948604992659,
+          0.18199339207048454,
+          0.8135095447870778
+        ]
+      },
+      "treasure.settle_final_price": {
+        "label": "最终竞拍价格",
+        "order": 1,
+        "page": "payout",
+        "rect": [
+          0.6844444444444445,
+          0.23670781893004122,
+          0.8962962962962963,
+          0.30905349794238685
+        ]
+      },
+      "treasure.settle_my_income": {
+        "label": "我的收入",
+        "order": 4,
+        "page": "payout",
+        "rect": [
+          0.6859259259259259,
+          0.668641975308642,
+          0.9081481481481481,
+          0.7357201646090535
+        ]
+      },
+      "treasure.settle_profit": {
+        "label": "本场利润",
+        "order": 3,
+        "page": "payout",
+        "rect": [
+          0.68,
+          0.4895473251028807,
+          0.8992592592592593,
+          0.5592592592592592
+        ]
+      },
+      "treasure.settle_total_price": {
+        "label": "合计价格",
+        "order": 2,
+        "page": "payout",
+        "rect": [
+          0.6829629629629629,
+          0.36312757201646106,
+          0.8958878214675802,
+          0.4371389799093106
+        ]
+      }
+    },
+    "stage_signals": {
+      "中标结算": {
+        "anchors": [
+          "result_banner",
+          "settle_title",
+          "daily_high_banner",
+          "egg_reward_title"
+        ],
+        "ocr": [
+          "settle_final_price",
+          "settle_total_price",
+          "settle_profit",
+          "settle_my_income"
+        ],
+        "page": "settle"
+      },
+      "匹配中": {
+        "anchors": [
+          "is_matching_btn",
+          "appraiser_title"
+        ],
+        "ocr": [],
+        "page": "matching"
+      },
+      "活动页面": {
+        "anchors": [
+          "goto_appraise_btn",
+          "hall_session_cards"
+        ],
+        "ocr": [],
+        "page": "activity"
+      },
+      "游戏大厅": {
+        "anchors": [
+          "hall_peak_appraise_card",
+          "goto_appraise_btn",
+          "hall_session_cards"
+        ],
+        "ocr": [],
+        "page": "hall"
+      },
+      "第1回合出价": {
+        "anchors": [
+          "round_big_banner",
+          "smart_bid_btn",
+          "settle_title",
+          "result_banner"
+        ],
+        "ocr": [
+          "bid_result_amount_box",
+          "bid_player1",
+          "bid_player2",
+          "bid_player3",
+          "bid_player4",
+          "player_name1",
+          "player_name2",
+          "player_name3",
+          "player_name4",
+          "round_label_area"
+        ],
+        "page": "bidding"
+      },
+      "第2回合出价": {
+        "anchors": [
+          "round_big_banner",
+          "smart_bid_btn",
+          "settle_title",
+          "result_banner"
+        ],
+        "ocr": [
+          "bid_result_amount_box",
+          "bid_player1",
+          "bid_player2",
+          "bid_player3",
+          "bid_player4",
+          "player_name1",
+          "player_name2",
+          "player_name3",
+          "player_name4",
+          "round_label_area"
+        ],
+        "page": "bidding"
+      },
+      "第3回合出价": {
+        "anchors": [
+          "round_big_banner",
+          "smart_bid_btn",
+          "settle_title",
+          "result_banner"
+        ],
+        "ocr": [
+          "bid_result_amount_box",
+          "bid_player1",
+          "bid_player2",
+          "bid_player3",
+          "bid_player4",
+          "player_name1",
+          "player_name2",
+          "player_name3",
+          "player_name4",
+          "round_label_area"
+        ],
+        "page": "bidding"
+      },
+      "第4回合出价": {
+        "anchors": [
+          "round_big_banner",
+          "smart_bid_btn",
+          "settle_title",
+          "result_banner"
+        ],
+        "ocr": [
+          "bid_result_amount_box",
+          "bid_player1",
+          "bid_player2",
+          "bid_player3",
+          "bid_player4",
+          "player_name1",
+          "player_name2",
+          "player_name3",
+          "player_name4",
+          "round_label_area"
+        ],
+        "page": "bidding"
+      },
+      "第5回合出价": {
+        "anchors": [
+          "round_big_banner",
+          "smart_bid_btn",
+          "settle_title",
+          "result_banner"
+        ],
+        "ocr": [
+          "bid_result_amount_box",
+          "bid_player1",
+          "bid_player2",
+          "bid_player3",
+          "bid_player4",
+          "player_name1",
+          "player_name2",
+          "player_name3",
+          "player_name4",
+          "round_label_area"
+        ],
+        "page": "bidding"
+      },
+      "结算弹窗": {
+        "anchors": [
+          "daily_high_banner",
+          "egg_reward_title",
+          "settle_title",
+          "result_banner"
+        ],
+        "ocr": [],
+        "page": "popup"
+      },
+      "选择鉴宝师": {
+        "anchors": [
+          "appraiser_title",
+          "round_big_banner",
+          "is_matching_btn"
+        ],
+        "ocr": [],
+        "page": "appraiser"
+      },
+      "鉴宝大厅(选择场次)": {
+        "anchors": [
+          "hall_session_cards",
+          "is_matching_btn"
+        ],
+        "ocr": [],
+        "page": "session"
+      },
+      "领取分红": {
+        "anchors": [
+          "settle_title",
+          "result_banner",
+          "daily_high_banner",
+          "egg_reward_title"
+        ],
+        "ocr": [
+          "settle_final_price",
+          "settle_total_price",
+          "settle_profit",
+          "settle_my_income"
+        ],
+        "page": "payout"
+      }
+    },
+    "tuning": {
+      "appraiser_match_threshold": 0.72,
+      "appraiser_search_roi": [
+        0.03,
+        0.18,
+        0.97,
+        0.92
+      ],
+      "check_match_threshold": 0.62,
+      "session_match_threshold": 0.9,
+      "smart_bid_match_threshold": 0.72
+    }
+  },
+  "policy": {
+    "rules": [
+      {
+        "decision": {
+          "hint": "弹窗点击后冷却，等待阶段稳定...",
+          "key": "popup_click_cooldown"
+        },
+        "id": "popup_cooldown",
+        "when": {
+          "cooldown": {
+            "gt": 0
+          }
+        }
+      },
+      {
+        "decision": {
+          "hint": "进入巅峰鉴宝活动页",
+          "key": "hall_peak_appraise_card"
+        },
+        "id": "hall_enter",
+        "when": {
+          "stage": "hall"
+        }
+      },
+      {
+        "decision": {
+          "hint": "前往鉴宝",
+          "key": "goto_appraise_btn"
+        },
+        "id": "activity_goto",
+        "when": {
+          "stage": "activity"
+        }
+      },
+      {
+        "decision": {
+          "fallback_key": "session_waiting",
+          "hint": "鉴宝大厅(选择场次)等待识别...",
+          "source": "session_decision"
+        },
+        "id": "session_ready",
+        "when": {
+          "stage": "session"
+        }
+      },
+      {
+        "decision": {
+          "fallback_key": "appraiser_waiting",
+          "hint": "选择鉴宝师阶段等待识别...",
+          "source": "appraiser_decision"
+        },
+        "id": "appraiser_ready",
+        "when": {
+          "stage": "appraiser"
+        }
+      },
+      {
+        "decision": {
+          "fallback_key": "bid_waiting",
+          "hint": "等待出价按钮亮起...",
+          "source": "bidding_decision"
+        },
+        "id": "bid_ready",
+        "when": {
+          "stage": "bid"
+        }
+      },
+      {
+        "decision": {
+          "hint": "领取分红（本场收入已读出）",
+          "key": "settle_collect_red_btn"
+        },
+        "id": "settle_ready_click",
+        "when": {
+          "settle_income": {
+            "gte": 0
+          },
+          "stage": "settle"
+        }
+      },
+      {
+        "decision": {
+          "hint": "点领取跳过数据动画（之后等 OCR 读完整再准星再指）",
+          "key": "settle_collect_red_btn"
+        },
+        "id": "settle_first_enter",
+        "when": {
+          "clicked_once": false,
+          "settle_income": null,
+          "stage": "settle"
+        }
+      },
+      {
+        "decision": {
+          "fatal": "领取分红跳过动画点击重试 3 次仍无响应（本场收入始终未读出），请检查游戏界面/点击方式后重新开始",
+          "key": "settle_collect_red_btn"
+        },
+        "id": "settle_skip_fatal",
+        "when": {
+          "clicked_once": true,
+          "retry_count": {
+            "gte": "@settle_skip_retry_max"
+          },
+          "retry_elapsed": {
+            "gte": "@settle_skip_retry_frames"
+          },
+          "settle_income": null,
+          "stage": "settle"
+        }
+      },
+      {
+        "decision": {
+          "center": "settle_collect_red_btn",
+          "effect": "settle_skip_retry",
+          "hint": "跳过动画点击疑似无响应，重试中...",
+          "key": "settle_collect_red_btn"
+        },
+        "id": "settle_skip_retry",
+        "when": {
+          "clicked_once": true,
+          "retry_count": {
+            "lt": "@settle_skip_retry_max"
+          },
+          "retry_elapsed": {
+            "gte": "@settle_skip_retry_frames"
+          },
+          "settle_income": null,
+          "stage": "settle"
+        }
+      },
+      {
+        "decision": {
+          "hint": "已跳动画，等待 OCR 读本场收入/利润...（数据齐后准星再指领取）",
+          "key": "dividend_waiting"
+        },
+        "id": "settle_skip_waiting",
+        "when": {
+          "clicked_once": true,
+          "settle_income": null,
+          "stage": "settle"
+        }
+      },
+      {
+        "decision": {
+          "center": "confirm_red_btn",
+          "hint": "今日最高积分上涨 → 点屏幕继续",
+          "key": "popup_high_continue"
+        },
+        "id": "popup_daily_high_ready",
+        "when": {
+          "daily_high_score": {
+            "neq": null
+          },
+          "popup_kind": "daily_high_banner",
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "center": "confirm_red_btn",
+          "hint": "今日最高积分读取超时 → 跳过",
+          "key": "popup_high_continue"
+        },
+        "id": "popup_daily_high_timeout",
+        "when": {
+          "popup_kind": "daily_high_banner",
+          "reward_elapsed": {
+            "gte": "@daily_high_timeout_frames"
+          },
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "hint": "今日最高积分上涨：等待识别积分...",
+          "key": "popup_waiting"
+        },
+        "id": "popup_daily_high_waiting",
+        "when": {
+          "popup_kind": "daily_high_banner",
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "center": "confirm_red_btn",
+          "hint": "彩蛋结算 → 点屏幕继续",
+          "key": "popup_reward_continue"
+        },
+        "id": "popup_egg_ready",
+        "when": {
+          "egg_read_done": true,
+          "popup_kind": "egg_reward_title",
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "center": "confirm_red_btn",
+          "hint": "彩蛋结算读取超时 → 点屏幕继续",
+          "key": "popup_reward_continue"
+        },
+        "id": "popup_egg_timeout",
+        "when": {
+          "popup_kind": "egg_reward_title",
+          "reward_elapsed": {
+            "gte": "@egg_ocr_timeout_frames"
+          },
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "hint": "奖励结算：等待识别彩蛋数量...",
+          "key": "popup_waiting"
+        },
+        "id": "popup_egg_waiting",
+        "when": {
+          "popup_kind": "egg_reward_title",
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "center": "confirm_red_btn",
+          "hint": "彩蛋结算 → 点屏幕继续",
+          "key": "popup_reward_continue"
+        },
+        "id": "popup_eggreading_ready",
+        "when": {
+          "egg_read_done": true,
+          "egg_reading": true,
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "center": "confirm_red_btn",
+          "hint": "彩蛋结算读取超时 → 点屏幕继续",
+          "key": "popup_reward_continue"
+        },
+        "id": "popup_eggreading_timeout",
+        "when": {
+          "egg_reading": true,
+          "reward_elapsed": {
+            "gte": "@egg_ocr_timeout_frames"
+          },
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "hint": "奖励结算：等待识别彩蛋数量...",
+          "key": "popup_waiting"
+        },
+        "id": "popup_eggreading_waiting",
+        "when": {
+          "egg_reading": true,
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "center": "confirm_red_btn",
+          "hint": "等级提升弹窗(盲点) → 点屏幕跳过",
+          "key": "popup_high_continue"
+        },
+        "id": "popup_blind",
+        "when": {
+          "skip_cycle": {
+            "eq": 0
+          },
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "hint": "等待弹窗切换...",
+          "key": "popup_waiting"
+        },
+        "id": "popup_waiting",
+        "when": {
+          "stage": "popup"
+        }
+      },
+      {
+        "decision": {
+          "hint": "匹配中...（等待界面稳定）",
+          "key": "stage_waiting"
+        },
+        "id": "matching_wait",
+        "when": {
+          "stage": "matching"
+        }
+      },
+      {
+        "decision": {
+          "hint": "中标结算中...（等待界面稳定）",
+          "key": "stage_waiting"
+        },
+        "id": "auction_result_wait",
+        "when": {
+          "stage": "auction_result"
+        }
+      }
+    ],
+    "stage_map": {
+      "activity": "活动页面",
+      "appraiser": "选择鉴宝师",
+      "auction_result": "中标结算",
+      "bid": "第1回合出价",
+      "hall": "游戏大厅",
+      "matching": "匹配中",
+      "popup": "结算弹窗",
+      "session": "鉴宝大厅(选择场次)",
+      "settle": "领取分红"
+    },
+    "tuning": {
+      "execution": {
+        "click_cooldown_s": 0.2
+      },
+      "policy": {
+        "click_retry_frames": 10,
+        "click_retry_max": 3,
+        "daily_high_timeout_frames": 8,
+        "egg_ocr_timeout_frames": 8,
+        "popup_click_cooldown_frames": 5,
+        "popup_continue_retry_frames": 3,
+        "session_start_click_cooldown_frames": 3,
+        "settle_skip_retry_frames": 10,
+        "settle_skip_retry_max": 3
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "MRA Custom Action Schema",
+    "description": "MaaRacingAssistant 自定义动作参数契约（官方 pipeline.schema.json 的 custom 扩展槽，同目录引用）。",
+    "type": "object",
+    "allOf": [
+        {
+            "if": {
+                "properties": { "custom_action": { "const": "MRA_Policy" } },
+                "required": ["custom_action"]
+            },
+            "then": {
+                "properties": {
+                    "custom_action_param": {
+                        "type": "object",
+                        "properties": {
+                            "table": {
+                                "title": "策略表引用",
+                                "description": "<module>.policy.json#<段名> 形式",
+                                "type": "string",
+                                "pattern": "^.+\\.policy\\.json(#[\\w./-]+)?$"
+                            }
+                        },
+                        "required": ["table"]
+                    }
+                }
+            }
+        },
+        {
+            "if": {
+                "properties": { "custom_action": { "const": "MRA_Click" } },
+                "required": ["custom_action"]
+            },
+            "then": {
+                "properties": {
+                    "custom_action_param": {
+                        "type": "object",
+                        "description": "手柄光标点击（目标默认取命中框；point 模式取识别参数 rect 中心）",
+                        "properties": {
+                            "target": {
+                                "description": "归一化固定点 [x, y]（可选，缺省按识别结果）",
+                                "type": "array",
+                                "items": false,
+                                "prefixItems": [
+                                    { "type": "number", "minimum": 0, "maximum": 1 },
+                                    { "type": "number", "minimum": 0, "maximum": 1 }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

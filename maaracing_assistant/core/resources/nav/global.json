@@ -1,0 +1,304 @@
+{
+  "global.__confirm.hall_to_treasure.0": {
+    "_page": "activity",
+    "_route": "hall_to_treasure:0.confirm",
+    "action": "DoNothing",
+    "custom_recognition": "MRA_Template",
+    "custom_recognition_param": {
+      "mode": "template",
+      "rect": [
+        0.7244444444444447,
+        0.7446913580246916,
+        0.9022222222222223,
+        0.8279012345679012
+      ],
+      "templates": [
+        "act_goto_appraise_btn.png"
+      ]
+    },
+    "next": [
+      "global.goto_appraise_btn.rhall_to_treasure.1"
+    ],
+    "recognition": "Custom"
+  },
+  "global.goto_appraise_btn": {
+    "_label": "活动页前往鉴宝按钮",
+    "_order": 950,
+    "_owner": "treasure",
+    "_page": "activity",
+    "action": "Custom",
+    "custom_action": "MRA_Click",
+    "custom_recognition": "MRA_Template",
+    "custom_recognition_param": {
+      "mode": "template",
+      "rect": [
+        0.7244444444444447,
+        0.7446913580246916,
+        0.9022222222222223,
+        0.8279012345679012
+      ],
+      "templates": [
+        "act_goto_appraise_btn.png"
+      ]
+    },
+    "next": [
+      "global.活动页面.dwell",
+      "global.游戏大厅.dwell",
+      "treasure.鉴宝大厅(选择场次).dwell",
+      "treasure.匹配中.dwell",
+      "treasure.选择鉴宝师.dwell",
+      "treasure.第1回合出价.dwell",
+      "treasure.第2回合出价.dwell",
+      "treasure.第3回合出价.dwell",
+      "treasure.第4回合出价.dwell",
+      "treasure.第5回合出价.dwell",
+      "treasure.中标结算.dwell",
+      "treasure.领取分红.dwell",
+      "treasure.结算弹窗.dwell"
+    ],
+    "on_error": [
+      "global.游戏大厅.dwell"
+    ],
+    "recognition": "Custom"
+  },
+  "global.goto_appraise_btn.rhall_to_treasure.1": {
+    "_label": "活动页前往鉴宝按钮",
+    "_order": 950,
+    "_owner": "treasure",
+    "_page": "activity",
+    "_route": "hall_to_treasure:1",
+    "action": "Custom",
+    "custom_action": "MRA_Click",
+    "custom_recognition": "MRA_Template",
+    "custom_recognition_param": {
+      "mode": "template",
+      "rect": [
+        0.7244444444444447,
+        0.7446913580246916,
+        0.9022222222222223,
+        0.8279012345679012
+      ],
+      "templates": [
+        "act_goto_appraise_btn.png"
+      ]
+    },
+    "next": [
+      "treasure.__confirm.hall_to_treasure.1"
+    ],
+    "rate_limit": 600,
+    "recognition": "Custom",
+    "timeout": 45000
+  },
+  "global.hall_peak_appraise_card": {
+    "_label": "大厅巅峰鉴宝卡片",
+    "_order": 950,
+    "_owner": "treasure",
+    "_page": "hall",
+    "action": "Custom",
+    "custom_action": "MRA_Click",
+    "custom_recognition": "MRA_Template",
+    "custom_recognition_param": {
+      "mode": "template",
+      "rect": [
+        0.7603703703703705,
+        0.8037448559670782,
+        0.8962962962962963,
+        0.8911111111111112
+      ],
+      "templates": [
+        "hall_peak_appraise_card.png"
+      ]
+    },
+    "next": [
+      "global.游戏大厅.dwell",
+      "global.活动页面.dwell",
+      "treasure.鉴宝大厅(选择场次).dwell",
+      "treasure.匹配中.dwell",
+      "treasure.选择鉴宝师.dwell",
+      "treasure.第1回合出价.dwell",
+      "treasure.第2回合出价.dwell",
+      "treasure.第3回合出价.dwell",
+      "treasure.第4回合出价.dwell",
+      "treasure.第5回合出价.dwell",
+      "treasure.中标结算.dwell",
+      "treasure.领取分红.dwell",
+      "treasure.结算弹窗.dwell"
+    ],
+    "recognition": "Custom"
+  },
+  "global.hall_peak_appraise_card.rhall_to_treasure.0": {
+    "_entry": true,
+    "_label": "大厅巅峰鉴宝卡片",
+    "_order": 950,
+    "_owner": "treasure",
+    "_page": "hall",
+    "_route": "hall_to_treasure:0",
+    "action": "Custom",
+    "custom_action": "MRA_Click",
+    "custom_recognition": "MRA_Template",
+    "custom_recognition_param": {
+      "mode": "template",
+      "rect": [
+        0.7603703703703705,
+        0.8037448559670782,
+        0.8962962962962963,
+        0.8911111111111112
+      ],
+      "templates": [
+        "hall_peak_appraise_card.png"
+      ]
+    },
+    "next": [
+      "global.__confirm.hall_to_treasure.0"
+    ],
+    "rate_limit": 600,
+    "recognition": "Custom",
+    "timeout": 45000
+  },
+  "global.活动页面.dwell": {
+    "_dwell": true,
+    "_page": "activity",
+    "_signals": [
+      "global.goto_appraise_btn",
+      "treasure.hall_session_cards"
+    ],
+    "_stage": "活动页面",
+    "action": "DoNothing",
+    "next": [
+      "treasure.hall_session_cards",
+      "treasure.daily_high_banner",
+      "treasure.egg_reward_title",
+      "treasure.settle_title",
+      "treasure.result_banner",
+      "treasure.smart_bid_btn",
+      "treasure.round_big_banner",
+      "treasure.appraiser_title",
+      "treasure.is_matching_btn",
+      "global.hall_peak_appraise_card",
+      "global.goto_appraise_btn"
+    ],
+    "rate_limit": 600,
+    "recognition": {
+      "param": {
+        "any_of": [
+          {
+            "custom_recognition": "MRA_Template",
+            "custom_recognition_param": {
+              "mode": "template",
+              "rect": [
+                0.7244444444444447,
+                0.7446913580246916,
+                0.9022222222222223,
+                0.8279012345679012
+              ],
+              "templates": [
+                "act_goto_appraise_btn.png"
+              ]
+            },
+            "recognition": "Custom"
+          },
+          {
+            "custom_recognition": "MRA_Template",
+            "custom_recognition_param": {
+              "mode": "template",
+              "rect": [
+                0.06170370370370369,
+                0.7154074074074074,
+                0.20296296296296296,
+                0.8700411522633745
+              ],
+              "templates": [
+                "hall_session_cards.png"
+              ]
+            },
+            "recognition": "Custom"
+          }
+        ]
+      },
+      "type": "Or"
+    },
+    "timeout": -1
+  },
+  "global.游戏大厅.dwell": {
+    "_dwell": true,
+    "_page": "hall",
+    "_signals": [
+      "global.hall_peak_appraise_card",
+      "global.goto_appraise_btn",
+      "treasure.hall_session_cards"
+    ],
+    "_stage": "游戏大厅",
+    "action": "DoNothing",
+    "next": [
+      "global.goto_appraise_btn",
+      "treasure.hall_session_cards",
+      "treasure.daily_high_banner",
+      "treasure.egg_reward_title",
+      "treasure.settle_title",
+      "treasure.result_banner",
+      "treasure.smart_bid_btn",
+      "treasure.round_big_banner",
+      "treasure.appraiser_title",
+      "treasure.is_matching_btn",
+      "global.hall_peak_appraise_card",
+      "global.hall_peak_appraise_card.rhall_to_treasure.0"
+    ],
+    "rate_limit": 600,
+    "recognition": {
+      "param": {
+        "any_of": [
+          {
+            "custom_recognition": "MRA_Template",
+            "custom_recognition_param": {
+              "mode": "template",
+              "rect": [
+                0.7603703703703705,
+                0.8037448559670782,
+                0.8962962962962963,
+                0.8911111111111112
+              ],
+              "templates": [
+                "hall_peak_appraise_card.png"
+              ]
+            },
+            "recognition": "Custom"
+          },
+          {
+            "custom_recognition": "MRA_Template",
+            "custom_recognition_param": {
+              "mode": "template",
+              "rect": [
+                0.7244444444444447,
+                0.7446913580246916,
+                0.9022222222222223,
+                0.8279012345679012
+              ],
+              "templates": [
+                "act_goto_appraise_btn.png"
+              ]
+            },
+            "recognition": "Custom"
+          },
+          {
+            "custom_recognition": "MRA_Template",
+            "custom_recognition_param": {
+              "mode": "template",
+              "rect": [
+                0.06170370370370369,
+                0.7154074074074074,
+                0.20296296296296296,
+                0.8700411522633745
+              ],
+              "templates": [
+                "hall_session_cards.png"
+              ]
+            },
+            "recognition": "Custom"
+          }
+        ]
+      },
+      "type": "Or"
+    },
+    "timeout": -1
+  }
+}

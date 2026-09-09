@@ -1,0 +1,86 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "MRA Custom Recognition Schema",
+    "description": "MaaRacingAssistant 自定义识别参数契约（官方 pipeline.schema.json 的 custom 扩展槽，同目录引用）。编辑器按此提示/校验；运行时 custom_recognition_param 仍是透传黑盒。",
+    "type": "object",
+    "allOf": [
+        {
+            "if": {
+                "properties": { "custom_recognition": { "const": "MRA_Template" } },
+                "required": ["custom_recognition"]
+            },
+            "then": {
+                "properties": {
+                    "custom_recognition_param": { "$ref": "#/$defs/MRA_TemplateParam" }
+                }
+            }
+        }
+    ],
+    "$defs": {
+        "NormalizedRect": {
+            "title": "归一化矩形",
+            "description": "[x0, y0, x1, y1]，各分量 ∈ [0,1]（注意与 MaaFW 像素 roi 区分，本参数为自研识别私有）",
+            "type": "array",
+            "items": false,
+            "prefixItems": [
+                { "type": "number", "minimum": 0, "maximum": 1 },
+                { "type": "number", "minimum": 0, "maximum": 1 },
+                { "type": "number", "minimum": 0, "maximum": 1 },
+                { "type": "number", "minimum": 0, "maximum": 1 }
+            ]
+        },
+        "MRA_TemplateParam": {
+            "title": "MRA_Template 参数",
+            "description": "彩色/遮挡感知模板匹配（v3 锚点行为位一致迁移形态）",
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "title": "锚点模式",
+                    "enum": ["template", "point"],
+                    "description": "template = 命中框即目标；point = 固定坐标 rect 中心点击（需 guarded_by）"
+                },
+                "rect": { "$ref": "#/$defs/NormalizedRect" },
+                "templates": {
+                    "title": "模板图列表",
+                    "type": "array",
+                    "items": { "type": "string", "pattern": "^.+\\.(png|jpg)$" }
+                },
+                "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+                "arbitration": {
+                    "title": "多模板仲裁",
+                    "type": "object",
+                    "properties": {
+                        "template_thresholds": {
+                            "type": "object",
+                            "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+                        }
+                    }
+                },
+                "guarded_by": {
+                    "title": "守卫节点",
+                    "description": "保险丝：守卫模板命中才允许本节点命中（点号命名空间节点名）",
+                    "type": "string"
+                },
+                "colorspace": { "enum": ["gray", "rgb", "rgb_strict"] },
+                "color_assert": {
+                    "title": "色相断言",
+                    "type": "object",
+                    "properties": {
+                        "rect": { "$ref": "#/$defs/NormalizedRect" },
+                        "hue": {
+                            "type": "array",
+                            "items": false,
+                            "prefixItems": [
+                                { "type": "number" },
+                                { "type": "number" }
+                            ]
+                        }
+                    }
+                },
+                "mask_cursor": { "type": "boolean", "description": "L1 光标掩膜评分" },
+                "max_occlusion": { "type": "number", "minimum": 0, "maximum": 1, "description": "L3 挪开重拍阈值" }
+            },
+            "required": ["mode", "rect"]
+        }
+    }
+}
