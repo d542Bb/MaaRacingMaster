@@ -257,6 +257,17 @@
     ],
     "recognition": "Custom"
   },
+  "treasure.policy_loop": {
+    "_policy_loop": true,
+    "action": "Custom",
+    "custom_action": "MRA_Policy",
+    "custom_action_param": {
+      "table": "treasure.policy.json#policy"
+    },
+    "next": [],
+    "recognition": "DirectHit",
+    "timeout": -1
+  },
   "treasure.result_banner": {
     "_label": "竞拍结果横幅",
     "_order": 910,
@@ -504,7 +515,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -609,7 +624,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -688,7 +707,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -813,7 +836,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -938,7 +965,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -1063,7 +1094,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -1188,7 +1223,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -1301,7 +1340,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -1407,7 +1450,11 @@
       "treasure.appraiser_title",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -1497,7 +1544,11 @@
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
       "treasure.hall_session_cards",
-      "treasure.session_start_match_click.rsession_to_matching.0"
+      "treasure.session_start_match_click.rsession_to_matching.0",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -1570,7 +1621,11 @@
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
-      "treasure.hall_session_cards"
+      "treasure.hall_session_cards",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {

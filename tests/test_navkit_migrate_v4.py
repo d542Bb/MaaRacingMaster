@@ -109,10 +109,24 @@ def test_graph_clean_and_shaped(full_graph):
     assert errors == []
     assert warns == []
     v4 = audit["v4"]
-    assert v4["dwell"] == 13 and v4["chain"] == 6
-    assert v4["total"] == v4["dwell"] + v4["anchor_graph"] + v4["chain"]
+    assert v4["dwell"] == 13 and v4["chain"] == 6 and v4["policy_loop"] == 1
+    assert v4["total"] == v4["dwell"] + v4["policy_loop"] + v4["anchor_graph"] + v4["chain"]
     assert v4["actuators"] == 24 and v4["ocr_sensors"] == 18
     assert audit["entry"] == ["treasure.hall_peak_appraise_card.rhall_to_treasure.0"]
+
+
+def test_policy_loop_wired_into_every_dwell(full_graph):
+    full, _, _ = full_graph
+    loop = full["treasure.policy_loop"]
+    assert loop["custom_action"] == "MRA_Policy"
+    assert loop["custom_action_param"]["table"] == "treasure.policy.json#policy"
+    assert loop["next"] == [] and loop["timeout"] == -1
+    dwells = [n for n, d in full.items() if d.get("_dwell")]
+    assert len(dwells) == 13
+    for n in dwells:
+        tail = full[n]["next"][-1]
+        assert isinstance(tail, dict) and tail["name"] == "treasure.policy_loop" \
+            and tail["jump_back"] is True, n
 
 
 def test_dwell_semantics(full_graph):
@@ -173,7 +187,9 @@ def test_split_global_reference_consistency(full_graph):
     old_names = {old for old, _ in renames}
     for n, d in merged.items():
         for key in ("next", "on_error"):
-            for ref in d.get(key) or []:
+            for raw in d.get(key) or []:
+                ref = mv.ref_name(raw)
+                assert ref is not None, f"{n} 的 {key} 元素形态非法 {raw!r}"
                 assert ref not in old_names, f"{n} 引用了改名前的 {ref}"
                 assert ref in merged, f"{n} 悬空引用 {ref}"
     errors, warns = mv.validate_graph(merged)

@@ -3553,6 +3553,16 @@ class TreasureModule(ActivityModule):
         # --------- 6. 真实点击：把当前点击意图执行成可见鼠标移动 + 停顿 + 点击 ---------
         # 意图由各阶段决策（_resolve_action_target 统一）给出，含归一化 center；
         # 安全机制（指纹锁/限速/前台校验/坐标换算）见 _execute_click 文档。
+        # P2a-Q3b：此段抽为 _decision_phase()，供 v4 MRA_Policy 桥复用（调用序
+        # 行为位一致：意图解析 → consume → submit → 避让 → 决策契约落盘）。
+        self._decision_phase()
+
+    def _decision_phase(self) -> None:
+        """单帧决策-动作段：v3 主循环与 v4 policy 闭环节点共用的调用序。
+
+        v3：_tick_once 每帧调用；v4：MRA_Policy 桥（PolicyBridge）每次
+        CustomAction.run 调用一次（一帧决策），[JumpBack] 回 dwell 重判。
+        """
         intent = self._resolve_action_target()
         # 光标驻留看守（手柄模式）：每帧在决策更新后检查——光标若压住本阶段需识别
         # 的 ROI 且下一意图目标不能自然带离，先避让导航到空白处（不点击）再走点击。

@@ -343,7 +343,12 @@ def split_global(full: dict) -> tuple[dict, dict, list[tuple[str, str]]]:
     renames = {n: "global." + n.removeprefix("treasure.")
                for n, d in full.items() if d.get("_page") in GLOBAL_PAGES}
 
-    def map_ref(r: str) -> str:
+    def map_ref(r: Any) -> Any:
+        if isinstance(r, dict):
+            out = dict(r)
+            if isinstance(out.get("name"), str):
+                out["name"] = renames.get(out["name"], out["name"])
+            return out
         return renames.get(r, r)
 
     def rewrite(n: dict) -> dict:
@@ -391,13 +396,32 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
     for stage, heads in starts.items():  # 链头从所属阶段 dwell 可达
         d = dwell_names[stage]
         dwells[d]["next"] = list(dict.fromkeys((dwells[d].get("next") or []) + heads))
+    # Q3b：policy 闭环节点——dwell.next 兜底位（锚点/链头/通配全未命中时执行
+    # 一帧决策，[JumpBack] 回 dwell 重判）。对象形式 NodeAttr（v5.1，binding
+    # pipeline.py _parse_node_attr_list 实证）。桥注册在 plugin（宪法 3）。
+    policy_loop = f"{module}.policy_loop"
+    dwells[policy_loop] = {
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "MRA_Policy",
+        "custom_action_param": {"table": f"{module}.policy.json#policy"},
+        "next": [],
+        "timeout": -1,
+        "_policy_loop": True,
+    }
+    for d in dwell_names.values():
+        dwells[d]["next"] = (dwells[d].get("next") or []) + [
+            {"name": policy_loop, "jump_back": True}]
     pol = doc.get("policies") or {}
     # 孤岛归类：未被任何 next/on_error/信号/链引用的基节点 = 决策闭环执行资产，
     # 移入 policy.actuators 段（参数随行、引擎按名取用），不占画布（A-1 去向）。
     referenced: set[str] = set()
     for n in {**dwells, **nodes, **chain}.values():
         for key in ("next", "on_error"):
-            referenced.update(n.get(key) or [])
+            for r in n.get(key) or []:
+                name = ref_name(r)
+                if name:
+                    referenced.add(name)
     for d in dwells.values():
         referenced.update(d.get("_signals") or [])
     graph_nodes = {k: v for k, v in nodes.items() if k in referenced or k in chain}
@@ -419,7 +443,10 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
                [("anchors", doc["anchors"]), ("transitions", doc.get("transitions") or []),
                 ("routes", doc.get("routes") or {}), ("stages", defs),
                 ("rules", pol.get("rules") or [])]},
-        "v4": {"total": len(full), "dwell": len(dwells), "chain": len(chain),
+        "v4": {"total": len(full),
+               "dwell": sum(1 for d in full.values() if d.get("_dwell")),
+               "policy_loop": sum(1 for d in full.values() if d.get("_policy_loop")),
+               "chain": len(chain),
                "anchor_graph": len(graph_nodes), "actuators": len(actuators),
                "ocr_sensors": len(sensors)},
         "fanout": sorted(((len(d.get("next") or []), n) for n, d in full.items()),
@@ -429,13 +456,28 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
     return full, policy_doc, audit
 
 
+def ref_name(r: Any) -> str | None:
+    """next/on_error 元素 → 节点名；兼容字符串与对象形式 NodeAttr。"""
+    if isinstance(r, str):
+        return r
+    if isinstance(r, dict) and isinstance(r.get("name"), str):
+        return r["name"]
+    return None
+
+
 def validate_graph(full: dict) -> tuple[list[str], list[str]]:
-    """校验器 1/5 条（引用闭合、死胡同/不可达）；3/4/模板存在性已在 M1 层。"""
+    """校验器 1/5 条（引用闭合、死胡同/不可达）；3/4/模板存在性已在 M1 层。
+
+    next/on_error 元素兼容字符串与对象形式 NodeAttr（{"name": ..., "jump_back": ...}）。
+    """
     problems: list[str] = []
     for name, n in full.items():
         for key in ("next", "on_error"):
-            for ref in n.get(key) or []:
-                if ref not in full:
+            for r in n.get(key) or []:
+                ref = ref_name(r)
+                if ref is None:
+                    problems.append(f"{name}: {key} 元素形态非法 {r!r}")
+                elif ref not in full:
                     problems.append(f"{name}: {key} 悬空引用 {ref}")
     entries = [n for n, d in full.items() if d.get("_entry")]
     if not entries:
@@ -447,14 +489,16 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
         if cur in seen:
             continue
         seen.add(cur)
-        for ref in full.get(cur, {}).get("next") or []:
-            dq.append(ref)
+        for r in full.get(cur, {}).get("next") or []:
+            name = ref_name(r)
+            if name:
+                dq.append(name)
     unreachable = sorted(set(full) - seen)
     for u in unreachable:
         problems.append(f"WARN 入口不可达: {u}")
     for name, n in full.items():
         if (not n.get("next") and not n.get("on_error")
-                and not n.get("_dwell") and not n.get("_policy_only")):
+                and not n.get("_dwell") and not n.get("_policy_loop")):
             problems.append(f"WARN 无出口节点: {name}")
     # 第 6 条：疑似重复识别——**不同基锚**共用同一模板集才报（链复制/dwell 信号
     # 内联与基节点同模板属结构性复制，去基名后自然合并，不告警）。

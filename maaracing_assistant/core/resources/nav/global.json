@@ -175,7 +175,11 @@
       "treasure.appraiser_title",
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
-      "global.goto_appraise_btn"
+      "global.goto_appraise_btn",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
@@ -241,7 +245,11 @@
       "treasure.appraiser_title",
       "treasure.is_matching_btn",
       "global.hall_peak_appraise_card",
-      "global.hall_peak_appraise_card.rhall_to_treasure.0"
+      "global.hall_peak_appraise_card.rhall_to_treasure.0",
+      {
+        "jump_back": true,
+        "name": "treasure.policy_loop"
+      }
     ],
     "rate_limit": 600,
     "recognition": {
