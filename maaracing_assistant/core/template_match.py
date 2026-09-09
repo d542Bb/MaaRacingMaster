@@ -30,11 +30,24 @@ Box = tuple[int, int, int, int]  # (x1, y1, x2, y2) 像素
 
 
 def load_template(name: str, image_dirs: list[Path]) -> np.ndarray | None:
-    """按目录顺序加载模板（.png / .jpg），返回 RGB ndarray；找不到返回 None。"""
+    """按目录顺序加载模板（.png / .jpg），返回 RGB ndarray；找不到返回 None。
+
+    name 兼容两种形态：裸名（自动拼 .png/.jpg/.jpeg）与自带扩展名
+    （v3/v4 资产模板字段形态，直接按原名查找，不再二次拼接）。
+    """
     if name in _cache:
         return _cache[name]
+    has_ext = name.lower().endswith((".png", ".jpg", ".jpeg"))
     img = None
     for d in image_dirs:
+        if has_ext:
+            path = Path(d) / name
+            if path.exists():
+                raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+                if raw is not None:
+                    img = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+                break
+            continue
         for ext in (".png", ".jpg", ".jpeg"):
             path = Path(d) / f"{name}{ext}"
             if not path.exists():
