@@ -54,8 +54,12 @@ def _check_rect(rect: Any, where: str) -> list[float]:
     return [float(x) for x in rect]
 
 
-def migrate_anchor(name: str, a: dict, images: set[str]) -> dict | None:
-    """v3 锚点 → v4 节点；ocr 返回 None（进策略表）。"""
+def migrate_anchor(name: str, a: dict, images: set[str], anchors_raw: dict | None = None) -> dict | None:
+    """v3 锚点 → v4 节点；ocr 返回 None（进策略表）。
+
+    guard/point 自包含内联（plan §2 节点自包含可复制）：guarded_by 的守卫
+    模板/阈值/区域内联进 param.guard，桥不做跨节点查询。
+    """
     kind = a.get("kind")
     where = f"anchor {name}"
     if kind == "ocr":
@@ -76,8 +80,29 @@ def migrate_anchor(name: str, a: dict, images: set[str]) -> dict | None:
         param["threshold"] = a["threshold"]
     if a.get("arbitration") is not None:
         param["arbitration"] = a["arbitration"]
-    if a.get("guarded_by") is not None:
-        param["guarded_by"] = _node_name(a["guarded_by"]) if a["guarded_by"] in KNOWN_ANCHORS else a["guarded_by"]
+    guard_name = a.get("guarded_by")
+    if guard_name is not None:
+        param["guarded_by"] = _node_name(guard_name) if guard_name in KNOWN_ANCHORS else guard_name
+        g = (anchors_raw or {}).get(guard_name)
+        if g is None:
+            raise MigrateError(f"{where}: guarded_by 引用悬空 {guard_name!r}")
+        g_rect = _check_rect(g.get("rect"), f"guard {guard_name}")
+        g_templates = g.get("templates") or []
+        if not g_templates:
+            raise MigrateError(f"{where}: 守卫锚点 {guard_name!r} 无模板，保险丝失效")
+        for t in g_templates:
+            if t not in images:
+                raise MigrateError(f"{where}: 守卫模板缺失 {t}")
+        param["guard"] = {
+            "templates": list(g_templates),
+            "rect": g_rect,
+            **({"threshold": g["threshold"]} if g.get("threshold") is not None else {}),
+        }
+    if kind == "point":
+        # point 的点击目标 = rect 中心（识别走 guard 模板，命中框 ≠ 点击点）
+        cx, cy = (rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0
+    else:
+        cx = cy = None
     MAPPED = ("kind", "rect", "templates", "threshold", "arbitration", "guarded_by",
               "label", "page", "order", "owner")
     residual = {k: v for k, v in a.items() if k not in MAPPED}
@@ -88,6 +113,8 @@ def migrate_anchor(name: str, a: dict, images: set[str]) -> dict | None:
         "action": "Custom",
         "custom_action": "MRA_Click",
     }
+    if cx is not None:
+        node["custom_action_param"] = {"target": [cx, cy]}
     if a.get("label"):
         node["_label"] = a["label"]
     if a.get("page"):
@@ -304,7 +331,7 @@ def build_v4(module: str, page_filter: str | None) -> tuple[dict, dict]:
         if a.get("kind") == "ocr":
             ocr_sensors[f"{module}.{name}"] = migrate_ocr_anchor(name, a)
             continue
-        node = migrate_anchor(name, a, images)
+        node = migrate_anchor(name, a, images, anchors_raw=anchors)
         if node is not None:
             nodes[_node_name(name)] = node
     return nodes, ocr_sensors

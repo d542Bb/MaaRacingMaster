@@ -61,6 +61,20 @@
                     "description": "保险丝：守卫模板命中才允许本节点命中（点号命名空间节点名）",
                     "type": "string"
                 },
+                "guard": {
+                    "title": "守卫内联（自包含）",
+                    "description": "guarded_by 的内联形态（迁移器产出）：守卫模板/阈值/区域随节点自带，桥不做跨节点查询",
+                    "type": "object",
+                    "properties": {
+                        "templates": {
+                            "type": "array",
+                            "items": { "type": "string", "pattern": "^.+\\.(png|jpg)$" }
+                        },
+                        "rect": { "$ref": "#/$defs/NormalizedRect" },
+                        "threshold": { "type": "number", "minimum": 0, "maximum": 1 }
+                    },
+                    "required": ["templates", "rect"]
+                },
                 "colorspace": { "enum": ["gray", "rgb", "rgb_strict"] },
                 "color_assert": {
                     "title": "色相断言",

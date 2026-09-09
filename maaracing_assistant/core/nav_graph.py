@@ -42,7 +42,15 @@ from maa.tasker import Tasker
 from maaracing_assistant.core.clicker import Clicker
 from maaracing_assistant.core.logger import logger
 from maaracing_assistant.core.pipeline_logger import PipelineLogger
-from maaracing_assistant.core.template_match import DEFAULT_SCALES, find_any
+from maaracing_assistant.core.template_match import (
+    DEFAULT_SCALES,
+    color_assert_ok,
+    cursor_box_norm,
+    find_any,
+    find_any_cs,
+    occlusion_ratio,
+    strip_ext,
+)
 
 # core 自带资源根（stick_speed_model.json 也在这，不新开目录约定）
 CORE_RES_DIR = Path(__file__).resolve().parent / "resources"
@@ -61,65 +69,91 @@ def _parse(raw: str) -> dict:
 
 
 class TemplateRecognizer(CustomRecognition):
-    """识别桥：在宿主截图帧上多尺度匹配候选模板，命中框交给框架决定走哪条边。
+    """识别桥（v4 参数面）：MRA_Template 的引擎实现，编排 template_match 引擎件。
 
-    节点参数（写在 pipeline JSON 的 custom_recognition_param 里）：
-        templates      ["activity_page_template"]   候选图名（不带扩展名），取最高分
-        threshold      0.70                          匹配下限
-        roi            [0.55,0.60,1.00,0.85]         可选，归一化搜索区（换分辨率不失效）
-        scales         [0.5,0.7,...]                 可选，覆盖默认尺度表
-        fallback_pct   [0.880,0.720]                 可选，模板全落空时退到百分比坐标
-        expect_absent  true                          可选，模板消失才算命中（终点确认用）
+    节点参数（迁移器产出，契约见 tools/navkit/schema/custom.recognition.schema.json）：
+        mode           template | point（point 识别走 guard 模板，点击走 target）
+        rect           [x0,y0,x1,y1] 归一化搜索区
+        templates      ["x.png"] 主模板（point 无此键）
+        threshold      匹配下限（缺省 0.75）
+        arbitration    {"template_thresholds": {名: 阈}} 逐模板阈值（互斥模板族）
+        guard          {"templates","rect","threshold"?} 保险丝（主命中后守卫必须同帧命中）
+        colorspace     rgb | gray | rgb_strict（默认 rgb；strict = 分通道 NCC 取最低分）
+        color_assert   {"rect": 命中框内归一化子矩形, "hue": [lo,hi]} 色相校验
+        mask_cursor    true 时启用光标遮挡过滤
+        max_occlusion  命中框被光标覆盖占比上限（默认 0.4）
+        critical/_park L2 驻留握手字段（P2b 接导航 ACK 通道，当前不激活）
+
+    帧源：优先 argv.image（WgcapController 注入帧，BGR）；缺省回退
+    graph.frame()（ctx.capture 直读，v3 形态兼容）。
     """
 
-    def __init__(self, graph: "NavGraph"):
+    def __init__(self, graph: "NavGraph", *, cursor_pos_provider=None):
         super().__init__()
         self._graph = graph
+        self._cursor_pos_provider = cursor_pos_provider  # () -> (cx, cy) 归一化 | None
 
     def analyze(self, context, argv):
         p = _parse(argv.custom_recognition_param)
-        frame = self._graph.frame()
+        frame = getattr(argv, "image", None)
+        if frame is None:
+            frame = self._graph.frame()
         if frame is None:
             return self.AnalyzeResult(box=None, detail={"error": "截图失败"})
+        import cv2
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # 注入帧为 BGR（框架契约）
+        H, W = rgb.shape[:2]
 
         names = [n for n in p.get("templates", []) if isinstance(n, str) and n]
-        if not names and not p.get("fallback_pct"):
-            # 模板清单为空且没有固定坐标兜底才是配置错误。
-            # D2 的 point 目标本来就不配模板，由 guarded_by + fallback_pct 证明/定位；
-            # 只有 expect_absent 仍必须拒绝空模板，避免"什么都没找到=已消失"假成功。
-            logger.log(f"[跳转图] 节点「{argv.node_name}」未配置 templates/fallback_pct，判为识别失败", "ERROR")
-            return self.AnalyzeResult(box=None, detail={"error": "templates/fallback_pct 未配置"})
-        if p.get("expect_absent") and not names:
-            return self.AnalyzeResult(box=None, detail={"error": "expect_absent 不允许空 templates"})
-        H, W = frame.shape[:2]
-        roi = None
-        if p.get("roi"):
-            x1, y1, x2, y2 = p["roi"]
-            roi = (int(x1 * W), int(y1 * H),
-                   int((x2 - x1) * W), int((y2 - y1) * H))
+        guard = p.get("guard") or {}
+        if not names:
+            if not guard.get("templates"):
+                logger.log(f"[v4] 节点「{argv.node_name}」无 templates 且无 guard，判为识别失败", "ERROR")
+                return self.AnalyzeResult(box=None, detail={"error": "无识别依据"})
+            names = [strip_ext(n) for n in guard["templates"]]  # point：识别 = guard 模板
+        g_rect = guard.get("rect")
+        # 搜索区：point 模式用 guard 区（识别对象是守卫模板）；template 模式用 rect
+        s_rect = (g_rect if (g_rect and not p.get("templates")) else p.get("rect")) or (0, 0, 1, 1)
 
-        box, score, hit_name = find_any(
-            frame, names, self._graph.image_dirs,
-            threshold=float(p.get("threshold", 0.7)),
-            scales=p.get("scales") or DEFAULT_SCALES, roi=roi)
-
-        if p.get("expect_absent"):
-            # 「模板消失才算到位」：用于点了按钮之后原按钮消失这类终点确认。
-            # 命中时返回 1x1 空框只为骗过框架的"有框=成功"，这类节点必须配
-            # DoNothing，不能拿去定位点击。
-            hit = box is None
-            return self.AnalyzeResult(box=(0, 0, 1, 1) if hit else None,
-                                      detail={"absent": hit, "score": round(score, 3)})
-
+        x1, y1, x2, y2 = s_rect
+        roi = (int(x1 * W), int(y1 * H), int((x2 - x1) * W), int((y2 - y1) * H))
+        arb = (p.get("arbitration") or {}).get("template_thresholds") or None
+        box, score, hit_name = find_any_cs(
+            rgb, names, self._graph.image_dirs,
+            colorspace=p.get("colorspace", "rgb"),
+            threshold=float(p.get("threshold", 0.75)),
+            thresholds=arb, roi=roi)
         if box is None:
-            # pct 兜底：只为「按钮小图还没截」的过渡期不阻塞跑图，补上图即失效。
-            pct = p.get("fallback_pct")
-            if not pct:
-                return self.AnalyzeResult(box=None, detail={"score": round(score, 3)})
-            cx, cy = int(pct[0] * W), int(pct[1] * H)
-            box = (cx - 20, cy - 20, cx + 20, cy + 20)
-            hit_name = "fallback_pct"
-            logger.log(f"[跳转图] 模板未命中，退到百分比兜底 {pct}", "WARNING")
+            return self.AnalyzeResult(box=None, detail={"score": round(score, 3)})
+
+        if guard.get("templates") and p.get("templates"):
+            # template+guard：主命中后守卫必须同帧命中（保险丝）；point 的识别
+            # 本身就是 guard 模板，无需重复校验。
+            gx1, gy1, gx2, gy2 = g_rect or (0, 0, 1, 1)
+            g_roi = (int(gx1 * W), int(gy1 * H), int((gx2 - gx1) * W), int((gy2 - gy1) * H))
+            g_box, _gs, _gn = find_any_cs(
+                rgb, [strip_ext(t) for t in guard["templates"]], self._graph.image_dirs,
+                colorspace=p.get("colorspace", "rgb"),
+                threshold=float(guard.get("threshold", 0.75)), roi=g_roi)
+            if g_box is None:
+                logger.log(f"[v4] 「{argv.node_name}」主命中但守卫未同帧出现（保险丝）", "DEBUG")
+                return self.AnalyzeResult(box=None, detail={"blocked_by": "guard"})
+
+        if p.get("color_assert"):
+            ca = p["color_assert"]
+            if not color_assert_ok(rgb, box, ca["rect"], ca["hue"]):
+                logger.log(f"[v4] 「{argv.node_name}」命中但色相断言未过", "DEBUG")
+                return self.AnalyzeResult(box=None, detail={"blocked_by": "color_assert"})
+
+        if p.get("mask_cursor") and self._cursor_pos_provider is not None:
+            pos = self._cursor_pos_provider()
+            if pos is not None:
+                cbox = cursor_box_norm(pos[0], pos[1], frame_w=W, frame_h=H)
+                ratio = occlusion_ratio(box, cbox)
+                if ratio > float(p.get("max_occlusion", 0.4)):
+                    logger.log(f"[v4] 「{argv.node_name}」命中框被光标遮挡 {ratio:.0%}，拒绝", "DEBUG")
+                    return self.AnalyzeResult(box=None, detail={"blocked_by": "cursor",
+                                                                "occlusion": round(ratio, 2)})
 
         return self.AnalyzeResult(
             box=box,
