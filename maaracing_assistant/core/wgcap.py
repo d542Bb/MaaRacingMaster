@@ -35,6 +35,7 @@ from maaracing_assistant.core.logger import logger
 
 
 _DWMWA_EXTENDED_FRAME_BOUNDS = 9
+_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4  # Win10 1607+
 _dwmapi = ctypes.WinDLL("dwmapi")
 _dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long  # HRESULT
 _dwmapi.DwmGetWindowAttribute.argtypes = [
@@ -74,6 +75,7 @@ class WgcCapture:
         self._client_offset: tuple[int, int] | None = None  # 客户区在窗口帧中的偏移 (dx, dy)
         self._client_size: tuple[int, int] | None = None    # 客户区尺寸 (w, h)
         self._dwm_size: tuple[int, int] | None = None       # DWM 可见边界尺寸（判定渲染链用）
+        self._crop_warned = False                            # 裁剪越界只告警一次
 
         # 60fps 节流
         self._last_accept_ts_ns: int | None = None
@@ -122,7 +124,12 @@ class WgcCapture:
         logger.log("WGC 中心采集已启动", "DEBUG")
 
     def stop(self):
-        """停止捕获（幂等）。"""
+        """停止捕获（幂等）。
+
+        原生 stop 返回 ≠ windows_capture 线程已收摊：帧 ndarray 的 base 链
+        持有 staging texture，Python 引用不清零就退出/回收会与原生收尾竞争
+        （0xC0000005，P2b 实验 run13 二分定案：stop 后清引用+宽限则稳定干净）。
+        """
         if self._stopped and self._capture is None:
             return
         self._stopped = True
@@ -133,6 +140,11 @@ class WgcCapture:
                 cap.stop()  # windows_capture 原生优雅停止
             except Exception:
                 pass
+        with self._lock:
+            self._latest_frame = None
+            self._std_rgb = None
+            self._std_fid = -1
+        time.sleep(0.25)  # 原生线程收摊宽限
         logger.log("WGC 中心采集已停止", "DEBUG")
 
     def get_latest(self):
@@ -214,6 +226,11 @@ class WgcCapture:
 
         WGC 捕获的是窗口整体（含标题栏/边框）；先拿 DWM 可见边界（不含阴影），
         再拿客户区屏幕原点，偏移 = 客户区原点 - 可见边界原点。
+        坐标系统一（真机八炸定案）：DWM 边界恒为物理像素，而 GetClientRect/
+        ClientToScreen 随进程 DPI awareness 返回逻辑像素——125% 缩放下混系
+        相减得出负偏移，裁剪静默失效、整窗（含标题栏）下传。用
+        SetThreadDpiAwarenessContext(PMv2) 线程级切换统一取物理坐标，
+        调用完即恢复，不影响进程其他部分。
         失败（DWM 不可用等）→ 不裁剪（整窗），后续 16:9 校正兜底。
         """
         try:
@@ -226,15 +243,30 @@ class WgcCapture:
             if hret != 0:
                 raise OSError(f"DwmGetWindowAttribute 失败 HRESULT={hret:#x}")
             u32 = ctypes.windll.user32
-            pt = _wt.POINT(0, 0)
-            if not u32.ClientToScreen(self._hwnd, ctypes.byref(pt)):
-                raise OSError("ClientToScreen 失败")
-            crect = _wt.RECT()
-            if not u32.GetClientRect(self._hwnd, ctypes.byref(crect)):
-                raise OSError("GetClientRect 失败")
+            old_ctx = None
+            try:  # 线程级 PMv2：本函数内 Win32 坐标全部物理像素
+                set_ctx = u32.SetThreadDpiAwarenessContext
+                set_ctx.restype = ctypes.c_void_p
+                set_ctx.argtypes = [ctypes.c_void_p]
+                old_ctx = set_ctx(ctypes.c_void_p(_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+            except (AttributeError, OSError):
+                pass  # Win10 1607 前无此 API：保持原状（低概率，且兜底路径已修向）
+            try:
+                pt = _wt.POINT(0, 0)
+                if not u32.ClientToScreen(self._hwnd, ctypes.byref(pt)):
+                    raise OSError("ClientToScreen 失败")
+                crect = _wt.RECT()
+                if not u32.GetClientRect(self._hwnd, ctypes.byref(crect)):
+                    raise OSError("GetClientRect 失败")
+            finally:
+                if old_ctx is not None:
+                    set_ctx(old_ctx)
             self._client_offset = (pt.x - rect.left, pt.y - rect.top)
             self._client_size = (crect.right - crect.left, crect.bottom - crect.top)
             self._dwm_size = (rect.right - rect.left, rect.bottom - rect.top)
+            if self._client_offset[0] < 0 or self._client_offset[1] < 0:
+                raise OSError(f"客户区偏移为负 {self._client_offset}（坐标系仍不一致，"
+                              f"拒绝带病裁剪）")
             logger.log(
                 f"WGC 客户区裁剪: offset={self._client_offset} size={self._client_size} "
                 f"dwm={self._dwm_size}",
@@ -252,6 +284,8 @@ class WgcCapture:
         窗口装饰链（含标题栏/边框），用客户区 offset 裁剪；否则（如游戏走独立
         交换链，帧 1604x902 ≫ 窗口 1281x721）→ 帧即纯游戏画面（天然无标题栏），
         整帧直接使用——不依赖 offset 符号，两种场景都正确。
+        兜底方向（真机八炸定案）：非 16:9 时裁顶部、保底部——游戏主体 UI 在
+        底部，而混入的窗口装饰在顶部；旧实现 `img[:target_h]` 恰好裁反。
         """
         if (self._client_offset is not None and self._client_size is not None
                 and self._dwm_size is not None):
@@ -262,12 +296,17 @@ class WgcCapture:
                 cw, ch = self._client_size
                 if dx >= 0 and dy >= 0 and dx + cw <= w and dy + ch <= h:
                     img = img[dy:dy + ch, dx:dx + cw]
+                elif not self._crop_warned:
+                    self._crop_warned = True
+                    logger.log(f"WGC 客户区裁剪越界 offset={self._client_offset} "
+                               f"size={self._client_size} frame={w}x{h}（整窗下传）",
+                               "WARNING")
             # 独立渲染链 → 整帧即内容（跳过裁剪）
         # 非 16:9 兜底：底部锚定裁到 16:9（bottom 是画面主体，顶部裁最安全）
         h, w = img.shape[:2]
         target_h = int(round(w * 9 / 16))
         if 0 < target_h < h:
-            img = img[:target_h, :]
+            img = img[h - target_h:, :]
         return img
 
     # ---- 内部回调 ----

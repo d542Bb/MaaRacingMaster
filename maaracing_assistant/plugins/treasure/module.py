@@ -546,6 +546,11 @@ class TreasureModule(ActivityModule):
                                         # 用户点确认后出价区有切换动画，动画期 OCR 读到的可能是
                                         # 旧"出价中"或乱帧；此时若用"已出价"硬门槛判断会误拒正常提交。
                                         # wait_result 内前 N 帧不校验，动画期过后仍"出价中"才算假下降沿。
+    SUBMIT_ANIMATION_BUFFER_MS = 1500    # 假下降沿缓冲的**时间**口径（v4 定案）：帧数口径隐含依赖
+                                        # 主循环帧率（v3 的 wait_result 150ms/帧），v4 节奏交还框架后
+                                        # 实际帧间隔 ~125ms，10 帧缓冲被稀释到 1.25s → 对手未齐报价时
+                                        # 误判假下降沿、phase 退 wait_first、OCR 停投 → 错过整个公开
+                                        # 报价窗口（2026-09-09 20:13 实机 log 实锤）。计时与帧率解耦。
     # 真实点击（v0.4，方案见 docs/treasure_real_click_plan.md）：
     #   可见鼠标移动到目标 → 停顿 → SendInput 左键。所有参数化，便于按阶段调整。
     CLICK_MOVE_PAUSE_S = 0.4     # 鼠标移到目标后的停顿（让用户看清；后续出价 S3 可单独降 0.1~0.2s）
@@ -776,7 +781,7 @@ class TreasureModule(ActivityModule):
         # --------- 阶段切换类点击重试状态 ---------
         self._click_retry_key: str | None = None    # 正在等待"切换阶段"的 key
         self._click_retry_stage: str | None = None  # 点击时所在阶段（阶段切走即成功）
-        self._click_retry_since: int = 0            # 最近一次点击成功的帧计数
+        self._click_retry_since_ts: float = 0.0     # 最近一次点击成功的时刻（重试超时计时，与帧率解耦）
         self._click_retry_count: int = 0            # 已重试次数（达 CLICK_RETRY_MAX 停手）
         # 进入「选择鉴宝师」阶段时的帧计数（转场稳定缓冲用，见 APPRAISER_SETTLE_FRAMES）
         self._appr_enter_frame: int = 0
@@ -910,7 +915,8 @@ class TreasureModule(ActivityModule):
         # 仅作 wait_result 内「假下降沿」兜底校验，不作进入 wait_result 的硬门槛
         # （出价区切换有动画，动画期会误读，硬门槛会误拒正常提交）。
         self._bid_player_submitted: dict[int, bool] = {}
-        self._wait_result_frames: int = 0     # 进入 wait_result 后的累计帧数（动画期缓冲用）
+        self._wait_result_frames: int = 0     # 进入 wait_result 后的累计帧数（日志/统计用）
+        self._wait_result_entered_ts: float = 0.0  # 进入 wait_result 的时刻（假下降沿缓冲计时，见 SUBMIT_ANIMATION_BUFFER_MS）
         # 报价槽级固化状态（wait_result 读 4 槽报价）：pid → {val, stable, locked, miss,
         # consumed, output, hits}
         #   val=-1 未读；stable=连续一致帧数；locked=已固化（停止该槽 OCR）；
@@ -951,7 +957,6 @@ class TreasureModule(ActivityModule):
         # 主线程零阻塞；结果仅记录用途，超时兜底在 _decide_action（EGG_OCR_TIMEOUT_FRAMES）。
         self._egg_result: dict | None = None
         # --------- 结构化落盘（%APPDATA%/MaaRacingAssistant/data/treasure/treasure.db，凌晨5点日界）----------
-        self._db_conn = None                          # sqlite3 连接（start 时初始化，主线程写，stop 关闭）
         self._data_dir: Path | None = None            # 用户数据目录 treasure/（start 时初始化）
         # --------- 真实点击（v0.4）：边沿触发指纹锁 + 限速 ---------
         # 指纹 = (key, state, 归一化中心四舍五入[, 输入位锚点])；点击成功后才更新，
@@ -1075,7 +1080,7 @@ class TreasureModule(ActivityModule):
 
     # ---------------- v4 执行通路（P2a-Q4，NAVKIT_SOURCE=v4 启用） ----------------
 
-    _V4_ENTRY = "global.hall_peak_appraise_card.rhall_to_treasure.0"  # v4 图入口链头
+    _V4_ENTRY = "treasure.__boot.dwell"  # 起跑汇聚节点：任意 stage 自适应（v3 语义）
 
     @staticmethod
     def _v4_enabled() -> bool:
@@ -1092,17 +1097,22 @@ class TreasureModule(ActivityModule):
         from maaracing_assistant.plugins.treasure.policy_bridge import (
             POLICY_ACTION_NAME, PolicyBridge,
         )
-        plugin_root = _Path(__file__).resolve().parents[1]
-        repo_root = plugin_root.parents[1]
-        runner = NavKitV4(
-            self.ctx,
-            pipeline_dirs=[
-                repo_root / "maaracing_assistant" / "core" / "resources" / "nav",
-                plugin_root / "resources" / "nav",
-            ],
-            image_dirs=[plugin_root / "resources" / "image"],
-            bridges=[(POLICY_ACTION_NAME, PolicyBridge(self))],
-        )
+        plugin_root = _Path(__file__).resolve().parent  # module.py 直接父目录 = plugins/treasure
+        repo_root = plugin_root.parents[2]  # 仓库根：treasure → plugins → 包目录 → 根
+        # C 句柄对象（Resource/Tasker/CustomController）全程驻留、跨重启复用：
+        # binding __del__ 不等 C++ worker 收摊，模块结束即 GC 会竞态崩溃
+        # （0xC0000005，P2b 实验 run13 定案）。
+        runner = getattr(self, "_v4_runner", None)
+        if runner is None:
+            runner = self._v4_runner = NavKitV4(
+                self.ctx,
+                pipeline_dirs=[
+                    repo_root / "maaracing_assistant" / "core" / "resources" / "nav",
+                    plugin_root / "resources" / "nav",
+                ],
+                image_dirs=[plugin_root / "resources" / "image"],
+                bridges=[(POLICY_ACTION_NAME, PolicyBridge(self))],
+            )
         if not runner.start(self._V4_ENTRY):
             raise RuntimeError("[鉴宝][v4] 常驻图加载失败，模块终止")
         logger.log("[鉴宝][v4] 帧工作已移交 MaaFW Tasker 线程（policy 闭环桥）")
@@ -1351,7 +1361,7 @@ class TreasureModule(ActivityModule):
         # 阶段切换重试状态：新一场清零（防残留重试配额/等待态）
         self._click_retry_key = None
         self._click_retry_stage = None
-        self._click_retry_since = 0
+        self._click_retry_since_ts = 0.0
         self._click_retry_count = 0
         # 场次选择「开始匹配」冷却：新一场清零（防残留）
         self._session_start_cooldown = 0
@@ -1388,7 +1398,7 @@ class TreasureModule(ActivityModule):
                 self._pending_click = None  # 异步点击：回合切换无在途点击
                 self._click_retry_key = None
                 self._click_retry_stage = None
-                self._click_retry_since = 0
+                self._click_retry_since_ts = 0.0
                 self._click_retry_count = 0
             # 进入「领取分红」阶段：重置"跳过动画点一次"标记（仅第一次准星指领取按钮，
             # 跳过数据加载动画，防止连点把结算页直接关掉退出去）
@@ -2150,6 +2160,7 @@ class TreasureModule(ActivityModule):
         if falling_edge and self._bid_phase == "bidding":
             self._bid_phase = "wait_result"
             self._wait_result_frames = 0
+            self._wait_result_entered_ts = time.time()
             logger.log(
                 f"[鉴宝出价] epoch#{self._bid_epoch} 检测到面板关闭（用户已确认出价）"
                 "（phase→wait_result），等待公开报价，OCR 读 4 槽构建快照...",
@@ -2179,15 +2190,15 @@ class TreasureModule(ActivityModule):
             # 三态化保证：网卡/动画残缺的空读取不写键（保持上次状态），不会把"没读到"当"出价中"误判。
             # 用户拍板「读到报价即禁用」：本回合任意槽已读到过报价（固化 或 hits>0）即证明
             # 报价已开始展示、我方必已提交 → 禁用假下降沿，避免"读不到已出价状态"误判重报。
-            # 缓冲帧数按 wait_result 帧率翻倍(150ms)补偿：保持 ≈1.5s 的动画缓冲时间。
+            # 缓冲用时间口径（SUBMIT_ANIMATION_BUFFER_MS），与帧率解耦——帧数口径在
+            # v4 节奏（policy_loop 自驱）下会被稀释。即使仍误回退 wait_first，按钮
+            # OCR 读到「已出价」会自愈回 wait_result（见下方 S1/S2 分支）。
             any_bid_read = any(
                 s.get("locked") or s.get("hits", 0) > 0 for s in self._bid_slots.values()
             )
-            buffer_frames = self.SUBMIT_ANIMATION_BUFFER_FRAMES * (
-                2 if self._bid_phase == "wait_result" else 1
-            )
             if (not any_bid_read
-                    and self._wait_result_frames > buffer_frames
+                    and (time.time() - self._wait_result_entered_ts) * 1000
+                    >= self.SUBMIT_ANIMATION_BUFFER_MS
                     and self._my_rank is not None
                     and self._bid_player_submitted.get(self._my_rank) is False):
                 self._bid_phase = "wait_first"
@@ -2241,6 +2252,25 @@ class TreasureModule(ActivityModule):
             return
         # S1/S2：面板未开 → OCR 主按钮文字
         label = self._read_bid_main_btn_label(frame_rgb)
+        # 「已出价」= 提交成功的铁证（按钮显示 已出价:金额）。wait_first 若由假下降沿
+        # 回退而来，按钮仍读「已出价」说明实际已提交、只是对手未齐报价 → 回
+        # wait_result 继续读 4 槽等公开报价。没有这一步，wait_first 不投递槽 OCR，
+        # 会错过整个公开报价窗口 → 快照缺失 → 后续回合策略退化为 observe。
+        if "已出价" in label and self._bid_phase == "wait_first" and self._bid_epoch > 0:
+            self._bid_phase = "wait_result"
+            self._wait_result_frames = 0
+            self._wait_result_entered_ts = time.time()
+            logger.log(
+                f"[鉴宝出价] epoch#{self._bid_epoch} wait_first 中按钮 OCR 读到「已出价」→ "
+                "判定我方提交实际已成功（对手未齐报价），phase→wait_result 继续读公开报价",
+                "INFO",
+            )
+            self._bidding_last_decision = {
+                "state": "S4_wait_result", "key": None, "center": None,
+                "hint": f"已提交，等待公布第 {self._round_no} 回合报价...（epoch#{self._bid_epoch}）",
+                "score": 0.0,
+            }
+            return
         main_btn = self._action_centers.get(self._BID_MAIN_BTN_KEY)
         if main_btn is None:
             logger.log("[鉴宝出价] 主出价按钮(bid_main_red_btn)未配置 rect，准星跳过", "WARNING")
@@ -2252,7 +2282,7 @@ class TreasureModule(ActivityModule):
                 "hint": f"等待出价按钮亮起...（OCR={label or '?'}）", "score": 0.0,
             }
             return
-        if "出价" in label and "等待" not in label:
+        if "出价" in label and "等待" not in label and "已出价" not in label:
             self._bidding_last_decision = {
                 "state": "S2_bid", "key": self._BID_MAIN_BTN_KEY, "center": main_btn,
                 "hint": f"意图: 出价按钮已亮（OCR={label or '?'}）→ 点出价",
@@ -3067,7 +3097,7 @@ class TreasureModule(ActivityModule):
                 self._click_retry_count = 0
             self._click_retry_key = key
             self._click_retry_stage = self._current_stage
-            self._click_retry_since = self._frame_counter
+            self._click_retry_since_ts = time.time()
         # 领取分红"跳过动画"首次点击成功后才置位（失败时意图持续，下帧重试）
         if (key == "settle_collect_red_btn" and self._current_stage == "领取分红"
                 and self._settle_my_income is None):
@@ -3215,9 +3245,12 @@ class TreasureModule(ActivityModule):
                 self._click_retry_count = 0
                 return
         # 仍停在点击时的阶段：超时则重新 arm。
-        # 重试帧数 per-key（弹窗连点 3 帧 / 阶段切换 10 帧），见 tuning.policy。
+        # 重试帧数 per-key（弹窗连点 3 帧 / 阶段切换 10 帧），见 tuning.policy；
+        # 配置口径是 v3 主循环帧数（FRAME_INTERVAL_MS/帧），运行时按**时间**判定——
+        # v4 节奏由框架驱动、实际帧间隔不再是 FRAME_INTERVAL_MS，帧数口径会被稀释。
         retry_frames = self._retry_frames_by_key.get(key, self._click_retry_frames)
-        if self._frame_counter - self._click_retry_since < retry_frames:
+        retry_ms = retry_frames * self.FRAME_INTERVAL_MS
+        if (time.time() - self._click_retry_since_ts) * 1000 < retry_ms:
             return
         if self._click_retry_count >= self._click_retry_max:
             logger.log(
@@ -3230,9 +3263,9 @@ class TreasureModule(ActivityModule):
             )
         self._click_retry_count += 1
         self._last_click_fingerprint = None      # 重新 arm → 本帧同一意图可再次点击
-        self._click_retry_since = self._frame_counter
+        self._click_retry_since_ts = time.time()
         logger.log(
-            f"[鉴宝点击] key={key} 点击后 {retry_frames} 帧仍在「{self._click_retry_stage}」，"
+            f"[鉴宝点击] key={key} 点击后 {retry_ms}ms 仍在「{self._click_retry_stage}」，"
             f"第 {self._click_retry_count}/{self._click_retry_max} 次重试", "WARNING",
         )
 

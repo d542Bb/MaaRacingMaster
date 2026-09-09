@@ -29,6 +29,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -42,6 +44,7 @@ from maa.tasker import Tasker
 from maaracing_assistant.core.clicker import Clicker
 from maaracing_assistant.core.logger import logger
 from maaracing_assistant.core.pipeline_logger import PipelineLogger
+from maaracing_assistant.core.window_utils import is_foreground
 from maaracing_assistant.core.template_match import (
     DEFAULT_SCALES,
     color_assert_ok,
@@ -124,6 +127,8 @@ class TemplateRecognizer(CustomRecognition):
             threshold=float(p.get("threshold", 0.75)),
             thresholds=arb, roi=roi)
         if box is None:
+            logger.log(f"[v4] 「{argv.node_name}」识别未命中（ROI 内最高分 "
+                       f"{score:.3f}，模板 {names}）", "DEBUG")
             return self.AnalyzeResult(box=None, detail={"score": round(score, 3)})
 
         if guard.get("templates") and p.get("templates"):
@@ -156,7 +161,9 @@ class TemplateRecognizer(CustomRecognition):
                                                                 "occlusion": round(ratio, 2)})
 
         return self.AnalyzeResult(
-            box=box,
+            # MaaFW rect 契约 = (x, y, w, h)（框架按此归一/裁剪，越界会 clip）；
+            # 内部匹配全程 (x1,y1,x2,y2)，只在框架边界转换。
+            box=(box[0], box[1], box[2] - box[0], box[3] - box[1]),
             detail={"template": hit_name, "score": round(score, 3), "name": argv.node_name})
 
 
@@ -174,12 +181,20 @@ class ClickAction(CustomAction):
 
     def run(self, context, argv):
         p = _parse(argv.custom_action_param)
-        x1, y1, x2, y2 = argv.box
+        rx, ry, rw, rh = argv.box  # MaaFW rect 契约 (x, y, w, h)
         W, H = self._graph.frame_size()
         if W <= 0 or H <= 0:
+            # v4 识别走 argv.image（注入帧），从不触 graph.frame()，_last_frame
+            # 无更新方——这里补取一帧只为尺寸（WGC 缓存同源同尺寸，归一化不偏移）。
+            self._graph.frame()
+            W, H = self._graph.frame_size()
+        if W <= 0 or H <= 0:
+            logger.log(f"[跳转图] 节点「{argv.node_name}」拿不到帧尺寸，点击放弃", "WARNING")
             return False
-        cx, cy = ((x1 + x2) / 2) / W, ((y1 + y2) / 2) / H
-        box_norm = (abs(x2 - x1) / W, abs(y2 - y1) / H)
+        cx, cy = (rx + rw / 2) / W, (ry + rh / 2) / H
+        box_norm = (rw / W, rh / H)
+        logger.log(f"[v4] 「{argv.node_name}」点击 rect=({rx},{ry},{rw},{rh}) "
+                   f"帧 {W}x{H} 归一化=({cx:.3f},{cy:.3f})", "DEBUG")
 
         ok = self._graph.click(cx, cy, box_norm,
                                timeout_s=float(p.get("timeout_s", 20.0)))
@@ -200,9 +215,11 @@ class NavGraph:
     """
 
     CLICK_POLL_S = 0.05   # 点击结果轮询间隔
+    FOREGROUND_WARN_S = 5.0  # 前台校验告警节流（dwell 重试 600ms 一次，防空降）
 
     def __init__(self, ctx):
         self.ctx = ctx
+        self._last_fg_warn = 0.0
         self.image_dirs = [CORE_RES_DIR / "image"]
         # core 侧公共图目录按存在性纳入：导航真源已收口到 v3 资产，
         # 没有手写公共图时不该让 load() 对着不存在的路径去 post_pipeline。
@@ -266,6 +283,21 @@ class NavGraph:
         clicker = self._ensure_clicker()
         clicker.set_mode(self.ctx.click_mode)
         clicker.set_intent(self.ctx.intent_mode)
+        if clicker.mode == "gamepad" and not clicker.gamepad_bound:
+            # v4 手柄租约只在模块启动时按当时模式绑定；运行中热切到 gamepad
+            # 不重绑——不拦会静默 submit False，这里给可诊断的告警。
+            logger.log("[v4] 点击方式已热切为 gamepad 但手柄未绑定：请重启模块生效", "WARNING")
+            return False
+        if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
+            # 与 v3 _execute_click 同款护栏：前台(鼠标)模式不抢前台——游戏不在
+            # 前台时 SendInput 会点到该屏幕位置最上的其他窗口（落点看似「完全
+            # 不对」）。取消本次点击，节点走 on_error 回 dwell 按 rate_limit 重试。
+            now = time.monotonic()
+            if now - self._last_fg_warn >= self.FOREGROUND_WARN_S:
+                self._last_fg_warn = now
+                logger.log("[v4] 游戏窗口非前台，取消本次点击（安全策略：不抢前台；"
+                           "可切后台(手柄)方式或把游戏带到前台）", "WARNING")
+            return False
         if not clicker.submit_click(cx, cy, box=box_norm):
             return False
         deadline = time.monotonic() + timeout_s
@@ -447,14 +479,45 @@ class NavKitV4:
         self._job = None
 
     def load(self) -> bool:
-        """加载 v4 真源目录并把 Tasker 绑到帧注入控制器。重复调用无副作用。"""
+        """加载 v4 真源目录并把 Tasker 绑到帧注入控制器。重复调用无副作用。
+
+        真源分居 core/plugin 两处且互指（global 骨架 ↔ 模块图），框架按
+        post 校验节点引用存在性——分次 post 时先加载者必然失败。多目录
+        时合并到临时目录一次 post；框架在 post 时同步解析为内部节点，
+        加载完成即清理临时目录，源目录（MPE 编辑入口）不受影响。
+        """
         if self._loaded:
             return True
         for d in self._pipeline_dirs:
-            job = self._resource.post_pipeline(str(d)).wait()
-            if job.failed:
-                logger.log(f"[v4] pipeline 加载失败: {d}", "ERROR")
+            if not d.is_dir():
+                logger.log(f"[v4] 真源目录不存在: {d}", "ERROR")
                 return False
+        merged_tmp: Path | None = None
+        try:
+            if len(self._pipeline_dirs) == 1:
+                target = self._pipeline_dirs[0]
+            else:
+                merged_tmp = Path(tempfile.mkdtemp(prefix="navkit-pipeline-"))
+                seen: dict[str, Path] = {}
+                for d in self._pipeline_dirs:
+                    for f in d.rglob("*.json*"):
+                        rel = f.relative_to(d).as_posix()
+                        if rel in seen:
+                            logger.log(
+                                f"[v4] 真源文件冲突: {rel}（{seen[rel]} 与 {d}）", "ERROR")
+                            return False
+                        seen[rel] = d
+                        dest = merged_tmp / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(f, dest)
+                target = merged_tmp
+            job = self._resource.post_pipeline(str(target)).wait()
+        finally:
+            if merged_tmp is not None:
+                shutil.rmtree(merged_tmp, ignore_errors=True)
+        if job.failed:
+            logger.log(f"[v4] pipeline 加载失败: {[str(d) for d in self._pipeline_dirs]}", "ERROR")
+            return False
         self._tasker.add_context_sink(PipelineLogger())
         self._tasker.bind(self._resource, self._controller)
         self._loaded = True
@@ -480,6 +543,13 @@ class NavKitV4:
             self._tasker.post_stop()
         except Exception:  # noqa: BLE001 —— 未起跑时停止是正常路径
             pass
+        if self._job is not None:
+            # 等 Tasker 线程真正收摊再返回：对象随模块结束被 GC 时若线程仍在
+            # 跑图，C 层回调悬空 → 0xC0000005（binding 句柄生命周期已知坑）。
+            try:
+                self._job.wait()
+            except Exception:  # noqa: BLE001
+                pass
 
     def shutdown(self) -> None:
         self.stop()

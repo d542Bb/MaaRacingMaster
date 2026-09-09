@@ -72,6 +72,28 @@
       },
       "recognition": "Custom"
     },
+    "treasure.appraiser_title": {
+      "_label": "选择鉴宝师标题",
+      "_order": 940,
+      "_owner": "treasure",
+      "_page": "appraiser",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.4037037037037037,
+          0.1674074074074074,
+          0.6000000000000001,
+          0.2563786008230453
+        ],
+        "templates": [
+          "select_appraiser_title.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
     "treasure.bid_confirm_red_btn": {
       "_label": "出价确认(红)",
       "_order": 21,
@@ -101,8 +123,29 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.47704791344667696,
+          0.8288425210372661
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.39703703703703697,
+            0.42790123456790125,
+            0.5970370370370369,
+            0.5779012345679012
+          ],
+          "templates": [
+            "round1_banner.png",
+            "round2_banner.png",
+            "round3_banner.png",
+            "round4_banner.png",
+            "round5_banner.png"
+          ]
+        },
         "guarded_by": "treasure.round_big_banner",
         "mode": "point",
         "rect": [
@@ -121,8 +164,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.5829211746522411,
+          0.8054868624420402
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -141,8 +201,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.5817619783616692,
+          0.5382706508672506
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -161,8 +238,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.6312210200927357,
+          0.5389575820024043
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -181,8 +275,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.681839258114374,
+          0.5417053065430192
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -201,8 +312,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.5825347758887172,
+          0.6282586295723853
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -221,8 +349,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.6312210200927357,
+          0.6282586295723853
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -241,8 +386,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.6802936630602783,
+          0.6282586295723853
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -261,8 +423,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.5821483771251932,
+          0.7189335394126739
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -281,8 +460,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.6327666151468315,
+          0.7182466082775202
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -301,8 +497,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.6818392581143741,
+          0.7182466082775202
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -321,8 +534,25 @@
       "_page": "bidding",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.3294435857805255,
+          0.6255109050317706
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.7081481481481482,
+            0.7626337448559671,
+            0.8074074074074075,
+            0.8476543209876544
+          ],
+          "templates": [
+            "bid_smart_btn.png"
+          ]
+        },
         "guarded_by": "treasure.smart_bid_btn",
         "mode": "point",
         "rect": [
@@ -353,6 +583,32 @@
         "templates": [
           "confirm_red_btn.png"
         ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.daily_high_banner": {
+      "_label": "今日最高积分上涨横幅",
+      "_order": 890,
+      "_owner": "treasure",
+      "_page": "popup",
+      "_v3": {
+        "comment": "结算后弹窗①：单日最高利润刷新时出现；点空白继续"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.2829629629629631,
+          0.38979423868312757,
+          0.7348148148148149,
+          0.5184362139917695
+        ],
+        "templates": [
+          "daily_high_banner.png"
+        ],
+        "threshold": 0.8
       },
       "recognition": "Custom"
     },
@@ -388,6 +644,142 @@
       },
       "recognition": "Custom"
     },
+    "treasure.egg_reward_title": {
+      "_label": "奖励彩蛋弹窗标题",
+      "_order": 895,
+      "_owner": "treasure",
+      "_page": "popup",
+      "_v3": {
+        "comment": "结算后弹窗③：拍品含蛋时出现；点屏幕继续"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.44296296296296295,
+          0.22913580246913579,
+          0.56,
+          0.37621399176954734
+        ],
+        "templates": [
+          "egg_reward_title.png"
+        ],
+        "threshold": 0.8
+      },
+      "recognition": "Custom"
+    },
+    "treasure.hall_session_cards": {
+      "_label": "鉴宝大厅左下角场次信息卡",
+      "_order": 950,
+      "_owner": "treasure",
+      "_page": "session",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.05,
+          0.7,
+          0.21,
+          0.93
+        ],
+        "templates": [
+          "hall_session_cards.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.is_matching_btn": {
+      "_label": "匹配中按钮",
+      "_order": 940,
+      "_owner": "treasure",
+      "_page": "matching",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.7096296296296296,
+          0.7660905349794238,
+          0.8962962962962964,
+          0.8502880658436215
+        ],
+        "templates": [
+          "is_matching_btn.png"
+        ],
+        "threshold": 0.9
+      },
+      "recognition": "Custom"
+    },
+    "treasure.result_banner": {
+      "_label": "竞拍结果横幅",
+      "_order": 910,
+      "_owner": "treasure",
+      "_page": "settle",
+      "_v3": {
+        "comment": "中标横幅带彩条特效，匹配分偏低，单独放宽阈值防误判"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "arbitration": {
+          "template_thresholds": {
+            "result_auction_win_banner": 0.6
+          }
+        },
+        "mode": "template",
+        "rect": [
+          0.31146717041616573,
+          0.3948084543413412,
+          0.6993817619783617,
+          0.6037266014082088
+        ],
+        "templates": [
+          "result_auction_fail_banner.png",
+          "result_auction_win_banner.png"
+        ],
+        "threshold": 0.9
+      },
+      "recognition": "Custom"
+    },
+    "treasure.round_big_banner": {
+      "_label": "回合巨型横幅",
+      "_order": 930,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "_v3": {
+        "comment": "5 张互斥模板取最高分且领先次高 ≥ 0.03；回合号权威来源"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "arbitration": {
+          "margin": 0.03,
+          "round_from_template": true
+        },
+        "mode": "template",
+        "rect": [
+          0.39703703703703697,
+          0.42790123456790125,
+          0.5970370370370369,
+          0.5779012345679012
+        ],
+        "templates": [
+          "round1_banner.png",
+          "round2_banner.png",
+          "round3_banner.png",
+          "round4_banner.png",
+          "round5_banner.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
     "treasure.session_expert_badge": {
       "_label": "鉴宝专家场标签",
       "_order": 8,
@@ -398,8 +790,25 @@
       },
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.2106259659969088,
+          0.3517688476730208
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.05,
+            0.7,
+            0.21,
+            0.93
+          ],
+          "templates": [
+            "hall_session_cards.png"
+          ]
+        },
         "guarded_by": "treasure.hall_session_cards",
         "mode": "point",
         "rect": [
@@ -421,8 +830,25 @@
       },
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.19217156105100464,
+          0.5907994161085351
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.05,
+            0.7,
+            0.21,
+            0.93
+          ],
+          "templates": [
+            "hall_session_cards.png"
+          ]
+        },
         "guarded_by": "treasure.hall_session_cards",
         "mode": "point",
         "rect": [
@@ -446,6 +872,17 @@
       "custom_action": "MRA_Click",
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.05,
+            0.7,
+            0.21,
+            0.93
+          ],
+          "templates": [
+            "hall_session_cards.png"
+          ]
+        },
         "guarded_by": "treasure.hall_session_cards",
         "mode": "template",
         "rect": [
@@ -494,8 +931,25 @@
       "_page": "session",
       "action": "Custom",
       "custom_action": "MRA_Click",
+      "custom_action_param": {
+        "target": [
+          0.8005566878960182,
+          0.8076892775995848
+        ]
+      },
       "custom_recognition": "MRA_Template",
       "custom_recognition_param": {
+        "guard": {
+          "rect": [
+            0.05,
+            0.7,
+            0.21,
+            0.93
+          ],
+          "templates": [
+            "hall_session_cards.png"
+          ]
+        },
         "guarded_by": "treasure.hall_session_cards",
         "mode": "point",
         "rect": [
@@ -525,6 +979,53 @@
         ],
         "templates": [
           "settle_collect_red_btn.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.settle_title": {
+      "_label": "结算最终竞拍价格标题",
+      "_order": 900,
+      "_owner": "treasure",
+      "_page": "payout",
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.6792592592592593,
+          0.1805761316872428,
+          0.802962962962963,
+          0.24452674897119342
+        ],
+        "templates": [
+          "settle_final_price_title.png"
+        ]
+      },
+      "recognition": "Custom"
+    },
+    "treasure.smart_bid_btn": {
+      "_label": "智能出价按钮",
+      "_order": 920,
+      "_owner": "treasure",
+      "_page": "bidding",
+      "_v3": {
+        "comment": "出价面板开的强信号；常亮但无回合号，回合号走横幅"
+      },
+      "action": "Custom",
+      "custom_action": "MRA_Click",
+      "custom_recognition": "MRA_Template",
+      "custom_recognition_param": {
+        "mode": "template",
+        "rect": [
+          0.7081481481481482,
+          0.7626337448559671,
+          0.8074074074074075,
+          0.8476543209876544
+        ],
+        "templates": [
+          "bid_smart_btn.png"
         ]
       },
       "recognition": "Custom"

@@ -1,7 +1,7 @@
 # P2b 真机冒烟启动：NAVKIT_SOURCE=v4 注入后启动 mra_shell GUI
 # 用法：在仓库根目录执行  .\tools\experiments\v4-p2b-smoke\run_v4_smoke.ps1
 $ErrorActionPreference = "Stop"
-Set-Location "$PSScriptRoot\..\.."
+Set-Location "$PSScriptRoot\..\..\.."
 
 $env:NAVKIT_SOURCE = "v4"
 Write-Host "[v4-smoke] NAVKIT_SOURCE = $env:NAVKIT_SOURCE"

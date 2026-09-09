@@ -35,8 +35,12 @@ class PipelineLogger(ContextEventSink):
         hit = getattr(detail, "hit", None)
         if ts == "Succeeded" and hit is not None:
             logger.log(f"[Pipeline] {name}({desc}) → 识别{'✅命中' if hit else '❌未找到'}")
-        elif ts in ("Starting", "Succeeded"):
+        elif ts == "Succeeded":
             logger.log(f"[Pipeline] {ts}: {name}({desc})")
+        elif ts == "Failed":
+            # Custom 识别器未命中（box=None）即发 Failed；Starting 不再逐次
+            # 打印——rate_limit 内每帧一对 Starting/Failed 会淹没有效信息。
+            logger.log(f"[Pipeline] {name}({desc}) → 识别未命中（驻留重试）", "DEBUG")
 
     def on_node_action(self, context, noti_type, detail):
         ts = NotificationType(noti_type).name

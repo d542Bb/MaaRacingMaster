@@ -163,14 +163,25 @@ def _signal_inline(sig_anchor_name: str, base_nodes: dict) -> dict | None:
     return sub
 
 
-def _dwell_node(stage: str, definition: dict, base_nodes: dict) -> dict:
-    """stage 驻留节点：识别 = 阶段识别信号 Or 内联（无信号 = DirectHit），动作 DoNothing。"""
-    sigs = [f"treasure.{a}" for a in (definition.get("anchors") or []) if f"treasure.{a}" in base_nodes]
+def _dwell_node(stage: str, definition: dict, base_nodes: dict,
+                sig_judge: dict[str, set[str]] | None = None) -> dict:
+    """stage 驻留节点：识别 = 阶段专属信号 Or 内联（无信号 = DirectHit），动作 DoNothing。
+
+    信号专属化（真机八炸定案）：只保留「transitions 判定阶段含本阶段」的信号，
+    未声明判定映射的信号保守保留。专属化后无任何识别信号 = 判定表与锚点集矛盾，
+    直接报错（DirectHit dwell 会让 boot 起跑即误命中，必须暴露而非静默）。
+    """
+    sigs = [f"treasure.{a}" for a in (definition.get("anchors") or [])
+            if f"treasure.{a}" in base_nodes
+            and (not sig_judge or stage in sig_judge.get(a, {stage}))]
     inlines = [x for x in (_signal_inline(s, base_nodes) for s in sigs) if x]
     if len(inlines) == 1:
         recog = dict(inlines[0])
     elif inlines:
         recog = {"recognition": {"type": "Or", "param": {"any_of": inlines}}}
+    elif sig_judge and definition.get("anchors"):
+        raise MigrateError(
+            f"stage {stage!r} 锚点 {definition['anchors']} 全部不属于本阶段判定（transitions 判定表矛盾）")
     else:
         recog = {"recognition": "DirectHit"}
     node: dict[str, Any] = dict(recog)
@@ -188,16 +199,53 @@ def _dwell_node(stage: str, definition: dict, base_nodes: dict) -> dict:
     return node
 
 
-def expand_transitions(doc: dict, base_nodes: dict, stage_order: list[str]) -> tuple[dict, dict, dict]:
-    """生成 dwell 节点、给 transition/通配锚点接全表回判 next。
+def expand_transitions(doc: dict, base_nodes: dict, stage_order: list[str],
+                       dyn_stages: frozenset = frozenset()) -> tuple[dict, dict, dict]:
+    """生成 dwell 节点、给可导航锚点接全表回判 next。
 
     返回 (dwells, anchor_next, anchor_onerror)。
+    单脑原则（真机七炸定案）——锚点可点击判据 = 数据驱动：
+      clickable = routes.steps.target（显式导航按钮）∪ 非 stage 信号的 transition.on；
+      纯信号锚点（hall_session_cards/smart_bid_btn 等）只作 dwell 识别内联，
+      点击语义归 policy 决策（图不代点）——否则「点当前高亮卡」这种静态投影
+      会替掉动态场次/出价决策，反复点错误元素。
+    阶段候选序（boot/回判全表）：决策阶段（dyn_stages）优先——共享信号
+    （hall_session_cards 同属大厅/活动页/鉴宝厅信号组）下导航厅会截胡，
+    特定阶段前置消歧（真机 run15 取证定案）。
     行为位一致：点击命中后下一帧 = 全阶段信号重判（v3 detector 同款），
     next 稳定序 = 该锚点声明目标优先（stages.order 序），其余按 order。
     """
     defs = doc["stages"]["definitions"]
-    dwells = {f"treasure.{s}.dwell": _dwell_node(s, defs[s], base_nodes) for s in stage_order}
-    dwell_order = [f"treasure.{s}.dwell" for s in stage_order]
+    route_targets = {st.get("target") for r in (doc.get("routes") or {}).values()
+                     for st in (r.get("steps") or []) if st.get("target")}
+    signal_set = {a for d in defs.values() for a in (d.get("anchors") or [])}
+
+    # 信号→页面判定映射（v3 transitions 语义：on 的 to =「看到该信号=当前在该阶段」，
+    # 真机八炸定案）。dwell 识别信号专属化判据：信号只归属其判定阶段——否则
+    # 共享信号（hall_session_cards 同属大厅/活动页信号组）让场次页被「活动页面
+    # dwell」截胡，纯导航 next 全表识别误判后 timeout=-1 永久静默。
+    sig_judge: dict[str, set[str]] = {}
+    for tr in doc.get("transitions") or []:
+        on, to = tr.get("on"), tr.get("to")
+        if not on:
+            continue
+        if to in (None, "same", "*"):
+            judge = set(stage_order)  # 无判定声明 → 保守保留原状
+        elif to == "$round":
+            judge = {s for s in stage_order if "回合" in s}
+        elif to in stage_order:
+            judge = {to}
+        else:
+            raise MigrateError(f"transition on={on!r} to 引用未定义阶段 {to!r}")
+        sig_judge.setdefault(on, set()).update(judge)
+
+    def _clickable(tgt: str) -> bool:
+        bare = tgt.removeprefix("treasure.")  # signal/route 集是裸名，tgt 是全名
+        return bare in route_targets or bare not in signal_set
+
+    dwells = {f"treasure.{s}.dwell": _dwell_node(s, defs[s], base_nodes, sig_judge)
+              for s in stage_order}
+    dwell_order = [f"treasure.{s}.dwell" for s in _dyn_first(stage_order, dyn_stages)]
     wilds: list[str] = []
     dwell_next: dict[str, list[str]] = {d: [] for d in dwell_order}
     targets_by_anchor: dict[str, list[str]] = {}
@@ -209,6 +257,8 @@ def expand_transitions(doc: dict, base_nodes: dict, stage_order: list[str]) -> t
         tgt = _node_name(on)
         if tgt not in base_nodes:
             raise MigrateError(f"transition.on 引用悬空: {on}")
+        if not _clickable(tgt):
+            continue  # 纯信号：dwell 识别内联已覆盖，不进点击位
         if src == "*":
             wilds.append(tgt)
             # 通配锚点的声明 to 仍是点击后的优先目标（任意处命中 → 该阶段）
@@ -392,6 +442,52 @@ def split_global(full: dict) -> tuple[dict, dict, list[tuple[str, str]]]:
     return glob, trea, sorted(renames.items())
 
 
+def _dyn_first(stage_order: list[str], dyn_stages: frozenset) -> list[str]:
+    """决策阶段（动态 source）前置的 stage 稳定序——共享信号下特定阶段优先命中。"""
+    return sorted(stage_order, key=lambda s: s not in dyn_stages)
+
+
+def _boot_node(module: str, stage_order: list[str], dwells: dict,
+               dyn_stages: frozenset = frozenset()) -> dict:
+    """起跑汇聚节点：v3「任意 stage 起跑」语义的 v4 形态（P2b 真机三炸根修）。
+
+    route 链头是线性硬路径（主大厅→活动页），游戏不在链头画面时永不命中；
+    v3 主循环则是每帧检测 stage 自适应。boot = 全部 stage 信号大 Or、next =
+    全部 dwell（stage 序），timeout=-1 未知画面无限驻留等待（v3 同款）。
+    不设 _page：M3 切分只搬 hall/activity，boot 属模块、留 plugin 文件。
+    """
+    inlines = []
+    seen: set[str] = set()
+    for s in stage_order:
+        d = dwells[f"{module}.{s}.dwell"]
+        r = d.get("recognition")
+        if isinstance(r, dict) and r.get("type") == "Or":
+            # 多信号 dwell：Or 对象即 recognition 本体
+            subs = r["param"]["any_of"]
+        elif r == "Custom" and "custom_recognition" in d:
+            # 单信号 dwell（信号专属化后多数阶段）：识别参数在节点顶层
+            subs = [{k: d[k] for k in
+                     ("recognition", "custom_recognition", "custom_recognition_param")
+                     if k in d}]
+        else:
+            continue  # DirectHit 信号（无识别 stage）不进 boot：起跑即命中会破坏汇聚语义
+        for sub in subs:  # 共享模板去重（信号专属化后各页信号已唯一，此处只防历史膨胀）
+            key = json.dumps(sub, sort_keys=True, ensure_ascii=False)
+            if key not in seen:
+                seen.add(key)
+                inlines.append(sub)
+    return {
+        "recognition": {"type": "Or", "param": {"any_of": inlines}},
+        "action": "DoNothing",
+        "timeout": -1,
+        "rate_limit": 600,
+        "next": [f"{module}.{s}.dwell" for s in _dyn_first(stage_order, dyn_stages)],
+        "_boot": True,
+        "_entry": True,
+        "_label": "起跑汇聚（任意阶段自适应）",
+    }
+
+
 def build_full(module: str) -> tuple[dict, dict, dict]:
     """M2 全图装配：基节点 + dwell 层 + transition 接线 + route 链 + policy 拆表。"""
     with V3_ASSETS[module].open(encoding="utf-8") as f:
@@ -399,7 +495,21 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
     nodes, sensors = build_v4(module, None)
     stage_order = doc["stages"]["order"]
     defs = doc["stages"]["definitions"]
-    dwells, anchor_next, anchor_err = expand_transitions(doc, nodes, stage_order)
+    # 决策阶段判据（数据驱动，真机七炸定案）：rules 带动态 decision.source 的页
+    # （session_decision/appraiser/bidding）= 生态无法静态表达 → 点击权归 policy，
+    # 图不给链头/可点击位；且 boot/回判全表前置（共享信号截胡消歧）。
+    pol = doc.get("policies") or {}
+    page_of = {v: k for k, v in (pol.get("stage_map") or {}).items()}
+    dyn_pages = {(r.get("when") or {}).get("stage") for r in (pol.get("rules") or [])
+                 if (r.get("decision") or {}).get("source")}
+
+    def _stage_page(s: str) -> str | None:
+        if s.startswith("第") and "回合出价" in s:
+            return "bid"  # 第2-5回合共享 bid 页码（stage_map 只列第1回合）
+        return page_of.get(s)
+
+    dyn_stages = frozenset(s for s in stage_order if _stage_page(s) in dyn_pages)
+    dwells, anchor_next, anchor_err = expand_transitions(doc, nodes, stage_order, dyn_stages)
     for tgt, nx in anchor_next.items():
         nodes[tgt]["next"] = nx
         if anchor_err.get(tgt):
@@ -420,13 +530,40 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
         if tr.get("stage") != "*" and to not in (None, "same", "*") and not str(to).startswith("$"):
             exit_from_trans.setdefault(on, set()).add(to)
     chain, starts = expand_routes(doc, nodes, dwell_names, stage_of_anchor, exit_from_trans)
+    # 决策阶段的 route 链整体摘除：其 steps 点击（如"开始匹配"）是动态决策的
+    # 后置动作（先选场次再匹配由 session_decision 编排），留在图里=死节点+诱惑。
+    drop: set[str] = set()
+    for stage, heads in starts.items():
+        if stage not in dyn_stages:
+            continue
+        for h in heads:
+            cur: str | None = h
+            while cur in chain and cur not in drop:
+                drop.add(cur)
+                nxt = chain[cur].get("next") or []
+                cur = nxt[0] if nxt and isinstance(nxt[0], str) else None
+    for k in drop:
+        chain.pop(k, None)
+    starts = {s: hs for s, hs in starts.items() if s not in dyn_stages}
     for stage, heads in starts.items():  # 链头从所属阶段 dwell 可达
+        if stage in dyn_stages:
+            continue  # 决策阶段不挂导航链头（如鉴宝厅的"开始匹配"——先选场次
+            # 再匹配是 session_decision 的动态职责，链头直点会跳过决策）
         d = dwell_names[stage]
-        dwells[d]["next"] = list(dict.fromkeys((dwells[d].get("next") or []) + heads))
-    # Q3b：policy 闭环节点——dwell.next 兜底位（锚点/链头/通配全未命中时执行
-    # 一帧决策，[JumpBack] 回 dwell 重判）。对象形式 NodeAttr（v5.1，binding
-    # pipeline.py _parse_node_attr_list 实证）。桥注册在 plugin（宪法 3）。
+        # 链头前置（真机八炸定案）：route 链带精确 confirm（点击后等到达信号），
+        # 是 v3 权威导航路径——裸锚点是全表回判兜底，不得抢在链头前命中
+        # （否则 confirm 语义被绕过，落进共享信号截胡路径）。
+        dwells[d]["next"] = list(dict.fromkeys(heads + (dwells[d].get("next") or [])))
+    # Q3b：policy 闭环节点——**局内/流程阶段**的 dwell.next 兜底位（锚点/链头/
+    # 通配全未命中时执行一帧决策，[JumpBack] 回 dwell 重判）。对象形式 NodeAttr
+    # （v5.1，binding pipeline.py _parse_node_attr_list 实证）。桥注册在
+    # plugin（宪法 3）。
+    # 单脑原则（真机五/七炸定案，P2b）：纯导航阶段（游戏大厅/活动页面）不挂
+    # policy_loop——导航归图锚点，v3 决策脑不得在图外点击。鉴宝大厅(选择场次)
+    # 挂：场次选择是动态决策（target_session+彩蛋计算），生态无法用静态图表达，
+    # 正是 MRA_Policy 的本职（其信号锚点已从可点击位摘除，图不代点）。
     policy_loop = f"{module}.policy_loop"
+    _HALL_STAGES = {"游戏大厅", "活动页面"}
     dwells[policy_loop] = {
         "recognition": "DirectHit",
         "action": "Custom",
@@ -435,12 +572,42 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
         "next": [],
         "timeout": -1,
         "rate_limit": 300,  # v4 模式帧节律（= v3 FRAME_INTERVAL_MS，桥内跑完整帧工作）
+        # 决策循环节拍（P2b 延迟实测定案）：桥内 _tick_once 已自带完整帧工作与
+        # 内部节奏，不让框架在动作前后再补 200ms 默认 delay——协议 pre/post_delay
+        # 默认 200ms，不显式置 0 则每帧决策白付 400ms 空转（真机帧间隔 1s vs
+        # 期望 300ms）。「少用硬 delay」生态实践。
+        "pre_delay": 0,
+        "post_delay": 0,
         "_policy_loop": True,
     }
-    for d in dwell_names.values():
+    for s, d in dwell_names.items():
+        if s in _HALL_STAGES:
+            continue
         dwells[d]["next"] = (dwells[d].get("next") or []) + [
             {"name": policy_loop, "jump_back": True}]
-    pol = doc.get("policies") or {}
+    # P2b：起跑汇聚节点（v3「任意 stage 起跑」语义）——生产入口用它，不用链头。
+    dwells[f"{module}.__boot.dwell"] = _boot_node(module, stage_order, dwells, dyn_stages)
+    # 纯导航/链节点兜底（真机八炸定案）：这些节点的 next 是固定候选（本页锚点/
+    # confirm/链尾 dwell），画面意外（点击后页面未按预期切换、弹窗遮挡）时 next
+    # 全 miss——timeout=-1 会永久静默卡死（MaaFW 协议：timeout 是「识别本节点
+    # next 列表」的窗口）。改为默认 20s 超时 + on_error 回 boot 重判自愈（v3
+    # timeout_ms 超时重试语义的 v4 形态）。决策阶段 dwell 保留 -1：policy_loop
+    # DirectHit 永远兜底命中，永不超时正是决策循环设计。
+    boot_name = f"{module}.__boot.dwell"
+    for s, d in dwell_names.items():
+        if s in dyn_stages:
+            continue
+        node = dwells[d]
+        node.pop("timeout", None)
+        node["on_error"] = [boot_name]
+    for node in chain.values():
+        node["on_error"] = [boot_name]
+    # 决策阶段 dwell 节拍对齐（P2b 延迟实测定案）：决策循环的真正节拍 = policy_loop
+    # 的 300ms，决策 dwell 若保持导航 dwell 的 600ms rate_limit 就成了卡帧瓶颈
+    # （真机帧间隔 1s，超 policy 预期 3 倍）。把 dyn_stages 的 dwell 降到 300，
+    # 与 policy_loop 一致；非决策（纯导航）dwell 保持 600（画面稳定重判频率）。
+    for s in dyn_stages:
+        dwells[dwell_names[s]]["rate_limit"] = 300
     # 孤岛归类：未被任何 next/on_error/信号/链引用的基节点 = 决策闭环执行资产，
     # 移入 policy.actuators 段（参数随行、引擎按名取用），不占画布（A-1 去向）。
     referenced: set[str] = set()
@@ -450,8 +617,9 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
                 name = ref_name(r)
                 if name:
                     referenced.add(name)
-    for d in dwells.values():
-        referenced.update(d.get("_signals") or [])
+    # _signals 是元数据（识别已内联进 dwell），不算图引用——纯信号锚点
+    # （hall_session_cards/smart_bid_btn 等）归 actuators（决策执行资产，
+    # 真机七炸定案：图不代点，参数按名供 v3 决策栈取用）。
     graph_nodes = {k: v for k, v in nodes.items() if k in referenced or k in chain}
     actuators = {k: nodes[k] for k in sorted(set(nodes) - set(graph_nodes))}
     full = {**dwells, **graph_nodes, **chain}
@@ -473,6 +641,7 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
                 ("rules", pol.get("rules") or [])]},
         "v4": {"total": len(full),
                "dwell": sum(1 for d in full.values() if d.get("_dwell")),
+               "boot": sum(1 for d in full.values() if d.get("_boot")),
                "policy_loop": sum(1 for d in full.values() if d.get("_policy_loop")),
                "chain": len(chain),
                "anchor_graph": len(graph_nodes), "actuators": len(actuators),
@@ -480,6 +649,7 @@ def build_full(module: str) -> tuple[dict, dict, dict]:
         "fanout": sorted(((len(d.get("next") or []), n) for n, d in full.items()),
                          reverse=True)[:6],
         "entry": [n for n, d in full.items() if d.get("_entry")],
+        "dyn_stages": sorted(dyn_stages),
     }
     return full, policy_doc, audit
 

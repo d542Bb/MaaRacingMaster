@@ -66,7 +66,53 @@ def test_decision_phase_flushes_trace_snapshot():
 
 
 def test_v4_entry_and_flag_contract():
-    """入口链头常量与开关函数契约。"""
-    assert TreasureModule._V4_ENTRY == \
-        "global.hall_peak_appraise_card.rhall_to_treasure.0"
+    """入口与开关契约：生产入口 = 起跑汇聚节点（任意 stage 自适应，
+    P2b 真机三炸根修——链头线性路径在卡片态变化时永不命中）。"""
+    assert TreasureModule._V4_ENTRY == "treasure.__boot.dwell"
     assert TreasureModule._v4_enabled() is False  # 缺省 NAVKIT_SOURCE=v3
+
+
+def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
+    """_run_v4_loop 装配契约：core/plugin 真源目录必须真实落位
+    （回归：插件根曾少推导一级，真机拼出 plugins/resources/nav 而炸）。"""
+    from pathlib import Path
+
+    from maaracing_assistant.core import nav_graph as _ng
+
+    captured: dict = {}
+
+    class _StubRunner:
+        def __init__(self, ctx, *, pipeline_dirs, image_dirs, bridges):
+            captured["built"] = captured.get("built", 0) + 1
+            captured["pipeline_dirs"] = [Path(d) for d in pipeline_dirs]
+            captured["image_dirs"] = [Path(d) for d in image_dirs]
+            captured["bridges"] = dict(bridges)
+
+        def start(self, entry):
+            captured["entry"] = entry
+            return True
+
+        def poll(self):
+            return True
+
+        def stop(self):
+            captured["stopped"] = True
+
+    monkeypatch.setattr(_ng, "NavKitV4", _StubRunner)
+    m = _stub_module()
+    m._V4_ENTRY = TreasureModule._V4_ENTRY
+    m._v4_runner = None            # 无驻留 runner → 走构造分支
+    m.ctx.lifecycle.running = False  # 健康守护循环立即退出
+    m.ctx.click_mode = "keyboard"    # 跳过手柄租约分支
+    TreasureModule._run_v4_loop.__get__(m)()
+
+    dirs = captured["pipeline_dirs"]
+    assert len(dirs) == 2
+    assert (dirs[0] / "global.json").is_file()    # core 骨架真源
+    assert (dirs[1] / "treasure.json").is_file()  # 插件模块图真源
+    assert (Path(captured["image_dirs"][0]) / ".").is_dir()  # 模板目录存在
+    assert captured["entry"] == TreasureModule._V4_ENTRY
+    assert PolicyBridge in [type(v) for v in captured["bridges"].values()]
+    assert captured["stopped"] is True
+    TreasureModule._run_v4_loop.__get__(m)()  # 重启：必须复用驻留 runner
+    assert captured["built"] == 1  # C 句柄不二次构造（GC 竞态崩溃防线）

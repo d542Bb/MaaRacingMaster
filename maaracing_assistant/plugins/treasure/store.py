@@ -12,39 +12,43 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 
 from maaracing_assistant.core.logger import logger
 
 
 class TreasureStore:
-    """鉴宝落盘存储：DB 连接管理 + 场次/当日汇总写入 + 会话总结。"""
+    """鉴宝落盘存储：DB 连接管理 + 场次/当日汇总写入 + 会话总结。
+
+    线程亲和（P2b 真机八炸后复盘定案）：SQLite 连接必须"在哪个线程用就在哪个
+    线程建"。v4 通道把 v3 决策栈搬上 MaaFW Tasker 线程，`_tick_once` → 落盘
+    全在桥线程执行，而连接原先在 start()（主线程）建——跨线程使用 SQLite 连接
+    会抛 ProgrammingError（实测："SQLite objects created in a thread can only
+    be used in that same thread"），落盘整场丢失。此处用 threading.local 让每个
+    线程持有自己的连接；与之同构的先例见 wgcap.py 的零拷贝帧缓存线程模型。
+    """
 
     def __init__(self, module):
         """module: TreasureModule 实例（状态机与落盘字段的所有者）。"""
         self._m = module
+        self._local = threading.local()  # 每线程独立连接（_conn 惰性创建）
 
-    # ---------- 日界 ----------
+    # ---------- 线程本地连接 ----------
 
-    def current_bucket_str(self, now: datetime | None = None) -> str:
-        """凌晨 5 点为界的日期桶：05:00 ~ 次日 04:59 属同一天。"""
-        now = now or datetime.now()
-        day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
-        return day.isoformat()
-
-    # ---------- DB 连接 ----------
-
-    def ensure_db(self) -> None:
-        """打开落盘库并建表（幂等）。start 时调用；失败仅告警（记录功能不阻断自动化）。"""
-        if self._m._db_conn is not None:
-            return
+    @property
+    def _conn(self) -> sqlite3.Connection | None:
+        """当前线程的连接（惰性建连；失败仅告警，记录不阻断自动化）。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
         try:
             if self._m._data_dir is None:
-                return
+                return None
             self._m._data_dir.mkdir(parents=True, exist_ok=True)
-            self._m._db_conn = sqlite3.connect(str(self._m._data_dir / "treasure.db"))
-            self._m._db_conn.execute("PRAGMA journal_mode=WAL")
-            self._m._db_conn.executescript(
+            conn = sqlite3.connect(str(self._m._data_dir / "treasure.db"))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS games (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,28 +86,58 @@ class TreasureStore:
                 );
                 """
             )
-            # 迁移：旧库 games 表可能缺少 strategy_mode 列（CREATE TABLE IF NOT EXISTS 不会改已有表）
+            # 迁移：旧库 games 表可能缺少 strategy_mode 列（IF NOT EXISTS 不改已有表）
             try:
-                cols = [r[1] for r in self._m._db_conn.execute("PRAGMA table_info(games)").fetchall()]
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(games)").fetchall()]
                 if "strategy_mode" not in cols:
-                    self._m._db_conn.execute("ALTER TABLE games ADD COLUMN strategy_mode TEXT")
+                    conn.execute("ALTER TABLE games ADD COLUMN strategy_mode TEXT")
             except Exception as e:
                 logger.log(f"[鉴宝落盘] games 表迁移失败（strategy_mode 列缺失）: {e}", "WARNING")
+            self._local.conn = conn
+            return conn
         except Exception as e:
-            self._m._db_conn = None
             logger.log(f"[鉴宝落盘] SQLite 初始化失败（数据不记录，不影响自动化）: {e}", "WARNING")
+            return None
+
+    @_conn.setter
+    def _conn(self, value) -> None:
+        self._local.conn = value
+
+    # ---------- 日界 ----------
+
+    def current_bucket_str(self, now: datetime | None = None) -> str:
+        """凌晨 5 点为界的日期桶：05:00 ~ 次日 04:59 属同一天。"""
+        now = now or datetime.now()
+        day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
+        return day.isoformat()
+
+    # ---------- DB 连接 ----------
+
+    def ensure_db(self) -> None:
+        """打开落盘库并建表（幂等）。start 时调用；失败仅告警（记录功能不阻断自动化）。
+
+        v5（线程亲和修复）后此方法为轻量占位：真正建连移到 `_conn` 惰性获取
+        （谁线程用、谁线程建）。保留空实现以兼容既有调用序（module.start → ensure_db）。
+        """
+        self._conn  # 触发当前线程惰性建连（幂等）
 
     def close_db(self) -> None:
-        """提交未完成事务并关闭落盘连接（模块收尾调用）。"""
-        if self._m._db_conn is None:
+        """提交并关闭**当前线程**的落盘连接（在哪个线程清理就在哪个线程关）。
+
+        v4 通道决策栈跑 Tasker 线程，模块收尾时关闭线程可能不是建连线程；
+        只关当前线程连接，避免跨线程 close 抛错。其他线程的连接随线程结束
+        被 Python 回收（WAL 已持久化，无数据丢失）。
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
             return
         try:
-            self._m._db_conn.commit()
-            self._m._db_conn.close()
+            conn.commit()
+            conn.close()
         except Exception as e:
             logger.log(f"[鉴宝落盘] 关闭连接失败: {e}", "WARNING")
         finally:
-            self._m._db_conn = None
+            self._local.conn = None
 
     # ---------- 场次落盘 ----------
 
@@ -113,7 +147,8 @@ class TreasureStore:
         调用时机：回大厅且确认为「完整走完一场」，且本场字段（结算/彩蛋/积分）尚未清空。
         失败仅告警不阻断主循环（数据记录不影响自动化决策）。
         """
-        if self._m._db_conn is None:
+        conn = self._conn
+        if conn is None:
             return
         try:
             self._m._refresh_daily_bucket()  # 先对齐日界（跨凌晨5点重置计数），再算本场序号
@@ -122,7 +157,6 @@ class TreasureStore:
             ec = self._m._egg_counts or {}
             # 本场出价策略模式：profit=赚钱 / egg=赚蛋（以策略实例实际 mode 为准，config 注入可能覆盖默认）
             strategy_mode = getattr(self._m._strategy, "mode", None) or self._m._treasure_mode
-            conn = self._m._db_conn
             conn.execute(
                 """INSERT INTO games (ts, bucket, game_seq, auction_result,
                    settle_final_price, settle_total_price, settle_profit, settle_my_income,
@@ -185,8 +219,8 @@ class TreasureStore:
             )
         except Exception as e:
             try:
-                if self._m._db_conn is not None:
-                    self._m._db_conn.rollback()
+                if conn is not None:
+                    conn.rollback()
             except Exception:
                 pass
             logger.log(f"[鉴宝落盘] 写入失败: {e}", "WARNING")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -99,3 +100,82 @@ def test_navkit_v4_assembles_dirs_and_idempotent_start(pure_maa, tmp_path):
     assert v4.start("t") is True  # 起跑幂等
     v4.stop()
     v4.shutdown()
+
+
+def _stub_post_recording(calls: list):
+    """post 桩：记录每次 post 的目标目录内文件名，并返回成功 job。"""
+
+    def _post(path):
+        calls.append(sorted(p.name for p in Path(path).iterdir()))
+        job = MagicMock()
+        job.failed = False
+        job.wait = MagicMock(return_value=job)
+        return job
+
+    return _post
+
+
+def _make_nav_dir(root, name, nodes):
+    d = root / name
+    d.mkdir()
+    (d / f"{name}.json").write_text(json.dumps(nodes, ensure_ascii=False), encoding="utf-8")
+    return d
+
+
+def test_navkit_v4_merges_crossref_dirs_into_single_post(pure_maa, tmp_path):
+    """互指真源（core 骨架 ↔ 模块图）必须合并为一次 post：框架按 post 校验
+    节点引用存在性，分次 post 时先加载者必然失败（P2b 真机首炸根因）。"""
+    d1 = _make_nav_dir(tmp_path, "core", {"a.hall": {"next": "t.anchor"}})
+    d2 = _make_nav_dir(tmp_path, "plugin", {"t.anchor": {"next": "a.hall"}})
+    ctx = MagicMock()
+    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
+    v4 = ng.NavKitV4(ctx, pipeline_dirs=[d1, d2], image_dirs=[])
+    calls: list = []
+    v4._resource.post_pipeline.side_effect = _stub_post_recording(calls)
+    assert v4.load() is True
+    assert len(calls) == 1  # 一次 post
+    assert calls[0] == ["core.json", "plugin.json"]  # 两目录内容合并到同一树
+
+
+def test_navkit_v4_rejects_filename_conflict(pure_maa, tmp_path):
+    """合并目录遇同名真源文件时拒绝加载（静默覆盖会悄悄换图）。"""
+    d1 = _make_nav_dir(tmp_path, "x", {"n1": {}})
+    d2 = _make_nav_dir(tmp_path, "y", {"n2": {}})
+    (d2 / "x.json").write_text("{}", encoding="utf-8")  # 与 d1 同名
+    ctx = MagicMock()
+    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
+    v4 = ng.NavKitV4(ctx, pipeline_dirs=[d1, d2], image_dirs=[])
+    v4._resource.post_pipeline.side_effect = AssertionError("冲突应拒绝 post")
+    assert v4.load() is False
+
+
+def test_navkit_v4_rejects_missing_pipeline_dir(pure_maa, tmp_path):
+    """真源目录不存在直接拒绝（可诊断），不进 post。"""
+    ctx = MagicMock()
+    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
+    v4 = ng.NavKitV4(ctx, pipeline_dirs=[tmp_path / "nope"], image_dirs=[])
+    v4._resource.post_pipeline.side_effect = AssertionError("缺失应拒绝 post")
+    assert v4.load() is False
+
+
+def test_click_action_uses_xywh_rect_contract(pure_maa):
+    """MaaFW rect 契约 = (x, y, w, h)：ClickAction 落点 = rect 中心。
+
+    真机六炸根修——analyze 曾返回 (x1,y1,x2,y2) 混填 w/h 槽，框架按帧边界
+    clip 后中心恒错位到 (0.5,0.5) 附近（卡片 (999,591,1103,633) → 被裁成
+    (999,591,281,129) → 点击落屏幕中心）。
+    """
+    graph = MagicMock()
+    graph.frame_size.return_value = (1280, 720)
+    graph.click.return_value = True
+    act = ng.ClickAction(graph)
+    argv = MagicMock()
+    argv.custom_action_param = json.dumps({})
+    argv.node_name = "t.card"
+    argv.box = (999, 591, 104, 42)
+    assert act.run(None, argv) is True
+    cx, cy, box_norm = graph.click.call_args[0]
+    assert graph.click.call_args[1]["timeout_s"] == 20.0
+    assert abs(cx - (999 + 52) / 1280) < 1e-9
+    assert abs(cy - (591 + 21) / 720) < 1e-9
+    assert box_norm == (104 / 1280, 42 / 720)
