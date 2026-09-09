@@ -5,7 +5,7 @@
 > 信息基于 MaaFramework 官方文档 + Python binding 源码（`source/binding/Python/maa`）核对。
 > 官方全套文档：<https://maafw.com/docs/>（中文）；仓库：<https://github.com/MaaXYZ/MaaFramework>
 
----
+***
 
 ## 1. 核心定位与适用边界（先读）
 
@@ -13,18 +13,21 @@ MaaFramework = 基于图像识别的自动化黑盒框架，核心是 **Pipeline
 节点：识别→动作→next）。
 
 **它擅长（适合做成 Pipeline）**：
+
 - 离散步骤：进页面、点按钮、等某个模板/文字出现、按条件分支/跳转
+
 - 固定/可复识的静态 UI 目标
+
 - 秒级节奏、点击型操作
 
-**它不擅长（别硬塞 Pipeline）**：高频实时闭环（连续摇杆控制、15~30fps 决策）。这类应作为
+**它不擅长（别硬塞 Pipeline）**：高频实时闭环（连续摇杆控制、15\~30fps 决策）。这类应作为
 `CustomAction`（自定义动作）注入，由你自己的代码实时跑，见 §6。
 
 > 本项目结论（详见记忆库 `MaaRacingAssistant迁移MaaFW适配评估`）：
 > 实时闭环控制、光标/摇杆导航、YOLO/OCR 推理都是自研实时链路，**保留为 CustomAction / 自研**；
 > 新增**离散流水线**（日常清理等）用本文档的范式，直接吃 MaaFW 的 Pipeline。
 
----
+***
 
 ## 2. Python 包结构与导入
 
@@ -53,7 +56,7 @@ mmaa/
 `from maa.custom_action import CustomAction`、`from maa.custom_recognition import CustomRecognition`、
 `from maa.define import MaaWin32ScreencapMethodEnum`。
 
----
+***
 
 ## 3. 核心对象与真实签名
 
@@ -148,7 +151,7 @@ context.wait_freezes(time_ms, ...) # 等待画面静止
 context.get_task_job() / context.clone()  # clone 可复制上下文做分支
 ```
 
----
+***
 
 ## 4. 三种集成范式（按需选）
 
@@ -206,7 +209,7 @@ tasker.post_task("日常清理").wait()
 可视化/调试器/通用 UI 生态。仅用于深度定制或宿主 UI 编排。本项目 `controller.py` 就属于这种，
 作为自定义层保留，新离散流程不要一律走这种。
 
----
+***
 
 ## 5. 离散流水线开发规范（"方舟日常式"新功能模板）
 
@@ -229,33 +232,48 @@ tasker.post_task("日常清理").wait()
 ### 5.2 JSON 节点书写规范（血泪要点）
 
 - `recognition` 默认 `DirectHit`（不识别直接执行）；常用 `TemplateMatch` / `OCR`。
+
 - `action` 默认 `DoNothing`；常用 `Click` / `Swipe` / `Custom`。
+
 - `roi`(识别区) / `box`(命中框) / `target`(动作点) 三个概念分离；`target` 默认 `true`=用命中框。
+
 - `timeout`（识别 next 的超时，默认 20s，`-1`=无限）、`rate_limit`（每轮识别最低 ms，默认 1000）。
-- 用 `pre/post_delay`、`pre/post_wait_freezes`(等画面静止) 控制节奏；**少用硬 delay，多用
-  "中间过程节点"**会让流程更稳。
+
+- 用 `pre/post_delay`、`pre/post_wait_freezes`(等画面静止) 控制节奏；\*\*少用硬 delay，多用
+  "中间过程节点"\*\*会让流程更稳。
+
 - `next` 列表顺序识别、**命中即中断**执行第一个 —— 天然表达"多选一"分支。
+
 - `on_error`：next 全未命中且超时 / 动作失败时走的分支（重试/告警）。
+
 - `anchor` + `[JumpBack]`：动态锚点回跳，实现**循环/重试**（如"没拿到→跳回再领"）。
+
 - `repeat` / `max_hit` / `enabled` / `inverse`：动作重复/命中上限/开关/反逻辑。
+
 - `default_pipeline.json`：放资源包根目录，统一给所有节点/某算法/某动作设默认参数，减少重复。
 
 ### 5.3 识别算法速查
 
 `DirectHit | TemplateMatch | FeatureMatch | ColorMatch | OCR | NeuralNetworkClassify |
 NeuralNetworkDetect | And | Or | Custom`。
+
 - `TemplateMatch`：找图，`template` 相对 `image/`，支持多模板、`threshold`、`method`。
+
 - `OCR`：内置 PaddleOCR(ONNX)，`expected` 关键词/正则，支持 `color_filter`。
+
 - `And`/`Or`：复合识别（"A 且 B" / "A 或 B"）——很适合做多条件到站判定。
+
 - `Custom`：接自研识别（见 §6）。
 
 ### 5.4 何时用 Custom、何时纯 JSON
 
 - 纯"点已知按钮/等已知文字"→ 纯 JSON。
+
 - 需要"复杂判断、算法、跨帧状态、自定义计算"→ `CustomRecognition`（识别）+ `CustomAction`（动作）。
+
 - 实时高频控制 → 只许用 `CustomAction`，别拆成 Pipeline 节点。
 
----
+***
 
 ## 6. Custom 开发契约（真实签名）
 
@@ -295,40 +313,45 @@ class MyAction(CustomAction):
 `"action": "Custom", "custom_action": "MyAction"`。
 项目现有示例见 `core/nav_graph.py` 的 `ClickAction`（继承 `CustomAction`，经 `register_custom_action` 注册）。
 
----
+***
 
 ## 7. 调试与诊断
 
 - `Toolkit.init_option(path, "")`（**第二参传空串**）读取/生成 `config/maa_option.json`：
-  `logging`(存 maafw.log)、`save_draw`(存识别可视化到 vision/)、`stdout_level`(0无~7全)、
+  `logging`(存 maafw\.log)、`save_draw`(存识别可视化到 vision/)、`stdout_level`(0无\~7全)、
   `save_on_error`(失败存图)、`draw_quality`。
+
 - Tasker 全局选项可设 `DebugMode`(所有任务当 focus 产生回调，RecoDetail 含 raw/draws)。
+
 - 监听日志：`tasker.add_context_sink(PipelineLogger类)`（项目已有 `core/pipeline_logger.py`）。
+
 - 生态工具：MaaDebugger(Pipeline 调试器)、VSCode 插件(maa-support)、MaaPipelineEditor(可视化)、
   MaaCommonAssets(预转 OCR 模型)、MaaPracticeBoilerplate(空模板脚手架)。
 
----
+***
 
 ## 8. 本项目可复用结论（速查）
 
-| 事项 | 结论 |
-|---|---|
+| 事项                        | 结论                                    |
+| ------------------------- | ------------------------------------- |
 | 截图（Win32 FramePool / WGC） | 保留现有（含 `PostScreencapCapture` RGB 封装） |
-| 实时控制 / 光标导航 / YOLO / OCR | 自研，保留为 CustomAction / 自研引擎，**勿迁** |
-| 新增离散流水线（日常、活动代刷） | **用本文档 §5 范式**，JSON + Custom |
-| 自研识别若要进 Pipeline | 包层 `CustomRecognition` 壳（§6），不动算法 |
-| 通用 GUI / 可视化调试 | 需要时写 `interface.json`，接通用 UI 生态 |
+| 实时控制 / 光标导航 / YOLO / OCR  | 自研，保留为 CustomAction / 自研引擎，**勿迁**     |
+| 新增离散流水线（日常、活动代刷）          | **用本文档 §5 范式**，JSON + Custom          |
+| 自研识别若要进 Pipeline          | 包层 `CustomRecognition` 壳（§6），不动算法     |
+| 通用 GUI / 可视化调试            | 需要时写 `interface.json`，接通用 UI 生态       |
 
----
+***
 
 ## 9. 高频红线/坑（背下来）
 
 1. `Tasker.bind(resource, controller)` — **resource 在前**。
 2. `Resource.post_bundle(path)` — 是 `post_bundle`，**不是** `post_path`。
 3. `Toolkit.init_option(path, "")` — 第二参**传空串**。
-4. `Win32Controller(hWnd=hwnd, ...)` — 参数名**驼峰 `hWnd`**。
+4. `Win32Controller(hWnd=hwnd, ...)` — 参数名**驼峰** **`hWnd`**。
 5. 截图返回 `Image`，`img.numpy()` 是 **BGR**；要 RGB 手动转。
 6. `post_*` 都是异步 → 用 `.wait()` / `.get()`；取结果前先 `wait()`。
 7. `CustomRecognition.image` 是 BGR；返回 4 元组/`None`/`AnalyzeResult` 三选一。
 8. `robot`/template 图需 720p 无损原图裁剪。
 9. 新功能默认走"范式二 JSON + Custom"（官方推荐），全代码只做宿主编排。
+10. `Toolkit.find_desktop_windows()` 返回 `DesktopWindow` 对象列表，属性为 `hwnd` / `class_name` / `window_name`（下划线命名；用法见 `core/window_utils.py`）。
+
