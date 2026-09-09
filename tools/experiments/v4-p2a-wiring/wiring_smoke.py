@@ -30,6 +30,7 @@ from maa.tasker import Tasker  # noqa: E402
 
 NAV_DIR = REPO / "maaracing_assistant" / "core" / "resources" / "nav"
 TREASURE_NAV = REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "nav"
+TREASURE_POLICY = REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
 
 
 class InjectController(CustomController):
@@ -135,7 +136,7 @@ def make_dir(with_policy_contamination: bool) -> Path:
     shutil.copy(NAV_DIR / "global.json", d / "global.json")
     shutil.copy(TREASURE_NAV / "treasure.json", d / "treasure.json")
     if with_policy_contamination:
-        shutil.copy(TREASURE_NAV / "treasure.policy.json", d / "treasure.policy.json")
+        shutil.copy(TREASURE_POLICY, d / "treasure.policy.json")
     (d / "smoke.json").write_text(json.dumps(SMOKE, ensure_ascii=False), encoding="utf-8")
     return d
 
