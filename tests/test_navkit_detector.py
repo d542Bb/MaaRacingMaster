@@ -125,7 +125,7 @@ def test_banner_result_win_uses_per_template_threshold(monkeypatch):
 
 
 def test_banner_result_per_template_threshold_by_stem_key(monkeypatch):
-    """仲裁表键兼容裸名形态（历史 v3 锚点以无扩展名为键落盘）。"""
+    """仲裁表键兼容裸名形态（真源 arbitration 键带/不带扩展名两种形态并存）。"""
     det = _make_banner_detector(
         ("result_auction_win_banner.png",), threshold=0.90,
         template_thresholds={"result_auction_win_banner": 0.60})

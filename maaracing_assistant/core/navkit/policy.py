@@ -4,19 +4,19 @@
 navkit 决策策略层（P1，决策规则数据化）。
 
 把鉴宝 plugin 的「最终意图路由」（stage → action 查表 + 意图触达条件）从 Python
-上纸到 v3 资产的 `policies` 段：JSON 声明「当前事实满足条件 → 输出哪个意图」，
+上纸到 policy.json 的 `policy` 段：JSON 声明「当前事实满足条件 → 输出哪个意图」，
 上游算事实的匹配/策略算法、下游 retry/cooldown 的状态副作用一律留码。
 
-本模块保持纯标准库，与 assets/validate/trace 同级，职责边界：
+本模块保持纯标准库，与 v4_source/trace 同级，职责边界：
 
 - 契约（P0-6 / P0-7）：`StateSnapshot`（封闭白名单投影）、`DecisionFacts`（冻结
   快照，PolicyEngine 全程只读）、`DecisionSnapshot`（trace 落盘的决策契约）。
 - 数据与执行：`Policies`（schema 解析）、`PolicyPlan`（启动编译的不可变索引，
   运行时禁止 json lookup / 表达式解析，规则匹配复杂度 O(#rules)）。
-- 校验：P01-P09（结构性错误硬阻断，语义告警可配置），供 validate.py 并入
-  `validate_assets()` 同层输出。
+- 校验：P01-P09（结构性错误硬阻断，语义告警可配置）；真源自洽互洽
+  由 `tools/navkit/check_truth.py`（CI 闸门）承担。
 
-消费方（plugins/treasure/module.py / 控制台 / 回放工具）只依赖本模块公开符号。
+消费方（plugins/treasure/module.py）只依赖本模块公开符号。
 """
 from __future__ import annotations
 
@@ -335,7 +335,7 @@ class PolicyRule:
 
 @dataclass(frozen=True)
 class Policies:
-    """v3 资产顶层 `policies` 段（一等公民，由 assets.py 持有）。"""
+    """policy.json 的 `policy` 段（一等公民，由 NavSource 装配持有）。"""
 
     schema_ver: int
     stage_map: Mapping[str, str]

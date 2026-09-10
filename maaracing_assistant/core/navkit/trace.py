@@ -57,13 +57,13 @@ def json_safe(value: Any) -> Any:
 class FrameTrace:
     """单帧决策流水记录。
 
-    字段对应 §5.2 / §5.3 的可还原信息：阶段、回合、每锚点分数、命中锚点、
-    当前感知集合、点击意图、点击结果、plan 版本。额外字段通过 `extra` 放入，
+    记录的可还原信息：阶段、回合、每锚点分数、命中锚点、
+    当前感知集合、点击意图、点击结果。额外字段通过 `extra` 放入，
     但必须是 JSON 可序列化值。
     """
 
     __slots__ = ("frame", "stage", "round_no", "scores", "hit_anchor", "active_used",
-                 "intent", "click_result", "plan_version", "timestamp_ms", "extra")
+                 "intent", "click_result", "timestamp_ms", "extra")
 
     def __init__(
         self,
@@ -76,7 +76,6 @@ class FrameTrace:
         active_used: Any = (),
         intent: Mapping[str, Any] | None = None,
         click_result: Mapping[str, Any] | None = None,
-        plan_version: str | None = None,
         timestamp_ms: int | None = None,
         extra: Mapping[str, Any] | None = None,
     ) -> None:
@@ -88,7 +87,6 @@ class FrameTrace:
         self.active_used = active_used
         self.intent = intent
         self.click_result = click_result
-        self.plan_version = plan_version
         self.timestamp_ms = int(timestamp_ms if timestamp_ms is not None else time.time() * 1000)
         self.extra = dict(extra or {})
 
@@ -103,7 +101,6 @@ class FrameTrace:
             "active_used": json_safe(self.active_used),
             "intent": json_safe(self.intent),
             "click_result": json_safe(self.click_result),
-            "plan_version": self.plan_version,
         }
         data.update(json_safe(self.extra))
         return data

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""跳转图专用的模板匹配（唯一一份实现）。
+"""跳转图专用的模板匹配（全仓模板匹配唯一实现）。
 
-为什么单独有一份：模板匹配此前在 racing（Navigation._find_template）和鉴宝
-（detector._match_local）各写了一套，再接新模块就是第三套。跳转图（pipeline）
-只认这一份，新模块不再自己写匹配。
+运行时所有模板匹配（图节点 MRA_Template、鉴宝阶段检测器、module 私有感知
+装载器）都收口在这一份实现，新模块禁止再自带匹配。
 
 算法沿用 racing 已验证的多尺度 TM_CCOEFF_NORMED（窗口尺寸变化时靠 scale 命中）。
 
@@ -33,7 +32,7 @@ Box = tuple[int, int, int, int]  # (x1, y1, x2, y2) 像素
 
 
 def strip_ext(name: str) -> str:
-    """模板名规范化：剥掉自带扩展名（v3/v4 资产形态），裸名原样返回。"""
+    """模板名规范化：剥掉自带扩展名（真源两种带/不带扩展名形态并存），裸名原样返回。"""
     return name[:-4] if name.lower().endswith((".png", ".jpg", ".jpeg")) else name
 
 
@@ -237,7 +236,7 @@ def color_assert_ok(frame: np.ndarray, box: Box, sub_rect_norm: list[float],
                     hue_range: list[float]) -> bool:
     """色相断言（L1 闸门）：命中框内子区域均值 H ∈ [lo, hi]（HSV，OpenCV H∈[0,180]）。
 
-    sub_rect_norm 以命中框为基准的归一化子矩形 [x0,y0,x1,y1]（v3 color_assert.rect 语义）。
+    sub_rect_norm 以命中框为基准的归一化子矩形 [x0,y0,x1,y1]（节点参数 color_assert.rect 语义）。
     """
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1

@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import threading
 import time
@@ -70,8 +69,8 @@ from maaracing_assistant.plugins.treasure import IMAGE_DIR, POLICY_PATH, nav_sou
 class ClickRetryExhaustedError(RuntimeError):
     """阶段切换类点击重试耗尽：点击无法生效、页面不切换，判定为系统性问题，终止模块。
 
-    抛出后由主循环单帧兜底识别并【穿透】（不进入"连续帧异常"计数兜底），
-    沿 start() 上抛 → start_module 记 ERROR → finally 恢复音量并收尾，流程停止。
+    在 Tasker 线程（policy 闭环桥内）抛出后沿常驻图路径上抛 → 模块终止 →
+    start_module 记 ERROR → finally 恢复音量并收尾，流程停止。
     """
 
 
@@ -79,10 +78,8 @@ class ClickRetryExhaustedError(RuntimeError):
 def _policy_tuning() -> dict[str, Any]:
     """P1 收编（P4b 换源）：policy.json `policy.tuning` 全量（perception/policy/execution）。
 
-    加载失败 / v2 模式 / 真源缺段 → 返回 {}（调用方回落代码常量）。
+    加载失败 / 真源缺段 → 返回 {}（调用方回落代码常量）。
     """
-    if os.environ.get("NAVKIT_SOURCE", "v4").lower() == "v2":
-        return {}
     try:
         nav = nav_source()
     except Exception:
@@ -103,7 +100,7 @@ def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], di
 
     动作按钮分布在 point 与 template 两类锚点；宽高供手柄模式点击容差用（落点在框中心
     70% 区域内即可按 A——ROI 本对标整个可交互区域，无需像素级精确到中心）。
-    P4b：policy.json 为唯一真源，真源缺失/损坏时返回空 dict（v2 回退已死）。
+    P4b：policy.json 为唯一真源，真源缺失/损坏时返回空 dict。
     """
     nav = nav_source()
     if nav is None:
@@ -118,13 +115,14 @@ def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], di
             x1, y1, x2, y2 = rect
             out[key] = ((x1 + x2) / 2, (y1 + y2) / 2)
             sizes[key] = (x2 - x1, y2 - y1)
-        # 兼容 module 尚未改名的消费点；v3 的物理资产 id 仍保留可审计的新名。
+        # 锚点改名（session_start_match_btn → session_start_match_click）的
+        # 兼容别名：module 消费点仍用旧名，真源只登记新名。
         if "session_start_match_click" in out:
             out["session_start_match_btn"] = out["session_start_match_click"]
             sizes["session_start_match_btn"] = sizes["session_start_match_click"]
         return out, sizes
     except Exception as exc:
-        logger.log(f"[鉴宝] v3 actions rect 读取失败: {exc}", "WARNING")
+        logger.log(f"[鉴宝] policy 感知锚点 rect 读取失败: {exc}", "WARNING")
         return {}, {}
 
 
@@ -178,19 +176,6 @@ TARGET_SESSION_OPTIONS: dict[str, tuple[str, str]] = {
     "master": ("session_master_badge",  "大师场"),
 }
 DEFAULT_TARGET_SESSION: str = "master"
-
-# 运行时阶段名 → policies 稳定 ID（P1）。bid 回合（第N回合出价）统一为 "bid"，
-# 由 _stage_id 特判处理；本表覆盖其余阶段，v2 回退路径（无 stage_map）兜底用。
-_STAGE_TO_STABLE: dict[str, str] = {
-    "游戏大厅": "hall",
-    "活动页面": "activity",
-    "鉴宝大厅(选择场次)": "session",
-    "匹配中": "matching",
-    "选择鉴宝师": "appraiser",
-    "中标结算": "auction_result",
-    "领取分红": "settle",
-    "结算弹窗": "popup",
-}
 
 
 def _load_appraiser_templates(
@@ -546,7 +531,7 @@ class TreasureModule(ActivityModule):
                                         # 旧"出价中"或乱帧；此时若用"已出价"硬门槛判断会误拒正常提交。
                                         # wait_result 内前 N 帧不校验，动画期过后仍"出价中"才算假下降沿。
     SUBMIT_ANIMATION_BUFFER_MS = 1500    # 假下降沿缓冲的**时间**口径（v4 定案）：帧数口径隐含依赖
-                                        # 主循环帧率（v3 的 wait_result 150ms/帧），v4 节奏交还框架后
+                                        # 主循环帧率（旧口径 wait_result 150ms/帧），v4 节奏交还框架后
                                         # 实际帧间隔 ~125ms，10 帧缓冲被稀释到 1.25s → 对手未齐报价时
                                         # 误判假下降沿、phase 退 wait_first、OCR 停投 → 错过整个公开
                                         # 报价窗口（2026-09-09 20:13 实机 log 实锤）。计时与帧率解耦。
@@ -771,12 +756,6 @@ class TreasureModule(ActivityModule):
         self._frame_counter = 0
         self._last_stage_logged: str | None = None
 
-        # --------- 主循环单帧异常兜底 ---------
-        # _tick_once 任一帧抛异常不得直接杀死主循环（截图/识别单帧偶发失败很常见），
-        # 跳过该帧继续；但连续失败过多说明是系统性问题（窗口关闭/帧彻底无响应），
-        # 达到上限 _MAIN_CRASH_RETRY_MAX 则照常上抛，让模块停止，避免"静默空转"掩盖真 bug。
-        self._main_crash_frames = 0   # 连续抛异常的帧计数（任一正常帧归零）
-
         # --------- 阶段切换类点击重试状态 ---------
         self._click_retry_key: str | None = None    # 正在等待"切换阶段"的 key
         self._click_retry_stage: str | None = None  # 点击时所在阶段（阶段切走即成功）
@@ -820,10 +799,12 @@ class TreasureModule(ActivityModule):
         self._appr_last_decision: dict | None = None
 
         # --------- 场次选择（鉴宝大厅(选择场次)）---------
-        # 「开始匹配」按钮模板缓存：[(priority, key, gray, rect_norm)]，顺位升序；
+        # 「开始匹配」按钮模板缓存：[(priority, key, rgb, rect_norm, colorspace)]，顺位升序；
         # 用于判定"详情卡已切到目标场次、按钮已出现在屏幕上"。
         # 命中 → 点 session_start_match_btn（actions 段 rect 中心）；未命中 → 先点目标场次 badge。
-        self._session_panel: list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]] = []
+        self._session_panel: list[
+            tuple[int, str, np.ndarray, tuple[float, float, float, float], str]
+        ] = []
         # 上一次"点击意图"结果：{"key","center","hint","score"}|None，由 _run_session_choice 每帧重算
         self._session_last_decision: dict | None = None
         # 点击「开始匹配」后的冷却帧计数：点完 N 帧内不产出新意图，避免检测器还没切阶段
@@ -833,7 +814,7 @@ class TreasureModule(ActivityModule):
         # 模板匹配不上，冷却帧内不产出新点击意图，等动画稳定再识别（2026-08-16）。
         self._popup_click_cooldown: int = 0
         # 决策策略（P1：policies 决策规则数据化；P1e：policies 是唯一决策源）：
-        #   _policy_plan = v3 assets policies → PolicyPlan（启动编译不可变，缺失/非法 = 启动失败）
+        #   _policy_plan = policy.json policy 段 → PolicyPlan（启动编译不可变，缺失/非法 = 启动失败）
         self._policy_plan = None
         self._policy_snapshot: dict | None = None  # 最近一帧 DecisionSnapshot（trace 决策契约）
         # 帧内意图缓存：_resolve_action_target 每帧只允许真正决策一次（主循环 +
@@ -1082,17 +1063,9 @@ class TreasureModule(ActivityModule):
     def current_stage(self) -> str | None:
         return self._current_stage
 
-    # ---------------- v4 执行通路（P2a-Q4，NAVKIT_SOURCE=v4 启用） ----------------
+    # ---------------- 执行通路：MaaFW Tasker 常驻图（唯一路径） ----------------
 
-    _V4_ENTRY = "treasure.__boot.dwell"  # 起跑汇聚节点：任意 stage 自适应（v3 语义）
-
-    @staticmethod
-    def _v4_enabled() -> bool:
-        """v4 通路开关：沿用 NAVKIT_SOURCE env。P2b 真机验收后默认 v4
-        （2026-09-10 用户拍板）；显式 `NAVKIT_SOURCE=v3` 保留应急回退，
-        v3 通路本体按 P4 计划退役。"""
-        import os
-        return os.environ.get("NAVKIT_SOURCE", "v4").lower() == "v4"
+    _V4_ENTRY = "treasure.__boot.dwell"  # 起跑汇聚节点：任意 stage 自适应
 
     def _run_v4_loop(self) -> None:
         """v4 执行通路：帧工作全部在 MaaFW Tasker 线程（PolicyBridge 桥内
@@ -1125,8 +1098,8 @@ class TreasureModule(ActivityModule):
         from contextlib import ExitStack
         from maaracing_assistant.core.capabilities import BUTTON_A
         with ExitStack() as stack:
-            # v4 常驻图永不退出：手柄租约全程持有（与 v3「跑图期间持、结束归还」
-            # 不同——桥线程点击依赖手柄，中途归还即断点击）。runner.stop() 在
+            # v4 常驻图永不退出：手柄租约全程持有——桥线程点击依赖手柄，
+            # 中途归还即断点击。runner.stop() 在
             # 租约归还前执行，确保 Tasker 线程先停。
             if self.ctx.click_mode == "gamepad":
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
@@ -1191,8 +1164,7 @@ class TreasureModule(ActivityModule):
         if not self._action_centers:
             logger.log("[鉴宝] 未加载到动作按钮 rect，准星模式将不可用", "WARNING")
 
-        # 2.551 决策策略（P1：policies 数据化）。v3 资产缺 policies = 启动失败（P1e）；
-        # v2 回退路径（NAVKIT_SOURCE=v2 或 v3 缺失）下策略栈降级为 LegacyPolicy。
+        # 2.551 决策策略（P1：policies 数据化；P1e：policy.json 缺 policy 段 = 启动失败）。
         self._init_policy_stack()
 
         # 2.56 加载鉴宝师头像模板（顺位匹配用；定义源=JSON appraisers 段，调试台可调）
@@ -1276,35 +1248,11 @@ class TreasureModule(ActivityModule):
         else:
             logger.log("[鉴宝] 调试模式未开启（可在GUI打开Debug开关），仅运行日志 + PEEP（如果开启）", "DEBUG")
 
-        # 5. 主循环（纯观察）
-        # 单帧异常兜底：_tick_once 抛异常不杀死主循环，跳过该帧继续；连续失败达
-        # _MAIN_CRASH_RETRY_MAX 帧才照常上抛，让异常走 finally 清理后终止模块（防静默空转）。
-        # 例外：ClickRetryExhaustedError（阶段切换点击重试耗尽）直接穿透终止，
-        # 不等待连续帧计数——重试失败是明确的系统性问题，应立即停止而非跳过。
-        _MAIN_CRASH_RETRY_MAX = 30   # 30 帧 ≈ 9s（主循环 ~300ms/帧）
+        # 5. 执行通路：帧工作全部在 MaaFW Tasker 线程（PolicyBridge 桥内
+        # _tick_once），本线程进入 _run_v4_loop 做健康守护（常驻图意外退出告警
+        # 并重启）；无论正常停止还是异常上抛，finally 统一收尾清理。
         try:
-            if self._v4_enabled:
-                self._run_v4_loop()
-                return
-            while self.ctx.lifecycle.running:
-                try:
-                    self._tick_once()
-                except ClickRetryExhaustedError:
-                    raise  # 重试耗尽：穿透单帧兜底，终止模块
-                except Exception as e:
-                    self._main_crash_frames += 1
-                    if self._main_crash_frames == 1:
-                        logger.log(f"[鉴宝] 单帧异常（已跳过，继续运行）: {e!r}", "WARNING")
-                    if self._main_crash_frames > _MAIN_CRASH_RETRY_MAX:
-                        logger.log(
-                            f"[鉴宝] 连续 {_MAIN_CRASH_RETRY_MAX} 帧异常，判定为系统性问题，模块终止: {e!r}",
-                            "ERROR",
-                        )
-                        raise
-                    self.ctx.lifecycle.sleep(self._frame_interval_s)
-                    continue
-                self._main_crash_frames = 0
-                self.ctx.lifecycle.sleep(self._frame_interval_s)
+            self._run_v4_loop()
         finally:
             if self._trace_writer is not None:
                 self._trace_writer.close()
@@ -2521,18 +2469,20 @@ class TreasureModule(ActivityModule):
         )
 
     def _stage_id(self) -> str | None:
-        """运行时阶段名 → policies 稳定 ID（stage_map 反向；bid 回合归一）。"""
+        """运行时阶段名 → policies 稳定 ID（stage_map 反向；bid 回合归一）。
+
+        阶段不在 stage_map（真源未登记）→ None，本帧决策不匹配任何按阶段
+        过滤的规则（不用残缺常量表掩盖真源缺项）。
+        """
         stage = self._current_stage
         if stage is None:
             return None
         if stage.startswith("第") and "回合" in stage:
             return "bid"
-        if self._policy_plan is not None:
-            rev = {v: k for k, v in self._policy_plan.stage_map.items()}
-            stable = rev.get(stage)
-            if stable is not None:
-                return stable
-        return _STAGE_TO_STABLE.get(stage)
+        if self._policy_plan is None:
+            return None
+        rev = {v: k for k, v in self._policy_plan.stage_map.items()}
+        return rev.get(stage)
 
     def _capture_decision_facts(self) -> DecisionFacts:
         """P0-6：本帧上游事实全部生产完后统一冻结（PolicyEngine 全程只读）。
@@ -2855,7 +2805,7 @@ class TreasureModule(ActivityModule):
         consume → decision → submit。结果类型：
           - click ok    → 更新指纹/时刻 + 成功副作用（重试状态/领取标记/弹窗冷却/日志）
           - click 失败  → 指纹不更新（下帧同意图重试），节流打失败日志
-          - move（只移动）→ 不涉及点击状态，忽略（P4c 起无避让生产消费方）
+          - move（只移动）→ 不涉及点击状态，忽略
         """
         clicker = self._get_clicker() if self._clicker is not None else None
         if clicker is None:
@@ -3054,7 +3004,7 @@ class TreasureModule(ActivityModule):
                 return
         # 仍停在点击时的阶段：超时则重新 arm。
         # 重试帧数 per-key（弹窗连点 3 帧 / 阶段切换 10 帧），见 tuning.policy；
-        # 配置口径是 v3 主循环帧数（FRAME_INTERVAL_MS/帧），运行时按**时间**判定——
+        # 配置口径是主循环帧数（FRAME_INTERVAL_MS/帧），运行时按**时间**判定——
         # v4 节奏由框架驱动、实际帧间隔不再是 FRAME_INTERVAL_MS，帧数口径会被稀释。
         retry_frames = self._retry_frames_by_key.get(key, self._click_retry_frames)
         retry_ms = retry_frames * self.FRAME_INTERVAL_MS
@@ -3338,8 +3288,6 @@ class TreasureModule(ActivityModule):
                 scores=getattr(detection, "scores", {}),
                 hit_anchor=getattr(detection, "hit_anchor", None),
                 active_used=getattr(detection, "active_used", ()),
-                plan_version=("v4" if self._v4_enabled()
-                              else "v3" if getattr(self._detector, "plan", None) is not None else "v2"),
             ))
 
         # --------- 0.05 每日循环上限：连续 3 帧确认后自动停止 ---------
@@ -3451,15 +3399,15 @@ class TreasureModule(ActivityModule):
         # --------- 6. 真实点击：把当前点击意图执行成可见鼠标移动 + 停顿 + 点击 ---------
         # 意图由各阶段决策（_resolve_action_target 统一）给出，含归一化 center；
         # 安全机制（指纹锁/限速/前台校验/坐标换算）见 _execute_click 文档。
-        # P2a-Q3b：此段抽为 _decision_phase()，供 v4 MRA_Policy 桥复用（调用序
-        # 行为位一致：意图解析 → consume → submit → 避让 → 决策契约落盘）。
+        # P2a-Q3b：此段抽为 _decision_phase()，由 MRA_Policy 桥每帧调用一次
+        # （调用序：意图解析 → consume → submit → 决策契约落盘）。
         self._decision_phase()
 
     def _decision_phase(self) -> None:
-        """单帧决策-动作段：v3 主循环与 v4 policy 闭环节点共用的调用序。
+        """单帧决策-动作段：意图解析 → consume → submit → 决策契约落盘。
 
-        v3：_tick_once 每帧调用；v4：MRA_Policy 桥（PolicyBridge）每次
-        CustomAction.run 调用一次（一帧决策），[JumpBack] 回 dwell 重判。
+        MRA_Policy 桥（PolicyBridge）每次 CustomAction.run 调用一次（一帧决策），
+        [JumpBack] 回 dwell 重判。
         """
         intent = self._resolve_action_target()
         # 异步导航协议（2026-09-03）：consume → click 决策/提交。

@@ -91,7 +91,7 @@ class TemplateRecognizer(CustomRecognition):
         critical/_park L2 驻留握手字段（P2b 接导航 ACK 通道，当前不激活）
 
     帧源：优先 argv.image（WgcapController 注入帧，BGR）；缺省回退
-    graph.frame()（ctx.capture 直读，v3 形态兼容）。
+    graph.frame()（ctx.capture 直读）。
     """
 
     def __init__(self, graph: "NavGraph", *, cursor_pos_provider=None):
@@ -224,8 +224,8 @@ class NavGraph:
         self.ctx = ctx
         self._last_fg_warn = 0.0
         self.image_dirs = [CORE_RES_DIR / "image"]
-        # core 侧公共图目录按存在性纳入：导航真源已收口到 v3 资产，
-        # 没有手写公共图时不该让 load() 对着不存在的路径去 post_pipeline。
+        # core 侧公共图目录（global 真源）按存在性纳入：目录不存在时
+        # 不该让 load() 对着不存在的路径去 post_pipeline。
         core_pipeline = CORE_RES_DIR / "pipeline"
         self._pipeline_dirs = [core_pipeline] if core_pipeline.is_dir() else []
         self._resource = Resource()
@@ -314,7 +314,7 @@ class NavGraph:
             logger.log("[v4] 点击方式已热切为 gamepad 但手柄未绑定：请重启模块生效", "WARNING")
             return False
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
-            # 与 v3 _execute_click 同款护栏：前台(鼠标)模式不抢前台——游戏不在
+            # 前台(鼠标)模式不抢前台护栏：游戏不在
             # 前台时 SendInput 会点到该屏幕位置最上的其他窗口（落点看似「完全
             # 不对」）。取消本次点击，节点走 on_error 回 dwell 按 rate_limit 重试。
             now = time.monotonic()
@@ -474,11 +474,11 @@ class WgcapController(CustomController):
 
 
 class NavKitV4:
-    """v4 执行通路：v4 真源图（nav/ 节点 JSON）常驻跑在 MaaFW Tasker 上。
+    """v4 执行通路：真源图（pipeline/ 节点 JSON）常驻跑在 MaaFW Tasker 上。
 
-    与 NavGraph（v3 备选通路）共享桥宿主接口（frame/click/ensure_clicker），
+    与 NavGraph（按需跑一段的跳转图）共享桥宿主接口（frame/click/ensure_clicker），
     差异：①Tasker 绑 WgcapController（帧注入）而非 app 控制器；②图目录 =
-    nav/ 真源；③dwell 图常驻不退出（post_task 后框架自驱，桥内决策）。
+    pipeline/ 真源；③dwell 图常驻不退出（post_task 后框架自驱，桥内决策）。
     业务桥（MRA_Policy 等）由 plugin 经 bridges 参数注入（宪法 3）。
     """
 

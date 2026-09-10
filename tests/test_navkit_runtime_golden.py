@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-"""鉴宝运行时读取器 · 金标回归 + V-1（运行时不得再打开 treasure_rois.json）。
+"""鉴宝运行时读取器 · 金标回归（真源数值防漂移锁）。
 
-沿革：M0–M3 用现读 v2 与 v3 逐字段对照证明「切到 v3 不改值」；M4/E1 后 v2 读取器
-移除，一致值固化为金标。**P4b 数据源切换（v3 assets → policy.json 数据面）沿用同一
-套金标值**——切换的逐字段等价由 tools/experiments/v4-p4b-source/diag_p4b_plan_equiv.py
+金标 = 2026-09-08 M4/E1 收口时固化的历代一致值；P4b 数据源切换（policy.json
+数据面）沿用同一套金标值——切换的逐字段等价由 tools/experiments/v4-p4b-source/
 双跑对拍证明，本文件负责此后锁值不回退漂移。
-V-1 守卫不变：monkeypatch `open` 断言运行时绝不触碰 treasure_rois.json。
+V-1 守卫不变：monkeypatch `open` 断言运行时绝不触碰已退役的 treasure_rois.json。
 
 本文件导入 module（经 core.capabilities 拉 maa），属完整运行时测试；CI 只装 numpy+opencv-headless
 时由 importorskip 整文件跳过，dev 环境（.venv 全依赖）全跑。
@@ -30,15 +29,15 @@ pytestmark = pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"运行时金标测试需要完整依赖（maa/cv2/…）：{_RUNTIME_ERR}"
 )
 
-_PROJ = POLICY_PATH.parent.parent if _RUNTIME_OK else None  # resources 目录（原 CONFIG_DIR.parent）
-TOL = 1e-4  # 金标为 v2↔v3↔v4 三代一致值（6dp 记录），容差仅吸收浮点噪声，足以抓真实漂移
+_PROJ = POLICY_PATH.parent.parent if _RUNTIME_OK else None  # resources 目录
+TOL = 1e-4  # 金标为历代一致值（6dp 记录），容差仅吸收浮点噪声，足以抓真实漂移
 
 
 def _close(a, b) -> bool:
     return all(abs(float(x) - float(y)) <= TOL for x, y in zip(a, b))
 
 
-# ---- 金标（2026-09-08 M4/E1 收口时，v3 == 已退役 v2 的一致值）----
+# ---- 金标（2026-09-08 M4/E1 收口时固化的历代一致值）----
 GOLDEN_APPRAISERS = {
     "appraiser_p1_caroline": {"prio": 1, "rect": [0.094617, 0.266892, 0.903443, 0.729013], "threshold": 0.8},
     "appraiser_p2_shotaro": {"prio": 2, "rect": [0.086333, 0.265420, 0.905099, 0.733432], "threshold": 0.8},
@@ -96,7 +95,7 @@ def test_smart_bid_btn_match_golden():
 def test_ocr_regions_match_golden():
     regions = toc.TreasureOcr(_PROJ)._regions
     for key, rect in GOLDEN_OCR.items():
-        assert key in regions, f"丢失 v3 ocr 识别区: {key}"
+        assert key in regions, f"丢失 ocr 识别区: {key}"
         assert _close(regions[key], rect), f"ocr[{key}] rect 漂移 {regions[key]}"
 
 

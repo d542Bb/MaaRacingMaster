@@ -21,7 +21,7 @@ POLICY_PATH = RES_DIR / "policy" / "treasure.policy.json"
 def nav_source():
     """policy.json 数据面（NavSource）的进程内缓存加载，供鉴宝运行时共用。
 
-    契约（承接 v3_assets 的降级与冷生效语义，P4b 换数据源）：
+    契约（降级与冷生效语义）：
     - 文件缺失或加载异常 → 返回 ``None``；调用方以 None 触发既有降级路径
       （detector 检测跳过 / 模板装载器回代码常量）。
     - N-3 冷生效：改真源下次启动生效，故缓存不失效。

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """TreasureStore 线程亲和回归（P2b 真机落盘崩溃定案）。
 
-v4 通道把 v3 决策栈搬上 MaaFW Tasker 线程后，`_tick_once` → 落盘全在桥线程执行，
+v4 通道把决策栈搬上 MaaFW Tasker 线程后，`_tick_once` → 落盘全在桥线程执行，
 而连接原先在主线程 start() 时建——跨线程用 sqlite 连接抛 ProgrammingError
 （日志实拍："SQLite objects created in a thread..."），落盘整场丢失。
 修复：store 用 threading.local 每线程独立连接，谁线程用谁线程建。

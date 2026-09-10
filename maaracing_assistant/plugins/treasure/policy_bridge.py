@@ -5,9 +5,9 @@
 `{"name": "<module>.policy_loop", "jump_back": true}`；节点本体
 `action: Custom + custom_action: MRA_Policy`。
 
-语义：锚点/链头/通配全部未命中时执行一帧决策段（意图解析 → 点击消费/
-提交 → 避让 → 决策契约落盘，与 v3 主循环 `_decision_phase()` 同序），
-`[JumpBack]` 返回父 dwell 重判——即 v3「每帧重判」的图化。
+语义：锚点/链头/通配全部未命中时执行一帧决策段（`module._decision_phase()`：
+意图解析 → 点击消费/提交 → 决策契约落盘），
+`[JumpBack]` 返回父 dwell 重判——「每帧重判」的图化。
 
 分层（宪法 3）：桥注册在 plugin（持 module 引用，感知业务决策件）；
 core 的 v4 runner 只提供通用加载（MRA_Template/MRA_Click），不感知本桥。
@@ -27,10 +27,9 @@ POLICY_ACTION_NAME = "MRA_Policy"
 class PolicyBridge(CustomAction):
     """`<module>.policy_loop` 节点的动作桥：一次 run = 一帧完整工作。
 
-    v4 模式下全部帧工作（stage 标注/阶段自动化/OCR/决策/点击/调试存盘）
-    都在本桥（Tasker 线程）执行——直接委托 `module._tick_once()`，与 v3
-    主循环逐位同一段代码，线程模型单线程无竞态。module 主线程退化为
-    健康守护（poll）与生命周期。
+    全部帧工作（stage 标注/阶段自动化/OCR/决策/点击/调试存盘）
+    都在本桥（Tasker 线程）执行——直接委托 `module._tick_once()`，
+    单线程无竞态。module 主线程退化为健康守护（poll）与生命周期。
     """
 
     def __init__(self, module: Any) -> None:

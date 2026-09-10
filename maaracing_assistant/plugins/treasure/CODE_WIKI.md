@@ -41,11 +41,11 @@
 
 - **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
 
-- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/config/treasure_assets.json`（v3），detector/module/ocr/eggs 一律读它，v2 的 `treasure_rois.json` 已于 M4 退役。插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR`/`v3_assets()` 统一引用，不依赖主程序 `assets/`。
+- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/policy/treasure.policy.json`（`perception.spec` 锚点 + `policy` 段），detector/module/ocr/eggs 一律读它。插件以 `__init__.py` 的 `IMAGE_DIR`/`PIPELINE_DIR`/`POLICY_PATH`/`nav_source()` 统一引用，不依赖主程序 `assets/`。
 
-- **NavKit 底座**：`core/navkit` 负责 v3 资产模型、E/W 校验、DetectionPlan、路由编译、trace；`tools/navkit` 是结构树/编辑/回放控制台。固定坐标点击件不强制配模板，必须由 v3 `guarded_by` 担保（D2）。
+- **NavKit 底座**：`core/navkit` = v4 数据面 loader（v4_source：policy.json → NavSource/DetectionPlan）+ 决策引擎（policy.py）+ trace 落盘记录器；`tools/navkit` 是 MPE 桥入口 + 策略表薄页 + check_truth 校验闸门。固定坐标点击件不强制配模板，必须由 spec 锚点 `guarded_by` 担保（D2）。
 
-**阶段链路（`treasure_assets.json`** **的** **`stages.order`，仍与** **`STAGE_ORDER`** **保持 GUI 断点兼容）**：
+**阶段链路（policy.json `perception.stages` 序，仍与 `STAGE_ORDER` 保持 GUI 断点兼容）**：
 
 ```
 游戏大厅 → 活动页面 → 鉴宝大厅(选择场次) → 匹配中 → 选择鉴宝师
@@ -158,7 +158,7 @@
 
 P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy.json 数据面（P4b），plan 缺失（真源不可用）→ 阶段检测降级为空。模板读盘/热修（`mtime_ns + size` 指纹失效）收敛在 `template_match.load_template`，控制台替换模板后不会永久命中旧图。
 
-**自定义阈值**：`result_banner=0.900`、`is_matching_btn=0.900`（spec 锚点 `threshold` 字段；result_banner 另有 `arbitration.template_thresholds.result_auction_win_banner=0.60`）
+**自定义阈值**：`result_banner=0.900`、`is_matching_btn=0.900`（spec 锚点 `threshold` 字段；result\_banner 另有 `arbitration.template_thresholds.result_auction_win_banner=0.60`）
 
 ***
 
@@ -198,11 +198,12 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 ## 6. 校准与编辑工具（v4 形态）
 
-> v3 校准台（`tools/navkit/server.py` + React 前端 + adapter 投影）已于 P4a 整体退役。
-
 - **画布编辑**：`tools/navkit/mpe.cmd` 起 mpelb（root=仓库根）并在浏览器打开 MPE——节点/ROI/模板引用直接编辑 v4 真源 `resources/pipeline/treasure.json`（round-trip 保真 P3a 实证）。
+
 - **策略表**：`mpe.cmd` 同批打开 `policy_server.py` 薄页（127.0.0.1:26530），编辑 `resources/policy/treasure.policy.json`。
-- **运行时数据面（过渡态）**：detector/决策栈/ROI 仍读 v3 `resources/config/treasure_assets.json`——P4b 数据源切换后 v3 真源退役，本节届时更新。
+
+- **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；编辑后用 `tools/navkit/check_truth.py` 机检。
+
 - **校准截图来源**：`debug/treasure/<ts>/raw/`（GUI debug 图落盘），匹配行为离线验证可用 `tools/experiments/` 系列脚本。
 
 ***
@@ -228,12 +229,12 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 ### treasure\_detector.TreasureStageDetector
 
-| 方法                           | 说明                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------ |
+| 方法                           | 说明                                                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `detect(frame_rgb)`          | 返回 `DetectResult`（兼容二元组解包）：按 v4 DetectionPlan 扫描（template\_match 引擎，按锚点 colorspace）+ scores/hit\_anchor 明细 |
-| `_round_from_template(name)` | roundN\_banner 文件名 → 回合号                                                 |
-| `_round_no_from_text(text)`  | OCR 文本提取回合号（1\~5 之外视为噪声）                                                 |
-| `_round_label_rect()`        | 回合小字 OCR 区 rect（优先 ocr.round\_label\_area）                               |
+| `_round_from_template(name)` | roundN\_banner 文件名 → 回合号                                                                                   |
+| `_round_no_from_text(text)`  | OCR 文本提取回合号（1\~5 之外视为噪声）                                                                                   |
+| `_round_label_rect()`        | 回合小字 OCR 区 rect（优先 ocr.round\_label\_area）                                                                 |
 
 ### treasure\_ocr.TreasureOcr
 
@@ -254,7 +255,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 ## 8. 鉴宝模板清单
 
-配置源 v3 `treasure_assets.json`（`anchors`，rect/threshold 逐项；M4 后 `treasure_rois.json` 退役归档）；匹配阈值：全局默认 0.75，鉴宝师代码回退默认 0.72（v3 已校准 0.8）、对勾默认 0.62、智能出价按钮默认 0.72（锚点 `threshold` 逐项覆盖）：
+配置源 policy.json `perception.spec`（rect/threshold/colorspace 逐项）；匹配阈值：全局默认 0.75，鉴宝师代码回退默认 0.72（真源已校准 0.8）、对勾默认 0.62、智能出价按钮默认 0.72（锚点 `threshold` 逐项覆盖）：
 
 | ROI 键                      | 模板文件                                                     | 阶段/用途                                                                                         | 阈值       |
 | -------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------- |
@@ -274,7 +275,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 > 注：`hall_session_cards` 曾名 `hall_start_match_btn`；`hall_peak_appraise_card` 曾名 `hall_participation_card`（v0.13.0-dev.3/4 语义化改名）。已删除 `round_label_*.png`（回合小字改 OCR）。
 >
-> ¹ 鉴宝师 `threshold` 已在 v3 `anchors.appraiser_p*.threshold` 校准为 0.80（代码回退默认 `_APPRAISER_MATCH_THRESHOLD=0.72`，控制台「偏好鉴宝师」分类可逐项覆盖）。
+> ¹ 鉴宝师 `threshold` 已在真源 spec `appraiser_p*` 锚点校准为 0.80（代码回退默认 `_APPRAISER_MATCH_THRESHOLD=0.72`，MPE/薄页可逐项覆盖）。
 
 ***
 
@@ -283,10 +284,10 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 | 坑点                                    | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | <br /> | <br /> | <br />                       |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----- | :----- | :--------------------------- |
 | 准星意图模式                                | 当前全部逻辑只算「程序想点击的位置」，经 `_decide_action → _resolve_action_target → _treasure_kwargs → debug.save_frame` 渲染 PEEP 准星，**不执行真实点击**（已删除 `_click_norm`）                                                                                                                                                                                                                                                                                                                                                                                          | <br /> | <br /> | <br />                       |
-| 锚点 kind 分类语义                           | policy.json `perception.spec` 按 `kind` 分类：**template = 模板匹配做阶段/状态判定**（如 `session_start_match_btn` 判详情卡出现、`is_matching_btn` 判匹配中）；**point = 纯 rect 中心点击按钮**（准星直接用中心，不挂模板，如 `session_master_badge`/`session_expert_badge`/`session_intern_badge`/`confirm_red_btn`）；**ocr = RapidOCR 识别区**。按钮位置固定就做成 point，别挂模板                                                                                                                                                                                                                   | <br /> | <br /> | <br />                       |
-| 鉴宝师/场次多尺度匹配                           | 0.70\~1.30× 共 13 档（步长 0.05），缩小时 `INTER_AREA`/放大 `INTER_CUBIC`（P4c 起该口径在 `template_match._best_match` 唯一实现）；中心/右边界用**缩放后模板尺寸**计算（不是原始尺寸）；鉴宝师代码默认 0.72，spec 逐项覆盖为 0.80；对勾默认 0.62                                                                                                                                                                                                                                                                                                                                                                                                       | <br /> | <br /> | <br />                       |
-| rgb 帧成本与按锚点色彩空间                      | 实测 rgb 匹配成本 ≈ 灰度 2.4×（4 段真机录帧 812 帧，`tools/experiments/v4-p4c-match/`）；大搜索区/横幅类锚点（鉴宝师头像、对勾、开始匹配、round\_big\_banner、result\_banner）在 spec 声明 `colorspace: "gray"` 保帧间隔与历史校准，其余缺省 rgb。灰度豁免集是**契约**（`test_navkit_truth.test_spec_colorspace_contract` 锁死）——增删任何锚点的色彩空间前先重跑对拍脚本。翻转风险：小目标彩图分对 jpg 色度噪声敏感（smart\_bid 最差 -0.22 但 100/100 命中保持），换阈值前先想 colorspace | <br /> | <br /> | <br />                       |
-| 光标遮挡防线（P4c 定稿）                        | 反应式躲避已从架构退役：光标停在点击点属常态画面，识别可靠性靠 colorspace 校准 + 稳定帧判定（面板 `PANEL_OPEN_MIN_STABLE_FRAMES`、选师 `APPRAISER_SETTLE_FRAMES`、阶段防抖）；图侧锚点可按需开 `mask_cursor`（光标真值 = `Clicker.gamepad_cursor_pos` → `NavGraph.cursor_pos`，对局内外共享同一 Clicker 实例）。真机验收若发现遮挡漏检：优先录帧复现，再决定调阈或开 mask\_cursor，**不要回加反应式躲避** | <br /> | <br /> | <br />                       |
+| 锚点 kind 分类语义                          | policy.json `perception.spec` 按 `kind` 分类：**template = 模板匹配做阶段/状态判定**（如 `session_start_match_btn` 判详情卡出现、`is_matching_btn` 判匹配中）；**point = 纯 rect 中心点击按钮**（准星直接用中心，不挂模板，如 `session_master_badge`/`session_expert_badge`/`session_intern_badge`/`confirm_red_btn`）；**ocr = RapidOCR 识别区**。按钮位置固定就做成 point，别挂模板                                                                                                                                                                                                                           | <br /> | <br /> | <br />                       |
+| 鉴宝师/场次多尺度匹配                           | 0.70\~1.30× 共 13 档（步长 0.05），缩小时 `INTER_AREA`/放大 `INTER_CUBIC`（P4c 起该口径在 `template_match._best_match` 唯一实现）；中心/右边界用**缩放后模板尺寸**计算（不是原始尺寸）；鉴宝师代码默认 0.72，spec 逐项覆盖为 0.80；对勾默认 0.62                                                                                                                                                                                                                                                                                                                                                          | <br /> | <br /> | <br />                       |
+| rgb 帧成本与按锚点色彩空间                       | 实测 rgb 匹配成本 ≈ 灰度 2.4×（4 段真机录帧 812 帧，`tools/experiments/v4-p4c-match/`）；大搜索区/横幅类锚点（鉴宝师头像、对勾、开始匹配、round\_big\_banner、result\_banner）在 spec 声明 `colorspace: "gray"` 保帧间隔与历史校准，其余缺省 rgb。灰度豁免集是**契约**（`test_navkit_truth.test_spec_colorspace_contract` 锁死）——增删任何锚点的色彩空间前先重跑对拍脚本。翻转风险：小目标彩图分对 jpg 色度噪声敏感（smart\_bid 最差 -0.22 但 100/100 命中保持），换阈值前先想 colorspace                                                                                                                                                                               | <br /> | <br /> | <br />                       |
+| 光标遮挡防线（P4c 定稿）                        | 反应式躲避已从架构退役：光标停在点击点属常态画面，识别可靠性靠 colorspace 校准 + 稳定帧判定（面板 `PANEL_OPEN_MIN_STABLE_FRAMES`、选师 `APPRAISER_SETTLE_FRAMES`、阶段防抖）；图侧锚点可按需开 `mask_cursor`（光标真值 = `Clicker.gamepad_cursor_pos` → `NavGraph.cursor_pos`，对局内外共享同一 Clicker 实例）。真机验收若发现遮挡漏检：优先录帧复现，再决定调阈或开 mask\_cursor，**不要回加反应式躲避**                                                                                                                                                                                                                                                | <br /> | <br /> | <br />                       |
 | 阶段感知动态激活                              | 非标准窗口（DPI 缩放）下画面模糊 → 单点匹配分不稳定（如 smart\_bid\_btn 多尺度仅 0.686，达不到 `_SESSION_MATCH_THRESHOLD` 0.90 → 面板判未开 → 不点智能出价）。`treasure_module._STAGE_PERCEPTION` 按阶段只激活「当前画面必然出现/相关」的 stage ROI，`detect(active_rois)` 只扫交集；全局锚点 `_GLOBAL_ANCHORS`（`hall_peak_appraise_card` 掉回大厅兜底）始终全量并入。阶段未登记 → 回退全量（安全兜底）。OCR 同理按 `_STAGE_OCR_KEYS` 裁剪 worker 第二段 keys。**新阶段必须登记感知清单**（含转移信号，如出价阶段必须含 settle\_title/result\_banner），否则只跑锚点 → 永不切换。smart\_bid\_btn 阈值已解耦：读 JSON `stage.smart_bid_btn.threshold`，缺省回退 `_SMART_BID_MATCH_THRESHOLD=0.72`（不可复用 0.90） | <br /> | <br /> | <br />                       |
 | 「已选中」对勾判定                             | `stage.appraiser_selected_check` 是横向长条 rect（覆盖三卡右上角对勾高度带），扫描黄色√；判定对勾中心 X ≈ 目标卡片命中框右边界（容差 0.09）                                                                                                                                                                                                                                                                                                                                                                                                                                          | <br /> | <br /> | <br />                       |
 | 鉴宝师搜索区                                | `_APPRAISER_SEARCH_ROI=(0.03,0.18,0.97,0.92)` 全屏范围（三卡位置/尺寸不固定），顺位 P1 卡洛琳→P2 章太郎，均未命中→准星指屏幕中心                                                                                                                                                                                                                                                                                                                                                                                                                                            | <br /> | <br /> | <br />                       |

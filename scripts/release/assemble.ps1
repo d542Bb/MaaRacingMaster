@@ -691,7 +691,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     # 白名单只 robocopy maaracing_assistant/，tools\（NavKit 校准台：HTTP server + 前端
     # 构建产物，开发树 ~180MB）、tests\、docs\ 本就不该出现。此处反向断言：白名单一旦被
     # 放宽、或有人把开发工具挪进源码包，构建当场失败，而不是静默发给用户。
-    # 注意区分：maaracing_assistant\core\navkit\ 是运行期识别/编译引擎，必须随包。
+    # 注意区分：maaracing_assistant\core\navkit\ 是运行期数据面 loader + 决策引擎，必须随包。
     foreach ($rel in @('tools', 'tests', 'docs', '.github', 'scripts')) {
         if (Test-Path (Join-Path $StageRoot $rel)) {
             $errors.Add("DEV-TREE-LEAK: '$rel' must not be shipped")
@@ -703,7 +703,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
             $errors.Add('DEV-TREE-LEAK: 校准台目录入包 -> ' +
                 $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
         }
-    $consoleMarkers = @('compile_routes.py', 'replay_policy.py', 'graph_api.py', 'regress_stages.py')
+    $consoleMarkers = @('mpe.cmd', 'policy_server.py', 'check_truth.py')
     Get-ChildItem $StageRoot -Recurse -File -EA SilentlyContinue |
         Where-Object { $consoleMarkers -contains $_.Name } |
         ForEach-Object {

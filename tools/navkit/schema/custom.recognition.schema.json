@@ -31,7 +31,7 @@
         },
         "MRA_TemplateParam": {
             "title": "MRA_Template 参数",
-            "description": "彩色/遮挡感知模板匹配（v3 锚点行为位一致迁移形态）",
+            "description": "彩色/遮挡感知模板匹配（template_match 唯一引擎的图桥）",
             "type": "object",
             "properties": {
                 "mode": {

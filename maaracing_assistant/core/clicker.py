@@ -104,7 +104,7 @@ class Clicker:
     def submit_move(self, cx: float, cy: float, *,
                     box=None, tol_px=None,
                     down_up_gap_ms: int = 30, move_pause_s: float = 0.4) -> bool:
-        """提交一次只移动（避让/悬停）。语义同 submit_click，但 intent 恒 True（不点击）。"""
+        """提交一次只移动（光标移到位但不点击）。语义同 submit_click，但 intent 恒 True（不点击）。"""
         if self.mode == "gamepad":
             return self._submit_gamepad("move", cx, cy, intent=True,
                                         box=box, tol_px=tol_px)
@@ -163,13 +163,12 @@ class Clicker:
         return res
 
     def _handle_gamepad_result(self, res: dict) -> None:
-        """主循环 consume 时处理导航结果：丢失累计/重建计数（原 _click_gamepad 职责）。
+        """消费导航结果时处理：丢失累计/重建计数。
 
         device_lost=True 且为真实点击（intent=False）→ 累计丢失，达阈值重建；
         意图导航（intent=True：PEEP 意图模式/只移动任务）丢失不触发重建——
         转场期光标被遮罩隐藏是正常现象（2026-09-03 用户实测：丢失误触发重建
-        会拔插设备制造空档）。P4c 注：原「避让（shoo）」消费方已退役，
-        本条对 intent 的保护语义不变。
+        会拔插设备制造空档），故 intent 保护为协议的固定语义。
         """
         if res.get("device_lost"):
             if not res.get("intent"):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""NavKit v4 真源自洽校验（CI 闸门；P4b 承接自已退役的 v3→v4 迁移器）。
+"""NavKit v4 真源自洽校验（CI 闸门，P4b 起承担图/数据面全部机检）。
 
 读盘三件套真源并校验：
 1. 图自洽（校验器第 1/5/6 条）：next/on_error 引用闭合、入口可达、无出口告警、

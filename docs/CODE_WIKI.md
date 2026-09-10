@@ -131,12 +131,13 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │       └── treasure/                         # 巅峰鉴宝
 │           ├── CODE_WIKI.md                  # 鉴宝域文档
 │           ├── manifest.py                   # ID + MODULE_CLASS（registry 扫描用）
-│           ├── __init__.py                   # PLUGIN_DIR / RES_DIR / IMAGE_DIR / CONFIG_DIR 资源常量
+│           ├── __init__.py                   # PLUGIN_DIR / RES_DIR / IMAGE_DIR / PIPELINE_DIR / POLICY_PATH / nav_source()
 │           ├── module.py / detector.py / ocr.py / strategy.py
-│           ├── eggs.py / renderer.py / store.py
+│           ├── policy_bridge.py / eggs.py / renderer.py / store.py
 │           └── resources/                    # 插件专属资源（自包含）
 │               ├── image/                    # 全部鉴宝模板
-│               ├── config/treasure_assets.json # NavKit schema v3 唯一检测/路由/ROI 真源
+│               ├── pipeline/treasure.json    # v4 图节点真源
+│               └── policy/treasure.policy.json # 感知 spec + 决策 + tuning 唯一数据面真源
 │
 ├── assets/                                   # 应用级资产（插件素材已全部内聚到各自 plugins/<id>/resources/）
 │   ├── config/maa_option.json                # MAA 框架配置
@@ -675,7 +676,7 @@ python -u -m maaracing_assistant.core.sidecar  # 独立调试 sidecar（等待 s
 1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingAssistant/debug/<module>/<会话>/` 目录
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，弹出 OpenCV 窗口实时显示精简标注画面（\~30fps）
 3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
-4. **MPE Studio**：`tools/navkit/mpe.cmd` 起 LocalBridge 并在浏览器打开 MPE（画布编辑 v4 真源）+ 策略表薄页；v3 校准台已退役（P4a）
+4. **MPE Studio**：`tools/navkit/mpe.cmd` 起 LocalBridge 并在浏览器打开 MPE（画布编辑 v4 真源）+ 策略表薄页
 
 ### 9.4 YOLO模型训练
 
@@ -705,9 +706,9 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 
 - 历史"记录模式"（读取物理手柄采集数据）已随 v0.14 重构移除，不再适用
 
-### 9.7 NavKit 模板图采集工作流（v3 资产，2026-09-07 定案）
+### 9.7 NavKit 模板图采集工作流（2026-09-07 定案，v4 载体沿用）
 
-> 适用：为 `*_assets.json` 锚点采集模板图。分工：**人工截图+裁剪标注 → 导出
+> 适用：为图节点 / policy `perception.spec` 锚点采集模板图。分工：**人工截图+裁剪标注 → 导出
 > regions.json + PNG → 工具侧换算入库**（rect 归一化/JSON/校验/提交均为工具侧职责）。
 
 **来源纪律**：只从 1280×720 运行帧截图裁剪（`window_utils` 启动即统一 720p），
@@ -717,60 +718,59 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 留在模板外。变化在模板图**外**（哪怕紧贴）不影响匹配得分；在图**内**才失效
 （阈值 0.75 容忍渲染抖动，不容忍结构性变化）。
 
-**命名**：`<页面>_<元素>[_限定词].png`，全小写下划线；首段页面名与 assets 的
-`pages` 注册表一致（`hall_` / `rank_` / `speedrush_`…），看文件名即知归属。
+**命名**：`<页面>_<元素>[_限定词].png`，全小写下划线；首段页面名与页注册表一致
+（`hall_` / `rank_` / `speedrush_`…），看文件名即知归属。
 
 **位置跟 owner 走**：global 锚点 → `core/resources/image/`；模块锚点 →
-`plugins/<id>/resources/image/`。归属与物理位置矛盾由 W04 盯。
+`plugins/<id>/resources/image/`。归属与物理位置矛盾由编辑评审盯。
 
-**回传**：标注工具导出 regions.json（像素区域 x/y/w/h）+ PNG → 工具侧换算
-归一化 rect（外扩 15% 宽 / 25% 高、4 位小数）写入 assets；**JSON 永远工具侧维护，
-人工不手改**（改资产必须重编译，CI `--all --check` + `source_hash` 守着）。
+**回传**：标注工具导出 regions.json（像素区域 x/y/w/h）+ PNG → 换算
+归一化 rect（外扩 15% 宽 / 25% 高、4 位小数）写入真源。**JSON 真源由 MPE 画布 /
+`policy_server.py` 薄页维护，人工不手改裸文件**；agent/脚本直改 JSON 后
+`tools/navkit/check_truth.py` 机检 + 提交。
 
-**守卫闭环（已有机具，无需新造）**：W01 = 死模板探测器（锚点下线删引用后，
-孤儿图自动浮出 → 连文件一起删）；W02 悬空引用；W04 归属错位；E20/CI 防手改
-生成物。**体积账**：单张 5\~60KB、全部模板预期 <1MB（对比 rapidocr 模型 30MB、
-onnx 12MB 不成量级）——要防的是"图死"（W01 管）不是"图多"。
+**守卫闭环（现状）**：CI = `check_truth.py`（next/on_error 引用闭合、入口可达、
+疑似重复识别告警、policy 数据面可装配、图↔spec 交叉互洽）+ `test_navkit_truth.py`
+节点/锚点计数见证。模板文件缺失由运行时 `load_template` 返回 None 降级 +
+装载器 WARNING 暴露。**体积账**：单张 5\~60KB、全部模板预期 <1MB（对比 rapidocr
+模型 30MB、onnx 12MB 不成量级）——要防的是"图死"（孤儿图定期对照 spec/节点引用
+清一次）不是"图多"。
 
 **MAA 对照**：MaaFramework 侧仅约定"720p 无损原图裁剪勿缩放 + `roi`/`box`/`target`
 三概念分离"（本指南 §5.1/§5.2）；社区靠 ImageCropper 类工具 + 人工纪律，无结构化
 工作流。MRA 在其上加 regions 机器可读导出 + 校验守卫闭环。
 
-### 9.8 全局资产分层与路由侧 merge（v3 资产，2026-09-07 定案）
+### 9.8 全局资产分层与两文件同图（2026-09-07 定案，v4 形态）
 
 > 分界线：**大厅本身即边界**。跨模块常驻的页面骨架（大厅底栏、设置、比赛/排位/娱乐玩法入口等）
 > 归 global，其余玩法专属内容归各自 `plugins/<id>/`。判据是"这个元素是否跨玩法长期共享"
-> （爆炸半径），**与"某个玩法是否从这个按钮进入"无关**——锚点归属由 `owner` 字段声明。
+> （爆炸半径），**与"某个玩法是否从这个按钮进入"无关**——锚点归属由节点 `_owner` 声明。
 
-**两段资产**：
+**两段真源（v4 文件形态）**：
 
-- global 段 = `core/resources/config/global_assets.json`（`_module: global`，页名 + 共用锚点，无 routes）。
+- global 段 = `core/resources/pipeline/global.json`（`global.*` 命名空间，大厅骨架页 dwell + 共用锚点）。
 
-- 模块段 = `plugins/<id>/resources/config/<id>_assets.json`（自有锚点 + stages/transitions/routes/policies）。
-
-**单向可见合并** **`Assets.merge(global)`**：模块可见 global、global 不见模块；同名锚点保留模块版；
-global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection` 的入集条件依赖此同步）；
-`owner` / `_module` 保持原值，保证 W04/E02 判定输入不变。
+- 模块段 = `plugins/<id>/resources/pipeline/<id>.json`（自有节点）+ `plugins/<id>/resources/policy/<id>.policy.json`（感知/决策数据面）。
 
 **通电位置（关键契约）**：
 
-- **仅路由侧并入**（v4 现状）——global 节点与鉴宝节点由 MaaFW「全部 JSON 载入同一张图」原生并入
+- **图侧原生并入**——global 节点与鉴宝节点由 MaaFW「全部 JSON 载入同一张图」原生并入
   同一命名空间，路由可 **baseTask 式跨文件引用 global 节点**（如 speedrush 入口链点大厅
-  `hall_race_btn`）而不必各自复制一份大厅识别（原 v3 `compile_routes` 编译期 merge 已随 P4a 退役）。
+  `hall_race_btn`）而不必各自复制一份大厅识别。
 
-- **检测侧绝不并入**（原则不变）——`detector.py` 用未合并的模块资产编译 `DetectionPlan`。原因：
-  global 锚点无 `order` → `stage_priority=1000`，一旦进 `detect_anchors` 会在局内帧抢先短路、
+- **检测侧绝不并入**（原则不变）——运行时阶段检测只扫 policy.json `perception.spec`
+  装配的 `DetectionPlan`（模块自有锚点集），global 节点不进每帧检测环。原因：
+  global 锚点无 `order` → `stage_priority=1000`，一旦进扫描集会在局内帧抢先短路、
   破坏逐帧等价回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
 
 - **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），与 MAA `activity_pool` 同构。
 
-**回归护栏（P4b 后现状）**：CI 校验为 `check_truth.py`（图闭合 + 数据面装配 + 交叉互洽；
-v3→v4 迁移器完成使命已退役，退役对拍见 tools/experiments/v4-p4b-source/）；
-原 `test_navkit_merge` 的"鉴宝检测集 ∩ global 锚点 = ∅"守卫随 v3 控制台批退役——
-"检测侧绝不并入 global"的原则在 P4b 数据源切换时必须以新数据源重建等价契约测试。
+**回归护栏（现状）**：CI = `check_truth.py`（图闭合 + 数据面装配 + 图↔spec 交叉互洽）；
+`test_navkit_truth.py` 锁切分形态——global.json 只装大厅骨架、`<id>.json` 不出现
+`global.*` 节点（切分幂等的落盘见证），spec/节点计数见证防漂。
 
-**编辑 global（v4 形态）**：v3 控制台的运行中切模块机制已删除；global 真源
-`core/resources/pipeline/global.json` 与鉴宝图同批由 `mpe.cmd` 打开的 MPE 文件面板列出，直接编辑保存。
+**编辑 global**：global 真源 `core/resources/pipeline/global.json` 与鉴宝图同批由
+`mpe.cmd` 打开的 MPE 文件面板列出，直接编辑保存。
 
 ***
 

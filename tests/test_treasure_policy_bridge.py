@@ -66,14 +66,15 @@ def test_decision_phase_flushes_trace_snapshot():
     writer.write.assert_called_once()
     row = writer.write.call_args[0][0]
     assert row["event"] == "decision" and row["decision_snapshot"]["decision"]["key"] == "x"
-    assert m._policy_snapshot is None  # 落盘后清空（v3 主循环与桥一致）
+    assert m._policy_snapshot is None  # 落盘后清空，每帧只写一份决策契约
 
 
-def test_v4_entry_and_flag_contract():
-    """入口与开关契约：生产入口 = 起跑汇聚节点（任意 stage 自适应，
-    P2b 真机三炸根修——链头线性路径在卡片态变化时永不命中）。"""
+def test_v4_entry_and_single_path_contract():
+    """入口契约：生产入口 = 起跑汇聚节点（任意 stage 自适应，
+    P2b 真机三炸根修——链头线性路径在卡片态变化时永不命中）；
+    执行通路唯一，运行模式开关不得回加。"""
     assert TreasureModule._V4_ENTRY == "treasure.__boot.dwell"
-    assert TreasureModule._v4_enabled() is True  # P2b 验收后缺省即 v4（应急回退需显式 NAVKIT_SOURCE=v3）
+    assert not hasattr(TreasureModule, "_v4_enabled")
 
 
 def test_v4_loop_assembles_existing_source_dirs(monkeypatch):

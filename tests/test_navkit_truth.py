@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""NavKit v4 盘上真源契约测试（P4b 起替代迁移器套件）。
+"""NavKit v4 盘上真源契约测试。
 
-v3→v4 迁移器的「映射一致」使命已由对拍实验完成
-（tools/experiments/v4-p4b-source/diag_p4b_plan_equiv.py）；本套件看护的是
-**落盘真源三件套本身**的形态与行为契约——历史定案（真机五/七/八炸、P2b
-节拍与起跑汇聚）逐条保留，fixture 从 build 输出改为直读盘上文件。
+本套件看护 **落盘真源三件套本身** 的形态与行为契约——历史定案（真机五/七/
+八炸、P2b 节拍与起跑汇聚）逐条保留，fixture 直读盘上文件；等价性对拍记录见
+tools/experiments/v4-p4b-source/。
 """
 from __future__ import annotations
 
@@ -135,7 +134,7 @@ def test_navigation_dwell_fallback_to_boot(truth):
     """纯导航兜底契约（真机八炸定案）：纯导航 dwell 的 next 是固定候选，
     timeout=-1 + 画面意外 = 永久静默——默认超时 + on_error 回 boot 重判
     自愈；决策阶段 dwell 保留 -1（policy_loop DirectHit 永远兜底，永不超时
-    是决策循环设计）。route 链节点同款兜底（v3 timeout_ms 重试语义的 v4 形态）。"""
+    是决策循环设计）。route 链节点同款兜底。"""
     full, _ = truth
     for n in ["global.游戏大厅.dwell", "global.活动页面.dwell"]:
         d = full[n]

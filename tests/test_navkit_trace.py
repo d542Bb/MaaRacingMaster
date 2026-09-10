@@ -29,7 +29,6 @@ def test_frame_trace_has_reconstruction_fields():
         active_used={"round_big_banner", "smart_bid_btn"},
         intent={"key": "bid_main_red_btn", "center": (0.5, 0.8)},
         click_result={"ok": False, "device_lost": False},
-        plan_version="v3",
         timestamp_ms=123,
     )
     data = trace.as_dict()
@@ -37,6 +36,7 @@ def test_frame_trace_has_reconstruction_fields():
     assert data["scores"]["round_big_banner"] == 0.91
     assert sorted(data["active_used"]) == ["round_big_banner", "smart_bid_btn"]
     assert data["intent"]["center"] == [0.5, 0.8]
+    assert "plan_version" not in data  # 执行通路唯一后该字段已退役
 
 
 def test_trace_writer_appends_compact_jsonl(tmp_path: Path):

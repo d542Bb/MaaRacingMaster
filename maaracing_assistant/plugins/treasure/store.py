@@ -22,7 +22,7 @@ class TreasureStore:
     """鉴宝落盘存储：DB 连接管理 + 场次/当日汇总写入 + 会话总结。
 
     线程亲和（P2b 真机八炸后复盘定案）：SQLite 连接必须"在哪个线程用就在哪个
-    线程建"。v4 通道把 v3 决策栈搬上 MaaFW Tasker 线程，`_tick_once` → 落盘
+    线程建"。v4 通道把决策栈搬上 MaaFW Tasker 线程，`_tick_once` → 落盘
     全在桥线程执行，而连接原先在 start()（主线程）建——跨线程使用 SQLite 连接
     会抛 ProgrammingError（实测："SQLite objects created in a thread can only
     be used in that same thread"），落盘整场丢失。此处用 threading.local 让每个

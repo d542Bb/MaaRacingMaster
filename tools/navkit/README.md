@@ -1,6 +1,6 @@
 # NavKit v4 工具链
 
-> v3 校准台（server.py + React 前端 + 编译链）已于 P4a 退役删除；画布编辑由 MPE 承担（round-trip 保真已实证），本目录只留 v4 活件。
+> 画布编辑由 MPE 承担（round-trip 保真已实证）：`mpe.cmd` 起本地桥即 Studio（C 形态，无壳）。本目录只含 v4 活件。
 
 ## 入口
 
@@ -33,4 +33,4 @@ tools/navkit/
 
 校验（CI 同款）：`python tools/navkit/check_truth.py`
 
-> v3→v4 迁移器（migrate_v4.py）已完成使命并在 P4b 退役——等价性对拍记录于 `tools/experiments/v4-p4b-source/`，历史版本在 git。
+> 真源数值等价性的历史对拍记录在 `tools/experiments/v4-p4b-source/`。

@@ -6,12 +6,11 @@ navkit —— 导航判断逻辑的运行时底座（v4 数据面）。
 真源 = 插件 `resources/policy/*.policy.json`（感知规格 + 决策规则 + 执行资产）
 与 `resources/pipeline/*.json`（图节点）；本包负责前者到内存对象的加载。
 
-子模块（P4b 后现状；assets/compile_detect/validate/legacy/compile_route/signature
-已随 v3 全家退役，退役对拍见 tools/experiments/v4-p4b-source/）
-----------
+子模块
+------
 - `v4_source` : policy.json → NavSource（DetectionPlan + spec + Policies 装配）
 - `policy`    : P1 决策引擎（rules → PolicyPlan，输入由 v4_source 供）
-- `trace`     : 决策落盘记录器（P4d 拍板去留）
+- `trace`     : 决策落盘记录器（JSONL 单行追加，会话目录 + keep_sessions 保留策略）
 
 约束（不可违反）
 ----------------

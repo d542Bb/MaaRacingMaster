@@ -3,15 +3,14 @@
 """
 navkit v4 数据面 loader——policy.json → 运行时消费对象（P4b 引入）。
 
-运行时感知/决策数据的唯一真源（取代 v3 Assets 五段 schema）：
+运行时感知/决策数据的唯一真源：
 
 - `perception.{spec,stages,transitions,match}` → `DetectionPlan`
-  （detector 每帧扫描规格；调度语义与原 compile_detect 逐字段同构，
-  对拍证明见 tools/experiments/v4-p4b-source/）
+  （detector 每帧扫描规格；等价性对拍见 tools/experiments/v4-p4b-source/）
 - `policy` 段 → `Policies`（决策引擎 policy.py 原样复用，仅换装配口）
 
 `spec` 同时是 module 私有感知装载器（鉴宝师模板/勾选/场次面板/智能出价/
-彩蛋/动作中心点）与 ocr 区域的供料源——消费接口与 v3 Anchor 对齐
+彩蛋/动作中心点）与 ocr 区域的供料源——消费接口为稳定调用形
 （`.rect.as_list()` / `.kind` / `.templates` / `.threshold` / `.order` / `.domain`）。
 
 编译确定性：同输入两次加载产出等值对象。
@@ -45,7 +44,7 @@ ROUND_PHASE_STAGE = "__round_phase__"
 
 @dataclass(frozen=True)
 class Rect:
-    """归一化矩形（消费接口对齐 v3 Anchor.rect，兼容既有 .as_list() 调用形）。"""
+    """归一化矩形（`.as_list()` 为装载器/检测器的稳定调用形）。"""
 
     x1: float
     y1: float
@@ -247,9 +246,9 @@ def _build_detection_plan(anchors: Mapping[str, Anchor], perception: Mapping[str
 
 
 def load_nav_source(policy_path: Path) -> NavSource:
-    """policy.json → NavSource。结构性错误直接抛（fail-closed，与 v3 加载一致）。
+    """policy.json → NavSource。结构性错误直接抛（fail-closed）。
 
-    缓存语义（承接 v3_assets N-3「冷生效」）：同一路径只读一次，改文件下次
+    缓存语义（冷生效）：同一路径只读一次，改文件下次
     进程启动生效；测试以不同 tmp 路径注入，不受缓存串扰。
     """
     return _load_nav_source_cached(Path(policy_path))
