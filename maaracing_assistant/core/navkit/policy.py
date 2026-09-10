@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-navkit 决策策略层（P1，决策规则数据化）。
+navkit 决策策略层（P1，决策规则数据化；域中性——本模块零业务词汇）。
 
-把鉴宝 plugin 的「最终意图路由」（stage → action 查表 + 意图触达条件）从 Python
-上纸到 policy.json 的 `policy` 段：JSON 声明「当前事实满足条件 → 输出哪个意图」，
-上游算事实的匹配/策略算法、下游 retry/cooldown 的状态副作用一律留码。
+把「最终意图路由」（stage → action 查表 + 意图触达条件）从 Python 上纸到
+policy.json：`policy` 段声明「当前事实满足条件 → 输出哪个意图」，
+`engine_contract` 段供给本引擎消费的域白名单、推导与副作用形
+（EngineContract——接入新模块 = 写新数据面，不改本文件）。
+上游算事实的匹配/策略算法、下游状态副作用的更新逻辑一律留各 plugin。
 
 本模块保持纯标准库，与 v4_source/trace 同级，职责边界：
 
-- 契约（P0-6 / P0-7）：`StateSnapshot`（封闭白名单投影）、`DecisionFacts`（冻结
-  快照，PolicyEngine 全程只读）、`DecisionSnapshot`（trace 落盘的决策契约）。
+- 契约（P0-6 / P0-7）：`EngineContract`（引擎的域合同）、`StateSnapshot`
+  （白名单投影）、`DecisionFacts`（冻结快照，PolicyPlan.decide 全程只读）、
+  `DecisionSnapshot`（trace 落盘的决策契约）。
 - 数据与执行：`Policies`（schema 解析）、`PolicyPlan`（启动编译的不可变索引，
   运行时禁止 json lookup / 表达式解析，规则匹配复杂度 O(#rules)）。
 - 校验：P01-P09（结构性错误硬阻断，语义告警可配置）；真源自洽互洽
   由 `tools/navkit/check_truth.py`（CI 闸门）承担。
-
-消费方（plugins/treasure/module.py）只依赖本模块公开符号。
 """
 from __future__ import annotations
 
@@ -25,14 +26,10 @@ from typing import Any, Mapping, Sequence
 
 __all__ = [
     "POLICIES_SCHEMA_VER",
-    "DEFAULT_FALLBACK_KEY",
-    "DEFAULT_FALLBACK_HINT",
-    "FACT_FIELDS",
-    "STATE_FIELDS",
-    "ALGO_FIELDS",
+    "ENGINE_CONTRACT_SCHEMA_VER",
     "OP_WHITELIST",
-    "DECISION_SOURCES",
-    "EFFECT_WHITELIST",
+    "EngineContract",
+    "parse_engine_contract",
     "PolicyError",
     "StateSnapshot",
     "DecisionFacts",
@@ -50,67 +47,12 @@ __all__ = [
 ]
 
 POLICIES_SCHEMA_VER = 1
-DEFAULT_FALLBACK_KEY = "stage_waiting"
-DEFAULT_FALLBACK_HINT = "等待阶段切换...（等待界面稳定）"
+ENGINE_CONTRACT_SCHEMA_VER = 1
 
-# 决策事实（DecisionFacts）字段白名单：rules[].when 只能引用这些（P04）。
-FACT_FIELDS: frozenset[str] = frozenset({
-    "stage",
-    "popup_kind",
-    "session_decision",
-    "appraiser_decision",
-    "bidding_decision",
-    "settle_income",
-    "clicked_once",
-    "retry_count",
-    "retry_elapsed",
-    "cooldown",
-    "daily_high_score",
-    "egg_reading",
-    "egg_read_done",
-    "reward_elapsed",
-    "skip_cycle",
-    "frame_counter",
-})
-
-# StateSnapshot 封闭白名单：运行时原始状态可投影字段（P0-7）。
-STATE_FIELDS: frozenset[str] = frozenset({
-    "settle_income",
-    "clicked_once",
-    "retry_count",
-    "settle_skip_since",
-    "cooldown",
-    "daily_high_score",
-    "egg_reading",
-    "egg_read_done",
-    "reward_enter_frame",
-    "frame_counter",
-})
-
-# 帧内上游算法产出事实（P0-6：各自 _run_*_choice 执行后冻结）。
-ALGO_FIELDS: frozenset[str] = frozenset({
-    "stage",
-    "popup_kind",
-    "session_decision",
-    "appraiser_decision",
-    "bidding_decision",
-})
-
-# 条件算子白名单（P05）：只有六个原语，禁止表达式/函数/嵌套。
+# 条件算子白名单（P05）：只有六个原语，禁止表达式/函数/嵌套——引擎机制本体。
 OP_WHITELIST: frozenset[str] = frozenset({"eq", "neq", "gt", "gte", "lt", "lte"})
 
-# decision.source 白名单（P03）：上游「决策算法」产出的动态 key 源。
-DECISION_SOURCES: frozenset[str] = frozenset({
-    "session_decision",
-    "appraiser_decision",
-    "bidding_decision",
-})
-
-# decision.effect 白名单：引用引擎已实现的状态副作用（更新逻辑留码，JSON 只选择）。
-EFFECT_WHITELIST: frozenset[str] = frozenset({
-    "popup_cooldown_decr",
-    "settle_skip_retry",
-})
+_DERIVED_OPS: frozenset[str] = frozenset({"elapsed", "frame_mod"})
 
 
 class PolicyError(ValueError):
@@ -124,26 +66,176 @@ class PolicyError(ValueError):
 
 
 # ------------------------------------------------------------------
+# 引擎契约（engine_contract 段）：域的全部白名单/推导/副作用来自数据，
+# core 不携带任何业务词汇——「机制归引擎，策略归数据」的机制侧闭环。
+# ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EngineContract:
+    """policy.json `engine_contract` 段的内存形。
+
+    - `facts/state_fields/algo_fields/decision_sources/effects/wait_keys`：
+      规则条件、状态投影、算法产出、动态 key 源、effect、保留等待 key 的合法集；
+    - `fallback_key/fallback_hint`：无任何规则命中时的终值决策；
+    - `auto_effects`：决策 key → 自动附加的 effect（表驱动，无代码分支）；
+    - `passthrough_effects`：规则显式声明 effect 即附加的合法集；
+    - `effect_required_conditions`：effect → 声明该 effect 的规则必须覆盖的
+      条件字段集（语义护栏，P05）；
+    - `derived`：冻结期推导注入（op ∈ {elapsed, frame_mod}，算子白名单受控）；
+    - `derived_sources`：推导前体键——允许经 state 流入、冻结后不出现在 facts；
+    - `tuning_keys`：policy.tuning 的段 → 键白名单（未知键 P01 防拼写漂移）。
+    """
+
+    schema_ver: int
+    facts: frozenset[str]
+    state_fields: frozenset[str]
+    algo_fields: frozenset[str]
+    decision_sources: frozenset[str]
+    effects: frozenset[str]
+    wait_keys: frozenset[str]
+    fallback_key: str
+    fallback_hint: str
+    auto_effects: Mapping[str, str]
+    passthrough_effects: frozenset[str]
+    effect_required_conditions: Mapping[str, frozenset[str]]
+    derived: tuple[Mapping[str, Any], ...]
+    derived_sources: frozenset[str]
+    tuning_keys: Mapping[str, frozenset[str]]
+
+
+def parse_engine_contract(raw: Any) -> EngineContract:
+    """`engine_contract` 文档段 → EngineContract。结构性错误抛 PolicyError（fail-closed）。"""
+    if not isinstance(raw, Mapping):
+        raise PolicyError("P01", "engine_contract",
+                          f"engine_contract 须为 object，收到 {type(raw).__name__}")
+    ver = raw.get("_schema_ver", ENGINE_CONTRACT_SCHEMA_VER)
+    if ver != ENGINE_CONTRACT_SCHEMA_VER:
+        raise PolicyError("P01", "engine_contract._schema_ver",
+                          f"需为 {ENGINE_CONTRACT_SCHEMA_VER}，收到 {ver!r}")
+
+    def _names(key: str, *, allow_empty: bool = False) -> frozenset[str]:
+        v = raw.get(key)
+        if not isinstance(v, Sequence) or isinstance(v, (str, bytes)):
+            raise PolicyError("P01", f"engine_contract.{key}", f"{key} 须为字符串数组")
+        if not v and not allow_empty:
+            raise PolicyError("P01", f"engine_contract.{key}", f"{key} 须为非空数组")
+        if any(not isinstance(x, str) or not x for x in v):
+            raise PolicyError("P01", f"engine_contract.{key}", "元素须为非空字符串")
+        return frozenset(v)
+
+    facts = _names("facts")
+    state_fields = _names("state_fields")
+    algo_fields = _names("algo_fields")
+    decision_sources = _names("decision_sources", allow_empty=True)
+    effects = _names("effects")
+    wait_keys = _names("wait_keys")
+
+    fallback = raw.get("fallback")
+    if not isinstance(fallback, Mapping) or not isinstance(fallback.get("key"), str) \
+            or not isinstance(fallback.get("hint"), str):
+        raise PolicyError("P01", "engine_contract.fallback", "fallback 须为 {key, hint} 字符串对象")
+
+    auto_raw = raw.get("auto_effects", {})
+    if not isinstance(auto_raw, Mapping) or any(
+            not isinstance(k, str) or not isinstance(v, str) for k, v in auto_raw.items()):
+        raise PolicyError("P01", "engine_contract.auto_effects", "须为字符串到字符串的 object")
+    if sorted(set(auto_raw.values()) - effects):
+        raise PolicyError("P01", "engine_contract.auto_effects",
+                          f"目标 effect 不在 effects 白名单：{sorted(set(auto_raw.values()) - effects)}")
+
+    passthrough = _names("passthrough_effects") if raw.get("passthrough_effects") else frozenset()
+    if sorted(passthrough - effects):
+        raise PolicyError("P01", "engine_contract.passthrough_effects",
+                          f"effect 不在 effects 白名单：{sorted(passthrough - effects)}")
+
+    erc_raw = raw.get("effect_required_conditions", {})
+    if not isinstance(erc_raw, Mapping):
+        raise PolicyError("P01", "engine_contract.effect_required_conditions", "须为 object")
+    effect_required_conditions: dict[str, frozenset[str]] = {}
+    for eff, req in erc_raw.items():
+        if eff not in effects or not isinstance(req, Sequence) or isinstance(req, (str, bytes)) \
+                or any(not isinstance(x, str) or not x for x in req):
+            raise PolicyError("P01", f"engine_contract.effect_required_conditions.{eff}",
+                              "键须为 effects 成员、值须为非空字符串数组")
+        missing = sorted(set(req) - facts)
+        if missing:
+            raise PolicyError("P01", f"engine_contract.effect_required_conditions.{eff}",
+                              f"条件字段不在 facts 白名单：{missing}")
+        effect_required_conditions[eff] = frozenset(req)
+
+    derived_raw = raw.get("derived", [])
+    if not isinstance(derived_raw, Sequence) or isinstance(derived_raw, (str, bytes)):
+        raise PolicyError("P01", "engine_contract.derived", "derived 须为数组")
+    derived: list[Mapping[str, Any]] = []
+    derived_sources: set[str] = set()
+    for i, d in enumerate(derived_raw):
+        path = f"engine_contract.derived[{i}]"
+        if not isinstance(d, Mapping) or not isinstance(d.get("field"), str):
+            raise PolicyError("P01", path, "须为含 field 的 object")
+        if d.get("op") == "elapsed":
+            if not isinstance(d.get("from"), str) or not d["from"]:
+                raise PolicyError("P01", f"{path}.from", "elapsed 需要非空 from 前体键")
+            derived_sources.add(d["from"])
+        elif d.get("op") == "frame_mod":
+            if isinstance(d.get("k"), bool) or not isinstance(d.get("k"), (int, float)):
+                raise PolicyError("P01", f"{path}.k", "frame_mod 需要数值 k")
+        else:
+            raise PolicyError("P01", f"{path}.op",
+                              f"推导算子须为 {sorted(_DERIVED_OPS)}，收到 {d.get('op')!r}")
+        if d["field"] not in facts:
+            raise PolicyError("P01", f"{path}.field",
+                              f"派生目标 {d['field']!r} 不在 facts 白名单")
+        derived.append(dict(d))
+
+    tuning_raw = raw.get("tuning_keys")
+    if not isinstance(tuning_raw, Mapping) or not tuning_raw:
+        raise PolicyError("P01", "engine_contract.tuning_keys", "须为段到键数组的非空 object")
+    tuning_keys: dict[str, frozenset[str]] = {}
+    for sec, v in tuning_raw.items():
+        if not isinstance(sec, str) or not isinstance(v, Sequence) or isinstance(v, (str, bytes)) \
+                or any(not isinstance(x, str) or not x for x in v):
+            raise PolicyError("P01", f"engine_contract.tuning_keys.{sec}", "段须为字符串数组")
+        tuning_keys[sec] = frozenset(v)
+
+    return EngineContract(
+        schema_ver=int(ver),
+        facts=facts,
+        state_fields=state_fields,
+        algo_fields=algo_fields,
+        decision_sources=decision_sources,
+        effects=effects,
+        wait_keys=wait_keys,
+        fallback_key=fallback["key"],
+        fallback_hint=fallback["hint"],
+        auto_effects=dict(auto_raw),
+        passthrough_effects=passthrough,
+        effect_required_conditions=effect_required_conditions,
+        derived=tuple(derived),
+        derived_sources=frozenset(derived_sources),
+        tuning_keys=tuning_keys,
+    )
+
+
+# ------------------------------------------------------------------
 # 契约：StateSnapshot / DecisionFacts / Decision / DecisionSnapshot
 # ------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class StateSnapshot:
-    """运行时状态投射（P0-7）：封闭白名单，构造期校验字段 ⊆ `FIELDS`。
+    """运行时状态投射（P0-7）：封闭白名单，构造期校验字段 ⊆ 给定 `fields`。
 
-    `FIELDS` 是原始状态字段（不含派生值）；派生（elapsed / skip_cycle）由
-    `DecisionFacts.freeze` 在捕获期计算，本类只做投影不做算术。
+    `fields` 来自 EngineContract（数据面供给）；本类只做投影不做算术，
+    派生（elapsed / skip_cycle）由 `DecisionFacts.freeze` 在捕获期计算。
     """
-
-    FIELDS: frozenset[str] = STATE_FIELDS
 
     values: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def projection(cls, raw: Mapping[str, Any]) -> "StateSnapshot":
-        """白名单投影：`raw` 必须 ⊆ `FIELDS`，未知字段即抛（fail-closed）。"""
-        unknown = set(raw) - set(cls.FIELDS)
+    def projection(cls, raw: Mapping[str, Any], *, fields: frozenset[str]) -> "StateSnapshot":
+        """白名单投影：`raw` 必须 ⊆ `fields`，未知字段即抛（fail-closed）。"""
+        unknown = set(raw) - set(fields)
         if unknown:
             raise PolicyError(
                 "P04",
@@ -160,8 +252,8 @@ class DecisionFacts:
     `freeze` 输入：
     - `state_snapshot`：StateSnapshot 投影（直接从它读取运行时状态，禁止直读
       module / RuntimeState 可变对象）；
-    - `outputs`：本帧上游算法产出（stage / popup_kind / 各 *_decision）；
-    - `frame_counter`：帧号（派生 skip_cycle / elapsed 用）。
+    - `outputs`：本帧上游算法产出（`algo_fields` 白名单，如 stage / 各 *_decision）；
+    - `frame_counter`：帧号（契约 `derived` 推导 elapsed / mod 类事实的输入）。
     """
 
     values: Mapping[str, Any] = field(default_factory=dict)
@@ -173,34 +265,35 @@ class DecisionFacts:
         state_snapshot: StateSnapshot,
         outputs: Mapping[str, Any],
         frame_counter: int,
+        contract: EngineContract,
     ) -> "DecisionFacts":
-        unknown = set(outputs) - set(ALGO_FIELDS)
+        unknown = set(outputs) - set(contract.algo_fields)
         if unknown:
             raise PolicyError(
                 "P04",
                 "outputs",
-                f"算法产出字段不在 ALGO_FIELDS 白名单：{sorted(unknown)}",
+                f"算法产出字段不在 algo_fields 白名单：{sorted(unknown)}",
             )
         vals: dict[str, Any] = dict(outputs)
+        allowed_state = contract.state_fields & (contract.facts | contract.derived_sources)
         for key, value in state_snapshot.values.items():
-            if key not in set(STATE_FIELDS) & (set(FACT_FIELDS) | {"settle_skip_since", "reward_enter_frame"}):
+            if key not in allowed_state:
                 raise PolicyError(
                     "P04",
                     f"state.{key}",
                     f"状态字段未声明可流入决策事实：{key!r}",
                 )
             vals[key] = value
-        skip_since = vals.get("settle_skip_since")
-        vals["retry_elapsed"] = (
-            None if skip_since is None else frame_counter - skip_since
-        )
-        enter = vals.get("reward_enter_frame")
-        vals["reward_elapsed"] = None if enter is None else frame_counter - enter
-        vals["skip_cycle"] = frame_counter % 3
+        for d in contract.derived:
+            if d["op"] == "elapsed":
+                since = vals.get(d["from"])
+                vals[d["field"]] = None if since is None else frame_counter - since
+            else:
+                vals[d["field"]] = frame_counter % d["k"]
         vals["frame_counter"] = frame_counter
-        vals.pop("settle_skip_since", None)
-        vals.pop("reward_enter_frame", None)
-        leftover = set(vals) - set(FACT_FIELDS)
+        for source_key in contract.derived_sources:
+            vals.pop(source_key, None)
+        leftover = set(vals) - set(contract.facts)
         if leftover:
             raise PolicyError(
                 "P04",
@@ -238,10 +331,10 @@ class Decision:
 
 @dataclass(frozen=True)
 class DecisionSnapshot:
-    """trace 的决策契约（§5.2 双层等价第一层）。
+    """trace 的决策契约（离线等价回放第一层）。
 
     由本帧 immutable `facts_projection` 与 policy 输出 `decision {key,source,payload}`
-    组成；**不存在 `decision.state`**——输入事实（bid_phase 等）都在 facts 里。
+    组成；**不存在 `decision.state`**——全部输入事实都在 facts 里。
     """
 
     facts_projection: Mapping[str, Any]
@@ -276,7 +369,7 @@ class DecisionSnapshot:
 
 @dataclass(frozen=True)
 class Condition:
-    """单条件：`field` op `value`。省略等值的宽松写法（`"settle_income": 0`）
+    """单条件：`field` op `value`。省略等值的宽松写法（`"cooldown": 0`）
     视为 `eq`。值允许标量 / None / 数值比较对象 `{"gte": 0}`。"""
 
     field: str
@@ -335,15 +428,20 @@ class PolicyRule:
 
 @dataclass(frozen=True)
 class Policies:
-    """policy.json 的 `policy` 段（一等公民，由 NavSource 装配持有）。"""
+    """policy.json 的 `policy` 段（一等公民，由 NavSource 装配持有）。
+
+    `contract` 为同文件的 `engine_contract` 段——规则校验与运行时决策
+    所需的域白名单/推导/副作用形，随 Policies 贯穿 compile/validate/decide。
+    """
 
     schema_ver: int
     stage_map: Mapping[str, str]
     rules: tuple[PolicyRule, ...]
     tuning: Mapping[str, Any]
+    contract: EngineContract
 
 
-def parse_policies(raw: Any) -> Policies:
+def parse_policies(raw: Any, contract: EngineContract) -> Policies:
     """policies 文档 → 内存对象。结构性错误抛 `PolicyError`（P01-P05）。"""
     if not isinstance(raw, Mapping):
         raise PolicyError("P01", "policies", f"policies 须为 object，收到 {type(raw).__name__}")
@@ -380,12 +478,12 @@ def parse_policies(raw: Any) -> Policies:
         when_raw = item.get("when")
         if not isinstance(when_raw, Mapping):
             raise PolicyError("P01", f"policies.rules[{i}].when", "when 须为 object")
-        conditions = _parse_when(when_raw, f"policies.rules[{i}].when", stage_map)
+        conditions = _parse_when(when_raw, f"policies.rules[{i}].when", stage_map, contract)
         decision_raw = item.get("decision")
         if not isinstance(decision_raw, Mapping):
             raise PolicyError("P01", f"policies.rules[{i}].decision", "decision 须为 object")
         key, source, fallback_key, hint, center, fatal, effect = _parse_decision(
-            decision_raw, f"policies.rules[{i}].decision"
+            decision_raw, f"policies.rules[{i}].decision", contract
         )
         rules.append(
             PolicyRule(
@@ -412,21 +510,23 @@ def parse_policies(raw: Any) -> Policies:
         stage_map=stage_map,
         rules=tuple(rules),
         tuning=dict(tuning_raw),
+        contract=contract,
     )
 
 
 def _parse_when(
-    when_raw: Mapping[str, Any], path: str, stage_map: Mapping[str, str]
+    when_raw: Mapping[str, Any], path: str, stage_map: Mapping[str, str],
+    contract: EngineContract,
 ) -> tuple[Condition, ...]:
     out: list[Condition] = []
     for field_name, spec in when_raw.items():
         if not isinstance(field_name, str) or not field_name:
             raise PolicyError("P04", f"{path}.{field_name!r}", "条件字段名须为非空字符串")
-        if field_name not in FACT_FIELDS:
+        if field_name not in contract.facts:
             raise PolicyError(
                 "P04",
                 f"{path}.{field_name}",
-                f"条件字段不在 DecisionFacts 白名单（已知：{sorted(FACT_FIELDS)}）",
+                f"条件字段不在 DecisionFacts 白名单（已知：{sorted(contract.facts)}）",
             )
         if field_name == "stage":
             if isinstance(spec, str):
@@ -489,7 +589,7 @@ def _parse_condition(field_name: str, spec: Any, path: str) -> Condition:
 
 
 def _parse_decision(
-    decision_raw: Mapping[str, Any], path: str
+    decision_raw: Mapping[str, Any], path: str, contract: EngineContract,
 ) -> tuple[str | None, str | None, str | None, str | None, Any, str | None, str | None]:
     key = decision_raw.get("key")
     source = decision_raw.get("source")
@@ -504,11 +604,11 @@ def _parse_decision(
     if hint is not None and not isinstance(hint, str):
         raise PolicyError("P05", f"{path}.hint", "hint 须为字符串")
     if source is not None:
-        if not isinstance(source, str) or source not in DECISION_SOURCES:
+        if not isinstance(source, str) or source not in contract.decision_sources:
             raise PolicyError(
                 "P03",
                 f"{path}.source",
-                f"source 须为 {sorted(DECISION_SOURCES)} 之一，收到 {source!r}",
+                f"source 须为 {sorted(contract.decision_sources)} 之一，收到 {source!r}",
             )
     if fallback_key is not None and not isinstance(fallback_key, str):
         raise PolicyError("P05", f"{path}.fallback_key", "fallback_key 须为字符串")
@@ -529,11 +629,11 @@ def _parse_decision(
     if fatal is not None and not isinstance(fatal, str):
         raise PolicyError("P05", f"{path}.fatal", "fatal 须为字符串（终止原因文案）")
     if effect is not None:
-        if not isinstance(effect, str) or effect not in EFFECT_WHITELIST:
+        if not isinstance(effect, str) or effect not in contract.effects:
             raise PolicyError(
                 "P05",
                 f"{path}.effect",
-                f"effect 须为 {sorted(EFFECT_WHITELIST)} 之一，收到 {effect!r}",
+                f"effect 须为 {sorted(contract.effects)} 之一，收到 {effect!r}",
             )
     if key is None and source is None and fatal is None:
         raise PolicyError(
@@ -598,19 +698,13 @@ class PolicyPlan:
         stage_map: Mapping[str, str],
         tuning: Mapping[str, Any],
         fallback: CompiledDecision,
+        contract: EngineContract,
     ) -> None:
         self._rules = tuple(rules)
         self.stage_map = dict(stage_map)
         self.tuning = dict(tuning)
         self._fallback = fallback
-        self._stage_prefix: dict[str, tuple[str, ...]] = {}
-        for rid, conds in ((r.id, r.conditions) for r in self._rules):
-            for c in conds:
-                if c.field == "stage" and c.op == "prefix" and isinstance(c.value, str):
-                    self._stage_prefix.setdefault(c.value, ())
-        for c in (cc for r in self._rules for cc in r.conditions):
-            if c.field == "stage" and c.op == "prefix" and isinstance(c.value, str):
-                pass
+        self.contract = contract
 
     @property
     def rules(self) -> tuple[CompiledRule, ...]:
@@ -621,6 +715,16 @@ class PolicyPlan:
             if all(c.match(facts.get(c.field)) for c in rule.conditions):
                 return self._build(rule.decision, facts)
         return self._build(self._fallback, facts)
+
+    def _effects(self, key: str, compiled: CompiledDecision) -> tuple[str, ...]:
+        """引擎侧副作用推断（更新逻辑留码；表驱动自契约，无业务分支）。"""
+        out: list[str] = []
+        auto = self.contract.auto_effects.get(key)
+        if auto is not None:
+            out.append(auto)
+        if compiled.effect in self.contract.passthrough_effects:
+            out.append(str(compiled.effect))
+        return tuple(out)
 
     def _build(self, compiled: CompiledDecision, facts: DecisionFacts) -> Decision:
         payload = dict(compiled.payload)
@@ -634,24 +738,24 @@ class PolicyPlan:
             if src is not None and isinstance(src, Mapping) and src.get("key"):
                 key = str(src["key"])
                 hint = compiled.hint or str(src.get("hint") or key)
-                effects = _effects_for(key, facts, compiled, src)
+                effects = self._effects(key, compiled)
                 # 动态 center 由调用方（module._resolve_action_target）从上游 decision
                 # 取值，不进决策 payload（与旧 _decide_action 返回结构一致）。
                 return Decision(
                     key=key, hint=hint, source=compiled.source,
                     payload=payload, fatal=fatal, side_effects=effects,
                 )
-            key = compiled.fallback_key or DEFAULT_FALLBACK_KEY
+            key = compiled.fallback_key or self.contract.fallback_key
             hint = compiled.hint
             if hint is None and isinstance(src, Mapping) and src.get("hint"):
                 hint = str(src["hint"])
             if hint is None:
-                hint = DEFAULT_FALLBACK_HINT
+                hint = self.contract.fallback_hint
             return Decision(key=key, hint=hint, source=compiled.source,
                             payload=payload, fatal=fatal)
-        key = compiled.key or DEFAULT_FALLBACK_KEY
+        key = compiled.key or self.contract.fallback_key
         hint = compiled.hint or key
-        effects = _effects_for(key, facts, compiled, None)
+        effects = self._effects(key, compiled)
         return Decision(key=key, hint=hint, source=None,
                         payload=payload, fatal=fatal, side_effects=effects)
 
@@ -679,13 +783,14 @@ def _bake_conditions(
 
 
 def compile_plan(policies: Policies, anchors: Mapping[str, Any]) -> PolicyPlan:
-    """编译 Policies → PolicyPlan。`anchors` 来自 Assets（中心坐标在编译期解析）。"""
+    """编译 Policies → PolicyPlan。`anchors` 来自数据面 spec（中心坐标编译期解析）。"""
     rules: list[CompiledRule] = []
     known_anchors = set(anchors)
+    contract = policies.contract
     for rule in policies.rules:
         if rule.key is not None and rule.key not in known_anchors \
                 and rule.source is None \
-                and not _is_wait_key(rule.key):
+                and rule.key not in contract.wait_keys:
             raise PolicyError(
                 "P02",
                 f"policies.rules[{rule.order}].decision.key",
@@ -706,66 +811,19 @@ def compile_plan(policies: Policies, anchors: Mapping[str, Any]) -> PolicyPlan:
         )
         rules.append(CompiledRule(id=rule.id, conditions=baked, decision=compiled))
 
-    fallback = CompiledDecision(key=DEFAULT_FALLBACK_KEY, hint=DEFAULT_FALLBACK_HINT)
+    fallback = CompiledDecision(key=contract.fallback_key, hint=contract.fallback_hint)
     return PolicyPlan(
         rules=rules,
         stage_map=policies.stage_map,
         tuning=policies.tuning,
         fallback=fallback,
+        contract=contract,
     )
-
-
-_WAIT_KEYS = frozenset({
-    "stage_waiting", "session_waiting", "appraiser_waiting",
-    "bid_waiting", "dividend_waiting", "popup_waiting", "popup_click_cooldown",
-    "popup_high_continue", "popup_reward_continue", "fatal",
-})
-
-
-def _is_wait_key(key: str) -> bool:
-    return key in _WAIT_KEYS
-
-
-def _effects_for(
-    key: str,
-    facts: DecisionFacts,
-    compiled: CompiledDecision,
-    src: Mapping[str, Any] | None,
-) -> tuple[str, ...]:
-    """引擎侧副作用推断（更新逻辑留码；effect 由 rule.decision 显式声明）。"""
-    out: list[str] = []
-    if key == "popup_click_cooldown":
-        out.append("popup_cooldown_decr")
-    if compiled.effect == "settle_skip_retry":
-        out.append("settle_skip_retry")
-    return tuple(out)
 
 
 # ------------------------------------------------------------------
 # 校验（P01-P09）：结构错误硬阻断；语义告警可配置
 # ------------------------------------------------------------------
-
-_TUNING_KEYS = {
-    "perception": frozenset({
-        "appraiser_search_roi",
-        "appraiser_match_threshold",
-        "check_match_threshold",
-        "session_match_threshold",
-        "smart_bid_match_threshold",
-    }),
-    "policy": frozenset({
-        "session_start_click_cooldown_frames",
-        "click_retry_frames",
-        "click_retry_max",
-        "settle_skip_retry_frames",
-        "settle_skip_retry_max",
-        "popup_continue_retry_frames",
-        "popup_click_cooldown_frames",
-        "daily_high_timeout_frames",
-        "egg_ocr_timeout_frames",
-    }),
-    "execution": frozenset({"click_cooldown_s"}),
-}
 
 
 def validate_policy_document(
@@ -784,8 +842,9 @@ def validate_policy_document(
 
     known = set(anchors)
     rules = policies.rules
+    contract = policies.contract
 
-    for section, allowed in _TUNING_KEYS.items():
+    for section, allowed in contract.tuning_keys.items():
         section_raw = policies.tuning.get(section)
         if section_raw is None:
             issues.append(("P01", "error", f"policies.tuning.{section}", f"tuning.{section} 缺失"))
@@ -811,7 +870,7 @@ def validate_policy_document(
                         ("P05", "error", f"{base}.when.{cond.field}.{cond.op}",
                          f"@tuning 引用 {name!r} 未在 policies.tuning.policy 中定义")
                     )
-        if rule.source is None and rule.key is not None and not _is_wait_key(rule.key) \
+        if rule.source is None and rule.key is not None and rule.key not in contract.wait_keys \
                 and rule.key not in known:
             issues.append(
                 ("P02", "error", f"{base}.decision.key",
@@ -823,12 +882,13 @@ def validate_policy_document(
                 ("P08", "error", f"{base}.decision.center",
                  f"引用不存在的锚点 {rule.center!r}")
             )
-        if rule.effect == "settle_skip_retry":
+        if rule.effect is not None and rule.effect in contract.effect_required_conditions:
             fields = {c.field for c in rule.when}
-            if not {"stage", "clicked_once", "settle_income", "retry_elapsed", "retry_count"} <= fields:
+            required = contract.effect_required_conditions[rule.effect]
+            if not required <= fields:
                 issues.append(
                     ("P05", "error", f"{base}.decision.effect",
-                     "effect=settle_skip_retry 的条件必须覆盖 stage/clicked_once/settle_income/retry_elapsed/retry_count")
+                     f"effect={rule.effect} 的条件必须覆盖 {'/'.join(sorted(required))}")
                 )
 
     # P07 duplicate / P06 unreachable：按规则顺序比较条件集合
@@ -867,7 +927,7 @@ def validate_policy_document(
         if sid not in covered and f"prefix:{sid}" not in covered:
             issues.append(
                 ("P09", warn_level, "policies.rules",
-                 f"阶段 {sid!r} 无任何规则覆盖（将走默认兜底 {DEFAULT_FALLBACK_KEY}），"
+                 f"阶段 {sid!r} 无任何规则覆盖（将走默认兜底 {contract.fallback_key}），"
                  f"如属有意请忽略，否则请补充规则")
             )
     return issues

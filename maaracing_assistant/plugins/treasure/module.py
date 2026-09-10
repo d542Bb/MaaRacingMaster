@@ -2492,6 +2492,7 @@ class TreasureModule(ActivityModule):
         """
         if self._current_stage == "结算弹窗":
             self._popup_click_cooldown = 0
+        contract = self._policy_plan.contract
         state = StateSnapshot.projection({
             "frame_counter": self._frame_counter,
             "settle_income": self._settle_my_income,
@@ -2503,7 +2504,7 @@ class TreasureModule(ActivityModule):
             "egg_reading": self._egg_reading,
             "egg_read_done": self._egg_read_done,
             "reward_enter_frame": self._reward_enter_frame,
-        })
+        }, fields=contract.state_fields)
         outputs = {
             "stage": self._stage_id(),
             "popup_kind": (
@@ -2517,6 +2518,7 @@ class TreasureModule(ActivityModule):
             state_snapshot=state,
             outputs=outputs,
             frame_counter=self._frame_counter,
+            contract=contract,
         )
 
     def _apply_decision_effects(self, decision) -> None:

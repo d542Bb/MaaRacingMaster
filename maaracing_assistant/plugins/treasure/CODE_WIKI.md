@@ -202,7 +202,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 - **策略表**：`mpe.cmd` 同批打开 `policy_server.py` 薄页（127.0.0.1:26530），编辑 `resources/policy/treasure.policy.json`。
 
-- **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；编辑后用 `tools/navkit/check_truth.py` 机检。
+- **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；决策引擎消费的域白名单、推导与副作用形收在同文件 `engine_contract` 段（改鉴宝事实/等待 key/tuning 键 = 改契约段，不改 core/navkit/policy.py）；编辑后用 `tools/navkit/check_truth.py` 机检。
 
 - **校准截图来源**：`debug/treasure/<ts>/raw/`（GUI debug 图落盘），匹配行为离线验证可用 `tools/experiments/` 系列脚本。
 

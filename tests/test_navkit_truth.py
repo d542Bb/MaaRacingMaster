@@ -52,6 +52,12 @@ def test_graph_clean_and_shaped(truth):
         "treasure.__boot.dwell"]
     assert len(policy["actuators"]) == 33
     assert len(policy["perception"]["spec"]) == 53
+    # 引擎契约段：白名单计数见证（改契约 = 有意识的真源变更，须过本锁）
+    ec = policy["engine_contract"]
+    assert len(ec["facts"]) == 16
+    assert len(ec["state_fields"]) == 10
+    assert len(ec["wait_keys"]) == 10
+    assert ec["fallback"]["key"] == "stage_waiting"
 
 
 def test_policy_loop_wired_into_every_dwell(truth):

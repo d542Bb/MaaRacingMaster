@@ -20,13 +20,14 @@ from typing import Any
 import pytest
 
 from maaracing_assistant.core.navkit import (
-    DEFAULT_FALLBACK_KEY,
     DecisionFacts,
     DecisionSnapshot,
+    EngineContract,
     PolicyError,
     PolicyPlan,
     StateSnapshot,
     compile_plan,
+    parse_engine_contract,
     parse_policies,
     validate_policy_document,
 )
@@ -42,6 +43,10 @@ def _load_nav():
     from maaracing_assistant.core.navkit.v4_source import load_nav_source
 
     return load_nav_source(_POLICY_PATH)
+
+
+def _contract() -> EngineContract:
+    return _load_nav().policies.contract
 
 
 def _make_facts(
@@ -62,6 +67,7 @@ def _make_facts(
     egg_read_done: bool = False,
     reward_enter_frame: int = 0,
 ) -> DecisionFacts:
+    contract = _contract()
     state = StateSnapshot.projection({
         "frame_counter": frame,
         "settle_income": settle_income,
@@ -73,7 +79,7 @@ def _make_facts(
         "egg_reading": egg_reading,
         "egg_read_done": egg_read_done,
         "reward_enter_frame": reward_enter_frame,
-    })
+    }, fields=contract.state_fields)
     outputs = {
         "stage": stage,
         "popup_kind": popup_kind,
@@ -81,7 +87,8 @@ def _make_facts(
         "appraiser_decision": appraiser_decision,
         "bidding_decision": bidding_decision,
     }
-    return DecisionFacts.freeze(state_snapshot=state, outputs=outputs, frame_counter=frame)
+    return DecisionFacts.freeze(
+        state_snapshot=state, outputs=outputs, frame_counter=frame, contract=contract)
 
 
 # ------------------------------------------------------------------
@@ -91,7 +98,8 @@ def _make_facts(
 
 def test_state_snapshot_projection_rejects_unknown_fields():
     with pytest.raises(PolicyError) as exc:
-        StateSnapshot.projection({"frame_counter": 1, "unknown_field": 3})
+        StateSnapshot.projection({"frame_counter": 1, "unknown_field": 3},
+                                 fields=_contract().state_fields)
     assert exc.value.code == "P04"
 
 
@@ -101,7 +109,7 @@ def test_state_snapshot_projection_accepts_all_fields():
         "retry_count": 0, "settle_skip_since": 0, "cooldown": 0,
         "daily_high_score": None, "egg_reading": False, "egg_read_done": False,
         "reward_enter_frame": 0,
-    })
+    }, fields=_contract().state_fields)
     assert snap.values["frame_counter"] == 1
 
 
@@ -120,9 +128,10 @@ def test_decision_facts_derived_fields():
 def test_decision_facts_rejects_unknown_outputs():
     with pytest.raises(PolicyError) as exc:
         DecisionFacts.freeze(
-            state_snapshot=StateSnapshot.projection({}),
+            state_snapshot=StateSnapshot.projection({}, fields=_contract().state_fields),
             outputs={"stage": "hall", "not_a_fact": 1},
             frame_counter=1,
+            contract=_contract(),
         )
     assert exc.value.code == "P04"
 
@@ -144,7 +153,8 @@ def test_decision_snapshot_structure():
 
 def test_parse_policies_bad_schema_ver():
     with pytest.raises(PolicyError) as exc:
-        parse_policies({"_schema_ver": 99, "stage_map": {"a": "b"}, "rules": [], "tuning": {}})
+        parse_policies({"_schema_ver": 99, "stage_map": {"a": "b"}, "rules": [], "tuning": {}},
+                       _contract())
     assert exc.value.code == "P01"
 
 
@@ -155,7 +165,7 @@ def test_parse_policies_unknown_condition_field():
             "stage_map": {"hall": "游戏大厅"},
             "rules": [{"id": "r1", "when": {"bogus": 1}, "decision": {"key": "x"}}],
             "tuning": {},
-        })
+        }, _contract())
     assert exc.value.code == "P04"
 
 
@@ -167,7 +177,7 @@ def test_parse_policies_bad_source():
             "rules": [{"id": "r1", "when": {"stage": "hall"},
                        "decision": {"source": "not_a_source"}}],
             "tuning": {},
-        })
+        }, _contract())
     assert exc.value.code == "P03"
 
 
@@ -179,7 +189,7 @@ def test_parse_policies_bad_op():
             "rules": [{"id": "r1", "when": {"cooldown": {"between": 1}},
                        "decision": {"key": "x"}}],
             "tuning": {},
-        })
+        }, _contract())
     assert exc.value.code == "P05"
 
 
@@ -190,12 +200,80 @@ def test_parse_policies_stage_not_in_map():
             "stage_map": {"hall": "游戏大厅"},
             "rules": [{"id": "r1", "when": {"stage": "ghost"}, "decision": {"key": "x"}}],
             "tuning": {},
-        })
+        }, _contract())
     assert exc.value.code == "P04"
 
 
 # ------------------------------------------------------------------
-# §5 P1d：双轨等价（同一 facts → LegacyPolicy 与 PolicyEngine 同输出）
+# §4.4 P4d 契约化：EngineContract fail-closed + 异域合同直跑（域中性证明）
+# ------------------------------------------------------------------
+
+
+def _alt_contract_doc() -> dict:
+    """一个与鉴宝无关的最小异域合同：字段、key、effect 全换成测试自造词汇。"""
+    return {
+        "facts": ["phase", "door_state", "frame_counter"],
+        "state_fields": ["lever_pos", "frame_counter"],
+        "algo_fields": ["phase"],
+        "decision_sources": [],
+        "effects": ["lever_reset"],
+        "wait_keys": ["hall_waiting", "fatal"],
+        "fallback": {"key": "hall_waiting", "hint": "等待"},
+        "auto_effects": {},
+        "passthrough_effects": ["lever_reset"],
+        "derived": [],
+        "tuning_keys": {"policy": ["cool"]},
+    }
+
+
+def test_engine_contract_parses_minimal_domain():
+    c = parse_engine_contract(_alt_contract_doc())
+    assert c.facts == frozenset({"phase", "door_state", "frame_counter"})
+    assert c.fallback_key == "hall_waiting"
+
+
+@pytest.mark.parametrize("mutate, path_kw", [
+    (lambda d: d.pop("facts"), "facts"),
+    (lambda d: d.update(fallback={"key": "x"}), "fallback"),
+    (lambda d: d.update(derived=[{"field": "nope", "op": "elapsed", "from": "lever_pos"}]), "derived"),
+    (lambda d: d.update(auto_effects={"ghost": "not_an_effect"}), "auto_effects"),
+])
+def test_engine_contract_fail_closed(mutate, path_kw):
+    doc = _alt_contract_doc()
+    mutate(doc)
+    with pytest.raises(PolicyError) as exc:
+        parse_engine_contract(doc)
+    assert exc.value.code == "P01"
+    assert path_kw in exc.value.path
+
+
+def test_alt_domain_plan_decides_with_its_own_contract():
+    """引擎域中性：异域合同 + 异域规则直编直跑，鉴宝词汇零参与。"""
+    contract = parse_engine_contract(_alt_contract_doc())
+    policies = parse_policies({
+        "_schema_ver": 1,
+        "stage_map": {"foyer": "前厅"},
+        "rules": [
+            {"id": "open", "when": {"phase": "foyer", "door_state": "locked"},
+             "decision": {"key": "open_door_btn", "effect": "lever_reset"}},
+        ],
+        "tuning": {"policy": {"cool": 3}},
+    }, contract)
+    plan = compile_plan(policies, {"open_door_btn": object()})
+    state = StateSnapshot.projection(
+        {"frame_counter": 7}, fields=contract.state_fields)
+    facts = DecisionFacts.freeze(
+        state_snapshot=state, outputs={"phase": "foyer"}, frame_counter=7,
+        contract=contract)
+    dec = plan.decide(
+        DecisionFacts(values={**facts.projection(), "door_state": "locked"}))
+    assert dec.key == "open_door_btn"
+    assert dec.side_effects == ("lever_reset",)
+    assert plan.decide(facts).key == "hall_waiting"
+
+
+# ------------------------------------------------------------------
+# §5 P1d：阶段决策绝对断言（同一 facts → 编译计划输出锁值）
 # ------------------------------------------------------------------
 
 
@@ -317,7 +395,7 @@ def test_plan_fallback_key():
     d = plan.decide(_make_facts(stage="bid", frame=1, bidding_decision=None))
     assert d.key == "bid_waiting"
     d = plan.decide(_make_facts(stage="unknown_stage", frame=1))
-    assert d.key == DEFAULT_FALLBACK_KEY
+    assert d.key == _contract().fallback_key
 
 
 def test_tuning_reference_baked_at_compile_time():
@@ -359,7 +437,7 @@ def test_tuning_unknown_reference_rejected():
         "rules": [{"id": "r1", "when": {"cooldown": {"gte": "@not_defined"}},
                    "decision": {"key": "x"}}],
         "tuning": {"policy": {}},
-    })
+    }, _contract())
     issues = validate_policy_document(policies, {})
     assert any(code == "P05" for code, _, _, _ in issues)
 
@@ -419,7 +497,8 @@ def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
 def test_policies_bad_schema_ver_parse_fails():
     """P1e（引擎层）：结构错误（schema_ver 错）在 `parse_policies` 构造期即抛 P01。"""
     with pytest.raises(PolicyError) as exc:
-        parse_policies({"_schema_ver": 99, "stage_map": {}, "rules": [], "tuning": {}})
+        parse_policies({"_schema_ver": 99, "stage_map": {}, "rules": [], "tuning": {}},
+                       _contract())
     assert exc.value.code == "P01"
 
 
@@ -450,7 +529,7 @@ def test_tuning_unknown_key_rejected():
         "stage_map": {"hall": "游戏大厅"},
         "rules": [{"id": "r1", "when": {"stage": "hall"}, "decision": {"key": "hall_peak_appraise_card"}}],
         "tuning": {"perception": {"bogus_key": 1}},
-    })
+    }, _contract())
     issues = validate_policy_document(policies, {"hall_peak_appraise_card": _DummyAnchor()})
     assert any(code == "P01" for code, _, _, _ in issues)
 

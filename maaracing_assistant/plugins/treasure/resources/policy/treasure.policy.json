@@ -1049,6 +1049,129 @@
       "recognition": "Custom"
     }
   },
+  "engine_contract": {
+    "algo_fields": [
+      "appraiser_decision",
+      "bidding_decision",
+      "popup_kind",
+      "session_decision",
+      "stage"
+    ],
+    "auto_effects": {
+      "popup_click_cooldown": "popup_cooldown_decr"
+    },
+    "decision_sources": [
+      "appraiser_decision",
+      "bidding_decision",
+      "session_decision"
+    ],
+    "derived": [
+      {
+        "field": "retry_elapsed",
+        "from": "settle_skip_since",
+        "op": "elapsed"
+      },
+      {
+        "field": "reward_elapsed",
+        "from": "reward_enter_frame",
+        "op": "elapsed"
+      },
+      {
+        "field": "skip_cycle",
+        "k": 3,
+        "op": "frame_mod"
+      }
+    ],
+    "derived_sources": [
+      "reward_enter_frame",
+      "settle_skip_since"
+    ],
+    "effect_required_conditions": {
+      "settle_skip_retry": [
+        "clicked_once",
+        "retry_count",
+        "retry_elapsed",
+        "settle_income",
+        "stage"
+      ]
+    },
+    "effects": [
+      "popup_cooldown_decr",
+      "settle_skip_retry"
+    ],
+    "facts": [
+      "appraiser_decision",
+      "bidding_decision",
+      "clicked_once",
+      "cooldown",
+      "daily_high_score",
+      "egg_read_done",
+      "egg_reading",
+      "frame_counter",
+      "popup_kind",
+      "retry_count",
+      "retry_elapsed",
+      "reward_elapsed",
+      "session_decision",
+      "settle_income",
+      "skip_cycle",
+      "stage"
+    ],
+    "fallback": {
+      "hint": "等待阶段切换...（等待界面稳定）",
+      "key": "stage_waiting"
+    },
+    "passthrough_effects": [
+      "settle_skip_retry"
+    ],
+    "state_fields": [
+      "clicked_once",
+      "cooldown",
+      "daily_high_score",
+      "egg_read_done",
+      "egg_reading",
+      "frame_counter",
+      "retry_count",
+      "reward_enter_frame",
+      "settle_income",
+      "settle_skip_since"
+    ],
+    "tuning_keys": {
+      "execution": [
+        "click_cooldown_s"
+      ],
+      "perception": [
+        "appraiser_match_threshold",
+        "appraiser_search_roi",
+        "check_match_threshold",
+        "session_match_threshold",
+        "smart_bid_match_threshold"
+      ],
+      "policy": [
+        "click_retry_frames",
+        "click_retry_max",
+        "daily_high_timeout_frames",
+        "egg_ocr_timeout_frames",
+        "popup_click_cooldown_frames",
+        "popup_continue_retry_frames",
+        "session_start_click_cooldown_frames",
+        "settle_skip_retry_frames",
+        "settle_skip_retry_max"
+      ]
+    },
+    "wait_keys": [
+      "appraiser_waiting",
+      "bid_waiting",
+      "dividend_waiting",
+      "fatal",
+      "popup_click_cooldown",
+      "popup_high_continue",
+      "popup_reward_continue",
+      "popup_waiting",
+      "session_waiting",
+      "stage_waiting"
+    ]
+  },
   "perception": {
     "match": {
       "margin_default": 0.0,

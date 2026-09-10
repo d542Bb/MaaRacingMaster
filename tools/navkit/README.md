@@ -31,7 +31,7 @@ tools/navkit/
 
 - `maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json` —— 鉴宝图
 
-- `maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；编辑后与图节点同权）
+- `maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
 
 校验（CI 同款）：`python tools/navkit/check_truth.py`
 

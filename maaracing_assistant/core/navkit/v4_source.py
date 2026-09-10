@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..roi_config import ROIConfig
-from .policy import Policies, parse_policies
+from .policy import Policies, parse_engine_contract, parse_policies
 
 __all__ = [
     "ROUND_PHASE_STAGE",
@@ -260,13 +260,15 @@ def _load_nav_source_cached(policy_path: Path) -> NavSource:
     perception = doc["perception"]
     anchors = _parse_spec_section(perception["spec"])
     plan = _build_detection_plan(anchors, perception)
+    # 引擎契约先行解析（缺失/非法 = 整源 fail-closed，与 policy 段同权）
+    contract = parse_engine_contract(doc["engine_contract"])
     pol_raw = doc["policy"]
     policies = parse_policies({
         "_schema_ver": pol_raw.get("schema_ver"),
         "stage_map": pol_raw.get("stage_map"),
         "rules": pol_raw.get("rules"),
         "tuning": pol_raw.get("tuning"),
-    })
+    }, contract)
     return NavSource(
         path=policy_path,
         spec=anchors,
