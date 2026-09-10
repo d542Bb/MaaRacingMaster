@@ -333,7 +333,8 @@ class GamepadClicker:
     """手柄光标导航 + 确认点击（**导航线程化**）。
 
     注入：
-      - capture: 返回 RGB ndarray 帧的 callable，或提供 .get_latest() 的帧源。
+      - capture: 截图能力对象（提供 .screenshot()，即 core.capabilities.
+        CaptureCapability）、返回 RGB ndarray 帧的 callable，或 .get_latest() 裸帧源。
       - gpad: 提供 .left_joystick(x,y)/.press_button/.release_button/.update 的手柄对象。
       - model_path: stick_speed_model.json 路径（速度模型 k / deadzone / resolution）。
     意图模式：intent 开关置位时只导航到位、不按 A 确认（由用户手动按下）。
@@ -490,9 +491,18 @@ class GamepadClicker:
     # ---------- 帧/光标 ----------
 
     def _frame(self) -> np.ndarray | None:
+        """读一帧（三种注入形态都吃：callable / 截图能力对象 / WgcCapture 裸帧源）。
+
+        截图能力对象这条分支（`CaptureCapability.screenshot()`）是 v4 装配的注入形态
+        （`bind_gamepad(self.ctx.capture, ...)`）；漏认它会让闭环静默拿到 None，
+        表现为「摇杆从未推出 + PEEP 无光标内容」却被判成 device_lost（2026-09-10）。
+        """
         cap = self._capture
         if callable(cap):
             return cap()
+        shot = getattr(cap, "screenshot", None)
+        if shot is not None:
+            return shot()
         getter = getattr(cap, "get_latest", None)
         if getter is not None:
             frame, *_ = getter()
