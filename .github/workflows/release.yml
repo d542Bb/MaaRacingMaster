@@ -25,9 +25,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 校验 v4 图自洽（引用闭合/ROI 合法，--check-only）
+      - name: 校验 v4 真源自洽（图闭合 + 数据面装配 + 交叉互洽）
         # 与 test.yml 同一守卫（纯标准库，零依赖）。
-        run: python tools/navkit/migrate_v4.py --full --check-only
+        run: python tools/navkit/check_truth.py
 
       - name: 安装 pytest 与轻量测试依赖
         # 同 test.yml：不采用 `.[test]`（会连带安装 Windows-only 主依赖，Linux runner 装不上），

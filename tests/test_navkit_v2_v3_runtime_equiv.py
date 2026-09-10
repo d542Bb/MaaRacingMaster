@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""鉴宝运行时 v3 读取器 · 金标回归 + V-1（运行时不得再打开 treasure_rois.json）。
+"""鉴宝运行时读取器 · 金标回归 + V-1（运行时不得再打开 treasure_rois.json）。
 
-M0–M3 期间，本文件用 `NAVKIT_SOURCE=v2` 现读 v2 与 v3 逐字段对照，证明「切到 v3 不改值」。
-M4/E1 收口后：v2 文件读取器已从生产包移除、treasure_rois.json 归档到仓库根，无法再"现读 v2"。
-故把当初 v2==v3 已证明一致的值**固化为金标**（golden），继续锁住 6 个 v3 读取器不回退漂移，
-并用 monkeypatch `open` 断言运行时绝不触碰 treasure_rois.json（V-1「无可达 v2 引用」的行为级证明）。
+沿革：M0–M3 用现读 v2 与 v3 逐字段对照证明「切到 v3 不改值」；M4/E1 后 v2 读取器
+移除，一致值固化为金标。**P4b 数据源切换（v3 assets → policy.json 数据面）沿用同一
+套金标值**——切换的逐字段等价由 tools/experiments/v4-p4b-source/diag_p4b_plan_equiv.py
+双跑对拍证明，本文件负责此后锁值不回退漂移。
+V-1 守卫不变：monkeypatch `open` 断言运行时绝不触碰 treasure_rois.json。
 
 本文件导入 module（经 core.capabilities 拉 maa），属完整运行时测试；CI 只装 numpy+opencv-headless
 时由 importorskip 整文件跳过，dev 环境（.venv 全依赖）全跑。
@@ -16,7 +17,7 @@ import pytest
 # 完整运行时依赖（module 经 core.capabilities 拉 maa/vgamepad 等，ocr/eggs 需 cv2）。
 # conftest 约定 CI 尽量避开这些重依赖：任一缺失则整文件 SKIP（不误红），dev（.venv 全依赖）全跑。
 try:
-    from maaracing_assistant.plugins.treasure import CONFIG_DIR  # noqa: E402
+    from maaracing_assistant.plugins.treasure import POLICY_PATH  # noqa: E402
     from maaracing_assistant.plugins.treasure import module as tm  # noqa: E402
     from maaracing_assistant.plugins.treasure import ocr as toc  # noqa: E402
     from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
@@ -29,8 +30,8 @@ pytestmark = pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"运行时金标测试需要完整依赖（maa/cv2/…）：{_RUNTIME_ERR}"
 )
 
-_PROJ = CONFIG_DIR.parent if _RUNTIME_OK else None
-TOL = 1e-4  # 金标为 v2↔v3 一致值（6dp 记录），容差仅吸收浮点噪声，足以抓真实漂移
+_PROJ = POLICY_PATH.parent.parent if _RUNTIME_OK else None  # resources 目录（原 CONFIG_DIR.parent）
+TOL = 1e-4  # 金标为 v2↔v3↔v4 三代一致值（6dp 记录），容差仅吸收浮点噪声，足以抓真实漂移
 
 
 def _close(a, b) -> bool:
@@ -101,7 +102,7 @@ def test_ocr_regions_match_golden():
 
 def test_round_label_rect_match_golden():
     det = TreasureStageDetector(_PROJ)
-    assert det.plan is not None, "默认应为 v3 模式（DetectionPlan 载入）"
+    assert det.plan is not None, "policy.json 数据面应可装配 DetectionPlan"
     r = det._round_label_rect()
     assert r is not None and _close(r, GOLDEN_ROUND_LABEL_RECT), f"round_label rect 漂移 {r}"
 

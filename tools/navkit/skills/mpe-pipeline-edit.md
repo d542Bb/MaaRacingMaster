@@ -31,7 +31,7 @@
 ## 2. agent 编辑真源的正确姿势
 
 1. 直接改 JSON（用文件编辑，注意 UTF-8、`\n`、有序键——键序人读友好，migrate\_v4 已对齐 MPE 序）。
-2. 改完跑校验：`.venv\Scripts\python.exe tools\navkit\migrate_v4.py --full --check`
+2. 改完跑校验：`.venv\Scripts\python.exe tools\navkit\check_truth.py`
 3. 需要运行时态确认时：`NavKitV4.load`（见 tests / experiments），节点数基线=21。
 4. 约定字段：
 

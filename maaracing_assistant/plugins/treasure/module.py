@@ -63,7 +63,7 @@ from maaracing_assistant.core.window_utils import (
     verify_frame_client,
 )
 from maaracing_assistant.core.logger import logger
-from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR, v3_assets
+from maaracing_assistant.plugins.treasure import IMAGE_DIR, POLICY_PATH, nav_source
 
 
 class ClickRetryExhaustedError(RuntimeError):
@@ -76,45 +76,41 @@ class ClickRetryExhaustedError(RuntimeError):
 
 @lru_cache(maxsize=1)
 def _policy_tuning() -> dict[str, Any]:
-    """P1 收编：v3 资产 `policies.tuning` 全量（perception/policy/execution）。
+    """P1 收编（P4b 换源）：policy.json `policy.tuning` 全量（perception/policy/execution）。
 
-    加载失败 / v2 模式 / 资产无 policies → 返回 {}（调用方回落代码常量）。
+    加载失败 / v2 模式 / 真源缺段 → 返回 {}（调用方回落代码常量）。
     """
-    if os.environ.get("NAVKIT_SOURCE", "v3").lower() == "v2":
-        return {}
-    v3_path = CONFIG_DIR / "treasure_assets.json"
-    if not v3_path.exists():
+    if os.environ.get("NAVKIT_SOURCE", "v4").lower() == "v2":
         return {}
     try:
-        from maaracing_assistant.core.navkit import Assets
-        assets = Assets.load(v3_path, module="treasure")
-        if assets.policies is None:
-            return {}
-        return dict(assets.policies.tuning)
+        nav = nav_source()
     except Exception:
         return {}
+    if nav is None:
+        return {}
+    return dict(nav.tuning)
 
 
 @lru_cache(maxsize=1)
 def _perception_tuning() -> dict[str, Any]:
-    """P1 收编：v3 资产 `policies.tuning.perception`（匹配阈值/ROI 单一真源）。"""
+    """P1 收编（P4b 换源）：policy.json `policy.tuning.perception`（匹配阈值/ROI 单一真源）。"""
     return dict(_policy_tuning().get("perception") or {})
 
 
 def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
-    """读 v3 资产（anchors）的动作/模板 rect → 归一化中心点 + 归一化宽高。
+    """读 policy.json `perception.spec` 的动作/模板 rect → 归一化中心点 + 归一化宽高。
 
     动作按钮分布在 point 与 template 两类锚点；宽高供手柄模式点击容差用（落点在框中心
     70% 区域内即可按 A——ROI 本对标整个可交互区域，无需像素级精确到中心）。
-    E1：v3 为唯一真源，无 v3 资产时返回空 dict（不再回读 treasure_rois.json）。
+    P4b：policy.json 为唯一真源，真源缺失/损坏时返回空 dict（v2 回退已死）。
     """
-    assets = v3_assets()
-    if assets is None:
+    nav = nav_source()
+    if nav is None:
         return {}, {}
     try:
         out: dict[str, tuple[float, float]] = {}
         sizes: dict[str, tuple[float, float]] = {}
-        for key, anchor in assets.anchors.items():
+        for key, anchor in nav.spec.items():
             if anchor.kind not in ("point", "template"):
                 continue
             rect = anchor.rect.as_list()
@@ -215,13 +211,14 @@ def _load_appraiser_templates(
     match_th = per.get("appraiser_match_threshold", _APPRAISER_MATCH_THRESHOLD)
     for prio, key, fname in _APPRAISER_TEMPLATE_DEFS:
         defs.append((prio, key, fname, search_roi, match_th))
-    assets = v3_assets()
-    if assets is not None:
-        # v3 优先真源：_APPRAISER_TEMPLATE_DEFS 供「有哪些鉴宝师」身份，rect/threshold/prio 逐卡取
-        # v3 锚点（prio↔order）；缺锚点或非 template 时回退该卡代码默认值（search_roi/match_th/prio_default）。
+    nav = nav_source()
+    if nav is not None:
+        # policy.json spec 优先：_APPRAISER_TEMPLATE_DEFS 供「有哪些鉴宝师」身份，
+        # rect/threshold/prio 逐卡取 spec 锚点（prio↔order）；缺锚点或非 template 时
+        # 回退该卡代码默认值（search_roi/match_th/prio_default）。
         v3_defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
         for prio_default, key, fname_default in _APPRAISER_TEMPLATE_DEFS:
-            anchor = assets.anchors.get(key)
+            anchor = nav.spec.get(key)
             if anchor is None or anchor.kind != "template":
                 v3_defs.append((prio_default, key, fname_default, search_roi, match_th))
                 continue
@@ -277,12 +274,12 @@ def _load_selected_check(
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
         return None
-    # rect：v3 唯一真源读锚点 appraiser_selected_check；E1：无 v3 时不再回读 treasure_rois.json，
+    # rect：policy.json spec 唯一真源读锚点 appraiser_selected_check；真源缺失时
     # rect 保持 None → 本函数返回 None（选中判定自动跳过）。
     rect: tuple[float, float, float, float] | None = None
-    assets = v3_assets()
-    if assets is not None:
-        anchor = assets.anchors.get("appraiser_selected_check")
+    nav = nav_source()
+    if nav is not None:
+        anchor = nav.spec.get("appraiser_selected_check")
         if anchor is not None:
             r4 = anchor.rect.as_list()
             rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
@@ -296,18 +293,17 @@ def _load_session_panel(
 ) -> list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]]:
     """加载「开始匹配」按钮模板（详情卡已切到目标场次的判定用）。
 
-    rect 从 treasure_assets.json（v3 优先）或 treasure_rois.json（v2 回退）读取
-    （key: session_start_match_btn）；返回: [(priority, key, gray, rect_norm)]，
+    rect 从 policy.json `perception.spec` 读取（key: session_start_match_btn）；
+    返回: [(priority, key, gray, rect_norm)]，
     缺失则返回空列表（判定降级为未匹配 → 始终先点目标场次 badge，再点开始匹配位置）。
     """
     rois: dict[str, tuple[float, float, float, float]] = {}
-    assets = v3_assets()
-    if assets is not None:
-        anchor = assets.anchors.get("session_start_match_btn")
+    nav = nav_source()
+    if nav is not None:
+        anchor = nav.spec.get("session_start_match_btn")
         if anchor is not None:
             rois["session_start_match_btn"] = tuple(anchor.rect.as_list())
-    # E1：无 v3 资产（缺失/损坏 / NAVKIT_SOURCE=v2）→ rois 为空，判定降级为「始终先点目标 badge」，
-    # 不再回读 treasure_rois.json。
+    # P4b：policy.json 真源缺失/损坏 → rois 为空，判定降级为「始终先点目标 badge」。
     out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]] = []
     for prio, key, fname in _SESSION_PANEL_DEFS:
         rect = rois.get(key)
@@ -471,13 +467,13 @@ def _load_smart_bid_btn(
     if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
         return None
     rect: tuple[float, float, float, float] | None = None
-    assets = v3_assets()
-    if assets is not None:
-        anchor = assets.anchors.get(_SMART_BID_KEY)
+    nav = nav_source()
+    if nav is not None:
+        anchor = nav.spec.get(_SMART_BID_KEY)
         if anchor is not None:
             r4 = anchor.rect.as_list()
             rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-    # E1：无 v3 时不再回读 treasure_rois.json；rect 保持 None → 返回 None（面板已开判定降级依赖主按钮 OCR 兜底）。
+    # P4b：policy.json 真源缺失时 rect 保持 None → 返回 None（面板已开判定降级依赖主按钮 OCR 兜底）。
     if rect is None:
         return None
     return (gray, rect)
@@ -2619,26 +2615,24 @@ class TreasureModule(ActivityModule):
     # ==================================================================
 
     def _init_policy_stack(self) -> None:
-        """P1：编译 policies → PolicyPlan（唯一决策源）。
+        """P1：编译 policies → PolicyPlan（唯一决策源；P4b 数据面=policy.json）。
 
-        - v3 资产存在但缺 `policies` 段 → 启动失败（P1e 硬约束）。
+        - policy.json 缺失/损坏/缺 policy 段 → 启动失败（P1e 硬约束不变）。
         - 编译/校验失败（P01-P09 阻断项）→ 启动失败。
         """
-        v3_path = CONFIG_DIR / "treasure_assets.json"
         try:
-            from maaracing_assistant.core.navkit import Assets
-            assets = Assets.load(v3_path, module="treasure")
-            if assets.policies is None:
+            nav = nav_source()
+            if nav is None:
                 raise RuntimeError(
-                    "treasure_assets.json 缺少 policies 段"
-                    "（决策策略缺失 = 启动失败，请先迁移策略到资产文件）"
+                    f"{POLICY_PATH.name} 缺失或不可读"
+                    "（决策策略缺失 = 启动失败，请先恢复策略表真源）"
                 )
-            self._policy_plan = compile_plan(assets.policies, assets.anchors)
+            self._policy_plan = compile_plan(nav.policies, nav.spec)
         except Exception as exc:
             logger.log(f"[鉴宝] policies 编译失败：{exc}", "ERROR")
             raise
         logger.log(
-            f"[鉴宝] 决策策略就绪: v3 policies（rules={len(self._policy_plan.rules)}）",
+            f"[鉴宝] 决策策略就绪: v4 policy 表（rules={len(self._policy_plan.rules)}）",
             "INFO",
         )
 

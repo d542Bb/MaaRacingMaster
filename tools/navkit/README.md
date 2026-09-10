@@ -19,7 +19,7 @@
 tools/navkit/
 ├── mpe.cmd              # v4 Studio 入口（必须保持 ASCII+CRLF，见文件头 NOTE）
 ├── policy_server.py     # 策略表薄页（读写 treasure.policy.json，原子落盘）
-├── migrate_v4.py        # v3→v4 迁移器 + 图自洽校验（--full --split-global 重生成三件套真源）
+├── check_truth.py       # 真源自洽校验（图闭合+数据面装配+交叉互洽；CI 同款）
 ├── schema/              # pipeline / custom action / custom recognition JSON Schema 三件套
 ├── skills/              # agent 操作规范（mpe-pipeline-edit.md）
 └── dev/                 # 本地工具二进制（mpelb.exe 等，gitignore）
@@ -29,8 +29,8 @@ tools/navkit/
 
 - `maaracing_assistant/core/resources/pipeline/global.json` —— 大厅骨架（global.* 命名空间）
 - `maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json` —— 鉴宝图
-- `maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表
+- `maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；编辑后与图节点同权）
 
-校验（CI 同款）：`python tools/navkit/migrate_v4.py --full --check-only`
+校验（CI 同款）：`python tools/navkit/check_truth.py`
 
-重生成（仅迁移器语义变更时）：`--full --split-global` **两 flag 必须连用**，漏掉会把合并图覆写进 treasure.json 破坏分文件真源。
+> v3→v4 迁移器（migrate_v4.py）已完成使命并在 P4b 退役——等价性对拍记录于 `tools/experiments/v4-p4b-source/`，历史版本在 git。

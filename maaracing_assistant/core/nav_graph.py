@@ -10,19 +10,20 @@
                      click_mode 分派 前台鼠标 / 后台手柄导航+A / 意图不确认）
   3. 目标坐标永远来自识别框，不来自代码里写死的百分比。
 
-于是新增一个活动模块的导航 = 写一份 NavKit v3 资产（见下），不需要再写一遍
+于是新增一个活动模块的导航 = 写一份 pipeline 真源（见下），不需要再写一遍
 导航匹配代码；游戏把入口挪了位置 = 换模板图或改 roi，不需要动 Python。
 
-导航真源（用户 2026-09-07 拍板）：
-    页面/锚点/入口链/出价策略等一切导航地图 → NavKit v3 资产
-        plugins/<id>/resources/config/<id>_assets.json   模块自己的段
-        core/resources/config/global_assets.json          跨模块共用段（大厅骨架）
-    由 core/navkit 编译与校验，经 `Assets.load` 在 Python 侧直读执行。
+导航真源（v4，P4b 收口形态）：
+    页面/锚点/入口链/出价策略等一切导航地图 → 三份 v4 真源
+        core/resources/pipeline/global.json                    跨模块共用段（大厅骨架）
+        plugins/<id>/resources/pipeline/<id>.json              模块图节点
+        plugins/<id>/resources/policy/<id>.policy.json         感知规格+决策规则+执行资产
+    图节点经 MaaFW Resource 原生执行；数据面经 `core/navkit/v4_source.load_nav_source`
+    在 Python 侧直读（detector/决策栈/模板装载器共用）。校验走 `tools/navkit/check_truth.py`。
 
-本文件提供的是 MAA Pipeline 执行通路（`Resource.post_pipeline` + 自定义识别/动作桥），
-当前尚未接线：全仓无生产实例化点（`plugins/treasure/module.py:804` 仅类型标注；
-上方 docstring 中的用法示例不计）。留作后续把图交给框架跑的备选实现，
-新模块接入导航请走上面的 v3 资产，不要再另建一套手写入口链。
+本文件提供 MAA Pipeline 执行通路（`Resource.post_pipeline` + 自定义识别/动作桥）
+与 `NavKitV4` 常驻图宿主（P2a 接线，treasure v4 通路的执行底座）；
+新模块接入导航请走上面的 v4 真源，不要再另建一套手写入口链。
 
 资源一律留在程序目录内（便携包解压在哪资源就在哪），不往 C 盘复制。
 """

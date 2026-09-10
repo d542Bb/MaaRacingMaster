@@ -764,7 +764,8 @@ global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection
 
 - **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），与 MAA `activity_pool` 同构。
 
-**回归护栏（P4a 后现状）**：CI 校验已换为 `migrate_v4.py --full --check-only`（v4 图自洽）；
+**回归护栏（P4b 后现状）**：CI 校验为 `check_truth.py`（图闭合 + 数据面装配 + 交叉互洽；
+v3→v4 迁移器完成使命已退役，退役对拍见 tools/experiments/v4-p4b-source/）；
 原 `test_navkit_merge` 的"鉴宝检测集 ∩ global 锚点 = ∅"守卫随 v3 控制台批退役——
 "检测侧绝不并入 global"的原则在 P4b 数据源切换时必须以新数据源重建等价契约测试。
 

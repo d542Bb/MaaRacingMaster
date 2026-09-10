@@ -25,7 +25,7 @@ import numpy as np
 
 from maaracing_assistant.core.logger import logger
 
-from maaracing_assistant.plugins.treasure import CONFIG_DIR, v3_assets
+from maaracing_assistant.plugins.treasure import nav_source
 
 
 # 数字提取：千分位格式优先（"1,234,567"），其次纯数字。
@@ -222,19 +222,19 @@ class TreasureOcr:
     def _load_regions(self) -> dict[str, tuple[float, float, float, float]]:
         """读取 ocr 识别区（归一化坐标）。
 
-        v3 唯一真源：筛 `kind == "ocr"` 锚点取 rect。E1：无 v3 资产（缺失/损坏，或显式
-        `NAVKIT_SOURCE=v2`）时**不再回读 treasure_rois.json** → 返回空 dict（OCR 区降级）。
+        P4b 唯一真源：policy.json `perception.spec` 中筛 `kind == "ocr"` 锚点取 rect；
+        真源缺失/损坏 → 返回空 dict（OCR 区降级，v2 回退已死）。
         """
         regions: dict[str, tuple[float, float, float, float]] = {}
-        assets = v3_assets()
-        if assets is None:
-            logger.log("[鉴宝OCR] v3 资产不可用，识别区为空（不回读 v2）", "WARNING")
+        nav = nav_source()
+        if nav is None:
+            logger.log("[鉴宝OCR] policy.json 真源不可用，识别区为空", "WARNING")
             return regions
-        for name, anchor in assets.anchors.items():
+        for name, anchor in nav.spec.items():
             if anchor.kind == "ocr":
                 r4 = anchor.rect.as_list()
                 regions[name] = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-        logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区(v3): {', '.join(regions)}", "DEBUG")
+        logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区(v4): {', '.join(regions)}", "DEBUG")
         return regions
 
     # ---------------- 引擎（懒加载） ----------------

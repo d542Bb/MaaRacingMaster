@@ -51,11 +51,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: 校验 v4 图自洽（引用闭合/ROI 合法，--check-only）
-        # v3 编译器闸门（compile_routes --all --check）已随 P4a 退役；
-        # 真源一致性由运行时金标测试（test_navkit_v2_v3_runtime_equiv）看护。
-        # migrate_v4 为纯标准库工具，本步骤零依赖直接运行。
-        run: python tools/navkit/migrate_v4.py --full --check-only
+      - name: 校验 v4 真源自洽（图闭合 + 数据面装配 + 交叉互洽）
+        # check_truth 为纯标准库工具，本步骤零依赖直接运行；
+        # 运行时读取路径由金标测试（test_navkit_v2_v3_runtime_equiv）看护。
+        run: python tools/navkit/check_truth.py
 
       - name: 安装 pytest 与轻量测试依赖
         # 注：不采用 `pip install -e .[test]`——会连带安装主依赖（onnxruntime-directml /

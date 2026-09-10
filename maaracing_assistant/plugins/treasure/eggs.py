@@ -32,7 +32,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR, v3_assets
+from maaracing_assistant.plugins.treasure import IMAGE_DIR, nav_source
 
 
 MATCH_THRESHOLD = 0.72  # TM_CCOEFF_NORMED（与鉴宝师匹配同一数量级）
@@ -143,21 +143,21 @@ class EggRewardRecognizer:
 
     # ---------- 加载 ----------
     def _load(self, proj: Path) -> None:
-        # v3 唯一真源：读 anchors.egg（rect/templates/threshold + domain 的 _count_*_norm）。
-        # E1：无 v3 资产（缺失/损坏，或显式 NAVKIT_SOURCE=v2）时**不再回读 treasure_rois.json**，
-        # 直接保持未配置（configured=False）→ 彩蛋识别降级、奖励结算走超时点关闭。
-        assets = v3_assets()
-        if assets is None:
+        # P4b 唯一真源：读 policy.json spec 的 egg 锚点（rect/templates/threshold +
+        # domain 的 _count_*_norm）。真源缺失/损坏 → 直接保持未配置（configured=False）
+        # → 彩蛋识别降级、奖励结算走超时点关闭。
+        nav = nav_source()
+        if nav is None:
             return
-        anchor = assets.anchors.get("egg")
+        anchor = nav.spec.get("egg")
         if anchor is not None:
-            self._load_v3_entry(anchor)
+            self._load_spec_entry(anchor)
 
-    def _load_v3_entry(self, anchor) -> None:
-        """从 v3 `anchors.egg` 锚点装配 `self._entry` + 计数区参数，语义与 v2 eggs 段路径逐字段等价。
+    def _load_spec_entry(self, anchor) -> None:
+        """从 spec `egg` 锚点装配 `self._entry` + 计数区参数，语义与迁移前逐字段等价。
 
-        - 计数区 `_count_*_norm`：v3 存于 `anchor.domain`，v2 存于 eggs 段顶层（同键名）。
-        - rect / templates[0] / threshold：v3 锚点直取；threshold 非法/缺省回落 `MATCH_THRESHOLD`。
+        - 计数区 `_count_*_norm`：存于 `anchor.domain`（v2 时代在 eggs 段顶层，同键名）。
+        - rect / templates[0] / threshold：spec 锚点直取；threshold 非法/缺省回落 `MATCH_THRESHOLD`。
         - 模板图缺失/灰度非法 → 直接 return（`self._entry` 保持 None，`configured` 为 False）。
         """
         dom = anchor.domain or {}

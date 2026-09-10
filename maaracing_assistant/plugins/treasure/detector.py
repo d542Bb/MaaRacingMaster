@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from maaracing_assistant.core.logger import logger
-from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR
+from maaracing_assistant.plugins.treasure import IMAGE_DIR
 
 
 MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED
@@ -41,7 +41,7 @@ MATCH_SCALES: tuple[float, ...] = (
 )
 
 # ============================================================
-# 搜索 ROI / 模板 / 阈值：v3 唯一真源 treasure_assets.json → DetectionPlan（__init__ 载入）。
+# 搜索 ROI / 模板 / 阈值：唯一真源 policy.json perception 数据面 → DetectionPlan（__init__ 载入）。
 # rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时直接乘当前输入帧 W/H。
 # M4/E1：不再提供 treasure_rois.json 读取器——v3 缺失/损坏时如实报告并跳过检测，
 #        避免用残缺默认值掩盖真实配置导致阶段漏检。_ROI_STAGE 仅保留为常量元数据（无 rect）。
@@ -121,21 +121,21 @@ class TreasureStageDetector:
     def __init__(self, proj: Path, ocr=None):
         self.tpl_dir = IMAGE_DIR
         self._tpl_cache: dict[str, tuple[int, int, np.ndarray | None]] = {}
-        # M4/E1：v3 DetectionPlan 是**唯一真源**。加载失败或资产缺失 → plan=None，阶段检测降级为空
-        # （不再 open(treasure_rois.json)，不保留 v2 文件回退）。用局部导入，保持 detector 的
-        # cv2/numpy 运行时依赖不泄漏到纯标准库 navkit 包。
+        # P4b：policy.json perception 段的 DetectionPlan 是**唯一真源**（v3
+        # treasure_assets.json 已退役）。加载失败或真源缺失 → plan=None，阶段检测
+        # 降级为空（不保留 v2 文件回退）。经插件包级 nav_source() 共用缓存加载；
+        # 局部导入保持 detector 的 cv2/numpy 运行时依赖不泄漏到纯标准库 navkit 包。
         self.plan = None
         try:
-            from maaracing_assistant.core.navkit import Assets, compile_detection
-            asset_path = CONFIG_DIR / "treasure_assets.json"
-            if asset_path.exists():
-                asset_doc = Assets.load(asset_path, module="treasure", image_dirs=(IMAGE_DIR,))
-                self.plan = compile_detection(asset_doc)
+            from maaracing_assistant.plugins.treasure import nav_source
+            nav = nav_source()
+            if nav is not None:
+                self.plan = nav.plan
         except Exception as exc:
-            logger.log(f"[鉴宝检测器] v3 DetectionPlan 加载失败: {exc}", "WARNING")
+            logger.log(f"[鉴宝检测器] v4 DetectionPlan 加载失败: {exc}", "WARNING")
         if self.plan is None:
             logger.log(
-                "[鉴宝检测器] 无可用 v3 DetectionPlan（treasure_assets.json 缺失/损坏），阶段检测跳过",
+                "[鉴宝检测器] 无可用 v4 DetectionPlan（policy.json 缺失/损坏），阶段检测跳过",
                 "WARNING",
             )
         self.match_scales = tuple(self.plan.scales) if self.plan is not None else MATCH_SCALES
@@ -419,11 +419,10 @@ class TreasureStageDetector:
     def _round_label_rect(self) -> tuple[float, float, float, float] | None:
         """回合小字识别区域。
 
-        v3 优先：读 `DetectionPlan.spec["round_label_area"].rect`（`compile_detection` 把**全部**
-        锚点含 ocr 类都纳入 spec，故此 ocr 锚点在 plan 里可取）。plan 存在即认定 v3 生效：
-        有锚点返回其 rect、无锚点返回 None，**不再回读 v2 schema**（消除同矩形双真源）。
-        仅 `plan is None`（`NAVKIT_SOURCE=v2` / v3 缺失）时，才走 v2 `ocr.round_label_area`
-        兼容旧 `round_labels` 段回退（AGENTS.md 回退约定 / N-6）。未配置时返回 None。
+        唯一路径：读 `DetectionPlan.spec["round_label_area"].rect`（数据面 loader 把
+        **全部**锚点含 ocr 类都纳入 spec，故此 ocr 锚点在 plan 里可取）。plan 缺失
+        （真源不可用）时返回 None——旧 v2 schema 回退分支自 v2 读取器移除后即为
+        死路（self.schema 恒空），常量本体随 P4d v2 回退段一并清理。
         """
         if self.plan is not None:
             spec = self.plan.spec.get("round_label_area")

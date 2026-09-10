@@ -5,7 +5,7 @@
 作用：以表格形式读/改 `treasure.policy.json` 的 `policy.rules`（id / when 条件 /
 decision.key / decision.hint），保存回写真源原子替换。字段契约以
 tools/navkit/schema/ 三件套为准，本工具**不内嵌第二套 schema 理解**——只做
-展示 + 基础字段编辑，深层校验/重编译交给 `migrate_v4.py --full --check`。
+展示 + 基础字段编辑，深层校验交给 `check_truth.py`（图闭合+数据面装配+交叉互洽）。
 
 用法：
     python policy_server.py [--port 26530]   # 默认 26530，与 mpelb 端口错开
@@ -78,7 +78,7 @@ async function save(){ setMsg('保存中...','');
   try{ const need=new Set(['id','when','decision']); for(const r of data.policy.rules){
     if(r.id&&r.id.startsWith('new_')) throw new Error('存在未命名规则 id='+r.id+'，请先命名'); }
     await api('/api/policy',{method:'PUT',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(data)}); setMsg('已保存。深层校验请跑: migrate_v4 --full --check','ok');
+      body:JSON.stringify(data)}); setMsg('已保存。深层校验请跑: tools\\navkit\\check_truth.py','ok');
   }catch(e){ setMsg('保存失败: '+e.message,'err'); } }
 load();
 </script></body></html>

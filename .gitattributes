@@ -3,8 +3,8 @@
 #
 # 目标：文本文件在仓库内与工作区统一 LF，任何平台（Windows / Linux / CI）检出
 # 的字节完全一致。v4 真源（pipeline/*.json、policy/*.json）的 round-trip 保真与
-# 内容哈希比对依赖该不变量：行尾若按平台默认（core.autocrlf）漂移，MPE 保存与
-# migrate_v4 产物的 diff 会被行尾噪音淹没。
+# 内容哈希比对依赖该不变量：行尾若按平台默认（core.autocrlf）漂移，MPE 保存等
+# 真源改动的 diff 会被行尾噪音淹没。
 # 例外：tools/navkit/*.cmd 必须 CRLF+ASCII（cmd 批处理解析器对 LF/非 ASCII 会
 # 错位碎裂，实证见 v4-p3-studio plan）。
 #

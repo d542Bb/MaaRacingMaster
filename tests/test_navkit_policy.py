@@ -23,7 +23,6 @@ from maaracing_assistant.core.navkit import (
     DEFAULT_FALLBACK_KEY,
     DecisionFacts,
     DecisionSnapshot,
-    NavKitError,
     PolicyError,
     PolicyPlan,
     StateSnapshot,
@@ -32,16 +31,17 @@ from maaracing_assistant.core.navkit import (
     validate_policy_document,
 )
 
-_ASSETS_PATH = (
+_POLICY_PATH = (
     Path(__file__).resolve().parents[1]
-    / "maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json"
+    / "maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json"
 )
 
 
-def _load_assets():
-    from maaracing_assistant.core.navkit import Assets
+def _load_nav():
+    """policy.json 数据面（P4b 起本套件的唯一输入源）。"""
+    from maaracing_assistant.core.navkit.v4_source import load_nav_source
 
-    return Assets.load(_ASSETS_PATH, module="treasure")
+    return load_nav_source(_POLICY_PATH)
 
 
 def _make_facts(
@@ -200,9 +200,9 @@ def test_parse_policies_stage_not_in_map():
 
 
 def _compile() -> PolicyPlan:
-    assets = _load_assets()
-    assert assets.policies is not None
-    return compile_plan(assets.policies, assets.anchors)
+    nav = _load_nav()
+    assert nav.policies is not None
+    return compile_plan(nav.policies, nav.spec)
 
 
 def _decide_key(plan: PolicyPlan, **kw) -> str:
@@ -322,9 +322,9 @@ def test_plan_fallback_key():
 
 def test_tuning_reference_baked_at_compile_time():
     """`@tuning_key` 条件在编译期烘焙：改 tuning 即改规则阈值（P1 调参上纸）。"""
-    assets = _load_assets()
-    assert assets.policies is not None
-    plan = compile_plan(assets.policies, assets.anchors)
+    nav = _load_nav()
+    assert nav.policies is not None
+    plan = compile_plan(nav.policies, nav.spec)
     # 烘焙后条件里不应残留 @ 引用
     for rule in plan.rules:
         for cond in rule.conditions:
@@ -339,12 +339,12 @@ def test_tuning_reference_baked_at_compile_time():
         )
         return plan.decide(facts).key
 
-    frames = int(assets.policies.tuning["policy"]["settle_skip_retry_frames"])
+    frames = int(nav.policies.tuning["policy"]["settle_skip_retry_frames"])
     assert decide(frame=frames) == "dividend_waiting"   # elapsed = frames - 1，未超时
     assert decide(frame=frames + 1) == "settle_collect_red_btn"  # elapsed = frames，超时重试
     # 改 tuning → 重编译 → 阈值跟着变（证明非字面量硬编码）
-    assets.policies.tuning["policy"]["settle_skip_retry_frames"] = 5
-    plan5 = compile_plan(assets.policies, assets.anchors)
+    nav.policies.tuning["policy"]["settle_skip_retry_frames"] = 5
+    plan5 = compile_plan(nav.policies, nav.spec)
     # frame=5 → elapsed=4 < 5 仍等待；frame=6 → elapsed=5 触发重试
     assert plan5.decide(_make_facts(stage="settle", frame=5, clicked_once=True,
                                     settle_skip_since=1)).key == "dividend_waiting"
@@ -370,13 +370,12 @@ def test_tuning_unknown_reference_rejected():
 
 
 def test_policies_missing_is_startup_failure(monkeypatch, tmp_path):
-    """P1e：资产缺 policies 段 → 模块启动失败（不允许静默回退代码常量）。"""
+    """P1e（v4）：policy.json 缺 policy 段 → 模块启动失败（不允许静默回退代码常量）。"""
     import json as _json
 
-    src = _ASSETS_PATH
-    doc = _json.loads(src.read_text(encoding="utf-8"))
-    doc.pop("policies", None)
-    broken = tmp_path / "treasure_assets.json"
+    doc = _json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
+    doc.pop("policy", None)
+    broken = tmp_path / "treasure.policy.json"
     broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
     try:
@@ -384,24 +383,23 @@ def test_policies_missing_is_startup_failure(monkeypatch, tmp_path):
     except Exception:
         pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 
-    monkeypatch.setattr(tm, "CONFIG_DIR", tmp_path)
-    monkeypatch.setenv("NAVKIT_SOURCE", "v3")
+    from maaracing_assistant.core.navkit.v4_source import load_nav_source
+    monkeypatch.setattr(tm, "nav_source", lambda: load_nav_source(broken))
     tm._policy_tuning.cache_clear()
     m = tm.TreasureModule(None)
     with pytest.raises(Exception) as exc:
         m._init_policy_stack()
-    assert "policies" in str(exc.value)
+    assert "policy" in str(exc.value)
     tm._policy_tuning.cache_clear()
 
 
 def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
-    """P1e：policies 结构非法（schema_ver 错）→ 启动失败。"""
+    """P1e（v4）：policy 段结构非法（schema_ver 错）→ 启动失败。"""
     import json as _json
 
-    src = _ASSETS_PATH
-    doc = _json.loads(src.read_text(encoding="utf-8"))
-    doc["policies"] = {"_schema_ver": 99, "stage_map": {}, "rules": [], "tuning": {}}
-    broken = tmp_path / "treasure_assets.json"
+    doc = _json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
+    doc["policy"]["schema_ver"] = 99
+    broken = tmp_path / "treasure.policy.json"
     broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
     try:
@@ -409,8 +407,8 @@ def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
     except Exception:
         pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 
-    monkeypatch.setattr(tm, "CONFIG_DIR", tmp_path)
-    monkeypatch.setenv("NAVKIT_SOURCE", "v3")
+    from maaracing_assistant.core.navkit.v4_source import load_nav_source
+    monkeypatch.setattr(tm, "nav_source", lambda: load_nav_source(broken))
     tm._policy_tuning.cache_clear()
     m = tm.TreasureModule(None)
     with pytest.raises(Exception):
@@ -418,18 +416,10 @@ def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
     tm._policy_tuning.cache_clear()
 
 
-def test_policies_missing_assets_load_fails():
-    """P1e（schema 层）：`Assets` 的 `policies` 缺失=启动失败由调用方强制，
-    但结构错误（`_schema_ver` 错）在 `Assets.load` 构造期即抛。"""
-    import json as _json
-
-    src = _ASSETS_PATH
-    doc = _json.loads(src.read_text(encoding="utf-8"))
-    doc["policies"] = {"_schema_ver": 99, "stage_map": {}, "rules": [], "tuning": {}}
-    from maaracing_assistant.core.navkit import Assets
-
-    with pytest.raises(NavKitError) as exc:
-        Assets.from_document(doc, module="treasure")
+def test_policies_bad_schema_ver_parse_fails():
+    """P1e（引擎层）：结构错误（schema_ver 错）在 `parse_policies` 构造期即抛 P01。"""
+    with pytest.raises(PolicyError) as exc:
+        parse_policies({"_schema_ver": 99, "stage_map": {}, "rules": [], "tuning": {}})
     assert exc.value.code == "P01"
 
 
@@ -439,18 +429,18 @@ def test_policies_missing_assets_load_fails():
 
 
 def test_validate_policy_document_reports_warnings():
-    assets = _load_assets()
-    assert assets.policies is not None
-    issues = validate_policy_document(assets.policies, assets.anchors)
+    nav = _load_nav()
+    assert nav.policies is not None
+    issues = validate_policy_document(nav.policies, nav.spec)
     codes = {c for c, _, _, _ in issues}
     assert codes <= {"P01", "P02", "P03", "P04", "P05", "P06", "P07", "P08", "P09"}
     assert all(level != "error" or code in {"P02", "P08", "P05"} for code, level, _, _ in issues)
 
 
 def test_validate_policy_document_strict_upgrades_warnings():
-    assets = _load_assets()
-    assert assets.policies is not None
-    issues = validate_policy_document(assets.policies, assets.anchors, strict=True)
+    nav = _load_nav()
+    assert nav.policies is not None
+    issues = validate_policy_document(nav.policies, nav.spec, strict=True)
     assert all(level == "error" for _, level, _, _ in issues)
 
 
@@ -473,11 +463,11 @@ class _DummyAnchor:
 
 
 def test_assets_policies_present():
-    assets = _load_assets()
-    assert assets.policies is not None
-    assert len(assets.policies.rules) >= 20
-    assert "hall" in assets.policies.stage_map
-    assert set(assets.policies.tuning) == {"perception", "policy", "execution"}
+    nav = _load_nav()
+    assert nav.policies is not None
+    assert len(nav.policies.rules) >= 20
+    assert "hall" in nav.policies.stage_map
+    assert set(nav.policies.tuning) == {"perception", "policy", "execution"}
 
 
 
