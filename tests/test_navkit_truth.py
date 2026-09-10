@@ -35,10 +35,10 @@ def test_graph_clean_and_shaped(truth):
     errors, warns = ct.validate_graph(full)
     assert errors == []
     assert warns == []
-    dwell = [n for n, d in full.items() if d.get("_dwell")]
+    dwell = [n for n, d in full.items() if ct.att(d).get("_dwell")]
     assert len(dwell) == 13
-    assert sum(1 for d in full.values() if d.get("_boot")) == 1
-    assert sum(1 for d in full.values() if d.get("_policy_loop")) == 1
+    assert sum(1 for d in full.values() if ct.att(d).get("_boot")) == 1
+    assert sum(1 for d in full.values() if ct.att(d).get("_policy_loop")) == 1
     # chain=4：仅导航 route 链（hall_to_treasure 3 节点+confirm）；session_to_matching
     # 链整体摘除（决策阶段图不代点，真机七炸定案）
     chain = [n for n in full if ".rhall_to_treasure." in n or ".__confirm." in n]
@@ -47,7 +47,7 @@ def test_graph_clean_and_shaped(truth):
     assert {"global.goto_appraise_btn", "global.hall_peak_appraise_card"} \
         <= set(full)
     assert len(full) == 21
-    assert sorted(n for n, d in full.items() if d.get("_entry")) == [
+    assert sorted(n for n, d in full.items() if ct.att(d).get("_entry")) == [
         "global.hall_peak_appraise_card.rhall_to_treasure.0",
         "treasure.__boot.dwell"]
     assert len(policy["actuators"]) == 33
@@ -68,7 +68,7 @@ def test_policy_loop_wired_into_every_dwell(truth):
     assert loop["custom_action"] == "MRA_Policy"
     assert loop["custom_action_param"]["table"] == "treasure.policy.json#policy"
     assert loop["next"] == [] and loop["timeout"] == -1
-    dwells = [n for n, d in full.items() if d.get("_dwell")]
+    dwells = [n for n, d in full.items() if ct.att(d).get("_dwell")]
     assert len(dwells) == 13
     hall = {"global.游戏大厅.dwell", "global.活动页面.dwell"}
     # 鉴宝大厅(选择场次)挂 policy_loop：场次选择是动态决策（target_session+
@@ -111,7 +111,7 @@ def _tpls_of(node) -> set[str]:
 def test_dwell_semantics(truth):
     full, _ = truth
     hall = full["global.游戏大厅.dwell"]
-    assert hall["action"] == "DoNothing" and hall["_dwell"]
+    assert hall["action"] == "DoNothing" and ct.att(hall)["_dwell"]
     # 信号专属化（真机八炸定案）：游戏大厅只认本页判定信号
     # （transitions: hall_peak_appraise_card → 游戏大厅）；共享信号（场次卡/
     # 活动页按钮）剔除——否则场次页会被大厅 dwell 误判回导航层
@@ -180,7 +180,7 @@ def test_boot_node_aggregates_stage_signals(truth):
     next = 全 dwell 表、未知画面无限驻留——「任意 stage 起跑」语义。"""
     full, _ = truth
     boot = full["treasure.__boot.dwell"]
-    assert boot["_boot"] is True and boot["_entry"] is True
+    assert ct.att(boot)["_boot"] is True and ct.att(boot)["_entry"] is True
     assert boot["action"] == "DoNothing" and boot["timeout"] == -1
     subs = boot["recognition"]["param"]["any_of"]
     assert all(s.get("recognition") != "DirectHit" for s in subs)  # 直过信号不进
@@ -190,7 +190,7 @@ def test_boot_node_aggregates_stage_signals(truth):
     assert len(set(tpls)) == 16
     assert {"act_goto_appraise_btn.png", "hall_peak_appraise_card.png",
             "hall_session_cards.png"} <= set(tpls)
-    dwells = {n for n, d in full.items() if d.get("_dwell")}
+    dwells = {n for n, d in full.items() if ct.att(d).get("_dwell")}
     assert set(boot["next"]) == dwells  # 全 dwell 表
 
 
@@ -235,7 +235,7 @@ def test_dyn_stages_priority_and_exit(truth):
 def test_entry_chain_walk(truth):
     full, _ = truth
     entry = full["global.hall_peak_appraise_card.rhall_to_treasure.0"]
-    assert entry["_entry"] is True
+    assert ct.att(entry)["_entry"] is True
     cur = entry["next"][0]
     for _ in range(8):
         if cur.endswith(".dwell"):
@@ -315,10 +315,10 @@ def test_dedup_rule_catches_cross_anchor_duplicate():
                                                    "templates": ["x.png"]},
                        "action": "Custom", "custom_action": "MRA_Click",
                        "next": ["treasure.a.dwell"]},
-        "treasure.a.dwell": {"recognition": "DirectHit", "action": "DoNothing", "_dwell": True,
-                             "next": ["treasure.b"]},
-        "treasure.b.dwell": {"recognition": "DirectHit", "action": "DoNothing", "_dwell": True,
-                             "next": ["treasure.a"]},
+        "treasure.a.dwell": {"recognition": "DirectHit", "action": "DoNothing",
+                             "attach": {"_dwell": True}, "next": ["treasure.b"]},
+        "treasure.b.dwell": {"recognition": "DirectHit", "action": "DoNothing",
+                             "attach": {"_dwell": True}, "next": ["treasure.a"]},
     }
     _, warns = ct.validate_graph(fake)
     assert any("重复识别" in w for w in warns)

@@ -6,8 +6,8 @@
 1. 图自洽（校验器第 1/5/6 条）：next/on_error 引用闭合、入口可达、无出口告警、
    跨锚点重复识别告警——逻辑自 migrate_v4.validate_graph 原样迁移；
 2. 数据面可加载：policy.json 经 v4_source 装配（结构性错误 P01-P09 fail-fast）；
-3. 两面交叉一致：图 dwell `_signals` 引用的锚点、policy spec 里 stages/transitions
-   引用的名字必须互洽（编辑任一面时的防脱钩机械检）；
+3. 两面交叉一致：图 dwell `attach._signals` 引用的锚点、policy spec 里
+   stages/transitions 引用的名字必须互洽（编辑任一面时的防脱钩机械检）；
 4. 几何合法（校验器第 3 条）：两面一切 rect/roi/box 值域 [0,1] 且有序。
 
 用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
@@ -24,6 +24,11 @@ PACK = REPO / "maaracing_assistant"
 GLOBAL_TRUTH = PACK / "core" / "resources" / "pipeline" / "global.json"
 TREASURE_TRUTH = PACK / "plugins" / "treasure" / "resources" / "pipeline" / "treasure.json"
 POLICY_TRUTH = PACK / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
+
+
+def att(n: dict) -> dict:
+    """节点元数据统一从 attach 读（3.1 唯一文档化扩展位；顶层 `_xxx` 会被框架丢弃）。"""
+    return n.get("attach") or {}
 
 
 def ref_name(r: Any) -> str | None:
@@ -49,9 +54,9 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
                     problems.append(f"{name}: {key} 元素形态非法 {r!r}")
                 elif ref not in full:
                     problems.append(f"{name}: {key} 悬空引用 {ref}")
-    entries = [n for n, d in full.items() if d.get("_entry")]
+    entries = [n for n, d in full.items() if att(d).get("_entry")]
     if not entries:
-        problems.append("无 _entry 入口节点")
+        problems.append("无 attach._entry 入口节点")
     seen: set[str] = set()
     dq = list(entries)
     while dq:
@@ -67,8 +72,9 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
     for u in unreachable:
         problems.append(f"WARN 入口不可达: {u}")
     for name, n in full.items():
+        a = att(n)
         if (not n.get("next") and not n.get("on_error")
-                and not n.get("_dwell") and not n.get("_policy_loop")):
+                and not a.get("_dwell") and not a.get("_policy_loop")):
             problems.append(f"WARN 无出口节点: {name}")
     # 第 6 条：疑似重复识别——**不同基锚**共用同一模板集才报（链复制/dwell 信号
     # 内联与基节点同模板属结构性复制，去基名后自然合并，不告警）。
@@ -78,7 +84,7 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
     for name, n in full.items():
         # dwell/confirm 的模板是锚点信号的结构性内联副本，不参与重复判定；
         # 真正该报的是不同基锚之间共用同一模板。
-        if n.get("_dwell") or ".__confirm." in name:
+        if att(n).get("_dwell") or ".__confirm." in name:
             continue
         p = n.get("custom_recognition_param") or {}
         if p.get("templates"):
@@ -117,12 +123,12 @@ def cross_checks(graph: dict, policy: dict) -> list[str]:
         cs = a.get("colorspace")
         if cs is not None and cs not in ("gray", "rgb", "rgb_strict"):
             problems.append(f"spec.{a_name}.colorspace 非法值 {cs!r}（可选 gray/rgb/rgb_strict）")
-    # 图 dwell 的 _signals（合格式锚点名）必须能在对应数据面或图中解释
+    # 图 dwell 的 attach._signals（合格式锚点名）必须能在对应数据面或图中解释
     for name, n in graph.items():
-        for sig in n.get("_signals") or []:
+        for sig in att(n).get("_signals") or []:
             short = sig.split(".", 1)[-1]
             if short not in spec and sig not in graph:
-                problems.append(f"{name}._signals 引用不存在锚点 {sig}")
+                problems.append(f"{name}.attach._signals 引用不存在锚点 {sig}")
     return problems
 
 

@@ -1,9 +1,11 @@
 {
   "treasure.__boot.dwell": {
-    "_boot": true,
-    "_entry": true,
-    "_label": "起跑汇聚（任意阶段自适应）",
     "action": "DoNothing",
+    "attach": {
+      "_boot": true,
+      "_entry": true,
+      "_label": "起跑汇聚（任意阶段自适应）"
+    },
     "next": [
       "treasure.鉴宝大厅(选择场次).dwell",
       "treasure.选择鉴宝师.dwell",
@@ -235,9 +237,11 @@
     "timeout": -1
   },
   "treasure.__confirm.hall_to_treasure.1": {
-    "_page": "session",
-    "_route": "hall_to_treasure:1.confirm",
     "action": "DoNothing",
+    "attach": {
+      "_page": "session",
+      "_route": "hall_to_treasure:1.confirm"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",
@@ -261,8 +265,10 @@
     "recognition": "Custom"
   },
   "treasure.policy_loop": {
-    "_policy_loop": true,
     "action": "Custom",
+    "attach": {
+      "_policy_loop": true
+    },
     "custom_action": "MRA_Policy",
     "custom_action_param": {
       "table": "treasure.policy.json#policy"
@@ -275,19 +281,21 @@
     "timeout": -1
   },
   "treasure.中标结算.dwell": {
-    "_dwell": true,
-    "_ocr_signals": [
-      "settle_final_price",
-      "settle_total_price",
-      "settle_profit",
-      "settle_my_income"
-    ],
-    "_page": "settle",
-    "_signals": [
-      "treasure.result_banner"
-    ],
-    "_stage": "中标结算",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_ocr_signals": [
+        "settle_final_price",
+        "settle_total_price",
+        "settle_profit",
+        "settle_my_income"
+      ],
+      "_page": "settle",
+      "_signals": [
+        "treasure.result_banner"
+      ],
+      "_stage": "中标结算"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "arbitration": {
@@ -324,13 +332,15 @@
     "recognition": "Custom"
   },
   "treasure.匹配中.dwell": {
-    "_dwell": true,
-    "_page": "matching",
-    "_signals": [
-      "treasure.is_matching_btn"
-    ],
-    "_stage": "匹配中",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_page": "matching",
+      "_signals": [
+        "treasure.is_matching_btn"
+      ],
+      "_stage": "匹配中"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",
@@ -361,26 +371,28 @@
     "recognition": "Custom"
   },
   "treasure.第1回合出价.dwell": {
-    "_dwell": true,
-    "_ocr_signals": [
-      "bid_result_amount_box",
-      "bid_player1",
-      "bid_player2",
-      "bid_player3",
-      "bid_player4",
-      "player_name1",
-      "player_name2",
-      "player_name3",
-      "player_name4",
-      "round_label_area"
-    ],
-    "_page": "bidding",
-    "_signals": [
-      "treasure.round_big_banner",
-      "treasure.smart_bid_btn"
-    ],
-    "_stage": "第1回合出价",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_ocr_signals": [
+        "bid_result_amount_box",
+        "bid_player1",
+        "bid_player2",
+        "bid_player3",
+        "bid_player4",
+        "player_name1",
+        "player_name2",
+        "player_name3",
+        "player_name4",
+        "round_label_area"
+      ],
+      "_page": "bidding",
+      "_signals": [
+        "treasure.round_big_banner",
+        "treasure.smart_bid_btn"
+      ],
+      "_stage": "第1回合出价"
+    },
     "next": [
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
@@ -442,26 +454,28 @@
     "timeout": -1
   },
   "treasure.第2回合出价.dwell": {
-    "_dwell": true,
-    "_ocr_signals": [
-      "bid_result_amount_box",
-      "bid_player1",
-      "bid_player2",
-      "bid_player3",
-      "bid_player4",
-      "player_name1",
-      "player_name2",
-      "player_name3",
-      "player_name4",
-      "round_label_area"
-    ],
-    "_page": "bidding",
-    "_signals": [
-      "treasure.round_big_banner",
-      "treasure.smart_bid_btn"
-    ],
-    "_stage": "第2回合出价",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_ocr_signals": [
+        "bid_result_amount_box",
+        "bid_player1",
+        "bid_player2",
+        "bid_player3",
+        "bid_player4",
+        "player_name1",
+        "player_name2",
+        "player_name3",
+        "player_name4",
+        "round_label_area"
+      ],
+      "_page": "bidding",
+      "_signals": [
+        "treasure.round_big_banner",
+        "treasure.smart_bid_btn"
+      ],
+      "_stage": "第2回合出价"
+    },
     "next": [
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
@@ -523,26 +537,28 @@
     "timeout": -1
   },
   "treasure.第3回合出价.dwell": {
-    "_dwell": true,
-    "_ocr_signals": [
-      "bid_result_amount_box",
-      "bid_player1",
-      "bid_player2",
-      "bid_player3",
-      "bid_player4",
-      "player_name1",
-      "player_name2",
-      "player_name3",
-      "player_name4",
-      "round_label_area"
-    ],
-    "_page": "bidding",
-    "_signals": [
-      "treasure.round_big_banner",
-      "treasure.smart_bid_btn"
-    ],
-    "_stage": "第3回合出价",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_ocr_signals": [
+        "bid_result_amount_box",
+        "bid_player1",
+        "bid_player2",
+        "bid_player3",
+        "bid_player4",
+        "player_name1",
+        "player_name2",
+        "player_name3",
+        "player_name4",
+        "round_label_area"
+      ],
+      "_page": "bidding",
+      "_signals": [
+        "treasure.round_big_banner",
+        "treasure.smart_bid_btn"
+      ],
+      "_stage": "第3回合出价"
+    },
     "next": [
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
@@ -604,26 +620,28 @@
     "timeout": -1
   },
   "treasure.第4回合出价.dwell": {
-    "_dwell": true,
-    "_ocr_signals": [
-      "bid_result_amount_box",
-      "bid_player1",
-      "bid_player2",
-      "bid_player3",
-      "bid_player4",
-      "player_name1",
-      "player_name2",
-      "player_name3",
-      "player_name4",
-      "round_label_area"
-    ],
-    "_page": "bidding",
-    "_signals": [
-      "treasure.round_big_banner",
-      "treasure.smart_bid_btn"
-    ],
-    "_stage": "第4回合出价",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_ocr_signals": [
+        "bid_result_amount_box",
+        "bid_player1",
+        "bid_player2",
+        "bid_player3",
+        "bid_player4",
+        "player_name1",
+        "player_name2",
+        "player_name3",
+        "player_name4",
+        "round_label_area"
+      ],
+      "_page": "bidding",
+      "_signals": [
+        "treasure.round_big_banner",
+        "treasure.smart_bid_btn"
+      ],
+      "_stage": "第4回合出价"
+    },
     "next": [
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
@@ -685,26 +703,28 @@
     "timeout": -1
   },
   "treasure.第5回合出价.dwell": {
-    "_dwell": true,
-    "_ocr_signals": [
-      "bid_result_amount_box",
-      "bid_player1",
-      "bid_player2",
-      "bid_player3",
-      "bid_player4",
-      "player_name1",
-      "player_name2",
-      "player_name3",
-      "player_name4",
-      "round_label_area"
-    ],
-    "_page": "bidding",
-    "_signals": [
-      "treasure.round_big_banner",
-      "treasure.smart_bid_btn"
-    ],
-    "_stage": "第5回合出价",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_ocr_signals": [
+        "bid_result_amount_box",
+        "bid_player1",
+        "bid_player2",
+        "bid_player3",
+        "bid_player4",
+        "player_name1",
+        "player_name2",
+        "player_name3",
+        "player_name4",
+        "round_label_area"
+      ],
+      "_page": "bidding",
+      "_signals": [
+        "treasure.round_big_banner",
+        "treasure.smart_bid_btn"
+      ],
+      "_stage": "第5回合出价"
+    },
     "next": [
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
@@ -766,14 +786,16 @@
     "timeout": -1
   },
   "treasure.结算弹窗.dwell": {
-    "_dwell": true,
-    "_page": "popup",
-    "_signals": [
-      "treasure.daily_high_banner",
-      "treasure.egg_reward_title"
-    ],
-    "_stage": "结算弹窗",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_page": "popup",
+      "_signals": [
+        "treasure.daily_high_banner",
+        "treasure.egg_reward_title"
+      ],
+      "_stage": "结算弹窗"
+    },
     "next": [
       "global.hall_peak_appraise_card",
       "global.goto_appraise_btn",
@@ -831,13 +853,15 @@
     }
   },
   "treasure.选择鉴宝师.dwell": {
-    "_dwell": true,
-    "_page": "appraiser",
-    "_signals": [
-      "treasure.appraiser_title"
-    ],
-    "_stage": "选择鉴宝师",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_page": "appraiser",
+      "_signals": [
+        "treasure.appraiser_title"
+      ],
+      "_stage": "选择鉴宝师"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",
@@ -865,13 +889,15 @@
     "timeout": -1
   },
   "treasure.鉴宝大厅(选择场次).dwell": {
-    "_dwell": true,
-    "_page": "session",
-    "_signals": [
-      "treasure.hall_session_cards"
-    ],
-    "_stage": "鉴宝大厅(选择场次)",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_page": "session",
+      "_signals": [
+        "treasure.hall_session_cards"
+      ],
+      "_stage": "鉴宝大厅(选择场次)"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",
@@ -899,19 +925,21 @@
     "timeout": -1
   },
   "treasure.领取分红.dwell": {
-    "_dwell": true,
-    "_ocr_signals": [
-      "settle_final_price",
-      "settle_total_price",
-      "settle_profit",
-      "settle_my_income"
-    ],
-    "_page": "payout",
-    "_signals": [
-      "treasure.settle_title"
-    ],
-    "_stage": "领取分红",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_ocr_signals": [
+        "settle_final_price",
+        "settle_total_price",
+        "settle_profit",
+        "settle_my_income"
+      ],
+      "_page": "payout",
+      "_signals": [
+        "treasure.settle_title"
+      ],
+      "_stage": "领取分红"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",

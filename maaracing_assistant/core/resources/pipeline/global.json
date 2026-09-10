@@ -1,8 +1,10 @@
 {
   "global.__confirm.hall_to_treasure.0": {
-    "_page": "activity",
-    "_route": "hall_to_treasure:0.confirm",
     "action": "DoNothing",
+    "attach": {
+      "_page": "activity",
+      "_route": "hall_to_treasure:0.confirm"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",
@@ -26,11 +28,13 @@
     "recognition": "Custom"
   },
   "global.goto_appraise_btn": {
-    "_label": "活动页前往鉴宝按钮",
-    "_order": 950,
-    "_owner": "treasure",
-    "_page": "activity",
     "action": "Custom",
+    "attach": {
+      "_label": "活动页前往鉴宝按钮",
+      "_order": 950,
+      "_owner": "treasure",
+      "_page": "activity"
+    },
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
@@ -67,12 +71,14 @@
     "recognition": "Custom"
   },
   "global.goto_appraise_btn.rhall_to_treasure.1": {
-    "_label": "活动页前往鉴宝按钮",
-    "_order": 950,
-    "_owner": "treasure",
-    "_page": "activity",
-    "_route": "hall_to_treasure:1",
     "action": "Custom",
+    "attach": {
+      "_label": "活动页前往鉴宝按钮",
+      "_order": 950,
+      "_owner": "treasure",
+      "_page": "activity",
+      "_route": "hall_to_treasure:1"
+    },
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
@@ -99,11 +105,13 @@
     "timeout": 45000
   },
   "global.hall_peak_appraise_card": {
-    "_label": "大厅巅峰鉴宝卡片",
-    "_order": 950,
-    "_owner": "treasure",
-    "_page": "hall",
     "action": "Custom",
+    "attach": {
+      "_label": "大厅巅峰鉴宝卡片",
+      "_order": 950,
+      "_owner": "treasure",
+      "_page": "hall"
+    },
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
@@ -137,13 +145,15 @@
     "recognition": "Custom"
   },
   "global.hall_peak_appraise_card.rhall_to_treasure.0": {
-    "_entry": true,
-    "_label": "大厅巅峰鉴宝卡片",
-    "_order": 950,
-    "_owner": "treasure",
-    "_page": "hall",
-    "_route": "hall_to_treasure:0",
     "action": "Custom",
+    "attach": {
+      "_entry": true,
+      "_label": "大厅巅峰鉴宝卡片",
+      "_order": 950,
+      "_owner": "treasure",
+      "_page": "hall",
+      "_route": "hall_to_treasure:0"
+    },
     "custom_action": "MRA_Click",
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
@@ -170,13 +180,15 @@
     "timeout": 45000
   },
   "global.活动页面.dwell": {
-    "_dwell": true,
-    "_page": "activity",
-    "_signals": [
-      "global.goto_appraise_btn"
-    ],
-    "_stage": "活动页面",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_page": "activity",
+      "_signals": [
+        "global.goto_appraise_btn"
+      ],
+      "_stage": "活动页面"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",
@@ -202,13 +214,15 @@
     "recognition": "Custom"
   },
   "global.游戏大厅.dwell": {
-    "_dwell": true,
-    "_page": "hall",
-    "_signals": [
-      "global.hall_peak_appraise_card"
-    ],
-    "_stage": "游戏大厅",
     "action": "DoNothing",
+    "attach": {
+      "_dwell": true,
+      "_page": "hall",
+      "_signals": [
+        "global.hall_peak_appraise_card"
+      ],
+      "_stage": "游戏大厅"
+    },
     "custom_recognition": "MRA_Template",
     "custom_recognition_param": {
       "colorspace": "rgb",
