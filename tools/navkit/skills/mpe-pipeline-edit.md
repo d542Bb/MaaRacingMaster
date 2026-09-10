@@ -37,7 +37,9 @@
 
    - 标准字段（recognition/action/next/timeout/rate\_limit/on\_error…）按 MaaFW 协议。
 
-   - 扩展字段用根级 `_` 前缀（`_page` `_route` `_dwell` `_boot` `_park`…）——MPE 无损往返。
+   - 节点元数据一律放官方扩展位 `attach` 内、键名带 `_` 前缀（`attach:{_page,_route,_dwell,_boot,_park…}`）——
+     框架保留可经 get_node_data 回读；**节点顶层 `_xxx` 会被框架解析器静默丢弃（5.12.3 实测），禁止再写**。
+     policy 数据面 JSON 不受此规约束（框架不解析该文件）。
 
    - custom 识别/动作：`type:"Custom"` + `param:{custom_recognition/custom_action, *_param}`（MPE 归一化形态，协议标准）。
 

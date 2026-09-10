@@ -2,8 +2,12 @@
 
 > 用途：本仓库后续开发"类方舟日常"式**离散步骤流程**（新活动、清理日常、页面切换链等）时，
 > 直接复用本文档的**可复用范式**，避免从头查文档/从零写代码。
-> 信息基于 MaaFramework 官方文档 + Python binding 源码（`source/binding/Python/maa`）核对。
-> 官方全套文档：<https://maafw.com/docs/>（中文）；仓库：<https://github.com/MaaXYZ/MaaFramework>
+> 信息基于 MaaFramework 官方文档（2.2–4.2 全节，2026-09-10 校核）+ **本项目 `.venv` 锁定的
+> MaaFw 5.12.3** binding 源码与运行时实测核对——文档站跟随 main（v5.13+），凡行为论断以
+> 实测为准（差异处文中显式标注版本口径）。研究底稿：`tools/experiments/maafw-docs-constraints/`。
+> 官方全套文档：<https://maafw.com/docs/>（中文）；仓库：<https://github.com/MaaXYZ/MaaFramework>；
+> 社区经验信源：MaaHub <https://hub.maafw.com/>（Skills/Customs/Experiences）、
+> MaaPracticeBoilerplate、create-maa-project、M9A 仓库内规范。
 
 ***
 
@@ -100,11 +104,16 @@ job.override_pipeline({...})# 任务执行中动态改 pipeline
 from maa.resource import Resource
 res = Resource()
 res.post_bundle("path/to/resource").wait()   # 异步加载资源包（★post_bundle 不是 post_path）
-res.register_custom_recognition("MyReco", inst)  # 注册自定义识别器
+# 除 bundle 整包外，官方还有三个细粒度入口（2.3 资源加载类型枚举；5.12.3 binding 实测齐备）：
+res.post_pipeline("pipeline目录或单个json").wait()   # 只注入节点（本项目 v4 真源通路）
+res.post_image("image目录或单图").wait()             # 只注入图片
+res.post_ocr_model("model目录").wait()               # 只注入 OCR 模型
+res.clear()                              # 加载中会失败返回 false —— 重载流程必须先 wait() 再 clear
+res.register_custom_recognition("MyReco", inst)  # 注册自定义识别器（红线见 §6 注册命名空间）
 res.register_custom_action("MyAction", inst)     # 注册自定义动作
-res.override_pipeline({...})                   # 运行时覆盖 pipeline
-res.override_next("节点", ["A","B"])           # 运行中改 next 列表（节点不存在也会创建）
-res.override_image("img.png", ndarray)         # 覆盖图片数据
+res.override_pipeline({...})                   # 运行时覆盖 pipeline（同名节点=顶级键整体替换）
+res.override_next("节点", ["A","B"])           # ★Resource 侧：节点不存在也会创建（与 Context 侧相反，见 §3.5）
+res.override_image("img.png", ndarray)         # 覆盖图片数据（官方注"此方法总是成功"）
 res.get_node_data("节点") / res.node_list      # node_list 是属性（maafw 5.12.3 实测；旧名 get_node_list() 已不存在）
 res.set_inference(...) / set_cpu / set_gpu / set_auto_device   # 推理设备/推理库（旧名 set_option 已不存在）
 ```
@@ -134,6 +143,31 @@ ctrl.post_scroll(dx, dy) / post_relative_move(dx, dy)  # Win32 支持
 需要 RGB 时手动 `cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)`。项目里已有 `PostScreencapCapture`
 封装好此转换，见 `core/capabilities.py`。
 
+**Win32 平台事实（2.2/2.4 + 5.12.3 实测，与本项目平台层同域）**：
+
+- **截图缩放语义**：截图按目标尺寸设置（`set_screenshot_target_long_side/short_side` /
+  `set_screenshot_use_raw_size` / `set_screenshot_resize_method`）缩放；识别与模板坐标
+  一律在**缩放后**坐标系。`ctrl.resolution` 是设备**原始**分辨率且**首帧截图后才有效**。
+  "缩放坐标→设备坐标"的自动反算原文只写在 Android Native 小节，**不得外推为对
+  CustomController 也成立**——自研控制器通路必须自证坐标域一致。
+- **后台可用截图只有两种**：`FramePool(2)` / `PrintWindow(16)`；且二者内置**伪最小化**
+  ——目标窗口最小化时会被改写扩展样式与不透明度（透明+点击穿透）来恢复渲染。
+  与本项目的窗口隐藏/置顶/WGC 遮罩是**同一批窗口状态的写入方，混用即竞态**。
+- **`post_inactive()` 被 Tasker 自动调用**：所有任务链执行完毕后框架自动 inactive
+  （Win32 侧恢复置顶/解除输入阻塞/还原光标与窗口位置）。自研收尾逻辑与其语义要显式
+  定案谁负责，避免双写。
+- **`post_relative_move`（Win32）有前置条件**：必须先 `set_mouse_lock_follow(True)`，
+  且仅 MessageInput 系列输入方式可用。自研 XInput/ViGEm 通路不在 MaaFW 语义内，
+  要经 pipeline 节点复用只能在 `CustomController` 内自己实现。
+- **`set_background_managed_keys`**：声明后 pipeline 的 `ClickKey/LongPressKey/KeyDown/KeyUp`
+  对命中键自动改走后台守护路径（仅 Win32）。用了它，按键动作语义会变。
+- **Gamepad 官方编码**（与本项目 ViGEm 链路对齐用）：数字键 `MaaGamepadButton_*`
+  （A=4096/B=8192/X=16384/Y=32768/LB=256/RB=512/DPAD 1/2/4/8…）；摇杆 =
+  `touch_down/move/up` + `contact 0`(左)/`1`(右)，x/y ∈ ±32768；扳机 = `contact 2`(LT)/
+  `3`(RT)，pressure 0~255。
+- 5.12.3 **无** Expand 截图选项（`set_screenshot_target_expand` 是 5.13+）；
+  需要 Expand 语义（`scale = max(w/原生w, h/原生h)`）须升级或在 CustomController 内自实现。
+
 ### 3.5 Context（Custom 内运行时）
 
 Custom 代码里拿到的 `context` 提供执行/覆盖能力：
@@ -150,6 +184,18 @@ context.get_hit_count(node) / context.clear_hit_count(node)
 context.wait_freezes(time_ms, ...) # 等待画面静止
 context.get_task_job() / context.clone()  # clone 可复制上下文做分支
 ```
+
+Context 侧要点（2.2 实测口径）：
+
+- **`context.override_next` 与 Resource 侧语义相反**：节点**不存在 → 返回 false**（不创建）。
+  运行时改路由拼错节点名，这里的失败方式是静默 false，不是凭空造节点（§3.3）。
+- `run_recognition` / `run_recognition_direct` **不执行动作、不执行 next**；
+  `run_action` / `run_action_direct` **不执行 next**；`run_task` **同步**执行、失败返回 InvalidId。
+  这是 Custom 内部"借用官方识别器"的安全边界。
+- `wait_freezes(time, wait_freezes_param)`：`time` 与 `param.time` **互斥**——不能同时非零、
+  也不能同时为零（binding 层是否强校验未文档化，两参只给一个）。
+- 对象的 `is` 比较不可靠：`context.tasker` / `tasker.resource` 按 4.2 封装约定可能每次返回
+  新包装对象，判同用身份属性（如 handle）而非 `is`。
 
 ***
 
@@ -231,39 +277,67 @@ tasker.post_task("日常清理").wait()
 
 ### 5.2 JSON 节点书写规范（血泪要点）
 
-- `recognition` 默认 `DirectHit`（不识别直接执行）；常用 `TemplateMatch` / `OCR`。
+**执行语义（先记牢，最容易误判的三条）**：
 
-- `action` 默认 `DoNothing`；常用 `Click` / `Swipe` / `Custom`。
+- 节点**不"识别自己再执行"**——命中发生在**父节点**对 next 列表的识别轮里；
+  `timeout`/`on_error` 是"上一节点等我的时间"。**要调当前节点的识别等待，改的是上一节点
+  的 `timeout`**。
+- 每轮识别前才截图（`post_delay` 之后），识别到的一定是新帧。
+- next **顺序检测、命中即中断** ⇒ 数组顺序就是优先级：优先抢占的（哪怕命中频率低的弹窗）
+  排前面，避免"主界面也能匹配、弹窗永远轮不到"。
 
-- `roi`(识别区) / `box`(命中框) / `target`(动作点) 三个概念分离；`target` 默认 `true`=用命中框。
+**字段与默认值对表（3.1 权威值，勿靠记忆）**：
 
-- `timeout`（识别 next 的超时，默认 20s，`-1`=无限）、`rate_limit`（每轮识别最低 ms，默认 1000）。
+| 字段                                  | 默认              | 备注                                    |
+| ----------------------------------- | --------------- | ------------------------------------- |
+| `recognition` / `action`            | DirectHit / DoNothing | 常用 `TemplateMatch`/`OCR`；`Click`/`Swipe`/`Custom` |
+| `rate_limit`                        | **1000ms**      | 每轮识别最低消耗，不足则 sleep                    |
+| `timeout`                           | **20000ms**     | `-1`=永不超时                             |
+| `pre_delay` / `post_delay`          | **200ms**       | 不需要时**显式写 0**，省略字段=吃隐式等待             |
+| `pre/post/repeat_wait_freezes`      | 0               | 对象参默认 `threshold=0.95`、`method=5`     |
+| `repeat` / `max_hit` / `enabled` / `inverse` | 1 / UINT_MAX / true / false | repeat 中单次动作失败不中止，以最后一次为准 |
+| `attach`                            | {}              | **节点元数据唯一官方位**（下）                     |
 
-- 用 `pre/post_delay`、`pre/post_wait_freezes`(等画面静止) 控制节奏；\*\*少用硬 delay，多用
-  "中间过程节点"\*\*会让流程更稳。
+- `roi`(在哪儿找) / `box`(找到了哪儿) / `target`(对哪儿动手) 三分，各有 `*_offset`；
+  `target` 默认 `true`=用命中框，也可填节点名/`[Anchor]名`/坐标。
+- `inverse=true` 时"点击自身"失效（实际没识别到东西），必须显式 `target`。
+- `[JumpBack]`（替代已废弃 is_sub/interrupt）= 状态回退原语；**错误处理路径（on_error）
+  不回跳**（v5.9 起，5.12.3 已含）。`[Anchor]` = 运行时才定的"上一站"，官方自评
+  "类似给 pipeline 引入变量机制"。
+- `next` 列表要**覆盖操作后所有可能画面**，争取一次命中；`on_error` 是兜底不是重试机。
 
-- `next` 列表顺序识别、**命中即中断**执行第一个 —— 天然表达"多选一"分支。
+**元数据与目录规则（本项目定案形态）**：
 
-- `on_error`：next 全未命中且超时 / 动作失败时走的分支（重试/告警）。
+- 节点级附加配置**只放 `attach`**（3.1 唯一文档化扩展位；dict merge、框架保留、
+  `get_node_data` 可回读）。本项目节点元数据（`_entry/_dwell/_signals/_stage/_page/_label` 等）
+  统一承载于 `attach` 内，键名保留 `_` 前缀标识项目私有语义，由 `check_truth` 机检引用闭合。
+  **实测教训**：顶层 `_xxx` 键会被框架解析器**静默丢弃**（5.12.3 probe 实锤）——放错位置
+  的元数据对经框架接口读数据的工具（MPE 高级用法、自研 Inspector）是不可见的。
+- `.` 开头的目录/JSON **不读取**、root 级 `$` 开头字段**不解析**（官方逃生位：临时片段、
+  文件级元数据）；必选字段可留空由接口注入（"真源 + override"合法）。
+- `default_pipeline.json`：放 **Bundle 根**（与 `pipeline/` 同级）；默认值在**节点首次加载时
+  冻结**，多 Bundle 后到的 default **不影响已加载节点** ⇒ 多目录真源必须**合并单次 post**
+  （本项目 `_post_pipeline_merged` 的协议依据），避免"加载顺序决定运行参数"。
+- 同名节点合并 = **顶级键整体替换**（数组不逐元素合并），`attach` 是唯一 dict merge 例外。
+- **少用硬 delay，多用中间过程节点**（官方原话"不然既慢还不稳定"）；失败要重试先定位
+  哪个节点哪次识别错，绝不盲目加重试。
 
-- `anchor` + `[JumpBack]`：动态锚点回跳，实现**循环/重试**（如"没拿到→跳回再领"）。
-
-- `repeat` / `max_hit` / `enabled` / `inverse`：动作重复/命中上限/开关/反逻辑。
-
-- `default_pipeline.json`：放资源包根目录，统一给所有节点/某算法/某动作设默认参数，减少重复。
-
-### 5.3 识别算法速查
+### 5.3 识别器选型决策表（协议清单 + 生态实战倾向）
 
 `DirectHit | TemplateMatch | FeatureMatch | ColorMatch | OCR | NeuralNetworkClassify |
 NeuralNetworkDetect | And | Or | Custom`。
 
-- `TemplateMatch`：找图，`template` 相对 `image/`，支持多模板、`threshold`、`method`。
-
-- `OCR`：内置 PaddleOCR(ONNX)，`expected` 关键词/正则，支持 `color_filter`。
-
-- `And`/`Or`：复合识别（"A 且 B" / "A 或 B"）——很适合做多条件到站判定。
-
-- `Custom`：接自研识别（见 §6）。
+| 场景                | 选什么                                                                                                     | 关键参数与坑                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| 找按钮/图标            | `TemplateMatch`（默认选择）                                                                                     | `method` 默认 5=TM_CCOEFF_NORMED（官方"推荐"）；模板必须 720p 无损原图裁剪；`threshold` 默认 0.7，数组长度须与 template 一致 |
+| 抗透视/尺寸变化          | `FeatureMatch`                                                                                           | 模板 ≥64×64、纹理足、避免重复条纹；detector 默认 SIFT（最准最慢），ORB 无尺度不变性           |
+| 找色/状态灯            | `ColorMatch`，优先 **HSV(40) 或 GRAY(6)**                                                                     | 社区明确不推荐直接 RGB(4)（显卡渲染差异）；`connected=true` 只数相连最大块                    |
+| 读文字/数字            | `OCR`                                                                                                    | `expected` 支持正则但要**写完整文本而非片段**；混淆字用 `replace`；`only_rec` 需精确 `roi` |
+| 彩色/复杂背景文字         | `OCR` + `color_filter`(v5.8) 或「`ColorMatch` 定色域→`only_rec` 精识别」组合                                          | 设了 `color_filter` 的 OCR 节点**不参与 batch 优化**（帧预算敏感场景注意）              |
+| 固定位置类别判定 vs 找目标框  | `NeuralNetworkClassify`（位置固定判类别）vs `NeuralNetworkDetect`（找目标，YOLOv8/v11 ONNX）                             | Detect 的 `expected` 在 5.12.3 只承诺**整数下标**；labels 自动从模型 metadata 读     |
+| 多条件到站判定           | `And`/`Or`(v5.3)：`all_of`/`any_of` 可内联或按节点名引用(v5.7)                                                     | `box_index` 决定输出哪个子框；`sub_name` 让后续子识别以前一子结果为 ROI                  |
+| 同屏多目标取哪个          | `order_by`(Horizontal/Vertical/Score/Area/Length/Random/Expected) + `index`                             | `index` 支持负数（Python 规则），越界=无结果                                     |
+| 内置组合仍表达不了         | 才 `Custom`（见 §5.4/§6）                                                                                     | 官方判据：逻辑复杂到 JSON 堆不动、或涉及算法；能用 JSON 不用 Custom                        |
 
 ### 5.4 何时用 Custom、何时纯 JSON
 
@@ -272,6 +346,29 @@ NeuralNetworkDetect | And | Or | Custom`。
 - 需要"复杂判断、算法、跨帧状态、自定义计算"→ `CustomRecognition`（识别）+ `CustomAction`（动作）。
 
 - 实时高频控制 → 只许用 `CustomAction`，别拆成 Pipeline 节点。
+
+- 社区共识（M9A/脚手架同调）：**跨页面流程优先纯 JSON 状态机，不要写 Python 编排**
+  （自己 for/while 调 run_task 模拟状态机）；只有复杂运行时分支才用 Flag 节点 + CustomAction。
+
+### 5.5 命名与结构规范（未来新条目立规；定案于 2026-09 生态调研）
+
+生态实证结论：**命名风格无协议约束，"项目内一致"即可**（boilerplate 用 snake_case
+Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
+
+- **存量冻结**：现有节点名/图名（中文 + snake_case 混合、`<模块>.<名>` 命名空间前缀）
+  不改——重命名波及 next 引用、policy anchors、trace 历史，零行为收益。
+- **节点名（新）**：沿用所在真源文件的既有风格，带模块前缀（`global.` / `<插件id>.`）；
+  纯内部工具节点用 `__` 前缀 + 不写 next（`[JumpBack]` 目标形态）；同一基锚的链复制节点
+  用 `.r<route>.<n>` 后缀（现行约定，`_base_name` 机检依赖此形态）。
+- **Custom 注册名（新）**：与 pipeline 中 `custom_recognition`/`custom_action` 字段值
+  **逐字相同**（大小写敏感）；本项目用 `MRA_*` 命名空间前缀防止与未来 Agent 组件撞名。
+- **模板图（新）**：与节点语义同名（`.png`）、放所属插件 `resources/image/`；
+  一个 pipeline JSON 对应一组图（M9A 惯例）；必须 720p 无损原图裁剪；路径分隔符一律正斜杠。
+- **attach 元数据键（新）**：`_` 前缀 + snake_case 语义名（如 `_dwell/_signals`）；
+  新键必须同时有消费方（check_truth 或编译层），**禁止只写不读的键**（防注释腐化成假契约）；
+  协议键（`next/recognition/...`）永不进 attach。
+- **policy/数据面 JSON 不在 pipeline 协议管辖内**（框架不解析它们），其 `_` 前缀注释字段
+  （如 `_schema_ver`、`_v3` 随行注记）不受 attach 规则约束，维持现状。
 
 ***
 
@@ -313,6 +410,30 @@ class MyAction(CustomAction):
 `"action": "Custom", "custom_action": "MyAction"`。
 项目现有示例见 `core/nav_graph.py` 的 `ClickAction`（继承 `CustomAction`，经 `register_custom_action` 注册）。
 
+**注册命名空间（文档口径 vs 5.12.3 实测，实验见 `tools/experiments/maafw-docs-constraints/`）**：
+
+| 行为                        | v5.13 文档口径                | **5.12.3 实测（本项目在用）**          |
+| ------------------------- | ------------------------- | ------------------------------- |
+| 识别器同名二次注册                 | 返回 false，**保留旧注册**        | 返回 True，**新实现直接覆盖生效**（热重载安全）   |
+| 识别与动作跨类型同名                | 共享命名空间，互斥                 | 各自注册成功，可并存                      |
+| 空名注册                      | 返回 false                  | **返回 True 但 C 侧拒绝**（只打日志）——返回值不可信 |
+| 覆盖后旧实例被 GC                | （潜在悬垂）                   | 稳定命中新实现，无悬垂                     |
+| unregister → register     | 生效                        | 生效；unregister 不存在的名也返回 True（幂等） |
+
+**防御性纪律（跨版本安全，两版行为下都正确）**：
+
+1. **替换注册一律先 `unregister_custom_*` 再 `register_custom_*`**，不依赖同名覆盖——
+   升级 MaaFw 前重跑 `v1_duplicate_register.py` 校准。
+2. 注册名必须是非空字面量/常量（空名失败不经返回值暴露）；注册名与 pipeline 引用名的
+   一致性由 `check_truth` 机检兜底。
+3. binding 的 `_custom_{action,recognition}_holder` 负责防 GC（4.2 约定）——**不要**绕过
+   binding 直接 ctypes 注册，也不要注册后丢弃实例假定安全。
+4. Custom 动作要拿"任意区域"用节点 `target`/`target_offset` 声明（会以 `box` 传给
+   `run()`），不自造字段；`custom_*_param` 是 *any* 黑盒透传（本项目 policy 桥即 `table` 引用形）。
+5. 将来若把 Custom 逻辑挪进 **AgentServer 子进程**：注册走 `AgentServer.register_custom_*`
+   + `RegisterResourceSink` 等回流通道，且必须遵守 PI v2.5.0 的 `PI_*` 环境变量约定
+   （子进程做容错、勿假定全部存在；`child_exec` 的 CWD = interface.json 所在目录）。
+
 ***
 
 ## 7. 调试与诊断
@@ -322,11 +443,36 @@ class MyAction(CustomAction):
   `save_on_error`(失败存图)、`draw_quality`。
 
 - Tasker 全局选项可设 `DebugMode`(所有任务当 focus 产生回调，RecoDetail 含 raw/draws)。
+  `raw`/`draws` **只在 DebugMode/SaveDraw 下可得**——诊断代码不得假设 RecoDetail 一定有 draws。
+  高频流水线留意 `RecoImageCacheLimit`（识别图像缓存，默认 4096 帧）。
 
-- 监听日志：`tasker.add_context_sink(PipelineLogger类)`（项目已有 `core/pipeline_logger.py`）。
+- **回调四条纪律（2.3 原文，对 `pipeline_logger.py` 这类 Sink 直接生效）**：
+  ① `details_json` 保证是合法 JSON（但消息族会增，**必须容忍未知 message 类型**）；
+  ② 回调**可能来自不同线程**；③ 必须**尽快返回**（重活转投自己的队列，不阻塞框架）；
+  ④ 必须**自吞异常**（防影响框架运行）。GUI 从回调直接刷 WebView2 属原文明确警告的模式。
 
-- 生态工具：MaaDebugger(Pipeline 调试器)、VSCode 插件(maa-support)、MaaPipelineEditor(可视化)、
-  MaaCommonAssets(预转 OCR 模型)、MaaPracticeBoilerplate(空模板脚手架)。
+- 回调消息族速查（`add_sink`/`add_context_sink`）：`Resource.Loading.*`（type=
+  Bundle/OcrModel/Pipeline/Image）、`Controller.Action.*`、`Tasker.Task.*`、
+  `Node.NextList.*`（含 jump_back/anchor 标记）、`Node.{Recognition,Action,WaitFreezes}.*`、
+  `Node.{PipelineNode,RecognitionNode,ActionNode}.*`（分别对应 post/run_task、run_recognition、
+  run_action 三条通路）。**只有配了 `focus` 的节点（或开 DebugMode）才产 `Node.*` 细粒度回调**；
+  2.3 示例里的 `MaaTaskerAddNodeSink` 是遗留写法，实际只有 `add_sink`/`add_context_sink`。
+
+- 监听日志：`tasker.add_context_sink(PipelineLogger类)`（项目已有 `core/pipeline_logger.py`，
+  其实现须满足上文回调四条纪律）。
+
+- 排障默认顺序（社区共识）：按任务链逐步比对（一次只改一处）→ 先看 override 参数错误
+  （列表/阈值长度不一致在 post 阶段就报 PipelineParser ERR）→ 再查缺模板/text 错/roi 偏，
+  用 `save_draw` + 失败截图 + 日志交叉验证。
+
+- 生态工具：MaaDebugger(Pipeline 调试器)、VSCode 插件(maa-support，含截图裁剪素材与
+  Agent socket 调试)、MaaPipelineEditor(可视化)、MaaCommonAssets(预转 OCR 模型)、
+  MaaPracticeBoilerplate(空模板脚手架)。
+
+- **文档口径纪律**：官方文档站跟随 main（现 v5.13+），引用任何"框架行为"论断前，
+  先对**当前安装版本**实测（V-1 实验即反例：文档"重名返回 false 保留旧注册"在 5.12.3
+  行为相反）。binding 与 C API 表面对不上时按 4.2 封装原则理解（SetOption 拆独立方法、
+  Job 封装异步 id），**不要**绕过 binding 直接 ctypes。
 
 ***
 
@@ -338,14 +484,37 @@ class MyAction(CustomAction):
 | 实时控制 / 光标导航 / YOLO / OCR  | 自研，保留为 CustomAction / 自研引擎，**勿迁**     |
 | 新增离散流水线（日常、活动代刷）          | **用本文档 §5 范式**，JSON + Custom          |
 | 自研识别若要进 Pipeline          | 包层 `CustomRecognition` 壳（§6），不动算法     |
-| 通用 GUI / 可视化调试            | 需要时写 `interface.json`，接通用 UI 生态       |
+| 通用 GUI / 可视化调试            | 需要时写 `interface.json`（清单见 §8.1），接通用 UI 生态 |
+| 节点元数据承载位                  | **只放 `attach`**（§5.2 定案；顶层 `_xxx` 被框架丢弃） |
+| 目录结构定位                    | 本项目是"宿主 App 内嵌 MaaFW"形态（非 Bundle 分发），资源布局自洽即可，PI 属对外契约 |
+
+### 8.1 interface.json（PI v2）补写时的验收清单（定案：暂不建，用到再落）
+
+3.2（PI v1）**已废弃**，将来只能按 3.3 写。硬条目：
+
+- `interface_version` **固定为 2 且必须设置**；`name` = 永不改的 ID（kebab-case），展示走
+  `label`（`$` 前缀 i18n 键）。
+- `resource.path` 是**数组依次加载、后者覆盖前者**，且**不得直指 pipeline 目录**——指 Bundle 根
+  （image/model/pipeline + default_pipeline.json 一并生效）。本项目运行期走
+  `post_pipeline(<pipeline 目录>)` 细粒度注入，两条通路语义不同，混用前确认模板/模型由哪次加载提供。
+- `task.entry` = pipeline 起点节点名；`task[].resource/controller`、`option` 键等**引用一律用 name**；
+  `pipeline_override` 结构须与 pipeline JSON 完全一致（含任务名层）。
+- option 合并优先级 `task > controller > resource > global_option`；不满足当前 controller/resource
+  条件的 option **不得产生 override**。已记录的坑：override 把 `expected/template` 列表改短时，
+  继承的 `threshold` 长度不匹配 → post 直接失败——override 要么只改目标不改数量，要么显式带等长 threshold。
+- Agent 子进程（若有）：`child_exec` CWD = interface.json 同目录；`PI_*` 环境变量八项做容错。
+- `input.password` 类字段强制加密存储、禁入日志/遥测/preset；`welcome` 公告为 Markdown。
+- 更新边界（社区惨痛教训）：通用 UI 只更新本 release 整体，**不提供单独升 UI/MaaFW**；
+  发布以 git tag 为准（与本项目"tag 唯一版本信源"同向）。
 
 ***
 
 ## 9. 高频红线/坑（背下来）
 
 1. `Tasker.bind(resource, controller)` — **resource 在前**。
-2. `Resource.post_bundle(path)` — 是 `post_bundle`，**不是** `post_path`。
+2. `Resource.post_bundle(path)` — 是 `post_bundle`，**不是** `post_path`；细粒度还有
+   `post_pipeline/post_image/post_ocr_model` 三个官方入口（本项目 v4 用前者）；
+   `Resource.clear()` 在加载中会失败——重载先 `wait()`。
 3. `Toolkit.init_option(path)` — 5.12.3 起第二参可省（binding 源码 `None→{}` 后必传 JSON 串）；低于 5.12 的旧 binding 必须显式传空串 `""`。
 4. `Win32Controller(hWnd=hwnd, ...)` — 参数名**驼峰** **`hWnd`**。
 5. 截图返回 `Image`，`img.numpy()` 是 **BGR**；要 RGB 手动转。
@@ -354,4 +523,18 @@ class MyAction(CustomAction):
 8. `robot`/template 图需 720p 无损原图裁剪。
 9. 新功能默认走"范式二 JSON + Custom"（官方推荐），全代码只做宿主编排。
 10. `Toolkit.find_desktop_windows()` 返回 `DesktopWindow` 对象列表，属性为 `hwnd` / `class_name` / `window_name`（下划线命名；用法见 `core/window_utils.py`）。
+11. **节点元数据只放 `attach`**——节点顶层 `_xxx` 会被框架解析器静默丢弃（5.12.3 实测）；
+    文件根级 `$` 前缀字段不被解析、`.` 开头目录/文件不被读取（可作安全的非加载片段位）。
+12. **`override_next` 两侧语义相反**：Resource 侧"节点不存在也创建"，Context 侧
+    "节点不存在返回 false"。运行时改路由先想清楚拿的是哪一侧。
+13. **Custom 注册替换先 unregister**（5.12.3 同名注册实测=覆盖生效、与 v5.13 文档"保留旧注册"
+    相反；升版前重跑 `tools/experiments/maafw-docs-constraints/` 实验）；空名注册返回 True
+    但未注册——返回值不可全信。
+14. **默认值在节点首次加载时冻结**——多真源目录必须合并单次 post（`_post_pipeline_merged`），
+    否则"后到的 default_pipeline.json 不影响已加载节点"会形成加载顺序耦合。
+15. Win32 `post_relative_move` 需先开 `set_mouse_lock_follow` 且仅 MessageInput 系列可用；
+    `FramePool/PrintWindow` 的**伪最小化会改写目标窗口样式与不透明度**——与自研窗口管理
+    是同一批状态的写入方，不得混用；Tasker 任务链结束**自动 `post_inactive()`**，收尾归属要定案。
+16. **文档口径 ≠ 当前版本行为**：maafw.com 跟随 main（v5.13+），本项目锁 5.12.3——凡引用
+    文档论断作设计依据，先做最小实验校准当前安装版本（本条由 V-1 注册语义反转实证）。
 
