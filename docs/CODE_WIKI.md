@@ -157,16 +157,15 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │
 ├── tools/                                    # 开发工具脚本（按用途分组）
 │   ├── mouse_overlay.py                      # 独立 Overlay 工具（屏幕十字准星）
-│   ├── navkit/                               # NavKit 控制台（结构树/资产编辑/回放）
+│   ├── navkit/                               # NavKit v4 工具链（mpe.cmd 起 MPE Studio + 迁移校验器）
 │   ├── training/                             # 模型训练与数据准备
 │   │   ├── train.py                          # YOLO 训练 + ONNX 导出脚本
 │   │   ├── dataset.yaml                      # 数据集类别配置
 │   │   └── auto_label.py                     # 自动标注工具
 │
 ├── tests/                                    # 单元测试（纯逻辑，CI 矩阵 3.11）
-├── scripts/                                  # 发布打包 / 启动脚本
-│   ├── release/assemble.ps1                  # 发布打包脚本
-│   └── start_navkit.ps1                      # NavKit 启动
+├── scripts/                                  # 发布打包脚本
+│   └── release/assemble.ps1                  # 发布打包脚本
 │
 ├── .github/workflows/                        # CI：test.yml（单测）、release.yml（发布）
 ├── docs/
@@ -676,7 +675,7 @@ python -u -m maaracing_assistant.core.sidecar  # 独立调试 sidecar（等待 s
 1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingAssistant/debug/<module>/<会话>/` 目录
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，弹出 OpenCV 窗口实时显示精简标注画面（\~30fps）
 3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
-4. **NavKit 控制台**：`tools/navkit`（`python tools/navkit/server.py --module treasure`）浏览会话、查看 v3 结构树、校准资产；`/api/assets` 保存前校验，`/api/trace` 读取决策流水
+4. **MPE Studio**：`tools/navkit/mpe.cmd` 起 LocalBridge 并在浏览器打开 MPE（画布编辑 v4 真源）+ 策略表薄页；v3 校准台已退役（P4a）
 
 ### 9.4 YOLO模型训练
 
@@ -755,26 +754,22 @@ global 锚点 id 自动并入模块 `stages.global_anchors`（`compile_detection
 
 **通电位置（关键契约）**：
 
-- **仅路由侧并入**——`tools/navkit/compile_routes.py:compile_one` 在编译模块 routes 前先
-  `assets.merge(global)`，使模块路由可 **baseTask 式引用 global 锚点**（如 speedrush 入口链点大厅
-  `hall_race_btn`）而不必各自复制一份大厅识别。不引用 global 的既有模块，重编译产物逐字节不变。
+- **仅路由侧并入**（v4 现状）——global 节点与鉴宝节点由 MaaFW「全部 JSON 载入同一张图」原生并入
+  同一命名空间，路由可 **baseTask 式跨文件引用 global 节点**（如 speedrush 入口链点大厅
+  `hall_race_btn`）而不必各自复制一份大厅识别（原 v3 `compile_routes` 编译期 merge 已随 P4a 退役）。
 
-- **检测侧绝不并入**——`detector.py` 用未合并的模块资产编译 `DetectionPlan`，`compile_detection`
-  不经 `compile_routes`。原因：global 锚点无 `order` → `stage_priority=1000`，一旦进 `detect_anchors`
-  会在局内帧抢先短路、破坏 v2/v3 逐帧等价回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
+- **检测侧绝不并入**（原则不变）——`detector.py` 用未合并的模块资产编译 `DetectionPlan`。原因：
+  global 锚点无 `order` → `stage_priority=1000`，一旦进 `detect_anchors` 会在局内帧抢先短路、
+  破坏逐帧等价回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
 
 - **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），与 MAA `activity_pool` 同构。
 
-**回归护栏（双道）**：① `compile_routes.py --all --check`（CI 步骤）——merge 接线后鉴宝产物逐字节不变即通过；
-② `tests/test_navkit_merge.py::test_treasure_detection_excludes_global_anchors`——锁死"鉴宝检测集 ∩ global
-锚点 = ∅"，并以"误 merge 必污染 detect\_anchors"反证守卫有效。
+**回归护栏（P4a 后现状）**：CI 校验已换为 `migrate_v4.py --full --check-only`（v4 图自洽）；
+原 `test_navkit_merge` 的"鉴宝检测集 ∩ global 锚点 = ∅"守卫随 v3 控制台批退役——
+"检测侧绝不并入 global"的原则在 P4b 数据源切换时必须以新数据源重建等价契约测试。
 
-**控制台编辑 global**：控制台顶栏下拉可运行时切换编辑模块（`GET /api/modules` 列可用、
-`POST /api/switch_module` 原子重建 server state），treasure ↔ global 免重启免换端口；
-`--module global` 仅作为初始模块参数保留。global 段经 `/api/assets` 查看/编辑
-（`assets_path_for("global")` 指向 core 真源）。global 是纯 v3、无 v2 rois 也无 debug 会话，其 adapter 的
-`rois_path` 落到 gitignored 用户目录缓存——**不可指回** **`global_assets.json`**，否则 `main()` 的无条件
-`ensure_rois` 会用 v2 视图 JSON 往返重排该 git 跟踪文件（每次开台无谓改写真源）。
+**编辑 global（v4 形态）**：v3 控制台的运行中切模块机制已删除；global 真源
+`core/resources/pipeline/global.json` 与鉴宝图同批由 `mpe.cmd` 打开的 MPE 文件面板列出，直接编辑保存。
 
 ***
 

@@ -2,11 +2,11 @@
 # 行尾与二进制策略
 #
 # 目标：文本文件在仓库内与工作区统一 LF，任何平台（Windows / Linux / CI）检出
-# 的字节完全一致。该不变量有硬依赖——navkit 的
-# source_hash = sha256(source_path.read_bytes()) 前 8 位，由 compile_routes
-# --check 与生成物头部比对，并挂在 test.yml 与 release.yml 的发布门禁上。
-# 实测：treasure_assets.json 若为 CRLF，source_hash 由 25767a9c 变 bb7934f1，
-# 守卫即在本地与 CI 双双报错。故行尾不得按平台默认（core.autocrlf）漂移。
+# 的字节完全一致。v4 真源（pipeline/*.json、policy/*.json）的 round-trip 保真与
+# 内容哈希比对依赖该不变量：行尾若按平台默认（core.autocrlf）漂移，MPE 保存与
+# migrate_v4 产物的 diff 会被行尾噪音淹没。
+# 例外：tools/navkit/*.cmd 必须 CRLF+ASCII（cmd 批处理解析器对 LF/非 ASCII 会
+# 错位碎裂，实证见 v4-p3-studio plan）。
 #
 # 生效方式：改本文件只影响后续 checkout/normalize，已存在的工作副本需执行一次
 # 归一（见 git add --renormalize 或等价的工作区行尾重写）才会落到位。

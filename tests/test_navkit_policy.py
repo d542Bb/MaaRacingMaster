@@ -480,9 +480,4 @@ def test_assets_policies_present():
     assert set(assets.policies.tuning) == {"perception", "policy", "execution"}
 
 
-def test_assets_json_document_validates_clean():
-    from maaracing_assistant.core.navkit import safe_load
 
-    assets, report = safe_load(_ASSETS_PATH, module="treasure")
-    assert assets is not None
-    assert report.ok, report.text()

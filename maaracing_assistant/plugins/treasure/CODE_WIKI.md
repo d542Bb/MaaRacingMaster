@@ -196,23 +196,14 @@ v3 唯一真源：detector 从 `treasure_assets.json` 编译 `DetectionPlan`；M
 
 ***
 
-## 6. NavKit ROI 校准与结构树控制台
+## 6. 校准与编辑工具（v4 形态）
 
-[tools/navkit](file:///d:/maaracing_assistant/tools/navkit)（`python tools/navkit/server.py --module treasure`）
+> v3 校准台（`tools/navkit/server.py` + React 前端 + adapter 投影）已于 P4a 整体退役。
 
-**职责**：可视化校准 ROI（通用 server + treasure adapter，独立启动）。M2-B1 后校准落点是 v3 `treasure_assets.json`（`/api/rois` GET/POST 经 adapter 双向投影到 v3 锚点，前端契约仍是 v2 扁平 shape）：
-
-- 三段分类 tab：`stage`（模板阶段检测）/ `actions`（纯 rect 按钮）/ `ocr`（识别区）/ `unassigned`（未分配模板）
-
-- ROI 拖拽/缩放/新建/删除、rect 归一化编辑、模板上传/裁剪/多选
-
-- 匹配分数实时预览（TM\_CCOEFF\_NORMED）+ 跨帧测试（直方图/达标率）
-
-- 显示控制：框显示模式（all/selected/none）+ 命中位置高亮（showHit）
-
-- 截图来源：`debug/treasure/<ts>/raw/`（支持 png/jpg/webp）
-
-**配置**：运行时唯一真源 `maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json`（schema v3：pages/anchors/stages/transitions/routes）。v2 的 `treasure_rois.json` 已于 M4 退役。`tools/navkit` 提供 `/api/rois`（v3 投影）、`/api/assets`、`/api/graph`、`/api/trace`、`/api/compile`。
+- **画布编辑**：`tools/navkit/mpe.cmd` 起 mpelb（root=仓库根）并在浏览器打开 MPE——节点/ROI/模板引用直接编辑 v4 真源 `resources/pipeline/treasure.json`（round-trip 保真 P3a 实证）。
+- **策略表**：`mpe.cmd` 同批打开 `policy_server.py` 薄页（127.0.0.1:26530），编辑 `resources/policy/treasure.policy.json`。
+- **运行时数据面（过渡态）**：detector/决策栈/ROI 仍读 v3 `resources/config/treasure_assets.json`——P4b 数据源切换后 v3 真源退役，本节届时更新。
+- **校准截图来源**：`debug/treasure/<ts>/raw/`（GUI debug 图落盘），匹配行为离线验证可用 `tools/experiments/` 系列脚本。
 
 ***
 

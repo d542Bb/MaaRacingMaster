@@ -7,12 +7,12 @@ navkit —— 导航与寻路判断逻辑的底座（schema v3）。
 这套判断逻辑，从**一半在 JSON、一半在 Python 常量**的分裂状态，收敛成一份
 **人写、工具可编辑、运行时可执行、事后可还原**的模型。
 
-三个子模块
+子模块（P4a 后现状；validate/legacy/compile_route/signature 已随 v3 工具链退役）
 ----------
-- `assets`   : schema v3 文档 → 内存对象，以及 v3 → MAA 节点名的唯一映射权威
-- `validate` : §3.3 规则表（E01-E20 / W01-W07）的可执行形式；纸码互查（D1）
-- `legacy`   : v2 只读判定、v2 → v3 迁移草稿与缺口清单、逐字段等价比对
+- `assets`   : schema v3 文档 → 内存对象（运行时数据面，P4b 换 v4 真源供料）
 - `compile_detect` : assets → DetectionPlan（帧循环检测真源）
+- `trace`    : 决策落盘记录器（P4d 拍板去留）
+- `policy`   : P1 决策引擎（继承件，表数据源切换见 P4b）
 
 约束（不可违反）
 ----------------
@@ -47,16 +47,6 @@ from .assets import (
     Transition,
     route_node_name,
 )
-from .legacy import (
-    V2_SEGMENTS,
-    Gap,
-    V2Item,
-    V2Report,
-    diff_v2_v3,
-    inspect_v2,
-    migrate_v2_to_v3,
-    schema_of,
-)
 from .compile_detect import (
     ROUND_PHASE_STAGE,
     AnchorSpec,
@@ -64,8 +54,6 @@ from .compile_detect import (
     compile_detection,
 )
 from .trace import FrameTrace, TraceWriter, json_safe
-from .signature import anchor_signature
-from .compile_route import compile_routes, compile_routes_json, generated_header
 from .policy import (
     ALGO_FIELDS,
     DECISION_SOURCES,
@@ -91,17 +79,6 @@ from .policy import (
     parse_policies,
     validate_policy_document,
 )
-from .validate import (
-    Issue,
-    NavKitValidationError,
-    Report,
-    assert_valid,
-    safe_load,
-    validate_assets,
-    validate_compiled,
-    validate_merged,
-)
-
 __all__ = [
     # assets
     "SCHEMA_V3",
@@ -122,24 +99,6 @@ __all__ = [
     "Route",
     "Assets",
     "route_node_name",
-    # validate
-    "Issue",
-    "Report",
-    "NavKitValidationError",
-    "validate_assets",
-    "validate_compiled",
-    "validate_merged",
-    "safe_load",
-    "assert_valid",
-    # legacy
-    "V2_SEGMENTS",
-    "V2Item",
-    "V2Report",
-    "Gap",
-    "schema_of",
-    "inspect_v2",
-    "migrate_v2_to_v3",
-    "diff_v2_v3",
     # compile_detect
     "ROUND_PHASE_STAGE",
     "AnchorSpec",
@@ -149,11 +108,6 @@ __all__ = [
     "FrameTrace",
     "TraceWriter",
     "json_safe",
-    # compile_route
-    "compile_routes",
-    "compile_routes_json",
-    "anchor_signature",
-    "generated_header",
     # policy（P1）
     "POLICIES_SCHEMA_VER",
     "DEFAULT_FALLBACK_KEY",
