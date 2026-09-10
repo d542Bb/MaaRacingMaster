@@ -740,37 +740,63 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 三概念分离"（本指南 §5.1/§5.2）；社区靠 ImageCropper 类工具 + 人工纪律，无结构化
 工作流。MRA 在其上加 regions 机器可读导出 + 校验守卫闭环。
 
-### 9.8 全局资产分层与两文件同图（2026-09-07 定案，v4 形态）
+### 9.8 全局资产分层与同图命名空间（2026-09-10 归位，v4 形态）
 
-> 分界线：**大厅本身即边界**。跨模块常驻的页面骨架（大厅底栏、设置、比赛/排位/娱乐玩法入口等）
-> 归 global，其余玩法专属内容归各自 `plugins/<id>/`。判据是"这个元素是否跨玩法长期共享"
-> （爆炸半径），**与"某个玩法是否从这个按钮进入"无关**——锚点归属由节点 `attach._owner` 声明。
+> 分界线：**这个元素是否跨玩法长期共享**（爆炸半径）——是则归 `core/`，否则归
+> `plugins/<id>/`。**与"某个玩法是否从这个按钮进入"无关**：鉴宝入口卡片是鉴宝专属
+> 知识，即使它物理上长在大厅里。
+>
+> 现状：项目尚无第二个模块接图，**core 侧没有任何 pipeline 真源**（2026-09-10 把
+> 原 `global.json` 的 7 个节点全部迁回 plugin）。只有一个实现就把它的入口链抽进
+> core，是过早抽象而非分离——那份"大厅骨架"里 6/7 节点带 `_owner: treasure`，
+> 且 core 抄了 plugin `__boot.dwell` 已有的 13 条全页面清单两遍。
+
+**协议前提（决定"分离"能到什么程度）**：MaaFW 的节点名**全城唯一、没有命名空间**
+（官方定义 Pipeline = 一个 `pipeline` 目录内 Node 全体，Resource = 多个 Bundle 按序
+加载；跨文件连接靠 `next`/`on_error` 里的节点名字符串）。因此 core 与 plugin 一旦
+互指，就必须**合并为单次 post**（见 `nav_graph._post_pipeline_merged`；分次 post 时
+先加载者必被 C++ PipelineChecker 判引用不闭合）。**文件摆放不产生隔离，引用方向才产生隔离。**
 
 **两段真源（v4 文件形态）**：
 
-- global 段 = `core/resources/pipeline/global.json`（`global.*` 命名空间，大厅骨架页 dwell + 共用锚点）。
+- 模块段 = `plugins/<id>/resources/pipeline/<id>*.json`（对局图 + 本模块的入口链与
+  页面锚点，按业务域分文件：鉴宝 = `treasure.json` + `treasure.entry.json`）
+  \+ `plugins/<id>/resources/policy/<id>.policy.json`（感知/决策数据面）。
+- 共用段 = `core/resources/pipeline/*.json`，**当前为空目录不存在**；出现真跨模块
+  链（如"任何模块开工前先回游戏大厅"）时再建，且它只允许引用各模块的**汇聚入口**
+  （`<id>.__boot.dwell`），不得引用模块内部页面。
 
-- 模块段 = `plugins/<id>/resources/pipeline/<id>.json`（自有节点）+ `plugins/<id>/resources/policy/<id>.policy.json`（感知/决策数据面）。
+**方向红线（机检，校验器第 7 条）**：`check_truth.namespace_checks` 锁两条——
+core 真源①不得占用 `<module>.` 前缀、②`next`/`on_error` 不得引用 `<module>.` 节点。
+模块命名空间由 `plugins/*/module.py` 自动发现，无需配置。归属**由命名空间前缀表达**；
+旧 `attach._owner` 字段因全仓零消费方已废除（写了等于没写）。
 
-**通电位置（关键契约）**：
+**通电位置（关键契约，不变项）**：
 
-- **图侧原生并入**——global 节点与鉴宝节点由 MaaFW「全部 JSON 载入同一张图」原生并入
-  同一命名空间，路由可 **baseTask 式跨文件引用 global 节点**（如 speedrush 入口链点大厅
-  `hall_race_btn`）而不必各自复制一份大厅识别。
-
+- **图侧原生并入**——多真源文件载入同一张图，模块图可原生引用共用段节点而不必复制
+  一份大厅识别（当前共用段为空，模块图自包含）。
 - **检测侧绝不并入**（原则不变）——运行时阶段检测只扫 policy.json `perception.spec`
-  装配的 `DetectionPlan`（模块自有锚点集），global 节点不进每帧检测环。原因：
-  global 锚点无 `order` → `stage_priority=1000`，一旦进扫描集会在局内帧抢先短路、
-  破坏逐帧等价回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
+  装配的 `DetectionPlan`（模块自有锚点集），图节点不进每帧检测环。原因：global 锚点
+  无 `order` → `stage_priority=1000`，一旦进扫描集会在局内帧抢先短路、破坏逐帧等价
+  回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
+- **全页面清单的唯一真源 = `<id>.__boot.dwell`**（`recognition.type=Or` 全 stage 信号
+  并集 → `next` 全 dwell 表，`timeout=-1` 未知画面驻留重判）。入口锚点点击后一律
+  `next: [<id>.__boot.dwell]` 交汇聚重判，不得各自再抄一份清单。
+- **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），
+  与 MAA `activity_pool` 同构。
 
-- **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），与 MAA `activity_pool` 同构。
+**回归护栏（现状）**：CI = `check_truth.py`（图闭合 + 数据面装配 + 图↔spec 交叉互洽
++ 几何 + **方向红线**）；`test_navkit_truth.py` 锁归位形态（真源全在模块命名空间、
+core 侧零节点、plugin 文件集）与红线活性（合成违规图必须报）；spec/节点计数见证防漂。
 
-**回归护栏（现状）**：CI = `check_truth.py`（图闭合 + 数据面装配 + 图↔spec 交叉互洽）；
-`test_navkit_truth.py` 锁切分形态——global.json 只装大厅骨架、`<id>.json` 不出现
-`global.*` 节点（切分幂等的落盘见证），spec/节点计数见证防漂。
+**编辑真源**：`mpe.cmd` 打开的 MPE 文件面板列出 plugin 两个 pipeline 文件，直接编辑
+保存；一个视口 = 一个文件，跨文件被引用节点显示为"外部节点"虚影（MPE 只补**被本文件
+引用到的**别处节点，不摊开全城——所以图越干净，编辑器越安静）。
 
-**编辑 global**：global 真源 `core/resources/pipeline/global.json` 与鉴宝图同批由
-`mpe.cmd` 打开的 MPE 文件面板列出，直接编辑保存。
+**生态一手参照（为什么这么定）**：MAA 把地狱决策移出 pipeline（页面导航归图，策略归
+声明式领域协议 JSON，搜索/时间轴归 C++，规划结果**输出仍是 pipeline 任务名**）；协议
+无命名空间的事实、"什么该出 pipeline"的六条判据与生态复用位清单，权威版见
+[MAAFW_GUIDE §5.6](MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)。
 
 ***
 
