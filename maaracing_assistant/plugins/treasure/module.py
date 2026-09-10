@@ -1084,9 +1084,11 @@ class TreasureModule(ActivityModule):
 
     @staticmethod
     def _v4_enabled() -> bool:
-        """v4 通路开关：沿用 NAVKIT_SOURCE env（与 v2/v3 切换同款机制）。"""
+        """v4 通路开关：沿用 NAVKIT_SOURCE env。P2b 真机验收后默认 v4
+        （2026-09-10 用户拍板）；显式 `NAVKIT_SOURCE=v3` 保留应急回退，
+        v3 通路本体按 P4 计划退役。"""
         import os
-        return os.environ.get("NAVKIT_SOURCE", "v3").lower() == "v4"
+        return os.environ.get("NAVKIT_SOURCE", "v4").lower() == "v4"
 
     def _run_v4_loop(self) -> None:
         """v4 执行通路：帧工作全部在 MaaFW Tasker 线程（PolicyBridge 桥内

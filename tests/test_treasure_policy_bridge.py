@@ -69,7 +69,7 @@ def test_v4_entry_and_flag_contract():
     """入口与开关契约：生产入口 = 起跑汇聚节点（任意 stage 自适应，
     P2b 真机三炸根修——链头线性路径在卡片态变化时永不命中）。"""
     assert TreasureModule._V4_ENTRY == "treasure.__boot.dwell"
-    assert TreasureModule._v4_enabled() is False  # 缺省 NAVKIT_SOURCE=v3
+    assert TreasureModule._v4_enabled() is True  # P2b 验收后缺省即 v4（应急回退需显式 NAVKIT_SOURCE=v3）
 
 
 def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
