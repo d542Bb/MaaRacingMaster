@@ -1081,12 +1081,16 @@ class TreasureModule(ActivityModule):
         # （0xC0000005，P2b 实验 run13 定案）。
         runner = getattr(self, "_v4_runner", None)
         if runner is None:
+            # 真源目录：模块图为必选；core 共用链目录按存在性纳入——协议层
+            # 节点名全城唯一（无命名空间），跨模块共用链一旦存在就必须与模块图
+            # 合并单次 post（见 nav_graph._post_pipeline_merged），缺席则整层不加载。
+            core_pipeline = repo_root / "maaracing_assistant" / "core" / "resources" / "pipeline"
+            pipeline_dirs = [plugin_root / "resources" / "pipeline"]
+            if core_pipeline.is_dir() and any(core_pipeline.rglob("*.json*")):
+                pipeline_dirs.insert(0, core_pipeline)
             runner = self._v4_runner = NavKitV4(
                 self.ctx,
-                pipeline_dirs=[
-                    repo_root / "maaracing_assistant" / "core" / "resources" / "pipeline",
-                    plugin_root / "resources" / "pipeline",
-                ],
+                pipeline_dirs=pipeline_dirs,
                 image_dirs=[plugin_root / "resources" / "image"],
                 bridges=[(POLICY_ACTION_NAME, PolicyBridge(self))],
             )

@@ -112,9 +112,10 @@ def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
     TreasureModule._run_v4_loop.__get__(m)()
 
     dirs = captured["pipeline_dirs"]
-    assert len(dirs) == 2
-    assert (dirs[0] / "global.json").is_file()    # core 骨架真源
-    assert (dirs[1] / "treasure.json").is_file()  # 插件模块图真源
+    # core 侧无跨模块共用链真源 → 整层不加载（目录按存在性+非空纳入）
+    assert len(dirs) == 1
+    assert (dirs[0] / "treasure.json").is_file()       # 插件对局图真源
+    assert (dirs[0] / "treasure.entry.json").is_file()  # 插件大厅入口链真源
     assert (Path(captured["image_dirs"][0]) / ".").is_dir()  # 模板目录存在
     assert captured["entry"] == TreasureModule._V4_ENTRY
     assert PolicyBridge in [type(v) for v in captured["bridges"].values()]

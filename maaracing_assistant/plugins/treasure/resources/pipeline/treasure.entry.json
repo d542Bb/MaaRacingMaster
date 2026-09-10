@@ -1,0 +1,339 @@
+{
+    "$__mpe_config_treasure.entry": {
+        "$__mpe_code": {
+            "prefix": "",
+            "coordinateMode": "absolute-v1",
+            "lastSyncTime": 1789050825917,
+            "isModifiedExternally": false,
+            "isDeleted": false,
+            "filePath": "D:\\maaracing_assistant\\maaracing_assistant\\plugins\\treasure\\resources\\pipeline\\treasure.entry.json",
+            "savedViewport": {
+                "x": 323,
+                "y": 75,
+                "zoom": 0.44
+            },
+            "filename": "treasure.entry",
+            "version": "v1.9.3"
+        }
+    },
+    "treasure.__confirm.hall_to_treasure.0": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MRA_Template",
+                "custom_recognition_param": {
+                    "colorspace": "rgb",
+                    "mode": "template",
+                    "rect": [
+                        0.7244444444444447,
+                        0.7446913580246916,
+                        0.92,
+                        0.9
+                    ],
+                    "templates": [
+                        "act_goto_appraise_btn.png"
+                    ]
+                }
+            }
+        },
+        "attach": {
+            "_page": "activity",
+            "_route": "hall_to_treasure:0.confirm"
+        },
+        "next": [
+            "treasure.goto_appraise_btn.rhall_to_treasure.1"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ],
+        "$__mpe_code": {
+            "position": {
+                "x": 652,
+                "y": 402
+            }
+        }
+    },
+    "treasure.goto_appraise_btn": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MRA_Template",
+                "custom_recognition_param": {
+                    "colorspace": "rgb",
+                    "mode": "template",
+                    "rect": [
+                        0.7244444444444447,
+                        0.7446913580246916,
+                        0.92,
+                        0.9
+                    ],
+                    "templates": [
+                        "act_goto_appraise_btn.png"
+                    ]
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MRA_Click"
+            }
+        },
+        "attach": {
+            "_label": "活动页前往鉴宝按钮",
+            "_order": 950,
+            "_page": "activity"
+        },
+        "next": [
+            "treasure.__boot.dwell"
+        ],
+        "on_error": [
+            "treasure.游戏大厅.dwell"
+        ],
+        "$__mpe_code": {
+            "position": {
+                "x": 332,
+                "y": 23
+            }
+        }
+    },
+    "treasure.goto_appraise_btn.rhall_to_treasure.1": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MRA_Template",
+                "custom_recognition_param": {
+                    "colorspace": "rgb",
+                    "mode": "template",
+                    "rect": [
+                        0.7244444444444447,
+                        0.7446913580246916,
+                        0.92,
+                        0.9
+                    ],
+                    "templates": [
+                        "act_goto_appraise_btn.png"
+                    ]
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MRA_Click"
+            }
+        },
+        "timeout": 45000,
+        "rate_limit": 600,
+        "attach": {
+            "_label": "活动页前往鉴宝按钮",
+            "_order": 950,
+            "_page": "activity",
+            "_route": "hall_to_treasure:1"
+        },
+        "next": [
+            "treasure.__confirm.hall_to_treasure.1"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ],
+        "$__mpe_code": {
+            "position": {
+                "x": 972,
+                "y": 277
+            }
+        }
+    },
+    "treasure.hall_peak_appraise_card": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MRA_Template",
+                "custom_recognition_param": {
+                    "colorspace": "rgb",
+                    "mode": "template",
+                    "rect": [
+                        0.7603703703703705,
+                        0.8037448559670782,
+                        0.8962962962962963,
+                        0.8911111111111112
+                    ],
+                    "templates": [
+                        "hall_peak_appraise_card.png"
+                    ]
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MRA_Click"
+            }
+        },
+        "attach": {
+            "_label": "大厅巅峰鉴宝卡片",
+            "_order": 950,
+            "_page": "hall"
+        },
+        "next": [
+            "treasure.__boot.dwell"
+        ],
+        "$__mpe_code": {
+            "position": {
+                "x": 332,
+                "y": 933
+            }
+        }
+    },
+    "treasure.hall_peak_appraise_card.rhall_to_treasure.0": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MRA_Template",
+                "custom_recognition_param": {
+                    "colorspace": "rgb",
+                    "mode": "template",
+                    "rect": [
+                        0.7603703703703705,
+                        0.8037448559670782,
+                        0.8962962962962963,
+                        0.8911111111111112
+                    ],
+                    "templates": [
+                        "hall_peak_appraise_card.png"
+                    ]
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MRA_Click"
+            }
+        },
+        "timeout": 45000,
+        "rate_limit": 600,
+        "attach": {
+            "_entry": true,
+            "_label": "大厅巅峰鉴宝卡片",
+            "_order": 950,
+            "_page": "hall",
+            "_route": "hall_to_treasure:0"
+        },
+        "next": [
+            "treasure.__confirm.hall_to_treasure.0"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ],
+        "$__mpe_code": {
+            "position": {
+                "x": 332,
+                "y": 437
+            }
+        }
+    },
+    "treasure.活动页面.dwell": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MRA_Template",
+                "custom_recognition_param": {
+                    "colorspace": "rgb",
+                    "mode": "template",
+                    "rect": [
+                        0.7244444444444447,
+                        0.7446913580246916,
+                        0.92,
+                        0.9
+                    ],
+                    "templates": [
+                        "act_goto_appraise_btn.png"
+                    ]
+                }
+            }
+        },
+        "rate_limit": 600,
+        "attach": {
+            "_dwell": true,
+            "_page": "activity",
+            "_signals": [
+                "treasure.goto_appraise_btn"
+            ],
+            "_stage": "活动页面"
+        },
+        "next": [
+            "treasure.hall_peak_appraise_card",
+            "treasure.goto_appraise_btn"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ],
+        "$__mpe_code": {
+            "position": {
+                "x": 12,
+                "y": 963
+            }
+        }
+    },
+    "treasure.游戏大厅.dwell": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MRA_Template",
+                "custom_recognition_param": {
+                    "colorspace": "rgb",
+                    "mode": "template",
+                    "rect": [
+                        0.7603703703703705,
+                        0.8037448559670782,
+                        0.8962962962962963,
+                        0.8911111111111112
+                    ],
+                    "templates": [
+                        "hall_peak_appraise_card.png"
+                    ]
+                }
+            }
+        },
+        "rate_limit": 600,
+        "attach": {
+            "_dwell": true,
+            "_page": "hall",
+            "_signals": [
+                "treasure.hall_peak_appraise_card"
+            ],
+            "_stage": "游戏大厅"
+        },
+        "next": [
+            "treasure.hall_peak_appraise_card.rhall_to_treasure.0",
+            "treasure.goto_appraise_btn",
+            "treasure.hall_peak_appraise_card"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ],
+        "$__mpe_code": {
+            "position": {
+                "x": 12,
+                "y": 13
+            }
+        }
+    },
+    "$__mpe_external_treasure.__boot.dwell_treasure.entry": {
+        "$__mpe_code": {
+            "position": {
+                "x": 1292,
+                "y": 673
+            }
+        }
+    },
+    "$__mpe_external_treasure.__confirm.hall_to_treasure.1_treasure.entry": {
+        "$__mpe_code": {
+            "position": {
+                "x": 1292,
+                "y": 385
+            }
+        }
+    }
+}

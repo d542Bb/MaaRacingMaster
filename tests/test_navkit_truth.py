@@ -24,10 +24,9 @@ def _load(p: Path) -> dict:
 
 @pytest.fixture(scope="module")
 def truth():
-    glob = _load(ct.GLOBAL_TRUTH)
-    trea = _load(ct.TREASURE_TRUTH)
+    graph, _origin = ct.load_graph()
     policy = _load(ct.POLICY_TRUTH)
-    return {**glob, **trea}, policy
+    return graph, policy
 
 
 def test_graph_clean_and_shaped(truth):
@@ -44,12 +43,12 @@ def test_graph_clean_and_shaped(truth):
     chain = [n for n in full if ".rhall_to_treasure." in n or ".__confirm." in n]
     assert len(chain) == 4
     # 可导航锚点仅 goto_appraise_btn / hall_peak_appraise_card
-    assert {"global.goto_appraise_btn", "global.hall_peak_appraise_card"} \
+    assert {"treasure.goto_appraise_btn", "treasure.hall_peak_appraise_card"} \
         <= set(full)
     assert len(full) == 21
     assert sorted(n for n, d in full.items() if ct.att(d).get("_entry")) == [
-        "global.hall_peak_appraise_card.rhall_to_treasure.0",
-        "treasure.__boot.dwell"]
+        "treasure.__boot.dwell",
+        "treasure.hall_peak_appraise_card.rhall_to_treasure.0"]
     assert len(policy["actuators"]) == 33
     assert len(policy["perception"]["spec"]) == 53
     # 引擎契约段：白名单计数见证（改契约 = 有意识的真源变更，须过本锁）
@@ -65,12 +64,13 @@ def test_policy_loop_wired_into_every_dwell(truth):
     （导航归图锚点，决策脑不得在厅类阶段图外点击——真机五炸定案）。"""
     full, _ = truth
     loop = full["treasure.policy_loop"]
-    assert loop["custom_action"] == "MRA_Policy"
-    assert loop["custom_action_param"]["table"] == "treasure.policy.json#policy"
+    act = loop["action"]
+    assert act["type"] == "Custom" and act["param"]["custom_action"] == "MRA_Policy"
+    assert act["param"]["custom_action_param"]["table"] == "treasure.policy.json#policy"
     assert loop["next"] == [] and loop["timeout"] == -1
     dwells = [n for n, d in full.items() if ct.att(d).get("_dwell")]
     assert len(dwells) == 13
-    hall = {"global.游戏大厅.dwell", "global.活动页面.dwell"}
+    hall = {"treasure.游戏大厅.dwell", "treasure.活动页面.dwell"}
     # 鉴宝大厅(选择场次)挂 policy_loop：场次选择是动态决策（target_session+
     # 彩蛋计算），生态无法静态表达——MRA_Policy 本职（真机七炸定案）。
     for n in dwells:
@@ -100,25 +100,24 @@ def test_spec_colorspace_contract(truth):
 
 
 def _tpls_of(node) -> set[str]:
-    r = node.get("recognition")
-    if isinstance(r, dict) and r.get("type") == "Or":
-        return {t for s in r["param"]["any_of"]
-                for t in s["custom_recognition_param"]["templates"]}
-    p = node.get("custom_recognition_param")
-    return set(p["templates"]) if p else set()
+    """节点识别模板集（v1 平铺 / v2 嵌套 / Or 分支全兼容，口径同 check_truth）。"""
+    return {t for p in ct.custom_reco_params(node) for t in p.get("templates") or []}
 
 
 def test_dwell_semantics(truth):
     full, _ = truth
-    hall = full["global.游戏大厅.dwell"]
-    assert hall["action"] == "DoNothing" and ct.att(hall)["_dwell"]
+    hall = full["treasure.游戏大厅.dwell"]
+    # action 兼容三种写法：v1 字符串、v2 {type,param} 嵌套、MPE 省略等于默认值的键
+    act = hall.get("action", "DoNothing")
+    assert (act if isinstance(act, str) else act.get("type")) == "DoNothing"
+    assert ct.att(hall)["_dwell"]
     # 信号专属化（真机八炸定案）：游戏大厅只认本页判定信号
     # （transitions: hall_peak_appraise_card → 游戏大厅）；共享信号（场次卡/
     # 活动页按钮）剔除——否则场次页会被大厅 dwell 误判回导航层
     # 链头前置（权威导航路径优先于裸锚点兜底）
     assert _tpls_of(hall) == {"hall_peak_appraise_card.png"}
-    assert hall["next"][0] == "global.hall_peak_appraise_card.rhall_to_treasure.0"
-    assert "global.goto_appraise_btn" in hall["next"]
+    assert hall["next"][0] == "treasure.hall_peak_appraise_card.rhall_to_treasure.0"
+    assert "treasure.goto_appraise_btn" in hall["next"]
 
 
 def test_dwell_signals_scoped_by_transitions(truth):
@@ -127,7 +126,7 @@ def test_dwell_signals_scoped_by_transitions(truth):
     共享信号不再让深层页面被浅层 dwell 截胡。"""
     full, _ = truth
     # 活动页面只认前往按钮（场次卡判定=鉴宝厅，剔除）
-    assert _tpls_of(full["global.活动页面.dwell"]) == {"act_goto_appraise_btn.png"}
+    assert _tpls_of(full["treasure.活动页面.dwell"]) == {"act_goto_appraise_btn.png"}
     # 鉴宝厅只认场次卡（is_matching_btn 判定=匹配中，剔除）
     assert _tpls_of(full["treasure.鉴宝大厅(选择场次).dwell"]) == {"hall_session_cards.png"}
     # 回合 dwell 保留双信号（round_banner/smart_bid_btn 判定=$round ∈ 回合）
@@ -142,7 +141,7 @@ def test_navigation_dwell_fallback_to_boot(truth):
     自愈；决策阶段 dwell 保留 -1（policy_loop DirectHit 永远兜底，永不超时
     是决策循环设计）。route 链节点同款兜底。"""
     full, _ = truth
-    for n in ["global.游戏大厅.dwell", "global.活动页面.dwell"]:
+    for n in ["treasure.游戏大厅.dwell", "treasure.活动页面.dwell"]:
         d = full[n]
         assert "timeout" not in d, n  # 默认 20s 识别窗口
         assert d["on_error"] == ["treasure.__boot.dwell"], n
@@ -166,7 +165,7 @@ def test_decision_loop_rhythm(truth):
            "treasure.第2回合出价.dwell", "treasure.第3回合出价.dwell",
            "treasure.第4回合出价.dwell", "treasure.第5回合出价.dwell",
            "treasure.选择鉴宝师.dwell"]
-    nav = ["global.游戏大厅.dwell", "global.活动页面.dwell",
+    nav = ["treasure.游戏大厅.dwell", "treasure.活动页面.dwell",
            "treasure.匹配中.dwell", "treasure.中标结算.dwell",
            "treasure.领取分红.dwell", "treasure.结算弹窗.dwell"]
     for s in dyn:
@@ -181,10 +180,15 @@ def test_boot_node_aggregates_stage_signals(truth):
     full, _ = truth
     boot = full["treasure.__boot.dwell"]
     assert ct.att(boot)["_boot"] is True and ct.att(boot)["_entry"] is True
-    assert boot["action"] == "DoNothing" and boot["timeout"] == -1
+    assert boot["action"]["type"] == "DoNothing" and boot["timeout"] == -1
     subs = boot["recognition"]["param"]["any_of"]
-    assert all(s.get("recognition") != "DirectHit" for s in subs)  # 直过信号不进
-    tpls = [t for s in subs for t in s["custom_recognition_param"]["templates"]]
+
+    def _rtype(s):
+        r = s.get("recognition")
+        return r.get("type") if isinstance(r, dict) else r
+
+    assert all(_rtype(s) != "DirectHit" for s in subs)  # 直过信号不进
+    tpls = [t for s in subs for t in _tpls_of(s)]
     assert len(tpls) == len(set(tpls))  # 共享模板去重（真机八炸定案）
     # 全部 9 页专属信号可起跑（模板文件级：回合横幅 5 张、胜负横幅 2 张）
     assert len(set(tpls)) == 16
@@ -209,8 +213,10 @@ def test_signals_not_clickable(truth):
     # 信号内联不丢：鉴宝大厅 dwell 识别仍含 hall_session_cards 模板
     sess = full["treasure.鉴宝大厅(选择场次).dwell"]
     assert "hall_session_cards.png" in _tpls_of(sess)
-    # 可导航锚点（routes target）保留且带全表回判
-    assert len(full["global.goto_appraise_btn"]["next"]) >= 13
+    # 可导航锚点点击后交起跑汇聚重判：全页面清单的唯一真源是 boot（Or 全信号 →
+    # 全 dwell 表），锚点不再各自抄一份（2026-09-10 归位；曾三处重复 13 条清单）
+    for anchor in ("treasure.goto_appraise_btn", "treasure.hall_peak_appraise_card"):
+        assert full[anchor]["next"] == ["treasure.__boot.dwell"], anchor
 
 
 def test_dyn_stages_priority_and_exit(truth):
@@ -234,7 +240,7 @@ def test_dyn_stages_priority_and_exit(truth):
 
 def test_entry_chain_walk(truth):
     full, _ = truth
-    entry = full["global.hall_peak_appraise_card.rhall_to_treasure.0"]
+    entry = full["treasure.hall_peak_appraise_card.rhall_to_treasure.0"]
     assert ct.att(entry)["_entry"] is True
     cur = entry["next"][0]
     for _ in range(8):
@@ -245,13 +251,102 @@ def test_entry_chain_walk(truth):
 
 
 def test_namespace_partition(truth):
-    """分文件真源形态：global.json 只装大厅骨架（hall/activity 页），
-    treasure.json 不出现 global.* 节点（切分幂等的落盘见证）。"""
-    glob = _load(ct.GLOBAL_TRUTH)
-    trea = _load(ct.TREASURE_TRUTH)
-    assert all(n.startswith("global.") for n in glob)
-    assert not any(n.startswith("global.") for n in trea)
-    assert "global.游戏大厅.dwell" in glob and "global.活动页面.dwell" in glob
+    """真源归位见证（2026-09-10）：大厅入口链与页面锚点属**模块知识**，全部住
+    plugin；core 侧无 pipeline 真源（尚无跨模块共用链）。
+
+    协议层节点名全城唯一、没有命名空间 ⇒ "core/plugin 分离"的可见形态只能是
+    引用方向单向 + 命名空间归属诚实，而不是文件摆放位置。
+    """
+    graph, origin = ct.load_graph()
+    assert origin, "pipeline 真源发现为空（加载路径漂移）"
+    assert all(n.startswith("treasure.") for n in graph), \
+        [n for n in graph if not n.startswith("treasure.")]
+    core_nodes = [n for n, f in origin.items() if ct.CORE_PIPELINE_DIR in f.parents]
+    assert core_nodes == [], f"core 真源不得承载模块知识: {core_nodes}"
+    assert {f.name for f in origin.values()} == {"treasure.json", "treasure.entry.json"}
+
+
+def test_root_dollar_keys_never_become_nodes():
+    """`$` 前缀根级键（MPE 回写的画布配置与外部节点占位）不得被当节点。
+
+    框架明文不解析 `$` 根级字段；校验器若把它们算进图，就会凭空产出「入口不可达/
+    无出口」告警与节点数漂移（2026-09-10 MPE 存盘后实测发生）。
+    """
+    graph, origin = ct.load_graph()
+    assert not [n for n in graph if n.startswith("$")], graph.keys()
+    assert not [n for n in origin if n.startswith("$")]
+
+
+@pytest.mark.parametrize("node", [
+    # v1 平铺
+    {"custom_recognition": "MRA_Template",
+     "custom_recognition_param": {"mode": "template", "templates": ["a.png"]}},
+    # v2 归一（MPE 保存形态）
+    {"recognition": {"type": "Custom",
+                     "param": {"custom_recognition": "MRA_Template",
+                               "custom_recognition_param": {"mode": "template",
+                                                           "templates": ["a.png"]}}}},
+    # Or 分支内联（起跑汇聚形态）
+    {"recognition": {"type": "Or", "param": {"any_of": [
+        {"recognition": "Custom", "custom_recognition": "MRA_Template",
+         "custom_recognition_param": {"mode": "template", "templates": ["a.png"]}},
+        {"recognition": "Custom", "custom_recognition": "MRA_Template",
+         "custom_recognition_param": {"mode": "template", "templates": ["b.png"]}}]}}},
+], ids=["v1平铺", "v2嵌套", "Or分支"])
+def test_custom_recognitions_covers_all_protocol_shapes(node):
+    """读取面必须同时吃下两种协议形态——否则 MPE 一存盘，机检就静默失明。"""
+    got = ct.custom_recognitions(node)
+    assert [n for n, _ in got] == ["MRA_Template"] * len(got)
+    assert {t for _n, p in got for t in p.get("templates") or []} & {"a.png", "b.png"}
+
+
+def test_truth_source_normalized_to_v2(truth):
+    """项目规范形态 = **v2 归一**（框架内部规范形 + MPE 与官方 PipelineDumper 原生产）。
+
+    v1 平铺在协议上仍合法（同一解析路径、新字段两边都生效），但仓库统一 v2：MPE 存盘
+    不再产生形态翻转，人读与 diff 口径一致。本锁防的是"手写回 v1"让形态再度混居。
+    默认值省写合法（`DoNothing`/`DirectHit` 由框架补），故只约束"写了就必须是对象形"。
+    """
+    flat_custom = {"custom_recognition", "custom_recognition_param",
+                   "custom_action", "custom_action_param"}
+
+    def check(n: dict, where: str) -> None:
+        for key in ("recognition", "action"):
+            v = n.get(key)
+            if v is None:
+                continue
+            assert isinstance(v, dict) and "type" in v, f"{where}.{key} 非 v2 对象形: {v!r}"
+            assert "param" in v or v["type"] in ("DirectHit", "DoNothing"), \
+                f"{where}.{key} 缺 param: {v!r}"
+            rp = v.get("param")
+            if isinstance(rp, dict):
+                # param 内出现 custom_recognition/custom_action 正是 v2 该放的位置
+                for branch in ("any_of", "all_of"):
+                    for i, sub in enumerate(rp.get(branch) or []):
+                        check(sub, f"{where}.{key}.{branch}[{i}]")
+        assert not (flat_custom & set(n)), f"{where} 残留 v1 平铺 Custom 字段"
+
+    full, _ = truth
+    for name, n in full.items():
+        check(n, name)
+
+
+def test_layering_red_line_is_live():
+    """分层红线必须是活的（防它退化成装饰）：合成违规图必须报，盘上真源必须零报。"""
+    fake = {"global.hall_dwell": {"next": ["treasure.foo.dwell"]},
+            "treasure.foo.dwell": {}}
+    fake_origin = {"global.hall_dwell": ct.CORE_PIPELINE_DIR / "core.json",
+                   "treasure.foo.dwell": ct.PLUGIN_PIPELINE_DIRS[0] / "t.json"}
+    problems = ct.namespace_checks(fake, fake_origin)
+    assert any("引用模块节点" in p for p in problems), f"core 点名模块节点未报: {problems}"
+
+    occupy = {"treasure.hall_dwell": {}}
+    occupy_origin = {"treasure.hall_dwell": ct.CORE_PIPELINE_DIR / "core.json"}
+    assert any("占用模块命名空间" in p
+               for p in ct.namespace_checks(occupy, occupy_origin)), "core 占用模块前缀未报"
+
+    graph, origin = ct.load_graph()
+    assert ct.namespace_checks(graph, origin) == []
 
 
 def test_actuators_isolated_from_canvas(truth):
@@ -285,16 +380,14 @@ def test_schema_files_present_and_valid():
 
 
 def test_mra_template_nodes_match_schema_contract(truth):
+    """MRA_Template 参数面契约（v1 平铺 / v2 recognition.param 嵌套 / Or 分支全验）。"""
     full, policy = truth
     for name, n in {**full, **policy["actuators"]}.items():
-        p = n.get("custom_recognition_param")
-        if p is None:
-            continue
-        assert n.get("recognition") == "Custom", name
-        assert n.get("custom_recognition") == "MRA_Template", name
-        assert p.get("mode") in ("template", "point"), name
-        assert isinstance(p.get("rect"), list) and len(p["rect"]) == 4, name
-        assert all(0.0 <= v <= 1.0 for v in p["rect"]), name
+        for reco_name, p in ct.custom_recognitions(n):
+            assert reco_name == "MRA_Template", (name, reco_name)
+            assert p.get("mode") in ("template", "point"), name
+            assert isinstance(p.get("rect"), list) and len(p["rect"]) == 4, name
+            assert all(0.0 <= v <= 1.0 for v in p["rect"]), name
 
 
 def test_dedup_rule_exempt_structural_copies(truth):

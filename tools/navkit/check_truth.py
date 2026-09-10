@@ -8,7 +8,10 @@
 2. 数据面可加载：policy.json 经 v4_source 装配（结构性错误 P01-P09 fail-fast）；
 3. 两面交叉一致：图 dwell `attach._signals` 引用的锚点、policy spec 里
    stages/transitions 引用的名字必须互洽（编辑任一面时的防脱钩机械检）；
-4. 几何合法（校验器第 3 条）：两面一切 rect/roi/box 值域 [0,1] 且有序。
+4. 几何合法（校验器第 3 条）：两面一切 rect/roi/box 值域 [0,1] 且有序；
+5. 分层红线（校验器第 7 条）：core 真源不得占用、也不得引用模块命名空间的
+   节点名——协议层节点名全城唯一（无命名空间），"core/plugin 分离"只能靠
+   引用方向单向守住，不靠文件摆放位置。
 
 用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
 """
@@ -21,14 +24,75 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
 PACK = REPO / "maaracing_assistant"
-GLOBAL_TRUTH = PACK / "core" / "resources" / "pipeline" / "global.json"
-TREASURE_TRUTH = PACK / "plugins" / "treasure" / "resources" / "pipeline" / "treasure.json"
+# 真源按目录发现（不再硬编码文件名）：core 目录缺席是合法状态（尚无跨模块共用链）。
+CORE_PIPELINE_DIR = PACK / "core" / "resources" / "pipeline"
+PLUGIN_PIPELINE_DIRS = [PACK / "plugins" / "treasure" / "resources" / "pipeline"]
+TREASURE_TRUTH = PLUGIN_PIPELINE_DIRS[0] / "treasure.json"
 POLICY_TRUTH = PACK / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
+# 模块命名空间 = plugins/<id>/ 下带 module.py 的目录名（分层红线的判据来源）
+MODULE_NS = frozenset(p.name for p in (PACK / "plugins").iterdir()
+                      if p.is_dir() and (p / "module.py").is_file())
 
 
 def att(n: dict) -> dict:
     """节点元数据统一从 attach 读（3.1 唯一文档化扩展位；顶层 `_xxx` 会被框架丢弃）。"""
     return n.get("attach") or {}
+
+
+def pipeline_files() -> list[Path]:
+    files: list[Path] = []
+    for d in [CORE_PIPELINE_DIR, *PLUGIN_PIPELINE_DIRS]:
+        if d.is_dir():
+            files += sorted(p for p in d.rglob("*.json") if not p.name.startswith("."))
+    return files
+
+
+def load_graph() -> tuple[dict, dict]:
+    """合并全部 pipeline 真源 → (节点表, 节点→来源文件)。
+
+    同名节点出现在两个文件 = 双真源，直接失败（协议层节点名全城唯一，静默覆盖
+    会让其中一份成为死文件）。
+
+    `$` 前缀根级键一律跳过——协议明文「以 $ 开头的 JSON root field 不会被解析」，
+    MaaFW 不认它们；MPE 保存时会回写 `$__mpe_config_*`（画布配置）与
+    `$__mpe_external_*`（跨文件外部节点占位），校验器必须与框架同口径，否则把
+    工具元数据当节点，凭空冒出「入口不可达/无出口」告警与节点数漂移。
+    """
+    graph: dict = {}
+    origin: dict = {}
+    for f in pipeline_files():
+        for name, node in _load(f).items():
+            if name.startswith("$"):
+                continue
+            if name in origin:
+                raise ValueError(f"节点名重复（双真源）: {name} 同见于 {origin[name]} 与 {f}")
+            graph[name] = node
+            origin[name] = f
+    return graph, origin
+
+
+def namespace_checks(graph: dict, origin: dict) -> list[str]:
+    """分层红线：通用层（core）不得点名业务层（plugins/<id>）。
+
+    两条：① core 真源里的节点不得占用模块命名空间；② core 节点的 next/on_error
+    不得引用模块命名空间的节点。方向唯一合法解 = 业务层引用通用层锚点。
+    合并单次 post 是协议约束（节点名全城唯一），所以"分离"只能靠引用方向守住。
+    """
+    problems: list[str] = []
+    for name, f in origin.items():
+        if CORE_PIPELINE_DIR not in f.parents:
+            continue
+        ns = name.split(".", 1)[0]
+        if ns in MODULE_NS:
+            problems.append(f"core 真源占用模块命名空间: {name}（{f.name}）→ 应迁往 plugins/{ns}/")
+        for key in ("next", "on_error"):
+            for r in graph[name].get(key) or []:
+                ref = ref_name(r)
+                if ref and ref.split(".", 1)[0] in MODULE_NS:
+                    problems.append(
+                        f"core 真源引用模块节点: {name}.{key} → {ref}（{f.name}）"
+                        f"→ 通用层不得点名业务层，改由模块侧声明该边")
+    return problems
 
 
 def ref_name(r: Any) -> str | None:
@@ -38,6 +102,44 @@ def ref_name(r: Any) -> str | None:
     if isinstance(r, dict) and isinstance(r.get("name"), str):
         return r["name"]
     return None
+
+
+def custom_recognitions(node: dict) -> list[tuple[str | None, dict]]:
+    """取节点声明的 (Custom 识别名, 参数表) 列表，**两种协议形态 + Or 分支全兼容**。
+
+    v1 平铺：节点顶层 `custom_recognition` + `custom_recognition_param`；
+    v2 归一：`recognition: {type, param:{custom_recognition, custom_recognition_param}}`
+    ——MPE 保存时统一按 v2 写回（框架两种都吃）。只认其中一种形态的读取方会在
+    MPE 存盘后静默拿到空值（重复识别机检、模板契约断言都会假装通过）。
+    Or 分支（如起跑汇聚节点内联全 stage 信号）逐个展开。
+    """
+    out: list[tuple[str | None, dict]] = []
+
+    def level(n: dict) -> bool:
+        p = n.get("custom_recognition_param")
+        if isinstance(p, dict):
+            out.append((n.get("custom_recognition"), p))
+            return True
+        return False
+
+    def walk(n: Any) -> None:
+        if not isinstance(n, dict) or level(n):
+            return
+        reco = n.get("recognition")
+        if isinstance(reco, dict):
+            rp = reco.get("param") or {}
+            if level(rp):
+                return
+            for sub in rp.get("any_of") or []:   # Or 分支递归
+                walk(sub)
+
+    walk(node)
+    return out
+
+
+def custom_reco_params(node: dict) -> list[dict]:
+    """只要参数表的简写（口径与 custom_recognitions 一致）。"""
+    return [p for _name, p in custom_recognitions(node)]
 
 
 def validate_graph(full: dict) -> tuple[list[str], list[str]]:
@@ -82,13 +184,14 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
         return nm.split(".r", 1)[0]
     tpl_seen: dict[frozenset, set[str]] = {}
     for name, n in full.items():
-        # dwell/confirm 的模板是锚点信号的结构性内联副本，不参与重复判定；
-        # 真正该报的是不同基锚之间共用同一模板。
-        if att(n).get("_dwell") or ".__confirm." in name:
+        # dwell/confirm/boot 的模板是锚点信号的结构性内联副本（boot = 起跑汇聚，
+        # 按设计内联全 stage 信号），不参与重复判定；真正该报的是不同基锚之间共用同一模板。
+        if att(n).get("_dwell") or att(n).get("_boot") or ".__confirm." in name:
             continue
-        p = n.get("custom_recognition_param") or {}
-        if p.get("templates"):
-            tpl_seen.setdefault(frozenset(p["templates"]), set()).add(_base_name(name))
+        p_list = custom_reco_params(n)
+        for p in p_list:
+            if p.get("templates"):
+                tpl_seen.setdefault(frozenset(p["templates"]), set()).add(_base_name(name))
     for tpls, holders in sorted(tpl_seen.items(), key=lambda kv: -len(kv[1])):
         if len(holders) > 1:
             problems.append(f"WARN 重复识别 {'+'.join(sorted(tpls))} 跨锚点: {sorted(holders)}")
@@ -162,8 +265,9 @@ def rect_checks(graph: dict, policy: dict) -> list[str]:
 
 
 def main() -> int:
-    graph = {**_load(GLOBAL_TRUTH), **_load(TREASURE_TRUTH)}
+    graph, origin = load_graph()
     errors, warns = validate_graph(graph)
+    errors += namespace_checks(graph, origin)
     for w in warns:
         print(f"[warn] {w}")
     policy_doc = None
