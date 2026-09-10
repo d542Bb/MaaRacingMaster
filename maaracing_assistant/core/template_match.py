@@ -23,8 +23,11 @@ from maaracing_assistant.core.logger import logger
 # 与 racing 导航引擎一致的默认尺度表（跨窗口分辨率/全屏-窗口切换）
 DEFAULT_SCALES = (0.5, 0.7, 0.9, 1.0, 1.2, 1.5, 1.8)
 
-# 模板缓存：键含目录版本（同一目录树 mtime 不变即复用），避免每帧读盘
-_cache: dict[str, np.ndarray | None] = {}
+# 模板缓存（R4 热修语义，P4c 起为全引擎唯一读盘口）：键 = 模板名，值 =
+# (解析到的文件路径指纹, RGB ndarray|None)。控制台换图后同路径 mtime/size 变化
+# 即自动重读——「改了没用」不允许发生；不存在/读取失败也缓存当前指纹，
+# 文件后来出现时指纹变化会重读。
+_cache: dict[str, tuple[tuple[int, int], np.ndarray | None]] = {}
 
 Box = tuple[int, int, int, int]  # (x1, y1, x2, y2) 像素
 
@@ -34,47 +37,58 @@ def strip_ext(name: str) -> str:
     return name[:-4] if name.lower().endswith((".png", ".jpg", ".jpeg")) else name
 
 
-def load_template(name: str, image_dirs: list[Path]) -> np.ndarray | None:
-    """按目录顺序加载模板（.png / .jpg），返回 RGB ndarray；找不到返回 None。
+def _fingerprint(path: Path) -> tuple[int, int]:
+    try:
+        st = path.stat()
+        return (int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return (-1, -1)
+
+
+def _resolve_template_path(name: str, image_dirs: list[Path]) -> Path | None:
+    """按目录顺序解析模板文件路径（先命中先用——覆盖图放靠前目录即热修）。
 
     name 兼容两种形态：裸名（自动拼 .png/.jpg/.jpeg）与自带扩展名
-    （v3/v4 资产模板字段形态，直接按原名查找，不再二次拼接）。
+    （v4 资产模板字段形态，直接按原名查找，不再二次拼接）。
     """
-    if name in _cache:
-        return _cache[name]
     has_ext = name.lower().endswith((".png", ".jpg", ".jpeg"))
-    img = None
     for d in image_dirs:
         if has_ext:
             path = Path(d) / name
             if path.exists():
-                raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
-                if raw is not None:
-                    img = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
-                break
+                return path
             continue
         for ext in (".png", ".jpg", ".jpeg"):
             path = Path(d) / f"{name}{ext}"
-            if not path.exists():
-                continue
-            raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
-            if raw is not None:
-                img = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
-            break
-        if img is not None:
-            break
+            if path.exists():
+                return path
+    return None
+
+
+def load_template(name: str, image_dirs: list[Path]) -> np.ndarray | None:
+    """加载模板，返回 RGB ndarray；找不到/读失败返回 None。带 mtime 指纹热修缓存。"""
+    path = _resolve_template_path(name, image_dirs)
+    fp = _fingerprint(path) if path is not None else (-1, -1)
+    cached = _cache.get(name)
+    if cached is not None and cached[0] == fp:
+        return cached[1]
+    img = None
+    if path is not None:
+        raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if raw is not None:
+            img = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
     if img is None:
         logger.log(f"模板不存在: {name}.png/.jpg（搜索 {len(image_dirs)} 个目录）", "WARNING")
-    _cache[name] = img
+    _cache[name] = (fp, img)
     return img
 
 
-def find_template(frame: np.ndarray, template: np.ndarray, threshold: float = 0.7,
-                  scales=DEFAULT_SCALES, roi: Box | None = None) -> tuple[Box | None, float]:
-    """在 frame 里多尺度匹配 template。
+def _best_match(frame: np.ndarray, template: np.ndarray, scales,
+                roi: Box | None) -> tuple[Box | None, float]:
+    """多尺度匹配内核（唯一一份）：返回 (最优框 x1y1x2y2, 置信度)，不放日志。
 
-    roi：(x, y, w, h) 限定搜索区，缺省全图。
-    返回 (命中框 x1y1x2y2, 置信度)；未命中返回 (None, 最高分)。
+    roi：(x, y, w, h) 限定搜索区，缺省全图；返回框为全图坐标（含 roi 偏移）。
+    尺度全部放不下搜索区时返回 (None, 0.0)。
     """
     search = frame
     ox = oy = 0
@@ -84,22 +98,51 @@ def find_template(frame: np.ndarray, template: np.ndarray, threshold: float = 0.
         ox, oy = rx, ry
 
     th, tw = template.shape[0], template.shape[1]
-    best_val, best_box, best_scale = 0.0, None, 1.0
+    best_val, best_box = 0.0, None
     for scale in scales:
-        resized = cv2.resize(template, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-        if resized.shape[0] > search.shape[0] or resized.shape[1] > search.shape[1]:
+        # P4c 口径统一：整数尺寸（min 4px）+ 缩小时 AREA（避免锯齿）/放大时 CUBIC
+        # ——与原 detector/调试台的缩放实现一致，历史校准阈值可原样迁移。
+        nw = max(4, int(round(tw * scale)))
+        nh = max(4, int(round(th * scale)))
+        if nh > search.shape[0] or nw > search.shape[1]:
             continue
-        result = cv2.matchTemplate(search, resized, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        resized = template if (nw == tw and nh == th) else cv2.resize(
+            template, (nw, nh),
+            interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
+        try:
+            _, max_val, _, max_loc = cv2.minMaxLoc(
+                cv2.matchTemplate(search, resized, cv2.TM_CCOEFF_NORMED))
+        except cv2.error:
+            continue
         if max_val > best_val:
-            w, h = int(tw * scale), int(th * scale)
             x1, y1 = max_loc[0] + ox, max_loc[1] + oy
-            best_val, best_box, best_scale = max_val, (x1, y1, x1 + w, y1 + h), scale
+            best_val, best_box = max_val, (x1, y1, x1 + nw, y1 + nh)
+    return best_box, float(best_val)
 
+
+def best_match_score(frame: np.ndarray, template: np.ndarray, scales=DEFAULT_SCALES,
+                     roi: Box | None = None) -> tuple[Box | None, float]:
+    """取分入口（P4c）：调用方自己做阈值/领先仲裁时用——不产生逐模板日志。
+
+    detector 每帧 11 锚点 × 多模板：若逐模板走 find_template 的命中/未命中
+    DEBUG 日志，几十条/帧会冲爆日志环形缓冲、淹没关键 INFO。
+    返回 (最优框|None, 最高分)；与 find_template 同一内核、同一缩放口径。
+    """
+    return _best_match(frame, template, scales, roi)
+
+
+def find_template(frame: np.ndarray, template: np.ndarray, threshold: float = 0.7,
+                  scales=DEFAULT_SCALES, roi: Box | None = None) -> tuple[Box | None, float]:
+    """在 frame 里多尺度匹配 template。
+
+    roi：(x, y, w, h) 限定搜索区，缺省全图。
+    返回 (命中框 x1y1x2y2, 置信度)；未命中返回 (None, 最高分)。
+    """
+    best_box, best_val = _best_match(frame, template, scales, roi)
     if best_val < threshold or best_box is None:
         logger.log(f"模板未命中: 最高分={best_val:.3f} < {threshold:.2f}", "DEBUG")
         return None, best_val
-    logger.log(f"模板命中: {best_box} 置信度={best_val:.3f} scale={best_scale:.2f}", "DEBUG")
+    logger.log(f"模板命中: {best_box} 置信度={best_val:.3f}", "DEBUG")
     return best_box, best_val
 
 
@@ -166,11 +209,8 @@ def match_template_cs(frame: np.ndarray, tpl: np.ndarray, *, colorspace: str = "
             return None, float(mv)
         th, tw = tpl.shape[:2]
         return (ml[0] + ox, ml[1] + oy, ml[0] + ox + tw, ml[1] + oy + th), float(mv)
+    # gray 直走单通道匹配（find_template 与通道数无关；转三通道会白白 3 倍开销）
     f, t = _match_colorspace(frame, tpl, colorspace)
-    if f.ndim == 2:
-        f3 = np.stack([f] * 3, axis=-1)
-        t3 = np.stack([t] * 3, axis=-1)
-        return find_template(f3, t3, threshold=threshold, scales=scales, roi=roi)
     return find_template(f, t, threshold=threshold, scales=scales, roi=roi)
 
 

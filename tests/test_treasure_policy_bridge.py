@@ -42,12 +42,16 @@ def _module_with_real_decision_phase() -> MagicMock:
 
 
 def test_decision_phase_call_sequence_on_module():
-    """_decision_phase 内部按 resolve → consume → execute → shoo 顺序调三件。"""
+    """_decision_phase 内部按 resolve → consume → execute 顺序调三件。
+
+    P4c（宪法 §5）：原第四步 shoo 避让看守已从调用序退役——断言方法本体不存在，
+    防止反应式躲避被悄悄加回。"""
     m = _module_with_real_decision_phase()
     m._decision_phase()
     m._consume_click_result.assert_called_once_with()
     m._execute_click.assert_called_once_with("INTENT")
-    m._maybe_shoo_cursor.assert_called_once_with("INTENT")
+    assert not hasattr(TreasureModule, "_maybe_shoo_cursor")
+    assert not hasattr(TreasureModule, "_collect_guard_rects")
     names = [c[0] for c in m.method_calls]
     assert names.index("_resolve_action_target") < names.index("_consume_click_result")
     assert names.index("_consume_click_result") < names.index("_execute_click")

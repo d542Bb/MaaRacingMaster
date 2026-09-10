@@ -45,6 +45,7 @@ from maaracing_assistant.plugins.treasure.strategy import (
 )
 from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector
 from maaracing_assistant.core.nav_graph import NavGraph
+from maaracing_assistant.core.template_match import match_template_cs
 from maaracing_assistant.core.navkit import (
     DecisionFacts,
     DecisionSnapshot,
@@ -194,33 +195,32 @@ _STAGE_TO_STABLE: dict[str, str] = {
 
 def _load_appraiser_templates(
     proj: Path,
-) -> list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float]]:
-    """加载偏好鉴宝师头像模板（灰度），按顺位升序返回。加载失败的模板自动剔除。
+) -> list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float, str]]:
+    """加载偏好鉴宝师头像模板（RGB 彩图 + 锚点 colorspace 声明），按顺位升序返回。
 
-    定义源：treasure_rois.json 的 appraisers 段（调试台「偏好鉴宝师」分类可编辑）：
-        { "<key>": {"prio": n, "rect": [x1,y1,x2,y2], "templates": ["xxx.png"], "threshold": 0.72} }
-      - rect = 该鉴宝师的卡片搜索区（匹配时按各自 rect 裁剪）
-      - threshold = 该鉴宝师命中阈值（TM_CCOEFF_NORMED）
-    JSON 段缺失/损坏 → 回退 _APPRAISER_TEMPLATE_DEFS（全卡统一搜索区/阈值）。
+    定义源：policy.json `perception.spec` 锚点（MPE 可编辑）：
+        rect = 该鉴宝师的卡片搜索区；threshold = 命中阈；colorspace = 匹配色彩空间。
+      - 缺锚点/非 template → 回退 _APPRAISER_TEMPLATE_DEFS（全卡统一搜索区/阈值），
+        色彩空间回退 "gray"（这些代码常量的历史阈值按灰度校准）。
+    加载失败的模板自动剔除。
 
-    返回: [(priority, key, gray_ndarray, rect, threshold), ...]，至少 0 项，不崩溃。
+    返回: [(priority, key, ndarray, rect, threshold, colorspace), ...]，至少 0 项，不崩溃。
     """
-    defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
+    defs: list[tuple[int, str, str, tuple[float, float, float, float], float, str]] = []
     per = _perception_tuning()
     search_roi = tuple(per["appraiser_search_roi"]) if per.get("appraiser_search_roi") else _APPRAISER_SEARCH_ROI
     match_th = per.get("appraiser_match_threshold", _APPRAISER_MATCH_THRESHOLD)
     for prio, key, fname in _APPRAISER_TEMPLATE_DEFS:
-        defs.append((prio, key, fname, search_roi, match_th))
+        defs.append((prio, key, fname, search_roi, match_th, "gray"))
     nav = nav_source()
     if nav is not None:
         # policy.json spec 优先：_APPRAISER_TEMPLATE_DEFS 供「有哪些鉴宝师」身份，
-        # rect/threshold/prio 逐卡取 spec 锚点（prio↔order）；缺锚点或非 template 时
-        # 回退该卡代码默认值（search_roi/match_th/prio_default）。
-        v3_defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
+        # rect/threshold/prio/colorspace 逐卡取 spec 锚点（prio↔order）。
+        spec_defs: list[tuple[int, str, str, tuple[float, float, float, float], float, str]] = []
         for prio_default, key, fname_default in _APPRAISER_TEMPLATE_DEFS:
             anchor = nav.spec.get(key)
             if anchor is None or anchor.kind != "template":
-                v3_defs.append((prio_default, key, fname_default, search_roi, match_th))
+                spec_defs.append((prio_default, key, fname_default, search_roi, match_th, "gray"))
                 continue
             try:
                 prio = int(anchor.order) if anchor.order is not None else prio_default
@@ -231,13 +231,11 @@ def _load_appraiser_templates(
             r4 = anchor.rect.as_list()
             rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
             threshold = float(anchor.threshold) if anchor.threshold is not None else match_th
-            v3_defs.append((prio, key, fname, rect, threshold))
-        if v3_defs:
-            defs = v3_defs
-    # E1：无 v3 资产（缺失/损坏 / NAVKIT_SOURCE=v2）时保留 _APPRAISER_TEMPLATE_DEFS 代码常量兜底
-    # （全卡统一搜索区/阈值），**不再回读 treasure_rois.json**。
-    out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float]] = []
-    for prio, key, fname, rect, threshold in defs:
+            spec_defs.append((prio, key, fname, rect, threshold, anchor.colorspace))
+        if spec_defs:
+            defs = spec_defs
+    out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float, str]] = []
+    for prio, key, fname, rect, threshold, cs in defs:
         if not fname:
             continue
         p = IMAGE_DIR / fname
@@ -246,10 +244,10 @@ def _load_appraiser_templates(
         img = cv2.imread(str(p))
         if img is None:
             continue
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
+        tpl = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if tpl.size == 0 or tpl.shape[0] < 4 or tpl.shape[1] < 4:
             continue
-        out.append((prio, key, gray, rect, threshold))
+        out.append((prio, key, tpl, rect, threshold, cs))
     # 顺位越小编号越优先，排序保证遍历顺序 = 优先级顺序
     out.sort(key=lambda x: x[0])
     return out
@@ -257,12 +255,12 @@ def _load_appraiser_templates(
 
 def _load_selected_check(
     proj: Path,
-) -> tuple[np.ndarray, tuple[float, float, float, float]] | None:
-    """加载「已选中」对勾模板（灰度）+ 扫描区域 rect。
+) -> tuple[np.ndarray, tuple[float, float, float, float], str] | None:
+    """加载「已选中」对勾模板（RGB 彩图 + 锚点 colorspace）+ 扫描区域 rect。
 
-    rect 从 treasure_rois.json 的 stage.appraiser_selected_check 读取（调试台可调）：
-     应框住三张卡片右上角的对勾高度带（横向长条，X 覆盖左/中/右三卡）。
-     文件缺失/损坏/rect 非法返回 None（选中判定自动跳过）。
+    真源 = policy.json spec 锚点 appraiser_selected_check：rect 应框住三张卡片
+    右上角的对勾高度带（横向长条，X 覆盖左/中/右三卡）。
+    文件缺失/损坏/rect 非法返回 None（选中判定自动跳过）。
     """
     _, fname = _SELECTED_CHECK_DEF
     p = IMAGE_DIR / fname
@@ -271,40 +269,44 @@ def _load_selected_check(
     img = cv2.imread(str(p))
     if img is None:
         return None
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
+    tpl = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    if tpl.size == 0 or tpl.shape[0] < 4 or tpl.shape[1] < 4:
         return None
-    # rect：policy.json spec 唯一真源读锚点 appraiser_selected_check；真源缺失时
-    # rect 保持 None → 本函数返回 None（选中判定自动跳过）。
+    # rect/colorspace：policy.json spec 唯一真源；真源缺失时 rect 保持 None →
+    # 本函数返回 None（选中判定自动跳过）。
     rect: tuple[float, float, float, float] | None = None
+    colorspace = "gray"  # 代码常量文件的历史阈值（0.62）按灰度校准
     nav = nav_source()
     if nav is not None:
         anchor = nav.spec.get("appraiser_selected_check")
         if anchor is not None:
             r4 = anchor.rect.as_list()
             rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+            colorspace = anchor.colorspace
     if rect is None:
         return None
-    return (gray, rect)
+    return (tpl, rect, colorspace)
 
 
 def _load_session_panel(
     proj: Path,
-) -> list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]]:
+) -> list[tuple[int, str, np.ndarray, tuple[float, float, float, float], str]]:
     """加载「开始匹配」按钮模板（详情卡已切到目标场次的判定用）。
 
-    rect 从 policy.json `perception.spec` 读取（key: session_start_match_btn）；
-    返回: [(priority, key, gray, rect_norm)]，
+    rect/colorspace 从 policy.json `perception.spec` 读取（key: session_start_match_btn）；
+    返回: [(priority, key, ndarray, rect_norm, colorspace)]，
     缺失则返回空列表（判定降级为未匹配 → 始终先点目标场次 badge，再点开始匹配位置）。
     """
     rois: dict[str, tuple[float, float, float, float]] = {}
+    colorspaces: dict[str, str] = {}
     nav = nav_source()
     if nav is not None:
         anchor = nav.spec.get("session_start_match_btn")
         if anchor is not None:
             rois["session_start_match_btn"] = tuple(anchor.rect.as_list())
+            colorspaces["session_start_match_btn"] = anchor.colorspace
     # P4b：policy.json 真源缺失/损坏 → rois 为空，判定降级为「始终先点目标 badge」。
-    out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]] = []
+    out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float], str]] = []
     for prio, key, fname in _SESSION_PANEL_DEFS:
         rect = rois.get(key)
         if rect is None:
@@ -315,10 +317,10 @@ def _load_session_panel(
         img = cv2.imread(str(p))
         if img is None:
             continue
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
+        tpl = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if tpl.size == 0 or tpl.shape[0] < 4 or tpl.shape[1] < 4:
             continue
-        out.append((prio, key, gray, rect))
+        out.append((prio, key, tpl, rect, colorspaces.get(key, "gray")))
     out.sort(key=lambda x: x[0])
     return out
 
@@ -346,7 +348,7 @@ _SMART_BID_MATCH_THRESHOLD = 0.72
 #
 #  使用规则（改这里前必读）：
 #   - 键：STAGE_ORDER 中的阶段名；值：该阶段要激活的 stage ROI 键
-#     （来自 treasure_detector._ROI_STAGE，不含模块独立匹配的
+#     （= policy.json perception 锚点名，不含模块独立匹配的
 #     appraiser_selected_check / session_start_match_btn / 鉴宝师模板）。
 #   - 值只写「本阶段画面会出现/需要感知」的 ROI；全局锚点（_GLOBAL_ANCHORS）
 #     运行时自动并入，不必重复写。
@@ -451,10 +453,10 @@ _STAGE_OCR_KEYS: dict[str, frozenset[str]] = {
 
 def _load_smart_bid_btn(
     proj: Path,
-) -> tuple[np.ndarray, tuple[float, float, float, float]] | None:
-    """加载出价面板「智能出价」按钮模板（灰度）+ 扫描 rect。
+) -> tuple[np.ndarray, tuple[float, float, float, float], str] | None:
+    """加载出价面板「智能出价」按钮模板（RGB 彩图 + 锚点 colorspace）+ 扫描 rect。
 
-    rect 从 treasure_rois.json 的 stage.smart_bid_btn 读取（调试台可调）。
+    rect/colorspace 从 policy.json `perception.spec` 锚点 smart_bid_btn 读取（MPE 可调）。
     文件缺失/损坏/rect 非法返回 None（面板已开判定自动降级 → 依赖主按钮 OCR 兜底）。
     """
     p = IMAGE_DIR / "bid_smart_btn.png"
@@ -463,20 +465,22 @@ def _load_smart_bid_btn(
     img = cv2.imread(str(p))
     if img is None:
         return None
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
+    tpl = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    if tpl.size == 0 or tpl.shape[0] < 4 or tpl.shape[1] < 4:
         return None
     rect: tuple[float, float, float, float] | None = None
+    colorspace = "gray"  # 代码常量文件的历史阈值按灰度校准；有锚点则以锚点声明为准
     nav = nav_source()
     if nav is not None:
         anchor = nav.spec.get(_SMART_BID_KEY)
         if anchor is not None:
             r4 = anchor.rect.as_list()
             rect = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+            colorspace = anchor.colorspace
     # P4b：policy.json 真源缺失时 rect 保持 None → 返回 None（面板已开判定降级依赖主按钮 OCR 兜底）。
     if rect is None:
         return None
-    return (gray, rect)
+    return (tpl, rect, colorspace)
 
 
 class TreasureModule(ActivityModule):
@@ -513,10 +517,9 @@ class TreasureModule(ActivityModule):
     # 两套点击方式的日志/peep 标签（与 core.clicker.CLICK_MODES 对齐）
     CLICK_MODE_LABELS = {"real": "前台鼠标", "gamepad": "后台手柄+A"}
 
-    # 光标避让：主循环每帧调用 _maybe_shoo_cursor，光标（圆盘+hover 高亮）压住
-    # 「当前阶段需识别的 ROI」时让 core.clicker.auto_shoo 挪到邻近空白处，
-    # 防止模板匹配/OCR 掉分失效。半径按圆盘+环+高亮扩散保守取值。
-    SHOO_CURSOR_RADIUS_PX = 30.0
+    # 光标遮挡防线（宪法 §5，P4c 定稿）：不做反应式躲避——识别可靠性由
+    # 「按锚点 colorspace 校准 + 稳定帧/转场缓冲判定」保证，图侧锚点可经
+    # MRA_Template 的 mask_cursor/遮挡过滤按需启用（光标真值已接线）。
 
     # --------- 可调参数 ---------
     FRAME_INTERVAL_MS     = 300    # 截图周期（毫秒）：主循环 ~3.3Hz，满足「≥3 次/秒」画面采集
@@ -802,12 +805,16 @@ class TreasureModule(ActivityModule):
         self._stage_tracker: StageTracker | None = None
 
         # --------- 鉴宝师选择自动化 ---------
-        # 模板缓存：[(priority, key, gray_ndarray)]，顺位升序；空列表 = 未加载或无可用模板
-        self._appr_tpls: list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float]] = []
-        # 「已选中」对勾模板（黄色√，卡片右上角）：灰度图或 None（未配置/加载失败）
+        # 模板缓存：[(priority, key, ndarray, rect, threshold, colorspace)]，顺位升序；
+        # 空列表 = 未加载或无可用模板（P4c 起统一走 template_match 引擎按锚点色彩空间匹配）
+        self._appr_tpls: list[
+            tuple[int, str, np.ndarray, tuple[float, float, float, float], float, str]
+        ] = []
+        # 「已选中」对勾模板（黄色√，卡片右上角）：RGB 彩图或 None（未配置/加载失败）
         self._check_tpl: np.ndarray | None = None
-        # 对勾扫描区域 rect（归一化，来自 stage.appraiser_selected_check）；随模板一起加载
+        # 对勾扫描区域 rect（归一化，来自 spec 锚点 appraiser_selected_check）；随模板一起加载
         self._check_rect: tuple[float, float, float, float] | None = None
+        self._check_colorspace: str = "gray"
         # 上一次"点击意图"结果：供 peep 准星显示 {"key","center","hint","score"}|None，
         # 中心为归一化坐标 (cxn, cyn)。由 _run_appraiser_choice 每帧重算。
         self._appr_last_decision: dict | None = None
@@ -885,6 +892,7 @@ class TreasureModule(ActivityModule):
         # （按钮明暗态模板匹配不稳，见 Experience 1112416）。
         self._bid_smart_tpl: np.ndarray | None = None
         self._bid_smart_rect: tuple[float, float, float, float] | None = None
+        self._bid_smart_colorspace: str = "gray"
         # 上一次"点击意图"结果：{"state","key","center","hint","score"}|None，由 _run_bidding_choice 每帧重算
         self._bidding_last_decision: dict | None = None
 
@@ -1122,9 +1130,14 @@ class TreasureModule(ActivityModule):
             # 租约归还前执行，确保 Tasker 线程先停。
             if self.ctx.click_mode == "gamepad":
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
-                runner._graph._ensure_clicker().bind_gamepad(
-                    self.ctx.capture, gpad, confirm_button=BUTTON_A)
-                logger.log("[鉴宝][v4] 手柄租约已绑定（常驻持有）")
+                # P4c：与决策段共享同一 Clicker 实例——此前图/桥各持一个导航器，
+                # 光标真值（last_pos）分裂：MRA_Template 遮挡过滤（mask_cursor）
+                # 在对局内读不到决策点击后的光标位。共享后单导航器全程追踪。
+                clicker = self._get_clicker()
+                clicker.bind_gamepad(self.ctx.capture, gpad, confirm_button=BUTTON_A,
+                                     rebuild_cb=self._rebuild_gamepad_device)
+                runner._graph._clicker = clicker
+                logger.log("[鉴宝][v4] 手柄租约已绑定（常驻持有，与决策段共享点击器）")
             try:
                 while self.ctx.lifecycle.running:
                     if not runner.poll():
@@ -1185,7 +1198,7 @@ class TreasureModule(ActivityModule):
         # 2.56 加载鉴宝师头像模板（顺位匹配用；定义源=JSON appraisers 段，调试台可调）
         self._appr_tpls = _load_appraiser_templates(self.ctx.proj)
         if self._appr_tpls:
-            names = ", ".join(f"P{p}={k}" for p, k, _, _, _ in self._appr_tpls)
+            names = ", ".join(f"P{p}={k}" for p, k, _, _, _, _ in self._appr_tpls)
             logger.log(f"[鉴宝] 已加载鉴宝师模板: {names}", "DEBUG")
         else:
             logger.log("[鉴宝] 未加载任何鉴宝师头像模板（选择鉴宝师阶段将用点中心兜底）", "WARNING")
@@ -1193,17 +1206,17 @@ class TreasureModule(ActivityModule):
         # 2.561 加载「已选中」对勾模板 + 扫描 rect（选中判定用；缺失则跳过选中判定）
         _ck = _load_selected_check(self.ctx.proj)
         if _ck is not None:
-            self._check_tpl, self._check_rect = _ck
+            self._check_tpl, self._check_rect, self._check_colorspace = _ck
             logger.log(f"[鉴宝] 已加载「已选中」对勾模板（扫描 rect={self._check_rect}）", "DEBUG")
         else:
-            self._check_tpl, self._check_rect = None, None
+            self._check_tpl, self._check_rect, self._check_colorspace = None, None, "gray"
             logger.log("[鉴宝] 未加载「已选中」对勾模板（选中判定禁用，仅指向目标头像）", "DEBUG")
 
         # 2.57 加载场次选择「开始匹配」按钮模板（详情卡出现判定用；
         #     命中 → 点 session_start_match_btn；未命中 → 先点目标场次 badge 切换详情卡）
         self._session_panel = _load_session_panel(self.ctx.proj)
         if self._session_panel:
-            names = ", ".join(f"P{p}={k}" for p, k, _, _ in self._session_panel)
+            names = ", ".join(f"P{p}={k}" for p, k, _, _, _ in self._session_panel)
             logger.log(f"[鉴宝] 已加载「开始匹配」按钮模板: {names}", "DEBUG")
         else:
             logger.log("[鉴宝] 未加载「开始匹配」按钮模板（降级：始终先点目标场次 badge，再点开始匹配位置）", "WARNING")
@@ -1211,10 +1224,10 @@ class TreasureModule(ActivityModule):
         # 2.58 加载出价面板「智能出价」按钮模板（面板打开判定用，截图3）
         _sb = _load_smart_bid_btn(self.ctx.proj)
         if _sb is not None:
-            self._bid_smart_tpl, self._bid_smart_rect = _sb
+            self._bid_smart_tpl, self._bid_smart_rect, self._bid_smart_colorspace = _sb
             logger.log(f"[鉴宝] 已加载智能出价按钮模板（扫描 rect={self._bid_smart_rect}）", "DEBUG")
         else:
-            self._bid_smart_tpl, self._bid_smart_rect = None, None
+            self._bid_smart_tpl, self._bid_smart_rect, self._bid_smart_colorspace = None, None, "gray"
             logger.log("[鉴宝] 未加载智能出价按钮模板（面板已开判定降级：依赖主按钮 OCR 兜底）", "WARNING")
 
         # 2.59 初始化出价策略决策器（V2：数据驱动双层缓冲 + 兜底上限 + 赚钱/赚蛋模式）
@@ -1551,14 +1564,41 @@ class TreasureModule(ActivityModule):
     #  鉴宝师选择自动化：模板匹配 + 顺位抉择 + 点击
     # ==================================================================
 
+    @staticmethod
+    def _px_roi(rect: tuple[float, float, float, float], W: int, H: int
+                ) -> tuple[int, int, int, int] | None:
+        """归一化 rect (x1n,y1n,x2n,y2n) → 引擎像素搜索区 (x, y, w, h)。"""
+        x1n, y1n, x2n, y2n = rect
+        x1 = max(0, int(x1n * W))
+        y1 = max(0, int(y1n * H))
+        x2 = min(W, int(x2n * W))
+        y2 = min(H, int(y2n * H))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2 - x1, y2 - y1
+
+    @staticmethod
+    def _box_to_norm(box: tuple[int, int, int, int], W: int, H: int
+                     ) -> tuple[float, float, float, float, float]:
+        """引擎命中框（全图像素 x1y1x2y2）→ (cxn, cyn, x2n, bw, bh) 归一化五元组。
+
+        cxn/cyn=框中心；x2n=右边界（选中判定用）；bw/bh=框宽高（手柄点击容差用）。
+        """
+        x1, y1, x2, y2 = box
+        cxn = max(0.0, min(1.0, (x1 + x2) / 2 / W))
+        cyn = max(0.0, min(1.0, (y1 + y2) / 2 / H))
+        x2n = max(0.0, min(1.0, x2 / W))
+        bw = max(0.001, min(1.0, (x2 - x1) / W))
+        bh = max(0.001, min(1.0, (y2 - y1) / H))
+        return cxn, cyn, x2n, bw, bh
+
     def _match_appraisers(
         self, frame_rgb: np.ndarray,
     ) -> list[tuple[int, str, float, float, float, float, float, float]]:
-        """在 _APPRAISER_SEARCH_ROI 区域内做多尺度顺位匹配。
+        """在各自卡片搜索区内做多尺度顺位匹配（统一走 template_match 引擎）。
 
-        对每个模板（按 P1→P2 顺序）遍历 _APPRAISER_MATCH_SCALES（0.70×~1.30×
-        共 13 档），取该模板所有尺度下的「最高得分命中」作为该模板最终结果；
-        只有最高分 ≥ _APPRAISER_MATCH_THRESHOLD 的模板才进入返回列表。
+        对每个模板（按 P1→P2 顺序）在搜索区 rect 内遍历 13 档尺度取最高分；
+        分数 ≥ 该模板自己的阈值（policy.json spec，含 colorspace）才进入返回列表。
 
         返回按顺位升序（prio 小在前）的命中列表：
             [(priority, key, score, cxn, cyn, x2n, bw, bh), ...]
@@ -1573,127 +1613,44 @@ class TreasureModule(ActivityModule):
         if not self._appr_tpls:
             return results
         H, W = frame_rgb.shape[:2]
-        try:
-            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        except Exception:
-            return results
         # 按顺位遍历（hits 本身就按 P1→P2 顺序产出，不用再排序）；
-        # 每个模板用自己的搜索区 rect + 阈值（来自 JSON appraisers 段，调试台可逐项校准）。
-        for prio, key, tpl, rect, threshold in self._appr_tpls:
-            x1n, y1n, x2n, y2n = rect
-            x1 = max(0, int(x1n * W))
-            y1 = max(0, int(y1n * H))
-            x2 = min(W, int(x2n * W))
-            y2 = min(H, int(y2n * H))
-            if x2 <= x1 or y2 <= y1:
+        # 每个模板用自己的搜索区 rect + 阈值 + 色彩空间（spec 锚点，MPE 可逐项校准）。
+        for prio, key, tpl, rect, threshold, cs in self._appr_tpls:
+            px_roi = self._px_roi(rect, W, H)
+            if px_roi is None:
                 continue
-            roi = gray[y1:y2, x1:x2]
-            rh, rw = roi.shape[:2]
-            best: tuple[float, int, int, int, int, int] | None = None
-            # best = (score, scale_idx, match_x_in_roi, match_y_in_roi, scaled_th, scaled_tw)
-            th0, tw0 = tpl.shape[:2]
-            for s_idx, s in enumerate(_APPRAISER_MATCH_SCALES):
-                # 缩放模板：整数尺寸，宽高同比例
-                nw = max(4, int(round(tw0 * s)))
-                nh = max(4, int(round(th0 * s)))
-                if nh > rh or nw > rw:
-                    # 缩放过大会让模板比 ROI 大，跳过
-                    continue
-                if nw == tw0 and nh == th0:
-                    tpl_s = tpl
-                else:
-                    try:
-                        # 缩小时用 AREA（避免锯齿），放大时用 CUBIC
-                        interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
-                        tpl_s = cv2.resize(tpl, (nw, nh), interpolation=interp)
-                    except Exception:
-                        continue
-                try:
-                    res = cv2.matchTemplate(roi, tpl_s, cv2.TM_CCOEFF_NORMED)
-                except Exception:
-                    continue
-                _, smax, _, lmax = cv2.minMaxLoc(res)
-                smax = float(smax)
-                if best is None or smax > best[0]:
-                    best = (smax, s_idx, lmax[0], lmax[1], nh, nw)
-            # 全部尺度跑完：看最佳分数过该模板自己的阈值没
-            if best is None:
+            box, score = match_template_cs(frame_rgb, tpl, colorspace=cs,
+                                           threshold=float(threshold),
+                                           scales=_APPRAISER_MATCH_SCALES, roi=px_roi)
+            if box is None:
                 continue
-            score = best[0]
-            if score < threshold:
-                continue
-            # 用"该最佳匹配对应的缩放后模板尺寸"算中心（而不是原始尺寸！）
-            _, _, mx_roi, my_roi, sth, stw = best
-            cx_px = x1 + mx_roi + stw // 2
-            cy_px = y1 + my_roi + sth // 2
-            cxn = max(0.0, min(1.0, cx_px / W))
-            cyn = max(0.0, min(1.0, cy_px / H))
-            # 命中框右边界（归一化），选中判定用
-            rx2 = max(0.0, min(1.0, (x1 + mx_roi + stw) / W))
-            # 命中框宽高（归一化）——手柄点击容差 box 用（头像在卡片内）
-            bw = max(0.001, min(1.0, stw / W))
-            bh = max(0.001, min(1.0, sth / H))
-            results.append((prio, key, score, cxn, cyn, rx2, bw, bh))
+            cxn, cyn, rx2, bw, bh = self._box_to_norm(box, W, H)
+            results.append((prio, key, float(score), cxn, cyn, rx2, bw, bh))
         return results
 
     def _match_selected_check(self, frame_rgb: np.ndarray) -> tuple[float, float, float] | None:
-        """在 JSON 配置的对勾扫描区（stage.appraiser_selected_check.rect）匹配「已选中」对勾。
+        """在 spec 锚点配置的对勾扫描区（appraiser_selected_check.rect）匹配「已选中」对勾。
 
-        扫描区应为覆盖三张卡片右上角对勾高度带的横向长条（调试台可调），
-        对勾出现在左/中/右任一卡片右上角都能命中。多尺度匹配取最高分，
+        扫描区应为覆盖三张卡片右上角对勾高度带的横向长条（MPE 可调），
+        对勾出现在左/中/右任一卡片右上角都能命中。多尺度匹配取最高分
+        （统一走 template_match 引擎，色彩空间按锚点声明），
         分数 ≥ self._check_match_threshold 才返回 (score, cxn, cyn)；
         模板/rect 缺失或未命中返回 None（选中判定自动跳过）。
         """
         if self._check_tpl is None or self._check_rect is None:
             return None
         H, W = frame_rgb.shape[:2]
-        try:
-            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        except Exception:
+        px_roi = self._px_roi(self._check_rect, W, H)
+        if px_roi is None:
             return None
-        x1n, y1n, x2n, y2n = self._check_rect
-        x1 = max(0, int(x1n * W))
-        y1 = max(0, int(y1n * H))
-        x2 = min(W, int(x2n * W))
-        y2 = min(H, int(y2n * H))
-        if x2 <= x1 or y2 <= y1:
+        box, score = match_template_cs(frame_rgb, self._check_tpl,
+                                       colorspace=self._check_colorspace,
+                                       threshold=self._check_match_threshold,
+                                       scales=_CHECK_MATCH_SCALES, roi=px_roi)
+        if box is None:
             return None
-        roi = gray[y1:y2, x1:x2]
-        rh, rw = roi.shape[:2]
-        th0, tw0 = self._check_tpl.shape[:2]
-        best: tuple[float, int, int, int, int, int] | None = None
-        for s_idx, s in enumerate(_CHECK_MATCH_SCALES):
-            nw = max(4, int(round(tw0 * s)))
-            nh = max(4, int(round(th0 * s)))
-            if nh > rh or nw > rw:
-                continue
-            if nw == tw0 and nh == th0:
-                tpl_s = self._check_tpl
-            else:
-                try:
-                    interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
-                    tpl_s = cv2.resize(self._check_tpl, (nw, nh), interpolation=interp)
-                except Exception:
-                    continue
-            try:
-                res = cv2.matchTemplate(roi, tpl_s, cv2.TM_CCOEFF_NORMED)
-            except Exception:
-                continue
-            _, smax, _, lmax = cv2.minMaxLoc(res)
-            smax = float(smax)
-            if best is None or smax > best[0]:
-                best = (smax, s_idx, lmax[0], lmax[1], nh, nw)
-        if best is None:
-            return None
-        score = best[0]
-        if score < self._check_match_threshold:
-            return None
-        _, _, mx_roi, my_roi, sth, stw = best
-        cx_px = x1 + mx_roi + stw // 2
-        cy_px = y1 + my_roi + sth // 2
-        cxn = max(0.0, min(1.0, cx_px / W))
-        cyn = max(0.0, min(1.0, cy_px / H))
-        return (score, cxn, cyn)
+        cxn, cyn, _rx2, _bw, _bh = self._box_to_norm(box, W, H)
+        return (float(score), cxn, cyn)
 
     def _run_appraiser_choice(self, frame_rgb: np.ndarray) -> None:
         """选择鉴宝师阶段：顺位匹配 + 选中判定 → 计算「点击意图」供 PEEP 准星显示。
@@ -1845,54 +1802,17 @@ class TreasureModule(ActivityModule):
         if not self._session_panel:
             return results
         H, W = frame_rgb.shape[:2]
-        try:
-            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        except Exception:
-            return results
-        for prio, key, tpl, rect_norm in self._session_panel:
-            x1n, y1n, x2n, y2n = rect_norm
-            x1 = max(0, int(x1n * W))
-            y1 = max(0, int(y1n * H))
-            x2 = min(W, int(x2n * W))
-            y2 = min(H, int(y2n * H))
-            if x2 <= x1 or y2 <= y1:
+        for prio, key, tpl, rect_norm, cs in self._session_panel:
+            px_roi = self._px_roi(rect_norm, W, H)
+            if px_roi is None:
                 continue
-            roi = gray[y1:y2, x1:x2]
-            rh, rw = roi.shape[:2]
-            best: tuple[float, int, int, int, int, int] | None = None
-            th0, tw0 = tpl.shape[:2]
-            for s_idx, s in enumerate(_SESSION_MATCH_SCALES):
-                nw = max(4, int(round(tw0 * s)))
-                nh = max(4, int(round(th0 * s)))
-                if nh > rh or nw > rw:
-                    continue
-                if nw == tw0 and nh == th0:
-                    tpl_s = tpl
-                else:
-                    try:
-                        interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
-                        tpl_s = cv2.resize(tpl, (nw, nh), interpolation=interp)
-                    except Exception:
-                        continue
-                try:
-                    res = cv2.matchTemplate(roi, tpl_s, cv2.TM_CCOEFF_NORMED)
-                except Exception:
-                    continue
-                _, smax, _, lmax = cv2.minMaxLoc(res)
-                smax = float(smax)
-                if best is None or smax > best[0]:
-                    best = (smax, s_idx, lmax[0], lmax[1], nh, nw)
-            if best is None:
+            box, score = match_template_cs(frame_rgb, tpl, colorspace=cs,
+                                           threshold=self._session_match_threshold,
+                                           scales=_SESSION_MATCH_SCALES, roi=px_roi)
+            if box is None:
                 continue
-            score = best[0]
-            if score < self._session_match_threshold:
-                continue
-            _, _, mx_roi, my_roi, sth, stw = best
-            cx_px = x1 + mx_roi + stw // 2
-            cy_px = y1 + my_roi + sth // 2
-            cxn = max(0.0, min(1.0, cx_px / W))
-            cyn = max(0.0, min(1.0, cy_px / H))
-            results.append((prio, key, score, cxn, cyn))
+            cxn, cyn, _rx2, _bw, _bh = self._box_to_norm(box, W, H)
+            results.append((prio, key, float(score), cxn, cyn))
         return results
 
     def _run_session_choice(self, frame_rgb: np.ndarray) -> None:
@@ -2014,70 +1934,34 @@ class TreasureModule(ActivityModule):
     _BID_MAIN_BTN_KEY = "bid_main_red_btn"
 
     def _match_bid_smart_btn(self, frame_rgb: np.ndarray) -> tuple[float, float, float] | None:
-        """在 stage.smart_bid_btn 的 rect 内匹配出价面板「智能出价」按钮模板。
+        """在 spec 锚点 smart_bid_btn 的 rect 内匹配出价面板「智能出价」按钮模板。
 
         面板打开 → 该按钮出现 → 模板命中 = 面板已开（S3 强信号）。
-        多尺度 0.70~1.30×，阈值优先读 JSON stage.smart_bid_btn.threshold（调试台可校准），
-        缺省回退 _SMART_BID_MATCH_THRESHOLD（0.72）；取最高分；返回 (score, cxn, cyn) | None。
+        多尺度 0.70~1.30×（template_match 引擎，色彩空间按锚点声明），阈值优先读
+        spec 锚点 threshold（MPE 可校准，与 detect() 同源），缺省回退
+        _SMART_BID_MATCH_THRESHOLD（0.72）；取最高分；返回 (score, cxn, cyn) | None。
         """
         if self._bid_smart_tpl is None or self._bid_smart_rect is None:
             return None
         H, W = frame_rgb.shape[:2]
-        try:
-            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        except Exception:
+        px_roi = self._px_roi(self._bid_smart_rect, W, H)
+        if px_roi is None:
             return None
-        x1n, y1n, x2n, y2n = self._bid_smart_rect
-        x1 = max(0, int(x1n * W))
-        y1 = max(0, int(y1n * H))
-        x2 = min(W, int(x2n * W))
-        y2 = min(H, int(y2n * H))
-        if x2 <= x1 or y2 <= y1:
-            return None
-        roi = gray[y1:y2, x1:x2]
-        rh, rw = roi.shape[:2]
-        tpl = self._bid_smart_tpl
-        th0, tw0 = tpl.shape[:2]
-        best: tuple[float, int, int, int, int, int] | None = None
-        for s_idx, s in enumerate(_SESSION_MATCH_SCALES):
-            nw = max(4, int(round(tw0 * s)))
-            nh = max(4, int(round(th0 * s)))
-            if nh > rh or nw > rw:
-                continue
-            if nw == tw0 and nh == th0:
-                tpl_s = tpl
-            else:
-                try:
-                    interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
-                    tpl_s = cv2.resize(tpl, (nw, nh), interpolation=interp)
-                except Exception:
-                    continue
-            try:
-                res = cv2.matchTemplate(roi, tpl_s, cv2.TM_CCOEFF_NORMED)
-            except Exception:
-                continue
-            _, smax, _, lmax = cv2.minMaxLoc(res)
-            smax = float(smax)
-            if best is None or smax > best[0]:
-                best = (smax, s_idx, lmax[0], lmax[1], nh, nw)
-        if best is None:
-            return None
-        score = best[0]
-        # 阈值：优先 JSON stage.smart_bid_btn.threshold（调试台校准，与 detect() 同源），
+        # 阈值：优先 spec 锚点 threshold（detector.roi_thresholds 同源），
         # 缺省回退 self._smart_bid_match_threshold（tuning.perception 收编）。
         threshold: float = self._smart_bid_match_threshold
         if self._detector is not None and self._detector.roi_thresholds:
             roi_th = self._detector.roi_thresholds.get(_SMART_BID_KEY)
             if isinstance(roi_th, float):
                 threshold = roi_th
-        if score < threshold:
+        box, score = match_template_cs(frame_rgb, self._bid_smart_tpl,
+                                       colorspace=self._bid_smart_colorspace,
+                                       threshold=threshold,
+                                       scales=_SESSION_MATCH_SCALES, roi=px_roi)
+        if box is None:
             return None
-        _, _, mx_roi, my_roi, sth, stw = best
-        cx_px = x1 + mx_roi + stw // 2
-        cy_px = y1 + my_roi + sth // 2
-        cxn = max(0.0, min(1.0, cx_px / W))
-        cyn = max(0.0, min(1.0, cy_px / H))
-        return (score, cxn, cyn)
+        cxn, cyn, _rx2, _bw, _bh = self._box_to_norm(box, W, H)
+        return (float(score), cxn, cyn)
 
     def _read_bid_main_btn_label(self, frame_rgb: np.ndarray) -> str:
         """同步 OCR 主界面底部出价按钮文字（等待出价/出价）。
@@ -2941,17 +2825,15 @@ class TreasureModule(ActivityModule):
         return dict(prog)
 
     def _active_stage_rois(self, stage: str | None) -> frozenset[str] | None:
-        """当前阶段的「激活感知 ROI」：阶段检测与避让守卫同源（谁激活就保护谁）。
+        """当前阶段的「激活感知 ROI」：detector 每帧只扫本阶段相关锚点。
 
         返回语义与 _STAGE_PERCEPTION.get(stage) 一致：None=未登记 → 消费方回退
         全量检测（安全兜底）；非 None=frozenset 激活集。
         出价阶段按子状态动态裁剪：
           - bidding（面板打开、拨号盘输入/确认中）：只激活 smart_bid_btn。
             回合横幅/结算横幅/结算标题是"出价完成后"才可能出现的转移信号——
-            拨号盘还在 = 本回合还没出价 = 它们必然不出现，激活纯属静态占坑；
-            且这些横幅 ROI 的坐标与数字键盘重叠（round_big_banner 压 numpad 1/2/3、
-            result_banner 压 numpad 1~6），面板期激活会导致光标点完数字被误判
-            "压住识别区"反复避让（2026-09-03 用户实测根治）。
+            拨号盘还在 = 本回合还没出价 = 它们必然不出现，激活纯属静态占坑，
+            白白摊大每帧扫描成本（收窄的本义不变）。
           - 其余出价子态（wait_first / wait_result / wait_next / 转场）：完整
             激活集（含转移信号，wait_result/wait_next 正是等它们出现的时刻）。
         """
@@ -2960,90 +2842,20 @@ class TreasureModule(ActivityModule):
         if (stage.startswith("第") and "回合" in stage
                 and self._bid_phase == "bidding"):
             return frozenset({_SMART_BID_KEY})
-        # S1：v3 DetectionPlan 是感知清单真源；NAVKIT_SOURCE=v2 时保留旧常量回退。
+        # S1：v4 DetectionPlan 是感知清单真源；plan 缺失时保留旧常量回退（P4d 清）。
         plan = getattr(self._detector, "plan", None)
         if plan is not None:
             return plan.active_for(stage)
         return _STAGE_PERCEPTION.get(stage)
 
-    def _collect_guard_rects(self) -> list[tuple[str, tuple[float, float, float, float]]]:
-        """收集当前阶段「需要保持可识别」的 ROI：[(key, rect)]。
-
-        口径：阶段感知激活的 stage 判定锚点 ∪ 全局锚点（被挡 = 阶段判定/回退失效）
-        ∪ 当前阶段 OCR 区。由主循环**每帧**驱动——阶段状态每帧更新，激活集合自然
-        跟随新阶段（修正：此前"点击后一次性 + 全量锚点"导致槽位复用误判——出价面板
-        的智能出价按钮与匹配中的取消匹配按钮是同一屏幕槽位，全量锚点让出价阶段也
-        被误避让；每帧驱动下按当前阶段裁剪即正确）。
-        """
-        rects: list[tuple[str, tuple[float, float, float, float]]] = []
-        plan = getattr(self._detector, "plan", None)
-        global_anchors = plan.global_anchors if plan is not None else _GLOBAL_ANCHORS
-        keys = set(global_anchors)
-        if self._current_stage:
-            perception = self._active_stage_rois(self._current_stage)
-            if perception:
-                keys |= set(perception)
-        for k in keys:
-            r = self._detector.ROI.get(k)
-            if r:
-                rects.append((k, tuple(float(n) for n in r)))
-        schema_ocr = self._detector.schema.get("ocr") or {}
-        ocr_keys = (
-            self._detector.plan.ocr_for(self._current_stage)
-            if getattr(self._detector, "plan", None) is not None
-            else _STAGE_OCR_KEYS.get(self._current_stage, ())
-        )
-        for k in ocr_keys or ():
-            val = schema_ocr.get(k)
-            rect = val.get("rect") if isinstance(val, dict) else None
-            if isinstance(rect, list) and len(rect) == 4:
-                rects.append((k, tuple(float(n) for n in rect)))
-        # 出价主按钮文字 OCR 区（bid_main_btn_label，S1/S2 同步读取，不在异步
-        # _STAGE_OCR_KEYS 里）：确认出价后光标恰好停在 (0.463,0.805) 落在该
-        # label 区内，若不被守卫，下一轮 S1 读「出价」文字被光标挡住 → OCR 空 →
-        # 永远等不到按钮亮起（2026-09-03 用户实测：出价 OCR 被挡但不避让）。
-        # 面板开（bidding 相位）期间不守卫：面板覆盖主按钮且确认按钮 rect 与
-        # 该 label 重叠，守卫会让"点确认前光标停确认按钮"被误判压住识别区，
-        # 反复避让反而打断确认点击。
-        if (self._current_stage and "回合" in self._current_stage
-                and self._bid_phase != "bidding"):
-            val = schema_ocr.get(self._BID_MAIN_LABEL_KEY)
-            rect = val.get("rect") if isinstance(val, dict) else None
-            if isinstance(rect, list) and len(rect) == 4:
-                rects.append((self._BID_MAIN_LABEL_KEY, tuple(float(n) for n in rect)))
-        return rects
-
-    def _maybe_shoo_cursor(self, intent: dict | None) -> None:
-        """光标驻留看守（主循环每帧调用，决策更新后）：光标压识别区则让核心避让。
-
-        仅组装宿主领域知识（guard 区域 + 下一意图中心），判定与执行在
-        core.clicker.auto_shoo（异步提交导航，主循环不被阻塞——2026-09-03
-        导航线程化）。触发时打 DEBUG 日志（带命中区域 key）。
-        """
-        if self.ctx.click_mode != "gamepad" or self._last_frame_rgb is None:
-            return
-        H, W = self._last_frame_rgb.shape[:2]
-        rects = self._collect_guard_rects()
-        if not rects:
-            return
-        center = intent.get("center") if intent else None
-        result = self._get_clicker().auto_shoo(
-            rects, radius_px=self.SHOO_CURSOR_RADIUS_PX, frame_size=(W, H),
-            next_center=(float(center[0]), float(center[1])) if center else None)
-        if result:
-            logger.log(
-                f"[鉴宝点击] 光标压住识别区[{result['key']}]，"
-                f"避让导航到 ({result['point'][0]:.2f},{result['point'][1]:.2f})（不点击）",
-                "DEBUG")
-
     def _consume_click_result(self) -> None:
-        """消费上一导航任务结果（点击/避让共用单槽），应用成功/失败副作用。
+        """消费上一导航任务结果（点击/移动共用单槽），应用成功/失败副作用。
 
         异步导航协议（2026-09-03 导航线程化）：主循环每帧**先 consume 再决策**——
         consume → decision → submit。结果类型：
           - click ok    → 更新指纹/时刻 + 成功副作用（重试状态/领取标记/弹窗冷却/日志）
           - click 失败  → 指纹不更新（下帧同意图重试），节流打失败日志
-          - move（避让）→ 不涉及点击状态，忽略（避让失败下帧重新判定即可）
+          - move（只移动）→ 不涉及点击状态，忽略（P4c 起无避让生产消费方）
         """
         clicker = self._get_clicker() if self._clicker is not None else None
         if clicker is None:
@@ -3052,7 +2864,7 @@ class TreasureModule(ActivityModule):
         if res is None:
             return
         if res.get("type") != "click":
-            return  # 避让(move)结果：无点击副作用
+            return  # move 结果：无点击副作用
         pending = self._pending_click
         self._pending_click = None
         if self._trace_writer is not None:
@@ -3650,12 +3462,9 @@ class TreasureModule(ActivityModule):
         CustomAction.run 调用一次（一帧决策），[JumpBack] 回 dwell 重判。
         """
         intent = self._resolve_action_target()
-        # 光标驻留看守（手柄模式）：每帧在决策更新后检查——光标若压住本阶段需识别
-        # 的 ROI 且下一意图目标不能自然带离，先避让导航到空白处（不点击）再走点击。
-        # 异步导航协议（2026-09-03）：consume → click 决策/提交 → shoo（click 优先）。
+        # 异步导航协议（2026-09-03）：consume → click 决策/提交。
         self._consume_click_result()      # 先消费上一任务结果，应用指纹/时刻等副作用
         self._execute_click(intent)       # click 决策 + 提交（非阻塞，导航后台闭环）
-        self._maybe_shoo_cursor(intent)   # 无 click 任务时（任务槽空闲）才尝试避让
         # P1：决策契约落盘（facts 投影 + policy 输出）。
         if self._policy_snapshot is not None and self._trace_writer is not None:
             self._trace_writer.write({

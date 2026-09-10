@@ -72,7 +72,7 @@ GOLDEN_OCR = {
 
 def test_appraiser_templates_match_golden():
     out = tm._load_appraiser_templates(_PROJ)
-    got = {key: (prio, rect, th) for prio, key, _gray, rect, th in out}
+    got = {key: (prio, rect, th) for prio, key, _tpl, rect, th, _cs in out}
     assert set(got) == set(GOLDEN_APPRAISERS), f"鉴宝师键漂移: {set(got)^set(GOLDEN_APPRAISERS)}"
     for key, g in GOLDEN_APPRAISERS.items():
         prio, rect, th = got[key]

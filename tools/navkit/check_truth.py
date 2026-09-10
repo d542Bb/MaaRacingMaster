@@ -111,6 +111,11 @@ def cross_checks(graph: dict, policy: dict) -> list[str]:
     for g in policy["perception"]["stages"].get("global_anchors") or []:
         if g not in spec:
             problems.append(f"global_anchors 引用不存在锚点 {g}")
+    # P4c：spec 锚点 colorspace 只认引擎实现的三值（缺省=rgb 合法）
+    for a_name, a in spec.items():
+        cs = a.get("colorspace")
+        if cs is not None and cs not in ("gray", "rgb", "rgb_strict"):
+            problems.append(f"spec.{a_name}.colorspace 非法值 {cs!r}（可选 gray/rgb/rgb_strict）")
     # 图 dwell 的 _signals（合格式锚点名）必须能在对应数据面或图中解释
     for name, n in graph.items():
         for sig in n.get("_signals") or []:

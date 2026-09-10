@@ -84,7 +84,9 @@ class TemplateRecognizer(CustomRecognition):
         guard          {"templates","rect","threshold"?} 保险丝（主命中后守卫必须同帧命中）
         colorspace     rgb | gray | rgb_strict（默认 rgb；strict = 分通道 NCC 取最低分）
         color_assert   {"rect": 命中框内归一化子矩形, "hue": [lo,hi]} 色相校验
-        mask_cursor    true 时启用光标遮挡过滤
+        mask_cursor    true 时启用光标遮挡过滤（P4c 起 cursor_pos_provider 已由
+                       桥宿主接线：手柄导航器最近识别位；手柄未绑定/real 模式
+                       返回 None 即按无光标处理。各节点是否开启按遮挡证据标定）
         max_occlusion  命中框被光标覆盖占比上限（默认 0.4）
         critical/_park L2 驻留握手字段（P2b 接导航 ACK 通道，当前不激活）
 
@@ -228,7 +230,8 @@ class NavGraph:
         self._pipeline_dirs = [core_pipeline] if core_pipeline.is_dir() else []
         self._resource = Resource()
         self._tasker = Tasker()
-        self._resource.register_custom_recognition(RECOGNIZER_NAME, TemplateRecognizer(self))
+        self._resource.register_custom_recognition(
+            RECOGNIZER_NAME, TemplateRecognizer(self, cursor_pos_provider=self.cursor_pos))
         self._resource.register_custom_action(ACTION_NAME, ClickAction(self))
         self._clicker: Clicker | None = None
         self._loaded = False
@@ -278,6 +281,27 @@ class NavGraph:
             return (0, 0)
         H, W = self._last_frame.shape[:2]
         return (W, H)
+
+    def cursor_pos(self) -> tuple[float, float] | None:
+        """游戏光标在截图帧中的归一化位置（MRA_Template mask_cursor 遮挡过滤用）。
+
+        P4c 接线（宪法 §5 L1 防线的数据源）：真值来自手柄导航器对游戏渲染
+        圆盘的最近识别位；real 鼠标模式 WGC 不采 OS 光标、手柄未绑定或从未
+        识别到时返回 None（识别节点按无光标处理）。
+        """
+        clicker = self._clicker
+        if clicker is None:
+            return None
+        pos = clicker.gamepad_cursor_pos()
+        if not pos:
+            return None
+        W, H = self.frame_size()
+        if W <= 0 or H <= 0:
+            self.frame()  # v4 注入帧路径 _last_frame 无更新方：补读一次缓存帧拿尺寸
+            W, H = self.frame_size()
+        if W <= 0 or H <= 0:
+            return None
+        return (pos[0] / W, pos[1] / H)
 
     def click(self, cx: float, cy: float, box_norm, timeout_s: float) -> bool:
         """执行一次点击并等到位。模式与意图每次同步（设置页可热切）。"""
@@ -469,7 +493,9 @@ class NavKitV4:
         self._resource = Resource()
         self._tasker = Tasker()
         self._controller = WgcapController(ctx.capture, stale_ms=stale_ms)
-        self._resource.register_custom_recognition(RECOGNIZER_NAME, TemplateRecognizer(self._graph))
+        self._resource.register_custom_recognition(
+            RECOGNIZER_NAME,
+            TemplateRecognizer(self._graph, cursor_pos_provider=self._graph.cursor_pos))
         self._resource.register_custom_action(ACTION_NAME, ClickAction(self._graph))
         for name, inst in bridges:
             if isinstance(inst, CustomAction):

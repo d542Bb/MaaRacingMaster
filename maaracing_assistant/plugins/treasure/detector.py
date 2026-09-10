@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-巅峰鉴宝阶段自动检测器（基于 cv2.matchTemplate 模板匹配，无 OCR，毫秒级）。
+巅峰鉴宝阶段自动检测器（P4c 起：匹配统一走 core.template_match 引擎）。
 
 设计原则：
   1. **局部 ROI 匹配**：每个模板只在「它理论上会出现的那一小块区域」内搜索，
@@ -11,6 +11,10 @@
   3. **强特征优先**：结算页的「竞拍失败」「最终竞拍价格」绝对唯一，优先级最高。
   4. **不要求全覆盖**：模糊阶段（匹配中、主题抽取动画）返回 None，
      上层状态机按「最近一次稳定阶段 + 时间推移」自行推进即可。
+  5. **色彩空间按锚点声明**（policy.json `perception.spec.<锚点>.colorspace`）：
+     默认 rgb；回合横幅/结算横幅等高成本锚点声明 gray（帧预算与历史灰度校准
+     保真，见 tools/experiments/v4-p4c-match/ 对拍报告）。本文件不再有第二套
+     匹配实现——缩放口径（整数尺寸 + AREA/CUBIC）已收敛进 find_template。
 
 用法：
     detector = TreasureStageDetector(proj)
@@ -23,29 +27,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 from maaracing_assistant.core.logger import logger
+from maaracing_assistant.core.template_match import best_match_score, load_template
 from maaracing_assistant.plugins.treasure import IMAGE_DIR
-
-
-MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED
-
-# 多尺度匹配缩放档（0.70×~1.30×，步长 0.05）。
-# 必须与调试台 tools/navkit/core/reader.py 的 MATCH_SCALES、
-# treasure_module 的 _APPRAISER_MATCH_SCALES 保持完全一致——调试台校准的分数/阈值
-# 要能原样复现于运行时，画面/ROI/模板/算法四者必须同口径（牵一发而动全身原则）。
-MATCH_SCALES: tuple[float, ...] = (
-    0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30,
-)
-
-# ============================================================
-# 搜索 ROI / 模板 / 阈值：唯一真源 policy.json perception 数据面 → DetectionPlan（__init__ 载入）。
-# rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时直接乘当前输入帧 W/H。
-# M4/E1：不再提供 treasure_rois.json 读取器——v3 缺失/损坏时如实报告并跳过检测，
-#        避免用残缺默认值掩盖真实配置导致阶段漏检。_ROI_STAGE 仅保留为常量元数据（无 rect）。
-# ============================================================
 
 
 @dataclass(frozen=True)
@@ -70,61 +56,23 @@ class DetectResult:
         yield self.round_no
 
 
-@dataclass(frozen=True)
-class _Rule:
-    template: str
-    roi_key: str
-    stage: str
-    round_no: int | None = None
-
-
-# ROI → 阶段语义映射。模板列表完全由 JSON 的 templates 数组决定（_ROI_TPL），
-# 这里只定义"这个 ROI 代表哪个阶段"、优先级、以及多模板互斥时的领先要求。
-#   - __round_phase__：命中后走回合识别（智能出价按钮 / 回合横幅）
-#   - round_from_template：True 时回合号从命中的模板文件名解析（如 round3_banner.png → 3）
-#   - margin：多模板互斥时，最高分需领先次高分 ≥ margin 才算命中
-_ROI_STAGE: dict[str, dict] = {
-    # 结算后弹窗（领取分红后可能出现）。三个弹窗（今日最高/等级提升/彩蛋）合并为单一
-    # 阶段「结算弹窗」，靠 _last_hit_roi_key 区分具体弹窗：
-    #   - daily_high_banner 命中 → 今日最高积分上涨（需先 OCR 读积分再点）
-    #   - egg_reward_title 命中 → 奖励结算彩蛋（需先 OCR 读蛋数量再点）
-    #   - 都没命中（等级提升遮满全屏，无 ROI）→ 盲点跳过
-    # 优先级（110/105）高于大厅（50）：弹窗在时一定先命中弹窗，弹窗全关后大厅才可见。
-    # ②鉴宝等级提升 不识别（无 ROI），弹窗遮满全屏 → 三种弹窗模板都匹配不到 → 上层盲点。
-    "daily_high_banner":  {"stage": "结算弹窗", "priority": 110},
-    "egg_reward_title":   {"stage": "结算弹窗", "priority": 105},
-    # 结算页
-    "settle_title":       {"stage": "领取分红",           "priority": 100},
-    "result_banner":      {"stage": "中标结算",           "priority": 90,
-                           # 竞拍成功横幅带彩条特效，匹配分偏低，单独放宽阈值防误判
-                           "thresholds": {"result_auction_win_banner": 0.60}},
-    # 出价面板的智能出价按钮（常亮，但没有回合号 → 走小字像素差识别兜底）
-    "smart_bid_btn":      {"stage": "__round_phase__",    "priority": 80},
-    # 回合巨型横幅（5 张互斥模板，取最高分且领先次高 ≥ margin）
-    "round_big_banner":   {"stage": "__round_phase__",    "priority": 70,
-                           "round_from_template": True, "margin": 0.03},
-    # 进入对局前
-    "appraiser_title":    {"stage": "选择鉴宝师",         "priority": 60},
-    "is_matching_btn":    {"stage": "匹配中",             "priority": 60},
-    "participation_card": {"stage": "游戏大厅",           "priority": 50},
-    "hall_peak_appraise_card": {"stage": "游戏大厅",       "priority": 50},
-    "goto_appraise_btn":  {"stage": "活动页面",           "priority": 50},
-    "hall_session_cards": {"stage": "鉴宝大厅(选择场次)", "priority": 50},
-}
+# ============================================================
+# 搜索 ROI / 模板 / 阈值：唯一真源 policy.json perception 数据面 → DetectionPlan
+# （__init__ 载入）。rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时乘当前输入帧
+# W/H 换算像素搜索区。plan 缺失（policy.json 不可用）→ 检测降级为空，
+# 不做任何常量兜底（M4/E1 定案：避免残缺默认值掩盖真实配置导致阶段漏检）。
+# ============================================================
 
 _ROUND_RE = re.compile(r"round(\d+)", re.IGNORECASE)
 
 
 class TreasureStageDetector:
-    """巅峰鉴宝自动阶段检测器（无状态，局部 ROI 匹配）"""
+    """巅峰鉴宝自动阶段检测器（无状态，局部 ROI 多尺度匹配）"""
 
     def __init__(self, proj: Path, ocr=None):
-        self.tpl_dir = IMAGE_DIR
-        self._tpl_cache: dict[str, tuple[int, int, np.ndarray | None]] = {}
-        # P4b：policy.json perception 段的 DetectionPlan 是**唯一真源**（v3
-        # treasure_assets.json 已退役）。加载失败或真源缺失 → plan=None，阶段检测
-        # 降级为空（不保留 v2 文件回退）。经插件包级 nav_source() 共用缓存加载；
-        # 局部导入保持 detector 的 cv2/numpy 运行时依赖不泄漏到纯标准库 navkit 包。
+        # P4c：policy.json perception 段的 DetectionPlan 是**唯一真源**。加载失败
+        # 或真源缺失 → plan=None，阶段检测降级为空。经插件包级 nav_source() 共用
+        # 缓存加载；局部导入保持 detector 的运行时依赖不泄漏到纯标准库 navkit 包。
         self.plan = None
         try:
             from maaracing_assistant.plugins.treasure import nav_source
@@ -138,11 +86,14 @@ class TreasureStageDetector:
                 "[鉴宝检测器] 无可用 v4 DetectionPlan（policy.json 缺失/损坏），阶段检测跳过",
                 "WARNING",
             )
-        self.match_scales = tuple(self.plan.scales) if self.plan is not None else MATCH_SCALES
-        self.match_threshold = (
-            float(self.plan.default_threshold) if self.plan is not None else MATCH_THRESHOLD
-        )
-        if self.plan is not None:
+            self.ROI: dict[str, tuple] = {}
+            self.ROI_TPL: dict[str, list[str]] = {}
+            self.roi_thresholds: dict[str, float] = {}
+            self.match_scales: tuple[float, ...] = ()
+            self.match_threshold = 0.75
+        else:
+            self.match_scales = tuple(self.plan.scales)
+            self.match_threshold = float(self.plan.default_threshold)
             self.ROI = {
                 name: tuple(spec.rect) for name, spec in self.plan.spec.items()
                 if spec.kind == "template"
@@ -155,11 +106,9 @@ class TreasureStageDetector:
                 name: spec.threshold for name, spec in self.plan.spec.items()
                 if spec.threshold is not None
             }
-        else:
-            self.ROI = {}
-            self.ROI_TPL = {}
-            self.roi_thresholds = {}
-        self.schema = {}
+        # 模板的灰度投影缓存（热修失效靠源数组对象身份——engine 重读时返回新
+        # ndarray，id 变化即重转）：{name: (id(rgb_arr), gray_arr)}
+        self._gray_view: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         # ROI 级自定义阈值 self.roi_thresholds：来自 plan.spec.threshold。供外部
         # （如 treasure_module._match_bid_smart_btn）与 detect()/banner_result 同源取阈值。
         self._weak_alert_ts: dict[str, float] = {}
@@ -188,106 +137,141 @@ class TreasureStageDetector:
     ) -> DetectResult:
         """阶段检测（动态感知裁剪），统一返回 `DetectResult`（D7）。
 
-        旧的二元组实现保留在 `_detect_legacy`，并通过 `DetectResult.__iter__` 兼容
-        `stage, round_no = detector.detect(...)`。v3 资产加载成功时，ROI/模板/阈值
-        来自 `DetectionPlan`；缺失或显式 `NAVKIT_SOURCE=v2` 时走旧实现。
+        `DetectResult.__iter__` 兼容 `stage, round_no = detector.detect(...)`。
+        ROI/模板/阈值/色彩空间全部来自 `DetectionPlan`（policy.json 数据面）；
+        plan 缺失 → 直接空结果（无常量兜底）。
         """
-        legacy_stage, legacy_round = self._detect_legacy(frame_rgb, active_rois)
-        if self.plan is not None:
-            active_used = (
-                tuple(self.plan.spec) if active_rois is None else tuple(sorted(active_rois))
-            )
-        else:
-            active_used = tuple(sorted(active_rois)) if active_rois is not None else tuple(_ROI_STAGE)
-        # `_detect_legacy` 在实际扫描同一帧时同步收集最高分，避免为了 trace 再做一遍
-        # 19 ROI × 13 scales 的模板匹配（原实现会让 3582 帧回归耗时成倍增加）。
+        if self.plan is None:
+            return DetectResult(stage=None, round_no=None, scores={},
+                                hit_anchor=None, active_used=())
+        stage, round_no, hit_tpl, hit_box = self._scan(frame_rgb, active_rois)
+        active_used = (
+            tuple(self.plan.spec) if active_rois is None else tuple(sorted(active_rois))
+        )
         return DetectResult(
-            stage=legacy_stage,
-            round_no=legacy_round,
+            stage=stage,
+            round_no=round_no,
             scores=dict(self._last_detect_scores),
             hit_anchor=self._last_hit_roi_key,
             active_used=active_used,
+            hit_template=hit_tpl,
+            hit_box=hit_box,
         )
 
-    def _detect_legacy(
-        self,
-        frame_rgb: np.ndarray,
-        active_rois: set[str] | None = None,
-    ) -> tuple[str | None, int | None]:
-        """v2 阶段检测实现（S1 等价回归对照；不再作为公共回传类型）。
+    # ---------------- 扫描核心 ----------------
+    def _px_roi(self, rect, W: int, H: int) -> tuple[int, int, int, int] | None:
+        """归一化 rect (x1n,y1n,x2n,y2n) → 引擎像素搜索区 (x, y, w, h)。"""
+        x1, y1, x2n, y2n = rect
+        px1 = max(0, int(x1 * W))
+        py1 = max(0, int(y1 * H))
+        px2 = min(W, int(x2n * W))
+        py2 = min(H, int(y2n * H))
+        if px2 <= px1 or py2 <= py1:
+            return None
+        return px1, py1, px2 - px1, py2 - py1
 
-        active_rois：本帧只匹配这些 stage ROI 键；None = 全量匹配（调试台/断点/测试用）。
-        未命中的 ROI 不参与扫描 → 非当前阶段的背景元素不会干扰判定（配合阶段感知清单），
-        也让阶段内阈值可以放宽而不担心跨阶段误识别。
+    def _match_score(self, roi_key: str, tpl_name: str, frame_rgb: np.ndarray,
+                     gray_frame: np.ndarray | None, px_roi, colorspace: str):
+        """单模板在 ROI 内的多尺度最高分（+命中框）。
+
+        gray 锚点走帧灰度投影（同帧一次转换、全锚共享）；rgb 直接吃彩色帧。
+        两者共用同一个引擎函数 find_template——本文件不再有第二套匹配实现。
+        """
+        rgb_tpl = load_template(tpl_name, [IMAGE_DIR])
+        if rgb_tpl is None:
+            return None
+        if colorspace == "gray":
+            import cv2
+            cached = self._gray_view.get(tpl_name)
+            if cached is not None and cached[0] is rgb_tpl:
+                gray_tpl = cached[1]
+            else:
+                # 源数组对象变化 = engine 已按新指纹重读（热修）→ 重转灰度投影。
+                # 持源数组强引用做 `is` 身份判定（不依赖 id() 复用语义）。
+                gray_tpl = cv2.cvtColor(rgb_tpl, cv2.COLOR_RGB2GRAY)
+                self._gray_view[tpl_name] = (rgb_tpl, gray_tpl)
+            if gray_frame is None:
+                return None
+            box, s = best_match_score(gray_frame, gray_tpl,
+                                      scales=self.match_scales, roi=px_roi)
+        else:
+            box, s = best_match_score(frame_rgb, rgb_tpl,
+                                      scales=self.match_scales, roi=px_roi)
+        if box is None and s == 0.0:
+            # 模板即使缩到最小档仍超出 ROI → 该 ROI 永远无法命中（历史调试台告警口径）
+            now = time.time()
+            if now - getattr(self, "_last_size_warn", 0.0) > 10.0:
+                self._last_size_warn = now
+                logger.log(
+                    f"[鉴宝检测器] ROI 尺寸不足（{roi_key}/{Path(tpl_name).stem} "
+                    f"搜索区 {px_roi[2]}×{px_roi[3]}），该模板永远无法命中，请调大 ROI",
+                    "WARNING",
+                )
+        return box, s
+
+    def _resolve_threshold(self, spec, tpl_name: str) -> float:
+        """该 ROI+命中模板的实际阈值：per-模板仲裁表（带扩展名/裸名两查）
+        → 锚点 threshold → 全局 default。与历史实现逐行同构。"""
+        ths = (spec.arbitration.get("template_thresholds") or {})
+        per_tpl = ths.get(tpl_name)
+        if per_tpl is None:
+            per_tpl = ths.get(Path(tpl_name).stem)
+        if per_tpl is not None:
+            return float(per_tpl)
+        if isinstance(spec.threshold, float):
+            return spec.threshold
+        return float(self.match_threshold)
+
+    def _scan(self, frame_rgb: np.ndarray, active_rois: set[str] | None
+              ) -> tuple[str | None, int | None, str | None, tuple | None]:
+        """按计划优先级从高到低扫描锚点，命中短路。返回 (stage, round, 模板, 框)。
+
+        active_rois：本帧只匹配这些锚点键；None = 全量匹配（调试/断点/测试用）。
+        未命中的锚点不参与扫描 → 非当前阶段的背景元素不会干扰判定（配合阶段感知
+        清单），也让阶段内阈值可以放宽而不担心跨阶段误识别。
         """
         H, W = frame_rgb.shape[:2]
-        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         self._last_detect_scores = {}
+        gray_frame = None  # 帧灰度投影，按首个 gray 锚点惰性转换
 
-        # 按计划优先级从高到低扫描；NAVKIT_SOURCE=v2 才使用旧常量顺序。
-        # active_rois 提供时只扫描交集，优先级排序与命中短路逻辑不受影响。
-        if self.plan is not None:
-            scan_keys = sorted(
-                self.plan.detect_anchors,
-                key=lambda name: -self.plan.spec[name].stage_priority,
-            )
-        else:
-            scan_keys = sorted(_ROI_STAGE, key=lambda k: -_ROI_STAGE[k]["priority"])
+        scan_keys = sorted(
+            self.plan.detect_anchors,
+            key=lambda name: -self.plan.spec[name].stage_priority,
+        )
         for roi_key in scan_keys:
             if active_rois is not None and roi_key not in active_rois:
                 continue
-            rect = self.ROI.get(roi_key)
-            if not rect:
+            spec = self.plan.spec.get(roi_key)
+            if spec is None or not spec.templates:
                 continue
-            plan_spec = self.plan.spec.get(roi_key) if self.plan is not None else None
-            if plan_spec is not None:
-                st = {
-                    "stage": plan_spec.stage or "",
-                    "priority": plan_spec.stage_priority,
-                    "margin": plan_spec.arbitration.get("margin", 0.0),
-                    "round_from_template": plan_spec.arbitration.get("round_from_template", False),
-                    "thresholds": plan_spec.arbitration.get("template_thresholds", {}),
-                }
-                templates = list(plan_spec.templates)
-            else:
-                st = _ROI_STAGE[roi_key]
-                templates = self.ROI_TPL.get(roi_key) or []
-            if not templates:
+            px_roi = self._px_roi(tuple(spec.rect), W, H)
+            if px_roi is None:
                 continue
+            if spec.colorspace == "gray" and gray_frame is None:
+                import cv2
+                gray_frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
 
             # 聚合匹配：同 ROI 多模板都跑一遍，取最高分（及次高分）
-            best = None  # (score, template_name)
+            best = None      # (score, template_name, box)
             second_score = 0.0
-            for t in templates:
-                gt = self._load_gray(Path(t).stem)
-                if gt is None:
+            for t in spec.templates:
+                got = self._match_score(roi_key, t, frame_rgb, gray_frame,
+                                        px_roi, spec.colorspace)
+                if got is None:
                     continue
-                s = self._match_local(gray, gt, rect[0], rect[1], rect[2], rect[3], W, H)
+                box, s = got
+                s = float(s)
                 if best is None or s > best[0]:
                     second_score = best[0] if best else 0.0
-                    best = (s, t)
+                    best = (s, t, box)
                 elif s > second_score:
                     second_score = s
             if best is None:
                 continue
-            score, tpl_name = best
-            self._last_detect_scores[roi_key] = float(score)
+            score, tpl_name, hit_box = best
+            self._last_detect_scores[roi_key] = score
 
-            # 先解析该 ROI+命中模板的实际阈值（优先级同上），供弱匹配告警 + 命中判定共享
-            plan_spec = self.plan.spec.get(roi_key) if self.plan is not None else None
-            plan_tpl_th = (
-                (plan_spec.arbitration.get("template_thresholds", {}) or {}).get(Path(tpl_name).name)
-                if plan_spec is not None else None
-            )
-            per_tpl_th = plan_tpl_th
-            if per_tpl_th is None:
-                per_tpl_th = st.get("thresholds", {}).get(Path(tpl_name).stem)
-            if per_tpl_th is not None:
-                threshold = float(per_tpl_th)
-            else:
-                roi_th = plan_spec.threshold if plan_spec is not None else None
-                threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
-
+            threshold = self._resolve_threshold(spec, tpl_name)
             # 弱匹配：[threshold - 0.25, threshold) 区间，便于发现「差一点命中」但低于 threshold 的情况
             weak_low = max(0.50, threshold - 0.25)
             if weak_low <= score < threshold and not self._weak_alerted(roi_key):
@@ -296,8 +280,7 @@ class TreasureStageDetector:
                     f"score={score:.3f}（阈 {threshold:.3f}），可能是 ROI 偏移或模板过期",
                     "DEBUG",
                 )
-            arbitration = plan_spec.arbitration if plan_spec is not None else {}
-            margin = float(arbitration.get("margin", st.get("margin", 0.0)))
+            margin = float((spec.arbitration or {}).get("margin", 0.0))
             if margin > 0.0:
                 if score < threshold or (score - second_score) < margin:
                     continue
@@ -306,25 +289,23 @@ class TreasureStageDetector:
 
             # 命中
             self._last_hit_roi_key = roi_key
-            if st["stage"] == "__round_phase__":
-                plan_spec = self.plan.spec.get(roi_key) if self.plan is not None else None
+            if spec.stage == "__round_phase__":
                 round_from_template = bool(
-                    (plan_spec.arbitration.get("round_from_template", False)
-                     if plan_spec is not None else st.get("round_from_template", False))
-                )
+                    (spec.arbitration or {}).get("round_from_template", False))
                 if round_from_template:
                     # round_big_banner（回合横幅，1~5 识别率 100%）= 回合号权威来源，
                     # 模板命中的回合号即时生效并更新 _last_round。
                     r = self._round_from_template(tpl_name)
                     if r is not None:
                         self._last_round = r
-                        return (f"第{r}回合出价", r)
-                    return (None, None)
-                # smart_bid_btn（出价面板开，priority 80 先于横幅检查）：标准回合用
+                        return (f"第{r}回合出价", r, tpl_name, hit_box)
+                    return (None, None, tpl_name, hit_box)
+                # smart_bid_btn（出价面板开，优先级先于横幅检查）：标准回合用
                 # _last_round（横幅上次结果），不碰小字——小字比横幅早 1 帧变号，
                 # R2→R3 切换时小字先读 3 会把 R2 尾帧第 4 槽报价误标成 R3（丢失+污染）。
                 if self._last_round is not None and self._last_round < 5:
-                    return (f"第{self._last_round}回合出价", self._last_round)
+                    return (f"第{self._last_round}回合出价", self._last_round,
+                            tpl_name, hit_box)
                 # 附加回合（第 5 回合平局追加，_allow_label_fallback 由上层激活）：
                 # 横幅模板只有 1~5，识别不到 6+，用小字 OCR 读真实回合号。
                 # stage 名 clamp 到第 5 回合（在 STAGE_ORDER 内），raw_r 保留原始号
@@ -332,9 +313,9 @@ class TreasureStageDetector:
                 if self._allow_label_fallback:
                     r = self._detect_round_full(frame_rgb, W, H)
                     if r is not None:
-                        return (f"第{min(r, 5)}回合出价", r)
-                return (None, None)
-            return (st["stage"], None)
+                        return (f"第{min(r, 5)}回合出价", r, tpl_name, hit_box)
+                return (None, None, tpl_name, hit_box)
+            return (spec.stage or "", None, tpl_name, hit_box)
 
         # 兜底：横幅/smart 都没命中。标准回合（_last_round < 5）属转场/画面抖动，
         # 返回 None 保持现状（等横幅出现，避免小字提前切号）。
@@ -342,9 +323,9 @@ class TreasureStageDetector:
         if self._allow_label_fallback:
             r = self._detect_round_full(frame_rgb, W, H)
             if r is not None:
-                return (f"第{min(r, 5)}回合出价", r)
+                return (f"第{min(r, 5)}回合出价", r, None, None)
         self._last_hit_roi_key = None  # 无命中：弹窗链阶段区分"等级提升盲点"
-        return (None, None)
+        return (None, None, None, None)
 
     def banner_result(self, frame_rgb: np.ndarray) -> str | None:
         """中标结算阶段：判断竞拍结果横幅命中的是「中标」还是「未中标」模板。
@@ -353,42 +334,33 @@ class TreasureStageDetector:
         仅在 result_banner ROI 内对 win/fail 两个模板匹配取最高分，阈值与 detect()
         保持一致（win 模板有单独放宽阈值 0.60）。供 treasure_module 记录落盘字段。
         """
-        rect = self.ROI.get("result_banner")
-        tpls = self.ROI_TPL.get("result_banner") or []
-        if not rect or not tpls:
+        if self.plan is None:
+            return None
+        spec = self.plan.spec.get("result_banner")
+        if spec is None or not spec.templates:
             return None
         H, W = frame_rgb.shape[:2]
-        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        px_roi = self._px_roi(tuple(spec.rect), W, H)
+        if px_roi is None:
+            return None
+        gray_frame = None
+        if spec.colorspace == "gray":
+            import cv2
+            gray_frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         best_name: str | None = None
         best_score = -1.0
-        for t in tpls:
-            gt = self._load_gray(Path(t).stem)
-            if gt is None:
+        for t in spec.templates:
+            got = self._match_score("result_banner", t, frame_rgb, gray_frame,
+                                    px_roi, spec.colorspace)
+            if got is None:
                 continue
-            s = self._match_local(gray, gt, rect[0], rect[1], rect[2], rect[3], W, H)
+            _box, s = got
             if s > best_score:
-                best_score = s
+                best_score = float(s)
                 best_name = t
         if best_name is None:
             return None
-        # 阈值解析与 detect() 一致：优先 per-模板（win 0.60），再 ROI 通用，最后全局。
-        # v3 锚点 arbitration.template_thresholds 以「无扩展名」为键，故 name 查不中再按 stem 查，
-        # 命中即来自 plan；仅 plan 缺失（v2 模式）才回退 _ROI_STAGE 常量（M3：v3 下 _ROI_STAGE 不再可达）。
-        plan_spec = self.plan.spec.get("result_banner") if self.plan is not None else None
-        per_tpl_th = None
-        if plan_spec is not None:
-            ths = plan_spec.arbitration.get("template_thresholds", {}) or {}
-            per_tpl_th = ths.get(Path(best_name).name)
-            if per_tpl_th is None:
-                per_tpl_th = ths.get(Path(best_name).stem)
-        if per_tpl_th is None and self.plan is None:
-            per_tpl_th = _ROI_STAGE["result_banner"].get("thresholds", {}).get(Path(best_name).stem)
-        if per_tpl_th is not None:
-            threshold = float(per_tpl_th)
-        else:
-            roi_th = plan_spec.threshold if plan_spec is not None else None
-            threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
-        if best_score < threshold:
+        if best_score < self._resolve_threshold(spec, best_name):
             return None
         if "win" in best_name:
             return "win"
@@ -417,31 +389,18 @@ class TreasureStageDetector:
         return r if 1 <= r <= 9 else None
 
     def _round_label_rect(self) -> tuple[float, float, float, float] | None:
-        """回合小字识别区域。
-
-        唯一路径：读 `DetectionPlan.spec["round_label_area"].rect`（数据面 loader 把
-        **全部**锚点含 ocr 类都纳入 spec，故此 ocr 锚点在 plan 里可取）。plan 缺失
-        （真源不可用）时返回 None——旧 v2 schema 回退分支自 v2 读取器移除后即为
-        死路（self.schema 恒空），常量本体随 P4d v2 回退段一并清理。
+        """回合小字识别区域：读 `DetectionPlan.spec["round_label_area"].rect`
+        （数据面 loader 把**全部**锚点含 ocr 类都纳入 spec，故此 ocr 锚点在 plan
+        里可取）。plan 缺失/锚点缺失返回 None（旧 v2 schema 回退死路已随 P4c 清除）。
         """
-        if self.plan is not None:
-            spec = self.plan.spec.get("round_label_area")
-            if spec is None:
-                return None
-            r4 = list(spec.rect)
-            if len(r4) == 4:
-                return (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+        if self.plan is None:
             return None
-        if not isinstance(self.schema, dict):
+        spec = self.plan.spec.get("round_label_area")
+        if spec is None:
             return None
-        for seg_key in ("ocr", "round_labels"):
-            seg = self.schema.get(seg_key)
-            if not isinstance(seg, dict):
-                continue
-            rla = seg.get("round_label_area")
-            if isinstance(rla, dict) and isinstance(rla.get("rect"), list) and len(rla["rect"]) == 4:
-                r4 = rla["rect"]
-                return (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
+        r4 = list(spec.rect)
+        if len(r4) == 4:
+            return (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
         return None
 
     def _weak_alerted(self, roi_key: str) -> bool:
@@ -453,94 +412,11 @@ class TreasureStageDetector:
         self._weak_alert_ts[roi_key] = now
         return False
 
-    def _load_gray(self, name_no_ext: str) -> np.ndarray | None:
-        """加载灰度模板，按文件 mtime_ns + size 失效缓存（R4）。
-
-        控制台换图后同一路径可能仍被旧缓存命中；只按文件名永久缓存会让用户看到
-        "改了没用"。不存在/读取失败也缓存当前指纹，文件后来出现时指纹变化会重读。
-        """
-        path = self.tpl_dir / f"{name_no_ext}.png"
-        try:
-            stat = path.stat()
-            fingerprint = (int(stat.st_mtime_ns), int(stat.st_size))
-        except OSError:
-            fingerprint = (-1, -1)
-        cached = self._tpl_cache.get(name_no_ext)
-        if cached is not None and cached[:2] == fingerprint:
-            return cached[2]
-        if fingerprint == (-1, -1):
-            self._tpl_cache[name_no_ext] = (*fingerprint, None)
-            return None
-        img = cv2.imread(str(path))
-        if img is None:
-            self._tpl_cache[name_no_ext] = (*fingerprint, None)
-            return None
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        self._tpl_cache[name_no_ext] = (*fingerprint, gray)
-        return gray
-
-    @staticmethod
-    def _crop(gray_big, x1n, y1n, x2n, y2n, W, H):
-        x1, y1 = max(0, int(x1n * W)), max(0, int(y1n * H))
-        x2, y2 = min(W, int(x2n * W)), min(H, int(y2n * H))
-        if x2 <= x1 or y2 <= y1:
-            return None
-        return gray_big[y1:y2, x1:x2]
-
-    def _match_local(self, gray_big, gray_tpl, x1n, y1n, x2n, y2n, W, H) -> float:
-        """ROI 内多尺度模板匹配，返回所有尺度下的最高命中分（0~1）。
-
-        与调试台 server.match_local 同一算法：模板在 MATCH_SCALES（0.70×~1.30×）
-        逐档缩放取最优分。非标准窗口/DPI 下画面内容会被重采样缩放，模板渲染尺寸
-        可能偏离 1.0×，单尺度匹配会漏检（分数被拉低、横幅互斥区分度消失）；
-        多尺度把实际渲染尺寸对应的最优档找出来，保证运行时分数与调试台校准口径一致。
-        """
-        crop = self._crop(gray_big, x1n, y1n, x2n, y2n, W, H)
-        if crop is None:
-            return 0.0
-        th0, tw0 = gray_tpl.shape[:2]
-        ch, cw = crop.shape[:2]
-        best = 0.0
-        attempted = False
-        for s in self.match_scales:
-            nw = max(4, int(round(tw0 * s)))
-            nh = max(4, int(round(th0 * s)))
-            if nh > ch or nw > cw:
-                continue  # 该尺度放不下，跳过（与调试台一致）
-            attempted = True
-            if nw == tw0 and nh == th0:
-                tpl_s = gray_tpl
-            else:
-                try:
-                    # 缩小时用 AREA（避免锯齿），放大时用 CUBIC
-                    interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
-                    tpl_s = cv2.resize(gray_tpl, (nw, nh), interpolation=interp)
-                except Exception:
-                    continue
-            try:
-                res = cv2.matchTemplate(crop, tpl_s, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, _ = cv2.minMaxLoc(res)
-            except cv2.error:
-                continue
-            if float(max_val) > best:
-                best = float(max_val)
-        if not attempted:
-            # 模板即使缩到最小档 0.70× 仍超出 ROI → 该 ROI 永远无法命中
-            now = time.time()
-            if now - getattr(self, "_last_size_warn", 0.0) > 10.0:
-                self._last_size_warn = now
-                logger.log(
-                    f"[鉴宝检测器] ROI 尺寸不足 (crop {cw}×{ch} < tpl {tw0}×{th0}×0.70)，"
-                    f"该 ROI 永远无法命中，请用调试台调大",
-                    "WARNING",
-                )
-        return best
-
     def _detect_round_full(self, frame_rgb, W, H) -> int | None:
         """识别不到回合（横幅未命中）时激活一次：OCR 读回合小字区域 → 提取回合号。
 
         仅当注入的 OCR 引擎可用时执行；引擎未注入/加载失败/文本无数字均返回 None，
-        由调用方（detect）走兜底，不抛异常、不阻塞主流程。
+        由调用方（_scan）走兜底，不抛异常、不阻塞主流程。
         """
         if self._ocr is None:
             return None

@@ -1075,6 +1075,7 @@
     },
     "spec": {
       "appraiser_p1_caroline": {
+        "colorspace": "gray",
         "kind": "template",
         "label": "偏好鉴宝师① Caroline",
         "order": 1,
@@ -1091,6 +1092,7 @@
         "threshold": 0.8
       },
       "appraiser_p2_shotaro": {
+        "colorspace": "gray",
         "kind": "template",
         "label": "偏好鉴宝师② Shotaro",
         "order": 2,
@@ -1108,6 +1110,7 @@
       },
       "appraiser_selected_check": {
         "_comment": "卡片右上角黄色√，用于判定目标鉴宝师是否已被选中",
+        "colorspace": "gray",
         "kind": "template",
         "label": "鉴宝师已选中对勾",
         "order": 961,
@@ -1593,6 +1596,7 @@
             "result_auction_win_banner": 0.6
           }
         },
+        "colorspace": "gray",
         "kind": "template",
         "label": "竞拍结果横幅",
         "order": 910,
@@ -1615,6 +1619,7 @@
           "margin": 0.03,
           "round_from_template": true
         },
+        "colorspace": "gray",
         "kind": "template",
         "label": "回合巨型横幅",
         "order": 930,
@@ -1706,6 +1711,7 @@
       },
       "session_start_match_btn": {
         "_comment": "判定按钮是否已出现（详情卡已切到目标场次）；点击用 actions 版的同名锚点",
+        "colorspace": "gray",
         "kind": "template",
         "label": "开始匹配按钮（判定）",
         "order": 960,

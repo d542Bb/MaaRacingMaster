@@ -71,6 +71,9 @@ class Anchor:
     arbitration: dict = field(default_factory=dict)
     guarded_by: str | None = None
     domain: dict | None = None
+    # P4c：匹配色彩空间（宪法 §6「按节点声明 colorspace」；python 侧消费形，
+    # 图侧同名字段在 pipeline 节点参数里）。默认彩色，灰度按锚点显式声明。
+    colorspace: str = "rgb"
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,7 @@ class AnchorSpec:
     scales: tuple[float, ...] | None = None  # None → 用 plan.scales
     arbitration: Mapping = field(default_factory=dict)
     guarded_by: str | None = None
+    colorspace: str = "rgb"
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,7 @@ def _parse_spec_section(raw: Mapping[str, Any]) -> dict[str, Anchor]:
             arbitration=dict(a.get("arbitration") or {}),
             guarded_by=a.get("guarded_by"),
             domain=dict(a.get("domain") or {}),
+            colorspace=str(a.get("colorspace") or "rgb"),
         )
     return anchors
 
@@ -206,6 +211,7 @@ def _build_detection_plan(anchors: Mapping[str, Anchor], perception: Mapping[str
             scales=None,
             arbitration=dict(anchor.arbitration),
             guarded_by=anchor.guarded_by,
+            colorspace=anchor.colorspace,
         )
 
     active: dict[str, frozenset[str]] = {}

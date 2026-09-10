@@ -75,6 +75,25 @@ def test_policy_loop_wired_into_every_dwell(truth):
         assert wired == (n not in hall), n
 
 
+def test_spec_colorspace_contract(truth):
+    """P4c 数据面契约：colorspace 三值合法；灰度豁免集 = 帧预算标定的声明集。
+
+    灰度集依据 tools/experiments/v4-p4c-match/ 对拍报告（rgb 2.3~2.8× 成本、
+    selected_check 彩图松判、session_start_match_btn 边界翻转）；改这里=改帧率
+    与识别行为，须重跑对拍。其余锚点缺省 rgb（宪法 §6 默认彩色）。
+    """
+    _, policy = truth
+    spec = policy["perception"]["spec"]
+    for name, a in spec.items():
+        cs = a.get("colorspace")
+        assert cs is None or cs in ("gray", "rgb", "rgb_strict"), f"{name}: {cs!r}"
+    gray_set = {n for n, a in spec.items() if a.get("colorspace") == "gray"}
+    assert gray_set == {
+        "appraiser_p1_caroline", "appraiser_p2_shotaro", "appraiser_selected_check",
+        "session_start_match_btn", "round_big_banner", "result_banner",
+    }, f"灰度声明集漂移: {gray_set}"
+
+
 def _tpls_of(node) -> set[str]:
     r = node.get("recognition")
     if isinstance(r, dict) and r.get("type") == "Or":

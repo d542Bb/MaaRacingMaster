@@ -58,7 +58,6 @@ class Clicker:
         self._rebuild_gamepad_cb = None  # 手柄重建回调（宿主注入；None=不支持自愈）
         self._gamepad_lost_streak = 0  # 手柄光标连续丢失计数（approach lost 累加）
         self._rebuild_cooldown_until_ts = 0.0  # 重建冷却截止（monotonic 秒）
-        self._shoo_cooldown_until_ts = 0.0  # 光标避让冷却截止（monotonic 秒）
         # 异步点击（2026-09-03 导航线程化）：real 立即执行、结果入槽；gamepad 后台导航
         self._real_result: dict | None = None  # real 模式结果槽（submit 后立即可消费）
         self._last_norm: tuple[float, float] | None = None  # 最近提交归一化坐标（结果回填 last_pos 用）
@@ -167,8 +166,10 @@ class Clicker:
         """主循环 consume 时处理导航结果：丢失累计/重建计数（原 _click_gamepad 职责）。
 
         device_lost=True 且为真实点击（intent=False）→ 累计丢失，达阈值重建；
-        避让/意图导航（intent=True）丢失不触发重建——转场期光标被遮罩隐藏是
-        正常现象（2026-09-03 用户实测：避让丢失误触发重建会拔插设备制造空档）。
+        意图导航（intent=True：PEEP 意图模式/只移动任务）丢失不触发重建——
+        转场期光标被遮罩隐藏是正常现象（2026-09-03 用户实测：丢失误触发重建
+        会拔插设备制造空档）。P4c 注：原「避让（shoo）」消费方已退役，
+        本条对 intent 的保护语义不变。
         """
         if res.get("device_lost"):
             if not res.get("intent"):
@@ -197,90 +198,21 @@ class Clicker:
         if self._gamepad is not None:
             self._gamepad.shutdown()
 
-    # ---------- 光标驻留看守（避让）----------
+    # 光标遮挡防线（宪法 §5，P4c 定稿）：光标是已知遮挡物，不做反应式躲避。
+    # python 识别侧 = 按锚点 colorspace 校准 + 稳定帧/转场缓冲判定；
+    # 图侧 = MRA_Template 的 mask_cursor 遮挡过滤按需启用（本类
+    # gamepad_cursor_pos 提供光标真值，桥宿主 cursor_pos 已接线）。
 
-    SHOO_COOLDOWN_S = 0.3  # 避让冷却（monotonic）：一帧即够——避让导航本身已宽松
-    # 快速化（SHOO_TOL_PX），光标移开识别区后下帧即可恢复检测/再次避让。用户
-    # 拍板 2026-09-03：原 4.0s 过长，点击后光标压转移信号需避让的窗口内，
-    # 冷却期间识别区被挡也不避让 → 转移信号（如"匹配中"）漏检。
-    SHOO_TOL_PX = 60.0    # 避让导航容差 px：只需把光标移出识别区（遮挡半径 30px），
-    # 无需精确到位；60px 大幅缩短同步导航耗时，避免避让阻塞吃掉转移信号窗口
-    # 光标连续未识别跳过避让的阈值：游戏转场期（点「开始匹配」后匹配加载遮罩
-    # 隐藏光标、面板开关动画等）光标短暂不可见属正常，此时 last_pos 是陈旧
-    # 位置，盲导航既挪不动又白白阻塞主循环 → 跳过，等光标重现/阶段切换。
-    SHOO_SKIP_MISS_STREAK = 3
-    # 避让点候选方向（归一化偏移）：下→上→右→左→远上，取第一个不压区域者
-    SHOO_DIRECTIONS = ((0.0, 0.14), (0.0, -0.14), (0.13, 0.0), (-0.13, 0.0), (0.0, -0.30))
+    def gamepad_cursor_pos(self) -> tuple[int, int] | None:
+        """手柄导航器最近一次识别到的游戏光标位置（截图帧像素坐标）。
 
-    def auto_shoo(self, guard_rects, *, radius_px: float,
-                  frame_size: tuple[int, int],
-                  next_center: tuple[float, float] | None = None,
-                  on_progress=None, should_abort=None) -> dict | None:
-        """光标驻留看守：光标压住宿主指定的「需保持可识别」区域时，自动导航到
-        邻近空白处（不点击）。由宿主主循环**每帧**驱动——阶段状态每帧更新后，
-        激活区域集合自然跟随新阶段；失败后冷却过期自动重试。
-
-        **异步（2026-09-03 导航线程化）**：判定逻辑在主循环（本方法）执行，
-        导航动作经 submit_move 提交后台线程，**不阻塞主循环**。
-
-        guard_rects：[(key, (x1,y1,x2,y2))] 归一化区域（宿主的领域知识，带 key
-          供触发诊断）。
-        radius_px：光标遮挡等效半径（圆盘+环+hover 高亮，帧像素）。
-        next_center：宿主下一个点击意图的中心（归一化，可选）——它在遮挡区外时
-          跳过避让（下一次点击导航会自然把光标带离），省一次专门导航；它在遮挡
-          区内（或无意图/等待态）才避让——光标已在目标上时按 A 即可，挪走反而
-          多此一举，也避免"点锚点按钮后自己挡自己"的震荡。
-
-        返回 {"key": 命中区域, "point": (nx, ny) 避让点}；未触发返回 None。
-        防抖/互斥设计：
-          • 冷却（monotonic 秒）：避让后 SHOO_COOLDOWN_S 内不再触发
-          • 任务槽忙（点击/避让在跑或结果待消费）→ 跳过本次判定（click 优先）
-          • 避让走 submit_move（intent=True），不产生点击
-          • 光标位置取手柄导航器最近一次成功识别位；导航器未绑定/位置未知不触发
+        遮挡过滤（MRA_Template mask_cursor）的光标真值来源；real 模式/未绑定/
+        从未识别到光标时为 None。转场期光标隐藏时返回的是陈旧位——消费方
+        （识别节点）自担时效，只有真压住命中框才生效，最坏多拒一帧。
         """
-        if self.mode != "gamepad" or self._gamepad is None:
+        if self._gamepad is None:
             return None
-        if self.is_busy():
-            return None  # 任务槽忙（点击优先）→ 下帧再判定
-        now = time.monotonic()
-        if now < self._shoo_cooldown_until_ts:
-            return None
-        # 光标当前连续未识别（游戏转场期光标被遮罩隐藏，如匹配中加载画面）：
-        # last_pos 是陈旧位置，盲导航只会白占任务槽；等光标重现再避让
-        # （2026-09-03 用户实测：第二次匹配瞬间 PEEP 消失、程序空档）。
-        if self._gamepad.miss_streak >= self.SHOO_SKIP_MISS_STREAK:
-            return None
-        pos = self._gamepad.last_pos
-        W, H = frame_size
-        if not pos or W <= 0 or H <= 0 or not guard_rects:
-            return None
-        rx, ry = radius_px / W, radius_px / H
-        nx, ny = pos[0] / W, pos[1] / H
-
-        def _hit(x: float, y: float) -> str | None:
-            for key, (x1, y1, x2, y2) in guard_rects:
-                if x1 - rx <= x <= x2 + rx and y1 - ry <= y <= y2 + ry:
-                    return key
-            return None
-
-        hit_key = _hit(nx, ny)
-        if hit_key is None:
-            return None  # 光标没压任何需识别区域
-        if next_center is not None:
-            ncx, ncy = float(next_center[0]), float(next_center[1])
-            if _hit(ncx, ncy) is None:
-                return None  # 下一个意图目标在干净区：点击导航自然带离，无需避让
-        for dxn, dyn in self.SHOO_DIRECTIONS:
-            px_ = min(0.97, max(0.03, nx + dxn))
-            py_ = min(0.95, max(0.05, ny + dyn))
-            if _hit(px_, py_) is None:
-                self._shoo_cooldown_until_ts = now + self.SHOO_COOLDOWN_S
-                # 宽松容差避让：只移出识别区即返回（无需精确微调）；异步提交，
-                # 导航线程后台执行，主循环不被阻塞（转移信号窗口不丢失）。
-                if self.submit_move(px_, py_, tol_px=self.SHOO_TOL_PX):
-                    return {"key": hit_key, "point": (px_, py_)}
-                return None
-        return None  # 邻域全是需识别区（少见），放弃避让保持现状
+        return getattr(self._gamepad, "last_pos", None)
 
     @property
     def last_pos(self) -> tuple[int, int] | None:
