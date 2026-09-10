@@ -7,11 +7,13 @@ rem  Usage:
 rem    mpe.cmd                          defaults (root=repo, port=26521)
 rem    mpe.cmd --root <dir> --port <n>  override root / port
 rem    mpe.cmd --mpelb <exe>            explicit mpelb path
-rem    mpe.cmd --stop                   kill mpelb started by this studio
+rem    mpe.cmd --stop                   kill mpelb started by this tool
 rem  mpelb lookup: --mpelb > tools/navkit/dev/mpelb.exe > PATH > %LOCALAPPDATA%
+rem  NOTE: keep this file ASCII-only with CRLF line endings. cmd's batch
+rem  parser byte-seeks and garbles the script when non-ASCII bytes mix with
+rem  a mid-script chcp codepage switch.
 rem ============================================================================
 setlocal EnableDelayedExpansion
-chcp 65001 >nul 2>&1
 
 set "ROOT=%~dp0..\.."
 set "PORT=26521"
@@ -51,18 +53,28 @@ taskkill /f /im mpelb.exe >nul 2>&1
 
 start "MaaRacingAssistant MPE LB" "%MPELB%" --root "%ROOT%" --port %PORT% --log-level INFO
 
-rem ---- P3c: 策略表薄页（独立小服务，与 MPE 并列）----
+rem ---- P3c: policy table page (standalone mini server, next to MPE) ----
 set "POLICY_PORT=26530"
 set "VENV_PY=%ROOT%\.venv\Scripts\python.exe"
 if exist "%VENV_PY%" if exist "%~dp0policy_server.py" (
   start "MaaRacingAssistant MPE policy" "%VENV_PY%" "%~dp0policy_server.py" --port %POLICY_PORT%
 )
 
-ping -n 3 127.0.0.1 >nul
-set "URL=https://mpe.codax.site/stable/?link_lb=true^&port=%PORT%"
-start "" "!URL!"
-set "PURL=http://127.0.0.1:%POLICY_PORT%/"
-start "" "!PURL!"
+rem wait until mpelb WebSocket port is actually listening (max ~20s),
+rem then open browser tabs so MPE connects on first load
+set "TRIES=0"
+:wait_lb
+ping -n 2 127.0.0.1 >nul
+netstat -ano | findstr /r /c:":%PORT% .*LISTENING" >nul 2>&1
+if not errorlevel 1 goto open_browser
+set /a TRIES+=1
+if %TRIES% LSS 20 goto wait_lb
+echo [MPE] warning: mpelb port %PORT% not listening after 20s, opening anyway.
+
+:open_browser
+set "URL=https://mpe.codax.site/stable/?link_lb=true&port=%PORT%"
+start "" "%URL%"
+start "" "http://127.0.0.1:%POLICY_PORT%/"
 
 echo.
 echo [MPE] Opened MPE connecting LB on port %PORT%.
