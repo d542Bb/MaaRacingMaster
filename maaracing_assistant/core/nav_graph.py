@@ -207,6 +207,55 @@ class ClickAction(CustomAction):
         return ok
 
 
+def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str) -> bool:
+    """支持互指文件集的 post_pipeline：多条目（目录或单文件）合并临时目录后一次 post。
+
+    MaaFW 在 post 时即校验 next/on_error 引用闭合（C++ PipelineChecker）——
+    互指条目（global 骨架 ↔ 模块图）分次 post 时先加载者必失败。框架在
+    post 时同步解析为内部节点，加载完成即清理临时目录，源文件/目录（MPE
+    编辑入口）不受影响。仅一个目录条目时直接 post，无合并开销。
+    """
+    for d in dirs:
+        if not d.exists():
+            logger.log(f"[{tag}] 真源路径不存在: {d}", "ERROR")
+            return False
+    if len(dirs) == 1 and dirs[0].is_dir():
+        target = dirs[0]
+        merged_dir: Path | None = None
+    else:
+        merged_tmp = Path(tempfile.mkdtemp(prefix="navkit-pipeline-"))
+        try:
+            seen: dict[str, Path] = {}
+            for d in dirs:
+                files = [d] if d.is_file() else list(d.rglob("*.json*"))
+                base = d.parent if d.is_file() else d
+                for f in files:
+                    rel = f.relative_to(base).as_posix()
+                    if rel in seen:
+                        logger.log(
+                            f"[{tag}] 真源文件冲突: {rel}（{seen[rel]} 与 {base}）", "ERROR")
+                        shutil.rmtree(merged_tmp, ignore_errors=True)
+                        return False
+                    seen[rel] = base
+                    dest = merged_tmp / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, dest)
+            target = merged_tmp
+        except BaseException:
+            shutil.rmtree(merged_tmp, ignore_errors=True)
+            raise
+        merged_dir = merged_tmp
+    try:
+        job = resource.post_pipeline(str(target)).wait()
+    finally:
+        if merged_dir is not None:
+            shutil.rmtree(merged_dir, ignore_errors=True)
+    if job.failed:
+        logger.log(f"[{tag}] pipeline 加载失败: {[str(d) for d in dirs]}", "ERROR")
+        return False
+    return True
+
+
 class NavGraph:
     """一个模块的跳转图实例：装资源、注册桥、跑一段图并返回成败。
 
@@ -251,14 +300,14 @@ class NavGraph:
             self.image_dirs.append(Path(image_dir))
 
     def load(self) -> bool:
-        """加载公共图 + 各模块图，绑定 Tasker。重复调用无副作用。"""
+        """加载公共图 + 各模块图，绑定 Tasker。重复调用无副作用。
+
+        多目录经 _post_pipeline_merged（互指真源合并单次 post）。
+        """
         if self._loaded:
             return True
-        for d in self._pipeline_dirs:
-            job = self._resource.post_pipeline(str(d)).wait()
-            if job.failed:
-                logger.log(f"[跳转图] pipeline 加载失败: {d}", "ERROR")
-                return False
+        if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "跳转图"):
+            return False
         self._tasker.add_context_sink(PipelineLogger())
         self.ctx.bind_tasker(self._tasker, self._resource)
         self._loaded = True
@@ -508,42 +557,11 @@ class NavKitV4:
     def load(self) -> bool:
         """加载 v4 真源目录并把 Tasker 绑到帧注入控制器。重复调用无副作用。
 
-        真源分居 core/plugin 两处且互指（global 骨架 ↔ 模块图），框架按
-        post 校验节点引用存在性——分次 post 时先加载者必然失败。多目录
-        时合并到临时目录一次 post；框架在 post 时同步解析为内部节点，
-        加载完成即清理临时目录，源目录（MPE 编辑入口）不受影响。
+        真源分居 core/plugin 两处且互指，经 _post_pipeline_merged 合并单次 post。
         """
         if self._loaded:
             return True
-        for d in self._pipeline_dirs:
-            if not d.is_dir():
-                logger.log(f"[v4] 真源目录不存在: {d}", "ERROR")
-                return False
-        merged_tmp: Path | None = None
-        try:
-            if len(self._pipeline_dirs) == 1:
-                target = self._pipeline_dirs[0]
-            else:
-                merged_tmp = Path(tempfile.mkdtemp(prefix="navkit-pipeline-"))
-                seen: dict[str, Path] = {}
-                for d in self._pipeline_dirs:
-                    for f in d.rglob("*.json*"):
-                        rel = f.relative_to(d).as_posix()
-                        if rel in seen:
-                            logger.log(
-                                f"[v4] 真源文件冲突: {rel}（{seen[rel]} 与 {d}）", "ERROR")
-                            return False
-                        seen[rel] = d
-                        dest = merged_tmp / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(f, dest)
-                target = merged_tmp
-            job = self._resource.post_pipeline(str(target)).wait()
-        finally:
-            if merged_tmp is not None:
-                shutil.rmtree(merged_tmp, ignore_errors=True)
-        if job.failed:
-            logger.log(f"[v4] pipeline 加载失败: {[str(d) for d in self._pipeline_dirs]}", "ERROR")
+        if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "v4"):
             return False
         self._tasker.add_context_sink(PipelineLogger())
         self._tasker.bind(self._resource, self._controller)

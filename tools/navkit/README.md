@@ -4,10 +4,10 @@
 
 ## 入口
 
-| 目的 | 命令 |
-| --- | --- |
-| 打开 MPE Studio（C 形态：MPE 即 Studio，无壳） | `tools/navkit/mpe.cmd` |
-| 只停本地桥 | `tools/navkit/mpe.cmd --stop` |
+| 目的                                  | 命令                            |
+| ----------------------------------- | ----------------------------- |
+| 打开 MPE Studio（C 形态：MPE 即 Studio，无壳） | `tools/navkit/mpe.cmd`        |
+| 只停本地桥                               | `tools/navkit/mpe.cmd --stop` |
 
 `mpe.cmd` 流程：探测 `mpelb.exe`（`--mpelb` > `dev/mpelb.exe` > PATH > `%LOCALAPPDATA%`）→ 以仓库根为 root 起 LocalBridge（端口 26521）→ 起策略表薄页 `policy_server.py`（26530）→ 等端口真 LISTENING 后打开浏览器（MPE 满幅 + 策略表两个标签页）。mpelb 二进制是本地开发工具，放 `dev/`（gitignore），不入库。
 
@@ -27,10 +27,13 @@ tools/navkit/
 
 ## 真源
 
-- `maaracing_assistant/core/resources/pipeline/global.json` —— 大厅骨架（global.* 命名空间）
+- `maaracing_assistant/core/resources/pipeline/global.json` —— 大厅骨架（global.\* 命名空间）
+
 - `maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json` —— 鉴宝图
+
 - `maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；编辑后与图节点同权）
 
 校验（CI 同款）：`python tools/navkit/check_truth.py`
 
 > 真源数值等价性的历史对拍记录在 `tools/experiments/v4-p4b-source/`。
+

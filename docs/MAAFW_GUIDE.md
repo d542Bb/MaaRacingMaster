@@ -105,8 +105,8 @@ res.register_custom_action("MyAction", inst)     # 注册自定义动作
 res.override_pipeline({...})                   # 运行时覆盖 pipeline
 res.override_next("节点", ["A","B"])           # 运行中改 next 列表（节点不存在也会创建）
 res.override_image("img.png", ndarray)         # 覆盖图片数据
-res.get_node_data("节点") / get_node_list()
-res.set_option(res-option, ...)                # 推理设备/推理库
+res.get_node_data("节点") / res.node_list      # node_list 是属性（maafw 5.12.3 实测；旧名 get_node_list() 已不存在）
+res.set_inference(...) / set_cpu / set_gpu / set_auto_device   # 推理设备/推理库（旧名 set_option 已不存在）
 ```
 
 ### 3.4 Controller（Win32 常用）
@@ -317,7 +317,7 @@ class MyAction(CustomAction):
 
 ## 7. 调试与诊断
 
-- `Toolkit.init_option(path, "")`（**第二参传空串**）读取/生成 `config/maa_option.json`：
+- `Toolkit.init_option(path)`（maafw 5.12.3 起第二参可省，binding 把 `None` 归一为 `{}`；旧版 binding 需显式传空串 `""`）读取/生成 `config/maa_option.json`：
   `logging`(存 maafw\.log)、`save_draw`(存识别可视化到 vision/)、`stdout_level`(0无\~7全)、
   `save_on_error`(失败存图)、`draw_quality`。
 
@@ -346,7 +346,7 @@ class MyAction(CustomAction):
 
 1. `Tasker.bind(resource, controller)` — **resource 在前**。
 2. `Resource.post_bundle(path)` — 是 `post_bundle`，**不是** `post_path`。
-3. `Toolkit.init_option(path, "")` — 第二参**传空串**。
+3. `Toolkit.init_option(path)` — 5.12.3 起第二参可省（binding 源码 `None→{}` 后必传 JSON 串）；低于 5.12 的旧 binding 必须显式传空串 `""`。
 4. `Win32Controller(hWnd=hwnd, ...)` — 参数名**驼峰** **`hWnd`**。
 5. 截图返回 `Image`，`img.numpy()` 是 **BGR**；要 RGB 手动转。
 6. `post_*` 都是异步 → 用 `.wait()` / `.get()`；取结果前先 `wait()`。

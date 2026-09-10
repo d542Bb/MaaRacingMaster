@@ -7,7 +7,8 @@
    跨锚点重复识别告警——逻辑自 migrate_v4.validate_graph 原样迁移；
 2. 数据面可加载：policy.json 经 v4_source 装配（结构性错误 P01-P09 fail-fast）；
 3. 两面交叉一致：图 dwell `_signals` 引用的锚点、policy spec 里 stages/transitions
-   引用的名字必须互洽（编辑任一面时的防脱钩机械检）。
+   引用的名字必须互洽（编辑任一面时的防脱钩机械检）；
+4. 几何合法（校验器第 3 条）：两面一切 rect/roi/box 值域 [0,1] 且有序。
 
 用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
 """
@@ -125,6 +126,35 @@ def cross_checks(graph: dict, policy: dict) -> list[str]:
     return problems
 
 
+def rect_checks(graph: dict, policy: dict) -> list[str]:
+    """校验器第 3 条：两面一切 `rect`/`roi`/`box` 几何字段——4 元数值、值域
+    [0,1]、x1<x2 / y1<y2（归一化矩形统一形；越界 rect 运行时静默错区）。"""
+    errs: list[str] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("rect", "roi", "box"):
+                    label = f"{path}.{k}"
+                    if not (isinstance(v, list) and len(v) == 4
+                            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v)):
+                        errs.append(f"{label} 必须是 4 元数值数组：{v!r}")
+                        continue
+                    if any(not 0.0 <= float(x) <= 1.0 for x in v):
+                        errs.append(f"{label} 值越出 [0,1]：{v!r}")
+                    elif not (v[0] < v[2] and v[1] < v[3]):
+                        errs.append(f"{label} 必须满足 x1<x2 且 y1<y2：{v!r}")
+                else:
+                    walk(v, f"{path}.{k}")
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                walk(item, f"{path}[{i}]")
+
+    walk(graph, "graph")
+    walk(policy, "policy")
+    return errs
+
+
 def main() -> int:
     graph = {**_load(GLOBAL_TRUTH), **_load(TREASURE_TRUTH)}
     errors, warns = validate_graph(graph)
@@ -134,6 +164,7 @@ def main() -> int:
     try:
         policy_doc = _load(POLICY_TRUTH)
         errors += cross_checks(graph, policy_doc)
+        errors += rect_checks(graph, policy_doc)
     except (KeyError, TypeError) as exc:
         errors.append(f"policy.json 段结构非法: {exc}")
     if policy_doc is not None:

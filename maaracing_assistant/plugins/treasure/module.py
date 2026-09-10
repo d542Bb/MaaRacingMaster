@@ -43,7 +43,6 @@ from maaracing_assistant.plugins.treasure.strategy import (
     VAL_COEF,
 )
 from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector
-from maaracing_assistant.core.nav_graph import NavGraph
 from maaracing_assistant.core.template_match import match_template_cs
 from maaracing_assistant.core.navkit import (
     DecisionFacts,
@@ -740,7 +739,6 @@ class TreasureModule(ActivityModule):
         self._session_dir: Path | None = None        # debug/treasure/<ts>/
         self._raw_dir: Path | None = None            # debug/treasure/<ts>/raw/
         self._trace_writer: TraceWriter | None = None
-        self._nav_graph: NavGraph | None = None
         self._saved_frames = 0                       # 已保存的 raw 帧数（全量，每帧 +1）
         self._debug_saved = 0                        # 已保存的 rendered（debug 图）帧数（全量，每帧 +1）
 
