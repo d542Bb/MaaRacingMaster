@@ -110,15 +110,24 @@ class TestWriteDiscipline:
         assert _bytes(env) == snap
 
     def test_pipeline_files_keep_original_style(self, env):
-        """pipeline 真源原为 CRLF/indent 4，写盘必须沿用原风格（否则 diff 全文件漂移）。"""
-        style_before = s._detect_style(env["treasure"])
-        assert style_before == ("\r\n", 4)
-        s.apply_save(_body(), dry_run=False)
-        assert s._detect_style(env["treasure"]) == style_before
-        assert b"\r\n" in env["treasure"].read_bytes()
+        """写盘沿用各真源既有的行尾与缩进（否则 diff 会被格式噪音淹没）。
 
-    def test_policy_keeps_lf_indent2(self, env):
-        assert s._detect_style(env["policy"]) == ("\n", 2)
+        真源在仓库内是 LF（`.gitattributes` 声明 `*.json text eol=lf`），Windows 工作
+        副本可能是 CRLF——断言「写盘前后风格不变」，两种检出形态都成立。
+        """
+        keys = ("policy", "treasure", "entry")
+        styles_before = {k: s._detect_style(env[k]) for k in keys}
+        s.apply_save(_body(), dry_run=False)
+        assert {k: s._detect_style(env[k]) for k in keys} == styles_before
+
+    def test_pipeline_indent_is_four(self, env):
+        """pipeline 真源缩进为 4（与 policy 的 2 不同），写盘后必须保持。"""
+        assert s._detect_style(env["treasure"])[1] == 4
+        s.apply_save(_body(), dry_run=False)
+        assert s._detect_style(env["treasure"])[1] == 4
+
+    def test_policy_indent_is_two(self, env):
+        assert s._detect_style(env["policy"])[1] == 2
 
 
 # ----------------------------------------------------------------------
