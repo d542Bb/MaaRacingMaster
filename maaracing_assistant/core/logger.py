@@ -5,7 +5,7 @@
 
 磁盘写入默认关闭（GUI 内存缓冲不受影响）；由设置页「日志记录」开关或
 sidecar 启动时的 profile 回读启用。日志根 = user_data_dir()/logs，
-开发版与发行版位置一致（%APPDATA%/MaaRacingAssistant/logs）。
+开发版与发行版位置一致（%APPDATA%/MaaRacingMaster/logs）。
 """
 
 from pathlib import Path

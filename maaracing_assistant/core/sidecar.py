@@ -51,7 +51,7 @@ from maaracing_assistant.core.window_utils import ensure_dpi_aware, has_physical
 _STDERR = cast(TextIO, sys.__stderr__)
 
 # --------------------------------------------------------------------------
-# 用户偏好持久化（profile）：%APPDATA%/MaaRacingAssistant/config/profile.json
+# 用户偏好持久化（profile）：%APPDATA%/MaaRacingMaster/config/profile.json
 # 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
 # --------------------------------------------------------------------------
 _PROFILE_FILENAME = "profile.json"
@@ -246,7 +246,7 @@ def _set_ignored_prompt_ids(ids: list) -> None:
 
 
 def _profile_path() -> Path:
-    """profile 文件路径：配置目录（%APPDATA%/MaaRacingAssistant/config/ 下）。"""
+    """profile 文件路径：配置目录（%APPDATA%/MaaRacingMaster/config/ 下）。"""
     return config_dir() / _PROFILE_FILENAME
 
 
@@ -662,7 +662,7 @@ class SidecarService:
             return (False, None, f"打开链接失败: {exc}")
 
     def open_user_data_folder(self, params):
-        """用资源管理器打开用户数据目录（%APPDATA%/MaaRacingAssistant）。
+        """用资源管理器打开用户数据目录（%APPDATA%/MaaRacingMaster）。
 
         目录不存在时自动创建，避免首次运行即报错。os.startfile 是 Windows
         原生调起关联程序的方式，比 subprocess.Popen(['explorer', path]) 更稳。
