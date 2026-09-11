@@ -1,4 +1,4 @@
-# Release package assembly for MaaRM Windows.
+﻿# Release package assembly for MaaRM Windows.
 # Output: <OutRoot>/MaaRacingMaster-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
 #   <name>/{ MaaRacingMaster.Shell.exe + WinUI/.NET dlls, pyproject.toml,
@@ -605,6 +605,12 @@ Set-Content -Path (Join-Path $StageRoot 'maaracing_master\_version.py') -Value $
 # vgamepad 单独容错：import 即建 ViGEmBus VBus()，无驱动环境（CI runner）会抛
 # VIGEM_ERROR_BUS_NOT_FOUND。这证明 wheel 已正确装载，只是缺系统驱动，属于运行
 # 环境问题而非打包问题（用户机器装了 ViGEmBus 驱动后即可正常使用），降级为 warning。
+#
+# 为什么不能只 print(__version__)：maaracing_master/__init__.py 是双轨版本策略——
+# 从包目录向上找到 .git 就用 `git describe` 覆盖 _version.py 快照。本地把 stage 建在
+# 仓库树内（build/...）时打印的是 git 派生值，与本次 -Version 无关，既验不出快照写对
+# 了没有，也容易被误读成"包内版本错了"。故这里：① 断言导入路径确实落在 StageRoot 内
+# （证明自检没有跑到仓库源码上）；② 快照行与生效值分开打印。
 $py = Join-Path $rtDir 'python.exe'
 $checkCode = @'
 import sys
@@ -612,7 +618,15 @@ sys.path.insert(0, sys.argv[1])
 for m in ('maa', 'onnxruntime', 'cv2', 'numpy', 'rapidocr', 'windows_capture'):
     __import__(m)
 import maaracing_master
-print(maaracing_master.__version__)
+from pathlib import Path
+
+here = Path(sys.argv[1]).resolve()
+init = Path(maaracing_master.__file__).resolve()
+if here not in init.parents:
+    raise SystemExit('[self-check] FAIL: imported the wrong tree: %s not under %s' % (init, here))
+print('[self-check] import tree: %s' % init.parent)
+print('[self-check] %s' % (init.parent / '_version.py').read_text(encoding='utf-8').splitlines()[-1])
+print('[self-check] __version__ in effect: %s' % maaracing_master.__version__)
 try:
     __import__('vgamepad')
 except Exception as e:
