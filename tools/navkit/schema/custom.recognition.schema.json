@@ -6,12 +6,12 @@
     "allOf": [
         {
             "if": {
-                "properties": { "custom_recognition": { "const": "MRA_Template" } },
+                "properties": { "custom_recognition": { "const": "MaaRM_Template" } },
                 "required": ["custom_recognition"]
             },
             "then": {
                 "properties": {
-                    "custom_recognition_param": { "$ref": "#/$defs/MRA_TemplateParam" }
+                    "custom_recognition_param": { "$ref": "#/$defs/MaaRM_TemplateParam" }
                 }
             }
         }
@@ -29,8 +29,8 @@
                 { "type": "number", "minimum": 0, "maximum": 1 }
             ]
         },
-        "MRA_TemplateParam": {
-            "title": "MRA_Template 参数",
+        "MaaRM_TemplateParam": {
+            "title": "MaaRM_Template 参数",
             "description": "彩色/遮挡感知模板匹配（template_match 唯一引擎的图桥）",
             "type": "object",
             "properties": {

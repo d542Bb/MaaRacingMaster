@@ -79,7 +79,7 @@ templates/plugin/
 - **导航真源**：NavKit v3 资产 —— `plugins/<id>/resources/config/<id>_assets.json`（模块段）
   + `core/resources/config/global_assets.json`（跨模块共用段=大厅骨架），由 `core/navkit`
   校验与编译，运行期在 Python 侧经 `Assets.load` 直读执行；ROI/资产校准台见 `tools/navkit/`。
-- **MAA Pipeline 执行通路**：`core/nav_graph.py`（`NavGraph` + `MRA_Template`/`MRA_Click` 桥），
+- **MAA Pipeline 执行通路**：`core/nav_graph.py`（`NavGraph` + `MaaRM_Template`/`MaaRM_Click` 桥），
   当前未接线（无生产实例化点），留作把跳转图交给框架跑的备选实现。
 - **MAA Pipeline 任务驱动**：`Resource.post_bundle(RES_DIR)` + 自定义
   `CustomAction`（参考 `core/nav_graph.py` 的桥实现与 docs/MAAFW_GUIDE.md）。

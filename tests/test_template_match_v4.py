@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""P2a-Q5：MRA_Template v4 引擎件合成帧契约（colorspace/仲裁/断言/遮挡/桥编排）。"""
+"""P2a-Q5：MaaRM_Template v4 引擎件合成帧契约（colorspace/仲裁/断言/遮挡/桥编排）。"""
 from __future__ import annotations
 
 import json

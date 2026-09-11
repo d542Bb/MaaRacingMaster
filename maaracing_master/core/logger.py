@@ -40,7 +40,7 @@ class Logger:
         if self._file_enabled:
             try:
                 self._log_dir.mkdir(parents=True, exist_ok=True)
-                self.log_file = self._log_dir / f"MRA_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+                self.log_file = self._log_dir / f"MaaRM_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
             except OSError:
                 self._file_enabled = False   # 目录建不出来（无权限等）：回到关闭态，不干扰主流程
                 self.log_file = None

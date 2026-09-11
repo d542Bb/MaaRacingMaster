@@ -7,8 +7,8 @@
       "_owner": "treasure",
       "_page": "appraiser",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -31,8 +31,8 @@
       "_owner": "treasure",
       "_page": "appraiser",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -58,8 +58,8 @@
         "comment": "卡片右上角黄色√，用于判定目标鉴宝师是否已被选中"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -81,8 +81,8 @@
       "_owner": "treasure",
       "_page": "appraiser",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -104,8 +104,8 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -127,14 +127,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.47704791344667696,
           0.8288425210372661
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -168,14 +168,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.5829211746522411,
           0.8054868624420402
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -205,14 +205,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.5817619783616692,
           0.5382706508672506
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -242,14 +242,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.6312210200927357,
           0.5389575820024043
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -279,14 +279,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.681839258114374,
           0.5417053065430192
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -316,14 +316,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.5825347758887172,
           0.6282586295723853
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -353,14 +353,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.6312210200927357,
           0.6282586295723853
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -390,14 +390,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.6802936630602783,
           0.6282586295723853
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -427,14 +427,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.5821483771251932,
           0.7189335394126739
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -464,14 +464,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.6327666151468315,
           0.7182466082775202
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -501,14 +501,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.6818392581143741,
           0.7182466082775202
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -538,14 +538,14 @@
       "_owner": "treasure",
       "_page": "bidding",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.3294435857805255,
           0.6255109050317706
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -575,8 +575,8 @@
       "_owner": "treasure",
       "_page": "appraiser",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -601,8 +601,8 @@
         "comment": "结算后弹窗①：单日最高利润刷新时出现；点空白继续"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -634,8 +634,8 @@
         }
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -661,8 +661,8 @@
         "comment": "结算后弹窗③：拍品含蛋时出现；点屏幕继续"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -685,8 +685,8 @@
       "_owner": "treasure",
       "_page": "session",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -708,8 +708,8 @@
       "_owner": "treasure",
       "_page": "matching",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -735,8 +735,8 @@
         "comment": "中标横幅带彩条特效，匹配分偏低，单独放宽阈值防误判"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "arbitration": {
           "template_thresholds": {
@@ -768,8 +768,8 @@
         "comment": "5 张互斥模板取最高分且领先次高 ≥ 0.03；回合号权威来源"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "arbitration": {
           "margin": 0.03,
@@ -802,14 +802,14 @@
         "comment": "地图上「鉴宝专家场」标签（点击切换到专家场详情卡）。rect 为占位粗估，请在调试台「Actions」分类下校准中心位置（点该标签中心即可）。"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.2106259659969088,
           0.3517688476730208
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -842,14 +842,14 @@
         "comment": "地图上「鉴宝实习场」标签（点击切换到实习场详情卡）。rect 为占位粗估，请在调试台「Actions」分类下校准中心位置（点该标签中心即可）。"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.19217156105100464,
           0.5907994161085351
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -882,8 +882,8 @@
         "comment": "地图上「鉴宝大师场」标签（点击切换到大师场详情卡）。2026-09-05 经 3582 帧历史会话验证后登记为模板识别：可见帧 P50=0.961、非场次页最高分 0.405（串图安全边际 0.45）；rect 为搜索区（原点击区外扩 25%），点击目标 = 识别框中心。"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "guard": {
@@ -921,8 +921,8 @@
         "comment": "判定按钮是否已出现（详情卡已切到目标场次）；点击用 actions 版的同名锚点"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -945,14 +945,14 @@
       "_owner": "treasure",
       "_page": "session",
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "custom_action_param": {
         "target": [
           0.8005566878960182,
           0.8076892775995848
         ]
       },
-      "custom_recognition": "MRA_Template",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "guard": {
           "rect": [
@@ -982,8 +982,8 @@
       "_owner": "treasure",
       "_page": "payout",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -1005,8 +1005,8 @@
       "_owner": "treasure",
       "_page": "payout",
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",
@@ -1031,8 +1031,8 @@
         "comment": "出价面板开的强信号；常亮但无回合号，回合号走横幅"
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
-      "custom_recognition": "MRA_Template",
+      "custom_action": "MaaRM_Click",
+      "custom_recognition": "MaaRM_Template",
       "custom_recognition_param": {
         "colorspace": "rgb",
         "mode": "template",

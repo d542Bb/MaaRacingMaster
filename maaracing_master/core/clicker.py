@@ -199,13 +199,13 @@ class Clicker:
 
     # 光标遮挡防线（宪法 §5，P4c 定稿）：光标是已知遮挡物，不做反应式躲避。
     # python 识别侧 = 按锚点 colorspace 校准 + 稳定帧/转场缓冲判定；
-    # 图侧 = MRA_Template 的 mask_cursor 遮挡过滤按需启用（本类
+    # 图侧 = MaaRM_Template 的 mask_cursor 遮挡过滤按需启用（本类
     # gamepad_cursor_pos 提供光标真值，桥宿主 cursor_pos 已接线）。
 
     def gamepad_cursor_pos(self) -> tuple[int, int] | None:
         """手柄导航器最近一次识别到的游戏光标位置（截图帧像素坐标）。
 
-        遮挡过滤（MRA_Template mask_cursor）的光标真值来源；real 模式/未绑定/
+        遮挡过滤（MaaRM_Template mask_cursor）的光标真值来源；real 模式/未绑定/
         从未识别到光标时为 None。转场期光标隐藏时返回的是陈旧位——消费方
         （识别节点）自担时效，只有真压住命中框才生效，最坏多拒一帧。
         """

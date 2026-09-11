@@ -32,7 +32,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -53,7 +53,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -74,7 +74,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -95,7 +95,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -117,7 +117,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -138,7 +138,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "arbitration": {
                                         "margin": 0.03,
@@ -167,7 +167,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -188,7 +188,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "arbitration": {
                                         "template_thresholds": {
@@ -216,7 +216,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -237,7 +237,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -259,7 +259,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -301,7 +301,7 @@
         "recognition": {
             "type": "Custom",
             "param": {
-                "custom_recognition": "MRA_Template",
+                "custom_recognition": "MaaRM_Template",
                 "custom_recognition_param": {
                     "colorspace": "rgb",
                     "mode": "template",
@@ -322,7 +322,7 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MRA_Policy",
+                "custom_action": "MaaRM_Policy",
                 "custom_action_param": {
                     "table": "treasure.policy.json#policy"
                 }
@@ -375,7 +375,7 @@
         "recognition": {
             "type": "Custom",
             "param": {
-                "custom_recognition": "MRA_Template",
+                "custom_recognition": "MaaRM_Template",
                 "custom_recognition_param": {
                     "arbitration": {
                         "template_thresholds": {
@@ -427,7 +427,7 @@
         "recognition": {
             "type": "Custom",
             "param": {
-                "custom_recognition": "MRA_Template",
+                "custom_recognition": "MaaRM_Template",
                 "custom_recognition_param": {
                     "colorspace": "rgb",
                     "mode": "template",
@@ -487,7 +487,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "arbitration": {
                                         "margin": 0.03,
@@ -516,7 +516,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -581,7 +581,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "arbitration": {
                                         "margin": 0.03,
@@ -610,7 +610,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -675,7 +675,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "arbitration": {
                                         "margin": 0.03,
@@ -704,7 +704,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -769,7 +769,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "arbitration": {
                                         "margin": 0.03,
@@ -798,7 +798,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -863,7 +863,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "arbitration": {
                                         "margin": 0.03,
@@ -892,7 +892,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -948,7 +948,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -970,7 +970,7 @@
                         "recognition": {
                             "type": "Custom",
                             "param": {
-                                "custom_recognition": "MRA_Template",
+                                "custom_recognition": "MaaRM_Template",
                                 "custom_recognition_param": {
                                     "colorspace": "rgb",
                                     "mode": "template",
@@ -1018,7 +1018,7 @@
         "recognition": {
             "type": "Custom",
             "param": {
-                "custom_recognition": "MRA_Template",
+                "custom_recognition": "MaaRM_Template",
                 "custom_recognition_param": {
                     "colorspace": "rgb",
                     "mode": "template",
@@ -1061,7 +1061,7 @@
         "recognition": {
             "type": "Custom",
             "param": {
-                "custom_recognition": "MRA_Template",
+                "custom_recognition": "MaaRM_Template",
                 "custom_recognition_param": {
                     "colorspace": "rgb",
                     "mode": "template",
@@ -1113,7 +1113,7 @@
         "recognition": {
             "type": "Custom",
             "param": {
-                "custom_recognition": "MRA_Template",
+                "custom_recognition": "MaaRM_Template",
                 "custom_recognition_param": {
                     "colorspace": "rgb",
                     "mode": "template",

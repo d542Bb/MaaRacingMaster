@@ -65,14 +65,14 @@ def test_policy_loop_wired_into_every_dwell(truth):
     full, _ = truth
     loop = full["treasure.policy_loop"]
     act = loop["action"]
-    assert act["type"] == "Custom" and act["param"]["custom_action"] == "MRA_Policy"
+    assert act["type"] == "Custom" and act["param"]["custom_action"] == "MaaRM_Policy"
     assert act["param"]["custom_action_param"]["table"] == "treasure.policy.json#policy"
     assert loop["next"] == [] and loop["timeout"] == -1
     dwells = [n for n, d in full.items() if ct.att(d).get("_dwell")]
     assert len(dwells) == 13
     hall = {"treasure.游戏大厅.dwell", "treasure.活动页面.dwell"}
     # 鉴宝大厅(选择场次)挂 policy_loop：场次选择是动态决策（target_session+
-    # 彩蛋计算），生态无法静态表达——MRA_Policy 本职（真机七炸定案）。
+    # 彩蛋计算），生态无法静态表达——MaaRM_Policy 本职（真机七炸定案）。
     for n in dwells:
         tail = full[n]["next"][-1]
         wired = isinstance(tail, dict) and tail.get("name") == "treasure.policy_loop" \
@@ -279,24 +279,24 @@ def test_root_dollar_keys_never_become_nodes():
 
 @pytest.mark.parametrize("node", [
     # v1 平铺
-    {"custom_recognition": "MRA_Template",
+    {"custom_recognition": "MaaRM_Template",
      "custom_recognition_param": {"mode": "template", "templates": ["a.png"]}},
     # v2 归一（MPE 保存形态）
     {"recognition": {"type": "Custom",
-                     "param": {"custom_recognition": "MRA_Template",
+                     "param": {"custom_recognition": "MaaRM_Template",
                                "custom_recognition_param": {"mode": "template",
                                                            "templates": ["a.png"]}}}},
     # Or 分支内联（起跑汇聚形态）
     {"recognition": {"type": "Or", "param": {"any_of": [
-        {"recognition": "Custom", "custom_recognition": "MRA_Template",
+        {"recognition": "Custom", "custom_recognition": "MaaRM_Template",
          "custom_recognition_param": {"mode": "template", "templates": ["a.png"]}},
-        {"recognition": "Custom", "custom_recognition": "MRA_Template",
+        {"recognition": "Custom", "custom_recognition": "MaaRM_Template",
          "custom_recognition_param": {"mode": "template", "templates": ["b.png"]}}]}}},
 ], ids=["v1平铺", "v2嵌套", "Or分支"])
 def test_custom_recognitions_covers_all_protocol_shapes(node):
     """读取面必须同时吃下两种协议形态——否则 MPE 一存盘，机检就静默失明。"""
     got = ct.custom_recognitions(node)
-    assert [n for n, _ in got] == ["MRA_Template"] * len(got)
+    assert [n for n, _ in got] == ["MaaRM_Template"] * len(got)
     assert {t for _n, p in got for t in p.get("templates") or []} & {"a.png", "b.png"}
 
 
@@ -375,16 +375,16 @@ def test_schema_files_present_and_valid():
     reco = json.loads((SCHEMA_DIR / "custom.recognition.schema.json").read_text(encoding="utf-8"))
     action = json.loads((SCHEMA_DIR / "custom.action.schema.json").read_text(encoding="utf-8"))
     assert pipeline["$defs"]["CustomRecognitionSchema"]["$ref"] == "./custom.recognition.schema.json"
-    assert "MRA_Template" in json.dumps(reco, ensure_ascii=False)
-    assert "MRA_Policy" in json.dumps(action, ensure_ascii=False)
+    assert "MaaRM_Template" in json.dumps(reco, ensure_ascii=False)
+    assert "MaaRM_Policy" in json.dumps(action, ensure_ascii=False)
 
 
 def test_mra_template_nodes_match_schema_contract(truth):
-    """MRA_Template 参数面契约（v1 平铺 / v2 recognition.param 嵌套 / Or 分支全验）。"""
+    """MaaRM_Template 参数面契约（v1 平铺 / v2 recognition.param 嵌套 / Or 分支全验）。"""
     full, policy = truth
     for name, n in {**full, **policy["actuators"]}.items():
         for reco_name, p in ct.custom_recognitions(n):
-            assert reco_name == "MRA_Template", (name, reco_name)
+            assert reco_name == "MaaRM_Template", (name, reco_name)
             assert p.get("mode") in ("template", "point"), name
             assert isinstance(p.get("rect"), list) and len(p["rect"]) == 4, name
             assert all(0.0 <= v <= 1.0 for v in p["rect"]), name
@@ -398,15 +398,15 @@ def test_dedup_rule_exempt_structural_copies(truth):
 
 def test_dedup_rule_catches_cross_anchor_duplicate():
     fake = {
-        "treasure.a": {"recognition": "Custom", "custom_recognition": "MRA_Template",
+        "treasure.a": {"recognition": "Custom", "custom_recognition": "MaaRM_Template",
                        "custom_recognition_param": {"mode": "template", "rect": [0, 0, 1, 1],
                                                    "templates": ["x.png"]},
-                       "action": "Custom", "custom_action": "MRA_Click",
+                       "action": "Custom", "custom_action": "MaaRM_Click",
                        "next": ["treasure.b.dwell"]},
-        "treasure.b": {"recognition": "Custom", "custom_recognition": "MRA_Template",
+        "treasure.b": {"recognition": "Custom", "custom_recognition": "MaaRM_Template",
                        "custom_recognition_param": {"mode": "template", "rect": [0, 0, 1, 1],
                                                    "templates": ["x.png"]},
-                       "action": "Custom", "custom_action": "MRA_Click",
+                       "action": "Custom", "custom_action": "MaaRM_Click",
                        "next": ["treasure.a.dwell"]},
         "treasure.a.dwell": {"recognition": "DirectHit", "action": "DoNothing",
                              "attach": {"_dwell": True}, "next": ["treasure.b"]},

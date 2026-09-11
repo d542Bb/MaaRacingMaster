@@ -6,7 +6,7 @@
     "allOf": [
         {
             "if": {
-                "properties": { "custom_action": { "const": "MRA_Policy" } },
+                "properties": { "custom_action": { "const": "MaaRM_Policy" } },
                 "required": ["custom_action"]
             },
             "then": {
@@ -28,7 +28,7 @@
         },
         {
             "if": {
-                "properties": { "custom_action": { "const": "MRA_Click" } },
+                "properties": { "custom_action": { "const": "MaaRM_Click" } },
                 "required": ["custom_action"]
             },
             "then": {

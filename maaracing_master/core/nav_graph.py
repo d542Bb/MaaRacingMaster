@@ -5,8 +5,8 @@
 设计只有三条：
   1. 地图（节点/边/阈值/ROI）写在 pipeline JSON 里，不写在 Python 里；
   2. 框架负责跑图循环（截图-识别-动作-走边-超时重试），我们只提供两个桥：
-       MRA_Template  识别：在宿主帧上找模板，把命中框交给框架
-       MRA_Click     动作：把命中框中心交给 core.clicker.Clicker（自动按
+       MaaRM_Template  识别：在宿主帧上找模板，把命中框交给框架
+       MaaRM_Click     动作：把命中框中心交给 core.clicker.Clicker（自动按
                      click_mode 分派 前台鼠标 / 后台手柄导航+A / 意图不确认）
   3. 目标坐标永远来自识别框，不来自代码里写死的百分比。
 
@@ -65,8 +65,8 @@ from maaracing_master.core.template_match import (
 # core 自带资源根（stick_speed_model.json 也在这，不新开目录约定）
 CORE_RES_DIR = Path(__file__).resolve().parent / "resources"
 
-RECOGNIZER_NAME = "MRA_Template"
-ACTION_NAME = "MRA_Click"
+RECOGNIZER_NAME = "MaaRM_Template"
+ACTION_NAME = "MaaRM_Click"
 
 
 def _parse(raw: str) -> dict:
@@ -79,7 +79,7 @@ def _parse(raw: str) -> dict:
 
 
 class TemplateRecognizer(CustomRecognition):
-    """识别桥（v4 参数面）：MRA_Template 的引擎实现，编排 template_match 引擎件。
+    """识别桥（v4 参数面）：MaaRM_Template 的引擎实现，编排 template_match 引擎件。
 
     节点参数（迁移器产出，契约见 tools/navkit/schema/custom.recognition.schema.json）：
         mode           template | point（point 识别走 guard 模板，点击走 target）
@@ -340,7 +340,7 @@ class NavGraph:
         return (W, H)
 
     def cursor_pos(self) -> tuple[float, float] | None:
-        """游戏光标在截图帧中的归一化位置（MRA_Template mask_cursor 遮挡过滤用）。
+        """游戏光标在截图帧中的归一化位置（MaaRM_Template mask_cursor 遮挡过滤用）。
 
         P4c 接线（宪法 §5 L1 防线的数据源）：真值来自手柄导航器对游戏渲染
         圆盘的最近识别位；real 鼠标模式 WGC 不采 OS 光标、手柄未绑定或从未
@@ -467,7 +467,7 @@ class WgcapController(CustomController):
 
     screencap() 读 CaptureAdapter 的 WGC 缓存帧（RGB→BGR 适配框架契约），
     帧龄超过 stale_ms 抛 FrameStaleError。点击/按键等动作一律成功返回——
-    真实动作走 MRA_Click → Clicker（手柄导航协议），不经框架输入通道。
+    真实动作走 MaaRM_Click → Clicker（手柄导航协议），不经框架输入通道。
     """
 
     def __init__(self, capture, *, stale_ms: float = STALE_FRAME_MS):
@@ -485,7 +485,7 @@ class WgcapController(CustomController):
         self.last_frame_id = int(fid)
         return np.ascontiguousarray(frame[:, :, ::-1])  # RGB → BGR（框架契约）
 
-    # ---- 框架要求的输入接口：真实动作走 MRA_Click，这里全部成功占位 ----
+    # ---- 框架要求的输入接口：真实动作走 MaaRM_Click，这里全部成功占位 ----
 
     def connect(self):
         return True
@@ -536,7 +536,7 @@ class NavKitV4:
     与 NavGraph（按需跑一段的跳转图）共享桥宿主接口（frame/click/ensure_clicker），
     差异：①Tasker 绑 WgcapController（帧注入）而非 app 控制器；②图目录 =
     pipeline/ 真源；③dwell 图常驻不退出（post_task 后框架自驱，桥内决策）。
-    业务桥（MRA_Policy 等）由 plugin 经 bridges 参数注入（宪法 3）。
+    业务桥（MaaRM_Policy 等）由 plugin 经 bridges 参数注入（宪法 3）。
     """
 
     def __init__(self, ctx, *, pipeline_dirs, image_dirs=(), bridges=(),

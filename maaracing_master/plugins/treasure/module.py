@@ -503,7 +503,7 @@ class TreasureModule(ActivityModule):
 
     # 光标遮挡防线（宪法 §5，P4c 定稿）：不做反应式躲避——识别可靠性由
     # 「按锚点 colorspace 校准 + 稳定帧/转场缓冲判定」保证，图侧锚点可经
-    # MRA_Template 的 mask_cursor/遮挡过滤按需启用（光标真值已接线）。
+    # MaaRM_Template 的 mask_cursor/遮挡过滤按需启用（光标真值已接线）。
 
     # --------- 可调参数 ---------
     FRAME_INTERVAL_MS     = 300    # 截图周期（毫秒）：主循环 ~3.3Hz，满足「≥3 次/秒」画面采集
@@ -1106,7 +1106,7 @@ class TreasureModule(ActivityModule):
             if self.ctx.click_mode == "gamepad":
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
                 # P4c：与决策段共享同一 Clicker 实例——此前图/桥各持一个导航器，
-                # 光标真值（last_pos）分裂：MRA_Template 遮挡过滤（mask_cursor）
+                # 光标真值（last_pos）分裂：MaaRM_Template 遮挡过滤（mask_cursor）
                 # 在对局内读不到决策点击后的光标位。共享后单导航器全程追踪。
                 clicker = self._get_clicker()
                 clicker.bind_gamepad(self.ctx.capture, gpad, confirm_button=BUTTON_A,
@@ -3403,14 +3403,14 @@ class TreasureModule(ActivityModule):
         # --------- 6. 真实点击：把当前点击意图执行成可见鼠标移动 + 停顿 + 点击 ---------
         # 意图由各阶段决策（_resolve_action_target 统一）给出，含归一化 center；
         # 安全机制（指纹锁/限速/前台校验/坐标换算）见 _execute_click 文档。
-        # P2a-Q3b：此段抽为 _decision_phase()，由 MRA_Policy 桥每帧调用一次
+        # P2a-Q3b：此段抽为 _decision_phase()，由 MaaRM_Policy 桥每帧调用一次
         # （调用序：意图解析 → consume → submit → 决策契约落盘）。
         self._decision_phase()
 
     def _decision_phase(self) -> None:
         """单帧决策-动作段：意图解析 → consume → submit → 决策契约落盘。
 
-        MRA_Policy 桥（PolicyBridge）每次 CustomAction.run 调用一次（一帧决策），
+        MaaRM_Policy 桥（PolicyBridge）每次 CustomAction.run 调用一次（一帧决策），
         [JumpBack] 回 dwell 重判。
         """
         intent = self._resolve_action_target()

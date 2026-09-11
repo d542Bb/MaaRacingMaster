@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """跳转图专用的模板匹配（全仓模板匹配唯一实现）。
 
-运行时所有模板匹配（图节点 MRA_Template、鉴宝阶段检测器、module 私有感知
+运行时所有模板匹配（图节点 MaaRM_Template、鉴宝阶段检测器、module 私有感知
 装载器）都收口在这一份实现，新模块禁止再自带匹配。
 
 算法沿用 racing 已验证的多尺度 TM_CCOEFF_NORMED（窗口尺寸变化时靠 scale 命中）。

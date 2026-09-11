@@ -177,7 +177,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 # 运行期数据（自动生成，gitignore）：已迁至 %APPDATA%/MaaRacingAssistant/
 # ├── config/                                 # profile.json、maa_option.json
 # ├── data/                                   # data/treasure/treasure.db
-# ├── logs/                                   # MRA_*.log
+# ├── logs/                                   # MaaRM_*.log
 # ├── framework/                              # MAA 框架自产物（maafw.log、cache）
 # └── debug/                                  # debug/<module>/<会话>/（调试台契约）
 #
@@ -375,7 +375,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 - GUI 默认只显示 INFO 及以上
 
-- 按时间戳命名日志文件（`MRA_YYYYMMDD_HHMMSS.log`）
+- 按时间戳命名日志文件（`MaaRM_YYYYMMDD_HHMMSS.log`）
 
 - 级别过滤提取（get\_lines）
 
@@ -690,7 +690,7 @@ python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdi
 
 - `data/`：结构化业务数据（`data/treasure/treasure.db`）
 
-- `logs/`：运行日志 `MRA_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）
+- `logs/`：运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）
 
 - `framework/`：MAA 框架自产物（`maafw.log`、cache）
 

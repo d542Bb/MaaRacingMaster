@@ -3,14 +3,14 @@
 
 图形态（迁移器产出）：每个 stage dwell 的 next 兜底位挂
 `{"name": "<module>.policy_loop", "jump_back": true}`；节点本体
-`action: Custom + custom_action: MRA_Policy`。
+`action: Custom + custom_action: MaaRM_Policy`。
 
 语义：锚点/链头/通配全部未命中时执行一帧决策段（`module._decision_phase()`：
 意图解析 → 点击消费/提交 → 决策契约落盘），
 `[JumpBack]` 返回父 dwell 重判——「每帧重判」的图化。
 
 分层（宪法 3）：桥注册在 plugin（持 module 引用，感知业务决策件）；
-core 的 v4 runner 只提供通用加载（MRA_Template/MRA_Click），不感知本桥。
+core 的 v4 runner 只提供通用加载（MaaRM_Template/MaaRM_Click），不感知本桥。
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from maa.resource import Resource
 
 __all__ = ["POLICY_ACTION_NAME", "PolicyBridge"]
 
-POLICY_ACTION_NAME = "MRA_Policy"
+POLICY_ACTION_NAME = "MaaRM_Policy"
 
 
 class PolicyBridge(CustomAction):
@@ -42,7 +42,7 @@ class PolicyBridge(CustomAction):
         # 值由 test_navkit_truth + check_truth 双向锁——桥不做二次解析，
         # 只前置断言编译事实（未编译 = 装配违序，尽早暴露）。
         assert getattr(self._module, "_policy_plan", None) is not None, \
-            "MRA_Policy 前置未满足：决策栈未编译"
+            "MaaRM_Policy 前置未满足：决策栈未编译"
         self._module._tick_once()
         return True
 

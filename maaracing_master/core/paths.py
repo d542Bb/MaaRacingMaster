@@ -7,7 +7,7 @@
 目录结构（五类各归其位）：
     config/     配置类（profile.json、maa_option.json）
     data/       结构化业务数据（data/treasure/treasure.db）
-    logs/       应用日志（MRA_*.log）
+    logs/       应用日志（MaaRM_*.log）
     framework/  MAA 框架自产物（maafw.log、cache）
     debug/      调试截图会话（debug/<module>/<会话>/，调试台契约）
 """
@@ -37,7 +37,7 @@ def data_dir() -> Path:
 
 
 def logs_dir() -> Path:
-    """应用日志目录：MRA_*.log。"""
+    """应用日志目录：MaaRM_*.log。"""
     return user_data_dir() / "logs"
 
 
