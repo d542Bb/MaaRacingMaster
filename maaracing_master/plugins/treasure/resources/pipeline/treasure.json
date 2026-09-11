@@ -28,255 +28,15 @@
         "recognition": {
             "param": {
                 "any_of": [
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.7603703703703705,
-                                        0.8037448559670782,
-                                        0.8962962962962963,
-                                        0.8911111111111112
-                                    ],
-                                    "templates": [
-                                        "hall_peak_appraise_card.png"
-                                    ]
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.7244444444444447,
-                                        0.7446913580246916,
-                                        0.92,
-                                        0.9
-                                    ],
-                                    "templates": [
-                                        "act_goto_appraise_btn.png"
-                                    ]
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.05,
-                                        0.7,
-                                        0.21,
-                                        0.93
-                                    ],
-                                    "templates": [
-                                        "hall_session_cards.png"
-                                    ]
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.7096296296296296,
-                                        0.7660905349794238,
-                                        0.8962962962962964,
-                                        0.8502880658436215
-                                    ],
-                                    "templates": [
-                                        "is_matching_btn.png"
-                                    ],
-                                    "threshold": 0.9
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.4037037037037037,
-                                        0.1674074074074074,
-                                        0.6000000000000001,
-                                        0.2563786008230453
-                                    ],
-                                    "templates": [
-                                        "select_appraiser_title.png"
-                                    ]
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "arbitration": {
-                                        "margin": 0.03,
-                                        "round_from_template": true
-                                    },
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.39703703703703697,
-                                        0.42790123456790125,
-                                        0.5970370370370369,
-                                        0.5779012345679012
-                                    ],
-                                    "templates": [
-                                        "round1_banner.png",
-                                        "round2_banner.png",
-                                        "round3_banner.png",
-                                        "round4_banner.png",
-                                        "round5_banner.png"
-                                    ]
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.7081481481481482,
-                                        0.7626337448559671,
-                                        0.8074074074074075,
-                                        0.8476543209876544
-                                    ],
-                                    "templates": [
-                                        "bid_smart_btn.png"
-                                    ]
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "arbitration": {
-                                        "template_thresholds": {
-                                            "result_auction_win_banner": 0.6
-                                        }
-                                    },
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.31146717041616573,
-                                        0.3948084543413412,
-                                        0.6993817619783617,
-                                        0.6037266014082088
-                                    ],
-                                    "templates": [
-                                        "result_auction_fail_banner.png",
-                                        "result_auction_win_banner.png"
-                                    ],
-                                    "threshold": 0.9
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.6792592592592593,
-                                        0.1805761316872428,
-                                        0.802962962962963,
-                                        0.24452674897119342
-                                    ],
-                                    "templates": [
-                                        "settle_final_price_title.png"
-                                    ]
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.2829629629629631,
-                                        0.38979423868312757,
-                                        0.7348148148148149,
-                                        0.5184362139917695
-                                    ],
-                                    "templates": [
-                                        "daily_high_banner.png"
-                                    ],
-                                    "threshold": 0.8
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "recognition": {
-                            "type": "Custom",
-                            "param": {
-                                "custom_recognition": "MaaRM_Template",
-                                "custom_recognition_param": {
-                                    "colorspace": "rgb",
-                                    "mode": "template",
-                                    "rect": [
-                                        0.44296296296296295,
-                                        0.22913580246913579,
-                                        0.56,
-                                        0.37621399176954734
-                                    ],
-                                    "templates": [
-                                        "egg_reward_title.png"
-                                    ],
-                                    "threshold": 0.8
-                                }
-                            }
-                        }
-                    }
+                    "treasure.游戏大厅.dwell",
+                    "treasure.活动页面.dwell",
+                    "treasure.鉴宝大厅(选择场次).dwell",
+                    "treasure.匹配中.dwell",
+                    "treasure.选择鉴宝师.dwell",
+                    "treasure.第1回合出价.dwell",
+                    "treasure.中标结算.dwell",
+                    "treasure.领取分红.dwell",
+                    "treasure.结算弹窗.dwell"
                 ]
             },
             "type": "Or"
@@ -382,7 +142,7 @@
                             "result_auction_win_banner": 0.6
                         }
                     },
-                    "colorspace": "rgb",
+                    "colorspace": "gray",
                     "mode": "template",
                     "rect": [
                         0.31146717041616573,
@@ -493,7 +253,7 @@
                                         "margin": 0.03,
                                         "round_from_template": true
                                     },
-                                    "colorspace": "rgb",
+                                    "colorspace": "gray",
                                     "mode": "template",
                                     "rect": [
                                         0.39703703703703697,
@@ -587,7 +347,7 @@
                                         "margin": 0.03,
                                         "round_from_template": true
                                     },
-                                    "colorspace": "rgb",
+                                    "colorspace": "gray",
                                     "mode": "template",
                                     "rect": [
                                         0.39703703703703697,
@@ -681,7 +441,7 @@
                                         "margin": 0.03,
                                         "round_from_template": true
                                     },
-                                    "colorspace": "rgb",
+                                    "colorspace": "gray",
                                     "mode": "template",
                                     "rect": [
                                         0.39703703703703697,
@@ -775,7 +535,7 @@
                                         "margin": 0.03,
                                         "round_from_template": true
                                     },
-                                    "colorspace": "rgb",
+                                    "colorspace": "gray",
                                     "mode": "template",
                                     "rect": [
                                         0.39703703703703697,
@@ -869,7 +629,7 @@
                                         "margin": 0.03,
                                         "round_from_template": true
                                     },
-                                    "colorspace": "rgb",
+                                    "colorspace": "gray",
                                     "mode": "template",
                                     "rect": [
                                         0.39703703703703697,

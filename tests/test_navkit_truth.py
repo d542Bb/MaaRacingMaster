@@ -175,27 +175,44 @@ def test_decision_loop_rhythm(truth):
 
 
 def test_boot_node_aggregates_stage_signals(truth):
-    """起跑汇聚契约（P2b 真机三炸根修）：识别 = 全 stage 专属信号并集（去重）、
-    next = 全 dwell 表、未知画面无限驻留——「任意 stage 起跑」语义。"""
+    """起跑汇聚契约（P2b 真机三炸根修；2026-09-11 识别改按名引用）：识别 = 全 stage
+    专属信号并集、next = 全 dwell 表、未知画面无限驻留——「任意 stage 起跑」语义。
+
+    引用化前后行为等价的依据（两条，缺一不可）：
+      · 协议侧——Or/And 的字符串子项按名取**被引节点的识别定义**、只跑识别不跑其动作
+        （5.12.3 实测，tools/experiments/pipeline-inheritance/）；
+      · 真源侧——原 11 块内联参数与这 9 个被引节点的 11 处参数逐一全等（第 2~5 回合与
+        第 1 回合同规格），由两面同图闸 anchor_face_checks 持续锁住。
+    """
     full, _ = truth
     boot = full["treasure.__boot.dwell"]
     assert ct.att(boot)["_boot"] is True and ct.att(boot)["_entry"] is True
     assert boot["action"]["type"] == "DoNothing" and boot["timeout"] == -1
     subs = boot["recognition"]["param"]["any_of"]
+    assert all(isinstance(s, str) for s in subs), "汇聚识别必须按名引用，不留内联副本"
+    assert subs == ct.and_or_refs(boot)
 
-    def _rtype(s):
-        r = s.get("recognition")
-        return r.get("type") if isinstance(r, dict) else r
-
-    assert all(_rtype(s) != "DirectHit" for s in subs)  # 直过信号不进
-    tpls = [t for s in subs for t in _tpls_of(s)]
-    assert len(tpls) == len(set(tpls))  # 共享模板去重（真机八炸定案）
-    # 全部 9 页专属信号可起跑（模板文件级：回合横幅 5 张、胜负横幅 2 张）
-    assert len(set(tpls)) == 16
-    assert {"act_goto_appraise_btn.png", "hall_peak_appraise_card.png",
-            "hall_session_cards.png"} <= set(tpls)
     dwells = {n for n, d in full.items() if ct.att(d).get("_dwell")}
     assert set(boot["next"]) == dwells  # 全 dwell 表
+    dup_rounds = {f"treasure.第{i}回合出价.dwell" for i in (2, 3, 4, 5)}
+    # 引用集 = 全 dwell 去掉同规格重复（第 1 回合作代表）。any_of 的**序**只影响识别
+    # 开销，不影响落到哪个页面——路由序看 next（优先级契约见 test_dyn_stages_priority）
+    assert set(subs) == dwells - dup_rounds, sorted(set(dwells) - set(subs) - dup_rounds)
+    assert "treasure.第1回合出价.dwell" in subs
+    for n in dwells - set(subs):     # 未被引用的 dwell 必须与某被引节点同规格，否则=漏页
+        assert ct.custom_recognitions(full[n]) in [
+            ct.custom_recognitions(full[m]) for m in subs], n
+
+    def _rtype(n: dict) -> str:
+        r = n.get("recognition")
+        return r.get("type") if isinstance(r, dict) else r
+
+    assert all(_rtype(full[s]) != "DirectHit" for s in subs)  # 直过信号不进汇聚
+    tpls = {t for s in subs for _c, p in ct.custom_recognitions(full[s])
+            for t in (p.get("templates") or [])}
+    assert len(tpls) == 16, sorted(tpls)   # 与原内联并集同集（真机八炸去重定案不回归）
+    assert {"act_goto_appraise_btn.png", "hall_peak_appraise_card.png",
+            "hall_session_cards.png"} <= tpls
 
 
 def test_signals_not_clickable(truth):
@@ -323,6 +340,8 @@ def test_truth_source_normalized_to_v2(truth):
                 # param 内出现 custom_recognition/custom_action 正是 v2 该放的位置
                 for branch in ("any_of", "all_of"):
                     for i, sub in enumerate(rp.get(branch) or []):
+                        if isinstance(sub, str):
+                            continue  # 按名引用子项（v5.7）与形态无关，不是 v1 平铺
                         check(sub, f"{where}.{key}.{branch}[{i}]")
         assert not (flat_custom & set(n)), f"{where} 残留 v1 平铺 Custom 字段"
 
@@ -347,6 +366,95 @@ def test_layering_red_line_is_live():
 
     graph, origin = ct.load_graph()
     assert ct.namespace_checks(graph, origin) == []
+
+
+# ---------------- 引用位闭合 + 两面同图（2026-09-11 新增闸门） ----------------
+# 依据：MaaFW 5.12.3 实测（tools/experiments/pipeline-inheritance/）——And/Or 按名子项
+# 是真引用（运行期取被引用节点的识别定义），但框架加载期不校验其名字，拼错要到运行期
+# 才 `Bad sub ref` 静默判该 Or 未命中；`[Anchor]名` 在子项里同样按字面节点名解析，不可用。
+
+def test_and_or_refs_collected_across_forms():
+    """and_or_refs 必须同时吃 v2 嵌套、v1 平铺、以及内联子识别里再套一层 And/Or。"""
+    v2 = {"recognition": {"type": "Or", "param": {"any_of": [
+        "sig.a",
+        {"recognition": {"type": "And", "param": {"all_of": ["sig.b"]}}}]}}}
+    v1 = {"recognition": "Or", "any_of": ["sig.c"]}
+    assert ct.and_or_refs(v2) == ["sig.a", "sig.b"]
+    assert ct.and_or_refs(v1) == ["sig.c"]
+    assert ct.and_or_refs({"recognition": "DirectHit"}) == []
+    # 内联 Custom 参数不是引用，不得被误收
+    inline = {"recognition": {"type": "Or", "param": {"any_of": [
+        {"recognition": {"type": "Custom", "param": {
+            "custom_recognition": "MaaRM_Template",
+            "custom_recognition_param": {"templates": ["a.png"]}}}}]}}}
+    assert ct.and_or_refs(inline) == []
+
+
+def test_and_or_dangling_ref_is_error():
+    """And/Or 子项写错门牌必须在这里红——框架不拦，运行期只静默失败。"""
+    fake = {"入口": {"recognition": {"type": "Or", "param": {"any_of": ["不存在的节点"]}},
+                     "next": ["尾"]},
+            "尾": {"attach": {"_dwell": True}}}
+    errors, _ = ct.validate_graph(fake)
+    assert any("And/Or 子项悬空引用" in e for e in errors), errors
+
+
+def test_anchor_ref_inside_and_or_is_error():
+    """`[Anchor]` 出现在 And/Or 子项 = 按字面节点名解析的死引用，必须报并说明原因。"""
+    fake = {"设锚": {"recognition": "DirectHit", "anchor": "回", "next": ["借锚"]},
+            "借锚": {"recognition": {"type": "Or", "param": {"any_of": ["[Anchor]回"]}}}}
+    errors, _ = ct.validate_graph(fake)
+    assert any("And/Or 子项悬空引用" in e and "[Anchor]" in e for e in errors), errors
+
+
+def test_layering_red_line_covers_every_reference_slot():
+    """红线口径 = 一切按名字指人的位置：And/Or 子项与 anchor 对象 value 同样受检。
+
+    只堵 next/on_error 会留后门：公共层可以靠 any_of 借模块的识别定义，
+    等于间接点名业务层，而机检一声不响。
+    """
+    fake = {"global.hall": {
+        "recognition": {"type": "Or", "param": {"any_of": ["treasure.sig"]}},
+        "anchor": {"出口": "treasure.entry"}}}
+    origin = {"global.hall": ct.CORE_PIPELINE_DIR / "hall.json"}
+    problems = ct.namespace_checks(fake, origin)
+    refs = [p for p in problems if "引用模块节点" in p]
+    assert len(refs) == 2, problems
+
+
+def test_anchor_face_checks_live():
+    """两面同图闸必须是活的：rect 分叉报、colorspace 分叉报、图侧新规格报、全等零报。"""
+    def _g(rect, colorspace="rgb", templates=("a.png",)):
+        return {"m.sig": {"recognition": {"type": "Custom", "param": {
+            "custom_recognition": "MaaRM_Template",
+            "custom_recognition_param": {"mode": "template", "templates": list(templates),
+                                         "rect": list(rect), "colorspace": colorspace}}}}}
+
+    policy = {"perception": {"spec": {
+        "sig_a": {"kind": "template", "templates": ["a.png"],
+                  "rect": [0.0, 0.0, 0.5, 0.5], "colorspace": "gray"}}}}
+    errors, warns = ct.anchor_face_checks(_g([0.0, 0.0, 1.0, 1.0]), policy)
+    assert any("两面不一致" in e and ".rect=" in e for e in errors), errors
+    assert any("两面不一致" in e and ".colorspace=" in e for e in errors), errors
+    assert warns == [], warns
+    # 图侧引入 spec 未登记的规格 → 两面无从比对，必须拦
+    errors2, _ = ct.anchor_face_checks(_g([0.0, 0.0, 0.5, 0.5], templates=("新图.png",)), policy)
+    assert any("spec 无登记" in e for e in errors2), errors2
+    # 结构性字段全等时零报（防闸退化成永远绿的装饰）；spec 省略 colorspace = 缺省 rgb
+    errors3, warns3 = ct.anchor_face_checks(_g([0.0, 0.0, 0.5, 0.5], colorspace="gray"), policy)
+    assert errors3 == [] and warns3 == [], (errors3, warns3)
+    errors4, _ = ct.anchor_face_checks(_g([0.0, 0.0, 0.5, 0.5]), {"perception": {"spec": {
+        "sig_a": {"kind": "template", "templates": ["a.png"], "rect": [0.0, 0.0, 0.5, 0.5]}}}})
+    assert errors4 == [], errors4
+
+
+def test_real_truth_faces_agree(truth):
+    """盘上真源：两面逐字段零分叉、零告警（colorspace 定案「默认 gray，灰度拉不开转
+    rgb」后，两面已统一；出现任何一条报或告警都说明有一面被单独改过）。"""
+    full, policy = truth
+    errors, warns = ct.anchor_face_checks(full, policy)
+    assert errors == []
+    assert warns == []
 
 
 def test_actuators_isolated_from_canvas(truth):

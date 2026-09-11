@@ -3,15 +3,21 @@
 """NavKit v4 真源自洽校验（CI 闸门，P4b 起承担图/数据面全部机检）。
 
 读盘三件套真源并校验：
-1. 图自洽（校验器第 1/5/6 条）：next/on_error 引用闭合、入口可达、无出口告警、
-   跨锚点重复识别告警——逻辑自 migrate_v4.validate_graph 原样迁移；
+1. 图自洽（校验器第 1/5/6 条）：next/on_error 引用闭合、**And/Or 按名子项引用闭合**、
+   入口可达、无出口告警、跨锚点重复识别告警——1/5/6 逻辑自 migrate_v4.validate_graph
+   原样迁移，And/Or 闭合是 2026-09-11 新增（协议侧只给 next/on_error 做加载期闭合校验，
+   And/Or 子项写错名字要到运行期才 `Bad sub ref` 静默判失败，见 and_or_refs 注释）；
 2. 数据面可加载：policy.json 经 v4_source 装配（结构性错误 P01-P09 fail-fast）；
 3. 两面交叉一致：图 dwell `attach._signals` 引用的锚点、policy spec 里
    stages/transitions 引用的名字必须互洽（编辑任一面时的防脱钩机械检）；
+   并且**同一条识别规格在两面必须是同一张照片**——templates 集合相同的图侧参数与
+    spec 锚点，逐字段比对 rect/threshold/arbitration/mode↔kind/colorspace
+    （anchor_face_checks，2026-09-11 新增）；
 4. 几何合法（校验器第 3 条）：两面一切 rect/roi/box 值域 [0,1] 且有序；
 5. 分层红线（校验器第 7 条）：core 真源不得占用、也不得引用模块命名空间的
    节点名——协议层节点名全城唯一（无命名空间），"core/plugin 分离"只能靠
-   引用方向单向守住，不靠文件摆放位置。
+   引用方向单向守住，不靠文件摆放位置。"引用"的口径 = 节点里一切按名字指人的
+   位置（next/on_error + And/Or 子项 + anchor 对象 value），只堵 next 会留后门。
 
 用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
 """
@@ -74,9 +80,12 @@ def load_graph() -> tuple[dict, dict]:
 def namespace_checks(graph: dict, origin: dict) -> list[str]:
     """分层红线：通用层（core）不得点名业务层（plugins/<id>）。
 
-    两条：① core 真源里的节点不得占用模块命名空间；② core 节点的 next/on_error
-    不得引用模块命名空间的节点。方向唯一合法解 = 业务层引用通用层锚点。
+    两条：① core 真源里的节点不得占用模块命名空间；② core 节点**任何按名字指人的
+    位置**（next/on_error、And/Or 子项、anchor 对象 value）都不得引用模块命名空间的
+    节点。方向唯一合法解 = 业务层引用通用层锚点。
     合并单次 post 是协议约束（节点名全城唯一），所以"分离"只能靠引用方向守住。
+    ② 的口径 2026-09-11 从"只看 next/on_error"扩到 all_name_refs：And/Or 按名引用
+    是真引用（运行期取被引用节点的识别定义），只堵 next 等于给红线留一条后门。
     """
     problems: list[str] = []
     for name, f in origin.items():
@@ -85,13 +94,11 @@ def namespace_checks(graph: dict, origin: dict) -> list[str]:
         ns = name.split(".", 1)[0]
         if ns in MODULE_NS:
             problems.append(f"core 真源占用模块命名空间: {name}（{f.name}）→ 应迁往 plugins/{ns}/")
-        for key in ("next", "on_error"):
-            for r in graph[name].get(key) or []:
-                ref = ref_name(r)
-                if ref and ref.split(".", 1)[0] in MODULE_NS:
-                    problems.append(
-                        f"core 真源引用模块节点: {name}.{key} → {ref}（{f.name}）"
-                        f"→ 通用层不得点名业务层，改由模块侧声明该边")
+        for ref in all_name_refs(graph[name]):
+            if ref.split(".", 1)[0] in MODULE_NS:
+                problems.append(
+                    f"core 真源引用模块节点: {name} → {ref}（{f.name}）"
+                    f"→ 通用层不得点名业务层，改由模块侧声明该边")
     return problems
 
 
@@ -102,6 +109,69 @@ def ref_name(r: Any) -> str | None:
     if isinstance(r, dict) and isinstance(r.get("name"), str):
         return r["name"]
     return None
+
+
+def and_or_refs(node: dict) -> list[str]:
+    """节点识别树里所有 And/Or（any_of/all_of）的**按名引用子项**，v1/v2 两种形态都走。
+
+    为什么必须自己闭合（5.12.3 实测，tools/experiments/pipeline-inheritance/）：
+      · `any_of: ["不存在的节点"]` → post_pipeline **不报错**，运行期才
+        `PipelineTask collect_ocr_from_sub_recognitions: Bad sub ref` +
+        `Recognizer::or_ failed to get pipeline data for node` → 整个 Or 判未命中，
+        该节点永不进入、任务静默失败。而 next/on_error 里的同类拼错是加载期就拦。
+      · 子项里的 `[Anchor]名` **同样按字面节点名解析**（实测 Bad sub ref 原文带
+        `[Anchor]` 前缀），锚点晚绑定在这条路上不可用——出现即判死引用。
+    框架给的"引用而不复制识别规格"是省真源行数的正路，但它不带闭合校验，
+    所以这道闸是把"复制但一定对"换成"引用且仍然可证"的前提。
+    """
+    out: list[str] = []
+
+    def take(container: Any) -> None:
+        if not isinstance(container, dict):
+            return
+        for key in ("any_of", "all_of"):
+            lst = container.get(key)
+            if not isinstance(lst, list):
+                continue
+            for sub in lst:
+                if isinstance(sub, str):
+                    out.append(sub)
+                elif isinstance(sub, dict):
+                    walk(sub)
+
+    def walk(obj: Any) -> None:
+        if not isinstance(obj, dict):
+            return
+        take(obj)                       # v1：any_of/all_of 平铺在本层
+        reco = obj.get("recognition")
+        if isinstance(reco, dict):
+            take(reco)                  # v2：参数与类型同级
+            take(reco.get("param"))     # v2：参数在 param 里
+        elif isinstance(reco, list):
+            for r in reco:
+                walk(r)
+
+    walk(node)
+    return out
+
+
+def all_name_refs(node: dict) -> list[str]:
+    """节点里一切"按名字指人"的位置——分层红线的完整口径。
+
+    不含 `roi`/`target` 的字符串形式：那两类指的是"该节点上次跑出来的框"（运行期
+    状态，且合法支持 `[Anchor]`），不是静态可闭合的图边。
+    """
+    refs: list[str] = []
+    for key in ("next", "on_error"):
+        for r in node.get(key) or []:
+            name = ref_name(r)
+            if name:
+                refs.append(name)
+    refs.extend(and_or_refs(node))
+    anch = node.get("anchor")
+    if isinstance(anch, dict):
+        refs.extend(v for v in anch.values() if isinstance(v, str) and v)
+    return refs
 
 
 def custom_recognitions(node: dict) -> list[tuple[str | None, dict]]:
@@ -156,6 +226,19 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
                     problems.append(f"{name}: {key} 元素形态非法 {r!r}")
                 elif ref not in full:
                     problems.append(f"{name}: {key} 悬空引用 {ref}")
+    # And/Or 按名子项：框架加载期不校验（实测放行），运行期才静默判该 Or 未命中，
+    # 所以闭合只能在这里做——这是"把识别规格改成引用"的前提闸门。
+    for name, n in full.items():
+        for ref in and_or_refs(n):
+            hint = "（And/Or 子项按字面节点名解析，[Anchor] 晚绑定在此不可用）" \
+                if ref.startswith("[Anchor]") else ""
+            if ref not in full:
+                problems.append(f"{name}: And/Or 子项悬空引用 {ref}{hint}")
+        anch = n.get("anchor")
+        if isinstance(anch, dict):
+            for a_key, target in anch.items():
+                if isinstance(target, str) and target and target not in full:
+                    problems.append(f"WARN {name}.anchor[{a_key}] 指向不存在的节点 {target}")
     entries = [n for n, d in full.items() if att(d).get("_entry")]
     if not entries:
         problems.append("无 attach._entry 入口节点")
@@ -235,6 +318,73 @@ def cross_checks(graph: dict, policy: dict) -> list[str]:
     return problems
 
 
+# 两面同义字段的配对（图侧 Custom 识别参数键 ↔ spec 锚点键）
+FACE_FIELDS = (("rect", "rect"), ("threshold", "threshold"),
+               ("arbitration", "arbitration"), ("mode", "kind"),
+               ("colorspace", "colorspace"))
+
+
+def _face_norm(field: str, val: Any) -> Any:
+    """两面同义值归一：rect 收 6 位小数；colorspace 缺省两侧同为 rgb（图侧引擎读
+    `p.get("colorspace", "rgb")`，spec 侧本校验器第 4 条认缺省 rgb 合法）。"""
+    if field == "rect" and isinstance(val, list) and len(val) == 4:
+        return tuple(round(float(x), 6) for x in val)
+    if field == "colorspace" and val is None:
+        return "rgb"
+    return val
+
+
+def anchor_face_checks(graph: dict, policy: dict) -> tuple[list[str], list[str]]:
+    """图 ↔ 数据面「同一条识别规格必须同一张照片」。
+
+    连接键 = templates 集合，不靠节点名与 spec 名的字面巧合（图侧节点名带
+    `.r<路线>.<序号>` 链复制后缀，spec 侧是裸锚点名）。同一条规格在图侧会被多处持有
+    （互斥模板族由五个回合 dwell 共享、入口锚点与其 dwell 各持一份），本闸先保证
+    "抄的都是同一张"，收敛重复是下一步的事。
+
+    分级：rect/threshold/arbitration/mode/colorspace 任一面不等 = 双真源已分叉 → error；
+    图侧有、spec 查无此模板集 → error（从此无从比对，等于新开一条无闸规格）。
+    colorspace 的口径 2026-09-11 从告警升为拦：定案「默认 gray，灰度拉不开差距才转
+    rgb」，盘上两处不一致（round_big_banner、result_banner）已按此统一，两面零分叉。
+    """
+    spec = policy["perception"]["spec"]
+    by_tpl: dict[frozenset, list[str]] = {}
+    for a_name, a in spec.items():
+        tpls = a.get("templates")
+        if isinstance(tpls, list) and tpls:
+            by_tpl.setdefault(frozenset(tpls), []).append(a_name)
+
+    graph_face: dict[frozenset, list[tuple[str, dict]]] = {}
+    for n_name, node in sorted(graph.items()):
+        for _cn, p in custom_recognitions(node):
+            tpls = p.get("templates")
+            if isinstance(tpls, list) and tpls:
+                graph_face.setdefault(frozenset(tpls), []).append((n_name, p))
+
+    errs: list[str] = []
+    warns: list[str] = []
+    for tpls, holders in sorted(graph_face.items()):
+        label = "+".join(sorted(tpls))
+        matched = by_tpl.get(tpls, [])
+        if not matched:
+            errs.append(f"图侧规格 {label} 在 policy spec 无登记（持有节点 "
+                        f"{sorted(h for h, _ in holders)}）→ 两面无从比对")
+            continue
+        if len(matched) > 1:
+            warns.append(f"WARN 模板集 {label} 对应多个 spec 锚点 {sorted(matched)}，"
+                         "跳过逐字段比对")
+            continue
+        a_name, a = matched[0], spec[matched[0]]
+        for n_name, p in holders:
+            for g_key, a_key in FACE_FIELDS:
+                g_v = _face_norm(g_key, p.get(g_key))
+                a_v = _face_norm(g_key, a.get(a_key))
+                if g_v != a_v:
+                    errs.append(f"{a_name} 两面不一致: 图({n_name}).{g_key}={g_v!r} "
+                                f"spec.{a_key}={a_v!r}")
+    return errs, warns
+
+
 def rect_checks(graph: dict, policy: dict) -> list[str]:
     """校验器第 3 条：两面一切 `rect`/`roi`/`box` 几何字段——4 元数值、值域
     [0,1]、x1<x2 / y1<y2（归一化矩形统一形；越界 rect 运行时静默错区）。"""
@@ -268,12 +418,13 @@ def main() -> int:
     graph, origin = load_graph()
     errors, warns = validate_graph(graph)
     errors += namespace_checks(graph, origin)
-    for w in warns:
-        print(f"[warn] {w}")
     policy_doc = None
     try:
         policy_doc = _load(POLICY_TRUTH)
         errors += cross_checks(graph, policy_doc)
+        face_errors, face_warns = anchor_face_checks(graph, policy_doc)
+        errors += face_errors
+        warns += face_warns
         errors += rect_checks(graph, policy_doc)
     except (KeyError, TypeError) as exc:
         errors.append(f"policy.json 段结构非法: {exc}")
@@ -284,6 +435,8 @@ def main() -> int:
             load_nav_source(POLICY_TRUTH)
         except Exception as exc:
             errors.append(f"policy.json 数据面装配失败: {exc}")
+    for w in warns:
+        print(f"[warn] {w}")
     for e in errors:
         print(f"[error] {e}")
     if errors:

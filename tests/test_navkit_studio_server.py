@@ -47,8 +47,9 @@ class TestProjection:
         assert len(proj["ocr"]) == 18
 
     def test_nodes_and_tuning_counts(self, proj):
-        """nodes = pipeline 两文件逐处 rect；tuning = 第 54 个 rect。"""
-        assert len(proj["nodes"]) == 36
+        """nodes = pipeline 两文件逐处 rect（25 处：起跑汇聚识别改按名引用后不再持有
+        rect，原 36 减去 boot 的 11 处）；tuning = 第 54 个 rect。"""
+        assert len(proj["nodes"]) == 25
         assert len(proj["tuning"]) == 1
         assert "appraiser_search_roi" in proj["tuning"]
 
@@ -77,8 +78,15 @@ class TestProjection:
         assert smart["order"] == 920
 
     def test_two_sides_colorspace_not_normalized(self, proj):
-        """节点面全 rgb、spec 面 6 个 gray——台内必须如实透传，不得静默归一。"""
-        assert all(v["colorspace"] == "rgb" for v in proj["nodes"].values())
+        """节点面 colorspace 逐处如实透传（有值原样带出，不替节点补默认、不做归一）。
+
+        两面同图闸（check_truth.anchor_face_checks）已把 colorspace 锁成 error 级、
+        盘上两面统一为「默认 gray，灰度拉不开差距才转 rgb」；本测试盯的是投影侧——
+        台内一旦归一，人看到的和跑的就不是同一份。
+        """
+        cs = [v.get("colorspace") for v in proj["nodes"].values()]
+        assert set(cs) <= {None, "gray", "rgb"}, cs
+        assert sum(1 for c in cs if c == "gray") == 6   # 5 处回合横幅 + 1 处胜负横幅
         gray = {k for k, v in proj["template"].items() if v.get("colorspace") == "gray"}
         assert gray == {
             "appraiser_p1_caroline", "appraiser_p2_shotaro", "appraiser_selected_check",
@@ -209,7 +217,7 @@ class TestRoutes:
         st, _, body = _get(live + "/api/rois")
         assert st == 200
         data = json.loads(body)
-        assert len(data["nodes"]) == 36 and len(data["tuning"]) == 1
+        assert len(data["nodes"]) == 25 and len(data["tuning"]) == 1
 
     def test_image_api_rejects_bad_session(self, live):
         st, _, _ = _get(live + "/api/image?session=../x&name=0001_raw.png")

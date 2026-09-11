@@ -136,7 +136,7 @@ class TestWriteDiscipline:
 
 
 class TestMirrorLinkage:
-    NODE = "treasure.__boot.dwell#0"   # mirrors = hall_peak_appraise_card
+    NODE = "treasure.hall_peak_appraise_card#0"   # mirrors = hall_peak_appraise_card
 
     def test_default_writes_both_sides(self, env):
         proj = s.project_rois()
