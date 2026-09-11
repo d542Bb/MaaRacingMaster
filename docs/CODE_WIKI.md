@@ -766,11 +766,14 @@ Studio 工具链**（`tools/navkit/studio.cmd`：ROI 校准台 / 策略表 / 模
   \+ `plugins/<id>/resources/policy/<id>.policy.json`（感知/决策数据面）。
 
 - 共用段 = `core/resources/pipeline/*.json`，**当前为空目录不存在**；出现真跨模块
-  链（如"任何模块开工前先回游戏大厅"）时再建，且它只允许引用各模块的**汇聚入口**
-  （`<id>.__boot.dwell`），不得引用模块内部页面。
+  链（如"任何模块开工前先回游戏大厅"）时再建。它能承载的只有**无出口的公共锚点**
+  （一份识别规格）与**公共动作节点**（识别 + 动作、不带出口），由各模块在自己的
+  `next`/`any_of` 里引用；它**不指向任何模块节点**（机检零例外，2026-09-11 起口径
+  含 And/Or 子项与 `anchor` 对象 value），"回哪个模块"这条边永远由模块自己声明。
 
 **方向红线（机检，校验器第 7 条）**：`check_truth.namespace_checks` 锁两条——
-core 真源①不得占用 `<module>.` 前缀、②`next`/`on_error` 不得引用 `<module>.` 节点。
+core 真源①不得占用 `<module>.` 前缀、②**一切按名字指人的位置**（`next`/`on_error` +
+And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得引用 `<module>.` 节点。
 模块命名空间由 `plugins/*/module.py` 自动发现，无需配置。归属**由命名空间前缀表达**；
 旧 `attach._owner` 字段因全仓零消费方已废除（写了等于没写）。
 
@@ -791,10 +794,17 @@ core 真源①不得占用 `<module>.` 前缀、②`next`/`on_error` 不得引�
 - **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），
   与 MAA `activity_pool` 同构。
 
-**回归护栏（现状）**：CI = `check_truth.py`（图闭合 + 数据面装配 + 图↔spec 交叉互洽
+**回归护栏（现状）**：CI = `check_truth.py`（图闭合（含 **And/Or 按名子项**——框架只校验
+`next`/`on_error`，子项拼错要到运行期才 `Bad sub ref` 静默失败）+ 数据面装配 + 图↔spec
+交叉互洽
 
-- 几何 + **方向红线**）；`test_navkit_truth.py` 锁归位形态（真源全在模块命名空间、
-  core 侧零节点、plugin 文件集）与红线活性（合成违规图必须报）；spec/节点计数见证防漂。
+- 几何 + **方向红线** + **两面同图**（templates 相同的图侧参数与 spec 锚点逐字段比对
+  `rect`/`threshold`/`arbitration`/`mode↔kind`/`colorspace`，任一面不等即拦）。颜色口径
+  定案：**默认 gray，灰度拉不开差距才转 rgb**（2026-09-11 两面统一；依据 = 检测面
+  detector 早已按 `spec.arbitration.margin` 做领先判定，P4C 对拍 812 帧两引擎命中数
+  相等、零翻转，gray 快 2.8 倍）；`test_navkit_truth.py` 锁归位形态
+  （真源全在模块命名空间、core 侧零节点、plugin 文件集）与红线活性（合成违规图必须报）；
+  spec/节点计数见证防漂。
 
 **编辑真源**：`mpe.cmd` 打开的 MPE 文件面板列出 plugin 两个 pipeline 文件，直接编辑
 保存；一个视口 = 一个文件，跨文件被引用节点显示为"外部节点"虚影（MPE 只补**被本文件
@@ -971,3 +981,4 @@ core 真源①不得占用 `<module>.` 前缀、②`next`/`on_error` 不得引�
 | `NavigationDebugger`                 | core/debug.py                                                                             | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
 | `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志（用户数据目录）                    |
 
+<br />

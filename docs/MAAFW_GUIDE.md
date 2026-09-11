@@ -286,25 +286,34 @@ tasker.post_task("日常清理").wait()
 
 ### 5.2 JSON 节点书写规范（血泪要点）
 
-**执行语义（先记牢，最容易误判的四条）**：
+**执行语义（先记牢，最容易误判的六条）**：
 
 - 节点**不"识别自己再执行"**——命中发生在**父节点**对 next 列表的识别轮里；
   `timeout`/`on_error` 是"上一节点等我的时间"。**要调当前节点的识别等待，改的是上一节点
   的** **`timeout`**。
+
+- **唯一的例外是入口节点：它识别自己**。`post_task(entry)` 后框架第一步就执行 entry 自己的
+  `recognition`，不命中则任务直接以失败收场（5.12.3 实测）。所以常驻图的"起跑汇聚节点必须
+  覆盖全页面信号"是硬要求不是风格：画面落在汇聚识别范围之外 = 任务结束 → 宿主健康守护
+  重启 → 再失败，日志表现为每秒一条"常驻图已退出，尝试重启"。
+
+- `And`/`Or` 的 `all_of`/`any_of` 子项**可以只写节点名**（v5.7）：运行期取被引节点的
+  **识别定义**对当前帧重跑，**只跑识别、不执行被引节点的动作、不改变流程**，可嵌套传递。
+  这是 MaaFW 里"引用而不复制识别规格"的唯一原生通路（框架不校验这些名字，见 §5.6）。
 
 - 每轮识别前才截图（`post_delay` 之后），识别到的一定是新帧。
 
 - next **顺序检测、命中即中断** ⇒ 数组顺序就是优先级：优先抢占的（哪怕命中频率低的弹窗）
   排前面，避免"主界面也能匹配、弹窗永远轮不到"。
 
-- **`rate_limit` 管不住 `jump_back` 回弹闭环**（5.12.3 实测，`tools/experiments/v4-frame-pacing/`）：
+- **`rate_limit`** **管不住** **`jump_back`** **回弹闭环**（5.12.3 实测，`tools/experiments/v4-frame-pacing/`）：
   `rate_limit` 的作用域是「节点自己等后继命中的那段轮询」，`pre/post_delay` 只在**进入该节点执行时**
   付一次；一旦下一跳命中了挂 `jump_back` 的兜底节点，父节点的 `rate_limit`/`pre_delay`/`post_delay`
   **全部旁路**——实测把父 `rate_limit` 设 50 / 600 / 2000、`pre/post_delay` 设 0 / 200 / 500 任意组合，
   相邻决策帧间隔恒等于「兜底节点动作自身耗时 + ≈3.5ms 框架开销」；动作耗时归零即飙到 **291 次/秒**，
   而把动作耗时设为 105ms 时三组限速档读数一字不差（108.9ms）。同图改成"next 全 miss 驻留"（不走回弹）
   则间隔立刻精确托住 62 / 606 / ≈2000ms，证明 `rate_limit` 本身工作正常。
-  ⇒ 两条结论：**① 想改"每帧重判"的节拍，改图上的 `rate_limit` 是无效操作，必须在决策段按时间戳自节流；
+  ⇒ 两条结论：**① 想改"每帧重判"的节拍，改图上的** **`rate_limit`** **是无效操作，必须在决策段按时间戳自节流；
   ② 决策段一旦变轻（少跑一轮 OCR 之类），回弹闭环会自动放大成几百 Hz 空转——CPU、trace 落盘、决策契约
   一起被打爆，这是结构性风险而非偶发故障。**
 
@@ -353,8 +362,7 @@ tasker.post_task("日常清理").wait()
 
 ### 5.3 识别器选型决策表（协议清单 + 生态实战倾向）
 
-`DirectHit | TemplateMatch | FeatureMatch | ColorMatch | OCR | NeuralNetworkClassify |
-NeuralNetworkDetect | And | Or | Custom`。
+`DirectHit | TemplateMatch | FeatureMatch | ColorMatch | OCR | NeuralNetworkClassify | NeuralNetworkDetect | And | Or | Custom`。
 
 | 场景               | 选什么                                                                           | 关键参数与坑                                                                                          |
 | ---------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -392,6 +400,15 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
   纯内部工具节点用 `__` 前缀 + 不写 next（`[JumpBack]` 目标形态）；同一基锚的链复制节点
   用 `.r<route>.<n>` 后缀（现行约定，`_base_name` 机检依赖此形态）。
 
+- **中文节点名合法且已在用**（5.12.3 实测：全中文的节点名 / 按名引用 / 锚点名加载通过、
+  运行期正常解析；本仓 21 节点里 13 个是中文名，MAA 本家更是全中文任务名）。但有三条
+  真实限制：① **模板图文件名必须 ASCII 小写下划线**——cv2 中文路径历史坑（仓内
+  `opencv_utf8_patch.py` 为证），且 MaaFW C++ 侧自行读图、Python 补丁管不到它；
+  ② **框架 C++ 日志在控制台侧会把中文打成乱码**（实测报错原文如此），排障时中文节点名
+  在 `maafw.log` 里可读性差；③ `.` 是命名段分隔符（前缀判归属、`.r<route>.<序号>` 是
+  链复制约定），中文段内不得再嵌 `.`。→ 会被跨模块引用的公共锚点用英文前缀
+  （`hall.idle_wake` 这种），模块内页面节点维持现状不改名。
+
 - **Custom 注册名（新）**：与 pipeline 中 `custom_recognition`/`custom_action` 字段值
   **逐字相同**（大小写敏感）；本项目用 `MaaRM_*` 命名空间前缀防止与未来 Agent 组件撞名。
 
@@ -423,9 +440,16 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
 
    - core 真源**不得占用** `<module>.` 前缀（模块命名空间由 `plugins/*/module.py` 自动发现）；
 
-   - core 真源的 `next`/`on_error` **不得引用** `<module>.` 节点。
-     合法方向只有一个：**业务层引用通用层锚点**。通用层要"知道"业务层，唯一允许的
-     接口是各模块的**汇聚入口**（`<id>.__boot.dwell` 这类），不是模块内部页面。
+   - core 真源**一切"按名字指人"的位置**都**不得引用** `<module>.` 节点。口径 =
+     `next`/`on_error` + And/Or 按名子项 + `anchor` 对象 value（`check_truth.all_name_refs`）。
+     只堵 `next`/`on_error` 会留后门：And/Or 的字符串子项是**真引用**——5.12.3 实测
+     运行期取被引用节点的识别定义对当前帧重跑（且只跑识别、不执行其动作），所以公共层
+     靠 `any_of: ["<module>.x"]` 就能借走模块的识别规格，等价于间接点名业务层。
+     合法方向只有一个：**业务层引用通用层锚点**。通用层**不指向任何模块节点**（机检零
+     例外，无"汇聚入口"白名单）——需要"从通用画面回到某个模块"时，由该模块自己在自己
+     的 dwell `next` 里挂上通用锚点，引用方向不变。
+     （2026-09-11 定案：原文"唯一允许的接口是各模块的汇聚入口 `<id>.__boot.dwell`"与
+     机检不符且无必要，已删；公共枢纽形态本身被否——枢纽必然要往下游指，一指就撞红线。）
 
 **过早抽象同样是债**（本节起因，2026-09-10 归位）：`core/resources/pipeline/global.json`
 曾以"大厅骨架"名义装着 7 个节点，其中 6 个带 `_owner: treasure`、模板图是鉴宝入口
@@ -448,11 +472,25 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
   ⑥ 需解析非界面数据。留在图里的只有：识别与跳转、线性流程、错误回退、重试/次数上限、
   模板继承复用、跨服资源叠加。
 
-- **协议自带的复用/变体位，优先于自研**：`baseTask` + `@ # * + ^` 组合代数（继承与
-  列表合并/差集）、`interface.json` 的 `resource.path` 数组（基座 Bundle + 差分 Bundle
-  叠加）、`pipeline_override`（节点级补丁 + `{占位}` 参数拼接）、`default_pipeline.json`
-  （参数下沉，四级优先级）、`.` 前缀文件不加载 / `$` 前缀 root field 不解析（片段与
-  工具元数据逃生位）、`[Anchor]`/`[JumpBack]`/`enabled`/`max_hit`/And-Or 按名引用子条件。
+- **协议自带的复用/变体位，优先于自研**（2026-09-11 按 5.12.3 实测重列，取证脚本
+  `tools/experiments/pipeline-inheritance/`）：
+  **`And`/`Or` 按节点名引用子条件**（v5.7；实测=运行期取被引节点的**识别定义**对当前帧
+  重跑、只跑识别不执行其动作、可嵌套传递，是"引用而不复制识别规格"的唯一原生通路。
+  代价：框架**不校验**这些名字，拼错要到运行期才 `Bad sub ref` 静默判该 Or 未命中，
+  且 `[Anchor]名` 在子项里同样按字面节点名解析=死引用 → 闭合由 `check_truth` 补）；
+  `default_pipeline.json`（参数下沉，四级优先级，`attach` 走 dict merge）、
+  `pipeline_override`（节点级补丁；`PipelineResMgr` 重解析时以**已加载的同名节点**为
+  default，这是协议内唯一"改一处而不重写整节点"的形态）、`interface.json` 的
+  `resource.path` 数组（基座 Bundle + 差分 Bundle 叠加）、`[JumpBack]`/`enabled`/
+  `max_hit`、`.` 前缀文件不加载 / `$` 前缀 root field 不解析（片段与工具元数据逃生位）。
+
+  **MaaFW 没有节点继承**：`baseTask` 字段与节点名里的 `@ # * + ^` 组合代数**不属于本
+  框架**——5.12.3 实测五种算子形态全部按字面量注册为节点名、字段一律回落框架默认，
+  `MaaFramework.dll` 内无 `baseTask` 字符串，`PipelineParser::parse_node` 无对应分支。
+  那是 MaaAssistantArknights 自家 `resource/tasks` 协议的机制
+  （[docs.maa.plus/protocol/task-schema](https://docs.maa.plus/zh-cn/protocol/task-schema.html)）。
+  推论：**"公共骨架节点 + 各模块只改出口"这种省法在 MaaFW 不成立**，每个模块的自适应
+  起跑汇聚必须自己列全页面信号（可引用、不可共用一份清单）。
 
 **协议形态：v1 平铺 vs v2 归一（本项目 2026-09-10 起统一 v2）**
 
@@ -652,6 +690,7 @@ class MyAction(CustomAction):
 16. **文档口径 ≠ 当前版本行为**：maafw\.com 跟随 main（v5.13+），本项目锁 5.12.3——凡引用
     文档论断作设计依据，先做最小实验校准当前安装版本（本条由 V-1 注册语义反转实证）。
 17. **协议无命名空间 ⇒ 分层靠引用方向，不靠目录**：节点名全城唯一，core 真源不得占用
-    也不得引用 `<module>.` 节点（`check_truth.namespace_checks` 机检）；通用层若必须
-    指向业务层，只允许指向其汇聚入口 `<id>.__boot.dwell`。互指即须合并单次 post（见 §5.6）。
+    也不得引用 `<module>.` 节点（`check_truth.namespace_checks` 机检）；"引用"= 一切按名字
+    指人的位置（`next`/`on_error`、And/Or 按名子项、`anchor` 对象 value），通用层不指向任何
+    模块节点，需要被使用时由业务层自行声明那条边。互指即须合并单次 post（见 §5.6）。
 
