@@ -269,14 +269,16 @@ jobs:
     needs: win-build  # 等 zip 补传到 GitHub Release 完成后再同步
     steps:
       - name: 上传 zip 与 sha256 到 CNB Release
+        # CNB 仓库路径与 mirror-to-cnb.yml 同源读 secrets，避免同一事实两处硬编码
+        # （改名时只改 secrets 会漏掉本 job，资产同步静默失效）。
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
-          CNB_REPO: 'MaaRacingMaster/MAIN'
+          CNB_PATH: ${{ secrets.CNB_ORG }}/${{ secrets.CNB_REPO }}
           TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          API="https://api.cnb.cool/${CNB_REPO}"
+          API="https://api.cnb.cool/${CNB_PATH}"
           AUTH="Authorization: Bearer ${CNB_TOKEN}"
           VER="${TAG#v}"
           ZIP="MaaRacingMaster-${VER}-win-x64.zip"
@@ -331,4 +333,4 @@ jobs:
           upload_asset "${ZIP}.sha256"
           upload_asset "$SZ7"
           upload_asset "${SZ7}.sha256"
-          echo "CNB Release 同步完成: https://cnb.cool/${CNB_REPO}/-/releases"
+          echo "CNB Release 同步完成: https://cnb.cool/${CNB_PATH}/-/releases"
