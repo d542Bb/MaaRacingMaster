@@ -14,13 +14,13 @@ import json
 
 import pytest
 
-from maaracing_assistant.core.debug_io import DebugIOWorker
-from maaracing_assistant.core.module_config import (
+from maaracing_master.core.debug_io import DebugIOWorker
+from maaracing_master.core.module_config import (
     ModuleConfig,
     ModuleConfigError,
     load_module_config,
 )
-from maaracing_assistant.core.render_plan import RenderPlan
+from maaracing_master.core.render_plan import RenderPlan
 
 # 一份包含 rois/stages/render 的完整配置（供 loader 测试）
 _CFG = {

@@ -3,6 +3,6 @@
   "venvPath": ".",
   "venv": ".venv",
   "extraPaths": [
-    "maaracing_assistant/plugins/treasure"
+    "maaracing_master/plugins/treasure"
   ]
 }

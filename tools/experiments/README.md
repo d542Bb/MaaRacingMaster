@@ -16,7 +16,7 @@
 
 - 一个主题一个子目录：`experiments/<主题>/`（如 `xinput/`、`wgc/`、`titlebar/`）。
 - 实验脚本**自包含、可直接运行**（`python tools/experiments/<主题>/<脚本>.py`），
-  不 import `maaracing_assistant` 业务代码；需要的能力（截图/手柄）在脚本内最小自建。
+  不 import `maaracing_master` 业务代码；需要的能力（截图/手柄）在脚本内最小自建。
 - 每个主题目录内放一个 `README.md`：记录**实验结论**（成立/不成立/条件成立 + 复现命令），
   结论同时按触发清单写入项目记忆库。
 - 大型探针工具（需要采集数据/训练模型的）完成后移到仓库根 `archive/<名>/`——本机归档目录，

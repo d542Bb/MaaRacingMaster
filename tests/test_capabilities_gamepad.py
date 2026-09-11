@@ -25,11 +25,11 @@ _FakeVg = types.SimpleNamespace(XUSB_BUTTON=_FakeXUSB)
 # capabilities.py 里 `from ...vgamepad_lazy import vg` 需要从该模块取名为 `vg` 的对象，
 # 因此假模块要有一个 `vg` 属性承载 XUSB_BUTTON 枚举。
 _FakeLazy = types.SimpleNamespace(vg=_FakeVg)
-for _key in ("vgamepad_lazy", "maaracing_assistant.core.vgamepad_lazy"):
+for _key in ("vgamepad_lazy", "maaracing_master.core.vgamepad_lazy"):
     assert _key not in sys.modules
     sys.modules[_key] = _FakeLazy
 
-from maaracing_assistant.core.capabilities import (  # noqa: E402
+from maaracing_master.core.capabilities import (  # noqa: E402
     VGamepadAdapter,
 )
 
@@ -91,7 +91,7 @@ def test_left_joystick_default_args():
 
 
 def test_button_constants_exist():
-    from maaracing_assistant.core.capabilities import __getattr__
+    from maaracing_master.core.capabilities import __getattr__
     # 惰性求值返回枚举（此处为假语义模块注入的值）
     a = __getattr__("BUTTON_A")
     b = __getattr__("BUTTON_B")

@@ -44,7 +44,7 @@ pip install -r requirements.txt
 ```
 
 - 启动 GUI：运行编译产物 `apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe`（exe 自身 manifest 自动 UAC 提权）
-- 独立调试 sidecar（不经 GUI）：`python -m maaracing_assistant`
+- 独立调试 sidecar（不经 GUI）：`python -m maaracing_master`
 - 调试工具位于 `tools/`（训练 / 分析 / 调试分类）
 
 ---
@@ -61,13 +61,13 @@ pip install -r requirements.txt
 
 | 文件 | 职责 |
 |------|------|
-| `maaracing_assistant/controller.py` | 总控编排（生命周期 + 能力门面 `ActivityContext`） |
-| `maaracing_assistant/modules/capabilities.py` | 能力 Protocol + 最薄 adapter |
-| `maaracing_assistant/modules/base.py` | `ActivityContext` / `ActivityModule` 基类 |
-| `maaracing_assistant/modules/registry.py` | 模块注册表 |
-| `maaracing_assistant/plugins/<id>/` | 活动插件（自包含目录，各含 `manifest.py` + `resources`） |
-| `maaracing_assistant/modules/treasure_module.py` | 巅峰鉴宝（主打） |
-| `maaracing_assistant/navigation.py` | 光标导航引擎 |
+| `maaracing_master/controller.py` | 总控编排（生命周期 + 能力门面 `ActivityContext`） |
+| `maaracing_master/modules/capabilities.py` | 能力 Protocol + 最薄 adapter |
+| `maaracing_master/modules/base.py` | `ActivityContext` / `ActivityModule` 基类 |
+| `maaracing_master/modules/registry.py` | 模块注册表 |
+| `maaracing_master/plugins/<id>/` | 活动插件（自包含目录，各含 `manifest.py` + `resources`） |
+| `maaracing_master/modules/treasure_module.py` | 巅峰鉴宝（主打） |
+| `maaracing_master/navigation.py` | 光标导航引擎 |
 | `apps/mra_shell/` | WinUI 3 图形界面（Python sidecar 承载业务） |
 
 **完整 API / 算法 / 参数 / 坑点详见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md) 第 11 节「高频致命坑点」——改代码前务必阅读。**

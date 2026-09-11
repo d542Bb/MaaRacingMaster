@@ -40,7 +40,7 @@ class Attriber:
             return "app(.NET/WinUI)"
         if relp.startswith("assets"):
             return "assets"
-        if relp.startswith("maaracing_assistant"):
+        if relp.startswith("maaracing_master"):
             return "mra-sidecar"
         if relp.startswith("runtime"):
             return "runtime-shell"

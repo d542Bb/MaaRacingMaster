@@ -25,7 +25,7 @@ from pathlib import Path
 # 真源 policy 表（仓库内绝对定位，兼容从任意 cwd 启动）
 POLICY_FILE = (
     Path(__file__).resolve().parent.parent.parent
-    / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
+    / "maaracing_master" / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
 )
 
 PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">

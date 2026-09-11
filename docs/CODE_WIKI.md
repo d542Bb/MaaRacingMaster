@@ -6,7 +6,7 @@
 >
 > - **本文件（主文档）**：架构总览 / 目录结构 / 主程核心模块 / 依赖 / 运行流程 / 配置常量 / 开发调试 / 主程坑点 / GUI 选型
 >
-> - [鉴宝域 CODE\_WIKI（plugins/treasure）](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)（treasure\_\* 全模块 / 出价策略 / 鉴宝模板 / 鉴宝坑点）
+> - [鉴宝域 CODE\_WIKI（plugins/treasure）](../maaracing_master/plugins/treasure/CODE_WIKI.md)（treasure\_\* 全模块 / 出价策略 / 鉴宝模板 / 鉴宝坑点）
 
 ***
 
@@ -97,7 +97,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 项目采用**模块插件化**架构：主控（controller）只做生命周期与能力门面，活动流程由插件模块承载。
 
-- **巅峰鉴宝**（treasure 插件）：12 阶段状态机（游戏大厅 → 活动页 → 鉴宝大厅 → 场次 → 鉴宝师 → 出价 → 结算 → 分红），详见 [鉴宝文档 §1](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
+- **巅峰鉴宝**（treasure 插件）：12 阶段状态机（游戏大厅 → 活动页 → 鉴宝大厅 → 场次 → 鉴宝师 → 出价 → 结算 → 分红），详见 [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
 主控不再持有活动流程编排：`MaaRacingAssistantController` 仅负责窗口连接、能力门面（`ActivityContext`）、模块生命周期与全局设置，活动阶段流转全部在模块内部。
 
@@ -111,7 +111,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 ├── AGENTS.md                                 # AI 助手项目配置
 ├── README.md                                 # 用户说明文档
 │
-├── maaracing_assistant/                      # 📦 核心应用包
+├── maaracing_master/                      # 📦 核心应用包
 │   ├── __init__.py                           # 版本号导出（setuptools-scm 自动生成）
 │   ├── __main__.py                           # python -m 入口
 │   ├── core/                                 # 主程序（应用层）
@@ -191,9 +191,9 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 > 本文档覆盖**主程核心模块**。按功能域拆分：
 >
-> - **鉴宝域**（treasure\_module / treasure\_detector / treasure\_ocr / treasure\_renderer / bid\_strategy）→ [鉴宝域文档](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)
+> - **鉴宝域**（treasure\_module / treasure\_detector / treasure\_ocr / treasure\_renderer / bid\_strategy）→ [鉴宝域文档](../maaracing_master/plugins/treasure/CODE_WIKI.md)
 
-### 4.1 [controller.py](file:///d:/maaracing_assistant/maaracing_assistant/core/controller.py) — 主控编排器
+### 4.1 [controller.py](file:///d:/maaracing_master/maaracing_master/core/controller.py) — 主控编排器
 
 **职责**（v0.14+ 已去流程化，专注生命周期与能力门面）：
 
@@ -225,7 +225,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.2 [gamepad\_cursor.py](file:///d:/maaracing_assistant/maaracing_assistant/core/gamepad_cursor.py) — 手柄光标导航引擎
+### 4.2 [gamepad\_cursor.py](file:///d:/maaracing_master/maaracing_master/core/gamepad_cursor.py) — 手柄光标导航引擎
 
 **职责摘要**：签名剖面法识别游戏内白色圆盘光标（normal / interactive 两态）、摇杆-光标速度模型 + 闭环趋近导航、到位后确认点击（意图模式只导航不确认）；供 `core.clicker` 的「后台(手柄)」点击方式复用，与「前台(鼠标)」SendInput 同层。底座与手柄均依赖注入（复用 controller 的 `_gpad` / 模块的 capture），本模块不自建，避免手柄/截图冲突。
 
@@ -233,7 +233,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.3 [yolo\_detector.py](file:///d:/maaracing_assistant/maaracing_assistant/core/yolo_detector.py) — YOLO 检测器
+### 4.3 [yolo\_detector.py](file:///d:/maaracing_master/maaracing_master/core/yolo_detector.py) — YOLO 检测器
 
 **职责**：
 
@@ -263,7 +263,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.4 [mra\_shell](file:///d:/maaracing_assistant/apps/mra_shell) — GUI 宿主（WinUI 3 + HTML 前端）
+### 4.4 [mra\_shell](file:///d:/maaracing_master/apps/mra_shell) — GUI 宿主（WinUI 3 + HTML 前端）
 
 > v0.13.0 起 GUI 定案为 WinUI 3 shell + WebView2 HTML 前端（详见 §11）。旧 ttkbootstrap GUI（`gui.py` MRAGUI）已在重构时移除，以下历史记录仅供参考。
 
@@ -275,7 +275,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 - 前端 HTML 通过 `window.chrome.webview.postMessage` → C# → Python 通信，封装为 `mra.call(method, params)`
 
-**前端文件**（[frontend/](file:///d:/maaracing_assistant/apps/mra_shell/frontend)）：
+**前端文件**（[frontend/](file:///d:/maaracing_master/apps/mra_shell/frontend)）：
 
 | 文件           | 职责                                         |
 | ------------ | ------------------------------------------ |
@@ -306,7 +306,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.5 [debug.py](file:///d:/maaracing_assistant/maaracing_assistant/core/debug.py) — 调试可视化
+### 4.5 [debug.py](file:///d:/maaracing_master/maaracing_master/core/debug.py) — 调试可视化
 
 **职责**：
 
@@ -365,7 +365,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.6 [logger.py](file:///d:/maaracing_assistant/maaracing_assistant/logger.py) — 日志系统
+### 4.6 [logger.py](file:///d:/maaracing_master/maaracing_master/logger.py) — 日志系统
 
 **职责**：
 
@@ -395,7 +395,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.7 [window\_utils.py](file:///d:/maaracing_assistant/maaracing_assistant/window_utils.py) — 窗口与手柄检测
+### 4.7 [window\_utils.py](file:///d:/maaracing_master/maaracing_master/window_utils.py) — 窗口与手柄检测
 
 **职责**：
 
@@ -411,19 +411,19 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.8 [pipeline\_logger.py](file:///d:/maaracing_assistant/maaracing_assistant/pipeline_logger.py) — MAA Pipeline日志
+### 4.8 [pipeline\_logger.py](file:///d:/maaracing_master/maaracing_master/pipeline_logger.py) — MAA Pipeline日志
 
 **职责**：继承 `ContextEventSink`，监听Pipeline节点识别/动作事件，输出中文友好日志。
 
 ***
 
-### 4.9 [opencv\_utf8\_patch.py](file:///d:/maaracing_assistant/maaracing_assistant/core/opencv_utf8_patch.py) — 中文路径补丁
+### 4.9 [opencv\_utf8\_patch.py](file:///d:/maaracing_master/maaracing_master/core/opencv_utf8_patch.py) — 中文路径补丁
 
 **职责**：Monkey-patch `cv2.imread`/`cv2.imwrite`，支持中文Windows路径。ASCII路径走原生API，中文路径用 `np.frombuffer`/`cv2.imencode`+Python文件IO绕过。程序启动时import一次即全局生效。
 
 ***
 
-### 4.10 [wgcap.py](file:///d:/maaracing_assistant/maaracing_assistant/core/wgcap.py) — WGC 持久化后台截图
+### 4.10 [wgcap.py](file:///d:/maaracing_master/maaracing_master/core/wgcap.py) — WGC 持久化后台截图
 
 **职责**：
 
@@ -465,7 +465,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ## 5. 关键类与函数索引
 
-> 鉴宝域（treasure\_\*）类速查见 [鉴宝域文档 §7](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
+> 鉴宝域（treasure\_\*）类速查见 [鉴宝域文档 §7](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
 ### 5.1 controller.MaaRacingAssistantController
 
@@ -546,7 +546,7 @@ core/sidecar.py（JSONL RPC handler）
 
 mra_shell（C#，不导入 Python）
   └── PythonSidecar（stdin/stdout JSONL 通信）
-        └── 子进程：python -m maaracing_assistant（core/sidecar.py）
+        └── 子进程：python -m maaracing_master（core/sidecar.py）
 
 core/controller.py
   ├── core.sidecar（handler） / core.registry
@@ -593,12 +593,12 @@ core/sidecar.py（mra_shell 托管）
 ```
 双击根目录 mra_shell.exe / MaaRacingAssistant.lnk（exe manifest 自动 UAC 提权）
   → WinUI 3 shell 创建窗口（AppWindowTitleBar）并展示 HTML 前端
-  → shell 拉起 Python sidecar（python -m maaracing_assistant）
+  → shell 拉起 Python sidecar（python -m maaracing_master）
     → sidecar 初始化 Controller，等待 stdin JSONL RPC
   → 前端通过 mra.call(method, params) 与 sidecar 通信
 ```
 
-独立调试 sidecar（不经 GUI）：`python -u -m maaracing_assistant.core.sidecar`（等待 stdin JSONL RPC）。
+独立调试 sidecar（不经 GUI）：`python -u -m maaracing_master.core.sidecar`（等待 stdin JSONL RPC）。
 
 ### 7.2 用户点击"开始"后流程
 
@@ -641,7 +641,7 @@ start_module(module_id, start_from)
 
 - 入口：`git tag vX.Y.Z && git push origin vX.Y.Z` 触发CI Release
 
-**双轨版本机制（v0.13.0-dev.5 起，`maaracing_assistant/__init__.py`）**：
+**双轨版本机制（v0.13.0-dev.5 起，`maaracing_master/__init__.py`）**：
 
 - 打包/安装产物（无 `.git`）：读 `_version.py` 构建快照（setuptools-scm 构建时写入）→ 版本固化，**旧版本不会被仓库后续新 tag 带歪**
 
@@ -649,7 +649,7 @@ start_module(module_id, start_from)
 
 - 兜底：`"0.0.0.dev"`
 
-- **sidecar 必须读包级** **`__version__`**（`from maaracing_assistant import __version__`），**不能读** **`_version.__version__`**——后者是 `_version.py` 文件里的构建时硬编码，与 `__init__.py` 动态推导的包级 `__version__` 不是同一个对象（v0.13.0-dev.5 真实踩过：sidecar 一直返回过期版本号）
+- **sidecar 必须读包级** **`__version__`**（`from maaracing_master import __version__`），**不能读** **`_version.__version__`**——后者是 `_version.py` 文件里的构建时硬编码，与 `__init__.py` 动态推导的包级 `__version__` 不是同一个对象（v0.13.0-dev.5 真实踩过：sidecar 一直返回过期版本号）
 
 ***
 
@@ -668,7 +668,7 @@ pip install -r requirements.txt
 ### 9.2 运行
 
 ```bash
-python -u -m maaracing_assistant.core.sidecar  # 独立调试 sidecar（等待 stdin JSONL RPC）
+python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdin JSONL RPC）
 ```
 
 ### 9.3 调试模式
@@ -684,7 +684,7 @@ python -u -m maaracing_assistant.core.sidecar  # 独立调试 sidecar（等待 s
 
 ### 9.5 日志位置（%APPDATA%/MaaRacingAssistant/）
 
-用户数据目录 `user_data_dir()` 五目录结构（[paths.py](file:///d:/maaracing_assistant/maaracing_assistant/core/paths.py)）：
+用户数据目录 `user_data_dir()` 五目录结构（[paths.py](file:///d:/maaracing_master/maaracing_master/core/paths.py)）：
 
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
 
@@ -802,7 +802,7 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 
 ## 10. 已知坑点与注意事项
 
-> 鉴宝坑点见 [鉴宝文档 §9](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
+> 鉴宝坑点见 [鉴宝文档 §9](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
 ### 10.1 系统层
 
@@ -945,20 +945,20 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 | Python worker 线程退出  | `sys.exit()` 在非主线程只抛 SystemExit 不退出进程，必须 `os._exit(n)`                                                                           |
 | Dispose 后访问 Process | `_process.Dispose()` 后访问属性抛「No process is associated」；验证进程存活用 `ProcessId` + `Process.GetProcessById(pid)` 捕获 `ArgumentException` |
 
-> 正式 sidecar：[sidecar.py](file:///d:/maaracing_assistant/maaracing_assistant/core/sidecar.py)（Step 4 完成，已命令行验证）。入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr）。**坑**：handler 线程必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失。
+> 正式 sidecar：[sidecar.py](file:///d:/maaracing_master/maaracing_master/core/sidecar.py)（Step 4 完成，已命令行验证）。入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr）。**坑**：handler 线程必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失。
 
 ***
 
 ## 附录：类速查表
 
-> 主程类速查见下表；鉴宝类（TreasureModule / TreasureStageDetector / TreasureOcr / TreasureDebugRenderer）见 [鉴宝文档 §7](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
+> 主程类速查见下表；鉴宝类（TreasureModule / TreasureStageDetector / TreasureOcr / TreasureDebugRenderer）见 [鉴宝文档 §7](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
 | 类名                                   | 文件                                                                                           | 核心职责                                 |
 | ------------------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------ |
 | `MaaRacingAssistantController`       | core/controller.py                                                                           | 主控编排：能力门面 + 模块生命周期 + 全局设置            |
 | `ActivityModule` / `ActivityContext` | core/base.py                                                                                 | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
 | `Registry`                           | core/registry.py                                                                             | 插件自动扫描注册（扫 `plugins/*/manifest.py`）  |
-| `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_assistant/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机）                    |
+| `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机）                    |
 | `MRAGUI`                             | ~~gui.py~~（已归档移除）                                                                            | 旧 ttkbootstrap 图形界面（已废弃，代码已删）        |
 | `Sidecar`                            | core/sidecar.py                                                                              | JSONL RPC 业务后端（mra\_shell 托管）        |
 | `NavigationDebugger`                 | core/debug.py                                                                                | PEEP预览、截图标注（存盘走 debug\_io IO worker） |

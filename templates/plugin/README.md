@@ -2,8 +2,8 @@
 
 开发新活动插件的起点：本目录是一份**最小完整、可运行骨架**，演示平台对插件的全套契约。
 
-> **为什么放在 `templates/` 而不是 `maaracing_assistant/plugins/`**：
-> [core/registry.py](../../maaracing_assistant/core/registry.py) 只扫描 `maaracing_assistant/plugins/*/manifest.py`。
+> **为什么放在 `templates/` 而不是 `maaracing_master/plugins/`**：
+> [core/registry.py](../../maaracing_master/core/registry.py) 只扫描 `maaracing_master/plugins/*/manifest.py`。
 > 样板在 `plugins/` 之外，**不会被主程序识别为活动模块**，GUI 模块列表里也看不到它；
 > 复制进 `plugins/<id>/` 并完成三处改名后才会被装载。
 
@@ -22,7 +22,7 @@ templates/plugin/
 
 ## 启用步骤（复制即装）
 
-1. **复制**：把 `templates/plugin/` 整个目录复制为 `maaracing_assistant/plugins/<你的插件id>/`。
+1. **复制**：把 `templates/plugin/` 整个目录复制为 `maaracing_master/plugins/<你的插件id>/`。
 2. **改 `manifest.py`**：`ID = "<你的插件id>"`（与目录名一致，全局唯一）。
 3. **改 `module.py`**：类名 `SampleModule` → `<你的模块类名>`，同步 `manifest.py` 的
    `MODULE_CLASS = "module.<你的模块类名>"`；填写 `NAME` / `STAGE_ORDER` / `REQUIRES` / `REQUIRED_ASSETS`。
@@ -89,5 +89,5 @@ templates/plugin/
 ## 打包与分发
 
 无需任何配置：`scripts/release/assemble.ps1` 按 robocopy 整包复制
-`maaracing_assistant/` 目录，`plugins/<id>/`（含资源与模型）自动随包分发。
+`maaracing_master/` 目录，`plugins/<id>/`（含资源与模型）自动随包分发。
 `REQUIRED_ASSETS` 声明的文件缺失时，启动前会给出插件内具体路径提示。

@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np  # noqa: E402
 
-from maaracing_assistant.core.wgcap import WgcCapture  # noqa: E402
+from maaracing_master.core.wgcap import WgcCapture  # noqa: E402
 from maa.controller import Win32Controller  # noqa: E402
 from maa.define import MaaWin32ScreencapMethodEnum  # noqa: E402
 from maa.toolkit import Toolkit  # noqa: E402

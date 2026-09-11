@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from maaracing_assistant.plugins.treasure.module import TreasureModule
-from maaracing_assistant.plugins.treasure.policy_bridge import (
+from maaracing_master.plugins.treasure.module import TreasureModule
+from maaracing_master.plugins.treasure.policy_bridge import (
     POLICY_ACTION_NAME,
     PolicyBridge,
 )
@@ -82,7 +82,7 @@ def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
     （回归：插件根曾少推导一级，真机拼出 plugins/resources/nav 而炸）。"""
     from pathlib import Path
 
-    from maaracing_assistant.core import nav_graph as _ng
+    from maaracing_master.core import nav_graph as _ng
 
     captured: dict = {}
 

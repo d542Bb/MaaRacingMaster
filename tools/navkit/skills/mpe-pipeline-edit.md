@@ -19,9 +19,9 @@
 
 | 内容      | 路径                                                                            |
 | ------- | ----------------------------------------------------------------------------- |
-| 鉴宝对局图   | `maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json`       |
-| 鉴宝大厅入口链 | `maaracing_assistant/plugins/treasure/resources/pipeline/treasure.entry.json` |
-| 决策策略表   | `maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json`  |
+| 鉴宝对局图   | `maaracing_master/plugins/treasure/resources/pipeline/treasure.json`       |
+| 鉴宝大厅入口链 | `maaracing_master/plugins/treasure/resources/pipeline/treasure.entry.json` |
+| 决策策略表   | `maaracing_master/plugins/treasure/resources/policy/treasure.policy.json`  |
 
 - **分层红线**：节点名前缀 = 归属命名空间，全部真源现住 `treasure.*`；core 侧不得新增
   引用模块节点名的图（`check_truth.namespace_checks` 机检）。想加"跨模块共用链"先读

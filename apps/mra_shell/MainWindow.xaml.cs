@@ -145,7 +145,7 @@ public sealed partial class MainWindow : Window
                 : Path.Combine(projectRoot, ".venv", "Scripts", "python.exe");
             try
             {
-                _sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_assistant.core.sidecar", projectRoot);
+                _sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_master.core.sidecar", projectRoot);
                 // 运行结束自动退出：sidecar 推 auto_exit → shell 关闭主窗口优雅退出
                 _sidecar.SidecarEvent += OnSidecarEvent;
             }

@@ -15,8 +15,8 @@ REL_APP = "app"
 PY_PACKAGES_REL = "runtime/python/packages"
 
 # 各层入口：sidecar 顶层包 + 插件
-SIDECAR_TOP = "maaracing_assistant"
-SIDECAR_MAIN = "maaracing_assistant.__main__"
+SIDECAR_TOP = "maaracing_master"
+SIDECAR_MAIN = "maaracing_master.__main__"
 PLUGINS = ("treasure",)
 
 # native 扩展后缀
@@ -26,12 +26,12 @@ PY_TOP_LEVEL_DIRS_TO_SKIP_STATIC = set()   # sympy 等整包目录不发散，�
 
 # Layer2 runtime trace 使用的无 GUI 触发序列（在 exp runtime python 中执行）
 RUNTIME_TRACE_IMPORTS = [
-    "maaracing_assistant",
-    "maaracing_assistant.core.sidecar",
-    "maaracing_assistant.core.controller",
-    "maaracing_assistant.plugins.treasure.manifest",
-    "maaracing_assistant.plugins.treasure.module",
-    "maaracing_assistant.plugins.treasure.ocr",
+    "maaracing_master",
+    "maaracing_master.core.sidecar",
+    "maaracing_master.core.controller",
+    "maaracing_master.plugins.treasure.manifest",
+    "maaracing_master.plugins.treasure.module",
+    "maaracing_master.plugins.treasure.ocr",
     "numpy",
     "cv2",
     "onnxruntime",

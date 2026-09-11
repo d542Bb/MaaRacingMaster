@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
-PACK = REPO / "maaracing_assistant"
+PACK = REPO / "maaracing_master"
 # 真源按目录发现（不再硬编码文件名）：core 目录缺席是合法状态（尚无跨模块共用链）。
 CORE_PIPELINE_DIR = PACK / "core" / "resources" / "pipeline"
 PLUGIN_PIPELINE_DIRS = [PACK / "plugins" / "treasure" / "resources" / "pipeline"]
@@ -280,7 +280,7 @@ def main() -> int:
     if policy_doc is not None:
         sys.path.insert(0, str(REPO))
         try:
-            from maaracing_assistant.core.navkit.v4_source import load_nav_source
+            from maaracing_master.core.navkit.v4_source import load_nav_source
             load_nav_source(POLICY_TRUTH)
         except Exception as exc:
             errors.append(f"policy.json 数据面装配失败: {exc}")

@@ -110,7 +110,7 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 ### E1. 导入冒烟（验证 sidecar 可 import）
 
 ```bash
-.venv\Scripts\python.exe -c "import maaracing_assistant; print('OK', maaracing_assistant.__version__)"
+.venv\Scripts\python.exe -c "import maaracing_master; print('OK', maaracing_master.__version__)"
 ```
 
 预期：`OK <v版本号>`。若报 `ModuleNotFoundError`，说明包未能在仓库根解析（确认 cwd 是仓库根）。
@@ -136,7 +136,7 @@ start apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.
 ### E3. 独立调试 sidecar（不经 GUI，可选）
 
 ```bash
-.venv\Scripts\python.exe -u -m maaracing_assistant.core.sidecar
+.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar
 ```
 
 预期：进程保持运行等待 stdin。可另开终端发一行 JSONL 测试吞吐：
@@ -158,7 +158,7 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 | 日志出现「窗口连接失败」 | 游戏未开 / 未前台 / 游戏窗口标题不符 → 确认游戏已到主界面 |
 | 日志频繁「前台校验失败」 | 游戏窗口不在前台（安全策略不抢前台）→ 把游戏切到前台 |
 | OCR 心跳正常、阶段正常流转 | 截图 + 识别链路健康 |
-| 模块中途静默退出 | 参考 [鉴宝文档 CODE_WIKI](../maaracing_assistant/plugins/treasure/CODE_WIKI.md) 遗留问题与坑点 |
+| 模块中途静默退出 | 参考 [鉴宝文档 CODE_WIKI](../maaracing_master/plugins/treasure/CODE_WIKI.md) 遗留问题与坑点 |
 
 > 单帧异常已被主循环兜底（忽略并继续），只有连续多帧系统性问题才会终止——若持续异常，请收集 `Debug` 存盘截图 + 日志后提 Issue。
 

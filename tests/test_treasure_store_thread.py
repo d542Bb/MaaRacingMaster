@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from maaracing_assistant.plugins.treasure.store import TreasureStore
+from maaracing_master.plugins.treasure.store import TreasureStore
 
 
 class _FakeModule:

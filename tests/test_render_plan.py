@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_assistant.core.render_plan import (
+from maaracing_master.core.render_plan import (
     LayerRegistry,
     RenderPlan,
     UnknownLayerError,

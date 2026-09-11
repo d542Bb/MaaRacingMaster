@@ -364,7 +364,7 @@ def test_cross_truth_gates_pass(truth):
     errors, _ = ct.validate_graph(full)
     assert errors == []
     assert ct.cross_checks(full, policy) == []
-    from maaracing_assistant.core.navkit.v4_source import load_nav_source
+    from maaracing_master.core.navkit.v4_source import load_nav_source
     nav = load_nav_source(ct.POLICY_TRUTH)
     assert len(nav.plan.spec) == 53
     assert nav.plan.detect_anchors and len(nav.policies.rules) == 24

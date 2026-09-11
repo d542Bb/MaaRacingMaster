@@ -18,20 +18,20 @@ from pathlib import Path
 def main() -> int:
     exp_root = Path(sys.argv[1])
     out_json = Path(sys.argv[2])
-    # 注入 sidecar 顶层与 sidecar 包目录，使发行里的 maaracing_assistant 可被 import
+    # 注入 sidecar 顶层与 sidecar 包目录，使发行里的 maaracing_master 可被 import
     sys.path.insert(0, str(exp_root))
-    sys.path.insert(0, str(exp_root / "maaracing_assistant" / "core"))
+    sys.path.insert(0, str(exp_root / "maaracing_master" / "core"))
 
     loaded: set[Path] = set()
 
     def _run():
         # 关键：先 import 交互期内核，再去收集，确保 sidecar 完整初始化
-        import maaracing_assistant  # noqa
-        import maaracing_assistant.core.sidecar  # noqa
-        import maaracing_assistant.core.controller  # noqa
-        import maaracing_assistant.plugins.treasure.manifest  # noqa
-        import maaracing_assistant.plugins.treasure.module  # noqa
-        import maaracing_assistant.plugins.treasure.ocr  # noqa
+        import maaracing_master  # noqa
+        import maaracing_master.core.sidecar  # noqa
+        import maaracing_master.core.controller  # noqa
+        import maaracing_master.plugins.treasure.manifest  # noqa
+        import maaracing_master.plugins.treasure.module  # noqa
+        import maaracing_master.plugins.treasure.ocr  # noqa
         import numpy  # noqa
         import cv2  # noqa
         import onnxruntime  # noqa

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from maaracing_assistant.core.wgcap import WgcCapture
+from maaracing_master.core.wgcap import WgcCapture
 
 
 def _bare_cap(offset=None, size=None, dwm=None) -> WgcCapture:

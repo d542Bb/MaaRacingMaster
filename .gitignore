@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 
 # setuptools-scm 自动生成（版本号从 Git Tag 推导）
-maaracing_assistant/_version.py
+maaracing_master/_version.py
 *.pyo
 *.egg-info/
 .venv/

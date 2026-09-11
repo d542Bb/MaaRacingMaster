@@ -27,7 +27,7 @@ def collect_app_files(app_dir: Path) -> list[tuple[str, int]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", default=r"D:\maaracing_assistant\build\exp6\MaaRacingAssistant-0.19.0-win-x64")
+    ap.add_argument("--exp", default=r"D:\maaracing_master\build\exp6\MaaRacingAssistant-0.19.0-win-x64")
     args = ap.parse_args()
     exp = Path(args.exp).resolve()
     app_dir = exp / "app"

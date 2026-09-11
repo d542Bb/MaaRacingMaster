@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import cv2
 import numpy as np
-from maaracing_assistant.core.yolo_detector import YOLODetector
-from maaracing_assistant.core.logger import logger
+from maaracing_master.core.yolo_detector import YOLODetector
+from maaracing_master.core.logger import logger
 
 
 def main():

@@ -56,7 +56,7 @@
 > \[!IMPORTANT]
 > 🚧 **开发状态**
 >
-> 项目处于积极开发中：当前内置活动插件见 [maaracing\_assistant/plugins/](maaracing_assistant/plugins/)，
+> 项目处于积极开发中：当前内置活动插件见 [maaracing\_assistant/plugins/](maaracing_master/plugins/)，
 > 各插件的功能细节与完成度以其自述文档为准。
 > 如遇异常，请提交 Issue 或参考开发文档自诊。
 
@@ -149,7 +149,7 @@ git clone https://github.com/d542Bb/MaaRacingAssistant.git
 cd MaaRacingAssistant
 ```
 
-> 成功标志：目录下有 `README.md`、`maaracing_assistant/`、`apps/mra_shell/`。
+> 成功标志：目录下有 `README.md`、`maaracing_master/`、`apps/mra_shell/`。
 
 ### 2. 安装 Python 环境
 
@@ -184,7 +184,7 @@ dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
 
-**独立调试 sidecar**（不经 GUI，等待 stdin JSONL RPC）：`python -u -m maaracing_assistant.core.sidecar`。
+**独立调试 sidecar**（不经 GUI，等待 stdin JSONL RPC）：`python -u -m maaracing_master.core.sidecar`。
 
 ***
 
@@ -225,7 +225,7 @@ dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 ```
 MaaRacingAssistant/
 ├── pyproject.toml                 # 项目配置（setuptools-scm 版本推导）
-├── maaracing_assistant/           # 📦 Python 应用包
+├── maaracing_master/           # 📦 Python 应用包
 │   ├── core/                      # 主程序：应用编排 + 共享能力
 │   │   ├── controller.py          # 总控编排（生命周期 + 能力门面 ActivityContext）
 │   │   ├── sidecar.py             # JSONL RPC 业务后端

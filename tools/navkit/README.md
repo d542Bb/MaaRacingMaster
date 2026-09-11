@@ -27,13 +27,13 @@ tools/navkit/
 
 ## 真源
 
-- `maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json` —— 鉴宝对局图
+- `maaracing_master/plugins/treasure/resources/pipeline/treasure.json` —— 鉴宝对局图
 
-- `maaracing_assistant/plugins/treasure/resources/pipeline/treasure.entry.json` —— 鉴宝大厅入口链与页面锚点（游戏大厅/活动页面 dwell + 两个入口锚点 + `hall_to_treasure` 链；2026-09-10 自 core 归位）
+- `maaracing_master/plugins/treasure/resources/pipeline/treasure.entry.json` —— 鉴宝大厅入口链与页面锚点（游戏大厅/活动页面 dwell + 两个入口锚点 + `hall_to_treasure` 链；2026-09-10 自 core 归位）
 
-- `maaracing_assistant/core/resources/pipeline/` —— 跨模块共用链目录，**当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `check_truth.namespace_checks` 与 MAAFW\_GUIDE §5.6）
+- `maaracing_master/core/resources/pipeline/` —— 跨模块共用链目录，**当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `check_truth.namespace_checks` 与 MAAFW\_GUIDE §5.6）
 
-- `maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
+- `maaracing_master/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
 
 校验（CI 同款）：`python tools/navkit/check_truth.py`
 
@@ -66,7 +66,7 @@ tools/navkit/
 
 ```powershell
 # 基线：记下真源当前的修改状态
-git status --short -- maaracing_assistant/plugins/treasure/resources/pipeline
+git status --short -- maaracing_master/plugins/treasure/resources/pipeline
 # ① 只打开文件、什么都不动，等几分钟后重跑上面那条——无变化 = 不存在纯定时自动保存
 # ② 在画布上拖动一个节点（不改任何字段），再查后端日志：
 Select-String -Path "$env:APPDATA\MaaPipelineEditor\LocalBridge\logs\lb-*.log" -Pattern '文件已保存'

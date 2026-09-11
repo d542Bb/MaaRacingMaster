@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from maaracing_assistant.core import template_match as tm
+from maaracing_master.core import template_match as tm
 
 
 @pytest.fixture()

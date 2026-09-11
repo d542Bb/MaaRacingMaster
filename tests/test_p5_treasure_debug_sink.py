@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 from pathlib import Path
 
-from maaracing_assistant.core.debug import NavigationDebugger
+from maaracing_master.core.debug import NavigationDebugger
 
 
 def _make_debugger(tmp_path=None):
@@ -66,7 +66,7 @@ def test_treasure_no_private_debug_member_access():
     from pathlib import Path
 
     src = Path(__file__).resolve().parent.parent / \
-        "maaracing_assistant/plugins/treasure/module.py"
+        "maaracing_master/plugins/treasure/module.py"
     text = src.read_text(encoding="utf-8")
     # 不应再通过 ctx.debug 直接访问私有帧成员（P5 红线）；注释提及不算访问，故只拦访问形态。
     assert "ctx.debug._frame_lock" not in text

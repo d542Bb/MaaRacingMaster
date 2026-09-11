@@ -15,8 +15,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from maaracing_assistant.core import nav_graph as ng
-from maaracing_assistant.core.nav_graph import STALE_FRAME_MS, FrameStaleError
+from maaracing_master.core import nav_graph as ng
+from maaracing_master.core.nav_graph import STALE_FRAME_MS, FrameStaleError
 
 
 @pytest.fixture()

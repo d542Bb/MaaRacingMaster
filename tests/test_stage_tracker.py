@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_assistant.core.roi_config import ROIConfig
-from maaracing_assistant.core.stage_tracker import InvalidStageError, StageTracker
+from maaracing_master.core.roi_config import ROIConfig
+from maaracing_master.core.stage_tracker import InvalidStageError, StageTracker
 
 _ORDER = ["大厅", "选择", "第1回合", "第2回合"]
 

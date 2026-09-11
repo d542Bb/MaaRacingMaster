@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from maaracing_assistant.plugins.treasure.module import TreasureModule
+from maaracing_master.plugins.treasure.module import TreasureModule
 
 _FRAME = np.zeros((720, 1280, 3), dtype=np.uint8)
 

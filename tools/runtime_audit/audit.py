@@ -46,7 +46,7 @@ def _rel_category(rel: str) -> str:
         return "app"
     if rel.startswith("assets"):
         return "assets"
-    if rel.startswith("maaracing_assistant"):
+    if rel.startswith("maaracing_master"):
         return "sidecar"
     return "other"
 

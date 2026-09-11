@@ -18,7 +18,7 @@ from . import config
 class PyStaticGraph:
     def __init__(self, exp_root: Path):
         self.exp_root = exp_root
-        self.sidecar_dir = exp_root / "maaracing_assistant"
+        self.sidecar_dir = exp_root / "maaracing_master"
         self.packages_dir = exp_root / "runtime" / "python" / "packages"
         # module_key -> set(被引用绝对模块名)
         self.refs: dict[str, set[str]] = {}

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_assistant.core.stage_tracker import StageTracker
+from maaracing_master.core.stage_tracker import StageTracker
 
 # 与 TreasureModule.STAGE_ORDER 保持一致（模块类中定义，此处镜像用于纯逻辑对照）
 STAGE_ORDER = [

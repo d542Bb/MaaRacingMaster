@@ -17,8 +17,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maaracing_assistant.core import template_match as tm
-from maaracing_assistant.plugins.treasure.detector import DetectResult, TreasureStageDetector
+from maaracing_master.core import template_match as tm
+from maaracing_master.plugins.treasure.detector import DetectResult, TreasureStageDetector
 
 
 def test_detect_result_keeps_legacy_unpacking():

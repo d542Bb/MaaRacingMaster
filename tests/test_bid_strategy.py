@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """BidStrategy V2/V3 出价策略单元测试（pytest 断言版）。
 
-替代原 maaracing_assistant/modules/test_bid_strategy.py 的纯打印冒烟脚本：
+替代原 maaracing_master/modules/test_bid_strategy.py 的纯打印冒烟脚本：
 原脚本只有 print 无断言，无法作为 CI 通过/失败判定；本测试以真实运行结果为基线，
 把决策类型与出价锁定为回归断言，防止后续改动悄悄破坏策略行为。
 """

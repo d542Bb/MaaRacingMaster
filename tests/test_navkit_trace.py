@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from maaracing_assistant.core.navkit import FrameTrace, TraceWriter, json_safe
+from maaracing_master.core.navkit import FrameTrace, TraceWriter, json_safe
 
 
 def _touch_trace(path: Path) -> Path:

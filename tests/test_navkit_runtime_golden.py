@@ -16,11 +16,11 @@ import pytest
 # 完整运行时依赖（module 经 core.capabilities 拉 maa/vgamepad 等，ocr/eggs 需 cv2）。
 # conftest 约定 CI 尽量避开这些重依赖：任一缺失则整文件 SKIP（不误红），dev（.venv 全依赖）全跑。
 try:
-    from maaracing_assistant.plugins.treasure import POLICY_PATH  # noqa: E402
-    from maaracing_assistant.plugins.treasure import module as tm  # noqa: E402
-    from maaracing_assistant.plugins.treasure import ocr as toc  # noqa: E402
-    from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
-    from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer  # noqa: E402
+    from maaracing_master.plugins.treasure import POLICY_PATH  # noqa: E402
+    from maaracing_master.plugins.treasure import module as tm  # noqa: E402
+    from maaracing_master.plugins.treasure import ocr as toc  # noqa: E402
+    from maaracing_master.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
+    from maaracing_master.plugins.treasure.eggs import EggRewardRecognizer  # noqa: E402
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)

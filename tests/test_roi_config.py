@@ -14,7 +14,7 @@ import math
 
 import pytest
 
-from maaracing_assistant.core.roi_config import NormalizedROI, ROIConfig, SCHEMA_VER
+from maaracing_master.core.roi_config import NormalizedROI, ROIConfig, SCHEMA_VER
 
 
 # ---------------- 坐标契约：NormalizedROI ----------------

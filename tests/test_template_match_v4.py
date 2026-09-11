@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 import pytest
 
-from maaracing_assistant.core import template_match as tm
-from maaracing_assistant.core.nav_graph import TemplateRecognizer
+from maaracing_master.core import template_match as tm
+from maaracing_master.core.nav_graph import TemplateRecognizer
 
 W, H = 1280, 720
 

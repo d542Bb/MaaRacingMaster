@@ -7,9 +7,9 @@
 
 from __future__ import annotations
 
-from maaracing_assistant.core.base import ActivityContext, ActivityModule
-from maaracing_assistant.core.logger import logger
-from maaracing_assistant.core.stage_tracker import StageTracker
+from maaracing_master.core.base import ActivityContext, ActivityModule
+from maaracing_master.core.logger import logger
+from maaracing_master.core.stage_tracker import StageTracker
 
 
 class SampleModule(ActivityModule):

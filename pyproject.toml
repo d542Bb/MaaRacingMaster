@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "maaracing-assistant"
+name = "maaracing-master"
 dynamic = ["version"]
 description = "模块化游戏自动化平台 — MAA Framework + YOLOv8 ONNX + vgamepad，主打巅峰鉴宝"
 readme = "README.md"
@@ -31,7 +31,7 @@ train = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["maaracing_assistant*"]
+include = ["maaracing_master*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -40,4 +40,4 @@ addopts = "-ra"
 python_files = ["test_*.py", "*_test.py"]
 
 [tool.setuptools_scm]
-write_to = "maaracing_assistant/_version.py"
+write_to = "maaracing_master/_version.py"

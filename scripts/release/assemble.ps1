@@ -2,7 +2,7 @@
 # Output: <OutRoot>/MaaRacingAssistant-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
 #   <name>/{ mra_shell.exe + WinUI/.NET dlls, pyproject.toml,
-#          maaracing_assistant/, assets/ (含 config/), apps/mra_shell/frontend/,
+#          maaracing_master/, assets/ (含 config/), apps/mra_shell/frontend/,
 #          runtime/python/{python.exe, python311._pth, packages/, vcruntime140*.dll} }
 # Usage: powershell -File assemble.ps1 -Version 1.0.0 -Configuration Release
 #   -Configuration          Release (default, all SAFE pruning on) | Experimental (no pruning)
@@ -578,7 +578,7 @@ if (-not (Test-Path (Join-Path $appDir 'mra_shell.exe'))) {
 }
 
 # ---------- 3. whitelist ----------
-# 模型已随插件自包含（maaracing_assistant/plugins/*/resources/，经下方 robocopy 整包带出），
+# 模型已随插件自包含（maaracing_master/plugins/*/resources/，经下方 robocopy 整包带出），
 # assets/ 仅保留应用级资产（图标/演示图/框架配置）。
 foreach ($rel in @(
     'pyproject.toml', 'LICENSE', 'THIRD_PARTY_LICENSES.md',
@@ -591,7 +591,7 @@ foreach ($rel in @(
         Copy-Item $src $dest -Recurse -Force
     } else { $errors.Add('missing source path: ' + $rel) }
 }
-robocopy (Join-Path $RepoRoot 'maaracing_assistant') (Join-Path $StageRoot 'maaracing_assistant') /E /XD __pycache__ /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
 
 # ---------- 4. _version.py ----------
 $verContent = @(
@@ -599,7 +599,7 @@ $verContent = @(
     'from __future__ import annotations',
     ('__version__ = version = "{0}"' -f $Version)
 )
-Set-Content -Path (Join-Path $StageRoot 'maaracing_assistant\_version.py') -Value $verContent -Encoding ascii
+Set-Content -Path (Join-Path $StageRoot 'maaracing_master\_version.py') -Value $verContent -Encoding ascii
 
 # ---------- 5. import self-check ----------
 # vgamepad 单独容错：import 即建 ViGEmBus VBus()，无驱动环境（CI runner）会抛
@@ -611,8 +611,8 @@ import sys
 sys.path.insert(0, sys.argv[1])
 for m in ('maa', 'onnxruntime', 'cv2', 'numpy', 'rapidocr', 'windows_capture'):
     __import__(m)
-import maaracing_assistant
-print(maaracing_assistant.__version__)
+import maaracing_master
+print(maaracing_master.__version__)
 try:
     __import__('vgamepad')
 except Exception as e:
@@ -688,10 +688,10 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     }
 
     # ---------- 5.6 开发工具链不得入包（反向守卫）----------
-    # 白名单只 robocopy maaracing_assistant/，tools\（NavKit 校准台：HTTP server + 前端
+    # 白名单只 robocopy maaracing_master/，tools\（NavKit 校准台：HTTP server + 前端
     # 构建产物，开发树 ~180MB）、tests\、docs\ 本就不该出现。此处反向断言：白名单一旦被
     # 放宽、或有人把开发工具挪进源码包，构建当场失败，而不是静默发给用户。
-    # 注意区分：maaracing_assistant\core\navkit\ 是运行期数据面 loader + 决策引擎，必须随包。
+    # 注意区分：maaracing_master\core\navkit\ 是运行期数据面 loader + 决策引擎，必须随包。
     foreach ($rel in @('tools', 'tests', 'docs', '.github', 'scripts')) {
         if (Test-Path (Join-Path $StageRoot $rel)) {
             $errors.Add("DEV-TREE-LEAK: '$rel' must not be shipped")
@@ -762,9 +762,9 @@ if ($SevenZ) {
 if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     $g_runtime = (Get-ChildItem (Join-Path $StageRoot 'runtime') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
     $g_app = (Get-ChildItem (Join-Path $StageRoot 'app') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
-    $g_sidecar = (Get-ChildItem (Join-Path $StageRoot 'maaracing_assistant') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+    $g_sidecar = (Get-ChildItem (Join-Path $StageRoot 'maaracing_master') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
     $g_other = (Get-ChildItem $StageRoot -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum +
-               (Get-ChildItem $StageRoot -Directory | Where-Object { $_.Name -notin @('runtime','app','maaracing_assistant') } |
+               (Get-ChildItem $StageRoot -Directory | Where-Object { $_.Name -notin @('runtime','app','maaracing_master') } |
                 ForEach-Object { (Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum } | Measure -Sum).Sum
     $g_total = $g_runtime + $g_app + $g_sidecar + $g_other
     $g_zip = (Get-Item $zip).Length
