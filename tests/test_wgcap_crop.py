@@ -6,8 +6,20 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from maaracing_master.core.wgcap import WgcCapture
+# wgcap 顶层 import windows_capture（仅 Windows 有 wheel），CI 轻依赖环境下收集期
+# ERROR 会中断整个 pytest 会话；按仓内既有口径整文件优雅跳过。
+try:
+    from maaracing_master.core.wgcap import WgcCapture
+
+    _RUNTIME_OK, _RUNTIME_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
+
+pytestmark = pytest.mark.skipif(
+    not _RUNTIME_OK, reason=f"需要完整运行时依赖（windows_capture）：{_RUNTIME_ERR}"
+)
 
 
 def _bare_cap(offset=None, size=None, dwm=None) -> WgcCapture:

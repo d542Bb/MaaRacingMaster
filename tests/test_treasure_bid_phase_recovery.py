@@ -13,8 +13,21 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import pytest
 
-from maaracing_master.plugins.treasure.module import TreasureModule
+# module 经 core.window_utils 顶层 import maa.toolkit，CI 轻依赖环境下收集期 ERROR
+# 会中断整个 pytest 会话；按仓内既有口径整文件优雅跳过。
+try:
+    from maaracing_master.plugins.treasure.module import TreasureModule
+
+    _RUNTIME_OK, _RUNTIME_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
+    TreasureModule = None
+
+pytestmark = pytest.mark.skipif(
+    not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
+)
 
 _FRAME = np.zeros((720, 1280, 3), dtype=np.uint8)
 
@@ -22,10 +35,14 @@ _FRAME = np.zeros((720, 1280, 3), dtype=np.uint8)
 class _FakeSelf:
     """最小状态桩：只喂 _run_bidding_choice 读到的字段，方法按需打桩。"""
 
-    SWITCH_CONFIRM_FRAMES = TreasureModule.SWITCH_CONFIRM_FRAMES
-    PANEL_OPEN_MIN_STABLE_FRAMES = TreasureModule.PANEL_OPEN_MIN_STABLE_FRAMES
-    SUBMIT_ANIMATION_BUFFER_MS = TreasureModule.SUBMIT_ANIMATION_BUFFER_MS
-    _BID_MAIN_BTN_KEY = TreasureModule._BID_MAIN_BTN_KEY
+    SWITCH_CONFIRM_FRAMES = getattr(TreasureModule, "SWITCH_CONFIRM_FRAMES", None)
+    PANEL_OPEN_MIN_STABLE_FRAMES = getattr(
+        TreasureModule, "PANEL_OPEN_MIN_STABLE_FRAMES", None
+    )
+    SUBMIT_ANIMATION_BUFFER_MS = getattr(
+        TreasureModule, "SUBMIT_ANIMATION_BUFFER_MS", None
+    )
+    _BID_MAIN_BTN_KEY = getattr(TreasureModule, "_BID_MAIN_BTN_KEY", None)
 
     def __init__(self, *, phase, smart=None, label="", epoch=1):
         self._current_stage = "第1回合出价"

@@ -9,8 +9,18 @@ import cv2
 import numpy as np
 import pytest
 
-from maaracing_master.core import template_match as tm
-from maaracing_master.core.nav_graph import TemplateRecognizer
+# nav_graph 顶层 import maa，CI 轻依赖环境下收集期 ERROR 会中断整个 pytest 会话。
+try:
+    from maaracing_master.core import template_match as tm
+    from maaracing_master.core.nav_graph import TemplateRecognizer
+
+    _RUNTIME_OK, _RUNTIME_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
+
+pytestmark = pytest.mark.skipif(
+    not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
+)
 
 W, H = 1280, 720
 

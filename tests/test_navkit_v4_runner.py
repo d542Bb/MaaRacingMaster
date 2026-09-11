@@ -15,8 +15,19 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from maaracing_master.core import nav_graph as ng
-from maaracing_master.core.nav_graph import STALE_FRAME_MS, FrameStaleError
+# nav_graph 顶层 import maa，CI 轻依赖环境（只装 pytest+numpy+opencv-headless）下
+# 收集期即 ERROR 并中断整个 pytest 会话；按仓内既有口径整文件优雅跳过。
+try:
+    from maaracing_master.core import nav_graph as ng
+    from maaracing_master.core.nav_graph import STALE_FRAME_MS, FrameStaleError
+
+    _RUNTIME_OK, _RUNTIME_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
+
+pytestmark = pytest.mark.skipif(
+    not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
+)
 
 
 @pytest.fixture()
