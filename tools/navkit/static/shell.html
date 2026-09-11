@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NavKit v4 Studio</title>
+<style>
+:root{--bg:#161b22;--panel:#21262d;--line:#30363d;--fg:#e6edf3;--dim:#9da7b3;--accent:#58a6ff;--warn:#f9e2af}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+  font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+body{display:flex;flex-direction:column}
+#tabs{display:flex;align-items:center;gap:4px;background:var(--panel);
+  border-bottom:1px solid var(--line);padding:6px 10px;flex:0 0 auto}
+.brand{font-size:13px;font-weight:600;color:var(--dim);margin-right:12px;letter-spacing:.4px}
+.tab{position:relative;background:transparent;color:var(--dim);border:1px solid transparent;
+  border-radius:6px;padding:5px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+.tab:hover{color:var(--fg);background:#2a3038}
+.tab.active{color:#fff;background:#1f6feb;border-color:#1f6feb}
+.tab .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);
+  margin-left:6px;vertical-align:middle}
+.tab .dot.hidden{display:none}
+#hint{margin-left:auto;font-size:12px;color:var(--dim)}
+main{flex:1 1 auto;position:relative;min-height:0}
+iframe.page{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+iframe.page.hidden{display:none}
+</style>
+</head>
+<body>
+<header id="tabs">
+  <span class="brand">NavKit v4 Studio</span>
+  <button class="tab active" data-page="roi">ROI 校准台<span id="dirtyDot" class="dot hidden"></span></button>
+  <button class="tab" data-page="policy">策略表</button>
+  <button class="tab" data-page="cropper">模板截取</button>
+  <span id="hint"></span>
+</header>
+
+<main>
+  <iframe class="page" data-page="roi" src="/static/calibrator.html" title="ROI 校准台"></iframe>
+  <iframe class="page hidden" data-page="policy" src="/policy" title="策略表"></iframe>
+  <iframe class="page hidden" data-page="cropper" src="/cropper" title="模板截取"></iframe>
+</main>
+
+<script>
+"use strict";
+// 三个 iframe 常驻（切页不重载，ROI 台的未保存编辑不会因切走而丢失），只切显示。
+const HINTS = {
+  roi: "拖拽创建 ROI · 选中后拖内部移动 · 拖右下角缩放 · Delete 删除",
+  policy: "表格编辑 policy.rules；深层校验请跑 tools\\navkit\\check_truth.py",
+  cropper: "从截图裁剪模板图（只读页，写盘走 ROI 校准台的「裁剪当前区域作模板」）",
+};
+let dirty = false;
+
+function show(page) {
+  document.querySelectorAll(".tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.page === page));
+  document.querySelectorAll("iframe.page").forEach((f) =>
+    f.classList.toggle("hidden", f.dataset.page !== page));
+  document.getElementById("hint").textContent = HINTS[page] || "";
+}
+
+function renderDirty() {
+  // 未保存点只挂在 ROI 校准台标签上（postMessage 协议由 calibrator 内 app.js 发出）
+  document.getElementById("dirtyDot").classList.toggle("hidden", !dirty);
+}
+
+document.querySelectorAll(".tab").forEach((b) => {
+  b.addEventListener("click", () => show(b.dataset.page));
+});
+
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (!d || d.source !== "navkit-calib") return;
+  dirty = !!d.dirty;
+  renderDirty();
+});
+
+// 支持 /#policy 之类的直达（书签兼容：壳内定位标签页）
+function applyHash() {
+  const page = (location.hash || "").replace(/^#/, "");
+  if (["roi", "policy", "cropper"].includes(page)) show(page);
+}
+window.addEventListener("hashchange", applyHash);
+applyHash();
+show((location.hash || "#roi").replace(/^#/, "") || "roi");
+
+// 保活通道：页面关闭/刷新时连接断开，服务端据此在空闲后自动退出。
+// EventSource 自带断线重连，服务重启后本页无需刷新即可恢复计数。
+new EventSource("/api/events");
+</script>
+</body>
+</html>

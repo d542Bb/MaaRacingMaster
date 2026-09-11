@@ -1,24 +1,51 @@
 # NavKit v4 工具链
 
-> 画布编辑由 MPE 承担（round-trip 保真已实证）：`mpe.cmd` 起本地桥即 Studio（C 形态，无壳）。本目录只含 v4 活件。
+> 画布编辑由 MPE 承担（round-trip 保真已实证）；ROI 校准台 / 策略表 / 模板截取由单进程单端口的 `studio_server.py` 承担（统一标签栏互切）。
 
 ## 入口
 
-| 目的                                  | 命令                            |
-| ----------------------------------- | ----------------------------- |
-| 打开 MPE Studio（C 形态：MPE 即 Studio，无壳） | `tools/navkit/mpe.cmd`        |
-| 只停本地桥                               | `tools/navkit/mpe.cmd --stop` |
+| 目的                                          | 命令                            |
+| ------------------------------------------- | ----------------------------- |
+| 打开完整工作台（MPE + ROI 校准台 / 策略表 / 模板截取，零控制台弹窗） | `tools/navkit/studio.cmd`     |
+| 只开 MPE（附起 Studio 服务）                          | `tools/navkit/mpe.cmd`        |
+| 停 MPE 的本地桥                                   | `tools/navkit/mpe.cmd --stop` |
+| 停 mpelb + Studio 服务                          | `tools/navkit/studio.cmd --stop` |
 
-`mpe.cmd` 流程：探测 `mpelb.exe`（`--mpelb` > `dev/mpelb.exe` > PATH > `%LOCALAPPDATA%`）→ 以仓库根为 root 起 LocalBridge（端口 26521）→ 起策略表薄页 `policy_server.py`（26530）→ 等端口真 LISTENING 后打开浏览器（MPE 满幅 + 策略表两个标签页）。mpelb 二进制是本地开发工具，放 `dev/`（gitignore），不入库。
+`studio.cmd` 流程：探测 `mpelb.exe`（`--mpelb` > `dev/mpelb.exe` > PATH > `%APPDATA%`）→ 隐藏窗口起 LocalBridge（仓库根为 root，端口 26521）→ 隐藏窗口起 `studio_server.py`（端口 26530，优先 `pythonw.exe`）→ 轮询两端口真 LISTENING → 开浏览器两标签（MPE 满幅 + Studio 壳页）。`--stop` 把 mpelb 与 Studio 服务一并停掉。
+
+关闭浏览器页面后，Studio 服务在 `--idle-exit` 秒（默认 15）内自动退出：页面开着一条 SSE 保活连接（`/api/events`），关页签即断连，计数归零后延迟收摊；期间刷新或重开页面会取消退出。脚本/curl 直接调 API 时不会建立该连接，服务保持常驻（CI 与验收脚本不受影响）；需要服务一直挂着就加 `--idle-exit 0`。
+
+`mpe.cmd` 流程：探测 mpelb → 起 LocalBridge（26521）→ 起 `studio_server.py`（26530，端口已占用则跳过）→ 等端口真 LISTENING 后打开 MPE 与 Studio 壳页两个标签。mpelb 二进制是本地开发工具，放 `dev/`（gitignore），不入库。
 
 **编辑真源请优先在 MPE 里做**；agent/脚本直改 JSON + 跑校验同样是合法路径（见 `skills/mpe-pipeline-edit.md`）。
+
+## Studio 三页
+
+`studio_server.py` 一个进程承载三页，浏览器只开 `http://127.0.0.1:26530/`：
+
+| 路径         | 页                                                          |
+| ---------- | ---------------------------------------------------------- |
+| `/`        | 壳页（统一标签栏 + iframe 切三页，ROI 页未保存点显示在标签上）                      |
+| `/roi`     | ROI 校准台：离线回放会话帧 + 拖框选区 + 单帧测分 / 跨帧分布 / OCR 识别 / 裁剪模板           |
+| `/policy`  | 策略表：表格编辑 `treasure.policy.json` 的 `policy.rules`，原子落盘             |
+| `/cropper` | 模板截取：静态只读服务 `tools/template_cropper/index.html`              |
+
+ROI 校准台的数据面（`/api/rois` 读写）以 **v4 真源**为准：
+
+- 读面 flat 投影 = spec 三组（`template` / `point` / `ocr`，按 `kind` 分组）+ `nodes` 组（pipeline 两文件逐处 `rect`，含 `mirrors` 与 colorspace 现值）+ `tuning` 组（`policy.tuning.perception` 的第 54 个 rect）+ `_meta`；
+- 写面管线：`base_hash` 比对(409) → 内存合并 → 结构校验 → `check_truth` 三闸 → preview 回 diff/report 不落盘 → 逐文件原子替换；
+- 11 个两面同值锚点在 `nodes` 组编辑时默认同步写 spec 同名锚点（UI 提供「仅改此面」逃生口）；colorspace 两面各自维护（语义独立，台内如实呈现各自现值）；
+- 测分/跨帧/OCR 走**生产同源**引擎（`core.template_match.find_any_cs`、`plugins.treasure.ocr.TreasureOcr.recognize_single`）。
 
 ## 目录
 
 ```
 tools/navkit/
-├── mpe.cmd              # v4 Studio 入口（必须保持 ASCII+CRLF，见文件头 NOTE）
-├── policy_server.py     # 策略表薄页（读写 treasure.policy.json，原子落盘）
+├── studio.cmd           # 完整工作台入口（mpelb + studio_server 均隐藏窗口；必须 ASCII+CRLF）
+├── studio_server.py     # 单进程三页服务（ROI 校准台 / 策略表 / 模板截取，端口 26530）
+├── studio_sessions.py   # 帧库（会话/帧/模板名白名单 + 目录穿越防护）
+├── static/              # ROI 校准台前端（shell.html + calibrator.html + app.js + history.js + style.css）
+├── mpe.cmd              # MPE 入口（起 mpelb + studio_server；必须 ASCII+CRLF，见文件头 NOTE）
 ├── check_truth.py       # 真源自洽校验（图闭合+数据面装配+交叉互洽+几何+分层红线；CI 同款）
 ├── schema/              # pipeline / custom action / custom recognition JSON Schema 三件套
 ├── skills/              # agent 操作规范（mpe-pipeline-edit.md）
@@ -41,9 +68,36 @@ tools/navkit/
 
 ## MPE 常见疑惑与排错
 
-面向第一次用 Studio 的开发者。口径：mpelb **1.9.3** + MPE 在线 stable；机器本地配置在
+面向第一次用 Studio 的开发者。口径：mpelb **1.10.0** + MPE 在线 stable（**两者必须同代**，
+版本号对齐即可，见下方「协议版本不匹配」条）；机器本地配置在
 `%APPDATA%\MaaPipelineEditor\LocalBridge\`（**重装 mpelb 即丢，换机器要重设**）。
 原理与机检口径见 `skills/mpe-pipeline-edit.md` §5，这里只给能照抄的处置。
+
+**打开 MPE 没几秒 LocalBridge 自己退出了**
+先怀疑**协议版本不匹配**：MPE 在线版每次大版本更新都会抬高 LocalBridge 协议要求，本地 mpelb
+落后时**后端会主动退出**（不是崩溃，是它检测到前后端协议不一致后自行收摊）。日志里是这三行：
+
+```
+level=warning msg="协议版本不匹配，前端需求: 1.5.0，当前本地服务协议: 1.4.6"
+level=error   msg="检测到前后端协议版本不一致，当前前端需求: 1.5.0，后端协议: 1.4.6"
+level=error   msg="请更新 MaaPipelineEditor 或 Local Bridge 后重试，后端即将主动退出"
+```
+
+处置：把 mpelb 升到与 MPE 同版本号。`dev/` 下的 mpelb 是本地工具（gitignore，不入库），
+按 release tag 取对应平台二进制即可（Windows x64 用 `mpelb-windows-amd64.exe`，重命名为
+`mpelb.exe` 放 `dev/`）：
+
+```
+https://github.com/kqcoxn/MaaPipelineEditor/releases/download/v<版本>/mpelb-windows-amd64.exe
+```
+
+自检（起隔离端口 + WS 握手，不碰正在用的实例）：
+
+```powershell
+.venv\Scripts\python.exe tools\experiments\v4-p3-studio\diag_lb_protocol_handshake.py
+```
+
+期望输出 `协议版本: 本地=1.5.0 要求=1.5.0 success=True -> 匹配` 与 `mpelb 进程存活: True`。
 
 **首次打开弹"新手引导"答题，挡住工作面**
 在浏览器控制台执行 `mpedev("skipNewcomer")` 即可跳过。答过一次后 MPE 自己会提供跳过入口
@@ -127,6 +181,6 @@ if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { [IO.File]::WriteAl
 或自连 WS 探（可复用 `tools/experiments/v4-p3-studio/diag_lb_ws_permission.py` 里的
 `ws_connect` / `ws_send` / `FrameReader` / `read_until_response`）。
 
-**只想起 LocalBridge 不起策略表薄页**
+**只想起 LocalBridge 不起 Studio 服务**
 `mpe.cmd` 会一并起两者（26521 / 26530）。只要文件管理就直接跑 `dev\mpelb.exe --root <仓库根> --port 26521`；
-停服务统一用 `mpe.cmd --stop`。
+停服务用 `mpe.cmd --stop`（只停 mpelb）或 `studio.cmd --stop`（mpelb + Studio 服务一起停）。

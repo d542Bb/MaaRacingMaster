@@ -728,7 +728,7 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 
 **回传**：标注工具导出 regions.json（像素区域 x/y/w/h）+ PNG → 换算
 归一化 rect（外扩 15% 宽 / 25% 高、4 位小数）写入真源。**JSON 真源由 MPE 画布 /
-`policy_server.py`** **薄页维护，人工不手改裸文件**；agent/脚本直改 JSON 后
+Studio 工具链**（`tools/navkit/studio.cmd`：ROI 校准台 / 策略表 / 模板截取）**维护，人工不手改裸文件**；agent/脚本直改 JSON 后
 `tools/navkit/check_truth.py` 机检 + 提交。
 
 **守卫闭环（现状）**：CI = `check_truth.py`（next/on\_error 引用闭合、入口可达、

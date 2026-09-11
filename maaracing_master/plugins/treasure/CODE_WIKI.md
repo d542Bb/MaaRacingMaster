@@ -43,9 +43,9 @@
 
 - **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/policy/treasure.policy.json`（`perception.spec` 锚点 + `policy` 段），detector/module/ocr/eggs 一律读它。插件以 `__init__.py` 的 `IMAGE_DIR`/`PIPELINE_DIR`/`POLICY_PATH`/`nav_source()` 统一引用，不依赖主程序 `assets/`。
 
-- **NavKit 底座**：`core/navkit` = v4 数据面 loader（v4_source：policy.json → NavSource/DetectionPlan）+ 决策引擎（policy.py）+ trace 落盘记录器；`tools/navkit` 是 MPE 桥入口 + 策略表薄页 + check_truth 校验闸门。固定坐标点击件不强制配模板，必须由 spec 锚点 `guarded_by` 担保（D2）。
+- **NavKit 底座**：`core/navkit` = v4 数据面 loader（v4\_source：policy.json → NavSource/DetectionPlan）+ 决策引擎（policy.py）+ trace 落盘记录器；`tools/navkit` 是 MPE 桥入口 + 策略表薄页 + check\_truth 校验闸门。固定坐标点击件不强制配模板，必须由 spec 锚点 `guarded_by` 担保（D2）。
 
-**阶段链路（policy.json `perception.stages` 序，仍与 `STAGE_ORDER` 保持 GUI 断点兼容）**：
+**阶段链路（policy.json** **`perception.stages`** **序，仍与** **`STAGE_ORDER`** **保持 GUI 断点兼容）**：
 
 ```
 游戏大厅 → 活动页面 → 鉴宝大厅(选择场次) → 匹配中 → 选择鉴宝师
@@ -76,7 +76,7 @@
 
 - 面板已开判定：`stage.smart_bid_btn` 模板匹配（`bid_smart_btn.png`，面板内「智能出价」按钮，只有面板打开才出现 = 强信号）
 
-- 主按钮状态（等待出价/出价）走 **OCR 文字**（`ocr.bid_main_btn_label`）——按钮明暗态模板匹配不稳（见 Experience 1112416），用 OCR 文字「等待出价」→「出价」切换判 S1/S2，比模板稳
+- 主按钮状态（等待出价/出价）走 **OCR 文字**（`ocr.bid_main_btn_label`）——按钮明暗态模板匹配不稳（见 Experience 1112416），用 OCR 文字「等待出价」→「出价」切换判 S1/S2，比模板稳。OCR 通路光标遮挡三层防线（2026-09-11 重新接线）：① 主动避让——决策段每帧 `_maybe_shoo_cursor` → `Clicker.auto_shoo`（光标压住 `_collect_guard_rects` 的识别区且下一意图不能自然带离 → submit\_move 避让不点击，0.3s 冷却/miss\_streak 闸；P4c 退役 shoo 时 mask\_cursor 只覆盖了图内模板节点，OCR 通路实机被读脏「出价.39,5」）；② 消费侧剔除——`_read_bid_main_btn_label` 光标压 ROI 时读数按不可信返回 ""（避让冷却窗兜底）；③ 判定精确化——S2 只认剥非中文后恰为「出价」的读数（「等得出价」误读不再点灰按钮）
 
 - `_load_action_centers` 同时扫 stage+actions，`smart_bid_btn`（stage）与 `bid_main_red_btn`（actions）自动进 center 表
 
@@ -132,11 +132,11 @@
 
 - **phase 门控**（`_bid_phase`：wait\_first/wait\_next/bidding/wait\_result）：面板「关→开」上升沿只在等待相位有效才建新 bidding epoch，防模板抖动制造假 epoch；提交后 wait\_result，OCR 4 槽全部「固化」（见上槽级固化）才构建快照并放行 wait\_next
 
-- **输入子状态机**（`_run_bidding_execute`，画面驱动）：输入框当前值 B（OCR `bid_result_amount_box` 实时读）对比目标价 T——B==T 点 `bid_confirm_red_btn`；B==0 或前缀不匹配点 `bid_numpad_clear`；前缀匹配输下一位 `bid_numpad_{d}`。不依赖「我点过了」内部标记，用户任何遗漏/改价都能自动纠正
+- **输入子状态机**（`_run_bidding_execute`，画面驱动）：输入框当前值 B（OCR `bid_result_amount_box` 实时读）对比目标价 T——B==T 点 `bid_confirm_red_btn`；B==0 或前缀不匹配点 `bid_numpad_clear`；前缀匹配输下一位 `bid_numpad_{d}`。不依赖「我点过了」内部标记，用户任何遗漏/改价都能自动纠正。**瞬空读防抖（2026-09-11 实机振荡）**：B==0 且锚点 `_bid_input_progress>0` 时不回头重输首位，按锚点指 `ts[锚点]`（与前缀分支同形，指纹锁天然去重）；B==0 持续超 `BID_ZERO_STABLE_MS=1500`（时间口径）才判真空清空重输。教训：输 8 后 OCR 瞬时读空 → 旧代码重输首位 8（fp 带 progress=1≠0 挡不住）→ B=88 → 清空 → 重输，一回合 19 秒振荡，用户视角=「不点出价」；回归 `tests/test_treasure_bid_phase_recovery.py::test_blink_zero_read_advances_by_anchor_not_restart`
 
 - **附加回合**：`_extract_round_from_stage` 正则提取任意「第N回合」，`set_stage` clamp 到 5（附加回合数据统一写进第5回合槽），用原始数字判断回合切换以正确重置转场期
 
-- `_bid_input_latest` 无条件更新：OCR 读到无数字（已清空/占位）→ 0，避免输入子状态机反复点✖死循环
+- `_bid_input_latest` 无条件更新：OCR 读到无数字（已清空/占位）→ 0，避免输入子状态机反复点✖死循环。注意"读到 0"不等于"框里是空"——输入中途数字弹起动画/ROI 残缺会瞬空读，消费侧须走锚点防抖（见上"瞬空读防抖"）
 
 ***
 
@@ -200,7 +200,9 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 - **画布编辑**：`tools/navkit/mpe.cmd` 起 mpelb（root=仓库根）并在浏览器打开 MPE——节点/ROI/模板引用直接编辑 v4 真源 `resources/pipeline/treasure.json`（round-trip 保真 P3a 实证）。
 
-- **策略表**：`mpe.cmd` 同批打开 `policy_server.py` 薄页（127.0.0.1:26530），编辑 `resources/policy/treasure.policy.json`。
+- **策略表**：`mpe.cmd` 同批打开 Studio 壳页（127.0.0.1:26530），切到「策略表」标签编辑 `resources/policy/treasure.policy.json`。
+
+- **ROI 校准台 / 模板截取**：`tools/navkit/studio.cmd` 一次起 mpelb + Studio 服务（两者均隐藏窗口，零控制台弹窗），壳页三标签互切——ROI 校准台离线回放会话帧（`debug/treasure/<ts>/raw/`），拖框改 spec 锚点 rect / pipeline 节点 rect / `tuning` rect，保存时 `check_truth` 三闸随管线执行；模板截取页从截图裁模板图落 `resources/image/`。
 
 - **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；决策引擎消费的域白名单、推导与副作用形收在同文件 `engine_contract` 段（改鉴宝事实/等待 key/tuning 键 = 改契约段，不改 core/navkit/policy.py）；编辑后用 `tools/navkit/check_truth.py` 机检。
 

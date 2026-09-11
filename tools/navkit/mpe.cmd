@@ -8,7 +8,7 @@ rem    mpe.cmd                          defaults (root=repo, port=26521)
 rem    mpe.cmd --root <dir> --port <n>  override root / port
 rem    mpe.cmd --mpelb <exe>            explicit mpelb path
 rem    mpe.cmd --stop                   kill mpelb started by this tool
-rem  mpelb lookup: --mpelb > tools/navkit/dev/mpelb.exe > PATH > %LOCALAPPDATA%
+rem  mpelb lookup: --mpelb > tools/navkit/dev/mpelb.exe > PATH > %APPDATA%
 rem  NOTE: keep this file ASCII-only with CRLF line endings. cmd's batch
 rem  parser byte-seeks and garbles the script when non-ASCII bytes mix with
 rem  a mid-script chcp codepage switch.
@@ -38,7 +38,7 @@ set "MPELB="
 if not "%OVERRIDE%"=="" if exist "%OVERRIDE%" set "MPELB=%OVERRIDE%"
 if "%MPELB%"=="" if exist "%DEV_MPELB%" set "MPELB=%DEV_MPELB%"
 if "%MPELB%"=="" for /f "delims=" %%i in ('where mpelb 2^>nul') do if not defined MPELB set "MPELB=%%i"
-if "%MPELB%"=="" if exist "%LOCALAPPDATA%\MaaPipelineEditor\LocalBridge\mpelb.exe" set "MPELB=%LOCALAPPDATA%\MaaPipelineEditor\LocalBridge\mpelb.exe"
+if "%MPELB%"=="" if exist "%APPDATA%\MaaPipelineEditor\LocalBridge\mpelb.exe" set "MPELB=%APPDATA%\MaaPipelineEditor\LocalBridge\mpelb.exe"
 if "%MPELB%"=="" (
   echo [MPE] mpelb.exe not found. Put it in %~dp0dev\ or on PATH, or use --mpelb.
   goto usage
@@ -53,12 +53,15 @@ taskkill /f /im mpelb.exe >nul 2>&1
 
 start "MaaRacingMaster MPE LB" "%MPELB%" --root "%ROOT%" --port %PORT% --log-level INFO
 
-rem ---- P3c: policy table page (standalone mini server, next to MPE) ----
+rem ---- P4d: policy table merged into the Studio server (single port; see studio.cmd) ----
 set "POLICY_PORT=26530"
 set "VENV_PY=%ROOT%\.venv\Scripts\python.exe"
-if exist "%VENV_PY%" if exist "%~dp0policy_server.py" (
-  start "MaaRacingMaster MPE policy" "%VENV_PY%" "%~dp0policy_server.py" --port %POLICY_PORT%
-)
+if not exist "%VENV_PY%" goto skip_studio
+if not exist "%~dp0studio_server.py" goto skip_studio
+netstat -ano | findstr /r /c:":%POLICY_PORT% .*LISTENING" >nul 2>&1
+if not errorlevel 1 goto skip_studio
+start "MaaRacingMaster MPE policy" "%VENV_PY%" "%~dp0studio_server.py" --port %POLICY_PORT%
+:skip_studio
 
 rem wait until mpelb WebSocket port is actually listening (max ~20s),
 rem then open browser tabs so MPE connects on first load
@@ -78,7 +81,7 @@ start "" "http://127.0.0.1:%POLICY_PORT%/"
 
 echo.
 echo [MPE] Opened MPE connecting LB on port %PORT%.
-echo [MPE] Opened policy table on http://127.0.0.1:%POLICY_PORT%/ (rules editor).
+echo [MPE] Opened Studio shell on http://127.0.0.1:%POLICY_PORT%/ (policy table + ROI calibrator).
 echo [MPE] Use "mpe.cmd --stop" to stop the LocalBridge.
 exit /b 0
 
