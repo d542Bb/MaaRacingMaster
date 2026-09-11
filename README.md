@@ -125,7 +125,7 @@
 
 1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingAssistant/releases) 下载最新 **`MaaRacingAssistant-<版本>-win-x64.zip`**。
 2. 用资源管理器把它**解压到任意本地目录**。
-3. 打开该文件夹，**双击** **`mra_shell.exe`** 启动（已自带 Python 运行时与全部依赖，exe manifest 会自动弹出 UAC 提权）。
+3. 打开该文件夹，**双击** **`MaaRacingMaster.Shell.exe`** 启动（已自带 Python 运行时与全部依赖，exe manifest 会自动弹出 UAC 提权）。
 4. 若所用插件依赖虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；插件对依赖的要求见其自述文档。
 
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
@@ -149,7 +149,7 @@ git clone https://github.com/d542Bb/MaaRacingAssistant.git
 cd MaaRacingAssistant
 ```
 
-> 成功标志：目录下有 `README.md`、`maaracing_master/`、`apps/mra_shell/`。
+> 成功标志：目录下有 `README.md`、`maaracing_master/`、`apps/MaaRacingMaster.Shell/`。
 
 ### 2. 安装 Python 环境
 
@@ -162,7 +162,7 @@ pip install -r requirements.txt
 
 > 成功标志：`.venv\Scripts\python.exe` 存在，且 `pip show maafw` 能查到版本。
 >
-> 前台 `mra_shell.exe` 会从自身基目录向上定位仓库根（`pyproject.toml`）并拼接 `.venv`，**不再硬编码本机路径**，仓库可 clone 到任意磁盘位置运行。
+> 前台 `MaaRacingMaster.Shell.exe` 会从自身基目录向上定位仓库根（`pyproject.toml`）并拼接 `.venv`，**不再硬编码本机路径**，仓库可 clone 到任意磁盘位置运行。
 
 ### 3. 可行性自检（推荐）
 
@@ -177,10 +177,10 @@ pip install -r requirements.txt
 
 ```bash
 # 首次使用需先编译前台 shell（管理员提权由 exe 自身 manifest 承担，无需再手动以管理员运行）
-dotnet build apps\mra_shell\mra_shell.csproj -c Debug
+dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ```
 
-编译成功后，运行编译产物 **`apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe`** 启动 GUI（exe manifest `requireAdministrator` 会自动弹出 UAC 提权）。
+编译成功后，运行编译产物 **`apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`** 启动 GUI（exe manifest `requireAdministrator` 会自动弹出 UAC 提权）。
 
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
 
@@ -203,7 +203,7 @@ dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 ## 使用说明
 
 1. 打开游戏到主界面（分辨率 **1280×720**）
-2. 以**管理员身份**运行 `mra_shell.exe`
+2. 以**管理员身份**运行 `MaaRacingMaster.Shell.exe`
 3. 选择活动模块与起始阶段（支持断点），点击「开始运行」
 
 > **调试功能**：PEEP 实时预览调试帧；DEBUG 存盘模式将标注截图保存至用户数据目录。
@@ -236,7 +236,7 @@ MaaRacingAssistant/
 │   │   └── logger.py / paths.py / ...
 │   └── plugins/                   # 🧩 活动插件（一活动 = 一自包含目录）
 │       └── treasure/              # 各插件的功能说明见其目录内文档
-├── apps/mra_shell/                # 🖥️ WinUI 3 图形界面（含 .sln）
+├── apps/MaaRacingMaster.Shell/                # 🖥️ WinUI 3 图形界面（含 .sln）
 ├── templates/plugin/              # 🧪 插件开发样板（复制到 plugins/ 即成新模块）
 ├── assets/                        # 应用图标 / 演示素材 / 配置
 ├── tools/                         # 辅助开发工具（NavKit 调试台/训练/审计）

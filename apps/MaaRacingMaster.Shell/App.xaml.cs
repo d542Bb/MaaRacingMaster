@@ -1,6 +1,6 @@
-﻿using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml;
 
-namespace mra_shell;
+namespace MaaRacingMaster.Shell;
 
 public partial class App : Application
 {

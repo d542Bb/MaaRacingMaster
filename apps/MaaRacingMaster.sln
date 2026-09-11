@@ -4,7 +4,7 @@ VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "apps", "apps", "{E54166BF-D5A5-D108-1244-AA6816D2859D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "mra_shell", "mra_shell\mra_shell.csproj", "{A47D98FE-3B27-8185-5DCA-ACA22421E4AE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MaaRacingMaster.Shell", "MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj", "{A47D98FE-3B27-8185-5DCA-ACA22421E4AE}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

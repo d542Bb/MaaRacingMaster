@@ -3,11 +3,11 @@
 //   1. 图标（assets/icon.ico）→ 资源管理器/任务栏展示，消除"无图标"问题
 //   2. RT_MANIFEST（id=1，即 CREATEPROCESS_MANIFEST_RESOURCE_ID）→
 //      launcher.manifest 的 requireAdministrator 提权声明，作为 exe 内嵌清单
-// 注意：rc 内相对路径相对于本 .rc 文件所在目录（apps/mra_launcher）。
+// 注意：rc 内相对路径相对于本 .rc 文件所在目录（apps/MaaRacingMaster.Launcher）。
 #include <winres.h>
 
 // 图标（索引 0 为 initial，总索引 0 及以上）
 101 ICON "..\\..\\assets\\icon.ico"
 
-// 内嵌申请清单：mra_launcher 启动即请求管理员权限（须与 launcher.manifest 一致）
+// 内嵌申请清单：MaaRacingMaster.Launcher 启动即请求管理员权限（须与 launcher.manifest 一致）
 1 24 "launcher.manifest"

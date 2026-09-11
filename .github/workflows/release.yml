@@ -195,7 +195,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('apps/mra_shell/mra_shell.csproj', 'apps/mra_shell/NuGet.Config') }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj', 'apps/MaaRacingMaster.Shell/NuGet.Config') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
 

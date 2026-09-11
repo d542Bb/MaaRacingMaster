@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="mra_launcher"/>
+  <assemblyIdentity version="1.0.0.0" name="MaaRacingMaster.Launcher"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <!-- Launcher 是用户双击的唯一入口，必须与 mra_shell 的截图需求一致：
-             requireAdministrator 提权一次，CreateProcessW 启动 mra_shell.exe 时
+        <!-- Launcher 是用户双击的唯一入口，必须与 MaaRacingMaster.Shell 的截图需求一致：
+             requireAdministrator 提权一次，CreateProcessW 启动 MaaRacingMaster.Shell.exe 时
              子进程继承同一 token，从而规避 ERROR_ELEVATION_REQUIRED (740)。 -->
         <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
       </requestedPrivileges>

@@ -6,13 +6,13 @@ using System.Threading;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 
-namespace mra_shell;
+namespace MaaRacingMaster.Shell;
 
 public static class Program
 {
     // 单实例互斥体名：应用 requireAdministrator，用 Global 前缀跨提升级别可见；
     // 权限异常时降级为会话级命名空间（见 AcquireSingleInstance）。
-    private const string SingleInstanceMutexName = "Global\\MRA_SingleInstance";
+    private const string SingleInstanceMutexName = "Global\\MaaRM_SingleInstance";
 
     // MessageBox 常量（user32）
     private const uint MB_YESNO = 0x00000004;
@@ -65,7 +65,7 @@ public static class Program
             // Global 前缀权限不足（异常场景）：降级为会话级命名空间
             try
             {
-                mutex = new Mutex(true, "MRA_SingleInstance", out var createdNew);
+                mutex = new Mutex(true, "MaaRM_SingleInstance", out var createdNew);
                 if (createdNew)
                 {
                     s_instanceMutex = mutex;
@@ -105,11 +105,11 @@ public static class Program
         return true;
     }
 
-    /// <summary>结束除本进程外的所有 mra_shell 实例（taskkill /T 连带子进程）。</summary>
+    /// <summary>结束除本进程外的所有 MaaRacingMaster.Shell 实例（taskkill /T 连带子进程）。</summary>
     private static void KillOtherInstances()
     {
         var me = Process.GetCurrentProcess().Id;
-        foreach (var p in Process.GetProcessesByName("mra_shell")
+        foreach (var p in Process.GetProcessesByName("MaaRacingMaster.Shell")
                      .Where(p => p.Id != me).ToList())
         {
             try

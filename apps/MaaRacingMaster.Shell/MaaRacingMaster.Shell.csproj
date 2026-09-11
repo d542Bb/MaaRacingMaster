@@ -4,7 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
-    <RootNamespace>mra_shell</RootNamespace>
+    <RootNamespace>MaaRacingMaster.Shell</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- exe 图标（资源管理器/任务栏默认图标） -->
     <ApplicationIcon>..\..\assets\icon.ico</ApplicationIcon>

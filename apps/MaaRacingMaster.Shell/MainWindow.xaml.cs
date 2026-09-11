@@ -13,7 +13,7 @@ using Microsoft.Web.WebView2.Core;
 using Windows.Graphics;
 using WinRT.Interop;
 
-namespace mra_shell;
+namespace MaaRacingMaster.Shell;
 
 /// <summary>
 /// MRA 正式 shell —— 唯一 GUI。职责边界：窗口 + sidecar 生命周期 + 消息转发。
@@ -27,8 +27,8 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// 定位仓库根 / AppRoot（含 pyproject.toml 的目录，发布版为安装根）。
-    /// 优先级（见 .trae/documents 报告 §5.3）：--app-root 参数 > MRA_APP_ROOT 环境变量 > exe 向上探测 pyproject.toml。
-    /// 第一版 PoC：native Launcher 经环境变量 MRA_APP_ROOT 传入安装根（避免命令行 quoting），
+    /// 优先级（见 .trae/documents 报告 §5.3）：--app-root 参数 > MaaRM_APP_ROOT 环境变量 > exe 向上探测 pyproject.toml。
+    /// 第一版 PoC：native Launcher 经环境变量 MaaRM_APP_ROOT 传入安装根（避免命令行 quoting），
     /// 此处用 Path.GetFullPath 归一化为绝对路径（不变量：启动期只解析一次，此后不因 cwd/exe 位置再推导）。
     /// 找不到返回 null。
     /// </summary>
@@ -43,8 +43,8 @@ public sealed partial class MainWindow : Window
             catch { /* 非法路径，继续降级 */ }
         }
 
-        // MRA_APP_ROOT 环境变量（第一版 PoC transport）
-        var envRoot = Environment.GetEnvironmentVariable("MRA_APP_ROOT");
+        // MaaRM_APP_ROOT 环境变量（第一版 PoC transport）
+        var envRoot = Environment.GetEnvironmentVariable("MaaRM_APP_ROOT");
         if (!string.IsNullOrWhiteSpace(envRoot))
         {
             try { return Path.GetFullPath(envRoot); }
@@ -172,7 +172,7 @@ public sealed partial class MainWindow : Window
             web.Focus(FocusState.Programmatic);
             SendMaximizedState();
         };
-        var indexPath = ResolveRepoAssetPath("apps", "mra_shell", "frontend", "index.html");
+        var indexPath = ResolveRepoAssetPath("apps", "MaaRacingMaster.Shell", "frontend", "index.html");
         if (indexPath is not null)
         {
             // 绝对 windows 路径按文件 URI 解析（auto file:/// scheme），WebView 本地加载

@@ -4,7 +4,7 @@
 再分发或使用的第三方组件的许可证与归属。请随发布包一并保留本声明。
 
 ## 项目自身许可（分层）
-- **本项目源码**（`maaracing_master/`、`apps/mra_shell/` 等）采用 **Apache-2.0**（见根目录 `LICENSE`）。
+- **本项目源码**（`maaracing_master/`、`apps/MaaRacingMaster.Shell/` 等）采用 **Apache-2.0**（见根目录 `LICENSE`）。
 - **模型权重**：当前版本不随发布包分发任何模型权重；若某活动插件自带 YOLO 等模型权重，则该权重单独沿用 **AGPL-3.0**
   （见下方「模型权重」一节）。AGPL 仅作用于权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0。
 
@@ -54,7 +54,7 @@
 
 ## 三、GUI / 构建工具链（非再分发，仅构建期引用）
 - WinUI 3 / Windows App SDK：Microsoft 专有许可，构建产物自包含分发受微软条款约束；本项目不包含其源码。
-- .NET Runtime：由 `dotnet publish --self-contained` 随 `mra_shell.exe` 附带，遵循 .NET 开源许可。
+- .NET Runtime：由 `dotnet publish --self-contained` 随 `MaaRacingMaster.Shell.exe` 附带，遵循 .NET 开源许可。
 
 ---
 

@@ -2,10 +2,10 @@
 // ---------------------------------------------------------------
 // 职责范围（第一版最小 PoC，见 docs/.trae 报告 §5.5/§5.6）：
 //   1. 定位并归一化 AppRoot = Launcher 自身所在目录
-//   2. 检查 app\mra_shell.exe 存在
-//   3. 设置环境变量 MRA_APP_ROOT = AppRoot（transport，不经命令行 quoting）
+//   2. 检查 app\MaaRacingMaster.Shell.exe 存在
+//   3. 设置环境变量 MaaRM_APP_ROOT = AppRoot（transport，不经命令行 quoting）
 //   4. cwd = AppRoot（兼容保护层，非数据目录）
-//   5. CreateProcessW 启动 app\mra_shell.exe（不传任何用户参数）
+//   5. CreateProcessW 启动 app\MaaRacingMaster.Shell.exe（不传任何用户参数）
 //   6. 等待子进程退出并回传其退出码
 // 不做：用户参数透传、自动更新、日志框架、崩溃告警 UI。
 //
@@ -38,7 +38,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         return 1;
     }
 
-    // 归一化 AppRoot：截掉最后的文件名（保留尾部路径分隔符语义交给 mra_shell 处理）
+    // 归一化 AppRoot：截掉最后的文件名（保留尾部路径分隔符语义交给 MaaRacingMaster.Shell 处理）
     wchar_t *slash = NULL;
     for (wchar_t *p = exePath; *p; ++p)
         if (*p == L'\\' || *p == L'/')
@@ -51,10 +51,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     *slash = L'\0';                // exePath 现在 = AppRoot（绝对路径）
     const wchar_t *appRoot = exePath;
 
-    // 拼接子进程路径：<AppRoot>\app\mra_shell.exe
+    // 拼接子进程路径：<AppRoot>\app\MaaRacingMaster.Shell.exe
     wchar_t childExe[32768];
     if (swprintf(childExe, (size_t)(sizeof(childExe) / sizeof(childExe[0])),
-                 L"%s\\app\\mra_shell.exe", appRoot) < 0)
+                 L"%s\\app\\MaaRacingMaster.Shell.exe", appRoot) < 0)
     {
         FatalBox(L"路径过长，无法构建子进程路径。");
         return 1;
@@ -65,16 +65,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         wchar_t msg[34000];
         swprintf(msg, (size_t)(sizeof(msg) / sizeof(msg[0])),
                  L"未找到核心程序：\n%ls\n\n"
-                 L"请确认 MaaRacingAssistant 安装完整（app\\mra_shell.exe 缺失）。",
+                 L"请确认 MaaRacingAssistant 安装完整（app\\MaaRacingMaster.Shell.exe 缺失）。",
                  childExe);
         FatalBox(msg);
         return 1;
     }
 
     // 通过环境变量传 AppRoot（不经 command-line quoting，中文/空格/尾部反斜杠均安全）
-    if (!SetEnvironmentVariableW(L"MRA_APP_ROOT", appRoot))
+    if (!SetEnvironmentVariableW(L"MaaRM_APP_ROOT", appRoot))
     {
-        FatalBox(L"无法设置环境变量 MRA_APP_ROOT。");
+        FatalBox(L"无法设置环境变量 MaaRM_APP_ROOT。");
         return 1;
     }
 
@@ -94,7 +94,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         NULL, NULL,             // 默认安全属性，不继承句柄
         FALSE,                  // 不继承句柄
         0,                      // 无创建标志
-        NULL,                   // 继承父进程环境（已含 MRA_APP_ROOT）
+        NULL,                   // 继承父进程环境（已含 MaaRM_APP_ROOT）
         appRoot,                // 工作目录（cwd = AppRoot）
         &si, &pi);
 

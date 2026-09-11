@@ -52,9 +52,9 @@ docs/design/validation-report.json
 # 归档（被 sidecar + WinUI3 取代的旧 GUI、历史 spike）
 archive/
 
-# WinUI 3 / .NET 构建产物（apps/mra_shell）
-apps/mra_shell/bin/
-apps/mra_shell/obj/
+# WinUI 3 / .NET 构建产物（apps/MaaRacingMaster.Shell）
+apps/MaaRacingMaster.Shell/bin/
+apps/MaaRacingMaster.Shell/obj/
 
 # 本地构建缓存/实验/验证产物目录（整体忽略：zip/dll/runtime-cache/publish-cache/C1 基准/7z 下载缓存等均不入库；
 # 唯一入库的 7za.exe 已在 scripts/release/tools/ 单独跟踪）

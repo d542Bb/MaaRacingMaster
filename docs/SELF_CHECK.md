@@ -56,7 +56,7 @@ python --version   # 应显示 3.11.x（venv 内的 python 已是所选版本）
 
 预期：命令行前缀出现 `(.venv)`，且 `.venv\Scripts\python.exe` 存在。
 
-> **GUI 自动定位 venv**：前台 `mra_shell.exe` 会从自身基目录向上定位仓库根（`pyproject.toml`）并拼接 `.venv`，**不再硬编码本机路径**，仓库可 clone 到任意磁盘位置运行。若仓库根 `.venv` 缺失，GUI 后端可能连不上，可先用 D/E 自检确认逻辑层可用，详见 README 快速开始第 2 步的警告。
+> **GUI 自动定位 venv**：前台 `MaaRacingMaster.Shell.exe` 会从自身基目录向上定位仓库根（`pyproject.toml`）并拼接 `.venv`，**不再硬编码本机路径**，仓库可 clone 到任意磁盘位置运行。若仓库根 `.venv` 缺失，GUI 后端可能连不上，可先用 D/E 自检确认逻辑层可用，详见 README 快速开始第 2 步的警告。
 
 ### B3. 安装依赖
 
@@ -117,16 +117,16 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 
 ### E2. 启动 GUI（推荐入口）
 
-首次需先编译前台 shell（构建产物 `apps/mra_shell/bin/` 已 gitignore，需本地构建）：
+首次需先编译前台 shell（构建产物 `apps/MaaRacingMaster.Shell/bin/` 已 gitignore，需本地构建）：
 
 ```bash
-dotnet build apps\mra_shell\mra_shell.csproj -c Debug
+dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ```
 
 编译成功后，双击根目录 **`MaaRacingAssistant.lnk`**（若存在，本机快捷方式，指向编译产物路径，`.gitignore` 排除），或在命令行：
 
 ```bash
-start apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe
+start apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe
 ```
 
 预期：exe 自身 manifest `requireAdministrator` 自动触发 UAC 提权；GUI 左上角显示版本号，后端连接成功后「巅峰鉴宝」模块与阶段列表正常加载。

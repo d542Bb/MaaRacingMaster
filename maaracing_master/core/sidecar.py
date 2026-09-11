@@ -13,7 +13,7 @@ MRA Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
     handler     → 每个 request 独立线程执行；start 只做校验 + 起 worker，立即响应
     response    → stdout 带写锁
 
-方法（JSONL RPC，供 mra_shell.exe 前端调用）：
+方法（JSONL RPC，供 MaaRacingMaster.Shell.exe 前端调用）：
     get_initial_state / select_module / get_status / start / stop / fetch_logs / close / shutdown
     get_debug_state / set_debug_mode / set_peep / set_capture_backend（调试页）
     get_registry_optimizations / set_registry_optimization（启动体检：注册表权限优化中心）
@@ -69,7 +69,7 @@ _MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap",
 #          写入管不住「协议已注册但无处理程序 → 弹 Store 推荐」的路径，空 command 才是阻断键）。
 #   optimized = 期望写入的"优化值"（本程序推荐态）；default = 系统默认值（值缺失时按此判定）。
 #   options/apply_label/restore_label = 前端展示文案（不同 kind 的可选值语义不同，由后端下发）。
-#   needs_admin = 写入是否需要管理员（HKLM 项）；发布版 sidecar 经 mra_shell UAC 提权可写，
+#   needs_admin = 写入是否需要管理员（HKLM 项）；发布版 sidecar 经 MaaRacingMaster.Shell UAC 提权可写，
 #   开发模式非管理员终端写入会失败并返回明确错误。
 #   appx_absent = 仅 protocol_command：目标应用（如 Microsoft.XboxGamingOverlay）包注册
 #   存在时该项"无需优化"（协议有真实处理程序不会弹窗，写空 command 反而拦截正常唤起），
@@ -751,7 +751,7 @@ class SidecarService:
     def set_registry_optimization(self, params):
         """写入指定优化项的注册表值（id + value），写后回读确认。
 
-        HKLM 项需要管理员权限：发布版 sidecar 经 mra_shell UAC 提权可写；
+        HKLM 项需要管理员权限：发布版 sidecar 经 MaaRacingMaster.Shell UAC 提权可写；
         开发模式非管理员终端会收到带指引的明确错误。
         """
         import winreg

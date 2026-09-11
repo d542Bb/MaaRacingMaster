@@ -43,7 +43,7 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
-- 启动 GUI：运行编译产物 `apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe`（exe 自身 manifest 自动 UAC 提权）
+- 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
 - 独立调试 sidecar（不经 GUI）：`python -m maaracing_master`
 - 调试工具位于 `tools/`（训练 / 分析 / 调试分类）
 
@@ -68,7 +68,7 @@ pip install -r requirements.txt
 | `maaracing_master/plugins/<id>/` | 活动插件（自包含目录，各含 `manifest.py` + `resources`） |
 | `maaracing_master/modules/treasure_module.py` | 巅峰鉴宝（主打） |
 | `maaracing_master/navigation.py` | 光标导航引擎 |
-| `apps/mra_shell/` | WinUI 3 图形界面（Python sidecar 承载业务） |
+| `apps/MaaRacingMaster.Shell/` | WinUI 3 图形界面（Python sidecar 承载业务） |
 
 **完整 API / 算法 / 参数 / 坑点详见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md) 第 11 节「高频致命坑点」——改代码前务必阅读。**
 

@@ -1,5 +1,5 @@
-﻿<Window
-    x:Class="mra_shell.MainWindow"
+<Window
+    x:Class="MaaRacingMaster.Shell.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid>

@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace mra_shell;
+namespace MaaRacingMaster.Shell;
 
 /// <summary>backend 进程非零退出 / 连接断开。</summary>
 public sealed class BackendDisconnectedException : Exception

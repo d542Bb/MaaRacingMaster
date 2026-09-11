@@ -59,7 +59,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│               GUI 层 (apps/mra_shell/)                          │
+│               GUI 层 (apps/MaaRacingMaster.Shell/)                          │
 │        WinUI 3 窗口 + HTML 前端 + sidecar 进程托管                │
 ├─────────────────────────────────────────────────────────────────┤
 │                      主控层 (controller.py)                     │
@@ -116,7 +116,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   ├── __main__.py                           # python -m 入口
 │   ├── core/                                 # 主程序（应用层）
 │   │   ├── controller.py                     # 主控编排（生命周期 + 能力门面 ActivityContext，已不直接持有 MAA 对象）
-│   │   ├── sidecar.py                        # JSONL RPC 业务后端（供 mra_shell.exe 托管）
+│   │   ├── sidecar.py                        # JSONL RPC 业务后端（供 MaaRacingMaster.Shell.exe 托管）
 │   │   ├── registry.py                       # 插件自动扫描注册表（扫 plugins/*/manifest.py）
 │   │   ├── base.py                           # ActivityContext / ActivityModule 基类
 │   │   ├── capabilities.py                   # typed capability 窄接口 + adapter
@@ -146,7 +146,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   └── mra_icon.png                          # README 展示图标
 │
 ├── apps/
-│   │   └── mra_shell/                        # 🖥️ 正式 GUI（WinUI 3 shell + WebView2）
+│   │   └── MaaRacingMaster.Shell/                        # 🖥️ 正式 GUI（WinUI 3 shell + WebView2）
 │   │       ├── MainWindow.xaml(.cs)          # 窗口 + sidecar 生命周期 + 消息转发
 │   │       ├── PythonSidecar.cs              # JSONL transport 契约实现
 │   │       ├── App.xaml(.cs)                 # 应用入口（DISABLE_XAML_GENERATED_MAIN）
@@ -154,7 +154,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   │           ├── index.html                # 页面结构 + 元素 id
 │   │           ├── style.css                 # 纯 CSS 样式（无 CDN）
 │   │           └── app.js                    # mra.call RPC + 页面交互逻辑
-│   └── mra_launcher/                         # C 启动器（提权 + 定位 shell）
+│   └── MaaRacingMaster.Launcher/                         # C 启动器（提权 + 定位 shell）
 │
 ├── tools/                                    # 开发工具脚本（按用途分组）
 │   ├── mouse_overlay.py                      # 独立 Overlay 工具（屏幕十字准星）
@@ -263,19 +263,19 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ***
 
-### 4.4 [mra\_shell](file:///d:/maaracing_master/apps/mra_shell) — GUI 宿主（WinUI 3 + HTML 前端）
+### 4.4 [mra\_shell](file:///d:/maaracing_master/apps/MaaRacingMaster.Shell) — GUI 宿主（WinUI 3 + HTML 前端）
 
 > v0.13.0 起 GUI 定案为 WinUI 3 shell + WebView2 HTML 前端（详见 §11）。旧 ttkbootstrap GUI（`gui.py` MRAGUI）已在重构时移除，以下历史记录仅供参考。
 
 **进程模型**：
 
-- `mra_shell.exe`（C# WinUI 3）：唯一 GUI，只做窗口 + sidecar 进程生命周期 + 消息转发
+- `MaaRacingMaster.Shell.exe`（C# WinUI 3）：唯一 GUI，只做窗口 + sidecar 进程生命周期 + 消息转发
 
 - `sidecar.py`（Python）：JSONL RPC 业务后端（stdin=request / stdout=response / stderr=日志）
 
 - 前端 HTML 通过 `window.chrome.webview.postMessage` → C# → Python 通信，封装为 `mra.call(method, params)`
 
-**前端文件**（[frontend/](file:///d:/maaracing_master/apps/mra_shell/frontend)）：
+**前端文件**（[frontend/](file:///d:/maaracing_master/apps/MaaRacingMaster.Shell/frontend)）：
 
 | 文件           | 职责                                         |
 | ------------ | ------------------------------------------ |
@@ -287,7 +287,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 **启动流程**：
 
-1. 双击根目录 `MaaRacingAssistant.lnk`（定位 `mra_shell.exe`，exe manifest 自动 UAC 提权）
+1. 双击根目录 `MaaRacingAssistant.lnk`（定位 `MaaRacingMaster.Shell.exe`，exe manifest 自动 UAC 提权）
 2. shell 启动 Python `sidecar.py`，建立 JSONL 双向管道
 3. WebView2 加载 `frontend/index.html`，前端 `mra.call` 初始化状态
 4. 用户操作 → 前端 RPC → sidecar → 模块执行
@@ -544,7 +544,7 @@ core/sidecar.py（JSONL RPC handler）
   ├── core.window_utils.has_physical_controller
   └── core.registry（插件自动扫描注册）
 
-mra_shell（C#，不导入 Python）
+MaaRacingMaster.Shell（C#，不导入 Python）
   └── PythonSidecar（stdin/stdout JSONL 通信）
         └── 子进程：python -m maaracing_master（core/sidecar.py）
 
@@ -573,7 +573,7 @@ core/window_utils.py
 ### 6.2 运行时对象持有关系
 
 ```
-core/sidecar.py（mra_shell 托管）
+core/sidecar.py（MaaRacingMaster.Shell 托管）
   └── controller: MaaRacingAssistantController
         ├── debug: NavigationDebugger
         ├── tasker: Tasker
@@ -591,7 +591,7 @@ core/sidecar.py（mra_shell 托管）
 ### 7.1 启动流程
 
 ```
-双击根目录 mra_shell.exe / MaaRacingAssistant.lnk（exe manifest 自动 UAC 提权）
+双击根目录 MaaRacingMaster.Shell.exe / MaaRacingAssistant.lnk（exe manifest 自动 UAC 提权）
   → WinUI 3 shell 创建窗口（AppWindowTitleBar）并展示 HTML 前端
   → shell 拉起 Python sidecar（python -m maaracing_master）
     → sidecar 初始化 Controller，等待 stdin JSONL RPC
@@ -854,7 +854,7 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 
 ## 11. GUI 宿主选型（WinUI 3 定案）
 
-> 2026-08 定案。目标：HTML/WebView2 前端 + 原生 Windows 窗口行为（DWM 动画/系统按钮/Snap），Python 保持唯一业务后端（sidecar 模式）。**已落地**：正式 GUI 为 `apps/mra_shell/`（WinUI 3 shell + HTML 前端），取代选型期的 ttkbootstrap GUI（`gui/`、`gui_webview/`）与三个 spike。
+> 2026-08 定案。目标：HTML/WebView2 前端 + 原生 Windows 窗口行为（DWM 动画/系统按钮/Snap），Python 保持唯一业务后端（sidecar 模式）。**已落地**：正式 GUI 为 `apps/MaaRacingMaster.Shell/`（WinUI 3 shell + HTML 前端），取代选型期的 ttkbootstrap GUI（`gui/`、`gui_webview/`）与三个 spike。
 
 ### 11.1 选型历程（三个 Spike 实测结论）
 
@@ -875,7 +875,7 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 
 - WinUI 3 未打包应用：`WindowsPackageType=None` + `WindowsAppSDKSelfContained=true`（免装 Windows App Runtime）
 
-- spike 原型：实测结论沉淀于 §11.1，正式实现见 `apps/mra_shell/`（`prototypes/` 已迁入 `apps/`）
+- spike 原型：实测结论沉淀于 §11.1，正式实现见 `apps/MaaRacingMaster.Shell/`（`prototypes/` 已迁入 `apps/`）
 
 ### 11.3 NuGet 网络坑（本机）
 
@@ -896,7 +896,7 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 
 - **drag region 交互区挖孔（v0.13.0-dev.5）**：顶部 52px 整条设为 drag rect 时，双击 tab/品牌按钮区会触发最大化（按钮被「标题栏」行为吃掉）。方案：前端 `reportDragExcludes()` 测量 `.brand`+`.tabs` 合并矩形 → `postMessage({type:'drag-exclude', rect})` → C# 收到后存 DIP 矩形，`UpdateDragRects()` 按 DPI 换算挖孔（左段+右段+按钮下方段三段），坐标基准 = 窗口左上角（HTML 延伸进标题栏后 DOM (0,0) 即窗口左上角）
 
-- **单实例互斥（v0.13.0-dev.5，`Program.cs`）**：`AcquireSingleInstance()` 用命名 Mutex（`Global\MRA_SingleInstance`，权限异常降级会话级）检测已有实例 → `MessageBoxW` 询问「启动新进程（taskkill /T 连 sidecar 杀旧进程）或取消保留旧进程」；旧进程被强杀后接管 Mutex 需捕获 `AbandonedMutexException`
+- **单实例互斥（v0.13.0-dev.5，`Program.cs`）**：`AcquireSingleInstance()` 用命名 Mutex（`Global\MaaRM_SingleInstance`，权限异常降级会话级）检测已有实例 → `MessageBoxW` 询问「启动新进程（taskkill /T 连 sidecar 杀旧进程）或取消保留旧进程」；旧进程被强杀后接管 Mutex 需捕获 `AbandonedMutexException`
 
 - 系统按钮颜色跟随系统主题（native 正常表现，非 bug）
 

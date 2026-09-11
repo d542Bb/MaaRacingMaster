@@ -54,7 +54,7 @@ class AppAuditV02:
         self.managed_edges: dict[str, set[str]] = {}
 
     def load_deps(self) -> None:
-        deps_file = self.app_dir / "mra_shell.deps.json"
+        deps_file = self.app_dir / "MaaRacingMaster.Shell.deps.json"
         if not deps_file.exists():
             return
         self.deps = json.loads(deps_file.read_text(encoding="utf-8"))

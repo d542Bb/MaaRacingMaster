@@ -1,8 +1,8 @@
 # Release package assembly for MRA Windows.
 # Output: <OutRoot>/MaaRacingAssistant-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
-#   <name>/{ mra_shell.exe + WinUI/.NET dlls, pyproject.toml,
-#          maaracing_master/, assets/ (含 config/), apps/mra_shell/frontend/,
+#   <name>/{ MaaRacingMaster.Shell.exe + WinUI/.NET dlls, pyproject.toml,
+#          maaracing_master/, assets/ (含 config/), apps/MaaRacingMaster.Shell/frontend/,
 #          runtime/python/{python.exe, python311._pth, packages/, vcruntime140*.dll} }
 # Usage: powershell -File assemble.ps1 -Version 1.0.0 -Configuration Release
 #   -Configuration          Release (default, all SAFE pruning on) | Experimental (no pruning)
@@ -142,7 +142,7 @@ $PruneExpects = @(
 )
 
 # ---------- 缓存源指纹（防跨分支 / 改代码后误用过期缓存） ----------
-$pubFinger = 'publish/' + ((Get-ChildItem (Join-Path $RepoRoot 'apps\mra_shell') -Recurse -File |
+$pubFinger = 'publish/' + ((Get-ChildItem (Join-Path $RepoRoot 'apps\MaaRacingMaster.Shell') -Recurse -File |
     Where-Object { $_.Extension -in '.cs','.xaml','.csproj','.manifest' -and $_.FullName -notmatch '\\(bin|obj)\\' } |
     Sort-Object FullName |
     ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ';')
@@ -213,7 +213,7 @@ Set-Content -Path (Join-Path $rtDir 'python311._pth') -Value $pthContent -Encodi
 # -SkipPublish 时仅当指纹一致才复用（改过源码会自动重编，杜绝跨分支误用旧产物）。
 # PoC 布局：GUI publish 整目录进入 StageRoot\app\（实现目录），根目录只保留 Launcher 与资源。
 $publishDir = Join-Path $RepoRoot 'build\publish-cache'
-$csproj = Join-Path $RepoRoot 'apps\mra_shell\mra_shell.csproj'
+$csproj = Join-Path $RepoRoot 'apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj'
 if ($SkipPublish -and (& $CacheFPMatch $publishDir $pubFinger)) {
     Write-Host '[assemble] 复用已编译 GUI（-SkipPublish，指纹一致）'
 } else {
@@ -256,7 +256,7 @@ foreach ($d in $langDirs) {
 # ---------- 2.55 实验1：删除 WindowsAppSDK AI/ML 死链（-RemoveWinAppSdkML 开启时） ----------
 # 白名单依据 deps.json 中 Microsoft.WindowsAppSDK.AI/1.8.79 与 Microsoft.WindowsAppSDK.ML/1.8.2197
 # 子包布局（runtimes-framework\win-x64\native\ + lib\ + metadata\）逐文件映射到 app\ 目录得到；
-# MRA C# 源码 / mra_shell.dll IL / dumpbin 静态引用三重证据均证明整条链零使用
+# MRA C# 源码 / MaaRacingMaster.Shell.dll IL / dumpbin 静态引用三重证据均证明整条链零使用
 # （推理在 Python sidecar 与 MaaFramework 内完成）。开关默认关闭；一键恢复 = 去掉开关重新 assemble。
 if ($RemoveWinAppSdkML) {
     $mlWhitelist = @(
@@ -299,8 +299,8 @@ if ($RemoveWinAppSdkML) {
 #   runtimes-framework\win-x64\native\Microsoft.Windows.Widgets.dll
 #   lib\net6.0-windows10.0.17763.0\Microsoft.Windows.Widgets.Projection.dll
 #   metadata\Microsoft.Windows.Widgets.winmd
-# MRA C# source / XAML / mra_shell.dll use none of WidgetManager/FeedManager/WidgetProvider
-# (zero reference verified). mra_shell.exe's embedded activation manifest still declares these
+# MRA C# source / XAML / MaaRacingMaster.Shell.dll use none of WidgetManager/FeedManager/WidgetProvider
+# (zero reference verified). MaaRacingMaster.Shell.exe's embedded activation manifest still declares these
 # WinRT classes, but that manifest is only a per-request lookup table (same proven-safe pattern as
 # EXP-1 AI/ML): MRA never requests a Windows.Widgets.* type, so the vanished DLL is never resolved.
 # Default OFF; restore = reassemble w/o switch.
@@ -525,30 +525,30 @@ if ($RemoveCvFfmpeg) {
 }
 
 # ---------- 2.6 native Launcher 编译 ----------
-# 根目录唯一入口 MaaRacingAssistant.exe（薄 Launcher，见 apps/mra_launcher/launcher.c）。
+# 根目录唯一入口 MaaRacingAssistant.exe（薄 Launcher，见 apps/MaaRacingMaster.Launcher/launcher.c）。
 # 用 MSVC 编译为静态链接（/MT）GUI 子系统 exe，零外部 runtime 依赖；每次重新编译（体积小、快），不缓存。
 # 现在通过 launcher.rc 一次性嵌入两类 Win32 资源：图标（resources/icon）与内嵌申请清单
 # （launcher.manifest 的 requireAdministrator 提权）。作用：① 入口 exe 有图标；
-# ② Launcher 启动即申请管理员权限，CreateProcessW 启动 mra_shell.exe 时子进程继承
+# ② Launcher 启动即申请管理员权限，CreateProcessW 启动 MaaRacingMaster.Shell.exe 时子进程继承
 # 同一 token，规避 ERROR_ELEVATION_REQUIRED (740)。
 # 优先直接用 PATH 里的 cl/rc（CI 用 setup-msvc 已配置环境）；否则自动探测 vcvarsall.bat 初始化。
-$launcherSrc = Join-Path $RepoRoot 'apps\mra_launcher\launcher.c'
+$launcherSrc = Join-Path $RepoRoot 'apps\MaaRacingMaster.Launcher\launcher.c'
 $launcherOut = Join-Path $StageRoot 'MaaRacingAssistant.exe'
-$launcherObj = Join-Path $env:TEMP 'mra_launcher.obj'
+$launcherObj = Join-Path $env:TEMP 'MaaRacingMaster.Launcher.obj'
 # rc 内部的相对资源路径（..\..\assets\icon.ico、launcher.manifest）是按编译时的工作目录
-# （而非 .rc 文件所在目录）解析的，因此编译前必须把 cwd 切到 apps\mra_launcher 并保持到结束。
+# （而非 .rc 文件所在目录）解析的，因此编译前必须把 cwd 切到 apps\MaaRacingMaster.Launcher 并保持到结束。
 # res 以相对名下发当前目录生成：rc.exe 对带引号的 /fo 及环境变量路径存在 RC1109 坑，
 # 无引号相对名最稳；编译后立即删除该临时 res，避免污染源码目录。
-$launcherDir = Join-Path $RepoRoot 'apps\mra_launcher'
-$launcherRes = Join-Path $launcherDir 'mra_launcher.res'
+$launcherDir = Join-Path $RepoRoot 'apps\MaaRacingMaster.Launcher'
+$launcherRes = Join-Path $launcherDir 'MaaRacingMaster.Launcher.res'
 Push-Location $launcherDir
 try {
     $clInPath = (Get-Command cl.exe -ErrorAction SilentlyContinue)
     if ($clInPath -and (Test-Path -Path $launcherSrc)) {
         Write-Host "[assemble] 用 PATH 中的 cl.exe/rc.exe 编译 Launcher"
-        & rc.exe /nologo /fomra_launcher.res launcher.rc
+        & rc.exe /nologo /foMaaRacingMaster.Launcher.res launcher.rc
         if ($LASTEXITCODE -ne 0) { $errors.Add('Launcher 资源编译失败 (rc.exe 退出码 ' + $LASTEXITCODE + ')') }
-        & cl.exe /nologo /utf-8 /O2 /MT /Fe:"$launcherOut" /Fo:"$launcherObj" launcher.c mra_launcher.res /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib | Out-Null
+        & cl.exe /nologo /utf-8 /O2 /MT /Fe:"$launcherOut" /Fo:"$launcherObj" launcher.c MaaRacingMaster.Launcher.res /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib | Out-Null
         Remove-Item $launcherRes -Force -ErrorAction SilentlyContinue
         if ($LASTEXITCODE -ne 0) { $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')') }
     } elseif (-not $VcVarsAll) {
@@ -558,7 +558,7 @@ try {
     } else {
         Write-Host "[assemble] 用 vcvarsall 编译 Launcher: $(Split-Path $launcherOut -Leaf)"
         # cmd /c 内 call vcvarsall 一次性生效（PowerShell 无法直接继承批处理环境）
-        $cmdLine = "`"$VcVarsAll`" x64 >nul 2>&1 && rc.exe /nologo /fomra_launcher.res launcher.rc && cl.exe /nologo /utf-8 /O2 /MT /Fe:`"$launcherOut`" /Fo:`"$launcherObj`" launcher.c mra_launcher.res /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib & del /q /s mra_launcher.res >nul 2>&1"
+        $cmdLine = "`"$VcVarsAll`" x64 >nul 2>&1 && rc.exe /nologo /foMaaRacingMaster.Launcher.res launcher.rc && cl.exe /nologo /utf-8 /O2 /MT /Fe:`"$launcherOut`" /Fo:`"$launcherObj`" launcher.c MaaRacingMaster.Launcher.res /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib & del /q /s MaaRacingMaster.Launcher.res >nul 2>&1"
         cmd /c $cmdLine | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')')
@@ -572,9 +572,9 @@ if (-not (Test-Path $launcherOut)) {
 } else {
     Write-Host "[assemble] Launcher OK: $launcherOut"
 }
-# Launcher 前置校验：app\mra_shell.exe 必须存在（Launcher 依赖它启动）
-if (-not (Test-Path (Join-Path $appDir 'mra_shell.exe'))) {
-    $errors.Add('app\mra_shell.exe not found — Launcher 无法启动 GUI')
+# Launcher 前置校验：app\MaaRacingMaster.Shell.exe 必须存在（Launcher 依赖它启动）
+if (-not (Test-Path (Join-Path $appDir 'MaaRacingMaster.Shell.exe'))) {
+    $errors.Add('app\MaaRacingMaster.Shell.exe not found — Launcher 无法启动 GUI')
 }
 
 # ---------- 3. whitelist ----------
@@ -583,7 +583,7 @@ if (-not (Test-Path (Join-Path $appDir 'mra_shell.exe'))) {
 foreach ($rel in @(
     'pyproject.toml', 'LICENSE', 'THIRD_PARTY_LICENSES.md',
     'assets\icon.ico',
-    'assets\mra_icon.png', 'assets\config', 'apps\mra_shell\frontend')) {
+    'assets\mra_icon.png', 'assets\config', 'apps\MaaRacingMaster.Shell\frontend')) {
     $src = Join-Path $RepoRoot $rel
     if (Test-Path $src) {
         $dest = Join-Path $StageRoot $rel
