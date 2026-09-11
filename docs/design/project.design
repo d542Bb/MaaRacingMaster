@@ -155,7 +155,7 @@
   "config": {
     "autoLayout": false,
     "deviceType": "desktop",
-    "projectName": "MRA GUI 重构",
+    "projectName": "MaaRM GUI 重构",
     "visualEditorEnabled": false
   }
 }

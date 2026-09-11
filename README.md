@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/mra_icon.png" width="128" alt="MaaRacingAssistant logo">
+  <img src="assets/mra_icon.png" width="128" alt="MaaRacingMaster logo">
 </p>
 
-<h1 align="center">MaaRacingAssistant</h1>
+<h1 align="center">MaaRacingMaster</h1>
 
 <p align="center">
   <em>模块化游戏自动化平台 —— MAA Framework × 计算机视觉 × 虚拟手柄</em>
@@ -12,13 +12,13 @@
   <img src="https://img.shields.io/badge/python-3.11-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/MaaFramework-5.12.3-green" alt="MaaFramework">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License">
-  <img src="https://github.com/d542Bb/MaaRacingAssistant/actions/workflows/test.yml/badge.svg" alt="Test">
+  <img src="https://github.com/d542Bb/MaaRacingMaster/actions/workflows/test.yml/badge.svg" alt="Test">
   <img src="https://img.shields.io/badge/status-development-yellow" alt="Status">
-  <a href="https://afdian.com/a/MaaRacingAssistant">
+  <a href="https://afdian.com/a/MaaRacingMaster">
     <img src="https://img.shields.io/badge/爱发电-赞助-blue?logo=afdian&logoColor=white" alt="爱发电 赞助">
   </a>
   <!-- 正式 v1.0.0 发版时换用 release badge：
-  <img src="https://github.com/d542Bb/MaaRacingAssistant/actions/workflows/release.yml/badge.svg" alt="Release"> -->
+  <img src="https://github.com/d542Bb/MaaRacingMaster/actions/workflows/release.yml/badge.svg" alt="Release"> -->
 </p>
 
 ***
@@ -30,7 +30,7 @@
 >
 > - **打 tag 即出正式 Release 包**；未打 tag 的改动仅提交到 master，可能尚未打包或有中途变化。
 >
-> - 遇到问题请优先提交 [Issue](https://github.com/d542Bb/MaaRacingAssistant/issues)；修复取决于个人时间与精力，**不保证响应与修复时限（无 SLA）**。
+> - 遇到问题请优先提交 [Issue](https://github.com/d542Bb/MaaRacingMaster/issues)；修复取决于个人时间与精力，**不保证响应与修复时限（无 SLA）**。
 >
 > - 源码完全开源，**欢迎任何人 fork / 提 PR / 参与维护**——项目的延续依靠社区而非单一开发者。
 
@@ -64,7 +64,7 @@
 
 ## 简介
 
-**MaaRacingAssistant** 是一款模块化游戏自动化平台。
+**MaaRacingMaster** 是一款模块化游戏自动化平台。
 
 基于图像识别与模拟输入，把游戏中重复的日常劳作交给电脑！
 
@@ -88,7 +88,7 @@
 
 ## 支持本项目
 
-如果本项目对你有帮助，欢迎[在爱发电上赞助](https://afdian.com/a/MaaRacingAssistant)，
+如果本项目对你有帮助，欢迎[在爱发电上赞助](https://afdian.com/a/MaaRacingMaster)，
 支持持续的开发与维护。您的每一份支持都对本项目的成长意义重大。
 
 ***
@@ -119,11 +119,11 @@
 
 - **要改代码 / 参与开发** → 继续往下，走「从源码构建」四步
 
-> 当前处于**开发阶段**：GitHub [Releases](https://github.com/d542Bb/MaaRacingAssistant/releases) 上已提供 pre-release 打包，正式 v1.0.0 尚未发布。
+> 当前处于**开发阶段**：GitHub [Releases](https://github.com/d542Bb/MaaRacingMaster/releases) 上已提供 pre-release 打包，正式 v1.0.0 尚未发布。
 
 ### 下载即用包（普通用户，无需编译）
 
-1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingAssistant/releases) 下载最新 **`MaaRacingAssistant-<版本>-win-x64.zip`**。
+1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingMaster/releases) 下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**。
 2. 用资源管理器把它**解压到任意本地目录**。
 3. 打开该文件夹，**双击** **`MaaRacingMaster.Shell.exe`** 启动（已自带 Python 运行时与全部依赖，exe manifest 会自动弹出 UAC 提权）。
 4. 若所用插件依赖虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；插件对依赖的要求见其自述文档。
@@ -145,8 +145,8 @@
 ### 1. 拉取代码
 
 ```bash
-git clone https://github.com/d542Bb/MaaRacingAssistant.git
-cd MaaRacingAssistant
+git clone https://github.com/d542Bb/MaaRacingMaster.git
+cd MaaRacingMaster
 ```
 
 > 成功标志：目录下有 `README.md`、`maaracing_master/`、`apps/MaaRacingMaster.Shell/`。
@@ -223,7 +223,7 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ## 项目结构
 
 ```
-MaaRacingAssistant/
+MaaRacingMaster/
 ├── pyproject.toml                 # 项目配置（setuptools-scm 版本推导）
 ├── maaracing_master/           # 📦 Python 应用包
 │   ├── core/                      # 主程序：应用编排 + 共享能力

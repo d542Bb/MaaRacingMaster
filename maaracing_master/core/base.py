@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, TypeVar
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     # 仅类型检查用；运行时注解为字符串不求值（from __future__ import annotations）
-    from maaracing_master.core.controller import MaaRacingAssistantController as AppController
+    from maaracing_master.core.controller import MaaRacingMasterController as AppController
     from maaracing_master.core.debug import NavigationDebugger
     from maaracing_master.core.capabilities import (
         CaptureCapability,

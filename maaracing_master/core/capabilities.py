@@ -144,7 +144,7 @@ class CaptureAdapter:
     无需感知后端差异。返回 RGB ndarray（WGC 侧为标准 16:9 720p 帧）。
     """
 
-    def __init__(self, app):  # app: MaaRacingAssistantController
+    def __init__(self, app):  # app: MaaRacingMasterController
         self._app = app
 
     def screenshot(self) -> np.ndarray | None:
@@ -222,7 +222,7 @@ class GamepadAdapter:
       绝不静默销毁正在借用中的设备。
     """
 
-    def __init__(self, app):  # app: MaaRacingAssistantController
+    def __init__(self, app):  # app: MaaRacingMasterController
         self._app = app
         self._active = 0  # 活跃租约计数（跨所有 acquire 的并发活跃数）
 
@@ -249,7 +249,7 @@ class GamepadAdapter:
 class LifecycleAdapter:
     """把 controller 停止信号/可中断睡眠包装成 Lifecycle。"""
 
-    def __init__(self, app):  # app: MaaRacingAssistantController
+    def __init__(self, app):  # app: MaaRacingMasterController
         self._app = app
 
     @property

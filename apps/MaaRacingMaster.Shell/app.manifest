@@ -4,7 +4,7 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <!-- MRA 截图需要管理员权限：只在此处提权一次，sidecar 子进程继承 token -->
+        <!-- MaaRM 截图需要管理员权限：只在此处提权一次，sidecar 子进程继承 token -->
         <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
       </requestedPrivileges>
     </security>

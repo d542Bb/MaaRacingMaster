@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "MRA Custom Recognition Schema",
-    "description": "MaaRacingAssistant 自定义识别参数契约（官方 pipeline.schema.json 的 custom 扩展槽，同目录引用）。编辑器按此提示/校验；运行时 custom_recognition_param 仍是透传黑盒。",
+    "title": "MaaRM Custom Recognition Schema",
+    "description": "MaaRacingMaster 自定义识别参数契约（官方 pipeline.schema.json 的 custom 扩展槽，同目录引用）。编辑器按此提示/校验；运行时 custom_recognition_param 仍是透传黑盒。",
     "type": "object",
     "allOf": [
         {

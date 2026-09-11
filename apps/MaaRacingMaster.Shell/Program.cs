@@ -83,10 +83,10 @@ public static class Program
         // 已有实例在运行 → 询问用户
         var choice = MessageBoxW(
             IntPtr.Zero,
-            "检测到 MRA 已在运行。\n\n" +
+            "检测到 MaaRM 已在运行。\n\n" +
             "是(Y)：启动新进程（将自动关闭当前运行的旧进程）\n" +
             "否(N)：取消启动，保留当前运行的进程",
-            "MRA — 是否启动新进程？",
+            "MaaRM — 是否启动新进程？",
             MB_YESNO | MB_ICONQUESTION);
         if (choice != IDYES)
             return false; // 用户选择保留旧进程 → 本进程退出

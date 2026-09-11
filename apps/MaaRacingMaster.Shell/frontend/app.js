@@ -1,4 +1,4 @@
-// MRA shell 前端 —— 通信层 + 三 tab 页面逻辑。
+// MaaRM shell 前端 —— 通信层 + 三 tab 页面逻辑。
 // 通信层：HTML 只看到 mra.call，不知道 JSONL/Python 存在。
 (function () {
   'use strict';
@@ -131,7 +131,7 @@
   // ---------- ViGEmBus 驱动缺失引导弹框 ----------
   const VIGEM_DL_URL = 'https://github.com/nefarius/ViGEmBus/releases/latest';
   // 关于页底部跳转链接
-  const REPO_URL = 'https://github.com/d542Bb/MaaRacingAssistant';
+  const REPO_URL = 'https://github.com/d542Bb/MaaRacingMaster';
   const ABOUT_LINKS = {
     home: REPO_URL,
     issue: REPO_URL + '/issues',
@@ -555,7 +555,7 @@
 
   // 员工守则（规则怪谈，致敬 MAA）
   const EGG_RULES = [
-    'MaaRacingAssistant 正式版不会出现「调试模式」。如果你在运行时看到 Debug 选项，请立即关闭软件，不要点击它，并联系离你最近的开发者。',
+    'MaaRacingMaster 正式版不会出现「调试模式」。如果你在运行时看到 Debug 选项，请立即关闭软件，不要点击它，并联系离你最近的开发者。',
     '运行前请断开所有物理手柄。如果你已经断开了所有手柄，界面却显示「已连接」，请把它也拔掉。',
     'AI 的出价建议仅供参考。如果 AI 建议你抵押房产，请重启软件，并道歉。',
     '软件不会主动发送好友申请。如果你收到来自「MaaRM_System」的好友请求，不要接受，并删除该账号。',
@@ -567,7 +567,7 @@
     '软件不支持未来版本。如果软件自动更新到一个尚未发布的版本号（如 v99.0.0），不要运行，等待官方公告。',
     '软件没有语音提示。如果听到低语声、笑声或非程序生成的语音，请关闭扬声器，并检查是否有未知脚本在运行。',
     '软件不会在周日凌晨更新。如果收到更新提示，请忽略，不要查看更新公告，直到周一。',
-    '最后一条规则不存在。如果你看到了这条，请忘记它，并正常使用 MaaRacingAssistant。',
+    '最后一条规则不存在。如果你看到了这条，请忘记它，并正常使用 MaaRacingMaster。',
   ];
 
   function showRulesDialog() {
@@ -1510,7 +1510,7 @@
               <button class="mra-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">DEBUG 每帧截图</div>
-                <p class="option-desc">开启后每帧截图保存到 %APPDATA%/MaaRacingAssistant/debug/navigate/ 目录，用于分析导航和识别问题</p>
+                <p class="option-desc">开启后每帧截图保存到 %APPDATA%/MaaRacingMaster/debug/navigate/ 目录，用于分析导航和识别问题</p>
               </div>
               <span class="option-note">约占用 50-100MB/分钟磁盘空间</span>
             </div>
@@ -1526,7 +1526,7 @@
               <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
-                <p class="option-desc">开启后才把运行日志写入 %APPDATA%/MaaRacingAssistant/logs（每次开启新建一个文件）；关闭时日志仅保留在界面内存，不落盘</p>
+                <p class="option-desc">开启后才把运行日志写入 %APPDATA%/MaaRacingMaster/logs（每次开启新建一个文件）；关闭时日志仅保留在界面内存，不落盘</p>
               </div>
               <span class="option-note">默认关闭，排查问题时开启</span>
             </div>
@@ -1564,7 +1564,7 @@
             <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-exitmra" role="switch" aria-checked="false"></button>
               <div class="option-main">
-                <div class="option-title">退出 MRA 程序</div>
+                <div class="option-title">退出 MaaRM 程序</div>
                 <p class="option-desc">关闭游戏后自动退出本程序；报错退出、手动停止不生效</p>
               </div>
               <span class="option-note">建议先勾选关闭游戏</span>
@@ -1758,7 +1758,7 @@
       });
     }
 
-    // 运行选项：运行时静音游戏 / 关闭游戏进程 / 退出 MRA 程序
+    // 运行选项：运行时静音游戏 / 关闭游戏进程 / 退出 MaaRM 程序
     const tMuteGame = p('toggle-mutegame');
     if (tMuteGame) {
       tMuteGame.addEventListener('click', async () => {

@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "MRA Custom Action Schema",
-    "description": "MaaRacingAssistant 自定义动作参数契约（官方 pipeline.schema.json 的 custom 扩展槽，同目录引用）。",
+    "title": "MaaRM Custom Action Schema",
+    "description": "MaaRacingMaster 自定义动作参数契约（官方 pipeline.schema.json 的 custom 扩展槽，同目录引用）。",
     "type": "object",
     "allOf": [
         {

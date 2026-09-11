@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MaaRacingAssistant
+MaaRacingMaster
 巅峰极速 · 活动自动化平台
 MAA Framework + YOLOv8 ONNX + vgamepad
 """

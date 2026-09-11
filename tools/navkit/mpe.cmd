@@ -51,13 +51,13 @@ echo [MPE] port  : %PORT%
 rem only one LB at a time for this tool
 taskkill /f /im mpelb.exe >nul 2>&1
 
-start "MaaRacingAssistant MPE LB" "%MPELB%" --root "%ROOT%" --port %PORT% --log-level INFO
+start "MaaRacingMaster MPE LB" "%MPELB%" --root "%ROOT%" --port %PORT% --log-level INFO
 
 rem ---- P3c: policy table page (standalone mini server, next to MPE) ----
 set "POLICY_PORT=26530"
 set "VENV_PY=%ROOT%\.venv\Scripts\python.exe"
 if exist "%VENV_PY%" if exist "%~dp0policy_server.py" (
-  start "MaaRacingAssistant MPE policy" "%VENV_PY%" "%~dp0policy_server.py" --port %POLICY_PORT%
+  start "MaaRacingMaster MPE policy" "%VENV_PY%" "%~dp0policy_server.py" --port %POLICY_PORT%
 )
 
 rem wait until mpelb WebSocket port is actually listening (max ~20s),

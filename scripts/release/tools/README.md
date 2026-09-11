@@ -10,7 +10,7 @@
 
 - Verified: C1 benchmark 用此版本实测 7z solid 256M = 136.59 MiB（−31.3%）；本文件随仓库入库，保证本地与 CI 参数/版本一致。
 
-This project (MaaRacingAssistant) uses part of the 7-Zip program (7za.exe).
+This project (MaaRacingMaster) uses part of the 7-Zip program (7za.exe).
 7-Zip is released under the GNU LGPL license.
 Source code: `https://www.7-zip.org/`
 

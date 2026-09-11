@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         感谢你的建议！请描述清楚使用场景，这能帮助我们判断优先级。
-        提交前请先在 [Issues](https://github.com/d542Bb/MaaRacingAssistant/issues) 搜索是否已有重复提案。
+        提交前请先在 [Issues](https://github.com/d542Bb/MaaRacingMaster/issues) 搜索是否已有重复提案。
 
   - type: dropdown
     id: scope

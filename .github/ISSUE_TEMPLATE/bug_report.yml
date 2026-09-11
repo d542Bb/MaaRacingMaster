@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         感谢提交 Bug 报告！请尽量提供完整信息，方便我们快速定位问题。
-        提交前请先在 [Issues](https://github.com/d542Bb/MaaRacingAssistant/issues) 搜索是否已有重复报告。
+        提交前请先在 [Issues](https://github.com/d542Bb/MaaRacingMaster/issues) 搜索是否已有重复报告。
 
   - type: input
     id: version

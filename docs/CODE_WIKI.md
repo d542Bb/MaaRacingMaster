@@ -1,4 +1,4 @@
-# MaaRacingAssistant — Code Wiki（主文档）
+# MaaRacingMaster — Code Wiki（主文档）
 
 > 《巅峰极速》模块化游戏自动化平台 —— 完整代码架构文档
 >
@@ -31,7 +31,7 @@
 
 ### 1.1 项目定位
 
-MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**的模块化游戏自动化平台，以统一模块框架承载《巅峰极速》各类重复性活动的自动化。当前入库可用的活动插件为**巅峰鉴宝**（treasure）；**极速狂飙**将基于新的模块化插件架构（`core/navkit` + 插件自包含契约）重写，当前未入库。
+MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的模块化游戏自动化平台，以统一模块框架承载《巅峰极速》各类重复性活动的自动化。当前入库可用的活动插件为**巅峰鉴宝**（treasure）；**极速狂飙**将基于新的模块化插件架构（`core/navkit` + 插件自包含契约）重写，当前未入库。
 
 ### 1.2 核心技术栈
 
@@ -99,7 +99,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 - **巅峰鉴宝**（treasure 插件）：12 阶段状态机（游戏大厅 → 活动页 → 鉴宝大厅 → 场次 → 鉴宝师 → 出价 → 结算 → 分红），详见 [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
-主控不再持有活动流程编排：`MaaRacingAssistantController` 仅负责窗口连接、能力门面（`ActivityContext`）、模块生命周期与全局设置，活动阶段流转全部在模块内部。
+主控不再持有活动流程编排：`MaaRacingMasterController` 仅负责窗口连接、能力门面（`ActivityContext`）、模块生命周期与全局设置，活动阶段流转全部在模块内部。
 
 ***
 
@@ -124,7 +124,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   │   ├── render_plan.py / stage_tracker.py / roi_config.py   # 渲染计划 / 阶段记录 / ROI 底座
 │   │   ├── debug.py / debug_io.py            # PEEP 预览 + 调试落盘 IO worker
 │   │   ├── module_config.py / registry.py    # 模块配置契约 / 插件扫描注册
-│   │   ├── paths.py                          # 用户数据目录（%APPDATA%/MaaRacingAssistant，五目录）
+│   │   ├── paths.py                          # 用户数据目录（%APPDATA%/MaaRacingMaster，五目录）
 │   │   ├── opencv_utf8_patch.py / vgamepad_lazy.py / wgcap.py
 │   │   └── yolo_detector.py                  # 跨活动视觉基础设施
 │   └── plugins/                              # 活动插件（一活动 = 一自包含目录，放入即装/删除即卸）
@@ -174,7 +174,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   ├── MAAFW_GUIDE.md / SELF_CHECK.md / announcement.md
 │   └── CODE_WIKI.md                          # 本文档（主文档）；鉴宝域文档随插件（plugins/&lt;id&gt;/CODE_WIKI.md）
 │
-# 运行期数据（自动生成，gitignore）：已迁至 %APPDATA%/MaaRacingAssistant/
+# 运行期数据（自动生成，gitignore）：已迁至 %APPDATA%/MaaRacingMaster/
 # ├── config/                                 # profile.json、maa_option.json
 # ├── data/                                   # data/treasure/treasure.db
 # ├── logs/                                   # MaaRM_*.log
@@ -209,7 +209,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 - 虚拟手柄租约管理（`_get_gpad` 懒创建 / `_reset_gpad` / `_destroy_gpad` ctypes 从总线拔除）
 
-**核心类**：`MaaRacingAssistantController`
+**核心类**：`MaaRacingMasterController`
 
 **关键属性**：
 
@@ -287,7 +287,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 **启动流程**：
 
-1. 双击根目录 `MaaRacingAssistant.lnk`（定位 `MaaRacingMaster.Shell.exe`，exe manifest 自动 UAC 提权）
+1. 双击根目录 `MaaRacingMaster.lnk`（定位 `MaaRacingMaster.Shell.exe`，exe manifest 自动 UAC 提权）
 2. shell 启动 Python `sidecar.py`，建立 JSONL 双向管道
 3. WebView2 加载 `frontend/index.html`，前端 `mra.call` 初始化状态
 4. 用户操作 → 前端 RPC → sidecar → 模块执行
@@ -467,7 +467,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 > 鉴宝域（treasure\_\*）类速查见 [鉴宝域文档 §7](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
-### 5.1 controller.MaaRacingAssistantController
+### 5.1 controller.MaaRacingMasterController
 
 | 方法                                        | 说明                                                                      |
 | ----------------------------------------- | ----------------------------------------------------------------------- |
@@ -539,7 +539,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ```
 core/sidecar.py（JSONL RPC handler）
-  ├── core.controller.MaaRacingAssistantController
+  ├── core.controller.MaaRacingMasterController
   ├── core.logger.logger
   ├── core.window_utils.has_physical_controller
   └── core.registry（插件自动扫描注册）
@@ -574,7 +574,7 @@ core/window_utils.py
 
 ```
 core/sidecar.py（MaaRacingMaster.Shell 托管）
-  └── controller: MaaRacingAssistantController
+  └── controller: MaaRacingMasterController
         ├── debug: NavigationDebugger
         ├── tasker: Tasker
         │     └── context_sink: PipelineLogger
@@ -591,7 +591,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 ### 7.1 启动流程
 
 ```
-双击根目录 MaaRacingMaster.Shell.exe / MaaRacingAssistant.lnk（exe manifest 自动 UAC 提权）
+双击根目录 MaaRacingMaster.Shell.exe / MaaRacingMaster.lnk（exe manifest 自动 UAC 提权）
   → WinUI 3 shell 创建窗口（AppWindowTitleBar）并展示 HTML 前端
   → shell 拉起 Python sidecar（python -m maaracing_master）
     → sidecar 初始化 Controller，等待 stdin JSONL RPC
@@ -658,8 +658,8 @@ start_module(module_id, start_from)
 ### 9.1 安装开发环境
 
 ```bash
-git clone https://github.com/d542Bb/MaaRacingAssistant.git
-cd MaaRacingAssistant
+git clone https://github.com/d542Bb/MaaRacingMaster.git
+cd MaaRacingMaster
 py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -673,7 +673,7 @@ python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdi
 
 ### 9.3 调试模式
 
-1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingAssistant/debug/<module>/<会话>/` 目录
+1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingMaster/debug/<module>/<会话>/` 目录
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，弹出 OpenCV 窗口实时显示精简标注画面（\~30fps）
 3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
 4. **MPE Studio**：`tools/navkit/mpe.cmd` 起 LocalBridge 并在浏览器打开 MPE（画布编辑 v4 真源）+ 策略表薄页
@@ -682,7 +682,7 @@ python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdi
 
 `tools/training/train.py` 提供 YOLO 训练→ONNX 导出链路（Ultralytics yolo11n 微调）；导出目标为 racing 插件的归档资源目录 `archive/racing/resources/onnx/model.onnx`。当前版本不随发行包分发模型权重，含检测的插件启用时再由插件自带并声明 `REQUIRED_ASSETS`。
 
-### 9.5 日志位置（%APPDATA%/MaaRacingAssistant/）
+### 9.5 日志位置（%APPDATA%/MaaRacingMaster/）
 
 用户数据目录 `user_data_dir()` 五目录结构（[paths.py](file:///d:/maaracing_master/maaracing_master/core/paths.py)）：
 
@@ -738,7 +738,7 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 
 **MAA 对照**：MaaFramework 侧仅约定"720p 无损原图裁剪勿缩放 + `roi`/`box`/`target`
 三概念分离"（本指南 §5.1/§5.2）；社区靠 ImageCropper 类工具 + 人工纪律，无结构化
-工作流。MRA 在其上加 regions 机器可读导出 + 校验守卫闭环。
+工作流。MaaRM 在其上加 regions 机器可读导出 + 校验守卫闭环。
 
 ### 9.8 全局资产分层与同图命名空间（2026-09-10 归位，v4 形态）
 
@@ -955,7 +955,7 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 
 | 类名                                   | 文件                                                                                           | 核心职责                                 |
 | ------------------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `MaaRacingAssistantController`       | core/controller.py                                                                           | 主控编排：能力门面 + 模块生命周期 + 全局设置            |
+| `MaaRacingMasterController`       | core/controller.py                                                                           | 主控编排：能力门面 + 模块生命周期 + 全局设置            |
 | `ActivityModule` / `ActivityContext` | core/base.py                                                                                 | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
 | `Registry`                           | core/registry.py                                                                             | 插件自动扫描注册（扫 `plugins/*/manifest.py`）  |
 | `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机）                    |

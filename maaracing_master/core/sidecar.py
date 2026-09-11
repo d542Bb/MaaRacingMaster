@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MRA Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
+MaaRM Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
 
 通道契约（与 Step 2 契约测试一致）：
     stdin  = JSONL request only
@@ -36,7 +36,7 @@ from typing import TextIO, cast
 
 from maaracing_master import __version__
 from maaracing_master.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
-from maaracing_master.core.controller import MaaRacingAssistantController
+from maaracing_master.core.controller import MaaRacingMasterController
 from maaracing_master.core.logger import logger
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
@@ -298,7 +298,7 @@ class SidecarService:
     def __init__(self, protocol_stdout):
         self._out = protocol_stdout
         self._out_lock = threading.Lock()
-        self._controller = MaaRacingAssistantController()
+        self._controller = MaaRacingMasterController()
         self._lock = threading.RLock()
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
         # 默认选中鉴宝模块（GUI 进入即默认展示鉴宝；未注册时回退到第一个已注册模块）。

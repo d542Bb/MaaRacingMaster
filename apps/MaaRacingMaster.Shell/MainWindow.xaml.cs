@@ -16,7 +16,7 @@ using WinRT.Interop;
 namespace MaaRacingMaster.Shell;
 
 /// <summary>
-/// MRA 正式 shell —— 唯一 GUI。职责边界：窗口 + sidecar 生命周期 + 消息转发。
+/// MaaRM 正式 shell —— 唯一 GUI。职责边界：窗口 + sidecar 生命周期 + 消息转发。
 /// 业务（Controller）完全在 Python sidecar，本类不承载任何业务逻辑。
 /// </summary>
 public sealed partial class MainWindow : Window
@@ -95,7 +95,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Title = "MRA";
+        Title = "MaaRM";
 
         // 窗口图标（任务栏/Alt-Tab 显示）：AppWindow.SetIcon 只接受 .ico 路径
         // 从 exe 运行目录向上查找仓库根 assets/icon.ico（避免硬编码本机绝对路径）

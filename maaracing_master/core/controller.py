@@ -35,7 +35,7 @@ from maaracing_master.core.base import ActivityContext, ModuleDependencyError
 from maaracing_master.core.registry import create_module
 
 
-class MaaRacingAssistantController:
+class MaaRacingMasterController:
     """主控制器（AppController）：生命周期编排 + 共享能力提供，活动流程已迁入模块"""
 
     def __init__(self, capture_backend: str = "wgc_latest"):
@@ -63,7 +63,7 @@ class MaaRacingAssistantController:
         # 运行结束后自动关闭（GUI「运行结束后」卡片）：仅在流程"正常完成"时生效，
         # 报错退出 / 手动停止（stop_event 置位）不触发。
         self._auto_close_game = False  # 结束后关闭游戏进程
-        self._auto_exit_mra = False    # 结束后退出 MRA 程序
+        self._auto_exit_mra = False    # 结束后退出 MaaRM 程序
         self._last_run_natural = False  # 上次 start_module 是否正常跑完（非报错、非手动停止）
         self._mute_game_enabled = False  # 「运行选项」运行时静音游戏（结束恢复 100%）
         self._wgc_capture = None  # WGC 中心采集器（单生产者，全模块读缓存；运行期存在）
@@ -220,7 +220,7 @@ class MaaRacingAssistantController:
                 logger.log("运行结束：手动停止，「运行结束后」开关不生效", "INFO")
 
     def stop(self):
-        """停止当前活动模块（幂等）。手动停止：自动关闭游戏/退出 MRA 开关不生效"""
+        """停止当前活动模块（幂等）。手动停止：自动关闭游戏/退出 MaaRM 开关不生效"""
         self._manual_stop = True
         self.stop_event.set()
         if self.active_module:
@@ -238,7 +238,7 @@ class MaaRacingAssistantController:
 
     @property
     def auto_exit_mra(self) -> bool:
-        """是否在流程正常结束后自动退出 MRA 程序（设置开关）"""
+        """是否在流程正常结束后自动退出 MaaRM 程序（设置开关）"""
         return self._auto_exit_mra
 
     @property
@@ -291,7 +291,7 @@ class MaaRacingAssistantController:
             logger.log(f"{label}：音量设置异常: {e}", "WARNING")
 
     def _maybe_auto_shutdown(self) -> None:
-        """流程正常结束后执行：按开关关闭游戏进程（退出 MRA 由 sidecar 依 last_run_natural 发起，以保证时序）"""
+        """流程正常结束后执行：按开关关闭游戏进程（退出 MaaRM 由 sidecar 依 last_run_natural 发起，以保证时序）"""
         if not self._auto_close_game:
             return
         hwnd = self._hwnd or find_game_hwnd()

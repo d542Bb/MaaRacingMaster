@@ -1,4 +1,4 @@
-# MaaRacingAssistant — Code Wiki · 鉴宝域
+# MaaRacingMaster — Code Wiki · 鉴宝域
 
 > 《巅峰极速》"巅峰鉴宝"活动 —— **出价 / 估值 / OCR 全自动模块（treasure\_\*）** 专属文档。
 > 聚焦鉴宝核心：12 阶段状态机 / 准星意图 / 出价策略（bid\_strategy）/ 异步 OCR / ROI 三段分类。

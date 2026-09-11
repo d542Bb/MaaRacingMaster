@@ -1,6 +1,6 @@
 # 可行性自检清单（SELF CHECK）
 
-> 从零跑通 MaaRacingAssistant 的**分步验收清单**：每步给你「怎么验、成功是什么样、失败怎么查」。
+> 从零跑通 MaaRacingMaster 的**分步验收清单**：每步给你「怎么验、成功是什么样、失败怎么查」。
 > 适合新环境部署、跨机器迁移、或运行异常时定位「是环境问题还是功能 bug」。
 
 所有命令默认在**仓库根目录**（含 `README.md` 的那一层）执行。本文与 [README 快速开始](../README.md#快速开始) 配套。
@@ -123,7 +123,7 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ```
 
-编译成功后，双击根目录 **`MaaRacingAssistant.lnk`**（若存在，本机快捷方式，指向编译产物路径，`.gitignore` 排除），或在命令行：
+编译成功后，双击根目录 **`MaaRacingMaster.lnk`**（若存在，本机快捷方式，指向编译产物路径，`.gitignore` 排除），或在命令行：
 
 ```bash
 start apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe

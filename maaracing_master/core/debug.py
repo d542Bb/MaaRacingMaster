@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MaaRacingAssistant — 调试可视化模块
+MaaRacingMaster — 调试可视化模块
 每帧截图标注：探测轮廓(黄) / 入围候选(绿) / 选中光标(红) / 按钮目标
 
 两套渲染：
