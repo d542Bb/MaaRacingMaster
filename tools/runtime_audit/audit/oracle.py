@@ -8,7 +8,7 @@ KNOWN = {
         ("runtime/python/python.exe", "REQUIRED", "KEEP"),
         ("runtime/python/pythonw.exe", "REQUIRED", "KEEP"),
         ("runtime/python/python311.dll", "REQUIRED", "KEEP"),
-        ("MaaRacingAssistant.exe", "REQUIRED", "KEEP"),
+        ("MaaRacingMaster.exe", "REQUIRED", "KEEP"),
         ("runtime/python/packages/numpy/_core", "REQUIRED", "KEEP"),
         ("runtime/python/packages/numpy/lib", "RUNTIME-LOADED", "KEEP"),
         ("runtime/python/packages/cv2/__init__.py", "RUNTIME-LOADED", "KEEP"),

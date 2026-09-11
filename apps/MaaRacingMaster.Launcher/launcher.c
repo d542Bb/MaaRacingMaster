@@ -1,4 +1,4 @@
-// MaaRacingAssistant native Launcher (PoC)
+// MaaRacingMaster native Launcher (PoC)
 // ---------------------------------------------------------------
 // 职责范围（第一版最小 PoC，见 docs/.trae 报告 §5.5/§5.6）：
 //   1. 定位并归一化 AppRoot = Launcher 自身所在目录
@@ -10,7 +10,7 @@
 // 不做：用户参数透传、自动更新、日志框架、崩溃告警 UI。
 //
 // 编译（VS2019 MSVC，Hostx64/x64）：
-//   cl /nologo /O2 /MT /Fe:MaaRacingAssistant.exe launcher.c /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib
+//   cl /nologo /O2 /MT /Fe:MaaRacingMaster.exe launcher.c /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib
 // 说明：/MT 静态链接 CRT，避免运行时依赖 msvcrt；图标后续由 rc 资源嵌入。
 // ---------------------------------------------------------------
 
@@ -21,7 +21,7 @@
 // 失败提示：native 无控制台，用 MessageBox 汇报，避免静默失败
 static void FatalBox(const wchar_t *msg)
 {
-    MessageBoxW(NULL, msg, L"MaaRacingAssistant — 启动失败",
+    MessageBoxW(NULL, msg, L"MaaRacingMaster — 启动失败",
                 MB_OK | MB_ICONERROR);
 }
 
@@ -65,7 +65,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         wchar_t msg[34000];
         swprintf(msg, (size_t)(sizeof(msg) / sizeof(msg[0])),
                  L"未找到核心程序：\n%ls\n\n"
-                 L"请确认 MaaRacingAssistant 安装完整（app\\MaaRacingMaster.Shell.exe 缺失）。",
+                 L"请确认 MaaRacingMaster 安装完整（app\\MaaRacingMaster.Shell.exe 缺失）。",
                  childExe);
         FatalBox(msg);
         return 1;

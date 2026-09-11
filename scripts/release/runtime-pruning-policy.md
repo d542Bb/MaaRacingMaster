@@ -17,10 +17,10 @@
 \| NumPy dev/build 目录 | exp5A | \~1.87 MB | SAFE |
 \| `.pyi` typing stubs | exp5B-1 | \~1.13 MB | SAFE |
 \| Python console wrappers | exp5E-1 | \~0.83 MB | SAFE |
-\| SymPy | exp6 | \~25.37 MB | **SAFE FOR CURRENT MRA** |
-\| MaaAgentBinary | exp7 | \~12.53 MB | **SAFE FOR CURRENT MRA** |
+\| SymPy | exp6 | \~25.37 MB | **SAFE FOR CURRENT MaaRM** |
+\| MaaAgentBinary | exp7 | \~12.53 MB | **SAFE FOR CURRENT MaaRM** |
 \| ORT offline toolchain（google/protobuf + flatbuffers） | exp8 | \~0.96 MB | SAFE（onnxruntime+RapidOCR closure 探针确认运行时未加载；cost：ORT quantization / offline shape-infer / ort\_format\_model 不可用，推理路径不受影响） |
-\| OpenCV videoio ffmpeg backend（`opencv_videoio_ffmpeg500_64.dll`） | exp9 | \~29.45 MB | SAFE（dumpbin 证实 cv2.pyd 非静态依赖，ffmpeg 为运行时 LoadLibrary 的 videoio 后端；阶段二删除后 import cv2/中文路径/dnn.NMSBoxes 全 PASS，videoio 失败仅告警到 stderr，stdout/JSONL 干净；cost：OpenCV 视频文件读写/回放禁用，MRA 生产零 videoio 调用） |
+\| OpenCV videoio ffmpeg backend（`opencv_videoio_ffmpeg500_64.dll`） | exp9 | \~29.45 MB | SAFE（dumpbin 证实 cv2.pyd 非静态依赖，ffmpeg 为运行时 LoadLibrary 的 videoio 后端；阶段二删除后 import cv2/中文路径/dnn.NMSBoxes 全 PASS，videoio 失败仅告警到 stderr，stdout/JSONL 干净；cost：OpenCV 视频文件读写/回放禁用，MaaRM 生产零 videoio 调用） |
 
 ## 注意与代价
 
@@ -28,10 +28,10 @@
   降低崩溃转储与 SOS 分析能力；Windows Error Reporting OS 级 dump 仍可配置。
   保留 `mscordbi.dll`（debugger attach 能力）。
 
-- **SymPy**：仅当前 MRA 运行路径安全。若未来使用 onnxruntime 的离线
+- **SymPy**：仅当前 MaaRM 运行路径安全。若未来使用 onnxruntime 的离线
   `symbolic_shape_infer` / `transformers` 工具，需恢复依赖。
 
-- **MaaAgentBinary**：Android/ADB 路径不再支持。当前 MRA 的 `Win32Controller`
+- **MaaAgentBinary**：Android/ADB 路径不再支持。当前 MaaRM 的 `Win32Controller`
   （Win32 截图 + 手柄）不受影响。
 
 ## 明确不纳入正式裁剪
@@ -61,7 +61,7 @@
 
 | 语义名                  | 一手证据                                                                                | Installed Δ | Download Δ（内容/形态） | 风险·cost                                                | 失效条件    | status |
 | -------------------- | ----------------------------------------------------------------------------------- | ----------- | ----------------- | ------------------------------------------------------ | ------- | ------ |
-| OpenCVVideoioBackend | dumpbin 证 ffmpeg dll 为运行时 LoadLibrary 的 videoio 后端，非 cv2.pyd 静态依赖；删后 JSONL 污染专测 0 行 | −29.45 MB   | −12.20（内容）        | OpenCV 视频读写/回放禁用；MRA 生产零 videoio 调用                    | 若引入视频功能 | 落地     |
+| OpenCVVideoioBackend | dumpbin 证 ffmpeg dll 为运行时 LoadLibrary 的 videoio 后端，非 cv2.pyd 静态依赖；删后 JSONL 污染专测 0 行 | −29.45 MB   | −12.20（内容）        | OpenCV 视频读写/回放禁用；MaaRM 生产零 videoio 调用                    | 若引入视频功能 | 落地     |
 | OrtOfflineTooling    | closure 探针（onnxruntime+RapidOCR 构造+推理）确认 protobuf/flatbuffers 未加载                   | −0.96 MB    | −0.39（内容）         | ORT quantization/离线 shape-infer/ort\_format\_model 不可用 | 若需离线量化  | 落地     |
 
 ### CLOSED-ABSENT（目标物不存在，基本永久关闭）

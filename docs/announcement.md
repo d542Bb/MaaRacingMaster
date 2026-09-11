@@ -25,7 +25,7 @@
   "title": "一句话标题（≤30 字）",
   "body": "正文第一行\n正文第二行（用 \\n 分段，纯文本）",
   "date": "2026-09-01",
-  "url": "https://github.com/d542Bb/MaaRacingAssistant/releases",
+  "url": "https://github.com/d542Bb/MaaRacingMaster/releases",
   "url_text": "查看发布说明 ↗",
   "effective_until": "2026-09-30"
 }

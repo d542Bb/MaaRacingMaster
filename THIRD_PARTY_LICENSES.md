@@ -1,6 +1,6 @@
 # 第三方组件许可证声明（Third-Party Notices）
 
-本文件汇总 MaaRacingAssistant 在其源码、运行时发布包（`MaaRacingAssistant-<ver>-win-x64.zip`）中
+本文件汇总 MaaRacingMaster 在其源码、运行时发布包（`MaaRacingMaster-<ver>-win-x64.zip`）中
 再分发或使用的第三方组件的许可证与归属。请随发布包一并保留本声明。
 
 ## 项目自身许可（分层）

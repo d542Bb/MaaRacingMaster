@@ -80,9 +80,9 @@ build/assemble-test/
 build/zip-e2e/
 
 # assemble.ps1 本地打包产物（默认输出到 scripts/release；CI 输出到 build/release 已忽略）
-scripts/release/MaaRacingAssistant-*/
-scripts/release/MaaRacingAssistant-*.zip
-scripts/release/MaaRacingAssistant-*.zip.sha256
+scripts/release/MaaRacingMaster-*/
+scripts/release/MaaRacingMaster-*.zip
+scripts/release/MaaRacingMaster-*.zip.sha256
 
 # 系统
 Thumbs.db

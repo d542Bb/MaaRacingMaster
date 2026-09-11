@@ -1,4 +1,4 @@
-// MaaRacingAssistant native Launcher 资源脚本
+// MaaRacingMaster native Launcher 资源脚本
 // 用于 launcher.c 编译时一次性嵌入两类 Win32 资源：
 //   1. 图标（assets/icon.ico）→ 资源管理器/任务栏展示，消除"无图标"问题
 //   2. RT_MANIFEST（id=1，即 CREATEPROCESS_MANIFEST_RESOURCE_ID）→

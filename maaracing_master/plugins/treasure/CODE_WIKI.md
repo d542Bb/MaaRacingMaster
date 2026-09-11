@@ -25,7 +25,7 @@
 
 ## 1. treasure\_module 巅峰鉴宝模块
 
-[treasure\_module.py](file:///d:/maaracing_master/maaracing_master/plugins/treasure/module.py)（v0.13.0 主战场）
+[treasure\_module.py](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/module.py)（v0.13.0 主战场）
 
 **职责**：
 
@@ -39,7 +39,7 @@
 
 - 估值算法：全 5 回合系统报价最大值 `sysmax_13`（H=智能出价填入的输入框值，只取每回合第一次）×1.35(求稳)/1.4(激进) = 真实估值区间
 
-- **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_master/maaracing_master/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
+- **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
 
 - **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/policy/treasure.policy.json`（`perception.spec` 锚点 + `policy` 段），detector/module/ocr/eggs 一律读它。插件以 `__init__.py` 的 `IMAGE_DIR`/`PIPELINE_DIR`/`POLICY_PATH`/`nav_source()` 统一引用，不依赖主程序 `assets/`。
 
@@ -118,7 +118,7 @@
 
 ## 2. bid\_strategy 出价策略
 
-[bid\_strategy.py](file:///d:/maaracing_master/maaracing_master/plugins/treasure/strategy.py)（V3 秒杀火力基准，2026-09-05；V2 数据驱动 2026-08-16；设计文档 `docs/treasure_bid_strategy.md` + `docs/treasure_tick_dynamic_step_report.md`）
+[bid\_strategy.py](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/strategy.py)（V3 秒杀火力基准，2026-09-05；V2 数据驱动 2026-08-16；设计文档 `docs/treasure_bid_strategy.md` + `docs/treasure_tick_dynamic_step_report.md`）
 
 - 数据结构：`RoundSnapshot`（上一轮完整公开快照，策略唯一对手信息源）/ `BidContext`（决策输入，含 `opp_high_history` 对手逐轮最高）/ `BidDecision`（决策输出）/ `LureState`（逼价基线，V3 未启用）
 
@@ -142,7 +142,7 @@
 
 ## 3. treasure\_detector 阶段检测器
 
-[treasure\_detector.py](file:///d:/maaracing_master/maaracing_master/plugins/treasure/detector.py)
+[treasure\_detector.py](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/detector.py)
 
 **职责**：
 
@@ -164,7 +164,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 ## 4. treasure\_ocr 金额识别
 
-[treasure\_ocr.py](file:///d:/maaracing_master/maaracing_master/plugins/treasure/ocr.py)
+[treasure\_ocr.py](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/ocr.py)
 
 **职责**：
 
@@ -182,7 +182,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 ## 5. treasure\_renderer HUD 渲染
 
-[treasure\_renderer.py](file:///d:/maaracing_master/maaracing_master/plugins/treasure/renderer.py)
+[treasure\_renderer.py](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/renderer.py)
 
 **职责**：复用调试渲染器，绘制鉴宝专属 HUD：
 

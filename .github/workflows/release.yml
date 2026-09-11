@@ -159,7 +159,7 @@ jobs:
       # 程序「检测更新」从 CNB raw 优先读取，GitHub raw 与 GitHub API 兜底）。
 
   # 解压即用的 Windows 可执行包：embedded Python3.11 runtime + 预装依赖 + dotnet publish GUI，
-  # 组装成 MaaRacingAssistant-<ver>-win-x64.zip 并补传同一 Release（见 build/release/assemble.ps1）。
+  # 组装成 MaaRacingMaster-<ver>-win-x64.zip 并补传同一 Release（见 build/release/assemble.ps1）。
   # 在 release job 之后顺序执行，避免与「创建 Release」竞态。
   win-build:
     name: 构建解压即用 Windows 包
@@ -242,8 +242,8 @@ jobs:
       - name: 校验产物存在（zip 保底 + 7z 主推）
         shell: pwsh
         run: |
-          $zip = "${{ github.workspace }}\build\release\MaaRacingAssistant-$env:VER-win-x64.zip"
-          $sevenz = "${{ github.workspace }}\build\release\MaaRacingAssistant-$env:VER-win-x64.7z"
+          $zip = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip"
+          $sevenz = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.7z"
           if (-not (Test-Path $zip))    { throw "zip 未生成: $zip" }
           if (-not (Test-Path $sevenz)) { throw "7z 未生成: $sevenz" }
           Get-Item $zip, $sevenz | Select-Object Name, Length
@@ -253,10 +253,10 @@ jobs:
         with:
           tag_name: ${{ env.TAGNAME }}
           files: |
-            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.zip
-            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.zip.sha256
-            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.7z
-            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.7z.sha256
+            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip
+            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip.sha256
+            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z
+            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z.sha256
 
   # CNB（cnb.cool）Release 资产同步：把 GitHub Release 的 zip/sha256 推到 CNB 仓库的
   # 同名 Release。CNB 构建节点只有 Linux 容器（无 Windows），无法自行构建本项目发布包，
@@ -271,7 +271,7 @@ jobs:
       - name: 上传 zip 与 sha256 到 CNB Release
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
-          CNB_REPO: 'MaaRacingAssistant/MAIN'
+          CNB_REPO: 'MaaRacingMaster/MAIN'
           TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
         run: |
@@ -279,8 +279,8 @@ jobs:
           API="https://api.cnb.cool/${CNB_REPO}"
           AUTH="Authorization: Bearer ${CNB_TOKEN}"
           VER="${TAG#v}"
-          ZIP="MaaRacingAssistant-${VER}-win-x64.zip"
-          SZ7="MaaRacingAssistant-${VER}-win-x64.7z"
+          ZIP="MaaRacingMaster-${VER}-win-x64.zip"
+          SZ7="MaaRacingMaster-${VER}-win-x64.7z"
 
           # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）：zip 保底 + 7z 主推，各带 sha256
           for f in "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256"; do

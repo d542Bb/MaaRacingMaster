@@ -843,12 +843,12 @@ class SidecarService:
 
     # ---------- 关于页：检查更新 / 公告 ----------
 
-    _GITHUB_REPO = "d542Bb/MaaRacingAssistant"
-    # CNB 镜像仓库（cnb.cool/MaaRacingAssistant/MAIN）：只做 git 同步（mirror-to-cnb.yml），
+    _GITHUB_REPO = "d542Bb/MaaRacingMaster"
+    # CNB 镜像仓库（cnb.cool/MaaRacingMaster/MAIN）：只做 git 同步（mirror-to-cnb.yml），
     # 无发布包与匿名 releases API。「检测更新」改读版本标记文件 docs/latest_release.json
     # （release.yml 打 tag 时自动生成并回写 master，镜像随之同步）——CNB 优先（国内快），
     # GitHub raw / GitHub API 兜底。公告同理 CNB raw 优先。
-    _CNB_RAW_BASE = "https://cnb.cool/MaaRacingAssistant/MAIN/-/git/raw/master"
+    _CNB_RAW_BASE = "https://cnb.cool/MaaRacingMaster/MAIN/-/git/raw/master"
     _RELEASE_URLS = (
         f"{_CNB_RAW_BASE}/docs/latest_release.json",
         f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json",
@@ -864,7 +864,7 @@ class SidecarService:
     @staticmethod
     def _http_get(url: str) -> str:
         """带 UA 的 GET，超时返回空串；不抛网络异常（由调用方处理结果断言）。"""
-        req = Request(url, headers={"User-Agent": f"MaaRacingAssistant/{__version__}"})
+        req = Request(url, headers={"User-Agent": f"MaaRacingMaster/{__version__}"})
         with urlopen(req, timeout=SidecarService._NET_TIMEOUT) as resp:
             return resp.read().decode("utf-8")
 

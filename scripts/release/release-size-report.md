@@ -49,7 +49,7 @@ no regression（本轮 total −30.41 / zip −12.59 为 exp8 EXP-9 新增裁剪
 | RapidOCR（构造+推理） | PASS |
 | windows_capture / vgamepad | PASS |
 | MaaFramework Toolkit/Tasker/Resource + 桌面枚举 | PASS |
-| Win32Controller（MRA 实际控制路径） | PASS |
+| Win32Controller（MaaRM 实际控制路径） | PASS |
 | Racing（manifest/module/loop） | PASS |
 | Treasure（manifest/module/ocr/strategy/store + 业务逻辑） | PASS |
 | yolo_detector / wgcap | PASS |

@@ -1,5 +1,5 @@
-# Release package assembly for MRA Windows.
-# Output: <OutRoot>/MaaRacingAssistant-<Version>-win-x64.zip + .sha256
+# Release package assembly for MaaRM Windows.
+# Output: <OutRoot>/MaaRacingMaster-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
 #   <name>/{ MaaRacingMaster.Shell.exe + WinUI/.NET dlls, pyproject.toml,
 #          maaracing_master/, assets/ (含 config/), apps/MaaRacingMaster.Shell/frontend/,
@@ -31,19 +31,19 @@ param(
     [switch]$KeepGoing,
     [switch]$SevenZ,        # 额外产出 .7z 主推档（solid LZMA2 256M, 参数同 C1-C 基准）+ .7z.sha256；zip 保底始终产出
     [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
-    [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MRA zero usage)
-    [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MRA zero usage)
+    [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MaaRM zero usage)
+    [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MaaRM zero usage)
     [switch]$RemovePythonOrtCapi, # EXP-3: remove Python ORT capi\onnxruntime.dll (20.1MB, pyd self-contained)
     [switch]$RemovePilAvif,       # EXP-4A: remove Pillow _avif native ext (7.5MB, lazy-loaded AVIF only)
     [switch]$RemoveCrashDiagnostics, # EXP-4B: remove createdump/mscordaccore/DiaSymReader (4.7MB, on-demand diag; KEEP mscordbi)
     [switch]$RemoveNumpyDev,       # EXP-5A: remove numpy dev/test/build dirs (f2py/distutils/testing/tests/doc/_pyinstaller/ctypeslib, 2.55MB); KEEP _pytesttester/typing/_typing; no numpy source fork
     [switch]$RemovePythonTypingStubs, # EXP-5B-1: remove ALL runtime\python\packages\**\*.pyi (typing-only static stubs, 1.96MB/267 files); KEEP numpy.typing (still its .py), numpy._typing (runtime-loaded, its .pyi removed too but .py stays); verified no .py does open()/resources/pkgutil/metadata reads of .pyi
     [switch]$RemoveDistInfoInstallMetadata, # EXP-5C-1: remove INSTALLER/WHEEL/REQUESTED from every *.dist-info (only ~2.8KB total; install/dev-stage only, no runtime reader). METADATA/RECORD/entry_points.txt/top_level.txt untouched for 5C-1.
-    [switch]$RemovePythonConsoleDev, # EXP-5E-1: remove packages\bin\*.exe console wrappers (~0.83MB/8 files: f2py numpy-config isympy normalizer idna onnxruntime_test rapidocr tqdm). All are pip console_scripts launchers (105.8KB each) for dev/test/CLI entry points. Verified: MRA sidecar & third-party runtime make ZERO subprocess/Popen calls to any of them (sidecar only runs git/taskkill); f2py.exe is an orphan (its numpy.f2py.f2py2e source was removed in EXP-5A). No native runtime/DLL embedded. Deleting loses only console CLI access, not library import. Default OFF; restore = reassemble w/o switch.
-    [switch]$RemoveSympy,    # EXP-6: remove sympy (25.37MB) from packages. Verified via full-chain runtime trace (sidecar+Racing+Treasure+all third-party, 360 modules) that sympy is NEVER loaded on any MRA run path; onnxruntime DML inference does NOT load sympy either. Its only dependency source is onnxruntime_directml METADATA Requires-Dist:sympy, used only by offline tools (onnxruntime\tools\symbolic_shape_infer.py, transformers\shape_infer_helper.py) — NOT the inference/DML runtime path. MRA has zero sympy import. Deletion loses only onnxruntime offline symbolic shape-infer/quantization tooling. mpmath kept (separate EXP-7). Default OFF; restore = reassemble w/o switch.
-    [switch]$RemoveMaaAgentBinary, # EXP-7: remove MaaAgentBinary (12.53MB) — Android/ADB agent binaries (23 adb/minicap + 56 minicap.so). Referenced only by maa\controller.py L802 AdbController path ("../MaaAgentBinary"); MRA uses Win32Controller (Win32 screenshot+gamepad), never ADB. Verified no runtime import loads MaaAgentBinary. Deleting breaks only future Android/ADB control. Default OFF; restore = reassemble w/o switch.
+    [switch]$RemovePythonConsoleDev, # EXP-5E-1: remove packages\bin\*.exe console wrappers (~0.83MB/8 files: f2py numpy-config isympy normalizer idna onnxruntime_test rapidocr tqdm). All are pip console_scripts launchers (105.8KB each) for dev/test/CLI entry points. Verified: MaaRM sidecar & third-party runtime make ZERO subprocess/Popen calls to any of them (sidecar only runs git/taskkill); f2py.exe is an orphan (its numpy.f2py.f2py2e source was removed in EXP-5A). No native runtime/DLL embedded. Deleting loses only console CLI access, not library import. Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveSympy,    # EXP-6: remove sympy (25.37MB) from packages. Verified via full-chain runtime trace (sidecar+Racing+Treasure+all third-party, 360 modules) that sympy is NEVER loaded on any MaaRM run path; onnxruntime DML inference does NOT load sympy either. Its only dependency source is onnxruntime_directml METADATA Requires-Dist:sympy, used only by offline tools (onnxruntime\tools\symbolic_shape_infer.py, transformers\shape_infer_helper.py) — NOT the inference/DML runtime path. MaaRM has zero sympy import. Deletion loses only onnxruntime offline symbolic shape-infer/quantization tooling. mpmath kept (separate EXP-7). Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveMaaAgentBinary, # EXP-7: remove MaaAgentBinary (12.53MB) — Android/ADB agent binaries (23 adb/minicap + 56 minicap.so). Referenced only by maa\controller.py L802 AdbController path ("../MaaAgentBinary"); MaaRM uses Win32Controller (Win32 screenshot+gamepad), never ADB. Verified no runtime import loads MaaAgentBinary. Deleting breaks only future Android/ADB control. Default OFF; restore = reassemble w/o switch.
     [switch]$RemoveOrtOffline,  # EXP-8: remove onnxruntime offline toolchain deps — google\protobuf (1.57MB) + flatbuffers (0.08MB). Both are pure-python dependencies of onnxruntime\quantization + tools (cold paths), never loaded by runtime inference; runtime closure probe (onnxruntime + RapidOCR 构造+推理) confirms both NOT in sys.modules. dist-info 保留（与 RECORD 不删先例一致）。Cost: onnxruntime quantization / offline shape-infer / ort_format_model unusable (inference path unaffected). Default OFF; restore = reassemble w/o switch.
-    [switch]$RemoveCvFfmpeg # EXP-9: remove opencv_videoio_ffmpeg500_64.dll (29.45MB) from cv2. dumpbin /dependents on cv2.pyd shows NO static dependency (ffmpeg dll is a runtime LoadLibrary'd videoio backend). Stage-2 probe (rm dll) confirms import cv2 + imencode/imdecode + cvtColor/resize/matchTemplate/dnn.NMSBoxes + chinese-path(utf8_patch chain) all OK; videoio(VideoWriter) unavailable but MRA production has ZERO videoio usage; any video-backend failure warns to STDERR, stdout(JSONL) stays clean. Cost: OpenCV video file read/write playback disabled. Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveCvFfmpeg # EXP-9: remove opencv_videoio_ffmpeg500_64.dll (29.45MB) from cv2. dumpbin /dependents on cv2.pyd shows NO static dependency (ffmpeg dll is a runtime LoadLibrary'd videoio backend). Stage-2 probe (rm dll) confirms import cv2 + imencode/imdecode + cvtColor/resize/matchTemplate/dnn.NMSBoxes + chinese-path(utf8_patch chain) all OK; videoio(VideoWriter) unavailable but MaaRM production has ZERO videoio usage; any video-backend failure warns to STDERR, stdout(JSONL) stays clean. Cost: OpenCV video file read/write playback disabled. Default OFF; restore = reassemble w/o switch.
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,7 +108,7 @@ if ($DisableReleaseOptimizations -or $Configuration -eq 'Experimental') {
     Write-Host "[assemble] Configuration=Release; production pruning ON (12 SAFE removals)"
 }
 
-$Name      = 'MaaRacingAssistant-' + $Version + '-win-x64'
+$Name      = 'MaaRacingMaster-' + $Version + '-win-x64'
 $StageRoot = Join-Path $OutRoot $Name
 
 Write-Host "[assemble] Version=$Version stage=$StageRoot"
@@ -256,7 +256,7 @@ foreach ($d in $langDirs) {
 # ---------- 2.55 实验1：删除 WindowsAppSDK AI/ML 死链（-RemoveWinAppSdkML 开启时） ----------
 # 白名单依据 deps.json 中 Microsoft.WindowsAppSDK.AI/1.8.79 与 Microsoft.WindowsAppSDK.ML/1.8.2197
 # 子包布局（runtimes-framework\win-x64\native\ + lib\ + metadata\）逐文件映射到 app\ 目录得到；
-# MRA C# 源码 / MaaRacingMaster.Shell.dll IL / dumpbin 静态引用三重证据均证明整条链零使用
+# MaaRM C# 源码 / MaaRacingMaster.Shell.dll IL / dumpbin 静态引用三重证据均证明整条链零使用
 # （推理在 Python sidecar 与 MaaFramework 内完成）。开关默认关闭；一键恢复 = 去掉开关重新 assemble。
 if ($RemoveWinAppSdkML) {
     $mlWhitelist = @(
@@ -299,10 +299,10 @@ if ($RemoveWinAppSdkML) {
 #   runtimes-framework\win-x64\native\Microsoft.Windows.Widgets.dll
 #   lib\net6.0-windows10.0.17763.0\Microsoft.Windows.Widgets.Projection.dll
 #   metadata\Microsoft.Windows.Widgets.winmd
-# MRA C# source / XAML / MaaRacingMaster.Shell.dll use none of WidgetManager/FeedManager/WidgetProvider
+# MaaRM C# source / XAML / MaaRacingMaster.Shell.dll use none of WidgetManager/FeedManager/WidgetProvider
 # (zero reference verified). MaaRacingMaster.Shell.exe's embedded activation manifest still declares these
 # WinRT classes, but that manifest is only a per-request lookup table (same proven-safe pattern as
-# EXP-1 AI/ML): MRA never requests a Windows.Widgets.* type, so the vanished DLL is never resolved.
+# EXP-1 AI/ML): MaaRM never requests a Windows.Widgets.* type, so the vanished DLL is never resolved.
 # Default OFF; restore = reassemble w/o switch.
 if ($RemoveWidgets) {
     $widgetsWhitelist = @(
@@ -375,7 +375,7 @@ if ($RemoveCrashDiagnostics) {
 #   testing, tests   -> pytest harness; numpy.testing only via np.testing (lazy).
 #   doc              -> package docs.
 #   _pyinstaller     -> PyInstaller hook helpers.
-#   ctypeslib        -> numpy.ctypeslib, lazy submodule, not used by MRA/RapidOCR/ORT.
+#   ctypeslib        -> numpy.ctypeslib, lazy submodule, not used by MaaRM/RapidOCR/ORT.
 # STRICT EXCLUSION (never removed): numpy\_pytesttester.py (top-level hard import in numpy/__init__.py,
 #   `from numpy._pytesttester import PytestTester`; only 6KB, do NOT patch numpy source),
 #   numpy\typing + numpy\_typing (reserved for EXP-5B .pyi study), numpy\core (compat shim),
@@ -416,7 +416,7 @@ if ($RemovePythonTypingStubs) {
 }
 
 # ---------- 2.62 EXP-5C-1: remove INSTALLER/WHEEL/REQUESTED from dist-info (only with -RemoveDistInfoInstallMetadata) --
-# Install/dev-stage only files; no runtime reader found in MRA sidecar (zero importlib.metadata/pkg_resources) nor on
+# Install/dev-stage only files; no runtime reader found in MaaRM sidecar (zero importlib.metadata/pkg_resources) nor on
 # the normal import path of numpy/cv2/onnxruntime/rapidocr/maafw (onnxruntime's metadata calls are lazy function-internal,
 # and its packaged dist-info is onnxruntime_directml-*.dist-info so importlib.metadata.version('onnxruntime') throws
 # PackageNotFoundError EVEN BEFORE any removal — proving it is not load-path-critical). METADATA / RECORD / entry_points.txt /
@@ -435,7 +435,7 @@ if ($RemoveDistInfoInstallMetadata) {
 
 # ---------- 2.63 EXP-5E-1: remove packages\bin\*.exe console wrappers (only with -RemovePythonConsoleDev) ----------
 # 8 dev/test/CLI console launchers (~0.83MB), all pure pip console_scripts wrappers (105.8KB each, distinct hashes =
-# distinct embedded entry points). No native runtime/DLL. Zero subprocess/Popen runtime call found from MRA sidecar
+# distinct embedded entry points). No native runtime/DLL. Zero subprocess/Popen runtime call found from MaaRM sidecar
 # (only git/taskkill) or from third-party runtime load path (numpy/conftest.py is pytest-only, sympy/autowrap.py is lazy
 # Fortran codegen, tqdm/std.py match is the class name not a launch). f2py.exe is an orphan (numpy.f2py.f2py2e removed in
 # EXP-5A). Deletion only removes console CLI access; library imports (RapidOCR class, tqdm, charset_normalizer) unaffected.
@@ -453,9 +453,9 @@ if ($RemovePythonConsoleDev) {
 }
 
 # ---------- 2.64 EXP-6: remove sympy (only with -RemoveSympy) ----------
-# 25.37MB. Verified never loaded on any MRA run path (full-chain trace = 360 modules) nor after onnxruntime DML
+# 25.37MB. Verified never loaded on any MaaRM run path (full-chain trace = 360 modules) nor after onnxruntime DML
 # inference. Its only dependency is onnxruntime's offline symbolic shape-infer/transformers tooling, not the runtime
-# inference/DML path. MRA has zero sympy import. mpmath is KEPT (separate EXP-7). Default OFF; restore = reassemble.
+# inference/DML path. MaaRM has zero sympy import. mpmath is KEPT (separate EXP-7). Default OFF; restore = reassemble.
 if ($RemoveSympy) {
     $t = Join-Path $rtDir 'packages\sympy'
     if (Test-Path $t) {
@@ -471,7 +471,7 @@ if ($RemoveSympy) {
 }
 
 # ---------- 2.65 EXP-7: remove MaaAgentBinary (only with -RemoveMaaAgentBinary) ----------
-# Android/ADB agent binaries (12.53MB). Referenced by maa\controller.py AdbController only; MRA uses Win32Controller.
+# Android/ADB agent binaries (12.53MB). Referenced by maa\controller.py AdbController only; MaaRM uses Win32Controller.
 # Verified no runtime import loads it. Also drop its dist-info. Default OFF; restore = reassemble w/o switch.
 if ($RemoveMaaAgentBinary) {
     $t = Join-Path $rtDir 'packages\MaaAgentBinary'
@@ -511,7 +511,7 @@ if ($RemoveOrtOffline) {
 # opencv_videoio_ffmpeg500_64.dll (29.45MB) in packages\cv2. dumpbin /dependents on cv2.pyd shows NO static dependency
 # (ffmpeg dll is a runtime LoadLibrary'd videoio backend). Stage-2 probe (rm dll on stage): import cv2 + imencode/imdecode
 # + cvtColor/resize/matchTemplate/dnn.NMSBoxes + chinese-path(utf8_patch imencode->bytes->imdecode chain) all PASS;
-# videoio(VideoWriter MJPG/XVID) unavailable but MRA production has ZERO highgui/videoio usage. Any video-backend failure
+# videoio(VideoWriter MJPG/XVID) unavailable but MaaRM production has ZERO highgui/videoio usage. Any video-backend failure
 # warns to STDERR only; STDOUT(JSONL) stays clean. Default OFF; restore = reassemble w/o switch.
 if ($RemoveCvFfmpeg) {
     $t = Join-Path $rtDir 'packages\cv2\opencv_videoio_ffmpeg500_64.dll'
@@ -525,7 +525,7 @@ if ($RemoveCvFfmpeg) {
 }
 
 # ---------- 2.6 native Launcher 编译 ----------
-# 根目录唯一入口 MaaRacingAssistant.exe（薄 Launcher，见 apps/MaaRacingMaster.Launcher/launcher.c）。
+# 根目录唯一入口 MaaRacingMaster.exe（薄 Launcher，见 apps/MaaRacingMaster.Launcher/launcher.c）。
 # 用 MSVC 编译为静态链接（/MT）GUI 子系统 exe，零外部 runtime 依赖；每次重新编译（体积小、快），不缓存。
 # 现在通过 launcher.rc 一次性嵌入两类 Win32 资源：图标（resources/icon）与内嵌申请清单
 # （launcher.manifest 的 requireAdministrator 提权）。作用：① 入口 exe 有图标；
@@ -533,7 +533,7 @@ if ($RemoveCvFfmpeg) {
 # 同一 token，规避 ERROR_ELEVATION_REQUIRED (740)。
 # 优先直接用 PATH 里的 cl/rc（CI 用 setup-msvc 已配置环境）；否则自动探测 vcvarsall.bat 初始化。
 $launcherSrc = Join-Path $RepoRoot 'apps\MaaRacingMaster.Launcher\launcher.c'
-$launcherOut = Join-Path $StageRoot 'MaaRacingAssistant.exe'
+$launcherOut = Join-Path $StageRoot 'MaaRacingMaster.exe'
 $launcherObj = Join-Path $env:TEMP 'MaaRacingMaster.Launcher.obj'
 # rc 内部的相对资源路径（..\..\assets\icon.ico、launcher.manifest）是按编译时的工作目录
 # （而非 .rc 文件所在目录）解析的，因此编译前必须把 cwd 切到 apps\MaaRacingMaster.Launcher 并保持到结束。
@@ -661,7 +661,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         'runtime\python\python.exe', 'runtime\python\pythonw.exe',
         'runtime\python\packages\maa',
         'runtime\python\packages\rapidocr\models',
-        'MaaRacingAssistant.exe'
+        'MaaRacingMaster.exe'
     )
     foreach ($rel in $PresentChecks) {
         if (-not (Test-Path (Join-Path $StageRoot $rel))) {
@@ -723,7 +723,7 @@ if ($errors.Count -gt 0) {
 $zip = Join-Path $OutRoot ($Name + '.zip')
 if (Test-Path $zip) { Remove-Item $zip -Force }
 # 只用 $Name 目录的内容作 zip 顶层（而非再包一层 $Name 目录），
-# 避免用户"解压到文件名文件夹"时目录多做一层嵌套。解压后 MaaRacingAssistant.exe 直接在解压根。
+# 避免用户"解压到文件名文件夹"时目录多做一层嵌套。解压后 MaaRacingMaster.exe 直接在解压根。
 & tar -a -cf $zip -C (Join-Path $OutRoot $Name) .
 if ($LASTEXITCODE -ne 0) { exit 1 }
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
