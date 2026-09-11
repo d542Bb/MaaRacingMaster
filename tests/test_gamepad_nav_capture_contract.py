@@ -18,9 +18,20 @@ import cv2
 import numpy as np
 import pytest
 
-from maaracing_assistant.core import clicker as clicker_mod
-from maaracing_assistant.core.clicker import GAMEPAD_BOX_TOL_RATIO, Clicker
-from maaracing_assistant.core.gamepad_cursor import GamepadClicker
+# 完整运行时依赖（core.clicker 经 window_utils 拉 maa；gamepad_cursor 拉 cv2）。
+# CI 轻依赖环境（只装 pytest+numpy+opencv-headless）下整文件跳过，不误红——
+# 口径同 test_navkit_runtime_golden.py。
+try:
+    from maaracing_assistant.core import clicker as clicker_mod
+    from maaracing_assistant.core.clicker import GAMEPAD_BOX_TOL_RATIO, Clicker
+    from maaracing_assistant.core.gamepad_cursor import GamepadClicker
+    _RUNTIME_OK, _RUNTIME_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
+
+pytestmark = pytest.mark.skipif(
+    not _RUNTIME_OK, reason=f"手柄导航契约测试需要完整运行时依赖（maa/cv2）：{_RUNTIME_ERR}"
+)
 
 W, H = 1280, 720
 BG = (32, 46, 68)  # 非中性色背景（不参与灰/白种子提取）
