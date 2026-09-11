@@ -159,7 +159,7 @@ jobs:
       # 程序「检测更新」从 CNB raw 优先读取，GitHub raw 与 GitHub API 兜底）。
 
   # 解压即用的 Windows 可执行包：embedded Python3.11 runtime + 预装依赖 + dotnet publish GUI，
-  # 组装成 MaaRacingMaster-<ver>-win-x64.zip 并补传同一 Release（见 build/release/assemble.ps1）。
+  # 组装成 MaaRacingMaster-<ver>-win-x64.zip 并补传同一 Release（见 scripts/release/assemble.ps1）。
   # 在 release job 之后顺序执行，避免与「创建 Release」竞态。
   win-build:
     name: 构建解压即用 Windows 包
