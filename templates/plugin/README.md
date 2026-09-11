@@ -68,7 +68,7 @@ templates/plugin/
 | `ctx.connect()` | 幂等连接游戏窗口（720p 校验内置） | 恒可用 |
 | `ctx.debug_renderer.renderer()` | 调试 HUD 渲染租约（PEEP / 存盘），经 `ctx.enter_context()` 接管 | 恒可用 |
 | `ctx.gamepad` | 虚拟手柄（摇杆/按键） | 需 `REQUIRES` 声明 + ViGEmBus |
-| `ctx.bind_tasker(tasker, resource)` | MAA 深度绑定（Pipeline 驱动型活动） | 需已连接窗口 |
+| `ctx.bind_tasker(tasker, resource)` | MAA 深度绑定（Pipeline 驱动型活动） | 需 WGC 中心采集器就绪（绑的是帧注入控制器，插件侧无同步截图通道） |
 | `ctx.enter_context(cm)` | 登记资源到生命周期栈，模块退出（含异常）自动释放 | — |
 
 ## 常用扩展点

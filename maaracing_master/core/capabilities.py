@@ -138,10 +138,12 @@ class Lifecycle(Protocol):
 class CaptureAdapter:
     """把 controller 的截图能力包装成 CaptureCapability。
 
-    screenshot() 路由：**WGC 中心采集器优先**（读缓存，零阻塞，全模块共享同一
-    时间线），WGC 未启动/不可用时回退 MAA FramePool（post_screencap 同步路径）。
-    所有消费者（treasure 主循环 / 导航线程 / racing / OCR）经此接口取帧，
-    无需感知后端差异。返回 RGB ndarray（WGC 侧为标准 16:9 720p 帧）。
+    screenshot() **只读 WGC 中心缓存**（宪法 6：帧只从中心缓存来，引擎永不自截帧）。
+    缓存缺席/未启动/读帧异常一律返回 None，**不回退 MAA 同步截图**——回退会造成
+    双时间线（消费者各自持有不同时刻的帧，且回退路径在调用线程内阻塞等截图）。
+    所有消费者（v4 决策段 / 导航线程 / 模板装载 / OCR）经此接口取帧。
+    返回 RGB ndarray（WGC 侧为标准 16:9 720p 帧）；返回 None 时调用方按
+    "采集链路故障"处理，不得当作"画面无变化"继续推进状态机。
     """
 
     def __init__(self, app):  # app: MaaRacingMasterController
@@ -154,9 +156,9 @@ class CaptureAdapter:
                 rgb, _fid, _ts, _age = wgc.get_latest_rgb()
                 if rgb is not None:
                     return rgb
-            except Exception:  # noqa: BLE001 —— WGC 读帧异常回退 MAA
+            except Exception:  # noqa: BLE001 —— 读帧异常按缺帧处理，不回退
                 pass
-        return self._app._screencap()
+        return None
 
     def frame_with_age(self):
         """带新鲜度的帧四元组 (rgb, frame_id, ts_ns, age_ms)。
@@ -174,43 +176,6 @@ class CaptureAdapter:
             except Exception:  # noqa: BLE001 —— 读帧异常按缺帧处理
                 pass
         return (None, 0, 0, math.inf)
-
-
-class PostScreencapCapture:
-    """把任何暴露 post_screencap() 的对象（如 MAA 运行时注入的 controller）包装成
-    CaptureCapability。用于 MAA CustomAction 入口（run(context)）兼容。
-    """
-
-    def __init__(self, controller):
-        self._controller = controller
-
-    def screenshot(self) -> np.ndarray | None:
-        import cv2
-
-        try:
-            job = self._controller.post_screencap()
-            job.wait()
-            img = job.get()
-            if img is None:
-                return None
-            if hasattr(img, "numpy"):
-                arr = np.asarray(getattr(img, "numpy")())
-            elif isinstance(img, np.ndarray):
-                arr = img
-            elif hasattr(img, "__array__"):
-                arr = np.asarray(img)
-            else:
-                return None
-            if arr is None or arr.size == 0 or arr.ndim < 3:
-                return None
-            # MAA PostScreencap 默认返回 BGR（OpenCV），转 RGB 供下游
-            if arr.shape[2] == 4:
-                return cv2.cvtColor(arr, cv2.COLOR_BGRA2RGB)
-            if arr.shape[2] == 3:
-                return cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-            return arr
-        except Exception:
-            return None
 
 
 class GamepadAdapter:

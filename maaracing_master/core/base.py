@@ -124,11 +124,6 @@ class ActivityContext:
         return self.app.proj
 
     @property
-    def capture_backend(self) -> str:
-        """截图后端（wgc_latest / maa）"""
-        return self.app._capture_backend
-
-    @property
     def click_mode(self) -> str:
         """点击方式（real 前台鼠标 / gamepad 后台手柄）"""
         return self.app._click_mode
@@ -148,14 +143,19 @@ class ActivityContext:
         return self.app.connect()
 
     def bind_tasker(self, tasker, resource) -> None:
-        """MAA 集成：把 Resource 绑定到 Tasker（内部持有 Win32Controller，不对外暴露）。
+        """MAA 集成：把 Resource 绑定到 Tasker（内部持帧注入控制器，不对外暴露）。
 
         模块不得直接获取 controller 高权限对象；此方法是 MAA 深度绑定点的窄入口。
-        controller 未连接时抛 ModuleIntegrationError（语义化失败，而非裸断言）。
+        绑的是 `WgcapController`（读 WGC 中心缓存），**不是** MAA Win32Controller——
+        宪法 6 要求帧只从中心缓存来，插件侧一律不得持有同步截图通道。
+        WGC 采集器未就绪时抛 ModuleIntegrationError（语义化失败，而非裸断言）。
         """
-        if self.app.controller is None:
-            raise ModuleIntegrationError("MAA controller 未连接，无法绑定 Tasker")
-        tasker.bind(resource, self.app.controller)
+        from maaracing_master.core.nav_graph import WgcapController
+
+        cap = getattr(self.app, "_wgc_capture", None)
+        if cap is None or not cap.is_running:
+            raise ModuleIntegrationError("WGC 中心采集器未就绪，无法绑定 Tasker（截图链路故障）")
+        tasker.bind(resource, WgcapController(self.capture))
 
 
 class ModuleDependencyError(RuntimeError):

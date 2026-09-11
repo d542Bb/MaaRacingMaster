@@ -11,9 +11,6 @@ import threading
 import time
 from pathlib import Path
 
-import cv2
-import numpy as np
-
 from maa.controller import Win32Controller
 from maa.define import MaaWin32ScreencapMethodEnum
 
@@ -38,17 +35,16 @@ from maaracing_master.core.registry import create_module
 class MaaRacingMasterController:
     """主控制器（AppController）：生命周期编排 + 共享能力提供，活动流程已迁入模块"""
 
-    def __init__(self, capture_backend: str = "wgc_latest"):
+    def __init__(self):
         # DPI awareness：进程级语义，须在创建窗口 / 初始化坐标 API 前显式建立（不继承 shell 配置）
         ensure_dpi_aware()
         self.proj = Path(__file__).resolve().parent.parent.parent
-        self.controller = None  # MAA Win32Controller（连接后有效，未连接为 None）
+        self.controller = None  # MAA Win32Controller（连接后有效，仅用于连接校验；截图一律走 WGC）
         self._hwnd = 0  # 已连接的游戏窗口句柄（未连接为 0）
         self._gpad = None  # 虚拟手柄，首次使用时创建，不复位不销毁
         self._gp_avail = None  # vgamepad 可用性缓存（None=未探测）
         self.debug = NavigationDebugger(debug_dir())
         self._debug_mode = False  # 调试模式开关（由 GUI 控制）
-        self._capture_backend = capture_backend
         self._click_mode = "real"  # 点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)
         self._intent_mode = False  # 意图开关（仅显示意图）：只导航不确认，由用户自己按
         self._running = False  # 模块运行标志（start_module 生命周期内为 True）
@@ -356,14 +352,14 @@ class MaaRacingMasterController:
     def _start_wgc_capture(self) -> None:
         """启动 WGC 中心采集器（幂等）：全模块截图统一读缓存，不再各自 post_screencap。
 
-        失败不阻断（回退 MAA FramePool post_screencap），WARNING 提示——WGC 是
-        增强通道，MAA 兜底保证功能不缺失。
+        启动失败即截图链路故障（宪法 6：帧只从中心缓存来，无 MAA 回退通道）——
+        WARNING 后取帧方一律拿到 None，模块按"无帧"处理而非静默截旧帧。
         """
         if not self._hwnd:
             # 与 docstring 契约一致：不静默。正常路径下 start_module 已建立
             # _hwnd 前置条件（P2），此分支仅作异常防御。
             logger.log(
-                "WGC 中心采集器启动跳过：游戏窗口尚未连接，回退 MAA FramePool 截图",
+                "WGC 中心采集器启动跳过：游戏窗口尚未连接，截图链路不可用",
                 "WARNING",
             )
             return
@@ -392,9 +388,9 @@ class MaaRacingMasterController:
                 raise RuntimeError("WGC 启动后 2 秒未收到首帧")
             self._wgc_capture = cap
             logger.log("WGC 中心采集器已就绪（全模块截图统一走缓存）", "INFO")
-        except Exception as e:  # noqa: BLE001 —— 启动失败回退 MAA 截图
+        except Exception as e:  # noqa: BLE001 —— 启动失败即无帧可用，不回退 MAA 截图
             self._wgc_capture = None
-            logger.log(f"WGC 中心采集启动失败（回退 MAA FramePool 截图）: {e}", "WARNING")
+            logger.log(f"WGC 中心采集启动失败，截图链路不可用: {e}", "WARNING")
 
     def _stop_wgc_capture(self) -> None:
         """停止 WGC 中心采集器（幂等）。"""
@@ -529,47 +525,6 @@ class MaaRacingMasterController:
         self._gpad = None
         import gc
         gc.collect()  # 兜底：回收模块/点击器链上的手柄对象（free 仍由 __del__ 恰好执行一次）
-
-    # ---------- 截图 ----------
-
-    def _screencap(self):
-        """截图并返回 RGB ndarray，失败返回 None"""
-        if self.controller is None:
-            logger.log("控制器未连接", "WARNING")
-            return None
-        try:
-            job = self.controller.post_screencap()
-            job.wait()
-            img = job.get()
-            if img is None:
-                logger.log("job.get() 返回 None", "WARNING")
-                return self._screencap_ctypes()
-
-            if hasattr(img, "numpy"):
-                # MAA Image 等类型自带 numpy()，用 getattr 规避类型推断
-                arr = np.asarray(getattr(img, "numpy")())
-            elif isinstance(img, np.ndarray):
-                arr = img
-            elif hasattr(img, "__array__"):
-                arr = np.asarray(img)
-            else:
-                logger.log(f"未知图像类型={type(img).__name__}", "WARNING")
-                return self._screencap_ctypes()
-
-            if arr is None or arr.size == 0 or arr.ndim < 3:
-                logger.log(f"图像格式异常: size={arr.size if arr is not None else 0}, "
-                           f"ndim={arr.ndim if arr is not None else 0}", "WARNING")
-                return self._screencap_ctypes()
-            # MAA PostScreencap 返回 BGR（OpenCV 默认），转 RGB 供下游
-            arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-            return arr
-        except Exception as e:
-            logger.log(f"截图异常: {e}", "ERROR")
-            return None
-
-    def _screencap_ctypes(self):
-        """ctypes 截图兜底（已废弃：统一走 MAA DXGI_DesktopDup_Window）。"""
-        return None
 
     # ---------- 工具方法 ----------
 

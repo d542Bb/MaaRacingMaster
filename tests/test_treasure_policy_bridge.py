@@ -11,6 +11,7 @@ import pytest
 try:
     from maaracing_master.plugins.treasure.module import TreasureModule
     from maaracing_master.plugins.treasure.policy_bridge import (
+        MIN_FRAME_INTERVAL_MS,
         POLICY_ACTION_NAME,
         PolicyBridge,
     )
@@ -135,3 +136,81 @@ def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
     assert captured["stopped"] is True
     TreasureModule._run_v4_loop.__get__(m)()  # 重启：必须复用驻留 runner
     assert captured["built"] == 1  # C 句柄不二次构造（GC 竞态崩溃防线）
+
+
+# ==================== 决策帧自节流闸门 ====================
+# 依据 5.12.3 实测（tools/experiments/v4-frame-pacing/）：命中 jump_back 兜底位后，
+# 父 dwell 的 rate_limit / pre_delay / post_delay 全部旁路，间隔 = 动作自身耗时。
+# 闸门只在这一层能拦住，故用可注入时钟做确定性验证（不靠真实 sleep 计时）。
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
+
+
+def _paced_bridge(*, work_s: float, floor_ms: float = 100.0, running: bool = True):
+    """桥 + 假时钟 + 假决策段：_tick_once 恒耗时 work_s。
+
+    sleeper 必须**推进假时钟**——_sleep 的退出条件靠时钟前进，
+    只记录不推进会让等待循环永不结束（首版踩过的坑）。
+    """
+    clock = _FakeClock()
+    slept: list[float] = []
+
+    def _advance(seconds: float) -> None:
+        clock.advance(seconds)
+        slept.append(seconds)
+
+    module = _stub_module()
+    module.ctx.lifecycle.running = running
+    module._tick_once.side_effect = lambda: clock.advance(work_s)
+    bridge = PolicyBridge(module, min_interval_ms=floor_ms, clock=clock,
+                          sleeper=_advance)
+    return bridge, clock, slept
+
+
+def test_pacer_gates_light_decision_frames():
+    """决策段轻于下限时补足间隔：轻帧 10ms + 下限 100ms → 决策起点严格 100ms 步进。"""
+    bridge, clock, slept = _paced_bridge(work_s=0.010)
+    starts: list[float] = []
+    for _ in range(4):
+        assert bridge.run(None, MagicMock()) is True
+        starts.append(bridge._last_run_at)  # 过闸后的决策起点，不是入口时刻
+    assert starts == pytest.approx([0.0, 0.1, 0.2, 0.3])
+    assert sum(slept) == pytest.approx(0.27)  # 首帧不等待，后三帧各补 90ms
+    assert clock.t == pytest.approx(0.31)     # 末帧起点 0.3 + 该帧工作 10ms
+
+
+def test_pacer_silent_when_work_exceeds_floor():
+    """决策段自身够重（真机约 125ms > 100ms 下限）时闸门完全不介入，不加延迟。"""
+    bridge, clock, slept = _paced_bridge(work_s=0.125)
+    for _ in range(3):
+        bridge.run(None, MagicMock())
+    assert slept == []
+    assert clock.t == pytest.approx(0.375)
+
+
+def test_pacer_returns_fast_on_stop_signal():
+    """睡眠途中宿主停止 → 立即返回，不把 Tasker 线程睡在闸门里。"""
+    bridge, clock, slept = _paced_bridge(work_s=0.010, running=False)
+    bridge.run(None, MagicMock())   # 首帧建立基准时刻
+    slept.clear()
+    bridge.run(None, MagicMock())   # 本应补 90ms，被停止信号短路
+    assert slept == []
+    assert clock.t == pytest.approx(0.020)  # 未等待，两帧只有工作耗时 10+10
+
+
+def test_pacer_floor_configurable_and_disablable():
+    """下限可配：0 = 关闭闸门（供实测/压测复现自旋上限）。"""
+    assert MIN_FRAME_INTERVAL_MS == 100.0
+    bridge, clock, slept = _paced_bridge(work_s=0.010, floor_ms=0.0)
+    for _ in range(5):
+        bridge.run(None, MagicMock())
+    assert slept == []
+    assert clock.t == pytest.approx(0.05)

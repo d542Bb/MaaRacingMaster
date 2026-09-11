@@ -1600,33 +1600,6 @@
           </div>
         </div>
 
-        <!-- 截图方式 -->
-        <div class="card">
-          <div class="card-head"><h3>截图方式</h3></div>
-          <div class="card-body">
-            <div class="radio-grid">
-              <div class="mra-radio-card mra-radio-card--selected" data-backend="wgc_latest">
-                <div class="radio-inner">
-                  <div class="mra-radio-dot"></div>
-                  <div class="option-main">
-                    <div class="radio-title"><strong>WGC 常驻</strong><span class="badge-recommend">推荐</span></div>
-                    <p class="radio-desc">Windows Graphics Capture，性能更好，延迟更低</p>
-                  </div>
-                </div>
-              </div>
-              <div class="mra-radio-card" data-backend="maa">
-                <div class="radio-inner">
-                  <div class="mra-radio-dot"></div>
-                  <div class="option-main">
-                    <div class="radio-title"><strong>MAA FramePool</strong></div>
-                    <p class="radio-desc">MAA 框架内置，兼容性更好</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <p class="capture-note">切换后下次运行生效</p>
-          </div>
-        </div>
       </div>
 
       <div class="col-right">
@@ -1830,8 +1803,8 @@
       previewMin.addEventListener('click', () => { exitPreviewFullscreen(previewCard); });
     }
 
-    // 点击方式 / 截图方式：每个 .radio-grid 是一组单选，组内互斥、组间独立
-    // （两组共用 .mra-radio-card 样式，但选中态不能全页互斥，否则点一组会清掉另一组的选中）
+    // 点击方式：每个 .radio-grid 是一组单选，组内互斥、组间独立
+    // （共用 .mra-radio-card 样式，选中态不能全页互斥，否则点一组会清掉另一组的选中）
     document.querySelectorAll('.radio-grid').forEach((grid) => {
       grid.querySelectorAll('.mra-radio-card').forEach((card) => {
         card.addEventListener('click', async () => {
@@ -1841,8 +1814,6 @@
             if (card.dataset.clickmode) {
               if (card.dataset.clickmode === 'gamepad') showGamepadNotice();
               await mra.call('set_click_mode', { mode: card.dataset.clickmode });
-            } else if (card.dataset.backend) {
-              await mra.call('set_capture_backend', { backend: card.dataset.backend });
             }
           } catch (e) {
             console.error(e);
@@ -1870,7 +1841,7 @@
     });
   }
 
-  // 从后端回填当前模块的调试开关/截图方式状态（切换模块后丢弃过期回填）
+  // 从后端回填当前模块的调试开关状态（切换模块后丢弃过期回填）
   async function refreshDebugState() {
     const mid = currentModuleId;
     try {
@@ -1887,12 +1858,10 @@
       safeToggle('toggle-exitmra', !!d.auto_exit_mra);
       safeToggle('toggle-mutegame', !!d.mute_game);
       safeToggle('toggle-intent', !!d.intent_mode);
-      // 点击方式 / 截图方式选中态
+      // 点击方式选中态
       document.querySelectorAll('.mra-radio-card').forEach((card) => {
         if (card.dataset.clickmode) {
           card.classList.toggle('mra-radio-card--selected', card.dataset.clickmode === d.click_mode);
-        } else if (card.dataset.backend) {
-          card.classList.toggle('mra-radio-card--selected', card.dataset.backend === d.capture_backend);
         }
       });
     } catch (e) {

@@ -15,7 +15,7 @@ MaaRM Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
 
 方法（JSONL RPC，供 MaaRacingMaster.Shell.exe 前端调用）：
     get_initial_state / select_module / get_status / start / stop / fetch_logs / close / shutdown
-    get_debug_state / set_debug_mode / set_peep / set_capture_backend（调试页）
+    get_debug_state / set_debug_mode / set_peep / set_click_mode（调试页）
     get_registry_optimizations / set_registry_optimization（启动体检：注册表权限优化中心）
     set_optimization_prompt_ignored（按项忽略/恢复启动提醒，profile 持久化）
 
@@ -1024,7 +1024,6 @@ class SidecarService:
         return (True, {
             "debug_mode": bool(getattr(self._controller, "_debug_mode", False)),
             "peep_enabled": bool(debug.peep_enabled),
-            "capture_backend": self._controller._capture_backend,
             "click_mode": self._controller.click_mode,
             "intent_mode": self._controller.intent_mode,
             "emergency_stop_enabled": bool(getattr(self._controller, "_emergency_stop_enabled", False)),
@@ -1080,12 +1079,6 @@ class SidecarService:
         enabled = bool(params.get("enabled", False))
         self._controller.set_emergency_stop(enabled)
         return (True, {"emergency_stop_enabled": enabled}, None)
-
-    def set_capture_backend(self, params):
-        backend = params.get("backend", "wgc_latest")
-        self._controller._capture_backend = backend
-        logger.log(f"截图方式: {backend}")
-        return (True, {"capture_backend": backend}, None)
 
     def set_click_mode(self, params):
         """切换点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)。

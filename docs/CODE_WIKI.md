@@ -451,11 +451,13 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 - 帧缓存重复率 \~48.5%（正常现象：consumer 比 producer 快）
 
-**架构决策（v0.14 截图收敛后）**：
+**架构决策（v4 截图收敛：只留 WGC，无回退通道）**：
 
-- **生产默认后端 = MAA FramePool**（`capture.screenshot()` 统一能力接口，截图帧由插件经 `ctx.capture` 消费）
+- **唯一截图通道 = WGC 中心缓存**（宪法 6「帧只从中心缓存来，引擎永不自截帧」）。`capture.screenshot()` 与 `capture.frame_with_age()` 都只读 `WgcCapture`；采集器未就绪/读帧异常一律返回 None，调用方按"采集链路故障"处理，**不再回退 MAA 同步截图**（回退会造成双时间线：消费者各持不同时刻的帧，且回退路径在调用线程内阻塞等截图）。
 
-- WGC（`wgcap.py` `WgcCapture`）曾作为 racing 生产截图后端（`capture_backend` 分派），**已随 v0.14 截图收敛移除**，此模块保留为可选工具（后台/遮挡场景备选）
+- `Win32Controller`（`screencap_method=FramePool`）**仅保留连接校验用途**（`connect()` 里的 `post_connection()`），不再作为任何取帧来源；`ctx.bind_tasker()` 给插件绑的是 `WgcapController`（帧注入控制器），插件侧不得持有同步截图通道。
+
+- racing 早期的 `capture_backend` 分派（`wgc_latest` / `maa`）已彻底移除：字段、`_screencap()`/`_screencap_ctypes()`、`PostScreencapCapture` 适配壳、GUI「截图方式」单选卡与 `set_capture_backend` RPC 一并删除——它们在分派逻辑消失后只剩"能点、不生效"的死控件。
 
 - 线程安全：锁内仅交换 Python 引用和整数，NumPy 操作在锁外
 
@@ -469,23 +471,23 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ### 5.1 controller.MaaRacingMasterController
 
-| 方法                                        | 说明                                                                      |
-| ----------------------------------------- | ----------------------------------------------------------------------- |
-| `__init__(capture_backend="wgc_latest")`  | 初始化能力门面、点击方式、急停等                                                        |
-| `connect()`                               | 幂等窗口连接：仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验  |
-| `start_module(module_id, start_from)`     | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）                                     |
-| `stop()`                                  | 停止模块、中断 Pipeline、销毁手柄                                                   |
-| `set_click_mode(mode)` / `intent_mode`    | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                                |
-| `set_auto_shutdown(close_game, exit_mra)` | 运行结束后自动关游戏 / 退出程序（仅自然完成时）                                               |
-| `set_mute_game(enabled)`                  | 运行时静音游戏（音频音量控制）                                                         |
-| `set_emergency_stop(enabled)`             | 急停开关（后台轮询回路）                                                            |
-| `set_auto_close_game` / `set_auto_exit`   | 自动收尾开关                                                                  |
-| `gamepad_available()`                     | vgamepad / ViGEmBus 驱动可用性探测（缓存）                                         |
-| `_get_gpad()`                             | 懒创建并返回虚拟手柄（复用，不销毁重建）                                                    |
-| `_reset_gpad()`                           | 摇杆归零+按钮释放（不销毁）                                                          |
-| `_destroy_gpad()`                         | 销毁虚拟手柄：显式 ctypes `vigem_target_remove` 从总线拔除（确定性）                       |
-| `_screencap()`                            | 截图（FramePool → BGR→RGB），失败返回 None（主编排层；模块侧走 `ctx.capture.screenshot()`） |
-| `_interruptible_sleep(s)`                 | 可中断睡眠（每 0.1s 检查 `_running`）                                             |
+| 方法                                             | 说明                                                                     |
+| ---------------------------------------------- | ---------------------------------------------------------------------- |
+| `__init__()`                                   | 初始化能力门面、点击方式、急停等（截图通道唯一，无后端选择项）                                        |
+| `connect()`                                    | 幂等窗口连接：仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验 |
+| `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）                                    |
+| `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
+| `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                               |
+| `set_auto_shutdown(close_game, exit_mra)`      | 运行结束后自动关游戏 / 退出程序（仅自然完成时）                                              |
+| `set_mute_game(enabled)`                       | 运行时静音游戏（音频音量控制）                                                        |
+| `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路）                                                           |
+| `set_auto_close_game` / `set_auto_exit`        | 自动收尾开关                                                                 |
+| `gamepad_available()`                          | vgamepad / ViGEmBus 驱动可用性探测（缓存）                                        |
+| `_get_gpad()`                                  | 懒创建并返回虚拟手柄（复用，不销毁重建）                                                   |
+| `_reset_gpad()`                                | 摇杆归零+按钮释放（不销毁）                                                         |
+| `_destroy_gpad()`                              | 销毁虚拟手柄：显式 ctypes `vigem_target_remove` 从总线拔除（确定性）                      |
+| `_start_wgc_capture()` / `_stop_wgc_capture()` | 启动/停止 WGC 中心采集器（幂等）；失败即"截图链路不可用"，无 MAA 回退                              |
+| `_interruptible_sleep(s)`                      | 可中断睡眠（每 0.1s 检查 `_running`）                                            |
 
 ### 5.4 yolo\_detector.YOLODetector
 
@@ -524,12 +526,12 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 跨模块高频工具函数，本表统一索引：
 
-| 方法                              | 所属模块                           | 说明                                                     | 关键参数/坑点                                                 |
-| ------------------------------- | ------------------------------ | ------------------------------------------------------ | ------------------------------------------------------- |
-| `_screencap()`                  | Controller（模块侧走 `ctx.capture`） | 截图 RGB ndarray（FramePool → BGR→RGB）                    | 主编排层方法；模块经 `capture.screenshot()` 能力接口统一取值              |
-| `_interruptible_sleep(seconds)` | Controller                     | 每 0.1 s 轮询检查 `_running` 的可中断 sleep                     | stop 能 0.1 s 级响应；**不要用** **`time.sleep(>0.2)`**         |
-| `NavigationDebugger(proj_dir)`  | debug.py                       | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §5.5；§9.3 调试模式说明                                        |
-| `has_physical_controller()`     | window\_utils.py               | XInput API 遍历 4 端口，任一连接返回 True                         | DLL 回退 xinput1\_4 → xinput9\_1\_0 → xinput1\_3；§10.4 坑点 |
+| 方法                              | 所属模块                             | 说明                                                     | 关键参数/坑点                                                 |
+| ------------------------------- | -------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
+| `ctx.capture.screenshot()`      | capabilities.py `CaptureAdapter` | 截图 RGB ndarray（**只读 WGC 中心缓存**，无帧返回 None）              | 唯一取帧入口；不得回退同步截图，返回 None 按"采集链路故障"处理，不得当作"画面无变化"         |
+| `_interruptible_sleep(seconds)` | Controller                       | 每 0.1 s 轮询检查 `_running` 的可中断 sleep                     | stop 能 0.1 s 级响应；**不要用** **`time.sleep(>0.2)`**         |
+| `NavigationDebugger(proj_dir)`  | debug.py                         | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §5.5；§9.3 调试模式说明                                        |
+| `has_physical_controller()`     | window\_utils.py                 | XInput API 遍历 4 端口，任一连接返回 True                         | DLL 回退 xinput1\_4 → xinput9\_1\_0 → xinput1\_3；§10.4 坑点 |
 
 ***
 
@@ -726,10 +728,10 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 
 **回传**：标注工具导出 regions.json（像素区域 x/y/w/h）+ PNG → 换算
 归一化 rect（外扩 15% 宽 / 25% 高、4 位小数）写入真源。**JSON 真源由 MPE 画布 /
-`policy_server.py` 薄页维护，人工不手改裸文件**；agent/脚本直改 JSON 后
+`policy_server.py`** **薄页维护，人工不手改裸文件**；agent/脚本直改 JSON 后
 `tools/navkit/check_truth.py` 机检 + 提交。
 
-**守卫闭环（现状）**：CI = `check_truth.py`（next/on_error 引用闭合、入口可达、
+**守卫闭环（现状）**：CI = `check_truth.py`（next/on\_error 引用闭合、入口可达、
 疑似重复识别告警、policy 数据面可装配、图↔spec 交叉互洽）+ `test_navkit_truth.py`
 节点/锚点计数见证。模板文件缺失由运行时 `load_template` 返回 None 降级 +
 装载器 WARNING 暴露。**体积账**：单张 5\~60KB、全部模板预期 <1MB（对比 rapidocr
@@ -762,6 +764,7 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 - 模块段 = `plugins/<id>/resources/pipeline/<id>*.json`（对局图 + 本模块的入口链与
   页面锚点，按业务域分文件：鉴宝 = `treasure.json` + `treasure.entry.json`）
   \+ `plugins/<id>/resources/policy/<id>.policy.json`（感知/决策数据面）。
+
 - 共用段 = `core/resources/pipeline/*.json`，**当前为空目录不存在**；出现真跨模块
   链（如"任何模块开工前先回游戏大厅"）时再建，且它只允许引用各模块的**汇聚入口**
   （`<id>.__boot.dwell`），不得引用模块内部页面。
@@ -775,19 +778,23 @@ core 真源①不得占用 `<module>.` 前缀、②`next`/`on_error` 不得引�
 
 - **图侧原生并入**——多真源文件载入同一张图，模块图可原生引用共用段节点而不必复制
   一份大厅识别（当前共用段为空，模块图自包含）。
+
 - **检测侧绝不并入**（原则不变）——运行时阶段检测只扫 policy.json `perception.spec`
   装配的 `DetectionPlan`（模块自有锚点集），图节点不进每帧检测环。原因：global 锚点
   无 `order` → `stage_priority=1000`，一旦进扫描集会在局内帧抢先短路、破坏逐帧等价
   回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
-- **全页面清单的唯一真源 = `<id>.__boot.dwell`**（`recognition.type=Or` 全 stage 信号
+
+- **全页面清单的唯一真源 =** **`<id>.__boot.dwell`**（`recognition.type=Or` 全 stage 信号
   并集 → `next` 全 dwell 表，`timeout=-1` 未知画面驻留重判）。入口锚点点击后一律
   `next: [<id>.__boot.dwell]` 交汇聚重判，不得各自再抄一份清单。
+
 - **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），
   与 MAA `activity_pool` 同构。
 
 **回归护栏（现状）**：CI = `check_truth.py`（图闭合 + 数据面装配 + 图↔spec 交叉互洽
-+ 几何 + **方向红线**）；`test_navkit_truth.py` 锁归位形态（真源全在模块命名空间、
-core 侧零节点、plugin 文件集）与红线活性（合成违规图必须报）；spec/节点计数见证防漂。
+
+- 几何 + **方向红线**）；`test_navkit_truth.py` 锁归位形态（真源全在模块命名空间、
+  core 侧零节点、plugin 文件集）与红线活性（合成违规图必须报）；spec/节点计数见证防漂。
 
 **编辑真源**：`mpe.cmd` 打开的 MPE 文件面板列出 plugin 两个 pipeline 文件，直接编辑
 保存；一个视口 = 一个文件，跨文件被引用节点显示为"外部节点"虚影（MPE 只补**被本文件
@@ -796,7 +803,7 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 **生态一手参照（为什么这么定）**：MAA 把地狱决策移出 pipeline（页面导航归图，策略归
 声明式领域协议 JSON，搜索/时间轴归 C++，规划结果**输出仍是 pipeline 任务名**）；协议
 无命名空间的事实、"什么该出 pipeline"的六条判据与生态复用位清单，权威版见
-[MAAFW_GUIDE §5.6](MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)。
+[MAAFW\_GUIDE §5.6](MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)。
 
 ***
 
@@ -953,14 +960,14 @@ core 侧零节点、plugin 文件集）与红线活性（合成违规图必须�
 
 > 主程类速查见下表；鉴宝类（TreasureModule / TreasureStageDetector / TreasureOcr / TreasureDebugRenderer）见 [鉴宝文档 §7](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
-| 类名                                   | 文件                                                                                           | 核心职责                                 |
-| ------------------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `MaaRacingMasterController`       | core/controller.py                                                                           | 主控编排：能力门面 + 模块生命周期 + 全局设置            |
-| `ActivityModule` / `ActivityContext` | core/base.py                                                                                 | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
-| `Registry`                           | core/registry.py                                                                             | 插件自动扫描注册（扫 `plugins/*/manifest.py`）  |
+| 类名                                   | 文件                                                                                        | 核心职责                                 |
+| ------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------ |
+| `MaaRacingMasterController`          | core/controller.py                                                                        | 主控编排：能力门面 + 模块生命周期 + 全局设置            |
+| `ActivityModule` / `ActivityContext` | core/base.py                                                                              | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
+| `Registry`                           | core/registry.py                                                                          | 插件自动扫描注册（扫 `plugins/*/manifest.py`）  |
 | `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机）                    |
-| `MRAGUI`                             | ~~gui.py~~（已归档移除）                                                                            | 旧 ttkbootstrap 图形界面（已废弃，代码已删）        |
-| `Sidecar`                            | core/sidecar.py                                                                              | JSONL RPC 业务后端（mra\_shell 托管）        |
-| `NavigationDebugger`                 | core/debug.py                                                                                | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
-| `Logger`                             | core/logger.py                                                                               | 内存+文件双写日志（用户数据目录）                    |
+| `MRAGUI`                             | ~~gui.py~~（已归档移除）                                                                         | 旧 ttkbootstrap 图形界面（已废弃，代码已删）        |
+| `Sidecar`                            | core/sidecar.py                                                                           | JSONL RPC 业务后端（mra\_shell 托管）        |
+| `NavigationDebugger`                 | core/debug.py                                                                             | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
+| `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志（用户数据目录）                    |
 
