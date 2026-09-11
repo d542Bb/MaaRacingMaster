@@ -382,7 +382,7 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
   用 `.r<route>.<n>` 后缀（现行约定，`_base_name` 机检依赖此形态）。
 
 - **Custom 注册名（新）**：与 pipeline 中 `custom_recognition`/`custom_action` 字段值
-  **逐字相同**（大小写敏感）；本项目用 `MRA_*` 命名空间前缀防止与未来 Agent 组件撞名。
+  **逐字相同**（大小写敏感）；本项目用 `MaaRM_*` 命名空间前缀防止与未来 Agent 组件撞名。
 
 - **模板图（新）**：与节点语义同名（`.png`）、放所属插件 `resources/image/`；
   一个 pipeline JSON 对应一组图（M9A 惯例）；必须 720p 无损原图裁剪；路径分隔符一律正斜杠。
@@ -448,20 +448,23 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
 一手口径（[3.1 协议](https://github.com/MaaXYZ/MaaFramework/blob/main/docs/zh_cn/3.1-%E4%BB%BB%E5%8A%A1%E6%B5%81%E6%B0%B4%E7%BA%BF%E5%8D%8F%E8%AE%AE.md) + [PipelineParser.cpp](https://github.com/MaaXYZ/MaaFramework/blob/main/source/MaaFramework/Resource/PipelineParser.cpp)）：
 
 - v2 自 **v4.4.0** 起支持，官方原文"**同时兼容 v1**"，文档里 v2 一节写的是"可选 v2 格式（**与 v1 等效**）"；文档字段全集仍以 v1 叙述。
+
 - **v1 未被废弃**：解析器唯一的废弃硬报错是 `is_sub`/`interrupt`（v5.1），与形态无关。
+
 - **新字段不是 v2 独占**：`param_input = input`（v1）或 `reco_opt->get("param", *reco_opt)`（v2）之后**同一套** `parse_*_param`；节点级通用字段（`attach`/`anchor`/`max_hit`/`repeat*`/`focus`）从顶层直读，与形态无关。
+
 - **但 v2 是框架的内部规范形**：`get_node_data`（官方 PipelineDumper）**只吐 v2** 并补齐默认值（实测 5.12.3：v1 写的 `policy_loop` 回读成 `{'action': {'param': {...,'target': True,'target_offset': [...]}, 'type': 'Custom'}, 'enabled': True, 'max_hit': 4294967295, ...}`）；MPE 保存亦产 v2。→ 生态真实分工是"**人写侧默认 v1、机器产出侧默认 v2**"，不是新旧交替。
 
 字段对照（读官方文档/sample 时用得上）：
 
-| v1 平铺 | v2 归一 |
-| --- | --- |
-| `"recognition": "TemplateMatch"` + 顶层 `template`/`roi`/`threshold` | `"recognition": {"type":"TemplateMatch","param":{"template":…,"roi":…,"threshold":…}}` |
+| v1 平铺                                                                         | v2 归一                                                                                            |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `"recognition": "TemplateMatch"` + 顶层 `template`/`roi`/`threshold`            | `"recognition": {"type":"TemplateMatch","param":{"template":…,"roi":…,"threshold":…}}`           |
 | `"recognition": "Custom"` + `custom_recognition` + `custom_recognition_param` | `"recognition": {"type":"Custom","param":{"custom_recognition":…,"custom_recognition_param":…}}` |
-| `"action": "DoNothing"` | 可整键省略（框架默认 `DoNothing`）或 `{"type":"DoNothing","param":{}}` |
-| — | `param` 键本身可省略：v2 里 parser 会退回用 `recognition` 对象当参数容器 |
+| `"action": "DoNothing"`                                                       | 可整键省略（框架默认 `DoNothing`）或 `{"type":"DoNothing","param":{}}`                                       |
+| —                                                                             | `param` 键本身可省略：v2 里 parser 会退回用 `recognition` 对象当参数容器                                            |
 
-**形态风险点不在新字段，在 And/Or 子项**：官方 PipelineDumper 曾产出自己 parser 读不回来的子项形（`failed to parse sub recognition in 'all_of'`，maafw 5.10.0b2，样本 1364 task 中 116 个≈8.5% 受影响），由 [issue #1314](https://github.com/MaaXYZ/MaaFramework/issues/1314) → [PR #1423](https://github.com/MaaXYZ/MaaFramework/pull/1423) 修复。本项目有 7 个 `Or` 节点（起跑汇聚 + 回合 dwell），升 MaaFw 版本时**必须重跑 `tools/experiments/ecosystem-audit/load_truth.py`**（含 `get_node_data` 回读对照）而不是只看加载成功。未取证项：v1 平铺下 And/Or 子项的完整合法写法（官方"算法类型"章节原文未取到）。
+**形态风险点不在新字段，在 And/Or 子项**：官方 PipelineDumper 曾产出自己 parser 读不回来的子项形（`failed to parse sub recognition in 'all_of'`，maafw 5.10.0b2，样本 1364 task 中 116 个≈8.5% 受影响），由 [issue #1314](https://github.com/MaaXYZ/MaaFramework/issues/1314) → [PR #1423](https://github.com/MaaXYZ/MaaFramework/pull/1423) 修复。本项目有 7 个 `Or` 节点（起跑汇聚 + 回合 dwell），升 MaaFw 版本时**必须重跑** **`tools/experiments/ecosystem-audit/load_truth.py`**（含 `get_node_data` 回读对照）而不是只看加载成功。未取证项：v1 平铺下 And/Or 子项的完整合法写法（官方"算法类型"章节原文未取到）。
 
 ***
 
