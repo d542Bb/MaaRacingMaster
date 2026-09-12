@@ -14,7 +14,7 @@
 \| Python ORT `capi\onnxruntime.dll` | exp3 | \~20.13 MB | SAFE（pyd 自带 ORT 引擎） |
 \| PIL `_avif` native ext | exp4A | \~7.52 MB | SAFE（惰性，项目零 avif 路径） |
 \| `.NET` crash diagnostics | exp4B | \~4.73 MB | **SAFE FOR NORMAL OPERATION** |
-\| NumPy dev/build 目录 | exp5A | \~1.87 MB | SAFE |
+\| NumPy dev/build 目录 | exp5A | \~1.87 MB | SAFE（不含 ctypeslib，见「明确不纳入」表） |
 \| `.pyi` typing stubs | exp5B-1 | \~1.13 MB | SAFE |
 \| Python console wrappers | exp5E-1 | \~0.83 MB | SAFE |
 \| SymPy | exp6 | \~25.37 MB | **SAFE FOR CURRENT MaaRM** |
@@ -36,16 +36,17 @@
 
 ## 明确不纳入正式裁剪
 
-| 项                                                         | 原因                                         |
-| --------------------------------------------------------- | ------------------------------------------ |
-| `pygrun` (6 KB)                                           | 收益过低，不值得增加规则复杂度                            |
-| `mpmath`                                                  | 不因"看似无用"顺手删，等真正需要时独立实验                     |
-| `mscordbi.dll`                                            | 保留 debugger attach，1.18 MB 不值得牺牲           |
-| `numpy.typing`                                            | 收益 \~0.14 MB，进入第三方源码层，不划算                  |
-| dist-info `RECORD`                                        | `importlib.metadata.files()` 语义可能依赖，价值低于风险 |
-| `INSTALLER/WHEEL/REQUESTED`                               | 收益仅 2.8 KB，不纳入                             |
-| `PublishTrimmed` / WindowsAppSDKSelfContained 调整 / TFM 调整 | 大决策，未验证，禁止盲开                               |
-| DirectML hardlink                                         | 未纳入                                        |
+| 项                                                         | 原因                                                                                                                                                                                                                        |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pygrun` (6 KB)                                           | 收益过低，不值得增加规则复杂度                                                                                                                                                                                                           |
+| `mpmath`                                                  | 不因"看似无用"顺手删，等真正需要时独立实验                                                                                                                                                                                                    |
+| `mscordbi.dll`                                            | 保留 debugger attach，1.18 MB 不值得牺牲                                                                                                                                                                                          |
+| `numpy.typing`                                            | 收益 \~0.14 MB，进入第三方源码层，不划算                                                                                                                                                                                                 |
+| `numpy.ctypeslib`                                         | **MaaFW binding 运行时依赖**：`maa\buffer.py` `ImageBuffer.get()` 每次 custom recognition 回调读帧都调 `numpy.ctypeslib.as_array`；误删 → 回调在用户代码前崩溃（ctypes 吞异常），框架仍执行动作且 rect 保持初值 (0,0,0,0)，点击盲落屏幕左上角（2026-09-11 真机事故，EXP-5A 已剔除该项并加双守卫） |
+| dist-info `RECORD`                                        | `importlib.metadata.files()` 语义可能依赖，价值低于风险                                                                                                                                                                                |
+| `INSTALLER/WHEEL/REQUESTED`                               | 收益仅 2.8 KB，不纳入                                                                                                                                                                                                            |
+| `PublishTrimmed` / WindowsAppSDKSelfContained 调整 / TFM 调整 | 大决策，未验证，禁止盲开                                                                                                                                                                                                              |
+| DirectML hardlink                                         | 未纳入                                                                                                                                                                                                                       |
 
 ## 负结果归档（本轮候选方向，实测后关闭）
 
@@ -61,7 +62,7 @@
 
 | 语义名                  | 一手证据                                                                                | Installed Δ | Download Δ（内容/形态） | 风险·cost                                                | 失效条件    | status |
 | -------------------- | ----------------------------------------------------------------------------------- | ----------- | ----------------- | ------------------------------------------------------ | ------- | ------ |
-| OpenCVVideoioBackend | dumpbin 证 ffmpeg dll 为运行时 LoadLibrary 的 videoio 后端，非 cv2.pyd 静态依赖；删后 JSONL 污染专测 0 行 | −29.45 MB   | −12.20（内容）        | OpenCV 视频读写/回放禁用；MaaRM 生产零 videoio 调用                    | 若引入视频功能 | 落地     |
+| OpenCVVideoioBackend | dumpbin 证 ffmpeg dll 为运行时 LoadLibrary 的 videoio 后端，非 cv2.pyd 静态依赖；删后 JSONL 污染专测 0 行 | −29.45 MB   | −12.20（内容）        | OpenCV 视频读写/回放禁用；MaaRM 生产零 videoio 调用                  | 若引入视频功能 | 落地     |
 | OrtOfflineTooling    | closure 探针（onnxruntime+RapidOCR 构造+推理）确认 protobuf/flatbuffers 未加载                   | −0.96 MB    | −0.39（内容）         | ORT quantization/离线 shape-infer/ort\_format\_model 不可用 | 若需离线量化  | 落地     |
 
 ### CLOSED-ABSENT（目标物不存在，基本永久关闭）
@@ -76,7 +77,7 @@
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
 | OpenCVHeadless     | `opencv-python-headless==5.0.0.93` = 111.98 MB vs 原版 111.95 MB；仍暴露 imshow/namedWindow/VideoCapture                                                                                                                                                                                                             | ≈0 MB       |
 | SatelliteResources | 非目标 culture = 0（仅 `zh-CN`）；`.resources.dll` 仅 1 个 0.150 MB 主 `Microsoft.Windows.ApplicationModel.Resources.dll`（非卫星，须保留）                                                                                                                                                                                       | 0 MB        |
-| ReleasePdb         | `MaaRacingMaster.Shell.pdb` = 0.038 MB → 保留（39 KB 换异常堆栈行号不划算，同 pygrun 6 KB 先例）                                                                                                                                                                                                                                             | 0 MB        |
+| ReleasePdb         | `MaaRacingMaster.Shell.pdb` = 0.038 MB → 保留（39 KB 换异常堆栈行号不划算，同 pygrun 6 KB 先例）                                                                                                                                                                                                                                 | 0 MB        |
 | NonX64Artifacts    | 判定须**双条件**，不可单看 PE machine 字段：托管（IL）程序集的 machine 是历史遗留占位值，运行时架构由 CLR 决定，与字段无关——单看字段会把 105 个 `System.*`/`*Projection.dll` 误报成 x86 payload。正确判定：`IMAGE_FILE_MACHINE_AMD64(0x8664) 且非 ILONLY` → 真 x64 native（实测 135 个）；`COMIMAGE_FLAGS_ILONLY` 置位 → 架构中立，machine 字段忽略（实测 105 个托管程序集，非真 x86）。托管侧（37.85 MB）全 AnyCPU | 0 MB        |
 
 ### CLOSED-UNSAFE（有收益但风险不可接受，上游修复后可复活）

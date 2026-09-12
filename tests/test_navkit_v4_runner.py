@@ -190,3 +190,21 @@ def test_click_action_uses_xywh_rect_contract(pure_maa):
     assert abs(cx - (999 + 52) / 1280) < 1e-9
     assert abs(cy - (591 + 21) / 720) < 1e-9
     assert box_norm == (104 / 1280, 42 / 720)
+
+
+def test_click_action_rejects_zero_box(pure_maa):
+    """零面积框 = 识别链断裂，必须拒绝点击（不盲落屏幕左上角）。
+
+    真机教训（2026-09-11）：打包裁剪误删 numpy.ctypeslib 后识别回调在
+    binding 层崩溃，框架仍执行动作且 rect 保持初值 (0,0,0,0)——鼠标/手柄
+    全部点到屏幕左上角。匹配引擎合法命中框 w/h ≥4，零框只可能是故障形态。
+    """
+    graph = MagicMock()
+    graph.frame_size.return_value = (1280, 720)
+    act = ng.ClickAction(graph)
+    argv = MagicMock()
+    argv.custom_action_param = json.dumps({})
+    argv.node_name = "t.card"
+    argv.box = (0, 0, 0, 0)
+    assert act.run(None, argv) is False
+    graph.click.assert_not_called()

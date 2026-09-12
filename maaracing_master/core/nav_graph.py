@@ -191,6 +191,13 @@ class ClickAction(CustomAction):
     def run(self, context, argv):
         p = _parse(argv.custom_action_param)
         rx, ry, rw, rh = argv.box  # MaaFW rect 契约 (x, y, w, h)
+        if rw <= 0 or rh <= 0:
+            # 零面积框不是合法识别结果（匹配引擎保证 w/h ≥4），只可能是识别链
+            # 断裂（如回调异常时框架仍走动作、rect 保持初值）。此时点击会盲落
+            # 屏幕左上角——拒绝执行，节点走 on_error，故障留在日志里。
+            logger.log(f"[v4] 「{argv.node_name}」识别框为空 (rect=({rx},{ry},{rw},{rh}))，"
+                       "拒绝点击——请排查识别链路", "ERROR")
+            return False
         W, H = self._graph.frame_size()
         if W <= 0 or H <= 0:
             # v4 识别走 argv.image（注入帧），从不触 graph.frame()，_last_frame

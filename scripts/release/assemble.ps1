@@ -36,7 +36,7 @@ param(
     [switch]$RemovePythonOrtCapi, # EXP-3: remove Python ORT capi\onnxruntime.dll (20.1MB, pyd self-contained)
     [switch]$RemovePilAvif,       # EXP-4A: remove Pillow _avif native ext (7.5MB, lazy-loaded AVIF only)
     [switch]$RemoveCrashDiagnostics, # EXP-4B: remove createdump/mscordaccore/DiaSymReader (4.7MB, on-demand diag; KEEP mscordbi)
-    [switch]$RemoveNumpyDev,       # EXP-5A: remove numpy dev/test/build dirs (f2py/distutils/testing/tests/doc/_pyinstaller/ctypeslib, 2.55MB); KEEP _pytesttester/typing/_typing; no numpy source fork
+    [switch]$RemoveNumpyDev,       # EXP-5A: remove numpy dev/test/build dirs (f2py/distutils/testing/tests/doc/_pyinstaller); KEEP ctypeslib (MaaFW binding runtime dep, 2026-09-11 lesson) / _pytesttester/typing/_typing; no numpy source fork
     [switch]$RemovePythonTypingStubs, # EXP-5B-1: remove ALL runtime\python\packages\**\*.pyi (typing-only static stubs, 1.96MB/267 files); KEEP numpy.typing (still its .py), numpy._typing (runtime-loaded, its .pyi removed too but .py stays); verified no .py does open()/resources/pkgutil/metadata reads of .pyi
     [switch]$RemoveDistInfoInstallMetadata, # EXP-5C-1: remove INSTALLER/WHEEL/REQUESTED from every *.dist-info (only ~2.8KB total; install/dev-stage only, no runtime reader). METADATA/RECORD/entry_points.txt/top_level.txt untouched for 5C-1.
     [switch]$RemovePythonConsoleDev, # EXP-5E-1: remove packages\bin\*.exe console wrappers (~0.83MB/8 files: f2py numpy-config isympy normalizer idna onnxruntime_test rapidocr tqdm). All are pip console_scripts launchers (105.8KB each) for dev/test/CLI entry points. Verified: MaaRM sidecar & third-party runtime make ZERO subprocess/Popen calls to any of them (sidecar only runs git/taskkill); f2py.exe is an orphan (its numpy.f2py.f2py2e source was removed in EXP-5A). No native runtime/DLL embedded. Deleting loses only console CLI access, not library import. Default OFF; restore = reassemble w/o switch.
@@ -375,14 +375,18 @@ if ($RemoveCrashDiagnostics) {
 #   testing, tests   -> pytest harness; numpy.testing only via np.testing (lazy).
 #   doc              -> package docs.
 #   _pyinstaller     -> PyInstaller hook helpers.
-#   ctypeslib        -> numpy.ctypeslib, lazy submodule, not used by MaaRM/RapidOCR/ORT.
-# STRICT EXCLUSION (never removed): numpy\_pytesttester.py (top-level hard import in numpy/__init__.py,
+# STRICT EXCLUSION (never removed): numpy\ctypeslib (MaaFW binding runtime dep --
+#   maa\buffer.py ImageBuffer.get() calls numpy.ctypeslib.as_array on every custom
+#   recognition callback frame; pruning it makes ALL custom recognition die inside
+#   the ctypes callback, symptom: pipeline "Succeeded" with rect=(0,0,0,0) and
+#   clicks land at screen top-left. 2026-09-11 real-machine lesson),
+#   numpy\_pytesttester.py (top-level hard import in numpy/__init__.py,
 #   `from numpy._pytesttester import PytestTester`; only 6KB, do NOT patch numpy source),
 #   numpy\typing + numpy\_typing (reserved for EXP-5B .pyi study), numpy\core (compat shim),
 #   numpy\_core\lib\random\linalg\fft\polynomial\matrixlib (runtime-required).
 # No numpy source is forked/patched. Default OFF; restore = reassemble w/o switch.
 if ($RemoveNumpyDev) {
-    $numpyDevDirs = @('f2py','distutils','testing','tests','doc','_pyinstaller','ctypeslib')
+    $numpyDevDirs = @('f2py','distutils','testing','tests','doc','_pyinstaller')
     foreach ($d in $numpyDevDirs) {
         $t = Join-Path $rtDir "packages\numpy\$d"
         if (Test-Path $t) {
@@ -395,6 +399,11 @@ if ($RemoveNumpyDev) {
     $guard = Join-Path $rtDir 'packages\numpy\_pytesttester.py'
     if (-not (Test-Path $guard)) {
         & $Fail 'EXP-5A guard breached: numpy\_pytesttester.py must be kept (top-level import). Aborting.'
+    }
+    # guard: numpy.ctypeslib is the maa binding image-read path; must remain
+    $guard2 = Join-Path $rtDir 'packages\numpy\ctypeslib'
+    if (-not (Test-Path $guard2)) {
+        & $Fail 'EXP-5A guard breached: numpy\ctypeslib must be kept (maa ImageBuffer.get runtime dep). Aborting.'
     }
 }
 
@@ -674,6 +683,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     $PresentChecks = @(
         'runtime\python\python.exe', 'runtime\python\pythonw.exe',
         'runtime\python\packages\maa',
+        'runtime\python\packages\numpy\ctypeslib',
         'runtime\python\packages\rapidocr\models',
         'MaaRacingMaster.exe'
     )
@@ -725,6 +735,20 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
                 $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
         }
 }
+
+# ---------- 5.7 runtime behavior smoke（所有配置） ----------
+# §5 的 import 自检只证明"模块能 import"；2026-09-11 真机事故（EXP-5A 误删
+# numpy.ctypeslib）证明裁剪破坏的往往是惰性运行时路径——maa ImageBuffer.get()
+# 每次 custom recognition 回调读帧才触碰 ctypeslib，import 全程无感，且异常被
+# ctypes 吞掉后框架仍执行动作、rect 保持初值，用户侧症状是点击盲落屏幕左上角。
+# 冒烟用包内 runtime 跑真实调用链（C++ 回调图像往返 / 最小探针图 box 贯通 /
+# cv2 编解码+匹配 / rapidocr 构造+推理），任一红即构建失败——把"裁剪过度"从
+# 用户真机暴露前移到构建期红灯。所有配置都跑（Experimental 未裁剪，同样验
+# runtime 完整性），脚本与判定见 scripts/release/smoke_runtime.py。
+# -B：冒烟会在被 import 的包目录里生成 __pycache__（实测 +3.5MB），stage 随后
+# 直接进 zip——构建验收工具不得改变产物，禁写字节码缓存。
+& $py -B (Join-Path $PSScriptRoot 'smoke_runtime.py')
+if ($LASTEXITCODE -ne 0) { $errors.Add('RUNTIME-SMOKE-FAIL: runtime behavior smoke failed (见上方 [smoke] 行)') }
 
 # ---------- 6. errors ----------
 if ($errors.Count -gt 0) {
