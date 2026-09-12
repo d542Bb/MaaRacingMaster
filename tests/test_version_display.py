@@ -102,6 +102,8 @@ class TestCurrentCheckout:
 
     def test_clean_version_regex_when_describe_succeeded(self):
         described = pkg._git_describe_version()
-        if described is None:
-            pytest.skip("当前环境 git describe 不可用（浅克隆/无 tag），跳过形状断言")
+        # 浅克隆未抓 tag 时（CI 的 actions/checkout 默认形态），describe --always 会退化成
+        # 短 hash 而非版本串；这与「describe 完全不可用」同属环境限制，只跳过不断言。
+        if described is None or not re.match(r"^v?\d+\.", described):
+            pytest.skip("当前环境 git describe 取不到 tag（浅克隆/无 tag），跳过形状断言")
         assert re.match(r"^\d+\.\d+\.\d+\.dev\d+(\+\d+)?$", described), described
