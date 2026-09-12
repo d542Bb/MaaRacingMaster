@@ -37,9 +37,17 @@
 
 - **质量门禁：** `pytest` 261 passed（新增 4 条闸门用例：轻帧补足、重帧不介入、停止即返回、下限可关）· `check_truth` 图 21 节点自洽 · 运行代码内截图后端触点仅剩 `connect()` 一处连接校验声明。
 
-### v0.22.0-dev.1 项目更名 MaaRacingMaster（缩写 MaaRM）+ CI 单测门禁转绿 🏷️
+### v0.22.0-dev.1 项目更名 MaaRacingMaster（缩写 MaaRM）+ 内部架构收敛 🏷️
 
 - **版本号：** `v0.22.0-dev.1`（预发布；基于 v0.21.0-dev.2 新开 minor 系列）
+
+- **⚠️ 升级前必读——两处名称会变，且数据不自动搬迁：**
+  - **软件更名：** 全称 `MaaRacingAssistant` → `MaaRacingMaster`，缩写 `MRA` → `MaaRM`。入口 exe、发行包名、窗口标题、日志文件前缀一并变更（完整同步面见下条）。
+  - **用户数据目录换名：** 运行期数据根改为 Roaming 下的 `MaaRacingMaster` 文件夹。**新版本不会读取旧目录**：直接升级会让偏好回到默认、鉴宝历史记录重新起算。**需要保留历史的用户，请先用文件管理器把旧文件夹整体改名或复制为 `MaaRacingMaster`，再启动新版本。**
+
+- **本版重心在内部收敛：** 识别真源迁移到 pipeline 节点 + policy 数据面（NavKit v4）、截图统一为 WGC 单一来源并加决策帧自节流、进程内时钟按用途分族、调试存图与决策段解耦、构建期体积闸门与包内自检前移、CI 单测门禁转绿，并补上一套源码直跑的开发入口。对玩家的可见交互与活动流程无实质改动。
+
+- **验证状态：** 上述改动已通过单元测试与真机冒烟；覆盖全部活动流程的完整真机回归仍在进行中，欢迎试用并反馈问题。
 
 - **项目更名（一次覆盖全部标识面）：** 全称 `MaaRacingAssistant` → `MaaRacingMaster`，缩写 `MRA` → `MaaRM`。同步范围：产品名与窗口标题、发行包 `MaaRacingMaster-<ver>-win-x64.{zip,7z}` 与根入口 `MaaRacingMaster.exe`、Python 包 `maaracing_master`、C# 工程 `MaaRacingMaster.Shell` / `MaaRacingMaster.Launcher`、MAA 自定义识别与动作注册名 `MaaRM_Template` / `MaaRM_Click` / `MaaRM_Policy`、日志文件名前缀 `MaaRM_*.log`、AppRoot 环境变量与单实例互斥体名。界面短名位显示 `MaaRM`，关于页与文档用全称；源码仓库与 CNB 镜像仓库同步更名，程序内「检查更新」与「公告」读取源随之切换
 
@@ -47,7 +55,7 @@
 
 - **CI 单测门禁转绿：** master 分支的 `Test` 工作流自 2026-09-10 起连红三次。根因是 5 个运行时测试文件在 CI 轻依赖环境（只装 pytest + numpy + opencv-headless）下于收集期 ImportError，导致 pytest 整体中断、实际零个测试被执行。已按仓内既有口径补 try-import + 整文件跳过守卫。轻依赖模拟 216 passed / 41 skipped / 0 error，完整依赖本机 257 passed
 
-- **质量门禁：** `pytest` 257 passed · `dotnet build` 0 警告 0 错误 · `check_truth` 图 21 节点自洽 · 被改 JSON 全部合法
+- **质量门禁：** `pytest` 381 passed · `dotnet build` 0 警告 0 错误 · `check_truth` 图 21 节点自洽 · 被改 JSON 全部合法
 
 ## 2026-09-05
 
