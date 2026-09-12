@@ -199,7 +199,8 @@ class TreasureStageDetector:
                                       scales=self.match_scales, roi=px_roi)
         if box is None and s == 0.0:
             # 模板即使缩到最小档仍超出 ROI → 该 ROI 永远无法命中（历史调试台告警口径）
-            now = time.time()
+            # 节流窗口一律 monotonic（墙钟校时跳变会把窗口拉长或清零）
+            now = time.monotonic()
             if now - getattr(self, "_last_size_warn", 0.0) > 10.0:
                 self._last_size_warn = now
                 logger.log(
@@ -404,8 +405,8 @@ class TreasureStageDetector:
         return None
 
     def _weak_alerted(self, roi_key: str) -> bool:
-        """弱匹配告警节流：同一 ROI 最多每 30 秒告警一次，避免刷屏。"""
-        now = time.time()
+        """弱匹配告警节流：同一 ROI 最多每 30 秒告警一次，避免刷屏（窗口一律 monotonic）。"""
+        now = time.monotonic()
         last = self._weak_alert_ts.get(roi_key, 0.0)
         if now - last < 30.0:
             return True

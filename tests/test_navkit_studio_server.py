@@ -242,8 +242,8 @@ def _spawn(port: int, idle: int) -> subprocess.Popen:
 
 
 def _wait_port(port: int, timeout: float = 30.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
@@ -271,8 +271,8 @@ def _sse_connect(port: int) -> socket.socket:
 
 
 def _wait_exit(proc: subprocess.Popen, timeout: float = 20.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if proc.poll() is not None:
             return True
         time.sleep(0.25)

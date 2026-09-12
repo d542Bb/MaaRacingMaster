@@ -87,15 +87,15 @@ def _choice(fake):
     return fake
 
 
-def test_fake_fallback_requires_wall_clock_buffer():
-    """wait_result 缓冲未满（时间口径）不回退；超 1.5s 才判假下降沿。"""
+def test_fake_fallback_requires_elapsed_buffer():
+    """wait_result 缓冲未满（monotonic 经过时长口径）不回退；超 1.5s 才判假下降沿。"""
     fake = _FakeSelf(phase="wait_result")
-    fake._wait_result_entered_ts = time.time() - 0.2
+    fake._wait_result_entered_ts = time.monotonic() - 0.2
     _choice(fake)
     assert fake._bid_phase == "wait_result", "缓冲期内不得回退（旧帧数口径在 v4 节奏下秒级稀释）"
     assert fake._bidding_last_decision["state"] == "S4_wait_result"
 
-    fake._wait_result_entered_ts = time.time() - 2.0
+    fake._wait_result_entered_ts = time.monotonic() - 2.0
     _choice(fake)
     assert fake._bid_phase == "wait_first"
     assert fake._bidding_last_decision["state"] == "S4_fake_fallback"
@@ -107,7 +107,7 @@ def test_submitted_label_recovers_wait_result():
     _choice(fake)
     assert fake._bid_phase == "wait_result"
     assert fake._bidding_last_decision["state"] == "S4_wait_result"
-    assert time.time() - fake._wait_result_entered_ts < 1.0, "自愈须重置缓冲计时"
+    assert time.monotonic() - fake._wait_result_entered_ts < 1.0, "自愈须重置缓冲计时"
 
 
 def test_submitted_label_never_triggers_s2():

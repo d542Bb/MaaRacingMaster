@@ -266,8 +266,8 @@ def activate_window(hwnd: int) -> bool:
             if attached:
                 _UD.AttachThreadInput(cur_tid, fg_tid, False)
         # 前台切换是异步的：轮询等待确认（最多 ~300ms），避免切换未完成就误判失败
-        deadline = time.time() + 0.3
-        while time.time() < deadline:
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
             if _UD.GetForegroundWindow() == hwnd:
                 return True
             time.sleep(0.02)

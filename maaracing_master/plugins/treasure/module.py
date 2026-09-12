@@ -725,13 +725,15 @@ class TreasureModule(ActivityModule):
         # --- 投递槽（主线程写 / worker 取）---
         self._ocr_lock = threading.Lock()     # 保护两个槽：latest 帧 + 结果
         self._ocr_pending: tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None] | None = None
-        # (frame_id, round_no, frame, captured_ts, task, keys)，frame 为副本，captured_ts=投递时刻≈帧捕获时刻
+        # (frame_id, round_no, frame, captured_ts, task, keys)，frame 为副本，
+        # captured_ts=投递时刻≈帧捕获时刻（perf_counter 秒，时效老化口径）
         self._ocr_frame_id = 0                # 单调递增投递序号（仅主线程写）
         # --- 结果槽（worker 写 / 主线程消费）---
         # 双槽：关键通道（_ocr_result_critical，第一段 H+P4）与全量通道（_ocr_result，第二段
         # 其余 ROI）独立发布、独立消费。修复 P4 双通道覆盖 bug：第一段结果不再被第二段整体覆盖，
         # P4 每帧由关键通道独立识别、优先落地（docs/P4_DUAL_CHANNEL_ANALYSIS.md §3 困难二）。
         self._ocr_result_critical: dict | None = None  # {frame_id, round_no, captured_ts, ..., data}
+        # captured_ts / duration_ms 为 perf_counter 口径（毫秒级耗时测量）；completed_ts 为墙钟事件时刻
         self._ocr_result: dict | None = None  # {frame_id, round_no, captured_ts, completed_ts, duration_ms, data}
         # --- 可观测指标（worker 写 / 主线程 DEBUG 读）---
         self._ocr_total_runs = 0
@@ -762,7 +764,7 @@ class TreasureModule(ActivityModule):
 
         # --------- 画面变化检测 ---------
         self._prev_gray: np.ndarray | None = None
-        self._last_change_ts: float = 0.0
+        self._last_change_ts: float = 0.0       # 上次触发画面变化事件的时刻（monotonic 秒；CHANGE_COOLDOWN_S 冷却判定用）
 
         # --------- 日志限流 ---------
         self._frame_counter = 0
@@ -771,7 +773,7 @@ class TreasureModule(ActivityModule):
         # --------- 阶段切换类点击重试状态 ---------
         self._click_retry_key: str | None = None    # 正在等待"切换阶段"的 key
         self._click_retry_stage: str | None = None  # 点击时所在阶段（阶段切走即成功）
-        self._click_retry_since_ts: float = 0.0     # 最近一次点击成功的时刻（重试超时计时，与帧率解耦）
+        self._click_retry_since_ts: float = 0.0     # 最近一次点击成功的时刻（monotonic 秒；重试超时计时，与帧率解耦）
         self._click_retry_count: int = 0            # 已重试次数（达 CLICK_RETRY_MAX 停手）
         # 进入「选择鉴宝师」阶段时的帧计数（转场稳定缓冲用，见 APPRAISER_SETTLE_FRAMES）
         self._appr_enter_frame: int = 0
@@ -913,7 +915,8 @@ class TreasureModule(ActivityModule):
         # （出价区切换有动画，动画期会误读，硬门槛会误拒正常提交）。
         self._bid_player_submitted: dict[int, bool] = {}
         self._wait_result_frames: int = 0     # 进入 wait_result 后的累计帧数（日志/统计用）
-        self._wait_result_entered_ts: float = 0.0  # 进入 wait_result 的时刻（假下降沿缓冲计时，见 SUBMIT_ANIMATION_BUFFER_MS）
+        # 经过时长一律 monotonic（墙钟会被 NTP 校时/改表跳变，窗口会被拉长或清零）
+        self._wait_result_entered_ts: float = 0.0  # 进入 wait_result 的时刻（monotonic 秒；假下降沿缓冲计时，见 SUBMIT_ANIMATION_BUFFER_MS）
         # 报价槽级固化状态（wait_result 读 4 槽报价）：pid → {val, stable, locked, miss,
         # consumed, output, hits}
         #   val=-1 未读；stable=连续一致帧数；locked=已固化（停止该槽 OCR）；
@@ -953,6 +956,7 @@ class TreasureModule(ActivityModule):
         self._egg_recognizer: EggRewardRecognizer | None = None  # 彩蛋识别器（start 时懒加载）
         # 彩蛋识别结果槽（worker 写 / 主线程 _apply_egg_result 消费）：
         # {frame_id, captured_ts, completed_ts, duration_ms, data}
+        # captured_ts / duration_ms 为 perf_counter 口径（毫秒级耗时测量）；completed_ts 为墙钟事件时刻
         # data = recognize() 返回值 | None（识别异常）。复用 OCR worker 线程执行（task="egg"），
         # 主线程零阻塞；结果仅记录用途，超时兜底在 _decide_action（EGG_OCR_TIMEOUT_FRAMES）。
         self._egg_result: dict | None = None
@@ -962,7 +966,7 @@ class TreasureModule(ActivityModule):
         # 指纹 = (key, state, 归一化中心四舍五入[, 输入位锚点])；点击成功后才更新，
         # 相同意图持续存在时只点一次；数字键带输入位锚点区分连续相同数字（如 11 的第二个 1）。
         self._last_click_fingerprint: tuple | None = None
-        self._last_click_time: float = 0.0
+        self._last_click_time: float = 0.0             # 上次点击成功时刻（monotonic 秒；最小物理点击间隔限速用）
         # 异步点击（2026-09-03 导航线程化）：已提交但结果未消费的点击上下文
         # {key, state, fp, center, mode_label, stage}；consume 成功/失败后清空。
         self._pending_click: dict | None = None
@@ -2043,7 +2047,7 @@ class TreasureModule(ActivityModule):
         if falling_edge and self._bid_phase == "bidding":
             self._bid_phase = "wait_result"
             self._wait_result_frames = 0
-            self._wait_result_entered_ts = time.time()
+            self._wait_result_entered_ts = time.monotonic()
             logger.log(
                 f"[鉴宝出价] epoch#{self._bid_epoch} 检测到面板关闭（用户已确认出价）"
                 "（phase→wait_result），等待公开报价，OCR 读 4 槽构建快照...",
@@ -2080,7 +2084,7 @@ class TreasureModule(ActivityModule):
                 s.get("locked") or s.get("hits", 0) > 0 for s in self._bid_slots.values()
             )
             if (not any_bid_read
-                    and (time.time() - self._wait_result_entered_ts) * 1000
+                    and (time.monotonic() - self._wait_result_entered_ts) * 1000
                     >= self.SUBMIT_ANIMATION_BUFFER_MS
                     and self._my_rank is not None
                     and self._bid_player_submitted.get(self._my_rank) is False):
@@ -2142,7 +2146,7 @@ class TreasureModule(ActivityModule):
         if "已出价" in label and self._bid_phase == "wait_first" and self._bid_epoch > 0:
             self._bid_phase = "wait_result"
             self._wait_result_frames = 0
-            self._wait_result_entered_ts = time.time()
+            self._wait_result_entered_ts = time.monotonic()
             logger.log(
                 f"[鉴宝出价] epoch#{self._bid_epoch} wait_first 中按钮 OCR 读到「已出价」→ "
                 "判定我方提交实际已成功（对手未齐报价），phase→wait_result 继续读公开报价",
@@ -3008,7 +3012,7 @@ class TreasureModule(ActivityModule):
         sx, sy = clicker.last_pos or (0, 0)
         # 点击成功：更新指纹与时刻（失败时不更新 → 下帧意图相同会重试）
         self._last_click_fingerprint = fp
-        self._last_click_time = time.time()
+        self._last_click_time = time.monotonic()
         # 结算后弹窗（今日最高/彩蛋）点击关闭后进入冷却；领取分红「真领取」也需冷却
         # （弹窗/结算页转场动画期模板匹配不上，冷却帧内不产出新意图防点穿/跳过阶段）。
         if (key in (self.POPUP_HIGH_CONTINUE_KEY, self.POPUP_REWARD_CONTINUE_KEY)
@@ -3021,7 +3025,7 @@ class TreasureModule(ActivityModule):
                 self._click_retry_count = 0
             self._click_retry_key = key
             self._click_retry_stage = self._current_stage
-            self._click_retry_since_ts = time.time()
+            self._click_retry_since_ts = time.monotonic()
         # 领取分红"跳过动画"首次点击成功后才置位（失败时意图持续，下帧重试）
         if (key == "settle_collect_red_btn" and self._current_stage == "领取分红"
                 and self._settle_my_income is None):
@@ -3106,8 +3110,8 @@ class TreasureModule(ActivityModule):
         self._maybe_retry_stage_click(key)
         if fp == self._last_click_fingerprint:
             return
-        # 不同意图间最小物理点击间隔（限速）
-        now = time.time()
+        # 不同意图间最小物理点击间隔（限速，经过时长一律 monotonic）
+        now = time.monotonic()
         if now - self._last_click_time < self._click_cooldown_s:
             return
         # 提交（非阻塞）。失败 → 指纹不更新，下帧同意图自动重试。
@@ -3174,7 +3178,8 @@ class TreasureModule(ActivityModule):
         # v4 节奏由框架驱动、实际帧间隔不再是 FRAME_INTERVAL_MS，帧数口径会被稀释。
         retry_frames = self._retry_frames_by_key.get(key, self._click_retry_frames)
         retry_ms = retry_frames * self.FRAME_INTERVAL_MS
-        if (time.time() - self._click_retry_since_ts) * 1000 < retry_ms:
+        # 经过时长一律 monotonic（墙钟校时跳变会让窗口拉长/清零）
+        if (time.monotonic() - self._click_retry_since_ts) * 1000 < retry_ms:
             return
         if self._click_retry_count >= self._click_retry_max:
             logger.log(
@@ -3187,7 +3192,7 @@ class TreasureModule(ActivityModule):
             )
         self._click_retry_count += 1
         self._last_click_fingerprint = None      # 重新 arm → 本帧同一意图可再次点击
-        self._click_retry_since_ts = time.time()
+        self._click_retry_since_ts = time.monotonic()
         logger.log(
             f"[鉴宝点击] key={key} 点击后 {retry_ms}ms 仍在「{self._click_retry_stage}」，"
             f"第 {self._click_retry_count}/{self._click_retry_max} 次重试", "WARNING",
@@ -3338,8 +3343,9 @@ class TreasureModule(ActivityModule):
         """排空 IO 队列直到空或超时（停止时调用，保证最后几帧不丢）。"""
         if self._io_queue is None:
             return
-        deadline = time.time() + 3.0
-        while time.time() < deadline and not self._io_queue.empty():
+        # 经过时长一律 monotonic（3s 排空超时不受校时跳变影响）
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not self._io_queue.empty():
             try:
                 self._process_io_task(self._io_queue.get(timeout=0.5))
             except Empty:
@@ -3669,13 +3675,18 @@ class TreasureModule(ActivityModule):
         self._ocr_push(frame_rgb, task="egg")
 
     def _egg_publish_result(self, res, frame_id: int, captured_ts: float, t0: float) -> None:
-        """worker 写彩蛋结果槽（完整新 dict 替换，不原地修改已发布对象）。"""
+        """worker 写彩蛋结果槽（完整新 dict 替换，不原地修改已发布对象）。
+
+        t0 / captured_ts 为 perf_counter 口径（毫秒级耗时测量），completed_ts 为墙钟事件时刻。
+        """
         with self._ocr_lock:
             self._egg_result = {
                 "frame_id": frame_id,
                 "captured_ts": captured_ts,
+                # 墙钟：结果完成时刻（事件语义，非经过时长口径）
                 "completed_ts": time.time(),
-                "duration_ms": (time.time() - t0) * 1000,
+                # 耗时测量一律 perf_counter（monotonic 在本机粒度约 16ms，会把 ms 级指标量化）
+                "duration_ms": (time.perf_counter() - t0) * 1000,
                 "data": res,
             }
 
@@ -3852,7 +3863,7 @@ class TreasureModule(ActivityModule):
                 # 识别器内部已含模板匹配+颜色+OCR，耗时几十 ms~百 ms 级，放后台不阻塞主循环。
                 if task == "egg":
                     if self._egg_recognizer is not None:
-                        t0 = time.time()
+                        t0 = time.perf_counter()
                         try:
                             egg_res = self._egg_recognizer.recognize(frame)
                         except Exception:
@@ -3866,7 +3877,7 @@ class TreasureModule(ActivityModule):
                 # 默认>0 把 0 滤成 None → _bid_input_latest 不更新 → 输入子状态机反复点✖死循环。
                 # bid_player4 允许 0：掉线玩家的报价框显示 0 合法。
                 # critical=True → 写独立关键槽，不被第二段全量覆盖（P4 双通道覆盖 bug 修复）。
-                t0 = time.time()
+                t0 = time.perf_counter()
                 if self._ocr is not None:
                     res_crit = self._ocr.recognize_amounts(
                         frame, keys=self.OCR_CRITICAL_KEYS,
@@ -3879,7 +3890,7 @@ class TreasureModule(ActivityModule):
                 # 结算收入/利润允许 0 值。
                 # 剔除关键通道 ROI（H/P4）：同帧 H/P4 已由第一段识别发布，第二段不再重复
                 # 识别（省 ~20ms/帧），也不会覆盖关键槽结果。
-                t0 = time.time()
+                t0 = time.perf_counter()
                 second_keys = (ocr_keys - self._OCR_CRITICAL_SET) if ocr_keys else None
                 if self._ocr is not None:
                     res_full = self._ocr.recognize_amounts(
@@ -3889,7 +3900,8 @@ class TreasureModule(ActivityModule):
                 else:
                     res_full = {}
                 self._ocr_total_runs += 1
-                self._ocr_duration_ms = (time.time() - t0) * 1000
+                # 耗时测量一律 perf_counter（monotonic 在本机粒度约 16ms）
+                self._ocr_duration_ms = (time.perf_counter() - t0) * 1000
                 self._ocr_publish_result(res_full, frame_id, round_no, t0, captured_ts)
             except Exception as e:
                 self._ocr_failures += 1
@@ -3898,8 +3910,9 @@ class TreasureModule(ActivityModule):
     def _ocr_push(self, frame_rgb: np.ndarray, task: str = "ocr",
                   keys: frozenset[str] | None = None) -> None:
         """主线程投递最新帧（latest-only：覆盖旧帧，worker 慢时丢中间帧）。
-        captured_ts = 投递时刻 ≈ 帧捕获时刻（同 tick 内 screencap 后立即投递），
-        供时效老化 age = consume_time - captured_ts。
+        captured_ts = 投递时刻 ≈ 帧捕获时刻（同 tick 内 screencap 后立即投递，perf_counter 秒），
+        供时效老化 age = consume_time - captured_ts（消费侧同用 perf_counter，见 _apply_ocr_result；
+        两侧必须同一时钟源，且与耗时测量同族——monotonic 粒度约 16ms 会把 age 量化）。
         frame 所有权：立即 copy，worker 与主线程不共享 buffer（不依赖 screencap
         返回新数组的隐含约束）。1280×720 RGB copy ~1ms，远小于 OCR 开销。
         task：任务类型。"ocr"=常规 ROI 识别；"egg"=彩蛋识别（复用同一 worker 线程，
@@ -3911,7 +3924,7 @@ class TreasureModule(ActivityModule):
                 self._ocr_frame_id,
                 self._round_no,
                 frame_rgb.copy(),
-                time.time(),
+                time.perf_counter(),  # captured_ts：耗时/时效测量一律 perf_counter（消费侧同源）
                 task,
                 keys,
             )
@@ -3929,7 +3942,7 @@ class TreasureModule(ActivityModule):
         critical: bool = False,
     ) -> None:
         """worker 写结果槽：完整新 dict 替换，不原地修改已发布对象。
-        captured_ts = 帧捕获时刻（_ocr_push 记录），供主线程时效老化。
+        captured_ts = 帧捕获时刻（_ocr_push 记录，perf_counter 秒），供主线程时效老化。
         critical=True → 写关键通道槽（第一段 H+P4，独立于全量槽，不被第二段覆盖）；
         critical=False → 写全量槽（第二段其余 ROI）。"""
         with self._ocr_lock:
@@ -3937,8 +3950,10 @@ class TreasureModule(ActivityModule):
                 "frame_id": frame_id,
                 "round_no": round_no,
                 "captured_ts": captured_ts,
+                # 墙钟：结果完成时刻（事件语义，非经过时长口径）
                 "completed_ts": time.time(),
-                "duration_ms": (time.time() - t0) * 1000,
+                # 耗时测量一律 perf_counter（monotonic 在本机粒度约 16ms）
+                "duration_ms": (time.perf_counter() - t0) * 1000,
                 "data": res,
             }
             if critical:
@@ -3973,7 +3988,8 @@ class TreasureModule(ActivityModule):
                 continue
             self._ocr_source_frame_id = result["frame_id"]
             # 时效 = 捕获时刻 → 消费时刻（captured_ts 在投递时记录，≈帧捕获时刻）
-            self._ocr_result_age_ms = (time.time() - result["captured_ts"]) * 1000
+            # 与 _ocr_push 投递侧同用 perf_counter：两侧必须同一时钟源，且须与耗时测量同族
+            self._ocr_result_age_ms = (time.perf_counter() - result["captured_ts"]) * 1000
             if result["round_no"] != self._round_no:
                 if self._round_no is None:
                     pass
@@ -4529,10 +4545,10 @@ class TreasureModule(ActivityModule):
             self._prev_gray = gray
             changed = ratio > self.CHANGE_AREA_RATIO
             if changed:
-                # 冷却期：5 秒内不重复触发
-                if time.time() - self._last_change_ts < self.CHANGE_COOLDOWN_S:
+                # 冷却期：5 秒内不重复触发（经过时长一律 monotonic）
+                if time.monotonic() - self._last_change_ts < self.CHANGE_COOLDOWN_S:
                     return False
-                self._last_change_ts = time.time()
+                self._last_change_ts = time.monotonic()
             return changed
         except Exception:
             return False
