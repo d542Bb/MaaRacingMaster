@@ -183,7 +183,7 @@ def test_blink_zero_read_advances_by_anchor_not_restart():
 def test_stable_zero_read_resets_anchor_and_restarts():
     """B==0 持续超 BID_ZERO_STABLE_MS（真清空）→ 锚点归零，从首位重输。"""
     fake = _ExecSelf(progress=1, latest=0)
-    fake._bid_zero_since_ts = time.time() - 2.0
+    fake._bid_zero_since_ts = time.monotonic() - 2.0
     TreasureModule._run_bidding_execute(fake, _FRAME, 1.0)
     d = fake._bidding_last_decision
     assert d["key"] == "bid_numpad_8"
@@ -194,7 +194,7 @@ def test_stable_zero_read_resets_anchor_and_restarts():
 def test_nonzero_read_clears_zero_timer():
     """读到非零值 → 空读计时清零（下一轮瞬空读重新获得完整防抖窗口）。"""
     fake = _ExecSelf(progress=1, latest=8)   # B=8 前缀匹配 → 输第 2 位
-    fake._bid_zero_since_ts = time.time() - 2.0
+    fake._bid_zero_since_ts = time.monotonic() - 2.0
     TreasureModule._run_bidding_execute(fake, _FRAME, 1.0)
     assert fake._bid_zero_since_ts is None
     assert fake._bidding_last_decision["key"] == "bid_numpad_1"

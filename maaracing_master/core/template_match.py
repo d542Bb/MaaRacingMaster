@@ -166,6 +166,17 @@ def find_any(frame: np.ndarray, names: list[str], image_dirs: list[Path],
 # ==================== v4 引擎件（P2a-Q5）：colorspace / 仲裁 / 断言 / 遮挡 ====================
 
 CURSOR_SIZE_NORM = 0.03  # 光标贴图归一化宽（P2b 真机校准前的引擎常量）
+CURSOR_OCCLUSION_PAD_PX = 10.0  # 贴图盘之外的扩散量（环 + hover 高亮），避让用
+
+
+def cursor_occlusion_radius_px(frame_w: int) -> float:
+    """光标遮挡等效半径（帧像素）= 贴图盘半径 + 扩散量。
+
+    与 `cursor_box_norm` 同源（都从 CURSOR_SIZE_NORM 派生）：图侧 mask_cursor 按
+    贴图盘判相交，避让要**提前**挪开，故再加环/hover 的扩散余量。1280 宽帧
+    → 0.03×1280/2 + 10 ≈ 29.2px（宿主侧原手标 30px 的来处）。
+    """
+    return CURSOR_SIZE_NORM * frame_w / 2.0 + CURSOR_OCCLUSION_PAD_PX
 
 
 def _match_colorspace(frame: np.ndarray, tpl: np.ndarray,

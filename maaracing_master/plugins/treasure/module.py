@@ -43,7 +43,11 @@ from maaracing_master.plugins.treasure.strategy import (
     VAL_COEF,
 )
 from maaracing_master.plugins.treasure.detector import TreasureStageDetector
-from maaracing_master.core.template_match import cursor_box_norm, match_template_cs
+from maaracing_master.core.template_match import (
+    cursor_box_norm,
+    cursor_occlusion_radius_px,
+    match_template_cs,
+)
 from maaracing_master.core.navkit import (
     DecisionFacts,
     DecisionSnapshot,
@@ -528,9 +532,10 @@ class TreasureModule(ActivityModule):
                                     # → B=88 → 清空 → 重输，一回合 19 秒在清空/重输间振荡。
     # 光标避让（驻留看守）：光标（圆盘+环+hover 高亮）压住「当前阶段需识别的
     # ROI」时让 core.clicker.auto_shoo 挪到邻近空白处（不点击），防模板匹配/OCR
-    # 掉分读脏。半径按圆盘+环+高亮扩散保守取值（2026-09-03 标定，2026-09-11
-    # 随 OCR 通路遮挡缺口重新接线——P4c 退役 shoo 时 mask_cursor 只覆盖了图内节点）。
-    SHOO_CURSOR_RADIUS_PX = 30.0
+    # 掉分读脏（2026-09-11 随 OCR 通路遮挡缺口重新接线——P4c 退役 shoo 时
+    # mask_cursor 只覆盖了图内节点）。遮挡等效半径不自标数值，按帧宽从
+    # template_match.cursor_occlusion_radius_px 派生（与图侧 mask_cursor 同一
+    # 光标盘模型，见 _maybe_shoo_cursor）。
     PANEL_OPEN_MIN_STABLE_FRAMES = 3   # 面板打开连续稳定帧：连续 N 帧命中 smart_bid_btn 才认为"面板真的开了"。
                                         # 否则单帧闪中（转场期画面乱）会制造假上升沿 → 紧接着假下降沿
                                         # → phase 误切 wait_result，用户看起来在"一直等"。
@@ -928,7 +933,8 @@ class TreasureModule(ActivityModule):
         self._bid_input_progress: int = 0
         # 确认态防抖计数：B==T 已就位后 OCR 连续读到 ≠T 的帧数（≥BID_CONFIRM_STABLE_FRAMES 才重置）
         self._bid_confirm_streak: int = 0
-        # B==0 持续起始时间戳（瞬空读锚点推进防抖，见 BID_ZERO_STABLE_MS；None=当前非空读）
+        # B==0 持续起始时刻（monotonic 秒；瞬空读锚点推进防抖，见 BID_ZERO_STABLE_MS；
+        # None=当前非空读）。经过时长一律 monotonic，免遭校时跳变拉长或清零。
         self._bid_zero_since_ts: float | None = None
         # --------- 问题1：选鉴宝师过场静默标记（点过确认鉴宝师后，过场动画不再发 fallback 准星）---------
         self._appraiser_confirmed_once: bool = False
@@ -2482,7 +2488,7 @@ class TreasureModule(ActivityModule):
         # B==0 持续超 BID_ZERO_STABLE_MS（时间口径）才判真空、回首位重输——
         # 否则一次瞬空读就重输首位，制造「8→88→清空→8→…」振荡（2026-09-11 实机）。
         if self._bid_input_progress > 0:
-            now = time.time()
+            now = time.monotonic()
             if self._bid_zero_since_ts is None:
                 self._bid_zero_since_ts = now
             if (now - self._bid_zero_since_ts) * 1000 < self.BID_ZERO_STABLE_MS:
@@ -2926,7 +2932,7 @@ class TreasureModule(ActivityModule):
             return
         center = intent.get("center") if intent else None
         result = self._get_clicker().auto_shoo(
-            rects, radius_px=self.SHOO_CURSOR_RADIUS_PX, frame_size=(W, H),
+            rects, radius_px=cursor_occlusion_radius_px(W), frame_size=(W, H),
             next_center=(float(center[0]), float(center[1])) if center else None)
         if result:
             logger.log(
