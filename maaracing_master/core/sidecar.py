@@ -34,7 +34,7 @@ from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import TextIO, cast
 
-from maaracing_master import __version__
+from maaracing_master import __display_version__, __version__
 from maaracing_master.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
 from maaracing_master.core.controller import MaaRacingMasterController
 from maaracing_master.core.logger import logger
@@ -418,7 +418,9 @@ class SidecarService:
 
     def get_initial_state(self, params):
         return (True, {
-            "version": __version__.split("+")[0],
+            # 显示串：源码模式带「+领先次数（源码模式）」，打包模式为包内固化快照；
+            # 版本比较另用 _version_tuple()（内部仍取干净基线，不受此后缀影响）
+            "version": __display_version__,
             "modules": self._module_list(),
             "selected_module": self._selected_module,
             "stages": list(self._stages),
