@@ -180,11 +180,30 @@ pip install -r requirements.txt
 dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ```
 
-编译成功后，运行编译产物 **`apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`** 启动 GUI（exe manifest `requireAdministrator` 会自动弹出 UAC 提权）。
+编译成功后，运行编译产物 **`apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`** 启动 GUI（exe manifest `requireAdministrator` 会自动弹出 UAC 提权）。
 
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
 
 **独立调试 sidecar**（不经 GUI，等待 stdin JSONL RPC）：`python -u -m maaracing_master.core.sidecar`。
+
+### 日常跑源码（推荐入口）
+
+上面四步走通之后，日常迭代不必再手动编译与找 exe——仓库根 **`dev-shell.cmd`** 一条命令搞定：
+
+```bash
+.\dev-shell.cmd                 # 按需编译 + 启动，窗口跑的就是仓库当前源码
+.\dev-shell.cmd --check-deps    # 顺带验证 .venv 依赖完整（import maa / cv2 / numpy）
+.\dev-shell.cmd --rebuild       # 强制重新编译 .NET shell
+.\dev-shell.cmd --no-launch     # 只编译与自检，不开窗口
+```
+
+它按四步走：预检（`.venv`、dotnet SDK）→ 仅当 C#/前端资源比现有 exe 更新时才 `dotnet build` → 检出冲突实例并列出其完整路径（单实例互斥体会让第二个窗口直接退出）→ 启动 `bin\` 下的 shell，最后**查进程自证**本次后端由哪个 python 拉起。
+
+- **改 Python / pipeline JSON / policy 存盘即生效**，不必重新打包；只有改 C# 或前端资源才需要编译，脚本按文件时间戳自行判断。
+
+- 源码模式下左上角版本号形如 `v0.21.0.dev2+102（源码模式）`：基线取最近的 tag，`+102` 是距该 tag 领先的 commit 数。打包版显示的是包内固化的版本号，不带此后缀。
+
+- 判断"这次跑的到底是哪份代码"看输出末尾 `[verify]`：`源码模式 ✓` 表示后端来自仓库 `.venv`；若打印成其它目录下的 `runtime\python\python.exe`，则说明起的是打包产物。
 
 ***
 
