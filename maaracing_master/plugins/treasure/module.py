@@ -43,7 +43,7 @@ from maaracing_master.plugins.treasure.strategy import (
     VAL_COEF,
 )
 from maaracing_master.plugins.treasure.detector import TreasureStageDetector
-from maaracing_master.core.template_match import match_template_cs
+from maaracing_master.core.template_match import cursor_box_norm, match_template_cs
 from maaracing_master.core.navkit import (
     DecisionFacts,
     DecisionSnapshot,
@@ -522,6 +522,15 @@ class TreasureModule(ActivityModule):
     BID_CONFIRM_STABLE_FRAMES = 3  # 输入完成后确认态防抖：B==T 已就位后，OCR 单帧误读 B'≠T
                                     # 不立刻清空重输；连续 N 帧都读不到 T 才判定"输入被破坏/用户改价"
                                     # 并重置。避免"已输完、准星正指确认"被一次 OCR 抖动打回重输。
+    BID_ZERO_STABLE_MS = 1500.0    # 输入框瞬空读防抖（时间口径，与 v4 帧节奏解耦）：B==0 且锚点>0
+                                    # 时不回头重输首位，按锚点继续推进；B==0 持续超 N ms 才判"真空
+                                    # 清空"重输。2026-09-11 实机教训：输 8 后 OCR 瞬读空 → 重输 8
+                                    # → B=88 → 清空 → 重输，一回合 19 秒在清空/重输间振荡。
+    # 光标避让（驻留看守）：光标（圆盘+环+hover 高亮）压住「当前阶段需识别的
+    # ROI」时让 core.clicker.auto_shoo 挪到邻近空白处（不点击），防模板匹配/OCR
+    # 掉分读脏。半径按圆盘+环+高亮扩散保守取值（2026-09-03 标定，2026-09-11
+    # 随 OCR 通路遮挡缺口重新接线——P4c 退役 shoo 时 mask_cursor 只覆盖了图内节点）。
+    SHOO_CURSOR_RADIUS_PX = 30.0
     PANEL_OPEN_MIN_STABLE_FRAMES = 3   # 面板打开连续稳定帧：连续 N 帧命中 smart_bid_btn 才认为"面板真的开了"。
                                         # 否则单帧闪中（转场期画面乱）会制造假上升沿 → 紧接着假下降沿
                                         # → phase 误切 wait_result，用户看起来在"一直等"。
@@ -919,6 +928,8 @@ class TreasureModule(ActivityModule):
         self._bid_input_progress: int = 0
         # 确认态防抖计数：B==T 已就位后 OCR 连续读到 ≠T 的帧数（≥BID_CONFIRM_STABLE_FRAMES 才重置）
         self._bid_confirm_streak: int = 0
+        # B==0 持续起始时间戳（瞬空读锚点推进防抖，见 BID_ZERO_STABLE_MS；None=当前非空读）
+        self._bid_zero_since_ts: float | None = None
         # --------- 问题1：选鉴宝师过场静默标记（点过确认鉴宝师后，过场动画不再发 fallback 准星）---------
         self._appraiser_confirmed_once: bool = False
         # --------- 问题5：领取分红"跳过动画点一次"标记，防连点 ---------
@@ -1308,6 +1319,7 @@ class TreasureModule(ActivityModule):
         self._bid_input_progress = 0
         self._bid_input_latest = None
         self._bid_confirm_streak = 0
+        self._bid_zero_since_ts = None
         self._bidding_last_decision = None
         self._last_round_snapshot = None
         # 出价策略：重建实例清逼价基线等内部状态，保留已设的 risk_cap/mode
@@ -1913,16 +1925,48 @@ class TreasureModule(ActivityModule):
         cxn, cyn, _rx2, _bw, _bh = self._box_to_norm(box, W, H)
         return (float(score), cxn, cyn)
 
+    def _cursor_hits_rect(self, rect_norm: tuple[float, float, float, float],
+                          frame_rgb: np.ndarray) -> bool:
+        """手柄光标盘是否压住归一化 ROI（矩形相交，含盘半径余量）。
+
+        mask_cursor 遮挡过滤只装在图内模板识别桥上，OCR ROI 没有光标剔除——
+        光标盘停在按钮上时文字混进盘像素被读脏（2026-09-11 实机：出价按钮
+        文字读成「出价.39,5」）。压住时该读数按不可信处理，等光标移开再读。
+        real 模式/未绑定/从未识别到光标 → None → 视为无光标（WGC 不采 OS
+        光标，与模板侧 mask_cursor 同语义）；转场期陈旧位最多多拒一帧。
+        """
+        clicker = self._clicker
+        if clicker is None:
+            return False
+        pos = clicker.gamepad_cursor_pos()
+        if not pos:
+            return False
+        H, W = frame_rgb.shape[:2]
+        if W <= 0 or H <= 0:
+            return False
+        # gamepad_cursor_pos 是帧像素，cursor_box_norm 吃归一化中心（同 NavGraph.cursor_pos 换算）
+        cx1, cy1, cx2, cy2 = cursor_box_norm(pos[0] / W, pos[1] / H, frame_w=W, frame_h=H)
+        x0, y0 = int(rect_norm[0] * W), int(rect_norm[1] * H)
+        x1, y1 = int(rect_norm[2] * W), int(rect_norm[3] * H)
+        return not (cx2 <= x0 or cx1 >= x1 or cy2 <= y0 or cy1 >= y1)
+
     def _read_bid_main_btn_label(self, frame_rgb: np.ndarray) -> str:
         """同步 OCR 主界面底部出价按钮文字（等待出价/出价）。
 
         只用 text（不做金额解析），返回去空格后的文本；识别失败/引擎不可用返回 ""。
         仅在面板未开（S1/S2）时调用，避免面板遮挡干扰 + 省 CPU。
+        光标盘压住按钮文字 ROI 时读数不可信（手柄导航残留常停在按钮上），
+        返回 "" 走保守等待，等光标移开再读。
         """
         if self._ocr is None:
             return ""
         rect = self._ocr._regions.get(self._BID_MAIN_LABEL_KEY)
         if rect is None:
+            return ""
+        if self._cursor_hits_rect(rect, frame_rgb):
+            if self._frame_counter % 10 == 0:
+                logger.log("[鉴宝出价] 光标压住出价按钮文字 ROI，本轮读数按不可信（等光标移开）",
+                           "DEBUG")
             return ""
         info = self._ocr.recognize_single(frame_rgb, rect)
         if info is None:
@@ -1979,9 +2023,10 @@ class TreasureModule(ActivityModule):
             # 面板打开时，清空"上次读的输入框值"（新面板输入框可能是空，避免把上帧旧残留 T
             # 当成"已就位"误点确认）
             self._bid_input_latest = None
-            # 新面板 = 新的输入会话：重置输入进度锚点 + 确认防抖计数
+            # 新面板 = 新的输入会话：重置输入进度锚点 + 确认防抖计数 + 瞬空读计时
             self._bid_input_progress = 0
             self._bid_confirm_streak = 0
+            self._bid_zero_since_ts = None
             logger.log(f"[鉴宝出价] 新 bidding epoch #{self._bid_epoch}（面板打开，输入框值已重置）")
 
         # 下降沿（phase==bidding 时面板从稳定开到稳定关）= 用户点了确认出价，面板关闭 → 推进 wait_result。
@@ -2114,7 +2159,11 @@ class TreasureModule(ActivityModule):
                 "hint": f"等待出价按钮亮起...（OCR={label or '?'}）", "score": 0.0,
             }
             return
-        if "出价" in label and "等待" not in label and "已出价" not in label:
+        # S2 判定 = 按钮文字剥掉非中文噪声后恰为「出价」。子串包含会把 OCR 误读
+        # 判成已亮（实机 2026-09-11：「等得出价」含"出价"不含"等待" → 连点灰按钮
+        # 3 轮）；光标盘数字混入的「出价.39,5」剥离后仍正确命中。
+        label_cn = "".join(ch for ch in label if "\u4e00" <= ch <= "\u9fff")
+        if label_cn == "出价":
             self._bidding_last_decision = {
                 "state": "S2_bid", "key": self._BID_MAIN_BTN_KEY, "center": main_btn,
                 "hint": f"意图: 出价按钮已亮（OCR={label or '?'}）→ 点出价",
@@ -2280,6 +2329,9 @@ class TreasureModule(ActivityModule):
 
         # 输入框当前值（智能出价填入后，OCR bid_result_amount_box 实时读值）
         B = self._bid_input_latest
+        if B:
+            # 读到非零值 → 空读计时清零（下一次瞬空读重新获得完整防抖窗口）
+            self._bid_zero_since_ts = None
         if B is None:
             # 从未读到输入框值：等 OCR（面板打开初期 ROI 可能还没识别到）
             self._bidding_last_decision = {
@@ -2425,7 +2477,41 @@ class TreasureModule(ActivityModule):
                 "INFO",
             )
             return
-        # 空（B==0）→ 输第一位
+        # 空（B==0）有两种可能：真清空（点✖后/用户手动清）与 OCR 瞬空读（框里其实有值）。
+        # 锚点>0 时先按锚点推进（指 ts[锚点]，与前缀匹配分支同形 → 指纹锁天然去重），
+        # B==0 持续超 BID_ZERO_STABLE_MS（时间口径）才判真空、回首位重输——
+        # 否则一次瞬空读就重输首位，制造「8→88→清空→8→…」振荡（2026-09-11 实机）。
+        if self._bid_input_progress > 0:
+            now = time.time()
+            if self._bid_zero_since_ts is None:
+                self._bid_zero_since_ts = now
+            if (now - self._bid_zero_since_ts) * 1000 < self.BID_ZERO_STABLE_MS:
+                next_digit = ts[self._bid_input_progress]
+                key = f"bid_numpad_{next_digit}"
+                center = self._action_centers.get(key)
+                if center is None:
+                    logger.log(f"[鉴宝出价] 数字键({key})未配置 rect", "WARNING")
+                    self._bidding_last_decision = None
+                    return
+                self._bidding_last_decision = {
+                    "state": "S3_edit_type", "key": key, "center": center,
+                    "hint": f"意图: [{dec.decision}] 输入 {next_digit}（OCR 空读，锚点推进 "
+                            f"{self._bid_input_progress} 位 → 目标 {T:,}）",
+                    "score": s_score,
+                }
+                logger.log(
+                    f"[鉴宝出价] 点击意图: [{dec.decision}] 输入数字 {next_digit}（OCR 空读锚点推进 "
+                    f"{self._bid_input_progress}/{len(ts)} → 目标 {ts}）"
+                    f"目标=({center[0]:.3f},{center[1]:.3f}) | {dec.reason}",
+                    "INFO",
+                )
+                return
+            logger.log(
+                f"[鉴宝出价] B=0 持续超 {self.BID_ZERO_STABLE_MS:.0f}ms，判真空清空，"
+                f"锚点 {self._bid_input_progress}→0 从首位重输", "INFO")
+        # 真空（锚点=0，或上方判空重置）→ 输第一位
+        self._bid_input_progress = 0
+        self._bid_zero_since_ts = None
         next_digit = ts[0]
         key = f"bid_numpad_{next_digit}"
         center = self._action_centers.get(key)
@@ -2777,6 +2863,76 @@ class TreasureModule(ActivityModule):
         if not prog or not prog.get("stage") or prog.get("stage") == "done":
             return None
         return dict(prog)
+
+    def _collect_guard_rects(self) -> list[tuple[str, tuple[float, float, float, float]]]:
+        """收集当前阶段「需要保持可识别」的 ROI：[(key, rect)]（归一化）。
+
+        口径：阶段感知激活的 stage 判定锚点 ∪ 全局锚点（被挡 = 阶段判定/回退失效）
+        ∪ 当前阶段 OCR 区。由决策段**每帧**驱动——阶段状态每帧更新，激活集合自然
+        跟随新阶段（2026-09-03 教训：点击后一次性 + 全量锚点导致槽位复用误判——
+        出价面板的智能出价按钮与匹配中的取消匹配按钮是同一屏幕槽位，每帧按当前
+        阶段裁剪才正确）。
+        """
+        if self._detector is None:
+            return []
+        rects: list[tuple[str, tuple[float, float, float, float]]] = []
+        plan = getattr(self._detector, "plan", None)
+        global_anchors = plan.global_anchors if plan is not None else _GLOBAL_ANCHORS
+        keys = set(global_anchors)
+        if self._current_stage:
+            perception = self._active_stage_rois(self._current_stage)
+            if perception:
+                keys |= set(perception)
+        for k in sorted(keys):
+            r = self._detector.ROI.get(k)
+            if r:
+                rects.append((k, tuple(float(n) for n in r)))
+        regions = self._ocr._regions if self._ocr is not None else {}
+        ocr_keys = None
+        if plan is not None and self._current_stage:
+            ocr_keys = plan.ocr_for(self._current_stage)
+        if ocr_keys is None and self._current_stage:
+            ocr_keys = _STAGE_OCR_KEYS.get(self._current_stage)
+        for k in sorted(ocr_keys or ()):
+            rect = regions.get(k)
+            if isinstance(rect, (tuple, list)) and len(rect) == 4:
+                rects.append((k, tuple(float(n) for n in rect)))
+        # 出价主按钮文字 OCR 区（bid_main_btn_label，S1/S2 同步读取，不在异步
+        # _STAGE_OCR_KEYS 里）：确认出价后光标恰好停在 (0.463,0.805) 落在该
+        # label 区内，若不被守卫，下一轮 S1 读「出价」文字被光标挡住 → OCR 空 →
+        # 永远等不到按钮亮起（2026-09-03 用户实测：出价 OCR 被挡但不避让）。
+        # 面板开（bidding 相位）期间不守卫：面板覆盖主按钮且确认按钮 rect 与
+        # 该 label 重叠，守卫会让"点确认前光标停确认按钮"被误判压住识别区，
+        # 反复避让反而打断确认点击。
+        if (self._current_stage and "回合" in self._current_stage
+                and self._bid_phase != "bidding"):
+            rect = regions.get(self._BID_MAIN_LABEL_KEY)
+            if isinstance(rect, (tuple, list)) and len(rect) == 4:
+                rects.append((self._BID_MAIN_LABEL_KEY, tuple(float(n) for n in rect)))
+        return rects
+
+    def _maybe_shoo_cursor(self, intent: dict | None) -> None:
+        """光标驻留看守（决策段每帧调用，决策更新后）：光标压识别区则让核心避让。
+
+        仅组装宿主领域知识（guard 区域 + 下一意图中心），判定与执行在
+        core.clicker.auto_shoo（异步提交导航，决策段不被阻塞——2026-09-03
+        导航线程化）。触发时打 DEBUG 日志（带命中区域 key），误避让/漏避让靠它定位。
+        """
+        if self.ctx.click_mode != "gamepad" or self._last_frame_rgb is None:
+            return
+        H, W = self._last_frame_rgb.shape[:2]
+        rects = self._collect_guard_rects()
+        if not rects:
+            return
+        center = intent.get("center") if intent else None
+        result = self._get_clicker().auto_shoo(
+            rects, radius_px=self.SHOO_CURSOR_RADIUS_PX, frame_size=(W, H),
+            next_center=(float(center[0]), float(center[1])) if center else None)
+        if result:
+            logger.log(
+                f"[鉴宝点击] 光标压住识别区[{result['key']}]，"
+                f"避让导航到 ({result['point'][0]:.2f},{result['point'][1]:.2f})（不点击）",
+                "DEBUG")
 
     def _active_stage_rois(self, stage: str | None) -> frozenset[str] | None:
         """当前阶段的「激活感知 ROI」：detector 每帧只扫本阶段相关锚点。
@@ -3414,9 +3570,13 @@ class TreasureModule(ActivityModule):
         [JumpBack] 回 dwell 重判。
         """
         intent = self._resolve_action_target()
-        # 异步导航协议（2026-09-03）：consume → click 决策/提交。
+        # 异步导航协议（2026-09-03）：consume → click 决策/提交 → shoo。
         self._consume_click_result()      # 先消费上一任务结果，应用指纹/时刻等副作用
         self._execute_click(intent)       # click 决策 + 提交（非阻塞，导航后台闭环）
+        # 光标驻留看守（手柄模式）：光标压住本阶段需识别 ROI 且下一意图不能自然
+        # 带离时，避让导航到空白处（submit_move，不点击）。已有 click 任务在跑时
+        # auto_shoo 的 is_busy 闸直接跳过——点击永远优先于避让。
+        self._maybe_shoo_cursor(intent)
         # P1：决策契约落盘（facts 投影 + policy 输出）。
         if self._policy_snapshot is not None and self._trace_writer is not None:
             self._trace_writer.write({

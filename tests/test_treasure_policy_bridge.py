@@ -56,19 +56,22 @@ def _module_with_real_decision_phase() -> MagicMock:
 
 
 def test_decision_phase_call_sequence_on_module():
-    """_decision_phase 内部按 resolve → consume → execute 顺序调三件。
+    """_decision_phase 内部按 resolve → consume → execute → shoo 顺序调四件。
 
-    P4c（宪法 §5）：原第四步 shoo 避让看守已从调用序退役——断言方法本体不存在，
-    防止反应式躲避被悄悄加回。"""
+    P4c 曾以 mask_cursor 替代全部 shoo 并锁死调用序；2026-09-11 实机定罪该替代
+    有缺口——mask_cursor 只装在图内模板节点，OCR 通路（出价按钮文字/输入框）无
+    遮挡处理被读脏（「出价.39,5」、瞬空读振荡）。光标驻留看守按新证据重新接线：
+    shoo 在 execute 之后（auto_shoo 的 is_busy 闸保证点击优先，避让只走
+    submit_move 不产生点击）。"""
     m = _module_with_real_decision_phase()
     m._decision_phase()
     m._consume_click_result.assert_called_once_with()
     m._execute_click.assert_called_once_with("INTENT")
-    assert not hasattr(TreasureModule, "_maybe_shoo_cursor")
-    assert not hasattr(TreasureModule, "_collect_guard_rects")
+    m._maybe_shoo_cursor.assert_called_once_with("INTENT")
     names = [c[0] for c in m.method_calls]
     assert names.index("_resolve_action_target") < names.index("_consume_click_result")
     assert names.index("_consume_click_result") < names.index("_execute_click")
+    assert names.index("_execute_click") < names.index("_maybe_shoo_cursor")
 
 
 def test_decision_phase_flushes_trace_snapshot():

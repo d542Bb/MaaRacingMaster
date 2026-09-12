@@ -120,3 +120,181 @@ def test_submitted_label_never_triggers_s2():
     fake = _FakeSelf(phase="wait_first", epoch=0, label="出价")
     _choice(fake)
     assert fake._bidding_last_decision["state"] == "S2_bid"
+
+
+# --------------------------------------------------------------------
+#  输入子状态机：OCR 瞬空读锚点推进（2026-09-11 实机振荡回归）
+# --------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from maaracing_master.plugins.treasure.strategy import (  # noqa: E402
+    BALANCE_UNKNOWN, DECISION_TARGET_SECOND, BidContext, BidDecision)
+
+
+class _StubStrategy:
+    risk_cap = 50_000
+
+    def decide(self, ctx):
+        return BidDecision(
+            price=81401, decision=DECISION_TARGET_SECOND, vhat=120960.0,
+            max_win_bid=None, opponent_max=89500, trigger_bid=None,
+            reason="R5 target_second(紧贴): 81400+1=81401 < 89999")
+
+
+class _ExecSelf:
+    """_run_bidding_execute 最小状态桩：R5 target_second 目标 81401（实机场景）。"""
+
+    BID_CONFIRM_STABLE_FRAMES = getattr(TreasureModule, "BID_CONFIRM_STABLE_FRAMES", 3)
+    BID_ZERO_STABLE_MS = getattr(TreasureModule, "BID_ZERO_STABLE_MS", 1500.0)
+
+    def __init__(self, *, progress=0, latest=8):
+        self._bid_input_progress = progress
+        self._bid_input_latest = latest
+        self._bid_confirm_streak = 0
+        self._bid_zero_since_ts = None
+        self._bidding_last_decision = None
+        self._action_centers = {
+            "bid_numpad_8": (0.633, 0.718), "bid_numpad_1": (0.582, 0.538),
+            "bid_numpad_4": (0.583, 0.628), "bid_numpad_0": (0.583, 0.805),
+            "bid_numpad_clear": (0.329, 0.626), "bid_confirm_red_btn": (0.463, 0.805),
+        }
+        self._strategy = _StubStrategy()
+
+    def _build_bid_context(self):
+        return BidContext(round_no=5, h_seen=(89600,), last_round=None,
+                          balance=BALANCE_UNKNOWN)
+
+
+def test_blink_zero_read_advances_by_anchor_not_restart():
+    """OCR 瞬空读（B=0、锚点=1）→ 按锚点继续指第 2 位，不回头重输第 1 位。
+
+    实机振荡（2026-09-11 R5）：输 8 后 OCR 瞬时读输入框为空 → 旧代码直接
+    重输首位 8（指纹带 progress 挡不住）→ B=88 → ✖清空 → 重输，一回合
+    19 秒在清空/重输间循环，光标在面板来回跳（用户视角=「不点出价」）。
+    """
+    fake = _ExecSelf(progress=1, latest=0)
+    TreasureModule._run_bidding_execute(fake, _FRAME, 1.0)
+    d = fake._bidding_last_decision
+    assert d["key"] == "bid_numpad_1", f"应按锚点推进到第 2 位，实际 {d['key']}"
+    assert fake._bid_input_progress == 1, "瞬空读不得回退/重置锚点"
+
+
+def test_stable_zero_read_resets_anchor_and_restarts():
+    """B==0 持续超 BID_ZERO_STABLE_MS（真清空）→ 锚点归零，从首位重输。"""
+    fake = _ExecSelf(progress=1, latest=0)
+    fake._bid_zero_since_ts = time.time() - 2.0
+    TreasureModule._run_bidding_execute(fake, _FRAME, 1.0)
+    d = fake._bidding_last_decision
+    assert d["key"] == "bid_numpad_8"
+    assert fake._bid_input_progress == 0
+    assert fake._bid_zero_since_ts is None
+
+
+def test_nonzero_read_clears_zero_timer():
+    """读到非零值 → 空读计时清零（下一轮瞬空读重新获得完整防抖窗口）。"""
+    fake = _ExecSelf(progress=1, latest=8)   # B=8 前缀匹配 → 输第 2 位
+    fake._bid_zero_since_ts = time.time() - 2.0
+    TreasureModule._run_bidding_execute(fake, _FRAME, 1.0)
+    assert fake._bid_zero_since_ts is None
+    assert fake._bidding_last_decision["key"] == "bid_numpad_1"
+
+
+# --------------------------------------------------------------------
+#  出价主按钮：OCR 读数光标遮挡剔除 + S2 精确判定（2026-09-11 实机）
+# --------------------------------------------------------------------
+
+_LABEL_ROI = (0.4313876651982379, 0.805286343612335,
+              0.523953744493392, 0.8575624082232012)
+
+
+def test_cursor_over_label_roi_detected():
+    """光标盘压在按钮文字 ROI 内 → 判遮挡；移开/无光标（real 模式）→ 不判。"""
+    fake = _FakeSelf(phase="wait_next", label="出价")
+    # 盘中心 (610,596)：ROI 像素 x[551,670] y[579,617] 之内
+    fake._clicker = SimpleNamespace(gamepad_cursor_pos=lambda: (610, 596))
+    assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is True
+    # 移远 → 不相交
+    fake._clicker = SimpleNamespace(gamepad_cursor_pos=lambda: (100, 100))
+    assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is False
+    # 无光标（real 模式/未绑定/从未识别）→ 视为无光标，与模板侧 mask_cursor 同语义
+    fake._clicker = None
+    assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is False
+
+
+def test_s2_requires_exact_cn_label():
+    """S2 只认剥掉非中文噪声后恰为「出价」的读数。
+
+    实机误判（2026-09-11）：「等得出价」（等待出价的 OCR 误读）含"出价"不含
+    "等待"，旧子串判定连点灰按钮并触发 3 轮无效重试；光标盘数字混入的
+    「出价.39,5」剥离后仍须正常触发。
+    """
+    fake = _FakeSelf(phase="wait_next", label="等得出价")
+    _choice(fake)
+    assert fake._bidding_last_decision["state"] == "S1_waiting", \
+        "「等得出价」是等待态误读，不得触发 S2 点灰按钮"
+
+    fake = _FakeSelf(phase="wait_next", label="出价.39,5")
+    _choice(fake)
+    assert fake._bidding_last_decision["state"] == "S2_bid", \
+        "光标盘数字噪声剥离后应正常识别已亮"
+
+
+# --------------------------------------------------------------------
+#  光标驻留看守 auto_shoo（core 层避让判定语义，2026-09-11 重新接线）
+# --------------------------------------------------------------------
+
+_SHOO_ROI = ("bid_main_btn_label", (0.4, 0.75, 0.55, 0.9))
+
+
+class _NavStub:
+    def __init__(self, pos, miss=0):
+        self.last_pos = pos
+        self.miss_streak = miss
+
+
+def _shoo_clicker(pos, *, busy=False, miss=0):
+    from maaracing_master.core.clicker import Clicker
+    c = Clicker(hwnd=123, mode="gamepad")
+    c._gamepad = _NavStub(pos, miss)
+    c.is_busy = lambda: busy
+    moves: list[tuple[float, float]] = []
+    c.submit_move = lambda cx, cy, **kw: (moves.append((cx, cy)), True)[1]
+    return c, moves
+
+
+def test_auto_shoo_moves_cursor_off_guard_roi():
+    """光标压 guard ROI 且下一意图中心也在脏区 → 避让导航（不点击）并返回命中 key。"""
+    c, moves = _shoo_clicker((610, 596))   # (0.477,0.828) 在 ROI 内
+    r = c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720),
+                    next_center=(0.477, 0.829))
+    assert r is not None and r["key"] == "bid_main_btn_label"
+    assert len(moves) == 1, "避让须走 submit_move（只导航不点击）"
+    x, y = r["point"]
+    rx, ry = 30.0 / 1280, 30.0 / 720
+    assert not (0.4 - rx <= x <= 0.55 + rx and 0.75 - ry <= y <= 0.9 + ry), \
+        "避让点必须移出识别区（含遮挡半径余量）"
+
+
+def test_auto_shoo_skips_when_next_intent_clean():
+    """下一点击意图中心在干净区 → 点击导航自然带离，不专门避让。"""
+    c, moves = _shoo_clicker((610, 596))
+    r = c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720),
+                    next_center=(0.9, 0.5))
+    assert r is None and not moves
+
+
+def test_auto_shoo_gates_busy_miss_streak_cooldown():
+    """任务槽忙（点击优先）/光标连续未识别（陈旧位盲导航）/冷却窗内 → 一律跳过。"""
+    c, moves = _shoo_clicker((610, 596), busy=True)
+    assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is None
+    assert not moves
+
+    c, _ = _shoo_clicker((610, 596), miss=3)
+    assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is None
+
+    c, moves = _shoo_clicker((610, 596))
+    assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is not None
+    assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is None, \
+        "冷却窗内不得连续避让"
+    assert len(moves) == 1
