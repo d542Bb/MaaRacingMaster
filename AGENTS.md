@@ -23,7 +23,7 @@
 | MaaFW 能力、Pipeline 协议、Custom 契约、MAA API 红线 | [docs/MAAFW\_GUIDE.md](docs/MAAFW_GUIDE.md)（§5.6 真源组织与分层、§9 为 API 红线权威版）                           |
 | 整体架构、导航引擎、GUI、平台层坑点（完整版）                  | [docs/CODE\_WIKI.md](docs/CODE_WIKI.md)                                                            |
 | 鉴宝域（treasure\_\*、出价策略、stage 检测、域内坑点 §9）   | [maaracing\_master/plugins/treasure/CODE\_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md) |
-| 历史决策、环境/工具链结论、实验记录                        | memory-ws 记忆库（本机记忆服务，协作者环境不可达；非本机环境下以文档与代码为准）                                                      |
+| 历史决策、环境/工具链结论、实验记录                        | 对应域 CODE\_WIKI 与宪法归档记录                                                                             |
 | 公告通知卡（关于页）规范                              | [docs/announcement.md](docs/announcement.md)                                                       |
 | 当前版本方向与宪法                                 | [docs/NAVKIT\_V4\_PLAN.md](docs/NAVKIT_V4_PLAN.md)                                                 |
 
@@ -54,7 +54,7 @@
 「第二个使用者是谁、今天是否真实存在」；答不出就不抽——只有一个实现时抽出的"公共层"，内容必然
 全是那个实现的私货（实证案例载于 MAAFW\_GUIDE §5.6）。
 
-**问题分级**：A 类（纯设计：函数拆分、命名、结构）直接做；B 类（谁创建/谁持有）grep 代码回答，不靠回忆；C 类（外部系统行为：是否阻塞/释放/污染）必须写最小实验到 `tools/experiments/<主题>/`，禁止靠猜。实验结论写入 memory-ws，生产化坑点进对应域 CODE\_WIKI。
+**问题分级**：A 类（纯设计：函数拆分、命名、结构）直接做；B 类（谁创建/谁持有）grep 代码回答，不靠回忆；C 类（外部系统行为：是否阻塞/释放/污染）必须写最小实验到 `tools/experiments/<主题>/`，禁止靠猜。实验结论的生产化坑点进对应域 CODE\_WIKI。
 
 ## 计划与文档
 
@@ -73,16 +73,6 @@
 - 0.x 默认发 `v0.x.y-dev.N`；dev 系列成熟后经用户拍板可发正式版 `v0.x.y`（先例 `v0.13.0` / `v0.19.0` / `v0.19.1`）。发版流程见 `skills/project-update/SKILL.md`，交付文案同时过 `no-negative-echo` skill。
 
 - **No Negative Echo**：一切最终产物及其包装（标题、文件名、正文、注释、commit、PR、交付说明）只描述最终采用的状态，假设读者没看过本次会话——被否方案、中间尝试、措辞纠正、「无 X」式声明不得成为产物的命名或叙述中心；保留真实基线变化、必要技术名称与诊断。
-
-## 记忆服务（若本机已配置）
-
-- **先查后写**：架构、文件定位、历史决策、环境工具链等跨会话问题，先查 MCP 记忆库；本机未配置该服务时，以文档与代码为准。
-
-- 本项目结论写 `memory-ws`（实体+观察，无后缀的全局记忆只查不写）；写前自检指针是否指向本项目。
-
-- **每轮任务收尾自查写入触发**：文件/目录变更、架构决策与坑点、环境/依赖变化、可复用方案。
-
-- 严禁把个人隐私（密钥、用户绝对路径）写入记忆或任何交付物。
 
 ## 协作八条
 
