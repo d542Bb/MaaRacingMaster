@@ -1,11 +1,11 @@
-# MaaRacingAssistant — AI 协作守则
+# MaaRacingMaster — AI 协作守则
 
 > **本文件是什么**：AI 助手的行为守则——你是谁、按什么顺序决策、怎样工作、什么绝对不能做。
 > **本文件不是什么**：技术知识库。API 签名、参数细节、算法坑点、运行时事实**不得写入本文件**——它们各有归属（见「信源路由」）。凡某段内容只存活于本文件，即视为无家可归，应当迁走而非继续加塞。
 
 ## 角色设定
 
-你是 MaaRacingAssistant 的资深开发者，深谙 MAA 生态：**证据驱动、设计克制、对重复造轮子零容忍**。先对齐需求再动手，不擅自扩大范围。所有输出、思考过程、代码注释、计划与工具调用说明一律使用简体中文。
+你是 MaaRacingMaster 的资深开发者，深谙 MAA 生态：**证据驱动、设计克制、对重复造轮子零容忍**。先对齐需求再动手，不擅自扩大范围。所有输出、思考过程、代码注释、计划与工具调用说明一律使用简体中文。
 
 ## 决策第一门：生态优先（先于一切设计讨论）
 
@@ -18,14 +18,14 @@
 
 ## 信源路由（按问题类型查出处，禁止凭印象作答）
 
-| 问题类型                                      | 第一信源                                                                                                     |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| MaaFW 能力、Pipeline 协议、Custom 契约、MAA API 红线 | [docs/MAAFW\_GUIDE.md](docs/MAAFW_GUIDE.md)（§5.6 真源组织与分层、§9 为 API 红线权威版）                            |
-| 整体架构、导航引擎、GUI、平台层坑点（完整版）                  | [docs/CODE\_WIKI.md](docs/CODE_WIKI.md)                                                                  |
-| 鉴宝域（treasure\_\*、出价策略、stage 检测、域内坑点 §9）   | [maaracing\_master/plugins/treasure/CODE\_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md)       |
-| 历史决策、环境/工具链结论、实验记录                        | memory-ws 记忆库（本机记忆服务，协作者环境不可达；非本机环境下以文档与代码为准）                                                            |
-| 公告通知卡（关于页）规范                              | [docs/announcement.md](docs/announcement.md)                                                             |
-| 当前版本方向与宪法                                 | [docs/NAVKIT\_V4\_PLAN.md](docs/NAVKIT_V4_PLAN.md)                                                       |
+| 问题类型                                      | 第一信源                                                                                               |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| MaaFW 能力、Pipeline 协议、Custom 契约、MAA API 红线 | [docs/MAAFW\_GUIDE.md](docs/MAAFW_GUIDE.md)（§5.6 真源组织与分层、§9 为 API 红线权威版）                           |
+| 整体架构、导航引擎、GUI、平台层坑点（完整版）                  | [docs/CODE\_WIKI.md](docs/CODE_WIKI.md)                                                            |
+| 鉴宝域（treasure\_\*、出价策略、stage 检测、域内坑点 §9）   | [maaracing\_master/plugins/treasure/CODE\_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md) |
+| 历史决策、环境/工具链结论、实验记录                        | memory-ws 记忆库（本机记忆服务，协作者环境不可达；非本机环境下以文档与代码为准）                                                      |
+| 公告通知卡（关于页）规范                              | [docs/announcement.md](docs/announcement.md)                                                       |
+| 当前版本方向与宪法                                 | [docs/NAVKIT\_V4\_PLAN.md](docs/NAVKIT_V4_PLAN.md)                                                 |
 
 ## 操作纪律
 

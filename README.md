@@ -56,7 +56,7 @@
 > \[!IMPORTANT]
 > 🚧 **开发状态**
 >
-> 项目处于积极开发中：当前内置活动插件见 [maaracing\_assistant/plugins/](maaracing_master/plugins/)，
+> 项目处于积极开发中：当前内置活动插件见 [maaracing\_master/plugins/](maaracing_master/plugins/)，
 > 各插件的功能细节与完成度以其自述文档为准。
 > 如遇异常，请提交 Issue 或参考开发文档自诊。
 
@@ -125,7 +125,7 @@
 
 1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingMaster/releases) 下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**。
 2. 用资源管理器把它**解压到任意本地目录**。
-3. 打开该文件夹，**双击** **`MaaRacingMaster.Shell.exe`** 启动（已自带 Python 运行时与全部依赖，exe manifest 会自动弹出 UAC 提权）。
+3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
 4. 若所用插件依赖虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；插件对依赖的要求见其自述文档。
 
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
@@ -222,7 +222,7 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ## 使用说明
 
 1. 打开游戏到主界面（分辨率 **1280×720**）
-2. 以**管理员身份**运行 `MaaRacingMaster.Shell.exe`
+2. 运行解压根目录的 `MaaRacingMaster.exe`（启动时自动请求管理员权限）
 3. 选择活动模块与起始阶段（支持断点），点击「开始运行」
 
 > **调试功能**：PEEP 实时预览调试帧；DEBUG 存盘模式将标注截图保存至用户数据目录。
