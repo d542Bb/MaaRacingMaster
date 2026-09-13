@@ -18,14 +18,15 @@
 
 ## 信源路由（按问题类型查出处，禁止凭印象作答）
 
-| 问题类型                                      | 第一信源                                                                                               |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| MaaFW 能力、Pipeline 协议、Custom 契约、MAA API 红线 | [docs/MAAFW\_GUIDE.md](docs/MAAFW_GUIDE.md)（§5.6 真源组织与分层、§9 为 API 红线权威版）                           |
-| 整体架构、导航引擎、GUI、平台层坑点（完整版）                  | [docs/CODE\_WIKI.md](docs/CODE_WIKI.md)                                                            |
-| 鉴宝域（treasure\_\*、出价策略、stage 检测、域内坑点 §9）   | [maaracing\_master/plugins/treasure/CODE\_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md) |
-| 历史决策、环境/工具链结论、实验记录                        | 对应域 CODE\_WIKI 与宪法归档记录                                                                             |
-| 公告通知卡（关于页）规范                              | [docs/announcement.md](docs/announcement.md)                                                       |
-| 当前版本方向与宪法                                 | [docs/NAVKIT\_V4\_PLAN.md](docs/NAVKIT_V4_PLAN.md)                                                 |
+| 问题类型                                      | 第一信源                                                                                                      |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| MaaFW 能力、Pipeline 协议、Custom 契约、MAA API 红线 | [docs/MAAFW\_GUIDE.md](docs/MAAFW_GUIDE.md)（§5.6 真源组织与分层、§9 为 API 红线权威版）                                  |
+| 整体架构、导航引擎、GUI、平台层坑点（完整版）                  | [docs/CODE\_WIKI.md](docs/CODE_WIKI.md)                                                                   |
+| 鉴宝域（treasure\_\*、出价策略、stage 检测、域内坑点 §9）   | [maaracing\_master/plugins/treasure/CODE\_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md)        |
+| 历史决策、环境/工具链结论、实验记录                        | 对应域 CODE\_WIKI 与宪法归档记录                                                                                    |
+| 维护者自用待办与未定性疑点（非玩家反馈）                      | [GitHub Issues](https://github.com/d542Bb/MaaRacingMaster/issues?q=label%3Aself-todo)（`label: self-todo`） |
+| 公告通知卡（关于页）规范                              | [docs/announcement.md](docs/announcement.md)                                                              |
+| 当前版本方向与宪法                                 | [docs/NAVKIT\_V4\_PLAN.md](docs/NAVKIT_V4_PLAN.md)                                                        |
 
 ## 操作纪律
 
