@@ -7,6 +7,16 @@
 
 ## 2026-09-13
 
+### 未发版变更：GUI 图标统一 Lucide 真源并引入变形动画 🎨
+
+- **性质：** 未发版变更（GUI 前端：`apps/MaaRacingMaster.Shell/frontend/`、`THIRD_PARTY_LICENSES.md`；master 直接提交、不 tag）
+
+- **图标真源：** 新增 `frontend/icons.js`（`window.MRAIcons`）作为全部 UI 图标的唯一真源，数据拷自 Lucide v1.45.0（ISC 许可）；此前散落在 `index.html` / `app.js` 的约 30 处内联 SVG（含 play×3、camera×2 等重复拷贝）全部迁入，经占位水合（`<i data-icon>` → `MRAIcons.hydrate()`）或模板函数（`MRAIcons.svg()`）渲染。金币检测的自拼复合图形换用 Lucide 现成 `circle-dollar-sign`；窗口标题栏自绘 chrome 与性能走势图 polyline 按规范排除在图标系统外。
+
+- **变形动画：** 引入 morphicons v1.7.1（MIT）作为图标状态过渡动画，以 vendor 摊平单文件（`vendor.morphicons.js`）适配 WebView2 的 `file://` 加载（无构建链、无 CDN）；首个用例为数据页「实时预览」放大/还原按钮——两按钮合并为一个，scan ↔ shrink 图标弹簧变形，尊重系统减少动态设置。后续成就系统的图标动画复用同一套用法。
+
+- **规范与许可：** 新增 `frontend/README.md`（图标来源、新增流程、渲染方式、排除项的权威规范）；`THIRD_PARTY_LICENSES.md` 补第四节登记 Lucide（ISC）与 morphicons（MIT）随包分发，许可原文分别内嵌于 `icons.js` 与 `vendor.morphicons.js` 文件头。
+
 ### 未发版变更：长线文档与团队技能对齐现行基线 📄
 
 - **性质：** 未发版变更（纯文档：`AGENTS.md`、`README.md`、`skills/`；master 直接提交、不 tag）
