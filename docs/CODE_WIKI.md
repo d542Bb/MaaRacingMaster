@@ -150,10 +150,13 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │   │       ├── MainWindow.xaml(.cs)          # 窗口 + sidecar 生命周期 + 消息转发
 │   │       ├── PythonSidecar.cs              # JSONL transport 契约实现
 │   │       ├── App.xaml(.cs)                 # 应用入口（DISABLE_XAML_GENERATED_MAIN）
-│   │       └── frontend/                     # HTML 前端（三 Tab：控制/调试/关于）
+│   │       └── frontend/                     # HTML 前端（四 Tab：主控/数据/设置/关于，规范见其 README.md）
 │   │           ├── index.html                # 页面结构 + 元素 id
 │   │           ├── style.css                 # 纯 CSS 样式（无 CDN）
-│   │           └── app.js                    # mra.call RPC + 页面交互逻辑
+│   │           ├── app.js                    # mra.call RPC + 页面交互逻辑
+│   │           ├── icons.js                  # 图标真源（Lucide v1.45.0 数据，MRAIcons）
+│   │           ├── vendor.morphicons.js      # morphicons v1.7.1 vendor 摊平（图标变形动画）
+│   │           └── README.md                 # 前端与图标规范权威文档
 │   └── MaaRacingMaster.Launcher/                         # C 启动器（提权 + 定位 shell）
 │
 ├── tools/                                    # 开发工具脚本（按用途分组）
@@ -277,11 +280,14 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 **前端文件**（[frontend/](file:///d:/maaracing_assistant/apps/MaaRacingMaster.Shell/frontend)）：
 
-| 文件           | 职责                                         |
-| ------------ | ------------------------------------------ |
-| `index.html` | 三 Tab 页面结构（控制面板/调试/关于），所有 UI 元素 id 在此定义    |
-| `style.css`  | 纯 CSS 设计 token + 组件样式（无 CDN，WebView2 离线可用） |
-| `app.js`     | 通信层 + Tab 切换 + 日志轮询 + 调试页开关/截图方式交互         |
+| 文件                      | 职责                                                         |
+| ----------------------- | ---------------------------------------------------------- |
+| `index.html`            | 四 Tab 页面结构（主控/数据/设置/关于），所有 UI 元素 id 在此定义                     |
+| `style.css`             | 纯 CSS 设计 token + 组件样式（无 CDN，WebView2 离线可用）                  |
+| `app.js`                | 通信层 + Tab 切换 + 日志轮询 + 数据/设置页交互                              |
+| `icons.js`              | 图标唯一真源（`MRAIcons`，Lucide v1.45.0 数据；规范见 `README.md`）         |
+| `vendor.morphicons.js`  | morphicons v1.7.1 vendor 摊平版（图标变形动画，MIT 原文内嵌文件头）             |
+| `README.md`             | 前端与图标规范权威文档（新增图标流程、morph 用法、file:// 约束）                     |
 
 **窗口细节**：自定义标题栏 52px（进入 drag rect，右侧留 140px 给系统按钮）、最小尺寸 1000×700、系统按钮失焦配色、icon.ico。
 
@@ -507,9 +513,10 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | `PythonSidecar.cs`    | JSONL transport：stdin 串行写 + 唯一 stdout reader + pending 匹配 + 超时/Kill 树    |
 | `App.xaml.cs`         | 应用入口（DISABLE\_XAML\_GENERATED\_MAIN），UAC 提权环境变量注入                        |
 | `sidecar.py`          | Python 侧 RPC handler（get\_initial\_state / start / stop / set\_peep ...） |
-| `frontend/app.js`     | 前端逻辑：`mra.call()` 通信 + 三 Tab 切换 + 日志/状态轮询                                |
+| `frontend/app.js`     | 前端逻辑：`mra.call()` 通信 + 四 Tab 切换 + 日志/状态轮询                                |
 | `frontend/index.html` | 页面结构，所有 UI 元素 id（改 UI 先改这里）                                              |
 | `frontend/style.css`  | 设计 token + 组件样式                                                          |
+| `frontend/icons.js`   | 图标唯一真源（Lucide 数据 / `MRAIcons`），规范见 `frontend/README.md`                    |
 
 ### 5.6 debug.NavigationDebugger
 
