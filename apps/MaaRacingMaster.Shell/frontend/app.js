@@ -43,6 +43,8 @@
 
   // 静态 HTML 的 <i data-icon> 占位替换为真源 SVG（icons.js 先于本文件加载）
   MRAIcons.hydrate(document);
+  // 注册 <morph-icon> 自定义元素（vendor.morphicons.js 先于本文件加载；幂等）
+  if (window.MorphIcons) MorphIcons.defineMorphIcon();
 
   // ---------- 工具 ----------
   const $ = (id) => document.getElementById(id);
@@ -1619,10 +1621,7 @@
                 ${MRAIcons.svg('media-pause', {class: 'icon-pause'})}
               </button>
               <button class="icon-btn" id="${mid}-btn-preview-max" title="放大">
-                ${MRAIcons.svg('scan')}
-              </button>
-              <button class="icon-btn" id="${mid}-btn-preview-min" title="还原" style="display:none;">
-                ${MRAIcons.svg('shrink')}
+                <morph-icon reduced-motion="user"></morph-icon>
               </button>
             </div>
           </div>
@@ -1922,11 +1921,14 @@
       });
     }
 
-    // 实时预览卡：播放/暂停（peep 开关）+ 放大/还原（全屏）
+    // 实时预览卡：播放/暂停（peep 开关）+ 放大/还原（morph-icon 弹簧变形，scan ↔ shrink）
     const previewToggle = p('btn-preview-toggle');
     const previewMax = p('btn-preview-max');
-    const previewMin = p('btn-preview-min');
     const previewCard = p('preview-card');
+    if (previewMax) {
+      const morphEl = previewMax.querySelector('morph-icon');
+      if (morphEl) morphEl.icon = MRAIcons.node('scan'); // mount 后首个 icon 直接绘制不动画
+    }
 
     if (previewToggle) {
       previewToggle.addEventListener('click', async () => {
@@ -1943,9 +1945,11 @@
       });
     }
 
-    if (previewCard && previewMax && previewMin) {
-      previewMax.addEventListener('click', () => { enterPreviewFullscreen(previewCard); });
-      previewMin.addEventListener('click', () => { exitPreviewFullscreen(previewCard); });
+    if (previewCard && previewMax) {
+      previewMax.addEventListener('click', () => {
+        if (previewCard.classList.contains('preview-card--fullscreen')) exitPreviewFullscreen(previewCard);
+        else enterPreviewFullscreen(previewCard);
+      });
     }
 
     // 点击方式：每个 .radio-grid 是一组单选，组内互斥、组间独立
@@ -2065,18 +2069,19 @@
     if (pageEl) pageEl.classList.toggle('preview-fs-active', active);
   }
 
-  // 放大态只保留「还原」，隐藏「放大」；还原后恢复
-  function setPreviewMaxVisible(visible) {
-    const maxBtn = $(currentModuleId + '-btn-preview-max');
-    const minBtn = $(currentModuleId + '-btn-preview-min');
-    if (maxBtn) maxBtn.style.display = visible ? '' : 'none';
-    if (minBtn) minBtn.style.display = visible ? 'none' : 'flex';
+  // 放大/还原共用一个按钮：morph-icon 在 scan ↔ shrink 间弹簧变形，title 同步切换
+  function setPreviewMaxState(fs) {
+    const btn = $(currentModuleId + '-btn-preview-max');
+    if (!btn) return;
+    const morphEl = btn.querySelector('morph-icon');
+    if (morphEl) morphEl.icon = MRAIcons.node(fs ? 'shrink' : 'scan');
+    btn.title = fs ? '还原' : '放大';
   }
 
   function enterPreviewFullscreen(card) {
     card.classList.add('preview-card--fullscreen');
     setPreviewFsActive(card, true);
-    setPreviewMaxVisible(false); // 放大态只剩「还原」
+    setPreviewMaxState(true); // 图标变形为「还原」
     _previewFsCard = card;
     fitPreviewCanvas();
     window.addEventListener('resize', onPreviewFsResize);
@@ -2089,7 +2094,7 @@
   function exitPreviewFullscreen(card) {
     card.classList.remove('preview-card--fullscreen');
     setPreviewFsActive(card, false);
-    setPreviewMaxVisible(true);  // 还原：恢复「放大」
+    setPreviewMaxState(false); // 图标变形回「放大」
     const canvas = card.querySelector('.preview-canvas');
     if (canvas) { canvas.style.width = ''; canvas.style.height = ''; } // 清除内联尺寸还原为 100%
     window.removeEventListener('resize', onPreviewFsResize);

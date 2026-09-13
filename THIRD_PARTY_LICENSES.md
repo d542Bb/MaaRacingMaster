@@ -58,4 +58,37 @@
 
 ---
 
+## 四、前端图标资源（随发布包再分发）
+
+以下组件的数据/代码随发布包内 `apps/MaaRacingMaster.Shell/frontend/` 一并分发。
+
+| 组件 | 许可证 | 归属与用途 |
+|---|---|---|
+| Lucide（图标 path 数据） | **ISC** | <https://lucide.dev> / <https://github.com/lucide-icons/lucide>；`icons.js` 的 `LUCIDE` 分区拷贝自 lucide v1.45.0 图标几何数据（`github` 为 lucide 1.x 移除品牌图标前 0.x 版本数据）。ISC 为宽松许可，义务仅为保留版权声明与本许可标识。 |
+| morphicons | **MIT** | <https://github.com/guillermolg00/morphicons>；`vendor.morphicons.js` 为 v1.7.1 上游 dist 的 ESM→经典脚本摊平版（未改函数体），用于图标变形动画。 |
+
+Lucide 许可原文（ISC）：
+
+```
+ISC License
+
+Copyright (c) Lucide Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+```
+
+morphicons 为 MIT 许可，许可原文随代码副本携带于 `frontend/vendor.morphicons.js` 文件头注释块。
+
+---
+
 _本声明不构成法律意见；有疑问请与上游组件方或专业律师确认。_

@@ -1,7 +1,20 @@
 // MaaRM shell 图标真源（唯一来源，规范见同目录 README.md）。
 // 数据格式：IconNode（Lucide 数据格式，[标签, 属性] 元组的数组），与 morphicons 直接兼容。
 // 分区一 `LUCIDE`：path 数据拷自 lucide v1.45.0（ISC 许可，声明见仓库 THIRD_PARTY_LICENSES.md），
-//   来源 https://lucide.dev ；升级版本时逐个重拷并以 `node tools/... 校验`（见 README）。
+//   来源 https://lucide.dev ；升级版本时逐个从 lucide 官方重拷（冒烟方法见同目录 README.md）。
+//   上游许可原文（ISC，随本代码副本携带；汇总声明见仓库 THIRD_PARTY_LICENSES.md 第四节）：
+//   ISC License
+//   Copyright (c) Lucide Contributors
+//   Permission to use, copy, modify, and/or distribute this software for any
+//   purpose with or without fee is hereby granted, provided that the above
+//   copyright notice and this permission notice appear in all copies.
+//   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+//   WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+//   MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+//   ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+//   WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+//   ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+//   OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 // 分区二 `CUSTOM`：lucide 没有或不适用的图标 —— github 为 lucide 0.x 时代的品牌图标
 //   （lucide 1.x 已移除品牌图标），media-* 为实心媒体控件惯例画法（lucide 仅提供描边版），
 //   实心图标不参与 morph 变形动画。
