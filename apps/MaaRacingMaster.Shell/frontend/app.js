@@ -48,7 +48,11 @@
     selected_index: -1,
     is_running: false,
     _lastRunState: false,
-    peepEnabled: false
+    peepEnabled: false,
+    // 性能卡走势图环形缓冲：250ms 轮询 × 120 点 ≈ 近 30 秒。快照里的数值本身
+    // 已是滑窗 p50，曲线看的是"什么时候开始变差"，不是逐帧抖动。
+    perfHist: { fps: [], load: [] },
+    PERF_HIST_MAX: 120
   };
 
   function showError(msg) {
@@ -1074,6 +1078,91 @@
       setStatus('系统就绪', 'ready');
       if (perfStage) perfStage.textContent = '空闲中';
     }
+    renderPerfCard(d.perf);
+  }
+
+  // ---------- 鉴宝性能卡渲染 ----------
+  // 三态的样式与"给用户看的词"放前端（纯呈现）；语义诊断文案来自后端 health.text。
+  const PERF_LEVEL_CLASS = {
+    ok: 'perf-badge--ok', warn: 'perf-badge--warn',
+    error: 'perf-badge--error', idle: 'perf-badge--idle'
+  };
+  const PERF_RESP_LABEL = { ok: '流畅', warn: '偏慢', error: '卡顿', idle: '空闲' };
+  const PERF_LOAD_LABEL = { ok: '正常', warn: '偏高', error: '过载', idle: '空闲' };
+  const PERF_HEALTH_LABEL = { ok: '正常', warn: '偏慢', error: '读不到', idle: '空闲' };
+
+  function setPerfText(id, text) {
+    const el = $(id);
+    if (el) el.textContent = text;   // textContent：后端文案不进 HTML 通道
+  }
+
+  function setPerfBadge(id, level, label) {
+    const el = $(id);
+    if (!el) return;
+    el.className = 'perf-badge ' + (PERF_LEVEL_CLASS[level] || PERF_LEVEL_CLASS.idle);
+    el.textContent = '';
+    const dot = document.createElement('span');
+    dot.className = 'perf-badge-dot';
+    el.appendChild(dot);
+    el.appendChild(document.createTextNode(label || ''));
+  }
+
+  function pushPerfHist(key, value) {
+    const h = state.perfHist[key];
+    if (!h || !Number.isFinite(value)) return;
+    h.push(value);
+    if (h.length > state.PERF_HIST_MAX) h.shift();
+  }
+
+  function drawSpark(id, hist, ceiling) {
+    const svg = $(id);
+    if (!svg) return;
+    if (hist.length < 2) { svg.textContent = ''; return; }
+    const top = Math.max(ceiling, hist.reduce((a, b) => (b > a ? b : a), 0));
+    let pts = '';
+    for (let i = 0; i < hist.length; i++) {
+      const x = (i / (hist.length - 1)) * 100;
+      const y = 21 - Math.min(1, hist[i] / top) * 20;
+      pts += x.toFixed(2) + ',' + y.toFixed(2) + ' ';
+    }
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    line.setAttribute('points', pts.trim());
+    svg.textContent = '';
+    svg.appendChild(line);
+  }
+
+  function renderPerfCard(perf) {
+    const mid = currentModuleId;
+    const r = (perf && perf.response) || {};
+    const c = (perf && perf.cpu) || {};
+    const h = (perf && perf.health) || {};
+
+    const fps = Number(r.fps) || 0;
+    const respLevel = perf ? (r.level || 'idle') : 'idle';
+    setPerfText(mid + '-perf-fps', fps > 0 ? fps.toFixed(1) + ' 次/秒' : '-- 次/秒');
+    setPerfBadge(mid + '-perf-fps-badge', respLevel, PERF_RESP_LABEL[respLevel] || '空闲');
+    setPerfText(mid + '-perf-fps-note', respLevel === 'warn' || respLevel === 'error'
+      ? '反应变慢：关掉调试落盘，或降低游戏画质后再看'
+      : '程序每秒查看游戏画面的次数，越高越跟手');
+    pushPerfHist('fps', fps);
+    drawSpark(mid + '-perf-fps-spark', state.perfHist.fps, 10);
+
+    const loadLevel = perf && c.available ? (c.level || 'idle') : 'idle';
+    if (perf && c.available) {
+      setPerfText(mid + '-perf-cpu', Math.round((c.load_p50 || 0) * 100) + '%');
+      setPerfText(mid + '-perf-cpu-note',
+        '本机 ' + (c.cores || '?') + ' 核 · 偏高时关闭其它程序，或在设置里关掉调试落盘');
+    } else {
+      setPerfText(mid + '-perf-cpu', '--');
+      setPerfText(mid + '-perf-cpu-note', '偏高时关闭其它程序，或在设置里关掉调试落盘');
+    }
+    setPerfBadge(mid + '-perf-cpu-badge', loadLevel, PERF_LOAD_LABEL[loadLevel] || '空闲');
+    pushPerfHist('load', perf && c.available ? (c.load_p50 || 0) : NaN);
+    drawSpark(mid + '-perf-cpu-spark', state.perfHist.load, 1);
+
+    const healthLevel = h.level || 'idle';
+    setPerfBadge(mid + '-perf-health-badge', healthLevel, PERF_HEALTH_LABEL[healthLevel] || '空闲');
+    setPerfText(mid + '-perf-health-note', h.text || '等待识别');
   }
 
   async function pollLogs() {
@@ -1415,10 +1504,10 @@
     setTimeout(pollPeepFrame, active ? 100 : 400); // 激活时 ~10fps，空闲降频省资源
   }
 
-  function defaultDataCards(mid) {
+  // 默认（竞速形状）性能卡：YOLO 推理 / 截图耗时 / 当前阶段。
+  // 鉴宝不用这套——它没有 YOLO，模板见 treasurePerfCard。
+  function perfCardLegacy(mid) {
     return `
-      <div class="col-left">
-        <!-- 性能监控 -->
         <div class="card card-flex">
           <div class="card-head"><h3>性能监控</h3></div>
           <div class="card-body" style="flex:1;display:flex;flex-direction:column;justify-content:space-around;min-height:0;">
@@ -1462,7 +1551,56 @@
               </div>
             </div>
           </div>
-        </div>
+        </div>`;
+  }
+
+  // 鉴宝性能卡：只放「看得懂 + 看完能行动」的三项，诊断细节一律留在日志。
+  // 走势图取近 30 秒（250ms 轮询 × 120 点）；数值本身已是滑窗 p50，曲线看的是趋势。
+  function treasurePerfCard(mid) {
+    return `
+        <div class="card card-flex">
+          <div class="card-head"><h3>性能监控</h3></div>
+          <div class="card-body" style="flex:1;display:flex;flex-direction:column;justify-content:space-around;min-height:0;">
+            <div class="perf-item">
+              <div class="perf-head">
+                <span class="perf-label">画面响应</span>
+                <div class="perf-right">
+                  <span class="perf-value" id="${mid}-perf-fps">-- 次/秒</span>
+                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-fps-badge"><span class="perf-badge-dot"></span>空闲</span>
+                </div>
+              </div>
+              <svg class="perf-spark" id="${mid}-perf-fps-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <p class="perf-note" id="${mid}-perf-fps-note">启动后显示程序每秒查看画面的次数</p>
+            </div>
+            <div class="perf-item">
+              <div class="perf-head">
+                <span class="perf-label">机器负载</span>
+                <div class="perf-right">
+                  <span class="perf-value" id="${mid}-perf-cpu">--</span>
+                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-cpu-badge"><span class="perf-badge-dot"></span>空闲</span>
+                </div>
+              </div>
+              <svg class="perf-spark" id="${mid}-perf-cpu-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <p class="perf-note" id="${mid}-perf-cpu-note">偏高时关闭其它程序，或在设置里关掉调试落盘</p>
+            </div>
+            <div class="perf-item">
+              <div class="perf-head">
+                <span class="perf-label">识别健康</span>
+                <div class="perf-right">
+                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-health-badge"><span class="perf-badge-dot"></span>空闲</span>
+                </div>
+              </div>
+              <p class="perf-note" id="${mid}-perf-health-note">等待识别</p>
+            </div>
+          </div>
+        </div>`;
+  }
+
+  function defaultDataCards(mid, perfCardHtml) {
+    return `
+      <div class="col-left">
+        <!-- 性能监控 -->
+        ${perfCardHtml || perfCardLegacy(mid)}
       </div>
 
       <div class="col-right">
@@ -1641,10 +1779,14 @@
       </div>`;
   }
 
-  // 模块 → 页面模板注册表。当前模块均共用默认模板；
-  // 以后给某模块定制时，把对应 data/settings 换成专属模板函数即可。
+  // 模块 → 页面模板注册表。未定制的模块共用默认模板；
+  // 鉴宝的数据页只换性能卡（其余两栏同构），故把卡片 HTML 作参数传入。
+  function treasureDataCards(mid) {
+    return defaultDataCards(mid, treasurePerfCard(mid));
+  }
+
   const MODULE_PAGE_DEFS = {
-    treasure: { data: defaultDataCards, settings: defaultSettingsCards },
+    treasure: { data: treasureDataCards, settings: defaultSettingsCards },
   };
 
   // 按模块渲染「数据/设置」页并绑定当前模块的控件事件

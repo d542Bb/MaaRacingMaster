@@ -462,6 +462,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .perf-badge--ok .perf-badge-dot { background: var(--mra-success); }
 .perf-badge--idle { color: var(--mra-foreground-dim); }
 .perf-badge--idle .perf-badge-dot { background: var(--mra-foreground-dim); }
+.perf-badge--warn { color: var(--mra-warning); }
+.perf-badge--warn .perf-badge-dot { background: var(--mra-warning); }
+.perf-badge--error { color: var(--mra-danger); }
+.perf-badge--error .perf-badge-dot { background: var(--mra-danger); }
+/* 性能卡迷你走势图：纯内联 SVG polyline，无 CDN（WebView2 离线可用） */
+.perf-spark { display: block; width: 100%; height: 22px; margin: 2px 0 4px; }
+.perf-spark polyline { fill: none; stroke: var(--mra-foreground-muted); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
 .mra-perf-bar { height: 4px; border-radius: 2px; background-color: var(--mra-border-light); overflow: hidden; }
 .mra-perf-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
 .mra-perf-bar-fill--success { background-color: var(--mra-success); }
