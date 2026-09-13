@@ -29,8 +29,9 @@ from maa.tasker import Tasker
 from maaracing_master.core.nav_graph import (
     RECOGNIZER_NAME, ACTION_NAME, TemplateRecognizer)
 
-SHOT = Path(r"c:\Users\yomen\.trae-cn\attachments\6aa39734a75a5d5831ba9350"
-            "/9901a958-8a56-4a59-8a3d-8ee182ce71b8_4564eb83-1564-42bd-9a7c-fa296ea2fca0_image.png")
+# 截图来源：命令行第 1 个参数，或本目录 fixtures/hall_shot.png
+SHOT = (Path(sys.argv[1]) if len(sys.argv) > 1
+        else Path(__file__).resolve().parent / "fixtures" / "hall_shot.png")
 TPL_DIR = REPO / "maaracing_master" / "plugins" / "treasure" / "resources" / "image"
 NODE_JSON = REPO / "maaracing_master" / "plugins" / "treasure" / "resources" / "pipeline" / "treasure.entry.json"
 NODE_NAME = "treasure.hall_peak_appraise_card"

@@ -35,7 +35,7 @@ def test_graph_clean_and_shaped(truth):
     assert errors == []
     assert warns == []
     dwell = [n for n, d in full.items() if ct.att(d).get("_dwell")]
-    assert len(dwell) == 13
+    assert len(dwell) == 15
     assert sum(1 for d in full.values() if ct.att(d).get("_boot")) == 1
     assert sum(1 for d in full.values() if ct.att(d).get("_policy_loop")) == 1
     # chain=4：仅导航 route 链（hall_to_treasure 3 节点+confirm）；session_to_matching
@@ -45,7 +45,9 @@ def test_graph_clean_and_shaped(truth):
     # 可导航锚点仅 goto_appraise_btn / hall_peak_appraise_card
     assert {"treasure.goto_appraise_btn", "treasure.hall_peak_appraise_card"} \
         <= set(full)
-    assert len(full) == 21
+    # 27 = 原 21 + 待机链 3（聊天框 anchor / dwell / wake）
+    #       + 控制器弹窗链 3（面板 anchor / dwell / close）
+    assert len(full) == 27
     assert sorted(n for n, d in full.items() if ct.att(d).get("_entry")) == [
         "treasure.__boot.dwell",
         "treasure.hall_peak_appraise_card.rhall_to_treasure.0"]
@@ -60,8 +62,9 @@ def test_graph_clean_and_shaped(truth):
 
 
 def test_policy_loop_wired_into_every_dwell(truth):
-    """单脑原则：局内/流程 dwell 挂 policy_loop 兜底；大厅二阶段不挂
-    （导航归图锚点，决策脑不得在厅类阶段图外点击——真机五炸定案）。"""
+    """单脑原则：局内/流程 dwell 挂 policy_loop 兜底；厅类页面/障碍态不挂
+    （导航归图锚点，决策脑不得在厅类阶段图外点击——真机五炸定案；待机与控制器
+    弹窗同属厅类，next 已是确定动作，无需也不得挂决策段）。"""
     full, _ = truth
     loop = full["treasure.policy_loop"]
     act = loop["action"]
@@ -69,8 +72,9 @@ def test_policy_loop_wired_into_every_dwell(truth):
     assert act["param"]["custom_action_param"]["table"] == "treasure.policy.json#policy"
     assert loop["next"] == [] and loop["timeout"] == -1
     dwells = [n for n, d in full.items() if ct.att(d).get("_dwell")]
-    assert len(dwells) == 13
-    hall = {"treasure.游戏大厅.dwell", "treasure.活动页面.dwell"}
+    assert len(dwells) == 15
+    hall = {"treasure.游戏大厅.dwell", "treasure.活动页面.dwell",
+            "treasure.待机.dwell", "treasure.控制器指引弹窗.dwell"}
     # 鉴宝大厅(选择场次)挂 policy_loop：场次选择是动态决策（target_session+
     # 彩蛋计算），生态无法静态表达——MaaRM_Policy 本职（真机七炸定案）。
     for n in dwells:
@@ -405,6 +409,46 @@ def test_anchor_ref_inside_and_or_is_error():
             "借锚": {"recognition": {"type": "Or", "param": {"any_of": ["[Anchor]回"]}}}}
     errors, _ = ct.validate_graph(fake)
     assert any("And/Or 子项悬空引用" in e and "[Anchor]" in e for e in errors), errors
+
+
+def test_builtin_input_action_is_error():
+    """内置输入 action 打在我们的占位控制器上=假成功，v1/v2 两形态都要拦。"""
+    errors = ct.action_checks({
+        "点一下": {"action": "Click"},
+        "按键": {"action": {"type": "ClickKey", "param": {"key_list": [27]}}},
+    })
+    assert len(errors) == 2, errors
+    assert all("假成功" in e for e in errors), errors
+    # Custom 与无副作用的内置类型不受影响
+    assert ct.action_checks({"正常": {"action": {"type": "Custom", "param": {}}},
+                             "停手": {"action": "StopTask"},
+                             "什么都不做": {}}) == []
+
+
+def test_anchor_only_needs_no_route_but_needs_a_referrer():
+    """纯锚点：零路由不报「不可达/无出口」，但没人抄它就是孤儿真源。"""
+    anchored = {"入口": {"attach": {"_entry": True}, "next": ["公共.聊天框"]},
+                "公共.聊天框": {"attach": {"_anchor_only": True},
+                                 "recognition": "DirectHit"}}
+    errors, warns = ct.validate_graph(anchored)
+    assert errors == [], errors
+    assert warns == [], warns
+
+    orphan = {"入口": {"attach": {"_entry": True}, "next": ["尾"]},
+              "尾": {"attach": {"_dwell": True}},
+              "公共.聊天框": {"attach": {"_anchor_only": True}, "recognition": "DirectHit"}}
+    errors, _ = ct.validate_graph(orphan)
+    assert any("孤儿真源" in e for e in errors), errors
+
+
+def test_anchor_only_must_stay_route_free():
+    """纯锚点带 next 就不是纯锚点了——搬进通用层时会点名业务层，当场拦。"""
+    fake = {"入口": {"attach": {"_entry": True}, "next": ["公共.聊天框"]},
+            "公共.聊天框": {"attach": {"_anchor_only": True},
+                             "recognition": "DirectHit", "next": ["尾"]},
+            "尾": {"attach": {"_dwell": True}}}
+    errors, _ = ct.validate_graph(fake)
+    assert any("纯锚点必须零路由" in e for e in errors), errors
 
 
 def test_layering_red_line_covers_every_reference_slot():

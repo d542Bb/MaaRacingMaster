@@ -297,3 +297,4 @@ MaaRacingMaster/
 > 其权重单独沿用 AGPL-3.0；运行时依赖各自保留其许可证
 > （含 LGPL-3.0 的 MaaFramework）。详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md)。
 
+<br />

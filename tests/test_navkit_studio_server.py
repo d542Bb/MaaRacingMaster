@@ -47,9 +47,10 @@ class TestProjection:
         assert len(proj["ocr"]) == 18
 
     def test_nodes_and_tuning_counts(self, proj):
-        """nodes = pipeline 两文件逐处 rect（25 处：起跑汇聚识别改按名引用后不再持有
-        rect，原 36 减去 boot 的 11 处）；tuning = 第 54 个 rect。"""
-        assert len(proj["nodes"]) == 25
+        """nodes = pipeline 两文件逐处 rect（28 处：起跑汇聚识别改按名引用后不再持有
+        rect，原 36 减去 boot 的 11 处，再加待机/控制器弹窗链的 3 处图侧独有 rect）；
+        tuning = 第 54 个 rect。"""
+        assert len(proj["nodes"]) == 28
         assert len(proj["tuning"]) == 1
         assert "appraiser_search_roi" in proj["tuning"]
 
@@ -86,7 +87,8 @@ class TestProjection:
         """
         cs = [v.get("colorspace") for v in proj["nodes"].values()]
         assert set(cs) <= {None, "gray", "rgb"}, cs
-        assert sum(1 for c in cs if c == "gray") == 6   # 5 处回合横幅 + 1 处胜负横幅
+        assert sum(1 for c in cs if c == "gray") == 9   # 5 回合横幅 + 1 胜负横幅
+        # + 3 处图侧独有规格（待机聊天框、控制器弹窗面板与 X）
         gray = {k for k, v in proj["template"].items() if v.get("colorspace") == "gray"}
         assert gray == {
             "appraiser_p1_caroline", "appraiser_p2_shotaro", "appraiser_selected_check",
@@ -115,8 +117,16 @@ class TestMirrorAnchors:
         assert len(s.MIRROR_ANCHORS) == 11
 
     def test_every_node_has_mirror(self, proj):
-        """当前 pipeline 全部 36 处 rect 都是 11 个镜像锚点之一的副本。"""
-        assert all(item["mirrors"] in s.MIRROR_ANCHORS for item in proj["nodes"].values())
+        """每处 rect 要么是镜像锚点的副本，要么显式声明了 _graph_only。
+
+        _graph_only = 只在图侧跑的识别规格（页面/障碍态判据），检测面本就没有对应物，
+        无从镜像；豁免靠声明，不靠"恰好查无同值 rect"。
+        """
+        graph_only = {n for doc in s.read_pipelines().values()
+                      for n, d in doc.items()
+                      if isinstance(d, dict) and (d.get("attach") or {}).get("_graph_only")}
+        assert all(item["mirrors"] in s.MIRROR_ANCHORS or item["node"] in graph_only
+                   for item in proj["nodes"].values())
 
     def test_mirror_lookup_uses_whitelist(self):
         """白名单外的同值锚点不算镜像（防偶然同值被误当联动对象）。"""
@@ -217,7 +227,7 @@ class TestRoutes:
         st, _, body = _get(live + "/api/rois")
         assert st == 200
         data = json.loads(body)
-        assert len(data["nodes"]) == 25 and len(data["tuning"]) == 1
+        assert len(data["nodes"]) == 28 and len(data["tuning"]) == 1
 
     def test_image_api_rejects_bad_session(self, live):
         st, _, _ = _get(live + "/api/image?session=../x&name=0001_raw.png")

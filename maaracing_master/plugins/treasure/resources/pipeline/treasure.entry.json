@@ -320,6 +320,165 @@
             }
         }
     },
+    "treasure.大厅聊天框.anchor": {
+        "attach": {
+            "_anchor_only": true,
+            "_graph_only": true,
+            "_label": "聊天框停在左端＝底部左角图标组消失（纯识别规格，零路由，可整块搬入通用层）"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "colorspace": "gray",
+                    "mode": "template",
+                    "rect": [
+                        0.0453125,
+                        0.8222222,
+                        0.1390625,
+                        0.9055556
+                    ],
+                    "templates": [
+                        "hall_chat_left.png"
+                    ]
+                }
+            }
+        }
+    },
+    "treasure.控制器指引弹窗.anchor": {
+        "attach": {
+            "_anchor_only": true,
+            "_graph_only": true,
+            "_label": "控制器指引弹窗面板（纯识别规格，零路由）——弹窗把背景整片高斯模糊，只取清晰前景"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "colorspace": "gray",
+                    "mode": "template",
+                    "rect": [
+                        0.234375,
+                        0.25,
+                        0.78125,
+                        0.75
+                    ],
+                    "templates": [
+                        "hall_controller_popup.png"
+                    ]
+                }
+            }
+        }
+    },
+    "treasure.控制器指引弹窗.dwell": {
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "treasure.控制器指引弹窗.anchor"
+                ]
+            }
+        },
+        "rate_limit": 600,
+        "attach": {
+            "_dwell": true,
+            "_page": "hall",
+            "_stage": "控制器指引弹窗",
+            "_label": "手柄操作指引弹窗（只在大厅弹、每次启动一次）——必须排在大厅之前：背景虽糊，鉴宝卡片仍以 0.86 命中"
+        },
+        "next": [
+            "treasure.控制器指引弹窗.close"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ]
+    },
+    "treasure.控制器指引弹窗.close": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "colorspace": "gray",
+                    "mode": "template",
+                    "rect": [
+                        0.6328125,
+                        0.2458333,
+                        0.7890625,
+                        0.4680556
+                    ],
+                    "templates": [
+                        "hall_popup_close_x.png"
+                    ]
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "attach": {
+            "_graph_only": true,
+            "_label": "关闭控制器指引弹窗（点面板右上 X）"
+        },
+        "next": [
+            "treasure.__boot.dwell"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ]
+    },
+    "treasure.待机.dwell": {
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "treasure.大厅聊天框.anchor"
+                ]
+            }
+        },
+        "rate_limit": 600,
+        "attach": {
+            "_dwell": true,
+            "_page": "hall",
+            "_stage": "待机",
+            "_label": "大厅待机（挂机后 UI 收起、展车轮播；聊天框左移 168px 是唯一稳定证据）"
+        },
+        "next": [
+            "treasure.待机.wake"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ]
+    },
+    "treasure.待机.wake": {
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Input",
+                "custom_action_param": {
+                    "point": [
+                        0.0,
+                        0.0
+                    ],
+                    "wait_after_ms": 1500
+                }
+            }
+        },
+        "attach": {
+            "_label": "点左上角空白唤醒大厅（wait_after_ms 消化「待机→大厅一闪→弹窗」的过渡帧）"
+        },
+        "next": [
+            "treasure.__boot.dwell"
+        ],
+        "on_error": [
+            "treasure.__boot.dwell"
+        ]
+    },
     "$__mpe_external_treasure.__boot.dwell_treasure.entry": {
         "$__mpe_code": {
             "position": {

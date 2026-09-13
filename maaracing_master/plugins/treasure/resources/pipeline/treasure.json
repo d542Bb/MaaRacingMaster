@@ -17,12 +17,14 @@
             "treasure.第3回合出价.dwell",
             "treasure.第4回合出价.dwell",
             "treasure.第5回合出价.dwell",
+            "treasure.控制器指引弹窗.dwell",
             "treasure.游戏大厅.dwell",
             "treasure.活动页面.dwell",
             "treasure.匹配中.dwell",
             "treasure.中标结算.dwell",
             "treasure.领取分红.dwell",
-            "treasure.结算弹窗.dwell"
+            "treasure.结算弹窗.dwell",
+            "treasure.待机.dwell"
         ],
         "rate_limit": 600,
         "recognition": {
@@ -36,7 +38,9 @@
                     "treasure.第1回合出价.dwell",
                     "treasure.中标结算.dwell",
                     "treasure.领取分红.dwell",
-                    "treasure.结算弹窗.dwell"
+                    "treasure.结算弹窗.dwell",
+                    "treasure.控制器指引弹窗.dwell",
+                    "treasure.待机.dwell"
                 ]
             },
             "type": "Or"

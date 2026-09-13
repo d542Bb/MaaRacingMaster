@@ -18,6 +18,10 @@
    节点名——协议层节点名全城唯一（无命名空间），"core/plugin 分离"只能靠
    引用方向单向守住，不靠文件摆放位置。"引用"的口径 = 节点里一切按名字指人的
    位置（next/on_error + And/Or 子项 + anchor 对象 value），只堵 next 会留后门。
+6. 输入通道（校验器第 8 条）：真源不得用框架内置输入 action（Click/Swipe/Key…）——
+   v4 控制器的输入接口全是成功占位，内置 action 会假成功而屏幕上什么都不发生。
+7. 纯锚点形态（attach._anchor_only）：豁免「入口不可达」「无出口节点」两条 WARN，
+   但必须零路由且被至少一处引用，否则判孤儿真源。
 
 用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
 """
@@ -212,6 +216,46 @@ def custom_reco_params(node: dict) -> list[dict]:
     return [p for _name, p in custom_recognitions(node)]
 
 
+# 框架内置的**输入类** action：一律不得出现在真源里。
+# 依据（一手）：① .venv/Lib/site-packages/maa/define.py 的 ActionEnum（MaaFW 5.12.3
+# 实际绑定的动作全集）；② core/nav_graph.py WgcapController——v4 的 Tasker 绑的是它
+# （宪法 6：帧只从中心缓存来），而它的 click/swipe/touch_*/click_key/input_text/
+# key_down/key_up/start_app/stop_app **全部是 `return True` 占位**，真实输入一律走
+# MaaRM_Click / MaaRM_Input → Clicker（platform 层）。
+# 后果：写了内置输入 action 的节点会**假成功**——框架报执行成功、日志干净、屏幕上
+# 一个输入都没发生。这是最难查的一类故障，所以在这里硬拦。
+BANNED_BUILTIN_ACTIONS = frozenset({
+    "Click", "LongPress", "Swipe", "MultiSwipe", "ClickKey", "LongPressKey",
+    "InputText", "Scroll", "TouchDown", "TouchMove", "TouchUp",
+    "KeyDown", "KeyUp", "StartApp", "StopApp",
+})
+
+
+def action_type(node: dict) -> str | None:
+    """节点 action 的类型名；兼容 v1 字符串（`"action": "Click"`）与
+    v2 对象（`"action": {"type": "Custom", "param": {...}}`）两种形态。"""
+    a = node.get("action")
+    if isinstance(a, str):
+        return a
+    if isinstance(a, dict):
+        t = a.get("type")
+        return t if isinstance(t, str) else None
+    return None
+
+
+def action_checks(full: dict) -> list[str]:
+    """校验器第 8 条：真源里的 action 只能是 Custom（或无副作用的内置类型）。"""
+    problems: list[str] = []
+    for name, n in full.items():
+        t = action_type(n)
+        if t in BANNED_BUILTIN_ACTIONS:
+            problems.append(
+                f"{name}: action={t} 是框架内置输入动作，但 v4 的控制器输入接口全部"
+                f"占位返回成功（WgcapController）——节点会假成功而屏幕上什么都不发生"
+                f"→ 改用 MaaRM_Click（点识别框中心）或 MaaRM_Input（固定坐标/手柄按键）")
+    return problems
+
+
 def validate_graph(full: dict) -> tuple[list[str], list[str]]:
     """校验器 1/5 条（引用闭合、死胡同/不可达）+ 第 6 条（疑似重复识别）。
 
@@ -253,11 +297,29 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
             name = ref_name(r)
             if name:
                 dq.append(name)
-    unreachable = sorted(set(full) - seen)
+    # 纯锚点节点（attach._anchor_only）= 只被引用的识别规格容器，自身不参与路由。
+    # 「沿 next 可达」和「有出口」两条对它没有意义，故豁免；取而代之硬要求它**必须
+    # 被引用到**——纯锚点的全部存在理由就是被人抄进墙上清单，没人引用就是孤儿真源
+    # （历史上那张 hall_race_btn.png 就是这么躺着的）。
+    anchors = {n for n, d in full.items() if att(d).get("_anchor_only")}
+    unreachable = sorted(set(full) - seen - anchors)
     for u in unreachable:
         problems.append(f"WARN 入口不可达: {u}")
+    referenced: set[str] = set()
+    for name, n in full.items():
+        referenced.update(all_name_refs(n))
+    for name in sorted(anchors):
+        n = full[name]
+        if n.get("next") or n.get("on_error"):
+            problems.append(f"{name}: 标了 attach._anchor_only 却带 next/on_error —— "
+                            f"纯锚点必须零路由，否则搬进通用层时会点名业务层")
+        if name not in referenced:
+            problems.append(f"{name}: attach._anchor_only 但无任何节点引用它 —— "
+                            f"纯锚点没人抄就是孤儿真源")
     for name, n in full.items():
         a = att(n)
+        if a.get("_anchor_only"):
+            continue
         if (not n.get("next") and not n.get("on_error")
                 and not a.get("_dwell") and not a.get("_policy_loop")):
             problems.append(f"WARN 无出口节点: {name}")
@@ -346,6 +408,10 @@ def anchor_face_checks(graph: dict, policy: dict) -> tuple[list[str], list[str]]
     图侧有、spec 查无此模板集 → error（从此无从比对，等于新开一条无闸规格）。
     colorspace 的口径 2026-09-11 从告警升为拦：定案「默认 gray，灰度拉不开差距才转
     rgb」，盘上两处不一致（round_big_banner、result_banner）已按此统一，两面零分叉。
+
+    例外：attach._graph_only 的节点声明「这条识别规格只在图侧跑、检测面没有对应物」，
+    不参与比对。页面/障碍态判据（待机聊天框、控制器弹窗前景）属于此类——它们进检测面
+    反而会被阶段裁剪与优先级抢判。豁免靠显式声明，不靠模板恰好查无。
     """
     spec = policy["perception"]["spec"]
     by_tpl: dict[frozenset, list[str]] = {}
@@ -356,6 +422,8 @@ def anchor_face_checks(graph: dict, policy: dict) -> tuple[list[str], list[str]]
 
     graph_face: dict[frozenset, list[tuple[str, dict]]] = {}
     for n_name, node in sorted(graph.items()):
+        if att(node).get("_graph_only"):
+            continue
         for _cn, p in custom_recognitions(node):
             tpls = p.get("templates")
             if isinstance(tpls, list) and tpls:
@@ -417,6 +485,7 @@ def rect_checks(graph: dict, policy: dict) -> list[str]:
 def main() -> int:
     graph, origin = load_graph()
     errors, warns = validate_graph(graph)
+    errors += action_checks(graph)
     errors += namespace_checks(graph, origin)
     policy_doc = None
     try:
