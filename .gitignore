@@ -33,9 +33,21 @@ debug.txt
 .idea/
 *.swp
 
-# 本机 harness 配置（不同步到远端；.trae/ 下已跟踪的旧文件用 git rm --cached 移出）
+# 本机 harness 配置（各 coding agent 在工作区落盘的目录/文件，不同步到远端；
+# .trae/ 下已跟踪的旧文件用 git rm --cached 移出。共享规则文件 AGENTS.md 不在此列，始终入库）
+.zcode/
+.workbuddy-ai/
 .trae/
+.trae-cn/
 .claude/
+.cursor/
+.windsurf/
+.codeium/
+.qoder/
+.gemini/
+.continue/
+.junie/
+.aider*
 
 # AI 生成的 plan 文档（过程产物，不入库；归档后移 archive/）
 docs/plan/
