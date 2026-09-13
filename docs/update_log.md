@@ -7,6 +7,16 @@
 
 ## 2026-09-13
 
+### 未发版变更：长线文档与团队技能对齐现行基线 📄
+
+- **性质：** 未发版变更（纯文档：`AGENTS.md`、`README.md`、`skills/`；master 直接提交、不 tag）
+
+- **守则与 README 对齐现行名称与打包布局：** 守则标题与角色设定使用 `MaaRacingMaster`；README「下载即用包」与「使用说明」指向发行包根目录唯一入口 `MaaRacingMaster.exe`（薄 Launcher 拉起 `app\` 下的 GUI），插件目录引用对齐现行包名。
+
+- **守则只留跨环境共识：** 协议引用口径与过早抽象案例统一载于 `docs/MAAFW_GUIDE.md` §5.6；v3 返工与归位的记录由宪法废弃清单与 §5.6 案例段承载；记忆服务等 harness 机制由各工具自行配置，仓库文档不承载。
+
+- **团队技能补齐入库：** `skills/anti-sycophancy/` 与 `skills/no-negative-echo/` 以逻辑文件（SKILL.md、参考文档、校验脚本）入库，上游来源与抓取哈希保留在 provenance 清单中按需可取回；`skills/project-update/SKILL.md` 对安装关系的表述改为 harness 无关（仓库为权威定义，副本归属各工具的本地配置）。
+
 ### 未发版变更：文档基线收敛为团队共有基线 📄
 
 - **性质：** 未发版变更（纯文档：`AGENTS.md`、`docs/NAVKIT_V4_PLAN.md`、`skills/project-update/SKILL.md`；master 直接提交、不 tag）
