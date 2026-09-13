@@ -24,7 +24,10 @@ _FakeXUSB = types.SimpleNamespace(
 _FakeVg = types.SimpleNamespace(XUSB_BUTTON=_FakeXUSB)
 # capabilities.py 里 `from ...vgamepad_lazy import vg` 需要从该模块取名为 `vg` 的对象，
 # 因此假模块要有一个 `vg` 属性承载 XUSB_BUTTON 枚举。
-_FakeLazy = types.SimpleNamespace(vg=_FakeVg)
+# ⚠️ 本桩注入后不会撤销（sys.modules 全局生效到会话结束），所以**被替换模块的公开符号
+#    必须一并建模**：缺 `gamepad_available` 会让任何后续导入 controller/sidecar 的测试
+#    在收集期报 ImportError（桩只给 vg 时就是这样污染过性能仪表测试）。
+_FakeLazy = types.SimpleNamespace(vg=_FakeVg, gamepad_available=lambda: False)
 for _key in ("vgamepad_lazy", "maaracing_master.core.vgamepad_lazy"):
     assert _key not in sys.modules
     sys.modules[_key] = _FakeLazy

@@ -13,7 +13,7 @@ PEEP）」收敛成一份**依赖窄接口**的通用实现，禁止直接访问
 2. DebugSink   —— 帧去处。抽象「PEEP 预览帧写入」「写盘回调」：
        - `update_peep(peep_img)`：更新 PEEP 预览帧（封装 _latest_frame + 锁）
        - `save_full(idx, full_img_bgr)` / `save_raw(idx, frame_bgr)`：写盘（存 raw /
-         rendered webp），由实现方管理目录与编码
+         rendered 两张图），由实现方管理目录与编码口径
 
 DebugIOWorker 自身不 import cv2、不碰 debug 对象、不管理文件系统——渲染交给注入的
 renderer（具备 render_full / render_peep），写盘与 PEEP 全部委托给 DebugSink。
@@ -91,7 +91,7 @@ class DebugIOWorker:
     ):
         """
         mode:
-          "manual" —— 由调用方显式 enqueue 任务（同鉴宝 _debug_enqueue_frame），
+          "manual" —— 由调用方显式 enqueue 任务（同鉴宝 _io_submit），
                       queue_max<=0 表示不设上限。
           "piped"  —— 由本 worker 线程从 frame_source 拉帧（占位，后续 P5 接
                       capture 流式场景可启用）。

@@ -469,11 +469,22 @@ class SidecarService:
         with self._lock:
             worker = self._worker
             selected = self._selected_module
+        # 性能快照按鸭子类型取：谁实现了 read_perf_snapshot 就带谁的数据，
+        # core 不点名任何活动模块（方向红线：通用层不指向模块）。模块没实现 /
+        # 未运行 → perf=None，前端据此渲染"无数据"，不猜默认值。
+        perf = None
+        reader = getattr(self._controller.active_module, "read_perf_snapshot", None)
+        if callable(reader):
+            try:
+                perf = reader()
+            except Exception as exc:  # noqa: BLE001 —— 仪表读数失败绝不影响状态轮询
+                logger.log(f"[sidecar] 性能快照读取失败: {exc}", "DEBUG")
         return (True, {
             "is_running": self._controller.module_active,
             "current_stage": self._controller.current_stage,
             "worker_active": worker is not None and worker.is_alive(),
             "selected_module": selected,
+            "perf": perf,
         }, None)
 
     # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------

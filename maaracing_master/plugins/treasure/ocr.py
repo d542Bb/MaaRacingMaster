@@ -60,6 +60,8 @@ OCR_INTER_OP_THREADS = 1
 # 注意这是「本机固定配置」，不是通用 Alder Lake 检测——Windows 的 processor number
 # 不保证前 N 个就是 P-core（受 BIOS/processor group/SMT 影响）；其它机器请按拓扑调整
 # 或置空列表禁用（传统同构多核无需绑定）。
+# ⚠️ 生效前提是 psutil，而 psutil 不在本项目依赖里：缺失时 _pin_to_p_cores 直接
+#    跳过并报 WARNING，本段校准结论（尖峰 6→0）就一次也没落到运行时上。
 PIN_P_CORE_AFFINITY: list[int] = list(range(8))
 _p_affinity_pinned = False
 
@@ -79,7 +81,13 @@ def _pin_to_p_cores() -> None:
             psutil.Process().cpu_affinity(PIN_P_CORE_AFFINITY)
             logger.log(f"[鉴宝OCR] 已绑定进程 CPU 亲和性到 P-core {PIN_P_CORE_AFFINITY}", "DEBUG")
     except Exception as e:
-        logger.log(f"[鉴宝OCR] CPU 亲和性绑定失败({e})，忽略", "DEBUG")
+        # 必须 WARNING：这里曾记 DEBUG，导致「绑核从未生效」静默存在了近一个月
+        # （psutil 不在依赖里 → 每个跑 OCR 的会话都失败一次而无人看见）。
+        # 后果：E-core 漂移防护缺位，OCR 尾部耗时在高负载下更易被拉爆；
+        # 消除方式：装 psutil，或按 core/cpu_time.py 的口径改走无依赖实现。
+        logger.log(
+            f"[鉴宝OCR] CPU 亲和性未生效({e})——E-core 漂移防护缺位，"
+            "OCR 尾部耗时可能偏高", "WARNING")
     _p_affinity_pinned = True
 
 # ---------------- 预处理参数（小尺寸文字识别关键） ----------------

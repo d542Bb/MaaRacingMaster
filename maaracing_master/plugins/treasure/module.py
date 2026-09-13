@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -31,6 +32,7 @@ import cv2
 import numpy as np
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
+from maaracing_master.core.cpu_time import logical_core_count, process_cpu_seconds
 from maaracing_master.core.stage_tracker import StageTracker
 from maaracing_master.plugins.treasure.store import TreasureStore
 from maaracing_master.plugins.treasure.strategy import (
@@ -510,12 +512,17 @@ class TreasureModule(ActivityModule):
     # MaaRM_Template 的 mask_cursor/遮挡过滤按需启用（光标真值已接线）。
 
     # --------- 可调参数 ---------
-    FRAME_INTERVAL_MS     = 300    # 截图周期（毫秒）：主循环 ~3.3Hz，满足「≥3 次/秒」画面采集
-    WAIT_RESULT_FAST_MS   = 150    # wait_result 阶段帧间隔（用户拍板「帧率翻倍真双通道」）：
-                                   # 报价读取频率 ×2，配合动态 keys 剔除已固化槽 → 未固化槽（尤其 P4）
-                                   # 刷新率翻倍。仅报价等待阶段加速，不影响其他阶段。
+    # ⚠️ v4 起本常量**不再是运行时帧间隔**（真实节奏 = PolicyBridge 的 100ms 地板 +
+    #    _tick_once 自身耗时，真机出价段实测 115~290ms 随负载浮动）。它现在唯一的用途是把
+    #    「按帧数配置」的重试窗口换算成时间预算（见 _maybe_retry_stage_click 的 retry_ms）。
+    FRAME_INTERVAL_MS     = 300    # 帧数↔时间换算基准（毫秒），不是截图周期
     DEBUG_LOG_INTERVAL    = 1      # 验证期全量日志：每帧打一条 DEBUG 心跳（含阶段/H/出价/OCR指标）。
                                    # 验证完 OCR 尖峰修复后再考虑瘦身（如恢复 20 帧一次）
+    # 观察通路节律（与决策段解耦；见 docs/plan/observe-split-plan.md）：存图挡取 150ms 是为
+    # 了与拆分前真机观测密度（~150ms/帧）一致，零观感回归；仅预览时可提到 20fps——不写盘，
+    # 队列满自然丢帧降密（IO_QUEUE_MAX），不需要额外降挡逻辑。
+    OBSERVE_INTERVAL_MS   = 150.0
+    PEEP_ONLY_INTERVAL_MS = 50.0
     CHANGE_PIXEL_THRESH   = 40     # 画面变化判定：平均像素差 > 该值 → 认为有显著变化（原25→40）
     CHANGE_AREA_RATIO     = 0.05   # 变化像素比例 > 该值 → 保存事件截图（原0.01→0.05）
     CHANGE_COOLDOWN_S     = 5.0    # 画面变化事件冷却（秒），抑制同屏动画反复触发
@@ -652,10 +659,29 @@ class TreasureModule(ActivityModule):
     )
     # 关键通道 ROI 集合（供 worker 第二段剔除，避免同帧 H/P4 被全量重复识别 + 覆盖关键结果）。
     _OCR_CRITICAL_SET: frozenset[str] = frozenset(OCR_CRITICAL_KEYS)
-    # debug 落盘 IO worker 有界队列容量：IO 线程渲染+写盘 ~70-100ms/帧，主循环 wait_result
-    # ~150ms/帧 → 队列几乎不积压；maxsize=8 足够缓冲瞬时尖峰。满则丢新任务（观测降密度）。
+    # debug 落盘 IO worker 有界队列容量：maxsize=8 缓冲瞬时尖峰，满则丢新任务（观测降密度）。
+    # ⚠️ 原注释断言「IO 渲染+写盘 ~70-100ms/帧 vs 主循环 ~150ms/帧 → 队列几乎不积压」是错的：
+    #    70-100ms 对 150ms 是 47~67% 占空比，一旦有别的内容争核必然积压。真机实测丢帧 13.6%
+    #    （824 产 / 712 落盘）。丢帧现在计入 _io_dropped 并进会话汇总，不再静默。
     IO_QUEUE_MAX = 8
     OCR_MAX_AGE_MS = 800.0   # 结果时效阈值：age = consume_time - frame_capture_time 超限即丢弃
+    # 性能仪表滑窗容量（帧间隔 / OCR 时效 / OCR 第二段耗时各一条）：够算 p50/p95，
+    # 且 200 个 float 排序成本可忽略——快照方法会被 GUI 轮询调用，不能拖决策段。
+    PERF_WINDOW = 200
+    # 识别健康三态阈值（丢弃率 = 被闸掉的结果 / 被检视过的结果）：
+    #   warn  5% —— 真机基线是 0%（09-09/09-10/09-11 未开落盘的会话），5% 已是明显劣化；
+    #   error 25% —— 那次「第1、2回合读不到」的真机值是 18.8%，落在 warn 之上；
+    #          再高就意味着报价窗口内基本没有可用结果。
+    PERF_DROP_WARN_RATIO = 0.05
+    PERF_DROP_ERROR_RATIO = 0.25
+    # 机器负载三态：进程 CPU 占用 ÷ (可用逻辑核数 × 100%)。真机健康场次实测
+    # p50 约 60~90%（8~12 核机器 → 负载 0.06~0.09），这里给的是"整台机器被本进程
+    # 吃掉多少"的余量判断，不是进程自身快慢——慢已由响应/健康两项表达。
+    PERF_LOAD_WARN_RATIO = 0.60
+    PERF_LOAD_ERROR_RATIO = 0.85
+    # 画面响应（次/秒）三态：健康真机 6.9~9.1；坏掉那场约 3.4（290ms/帧）且已丢数据。
+    PERF_FPS_WARN = 5.0
+    PERF_FPS_ERROR = 2.5
     # 报价槽级固化（wait_result 阶段读 4 槽报价）：
     #   报价从上往下逐条展示（P1→P4），且所有人同时出价 → 报价数字会先显示「已出价」，
     #   再逐位刷新到完整值（实测 P4 从 486,70 → 486,700 只隔 1 帧，完整值稳定窗口仅 2 帧）。
@@ -675,6 +701,10 @@ class TreasureModule(ActivityModule):
         # None → _player_bids 该槽永远是初始值 → 快照 4 槽永远凑不齐 → 整场死锁（2026-08-19）。
         "bid_player1", "bid_player2", "bid_player3", "bid_player4",
     )
+    # 传给 recognize_amounts 的按区下限覆盖表：关键通道与全量通道共用同一份，
+    # 避免「某 key 被挪进关键通道却漏配 0 下限」——低价报价与 0 值被 MIN_AMOUNT
+    # 吞成 None 是静默的，只会表现为"那一回合没数据"。
+    OCR_MIN_AMOUNTS: dict[str, int] = {k: 0 for k in OCR_ZERO_ALLOWED_KEYS}
 
     def __init__(self, ctx: ActivityContext | None = None):
         # ctx=None → 离线模式：只初始化状态机，不启动运行时（worker/截图/主循环）
@@ -741,14 +771,46 @@ class TreasureModule(ActivityModule):
         self._ocr_duration_ms = 0.0           # 最近一次识别耗时
         self._ocr_source_frame_id = 0         # 最近一次应用结果的来源帧
         self._ocr_result_age_ms = 0.0         # 最近一次应用结果时的时效（丢帧/延迟观测）
+        # --- 性能仪表（2026-09-13 补）：把「只能靠 grep 日志算」的量变成进程内读数 ---
+        # 立此三项的起因：一次「第1、2回合报价没录入」的回归，p50 耗时全程正常，
+        # 定性靠的是「超龄丢弃 / 已应用」比值与「_saved_frames vs 盘上文件数」之差，
+        # 而这两个数当时一个都没有计数器。
+        self._ocr_applied = 0                 # 过双闸被采纳的结果数（双槽各自计，与丢弃同分母）
+        self._ocr_stale_drops = 0             # 因时效超 OCR_MAX_AGE_MS 被丢的结果数
+        self._ocr_expired_drops = 0           # 因回合不匹配（跨回合串写）被丢的结果数
+        # 报价窗口（wait_result）分桶：识别健康的**主判据**。全局丢弃率会被非报价阶段
+        # 摊薄——真机那次「第1、2回合完全没录到」全局值只有 18.8%（判 warn，太松），
+        # 而报价窗口内几乎全丢（该判 error）。
+        self._ocr_applied_wr = 0
+        self._ocr_stale_drops_wr = 0
+        self._ocr_expired_drops_wr = 0
+        self._io_enqueued = 0                 # 落盘任务入队成功数
+        self._io_dropped = 0                  # 队列满被丢数（曾完全静默）
+        self._io_queue_peak = 0               # 队列历史峰值深度
+        self._tick_gap_ms: deque[float] = deque(maxlen=self.PERF_WINDOW)   # 决策帧间隔
+        self._age_ms_win: deque[float] = deque(maxlen=self.PERF_WINDOW)     # OCR 结果时效
+        self._dur_ms_win: deque[float] = deque(maxlen=self.PERF_WINDOW)     # OCR 第二段耗时
+        self._last_tick_at: float | None = None                             # perf_counter
+        # 进程 CPU 占用（%）：由相邻两次 GetProcessTimes 差 ÷ 墙钟差得出，多核可 > 100。
+        # 每 tick 采一次（单核微秒级），非 Windows / 取不到时恒空，快照标 available=False。
+        self._cpu_pct_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
+        self._cpu_last: tuple[float, float] | None = None                   # (cpu_s, 墙钟)
 
         # --- debug 落盘 IO worker（生产-消费者，渲染+imwrite 移出主线程）---
-        # 目标：wait_result 段主循环帧间隔真正逼近 WAIT_RESULT_FAST_MS（渲染 ~30ms +
-        # webp 存盘 ~63ms 曾把实际帧率拖回 ~240ms，见 docs/P4_DUAL_CHANNEL_ANALYSIS.md §3 困难一）。
+        # 目标：落盘不再拖慢决策段（渲染 ~30ms + 编码曾把实际帧率从 150ms 拖回 ~240ms，
+        # 见 docs/P4_DUAL_CHANNEL_ANALYSIS.md §3 困难一）。
         # 主线程只打包 (frame copy + 当帧 state 快照) 入队，渲染/写盘全部在 IO 线程执行。
+        # ⚠️ 移出主线程只解决"谁付账"，没解决"付多少"：观察通路独立按 150ms 产帧后，
+        #    本线程成为唯一瓶颈（webp 单帧 77.7ms → 占空比 60% → 队列满丢帧），
+        #    与 OCR worker 争抢绑核后的 8 个 P-core。落盘编码口径因此定为 JPG。
         self._io_queue: Queue | None = None   # 有界队列；满则丢新任务（观测降密度，不阻塞主循环）
         self._io_stop = threading.Event()
         self._io_thread: threading.Thread | None = None
+        # --- 观察通路（产帧 + 帧号 + 入队），与决策段彻底解耦 ---
+        self._observe_stop = threading.Event()
+        self._observe_thread: threading.Thread | None = None
+        # HUD 状态快照：决策段整体替换引用发布，观察线程只读引用（不并发迭代活容器）
+        self._last_debug_kwargs: dict | None = None
 
         # --------- debug 目录 & 元数据 ---------
         self._debug_root: Path | None = None         # debug/treasure/
@@ -1248,8 +1310,10 @@ class TreasureModule(ActivityModule):
 
         # 3.1 启动 debug 落盘 IO worker（仅 debug/peep 开启时有任务；全关不启动空转线程）。
         #     渲染 + raw/rendered 写盘移出主线程，wait_result 段帧率不再被存盘拖慢。
+        # 3.2 观察通路：帧供给独立于决策段，厅类阶段（无 policy 帧）也照常出图。
         if self.ctx.debug.enabled or self.ctx.debug.peep_enabled:
             self._start_io_worker()
+            self._start_observer()
 
         # 4. 解析断点（换算收敛到统一底座 StageTracker，先 in 判断保护非法值回退 0）
         self._stage_tracker = StageTracker(self.STAGE_ORDER)
@@ -1280,12 +1344,15 @@ class TreasureModule(ActivityModule):
             if self._trace_writer is not None:
                 self._trace_writer.close()
                 self._trace_writer = None
-            self._stop_io_worker()     # 先停 IO 落盘 worker（排空队列，保证最后几帧落盘）
+            self._stop_observer()      # 先停止产帧（不变量 I4：顺序反了会漏收尾帧）
+            self._stop_io_worker()     # 再排空落盘队列，保证最后几帧写盘
             self._stop_ocr_worker()
             if self._clicker is not None:
                 self._clicker.shutdown()  # 停导航线程（异步导航收尾，daemon 不阻塞退出）
             self._store.close_db()  # 提交未完成事务并关闭落盘连接
             self._store.log_session_summary()
+            # 性能汇总放在所有 worker 停完之后：此时计数才是本次运行的终值。
+            self.log_perf_summary()
 
     def stop(self) -> None:
         assert self.ctx is not None  # 仅运行态调用
@@ -1351,6 +1418,13 @@ class TreasureModule(ActivityModule):
         # 弹窗链状态：新一场清零（防跨场残留触发误判定）
         self._popup_click_cooldown = 0
         self._popup_loopback_frames = 0
+        # 场次边界也是性能边界：整场计数不清零的话，一次 50 场的运行会把某一场
+        # 的集中丢弃摊薄到看不见。汇总**只认 OCR 活动**——刚启动的预热期往往只有
+        # 几帧落盘、OCR 全 0，那种 idle 空行是噪音；但计数无论如何都要在边界清零，
+        # 否则会串进下一场的读数。
+        if self._ocr_applied or self._ocr_stale_drops or self._ocr_expired_drops:
+            self.log_perf_summary(f"{reason}——上一场")
+        self._reset_perf_counters()
         logger.log(f"[鉴宝] {reason}：已清空上一场拍卖状态（H/出价/对手/回合/bidding）", "DEBUG")
 
     def set_stage(self, stage_name: str, reason: str = "OCR", raw_round: int | None = None) -> bool:
@@ -3284,35 +3358,50 @@ class TreasureModule(ActivityModule):
     #  内部：Debug 落盘 IO worker（生产-消费者，异步渲染+写盘）
     # ==================================================================
 
-    def _debug_enqueue_frame(self, frame_rgb: np.ndarray, *, idx: int, didx: int,
-                              label: str = "鉴宝观察", extra_note: str = "") -> None:
-        """主线程→IO worker 入队：debug 全量存盘帧（raw + rendered）。
-        有界队列满时静默丢帧（观测降密度，不阻塞主循环）。"""
-        if self._io_queue is None:
-            return
-        kwargs = self._treasure_kwargs(extra_note=extra_note)
-        frame_copy = frame_rgb.copy()
-        try:
-            self._io_queue.put_nowait(
-                ("frame", frame_copy, idx, didx, label, kwargs)
-            )
-        except Full:
-            pass  # 队列满 → 丢帧（观测降密度）
+    def _io_submit(self, kind: str, frame_rgb: np.ndarray, idx: int, didx: int,
+                   label: str, kwargs: dict) -> None:
+        """纯入队（观察线程的唯一出口）：copy 帧 + 打包状态快照入有界队列。
 
-    def _debug_enqueue_peep(self, frame_rgb: np.ndarray, *,
-                             label: str = "鉴宝观察", extra_note: str = "") -> None:
-        """主线程→IO worker 入队：仅 PEEP 预览（无落盘）。
-        主线程不阻塞，PEEP 预览帧由 IO 线程渲染更新。"""
+        kind: "frame" = raw + rendered 落盘；"peep" = 仅预览。
+        队列满 → 丢新帧（观测降密度），绝不阻塞产帧方。
+        丢帧必须计数：它曾经是 `except Full: pass`，一场跑完看不出丢过多少，
+        只能靠「观察线程声称的帧号」减「盘上文件数」倒推。
+        仪表写侧不变量：本组计数只由观察线程写（单写者），perf_snapshot 只读，
+        故无需加锁——读侧偶发看到旧值对一个仪表无碍。
+        """
         if self._io_queue is None:
             return
-        kwargs = self._treasure_kwargs(extra_note=extra_note)
-        frame_copy = frame_rgb.copy()
+        q = self._io_queue
+        depth = q.qsize()
+        if depth > self._io_queue_peak:
+            self._io_queue_peak = depth
         try:
-            self._io_queue.put_nowait(
-                ("peep", frame_copy, 0, 0, label, kwargs)
-            )
+            q.put_nowait((kind, frame_rgb.copy(), idx, didx, label, kwargs))
+            self._io_enqueued += 1
         except Full:
-            pass
+            self._io_dropped += 1  # 队列满 → 丢帧（观测降密度）
+
+    def _observe_kwargs(self, idx: int, didx: int) -> dict:
+        """观察线程用的 HUD 状态：取决策段最近一次发布的快照引用，只覆盖帧号。
+
+        绝不在这里调 _treasure_kwargs()——它内含 _resolve_action_target()（决策入口），
+        还会迭代 _player_bids / _bid_slots 活容器；两者都不属于观察线程的权限。
+        厅类阶段没有决策帧，快照为 None 时给一张最小快照，保证"有图可看"优先于"图上有数"。
+        """
+        base = self._last_debug_kwargs
+        if base is None:
+            return dict(
+                treasure_stage=self._current_stage,
+                treasure_note=self._note,
+                treasure_frame_index=idx,
+                treasure_debug_index=didx,
+                treasure_stage_order=list(self.STAGE_ORDER),
+                treasure_click_mode=getattr(self.ctx, "click_mode", "real"),
+            )
+        snap = dict(base)  # 浅拷贝只为换帧号；内层 dict 是 _treasure_kwargs 已固化的副本
+        snap["treasure_frame_index"] = idx
+        snap["treasure_debug_index"] = didx
+        return snap
 
     def _start_io_worker(self) -> None:
         """启动 debug 落盘 IO worker（daemon 线程）。"""
@@ -3338,6 +3427,74 @@ class TreasureModule(ActivityModule):
             logger.log("[鉴宝] IO worker 3s 内未退出", "WARNING")
         self._io_thread = None
         self._io_queue = None
+
+    # ---------- 观察通路：产帧 / 帧号 / 入队（与决策段解耦） ----------
+
+    def _start_observer(self) -> None:
+        """启动观察线程（daemon）。与 IO worker 同条件：debug 或 peep 开着才有意义。"""
+        if self._observe_thread is not None and self._observe_thread.is_alive():
+            return
+        self._observe_stop.clear()
+        self._observe_thread = threading.Thread(
+            target=self._observer_loop, name="treasure-observer", daemon=True
+        )
+        self._observe_thread.start()
+        logger.log("[鉴宝] 观察通路已启动（帧供给与决策段解耦）", "DEBUG")
+
+    def _stop_observer(self) -> None:
+        """停观察线程。调用序不可反：先停止产帧，再排空 IO 队列，否则收尾帧漏落盘。"""
+        if self._observe_thread is None:
+            return
+        self._observe_stop.set()
+        self._observe_thread.join(timeout=3.0)
+        if self._observe_thread.is_alive():
+            logger.log("[鉴宝] 观察线程 3s 内未退出", "WARNING")
+        self._observe_thread = None
+
+    def _observe_interval_s(self) -> float | None:
+        """本 tick 的间隔（秒）；debug 与 peep 全关 → None（不取帧、不 copy、不入队）。"""
+        if getattr(self.ctx.debug, "enabled", False):
+            return self.OBSERVE_INTERVAL_MS / 1000.0
+        if getattr(self.ctx.debug, "peep_enabled", False):
+            return self.PEEP_ONLY_INTERVAL_MS / 1000.0
+        return None
+
+    def _observer_loop(self) -> None:
+        """观察主循环。Event.wait 即节拍器，停止信号当场生效（不等满一个间隔）。"""
+        while not self._observe_stop.is_set():
+            interval_s = self._observe_interval_s()
+            if interval_s is None:
+                self._observe_stop.wait(self.OBSERVE_INTERVAL_MS / 1000.0)
+                continue
+            try:
+                self._observe_tick_once()
+            except Exception as exc:  # noqa: BLE001 —— 观察通路故障不得波及执行通路
+                logger.log(f"[鉴宝] 观察帧异常（跳过本帧）: {exc}", "DEBUG")
+            self._observe_stop.wait(interval_s)
+
+    def _observe_tick_once(self) -> None:
+        """一帧观察工作：读中心缓存帧 → 帧号自增 → 入队。
+
+        权限边界（见 docs/plan/observe-split-plan.md 不变量 I1/I2）：不碰阶段检测、
+        不碰 OCR、不改状态机、不调 _treasure_kwargs（内含决策入口）。帧只从 WGC
+        中心缓存取，不新起截图通路。
+        """
+        saving = self._session_dir is not None and self._raw_dir is not None
+        if not saving and not getattr(self.ctx.debug, "peep_enabled", False):
+            return                      # 两个出口都关：连帧都不取（不变量 I5）
+        frame_rgb = self.ctx.capture.screenshot()
+        if frame_rgb is None:
+            return
+        if saving:
+            self._saved_frames += 1
+            self._debug_saved += 1
+            idx, didx = self._saved_frames, self._debug_saved
+            self._io_submit("frame", frame_rgb, idx, didx, "鉴宝观察",
+                            self._observe_kwargs(idx, didx))
+        else:
+            idx, didx = self._saved_frames, self._debug_saved
+            self._io_submit("peep", frame_rgb, idx, didx, "鉴宝观察",
+                            self._observe_kwargs(idx, didx))
 
     def _drain_io_queue(self) -> None:
         """排空 IO 队列直到空或超时（停止时调用，保证最后几帧不丢）。"""
@@ -3365,7 +3522,7 @@ class TreasureModule(ActivityModule):
                 logger.log(f"[鉴宝] IO worker 异常: {e}", "WARNING")
 
     def _process_io_task(self, task: tuple) -> None:
-        """处理单帧 IO 任务：渲染 → 写盘（raw + rendered webp）或 PEEP 更新。"""
+        """处理单帧 IO 任务：渲染 → 写盘（raw + rendered，均 JPG）或 PEEP 更新。"""
         cmd, frame_rgb, idx, didx, label, kwargs = task
         img_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         if cmd == "frame":
@@ -3383,10 +3540,16 @@ class TreasureModule(ActivityModule):
                 full_img = renderer.render_full(img_bgr.copy(), state)
             else:
                 full_img = img_bgr
+            # rendered 编码口径 = JPG q85，与 raw 同族。换算依据（1280x720 实测）：
+            # WEBP q95 单帧 77.7ms，且质量一路降到 q50 仍要 60ms（OpenCV 的 webp 编码
+            # 单线程、成本几乎不随质量下降），换 JPG q85 只要 3.9ms、体积与 webp q95
+            # 同级（141KB vs 138KB）。观察通路按固定 150ms 产帧后，webp 把 IO worker
+            # 占空比推到 60% 并持续丢帧（真机 824 产 / 712 落盘），与 OCR worker 争抢
+            # 被 PIN_P_CORE_AFFINITY 绑死的 8 个 P-core，报价结果超龄丢弃率 0%→18.8%。
             cv2.imwrite(
-                str(self._session_dir / f"{didx:04d}.webp"),
+                str(self._session_dir / f"{didx:04d}.jpg"),
                 full_img,
-                [cv2.IMWRITE_WEBP_QUALITY, 95],
+                [cv2.IMWRITE_JPEG_QUALITY, 85],
             )
             # debug 开启 + peep 也开：同帧同时维护 PEEP 预览（与 save_frame 行为一致）
             if renderer is not None and getattr(self.ctx.debug, "peep_enabled", False):
@@ -3426,6 +3589,11 @@ class TreasureModule(ActivityModule):
 
     def _tick_once(self):
         assert self.ctx is not None  # 仅运行态调用
+        now = time.perf_counter()
+        if self._last_tick_at is not None:
+            self._tick_gap_ms.append((now - self._last_tick_at) * 1000)
+        self._last_tick_at = now
+        self._sample_cpu(now)
         self._frame_counter += 1
         self._round_elapsed += 1  # 每帧自增；set_stage 回合变化时重置
 
@@ -3501,28 +3669,13 @@ class TreasureModule(ActivityModule):
         # --------- 1. 画面变化检测 ---------
         significant_change = self._detect_change(frame_rgb)
 
-        # --------- 2+3. 调试存盘：渲染 + raw/rendered 落盘全部异步到 IO worker ---------
-        # 主线程只做：分配帧号 + 打包 (frame copy + 当帧 state 快照) 入队，不等落盘完成。
-        # 渲染（HUD/ROI/PEEP ~20-40ms）+ raw JPG + rendered WebP（~63ms）由 IO 线程执行，
-        # 主循环帧间隔不再被存盘拖慢（docs/P4_DUAL_CHANNEL_ANALYSIS.md §3 困难一）。
-        # debug 开启 → raw 全量 + rendered 全量；debug 关 + peep 开 → 仅维护 PEEP 预览。
-        if self._session_dir is not None and self._raw_dir is not None:
-            self._saved_frames += 1
-            self._debug_saved += 1
-            self._debug_enqueue_frame(
-                frame_rgb,
-                idx=self._saved_frames,
-                didx=self._debug_saved,
-                label="鉴宝观察",
-                extra_note=("画面变化" if significant_change else ""),
-            )
-        elif getattr(self.ctx.debug, "peep_enabled", False):
-            # peep-only：save_frame 走 IO 线程渲染并更新 _latest_frame，主循环不阻塞。
-            self._debug_enqueue_peep(
-                frame_rgb,
-                label="鉴宝观察",
-                extra_note=("画面变化" if significant_change else ""),
-            )
+        # --------- 2+3. 发布 HUD 状态快照（产帧与落盘已移交观察通路） ---------
+        # 帧号唯一主人 = 观察线程（_observe_tick_once）。决策段在此只把「当帧状态」固化成
+        # 一份新建 dict 并整体替换引用发布：观察线程只读引用、不迭代活容器，两侧无需加锁
+        # （不变量 I2，见 docs/plan/observe-split-plan.md）。
+        # 快照内的帧号由观察线程覆盖；厅类阶段没有决策帧时，观察线程用最小快照照常出图。
+        self._last_debug_kwargs = self._treasure_kwargs(
+            extra_note=("画面变化" if significant_change else ""))
 
         # --------- 4. 画面显著变化 → 事件日志（不再单独截图，raw 已全量覆盖）---------
         # 说明：screen_change 事件日志已移除——它不携带"变化到哪个阶段"的信息（阶段切换
@@ -3752,15 +3905,6 @@ class TreasureModule(ActivityModule):
                 f"（最优命中 {len(eggs)} 张卡: {detail}）", "INFO",
             )
 
-    @property
-    def _frame_interval_s(self) -> float:
-        """主循环帧间隔（秒）。wait_result 阶段报价读取需要高频——用户拍板「帧率翻倍真双通道」：
-        帧间隔从 300ms 降到 150ms，未固化槽（尤其 P4）的 OCR 投递频率 ×2；
-        其余阶段维持 FRAME_INTERVAL_MS。"""
-        if self._bid_phase == "wait_result":
-            return self.WAIT_RESULT_FAST_MS / 1000.0
-        return self.FRAME_INTERVAL_MS / 1000.0
-
     def _run_ocr(self, frame_rgb: np.ndarray) -> None:
         """主线程先消费上一轮 worker 结果应用业务状态，再投递最新帧给 worker。
         识别在 worker 线程进行，本方法 O(1) 不阻塞主循环。
@@ -3873,29 +4017,29 @@ class TreasureModule(ActivityModule):
                 # 第一段：关键 ROI（bid_result_amount_box + bid_player4 双通道）单独识别、立即发布。
                 # 窗口期（偶发系统级慢）单 ROI 即使慢 15 倍也仅 ~200ms，age 仍低于
                 # OCR_MAX_AGE_MS，保证 H 等关键数值先于全量结果落地，不被 18 ROI 长循环拖死。
-                # bid_result_amount_box 必须允许 0：用户点✖清空后画面显示"¥0"，若 MIN_AMOUNT
-                # 默认>0 把 0 滤成 None → _bid_input_latest 不更新 → 输入子状态机反复点✖死循环。
-                # bid_player4 允许 0：掉线玩家的报价框显示 0 合法。
+                # 按区下限覆盖表 OCR_MIN_AMOUNTS 与全量通道同源：bid_result_amount_box 必须
+                # 允许 0（用户点✖清空后画面显示"¥0"，若 MIN_AMOUNT 默认>0 把 0 滤成 None →
+                # _bid_input_latest 不更新 → 输入子状态机反复点✖死循环）；bid_player* 允许 0
+                # 与低价（掉线/捡漏报价）。
                 # critical=True → 写独立关键槽，不被第二段全量覆盖（P4 双通道覆盖 bug 修复）。
                 t0 = time.perf_counter()
                 if self._ocr is not None:
                     res_crit = self._ocr.recognize_amounts(
                         frame, keys=self.OCR_CRITICAL_KEYS,
-                        min_amounts={"bid_result_amount_box": 0, "bid_player4": 0},
+                        min_amounts=self.OCR_MIN_AMOUNTS,
                     )
                     self._ocr_publish_result(res_crit, frame_id, round_no, t0, captured_ts,
                                              critical=True)
                 # 第二段：阶段感知 keys（投递时按阶段裁剪；None=全量，尽力而为）。
                 # 窗口期超龄的结果会被主线程丢弃，此时关键 ROI 结果已由第一段保住。
-                # 结算收入/利润允许 0 值。
                 # 剔除关键通道 ROI（H/P4）：同帧 H/P4 已由第一段识别发布，第二段不再重复
-                # 识别（省 ~20ms/帧），也不会覆盖关键槽结果。
+                # 识别（省 ~20ms/帧），也不会覆盖关键槽结果。下限覆盖表同源，两通道口径一致。
                 t0 = time.perf_counter()
                 second_keys = (ocr_keys - self._OCR_CRITICAL_SET) if ocr_keys else None
                 if self._ocr is not None:
                     res_full = self._ocr.recognize_amounts(
                         frame, keys=second_keys,
-                        min_amounts={k: 0 for k in self.OCR_ZERO_ALLOWED_KEYS}
+                        min_amounts=self.OCR_MIN_AMOUNTS
                     )
                 else:
                     res_full = {}
@@ -3982,6 +4126,7 @@ class TreasureModule(ActivityModule):
         各自独立过闸门，通过后合并成一份 res 再消费——H/P4 恒来自关键通道（时效最低、
         不被全量覆盖），P1~P3/玩家名等来自全量通道。帧元信息优先取关键槽。"""
         results: list[dict] = []
+        in_wr = self._bid_phase == "wait_result"   # 报价窗口分桶标记（识别健康主判据口径）
         for critical in (True, False):
             result = self._ocr_take_result(critical)
             if not result:
@@ -3990,10 +4135,15 @@ class TreasureModule(ActivityModule):
             # 时效 = 捕获时刻 → 消费时刻（captured_ts 在投递时记录，≈帧捕获时刻）
             # 与 _ocr_push 投递侧同用 perf_counter：两侧必须同一时钟源，且须与耗时测量同族
             self._ocr_result_age_ms = (time.perf_counter() - result["captured_ts"]) * 1000
+            self._age_ms_win.append(self._ocr_result_age_ms)
+            self._dur_ms_win.append(float(result["duration_ms"]))
             if result["round_no"] != self._round_no:
                 if self._round_no is None:
                     pass
                 else:
+                    self._ocr_expired_drops += 1
+                    if in_wr:
+                        self._ocr_expired_drops_wr += 1
                     logger.log(
                         f"[鉴宝] OCR 结果过期丢弃(结果R{result['round_no']}≠当前R{self._round_no}, "
                         f"耗时{result['duration_ms']:.0f}ms, 时效{self._ocr_result_age_ms:.0f}ms)",
@@ -4002,6 +4152,9 @@ class TreasureModule(ActivityModule):
                 continue
             # 时效老化：陈旧帧不当作当前状态（窗口期全量 18 ROI 结果常在此被拦）
             if self._ocr_result_age_ms > self.OCR_MAX_AGE_MS:
+                self._ocr_stale_drops += 1
+                if in_wr:
+                    self._ocr_stale_drops_wr += 1
                 logger.log(
                     f"[鉴宝] OCR 结果超龄丢弃(R{result['round_no']} 帧{result['frame_id']} "
                     f"时效{self._ocr_result_age_ms:.0f}ms>{self.OCR_MAX_AGE_MS:.0f}ms, "
@@ -4009,6 +4162,9 @@ class TreasureModule(ActivityModule):
                     "DEBUG",
                 )
                 continue
+            self._ocr_applied += 1
+            if in_wr:
+                self._ocr_applied_wr += 1
             results.append(result)
 
         if not results:
@@ -4032,6 +4188,213 @@ class TreasureModule(ActivityModule):
             f"累计{self._ocr_total_runs}次",
             "DEBUG",
         )
+
+    # ==================================================================
+    #  性能仪表：快照（GUI 轮询）与会话汇总（日志）共用同一出口
+    # ==================================================================
+
+    def _sample_cpu(self, wall_now: float) -> None:
+        """相邻两次 GetProcessTimes 差 ÷ 墙钟差 → 本进程 CPU 占用（%），入滑窗。
+
+        取不到（非 Windows / Win32 调用失败）就静默留空——快照会标 available=False，
+        GUI 按"无此项"渲染，绝不拿 0% 冒充"很空闲"。
+        """
+        cpu_now = process_cpu_seconds()
+        if cpu_now is None:
+            self._cpu_last = None
+            return
+        prev = self._cpu_last
+        self._cpu_last = (cpu_now, wall_now)
+        if prev is None:
+            return
+        d_wall = wall_now - prev[1]
+        if d_wall <= 0:
+            return
+        self._cpu_pct_win.append(max(0.0, (cpu_now - prev[0]) / d_wall * 100.0))
+
+    @staticmethod
+    def _percentile(values, pct: float) -> float:
+        """滑窗分位（线性插值）。空窗返回 0.0，调用方按"尚无数据"渲染。
+
+        为什么要分位而不是瞬时值：那次「第1、2回合报价没录入」的回归里，
+        OCR 耗时 p50 全程正常（27~33ms），坏掉的只有尾部——看瞬时值永远抓不到。
+        """
+        if not values:
+            return 0.0
+        s = sorted(values)
+        if len(s) == 1:
+            return float(s[0])
+        pos = (len(s) - 1) * pct
+        lo = int(pos)
+        hi = min(lo + 1, len(s) - 1)
+        frac = pos - lo
+        return float(s[lo] * (1.0 - frac) + s[hi] * frac)
+
+    @staticmethod
+    def _ratio(numerator: int, denominator: int) -> float:
+        """安全比值：分母为 0 → 0.0（无数据不等于全丢）。"""
+        return (numerator / denominator) if denominator else 0.0
+
+    def read_perf_snapshot(self) -> dict:
+        """机器可读的性能快照（纯读，不改动任何状态）。
+
+        写侧不变量：所有字段都来自单写者计数器（观察线程写 io_*，Tasker 线程写
+        ocr_*/tick_*），本方法可被 sidecar handler 线程直接调用而不加锁。
+        """
+        applied = int(self._ocr_applied)
+        stale = int(self._ocr_stale_drops)
+        expired = int(self._ocr_expired_drops)
+        examined = applied + stale + expired
+        gap_p50 = self._percentile(self._tick_gap_ms, 0.50)
+        gap_p95 = self._percentile(self._tick_gap_ms, 0.95)
+        fps = round(1000.0 / gap_p50, 2) if gap_p50 > 0 else 0.0
+        enq = int(self._io_enqueued)
+        drop = int(self._io_dropped)
+        # 负载：进程 CPU% ÷ (核数 × 100%) → 本进程吃掉整台机器的比例
+        cores = logical_core_count()
+        cpu_p50 = self._percentile(self._cpu_pct_win, 0.50)
+        cpu_p95 = self._percentile(self._cpu_pct_win, 0.95)
+        cpu_ok = bool(self._cpu_pct_win)
+        load_p50 = round(cpu_p50 / (cores * 100.0), 4) if cpu_ok else 0.0
+        load_p95 = round(cpu_p95 / (cores * 100.0), 4) if cpu_ok else 0.0
+        if not cpu_ok:
+            load_level = "idle"
+        elif load_p95 >= self.PERF_LOAD_ERROR_RATIO:
+            load_level = "error"
+        elif load_p95 >= self.PERF_LOAD_WARN_RATIO:
+            load_level = "warn"
+        else:
+            load_level = "ok"
+        # 响应：无读数不冒充"卡"，标 idle
+        if fps <= 0:
+            resp_level = "idle"
+        elif fps < self.PERF_FPS_ERROR:
+            resp_level = "error"
+        elif fps < self.PERF_FPS_WARN:
+            resp_level = "warn"
+        else:
+            resp_level = "ok"
+        return {
+            "response": {
+                "fps": fps,
+                "level": resp_level,
+                "tick_gap_ms": {"p50": round(gap_p50, 1), "p95": round(gap_p95, 1)},
+            },
+            "ocr": {
+                "applied": applied, "stale_drops": stale, "expired_drops": expired,
+                "drop_ratio": round(self._ratio(stale + expired, examined), 4),
+                "bid_window": {
+                    "applied": int(self._ocr_applied_wr),
+                    "stale_drops": int(self._ocr_stale_drops_wr),
+                    "expired_drops": int(self._ocr_expired_drops_wr),
+                    "drop_ratio": round(self._ratio(
+                        self._ocr_stale_drops_wr + self._ocr_expired_drops_wr,
+                        self._ocr_applied_wr + self._ocr_stale_drops_wr + self._ocr_expired_drops_wr
+                    ), 4),
+                },
+                "age_ms": {"p50": round(self._percentile(self._age_ms_win, 0.50), 1),
+                           "p95": round(self._percentile(self._age_ms_win, 0.95), 1)},
+                "dur_ms": {"p50": round(self._percentile(self._dur_ms_win, 0.50), 1),
+                           "p95": round(self._percentile(self._dur_ms_win, 0.95), 1)},
+                "age_gate_ms": self.OCR_MAX_AGE_MS,
+            },
+            "debug_io": {
+                "enqueued": enq, "dropped": drop,
+                "drop_ratio": round(self._ratio(drop, enq + drop), 4),
+                "queue_peak": int(self._io_queue_peak), "queue_max": self.IO_QUEUE_MAX,
+            },
+            "health": self.read_recognition_health(),
+            "cpu": {
+                "available": cpu_ok,
+                "cores": cores,
+                "p50": round(cpu_p50, 1),
+                "p95": round(cpu_p95, 1),
+                "max": round(max(self._cpu_pct_win), 1) if cpu_ok else 0.0,
+                "load_p50": load_p50,
+                "load_p95": load_p95,
+                "level": load_level,
+            },
+        }
+
+    def read_recognition_health(self) -> dict:
+        """识别健康三态——给用户的说法是「报价读得到吗」，不是丢弃率百分数。
+
+        主判据是**报价窗口（wait_result）内**的丢弃率：报价只在那段时间读，全局比值
+        会被非报价阶段摊薄（真机那次全局 18.8% 却两回合完全没录到）。窗口尚未出现时
+        退回全局口径，避免开局就把用户报成"正常"。
+        判据一律用比值与尾部时效，不用 p50：回归只发生在尾部。
+        """
+        wr_examined = self._ocr_applied_wr + self._ocr_stale_drops_wr + self._ocr_expired_drops_wr
+        applied = int(self._ocr_applied)
+        dropped = int(self._ocr_stale_drops) + int(self._ocr_expired_drops)
+        if applied == 0 and dropped == 0:
+            return {"level": "idle", "text": "尚未开始识别"}
+        if wr_examined:
+            ratio = self._ratio(self._ocr_stale_drops_wr + self._ocr_expired_drops_wr, wr_examined)
+            scope = "bid_window"
+        else:
+            ratio = self._ratio(dropped, applied + dropped)
+            scope = "overall"
+        age_p95 = self._percentile(self._age_ms_win, 0.95)
+        if ratio >= self.PERF_DROP_ERROR_RATIO:
+            return {"level": "error", "scope": scope, "drop_ratio": round(ratio, 4),
+                    "text": "报价读不到：识别跟不上画面，建议关闭调试落盘"}
+        if ratio >= self.PERF_DROP_WARN_RATIO or age_p95 > self.OCR_MAX_AGE_MS * 0.75:
+            return {"level": "warn", "scope": scope, "drop_ratio": round(ratio, 4),
+                    "text": "报价读取偏慢：机器负载偏高，画面变化快时可能漏读"}
+        return {"level": "ok", "scope": scope, "drop_ratio": round(ratio, 4),
+                "text": "报价读取正常"}
+
+    def _reset_perf_counters(self) -> None:
+        """清零性能仪表计数与滑窗（场次边界用）。
+
+        不动 _ocr_total_runs / _ocr_failures——它们是 debug HUD「运行次数/失败」的
+        既有口径（整轮累计），在此清零会让那张卡的数字突然变小，属于改行为不是补仪表。
+        """
+        self._ocr_applied = 0
+        self._ocr_stale_drops = 0
+        self._ocr_expired_drops = 0
+        self._ocr_applied_wr = 0
+        self._ocr_stale_drops_wr = 0
+        self._ocr_expired_drops_wr = 0
+        self._io_enqueued = 0
+        self._io_dropped = 0
+        self._io_queue_peak = 0
+        self._tick_gap_ms.clear()
+        self._age_ms_win.clear()
+        self._dur_ms_win.clear()
+        self._cpu_pct_win.clear()
+        self._cpu_last = None
+
+    def log_perf_summary(self, reason: str = "本次运行结束") -> None:
+        """会话汇总一行（INFO）：把定性所需的四个比值一次性落到日志里。
+
+        为什么必须有：此前同类回归的定性靠 regex 扫完整份日志算「已应用 vs 超龄丢弃」，
+        再拿声称帧号减盘上文件数倒推丢帧——这两步都不该由人来手做。
+        """
+        s = self.read_perf_snapshot()
+        o, r, io_, h, c = s["ocr"], s["response"], s["debug_io"], s["health"], s["cpu"]
+        w = o["bid_window"]
+        cpu_txt = (f"CPU p50 {c['p50']:.0f}% p95 {c['p95']:.0f}% 峰值 {c['max']:.0f}%"
+                   if c["available"] else "CPU 不可得")
+        logger.log(
+            f"[鉴宝][性能] {reason}：OCR 应用 {o['applied']} / "
+            f"超龄丢弃 {o['stale_drops']} / 过期丢弃 {o['expired_drops']} / "
+            f"丢弃率 {o['drop_ratio'] * 100:.1f}% | "
+            f"报价窗口 应用 {w['applied']} / 丢弃 {w['stale_drops'] + w['expired_drops']}"
+            f"（{w['drop_ratio'] * 100:.1f}%）| "
+            f"时效 p50 {o['age_ms']['p50']:.0f}ms p95 {o['age_ms']['p95']:.0f}ms"
+            f"（闸 {o['age_gate_ms']:.0f}ms）| "
+            f"第二段耗时 p50 {o['dur_ms']['p50']:.0f}ms p95 {o['dur_ms']['p95']:.0f}ms | "
+            f"决策帧间隔 p50 {r['tick_gap_ms']['p50']:.0f}ms p95 {r['tick_gap_ms']['p95']:.0f}ms"
+            f"（≈{r['fps']:.1f} 次/秒）| {cpu_txt} | "
+            f"落盘 入队 {io_['enqueued']} / 丢帧 {io_['dropped']}"
+            f"（{io_['drop_ratio'] * 100:.1f}%）/ 队列峰值 {io_['queue_peak']}"
+            f"/{io_['queue_max']} | 识别健康 {h['level']}"
+            f"（{h.get('scope', '-')} {h.get('drop_ratio', 0) * 100:.1f}%）",
+            "INFO",
+        )
+
 
     # ---------- 每日划分（凌晨 5 点为界）----------
     def _refresh_daily_bucket(self, now: datetime | None = None) -> None:
