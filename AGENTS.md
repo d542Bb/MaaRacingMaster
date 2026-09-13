@@ -14,7 +14,7 @@
 1. **生态里已有什么** —— 一手核查并附出处：MaaFramework Pipeline 协议（maafw\.com/docs）、MaaPipelineEditor（github.com/kqcoxn/MaaPipelineEditor，在线 mpe.codax.site，支持 iframe 嵌入 + LocalBridge）、MaaDebugger、MaaInspector、MaaHub、ProjectInterface；以及本仓库既有实现。
 2. **为什么不能用** —— 确需扩展时，用生态的标准扩展点（Custom 识别/动作、custom 参数、`attach` 字段）在上层做，写明与标准的差距；**禁止另起平行真源**。
 
-禁止未经检索宣称"生态没有 X"。本项目已因违反此条付出整版 v3 schema 的返工代价（v3 五段概念是 pipeline 协议的重复发明）。回答"有没有现成的"之前，把这句话读三遍。
+禁止未经检索宣称"生态没有 X"。回答"有没有现成的"之前，把这句话读三遍。
 
 ## 信源路由（按问题类型查出处，禁止凭印象作答）
 
@@ -46,15 +46,13 @@
 
 - Win32 / WGC / XInput / ViGEm / WebView2 等平台事实 → platform 层，插件不得直接接触
 
-**分层靠引用方向，不靠目录**（MaaFW 节点名全城唯一、协议无命名空间，详见 MAAFW\_GUIDE §5.6）：
-core 真源**不得占用也不得引用** `<module>.` 节点名。"引用"= 节点里一切按名字指人的位置
-（`next`/`on_error`、And/Or 按名子项、`anchor` 对象 value）；通用层**不指向任何模块节点**，
-需要被使用时由业务层自行声明那条边，方向永不反向——此红线由 `check_truth.namespace_checks`
-机检，不可口头遵守。
+**分层靠引用方向，不靠目录**：core 真源不得占用、也不得引用 `<module>.` 节点名；需要被使用时
+由业务层自行声明那条边，方向永不反向——此红线由 `check_truth.namespace_checks` 机检，
+不可口头遵守。协议事实与"按名字指人"的完整口径唯一载于 MAAFW\_GUIDE §5.6，本文件不复制。
 
 **过早抽象与重复造轮子同样是债**：抽公共层（core 目录、共用 pipeline、通用协议）之前必须先答
 「第二个使用者是谁、今天是否真实存在」；答不出就不抽——只有一个实现时抽出的"公共层"，内容必然
-全是那个实现的私货（2026-09-10 已为这条付过一次归位成本）。
+全是那个实现的私货（实证案例载于 MAAFW\_GUIDE §5.6）。
 
 **问题分级**：A 类（纯设计：函数拆分、命名、结构）直接做；B 类（谁创建/谁持有）grep 代码回答，不靠回忆；C 类（外部系统行为：是否阻塞/释放/污染）必须写最小实验到 `tools/experiments/<主题>/`，禁止靠猜。实验结论写入 memory-ws，生产化坑点进对应域 CODE\_WIKI。
 
