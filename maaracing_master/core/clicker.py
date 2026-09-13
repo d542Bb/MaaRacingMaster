@@ -302,6 +302,17 @@ class Clicker:
             return None
         return getattr(self._gamepad, "last_pos", None)
 
+    def press_button(self, button, duration: float = 0.15) -> bool:
+        """经已绑定的手柄导航器按一个按钮（按下→update→按住→松开→update）。
+
+        与点击共用同一个虚拟设备、同一条租约，不另开输入口子。未绑定手柄时
+        返回 False——按键能力只存在于 gamepad 模式，调用方据此走失败分支，
+        不得静默当成成功。
+        """
+        if self._gamepad is None:
+            return False
+        return bool(self._gamepad.press_confirm(button, duration=duration))
+
     @property
     def last_pos(self) -> tuple[int, int] | None:
         """最近一次成功执行的屏幕坐标（供调用方日志/事件记录）。"""

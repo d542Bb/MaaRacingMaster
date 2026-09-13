@@ -208,3 +208,66 @@ def test_click_action_rejects_zero_box(pure_maa):
     argv.box = (0, 0, 0, 0)
     assert act.run(None, argv) is False
     graph.click.assert_not_called()
+
+
+def test_input_action_point_goes_through_click_with_no_box(pure_maa):
+    """point = 归一化 0..1 直送 graph.click；无识别框可给，box 必须是 None。"""
+    graph = MagicMock()
+    graph.click.return_value = True
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.wake"
+    argv.custom_action_param = json.dumps({"point": [0.0, 0.0], "wait_after_ms": 0})
+    assert act.run(None, argv) is True
+    assert graph.click.call_args[0] == (0.0, 0.0, None)
+    assert graph.click.call_args[1] == {"timeout_s": 20.0}
+
+
+def test_input_action_requires_exactly_one_of_point_and_button(pure_maa):
+    """两个都给 = 意图不明；两个都不给 = 空动作。两种都当场失败。"""
+    graph = MagicMock()
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.x"
+    for bad in ({}, {"point": [0.5, 0.5], "button": "B"}):
+        argv.custom_action_param = json.dumps(bad)
+        assert act.run(None, argv) is False
+    graph.click.assert_not_called()
+    graph.press_gamepad_button.assert_not_called()
+
+
+def test_input_action_rejects_out_of_range_or_malformed_point(pure_maa):
+    """point 越界/形态非法一律拒绝——0..1 口径与真源其余几何同族，写错不能盲点。"""
+    graph = MagicMock()
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.x"
+    for bad in ([0, 900], [1.5], "0,0", None):
+        argv.custom_action_param = json.dumps({"point": bad})
+        assert act.run(None, argv) is False
+    graph.click.assert_not_called()
+
+
+def test_input_action_button_maps_by_table_and_never_fakes_success(pure_maa):
+    """button 名查表送真按钮对象；手柄未绑定（宿主返回 False）时不得报成功。"""
+    from maaracing_master.core.vgamepad_lazy import vg
+    graph = MagicMock()
+    graph.press_gamepad_button.return_value = False
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.back"
+    argv.custom_action_param = json.dumps({"button": "b", "wait_after_ms": 0})
+    assert act.run(None, argv) is False
+    assert graph.press_gamepad_button.call_args[0][0] == vg.XUSB_BUTTON.XUSB_GAMEPAD_B
+
+
+def test_input_action_rejects_unknown_button_names(pure_maa):
+    """扳机 LT/RT 是模拟量、不在按键表里；写错名字必须失败而不是按一个别的键。"""
+    graph = MagicMock()
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.x"
+    for bad in ("LT", "RT", "TRIGGER", "H", ""):
+        argv.custom_action_param = json.dumps({"button": bad})
+        assert act.run(None, argv) is False
+    graph.press_gamepad_button.assert_not_called()

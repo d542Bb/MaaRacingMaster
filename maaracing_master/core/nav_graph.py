@@ -67,6 +67,8 @@ CORE_RES_DIR = Path(__file__).resolve().parent / "resources"
 
 RECOGNIZER_NAME = "MaaRM_Template"
 ACTION_NAME = "MaaRM_Click"
+# 输入原语：固定坐标点击 / 手柄按键——识别框帮不上的两种场合（唤醒点、页面回退）。
+INPUT_ACTION_NAME = "MaaRM_Input"
 
 
 def _parse(raw: str) -> dict:
@@ -220,6 +222,89 @@ class ClickAction(CustomAction):
         return ok
 
 
+# 真源里可写的按钮名 → vgamepad 按钮位（一手核对：vgamepad/win/vigem_commons.py）。
+# 扳机 LT/RT 故意不在表里：它们是模拟量（left_trigger(value)），没有"按下-松开"
+# 语义，写进按键表只会得到一个常量而游戏毫无反应。
+GAMEPAD_BUTTONS = {
+    "A": "XUSB_GAMEPAD_A", "B": "XUSB_GAMEPAD_B",
+    "X": "XUSB_GAMEPAD_X", "Y": "XUSB_GAMEPAD_Y",
+    "LB": "XUSB_GAMEPAD_LEFT_SHOULDER", "RB": "XUSB_GAMEPAD_RIGHT_SHOULDER",
+    "START": "XUSB_GAMEPAD_START", "BACK": "XUSB_GAMEPAD_BACK",
+    "LS": "XUSB_GAMEPAD_LEFT_THUMB", "RS": "XUSB_GAMEPAD_RIGHT_THUMB",
+    "UP": "XUSB_GAMEPAD_DPAD_UP", "DOWN": "XUSB_GAMEPAD_DPAD_DOWN",
+    "LEFT": "XUSB_GAMEPAD_DPAD_LEFT", "RIGHT": "XUSB_GAMEPAD_DPAD_RIGHT",
+}
+
+
+class InputAction(CustomAction):
+    """输入原语动作：固定坐标点击、手柄按键——MaaRM_Click 覆盖不到的两种场合。
+
+    为什么必须自建而不用框架内置 action：v4 的 Tasker 绑的是 WgcapController，
+    它的 click/click_key/key_down/… 全部 `return True` 占位（宪法 6：帧只从中心
+    缓存来，输入也不经框架通道）。内置动作在这里会**假成功**——日志干净、屏幕上
+    什么都不发生。真实输入只有这一条通路，与 MaaRM_Click 同一个出口。
+
+    节点参数（point / button 二选一，同给或都不给都算配置错误）：
+        point         [cx, cy]  归一化 0..1（与真源一切几何同族），走 graph.click
+        button        "B"       GAMEPAD_BUTTONS 表里的名字
+        timeout_s     20.0      point：手柄导航到位的等待上限
+        duration      0.15      button：按住时长（秒）
+        wait_after_ms 800       输入后的停顿（页面动画），两种模式共用
+    """
+
+    def __init__(self, graph: "NavGraph"):
+        super().__init__()
+        self._graph = graph
+
+    def run(self, context, argv):
+        p = _parse(argv.custom_action_param)
+        point, button = p.get("point"), p.get("button")
+        if (point is None) == (button is None):
+            logger.log(f"[v4] 「{argv.node_name}」MaaRM_Input 参数非法：point 与 "
+                       f"button 必须且只能给一个（收到 {p!r}）", "ERROR")
+            return False
+        ok = (self._run_point(argv, point, p) if point is not None
+              else self._run_button(argv, button, p))
+        self._graph.ctx.lifecycle.sleep(float(p.get("wait_after_ms", 800)) / 1000.0)
+        return ok
+
+    def _run_point(self, argv, point, p) -> bool:
+        try:
+            cx, cy = float(point[0]), float(point[1])
+        except (TypeError, ValueError, IndexError):
+            logger.log(f"[v4] 「{argv.node_name}」point 须为 [x, y] 两个归一化数，"
+                       f"收到 {point!r}", "ERROR")
+            return False
+        if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0):
+            logger.log(f"[v4] 「{argv.node_name}」point 越界 {point!r}（口径 0..1）",
+                       "ERROR")
+            return False
+        logger.log(f"[v4] 「{argv.node_name}」固定坐标点击 ({cx:.3f},{cy:.3f})", "DEBUG")
+        return self._graph.click(cx, cy, None,
+                                 timeout_s=float(p.get("timeout_s", 20.0)))
+
+    def _run_button(self, argv, button, p) -> bool:
+        key = button.upper() if isinstance(button, str) else ""
+        attr = GAMEPAD_BUTTONS.get(key)
+        if attr is None:
+            logger.log(f"[v4] 「{argv.node_name}」button={button!r} 不在按钮表里"
+                       f"（可选 {'/'.join(GAMEPAD_BUTTONS)}；LT/RT 是模拟扳机，不按键）",
+                       "ERROR")
+            return False
+        from maaracing_master.core.vgamepad_lazy import vg
+        try:
+            btn = getattr(vg.XUSB_BUTTON, attr)   # 懒代理：无驱动机器在这里抛
+        except Exception as exc:  # noqa: BLE001 —— 驱动缺失必须是可诊断的失败
+            logger.log(f"[v4] 「{argv.node_name}」按 {key} 放弃：虚拟手柄不可用"
+                       f"（{exc}）→ 需安装 ViGEmBus 驱动", "ERROR")
+            return False
+        ok = self._graph.press_gamepad_button(btn, duration=float(p.get("duration", 0.15)))
+        if not ok:
+            logger.log(f"[v4] 「{argv.node_name}」按 {key} 未执行（手柄未绑定或仅 "
+                       "gamepad 模式可用）", "WARNING")
+        return ok
+
+
 def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str) -> bool:
     """支持互指文件集的 post_pipeline：多条目（目录或单文件）合并临时目录后一次 post。
 
@@ -297,6 +382,7 @@ class NavGraph:
         self._resource.register_custom_recognition(
             RECOGNIZER_NAME, TemplateRecognizer(self, cursor_pos_provider=self.cursor_pos))
         self._resource.register_custom_action(ACTION_NAME, ClickAction(self))
+        self._resource.register_custom_action(INPUT_ACTION_NAME, InputAction(self))
         self._clicker: Clicker | None = None
         self._loaded = False
         self._last_frame = None   # 最近一次识别帧（只为动作桥换算框中心提供尺寸）
@@ -405,6 +491,17 @@ class NavGraph:
         if self._clicker is None:
             self._clicker = Clicker(self.ctx.hwnd, self.ctx.click_mode)
         return self._clicker
+
+    def press_gamepad_button(self, button, duration: float = 0.15) -> bool:
+        """按一个手柄键（与点击共用同一个虚拟设备、同一条租约）。
+
+        只有 gamepad 模式且手柄已绑定才可能成功；未绑定时返回 False，由调用方走
+        on_error——按键不存在"静默成功"这条路径。
+        """
+        clicker = self._ensure_clicker()
+        if not clicker.gamepad_bound:
+            return False
+        return clicker.press_button(button, duration=duration)
 
     # ---------- 跑图 ----------
 
@@ -561,6 +658,8 @@ class NavKitV4:
             RECOGNIZER_NAME,
             TemplateRecognizer(self._graph, cursor_pos_provider=self._graph.cursor_pos))
         self._resource.register_custom_action(ACTION_NAME, ClickAction(self._graph))
+        self._resource.register_custom_action(INPUT_ACTION_NAME,
+                                              InputAction(self._graph))
         for name, inst in bridges:
             if isinstance(inst, CustomAction):
                 self._resource.register_custom_action(name, inst)
