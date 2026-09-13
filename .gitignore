@@ -33,10 +33,9 @@ debug.txt
 .idea/
 *.swp
 
-# AI 工作目录 / 本机 harness 配置（不同步到远端；.trae/ 下已跟踪的旧文件用 git rm --cached 移出）
+# 本机 harness 配置（不同步到远端；.trae/ 下已跟踪的旧文件用 git rm --cached 移出）
 .trae/
 .claude/
-AGENTS.md
 
 # AI 生成的 plan 文档（过程产物，不入库；归档后移 archive/）
 docs/plan/
