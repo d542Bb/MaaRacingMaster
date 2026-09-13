@@ -41,6 +41,9 @@
   })();
   window.mra = mra;
 
+  // 静态 HTML 的 <i data-icon> 占位替换为真源 SVG（icons.js 先于本文件加载）
+  MRAIcons.hydrate(document);
+
   // ---------- 工具 ----------
   const $ = (id) => document.getElementById(id);
   const state = {
@@ -494,7 +497,7 @@
             '<div class="nr-title">v' + d.latest_tag + ' 已发布</div>' +
             '<div class="nr-sub">' + (d.published_at ? '发布于 ' + d.published_at + ' · ' : '') + '建议更新到最新版本</div>' +
           '</div>' +
-          '<button class="mra-btn mra-btn--primary" id="btn-go-download" type="button">前往下载<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg></button>';
+          '<button class="mra-btn mra-btn--primary" id="btn-go-download" type="button">前往下载' + MRAIcons.svg('arrow-up-right') + '</button>';
         $('btn-go-download').addEventListener('click', () => openUrl(d.download_url));
       } else {
         renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本');
@@ -1005,7 +1008,7 @@
       // ▶ 跟随当前阶段：当前项显示三角指示器，其余项清空
       const icon = items[i].querySelector('.bp-icon');
       icon.innerHTML = cur
-        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>'
+        ? MRAIcons.svg('media-play')
         : '';
       const badge = items[i].querySelector('.bp-badge');
       if (cur && !badge) {
@@ -1384,21 +1387,21 @@
             <div class="detect-grid">
               <div class="mra-detect-item">
                 <div class="mra-detect-icon mra-detect-icon--coin">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></svg>
+                  ${MRAIcons.svg('circle-dollar-sign')}
                 </div>
                 <span class="mra-detect-value" id="${mid}-detect-coin">--</span>
                 <span class="mra-detect-label">金币</span>
               </div>
               <div class="mra-detect-item">
                 <div class="mra-detect-icon mra-detect-icon--obstacle">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>
+                  ${MRAIcons.svg('car')}
                 </div>
                 <span class="mra-detect-value" id="${mid}-detect-car">--</span>
                 <span class="mra-detect-label">障碍车</span>
               </div>
               <div class="mra-detect-item">
                 <div class="mra-detect-icon mra-detect-icon--bonus">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/></svg>
+                  ${MRAIcons.svg('gift')}
                 </div>
                 <span class="mra-detect-value" id="${mid}-detect-bonus">--</span>
                 <span class="mra-detect-label">奖励车</span>
@@ -1612,14 +1615,14 @@
             <h3>实时预览</h3>
             <div class="log-head-actions">
               <button class="icon-btn" id="${mid}-btn-preview-toggle" title="暂停预览">
-                <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-                <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/></svg>
+                ${MRAIcons.svg('media-play', {class: 'icon-play'})}
+                ${MRAIcons.svg('media-pause', {class: 'icon-pause'})}
               </button>
               <button class="icon-btn" id="${mid}-btn-preview-max" title="放大">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+                ${MRAIcons.svg('scan')}
               </button>
               <button class="icon-btn" id="${mid}-btn-preview-min" title="还原" style="display:none;">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
+                ${MRAIcons.svg('shrink')}
               </button>
             </div>
           </div>
@@ -1627,7 +1630,7 @@
             <div class="preview-canvas">
               <img class="preview-img" id="${mid}-preview-img" alt="PEEP 实时预览">
               <div class="preview-empty" id="${mid}-preview-empty">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                ${MRAIcons.svg('camera')}
                 <span>PEEP 开启后显示实时画面</span>
               </div>
             </div>
@@ -1747,19 +1750,19 @@
           <div class="card-body">
             <div class="tool-grid">
               <button class="mra-tool-btn" data-tool="screenshot">
-                <svg class="mra-tool-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                ${MRAIcons.svg('camera', {class: 'mra-tool-btn-icon'})}
                 <span class="mra-tool-btn-label">截图测试</span>
               </button>
               <button class="mra-tool-btn" data-tool="folder">
-                <svg class="mra-tool-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
+                ${MRAIcons.svg('folder-open', {class: 'mra-tool-btn-icon'})}
                 <span class="mra-tool-btn-label">调试文件夹</span>
               </button>
               <button class="mra-tool-btn" data-tool="template">
-                <svg class="mra-tool-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M22 12h-4"/><path d="M6 12H2"/><path d="M12 6V2"/><path d="M12 22v-4"/></svg>
+                ${MRAIcons.svg('crosshair', {class: 'mra-tool-btn-icon'})}
                 <span class="mra-tool-btn-label">模板匹配</span>
               </button>
               <button class="mra-tool-btn" data-tool="cache">
-                <svg class="mra-tool-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                ${MRAIcons.svg('trash', {class: 'mra-tool-btn-icon'})}
                 <span class="mra-tool-btn-label">清空缓存</span>
               </button>
             </div>
