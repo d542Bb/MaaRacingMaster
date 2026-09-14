@@ -94,10 +94,12 @@ class RoundSnapshot:
         return self.opponent_bids[self.opponent_ids.index(player_id)]
 
     def is_complete(self) -> bool:
-        if not (self.h > 0 and self.our_bid > 0):
+        # 0 = 合法公开事实（我方/对手该回合并未出价，如放弃/掉线）——公开盘面读到的
+        # 对手价格依然有效，不得因「我方=0」连坐作废整张快照（真机教训 2026-09-14：
+        # R2 执行事故出 0 → R3 快照作废 → 误判「无竞争者可压」→ 又 0 出价 → 卡死）。
+        # 仅 -1（未读到）才算信息缺失。构建快照时已保证 4 槽全部 locked，不会出现 -1。
+        if not (self.h > 0 and self.our_bid >= 0):
             return False
-        # 0 = 对手掉线/没出价（视为有效最低价，可参与捡漏/赚蛋）；
-        # 仅 -1 = 未读到才算信息缺失。构建快照时已保证 4 槽全部 locked，不会出现 -1。
         return all(b >= 0 for b in self.opponent_bids)
 
 
@@ -322,6 +324,16 @@ class BidStrategy:
         #    分红唯一来源=赢家亏钱（第一名亏→第2名15%/第3名10%/第4名5%）；
         #    赢家盈利则未拍中者收入为 0，但出价不成交就不花钱——卡第二是免费彩票。
         #    upper 用 M 卡安全垫：对手约 30% 概率退出/降价，防止意外当第一接盘。
+        # ②-前置守卫：卡第二的定价依据是**上一轮快照里的对手位次**；没有可用快照时
+        #    opp_second/opp_third 只能是 0，那是"没数据"不是"对手都不出价"——绝不许
+        #    据此 pass 出 0（真机教训 2026-09-14），退回观察价等捡漏。
+        if not opp:
+            price = min(ctx.h_seen[-1], balance) if ctx.h_seen else 1
+            return BidDecision(
+                price=price, decision=DECISION_OBSERVE, vhat=vhat,
+                max_win_bid=line, opponent_max=m_power, trigger_bid=None,
+                reason=f"R{r} 无完整上轮快照，卡第二缺位次依据: 退回观察价={price} 等捡漏",
+            )
         return self._try_second(
             r, m_power,
             opp[1] if len(opp) >= 2 else 0,

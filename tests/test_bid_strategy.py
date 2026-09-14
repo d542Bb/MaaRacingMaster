@@ -144,6 +144,28 @@ def test_r5_disconnected_bidder_second():
     assert_decision("R5 掉线玩家参与→卡第二(紧贴)", dec, DECISION_TARGET_SECOND, 44001)
 
 
+# ----------------------------------------------------------------------
+# 真机 2026-09-14 事故回归：我方=0 连坐作废快照 → 误判「无竞争者可压」→ 0 出价卡死
+# ----------------------------------------------------------------------
+def test_r3_our_zero_snapshot_valid_not_pass():
+    """我方=0（放弃/执行事故）不得作废快照——对手三位 >0 是真实公开信息。"""
+    last = snap(2, 136600, 0, (87600, 131000, 92500), epoch=2)
+    assert last.is_complete(), "我方=0 且对手位次 >0 的快照应判完整"
+    dec = BidStrategy().decide(ctx(3, (111100, 136600), last, 200000))
+    assert dec.decision != DECISION_PASS, f"我方=0 被误判为无竞争者: {dec.reason}"
+    assert dec.price > 0, f"不得出 0 价: {dec.reason}"
+
+
+def test_r3_missing_snapshot_history_fire_observes_not_pass():
+    """上轮快照不完整且历史火力>0：卡第二缺位次依据 → 退回观察价，不把「没数据」当「对手全 0」。"""
+    broken = snap(2, 136600, -1, (87600, 131000, 92500), epoch=2)
+    assert not broken.is_complete()
+    c = BidContext(round_no=3, h_seen=(111100, 136600), last_round=broken,
+                   balance=200000, opp_high_history=(131000,))
+    dec = BidStrategy().decide(c)
+    assert_decision("缺快照+有历史火力→observe", dec, DECISION_OBSERVE, 136600)
+
+
 def test_r5_three_high_tight_second():
     dec = BidStrategy().decide(
         ctx(5, (30000, 35000, 40000),
