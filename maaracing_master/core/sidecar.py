@@ -976,7 +976,7 @@ class SidecarService:
         self._last_log_seq = new_seq
         result = []
         if truncated:
-            result.append("[!!] 日志界面因落后过多已自动截断，以下为最新日志（清空界面可重看完整实时流）")
+            result.append("[!!] 日志界面因落后过多已自动截断，以下为最新日志")
         result.extend(lines)
         return (True, {"lines": result}, None)
 

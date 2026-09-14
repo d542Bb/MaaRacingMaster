@@ -10,9 +10,11 @@ sidecar 启动时的 profile 回读启用。日志根 = user_data_dir()/logs，
 设计要点：
 - 进程内行缓冲用有界 deque（环形），长时间运行不随日志量增长。
 - GUI 增量读取用单调序列号（_seq）作游标，而非行数；环形回绕后仍不重不漏。
-- 落盘按级别分档：INFO/WARNING/ERROR 写入 `<基准>.log`（可上报），
-  DEBUG/TRACE 写入 `<基准>.debug.log`（排查用），两者分别持句柄、轮转、
-  按会话组做保留清理。DEBUG 档可能含本机绝对路径，分档后上报只需发 INFO 档。
+- 落盘**单流全量**：一次开启只建一个 `MaaRM_<ts>.log`，各级别按发生顺序写入。
+  不按级别分档——诊断是顺序的（「失败之前发生了什么」），按级别切分会把时序切断
+  且不可逆：切出的两份文件各自都读不通（DEBUG 档没有业务锚点，INFO 档没有诊断
+  细节）。分级过滤留给读侧（GUI）与导出侧，写侧只保证时序完整。
+- 按大小轮转 + 启动时按会话组保留清理，占用有上限。
 - 写盘持句柄 + Lock 跨线程安全。
 """
 
@@ -89,11 +91,12 @@ class Logger:
     # 进程内行缓冲上限。实测峰值约 4 行/秒，按最坏情况放大 25 倍取 100 行/秒，
     # 5000 行对应 50 秒最坏积压，安全裕度充足。
     BUFFER_CAPACITY = 5000
-    # 落盘分档参数：单档轮转上限 / 每会话每档备份份数 / 启动保留的会话组数。
+    # 落盘参数：单文件轮转上限 / 备份份数 / 启动保留的会话组数。
     MAX_BYTES = 16 * 1024 * 1024   # 16 MB（实测单档 <100KB，此为防跑飞安全阀）
-    BACKUP_COUNT = 3               # 单会话单档最多 4 份 × 16MB = 64MB
+    BACKUP_COUNT = 3               # 单会话最多 4 份 × 16MB = 64MB
     KEEP_SESSIONS = 20             # 会话组按 MaaRM_<ts> 前缀归组，整组同清
-    # 会话组文件形态：MaaRM_+YYYYMMDD_HHMMSS，主档 .log，debug 档 .debug.log，轮转尾标 .N
+    # 会话组文件形态：MaaRM_+YYYYMMDD_HHMMSS，主档 .log，轮转尾标 .N。
+    # `(?:\.debug)?` 兼容旧版分档产物，让保留清理顺带回收历史 .debug.log。
     _SESSION_RE = re.compile(r"MaaRM_(\d{8}_\d{6})(?:\.debug)?\.log(?:\.\d+)?$")
 
     def __init__(self, log_dir: Path):
@@ -105,7 +108,7 @@ class Logger:
         self._seq = 0                 # 每写一行 +1，只增不减；GUI 增量读取的单调游标
         self._lock = Lock()
         self._session_ts = None       # 当前会话时间戳（YYYYMMDD_HHMMSS），用于跳过一次当前会话清理
-        self._tiers: dict[str, _TierFile] = {}
+        self._tier: _TierFile | None = None   # 单流写盘句柄（未启用写盘时为 None）
         self._channel_levels: dict[str, str] = {}  # 通道 → 级别（运行时调级）；查不到回落 _min_level
         self._min_level: str | None = None        # 全局最低记录级别；None = 全记录（兼容旧行为）
 
@@ -117,44 +120,40 @@ class Logger:
     def set_file_logging(self, enabled: bool) -> None:
         """开关磁盘写入。
 
-        开启：惰性创建日志目录并为本次开启新建一个会话组（INFO 档 + DEBUG 档）；
-        关闭：立即停止写盘（已写文件保留，内存缓冲继续累积，GUI 显示不受影响）。
+        开启：惰性创建日志目录并为本次开启新建一个日志文件（单流全量，各级别按
+        发生顺序写入）；关闭：立即停止写盘（已写文件保留，内存缓冲继续累积，
+        GUI 显示不受影响）。
         """
         self._file_enabled = bool(enabled)
         if self._file_enabled:
             try:
                 self._log_dir.mkdir(parents=True, exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                base = self._log_dir / f"MaaRM_{ts}"
                 self._session_ts = ts          # 与 _SESSION_RE 的 group(1) 同形（带下划线）
-                self.log_file = Path(f"{base}.log")
-                self._tiers = {
-                    # 注意：传字符串路径用内置 open（buffering=1 行缓冲；本环境 open 的
-                    # line_buffering 关键字被拦截，故用等价的标准 buffering=1）。
-                    "info": _TierFile(self.log_file, self.MAX_BYTES, self.BACKUP_COUNT),
-                    "debug": _TierFile(Path(f"{base}.debug.log"), self.MAX_BYTES, self.BACKUP_COUNT),
-                }
+                self.log_file = self._log_dir / f"MaaRM_{ts}.log"
+                # 注意：传字符串路径用内置 open（buffering=1 行缓冲；本环境 open 的
+                # line_buffering 关键字被拦截，故用等价的标准 buffering=1）。
+                self._tier = _TierFile(self.log_file, self.MAX_BYTES, self.BACKUP_COUNT)
             except OSError:
                 self._file_enabled = False   # 目录建不出来（无权限等）：回到关闭态，不干扰主流程
                 self.log_file = None
-                self._tiers = {}
+                self._tier = None
                 self._session_ts = None
         else:
-            self._close_all_tiers()
+            self._close_tier()
             self.log_file = None
-            self._tiers = {}
             self._session_ts = None
 
-    def _close_all_tiers(self) -> None:
-        """关闭并清空全部写盘句柄（幂等）。假设持有 `_lock` 或无并发写盘。"""
-        tiers, self._tiers = self._tiers, {}
-        for t in tiers.values():
-            t.close()
+    def _close_tier(self) -> None:
+        """关闭写盘句柄（幂等）。假设持有 `_lock` 或无并发写盘。"""
+        tier, self._tier = self._tier, None
+        if tier is not None:
+            tier.close()
 
     def close(self) -> None:
         """关闭写盘句柄并 flush 尾部（进程退出路径调用）。"""
         with self._lock:
-            self._close_all_tiers()
+            self._close_tier()
 
     def prune_sessions(self, keep: int = KEEP_SESSIONS) -> None:
         """按会话组清理 logs/ 下旧日志，保留最近 `keep` 组。
@@ -189,8 +188,9 @@ class Logger:
         """记录一行日志。
 
         channel=None → DEFAULT_CHANNEL（app）。通道管「要不要打」（调级）：
-        低于该通道有效级别的行直接丢弃（不进内存、不落盘）；级别本身仍负责
-        「打到哪个档位文件」。通道级别查不到时回落到 _min_level（None=全记录）。
+        低于该通道有效级别的行直接丢弃（不进内存、不落盘）。通道级别查不到时
+        回落到 _min_level（None=全记录）。级别不参与写侧落点判定——落盘是单流
+        全量，级别过滤只发生在读侧（GUI）与导出侧。
         """
         channel = channel or self.DEFAULT_CHANNEL
         eff = self._channel_levels.get(channel, self._min_level)
@@ -201,12 +201,8 @@ class Logger:
         with self._lock:
             self._seq += 1
             self._lines.append((self._seq, line))
-            if self._tiers:
-                # 级别决定档位：DEBUG/TRACE → 排查档；其余 → 上报档。
-                tier = "debug" if self.LEVELS.get(level, 2) <= self.LEVELS["DEBUG"] else "info"
-                t = self._tiers.get(tier)
-                if t is not None:
-                    t.write(line)
+            if self._tier is not None:
+                self._tier.write(line)
 
     def set_channel_level(self, channel: str, level: str) -> None:
         """运行时调整某通道的最低记录级别（channel 名不透明字符串）。"""
@@ -238,7 +234,11 @@ class Logger:
             truncated = False
             if self._lines:
                 oldest_seq = self._lines[0][0]
-                if seq < oldest_seq:
+                # 游标 seq 的语义是「只要 seq 之后的行」，故最早需要的是 seq+1；
+                # 只有 seq+1 也已落出缓冲才算真丢行，即 seq < oldest_seq - 1。
+                # 写成 seq < oldest_seq 会误判边界：缓冲未回绕时 oldest_seq 恒为 1，
+                # 首帧游标 0 即落在边界上，会让 GUI 每次会话首次拉取都插一条假的截断提示。
+                if seq < oldest_seq - 1:
                     truncated = True
                 for s, line in self._lines:
                     if s <= seq:

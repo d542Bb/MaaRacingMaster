@@ -4,7 +4,7 @@
 覆盖计划（log-channel-separation）：
 - P1 T2 有界环形缓冲：回绕后 get_lines_since 不重不漏、truncated 语义
 - P1 T4 加锁持句柄写盘：多线程并发写行完整、无交错、close 幂等
-- P2 T3 落盘分档 + 轮转 + 会话保留
+- P2 T3 单流落盘 + 轮转 + 会话保留
 - P3 T1 通道机制：通道级别覆盖与回落、DEFAULT 回落
 """
 
@@ -68,6 +68,29 @@ def test_get_lines_since_truncated_flag(log):
     oldest = Logger.BUFFER_CAPACITY + 5 - cap + 1
     _, _, truncated2 = log.get_lines_since(oldest, "INFO")    # 缓冲内 → 不截断
     assert truncated2 is False
+
+
+def test_get_lines_since_truncated_boundary(log):
+    """边界：游标恰好等于 oldest-1 时不算截断（此时 seq+1 仍在缓冲内）。
+
+    这是 `seq < oldest` 与 `seq < oldest-1` 两式的唯一分歧点。缓冲未回绕时
+    oldest 恒为 1，GUI 首帧游标 0 正落在此边界上——误判会让每次会话首次拉取
+    都插一条假的「落后过多已截断」提示。上一条用例取的是 seq=1 与 seq=oldest
+    两点，恰好跨过该边界而未覆盖。
+    """
+    log.log("first")
+    lines, _, truncated = log.get_lines_since(0, "INFO")
+    assert truncated is False                      # 未回绕：0 之后的行全在缓冲里
+    assert [_msg(l) for l in lines] == ["first"]
+
+    for i in range(Logger.BUFFER_CAPACITY):
+        log.log(f"line-{i}")
+    oldest = log._lines[0][0]
+    assert oldest > 1                              # 已回绕
+    _, _, at_boundary = log.get_lines_since(oldest - 1, "INFO")
+    assert at_boundary is False                    # 要的行从 oldest 起，都在
+    _, _, past_boundary = log.get_lines_since(oldest - 2, "INFO")
+    assert past_boundary is True                   # oldest-1 本身已丢
 
 
 def test_get_lines_since_level_filter(log):
@@ -138,27 +161,21 @@ def test_file_logging_disabled_ignored_writes(log):
     assert list(log._log_dir.glob("MaaRM_*")) == []
 
 
-# ---------- T3 分档落盘 + 轮转 + 会话保留（P2） ----------
+# ---------- T3 单流落盘 + 轮转 + 会话保留（P2） ----------
 
-def test_tiered_files_info_vs_debug(tmp_path: Path):
-    """同一次开启生成 INFO 档与 DEBUG 档两个文件，级别各归各位。"""
+def test_single_file_keeps_all_levels_in_order(tmp_path: Path):
+    """单流全量：一次开启只建一个文件，各级别按发生顺序写入（时序不被打散）。"""
     log = Logger(tmp_path)
     log.set_file_logging(True)
     log.log("i", "INFO")
-    log.log("w", "WARNING")
     log.log("d", "DEBUG")
+    log.log("w", "WARNING")
     log.log("t", "TRACE")
     log.close()
-    info_files = list(tmp_path.glob("MaaRM_*.log"))
-    debug_files = [p for p in info_files if ".debug.log" in p.name]
-    info_files = [p for p in info_files if ".debug.log" not in p.name and not re.search(r"\.log\.\d+$", p.name)]
-    assert len(info_files) == 1 and len(debug_files) == 1
-    assert "i" in info_files[0].read_text(encoding="utf-8")
-    assert "w" in info_files[0].read_text(encoding="utf-8")
-    assert "d" not in info_files[0].read_text(encoding="utf-8")  # DEBUG 不进上报档
-    dbg = debug_files[0].read_text(encoding="utf-8")
-    assert "d" in dbg and "t" in dbg
-    assert "i" not in dbg  # INFO 不进 debug 档
+    files = [p for p in tmp_path.glob("MaaRM_*.log") if not re.search(r"\.log\.\d+$", p.name)]
+    assert len(files) == 1                        # 不再按级别分档
+    body = [_msg(l) for l in files[0].read_text(encoding="utf-8").splitlines()]
+    assert body == ["i", "d", "w", "t"]           # 顺序即发生顺序，四个级别同处一文件
 
 
 def test_rotation_triggers_and_backup_count(tmp_path: Path):
@@ -166,24 +183,22 @@ def test_rotation_triggers_and_backup_count(tmp_path: Path):
     log = Logger(tmp_path)
     log.set_file_logging(True)
     # 用小阈值强制轮转（避免真的写 16MB）
-    for t in log._tiers.values():
-        t.max_bytes = 1000  # 1KB 即轮转
+    assert log._tier is not None
+    log._tier.max_bytes = 1000  # 1KB 即轮转
     for _ in range(1200):
-        log.log("x" * 100, "ERROR")   # 全进上报档
+        log.log("x" * 100, "ERROR")
     log.close()
     names = [p.name for p in tmp_path.glob("MaaRM_*.log*")]
-    info_names = [n for n in names if ".debug" not in n]
-    assert any(n.endswith(".log.1") for n in info_names)  # 发生过轮转
-    tiers = [n for n in info_names if re.search(r"\.log\.(\d+)\.$", n)] or \
-        [n for n in info_names if re.search(r"\.\d+$", n)]
-    nums = [int(re.search(r"\.(\d+)$", n).group(1)) for n in tiers]
+    assert any(n.endswith(".log.1") for n in names)  # 发生过轮转
+    backups = [n for n in names if re.search(r"\.log\.(\d+)$", n)]
+    nums = [int(re.search(r"\.log\.(\d+)$", n).group(1)) for n in backups]
     assert nums and max(nums) <= Logger.BACKUP_COUNT
 
 
 def test_prune_keeps_recent_and_ignores_others(tmp_path: Path):
-    """保留只清旧会话组；不碰 sidecar_stderr.log / 无关文件。"""
+    """保留只清旧会话；不碰 sidecar_stderr.log / 无关文件；旧版 .debug.log 一并回收。"""
     log = Logger(tmp_path)
-    # 造 5 个会话组（互不相同的时间戳）+ 不相关文件
+    # 造 5 个会话（互不相同的时间戳），其中夹带旧版分档遗留的 .debug.log
     for i in range(5):
         ts = f"2026090{i + 1}_000000"
         (tmp_path / f"MaaRM_{ts}.log").write_text("old\n", encoding="utf-8")
@@ -194,18 +209,16 @@ def test_prune_keeps_recent_and_ignores_others(tmp_path: Path):
     # 非目标文件保留
     assert (tmp_path / "sidecar_stderr.log").exists()
     assert (tmp_path / "NOT_a_log.txt").exists()
-    # 只剩最近 1 组（2 文件：.log + .debug.log）
+    # 只剩最近 1 组：其 .log 与旧版 .debug.log 同属一组，整组同清
     remaining = sorted(p.name for p in tmp_path.glob("MaaRM_*"))
-    assert len(remaining) == 2
-    assert any(n.endswith(".log") for n in remaining)
-    assert any(n.endswith(".debug.log") for n in remaining)
+    assert remaining == ["MaaRM_20260905_000000.debug.log", "MaaRM_20260905_000000.log"]
 
 def test_prune_never_deletes_active_session(tmp_path: Path):
     """活动会话永不删；写盘关闭后回落普通保留语义。"""
     log = Logger(tmp_path)
     log.set_file_logging(True)
     log.log("active", "INFO")          # 写入当前会话文件（session_ts 此时非 None）
-    cur_file = log.log_file            # 当前会话 INFO 档
+    cur_file = log.log_file            # 当前会话文件
     assert cur_file.exists()
     log.prune_sessions(keep=0)         # keep=0：理论上全清，但活动会话必须保留
     assert cur_file.exists()           # 活动会话未被删
@@ -252,7 +265,7 @@ def test_channel_level_reset(log):
 
 
 def test_channel_filter_applies_to_disk(tmp_path: Path):
-    """通道级别过滤同样作用于落盘（被过滤行不进任何档位文件）。"""
+    """通道级别过滤同样作用于落盘（被过滤行不写盘）。"""
     log = Logger(tmp_path)
     log.set_file_logging(True)
     log.set_channel_level("treasure", "ERROR")
