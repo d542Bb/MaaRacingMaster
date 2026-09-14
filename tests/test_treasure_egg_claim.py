@@ -16,15 +16,25 @@ import pytest
 
 from maaracing_master.plugins.treasure.store import TreasureStore
 
-EGG_CHAIN_ANCHORS = (
-    "hall_back_btn", "act_get_silver_btn", "egg_panel_tabbar", "egg_task_tab3",
-    "egg_claim_red_btn", "egg_claim_title", "hall_home_btn",
-    "claim_coin_medal", "claim_score_medal",
-)
-
 POLICY_PATH = (Path(__file__).resolve().parents[1]
                / "maaracing_master" / "plugins" / "treasure"
                / "resources" / "policy" / "treasure.policy.json")
+
+
+def _load_module_class():
+    """取 TreasureModule —— 链内锚点清单的唯一真源（本文件不再手抄副本）。
+
+    历史：本文件曾手抄一份 EGG_CHAIN_ANCHORS，与 module 常量漂移（少一项
+    hall_peak_appraise_card；真源后来把它拆成独立的大厅锚点常量）。手抄副本与
+    「唯一真源」直接冲突，故改为直接 import。
+    module 顶层会 import maa.toolkit，CI 轻依赖环境下收集期即失败 → 局部导入 +
+    skip，不把本文件其余纯数据面用例一并拖下水。
+    """
+    try:
+        from maaracing_master.plugins.treasure.module import TreasureModule
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"需要完整运行时依赖（maa/…）：{exc}")
+    return TreasureModule
 
 
 class _FakeModule:
@@ -87,10 +97,12 @@ def test_record_egg_claim_missing_keys_default_zero(store):
 
 
 def test_egg_chain_anchors_inert_in_detection_plane():
+    """惰性锚点族：在 spec 有定义，但不得进检测面任何一处。"""
+    anchors = _load_module_class().EGG_CHAIN_ANCHORS
     doc = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     perception = doc["perception"]
     spec = perception["spec"]
-    for name in EGG_CHAIN_ANCHORS:
+    for name in anchors:
         anchor = spec.get(name)
         assert isinstance(anchor, dict), f"spec 缺收尾锚点 {name}"
         assert anchor["kind"] == "template" and anchor["templates"], name
@@ -98,11 +110,28 @@ def test_egg_chain_anchors_inert_in_detection_plane():
     active_names = {a for d in perception["stages"]["definitions"].values()
                     for a in (d.get("active") or [])}
     global_names = set(perception["stages"].get("global_anchors") or [])
-    leaked = [n for n in EGG_CHAIN_ANCHORS
+    leaked = [n for n in anchors
               if n in transition_ons or n in active_names or n in global_names]
     assert not leaked, f"收尾锚点泄入检测面（会被每帧扫描）: {leaked}"
     order = set(perception["stages"]["order"])
-    assert not (set(EGG_CHAIN_ANCHORS) & {s for s in order})  # 不新增阶段（A′）
+    assert not (set(anchors) & {s for s in order})  # 不新增阶段（A′）
+
+
+def test_egg_chain_lobby_anchor_is_global_not_lazy():
+    """链尾回大厅复用全局锚点：它不属于惰性清单，两者语义不得混。
+
+    拆分理由：惰性机检要求「不得进 global_anchors」，而链尾确实要复用它确认已回
+    大厅——混在一份清单里会让两条断言互相矛盾（历史正是靠测试手抄少一项来回避，
+    于是副本与真源漂移）。
+    """
+    mod = _load_module_class()
+    lobby = mod.EGG_CHAIN_LOBBY_ANCHOR
+    assert lobby not in mod.EGG_CHAIN_ANCHORS, "大厅锚点不得并入惰性清单"
+    doc = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    perception = doc["perception"]
+    assert lobby in (perception["stages"].get("global_anchors") or []), \
+        f"{lobby} 应为全局锚点（链尾回大厅的确认信号）"
+    assert isinstance(perception["spec"].get(lobby), dict), f"spec 缺 {lobby}"
 
 
 def test_egg_anchor_repointed_to_claim_popup():
@@ -184,3 +213,154 @@ def test_egg_recognize_golden_frame_counts():
     for e in res["eggs"]:
         assert e["count_rect"] is not None, f"{e['color']} 卡描边推导失败"
         assert e["count_text"] in ("×2", "x2", "×1", "x1", "2", "1")
+
+
+# ---------------------------------------------------------------------------
+# 链内点击通路：与主链路同一条出口协议（2026-09-14 修复的回归锁）
+#   背景：链内曾自成一套点击出口——硬编码关闭意图开关、提交前不消费任务槽遗留
+#   结果、结果不落事件与日志。下面四条各锁一条行为。
+# ---------------------------------------------------------------------------
+class _FakeClicker:
+    """点击器桩：记录调用序列 + 固定结果，供断言协议顺序与有界重试。"""
+
+    def __init__(self, *, mode="gamepad", busy_times=0, result=None, submit_ok=True):
+        self.mode = mode
+        self.intent = None
+        self.calls = []
+        self.last_pos = (100, 200)
+        self.cancelled = 0
+        self.submits = 0
+        self._busy_left = busy_times
+        self._result = result
+        self._submit_ok = submit_ok
+
+    def set_mode(self, mode):
+        self.calls.append(("set_mode", mode))
+        self.mode = mode
+
+    def set_intent(self, intent):
+        self.calls.append(("set_intent", intent))
+        self.intent = intent
+
+    @property
+    def need_foreground(self):
+        return self.mode == "real"
+
+    def is_busy(self):
+        self.calls.append(("is_busy",))
+        if self._busy_left > 0:
+            self._busy_left -= 1
+            return True
+        return False
+
+    def consume_result(self):
+        self.calls.append(("consume_result",))
+        return self._result
+
+    def submit_click(self, cx, cy, *, box=None, down_up_gap_ms=30, move_pause_s=0.4):
+        self.calls.append(("submit_click",))
+        self.submits += 1
+        return self._submit_ok
+
+    def cancel(self):
+        self.cancelled += 1
+
+    def order(self) -> list:
+        return [c[0] if isinstance(c, tuple) else c for c in self.calls]
+
+
+class _FakeLifecycle:
+    def __init__(self):
+        self.running = True
+
+    def sleep(self, _s):
+        return None
+
+    def request_stop(self):
+        self.running = False
+
+
+class _FakeCtx:
+    def __init__(self, intent_mode, click_mode):
+        self.intent_mode = intent_mode
+        self.click_mode = click_mode
+        self.hwnd = 1
+        self.lifecycle = _FakeLifecycle()
+
+
+class _FakeChainSelf:
+    """彩蛋链点击的最小桩：只喂 _egg_chain_click / _egg_chain_drain_slot 读到的字段。
+
+    被测方法是真身（与 test_treasure_observer 同一口径）；外围（点击器、生命周期、
+    遗留消费、结果记录）用桩，以便观察调用序列。CLICK_TIMEOUT 压到 0.05s，避免
+    「结果迟迟不回」的分支让测试真等 6 秒。
+    """
+
+    def __init__(self, clicker, *, intent_mode=False, click_mode="gamepad"):
+        mod = _load_module_class()
+        self.ctx = _FakeCtx(intent_mode, click_mode)
+        self._clicker_stub = clicker
+        self._consumed_legacy = 0
+        self._recorded = []
+        self.EGG_CHAIN_CLICK_TIMEOUT_S = 0.05
+        self.EGG_CHAIN_CLICK_RETRY_MAX = mod.EGG_CHAIN_CLICK_RETRY_MAX
+        self.EGG_CHAIN_POLL_S = 0.0
+        self.CLICK_MODE_LABELS = mod.CLICK_MODE_LABELS
+        self.CLICK_DOWN_UP_GAP_MS = 30
+        self.CLICK_MOVE_PAUSE_S = 0.0
+        self._egg_chain_click = mod._egg_chain_click.__get__(self)
+        self._egg_chain_drain_slot = mod._egg_chain_drain_slot.__get__(self)
+
+    def _get_clicker(self):
+        return self._clicker_stub
+
+    def _ensure_gamepad_bound(self):
+        return None
+
+    def _consume_click_result(self):
+        self._consumed_legacy += 1
+        self._clicker_stub.consume_result()
+
+    def _record_click(self, key, state, center, mode_label, *, ok):
+        self._recorded.append((key, state, ok))
+
+
+def test_egg_chain_click_follows_ctx_intent_mode():
+    """链内点击跟随 GUI「仅意图」开关：不得再单方面覆盖共享 Clicker 的意图状态。"""
+    clicker = _FakeClicker(result={"type": "click", "ok": True})
+    fake = _FakeChainSelf(clicker, intent_mode=True)
+    assert fake._egg_chain_click(0.1, 0.2, key="hall_back_btn") is True
+    assert clicker.intent is True, "链内点击绕过了 GUI「仅意图」开关"
+    clicker2 = _FakeClicker(result={"type": "click", "ok": True})
+    fake2 = _FakeChainSelf(clicker2, intent_mode=False)
+    assert fake2._egg_chain_click(0.1, 0.2, key="hall_back_btn") is True
+    assert clicker2.intent is False, "开关关闭时应真实点击"
+
+
+def test_egg_chain_click_drains_legacy_slot_before_submit():
+    """提交前先消化主链路遗留结果：链在决策段消费点之前触发，槽里必有残留。
+
+    真机 2026-09-14：返回键命中置信度 1.000，却因 is_busy 直接判「未点中」放弃整链。
+    """
+    clicker = _FakeClicker(busy_times=1, result={"type": "click", "ok": True})
+    fake = _FakeChainSelf(clicker)
+    assert fake._egg_chain_click(0.1, 0.2, key="hall_back_btn") is True
+    assert fake._consumed_legacy >= 1, "未消化遗留结果，首次提交会被 is_busy 拒掉"
+    order = clicker.order()
+    assert order.index("consume_result") < order.index("submit_click")
+
+
+def test_egg_chain_click_retries_submit_bounded():
+    """提交持续被拒 → 有界重试（含首点共 RETRY_MAX 次），不无限空转。"""
+    clicker = _FakeClicker(submit_ok=False)
+    fake = _FakeChainSelf(clicker)
+    assert fake._egg_chain_click(0.1, 0.2, key="hall_back_btn") is False
+    assert clicker.submits == fake.EGG_CHAIN_CLICK_RETRY_MAX
+
+
+def test_egg_chain_click_records_outcome():
+    """链内点击结果必须留痕：此前链内点击不写事件、不打日志，真机无从取证。"""
+    clicker = _FakeClicker(result={"type": "click", "ok": True})
+    fake = _FakeChainSelf(clicker)
+    fake._egg_chain_click(0.1, 0.2, key="hall_back_btn")
+    assert fake._recorded == [("hall_back_btn", "egg_chain", True)]

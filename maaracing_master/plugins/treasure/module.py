@@ -679,16 +679,24 @@ class TreasureModule(ActivityModule):
     # 无需旗标闸门/不改图拓扑。锚点读 perception.spec 的 egg_claim 族（不进 transitions/
     # active，detector 零扫描）。「有就领，没有就结束」：任一步超时只记 WARNING 后停止，
     # 绝不阻塞 request_stop。
-    EGG_CHAIN_TOTAL_BUDGET_S = 45.0    # 全链墙钟总预算，逐层递减到各步
+    EGG_CHAIN_TOTAL_BUDGET_S = 45.0    # 全链墙钟总预算：链入口算 deadline，各步等待按剩余预算 clamp
     EGG_CHAIN_POLL_S = 0.25            # 帧轮询间隔
     EGG_CHAIN_MAX_CLAIM_ROUNDS = 3     # 领取轮次上限（一次聚合弹窗通常 1 轮，防多弹窗兜底）
+    EGG_CHAIN_CLICK_TIMEOUT_S = 6.0    # 单次点击等结果超时（提交被拒与结果超时共用）
+    EGG_CHAIN_CLICK_RETRY_MAX = 3      # 单次点击的提交重试上限（含首点共 3 次）
     EGG_CHAIN_BLANK_NORM = (0.30, 0.50)    # 任务抽屉：点左侧空白 = 关抽屉（背景车场景空地，无可点物）
     EGG_CHAIN_DISMISS_NORM = (0.50, 0.55)  # 奖励弹窗「点击屏幕继续」= 点中间偏下任意处
+    # 链内惰性锚点：只在 spec 登记（不进 transitions/stages.active/global_anchors，
+    # detector 零扫描、不参阶段判定）。本清单与真源的一致性由
+    # tests/test_treasure_egg_claim.py 机检（测试直接 import 本常量，不再手抄副本）。
     EGG_CHAIN_ANCHORS = (
         "hall_back_btn", "act_get_silver_btn", "egg_panel_tabbar", "egg_task_tab3",
-        "egg_claim_red_btn", "egg_claim_title", "hall_home_btn", "hall_peak_appraise_card",
+        "egg_claim_red_btn", "egg_claim_title", "hall_home_btn",
         "claim_coin_medal", "claim_score_medal",
     )
+    # 链尾确认「已回到游戏大厅」复用的是全局锚点（检测面本就每帧扫描），故不并入
+    # EGG_CHAIN_ANCHORS——那份清单的语义是「只服务本链的惰性锚点」，混入会被惰性机检判泄漏。
+    EGG_CHAIN_LOBBY_ANCHOR = "hall_peak_appraise_card"
     # ---------- 每日循环（GUI 控制面板配置项，运行期由 sidecar 注入）----------
     #   max_daily_loops: 今日刷到第几场为止。0 = 不指定（按游戏默认 50）；有效值 1~50。
     #       实际生效上限 = min(游戏每日上限 50, 本配置)；二者取更严。
@@ -2998,19 +3006,22 @@ class TreasureModule(ActivityModule):
         if self.ctx.click_mode != "gamepad":
             return
         self._gp_bind_tried = True
-        from maaracing_master.core.capabilities import VGamepadAdapter
-        from maaracing_master.core.vgamepad_lazy import vg
 
         try:
+            # A 键语义常量经 capability 惰性求值：PEP 562 的模块级 __getattr__ 会真导入
+            # vgamepad，故放在 try 内——净机（无 ViGEmBus 驱动）时走下面的降级分支，
+            # 而不是把异常抛给主循环。模块不接触 vg 底层枚举（capabilities 明文契约）。
+            from maaracing_master.core.capabilities import BUTTON_A
+
             # 自 ctx 提取截图帧源（CaptureAdapter.screenshot），供手柄闭环导航读帧
             cap = self.ctx.capture
             frame_src = cap.screenshot  # 帧源 callable → RGB ndarray
-            # 手柄：复用 controller 底层手柄（首次取用即创建虚拟手柄设备）
-            gpad = VGamepadAdapter(self.ctx.gamepad._app._get_gpad())
-            confirm_btn = vg.XUSB_BUTTON.XUSB_GAMEPAD_A
+            # 手柄：经 capability 公开入口取「长期持有」的设备适配器（首次取用即创建
+            # 虚拟手柄设备）。此前直接穿 ctx.gamepad._app._get_gpad() 掏两层私有。
+            gpad = self.ctx.gamepad.persistent_adapter()
             self._clicker.bind_gamepad(frame_src, gpad,
                                        model_path=None,
-                                       confirm_button=confirm_btn,
+                                       confirm_button=BUTTON_A,
                                        rebuild_cb=self._rebuild_gamepad_device)
             logger.log("[鉴宝点击] 后台手柄方式：已绑定手柄导航能力（首次点击按需创建虚拟手柄）", "INFO")
         except Exception as e:  # noqa: BLE001 —— 无 gamepad 能力/手柄不可用时降级
@@ -3029,15 +3040,11 @@ class TreasureModule(ActivityModule):
         clicker = self._clicker
         if clicker is None or not clicker.gamepad_bound:
             return False
-        nav = getattr(clicker, "_gamepad", None)
-        if nav is None:
-            return False
         try:
             self.ctx.gamepad.reset_device()  # 确定性拔除旧设备（含活跃租约保护）
-            from maaracing_master.core.capabilities import VGamepadAdapter
-
-            gpad = VGamepadAdapter(self.ctx.gamepad._app._get_gpad())  # 懒创建新设备
-            nav.swap_gpad(gpad)  # 换绑到常驻导航线程（任务槽空闲才允许）
+            # 经 capability 公开入口取新设备适配器（懒创建），与首次绑定同一条路径
+            gpad = self.ctx.gamepad.persistent_adapter()
+            clicker.swap_gamepad(gpad)  # 换绑到常驻导航线程（任务槽空闲才允许）
             logger.log("[鉴宝点击] 光标长时间丢失：已重建虚拟手柄并换绑导航器", "INFO")
             return True
         except Exception as e:  # noqa: BLE001 —— 重建失败不阻塞主循环，下帧重试
@@ -3054,10 +3061,7 @@ class TreasureModule(ActivityModule):
         clicker = self._clicker
         if clicker is None or not clicker.gamepad_bound:
             return None
-        nav = getattr(clicker, "_gamepad", None)
-        if nav is None:
-            return None
-        prog = nav.nav_progress()
+        prog = clicker.nav_progress()
         if not prog or not prog.get("stage") or prog.get("stage") == "done":
             return None
         return dict(prog)
@@ -3196,8 +3200,6 @@ class TreasureModule(ActivityModule):
         fp = pending.get("fp")
         center = pending.get("center") or (0, 0)
         mode_label = pending.get("mode_label") or "?"
-        clicker = self._get_clicker()
-        sx, sy = clicker.last_pos or (0, 0)
         # 点击成功：更新指纹与时刻（失败时不更新 → 下帧意图相同会重试）
         self._last_click_fingerprint = fp
         self._last_click_time = time.monotonic()
@@ -3222,13 +3224,30 @@ class TreasureModule(ActivityModule):
             if not self._settle_collect_clicked_once:
                 self._settle_collect_clicked_once = True
                 logger.log("[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...", "INFO")
-        self.record_event("click",
-                          extra_msg=f"方式={mode_label} state={state} key={key} 屏幕=({sx},{sy})")
-        logger.log(
-            f"[鉴宝点击] {state} key={key} 方式={mode_label} "
-            f"目标=({sx},{sy}) 归一化=({center[0]:.3f},{center[1]:.3f})",
-            "DEBUG",
-        )
+        self._record_click(key, state, center, mode_label, ok=True)
+
+    def _record_click(self, key, state, center, mode_label, *, ok: bool) -> None:
+        """点击结果的统一记录出口：事件 + 日志。
+
+        主链路（_apply_click_success）与彩蛋收尾链共用。链内点击曾自成一套出口，
+        既不写事件也无点击日志，真机排查时「点没点到、点到哪」无从取证
+        （2026-09-14 定位彩蛋链缺陷时最大的取证障碍）。新增点击通路一律走这里。
+        """
+        clicker = self._get_clicker()
+        sx, sy = clicker.last_pos or (0, 0)
+        if ok:
+            self.record_event(
+                "click",
+                extra_msg=f"方式={mode_label} state={state} key={key} 屏幕=({sx},{sy})")
+            logger.log(
+                f"[鉴宝点击] {state} key={key} 方式={mode_label} "
+                f"目标=({sx},{sy}) 归一化=({center[0]:.3f},{center[1]:.3f})",
+                "DEBUG",
+            )
+        else:
+            logger.log(
+                f"[鉴宝点击] 执行失败 key={key} state={state} 方式={mode_label} "
+                f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
 
     def _apply_click_failure(self, res: dict, pending: dict) -> None:
         """点击失败副作用：指纹不更新（下帧同意图重试），节流打失败日志。"""
@@ -3445,13 +3464,11 @@ class TreasureModule(ActivityModule):
 
         快照由 GamepadClicker.read_pos 每帧刷新（分数降序前 8 个 + 选中下标）；
         超过 2s 未刷新（非手柄方式/导航已久未跑）返回 None 不显示。
+        走 Clicker 公开接口读，不再 getattr 掏 `_gamepad` 私有成员（P5）。
         """
-        gp = getattr(self._clicker, "_gamepad", None) if self._clicker is not None else None
-        if gp is None or not gp.last_cands:
+        if self._clicker is None:
             return None
-        if time.monotonic() - gp.last_cands_ts > 2.0:
-            return None
-        return {"list": list(gp.last_cands), "sel": gp.last_cand_sel}
+        return self._clicker.cursor_candidates()
 
     def record_event(self, name: str, extra_msg: str | None = None) -> Path | None:
         """
@@ -3733,7 +3750,7 @@ class TreasureModule(ActivityModule):
         nav = nav_source()
         specs: dict[str, tuple] = {}
         if nav is not None:
-            for name in self.EGG_CHAIN_ANCHORS:
+            for name in (*self.EGG_CHAIN_ANCHORS, self.EGG_CHAIN_LOBBY_ANCHOR):
                 anchor = nav.spec.get(name)
                 if anchor is None or not anchor.rect or not anchor.templates:
                     continue
@@ -3746,44 +3763,90 @@ class TreasureModule(ActivityModule):
         self._egg_chain_spec_cache = specs
         return specs or None
 
-    def _egg_chain_click(self, cxn: float, cyn: float,
-                         bw: float = 0.02, bh: float = 0.02) -> bool:
-        """链内同步点击：提交 → 等消费结果（与图 ClickAction 同一出口、同一护栏）。
+    def _egg_chain_drain_slot(self, timeout_s: float) -> bool:
+        """等主链路遗留的点击任务落地并消费，直到任务槽空闲（有界）。
 
-        real(前台鼠标) 模式沿用「不抢前台」安全策略：非前台时点击取消返回 False，
-        由链的等待轮询自然重试/超时。
+        链在 `_tick_once` 的决策段消费点**之前**触发，槽里必然残留上一帧提交的点击
+        （real 模式是待消费的结果，gamepad 模式可能还在导航中）。不先消化就提交，
+        会被 `is_busy` 直接拒掉——真机 2026-09-14：大厅返回键命中置信度 1.000，
+        却报「未见/未点中返回键」而放弃整条链，根因即此。
+        消费走 `_consume_click_result()`：那是主链路本来就要做的副作用应用
+        （事件/日志/指纹），链只是把它提前到自己的提交之前。
+        """
+        deadline = time.monotonic() + timeout_s
+        clicker = self._get_clicker()
+        while True:
+            self._consume_click_result()
+            if not clicker.is_busy():
+                return True
+            if not self.ctx.lifecycle.running or time.monotonic() >= deadline:
+                return not clicker.is_busy()
+            self.ctx.lifecycle.sleep(0.05)
+
+    def _egg_chain_click(self, cxn: float, cyn: float, bw: float = 0.02,
+                         bh: float = 0.02, *, key: str = "") -> bool:
+        """链内同步点击：与主链路同一条出口协议（消化遗留 → 提交 → 消费结果）。
+
+        与主链路对齐的三件事（此前各自一套，2026-09-14 修复）：
+          • 意图开关取自 `ctx.intent_mode` —— 不再单方面 `set_intent(False)` 覆盖共享
+            Clicker 的状态（那会让 GUI「仅意图」开关对链内点击失效，实测鼠标模式一路真点击）。
+          • 提交前先消化任务槽遗留结果（`_egg_chain_drain_slot`）。
+          • 结果经 `_record_click` 统一记录，链内点击同样有事件与日志。
+
+        real(前台鼠标) 模式沿用「不抢前台」安全策略：非前台时取消并返回 False。
+        提交被拒（槽忙/未绑定/物理提交失败）或结果超时 → 有界重试
+        `EGG_CHAIN_CLICK_RETRY_MAX` 次，不静默卡死。
         """
         clicker = self._get_clicker()
         clicker.set_mode(self.ctx.click_mode)
-        clicker.set_intent(False)
+        clicker.set_intent(self.ctx.intent_mode)
         self._ensure_gamepad_bound()
+        mode_label = self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
+            logger.log(f"[彩蛋收尾] 点击 {key} 取消：游戏窗口非前台（前台鼠标不抢前台）", "WARNING")
             return False
-        if clicker.is_busy():
+        if not self._egg_chain_drain_slot(self.EGG_CHAIN_CLICK_TIMEOUT_S):
+            logger.log(f"[彩蛋收尾] 点击 {key} 取消：任务槽被占用未释放", "WARNING")
             return False
-        if not clicker.submit_click(cxn, cyn, box=(bw, bh),
-                                    down_up_gap_ms=self.CLICK_DOWN_UP_GAP_MS,
-                                    move_pause_s=self.CLICK_MOVE_PAUSE_S):
-            return False
-        deadline = time.monotonic() + 6.0
-        while time.monotonic() < deadline:
+        for _attempt in range(self.EGG_CHAIN_CLICK_RETRY_MAX):
             if not self.ctx.lifecycle.running:
-                clicker.cancel()
                 return False
-            res = clicker.consume_result()
-            if res is not None:
-                return bool(res.get("ok"))
-            self.ctx.lifecycle.sleep(0.05)
+            if not clicker.submit_click(cxn, cyn, box=(bw, bh),
+                                        down_up_gap_ms=self.CLICK_DOWN_UP_GAP_MS,
+                                        move_pause_s=self.CLICK_MOVE_PAUSE_S):
+                self.ctx.lifecycle.sleep(self.EGG_CHAIN_POLL_S)
+                continue
+            deadline = time.monotonic() + self.EGG_CHAIN_CLICK_TIMEOUT_S
+            res = None
+            while time.monotonic() < deadline and self.ctx.lifecycle.running:
+                res = clicker.consume_result()
+                if res is not None:
+                    break
+                self.ctx.lifecycle.sleep(0.05)
+            if res is None:
+                clicker.cancel()  # 结果迟迟不回：中止本次导航，下轮重试
+                self._record_click(key, "egg_chain", (cxn, cyn), mode_label, ok=False)
+                continue
+            ok = bool(res.get("ok"))
+            self._record_click(key, "egg_chain", (cxn, cyn), mode_label, ok=ok)
+            if ok:
+                return True
         return False
 
     def _egg_chain_wait(self, specs: dict[str, tuple], name: str,
-                        timeout_s: float, *, want: bool = True):
+                        timeout_s: float, *, want: bool = True,
+                        budget_deadline: float | None = None):
         """轮询中心缓存帧直到锚点命中/消失（或超时/停止请求）。
 
         want=True：命中返回 (cxn, cyn, bw, bh)（中心归一 + 框宽高），否则 None。
         want=False：消失返回 True，否则 False。命中判定走 match_template_cs 单模板多尺度。
+        budget_deadline：全链墙钟 deadline（monotonic）。给出时本步超时取
+          `min(timeout_s, 剩余预算)` —— 这就是 EGG_CHAIN_TOTAL_BUDGET_S 所说的
+          「逐层递减到各步」，保证链整体有界，而非各步各自计时、总和可远超预算。
         """
         tpl, rect, th, cs = specs[name]
+        if budget_deadline is not None:
+            timeout_s = min(timeout_s, max(0.0, budget_deadline - time.monotonic()))
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline and self.ctx.lifecycle.running:
             frame = self.ctx.capture.screenshot()
@@ -3834,51 +3897,70 @@ class TreasureModule(ActivityModule):
         n = parse_count_text(str(info.get("text") or ""))
         return n if n and n > 0 else 0
 
-    def _egg_claim_steps(self, specs: dict[str, tuple] | None) -> None:
-        """链主体（素材缺失=直接离场）。每步只记日志，超时/失败走离场路径。"""
+    def _egg_claim_steps(self, specs: dict[str, tuple] | None,
+                         budget_deadline: float) -> None:
+        """链主体（素材缺失=直接离场）。每步只记日志，超时/失败走离场路径。
+
+        budget_deadline：全链墙钟 deadline，逐步 clamp 各步等待（见 _egg_chain_wait）。
+        每次点击都带 key，结果统一经 _record_click 落事件与日志（链内点击可观测）。
+        """
         log = logger.log
         if specs is None:
             log("[彩蛋收尾] 锚点素材缺失，跳过领取，直接离场", "WARNING")
-            self._egg_exit_to_lobby(None)
+            self._egg_exit_to_lobby(None, budget_deadline)
             return
         # 1) 鉴宝大厅 → 活动页：点左上「D」返回键，等「获取银币」出现确认到位
-        back = self._egg_chain_wait(specs, "hall_back_btn", 6.0)
-        if back is None or not self._egg_chain_click(*back):
+        back = self._egg_chain_wait(specs, "hall_back_btn", 6.0,
+                                    budget_deadline=budget_deadline)
+        if back is None or not self._egg_chain_click(*back, key="hall_back_btn"):
             log("[彩蛋收尾] 未见/未点中返回键，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs)
+            self._egg_exit_to_lobby(specs, budget_deadline)
             return
-        silver = self._egg_chain_wait(specs, "act_get_silver_btn", 6.0)
+        silver = self._egg_chain_wait(specs, "act_get_silver_btn", 6.0,
+                                      budget_deadline=budget_deadline)
         if silver is None:
             log("[彩蛋收尾] 点返回后未到活动页，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs)
+            self._egg_exit_to_lobby(specs, budget_deadline)
             return
         # 2) 活动页 → 打开任务抽屉：点「获取银币」，等 tab 栏出现
-        if not self._egg_chain_click(*silver):
+        if not self._egg_chain_click(*silver, key="act_get_silver_btn"):
             log("[彩蛋收尾] 「获取银币」点击未到位，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs)
+            self._egg_exit_to_lobby(specs, budget_deadline)
             return
-        if self._egg_chain_wait(specs, "egg_panel_tabbar", 6.0) is None:
+        if self._egg_chain_wait(specs, "egg_panel_tabbar", 6.0,
+                                budget_deadline=budget_deadline) is None:
             log("[彩蛋收尾] 抽屉未弹出，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs)
+            self._egg_exit_to_lobby(specs, budget_deadline)
             return
         # 3) 领取循环：tab1 红钮 →（无则）切「彩蛋任务」tab 红钮；每次弹一个聚合奖励弹窗
+        #    attempts 上限 = 轮次上限×2：点击未生效的尝试必须计入，否则红钮常驻而点击
+        #    持续失败时会一直 continue（原实现 rounds 不增，只靠各步超时兜底）。
         total = {"red": 0, "yellow": 0, "blue": 0}
         total_coin = 0
         total_score = 0
         rounds = 0
+        attempts = 0
+        max_attempts = self.EGG_CHAIN_MAX_CLAIM_ROUNDS * 2
         tab3_tried = False
-        while rounds < self.EGG_CHAIN_MAX_CLAIM_ROUNDS and self.ctx.lifecycle.running:
-            red = self._egg_chain_wait(specs, "egg_claim_red_btn", 2.0)
+        while (rounds < self.EGG_CHAIN_MAX_CLAIM_ROUNDS
+               and attempts < max_attempts
+               and self.ctx.lifecycle.running):
+            attempts += 1
+            red = self._egg_chain_wait(specs, "egg_claim_red_btn", 2.0,
+                                       budget_deadline=budget_deadline)
             if red is None and not tab3_tried:
                 tab3_tried = True
-                tab3 = self._egg_chain_wait(specs, "egg_task_tab3", 1.5)
-                if tab3 is not None and self._egg_chain_click(*tab3):
-                    red = self._egg_chain_wait(specs, "egg_claim_red_btn", 2.5)
+                tab3 = self._egg_chain_wait(specs, "egg_task_tab3", 1.5,
+                                            budget_deadline=budget_deadline)
+                if tab3 is not None and self._egg_chain_click(*tab3, key="egg_task_tab3"):
+                    red = self._egg_chain_wait(specs, "egg_claim_red_btn", 2.5,
+                                               budget_deadline=budget_deadline)
             if red is None:
                 break
-            if not self._egg_chain_click(*red):
+            if not self._egg_chain_click(*red, key="egg_claim_red_btn"):
                 continue
-            title = self._egg_chain_wait(specs, "egg_claim_title", 5.0)
+            title = self._egg_chain_wait(specs, "egg_claim_title", 5.0,
+                                         budget_deadline=budget_deadline)
             rounds += 1
             if title is None:
                 continue
@@ -3903,31 +3985,43 @@ class TreasureModule(ActivityModule):
                     self._store.record_egg_claim({}, coin=coin_amt, score=score_amt)
                     total_coin += coin_amt
                     total_score += score_amt
-            self._egg_chain_click(*self.EGG_CHAIN_DISMISS_NORM)
-            self._egg_chain_wait(specs, "egg_claim_title", 4.0, want=False)
+            self._egg_chain_click(*self.EGG_CHAIN_DISMISS_NORM, key="egg_dismiss_popup")
+            self._egg_chain_wait(specs, "egg_claim_title", 4.0, want=False,
+                                 budget_deadline=budget_deadline)
         if any(total.values()) or total_coin or total_score:
             log(f"[彩蛋收尾] 本次领取合计：红{total['red']} 黄{total['yellow']} "
                 f"蓝{total['blue']} 银币+{total_coin:,} 积分+{total_score:,}", "INFO")
         else:
             log("[彩蛋收尾] 无可领取彩蛋，看一眼即结束", "INFO")
         # 4) 关抽屉：点左侧空白，等 tab 栏消失
-        self._egg_chain_click(*self.EGG_CHAIN_BLANK_NORM)
-        self._egg_chain_wait(specs, "egg_panel_tabbar", 4.0, want=False)
+        self._egg_chain_click(*self.EGG_CHAIN_BLANK_NORM, key="egg_close_panel")
+        self._egg_chain_wait(specs, "egg_panel_tabbar", 4.0, want=False,
+                             budget_deadline=budget_deadline)
         # 5) 离场 → 停止
-        self._egg_exit_to_lobby(specs)
+        self._egg_exit_to_lobby(specs, budget_deadline)
 
-    def _egg_exit_to_lobby(self, specs: dict[str, tuple] | None) -> None:
-        """点房子直回游戏大厅（活动页左上恒有），等大厅卡片出现后请求停止。"""
+    def _egg_exit_to_lobby(self, specs: dict[str, tuple] | None,
+                           budget_deadline: float | None = None) -> None:
+        """点房子直回游戏大厅（活动页左上恒有），等大厅卡片出现后请求停止。
+
+        等大厅用的是全局锚点 EGG_CHAIN_LOBBY_ANCHOR（检测面本就每帧扫描），
+        不是链自己的惰性锚点。
+        """
         if specs is not None:
-            home = self._egg_chain_wait(specs, "hall_home_btn", 6.0)
-            if home is not None and self._egg_chain_click(*home):
-                self._egg_chain_wait(specs, "hall_peak_appraise_card", 8.0)
+            home = self._egg_chain_wait(specs, "hall_home_btn", 6.0,
+                                        budget_deadline=budget_deadline)
+            if home is not None and self._egg_chain_click(*home, key="hall_home_btn"):
+                self._egg_chain_wait(specs, self.EGG_CHAIN_LOBBY_ANCHOR, 8.0,
+                                     budget_deadline=budget_deadline)
         logger.log("[彩蛋收尾] 收尾完成，请求停止模块", "WARNING")
         self.ctx.lifecycle.request_stop()
 
     def _run_egg_claim_chain(self) -> None:
-        """到限收尾链入口（Tasker 线程内阻塞跑完；预算递减在 wait 的超时里兜底）。
+        """到限收尾链入口（Tasker 线程内阻塞跑完）。
 
+        全链有界：入口算一个墙钟 deadline（EGG_CHAIN_TOTAL_BUDGET_S），各步等待按
+        剩余预算 clamp（_egg_chain_wait 的 budget_deadline）——该预算此前只出现在
+        日志文案里、各步各自计时，链整体实际没有上界。
         链内任何异常都不许打断停止——「有就领，没有就结束」，最坏路径也只是没领成。
         """
         logger.log(
@@ -3935,8 +4029,9 @@ class TreasureModule(ActivityModule):
             f"（总预算 {self.EGG_CHAIN_TOTAL_BUDGET_S:.0f}s，跑完自动停止）",
             "WARNING",
         )
+        deadline = time.monotonic() + self.EGG_CHAIN_TOTAL_BUDGET_S
         try:
-            self._egg_claim_steps(self._egg_chain_load_specs())
+            self._egg_claim_steps(self._egg_chain_load_specs(), deadline)
         except Exception as e:
             logger.log(f"[彩蛋收尾] 链异常（不影响停止）：{e}", "WARNING")
             self.ctx.lifecycle.request_stop()
