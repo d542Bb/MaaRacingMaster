@@ -375,15 +375,19 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 **职责**：
 
-- 内存+文件双写日志
+- 内存+文件双写日志；内存缓冲为**有界环形 deque**（`BUFFER_CAPACITY=5000`），长跑不随日志量增长
+
+- GUI 增量读取用**单调序列号游标**（`get_lines_since(seq, ...)`），环形回绕后不重不漏、落后过多时返回 `truncated`
+
+- 落盘**按级别分档**：INFO/WARNING/ERROR 写 `MaaRM_<ts>.log`（可上报，不含绝对路径），DEBUG/TRACE 写 `MaaRM_<ts>.debug.log`（排查用）；两档各自单独句柄 + 轮转（`MAX_BYTES`/`BACKUP_COUNT`）+ 启动时按会话组保留清理（`KEEP_SESSIONS`，只碰 `MaaRM_<8位日期>_<6位时间>` 形态）
 
 - 5个日志级别：TRACE < DEBUG < INFO < WARNING < ERROR
 
 - GUI 默认只显示 INFO 及以上
 
-- 按时间戳命名日志文件（`MaaRM_YYYYMMDD_HHMMSS.log`）
+- **通道机制**：`log(channel=...)` 支持按子系统调级（`set_channel_level`/`clear_channel_level`）；`channel=None` 回落 `DEFAULT_CHANNEL`（app）。通道名是不透明字符串，core 不枚举/校验（红线 I7）
 
-- 级别过滤提取（get\_lines）
+- 线程安全：写盘持单句柄 + `Lock`；`close()` 关句柄 flush 尾部
 
 **全局单例**：`logger = Logger(logs_dir)`
 
@@ -398,6 +402,8 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | ERROR   | 错误需关注   | 模板加载失败、连接窗口失败、Pipeline异常、模型文件不存在、手柄创建失败、连续重试耗尽                 |
 
 > **约定**：所有可继续运行的降级/兜底必须打 WARNING（不能静默）。不能恢复的故障打 ERROR 并配合 stop。
+
+> **通道维度**：级别与通道是正交的两件事——级别管「打到哪个档位文件」（DEBUG→排查档，其余→上报档）；通道管「这一行要不要打」（调级）。未设置通道级别时全记录（兼容旧行为）。
 
 ***
 

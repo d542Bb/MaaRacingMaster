@@ -311,7 +311,7 @@ class SidecarService:
             self._stages = get_module_info(self._selected_module)["stages"] if self._selected_module else []
         except KeyError:
             self._stages = []
-        self._last_log_count = 0
+        self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
         self._closed = False
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
         self._restore_profile()
@@ -970,11 +970,14 @@ class SidecarService:
         return (ka > kb) - (ka < kb)
 
     def fetch_logs(self, params):
-        lines = logger.get_lines()
-        with self._lock:
-            start = min(self._last_log_count, len(lines))
-            result = lines[start:]
-            self._last_log_count = len(lines)
+        # 环形缓冲下「已返回行数」当游标语义失效，改用单调序列号。
+        # 初值 0 → 首次拉取返回全部历史（现有行为保留）。
+        lines, new_seq, truncated = logger.get_lines_since(self._last_log_seq, "INFO")
+        self._last_log_seq = new_seq
+        result = []
+        if truncated:
+            result.append("[!!] 日志界面因落后过多已自动截断，以下为最新日志（清空界面可重看完整实时流）")
+        result.extend(lines)
         return (True, {"lines": result}, None)
 
     # 看板读取列（白名单，兼作输出契约）：daily_summary 列名即输出键；games 为 输出键←列名。
@@ -1170,13 +1173,14 @@ class SidecarService:
         return (True, {"mute_game": enabled}, None)
 
     def close(self, params):
-        """shell 关闭前的业务清理：置 _closed + 停止 worker。"""
+        """shell 关闭前的业务清理：置 _closed + 停止 worker + 关写盘句柄。"""
         with self._lock:
             self._closed = True
             worker = self._worker
         if worker is not None and worker.is_alive():
             self._controller.stop()
         logger.log("sidecar 业务已停止", "DEBUG")
+        logger.close()  # 关写盘句柄，flush 尾部（进程退出路径）
         return (True, None, None)
 
     def shutdown(self, params):
@@ -1191,6 +1195,8 @@ def main() -> None:
     # 构造前应用，让启动初期的日志也遵守开关状态
     _dbg = _load_profile().get("debug")
     logger.set_file_logging(bool(isinstance(_dbg, dict) and _dbg.get("file_logging", False)))
+    # 启动时执行一次旧会话保留清理（不依赖本次是否启用写盘）
+    logger.prune_sessions()
     protocol_stdout = sys.stdout
     sys.stdout = _StdoutGuard(protocol_stdout)  # 后续一切 print 都走 stderr，协议通道纯净
     try:

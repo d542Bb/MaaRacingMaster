@@ -1632,9 +1632,9 @@
               <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
-                <p class="option-desc">开启后才把运行日志写入 %APPDATA%/MaaRacingMaster/logs（每次开启新建一个文件）；关闭时日志仅保留在界面内存，不落盘</p>
+                <p class="option-desc">开启后才把运行日志写入 %APPDATA%/MaaRacingMaster/logs。每次开启生成一个会话组、两个文件：`.log` 为常规日志（可安全上报，不含本机绝对路径），`.debug.log` 为排查细节；关闭时日志仅保留在界面内存，不落盘</p>
               </div>
-              <span class="option-note">默认关闭，排查问题时开启</span>
+              <span class="option-note">排查问题时开启，并需同时提供 debug 档</span>
             </div>
             <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-intent" role="switch" aria-checked="false"></button>
