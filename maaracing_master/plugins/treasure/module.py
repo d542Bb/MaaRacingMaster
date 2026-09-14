@@ -478,6 +478,45 @@ def _load_smart_bid_btn(
     return (tpl, rect, colorspace)
 
 
+_PASS_CONFIRM_KEY = "bid_pass_confirm_btn"
+
+
+def _load_bid_pass_confirm_btn(
+    proj: Path,
+) -> tuple[np.ndarray, tuple[float, float, float, float], float, str] | None:
+    """加载「放弃出价二级确认弹窗」右侧红色「确认」钮模板（spec 惰性锚点直读）。
+
+    弹窗由 pass→确认出价触发（输入 0 必弹，用户确证）；弹窗存在期间面板决策全部无效，
+    出价子机须先处置它（真机事故 2026-09-14：弹窗压暗面板把 smart_bid 打到 0.736，
+    高于决策阈值 0.72 → phase 卡 bidding 空转）。rect/threshold/colorspace 均出自
+    spec 锚点；缺失返回 None → 处置禁用（不影响其它出价路径）。
+    """
+    nav = nav_source()
+    if nav is None:
+        return None
+    anchor = nav.spec.get(_PASS_CONFIRM_KEY)
+    if anchor is None or not anchor.rect or not anchor.templates:
+        return None
+    p = IMAGE_DIR / anchor.templates[0]
+    if not p.exists():
+        return None
+    img = cv2.imread(str(p))
+    if img is None:
+        return None
+    tpl = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    if tpl.size == 0 or tpl.shape[0] < 4 or tpl.shape[1] < 4:
+        return None
+    r4 = anchor.rect.as_list()
+    th = anchor.threshold
+    threshold = (
+        float(th)
+        if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= float(th) <= 1.0
+        else 0.8
+    )
+    return (tpl, (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3])),
+            threshold, anchor.colorspace)
+
+
 class TreasureModule(ActivityModule):
     """巅峰鉴宝：Debug 观察记录模式（阶段一）"""
 
@@ -976,6 +1015,12 @@ class TreasureModule(ActivityModule):
         self._bid_smart_tpl: np.ndarray | None = None
         self._bid_smart_rect: tuple[float, float, float, float] | None = None
         self._bid_smart_colorspace: str = "gray"
+        # pass 二级确认弹窗「确认」钮（惰性 spec 直读，与 smart_bid 分开：弹窗存在期间
+        # 面板决策全部无效，出价子机 bidding 相位每帧先查它）。
+        self._bid_pass_tpl: np.ndarray | None = None
+        self._bid_pass_rect: tuple[float, float, float, float] | None = None
+        self._bid_pass_threshold: float = 0.8
+        self._bid_pass_colorspace: str = "rgb"
         # 上一次"点击意图"结果：{"state","key","center","hint","score"}|None，由 _run_bidding_choice 每帧重算
         self._bidding_last_decision: dict | None = None
 
@@ -1310,6 +1355,16 @@ class TreasureModule(ActivityModule):
         else:
             self._bid_smart_tpl, self._bid_smart_rect, self._bid_smart_colorspace = None, None, "gray"
             logger.log("[鉴宝] 未加载智能出价按钮模板（面板已开判定降级：依赖主按钮 OCR 兜底）", "WARNING")
+
+        # 2.58b 加载 pass 二级确认弹窗「确认」钮模板（惰性 spec 直读，弹窗出现时优先处置）
+        _pc = _load_bid_pass_confirm_btn(self.ctx.proj)
+        if _pc is not None:
+            (self._bid_pass_tpl, self._bid_pass_rect,
+             self._bid_pass_threshold, self._bid_pass_colorspace) = _pc
+            logger.log(f"[鉴宝] 已加载放弃确认弹窗模板（扫描 rect={self._bid_pass_rect}）", "DEBUG")
+        else:
+            self._bid_pass_tpl, self._bid_pass_rect = None, None
+            logger.log("[鉴宝] 未加载放弃确认弹窗模板（pass 二级确认将无法自动处置）", "WARNING")
 
         # 2.59 初始化出价策略决策器（V2：数据驱动双层缓冲 + 兜底上限）
         # 用 _treasure_* 暂存字段而非 DEFAULT：set_module_config 可能在实例创建前注入
@@ -1718,6 +1773,27 @@ class TreasureModule(ActivityModule):
         cxn, cyn, _rx2, _bw, _bh = self._box_to_norm(box, W, H)
         return (float(score), cxn, cyn)
 
+    def _match_bid_pass_confirm(self, frame_rgb: np.ndarray) -> tuple[float, float, float] | None:
+        """匹配「是否确认本轮放弃出价？」弹窗右侧红色「确认」钮。
+
+        只在出价子机 bidding 相位被每帧直查（惰性锚点，detector 不扫）；命中返回
+        (score, cxn, cyn)，其中心即点击目标。模板未加载 → None（弹窗不处置）。
+        """
+        if self._bid_pass_tpl is None or self._bid_pass_rect is None:
+            return None
+        H, W = frame_rgb.shape[:2]
+        px_roi = self._px_roi(self._bid_pass_rect, W, H)
+        if px_roi is None:
+            return None
+        box, score = match_template_cs(frame_rgb, self._bid_pass_tpl,
+                                       colorspace=self._bid_pass_colorspace,
+                                       threshold=self._bid_pass_threshold,
+                                       scales=(1.0,), roi=px_roi)
+        if box is None:
+            return None
+        cxn, cyn, _rx2, _bw, _bh = self._box_to_norm(box, W, H)
+        return (float(score), cxn, cyn)
+
     def _run_appraiser_choice(self, frame_rgb: np.ndarray) -> None:
         """选择鉴宝师阶段：顺位匹配 + 选中判定 → 计算「点击意图」供 PEEP 准星显示。
 
@@ -2095,6 +2171,24 @@ class TreasureModule(ActivityModule):
         stage = self._current_stage
         if stage is None or not (stage.startswith("第") and "回合" in stage):
             self._bidding_last_decision = None
+            return
+        # ---------- 最先：pass 二级确认弹窗处置（先于 S0/S1/S2/S3 一切判定） ----------
+        # 弹窗压在面板上时 smart_bid 因压暗可能仍在阈值上（卡 bidding）也可能跌破阈值
+        # （走 S1/S2 盲路）——两种缝都必须先处置弹窗：点它自己的「确认」落实 pass。
+        # 点「取消」只会回到面板再弹一次，无限循环；用户拍板=自动确认（2026-09-14）。
+        dlg = self._match_bid_pass_confirm(frame_rgb)
+        if dlg is not None:
+            d_score, d_cxn, d_cyn = dlg
+            self._bidding_last_decision = {
+                "state": "S3_pass_dialog", "key": None, "center": (d_cxn, d_cyn),
+                "hint": f"意图: 放弃出价确认弹窗 → 点「确认」落实 pass（√S={d_score:.2f}）",
+                "score": d_score,
+            }
+            logger.log(
+                f"[鉴宝出价] 点击意图: 放弃出价二级确认弹窗 → 点确认（落实 pass，S={d_score:.2f}）"
+                f" 目标=({d_cxn:.3f},{d_cyn:.3f})",
+                "INFO",
+            )
             return
         # S0：回合切换转场期，动画残缺高发，不判定
         if self._round_elapsed < self.SWITCH_CONFIRM_FRAMES:

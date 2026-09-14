@@ -2136,6 +2136,23 @@
         "templates": [
           "bid_smart_btn.png"
         ]
+      },
+      "bid_pass_confirm_btn": {
+        "_comment": "pass(放弃出价)确认后的游戏二级弹窗「是否确认本轮放弃出价？」右侧红色「确认」钮（真帧 0641_raw 标定，归一化≈0.778-0.951,0.615-0.696）。弹窗压暗面板致 smart_bid 掉到 0.736 仍被判「面板开」→ 卡 bidding；出价子机 bidding 相位每帧先查此锚点，命中即改点它落实 pass。惰性锚点：不进 transitions/stages.active/global_anchors（detector 零扫描，由 module 直读 spec，同 egg_claim 族）。",
+        "kind": "template",
+        "label": "放弃出价确认弹窗-确认钮",
+        "order": 960,
+        "page": "bidding",
+        "rect": [
+          0.72,
+          0.58,
+          1.0,
+          0.72
+        ],
+        "templates": [
+          "bid_pass_confirm_btn.png"
+        ],
+        "threshold": 0.8
       }
     },
     "stages": {

@@ -75,6 +75,9 @@ class _FakeSelf:
     def _match_bid_smart_btn(self, frame_rgb):
         return self._match
 
+    def _match_bid_pass_confirm(self, frame_rgb):
+        return None
+
     def _read_bid_main_btn_label(self, frame_rgb):
         return self._label
 
