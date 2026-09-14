@@ -308,8 +308,10 @@ class _FakeChainSelf:
         self.CLICK_MODE_LABELS = mod.CLICK_MODE_LABELS
         self.CLICK_DOWN_UP_GAP_MS = 30
         self.CLICK_MOVE_PAUSE_S = 0.0
+        self._trace_writer = None          # 链内 trace 走真身：无 writer 时静默跳过
         self._egg_chain_click = mod._egg_chain_click.__get__(self)
         self._egg_chain_drain_slot = mod._egg_chain_drain_slot.__get__(self)
+        self._egg_chain_trace = mod._egg_chain_trace.__get__(self)
 
     def _get_clicker(self):
         return self._clicker_stub

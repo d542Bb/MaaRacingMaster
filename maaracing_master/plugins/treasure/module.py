@@ -3763,6 +3763,23 @@ class TreasureModule(ActivityModule):
         self._egg_chain_spec_cache = specs
         return specs or None
 
+    def _egg_chain_trace(self, step: str, **detail) -> None:
+        """链内进度写 trace（事件名 `egg_chain`）。
+
+        链阻塞在决策段内（Tasker 线程被独占），`_tick_once` 的帧 trace 在链期间不再
+        产生——整段领取过程在 trace 里是空白，事后无法回溯「走到哪一步、哪一步失败」。
+        故链内关键节点显式补记。
+        """
+        if self._trace_writer is None:
+            return
+        self._trace_writer.write({
+            "frame": self._frame_counter,
+            "event": "egg_chain",
+            "stage": self._current_stage,
+            "step": step,
+            **detail,
+        })
+
     def _egg_chain_drain_slot(self, timeout_s: float) -> bool:
         """等主链路遗留的点击任务落地并消费，直到任务槽空闲（有界）。
 
@@ -3804,9 +3821,11 @@ class TreasureModule(ActivityModule):
         mode_label = self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
             logger.log(f"[彩蛋收尾] 点击 {key} 取消：游戏窗口非前台（前台鼠标不抢前台）", "WARNING")
+            self._egg_chain_trace("click_skipped", key=key, reason="not_foreground")
             return False
         if not self._egg_chain_drain_slot(self.EGG_CHAIN_CLICK_TIMEOUT_S):
             logger.log(f"[彩蛋收尾] 点击 {key} 取消：任务槽被占用未释放", "WARNING")
+            self._egg_chain_trace("click_skipped", key=key, reason="slot_busy")
             return False
         for _attempt in range(self.EGG_CHAIN_CLICK_RETRY_MAX):
             if not self.ctx.lifecycle.running:
@@ -3826,9 +3845,11 @@ class TreasureModule(ActivityModule):
             if res is None:
                 clicker.cancel()  # 结果迟迟不回：中止本次导航，下轮重试
                 self._record_click(key, "egg_chain", (cxn, cyn), mode_label, ok=False)
+                self._egg_chain_trace("click_timeout", key=key)
                 continue
             ok = bool(res.get("ok"))
             self._record_click(key, "egg_chain", (cxn, cyn), mode_label, ok=ok)
+            self._egg_chain_trace("click", key=key, ok=ok)
             if ok:
                 return True
         return False
@@ -3905,33 +3926,40 @@ class TreasureModule(ActivityModule):
         每次点击都带 key，结果统一经 _record_click 落事件与日志（链内点击可观测）。
         """
         log = logger.log
+
+        def _give_up(reason: str, sp: dict[str, tuple] | None) -> None:
+            """统一放弃出口：日志 + trace + 离场。
+
+            链内失败路径此前各写各的（一句 WARNING 加一次离场），既无统一形状也无
+            trace 记录；收口到这里，保证每条失败路径都留下可回溯的痕迹。
+            """
+            log(f"[彩蛋收尾] {reason}，跳过领取", "WARNING")
+            self._egg_chain_trace("give_up", reason=reason)
+            self._egg_exit_to_lobby(sp, budget_deadline)
+
         if specs is None:
-            log("[彩蛋收尾] 锚点素材缺失，跳过领取，直接离场", "WARNING")
-            self._egg_exit_to_lobby(None, budget_deadline)
+            _give_up("锚点素材缺失", None)
             return
         # 1) 鉴宝大厅 → 活动页：点左上「D」返回键，等「获取银币」出现确认到位
         back = self._egg_chain_wait(specs, "hall_back_btn", 6.0,
                                     budget_deadline=budget_deadline)
         if back is None or not self._egg_chain_click(*back, key="hall_back_btn"):
-            log("[彩蛋收尾] 未见/未点中返回键，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs, budget_deadline)
+            _give_up("未见/未点中返回键", specs)
             return
         silver = self._egg_chain_wait(specs, "act_get_silver_btn", 6.0,
                                       budget_deadline=budget_deadline)
         if silver is None:
-            log("[彩蛋收尾] 点返回后未到活动页，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs, budget_deadline)
+            _give_up("点返回后未到活动页", specs)
             return
         # 2) 活动页 → 打开任务抽屉：点「获取银币」，等 tab 栏出现
         if not self._egg_chain_click(*silver, key="act_get_silver_btn"):
-            log("[彩蛋收尾] 「获取银币」点击未到位，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs, budget_deadline)
+            _give_up("「获取银币」点击未到位", specs)
             return
         if self._egg_chain_wait(specs, "egg_panel_tabbar", 6.0,
                                 budget_deadline=budget_deadline) is None:
-            log("[彩蛋收尾] 抽屉未弹出，跳过领取", "WARNING")
-            self._egg_exit_to_lobby(specs, budget_deadline)
+            _give_up("抽屉未弹出", specs)
             return
+        self._egg_chain_trace("panel_opened")
         # 3) 领取循环：tab1 红钮 →（无则）切「彩蛋任务」tab 红钮；每次弹一个聚合奖励弹窗
         #    attempts 上限 = 轮次上限×2：点击未生效的尝试必须计入，否则红钮常驻而点击
         #    持续失败时会一直 continue（原实现 rounds 不增，只靠各步超时兜底）。
@@ -3993,6 +4021,9 @@ class TreasureModule(ActivityModule):
                 f"蓝{total['blue']} 银币+{total_coin:,} 积分+{total_score:,}", "INFO")
         else:
             log("[彩蛋收尾] 无可领取彩蛋，看一眼即结束", "INFO")
+        self._egg_chain_trace("claim_done", rounds=rounds, attempts=attempts,
+                              red=total["red"], yellow=total["yellow"],
+                              blue=total["blue"], coin=total_coin, score=total_score)
         # 4) 关抽屉：点左侧空白，等 tab 栏消失
         self._egg_chain_click(*self.EGG_CHAIN_BLANK_NORM, key="egg_close_panel")
         self._egg_chain_wait(specs, "egg_panel_tabbar", 4.0, want=False,
@@ -4030,10 +4061,16 @@ class TreasureModule(ActivityModule):
             "WARNING",
         )
         deadline = time.monotonic() + self.EGG_CHAIN_TOTAL_BUDGET_S
+        # 记下点击方式与意图开关：链内点击是「真点击」还是「只导航」，取决于后者——
+        # 真机复盘时这一条能直接回答「为什么没领到」。
+        self._egg_chain_trace("start", budget_s=self.EGG_CHAIN_TOTAL_BUDGET_S,
+                              click_mode=self.ctx.click_mode,
+                              intent_mode=self.ctx.intent_mode)
         try:
             self._egg_claim_steps(self._egg_chain_load_specs(), deadline)
         except Exception as e:
             logger.log(f"[彩蛋收尾] 链异常（不影响停止）：{e}", "WARNING")
+            self._egg_chain_trace("error", error=repr(e))
             self.ctx.lifecycle.request_stop()
 
     # ==================================================================
