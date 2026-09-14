@@ -52,7 +52,9 @@ def test_graph_clean_and_shaped(truth):
         "treasure.__boot.dwell",
         "treasure.hall_peak_appraise_card.rhall_to_treasure.0"]
     assert len(policy["actuators"]) == 33
-    assert len(policy["perception"]["spec"]) == 53
+    # spec = 检测面锚点 + 收尾链专用锚点族（stage-from-node-plan §10：不进 transitions）
+    #        + pass 二级确认弹窗惰性锚点（bid_pass_confirm_btn，module 直读）
+    assert len(policy["perception"]["spec"]) == 65
     # 引擎契约段：白名单计数见证（改契约 = 有意识的真源变更，须过本锁）
     ec = policy["engine_contract"]
     assert len(ec["facts"]) == 16
@@ -100,6 +102,10 @@ def test_spec_colorspace_contract(truth):
     assert gray_set == {
         "appraiser_p1_caroline", "appraiser_p2_shotaro", "appraiser_selected_check",
         "session_start_match_btn", "round_big_banner", "result_banner",
+        "hall_chat_left", "hall_controller_popup",
+        # 彩蛋收尾链专用（白字/图标类，进不了检测扫描，§10）
+        "egg_claim_title", "egg_panel_tabbar", "egg_task_tab3",
+        "hall_back_btn", "hall_home_btn",
     }, f"灰度声明集漂移: {gray_set}"
 
 
@@ -137,6 +143,37 @@ def test_dwell_signals_scoped_by_transitions(truth):
     assert _tpls_of(full["treasure.第1回合出价.dwell"]) == {
         "round1_banner.png", "round2_banner.png", "round3_banner.png",
         "round4_banner.png", "round5_banner.png", "bid_smart_btn.png"}
+
+
+def test_stage_face_gate(truth):
+    """页面清单等集闸：盘上真源必须过闸，且四类漂移各自被拦（漏改静默漂移的机检）。"""
+    import copy
+
+    full, policy = truth
+    assert ct.stage_face_checks(full, policy) == []
+
+    no_stage = copy.deepcopy(full)
+    no_stage["treasure.待机.dwell"]["attach"].pop("_stage")
+    assert any("treasure.待机.dwell" in e
+               for e in ct.stage_face_checks(no_stage, policy))
+
+    dup = copy.deepcopy(full)
+    dup["treasure.待机.dwell"]["attach"]["_stage"] = "游戏大厅"
+    assert any("_stage 重名" in e for e in ct.stage_face_checks(dup, policy))
+
+    drift_policy = copy.deepcopy(policy)
+    drift_policy["perception"]["stages"]["order"].remove("待机")
+    errs = ct.stage_face_checks(full, drift_policy)
+    assert any("不等集" in e and "待机" in e for e in errs)
+    assert any("definitions 键集" in e and "待机" in e for e in errs)
+
+    # 清单加一页、忘配 transitions 入边 → 该页运行时永远判不出
+    unreach = copy.deepcopy(policy)
+    unreach["perception"]["stages"]["order"].append("不存在的页")
+    unreach["perception"]["stages"]["definitions"]["不存在的页"] = {
+        "active": [], "ocr": [], "page": "hall"}
+    errs = ct.stage_face_checks(full, unreach)
+    assert any("无 transitions 入边" in e and "不存在的页" in e for e in errs)
 
 
 def test_navigation_dwell_fallback_to_boot(truth):
@@ -518,8 +555,17 @@ def test_cross_truth_gates_pass(truth):
     assert ct.cross_checks(full, policy) == []
     from maaracing_master.core.navkit.v4_source import load_nav_source
     nav = load_nav_source(ct.POLICY_TRUTH)
-    assert len(nav.plan.spec) == 53
+    assert len(nav.plan.spec) == 65
     assert nav.plan.detect_anchors and len(nav.policies.rules) == 24
+    # 待机的判定信号必须进 global_anchors：否则只有已判为待机时才扫它，而阶段又由它定
+    # → 鸡生蛋，该页永远进不去。控制器指引弹窗相反——它只会在大厅/待机两页弹，故挂在
+    # 那两页的 active 上即可（它的 rect 覆盖半屏，是全场最贵锚点，不进全局以免每帧交税）。
+    assert "hall_chat_left" in nav.plan.global_anchors
+    assert "hall_controller_popup" not in nav.plan.global_anchors
+    assert {nav.plan.stage_stage.get("hall_chat_left"),
+            nav.plan.stage_stage.get("hall_controller_popup")} == {"待机", "控制器指引弹窗"}
+    assert set(nav.plan.global_anchors) == {
+        "hall_peak_appraise_card", "hall_session_cards", "hall_chat_left"}
 
 
 def test_schema_files_present_and_valid():

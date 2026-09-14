@@ -41,8 +41,10 @@ def proj():
 
 class TestProjection:
     def test_spec_group_counts(self, proj):
-        """分类取 kind：template 20 / point 15 / ocr 18（五分类制废除）。"""
-        assert len(proj["template"]) == 20
+        """分类取 kind：template 32 / point 15 / ocr 18（五分类制废除）。
+        template 32 = 原 22 + 彩蛋收尾链专用锚点 9（不进 transitions，§10）
+        + pass 二级确认弹窗惰性锚点 1。"""
+        assert len(proj["template"]) == 32
         assert len(proj["point"]) == 15
         assert len(proj["ocr"]) == 18
 
@@ -93,6 +95,10 @@ class TestProjection:
         assert gray == {
             "appraiser_p1_caroline", "appraiser_p2_shotaro", "appraiser_selected_check",
             "session_start_match_btn", "round_big_banner", "result_banner",
+            "hall_chat_left", "hall_controller_popup",
+            # 彩蛋收尾链专用锚点（不进 transitions，§10）
+            "egg_claim_title", "egg_panel_tabbar", "egg_task_tab3",
+            "hall_back_btn", "hall_home_btn",
         }
 
     def test_nodes_key_shape_and_fields(self, proj):
@@ -114,7 +120,7 @@ class TestMirrorAnchors:
                 if s._rect_key(anchor["rect"]) == s._rect_key(item["rect"]):
                     dynamic.add(name)
         assert dynamic == set(s.MIRROR_ANCHORS)
-        assert len(s.MIRROR_ANCHORS) == 11
+        assert len(s.MIRROR_ANCHORS) == 13
 
     def test_every_node_has_mirror(self, proj):
         """每处 rect 要么是镜像锚点的副本，要么显式声明了 _graph_only。
