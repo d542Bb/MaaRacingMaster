@@ -288,13 +288,19 @@ def test_auto_shoo_skips_when_next_intent_clean():
 
 
 def test_auto_shoo_gates_busy_miss_streak_cooldown():
-    """任务槽忙（点击优先）/光标连续未识别（陈旧位盲导航）/冷却窗内 → 一律跳过。"""
+    """任务槽忙（点击优先）/冷却窗内 → 跳过；光标连续未识别 → 1s 节流探测
+    （不再永久跳过——失踪计数清零依赖导航执行，永久封死即自锁死局）。"""
     c, moves = _shoo_clicker((610, 596), busy=True)
     assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is None
     assert not moves
 
-    c, _ = _shoo_clicker((610, 596), miss=3)
-    assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is None
+    c, moves = _shoo_clicker((610, 596), miss=3)
+    # 失踪计数高不再永久封死（自锁死局修复）：首帧放行探测，节流窗内再跳过
+    assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is not None
+    assert len(moves) == 1
+    assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is None, \
+        "探测节流窗（1s）内不得重复提交"
+    assert len(moves) == 1
 
     c, moves = _shoo_clicker((610, 596))
     assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is not None

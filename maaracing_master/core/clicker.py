@@ -15,8 +15,10 @@
 """
 from __future__ import annotations
 
+import math
 import time
 
+from maaracing_master.core.logger import logger
 from maaracing_master.core.window_utils import (
     norm_to_screen,
     send_left_click,
@@ -59,6 +61,11 @@ class Clicker:
         self._gamepad_lost_streak = 0  # 手柄光标连续丢失计数（approach lost 累加）
         self._rebuild_cooldown_until_ts = 0.0  # 重建冷却截止（monotonic 秒）
         self._shoo_cooldown_until_ts = 0.0  # 光标避让冷却截止（monotonic 秒）
+        # 光标失踪期避让探测的下次放行时刻（见 SHOO_PROBE_INTERVAL_S）
+        self._shoo_probe_next_ts = 0.0
+        # 避让空转检测：同一 (压住区域, 避让点) 连续提交且光标始终没移开 → 升级告警
+        self._shoo_repeat_sig: tuple = ()
+        self._shoo_repeat_count = 0
         # 异步点击（2026-09-03 导航线程化）：real 立即执行、结果入槽；gamepad 后台导航
         self._real_result: dict | None = None  # real 模式结果槽（submit 后立即可消费）
         self._last_norm: tuple[float, float] | None = None  # 最近提交归一化坐标（结果回填 last_pos 用）
@@ -219,8 +226,16 @@ class Clicker:
     # 隐藏光标、面板开关动画等）光标短暂不可见属正常，此时 last_pos 是陈旧
     # 位置，盲导航既挪不动又白白阻塞主循环 → 跳过，等光标重现/阶段切换。
     SHOO_SKIP_MISS_STREAK = 3
-    # 避让点候选方向（归一化偏移）：下→上→右→左→远上，取第一个不压区域者
+    # 光标失踪期间的避让探测节流（秒）：miss_streak 清零只发生在导航任务的
+    # read_pos 成功里，而 S1 等待态没有点击意图、避让是唯一导航提交者——
+    # 永久 skip 会形成自锁死局（见 auto_shoo 内注释）。1s 一跳闸既不刷爆
+    # 任务槽（保留 2026-09-03 转场期保护的本义），又能让光标重现即恢复。
+    SHOO_PROBE_INTERVAL_S = 1.0
+    # 避让候选方向（归一化偏移）：下→上→右→左→远上，取第一个不压区域者
     SHOO_DIRECTIONS = ((0.0, 0.14), (0.0, -0.14), (0.13, 0.0), (-0.13, 0.0), (0.0, -0.30))
+    # 同一 (压住区域, 避让点) 连续提交达此数仍未移开 → WARNING（避让语义失效升级可见，
+    # 多因游戏不接受该导航落点；DEBUG 时代的 95 连发空转没人看见，2026-09-14 教训）
+    SHOO_REPEAT_WARN_AFTER = 8
 
     def auto_shoo(self, guard_rects, *, radius_px: float,
                   frame_size: tuple[int, int],
@@ -257,8 +272,16 @@ class Clicker:
         # 光标当前连续未识别（游戏转场期光标被遮罩隐藏，如匹配中加载画面）：
         # last_pos 是陈旧位置，盲导航只会白占任务槽；等光标重现再避让
         # （2026-09-03 用户实测：第二次匹配瞬间 PEEP 消失、程序空档）。
+        # 但不得永久跳过：miss_streak 清零只发生在导航任务的 read_pos 成功里，
+        # S1 等待态无点击意图时避让是唯一导航提交者——永久 skip = 自锁死局
+        # （真机 2026-09-14：确认出价后光标残留按钮白字上识别失踪，避让任务
+        # lost 收尾 miss_streak≥3，此后 40s 无一次避让提交、读侧拿陈旧位永远
+        # 判「压住」等光标移开）。改 1s 节流探测：光标真隐藏的代价与 skip 同阶
+        # （p 阶段快速失败），光标可见则立即恢复常规避让节奏。
         if getattr(self._gamepad, "miss_streak", 0) >= self.SHOO_SKIP_MISS_STREAK:
-            return None
+            if now < self._shoo_probe_next_ts:
+                return None
+            self._shoo_probe_next_ts = now + self.SHOO_PROBE_INTERVAL_S
         pos = self._gamepad.last_pos
         W, H = frame_size
         if not pos or W <= 0 or H <= 0 or not guard_rects:
@@ -283,10 +306,28 @@ class Clicker:
             px_ = min(0.97, max(0.03, nx + dxn))
             py_ = min(0.95, max(0.05, ny + dyn))
             if _hit(px_, py_) is None:
+                # 候选必须离当前位置 > 导航「到位容差」：太近（含被屏幕边界 clamp 挤近）
+                # 的点提交后会被导航判定「已到位」原地零移动——真机 2026-09-14 R5 死循环
+                # （避让点 0.95 距光标真实位 50px < SHOO_TOL_PX 60px，32s 连提 95 次光标
+                # 纹丝不动，label OCR 永远被遮挡 → S1 空等）。跳过让位下一方向。
+                if math.hypot((px_ - nx) * W, (py_ - ny) * H) <= self.SHOO_TOL_PX:
+                    continue
                 self._shoo_cooldown_until_ts = now + self.SHOO_COOLDOWN_S
                 # 宽松容差避让：只移出识别区即返回（无需精确微调）；异步提交，
                 # 导航线程后台执行，决策段不被阻塞（转移信号窗口不丢失）。
                 if self.submit_move(px_, py_, tol_px=self.SHOO_TOL_PX):
+                    sig = (hit_key, round(px_, 3), round(py_, 3))
+                    if sig == self._shoo_repeat_sig:
+                        self._shoo_repeat_count += 1
+                        if self._shoo_repeat_count == self.SHOO_REPEAT_WARN_AFTER:
+                            logger.log(
+                                f"[鉴宝点击] 避让空转：已连续 {self._shoo_repeat_count} 次导航到 "
+                                f"({px_:.2f},{py_:.2f}) 光标仍压住 [{hit_key}]（当前位 "
+                                f"({nx:.2f},{ny:.2f})）——游戏可能不接受该落点，需人工核查",
+                                "WARNING")
+                    else:
+                        self._shoo_repeat_sig = sig
+                        self._shoo_repeat_count = 1
                     return {"key": hit_key, "point": (px_, py_)}
                 return None
         return None  # 邻域全是需识别区（少见），放弃避让保持现状
