@@ -1,7 +1,7 @@
 # MaaRacingMaster — 游戏规则 · 巅峰鉴宝
 
 > **本文件是什么**：《巅峰极速》"巅峰鉴宝"活动的**游戏规则事实**——这个游戏怎么运转。
-> **本文件不是什么**：策略与实现。出价怎么打属策略（[strategy.py](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/strategy.py) + [CODE_WIKI §2](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/CODE_WIKI.md)）；参数怎么算、状态机怎么跑属实现（CODE_WIKI §1/§3）。
+> **本文件不是什么**：策略与实现。出价怎么打属策略（[strategy.py](./strategy.py) + [CODE_WIKI §2](./CODE_WIKI.md)）；参数怎么算、状态机怎么跑属实现（CODE_WIKI §1/§3）。
 
 ## ⚠️ 修改本文件前必读（硬约束）
 

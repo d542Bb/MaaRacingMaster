@@ -196,7 +196,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 >
 > - **鉴宝域**（treasure\_module / treasure\_detector / treasure\_ocr / treasure\_renderer / bid\_strategy）→ [鉴宝域文档](../maaracing_master/plugins/treasure/CODE_WIKI.md)
 
-### 4.1 [controller.py](file:///d:/maaracing_assistant/maaracing_master/core/controller.py) — 主控编排器
+### 4.1 [controller.py](../maaracing_master/core/controller.py) — 主控编排器
 
 **职责**（v0.14+ 已去流程化，专注生命周期与能力门面）：
 
@@ -228,7 +228,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ***
 
-### 4.2 [gamepad\_cursor.py](file:///d:/maaracing_assistant/maaracing_master/core/gamepad_cursor.py) — 手柄光标导航引擎
+### 4.2 [gamepad\_cursor.py](../maaracing_master/core/gamepad_cursor.py) — 手柄光标导航引擎
 
 **职责摘要**：签名剖面法识别游戏内白色圆盘光标（normal / interactive 两态）、摇杆-光标速度模型 + 闭环趋近导航、到位后确认点击（意图模式只导航不确认）；供 `core.clicker` 的「后台(手柄)」点击方式复用，与「前台(鼠标)」SendInput 同层。底座与手柄均依赖注入（复用 controller 的 `_gpad` / 模块的 capture），本模块不自建，避免手柄/截图冲突。
 
@@ -236,7 +236,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ***
 
-### 4.3 [yolo\_detector.py](file:///d:/maaracing_assistant/maaracing_master/core/yolo_detector.py) — YOLO 检测器
+### 4.3 [yolo\_detector.py](../maaracing_master/core/yolo_detector.py) — YOLO 检测器
 
 **职责**：
 
@@ -266,7 +266,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ***
 
-### 4.4 [mra\_shell](file:///d:/maaracing_assistant/apps/MaaRacingMaster.Shell) — GUI 宿主（WinUI 3 + HTML 前端）
+### 4.4 [mra\_shell](../apps/MaaRacingMaster.Shell) — GUI 宿主（WinUI 3 + HTML 前端）
 
 > v0.13.0 起 GUI 定案为 WinUI 3 shell + WebView2 HTML 前端（详见 §11）。旧 ttkbootstrap GUI（`gui.py` MRAGUI）已在重构时移除，以下历史记录仅供参考。
 
@@ -278,7 +278,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 - 前端 HTML 通过 `window.chrome.webview.postMessage` → C# → Python 通信，封装为 `mra.call(method, params)`
 
-**前端文件**（[frontend/](file:///d:/maaracing_assistant/apps/MaaRacingMaster.Shell/frontend)）：
+**前端文件**（[frontend/](../apps/MaaRacingMaster.Shell/frontend)）：
 
 | 文件                      | 职责                                                         |
 | ----------------------- | ---------------------------------------------------------- |
@@ -312,7 +312,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ***
 
-### 4.5 [debug.py](file:///d:/maaracing_assistant/maaracing_master/core/debug.py) — 调试可视化
+### 4.5 [debug.py](../maaracing_master/core/debug.py) — 调试可视化
 
 **职责**：
 
@@ -371,7 +371,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ***
 
-### 4.6 [logger.py](file:///d:/maaracing_assistant/maaracing_master/logger.py) — 日志系统
+### 4.6 [logger.py](../maaracing_master/core/logger.py) — 日志系统
 
 **职责**：
 
@@ -401,7 +401,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ***
 
-### 4.7 [window\_utils.py](file:///d:/maaracing_assistant/maaracing_master/window_utils.py) — 窗口与手柄检测
+### 4.7 [window\_utils.py](../maaracing_master/core/window_utils.py) — 窗口与手柄检测
 
 **职责**：
 
@@ -417,19 +417,19 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 ***
 
-### 4.8 [pipeline\_logger.py](file:///d:/maaracing_assistant/maaracing_master/pipeline_logger.py) — MAA Pipeline日志
+### 4.8 [pipeline\_logger.py](../maaracing_master/core/pipeline_logger.py) — MAA Pipeline日志
 
 **职责**：继承 `ContextEventSink`，监听Pipeline节点识别/动作事件，输出中文友好日志。
 
 ***
 
-### 4.9 [opencv\_utf8\_patch.py](file:///d:/maaracing_assistant/maaracing_master/core/opencv_utf8_patch.py) — 中文路径补丁
+### 4.9 [opencv\_utf8\_patch.py](../maaracing_master/core/opencv_utf8_patch.py) — 中文路径补丁
 
 **职责**：Monkey-patch `cv2.imread`/`cv2.imwrite`，支持中文Windows路径。ASCII路径走原生API，中文路径用 `np.frombuffer`/`cv2.imencode`+Python文件IO绕过。程序启动时import一次即全局生效。
 
 ***
 
-### 4.10 [wgcap.py](file:///d:/maaracing_assistant/maaracing_master/core/wgcap.py) — WGC 持久化后台截图
+### 4.10 [wgcap.py](../maaracing_master/core/wgcap.py) — WGC 持久化后台截图
 
 **职责**：
 
@@ -693,7 +693,7 @@ python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdi
 
 ### 9.5 日志位置（%APPDATA%/MaaRacingMaster/）
 
-用户数据目录 `user_data_dir()` 五目录结构（[paths.py](file:///d:/maaracing_assistant/maaracing_master/core/paths.py)）：
+用户数据目录 `user_data_dir()` 五目录结构（[paths.py](../maaracing_master/core/paths.py)）：
 
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
 
@@ -865,6 +865,7 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 | stop\_distance自适应      | `max(8, close_th×0.55)` 不是硬编码25px                   |
 | 微调脉冲                   | <35px用25ms+80ms刹车，40ms仍过冲                           |
 | 模板匹配正反逻辑               | True=匹配到算成功；False=模板消失算成功                           |
+| 避让候选必须超出「到位容差」        | auto\_shoo 的候选若离当前位置 ≤SHOO\_TOL\_PX(60px) 必须跳过：导航在容差内判「已到位」零移动——被屏幕边界 clamp 的避让点最易刚好贴出遮挡圈（2026-09-14 R5 实机：避让点距光标 50px，32s 空提 95 次光标纹丝不动，label OCR 永远被挡 → S1 死等）。同意图连提 8 次未移开升级 WARNING；契约锁 tests/test\_clicker\_auto\_shoo.py |
 
 ### 10.4 物理手柄XInput
 
@@ -969,7 +970,7 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 | Python worker 线程退出  | `sys.exit()` 在非主线程只抛 SystemExit 不退出进程，必须 `os._exit(n)`                                                                           |
 | Dispose 后访问 Process | `_process.Dispose()` 后访问属性抛「No process is associated」；验证进程存活用 `ProcessId` + `Process.GetProcessById(pid)` 捕获 `ArgumentException` |
 
-> 正式 sidecar：[sidecar.py](file:///d:/maaracing_assistant/maaracing_master/core/sidecar.py)（Step 4 完成，已命令行验证）。入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr）。**坑**：handler 线程必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失。
+> 正式 sidecar：[sidecar.py](../maaracing_master/core/sidecar.py)（Step 4 完成，已命令行验证）。入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr）。**坑**：handler 线程必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失。
 
 ***
 
