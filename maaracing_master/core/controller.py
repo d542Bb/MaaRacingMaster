@@ -525,12 +525,3 @@ class MaaRacingMasterController:
         self._gpad = None
         import gc
         gc.collect()  # 兜底：回收模块/点击器链上的手柄对象（free 仍由 __del__ 恰好执行一次）
-
-    # ---------- 工具方法 ----------
-
-    def _interruptible_sleep(self, seconds: float):
-        """可中断的 sleep，每 0.1 秒检查 _running 与 stop_event 状态"""
-        for _ in range(int(seconds / 0.1)):
-            if not self._running or self.stop_event.is_set():
-                return
-            time.sleep(0.1)

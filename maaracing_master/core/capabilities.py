@@ -238,13 +238,22 @@ class LifecycleAdapter:
         self._app.stop_event.set()
 
     def sleep(self, seconds: float) -> bool:
-        # 返回是否被中断（False=被停止信号提前返回）
-        for _ in range(int(seconds / 0.1)):
+        # 返回是否被中断（False=被停止信号提前返回）。
+        # 墙钟语义：正常情况下实际睡眠时长 ≥ seconds——量化实现做不到这一点：
+        # 旧版按 int(seconds/0.1) 迭代，小于 0.1s 的入参静默退化为零睡眠的忙旋
+        # （真机 2026-09-14：彩蛋链等待循环节传 0.05，6s 窗空转数百万次、持 GIL
+        # 饿死导航 worker 与观察线程），非整数倍入参也被向下截断。故改为
+        # deadline 分片：每片 ≤0.1s 保可中断性，末片补齐余数保墙钟下界。
+        # 「睡眠时长 ≥ 入参」由 tests/test_capabilities_lifecycle_sleep.py 机检。
+        import time
+        deadline = time.monotonic() + max(seconds, 0.0)
+        while True:
             if not self._app._running or self._app.stop_event.is_set():
                 return False
-            import time
-            time.sleep(0.1)
-        return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            time.sleep(min(remaining, 0.1))
 
 
 # ==================== DebugRenderer ====================

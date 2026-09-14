@@ -499,7 +499,6 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | `_reset_gpad()`                                | 摇杆归零+按钮释放（不销毁）                                                         |
 | `_destroy_gpad()`                              | 销毁虚拟手柄：显式 ctypes `vigem_target_remove` 从总线拔除（确定性）                      |
 | `_start_wgc_capture()` / `_stop_wgc_capture()` | 启动/停止 WGC 中心采集器（幂等）；失败即"截图链路不可用"，无 MAA 回退                              |
-| `_interruptible_sleep(s)`                      | 可中断睡眠（每 0.1s 检查 `_running`）                                            |
 
 ### 5.4 yolo\_detector.YOLODetector
 
@@ -542,7 +541,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | 方法                              | 所属模块                             | 说明                                                     | 关键参数/坑点                                                 |
 | ------------------------------- | -------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
 | `ctx.capture.screenshot()`      | capabilities.py `CaptureAdapter` | 截图 RGB ndarray（**只读 WGC 中心缓存**，无帧返回 None）              | 唯一取帧入口；不得回退同步截图，返回 None 按"采集链路故障"处理，不得当作"画面无变化"         |
-| `_interruptible_sleep(seconds)` | Controller                       | 每 0.1 s 轮询检查 `_running` 的可中断 sleep                     | stop 能 0.1 s 级响应；**不要用** **`time.sleep(>0.2)`**         |
+| `ctx.lifecycle.sleep(seconds)`  | capabilities.py `LifecycleAdapter` | 可中断睡眠：≤0.1s 分片检查停止信号，**墙钟时长 ≥ 入参**（deadline 分片+余数补齐）    | 曾按 `int(s/0.1)` 量化迭代，小于 0.1s 的入参静默退化为零睡眠忙旋（真机 2026-09-14 饿死导航 worker，见 treasure 域 CODE_WIKI §9）；语义由 `tests/test_capabilities_lifecycle_sleep.py` 机检。Controller 同名旧工具 `_interruptible_sleep` 为同型量化实现且零调用方，已删 |
 | `NavigationDebugger(proj_dir)`  | debug.py                         | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §5.5；§9.3 调试模式说明                                        |
 | `has_physical_controller()`     | window\_utils.py                 | XInput API 遍历 4 端口，任一连接返回 True                         | DLL 回退 xinput1\_4 → xinput9\_1\_0 → xinput1\_3；§10.4 坑点 |
 
