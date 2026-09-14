@@ -75,6 +75,9 @@ MIRROR_ANCHORS = frozenset({
     "hall_peak_appraise_card", "goto_appraise_btn", "hall_session_cards",
     "is_matching_btn", "appraiser_title", "round_big_banner", "smart_bid_btn",
     "result_banner", "settle_title", "daily_high_banner", "egg_reward_title",
+    # 待机/控制器指引弹窗：判定信号原先只活在图侧（_graph_only），2026-09-13 起
+    # 请进 spec 参与阶段判定，图侧锚点节点成为它的镜像副本（两面同值由 anchor_face_checks 锁）
+    "hall_chat_left", "hall_controller_popup",
 })
 
 # 静态服务白名单（扩展名 + 目录）

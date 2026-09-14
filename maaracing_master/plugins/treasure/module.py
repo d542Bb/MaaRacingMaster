@@ -480,27 +480,20 @@ class TreasureModule(ActivityModule):
     NAME = "巅峰鉴宝"
     REQUIRES = frozenset({"capture"})
 
-    # 阶段顺序：GUI 断点选择用，OCR/自动化阶段会细化
-    STAGE_ORDER = [
-        "游戏大厅",
-        "活动页面",
-        "鉴宝大厅(选择场次)",
-        "匹配中",
-        "选择鉴宝师",
-        "第1回合出价",
-        "第2回合出价",
-        "第3回合出价",
-        "第4回合出价",
-        "第5回合出价",
-        "中标结算",
-        "领取分红",
-        # 结算后弹窗链（合并为单一阶段）：领取分红后可能依次弹出 ①今日最高积分上涨
-        # ②鉴宝等级提升(无 ROI) ③奖励结算(彩蛋)，弹几个是随机的（也可能一个不弹）。
-        # 弹窗只会遮满全屏 → 弹窗存在时检测器一定匹配不到大厅；弹窗全关后大厅才可见。
-        # 具体是哪个弹窗由检测器 _last_hit_roi_key 区分（daily_high_banner=今日最高 /
-        # egg_reward_title=彩蛋 / 无命中=等级提升盲点）。_accept_stage 放行「结算弹窗→大厅」。
-        "结算弹窗",
-    ]
+    # 阶段清单与显示顺序：真源 = policy.json 的 perception.stages.order（与图 dwell 的
+    # attach._stage 声明、stages.definitions 三方等集，由 check_truth.stage_face_checks 机检）。
+    # 代码不再手抄第二份——漂移实证：commit a1a6424 新增「待机」「控制器指引弹窗」两条
+    # dwell 时阶段表仍是 13 项，新页面在 GUI 无处可显。
+    # 类定义期取不到真源即失败（fail-closed），与 detector「plan 缺失不做常量兜底」同调；
+    # registry 会把加载失败记 WARNING 并跳过该插件，不静默降级成残缺清单。
+    _NAV = nav_source()
+    if _NAV is None or _NAV.plan is None:
+        raise RuntimeError(
+            "treasure: policy.json 数据面不可用，阶段清单无真源"
+            "（检查 resources/policy/treasure.policy.json 是否损坏）"
+        )
+    STAGE_ORDER: list[str] = list(_NAV.plan.stage_order)
+    del _NAV
 
     REQUIRES_GAMEPAD_EXCLUSIVE = False
 
@@ -523,6 +516,11 @@ class TreasureModule(ActivityModule):
     # 队列满自然丢帧降密（IO_QUEUE_MAX），不需要额外降挡逻辑。
     OBSERVE_INTERVAL_MS   = 150.0
     PEEP_ONLY_INTERVAL_MS = 50.0
+    # 观察线程阶段判定节拍（stage-source-plan §9 C6）：判定挂观察线程后与存图节拍解耦。
+    # 300ms 与原决策段判定节奏同数量级（policy tick 内的 _run_stage_detection），单帧检测
+    # p50≈66ms（N1-a 档，被同期负载抬高约 2×）摊到 300ms 约 22%，与"原判定在决策 tick 里跑"
+    # 的总成本持平。debug/peep 全关但阶段判定有消费者（GUI 阶段条 / trace）时按此档取帧判定。
+    STAGE_JUDGE_INTERVAL_MS = 300.0
     CHANGE_PIXEL_THRESH   = 40     # 画面变化判定：平均像素差 > 该值 → 认为有显著变化（原25→40）
     CHANGE_AREA_RATIO     = 0.05   # 变化像素比例 > 该值 → 保存事件截图（原0.01→0.05）
     CHANGE_COOLDOWN_S     = 5.0    # 画面变化事件冷却（秒），抑制同屏动画反复触发
@@ -854,6 +852,14 @@ class TreasureModule(ActivityModule):
         self._last_raw_round: int | None = None
         self._last_detection_result = None
 
+        # --------- 观察线程阶段判定槽（stage-source-plan §9 C1-C3） ---------
+        # 观察线程是阶段判定的唯一计算点（detector.detect 只在观察布局调用），结果以
+        # 不可变元组整体替换发布，决策段只消费、不自算。槽值恒代表"最近一次观察帧的
+        # 真实画面阶段"：厅类 dwell 不挂 policy_loop 时，决策段 _current_stage 冻结，
+        # 但 GUI 阶段条 / debug 覆盖层 / trace 读槽 → 仍然刷新（修"部分阶段不更新"）。
+        self._obs_slot: tuple[str, int | None, int] | None = None  # (stage, round, tick_frame_hint)
+        self._last_judge_at = 0.0  # 上次判定的 monotonic 秒（节拍门控：每 STAGE_JUDGE_INTERVAL_MS 至少一次）
+
         # --------- 统一底座接入点（P2b+，保留运行时供给，不替换主路径）---------
         # StageTracker：阶段记录/断点换算的单一事实来源。运行时仍用既有 STAGE_ORDER +
         # set_stage，本 tracker 供断点解析与未来的 DebugStudio/调试统一口径（P4/P5 迁移）。
@@ -1142,6 +1148,11 @@ class TreasureModule(ActivityModule):
 
     @property
     def current_stage(self) -> str | None:
+        # GUI / debug 覆盖层 / trace 同源读槽（stage-source-plan §9）：槽由观察线程判定，
+        # 任何 dwell 下都持续刷新——厅类不挂 policy_loop 时 _current_stage 冻结的问题由此根治。
+        # 决策段内部仍读 self._current_stage（副作用链语义不变）。
+        if self._obs_slot is not None:
+            return self._obs_slot[0]
         return self._current_stage
 
     # ---------------- 执行通路：MaaFW Tasker 常驻图（唯一路径） ----------------
@@ -3387,11 +3398,14 @@ class TreasureModule(ActivityModule):
         绝不在这里调 _treasure_kwargs()——它内含 _resolve_action_target()（决策入口），
         还会迭代 _player_bids / _bid_slots 活容器；两者都不属于观察线程的权限。
         厅类阶段没有决策帧，快照为 None 时给一张最小快照，保证"有图可看"优先于"图上有数"。
+        treasure_stage 一律读判定槽（stage-source-plan §9）：厅类 debug 覆盖层的阶段
+        由此持续刷新（原 _current_stage 在厅类冻结 → 覆盖层阶段不同步）。
         """
+        obs_stage = self._obs_slot[0] if self._obs_slot is not None else self._current_stage
         base = self._last_debug_kwargs
         if base is None:
             return dict(
-                treasure_stage=self._current_stage,
+                treasure_stage=obs_stage,
                 treasure_note=self._note,
                 treasure_frame_index=idx,
                 treasure_debug_index=didx,
@@ -3399,6 +3413,7 @@ class TreasureModule(ActivityModule):
                 treasure_click_mode=getattr(self.ctx, "click_mode", "real"),
             )
         snap = dict(base)  # 浅拷贝只为换帧号；内层 dict 是 _treasure_kwargs 已固化的副本
+        snap["treasure_stage"] = obs_stage
         snap["treasure_frame_index"] = idx
         snap["treasure_debug_index"] = didx
         return snap
@@ -3452,12 +3467,20 @@ class TreasureModule(ActivityModule):
         self._observe_thread = None
 
     def _observe_interval_s(self) -> float | None:
-        """本 tick 的间隔（秒）；debug 与 peep 全关 → None（不取帧、不 copy、不入队）。"""
+        """本 tick 的取帧间隔（秒）。
+
+        消费者三选一（stage-source-plan §9 C6）：
+          debug 存图 → OBSERVE_INTERVAL_MS（150ms）；
+          peep 预览  → PEEP_ONLY_INTERVAL_MS（50ms）；
+          阶段判定   → STAGE_JUDGE_INTERVAL_MS（300ms，GUI 阶段条 / trace 的恒在消费者）。
+        debug/peep 全关 **不再** 返回 None：阶段判定消费者恒在，这是修厅类阶段冻结的前提
+        （旧 I5"全关不干活"只对存图/peep 两个出口成立，不再对阶段判定成立）。
+        """
         if getattr(self.ctx.debug, "enabled", False):
             return self.OBSERVE_INTERVAL_MS / 1000.0
         if getattr(self.ctx.debug, "peep_enabled", False):
             return self.PEEP_ONLY_INTERVAL_MS / 1000.0
-        return None
+        return self.STAGE_JUDGE_INTERVAL_MS / 1000.0
 
     def _observer_loop(self) -> None:
         """观察主循环。Event.wait 即节拍器，停止信号当场生效（不等满一个间隔）。"""
@@ -3473,25 +3496,33 @@ class TreasureModule(ActivityModule):
             self._observe_stop.wait(interval_s)
 
     def _observe_tick_once(self) -> None:
-        """一帧观察工作：读中心缓存帧 → 帧号自增 → 入队。
+        """一帧观察工作：读中心缓存帧 → 阶段判定（节拍门控）→ 帧号自增 → 入队。
 
-        权限边界（见 docs/plan/observe-split-plan.md 不变量 I1/I2）：不碰阶段检测、
-        不碰 OCR、不改状态机、不调 _treasure_kwargs（内含决策入口）。帧只从 WGC
-        中心缓存取，不新起截图通路。
+        权限边界（stage-source-plan §9 C4，代替旧 I1/I2）：观察线程可跑「纯模板判定 +
+        过滤层」写槽 `_obs_slot`；**不**调 OCR / 不落盘 / 不改状态机 / 不调
+        `_treasure_kwargs`（内含决策入口）。帧只从 WGC 中心缓存取，不新起截图通路。
         """
         saving = self._session_dir is not None and self._raw_dir is not None
-        if not saving and not getattr(self.ctx.debug, "peep_enabled", False):
-            return                      # 两个出口都关：连帧都不取（不变量 I5）
-        frame_rgb = self.ctx.capture.screenshot()
+        frame_rgb = self.ctx.capture.screenshot()   # 阶段判定消费者恒在（C6）→ 始终取帧
         if frame_rgb is None:
             return
+        # 阶段判定节拍门控：距上次判定 ≥ STAGE_JUDGE_INTERVAL_MS 才跑一次（防每帧全量检测
+        # 挤爆观察周期）。判定只写槽，副作用由决策段消费（见 _consume_stage_slot）。
+        if (self._detector is not None
+                and time.monotonic() - self._last_judge_at >=
+                self.STAGE_JUDGE_INTERVAL_MS / 1000.0):
+            self._last_judge_at = time.monotonic()
+            try:
+                self._judge_stage_into_slot(frame_rgb)
+            except Exception as exc:  # noqa: BLE001 —— 判定故障不得波及观察存图
+                logger.log(f"[鉴宝] 阶段判定异常（跳过本帧判定）: {exc}", "DEBUG")
         if saving:
             self._saved_frames += 1
             self._debug_saved += 1
             idx, didx = self._saved_frames, self._debug_saved
             self._io_submit("frame", frame_rgb, idx, didx, "鉴宝观察",
                             self._observe_kwargs(idx, didx))
-        else:
+        elif getattr(self.ctx.debug, "peep_enabled", False):
             idx, didx = self._saved_frames, self._debug_saved
             self._io_submit("peep", frame_rgb, idx, didx, "鉴宝观察",
                             self._observe_kwargs(idx, didx))
@@ -3617,13 +3648,13 @@ class TreasureModule(ActivityModule):
         if self._frame_counter == 1:
             verify_frame_client(self.ctx.hwnd, frame_rgb.shape[1], frame_rgb.shape[0])
 
-        # --------- 0. 阶段检测 → 过滤 → 同步状态机 ---------
-        self._run_stage_detection(frame_rgb)
+        # --------- 0. 消费观察线程判定槽 → 变更驱动 set_stage（阶段判定已移观察线程） ---------
+        self._consume_stage_slot(frame_rgb)
         if self._trace_writer is not None:
             detection = self._last_detection_result
             self._trace_writer.write(FrameTrace(
                 frame=self._frame_counter,
-                stage=self._current_stage,
+                stage=(self._obs_slot[0] if self._obs_slot is not None else self._current_stage),
                 round_no=self._round_no,
                 scores=getattr(detection, "scores", {}),
                 hit_anchor=getattr(detection, "hit_anchor", None),
@@ -3755,16 +3786,19 @@ class TreasureModule(ActivityModule):
     #  内部：阶段检测（模板匹配 → 过滤层 → 同步 set_stage）
     # ==================================================================
 
-    def _run_stage_detection(self, frame_rgb: np.ndarray) -> None:
-        """运行 TreasureStageDetector，套用过滤层（回合单调 + 防抖 + 强特征立即切），
-        再把结果同步到 set_stage()，让 HUD / 日志 / 状态机推进到真实游戏阶段。
+    def _judge_stage_into_slot(self, frame_rgb: np.ndarray) -> None:
+        """观察线程阶段判定（stage-source-plan §9 C1）：detect（纯模板）+ 过滤层 → 写槽。
 
-        动态感知裁剪：按当前阶段只匹配感知清单 ∪ 全局锚点；当前阶段未登记清单
-        （或尚未进入任何阶段）时回退全量检测（安全兜底，不会静默漏检）。"""
+        只写 `_obs_slot`（不可变元组整体替换）与 `_last_raw_*`/`_last_detection_result`
+        （判定原始结果缓存）；**不调 set_stage、不读 banner、不落盘** —— 副作用一律由
+        决策段 `_consume_stage_slot` 经 set_stage 变更驱动执行（C2/C4）。
+
+        动态感知裁剪：按槽当前阶段只匹配感知清单 ∪ 全局锚点；尚未判出阶段时全量（兜底）。
+        """
         if self._detector is None:
             return
-        # 阶段感知裁剪：active = 动态激活集 ∪ 全局锚点；未登记阶段 → None（全量）
-        perception = self._active_stage_rois(self._current_stage)
+        cur = self._obs_slot[0] if self._obs_slot is not None else self._current_stage
+        perception = self._active_stage_rois(cur)
         active_rois = None
         if perception is not None:
             active_rois = set(perception) | set(_GLOBAL_ANCHORS)
@@ -3788,15 +3822,28 @@ class TreasureModule(ActivityModule):
 
         det_stage, det_r = self._accept_stage(raw_stage, raw_r, immediate=is_big_jump)
 
-        # 同步到状态机（det_stage 为 None 时保持当前阶段不变）
+        # 写槽：只传不可变元组（C3），整体替换引用；stage 为 None 时保持上一槽（不覆盖）。
         if det_stage is not None:
+            self._obs_slot = (det_stage, det_r, self._frame_counter)
+
+    def _consume_stage_slot(self, frame_rgb: np.ndarray) -> None:
+        """决策段消费观察线程的判定槽：变更驱动 set_stage（副作用总线，幂等）。
+
+        槽 stage == _current_stage → 什么都不做（变更是天然的幂等谓词）；变更时 set_stage
+        才跑副作用（回合重置/清指纹/落盘/每日计数）。banner_result（竞拍结果横幅）是
+        set_stage 前的落盘数据读取，留决策段（C4：观察线程不读落盘方向的数据）。
+        """
+        if self._obs_slot is None:
+            return
+        det_stage, det_r = self._obs_slot[0], self._obs_slot[1]
+        if det_stage != self._current_stage:
             # 中标结算阶段：判断竞拍结果横幅（中标/未中标）供落盘记录。
             # 转场帧可能匹配不到 → 只在拿到 win/fail 时写，避免把已记录结果覆盖成 None。
             if det_stage == "中标结算" and self._detector is not None:
                 r = self._detector.banner_result(frame_rgb)
                 if r is not None:
                     self._auction_result = r
-            self.set_stage(det_stage, "检测器", raw_round=det_r)
+            self.set_stage(det_stage, "观察判定", raw_round=det_r)
 
     def _run_egg_ocr(self, frame_rgb: np.ndarray) -> None:
         """结算弹窗（彩蛋）阶段：异步投递彩蛋识别（worker 线程后台跑，主线程零阻塞）。

@@ -39,6 +39,7 @@ class _FakeSelf:
     STAGE_ORDER = getattr(TreasureModule, "STAGE_ORDER", ("游戏大厅",))
     OBSERVE_INTERVAL_MS = getattr(TreasureModule, "OBSERVE_INTERVAL_MS", 150.0)
     PEEP_ONLY_INTERVAL_MS = getattr(TreasureModule, "PEEP_ONLY_INTERVAL_MS", 50.0)
+    STAGE_JUDGE_INTERVAL_MS = getattr(TreasureModule, "STAGE_JUDGE_INTERVAL_MS", 300.0)
     IO_QUEUE_MAX = getattr(TreasureModule, "IO_QUEUE_MAX", 8)
 
     def __init__(self, *, debug_on=True, peep_on=False, saving=True):
@@ -56,6 +57,9 @@ class _FakeSelf:
         self._current_stage = "游戏大厅"
         self._round_no = None
         self._note = ""
+        self._detector = None                    # 桩不支持真检测：判定分支应在 detector 为 None 时直接跳过
+        self._obs_slot: tuple | None = None      # 观察线程阶段判定槽（C3，整体替换引用）
+        self._last_judge_at = 0.0                # 判定节拍门控（monotonic 秒水位）
         # 性能仪表字段：`_io_submit` 会写 io 三项，`_tick_once` 会写 tick 两项。
         # 桩里必须给齐，否则仪表一加、这批契约测试就红——正是仪表想暴露的"静默"的反面。
         self._io_enqueued = 0
@@ -113,7 +117,7 @@ def test_decision_tick_publishes_snapshot_but_owns_no_frame_number():
     fake._daily_loop_limit_reached = lambda: False
     fake._detect_change = lambda _f: True
     fake._treasure_kwargs = _kwargs
-    for name in ("_run_stage_detection", "_run_appraiser_choice", "_run_session_choice",
+    for name in ("_consume_stage_slot", "_run_appraiser_choice", "_run_session_choice",
                  "_run_bidding_choice", "_run_ocr", "_decision_phase"):
         assert hasattr(TreasureModule, name), name   # 决策段步骤改名 → 本锁必须失效提醒
         setattr(fake, name, lambda *_a, **_k: None)
@@ -164,12 +168,43 @@ def test_observer_drops_frames_when_queue_full():
 
 
 def test_observer_idle_when_both_sinks_off():
-    """debug 与 peep 全关：不取挡位、不截图、不入队（不变量 I5）。"""
+    """debug 与 peep 全关：存图/预览两个出口休眠，但阶段判定消费者恒在（C6）——
+
+    不再返回 None，改为判定档（STAGE_JUDGE_INTERVAL_MS）；仍截帧做判定但
+    不 copy、不入队。这是修厅类阶段冻结的前提（GUI 阶段条 / trace 恒在消费者）。
+    """
     fake = _FakeSelf(debug_on=False, peep_on=False, saving=False)
-    assert TreasureModule._observe_interval_s(fake) is None
+    assert TreasureModule._observe_interval_s(fake) == pytest.approx(
+        TreasureModule.STAGE_JUDGE_INTERVAL_MS / 1000.0)
     TreasureModule._observe_tick_once(fake)
-    assert fake.screenshot_calls == 0
-    assert fake._io_queue.empty()
+    assert fake.screenshot_calls >= 1            # 仍取帧（判定消费者）
+    assert fake._io_queue.empty()                # 但不入队（存图/peep 出口都关）
+    assert fake._saved_frames == 0
+
+
+def test_observer_judge_writes_slot_not_state_machine():
+    """观察线程判定只写槽，不改状态机；决策段消费槽 → 变更驱动 set_stage 恰一次。"""
+    fake = _FakeSelf()
+    calls = []
+
+    def _set_stage(stage, reason="", raw_round=None):
+        calls.append((stage, reason, raw_round))
+        fake._current_stage = stage   # 与真身 set_stage 一致：切换后状态机推进 → 幂等成立
+
+    fake.set_stage = _set_stage
+    # 模拟观察线程判定结果写槽（_judge_stage_into_slot 的产物）
+    fake._obs_slot = ("待机", None, 1)
+    # 观察侧：GUI 读槽即得新阶段
+    assert TreasureModule.current_stage.fget(fake) == "待机"
+    # 决策段尚未消费 → _current_stage 未动
+    assert fake._current_stage == "游戏大厅"
+    assert calls == []
+    # 决策段消费一次 → set_stage 变更驱动触发
+    TreasureModule._consume_stage_slot(fake, _FRAME)
+    assert calls == [("待机", "观察判定", None)]
+    # 同槽再消费（决策段每帧都读槽）→ 幂等，不再触发
+    TreasureModule._consume_stage_slot(fake, _FRAME)
+    assert calls == [("待机", "观察判定", None)]
 
 
 def test_peep_only_mode_uses_fast_interval_and_no_frame_number():

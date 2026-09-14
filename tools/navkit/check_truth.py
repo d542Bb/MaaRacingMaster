@@ -22,6 +22,9 @@
    v4 控制器的输入接口全是成功占位，内置 action 会假成功而屏幕上什么都不发生。
 7. 纯锚点形态（attach._anchor_only）：豁免「入口不可达」「无出口节点」两条 WARN，
    但必须零路由且被至少一处引用，否则判孤儿真源。
+8. 页面清单等集（stage_face_checks）：dwell 顶层 focus ↔ policy stages.order ↔
+   stages.definitions 三方互为等集，且 focus 全局唯一——显示态真源已收敛到「当前
+   节点」，这三处是同一事实的三个面，协议层不校验一致，漏改即静默漂移。
 
 用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
 """
@@ -482,6 +485,73 @@ def rect_checks(graph: dict, policy: dict) -> list[str]:
     return errs
 
 
+def stage_face_checks(graph: dict, policy: dict) -> list[str]:
+    """页面清单三方等集（防脱钩机检，2026-09-13）。
+
+    同一条「这张图有哪些页面」的事实有三处声明：dwell 的 `attach._stage`（图侧声明位）、
+    policy stages.order（清单与显示顺序）、stages.definitions（每页的感知配置）。
+    协议层不校验它们一致，漏改任一处都是静默漂移——实证：a1a6424 新增两条 dwell
+    （待机/控制器指引弹窗）时阶段表仍是 13 项，新页面在 GUI 无处可显。
+
+    闸口径：
+    1. 每个 `_dwell` 节点必须有非空 `attach._stage`，且值全局唯一——两页同名会让
+       阶段清单与图侧声明无法对应。
+    2. {dwell._stage} 与 stages.order 互为等集（多一页/少一页都判错）。
+    3. stages.definitions 键集 = stages.order（新页可 active 为空，但 active 为空 +
+       无 transitions 入边 = 该页运行时永远判不出，由第 4 条拦）。
+    4. order 里每一页都必须有至少一条 `transitions` 入边（`to` 指向它），否则它是
+       「清单上有、检测器认不出」的死格——阶段显示会永远跳过这一格。
+
+    注：`_stage` 只是声明位，运行期的阶段真源是 detector 的锚点判定；本闸防的是
+    声明与清单脱钩，不是让图侧参与判定。
+    """
+    problems: list[str] = []
+    stages = policy["perception"]["stages"]
+    order = list(stages.get("order") or [])
+    defs = stages.get("definitions") or {}
+    rounds = tuple(s for s in order if s.startswith("第") and "回合" in s)
+    declared_targets: set[str] = set()
+    for tr in policy["perception"].get("transitions") or []:
+        to = tr.get("to")
+        if to in ("$round", "same"):
+            declared_targets.update(rounds)   # 回合页由 detector 按横幅号实例化
+        elif to is not None:
+            declared_targets.add(to)
+
+    seen: dict[str, str] = {}
+    for name, node in sorted(graph.items()):
+        if not att(node).get("_dwell"):
+            continue
+        stage = att(node).get("_stage")
+        if not isinstance(stage, str) or not stage.strip():
+            problems.append(f"{name} 是 dwell 但缺非空 attach._stage（图侧页面声明位）")
+            continue
+        if stage in seen:
+            problems.append(f"_stage 重名：{name} 与 {seen[stage]} 都声明「{stage}」")
+        seen[stage] = name
+
+    if len(order) != len(set(order)):
+        problems.append("stages.order 含重复项")
+    declared = set(seen)
+    if declared != set(order):
+        problems.append(
+            "dwell _stage 与 stages.order 不等集"
+            f"（只在图: {sorted(declared - set(order))}；只在 order: {sorted(set(order) - declared)}）"
+        )
+    if set(defs) != set(order):
+        problems.append(
+            "stages.definitions 键集与 stages.order 不等"
+            f"（只在 definitions: {sorted(set(defs) - set(order))}；"
+            f"只在 order: {sorted(set(order) - set(defs))}）"
+        )
+    undetectable = sorted(s for s in order if s not in declared_targets)
+    if undetectable:
+        problems.append(
+            f"order 这些页面无 transitions 入边，运行时永远判不出: {undetectable}"
+        )
+    return problems
+
+
 def main() -> int:
     graph, origin = load_graph()
     errors, warns = validate_graph(graph)
@@ -495,6 +565,7 @@ def main() -> int:
         errors += face_errors
         warns += face_warns
         errors += rect_checks(graph, policy_doc)
+        errors += stage_face_checks(graph, policy_doc)
     except (KeyError, TypeError) as exc:
         errors.append(f"policy.json 段结构非法: {exc}")
     if policy_doc is not None:

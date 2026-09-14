@@ -1606,6 +1606,40 @@
           "act_goto_appraise_btn.png"
         ]
       },
+      "hall_chat_left": {
+        "_comment": "待机判定：挂机后大厅 UI 收起、展车轮播，唯一稳定证据是底部左角图标组消失、聊天框左移约 168px。与图侧 treasure.大厅聊天框.anchor 逐字段同义（anchor_face_checks 锁）",
+        "colorspace": "gray",
+        "kind": "template",
+        "label": "大厅聊天框停在左端（待机）",
+        "order": 880,
+        "page": "hall",
+        "rect": [
+          0.0453125,
+          0.8222222,
+          0.1390625,
+          0.9055556
+        ],
+        "templates": [
+          "hall_chat_left.png"
+        ]
+      },
+      "hall_controller_popup": {
+        "_comment": "手柄操作指引弹窗：弹窗把背景整片高斯模糊，鉴宝卡片仍以 0.86 假命中，故 order 必须小于一切大厅锚点（先判弹窗）。与图侧 treasure.控制器指引弹窗.anchor 同义",
+        "colorspace": "gray",
+        "kind": "template",
+        "label": "控制器指引弹窗面板",
+        "order": 870,
+        "page": "hall",
+        "rect": [
+          0.234375,
+          0.25,
+          0.78125,
+          0.75
+        ],
+        "templates": [
+          "hall_controller_popup.png"
+        ]
+      },
       "hall_peak_appraise_card": {
         "kind": "template",
         "label": "大厅巅峰鉴宝卡片",
@@ -1995,7 +2029,23 @@
           "active": [
             "hall_peak_appraise_card",
             "goto_appraise_btn",
-            "hall_session_cards"
+            "hall_session_cards",
+            "hall_controller_popup"
+          ],
+          "ocr": [],
+          "page": "hall"
+        },
+        "控制器指引弹窗": {
+          "active": [
+            "hall_controller_popup"
+          ],
+          "ocr": [],
+          "page": "hall"
+        },
+        "待机": {
+          "active": [
+            "hall_chat_left",
+            "hall_controller_popup"
           ],
           "ocr": [],
           "page": "hall"
@@ -2170,9 +2220,12 @@
       },
       "global_anchors": [
         "hall_peak_appraise_card",
-        "hall_session_cards"
+        "hall_session_cards",
+        "hall_chat_left"
       ],
       "order": [
+        "待机",
+        "控制器指引弹窗",
         "游戏大厅",
         "活动页面",
         "鉴宝大厅(选择场次)",
@@ -2189,6 +2242,16 @@
       ]
     },
     "transitions": [
+      {
+        "on": "hall_controller_popup",
+        "stage": "*",
+        "to": "控制器指引弹窗"
+      },
+      {
+        "on": "hall_chat_left",
+        "stage": "*",
+        "to": "待机"
+      },
       {
         "on": "daily_high_banner",
         "stage": "*",

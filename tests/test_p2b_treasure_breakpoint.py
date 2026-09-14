@@ -9,16 +9,22 @@ treasure 的 STAGE_ORDER 从模块类读取（不 import module.py，避免拉�
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from maaracing_master.core.stage_tracker import StageTracker
 
-# 与 TreasureModule.STAGE_ORDER 保持一致（模块类中定义，此处镜像用于纯逻辑对照）
-STAGE_ORDER = [
-    "游戏大厅", "活动页面", "鉴宝大厅(选择场次)", "匹配中", "选择鉴宝师",
-    "第1回合出价", "第2回合出价", "第3回合出价", "第4回合出价", "第5回合出价",
-    "中标结算", "领取分红", "结算弹窗",
-]
+REPO = Path(__file__).resolve().parents[1]
+
+# 阶段清单真源 = policy.json perception.stages.order（TreasureModule.STAGE_ORDER 由它派生）。
+# 直读盘上真源而非镜像常量：手抄镜像正是 a1a6424 那类漂移的发生地；也不 import module.py，
+# 避免拉入 cv2/maa 重依赖。
+STAGE_ORDER = json.loads(
+    (REPO / "maaracing_master" / "plugins" / "treasure" / "resources"
+     / "policy" / "treasure.policy.json").read_text(encoding="utf-8")
+)["perception"]["stages"]["order"]
 
 
 def _legacy_skip(start_from: str | None):
@@ -53,4 +59,8 @@ class TestTreasureBreakpointEquivalence:
             tracker.resolve_start_from("不存在的阶段")
 
     def test_mid_stage_index(self):
-        assert _legacy_skip("中标结算") == STAGE_ORDER.index("中标结算") == 10
+        assert _legacy_skip("中标结算") == STAGE_ORDER.index("中标结算")
+        # 流程首尾形态锁：开头按真实启动流程排（进游戏先待机 → 手柄指引弹窗 → 才到大厅），
+        # 不锁具体索引数字——写死 10 就是上一次加页面时差点绊倒的那类断言。
+        assert STAGE_ORDER[:3] == ["待机", "控制器指引弹窗", "游戏大厅"]
+        assert STAGE_ORDER[-1] == "结算弹窗"
