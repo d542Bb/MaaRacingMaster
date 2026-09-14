@@ -7,6 +7,22 @@
 
 ## 2026-09-14
 
+### 未发版变更：新增架构决策记录（ADR）目录并接入信源路由 📐
+
+- **性质：** 未发版变更（纯文档：`docs/adr/`（新增）、`AGENTS.md`、`docs/update_log.md`；master 直接提交、不 tag）
+
+- **设立缘由：** 仓库的架构决策此前散在宪法、MAAFW_GUIDE 定案、各域 CODE_WIKI 与 `docs/plan/archive/` 中，其中**只有宪法带状态标注**，其余是无状态断言——读者无法判断"这条还成立吗"。实证代价：`docs/plan/doc-knowledge-baseline-plan.md` 中一条已失效的定论（`file:///` 链接为"IDE 可跳转约定"）因缺少状态标注被当作有效前提转述，导出错误结论。
+
+- **准入硬门槛（用户定）：** 进入 ADR 的决策必须**充分验证**（一手协议核查 / 机检背书 / 真机实证三者之一，且可复核）**且板上钉钉**（已落地实施，非提案待定），并属**架构级**（影响跨模块结构、分层、协议或运行时拓扑）。实现细节、域内坑点、行为守则、方案过程一律不收，各有归宿（README 内列明对照表）。
+
+- **不复制真源：** ADR 只写"决策 + 理由 + 后果（含被否方案与代价）"，事实细节引用不重述；与宪法 / CODE_WIKI 冲突时以那两者为准并回头修 ADR——ADR 是决策的索引与状态，不构成平行真源。
+
+- **状态机：** `accepted` / `superseded by ADR-NNNN` / `deprecated`；推翻旧决策的唯一方式是新写一条并标注取代，禁止原地改写已生效正文（历史理由即决策记录的价值）。文件名 `NNNN-短横线小写标题.md`，序号只增不改。
+
+- **首条记录：** `docs/adr/0001-分层靠引用方向不靠目录.md` —— 收录 core / plugin 分离的唯一可实现形态（协议无命名空间，分离只能靠引用方向单向），附证据链四项：MAAFW_GUIDE §5.6 协议事实、`check_truth.namespace_checks` 机检、`tests/test_navkit_truth.py` 活性锁、`global.json` 归位实证与实施 commit `5d6c320`。
+
+- **信源路由接入：** `AGENTS.md` 新增「架构决策『为什么这么定』与其状态」行，指向 `docs/adr/`（标注准入与状态机见其 README）。
+
 ### 未发版变更：游戏规则事实独立成文并纳入信源路由 📜
 
 - **性质：** 未发版变更（纯文档：`maaracing_master/plugins/treasure/RULES.md`（新增）、`AGENTS.md`、`maaracing_master/plugins/treasure/CODE_WIKI.md`；master 直接提交、不 tag）
