@@ -189,47 +189,22 @@ def test_r4_no_snapshot_observe():
 
 
 # ----------------------------------------------------------------------
-# 策略模式切换（profit / egg）
+# 策略模式（赚蛋已删除，恒为赚钱；mode 参数从 BidStrategy 接口移除）
 # ----------------------------------------------------------------------
 def test_profit_hot_cool_becomes_second():
-    dec = BidStrategy(mode="profit").decide(
+    dec = BidStrategy().decide(
         ctx(4, (180000, 190000, 200000),
             snap(3, 200000, 150000, (120000, 150000, 180000)), 1000000)
     )
-    assert_decision("profit R4 冷静高价→卡第二", dec, DECISION_TARGET_SECOND, 135501)
+    assert_decision("R4 冷静高价→卡第二", dec, DECISION_TARGET_SECOND, 135501)
 
 
-def test_egg_hot_cool_win_egg():
-    dec = BidStrategy(mode="egg").decide(
-        ctx(4, (180000, 190000, 200000),
-            snap(3, 200000, 150000, (120000, 150000, 180000)), 1000000)
-    )
-    assert_decision("egg R4 冷静高价→拍中搏蛋", dec, DECISION_WIN, 243806)
-
-
-def test_egg_firefight_cap_second():
-    dec = BidStrategy(mode="egg").decide(
-        ctx(4, (180000, 190000, 200000),
-            snap(3, 200000, 180000, (150000, 220000, 300000)), 1000000)
-    )
-    assert_decision("egg R4 烧钱过猛→卡第二保底", dec, DECISION_TARGET_SECOND, 166001)
-
-
-def test_egg_small_cap_buys_within_egg_cap():
-    # 小兜底仍能拍中（raw_target=243806 ≤ V̂+cap=257000）→ 按实际行为断言 win
-    dec = BidStrategy(mode="egg", risk_cap=1000).decide(
-        ctx(4, (180000, 190000, 200000),
-            snap(3, 200000, 150000, (120000, 150000, 180000)), 1000000)
-    )
-    assert_decision("egg R4 小兜底→拍中(在买入上限内)", dec, DECISION_WIN, 243806)
-
-
-def test_profit_small_cap_firefight_second():
+def test_small_cap_firefight_second():
     dec = BidStrategy(risk_cap=1000).decide(
         ctx(4, (30000, 35000, 40000),
             snap(3, 40000, 20000, (20000, 30000, 80000)), 1000000)
     )
-    assert_decision("profit R4 小兜底烧钱→卡第二", dec, DECISION_TARGET_SECOND, 38001)
+    assert_decision("R4 小兜底烧钱→卡第二", dec, DECISION_TARGET_SECOND, 38001)
 
 
 # ----------------------------------------------------------------------

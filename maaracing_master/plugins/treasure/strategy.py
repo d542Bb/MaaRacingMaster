@@ -18,7 +18,7 @@ V2 历史（2026-08-16 数据驱动重构）：
   - 确定性超价 u 与预测缓冲 D 分离：u=1（最小货币单位），D 基于数据分布
   - 双层缓冲：基础缓冲（查价格桶） × 利润强度缩放（0.5~1.5）
   - 全局兜底上限 GLOBAL_CAP（GUI 可调，默认 5 万）
-  - 赚钱/赚蛋策略模式切换（蛋模式放宽利润线）
+  - 赚钱策略（捡漏利润线 0.9×V̂；分红彩票卡第二；兜底上限防意外接盘）
 """
 
 from __future__ import annotations
@@ -31,10 +31,9 @@ from typing import Optional
 # 参数（可调，见 docs/treasure_tick_feedback_report_20260816.md）
 # ----------------------------------------------------------------------
 VAL_COEF: float = 1.28          # 真实估值系数 = V̂ / max(H)（实测 median=1.265）
-PROFIT_FLOOR: float = 0.10      # 赚钱模式捡漏利润线：成交价 ≤ (1-FLOOR) × V̂
+PROFIT_FLOOR: float = 0.10      # 捡漏利润线：成交价 ≤ (1-FLOOR) × V̂
 u: int = 1                       # 游戏最小货币单位（实测 gcd=1）
 GLOBAL_CAP: int = 50000          # 全局兜底上限（GUI 可调：每局最多接受亏多少）
-STRATEGY_MODE: str = "profit"    # profit=赚钱, egg=赚蛋
 BALANCE_UNKNOWN: int = -1        # 余额哨兵：OCR 未读到（未知）时传入，策略兜底视为充足
 
 # 预测缓冲分桶（跨回合 Δopp 口径，向全局 p50=35000 收缩后值）
@@ -74,7 +73,7 @@ DECISION_TARGET_SECOND = "target_second"
 DECISION_LURE = "lure"
 DECISION_PASS = "pass"       # 主动放弃，不出价
 
-STRATEGY_LABEL: str = "V3 秒杀火力基准（赚钱/赚蛋）"
+STRATEGY_LABEL: str = "V3 秒杀火力基准（赚钱）"
 
 
 # ----------------------------------------------------------------------
@@ -172,15 +171,13 @@ class BidStrategy:
 
     参数（可由外部传入覆盖）：
       - risk_cap: 全局兜底上限（意外接盘的最大可接受亏损）
-      - mode: "profit"（赚钱）/ "egg"（赚蛋）
     """
 
-    def __init__(self, risk_cap: int = GLOBAL_CAP, mode: str = STRATEGY_MODE) -> None:
+    def __init__(self, risk_cap: int = GLOBAL_CAP) -> None:
         self.VAL_COEF: float = VAL_COEF
         self.PROFIT_FLOOR: float = PROFIT_FLOOR
         self.u: int = u
         self.risk_cap: int = risk_cap
-        self.mode: str = mode
         self._lure_state: Optional[LureState] = None
         self.TICK: int = BUFFER_FALLBACK  # 兼容旧接口引用
 
@@ -191,20 +188,14 @@ class BidStrategy:
         return self.VAL_COEF * max(h_seen) if h_seen else 0.0
 
     def _profit_floor(self) -> float:
-        """当前模式的利润线比例（仅赚钱模式使用；赚蛋模式无利润线概念）。"""
+        """利润线比例。"""
         return self.PROFIT_FLOOR
 
     def _max_win_bid(self, vhat: float) -> Optional[int]:
-        """赚钱模式捡漏利润上限：成交价 ≤ (1-利润线) × V̂。"""
+        """捡漏利润上限：成交价 ≤ (1-利润线) × V̂。"""
         if vhat <= 0:
             return None
         return int(math.floor(vhat * (1 - self._profit_floor())))
-
-    def _egg_buy_cap(self, vhat: float) -> Optional[int]:
-        """赚蛋模式买入上限：最多亏 risk_cap → 成交价 ≤ V̂ + risk_cap。"""
-        if vhat <= 0:
-            return None
-        return int(math.floor(vhat)) + self.risk_cap
 
     def _predict_buffer(self, base: int, for_second: bool = False) -> int:
         """第一层：查价格桶得基础缓冲值。"""
@@ -302,10 +293,10 @@ class BidStrategy:
 
         kr = K_RATIOS[r - 1] if 1 <= r <= 5 else 1.0
         # ---------- 秒杀判定（收入铁律：钱只在第一名和亏钱第一名的分红里） ----------
-        # 买入线：profit=捡漏利润线 0.9×V̂；egg=V̂+risk_cap（搏蛋放宽到可接受亏损）。
+        # 买入线：捡漏利润线 0.9×V̂（相对激进的火力峰值，肉搏反而在第二顺位更容易成交）。
         # 杀价 P_win = ceil(K_r × (M + 缓冲))：当第一名并把第二名（≤M+缓冲）甩开
         # K_r 倍即当回合成交。M 低时杀价自然低——"捡漏"就是本分支的特例，不再独立。
-        line = self._max_win_bid(vhat) if self.mode == "profit" else self._egg_buy_cap(vhat)
+        line = self._max_win_bid(vhat)
         buf = self._buffer(m_power, vhat, m_power, is_second=False)
         p_win = int(math.ceil(kr * (m_power + buf)))
 
