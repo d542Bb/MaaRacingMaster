@@ -198,16 +198,22 @@ class TreasureStageDetector:
             box, s = best_match_score(frame_rgb, rgb_tpl,
                                       scales=self.match_scales, roi=px_roi)
         if box is None and s == 0.0:
-            # 模板即使缩到最小档仍超出 ROI → 该 ROI 永远无法命中（历史调试台告警口径）
-            # 节流窗口一律 monotonic（墙钟校时跳变会把窗口拉长或清零）
-            now = time.monotonic()
-            if now - getattr(self, "_last_size_warn", 0.0) > 10.0:
-                self._last_size_warn = now
-                logger.log(
-                    f"[鉴宝检测器] ROI 尺寸不足（{roi_key}/{Path(tpl_name).stem} "
-                    f"搜索区 {px_roi[2]}×{px_roi[3]}），该模板永远无法命中，请调大 ROI",
-                    "WARNING",
-                )
+            # 「尺寸不足」按几何判定：模板缩到最小档仍大于 ROI → 该 ROI 永远无法命中。
+            # 不能拿 s==0.0 直接当判据——首帧黑屏等退化帧的 NCC 也恒为 0.0（曾误报
+            # hall_peak_appraise_card「永远无法命中」，次帧即 0.729 弱命中）。
+            tpl_used = gray_tpl if colorspace == "gray" else rgb_tpl
+            _th, _tw = tpl_used.shape[:2]
+            _ms = min(self.match_scales) if self.match_scales else 1.0
+            if _tw * _ms > px_roi[2] or _th * _ms > px_roi[3]:
+                # 节流窗口一律 monotonic（墙钟校时跳变会把窗口拉长或清零）
+                now = time.monotonic()
+                if now - getattr(self, "_last_size_warn", 0.0) > 10.0:
+                    self._last_size_warn = now
+                    logger.log(
+                        f"[鉴宝检测器] ROI 尺寸不足（{roi_key}/{Path(tpl_name).stem} "
+                        f"搜索区 {px_roi[2]}×{px_roi[3]}），该模板永远无法命中，请调大 ROI",
+                        "WARNING",
+                    )
         return box, s
 
     def _resolve_threshold(self, spec, tpl_name: str) -> float:
