@@ -3,6 +3,9 @@
 > 《巅峰极速》"巅峰鉴宝"活动 —— **出价 / 估值 / OCR 全自动模块（treasure\_\*）** 专属文档。
 > 聚焦鉴宝核心：12 阶段状态机 / 准星意图 / 出价策略（bid\_strategy）/ 异步 OCR / ROI 三段分类。
 >
+> **先读**：[RULES.md](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/RULES.md) —— 游戏规则事实（成交条件 / 分红机制 / 计分目标 / 对手行为约束）。
+> 本域一切策略与实现都以游戏规则为前提；**规则与本文冲突时以 RULES.md 为准**，并回头修本文。
+>
 > 配套文档：
 >
 > - 主文档：[docs/CODE\_WIKI.md](../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
@@ -11,6 +14,7 @@
 
 ## 目录
 
+0. [游戏规则（独立文件 RULES.md）](#0-游戏规则独立文件-rulesmd)
 1. [treasure\_module 巅峰鉴宝模块](#1-treasure_module-巅峰鉴宝模块)
 2. [bid\_strategy 出价策略](#2-bid_strategy-出价策略)
 3. [treasure\_detector 阶段检测器](#3-treasure_detector-阶段检测器)
@@ -20,6 +24,17 @@
 7. [鉴宝类速查](#7-鉴宝类速查)
 8. [鉴宝模板清单](#8-鉴宝模板清单)
 9. [鉴宝坑点](#9-鉴宝坑点)
+
+***
+
+## 0. 游戏规则（独立文件 RULES.md）
+
+游戏怎么运转（回合结构 / 成交判定 / 收入与分红 / 计分目标 / 对手行为约束）唯一载于
+[RULES.md](file:///d:/maaracing_assistant/maaracing_master/plugins/treasure/RULES.md)，
+**本文不复制**。规则是外部事实（代码错了改代码没用），修改须人工复核（见该文件顶部硬约束）；
+未知项列于其 §6，**禁止当作已知规则使用**。
+
+本文及本域代码中一切策略推导，前提均为 RULES.md；两者冲突时以规则文件为准。
 
 ***
 
@@ -70,7 +85,23 @@
 
 - 按钮中心来自 `_load_action_centers`（同时扫 JSON 的 stage+actions 两段）
 
+**每日循环收尾**（到限 → 「彩蛋任务」领取，stage-from-node-plan §10 定稿形态 A′）：
+
+- `_tick_once` 0.05 到限稳定 3 帧确认（且阶段=鉴宝大厅(选择场次)、本运行未进过）后不再直接停：进 `_run_egg_claim_chain()`——决策 tick 内**阻塞自包含顺序例程**（抓帧→匹配→同步点击→等待）。帧源仍是 WGC 中心缓存只读，不新起截图通路；Tasker 被占用 = 常驻图停摆，活动页「前往鉴宝」自动边没有触发机会，收尾方向冲突天然消解（因此不改图拓扑、不加旗标闸门）。
+
+- 链路线：屏幕返回键「D」→ 活动页 → 「获取银币」→ 任务抽屉（tab1 找红按钮 → 无则切「彩蛋任务」tab 再找）→ 聚合奖励弹窗 → `EggRewardRecognizer` 数蛋 + `claim_coin_medal`/`claim_score_medal` 匹配后按通用几何取「×N」读银币/积分 → `store.record_egg_claim` 累加落盘 → 点屏幕任意处继续 → 复查轮次 ≤3 → 点左侧空白关抽屉 → 点房子回大厅 → `request_stop()`。总预算 45s、每步超时/异常只记 WARNING 后仍走停止路径——「有就领，没有就结束」，绝不阻塞停止。medal 区分度经真匹配器实测（单币章 vs 币堆章 margin≥0.68，见 `tools/experiments/egg-claim-coin-read/`）。
+
+- 「×N」读数区 = **奖励卡通用几何推导**（用户拍板的设计，蛋卡/medal 卡同一套，`eggs.py::find_card_body/CARD_COUNT_BAND`）：红=命中图标框 → 外扩找整卡白色描边（Canny+轮廓，高宽比≥1.2 的最小包含候选；图标卡体内描边≈1.12 被天然排除）→ 蓝框内按比例切数字带（y 0.62–0.805）与名称带（y 0.805–0.985）。**几何参数只在代码常量，真源 policy 不携带偏移参数，Studio 也不做其预览**（校准台只管 ROI 与模板匹配——为推导区单开预览被用户明确否决）。校准与消费端契约：`tools/experiments/egg-claim-coin-read/card_geom_probe.py`（5 卡 5/5，含 det=True 行级真值对照）与 `tests/test_treasure_egg_claim.py::test_egg_recognize_golden_frame_counts`（真帧数蛋锁）。教训：计数区若做成「锚点+固定偏移」参数，偏移不可见不可调，历次校准全是猜——上一版交付就栽在未验证的偏移参数上。
+
+- 锚点真源 = spec 的 `egg_claim_red_btn`/`egg_claim_title`/`egg_panel_tabbar`/`egg_task_tab3`/`act_get_silver_btn`/`hall_back_btn`/`hall_home_btn`/`claim_coin_medal`/`claim_score_medal` 族，**不进 transitions/stages.active/global\_anchors**（detector 零扫描、不参阶段判定；`tests/test_treasure_egg_claim.py` 机检这条惰性）。GUI 底部阶段条在收尾期间（约 30s）不更新——链不是阶段，以「\[彩蛋收尾]」日志补偿；日后要可视化按 §10.1 升级路径补 dwell+stage，属独立改动。
+
+- 蛋落盘语义：`games` 蛋列退役（不再写、列保留）；`daily_summary.egg_red/yellow/blue` = 「今日领取数」，写入点=链内弹窗数蛋成功；`egg` 数蛋锚点 rect 已搬家到聚合奖励弹窗蛋卡行（旧结算链业务上不再产蛋；真帧实测红/黄/蓝蛋 0.837–0.920 命中、币章卡被中心 S≈7 判色拒掉）。
+- GUI 看板读侧契约（`core/sidecar.get_today_stats`）：新列的 ALTER 迁移由鉴宝模块（写侧）惰性建连时补，升级后天然存在「GUI 开着、模块没跑过」的窗口——读侧**按 PRAGMA 实有列取交集查询、缺列兜底 0/None**，绝不硬编码全列 SELECT（真机实证：曾 378 次/83min `no such column: egg_coin` 看板全灭）。回归锁 `tests/test_sidecar_today_stats.py`。
+
 **回合出价**（`第N回合出价` 阶段，`_run_bidding_choice`）：
+
+- **pass 二级确认弹窗（真机 2026-09-14 事故后新增）**：输入 0 点「确认出价」必弹「是否确认本轮放弃出价？」（用户确证；>0 确认无弹窗）。弹窗压暗面板把 smart_bid 打到 0.736——正落在**决策路兜底 0.72 与告警路 spec 0.75 的阈值缝**里，被判「面板仍开」→ 相位卡 bidding 空转人工停。处置：红「确认」钮表示成惰性 spec 锚点 `bid_pass_confirm_btn`（素材真帧量测裁切，detector 不扫），`_run_bidding_choice` 入口先于 S0-S3 一切判定查它，命中即点「确认」落实 pass（点「取消」会回面板再弹成死循环）。阈值缝本身不统一：0.72 兜底为模糊窗实测 0.686 而设（有独立正当性），弹窗表示出现后不再需要靠缝内分数做判断。契约锁 `tests/test_treasure_pass_dialog.py`（命中+串环境负例）。
+- **快照完整性语义**：`RoundSnapshot.is_complete` 里 0 是合法公开事实（我方=0=放弃/掉线同样有效，对手位次不得被连坐作废；仅 -1 未读到算缺失）。缺完整快照时卡第二分支**退回 observe**，绝不把「没数据」当「对手全 0」出 pass——pass 只允许出现在确证竞争者存在且压不动时（回归锁 `test_bid_strategy` 两条 2026-09-14 用例）。
 
 - 状态机：S0 转场期（`round_elapsed < SWITCH_CONFIRM_FRAMES`）→ 不出准星；S1 等待出价 → 不出准星；S2 出价亮起 → 准星指 `bid_main_red_btn`；S3 面板已开 → H 未读点 `smart_bid_btn`（智能出价）、H 已读进 `_run_bidding_execute`（策略决策 → 输入子状态机 → 确认出价）；提交后 S4 wait\_result（等公开报价，OCR 读 4 槽构建快照）
 
@@ -177,6 +208,8 @@
 P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy.json 数据面（P4b），plan 缺失（真源不可用）→ 阶段检测降级为空。模板读盘/热修（`mtime_ns + size` 指纹失效）收敛在 `template_match.load_template`，控制台替换模板后不会永久命中旧图。
 
 **自定义阈值**：`result_banner=0.900`、`is_matching_btn=0.900`（spec 锚点 `threshold` 字段；result\_banner 另有 `arbitration.template_thresholds.result_auction_win_banner=0.60`）
+
+**结算后弹窗链的区分口径**：领取分红后可能依次弹出 ①今日最高积分上涨 ②鉴宝等级提升 ③奖励结算（彩蛋），弹几个是随机的（也可能一个不弹）。弹窗会遮满全屏 → 弹窗存在期间检测器一定匹配不到大厅，弹窗全关后大厅才可见，因此"看到大厅"就是"弹窗已关"的可靠证据。三者中只有 ①② 有 ROI，**具体是哪个弹窗由 detector 的** **`_last_hit_roi_key`** **区分**：`daily_high_banner`=今日最高 / `egg_reward_title`=彩蛋 / 无命中=等级提升盲点。这三页在阶段表里合并为单一「结算弹窗」，`_accept_stage` 为此放行「结算弹窗→大厅」的回退。
 
 ***
 
@@ -334,3 +367,4 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 | 领取分红跳过动画点击无响应卡死     | 稳定性     | ✅ 已修复（2026-09-05）：`dividend_waiting` 加 `SETTLE_SKIP_RETRY_FRAMES=10` 超时 + `SETTLE_SKIP_RETRY_MAX=3` 封顶，超时清指纹重试，耗尽抛 `ClickRetryExhaustedError` 终止（见坑点表「领取分红跳过动画无响应兜底」）。`py_compile` 通过 |
 | 按钮重试规范未成文           | 规范      | ✅ 已定稿（2026-09-05）：三层重试语义（执行失败无限 / 无响应封顶 3 次 / 耗尽终止）+ 每 key 显式成功信号，见坑点表「按钮点击重试规范」，新增按钮默认照此写                                                                                            |
 
+<br />

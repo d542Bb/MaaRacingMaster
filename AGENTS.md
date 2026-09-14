@@ -20,6 +20,7 @@
 
 | 问题类型                                      | 第一信源                                                                                                      |
 | ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **游戏规则事实（活动怎么运转、结算与分红机制）**                | [plugins/\<id>/RULES.md](maaracing_master/plugins/treasure/RULES.md)（外部事实，修改须人工复核；未知项见其 §6）               |
 | MaaFW 能力、Pipeline 协议、Custom 契约、MAA API 红线 | [docs/MAAFW\_GUIDE.md](docs/MAAFW_GUIDE.md)（§5.6 真源组织与分层、§9 为 API 红线权威版）                                  |
 | 整体架构、导航引擎、GUI、平台层坑点（完整版）                  | [docs/CODE\_WIKI.md](docs/CODE_WIKI.md)                                                                   |
 | 鉴宝域（treasure\_\*、出价策略、stage 检测、域内坑点 §9）   | [maaracing\_master/plugins/treasure/CODE\_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md)        |
