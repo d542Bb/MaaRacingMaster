@@ -679,6 +679,11 @@ class TreasureModule(ActivityModule):
     EGG_CHAIN_MAX_CLAIM_ROUNDS = 3     # 领取轮次上限（一次聚合弹窗通常 1 轮，防多弹窗兜底）
     EGG_CHAIN_CLICK_TIMEOUT_S = 6.0    # 单次点击等结果超时（提交被拒与结果超时共用）
     EGG_CHAIN_CLICK_RETRY_MAX = 3      # 单次点击的提交重试上限（含首点共 3 次）
+    # 两个「空白点击」坐标：链内唯一的裸坐标（关抽屉点左侧空地、关弹窗点屏幕中下部）。
+    # 不登记为 spec 锚点的理由（评审结论，2026-09-14）：对象是空白处，没有识别物也没有
+    # 模板，位置精度要求极低（点哪都行，只要不落在按钮上）；真源锚点的价值在「有模板/
+    # 有精确边界需要标定」，空白点不具备该需求，登记只会把锚点计数锁与惰性机检一并牵动。
+    # 若游戏 UI 改版使这两点落到按钮上，改这里即可。
     EGG_CHAIN_BLANK_NORM = (0.30, 0.50)    # 任务抽屉：点左侧空白 = 关抽屉（背景车场景空地，无可点物）
     EGG_CHAIN_DISMISS_NORM = (0.50, 0.55)  # 奖励弹窗「点击屏幕继续」= 点中间偏下任意处
     # 链内惰性锚点：只在 spec 登记（不进 transitions/stages.active/global_anchors，

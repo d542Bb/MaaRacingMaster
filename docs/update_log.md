@@ -7,6 +7,24 @@
 
 ## 2026-09-14
 
+### 暂存（未发布 · 待并入下一版本）鉴宝彩蛋收尾链点击通路修复 + 手柄能力接口收敛 🔧
+
+- **性质：** 未发版变更（`plugins/treasure/module.py`、`core/capabilities.py`、`core/clicker.py`、`core/base.py`、`tests/test_treasure_egg_claim.py`、域 CODE_WIKI；master 直接提交、不 tag）
+
+- **修复：** 每日到限后的「彩蛋任务」领取链此前自带一套点击出口，与主链路不共享护栏与意图语义——「仅意图」开关对它无效、首次点击会被上一帧遗留的点击任务判忙而拒掉（真机实证：大厅返回键命中置信度满分却报「未点中」而放弃整条链）、链内点击不留事件与日志。现统一到与主链路同一条出口协议：先消化任务槽遗留结果再提交、意图开关取自 `ctx.intent_mode`、结果统一记录、提交被拒或结果超时有界重试。
+
+- **行为变化（须知）：** 链内点击从此遵守「仅意图」开关——开启时链只导航不点击、等不到按钮消失即超时跳过，不会自动领奖。需要自动领取请关闭该开关。
+
+- **链契约补齐：** 45 秒全链预算此前只写在日志文案里、各步各自计时，现由链入口算成墙钟截止时间并逐步收窄；领取循环加尝试次数上限，消除「红钮常驻而点击持续失败」时的空转；单次点击超时与重试次数提为类常量。
+
+- **可观测性：** 链独占 Tasker 期间帧 trace 不产生，新增链内进度 trace（事件 `egg_chain`：start / click / click_skipped / click_timeout / panel_opened / claim_done / give_up / error），其中 start 带点击方式与意图开关，可直接回答「为什么没领到」；链内失败路径收口到统一出口。
+
+- **接口收敛（内部）：** 插件不再穿透私有成员——新增 `GamepadAdapter.persistent_adapter()`、`Clicker.nav_progress()` / `cursor_candidates()` / `swap_gamepad()`；Win32 窗口事实（前台状态、帧尺寸校验、宽高比）收进 `ActivityContext` 窄接口，插件不再直接 import `window_utils`；A 键统一走 `BUTTON_A` 语义常量。
+
+- **回归锁：** `tests/test_treasure_egg_claim.py` 新增 5 条（意图开关跟随 / 先消费后提交 / 有界重试 / 结果留痕 / 大厅锚点语义）；链内锚点清单改为直接引用 `TreasureModule.EGG_CHAIN_ANCHORS`，不再手抄副本。全量 `pytest 455 passed`。
+
+- **验证边界（如实）：** 手柄模式下的链内点击通路仍待真机复验（现有真机日志均为前台鼠标模式）。
+
 ### 未发版变更：新增架构决策记录（ADR）目录并接入信源路由 📐
 
 - **性质：** 未发版变更（纯文档：`docs/adr/`（新增）、`AGENTS.md`、`docs/update_log.md`；master 直接提交、不 tag）
