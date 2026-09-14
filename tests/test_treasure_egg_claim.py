@@ -223,7 +223,8 @@ def test_egg_recognize_golden_frame_counts():
 class _FakeClicker:
     """点击器桩：记录调用序列 + 固定结果，供断言协议顺序与有界重试。"""
 
-    def __init__(self, *, mode="gamepad", busy_times=0, result=None, submit_ok=True):
+    def __init__(self, *, mode="gamepad", busy_times=0, result=None, submit_ok=True,
+                 busy_until_cancel=False):
         self.mode = mode
         self.intent = None
         self.calls = []
@@ -231,8 +232,18 @@ class _FakeClicker:
         self.cancelled = 0
         self.submits = 0
         self._busy_left = busy_times
+        self._busy_until_cancel = busy_until_cancel
         self._result = result
         self._submit_ok = submit_ok
+        self.gamepad_bound = True
+
+    def cursor_candidates(self):
+        return "新候选快照"
+
+    def nav_progress(self):
+        # 与真身契约同形：dict 带 stage（非 done），_gamepad_nav_progress_kwargs 会读
+        return {"seq": 2, "stage": "p", "pos": (50, 40), "target": (56, 23),
+                "dist": 40.0, "ok": None, "done": False}
 
     def set_mode(self, mode):
         self.calls.append(("set_mode", mode))
@@ -248,6 +259,8 @@ class _FakeClicker:
 
     def is_busy(self):
         self.calls.append(("is_busy",))
+        if self._busy_until_cancel:
+            return self.cancelled == 0  # 在途任务语义：cancel 中止前槽恒忙
         if self._busy_left > 0:
             self._busy_left -= 1
             return True
@@ -263,6 +276,7 @@ class _FakeClicker:
         return self._submit_ok
 
     def cancel(self):
+        self.calls.append(("cancel",))
         self.cancelled += 1
 
     def order(self) -> list:
@@ -312,6 +326,14 @@ class _FakeChainSelf:
         self._egg_chain_click = mod._egg_chain_click.__get__(self)
         self._egg_chain_drain_slot = mod._egg_chain_drain_slot.__get__(self)
         self._egg_chain_trace = mod._egg_chain_trace.__get__(self)
+        self._egg_chain_abort_pending = mod._egg_chain_abort_pending.__get__(self)
+        self._egg_chain_refresh_peep = mod._egg_chain_refresh_peep.__get__(self)
+        self._cursor_cands_snapshot = mod._cursor_cands_snapshot.__get__(self)
+        self._gamepad_nav_progress_kwargs = mod._gamepad_nav_progress_kwargs.__get__(self)
+        self._run_egg_claim_chain = mod._run_egg_claim_chain.__get__(self)
+        self.EGG_CHAIN_TOTAL_BUDGET_S = mod.EGG_CHAIN_TOTAL_BUDGET_S
+        self._clicker = clicker
+        self._last_debug_kwargs = None
 
     def _get_clicker(self):
         return self._clicker_stub
@@ -366,3 +388,78 @@ def test_egg_chain_click_records_outcome():
     fake = _FakeChainSelf(clicker)
     fake._egg_chain_click(0.1, 0.2, key="hall_back_btn")
     assert fake._recorded == [("hall_back_btn", "egg_chain", True)]
+
+
+def test_egg_chain_click_cancels_stuck_task_then_drains_again():
+    """drain 首窗超时 → 先中止在途任务再补一轮 drain，不再直接放弃本次点击。
+
+    真机 2026-09-14：每日上限拦截的 3 帧确认窗内主链路已提交手柄点击，导航任务
+    十几秒不落地，链内两轮 drain（各 6s）全超时，整链「任务槽被占用未释放」放弃。
+    上限已到，那个在途点击不再有意义，中止它比干等快。
+    """
+    clicker = _FakeClicker(busy_until_cancel=True, result={"type": "click", "ok": True})
+    fake = _FakeChainSelf(clicker)
+    assert fake._egg_chain_click(0.1, 0.2, key="hall_back_btn") is True
+    order = clicker.order()
+    assert "cancel" in order, "drain 超时后未中止在途任务，只能整链放弃"
+    last_submit = max(i for i, c in enumerate(order) if c == "submit_click")
+    assert order.index("cancel") < last_submit, \
+        "必须先释放任务槽再提交链内点击"
+
+
+def test_egg_chain_click_retry_consumes_aborted_result():
+    """「结果迟迟不回」中止后，必须消化中止结果再重试，否则下轮 submit 被 DONE 态占槽拒绝。
+
+    既有重试逻辑的空洞：cancel 只置 abort 标志，worker 退出后结果仍留在槽里
+    （is_busy 对 DONE 也算忙），裸 continue 的重试会连续 submit 被拒直至耗尽。
+    """
+    clicker = _FakeClicker(result={"type": "click", "ok": True})
+    # cancel 前「结果迟迟不回」，cancel 后 worker 快速退出、结果落槽可消费
+    clicker.consume_result = lambda: (
+        {"type": "click", "ok": True} if clicker.cancelled else None)
+    fake = _FakeChainSelf(clicker)
+    assert fake._egg_chain_click(0.1, 0.2, key="hall_back_btn") is True
+    assert clicker.submits == 2, "中止后重试未真正重新提交"
+    order = clicker.order()
+    last_submit = max(i for i, c in enumerate(order) if c == "submit_click")
+    assert order.index("cancel") < last_submit, \
+        "cancel 后未消化中止结果即重试（submit 会被 DONE 态拒绝）"
+
+
+def test_egg_claim_chain_entry_aborts_pending_task():
+    """链入口先作废主链路遗留的在途点击并消化，再进入领取步骤。
+
+    链由「每日上限拦截」触发，此刻槽里可能压着一个还在导航的手柄点击——
+    不先中止，第一步点击的 drain 就会把它当遗留干等到超时。
+    """
+    clicker = _FakeClicker(result={"type": "click", "ok": True})
+    fake = _FakeChainSelf(clicker)
+    steps_ran = []
+    fake._egg_claim_steps = lambda specs, deadline: steps_ran.append(specs)
+    fake._egg_chain_load_specs = lambda: {"anchor": ("tpl", (0, 0, 1, 1), 0.78, "rgb")}
+    fake._run_egg_claim_chain()
+    order = clicker.order()
+    assert "cancel" in order, "链入口未作废在途任务"
+    assert fake._consumed_legacy >= 1, "链入口未消化被中止任务的结果"
+    assert len(steps_ran) == 1, "作废遗留后应照常进入领取步骤"
+
+
+def test_egg_chain_refresh_peep_updates_gamepad_fields():
+    """链期间 PEEP 的手柄数据层实时刷新：导航进度/候选快照不再冻结在链前状态。
+
+    真机 2026-09-14：链独占决策段后 _last_debug_kwargs 停止发布，PEEP 叠加层
+    （准星/导航进度/候选）全程冻结——恰是用户最需要看「导航在干嘛」的时段，
+    链内点击三连失败却无任何可视线索。
+    """
+    clicker = _FakeClicker(result={"type": "click", "ok": True})
+    fake = _FakeChainSelf(clicker)
+    fake._last_debug_kwargs = {
+        "treasure_stage": "链前阶段",
+        "treasure_cursor_cands": "链前候选",
+        "treasure_gamepad_cursor": "链前进度",
+    }
+    fake._egg_chain_refresh_peep()
+    snap = fake._last_debug_kwargs
+    assert snap["treasure_stage"] == "链前阶段", "非手柄字段应维持链前快照"
+    assert snap["treasure_cursor_cands"] == "新候选快照", "候选快照未刷新"
+    assert snap["treasure_gamepad_cursor"]["stage"] == "p", "导航进度未刷新"

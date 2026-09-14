@@ -3794,11 +3794,44 @@ class TreasureModule(ActivityModule):
         clicker = self._get_clicker()
         while True:
             self._consume_click_result()
+            self._egg_chain_refresh_peep()
             if not clicker.is_busy():
                 return True
             if not self.ctx.lifecycle.running or time.monotonic() >= deadline:
                 return not clicker.is_busy()
             self.ctx.lifecycle.sleep(0.05)
+
+    def _egg_chain_abort_pending(self, timeout_s: float) -> None:
+        """作废主链路遗留的在途点击并消化，等任务槽释放（有界）。
+
+        链由「每日上限拦截」触发，而拦截带 3 帧确认窗——窗内主链路照常决策并可能
+        已提交一次点击（真机 2026-09-14：手柄导航任务十余秒不落地，链内两轮 drain
+        各 6s 全超时，整链「任务槽被占用未释放」放弃）。上限既已到达，那个在途点击
+        不再有意义：直接中止（real 无在途导航线程，cancel 等价 no-op）再消化结果，
+        比干等 drain 超时快且确定。
+        """
+        clicker = self._get_clicker()
+        clicker.cancel()
+        self._egg_chain_drain_slot(timeout_s)
+
+    def _egg_chain_refresh_peep(self) -> None:
+        """链期间刷新 PEEP 的手柄数据层（导航进度 + 光标候选快照）。
+
+        链独占决策段，`_last_debug_kwargs` 停止发布——PEEP 叠加层（准星、导航
+        进度、候选快照）冻结在链前状态，而链恰是用户最需要看「导航在干嘛」的
+        时段（真机 2026-09-14：链内点击三连失败，PEEP 全程无进度可看，事后只能
+        逐帧翻 raw 帧复盘）。导航线程的进度/候选一直新鲜（每步发布），只是
+        没人取。浅拷贝覆盖两个手柄字段、其余维持链前快照；决策段单写者契约
+        不变（观察线程只整体读引用，snapshot publication）。
+        """
+        base = self._last_debug_kwargs
+        clicker = self._clicker
+        if base is None or clicker is None or not clicker.gamepad_bound:
+            return
+        snap = dict(base)
+        snap["treasure_cursor_cands"] = self._cursor_cands_snapshot()
+        snap["treasure_gamepad_cursor"] = self._gamepad_nav_progress_kwargs()
+        self._last_debug_kwargs = snap
 
     def _egg_chain_click(self, cxn: float, cyn: float, bw: float = 0.02,
                          bh: float = 0.02, *, key: str = "") -> bool:
@@ -3824,9 +3857,15 @@ class TreasureModule(ActivityModule):
             self._egg_chain_trace("click_skipped", key=key, reason="not_foreground")
             return False
         if not self._egg_chain_drain_slot(self.EGG_CHAIN_CLICK_TIMEOUT_S):
-            logger.log(f"[彩蛋收尾] 点击 {key} 取消：任务槽被占用未释放", "WARNING")
-            self._egg_chain_trace("click_skipped", key=key, reason="slot_busy")
-            return False
+            # drain 超时：遗留任务还在跑（导航按步数上限可合法拖长）。它在途已无
+            # 意义，中止并消化（有界），而不是放弃本次链内点击——真机 2026-09-14
+            # 整链失败时有两个成因：链等待循环零睡眠忙旋饿死 worker（已修，见
+            # LifecycleAdapter.sleep），以及本处不消化中止结果导致下轮 submit 被拒。
+            clicker.cancel()
+            if not self._egg_chain_drain_slot(self.EGG_CHAIN_CLICK_TIMEOUT_S):
+                logger.log(f"[彩蛋收尾] 点击 {key} 取消：任务槽被占用未释放", "WARNING")
+                self._egg_chain_trace("click_skipped", key=key, reason="slot_busy")
+                return False
         for _attempt in range(self.EGG_CHAIN_CLICK_RETRY_MAX):
             if not self.ctx.lifecycle.running:
                 return False
@@ -3841,9 +3880,13 @@ class TreasureModule(ActivityModule):
                 res = clicker.consume_result()
                 if res is not None:
                     break
+                self._egg_chain_refresh_peep()
                 self.ctx.lifecycle.sleep(0.05)
             if res is None:
                 clicker.cancel()  # 结果迟迟不回：中止本次导航，下轮重试
+                # 中止结果必须消化掉：任务槽对 DONE 态也算忙，不消化则下轮
+                # submit 必被拒，RETRY_MAX 次重试形同虚设。
+                self._egg_chain_drain_slot(self.EGG_CHAIN_CLICK_TIMEOUT_S)
                 self._record_click(key, "egg_chain", (cxn, cyn), mode_label, ok=False)
                 self._egg_chain_trace("click_timeout", key=key)
                 continue
@@ -3870,6 +3913,7 @@ class TreasureModule(ActivityModule):
             timeout_s = min(timeout_s, max(0.0, budget_deadline - time.monotonic()))
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline and self.ctx.lifecycle.running:
+            self._egg_chain_refresh_peep()
             frame = self.ctx.capture.screenshot()
             found = False
             hit = None
@@ -4061,6 +4105,9 @@ class TreasureModule(ActivityModule):
             "WARNING",
         )
         deadline = time.monotonic() + self.EGG_CHAIN_TOTAL_BUDGET_S
+        # 入口先作废主链路遗留的在途点击：上限拦截的 3 帧确认窗内主链路可能刚提交
+        # 一次点击（手柄导航十余秒不落地），不中止它，第一步点击的 drain 就会干等到超时。
+        self._egg_chain_abort_pending(self.EGG_CHAIN_CLICK_TIMEOUT_S)
         # 记下点击方式与意图开关：链内点击是「真点击」还是「只导航」，取决于后者——
         # 真机复盘时这一条能直接回答「为什么没领到」。
         self._egg_chain_trace("start", budget_s=self.EGG_CHAIN_TOTAL_BUDGET_S,
