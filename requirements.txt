@@ -5,7 +5,10 @@ rapidocr>=3.9.2
 opencv-python>=5.0.0.93
 numpy>=2.4.6
 windows-capture>=2.0.1
+psutil>=5.9.0
 # 注意：
 # 1. ultralytics 已移出运行时依赖（仅 tools/training/ 训练用，见 pyproject [project.optional-dependencies].train），
 #    避免在发布包中拉入 torch 等训练期依赖，大幅减小体积。
 # 2. strenum 是 maafw 的运行时依赖，勿删。
+# 3. psutil 供 OCR 的 P-core 亲和性绑定（treasure/ocr.py PIN_P_CORE_AFFINITY）：
+#    曾长期缺失导致绑核从未生效（E-core 漂移防护缺位），2026-09-14 补为正式依赖。
