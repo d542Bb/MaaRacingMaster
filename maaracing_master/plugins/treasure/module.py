@@ -67,11 +67,6 @@ from maaracing_master.plugins.treasure.eggs import (
 from maaracing_master.plugins.treasure.ocr import TreasureOcr
 from maaracing_master.plugins.treasure.renderer import TreasureDebugRenderer
 from maaracing_master.core.paths import data_dir, debug_dir
-from maaracing_master.core.window_utils import (
-    check_game_window_aspect,
-    is_foreground,
-    verify_frame_client,
-)
 from maaracing_master.core.logger import logger
 from maaracing_master.plugins.treasure import IMAGE_DIR, POLICY_PATH, nav_source
 
@@ -1293,7 +1288,7 @@ class TreasureModule(ActivityModule):
 
         # 1.05 只校验比例、不调整窗口/分辨率：客户区应大致 16:9（模板与 ROI 均按
         #     720p(16:9) 归一化，其他比例如 16:10 / 21:9 / 4:3 会识别错位）→ 不符报错退出
-        if not check_game_window_aspect(self.ctx.hwnd):
+        if not self.ctx.check_window_aspect():
             logger.log(
                 "游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。"
                 "请将游戏窗口调整为 16:9 后重新开始，模块已终止", "ERROR",
@@ -3304,7 +3299,7 @@ class TreasureModule(ActivityModule):
         if clicker.is_busy():
             return
         # 前台校验：仅前台(鼠标)模式需要（点后台(手柄)不需要前台）
-        if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
+        if clicker.need_foreground and not self.ctx.window_foreground:
             if self._frame_counter % 10 == 0:
                 logger.log(
                     f"[鉴宝点击] 前台校验失败：游戏窗口非前台，取消本次点击 key={key}"
@@ -3819,7 +3814,7 @@ class TreasureModule(ActivityModule):
         clicker.set_intent(self.ctx.intent_mode)
         self._ensure_gamepad_bound()
         mode_label = self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)
-        if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
+        if clicker.need_foreground and not self.ctx.window_foreground:
             logger.log(f"[彩蛋收尾] 点击 {key} 取消：游戏窗口非前台（前台鼠标不抢前台）", "WARNING")
             self._egg_chain_trace("click_skipped", key=key, reason="not_foreground")
             return False
@@ -4105,7 +4100,7 @@ class TreasureModule(ActivityModule):
 
         # 首帧校验：截图帧尺寸 vs 客户区物理尺寸（坐标映射 1:1 前提，偏差时 WARNING）
         if self._frame_counter == 1:
-            verify_frame_client(self.ctx.hwnd, frame_rgb.shape[1], frame_rgb.shape[0])
+            self.ctx.verify_frame_client(frame_rgb.shape[1], frame_rgb.shape[0])
 
         # --------- 0. 消费观察线程判定槽 → 变更驱动 set_stage（阶段判定已移观察线程） ---------
         self._consume_stage_slot(frame_rgb)

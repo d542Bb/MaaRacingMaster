@@ -138,6 +138,30 @@ class ActivityContext:
         """已连接的游戏窗口句柄（未连接为 0）"""
         return self.app._hwnd
 
+    # ---------- 窗口事实（平台层事实经此暴露，插件不直接 import window_utils）----------
+
+    @property
+    def window_foreground(self) -> bool:
+        """目标窗口是否为当前前台窗口。
+
+        前台鼠标点击的安全前置（程序不主动抢前台）：非前台时调用方应取消本次点击。
+        """
+        from maaracing_master.core.window_utils import is_foreground
+
+        return bool(is_foreground(self.app._hwnd))
+
+    def verify_frame_client(self, frame_w: int, frame_h: int) -> None:
+        """校验「截图帧尺寸 vs 客户区物理尺寸」一致（坐标映射 1:1 的前提），偏差时告警。"""
+        from maaracing_master.core.window_utils import verify_frame_client
+
+        verify_frame_client(self.app._hwnd, frame_w, frame_h)
+
+    def check_window_aspect(self, tol: float = 0.05) -> bool:
+        """校验客户区宽高比是否约 16:9（模板/ROI 按 720p 归一化的前提）。"""
+        from maaracing_master.core.window_utils import check_game_window_aspect
+
+        return bool(check_game_window_aspect(self.app._hwnd, tol))
+
     def connect(self) -> bool:
         """幂等窗口连接，成功返回 True"""
         return self.app.connect()
