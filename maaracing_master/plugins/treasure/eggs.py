@@ -7,22 +7,27 @@
   1) **单个通用蛋模板**在 search_rect 内多尺度匹配（灰度匹配只认轮廓/星星，忽略颜色）
   2) 收齐所有 ≥threshold 的候选 → NMS 去重 → 最多取 Top-3（对应三色各 1 张卡）
   3) 每命中 1 张卡 → 取中心 ~40% 区域的彩色像素 → 转 HSV → 按色相判断 红/黄/蓝
-  4) 命中 → 在图标框下方开「×N」计数区 → OCR → 解析数量（兼容 ×2 / x2 / 2）
+  4) 每命中 1 张卡 → 按「奖励卡通用几何」推导「×N」数字带 → OCR 读数量
   5) 返回 {red, yellow, blue} 数量 + 命中框（供日志 / 调试台渲染）
 
-配置源：treasure_rois.json 的 eggs 段：
-    "eggs": {
-      "_count_dx_norm": 0.00,   // 计数区相对图标中心线的水平偏移（可选，默认 0，正数=向右）
-      "_count_dy_norm": 0.02,   // 计数区相对图标框下边缘的垂直偏移（可选，默认）
-      "_count_w_norm":  0.14,   // 计数区宽度（可选，默认）
-      "_count_h_norm":  0.05,   // 计数区高度（可选，默认）
-      "egg": {                  // 通用蛋模板（单条目替代原 egg_red/egg_yellow/egg_blue）
-        "rect": [x1,y1,x2,y2],  // 三色蛋共用的搜索区（居中排布，同一区域）
-        "templates": ["egg.png"],// 或过渡期 egg_yellow.png 作通用模板
-        "threshold": 0.72       // 图标命中阈值（灰度匹配）
-      }
+奖励卡通用几何（红→蓝→绿，蛋卡与 medal 卡同一机制；校准真值：
+tools/experiments/egg-claim-coin-read/card_geom_probe.py，claim_popup_0609.png 5/5）：
+  • 红 = 图标模板命中框；
+  • 蓝 = 由红框外扩找到整卡白色描边（Canny+轮廓；命中框中心被包含、宽 ≤1.9× 红框、
+    高宽比 ∈[1.2,2.2] 的最小候选——图标卡体边框高宽比≈1.12 被天然排除）；
+  • 绿 = 蓝框内按比例划出「数字带(×N)」与「名称带」两条横带（比例见常量）。
+计数几何参数只存在于本文件代码常量；policy.spec 只承载搜索 rect/模板/阈值，
+校准台（Studio）不需要也不应新增任何偏移参数——这就是"custom 老实待在代码里"。
+
+配置源：policy.json `perception.spec` 的 `egg` 模板锚点（P4b 唯一真源）：
+    "egg": {
+      "rect": [x1,y1,x2,y2],   // 三色蛋共用的搜索区（居中排布，同一区域）
+      "templates": ["egg.png"],// 通用蛋模板
+      "threshold": 0.72        // 图标命中阈值（灰度匹配）
     }
-  模板缺失 / rect 非法 / 整段缺失 → 识别器 configured=False → 上层降级为超时点关闭弹窗。
+  （domain 里的 `_count_*_norm` 固定偏移计数区已退役——计数区改由上述
+   通用几何从卡边框推导，参数只在本文件代码常量，真源不再携带。）
+  模板缺失 / rect 非法 / 锚点缺失 → 识别器 configured=False → 上层降级为超时点关闭弹窗。
 """
 from __future__ import annotations
 
@@ -40,17 +45,109 @@ MATCH_THRESHOLD = 0.72  # TM_CCOEFF_NORMED（与鉴宝师匹配同一数量级�
 MATCH_SCALES: tuple[float, ...] = (
     0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30,
 )
-# 计数区默认几何（归一化）：从图标框下方推导
-COUNT_DX_DEFAULT = 0.00   # 计数区相对图标中心水平偏移（默认 0=居中；>0 向右，<0 向左）
-COUNT_DY_DEFAULT = 0.02   # 图标框下边缘 → 计数区上边缘的偏移
-COUNT_W_DEFAULT = 0.14    # 计数区宽度（图标中心对齐）
-COUNT_H_DEFAULT = 0.05    # 计数区高度
 # 多目标 + NMS
 NMS_IOU_THRESHOLD = 0.5   # IoU ≥ 0.5 的重叠框只留最高分
 MAX_EGGS = 3              # 彩蛋弹窗最多 3 色（红/黄/蓝）各 1 张卡
 # 颜色分类：中心采样比例 + HSV 色相阈值
 COLOR_CENTER_RATIO = 0.4  # 取命中框中心 40%（避开边缘高光/阴影/卡片边框）
 COLOR_ORDER = ("red", "yellow", "blue")
+
+# ---------------------------------------------------------------------------
+# 奖励卡通用几何：命中框(红) → 外扩找整卡描边(蓝) → 按比例切数字带/名称带(绿)
+#   常量由 card_geom_probe.py 在 claim_popup_0609.png（5 卡：红蛋×2/积分×30000/
+#   蓝蛋×2/黄蛋×1/银币×250000）实测标定，生产口径 5/5 读数正确。
+#   这套几何同时服务蛋卡（EggRewardRecognizer）与 medal 卡（收尾链读金额），
+#   是"custom 待在代码里"的那部分——真源 policy.spec 不携带任何偏移参数。
+# ---------------------------------------------------------------------------
+# 蓝框（卡体）判别：整卡外描边高宽比≈1.38，图标卡体内描边≈1.12 → 用下限切开两者
+CARD_BODY_ASPECT_RANGE = (1.2, 2.2)
+CARD_BODY_MAX_WIDTH_RATIO = 1.9   # 卡宽 ≤ 命中框宽 ×1.9（横向不吞邻卡）
+CARD_BODY_AREA_RANGE = (1.6, 20.0)  # 卡面积 / 命中框面积 合理区间
+CARD_BODY_CANNY = (50, 150)
+CARD_BODY_DILATE_ITERS = 2
+CARD_BODY_PAD_RATIO = 2.2         # 外扩搜索窗口 = max(命中宽高) ×2.2
+# 绿框：带内相对蓝框的归一化位置 (dx1, dy1, dx2, dy2)
+CARD_COUNT_BAND = (0.02, 0.62, 0.98, 0.805)   # 「×N」数字带
+CARD_NAME_BAND = (0.02, 0.805, 0.98, 0.985)   # 物品名称带（校验/日志用）
+
+
+def find_card_body(gray_full: np.ndarray, hit_px, frame_wh) -> tuple[int, int, int, int] | None:
+    """由图标命中框外扩找「奖励卡整卡描边」，返回 (x, y, w, h) 像素框；找不到 None。
+
+    做法：命中框中心开窗口 → Canny + 膨胀闭缝 → 轮廓包围盒 → 三重判别（包含命中框
+    中心、宽不吞邻卡、高宽比落在卡体区间）→ 取面积最小者（最贴合的那圈描边）。
+    """
+    x1, y1, x2, y2 = hit_px
+    W, H = frame_wh
+    hw, hh = max(1, x2 - x1), max(1, y2 - y1)
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    pad = int(max(hw, hh) * CARD_BODY_PAD_RATIO)
+    wx1, wy1 = max(0, int(cx) - pad), max(0, int(cy) - pad)
+    wx2, wy2 = min(W, int(cx) + pad), min(H, int(cy) + pad)
+    if wx2 <= wx1 or wy2 <= wy1:
+        return None
+    edges = cv2.Canny(gray_full[wy1:wy2, wx1:wx2], *CARD_BODY_CANNY)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8),
+                       iterations=CARD_BODY_DILATE_ITERS)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    hit_area = float(hw * hh)
+    best: tuple[int, int, int, int] | None = None
+    for c in contours:
+        rx, ry, rw, rh = cv2.boundingRect(c)
+        if rw <= 0 or rh <= 0:
+            continue
+        rx += wx1
+        ry += wy1
+        area_ratio = (rw * rh) / hit_area
+        if not (CARD_BODY_AREA_RANGE[0] <= area_ratio <= CARD_BODY_AREA_RANGE[1]):
+            continue
+        if not (rx <= cx <= rx + rw and ry <= cy <= ry + rh):
+            continue
+        if rw > hw * CARD_BODY_MAX_WIDTH_RATIO:
+            continue
+        if not (CARD_BODY_ASPECT_RANGE[0] <= rh / rw <= CARD_BODY_ASPECT_RANGE[1]):
+            continue
+        if best is None or rw * rh < best[2] * best[3]:
+            best = (rx, ry, rw, rh)
+    return best
+
+
+def band_rect_norm(card_px, band, frame_wh) -> tuple[float, float, float, float]:
+    """蓝框内按比例切一条带，返回归一化 (x1n,y1n,x2n,y2n)。band 见 CARD_*_BAND。"""
+    W, H = frame_wh
+    rx, ry, rw, rh = card_px
+    dx1, dy1, dx2, dy2 = band
+    return (
+        max(0.0, min(1.0, (rx + rw * dx1) / W)),
+        max(0.0, min(1.0, (ry + rh * dy1) / H)),
+        max(0.0, min(1.0, (rx + rw * dx2) / W)),
+        max(0.0, min(1.0, (ry + rh * dy2) / H)),
+    )
+
+
+def parse_count_text(text: str) -> int | None:
+    """从 OCR 文本解析「×N」数量：优先带 ×/x/X 前缀的数字，其次裸数字；无数字 None。"""
+    if not text:
+        return None
+    s = text.replace(",", "").replace(" ", "")
+    m = re.search(r"[x×X]\s*(\d+)", s) or re.search(r"(\d+)", s)
+    return int(m.group(1)) if m else None
+
+
+def derive_count_rect(frame_rgb: np.ndarray, hit_px) -> tuple | None:
+    """图标命中框(像素) → 「×N」数字带归一化 rect；卡描边找不到即 None（上层自降级）。
+
+    蛋识别与收尾链读金额共用此入口——同一几何，两处消费。
+    """
+    H, W = frame_rgb.shape[:2]
+    try:
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+    except Exception:
+        return None
+    card = find_card_body(gray, hit_px, (W, H))
+    if card is None:
+        return None
+    return band_rect_norm(card, CARD_COUNT_BAND, (W, H))
 
 
 # ---------------------------------------------------------------------------
@@ -135,16 +232,13 @@ class EggRewardRecognizer:
         self._ocr = ocr
         # (gray_tpl, rect_norm, threshold)
         self._entry: tuple[np.ndarray, tuple[float, float, float, float], float] | None = None
-        self._count_dx = COUNT_DX_DEFAULT
-        self._count_dy = COUNT_DY_DEFAULT
-        self._count_w = COUNT_W_DEFAULT
-        self._count_h = COUNT_H_DEFAULT
         self._load(proj)
 
     # ---------- 加载 ----------
     def _load(self, proj: Path) -> None:
-        # P4b 唯一真源：读 policy.json spec 的 egg 锚点（rect/templates/threshold +
-        # domain 的 _count_*_norm）。真源缺失/损坏 → 直接保持未配置（configured=False）
+        # P4b 唯一真源：读 policy.json spec 的 egg 锚点（rect/templates/threshold）。
+        # 计数区几何不在真源里——它由本模块的通用卡几何从命中框推导（见 derive_count_rect）。
+        # 真源缺失/损坏 → 直接保持未配置（configured=False）
         # → 彩蛋识别降级、奖励结算走超时点关闭。
         nav = nav_source()
         if nav is None:
@@ -154,20 +248,11 @@ class EggRewardRecognizer:
             self._load_spec_entry(anchor)
 
     def _load_spec_entry(self, anchor) -> None:
-        """从 spec `egg` 锚点装配 `self._entry` + 计数区参数，语义与迁移前逐字段等价。
+        """从 spec `egg` 锚点装配 `self._entry`，语义与迁移前逐字段等价。
 
-        - 计数区 `_count_*_norm`：存于 `anchor.domain`（v2 时代在 eggs 段顶层，同键名）。
         - rect / templates[0] / threshold：spec 锚点直取；threshold 非法/缺省回落 `MATCH_THRESHOLD`。
         - 模板图缺失/灰度非法 → 直接 return（`self._entry` 保持 None，`configured` 为 False）。
         """
-        dom = anchor.domain or {}
-        try:
-            self._count_dx = float(dom.get("_count_dx_norm", COUNT_DX_DEFAULT))
-            self._count_dy = float(dom.get("_count_dy_norm", COUNT_DY_DEFAULT))
-            self._count_w = float(dom.get("_count_w_norm", COUNT_W_DEFAULT))
-            self._count_h = float(dom.get("_count_h_norm", COUNT_H_DEFAULT))
-        except (TypeError, ValueError):
-            pass
         rect = anchor.rect.as_list()
         if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
             return
@@ -226,7 +311,7 @@ class EggRewardRecognizer:
             if color is None:
                 # 颜色判不出来就跳过（蛋形状命中但色相不在区间，可能是卡背景/误识别）
                 continue
-            count_rect = self._count_rect_from_box(box)
+            count_rect = self._count_rect_from_box(box, gray, W, H)
             count, count_text = self._read_count(frame_rgb, count_rect)
             # 同色已存在（罕见，可能 NMS 漏了重叠卡）：取分数高的
             if counts[color] > 0:
@@ -240,7 +325,8 @@ class EggRewardRecognizer:
                 "color": color,
                 "score": round(float(score), 4),
                 "box": [round(float(v), 4) for v in box],
-                "count_rect": [round(float(v), 4) for v in count_rect],
+                "count_rect": ([round(float(v), 4) for v in count_rect]
+                               if count_rect is not None else None),
                 "count": int(count),
                 "count_text": count_text,
                 "center_rgb": [round(float(x), 1) for x in center_rgb.tolist()],
@@ -322,26 +408,27 @@ class EggRewardRecognizer:
         avg = center.reshape(-1, 3).mean(axis=0).astype(np.float32)
         return center, avg
 
-    def _count_rect_from_box(self, box) -> list[float]:
-        """计数区：图标框下方一横向小条（图标中心 + dx 对齐）。"""
-        cx = (box[0] + box[2]) / 2.0 + self._count_dx
-        bottom = box[3]
-        x1 = max(0.0, min(1.0, cx - self._count_w / 2.0))
-        x2 = max(0.0, min(1.0, cx + self._count_w / 2.0))
-        y1 = max(0.0, min(1.0, bottom + self._count_dy))
-        y2 = max(0.0, min(1.0, y1 + self._count_h))
-        return [x1, y1, x2, y2]
+    def _count_rect_from_box(self, box, gray, W, H):
+        """计数区：由命中图标框(红)外扩找到整卡描边(蓝)，按比例取「×N」数字带(绿)。
+
+        返回归一化 rect；卡描边找不到 → None（区别于"找到卡但 OCR 失败"）。
+        """
+        hit_px = (int(box[0] * W), int(box[1] * H), int(box[2] * W), int(box[3] * H))
+        card = find_card_body(gray, hit_px, (W, H))
+        if card is None:
+            return None
+        return band_rect_norm(card, CARD_COUNT_BAND, (W, H))
 
     def _read_count(self, frame_rgb: np.ndarray, rect) -> tuple[int, str]:
-        """OCR 计数区 → (数量, 原文)。OCR 不可用/无数字 → 默认 (1, '')。"""
-        if self._ocr is None:
+        """OCR 数字带 → (数量, 原文)。卡框/OCR 不可用或无数字 → 默认 (1, '')。"""
+        if self._ocr is None or rect is None:
             return 1, ""
         try:
             info = self._ocr.recognize_single(frame_rgb, rect) or {}
         except Exception:
             return 1, ""
         text = str(info.get("text") or "").strip()
-        m = re.search(r"(\d+)", text)
-        if not m:
+        n = parse_count_text(text)
+        if n is None:
             return 1, text
-        return int(m.group(1)), text
+        return n, text

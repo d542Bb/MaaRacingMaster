@@ -625,13 +625,7 @@
       "_owner": "treasure",
       "_page": "popup",
       "_v3": {
-        "comment": "通用蛋模板多尺度匹配 + NMS(IoU=0.5) + 中心 40% 区域 HSV 判色",
-        "domain": {
-          "_count_dx_norm": 0.03,
-          "_count_dy_norm": 0,
-          "_count_h_norm": 0.03,
-          "_count_w_norm": 0.04
-        }
+        "comment": "通用蛋模板多尺度匹配 + NMS(IoU=0.5) + 中心 40% 区域 HSV 判色；「×N」计数区由代码按奖励卡通用几何推导（plugins/treasure/eggs.py），不走 domain 偏移参数"
       },
       "action": "Custom",
       "custom_action": "MaaRM_Click",
@@ -1552,22 +1546,16 @@
         ]
       },
       "egg": {
-        "_comment": "通用蛋模板多尺度匹配 + NMS(IoU=0.5) + 中心 40% 区域 HSV 判色",
-        "domain": {
-          "_count_dx_norm": 0.03,
-          "_count_dy_norm": 0,
-          "_count_h_norm": 0.03,
-          "_count_w_norm": 0.04
-        },
+        "_comment": "通用蛋模板多尺度匹配 + NMS(IoU=0.5) + 中心 40% 区域 HSV 判色。rect 必须罩住弹窗整条图标带 y≈0.35-0.52（真帧实测红/黄/蓝蛋 0.837-0.920 命中；币章卡灰度也能命中蛋轮廓 ~0.94，但中心 S≈7 恒被判色拒掉）。「×N」计数区不在本真源：由代码常量按「奖励卡通用几何」从命中框推导（plugins/treasure/eggs.py，校准 tools/experiments/egg-claim-coin-read）。",
         "kind": "template",
         "label": "彩蛋",
         "order": 2,
         "page": "popup",
         "rect": [
-          0.30084448777940515,
-          0.34629322900305554,
-          0.7010041551246536,
-          0.5609418282548476
+          0.2,
+          0.35,
+          0.8,
+          0.56
         ],
         "templates": [
           "egg.png"
@@ -1590,6 +1578,164 @@
           "egg_reward_title.png"
         ],
         "threshold": 0.8
+      },
+      "act_get_silver_btn": {
+        "_comment": "「彩蛋任务」收尾链（stage-from-node-plan §10 A′）专用锚点族：不进 transitions/stages.active，detector 零扫描；由 module._run_egg_claim_chain 直读本 spec 做匹配/点击。此为活动页右下「获取银币」（打开任务抽屉入口）",
+        "kind": "template",
+        "label": "活动页获取银币按钮",
+        "order": 960,
+        "page": "activity",
+        "rect": [
+          0.65078125,
+          0.7213888888888889,
+          0.72890625,
+          0.8433333343929714
+        ],
+        "templates": [
+          "act_get_silver_btn.png"
+        ],
+        "threshold": 0.8
+      },
+      "egg_claim_title": {
+        "_comment": "领取成功后的聚合「奖励」弹窗标题（点任意处=点击屏幕继续）",
+        "kind": "template",
+        "colorspace": "gray",
+        "label": "彩蛋领取奖励弹窗标题",
+        "order": 960,
+        "page": "egg_task",
+        "rect": [
+          0.38,
+          0.2,
+          0.62,
+          0.42
+        ],
+        "templates": [
+          "egg_claim_title.png"
+        ],
+        "threshold": 0.78
+      },
+      "claim_coin_medal": {
+        "_comment": "奖励弹窗「鉴宝银币」单币锤徽 medal（收尾链读×N 落盘为银币收入）。与 claim_score_medal 同为真匹配器实测可分：本模板命中银卡1.0/积分卡0.314，阈值0.72下天然不串（tools/experiments/egg-claim-coin-read）。搜索区=弹窗整卡行；「×N」读数区按「奖励卡通用几何」从命中框推导，真源不携带偏移参数。",
+        "kind": "template",
+        "label": "领取鉴宝银币medal",
+        "order": 960,
+        "page": "egg_task",
+        "rect": [
+          0.2,
+          0.28,
+          0.8,
+          0.6
+        ],
+        "templates": [
+          "claim_coin_medal.png"
+        ],
+        "threshold": 0.72
+      },
+      "claim_score_medal": {
+        "_comment": "奖励弹窗「鉴宝积分」币堆锤徽 medal（收尾链读×N 落盘为积分）。积分卡=币堆、银币卡=单币，两 medal 图标不同（margin≥0.85）。同 claim_coin_medal 走惰性链读、通用几何取数。",
+        "kind": "template",
+        "label": "领取鉴宝积分medal",
+        "order": 960,
+        "page": "egg_task",
+        "rect": [
+          0.2,
+          0.28,
+          0.8,
+          0.6
+        ],
+        "templates": [
+          "claim_score_medal.png"
+        ],
+        "threshold": 0.72
+      },
+      "egg_claim_red_btn": {
+        "_comment": "任务抽屉右列红色可领礼物按钮（判「有奖励」+领取动作目标；灰色=不可领不匹配 rgb）。搜索区=抽屉右侧按钮列",
+        "kind": "template",
+        "label": "可领取红色礼物按钮",
+        "order": 960,
+        "page": "egg_task",
+        "rect": [
+          0.8807806401249024,
+          0.08222222222222225,
+          0.9907806401249024,
+          0.9922222222222222
+        ],
+        "templates": [
+          "egg_claim_red_btn.png"
+        ],
+        "threshold": 0.8
+      },
+      "egg_panel_tabbar": {
+        "_comment": "任务抽屉 tab 栏中「破产补给」白字（恒未选中态，tab1/tab3 切换期间外观不变=抽屉在场判据）",
+        "kind": "template",
+        "colorspace": "gray",
+        "label": "任务抽屉tab栏",
+        "order": 960,
+        "page": "egg_task",
+        "rect": [
+          0.4586651053864169,
+          0.0,
+          1.0,
+          0.09472222328186035
+        ],
+        "templates": [
+          "egg_panel_tabbar.png"
+        ],
+        "threshold": 0.78
+      },
+      "egg_task_tab3": {
+        "_comment": "「彩蛋任务」tab 未选中态（切 tab 动作目标；选中后红底自然不再命中=幂等）",
+        "kind": "template",
+        "colorspace": "gray",
+        "label": "彩蛋任务tab未选中",
+        "order": 960,
+        "page": "egg_task",
+        "rect": [
+          0.7,
+          0.0,
+          0.95,
+          0.12
+        ],
+        "templates": [
+          "egg_task_tab3.png"
+        ],
+        "threshold": 0.8
+      },
+      "hall_back_btn": {
+        "_comment": "鉴宝大厅左上「D」形屏幕返回键（点=回上一级活动页；与房子区分：房子直回游戏大厅）。模板只取 D 本体",
+        "kind": "template",
+        "colorspace": "gray",
+        "label": "大厅屏幕返回键",
+        "order": 960,
+        "page": "session",
+        "rect": [
+          0.0,
+          0.0,
+          0.1,
+          0.12
+        ],
+        "templates": [
+          "hall_back_btn.png"
+        ],
+        "threshold": 0.78
+      },
+      "hall_home_btn": {
+        "_comment": "活动页左上房子图标（点=直回游戏大厅，收尾链离场用）",
+        "kind": "template",
+        "colorspace": "gray",
+        "label": "活动页房子按钮",
+        "order": 960,
+        "page": "activity",
+        "rect": [
+          0.08,
+          0.0,
+          0.18,
+          0.12
+        ],
+        "templates": [
+          "hall_home_btn.png"
+        ],
+        "threshold": 0.78
       },
       "goto_appraise_btn": {
         "kind": "template",

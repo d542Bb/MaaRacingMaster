@@ -58,7 +58,7 @@ _PROFILE_FILENAME = "profile.json"
 # 默认选中模块 id（仅作 id 引用，不直接 import 插件包；GUI 进入默认展示鉴宝）
 _DEFAULT_MODULE_ID = "treasure"
 # 本程序目前持久化的模块配置键（treasure 模块）——回填时只取这些，其余忽略。
-_MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap", "treasure_mode")
+_MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap")
 
 # 注册表权限优化项注册表（数据驱动：新增优化项只改这里，前后端体检/设置页自动生效）。
 # 字段语义：
@@ -977,11 +977,24 @@ class SidecarService:
             self._last_log_count = len(lines)
         return (True, {"lines": result}, None)
 
+    # 看板读取列（白名单，兼作输出契约）：daily_summary 列名即输出键；games 为 输出键←列名。
+    _SUMMARY_COLS = ("games", "win", "fail", "profit_sum", "income_sum", "highest_score",
+                     "egg_red", "egg_yellow", "egg_blue", "egg_coin", "egg_score")
+    _GAMES_COLS = (("game_seq", "game_seq"), ("ts", "ts"),
+                   ("auction_result", "auction_result"), ("final_price", "settle_final_price"),
+                   ("total_price", "settle_total_price"), ("profit", "settle_profit"),
+                   ("income", "settle_my_income"), ("egg_red", "egg_red"),
+                   ("egg_yellow", "egg_yellow"), ("egg_blue", "egg_blue"),
+                   ("strategy_mode", "strategy_mode"))
+
     def get_today_stats(self, params):
         """读取鉴宝落盘库（data/treasure/treasure.db）今日统计数据（凌晨 5 点日界，与落盘一致）。
 
         返回 {"bucket": 日界, "summary": daily_summary 今日行或 None, "games": 今日各场明细列表}。
         库不存在/读取失败时 summary=None、games=[]（不抛错，前端显示空看板）。
+        读侧 schema 容错：新列的 ALTER 迁移由鉴宝模块（写侧）惰性建连时补，升级后存在
+        「GUI 已启动、模块未跑过」的窗口——此处按 PRAGMA 实有列取交集查询，缺列按 0/None
+        兜底，读侧永不依赖写侧启动时机，也不复制一份 DDL。
         """
         from datetime import datetime, timedelta
         import sqlite3
@@ -995,34 +1008,31 @@ class SidecarService:
         try:
             conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
             try:
-                row = conn.execute(
-                    "SELECT games, win, fail, profit_sum, income_sum, highest_score,"
-                    " egg_red, egg_yellow, egg_blue FROM daily_summary WHERE bucket = ?",
-                    (bucket,),
-                ).fetchone()
+                scols = {r[1] for r in conn.execute("PRAGMA table_info(daily_summary)").fetchall()}
+                sel_s = [c for c in self._SUMMARY_COLS if c in scols]
                 summary = None
-                if row is not None:
-                    summary = {
-                        "games": row[0], "win": row[1], "fail": row[2],
-                        "profit_sum": row[3], "income_sum": row[4], "highest_score": row[5],
-                        "egg_red": row[6], "egg_yellow": row[7], "egg_blue": row[8],
-                    }
-                games = [
-                    {
-                        "game_seq": r[0], "ts": r[1], "auction_result": r[2],
-                        "final_price": r[3], "total_price": r[4],
-                        "profit": r[5], "income": r[6],
-                        "egg_red": r[7], "egg_yellow": r[8], "egg_blue": r[9],
-                        "strategy_mode": r[10],
-                    }
-                    for r in conn.execute(
-                        "SELECT game_seq, ts, auction_result, settle_final_price,"
-                        " settle_total_price, settle_profit, settle_my_income,"
-                        " egg_red, egg_yellow, egg_blue, strategy_mode"
-                        " FROM games WHERE bucket = ? ORDER BY game_seq",
+                if sel_s:
+                    row = conn.execute(
+                        f"SELECT {', '.join(sel_s)} FROM daily_summary WHERE bucket = ?",
+                        (bucket,),
+                    ).fetchone()
+                    if row is not None:
+                        got = dict(zip(sel_s, row))
+                        summary = {c: got.get(c, 0) for c in self._SUMMARY_COLS}
+                gcols = {r[1] for r in conn.execute("PRAGMA table_info(games)").fetchall()}
+                pairs = [(k, c) for k, c in self._GAMES_COLS if c in gcols]
+                games = []
+                if "bucket" in gcols and "game_seq" in gcols and pairs:
+                    sel_g = ", ".join(c for _, c in pairs)
+                    raw_rows = conn.execute(
+                        f"SELECT {sel_g} FROM games WHERE bucket = ? ORDER BY game_seq",
                         (bucket,),
                     ).fetchall()
-                ]
+                    names = [c for _, c in pairs]
+                    games = []
+                    for r in raw_rows:
+                        vals = dict(zip(names, r))
+                        games.append({k: vals.get(c) for k, c in self._GAMES_COLS})
             finally:
                 conn.close()
             return (True, {"bucket": bucket, "summary": summary, "games": games}, None)

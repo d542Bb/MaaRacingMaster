@@ -87,7 +87,6 @@ const state = {
   showRois: "all",     // "all" 全部框 | "selected" 仅选中 | "none" 不显示
   showHit: true,       // 是否显示匹配命中位置（黄色高亮框 + 中心点）
   matchHit: null,      // 最近一次匹配命中 {key, rect:[归一化4值], score} | null
-  eggHits: null,       // 彩蛋识别测试结果 [{color, box, count_rect, count, score}, ...] | null
 };
 
 // 当前 ROI 的自定义阈值（缺省 0.75）
@@ -390,41 +389,6 @@ function draw() {
       ctx.stroke();
       ctx.restore();
     }
-  }
-  // 彩蛋识别测试结果（复用统一框样式：匹配框 vs OCR 框 + dy/dx 连接线），仅彩蛋分类显示
-  if (state.currentCat === "eggs" && Array.isArray(state.eggHits)) {
-    const eggColor = { red: "#f38ba8", yellow: "#f9e2af", blue: "#89dceb" };
-    state.eggHits.forEach((e) => {
-      const box = e.box, cr = e.count_rect;
-      if (!box || box.length !== 4) return;
-      const [bx1, by1] = normToCanvas(box[0], box[1]);
-      const [bx2, by2] = normToCanvas(box[2], box[3]);
-      const color = eggColor[e.color] || "#a6e3a1";
-      // 【模板匹配框】蛋卡图标命中（center 采样色块在右侧「计数区定位参数」栏展示，避免遮挡画面）
-      drawMatchBox(bx1, by1, bx2, by2, color, `🥚 ${e.color} s=${e.score}`);
-      // 【OCR 计数区】图标下方 ×N
-      if (cr && cr.length === 4) {
-        const [cx1, cy1] = normToCanvas(cr[0], cr[1]);
-        const [cx2, cy2] = normToCanvas(cr[2], cr[3]);
-        const ocrText = `×${e.count} OCR${e.count_text ? "「" + e.count_text + "」" : ""}`;
-        drawOcrBox(cx1, cy1, cx2, cy2, color, ocrText);
-        // 【匹配框 → OCR 区 连接线】：标注 dy / dx 关系
-        ctx.save();
-        ctx.setLineDash([2, 3]);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.2;
-        // 从匹配框底部中心 → OCR 区顶部中心
-        const bCx = (bx1 + bx2) / 2, bBy = by2;
-        const cCx = (cx1 + cx2) / 2, cTy = cy1;
-        ctx.beginPath(); ctx.moveTo(bCx, bBy); ctx.lineTo(cCx, cTy); ctx.stroke();
-        ctx.setLineDash([]);
-        // 箭头
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(cCx, cTy); ctx.lineTo(cCx - 4, cTy - 6); ctx.lineTo(cCx + 4, cTy - 6); ctx.closePath(); ctx.fill();
-        ctx.restore();
-      }
-    });
   }
 }
 
@@ -729,43 +693,6 @@ function updatePropPanel() {
       <div id="scoreBox" class="score-big score-dim">—</div>
       <div id="scoreNote" class="prop-row" style="justify-content:center">实时预览</div>
     </div>
-    ${state.currentCat === "eggs" ? `
-    <div class="prop-group">
-      <h3>🥚 计数区定位参数</h3>
-      <div class="prop-row">
-        <span class="k" style="flex-direction:column;align-items:flex-start;line-height:1.3">
-          <span>dx 水平偏移</span>
-          <span id="eggDxPx" style="font-size:11px;color:var(--dim);font-weight:400"></span>
-        </span>
-        <input id="eggDx" class="rect-input" type="number" step="0.005" min="-0.5" max="0.5" value="${(state.rois.eggs && state.rois.eggs._count_dx_norm) ?? 0}">
-      </div>
-      <div class="prop-row">
-        <span class="k" style="flex-direction:column;align-items:flex-start;line-height:1.3">
-          <span>dy 向下偏移</span>
-          <span id="eggDyPx" style="font-size:11px;color:var(--dim);font-weight:400"></span>
-        </span>
-        <input id="eggDy" class="rect-input" type="number" step="0.005" min="0" max="0.5" value="${(state.rois.eggs && state.rois.eggs._count_dy_norm) ?? 0.02}">
-      </div>
-      <div class="prop-row">
-        <span class="k" style="flex-direction:column;align-items:flex-start;line-height:1.3">
-          <span>w 计数区宽度</span>
-          <span id="eggWPx" style="font-size:11px;color:var(--dim);font-weight:400"></span>
-        </span>
-        <input id="eggW" class="rect-input" type="number" step="0.005" min="0.02" max="0.5" value="${(state.rois.eggs && state.rois.eggs._count_w_norm) ?? 0.14}">
-      </div>
-      <div class="prop-row">
-        <span class="k" style="flex-direction:column;align-items:flex-start;line-height:1.3">
-          <span>h 计数区高度</span>
-          <span id="eggHPx" style="font-size:11px;color:var(--dim);font-weight:400"></span>
-        </span>
-        <input id="eggH" class="rect-input" type="number" step="0.005" min="0.01" max="0.2" value="${(state.rois.eggs && state.rois.eggs._count_h_norm) ?? 0.05}">
-      </div>
-      <div class="prop-row" style="justify-content:center;color:var(--dim);font-size:12px">计数区 = 图标下缘 +dy，宽 w、高 h</div>
-      <button id="eggsTestBtn" class="btn" style="margin-top:8px;width:100%;border-color:var(--ok);color:var(--ok)">🥚 彩蛋识别测试（当前帧）</button>
-      <div id="eggsTestOut" class="prop-row" style="justify-content:center;margin-top:6px">—</div>
-      <div id="eggCenterInfo" class="prop-row" style="flex-direction:column;align-items:stretch;gap:4px;margin-top:8px"></div>
-    </div>
-    ` : ""}
     `))}
   `;
   // 修正删除按钮文字
@@ -793,50 +720,6 @@ function updatePropPanel() {
       addedEntry.guarded_by = guardSel.value || undefined;
       markDirty();
     };
-  }
-
-  // 彩蛋计数区偏移：改 → 写回段级元数据并标记 dirty（保存时统一落盘）
-  if (state.currentCat === "eggs" && state.rois.eggs) {
-    // 刷新归一化 → 像素的提示文字（基于当前截图尺寸 state.imgW / state.imgH）
-    const refreshPxLabels = () => {
-      const W = state.imgW || 0, H = state.imgH || 0;
-      const fmt = (norm, pxPer, signOk) => {
-        const px = Math.round(norm * pxPer);
-        const pxStr = (signOk && px > 0 ? `+${px}` : `${px}`) + " 像素";
-        return W && H
-          ? `≈ ${pxStr}（归一化 ${norm.toFixed(3)}）`
-          : `（归一化 ${norm.toFixed(3)}，请先加载截图查看像素）`;
-      };
-      const dx = panel.querySelector("#eggDx"); const dxLbl = panel.querySelector("#eggDxPx");
-      if (dx && dxLbl) dxLbl.textContent = fmt(parseFloat(dx.value) || 0, W, true);
-      const dy = panel.querySelector("#eggDy"); const dyLbl = panel.querySelector("#eggDyPx");
-      if (dy && dyLbl) dyLbl.textContent = fmt(parseFloat(dy.value) || 0, H, false);
-      const w = panel.querySelector("#eggW"); const wLbl = panel.querySelector("#eggWPx");
-      if (w && wLbl) wLbl.textContent = fmt(parseFloat(w.value) || 0, W, false);
-      const h = panel.querySelector("#eggH"); const hLbl = panel.querySelector("#eggHPx");
-      if (h && hLbl) hLbl.textContent = fmt(parseFloat(h.value) || 0, H, false);
-    };
-    const bindEggMeta = (id, metaKey, def) => {
-      const el = panel.querySelector("#" + id);
-      if (!el) return;
-      const onChange = () => {
-        let v = parseFloat(el.value);
-        if (Number.isNaN(v)) v = def;
-        state.rois.eggs[metaKey] = v;
-        markDirty();
-        refreshPxLabels();
-      };
-      el.onchange = onChange;
-      el.oninput = () => { refreshPxLabels(); };
-    };
-    bindEggMeta("eggDx", "_count_dx_norm", 0);
-    bindEggMeta("eggDy", "_count_dy_norm", 0.02);
-    bindEggMeta("eggW", "_count_w_norm", 0.14);
-    bindEggMeta("eggH", "_count_h_norm", 0.05);
-    refreshPxLabels();
-    const testBtn = panel.querySelector("#eggsTestBtn");
-    if (testBtn) testBtn.onclick = runEggsTest;
-    renderEggCenterInfo(); // 面板重建后恢复「中心采样颜色」区（若有历史识别结果）
   }
 
   // 模板多选（OCR 区域、纯 rect 点位锚点、调参 rect 不显示模板，跳过）
@@ -1144,62 +1027,6 @@ function htmlEscape(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
-}
-
-// ---------------- 彩蛋识别测试 ----------------
-async function runEggsTest() {
-  const out = $("eggsTestOut");
-  if (!state.session || !state.image) {
-    if (out) out.innerHTML = `<span class="bad">请先加载截图</span>`;
-    return;
-  }
-  if (out) out.innerHTML = `<span class="spinner"></span> 识别中…`;
-  state.eggHits = null; draw();
-  try {
-    const res = await apiPost("/api/eggs_recognize", {
-      session: state.session, name: state.image,
-    });
-    if (state.currentCat !== "eggs") return;
-    if (res.error) {
-      state.eggHits = null; draw();
-      renderEggCenterInfo();
-      if (out) out.innerHTML = `<span class="bad">${htmlEscape(res.error)}</span>`;
-      return;
-    }
-    state.eggHits = Array.isArray(res.eggs) ? res.eggs : [];
-    draw();
-    renderEggCenterInfo();
-    if (!out) return;
-    const c = res.counts || {};
-    const items = state.eggHits.length
-      ? state.eggHits.map((e) => `${e.color}×${e.count}(${e.score})`).join(" · ")
-      : `<span style="color:var(--dim)">未命中任何蛋卡</span>`;
-    out.innerHTML = `<span class="ok">红${c.red} 黄${c.yellow} 蓝${c.blue}</span> · ${items}`;
-  } catch (e) {
-    if (out) out.innerHTML = `<span class="bad">请求失败 ${htmlEscape(e.message || String(e))}</span>`;
-  }
-}
-
-// 右侧「计数区定位参数」栏的「中心采样颜色」区：展示每个命中蛋的 center_rgb 实际色块 + 判色结果
-function renderEggCenterInfo() {
-  const box = $("eggCenterInfo");
-  if (!box) return;
-  const hits = Array.isArray(state.eggHits) ? state.eggHits : [];
-  if (!hits.length) {
-    box.innerHTML = `<div style="color:var(--dim);font-size:12px;text-align:center">— 识别测试后显示各蛋中心采样色块 —</div>`;
-    return;
-  }
-  const colorName = { red: "红", yellow: "黄", blue: "蓝" };
-  box.innerHTML = hits.map((e) => {
-    const crgb = e.center_rgb || [0, 0, 0];
-    const sw = `rgb(${Math.round(crgb[0])},${Math.round(crgb[1])},${Math.round(crgb[2])})`;
-    return `
-      <div style="display:flex;align-items:center;gap:8px;font-size:12px">
-        <span style="display:inline-block;width:16px;height:16px;background:${sw};border:1px solid #111;border-radius:3px;flex-shrink:0" title="中心采样实际颜色 RGB(${Math.round(crgb[0])},${Math.round(crgb[1])},${Math.round(crgb[2])})"></span>
-        <span style="font-weight:600">${colorName[e.color] || e.color}</span>
-        <span style="color:var(--dim)">s=${e.score} · RGB(${Math.round(crgb[0])},${Math.round(crgb[1])},${Math.round(crgb[2])})</span>
-      </div>`;
-  }).join("");
 }
 
 // ---------------- 跨帧测试 ----------------

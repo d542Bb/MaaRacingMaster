@@ -45,8 +45,9 @@ GOLDEN_APPRAISERS = {
 GOLDEN_SELECTED_CHECK_RECT = [0.03, 0.26, 0.97, 0.38]
 GOLDEN_SMART_BID_RECT = [0.708148, 0.762634, 0.807407, 0.847654]
 GOLDEN_ROUND_LABEL_RECT = [0.399259, 0.152675, 0.469630, 0.195802]
-GOLDEN_EGG = {"rect": [0.300844, 0.346293, 0.701004, 0.560942], "threshold": 0.72,
-              "counts": [0.03, 0.0, 0.04, 0.03]}
+# egg 锚点已按「彩蛋任务」聚合奖励弹窗重配（stage-from-node-plan §9 搬家、§10 收尾链）
+# 计数区不再是真源数值（改由代码常量按通用几何推导），金标只锁 rect/threshold
+GOLDEN_EGG = {"rect": [0.2, 0.35, 0.8, 0.56], "threshold": 0.72}
 GOLDEN_OCR = {
     "bid_result_amount_box": [0.339259, 0.650535, 0.537778, 0.726502],
     "bid_player1": [0.149562, 0.278955, 0.274504, 0.311307],
@@ -111,8 +112,6 @@ def test_egg_entry_match_golden():
     assert e.configured
     assert _close(e._entry[1], GOLDEN_EGG["rect"]), "egg rect 漂移"
     assert abs(float(e._entry[2]) - GOLDEN_EGG["threshold"]) <= TOL, "egg threshold 漂移"
-    got_counts = [getattr(e, a) for a in ("_count_dx", "_count_dy", "_count_w", "_count_h")]
-    assert _close(got_counts, GOLDEN_EGG["counts"]), f"egg 计数参数漂移 {got_counts}"
 
 
 def test_result_banner_per_template_threshold_from_plan():

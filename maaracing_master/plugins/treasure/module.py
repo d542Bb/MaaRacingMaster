@@ -48,6 +48,7 @@ from maaracing_master.plugins.treasure.detector import TreasureStageDetector
 from maaracing_master.core.template_match import (
     cursor_box_norm,
     cursor_occlusion_radius_px,
+    load_template,
     match_template_cs,
 )
 from maaracing_master.core.navkit import (
@@ -58,7 +59,11 @@ from maaracing_master.core.navkit import (
     TraceWriter,
     compile_plan,
 )
-from maaracing_master.plugins.treasure.eggs import EggRewardRecognizer
+from maaracing_master.plugins.treasure.eggs import (
+    EggRewardRecognizer,
+    derive_count_rect,
+    parse_count_text,
+)
 from maaracing_master.plugins.treasure.ocr import TreasureOcr
 from maaracing_master.plugins.treasure.renderer import TreasureDebugRenderer
 from maaracing_master.core.paths import data_dir, debug_dir
@@ -629,6 +634,22 @@ class TreasureModule(ActivityModule):
     }
     APPRAISER_SETTLE_FRAMES = 5    # 进入「选择鉴宝师」后等 N 帧画面稳定再匹配判定（转场动画期卡片模糊，
                                    # 立即匹配分会低于阈值 → 误判未命中 → 直接 fallback 点中间卡）
+    # ---------- 彩蛋任务收尾链（A′ 自包含例程，stage-from-node-plan §10）----------
+    # 到限后在决策 tick 内阻塞跑完：抓帧(ctx.capture WGC 中心缓存只读)→模板匹配→同步点击
+    # →等待到位。Tasker 线程被占用 = 常驻图停摆，活动页「前往鉴宝」自动边天然无触发机会，
+    # 无需旗标闸门/不改图拓扑。锚点读 perception.spec 的 egg_claim 族（不进 transitions/
+    # active，detector 零扫描）。「有就领，没有就结束」：任一步超时只记 WARNING 后停止，
+    # 绝不阻塞 request_stop。
+    EGG_CHAIN_TOTAL_BUDGET_S = 45.0    # 全链墙钟总预算，逐层递减到各步
+    EGG_CHAIN_POLL_S = 0.25            # 帧轮询间隔
+    EGG_CHAIN_MAX_CLAIM_ROUNDS = 3     # 领取轮次上限（一次聚合弹窗通常 1 轮，防多弹窗兜底）
+    EGG_CHAIN_BLANK_NORM = (0.30, 0.50)    # 任务抽屉：点左侧空白 = 关抽屉（背景车场景空地，无可点物）
+    EGG_CHAIN_DISMISS_NORM = (0.50, 0.55)  # 奖励弹窗「点击屏幕继续」= 点中间偏下任意处
+    EGG_CHAIN_ANCHORS = (
+        "hall_back_btn", "act_get_silver_btn", "egg_panel_tabbar", "egg_task_tab3",
+        "egg_claim_red_btn", "egg_claim_title", "hall_home_btn", "hall_peak_appraise_card",
+        "claim_coin_medal", "claim_score_medal",
+    )
     # ---------- 每日循环（GUI 控制面板配置项，运行期由 sidecar 注入）----------
     #   max_daily_loops: 今日刷到第几场为止。0 = 不指定（按游戏默认 50）；有效值 1~50。
     #       实际生效上限 = min(游戏每日上限 50, 本配置)；二者取更严。
@@ -638,7 +659,6 @@ class TreasureModule(ActivityModule):
     #   出价策略：当前唯一「最大利润（刷单日计分）」，见 bid_strategy.STRATEGY_LABEL。
     DEFAULT_MAX_DAILY_LOOPS: int = 50
     DEFAULT_TREASURE_RISK_CAP: int = 50000   # 每局最多接受亏多少（兜底上限，GUI 可调）
-    DEFAULT_TREASURE_MODE: str = "profit"    # profit=赚钱 / egg=赚蛋
     # 到限自动停止防抖：连续 N 帧在鉴宝大厅且判定到限，才视为可信并自动停止模块。
     # 防止单帧 OCR 误读（如「日已参与 X/50」瞬时多读）或阶段抖动造成提前停机。
     DAILY_LIMIT_STOP_STABLE_FRAMES = 3
@@ -966,8 +986,7 @@ class TreasureModule(ActivityModule):
         self._strategy: BidStrategy | None = None
         # 待生效的策略配置：set_module_config 在策略实例创建前被调用（controller.start_module
         # 注入早于 module.start() 创建 BidStrategy），此时 _strategy 为 None，
-        # 直接写实例字段避免 mode/risk_cap 被静默丢弃回退默认值。
-        self._treasure_mode: str = self.DEFAULT_TREASURE_MODE
+        # 直接写实例字段避免 risk_cap 被静默丢弃回退默认值。
         self._treasure_risk_cap: int = self.DEFAULT_TREASURE_RISK_CAP
         # bidding epoch 时序（phase 门控，见文档 §13）：
         #   wait_first  = 等待第 1 次出价（无快照，R1 首轮）
@@ -1051,8 +1070,10 @@ class TreasureModule(ActivityModule):
         self._prev_stage_for_loop_count: str | None = None
         # 当前"日"桶（凌晨 5 点为界）：跨桶 → 当日计数清零重计。
         self._daily_bucket: str | None = None
-        # 到限自动停止防抖计数：连续 N 帧在鉴宝大厅且判定到限才 request_stop（见 _tick_once）
+        # 到限防抖计数：连续 N 帧在鉴宝大厅且判定到限 → 进入彩蛋任务收尾链（见 _tick_once 0.05）
         self._daily_limit_streak: int = 0
+        self._egg_chain_started = False      # 收尾链每次运行只进一次（进入即置位，防停止生效前重入）
+        self._egg_chain_spec_cache: dict | None = None  # 收尾链锚点规格懒加载缓存
 
     # ==================================================================
     #  对外：配置接口（GUI → sidecar → module；运行中可改，立即生效到下一轮决策/下一次点开始匹配）
@@ -1069,7 +1090,6 @@ class TreasureModule(ActivityModule):
             "target_session_label": tgt_label,         # 中文名（前端显示）
             "bid_strategy_label": STRATEGY_LABEL,      # 当前唯一策略显示名（前端只读展示）
             "treasure_risk_cap": int(getattr(self._strategy, "risk_cap", self._treasure_risk_cap) or self._treasure_risk_cap),
-            "treasure_mode": getattr(self._strategy, "mode", self._treasure_mode),
             "_state": {
                 # 运行时实况（只读）：已完成多少场 / 上限值，用于 HUD 展示
                 "daily_bucket": self._daily_bucket,
@@ -1116,13 +1136,6 @@ class TreasureModule(ActivityModule):
             self._treasure_risk_cap = v                    # 先存实例字段（策略实例可能尚未创建）
             if self._strategy is not None:                 # 运行中则立即同步到当前策略
                 self._strategy.risk_cap = v
-        # treasure_mode: profit（赚钱）/ egg（赚蛋）；非法→profit。
-        if "treasure_mode" in config:
-            v = config["treasure_mode"]
-            if isinstance(v, str) and v in ("profit", "egg"):
-                self._treasure_mode = v                    # 先存实例字段（策略实例可能尚未创建）
-                if self._strategy is not None:             # 运行中则立即同步到当前策略
-                    self._strategy.mode = v
         return self.get_module_config()
 
     # ---------- 内部：每日循环上限（0=不限 时返回 50，因为游戏本身也有 50 场天花板）----------
@@ -1298,17 +1311,14 @@ class TreasureModule(ActivityModule):
             self._bid_smart_tpl, self._bid_smart_rect, self._bid_smart_colorspace = None, None, "gray"
             logger.log("[鉴宝] 未加载智能出价按钮模板（面板已开判定降级：依赖主按钮 OCR 兜底）", "WARNING")
 
-        # 2.59 初始化出价策略决策器（V2：数据驱动双层缓冲 + 兜底上限 + 赚钱/赚蛋模式）
+        # 2.59 初始化出价策略决策器（V2：数据驱动双层缓冲 + 兜底上限）
         # 用 _treasure_* 暂存字段而非 DEFAULT：set_module_config 可能在实例创建前注入
-        # （controller.start_module 早于 module.start()），若回落默认会让 GUI 选的模式被静默丢弃。
-        self._strategy = BidStrategy(
-            risk_cap=self._treasure_risk_cap,
-            mode=self._treasure_mode,
-        )
+        # （controller.start_module 早于 module.start()），若回落默认会让 GUI 选的配置被静默丢弃。
+        self._strategy = BidStrategy(risk_cap=self._treasure_risk_cap)
         logger.log(
             f"[鉴宝] 出价策略决策器已初始化: 策略={STRATEGY_LABEL} "
             f"(VAL_COEF={self._strategy.VAL_COEF:.2f}, 利润线={self._strategy._profit_floor():.2f}, "
-            f"兜底上限={self._strategy.risk_cap:,}, 模式={self._strategy.mode})；"
+            f"兜底上限={self._strategy.risk_cap:,})；"
             f"每日循环上限={self._effective_daily_loop_limit()}场",
             "DEBUG",
         )
@@ -1410,11 +1420,10 @@ class TreasureModule(ActivityModule):
         self._bid_zero_since_ts = None
         self._bidding_last_decision = None
         self._last_round_snapshot = None
-        # 出价策略：重建实例清逼价基线等内部状态，保留已设的 risk_cap/mode
+        # 出价策略：重建实例清逼价基线等内部状态，保留已设的 risk_cap
         if self._strategy is not None:
             rc = getattr(self._strategy, "risk_cap", self.DEFAULT_TREASURE_RISK_CAP)
-            md = getattr(self._strategy, "mode", self.DEFAULT_TREASURE_MODE)
-            self._strategy = BidStrategy(risk_cap=rc, mode=md)
+            self._strategy = BidStrategy(risk_cap=rc)
         # 选鉴宝师确认标记 / 点击指纹锁：新一场重新走流程
         self._appraiser_confirmed_once = False
         self._last_click_fingerprint = None
@@ -1541,7 +1550,7 @@ class TreasureModule(ActivityModule):
                         # 自动停止由 _tick_once 的连续 3 帧确认触发（回大厅即开始计数）。
                         logger.log(
                             f"[鉴宝循环] 已到每日循环上限 {lim} 场，"
-                            f"本场为最后一场，回鉴宝大厅确认后模块将自动停止。",
+                            f"本场为最后一场，回鉴宝大厅确认后进入彩蛋任务收尾并自动停止。",
                             "WARNING",
                         )
                 # 记下来，下次跳变用
@@ -3615,6 +3624,230 @@ class TreasureModule(ActivityModule):
         self._debug_saved = 0
 
     # ==================================================================
+    #  内部：彩蛋任务收尾链（A′ 自包含例程，stage-from-node-plan §10）
+    # ==================================================================
+    def _egg_chain_load_specs(self) -> dict[str, tuple] | None:
+        """懒加载收尾链锚点规格 {name: (tpl_rgb, rect_norm, threshold, colorspace)}。
+
+        真源 = perception.spec 的 egg_claim 族（不进 transitions/active，detector 零
+        扫描）。medal 类读数区不在真源里：由 eggs.derive_count_rect 从命中框走
+        「奖励卡通用几何」推导（数字带），与数蛋同一套代码常量。
+        任一模板缺失/读失败即整族判不可用返回 None → 链降级为直接离场停止。
+        """
+        if self._egg_chain_spec_cache is not None:
+            return self._egg_chain_spec_cache or None
+        nav = nav_source()
+        specs: dict[str, tuple] = {}
+        if nav is not None:
+            for name in self.EGG_CHAIN_ANCHORS:
+                anchor = nav.spec.get(name)
+                if anchor is None or not anchor.rect or not anchor.templates:
+                    continue
+                tpl = load_template(anchor.templates[0], [IMAGE_DIR])
+                if tpl is None:
+                    specs = {}
+                    break
+                specs[name] = (tpl, tuple(anchor.rect.as_list()),
+                               float(anchor.threshold or 0.78), anchor.colorspace)
+        self._egg_chain_spec_cache = specs
+        return specs or None
+
+    def _egg_chain_click(self, cxn: float, cyn: float,
+                         bw: float = 0.02, bh: float = 0.02) -> bool:
+        """链内同步点击：提交 → 等消费结果（与图 ClickAction 同一出口、同一护栏）。
+
+        real(前台鼠标) 模式沿用「不抢前台」安全策略：非前台时点击取消返回 False，
+        由链的等待轮询自然重试/超时。
+        """
+        clicker = self._get_clicker()
+        clicker.set_mode(self.ctx.click_mode)
+        clicker.set_intent(False)
+        self._ensure_gamepad_bound()
+        if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
+            return False
+        if clicker.is_busy():
+            return False
+        if not clicker.submit_click(cxn, cyn, box=(bw, bh),
+                                    down_up_gap_ms=self.CLICK_DOWN_UP_GAP_MS,
+                                    move_pause_s=self.CLICK_MOVE_PAUSE_S):
+            return False
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            if not self.ctx.lifecycle.running:
+                clicker.cancel()
+                return False
+            res = clicker.consume_result()
+            if res is not None:
+                return bool(res.get("ok"))
+            self.ctx.lifecycle.sleep(0.05)
+        return False
+
+    def _egg_chain_wait(self, specs: dict[str, tuple], name: str,
+                        timeout_s: float, *, want: bool = True):
+        """轮询中心缓存帧直到锚点命中/消失（或超时/停止请求）。
+
+        want=True：命中返回 (cxn, cyn, bw, bh)（中心归一 + 框宽高），否则 None。
+        want=False：消失返回 True，否则 False。命中判定走 match_template_cs 单模板多尺度。
+        """
+        tpl, rect, th, cs = specs[name]
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline and self.ctx.lifecycle.running:
+            frame = self.ctx.capture.screenshot()
+            found = False
+            hit = None
+            if frame is not None:
+                H, W = frame.shape[:2]
+                px = self._px_roi(rect, W, H)
+                if px is not None:
+                    box, _score = match_template_cs(frame, tpl, colorspace=cs,
+                                                    threshold=th, roi=px)
+                    if box is not None:
+                        found = True
+                        _cxn, _cyn, _x2n, bw, bh = self._box_to_norm(box, W, H)
+                        hit = (_cxn, _cyn, bw, bh)
+            if want and found:
+                return hit
+            if not want and not found:
+                return True
+            self.ctx.lifecycle.sleep(self.EGG_CHAIN_POLL_S)
+        return None if want else False
+
+    def _egg_chain_read_amount(self, specs: dict[str, tuple], name: str,
+                               frame) -> int:
+        """medal 类锚点：命中图标框 → 「奖励卡通用几何」推导数字带 → OCR 读 ×N。
+
+        与数蛋同一机制（eggs.derive_count_rect：红框外扩找卡描边→框内比例取带，
+        真值校准 tools/experiments/egg-claim-coin-read）。medal 模板互斥实测
+        margin≥0.68，不叠色相断言（角标区脆）。无命中/无卡框/无数字 → 0。
+        """
+        tpl, rect, th, cs = specs[name]
+        if frame is None or self._ocr is None:
+            return 0
+        H, W = frame.shape[:2]
+        px = self._px_roi(rect, W, H)
+        if px is None:
+            return 0
+        box, _score = match_template_cs(frame, tpl, colorspace=cs, threshold=th, roi=px)
+        if box is None:
+            return 0
+        cnt_rect = derive_count_rect(frame, box)
+        if cnt_rect is None:
+            return 0
+        try:
+            info = self._ocr.recognize_single(frame, cnt_rect) or {}
+        except Exception:
+            return 0
+        n = parse_count_text(str(info.get("text") or ""))
+        return n if n and n > 0 else 0
+
+    def _egg_claim_steps(self, specs: dict[str, tuple] | None) -> None:
+        """链主体（素材缺失=直接离场）。每步只记日志，超时/失败走离场路径。"""
+        log = logger.log
+        if specs is None:
+            log("[彩蛋收尾] 锚点素材缺失，跳过领取，直接离场", "WARNING")
+            self._egg_exit_to_lobby(None)
+            return
+        # 1) 鉴宝大厅 → 活动页：点左上「D」返回键，等「获取银币」出现确认到位
+        back = self._egg_chain_wait(specs, "hall_back_btn", 6.0)
+        if back is None or not self._egg_chain_click(*back):
+            log("[彩蛋收尾] 未见/未点中返回键，跳过领取", "WARNING")
+            self._egg_exit_to_lobby(specs)
+            return
+        silver = self._egg_chain_wait(specs, "act_get_silver_btn", 6.0)
+        if silver is None:
+            log("[彩蛋收尾] 点返回后未到活动页，跳过领取", "WARNING")
+            self._egg_exit_to_lobby(specs)
+            return
+        # 2) 活动页 → 打开任务抽屉：点「获取银币」，等 tab 栏出现
+        if not self._egg_chain_click(*silver):
+            log("[彩蛋收尾] 「获取银币」点击未到位，跳过领取", "WARNING")
+            self._egg_exit_to_lobby(specs)
+            return
+        if self._egg_chain_wait(specs, "egg_panel_tabbar", 6.0) is None:
+            log("[彩蛋收尾] 抽屉未弹出，跳过领取", "WARNING")
+            self._egg_exit_to_lobby(specs)
+            return
+        # 3) 领取循环：tab1 红钮 →（无则）切「彩蛋任务」tab 红钮；每次弹一个聚合奖励弹窗
+        total = {"red": 0, "yellow": 0, "blue": 0}
+        total_coin = 0
+        total_score = 0
+        rounds = 0
+        tab3_tried = False
+        while rounds < self.EGG_CHAIN_MAX_CLAIM_ROUNDS and self.ctx.lifecycle.running:
+            red = self._egg_chain_wait(specs, "egg_claim_red_btn", 2.0)
+            if red is None and not tab3_tried:
+                tab3_tried = True
+                tab3 = self._egg_chain_wait(specs, "egg_task_tab3", 1.5)
+                if tab3 is not None and self._egg_chain_click(*tab3):
+                    red = self._egg_chain_wait(specs, "egg_claim_red_btn", 2.5)
+            if red is None:
+                break
+            if not self._egg_chain_click(*red):
+                continue
+            title = self._egg_chain_wait(specs, "egg_claim_title", 5.0)
+            rounds += 1
+            if title is None:
+                continue
+            frame = self.ctx.capture.screenshot()
+            coin_amt = self._egg_chain_read_amount(specs, "claim_coin_medal", frame)
+            score_amt = self._egg_chain_read_amount(specs, "claim_score_medal", frame)
+            if frame is not None and self._egg_recognizer is not None:
+                res = self._egg_recognizer.recognize(frame)
+                counts = (res or {}).get("counts")
+                if counts:
+                    self._store.record_egg_claim(counts, coin=coin_amt, score=score_amt)
+                    for k in total:
+                        total[k] += int(counts.get(k) or 0)
+                    total_coin += coin_amt
+                    total_score += score_amt
+                    log(f"[彩蛋收尾] 第 {rounds} 轮领取：红{counts.get('red', 0)} "
+                        f"黄{counts.get('yellow', 0)} 蓝{counts.get('blue', 0)} "
+                        f"银币+{coin_amt:,} 积分+{score_amt:,}", "INFO")
+                else:
+                    log(f"[彩蛋收尾] 第 {rounds} 轮弹窗未读到蛋数"
+                        f"（银币+{coin_amt:,} 积分+{score_amt:,} 照常入账）", "DEBUG")
+                    self._store.record_egg_claim({}, coin=coin_amt, score=score_amt)
+                    total_coin += coin_amt
+                    total_score += score_amt
+            self._egg_chain_click(*self.EGG_CHAIN_DISMISS_NORM)
+            self._egg_chain_wait(specs, "egg_claim_title", 4.0, want=False)
+        if any(total.values()) or total_coin or total_score:
+            log(f"[彩蛋收尾] 本次领取合计：红{total['red']} 黄{total['yellow']} "
+                f"蓝{total['blue']} 银币+{total_coin:,} 积分+{total_score:,}", "INFO")
+        else:
+            log("[彩蛋收尾] 无可领取彩蛋，看一眼即结束", "INFO")
+        # 4) 关抽屉：点左侧空白，等 tab 栏消失
+        self._egg_chain_click(*self.EGG_CHAIN_BLANK_NORM)
+        self._egg_chain_wait(specs, "egg_panel_tabbar", 4.0, want=False)
+        # 5) 离场 → 停止
+        self._egg_exit_to_lobby(specs)
+
+    def _egg_exit_to_lobby(self, specs: dict[str, tuple] | None) -> None:
+        """点房子直回游戏大厅（活动页左上恒有），等大厅卡片出现后请求停止。"""
+        if specs is not None:
+            home = self._egg_chain_wait(specs, "hall_home_btn", 6.0)
+            if home is not None and self._egg_chain_click(*home):
+                self._egg_chain_wait(specs, "hall_peak_appraise_card", 8.0)
+        logger.log("[彩蛋收尾] 收尾完成，请求停止模块", "WARNING")
+        self.ctx.lifecycle.request_stop()
+
+    def _run_egg_claim_chain(self) -> None:
+        """到限收尾链入口（Tasker 线程内阻塞跑完；预算递减在 wait 的超时里兜底）。
+
+        链内任何异常都不许打断停止——「有就领，没有就结束」，最坏路径也只是没领成。
+        """
+        logger.log(
+            f"[彩蛋收尾] 已到每日循环上限，开始彩蛋任务领取链"
+            f"（总预算 {self.EGG_CHAIN_TOTAL_BUDGET_S:.0f}s，跑完自动停止）",
+            "WARNING",
+        )
+        try:
+            self._egg_claim_steps(self._egg_chain_load_specs())
+        except Exception as e:
+            logger.log(f"[彩蛋收尾] 链异常（不影响停止）：{e}", "WARNING")
+            self.ctx.lifecycle.request_stop()
+
+    # ==================================================================
     #  内部：每帧 tick
     # ==================================================================
 
@@ -3661,23 +3894,26 @@ class TreasureModule(ActivityModule):
                 active_used=getattr(detection, "active_used", ()),
             ))
 
-        # --------- 0.05 每日循环上限：连续 3 帧确认后自动停止 ---------
-        # 到限后模块在鉴宝大厅空转（不点开始匹配）无意义：截图/OCR/存盘/心跳白耗资源。
-        # 连续 DAILY_LIMIT_STOP_STABLE_FRAMES 帧在鉴宝大厅且判定到限 → request_stop 收尾
-        # （主循环 finally 会停 OCR worker + 输出会话总结）。
-        # 3 帧防抖：单帧 OCR 误读「日已参与 X/50」或阶段抖动不触发提前停机；
-        # 未到限 / 离开大厅 / 跨日凌晨 5 点（计数清零后判定为 False）→ 计数清零重计。
+        # --------- 0.05 每日循环上限：连续 3 帧确认后进入「彩蛋任务」收尾链（§10）---------
+        # 到限后在鉴宝大厅空转（不点开始匹配）无意义：先跑一次彩蛋领取链（有就领，
+        # 没有就结束；链自带总预算与异常兜底），链末尾请求停止。链只在鉴宝大厅阶段进
+        # （对局中到限等回大厅后再进，防打断结算弹窗链的图点击——Tasker 被链独占会
+        # 停摆图）。未到限/跨日凌晨 5 点（计数清零后判定为 False）→ 计数清零重计。
         if self._daily_loop_limit_reached():
             self._daily_limit_streak += 1
-            if self._daily_limit_streak == self.DAILY_LIMIT_STOP_STABLE_FRAMES:
+            if (self._daily_limit_streak >= self.DAILY_LIMIT_STOP_STABLE_FRAMES
+                    and self._current_stage == "鉴宝大厅(选择场次)"
+                    and not self._egg_chain_started):
+                self._egg_chain_started = True
                 logger.log(
                     f"[鉴宝循环] 连续 {self.DAILY_LIMIT_STOP_STABLE_FRAMES} 帧确认已到每日循环上限"
                     f"（状态机 {self._session_daily_done_count} 场 / OCR"
                     f" {self._session_daily_ocr_count if self._session_daily_ocr_count is not None else '--'}），"
-                    f"停止开新场并自动停止模块",
+                    "停止开新场，进入彩蛋任务收尾",
                     "WARNING",
                 )
-                self.ctx.lifecycle.request_stop()
+                self._run_egg_claim_chain()
+                return
         else:
             self._daily_limit_streak = 0
 

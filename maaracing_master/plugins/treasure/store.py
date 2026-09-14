@@ -82,7 +82,9 @@ class TreasureStore:
                     highest_score INTEGER NOT NULL DEFAULT 0,
                     egg_red INTEGER NOT NULL DEFAULT 0,
                     egg_yellow INTEGER NOT NULL DEFAULT 0,
-                    egg_blue INTEGER NOT NULL DEFAULT 0
+                    egg_blue INTEGER NOT NULL DEFAULT 0,
+                    egg_coin INTEGER NOT NULL DEFAULT 0,
+                    egg_score INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
@@ -93,6 +95,14 @@ class TreasureStore:
                     conn.execute("ALTER TABLE games ADD COLUMN strategy_mode TEXT")
             except Exception as e:
                 logger.log(f"[鉴宝落盘] games 表迁移失败（strategy_mode 列缺失）: {e}", "WARNING")
+            # 迁移：旧库 daily_summary 补「彩蛋任务领取」两列（银币/积分，stage-from-node-plan §10）
+            try:
+                scols = [r[1] for r in conn.execute("PRAGMA table_info(daily_summary)").fetchall()]
+                for col in ("egg_coin", "egg_score"):
+                    if col not in scols:
+                        conn.execute(f"ALTER TABLE daily_summary ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            except Exception as e:
+                logger.log(f"[鉴宝落盘] daily_summary 迁移失败（egg_coin/egg_score 列）: {e}", "WARNING")
             self._local.conn = conn
             return conn
         except Exception as e:
@@ -154,15 +164,14 @@ class TreasureStore:
             self._m._refresh_daily_bucket()  # 先对齐日界（跨凌晨5点重置计数），再算本场序号
             bucket = self.current_bucket_str()
             game_seq = self._m._session_daily_done_count + 1  # 落盘后 done+1，这里 +1 即本场号
-            ec = self._m._egg_counts or {}
-            # 本场出价策略模式：profit=赚钱 / egg=赚蛋（以策略实例实际 mode 为准，config 注入可能覆盖默认）
-            strategy_mode = getattr(self._m._strategy, "mode", None) or self._m._treasure_mode
+            # 蛋奖励已改为「彩蛋任务页领取」（见 stage-from-node-plan §10），games 蛋列退役：
+            # 不再写（列保留、默认 0，历史行不动）；蛋数只在 daily_summary 记「今日领取数」。
             conn.execute(
                 """INSERT INTO games (ts, bucket, game_seq, auction_result,
                    settle_final_price, settle_total_price, settle_profit, settle_my_income,
-                   daily_high_score, egg_red, egg_yellow, egg_blue,
+                   daily_high_score,
                    h_prices, our_bids, player_bids, my_rank, balance, strategy_mode)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     bucket, game_seq,
@@ -172,49 +181,43 @@ class TreasureStore:
                     self._m._settle_profit,                       # 利润（中标者盈亏，可负）
                     self._m._settle_my_income,                    # 本场收入（分红）
                     self._m._daily_high_score,                    # 今日最高积分
-                    int(ec.get("red") or 0), int(ec.get("yellow") or 0), int(ec.get("blue") or 0),
                     json.dumps(self._m._h_prices, ensure_ascii=False),
                     json.dumps(self._m._our_bids, ensure_ascii=False),
                     json.dumps({k: list(v) for k, v in self._m._player_bids.items()}, ensure_ascii=False),
                     self._m._my_rank, self._m._my_balance,
-                    strategy_mode,
+                    "profit",               # 赚蛋模式已删，恒为赚钱（stage-from-node-plan §9）
                 ),
             )
-            # 当日汇总 UPSERT：读旧行累加
+            # 当日汇总 UPSERT：读旧行累加（蛋列不在此累加——改由 record_egg_claim 记领取数）
             row = conn.execute(
-                "SELECT games, win, fail, profit_sum, income_sum, highest_score,"
-                " egg_red, egg_yellow, egg_blue FROM daily_summary WHERE bucket = ?",
+                "SELECT games, win, fail, profit_sum, income_sum, highest_score"
+                " FROM daily_summary WHERE bucket = ?",
                 (bucket,),
             ).fetchone()
-            g, w, fl, ps, inc, hs, er, ey, eb = row if row else (0, 0, 0, 0, 0, 0, 0, 0, 0)
+            g, w, fl, ps, inc, hs = row if row else (0, 0, 0, 0, 0, 0)
             p = int(self._m._settle_profit) if isinstance(self._m._settle_profit, (int, float)) else 0
             inc_ = int(self._m._settle_my_income) if isinstance(self._m._settle_my_income, (int, float)) else 0
             hs_ = int(self._m._daily_high_score) if isinstance(self._m._daily_high_score, (int, float)) else 0
             conn.execute(
                 """INSERT INTO daily_summary (bucket, games, win, fail, profit_sum,
-                   income_sum, highest_score, egg_red, egg_yellow, egg_blue)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   income_sum, highest_score)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(bucket) DO UPDATE SET
                      games = excluded.games,
                      win = excluded.win,
                      fail = excluded.fail,
                      profit_sum = excluded.profit_sum,
                      income_sum = excluded.income_sum,
-                     highest_score = MAX(highest_score, excluded.highest_score),
-                     egg_red = excluded.egg_red,
-                     egg_yellow = excluded.egg_yellow,
-                     egg_blue = excluded.egg_blue""",
+                     highest_score = MAX(highest_score, excluded.highest_score)""",
                 (bucket, g + 1, w + (1 if self._m._auction_result == "win" else 0),
                  fl + (1 if self._m._auction_result == "fail" else 0),
-                 ps + p, inc + inc_, max(hs, hs_),
-                 er + int(ec.get("red") or 0), ey + int(ec.get("yellow") or 0), eb + int(ec.get("blue") or 0)),
+                 ps + p, inc + inc_, max(hs, hs_)),
             )
             conn.commit()
             logger.log(
-                f"[鉴宝落盘] 已记录第 {game_seq} 场: 策略={strategy_mode} 结果={self._m._auction_result or '-'} "
+                f"[鉴宝落盘] 已记录第 {game_seq} 场: 策略=profit 结果={self._m._auction_result or '-'} "
                 f"成交={self._m._settle_final_price or 0:,} 利润={self._m._settle_profit or 0:,} "
-                f"收入={self._m._settle_my_income or 0:,} 彩蛋="
-                f"红{int(ec.get('red') or 0)}黄{int(ec.get('yellow') or 0)}蓝{int(ec.get('blue') or 0)}",
+                f"收入={self._m._settle_my_income or 0:,}",
                 "INFO",
             )
         except Exception as e:
@@ -224,6 +227,58 @@ class TreasureStore:
             except Exception:
                 pass
             logger.log(f"[鉴宝落盘] 写入失败: {e}", "WARNING")
+
+    # ---------- 彩蛋领取落盘 ----------
+
+    def record_egg_claim(self, counts: dict, coin: int = 0, score: int = 0) -> None:
+        """「彩蛋任务」收尾链读到弹窗奖励 → daily_summary 当日桶累加（今日领取数）。
+
+        counts=蛋数 {red,yellow,blue}；coin/score=同弹窗读到的鉴宝银币/鉴宝积分金额。
+        调用时机：链内每轮弹窗读数成功一次。games 蛋列已退役（§10.3），领取数只活在本表。
+        与其他落盘同样：失败仅告警不阻断自动化。
+        """
+        conn = self._conn
+        if conn is None:
+            return
+        try:
+            self._m._refresh_daily_bucket()  # 先对齐日界，跨凌晨 5 点写进新桶
+            bucket = self.current_bucket_str()
+            red = int(counts.get("red") or 0)
+            yellow = int(counts.get("yellow") or 0)
+            blue = int(counts.get("blue") or 0)
+            coin = int(coin or 0)
+            score = int(score or 0)
+            if red <= 0 and yellow <= 0 and blue <= 0 and coin <= 0 and score <= 0:
+                return
+            if min(red, yellow, blue, coin, score) < 0:
+                logger.log(f"[鉴宝落盘] 领取数含负值，拒写: {counts} coin={coin} score={score}",
+                           "WARNING")
+                return
+            conn.execute(
+                """INSERT INTO daily_summary
+                   (bucket, egg_red, egg_yellow, egg_blue, egg_coin, egg_score)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(bucket) DO UPDATE SET
+                     egg_red = egg_red + excluded.egg_red,
+                     egg_yellow = egg_yellow + excluded.egg_yellow,
+                     egg_blue = egg_blue + excluded.egg_blue,
+                     egg_coin = egg_coin + excluded.egg_coin,
+                     egg_score = egg_score + excluded.egg_score""",
+                (bucket, red, yellow, blue, coin, score),
+            )
+            conn.commit()
+            logger.log(
+                f"[鉴宝落盘] 领取数已累加({bucket}): 红+{red} 黄+{yellow} 蓝+{blue} "
+                f"银币+{coin:,} 积分+{score:,}",
+                "INFO",
+            )
+        except Exception as e:
+            try:
+                if conn is not None:
+                    conn.rollback()
+            except Exception:
+                pass
+            logger.log(f"[鉴宝落盘] 领取蛋数写入失败: {e}", "WARNING")
 
     # ---------- 会话总结 ----------
 
@@ -245,11 +300,6 @@ class TreasureStore:
             lines.append(
                 f"  本场结算     : 收入 {m._settle_my_income or 0:,} / 利润 {m._settle_profit or 0:,}"
                 f"（成交价 {m._settle_final_price or 0:,} / 估值 {m._settle_total_price or 0:,}）"
-            )
-        if m._egg_counts is not None:
-            lines.append(
-                f"  彩蛋数量     : 红{m._egg_counts.get('red', 0)} "
-                f"黄{m._egg_counts.get('yellow', 0)} 蓝{m._egg_counts.get('blue', 0)}"
             )
         if m._daily_high_score is not None:
             lines.append(f"  今日最高积分 : {m._daily_high_score:,}")

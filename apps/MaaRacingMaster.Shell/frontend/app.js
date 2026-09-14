@@ -777,7 +777,6 @@
   // 规则：仅 treasure 显示；输入/下拉改了就立即写 sidecar 的缓存 + 热更新；
   // 之后点「开始」时 sidecar 会把缓存注入到新实例。未跑时热更新落到离线索实例不生效但缓存有效。
   let _optListenersBound = false;
-  const VALID_STRATEGY_MODES = new Set(['profit', 'egg']);
   const VALID_SESSIONS = new Set(['intern', 'expert', 'master']);
   const SESSION_LABELS = { intern: '实习场', expert: '专家场', master: '大师场' };
   function getTargetSessionFromUI() {
@@ -803,25 +802,13 @@
     host.style.opacity = disabled ? '0.6' : '1';
     host.style.pointerEvents = disabled ? 'none' : 'auto';
   }
-  // -------- 策略模式小字提示（赚钱=稳赚不亏 / 赚蛋=免责声明）--------
-  const STRATEGY_HINTS = {
-    profit: '（赚钱=吃分红/捡漏，稳赚不亏）',
-    egg: '（程序不识别有没有蛋，只尽可能拍下。建议全程观看，避免倾家荡产）',
-  };
-  function updateStrategyHint(mode) {
-    const hintEl = $('opt-bid-strategy-hint');
-    if (!hintEl) return;
-    hintEl.textContent = STRATEGY_HINTS[mode] || STRATEGY_HINTS.profit;
-  }
-
   function bindModuleOptionsUI() {
     if (_optListenersBound) return;
     _optListenersBound = true;
     const loops = $('opt-max-loops');
-    const strat = $('opt-bid-strategy');
     const riskCap = $('opt-risk-cap');
     const sessionHost = $('opt-target-session');
-    if (!loops || !strat) return;
+    if (!loops) return;
     // 数字输入：回车/失焦才发，避免每打一个数字 RPC 一次
     loops.addEventListener('change', onModuleOptionsInputChange);
     loops.addEventListener('keydown', (e) => { if (e.key === 'Enter') onModuleOptionsInputChange.call(loops, e); });
@@ -830,11 +817,6 @@
       riskCap.addEventListener('change', onModuleOptionsInputChange);
       riskCap.addEventListener('keydown', (e) => { if (e.key === 'Enter') onModuleOptionsInputChange.call(riskCap, e); });
     }
-    // 下拉：选中即发
-    strat.addEventListener('change', () => {
-      updateStrategyHint(strat.value);
-      onModuleOptionsInputChange();
-    });
     // 分段控件（目标场次）：点即切换并发送
     if (sessionHost) {
       sessionHost.querySelectorAll('.seg-btn').forEach((b) => {
@@ -851,7 +833,6 @@
     const host = $('module-options');
     if (!host) return;
     const loopsEl = $('opt-max-loops');
-    const stratEl = $('opt-bid-strategy');
     const riskCapEl = $('opt-risk-cap');
     const statusEl = $('module-options-status');
     // 非 treasure：隐藏并返回
@@ -868,13 +849,6 @@
       if (loopsEl) {
         const v = typeof cfg.max_daily_loops === 'number' ? cfg.max_daily_loops : 50;
         loopsEl.value = String(v);
-      }
-      // --- 填「策略模式」：profit / egg（后端权威值） ---
-      if (stratEl) {
-        const mode = (cfg && cfg.treasure_mode && VALID_STRATEGY_MODES.has(cfg.treasure_mode))
-          ? cfg.treasure_mode : 'profit';
-        stratEl.value = mode;
-        updateStrategyHint(mode);
       }
       // --- 填「兜底上限」：每局最多亏多少 ---
       if (riskCapEl) {
@@ -937,11 +911,7 @@
     if (Number.isNaN(riskCapVal) || riskCapVal < 0) riskCapVal = 0;
     if (riskCapEl) riskCapEl.value = String(riskCapVal);
 
-    // ③ 策略模式（profit/egg）
-    const stratEl = $('opt-bid-strategy');
-    const modeVal = (stratEl && VALID_STRATEGY_MODES.has(stratEl.value)) ? stratEl.value : 'profit';
-
-    // ④ 目标场次（校验 intern/expert/master）
+    // ③ 目标场次（校验 intern/expert/master）
     const sessionVal = getTargetSessionFromUI();
 
     _optionsSaving = true;
@@ -953,7 +923,6 @@
           max_daily_loops: loopsVal,
           target_session: sessionVal,
           treasure_risk_cap: riskCapVal,
-          treasure_mode: modeVal,
         },
       });
       // 写回成功：回显最终值
@@ -961,18 +930,14 @@
       const savedSession = (resp && resp.target_session && VALID_SESSIONS.has(resp.target_session))
         ? resp.target_session : sessionVal;
       setTargetSessionOnUI(savedSession);
-      const savedMode = (resp && resp.treasure_mode && VALID_STRATEGY_MODES.has(resp.treasure_mode))
-        ? resp.treasure_mode : modeVal;
-      if (stratEl) stratEl.value = savedMode;
       const savedRisk = (resp && typeof resp.treasure_risk_cap === 'number') ? resp.treasure_risk_cap : riskCapVal;
       if (riskCapEl) riskCapEl.value = String(savedRisk);
-      const modeLabel = savedMode === 'egg' ? '赚蛋（搏拍中彩蛋）' : '赚钱（吃分红/捡漏）';
       const sessionLabel = SESSION_LABELS[savedSession] || '大师场';
       const loopsTip = savedLoops === 0
         ? '不指定场数，按游戏默认 50 场'
         : '今日刷到第 ' + savedLoops + ' 场为止';
       setOptionsStatus(
-        `已保存：策略「${modeLabel}」兜底 ${savedRisk.toLocaleString()}，目标场次「${sessionLabel}」，${loopsTip}（下次「开始」时生效）`,
+        `已保存：兜底 ${savedRisk.toLocaleString()}，目标场次「${sessionLabel}」，${loopsTip}（下次「开始」时生效）`,
         'ok'
       );
     } catch (e) {
@@ -1043,13 +1008,11 @@
     }
   }
 
-  // 运行中锁定可选项（策略模式 / 兜底上限 运行中锁定）
+  // 运行中锁定可选项（兜底上限 运行中锁定）
   function updateModuleOptionsDisabled(running) {
     const loopsEl = $('opt-max-loops');
-    const stratEl = $('opt-bid-strategy');
     const riskCapEl = $('opt-risk-cap');
     if (loopsEl) loopsEl.disabled = running;
-    if (stratEl) stratEl.disabled = running;
     if (riskCapEl) riskCapEl.disabled = running;
     setSessionSegmentedDisabled(running);
   }
@@ -1343,35 +1306,32 @@
           <div class="card-body">
             <div class="board-grid">
               <div class="board-item">
+                <span class="board-value" id="${mid}-board-coinnet">--</span>
+                <span class="board-label">银币盈亏</span>
+              </div>
+              <div class="board-item">
+                <span class="board-value" id="${mid}-board-egg-total">0</span>
+                <span class="board-label">领取彩蛋</span>
+              </div>
+              <div class="board-item">
+                <span class="board-value" id="${mid}-board-score">--</span>
+                <span class="board-label">今日积分</span>
+              </div>
+              <div class="board-item">
                 <span class="board-value" id="${mid}-board-games">--</span>
-                <span class="board-label">场次</span>
-              </div>
-              <div class="board-item">
-                <span class="board-value board-value--win" id="${mid}-board-win">--</span>
-                <span class="board-label">胜</span>
-              </div>
-              <div class="board-item">
-                <span class="board-value board-value--fail" id="${mid}-board-fail">--</span>
-                <span class="board-label">负</span>
-              </div>
-              <div class="board-item">
-                <span class="board-value" id="${mid}-board-profit">--</span>
-                <span class="board-label">我方利润</span>
-              </div>
-              <div class="board-item">
-                <span class="board-value" id="${mid}-board-income">--</span>
-                <span class="board-label">收入</span>
-              </div>
-              <div class="board-item">
-                <span class="board-value" id="${mid}-board-high">--</span>
-                <span class="board-label">最高单场</span>
+                <span class="board-label" id="${mid}-board-games-wl">场次</span>
               </div>
             </div>
             <div class="board-eggs">
-              <span class="board-egg-total">今日蛋 <b id="${mid}-board-egg-total">0</b></span>
               <span class="board-egg board-egg--red"><span class="board-egg-dot"></span><b id="${mid}-board-egg-red">0</b></span>
               <span class="board-egg board-egg--yellow"><span class="board-egg-dot"></span><b id="${mid}-board-egg-yellow">0</b></span>
               <span class="board-egg board-egg--blue"><span class="board-egg-dot"></span><b id="${mid}-board-egg-blue">0</b></span>
+            </div>
+            <div class="board-sub">
+              <span>竞拍净利 <b id="${mid}-board-profit">--</b></span>
+              <span>领银币 <b id="${mid}-board-egg-coin">0</b></span>
+              <span>领积分 <b id="${mid}-board-egg-score">0</b></span>
+              <span>最高单场 <b id="${mid}-board-high">--</b></span>
             </div>
             <div class="board-list" id="${mid}-board-list"></div>
           </div>
@@ -1424,24 +1384,36 @@
     if (date) date.textContent = (d.bucket || '') + ' 05:00 起';
     const s = d.summary || {};
     const setNum = (el, v, cls) => { if (!el) return; el.textContent = fmtNum(v); if (cls) el.className = cls; };
-    setNum(p('games'), s.games, 'board-value');
-    setNum(p('win'), s.win, 'board-value board-value--win');
-    setNum(p('fail'), s.fail, 'board-value board-value--fail');
-    // 我方利润：仅我方拍中（win）场的利润累加，不混入别人拍中者的盈亏
+    const num = (v) => Number(v) || 0;
+    // T0 银币盈亏 = 竞拍净利（仅我方拍中场利润和）+ 彩蛋任务领取银币；两数分列存储、此处合并
     const myProfit = (d.games || []).reduce(
       (acc, g2) => acc + (g2.auction_result === 'win' ? (Number(g2.profit) || 0) : 0), 0);
-    const pr = p('profit');
-    if (pr) {
-      pr.textContent = fmtNum(myProfit);
-      pr.className = 'board-value' + (myProfit > 0 ? ' board-value--pos' : myProfit < 0 ? ' board-value--neg' : '');
+    const eggCoin = num(s.egg_coin);
+    const eggScore = num(s.egg_score);
+    const high = num(s.highest_score);
+    const coinNet = myProfit + eggCoin;
+    const cn = p('coinnet');
+    if (cn) {
+      cn.textContent = d.summary ? fmtNum(coinNet) : '--';
+      cn.className = 'board-value' + (coinNet > 0 ? ' board-value--pos' : coinNet < 0 ? ' board-value--neg' : '');
     }
-    setNum(p('income'), s.income_sum, 'board-value board-value--pos');
-    setNum(p('high'), s.highest_score, 'board-value board-value--high');
-    const eggTotal = (Number(s.egg_red) || 0) + (Number(s.egg_yellow) || 0) + (Number(s.egg_blue) || 0);
-    setNum(p('egg-total'), eggTotal, null);
+    // T0 领取彩蛋（红+黄+蓝）；分项沿用圆点行
+    setNum(p('egg-total'), num(s.egg_red) + num(s.egg_yellow) + num(s.egg_blue), null);
     setNum(p('egg-red'), s.egg_red, null);
     setNum(p('egg-yellow'), s.egg_yellow, null);
     setNum(p('egg-blue'), s.egg_blue, null);
+    // T1 今日积分 = 最高单场（现有口径）+ 领取积分
+    const scEl = p('score');
+    if (scEl) scEl.textContent = d.summary ? fmtNum(high + eggScore) : '--';
+    // T2 场次：胜负合并进标签（次要信息，不占格）
+    setNum(p('games'), s.games, 'board-value');
+    const wl = p('games-wl');
+    if (wl && d.summary) wl.textContent = '场次 · 胜' + num(s.win) + '/负' + num(s.fail);
+    // 明细行：合并数的构成项（竞拍净利 / 领银币 / 领积分 / 最高单场）
+    setNum(p('profit'), myProfit, null);
+    setNum(p('egg-coin'), eggCoin, null);
+    setNum(p('egg-score'), eggScore, null);
+    setNum(p('high'), high, null);
     const list = p('list');
     if (!list) return;
     const arr = d.games || [];
@@ -1455,17 +1427,11 @@
         : g2.auction_result === 'fail'
           ? '<span class="board-res board-res--fail">未中</span>'
           : '<span class="board-res">--</span>';
-      const mode = g2.strategy_mode === 'egg'
-        ? '<span class="board-mode board-mode--egg">赚蛋</span>'
-        : g2.strategy_mode === 'profit'
-          ? '<span class="board-mode">赚钱</span>' : '';
-      const eggs = (g2.egg_red || 0) + (g2.egg_yellow || 0) + (g2.egg_blue || 0);
       // 「利」仅在我方拍中（win）时显示（= 我方利润）；fail 场利润是别人的，不展示
       const profitCell = g2.auction_result === 'win'
         ? '<span class="board-row-val">利 ' + fmtNum(g2.profit) + '</span>' : '';
       return '<div class="board-row">' +
-        '<span class="board-row-seq">#' + g2.game_seq + '</span>' + res + mode +
-        '<span class="board-row-egg">' + (eggs ? '蛋×' + eggs : '') + '</span>' +
+        '<span class="board-row-seq">#' + g2.game_seq + '</span>' + res +
         '<span class="board-row-val">收 ' + fmtNum(g2.income) + '</span>' + profitCell +
         '</div>';
     }).join('');
