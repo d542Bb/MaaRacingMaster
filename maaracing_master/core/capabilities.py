@@ -194,6 +194,19 @@ class GamepadAdapter:
     def acquire(self) -> AbstractContextManager[Gamepad]:
         return GamepadLease(self)
 
+    def persistent_adapter(self) -> Gamepad:
+        """取一个**长期持有**的手柄适配器（不随上下文退出释放）。
+
+        `acquire()` 是租约语义（`__exit__` 归零归还：松按钮 + 摇杆归中 + reset），
+        适合"借一次就还"的调用方；手柄导航器则要跨整个会话持有同一设备（导航线程
+        常驻、每步推摇杆），租约语义不适用。本方法是模块侧获取导航设备的唯一公开
+        入口——此前鉴宝模块直接穿 `ctx.gamepad._app._get_gpad()` 掏两层私有。
+
+        调用方自担生命周期：设备重连/重建走 `reset_device()`（有活跃租约保护）；
+        本方法不计入 `_active`——导航器不是租约，而是常驻持有者。
+        """
+        return VGamepadAdapter(self._app._get_gpad())
+
     def _enter(self) -> Gamepad:
         self._active += 1
         return VGamepadAdapter(self._app._get_gpad())

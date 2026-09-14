@@ -205,6 +205,17 @@ class Clicker:
         if self._gamepad is not None:
             self._gamepad.shutdown()
 
+    def swap_gamepad(self, new_gpad) -> None:
+        """换绑底层手柄（设备重建后调用）。
+
+        内部转调导航器的 swap_gpad——宿主不再 getattr 掏 `_gamepad` 私有成员（P5）。
+        导航任务运行中换绑会抛 RuntimeError（导航器契约：worker 必须已完全退出
+        设备访问），由调用方按「时机不对、下帧重试」处理。
+        """
+        if self._gamepad is None:
+            raise RuntimeError("swap_gamepad: 手柄导航器未绑定")
+        self._gamepad.swap_gpad(new_gpad)
+
     # 光标遮挡防线（2026-09-11 修订）：光标是已知遮挡物，按通路分治——
     # 图侧模板识别 = MaaRM_Template 的 mask_cursor 遮挡拒绝（gamepad_cursor_pos
     # 提供真值）；OCR 读数与决策段内联匹配 = 反应式避让 auto_shoo（P4c 曾以
@@ -342,6 +353,29 @@ class Clicker:
         if self._gamepad is None:
             return None
         return getattr(self._gamepad, "last_pos", None)
+
+    def nav_progress(self) -> dict | None:
+        """手柄导航最近进度快照（PEEP 渲染用）；real 模式/未绑定 → None。
+
+        导航器是私有成员，宿主不该 getattr 去掏（Clicker 是这份数据的唯一主人）——
+        与 gamepad_cursor_pos 同一取向：读侧一律走本类公开接口。
+        """
+        if self._gamepad is None:
+            return None
+        return self._gamepad.nav_progress()
+
+    def cursor_candidates(self, *, max_age_s: float = 2.0) -> dict | None:
+        """手柄光标识别候选快照（PEEP 诊断用）；非手柄/未绑定/快照陈旧 → None。
+
+        max_age_s：陈旧阈值——导航已久未跑时不再显示。该判定原先散在宿主侧
+        （宿主自己读 last_cands_ts 比时间），现随数据一起归位到数据的主人。
+        """
+        gp = self._gamepad
+        if gp is None or not getattr(gp, "last_cands", None):
+            return None
+        if time.monotonic() - getattr(gp, "last_cands_ts", 0.0) > max_age_s:
+            return None
+        return {"list": list(gp.last_cands), "sel": gp.last_cand_sel}
 
     def press_button(self, button, duration: float = 0.15) -> bool:
         """经已绑定的手柄导航器按一个按钮（按下→update→按住→松开→update）。
