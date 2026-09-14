@@ -354,6 +354,17 @@ class Clicker:
             return None
         return getattr(self._gamepad, "last_pos", None)
 
+    def gamepad_cursor_age_s(self) -> float:
+        """最近一次识别到光标距今的秒数（从未识别到 → inf）。
+
+        PEEP 诊断层用：导航结束后仍要显示「上次光标在哪」，同时必须能说出
+        这个位置有多旧，否则用户无法区分实时位与历史位。
+        """
+        if self._gamepad is None:
+            return float("inf")
+        ts = getattr(self._gamepad, "last_pos_ts", 0.0)
+        return (time.monotonic() - ts) if ts else float("inf")
+
     def nav_progress(self) -> dict | None:
         """手柄导航最近进度快照（PEEP 渲染用）；real 模式/未绑定 → None。
 
@@ -365,17 +376,19 @@ class Clicker:
         return self._gamepad.nav_progress()
 
     def cursor_candidates(self, *, max_age_s: float = 2.0) -> dict | None:
-        """手柄光标识别候选快照（PEEP 诊断用）；非手柄/未绑定/快照陈旧 → None。
+        """手柄光标识别候选快照（PEEP 诊断用）；非手柄/未绑定/从未识别 → None。
 
-        max_age_s：陈旧阈值——导航已久未跑时不再显示。该判定原先散在宿主侧
-        （宿主自己读 last_cands_ts 比时间），现随数据一起归位到数据的主人。
+        max_age_s：新鲜度阈值。**超龄不再返回 None**——候选数据照常返回，只附
+        `stale`/`age_s` 标记，由渲染层淡化显示。旧口径（超龄即 None）让叠加层在
+        两次点击之间的大段空档里没有任何内容可看，恰是排查「光标卡住」最需要的
+        时段（真机 2026-09-15：数字键链路空转 24s，预览全程无候选可看）。
         """
         gp = self._gamepad
         if gp is None or not getattr(gp, "last_cands", None):
             return None
-        if time.monotonic() - getattr(gp, "last_cands_ts", 0.0) > max_age_s:
-            return None
-        return {"list": list(gp.last_cands), "sel": gp.last_cand_sel}
+        age = time.monotonic() - getattr(gp, "last_cands_ts", 0.0)
+        return {"list": list(gp.last_cands), "sel": gp.last_cand_sel,
+                "stale": age > max_age_s, "age_s": age}
 
     def press_button(self, button, duration: float = 0.15) -> bool:
         """经已绑定的手柄导航器按一个按钮（按下→update→按住→松开→update）。

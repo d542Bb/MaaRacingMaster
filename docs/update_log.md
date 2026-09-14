@@ -5,6 +5,22 @@
 > **暂存条目前缀「暂存」**：内容已定稿但版本号未定，`extract_changelog.py` 不会抽取它；
 > 发版时把「暂存」小节并入对应的 `### v<版本>` 标题后再出 Release 正文。
 
+## 2026-09-15
+
+### 暂存（未发布 · 待并入下一版本）转阶段交接与 PEEP 手柄诊断层修复 🔧
+
+- **性质：** 未发版变更（`core/clicker.py`、`core/gamepad_cursor.py`、`plugins/treasure/module.py`、`plugins/treasure/renderer.py`、`tests/test_clicker_cursor_snapshot.py`（新）、`tests/test_treasure_stage_handoff.py`（新）、`tools/experiments/bid-numpad-keypress/`（新）、域 CODE_WIKI；master 直接提交、不 tag）
+
+- **PEEP 手柄诊断层与点击意图解耦：** `render_peep` 原先在 `treasure_action` 为空（转场/未定义过渡）或 center 为空（纯等待）时提前返回，把手柄光标实时位绿圈与识别候选圈一并丢掉——转场期预览只剩原图（真机 2026-09-15 日志在结算弹窗转场反复打「动作按钮 popup_click_cooldown 未配置 rect，准星跳过」，即命中该分支）。现抽出 `_draw_gamepad_diag` 在函数开头无条件绘制，颜色/半径/文案口径不变。
+
+- **空闲期不再丢快照：** 候选快照超 2s 曾直接返回 None、导航结束（stage=done）时进度也返回 None，两次点击之间的大段空档叠加层无内容可看。现 `Clicker.cursor_candidates` 超龄仍返回数据并附 `stale`/`age_s`；新增 `GamepadClicker.last_pos_ts` 与 `Clicker.gamepad_cursor_age_s()`，`_gamepad_nav_progress_kwargs` 空闲态返回最后一次识别位。渲染层用暗色圈 + 「上次识别 N.Ns 前」「候选快照: 陈旧」标注，实时位与历史位一眼可辨。
+
+- **回合切换交接：** ① 在途导航立即中止（`_abort_inflight_nav`，仅手柄方式）——旧回合目标已随界面消失，实测新回合首次点击被旧任务推迟约 5s，且可能在新界面误按 A；② `_consume_click_result` 对无主结果（`_pending_click` 已被 `set_stage` 清）一律丢弃副作用，不再拿空 pending 走成功分支——旧口径会在每次回合切换落一条 `方式=? state=None key=None 归一化=(0.000,0.000)` 伪点击事件（真机第1→2、第2→3 回合各一条），并按「无主成功」刷新指纹与点击时刻。
+
+- **回归锁：** 新增 16 条（`tests/test_clicker_cursor_snapshot.py` 5 条；`tests/test_treasure_stage_handoff.py` 11 条：无主结果丢弃 / 正常结果不变式 / 回合切换中止且 real 不参与 / 空闲保底与活跃透传 / 渲染层无点击意图仍出层）；全量 `pytest 497 passed`。
+
+- **待定性（真机实验已就位）：** 数字键 `bid_numpad_*` 提交后游戏输入框不变化（真机 07:17:34–07:17:58 空转 24s，同面板「智能出价」「✖ 清空」按下均生效，光标正确停在 '2' 键中心）。新增 `tools/experiments/bid-numpad-keypress/`：自包含探针（基线 / 目标键 / 对照键三组前后帧差异）+ 判定矩阵（数字键需前置激活 / 导航落点 / 输入通道），结论待真机执行后回填主题 README。
+
 ## 2026-09-14
 
 ### 暂存（未发布 · 待并入下一版本）日志观测改造：有界缓冲 + 单流落盘 + 级别口径修正 🔧

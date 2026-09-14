@@ -632,6 +632,75 @@ class TreasureDebugRenderer:
 
     # ---------- 对外接口 ----------
 
+    def _draw_gamepad_diag(self, canvas, kw, W: int) -> None:
+        """手柄诊断层：光标实时位（绿圈）+ 识别候选（绿=选中 / 黄=次选）。
+
+        与「本帧有没有点击意图」解耦，单独成层——转场/纯等待期的决策意图为空
+        （`treasure_action` 为 None 或 center 为 None），叠加层曾整体消失在这两个
+        早退分支里，而那恰是用户最需要看「手柄在干嘛」的时段（2026-09-15 真机：
+        结算弹窗转场期 `popup_click_cooldown 未配置 rect，准星跳过` → 预览只剩原图）。
+
+        新鲜度分档（用户口径 2026-09-15：空闲期也要有内容可看）：
+        实时快照用饱和色 + 「手柄[stage] 距离Npx」；陈旧快照（stale=True）用暗色
+        + 「上次识别 N.Ns 前」，与实时位一眼可辨，不会把历史位误读成当前位。
+        """
+        # 手柄光标实时位置（treasure_gamepad_cursor 由导航进度快照注入，pos=帧像素）：
+        # 绿圈=手柄光标当前位置，与青黄/紫粉「点击目标准星」区分；pos=None=签名识别丢失
+        gcur = kw.get("treasure_gamepad_cursor")
+        if gcur:
+            gpos = gcur.get("pos")
+            if gpos:
+                gx, gy = int(gpos[0]), int(gpos[1])
+                stale = bool(gcur.get("stale"))
+                gc = (120, 170, 120) if stale else (80, 255, 80)  # BGR：暗绿=历史位
+                cv2.circle(canvas, (gx, gy), 14, gc, 2)
+                cv2.circle(canvas, (gx, gy), 2, gc, -1)
+                dist = gcur.get("dist")
+                if stale:
+                    age = gcur.get("age_s")
+                    label = ("手柄[上次识别 --]" if age is None or age == float("inf")
+                             else f"手柄[上次识别 {age:.1f}s 前]")
+                else:
+                    label = f"手柄[{gcur.get('stage', '')}]"
+                    if dist is not None:
+                        label += f" 距离{dist:.0f}px"
+                _put(canvas, label, gx + 16, gy + 16, scale=0.45, color=gc)
+            else:
+                stage = gcur.get("stage", "")
+                _put(canvas, f"手柄光标丢失[{stage}]", W // 2 - 70, 54, scale=0.5,
+                     color=(80, 80, 255), stroke=2)
+        # 手柄光标识别候选（treasure_cursor_cands：GamepadClicker.read_pos 每帧快照，
+        # 分数降序）：绿圈=本轮选中候选（与上方 gcur 光标圈同心套外环）；
+        # 黄圈=次选（最多 5 个，含低于置信门槛 0.60 的拒识候选）——诊断
+        # "为什么识别不到光标 / 为什么选错假候选"的分数与位置分布。
+        cands = kw.get("treasure_cursor_cands")
+        if not cands:
+            return
+        cands_stale = bool(cands.get("stale"))
+        alt_n = 0
+        for i, cd in enumerate(cands.get("list") or []):
+            try:
+                cx_, cy_, sc_ = float(cd[0]), float(cd[1]), float(cd[2])
+            except Exception:
+                continue  # 候选数据不完整跳过，不影响其余候选/准星绘制
+            is_sel = (i == cands.get("sel"))
+            if not is_sel:
+                if alt_n >= 5:
+                    continue  # 次选最多画 5 个
+                alt_n += 1
+            if cands_stale:
+                col = (110, 150, 110) if is_sel else (140, 190, 90)  # BGR：陈旧=暗色
+            else:
+                col = (80, 255, 80) if is_sel else (0, 255, 255)  # BGR：绿=选中 / 黄=次选
+            cv2.circle(canvas, (int(cx_), int(cy_)), 20 if is_sel else 11, col, 2)
+            _put(canvas, f"{sc_:.2f}{' 选中' if is_sel else ''}",
+                 int(cx_) + 12, max(14, int(cy_) - 24), scale=0.42, color=col)
+        if cands_stale:
+            age = cands.get("age_s")
+            txt = ("候选快照: 陈旧" if age is None
+                   else f"候选快照: 陈旧 {age:.1f}s 前（非实时位）")
+            _put(canvas, txt, 10, 54, scale=0.45, color=(140, 190, 90), stroke=2)
+
     def render_full(self, frame_bgr, state):
         """全量绘制（存盘用）：HUD + ROI 参考框"""
         return self._draw(frame_bgr, state, draw_roi=True)
@@ -649,15 +718,18 @@ class TreasureDebugRenderer:
         两套点击方式区分（state.treasure_click_mode）：
           - real（前台鼠标）→ 青黄准星 + [前台鼠标] 标签
           - gamepad（后台手柄+A）→ 紫粉准星 + [后台手柄+A] 标签
-        手柄光标实时位置（state.treasure_gamepad_cursor，导航进度回调注入）：
-        绿圈标出手柄光标当前位置 + 距目标距离；识别丢失时顶部提示。
+        手柄诊断层（光标实时位绿圈 + 识别候选圈，见 _draw_gamepad_diag）**与意图解耦**：
+        上面两种形态之外（`treasure_action` 为空，转场/未定义过渡期的静默分支），
+        诊断层照常绘制，不再随叠加层整体消失。
         """
         canvas = frame_bgr.copy()
         kw = state.to_kwargs()
+        H, W = canvas.shape[:2]
+        # 手柄诊断层在准星之前无条件绘制：转场/纯等待期（无点击意图）不再整体消失
+        self._draw_gamepad_diag(canvas, kw, W)
         act = kw.get("treasure_action")
         if not act:
             return canvas
-        H, W = canvas.shape[:2]
         center = act.get("center")
         # 纯等待模式：无 center → 只画顶部文字条（无准星、无 key 标签），不画准星
         if center is None:
@@ -696,46 +768,8 @@ class TreasureDebugRenderer:
         cv2.circle(canvas, (px, py), 6, color, 2)
         # 按钮 key 标签 + 点击方式标签（准星右上方）
         _put(canvas, f"{act['key']} [{tag}]", px + 14, max(14, py - 14), scale=0.5, color=color)
-        # 手柄光标实时位置（treasure_gamepad_cursor 由导航进度回调注入，pos=帧像素）：
-        # 绿圈=手柄光标当前位置，与青黄/紫粉「点击目标准星」区分；pos=None=签名识别丢失
-        gcur = kw.get("treasure_gamepad_cursor")
-        if gcur:
-            gpos = gcur.get("pos")
-            if gpos:
-                gx, gy = int(gpos[0]), int(gpos[1])
-                gc = (80, 255, 80)  # 绿色（BGR）
-                cv2.circle(canvas, (gx, gy), 14, gc, 2)
-                cv2.circle(canvas, (gx, gy), 2, gc, -1)
-                dist = gcur.get("dist")
-                label = f"手柄[{gcur.get('stage', '')}]"
-                if dist is not None:
-                    label += f" 距离{dist:.0f}px"
-                _put(canvas, label, gx + 16, gy + 16, scale=0.45, color=gc)
-            else:
-                stage = gcur.get("stage", "")
-                _put(canvas, f"手柄光标丢失[{stage}]", W // 2 - 70, 54, scale=0.5,
-                     color=(80, 80, 255), stroke=2)
-        # 手柄光标识别候选（treasure_cursor_cands：GamepadClicker.read_pos 每帧快照，
-        # 分数降序）：绿圈=本轮选中候选（与上方 gcur 光标圈同心套外环）；
-        # 黄圈=次选（最多 5 个，含低于置信门槛 0.60 的拒识候选）——诊断
-        # "为什么识别不到光标 / 为什么选错假候选"的分数与位置分布。
-        cands = kw.get("treasure_cursor_cands")
-        if cands:
-            alt_n = 0
-            for i, cd in enumerate(cands.get("list") or []):
-                try:
-                    cx_, cy_, sc_ = float(cd[0]), float(cd[1]), float(cd[2])
-                except Exception:
-                    continue  # 候选数据不完整跳过，不影响其余候选/准星绘制
-                is_sel = (i == cands.get("sel"))
-                if not is_sel:
-                    if alt_n >= 5:
-                        continue  # 次选最多画 5 个
-                    alt_n += 1
-                col = (80, 255, 80) if is_sel else (0, 255, 255)  # BGR：绿=选中 / 黄=次选
-                cv2.circle(canvas, (int(cx_), int(cy_)), 20 if is_sel else 11, col, 2)
-                _put(canvas, f"{sc_:.2f}{' 选中' if is_sel else ''}",
-                     int(cx_) + 12, max(14, int(cy_) - 24), scale=0.42, color=col)
+        # 手柄实时位/识别候选两层已在函数开头无条件绘制（_draw_gamepad_diag），
+        # 此处只画与「点击意图」绑定的准星/标签，最后压顶部提示条。
         # 顶部提示条
         hint = act.get("hint") or act["key"]
         stage_txt = kw.get("treasure_stage") or "-"

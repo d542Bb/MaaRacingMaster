@@ -367,6 +367,9 @@ class GamepadClicker:
         # 共享快照（snapshot publication：worker 整体替换，主循环只读）
         self.last_pos: tuple | None = None
         self.miss_streak = 0
+        # 最近一次成功识别的时刻（monotonic）：导航空闲/结束后 PEEP 仍要标出
+        # 「上次光标在哪、多久前」，没有它只能显示陈旧位却说不出新鲜度。
+        self.last_pos_ts: float = 0.0
         # 识别候选快照（PEEP 诊断用，read_pos 每帧刷新）：候选按分数降序截前 8 个
         # [(x, y, score, state)]，含低于置信门槛的拒识候选；sel=选中候选下标或 None。
         self.last_cands: tuple = ()
@@ -544,6 +547,7 @@ class GamepadClicker:
         hist.sort()
         pos = hist[len(hist) // 2]
         self.last_pos = pos
+        self.last_pos_ts = time.monotonic()
         self.miss_streak = 0
         return pos
 

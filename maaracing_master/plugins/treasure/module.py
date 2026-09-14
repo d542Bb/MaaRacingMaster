@@ -1532,6 +1532,10 @@ class TreasureModule(ActivityModule):
             # 用原始数字判断切换，保证转场期（_round_elapsed）正确重置
             if raw_r is not None and raw_r != old_raw:
                 self._round_elapsed = 0  # 切到新回合 → 转场期开始
+                # 回合切换交接：旧回合的在途导航立即中止（+ 本帧 consume 消化），
+                # 否则新回合第一次点击要排队等旧任务跑完（真机 2026-09-15 约 5s），
+                # 且旧目标已消失的导航可能在新界面误按 A。见 _abort_inflight_nav。
+                self._abort_inflight_nav("回合切换")
                 # 回合切换 → 清指纹锁 + 重试状态，避免上一回合的「出价按钮」指纹（S2_bid）
                 # 残留到新回合，导致新回合出价按钮亮起后永远不点击（时序问题根源）。
                 self._last_click_fingerprint = None
@@ -3051,20 +3055,60 @@ class TreasureModule(ActivityModule):
             logger.log(f"[鉴宝点击] 虚拟手柄重建失败（下帧重试）: {e}", "WARNING")
             return False
 
+    def _abort_inflight_nav(self, reason: str) -> None:
+        """中止在途导航任务（回合切换交接），结果由本帧 `_consume_click_result` 消化。
+
+        为什么必须中止：指纹锁是「同意图只点一次」的边沿触发，回合切换清指纹后
+        新回合立刻有新意图，但任务槽还被旧回合的导航占着——`_execute_click` 只能
+        整帧返回，新回合第一次点击被推迟到旧任务跑完（真机 2026-09-15：第2→3 回合
+        切换后等到旧结果回来，07:17:23 换回合、07:17:28 才发出本回合第一次点击）。
+        更糟的是旧目标随旧界面消失，导航会带着摇杆在空位上找、甚至在**新界面**按 A。
+
+        只中止、不点击：消化走主链路 consume（无主结果按契约丢弃副作用）。
+        real(前台鼠标)不参与——它的点击在提交帧内同步完成，不存在跨回合在途导航。
+        """
+        clicker = self._clicker
+        if clicker is None or not clicker.gamepad_bound or clicker.mode != "gamepad":
+            return
+        if not clicker.is_busy():
+            return
+        clicker.cancel()
+        logger.log(f"[鉴宝点击] {reason}：已中止在途导航（旧阶段目标已失效）", "DEBUG")
+
     def _gamepad_nav_progress_kwargs(self) -> dict | None:
-        """手柄导航最近进度快照（PEEP 渲染用；主循环每帧读，导航线程发布）。
+        """PEEP 手柄诊断层数据（光标实时位/导航进度；主循环每帧读，导航线程发布）。
 
         异步导航后不再用 on_progress 回调（跨线程渲染不安全），改为主循环从
         GamepadClicker.nav_progress() 拉取快照注入 PEEP kwargs。
-        导航结束（stage=done）后不再显示——避免 PEEP 持续提示"光标丢失[done]"。
+
+        两态（2026-09-15 用户口径：空闲期叠加层也要有内容可看）：
+          - 导航中 → 实时进度快照原样返回（stage/pos/dist）；
+          - 已结束/空闲 → 返回**最后一次识别位**，带 stale=True 与 age_s，由渲染层
+            淡化标注「上次识别」。旧口径在 stage=done 时直接返回 None，两次点击
+            之间的空档（真机 2026-09-15：数字键链路空转 24s）叠加层里既没有光标位
+            也没有候选，排查时无从判断光标停在哪。
         """
         clicker = self._clicker
         if clicker is None or not clicker.gamepad_bound:
             return None
-        prog = clicker.nav_progress()
-        if not prog or not prog.get("stage") or prog.get("stage") == "done":
-            return None
-        return dict(prog)
+        prog = clicker.nav_progress() or {}
+        stage = prog.get("stage")
+        if stage and stage != "done" and prog.get("pos"):
+            return dict(prog)  # 活跃导航：实时进度（识别丢失/lost 也照原样透出）
+        pos = clicker.gamepad_cursor_pos()
+        if not pos:
+            return None  # 从未识别到光标：无内容可画（不编造位置）
+        return {
+            "seq": prog.get("seq", 0),
+            "stage": "idle",
+            "pos": pos,
+            "target": prog.get("target"),
+            "dist": None,
+            "ok": None,
+            "done": True,
+            "stale": True,
+            "age_s": clicker.gamepad_cursor_age_s(),
+        }
 
     def _collect_guard_rects(self) -> list[tuple[str, tuple[float, float, float, float]]]:
         """收集当前阶段「需要保持可识别」的 ROI：[(key, rect)]（归一化）。
@@ -3179,6 +3223,15 @@ class TreasureModule(ActivityModule):
             return  # move 结果：无点击副作用
         pending = self._pending_click
         self._pending_click = None
+        if pending is None:
+            # 跨阶段/跨回合的「无主结果」：set_stage 在回合切换时清 _pending_click
+            # （旧口径假设「回合切换无在途点击」），但在途导航仍在跑、结果随后才回。
+            # 此时副作用一律不应用——旧口径拿空 pending 走成功分支，会落一条
+            # 「方式=? state=None key=None 归一化=(0.000,0.000)」伪点击事件
+            # （真机 2026-09-15：第1→2、第2→3 回合切换各一条），并按一次
+            # 「无主成功」刷新指纹/点击时刻。丢弃即正确归属：旧目标已随旧阶段消失。
+            logger.log("[鉴宝点击] 丢弃跨阶段残留点击结果（该在途任务已无主）", "DEBUG")
+            return
         if self._trace_writer is not None:
             self._trace_writer.write({
                 "frame": self._frame_counter,
@@ -3463,7 +3516,8 @@ class TreasureModule(ActivityModule):
         """读取手柄导航器最近一次识别的候选快照（选中 + 次选，PEEP 诊断用）。
 
         快照由 GamepadClicker.read_pos 每帧刷新（分数降序前 8 个 + 选中下标）；
-        超过 2s 未刷新（非手柄方式/导航已久未跑）返回 None 不显示。
+        从未识别到候选/非手柄方式返回 None。超龄快照**不再丢弃**——由 Clicker
+        附 stale/age_s 标记，渲染层淡化标注，空闲期也有内容可看（2026-09-15）。
         走 Clicker 公开接口读，不再 getattr 掏 `_gamepad` 私有成员（P5）。
         """
         if self._clicker is None:
