@@ -7,6 +7,20 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）卡第二出价改「出到买入线」（V4 出价口径）🔧
+
+- **性质：** 未发版变更（`plugins/treasure/strategy.py`、`tests/test_bid_strategy.py`；master 直接提交、不 tag）
+
+- **问题：** 卡第二分支原口径 `lower = 第三名 + 缓冲`、`upper = min(M − u, cap, 余额)`，`lower ≥ upper` 时回退 `competitor + u`，把「对手历史峰值 M」到「买入线」之间整段可盈利区间让掉。2026-09-05 后 61 场落盘审计（`docs/plan/bid_audit_20260915/`）显示：59 场可复算对局中 11 场（18.6%）存在买入线内本可拍中的机会，合计潜在利润 750,277；整链静态仿真现行口径拍中 7 场、利润 417,194。
+
+- **修复口径：** 卡第二出价取 `min(买入线, cap, 余额)`。依据「未拍中不花钱」——出价 ≤ 买入线时越高越优（多买到的成交是净增益，不成交零成本）；买入线由 `PROFIT_FLOOR` 定义，出到线即接受设计上的最小利润。反证：同一动作锚在 `M − u` 上会亏（仿真 19 场拍中里 10 场亏损、共亏 282,685）——实测成交价/M 中位 1.00、48% 场次成交价高于 M，M 不是安全天花板，买入线才是（实测 拍品总价/买入线 最小 1.021、全部场次 > 1）。
+
+- **已知设计后果：** `GLOBAL_CAP`（GUI 兜底上限）在卡第二分支失效——`cap = floor(V̂) + risk_cap` 恒大于买入线 `0.9×V̂`，`min` 恒取买入线。退役该旋钮或改语义待定。
+
+- **回归锁：** `tests/test_bid_strategy.py` 23 条（11 条卡第二期望值随口径更新；新增 `test_risk_cap_no_longer_binds_second_branch`、`test_balance_below_line_clamped`；`test_r3_phishing_crash_not_tricked` 语义更新为「防钓鱼保护由买入线承担」）。全量 `pytest 510 passed`。
+
+- **验证边界（真机待复验）：** 静态仿真为**上界估计**（对手出价按落盘值回放，不建模「我方出价不同 → 对手下一轮反应不同」）。V4 会让 R3 起我方成为公开盘面高位，需真机验证对手是否跟涨。生产代码回放与仿真一致：拍中 17 场 / 利润 647,362 / 零亏损（`docs/plan/bid_audit_20260915/verify_v4.py`）。
+
 ### 暂存（未发布 · 待并入下一版本）场次选择「先匹配后选场次」倒序修复：先选场次闸门 🔧
 
 - **性质：** 未发版变更（`plugins/treasure/module.py`、`plugins/treasure/resources/policy/treasure.policy.json`、`tests/test_treasure_session_badge_gate.py`（新）、域 CODE_WIKI；master 直接提交、不 tag）

@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""BidStrategy V2/V3 出价策略单元测试（pytest 断言版）。
+"""BidStrategy V2/V3/V4 出价策略单元测试（pytest 断言版）。
 
 替代原 maaracing_master/modules/test_bid_strategy.py 的纯打印冒烟脚本：
 原脚本只有 print 无断言，无法作为 CI 通过/失败判定；本测试以真实运行结果为基线，
 把决策类型与出价锁定为回归断言，防止后续改动悄悄破坏策略行为。
+
+V4（2026-09-15）改动：卡第二分支不再「紧贴第三名」，改为**出到买入线**。
+相关用例的期望值已随之更新，理由见 strategy.py 模块头 V4 段与
+docs/plan/bid_audit_20260915/出价审计报告_20260915.md。
 """
 
 from __future__ import annotations
@@ -52,6 +56,11 @@ def assert_decision(name, dec: BidDecision, expect_decision: str, expect_price: 
     )
 
 
+def line_of(h_max: int) -> int:
+    """买入线 = floor(0.9 × 1.28 × max(H))。"""
+    return int(0.9 * 1.28 * h_max)
+
+
 # ----------------------------------------------------------------------
 # R1/R2 观察
 # ----------------------------------------------------------------------
@@ -72,36 +81,26 @@ def test_r1_balance_short():
 
 
 # ----------------------------------------------------------------------
-# 捡漏 win（无人烧钱：opp_max < V̂）
+# 卡第二 = 出到买入线（V4 口径）
 # ----------------------------------------------------------------------
 def test_r4_cool_pick_bargain_becomes_second():
-    # H=(30000,35000,40000)，上轮第一=40000 未烧钱 → 捡漏失败转卡第二
+    # H=(30000,35000,40000) → 买入线 46080；捡漏失败转卡第二，出到线
     dec = BidStrategy().decide(
         ctx(4, (30000, 35000, 40000),
             snap(3, 40000, 40000, (20000, 30000, 40000)), 1000000)
     )
-    assert_decision("R4 冷静局捡漏转卡第二", dec, DECISION_TARGET_SECOND, 36001)
+    assert_decision("R4 冷静局捡漏转卡第二", dec, DECISION_TARGET_SECOND, 46080)
+    assert dec.price == line_of(40000)
+    assert dec.max_win_bid == line_of(40000), "卡第二也应回报买入线，供上层审计"
 
 
-def test_r4_hot_price_pick_bargain_win():
-    # 高价冷静局：H max=200000 → V̂=256000, max_win=230400；上轮第一=150000
-    dec = BidStrategy().decide(
-        ctx(4, (180000, 190000, 200000),
-            snap(3, 200000, 150000, (120000, 140000, 150000)), 1000000)
-    )
-    assert_decision("R4 高价冷静捡漏→win", dec, DECISION_WIN, 209551)
-
-
-# ----------------------------------------------------------------------
-# 卡第二吃分红（有人烧钱：opp_max > V̂）
-# ----------------------------------------------------------------------
 def test_r4_firefight_clamp_second():
-    # 有人烧钱(80000>51200) → 卡第二，挤不下用紧贴价
+    # 有人烧钱(80000>51200) → 卡第二，出到买入线（V3 为紧贴 48001）
     dec = BidStrategy().decide(
         ctx(4, (30000, 35000, 40000),
             snap(3, 40000, 30000, (30000, 50000, 80000)), 1000000)
     )
-    assert_decision("R4 有人烧钱→卡第二(紧贴)", dec, DECISION_TARGET_SECOND, 48001)
+    assert_decision("R4 有人烧钱→卡第二(出到买入线)", dec, DECISION_TARGET_SECOND, 46080)
 
 
 def test_r4_medium_firefight_second():
@@ -109,7 +108,7 @@ def test_r4_medium_firefight_second():
         ctx(4, (30000, 35000, 40000),
             snap(3, 40000, 20000, (20000, 30000, 60000)), 1000000)
     )
-    assert_decision("R4 烧钱中等→卡第二(紧贴)", dec, DECISION_TARGET_SECOND, 36001)
+    assert_decision("R4 烧钱中等→卡第二(出到买入线)", dec, DECISION_TARGET_SECOND, 46080)
 
 
 def test_r4_slight_firefight_second():
@@ -117,12 +116,9 @@ def test_r4_slight_firefight_second():
         ctx(4, (30000, 35000, 40000),
             snap(3, 40000, 20000, (20000, 30000, 52000)), 1000000)
     )
-    assert_decision("R4 轻微烧钱→卡第二", dec, DECISION_TARGET_SECOND, 36001)
+    assert_decision("R4 轻微烧钱→卡第二(出到买入线)", dec, DECISION_TARGET_SECOND, 46080)
 
 
-# ----------------------------------------------------------------------
-# 区间空 → pass
-# ----------------------------------------------------------------------
 def test_r5_snapshot_incomplete_observe():
     # 快照含 -1（信息缺失，未读到报价）→ is_complete=False → 无火力信息。
     # V3 语义：无对手信息不再 pass/嘲讽 250，出 min(H,余额) 等低价捡漏。
@@ -136,12 +132,12 @@ def test_r5_snapshot_incomplete_observe():
 
 def test_r5_disconnected_bidder_second():
     # 对手槽读值 0（掉线/没出价）视为有效最低价，快照仍完整可参与捡漏/卡第二：
-    # 对手报价 45000/44000/0 均无人烧钱(45000<51200) → 捡漏失败转卡第二，紧贴 44001
+    # 对手报价 45000/44000/0 均无人烧钱 → 捡漏失败转卡第二，出到买入线
     dec = BidStrategy().decide(
         ctx(5, (30000, 35000, 40000),
             snap(4, 40000, 30000, (0, 44000, 45000)), 1000000)
     )
-    assert_decision("R5 掉线玩家参与→卡第二(紧贴)", dec, DECISION_TARGET_SECOND, 44001)
+    assert_decision("R5 掉线玩家参与→卡第二(出到买入线)", dec, DECISION_TARGET_SECOND, 46080)
 
 
 # ----------------------------------------------------------------------
@@ -171,7 +167,7 @@ def test_r5_three_high_tight_second():
         ctx(5, (30000, 35000, 40000),
             snap(4, 40000, 30000, (41000, 42000, 43000)), 1000000)
     )
-    assert_decision("R5 三高→紧贴第二", dec, DECISION_TARGET_SECOND, 41001)
+    assert_decision("R5 三高→卡第二(出到买入线)", dec, DECISION_TARGET_SECOND, 46080)
 
 
 # ----------------------------------------------------------------------
@@ -192,19 +188,31 @@ def test_r4_no_snapshot_observe():
 # 策略模式（赚蛋已删除，恒为赚钱；mode 参数从 BidStrategy 接口移除）
 # ----------------------------------------------------------------------
 def test_profit_hot_cool_becomes_second():
+    # H max=200000 → V̂=256000，买入线 230400
     dec = BidStrategy().decide(
         ctx(4, (180000, 190000, 200000),
             snap(3, 200000, 150000, (120000, 150000, 180000)), 1000000)
     )
-    assert_decision("R4 冷静高价→卡第二", dec, DECISION_TARGET_SECOND, 135501)
+    assert_decision("R4 冷静高价→卡第二", dec, DECISION_TARGET_SECOND, 230400)
 
 
-def test_small_cap_firefight_second():
-    dec = BidStrategy(risk_cap=1000).decide(
+def test_risk_cap_no_longer_binds_second_branch():
+    """V4 起卡第二由买入线定界，risk_cap 不再影响该分支的出价。
+
+    cap = floor(V̂) + risk_cap 恒大于买入线 0.9×V̂（risk_cap > 0），
+    故 min(line, cap, 余额) 恒取买入线——GLOBAL_CAP 在卡第二分支失效，
+    这是 V4 的已知设计后果（见审计报告 §8）。
+    """
+    base = BidStrategy().decide(
         ctx(4, (30000, 35000, 40000),
             snap(3, 40000, 20000, (20000, 30000, 80000)), 1000000)
     )
-    assert_decision("R4 小兜底烧钱→卡第二", dec, DECISION_TARGET_SECOND, 38001)
+    tiny_cap = BidStrategy(risk_cap=1000).decide(
+        ctx(4, (30000, 35000, 40000),
+            snap(3, 40000, 20000, (20000, 30000, 80000)), 1000000)
+    )
+    assert_decision("R4 小兜底→卡第二(买入线定界)", tiny_cap, DECISION_TARGET_SECOND, 46080)
+    assert tiny_cap.price == base.price, "risk_cap 不应改变卡第二出价"
 
 
 # ----------------------------------------------------------------------
@@ -230,8 +238,12 @@ def test_r4_phishing_bait_rekill_401():
 
 
 def test_r3_phishing_crash_not_tricked():
-    # 对手上轮崩价到 100000 但历史峰值 748900：V3 不放松（M 取历史），
-    # 杀价超线 → 卡第二用安全垫 upper=M-u 防被顶成第一接盘。
+    """R3 同一局面：杀价仍超线（M=748900 未放松），但 V4 卡第二改为出到买入线。
+
+    旧口径（紧贴第三名）在此局面只出 116001，输给 R3 实际第二名 500300；
+    新口径出到买入线 843724 ≥ 1.3 × 500300 = 650390 → 当回合即可反杀成交。
+    即「不被钓鱼骗」的保护由买入线承担，不再由 M−u 承担。
+    """
     dec = BidStrategy().decide(BidContext(
         round_no=3,
         h_seen=(710600, 665000, 732400),
@@ -243,14 +255,17 @@ def test_r3_phishing_crash_not_tricked():
         our_last_bid=665000,
         opp_high_history=(582200, 748900),
     ))
-    assert_decision("R3 对手崩价不被骗→卡第二(M 安全垫)", dec, DECISION_TARGET_SECOND, 116001)
+    assert_decision("R3 对手崩价不被骗→卡第二(出到买入线)", dec, DECISION_TARGET_SECOND, 843724)
+    assert dec.price == line_of(732400)
+    # 反杀条件成立：843724 / 500300 = 1.686 ≥ K3=1.3
+    assert dec.price / 500300 >= 1.3
 
 
 # ----------------------------------------------------------------------
 # 余额三态（未知 -1 / 真实 0 / 正常）
 # ----------------------------------------------------------------------
 def test_balance_zero_pick_bargain_pass():
-    # 真实余额 0 → 没钱，捡漏无机会，区间空 → pass
+    # 真实余额 0 → 没钱，买入线被余额钳到 0 → pass
     dec = BidStrategy().decide(
         ctx(4, (180000, 190000, 200000),
             snap(3, 200000, 150000, (120000, 150000, 180000)), 0)
@@ -272,7 +287,7 @@ def test_balance_unknown_pick_bargain_second():
         ctx(4, (180000, 190000, 200000),
             snap(3, 200000, 150000, (120000, 150000, 180000)), BALANCE_UNKNOWN)
     )
-    assert_decision("余额未知 R4 捡漏→卡第二", dec, DECISION_TARGET_SECOND, 135501)
+    assert_decision("余额未知 R4 捡漏→卡第二", dec, DECISION_TARGET_SECOND, 230400)
 
 
 def test_balance_unknown_firefight_second():
@@ -280,4 +295,13 @@ def test_balance_unknown_firefight_second():
         ctx(4, (30000, 35000, 40000),
             snap(3, 40000, 20000, (20000, 30000, 80000)), BALANCE_UNKNOWN)
     )
-    assert_decision("余额未知 R4 烧钱→卡第二", dec, DECISION_TARGET_SECOND, 38001)
+    assert_decision("余额未知 R4 烧钱→卡第二", dec, DECISION_TARGET_SECOND, 46080)
+
+
+def test_balance_below_line_clamped():
+    """余额低于买入线 → 出价被钳到余额，而不是买入线。"""
+    dec = BidStrategy().decide(
+        ctx(4, (180000, 190000, 200000),
+            snap(3, 200000, 150000, (120000, 150000, 180000)), 100000)
+    )
+    assert_decision("余额 10 万 < 买入线 23.04 万 → 钳到余额", dec, DECISION_TARGET_SECOND, 100000)

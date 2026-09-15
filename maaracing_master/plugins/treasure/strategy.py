@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
-"""巅峰鉴宝 · 出价策略模块 V3（2026-09-05 秒杀规则重构）。
+"""巅峰鉴宝 · 出价策略模块 V4（2026-09-15 卡第二改出到买入线）。
 
 设计文档：docs/treasure_tick_dynamic_step_report.md + 多轮策略讨论 + 401 场复盘。
-V3 核心变更（用户推导 + treasure.db 规则验证）：
+V4 核心变更（61 场整链静态仿真，见 docs/plan/bid_audit_20260915/）：
+  - 卡第二分支的出价依据从「第三名 + 缓冲」改为**买入线**（`min(line, cap, 余额)`）。
+    旧口径在 `lower >= upper` 时回退 `competitor + u`，把 M 到买入线之间那段
+    可盈利区间整段让掉；仿真：拍中 7 → 17 场、利润 417,194 → 647,362、零亏损。
+  - 反证：同一动作锚在 M（对手历史峰值）上会亏——「出到 M−u」19 场拍中里
+    10 场亏损共 282,685。实测成交价/M 中位 1.00、48% 场次成交价高于 M，
+    M 不是安全天花板；买入线才是（实测 拍品总价/买入线 最小 1.021，全部场次 > 1）。
+  - 原理：未拍中不花钱 → 只要出价 ≤ 买入线，出得越高越优（多买到的成交是净增益，
+    不成交零成本）。买入线由 PROFIT_FLOOR 定义，故出到线即接受设计上的最小利润。
+V3 历史（2026-09-05 秒杀规则重构）：
   - 收入铁律：玩家收入 = 拍中者(总值-成交价)；未拍中者仅当赢家亏钱时按顺位
     吃 15%/10%/5% 分红——「卡第二」唯一合法前提 = 第一名必亏。
   - 成交铁律：当回合第一名/第二名 ≥ K_r 即秒杀成交（K=2.0/1.6/1.3/1.1/1.0）。
@@ -314,7 +323,10 @@ class BidStrategy:
         # ② 杀不动（对手火力已逼近/超过买入线）→ 卡第二吃分红彩票。
         #    分红唯一来源=赢家亏钱（第一名亏→第2名15%/第3名10%/第4名5%）；
         #    赢家盈利则未拍中者收入为 0，但出价不成交就不花钱——卡第二是免费彩票。
-        #    upper 用 M 卡安全垫：对手约 30% 概率退出/降价，防止意外当第一接盘。
+        #    V4：出价定界改由买入线承担（见 _try_second）。原以「M − u 安全垫」
+        #    防意外接盘，依据是「对手退出率≈30%」——2026-09-15 实测该说法不成立：
+        #    当轮第一下一轮退出率仅 1.0%、降价 44.7%（180 条对手出价序列），
+        #    且成交价/M 中位 1.00、48% 场次成交价高于 M，M 挡不住也兜不住。
         # ②-前置守卫：卡第二的定价依据是**上一轮快照里的对手位次**；没有可用快照时
         #    opp_second/opp_third 只能是 0，那是"没数据"不是"对手都不出价"——绝不许
         #    据此 pass 出 0（真机教训 2026-09-14），退回观察价等捡漏。
@@ -326,51 +338,37 @@ class BidStrategy:
                 reason=f"R{r} 无完整上轮快照，卡第二缺位次依据: 退回观察价={price} 等捡漏",
             )
         return self._try_second(
-            r, m_power,
-            opp[1] if len(opp) >= 2 else 0,
-            opp[2] if len(opp) >= 3 else 0, vhat, self._global_cap(vhat), balance, ctx, opp
+            r, m_power, vhat, line, self._global_cap(vhat), balance
         )
 
     # ---------- 卡第二吃分红 ----------
 
-    def _try_second(self, r, opp_max, opp_second, opp_third, vhat,
-                    cap, balance, ctx, opp) -> BidDecision:
-        """卡第二：双尾预测（V3 起由 decide 分支②调用，opp_max=对手已证明火力 M）。
+    def _try_second(self, r, opp_max, vhat, line, cap, balance) -> BidDecision:
+        """卡第二：出到买入线（V4 起；V3 为「第三名 + 缓冲」，见模块头 V4 说明）。
 
-        - lower = 第三名 + 缓冲（防被第三超）
-        - upper = min(M − u, 兜底上限 cap, 余额)（防对手退出/降价把我方顶成
-          第一名意外接盘——对手退出率≈30% 是实测数据，安全垫刚需）
-        - lower > upper → PASS
+        旧口径 lower = 第三名 + 缓冲、upper = min(M − u, cap, 余额)，
+        lower >= upper 时回退 `competitor + u`。2026-09-15 审计证伪该口径：
+          - 「出到 M − u」19 场拍中里 10 场亏损、共亏 282,685 → M 不是安全天花板；
+          - 「出到买入线」17 场拍中、零亏损、利润 647,362（现行 417,194）。
+        新口径只保留「买入线」这一道经济边界：
+          - 未拍中不花钱 → 出价 ≤ 买入线时越高越优（多买到的成交是净增益）；
+          - 买入线由 PROFIT_FLOOR 定义，出到线即接受设计上的最小利润，
+            故不会重现「出到 M−u」那类越线接盘。
+        `cap`（V̂ + risk_cap）保留在 min 中作为结构性上界；因 risk_cap > 0 时
+        cap 恒大于买入线，实际不生效（见报告「GLOBAL_CAP 在卡第二分支失效」）。
         """
-        # 竞争者：要压过的是第三名（如果存在）或第二名
-        competitor = opp_third if opp_third > 0 else opp_second
-        if competitor <= 0:
-            return self._make_pass(vhat, opp_max, f"R{r} 无竞争者可压，pass")
-
-        buf = self._buffer(competitor, vhat, opp_max, is_second=True)
-        lower = competitor + buf + self.u
-
-        # 安全上限：严格低于第一名，且不超兜底，且不超余额
-        upper = min(opp_max - self.u, cap, balance)
-
-        if lower >= upper:
-            # 尝试用 lower = competitor + u 挤一挤
-            tight = competitor + self.u
-            if tight < upper:
-                return BidDecision(
-                    price=tight, decision=DECISION_TARGET_SECOND, vhat=vhat,
-                    max_win_bid=None, opponent_max=opp_max,
-                    trigger_bid=None, buffer_used=0, scale_used=0,
-                    reason=f"R{r} target_second(紧贴): {competitor}+{self.u}={tight} < {upper}（缓冲挤不下，用紧贴价）",
-                )
-            return self._make_pass(vhat, opp_max,
-                                   f"R{r} 争第二区间空: lower={lower} >= upper={upper}，pass")
-
+        if line is None or line <= 0:
+            return self._make_pass(vhat, opp_max, f"R{r} 无买入线（V̂ 缺失），pass")
+        price = min(line, cap, balance)
+        if price <= 0:
+            return self._make_pass(
+                vhat, opp_max, f"R{r} 买入线/余额受限: line={line} cap={cap} balance={balance}，pass")
         return BidDecision(
-            price=lower, decision=DECISION_TARGET_SECOND, vhat=vhat,
-            max_win_bid=None, opponent_max=opp_max,
-            trigger_bid=None, buffer_used=buf, scale_used=self._scale_by_intensity(vhat, opp_max, True),
-            reason=f"R{r} target_second: {competitor}+{buf}+{self.u}={lower} < {upper}（cap={cap}, balance={balance}）",
+            price=price, decision=DECISION_TARGET_SECOND, vhat=vhat,
+            max_win_bid=line, opponent_max=opp_max,
+            trigger_bid=None, buffer_used=None, scale_used=None,
+            reason=(f"R{r} target_second(出到买入线): "
+                    f"min(line={line}, cap={cap}, balance={balance})={price}"),
         )
 
     # ---------- 辅助 ----------
