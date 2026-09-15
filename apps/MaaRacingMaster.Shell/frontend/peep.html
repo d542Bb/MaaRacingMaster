@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MaaRM · PEEP</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="peep.css">
+</head>
+<body class="peep-body" id="peep-body">
+  <!-- 常驻状态标题栏：整条为窗口拖动区（C# 侧注册顶部 32 DIP） -->
+  <div class="peep-titlebar">
+    <div class="peep-status">
+      <div class="mra-status-dot" id="peep-status-dot"></div>
+      <span class="status-text" id="peep-status-text">系统就绪</span>
+    </div>
+    <!-- 播放器式悬浮控件：鼠标移入窗口时浮现 -->
+    <div class="peep-actions">
+      <button class="icon-btn" id="peep-btn-toggle" type="button" title="暂停预览">
+        <i data-icon="media-play" class="icon-play"></i>
+        <i data-icon="media-pause" class="icon-pause"></i>
+      </button>
+      <button class="icon-btn" id="peep-btn-close" type="button" title="关闭并还原到主界面">
+        <i data-icon="x"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- 画面区（16:9，等比 contain） -->
+  <div class="peep-stage">
+    <img class="preview-img" id="peep-img" alt="PEEP 实时预览">
+    <div class="preview-empty" id="peep-empty">
+      <i data-icon="camera"></i>
+      <span>PEEP 开启后显示实时画面</span>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="peep-consumer.js"></script>
+  <script src="peep.js"></script>
+</body>
+</html>

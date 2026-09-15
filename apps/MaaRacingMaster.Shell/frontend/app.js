@@ -697,6 +697,11 @@
     $('btn-win-max').addEventListener('click', () => postWindowAction('maximize'));
     $('btn-win-close').addEventListener('click', () => postWindowAction('close'));
     mra.onNativeMessage((msg) => {
+      // PEEP 悬浮窗开/关：预览卡与占位符互换，帧消费权交接
+      if (msg.type === 'peep-floating') {
+        setPreviewFloating(Boolean(msg.value));
+        return;
+      }
       if (msg.type !== 'maximized') return;
       const btn = $('btn-win-max');
       if (!btn) return;
@@ -733,7 +738,7 @@
     setTimeout(pollStatus, 250);
     setTimeout(pollLogs, 300);
     setInterval(pollTodayBoard, 3000); // 今日看板（仅数据页可见时刷新）
-    setTimeout(pollPeepFrame, 500);    // PEEP 内嵌预览（peep 开启 + 数据页可见时 ~10fps）
+    peepConsumer.start(500);           // PEEP 预览轮询（peep 开启 + 数据页可见 + 未脱离悬浮窗时 ~10fps）
   }
 
   function renderModuleSelect(modules, selectedId) {
@@ -1418,32 +1423,28 @@
     } catch (e) { /* 看板轮询失败静默（如库未创建/尚未跑过） */ }
   }
 
-  // ---------- PEEP 实时预览（内嵌 16:9，不再独立弹窗） ----------
-  function updatePreview(b64) {
-    const img = $(currentModuleId + '-preview-img');
-    const empty = $(currentModuleId + '-preview-empty');
-    if (!img || !empty) return;
-    if (b64) {
-      img.src = 'data:image/jpeg;base64,' + b64;
-      img.style.display = 'block';
-      empty.style.display = 'none';
-    } else {
-      img.src = '';
-      img.style.display = 'none';
-      empty.style.display = 'flex';
-    }
-  }
+  // ---------- PEEP 实时预览（三态：内嵌 / 全屏 / 悬浮窗） ----------
+  // 帧消费实现来自 peep-consumer.js（与悬浮窗共用同一份代码，不重复实现）。
+  // 消费者互斥：悬浮窗打开期间本页不拉帧，卡片退化为占位符（见 setPreviewFloating）。
+  let previewMode = 'normal'; // 'normal' | 'fullscreen' | 'floating'
 
-  async function pollPeepFrame() {
-    const page = $('page-data');
-    const active = state.peepEnabled && page && !page.classList.contains('hidden');
-    if (active) {
-      try {
-        const d = await mra.call('get_peep_frame');
-        updatePreview(d && d.frame);
-      } catch (e) { /* 预览轮询失败静默 */ }
-    }
-    setTimeout(pollPeepFrame, active ? 100 : 400); // 激活时 ~10fps，空闲降频省资源
+  const peepConsumer = PeepConsumer.create(mra, {
+    isActive: () => {
+      if (previewMode === 'floating') return false; // 消费权已交给悬浮窗
+      const page = $('page-data');
+      return state.peepEnabled && !!page && !page.classList.contains('hidden');
+    },
+    img: () => $(currentModuleId + '-preview-img'),
+    empty: () => $(currentModuleId + '-preview-empty')
+  });
+
+  /** 悬浮窗开关（C# 广播）：卡片与占位符互换，并把帧消费权交出去 / 收回来。 */
+  function setPreviewFloating(floating) {
+    if (floating === (previewMode === 'floating')) return;
+    previewMode = floating ? 'floating' : 'normal';
+    const card = $(currentModuleId + '-preview-card');
+    if (card) card.classList.toggle('preview-card--floating', floating);
+    if (!floating) refreshDebugState(); // 收回消费权：PEEP 开关可能已在悬浮窗里改过，回填一次
   }
 
   // 默认（竞速形状）性能卡：YOLO 推理 / 截图耗时 / 当前阶段。
@@ -1550,15 +1551,22 @@
 
         <!-- 实时预览 -->
         <div class="card card-flex preview-card" id="${mid}-preview-card">
+          <!-- 悬浮窗接管期间的占位符（三态互斥，见 previewMode） -->
+          <div class="preview-away" id="${mid}-preview-away">
+            <span>PEEP 离家出走啦~</span>
+          </div>
           <div class="card-head">
             <h3>实时预览</h3>
             <div class="log-head-actions">
-              <button class="icon-btn" id="${mid}-btn-preview-toggle" title="暂停预览">
+              <button class="icon-btn" id="${mid}-btn-preview-float" type="button" title="悬浮窗显示（脱离主界面）">
+                ${MRAIcons.svg('picture-in-picture-2')}
+              </button>
+              <button class="icon-btn" id="${mid}-btn-preview-max" type="button" title="全屏">
+                <morph-icon reduced-motion="user"></morph-icon>
+              </button>
+              <button class="icon-btn" id="${mid}-btn-preview-toggle" type="button" title="开始预览">
                 ${MRAIcons.svg('media-play', {class: 'icon-play'})}
                 ${MRAIcons.svg('media-pause', {class: 'icon-pause'})}
-              </button>
-              <button class="icon-btn" id="${mid}-btn-preview-max" title="放大">
-                <morph-icon reduced-motion="user"></morph-icon>
               </button>
             </div>
           </div>
@@ -1858,9 +1866,10 @@
       });
     }
 
-    // 实时预览卡：播放/暂停（peep 开关）+ 放大/还原（morph-icon 弹簧变形，scan ↔ shrink）
+    // 实时预览卡：三个图标按钮 —— 悬浮窗 / 全屏 / 开关（三态互斥，见 previewMode）
     const previewToggle = p('btn-preview-toggle');
     const previewMax = p('btn-preview-max');
+    const previewFloat = p('btn-preview-float');
     const previewCard = p('preview-card');
     if (previewMax) {
       const morphEl = previewMax.querySelector('morph-icon');
@@ -1872,7 +1881,7 @@
         const on = !state.peepEnabled;
         setPreviewPlayState(on);      // 先翻转视觉状态
         try {
-          await mra.call('set_peep', { enabled: on });
+          await PeepConsumer.setPeep(mra, on);
           state.peepEnabled = on;
         } catch (e) {
           console.error(e);
@@ -1886,6 +1895,16 @@
       previewMax.addEventListener('click', () => {
         if (previewCard.classList.contains('preview-card--fullscreen')) exitPreviewFullscreen(previewCard);
         else enterPreviewFullscreen(previewCard);
+      });
+    }
+
+    if (previewFloat) {
+      previewFloat.addEventListener('click', () => {
+        // 三态互斥：全屏态点悬浮窗先退回普通态，不与悬浮窗形态并存
+        if (previewCard && previewCard.classList.contains('preview-card--fullscreen')) {
+          exitPreviewFullscreen(previewCard);
+        }
+        postWindowAction('peep-float');
       });
     }
 
@@ -1964,8 +1983,9 @@
     el.setAttribute('aria-checked', String(on));
   }
 
-  // ---------- 实时预览：播放状态视觉 ----------
-  // on=true 默认显示「暂停」图标（表示正在预览）；off 显示「播放」图标（预览已停）
+  // ---------- 实时预览：播放/暂停图标状态 ----------
+  // on=true 显示「暂停」图标（表示正在预览）；off 显示「播放」图标（预览已停）。
+  // title 即悬停提示（暂停预览 / 开始预览），与悬浮窗上的同名按钮语义一致。
   function setPreviewPlayState(on) {
     const btn = $(currentModuleId + '-btn-preview-toggle');
     if (!btn) return;
@@ -2006,13 +2026,13 @@
     if (pageEl) pageEl.classList.toggle('preview-fs-active', active);
   }
 
-  // 放大/还原共用一个按钮：morph-icon 在 scan ↔ shrink 间弹簧变形，title 同步切换
+  // 全屏/还原共用一个图标按钮：morph-icon 在 scan ↔ shrink 间弹簧变形，title 同步切换
   function setPreviewMaxState(fs) {
     const btn = $(currentModuleId + '-btn-preview-max');
     if (!btn) return;
     const morphEl = btn.querySelector('morph-icon');
     if (morphEl) morphEl.icon = MRAIcons.node(fs ? 'shrink' : 'scan');
-    btn.title = fs ? '还原' : '放大';
+    btn.title = fs ? '还原' : '全屏';
   }
 
   function enterPreviewFullscreen(card) {

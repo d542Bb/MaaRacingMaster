@@ -148,6 +148,8 @@ public sealed partial class MainWindow : Window
                 _sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_master.core.sidecar", projectRoot);
                 // 运行结束自动退出：sidecar 推 auto_exit → shell 关闭主窗口优雅退出
                 _sidecar.SidecarEvent += OnSidecarEvent;
+                // RPC 转发层绑定后端：主窗口与 PEEP 悬浮窗共用（回发按 sender 定位）
+                RpcBridge.Attach(_sidecar);
             }
             catch (Exception ex)
             {
@@ -277,16 +279,13 @@ public sealed partial class MainWindow : Window
                     case "minimize": MinimizeWindow(); break;
                     case "maximize": ToggleMaximizeWindow(); break;
                     case "close": CloseWindow(); break;
+                    case "peep-float": TogglePeepWindow(); break; // 预览「悬浮窗」按钮
                 }
             }
             else if (msgType == "call")
             {
-                var callId = root.GetProperty("callId").GetInt64();
-                var method = root.GetProperty("method").GetString() ?? "";
-                var paramsEl = root.TryGetProperty("params", out var p) && p.ValueKind != JsonValueKind.Null
-                    ? p
-                    : (JsonElement?)null;
-                _ = HandleCallAsync(sender, callId, method, paramsEl);
+                // RPC 转发已抽到 RpcBridge（与 PEEP 悬浮窗共用同一实现，回发按 sender 定位）
+                RpcBridge.TryHandleCall(sender, root);
             }
         }
         catch (Exception ex)
@@ -352,32 +351,60 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task HandleCallAsync(WebView2 sender, long callId, string method, JsonElement? paramsEl)
+    // ---------- PEEP 悬浮窗（脱离 GUI 的置顶播放器窗） ----------
+
+    private PeepWindow? _peepWindow;
+
+    /// <summary>
+    /// 打开/激活 PEEP 悬浮窗（单例：已开则只激活，不重复创建）。
+    /// 打开期间向主界面广播 peep-floating=true，主界面预览卡退化为占位符并停止拉帧
+    /// —— 消费者互斥：同一时刻只有一个帧消费者。
+    /// </summary>
+    private void TogglePeepWindow()
     {
-        object? data = null;
-        string? error = null;
-        bool ok = true;
-        try
+        if (_peepWindow is not null)
         {
-            if (_sidecar is null)
-                throw new InvalidOperationException("backend unavailable");
-            var resp = await _sidecar.CallAsync(method, paramsEl, TimeSpan.FromSeconds(10));
-            data = resp.GetProperty("data"); // JsonElement：null 或对象直接嵌入回传
+            _peepWindow.Activate();
+            return;
         }
-        catch (Exception ex)
+
+        var peepHtml = ResolveRepoAssetPath("apps", "MaaRacingMaster.Shell", "frontend", "peep.html");
+        if (peepHtml is null)
         {
-            ok = false;
-            error = ex.Message;
+            Console.Error.WriteLine("[shell] 未找到 frontend/peep.html，悬浮窗无法打开");
+            return;
         }
 
         try
         {
-            var reply = JsonSerializer.Serialize(new { type = "response", callId, ok, data, error });
-            sender.CoreWebView2.PostWebMessageAsJson(reply); // 同步 API
+            var win = new PeepWindow(peepHtml, AppWindow);
+            win.Closed += (_, _) =>
+            {
+                _peepWindow = null;
+                PostPeepFloating(false); // 关窗即还原：主界面卡片恢复并接管拉帧
+            };
+            _peepWindow = win;
+            win.Activate();
+            PostPeepFloating(true);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[shell] 回传 JS 失败: {ex.Message}");
+            _peepWindow = null;
+            Console.Error.WriteLine($"[shell] 悬浮窗创建失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>向主界面广播悬浮态（前端据此切换预览卡/占位符并交接帧消费者）。</summary>
+    private void PostPeepFloating(bool value)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(new { type = "peep-floating", value });
+            web.CoreWebView2?.PostWebMessageAsJson(json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[shell] 广播悬浮态失败: {ex.Message}");
         }
     }
 
@@ -385,6 +412,17 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        // 0. 悬浮窗连带销毁：主窗口退出后它不再有可依附的后端，留下来只会是黑窗
+        try
+        {
+            _peepWindow?.Close();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[shell] 悬浮窗关闭异常: {ex.Message}");
+        }
+        _peepWindow = null;
+
         if (_sidecar is not null)
         {
             try
@@ -401,6 +439,7 @@ public sealed partial class MainWindow : Window
                 Console.Error.WriteLine($"[shell] sidecar 关闭异常: {ex.Message}");
             }
             _sidecar.Dispose();
+            RpcBridge.Attach(null); // 解绑后端：此后任何窗口的 RPC 一律回 backend unavailable
         }
     }
 }

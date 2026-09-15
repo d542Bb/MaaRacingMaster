@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>PEEP 悬浮窗探测</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1a2e; color: #e6e6f0;
+               font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+  #box { box-sizing: border-box; height: 100%; padding: 10px 12px;
+         display: flex; flex-direction: column; gap: 8px; }
+  #title { font-size: 13px; font-weight: 600; }
+  #stage { font-size: 12px; line-height: 1.5; color: #9fe8b0; word-break: break-all; }
+  #log { flex: 1; overflow: hidden; font-size: 10px; line-height: 1.45;
+         color: #8a8aa8; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <div id="box">
+    <div id="title">第二个 WebView2 探测</div>
+    <div id="stage">初始化…</div>
+    <div id="log"></div>
+  </div>
+  <script src="probe.js"></script>
+</body>
+</html>

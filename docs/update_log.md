@@ -7,6 +7,26 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）PEEP 悬浮窗（脱离 GUI 的置顶播放器窗）🪟
+
+- **性质：** 未发版变更（shell 宿主 + 前端；Python 后端零改动。master 直接提交、不 tag）
+
+- **新增形态：** 数据页「实时预览」卡新增第三个图标按钮（悬浮窗，图标 `picture-in-picture-2`，lucide 真源新拷入 `icons.js`）。点开后 PEEP 画面脱离主 GUI，落到主窗口所在显示器左上角的一个**工具窗**（不占 Alt-Tab / 任务栏）+ 置顶 + 无系统边框的独立窗口；主界面卡片同时退化为虚线占位「PEEP 离家出走啦~」。
+
+- **三态互斥：** 预览卡在 normal（卡片内嵌）/ fullscreen（撑满数据页）/ floating（悬浮窗接管）三态间互斥，切换经 `previewMode` 单一变量收口；全屏态点悬浮窗会先退回普通态。
+
+- **单消费者：** 悬浮窗存在期间主界面**停止拉帧**，帧消费唯一由悬浮窗承担（两侧共用 `frontend/peep-consumer.js` 一份实现）；关闭悬浮窗时 C# 广播 `peep-floating` 事件，卡片恢复并把消费权交回。后端每帧因此只被编码一次，不存在双路拉流。
+
+- **复用既有能力，不新增帧出口：** 帧真源、`get_peep_frame` / `set_peep`、sidecar 单进程单通道全部照旧；C# 侧把原 `MainWindow.HandleCallAsync` 抽成 `RpcBridge`（回发按 `sender` 定位，两个 WebView2 各注册一次即可，天然不串台）。
+
+- **防呆：** 启动不自动开悬浮窗；位置 / 尺寸 / 形态不落盘（每次都是左上角默认尺寸）；悬浮窗单例（重复点只激活）；主窗口关闭时先连带销毁悬浮窗再关 sidecar。
+
+- **尺寸口径：** 按 16:9 的 270p 反算——270p 指**物理像素** 480×270，故 DIP 取 384×216（125% 缩放下正好 480×270 物理像素）。直接写 480 DIP 会被系统放大成 600 物理像素，实机截图逐像素量测偏大约 25%。
+
+- **真机修的两个坑：** ① 标题栏拖不动——根因是 `SetBorderAndTitleBar(false, false)` 完全无边框时 `AppWindow.TitleBar.SetDragRectangles` 的命中不生效，改为 `(true, false)`（保留边框、只去系统标题栏，与主窗口同口径）；② 预览卡三个按钮初版误做成文字按钮（把设计稿里的括号标注当成了按钮文案），已改回图标并保留悬停注释。
+
+- **验证：** 同进程双 WebView2 前置探测通过（`tools/experiments/dual-webview2/`：第二个 WebView2 可创建、可加载 `file://`、16 轮 RPC 全通且无串台）；`dotnet build` 无警告；悬浮窗开 / 关、拖动、占位符与还原经用户实机确认。
+
 ### 暂存（未发布 · 待并入下一版本）出价按钮文字 ROI 加宽，救回「已出价」提交铁证 🔧
 
 - **性质：** 未发版变更（`plugins/treasure/resources/policy/treasure.policy.json` 一处 rect，配套更新两处写死旧 rect 的测试期望；master 直接提交、不 tag）

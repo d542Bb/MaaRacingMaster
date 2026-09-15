@@ -576,6 +576,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .preview-empty svg { width: 32px; height: 32px; opacity: 0.6; }
 .preview-control { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; flex-shrink: 0; }
 
+/* 悬浮窗接管期间：卡片内容让位给虚线占位框（三态互斥中的 floating 态） */
+.preview-away {
+  display: none; flex: 1; min-height: 0; margin: 12px;
+  border: 1px dashed var(--mra-foreground-muted);
+  border-radius: var(--mra-radius-md);
+  align-items: center; justify-content: center;
+  color: var(--mra-foreground-muted); font-size: 12px;
+}
+.preview-card--floating .preview-away { display: flex; }
+.preview-card--floating .card-head,
+.preview-card--floating .preview-wrap { display: none; }
+
 /* 实时预览：播放/暂停图标（默认播放态，由 JS 按 peep 状态切换） */
 #page-data .preview-card .icon-play { display: block; }
 #page-data .preview-card .icon-pause { display: none; }
