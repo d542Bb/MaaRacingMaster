@@ -52,6 +52,8 @@
     stages: [],
     selected_index: -1,
     is_running: false,
+    // get_initial_state 返回的模块列表（含 expired / valid_until：下拉栏置灰与过期警告文案的数据源）
+    modules: [],
     _lastRunState: false,
     peepEnabled: false,
     // 性能卡走势图环形缓冲：250ms 轮询 × 120 点 ≈ 近 30 秒。快照里的数值本身
@@ -741,40 +743,120 @@
     peepConsumer.start(500);           // PEEP 预览轮询（peep 开启 + 数据页可见 + 未脱离悬浮窗时 ~10fps）
   }
 
+  // 「（空）」选项：不选择任何活动模块（无可用模块 / 用户主动清空）时的合法状态，
+  // value 为空串，避免空下拉栏取值报错。
+  const EMPTY_MODULE_LABEL = '（空）';
+
+  // 有效期端点（manifest 声明的 ISO 8601）→「YYYY-MM-DD HH:MM」原样展示：
+  // 端点本就是游戏服时间，不做时区换算；格式不符时原样返回。
+  function formatValidity(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso || ''));
+    return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : String(iso || '');
+  }
+
   function renderModuleSelect(modules, selectedId) {
     const sel = $('module-select');
+    state.modules = Array.isArray(modules) ? modules : [];
     sel.innerHTML = '';
-    modules.forEach((m) => {
+    state.modules.forEach((m) => {
       const opt = document.createElement('option');
       opt.value = m.id;
-      opt.textContent = m.id + ' — ' + m.name;
+      opt.textContent = m.expired ? `${m.id} — ${m.name}（已过期）` : `${m.id} — ${m.name}`;
+      if (m.expired) {
+        // 置灰只是视觉提示：仍然可选中，选中时由 onModuleChange 弹窗确认
+        opt.dataset.expired = '1';
+        opt.style.color = 'var(--mra-foreground-secondary,#4A5160)';
+      }
       if (m.id === selectedId) opt.selected = true;
       sel.appendChild(opt);
     });
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = EMPTY_MODULE_LABEL;
+    if (!selectedId) blank.selected = true;
+    sel.appendChild(blank);
     sel.onchange = onModuleChange;
     updateModuleDesc(selectedId);
   }
 
   function updateModuleDesc(moduleId) {
+    const el = $('module-desc');
+    if (!el) return;
+    if (!moduleId) {
+      el.textContent = '未选择活动模块';
+      return;
+    }
     const descs = { treasure: '寻宝模式' };
-    $('module-desc').textContent = descs[moduleId] || '';
+    const m = state.modules.find((x) => x.id === moduleId);
+    const parts = [descs[moduleId] || ''];
+    if (m && m.expired) {
+      parts.push('已过期' + (m.valid_until ? `（有效期至 ${formatValidity(m.valid_until)}）` : ''));
+    }
+    el.textContent = parts.filter(Boolean).join(' · ');
+  }
+
+  // 过期模块的强制选择确认：确认后按 force 下发，取消/点空白处一律撤销选项。
+  // 复用通用模态（openModal），Promise 化以便 onModuleChange 顺序处理。
+  function confirmExpiredModule(moduleId) {
+    const m = state.modules.find((x) => x.id === moduleId);
+    const until = (m && m.valid_until) ? formatValidity(m.valid_until) : '';
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (ok, modal) => {
+        if (settled) return;
+        settled = true;
+        if (modal) modal.close();
+        resolve(ok);
+      };
+      const modal = openModal({
+        title: '模块已过期',
+        titleColor: 'var(--mra-warning,#F59E0B)',
+        bodyHtml:
+          '<p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:var(--mra-foreground,#1F2430);">' +
+          '此模块已过期，可能无法正常使用！</p>' +
+          (until
+            ? '<p style="margin:0;font-size:12px;color:var(--mra-foreground-secondary,#4A5160);">' +
+              '声明有效期至 ' + until + '。</p>'
+            : ''),
+        buttons: [
+          { text: '取消', onClick: (mm) => finish(false, mm) },
+          { text: '仍然选择', primary: true, onClick: (mm) => finish(true, mm) },
+        ],
+      });
+      // 点空白关闭是 openModal 内置行为：一并视为取消（close 在点击时才取值，可安全包一层）
+      const origClose = modal.close;
+      modal.close = function () { finish(false, null); origClose(); };
+    });
   }
 
   async function onModuleChange() {
-    const mid = $('module-select').value;
+    const sel = $('module-select');
+    const mid = sel.value;
+    const opt = sel.options[sel.selectedIndex];
+    let force = false;
+    if (mid && opt && opt.dataset.expired === '1') {
+      const confirmed = await confirmExpiredModule(mid);
+      if (!confirmed) {
+        sel.value = currentModuleId || ''; // 撤销选择：回到当前生效模块
+        return;
+      }
+      force = true;
+    }
     try {
-      const data = await mra.call('select_module', { module_id: mid });
+      const data = await mra.call('select_module', { module_id: mid, force: force });
+      const applied = data.module_id || '';
       state.stages = data.stages || [];
       state.selected_index = 0;
       renderStageList();
-      updateModuleDesc(mid);
+      updateModuleDesc(applied);
       // 模块切换后：重新刷新模块专属选项（显示/隐藏 + 配置回读）
-      refreshModuleOptions(mid);
+      refreshModuleOptions(applied);
       // 数据/设置页卡片跟随模块切换
-      renderModulePages(mid);
+      renderModulePages(applied);
     } catch (e) {
       console.error(e);
       showError(e.message);
+      sel.value = currentModuleId || ''; // 后端拒绝时同样撤销显示值，避免前后端不一致
     }
   }
 
@@ -1736,8 +1818,23 @@
     treasure: { data: treasureDataCards, settings: defaultSettingsCards },
   };
 
+  // 未选择模块（下拉栏「（空）」或注册表为空）时，「数据/设置」页的占位内容
+  const EMPTY_MODULE_HTML =
+    '<div class="card"><div class="card-head"><h3>未选择活动模块</h3></div>' +
+    '<div class="card-body"><p class="module-desc">请在左上「活动模块」下拉栏中选择一个模块。</p></div></div>';
+
   // 按模块渲染「数据/设置」页并绑定当前模块的控件事件
   function renderModulePages(moduleId) {
+    // 未选择模块：两页只放占位内容、不挂模块控件；currentModuleId 置空后，
+    // 轮询里所有带模块前缀的取值都会落空并由各自的判空守卫跳过。
+    if (!moduleId) {
+      currentModuleId = '';
+      const dataHost = $('page-data');
+      const settingsHost = $('page-settings');
+      if (dataHost) dataHost.innerHTML = EMPTY_MODULE_HTML;
+      if (settingsHost) settingsHost.innerHTML = EMPTY_MODULE_HTML;
+      return;
+    }
     // 防注入白名单：moduleId 会拼入 HTML 模板（如 id="${mid}-..."），
     // 只接受注册表中已声明的模块键，非法值一律回退 treasure（兼断 CodeQL js/xss-through-dom 污点）
     if (!Object.prototype.hasOwnProperty.call(MODULE_PAGE_DEFS, moduleId)) {

@@ -41,7 +41,9 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
+    first_available_module_id,
     get_module_info,
+    module_expired,
 )
 from maaracing_master.core.paths import config_dir, data_dir, user_data_dir
 from maaracing_master.core.window_utils import ensure_dpi_aware, has_physical_controller
@@ -301,11 +303,13 @@ class SidecarService:
         self._controller = MaaRacingMasterController()
         self._lock = threading.RLock()
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
-        # 默认选中鉴宝模块（GUI 进入即默认展示鉴宝；未注册时回退到第一个已注册模块）。
+        # 默认选中鉴宝模块（GUI 进入即默认展示鉴宝；未注册或已过期时回退到第一个
+        # 仍在有效期内的模块；全部不可用则不预选，由 GUI「（空）」承担该状态）。
         # 以模块 id 常量引用，避免 sidecar 耦合具体插件包。
         self._selected_module = (
-            _DEFAULT_MODULE_ID if _DEFAULT_MODULE_ID in MODULE_REGISTRY
-            else (next(iter(MODULE_REGISTRY)) if MODULE_REGISTRY else None)
+            _DEFAULT_MODULE_ID
+            if _DEFAULT_MODULE_ID in MODULE_REGISTRY and not module_expired(_DEFAULT_MODULE_ID)
+            else first_available_module_id()
         )
         try:
             self._stages = get_module_info(self._selected_module)["stages"] if self._selected_module else []
@@ -411,7 +415,8 @@ class SidecarService:
             cache = {k: mc[k] for k in _MODULE_CONFIG_KEYS if k in mc}
             if cache:
                 mid = mc.get("module_id")
-                if not (isinstance(mid, str) and mid in MODULE_REGISTRY):
+                # 残留 id 已被剥离或已过有效期：一律忽略，落到本次会话的默认模块
+                if not (isinstance(mid, str) and mid in MODULE_REGISTRY) or module_expired(mid):
                     mid = self._selected_module
                 cache["module_id"] = mid
                 self._cached_module_config = cache
@@ -429,12 +434,15 @@ class SidecarService:
         }, None)
 
     def _module_list(self) -> list:
+        """GUI 下拉栏数据源：含声明有效期与过期标记（过期项前端置灰、不自动选中）。"""
         return [
             {
                 "id": mid,
                 "name": info["name"],
                 "stages": info["stages"],
                 "requires_gamepad_exclusive": info["requires_gamepad_exclusive"],
+                "expired": info["expired"],
+                "valid_until": info["valid_until"],
             }
             for mid, info in (
                 (mid, get_module_info(mid)) for mid in MODULE_REGISTRY
@@ -454,11 +462,25 @@ class SidecarService:
             return True
 
     def select_module(self, params):
+        """切换活动模块。
+
+        - module_id 为空 = GUI「（空）」选项：清空选择并正常返回（无模块可用时的合法状态）；
+        - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝；
+        - 未知 id 仍返回「模块不存在」。
+        """
         module_id = params.get("module_id")
+        if not module_id:
+            with self._lock:
+                self._selected_module = None
+                self._stages = []
+            logger.log("活动模块已清空选择")
+            return (True, {"stages": [], "module_id": None}, None)
         try:
             info = get_module_info(module_id)
         except KeyError:
             return (False, None, f"模块不存在: {module_id}")
+        if info["expired"] and not params.get("force"):
+            return (False, None, f"模块已过期，需确认后才能选择: {module_id}")
         with self._lock:
             self._selected_module = module_id
             self._stages = info["stages"]

@@ -7,6 +7,26 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）模块有效期门：过期模块不再自动选中，仍可强制选择 ⏳
+
+- **性质：** 未发版变更（core 契约 + sidecar + 前端 + 新纯函数模块；修复类零改动）
+
+- **声明方式：** 有效期由模块自己在 `manifest.py` 里声明（`VALID_FROM` / `VALID_UNTIL`，ISO 8601，**两端均含**，缺省 = 永久有效），不另设真源；`templates/plugin/manifest.py` 同步给出模板字段与注释。
+
+- **判定落点：** 新增纯函数模块 `maaracing_master/core/module_validity.py`（端点解析 + 闭区间判定，不 import registry / logger / 插件，单测可直导、不触发 plugins 重依赖扫描）；`core/registry.py` 只负责从 manifest 取字段、保管端点，对外新增 `module_validity` / `module_expired` / `module_available` / `first_available_module_id`，`get_module_info` 增 `valid_from` / `valid_until` / `expired` 三个字段。解析失败（类型/格式非法）记 WARNING 后按「未声明」处理，不阻断插件加载。
+
+- **过期模块的去向：** 照常注册、照常出现在下拉栏（置灰 + 「（已过期）」文案后缀），只是**不再自动选中**：启动默认选中与 `profile` 里 `module_config.module_id` 的回填都跳过它（落到第一个仍在有效期内的模块）；未经确认的 `select_module` 返回「模块已过期，需确认后才能选择」。
+
+- **强制选择：** 下拉栏仍可选过期模块，前端弹窗「**此模块已过期，可能无法正常使用！**」（附声明的有效期至）确认后带 `force=true` 重发；取消或点空白处则撤销选项、回到当前模块。后端拒绝时前端同样回滚显示值，避免前后端不一致。
+
+- **（空）选项：** 下拉栏新增 value 为空串的「（空）」项——无可用模块或想不选任何模块时选中它即 `select_module` 返回成功且 `selected_module=None`；数据/设置页退化为占位内容，此时点「开始运行」得到「未选择活动模块」的明确提示，而不是前端报错。
+
+- **当前声明窗口：** 巅峰鉴宝 = 2026-08-06 05:00 — 2026-09-23 04:59（游戏服时间 UTC+8；端点当刻仍有效，故本次改动对窗口内的使用无行为变化）。
+
+- **回归锁：** `tests/test_module_validity.py` 16 条——端点解析（带偏移 / naive 按 UTC+8 解释 / 非法类型 / 非法格式 / 字段缺省）、过期与窗口判定（闭区间两端、未声明 = 永久有效、跨时区一致）、treasure manifest 的窗口契约锁。
+
+- **验证：** sidecar 门控经临时探针实测四条路径（正常选择 / 未知模块 / （空）清空 / 过期拒绝 + force 放行）后删除探针；全量 `pytest` 571 项绿。
+
 ### 暂存（未发布 · 待并入下一版本）PEEP 悬浮窗（脱离 GUI 的置顶播放器窗）🪟
 
 - **性质：** 未发版变更（shell 宿主 + 前端；Python 后端零改动。master 直接提交、不 tag）

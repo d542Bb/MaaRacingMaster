@@ -117,7 +117,8 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │   ├── core/                                 # 主程序（应用层）
 │   │   ├── controller.py                     # 主控编排（生命周期 + 能力门面 ActivityContext，已不直接持有 MAA 对象）
 │   │   ├── sidecar.py                        # JSONL RPC 业务后端（供 MaaRacingMaster.Shell.exe 托管）
-│   │   ├── registry.py                       # 插件自动扫描注册表（扫 plugins/*/manifest.py）
+│   │   ├── registry.py                       # 插件自动扫描注册表（扫 plugins/*/manifest.py，含有效期门）
+│   │   ├── module_validity.py                # 模块有效期判定（manifest VALID_FROM / VALID_UNTIL，纯函数）
 │   │   ├── base.py                           # ActivityContext / ActivityModule 基类
 │   │   ├── capabilities.py                   # typed capability 窄接口 + adapter
 │   │   ├── clicker.py / gamepad_cursor.py / audio_volume.py    # 点击方式 / 手柄光标 / 静音
@@ -130,7 +131,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │   └── plugins/                              # 活动插件（一活动 = 一自包含目录，放入即装/删除即卸）
 │       └── treasure/                         # 巅峰鉴宝
 │           ├── CODE_WIKI.md                  # 鉴宝域文档
-│           ├── manifest.py                   # ID + MODULE_CLASS（registry 扫描用）
+│           ├── manifest.py                   # ID + MODULE_CLASS + 可选 VALID_FROM/VALID_UNTIL（registry 扫描用）
 │           ├── __init__.py                   # PLUGIN_DIR / RES_DIR / IMAGE_DIR / PIPELINE_DIR / POLICY_PATH / nav_source()
 │           ├── module.py / detector.py / ocr.py / strategy.py
 │           ├── policy_bridge.py / eggs.py / renderer.py / store.py
@@ -573,6 +574,11 @@ core/controller.py
 plugins/treasure/module.py
   └── treasure_detector / treasure_ocr / strategy / eggs / renderer / store（同目录）
 
+core/registry.py（插件真源入口：manifest = ID + MODULE_CLASS + 可选有效期）
+  ├── core.base.ActivityContext / core.base.ActivityModule（注册类型与实例化）
+  ├── core.module_validity（有效期解析与判定，纯函数）
+  └── core.logger.logger
+
 core/yolo_detector.py
   └── core.logger.logger
 
@@ -988,7 +994,7 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 | ------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------ |
 | `MaaRacingMasterController`          | core/controller.py                                                                        | 主控编排：能力门面 + 模块生命周期 + 全局设置            |
 | `ActivityModule` / `ActivityContext` | core/base.py                                                                              | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
-| `Registry`                           | core/registry.py                                                                          | 插件自动扫描注册（扫 `plugins/*/manifest.py`）  |
+| `Registry`                           | core/registry.py                                                                          | 插件自动扫描注册（扫 `plugins/*/manifest.py`；含有效期门与自动选中过滤）  |
 | `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机）                    |
 | `MRAGUI`                             | ~~gui.py~~（已归档移除）                                                                         | 旧 ttkbootstrap 图形界面（已废弃，代码已删）        |
 | `Sidecar`                            | core/sidecar.py                                                                           | JSONL RPC 业务后端（mra\_shell 托管）        |
