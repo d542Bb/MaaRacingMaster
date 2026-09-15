@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import threading
 from collections import deque
 from queue import Queue
 from types import SimpleNamespace
@@ -217,3 +218,81 @@ def test_peep_only_mode_uses_fast_interval_and_no_frame_number():
     assert kind == "peep"
     assert (idx, didx) == (0, 0)
     assert fake._saved_frames == 0
+
+
+# ---------- 启动判据（真机 2026-09-15 两场会话暴露的缺口） ----------
+#
+# 上面那批契约测试全是**方法级**：直接调 _observe_tick_once / _observe_interval_s，
+# 因此"观察线程到底有没有被启动"从未被钉住。两场真机日志暴露了两处判据过期：
+#   173823：不开 PEEP/Debug 跑会话 → 观察线程根本没起 → 阶段判定无帧可判；
+#   173229：会话途中打开 PEEP → 无第二个启动点 → 全程无预览。
+
+
+def test_session_workers_always_start_observer_even_when_all_sinks_off():
+    """两个出口全关，观察线程也必须起：它是阶段判定的唯一生产者。
+
+    观察线程是 `_obs_slot` 的唯一写者，决策段 `_consume_stage_slot` 读不到槽就直接
+    返回 → 阶段永不推进，整个流程停摆。旧判据把它绑在 debug/peep 开关上，
+    全关会话的阶段判定从未跑起来过（与 _observe_interval_s 声明的 C6 直接冲突）。
+    """
+    fake = _FakeSelf(debug_on=False, peep_on=False, saving=False)
+    started = []
+    fake._start_io_worker = lambda: started.append("io")
+    fake._start_observer = lambda: started.append("observer")
+
+    TreasureModule._start_session_workers(fake)
+
+    assert started == ["observer"], "全关时观察线程仍须启动（阶段判定恒在）"
+
+
+def test_session_workers_start_io_worker_only_when_sink_on():
+    """IO worker 仍按出口开关（全关不养空转线程），且先于观察线程起。"""
+    for debug_on, peep_on, saving in ((True, False, True), (False, True, False)):
+        fake = _FakeSelf(debug_on=debug_on, peep_on=peep_on, saving=saving)
+        started = []
+        fake._start_io_worker = lambda: started.append("io")
+        fake._start_observer = lambda: started.append("observer")
+
+        TreasureModule._start_session_workers(fake)
+
+        assert started == ["io", "observer"], (debug_on, peep_on)
+
+
+def test_ensure_io_worker_backfills_when_sink_opened_mid_session():
+    """会话途中打开 Debug/PEEP：观察循环补启 IO worker，不必重开会话。
+
+    真机 173229：第一次会话途中开 PEEP 全程无预览，重开会话（启动时已开）才出图。
+    """
+    fake = _FakeSelf(debug_on=False, peep_on=False, saving=False)
+    calls = []
+    fake._start_io_worker = lambda: calls.append("io")
+
+    TreasureModule._ensure_io_worker(fake)
+    assert calls == [], "出口全关：不养空转线程"
+
+    fake.ctx.debug.peep_enabled = True
+    TreasureModule._ensure_io_worker(fake)
+    assert calls == ["io"], "打开出口：补启 IO worker"
+
+    fake.ctx.debug.enabled = True
+    TreasureModule._ensure_io_worker(fake)
+    assert calls == ["io", "io"], "每 tick 复查一次（幂等由 _start_io_worker 内部保证）"
+
+
+def test_observer_loop_backfills_io_worker():
+    """补启的真实调用点在观察循环里（每 tick 复查），不是只在启动路径。"""
+    fake = _FakeSelf(debug_on=False, peep_on=True, saving=False)
+    fake._observe_stop = threading.Event()
+    fake._observe_interval_s = lambda: 0.01
+    fake._ensure_io_worker = TreasureModule._ensure_io_worker.__get__(fake)
+    calls = []
+    fake._start_io_worker = lambda: calls.append("io")
+
+    def _tick_once():
+        fake._observe_stop.set()   # 跑一轮即收工，避免测试卡在真循环里
+
+    fake._observe_tick_once = _tick_once
+
+    TreasureModule._observer_loop(fake)
+
+    assert calls == ["io"]

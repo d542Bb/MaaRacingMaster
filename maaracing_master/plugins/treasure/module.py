@@ -1302,9 +1302,8 @@ class TreasureModule(ActivityModule):
         # 3.1 启动 debug 落盘 IO worker（仅 debug/peep 开启时有任务；全关不启动空转线程）。
         #     渲染 + raw/rendered 写盘移出主线程，wait_result 段帧率不再被存盘拖慢。
         # 3.2 观察通路：帧供给独立于决策段，厅类阶段（无 policy 帧）也照常出图。
-        if self.ctx.debug.enabled or self.ctx.debug.peep_enabled:
-            self._start_io_worker()
-            self._start_observer()
+        #     起法见 _start_session_workers（观察线程无条件，判据不绑开关）。
+        self._start_session_workers()
 
         # 4. 解析断点（换算收敛到统一底座 StageTracker，先 in 判断保护非法值回退 0）
         self._stage_tracker = StageTracker(self.STAGE_ORDER)
@@ -3525,6 +3524,19 @@ class TreasureModule(ActivityModule):
         snap["treasure_debug_index"] = didx
         return snap
 
+    def _start_session_workers(self) -> None:
+        """会话启动时的 worker 起法（唯一入口，回归锁直接钉这条判据）。
+
+        观察线程**无条件**启动：它同时是阶段判定的唯一生产者（C6 阶段判定消费者恒在），
+        按 debug/peep 开关决定它起不起，会让两个出口全关的会话阶段判定彻底停摆——
+        _obs_slot 恒为 None → 决策段 _consume_stage_slot 直接返回 → 阶段永不推进
+        （真机 2026-09-15 173823：不开 PEEP 跑会话，阶段判定完全没有帧可判）。
+        IO worker 仍只服务存图/预览两个出口，会话中途打开由 _ensure_io_worker 补启。
+        """
+        if self.ctx.debug.enabled or self.ctx.debug.peep_enabled:
+            self._start_io_worker()
+        self._start_observer()
+
     def _start_io_worker(self) -> None:
         """启动 debug 落盘 IO worker（daemon 线程）。"""
         if self._io_thread is not None and self._io_thread.is_alive():
@@ -3596,11 +3608,26 @@ class TreasureModule(ActivityModule):
             if interval_s is None:
                 self._observe_stop.wait(self.OBSERVE_INTERVAL_MS / 1000.0)
                 continue
+            self._ensure_io_worker()   # 出口按需补启（会话中途打开 Debug/PEEP）
             try:
                 self._observe_tick_once()
             except Exception as exc:  # noqa: BLE001 —— 观察通路故障不得波及执行通路
                 logger.log(f"[鉴宝] 观察帧异常（跳过本帧）: {exc}", "DEBUG")
             self._observe_stop.wait(interval_s)
+
+    def _ensure_io_worker(self) -> None:
+        """存图 / 预览出口按需补启（幂等）。
+
+        会话启动点只在会话开头读一次开关，会话中途打开 Debug 或 PEEP 时没有第二个
+        启动点，落盘与预览就一直是哑的（真机 2026-09-15 173229：第一次会话途中开
+        PEEP 全程无预览，重开会话才有帧）。把这条判据挪到每 tick 复查即可常新。
+
+        唯一调用点是观察线程，而停止序保证观察线程先于 IO worker 退出
+        （见 run 的 finally：_stop_observer → _stop_io_worker），故不与 `_stop_io_worker` 并发。
+        """
+        if not (self.ctx.debug.enabled or self.ctx.debug.peep_enabled):
+            return
+        self._start_io_worker()   # 内部按 is_alive 幂等，重复调用无副作用
 
     def _observe_tick_once(self) -> None:
         """一帧观察工作：读中心缓存帧 → 阶段判定（节拍门控）→ 帧号自增 → 入队。

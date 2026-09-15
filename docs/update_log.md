@@ -27,6 +27,24 @@
 
 - **验证：** 同进程双 WebView2 前置探测通过（`tools/experiments/dual-webview2/`：第二个 WebView2 可创建、可加载 `file://`、16 轮 RPC 全通且无串台）；`dotnet build` 无警告；悬浮窗开 / 关、拖动、占位符与还原经用户实机确认。
 
+### 暂存（未发布 · 待并入下一版本）观察线程启动判据修复：不开 PEEP 也不再有阶段判定停摆 🐛
+
+- **性质：** 未发版变更（`maaracing_master/plugins/treasure/module.py` 两处 + 回归锁四条；master 直接提交、不 tag）
+
+- **工作基线：** 会话**启动时** debug 或 peep 已开的会话 → 阶段判定正常（用户常规用法，长期正常）；启动时两者全关的会话 → 阶段判定完全停摆（失败例）。差异假设：判据守的是「会话启动那一刻的开关快照」，而观察线程的职责早已从「存图 / 预览出口」扩为「阶段判定的唯一生产者」，启动条件没跟着改。
+
+- **症状：** 不开 PEEP（也不开 Debug）跑会话时，阶段条不动、决策段拿不到帧判阶段。
+
+- **根因：** `set_stage` 的自动调用者只有 `_consume_stage_slot`（`module.py:4344`），它读的 `_obs_slot` 由观察线程的 `_judge_stage_into_slot` 写；而观察线程的启动条件写成 `if debug.enabled or peep_enabled`（旧 `module.py:1305-1307`）→ 全关时线程根本不启动 → `_obs_slot` 恒为 None → 决策段直接 return → 阶段永不推进。这与同文件 `_observe_interval_s` 的注释「debug/peep 全关**不再**返回 None：阶段判定消费者恒在（C6）」直接冲突——**节拍判据已改新门，启动判据还守着旧门**。
+
+- **修法：** 启动判据收进 `_start_session_workers()`：观察线程**无条件**启动；IO worker（只服务存图 / 预览两个出口）仍按会话启动时的开关起。另新增 `_ensure_io_worker()`，由观察循环每 tick 复查、按需补启 IO worker——解决「会话途中才打开 Debug/PEEP 则全程无帧、必须重开会话」的第二处同类判据。
+
+- **真机证据（用户提供日志，未在本机复跑）：** `MaaRM_20260915_173823.log` 全关会话中**没有**「观察通路已启动」与「IO worker（落盘）已启动」两行；`MaaRM_20260915_173229.log` 时间线为 17:33:07 会话启动（peep 未开）→ 17:33:13 途中开 PEEP（无帧）→ 17:33:40 重开会话后才有「IO worker 已启动」。
+
+- **回归锁：** `tests/test_treasure_observer.py` 新增四条（全关仍起观察线程 / IO worker 仅按出口开关且先于观察线程起 / 补启幂等 / 观察循环确实每 tick 复查）。原有七条是**方法级**契约（直接调 `_observe_tick_once`），照不到「线程有没有被启动」这条判据，故修复前全绿。全量 `pytest` 546 项绿。
+
+- **遗留：** 会话途中才打开 Debug 时，`_prepare_debug_dirs()` 已在会话开头跑过，`_session_dir` 仍为 None → 该会话不落盘（预览与阶段判定已恢复）。这条属同类判据的第三处，未处置，需要时另开。
+
 ### 暂存（未发布 · 待并入下一版本）出价按钮文字 ROI 加宽，救回「已出价」提交铁证 🔧
 
 - **性质：** 未发版变更（`plugins/treasure/resources/policy/treasure.policy.json` 一处 rect，配套更新两处写死旧 rect 的测试期望；master 直接提交、不 tag）
