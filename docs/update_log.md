@@ -7,6 +7,18 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）出价面板数字键「点击无响应」兜底 🔧
+
+- **性质：** 未发版变更（`plugins/treasure/module.py`、`tests/test_treasure_bid_digit_retry.py`（新）、域 CODE_WIKI；master 直接提交、不 tag）
+
+- **问题：** 数字键指纹里带着输入位锚点（清空键的成功信号是输入框读数归零），点击后读数不推进 ⇒ 指纹不变 ⇒ 边沿触发永不重发 ⇒ 光标原地不动。真机 2026-09-15（07:17:34–07:17:58）：程序把光标导航到数字键「2」并按了 A，输入框 24 秒始终为空，只能人工停止；同面板「智能出价」「✖ 清空」按下均生效。
+
+- **口径（沿用按钮点击重试规范第②/③层）：** 成功信号 = 面板读回变化——它已编码在指纹里，故「指纹不变」就是「无响应」，不必另接回调。同一数字意图持续超 `BID_DIGIT_RETRY_MS`（4s，给足一次性导航+按键+OCR）→ 清指纹重发；累计超 `BID_DIGIT_RETRY_MAX`（2 次，含首点共 3 次）→ 抛 `ClickRetryExhaustedError` 终止模块（不得静默）。计时基准只在换新指纹时归零，重发自身不重置（否则封顶形同虚设）。
+
+- **回归锁：** `tests/test_treasure_bid_digit_retry.py` 7 条（换指纹归零 / 未超时不重发 / 超时清指纹并计数 / 封顶抛错 / 清空键同覆盖 / 其它 key 不介入 / `_execute_click` 接线）。全量 `pytest 504 passed`。
+
+- **验证边界（真机待复验）：** 若重发也耗尽，日志直接给出「该面板不接受本次输入」的 ERROR（用户可见、可干预）；届时再用 `tools/experiments/bid-numpad-keypress/` 区分「游戏不接受数字键」与「按键未送达」。
+
 ### 暂存（未发布 · 待并入下一版本）转阶段交接与 PEEP 手柄诊断层修复 🔧
 
 - **性质：** 未发版变更（`core/clicker.py`、`core/gamepad_cursor.py`、`plugins/treasure/module.py`、`plugins/treasure/renderer.py`、`tests/test_clicker_cursor_snapshot.py`（新）、`tests/test_treasure_stage_handoff.py`（新）、`tools/experiments/bid-numpad-keypress/`（新）、域 CODE_WIKI；master 直接提交、不 tag）

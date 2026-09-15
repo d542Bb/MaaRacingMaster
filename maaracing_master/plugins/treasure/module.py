@@ -629,6 +629,13 @@ class TreasureModule(ActivityModule):
     #   - 真领取：  成功信号 = 阶段切走，复用 _maybe_retry_stage_click 的 stage 判定
     SETTLE_SKIP_RETRY_FRAMES = 10  # 点击后等多少帧仍未读到收入 → 判定无响应（≈3s，给足动画+OCR 时间）
     SETTLE_SKIP_RETRY_MAX = 3      # 最多重试次数（含首点共 4 次），仍无响应则终止模块
+    # 面板内数字键（含 ✖ 清空）的「无响应兜底」：成功信号 = 面板读回变化。
+    # 数字键指纹含 _bid_input_progress（清空键的成功信号是 B→0），输入框读数不推进
+    # ⇒ 指纹不变 ⇒ 边沿触发永不重发 ⇒ 光标原地不动（真机 2026-09-15 07:17:34–07:17:58：
+    # 点 '2' 后输入框 24s 无变化，同面板「智能出价」「✖ 清空」均生效）。判定按时间
+    # （v4 帧节奏不固定），重发清指纹；累计超上限走点击重试规范第③层（不得静默）。
+    BID_DIGIT_RETRY_MS = 4000.0    # 同一数字意图持续多久无推进 → 判定点击未送达
+    BID_DIGIT_RETRY_MAX = 2        # 最多重发次数（含首点共 3 次），仍无响应则终止模块
     # 弹窗连点用短周期（3帧 ≈ 0.9s）：模板 1 帧出、OCR 2 帧稳（用户实测）。
     # 与阶段切换类 key（CLICK_RETRY_FRAMES=10，要等转场动画）目的相反——弹窗要"连续关多个弹窗"，
     # 故 per-key 覆盖重试帧数，不动全局常量（全局降 3 会误伤卡片/领取等转场点击，2026-08-15 洞3）。
@@ -1110,6 +1117,12 @@ class TreasureModule(ActivityModule):
         # 异步点击（2026-09-03 导航线程化）：已提交但结果未消费的点击上下文
         # {key, state, fp, center, mode_label, stage}；consume 成功/失败后清空。
         self._pending_click: dict | None = None
+        # 面板内数字键无响应兜底状态：当前指纹 / 计时起点 / 已重发次数
+        # （成功信号 = 输入框读回推进，它已编码在指纹里 → 指纹不变即无响应，见
+        #  _maybe_retry_panel_no_response）
+        self._panel_retry_sig: tuple | None = None
+        self._panel_retry_since_ts: float = 0.0
+        self._panel_retry_count: int = 0
 
         # --------- 每日循环次数限制（GUI 配置，可 1~50 / 0=不指定）----------
         # 双保险：① done_count（完成结算→回到大厅 自增）② OCR 读「日已参与 X/50」。
@@ -1490,6 +1503,9 @@ class TreasureModule(ActivityModule):
         # 选鉴宝师确认标记 / 点击指纹锁：新一场重新走流程
         self._appraiser_confirmed_once = False
         self._last_click_fingerprint = None
+        self._panel_retry_sig = None
+        self._panel_retry_since_ts = 0.0
+        self._panel_retry_count = 0
         self._pending_click = None  # 异步点击：新一场无在途点击
         # 阶段切换重试状态：新一场清零（防残留重试配额/等待态）
         self._click_retry_key = None
@@ -3366,9 +3382,11 @@ class TreasureModule(ActivityModule):
                 )
             return
         # 持续相同意图：只点一次（边沿触发，等意图变化/消失后重新 arm）；
-        # 阶段切换类 key 例外：点击后 N 帧页面没切走 → 在这里重新 arm（_maybe_retry_stage_click）
+        # 阶段切换类 key 例外：点击后 N 帧页面没切走 → 在这里重新 arm（_maybe_retry_stage_click）；
+        # 面板内数字键例外：点击后输入框读数不推进 → 在这里重新 arm（_maybe_retry_panel_no_response）
         self._maybe_retry_stage_click(key)
         if fp == self._last_click_fingerprint:
+            self._maybe_retry_panel_no_response(key, fp)
             return
         # 不同意图间最小物理点击间隔（限速，经过时长一律 monotonic）
         now = time.monotonic()
@@ -3384,6 +3402,12 @@ class TreasureModule(ActivityModule):
                 "key": key, "state": state, "fp": fp, "center": center,
                 "mode_label": self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode),
             }
+            # 数字键无响应兜底的计时基准：只在「换了新意图」时归零，重发自身不重置
+            # （否则重发→提交→归零 会变成无限重发，封顶形同虚设）。
+            if key.startswith("bid_numpad_") and self._panel_retry_sig != fp:
+                self._panel_retry_sig = fp
+                self._panel_retry_since_ts = now
+                self._panel_retry_count = 0
             if self._trace_writer is not None:
                 self._trace_writer.write({
                     "frame": self._frame_counter,
@@ -3392,6 +3416,49 @@ class TreasureModule(ActivityModule):
                     "intent": {"key": key, "state": state, "center": center,
                                "box": target.get("box")},
                 })
+
+    def _maybe_retry_panel_no_response(self, key: str, fp: tuple) -> None:
+        """面板内数字键的「点了但输入框没反应」兜底：超时清指纹重发，封顶后终止。
+
+        口径：成功信号 = 面板读回变化。数字键的指纹里就带着 `_bid_input_progress`
+        （清空键的成功信号是输入框读数归零），所以**指纹不变 == 读回没推进 == 无响应**，
+        不必另外接一条回调（沿用「按钮点击重试规范」第②/③层：超时清指纹重新 arm、
+        封顶不得静默）。
+
+        真机依据（2026-09-15 07:17:34–07:17:58）：程序把光标导航到数字键「2」并按了 A，
+        输入框读数始终为空 → 指纹不变 → 边沿触发不再重发 → 24 秒光标本该在动却原地
+        不动，用户只能人工停止。同面板「智能出价」「✖ 清空」按下均生效。
+
+        判定按时间（v4 帧节奏不固定），剂量给足一次性导航 + 按键 + OCR 的耗时
+        （实测首个数字从出意图到读回推进约 3s）。
+        """
+        if not key.startswith("bid_numpad_"):
+            return  # 只覆盖面板内数字键；阶段切换类走 _maybe_retry_stage_click
+        now = time.monotonic()
+        if self._panel_retry_sig != fp:
+            # 换了新意图（输入框推进/换数字）：计时归零，不重发
+            self._panel_retry_sig = fp
+            self._panel_retry_since_ts = now
+            self._panel_retry_count = 0
+            return
+        if (now - self._panel_retry_since_ts) * 1000 < self.BID_DIGIT_RETRY_MS:
+            return
+        if self._panel_retry_count >= self.BID_DIGIT_RETRY_MAX:
+            attempts = self._panel_retry_count + 1
+            logger.log(
+                f"[鉴宝出价] 数字键 {key} 连点 {attempts} 次输入框读数仍无变化，"
+                f"判定该面板不接受本次输入（输入框未激活/被遮挡/按键未送达），"
+                f"终止模块待人工核查", "ERROR")
+            raise ClickRetryExhaustedError(
+                f"面板数字键 {key} 连点 {attempts} 次输入框仍无变化（目标价无法录入），"
+                f"请检查出价面板与点击方式后重新开始")
+        self._panel_retry_count += 1
+        self._panel_retry_since_ts = now
+        self._last_click_fingerprint = None  # 重新 arm → 本帧即可重发同一意图
+        logger.log(
+            f"[鉴宝出价] 数字键 {key} 点击后 {self.BID_DIGIT_RETRY_MS:.0f}ms 输入框读数未变化，"
+            f"第 {self._panel_retry_count}/{self.BID_DIGIT_RETRY_MAX} 次重发"
+            f"（疑似点击未送达，详见日志上文点击记录）", "WARNING")
 
     def _maybe_retry_stage_click(self, key: str) -> None:
         """阶段切换类点击的失败重试：点击后 N 帧页面没切走 → 重新 arm 指纹，下帧重试。
