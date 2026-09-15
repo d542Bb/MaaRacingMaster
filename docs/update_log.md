@@ -7,6 +7,23 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）底栏状态文字运行期扫描光效 🎨
+
+- **性质：** 未发版变更（GUI 前端：`apps/MaaRacingMaster.Shell/frontend/style.css`、`app.js`、`README.md`；master 直接提交、不 tag）
+
+- **新增可复用工具类 `.mra-text-scan`：** 任意文字元素加类即生效，无额外 DOM。两层背景裁进文字（`background-clip: text`）——底层铺基色、上层一条高光带，动画只平移高光带的 `background-position`；默认 6s 周期里前 1.8s 扫过一次、其余静止（节律由 `--mra-scan-timing` 的 `linear()` 控制），速度与频率刻意压低，供长时间驻留的提示文字复用。可调项为十二个 CSS 变量（基色／光带色／倾角／半宽／层宽／字重／周期／节律／动效清单／两层渐变），`prefers-reduced-motion: reduce` 下退化为静态文字。
+
+- **首个用例：** 底栏状态文字（`#status-text`）运行中套用、结束（就绪／停止中／出错）恢复常态——`setStatus` 按 mode 切类，纯呈现改动，未动 sidecar 与后端。
+
+- **配套变体 `.mra-text-scan--rave`（动态彩虹字，默认不启用）：** 彩虹写进感知均匀的 OKLCH——固定感知亮度 L=0.70 与彩度 C=0.16、只让色相绕一圈（`linear-gradient(90deg in oklch longer hue, …)`）；逐列实测行内 OKLab 感知亮度极差 **0.024**，而 RGB 色标拼的彩虹是 0.281、HSL 是 0.471——那正是「明度忽明忽暗」的来源。彩度上限也是量出来的：C=0.24 时超出 sRGB 的部分被浏览器裁回，裁剪连带改变亮度，极差涨回 0.089。
+
+- **动态走色相角而非 `filter: hue-rotate()`：** 后者是线性矩阵近似，实测色相转到 120° 时极差从 0.024 涨到 **0.117**，等于把明度抖动请回来。改用 `@property` 注册 `--mra-scan-hue`（`syntax: '<angle>'`）把它写进渐变色标，动画每帧重算彩虹而明度彩度不动，各相位实测恒为 0.024；未注册的自定义属性无法平滑插值、只会跳变，`@property` 是该做法的前提。
+
+- **两个实测坑点（已写入 `frontend/README.md`）：** ①小字号彩色细笔画被抗锯齿冲淡——同一款彩虹 11px 发灰、22px 转深、44px 才饱满，且不经本效果、直接 `background-clip: text` 的对照组同样发灰，与实现无关；对策是抬字重（变体默认 600），换深色／饱和配色无效。②渐变颜色插值需 Chromium 111+，实测本机 Edge/WebView2（Chromium 150）对 `in oklch longer hue`、`oklch()`、`linear()` 缓动、`background-clip: text` 全部支持。
+
+- **验证：** 无头 Edge 定格取帧（`animation-delay` 负值 + `animation-play-state: paused`，多条动画按序钉相位）核对：静止段见纯基色、行程正中见白光束压白、色相六相位逐列亮度极差恒为 0.024 且条带色相明显推移；`node --check app.js` 通过。纯 CSS 与一处类名切换，Python 测试面不受影响。
+
+
 ### 暂存（未发布 · 待并入下一版本）结算 OCR 页面门控：拦跨页串读 🔧
 
 - **性质：** 未发版变更（`plugins/treasure/module.py`、`core/navkit/v4_source.py`、`tests/test_treasure_ocr_page_gate.py`（新）；master 直接提交、不 tag）

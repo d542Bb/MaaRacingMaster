@@ -997,6 +997,8 @@
     const dot = $('status-dot');
     const txt = $('status-text');
     txt.textContent = text;
+    // 运行期文字带扫描光效，结束（就绪/停止中/出错）恢复常态；样式见 style.css「通用文字扫描光效」
+    txt.classList.toggle('mra-text-scan', mode === 'running');
     dot.className = 'mra-status-dot' +
       (mode === 'running' ? ' mra-status-dot--running mra-status-dot--pulse' :
        mode === 'ready' ? ' mra-status-dot--ready' :

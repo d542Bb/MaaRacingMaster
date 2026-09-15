@@ -153,6 +153,81 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 /* flex: 0 1 auto：高度不随窗口增长而膨胀（留白固定），过矮时仍可被压缩或触发页面滚动 */
 .card-flex { flex: 0 1 auto; min-height: 240px; }
 
+/* ============ 通用文字扫描光效（可复用：任意文字元素加 .mra-text-scan 即生效，无需额外 DOM） ============ */
+/* 两层背景裁进文字：底层铺基色，上层是一条高光带；动画只平移高光带的 background-position。
+   默认 6s 周期里前 1.8s 扫过一次、其余静止——速度与频率刻意压低，供长时间驻留的提示文字使用。
+   两层都是整层可换的渐变，换配色只需覆写变量；现成的动态彩虹变体见下方 .mra-text-scan--rave，
+   更多变体写法与可调项清单见 frontend/README.md。 */
+/* 色相角注册：只有注册过的自定义属性才能被 @keyframes 平滑插值（未注册只会跳变）。
+   变体把它写进 OKLCH 渐变色标，动画每帧重算彩虹，而明度与彩度不动。 */
+@property --mra-scan-hue {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+.mra-text-scan {
+  /* 呈现 */
+  --mra-scan-base: currentColor;   /* 基色，默认继承元素自身文字色 */
+  --mra-scan-beam: #FFFFFF;        /* 光带色 */
+  --mra-scan-angle: 100deg;        /* 光带倾角 */
+  --mra-scan-half: 5%;             /* 光带半宽（相对光带层） */
+  --mra-scan-span: 250%;           /* 光带层宽度倍数：越大光带越窄、相对文字的比例越小（≥200% 才扫得完） */
+  /* 节律 */
+  --mra-scan-cycle: 6s;            /* 一个周期的时长 */
+  --mra-scan-timing: linear(0, 1 30%, 1 100%); /* 周期内前 30% 走完行程、其余静止；改这段数字即调「扫多快 / 停多久」 */
+  --mra-scan-hue-cycle: 6s;        /* 附加动效「色相流转」的周期，供 --mra-scan-anim 引用 */
+  /* 动效清单：默认只有扫描光带；要在其上叠加附加动效（如色相流转）就覆写这个变量 */
+  --mra-scan-anim: mra-text-scan var(--mra-scan-cycle) var(--mra-scan-timing) infinite;
+  /* 渐变层（整层可覆写） */
+  --mra-scan-base-layer: linear-gradient(var(--mra-scan-base), var(--mra-scan-base));
+  --mra-scan-layer: linear-gradient(var(--mra-scan-angle),
+    transparent calc(50% - var(--mra-scan-half)),
+    var(--mra-scan-beam) 50%,
+    transparent calc(50% + var(--mra-scan-half)));
+
+  background-image: var(--mra-scan-layer), var(--mra-scan-base-layer);
+  background-size: var(--mra-scan-span) 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: var(--mra-scan-anim);
+}
+/* 光带自左向右走完一趟（两端各留一点余量，入画出画都不是硬切）；静态段由 --mra-scan-timing 压制 */
+@keyframes mra-text-scan {
+  from { background-position: 100% 0, 0 0; }
+  to   { background-position: 0% 0, 0 0; }
+}
+/* 附加动效：色相绕一整圈。走 OKLCH 色相角而不是 filter: hue-rotate()——后者是线性矩阵近似，
+   实测把色相转到 120° 时行内感知亮度极差从 0.023 涨到 0.117，等于把彩虹的明度抖动又请回来；
+   走色相角则每帧都是同一组等亮度颜色，实测各相位恒为 0.024。 */
+@keyframes mra-text-scan-hue {
+  from { --mra-scan-hue: 0deg; }
+  to   { --mra-scan-hue: 360deg; }
+}
+/* 动态彩虹变体（土味酷炫）：整行彩虹字 + 白光束 + 色相流转。默认不启用，覆写变量即用。
+   彩虹在 OKLCH 里固定 L/C、只走色相：逐列实测行内感知亮度极差 0.024，而 RGB 色标是 0.281、
+   HSL 是 0.471——那正是肉眼看出的「明度忽明忽暗」。小字号彩色细笔画另会被抗锯齿冲淡
+   （11px 实测：不加粗几乎看不出颜色，44px 才饱满），故默认抬一档字重。原理与数据见 frontend/README.md。 */
+.mra-text-scan--rave {
+  --mra-scan-rainbow-l: 0.7;   /* 感知亮度：0.7 在浅底上既平整又清楚，调低即整条变暗 */
+  --mra-scan-rainbow-c: 0.16;  /* 彩度：实测 0.16 时几乎不触发 sRGB 裁剪，再往上会被裁出明度起伏 */
+  --mra-scan-beam: #FFFFFF;
+  --mra-scan-weight: 600;
+  --mra-scan-anim: mra-text-scan var(--mra-scan-cycle) var(--mra-scan-timing) infinite,
+                   mra-text-scan-hue var(--mra-scan-hue-cycle) linear infinite;
+  /* 两个色标取同一色相、靠 longer hue 走满一圈：色相角由动画驱动，明度与彩度不动 */
+  --mra-scan-base-layer: linear-gradient(90deg in oklch longer hue,
+    oklch(var(--mra-scan-rainbow-l) var(--mra-scan-rainbow-c) var(--mra-scan-hue)),
+    oklch(var(--mra-scan-rainbow-l) var(--mra-scan-rainbow-c) var(--mra-scan-hue)));
+
+  font-weight: var(--mra-scan-weight);
+}
+/* 减弱动效偏好下退化为静态文字：光带停在元素右侧之外，只剩基色层可见（彩虹字保留、不再流转） */
+@media (prefers-reduced-motion: reduce) {
+  .mra-text-scan { animation: none; }
+}
+
 /* ============ 控制面板页 ============ */
 /* 列高度跟随内容（align-items:flex-start），内容超高时页面滚动；min-height:100% 保证窗口够高时仍撑满 */
 .col-left { flex: 0 0 62%; display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 100%; }
