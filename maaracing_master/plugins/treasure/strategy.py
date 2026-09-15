@@ -11,6 +11,9 @@ V4 核心变更（61 场整链静态仿真，见 docs/plan/bid_audit_20260915/�
     M 不是安全天花板；买入线才是（实测 拍品总价/买入线 最小 1.021，全部场次 > 1）。
   - 原理：未拍中不花钱 → 只要出价 ≤ 买入线，出得越高越优（多买到的成交是净增益，
     不成交零成本）。买入线由 PROFIT_FLOOR 定义，故出到线即接受设计上的最小利润。
+  - **退役「全局兜底上限」（原 GLOBAL_CAP / GUI「每局最多接受亏多少」）**：
+    买入线（估值九成）恒严于兜底上限（估值 + 可接受亏损），两道边界并存时
+    取小恒取买入线，该旋钮在出价决策上已无作用。详见模块头 V4 变更说明。
 V3 历史（2026-09-05 秒杀规则重构）：
   - 收入铁律：玩家收入 = 拍中者(总值-成交价)；未拍中者仅当赢家亏钱时按顺位
     吃 15%/10%/5% 分红——「卡第二」唯一合法前提 = 第一名必亏。
@@ -26,8 +29,7 @@ V3 历史（2026-09-05 秒杀规则重构）：
 V2 历史（2026-08-16 数据驱动重构）：
   - 确定性超价 u 与预测缓冲 D 分离：u=1（最小货币单位），D 基于数据分布
   - 双层缓冲：基础缓冲（查价格桶） × 利润强度缩放（0.5~1.5）
-  - 全局兜底上限 GLOBAL_CAP（GUI 可调，默认 5 万）
-  - 赚钱策略（捡漏利润线 0.9×V̂；分红彩票卡第二；兜底上限防意外接盘）
+  - 赚钱策略（捡漏利润线 0.9×V̂；分红彩票卡第二）
 """
 
 from __future__ import annotations
@@ -42,7 +44,6 @@ from typing import Optional
 VAL_COEF: float = 1.28          # 真实估值系数 = V̂ / max(H)（实测 median=1.265）
 PROFIT_FLOOR: float = 0.10      # 捡漏利润线：成交价 ≤ (1-FLOOR) × V̂
 u: int = 1                       # 游戏最小货币单位（实测 gcd=1）
-GLOBAL_CAP: int = 50000          # 全局兜底上限（GUI 可调：每局最多接受亏多少）
 BALANCE_UNKNOWN: int = -1        # 余额哨兵：OCR 未读到（未知）时传入，策略兜底视为充足
 
 # 预测缓冲分桶（跨回合 Δopp 口径，向全局 p50=35000 收缩后值）
@@ -82,7 +83,7 @@ DECISION_TARGET_SECOND = "target_second"
 DECISION_LURE = "lure"
 DECISION_PASS = "pass"       # 主动放弃，不出价
 
-STRATEGY_LABEL: str = "V3 秒杀火力基准（赚钱）"
+STRATEGY_LABEL: str = "V4 买入线定界（赚钱）"
 
 
 # ----------------------------------------------------------------------
@@ -176,17 +177,16 @@ def predict_second_quantile(opp_max: int, opp_second: int,
 # 决策器
 # ----------------------------------------------------------------------
 class BidStrategy:
-    """出价策略决策器 V2。
+    """出价策略决策器 V4（无外部可调参数：唯一经济边界是买入线）。
 
-    参数（可由外部传入覆盖）：
-      - risk_cap: 全局兜底上限（意外接盘的最大可接受亏损）
+    V4 起不再接受 risk_cap——买入线（V̂ × 0.9）恒严于原「兜底上限」（V̂ + risk_cap），
+    两者并存时取小恒取买入线，旋钮在出价决策上已无作用（见模块头 V4 段）。
     """
 
-    def __init__(self, risk_cap: int = GLOBAL_CAP) -> None:
+    def __init__(self) -> None:
         self.VAL_COEF: float = VAL_COEF
         self.PROFIT_FLOOR: float = PROFIT_FLOOR
         self.u: int = u
-        self.risk_cap: int = risk_cap
         self._lure_state: Optional[LureState] = None
         self.TICK: int = BUFFER_FALLBACK  # 兼容旧接口引用
 
@@ -241,22 +241,11 @@ class BidStrategy:
         scale = self._scale_by_intensity(vhat, opp_max, is_second=is_second)
         return int(round(base_buf * scale))
 
-    def _global_cap(self, vhat: float) -> int:
-        """全局兜底上限 = 估值 + 可接受亏损（V̂ + risk_cap）。
-
-        用户直觉（2026-08-18）："V̂ 十几万、能接受亏 5 万 → 最高就应出二十几万"。
-        原来写成 max(risk_cap, V̂×0.15)，只取到 low 的 5 万，把卡第二 upper 钳死在 5 万，
-        对手价一高区间就走空弃权（见 log 20260818_000240 R3）。V̂+risk_cap 才是
-        "最多出到估值、再最多亏 risk_cap"的正确预算。risk_cap 本身不变。"""
-        if vhat <= 0:
-            return self.risk_cap
-        return int(math.floor(vhat)) + self.risk_cap
-
     # ---------- 主决策 ----------
 
     def decide(self, ctx: BidContext) -> BidDecision:
         r = ctx.round_no
-        # 余额语义：-1（BALANCE_UNKNOWN）= OCR 未读到（未知，兜底视为充足，只受兜底 cap 约束）；
+        # 余额语义：-1（BALANCE_UNKNOWN）= OCR 未读到（未知，兜底视为充足，只受买入线约束）；
         # 0 = 真实没钱（所有出价被限制）；>0 = 正常。
         if ctx.balance == BALANCE_UNKNOWN:
             balance = 2_000_000_000      # 未知余额 → 视为充足（避免 max(...,1)=1 误伤出价）
@@ -337,13 +326,11 @@ class BidStrategy:
                 max_win_bid=line, opponent_max=m_power, trigger_bid=None,
                 reason=f"R{r} 无完整上轮快照，卡第二缺位次依据: 退回观察价={price} 等捡漏",
             )
-        return self._try_second(
-            r, m_power, vhat, line, self._global_cap(vhat), balance
-        )
+        return self._try_second(r, m_power, vhat, line, balance)
 
     # ---------- 卡第二吃分红 ----------
 
-    def _try_second(self, r, opp_max, vhat, line, cap, balance) -> BidDecision:
+    def _try_second(self, r, opp_max, vhat, line, balance) -> BidDecision:
         """卡第二：出到买入线（V4 起；V3 为「第三名 + 缓冲」，见模块头 V4 说明）。
 
         旧口径 lower = 第三名 + 缓冲、upper = min(M − u, cap, 余额)，
@@ -354,21 +341,18 @@ class BidStrategy:
           - 未拍中不花钱 → 出价 ≤ 买入线时越高越优（多买到的成交是净增益）；
           - 买入线由 PROFIT_FLOOR 定义，出到线即接受设计上的最小利润，
             故不会重现「出到 M−u」那类越线接盘。
-        `cap`（V̂ + risk_cap）保留在 min 中作为结构性上界；因 risk_cap > 0 时
-        cap 恒大于买入线，实际不生效（见报告「GLOBAL_CAP 在卡第二分支失效」）。
         """
         if line is None or line <= 0:
             return self._make_pass(vhat, opp_max, f"R{r} 无买入线（V̂ 缺失），pass")
-        price = min(line, cap, balance)
+        price = min(line, balance)
         if price <= 0:
             return self._make_pass(
-                vhat, opp_max, f"R{r} 买入线/余额受限: line={line} cap={cap} balance={balance}，pass")
+                vhat, opp_max, f"R{r} 买入线/余额受限: line={line} balance={balance}，pass")
         return BidDecision(
             price=price, decision=DECISION_TARGET_SECOND, vhat=vhat,
             max_win_bid=line, opponent_max=opp_max,
             trigger_bid=None, buffer_used=None, scale_used=None,
-            reason=(f"R{r} target_second(出到买入线): "
-                    f"min(line={line}, cap={cap}, balance={balance})={price}"),
+            reason=f"R{r} target_second(出到买入线): min(line={line}, balance={balance})={price}",
         )
 
     # ---------- 辅助 ----------

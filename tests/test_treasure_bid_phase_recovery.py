@@ -136,13 +136,11 @@ from maaracing_master.plugins.treasure.strategy import (  # noqa: E402
 
 
 class _StubStrategy:
-    risk_cap = 50_000
-
     def decide(self, ctx):
         return BidDecision(
             price=81401, decision=DECISION_TARGET_SECOND, vhat=120960.0,
             max_win_bid=None, opponent_max=89500, trigger_bid=None,
-            reason="R5 target_second(紧贴): 81400+1=81401 < 89999")
+            reason="R5 target_second(出到买入线): 81401")
 
 
 class _ExecSelf:

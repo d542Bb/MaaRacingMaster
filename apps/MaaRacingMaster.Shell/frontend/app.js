@@ -773,7 +773,7 @@
     }
   }
 
-  // -------- 模块专属选项（当前仅 treasure：循环上限 / 策略模式 / 兜底上限 / 目标场次）--------
+  // -------- 模块专属选项（当前仅 treasure：循环上限 / 目标场次）--------
   // 规则：仅 treasure 显示；输入/下拉改了就立即写 sidecar 的缓存 + 热更新；
   // 之后点「开始」时 sidecar 会把缓存注入到新实例。未跑时热更新落到离线索实例不生效但缓存有效。
   let _optListenersBound = false;
@@ -806,17 +806,11 @@
     if (_optListenersBound) return;
     _optListenersBound = true;
     const loops = $('opt-max-loops');
-    const riskCap = $('opt-risk-cap');
     const sessionHost = $('opt-target-session');
     if (!loops) return;
     // 数字输入：回车/失焦才发，避免每打一个数字 RPC 一次
     loops.addEventListener('change', onModuleOptionsInputChange);
     loops.addEventListener('keydown', (e) => { if (e.key === 'Enter') onModuleOptionsInputChange.call(loops, e); });
-    // 兜底上限：同数字输入
-    if (riskCap) {
-      riskCap.addEventListener('change', onModuleOptionsInputChange);
-      riskCap.addEventListener('keydown', (e) => { if (e.key === 'Enter') onModuleOptionsInputChange.call(riskCap, e); });
-    }
     // 分段控件（目标场次）：点即切换并发送
     if (sessionHost) {
       sessionHost.querySelectorAll('.seg-btn').forEach((b) => {
@@ -833,7 +827,6 @@
     const host = $('module-options');
     if (!host) return;
     const loopsEl = $('opt-max-loops');
-    const riskCapEl = $('opt-risk-cap');
     const statusEl = $('module-options-status');
     // 非 treasure：隐藏并返回
     if (moduleId !== 'treasure') {
@@ -849,11 +842,6 @@
       if (loopsEl) {
         const v = typeof cfg.max_daily_loops === 'number' ? cfg.max_daily_loops : 50;
         loopsEl.value = String(v);
-      }
-      // --- 填「兜底上限」：每局最多亏多少 ---
-      if (riskCapEl) {
-        const v = (cfg && typeof cfg.treasure_risk_cap === 'number') ? cfg.treasure_risk_cap : 50000;
-        riskCapEl.value = String(v);
       }
       // --- 填「目标场次」：intern / expert / master（后端权威值） ---
       setTargetSessionOnUI((cfg && cfg.target_session) ? cfg.target_session : 'master');
@@ -904,14 +892,7 @@
     if (loopsVal > 50) loopsVal = 50;
     loopsEl.value = String(loopsVal);
 
-    // ② 兜底上限（≥0 整数；空→0）
-    const riskCapEl = $('opt-risk-cap');
-    let riskCapVal = riskCapEl ? parseInt(riskCapEl.value, 10) : 50000;
-    if (!riskCapEl) riskCapVal = 50000;
-    if (Number.isNaN(riskCapVal) || riskCapVal < 0) riskCapVal = 0;
-    if (riskCapEl) riskCapEl.value = String(riskCapVal);
-
-    // ③ 目标场次（校验 intern/expert/master）
+    // ② 目标场次（校验 intern/expert/master）
     const sessionVal = getTargetSessionFromUI();
 
     _optionsSaving = true;
@@ -922,7 +903,6 @@
         config: {
           max_daily_loops: loopsVal,
           target_session: sessionVal,
-          treasure_risk_cap: riskCapVal,
         },
       });
       // 写回成功：回显最终值
@@ -930,14 +910,12 @@
       const savedSession = (resp && resp.target_session && VALID_SESSIONS.has(resp.target_session))
         ? resp.target_session : sessionVal;
       setTargetSessionOnUI(savedSession);
-      const savedRisk = (resp && typeof resp.treasure_risk_cap === 'number') ? resp.treasure_risk_cap : riskCapVal;
-      if (riskCapEl) riskCapEl.value = String(savedRisk);
       const sessionLabel = SESSION_LABELS[savedSession] || '大师场';
       const loopsTip = savedLoops === 0
         ? '不指定场数，按游戏默认 50 场'
         : '今日刷到第 ' + savedLoops + ' 场为止';
       setOptionsStatus(
-        `已保存：兜底 ${savedRisk.toLocaleString()}，目标场次「${sessionLabel}」，${loopsTip}（下次「开始」时生效）`,
+        `已保存：目标场次「${sessionLabel}」，${loopsTip}（下次「开始」时生效）`,
         'ok'
       );
     } catch (e) {
@@ -1008,12 +986,10 @@
     }
   }
 
-  // 运行中锁定可选项（兜底上限 运行中锁定）
+  // 运行中锁定可选项
   function updateModuleOptionsDisabled(running) {
     const loopsEl = $('opt-max-loops');
-    const riskCapEl = $('opt-risk-cap');
     if (loopsEl) loopsEl.disabled = running;
-    if (riskCapEl) riskCapEl.disabled = running;
     setSessionSegmentedDisabled(running);
   }
 

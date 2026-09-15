@@ -5,7 +5,9 @@
 原脚本只有 print 无断言，无法作为 CI 通过/失败判定；本测试以真实运行结果为基线，
 把决策类型与出价锁定为回归断言，防止后续改动悄悄破坏策略行为。
 
-V4（2026-09-15）改动：卡第二分支不再「紧贴第三名」，改为**出到买入线**。
+V4（2026-09-15）改动：卡第二分支不再「紧贴第三名」，改为**出到买入线**；
+「全局兜底上限」（原 GLOBAL_CAP / GUI「每局最多接受亏多少」）随之下线
+（买入线恒严于它，旋钮在出价决策上已无作用）。
 相关用例的期望值已随之更新，理由见 strategy.py 模块头 V4 段与
 docs/plan/bid_audit_20260915/出价审计报告_20260915.md。
 """
@@ -194,25 +196,6 @@ def test_profit_hot_cool_becomes_second():
             snap(3, 200000, 150000, (120000, 150000, 180000)), 1000000)
     )
     assert_decision("R4 冷静高价→卡第二", dec, DECISION_TARGET_SECOND, 230400)
-
-
-def test_risk_cap_no_longer_binds_second_branch():
-    """V4 起卡第二由买入线定界，risk_cap 不再影响该分支的出价。
-
-    cap = floor(V̂) + risk_cap 恒大于买入线 0.9×V̂（risk_cap > 0），
-    故 min(line, cap, 余额) 恒取买入线——GLOBAL_CAP 在卡第二分支失效，
-    这是 V4 的已知设计后果（见审计报告 §8）。
-    """
-    base = BidStrategy().decide(
-        ctx(4, (30000, 35000, 40000),
-            snap(3, 40000, 20000, (20000, 30000, 80000)), 1000000)
-    )
-    tiny_cap = BidStrategy(risk_cap=1000).decide(
-        ctx(4, (30000, 35000, 40000),
-            snap(3, 40000, 20000, (20000, 30000, 80000)), 1000000)
-    )
-    assert_decision("R4 小兜底→卡第二(买入线定界)", tiny_cap, DECISION_TARGET_SECOND, 46080)
-    assert tiny_cap.price == base.price, "risk_cap 不应改变卡第二出价"
 
 
 # ----------------------------------------------------------------------

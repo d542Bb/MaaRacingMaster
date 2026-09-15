@@ -58,7 +58,7 @@ _PROFILE_FILENAME = "profile.json"
 # 默认选中模块 id（仅作 id 引用，不直接 import 插件包；GUI 进入默认展示鉴宝）
 _DEFAULT_MODULE_ID = "treasure"
 # 本程序目前持久化的模块配置键（treasure 模块）——回填时只取这些，其余忽略。
-_MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap")
+_MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session")
 
 # 注册表权限优化项注册表（数据驱动：新增优化项只改这里，前后端体检/设置页自动生效）。
 # 字段语义：

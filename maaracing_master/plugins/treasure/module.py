@@ -712,7 +712,6 @@ class TreasureModule(ActivityModule):
     #       每日划分以凌晨 5 点为界（_refresh_daily_bucket：跨 5 点即新一天，计数清零）。
     #   出价策略：当前唯一「最大利润（刷单日计分）」，见 bid_strategy.STRATEGY_LABEL。
     DEFAULT_MAX_DAILY_LOOPS: int = 50
-    DEFAULT_TREASURE_RISK_CAP: int = 50000   # 每局最多接受亏多少（兜底上限，GUI 可调）
     # 到限自动停止防抖：连续 N 帧在鉴宝大厅且判定到限，才视为可信并自动停止模块。
     # 防止单帧 OCR 误读（如「日已参与 X/50」瞬时多读）或阶段抖动造成提前停机。
     DAILY_LIMIT_STOP_STABLE_FRAMES = 3
@@ -1042,10 +1041,6 @@ class TreasureModule(ActivityModule):
         self._last_round_snapshot: RoundSnapshot | None = None
         # 出价策略决策器（内部维护逼价基线 _lure_state）
         self._strategy: BidStrategy | None = None
-        # 待生效的策略配置：set_module_config 在策略实例创建前被调用（controller.start_module
-        # 注入早于 module.start() 创建 BidStrategy），此时 _strategy 为 None，
-        # 直接写实例字段避免 risk_cap 被静默丢弃回退默认值。
-        self._treasure_risk_cap: int = self.DEFAULT_TREASURE_RISK_CAP
         # bidding epoch 时序（phase 门控，见文档 §13）：
         #   wait_first  = 等待第 1 次出价（无快照，R1 首轮）
         #   wait_next   = 等待下一次出价（已有完整快照，含附加回合）
@@ -1153,7 +1148,6 @@ class TreasureModule(ActivityModule):
             "target_session": tgt,                     # intern/expert/master
             "target_session_label": tgt_label,         # 中文名（前端显示）
             "bid_strategy_label": STRATEGY_LABEL,      # 当前唯一策略显示名（前端只读展示）
-            "treasure_risk_cap": int(getattr(self._strategy, "risk_cap", self._treasure_risk_cap) or self._treasure_risk_cap),
             "_state": {
                 # 运行时实况（只读）：已完成多少场 / 上限值，用于 HUD 展示
                 "daily_bucket": self._daily_bucket,
@@ -1187,19 +1181,6 @@ class TreasureModule(ActivityModule):
                 self._target_session = v
             else:
                 self._target_session = DEFAULT_TARGET_SESSION
-        # treasure_risk_cap: 每局最多接受亏多少（兜底上限）；正整数，非法→默认 5 万。
-        if "treasure_risk_cap" in config:
-            try:
-                v = int(config["treasure_risk_cap"])
-            except (TypeError, ValueError):
-                v = self.DEFAULT_TREASURE_RISK_CAP
-            if v < 0:
-                v = self.DEFAULT_TREASURE_RISK_CAP
-            if v > 10_000_000:
-                v = 10_000_000
-            self._treasure_risk_cap = v                    # 先存实例字段（策略实例可能尚未创建）
-            if self._strategy is not None:                 # 运行中则立即同步到当前策略
-                self._strategy.risk_cap = v
         return self.get_module_config()
 
     # ---------- 内部：每日循环上限（0=不限 时返回 50，因为游戏本身也有 50 场天花板）----------
@@ -1385,14 +1366,11 @@ class TreasureModule(ActivityModule):
             self._bid_pass_tpl, self._bid_pass_rect = None, None
             logger.log("[鉴宝] 未加载放弃确认弹窗模板（pass 二级确认将无法自动处置）", "WARNING")
 
-        # 2.59 初始化出价策略决策器（V2：数据驱动双层缓冲 + 兜底上限）
-        # 用 _treasure_* 暂存字段而非 DEFAULT：set_module_config 可能在实例创建前注入
-        # （controller.start_module 早于 module.start()），若回落默认会让 GUI 选的配置被静默丢弃。
-        self._strategy = BidStrategy(risk_cap=self._treasure_risk_cap)
+        # 2.59 初始化出价策略决策器（V4：单一决策树，唯一经济边界 = 买入线）
+        self._strategy = BidStrategy()
         logger.log(
             f"[鉴宝] 出价策略决策器已初始化: 策略={STRATEGY_LABEL} "
-            f"(VAL_COEF={self._strategy.VAL_COEF:.2f}, 利润线={self._strategy._profit_floor():.2f}, "
-            f"兜底上限={self._strategy.risk_cap:,})；"
+            f"(VAL_COEF={self._strategy.VAL_COEF:.2f}, 利润线={self._strategy._profit_floor():.2f})；"
             f"每日循环上限={self._effective_daily_loop_limit()}场",
             "DEBUG",
         )
@@ -1494,10 +1472,9 @@ class TreasureModule(ActivityModule):
         self._bid_zero_since_ts = None
         self._bidding_last_decision = None
         self._last_round_snapshot = None
-        # 出价策略：重建实例清逼价基线等内部状态，保留已设的 risk_cap
+        # 出价策略：重建实例清逼价基线等内部状态
         if self._strategy is not None:
-            rc = getattr(self._strategy, "risk_cap", self.DEFAULT_TREASURE_RISK_CAP)
-            self._strategy = BidStrategy(risk_cap=rc)
+            self._strategy = BidStrategy()
         # 选鉴宝师确认标记 / 点击指纹锁：新一场重新走流程
         self._appraiser_confirmed_once = False
         self._last_click_fingerprint = None
@@ -2512,21 +2489,14 @@ class TreasureModule(ActivityModule):
         T = dec.price
 
         # ---------- 余额不足钳制：出价不能超过余额，否则游戏会重置输入框 → 无限编辑循环 ----------
-        # 仅当余额已知（真实 0 或正数）才钳制；余额未知（BALANCE_UNKNOWN）不钳制（策略已在 cap 约束内）。
-        # 同时自动调整兜底上限：最大可接受亏损 = max(0, 余额 - 估值)。
+        # 仅当余额已知（真实 0 或正数）才钳制；余额未知（BALANCE_UNKNOWN）不钳制（策略已在买入线内）。
         if ctx.balance != BALANCE_UNKNOWN and T > ctx.balance:
             original_T = T
             T = ctx.balance
-            if self._strategy is not None and dec.vhat > 0:
-                max_afford = max(0, ctx.balance - int(dec.vhat))
-                if max_afford < self._strategy.risk_cap:
-                    old_cap = self._strategy.risk_cap
-                    self._strategy.risk_cap = max_afford
-                    logger.log(
-                        f"[鉴宝出价] 余额不足: 目标 {original_T:,} > 余额 {ctx.balance:,}，"
-                        f"钳制至 {T:,}；兜底上限自动下调 {old_cap:,} → {max_afford:,}",
-                        "WARNING"
-                    )
+            logger.log(
+                f"[鉴宝出价] 余额不足: 目标 {original_T:,} > 余额 {ctx.balance:,}，钳制至 {T:,}",
+                "WARNING",
+            )
 
         # 输入框当前值（智能出价填入后，OCR bid_result_amount_box 实时读值）
         B = self._bid_input_latest

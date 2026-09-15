@@ -49,22 +49,15 @@
             <p class="module-desc" id="module-desc"></p>
             <!-- 模块专属选项：当前仅 treasure（鉴宝）展示；其它模块隐藏。
                  两行结构避免拥挤：
-                 • 第1行（2列）：刷到第几场 + 出价策略
+                 • 第1行（整行）：刷到第几场
                  • 第2行（整行）：目标场次（实习/专家/大师，分段按钮组，互斥单选） -->
             <div class="module-options" id="module-options" style="display:none;margin-top:18px;">
-              <div class="module-options-row" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end;">
+              <div class="module-options-row" style="display:grid;grid-template-columns:1fr;gap:14px;align-items:end;">
                 <div class="mra-field">
                   <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
                   <div class="mra-field-control">
                     <input id="opt-max-loops" type="number" min="0" max="50" step="1" value="50">
                     <span class="field-suffix">场</span>
-                  </div>
-                </div>
-                <div class="mra-field">
-                  <label class="mra-field-label" for="opt-risk-cap">每局最多接受亏多少<span class="field-hint">（兜底上限，防意外接盘巨亏）</span></label>
-                  <div class="mra-field-control">
-                    <input id="opt-risk-cap" type="number" min="0" step="1000" value="50000">
-                    <span class="field-suffix">金币</span>
                   </div>
                 </div>
               </div>

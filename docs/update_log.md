@@ -7,6 +7,20 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）退役「每局最多接受亏多少」旋钮（GLOBAL_CAP）🔧
+
+- **性质：** 未发版变更（`plugins/treasure/strategy.py`、`plugins/treasure/module.py`、`core/sidecar.py`、`apps/MaaRacingMaster.Shell/frontend/index.html`、`apps/MaaRacingMaster.Shell/frontend/app.js`、`tests/test_bid_strategy.py`、`tests/test_treasure_bid_phase_recovery.py`；master 直接提交、不 tag）
+
+- **为什么退役：** 上一批把卡第二出价改为「出到买入线」后，兜底上限（`floor(V̂) + risk_cap`）恒大于买入线（`0.9×V̂`），`min` 恒取买入线——旋钮在出价决策上已无任何作用，留着只会让用户以为它还在生效。
+
+- **改动口径：** 删除 `GLOBAL_CAP` 常量、`BidStrategy(risk_cap=...)` 参数与 `_global_cap()`；卡第二取 `min(买入线, 余额)`。module 侧删除 `DEFAULT_TREASURE_RISK_CAP`、`_treasure_risk_cap`、配置读写与状态回报字段，以及「余额不足时自动下调兜底上限」分支（**余额钳制本身保留**，那一条与旋钮无关）。sidecar 的 `_MODULE_CONFIG_KEYS` 去掉该键——旧 profile.json 里的残留值下次保存时自动丢弃，无需迁移。GUI 删掉该输入框，选项区第 1 行改为整行的「刷到第几场」。
+
+- **顺带：** 策略显示名 `STRATEGY_LABEL` 由「V3 秒杀火力基准（赚钱）」改为「V4 买入线定界（赚钱）」（GUI 只读展示）。
+
+- **回归锁：** `tests/test_bid_strategy.py` 22 条（删除随旋钮失效的 `test_risk_cap_no_longer_binds_second_branch`）；`tests/test_treasure_bid_phase_recovery.py` 桩去掉 `risk_cap` 属性。全量 `pytest 509 passed`。
+
+- **验证：** 生产代码回放 9月5日后 61 场结果与退役前逐项一致（拍中 17 场 / 利润 647,362 / 零亏损）——符合预期，因该旋钮本已不参与决策。
+
 ### 暂存（未发布 · 待并入下一版本）卡第二出价改「出到买入线」（V4 出价口径）🔧
 
 - **性质：** 未发版变更（`plugins/treasure/strategy.py`、`tests/test_bid_strategy.py`；master 直接提交、不 tag）
@@ -15,7 +29,7 @@
 
 - **修复口径：** 卡第二出价取 `min(买入线, cap, 余额)`。依据「未拍中不花钱」——出价 ≤ 买入线时越高越优（多买到的成交是净增益，不成交零成本）；买入线由 `PROFIT_FLOOR` 定义，出到线即接受设计上的最小利润。反证：同一动作锚在 `M − u` 上会亏（仿真 19 场拍中里 10 场亏损、共亏 282,685）——实测成交价/M 中位 1.00、48% 场次成交价高于 M，M 不是安全天花板，买入线才是（实测 拍品总价/买入线 最小 1.021、全部场次 > 1）。
 
-- **已知设计后果：** `GLOBAL_CAP`（GUI 兜底上限）在卡第二分支失效——`cap = floor(V̂) + risk_cap` 恒大于买入线 `0.9×V̂`，`min` 恒取买入线。退役该旋钮或改语义待定。
+- **已知设计后果：** `GLOBAL_CAP`（GUI 兜底上限）在卡第二分支失效——`cap = floor(V̂) + risk_cap` 恒大于买入线 `0.9×V̂`，`min` 恒取买入线。该旋钮已随下一批退役（见上一条）。
 
 - **回归锁：** `tests/test_bid_strategy.py` 23 条（11 条卡第二期望值随口径更新；新增 `test_risk_cap_no_longer_binds_second_branch`、`test_balance_below_line_clamped`；`test_r3_phishing_crash_not_tricked` 语义更新为「防钓鱼保护由买入线承担」）。全量 `pytest 510 passed`。
 
