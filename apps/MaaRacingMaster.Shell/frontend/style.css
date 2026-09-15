@@ -428,22 +428,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .board-value--neg { color: var(--mra-danger); }
 .board-value--high { color: var(--mra-primary); }
 .board-label { font-size: 11px; color: var(--mra-foreground-muted); }
-.board-eggs {
-  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
-  font-size: 12px; color: var(--mra-foreground-secondary);
+/* 彩蛋红黄蓝分项：「领取彩蛋」卡片内的三色读数，发丝线分隔，零值淡出 */
+.board-eggs { display: inline-flex; align-items: baseline; margin-top: 1px; line-height: 1; }
+.board-egg-num {
+  font-size: 12px; font-weight: 600; line-height: 1;
+  padding: 0 8px; font-variant-numeric: tabular-nums;
+  transition: opacity .2s ease;
 }
-/* 今日看板明细行：合并统计的构成项（竞拍净利/领银币/领积分/最高单场），弱于主网格 */
-.board-sub {
-  display: flex; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 12px;
-  font-size: 12px; color: var(--mra-foreground-muted);
-}
-.board-sub b { font-weight: 600; color: var(--mra-foreground-secondary); font-variant-numeric: tabular-nums; }
-.board-egg { display: inline-flex; align-items: center; gap: 5px; }
-.board-egg-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.board-egg--red .board-egg-dot { background: var(--mra-danger); }
-.board-egg--yellow .board-egg-dot { background: #f59e0b; }
-.board-egg--blue .board-egg-dot { background: var(--mra-info); }
-.board-egg b { font-weight: 600; }
+.board-egg-num + .board-egg-num { border-left: 1px solid rgba(74, 81, 96, 0.18); }
+.board-egg-num--red { color: var(--mra-danger); }
+.board-egg-num--yellow { color: #B45309; }
+.board-egg-num--blue { color: var(--mra-info); }
+.board-egg-num--zero { opacity: .32; }
 .board-list {
   border-top: 1px dashed var(--mra-border-light); padding-top: 8px;
   max-height: 200px; overflow-y: auto;

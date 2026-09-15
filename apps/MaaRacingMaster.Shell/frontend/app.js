@@ -1290,6 +1290,9 @@
               <div class="board-item">
                 <span class="board-value" id="${mid}-board-egg-total">0</span>
                 <span class="board-label">领取彩蛋</span>
+                <span class="board-eggs">
+                  <b class="board-egg-num board-egg-num--red" id="${mid}-board-egg-red">0</b><b class="board-egg-num board-egg-num--yellow" id="${mid}-board-egg-yellow">0</b><b class="board-egg-num board-egg-num--blue" id="${mid}-board-egg-blue">0</b>
+                </span>
               </div>
               <div class="board-item">
                 <span class="board-value" id="${mid}-board-score">--</span>
@@ -1299,17 +1302,6 @@
                 <span class="board-value" id="${mid}-board-games">--</span>
                 <span class="board-label" id="${mid}-board-games-wl">场次</span>
               </div>
-            </div>
-            <div class="board-eggs">
-              <span class="board-egg board-egg--red"><span class="board-egg-dot"></span><b id="${mid}-board-egg-red">0</b></span>
-              <span class="board-egg board-egg--yellow"><span class="board-egg-dot"></span><b id="${mid}-board-egg-yellow">0</b></span>
-              <span class="board-egg board-egg--blue"><span class="board-egg-dot"></span><b id="${mid}-board-egg-blue">0</b></span>
-            </div>
-            <div class="board-sub">
-              <span>竞拍净利 <b id="${mid}-board-profit">--</b></span>
-              <span>领银币 <b id="${mid}-board-egg-coin">0</b></span>
-              <span>领积分 <b id="${mid}-board-egg-score">0</b></span>
-              <span>最高单场 <b id="${mid}-board-high">--</b></span>
             </div>
             <div class="board-list" id="${mid}-board-list"></div>
           </div>
@@ -1375,11 +1367,17 @@
       cn.textContent = d.summary ? fmtNum(coinNet) : '--';
       cn.className = 'board-value' + (coinNet > 0 ? ' board-value--pos' : coinNet < 0 ? ' board-value--neg' : '');
     }
-    // T0 领取彩蛋（红+黄+蓝）；分项沿用圆点行
+    // T0 领取彩蛋（红+黄+蓝）；分项以三色读数并入本卡片，零值淡出突出非零
     setNum(p('egg-total'), num(s.egg_red) + num(s.egg_yellow) + num(s.egg_blue), null);
-    setNum(p('egg-red'), s.egg_red, null);
-    setNum(p('egg-yellow'), s.egg_yellow, null);
-    setNum(p('egg-blue'), s.egg_blue, null);
+    const setEgg = (key, v) => {
+      const el = p(key);
+      if (!el) return;
+      el.textContent = fmtNum(v);
+      el.classList.toggle('board-egg-num--zero', !num(v));
+    };
+    setEgg('egg-red', s.egg_red);
+    setEgg('egg-yellow', s.egg_yellow);
+    setEgg('egg-blue', s.egg_blue);
     // T1 今日积分 = 最高单场（现有口径）+ 领取积分
     const scEl = p('score');
     if (scEl) scEl.textContent = d.summary ? fmtNum(high + eggScore) : '--';
@@ -1387,11 +1385,6 @@
     setNum(p('games'), s.games, 'board-value');
     const wl = p('games-wl');
     if (wl && d.summary) wl.textContent = '场次 · 胜' + num(s.win) + '/负' + num(s.fail);
-    // 明细行：合并数的构成项（竞拍净利 / 领银币 / 领积分 / 最高单场）
-    setNum(p('profit'), myProfit, null);
-    setNum(p('egg-coin'), eggCoin, null);
-    setNum(p('egg-score'), eggScore, null);
-    setNum(p('high'), high, null);
     const list = p('list');
     if (!list) return;
     const arr = d.games || [];
