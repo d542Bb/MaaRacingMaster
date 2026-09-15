@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 try:
+    from maaracing_master.core.navkit import ROUND_PHASE_STAGE
     from maaracing_master.core.navkit.v4_source import load_nav_source
     from maaracing_master.plugins.treasure.detector import TreasureStageDetector
     from maaracing_master.plugins.treasure.module import TreasureModule
@@ -53,7 +54,13 @@ _SETTLE_SIGNALS = (
 
 
 class _StubDetector:
-    """只提供 plan 的 detector 桩（门控只读 detector.plan）。"""
+    """只提供 plan 的 detector 桩（门控只读 detector.plan 与回合族判据）。
+
+    回合族判据直接借用真实现——桩只桩掉「装配」，不复制定义，否则这里的副本一旦
+    与生产分叉，测试会替生产背书。
+    """
+
+    is_round_stage = staticmethod(TreasureStageDetector.is_round_stage)
 
     def __init__(self, plan: object | None) -> None:
         self.plan = plan
@@ -143,6 +150,26 @@ def test_bid_signals_not_consumed_on_settle_page(plan):
     assert dropped == 1
 
 
+def test_round_family_token_passes_bid_signals(plan):
+    """回合族令牌（本帧在出价面板页，未推导第几回合）→ 出价信号放行。
+
+    出价面板整族共用同一块招牌，stages_for 本就把 5 个回合一起返回、任一都放行，
+    故令牌按族产出即可；具体第几回合门控并不需要（也就不该为它去读跨线程状态）。
+    """
+    data = {"bid_player1": 800, "round_label_area": "第2回合"}
+    kept, dropped = _filter(plan, ROUND_PHASE_STAGE, data)
+    assert kept == data
+    assert dropped == 0
+
+
+def test_round_family_token_does_not_open_settle_signals(plan):
+    """反向：回合族令牌对结算信号无效——出价面板页读到结算 ROI 仍须丢弃。"""
+    data = {"settle_my_income": 300000, "bid_player1": 800}
+    kept, dropped = _filter(plan, ROUND_PHASE_STAGE, data)
+    assert kept == {"bid_player1": 800}
+    assert dropped == 1
+
+
 def test_mixed_payload_filters_per_signal(plan):
     """按信号逐个过滤：同一份结果里的跨页项被丢，本页项保留。"""
     data = {"settle_profit": 5000, "bid_player2": 800, "未登记信号": 3}
@@ -164,6 +191,8 @@ def test_missing_plan_means_no_filtering():
 
 class _ProbeStubDetector:
     """令牌产地桩：plan 是真的（真源数据面），只有「本帧判定结果」可控。"""
+
+    is_round_stage = staticmethod(TreasureStageDetector.is_round_stage)
 
     def __init__(self, plan: object | None, verdict: str | None) -> None:
         self.plan = plan
@@ -249,6 +278,23 @@ def test_in_frame_token_drives_page_gate(plan):
     assert mod._ocr_page_drops == 1
 
 
+def test_round_family_token_drives_page_gate(plan):
+    """端到端：局内帧的回合族令牌经门控放行出价读数（本次回归的现场路径）。"""
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = _ProbeStubDetector(plan, ROUND_PHASE_STAGE)
+    mod._ocr_page_drops = 0
+
+    token = _judge(mod, frozenset({"bid_player1"}))
+    kept = TreasureModule._ocr_filter_by_page(mod, {
+        "frame_id": 12, "round_no": 1, "stage": token,
+        "data": {"bid_player1": 800},
+    })
+
+    assert token == ROUND_PHASE_STAGE
+    assert kept == {"bid_player1": 800}
+    assert mod._ocr_page_drops == 0
+
+
 # --------------------------------------------------------------------------
 # 标志锚点派生（真 detector + 真 policy，不依赖图像）
 # --------------------------------------------------------------------------
@@ -296,6 +342,55 @@ def test_probe_page_writes_no_instance_state(detector):
     after = (detector._last_hit_roi_key, dict(detector._last_detect_scores),
              detector._last_round)
     assert before == after
+
+
+def _forced_matcher(detector, anchor: str):
+    """_match_score 替身：只让 anchor 的首个模板必中，其余锚点走真实匹配。
+
+    打桩只打在模板匹配这一层，判定链路（优先级、阈值、margin 仲裁、哨兵分支）全是真的。
+    刻意只顶首个模板：多模板锚点（回合横幅有 5 张）若张张满分，次高分与最高分并列，会被
+    `arbitration.margin` 判成歧义而命中不了。
+    """
+    orig = detector._match_score
+    only = detector.plan.spec[anchor].templates[0]
+
+    def fake(roi_key, tpl_name, frame_rgb, gray_frame, px_roi, colorspace):
+        if roi_key == anchor and tpl_name == only:
+            return px_roi, 0.999
+        return orig(roi_key, tpl_name, frame_rgb, gray_frame, px_roi, colorspace)
+
+    return fake
+
+
+def test_probe_page_round_token_ignores_last_round(monkeypatch):
+    """回合族令牌不得读 _last_round（观察线程按周期维护的跨线程状态）。
+
+    这是本次回归的锁：探针曾在 smart_bid_btn 命中后去读该字段（它自己从不写），字段
+    为空时返回 None，并把自带回合号的横幅一并短路。实测同一批 515 帧，读它只判出 18
+    帧局内页、不读判出 80 帧——局内读数被 fail-closed 大面积丢弃。
+    """
+    det = TreasureStageDetector(_PLUGIN_DIR)
+    monkeypatch.setattr(det, "_match_score", _forced_matcher(det, "smart_bid_btn"))
+    stages = det.plan.stages_for("bid_player1")
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(det, "_last_round", None)
+    without_round = det.probe_page(frame, stages)
+    monkeypatch.setattr(det, "_last_round", 3)
+    with_round = det.probe_page(frame, stages)
+
+    assert without_round == with_round == ROUND_PHASE_STAGE
+
+
+def test_probe_page_round_token_survives_banner_first(monkeypatch):
+    """同一帧上横幅（自带回合号）先命中也产出同一种令牌——令牌按族，不按来源分叉。"""
+    det = TreasureStageDetector(_PLUGIN_DIR)
+    monkeypatch.setattr(det, "_match_score", _forced_matcher(det, "round_big_banner"))
+    stages = det.plan.stages_for("bid_player1")
+
+    token = det.probe_page(np.zeros((720, 1280, 3), dtype=np.uint8), stages)
+
+    assert token == ROUND_PHASE_STAGE
 
 
 # --------------------------------------------------------------------------

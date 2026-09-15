@@ -52,6 +52,7 @@ from maaracing_master.core.template_match import (
     match_template_cs,
 )
 from maaracing_master.core.navkit import (
+    ROUND_PHASE_STAGE,
     DecisionFacts,
     DecisionSnapshot,
     FrameTrace,
@@ -4703,7 +4704,7 @@ class TreasureModule(ActivityModule):
         return probe(frame_rgb, stages)
 
     def _ocr_filter_by_page(self, result: dict) -> dict:
-        """页面门控（闸③）：按本帧页面令牌过滤 result["data"]，只放行属于当前页的读数。
+        """页面门控（闸②）：按本帧页面令牌过滤 result["data"]，只放行属于当前页的读数。
 
         真源是 policy 的 `perception.stages.definitions[*].ocr`（「该阶段扫哪些 OCR 信号」），
         由 DetectionPlan.stages_for() 反转成「该信号只允许出现在哪些阶段」——与投递侧的
@@ -4711,6 +4712,8 @@ class TreasureModule(ActivityModule):
 
         - 信号未在任何阶段登记（stages_for 返回 None）→ 无页面约束，放行；
         - 本帧页面令牌为空（detector 认不出当前页：转场中 / 未登记画面）→ 丢弃已登记信号；
+        - 令牌是回合族哨兵（帧内命中出价面板锚点，未推导回合号）→ 该信号的允许阶段里
+          含回合族阶段即放行（见 _page_token_matches）；
         - 令牌不在该信号的允许阶段集合内 → 丢弃（画面已不是该信号所属的页）；
         - 其余放行。
 
@@ -4729,18 +4732,40 @@ class TreasureModule(ActivityModule):
         dropped: list[str] = []
         for key, value in data.items():
             allowed = plan.stages_for(key)
-            if allowed is None or (stage_token is not None and stage_token in allowed):
+            if allowed is None or self._page_token_matches(stage_token, allowed):
                 kept[key] = value
             else:
                 dropped.append(key)
         if dropped:
             self._ocr_page_drops += len(dropped)
+            shown = "回合族" if stage_token == ROUND_PHASE_STAGE else repr(stage_token)
             logger.log(
-                f"[鉴宝] OCR 读数跨页丢弃(本帧页={stage_token!r} 帧{result.get('frame_id')} "
+                f"[鉴宝] OCR 读数跨页丢弃(本帧页={shown} 帧{result.get('frame_id')} "
                 f"丢弃={dropped})",
                 "DEBUG",
             )
         return kept
+
+    def _page_token_matches(self, token: str | None, allowed: frozenset[str]) -> bool:
+        """本帧页面令牌是否落在该信号的允许阶段集合内（闸② 的匹配规则，单点表述）。
+
+        令牌有两种形态（产出侧见 detector.probe_page）：具体阶段名，或回合族哨兵
+        ROUND_PHASE_STAGE——后者意为「本帧在出价面板页，具体第几回合未推导」。出价面板
+        整族共用同一块招牌（smart_bid_btn / round_big_banner），而本闸要判的是「这一页
+        允不允许扫该信号」，与第几回合无关：stages_for 本就把 5 个回合一起返回、任一都
+        放行，故哨兵按族收下。
+
+        回合族的判据与锚点归属（detector._proof_anchors）共用 detector.is_round_stage，
+        不在这里另立一套说法。
+        """
+        if token is None:
+            return False
+        if token in allowed:
+            return True
+        if token != ROUND_PHASE_STAGE:
+            return False
+        is_round = getattr(self._detector, "is_round_stage", None)
+        return bool(is_round) and any(is_round(stage) for stage in allowed)
 
     def _apply_ocr_result(self) -> None:
         """消费 worker 双结果槽并应用业务状态。三道闸门，通过后委托给 _consume_ocr_result：

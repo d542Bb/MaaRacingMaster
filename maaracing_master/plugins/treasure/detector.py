@@ -165,9 +165,14 @@ class TreasureStageDetector:
 
     # ---------------- 帧内页面探针 ----------------
     @staticmethod
-    def _is_round_stage(stage: str) -> bool:
-        """回合族阶段名：本类按回合号实例化的「第N回合出价」（见 _scan 哨兵分支）。"""
-        return bool(_ROUND_STAGE_RE.match(stage))
+    def is_round_stage(stage: str | None) -> bool:
+        """阶段名是否属于回合族（本类按回合号实例化的「第N回合出价」，见 _scan 哨兵分支）。
+
+        回合族的唯一定义，两侧共用：_proof_anchors 判锚点归属，页面门控判令牌是否
+        落在某信号的允许阶段集合内（见 module._ocr_filter_by_page）——同一份判据，
+        不各自表述。
+        """
+        return bool(stage) and bool(_ROUND_STAGE_RE.match(stage))
 
     def _proof_anchors(self, stages: Iterable[str] | None) -> set[str]:
         """标志锚点：`active_for(stage)` 里「命中即进入该阶段」的模板锚点。
@@ -185,12 +190,17 @@ class TreasureStageDetector:
                 if spec is None or spec.kind != "template" or not spec.templates:
                     continue
                 if spec.stage == stage or (
-                        spec.stage == ROUND_PHASE_STAGE and self._is_round_stage(stage)):
+                        spec.stage == ROUND_PHASE_STAGE and self.is_round_stage(stage)):
                     out.add(anchor)
         return out
 
     def probe_page(self, frame_rgb: np.ndarray, stages: Iterable[str] | None) -> str | None:
-        """帧内页面探针：本帧是否属于给定阶段之一，是则返回该阶段名，否则 None。
+        """帧内页面探针：本帧是否属于给定阶段之一，是则返回该页阶段名，否则 None。
+
+        返回值口径：本帧命中归属具体阶段的锚点 → 该阶段名；命中回合族锚点
+        （spec.stage 为 ROUND_PHASE_STAGE）→ 返回哨兵本身，即「本帧在出价面板页」。
+        回合族内具体是第几回合不在这里推导——那是观察线程按周期维护的跨帧状态，而
+        门控只问页族（见 module._ocr_filter_by_page）。
 
         供 OCR worker 对**被识别的那一帧**现场取页面令牌——令牌与像素同源，取代
         「投递时快照观察线程的周期判定」那套跨线程搬运（搬运必有窗口，实证见
@@ -354,6 +364,15 @@ class TreasureStageDetector:
             if record:
                 self._last_hit_roi_key = roi_key
             if spec.stage == ROUND_PHASE_STAGE:
+                # 探针（record=False）只回答「哪一页」，回合号对它无关：出价面板整族共用
+                # 同一块招牌（smart_bid_btn / round_big_banner），令牌按族产出即可（门控
+                # 按族放行，见 module._ocr_filter_by_page）。而回合号来自观察线程按周期
+                # 维护的 _last_round——探针读它等于把跨线程陈旧值请回来；更糟的是该字段
+                # 为空时下面的分支返回 None，并把自带回合号的横幅一并短路掉（实测：同一批
+                # 515 帧，读 _last_round 只得 18 帧，不读可得 80 帧，丢的全是 smart_bid_btn
+                # 命中帧）。
+                if not record:
+                    return (ROUND_PHASE_STAGE, None, tpl_name, hit_box)
                 round_from_template = bool(
                     (spec.arbitration or {}).get("round_from_template", False))
                 if round_from_template:
