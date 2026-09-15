@@ -107,6 +107,7 @@ class DetectionPlan:
     detect_anchors: tuple[str, ...]            # 阶段检测锚点（不含 appraiser/actions 独立匹配）
     dynamic_narrow: Mapping[str, str]          # stage → "code:xxx" 指针
     stage_stage: Mapping[str, str]             # 锚点 → 命中阶段（含 ROUND_PHASE_STAGE 哨兵）
+    ocr_stages: Mapping[str, frozenset[str]]   # OCR 信号 → 允许出现的阶段（ocr_keys 反转）
 
     def active_for(self, stage: str | None) -> frozenset[str] | None:
         """当前阶段的激活集；未登记返回 None（运行时回退全量检测，既有安全兜底）。"""
@@ -119,6 +120,15 @@ class DetectionPlan:
         if stage is None:
             return None
         return self.ocr_keys.get(stage)
+
+    def stages_for(self, signal: str) -> frozenset[str] | None:
+        """OCR 信号的「允许阶段集合」；未登记返回 None（无页面约束，调用方放行）。
+
+        与 ocr_for 互为逆查，同一真源的两面：`definitions[*].ocr` 声明「该阶段扫哪些
+        OCR 信号」，反转即得「该信号只允许出现在哪些阶段」。消费侧据此判断某个读数
+        是否可能来自当前画面——比阶段的滞后判定更贴近本帧事实。
+        """
+        return self.ocr_stages.get(signal)
 
 
 @dataclass(frozen=True)
@@ -223,6 +233,15 @@ def _build_detection_plan(anchors: Mapping[str, Anchor], perception: Mapping[str
         if by:
             dynamic[stage_name] = str(by)
 
+    # ocr_keys 反转：signal → 允许阶段集合。构建期算一次，运行时只查表（O(1)）。
+    _by_signal: dict[str, set[str]] = {}
+    for stage_name, keys in ocr_keys.items():
+        for key in keys:
+            _by_signal.setdefault(key, set()).add(stage_name)
+    ocr_stages: Mapping[str, frozenset[str]] = {
+        key: frozenset(names) for key, names in _by_signal.items()
+    }
+
     active_names = {name for values in active.values() for name in values}
     detect_anchors = tuple(
         name for name, spec in specs.items()
@@ -235,6 +254,7 @@ def _build_detection_plan(anchors: Mapping[str, Anchor], perception: Mapping[str
         global_anchors=global_anchors,
         active=active,
         ocr_keys=ocr_keys,
+        ocr_stages=ocr_stages,
         spec=specs,
         scales=tuple(match["scales"]),
         default_threshold=float(match["threshold"]),

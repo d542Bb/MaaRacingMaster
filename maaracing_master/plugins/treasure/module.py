@@ -825,7 +825,7 @@ class TreasureModule(ActivityModule):
         self._ocr_thread: threading.Thread | None = None
         # --- 投递槽（主线程写 / worker 取）---
         self._ocr_lock = threading.Lock()     # 保护两个槽：latest 帧 + 结果
-        self._ocr_pending: tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None] | None = None
+        self._ocr_pending: tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None, str | None] | None = None
         # (frame_id, round_no, frame, captured_ts, task, keys)，frame 为副本，
         # captured_ts=投递时刻≈帧捕获时刻（perf_counter 秒，时效老化口径）
         self._ocr_frame_id = 0                # 单调递增投递序号（仅主线程写）
@@ -848,6 +848,7 @@ class TreasureModule(ActivityModule):
         # 而这两个数当时一个都没有计数器。
         self._ocr_applied = 0                 # 过双闸被采纳的结果数（双槽各自计，与丢弃同分母）
         self._ocr_stale_drops = 0             # 因时效超 OCR_MAX_AGE_MS 被丢的结果数
+        self._ocr_page_drops = 0              # 因跨页（本帧页面不属于该信号所属页）被丢的读数个数
         self._ocr_expired_drops = 0           # 因回合不匹配（跨回合串写）被丢的结果数
         # 报价窗口（wait_result）分桶：识别健康的**主判据**。全局丢弃率会被非报价阶段
         # 摊薄——真机那次「第1、2回合完全没录到」全局值只有 18.8%（判 warn，太松），
@@ -4628,7 +4629,7 @@ class TreasureModule(ActivityModule):
                     self._ocr_wakeup.wait(timeout=0.5)
                     self._ocr_wakeup.clear()
                     continue
-                frame_id, round_no, frame, captured_ts, task, ocr_keys = item
+                frame_id, round_no, frame, captured_ts, task, ocr_keys, page_stage = item
                 # 彩蛋识别任务：复用本 worker 线程串行执行（避免两个线程并发调同一 OCR 引擎）。
                 # 识别器内部已含模板匹配+颜色+OCR，耗时几十 ms~百 ms 级，放后台不阻塞主循环。
                 if task == "egg":
@@ -4655,7 +4656,7 @@ class TreasureModule(ActivityModule):
                         min_amounts=self.OCR_MIN_AMOUNTS,
                     )
                     self._ocr_publish_result(res_crit, frame_id, round_no, t0, captured_ts,
-                                             critical=True)
+                                             critical=True, stage=page_stage)
                 # 第二段：阶段感知 keys（投递时按阶段裁剪；None=全量，尽力而为）。
                 # 窗口期超龄的结果会被主线程丢弃，此时关键 ROI 结果已由第一段保住。
                 # 剔除关键通道 ROI（H/P4）：同帧 H/P4 已由第一段识别发布，第二段不再重复
@@ -4672,7 +4673,8 @@ class TreasureModule(ActivityModule):
                 self._ocr_total_runs += 1
                 # 耗时测量一律 perf_counter（monotonic 在本机粒度约 16ms）
                 self._ocr_duration_ms = (time.perf_counter() - t0) * 1000
-                self._ocr_publish_result(res_full, frame_id, round_no, t0, captured_ts)
+                self._ocr_publish_result(res_full, frame_id, round_no, t0, captured_ts,
+                                         stage=page_stage)
             except Exception as e:
                 self._ocr_failures += 1
                 logger.log(f"[鉴宝] OCR worker 异常: {e}", "WARNING")
@@ -4687,7 +4689,13 @@ class TreasureModule(ActivityModule):
         返回新数组的隐含约束）。1280×720 RGB copy ~1ms，远小于 OCR 开销。
         task：任务类型。"ocr"=常规 ROI 识别；"egg"=彩蛋识别（复用同一 worker 线程，
         彩蛋阶段与其他 OCR 阶段互斥，同刻 pending 槽只会有一种任务）。
-        keys：第二段识别的 OCR keys（阶段感知裁剪，见 _STAGE_OCR_KEYS）；None=全量。"""
+        keys：第二段识别的 OCR keys（阶段感知裁剪，见 _STAGE_OCR_KEYS）；None=全量。
+
+        隧道最后一位是本帧页面令牌：投递时快照 `self._last_raw_stage`（detector 本帧的
+        原始阶段判定，未过防抖）。不取 _current_stage / _obs_slot —— 那两者带防抖，
+        画面已切走时仍会滞后停在旧页，此时旧页 ROI 会对在新页面上乱读（实证：结算页
+        ROI 读到大厅场次卡的资产要求 300000）。令牌只随帧走、不参与识别，开销为一次
+        属性读取；消费侧按它做页面门控（见 _apply_ocr_result 闸③）。"""
         with self._ocr_lock:
             self._ocr_frame_id += 1
             self._ocr_pending = (
@@ -4697,11 +4705,12 @@ class TreasureModule(ActivityModule):
                 time.perf_counter(),  # captured_ts：耗时/时效测量一律 perf_counter（消费侧同源）
                 task,
                 keys,
+                self._last_raw_stage,
             )
         self._ocr_wakeup.set()  # 唤醒 worker 立即处理（无 queue，不积压）
 
-    def _ocr_pop_latest(self) -> tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None] | None:
-        """worker 取走最新帧并清槽（latest-only）。"""
+    def _ocr_pop_latest(self) -> tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None, str | None] | None:
+        """worker 取走最新帧并清槽（latest-only）。末位为本帧页面令牌，透传即可。"""
         with self._ocr_lock:
             item = self._ocr_pending
             self._ocr_pending = None
@@ -4709,16 +4718,20 @@ class TreasureModule(ActivityModule):
 
     def _ocr_publish_result(
         self, res: dict, frame_id: int, round_no: int | None, t0: float, captured_ts: float,
-        critical: bool = False,
+        critical: bool = False, stage: str | None = None,
     ) -> None:
         """worker 写结果槽：完整新 dict 替换，不原地修改已发布对象。
         captured_ts = 帧捕获时刻（_ocr_push 记录，perf_counter 秒），供主线程时效老化。
         critical=True → 写关键通道槽（第一段 H+P4，独立于全量槽，不被第二段覆盖）；
-        critical=False → 写全量槽（第二段其余 ROI）。"""
+        critical=False → 写全量槽（第二段其余 ROI）。
+        stage：本帧页面令牌（投递时快照的 _last_raw_stage），随结果回传供消费侧做页面
+        门控——识别发生在 worker，判定"这一帧属于哪一页"的事实必须跟着结果一起过闸，
+        否则消费侧只能拿滞后的 _current_stage 去猜。"""
         with self._ocr_lock:
             payload = {
                 "frame_id": frame_id,
                 "round_no": round_no,
+                "stage": stage,
                 "captured_ts": captured_ts,
                 # 墙钟：结果完成时刻（事件语义，非经过时长口径）
                 "completed_ts": time.time(),
@@ -4742,10 +4755,52 @@ class TreasureModule(ActivityModule):
                 self._ocr_result = None
             return res
 
+    def _ocr_filter_by_page(self, result: dict) -> dict:
+        """页面门控（闸③）：按本帧页面令牌过滤 result["data"]，只放行属于当前页的读数。
+
+        真源是 policy 的 `perception.stages.definitions[*].ocr`（「该阶段扫哪些 OCR 信号」），
+        由 DetectionPlan.stages_for() 反转成「该信号只允许出现在哪些阶段」——与投递侧的
+        plan.ocr_for(stage) 同一份数据的两面，不新增配置字段。过滤规则：
+
+        - 信号未在任何阶段登记（stages_for 返回 None）→ 无页面约束，放行；
+        - 本帧页面令牌为空（detector 认不出当前页：转场中 / 未登记画面）→ 丢弃已登记信号；
+        - 令牌不在该信号的允许阶段集合内 → 丢弃（画面已不是该信号所属的页）；
+        - 其余放行。
+
+        与闸①（回合 provenance）的关键差别：闸①在 round_no is None 时放行，而结算/分红期
+        round_no 恒为 None，那正是脏读的通路之一；本闸不复制该例外——页面令牌为 None 一律
+        按「认不出当前页」处理，宁可少读一帧也不把别的页的数字当成本页读数。
+
+        开销：每个读数一次 dict 查表 + 集合包含判断。不触碰图像、不新增取图、不新增 ROI。
+        """
+        plan = getattr(self._detector, "plan", None)
+        data = result.get("data") or {}
+        if plan is None:
+            return data  # 真源缺失（plan 未装配）→ 不过滤，保持既有行为，不因门控缺失误杀
+        stage_token = result.get("stage")
+        kept: dict = {}
+        dropped: list[str] = []
+        for key, value in data.items():
+            allowed = plan.stages_for(key)
+            if allowed is None or (stage_token is not None and stage_token in allowed):
+                kept[key] = value
+            else:
+                dropped.append(key)
+        if dropped:
+            self._ocr_page_drops += len(dropped)
+            logger.log(
+                f"[鉴宝] OCR 读数跨页丢弃(本帧页={stage_token!r} 帧{result.get('frame_id')} "
+                f"丢弃={dropped})",
+                "DEBUG",
+            )
+        return kept
+
     def _apply_ocr_result(self) -> None:
-        """消费 worker 双结果槽并应用业务状态。两道闸门，通过后委托给 _consume_ocr_result：
+        """消费 worker 双结果槽并应用业务状态。三道闸门，通过后委托给 _consume_ocr_result：
         ① provenance：round_no 与当前回合不匹配 → 丢弃（防旧回合结果串写新回合）；
-        ② 时效老化：age = consume_time - captured_ts 超 OCR_MAX_AGE_MS → 丢弃
+        ② 页面门控：本帧页面令牌不属于该信号所属页 → 丢弃（防旧页 ROI 在新页上乱读，
+          详见 _ocr_filter_by_page；结算/分红期 round_no 恒为 None 使闸①失效，本闸是主防线）；
+        ③ 时效老化：age = consume_time - captured_ts 超 OCR_MAX_AGE_MS → 丢弃
           （尖峰窗口期算出的陈旧帧不被当作当前状态；此时关键 ROI 已由优先通道保住）。
 
         双槽合并（P4 双通道覆盖 bug 修复）：关键槽（第一段 H+P4）与全量槽（第二段其余）
@@ -4776,6 +4831,12 @@ class TreasureModule(ActivityModule):
                         "DEBUG",
                     )
                 continue
+            # ② 页面门控：本帧页面不属于该信号所属页的读数一律丢弃（详见 _ocr_filter_by_page）。
+            # 排在时效闸之前：页面不匹配比"算得慢"更根本——错页的读数再新鲜也是错的。
+            kept = self._ocr_filter_by_page(result)
+            if not kept:
+                continue
+            result["data"] = kept
             # 时效老化：陈旧帧不当作当前状态（窗口期全量 18 ROI 结果常在此被拦）
             if self._ocr_result_age_ms > self.OCR_MAX_AGE_MS:
                 self._ocr_stale_drops += 1

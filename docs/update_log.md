@@ -7,6 +7,24 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）结算 OCR 页面门控：拦跨页串读 🔧
+
+- **性质：** 未发版变更（`plugins/treasure/module.py`、`core/navkit/v4_source.py`、`tests/test_treasure_ocr_page_gate.py`（新）；master 直接提交、不 tag）
+
+- **问题：** `settle_my_income` 在 2026-09-05 后 61 场中 17 场读到常量脏值（大师场 300,000 / 实习场 20,000）。raw 帧取证（#452 会话 `20260915_090037`）确认：结算页转场到大厅后 ROI 未移动却对在了大厅场次卡上，把「资产要求 ≥ 300,000」当成收入落盘——ROI 位置没画错（`marked_825.png` 已标注确认），根因是**阶段判定滞后**：`_current_stage` / `_obs_slot` 是 `_accept_stage` 去抖产物，画面已切走仍停在旧页，旧页 ROI 继续在新页上被识别并消费。加固阶段门控无效——守的是过期的门。
+
+- **修复口径：** 投递时快照本帧**未防抖**判定 `_last_raw_stage` 作页面令牌随帧走（pending 6→7 元组 → worker → payload `stage` 键），消费侧新增闸②按信号过滤：真源取 policy `definitions[*].ocr` 反转出的「信号允许阶段集合」（`DetectionPlan.stages_for()`，构建期算一次，运行时 O(1) 查表）。未登记信号放行；令牌为空（转场中/未登记画面）或不在允许集内则丢弃。闸序 ① 回合 provenance → ② 页面门控 → ③ 时效，且**不复制** ① 在 `round_no is None` 时的放行例外——结算/分红期 `round_no` 恒为 None，那正是脏读通路。
+
+- **真源选择：** 用 `ocr_keys` 反转而非锚点 `page` 字段：后者全仓库仅 `v4_source.py:173` 一处解析、**零消费者**，65 个锚点的声明从未被任何逻辑验证（四个 `settle_*` 标 `payout` 却在 `settle` 阶段被扫即由此长期潜伏），且单值装不下「同一套 rect 服务中标结算 + 领取分红两阶段」。`ocr_keys` 是活真源（投递侧 `plan.ocr_for()` 已在消费），零 policy 改动。
+
+- **性能：** 截图次数、帧拷贝次数、ROI 识别次数均不变；唯一新增是一次属性读取 + 一个字符串引用随帧传递，消费侧每个读数一次 dict 查表（微秒以下，对照 OCR ≈ 20ms/帧）。门控只丢弃不重试、不触发补帧；错页帧被丢后下游日志与状态写入不再执行，净效果略省。
+
+- **回归锁：** `tests/test_treasure_ocr_page_gate.py` 15 例（含 3 例端到端：跨页结果不进 `_consume_ocr_result`；覆盖大厅页丢弃四类结算信号、中标结算/领取分红放行、令牌为空丢弃、未登记信号不受约束、出价信号不在结算页消费、混合结果按信号过滤、plan 缺失不过滤、令牌随帧走且取本帧值）。全量 `pytest 524 passed`。
+
+- **验证边界（真机待复验）：** 对 300000 跨页串读的拦截有 raw 帧实证；但「放行中标结算阶段读 `settle_*`」的依据只是 policy 的 ocr 表登记（投递清单，不等于读得对）——现有取证全部来自「领取分红」阶段，「中标结算」尚未取证，两阶段是否同一张视觉脸待确认。真机还需比对 `_ocr_applied` / `duration_ms` 均值确认吞吐无劣化。
+
+- **遗留：** ①「中标结算」阶段 `settle_*` 读数取证；②`page` 死字段（建议删除或修正声明）；③`settle_profit` 相对下限 `max(H)/20` 误杀 8/8 个真实微小利润；④`auction_result` 漏读（9/6 21 场，其中 6 场实际中标被记 0 胜）。详见 `docs/plan/bid_audit_20260915/结算OCR页面门控方案.md` §七。
+
 ### 暂存（未发布 · 待并入下一版本）退役「每局最多接受亏多少」旋钮（GLOBAL_CAP）🔧
 
 - **性质：** 未发版变更（`plugins/treasure/strategy.py`、`plugins/treasure/module.py`、`core/sidecar.py`、`apps/MaaRacingMaster.Shell/frontend/index.html`、`apps/MaaRacingMaster.Shell/frontend/app.js`、`tests/test_bid_strategy.py`、`tests/test_treasure_bid_phase_recovery.py`；master 直接提交、不 tag）
