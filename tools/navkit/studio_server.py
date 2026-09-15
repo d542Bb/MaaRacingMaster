@@ -553,13 +553,15 @@ def apply_save(body: dict, *, dry_run: bool) -> dict:
     _merge_added(body, policy, spec, diff, problems)
     _merge_deleted(body, policy, spec, docs, diff, problems)
 
-    # check_truth 三闸（import 复用；内存文档直接校验，无需落盘）
+    # check_truth 各闸（import 复用；内存文档直接校验，无需落盘）
     ct = _check_truth_module()
     graph, origin = build_graph(docs)
     errors, warns = ct.validate_graph(graph)
     errors += ct.namespace_checks(graph, origin)
     errors += ct.cross_checks(graph, policy)
     errors += ct.rect_checks(graph, policy)
+    errors += ct.stage_face_checks(graph, policy)
+    errors += ct.page_checks(policy)
     report = {"errors": problems + list(errors), "warnings": list(warns)}
     ok = not report["errors"]
 

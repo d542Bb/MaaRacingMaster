@@ -25,6 +25,9 @@
 8. 页面清单等集（stage_face_checks）：dwell 顶层 focus ↔ policy stages.order ↔
    stages.definitions 三方互为等集，且 focus 全局唯一——显示态真源已收敛到「当前
    节点」，这三处是同一事实的三个面，协议层不校验一致，漏改即静默漂移。
+9. 页面归属闭合（page_checks）：spec 锚点与 stage definitions 的 page 非空，且
+   被阶段表/转移引用的锚点 page 不得逃逸出 stage page 集——page 是 Studio 编辑器
+   侧分组真源，运行时归属真源是 definitions[*].active/ocr，两者都不得写了没人验。
 
 用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
 """
@@ -552,6 +555,51 @@ def stage_face_checks(graph: dict, policy: dict) -> list[str]:
     return problems
 
 
+def page_checks(policy: dict) -> list[str]:
+    """页面归属闭合（校验器第 9 条，2026-09-15）。
+
+    口径：锚点与阶段的 `page` 是 ROI Studio 编辑器侧的**视觉页分组**真源
+    （分组展示 + 新增锚点 E09 校验消费）；运行时的「阶段 → 信号/锚点」归属
+    唯一真源是 stages.definitions[*].active/ocr（ADR-0002 真源单一）。
+    两条语义轴允许交叉——同一视觉页可服务多个语义阶段（实证：中标结算与
+    领取分红是同一张结算页的两个状态，共用 settle_* 信号族），所以本闸不要求
+    「信号 page == 所在阶段 page」，只锁分组闭合三件事：
+
+    1. 每个 spec 锚点必须有非空 page（Studio 侧 E09 的事后回锁：E09 只拦新增，
+       不锁历史数据与手改 JSON）；
+    2. 每个 stage definition 必须有非空 page；
+    3. 凡被阶段表（active/ocr）、global_anchors 或 transitions.on 引用的锚点，
+       其 page 必须落在 stage page 集内——引用不得逃逸到未定义页面。
+       不被任何阶段表/转移引用的惰性锚点（module 直读 spec，如 egg_task 族）
+       可用独立页面，不受 3 约束。
+    """
+    problems: list[str] = []
+    spec = policy["perception"]["spec"]
+    stages = policy["perception"]["stages"]
+    defs = stages.get("definitions") or {}
+    stage_pages = {d.get("page") for d in defs.values() if d.get("page")}
+    for s, d in defs.items():
+        if not d.get("page"):
+            problems.append(f"stages.definitions.{s}：缺 page（stage 侧页面声明位）")
+    for a_name, a in spec.items():
+        if not a.get("page"):
+            problems.append(f"spec.{a_name}：缺 page（Studio 分组/E09 依赖）")
+    referenced: set[str] = set(stages.get("global_anchors") or [])
+    for d in defs.values():
+        referenced |= set(d.get("active") or []) | set(d.get("ocr") or [])
+    for tr in policy["perception"].get("transitions") or []:
+        if tr.get("on"):
+            referenced.add(tr["on"])
+    for a_name in sorted(referenced & set(spec)):
+        p = spec[a_name].get("page")
+        if p and p not in stage_pages:
+            problems.append(
+                f"spec.{a_name}：被阶段表/转移引用，但 page {p!r} 不在 stage page 集 "
+                f"{sorted(stage_pages)}（引用不得逃逸到未定义页面）"
+            )
+    return problems
+
+
 def main() -> int:
     graph, origin = load_graph()
     errors, warns = validate_graph(graph)
@@ -566,6 +614,7 @@ def main() -> int:
         warns += face_warns
         errors += rect_checks(graph, policy_doc)
         errors += stage_face_checks(graph, policy_doc)
+        errors += page_checks(policy_doc)
     except (KeyError, TypeError) as exc:
         errors.append(f"policy.json 段结构非法: {exc}")
     if policy_doc is not None:

@@ -176,6 +176,40 @@ def test_stage_face_gate(truth):
     assert any("无 transitions 入边" in e and "不存在的页" in e for e in errs)
 
 
+def test_page_gate(truth):
+    """页面归属闭合闸（校验器第 9 条）：盘上真源过闸 + 三类漂移各自被拦。
+
+    page 是 Studio 编辑器侧视觉页分组真源（运行时归属 = definitions[*].active/ocr），
+    闸不要求「信号 page == 所在阶段 page」（中标结算/领取分红共用结算页信号族即反例），
+    只锁：锚点/stage 两侧 page 非空 + 被引用锚点 page 不逃逸出 stage page 集。
+    """
+    import copy
+    from dataclasses import fields
+
+    from maaracing_master.core.navkit.v4_source import Anchor
+
+    full, policy = truth
+    assert ct.page_checks(policy) == []
+    # 运行时不解析 page（写了没人读的死字段已清，JSON 侧供 Studio 消费）
+    assert "page" not in {f.name for f in fields(Anchor)}
+
+    no_anchor_page = copy.deepcopy(policy)
+    del no_anchor_page["perception"]["spec"]["settle_title"]["page"]
+    assert any("spec.settle_title" in e and "缺 page" in e
+               for e in ct.page_checks(no_anchor_page))
+
+    no_stage_page = copy.deepcopy(policy)
+    no_stage_page["perception"]["stages"]["definitions"]["游戏大厅"].pop("page")
+    assert any("definitions.游戏大厅" in e and "缺 page" in e
+               for e in ct.page_checks(no_stage_page))
+
+    # 被阶段表引用的锚点 page 逃逸到未定义页面 → 拦；惰性锚点（egg_task 族）不受此约束
+    escape = copy.deepcopy(policy)
+    escape["perception"]["spec"]["hall_session_cards"]["page"] = "no_such_page"
+    assert any("hall_session_cards" in e and "不在 stage page 集" in e
+               for e in ct.page_checks(escape))
+
+
 def test_navigation_dwell_fallback_to_boot(truth):
     """纯导航兜底契约（真机八炸定案）：纯导航 dwell 的 next 是固定候选，
     timeout=-1 + 画面意外 = 永久静默——默认超时 + on_error 回 boot 重判

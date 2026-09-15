@@ -591,7 +591,7 @@ function updatePropPanel() {
           ${(addOpts.stage_anchors || []).map(a => `<option value="${a}" ${a === addedEntry.guarded_by ? "selected" : ""}>${a}</option>`).join("")}
         </select>
       </label>
-      <div class="prop-row" style="color:var(--dim);font-size:12px">page/kind 决定该锚点在 v4 的归属；point 必须挂模板担保人（E10）</div>
+      <div class="prop-row" style="color:var(--dim);font-size:12px">page 决定编辑器视觉页分组（运行时归属以 stages 表 active/ocr 为准，机检 page_checks）；kind 决定锚点类型，point 必须挂模板担保人（E10）</div>
     </div>
   ` : "";
 

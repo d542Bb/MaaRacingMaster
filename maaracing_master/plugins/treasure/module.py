@@ -328,7 +328,7 @@ _SMART_BID_KEY = "smart_bid_btn"
 _SMART_BID_MATCH_THRESHOLD = 0.72
 
 # ==================================================================
-#  阶段感知清单（动态激活）
+#  阶段感知清单（动态激活）——唯一真源 = policy.json perception.stages
 #  ------------------------------------------------------------------
 #  背景：非标准窗口（DPI 缩放/分辨率变化）下画面模糊 → 单点模板匹配分
 #  不稳定（如 smart_bid_btn 多尺度最优仅 0.686 < 0.90 → 面板判未开 →
@@ -336,109 +336,24 @@ _SMART_BID_MATCH_THRESHOLD = 0.72
 #  方案：按阶段只激活「当前画面必然出现/相关的 ROI」，把「放宽阈值」
 #  和「防误识别」解耦 —— 其它阶段的背景元素根本不参与匹配。
 #
-#  使用规则（改这里前必读）：
-#   - 键：STAGE_ORDER 中的阶段名；值：该阶段要激活的 stage ROI 键
-#     （= policy.json perception 锚点名，不含模块独立匹配的
-#     appraiser_selected_check / session_start_match_btn / 鉴宝师模板）。
-#   - 值只写「本阶段画面会出现/需要感知」的 ROI；全局锚点（_GLOBAL_ANCHORS）
-#     运行时自动并入，不必重复写。
+#  取用口：`detector.plan`（v4_source DetectionPlan，policy 数据面装配）。
+#   - 阶段感知集 = `plan.active_for(stage)`（definitions[*].active）；
+#   - 阶段 OCR 集 = `plan.ocr_for(stage)`（definitions[*].ocr）；
+#   - 全局锚点 = `plan.global_anchors`（任何阶段都可能异常掉回大厅 →
+#     大厅锚点每帧并入扫描集；求解范围 = 阶段感知清单 ∪ 全局锚点，若漏掉
+#     回退目标页的识别 ROI，阶段会冻结——实测：结算弹窗点关闭后已回鉴宝
+#     大厅，但检测器只扫弹窗 ROI+游戏大厅卡片，看不到 hall_session_cards
+#     → 永远停在结算弹窗）。
+#   本文件不再另存第二份清单（ADR-0002 真源单一；v3 平行常量回退已随
+#   P4d 退役——模块类定义期 fail-closed，plan 缺失时插件根本不会加载）。
+#  改真源前必读（规则在 policy 侧生效）：
+#   - active 值只写「本阶段画面会出现/需要感知」的锚点，不含模块独立匹配的
+#     appraiser_selected_check / session_start_match_btn / 鉴宝师模板；
 #   - 转移信号必须包含：本阶段画面里可能出现的「下一阶段/结算」信号，
-#     否则阶段切换会漏检（如出价阶段必须含 settle_title/result_banner）。
-#   - 新阶段忘了登记 → 运行时回退全量检测（安全兜底，不会静默卡死）。
+#     否则阶段切换会漏检（如出价阶段必须含 settle_title/result_banner）；
+#   - 新阶段忘了登记 → `active_for` 返回 None = 运行时回退全量检测
+#     （安全兜底，不会静默卡死）。
 # ==================================================================
-# 全局锚点：任何阶段都可能异常掉回大厅（游戏大厅 / 鉴宝大厅选择场次）→
-# 这些「大厅锚点」始终全量匹配。注意：感知裁剪（active_rois）的求解范围 = 阶段感知清单
-# ∪ 本锚点，若漏掉回退目标页的识别 ROI，阶段会冻结（实测：结算弹窗点关闭后已回鉴宝
-# 大厅，但检测器只扫弹窗 ROI+游戏大厅卡片，看不到 hall_session_cards → 永远停在结算弹窗）。
-_GLOBAL_ANCHORS: frozenset[str] = frozenset({
-    "hall_peak_appraise_card",  # 游戏大厅「巅峰鉴宝」卡片
-    "hall_session_cards",       # 鉴宝大厅(选择场次) 场次卡片（弹窗链回退的常见落点）
-})
-
-# 回合出价阶段共用的激活集合（第1~5回合一致）。
-# 注意：这是「出价完成（wait_result/wait_next）」后的完整激活集。出价面板
-# 打开交互期（bidding，拨号盘输入中）由 _active_stage_rois 动态收窄为仅
-# smart_bid_btn —— round_big_banner/result_banner/settle_title 是"出价完成后"
-# 才可能出现的转移信号，拨号盘还在时必然不出现（见 _active_stage_rois 注释）。
-_ROUND_PERCEPTION_ROIS: frozenset[str] = frozenset({
-    "round_big_banner",   # 回合横幅：回合号权威来源 + 下一回合转移信号
-    "smart_bid_btn",      # 智能出价按钮：面板开（S3）强信号
-    "settle_title",       # 结算转移锚点：出价结束 → 领取分红
-    "result_banner",      # 结算结果锚点：出价结束 → 中标结算
-})
-
-# 出价面板 OCR keys（worker 第二段按阶段裁剪）。
-_BID_OCR_KEYS: frozenset[str] = frozenset({
-    "bid_result_amount_box",  # H 值（输入框当前值，智能出价填入）
-    "bid_player1", "bid_player2", "bid_player3", "bid_player4",  # 公开报价（快照）
-    "player_name1", "player_name2", "player_name3", "player_name4",  # 玩家名（槽位定位）
-    "round_label_area",       # 回合小字（附加回合兜底）
-})
-# 结算/分红 OCR keys。
-_SETTLE_OCR_KEYS: frozenset[str] = frozenset({
-    "settle_final_price", "settle_total_price", "settle_profit", "settle_my_income",
-})
-
-_STAGE_PERCEPTION: dict[str, frozenset[str]] = {
-    "游戏大厅": frozenset({
-        "hall_peak_appraise_card",  # 大厅卡片（点击进活动页/鉴宝大厅）
-        "goto_appraise_btn",        # 活动页「前往鉴宝」（若已切到活动页）
-        "hall_session_cards",       # 鉴宝大厅场次卡片（若已切到大厅）
-    }),
-    "活动页面": frozenset({
-        "goto_appraise_btn",        # 「前往鉴宝」按钮（点击进鉴宝大厅）
-        "hall_session_cards",       # 已进鉴宝大厅的转移信号
-    }),
-    "鉴宝大厅(选择场次)": frozenset({
-        "hall_session_cards",       # 场次卡片区（「开始匹配」为模块独立匹配，不走 detect）
-        "is_matching_btn",          # 点「开始匹配」后 → 匹配中 的转移信号（缺失会卡死在大厅反复点 badge）
-    }),
-    "匹配中": frozenset({
-        "is_matching_btn",          # 匹配中按钮
-        "appraiser_title",          # 匹配完成 → 选择鉴宝师 的转移信号
-    }),
-    "选择鉴宝师": frozenset({
-        "appraiser_title",          # 选师页标题
-        "round_big_banner",         # 确认后进回合的强信号（immediate 切换）
-        "is_matching_btn",          # 仍处匹配中的转移信号
-        # 对勾 / 鉴宝师模板为模块独立匹配，不走 detect
-    }),
-    "第1回合出价": _ROUND_PERCEPTION_ROIS,
-    "第2回合出价": _ROUND_PERCEPTION_ROIS,
-    "第3回合出价": _ROUND_PERCEPTION_ROIS,
-    "第4回合出价": _ROUND_PERCEPTION_ROIS,
-    "第5回合出价": _ROUND_PERCEPTION_ROIS,
-    "中标结算": frozenset({
-        "result_banner",            # 竞拍结果横幅（win/fail）
-        "settle_title",             # 点领取后 → 领取分红 的转移信号
-        "daily_high_banner",        # 弹窗链入口（今日最高）
-        "egg_reward_title",         # 弹窗链入口（彩蛋）
-    }),
-    "领取分红": frozenset({
-        "settle_title",             # 结算页标题
-        "result_banner",            # 结算结果（若结果横幅仍在）
-        "daily_high_banner",        # 弹窗链入口
-        "egg_reward_title",         # 弹窗链入口
-    }),
-    "结算弹窗": frozenset({
-        "daily_high_banner",        # 今日最高积分弹窗
-        "egg_reward_title",         # 彩蛋弹窗
-        "settle_title",             # 弹窗链未命中时结算页兜底
-        "result_banner",            # 弹窗链未命中时结果横幅兜底
-    }),
-}
-
-# OCR 感知清单：阶段 → 需要投递识别的 OCR keys（worker 第二段按此裁剪；None=全量）。
-# 仅列出走异步 worker 的阶段；鉴宝大厅/结算弹窗走同步单 ROI，不在此表。
-_STAGE_OCR_KEYS: dict[str, frozenset[str]] = {
-    "第1回合出价": _BID_OCR_KEYS,
-    "第2回合出价": _BID_OCR_KEYS,
-    "第3回合出价": _BID_OCR_KEYS,
-    "第4回合出价": _BID_OCR_KEYS,
-    "第5回合出价": _BID_OCR_KEYS,
-    "中标结算": _SETTLE_OCR_KEYS,
-    "领取分红": _SETTLE_OCR_KEYS,
-}
 
 
 def _load_smart_bid_btn(
@@ -3085,7 +3000,7 @@ class TreasureModule(ActivityModule):
             return []
         rects: list[tuple[str, tuple[float, float, float, float]]] = []
         plan = getattr(self._detector, "plan", None)
-        global_anchors = plan.global_anchors if plan is not None else _GLOBAL_ANCHORS
+        global_anchors = plan.global_anchors if plan is not None else ()
         keys = set(global_anchors)
         if self._current_stage:
             perception = self._active_stage_rois(self._current_stage)
@@ -3099,14 +3014,12 @@ class TreasureModule(ActivityModule):
         ocr_keys = None
         if plan is not None and self._current_stage:
             ocr_keys = plan.ocr_for(self._current_stage)
-        if ocr_keys is None and self._current_stage:
-            ocr_keys = _STAGE_OCR_KEYS.get(self._current_stage)
         for k in sorted(ocr_keys or ()):
             rect = regions.get(k)
             if isinstance(rect, (tuple, list)) and len(rect) == 4:
                 rects.append((k, tuple(float(n) for n in rect)))
-        # 出价主按钮文字 OCR 区（bid_main_btn_label，S1/S2 同步读取，不在异步
-        # _STAGE_OCR_KEYS 里）：确认出价后光标恰好停在 (0.463,0.805) 落在该
+        # 出价主按钮文字 OCR 区（bid_main_btn_label，S1/S2 同步读取，不在
+        # definitions[*].ocr 阶段清单里）：确认出价后光标恰好停在 (0.463,0.805) 落在该
         # label 区内，若不被守卫，下一轮 S1 读「出价」文字被光标挡住 → OCR 空 →
         # 永远等不到按钮亮起（2026-09-03 用户实测：出价 OCR 被挡但不避让）。
         # 面板开（bidding 相位）期间不守卫：面板覆盖主按钮且确认按钮 rect 与
@@ -3145,7 +3058,7 @@ class TreasureModule(ActivityModule):
     def _active_stage_rois(self, stage: str | None) -> frozenset[str] | None:
         """当前阶段的「激活感知 ROI」：detector 每帧只扫本阶段相关锚点。
 
-        返回语义与 _STAGE_PERCEPTION.get(stage) 一致：None=未登记 → 消费方回退
+        返回语义（plan.active_for）：None=未登记 → 消费方回退
         全量检测（安全兜底）；非 None=frozenset 激活集。
         出价阶段按子状态动态裁剪：
           - bidding（面板打开、拨号盘输入/确认中）：只激活 smart_bid_btn。
@@ -3160,11 +3073,12 @@ class TreasureModule(ActivityModule):
         if (stage.startswith("第") and "回合" in stage
                 and self._bid_phase == "bidding"):
             return frozenset({_SMART_BID_KEY})
-        # S1：v4 DetectionPlan 是感知清单真源；plan 缺失时保留旧常量回退（P4d 清）。
+        # v4 DetectionPlan（policy 数据面）是感知清单唯一真源；
+        # plan 缺失（policy.json 损坏 → 插件本不会加载）时回退全量检测。
         plan = getattr(self._detector, "plan", None)
         if plan is not None:
             return plan.active_for(stage)
-        return _STAGE_PERCEPTION.get(stage)
+        return None
 
     def _consume_click_result(self) -> None:
         """消费上一导航任务结果（点击/移动共用单槽），应用成功/失败副作用。
@@ -4381,7 +4295,9 @@ class TreasureModule(ActivityModule):
         perception = self._active_stage_rois(cur)
         active_rois = None
         if perception is not None:
-            active_rois = set(perception) | set(_GLOBAL_ANCHORS)
+            plan = getattr(self._detector, "plan", None)
+            global_anchors = plan.global_anchors if plan is not None else ()
+            active_rois = set(perception) | set(global_anchors)
         try:
             detection = self._detector.detect(frame_rgb, active_rois)
             raw_stage, raw_r = detection
@@ -4570,7 +4486,7 @@ class TreasureModule(ActivityModule):
             return
         if s == "中标结算" or s == "领取分红":
             plan = getattr(self._detector, "plan", None)
-            keys = plan.ocr_for(s) if plan is not None else _STAGE_OCR_KEYS.get(s)
+            keys = plan.ocr_for(s) if plan is not None else None
             self._ocr_push(frame_rgb, keys=keys)
             return
         if not (s.startswith("第") and "回合" in s):
@@ -4580,7 +4496,7 @@ class TreasureModule(ActivityModule):
         dec = self._bidding_last_decision
         if (dec and dec.get("state", "").startswith("S3")) or self._bid_phase == "wait_result":
             plan = getattr(self._detector, "plan", None)
-            base_keys = plan.ocr_for(s) if plan is not None else _STAGE_OCR_KEYS.get(s)
+            base_keys = plan.ocr_for(s) if plan is not None else None
             if self._bid_phase == "wait_result":
                 # wait_result 阶段：动态剔除已固化槽 → OCR 资源集中给未固化槽，
                 # 尤其是最后展示的 P4（配合 P4 双通道，未固化槽刷新率自动提升≈两倍）。
@@ -4689,7 +4605,7 @@ class TreasureModule(ActivityModule):
         返回新数组的隐含约束）。1280×720 RGB copy ~1ms，远小于 OCR 开销。
         task：任务类型。"ocr"=常规 ROI 识别；"egg"=彩蛋识别（复用同一 worker 线程，
         彩蛋阶段与其他 OCR 阶段互斥，同刻 pending 槽只会有一种任务）。
-        keys：第二段识别的 OCR keys（阶段感知裁剪，见 _STAGE_OCR_KEYS）；None=全量。
+        keys：第二段识别的 OCR keys（阶段感知裁剪，见 policy definitions[*].ocr）；None=全量。
 
         隧道最后一位是本帧页面令牌：投递时快照 `self._last_raw_stage`（detector 本帧的
         原始阶段判定，未过防抖）。不取 _current_stage / _obs_slot —— 那两者带防抖，
@@ -5231,10 +5147,10 @@ class TreasureModule(ActivityModule):
     def _bid_dynamic_ocr_keys(self) -> frozenset[str]:
         """出价阶段动态 OCR keys：剔除已固化槽（用户规则：固化→停止该回合该槽 OCR），
         OCR 资源集中给未固化槽，尤其最后展示的 P4（配合 P4 双通道提升刷新率）。
-        H/玩家名/回合小字等非报价槽恒在。无固化槽时直接复用全量 _BID_OCR_KEYS（避免每帧重建 frozenset）。"""
+        H/玩家名/回合小字等非报价槽恒在。无固化槽时直接复用阶段 OCR 全集（避免每帧重建 frozenset）。"""
         locked = {pid for pid, s in self._bid_slots.items() if s.get("locked")}
         plan = getattr(self._detector, "plan", None)
-        bid_keys = plan.ocr_for(self._current_stage) if plan is not None else _BID_OCR_KEYS
+        bid_keys = plan.ocr_for(self._current_stage) if plan is not None else None
         if not locked:
             return bid_keys or frozenset()
         return frozenset(

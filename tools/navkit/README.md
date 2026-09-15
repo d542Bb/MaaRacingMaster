@@ -33,7 +33,7 @@
 ROI 校准台的数据面（`/api/rois` 读写）以 **v4 真源**为准：
 
 - 读面 flat 投影 = spec 三组（`template` / `point` / `ocr`，按 `kind` 分组）+ `nodes` 组（pipeline 两文件逐处 `rect`，含 `mirrors` 与 colorspace 现值）+ `tuning` 组（`policy.tuning.perception` 的第 54 个 rect）+ `_meta`；
-- 写面管线：`base_hash` 比对(409) → 内存合并 → 结构校验 → `check_truth` 三闸 → preview 回 diff/report 不落盘 → 逐文件原子替换；
+- 写面管线：`base_hash` 比对(409) → 内存合并 → 结构校验 → `check_truth` 各闸（图自洽/分层红线/交叉互洽/几何/页面清单等集/页面归属闭合 `page_checks`）→ preview 回 diff/report 不落盘 → 逐文件原子替换；
 - 11 个两面同值锚点在 `nodes` 组编辑时默认同步写 spec 同名锚点（UI 提供「仅改此面」逃生口）；colorspace 两面各自维护（语义独立，台内如实呈现各自现值）；
 - 测分/跨帧/OCR 走**生产同源**引擎（`core.template_match.find_any_cs`、`plugins.treasure.ocr.TreasureOcr.recognize_single`）。
 
