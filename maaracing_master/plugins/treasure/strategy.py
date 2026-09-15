@@ -2,7 +2,7 @@
 """巅峰鉴宝 · 出价策略模块 V4（2026-09-15 卡第二改出到买入线）。
 
 设计文档：docs/treasure_tick_dynamic_step_report.md + 多轮策略讨论 + 401 场复盘。
-V4 核心变更（61 场整链静态仿真，见 docs/plan/bid_audit_20260915/）：
+V4 核心变更（61 场整链静态仿真，见 docs/plan/archive/bid_audit_20260915/）：
   - 卡第二分支的出价依据从「第三名 + 缓冲」改为**买入线**（`min(line, cap, 余额)`）。
     旧口径在 `lower >= upper` 时回退 `competitor + u`，把 M 到买入线之间那段
     可盈利区间整段让掉；仿真：拍中 7 → 17 场、利润 417,194 → 647,362、零亏损。

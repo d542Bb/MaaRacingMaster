@@ -9,7 +9,7 @@ V4（2026-09-15）改动：卡第二分支不再「紧贴第三名」，改为**
 「全局兜底上限」（原 GLOBAL_CAP / GUI「每局最多接受亏多少」）随之下线
 （买入线恒严于它，旋钮在出价决策上已无作用）。
 相关用例的期望值已随之更新，理由见 strategy.py 模块头 V4 段与
-docs/plan/bid_audit_20260915/出价审计报告_20260915.md。
+docs/plan/archive/bid_audit_20260915/出价审计报告_20260915.md。
 """
 
 from __future__ import annotations
