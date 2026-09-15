@@ -24,14 +24,19 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from maaracing_master.core.logger import logger
+from maaracing_master.core.navkit import ROUND_PHASE_STAGE
 from maaracing_master.core.template_match import best_match_score, load_template
 from maaracing_master.plugins.treasure import IMAGE_DIR
+
+# 回合族阶段名（本类按回合号实例化）：与 _scan 哨兵分支的生成口径配对。
+_ROUND_STAGE_RE = re.compile(r"^第\d+回合出价$")
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,50 @@ class TreasureStageDetector:
             hit_box=hit_box,
         )
 
+    # ---------------- 帧内页面探针 ----------------
+    @staticmethod
+    def _is_round_stage(stage: str) -> bool:
+        """回合族阶段名：本类按回合号实例化的「第N回合出价」（见 _scan 哨兵分支）。"""
+        return bool(_ROUND_STAGE_RE.match(stage))
+
+    def _proof_anchors(self, stages: Iterable[str] | None) -> set[str]:
+        """标志锚点：`active_for(stage)` 里「命中即进入该阶段」的模板锚点。
+
+        active 混着邻页锚点（「领取分红」的 active 含 daily_high_banner，其归属阶段是
+        「结算弹窗」），只有 spec.stage 等于本阶段的才是该页的现场证据；归属哨兵的锚点
+        （smart_bid_btn / round_big_banner）对回合族阶段成立，与 _scan 实例化口径一致。
+        """
+        if self.plan is None:
+            return set()
+        out: set[str] = set()
+        for stage in stages or ():
+            for anchor in self.plan.active_for(stage) or ():
+                spec = self.plan.spec.get(anchor)
+                if spec is None or spec.kind != "template" or not spec.templates:
+                    continue
+                if spec.stage == stage or (
+                        spec.stage == ROUND_PHASE_STAGE and self._is_round_stage(stage)):
+                    out.add(anchor)
+        return out
+
+    def probe_page(self, frame_rgb: np.ndarray, stages: Iterable[str] | None) -> str | None:
+        """帧内页面探针：本帧是否属于给定阶段之一，是则返回该阶段名，否则 None。
+
+        供 OCR worker 对**被识别的那一帧**现场取页面令牌——令牌与像素同源，取代
+        「投递时快照观察线程的周期判定」那套跨线程搬运（搬运必有窗口，实证见
+        docs/update_log.md 的跨页串读条目：结算页 ROI 在已转场的大厅帧上读到 300000）。
+
+        锚点集、阈值、尺度全部来自 policy 数据面，与 detect() 共用同一个 _scan；
+        差别只在 record=False——不写实例状态（`_last_hit_roi_key` / `_last_detect_scores`
+        / `_last_round` 的生产者是观察线程，决策线程正在读它们）。
+        认不出当前页（未命中任何标志锚点）→ None，由调用方按「认不出本页」处置。
+        """
+        anchors = self._proof_anchors(stages)
+        if not anchors:
+            return None
+        stage, _round_no, _hit_tpl, _hit_box = self._scan(frame_rgb, anchors, record=False)
+        return stage
+
     # ---------------- 扫描核心 ----------------
     def _px_roi(self, rect, W: int, H: int) -> tuple[int, int, int, int] | None:
         """归一化 rect (x1n,y1n,x2n,y2n) → 引擎像素搜索区 (x, y, w, h)。"""
@@ -229,16 +278,22 @@ class TreasureStageDetector:
             return spec.threshold
         return float(self.match_threshold)
 
-    def _scan(self, frame_rgb: np.ndarray, active_rois: set[str] | None
+    def _scan(self, frame_rgb: np.ndarray, active_rois: set[str] | None,
+              record: bool = True
               ) -> tuple[str | None, int | None, str | None, tuple | None]:
         """按计划优先级从高到低扫描锚点，命中短路。返回 (stage, round, 模板, 框)。
 
         active_rois：本帧只匹配这些锚点键；None = 全量匹配（调试/断点/测试用）。
         未命中的锚点不参与扫描 → 非当前阶段的背景元素不会干扰判定（配合阶段感知
         清单），也让阶段内阈值可以放宽而不担心跨阶段误识别。
+
+        record=False：不写 `_last_detect_scores` / `_last_hit_roi_key` / `_last_round`。
+        这三个字段的生产者约定是观察线程，决策线程正在读它们（结算弹窗分类、trace）；
+        worker 侧的帧内判定（probe_page）走 record=False，只取返回值。
         """
         H, W = frame_rgb.shape[:2]
-        self._last_detect_scores = {}
+        if record:
+            self._last_detect_scores = {}
         gray_frame = None  # 帧灰度投影，按首个 gray 锚点惰性转换
 
         scan_keys = sorted(
@@ -276,7 +331,8 @@ class TreasureStageDetector:
             if best is None:
                 continue
             score, tpl_name, hit_box = best
-            self._last_detect_scores[roi_key] = score
+            if record:
+                self._last_detect_scores[roi_key] = score
 
             threshold = self._resolve_threshold(spec, tpl_name)
             # 弱匹配：[threshold - 0.25, threshold) 区间，便于发现「差一点命中」但低于 threshold 的情况
@@ -295,8 +351,9 @@ class TreasureStageDetector:
                 continue
 
             # 命中
-            self._last_hit_roi_key = roi_key
-            if spec.stage == "__round_phase__":
+            if record:
+                self._last_hit_roi_key = roi_key
+            if spec.stage == ROUND_PHASE_STAGE:
                 round_from_template = bool(
                     (spec.arbitration or {}).get("round_from_template", False))
                 if round_from_template:
@@ -304,7 +361,8 @@ class TreasureStageDetector:
                     # 模板命中的回合号即时生效并更新 _last_round。
                     r = self._round_from_template(tpl_name)
                     if r is not None:
-                        self._last_round = r
+                        if record:
+                            self._last_round = r
                         return (f"第{r}回合出价", r, tpl_name, hit_box)
                     return (None, None, tpl_name, hit_box)
                 # smart_bid_btn（出价面板开，优先级先于横幅检查）：标准回合用
@@ -331,7 +389,8 @@ class TreasureStageDetector:
             r = self._detect_round_full(frame_rgb, W, H)
             if r is not None:
                 return (f"第{min(r, 5)}回合出价", r, None, None)
-        self._last_hit_roi_key = None  # 无命中：弹窗链阶段区分"等级提升盲点"
+        if record:
+            self._last_hit_roi_key = None  # 无命中：弹窗链阶段区分"等级提升盲点"
         return (None, None, None, None)
 
     def banner_result(self, frame_rgb: np.ndarray) -> str | None:

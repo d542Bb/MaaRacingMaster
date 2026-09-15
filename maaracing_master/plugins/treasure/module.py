@@ -740,9 +740,10 @@ class TreasureModule(ActivityModule):
         self._ocr_thread: threading.Thread | None = None
         # --- 投递槽（主线程写 / worker 取）---
         self._ocr_lock = threading.Lock()     # 保护两个槽：latest 帧 + 结果
-        self._ocr_pending: tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None, str | None] | None = None
+        self._ocr_pending: tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None] | None = None
         # (frame_id, round_no, frame, captured_ts, task, keys)，frame 为副本，
-        # captured_ts=投递时刻≈帧捕获时刻（perf_counter 秒，时效老化口径）
+        # captured_ts=投递时刻≈帧捕获时刻（perf_counter 秒，时效老化口径）。
+        # 页面令牌不进投递槽：由 worker 在识别前对同一帧现场判定（见 _judge_frame_page）。
         self._ocr_frame_id = 0                # 单调递增投递序号（仅主线程写）
         # --- 结果槽（worker 写 / 主线程消费）---
         # 双槽：关键通道（_ocr_result_critical，第一段 H+P4）与全量通道（_ocr_result，第二段
@@ -4545,7 +4546,7 @@ class TreasureModule(ActivityModule):
                     self._ocr_wakeup.wait(timeout=0.5)
                     self._ocr_wakeup.clear()
                     continue
-                frame_id, round_no, frame, captured_ts, task, ocr_keys, page_stage = item
+                frame_id, round_no, frame, captured_ts, task, ocr_keys = item
                 # 彩蛋识别任务：复用本 worker 线程串行执行（避免两个线程并发调同一 OCR 引擎）。
                 # 识别器内部已含模板匹配+颜色+OCR，耗时几十 ms~百 ms 级，放后台不阻塞主循环。
                 if task == "egg":
@@ -4557,6 +4558,10 @@ class TreasureModule(ActivityModule):
                             egg_res = None
                         self._egg_publish_result(egg_res, frame_id, captured_ts, t0)
                     continue
+                # 帧内判定：页面令牌与下面两段识别吃的是**同一帧像素**，同源由构造保证
+                # （跨线程搬运必有窗口 → 见 _ocr_push docstring）。标志锚点命中即短路：
+                # 本页帧 ~2–3ms，认不出的帧走满锚点集 16–40ms（只在转场那几帧）。
+                page_stage = self._judge_frame_page(frame, ocr_keys)
                 # 第一段：关键 ROI（bid_result_amount_box + bid_player4 双通道）单独识别、立即发布。
                 # 窗口期（偶发系统级慢）单 ROI 即使慢 15 倍也仅 ~200ms，age 仍低于
                 # OCR_MAX_AGE_MS，保证 H 等关键数值先于全量结果落地，不被 18 ROI 长循环拖死。
@@ -4607,11 +4612,12 @@ class TreasureModule(ActivityModule):
         彩蛋阶段与其他 OCR 阶段互斥，同刻 pending 槽只会有一种任务）。
         keys：第二段识别的 OCR keys（阶段感知裁剪，见 policy definitions[*].ocr）；None=全量。
 
-        隧道最后一位是本帧页面令牌：投递时快照 `self._last_raw_stage`（detector 本帧的
-        原始阶段判定，未过防抖）。不取 _current_stage / _obs_slot —— 那两者带防抖，
-        画面已切走时仍会滞后停在旧页，此时旧页 ROI 会对在新页面上乱读（实证：结算页
-        ROI 读到大厅场次卡的资产要求 300000）。令牌只随帧走、不参与识别，开销为一次
-        属性读取；消费侧按它做页面门控（见 _apply_ocr_result 闸③）。"""
+        页面令牌不由投递侧给出：在这里快照任何阶段值都是搬来一个「与像素不同源」的结论
+        ——`_last_raw_stage` 由观察线程按 STAGE_JUDGE_INTERVAL_MS 周期写，而本帧是决策
+        线程每 tick 自截的，两个捕获流、两种节拍；转场恰好落在窗口里时令牌仍是旧页、
+        像素已是新页，旧页 ROI 就在新页面上乱读（实证：结算页 ROI 读到大厅场次卡的
+        300000）。令牌改由 worker 对同一帧现场判定（_judge_frame_page），随结果回传
+        供消费侧门控。"""
         with self._ocr_lock:
             self._ocr_frame_id += 1
             self._ocr_pending = (
@@ -4621,12 +4627,11 @@ class TreasureModule(ActivityModule):
                 time.perf_counter(),  # captured_ts：耗时/时效测量一律 perf_counter（消费侧同源）
                 task,
                 keys,
-                self._last_raw_stage,
             )
         self._ocr_wakeup.set()  # 唤醒 worker 立即处理（无 queue，不积压）
 
-    def _ocr_pop_latest(self) -> tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None, str | None] | None:
-        """worker 取走最新帧并清槽（latest-only）。末位为本帧页面令牌，透传即可。"""
+    def _ocr_pop_latest(self) -> tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None] | None:
+        """worker 取走最新帧并清槽（latest-only）。"""
         with self._ocr_lock:
             item = self._ocr_pending
             self._ocr_pending = None
@@ -4640,9 +4645,9 @@ class TreasureModule(ActivityModule):
         captured_ts = 帧捕获时刻（_ocr_push 记录，perf_counter 秒），供主线程时效老化。
         critical=True → 写关键通道槽（第一段 H+P4，独立于全量槽，不被第二段覆盖）；
         critical=False → 写全量槽（第二段其余 ROI）。
-        stage：本帧页面令牌（投递时快照的 _last_raw_stage），随结果回传供消费侧做页面
-        门控——识别发生在 worker，判定"这一帧属于哪一页"的事实必须跟着结果一起过闸，
-        否则消费侧只能拿滞后的 _current_stage 去猜。"""
+        stage：本帧页面令牌（worker 对**同一帧**现场判定，见 _judge_frame_page），随结果
+        回传供消费侧做页面门控——识别发生在 worker，判定"这一帧属于哪一页"的事实必须
+        跟着结果一起过闸，且必须与读数字节同源，否则消费侧只能拿滞后结论去猜。"""
         with self._ocr_lock:
             payload = {
                 "frame_id": frame_id,
@@ -4670,6 +4675,32 @@ class TreasureModule(ActivityModule):
                 res = self._ocr_result
                 self._ocr_result = None
             return res
+
+    def _judge_frame_page(self, frame_rgb: np.ndarray,
+                          ocr_keys: frozenset[str] | None) -> str | None:
+        """对**即将识别的这一帧**现场判定页面（令牌产地），供消费侧页面门控。
+
+        与消费侧 _ocr_filter_by_page 构成一对：这里产出令牌，那里按令牌过滤，两者查的
+        是同一份 policy 真源的两面——本次识别的信号反查 `stages_for(信号)`（该信号允许
+        出现在哪些阶段），再由 detector 在这些阶段的标志锚点上对本帧做匹配。
+
+        令牌与读数字节同源（同一次 worker 调用里的同一帧），所以不存在「旧页令牌配新页
+        像素」的窗口：转场帧判不出本页 → None → 消费侧按「认不出本页」丢弃，宁可少读
+        一帧也不把别的页的数字当本页读数（与 _ocr_filter_by_page 同一 fail-closed 口径）。
+        """
+        det = self._detector
+        plan = getattr(det, "plan", None)
+        probe = getattr(det, "probe_page", None)
+        if plan is None or probe is None:
+            return None  # 真源缺失 → None（消费侧同样在 plan 缺失时不过滤，行为不变）
+        stages: set[str] = set()
+        for key in (ocr_keys or ()):
+            allowed = plan.stages_for(key)
+            if allowed:
+                stages |= set(allowed)
+        if not stages:
+            return None  # 本批信号都没有页面约束 → 无令牌（消费侧对这些信号本就放行）
+        return probe(frame_rgb, stages)
 
     def _ocr_filter_by_page(self, result: dict) -> dict:
         """页面门控（闸③）：按本帧页面令牌过滤 result["data"]，只放行属于当前页的读数。

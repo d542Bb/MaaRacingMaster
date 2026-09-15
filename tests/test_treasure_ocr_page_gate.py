@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """结算 OCR 页面门控（闸②）：按本帧页面令牌过滤跨页读数。
 
-背景是本仓实测的一次脏读：结算页转场后，`settle_my_income` 的 ROI 对在了大厅场次卡上，
-把「资产要求 300000」当成收入落盘。根因不是数值异常，而是阶段判定（_current_stage）带
-防抖，画面已切走时仍滞后停在旧页，旧页 ROI 继续在新页面上被识别并消费。
+背景是本仓实测的两次脏读：结算页转场后，`settle_my_income` 的 ROI 对在了大厅场次卡上，
+把「资产要求 300000」当成收入落盘。第一次根因是阶段判定（_current_stage）带防抖，画面
+已切走时仍滞后停在旧页；改用投递时快照 `_last_raw_stage` 后仍会漏——该值由观察线程按
+STAGE_JUDGE_INTERVAL_MS 周期写，而帧是决策线程每 tick 自截的，两个捕获流不同源，转场
+恰好落在窗口里时令牌仍是旧页、像素已是新页（实证：帧 997 令牌='领取分红' 而读到 300000）。
 
-门控依据不是滞后阶段，而是投递时快照的本帧原始判定 _last_raw_stage；真源是 policy 的
-`definitions[*].ocr`（「该阶段扫哪些 OCR 信号」）反转而成的「该信号允许出现在哪些阶段」。
+令牌因此改由 worker 对**被识别的那一帧**现场判定（`_judge_frame_page` → detector
+`probe_page`），同源由构造保证。真源始终是 policy 的 `definitions[*].ocr`（「该阶段扫哪些
+OCR 信号」）反转而成的「该信号允许出现在哪些阶段」；判定锚点由 `active` 里的标志锚点
+派生，不新增配置字段。
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import pytest
 
 try:
     from maaracing_master.core.navkit.v4_source import load_nav_source
+    from maaracing_master.plugins.treasure.detector import TreasureStageDetector
     from maaracing_master.plugins.treasure.module import TreasureModule
 
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
@@ -154,40 +159,143 @@ def test_missing_plan_means_no_filtering():
 
 
 # --------------------------------------------------------------------------
-# 令牌随帧走：_ocr_push 快照本帧原始判定
+# 帧内判定：令牌由 worker 对同一帧现场产出（不再跨线程搬运）
 # --------------------------------------------------------------------------
 
-def test_ocr_push_snapshots_raw_stage():
-    """页面令牌在投递时随帧写入 pending 槽，供 worker 透传。"""
+class _ProbeStubDetector:
+    """令牌产地桩：plan 是真的（真源数据面），只有「本帧判定结果」可控。"""
+
+    def __init__(self, plan: object | None, verdict: str | None) -> None:
+        self.plan = plan
+        self.verdict = verdict
+        self.seen_stages: list[set] = []
+
+    def probe_page(self, frame_rgb, stages):
+        self.seen_stages.append(set(stages))
+        return self.verdict
+
+
+def _judge(mod: TreasureModule, keys):
+    return TreasureModule._judge_frame_page(
+        mod, np.zeros((8, 8, 3), dtype=np.uint8), keys)
+
+
+def test_ocr_push_carries_no_page_token():
+    """投递槽是 6 元组：令牌与像素同源这件事，投递侧给不出来。"""
     mod = TreasureModule.__new__(TreasureModule)
     mod._ocr_lock = threading.Lock()
     mod._ocr_wakeup = threading.Event()
     mod._ocr_frame_id = 0
     mod._round_no = None
     mod._ocr_pending = None
-    mod._last_raw_stage = "中标结算"
+    mod._last_raw_stage = "中标结算"  # 观察线程恰好停在结算页，也不许进槽
 
     mod._ocr_push(np.zeros((8, 8, 3), dtype=np.uint8))
 
     assert mod._ocr_pending is not None
-    assert mod._ocr_pending[-1] == "中标结算"
+    assert len(mod._ocr_pending) == 6
+    # 槽里唯一的字符串是 task——没有页面令牌这一位（numpy 数组不能直接做 `in` 比较）
+    assert [x for x in mod._ocr_pending if isinstance(x, str)] == ["ocr"]
 
 
-def test_ocr_push_follows_latest_raw_stage():
-    """令牌取的是本帧值：上一帧还是结算页、本帧已是大厅时，令牌必须是大厅。"""
+def test_judge_frame_page_derives_stages_from_signals(plan):
+    """判定阶段集由本次识别信号反查 stages_for —— 与消费侧同一份真源。"""
+    det = _ProbeStubDetector(plan, "领取分红")
     mod = TreasureModule.__new__(TreasureModule)
-    mod._ocr_lock = threading.Lock()
-    mod._ocr_wakeup = threading.Event()
-    mod._ocr_frame_id = 0
-    mod._round_no = None
-    mod._ocr_pending = None
+    mod._detector = det
 
-    mod._last_raw_stage = "中标结算"
-    mod._ocr_push(np.zeros((8, 8, 3), dtype=np.uint8))
-    mod._last_raw_stage = "鉴宝大厅(选择场次)"
-    mod._ocr_push(np.zeros((8, 8, 3), dtype=np.uint8))
+    token = _judge(mod, frozenset({"settle_my_income"}))
 
-    assert mod._ocr_pending[-1] == "鉴宝大厅(选择场次)"
+    assert token == "领取分红"
+    assert det.seen_stages == [{"中标结算", "领取分红"}]
+
+
+def test_judge_frame_page_none_when_page_unrecognizable(plan):
+    """转场帧判不出本页 → None，正是 300000 脏读被拦下的那个判据。"""
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = _ProbeStubDetector(plan, None)
+
+    assert _judge(mod, frozenset({"settle_my_income"})) is None
+
+
+def test_judge_frame_page_none_without_plan_or_probe():
+    """真源/detector 缺失 → None（消费侧在 plan 缺失时不过滤，行为不变）。"""
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = _StubDetector(None)
+    assert _judge(mod, frozenset({"settle_my_income"})) is None
+
+
+def test_judge_frame_page_none_when_no_signals():
+    """本批信号都没页面约束 → 无令牌（消费侧对这些信号本就放行）。"""
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = _ProbeStubDetector(None, "随便什么页")
+    assert _judge(mod, frozenset()) is None
+    assert _judge(mod, None) is None
+
+
+def test_in_frame_token_drives_page_gate(plan):
+    """端到端：帧内判定产出令牌 → 同一帧的门控消费它（#453 路径复现）。"""
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = _ProbeStubDetector(plan, None)
+    mod._ocr_page_drops = 0
+
+    token = _judge(mod, frozenset({"settle_my_income"}))
+    kept = TreasureModule._ocr_filter_by_page(mod, {
+        "frame_id": 997, "round_no": None, "stage": token,
+        "data": {"settle_my_income": 300000},
+    })
+
+    assert kept == {}
+    assert mod._ocr_page_drops == 1
+
+
+# --------------------------------------------------------------------------
+# 标志锚点派生（真 detector + 真 policy，不依赖图像）
+# --------------------------------------------------------------------------
+
+_PLUGIN_DIR = (
+    Path(__file__).resolve().parents[1] / "maaracing_master" / "plugins" / "treasure"
+)
+
+
+@pytest.fixture(scope="module")
+def detector():
+    return TreasureStageDetector(_PLUGIN_DIR)
+
+
+def test_proof_anchors_take_only_own_stage(detector):
+    """只取归属本阶段的锚点：「领取分红」的 active 含 daily_high_banner（属结算弹窗）。"""
+    stages = detector.plan.stages_for("settle_my_income")
+    assert detector._proof_anchors(stages) == {"settle_title", "result_banner"}
+
+
+def test_proof_anchors_accept_round_phase_sentinel(detector):
+    """回合族阶段的标志锚点归属 __round_phase__ 哨兵，必须被认作本阶段证据。"""
+    stages = detector.plan.stages_for("bid_player1")
+    assert detector._proof_anchors(stages) == {"smart_bid_btn", "round_big_banner"}
+
+
+def test_proof_anchors_empty_for_unknown_stage(detector):
+    assert detector._proof_anchors(["不存在的阶段"]) == set()
+
+
+def test_probe_page_none_when_no_anchor(detector):
+    """无标志锚点可判（未知阶段/空集/None）→ None，不瞎猜。"""
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    assert detector.probe_page(frame, ["不存在的阶段"]) is None
+    assert detector.probe_page(frame, None) is None
+    assert detector.probe_page(frame, ()) is None
+
+
+def test_probe_page_writes_no_instance_state(detector):
+    """帧内判定不得改动观察线程的判定产物（决策线程正在读 _last_hit_roi_key）。"""
+    before = (detector._last_hit_roi_key, dict(detector._last_detect_scores),
+              detector._last_round)
+    detector.probe_page(np.zeros((720, 1280, 3), dtype=np.uint8),
+                        detector.plan.stages_for("settle_my_income"))
+    after = (detector._last_hit_roi_key, dict(detector._last_detect_scores),
+             detector._last_round)
+    assert before == after
 
 
 # --------------------------------------------------------------------------

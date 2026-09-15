@@ -23,24 +23,29 @@
 
 - **验证：** 无头 Edge 定格取帧（`animation-delay` 负值 + `animation-play-state: paused`，多条动画按序钉相位）核对：静止段见纯基色、行程正中见白光束压白、色相六相位逐列亮度极差恒为 0.024 且条带色相明显推移；`node --check app.js` 通过。纯 CSS 与一处类名切换，Python 测试面不受影响。
 
+### 暂存（未发布 · 待并入下一版本）结算 OCR 页面门控：页面令牌改为帧内判定 🔧
 
-### 暂存（未发布 · 待并入下一版本）结算 OCR 页面门控：拦跨页串读 🔧
+- **性质：** 未发版变更（`plugins/treasure/module.py`、`plugins/treasure/detector.py`、`core/navkit/v4_source.py`、`tests/test_treasure_ocr_page_gate.py`（新）；master 直接提交、不 tag）
 
-- **性质：** 未发版变更（`plugins/treasure/module.py`、`core/navkit/v4_source.py`、`tests/test_treasure_ocr_page_gate.py`（新）；master 直接提交、不 tag）
+- **问题：** `settle_my_income` 长期读到常量脏值（大师场 300,000 / 实习场 20,000）——库内 455 场中 50 场，占 11.0%。raw 帧取证确认：结算页转场到大厅后 ROI 未移动却对在了大厅场次卡上，把「资产要求 ≥ 300,000」当成收入落盘；ROI 位置没画错（`marked_825.png` 已标注确认）。根因是**页面身份与像素不同源**：`_current_stage` / `_obs_slot` 是 `_accept_stage` 去抖产物，画面已切走仍停在旧页；改用未防抖的 `_last_raw_stage` 作令牌后仍会漏——该值由观察线程按 `STAGE_JUDGE_INTERVAL_MS`（300ms）周期写，而帧是决策线程每 tick（~110ms）自截的，两个捕获流、两种节拍，转场恰好落进窗口时令牌仍是旧页、像素已是新页。日志实证（会话 `20260915_121005`）：OCR 帧 997 令牌=`'领取分红'` 且门控放行，同一帧 `settle_my_income` 读到 300,000；帧 998 起令牌翻成 `'鉴宝大厅(选择场次)'` 才拦下。
 
-- **问题：** `settle_my_income` 在 2026-09-05 后 61 场中 17 场读到常量脏值（大师场 300,000 / 实习场 20,000）。raw 帧取证（#452 会话 `20260915_090037`）确认：结算页转场到大厅后 ROI 未移动却对在了大厅场次卡上，把「资产要求 ≥ 300,000」当成收入落盘——ROI 位置没画错（`marked_825.png` 已标注确认），根因是**阶段判定滞后**：`_current_stage` / `_obs_slot` 是 `_accept_stage` 去抖产物，画面已切走仍停在旧页，旧页 ROI 继续在新页上被识别并消费。加固阶段门控无效——守的是过期的门。
+- **修复口径：** 令牌产地从「投递时快照观察线程的周期判定」搬到「被识别的那一帧自身」——worker 识别前对**同一帧**执行 `detector.probe_page(frame, stages)`，命中即得本帧页面、认不出即 None，随结果回传（payload `stage` 键）。同源由构造保证，没有可调的窗口参数。消费侧闸②按信号过滤不变：真源仍是 policy `definitions[*].ocr` 反转出的「信号允许阶段集合」（`DetectionPlan.stages_for()`，构建期算一次，运行时 O(1) 查表）；未登记信号放行，令牌为空（转场中/认不出本页）或不在允许集内则丢弃。闸序 ① 回合 provenance → ② 页面门控 → ③ 时效，且**不复制** ① 在 `round_no is None` 时的放行例外——结算/分红期 `round_no` 恒为 None，那正是脏读通路。
 
-- **修复口径：** 投递时快照本帧**未防抖**判定 `_last_raw_stage` 作页面令牌随帧走（pending 6→7 元组 → worker → payload `stage` 键），消费侧新增闸②按信号过滤：真源取 policy `definitions[*].ocr` 反转出的「信号允许阶段集合」（`DetectionPlan.stages_for()`，构建期算一次，运行时 O(1) 查表）。未登记信号放行；令牌为空（转场中/未登记画面）或不在允许集内则丢弃。闸序 ① 回合 provenance → ② 页面门控 → ③ 时效，且**不复制** ① 在 `round_no is None` 时的放行例外——结算/分红期 `round_no` 恒为 None，那正是脏读通路。
+- **判定锚点从 `active` 派生，不新增 policy 字段：** 取「标志锚点」——`active_for(stage)` 中归属阶段就是本阶段的模板锚点。`active` 里混着邻页锚点（「领取分红」的 active 含 `daily_high_banner`，其归属阶段是「结算弹窗」），只有归属本阶段的才是该页的现场证据；回合族阶段的标志锚点归属 `__round_phase__` 哨兵（`smart_bid_btn` / `round_big_banner`），按 detector 的实例化口径认领。与 `stages_for`/`ocr_for` 是同一份真源的另一面。
 
 - **真源选择：** 用 `ocr_keys` 反转而非锚点 `page` 字段：后者全仓库仅 `v4_source.py:173` 一处解析、**零消费者**，65 个锚点的声明从未被任何逻辑验证（四个 `settle_*` 标 `payout` 却在 `settle` 阶段被扫即由此长期潜伏），且单值装不下「同一套 rect 服务中标结算 + 领取分红两阶段」。`ocr_keys` 是活真源（投递侧 `plan.ocr_for()` 已在消费），零 policy 改动。
 
-- **性能：** 截图次数、帧拷贝次数、ROI 识别次数均不变；唯一新增是一次属性读取 + 一个字符串引用随帧传递，消费侧每个读数一次 dict 查表（微秒以下，对照 OCR ≈ 20ms/帧）。门控只丢弃不重试、不触发补帧；错页帧被丢后下游日志与状态写入不再执行，净效果略省。
+- **为什么不做完整阶段判定：** 实测否决。全量扫描（13 锚点 × 13 尺度）p50 140 / max 249 ms，而 OCR worker 单帧约 110 ms、决策帧间隔 p50 110 ms——每帧全量会让 worker 吞吐减半并触发 latest-only 丢帧。标志锚点集命中即短路：结算页 2.0–3.5 ms、出价页 ~3 ms、非本页 16–40 ms（只在转场那几帧走满）。
 
-- **回归锁：** `tests/test_treasure_ocr_page_gate.py` 15 例（含 3 例端到端：跨页结果不进 `_consume_ocr_result`；覆盖大厅页丢弃四类结算信号、中标结算/领取分红放行、令牌为空丢弃、未登记信号不受约束、出价信号不在结算页消费、混合结果按信号过滤、plan 缺失不过滤、令牌随帧走且取本帧值）。全量 `pytest 524 passed`。
+- **不写实例状态：** `probe_page` 走 `_scan(record=False)`，不碰 `_last_hit_roi_key` / `_last_detect_scores` / `_last_round`——这三个字段的生产者约定是观察线程，而决策线程正在读它们（结算弹窗分类 `_run_ocr`、`popup_kind`、trace）。`_last_raw_stage` 保留给 `_run_appraiser_choice` 的选师准星，只是不再供 OCR 令牌。
 
-- **验证边界（真机待复验）：** 对 300000 跨页串读的拦截有 raw 帧实证；但「放行中标结算阶段读 `settle_*`」的依据只是 policy 的 ocr 表登记（投递清单，不等于读得对）——现有取证全部来自「领取分红」阶段，「中标结算」尚未取证，两阶段是否同一张视觉脸待确认。真机还需比对 `_ocr_applied` / `duration_ms` 均值确认吞吐无劣化。
+- **性能：** 截图次数、帧拷贝次数、ROI 识别次数均不变；每帧新增一次标志锚点匹配（命中即短路：结算/出价页 ~2–3 ms，非本页 16–40 ms），对照 OCR 单帧 ~110 ms。门控只丢弃不重试、不触发补帧；错页帧被丢后下游日志与状态写入不再执行，净效果略省。
 
-- **遗留：** ①「中标结算」阶段 `settle_*` 读数取证；②`page` 死字段（建议删除或修正声明）；③`settle_profit` 相对下限 `max(H)/20` 误杀 8/8 个真实微小利润；④`auction_result` 漏读（9/6 21 场，其中 6 场实际中标被记 0 胜）。详见 `docs/plan/archive/bid_audit_20260915/结算OCR页面门控方案.md` §七。
+- **工作基线（自证未打穿）：** 以**全量判定**为参考真值比对帧内判定（会话 `20260915_090037`，191 帧抽样）：出价帧 63/63 一致、结算帧 8/8 一致，零退化；转场帧（会话 `20260915_121005` 帧 1000 起）判定为 None，正确拦截。验证脚本在 `tools/experiments/frame-page-token/`（`probe.py` 判定正确性与成本、`verify_round_baseline.py` 基线比对）。回归锁 `tests/test_treasure_ocr_page_gate.py` 24 例（门控行为 12 + 帧内判定 6 + 锚点派生与无副作用 6，含 3 例端到端）。全量 `pytest 537 passed`。
+
+- **验证边界（真机待复验）：** 对 300000 跨页串读的拦截有 raw 帧实证；但「放行中标结算阶段读 `settle_*`」的依据只是 policy 的 ocr 表登记（投递清单，不等于读得对）——现有取证全部来自「领取分红」阶段，「中标结算」尚未取证，两阶段是否同一张视觉脸待确认。真机还需比对 `_ocr_applied` / `_ocr_page_drops` / `duration_ms` 均值确认吞吐与丢读率无劣化。
+
+- **遗留：** ①「中标结算」阶段 `settle_*` 读数取证；②`page` 死字段（建议删除或修正声明）；③`settle_profit` 相对下限 `max(H)/20` 误杀 8/8 个真实微小利润；④`auction_result` 漏读（9/6 21 场，其中 6 场实际中标被记 0 胜）；⑤投递侧「要不要投递」仍基于去抖的 `_current_stage`——转场后可能多投几帧，帧内判定会把它们判为 None 丢弃（只浪费一次识别，不影响读数正确性）。详见 `docs/plan/archive/bid_audit_20260915/结算OCR页面门控方案.md` §七。
 
 ### 暂存（未发布 · 待并入下一版本）退役「每局最多接受亏多少」旋钮（GLOBAL_CAP）🔧
 
