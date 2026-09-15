@@ -1148,7 +1148,6 @@
         "egg_ocr_timeout_frames",
         "popup_click_cooldown_frames",
         "popup_continue_retry_frames",
-        "session_start_click_cooldown_frames",
         "settle_skip_retry_frames",
         "settle_skip_retry_max"
       ]
@@ -2941,7 +2940,6 @@
         "egg_ocr_timeout_frames": 8,
         "popup_click_cooldown_frames": 5,
         "popup_continue_retry_frames": 3,
-        "session_start_click_cooldown_frames": 3,
         "settle_skip_retry_frames": 10,
         "settle_skip_retry_max": 3
       }

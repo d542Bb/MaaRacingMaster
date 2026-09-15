@@ -7,6 +7,18 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）场次选择「先匹配后选场次」倒序修复：先选场次闸门 🔧
+
+- **性质：** 未发版变更（`plugins/treasure/module.py`、`plugins/treasure/resources/policy/treasure.policy.json`、`tests/test_treasure_session_badge_gate.py`（新）、域 CODE_WIKI；master 直接提交、不 tag）
+
+- **问题：** 进鉴宝大厅后程序直接点「开始匹配」（场次根本没点过），点完还倒序去点场次标签。根因是场次选择以「开始匹配」按钮模板命中判"已选目标场次"——详情卡默认已打开、任意场次都带该按钮，判据不成立；点完后的倒序点 badge 则是检测器确认「匹配中」前按帧冷却耗尽的回退分支（2026-08-16 修复治标不治本）。
+
+- **修复口径：** 单次进阶段内序钉死：点中目标场次标签（`_session_badge_clicked` 闸门，点击成功时置位）之前意图恒为场次标签；过闸后只给「开始匹配」（模板命中）或纯等待（未命中转场中），badge 阶段内不再出现。按帧冷却机制与 tuning 键 `session_start_click_cooldown_frames` 一并移除；点击落空的收口交给既有的阶段切换重试框架（时间窗口重 arm、封顶抛错终止，不静默）。
+
+- **回归锁：** `tests/test_treasure_session_badge_gate.py` 6 条（按钮可见也先选场次 / 点中标签开闸且他阶段不开 / 开闸后给开始匹配 / 转场 10 帧不回退 badge / 阶段切走复位 / 降级模式过闸后点开始匹配）。全量 `pytest 510 passed`。
+
+- **真机复验口径：** 大厅内应看到「先按场次标签、再按开始匹配」；直到切「匹配中」前不再出现场次标签点击。
+
 ### 暂存（未发布 · 待并入下一版本）出价面板数字键「点击无响应」兜底 🔧
 
 - **性质：** 未发版变更（`plugins/treasure/module.py`、`tests/test_treasure_bid_digit_retry.py`（新）、域 CODE_WIKI；master 直接提交、不 tag）

@@ -159,8 +159,10 @@ _CHECK_MATCH_SCALES: tuple[float, ...] = _APPRAISER_MATCH_SCALES
 #   • session_start_match_btn     —— 「开始匹配」按钮（stage 段模板：判定按钮是否已出现在屏幕上，
 #                                    即右侧详情卡已切到目标场次；命中后点同一 key 的 actions 段 rect 中心）
 #   • session_{master,expert,intern}_badge —— 地图上对应场次标签（点击切换场次，actions 段静态 rect 中心）
-# 主流程由 GUI 的 target_session 配置驱动：未识别到「开始匹配」按钮 → 先点目标 badge 切详情卡；
-# 识别到 → 直接点「开始匹配」。
+# 主流程由 GUI 的 target_session 配置驱动，单次进入本阶段内序钉死为：场次标签未点击成功
+# → 只点目标 badge；已点成功 → 点「开始匹配」（不再回退 badge，见 _session_badge_clicked）。
+# 注意「开始匹配」按钮可见**不能**作为"已选目标场次"的判据——详情卡默认已打开、任意场次都带
+# 该按钮，仅凭它直接点会进非目标场次（2026-09-15 倒序事故复盘）。
 _SESSION_PANEL_DEFS: list[tuple[int, str, str]] = [
     (0, "session_start_match_btn", "session_start_match_btn.png"),
 ]
@@ -170,9 +172,6 @@ _SESSION_MATCH_THRESHOLD = 0.90   # 与 treasure_rois.json stage.session_start_m
 _SESSION_MATCH_SCALES: tuple[float, ...] = (
     0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30,
 )
-# 点击「开始匹配」后的冷却帧数：按钮已消失但检测器还没切阶段（匹配中）时，
-# 冷却期内不再产出新意图，防止回退点 badge（时序 bug，实测 01:08:26 连点事故）。
-SESSION_START_CLICK_COOLDOWN_FRAMES = 3
 # GUI 可选的目标场次 → actions 段 badge key + 中文名（用于日志/HUD显示）。
 # badge key 对应 treasure_rois.json 的 actions 段：session_intern_badge / session_expert_badge / session_master_badge。
 TARGET_SESSION_OPTIONS: dict[str, tuple[str, str]] = {
@@ -180,6 +179,7 @@ TARGET_SESSION_OPTIONS: dict[str, tuple[str, str]] = {
     "expert": ("session_expert_badge",  "专家场"),
     "master": ("session_master_badge",  "大师场"),
 }
+_SESSION_BADGE_KEYS: frozenset[str] = frozenset(k for k, _ in TARGET_SESSION_OPTIONS.values())
 DEFAULT_TARGET_SESSION: str = "master"
 
 
@@ -963,9 +963,10 @@ class TreasureModule(ActivityModule):
         ] = []
         # 上一次"点击意图"结果：{"key","center","hint","score"}|None，由 _run_session_choice 每帧重算
         self._session_last_decision: dict | None = None
-        # 点击「开始匹配」后的冷却帧计数：点完 N 帧内不产出新意图，避免检测器还没切阶段
-        # 就回退点 badge（时序问题：按钮已消失但阶段仍是鉴宝大厅）。
-        self._session_start_cooldown: int = 0
+        # 场次选择进阶段闸门：本次进入本阶段是否已点成功目标场次标签（_apply_click_success
+        # 置位，离开阶段/新一场清零）。未过闸只给 badge 意图，过闸后只给开始匹配/等待——
+        # 「先选场次再开始匹配」序被钉死（01:08:26 倒序事故；2026-08-16 按帧冷却治标不治本）。
+        self._session_badge_clicked: bool = False
         # 结算后弹窗（今日最高/彩蛋）点击关闭后的冷却帧计数：点关闭后弹窗消失动画期
         # 模板匹配不上，冷却帧内不产出新点击意图，等动画稳定再识别（2026-08-16）。
         self._popup_click_cooldown: int = 0
@@ -1002,9 +1003,6 @@ class TreasureModule(ActivityModule):
             _exec.get("click_cooldown_s", self.CLICK_COOLDOWN_S)
         )
         _pol = _policy_tuning().get("policy") or {}
-        self._session_start_click_cooldown_frames = int(
-            _pol.get("session_start_click_cooldown_frames", SESSION_START_CLICK_COOLDOWN_FRAMES)
-        )
         self._click_retry_frames = int(_pol.get("click_retry_frames", self.CLICK_RETRY_FRAMES))
         self._click_retry_max = int(_pol.get("click_retry_max", self.CLICK_RETRY_MAX))
         self._popup_click_cooldown_frames = int(
@@ -1512,8 +1510,8 @@ class TreasureModule(ActivityModule):
         self._click_retry_stage = None
         self._click_retry_since_ts = 0.0
         self._click_retry_count = 0
-        # 场次选择「开始匹配」冷却：新一场清零（防残留）
-        self._session_start_cooldown = 0
+        # 场次选择闸门：新一场清零（防残留）
+        self._session_badge_clicked = False
         # 弹窗链状态：新一场清零（防跨场残留触发误判定）
         self._popup_click_cooldown = 0
         self._popup_loopback_frames = 0
@@ -1986,37 +1984,26 @@ class TreasureModule(ActivityModule):
         return results
 
     def _run_session_choice(self, frame_rgb: np.ndarray) -> None:
-        """鉴宝大厅(选择场次)阶段：GUI 配置目标场次 → 点对应 badge 切场次 → 识别到「开始匹配」就按。
+        """鉴宝大厅(选择场次)阶段：单次进入本阶段内序钉死为「先点目标场次标签，再开始匹配」。
 
         **只算意图，不执行任何真实点击。** 每帧重算，供 PEEP 准星显示：
-          1) 先做每日循环上限检查（到限就不给「开始匹配」意图，停止开新场）
-          2) 模板匹配右侧详情卡底部的「开始匹配」按钮（stage 段 session_start_match_btn 模板）
-             • 命中 → 详情卡已切到目标场次 → 准星指向 session_start_match_btn 中心
-             • 未命中 → 详情卡未切换到目标场次 → 准星指向 GUI 配置目标场次的 badge
-               （session_intern_badge / session_expert_badge / session_master_badge）
-          3) 模板缺失（未配置）→ 降级：交替点目标 badge / 直接点 start_match_btn
-             （指纹锁独立 key，不会相互阻挡；多点一次 badge 无害，详情卡停留在目标场次）
+          1) 每日循环上限检查（到限不给场次/匹配意图，停止开新场）
+          2) 闸门未过（_session_badge_clicked=False，由 _apply_click_success 在点中目标
+             场次 badge 成功时置位）→ 意图恒指目标场次 badge（session_intern_badge /
+             session_expert_badge / session_master_badge），与「开始匹配」按钮是否可见无关
+          3) 闸门已过：「开始匹配」模板命中 → 准星指 session_start_match_btn（actions 段
+             rect 中心）；未命中 → 纯等待 session_waiting，不再回退 badge
+        背景：详情卡默认已打开、任意场次都带「开始匹配」按钮，按钮可见**不能**判
+        "已选目标场次"。旧逻辑未命中才点 badge，会先点开始匹配再倒序点 badge
+        （01:08:26 事故；2026-08-16 按帧冷却治标不治本），现由闸门把序钉死。
         结果写入 _session_last_decision，供 _decide_action 消费。
         """
         if self._current_stage != "鉴宝大厅(选择场次)":
-            # 离开该阶段 → 冷却清零（防残留）
-            self._session_start_cooldown = 0
+            # 离开该阶段 → 闸门复位（下次进大厅重新选场次）
+            self._session_badge_clicked = False
             return
 
-        # 点击「开始匹配」后的冷却期：按钮已消失但检测器还没切阶段（匹配中），
-        # 若此时回退点 badge 会点到场次标签（时序 bug）。冷却帧内不产出新意图，
-        # 让检测器有时间确认切走；冷却期间每帧递减。
-        if self._session_start_cooldown > 0:
-            self._session_start_cooldown -= 1
-            self._session_last_decision = {
-                "key": "session_start_cooldown",
-                "hint": f"已点开始匹配，等待界面切换（冷却剩 {self._session_start_cooldown} 帧）...",
-                "score": 0.0,
-                # 无 center：不指向任何可点击物，指纹锁不会误匹配
-            }
-            return
-
-        # --- 每日循环上限检查：到上限就不再给「开始匹配」意图，只提示"已到上限"
+        # --- 每日循环上限检查：到上限就不再给场次选择/开始匹配任何意图
         if self._daily_loop_limit_reached():
             lim = self._effective_daily_loop_limit()
             msg = (
@@ -2038,43 +2025,31 @@ class TreasureModule(ActivityModule):
         tgt = self._target_session if self._target_session in TARGET_SESSION_OPTIONS else DEFAULT_TARGET_SESSION
         badge_key, session_label = TARGET_SESSION_OPTIONS[tgt]
 
-        # 判定「开始匹配」按钮是否已出现在屏幕上（stage 段模板匹配）
-        panel_hits = self._match_session_panel(frame_rgb)
-        if panel_hits:
-            # 命中 → 详情卡已切到目标场次，直接点「开始匹配」（actions 段 rect 中心）
-            score = float(panel_hits[0][2])
-            target_key = "session_start_match_btn"
-            # 冷却：点完「开始匹配」后给检测器留帧数确认切走，避免下帧回退点 badge
-            self._session_start_cooldown = SESSION_START_CLICK_COOLDOWN_FRAMES
-            status = f"目标场次「{session_label}」→ 已识别到开始匹配按钮（S={score:.2f}），点击进入匹配"
-        elif self._session_panel:
-            # 有模板但没命中 → 详情卡未切到目标场次 → 先点目标场次 badge（切换详情卡）
+        if not self._session_badge_clicked:
+            # 闸门未过：无论「开始匹配」按钮可见与否，先点目标场次标签（选场次）
             target_key = badge_key
             score = 0.0
-            status = f"目标场次「{session_label}」→ 未识别到开始匹配按钮，先点击场次标签切换详情卡"
+            status = f"目标场次「{session_label}」→ 先点击场次标签选择场次"
         else:
-            # ———— 降级模式：session_panel 模板未加载（缺模板/rect）————
-            # 无法用模板判断"按钮是否出现"，采用「每 6 帧交替目标」+ 指纹锁去重的推进方案：
-            #   • 周期 [0,5] → 点目标 badge（切场次）
-            #   • 周期 [6,11] → 点开始匹配位置
-            # 指纹锁保证每个 key 同阶段只点一次：点成功后就不再重复；
-            # 若某一帧点击落空（如前台校验拦截/画面抖动），下一帧仍会给出同样的意图，直到真正点击成功。
-            # 当 start 点击成功后，下一阶段会变到"匹配中"，set_stage 会重置降级步骤到 0。
-            phase = (self._frame_counter // 6) % 2
-            if phase == 0:
-                target_key = badge_key
-                score = 0.0
+            # 闸门已过：只给开始匹配/纯等待，不再回退 badge（序已钉死）
+            panel_hits = self._match_session_panel(frame_rgb)
+            if panel_hits or not self._session_panel:
+                # 命中 → 点「开始匹配」；降级模式（模板未配置）badge 成功后直接点其位置
+                score = float(panel_hits[0][2]) if panel_hits else 0.0
+                target_key = "session_start_match_btn"
                 status = (
-                    f"目标场次「{session_label}」→「开始匹配」模板未配置（降级模式），"
-                    f"本轮（第{self._frame_counter}帧）先点击场次标签切换详情卡"
+                    f"目标场次「{session_label}」→ 已识别到开始匹配按钮（S={score:.2f}），点击进入匹配"
+                    if panel_hits else
+                    f"目标场次「{session_label}」→「开始匹配」模板未配置（降级模式），点击开始匹配位置"
                 )
             else:
-                target_key = "session_start_match_btn"
-                score = 0.0
-                status = (
-                    f"目标场次「{session_label}」→「开始匹配」模板未配置（降级模式），"
-                    f"本轮（第{self._frame_counter}帧）直接点击开始匹配位置"
-                )
+                # badge 已点中、按钮未出现（详情卡转场中）→ 纯等待，不产出点击
+                self._session_last_decision = {
+                    "key": "session_waiting",
+                    "hint": f"目标场次「{session_label}」已选 → 等待「开始匹配」按钮出现...",
+                    "score": 0.0,
+                }
+                return
 
         center = self._action_centers.get(target_key)
         if center is None:
@@ -3278,6 +3253,10 @@ class TreasureModule(ActivityModule):
                 or (key == "settle_collect_red_btn" and self._current_stage == "领取分红"
                     and self._settle_my_income is not None)):
             self._popup_click_cooldown = self._popup_click_cooldown_frames
+        # 场次选择闸门：点中目标场次标签 → 本阶段内此后只给「开始匹配」/纯等待
+        # （「先选场次再开始匹配」的序由此钉死，见 _run_session_choice）
+        if key in _SESSION_BADGE_KEYS and self._current_stage == "鉴宝大厅(选择场次)":
+            self._session_badge_clicked = True
         # 阶段切换类点击：进入"等待切换"状态（阶段切走即成功；超时未切走 → _maybe_retry 重新 arm）
         if key in self.CLICK_RETRY_KEYS:
             if self._click_retry_key != key or self._click_retry_stage != self._current_stage:

@@ -79,9 +79,9 @@
 
 **场次选择**（`鉴宝大厅(选择场次)` 阶段）：
 
-- `_match_session_panel`：模板匹配「开始匹配」按钮 `session_start_match_btn`（stage 段）判定"详情卡已切到目标场次"
+- `_match_session_panel`：模板匹配「开始匹配」按钮 `session_start_match_btn`（stage 段）判"按钮是否在屏幕上"——按钮可见**不能**判"已选目标场次"（详情卡默认已打开、任意场次都带此按钮）
 
-- 命中 → 准星指 `session_start_match_btn`（静态中心）；未命中 → 准星指 GUI 目标场次 badge（`session_intern_badge`/`session_expert_badge`/`session_master_badge`，静态中心）
+- **单次进阶段内序钉死「先点目标场次标签，再开始匹配」**（2026-09-15 修复）：闸门 `_session_badge_clicked` 由 `_apply_click_success` 在点中目标场次 badge 成功时置位，离开阶段/新一场清零。未过闸 → 意图恒为 badge（`session_intern_badge`/`session_expert_badge`/`session_master_badge`，静态中心）；过闸后 → 命中才给「开始匹配」（actions 段静态中心），未命中纯等待 `session_waiting`，阶段内 badge 不再出现。旧逻辑以"按钮模板命中"判已切目标场次 → 进大厅直接点开始匹配（没点场次）、点完在检测器确认「匹配中」前又倒序点 badge（01:08:26 事故；2026-08-16 按帧冷却治标不治本，机制与 tuning 键 `session_start_click_cooldown_frames` 一并移除）。点击落空收口交阶段切换重试框架（时间窗口重 arm、封顶抛错）。降级模式（无模板）过闸后直接给开始匹配意图。回归锁 `tests/test_treasure_session_badge_gate.py` 六条
 
 - 按钮中心来自 `_load_action_centers`（同时扫 JSON 的 stage+actions 两段）
 
