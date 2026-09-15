@@ -94,7 +94,9 @@ class TestWriteDiscipline:
         assert len(old_lines) == len(new_lines)
         diff_lines = [(i, a, b) for i, (a, b) in enumerate(zip(old_lines, new_lines)) if a != b]
         assert len(diff_lines) == 1, diff_lines[:3]
-        assert "0.4324" in diff_lines[0][2]
+        # 期望值由本次改动推导，不写死常数——否则 ROI 一调（如加宽），这条断言会因为一个
+        # 与它无关的原因变红（它要证的是「只动一行」，不是「值必须是某个数」）。
+        assert str(proj["ocr"][key]["rect"][0]) in diff_lines[0][2]
         assert _bytes(env)["treasure"] == env["before"]["treasure"]
         assert _bytes(env)["entry"] == env["before"]["entry"]
 
