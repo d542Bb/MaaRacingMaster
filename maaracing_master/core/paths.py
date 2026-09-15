@@ -7,7 +7,7 @@
 目录结构（五类各归其位）：
     config/     配置类（profile.json、maa_option.json）
     data/       结构化业务数据（data/treasure/treasure.db）
-    logs/       应用日志（MaaRM_*.log）
+    logs/       会话记录（logs/<会话>/MaaRM_*.log + trace.jsonl，共用「日志记录」开关）
     framework/  MAA 框架自产物（maafw.log、cache）
     debug/      调试截图会话（debug/<module>/<会话>/，调试台契约）
 """
@@ -37,7 +37,7 @@ def data_dir() -> Path:
 
 
 def logs_dir() -> Path:
-    """应用日志目录：MaaRM_*.log。"""
+    """会话记录根目录：logs/<会话>/（MaaRM_*.log 与伴随产物 trace.jsonl）。"""
     return user_data_dir() / "logs"
 
 

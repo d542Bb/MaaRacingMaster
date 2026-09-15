@@ -6,6 +6,7 @@
 - P1 T4 加锁持句柄写盘：多线程并发写行完整、无交错、close 幂等
 - P2 T3 单流落盘 + 轮转 + 会话保留
 - P3 T1 通道机制：通道级别覆盖与回落、DEFAULT 回落
+- 会话目录形态：logs/<ts>/ 承载日志与伴随产物（trace.jsonl），整目录同清
 """
 
 from __future__ import annotations
@@ -23,6 +24,18 @@ def _msg(line: str) -> str:
     """从 `[HH:MM:SS] [LEVEL] msg` 行里解析出 msg。"""
     m = re.search(r"\] \[[A-Z]+\] (.*)$", line)
     return m.group(1) if m else line
+
+
+def _session_logs(root: Path) -> list[Path]:
+    """会话里的日志文件：现行形态 logs/<ts>/MaaRM_*.log* 与旧版平铺同列。"""
+    return sorted(root.glob("*/MaaRM_*.log*")) + sorted(root.glob("MaaRM_*.log*"))
+
+
+def _main_log(root: Path) -> Path:
+    """会话目录里的日志主档（排除轮转备份）。"""
+    files = [p for p in _session_logs(root) if not re.search(r"\.log\.\d+$", p.name)]
+    assert len(files) == 1
+    return files[0]
 
 
 @pytest.fixture
@@ -117,9 +130,27 @@ def test_file_logging_writes_lines(tmp_path: Path):
     log.set_file_logging(True)
     log.log("hello disk", "INFO")
     log.close()
-    files = list(tmp_path.glob("MaaRM_*.log"))
-    assert len(files) == 1
-    assert "hello disk" in files[0].read_text(encoding="utf-8")
+    main = _main_log(tmp_path)
+    assert "hello disk" in main.read_text(encoding="utf-8")
+
+
+def test_session_dir_holds_log_and_companions(tmp_path: Path):
+    """会话目录形态：logs/<ts>/ 承载日志与伴随产物（决策流水），session_dir 即共用落点。"""
+    log = Logger(tmp_path)
+    assert log.session_dir is None                     # 未开写盘 → 无会话目录
+    log.set_file_logging(True)
+    sink = log.session_dir
+    assert sink is not None and sink.parent == tmp_path
+    assert re.fullmatch(r"\d{8}_\d{6}", sink.name)
+    (sink / "trace.jsonl").write_text("{}\n", encoding="utf-8")   # 伴随产物与日志同目录
+    log.log("hello", "INFO")
+    assert log.log_file == sink / f"MaaRM_{sink.name}.log"
+    log.close()
+    assert (sink / "trace.jsonl").is_file()
+    assert "hello" in log.log_file.read_text(encoding="utf-8")
+
+    log.set_file_logging(False)                        # 关开关 → 落点引用清空（伴随产物随之停写）
+    assert log.session_dir is None
 
 
 def test_multithread_writes_no_interleave(tmp_path: Path):
@@ -142,7 +173,7 @@ def test_multithread_writes_no_interleave(tmp_path: Path):
         t.join()
     log.close()
 
-    content = list(tmp_path.glob("MaaRM_*.log"))[0].read_text(encoding="utf-8")
+    content = _main_log(tmp_path).read_text(encoding="utf-8")
     body = [_msg(l) for l in content.splitlines() if marker in l]
     assert len(body) == n_threads * per_thread       # 无丢行
     assert set(body) == expected                      # 每行完整、无交错/截断
@@ -155,10 +186,11 @@ def test_close_idempotent(log):
 
 
 def test_file_logging_disabled_ignored_writes(log):
-    """关闭写盘后，log 只进内存缓冲不写盘。"""
+    """关闭写盘后，log 只进内存缓冲不写盘（也不建会话目录）。"""
     log.set_file_logging(False)
     log.log("no disk", "INFO")
-    assert list(log._log_dir.glob("MaaRM_*")) == []
+    assert _session_logs(log._log_dir) == []
+    assert log.session_dir is None
 
 
 # ---------- T3 单流落盘 + 轮转 + 会话保留（P2） ----------
@@ -172,7 +204,7 @@ def test_single_file_keeps_all_levels_in_order(tmp_path: Path):
     log.log("w", "WARNING")
     log.log("t", "TRACE")
     log.close()
-    files = [p for p in tmp_path.glob("MaaRM_*.log") if not re.search(r"\.log\.\d+$", p.name)]
+    files = [p for p in _session_logs(tmp_path) if not re.search(r"\.log\.\d+$", p.name)]
     assert len(files) == 1                        # 不再按级别分档
     body = [_msg(l) for l in files[0].read_text(encoding="utf-8").splitlines()]
     assert body == ["i", "d", "w", "t"]           # 顺序即发生顺序，四个级别同处一文件
@@ -188,7 +220,7 @@ def test_rotation_triggers_and_backup_count(tmp_path: Path):
     for _ in range(1200):
         log.log("x" * 100, "ERROR")
     log.close()
-    names = [p.name for p in tmp_path.glob("MaaRM_*.log*")]
+    names = [p.name for p in _session_logs(tmp_path)]
     assert any(n.endswith(".log.1") for n in names)  # 发生过轮转
     backups = [n for n in names if re.search(r"\.log\.(\d+)$", n)]
     nums = [int(re.search(r"\.log\.(\d+)$", n).group(1)) for n in backups]
@@ -214,17 +246,41 @@ def test_prune_keeps_recent_and_ignores_others(tmp_path: Path):
     assert remaining == ["MaaRM_20260905_000000.debug.log", "MaaRM_20260905_000000.log"]
 
 def test_prune_never_deletes_active_session(tmp_path: Path):
-    """活动会话永不删；写盘关闭后回落普通保留语义。"""
+    """活动会话永不删；写盘关闭后回落普通保留语义（会话目录整目录回收）。"""
     log = Logger(tmp_path)
     log.set_file_logging(True)
     log.log("active", "INFO")          # 写入当前会话文件（session_ts 此时非 None）
     cur_file = log.log_file            # 当前会话文件
+    session_dir = log.session_dir
+    assert session_dir is not None
+    (session_dir / "trace.jsonl").write_text("{}\n", encoding="utf-8")   # 伴随产物
     assert cur_file.exists()
     log.prune_sessions(keep=0)         # keep=0：理论上全清，但活动会话必须保留
     assert cur_file.exists()           # 活动会话未被删
+    assert (session_dir / "trace.jsonl").exists()
     log.set_file_logging(False)        # 关闭写盘（session_ts 清空 → 不再保护）
     log.prune_sessions(keep=0)
     assert not cur_file.exists()
+    assert not session_dir.exists()    # 会话目录连同伴随产物整目录回收
+
+
+def test_prune_recycles_session_dirs_with_companions(tmp_path: Path):
+    """现行形态按会话目录整目录回收（日志 + trace.jsonl 同清），不碰无关目录。"""
+    log = Logger(tmp_path)
+    for i in range(3):
+        d = tmp_path / f"2026090{i + 1}_000000"
+        d.mkdir()
+        (d / f"MaaRM_{d.name}.log").write_text("old\n", encoding="utf-8")
+        (d / "trace.jsonl").write_text("{}\n", encoding="utf-8")
+    misc = tmp_path / "misc"
+    misc.mkdir()
+    (misc / "notes.txt").write_text("keep\n", encoding="utf-8")
+    log.prune_sessions(keep=1)
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_dir()) == ["20260903_000000", "misc"]
+    # 旧会话目录里的 trace.jsonl 随目录一起清掉，不残留孤儿文件
+    assert not (tmp_path / "20260901_000000").exists()
+    assert (tmp_path / "20260903_000000" / "trace.jsonl").is_file()
+    assert (misc / "notes.txt").is_file()
 
 
 # ---------- T1 通道机制（P3） ----------
@@ -274,7 +330,7 @@ def test_channel_filter_applies_to_disk(tmp_path: Path):
     log.close()
     text = "".join(
         p.read_text(encoding="utf-8")
-        for p in tmp_path.glob("MaaRM_*")
+        for p in _session_logs(tmp_path)
     )
     assert "kept" in text
     assert "dropped" not in text

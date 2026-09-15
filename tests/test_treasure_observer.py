@@ -71,6 +71,9 @@ class _FakeSelf:
         self._cpu_pct_win = deque(maxlen=getattr(TreasureModule, "PERF_WINDOW", 200))
         self._cpu_last = None
         self.screenshot_calls = 0
+        # 决策流水写手：落点由「日志记录」开关决定（测试里未开 → 不落盘）
+        self._trace_writer = None
+        self._trace_sink = None
 
         def _shot():
             self.screenshot_calls += 1
@@ -82,6 +85,8 @@ class _FakeSelf:
         self._observe_kwargs = TreasureModule._observe_kwargs.__get__(self)
         # CPU 采样也是真身：`_tick_once` 每帧都会调它，桩不给就会炸在这里
         self._sample_cpu = TreasureModule._sample_cpu.__get__(self)
+        # 写手落点管理也是真身：_tick_once 每帧按「日志记录」开关决定 trace 是否落盘
+        self._ensure_trace_sink = TreasureModule._ensure_trace_sink.__get__(self)
 
     def _treasure_kwargs(self, **_kw):
         raise AssertionError("观察线程不得调用决策段的快照构造（不变量 I1）")

@@ -323,9 +323,11 @@ class _FakeChainSelf:
         self.CLICK_DOWN_UP_GAP_MS = 30
         self.CLICK_MOVE_PAUSE_S = 0.0
         self._trace_writer = None          # 链内 trace 走真身：无 writer 时静默跳过
+        self._trace_sink = None            # 写手落点标记（由「日志记录」开关管理，测试里未开）
         self._egg_chain_click = mod._egg_chain_click.__get__(self)
         self._egg_chain_drain_slot = mod._egg_chain_drain_slot.__get__(self)
         self._egg_chain_trace = mod._egg_chain_trace.__get__(self)
+        self._ensure_trace_sink = mod._ensure_trace_sink.__get__(self)   # 链内写点也跟开关
         self._egg_chain_abort_pending = mod._egg_chain_abort_pending.__get__(self)
         self._egg_chain_refresh_peep = mod._egg_chain_refresh_peep.__get__(self)
         self._cursor_cands_snapshot = mod._cursor_cands_snapshot.__get__(self)

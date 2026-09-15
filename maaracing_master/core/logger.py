@@ -4,21 +4,24 @@
 日志模块：Logger 类 + 全局 logger 实例
 
 磁盘写入默认关闭（GUI 内存缓冲不受影响）；由设置页「日志记录」开关或
-sidecar 启动时的 profile 回读启用。日志根 = user_data_dir()/logs，
-开发版与发行版位置一致（%APPDATA%/MaaRacingMaster/logs）。
+sidecar 启动时的 profile 回读启用。每次开启新建一个**会话目录**
+`user_data_dir()/logs/<YYYYMMDD_HHMMSS>/`，日志与伴随产物（鉴宝决策流水
+`trace.jsonl`，与本开关共用）同放其中，取证时整个目录打包即可；开发版与
+发行版位置一致（%APPDATA%/MaaRacingMaster/logs）。
 
 设计要点：
 - 进程内行缓冲用有界 deque（环形），长时间运行不随日志量增长。
 - GUI 增量读取用单调序列号（_seq）作游标，而非行数；环形回绕后仍不重不漏。
-- 落盘**单流全量**：一次开启只建一个 `MaaRM_<ts>.log`，各级别按发生顺序写入。
-  不按级别分档——诊断是顺序的（「失败之前发生了什么」），按级别切分会把时序切断
-  且不可逆：切出的两份文件各自都读不通（DEBUG 档没有业务锚点，INFO 档没有诊断
-  细节）。分级过滤留给读侧（GUI）与导出侧，写侧只保证时序完整。
+- 落盘**单流全量**：一次开启只建一个会话目录与一个 `MaaRM_<ts>.log`，各级别按
+  发生顺序写入。不按级别分档——诊断是顺序的（「失败之前发生了什么」），按级别切分
+  会把时序切断且不可逆：切出的两份文件各自都读不通（DEBUG 档没有业务锚点，INFO 档
+  没有诊断细节）。分级过滤留给读侧（GUI）与导出侧，写侧只保证时序完整。
 - 按大小轮转 + 启动时按会话组保留清理，占用有上限。
 - 写盘持句柄 + Lock 跨线程安全。
 """
 
 import re
+import shutil
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -94,20 +97,23 @@ class Logger:
     # 落盘参数：单文件轮转上限 / 备份份数 / 启动保留的会话组数。
     MAX_BYTES = 16 * 1024 * 1024   # 16 MB（实测单档 <100KB，此为防跑飞安全阀）
     BACKUP_COUNT = 3               # 单会话最多 4 份 × 16MB = 64MB
-    KEEP_SESSIONS = 20             # 会话组按 MaaRM_<ts> 前缀归组，整组同清
+    KEEP_SESSIONS = 20             # 会话按 <ts> 归组（会话目录或旧版平铺文件），整组同清
     # 会话组文件形态：MaaRM_+YYYYMMDD_HHMMSS，主档 .log，轮转尾标 .N。
     # `(?:\.debug)?` 兼容旧版分档产物，让保留清理顺带回收历史 .debug.log。
     _SESSION_RE = re.compile(r"MaaRM_(\d{8}_\d{6})(?:\.debug)?\.log(?:\.\d+)?$")
+    # 会话目录形态：logs/<YYYYMMDD_HHMMSS>/（现行落盘形态，内含 MaaRM_<ts>.log 与伴随产物）
+    _SESSION_DIR_RE = re.compile(r"(\d{8}_\d{6})$")
 
     def __init__(self, log_dir: Path):
         self._log_dir = Path(log_dir)
-        self.log_file = None          # 兼容属性：INFO 档路径（磁盘写入启用后非 None）
+        self.log_file = None          # 兼容属性：本次会话日志路径（磁盘写入启用后非 None）
         self._file_enabled = False
         # 环形缓冲：元素为 (seq, line)。deque 满时自动丢弃最旧元素。
         self._lines = deque(maxlen=self.BUFFER_CAPACITY)
         self._seq = 0                 # 每写一行 +1，只增不减；GUI 增量读取的单调游标
         self._lock = Lock()
         self._session_ts = None       # 当前会话时间戳（YYYYMMDD_HHMMSS），用于跳过一次当前会话清理
+        self._session_dir = None      # 当前会话目录 logs/<ts>/；未启用写盘时为 None
         self._tier: _TierFile | None = None   # 单流写盘句柄（未启用写盘时为 None）
         self._channel_levels: dict[str, str] = {}  # 通道 → 级别（运行时调级）；查不到回落 _min_level
         self._min_level: str | None = None        # 全局最低记录级别；None = 全记录（兼容旧行为）
@@ -117,20 +123,31 @@ class Logger:
         """当前是否启用磁盘写入。"""
         return self._file_enabled
 
+    @property
+    def session_dir(self) -> Path | None:
+        """当前写盘会话目录（logs/<ts>/）；未启用写盘时为 None。
+
+        伴随产物（如鉴宝决策流水 trace.jsonl）与日志共用同一个开关、同放这个目录：
+        取到 None 即表示本次不落盘。
+        """
+        return self._session_dir
+
     def set_file_logging(self, enabled: bool) -> None:
         """开关磁盘写入。
 
-        开启：惰性创建日志目录并为本次开启新建一个日志文件（单流全量，各级别按
-        发生顺序写入）；关闭：立即停止写盘（已写文件保留，内存缓冲继续累积，
-        GUI 显示不受影响）。
+        开启：惰性创建会话目录 `logs/<ts>/` 并为本次开启新建一个日志文件（单流全量，
+        各级别按发生顺序写入）；关闭：立即停止写盘（已写文件保留，内存缓冲继续累积，
+        GUI 显示不受影响），会话目录引用一并清空。
         """
         self._file_enabled = bool(enabled)
         if self._file_enabled:
             try:
-                self._log_dir.mkdir(parents=True, exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                session_dir = self._log_dir / ts
+                session_dir.mkdir(parents=True, exist_ok=True)
                 self._session_ts = ts          # 与 _SESSION_RE 的 group(1) 同形（带下划线）
-                self.log_file = self._log_dir / f"MaaRM_{ts}.log"
+                self._session_dir = session_dir
+                self.log_file = session_dir / f"MaaRM_{ts}.log"
                 # 注意：传字符串路径用内置 open（buffering=1 行缓冲；本环境 open 的
                 # line_buffering 关键字被拦截，故用等价的标准 buffering=1）。
                 self._tier = _TierFile(self.log_file, self.MAX_BYTES, self.BACKUP_COUNT)
@@ -139,10 +156,12 @@ class Logger:
                 self.log_file = None
                 self._tier = None
                 self._session_ts = None
+                self._session_dir = None
         else:
             self._close_tier()
             self.log_file = None
             self._session_ts = None
+            self._session_dir = None
 
     def _close_tier(self) -> None:
         """关闭写盘句柄（幂等）。假设持有 `_lock` 或无并发写盘。"""
@@ -156,17 +175,24 @@ class Logger:
             self._close_tier()
 
     def prune_sessions(self, keep: int = KEEP_SESSIONS) -> None:
-        """按会话组清理 logs/ 下旧日志，保留最近 `keep` 组。
+        """按会话清理 logs/ 下旧记录，保留最近 `keep` 组。
 
-        仅匹配 `MaaRM_<14位数字>(.debug)?.log(.N)?` 形态的文件；当前正在写入的
-        会话永不删除；不碰 sidecar_stderr.log 等其它文件。删除失败不中断业务。
+        一个会话 = `logs/<ts>/` 目录（现行形态：内含 MaaRM_<ts>.log 与伴随产物
+        trace.jsonl，整目录同删）或旧版平铺的 `MaaRM_<14位数字>(.debug)?.log(.N)?`
+        文件；两类都按时间戳归组。当前正在写入的会话永不删除；不碰
+        sidecar_stderr.log 等其它文件与目录。删除失败不中断业务。
         """
         if not self._log_dir.exists():
             return
-        # 按会话时间戳归组
+        # 按会话时间戳归组（目录与旧版平铺文件同组同清）
         groups: dict[str, list] = {}
         for p in self._log_dir.iterdir():
-            if p.is_dir() or not p.name.startswith("MaaRM_"):
+            if p.is_dir():
+                m = self._SESSION_DIR_RE.match(p.name)
+                if m:
+                    groups.setdefault(m.group(1), []).append(p)
+                continue
+            if not p.name.startswith("MaaRM_"):
                 continue
             m = self._SESSION_RE.match(p.name)
             if not m:
@@ -180,7 +206,10 @@ class Logger:
                 continue  # 当前会话永不删
             for p in groups[ts]:
                 try:
-                    p.unlink()
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    else:
+                        p.unlink()
                 except OSError:
                     pass  # 删除失败不中断业务
 

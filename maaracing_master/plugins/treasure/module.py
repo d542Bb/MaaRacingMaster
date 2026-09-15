@@ -822,6 +822,7 @@ class TreasureModule(ActivityModule):
         self._session_dir: Path | None = None        # debug/treasure/<ts>/
         self._raw_dir: Path | None = None            # debug/treasure/<ts>/raw/
         self._trace_writer: TraceWriter | None = None
+        self._trace_sink: Path | None = None         # 本模块开的写手落在哪个日志会话目录（None = 未开/外部注入）
         self._saved_frames = 0                       # 已保存的 raw 帧数（全量，每帧 +1）
         self._debug_saved = 0                        # 已保存的 rendered（debug 图）帧数（全量，每帧 +1）
 
@@ -1349,6 +1350,12 @@ class TreasureModule(ActivityModule):
             logger.log(f"[鉴宝] 调试截图目录: {self._session_dir}", "DEBUG")
         else:
             logger.log("[鉴宝] 调试模式未开启（可在GUI打开Debug开关），仅运行日志 + PEEP（如果开启）", "DEBUG")
+        trace_sink = logger.session_dir
+        logger.log(
+            f"[鉴宝] 决策流水目录: {trace_sink}" if trace_sink
+            else "[鉴宝] 「日志记录」未开启：运行日志与决策流水均不落盘",
+            "DEBUG",
+        )
 
         # 5. 执行通路：帧工作全部在 MaaFW Tasker 线程（PolicyBridge 桥内
         # _tick_once），本线程进入 _run_v4_loop 做健康守护（常驻图意外退出告警
@@ -1356,9 +1363,7 @@ class TreasureModule(ActivityModule):
         try:
             self._run_v4_loop()
         finally:
-            if self._trace_writer is not None:
-                self._trace_writer.close()
-                self._trace_writer = None
+            self._close_trace_writer()
             self._stop_observer()      # 先停止产帧（不变量 I4：顺序反了会漏收尾帧）
             self._stop_io_worker()     # 再排空落盘队列，保证最后几帧写盘
             self._stop_ocr_worker()
@@ -3869,6 +3874,34 @@ class TreasureModule(ActivityModule):
         self._saved_frames = 0
         self._debug_saved = 0
 
+    def _close_trace_writer(self) -> None:
+        """收掉决策流水写手（幂等；会话收尾与停写共用）。"""
+        if self._trace_writer is not None:
+            self._trace_writer.close()
+        self._trace_writer = None
+        self._trace_sink = None
+
+    def _ensure_trace_sink(self) -> None:
+        """让决策流水落在当前写盘会话目录（与运行日志共用「日志记录」开关）。
+
+        每帧调用成本只有两次属性比较，故各写点前可直接调用：
+        - 开关未开（`logger.session_dir` 为 None）→ 收掉自己开的写手，不落盘；
+        - 开关开着且会话目录变了（中途关→开会新建会话目录）→ 换到新目录重开；
+        - 只认自己开的写手（`_trace_sink` 记着它落在哪个会话目录），外部注入的不动。
+        """
+        sink = logger.session_dir
+        if sink is None:
+            if self._trace_sink is not None:
+                self._close_trace_writer()
+            return
+        if self._trace_sink == sink:
+            return
+        if self._trace_sink is None and self._trace_writer is not None:
+            return  # 外部注入的写手（测试/调试）不归本开关管
+        self._close_trace_writer()
+        self._trace_writer = TraceWriter(sink, session_dir=sink)
+        self._trace_sink = sink
+
     # ==================================================================
     #  内部：彩蛋任务收尾链（A′ 自包含例程，stage-from-node-plan §10）
     # ==================================================================
@@ -3905,6 +3938,7 @@ class TreasureModule(ActivityModule):
         产生——整段领取过程在 trace 里是空白，事后无法回溯「走到哪一步、哪一步失败」。
         故链内关键节点显式补记。
         """
+        self._ensure_trace_sink()   # 链期间也要跟住「日志记录」开关的开关状态
         if self._trace_writer is None:
             return
         self._trace_writer.write({
@@ -4276,14 +4310,9 @@ class TreasureModule(ActivityModule):
             return
         self._last_frame_rgb = frame_rgb  # 手柄导航（同步阻塞）期间进度回调渲染 PEEP 用
 
-        # S2：常开决策流水。debug 会话开着时与 raw 帧同目录对齐（帧号可互查）；
-        # 未开启 debug 时落 debug/treasure/session_*/（独立 trace 会话）。
-        if self._trace_writer is None:
-            if self._session_dir is not None:
-                self._trace_writer = TraceWriter(self._session_dir.parent, keep_sessions=10,
-                                                 session_dir=self._session_dir)
-            else:
-                self._trace_writer = TraceWriter(debug_dir() / "treasure", keep_sessions=10)
+        # S2：决策流水与运行日志共用「日志记录」开关，同落 logs/<会话>/trace.jsonl
+        # （取证时整个会话目录打包即完整；开关未开则不落盘）。
+        self._ensure_trace_sink()
 
         # 首帧校验：截图帧尺寸 vs 客户区物理尺寸（坐标映射 1:1 前提，偏差时 WARNING）
         if self._frame_counter == 1:

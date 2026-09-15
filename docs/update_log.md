@@ -7,6 +7,24 @@
 
 ## 2026-09-15
 
+### 暂存（未发布 · 待并入下一版本）决策流水与运行日志共用一个开关，同放一个会话目录 🗂️
+
+- **性质：** 未发版变更（core/logger 落点 + 鉴宝落盘口径 + GUI 文案）
+
+- **之前是什么样：** 「日志记录」开关只管 `logs/MaaRM_<ts>.log`；鉴宝的决策流水 `trace.jsonl` 是**常开且无开关**的，落 `debug/treasure/<会话>/`（开了 DEBUG 每帧截图时与 `raw/` 帧同目录）。结果是「没开日志记录，磁盘上却一直在写 trace」，两份取证材料还分散在两个目录里。
+
+- **现在是什么样：** 打开「日志记录」→ 新建一个会话目录 `%APPDATA%/MaaRacingMaster/logs/<时间戳>/`，运行日志 `MaaRM_<ts>.log` 与决策流水 `trace.jsonl` **同放其中**，取证时整个目录打包即可；关闭该开关，两者都不落盘（开关中途关→开会跟到新会话目录，不再写旧目录）。
+
+- **落点唯一出口：** `Logger.session_dir` 是共用开关的落点真源（未开写盘为 `None`）；鉴宝侧新增 `_ensure_trace_sink()` / `_close_trace_writer()`，在每帧 tick 与彩蛋链写点前对账——只认自己开的写手（`_trace_sink` 记着落在哪个会话目录），外部注入的 writer 不受开关管辖。
+
+- **保留清理跟着改：** `prune_sessions` 认两种会话形态——新的 `logs/<ts>/` 目录（**整目录连同 trace.jsonl 一起回收**，不留孤儿文件）与旧版平铺的 `MaaRM_<ts>.log(.N)` 文件；当前正在写的会话永不删，无关目录（如 `sidecar_stderr.log`、`misc/`）一律不碰。
+
+- **GUI 文案：** 「日志记录」说明改写为「运行日志与决策流水（trace.jsonl）写入 logs/&lt;会话&gt;/，两者同放一个会话目录」。
+
+- **回归锁：** `tests/test_logger_channels.py` 落盘/轮转/清理用例改到会话目录形态，新增会话目录承载伴随产物、整目录回收、无关目录不碰三条；新增 `tests/test_trace_log_shared_switch.py` 六条（开关未开不落盘 / 落点与会话目录一致 / 中途关→开跟新目录 / 外部写手不受管 / 幂等）；全量 `pytest` 579 项绿。
+
+- **未迁移的历史产物：** 既有 `debug/treasure/<会话>/trace.jsonl` 原地保留（DebugStudio 与 `tools/experiments/` 的历史读数仍按原路径取用），不自动搬迁。
+
 ### 暂存（未发布 · 待并入下一版本）模块有效期门：过期模块不再自动选中，仍可强制选择 ⏳
 
 - **性质：** 未发版变更（core 契约 + sidecar + 前端 + 新纯函数模块；修复类零改动）

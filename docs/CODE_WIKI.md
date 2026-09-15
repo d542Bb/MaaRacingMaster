@@ -181,7 +181,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 # 运行期数据（自动生成，gitignore）：已迁至 %APPDATA%/MaaRacingMaster/
 # ├── config/                                 # profile.json、maa_option.json
 # ├── data/                                   # data/treasure/treasure.db
-# ├── logs/                                   # MaaRM_*.log
+# ├── logs/                                   # logs/<会话>/（MaaRM_*.log + trace.jsonl）
 # ├── framework/                              # MAA 框架自产物（maafw.log、cache）
 # └── debug/                                  # debug/<module>/<会话>/（调试台契约）
 #
@@ -380,7 +380,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 - GUI 增量读取用**单调序列号游标**（`get_lines_since(seq, ...)`），环形回绕后不重不漏、落后过多时返回 `truncated`
 
-- 落盘**单流全量**：一次开启只建一个 `MaaRM_<ts>.log`，各级别按发生顺序写入；按大小轮转（`MAX_BYTES`/`BACKUP_COUNT`）+ 启动时按会话组保留清理（`KEEP_SESSIONS`，只碰 `MaaRM_<8位日期>_<6位时间>` 形态）。**不按级别分档**——诊断是顺序的（「失败之前发生了什么」），按级别切分会切断时序且不可逆：切出的两份文件各自都读不通（DEBUG 档无业务锚点、INFO 档无诊断细节）。级别过滤只发生在读侧（GUI）与导出侧
+- 落盘**单流全量**：一次开启新建一个**会话目录** `logs/<MaaRM时间戳>/`，日志落其中的 `MaaRM_<ts>.log`，各级别按发生顺序写入；伴随产物（鉴宝决策流水 `trace.jsonl`）**共用同一个开关、同放该目录**（模块侧取 `logger.session_dir`，取到 `None` 即表示本次不落盘）。按大小轮转（`MAX_BYTES`/`BACKUP_COUNT`）+ 启动时按会话保留清理（`KEEP_SESSIONS`，会话目录整目录回收，旧版平铺的 `MaaRM_<8位日期>_<6位时间>` 文件同样归组回收）。**不按级别分档**——诊断是顺序的（「失败之前发生了什么」），按级别切分会切断时序且不可逆：切出的两份文件各自都读不通（DEBUG 档无业务锚点、INFO 档无诊断细节）。级别过滤只发生在读侧（GUI）与导出侧
 
 - 5个日志级别：TRACE < DEBUG < INFO < WARNING < ERROR
 
@@ -710,7 +710,7 @@ python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdi
 
 - `data/`：结构化业务数据（`data/treasure/treasure.db`）
 
-- `logs/`：运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）
+- `logs/`：会话记录 `logs/<MaaRM时间戳>/`——运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）与伴随产物 `trace.jsonl`（鉴宝决策流水，共用「日志记录」开关）
 
 - `framework/`：MAA 框架自产物（`maafw.log`、cache）
 
@@ -999,6 +999,6 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 | `MRAGUI`                             | ~~gui.py~~（已归档移除）                                                                         | 旧 ttkbootstrap 图形界面（已废弃，代码已删）        |
 | `Sidecar`                            | core/sidecar.py                                                                           | JSONL RPC 业务后端（mra\_shell 托管）        |
 | `NavigationDebugger`                 | core/debug.py                                                                             | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
-| `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志（用户数据目录）                    |
+| `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志；会话目录 `logs/<ts>/`（日志 + 伴随产物同放）    |
 
 <br />

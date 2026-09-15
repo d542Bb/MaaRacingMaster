@@ -1693,7 +1693,7 @@
               <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
-                <p class="option-desc">开启后才把运行日志写入 %APPDATA%/MaaRacingMaster/logs。每次开启新建一个文件，按大小轮转、并按会话保留最近若干份；关闭时日志仅保留在界面内存，不落盘</p>
+                <p class="option-desc">开启后才把运行日志与决策流水（trace.jsonl）写入 %APPDATA%/MaaRacingMaster/logs/&lt;会话&gt;/，两者同放一个会话目录，排查时整个目录发出来即可。每次开启新建一个会话目录，日志按大小轮转、并按会话保留最近若干份；关闭时日志仅保留在界面内存，决策流水不落盘</p>
               </div>
               <span class="option-note">默认关闭，排查问题时开启</span>
             </div>
