@@ -17,11 +17,11 @@
 
 - **回归锁：** `tests/test_treasure_bid_digit_retry.py` 7 条（换指纹归零 / 未超时不重发 / 超时清指纹并计数 / 封顶抛错 / 清空键同覆盖 / 其它 key 不介入 / `_execute_click` 接线）。全量 `pytest 504 passed`。
 
-- **验证边界（真机待复验）：** 若重发也耗尽，日志直接给出「该面板不接受本次输入」的 ERROR（用户可见、可干预）；届时再用 `tools/experiments/bid-numpad-keypress/` 区分「游戏不接受数字键」与「按键未送达」。
+- **验证边界（真机待复验）：** 若重发也耗尽，日志直接给出「该面板不接受本次输入」的 ERROR（用户可见、可干预），据此即可与「按键未送达」区分，无需另做取证。
 
 ### 暂存（未发布 · 待并入下一版本）转阶段交接与 PEEP 手柄诊断层修复 🔧
 
-- **性质：** 未发版变更（`core/clicker.py`、`core/gamepad_cursor.py`、`plugins/treasure/module.py`、`plugins/treasure/renderer.py`、`tests/test_clicker_cursor_snapshot.py`（新）、`tests/test_treasure_stage_handoff.py`（新）、`tools/experiments/bid-numpad-keypress/`（新）、域 CODE_WIKI；master 直接提交、不 tag）
+- **性质：** 未发版变更（`core/clicker.py`、`core/gamepad_cursor.py`、`plugins/treasure/module.py`、`plugins/treasure/renderer.py`、`tests/test_clicker_cursor_snapshot.py`（新）、`tests/test_treasure_stage_handoff.py`（新）、域 CODE_WIKI；master 直接提交、不 tag）
 
 - **PEEP 手柄诊断层与点击意图解耦：** `render_peep` 原先在 `treasure_action` 为空（转场/未定义过渡）或 center 为空（纯等待）时提前返回，把手柄光标实时位绿圈与识别候选圈一并丢掉——转场期预览只剩原图（真机 2026-09-15 日志在结算弹窗转场反复打「动作按钮 popup_click_cooldown 未配置 rect，准星跳过」，即命中该分支）。现抽出 `_draw_gamepad_diag` 在函数开头无条件绘制，颜色/半径/文案口径不变。
 
@@ -31,7 +31,7 @@
 
 - **回归锁：** 新增 16 条（`tests/test_clicker_cursor_snapshot.py` 5 条；`tests/test_treasure_stage_handoff.py` 11 条：无主结果丢弃 / 正常结果不变式 / 回合切换中止且 real 不参与 / 空闲保底与活跃透传 / 渲染层无点击意图仍出层）；全量 `pytest 497 passed`。
 
-- **待定性（真机实验已就位）：** 数字键 `bid_numpad_*` 提交后游戏输入框不变化（真机 07:17:34–07:17:58 空转 24s，同面板「智能出价」「✖ 清空」按下均生效，光标正确停在 '2' 键中心）。新增 `tools/experiments/bid-numpad-keypress/`：自包含探针（基线 / 目标键 / 对照键三组前后帧差异）+ 判定矩阵（数字键需前置激活 / 导航落点 / 输入通道），结论待真机执行后回填主题 README。
+- **同批定位（已在下一小节修复）：** 数字键 `bid_numpad_*` 提交后游戏输入框不变化（真机 07:17:34–07:17:58 空转 24s，同面板「智能出价」「✖ 清空」按下均生效，光标正确停在 '2' 键中心）→ 由「出价面板数字键『点击无响应』兜底」一节落地。
 
 ## 2026-09-14
 
