@@ -277,7 +277,10 @@ class _NavStub:
 
 
 def _shoo_clicker(pos, *, busy=False, miss=0):
-    from maaracing_master.core.clicker import Clicker
+    try:
+        from maaracing_master.core.clicker import Clicker
+    except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时跳过
+        pytest.skip(f"需要完整运行时依赖（maa/…）：{exc}")
     c = Clicker(hwnd=123, mode="gamepad")
     c._gamepad = _NavStub(pos, miss)
     c.is_busy = lambda: busy

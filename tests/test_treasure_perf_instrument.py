@@ -11,6 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import sys
 
 # module 顶层 import maa.toolkit，CI 轻依赖环境下收集期 ERROR 会中断整个会话；
 # 按仓内既有口径整文件优雅跳过。
@@ -21,6 +22,17 @@ try:
 except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
     TreasureModule = None
+
+# TestSidecarPassthrough 运行时 import core.sidecar（经 controller 拉 maa 等重依赖），
+# 与 TreasureModule 导入是否成功无关，单独探测以便仅对该类跳过。
+try:
+    from maaracing_master.core.sidecar import SidecarService  # noqa: F401
+
+    _SIDECAR_OK, _SIDECAR_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _SIDECAR_OK, _SIDECAR_ERR = False, str(exc)
+
+IS_WINDOWS = sys.platform.startswith("win")
 
 pytestmark = pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
@@ -226,6 +238,11 @@ class TestLevelCalibration:
 class TestSidecarPassthrough:
     """get_status 把快照带出去这一段是 GUI 唯一数据通道，且不得因仪表而炸轮询。"""
 
+    pytestmark = pytest.mark.skipif(
+        not _SIDECAR_OK,
+        reason=f"需要 core.sidecar 完整运行时依赖（maa/…）：{_SIDECAR_ERR}",
+    )
+
     @staticmethod
     def _service(active_module):
         from maaracing_master.core.sidecar import SidecarService
@@ -269,6 +286,7 @@ class TestSidecarPassthrough:
 class TestCpuSampling:
     """CPU 占用是差分量：无读数时必须标不可得，不能拿 0% 冒充"机器很空闲"。"""
 
+    @pytest.mark.skipif(not IS_WINDOWS, reason="GetProcessTimes 仅 Windows")
     def test_first_sample_only_primes_without_emitting(self):
         m = _mk()
         m._sample_cpu(1000.0)
