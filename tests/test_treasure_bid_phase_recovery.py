@@ -43,10 +43,18 @@ class _FakeSelf:
         TreasureModule, "SUBMIT_ANIMATION_BUFFER_MS", None
     )
     _BID_MAIN_BTN_KEY = getattr(TreasureModule, "_BID_MAIN_BTN_KEY", None)
+    BID_LABEL_PROBE_HEARTBEAT_S = getattr(
+        TreasureModule, "BID_LABEL_PROBE_HEARTBEAT_S", None
+    )
+    WAIT_RESULT_LOCK_WARN_S = getattr(TreasureModule, "WAIT_RESULT_LOCK_WARN_S", None)
+    WAIT_RESULT_LOCK_REPEAT_S = getattr(
+        TreasureModule, "WAIT_RESULT_LOCK_REPEAT_S", None
+    )
 
-    def __init__(self, *, phase, smart=None, label="", epoch=1):
+    def __init__(self, *, phase, smart=None, label="", epoch=1,
+                 round_no=1, slots_round=1):
         self._current_stage = "第1回合出价"
-        self._round_no = 1
+        self._round_no = round_no
         self._round_elapsed = 99
         self._match = smart
         self._label = label
@@ -68,8 +76,18 @@ class _FakeSelf:
                   "consumed": 5, "output": 3, "hits": 0}
             for pid in (1, 2, 3, 4)
         }
+        # 槽状态所属回合号：any_bid_read 的回合校验读它（默认与本回合一致=本回合数据）
+        self._bid_slots_round = slots_round
         self._action_centers = {"bid_main_red_btn": (0.477, 0.829)}
         self._bidding_last_decision = None
+        # S1/S2 按钮文字观测字段（_probe_bid_label 读取；该方法绑真实实现，见类尾）
+        self._bid_label_probe_last = None
+        self._bid_label_probe_ts = 0.0
+        self._bid_label_probe_reason = ""
+        # wait_result 滞留守望字段（_guard_wait_result_lock 读取；-1 保证首帧必重置计时）
+        self._wait_result_lock_round = -1
+        self._wait_result_lock_since_ts = 0.0
+        self._wait_result_lock_ts = 0.0
         self.executed = 0
 
     def _match_bid_smart_btn(self, frame_rgb):
@@ -83,6 +101,10 @@ class _FakeSelf:
 
     def _run_bidding_execute(self, frame_rgb, s_score):
         self.executed += 1
+
+    # 观测方法绑真实实现：它不参与决策，但必须在真实调用路径上不抛异常。
+    _probe_bid_label = TreasureModule._probe_bid_label
+    _guard_wait_result_lock = TreasureModule._guard_wait_result_lock
 
 
 def _choice(fake):
@@ -305,3 +327,90 @@ def test_auto_shoo_gates_busy_miss_streak_cooldown():
     assert c.auto_shoo([_SHOO_ROI], radius_px=30.0, frame_size=(1280, 720)) is None, \
         "冷却窗内不得连续避让"
     assert len(moves) == 1
+
+
+def test_stale_slot_hits_from_previous_round_does_not_block_fallback():
+    """上一回合残留的 hits>0 不得否决新回合的假下降沿（2026-09-15 锁死回归）。
+
+    实机 20260915_194459：R2 读到 P3 一次报价后相位停在 wait_result，R3 从未出价，
+    却因该残留被 any_bid_read=True 永久否决 → 锁死 41s（18:18 场更连锁两回合）。
+    """
+    fake = _FakeSelf(phase="wait_result", round_no=3, slots_round=2)
+    fake._wait_result_entered_ts = time.monotonic() - 2.0
+    fake._bid_slots[3]["hits"] = 1          # 上一回合留下的账
+    _choice(fake)
+    assert fake._bid_phase == "wait_first", \
+        "旧回合的读数不得否决新回合的退路（否则相位锁死在 wait_result）"
+    assert fake._bidding_last_decision["state"] == "S4_fake_fallback"
+
+
+def test_current_round_slot_hits_still_blocks_fallback():
+    """本回合确实读到过报价 → 假下降沿仍必须被否决（原有保护未被放宽）。"""
+    fake = _FakeSelf(phase="wait_result", round_no=3, slots_round=3)
+    fake._wait_result_entered_ts = time.monotonic() - 2.0
+    fake._bid_slots[3]["hits"] = 1
+    _choice(fake)
+    assert fake._bid_phase == "wait_result", \
+        "本回合已读到报价 = 我方必已提交，不得回退重报"
+    assert fake._bidding_last_decision["state"] == "S4_wait_result"
+
+
+# --------------------------------------------------------------------
+#  场次边界：报价槽的固化状态必须随场次清空（2026-09-15 真机带出）
+# --------------------------------------------------------------------
+
+def _bare_module_for_reset():
+    """最小装配 _reset_round_state 所需字段的裸模块（构造完整模块依赖过重）。
+
+    现场状态照抄真机：上一场最后一回合 = 第 1 回合，四个槽全部固化。
+    """
+    mod = TreasureModule.__new__(TreasureModule)
+    defaults = {
+        "_round_no": 1, "_h_prices": [242_100], "_our_bids": [242_100],
+        "_player_bids": {"玩家2": [0, 0, 0, 0, 0]}, "_rank_candidate": 1,
+        "_rank_candidate_frames": 3, "_my_rank": 1, "_my_balance": 500_000,
+        "_balance_locked": True, "_bid_epoch": 2, "_bid_phase": "wait_result",
+        "_panel_open": True, "_panel_stable_frames": 3,
+        "_bid_player_submitted": {1: True}, "_wait_result_frames": 9,
+        "_bid_input_progress": 4, "_bid_input_latest": 242_100,
+        "_bid_confirm_streak": 2, "_bid_zero_since_ts": 1.0,
+        "_bidding_last_decision": {"state": "S4_wait_result"},
+        "_last_round_snapshot": object(), "_strategy": None,
+        "_appraiser_confirmed_once": True, "_last_click_fingerprint": "fp",
+        "_panel_retry_sig": "sig", "_panel_retry_since_ts": 1.0,
+        "_panel_retry_count": 1, "_pending_click": object(),
+        "_click_retry_key": "k", "_click_retry_stage": "第1回合出价",
+        "_click_retry_since_ts": 1.0, "_click_retry_count": 1,
+        "_session_badge_clicked": True, "_popup_click_cooldown": 1,
+        "_popup_loopback_frames": 1,
+        "_ocr_applied": 0, "_ocr_stale_drops": 0, "_ocr_expired_drops": 0,
+    }
+    for key, value in defaults.items():
+        setattr(mod, key, value)
+    TreasureModule._reset_bid_slots(mod)
+    mod._bid_slots_round = 1
+    for pid, val in ((1, 150_900), (2, 208_800), (3, 550_000), (4, 178_000)):
+        mod._bid_slots[pid].update(val=val, stable=3, locked=True)
+    mod._reset_perf_counters = lambda: None
+    return mod
+
+
+def test_reset_round_state_clears_locked_bid_slots():
+    """跨场残留：上一场最后一回合也是第 1 回合时，槽的回合级重置条件不成立，
+    必须由 _reset_round_state 清掉固化状态。
+
+    真机 20260915_211002 实证：第 2、3 场 R1 开局四槽仍是第 1 场的
+    ✓150,900/✓208,800/✓550,000/✓178,000，OCR 计数冻结在 199 次不再增长——
+    本场 R1 报价一次都不读（动态 keys 已剔除固化槽），R1 快照直接用上一场数字。
+    该缺陷在报价读数可读之前不可达（那时没有任何槽会固化）。
+    """
+    mod = _bare_module_for_reset()
+
+    TreasureModule._reset_round_state(mod, "测试新一场")
+
+    assert mod._bid_slots_round is None, \
+        "回合级重置判据靠它；留旧值 = 新一场 R1 与上一场同号 → 槽永不重置"
+    assert all(not s["locked"] and s["val"] == -1 for s in mod._bid_slots.values()), \
+        "固化状态必须随场次清空，否则新一场 R1 的报价一个都读不进来"
+    assert set(mod._bid_slots) == {1, 2, 3, 4}, "四槽恒在（消费侧按下标直接取）"
+    assert mod._player_bids == {} and mod._last_round_snapshot is None

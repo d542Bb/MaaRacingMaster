@@ -508,6 +508,19 @@ class TreasureModule(ActivityModule):
                                         # 实际帧间隔 ~125ms，10 帧缓冲被稀释到 1.25s → 对手未齐报价时
                                         # 误判假下降沿、phase 退 wait_first、OCR 停投 → 错过整个公开
                                         # 报价窗口（2026-09-09 20:13 实机 log 实锤）。计时与帧率解耦。
+    # S1/S2 按钮文字观测（诊断补点）：出价按钮「亮/未亮」的判据全部落在
+    # _read_bid_main_btn_label 的读数上，而 S1_waiting 分支原本不打任何日志，
+    # 卡住时无法回答「按钮 ROI 里到底读到什么」（2026-09-15 复盘：整回合不出价的
+    # 根因因此无法定性）。观测只落盘、不参与任何决策。
+    BID_LABEL_PROBE_HEARTBEAT_S = 5.0   # 读数未变化时的兜底打点间隔（秒）；读数变化立即打点
+    # wait_result 相位滞留守望（诊断补点）：该相位下 _run_bidding_choice 会在
+    # wait_result 块尾直接 return，连 smart_bid_btn 已命中（面板已开）都走不到 S3
+    # 分支；而唯一出口「假下降沿」又会被跨回合残留的 any_bid_read 否决。两者叠加
+    # 把相位永久锁死 → 本场剩余回合全部不出价（2026-09-15 实测：卡住场次两回合共
+    # 618 帧全为 S4_wait_result、零状态变化；挡门项 any_bid_read=True 的来源是上一
+    # 回合残留的 P3 hits=1，而 my_rank / 缓冲 / 我方已提交 三项均满足）。
+    WAIT_RESULT_LOCK_WARN_S = 20.0      # 相位滞留多久后开始告警（秒）
+    WAIT_RESULT_LOCK_REPEAT_S = 10.0    # 告警重复间隔（秒）
     # 真实点击（v0.4，方案见 docs/treasure_real_click_plan.md）：
     #   可见鼠标移动到目标 → 停顿 → SendInput 左键。所有参数化，便于按阶段调整。
     CLICK_MOVE_PAUSE_S = 0.4     # 鼠标移到目标后的停顿（让用户看清；后续出价 S3 可单独降 0.1~0.2s）
@@ -766,6 +779,9 @@ class TreasureModule(ActivityModule):
         self._ocr_applied = 0                 # 过双闸被采纳的结果数（双槽各自计，与丢弃同分母）
         self._ocr_stale_drops = 0             # 因时效超 OCR_MAX_AGE_MS 被丢的结果数
         self._ocr_page_drops = 0              # 因跨页（本帧页面不属于该信号所属页）被丢的读数个数
+        # 令牌产地（观测）：模板锚点 / 回合小字印证 / 无 —— 只在变化时落一行日志。
+        # 用于真机确认「公开报价窗口的第二类同帧证据是否生效」（worker 线程独占读写）。
+        self._ocr_page_token_src: str | None = None
         self._ocr_expired_drops = 0           # 因回合不匹配（跨回合串写）被丢的结果数
         # 报价窗口（wait_result）分桶：识别健康的**主判据**。全局丢弃率会被非报价阶段
         # 摊薄——真机那次「第1、2回合完全没录到」全局值只有 18.8%（判 warn，太松），
@@ -975,6 +991,15 @@ class TreasureModule(ActivityModule):
         self._wait_result_frames: int = 0     # 进入 wait_result 后的累计帧数（日志/统计用）
         # 经过时长一律 monotonic（墙钟会被 NTP 校时/改表跳变，窗口会被拉长或清零）
         self._wait_result_entered_ts: float = 0.0  # 进入 wait_result 的时刻（monotonic 秒；假下降沿缓冲计时，见 SUBMIT_ANIMATION_BUFFER_MS）
+        # S1/S2 按钮文字观测（诊断用，见 _probe_bid_label）：只落盘、不参与决策。
+        self._bid_label_probe_last: str | None = None  # 上次已打点的读数（None=本回合尚未打点）
+        self._bid_label_probe_ts: float = 0.0          # 上次打点时刻（monotonic 秒）
+        self._bid_label_probe_reason: str = ""         # 本次读数来源：ok/no_ocr/no_rect/cursor/ocr_none
+        # wait_result 相位滞留守望（见 _guard_wait_result_lock）：只落盘、不参与决策。
+        # 回合号初值取 -1（回合号不会是 -1）：保证首帧必定重置滞留计时，不会读到 0.0 起算。
+        self._wait_result_lock_round: int | None = -1  # 上次守望看到的回合号（变化即重置计时）
+        self._wait_result_lock_since_ts: float = 0.0   # 本轮 wait_result 滞留起始时刻（monotonic 秒）
+        self._wait_result_lock_ts: float = 0.0         # 上次告警时刻（monotonic 秒）
         # 报价槽级固化状态（wait_result 读 4 槽报价）：pid → {val, stable, locked, miss,
         # consumed, output, hits}
         #   val=-1 未读；stable=连续一致帧数；locked=已固化（停止该槽 OCR）；
@@ -1389,6 +1414,15 @@ class TreasureModule(ActivityModule):
         self._bid_zero_since_ts = None
         self._bidding_last_decision = None
         self._last_round_snapshot = None
+        # 报价槽（含固化锁）必须一并清空重读。槽的回合级重置条件是「回合号变了」
+        # （_consume_ocr_result 比对 _bid_slots_round），而新一场的第 1 回合与上一场
+        # 最后一回合同为 1 时该条件不成立 → 沿用上一场已固化的四槽：本场 R1 的报价
+        # 一次都不读（动态 keys 已把固化槽剔除），R1 快照直接用上一场数字。
+        # 真机实证 20260915_211002：第 2、3 场 R1 开局四槽仍是第 1 场的
+        # ✓150,900/✓208,800/✓550,000/✓178,000，OCR 计数冻结在 199 次不再增长；
+        # 该缺陷在报价读数可读之前不可达（那时没有任何槽会固化）。
+        self._reset_bid_slots()
+        self._bid_slots_round = None
         # 出价策略：重建实例清逼价基线等内部状态
         if self._strategy is not None:
             self._strategy = BidStrategy()
@@ -2034,21 +2068,98 @@ class TreasureModule(ActivityModule):
         仅在面板未开（S1/S2）时调用，避免面板遮挡干扰 + 省 CPU。
         光标盘压住按钮文字 ROI 时读数不可信（手柄导航残留常停在按钮上），
         返回 "" 走保守等待，等光标移开再读。
+
+        返回空串的**原因**同时记入 _bid_label_probe_reason，供 _probe_bid_label
+        区分「游戏没亮按钮（读到等待出价）」与「识别/遮挡导致读空」两类根因。
         """
         if self._ocr is None:
+            self._bid_label_probe_reason = "no_ocr"
             return ""
         rect = self._ocr._regions.get(self._BID_MAIN_LABEL_KEY)
         if rect is None:
+            self._bid_label_probe_reason = "no_rect"
             return ""
         if self._cursor_hits_rect(rect, frame_rgb):
+            self._bid_label_probe_reason = "cursor"
             if self._frame_counter % 10 == 0:
                 logger.log("[鉴宝出价] 光标压住出价按钮文字 ROI，本轮读数按不可信（等光标移开）",
                            "DEBUG")
             return ""
         info = self._ocr.recognize_single(frame_rgb, rect)
         if info is None:
+            self._bid_label_probe_reason = "ocr_none"
             return ""
+        self._bid_label_probe_reason = "ok"
         return "".join(str(t) for t in info.get("raw_lines") or []).replace(" ", "").replace("\u3000", "")
+
+    def _probe_bid_label(self, label: str) -> None:
+        """S1/S2 按钮文字观测（诊断补点，只落盘、不参与任何决策）。
+
+        读数变化立即打点；读数未变化则每 BID_LABEL_PROBE_HEARTBEAT_S 秒兜底打一次，
+        既避免每帧刷屏，又能在「一直读到同一个值」时留下时间线。
+        落盘中文剥离结果（判据真正比对的口径）与读数来源，用于区分两类根因：
+          - 读到「等待出价」或读空 → 游戏侧还没给出价机会，保守等待是对的；
+          - 读到「已出价…」等已亮文案却被判不亮 → 判据侧问题（label_cn != "出价"）。
+        """
+        now = time.monotonic()
+        unchanged = label == self._bid_label_probe_last
+        if unchanged and (now - self._bid_label_probe_ts) < self.BID_LABEL_PROBE_HEARTBEAT_S:
+            return
+        self._bid_label_probe_last = label
+        self._bid_label_probe_ts = now
+        label_cn = "".join(ch for ch in label if "\u4e00" <= ch <= "\u9fff")
+        logger.log(
+            f"[鉴宝出价][观测] 按钮文字 OCR={label or '<空>'} 中文={label_cn or '<空>'} "
+            f"来源={self._bid_label_probe_reason} 相位={self._bid_phase} "
+            f"epoch={self._bid_epoch} 回合={self._round_no}",
+            "DEBUG",
+        )
+
+    def _guard_wait_result_lock(self, smart) -> None:
+        """wait_result 相位滞留守望（诊断补点，只落盘、不参与任何决策）。
+
+        相位停在 wait_result 时有三重锁死：① `rising_edge` 只在 wait_first/wait_next
+        才 +epoch；② wait_result 块尾直接 return，面板已开（smart 命中）也走不到 S3
+        分支，不会点智能出价/确认；③ 唯一出口「假下降沿」被跨回合残留的
+        any_bid_read 否决——槽状态 _bid_slots 的重置挂在 _consume_ocr_result 上，
+        锁死后该通路停摆，旧回合的 hits>0 便永久留存。
+
+        本守望每 WAIT_RESULT_LOCK_REPEAT_S 秒落一行四个子条件的取值 + 面板状态，
+        用于确认是哪一项挡住了出口。正常公开报价窗口也会短暂命中，靠持续时间区分。
+        """
+        now = time.monotonic()
+        if self._wait_result_lock_round != self._round_no:
+            self._wait_result_lock_round = self._round_no
+            self._wait_result_lock_since_ts = now
+            return
+        stuck_s = now - self._wait_result_lock_since_ts
+        if stuck_s < self.WAIT_RESULT_LOCK_WARN_S:
+            return
+        if (now - self._wait_result_lock_ts) < self.WAIT_RESULT_LOCK_REPEAT_S:
+            return
+        self._wait_result_lock_ts = now
+        my = self._my_rank
+        submitted = self._bid_player_submitted.get(my) if my is not None else None
+        # 与假下降沿判据同口径（含回合校验），另留原始读数以便看出"有残留但已被挡"
+        any_bid_read_raw = any(
+            s.get("locked") or s.get("hits", 0) > 0 for s in self._bid_slots.values()
+        )
+        same_round = self._bid_slots_round == self._round_no
+        any_bid_read = same_round and any_bid_read_raw
+        since_submit_ms = (now - self._wait_result_entered_ts) * 1000
+        slots = ",".join(
+            "P%d:%s/%s" % (pid, s.get("hits", 0), "L" if s.get("locked") else "-")
+            for pid, s in sorted(self._bid_slots.items())
+        )
+        logger.log(
+            f"[鉴宝出价][观测] wait_result 滞留 {stuck_s:.1f}s（阶段={self._current_stage} "
+            f"回合={self._round_no} epoch={self._bid_epoch} 面板已开={'是' if smart is not None else '否'}）"
+            f"假下降沿条件 → any_bid_read={any_bid_read}"
+            f"（原始读数={any_bid_read_raw} 槽轮次={self._bid_slots_round} 同回合={same_round}）"
+            f"缓冲={since_submit_ms:.0f}/{self.SUBMIT_ANIMATION_BUFFER_MS}ms "
+            f"my_rank={my} 我方已提交={submitted} | 槽 hits/锁定={slots}",
+            "WARNING",
+        )
 
     def _run_bidding_choice(self, frame_rgb: np.ndarray) -> None:
         """回合出价阶段：主按钮状态（等待出价/出价）+ 面板判定 → 点击意图。
@@ -2142,6 +2253,7 @@ class TreasureModule(ActivityModule):
         # wait_result：已提交，等待公开报价（快照构建在 OCR 消费后由 _maybe_build_snapshot 完成）
         if self._bid_phase == "wait_result":
             self._wait_result_frames += 1
+            self._guard_wait_result_lock(smart)
             # 前置强信号：4 槽都明确"已出价"（submitted=True，含金额）→ 4 人全提交 = 我方必已提交。
             # 此时无论此前 OCR 读到过什么"出价中"（提交后"出价中→已出价"过渡动画的误读帧），
             # 都直接跳过假下降沿判定，进入正常回合记录阶段（继续读 4 槽）。这是用户拍板方案：
@@ -2165,8 +2277,16 @@ class TreasureModule(ActivityModule):
             # 缓冲用时间口径（SUBMIT_ANIMATION_BUFFER_MS），与帧率解耦——帧数口径在
             # v4 节奏（policy_loop 自驱）下会被稀释。即使仍误回退 wait_first，按钮
             # OCR 读到「已出价」会自愈回 wait_result（见下方 S1/S2 分支）。
-            any_bid_read = any(
-                s.get("locked") or s.get("hits", 0) > 0 for s in self._bid_slots.values()
+            # 判据必须锚定「本回合」：_bid_slots 的重置挂在 _consume_ocr_result 上，
+            # 而相位停在 wait_result 时槽 OCR 投递闸不放行 → 没有消费事件 → 槽状态会
+            # 跨回合残留。残留的 hits>0 一旦被当成本回合读数，就会永久否决本出口
+            # （2026-09-15 实测：R2 读到 P3 一次报价，R3 从未出价却因该残留
+            # any_bid_read=True 锁死 41s；18:18 场更连锁两回合）。故只认「槽状态
+            # 属于当前回合」时的读数——旧回合的账不得否决新回合的退路。
+            any_bid_read = (
+                self._bid_slots_round == self._round_no
+                and any(s.get("locked") or s.get("hits", 0) > 0
+                        for s in self._bid_slots.values())
             )
             if (not any_bid_read
                     and (time.monotonic() - self._wait_result_entered_ts) * 1000
@@ -2224,6 +2344,7 @@ class TreasureModule(ActivityModule):
             return
         # S1/S2：面板未开 → OCR 主按钮文字
         label = self._read_bid_main_btn_label(frame_rgb)
+        self._probe_bid_label(label)
         # 「已出价」= 提交成功的铁证（按钮显示 已出价:金额）。wait_first 若由假下降沿
         # 回退而来，按钮仍读「已出价」说明实际已提交、只是对手未齐报价 → 回
         # wait_result 继续读 4 槽等公开报价。没有这一步，wait_first 不投递槽 OCR，
@@ -4482,8 +4603,9 @@ class TreasureModule(ActivityModule):
         识别在 worker 线程进行，本方法 O(1) 不阻塞主循环。
         投递阶段：① 出价面板（第 X 回合出价，且面板已开=识别到智能出价按钮）
                   ② 中标结算 ③ 领取分红。
-        出价阶段仅在面板已开（S3）时投递：H 就是输入框当前值（智能出价填入），
-        面板未开（S1等待/S2出价）输入框区域是别的 UI，投递既浪费性能又可能误判 H。
+        出价阶段只在两种情形投递（见下方分支）：面板已开（S3，读 H = 智能出价填入的输入框
+        当前值）；或已提交等结果（wait_result，读 4 人公开报价数字——整局对手报价只有这段
+        窗口能读到）。S1等待/S2出价面板未开，输入框区域是别的 UI，投递既浪费性能又可能误判 H。
         阶段 ②/③ 的 OCR ROI 都在 treasure_rois.json 里配置（settle_final/settle_total/settle_profit/
         settle_my_income），离线脚本同步验证过。不投递其他界面避免误识别。"""
         if self._ocr is None:
@@ -4589,7 +4711,10 @@ class TreasureModule(ActivityModule):
                 # 帧内判定：页面令牌与下面两段识别吃的是**同一帧像素**，同源由构造保证
                 # （跨线程搬运必有窗口 → 见 _ocr_push docstring）。标志锚点命中即短路：
                 # 本页帧 ~2–3ms，认不出的帧走满锚点集 16–40ms（只在转场那几帧）。
-                page_stage = self._judge_frame_page(frame, ocr_keys)
+                # round_no：投递时快照（_ocr_push 存下的当时 _round_no），供令牌的第二类
+                # 证据与它互相印证——两者都锚在这一帧上，不含消费时刻的实时状态
+                # （为什么必须成对，见 _judge_frame_page 与 detector.confirm_round_page）。
+                page_stage = self._judge_frame_page(frame, ocr_keys, round_no)
                 # 第一段：关键 ROI（bid_result_amount_box + bid_player4 双通道）单独识别、立即发布。
                 # 窗口期（偶发系统级慢）单 ROI 即使慢 15 倍也仅 ~200ms，age 仍低于
                 # OCR_MAX_AGE_MS，保证 H 等关键数值先于全量结果落地，不被 18 ROI 长循环拖死。
@@ -4705,7 +4830,8 @@ class TreasureModule(ActivityModule):
             return res
 
     def _judge_frame_page(self, frame_rgb: np.ndarray,
-                          ocr_keys: frozenset[str] | None) -> str | None:
+                          ocr_keys: frozenset[str] | None,
+                          round_no: int | None = None) -> str | None:
         """对**即将识别的这一帧**现场判定页面（令牌产地），供消费侧页面门控。
 
         与消费侧 _ocr_filter_by_page 构成一对：这里产出令牌，那里按令牌过滤，两者查的
@@ -4715,6 +4841,16 @@ class TreasureModule(ActivityModule):
         令牌与读数字节同源（同一次 worker 调用里的同一帧），所以不存在「旧页令牌配新页
         像素」的窗口：转场帧判不出本页 → None → 消费侧按「认不出本页」丢弃，宁可少读
         一帧也不把别的页的数字当本页读数（与 _ocr_filter_by_page 同一 fail-closed 口径）。
+
+        令牌的两类同帧证据（第一类命中即止；第一类缺席才问第二类）：
+          ① 模板标志锚点（detector.probe_page）——只在面板打开期与回合横幅闪现期可见；
+          ② 回合小字 OCR 与投递时快照的回合号互相印证（detector.confirm_round_page）——
+             回合小字在整个回合常驻，覆盖①缺席的「4 人已出价、面板关闭、逐个显示报价」
+             那段窗口。实测该窗口①恒为 None，正是报价读数整段被丢的原因（帧上 OCR 已
+             读出 122,100/250,000/163,100，令牌却是 None）。
+        ② 只在**本批信号属于回合族**时启用，且必须与 round_no（投递时快照，即阶段标签当时
+        的答案）一致：两个来源互相印证才放行。非回合族批次不启用，行为与加它之前完全一致
+        （结算/分红页的读数仍只认模板标志锚点，300000 那类跨页脏读照旧拦得住）。
         """
         det = self._detector
         plan = getattr(det, "plan", None)
@@ -4728,7 +4864,30 @@ class TreasureModule(ActivityModule):
                 stages |= set(allowed)
         if not stages:
             return None  # 本批信号都没有页面约束 → 无令牌（消费侧对这些信号本就放行）
-        return probe(frame_rgb, stages)
+        token = probe(frame_rgb, stages)
+        if token is not None:
+            self._note_page_token_source("模板锚点")
+            return token
+        is_round = getattr(det, "is_round_stage", None)
+        confirm = getattr(det, "confirm_round_page", None)
+        if (confirm is not None and is_round is not None
+                and any(is_round(stage) for stage in stages)
+                and confirm(frame_rgb, round_no)):
+            self._note_page_token_source("回合小字印证")
+            return ROUND_PHASE_STAGE
+        self._note_page_token_source("无")
+        return None
+
+    def _note_page_token_source(self, src: str) -> None:
+        """令牌产地只在变化时落一行日志（每帧打会淹没日志）。
+
+        产地三种：模板锚点（面板开/横幅闪现）／回合小字印证（公开报价窗口）／无。
+        真机复验用它确认第二类证据是否在窗口内生效；判据本身不读这个字段。
+        """
+        if src == self._ocr_page_token_src:
+            return
+        self._ocr_page_token_src = src
+        logger.log(f"[鉴宝] 页面令牌产地: {src}", "DEBUG")
 
     def _ocr_filter_by_page(self, result: dict) -> dict:
         """页面门控（闸②）：按本帧页面令牌过滤 result["data"]，只放行属于当前页的读数。
@@ -4744,8 +4903,8 @@ class TreasureModule(ActivityModule):
         - 令牌不在该信号的允许阶段集合内 → 丢弃（画面已不是该信号所属的页）；
         - 其余放行。
 
-        与闸①（回合 provenance）的关键差别：闸①在 round_no is None 时放行，而结算/分红期
-        round_no 恒为 None，那正是脏读的通路之一；本闸不复制该例外——页面令牌为 None 一律
+        与闸①（回合 provenance）的关键差别：闸①在**两侧回合号都为 None**（结算/分红期的常态）
+        时放行，那正是脏读的通路之一；本闸不复制该例外——页面令牌为 None 一律
         按「认不出当前页」处理，宁可少读一帧也不把别的页的数字当成本页读数。
 
         开销：每个读数一次 dict 查表 + 集合包含判断。不触碰图像、不新增取图、不新增 ROI。

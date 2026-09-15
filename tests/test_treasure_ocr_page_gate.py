@@ -204,9 +204,23 @@ class _ProbeStubDetector:
         return self.verdict
 
 
-def _judge(mod: TreasureModule, keys):
+class _CorroboratingStubDetector(_ProbeStubDetector):
+    """在产地桩之上加「第二类同帧证据」桩：记录被问到的回合号，印证结果可控。"""
+
+    def __init__(self, plan: object | None, verdict: str | None, confirm: bool) -> None:
+        super().__init__(plan, verdict)
+        self.confirm = confirm
+        self.confirm_calls: list = []
+
+    def confirm_round_page(self, frame_rgb, round_no):
+        self.confirm_calls.append(round_no)
+        return self.confirm
+
+
+def _judge(mod: TreasureModule, keys, round_no=None):
+    mod._ocr_page_token_src = None   # 裸模块（__new__ 构造）没有 __init__ 里那个观测字段
     return TreasureModule._judge_frame_page(
-        mod, np.zeros((8, 8, 3), dtype=np.uint8), keys)
+        mod, np.zeros((8, 8, 3), dtype=np.uint8), keys, round_no)
 
 
 def test_ocr_push_carries_no_page_token():
@@ -454,3 +468,99 @@ def test_transition_frame_does_not_reach_consumer(plan):
     """转场中（页面令牌 None）不消费：宁可少读一帧，也不把别的页的数字当本页读数。"""
     consumed = _run_apply(plan, None, {"settle_profit": 12000})
     assert consumed == []
+
+
+# --------------------------------------------------------------------------
+# 第二类同帧证据：模板锚点缺席时，同帧回合小字与投递时回合号互相印证
+#
+# 为什么需要：两个标志锚点（smart_bid_btn / round_big_banner）只在回合内的部分时段可见，
+# 而 4 人报价数字是在「都已出价、面板关闭」之后才逐个显示的。那段窗口第一类证据恒为 None
+# （实测帧上 OCR 已读出 122,100/250,000/163,100，令牌却是 None），整段公开报价被 fail-closed
+# 丢掉 → 4 个报价槽全场命中≈0 → 快照建不起来 → 相位停在 wait_result。
+# 第二类证据要求两侧互相印证：任一方单独说话都不作数（阶段标签有结算转场慢半拍的前科，
+# 本帧文字也只能证明画面上写着某个回合号）。
+# --------------------------------------------------------------------------
+
+def test_round_label_corroboration_produces_round_token(plan):
+    """公开报价窗口的现场路径：第一类缺席 + 印证成立 → 产出回合族令牌。"""
+    det = _CorroboratingStubDetector(plan, None, True)
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = det
+
+    token = _judge(mod, frozenset({"bid_player1", "round_label_area"}), 1)
+
+    assert token == ROUND_PHASE_STAGE
+    assert det.confirm_calls == [1]          # 印证问的就是投递时那个回合号
+
+
+def test_round_label_mismatch_stays_fail_closed(plan):
+    """回合号对不上（画面已切回合、标签还在旧回合）→ 仍 None，不放开读数。"""
+    det = _CorroboratingStubDetector(plan, None, False)
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = det
+
+    assert _judge(mod, frozenset({"bid_player1"}), 1) is None
+    assert det.confirm_calls == [1]
+
+
+def test_corroboration_not_used_for_non_round_signals(plan):
+    """非回合族批次（结算/分红）不启用第二类证据——300000 那类跨页脏读照旧拦得住。"""
+    det = _CorroboratingStubDetector(plan, None, True)
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = det
+
+    assert _judge(mod, frozenset({"settle_my_income"}), 1) is None
+    assert det.confirm_calls == []           # 连问都不问：结算页没有回合小字这条证据
+
+
+def test_template_anchor_wins_over_corroboration(plan):
+    """第一类命中即止，不再多跑一次回合小字识别（省一次 OCR，令牌口径不分叉）。"""
+    det = _CorroboratingStubDetector(plan, ROUND_PHASE_STAGE, True)
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = det
+
+    assert _judge(mod, frozenset({"bid_player1"}), 1) == ROUND_PHASE_STAGE
+    assert det.confirm_calls == []
+
+
+def test_detector_confirm_round_page_requires_matching_round(monkeypatch):
+    """真 detector 的印证口径：解析回合号必须等于快照回合号；附加回合按 clamp 比。"""
+    det = TreasureStageDetector(_PLUGIN_DIR)
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(det, "_detect_round_full", lambda *a, **k: 3)
+    assert det.confirm_round_page(frame, 3) is True
+    assert det.confirm_round_page(frame, 2) is False
+    assert det.confirm_round_page(frame, None) is False   # 快照回合号缺失 → 不印证
+
+    monkeypatch.setattr(det, "_detect_round_full", lambda *a, **k: 6)
+    assert det.confirm_round_page(frame, 5) is True       # 附加回合在 stage 名里 clamp 成 5
+    assert det.confirm_round_page(frame, 6) is False
+
+    monkeypatch.setattr(det, "_detect_round_full", lambda *a, **k: None)
+    assert det.confirm_round_page(frame, 3) is False      # 读不出回合号 → 不印证
+
+
+def test_corroborated_token_reaches_consumer(plan):
+    """端到端：印证产出的令牌 → 同一帧的报价读数过闸②进消费（改前这条链断在令牌）。"""
+    det = _CorroboratingStubDetector(plan, None, True)
+    mod = TreasureModule.__new__(TreasureModule)
+    mod._detector = det
+    mod._ocr_page_drops = 0
+
+    token = _judge(mod, frozenset({"bid_player1", "round_label_area"}), 1)
+    kept = TreasureModule._ocr_filter_by_page(mod, {
+        "frame_id": 32, "round_no": 1, "stage": token,
+        "data": {"bid_player1": 122100, "round_label_area": {"text": "第1回合"}},
+    })
+
+    assert kept["bid_player1"] == 122100
+    assert mod._ocr_page_drops == 0
+    # 同一条链上，令牌若仍为 None（改前行为），同一批读数会被整批丢掉
+    mod2 = TreasureModule.__new__(TreasureModule)
+    mod2._detector = _StubDetector(plan)
+    mod2._ocr_page_drops = 0
+    assert TreasureModule._ocr_filter_by_page(mod2, {
+        "frame_id": 32, "round_no": 1, "stage": None,
+        "data": {"bid_player1": 122100},
+    }) == {}

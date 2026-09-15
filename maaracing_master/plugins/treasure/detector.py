@@ -217,6 +217,35 @@ class TreasureStageDetector:
         stage, _round_no, _hit_tpl, _hit_box = self._scan(frame_rgb, anchors, record=False)
         return stage
 
+    def confirm_round_page(self, frame_rgb: np.ndarray, round_no: int | None) -> bool:
+        """同帧回合小字能否为「本帧属于回合族出价页」作证（probe_page 的第二类证据）。
+
+        为什么需要第二类：标志锚点（smart_bid_btn / round_big_banner）只在回合内的**部分
+        时段**可见——面板打开期与横幅闪现期；而 4 人报价数字是在「4 人都已出价、面板关闭」
+        之后才逐个显示出来的。那段时间两个锚点同时缺席 → probe_page 返回 None → 页面门控
+        fail-closed，把整段公开报价读数丢掉（实测帧：OCR 已正确读出 122,100 / 250,000 /
+        163,100，令牌却是 None）。回合小字（round_label_area）在整个回合常驻，是同一帧上
+        现成的证据。
+
+        判据是**两个来源互相印证**，不是单方作数：本帧文字解析出的回合号必须等于调用方
+        给的 round_no（生产口径 = 该帧投递时快照的 `_round_no`，即阶段标签当时的答案）。
+        任一方缺失或不等 → False，回到 fail-closed。理由两侧都有前科：阶段标签单独说过话
+        不算数（它曾在结算转场慢半拍，把大厅画面报成「领取分红」，见 docs/update_log.md
+        的 300000 条）；本帧文字单独说话也不算数（它只证明画面上写着「第 N 回合」，不证明
+        这是哪一页——大厅/结算页顶部也可能出现数字）。
+
+        回合号按 set_stage 的 clamp 口径比较（第 6+ 附加回合在阶段名里 clamp 成 5，
+        `_round_no` 存的是 clamp 后的值）。只读一次性单 ROI OCR（复用 `_detect_round_full`
+        的取字与解析，不另立第二套读法），不新增取图、不写任何实例状态。
+        """
+        if round_no is None:
+            return False
+        H, W = frame_rgb.shape[:2]
+        parsed = self._detect_round_full(frame_rgb, W, H)
+        if parsed is None:
+            return False
+        return min(parsed, 5) == round_no
+
     # ---------------- 扫描核心 ----------------
     def _px_roi(self, rect, W: int, H: int) -> tuple[int, int, int, int] | None:
         """归一化 rect (x1n,y1n,x2n,y2n) → 引擎像素搜索区 (x, y, w, h)。"""
