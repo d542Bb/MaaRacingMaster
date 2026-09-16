@@ -67,10 +67,16 @@ class _XINPUT_GAMEPAD(ctypes.Structure):
 
 
 class _XINPUT_STATE(ctypes.Structure):
-    """XINPUT_STATE：dwPacketNumber(4) + XINPUT_GAMEPAD(12) = 16 字节。"""
+    """XINPUT_STATE：dwPacketNumber(4) + XINPUT_GAMEPAD(12) = 16 字节。
+
+    首字段用 ``c_uint32`` 而非 ``c_ulong``——DWORD 是**固定 32 位**，而 ``c_ulong``
+    是平台相关的（Windows LLP64 为 4 字节、Linux LP64 为 8 字节），后者会让本结构
+    在 Linux 上膨胀到 24 字节。本模块是 Windows-only，生产中不会真在 Linux 上调用，
+    但"结构体定义跟着平台漂"本身就是错的：它让跨平台跑测试时读到的是假失败。
+    """
 
     _fields_ = [
-        ("dwPacketNumber", ctypes.c_ulong),
+        ("dwPacketNumber", ctypes.c_uint32),
         ("Gamepad", _XINPUT_GAMEPAD),
     ]
 
