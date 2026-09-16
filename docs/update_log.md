@@ -55,6 +55,36 @@
 
 - **验证：** 42 条关键规则逐条核查零丢失；文档内引用的 11 个路径全部存在；行尾 LF、无 BOM。
 
+### 暂存（未发布 · 待并入下一版本）静态检查与类型检查进门禁，依赖收上界 🔒
+
+- **性质：** 未发版变更（`.github/workflows/test.yml`、`pyproject.toml`、`pyrightconfig.json`、`requirements.txt` + 存量清零涉 60+ 文件；master 直接提交、不 tag）
+
+- **门禁：** test.yml 在 pytest 前新增两步——`ruff check .`（规则集 E4/E7/E9/F，配置落 `[tool.ruff]`，`tools/experiments/` 探针豁免）与 `pyright maaracing_master`（basic 模式）。版本钉死于新增 `[project.optional-dependencies].dev-lint`，本地与 CI 同版。格式类规则（ruff format）不入门禁：一次性重排淹没 review 信号，要引入时单独决策。
+
+- **存量清零：** ruff 安全自动修复 62 处（F401 未用导入、F541）；手工修 57 处（E402 理由标注、E731 lambda→def、E702 冻结分号行、死赋值与恒假死代码删除）；pyright 主包 18 处清零——含 `ActivityModule.ctx` 契约诚实化（离线只读形态入签名）、`Rect.as_tuple()` 定长形、`template_match` 消除 None 哨兵（行为不变）。treasure 域冻结豁免以文件级 `# pyright:` 声明落在 module.py/detector.py 头部，speedrush 新域不继承。
+
+- **依赖：** `requirements.txt` 全部条目按「下一 major」收上界（`numpy<3`、`opencv-python<6` 等），源码安装用户不再漂出已验证组合；发布包仍由 `requirements-runtime-lock.txt` 精确复现。
+
+### 暂存（未发布 · 待并入下一版本）RPC 分发白名单与并发闸门 🛡️
+
+- **性质：** 未发版变更（`maaracing_master/core/sidecar.py`、`apps/MaaRacingMaster.Shell/RpcBridge.cs`、`tests/test_rpc_allowlist.py`（新）；master 直接提交、不 tag）
+
+- **信任边界收口：** sidecar `_dispatch` 由 `getattr` 属性反射改为模块级 `HANDLERS` 白名单查表，WebView 内任意 JS 不得触达服务对象其余成员；C# 桥加 `AllowedMethods`（= HANDLERS 去掉 shell 生命周期方法 `shutdown`/`close`），非白名单消息在 shell 侧直接拒绝、不转发。新增 RPC 须同改两表 + handler，契约写入注释。
+
+- **并发闸门：** 在途 handler 上限 16（信号量非阻塞获取，超限回 busy；排队会阻塞 stdin reader、违背协议铁律）。
+
+- **回归锁：** 新增 4 例断言两表与实现、前端 `mra.call` 字面量的三方一致，含活性验证（合成漂移即时报红）与 `_dispatch` 表外必拒/表内必达。
+
+- **验证：** 全量 `pytest` 583 passed（+4）；`pyright` 0 errors；`ruff` 全仓 0 违规；`check_truth` 通过。
+
+### 暂存（未发布 · 待并入下一版本）文档-真源偏移修复与「不抄录可机检数值」守则 ✏️
+
+- **性质：** 未发版变更（`docs/CODE_WIKI.md`、`maaracing_master/plugins/treasure/CODE_WIKI.md`、`AGENTS.md`；master 直接提交、不 tag）
+
+- **修复：** 主文档 2 处 + 域文档 4 处「12 阶段」改为指向 `treasure.policy.json` `perception.stages.order`（真源现为 15 项，文档抄录已漂过两次）；§2.1 架构图「NavKit v3资产」→「v4」（与同文档 §9.7 定案对齐）；§4.4/§7.1 启动流的 `MaaRacingMaster.lnk` 改为发布包根目录 `MaaRacingMaster.exe`（薄 Launcher，全库无 .lnk 生成逻辑，与 README 定案对齐）。
+
+- **守则（AGENTS.md 信源路由新增）：** 文档不得抄录可机检的真源数值——凡能被 JSON/代码单向算出的值，prose 只写指向真源的路径，指针本身也不带数量。
+
 ## 2026-09-15
 ### v0.23.0-dev.1 鉴宝出价/OCR 纵深修复 + V4 出价口径 + PEEP 悬浮窗与日志体验迭代 🏷️
 
