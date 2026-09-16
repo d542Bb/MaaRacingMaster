@@ -294,6 +294,38 @@ class _StdoutGuard:
         _STDERR.flush()
 
 
+# ---------- RPC 信任边界 ----------
+# 前端可调方法白名单。_dispatch 只查本表，不做属性反射——WebView 内任意 JS
+# 不得触达服务对象的其余成员（含 shutdown 之外的全部内部方法与未来新增成员）。
+# 新增 RPC 必须同时改三处：本表、SidecarService 方法、前端与 C# 侧常量表
+# （apps/MaaRacingMaster.Shell/RpcBridge.cs AllowedMethods）。
+HANDLERS = frozenset({
+    # 生命周期与模块
+    "get_initial_state", "select_module", "get_status", "start", "stop",
+    "close", "shutdown",
+    # 模块配置
+    "get_module_config", "set_module_config",
+    # 外部资源与下载引导
+    "open_vigembus_download", "open_external_url", "open_user_data_folder",
+    # 注册表优化建议
+    "get_registry_optimizations", "set_optimization_prompt_ignored",
+    "set_registry_optimization",
+    # 更新与公告
+    "check_update", "fetch_announcement",
+    # 观测
+    "fetch_logs", "get_today_stats", "get_debug_state",
+    # 调试与显示开关
+    "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
+    # 行为开关
+    "set_emergency_stop", "set_click_mode", "set_intent_mode",
+    "set_auto_close_game", "set_auto_exit_mra", "set_mute_game",
+})
+
+# 在途请求并发上限：stdin reader 永不阻塞是协议铁律，超限直接拒（前端按
+# 普通错误处理并下轮重试），不排队——排队会让 reader 等锁、违背同一铁律。
+_MAX_INFLIGHT = 16
+
+
 class SidecarService:
     """业务 dispatch 层：线程安全（复用 bridge.py 的 _lock/_worker 语义）。"""
 
@@ -315,6 +347,7 @@ class SidecarService:
             self._stages = get_module_info(self._selected_module)["stages"] if self._selected_module else []
         except KeyError:
             self._stages = []
+        self._inflight = threading.Semaphore(_MAX_INFLIGHT)
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
         self._closed = False
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
@@ -348,6 +381,9 @@ class SidecarService:
             params = req.get("params") or {}
             # 每个 request 独立 handler 线程：stdin reader 永不阻塞。
             # 非 daemon：stdin EOF 后仍等所有在途请求写完响应再退出（shutdown 响应不能丢）。
+            if not self._inflight.acquire(blocking=False):
+                self._respond(rid, False, None, "sidecar busy (in-flight limit)")
+                continue
             threading.Thread(
                 target=self._dispatch, args=(method, params, rid)
             ).start()
@@ -355,7 +391,9 @@ class SidecarService:
     def _dispatch(self, method, params, rid) -> None:
         is_shutdown = method == "shutdown"
         try:
-            handler = getattr(self, method, None)
+            # 白名单查表，不做属性反射：非表内方法名（含任何下划线/内部成员）
+            # 一律 unknown，WebView 侧无法触达服务对象的其余接口。
+            handler = getattr(self, method, None) if method in HANDLERS else None
             if handler is None:
                 self._respond(rid, False, None, f"unknown method {method}")
                 return
@@ -365,6 +403,7 @@ class SidecarService:
             logger.log(f"sidecar dispatch 异常: {exc}", "ERROR")
             self._respond(rid, False, None, repr(exc))
         finally:
+            self._inflight.release()
             if is_shutdown:
                 os._exit(0)  # 响应已发出，立即退出（worker 线程中 sys.exit 无效）
 
