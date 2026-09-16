@@ -100,6 +100,10 @@ class SpeedRushModule(ActivityModule):
     # 驾驶阶段全程占用手柄（油门常踩 + 横向连续转向）
     REQUIRES_GAMEPAD_EXCLUSIVE = True
     REQUIRES: frozenset[str] = frozenset({"capture", "gamepad"})
+    # 录制开关的初值（False = 不录制，驾驶阶段只等本阶段结束）
+    DEFAULT_RECORD_MODE = False
+    # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
+    DEFAULT_MODULE_CONFIG: dict = {"record_mode": DEFAULT_RECORD_MODE}
 
     def __init__(self, ctx: ActivityContext | None) -> None:
         super().__init__(ctx)
@@ -107,7 +111,7 @@ class SpeedRushModule(ActivityModule):
         self._running = False
         self._stage_name: str | None = None
         # 录制模式：开启后驾驶阶段只采集（不操纵车辆），供维护者手动驾驶产出演示数据。
-        self._record_mode = False
+        self._record_mode = self.DEFAULT_RECORD_MODE
         self._recorder: DriveRecorder | None = None
 
     @property

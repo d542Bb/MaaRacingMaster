@@ -209,6 +209,15 @@ class ActivityModule(ABC):
     # 启动前由 sidecar 逐项检查存在性，缺失时拦截并给出插件内具体路径。
     REQUIRED_ASSETS: tuple[str, ...] = ()
 
+    # 声明模块配置面的**键集合与默认值**（GUI 配置项的唯一真源）。
+    # 两个用途：
+    #   1. 模块未运行（没有实例）时给 GUI 回填初值——故"读配置"不必构造实例，
+    #      模块代码不会因为"被看一眼配置"而执行；
+    #   2. profile 落盘与回填的键白名单——**新增可持久化的配置项必须加进这里**，
+    #      否则它不会被保存（core 不再持有任何模块的字段名）。
+    # 只放"用户可设置"的项；运行实况（进度、计数等）走 get_module_config 的 _state。
+    DEFAULT_MODULE_CONFIG: dict = {}
+
     def __init__(self, ctx: ActivityContext | None):
         # ctx=None 为离线形态（registry.create_module 的公开契约：只读默认配置，
         # 不启动运行时）。运行期编排层总是注入实 ctx；模块内访问 ctx 的属性前

@@ -59,8 +59,9 @@ _STDERR = cast(TextIO, sys.__stderr__)
 _PROFILE_FILENAME = "profile.json"
 # 默认选中模块 id（仅作 id 引用，不直接 import 插件包；GUI 进入默认展示鉴宝）
 _DEFAULT_MODULE_ID = "treasure"
-# 本程序目前持久化的模块配置键（treasure 模块）——回填时只取这些，其余忽略。
-_MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session")
+# 模块配置的键白名单不在这里定义：它由各模块类的 DEFAULT_MODULE_CONFIG 声明
+# （配置面由模块自述，见 ActivityModule 的契约）。core 不得出现任何模块的字段名
+# ——否则每加一个配置项都要回头改这里。
 
 # 注册表权限优化项注册表（数据驱动：新增优化项只改这里，前后端体检/设置页自动生效）。
 # 字段语义：
@@ -280,6 +281,47 @@ def _save_profile(partial: dict) -> None:
         logger.log(f"[sidecar] 偏好落盘失败: {exc!r}", "WARNING")
 
 
+def _parse_module_config_slots(mc: object) -> dict[str, dict]:
+    """把 profile 的 module_config 段解析成「模块 id → 配置 dict」的多槽形态。
+
+    兼容两种格式，判别依据是段内是否存在**字符串值**的 ``module_id`` 键：
+      - 新：``{"treasure": {"max_daily_loops": 50}, "speedrush": {...}}``
+      - 旧（单槽 flat）：``{"module_id": "treasure", "max_daily_loops": 50}``
+
+    无法归槽的内容（类型不符、键不是字符串）一律丢弃：多槽下"猜一个模块替它收下"
+    会把 A 模块的字段名塞进 B 模块的槽，不收比收错好。
+    """
+    if not isinstance(mc, dict):
+        return {}
+    mid = mc.get("module_id")
+    if isinstance(mid, str):
+        return {mid: {k: v for k, v in mc.items() if k != "module_id"}}
+    return {k: dict(v) for k, v in mc.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _module_config_defaults(module_id: str) -> dict:
+    """模块声明的配置面：键集合与默认值（``DEFAULT_MODULE_CONFIG``，真源在模块类）。
+
+    **静态读取，不创建实例**：读配置不得执行模块代码——否则"看一眼配置"就会跑一遍
+    模块的 ``__init__``，而"构造函数里有副作用（起线程、开文件）"本身是合理的事。
+    键白名单取自这里，所以新增配置项只要写进模块的声明就自动可持久化。
+    """
+    cls = MODULE_REGISTRY.get(module_id)
+    defaults = getattr(cls, "DEFAULT_MODULE_CONFIG", None)
+    return dict(defaults) if isinstance(defaults, dict) else {}
+
+
+def _merge_module_config(cache_cfg: dict | None, param_cfg: dict | None) -> dict:
+    """start 时的配置合并：缓存槽 ← 本次带参（带参优先）。
+
+    单独成函数是为了让"配置来源的优先级"只有一个落点、可被直接验证，
+    不然它散在 start 的启动流程里，只能靠跑整条 start 才间接覆盖。
+    """
+    merged: dict = dict(cache_cfg or {})
+    merged.update(param_cfg or {})
+    return merged
+
+
 class _StdoutGuard:
     """把一切误写 stdout 的输出（第三方库 print 等）转移到 stderr，保证协议通道纯净。"""
 
@@ -350,6 +392,10 @@ class SidecarService:
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
         self._closed = False
+        # 模块配置缓存：**按模块 id 分槽**，切走的模块配置留在自己的槽里不被覆盖。
+        # 槽里只放纯配置数据，**绝不放模块实例**——实例持有线程/文件句柄等资源，
+        # 缓存若持有实例，等于把"已经切走的模块"留在内存里继续活着。
+        self._module_config_cache: dict[str, dict] = {}
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
         self._restore_profile()
 
@@ -412,7 +458,7 @@ class SidecarService:
     def _restore_profile(self) -> None:
         """启动回填上次会话偏好：只取本程序认识的键，未知/非法内容一律忽略。
 
-        - module_config → 并入 _cached_module_config（下次 start 自动注入新实例）；
+        - module_config → 按模块分槽回填 _module_config_cache（下次 start 注入新实例）；
         - debug 段 → 直接恢复 controller 的调试/peep 开关状态。
         """
         data = _load_profile()
@@ -448,17 +494,17 @@ class SidecarService:
             mg = dbg.get("mute_game")
             if isinstance(mg, bool):
                 self._controller.set_mute_game(mg)
-        # 2) 模块配置（flat dict，含 module_id）→ 只取本程序管理的键，其余未知键忽略
-        mc = data.get("module_config")
-        if isinstance(mc, dict):
-            cache = {k: mc[k] for k in _MODULE_CONFIG_KEYS if k in mc}
-            if cache:
-                mid = mc.get("module_id")
-                # 残留 id 已被剥离或已过有效期：一律忽略，落到本次会话的默认模块
-                if not (isinstance(mid, str) and mid in MODULE_REGISTRY) or module_expired(mid):
-                    mid = self._selected_module
-                cache["module_id"] = mid
-                self._cached_module_config = cache
+        # 2) 模块配置 → 按模块分槽回填；键白名单由各模块的 DEFAULT_MODULE_CONFIG 声明
+        slots: dict[str, dict] = {}
+        for mid, flat in _parse_module_config_slots(data.get("module_config")).items():
+            # 未注册（模块已被剥离）或已过有效期的模块不收：留下的槽没有生效路径
+            if mid not in MODULE_REGISTRY or module_expired(mid):
+                continue
+            allowed = _module_config_defaults(mid)
+            kept = {k: flat[k] for k in allowed if k in flat}
+            if kept:
+                slots[mid] = kept
+        self._module_config_cache = slots
 
     def get_initial_state(self, params):
         return (True, {
@@ -550,78 +596,69 @@ class SidecarService:
 
     # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------
 
-    def _route_module_config(self) -> "dict | None":
-        """路由到「当前选中模块实例」或「同 id 新建的离线索实例」读 module_config（只读）。
+    def _module_config_view(self, module_id: str) -> dict:
+        """某模块的配置视图（未运行时）：模块声明的默认值 ← 该模块自己的缓存槽。
 
-        为什么"未运行时也需要可读"：GUI 未启动时回显模块默认配置 + sidecar 缓存。
-          - 活动模块已在跑（controller.active_module 非空）→ 读运行实例（含 _state 实况）；
-          - 没在跑 → 用 create_module(module_id, ctx=None) 离线建临时实例读默认值（不保存状态）。
-        没定义 get_module_config 的模块（如 racing）返回 None，RPC 层兜底为占位 dict。
-        配置写入统一走 set_module_config 写缓存（下次 start 注入），不做运行中热更新。
+        两条纪律：
+          - **不创建实例**——读配置是纯数据操作。模块的 ``get_module_config`` 只在
+            "该模块正在运行"时被调用（那份带 `_state` 实况），不再为了读默认值建离线段实例；
+          - **槽按模块隔离**——切走的模块配置留在自己的槽里，不被后来者覆盖。
         """
+        view = _module_config_defaults(module_id)
         with self._lock:
-            module_id = self._selected_module
-        if not module_id:  # 无预选模块（全部过期/未注册）——离线建实例无从谈起
-            return None
-        instance = None
-        # 优先用运行中的实例（读实时值）
-        if self._controller.active_module is not None and getattr(
-            self._controller.active_module, "ID", None
-        ) == module_id:
-            instance = self._controller.active_module
-        if instance is None:
-            # 离线模式：ctx=None → create_module/ActivityModule 基类允许（见 treasure_module __init__）
-            try:
-                from maaracing_master.core.registry import create_module as _create
-                instance = _create(module_id, None)
-            except Exception as exc:
-                logger.log(f"[sidecar] 离线建模块{module_id!r}读配置失败: {exc}", "DEBUG")
-                instance = None
-        if instance is None:
-            return None
-        getter: Any = getattr(instance, "get_module_config", None)
-        # 契约：模块的 get_module_config() 返回 dict（module_config 配置面）
-        return cast("dict | None", getter()) if callable(getter) else None
+            cached = self._module_config_cache.get(module_id)
+        if cached:
+            view.update(cached)
+        return view
 
     def get_module_config(self, params):
         module_id = params.get("module_id") or self._selected_module
-        try:
-            result: dict | None = self._route_module_config()
-        except Exception as exc:  # noqa: BLE001
-            return (False, None, f"读模块配置失败: {exc!r}")
-        # result 可能 None（老模块无接口）——返回空 dict + 支持的最小字段，前端不崩。
-        if result is None:
-            result = {}
-        # 运行中：实例权威（含 _state 实况）；未运行：缓存优先（GUI 改过且还没 start 的值）
-        live = self._controller.active_module is not None and getattr(
-            self._controller.active_module, "ID", None
-        ) == module_id
-        if not live:
-            cache = getattr(self, "_cached_module_config", None) or {}
-            if cache.get("module_id") == module_id:
-                result.update({k: v for k, v in cache.items() if k != "module_id"})
-        result.setdefault("module_id", module_id)
-        return (True, result, None)
+        if not module_id:
+            return (True, {}, None)
+        live = self._controller.active_module
+        if live is not None and getattr(live, "ID", None) == module_id:
+            # 运行中：实例权威——同 id 的运行实例是唯一知道实况（_state）的地方
+            getter: Any = getattr(live, "get_module_config", None)
+            if not callable(getter):
+                return (True, {}, None)
+            try:
+                raw = getter()
+            except Exception as exc:  # noqa: BLE001
+                return (False, None, f"读模块配置失败: {exc!r}")
+            # 契约：模块的 get_module_config() 返回 dict；返回值不符时按空配置处理，
+            # 不让一个写错的模块把 GUI 的配置读取整条打断。
+            if not isinstance(raw, dict):
+                return (True, {}, None)
+            raw.setdefault("module_id", module_id)
+            return (True, raw, None)
+        # 未运行：默认值 ∪ 缓存（GUI 改过但还没 start 的值）
+        view = self._module_config_view(module_id)
+        view.setdefault("module_id", module_id)
+        return (True, view, None)
 
     def set_module_config(self, params):
         config = params.get("config") or {}
         module_id = params.get("module_id") or self._selected_module
+        if not module_id:
+            return (False, None, "未选择活动模块，配置无处可存")
+        if module_id not in MODULE_REGISTRY:
+            return (False, None, f"模块不存在: {module_id}")
+        # 只收该模块声明过的键（白名单 = DEFAULT_MODULE_CONFIG 的键集），未知键丢弃
+        allowed = _module_config_defaults(module_id)
         try:
-            # 只写缓存（下次 start 生效），不做运行中热更新：
-            # 运行中的模块 GUI 已锁定不可改，配置一律下次「开始」时注入新实例。
             with self._lock:
-                old_cache = getattr(self, "_cached_module_config", None) or {}
-                # 只在 target_module_id 匹配时才复用旧缓存（跨模块切换不该带旧缓存）
-                target = old_cache if old_cache.get("module_id") == module_id else {"module_id": module_id}
-                target.update({k: v for k, v in config.items() if k != "module_id"})
-                self._cached_module_config = target
+                target = dict(self._module_config_cache.get(module_id) or {})
+                target.update({k: v for k, v in config.items() if k in allowed})
+                self._module_config_cache[module_id] = target
+                snapshot = {mid: dict(cfg) for mid, cfg in self._module_config_cache.items() if cfg}
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"写模块配置失败: {exc!r}")
-        # 返回最新读值（缓存 + 若实例还能回读也可回读；简化就直接回缓存+配置合并视图）
-        merged = dict(getattr(self, "_cached_module_config", None) or {"module_id": module_id})
-        # 写盘持久化（含 module_id），下次启动由 _restore_profile 回填；失败仅记警告。
-        _save_profile({"module_config": dict(self._cached_module_config)})
-        return (True, merged, None)
+        # 写盘持久化（按模块分槽），下次启动由 _restore_profile 回填；失败仅记警告。
+        # **只写缓存、不做运行中热更新**：运行中的模块以实例为准，配置下次「开始」才注入。
+        _save_profile({"module_config": snapshot})
+        result = self._module_config_view(module_id)
+        result.setdefault("module_id", module_id)
+        return (True, result, None)
 
     def start(self, params):
         """快速响应 + worker 线程跑 controller；stop/get_status 在运行期间必须仍可处理。"""
@@ -629,21 +666,15 @@ class SidecarService:
         with self._lock:
             module_id = self._selected_module
             stages = list(self._stages)
-            # 组装：start_params.module_config（本次 start 带参）∪ _cached_module_config（GUI 先改后 start 的缓存）
+            # 组装：start_params.module_config（本次 start 带参）∪ 该模块自己的缓存槽
+            # （GUI 先改后 start 的值）。槽按模块 id 取，不存在"老模块缓存污染新模块"。
             param_cfg = params.get("module_config") if isinstance(params.get("module_config"), dict) else {}
-            cache_cfg = (getattr(self, "_cached_module_config", None) or {})
-            # 缓存 key 的 module_id 匹配才生效（防止模块切了，老模块缓存污染新模块）
-            if cache_cfg.get("module_id") not in (None, module_id):
-                cache_cfg = {}
-            merged_cfg: dict = {}
-            merged_cfg.update({k: v for k, v in cache_cfg.items() if k != "module_id"})
-            merged_cfg.update({k: v for k, v in param_cfg.items()})
+            cache_cfg = dict(self._module_config_cache.get(module_id) or {}) if module_id else {}
+            merged_cfg = _merge_module_config(cache_cfg, param_cfg)
             start_module_config = merged_cfg or None
-            # 保存最后一次合并结果（用于下一次 get_module_config 回读一致）
-            if start_module_config:
-                target = {"module_id": module_id}
-                target.update(start_module_config)
-                self._cached_module_config = target
+            # 本次带参并入该模块的槽（下一次 get_module_config 回读一致）
+            if start_module_config and module_id:
+                self._module_config_cache[module_id] = dict(merged_cfg)
         if module_id is None:
             return (False, None, "未选择活动模块")
         if start_from is not None and start_from not in stages:

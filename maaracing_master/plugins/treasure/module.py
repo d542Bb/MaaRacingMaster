@@ -645,6 +645,12 @@ class TreasureModule(ActivityModule):
     #       每日划分以凌晨 5 点为界（_refresh_daily_bucket：跨 5 点即新一天，计数清零）。
     #   出价策略：当前唯一「最大利润（刷单日计分）」，见 bid_strategy.STRATEGY_LABEL。
     DEFAULT_MAX_DAILY_LOOPS: int = 50
+    # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单）。
+    # 必须与上面两个常量同源，不另抄数值——这正是"键白名单跟着模块走"的落点。
+    DEFAULT_MODULE_CONFIG: dict = {
+        "max_daily_loops": DEFAULT_MAX_DAILY_LOOPS,
+        "target_session": DEFAULT_TARGET_SESSION,
+    }
     # 到限自动停止防抖：连续 N 帧在鉴宝大厅且判定到限，才视为可信并自动停止模块。
     # 防止单帧 OCR 误读（如「日已参与 X/50」瞬时多读）或阶段抖动造成提前停机。
     DAILY_LIMIT_STOP_STABLE_FRAMES = 3
