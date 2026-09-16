@@ -26,11 +26,14 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
+from maaracing_master.core.paths import data_dir
 from maaracing_master.plugins.speedrush import IMAGE_DIR, PIPELINE_DIR
+from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
 
 # 一轮完整流程。首三段（进入活动）只在首轮需要——每轮循环结束时会回到活动页，
 # 故其后每轮从「开始挑战」起。
@@ -62,11 +65,29 @@ DRIVE_STAGE_NODE = "speedrush.驾驶页锚点"
 # 驾驶阶段等待上限。单局（含两阶段）实测一般 3 分钟、耗满可达 6~7 分钟
 # （RULES.md §4.7），取 10 分钟留余量。
 DRIVE_TIMEOUT_S = 600.0
-# 轮询间隔：单次 run() 含 post_task，间隔过密会白耗框架开销。
-DRIVE_POLL_S = 2.0
 # 连续多少次识别不到驾驶页锚点才判定「已离开对局」。取 2 是给动态场景下的
 # 偶发失配留一次容错——齿轮图标跨帧实测 0.92~1.00，阈值 0.8 本有余量。
 DRIVE_MISS_TOLERANCE = 2
+
+# ---------- 驾驶主循环节拍 ----------
+
+# 主循环目标频率。与后续模型输入契约的采样率一致（"K 帧堆叠"的时间跨度按此定义）。
+DRIVE_TICK_HZ = 30.0
+DRIVE_TICK_S = 1.0 / DRIVE_TICK_HZ
+
+# 驾驶页锚点复查间隔。锚点识别走框架（post_task + 等待，单轮毫秒级），不必每帧跑；
+# 采集/控制节拍与它解耦——帧各自带真实时间戳，离线按时间戳对齐，不受此频率污染。
+DRIVE_ANCHOR_CHECK_S = 0.5
+
+# 进入驾驶的就绪判据：连续命中驾驶页锚点多少次才认为"已在对局中"。
+# **待收紧**：起步动画的真实特征尚未实测，本判据只保证"驾驶页已稳定出现"，
+# 可能早于"车辆可操控"。取得动画样本后须按其特征加判据（见 docs/plan
+# speedrush-drive-plan.md 第十节门控）。
+DRIVE_READY_HITS = 2
+# 等待驾驶就绪的上限：动画再长也不该无限等。
+DRIVE_READY_TIMEOUT_S = 30.0
+# 就绪等待的轮询间隔
+DRIVE_READY_POLL_S = 0.3
 
 
 class SpeedRushModule(ActivityModule):
@@ -85,10 +106,39 @@ class SpeedRushModule(ActivityModule):
         self._graph: NavGraph | None = None
         self._running = False
         self._stage_name: str | None = None
+        # 录制模式：开启后驾驶阶段只采集（不操纵车辆），供维护者手动驾驶产出演示数据。
+        self._record_mode = False
+        self._recorder: DriveRecorder | None = None
 
     @property
     def current_stage(self) -> str | None:
         return self._stage_name
+
+    # ---------- 模块配置（GUI 读写；未定义时 RPC 层兜底为占位 dict） ----------
+
+    def get_module_config(self) -> dict:
+        """读配置。运行中由 sidecar 路由到本实例，故 ``_state`` 是实况而非快照。"""
+        rec = self._recorder
+        stats = rec.stats if rec is not None else None
+        return {
+            "record_mode": bool(self._record_mode),
+            "_state": {
+                "recording": bool(rec is not None and rec.running),
+                "frames": int(stats["frames_written"]) if stats else 0,
+                "frames_dropped": int(stats["frames_dropped"]) if stats else 0,
+                "pad_samples": int(stats["pad_samples"]) if stats else 0,
+                "demos_dir": str(_demos_root()),
+            },
+        }
+
+    def set_module_config(self, config: dict) -> dict:
+        """写配置。两条调用路径：controller 在 start 时注入实例、GUI 经 RPC 改缓存。
+
+        非法值一律静默修正并返回最终值（与 treasure 同约定），不抛给调用方。
+        """
+        if isinstance(config, dict) and "record_mode" in config:
+            self._record_mode = bool(config["record_mode"])
+        return self.get_module_config()
 
     # ---------- 生命周期 ----------
 
@@ -133,6 +183,10 @@ class SpeedRushModule(ActivityModule):
 
     def cleanup(self) -> None:
         """幂等释放模块资源。"""
+        # 录制器先于图释放：停录制要 drain 帧队列，不应与导航图拆卸竞争
+        if self._recorder is not None:
+            self._recorder.stop("cleanup")
+            self._recorder = None
         if self._graph is not None:
             self._graph.shutdown()
             self._graph = None
@@ -162,35 +216,120 @@ class SpeedRushModule(ActivityModule):
     def _drive(self, phase: int) -> bool:
         """驾驶阶段（phase = 1/2）——驾驶控制方案的接口点。
 
-        TODO(待定)：驾驶控制待与维护者讨论后实现。当前实现**不操纵车辆**，只等待
-        本阶段结束（车不动时对局由游戏自身结束），用于先把流程骨架跑通。
+        当前实现是**采集模式**：不操纵车辆，只等本阶段结束并按需录制演示数据。
+        驾驶控制接入后，本方法内部多一条"正常态交给模型"的分支，对调用方无感。
 
         契约（任何实现都必须满足）：
-          - 进入时画面已在驾驶中；退出时本阶段已结束、画面已切回 UI
+          - 进入时画面应在驾驶页（可能仍在起步动画，须自行等到就绪）
+          - 退出时本阶段已结束、画面已切回 UI
           - 响应 ``self._running``，收到停止信号立即返回
           - 不自建、不销毁手柄设备（设备复位统一由外层 ``reset_device`` 处理）
           - 返回 False = 本阶段无法完成，调用方会中止本轮
 
-        就绪判据用驾驶页锚点（齿轮图标）反查：仍能识别到 = 还在对局中。
+        **就绪与结束分离**是本实现的关键：把"被调用"当成"已在驾驶中"，起步动画
+        期间就开始动作，会在过场画面上误操作。故进入先等就绪、退出靠连续失配去抖。
         """
         assert self.ctx is not None
         assert self._graph is not None
-        logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（驾驶控制尚未实现）", "INFO")
-        deadline = time.monotonic() + DRIVE_TIMEOUT_S
-        miss = 0
+
+        if not self._wait_drive_ready(phase):
+            return False
+
+        recorder = self._begin_recording(phase) if self._record_mode else None
+        try:
+            return self._drive_loop(phase, recorder)
+        finally:
+            if recorder is not None:
+                recorder.stop("phase_end" if self._running else "stopped")
+                self._recorder = None
+
+    def _wait_drive_ready(self, phase: int) -> bool:
+        """等到驾驶页稳定出现；连续命中 ``DRIVE_READY_HITS`` 次才算就绪（去抖）。"""
+        assert self.ctx is not None
+        assert self._graph is not None
+        logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待进入驾驶页", "INFO")
+        hits = 0
+        deadline = time.monotonic() + DRIVE_READY_TIMEOUT_S
         while self._running and time.monotonic() < deadline:
             if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
-                miss = 0
-            else:
-                miss += 1
-                if miss >= DRIVE_MISS_TOLERANCE:
+                hits += 1
+                if hits >= DRIVE_READY_HITS:
+                    logger.log(f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页", "INFO")
                     return True
-            if not self._running:
+            else:
+                hits = 0  # 去抖：中间一次失配就重新计数
+            if not self.ctx.lifecycle.sleep(DRIVE_READY_POLL_S):
+                return False
+        if self._running:
+            logger.log(
+                f"[极速狂飙] 驾驶阶段 {phase}：{DRIVE_READY_TIMEOUT_S:.0f}s 内未进入驾驶页",
+                "WARNING")
+        return False
+
+    def _drive_loop(self, phase: int, recorder: DriveRecorder | None) -> bool:
+        """采集/控制主循环：按目标节拍取帧，锚点降频复查阶段是否已结束。
+
+        节拍与锚点复查**故意解耦**——识别走框架、单轮毫秒级且耗时不定，若把它塞进
+        每帧路径，帧间隔会随识别抖动；帧自带真实时间戳，离线按时间戳对齐即可。
+        """
+        assert self.ctx is not None
+        assert self._graph is not None
+        if recorder is not None:
+            logger.log(
+                f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶（正在录制演示数据）", "INFO")
+        else:
+            logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（驾驶控制尚未实现）", "INFO")
+
+        deadline = time.monotonic() + DRIVE_TIMEOUT_S
+        next_anchor = 0.0
+        miss = 0
+        while self._running and time.monotonic() < deadline:
+            t0 = time.monotonic()
+            frame = self.ctx.capture.screenshot()
+            if recorder is not None and frame is not None:
+                recorder.record_frame(frame)
+
+            now = time.monotonic()
+            if now >= next_anchor:
+                next_anchor = now + DRIVE_ANCHOR_CHECK_S
+                if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+                    miss = 0
+                else:
+                    miss += 1
+                    if miss >= DRIVE_MISS_TOLERANCE:
+                        logger.log(f"[极速狂飙] 驾驶阶段 {phase}：已离开对局", "INFO")
+                        return True
+
+            rest = DRIVE_TICK_S - (time.monotonic() - t0)
+            if rest > 0 and not self.ctx.lifecycle.sleep(rest):
                 break
-            if not self.ctx.lifecycle.sleep(DRIVE_POLL_S):
-                break
+        if not self._running:
+            return False
         logger.log(f"[极速狂飙] 驾驶阶段 {phase} 未在 {DRIVE_TIMEOUT_S:.0f}s 内结束", "WARNING")
         return False
+
+    def _begin_recording(self, phase: int) -> DriveRecorder | None:
+        """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。"""
+        try:
+            session = make_session_dir(_demos_root())
+            # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
+            session = session.with_name(f"{session.name}_p{phase}")
+            rec = DriveRecorder(session)
+            rec.start()
+        except Exception as exc:  # noqa: BLE001 —— 采集失败不阻断流程
+            logger.log(f"[极速狂飙] 录制器启动失败: {exc!r}", "WARNING")
+            return None
+        self._recorder = rec
+        return rec
+
+
+def _demos_root() -> Path:
+    """演示数据根目录。
+
+    落用户数据目录（与 treasure 的 ``data/treasure/`` 同构）：与安装目录解耦，
+    更新不丢数据，也不污染仓库工作树。
+    """
+    return data_dir() / "speedrush" / "demos"
 
 
 def resolve_start_index(start_from: str | None) -> int:
