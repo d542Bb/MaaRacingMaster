@@ -25,6 +25,18 @@
 
 - **验证：** `check_truth` 通过（图 27 节点自洽、policy 数据面可装配且交叉互洽）；全量 `pytest` 绿。
 
+### 暂存（未发布 · 待并入下一版本）core 调试可视化移除已退役赛车的渲染通路 🧹
+
+- **性质：** 未发版变更（`maaracing_master/core/debug.py`、`maaracing_master/plugins/treasure/module.py`、`maaracing_master/plugins/treasure/ocr.py`、`docs/CODE_WIKI.md`；master 直接提交、不 tag）
+
+- **移除内容：** `NavigationDebugger` 内置兜底视图里的赛车专属渲染——`_YOLO_COLORS` / `_REASON_COLORS` 类别配色、`_is_racing` 场景判断、`_draw_lane`（标线扫描区与边缘散点）、`_draw_racing_zones`（地平线与远中近分区、透视车道线、中心区竖线）、`_draw_racing_hud`（帧号与检测统计、摇杆位置条、死区宽度条、决策原因、前馈调试、方向文字），以及 `save_frame` 的 `lane` / `racing_info` 形参与两个渲染入口里的赛车分派。`debug.py` 730 → 383 行。
+
+- **保留的 core 能力：** 内置兜底视图保留导航侧元素（光标 / 候选 / 按钮目标 / 模板匹配框）、检测框绘制（`_draw_yolo_dets` / `_draw_raw_dets`）与顶部信息栏。检测框颜色改由 core 固定取值（实线绿 / 虚线灰）——**类别配色属模块语义，归模块渲染器**，core 不认识类别名。
+
+- **同步清理：** `plugins/treasure/module.py` 与 `ocr.py` 注释里指向已不存在的 `OCR_LATENCY_SPIKE_ANALYSIS.md` 的引用；`docs/CODE_WIKI.md` §4.5 的「检测标注与 HUD 通路」注记移除，改为「检测框：调用方传 `detections` 时绘制」。
+
+- **验证：** `py_compile` 通过；`pyright` 对 `debug.py` 0 errors / 0 warnings；`check_truth` 通过（图 27 节点自洽）；全量 `pytest` 579 passed。
+
 ## 2026-09-15
 ### v0.23.0-dev.1 鉴宝出价/OCR 纵深修复 + V4 出价口径 + PEEP 悬浮窗与日志体验迭代 🏷️
 
