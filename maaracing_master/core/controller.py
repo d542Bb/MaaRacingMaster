@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Any
 from pathlib import Path
 
 from maa.controller import Win32Controller
@@ -478,7 +479,7 @@ class MaaRacingMasterController:
                 self._gp_avail = False
         return self._gp_avail
 
-    def _get_gpad(self) -> vg.VX360Gamepad:
+    def _get_gpad(self) -> "Any":  # vg 为懒加载代理（vgamepad_lazy），类型经 Any 传递
         """获取虚拟手柄（懒创建 + 保持复用，不销毁重建）"""
         if self._gpad is None:
             self._gpad = vg.VX360Gamepad()

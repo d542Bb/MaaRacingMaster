@@ -24,7 +24,6 @@ FIXTURE = _REPO / "tools" / "experiments" / "bid-pass-dialog" / "dialog_crop.jpg
 
 try:
     import cv2
-    import numpy as np
     from maaracing_master.core.template_match import match_template_cs
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001

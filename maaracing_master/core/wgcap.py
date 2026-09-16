@@ -25,6 +25,7 @@ from __future__ import annotations
 import ctypes
 import time
 import threading
+from typing import Any
 from ctypes import wintypes
 
 import numpy as np
@@ -133,7 +134,7 @@ class WgcCapture:
         if self._stopped and self._capture is None:
             return
         self._stopped = True
-        cap = self._capture
+        cap: Any = self._capture  # stop 为运行期成员，windows_capture stub 未声明
         self._capture = None
         if cap is not None:
             try:
@@ -244,6 +245,7 @@ class WgcCapture:
                 raise OSError(f"DwmGetWindowAttribute 失败 HRESULT={hret:#x}")
             u32 = ctypes.windll.user32
             old_ctx = None
+            set_ctx = None
             try:  # 线程级 PMv2：本函数内 Win32 坐标全部物理像素
                 set_ctx = u32.SetThreadDpiAwarenessContext
                 set_ctx.restype = ctypes.c_void_p
@@ -259,7 +261,7 @@ class WgcCapture:
                 if not u32.GetClientRect(self._hwnd, ctypes.byref(crect)):
                     raise OSError("GetClientRect 失败")
             finally:
-                if old_ctx is not None:
+                if old_ctx is not None and set_ctx is not None:
                     set_ctx(old_ctx)
             self._client_offset = (pt.x - rect.left, pt.y - rect.top)
             self._client_size = (crect.right - crect.left, crect.bottom - crect.top)

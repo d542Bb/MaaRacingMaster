@@ -16,7 +16,6 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-import numpy as np
 
 sys.path.insert(0, ".")
 

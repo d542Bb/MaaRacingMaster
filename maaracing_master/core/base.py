@@ -209,7 +209,10 @@ class ActivityModule(ABC):
     # 启动前由 sidecar 逐项检查存在性，缺失时拦截并给出插件内具体路径。
     REQUIRED_ASSETS: tuple[str, ...] = ()
 
-    def __init__(self, ctx: ActivityContext):
+    def __init__(self, ctx: ActivityContext | None):
+        # ctx=None 为离线形态（registry.create_module 的公开契约：只读默认配置，
+        # 不启动运行时）。运行期编排层总是注入实 ctx；模块内访问 ctx 的属性前
+        # 应经运行态守卫（如 self._running）。
         self.ctx = ctx
 
     @property

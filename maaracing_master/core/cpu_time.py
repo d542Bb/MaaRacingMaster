@@ -72,10 +72,16 @@ def process_cpu_seconds() -> float | None:
     exit_ = ctypes.c_uint64()
     kernel = ctypes.c_uint64()
     user = ctypes.c_uint64()
-    handle = _kernel32.GetCurrentProcess()  # 伪句柄，恒为 -1
-    ok = _GetProcessTimes(ctypes.c_void_p(handle),
-                          ctypes.byref(creation), ctypes.byref(exit_),
-                          ctypes.byref(kernel), ctypes.byref(user))
+    kernel32 = _kernel32
+    if kernel32 is None:  # _bind() 成功即已初始化；此分支仅为类型收窄
+        return None
+    handle = kernel32.GetCurrentProcess()  # 伪句柄，恒为 -1
+    get_times = _GetProcessTimes
+    if get_times is None:  # 同 _kernel32，_bind() 成功即已绑定；仅为类型收窄
+        return None
+    ok = get_times(ctypes.c_void_p(handle),
+                   ctypes.byref(creation), ctypes.byref(exit_),
+                   ctypes.byref(kernel), ctypes.byref(user))
     if not ok:
         return None
     return (kernel.value + user.value) * _FILETIME_UNIT_S

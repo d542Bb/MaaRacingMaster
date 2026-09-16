@@ -53,10 +53,8 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.pipeline_logger import PipelineLogger
 from maaracing_master.core.window_utils import is_foreground
 from maaracing_master.core.template_match import (
-    DEFAULT_SCALES,
     color_assert_ok,
     cursor_box_norm,
-    find_any,
     find_any_cs,
     occlusion_ratio,
     strip_ext,

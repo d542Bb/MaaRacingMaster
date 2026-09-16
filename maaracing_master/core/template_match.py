@@ -208,12 +208,14 @@ def match_template_cs(frame: np.ndarray, tpl: np.ndarray, *, colorspace: str = "
             ox, oy = rx, ry
         # 逐像素 min：同一位置三通道 NCC 都要过（"每通道各自 max 的 min"会放行
         # 各通道在不同位置命中的假阳性）。负分（反相）天然参与 min。
-        res_min = None
-        for c in range(3):
+        res_min = cv2.matchTemplate(search[:, :, 0].astype(np.float32),
+                                    tpl[:, :, 0].astype(np.float32),
+                                    cv2.TM_CCOEFF_NORMED)
+        for c in range(1, 3):
             res_c = cv2.matchTemplate(search[:, :, c].astype(np.float32),
                                       tpl[:, :, c].astype(np.float32),
                                       cv2.TM_CCOEFF_NORMED)
-            res_min = res_c if res_min is None else np.minimum(res_min, res_c)
+            res_min = np.minimum(res_min, res_c)
         _mn, mv, _mnl, ml = cv2.minMaxLoc(res_min)
         if mv < threshold or ml is None:
             return None, float(mv)

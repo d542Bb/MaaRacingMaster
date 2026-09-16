@@ -269,7 +269,6 @@ def _draw_h_chart(canvas, h_hist, current_h):
     for i, v in enumerate(hs):
         cx, cy = _to_xy(i, v)
         if v > 0:
-            is_cur = (i + 1 == (int(current_h[0]) if isinstance(current_h, tuple) else -1)) or False
             # 当前回合 H 用红圈
             if current_h and v == current_h:
                 cv2.circle(canvas, (cx, cy), 6, (80, 80, 255), -1)
@@ -328,7 +327,6 @@ def _draw_player_bid_table(canvas, player_bids, current_round, h_max, my_rank=No
         ((120, 200, 120), "≥1.0"),
     ]
     lh = 14
-    lgap = 60
     # 计算整条图例宽度（色块 12 + 间隔）
     total_w = sum(12 + 4 + len(txt) * 6 for _, txt in legend_items) + 4 * 6
     lx_start = lx - total_w

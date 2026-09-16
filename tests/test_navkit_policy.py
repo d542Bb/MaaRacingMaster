@@ -13,9 +13,7 @@ NavKit P1 决策策略层单测（纯标准库，CI 只装 pytest 即可运行�
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 

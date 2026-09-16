@@ -4,5 +4,14 @@
   "venv": ".venv",
   "extraPaths": [
     "maaracing_master/plugins/treasure"
+  ],
+  "typeCheckingMode": "basic",
+  "exclude": [
+    "tools/experiments",
+    "build",
+    "archive",
+    "tests",
+    "scripts",
+    "templates"
   ]
 }

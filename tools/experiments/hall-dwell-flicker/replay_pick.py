@@ -24,7 +24,6 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from maa.custom_recognition import CustomRecognition  # noqa: E402
 from maa.define import RectType  # noqa: E402
 
 from maaracing_master.core.nav_graph import TemplateRecognizer  # noqa: E402

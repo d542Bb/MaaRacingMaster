@@ -133,6 +133,9 @@ def check_required_assets(module_id: str) -> list[str]:
     return missing
 
 
-def create_module(module_id: str, ctx: ActivityContext) -> ActivityModule:
-    """创建模块实例，模块不存在时抛出 KeyError(module_id)"""
+def create_module(module_id: str, ctx: ActivityContext | None) -> ActivityModule:
+    """创建模块实例，模块不存在时抛出 KeyError(module_id)
+
+    ctx=None 为离线形态（只读默认配置，不启动运行时）；是否支持由模块自身声明。
+    """
     return MODULE_REGISTRY[module_id](ctx)

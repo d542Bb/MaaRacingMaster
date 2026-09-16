@@ -13,16 +13,13 @@ YOLO 预标脚本：用现有模型自动生成标签文件（.txt），再手�
     labelImg <图片目录> --labels coin,car,bonus_car
 """
 import sys
-import glob
 from pathlib import Path
 
 # 把项目根目录加入 path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import cv2
-import numpy as np
 from maaracing_master.core.yolo_detector import YOLODetector
-from maaracing_master.core.logger import logger
 
 
 def main():
@@ -93,15 +90,15 @@ def main():
             print(f"  进度: {i+1}/{len(images)}")
 
     print(f"\n完成！已有标注跳过 {skipped} 张，新预标 {auto_labeled} 张")
-    print(f"标注统计（可手动修改 .txt 增删改）:")
+    print("标注统计（可手动修改 .txt 增删改）:")
     print(f"  coin(0):       {total_labels[0]}")
     print(f"  car(1):        {total_labels[1]}")
     print(f"  bonus_car(2):  {total_labels[2]}")
     print(f"  总计:          {sum(total_labels.values())}")
-    print(f"\n下一步:")
-    print(f"  1. 用 labelImg 打开检查/补标:")
+    print("\n下一步:")
+    print("  1. 用 labelImg 打开检查/补标:")
     print(f"     labelImg {img_dir} --labels coin,car,bonus_car")
-    print(f"  2. 补标完后复制到 dataset/images/train/ 和 dataset/labels/train/")
+    print("  2. 补标完后复制到 dataset/images/train/ 和 dataset/labels/train/")
 
 
 if __name__ == "__main__":

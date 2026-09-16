@@ -13,13 +13,12 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from maaracing_assistant.plugins.treasure.ocr import (  # noqa: E402
     _preprocess_patch, _extract_amount, USE_DET, USE_CLS,
-    OCR_INTRA_OP_THREADS, OCR_INTER_OP_THREADS, MIN_AMOUNT,
+    OCR_INTRA_OP_THREADS, OCR_INTER_OP_THREADS,
 )
 
 DEBUG_DIR = Path(os.environ["APPDATA"]) / "MaaRacingAssistant" / "debug/treasure/20260909_201348"

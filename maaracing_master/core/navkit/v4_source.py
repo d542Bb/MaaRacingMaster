@@ -54,6 +54,9 @@ class Rect:
     def as_list(self) -> list[float]:
         return [self.x1, self.y1, self.x2, self.y2]
 
+    def as_tuple(self) -> tuple[float, float, float, float]:
+        return (self.x1, self.y1, self.x2, self.y2)
+
 
 @dataclass(frozen=True)
 class Anchor:
@@ -216,7 +219,7 @@ def _build_detection_plan(anchors: Mapping[str, Anchor], perception: Mapping[str
             kind=anchor.kind,
             stage=stage_stage.get(name),
             stage_priority=_anchor_priority(anchor),
-            rect=anchor.rect.as_list(),
+            rect=anchor.rect.as_tuple(),
             templates=anchor.templates,
             threshold=anchor.threshold,
             scales=None,

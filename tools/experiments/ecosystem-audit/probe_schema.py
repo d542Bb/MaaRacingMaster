@@ -1,7 +1,6 @@
 # 审计实验：提取官方 pipeline.schema.json 快照的关键结构（只读）
 from pathlib import Path
 import json
-import sys
 
 PATH = str(Path(__file__).resolve().parents[3] / "tools/navkit/schema/pipeline.schema.json")
 

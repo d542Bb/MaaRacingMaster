@@ -12,7 +12,6 @@ import ast
 from pathlib import Path
 from typing import Iterator
 
-from . import config
 
 
 class PyStaticGraph:

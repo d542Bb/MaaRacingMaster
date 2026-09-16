@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from .model import FileClass, Confidence
-from . import config
 from . import oracle
 
 # 已证实 KEEP 的顶层包：其下 native 即使 baseline 未捕获 sys.modules 也视为必需。

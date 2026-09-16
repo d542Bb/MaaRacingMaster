@@ -15,9 +15,9 @@ import sys
 # 注意：__init__.py 自身的 .pyc 会在本行执行前由解释器写出，属正常现象。
 sys.dont_write_bytecode = True
 
-import re
-import subprocess
-from pathlib import Path
+import re  # noqa: E402 —— 上一行的停用字节码副作用须先于一切导入生效
+import subprocess  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 # 版本号由 setuptools-scm 从 Git Tag 自动生成（构建时写入 _version.py 快照）
 # 手动修改无效！改版本请打 git tag vX.Y.Z 并推送

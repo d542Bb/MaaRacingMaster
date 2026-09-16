@@ -15,8 +15,6 @@ from __future__ import annotations
 import ctypes
 import json
 import sys
-import time
-from ctypes import wintypes
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +22,6 @@ import numpy as np
 sys.path.insert(0, ".")
 
 from maaracing_assistant.core.template_match import find_any_cs
-from maaracing_assistant.core.wgcap import WgcCapture
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 

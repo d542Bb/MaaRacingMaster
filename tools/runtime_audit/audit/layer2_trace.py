@@ -9,7 +9,6 @@ import json
 import subprocess
 from pathlib import Path
 
-from . import config
 
 
 def run_runtime_trace(exp_root: Path, out_json: Path) -> set[Path]:

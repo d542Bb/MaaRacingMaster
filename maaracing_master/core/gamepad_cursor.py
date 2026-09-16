@@ -17,6 +17,7 @@ train_stick_speed 速度模型）沉淀而来，供 core.clicker 的「后台(�
 from __future__ import annotations
 
 import math
+from typing import Any
 import threading
 import time
 from pathlib import Path
@@ -221,8 +222,9 @@ class CursorCandidate:
         self.aspect = 1.0
         self.score = 0.0
         self.state = "reject"
-        self.center_color = None
-        self.ring_color = None
+        # 显式 Optional 标注：恒从 None 初始化会让推断器把槽位锁死为 None 型
+        self.center_color: tuple | None = None
+        self.ring_color: tuple | None = None
         self.ring_thick = 0
 
 
@@ -315,7 +317,8 @@ def select_cursor(targets, last_pos, miss_streak):
         return None
     if (last_pos is None or miss_streak >= MISS_STREAK_RESET):
         return top
-    dist = lambda c: math.hypot(c.pos[0] - last_pos[0], c.pos[1] - last_pos[1])
+    def dist(c):
+        return math.hypot(c.pos[0] - last_pos[0], c.pos[1] - last_pos[1])
     near = [c for c in targets if c.score >= THRESH_SCORE and dist(c) <= JUMP_DIST]
     if near:
         best_near = max(near, key=lambda c: c.score)
@@ -500,13 +503,14 @@ class GamepadClicker:
         （`bind_gamepad(self.ctx.capture, ...)`）；漏认它会让闭环静默拿到 None，
         表现为「摇杆从未推出 + PEEP 无光标内容」却被判成 device_lost（2026-09-10）。
         """
-        cap = self._capture
+        cap: Any = self._capture  # 注入形态三选一（callable / 截图能力对象 / 裸帧源），无统一协议
         if callable(cap):
-            return cap()
-        shot = getattr(cap, "screenshot", None)
+            # callable() 守卫会把 Any 收窄为「返回 object 的可调用」，帧类型只能由约定保证
+            return cap()  # pyright: ignore[reportReturnType]
+        shot: Any = getattr(cap, "screenshot", None)
         if shot is not None:
             return shot()
-        getter = getattr(cap, "get_latest", None)
+        getter: Any = getattr(cap, "get_latest", None)
         if getter is not None:
             frame, *_ = getter()
             return frame

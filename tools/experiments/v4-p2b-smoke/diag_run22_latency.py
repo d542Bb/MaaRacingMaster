@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from pathlib import Path
 
 LOG = Path(os.environ["APPDATA"]) / "MaaRacingAssistant" / "logs/MRA_20260909_193225.log"

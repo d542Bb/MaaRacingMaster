@@ -49,7 +49,7 @@ def test_get_lines_since_returns_incremental(log):
     log.log("a")
     log.log("b")
     lines1, new_seq1, _ = log.get_lines_since(0, "INFO")
-    assert [_msg(l) for l in lines1] == ["a", "b"]
+    assert [_msg(ln) for ln in lines1] == ["a", "b"]
     assert new_seq1 == 2
     # 游标续读：无新行
     lines2, new_seq2, _ = log.get_lines_since(new_seq1, "INFO")
@@ -68,7 +68,7 @@ def test_get_lines_since_rollover_no_loss_no_dup(log):
     lines, new_seq, truncated = log.get_lines_since(sample_seq, "INFO")
     assert truncated is False
     assert new_seq == total
-    msgs = [_msg(l) for l in lines]
+    msgs = [_msg(ln) for ln in lines]
     assert msgs == [f"line-{i}" for i in range(sample_seq + 1, total + 1)]  # 无重复、无遗漏
 
 
@@ -94,7 +94,7 @@ def test_get_lines_since_truncated_boundary(log):
     log.log("first")
     lines, _, truncated = log.get_lines_since(0, "INFO")
     assert truncated is False                      # 未回绕：0 之后的行全在缓冲里
-    assert [_msg(l) for l in lines] == ["first"]
+    assert [_msg(ln) for ln in lines] == ["first"]
 
     for i in range(Logger.BUFFER_CAPACITY):
         log.log(f"line-{i}")
@@ -111,7 +111,7 @@ def test_get_lines_since_level_filter(log):
     log.log("debug-a", "DEBUG")
     log.log("warn", "WARNING")
     info_only, _, _ = log.get_lines_since(0, "INFO")
-    assert [_msg(l) for l in info_only] == ["info", "warn"]
+    assert [_msg(ln) for ln in info_only] == ["info", "warn"]
     debug_all, _, _ = log.get_lines_since(0, "DEBUG")
     assert len(debug_all) == 3
 
@@ -120,7 +120,7 @@ def test_get_lines_compat(log):
     """旧 API get_lines 保持级别过滤（list[str]）。"""
     log.log("x", "INFO")
     log.log("y", "DEBUG")
-    assert [_msg(l) for l in log.get_lines("INFO")] == ["x"]
+    assert [_msg(ln) for ln in log.get_lines("INFO")] == ["x"]
 
 
 # ---------- T4 加锁持句柄写盘 ----------
@@ -174,7 +174,7 @@ def test_multithread_writes_no_interleave(tmp_path: Path):
     log.close()
 
     content = _main_log(tmp_path).read_text(encoding="utf-8")
-    body = [_msg(l) for l in content.splitlines() if marker in l]
+    body = [_msg(ln) for ln in content.splitlines() if marker in ln]
     assert len(body) == n_threads * per_thread       # 无丢行
     assert set(body) == expected                      # 每行完整、无交错/截断
 
@@ -206,7 +206,7 @@ def test_single_file_keeps_all_levels_in_order(tmp_path: Path):
     log.close()
     files = [p for p in _session_logs(tmp_path) if not re.search(r"\.log\.\d+$", p.name)]
     assert len(files) == 1                        # 不再按级别分档
-    body = [_msg(l) for l in files[0].read_text(encoding="utf-8").splitlines()]
+    body = [_msg(ln) for ln in files[0].read_text(encoding="utf-8").splitlines()]
     assert body == ["i", "d", "w", "t"]           # 顺序即发生顺序，四个级别同处一文件
 
 
@@ -291,8 +291,8 @@ def test_channel_default_to_app(log):
     log.log("low", "INFO")             # app 通道，INFO < ERROR → 不打
     log.log("high", "ERROR")           # 达到阈值 → 打
     lines, _, _ = log.get_lines_since(0, "TRACE")
-    assert not any("low" in l for l in lines)
-    assert any("high" in l for l in lines)
+    assert not any("low" in ln for ln in lines)
+    assert any("high" in ln for ln in lines)
 
 
 def test_channel_level_override_isolated(log):
@@ -317,7 +317,7 @@ def test_channel_level_reset(log):
     log.clear_channel_level("ocr")
     log.log("doc", "INFO", channel="ocr")   # 回落 → 打
     lines, _, _ = log.get_lines_since(0, "TRACE")
-    assert any("doc" in l for l in lines)
+    assert any("doc" in ln for ln in lines)
 
 
 def test_channel_filter_applies_to_disk(tmp_path: Path):

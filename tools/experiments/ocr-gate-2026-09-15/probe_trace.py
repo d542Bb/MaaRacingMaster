@@ -92,7 +92,7 @@ def main() -> None:
     for (stage, rnd), c in sorted(phase_by_round.items()):
         out.append(f"- {stage} R{rnd}：{dict(c)}")
 
-    out.append(f"\n## 同一相位连续 ≥150 帧的段落（旧的「静默锁死」形态，期望大幅减少）\n")
+    out.append("\n## 同一相位连续 ≥150 帧的段落（旧的「静默锁死」形态，期望大幅减少）\n")
     out += [f"- {x}" for x in stuck_runs[:20]] or ["- 无"]
 
     OUT.write_text("\n".join(out), encoding="utf-8")

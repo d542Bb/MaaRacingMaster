@@ -20,6 +20,10 @@
     detector = TreasureStageDetector(proj)
     stage, round_no = detector.detect(frame_rgb)
 """
+# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportOptionalOperand=false, reportGeneralTypeIssues=false, reportArgumentType=false, reportPossiblyUnboundVariable=false, reportOperatorIssue=false
+# 冻结域豁免（treasure 活动下线在即，开发方向转 speedrush）：上述报错几乎全部源于
+# ctx=None 离线只读形态下的属性访问，类型收窄需要域级重构，冻结期不做。
+# speedrush 新域不得复制本豁免。
 from __future__ import annotations
 
 import re

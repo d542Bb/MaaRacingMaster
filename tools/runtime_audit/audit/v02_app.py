@@ -115,7 +115,6 @@ class AppAuditV02:
 
     # ---- WinRT projection 报告（SDK.NET 同族） ----
     def sdknet_report(self, size: int) -> dict:
-        sys_dll = "System.Private.CoreLib.dll"
         return {
             "file": "Microsoft.Windows.SDK.NET.dll",
             "size_mb": size / (1024 * 1024),

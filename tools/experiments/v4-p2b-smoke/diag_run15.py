@@ -12,11 +12,9 @@ import shutil
 import sys
 import tempfile
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 sys.path.insert(0, ".")
 

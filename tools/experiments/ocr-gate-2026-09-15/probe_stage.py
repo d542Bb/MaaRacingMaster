@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 LOGS = Path.home() / "AppData/Roaming/MaaRacingMaster/logs"

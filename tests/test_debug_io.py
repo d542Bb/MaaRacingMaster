@@ -20,7 +20,6 @@ from maaracing_master.core.module_config import (
     ModuleConfigError,
     load_module_config,
 )
-from maaracing_master.core.render_plan import RenderPlan
 
 # 一份包含 rois/stages/render 的完整配置（供 loader 测试）
 _CFG = {

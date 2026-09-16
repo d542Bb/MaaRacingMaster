@@ -67,7 +67,7 @@ class IOTask:
     idx: int                 # raw 帧号（全局累计）
     didx: int                # rendered(debug 图) 编号
     label: str = ""
-    kwargs: dict = None
+    kwargs: dict | None = None
 
 
 class DebugIOWorker:
@@ -167,19 +167,28 @@ class DebugIOWorker:
         缺省时延迟 import cv2 / DebugState，仅在真正处理 frame 任务时付出。
         """
         to_bgr = self._to_bgr
-        if to_bgr is None and task.cmd == "frame":
-            import cv2
-            to_bgr = lambda f, _rgb2bgr=cv2.cvtColor: _rgb2bgr(f, cv2.COLOR_RGB2BGR)
+        if task.cmd == "frame":
+            if to_bgr is None:
+                import cv2
+
+                def _cv_rgb2bgr(f):
+                    return cv2.cvtColor(f, cv2.COLOR_RGB2BGR)
+
+                to_bgr = _cv_rgb2bgr
+            frame_bgr = to_bgr(task.frame_rgb)
+        else:
+            frame_bgr = task.frame_rgb
 
         make_state = self._make_state
         if make_state is None:
             from maaracing_master.core.debug import DebugState
 
-            def make_state(label, kwargs):
+            def _default_make_state(label, kwargs):
                 return DebugState(label=label, **kwargs)
 
-        state = make_state(task.label, task.kwargs)
-        frame_bgr = to_bgr(task.frame_rgb) if task.cmd == "frame" else task.frame_rgb
+            make_state = _default_make_state
+
+        state = make_state(task.label, task.kwargs or {})
 
         if task.cmd == "frame":
             self.sink.save_raw(task.idx, frame_bgr)

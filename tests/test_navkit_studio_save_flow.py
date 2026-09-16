@@ -398,7 +398,6 @@ class TestTruthGates:
 
     def test_gate_errors_are_from_check_truth(self, env):
         """三闸至少有一条真实错误路径：制造跨面引用断裂应被 cross_checks 抓到。"""
-        proj = s.project_rois()
         # 直接改内存 spec：把某 stage 的 active 指向不存在锚点（模拟外部半途改动）
         policy = s.read_policy()
         defs = policy["perception"]["stages"]["definitions"]

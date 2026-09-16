@@ -24,6 +24,11 @@ dependencies = [
 test = [
     "pytest>=7.0",
 ]
+# 静态检查与类型检查门禁（本地与 CI 同版本，见 .github/workflows/test.yml）
+dev-lint = [
+    "ruff==0.16.7",
+    "pyright==1.1.411",
+]
 # 训练/导出模型所用（tools/training/train.py）。运行时推理走 onnxruntime-directml，
 # 不依赖 ultralytics/torch，故作为可选 extra 避免发布包拽入 torch。
 train = [
@@ -38,6 +43,17 @@ testpaths = ["tests"]
 # 单测只覆盖纯逻辑模块，避免拉入 maa/opencv 等重量级依赖
 addopts = "-ra"
 python_files = ["test_*.py", "*_test.py"]
+
+[tool.ruff]
+# 门禁规则集：错误级（E4/E7/E9）+ Pyflakes（F）。存量已全量清零，
+# 新增违规即 CI 红。tools/experiments/ 为一次性探针（负结果也是证据），
+# 不在门禁内——它的价值在可复跑，不在风格。
+extend-exclude = ["tools/experiments", "build", "archive"]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.setuptools_scm]
 write_to = "maaracing_master/_version.py"

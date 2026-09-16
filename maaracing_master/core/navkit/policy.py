@@ -676,11 +676,11 @@ def _resolve_center(center: Any, anchors: Mapping[str, Any]) -> tuple[float, flo
         return (x, y)
     anchor = anchors.get(center)
     if anchor is None:
-        raise PolicyError("P08", f"decision.center", f"引用不存在的锚点 {center!r}")
+        raise PolicyError("P08", "decision.center", f"引用不存在的锚点 {center!r}")
     rect = getattr(anchor, "rect", None)
     as_list = getattr(rect, "as_list", None)
     if as_list is None:
-        raise PolicyError("P08", f"decision.center", f"锚点 {center!r} 缺少 rect（无法解析中心）")
+        raise PolicyError("P08", "decision.center", f"锚点 {center!r} 缺少 rect（无法解析中心）")
     x1, y1, x2, y2 = as_list()
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
@@ -856,7 +856,7 @@ def validate_policy_document(
             if key not in allowed:
                 issues.append(
                     ("P01", "error", f"policies.tuning.{section}.{key}",
-                     f"未知调参键（字段废弃/拼写错误会走 P 系列报错，不静默忽略）")
+                     "未知调参键（字段废弃/拼写错误会走 P 系列报错，不静默忽略）")
                 )
 
     for rule in rules:

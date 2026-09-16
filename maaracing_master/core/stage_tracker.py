@@ -20,7 +20,7 @@ treasure/module.py 里手写的断点/阶段记录逻辑，收敛成同一份线
 """
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from typing import Iterable
 
 
 class InvalidStageError(ValueError):

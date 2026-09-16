@@ -25,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
-from maaracing_assistant.core.navkit.v4_source import load_nav_source  # noqa: E402
 
 POLICY_PATH = (ROOT / "maaracing_assistant" / "plugins" / "treasure"
                / "resources" / "policy" / "treasure.policy.json")

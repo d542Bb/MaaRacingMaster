@@ -15,7 +15,6 @@ import sys
 import tempfile
 import threading
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 sys.path.insert(0, ".")

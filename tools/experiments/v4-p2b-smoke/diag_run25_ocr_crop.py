@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 DEBUG_DIR = Path(os.environ["APPDATA"]) / "MaaRacingAssistant" / "debug/treasure/20260909_201348"
 ASSETS = Path(__file__).resolve().parents[3] / "maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json"

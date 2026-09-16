@@ -20,7 +20,6 @@ class YOLODetector:
     def __init__(self, model_path: str, conf: float = 0.5, iou: float = 0.45):
         # ── Session 选项（图优化 + 缓存） ──
         from pathlib import Path
-        import os
 
         cache_dir = Path(__file__).resolve().parent / "__pycache__" / "ort_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)

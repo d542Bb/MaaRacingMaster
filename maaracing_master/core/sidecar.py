@@ -32,7 +32,7 @@ from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pathlib import Path
-from typing import TextIO, cast
+from typing import Any, TextIO, cast
 
 from maaracing_master import __display_version__, __version__
 from maaracing_master.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
@@ -511,7 +511,7 @@ class SidecarService:
 
     # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------
 
-    def _route_module_config(self):
+    def _route_module_config(self) -> "dict | None":
         """路由到「当前选中模块实例」或「同 id 新建的离线索实例」读 module_config（只读）。
 
         为什么"未运行时也需要可读"：GUI 未启动时回显模块默认配置 + sidecar 缓存。
@@ -522,6 +522,8 @@ class SidecarService:
         """
         with self._lock:
             module_id = self._selected_module
+        if not module_id:  # 无预选模块（全部过期/未注册）——离线建实例无从谈起
+            return None
         instance = None
         # 优先用运行中的实例（读实时值）
         if self._controller.active_module is not None and getattr(
@@ -538,13 +540,14 @@ class SidecarService:
                 instance = None
         if instance is None:
             return None
-        getter = getattr(instance, "get_module_config", None)
-        return getter() if callable(getter) else None
+        getter: Any = getattr(instance, "get_module_config", None)
+        # 契约：模块的 get_module_config() 返回 dict（module_config 配置面）
+        return cast("dict | None", getter()) if callable(getter) else None
 
     def get_module_config(self, params):
         module_id = params.get("module_id") or self._selected_module
         try:
-            result = self._route_module_config()
+            result: dict | None = self._route_module_config()
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"读模块配置失败: {exc!r}")
         # result 可能 None（老模块无接口）——返回空 dict + 支持的最小字段，前端不崩。

@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .model import AuditResult, FileRecord
-from . import config
 
 
 def build_audit_result(exp_root: Path, files: dict[str, FileRecord], pkgs: list,

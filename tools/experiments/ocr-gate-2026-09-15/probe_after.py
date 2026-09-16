@@ -124,7 +124,7 @@ def main() -> None:
     for k, v in dropped.most_common(12):
         out.append(f"- `{k}`：{v}")
 
-    out.append(f"\n## ⑤ 吞吐与时效\n")
+    out.append("\n## ⑤ 吞吐与时效\n")
     out.append(f"- 已应用：{applied} 次")
     out.append(f"- 超龄丢弃：{stale} 次；过期（跨回合）丢弃：{expired} 次")
     if ages:
@@ -137,13 +137,13 @@ def main() -> None:
     out.append(f"\n## ⑥ 快照构建相关：{len(snap_wait)} 条（前 25）\n")
     out += [f"- {x}" for x in snap_wait[:25]]
 
-    out.append(f"\n## ⑦ 阶段推进（前 40）\n")
+    out.append("\n## ⑦ 阶段推进（前 40）\n")
     out += [f"- {x}" for x in stage_lines[:40]]
 
-    out.append(f"\n## ⑧ 汇总行\n")
+    out.append("\n## ⑧ 汇总行\n")
     out += [f"- {x}" for x in summary[:12]]
 
-    out.append(f"\n## ⑨ 出价记录相关（前 30）\n")
+    out.append("\n## ⑨ 出价记录相关（前 30）\n")
     out += [f"- {x}" for x in pending_bids[:30]]
 
     OUT.write_text("\n".join(out), encoding="utf-8")

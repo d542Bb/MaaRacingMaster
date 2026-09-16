@@ -21,8 +21,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from maaracing_master.core.template_match import best_match_score, load_template  # noqa: E402
-from maaracing_master.plugins.treasure import IMAGE_DIR  # noqa: E402
+from maaracing_master.core.template_match import best_match_score  # noqa: E402
 from maaracing_master.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
 
 PROJ = Path(r"D:\maaracing_assistant\maaracing_master\plugins\treasure")

@@ -337,8 +337,8 @@ class EggRewardRecognizer:
     def _match_candidates(self, gray, tpl, rect, W, H, threshold) -> list[tuple[float, list[float]]]:
         """多尺度多候选：收集所有 score ≥ threshold 的框（后续 NMS 去重）。"""
         x1n, y1n, x2n, y2n = rect
-        x1 = max(0, int(x1n * W)); y1 = max(0, int(y1n * H))
-        x2 = min(W, int(x2n * W)); y2 = min(H, int(y2n * H))
+        x1 = max(0, int(x1n * W)); y1 = max(0, int(y1n * H))  # noqa: E702 —— treasure 冻结期只修行为缺陷，风格重排不做
+        x2 = min(W, int(x2n * W)); y2 = min(H, int(y2n * H))  # noqa: E702 —— treasure 冻结期只修行为缺陷，风格重排不做
         if x2 <= x1 or y2 <= y1:
             return []
         roi = gray[y1:y2, x1:x2]
@@ -368,7 +368,7 @@ class EggRewardRecognizer:
                 # 至少保留最高分项（即使未过阈值），供 NMS 上层统一过滤
                 _, smax, _, lmax = cv2.minMaxLoc(res)
                 if smax >= threshold:
-                    ys = np.array([lmax[1]]); xs = np.array([lmax[0]])
+                    ys = np.array([lmax[1]]); xs = np.array([lmax[0]])  # noqa: E702 —— treasure 冻结期只修行为缺陷，风格重排不做
                 else:
                     continue
             for px, py in zip(xs.tolist(), ys.tolist()):
@@ -400,8 +400,8 @@ class EggRewardRecognizer:
         nx2 = max(0.0, min(1.0, cx + bw / 2.0))
         ny1 = max(0.0, min(1.0, cy - bh / 2.0))
         ny2 = max(0.0, min(1.0, cy + bh / 2.0))
-        px1 = max(0, int(nx1 * W)); py1 = max(0, int(ny1 * H))
-        px2 = min(W, int(nx2 * W)); py2 = min(H, int(ny2 * H))
+        px1 = max(0, int(nx1 * W)); py1 = max(0, int(ny1 * H))  # noqa: E702 —— treasure 冻结期只修行为缺陷，风格重排不做
+        px2 = min(W, int(nx2 * W)); py2 = min(H, int(ny2 * H))  # noqa: E702 —— treasure 冻结期只修行为缺陷，风格重排不做
         if px2 <= px1 or py2 <= py1:
             return np.zeros((1, 1, 3), dtype=np.uint8), np.array([0.0, 0.0, 0.0])
         center = frame_rgb[py1:py2, px1:px2]
