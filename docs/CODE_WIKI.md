@@ -31,14 +31,14 @@
 
 ### 1.1 项目定位
 
-MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的模块化游戏自动化平台，以统一模块框架承载《巅峰极速》各类重复性活动的自动化。当前入库可用的活动插件为**巅峰鉴宝**（treasure）；**极速狂飙**将基于新的模块化插件架构（`core/navkit` + 插件自包含契约）重写，当前未入库。
+MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的模块化游戏自动化平台，以统一模块框架承载《巅峰极速》各类重复性活动的自动化。当前入库可用的活动插件为**巅峰鉴宝**（treasure）。
 
 ### 1.2 核心技术栈
 
 | 层级     | 技术组件                                     | 用途                   |
 | ------ | ---------------------------------------- | -------------------- |
 | 流程编排   | MAA Framework 5.12.x                     | UI 流程编排 + 窗口控制 + 截图  |
-| 视觉识别   | YOLO11 + ONNX Runtime (DirectML)         | 实时目标检测（金币/障碍车/跳板车）   |
+| 视觉识别   | YOLO11 + ONNX Runtime (DirectML)         | 跨活动目标检测（当前无模块启用）     |
 | 手柄模拟   | vgamepad 0.1.x                           | Xbox 360 虚拟手柄，摇杆精确控制 |
 | 图像处理   | OpenCV 5.x                               | 模板匹配、Hough 直线检测、可视化  |
 | OCR    | RapidOCR 3.9.x                           | 鉴宝金额 / 出价按钮文字识别      |
@@ -67,20 +67,20 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │      （MAA 对象 Tasker/Resource 归插件模块创建，主控不再持有）     │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
-│  │  导航引擎 (core/)    │  │  treasure 插件                   │  │
-│  │  nav_graph/clicker   │  │  (plugins/treasure/)            │  │
-│  │  - NavKit v3资产     │  │  - 12阶段状态机                │  │
-│  │  - 光标导航/虚拟手柄   │  │  - RapidOCR 金额识别            │  │
-│  │  - 多尺度模板匹配     │  │  - 智能出价策略                 │  │
-│  │  - 意图/真实点击     │  │  - 结算/彩蛋/分红               │  │
+│  │  导航引擎 (core/)    │  │  活动插件                        │  │
+│  │  nav_graph/clicker   │  │  (plugins/<id>/)                │  │
+│  │  - NavKit v3资产     │  │  - 本活动阶段状态机            │  │
+│  │  - 光标导航/虚拟手柄   │  │  - 自带模板/图/policy 真源      │  │
+│  │  - 多尺度模板匹配     │  │  - 自带调试渲染器               │  │
+│  │  - 意图/真实点击     │  │  - 能力经 ActivityContext 取用  │  │
 │  └─────────────────────┘  └──────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
 │  │  YOLO 检测器        │  │  调试可视化                      │  │
 │  │  (yolo_detector.py) │  │  (debug.py)                      │  │
-│  │  - ONNX Runtime     │  │  - PEEP 实时预览窗口             │  │
+│  │  - ONNX Runtime     │  │  - PEEP 精简预览                 │  │
 │  │  - DirectML GPU     │  │  - 每帧截图标注存盘              │  │
-│  │  - per-class NMS    │  │  - 导航/活动双模式渲染           │  │
+│  │  - per-class NMS    │  │  - 导航/检测框标注               │  │
 │  └─────────────────────┘  └──────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │                      基础设施层                                  │
@@ -235,7 +235,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 **职责摘要**：签名剖面法识别游戏内白色圆盘光标（normal / interactive 两态）、摇杆-光标速度模型 + 闭环趋近导航、到位后确认点击（意图模式只导航不确认）；供 `core.clicker` 的「后台(手柄)」点击方式复用，与「前台(鼠标)」SendInput 同层。底座与手柄均依赖注入（复用 controller 的 `_gpad` / 模块的 capture），本模块不自建，避免手柄/截图冲突。
 
-> 算法细节（光标识别三态、连续 P 趋近、速度模型标定）源自 cursor\_refactor 探针的实测沉淀；运行时不依赖探针代码，速度模型真源为 `core/resources/stick_speed_model.json`。
+> **速度模型真源 = `maaracing_master/core/resources/stick_speed_model.json`**；光标识别三态、连续 P 趋近与速度模型标定的参数均出自该文件。
 
 ***
 
@@ -426,7 +426,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 - `Win32Controller`（`screencap_method=FramePool`）**仅保留连接校验用途**（`connect()` 里的 `post_connection()`），不再作为任何取帧来源；`ctx.bind_tasker()` 给插件绑的是 `WgcapController`（帧注入控制器），插件侧不得持有同步截图通道。
 
-- racing 早期的 `capture_backend` 分派（`wgc_latest` / `maa`）已彻底移除：字段、`_screencap()`/`_screencap_ctypes()`、`PostScreencapCapture` 适配壳、GUI「截图方式」单选卡与 `set_capture_backend` RPC 一并删除——它们在分派逻辑消失后只剩"能点、不生效"的死控件。
+- **唯一截图通道 = WGC 中心缓存，无后端分派、无回退通道**：GUI 不提供「截图方式」选择，`Win32Controller` 只承担连接校验，插件侧不得持有同步截图通道。
 
 - 线程安全：锁内仅交换 Python 引用和整数，NumPy 操作在锁外
 
@@ -502,7 +502,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | 方法                              | 所属模块                             | 说明                                                     | 关键参数/坑点                                                 |
 | ------------------------------- | -------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
 | `ctx.capture.screenshot()`      | capabilities.py `CaptureAdapter` | 截图 RGB ndarray（**只读 WGC 中心缓存**，无帧返回 None）              | 唯一取帧入口；不得回退同步截图，返回 None 按"采集链路故障"处理，不得当作"画面无变化"         |
-| `ctx.lifecycle.sleep(seconds)`  | capabilities.py `LifecycleAdapter` | 可中断睡眠：≤0.1s 分片检查停止信号，**墙钟时长 ≥ 入参**（deadline 分片+余数补齐）    | 曾按 `int(s/0.1)` 量化迭代，小于 0.1s 的入参静默退化为零睡眠忙旋（真机 2026-09-14 饿死导航 worker，见 treasure 域 CODE_WIKI §9）；语义由 `tests/test_capabilities_lifecycle_sleep.py` 机检。Controller 同名旧工具 `_interruptible_sleep` 为同型量化实现且零调用方，已删 |
+| `ctx.lifecycle.sleep(seconds)`  | capabilities.py `LifecycleAdapter` | 可中断睡眠：≤0.1s 分片检查停止信号，**墙钟时长 ≥ 入参**（deadline 分片+余数补齐）    | 曾按 `int(s/0.1)` 量化迭代，小于 0.1s 的入参静默退化为零睡眠忙旋（真机 2026-09-14 饿死导航 worker，见 treasure 域 CODE_WIKI §9）；语义由 `tests/test_capabilities_lifecycle_sleep.py` 机检 |
 | `NavigationDebugger(proj_dir)`  | debug.py                         | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §5.4；§9.3 调试模式说明                                        |
 | `has_physical_controller()`     | window\_utils.py                 | XInput API 遍历 4 端口，任一连接返回 True                         | DLL 回退 xinput1\_4 → xinput9\_1\_0 → xinput1\_3；§10.4 坑点 |
 
@@ -530,9 +530,6 @@ core/controller.py
   ├── core.window_utils.find_game_hwnd / resize_game_window_720p / is_window_on_screen
   ├── core.logger.logger
   └── plugins.<id>.module（ActivityModule 启动分发）
-
-plugins/treasure/module.py
-  └── treasure_detector / treasure_ocr / strategy / eggs / renderer / store（同目录）
 
 core/registry.py（插件真源入口：manifest = ID + MODULE_CLASS + 可选有效期）
   ├── core.base.ActivityContext / core.base.ActivityModule（注册类型与实例化）
@@ -688,7 +685,6 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 
 - 检测方法：XInputGetState遍历端口0-3（`XInputGetState(i, buf) == 0` 表示已连接）
 
-- 历史"记录模式"（读取物理手柄采集数据）已随 v0.14 重构移除，不再适用
 
 ### 9.7 NavKit 模板图采集工作流（2026-09-07 定案，v4 载体沿用）
 
@@ -724,78 +720,60 @@ Studio 工具链**（`tools/navkit/studio.cmd`：ROI 校准台 / 策略表 / 模
 三概念分离"（本指南 §5.1/§5.2）；社区靠 ImageCropper 类工具 + 人工纪律，无结构化
 工作流。MaaRM 在其上加 regions 机器可读导出 + 校验守卫闭环。
 
-### 9.8 全局资产分层与同图命名空间（2026-09-10 归位，v4 形态）
+### 9.8 全局资产分层与同图命名空间（v4 形态）
 
-> 分界线：**这个元素是否跨玩法长期共享**（爆炸半径）——是则归 `core/`，否则归
-> `plugins/<id>/`。**与"某个玩法是否从这个按钮进入"无关**：鉴宝入口卡片是鉴宝专属
-> 知识，即使它物理上长在大厅里。
+> **分界线**：这个元素**是否跨玩法长期共享**（爆炸半径）——是则归 `core/`，否则归
+> `plugins/<id>/`。与"某个玩法是否从这个按钮进入"无关：鉴宝入口卡片是鉴宝专属知识，
+> 即使它物理上长在大厅里。
 >
-> 现状：项目尚无第二个模块接图，**core 侧没有任何 pipeline 真源**（2026-09-10 把
-> 原 `global.json` 的 7 个节点全部迁回 plugin）。只有一个实现就把它的入口链抽进
-> core，是过早抽象而非分离——那份"大厅骨架"里 6/7 节点带 `_owner: treasure`，
-> 且 core 抄了 plugin `__boot.dwell` 已有的 13 条全页面清单两遍。
-
-**协议前提（决定"分离"能到什么程度）**：MaaFW 的节点名**全城唯一、没有命名空间**
-（官方定义 Pipeline = 一个 `pipeline` 目录内 Node 全体，Resource = 多个 Bundle 按序
-加载；跨文件连接靠 `next`/`on_error` 里的节点名字符串）。因此 core 与 plugin 一旦
-互指，就必须**合并为单次 post**（见 `nav_graph._post_pipeline_merged`；分次 post 时
-先加载者必被 C++ PipelineChecker 判引用不闭合）。**文件摆放不产生隔离，引用方向才产生隔离。**
+> **现状**：项目尚无第二个模块接图，**core 侧没有任何 pipeline 真源**。
 
 **两段真源（v4 文件形态）**：
 
-- 模块段 = `plugins/<id>/resources/pipeline/<id>*.json`（对局图 + 本模块的入口链与
+- **模块段** = `plugins/<id>/resources/pipeline/<id>*.json`（对局图 + 本模块的入口链与
   页面锚点，按业务域分文件：鉴宝 = `treasure.json` + `treasure.entry.json`）
   \+ `plugins/<id>/resources/policy/<id>.policy.json`（感知/决策数据面）。
 
-- 共用段 = `core/resources/pipeline/*.json`，**当前为空目录不存在**；出现真跨模块
+- **共用段** = `core/resources/pipeline/*.json`，**当前为空目录不存在**；出现真跨模块
   链（如"任何模块开工前先回游戏大厅"）时再建。它能承载的只有**无出口的公共锚点**
   （一份识别规格）与**公共动作节点**（识别 + 动作、不带出口），由各模块在自己的
-  `next`/`any_of` 里引用；它**不指向任何模块节点**（机检零例外，2026-09-11 起口径
-  含 And/Or 子项与 `anchor` 对象 value），"回哪个模块"这条边永远由模块自己声明。
+  `next`/`any_of` 里引用；它**不指向任何模块节点**，"回哪个模块"这条边永远由模块自己声明。
 
-**方向红线（机检，校验器第 7 条）**：`check_truth.namespace_checks` 锁两条——
-core 真源①不得占用 `<module>.` 前缀、②**一切按名字指人的位置**（`next`/`on_error` +
-And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得引用 `<module>.` 节点。
-模块命名空间由 `plugins/*/module.py` 自动发现，无需配置。归属**由命名空间前缀表达**；
-旧 `attach._owner` 字段因全仓零消费方已废除（写了等于没写）。
+**归属由命名空间前缀表达**：core 真源不得占用、也不得引用 `<module>.` 节点，由
+`check_truth.namespace_checks` 机检；模块命名空间由 `plugins/*/module.py` 自动发现。
+协议为何没有命名空间、"引用"的完整口径（`next`/`on_error` + And/Or 按名子项 +
+`anchor` 对象 value）与"什么该出 pipeline"的六条判据，权威版见
+[MAAFW\_GUIDE §5.6](MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)。
 
 **通电位置（关键契约，不变项）**：
 
 - **图侧原生并入**——多真源文件载入同一张图，模块图可原生引用共用段节点而不必复制
   一份大厅识别（当前共用段为空，模块图自包含）。
 
-- **检测侧绝不并入**（原则不变）——运行时阶段检测只扫 policy.json `perception.spec`
-  装配的 `DetectionPlan`（模块自有锚点集），图节点不进每帧检测环。原因：global 锚点
-  无 `order` → `stage_priority=1000`，一旦进扫描集会在局内帧抢先短路、破坏逐帧等价
-  回归。贴 MAA：首页/入口识别属**导航段**，不进**每帧检测环**。
+- **检测侧绝不并入**——运行时阶段检测只扫 policy.json `perception.spec` 装配的
+  `DetectionPlan`（模块自有锚点集），图节点不进每帧检测环。原因：共用段锚点无 `order`
+  → `stage_priority=1000`，一旦进扫描集会在局内帧抢先短路、破坏逐帧等价回归。贴 MAA：
+  首页/入口识别属**导航段**，不进**每帧检测环**。
 
-- **全页面清单的唯一真源 =** **`<id>.__boot.dwell`**（`recognition.type=Or` 全 stage 信号
+- **全页面清单的唯一真源 = `<id>.__boot.dwell`**（`recognition.type=Or` 全 stage 信号
   并集 → `next` 全 dwell 表，`timeout=-1` 未知画面驻留重判）。入口锚点点击后一律
   `next: [<id>.__boot.dwell]` 交汇聚重判，不得各自再抄一份清单。
 
 - **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），
   与 MAA `activity_pool` 同构。
 
-**回归护栏（现状）**：CI = `check_truth.py`（图闭合（含 **And/Or 按名子项**——框架只校验
+**回归护栏**：CI = `check_truth.py`（图闭合（含 And/Or 按名子项——框架只校验
 `next`/`on_error`，子项拼错要到运行期才 `Bad sub ref` 静默失败）+ 数据面装配 + 图↔spec
-交叉互洽
+交叉互洽 + 方向红线 + **两面同图**：templates 相同的图侧参数与 spec 锚点逐字段比对
+`rect`/`threshold`/`arbitration`/`mode↔kind`/`colorspace`，任一面不等即拦）
++ `test_navkit_truth.py`（锁归位形态：真源全在模块命名空间、core 侧零节点、plugin
+文件集；锁红线活性：合成违规图必须报；spec/节点计数见证防漂）。颜色口径定案：
+**默认 gray，灰度拉不开差距才转 rgb**（2026-09-11 两面统一；依据 = 检测面 detector 早已按
+`spec.arbitration.margin` 做领先判定，P4C 对拍 812 帧两引擎命中数相等、零翻转，gray 快 2.8 倍）。
 
-- 几何 + **方向红线** + **两面同图**（templates 相同的图侧参数与 spec 锚点逐字段比对
-  `rect`/`threshold`/`arbitration`/`mode↔kind`/`colorspace`，任一面不等即拦）。颜色口径
-  定案：**默认 gray，灰度拉不开差距才转 rgb**（2026-09-11 两面统一；依据 = 检测面
-  detector 早已按 `spec.arbitration.margin` 做领先判定，P4C 对拍 812 帧两引擎命中数
-  相等、零翻转，gray 快 2.8 倍）；`test_navkit_truth.py` 锁归位形态
-  （真源全在模块命名空间、core 侧零节点、plugin 文件集）与红线活性（合成违规图必须报）；
-  spec/节点计数见证防漂。
-
-**编辑真源**：`mpe.cmd` 打开的 MPE 文件面板列出 plugin 两个 pipeline 文件，直接编辑
+**编辑真源**：`mpe.cmd` 打开的 MPE 文件面板列出 plugin 的两个 pipeline 文件，直接编辑
 保存；一个视口 = 一个文件，跨文件被引用节点显示为"外部节点"虚影（MPE 只补**被本文件
 引用到的**别处节点，不摊开全城——所以图越干净，编辑器越安静）。
-
-**生态一手参照（为什么这么定）**：MAA 把地狱决策移出 pipeline（页面导航归图，策略归
-声明式领域协议 JSON，搜索/时间轴归 C++，规划结果**输出仍是 pipeline 任务名**）；协议
-无命名空间的事实、"什么该出 pipeline"的六条判据与生态复用位清单，权威版见
-[MAAFW\_GUIDE §5.6](MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)。
 
 ***
 
@@ -813,14 +791,7 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 
 ### 10.2 MAA Framework API
 
-| API                               | 正确用法                                    | 常见错误                  |
-| --------------------------------- | --------------------------------------- | --------------------- |
-| Toolkit.init\_option              | `init_option(path, "")` 第二个参数传空字符串      | 不要传None               |
-| Win32Controller                   | `Win32Controller(hWnd=hwnd)` 参数名驼峰hWnd  | 不要写成hwnd=             |
-| Tasker.bind                       | `bind(resource, controller)` resource在前 | 参数顺序反了会崩溃             |
-| Resource.post\_bundle             | `post_bundle(path)`                     | 不是post\_path          |
-| Resource.register\_custom\_action | `register_custom_action(name, action)`  | action需继承CustomAction |
-| MAA PostScreencap返回               | BGR格式（OpenCV默认）                         | 需要手动cvtColor转RGB      |
+API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「高频红线/坑」](MAAFW_GUIDE.md#9-高频红线坑背下来)（完整签名见其 §3.3 与 §6）。
 
 ### 10.3 光标导航
 
@@ -847,7 +818,7 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 
 - 尝试加载顺序：xinput1\_4.dll → xinput1\_3.dll → xinput9\_1\_0.dll
 
-- 非记录模式必须断开所有物理手柄，否则虚拟手柄被游戏忽略或冲突
+- 运行前必须断开所有物理手柄，否则虚拟手柄被游戏忽略或冲突
 
 ***
 
