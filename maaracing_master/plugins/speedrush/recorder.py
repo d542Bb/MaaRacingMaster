@@ -28,16 +28,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import cv2
-
 from maaracing_master.core import xinput
+from maaracing_master.core.image_io import write_rgb
 from maaracing_master.core.logger import logger
 
 # 帧队列容量：约两秒（30fps）。满则丢帧计数，不阻塞采集侧。
 _FRAME_QUEUE_MAX = 64
 
 # 录制数据格式版本。字段语义变动时递增，供离线步骤识别。
-SCHEMA_VERSION = 1
+# v2：meta 增记帧图字节序（disk_pixel_order）。
+SCHEMA_VERSION = 2
 
 
 class DriveRecorder:
@@ -130,9 +130,13 @@ class DriveRecorder:
 
     # ---------- 采集侧（调用方线程） ----------
 
-    def record_frame(self, frame_bgr: Any, *, frame_id: int, ts_ns: int,
+    def record_frame(self, frame_rgb: Any, *, frame_id: int, ts_ns: int,
                      age_ms: float = 0.0) -> None:
         """非阻塞存入一帧。队列满则丢帧并计数——不得阻塞调用方。
+
+        ``frame_rgb`` 是内部 RGB 帧（``ctx.capture`` 的契约）。落盘由
+        ``image_io.write_rgb`` 转成标准图像语义后写——本方法不得自行 imwrite，
+        直写会把 R/B 写反（imwrite 期望 BGR 序）。
 
         ``frame_id`` 与 ``ts_ns`` **必填**，且必须来自 ``ctx.capture.frame_with_age()``：
         那是帧到达采集回调的时刻。调用侧自打的时间戳是"读取时刻"，与真实采集时刻差
@@ -140,14 +144,14 @@ class DriveRecorder:
         """
         if not self._running:
             return
-        h, w = frame_bgr.shape[:2]
+        h, w = frame_rgb.shape[:2]
         if self._frame_size is None:
             self._frame_size = (int(w), int(h))
         # 序列号在采集侧单调递增：丢帧不使编号跳变，缺口数即丢帧证据
         self._seq_counter += 1
         try:
             self._frame_q.put_nowait(
-                (self._seq_counter, int(frame_id), int(ts_ns), float(age_ms), frame_bgr))
+                (self._seq_counter, int(frame_id), int(ts_ns), float(age_ms), frame_rgb))
         except queue.Full:
             self._frames_dropped += 1
 
@@ -166,9 +170,11 @@ class DriveRecorder:
                     continue
                 name = f"{seq:06d}.jpg"
                 try:
-                    ok = cv2.imwrite(
-                        str(frames_dir / name), frame,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
+                    # 走 image_io.write_rgb（内部 RGB → 标准图像语义）：直写
+                    # imwrite 会把 R/B 写反（imwrite 期望 BGR 序），而白灰画面
+                    # 上看不出来——已录的三批会话就是这么错的。
+                    ok = write_rgb(frames_dir / name, frame,
+                                   jpeg_quality=self.jpeg_quality)
                 except Exception as exc:  # noqa: BLE001 —— 单帧写失败不该终止录制
                     logger.log(f"[极速狂飙] 录制写帧失败 seq={seq}: {exc!r}", "WARNING")
                     continue
@@ -225,6 +231,11 @@ class DriveRecorder:
         w, h = self._frame_size or (0, 0)
         meta = {
             "schema": SCHEMA_VERSION,
+            # 帧图文件的字节序：标准图像语义（首字节为红），仓库内读它走
+            # image_io.read_rgb。**schema 1 的会话没有这个键，其帧图是 R/B 互换的**
+            # ——当时绕开 image_io 直写 imwrite（它期望 BGR 序）。离线处理旧数据
+            # 必须特判为反序：与标准序混用会整体读错色，而灰白画面上看不出来。
+            "disk_pixel_order": "rgb",
             "started_at": self._started_iso,
             "ended_at": datetime.now().isoformat(timespec="seconds"),
             "monotonic_start_ns": self._started_ns,

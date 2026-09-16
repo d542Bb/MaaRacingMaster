@@ -89,6 +89,9 @@ def test_meta_counts_and_schema(tmp_path) -> None:
 
     meta = json.loads((tmp_path / "s3" / "meta.json").read_text(encoding="utf-8"))
     assert meta["schema"] == SCHEMA_VERSION
+    # 帧图字节序必须进 meta：把"这份数据按哪种语义落盘"钉死，离线工具据此选读法
+    # 而不必猜——猜错就是整体 R/B 互换，且在灰白画面上看不出来。
+    assert meta["disk_pixel_order"] == "rgb"
     assert meta["frames_written"] == 1
     assert meta["frames_dropped"] == 0
     assert meta["jpeg_quality"] == 80
@@ -124,6 +127,32 @@ def test_record_after_stop_is_ignored(tmp_path) -> None:
     rec.record_frame(_frame(), frame_id=1, ts_ns=1)
     assert rec.stats["frames_written"] == 0
     assert rec.stats["frames_dropped"] == 0
+
+
+def test_recorded_frame_is_standard_pixel_order(tmp_path) -> None:
+    """落盘帧必须是**标准图像语义**：看图/标注/训练框架按常规读即得运行时同色。
+
+    录制器曾绕开 ``image_io`` 直写 imwrite，把 R/B 写反（imwrite 期望 BGR 序），
+    已录三批会话的 JPEG 全是互换色——而 speedrush 的锚点齿轮是白灰（R=G=B）、
+    摄像机图标也是白的，画面上完全看不出来。判据取通道幅度对比而非精确值：
+    JPEG 有损，但"哪个通道亮"不会被压缩破坏。
+    """
+    import cv2
+
+    rec = DriveRecorder(tmp_path / "s7", pad_poll_hz=50.0)
+    rec.start()
+    frame = np.zeros((16, 24, 3), dtype=np.uint8)
+    frame[:, :, 0] = 220   # R 高
+    frame[:, :, 1] = 120
+    frame[:, :, 2] = 30    # B 低
+    rec.record_frame(frame, frame_id=1, ts_ns=1)
+    rec.stop()
+
+    row = _read_jsonl(tmp_path / "s7" / "frames.jsonl")[0]
+    got = cv2.imread(str(tmp_path / "s7" / "frames" / row["file"]), cv2.IMREAD_COLOR)
+    assert got is not None
+    r_ch, b_ch = got[:, :, 2].mean(), got[:, :, 0].mean()  # imread 返回 BGR
+    assert r_ch > b_ch + 100, f"R/B 互换（R={r_ch:.0f} B={b_ch:.0f}）—— 写盘前未转通道"
 
 
 def test_make_session_dir_uses_timestamp(tmp_path) -> None:

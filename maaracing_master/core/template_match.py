@@ -17,6 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from maaracing_master.core.image_io import read_rgb
 from maaracing_master.core.logger import logger
 
 # 与 racing 导航引擎一致的默认尺度表（跨窗口分辨率/全屏-窗口切换）
@@ -65,17 +66,17 @@ def _resolve_template_path(name: str, image_dirs: list[Path]) -> Path | None:
 
 
 def load_template(name: str, image_dirs: list[Path]) -> np.ndarray | None:
-    """加载模板，返回 RGB ndarray；找不到/读失败返回 None。带 mtime 指纹热修缓存。"""
+    """加载模板，返回 RGB ndarray；找不到/读失败返回 None。带 mtime 指纹热修缓存。
+
+    读盘走 ``image_io.read_rgb``（通道边界的唯一实现）：磁盘是标准图像语义，
+    模板与运行帧因而同处 RGB 空间，匹配内核不必关心通道。
+    """
     path = _resolve_template_path(name, image_dirs)
     fp = _fingerprint(path) if path is not None else (-1, -1)
     cached = _cache.get(name)
     if cached is not None and cached[0] == fp:
         return cached[1]
-    img = None
-    if path is not None:
-        raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if raw is not None:
-            img = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+    img = read_rgb(path) if path is not None else None
     if img is None:
         logger.log(f"模板不存在: {name}.png/.jpg（搜索 {len(image_dirs)} 个目录）", "WARNING")
     _cache[name] = (fp, img)
