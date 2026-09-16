@@ -5,6 +5,22 @@
 > **暂存条目前缀「暂存」**：内容已定稿但版本号未定，`extract_changelog.py` 不会抽取它；
 > 发版时把「暂存」小节并入对应的 `### v<版本>` 标题后再出 Release 正文。
 
+## 2026-09-16
+
+### 暂存（未发布 · 待并入下一版本）文档分层收敛：主 wiki 只留平台级事实 📄
+
+- **性质：** 未发版变更（`docs/CODE_WIKI.md`、`apps/MaaRacingMaster.Shell/README.md`（新）、`archive/racing/CODE_WIKI.md`；master 直接提交、不 tag）
+
+- **分层判据（新增）：** 文档按「寿命耦合 / 裁决者 / 读者与加载时机」三条判据归位——平台级（core 能力、分层拓扑、全局约定、core 坑点）留主文档；域知识（模块实现、算法、域坑点、游戏规则）只在 `plugins/<id>/` 内成文，随模块目录生灭；一次性选型过程与状态类清单归 `docs/plan/archive/`、issue 或本文件。跨文档只给指针，不复制真源。
+
+- **GUI 章节重构：** 主文档 §11 由选型过程收敛为「定案 + 硬约束 + 指针」；四候选实测结论与 spike 过程迁 `docs/plan/archive/gui-host-selection.md`；壳工程结构、锁定版本、WinUI 3 API 与构建坑、sidecar transport 契约成文于新增的 `apps/MaaRacingMaster.Shell/README.md`。硬约束保留：不得回退到 WPF `WindowChrome` 或 `FormBorderStyle.None` 类方案（WebView2 airspace 遮挡客户区 / 无 `WS_CAPTION` 拿不到 DWM 动画）。
+
+- **检测与渲染通路归位：** 主文档 §4.3 类别集与性能读数、§4.5 检测标注与 HUD 规格、§9.4 训练导出目标随已归档的极速狂飙域归档（细节迁 `archive/racing/CODE_WIKI.md` §3.1，该目录本机留存），主文档保留通路存在性说明与指针。检测器为跨活动基础设施，**类别集由所服务的活动定义**，不在 core 文档写死。
+
+- **纠错与补全：** §6.2 运行时持有关系与 §2.2/§4.1 对齐（`Tasker`/`Resource` 由活动模块实例创建并持有，主控不再持有）；Tab 口径统一为四 Tab；§5 小节号重排为 5.1–5.5 并修好两处失效锚点；§3 目录树去重 `registry.py`、补 `NAVKIT_V4_PLAN.md` / `adr/` / `design/` / `latest_release.json`；§8.1 改为「全局约定」并写明 core 侧常量仅分辨率一项、插件数值一律读 `resources/policy/<id>.policy.json`；§5.3 壳工程清单补 `Program.cs` / `PeepWindow` / `RpcBridge.cs` / `frontend/peep.*`；§4.5 PEEP 改为「产出 JPEG 交 GUI 侧渲染」并补「渲染器可被模块安装替换」这条 core 能力；§4.5 导航侧颜色表按 `debug.py` 实际常量重建。
+
+- **验证：** `check_truth` 通过（图 27 节点自洽、policy 数据面可装配且交叉互洽）；全量 `pytest` 绿。
+
 ## 2026-09-15
 ### v0.23.0-dev.1 鉴宝出价/OCR 纵深修复 + V4 出价口径 + PEEP 悬浮窗与日志体验迭代 🏷️
 
