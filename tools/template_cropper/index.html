@@ -116,7 +116,7 @@
   <!-- 左侧工具栏 -->
   <div class="sidebar">
     <h2>Template Cropper</h2>
-    <p class="hint">拖入或点击导入图片，在预览区拖拽框选模板区域。</p>
+    <p class="hint">拖入、Ctrl+V 粘贴或点击导入图片，在预览区拖拽框选模板区域。</p>
     <button class="btn" id="btnImport">导入图片</button>
     <input type="file" id="fileInput" accept="image/*">
     <div class="btn-row">
@@ -138,7 +138,7 @@
   <div class="main">
     <div class="toolbar">
       <span id="imgInfo">未加载图片</span>
-      <span style="float:right;">在图上拖拽新建选框 · 拖拽选框移动 · 拖四角调整大小 · Delete 键删除选中</span>
+      <span style="float:right;">Ctrl+V 粘贴导入 · 在图上拖拽新建选框 · 拖拽选框移动 · 拖四角调整大小 · Delete 键删除选中</span>
     </div>
     <div class="canvas-wrap">
       <div class="img-stage" id="imgStage">
@@ -146,7 +146,7 @@
         <div class="overlay" id="overlay"></div>
         <div class="drop-hint" id="dropHint">
           <div class="big">⬇</div>
-          <div>拖拽图片到此处，或点击「导入图片」</div>
+          <div>拖拽图片到此处，或 Ctrl+V 粘贴，或点击「导入图片」</div>
         </div>
       </div>
     </div>
@@ -228,19 +228,59 @@ imgStage.addEventListener('drop', (e) => {
   if (file && file.type.startsWith('image/')) loadImage(file);
 });
 
-function loadImage(file) {
+// ---------- 剪贴板粘贴导入（Ctrl+V / Cmd+V）----------
+// 剪贴板里的图片来源有两种：截图工具写的是 blob（items），文件管理器复制的是 files。
+// 文本粘贴只会产生 kind==='string' 的条目，不会出现 file 条目，因此这里不做额外过滤。
+document.addEventListener('paste', (e) => {
+  const dt = e.clipboardData;
+  if (!dt) return;
+
+  let file = null;
+  if (dt.files && dt.files.length) {
+    file = Array.from(dt.files).find(isImageFile) || null;
+  }
+  if (!file && dt.items) {
+    for (const it of dt.items) {
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (isImageFile(f)) { file = f; break; }
+      }
+    }
+  }
+  if (!file) return;   // 剪贴板里没有图片：放行默认行为（粘贴文本等）
+
+  e.preventDefault();
+  loadImage(file, 'clipboard_' + timestamp() + '.png');
+});
+
+// type 为空的 File 视为待解码的图片（部分平台不填 MIME）；
+// 非空但非 image/* 的（如从文件管理器复制的 .txt）一律拒绝。
+function isImageFile(f) {
+  return !!f && (!f.type || f.type.startsWith('image/'));
+}
+
+function timestamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// nameHint：粘贴进来的 File 名字往往是空的或恒为 image.png，用时间戳兜底，
+// 避免连续粘贴时导出的 JSON 重名。
+function loadImage(file, nameHint) {
+  const name = file.name || nameHint || 'image.png';
   const reader = new FileReader();
-  reader.onerror = () => { imgInfo.textContent = '图片读取失败：' + file.name; };
+  reader.onerror = () => { imgInfo.textContent = '图片读取失败：' + name; };
   reader.onload = (e) => {
     const dataUrl = e.target.result;
     const img = new Image();
-    img.onerror = () => { imgInfo.textContent = '图片解码失败：' + file.name; };
+    img.onerror = () => { imgInfo.textContent = '图片解码失败：' + name; };
     img.onload = () => {
       state.image = {
         naturalWidth: img.naturalWidth,
         naturalHeight: img.naturalHeight,
         src: dataUrl,
-        name: file.name
+        name: name
       };
       state.regions = [];
       state.selectedId = null;
@@ -252,7 +292,7 @@ function loadImage(file) {
       previewImg.src = dataUrl;
       previewImg.style.display = 'block';
       dropHint.style.display = 'none';
-      imgInfo.textContent = `${file.name} — ${img.naturalWidth} × ${img.naturalHeight} px`;
+      imgInfo.textContent = `${name} — ${img.naturalWidth} × ${img.naturalHeight} px`;
       updateUI();
     };
     img.src = dataUrl;
@@ -691,6 +731,22 @@ function triggerDownload(url, filename) {
   a.remove();
 }
 
+// 区域名常被当成文件名写（main_btn.png）。导出格式固定是 PNG，
+// 原样拼接会得到 main_btn.png.png，所以这里先剥掉一个图片后缀。
+// 只认已知图片格式，不做「砍掉最后一个点之后的内容」的泛化处理：
+// 区域名里的点更常见于版本号一类（如 v1.2），泛化会把 v1.2 误伤成 v1。
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'jfif', 'bmp', 'webp', 'gif', 'tif', 'tiff'];
+const IMAGE_EXT_RE = new RegExp('\\.(' + IMAGE_EXTS.join('|') + ')$', 'i');
+
+function exportFileName(rawName) {
+  const base = String(rawName == null ? '' : rawName)
+    .replace(/[\\/:*?"<>|]/g, '_')   // 文件名非法字符
+    .trim()                          // 必须先 trim：否则尾随空白会让后缀的 $ 锚点匹配不上
+    .replace(IMAGE_EXT_RE, '')       // 剥掉一个图片后缀
+    .replace(/[\s.]+$/, '');         // 剥完后可能残留空白或点（Windows 也会静默去掉）
+  return (base || 'region') + '.png';
+}
+
 async function exportImages() {
   if (!state.image || state.regions.length === 0) return;
   const img = new Image();
@@ -711,8 +767,7 @@ async function exportImages() {
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
     if (!blob) continue;
     const url = URL.createObjectURL(blob);
-    const safeName = (r.name || 'region').replace(/[\\/:*?"<>|]/g, '_');
-    triggerDownload(url, `${safeName}.png`);
+    triggerDownload(url, exportFileName(r.name));
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
