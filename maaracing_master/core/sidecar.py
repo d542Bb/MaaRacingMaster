@@ -687,12 +687,12 @@ class SidecarService:
             return (False, None, "未选择活动模块")
         if start_from is not None and start_from not in stages:
             return (False, None, f"断点 {start_from} 不属于模块 {module_id} 的阶段")
-        try:
-            info = get_module_info(module_id)
-        except KeyError:
+        if module_id not in MODULE_REGISTRY:
             return (False, None, f"模块不存在: {module_id}")
-
-        if info["requires_gamepad_exclusive"] and has_physical_controller():
+        module_cls = MODULE_REGISTRY[module_id]
+        # 启动约束按**本次配置**求值：模块可因模式不同放宽。比如 speedrush 的演示录制模式
+        # 不操纵车辆（不创建虚拟设备），而维护者正要用物理手柄驾驶——不能要求他断开手柄。
+        if module_cls.requires_exclusive_gamepad(start_module_config) and has_physical_controller():
             return (False, None, "请断开所有物理手柄后再运行")
 
         # 插件自带资源校验（REQUIRED_ASSETS，如 racing 的 YOLO 模型）：
@@ -701,9 +701,11 @@ class SidecarService:
         if missing_assets:
             return (False, None, "插件资源缺失: " + ", ".join(missing_assets))
 
-        # 启动阶段检测：依赖虚拟手柄的模块（racing）在 ViGEmBus 驱动缺失时提前拦下，
+        # 启动阶段检测：依赖虚拟手柄的模块在 ViGEmBus 驱动缺失时提前拦下，
         # 返回结构化错误码 VIGEM_BUS_MISSING，供前端弹「下载并安装 ViGEmBus 驱动」引导。
-        if "gamepad" in info["requires"] and not self._controller.gamepad_available():
+        # 同样按本次配置求值（录制模式不需要手柄能力，无驱动也该能跑）。
+        if ("gamepad" in module_cls.required_capabilities(start_module_config)
+                and not self._controller.gamepad_available()):
             return (False, None, (
                 "VIGEM_BUS_MISSING: 检测到缺少 ViGEmBus 驱动，无法创建虚拟手柄。"
                 "请先点击「下载并安装 ViGEmBus 驱动」完成安装后重试。"

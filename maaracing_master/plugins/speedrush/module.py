@@ -119,6 +119,32 @@ class SpeedRushModule(ActivityModule):
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     DEFAULT_MODULE_CONFIG: dict = {"record_mode": DEFAULT_RECORD_MODE}
 
+    # ---------- 启动约束（按本次配置求值，见基类说明）----------
+
+    @classmethod
+    def required_capabilities(cls, config: dict | None = None) -> frozenset[str]:
+        """录制模式不需要手柄能力：该模式不操纵车辆，也不创建虚拟设备。
+
+        不这么分的话，机器上没装 ViGEmBus 驱动时连"只录不控"都启动不了，
+        而录制恰恰是拿到训练数据的前提。
+        """
+        caps = set(cls.REQUIRES)
+        if bool((config or {}).get("record_mode")):
+            caps.discard("gamepad")
+        return frozenset(caps)
+
+    @classmethod
+    def requires_exclusive_gamepad(cls, config: dict | None = None) -> bool:
+        """录制模式不独占手柄——演示数据就是维护者用物理手柄开出来的。
+
+        代价为零：录制期模块不创建虚拟设备（见模块 docstring 的不变量），所以不存在
+        "物理 + 虚拟"双输入冲突。真正驾驶时该约束照旧生效（那时程序接管输入，
+        物理手柄必须断开）。
+        """
+        if bool((config or {}).get("record_mode")):
+            return False
+        return cls.REQUIRES_GAMEPAD_EXCLUSIVE
+
     def __init__(self, ctx: ActivityContext | None) -> None:
         super().__init__(ctx)
         self._graph: NavGraph | None = None

@@ -224,6 +224,28 @@ class ActivityModule(ABC):
         # 应经运行态守卫（如 self._running）。
         self.ctx = ctx
 
+    # ---------- 启动约束（可按本次配置求值）----------
+    #
+    # 为什么要有这两个查询、而不是直接读上面两个类属性：**同一个模块在不同配置下
+    # 需要的启动条件可能不同**。典型：speedrush 的演示录制模式不操纵车辆，既不需要
+    # 虚拟手柄能力（无 ViGEmBus 驱动也该能跑），也不该要求断开物理手柄——录制恰恰
+    # 要用物理手柄驾驶。类属性表达不了"按配置变化"，故把判定收在这两个可覆盖的
+    # 查询里；调用方（controller / sidecar）一律问它们，不直接读类属性。
+
+    @classmethod
+    def required_capabilities(cls, config: dict | None = None) -> frozenset[str]:
+        """本次启动（按这份配置）需要的能力；默认即 ``REQUIRES`` 声明。
+
+        ``config`` 是将要注入模块的那份配置（可能为空）。覆盖时请基于 ``cls.REQUIRES``
+        增删，别另抄一份清单——类属性仍是"模块能力的完整声明"，这里只是本次的子集。
+        """
+        return cls.REQUIRES
+
+    @classmethod
+    def requires_exclusive_gamepad(cls, config: dict | None = None) -> bool:
+        """本次启动是否独占手柄（即：必须断开所有物理手柄）；默认取类属性声明。"""
+        return cls.REQUIRES_GAMEPAD_EXCLUSIVE
+
     @property
     @abstractmethod
     def current_stage(self) -> str | None:

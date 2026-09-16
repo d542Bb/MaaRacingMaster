@@ -130,8 +130,10 @@ class MaaRacingMasterController:
             module = create_module(module_id, self.ctx)
             if start_from and start_from not in module.STAGE_ORDER:
                 raise ValueError(f"断点 {start_from} 不属于模块 {module_id} 的阶段")
-            # fail-fast：启动前验证模块声明的能力是否可用（固有能力 lifecycle 隐式满足）
-            missing = module.REQUIRES - self.ctx.capabilities
+            # fail-fast：启动前验证**本次配置下**需要的能力是否可用（固有能力 lifecycle 隐式满足）。
+            # 问 module.required_capabilities(config) 而非 module.REQUIRES：同一模块在不同
+            # 配置下需求可能不同（如 speedrush 的录制模式不操纵车辆、不需要手柄能力）。
+            missing = module.required_capabilities(module_config) - self.ctx.capabilities
             if missing:
                 raise ModuleDependencyError(
                     f"{module_id}: missing capabilities: {sorted(missing)}"

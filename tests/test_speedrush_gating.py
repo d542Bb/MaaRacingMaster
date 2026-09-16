@@ -298,3 +298,40 @@ def test_config_ignores_unknown_and_coerces_bool(env) -> None:
 def test_config_tolerates_non_dict(env) -> None:
     mod, _, _ = env
     assert mod.set_module_config("not-a-dict")["record_mode"] is False
+
+
+# ---------- 启动约束（按本次配置求值）----------
+
+
+def test_record_mode_does_not_require_gamepad_capability() -> None:
+    """录制模式不操纵车辆 → 不需要手柄能力；机器上没装 ViGEmBus 也该能录。"""
+    m = sr.SpeedRushModule
+    assert "gamepad" in m.required_capabilities({"record_mode": False})
+    assert "gamepad" not in m.required_capabilities({"record_mode": True})
+    # 不给配置 = 完整模式，按类属性声明
+    assert m.required_capabilities(None) == m.REQUIRES
+
+
+def test_record_mode_does_not_require_exclusive_gamepad() -> None:
+    """录制演示数据正是要用物理手柄驾驶 → 不能要求断开手柄。"""
+    m = sr.SpeedRushModule
+    assert m.requires_exclusive_gamepad({"record_mode": False}) is True
+    assert m.requires_exclusive_gamepad({"record_mode": True}) is False
+    assert m.requires_exclusive_gamepad(None) is True
+
+
+def test_startup_constraints_tolerate_truthy_config() -> None:
+    """配置值来自 GUI/缓存，只认真值不认字面 True（别写成 `is True`）。"""
+    m = sr.SpeedRushModule
+    assert "gamepad" not in m.required_capabilities({"record_mode": 1})
+    assert m.requires_exclusive_gamepad({"record_mode": 1}) is False
+    assert "gamepad" in m.required_capabilities({})
+
+
+def test_base_default_follows_class_attributes() -> None:
+    """未覆盖这两个查询的模块行为不变：默认就是类属性的直接投影。"""
+    from maaracing_master.core.base import ActivityModule
+
+    assert ActivityModule.required_capabilities(None) == ActivityModule.REQUIRES
+    assert ActivityModule.requires_exclusive_gamepad(None) == \
+        ActivityModule.REQUIRES_GAMEPAD_EXCLUSIVE
