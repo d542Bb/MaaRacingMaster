@@ -724,6 +724,8 @@
       const verCur = $('about-ver-current');
       if (verCur) verCur.textContent = 'v' + data.version;
       renderModuleSelect(data.modules, data.selected_module);
+      // 初始就按运行状态锁定（重连/刷新时可能已有模块在跑）
+      updateModuleOptionsDisabled(!!data.is_running);
       state.stages = data.stages || [];
       renderStageList();
       // 初始化模块选项（仅 treasure 展示）
@@ -1078,6 +1080,12 @@
     const loopsEl = $('opt-max-loops');
     if (loopsEl) loopsEl.disabled = running;
     setSessionSegmentedDisabled(running);
+    // 模块下拉：运行中禁止切换（后端同时拒绝，这里把入口也关掉，让"能不能切"一眼可见）
+    const sel = $('module-select');
+    if (sel) {
+      sel.disabled = running;
+      sel.title = running ? '运行中不允许切换活动模块，请先停止' : '';
+    }
   }
 
   function setStatus(text, mode) {

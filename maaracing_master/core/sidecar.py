@@ -549,10 +549,18 @@ class SidecarService:
     def select_module(self, params):
         """切换活动模块。
 
+        - **运行中一律拒绝**：所选模块与正在跑的模块必须始终一致。运行中切换会让
+          GUI 的阶段列表、当前阶段高亮、配置面板全部指向另一个模块，而跑着的仍是旧模块
+          ——界面与实况对不上，用户会照着错的阶段名读日志。判据用 worker 槽（从 start
+          受理到 worker 结束）而非模块自身的 running 标志，把"启动中/停止中"也一并拦住。
         - module_id 为空 = GUI「（空）」选项：清空选择并正常返回（无模块可用时的合法状态）；
         - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝；
         - 未知 id 仍返回「模块不存在」。
         """
+        with self._lock:
+            busy = self._worker is not None
+        if busy:
+            return (False, None, "运行中不允许切换活动模块，请先停止")
         module_id = params.get("module_id")
         if not module_id:
             with self._lock:
