@@ -47,27 +47,38 @@
               <i data-icon="chevron-down"></i>
             </div>
             <p class="module-desc" id="module-desc"></p>
-            <!-- 模块专属选项：当前仅 treasure（鉴宝）展示；其它模块隐藏。
+            <!-- 模块专属选项：按当前模块显示对应块，其余模块整块隐藏（见 app.js refreshModuleOptions）。
                  两行结构避免拥挤：
-                 • 第1行（整行）：刷到第几场
-                 • 第2行（整行）：目标场次（实习/专家/大师，分段按钮组，互斥单选） -->
+                 • treasure（鉴宝）第1行（整行）：刷到第几场；第2行（整行）：目标场次（互斥单选）
+                 • speedrush（极速狂飙）：演示数据录制开关（驾驶阶段只采集、由用户手动驾驶） -->
             <div class="module-options" id="module-options" style="display:none;margin-top:18px;">
-              <div class="module-options-row" style="display:grid;grid-template-columns:1fr;gap:14px;align-items:end;">
-                <div class="mra-field">
-                  <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
-                  <div class="mra-field-control">
-                    <input id="opt-max-loops" type="number" min="0" max="50" step="1" value="50">
-                    <span class="field-suffix">场</span>
+              <div id="opt-treasure-block" style="display:none;">
+                <div class="module-options-row" style="display:grid;grid-template-columns:1fr;gap:14px;align-items:end;">
+                  <div class="mra-field">
+                    <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
+                    <div class="mra-field-control">
+                      <input id="opt-max-loops" type="number" min="0" max="50" step="1" value="50">
+                      <span class="field-suffix">场</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="module-options-row" style="margin-top:14px;">
+                  <div class="mra-field">
+                    <label class="mra-field-label">目标场次<span class="field-hint">（每次回大厅先点对应场次标签，再点「开始匹配」）</span></label>
+                    <div class="mra-segmented" id="opt-target-session" role="group" aria-label="目标场次">
+                      <button type="button" class="seg-btn" data-value="intern"><span class="seg-dot seg-dot--intern"></span>实习场</button>
+                      <button type="button" class="seg-btn" data-value="expert"><span class="seg-dot seg-dot--expert"></span>专家场</button>
+                      <button type="button" class="seg-btn seg-btn--selected" data-value="master"><span class="seg-dot seg-dot--master"></span>大师场</button>
+                    </div>
                   </div>
                 </div>
               </div>
-              <div class="module-options-row" style="margin-top:14px;">
-                <div class="mra-field">
-                  <label class="mra-field-label">目标场次<span class="field-hint">（每次回大厅先点对应场次标签，再点「开始匹配」）</span></label>
-                  <div class="mra-segmented" id="opt-target-session" role="group" aria-label="目标场次">
-                    <button type="button" class="seg-btn" data-value="intern"><span class="seg-dot seg-dot--intern"></span>实习场</button>
-                    <button type="button" class="seg-btn" data-value="expert"><span class="seg-dot seg-dot--expert"></span>专家场</button>
-                    <button type="button" class="seg-btn seg-btn--selected" data-value="master"><span class="seg-dot seg-dot--master"></span>大师场</button>
+              <div id="opt-speedrush-block" style="display:none;">
+                <div class="option-row">
+                  <button class="mra-toggle" id="opt-record-mode" role="switch" aria-checked="false"></button>
+                  <div class="option-main">
+                    <div class="option-title">录制演示数据</div>
+                    <p class="option-desc">开启后驾驶阶段只采集、不操纵车辆（请自行手动驾驶），产出用于训练的数据集。改动在下次「开始」时生效。</p>
                   </div>
                 </div>
               </div>

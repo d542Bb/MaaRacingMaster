@@ -55,6 +55,8 @@
     // get_initial_state 返回的模块列表（含 expired / valid_until：下拉栏置灰与过期警告文案的数据源）
     modules: [],
     _lastRunState: false,
+    // 录制实况的刷新节流（毫秒时间戳）：运行中每秒刷一次，别跟着 250ms 状态轮询跑
+    _lastRecRefresh: 0,
     peepEnabled: false,
     // 性能卡走势图环形缓冲：250ms 轮询 × 120 点 ≈ 近 30 秒。快照里的数值本身
     // 已是滑窗 p50，曲线看的是"什么时候开始变差"，不是逐帧抖动。
@@ -788,9 +790,11 @@
       el.textContent = '未选择活动模块';
       return;
     }
+    // 描述优先取本表（更通俗的叫法），没有则回落到后端注册表给的模块名
+    // ——模块名只有一处真源（模块类的 NAME），前端不另抄一份。
     const descs = { treasure: '寻宝模式' };
     const m = state.modules.find((x) => x.id === moduleId);
-    const parts = [descs[moduleId] || ''];
+    const parts = [descs[moduleId] || (m && m.name) || ''];
     if (m && m.expired) {
       parts.push('已过期' + (m.valid_until ? `（有效期至 ${formatValidity(m.valid_until)}）` : ''));
     }
@@ -862,9 +866,9 @@
     }
   }
 
-  // -------- 模块专属选项（当前仅 treasure：循环上限 / 目标场次）--------
-  // 规则：仅 treasure 显示；输入/下拉改了就立即写 sidecar 的缓存 + 热更新；
-  // 之后点「开始」时 sidecar 会把缓存注入到新实例。未跑时热更新落到离线索实例不生效但缓存有效。
+  // -------- 模块专属选项（treasure：循环上限 / 目标场次；speedrush：演示录制开关）--------
+  // 规则：按 MODULE_OPTION_BLOCKS 显示对应块；控件改动立即写 sidecar 的配置槽，
+  // 下次「开始」注入新实例——不做运行中热更新，运行期间控件锁定（见 updateModuleOptionsDisabled）。
   let _optListenersBound = false;
   const VALID_SESSIONS = new Set(['intern', 'expert', 'master']);
   const SESSION_LABELS = { intern: '实习场', expert: '专家场', master: '大师场' };
@@ -894,6 +898,9 @@
   function bindModuleOptionsUI() {
     if (_optListenersBound) return;
     _optListenersBound = true;
+    // 录制开关：绑在 treasure 控件的卫语句之前——那些控件缺失时不得连带漏绑
+    const recToggle = $('opt-record-mode');
+    if (recToggle) recToggle.addEventListener('click', onRecordToggleClick);
     const loops = $('opt-max-loops');
     const sessionHost = $('opt-target-session');
     if (!loops) return;
@@ -912,50 +919,133 @@
     }
   }
 
+  // 有专属选项块的模块登记表（新增模块：这里加一行 + index.html 加对应块，别处不再改分支）。
+  // refresh 直接放函数引用——函数声明会提升，所以本表可以在函数定义之前求值。
+  const MODULE_OPTION_BLOCKS = {
+    treasure: { block: 'opt-treasure-block', refresh: refreshTreasureOptions },
+    speedrush: { block: 'opt-speedrush-block', refresh: refreshSpeedrushOptions },
+  };
+
+  // 按当前模块分派：先切换块的显隐，再刷该模块的选项与实况
   async function refreshModuleOptions(moduleId) {
     const host = $('module-options');
     if (!host) return;
-    const loopsEl = $('opt-max-loops');
-    const statusEl = $('module-options-status');
-    // 非 treasure：隐藏并返回
-    if (moduleId !== 'treasure') {
+    const def = MODULE_OPTION_BLOCKS[moduleId];
+    // 未登记专属选项的模块：整块隐藏
+    if (!def) {
       host.style.display = 'none';
       setOptionsStatus('', '');
       return;
     }
     host.style.display = 'block';
+    Object.keys(MODULE_OPTION_BLOCKS).forEach((mid) => {
+      const el = $(MODULE_OPTION_BLOCKS[mid].block);
+      if (el) el.style.display = mid === moduleId ? 'block' : 'none';
+    });
     setOptionsStatus('读取配置中...', '');
     try {
-      const cfg = await mra.call('get_module_config', { module_id: 'treasure' });
-      // --- 填「循环次数上限」 ---
-      if (loopsEl) {
-        const v = typeof cfg.max_daily_loops === 'number' ? cfg.max_daily_loops : 50;
-        loopsEl.value = String(v);
-      }
-      // --- 填「目标场次」：intern / expert / master（后端权威值） ---
-      setTargetSessionOnUI((cfg && cfg.target_session) ? cfg.target_session : 'master');
-      // 运行实况提示（只读，_state 仅运行时有数值变化）
-      const st = (cfg && cfg._state) || null;
-      if (st) {
-        const done = Number.isFinite(st.done_count_state) ? st.done_count_state : 0;
-        const ocr = (st.done_count_ocr === null || st.done_count_ocr === undefined) ? '--' : st.done_count_ocr;
-        const lim = Number.isFinite(st.effective_limit) ? st.effective_limit : 50;
-        const bucket = (st && st.daily_bucket) ? String(st.daily_bucket) : '';
-        if (state.is_running) {
-          // 运行中：选项已锁定，展示实况
-          setOptionsStatus(
-            `运行中：上方选项已锁定（改配置请先停止）。今日（${bucket} 05:00 起）已完成 ${done} 场（OCR读到 ${ocr}），刷到第 ${lim} 场为止。`,
-            done >= lim ? 'warn' : 'ok'
-          );
-        } else {
-          setOptionsStatus('', '');
-        }
-      } else {
-        setOptionsStatus('', '');
-      }
+      await def.refresh();
     } catch (e) {
       console.error(e);
       setOptionsStatus('读取配置失败: ' + (e.message || e), 'error');
+    }
+  }
+
+  // 鉴宝专属选项（循环上限 / 目标场次）
+  async function refreshTreasureOptions() {
+    const loopsEl = $('opt-max-loops');
+    const cfg = await mra.call('get_module_config', { module_id: 'treasure' });
+    // --- 填「循环次数上限」 ---
+    if (loopsEl) {
+      const v = typeof cfg.max_daily_loops === 'number' ? cfg.max_daily_loops : 50;
+      loopsEl.value = String(v);
+    }
+    // --- 填「目标场次」：intern / expert / master（后端权威值） ---
+    setTargetSessionOnUI((cfg && cfg.target_session) ? cfg.target_session : 'master');
+    // 运行实况提示（只读；_state 由运行实例提供，未运行时没有）
+    const st = (cfg && cfg._state) || null;
+    if (!st || !state.is_running) {
+      setOptionsStatus('', '');
+      return;
+    }
+    const done = Number.isFinite(st.done_count_state) ? st.done_count_state : 0;
+    const ocr = (st.done_count_ocr === null || st.done_count_ocr === undefined) ? '--' : st.done_count_ocr;
+    const lim = Number.isFinite(st.effective_limit) ? st.effective_limit : 50;
+    const bucket = (st && st.daily_bucket) ? String(st.daily_bucket) : '';
+    // 运行中：选项已锁定，展示实况
+    setOptionsStatus(
+      `运行中：上方选项已锁定（改配置请先停止）。今日（${bucket} 05:00 起）已完成 ${done} 场（OCR读到 ${ocr}），刷到第 ${lim} 场为止。`,
+      done >= lim ? 'warn' : 'ok'
+    );
+  }
+
+  // 极速狂飙专属选项（演示数据录制开关）
+  async function refreshSpeedrushOptions() {
+    const btn = $('opt-record-mode');
+    const cfg = await mra.call('get_module_config', { module_id: 'speedrush' });
+    if (btn) setToggle(btn, !!(cfg && cfg.record_mode));
+    renderSpeedrushStatus(cfg);
+  }
+
+  // 录制实况（只读）。_state 来自运行实例：未运行、或在导航阶段（录制只在驾驶阶段开写）时
+  // 都没有"正在录"的实况，此时按开关状态给出准确的一句话。
+  function renderSpeedrushStatus(cfg) {
+    const st = (cfg && cfg._state) || null;
+    const on = !!(cfg && cfg.record_mode);
+    if (st && st.recording) {
+      setOptionsStatus(
+        `录制中：已写 ${st.frames} 帧 · 丢帧 ${st.frames_dropped} · 手柄样本 ${st.pad_samples}；`
+        + `目录 ${st.demos_dir}`, 'ok'
+      );
+      return;
+    }
+    if (state.is_running) {
+      setOptionsStatus(
+        on ? '运行中：录制已开启，进入驾驶阶段后开始写入'
+           : '运行中：本次未开启录制（开关改动在下次「开始」时生效）',
+        on ? '' : 'warn'
+      );
+      return;
+    }
+    setOptionsStatus('', '');
+  }
+
+  // 运行中周期性刷新录制实况：只更新状态行，不动开关、不打"读取中"（避免每秒闪一下）
+  async function refreshSpeedrushStatus() {
+    try {
+      const cfg = await mra.call('get_module_config', { module_id: 'speedrush' });
+      renderSpeedrushStatus(cfg);
+    } catch (e) {
+      console.error(e); // 轮询失败不打扰用户，下次再试
+    }
+  }
+
+  // 录制开关：只写 sidecar 缓存（下次 start 注入），不做运行中热更新
+  async function onRecordToggleClick() {
+    const btn = $('opt-record-mode');
+    if (!btn || btn.disabled || _optionsSaving) return;
+    const on = !toggleState(btn);
+    setToggle(btn, on); // 先翻转视觉状态
+    _optionsSaving = true;
+    setOptionsStatus('保存中...', '');
+    try {
+      const resp = await mra.call('set_module_config', {
+        module_id: 'speedrush',
+        config: { record_mode: on },
+      });
+      const saved = !!(resp && resp.record_mode);
+      setToggle(btn, saved); // 回显后端最终值
+      setOptionsStatus(
+        saved ? '已开启录制：下次「开始」后，驾驶阶段请自行手动驾驶'
+              : '已关闭录制（下次「开始」时生效）',
+        'ok'
+      );
+    } catch (e) {
+      console.error(e);
+      setToggle(btn, !on); // 回滚
+      setOptionsStatus('保存失败: ' + (e.message || e), 'error');
+    } finally {
+      _optionsSaving = false;
     }
   }
 
@@ -1060,13 +1150,19 @@
     try {
       const d = await mra.call('get_status');
       renderStatus(d);
-      // 运行状态跳变时：锁定/解锁模块专属选项 + 刷新运行实况（仅 treasure 有）
+      // 运行状态跳变时：锁定/解锁模块专属选项 + 刷新该模块的运行实况
       const runState = !!(d.is_running || d.worker_active);
       if (runState !== state._lastRunState) {
         state._lastRunState = runState;
         updateModuleOptionsDisabled(runState);
         const mid = $('module-select') ? $('module-select').value : null;
-        if (mid === 'treasure') refreshModuleOptions('treasure');
+        if (mid) refreshModuleOptions(mid);
+      }
+      // 录制实况每秒刷一次：帧数在涨，只在状态跳变时刷是看不出进度的
+      if (runState && currentModuleId === 'speedrush'
+          && Date.now() - state._lastRecRefresh >= 1000) {
+        state._lastRecRefresh = Date.now();
+        refreshSpeedrushStatus();
       }
     } catch (e) {
       console.error(e);
@@ -1080,6 +1176,9 @@
     const loopsEl = $('opt-max-loops');
     if (loopsEl) loopsEl.disabled = running;
     setSessionSegmentedDisabled(running);
+    // 录制开关：运行中锁定（配置不做热更新，改动在下次「开始」时生效）
+    const recToggle = $('opt-record-mode');
+    if (recToggle) recToggle.disabled = running;
     // 模块下拉：运行中禁止切换（后端同时拒绝，这里把入口也关掉，让"能不能切"一眼可见）
     const sel = $('module-select');
     if (sel) {
@@ -1522,7 +1621,10 @@
     isActive: () => {
       if (previewMode === 'floating') return false; // 消费权已交给悬浮窗
       const page = $('page-data');
-      return state.peepEnabled && !!page && !page.classList.contains('hidden');
+      if (!state.peepEnabled || !page || page.classList.contains('hidden')) return false;
+      // 当前模块得有预览卡才拉帧：没有卡（如 speedrush）时拉了也没处显示，
+      // 白白让后端每帧编码一次 base64
+      return !!(currentModuleId && $(currentModuleId + '-preview-img'));
     },
     img: () => $(currentModuleId + '-preview-img'),
     empty: () => $(currentModuleId + '-preview-empty')
@@ -1816,14 +1918,48 @@
       </div>`;
   }
 
-  // 模块 → 页面模板注册表。未定制的模块共用默认模板；
+  // 模块 → 页面模板注册表。未登记的模块走 DEFAULT_PAGE_DEFS（默认模板）。
   // 鉴宝的数据页只换性能卡（其余两栏同构），故把卡片 HTML 作参数传入。
   function treasureDataCards(mid) {
     return defaultDataCards(mid, treasurePerfCard(mid));
   }
 
+  // 极速狂飙的数据页：驾驶数据落在会话目录里，界面这边只给入口与说明。
+  // **不套用默认数据页**——那两张卡（性能监控、金币/障碍车检测）是别的模块的概念，
+  // 摆在这里只会让人以为"检测没跑起来"。
+  function speedrushDataCards(mid) {
+    return `
+      <div class="col-left">
+        <div class="card">
+          <div class="card-head"><h3>驾驶演示数据</h3></div>
+          <div class="card-body">
+            <p class="module-desc">录制开关在「主控」页的模块选项里。每段驾驶各写一个会话目录，
+              含逐帧图与手柄序列；门控判定的日志带帧号（<code>frame=</code>），按它可回查
+              判定时刻的画面。</p>
+            <button class="mra-tool-btn" id="${mid}-open-demos" style="width:100%;justify-content:center;margin-top:12px;">
+              <span class="mra-tool-btn-label">打开数据目录</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="col-right">
+        <div class="card">
+          <div class="card-head"><h3>在线指标</h3></div>
+          <div class="card-body">
+            <p class="module-desc">驾驶控制接入后，这里显示模型输出与几何兜底的接管次数——
+              接管频次上升是分布漂移最灵敏的信号。</p>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // 未登记模板的模块用默认模板（此前是"回退到 treasure"，那会让合法但未定制的模块
+  // 显示成鉴宝的页面，包括读 treasure.db 的今日看板）
+  const DEFAULT_PAGE_DEFS = { data: (mid) => defaultDataCards(mid), settings: defaultSettingsCards };
+
   const MODULE_PAGE_DEFS = {
     treasure: { data: treasureDataCards, settings: defaultSettingsCards },
+    speedrush: { data: speedrushDataCards, settings: defaultSettingsCards },
   };
 
   // 未选择模块（下拉栏「（空）」或注册表为空）时，「数据/设置」页的占位内容
@@ -1843,13 +1979,17 @@
       if (settingsHost) settingsHost.innerHTML = EMPTY_MODULE_HTML;
       return;
     }
-    // 防注入白名单：moduleId 会拼入 HTML 模板（如 id="${mid}-..."），
-    // 只接受注册表中已声明的模块键，非法值一律回退 treasure（兼断 CodeQL js/xss-through-dom 污点）
-    if (!Object.prototype.hasOwnProperty.call(MODULE_PAGE_DEFS, moduleId)) {
-      moduleId = 'treasure';
+    // 防注入白名单：moduleId 会拼入 HTML 模板（如 id="${mid}-..."），只接受后端注册表
+    // 给出的模块 id（get_initial_state 的 modules），非法值退回注册表第一个
+    // ——此前是硬编码回退 treasure，那会让合法但未定制的模块显示成鉴宝的页面。
+    // （兼断 CodeQL js/xss-through-dom 污点：所有拼进模板的 mid 都出自本表）
+    if (!state.modules.some((m) => m && m.id === moduleId)) {
+      const first = state.modules.find((m) => m && m.id);
+      if (!first) return;
+      moduleId = first.id;
     }
     currentModuleId = moduleId;
-    const def = MODULE_PAGE_DEFS[moduleId];
+    const def = MODULE_PAGE_DEFS[moduleId] || DEFAULT_PAGE_DEFS;
     const dataPage = $('page-data');
     const settingsPage = $('page-settings');
     if (dataPage) dataPage.innerHTML = def.data(moduleId);
@@ -1865,6 +2005,19 @@
     if (btnOptimizer) btnOptimizer.addEventListener('click', () => { openOptimizerCenter(); });
 
     const p = (suffix) => $(moduleId + '-' + suffix);
+
+    // 驾驶数据目录入口（同样置于卫语句前：控件由模块模板决定，缺某个模块的控件不该漏绑）
+    const btnDemos = p('open-demos');
+    if (btnDemos) {
+      btnDemos.addEventListener('click', async () => {
+        try {
+          await mra.call('open_user_data_folder', {});
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+        }
+      });
+    }
     const tDebug = p('toggle-debug');
     const tEstop = p('toggle-estop');
     if (!tDebug || !tEstop) return;
