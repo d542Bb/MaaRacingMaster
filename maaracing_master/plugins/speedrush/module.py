@@ -90,6 +90,20 @@ DRIVE_READY_TIMEOUT_S = 30.0
 DRIVE_READY_POLL_S = 0.3
 
 
+def _frame_note(fid: int, age_ms: float) -> str:
+    """帧证据锚点，形如 ``frame=1234 age=12ms``，随门控判定的日志一起打出。
+
+    **为什么需要它**：logger 的时间戳只到秒且是墙钟（``%H:%M:%S``），而门控判据的
+    窗口是 0.3~1s 级；录制器的时间戳是单调时钟（``perf_counter_ns``）——两个时基
+    无法直接对齐。**帧号是唯一的共同坐标**：拿日志里的 ``frame=`` 去该会话的
+    ``frames.jsonl`` 里查，就得到那一刻画面所在的文件。没有这根针，"门控准不准"
+    只能靠猜，改判据也就无从验证。
+
+    ``age_ms`` 一并打出：它是判定所用帧的新鲜度，帧过旧本身就是门控误判的来源之一。
+    """
+    return f"frame={fid} age={age_ms:.0f}ms"
+
+
 class SpeedRushModule(ActivityModule):
     """极速狂飙：地铁跑酷式车道选择玩法。"""
 
@@ -248,26 +262,40 @@ class SpeedRushModule(ActivityModule):
                 self._recorder = None
 
     def _wait_drive_ready(self, phase: int) -> bool:
-        """等到驾驶页稳定出现；连续命中 ``DRIVE_READY_HITS`` 次才算就绪（去抖）。"""
+        """等到驾驶页稳定出现；连续命中 ``DRIVE_READY_HITS`` 次才算就绪（去抖）。
+
+        每次轮询都取一次帧（只为拿帧号，不落盘）：判定成立/超时的日志里带 ``frame=``，
+        事后才能在录制帧里复查"判早了还是判晚了"。
+        """
         assert self.ctx is not None
         assert self._graph is not None
         logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待进入驾驶页", "INFO")
         hits = 0
         deadline = time.monotonic() + DRIVE_READY_TIMEOUT_S
+        fid, age_ms = 0, 0.0
         while self._running and time.monotonic() < deadline:
+            _, fid, _, age_ms = self.ctx.capture.frame_with_age()
             if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
                 hits += 1
                 if hits >= DRIVE_READY_HITS:
-                    logger.log(f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页", "INFO")
+                    logger.log(
+                        f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页"
+                        f"（{_frame_note(fid, age_ms)}）", "INFO")
                     return True
             else:
+                if hits:
+                    # 只在"连击被中断"时记：这是起步动画/过场造成的瞬时丢失，
+                    # 是校准就绪判据最直接的证据；一直是 0 的等待期不必逐条刷。
+                    logger.log(
+                        f"[极速狂飙] 驾驶阶段 {phase}：就绪连击中断"
+                        f"（{_frame_note(fid, age_ms)}）", "DEBUG")
                 hits = 0  # 去抖：中间一次失配就重新计数
             if not self.ctx.lifecycle.sleep(DRIVE_READY_POLL_S):
                 return False
         if self._running:
             logger.log(
-                f"[极速狂飙] 驾驶阶段 {phase}：{DRIVE_READY_TIMEOUT_S:.0f}s 内未进入驾驶页",
-                "WARNING")
+                f"[极速狂飙] 驾驶阶段 {phase}：{DRIVE_READY_TIMEOUT_S:.0f}s 内未进入驾驶页"
+                f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
 
     def _drive_loop(self, phase: int, recorder: DriveRecorder | None) -> bool:
@@ -275,6 +303,11 @@ class SpeedRushModule(ActivityModule):
 
         节拍与锚点复查**故意解耦**——识别走框架、单轮毫秒级且耗时不定，若把它塞进
         每帧路径，帧间隔会随识别抖动；帧自带真实时间戳，离线按时间戳对齐即可。
+
+        **每 tick 都取帧，不论是否录制**：这一帧是门控判定的证据锚点（判定日志里带
+        ``frame=``）。读取本身是 WGC 中心缓存的共享引用（帧号不变则不重算），未录制时
+        的增量成本可忽略；反过来，缺了它，门控日志就只能记"判定发生了"，记不清
+        "判定发生在哪一帧"，校准判据时无从复查。
         """
         assert self.ctx is not None
         assert self._graph is not None
@@ -287,17 +320,14 @@ class SpeedRushModule(ActivityModule):
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         next_anchor = 0.0
         miss = 0
+        fid, ts_ns, age_ms = 0, 0, 0.0
         while self._running and time.monotonic() < deadline:
             t0 = time.monotonic()
-            if recorder is not None:
-                # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
-                # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
-                # 未录制时不取帧：主循环的心跳由下方 sleep 承担，省掉无谓的缓存读取。
-                # （驾驶控制接入后此处改为每帧必取，供感知输入。）
-                frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
-                if frame is not None:
-                    recorder.record_frame(
-                        frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
+            # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
+            # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
+            frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
+            if recorder is not None and frame is not None:
+                recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
 
             now = time.monotonic()
             if now >= next_anchor:
@@ -306,8 +336,15 @@ class SpeedRushModule(ActivityModule):
                     miss = 0
                 else:
                     miss += 1
+                    # 每次失配都记（DEBUG）：连续的失配序列正是"过场动画被误判为结束"
+                    # 与"真的离开了对局"的区别所在，只记最后一条就看不出这个区别。
+                    logger.log(
+                        f"[极速狂飙] 驾驶阶段 {phase}：锚点失配第 {miss} 次"
+                        f"（{_frame_note(fid, age_ms)}）", "DEBUG")
                     if miss >= DRIVE_MISS_TOLERANCE:
-                        logger.log(f"[极速狂飙] 驾驶阶段 {phase}：已离开对局", "INFO")
+                        logger.log(
+                            f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
+                            f"（{_frame_note(fid, age_ms)}）", "INFO")
                         return True
 
             rest = DRIVE_TICK_S - (time.monotonic() - t0)
@@ -315,7 +352,9 @@ class SpeedRushModule(ActivityModule):
                 break
         if not self._running:
             return False
-        logger.log(f"[极速狂飙] 驾驶阶段 {phase} 未在 {DRIVE_TIMEOUT_S:.0f}s 内结束", "WARNING")
+        logger.log(
+            f"[极速狂飙] 驾驶阶段 {phase} 未在 {DRIVE_TIMEOUT_S:.0f}s 内结束"
+            f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
 
     def _begin_recording(self, phase: int) -> DriveRecorder | None:

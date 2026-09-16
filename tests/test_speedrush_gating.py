@@ -172,6 +172,68 @@ def test_loop_times_out(env) -> None:
     assert mod._drive_loop(1, None) is False
 
 
+# ---------- 门控取证的帧锚点 ----------
+
+
+class _LogSink:
+    """接住模块的日志行，用来断言"日志里到底写了什么"。"""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str]] = []
+
+    def log(self, msg, level="INFO", channel=None) -> None:
+        self.lines.append((level, msg))
+
+    def texts(self, needle: str) -> list[str]:
+        return [m for _, m in self.lines if needle in m]
+
+
+def test_frame_note_format() -> None:
+    assert sr._frame_note(1234, 12.4) == "frame=1234 age=12ms"
+    assert sr._frame_note(0, float("inf")) == "frame=0 age=infms"
+
+
+def test_gating_logs_carry_frame_anchor(env, monkeypatch) -> None:
+    """门控判定的日志必须带帧号：没有它，门控判早了还是判晚了无从复查。
+
+    日志时间戳只到秒且是墙钟，录制器是单调时钟——两个时基对不上，帧号是唯一的共同坐标。
+    """
+    mod, _, _ = env
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    _set_graph(mod, [True, True, False, False])
+
+    assert mod._drive(1) is True
+    ready = sink.texts("已进入驾驶页")
+    left = sink.texts("已离开对局")
+    assert ready and "frame=" in ready[0]
+    assert left and "frame=" in left[0]
+
+
+def test_miss_sequence_is_logged_per_occurrence(env, monkeypatch) -> None:
+    """每次锚点失配都留一行：连续失配序列才是"过场动画"与"真离场"的区别所在。"""
+    mod, _, _ = env
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    _set_graph(mod, [True, False, False])
+
+    assert mod._drive_loop(1, None) is True
+    misses = sink.texts("锚点失配")
+    assert len(misses) == 2  # 容差是 2：两条都要留下，只留最后一条看不出序列
+    assert all("frame=" in m for m in misses)
+
+
+def test_frame_is_read_even_without_recorder(env) -> None:
+    """未录制也每 tick 取帧（取证锚点的来源），且不落任何盘。"""
+    mod, ctx, _ = env
+    mod._record_mode = False
+    _set_graph(mod, [True, True, False, False])
+
+    assert mod._drive(1) is True
+    assert ctx.capture.calls > 0
+    assert not (sr.data_dir() / "speedrush" / "demos").exists()
+
+
 # ---------- 录制接入 ----------
 
 
