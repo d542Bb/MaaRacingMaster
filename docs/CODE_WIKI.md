@@ -326,7 +326,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | 天蓝  | (235,206,135) | 按钮目标    |
 | 青   | (255,255,0)   | 模板匹配框   |
 
-> **检测标注与 HUD 通路**：`racing_info` 非空时另绘检测框（按类别着色）、透视车道线、远中近分区线与 HUD 状态栏（帧号与检测统计、摇杆位置条、死区宽度条、决策原因、前馈调试 `off/stop/dx/dy/moving/in_center/reason`、`ff_extra`、`CENTER_L`/`CENTER_R` 中心区竖线）。该通路属**已归档的极速狂飙域**，完整规格见本机 `archive/racing/CODE_WIKI.md` §3.1（本机留存，协作者不可达）。当前入库模块（treasure）自带 renderer 且不传 `racing_info`，故库内无消费者——**这是 `core/` 承载已退役模块私货的代码债，登记在维护者待办台账**。
+> **检测标注与 HUD 通路**：`racing_info` 非空时另绘检测框（按类别着色）、透视车道线、远中近分区线与 HUD 状态栏（帧号与检测统计、摇杆位置条、死区宽度条、决策原因、前馈调试 `off/stop/dx/dy/moving/in_center/reason`、`ff_extra`、`CENTER_L`/`CENTER_R` 中心区竖线）。该通路属**已归档的极速狂飙域**，完整规格见本机 `archive/racing/CODE_WIKI.md` §3.1（本机留存，协作者不可达）。当前入库模块（treasure）自带 renderer 且不传 `racing_info`，故库内无消费者——**这是 `core/` 承载已退役模块私货的代码债，属代码层清理项，不在文档层消化。**
 
 ***
 
