@@ -59,7 +59,10 @@ FLOW: list[tuple[str, str | None, int]] = [
 # 循环体起点：一轮跑完回到这里，入口链只在首轮走一次。
 LOOP_START_INDEX = 3
 
-# 驾驶页锚点节点名（图侧纯锚点，用于判定「当前是否还在对局中」）
+# 驾驶页锚点节点名（图侧纯锚点，用于判定「当前是否还在对局中」）。
+# 图里该节点的 rate_limit 已显式置零：驾驶循环每轮都要问它一次，而框架默认的
+# 「每轮识别最低消耗」是 1s——吃默认值时实测主循环被压到约 1Hz，采集帧率与阶段
+# 响应双双不可用。置零后单轮只剩框架开销与匹配本身。
 DRIVE_STAGE_NODE = "speedrush.驾驶页锚点"
 
 # 驾驶阶段等待上限。单局（含两阶段）实测一般 3 分钟、耗满可达 6~7 分钟
@@ -337,8 +340,9 @@ class SpeedRushModule(ActivityModule):
     def _drive_loop(self, phase: int, recorder: DriveRecorder | None) -> bool:
         """采集/控制主循环：按目标节拍取帧，锚点降频复查阶段是否已结束。
 
-        节拍与锚点复查**故意解耦**——识别走框架、单轮毫秒级且耗时不定，若把它塞进
-        每帧路径，帧间隔会随识别抖动；帧自带真实时间戳，离线按时间戳对齐即可。
+        节拍与锚点复查**故意解耦**——锚点识别走框架（单轮耗时不定），若每帧都塞一次
+        识别，帧间隔会随它抖动；帧自带真实时间戳，离线按时间戳对齐即可。退出时报一次
+        实际节拍（``_log_loop_pace``）：那是"采集能不能支撑训练"的第一手判据。
 
         **每 tick 都取帧，不论是否录制**：这一帧是门控判定的证据锚点（判定日志里带
         ``frame=``）。读取本身是 WGC 中心缓存的共享引用（帧号不变则不重算），未录制时
@@ -354,8 +358,10 @@ class SpeedRushModule(ActivityModule):
             logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（驾驶控制尚未实现）", "INFO")
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
+        loop_start = time.monotonic()
         next_anchor = 0.0
         miss = 0
+        frames = 0
         fid, ts_ns, age_ms = 0, 0, 0.0
         while self._running and time.monotonic() < deadline:
             t0 = time.monotonic()
@@ -364,6 +370,7 @@ class SpeedRushModule(ActivityModule):
             frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
             if recorder is not None and frame is not None:
                 recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
+            frames += 1
 
             now = time.monotonic()
             if now >= next_anchor:
@@ -381,17 +388,32 @@ class SpeedRushModule(ActivityModule):
                         logger.log(
                             f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
                             f"（{_frame_note(fid, age_ms)}）", "INFO")
+                        self._log_loop_pace(phase, frames, loop_start)
                         return True
 
             rest = DRIVE_TICK_S - (time.monotonic() - t0)
             if rest > 0 and not self.ctx.lifecycle.sleep(rest):
                 break
+        self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
         logger.log(
             f"[极速狂飙] 驾驶阶段 {phase} 未在 {DRIVE_TIMEOUT_S:.0f}s 内结束"
             f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
+
+    def _log_loop_pace(self, phase: int, frames: int, loop_start: float) -> None:
+        """报一次本次循环的实际节拍。
+
+        这是"采集能不能支撑训练"的第一手判据：训练侧按 30Hz 的时间窗重采样，实际节拍
+        掉到几 Hz 时录下的帧根本喂不进那条契约；而日志里原先只有帧数、没有速率，
+        这种偏差看不出来。三个出口（离开对局 / 停止 / 超时）都要报。
+        """
+        elapsed = time.monotonic() - loop_start
+        rate = frames / elapsed if elapsed > 0 else 0.0
+        logger.log(
+            f"[极速狂飙] 驾驶阶段 {phase}：循环结束，{frames} 轮 / {elapsed:.1f}s"
+            f"（实际 {rate:.1f}Hz，目标 {DRIVE_TICK_HZ:.0f}Hz）", "INFO")
 
     def _begin_recording(self, phase: int) -> DriveRecorder | None:
         """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。"""

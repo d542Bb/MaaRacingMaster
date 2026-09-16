@@ -433,7 +433,11 @@
         "action": {
             "type": "DoNothing",
             "param": {}
-        }
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
     },
     "speedrush.回合结果页锚点": {
         "attach": {
