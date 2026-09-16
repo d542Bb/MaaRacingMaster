@@ -14,7 +14,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from maaracing_master.plugins.speedrush import module as sr
+try:
+    from maaracing_master.plugins.speedrush import module as sr
+    _OK, _ERR = True, ""
+except Exception as exc:  # noqa: BLE001 —— 缺重依赖的机器上整文件 SKIP
+    # 模块的继承链要 maa（ActivityModule），而 CI 只装轻量依赖集（pytest/numpy/
+    # opencv-headless），故在 CI 上整文件跳过；本机 .venv 全依赖照常执行。
+    _OK, _ERR = False, str(exc)
+    sr = None  # type: ignore[assignment]
+
+pytestmark = pytest.mark.skipif(not _OK, reason=f"需要完整运行时依赖：{_ERR}")
 
 
 class _Clock:
