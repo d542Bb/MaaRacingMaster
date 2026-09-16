@@ -286,10 +286,10 @@
                     "mode": "template",
                     "colorspace": "rgb",
                     "rect": [
-                        0.8836,
-                        0.8639,
-                        0.9359,
-                        0.9667
+                        0.8594,
+                        0.85,
+                        0.95,
+                        0.9806
                     ],
                     "templates": [
                         "speedrush_continue_btn.png"
