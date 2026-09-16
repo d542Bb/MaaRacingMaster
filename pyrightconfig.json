@@ -2,6 +2,7 @@
   "reportMissingImports": "warning",
   "venvPath": ".",
   "venv": ".venv",
+  "pythonVersion": "3.11",
   "extraPaths": [
     "maaracing_master/plugins/treasure"
   ],
