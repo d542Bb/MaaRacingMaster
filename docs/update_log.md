@@ -21,6 +21,10 @@
 
 - **引用口径：** 入库文档不再引用本机过程产物与归档目录（`docs/plan/`、`archive/`），原指向它们的指针一并移除。
 
+- **第二真源副本压缩：** §9.8 移除与 `MAAFW_GUIDE §5.6` 重复的协议前提、方向红线详情与生态一手参照（改为一句指针），保留本项目契约（两段真源文件布局、通电位置四条、回归护栏、编辑真源）；§10.2 MAA API 表改为指向 `MAAFW_GUIDE §9` 的指针（六行内容其 §9 / §3.3 / §6 已全覆盖，零信息损失）。
+
+- **表述收敛：** §2.1 架构图的 treasure 框改为「活动插件 `plugins/<id>/`」+ 平台视角四条（阶段状态机 / 自带真源 / 自带渲染器 / 能力经 `ActivityContext` 取用）；§1.1 去掉极速狂飙重写承诺（开发方向归维护者台账）；§1.2 YOLO 行改「跨活动目标检测（当前无模块启用）」；§4.2 修正不完整路径为 `maaracing_master/core/resources/stick_speed_model.json`；§4.10 截图分派删除清单改为正面约束「唯一截图通道 = WGC 中心缓存，无后端分派、无回退通道」；§6.1 去掉模块内部依赖行；清掉「记录模式」「`_interruptible_sleep`」等已不存在事物的叙述。
+
 - **纠错与补全：** §6.2 运行时持有关系与 §2.2/§4.1 对齐（`Tasker`/`Resource` 由活动模块实例创建并持有，主控不再持有）；Tab 口径统一为四 Tab；§5 小节号重排为 5.1–5.5 并修好两处失效锚点；§3 目录树去重 `registry.py`、补 `NAVKIT_V4_PLAN.md` / `adr/` / `design/` / `latest_release.json`；§8.1 改为「全局约定」并写明 core 侧常量仅分辨率一项、插件数值一律读 `resources/policy/<id>.policy.json`；§5.3 壳工程清单补 `Program.cs` / `PeepWindow` / `RpcBridge.cs` / `frontend/peep.*`；§4.5 PEEP 改为「产出 JPEG 交 GUI 侧渲染」并补「渲染器可被模块安装替换」这条 core 能力；§4.5 导航侧颜色表按 `debug.py` 实际常量重建。
 
 - **验证：** `check_truth` 通过（图 27 节点自洽、policy 数据面可装配且交叉互洽）；全量 `pytest` 绿。
