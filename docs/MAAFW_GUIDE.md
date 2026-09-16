@@ -612,8 +612,10 @@ class MyAction(CustomAction):
   用 `save_draw` + 失败截图 + 日志交叉验证。
 
 - 生态工具：MaaDebugger(Pipeline 调试器)、VSCode 插件(maa-support，含截图裁剪素材与
-  Agent socket 调试)、MaaPipelineEditor(可视化)、MaaCommonAssets(预转 OCR 模型)、
-  MaaPracticeBoilerplate(空模板脚手架)。
+  Agent socket 调试)、MaaPipelineEditor(可视化；在线 mpe.codax.site，支持 iframe 嵌入 +
+  LocalBridge)、MaaInspector、MaaCommonAssets(预转 OCR 模型)、
+  MaaPracticeBoilerplate(空模板脚手架)、ProjectInterface(PI 协议，本项目暂不建，
+  补写清单见 §8.1)。
 
 - **文档口径纪律**：官方文档站跟随 main（现 v5.13+），引用任何"框架行为"论断前，
   先对**当前安装版本**实测（V-1 实验即反例：文档"重名返回 false 保留旧注册"在 5.12.3
