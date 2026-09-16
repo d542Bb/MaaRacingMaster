@@ -1,0 +1,343 @@
+{
+  "hall_race_btn": {
+    "template_size": [
+      69,
+      47
+    ],
+    "match_score": 0.9991,
+    "frame": "image-738596430e1629661b4f1669647e422c.png",
+    "pixel_rect": [
+      1143,
+      587,
+      1232,
+      658
+    ],
+    "rect": [
+      0.893,
+      0.8153,
+      0.9625,
+      0.9139
+    ]
+  },
+  "rank_fun_tab": {
+    "template_size": [
+      133,
+      49
+    ],
+    "match_score": 0.9968,
+    "frame": "image-1394195f2e250f95996d92acc54b4bb6.png",
+    "pixel_rect": [
+      1,
+      494,
+      174,
+      567
+    ],
+    "rect": [
+      0.0008,
+      0.6861,
+      0.1359,
+      0.7875
+    ]
+  },
+  "fun_speedrush_card": {
+    "template_size": [
+      348,
+      50
+    ],
+    "match_score": 0.9998,
+    "frame": "image-69b9e9f392ec6e373d97bc3786f8c9b0.png",
+    "pixel_rect": [
+      283,
+      235,
+      735,
+      309
+    ],
+    "rect": [
+      0.2211,
+      0.3264,
+      0.5742,
+      0.4292
+    ]
+  },
+  "speedrush_find_opponent_btn": {
+    "template_size": [
+      221,
+      56
+    ],
+    "match_score": 1.0,
+    "frame": "image-6a2e784abc8f8efb345f18e1fd47d367.png",
+    "pixel_rect": [
+      885,
+      499,
+      1172,
+      583
+    ],
+    "rect": [
+      0.6914,
+      0.6931,
+      0.9156,
+      0.8097
+    ]
+  },
+  "speedrush_giveup_btn": {
+    "template_size": [
+      122,
+      38
+    ],
+    "match_score": 1.0,
+    "frame": "image-6a2e784abc8f8efb345f18e1fd47d367.png",
+    "pixel_rect": [
+      1100,
+      17,
+      1258,
+      75
+    ],
+    "rect": [
+      0.8594,
+      0.0236,
+      0.9828,
+      0.1042
+    ]
+  },
+  "speedrush_reward_hint": {
+    "template_size": [
+      96,
+      20
+    ],
+    "match_score": 1.0,
+    "frame": "image-e3df85dfc72e54df4a222c40849076e2.png",
+    "pixel_rect": [
+      578,
+      662,
+      702,
+      692
+    ],
+    "rect": [
+      0.4516,
+      0.9194,
+      0.5484,
+      0.9611
+    ]
+  },
+  "speedrush_store_confirm_btn": {
+    "template_size": [
+      228,
+      61
+    ],
+    "match_score": 0.9794,
+    "frame": "image-773ee048ae811545ba214d930320a8bf.png",
+    "pixel_rect": [
+      907,
+      625,
+      1203,
+      716
+    ],
+    "rect": [
+      0.7086,
+      0.8681,
+      0.9398,
+      0.9944
+    ]
+  },
+  "speedrush_store_sell_title": {
+    "template_size": [
+      54,
+      25
+    ],
+    "match_score": 1.0,
+    "frame": "image-485c59462c825768b99f18a0fa2c4453.png",
+    "pixel_rect": [
+      150,
+      71,
+      220,
+      108
+    ],
+    "rect": [
+      0.1172,
+      0.0986,
+      0.1719,
+      0.15
+    ]
+  },
+  "speedrush_round_end_detail_btn": {
+    "template_size": [
+      157,
+      48
+    ],
+    "match_score": 0.9823,
+    "frame": "image-26344803bec558d14b78a81c574ecc9a.png",
+    "pixel_rect": [
+      920,
+      623,
+      1125,
+      695
+    ],
+    "rect": [
+      0.7188,
+      0.8653,
+      0.8789,
+      0.9653
+    ]
+  },
+  "speedrush_continue_btn": {
+    "template_size": [
+      51,
+      50
+    ],
+    "match_score": 0.9828,
+    "frame": "image-26344803bec558d14b78a81c574ecc9a.png",
+    "pixel_rect": [
+      1131,
+      622,
+      1198,
+      696
+    ],
+    "rect": [
+      0.8836,
+      0.8639,
+      0.9359,
+      0.9667
+    ]
+  },
+  "speedrush_giveup_continue_btn": {
+    "template_size": [
+      228,
+      60
+    ],
+    "match_score": 1.0,
+    "frame": "image-5546f9d39bd766d5f0e0d55b3d5b047a.png",
+    "pixel_rect": [
+      729,
+      426,
+      1025,
+      516
+    ],
+    "rect": [
+      0.5695,
+      0.5917,
+      0.8008,
+      0.7167
+    ]
+  },
+  "speedrush_rank_score_label": {
+    "template_size": [
+      82,
+      33
+    ],
+    "match_score": 1.0,
+    "frame": "image-095d2694b2a07ffa03f99ae44298a5fa.png",
+    "pixel_rect": [
+      750,
+      192,
+      856,
+      241
+    ],
+    "rect": [
+      0.5859,
+      0.2667,
+      0.6687,
+      0.3347
+    ]
+  },
+  "speedrush_drive_gear": {
+    "template_size": [
+      28,
+      26
+    ],
+    "match_score": 0.9304,
+    "frame": "agent-cut from 2e9f3ad03f63",
+    "pixel_rect": [
+      44,
+      24,
+      80,
+      62
+    ],
+    "rect": [
+      0.0344,
+      0.0333,
+      0.0625,
+      0.0861
+    ],
+    "note": "agent 自裁：替代不稳的 speedrush_stage_label"
+  },
+  "speedrush_title": {
+    "template_size": [
+      227,
+      59
+    ],
+    "match_score": 1.0,
+    "frame": "image-790ff10f22d312efc79938c02aee4a82.png",
+    "pixel_rect": [
+      241,
+      63,
+      536,
+      152
+    ],
+    "rect": [
+      0.1883,
+      0.0875,
+      0.4188,
+      0.2111
+    ]
+  },
+  "speedrush_start_btn": {
+    "template_size": [
+      126,
+      41
+    ],
+    "match_score": 0.9953,
+    "frame": "image-790ff10f22d312efc79938c02aee4a82.png",
+    "pixel_rect": [
+      1009,
+      613,
+      1173,
+      674
+    ],
+    "rect": [
+      0.7883,
+      0.8514,
+      0.9164,
+      0.9361
+    ]
+  },
+  "speedrush_career_award": {
+    "template_size": [
+      265,
+      88
+    ],
+    "match_score": 1.0,
+    "frame": "image-87af3ca5ff2e7958e3d1e19af7b6d63b.png",
+    "pixel_rect": [
+      924,
+      31,
+      1269,
+      163
+    ],
+    "rect": [
+      0.7219,
+      0.0431,
+      0.9914,
+      0.2264
+    ]
+  },
+  "speedrush_badge": {
+    "template_size": [
+      125,
+      48
+    ],
+    "match_score": 1.0,
+    "frame": "image-87af3ca5ff2e7958e3d1e19af7b6d63b.png",
+    "pixel_rect": [
+      10,
+      424,
+      173,
+      496
+    ],
+    "rect": [
+      0.0078,
+      0.5889,
+      0.1352,
+      0.6889
+    ]
+  }
+}

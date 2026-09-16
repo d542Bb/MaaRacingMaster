@@ -1,0 +1,675 @@
+{
+    "speedrush.点比赛": {
+        "attach": {
+            "_page": "hall",
+            "_label": "游戏大厅 → 点击比赛按钮",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.893,
+                        0.8153,
+                        0.9625,
+                        0.9139
+                    ],
+                    "templates": [
+                        "hall_race_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点娱乐玩法": {
+        "attach": {
+            "_page": "rank",
+            "_label": "比赛页 → 点击左侧 tab 娱乐玩法",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.0008,
+                        0.6861,
+                        0.1359,
+                        0.7875
+                    ],
+                    "templates": [
+                        "rank_fun_tab.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点极速狂飙卡片": {
+        "attach": {
+            "_page": "fun",
+            "_label": "娱乐玩法页 → 点击极速狂飙卡片",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.2211,
+                        0.3264,
+                        0.5742,
+                        0.4292
+                    ],
+                    "templates": [
+                        "fun_speedrush_card.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点开始挑战": {
+        "attach": {
+            "_page": "speedrush",
+            "_label": "活动页 → 点击开始挑战",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7883,
+                        0.8514,
+                        0.9164,
+                        0.9361
+                    ],
+                    "templates": [
+                        "speedrush_start_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点寻找对手": {
+        "attach": {
+            "_page": "round",
+            "_label": "回合开始页 → 点击寻找对手",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.6914,
+                        0.6931,
+                        0.9156,
+                        0.8097
+                    ],
+                    "templates": [
+                        "speedrush_find_opponent_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点放弃本轮": {
+        "attach": {
+            "_page": "round",
+            "_label": "回合开始页 → 点击放弃本轮",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.8594,
+                        0.0236,
+                        0.9828,
+                        0.1042
+                    ],
+                    "templates": [
+                        "speedrush_giveup_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.关闭奖励弹窗": {
+        "attach": {
+            "_page": "reward",
+            "_label": "奖励弹窗 → 点击任意处关闭",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.4516,
+                        0.9194,
+                        0.5484,
+                        0.9611
+                    ],
+                    "templates": [
+                        "speedrush_reward_hint.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点确认上阵": {
+        "attach": {
+            "_page": "store",
+            "_label": "策略商店 → 点击确认上阵",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7086,
+                        0.8681,
+                        0.9398,
+                        0.9944
+                    ],
+                    "templates": [
+                        "speedrush_store_confirm_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点继续": {
+        "attach": {
+            "_page": "result",
+            "_label": "回合结果页／段位分结算页 → 点击继续",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.8836,
+                        0.8639,
+                        0.9359,
+                        0.9667
+                    ],
+                    "templates": [
+                        "speedrush_continue_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.点继续放弃": {
+        "attach": {
+            "_page": "giveup",
+            "_label": "放弃确认框 → 点击继续放弃",
+            "_owner": "speedrush"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.5695,
+                        0.5917,
+                        0.8008,
+                        0.7167
+                    ],
+                    "templates": [
+                        "speedrush_giveup_continue_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click"
+            }
+        },
+        "next": [
+            "speedrush.__boot.dwell"
+        ],
+        "on_error": [
+            "speedrush.__boot.dwell"
+        ],
+        "rate_limit": 1000
+    },
+    "speedrush.活动页锚点": {
+        "attach": {
+            "_page": "speedrush",
+            "_label": "活动页主标题（页面感知）",
+            "_owner": "speedrush",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.1883,
+                        0.0875,
+                        0.4188,
+                        0.2111
+                    ],
+                    "templates": [
+                        "speedrush_title.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        }
+    },
+    "speedrush.商店页锚点": {
+        "attach": {
+            "_page": "store",
+            "_label": "策略商店售卖区标题（页面感知）",
+            "_owner": "speedrush",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.1172,
+                        0.0986,
+                        0.1719,
+                        0.15
+                    ],
+                    "templates": [
+                        "speedrush_store_sell_title.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        }
+    },
+    "speedrush.驾驶页锚点": {
+        "attach": {
+            "_page": "drive",
+            "_label": "驾驶页 HUD 齿轮图标（页面感知）",
+            "_owner": "speedrush",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.0344,
+                        0.0333,
+                        0.0625,
+                        0.0861
+                    ],
+                    "templates": [
+                        "speedrush_drive_gear.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        }
+    },
+    "speedrush.回合结果页锚点": {
+        "attach": {
+            "_page": "result",
+            "_label": "回合结果页回合详情按钮（页面感知）",
+            "_owner": "speedrush",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7188,
+                        0.8653,
+                        0.8789,
+                        0.9653
+                    ],
+                    "templates": [
+                        "speedrush_round_end_detail_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        }
+    },
+    "speedrush.段位分结算页锚点": {
+        "attach": {
+            "_page": "settle",
+            "_label": "段位分结算页段位分标签（页面感知）",
+            "_owner": "speedrush",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.5859,
+                        0.2667,
+                        0.6687,
+                        0.3347
+                    ],
+                    "templates": [
+                        "speedrush_rank_score_label.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        }
+    },
+    "speedrush.极速狂飙tab锚点": {
+        "attach": {
+            "_page": "speedrush",
+            "_label": "左侧 tab 极速狂飙条目（页面感知）",
+            "_owner": "speedrush",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.0078,
+                        0.5889,
+                        0.1352,
+                        0.6889
+                    ],
+                    "templates": [
+                        "speedrush_badge.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        }
+    },
+    "speedrush.生涯奖励入口": {
+        "attach": {
+            "_page": "speedrush",
+            "_label": "活动页生涯奖励入口（步骤16 用，当前仅感知）",
+            "_owner": "speedrush",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7219,
+                        0.0431,
+                        0.9914,
+                        0.2264
+                    ],
+                    "templates": [
+                        "speedrush_career_award.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        }
+    },
+    "speedrush.__boot.dwell": {
+        "attach": {
+            "_boot": true,
+            "_entry": true,
+            "_label": "起跑汇聚（任意页面自适应）"
+        },
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "speedrush.点比赛",
+                    "speedrush.点娱乐玩法",
+                    "speedrush.点极速狂飙卡片",
+                    "speedrush.点开始挑战",
+                    "speedrush.点寻找对手",
+                    "speedrush.点放弃本轮",
+                    "speedrush.关闭奖励弹窗",
+                    "speedrush.点确认上阵",
+                    "speedrush.点继续",
+                    "speedrush.点继续放弃",
+                    "speedrush.活动页锚点",
+                    "speedrush.商店页锚点",
+                    "speedrush.驾驶页锚点",
+                    "speedrush.回合结果页锚点",
+                    "speedrush.段位分结算页锚点",
+                    "speedrush.极速狂飙tab锚点",
+                    "speedrush.生涯奖励入口"
+                ]
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "next": [
+            "speedrush.点比赛",
+            "speedrush.点娱乐玩法",
+            "speedrush.点极速狂飙卡片",
+            "speedrush.点开始挑战",
+            "speedrush.点寻找对手",
+            "speedrush.点放弃本轮",
+            "speedrush.关闭奖励弹窗",
+            "speedrush.点确认上阵",
+            "speedrush.点继续",
+            "speedrush.点继续放弃"
+        ],
+        "timeout": -1,
+        "rate_limit": 600
+    }
+}
