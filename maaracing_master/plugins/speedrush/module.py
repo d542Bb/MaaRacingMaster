@@ -201,6 +201,16 @@ class SpeedRushModule(ActivityModule):
             )
             return
 
+        # 录制模式的输入前提：点击方式为「前台鼠标」时全程不创建虚拟手柄；选了「后台手柄」
+        # 的话，导航步骤会创建并常驻一个虚拟手柄（见 nav_graph 的 gamepad 分支），可能与其
+        # 物理手柄冲突——而录制恰恰要他用物理手柄驾驶。冲突与否未实测，故只提示不拦截：
+        # 真冲突的话他驾驶时会立刻发现手柄不响应，不会默默录坏数据。
+        if self._record_mode and self.ctx.click_mode != "real":
+            logger.log(
+                "[极速狂飙] 录制模式提示：当前点击方式为「后台手柄」，导航步骤会创建虚拟手柄，"
+                "可能与你的物理手柄冲突（驾驶时手柄可能不响应）。建议在设置页改为「前台鼠标」再录。",
+                "WARNING")
+
         graph = NavGraph(self.ctx)
         graph.add_plugin(PIPELINE_DIR, IMAGE_DIR)
         if not graph.load():
