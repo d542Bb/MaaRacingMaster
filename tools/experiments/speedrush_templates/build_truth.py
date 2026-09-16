@@ -80,15 +80,24 @@ def main() -> None:
 
     graph: dict[str, dict] = {}
 
-    # 动作节点：识别 + 点击，出口统一回汇聚重判
+    # 动作节点：识别 + 点击，**原子叶子**（零路由）。
+    # 出口为何不写在节点上：NavGraph.run(entry, reached) 的语义是"阻塞到图跑完，
+    # 再用 reached 事后校验"——节点若自带 next，Python 调 run(单节点) 会被框架
+    # 顺着边继续跑下去而失控。把出口交给调用方（Python 显式走下一段，或 run(__boot)
+    # 让框架按当前页面择一），单步驱动才成立。
+    # 标 _anchor_only 是因为本批节点"不参与路由"（零路由 + 被 __boot 引用），
+    # 借此豁免机检的「无出口节点」告警——告警本身不 fail，但十个节点一起报会淹没
+    # CI 输出。语义注释见 _label。
     for name, tpl, page, label in ACTIONS:
         graph[name] = {
-            "attach": {"_page": page, "_label": label, "_owner": MODULE},
+            "attach": {
+                "_page": page,
+                "_label": f"{label}（原子动作，零路由）",
+                "_owner": MODULE,
+                "_anchor_only": True,
+            },
             "recognition": recog(tpl, roi[tpl]["rect"]),
             "action": {"type": "Custom", "param": {"custom_action": "MaaRM_Click"}},
-            "next": [BOOT],
-            "on_error": [BOOT],
-            "rate_limit": 1000,
         }
 
     # 纯锚点节点：零路由，仅作页面感知规格
@@ -99,13 +108,14 @@ def main() -> None:
             "action": {"type": "DoNothing", "param": {}},
         }
 
-    # 汇聚节点：Or 全锚点信号并集 → next 全动作表（点击后一律回此处重判）
+    # 汇聚节点：DirectHit 恒命中 → next 全动作表。
+    # 出口语义：每个动作节点点完一律回此处重判，由"页面上此刻存在哪个按钮"决定下一步。
+    # 需要区分"同一页面在不同时机点击不同按钮"时（回合开始页：首轮点寻找对手、次轮点
+    # 放弃本轮），由 Python 侧用 NavGraph.run(entry, reached) 显式驱动，而非复制节点——
+    # 复制节点会让同一模板被两个节点认领，触发机检的跨锚点重复识别告警。
     graph[BOOT] = {
-        "attach": {"_boot": True, "_entry": True, "_label": "起跑汇聚（任意页面自适应）"},
-        "recognition": {
-            "type": "Or",
-            "param": {"any_of": [n for n, _, _, _ in ACTIONS + ANCHORS]},
-        },
+        "attach": {"_boot": True, "_entry": True, "_label": "起跑汇聚（按当前页面存在的按钮择一）"},
+        "recognition": {"type": "DirectHit", "param": {}},
         "action": {"type": "DoNothing", "param": {}},
         "next": [n for n, _, _, _ in ACTIONS],
         "timeout": -1,

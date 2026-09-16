@@ -2,8 +2,9 @@
     "speedrush.点比赛": {
         "attach": {
             "_page": "hall",
-            "_label": "游戏大厅 → 点击比赛按钮",
-            "_owner": "speedrush"
+            "_label": "游戏大厅 → 点击比赛按钮（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -30,20 +31,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点娱乐玩法": {
         "attach": {
             "_page": "rank",
-            "_label": "比赛页 → 点击左侧 tab 娱乐玩法",
-            "_owner": "speedrush"
+            "_label": "比赛页 → 点击左侧 tab 娱乐玩法（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -70,20 +65,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点极速狂飙卡片": {
         "attach": {
             "_page": "fun",
-            "_label": "娱乐玩法页 → 点击极速狂飙卡片",
-            "_owner": "speedrush"
+            "_label": "娱乐玩法页 → 点击极速狂飙卡片（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -110,20 +99,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点开始挑战": {
         "attach": {
             "_page": "speedrush",
-            "_label": "活动页 → 点击开始挑战",
-            "_owner": "speedrush"
+            "_label": "活动页 → 点击开始挑战（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -150,20 +133,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点寻找对手": {
         "attach": {
             "_page": "round",
-            "_label": "回合开始页 → 点击寻找对手",
-            "_owner": "speedrush"
+            "_label": "回合开始页 → 点击寻找对手（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -190,20 +167,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点放弃本轮": {
         "attach": {
             "_page": "round",
-            "_label": "回合开始页 → 点击放弃本轮",
-            "_owner": "speedrush"
+            "_label": "回合开始页 → 点击放弃本轮（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -230,20 +201,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.关闭奖励弹窗": {
         "attach": {
             "_page": "reward",
-            "_label": "奖励弹窗 → 点击任意处关闭",
-            "_owner": "speedrush"
+            "_label": "奖励弹窗 → 点击任意处关闭（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -270,20 +235,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点确认上阵": {
         "attach": {
             "_page": "store",
-            "_label": "策略商店 → 点击确认上阵",
-            "_owner": "speedrush"
+            "_label": "策略商店 → 点击确认上阵（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -310,20 +269,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点继续": {
         "attach": {
             "_page": "result",
-            "_label": "回合结果页／段位分结算页 → 点击继续",
-            "_owner": "speedrush"
+            "_label": "回合结果页／段位分结算页 → 点击继续（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -350,20 +303,14 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.点继续放弃": {
         "attach": {
             "_page": "giveup",
-            "_label": "放弃确认框 → 点击继续放弃",
-            "_owner": "speedrush"
+            "_label": "放弃确认框 → 点击继续放弃（原子动作，零路由）",
+            "_owner": "speedrush",
+            "_anchor_only": true
         },
         "recognition": {
             "type": "Custom",
@@ -390,14 +337,7 @@
             "param": {
                 "custom_action": "MaaRM_Click"
             }
-        },
-        "next": [
-            "speedrush.__boot.dwell"
-        ],
-        "on_error": [
-            "speedrush.__boot.dwell"
-        ],
-        "rate_limit": 1000
+        }
     },
     "speedrush.活动页锚点": {
         "attach": {
@@ -627,31 +567,11 @@
         "attach": {
             "_boot": true,
             "_entry": true,
-            "_label": "起跑汇聚（任意页面自适应）"
+            "_label": "起跑汇聚（按当前页面存在的按钮择一）"
         },
         "recognition": {
-            "type": "Or",
-            "param": {
-                "any_of": [
-                    "speedrush.点比赛",
-                    "speedrush.点娱乐玩法",
-                    "speedrush.点极速狂飙卡片",
-                    "speedrush.点开始挑战",
-                    "speedrush.点寻找对手",
-                    "speedrush.点放弃本轮",
-                    "speedrush.关闭奖励弹窗",
-                    "speedrush.点确认上阵",
-                    "speedrush.点继续",
-                    "speedrush.点继续放弃",
-                    "speedrush.活动页锚点",
-                    "speedrush.商店页锚点",
-                    "speedrush.驾驶页锚点",
-                    "speedrush.回合结果页锚点",
-                    "speedrush.段位分结算页锚点",
-                    "speedrush.极速狂飙tab锚点",
-                    "speedrush.生涯奖励入口"
-                ]
-            }
+            "type": "DirectHit",
+            "param": {}
         },
         "action": {
             "type": "DoNothing",
