@@ -22,7 +22,7 @@
 8. [关键配置与常量](#8-关键配置与常量)
 9. [开发与调试](#9-开发与调试)
 10. [已知坑点与注意事项](#10-已知坑点与注意事项)
-11. [GUI 宿主选型](#11-gui-宿主选型winui-3-定案)
+11. [GUI 宿主定案](#11-gui-宿主定案winui-3)
     附录：类速查表
 
 ***
@@ -42,7 +42,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | 手柄模拟   | vgamepad 0.1.x                           | Xbox 360 虚拟手柄，摇杆精确控制 |
 | 图像处理   | OpenCV 5.x                               | 模板匹配、Hough 直线检测、可视化  |
 | OCR    | RapidOCR 3.9.x                           | 鉴宝金额 / 出价按钮文字识别      |
-| GUI 框架 | WinUI 3 (Windows App SDK 1.8) + WebView2 | 原生窗口 + HTML 三 Tab 前端 |
+| GUI 框架 | WinUI 3 (Windows App SDK 1.8) + WebView2 | 原生窗口 + HTML 四 Tab 前端 |
 | 系统交互   | XInput API (Win32)                       | 物理手柄检测，避免冲突          |
 
 ### 1.3 核心工作流
@@ -124,7 +124,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │   │   ├── clicker.py / gamepad_cursor.py / audio_volume.py    # 点击方式 / 手柄光标 / 静音
 │   │   ├── render_plan.py / stage_tracker.py / roi_config.py   # 渲染计划 / 阶段记录 / ROI 底座
 │   │   ├── debug.py / debug_io.py            # PEEP 预览 + 调试落盘 IO worker
-│   │   ├── module_config.py / registry.py    # 模块配置契约 / 插件扫描注册
+│   │   ├── module_config.py                  # 模块配置契约（module.config.json 加载器）
 │   │   ├── paths.py                          # 用户数据目录（%APPDATA%/MaaRacingMaster，五目录）
 │   │   ├── opencv_utf8_patch.py / vgamepad_lazy.py / wgcap.py
 │   │   └── yolo_detector.py                  # 跨活动视觉基础设施
@@ -173,10 +173,15 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │   └── release/assemble.ps1                  # 发布打包脚本
 │
 ├── .github/workflows/                        # CI：test.yml（单测）、release.yml（发布）
-├── docs/
-│   ├── update_log.md                         # 版本更新日志
-│   ├── MAAFW_GUIDE.md / SELF_CHECK.md / announcement.md
-│   └── CODE_WIKI.md                          # 本文档（主文档）；鉴宝域文档随插件（plugins/&lt;id&gt;/CODE_WIKI.md）
+├── docs/                                     # 信源文档根（信源路由见 AGENTS.md）
+│   ├── CODE_WIKI.md                          # 本文档（主文档）；鉴宝域文档随插件（plugins/&lt;id&gt;/CODE_WIKI.md）
+│   ├── MAAFW_GUIDE.md / SELF_CHECK.md
+│   ├── NAVKIT_V4_PLAN.md                     # 版本宪法（§1 六条不变量）
+│   ├── adr/                                  # 架构决策记录（决策 + 理由 + 状态，只增不改）
+│   ├── announcement.md / announcement.json   # 公告通知卡规范（关于页）
+│   ├── design/                               # 前端设计稿（pages/*.html、colors_and_type.css）
+│   ├── latest_release.json                   # 最近发布元数据
+│   └── update_log.md                         # 对外变更记录（Release 正文由此抽取）
 │
 # 运行期数据（自动生成，gitignore）：已迁至 %APPDATA%/MaaRacingMaster/
 # ├── config/                                 # profile.json、maa_option.json
@@ -185,8 +190,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 # ├── framework/                              # MAA 框架自产物（maafw.log、cache）
 # └── debug/                                  # debug/<module>/<会话>/（调试台契约）
 #
-# 本机归档（gitignore）：archive/<名>/ —— 退役实现与离线探针工具的本机留存
-#   legacy_gui（旧 ttkbootstrap GUI）、cursor_refactor 探针、racing 插件、treasure_v2（v2 资产）
+# 本机归档（gitignore）：archive/<名>/ —— 退役实现与离线探针的本机留存，内容随本机状态
 ```
 
 ***
@@ -249,27 +253,19 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 - YOLOv8 输出解析（xywh → xyxy）
 
-- **per-class NMS**：按类别分别做非极大值抑制，避免跨类压制（如car压掉bonus\_car）
+- **per-class NMS**：按类别分别做非极大值抑制，避免高置信类别压掉相邻类别
 
 - 双阈值输出：正式检测（高置信度，供决策用）+ 全量低阈值检测（供debug可视化）
 
 **核心类**：`YOLODetector`
 
-**类别映射**：
-
-| 类别ID | 名称         | 说明       | 置信度阈值 |
-| ---- | ---------- | -------- | ----- |
-| 0    | coin       | 金币       | 0.35  |
-| 1    | car        | 障碍车      | 0.35  |
-| 2    | bonus\_car | 跳板车（奖励车） | 0.35  |
-
-**性能指标**（参考 RTX 4060）：\~3.7ms/帧，跳帧后GPU负载降至1/3
+**类别映射与阈值**：检测器为跨活动基础设施，**类别集由所服务的活动定义**，不写死在 core 文档里。当前唯一的类别集（`coin` / `car` / `bonus_car`）及其阈值属已归档的极速狂飙域，见本机 `archive/racing/CODE_WIKI.md`（本机留存，协作者不可达）；当前入库模块（treasure）不使用本检测器。阈值可在 `YOLODetector.CLASS_CONF` 覆盖。
 
 ***
 
 ### 4.4 [mra\_shell](../apps/MaaRacingMaster.Shell) — GUI 宿主（WinUI 3 + HTML 前端）
 
-> v0.13.0 起 GUI 定案为 WinUI 3 shell + WebView2 HTML 前端（详见 §11）。旧 ttkbootstrap GUI（`gui.py` MRAGUI）已在重构时移除，以下历史记录仅供参考。
+> v0.13.0 起 GUI 定案为 WinUI 3 shell + WebView2 HTML 前端（定案理由见 §11）。壳工程结构、锁定版本与 WinUI 3 坑点见 [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md)；前端与图标规范见其 [frontend/README.md](../apps/MaaRacingMaster.Shell/frontend/README.md)。
 
 **进程模型**：
 
@@ -299,31 +295,19 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 3. WebView2 加载 `frontend/index.html`，前端 `mra.call` 初始化状态
 4. 用户操作 → 前端 RPC → sidecar → 模块执行
 
-#### 4.4.1 旧 ttkbootstrap GUI 历史记录（已归档，仅存档）
-
-> 原 `gui.py` MRAGUI（ttkbootstrap）的改进历史，代码已在重构时移除，此处仅存档。
-
-| 改进项            | 说明                                                                                                                    | 核心实现                                          |
-| -------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| 窗口可拖拽可调大小      | 原 `resizable(False, False)` → 改为 `resizable(True, True)`                                                              | `gui.py MRAGUI.__init__()` toplevel / root 配置 |
-| 安全最小尺寸保护       | `minsize(480, 400)`，防止窗口缩小到 UI 元素互相重叠不可点                                                                              | 同上 init 阶段设置                                  |
-| 日志按级别过滤        | `logger.get_lines(min_level=...)` 拉取；GUI 默认只显示 INFO/WARNING/ERROR 三级；DEBUG/TRACE 仅文件 + 显式勾选 DEBUG 存盘开关时显示             | `gui.py _poll_logs()`；配合 §4.6.1 日志分级约定        |
-| 物理手柄检测阻止运行     | 非记录模式下调用 `has_physical_controller()` → 返回 True 时阻止 "开始" 并弹对话框提醒拔手柄                                                    | `gui.py _on_start_clicked()` 前置检查；§9.6 / §4.7 |
-| 弹窗图标修正（不继承父窗口） | `messagebox.showerror` 默认丢 root.ico → 改用 `tk.Toplevel` + 手动 `dlg.iconbitmap(icon_path)` 设置独立应用图标；agents.md / §10 均有记录 | 物理手柄弹窗 / 模型缺失弹窗 / 连接失败弹窗                      |
-
 ***
 
 ### 4.5 [debug.py](../maaracing_master/core/debug.py) — 调试可视化
 
 **职责**：
 
-- 两套渲染模式：全量存盘（enabled）/ 精简PEEP预览（peep\_enabled）
+- 两套渲染模式：全量存盘（enabled）/ 精简 PEEP 预览（peep\_enabled）
 
-- PEEP独立线程OpenCV窗口（\~30fps刷新，锁保护最新帧）
+- PEEP 产出为 JPEG 交 GUI 侧渲染（`update_peep` 写与 `get_peep_jpeg` 读共用一把锁防撕裂；主界面预览卡与独立 PEEP 悬浮窗互斥消费）——本模块不开窗口
 
-- 导航模式标注：光标(红)/候选(绿)/拉黑(紫)/过滤(黑)/按钮(蓝)/模板(青)
+- 渲染器可被模块安装替换（renderer token）：模块自带 `render_full` / `render_peep`，未安装时回落内置默认视图
 
-- 赛车模式标注：YOLO框(金/红/紫)/透视车道线/远中近分区/HUD状态栏
+- 导航标注：光标 / 候选（入围、拉黑、被过滤）/ 按钮目标 / 模板匹配框
 
 - 同类别重叠框去重（避免虚线框堆叠）
 
@@ -331,44 +315,18 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 **核心类**：`NavigationDebugger`
 
-**颜色约定**：
+**颜色约定（导航侧，BGR）**：
 
-| 颜色   | BGR值        | 含义                   |
-| ---- | ----------- | -------------------- |
-| 🔴 红 | (0,0,220)   | 选中的光标 / 障碍车car       |
-| 🟡 金 | (0,215,255) | 金币coin / 按钮目标        |
-| 🟣 紫 | (220,0,220) | 跳板车bonus\_car / 拉黑候选 |
-| 🟢 绿 | (0,200,0)   | 入围光标候选 / 车道中线        |
-| 🔵 青 | (255,255,0) | 模板匹配框 / 标线 / 距离分区线   |
-| ⚫ 黑  | (0,0,0)     | 被硬过滤的轮廓              |
-| 🟧 橙 | (0,140,255) | 左标线边缘散点              |
-| 🔵 蓝 | (255,140,0) | 右标线边缘散点              |
+| 颜色  | BGR值           | 含义      |
+| --- | ------------- | ------- |
+| 红   | (0,0,220)     | 选中的光标   |
+| 绿   | (0,200,0)     | 入围光标候选  |
+| 紫红  | (255,0,255)   | 拉黑候选    |
+| 黑   | (0,0,0)       | 被硬过滤的轮廓 |
+| 天蓝  | (235,206,135) | 按钮目标    |
+| 青   | (255,255,0)   | 模板匹配框   |
 
-**赛车HUD内容**：
-
-- 左上：帧号 + raw/filt检测统计 + 各类数量
-
-- 底部：摇杆位置条（←/→，彩色点）+ 数值
-
-- 底部居中：决策原因（彩色）+ 详细说明
-
-- 底部摇杆上方：±stop\_zone 死区宽度条（半透明绿填充 + 边界细线 + 中心线）
-
-- 右上：前馈调试信息（off/stop/dx/dy/moving/in\_center/reason）
-
-- 右上第四行：ff\_extra 预见性衰减原因说明（\[提前收敛…]/\[近区回摆…]/\[无预见性衰减]）
-
-- 画面中部：CENTER\_L / CENTER\_R 半透明红竖线（中心区边界，L2c/R2c 标签）
-
-**v0.12.0 新增 HUD 字段**：
-
-- `dy`: 目标纵向接近速度（px/帧），右上第二行
-
-- `ff_extra`: 预见性衰减原因（提前收敛ETA/近区回摆），右上第四行
-
-- 中心区竖线：`_draw_racing_zones` 中追加，与透视车道线共享 overlay
-
-- 死区条：`_draw_racing_hud` 底部，半宽 = stop\_zone × w/2，α=0.30
+> **检测标注与 HUD 通路**：`racing_info` 非空时另绘检测框（按类别着色）、透视车道线、远中近分区线与 HUD 状态栏（帧号与检测统计、摇杆位置条、死区宽度条、决策原因、前馈调试 `off/stop/dx/dy/moving/in_center/reason`、`ff_extra`、`CENTER_L`/`CENTER_R` 中心区竖线）。该通路属**已归档的极速狂飙域**，完整规格见本机 `archive/racing/CODE_WIKI.md` §3.1（本机留存，协作者不可达）。当前入库模块（treasure）自带 renderer 且不传 `racing_info`，故库内无消费者——**这是 `core/` 承载已退役模块私货的代码债，登记在维护者待办台账**。
 
 ***
 
@@ -501,7 +459,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | `_destroy_gpad()`                              | 销毁虚拟手柄：显式 ctypes `vigem_target_remove` 从总线拔除（确定性）                      |
 | `_start_wgc_capture()` / `_stop_wgc_capture()` | 启动/停止 WGC 中心采集器（幂等）；失败即"截图链路不可用"，无 MAA 回退                              |
 
-### 5.4 yolo\_detector.YOLODetector
+### 5.2 yolo\_detector.YOLODetector
 
 | 方法                                                 | 说明                                                       |
 | -------------------------------------------------- | -------------------------------------------------------- |
@@ -511,31 +469,35 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | `_to_dets(xyxy, scores, classes, ... indices)`     | 索引转结构化检测结果dict                                           |
 | `CLASS_CONF`                                       | 类属性：各类别置信度阈值字典                                           |
 
-### 5.4 mra\_shell（WinUI 3 shell + sidecar）
+### 5.3 mra\_shell（WinUI 3 shell + sidecar）
 
 | 类/文件                  | 职责                                                                       |
 | --------------------- | ------------------------------------------------------------------------ |
-| `MainWindow.xaml.cs`  | 窗口生命周期、WebView2 加载前端、AppWindowTitleBar drag rects                        |
+| `Program.cs`          | 入口（`DISABLE_XAML_GENERATED_MAIN`）+ 单实例互斥                                  |
+| `App.xaml.cs`         | 应用生命周期、UAC 提权环境变量注入                                                      |
+| `MainWindow.xaml.cs`  | 窗口生命周期、WebView2 加载前端、`AppWindowTitleBar` drag rects                       |
+| `PeepWindow.xaml.cs`  | PEEP 悬浮窗（工具窗 + 置顶 + 无系统边框，标题栏 HTML 自绘）                                    |
+| `RpcBridge.cs`        | HTML ↔ C# ↔ sidecar 的 RPC 转发（主窗口与 PEEP 窗共用；回发按 `sender.CoreWebView2` 定位，互不串台） |
 | `PythonSidecar.cs`    | JSONL transport：stdin 串行写 + 唯一 stdout reader + pending 匹配 + 超时/Kill 树    |
-| `App.xaml.cs`         | 应用入口（DISABLE\_XAML\_GENERATED\_MAIN），UAC 提权环境变量注入                        |
-| `sidecar.py`          | Python 侧 RPC handler（get\_initial\_state / start / stop / set\_peep ...） |
+| `sidecar.py`          | Python 侧 RPC handler（get_initial_state / start / stop / set_peep ...）   |
 | `frontend/app.js`     | 前端逻辑：`mra.call()` 通信 + 四 Tab 切换 + 日志/状态轮询                                |
 | `frontend/index.html` | 页面结构，所有 UI 元素 id（改 UI 先改这里）                                              |
 | `frontend/style.css`  | 设计 token + 组件样式                                                          |
 | `frontend/icons.js`   | 图标唯一真源（Lucide 数据 / `MRAIcons`），规范见 `frontend/README.md`                    |
+| `frontend/peep.*`     | PEEP 悬浮窗页面与帧消费（`peep.html` / `peep.js` / `peep.css` / `peep-consumer.js`） |
 
-### 5.6 debug.NavigationDebugger
+### 5.4 debug.NavigationDebugger
 
 | 方法                                 | 说明                     |
 | ---------------------------------- | ---------------------- |
 | `__init__(proj_dir)`               | 初始化                    |
-| `enable_peep()` / `disable_peep()` | 开关PEEP实时预览窗口           |
+| `enable_peep()` / `disable_peep()` | 开关 PEEP 预览（置 `peep_enabled`；窗口由 GUI 侧承担）   |
 | `start_session(label)`             | 开始一次调试会话（创建存盘子目录）      |
 | `save_frame(img, **kwargs)`        | 统一入口：存盘全量绘制 + PEEP精简绘制 |
 | `_render_full(img, **kw)`          | 全量标注绘制（存盘用）            |
 | `_render_peep(img, **kw)`          | 精简绘制（PEEP用）            |
 
-### 5.6 基础工具方法速查（core 共享）
+### 5.5 基础工具方法速查（core 共享）
 
 跨模块高频工具函数，本表统一索引：
 
@@ -543,7 +505,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | ------------------------------- | -------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
 | `ctx.capture.screenshot()`      | capabilities.py `CaptureAdapter` | 截图 RGB ndarray（**只读 WGC 中心缓存**，无帧返回 None）              | 唯一取帧入口；不得回退同步截图，返回 None 按"采集链路故障"处理，不得当作"画面无变化"         |
 | `ctx.lifecycle.sleep(seconds)`  | capabilities.py `LifecycleAdapter` | 可中断睡眠：≤0.1s 分片检查停止信号，**墙钟时长 ≥ 入参**（deadline 分片+余数补齐）    | 曾按 `int(s/0.1)` 量化迭代，小于 0.1s 的入参静默退化为零睡眠忙旋（真机 2026-09-14 饿死导航 worker，见 treasure 域 CODE_WIKI §9）；语义由 `tests/test_capabilities_lifecycle_sleep.py` 机检。Controller 同名旧工具 `_interruptible_sleep` 为同型量化实现且零调用方，已删 |
-| `NavigationDebugger(proj_dir)`  | debug.py                         | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §5.5；§9.3 调试模式说明                                        |
+| `NavigationDebugger(proj_dir)`  | debug.py                         | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §5.4；§9.3 调试模式说明                                        |
 | `has_physical_controller()`     | window\_utils.py                 | XInput API 遍历 4 端口，任一连接返回 True                         | DLL 回退 xinput1\_4 → xinput9\_1\_0 → xinput1\_3；§10.4 坑点 |
 
 ***
@@ -596,13 +558,15 @@ core/window_utils.py
 core/sidecar.py（MaaRacingMaster.Shell 托管）
   └── controller: MaaRacingMasterController
         ├── debug: NavigationDebugger
-        ├── tasker: Tasker
-        │     └── context_sink: PipelineLogger
-        ├── resource: Resource
-        ├── controller: Win32Controller
-        └── 活动模块实例（start_module 经 registry.create_module 按需创建，
-              经 ActivityContext 门面访问 tasker/resource/capture/gamepad 等能力）
+        ├── controller: Win32Controller（仅连接校验用途，不作取帧来源）
+        ├── ctx: ActivityContext（能力门面；持 WGC 采集器、手柄租约等托管资源）
+        └── 活动模块实例（start_module 经 registry.create_module 按需创建）
+              └── tasker: Tasker（bind 了 WgcapController）
+                    ├── context_sink: PipelineLogger
+                    └── resource: Resource
 ```
+
+> MAA 对象（`Tasker` / `Resource`）由**活动模块实例**创建并持有，主控不再持有（见 §2.2、§4.1）；模块经 `ActivityContext` 窄接口访问 capture / gamepad / debug\_renderer 等能力。
 
 ***
 
@@ -647,11 +611,13 @@ start_module(module_id, start_from)
 
 ## 8. 关键配置与常量
 
-### 8.1 图像与分辨率
+### 8.1 全局约定
 
 | 常量    | 值        | 说明                             |
 | ----- | -------- | ------------------------------ |
 | 游戏分辨率 | 1280×720 | 所有坐标基于此（全局约定，各插件 ROI/按钮均按此归一化） |
+
+core 侧全局常量仅此一项。各插件的 ROI / 阈值 / 仲裁等数值**不在代码内硬编码**，一律读插件自带的 `resources/policy/<id>.policy.json`（唯一数据面真源）；资产归属判据见 §9.8。
 
 ### 8.2 版本管理
 
@@ -700,7 +666,9 @@ python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdi
 
 ### 9.4 YOLO模型训练
 
-`tools/training/train.py` 提供 YOLO 训练→ONNX 导出链路（Ultralytics yolo11n 微调）；导出目标为 racing 插件的归档资源目录 `archive/racing/resources/onnx/model.onnx`。当前版本不随发行包分发模型权重，含检测的插件启用时再由插件自带并声明 `REQUIRED_ASSETS`。
+`tools/training/train.py` 提供 YOLO 训练→ONNX 导出链路（Ultralytics yolo11n 微调），`dataset.yaml` 配置数据集类别，`auto_label.py` 为自动标注工具。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
+
+> 数据集类别集与导出目标属已归档的极速狂飙域（其训练产物落在该域归档资源目录，重写时取用），规格见本机 `archive/racing/CODE_WIKI.md`（本机留存，协作者不可达）。
 
 ### 9.5 日志位置（%APPDATA%/MaaRacingMaster/）
 
@@ -844,9 +812,7 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 | 坑点                        | 说明                                            | 解决方案                                           |
 | ------------------------- | --------------------------------------------- | ---------------------------------------------- |
 | 截图需要管理员权限                 | PrintWindow/BitBlt需要提升权限                      | mra\_shell.exe manifest 自动 UAC 提权（一次，child 继承） |
-| ~~ttkbootstrap 相关坑~~（已移除） | 旧 GUI 遗留                                      | 代码已重构移除，不再适用                                   |
 | cv2不支持中文路径                | imread/imwrite在中文路径下失败                        | opencv\_utf8\_patch.py monkey-patch            |
-| messagebox不继承图标           | tk.messagebox弹窗无图标                            | 用tk.Toplevel自行创建+iconbitmap                    |
 | YOLO ONNX 导出              | `onnx.export(simplify=True)` 可能产生损坏模型（推理结果错乱） | 导出时关闭 simplify，或导出后校验精度                        |
 
 ### 10.2 MAA Framework API
@@ -889,100 +855,13 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 
 ***
 
-## 11. GUI 宿主选型（WinUI 3 定案）
+## 11. GUI 宿主定案（WinUI 3）
 
-> 2026-08 定案。目标：HTML/WebView2 前端 + 原生 Windows 窗口行为（DWM 动画/系统按钮/Snap），Python 保持唯一业务后端（sidecar 模式）。**已落地**：正式 GUI 为 `apps/MaaRacingMaster.Shell/`（WinUI 3 shell + HTML 前端），取代选型期的 ttkbootstrap GUI（`gui/`、`gui_webview/`）与三个 spike。
+正式 GUI = `apps/MaaRacingMaster.Shell/`（WinUI 3 shell + WebView2 HTML 前端）+ `sidecar.py`（Python 业务后端，JSONL RPC）。
 
-### 11.1 选型历程（三个 Spike 实测结论）
+**硬约束（不得回退到以下两条路）**：要同时拿到 HTML 前端、原生窗口行为（DWM 动画 / 系统 caption buttons / Snap）与可用的拖动区，只有 `AppWindowTitleBar` 的**系统级 NC 处理**能做到——WebView2 是独立 HWND 铺满客户区，任何在客户区内模拟标题栏的方案（如 WPF `WindowChrome`）都会被它遮挡并吞掉鼠标；`FormBorderStyle.None` 类方案无 `WS_CAPTION`，拿不到 DWM 动画。
 
-| 候选                              | 结论     | 根因                                                                                                                                                                              |
-| ------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| pywebview frameless             | 出局     | `FormBorderStyle.None` 无 WS\_CAPTION → 无 DWM 动画；官方无 custom titlebar（master 分支新增 `drag_region.py` 示例但动画无解）                                                                       |
-| Tauri v2 (2.11.5)               | 出局     | `titleBarStyle` 是 **macOS-only**：builder 标 `#[cfg(target_os="macos")]`、`set_title_bar_style` 注释「macOS only」、tao Windows 无实现、wry 无 WCO 代码                                        |
-| WPF + WindowChrome              | 出局     | WebView2 **airspace**：WebView2 是独立 HWND 铺满客户区，把 WindowChrome 的拖动区（CaptionHeight）/模拟 caption buttons（UseAeroCaptionButtons）/resize 边缘（ResizeBorderThickness）全部遮挡、鼠标被 WebView2 吞掉 |
-| **WinUI 3 + AppWindowTitleBar** | **定案** | drag rects / caption buttons 是**系统级 NC 处理**，不被 WebView2 遮挡；HTML 铺顶 + 系统按钮 overlay + DWM 动画 + 拖动/双击/圆角全部通过                                                                       |
-
-### 11.2 锁定版本与依赖
-
-- Windows App SDK **1.8.260710003**（NuGet；meta 包，依赖拆成 9 个子包，restore 自动拉）
-
-- WebView2 SDK **1.0.4129.50**（仅 WPF spike 用到；WinUI 3 的 `Microsoft.UI.Xaml.Controls.WebView2` 随 WindowsAppSDK 提供）
-
-- .NET SDK 8.0.123（本机已装 8/9/10）
-
-- WinUI 3 未打包应用：`WindowsPackageType=None` + `WindowsAppSDKSelfContained=true`（免装 Windows App Runtime）
-
-- spike 原型：实测结论沉淀于 §11.1，正式实现见 `apps/MaaRacingMaster.Shell/`（`prototypes/` 已迁入 `apps/`）
-
-### 11.3 NuGet 网络坑（本机）
-
-| 坑点                                 | 说明                                | 解法                                                                   |
-| ---------------------------------- | --------------------------------- | -------------------------------------------------------------------- |
-| nuget.org 被网络阻断                    | dotnet 报 SSL EOF；curl 能 302 到 CDN | 用 **Azure CN 镜像** `https://nuget.azure.cn/v3/index.json`（restore 可用） |
-| `dotnet restore --source <源名>` 当路径 | 源名被解析为相对目录                        | 用**项目级** **`NuGet.Config`**（`<clear/>` + 指定源），restore 不带 --source    |
-| 本地包源                               | curl 手动下载 nupkg 到目录               | `dotnet nuget add source <dir>`                                      |
-
-### 11.4 WinUI 3 关键 API（AppWindowTitleBar）
-
-| API                                                    | 用途                            | 注意                                                             |
-| ------------------------------------------------------ | ----------------------------- | -------------------------------------------------------------- |
-| `AppWindow.TitleBar.ExtendsContentIntoTitleBar = true` | 内容延伸到标题栏，保留系统 caption buttons | 关闭系统标题栏视觉，按钮仍在右上 overlay                                       |
-| `AppWindow.TitleBar.SetDragRectangles(RectInt32[])`    | HTML 拖拽区                      | **物理像素**；窗口尺寸变化（`AppWindow.Changed` + `args.DidSizeChange`）需重设 |
-| `AppWindow.TitleBar.PreferredHeightOption`             | 系统按钮高度                        | `Standard` / `Tall`                                            |
-| `Window.AppWindow`                                     | 获取 AppWindow                  | Windows App SDK 1.4+                                           |
-
-- **drag region 交互区挖孔（v0.13.0-dev.5）**：顶部 52px 整条设为 drag rect 时，双击 tab/品牌按钮区会触发最大化（按钮被「标题栏」行为吃掉）。方案：前端 `reportDragExcludes()` 测量 `.brand`+`.tabs` 合并矩形 → `postMessage({type:'drag-exclude', rect})` → C# 收到后存 DIP 矩形，`UpdateDragRects()` 按 DPI 换算挖孔（左段+右段+按钮下方段三段），坐标基准 = 窗口左上角（HTML 延伸进标题栏后 DOM (0,0) 即窗口左上角）
-
-- **单实例互斥（v0.13.0-dev.5，`Program.cs`）**：`AcquireSingleInstance()` 用命名 Mutex（`Global\MaaRM_SingleInstance`，权限异常降级会话级）检测已有实例 → `MessageBoxW` 询问「启动新进程（taskkill /T 连 sidecar 杀旧进程）或取消保留旧进程」；旧进程被强杀后接管 Mutex 需捕获 `AbandonedMutexException`
-
-- 系统按钮颜色跟随系统主题（native 正常表现，非 bug）
-
-- Snap Layout hover 在 AppWindowTitleBar 下未出现（用户确认不在乎；疑似系统 SnapAssist 设置，未深究）
-
-### 11.5 WinUI 3 构建坑
-
-| 坑点                                            | 解决                                                                                         |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 手写 `Program.cs` 与 XAML 自动生成 Main 冲突（CS0101）   | csproj 加 `DefineConstants=$(DefineConstants);DISABLE_XAML_GENERATED_MAIN`                  |
-| `Application.Start` 回调参数用 `_` 与丢弃赋值冲突（CS0029） | 参数命名 `p`                                                                                   |
-| 未打包应用入口样板                                     | `WinRT.ComWrappersSupport.InitializeComWrappers()` + DispatcherQueueSynchronizationContext |
-
-### 11.6 后续步骤（sidecar 架构）
-
-- 进程模型：`MRA.exe`（C# WinUI 3 shell）+ `maaracing_backend.exe`（PyInstaller sidecar）
-
-- IPC：stdin/stdout **JSONL**（stdin=request / stdout=response+event / stderr=日志），消息带 `type` 字段；C# 侧单一 reader task + `pending` map + timeout
-
-- 管理员权限：只放最外层 exe manifest，一次 UAC，child 继承
-
-- Rust 三原则平移为 C#：**C# 只做窗口/启停 Python/转发消息**，Controller 业务不进入 shell
-
-### 11.7 sidecar transport 契约测试（Step 2 完成）
-
-> spike **11/11 通过**（2026-08）：由 `PythonSidecar.cs` + `fake_sidecar.py` + `Program.cs` 三件套验证下面这份 transport 契约，正式 shell 照此实现。
-
-**契约要点（C# PythonSidecar）**：
-
-| 项                | 实现                                                                                            |
-| ---------------- | --------------------------------------------------------------------------------------------- |
-| 唯一 stdout reader | 一个常驻 `ReaderLoopAsync`，按 `response.id` 匹配 `ConcurrentDictionary<ulong, TCS>`                  |
-| stdin 串行         | `SemaphoreSlim` 写锁                                                                            |
-| 超时               | `Task.WaitAsync(timeout)`，超时清理 pending，只影响单请求                                                 |
-| backend 断开       | reader EOF → 所有 pending 立即抛 `BackendDisconnectedException`                                    |
-| malformed stdout | 忽略并记 stderr，不 crash 整个 IPC                                                                    |
-| stderr drain     | 独立 task 持续读，防 OS pipe 填满卡死 Python                                                             |
-| shutdown         | `ShutdownAsync(grace)`：发 shutdown → 等进程自退 → 超时 `Kill(entireProcessTree:true)`；返回退出码，不 Dispose |
-| 防孤儿              | `Dispose()` 对存活进程 KillTree                                                                    |
-
-**契约测试坑点（必记）**：
-
-| 坑点                  | 说明                                                                                                                               |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `JsonDocument` 生命周期 | reader 中 `using var doc` 循环末释放，`SetResult` 必须传 `root.Clone()`（深拷贝），否则调用方访问即 ObjectDisposedException                              |
-| Python worker 线程退出  | `sys.exit()` 在非主线程只抛 SystemExit 不退出进程，必须 `os._exit(n)`                                                                           |
-| Dispose 后访问 Process | `_process.Dispose()` 后访问属性抛「No process is associated」；验证进程存活用 `ProcessId` + `Process.GetProcessById(pid)` 捕获 `ArgumentException` |
-
-> 正式 sidecar：[sidecar.py](../maaracing_master/core/sidecar.py)（Step 4 完成，已命令行验证）。入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr）。**坑**：handler 线程必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失。
+壳工程结构、锁定版本、WinUI 3 API 与构建坑、sidecar transport 契约见 [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md)；四候选的实测过程（本机留存）见 `docs/plan/archive/gui-host-selection.md`。
 
 ***
 
@@ -996,9 +875,6 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 | `ActivityModule` / `ActivityContext` | core/base.py                                                                              | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
 | `Registry`                           | core/registry.py                                                                          | 插件自动扫描注册（扫 `plugins/*/manifest.py`；含有效期门与自动选中过滤）  |
 | `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机）                    |
-| `MRAGUI`                             | ~~gui.py~~（已归档移除）                                                                         | 旧 ttkbootstrap 图形界面（已废弃，代码已删）        |
 | `Sidecar`                            | core/sidecar.py                                                                           | JSONL RPC 业务后端（mra\_shell 托管）        |
 | `NavigationDebugger`                 | core/debug.py                                                                             | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
 | `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志；会话目录 `logs/<ts>/`（日志 + 伴随产物同放）    |
-
-<br />
