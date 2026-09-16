@@ -2,11 +2,13 @@
 
 > 《巅峰极速》模块化游戏自动化平台 —— 完整代码架构文档
 >
-> **文档导航（Code Wiki 已按功能域拆分，共 2 份）**：
+> **文档导航（Code Wiki 已按功能域拆分，共 3 份）**：
 >
 > - **本文件（主文档）**：架构总览 / 目录结构 / 主程核心模块 / 依赖 / 运行流程 / 配置常量 / 开发调试 / 主程坑点 / GUI 选型
 >
 > - [鉴宝域 CODE\_WIKI（plugins/treasure）](../maaracing_master/plugins/treasure/CODE_WIKI.md)（treasure\_\* 全模块 / 出价策略 / 鉴宝模板 / 鉴宝坑点）
+>
+> - [极速狂飙域 CODE\_WIKI（plugins/speedrush）](../maaracing_master/plugins/speedrush/CODE_WIKI.md)（流程编排 / 驾驶门控与节拍 / 演示录制 / 驾驶页锚点实测）
 
 ***
 
@@ -129,6 +131,14 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │   │   ├── opencv_utf8_patch.py / vgamepad_lazy.py / wgcap.py
 │   │   └── yolo_detector.py                  # 跨活动视觉基础设施
 │   └── plugins/                              # 活动插件（一活动 = 一自包含目录，放入即装/删除即卸）
+│       ├── speedrush/                        # 极速狂飙
+│       │   ├── CODE_WIKI.md                  # 本域文档
+│       │   ├── manifest.py                   # ID + MODULE_CLASS（未声明有效期 = 永久有效）
+│       │   ├── __init__.py                   # PLUGIN_DIR / RES_DIR / IMAGE_DIR / PIPELINE_DIR
+│       │   ├── module.py / recorder.py       # 流程编排 / 驾驶演示录制
+│       │   └── resources/                    # 插件专属资源（自包含）
+│       │       ├── image/                    # 本域模板
+│       │       └── pipeline/speedrush.json   # v4 图节点真源
 │       └── treasure/                         # 巅峰鉴宝
 │           ├── CODE_WIKI.md                  # 鉴宝域文档
 │           ├── manifest.py                   # ID + MODULE_CLASS + 可选 VALID_FROM/VALID_UNTIL（registry 扫描用）
@@ -198,6 +208,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 > 本文档覆盖**主程核心模块**。按功能域拆分：
 >
 > - **鉴宝域**（treasure\_module / treasure\_detector / treasure\_ocr / treasure\_renderer / bid\_strategy）→ [鉴宝域文档](../maaracing_master/plugins/treasure/CODE_WIKI.md)
+> - **极速狂飙域**（SpeedRushModule / DriveRecorder / 驾驶门控与节拍）→ [speedrush 域文档](../maaracing_master/plugins/speedrush/CODE_WIKI.md)
 
 ### 4.1 [controller.py](../maaracing_master/core/controller.py) — 主控编排器
 
@@ -704,10 +715,14 @@ GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目
 留在模板外。变化在模板图**外**（哪怕紧贴）不影响匹配得分；在图**内**才失效
 （阈值 0.75 容忍渲染抖动，不容忍结构性变化）。
 
-**半透明元素不可作锚点（2026-09-16 实测）**：压在动态画布上的 HUD 文字与进度条，
-其像素是逐帧与背景混合的结果——实测驾驶页"阶段"二字在两种天光下跨帧匹配分
-0.94 → 0.71，跌破阈值即失配。此类位置改取**不透明图标**替代（同区域齿轮图标替代后
-跨帧 0.93 稳定），或退为多锚点 Or 组合兜底。
+**半透明元素不宜作锚点**：压在动态画布上的 HUD 文字与进度条，其像素是逐帧与背景混合的
+结果，匹配分随背景大幅摆动。此类位置改取**不透明图标**替代，或退为多锚点 Or 组合兜底。
+
+背景干扰还有**第二个入口**：彩色匹配（`colorspace: rgb`）会把搜索区内的**背景颜色**一起
+算进相似度——换了不透明图标，分数照样会被天光拉低。只比形状（`gray`）可显著收敛，但
+**根治要靠"跨天光、多轮样本"标定阈值**：单轮样本读出的"稳定"是假象，阈值贴着实际分布
+的下缘画，就会在实机上抖动成假失配。各域的实测数据与数据见其域文档（如
+[speedrush 域 §1](../maaracing_master/plugins/speedrush/CODE_WIKI.md)）。
 
 **命名**：`<页面>_<元素>[_限定词].png`，全小写下划线；首段页面名与页注册表一致
 （`hall_` / `rank_` / `speedrush_`…），看文件名即知归属。
@@ -829,7 +844,9 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 
 - 尝试加载顺序：xinput1\_4.dll → xinput1\_3.dll → xinput9\_1\_0.dll
 
-- 运行前必须断开所有物理手柄，否则虚拟手柄被游戏忽略或冲突
+- 会**接管输入**的运行要求断开所有物理手柄，否则虚拟手柄被游戏忽略或冲突。**是否要求由
+  模块的启动约束声明**（`ActivityModule.requires_exclusive_gamepad(config)`）；模块可因
+  运行模式而放宽——如"只采集不控车"的录制模式反而需要物理手柄在位
 
 ***
 
