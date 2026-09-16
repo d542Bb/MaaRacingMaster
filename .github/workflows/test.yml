@@ -1,7 +1,10 @@
 # =============================================================================
 # CI 自动化单测 — push 与 PR 时运行
-# 只安装测试必要依赖（pytest），不拉重量级依赖（maa/opencv/onnxruntime 等）
-# 避免拉满 requirements.txt 拖慢 CI；单测仅覆盖纯逻辑模块（bid_strategy）
+# 两个 job，分别覆盖两侧语言：
+#   test（ubuntu）         Python 侧：真源机检 / ruff / pyright / pytest。
+#                          只装测试必要依赖（pytest 等轻量集），不拉重量级依赖
+#                          （maa/opencv/onnxruntime 等）以免拖慢 CI。
+#   shell-build（windows） C# 侧：dotnet build。Python 门禁覆盖不到 C# 编译错误。
 # =============================================================================
 name: Test
 
@@ -74,8 +77,10 @@ jobs:
           ruff check .
 
       - name: 类型检查（pyright basic，主包）
-        # pyrightconfig.json 为唯一配置源；依赖只装轻量集（同测试步骤的口径），
-        # maa/windows-capture 等 Windows-only 包缺失时按 reportMissingImports=warning
+        # pyrightconfig.json 为唯一配置源（含 pythonPlatform=Windows：本项目的
+        # ctypes.windll / WINFUNCTYPE 是 Windows-only，不声明会在 Linux runner 上
+        # 凭空报 51 个 reportAttributeAccessIssue）。依赖只装轻量集，maa /
+        # windows-capture 等 Windows-only 包缺失时按 reportMissingImports=warning
         # 降级，不阻塞。treasure 域冻结豁免声明在 module.py/detector.py 文件头。
         run: |
           pip install "pyright==1.1.411"
@@ -83,3 +88,36 @@ jobs:
 
       - name: 运行单元测试
         run: python -m pytest tests -v
+
+  # ---------------------------------------------------------------------------
+  # Shell 编译：Python 侧门禁覆盖不到 C#。漏 using、类型名拼错、改了签名没改调用，
+  # 都不会被 pytest / ruff / pyright 发现；而本地 dev-shell 只在「源文件比 exe 新」时
+  # 才真编译，缺陷可以潜伏很久——实例：RpcBridge.cs 缺 using System.Collections.Generic，
+  # 自 37ffec0 潜伏到首次真编译才炸（连带 XamlCompiler 报 WMC9999 次生错误）。
+  # 故单列一个 Windows job 做一次真编译；ubuntu runner 上无法完成此步。
+  # ---------------------------------------------------------------------------
+  shell-build:
+    name: Shell 编译 (dotnet build)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 缓存 NuGet 包
+        # Windows App SDK 等包较大，冷启动还原占这一步的大头
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('apps/**/*.csproj', 'apps/**/NuGet.Config') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: 编译 Shell（含 XAML 生成）
+        # 与 scripts/dev/run.ps1 同一条命令，避免"本地能编、CI 编不过"的口径分裂
+        run: dotnet build apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj -c Debug --nologo -v minimal
