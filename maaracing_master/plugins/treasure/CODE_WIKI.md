@@ -1,7 +1,7 @@
 # MaaRacingMaster — Code Wiki · 鉴宝域
 
 > 《巅峰极速》"巅峰鉴宝"活动 —— **出价 / 估值 / OCR 全自动模块（treasure\_\*）** 专属文档。
-> 聚焦鉴宝核心：12 阶段状态机 / 准星意图 / 出价策略（bid\_strategy）/ 异步 OCR / ROI 三段分类。
+> 聚焦鉴宝核心：阶段状态机（真源 = `resources/policy/treasure.policy.json` `perception.stages.order`）/ 准星意图 / 出价策略（bid\_strategy）/ 异步 OCR / ROI 三段分类。
 >
 > **先读**：[RULES.md](./RULES.md) —— 游戏规则事实（成交条件 / 分红机制 / 计分目标 / 对手行为约束）。
 > 本域一切策略与实现都以游戏规则为前提；**规则与本文冲突时以 RULES.md 为准**，并回头修本文。
@@ -44,7 +44,7 @@
 
 **职责**：
 
-- 活动模块实现（`ActivityModule` 子类，`ID="treasure"`），12 阶段状态机
+- 活动模块实现（`ActivityModule` 子类，`ID="treasure"`），阶段状态机（阶段清单读 policy.json `perception.stages.order`，文档不抄录数值）
 
 - **准星意图模式**：当前只算「程序想点击的位置」，不执行真实点击
 
@@ -255,7 +255,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 - **手柄诊断层**（`_draw_gamepad_diag`）：光标实时位绿圈 + 识别候选圈（绿=选中 / 黄=次选），**与点击意图解耦**——`treasure_action` 为空（转场/未定义过渡）或 center 为空（纯等待）时照常绘制，只有该层整层消失才是 bug；快照带 `stale`/`age_s` 时改暗色并标「上次识别 N.Ns 前」「候选快照: 陈旧」（2026-09-15 定稿）
 
-- 底部 12 阶段进度条、OCR 性能指标（total/failures/dur\_ms/age\_ms）
+- 底部阶段进度条（前端按 RPC 下发的 stages 列表动态渲染，不写死数量）、OCR 性能指标（total/failures/dur\_ms/age\_ms）
 
 ***
 
@@ -286,7 +286,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 | `_run_appraiser_choice(frame)`        | 选择鉴宝师阶段：匹配+选中判定 → 写 `_appr_last_decision` 意图                |
 | `_match_session_panel(frame)`         | 详情卡标题匹配（状态判定用）                                              |
 | `_run_session_choice(frame)`          | 鉴宝大厅阶段：标题判定 → 静态按钮中心意图写 `_session_last_decision`            |
-| `_decide_action()`                    | 阶段驱动决策（返回 `{"key","hint"}`），全部 12 阶段准星覆盖                    |
+| `_decide_action()`                    | 阶段驱动决策（返回 `{"key","hint"}`），覆盖全部阶段（以 policy.json stages 为准）  |
 | `_resolve_action_target()`            | 决策 → 补归一化 center（动态匹配/静态按钮/兜底中心）                            |
 | `_treasure_kwargs()`                  | 统一构造 save\_frame/DebugState 字段（含 `treasure_action` 准星）      |
 | `_ocr_push/pop_latest/publish_result` | 异步 OCR worker 投递/取帧/发布（latest-only + 两段式）                   |

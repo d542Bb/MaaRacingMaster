@@ -69,7 +69,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 │  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
 │  │  导航引擎 (core/)    │  │  活动插件                        │  │
 │  │  nav_graph/clicker   │  │  (plugins/<id>/)                │  │
-│  │  - NavKit v3资产     │  │  - 本活动阶段状态机            │  │
+│  │  - NavKit v4资产     │  │  - 本活动阶段状态机            │  │
 │  │  - 光标导航/虚拟手柄   │  │  - 自带模板/图/policy 真源      │  │
 │  │  - 多尺度模板匹配     │  │  - 自带调试渲染器               │  │
 │  │  - 意图/真实点击     │  │  - 能力经 ActivityContext 取用  │  │
@@ -97,7 +97,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 项目采用**模块插件化**架构：主控（controller）只做生命周期与能力门面，活动流程由插件模块承载。
 
-- **巅峰鉴宝**（treasure 插件）：12 阶段状态机（游戏大厅 → 活动页 → 鉴宝大厅 → 场次 → 鉴宝师 → 出价 → 结算 → 分红），详见 [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
+- **巅峰鉴宝**（treasure 插件）：阶段状态机（游戏大厅 → 活动页 → 鉴宝大厅 → 场次 → 鉴宝师 → 逐回合出价 → 结算 → 分红），阶段清单唯一真源 = 该插件 `resources/policy/treasure.policy.json` 的 `perception.stages.order`，语义见 [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md)。
 
 主控不再持有活动流程编排：`MaaRacingMasterController` 仅负责窗口连接、能力门面（`ActivityContext`）、模块生命周期与全局设置，活动阶段流转全部在模块内部。
 
@@ -288,7 +288,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 **启动流程**：
 
-1. 双击根目录 `MaaRacingMaster.lnk`（定位 `MaaRacingMaster.Shell.exe`，exe manifest 自动 UAC 提权）
+1. 双击发布包根目录 `MaaRacingMaster.exe`（包内唯一入口：薄 Launcher 拉起 `app\` 下的 Shell，exe manifest 自动 UAC 提权）
 2. shell 启动 Python `sidecar.py`，建立 JSONL 双向管道
 3. WebView2 加载 `frontend/index.html`，前端 `mra.call` 初始化状态
 4. 用户操作 → 前端 RPC → sidecar → 模块执行
@@ -570,7 +570,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 ### 7.1 启动流程
 
 ```
-双击根目录 MaaRacingMaster.Shell.exe / MaaRacingMaster.lnk（exe manifest 自动 UAC 提权）
+双击发布包根目录 MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 提权）
   → WinUI 3 shell 创建窗口（AppWindowTitleBar）并展示 HTML 前端
   → shell 拉起 Python sidecar（python -m maaracing_master）
     → sidecar 初始化 Controller，等待 stdin JSONL RPC
@@ -841,7 +841,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 | `MaaRacingMasterController`          | core/controller.py                                                                        | 主控编排：能力门面 + 模块生命周期 + 全局设置            |
 | `ActivityModule` / `ActivityContext` | core/base.py                                                                              | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
 | `Registry`                           | core/registry.py                                                                          | 插件自动扫描注册（扫 `plugins/*/manifest.py`；含有效期门与自动选中过滤）  |
-| `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机）                    |
+| `TreasureModule`                     | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（阶段数真源见其 policy.json stages.order）                    |
 | `Sidecar`                            | core/sidecar.py                                                                           | JSONL RPC 业务后端（mra\_shell 托管）        |
 | `NavigationDebugger`                 | core/debug.py                                                                             | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
 | `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志；会话目录 `logs/<ts>/`（日志 + 伴随产物同放）    |
