@@ -646,7 +646,7 @@ class TreasureModule(ActivityModule):
     DAILY_LIMIT_STOP_STABLE_FRAMES = 3
     # OCR 异步化：主循环投递最新帧给 worker（latest-only 丢帧），识别在 worker 线程进行，
     # 不阻塞主循环。识别一轮 ~117ms（关 det + intra_op=4），worker 天然限速，无需节流。
-    # 关键 ROI 优先通道（D 层兜底，见 docs/OCR_LATENCY_SPIKE_ANALYSIS.md 5.4）：
+    # 关键 ROI 优先通道（D 层兜底）：
     # worker 先单独识别「最小高优先级集」，再跑全量。窗口期（偶发系统级慢）单 ROI 识别
     # 即使慢 15 倍也仅 ~200ms，age 仍在阈值内；全量 18 ROI 累加会超龄被丢弃。
     # 集取最小：bid_result_amount_box 驱动出价策略（R1 H 丢失元凶），必须保住；

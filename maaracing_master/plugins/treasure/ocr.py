@@ -54,7 +54,7 @@ OCR_INTER_OP_THREADS = 1
 
 # --------- CPU 亲和性（本机混合架构优化） ---------
 # 本机 Intel Alder Lake 8 P-core + 4 E-core（Windows 逻辑核 0-7 = P、8-11 = E）。
-# 性能分析（docs/OCR_LATENCY_SPIKE_ANALYSIS.md）证实：ORT intra_op=4 的多线程推理
+# 性能分析证实：ORT intra_op=4 的多线程推理
 # 被 Windows 调度器偶发迁到 E-core 时，单次推理从 ~14ms 拉爆到 200ms+，
 # 18 ROI 循环累加成 1~2s 尖峰；绑定 P-core 后尖峰 6→0 个、性能仅 +4%（med 289→302ms）。
 # 注意这是「本机固定配置」，不是通用 Alder Lake 检测——Windows 的 processor number
