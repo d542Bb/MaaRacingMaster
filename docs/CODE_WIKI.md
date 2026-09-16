@@ -189,8 +189,6 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 # ├── logs/                                   # logs/<会话>/（MaaRM_*.log + trace.jsonl）
 # ├── framework/                              # MAA 框架自产物（maafw.log、cache）
 # └── debug/                                  # debug/<module>/<会话>/（调试台契约）
-#
-# 本机归档（gitignore）：archive/<名>/ —— 退役实现与离线探针的本机留存，内容随本机状态
 ```
 
 ***
@@ -259,7 +257,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 **核心类**：`YOLODetector`
 
-**类别映射与阈值**：检测器为跨活动基础设施，**类别集由所服务的活动定义**，不写死在 core 文档里。当前唯一的类别集（`coin` / `car` / `bonus_car`）及其阈值属已归档的极速狂飙域，见本机 `archive/racing/CODE_WIKI.md`（本机留存，协作者不可达）；当前入库模块（treasure）不使用本检测器。阈值可在 `YOLODetector.CLASS_CONF` 覆盖。
+**类别映射与阈值**：检测器为跨活动基础设施，**类别集由所服务的活动定义**，不在 core 文档写死。当前无入库模块使用本检测器。阈值可在 `YOLODetector.CLASS_CONF` 覆盖。
 
 ***
 
@@ -326,7 +324,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 | 天蓝  | (235,206,135) | 按钮目标    |
 | 青   | (255,255,0)   | 模板匹配框   |
 
-> **检测标注与 HUD 通路**：`racing_info` 非空时另绘检测框（按类别着色）、透视车道线、远中近分区线与 HUD 状态栏（帧号与检测统计、摇杆位置条、死区宽度条、决策原因、前馈调试 `off/stop/dx/dy/moving/in_center/reason`、`ff_extra`、`CENTER_L`/`CENTER_R` 中心区竖线）。该通路属**已归档的极速狂飙域**，完整规格见本机 `archive/racing/CODE_WIKI.md` §3.1（本机留存，协作者不可达）。当前入库模块（treasure）自带 renderer 且不传 `racing_info`，故库内无消费者——**这是 `core/` 承载已退役模块私货的代码债，属代码层清理项，不在文档层消化。**
+> **检测标注与 HUD 通路**：`racing_info` 非空时另绘检测框（按类别着色）、透视车道线、远中近分区线与 HUD 状态栏（帧号与检测统计、摇杆位置条、死区宽度条、决策原因、前馈调试 `off/stop/dx/dy/moving/in_center/reason`、`ff_extra`、`CENTER_L`/`CENTER_R` 中心区竖线）。当前入库模块（treasure）自带 renderer 且不传 `racing_info`，故该通路在库内无消费者。
 
 ***
 
@@ -668,8 +666,6 @@ python -u -m maaracing_master.core.sidecar  # 独立调试 sidecar（等待 stdi
 
 `tools/training/train.py` 提供 YOLO 训练→ONNX 导出链路（Ultralytics yolo11n 微调），`dataset.yaml` 配置数据集类别，`auto_label.py` 为自动标注工具。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
 
-> 数据集类别集与导出目标属已归档的极速狂飙域（其训练产物落在该域归档资源目录，重写时取用），规格见本机 `archive/racing/CODE_WIKI.md`（本机留存，协作者不可达）。
-
 ### 9.5 日志位置（%APPDATA%/MaaRacingMaster/）
 
 用户数据目录 `user_data_dir()` 五目录结构（[paths.py](../maaracing_master/core/paths.py)）：
@@ -861,7 +857,7 @@ And/Or 按名子项 + `anchor` 对象 value，收口在 `all_name_refs`）不得
 
 **硬约束（不得回退到以下两条路）**：要同时拿到 HTML 前端、原生窗口行为（DWM 动画 / 系统 caption buttons / Snap）与可用的拖动区，只有 `AppWindowTitleBar` 的**系统级 NC 处理**能做到——WebView2 是独立 HWND 铺满客户区，任何在客户区内模拟标题栏的方案（如 WPF `WindowChrome`）都会被它遮挡并吞掉鼠标；`FormBorderStyle.None` 类方案无 `WS_CAPTION`，拿不到 DWM 动画。
 
-壳工程结构、锁定版本、WinUI 3 API 与构建坑、sidecar transport 契约见 [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md)；四候选的实测过程（本机留存）见 `docs/plan/archive/gui-host-selection.md`。
+壳工程结构、锁定版本、WinUI 3 API 与构建坑、sidecar transport 契约见 [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md)。
 
 ***
 

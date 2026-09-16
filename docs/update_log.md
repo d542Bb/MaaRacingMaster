@@ -15,7 +15,11 @@
 
 - **GUI 章节重构：** 主文档 §11 由选型过程收敛为「定案 + 硬约束 + 指针」；四候选实测结论与 spike 过程迁 `docs/plan/archive/gui-host-selection.md`；壳工程结构、锁定版本、WinUI 3 API 与构建坑、sidecar transport 契约成文于新增的 `apps/MaaRacingMaster.Shell/README.md`。硬约束保留：不得回退到 WPF `WindowChrome` 或 `FormBorderStyle.None` 类方案（WebView2 airspace 遮挡客户区 / 无 `WS_CAPTION` 拿不到 DWM 动画）。
 
-- **检测与渲染通路归位：** 主文档 §4.3 类别集与性能读数、§4.5 检测标注与 HUD 规格、§9.4 训练导出目标随已归档的极速狂飙域归档（细节迁 `archive/racing/CODE_WIKI.md` §3.1，该目录本机留存），主文档保留通路存在性说明与指针。检测器为跨活动基础设施，**类别集由所服务的活动定义**，不在 core 文档写死。
+- **检测与渲染通路归位：** 主文档 §4.3 类别集与性能读数、§4.5 检测标注与 HUD 规格、§9.4 训练导出目标从 core 文档移出，随已归档的极速狂飙域一并归档。检测器为跨活动基础设施，**类别集由所服务的活动定义**，不在 core 文档写死。
+
+- **鉴宝域文档：** §9 坑点表重建为两列（原表被格式化成 5 列、后 3 列全为空占位，「调试台黑屏」一行的说明还被管道符割裂）；§10「遗留问题清单」清出（其结论均已落在坑点表）；清掉三处失效引用（两份出价策略设计文档、一份 OCR 延迟报告）与两处本机过程文档引用；负面回声按「保留禁止回退型约束、删纯历史括注」清理。
+
+- **引用口径：** 入库文档不再引用本机过程产物与归档目录（`docs/plan/`、`archive/`），原指向它们的指针一并移除。
 
 - **纠错与补全：** §6.2 运行时持有关系与 §2.2/§4.1 对齐（`Tasker`/`Resource` 由活动模块实例创建并持有，主控不再持有）；Tab 口径统一为四 Tab；§5 小节号重排为 5.1–5.5 并修好两处失效锚点；§3 目录树去重 `registry.py`、补 `NAVKIT_V4_PLAN.md` / `adr/` / `design/` / `latest_release.json`；§8.1 改为「全局约定」并写明 core 侧常量仅分辨率一项、插件数值一律读 `resources/policy/<id>.policy.json`；§5.3 壳工程清单补 `Program.cs` / `PeepWindow` / `RpcBridge.cs` / `frontend/peep.*`；§4.5 PEEP 改为「产出 JPEG 交 GUI 侧渲染」并补「渲染器可被模块安装替换」这条 core 能力；§4.5 导航侧颜色表按 `debug.py` 实际常量重建。
 
