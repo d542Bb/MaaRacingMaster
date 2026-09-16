@@ -115,9 +115,18 @@ class VGamepadAdapter:
 # ==================== CaptureCapability ====================
 
 class CaptureCapability(Protocol):
-    """截图能力：返回 RGB ndarray，失败返回 None。"""
+    """截图能力：返回 RGB ndarray，失败返回 None。
+
+    ``frame_with_age()`` 是**带帧标识的取帧入口**：返回 (rgb, frame_id, ts_ns, age_ms)，
+    ``ts_ns`` 是**帧到达采集回调的时刻**而非调用时刻。任何**需要事后对齐**的消费者
+    （录制演示数据、按时间戳做时间域重采样、跨源取证）必须走它——只用 ``screenshot()``
+    会丢掉 frame_id 与采集时刻，调用侧自打的时间戳是"读取时刻"，与真实采集时刻差一个
+    帧龄，落到训练标签的时序里就是实打实的偏差。
+    """
 
     def screenshot(self) -> np.ndarray | None: ...
+
+    def frame_with_age(self) -> tuple[np.ndarray | None, int, int, float]: ...
 
 
 # ==================== Lifecycle ====================

@@ -38,12 +38,20 @@ class _FakeLifecycle:
 
 
 class _FakeCapture:
+    """实现 CaptureCapability 的两个入口；帧标识单调递增以便断言落到 jsonl。"""
+
     def __init__(self) -> None:
         self.calls = 0
+        self._fid = 0
 
     def screenshot(self):
         self.calls += 1
         return np.zeros((8, 8, 3), dtype=np.uint8)
+
+    def frame_with_age(self):
+        self.calls += 1
+        self._fid += 1
+        return (np.zeros((8, 8, 3), dtype=np.uint8), self._fid, 1000 * self._fid, 1.5)
 
 
 class _FakeCtx:
@@ -140,9 +148,9 @@ def test_loop_returns_false_on_stop(env) -> None:
     _set_graph(mod, [True])
 
     class _StopAfterOne(_FakeCapture):
-        def screenshot(self):
+        def frame_with_age(self):
             mod._running = False  # 模拟 stop() 置停止标志
-            return np.zeros((4, 4, 3), dtype=np.uint8)
+            return (np.zeros((4, 4, 3), dtype=np.uint8), 1, 1000, 0.0)
 
     ctx.capture = _StopAfterOne()
     assert mod._drive_loop(1, None) is False

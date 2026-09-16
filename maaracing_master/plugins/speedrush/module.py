@@ -285,9 +285,15 @@ class SpeedRushModule(ActivityModule):
         miss = 0
         while self._running and time.monotonic() < deadline:
             t0 = time.monotonic()
-            frame = self.ctx.capture.screenshot()
-            if recorder is not None and frame is not None:
-                recorder.record_frame(frame)
+            if recorder is not None:
+                # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
+                # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
+                # 未录制时不取帧：主循环的心跳由下方 sleep 承担，省掉无谓的缓存读取。
+                # （驾驶控制接入后此处改为每帧必取，供感知输入。）
+                frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
+                if frame is not None:
+                    recorder.record_frame(
+                        frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
 
             now = time.monotonic()
             if now >= next_anchor:

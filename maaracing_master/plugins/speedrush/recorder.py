@@ -61,7 +61,8 @@ class DriveRecorder:
         # None = 每次采样自动找第一个已连接手柄（适配用户插哪个槽都行）
         self.pad_slot = pad_slot
 
-        self._frame_q: queue.Queue[tuple[int, int, Any]] = queue.Queue(_FRAME_QUEUE_MAX)
+        self._frame_q: queue.Queue[tuple[int, int, int, float, Any]] = queue.Queue(
+            _FRAME_QUEUE_MAX)
         self._stop = threading.Event()
         self._frame_thread: threading.Thread | None = None
         self._pad_thread: threading.Thread | None = None
@@ -129,19 +130,24 @@ class DriveRecorder:
 
     # ---------- 采集侧（调用方线程） ----------
 
-    def record_frame(self, frame_bgr: Any, ts_ns: int | None = None) -> None:
-        """非阻塞存入一帧。队列满则丢帧并计数——不得阻塞调用方。"""
+    def record_frame(self, frame_bgr: Any, *, frame_id: int, ts_ns: int,
+                     age_ms: float = 0.0) -> None:
+        """非阻塞存入一帧。队列满则丢帧并计数——不得阻塞调用方。
+
+        ``frame_id`` 与 ``ts_ns`` **必填**，且必须来自 ``ctx.capture.frame_with_age()``：
+        那是帧到达采集回调的时刻。调用侧自打的时间戳是"读取时刻"，与真实采集时刻差
+        一个帧龄——对训练标签而言是实打实的时序偏差，故不留默认值这种可误用的口子。
+        """
         if not self._running:
             return
-        if ts_ns is None:
-            ts_ns = time.perf_counter_ns()
         h, w = frame_bgr.shape[:2]
         if self._frame_size is None:
             self._frame_size = (int(w), int(h))
         # 序列号在采集侧单调递增：丢帧不使编号跳变，缺口数即丢帧证据
         self._seq_counter += 1
         try:
-            self._frame_q.put_nowait((self._seq_counter, ts_ns, frame_bgr))
+            self._frame_q.put_nowait(
+                (self._seq_counter, int(frame_id), int(ts_ns), float(age_ms), frame_bgr))
         except queue.Full:
             self._frames_dropped += 1
 
@@ -153,7 +159,7 @@ class DriveRecorder:
         with frames_jsonl.open("w", encoding="utf-8") as fj:
             while True:
                 try:
-                    seq, ts_ns, frame = self._frame_q.get(timeout=0.2)
+                    seq, frame_id, ts_ns, age_ms, frame = self._frame_q.get(timeout=0.2)
                 except queue.Empty:
                     if self._stop.is_set():
                         break
@@ -169,8 +175,10 @@ class DriveRecorder:
                 if not ok:
                     logger.log(f"[极速狂飙] 录制写帧返回失败 seq={seq}", "WARNING")
                     continue
+                # frame_id 是 WGC 帧号，跨源对齐用它；ts_ns 是采集时刻（非写入时刻）
                 fj.write(json.dumps(
-                    {"seq": seq, "ts_ns": ts_ns, "file": name},
+                    {"seq": seq, "frame_id": frame_id, "ts_ns": ts_ns,
+                     "age_ms": round(age_ms, 3), "file": name},
                     ensure_ascii=False) + "\n")
                 self._frames_written += 1
 

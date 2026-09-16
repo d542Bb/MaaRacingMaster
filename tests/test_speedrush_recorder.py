@@ -47,15 +47,17 @@ def _no_real_pad(monkeypatch):
 def test_records_frames_and_writes_index(tmp_path) -> None:
     rec = DriveRecorder(tmp_path / "s1", pad_poll_hz=50.0)
     rec.start()
-    for _ in range(5):
-        rec.record_frame(_frame())
+    for i in range(5):
+        rec.record_frame(_frame(), frame_id=100 + i, ts_ns=1_000_000 + i * 33_000_000)
     rec.stop()
 
     lines = _read_jsonl(tmp_path / "s1" / "frames.jsonl")
     assert len(lines) == 5
     for i, row in enumerate(lines):
         assert row["seq"] == i + 1
-        assert isinstance(row["ts_ns"], int) and row["ts_ns"] > 0
+        # frame_id 与 ts_ns 必须原样落盘：跨源对齐就靠它们，丢了就退化成"按序号猜"
+        assert row["frame_id"] == 100 + i
+        assert row["ts_ns"] == 1_000_000 + i * 33_000_000
         assert (tmp_path / "s1" / "frames" / row["file"]).is_file()
 
 
@@ -82,7 +84,7 @@ def test_records_pad_samples(tmp_path, monkeypatch) -> None:
 def test_meta_counts_and_schema(tmp_path) -> None:
     rec = DriveRecorder(tmp_path / "s3", jpeg_quality=80, pad_poll_hz=50.0)
     rec.start()
-    rec.record_frame(_frame(w=32, h=16))
+    rec.record_frame(_frame(w=32, h=16), frame_id=1, ts_ns=123)
     rec.stop(reason="drive_phase_end")
 
     meta = json.loads((tmp_path / "s3" / "meta.json").read_text(encoding="utf-8"))
@@ -100,8 +102,8 @@ def test_queue_full_counts_drop_without_blocking(tmp_path) -> None:
     rec = DriveRecorder(tmp_path / "s4")
     rec._running = True  # 只测入队路径，不起后台线程
     for _ in range(rec._frame_q.maxsize):
-        rec._frame_q.put_nowait((0, 0, _frame(2, 2)))
-    rec.record_frame(_frame(2, 2))  # 队满 → 应计数而非等待
+        rec._frame_q.put_nowait((0, 0, 0, 0.0, _frame(2, 2)))
+    rec.record_frame(_frame(2, 2), frame_id=1, ts_ns=1)  # 队满 → 应计数而非等待
     assert rec._frames_dropped == 1
     assert rec._frames_written == 0
 
@@ -109,7 +111,7 @@ def test_queue_full_counts_drop_without_blocking(tmp_path) -> None:
 def test_stop_is_idempotent(tmp_path) -> None:
     rec = DriveRecorder(tmp_path / "s5")
     rec.start()
-    rec.record_frame(_frame())
+    rec.record_frame(_frame(), frame_id=1, ts_ns=1)
     rec.stop()
     rec.stop()  # 重复调用不得抛异常、不得重写 meta
     assert rec.stats["frames_written"] == 1
@@ -119,7 +121,7 @@ def test_record_after_stop_is_ignored(tmp_path) -> None:
     rec = DriveRecorder(tmp_path / "s6")
     rec.start()
     rec.stop()
-    rec.record_frame(_frame())
+    rec.record_frame(_frame(), frame_id=1, ts_ns=1)
     assert rec.stats["frames_written"] == 0
     assert rec.stats["frames_dropped"] == 0
 
