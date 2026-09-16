@@ -426,7 +426,7 @@
                     "templates": [
                         "speedrush_drive_gear.png"
                     ],
-                    "threshold": 0.8
+                    "threshold": 0.5
                 }
             }
         },
