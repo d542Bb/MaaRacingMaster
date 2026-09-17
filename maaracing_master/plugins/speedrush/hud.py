@@ -36,6 +36,12 @@
 还不存在），代价是每段平台的第一个采样点判不出定值；``trusted`` 不因未定值而变 False
 ——读对了就是读对了，只是"还没涨到位"，判定与数据一起留下由消费方取用。
 
+**比分面板的归属必须成对判**（``pair_sides``）：两块面板必是一蓝（本机）一红（对手），
+而面板是半透明的——背景景物会给**两块**染上同一偏色，单块绝对阈值在白天蓝天场会把两块
+都判成"本机"（实测 62/69 行错，且下游据此产出过 51 处假"比分回落"）。故按**两块之差**
+定归属（公共偏色被抵消），差太小则两块都弃权 ``?``；条带采样同时收窄到**最饱和的一撮**
+（色条本身），让色条而非背景主导。逐格记 ``side_source``（``pair``/``single``）留痕。
+
 **区域真源**：``resources/policy/hud_regions.json``（本插件内唯一一份，离线探针读同一份）。
 本模块不复制任何 rect 常量，也不假定键集——采样范围就是该文件的键集。
 
@@ -65,10 +71,13 @@ __all__ = [
     "SCHEMA_VERSION",
     "GATED_FIELDS",
     "SIDE_FIELDS",
+    "SIDE_PAIR_MIN_DELTA",
     "SINGLE_CHAR_SUSPECT_FIELDS",
+    "band_blue_bias",
     "block_side",
     "field_on_dark",
     "load_hud_regions",
+    "pair_sides",
     "parse_int",
     "parse_value",
     "region_digest",
@@ -76,7 +85,9 @@ __all__ = [
 
 # 记录格式版本。字段语义变动时递增，供离线消费方识别。
 # v2：卡片三格（``GATED_FIELDS``）增记 ``settled``——见下方定值判据。
-SCHEMA_VERSION = 2
+# v3：比分格增记 ``side_source``（归属来自成对判还是单块兜底），且归属改为成对判
+#     ——v2 及以前按单块绝对阈值判，白天蓝天场会把两块判成同一方（见 ``pair_sides``）。
+SCHEMA_VERSION = 3
 
 # 采样间隔（秒）。理由见模块 docstring：面板在场约 3.5s → 约 7 个连续样本。
 SAMPLE_INTERVAL_S = 0.5
@@ -106,10 +117,15 @@ SIDE_FIELDS: tuple[str, ...] = ("score_top", "score_bottom")
 # 碎片。``overtake`` 刻意不在内——它的合法域就是 0~5 这类单字。
 SINGLE_CHAR_SUSPECT_FIELDS: tuple[str, ...] = ("mileage", "total_left")
 
-# 比分块归属的判据参数（搬自探针 ``block_side``）：取带内**饱和像素**均色。
-# 用固定采样点会被天空骗过（天空同样满足 B>R）。
+# 比分块归属的判据参数（口径搬自探针 ``block_side``，2026-09-17 起收窄到"最饱和一撮"）：
+# 用固定采样点会被天空骗过（天空同样满足 B>R）；用**全部**饱和像素会被半透明面板背后的
+# 景物骗过（白天蓝天场两块条带都偏蓝，见 ``pair_sides``）。故先按饱和度筛，再只取最高的一撮。
 _SIDE_MIN_SAT = 80.0
 _SIDE_MIN_PIXELS = 50
+SIDE_TOP_QUANTILE = 0.95
+# 两块条带的 (B−R) 之差小于此值即两块都弃权：归属靠"谁更蓝"，公共偏色下差值被压缩，
+# 差太小说明这一刻没有可用信号（实测正常场里也有单帧差 5.5、问题场最小 86）。
+SIDE_PAIR_MIN_DELTA = 40.0
 
 # 取整文本：'1,234' / '238' / '+120' 都能吃
 _INT_RE = re.compile(r"\d[\d,]*")
@@ -198,29 +214,74 @@ def field_on_dark(frame_rgb: Any, rect) -> bool:
     return float((lum < DARK_LUM_MAX).mean()) > FIELD_DARK_MIN
 
 
-def block_side(frame_rgb: Any, rect) -> str:
-    """该比分面板当前是"本机玩家（蓝）"还是"对手（红）"，判不出返回 ``"?"``。
+def band_blue_bias(frame_rgb: Any, rect) -> float | None:
+    """条带内**最饱和一撮**像素的 (B−R) 均值；像素不足以判时 None。
 
-    判据取带内**饱和像素**的均色而不是固定采样点：天空/路面是低饱和的，固定点采样
-    会被天空骗过（实测"下方永远是我方"就是这么来的）。**位置不等于敌我**——两块面板
-    会上下互换，故敌我判据只能来自颜色。
+    为什么取"最饱和的一撮"而不是"全部饱和像素"：面板是**半透明**的，背景景物会给条带整体
+    染上同一个偏色——白天蓝天场实测两块条带的 (B−R) **都是正的**（上块 +68、下块 +130），
+    此时"整体偏蓝"不再是归属信号。色条是实色块，饱和度显著高于背景与被染色的面板本身，
+    故取饱和度的最高一撮让色条主导（实测最小差值由 41 提到 86，分离更干净）。
+
+    非 3 通道帧直接返回 None：``reshape(-1, 3)`` 会把通道错位分组，算出一个看着合理但错的
+    归属——与其静默给错标签，不如说判不出。
     """
-    h, w = frame_rgb.shape[:2]
     if frame_rgb.ndim != 3 or frame_rgb.shape[2] != 3:
-        # 非 3 通道时 reshape(-1, 3) 会把通道错位分组，算出一个**看着合理但错**的归属；
-        # 与其静默给错标签，不如说判不出（消费方据此不下结论）。
-        return "?"
+        return None
+    h, w = frame_rgb.shape[:2]
     x1, y1, x2, y2 = _px_bounds(rect, w, h)
     reg = frame_rgb[y1:y2, x1:x2]
     if reg.size == 0:
-        return "?"
+        return None
     flat = reg.reshape(-1, 3).astype(float)
     sat = flat.max(axis=1) - flat.min(axis=1)
     sel = flat[sat > _SIDE_MIN_SAT]
     if len(sel) < _SIDE_MIN_PIXELS:
+        return None
+    sat_sel = sel.max(axis=1) - sel.min(axis=1)
+    # 分位阈值用排序取下标算（只对饱和子集排序，规模很小）——不为此在模块里引 numpy
+    ordered = sorted(float(x) for x in sat_sel)
+    cut = ordered[min(len(ordered) - 1, int(SIDE_TOP_QUANTILE * len(ordered)))]
+    top = sel[sat_sel >= cut]
+    if len(top) < _SIDE_MIN_PIXELS:
+        return None
+    return float(top[:, 2].mean() - top[:, 0].mean())
+
+
+def pair_sides(frame_rgb: Any, rect_a, rect_b) -> tuple[str, str]:
+    """**成对判**两块比分面板的归属：``(rect_a 的归属, rect_b 的归属)``。
+
+    这条是面板归属的**权威判据**，理由是一条物理约束——两块面板必是一块蓝（本机）、一块红
+    （对手），"两块同判"不可能。于是用**两块之差**定归属，公共偏色被抵消：
+
+    - 白天蓝天场实测（问题现场）：上块 B−R=+68、下块 +130。单块绝对判据会因两块都偏蓝而把
+      **两块都判成"本机"**（那一场 62/69 行都错，且工具据此产出了 51 处假"比分回落"）；成对
+      判取差值 → 下块更蓝 → 下块是本机，与画面一致。
+    - 夜里深色背景场：上块 +159、下块 −115，差 274，同样得到"上块本机"。
+
+    差值小于 ``SIDE_PAIR_MIN_DELTA`` 时两块**都弃权**（``?``）——多半是面板正在淡入淡出、
+    两块都还没显出各自颜色（实测正常场里也有单帧差 5.5 的样本）。**不猜**是这里的正确行为：
+    消费方拿到 ``?`` 就知道这一刻的归属不可用，而不是拿到一个看着合理的错标签。
+    """
+    a = band_blue_bias(frame_rgb, rect_a)
+    b = band_blue_bias(frame_rgb, rect_b)
+    if a is None or b is None or abs(a - b) < SIDE_PAIR_MIN_DELTA:
+        return "?", "?"
+    if a > b:
+        return "本机(蓝)", "对手(红)"
+    return "对手(红)", "本机(蓝)"
+
+
+def block_side(frame_rgb: Any, rect) -> str:
+    """**单块**颜色倾向：本机（蓝）/ 对手（红），判不出返回 ``"?"``。
+
+    **它不是权威判据**——单块绝对阈值在强公共偏色下会把两块判成同一方（见 ``pair_sides``
+    的实测）。保留它是给**离线逐格标注**用（探针与 Studio 在图上逐块画框，只需要这一块的
+    颜色倾向），运行期归属一律走 ``pair_sides``。
+    """
+    bias = band_blue_bias(frame_rgb, rect)
+    if bias is None:
         return "?"
-    m = sel.mean(axis=0)
-    return "本机(蓝)" if m[2] > m[0] else "对手(红)"
+    return "本机(蓝)" if bias > 0 else "对手(红)"
 
 
 def parse_int(text: str | None) -> int | None:
@@ -398,9 +459,10 @@ class HudObserver:
 
         self._seq += 1
         t0 = time.perf_counter()
+        pair = self._side_pair(frame)
         fields: dict[str, dict] = {}
         for name, rect in self._regions.items():
-            fields[name] = self._read_field_safe(frame, name, rect)
+            fields[name] = self._read_field_safe(frame, name, rect, pair.get(name))
         rec: dict = {
             "seq": self._seq,
             # frame_id / ts_ns 与 frames.jsonl 同源（同一帧号必带同一采集时刻），对齐靠它们
@@ -447,13 +509,37 @@ class HudObserver:
             entry["settled"] = bool(same)
             self._prev_read[name] = (int(value), int(ts_ns))
 
-    def _read_field(self, frame: Any, name: str, rect: list[float]) -> dict:
-        """读一格：先过在场闸门（仅面板三格），再识别，最后给可信标志与理由。"""
+    def _side_pair(self, frame: Any) -> dict[str, str]:
+        """一次采样算一次两块比分面板的归属（**成对判**，见 ``pair_sides``）。
+
+        为什么整帧只算一次：归属是一条**物理约束**下的联合判断（一蓝一红），逐格各判会
+        退化成单块绝对判据——那正是实测出错的形态（白天蓝天场两块都判成"本机"）。这里
+        算错也只是本拍归属不可用（返回 ``?``），不影响其它格。
+        """
+        names = [n for n in SIDE_FIELDS if n in self._regions]
+        if len(names) != 2:
+            return {}
+        try:
+            a, b = pair_sides(frame, self._regions[names[0]], self._regions[names[1]])
+        except Exception as exc:  # noqa: BLE001 —— 归属算不出来就交给单块兜底，不终止观察
+            logger.log(f"[极速狂飙] HUD 归属成对判异常: {exc!r}", "DEBUG")
+            return {}
+        return {names[0]: a, names[1]: b}
+
+    def _read_field(self, frame: Any, name: str, rect: list[float],
+                    side: str | None = None) -> dict:
+        """读一格：先过在场闸门（仅面板三格），再识别，最后给可信标志与理由。
+
+        ``side`` 由采样侧成对判好传入（比分格）；缺省回退到单块判据，且把来源记进
+        ``side_source``——归属判错是本模块最难事后归因的一类故障（看着是数字对、实为两家
+        混一条序列），留下来源才查得动。
+        """
         entry: dict = {"gate": None, "text": None, "value": None, "trusted": False,
                        "note": []}
         if name in SIDE_FIELDS:
             # 归属按块色判（位置会上下互换），与文本是否读出无关
-            entry["side"] = block_side(frame, rect)
+            entry["side"] = side if side is not None else block_side(frame, rect)
+            entry["side_source"] = "pair" if side is not None else "single"
         if name in GATED_FIELDS:
             dark = field_on_dark(frame, rect)
             entry["gate"] = dark
@@ -480,7 +566,8 @@ class HudObserver:
         entry["trusted"] = True
         return entry
 
-    def _read_field_safe(self, frame: Any, name: str, rect: list[float]) -> dict:
+    def _read_field_safe(self, frame: Any, name: str, rect: list[float],
+                         side: str | None = None) -> dict:
         """``_read_field`` 的护栏：单格读挂只废掉那一格，**绝不让异常逃到采样线程**。
 
         为什么必须在这里兜：采样线程没有外层 try——异常一旦逃出去线程就静默死掉，
@@ -490,7 +577,7 @@ class HudObserver:
         非法时构造期就抛），这里兜的是**运行期单帧异常**这一类。
         """
         try:
-            return self._read_field(frame, name, rect)
+            return self._read_field(frame, name, rect, side)
         except Exception as exc:  # noqa: BLE001 —— 单格异常按"该格读不出"处理
             self._read_errors += 1
             level = "WARNING" if self._read_errors == 1 else "DEBUG"
@@ -539,8 +626,8 @@ class HudObserver:
 
         两条判据：
         1. **``合计 < 里程`` 必是假读**——由公式「合计 = 里程 + 30×超车 ≥ 里程」自身导出。
-           实测成因是面板的"矮版"变体没有合计那一行，该处仍是暗底、闸门拦不住，识别
-           强行解码出 ``1``/``92`` 这类小数字。
+           实测成因是**卡片淡入中**：那时「合计」那一行还没显示出来，该处仍是暗底、闸门
+           拦不住，识别便强行解码出 ``1``/``92`` 这类小数字。
         2. **单字面板读数与噪声不可区分**——面板缺席时被强行解码出的碎片与真值同形，
            单帧无从分辨（见 ``SINGLE_CHAR_SUSPECT_FIELDS`` 的字段范围说明）；时间连续性
            才是二次判据，故这里只标记。

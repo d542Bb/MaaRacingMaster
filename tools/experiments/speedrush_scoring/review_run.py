@@ -232,6 +232,7 @@ class Findings:
     n_exact: int = 0
     n_near: int = 0
     n_no_frame: int = 0
+    n_side_conflict: int = 0
     gap_median_ms: float = 0.0
     gap_max_ms: float = 0.0
     bursts: list[list[int]] = field(default_factory=list)
@@ -266,19 +267,20 @@ def annotate(sess: Session) -> Findings:
             r.tags.append("mismatch:total")
             f.formula_bad.append((r, mi, ov, to))
 
-    # 比分单调：按归属（本机/对手）分列，位置上下互换不影响
+    # 比分单调：按归属（本机/对手）分列，位置上下互换不影响；两块同判的行**不进检验**
+    # （归属不可用，硬算会把两家的值混成一条序列——那正是"51 处假回落"的成因）
     seen: dict[str, tuple[int, Row]] = {}
     for r in rows:
+        if side_conflict(r):
+            f.n_side_conflict += 1
+            r.tags.append("side:conflict")
+            continue
         for name in SIDE_FIELDS:
             if not r.trusted(name):
                 continue
-            side = r.side(name)
-            if side.startswith("本机"):
-                key = "本机"
-            elif side.startswith("对手"):
-                key = "对手"
-            else:
-                continue  # side='?' → 归属未知，不进单调检验（否则会把互换记成违例）
+            key = side_of(r, name)
+            if key == "?":
+                continue  # 归属未知（含两块同判以外的弃权）：不进检验，免得把两块混成一条
             v = r.val(name)
             if v is None:
                 continue
@@ -424,6 +426,13 @@ def cmd_check(args) -> None:
                        for r in s.rows for n in CARD_FIELDS)
         print(f"  定值判据来源：{'落盘 settled 位（生产侧所判，权威）' if recorded else '按同一规则重算（旧格式无此位）'}"
               f"  阈值 {hm.get('settle_gap_s') or SETTLE_GAP_S}s")
+        srcs = sorted({str(r.f(n).get("side_source")) for r in s.rows for n in SIDE_FIELDS
+                       if r.f(n).get("side_source")})
+        print(f"  归属判据来源：{srcs or ['(旧格式无此位：SCHEMA≤2 单块绝对判据)']}")
+        if f.n_side_conflict:
+            print(f"  ⚠ 归属异常：两块比分面板被判成**同一方** {f.n_side_conflict}/{len(s.rows)} 行"
+                  f"——物理上不可能（一块蓝一块红），该行归属按 `?` 处理、不进序列检验。"
+                  f"成因是单块绝对判据在公共偏色下失效（白天蓝天背景），SCHEMA 3 起改为成对判")
         mism = []
         for k, got, want in (("frames", len(s.frames), meta.get("frames_written")),
                              ("hud", len(s.rows), hm.get("rows_written")),
@@ -466,20 +475,43 @@ def _norm_side(r: Row, name: str) -> str:
     return "本机" if side.startswith("本机") else ("对手" if side.startswith("对手") else "?")
 
 
+def side_conflict(r: Row) -> bool:
+    """两块比分面板被判成**同一方**——物理上不可能（一块蓝＝本机、一块红＝对手）。
+
+    这不是理论情况：SCHEMA ≤ 2 的**单块绝对判据**在强公共偏色下就会这样——白天蓝天背景把
+    半透明面板的两块条带都染蓝，于是两块都判成"本机"（实测一场 62/69 行）。生产侧自 SCHEMA 3
+    起改为**成对判**（`pair_sides`：按两块之差定归属）修掉了它，但**旧会话仍在**，而且
+    "两块同判"任何时候都值得当作数据质量事件看一眼——故本工具一律把它认成"归属不可用"，
+    否则两块的值会被混进同一条序列，产出成片的假"回落"（实测 51 处）。
+    """
+    a, b = (_norm_side(r, n) for n in SIDE_FIELDS)
+    return a != "?" and a == b
+
+
+def side_of(r: Row, name: str) -> str:
+    """归一后的归属（本机/对手/``?``）；整行冲突时一律 ``?``（见 ``side_conflict``）。"""
+    return "?" if side_conflict(r) else _norm_side(r, name)
+
+
 def _self_rate(r: Row):
     """**本机**的得分速度：速度格与比分格同属一块面板，谁在上谁在下随互换一起变。
 
-    按位置取 `rate_top` 会在互换后拿到对手的速度——实测互换发生在同一段录制内，
-    故必须与比分格用同一个归属判据（`side`）。
+    为什么必须按归属取而不是按位置：**「得分速度」只为我方显示**（实测本机侧 100% 有读数，
+    对手侧只有零星几处——那是空区的假读）。按位置取 `rate_top`，在面板互换后就会去读对手
+    那一块的空区，得到"空"或一个假读小数字（实测 2/1/0 那一类）。
     """
     return _side_rate(r, "本机")
 
 
 def _side_rate(r: Row, side: str):
-    """指定归属的得分速度（无该归属时返回 None）。"""
-    if _norm_side(r, "score_top") == side:
+    """指定归属那一块的得分速度读数（无该归属时 None）。
+
+    注意：**只有本机那一块真的有这个读数**，故 ``side="对手"`` 拿到的是空区假读——除诊断外
+    不要用它（见 `_self_rate`）。
+    """
+    if side_of(r, "score_top") == side:
         return r.val("rate_top") if r.trusted("rate_top") else None
-    if _norm_side(r, "score_bottom") == side:
+    if side_of(r, "score_bottom") == side:
         return r.val("rate_bottom") if r.trusted("rate_bottom") else None
     return None
 
@@ -500,7 +532,7 @@ def side_series(sess: Session, name: str) -> list[tuple[str, float, int, int]]:
     for r in sess.rows:
         if not r.trusted(name):
             continue
-        side = _norm_side(r, name)
+        side = side_of(r, name)
         v = r.val(name)
         if side == "?" or v is None:
             continue
@@ -544,21 +576,28 @@ def cmd_timeline(args) -> None:
                     cell[n] = f"{r.val(n)}{'定' if f.settle[n].get(i) else '爬'}"
             sc = {}
             for n in SIDE_FIELDS:
-                sc[_norm_side(r, n)] = r.val(n) if r.trusted(n) else None
+                sc[side_of(r, n)] = r.val(n) if r.trusted(n) else None
+            if side_conflict(r):
+                # 两块同判 → 归属不可用：按**位置**显示（上/下）而不是按敌我，免得读者
+                # 以为这行有归属；值本身不丢（原始行里都在）
+                cell_self = f"上{r.val('score_top') if r.trusted('score_top') else '—'}"
+                cell_opp = f"下{r.val('score_bottom') if r.trusted('score_bottom') else '—'}"
+            else:
+                cell_self, cell_opp = str(sc.get("本机") or "—"), str(sc.get("对手") or "—")
             rate = _self_rate(r)
             ev = r.text("event_banner").strip()
             extra = " ".join(r.tags)
             print(f"{r.seq:>4} {r.t:>6.2f} {str(r.val('timer') if r.trusted('timer') else '—'):>6} "
                   f"{cell['mileage']:>9} {cell['overtake']:>6} {cell['total_left']:>9} "
-                  f"{str(sc.get('本机') or '—'):>9} {str(sc.get('对手') or '—'):>9} "
+                  f"{cell_self:>9} {cell_opp:>9} "
                   f"{str(rate if rate is not None else '—'):>6}  {ev} {extra}")
 
         # 增量归因：右侧比分**连续跳动**，"定值"对它无意义（判据只服务周期性卡片），
         # 故这里只要求可信 + 同归属 + 相邻；回落样本按假读嫌疑跳过并显式列出。
         print("\n  增量归因（比分：相邻可信样本，Δ/Δt 供与画面「得分速度」读数对照）：")
         for n in SIDE_FIELDS:
-            pts = [(i, _norm_side(s.rows[i], n), s.rows[i]) for i in range(len(s.rows))
-                   if s.rows[i].trusted(n) and _norm_side(s.rows[i], n) != "?"]
+            pts = [(i, side_of(s.rows[i], n), s.rows[i]) for i in range(len(s.rows))
+                   if s.rows[i].trusted(n) and side_of(s.rows[i], n) != "?"]
             shown, skipped = 0, []
             for (i1, sd1, r1), (i2, sd2, r2) in zip(pts, pts[1:]):
                 dt = r2.t - r1.t
@@ -569,7 +608,7 @@ def cmd_timeline(args) -> None:
                     skipped.append(f"seq{r2.seq}({r1.val(n)}→{r2.val(n)})")
                     continue
                 if shown < 12:
-                    rt = _side_rate(r2, sd1)
+                    rt = _side_rate(r2, sd1) if sd1 == "本机" else None
                     print(f"    {sd1} {r1.t:6.2f}→{r2.t:6.2f}s  {r1.val(n)}→{r2.val(n)}  "
                           f"Δ={d:+5d}  Δ/Δt={d / dt:7.1f}/s"
                           + (f"  画面速度 {rt}" if rt is not None else ""))
@@ -676,14 +715,14 @@ def _label(r: Row, f: Findings, i: int) -> tuple[str, str]:
     card = "  ".join(
         f"{n}={r.val(n)}{'定' if f.settle[n].get(i) else '爬'}" if r.trusted(n) else f"{n}=—"
         for n in CARD_FIELDS)
-    sc = "  ".join(f"{_norm_side(r, n)}:{r.val(n) if r.trusted(n) else '—'}"
+    sc = "  ".join(f"{side_of(r, n)}:{r.val(n) if r.trusted(n) else '—'}"
                    for n in SIDE_FIELDS)
     ev = r.text("event_banner").strip() or "—"
     l1 = (f"#{r.seq}  t={r.t:6.2f}s  帧 {r.frame_id}   {card}   {sc}   "
           f"速度(本机) {_self_rate(r) if _self_rate(r) is not None else '—'}   {ev}")
     l2 = ("  判定：" + ("；".join(r.tags) if r.tags else "无标签（全部定值、无违例）")
           + (f"   [该行 side={r.side('score_top')}/{r.side('score_bottom')}]"
-             if any(_norm_side(r, n) == "?" for n in SIDE_FIELDS) else ""))
+             if any(side_of(r, n) == "?" for n in SIDE_FIELDS) else ""))
     return l1, l2
 
 

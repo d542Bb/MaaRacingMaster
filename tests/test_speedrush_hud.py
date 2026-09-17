@@ -332,6 +332,60 @@ class TestReadingJudgements:
 
 
 # ----------------------------------------------------------------------
+# 归属：面板半透明 → 必须**成对判**（单块绝对阈值在公共偏色下会两块同判）
+# ----------------------------------------------------------------------
+
+
+class TestSidePairJudgement:
+    """实测现场（2026-09-17 白天蓝天场）：两块条带的饱和像素**都偏蓝**。
+
+    单块绝对判据于是把两块都判成"本机"（那一场 62/69 行都错，下游据此产出 51 处假"比分
+    回落"——两个块的值被混进同一条序列）。物理约束是一蓝一红，故用**两块之差**定归属。
+    """
+
+    def test_pair_recovers_attribution_under_common_bias(self, tmp_path) -> None:
+        """两块都偏蓝时，更蓝的那块是本机。"""
+        # 上块 B−R=+90（被蓝天染过），下块 +180（本机色条更实）
+        sides = {"score_top": (60, 90, 150), "score_bottom": (20, 80, 200)}
+        rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
+        assert rec["fields"]["score_top"]["side"] == "对手(红)"
+        assert rec["fields"]["score_bottom"]["side"] == "本机(蓝)"
+        assert rec["fields"]["score_top"]["side_source"] == "pair"
+
+    def test_single_band_form_is_the_one_that_fails(self) -> None:
+        """把现场形态锁住：单块绝对判据在公共偏色下确实会两块同判（故它只配做离线标注）。"""
+        from maaracing_master.plugins.speedrush import hud as h
+        f = _frame(sides={"score_top": (60, 90, 150), "score_bottom": (20, 80, 200)})
+        assert h.block_side(f, REGIONS["score_top"]) == "本机(蓝)"     # 错：上块其实是对手
+        assert h.block_side(f, REGIONS["score_bottom"]) == "本机(蓝)"  # 对
+        assert h.pair_sides(f, REGIONS["score_top"], REGIONS["score_bottom"]) \
+            == ("对手(红)", "本机(蓝)")
+
+    def test_pair_abstains_when_two_bands_are_alike(self, tmp_path) -> None:
+        """差值太小 → 两块都弃权：多半是面板淡入/淡出，这一刻没有可用信号。"""
+        sides = {"score_top": (30, 60, 140), "score_bottom": (32, 61, 141)}
+        rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
+        assert rec["fields"]["score_top"]["side"] == "?"
+        assert rec["fields"]["score_bottom"]["side"] == "?"
+
+    def test_unsaturated_band_abstains_in_pair_too(self) -> None:
+        """低饱和带（天空/路面）连单块判都判不出 → 成对判同样弃权，不拿噪声凑。"""
+        gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
+        assert hud.pair_sides(gray, REGIONS["score_top"], REGIONS["score_bottom"]) == ("?", "?")
+
+    def test_pair_falls_back_to_single_when_one_block_missing(self, tmp_path) -> None:
+        """只剩一块（区域集缺项）时回退单块判据，并如实记来源 ``single``。"""
+        only = {n: REGIONS[n] for n in ("stage", "timer", "score_top")}
+        obs = hud.HudObserver(
+            tmp_path,
+            frame_source=lambda: (_frame(sides={"score_top": (30, 60, 220)}), 1001, 5_000_000, 3.5),
+            engine=_FakeEngine(_texts()), regions=only)
+        entry = _sample(obs)["fields"]["score_top"]
+        assert entry["side"] == "本机(蓝)"
+        assert entry["side_source"] == "single"
+
+
+# ----------------------------------------------------------------------
 # 「定值」判据：卡片三格的读数是滚动爬升出来的，只有停住的值才是真值
 # ----------------------------------------------------------------------
 

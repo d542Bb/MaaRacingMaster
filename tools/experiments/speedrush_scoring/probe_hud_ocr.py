@@ -238,7 +238,7 @@ def cmd_find(args) -> None:
     if len(win) != 4:
         raise SystemExit("--window 需要 x1,y1,x2,y2（归一化）")
     pat = re.compile(args.match)
-    sessions = ([Path(args.session)] if args.session
+    sessions = ([resolve_session(args.session)] if args.session
                 else sorted(d for d in DEMOS.iterdir() if d.is_dir()))
     if args.limit:
         sessions = sessions[:args.limit]
@@ -361,6 +361,8 @@ def _mmss(text: str) -> int | None:
 #      逐字段判暗底同时覆盖这两种情况，且纯 numpy、不消耗 OCR。
 FIELD_DARK_MIN = 0.35
 PANEL_FIELDS = ("mileage", "overtake", "total_left")
+# 比分面板两格：归属必须**成对判**（见 pair_sides）；位置名不等于敌我
+PAIR_FIELDS = ("score_top", "score_bottom")
 
 
 def field_on_dark(frame_rgb: np.ndarray, rect) -> bool:
@@ -429,6 +431,10 @@ def _draw_overlay(rgb: np.ndarray, regs: dict, ocr: HudOcr, title: str):
     d = ImageDraw.Draw(img, "RGBA")
     font = _font(15)
     h, w = rgb.shape[:2]
+    pair = {}
+    if all(n in regs for n in PAIR_FIELDS):
+        a, b = pair_sides(rgb, regs[PAIR_FIELDS[0]], regs[PAIR_FIELDS[1]])
+        pair = {PAIR_FIELDS[0]: a, PAIR_FIELDS[1]: b}
     d.rectangle([0, 0, w, 24], fill=(0, 0, 0, 190))
     d.text((8, 4), title, font=font, fill=(255, 255, 255))
     for name, rect in regs.items():
@@ -437,8 +443,10 @@ def _draw_overlay(rgb: np.ndarray, regs: dict, ocr: HudOcr, title: str):
         got = "—（闸门判定不在场）" if gated else ocr.read(rgb, rect).strip()
         d.rectangle([x1, y1, x2 - 1, y2 - 1], outline=(255, 64, 64, 255), width=2)
         label = f"{name}: {got or '(空)'}"
-        if name.startswith("score_"):
-            label += f" [{block_side(rgb, rect)}]"
+        if name in PAIR_FIELDS:
+            # 归属**成对判**（两块之差），两张图上标的是同一次判定的两个结果——单块判据
+            # 在公共偏色下会把两块判成同一方（见 pair_sides 的实测）
+            label += f" [{pair.get(name, '?')}]"
         tw = d.textlength(label, font=font)
         ly = y1 - 18 if y1 >= 18 else y2 + 2
         d.rectangle([x1, ly, x1 + tw + 6, ly + 17], fill=(0, 0, 0, 200))
@@ -460,7 +468,8 @@ def cmd_overlay(args) -> None:
     out_dir = Path(args.out) if args.out else DEMOS.parent / "roi_review"
     out_dir.mkdir(parents=True, exist_ok=True)
     ocr = HudOcr()
-    sessions = [Path(args.session)] if args.session else sorted(d for d in DEMOS.iterdir() if d.is_dir())
+    sessions = ([resolve_session(args.session)] if args.session
+                else sorted(d for d in DEMOS.iterdir() if d.is_dir()))
     picked: dict[str, tuple] = {}
     banner_len = 0
     scanned = 0
@@ -498,27 +507,68 @@ def cmd_overlay(args) -> None:
               f"{x2 - x1}×{y2 - y1}")
 
 
-def block_side(rgb: np.ndarray, rect) -> str:
-    """该比分面板当前是"本机玩家（蓝）"还是"对手（红）"。
+def band_blue_bias(rgb: np.ndarray, rect) -> float | None:
+    """条带内**最饱和一撮**像素的 (B−R) 均值；像素不足以判时 None。
 
-    为什么必须判：两块比分面板会**上下互换**（实测一段内至少 3 次），所以**位置不等于敌我**——
-    按位置命名的 ROI 会把两家的分数混成一条序列（本轮就据此产出过一条无效结论）。
-
-    判据取该带内**饱和像素**的均色，而不是某个固定采样点：天空/路面是低饱和的，会被
-    固定点采样放进来（实测踩过——天空同样满足 B>R，于是"下方永远是我方"）。
+    为什么取"最饱和的一撮"而不是"全部饱和像素"：面板是**半透明**的，背景景物会给条带整体
+    染上同一个偏色——白天蓝天场实测两块条带的 (B−R) **都是正的**，此时"整体偏蓝"不再是归属
+    信号。色条是实色块，饱和度显著高于背景与被染色的面板本身，故取最高一撮让色条主导。
     """
     h, w = rgb.shape[:2]
     x1, y1 = int(float(rect[0]) * w), int(float(rect[1]) * h)
     x2, y2 = int(float(rect[2]) * w), int(float(rect[3]) * h)
     reg = rgb[max(0, y1):y2, max(0, x1):max(x2, w)].reshape(-1, 3).astype(float)
     if reg.size == 0:
-        return "?"
+        return None
     sat = reg.max(axis=1) - reg.min(axis=1)
     sel = reg[sat > 80]
     if len(sel) < 50:
-        return "?"
-    m = sel.mean(axis=0)
-    return "本机(蓝)" if m[2] > m[0] else "对手(红)"
+        return None
+    sat_sel = sel.max(axis=1) - sel.min(axis=1)
+    cut = float(np.quantile(sat_sel, 0.95))
+    top = sel[sat_sel >= cut]
+    if len(top) < 50:
+        return None
+    return float(top[:, 2].mean() - top[:, 0].mean())
+
+
+def pair_sides(rgb: np.ndarray, rect_a, rect_b) -> tuple[str, str]:
+    """**成对判**两块比分面板的归属（权力判据，口径与插件内 `hud.pair_sides` 一致）。
+
+    两块面板必是一蓝（本机）一红（对手），故"两块同判"不可能——用两块之差定归属，公共偏色
+    被抵消。实测：白天蓝天场两块都偏蓝，单块绝对判据会把两块都判成"本机"（一场 62/69 行错），
+    成对判取差值即正确；差值太小则两块都弃权（多半是面板正在淡入/淡出）。
+    """
+    a = band_blue_bias(rgb, rect_a)
+    b = band_blue_bias(rgb, rect_b)
+    if a is None or b is None or abs(a - b) < 40.0:
+        return "?", "?"
+    return ("本机(蓝)", "对手(红)") if a > b else ("对手(红)", "本机(蓝)")
+
+
+def block_side(rgb: np.ndarray, rect) -> str:
+    """**单块**颜色倾向（离线逐格标注用）；强公共偏色下会两块同判，故**不是**权威判据。
+
+    为什么必须判归属：两块比分面板会**上下互换**（实测一段内至少 3 次），所以**位置不等于
+    敌我**——按位置命名的 ROI 会把两家的分数混成一条序列。运行时归属走 `pair_sides()`。
+    """
+    bias = band_blue_bias(rgb, rect)
+    return "?" if bias is None else ("本机(蓝)" if bias > 0 else "对手(红)")
+
+
+def resolve_session(name: str) -> Path:
+    """把会话名解析成目录：先当路径试，再当 demos 下的名字试。
+
+    两个工具（本探针与 `review_run.py`）对 `--session` 必须同一口径：只写名字是日常用法，
+    报错信息也要指向 demos 根，免得读成"这个会话不存在"。
+    """
+    p = Path(name)
+    if p.is_dir():
+        return p
+    q = DEMOS / name
+    if q.is_dir():
+        return q
+    raise SystemExit(f"找不到会话：{name}（既不是目录，也不在 {DEMOS} 下）")
 
 
 def _sample_rows(session: Path, regs: dict, every: int):
@@ -553,7 +603,7 @@ def cmd_timeline(args) -> None:
     权重——不必额外做一次实机实验（这会自动带入"读数噪声"作为分母，故要注意剔除
     里程/超车读数为空的区间）。
     """
-    session = Path(args.session)
+    session = resolve_session(args.session)
     regs = json.loads(Path(args.rects).read_text(encoding="utf-8"))
     rows, samples = _sample_rows(session, regs, args.every)
     print(f"会话 {session.name}  帧 {len(rows)}  采样 {len(samples)}（每 {args.every} 帧）")
