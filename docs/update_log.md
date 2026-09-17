@@ -10,6 +10,18 @@
 
 ## 2026-09-17
 
+### 暂存（未发布 · 待并入下一版本）比分面板改按「槽位 + 身份」读取：红那一格没有得分速度 🎯
+
+- **性质：** 未发版变更（`plugins/speedrush/resources/policy/hud_regions.json`（四个键改名）、`plugins/speedrush/hud.py`（`SCHEMA_VERSION` 3→4）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（探针与复盘工具）、`tools/roi_tuner/`（新增 ROI 调框页）、`tools/navkit/studio_server.py`（+10 行静态路由）、`tests/test_speedrush_hud.py`（+2 条）；master 直接提交、不 tag）
+
+- **起因（用户指出）：** "你不应该区分上下，而是蓝红……而且敌人没有得分速度"。上一轮虽然把归属改成了成对判（数据里记 `side`），但**区域名仍是 `score_top/bottom`、`rate_top/bottom`**——名字本身还在暗示"上＝我方"，而且读取侧对**两块速度格无条件识别**：红那一槽根本没有这个读数，识别到的是面板背景（用户在调框页上看到 `rate_top 暗0% 蓝133`，那就是背景值，不是读数）。
+
+- **改法（数据、读取、消费三层一起改）：** ① **真源改槽位名** `score_a`/`score_b`/`rate_a`/`rate_b`（a=上档、b=下档）——槽位会互换，故名字里不能带身份含义；身份由成对判写进每格 `side`，消费方按 `side` 取。② **读取侧只读"本槽是蓝"的速度格**：红那一槽连 OCR 都不做、标 `not_displayed`；归属判不出时同样不读（标 `side_unknown`）——不知道这一槽是谁的，就没理由把那里的像素当读数。③ **消费方全同步**：探针的 `timeline` 把比分/速度两列改成**按身份取**（列名「本方分」），`overlay` 标签标成对判结果；复盘工具加**旧会话兼容映射**（历史文件仍是位置名，载入时改名）并在「两块同判」时把归属按 `?` 处理。
+
+- **验证：** 全量 `pytest` **824 passed / 1 skipped**（新增 2 条锁：两种朝向下"红那一格不被识别且标 `not_displayed`"、归属未知时不读；并断言对手那一格的 rect **不在引擎调用记录**里——即真的没跑 OCR）；复盘工具在旧会话上复跑数字不变（公式 5/5、3/3、7/7）；探针 `timeline` 在本方上/下两种场次都取到本方速度。
+
+- **附带（一次性工具，不进测试与文档）：** 新增 `tools/roi_tuner/index.html`——把真帧（内置 6 张覆盖夜里/白天、两种朝向、卡片淡入中、横幅最长）与真源区域画在一起，可拖框改、实时显示两个判据量（在场闸门的暗底占比、归属判据的蓝偏移）、按 `Ctrl/Shift+方向键` 微调、双击读一次该框的文本，最后「复制区域 JSON」把结果带回来。区域集**打开时从真源读**（不内置矩形常量），读数走既有 `/api/speedrush/ocr`。Studio 只加了 10 行（一个常量 + 一个静态路由 `/roi_tuner`），用完删掉这三处即可。
+
 ### 暂存（未发布 · 待并入下一版本）比分归属改为「成对判」：半透明面板的公共偏色曾让两块同判 🎯
 
 - **性质：** 未发版变更（`maaracing_master/plugins/speedrush/hud.py`（`SCHEMA_VERSION` 2→3）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（探针与复盘工具）、`tests/test_speedrush_hud.py`（+5 条）；master 直接提交、不 tag）

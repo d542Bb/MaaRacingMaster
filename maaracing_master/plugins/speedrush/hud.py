@@ -110,8 +110,13 @@ FIELD_DARK_MIN = 0.35
 # **这也是「定值」判据的作用域**：滚动爬升是这张卡片三行数字的动画形态，只有它们才有
 # "这一拍读到的是不是动画中间值"的问题；比分与速度是持续跳动的量，"同值两拍"对它们无意义。
 GATED_FIELDS: tuple[str, ...] = ("mileage", "overtake", "total_left")
-# 比分面板：位置会上下互换，敌我必须按块色判（见 ``block_side``）
-SIDE_FIELDS: tuple[str, ...] = ("score_top", "score_bottom")
+# 比分面板：**位置会上下互换，故这两格是「槽位」而不是敌我**——a = 上档、b = 下档。
+# 敌我由块色成对判（见 ``pair_sides``）写进每格 ``side``；消费方按 ``side`` 取、不按槽位取。
+SIDE_FIELDS: tuple[str, ...] = ("score_a", "score_b")
+# 得分速度读数（与同槽位的比分格配对：``rate_a`` 恒在 ``score_a`` 上方）。
+# **它只为本方显示**（实测本机侧 100% 有读数、对手侧只有零星几处——那是背景的假读）：
+# 故只识别"本槽是蓝"的那一格，另一格连识别都不做（读到的是面板背景/空区）。
+RATE_FIELDS: tuple[str, ...] = ("rate_a", "rate_b")
 # 单字读数与噪声不可区分的字段：这两个计数的可信读数都是多位（由公式
 # 「合计 = 里程 + 30×超车」自身给出量级），单字只可能是面板缺席时被强行解码出来的
 # 碎片。``overtake`` 刻意不在内——它的合法域就是 0~5 这类单字。
@@ -510,7 +515,7 @@ class HudObserver:
             self._prev_read[name] = (int(value), int(ts_ns))
 
     def _side_pair(self, frame: Any) -> dict[str, str]:
-        """一次采样算一次两块比分面板的归属（**成对判**，见 ``pair_sides``）。
+        """一次采样算一次各槽位的**敌我**：比分两格成对判，速度格跟随同槽的比分格。
 
         为什么整帧只算一次：归属是一条**物理约束**下的联合判断（一蓝一红），逐格各判会
         退化成单块绝对判据——那正是实测出错的形态（白天蓝天场两块都判成"本机"）。这里
@@ -524,7 +529,13 @@ class HudObserver:
         except Exception as exc:  # noqa: BLE001 —— 归属算不出来就交给单块兜底，不终止观察
             logger.log(f"[极速狂飙] HUD 归属成对判异常: {exc!r}", "DEBUG")
             return {}
-        return {names[0]: a, names[1]: b}
+        out = {names[0]: a, names[1]: b}
+        # 速度格与同槽位的比分格同属一块面板 → 敌我直接沿用（后缀一致时）
+        for score_name, side in ((names[0], a), (names[1], b)):
+            rate_name = score_name.replace("score_", "rate_", 1)
+            if rate_name in self._regions:
+                out[rate_name] = side
+        return out
 
     def _read_field(self, frame: Any, name: str, rect: list[float],
                     side: str | None = None) -> dict:
@@ -536,10 +547,18 @@ class HudObserver:
         """
         entry: dict = {"gate": None, "text": None, "value": None, "trusted": False,
                        "note": []}
-        if name in SIDE_FIELDS:
-            # 归属按块色判（位置会上下互换），与文本是否读出无关
-            entry["side"] = side if side is not None else block_side(frame, rect)
+        if name in SIDE_FIELDS or name in RATE_FIELDS:
+            # 敌我按块色判（槽位会上下互换），与文本是否读出无关
+            entry["side"] = side if side is not None else (
+                block_side(frame, rect) if name in SIDE_FIELDS else "?")
             entry["side_source"] = "pair" if side is not None else "single"
+            if name in RATE_FIELDS and entry["side"] != "本机(蓝)":
+                # 得分速度**只为本方显示**：对手那一格是空的/背景，识别只会产出垃圾
+                # （实测那块能读出 133 这种"蓝偏移"背景值）。判不出归属时同样不读——
+                # 不知道这一槽是谁的，就没有理由把那一格的像素当读数。
+                entry["note"].append("not_displayed" if entry["side"] == "对手(红)"
+                                     else "side_unknown")
+                return entry
         if name in GATED_FIELDS:
             dark = field_on_dark(frame, rect)
             entry["gate"] = dark

@@ -8,6 +8,8 @@
 - `/policy`     策略表薄页（读写 `treasure.policy.json` 的 `policy.rules`，原 policy_server 整体并入）
 - `/roi`        ROI 校准台（`/static/calibrator.html`，离线回放 + 快速选区 + 测分）
 - `/cropper`    模板截取（静态只读服务 `tools/template_cropper/index.html`）
+- `/roi_tuner`  HUD ROI 调整（静态只读服务 `tools/roi_tuner/index.html`；区域集从 `/api/rois`
+  的 `speedrush_hud` 组读、读数走 `/api/speedrush/ocr`，页面本身不内置任何矩形常量）
 
 数据面（本文件主体）：
 - 读面 `GET /api/rois` 输出 **flat 投影**：spec 三组（template/point/ocr）+ `nodes` 组（pipeline
@@ -58,6 +60,8 @@ PIPELINE_DIR = RES / "pipeline"
 TEMPLATE_DIR = RES / "image"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CROPPER_HTML = REPO / "tools" / "template_cropper" / "index.html"
+# HUD ROI 调整页（静态只读；区域集从 /api/rois 的 speedrush_hud 组读，本页不内置矩形常量）
+ROI_TUNER_HTML = REPO / "tools" / "roi_tuner" / "index.html"
 
 # ---------------- speedrush HUD 只读复核（Studio 第四面） ----------------
 # 区域真源在**插件内**（`plugins/speedrush/resources/policy/hud_regions.json`）：它自
@@ -1369,6 +1373,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._txt(404, "template_cropper/index.html 不存在")
                 else:
                     self._send(200, CROPPER_HTML.read_bytes(),
+                               "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            elif path in ("/roi_tuner", "/roi_tuner/"):
+                if not ROI_TUNER_HTML.is_file():
+                    self._txt(404, "roi_tuner/index.html 不存在")
+                else:
+                    self._send(200, ROI_TUNER_HTML.read_bytes(),
                                "text/html; charset=utf-8", {"Cache-Control": "no-store"})
             elif path.startswith("/static/"):
                 self._serve_static(path[len("/static/"):])

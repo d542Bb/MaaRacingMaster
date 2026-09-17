@@ -82,8 +82,8 @@ def _texts(**over: str) -> dict[tuple, str]:
     """默认一套"面板与比分都在场"的读数；``over`` 按字段名覆盖。"""
     base = {
         "stage": "阶段:1", "timer": "00:25", "mileage": "338", "overtake": "1",
-        "total_left": "368", "score_top": "560", "score_bottom": "593",
-        "rate_top": "41", "rate_bottom": "38", "event_banner": "极限超车×2",
+        "total_left": "368", "score_a": "560", "score_b": "593",
+        "rate_a": "41", "rate_b": "38", "event_banner": "极限超车×2",
     }
     base.update(over)
     return {tuple(REGIONS[name]): text for name, text in base.items()}
@@ -239,18 +239,18 @@ class TestReadingJudgements:
 
     def test_block_side_attribution_lands_in_record(self, tmp_path) -> None:
         """② 比分面板上下互换 → 归属按块色判，并逐格写进记录。"""
-        sides = {"score_top": (30, 60, 220), "score_bottom": (220, 60, 30)}
+        sides = {"score_a": (30, 60, 220), "score_b": (220, 60, 30)}
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
-        assert rec["fields"]["score_top"]["side"] == "本机(蓝)"
-        assert rec["fields"]["score_bottom"]["side"] == "对手(红)"
+        assert rec["fields"]["score_a"]["side"] == "本机(蓝)"
+        assert rec["fields"]["score_b"]["side"] == "对手(红)"
         # 位置与敌我解耦：读数照读，归属单列
-        assert rec["fields"]["score_top"]["value"] == 560
+        assert rec["fields"]["score_a"]["value"] == 560
 
     def test_block_side_abstains_on_unsaturated_band(self, tmp_path) -> None:
         """低饱和带（天空/路面）判不出归属 → 显式 ``?``，不猜。"""
         gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), frame=gray))
-        assert rec["fields"]["score_top"]["side"] == "?"
+        assert rec["fields"]["score_a"]["side"] == "?"
 
     def test_total_lt_mileage_marked_not_dropped(self, tmp_path) -> None:
         """③ 合计 < 里程 必是假读 → 标记（行照旧产出、原始文本与值都留着）。"""
@@ -328,7 +328,7 @@ class TestReadingJudgements:
     def test_non_three_channel_frame_never_lies_about_side(self) -> None:
         """非 3 通道帧的归属说"判不出"，而不是把通道错位分组后给一个看着合理的错标签。"""
         f = np.zeros((FRAME_H, FRAME_W, 4), dtype=np.uint8)
-        assert hud.block_side(f, REGIONS["score_top"]) == "?"
+        assert hud.block_side(f, REGIONS["score_a"]) == "?"
 
 
 # ----------------------------------------------------------------------
@@ -346,43 +346,73 @@ class TestSidePairJudgement:
     def test_pair_recovers_attribution_under_common_bias(self, tmp_path) -> None:
         """两块都偏蓝时，更蓝的那块是本机。"""
         # 上块 B−R=+90（被蓝天染过），下块 +180（本机色条更实）
-        sides = {"score_top": (60, 90, 150), "score_bottom": (20, 80, 200)}
+        sides = {"score_a": (60, 90, 150), "score_b": (20, 80, 200)}
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
-        assert rec["fields"]["score_top"]["side"] == "对手(红)"
-        assert rec["fields"]["score_bottom"]["side"] == "本机(蓝)"
-        assert rec["fields"]["score_top"]["side_source"] == "pair"
+        assert rec["fields"]["score_a"]["side"] == "对手(红)"
+        assert rec["fields"]["score_b"]["side"] == "本机(蓝)"
+        assert rec["fields"]["score_a"]["side_source"] == "pair"
 
     def test_single_band_form_is_the_one_that_fails(self) -> None:
         """把现场形态锁住：单块绝对判据在公共偏色下确实会两块同判（故它只配做离线标注）。"""
         from maaracing_master.plugins.speedrush import hud as h
-        f = _frame(sides={"score_top": (60, 90, 150), "score_bottom": (20, 80, 200)})
-        assert h.block_side(f, REGIONS["score_top"]) == "本机(蓝)"     # 错：上块其实是对手
-        assert h.block_side(f, REGIONS["score_bottom"]) == "本机(蓝)"  # 对
-        assert h.pair_sides(f, REGIONS["score_top"], REGIONS["score_bottom"]) \
+        f = _frame(sides={"score_a": (60, 90, 150), "score_b": (20, 80, 200)})
+        assert h.block_side(f, REGIONS["score_a"]) == "本机(蓝)"     # 错：上块其实是对手
+        assert h.block_side(f, REGIONS["score_b"]) == "本机(蓝)"  # 对
+        assert h.pair_sides(f, REGIONS["score_a"], REGIONS["score_b"]) \
             == ("对手(红)", "本机(蓝)")
 
     def test_pair_abstains_when_two_bands_are_alike(self, tmp_path) -> None:
         """差值太小 → 两块都弃权：多半是面板淡入/淡出，这一刻没有可用信号。"""
-        sides = {"score_top": (30, 60, 140), "score_bottom": (32, 61, 141)}
+        sides = {"score_a": (30, 60, 140), "score_b": (32, 61, 141)}
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
-        assert rec["fields"]["score_top"]["side"] == "?"
-        assert rec["fields"]["score_bottom"]["side"] == "?"
+        assert rec["fields"]["score_a"]["side"] == "?"
+        assert rec["fields"]["score_b"]["side"] == "?"
 
     def test_unsaturated_band_abstains_in_pair_too(self) -> None:
         """低饱和带（天空/路面）连单块判都判不出 → 成对判同样弃权，不拿噪声凑。"""
         gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
-        assert hud.pair_sides(gray, REGIONS["score_top"], REGIONS["score_bottom"]) == ("?", "?")
+        assert hud.pair_sides(gray, REGIONS["score_a"], REGIONS["score_b"]) == ("?", "?")
 
     def test_pair_falls_back_to_single_when_one_block_missing(self, tmp_path) -> None:
         """只剩一块（区域集缺项）时回退单块判据，并如实记来源 ``single``。"""
-        only = {n: REGIONS[n] for n in ("stage", "timer", "score_top")}
+        only = {n: REGIONS[n] for n in ("stage", "timer", "score_a")}
         obs = hud.HudObserver(
             tmp_path,
-            frame_source=lambda: (_frame(sides={"score_top": (30, 60, 220)}), 1001, 5_000_000, 3.5),
+            frame_source=lambda: (_frame(sides={"score_a": (30, 60, 220)}), 1001, 5_000_000, 3.5),
             engine=_FakeEngine(_texts()), regions=only)
-        entry = _sample(obs)["fields"]["score_top"]
+        entry = _sample(obs)["fields"]["score_a"]
         assert entry["side"] == "本机(蓝)"
         assert entry["side_source"] == "single"
+
+    def test_enemy_rate_slot_is_not_read(self, tmp_path) -> None:
+        """**对手那一格没有得分速度**：不识别、标 `not_displayed`；本方那一格照常读。
+
+        两种朝向都验（蓝在上 / 蓝在下各一次）：速度格跟随**同槽位比分格**的敌我，而不是
+        槽位本身——按槽位读会在互换后去读对手的空区（实测那块能读出背景值，看着像读数）。
+        """
+        for blue_top in (True, False):
+            top = (30, 60, 220) if blue_top else (220, 60, 30)
+            bot = (220, 60, 30) if blue_top else (30, 60, 220)
+            engine = _FakeEngine(_texts())
+            rec = _sample(_observer(tmp_path, engine, sides={"score_a": top, "score_b": bot}))
+            own, enemy = (("rate_a", "rate_b") if blue_top else ("rate_b", "rate_a"))
+            assert rec["fields"]["score_a"]["side"] == ("本机(蓝)" if blue_top else "对手(红)")
+            assert rec["fields"][own]["side"] == "本机(蓝)"
+            assert rec["fields"][own]["trusted"] is True
+            assert rec["fields"][own]["value"] in (41, 38)     # 两槽各有自己的文本
+            assert rec["fields"][enemy]["trusted"] is False
+            assert "not_displayed" in rec["fields"][enemy]["note"]
+            assert tuple(REGIONS[enemy]) not in engine.calls, "对手那一格不该被识别"
+
+    def test_rate_slot_not_read_when_side_unknown(self, tmp_path) -> None:
+        """归属判不出时同样不读速度格：不知道这一槽是谁的，就没理由把那里的像素当读数。"""
+        engine = _FakeEngine(_texts())
+        gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
+        rec = _sample(_observer(tmp_path, engine, frame=gray))
+        for name in hud.RATE_FIELDS:
+            assert rec["fields"][name]["trusted"] is False
+            assert "side_unknown" in rec["fields"][name]["note"]
+            assert tuple(REGIONS[name]) not in engine.calls
 
 
 # ----------------------------------------------------------------------
@@ -444,7 +474,7 @@ class TestSettleJudgement:
         rec = _sample(obs)
         for name in hud.GATED_FIELDS:
             assert "settled" in rec["fields"][name]
-        for name in (*hud.SIDE_FIELDS, "rate_top", "rate_bottom", "timer", "event_banner"):
+        for name in (*hud.SIDE_FIELDS, "rate_a", "rate_b", "timer", "event_banner"):
             assert "settled" not in rec["fields"][name]
 
     def test_meta_declares_settle_contract(self, tmp_path) -> None:

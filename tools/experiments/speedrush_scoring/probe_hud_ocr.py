@@ -362,7 +362,9 @@ def _mmss(text: str) -> int | None:
 FIELD_DARK_MIN = 0.35
 PANEL_FIELDS = ("mileage", "overtake", "total_left")
 # 比分面板两格：归属必须**成对判**（见 pair_sides）；位置名不等于敌我
-PAIR_FIELDS = ("score_top", "score_bottom")
+PAIR_FIELDS = ("score_a", "score_b")
+# 得分速度两格与同槽位的比分格配对（rate_a 在 score_a 上方）；**只为本方显示**
+RATE_FIELDS = ("rate_a", "rate_b")
 
 
 def field_on_dark(frame_rgb: np.ndarray, rect) -> bool:
@@ -574,7 +576,8 @@ def resolve_session(name: str) -> Path:
 def _sample_rows(session: Path, regs: dict, every: int):
     """顺序读会话的 HUD（关 det，与生产口径一致）→ [(帧索引行, 各区域文本)]。
 
-    左侧三列先过逐字段暗底闸门；不在场记 None，不拿天空凑数。
+    左侧三列先过逐字段暗底闸门；不在场记 None，不拿天空凑数。另外把**成对判出的归属**
+    以 ``__side_a``/``__side_b`` 两个伪字段带回（消费方要按归属取速度格，不能按槽位取）。
     """
     rows = [json.loads(x) for x in
             (session / "frames.jsonl").read_text(encoding="utf-8").splitlines() if x]
@@ -590,6 +593,9 @@ def _sample_rows(session: Path, regs: dict, every: int):
                 vals[n] = None
                 continue
             vals[n] = ocr.read(rgb, rect)
+        if all(n in regs for n in PAIR_FIELDS):
+            a, b = pair_sides(rgb, regs[PAIR_FIELDS[0]], regs[PAIR_FIELDS[1]])
+            vals["__side_a"], vals["__side_b"] = a, b
         out.append((r, vals))
     return rows, out
 
@@ -607,18 +613,21 @@ def cmd_timeline(args) -> None:
     regs = json.loads(Path(args.rects).read_text(encoding="utf-8"))
     rows, samples = _sample_rows(session, regs, args.every)
     print(f"会话 {session.name}  帧 {len(rows)}  采样 {len(samples)}（每 {args.every} 帧）")
-    print("注意：`score`/`rate` 两列取的是**上块**，而上块可能是任一方——比分面板会上下互换，"
-          "判敌我要用 block_side()（见 README 复核结论）\n")
+    print("注意：面板两格是**槽位**（a=上/b=下），不是敌我——判敌我要成对判（pair_sides）；"
+          "`速度` 列取**本方**那一格（对手那一格没有得分速度，见 README 结论 9）\n")
     print(f"{'seq':>5} {'t(s)':>6} {'计时':>6} {'里程':>5} {'超车':>5} {'合计':>6} "
-          f"{'上块分':>7} {'速度':>5}  事件/浮字")
+          f"{'本方分':>7} {'速度':>5}  事件/浮字")
     seq = []
     t0 = samples[0][0]["ts_ns"] if samples else 0
     for r, v in samples:
+        # 速度格**按归属取**（只为本方显示）：归属来自 _sample_rows 里的成对判
+        own_slot = PAIR_FIELDS[1] if v.get("__side_a") == "对手(红)" else PAIR_FIELDS[0]
         cur = {
             "t": (r["ts_ns"] - t0) / 1e9,
             "timer": _mmss(v.get("timer")), "mileage": _digits(v.get("mileage")),
             "overtake": _digits(v.get("overtake")), "total": _digits(v.get("total_left")),
-            "score": _digits(v.get("score_top")), "rate": _digits(v.get("rate_top")),
+            "score": _digits(v.get("score_a")),
+            "rate": _digits(v.get("rate_a" if own_slot == PAIR_FIELDS[0] else "rate_b")),
         }
         seq.append(cur)
         ev = f"{(v.get('event_banner') or '').strip()} {(v.get('center_popup') or '').strip()}".strip()

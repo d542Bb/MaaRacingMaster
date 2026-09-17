@@ -49,9 +49,14 @@ DEFAULT_DEMOS = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "dat
 
 # 左侧周期卡片的三格；窗口切分与"定值"判据都只作用于它们
 CARD_FIELDS: tuple[str, ...] = ("mileage", "overtake", "total_left")
-# 比分面板两格（位置会上下互换，敌我按行内 side 判，不看位置）
-SIDE_FIELDS: tuple[str, ...] = ("score_top", "score_bottom")
-RATE_FIELDS: tuple[str, ...] = ("rate_top", "rate_bottom")
+# 比分面板两格：**槽位名**（a=上档、b=下档），不是敌我——敌我按行内 side 判
+SIDE_FIELDS: tuple[str, ...] = ("score_a", "score_b")
+# 得分速度两格：只为本方显示（对手那格在 2026-09-17 之后连识别都不做）
+RATE_FIELDS: tuple[str, ...] = ("rate_a", "rate_b")
+# 旧会话（区域真源还是位置名时录的）→ 新槽位名。复盘要能读历史文件，故载入时统一改名；
+# 顺带提醒：旧文件里"对手那一格"的得分速度是**无条件识别**出来的，可能是背景假读。
+LEGACY_FIELD_RENAMES = {"score_top": "score_a", "score_bottom": "score_b",
+                        "rate_top": "rate_a", "rate_bottom": "rate_b"}
 
 # 合计 = 里程 + w×超车。w 由探针 formula 模式定出，本工具作不变量复核。
 OVERTAKE_WEIGHT = 30
@@ -180,9 +185,11 @@ def load_session(path: Path) -> Session:
                          f"格式已变，先对齐字段语义再加模式")
     rows = []
     for r in _jsonl(path / "hud.jsonl"):
+        raw_fields = r.get("fields") or {}
         rows.append(Row(seq=int(r["seq"]), ts_ns=int(r["ts_ns"]),
                         frame_id=int(r.get("frame_id", -1)),
-                        fields=r.get("fields") or {}, flags=list(r.get("flags") or [])))
+                        fields={LEGACY_FIELD_RENAMES.get(k, k): v for k, v in raw_fields.items()},
+                        flags=list(r.get("flags") or [])))
     if rows:
         t0 = rows[0].ts_ns
         for r in rows:
@@ -497,7 +504,7 @@ def _self_rate(r: Row):
     """**本机**的得分速度：速度格与比分格同属一块面板，谁在上谁在下随互换一起变。
 
     为什么必须按归属取而不是按位置：**「得分速度」只为我方显示**（实测本机侧 100% 有读数，
-    对手侧只有零星几处——那是空区的假读）。按位置取 `rate_top`，在面板互换后就会去读对手
+    对手侧只有零星几处——那是空区的假读）。按槽位取 `rate_a`，在面板互换后就会去读对手
     那一块的空区，得到"空"或一个假读小数字（实测 2/1/0 那一类）。
     """
     return _side_rate(r, "本机")
@@ -509,10 +516,10 @@ def _side_rate(r: Row, side: str):
     注意：**只有本机那一块真的有这个读数**，故 ``side="对手"`` 拿到的是空区假读——除诊断外
     不要用它（见 `_self_rate`）。
     """
-    if side_of(r, "score_top") == side:
-        return r.val("rate_top") if r.trusted("rate_top") else None
-    if side_of(r, "score_bottom") == side:
-        return r.val("rate_bottom") if r.trusted("rate_bottom") else None
+    if side_of(r, "score_a") == side:
+        return r.val("rate_a") if r.trusted("rate_a") else None
+    if side_of(r, "score_b") == side:
+        return r.val("rate_b") if r.trusted("rate_b") else None
     return None
 
 
@@ -580,8 +587,8 @@ def cmd_timeline(args) -> None:
             if side_conflict(r):
                 # 两块同判 → 归属不可用：按**位置**显示（上/下）而不是按敌我，免得读者
                 # 以为这行有归属；值本身不丢（原始行里都在）
-                cell_self = f"上{r.val('score_top') if r.trusted('score_top') else '—'}"
-                cell_opp = f"下{r.val('score_bottom') if r.trusted('score_bottom') else '—'}"
+                cell_self = f"a槽{r.val('score_a') if r.trusted('score_a') else '—'}"
+                cell_opp = f"b槽{r.val('score_b') if r.trusted('score_b') else '—'}"
             else:
                 cell_self, cell_opp = str(sc.get("本机") or "—"), str(sc.get("对手") or "—")
             rate = _self_rate(r)
@@ -721,7 +728,7 @@ def _label(r: Row, f: Findings, i: int) -> tuple[str, str]:
     l1 = (f"#{r.seq}  t={r.t:6.2f}s  帧 {r.frame_id}   {card}   {sc}   "
           f"速度(本机) {_self_rate(r) if _self_rate(r) is not None else '—'}   {ev}")
     l2 = ("  判定：" + ("；".join(r.tags) if r.tags else "无标签（全部定值、无违例）")
-          + (f"   [该行 side={r.side('score_top')}/{r.side('score_bottom')}]"
+          + (f"   [该行 side={r.side('score_a')}/{r.side('score_b')}]"
              if any(side_of(r, n) == "?" for n in SIDE_FIELDS) else ""))
     return l1, l2
 
