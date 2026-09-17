@@ -1065,6 +1065,8 @@ class TreasureModule(ActivityModule):
         # 结算字段连续一致确认闸的累计状态（P1-8）：字段名 → {cand, n}
         # （cand=最近读数，n=连续一致次数；换场/切阶段清空）
         self._settle_stable: dict[str, dict] = {}
+        # 利润行 OCR 交叉校验哨兵：最近一次「与派生值不符」的读数（同值只告警一次，防刷屏）
+        self._settle_profit_cross_seen: int | None = None
         # 点击失败链（P0「静默失败不再可能」的收口）：某 key 连续失败时首次必记，
         # 其后按帧节流；成功即清链。只看帧号会把短失败链整段吞掉（见 _apply_click_failure）。
         self._click_fail_key: str | None = None
@@ -1540,6 +1542,7 @@ class TreasureModule(ActivityModule):
                 self._settle_skip_since_ms = 0
                 self._settle_skip_retry_count = 0
                 self._settle_stable.clear()   # 换场：连续一致计数不得跨场继承
+                self._settle_profit_cross_seen = None
             # 离开「结算弹窗」阶段 → 彩蛋识别窗口结束，清 _egg_reading
             if stage_name != "结算弹窗":
                 self._egg_reading = False
@@ -1582,6 +1585,7 @@ class TreasureModule(ActivityModule):
                 self._settle_final_price = None
                 self._settle_total_price = None
                 self._settle_profit = None
+                self._settle_profit_cross_seen = None
                 self._daily_high_score = None  # 弹窗①积分随弹窗消失失效，回大厅清空防串场
                 self._auction_result = None    # 竞拍结果（win/fail）随本场结束失效
                 # 回大厅 → 清空本场彩蛋计数（防串场带到下一场）
@@ -2846,6 +2850,10 @@ class TreasureModule(ActivityModule):
         """结算字段的连续一致确认闸（P1-8，与报价槽 BID_SLOT_STABLE_FRAMES 同口径）。
 
         返回 True=本次读数可固化（调用方写字段）；False=还在累积（本帧不写）。
+        这道闸只处理**逐帧抖动**（同一位置读出不同值）；「值还没涨到位」的滚动
+        中间值它拦不住——实测动画值能连稳 ≥3 帧。定值的**时序判据**在调用方：
+        `_settle_collect_clicked_once`（跳过动画后「领取」按钮出现才算定值），
+        本闸是在定值之后的第二道去抖，两道一起才固化。
         为什么必须有这道闸：结算页数字在动画期逐帧滚动，而 0 是合法终值
         （未分红）——「读到即认」会把滚动中的瞬时值当成「本场收入已读出」，
         于是 `settle_ready_click` 在动画还没播完时就触发「真领取」，
@@ -5757,68 +5765,102 @@ class TreasureModule(ActivityModule):
         # --------- 结算页 4 项（竞拍失败/成功 → 领取分红） ---------
         # settle_final_price = 最终竞拍价（最高出价人拿下的实际金额）
         # settle_total_price = 拍品总价（= 真实估值，用这个直接验证 sysmax_13×1.35/1.4 准不准）
-        # settle_profit = 利润（中标者的盈亏，负数=中标者亏钱=上头秒杀亏）
-        # settle_my_income = 本场收入（我方分红，正数=我赚）
+        # settle_profit = 利润（中标者的盈亏，负数=中标者亏钱；派生量，见下）
+        # settle_my_income = 本场收入（我方收入：拍中=利润、未拍中=分红，正数=我赚，负数=我方亏本拍中）
         #
-        # 防呆规则：
-        #   1) 0 是合法值（未分红 / 0 利润），按 OCR_ZERO_ALLOWED_KEYS 约定保留；
-        #   2) final_price / total_price / profit：
-        #        正数最小 MIN_SETTLE_AMOUNT，相对 sysmax_ref 的 1/20 下限，避免 OCR 裁位残缺；
-        #   3) settle_my_income（我方分红）：独立规则
-        #        - 绝对下限 1（元），允许小额正数（如 1,880 元的分红是合法的）；
-        #        - 不套 sysmax_ref × 1/20 相对下限（分红本来就是总价的很小比例）。
-        # （结算页金额 ROI 右侧非常窄，极易裁掉最后几位；用户实测 settle_my_income
-        #   曾从 200,000 被裁成 2 → 直接触发结算阶段语义误判 + 后续阶段跳回大厅）。
-        # 大金额三项共用：
+        # 【定值判据】结算页四行金额是**滚动计数动画**，唯有「跳过动画后『领取』按钮出现」
+        # 时才是定值（用户 2026-09-17 权威 + 真机日志双证）。动画中间值看着合理，且能一连
+        # 稳住好几帧 —— 「连续一致」拦不住它：实测会话 20260917_210330 第 15 场，
+        # 合计 31,013→31,361→320,605、利润 −445,987→−445,639→−156,395，各值都稳定 ≥3 帧。
+        # 故判据取「本次结算页的『跳过动画』点击已成功」（`_settle_collect_clicked_once`）：
+        # 点击前一律不固化，点击后才认。该标记本就是策略两次点击的交接点（跳过动画 ↔ 真领取），
+        # 唯一真源、不新增事实字段。
+        #
+        # 【利润改为派生】利润 = 拍品总价 − 最终竞拍价（RULES §3/§7）。三行金额同页同源，
+        # 利润行不含独立信息；独立 OCR 一份派生量会与自己的上游打架：旧护栏「利润绝对值不该
+        # 低于 Hmax/20」前提为假（薄利赢单的利润本就远小于 Hmax/20），把真实小额利润当裁位
+        # 残缺丢弃、却把动画中间值固化下来（2026-09-17 库内 55/485 场利润 ≠ 总价−成交价）。
+        # 派生值随两个价格每次更新而重算（价格被覆盖即自动纠正）；利润行 OCR 保留作
+        # **交叉校验哨兵**（与派生值不符即告警，用于发现 ROI 漂移），不再参与落值。
+        #
+        # 防呆规则（价格两项）：
+        #   1) 0 是合法值（未渲染完成），按 OCR_ZERO_ALLOWED_KEYS 约定保留；
+        #   2) 正数最小 MIN_SETTLE_AMOUNT，且不低于相对 sysmax_ref 的 1/20，避免裁位残缺
+        #      （结算页金额 ROI 右侧非常窄，极易裁掉最后几位）。
         big_settle_map = [
             ("settle_final_price", "_settle_final_price"),
             ("settle_total_price", "_settle_total_price"),
-            ("settle_profit",      "_settle_profit"),
         ]
         MIN_SETTLE_AMOUNT = 5000
         valid_hist = [v for v in self._h_prices if v and v > 0]
         sysmax_ref = max(valid_hist) if valid_hist else None
-        for key, attr in big_settle_map:
-            info = res.get(key)
-            if not info:
-                continue
-            # amount 走 _extract_amount：优先千分位逗号金额，负数保留符号（利润/收入会为负）
-            amt = info.get("amount")
-            if amt is None:
-                continue
-            # 1) 绝对下限（0 允许，正数最小 5000）
-            if amt != 0 and 0 < abs(amt) < MIN_SETTLE_AMOUNT:
-                logger.log(
-                    f"[鉴宝] OCR {key} = {amt:,} 丢弃：正数<{MIN_SETTLE_AMOUNT:,}，"
-                    f"判定为 OCR 裁位残缺", "WARNING",
-                )
-                continue
-            # 2) 相对历史 H 下限（sysmax_ref 存在时：最终竞拍价/总价/利润绝对值
-            #    任一都不该比 Hmax 的 1/20 还低）
-            if sysmax_ref is not None and amt != 0:
-                rel_floor = sysmax_ref // 20
-                if abs(amt) < rel_floor:
+        if self._settle_collect_clicked_once:
+            for key, attr in big_settle_map:
+                info = res.get(key)
+                if not info:
+                    continue
+                # amount 走 _extract_amount：优先千分位逗号金额，负数保留符号
+                amt = info.get("amount")
+                if amt is None:
+                    continue
+                # 1) 绝对下限（0 允许，正数最小 5000）
+                if amt != 0 and 0 < abs(amt) < MIN_SETTLE_AMOUNT:
                     logger.log(
-                        f"[鉴宝] OCR {key} = {amt:,} 丢弃：< 历史Hmax {sysmax_ref:,} 的 1/20 "
-                        f"（阈值 {rel_floor:,}），判定为 OCR 裁位残缺", "WARNING",
+                        f"[鉴宝] OCR {key} = {amt:,} 丢弃：正数<{MIN_SETTLE_AMOUNT:,}，"
+                        f"判定为 OCR 裁位残缺", "WARNING",
                     )
                     continue
-            prev = getattr(self, attr)
-            if prev == amt:
-                continue
-            # 连续一致确认闸（P1-8）：滚动动画期的瞬时值不固化（见 _settle_field_stable）
-            if not self._settle_field_stable(key, amt):
-                continue
-            setattr(self, attr, amt)
-            logger.log(f"[鉴宝] OCR {key} = {amt:,}" + (f"（覆盖旧值{prev:,}）" if prev else ""), "DEBUG")
-        # settle_my_income 单独判定（本场收入/收益，正数=赚，负数=亏，0=未分红）：
+                # 2) 相对历史 H 下限（sysmax_ref 存在时：最终竞拍价/总价都不该比
+                #    Hmax 的 1/20 还低）
+                if sysmax_ref is not None and amt != 0:
+                    rel_floor = sysmax_ref // 20
+                    if abs(amt) < rel_floor:
+                        logger.log(
+                            f"[鉴宝] OCR {key} = {amt:,} 丢弃：< 历史Hmax {sysmax_ref:,} 的 1/20 "
+                            f"（阈值 {rel_floor:,}），判定为 OCR 裁位残缺", "WARNING",
+                        )
+                        continue
+                prev = getattr(self, attr)
+                if prev == amt:
+                    continue
+                # 连续一致确认闸（P1-8）：滚动动画期的瞬时值不固化（见 _settle_field_stable）
+                if not self._settle_field_stable(key, amt):
+                    continue
+                setattr(self, attr, amt)
+                logger.log(f"[鉴宝] OCR {key} = {amt:,}" + (f"（覆盖旧值{prev:,}）" if prev else ""), "DEBUG")
+        # 利润 = 拍品总价 − 最终竞拍价：两项齐备即派生，任一被覆盖即同步重算
+        if self._settle_total_price is not None and self._settle_final_price is not None:
+            derived = self._settle_total_price - self._settle_final_price
+            prev_profit = self._settle_profit
+            if derived != prev_profit:
+                self._settle_profit = derived
+                logger.log(
+                    f"[鉴宝] 利润派生 = {derived:,}（拍品总价 {self._settle_total_price:,}"
+                    f" − 最终竞拍价 {self._settle_final_price:,}）"
+                    + (f"（覆盖旧值{prev_profit:,}）" if prev_profit is not None else ""),
+                    "DEBUG",
+                )
+            # 交叉校验哨兵：同页利润行读数应等于派生值；不等即 ROI 漂移/串位，告警但以派生值为准。
+            # 同值只报一次（动画/覆盖过程会反复读到同一个错值，逐帧告警会刷屏）。
+            info = res.get("settle_profit")
+            read = info.get("amount") if info else None
+            if isinstance(read, int) and read != derived and read != self._settle_profit_cross_seen:
+                self._settle_profit_cross_seen = read
+                logger.log(
+                    f"[鉴宝] 利润行 OCR = {read:,} 与派生值 {derived:,} 不符，"
+                    f"已按「拍品总价 − 最终竞拍价」计（排查 ROI 漂移用）", "WARNING",
+                )
+        # settle_my_income 单独判定（本场收入/收益，正数=赚，负数=亏【我方亏本拍中】，0=未分红）：
         # 只防 1 类误读：裁位残缺 → 个位/十位数字（|amt|<10 基本不可能是真实收入）。
         # 注意：负数 = 我方拍下且亏损（结算页 ROI 显示的就是我方的收入，负值合法），
         # 不能像 settle_profit 那样当串位丢弃——否则亏损场 _settle_my_income 恒 None，
         # 领取分红阶段永远等不到"数据已加载"而不再点第二次领取。
         # 用户截图本场收入 = 1,880 元，远 < 5000，原来 MIN_SETTLE_AMOUNT=5000 会误丢。
         info = res.get("settle_my_income")
-        if info:
+        # 同一条「已跳过动画」定值闸（见本段开头）：收入也在这张滚动动画的页面上，
+        # 点击前读到的「0 / 小额」只是动画中间值——真机 2026-09-16 事故正是它被当成
+        # 「本场收入已读出」而提前点真领取（tests/test_treasure_settle_stability.py 锁此分工）。
+        if info and self._settle_collect_clicked_once:
             amt = info.get("amount")
             if amt is not None:
                 if amt != 0 and abs(amt) < 10:

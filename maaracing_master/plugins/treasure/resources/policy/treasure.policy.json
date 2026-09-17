@@ -2677,7 +2677,7 @@
         "id": "settle_ready_click",
         "when": {
           "settle_income": {
-            "gte": 0
+            "neq": null
           },
           "stage": "settle"
         }
