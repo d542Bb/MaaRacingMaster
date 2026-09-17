@@ -230,7 +230,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 [treasure\_ocr.py](./ocr.py)
 
-**职责**（**业务薄层**：识别引擎的真源在 [core/ocr.py](../../maaracing_master/core/CODE_WIKI.md) §1.11，本文件不再持有第二份）：
+**职责**（**业务薄层**：识别引擎的真源在 [core §1.11](../../core/CODE_WIKI.md)，本文件不再持有第二份）：
 
 - 识别区 `_regions`：读 policy.json `perception.spec` 筛 `kind == "ocr"` 的锚点 rect
 
@@ -240,7 +240,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 - 金额提取加固：千分位逗号优先、重复逗号合并、中文「万」单位、7 位噪点前缀截首、`MIN_AMOUNT` 金额下限（下限值与区间口径见源码常量）
 
-- 抠图 → 预处理 → RapidOCR 推理、以及关检测/关方向分类/ORT 线程数/P-core 绑核那套调参**已上提 core**：插件自包含契约禁止 speedrush import 本模块，故引擎只能住公共层；改参去 [core/ocr.py](../../maaracing_master/core/ocr.py)，识别结果的行为不变锁见 `tests/test_core_ocr.py`
+- 抠图 → 预处理 → RapidOCR 推理、以及关检测/关方向分类/ORT 线程数/P-core 绑核那套调参**已上提 core**：插件自包含契约禁止 speedrush import 本模块，故引擎只能住公共层；改参去 [core/ocr.py](../../core/ocr.py)，识别结果的行为不变锁见 `tests/test_core_ocr.py`
 
 ***
 
