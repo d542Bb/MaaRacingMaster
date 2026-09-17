@@ -1228,30 +1228,33 @@ class TreasureModule(ActivityModule):
         if not runner.start(self._V4_ENTRY):
             raise RuntimeError("[鉴宝][v4] 常驻图加载失败，模块终止")
         logger.log("[鉴宝][v4] 帧工作已移交 MaaFW Tasker 线程（policy 闭环桥）")
-        from contextlib import ExitStack
         from maaracing_master.core.capabilities import BUTTON_A
-        with ExitStack() as stack:
-            # v4 常驻图永不退出：手柄租约全程持有——桥线程点击依赖手柄，
-            # 中途归还即断点击。runner.stop() 在
-            # 租约归还前执行，确保 Tasker 线程先停。
-            if self.ctx.click_mode == "gamepad":
-                gpad = stack.enter_context(self.ctx.gamepad.acquire())
-                # P4c：与决策段共享同一 Clicker 实例——此前图/桥各持一个导航器，
-                # 光标真值（last_pos）分裂：MaaRM_Template 遮挡过滤（mask_cursor）
-                # 在对局内读不到决策点击后的光标位。共享后单导航器全程追踪。
-                clicker = self._get_clicker()
-                clicker.bind_gamepad(self.ctx.capture, gpad, confirm_button=BUTTON_A,
-                                     rebuild_cb=self._rebuild_gamepad_device)
-                runner._graph._clicker = clicker
-                logger.log("[鉴宝][v4] 手柄租约已绑定（常驻持有，与决策段共享点击器）")
-            try:
-                while self.ctx.lifecycle.running:
-                    if not runner.poll():
-                        logger.log("[鉴宝][v4] 常驻图已退出，尝试重启", "WARNING")
-                        runner.start(self._V4_ENTRY)
-                    self.ctx.lifecycle.sleep(1.0)
-            finally:
-                runner.stop()
+        if self.ctx.click_mode == "gamepad":
+            # v4 常驻图永不退出，导航器要**跨整个会话持有**同一设备 → 走
+            # `persistent_adapter()`：那是为「常驻持有者」设计的入口，不计入租约计数。
+            # 这条区分是硬约束而非风格：`acquire()` 是「借一次就还」的租约语义，整场
+            # 持有会让 `_active` 恒 > 0，而 `reset_device()` 按能力契约在活跃租约存在时
+            # **必须抛错**——本模块自己的 `_rebuild_gamepad_device` 自愈（光标长时间丢失
+            # → 重建设备并换绑）就会恒不可用（真机 2026-09-17：重建请求被
+            # 「仍有 1 个活跃手柄租约」挡回）。设备生命周期由 controller 收口：运行结束
+            # `_destroy_gpad()` 在模块主循环退出后销毁（此时无并发使用，先 reset 再拔除）。
+            gpad = self.ctx.gamepad.persistent_adapter()
+            # P4c：与决策段共享同一 Clicker 实例——此前图/桥各持一个导航器，
+            # 光标真值（last_pos）分裂：MaaRM_Template 遮挡过滤（mask_cursor）
+            # 在对局内读不到决策点击后的光标位。共享后单导航器全程追踪。
+            clicker = self._get_clicker()
+            clicker.bind_gamepad(self.ctx.capture, gpad, confirm_button=BUTTON_A,
+                                 rebuild_cb=self._rebuild_gamepad_device)
+            runner._graph._clicker = clicker
+            logger.log("[鉴宝][v4] 手柄已绑定（常驻持有者，不计租约；与决策段共享点击器）")
+        try:
+            while self.ctx.lifecycle.running:
+                if not runner.poll():
+                    logger.log("[鉴宝][v4] 常驻图已退出，尝试重启", "WARNING")
+                    runner.start(self._V4_ENTRY)
+                self.ctx.lifecycle.sleep(1.0)
+        finally:
+            runner.stop()
 
     def start(self, start_from: str | None = None) -> None:
         """启动鉴宝模块（观察模式）：持续截图 + 日志，不做任何操作"""

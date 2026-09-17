@@ -100,3 +100,152 @@ def test_button_constants_exist():
     b = __getattr__("BUTTON_B")
     assert a == "BUTTON_A_ENUM"
     assert b == "BUTTON_B_ENUM"
+
+# ======================================================================
+# 租约 vs 常驻持有者：`reset_device()` 的准入（① 自愈链的契约基础）
+# ======================================================================
+#
+# 真机事故（2026-09-16 / 09-17 两次复现）：鉴宝 v4 启动时用 `acquire()`（借出-归还
+# 的**租约**语义）表达「整场持有手柄」，于是 `_active` 恒 > 0，而 `reset_device()`
+# 按能力契约在活跃租约存在时必须抛错——模块自己的「光标长时间丢失 → 重建手柄」
+# 自愈因此恒不可用，日志里只剩一句「仍有 N 个活跃手柄租约」。
+# 契约正解：跨整个会话持有的导航器走 `persistent_adapter()`（不计入 `_active`），
+# 租约留给「借一次就还」的调用方（如跑一次跳转图）。以下锁住这条区分。
+
+
+class _FakeApp:
+    """controller 手柄管理面的最小桩：只实现能力适配器真正调用的四个方法。"""
+
+    def __init__(self):
+        self.gpad = None
+        self.created = 0
+        self.destroyed = 0
+        self.reset_calls = 0
+
+    def _get_gpad(self):
+        if self.gpad is None:
+            self.gpad = _FakePad()
+            self.created += 1
+        return self.gpad
+
+    def _reset_gpad(self):
+        self.reset_calls += 1
+
+    def _destroy_gpad(self):
+        if self.gpad is None:
+            return
+        self.gpad = None
+        self.destroyed += 1
+
+
+def test_lease_blocks_reset_device_by_contract():
+    """活跃租约存在时 `reset_device()` 必须抛错——绝不静默销毁借用中的设备。"""
+    import pytest
+    from maaracing_master.core.capabilities import GamepadAdapter
+
+    app = _FakeApp()
+    cap = GamepadAdapter(app)
+    with cap.acquire() as pad:
+        assert pad is not None
+        with pytest.raises(RuntimeError) as exc:
+            cap.reset_device()
+        assert "活跃手柄租约" in str(exc.value)
+        assert app.destroyed == 0, "抛错路径不得真的动设备"
+    # 归还后即可销毁：懒创建 → 下次取用重建
+    cap.reset_device()
+    assert app.destroyed == 1
+
+
+def test_persistent_holder_does_not_block_reset_device():
+    """常驻持有者（导航器）**不占租约**：`reset_device()` 必须始终可用。
+
+    这是 ① 自愈链能成立的唯一前提——若它按租约语义实现，自愈就会恒不可用。
+    """
+    from maaracing_master.core.capabilities import GamepadAdapter
+
+    app = _FakeApp()
+    cap = GamepadAdapter(app)
+    gpad = cap.persistent_adapter()          # 整场持有
+    assert gpad is not None and app.created == 1
+    assert cap._active == 0, "常驻持有者不得计入活跃租约计数"
+    cap.reset_device()                       # 自愈要走的这一步必须放行
+    assert app.destroyed == 1
+    # 销毁后下次取用重新创建（换绑到新设备的前提）
+    assert cap.persistent_adapter() is not None
+    assert app.created == 2
+
+
+class _RebuildSelf:
+    """`TreasureModule._rebuild_gamepad_device` 的最小桩。"""
+
+    def __init__(self, cap):
+        self.ctx = types.SimpleNamespace(gamepad=cap)
+        self.swapped = []
+        self._clicker = types.SimpleNamespace(
+            gamepad_bound=True,
+            swap_gamepad=lambda new: self.swapped.append(new),
+        )
+
+
+def test_rebuild_chain_succeeds_for_persistent_holder(monkeypatch):
+    """自愈链端到端走通（原本正常场景）：reset_device → 取新设备 → 换绑导航器。
+
+    这是修复前**从未成功过**的那条路径：真机上它每次都被租约挡回。
+    """
+    from maaracing_master.core.capabilities import GamepadAdapter
+    from maaracing_master.plugins.treasure.module import TreasureModule
+
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        __import__("maaracing_master.plugins.treasure.module", fromlist=["logger"]),
+        "logger", types.SimpleNamespace(log=lambda m, lv="INFO": logged.append((lv, m))))
+
+    app = _FakeApp()
+    cap = GamepadAdapter(app)
+    cap.persistent_adapter()                 # v4 常驻绑定
+    fake = _RebuildSelf(cap)
+
+    assert TreasureModule._rebuild_gamepad_device(fake) is True
+    assert app.destroyed == 1, "旧设备必须被确定性拔除"
+    assert app.created == 2, "必须取到重建后的新设备"
+    assert len(fake.swapped) == 1, "导航器必须换绑到新设备"
+    assert any("已重建虚拟手柄并换绑导航器" in m for lv, m in logged)
+
+
+def test_rebuild_chain_reports_failure_instead_of_crashing(monkeypatch):
+    """自愈失败必须留痕且不拖垮主循环（返回 False，交下帧重试）。"""
+    from maaracing_master.core.capabilities import GamepadAdapter
+    from maaracing_master.plugins.treasure.module import TreasureModule
+
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        __import__("maaracing_master.plugins.treasure.module", fromlist=["logger"]),
+        "logger", types.SimpleNamespace(log=lambda m, lv="INFO": logged.append((lv, m))))
+
+    app = _FakeApp()
+    cap = GamepadAdapter(app)
+    fake = _RebuildSelf(cap)
+    with cap.acquire():                      # 别人正持租约 → reset_device 必然抛
+        assert TreasureModule._rebuild_gamepad_device(fake) is False
+    assert fake.swapped == [], "失败时不得换绑"
+    warns = [m for lv, m in logged if lv == "WARNING"]
+    assert warns and "虚拟手柄重建失败" in warns[0], "失败必须留痕"
+
+
+def test_treasure_v4_binding_never_takes_a_session_lease():
+    """静态守卫：鉴宝模块不得用 `acquire()` 表达整场持有（否则自愈恒不可用）。
+
+    租约会把 `_active` 钉在 > 0，`reset_device()` 契约性地拒绝执行；
+    整场持有者的正确入口是 `persistent_adapter()`。若将来确需一次短借
+    （如跑一次跳转图），应显式评估后再放开本守卫。
+    """
+    import inspect
+
+    from maaracing_master.plugins.treasure.module import TreasureModule
+
+    src = inspect.getsource(TreasureModule)
+    assert "gamepad.persistent_adapter()" in src, "v4 绑定应走常驻持有者入口"
+    assert "gamepad.acquire()" not in src, (
+        "不得取租约——整场持有会让 reset_device() 恒抛，"
+        "「光标长时间丢失 → 重建手柄」自愈失效"
+    )
