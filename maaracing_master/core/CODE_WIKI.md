@@ -15,7 +15,7 @@
 | 日志级别、通道与落盘形态 | [`core/logger.py`](./logger.py) |
 | 能力窄接口与契约 | [`core/capabilities.py`](./capabilities.py) |
 | 用户数据目录结构 | [`core/paths.py`](./paths.py) |
-| 游戏分辨率 720p 全局约定 | 见 [docs/CODE_WIKI.md §关键约定](../../docs/CODE_WIKI.md) |
+| 游戏分辨率 720p | [`core/window_utils.py`](./window_utils.py) `resize_game_window_720p`（连接时统一窗口，各插件 ROI / 按钮据此归一化） |
 | MaaFW 对象签名与红线 | [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md) |
 
 ***
