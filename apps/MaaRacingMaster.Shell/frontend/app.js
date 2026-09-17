@@ -1549,13 +1549,15 @@
     const s = d.summary || {};
     const setNum = (el, v, cls) => { if (!el) return; el.textContent = fmtNum(v); if (cls) el.className = cls; };
     const num = (v) => Number(v) || 0;
-    // T0 银币盈亏 = 竞拍净利（仅我方拍中场利润和）+ 彩蛋任务领取银币；两数分列存储、此处合并
-    const myProfit = (d.games || []).reduce(
-      (acc, g2) => acc + (g2.auction_result === 'win' ? (Number(g2.profit) || 0) : 0), 0);
+    // T0 银币盈亏 = 当日银币净变化 = 我方本场收入（拍中=利润、未拍中=分红）+ 彩蛋任务领取银币。
+    // 依据 RULES §3：未拍中不花钱，中标者亏钱时我方按顺位拿 5/10/15% 分红——分红是真收入，
+    // 只算「拍中场的利润」会把当天赚到的分红整个漏掉（2026-09-17：漏 61,488）。
+    // 逐场收入由落盘侧累加成 daily_summary.income_sum，此处直接读汇总，不在前端重算口径
+    //（前端再算一遍＝第二份真相，两处迟早对不上）。
     const eggCoin = num(s.egg_coin);
     const eggScore = num(s.egg_score);
     const high = num(s.highest_score);
-    const coinNet = myProfit + eggCoin;
+    const coinNet = num(s.income_sum) + eggCoin;
     const cn = p('coinnet');
     if (cn) {
       cn.textContent = d.summary ? fmtNum(coinNet) : '--';
