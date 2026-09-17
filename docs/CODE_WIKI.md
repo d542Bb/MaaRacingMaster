@@ -174,6 +174,7 @@ MaaRacingMaster/
 | 截图采集 / 帧通路 | `core/wgcap.py`（拓扑约束见 [ADR-0003](adr/0003-运行时拓扑硬约束.md)，不得新起截图通路） |
 | 日志级别 / 通道 / 落盘 | `core/logger.py` + [core/CODE_WIKI.md §1.5](../maaracing_master/core/CODE_WIKI.md) |
 | 模板图与锚点（采集 / ROI） | [tools/navkit/README.md](../tools/navkit/README.md)（采集工作流 + 校验器） |
+| 文字识别（OCR）引擎与调参 | `core/ocr.py`（跨插件共享底座的唯一真源）+ [core/CODE_WIKI.md §1.11](../maaracing_master/core/CODE_WIKI.md)；插件侧只留「文本怎么解释」的领域口径 |
 | 页面图节点 / 连线 | `plugins/<id>/resources/pipeline/*.json`，用 MPE 编辑（入口见 navkit README） |
 | GUI 窗口 / 前端 / 图标 | [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md) 与其 [frontend/README.md](../apps/MaaRacingMaster.Shell/frontend/README.md) |
 | MaaFW 用法 / 协议行为 | [MAAFW_GUIDE.md](MAAFW_GUIDE.md)；冲突时以官方文档为准 |

@@ -16,6 +16,7 @@
 | 能力窄接口与契约 | [`core/capabilities.py`](./capabilities.py) |
 | 用户数据目录结构 | [`core/paths.py`](./paths.py) |
 | 游戏分辨率 720p | [`core/window_utils.py`](./window_utils.py) `resize_game_window_720p`（连接时统一窗口，各插件 ROI / 按钮据此归一化） |
+| 文字识别引擎（跨插件共享） | [`core/ocr.py`](./ocr.py)（§1.11：调参、抠图边界与预处理口径的唯一真源） |
 | MaaFW 对象签名与红线 | [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md) |
 
 ***
@@ -255,6 +256,26 @@
 
 ***
 
+### 1.11 [ocr.py](./ocr.py) — RapidOCR 文字识别引擎（插件间共享底座）
+
+**职责**：单 ROI 抠图 → 预处理（自适应放大 + 轻度对比度增强）→ RapidOCR 推理 → 交出文本（`OcrText`：逐块 `lines` 与合并 `text` 两种取法）。**抠图边界、引擎调参（关检测/关方向分类/ORT 线程数/绑核）、预处理口径的唯一真源 = 本模块的常量与 docstring**——具体数值不在本文抄录（可机检数值只写指针，见 [docs/README.md](../../docs/README.md)），要改／要核对请直接读 [ocr.py](./ocr.py)。
+
+**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：`plugins/treasure/ocr.py`（业务薄层：识别区真源 + 金额解析）、`tools/navkit/studio_server.py`（ROI 校准台单区识别）；speedrush 的 HUD 读数将接同一入口。
+
+**分工**：「文本怎么解释」（金额解析、数蛋计数、记分口径）属领域知识，留在各业务层，不上提 core。
+
+**坑点**：
+
+| 坑点 | 说明 |
+| --- | --- |
+| 关 det 的口径必须保住 | ROI 全是固定 HUD 文字框，关文本检测是性能前提（det 占单 ROI 耗时的绝对大头，开关两个取值差两个数量级）；把它换回默认值会直接打爆每帧读数预算。关方向分类同理。二者**不是可随意调的性能旋钮**，实测依据写在 [ocr.py](./ocr.py) 对应常量注释里 |
+| 绑核必须在引擎构造前 | `_pin_to_p_cores()` 只在 ORT 线程池创建之前调用才有意义（worker 线程创建后继承进程亲和性）；引擎已构造再绑核是空动作。失败按 WARNING 降级——曾记 DEBUG 级，导致绑核结论近一个月静默未生效（psutil 当时不在依赖里） |
+| 通道序只走 image_io | 本模块对外收 RGB（标准语义），交 RapidOCR 前由 [`image_io.to_bgr`](./image_io.py) 翻一次；不要在 OCR 侧自写切片翻转（通道写反在灰白画面上看不出来） |
+| 抠图边界是 int 截断 | x1/y1/x2/y2 一律 `int()` 截断后夹紧到帧内，**不是** [`roi_config.to_pixel`](./roi_config.py) 的 floor/ceil——边界差一个像素就换掉喂给模型的像素，识别文本随之漂移，而下游把读数当稳定值用。边界与语义由 `tests/test_core_ocr.py` 机检 |
+| 引擎懒加载 + 失败固化 | `rapidocr` 在函数内导入（模块导入期不拉重依赖）；加载失败置 `_engine_failed`、不再重试，识别返回 None 不抛——调用方按「引擎不可用」降级，不得改成抛异常 |
+
+***
+
 ## 2. 模块依赖与持有关系
 
 ### 2.1 导入关系图
@@ -285,6 +306,11 @@ core/registry.py（插件真源入口：manifest = ID + MODULE_CLASS + 可选有
 
 core/yolo_detector.py
   └── core.logger.logger
+
+core/ocr.py（§1.11，插件间共享的识别引擎）
+  ├── core.image_io.to_bgr（通道序唯一边界）
+  ├── core.logger.logger
+  └── rapidocr（函数内延迟导入，不在模块导入期拉重依赖）
 
 core/debug.py / core/debug_io.py
   └── （纯 OpenCV/numpy，IO worker 生产-消费者）
@@ -377,6 +403,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `Sidecar`                            | core/sidecar.py                                                                           | JSONL RPC 业务后端（Shell 托管）        |
 | `NavigationDebugger`                 | core/debug.py                                                                             | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
 | `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志；会话目录 `logs/<ts>/`（日志 + 伴随产物同放）    |
+| `RapidOcrEngine` / `OcrText`         | core/ocr.py                                                                               | 单 ROI 文字识别（懒加载 + 失败降级）；逐块/合并两种文本取法（§1.11） |
 
 > 活动域类（`TreasureModule` / `SpeedRushModule` 等）见对应 `plugins/<id>/CODE_WIKI.md`；GUI 壳类见 [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)。
 
