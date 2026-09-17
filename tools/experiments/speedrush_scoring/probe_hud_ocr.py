@@ -626,6 +626,12 @@ def cmd_formula(args) -> None:
     ratio = extra / np.where(ov == 0, np.nan, ov)
     print(f"超车=0 的点: extra(合计−里程) = {sorted({int(e) for o, e in arr if o == 0})}  （应恒为 0）")
     print(f"超车>0 的点: extra/超车 取值 = {sorted({round(x, 1) for x in ratio if not np.isnan(x)})}")
+    # 由公式自身导出的过滤器：合计 = 里程 + 30×超车 ≥ 里程，故「合计 < 里程」必是假读。
+    # 实测来源：面板"矮版"变体没有合计那一行，闸门拦不住（该处仍是暗底），识别会强行
+    # 解码出 `1`/`92` 这类小数字。消费方应按这条过滤，而不是信单帧的合计。
+    bad = [p for p in pts if p[5] < 0]
+    print(f"合计 < 里程 的采样点 {len(bad)}/{len(pts)}：{[(p[0][-2:], p[1], p[2], p[3], p[4]) for p in bad]}"
+          f"\n  → 这些是矮版变体下的假读，公式在它们上不成立；**不得**据此推断公式有例外")
     for name, seq, mi, o, to, e in pts[:40]:
         print(f"  {name[-2:]} seq={seq:>4} 里程={mi:>4} 超车={o:>2} 合计={to:>4} 差={e:>4}")
 
