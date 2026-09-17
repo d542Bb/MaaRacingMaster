@@ -657,7 +657,7 @@ function updatePropPanel() {
   // 读不出可写入口，否则改归一化值仍会进内存并 markDirty，与「只读」自相矛盾
   const rectEditHtml = isReadonly ? `
       <div class="prop-row"><span class="k">Normalized</span><span style="font-family:monospace">${rect.map(n => n.toFixed(4)).join(', ')}</span></div>
-      <div class="prop-row" style="color:var(--dim);font-size:12px">只读区域：不接拖拽/改值/增删/保存（区域真源在实验目录 <code>hud_regions.json</code>）</div>
+      <div class="prop-row" style="color:var(--dim);font-size:12px">只读区域：不接拖拽/改值/增删/保存（区域真源在插件 <code>resources/policy/hud_regions.json</code>）</div>
   ` : `
       <div class="prop-row"><span class="k">Normalized</span></div>
       <input id="rectInput" class="rect-input" value="${rect.map(n => n.toFixed(3)).join(', ')}">
@@ -694,7 +694,7 @@ function updatePropPanel() {
       <h3>speedrush HUD 区域（只读复核）</h3>
       <div class="prop-row"><span class="k">引擎</span><span>core RapidOcrEngine</span></div>
       <div class="prop-row"><span class="k">读数</span><span>选中即识别，结果显示在下方「OCR 识别结果」</span></div>
-      <div class="prop-row" style="color:var(--dim);font-size:12px">区域真源：tools/experiments/speedrush_scoring/hud_regions.json（实时读数落地后移入插件 resources）</div>
+      <div class="prop-row" style="color:var(--dim);font-size:12px">区域真源：plugins/speedrush/resources/policy/hud_regions.json（与插件侧实时读数 hud.py 共用同一份）</div>
     </div>
     ` : `
     <div class="prop-group">

@@ -65,10 +65,10 @@ ROI 校准台的数据面（`/api/rois` 读写）以 **v4 真源**为准：
   [`tests/test_navkit_studio_speedrush.py`](../../tests/test_navkit_studio_speedrush.py) 锁住。
   注意这**不**涉及 treasure 的 `nodes`/`tuning`：它们的 rect 值仍可编辑并触发镜像联动
   （只读的是「锚点增删」），这是成文语义且有测试锁（`test_navkit_studio_save_flow.py::TestMirrorLinkage`）。
-- **区域真源仍在实验目录**：`tools/experiments/speedrush_scoring/hud_regions.json`
-  （纯 `{区域名: [x1, y1, x2, y2]}` 归一化、x2/y2 排他）。**刻意不复制进插件 resources**——
-  实时读数落地后本区域集会移入插件 resources，届时此处只留指向；现在复制会建出一份无人读的
-  第二真源。
+- **区域真源在插件内**：`maaracing_master/plugins/speedrush/resources/policy/hud_regions.json`
+  （纯 `{区域名: [x1, y1, x2, y2]}` 归一化、x2/y2 排他）。2026-09-17 该区域集有了真实消费者
+  ——插件侧实时读数 `speedrush/hud.py`（驾驶途中落 `hud.jsonl`）——故由实验目录搬进插件，
+  与离线探针 `probe_hud_ocr.py` 共用同一份（探针 `--rects` 缺省即指向它），**只留一份真源**。
 - **帧源**：`data/speedrush/demos/<会话>_p<N>/frames/NNNNNN.jpg`（根由 `core.paths.data_dir()`
   派生，不硬编码路径）。会话名/帧目录/帧名三份白名单与 debug 截图会话不同，由
   `studio_sessions.SessionBrowser` 的构造参数注入，**穿越防护（`is_relative_to` + 双白名单）

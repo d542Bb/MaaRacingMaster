@@ -60,11 +60,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 CROPPER_HTML = REPO / "tools" / "template_cropper" / "index.html"
 
 # ---------------- speedrush HUD 只读复核（Studio 第四面） ----------------
-# 区域真源**仍在实验目录**：实时读数落地后本区域集会移入插件 resources
-# （`plugins/speedrush/resources/…`），届时此处只留指向。现在不复制过去——插件还没有
-# 实时读数消费者，先建一份无人读的真源就是第二真源。
+# 区域真源在**插件内**（`plugins/speedrush/resources/policy/hud_regions.json`）：它自
+# 2026-09-17 起有了真实消费者（插件侧实时读数 `speedrush/hud.py` 落 hud.jsonl），
+# 故与离线探针共用同一份、不再留在实验目录——两份 rect 会各自漂移。
 # 形状（纯数据）：`{区域名: [x1, y1, x2, y2]}` 归一化、x2/y2 排他。
-HUD_REGIONS_FILE = REPO / "tools" / "experiments" / "speedrush_scoring" / "hud_regions.json"
+HUD_REGIONS_FILE = (REPO / "maaracing_master" / "plugins" / "speedrush"
+                    / "resources" / "policy" / "hud_regions.json")
 # 只读分类名（前端 `state.rois[cat]` 的键，同名字符串见 static/app.js READONLY_CATS）
 HUD_GROUP = "speedrush_hud"
 

@@ -33,6 +33,7 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.paths import data_dir
 from maaracing_master.plugins.speedrush import IMAGE_DIR, PIPELINE_DIR
+from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
 
 # 一轮完整流程。首三段（进入活动）只在首轮需要——每轮循环结束时会回到活动页，
@@ -161,6 +162,8 @@ class SpeedRushModule(ActivityModule):
         # 录制模式：开启后驾驶阶段只采集（不操纵车辆），供维护者手动驾驶产出演示数据。
         self._record_mode = self.DEFAULT_RECORD_MODE
         self._recorder: DriveRecorder | None = None
+        # HUD 读数观察者：挂在录制会话上（见 _begin_hud 为何必须如此）
+        self._hud: HudObserver | None = None
 
     @property
     def current_stage(self) -> str | None:
@@ -172,6 +175,8 @@ class SpeedRushModule(ActivityModule):
         """读配置。运行中由 sidecar 路由到本实例，故 ``_state`` 是实况而非快照。"""
         rec = self._recorder
         stats = rec.stats if rec is not None else None
+        hud = self._hud
+        hud_stats = hud.stats if hud is not None else None
         return {
             "record_mode": bool(self._record_mode),
             "_state": {
@@ -179,6 +184,10 @@ class SpeedRushModule(ActivityModule):
                 "frames": int(stats["frames_written"]) if stats else 0,
                 "frames_dropped": int(stats["frames_dropped"]) if stats else 0,
                 "pad_samples": int(stats["pad_samples"]) if stats else 0,
+                # HUD 读数（与录制器同一时机启停；行数/标记数即"这个阶段的读数有没有产出"）
+                "hud_recording": bool(hud is not None and hud.running),
+                "hud_rows": int(hud_stats["rows_written"]) if hud_stats else 0,
+                "hud_flagged": int(hud_stats["rows_flagged"]) if hud_stats else 0,
                 "demos_dir": str(_demos_root()),
             },
         }
@@ -245,6 +254,10 @@ class SpeedRushModule(ActivityModule):
 
     def cleanup(self) -> None:
         """幂等释放模块资源。"""
+        # HUD 观察者先停：它从采集缓存取帧，不该在录制器 drain 帧队列时还在读帧
+        if self._hud is not None:
+            self._hud.stop("cleanup")
+            self._hud = None
         # 录制器先于图释放：停录制要 drain 帧队列，不应与导航图拆卸竞争
         if self._recorder is not None:
             self._recorder.stop("cleanup")
@@ -280,7 +293,8 @@ class SpeedRushModule(ActivityModule):
     def _drive(self, phase: int, round_no: int = 1) -> bool:
         """驾驶阶段（phase = 1/2）——驾驶控制方案的接口点。
 
-        当前实现是**采集模式**：不操纵车辆，只等本阶段结束并按需录制演示数据。
+        当前实现是**采集模式**：不操纵车辆，只等本阶段结束并按需录制演示数据
+        （录制模式下同时起 HUD 读数观察线程，见 ``_begin_hud``）。
         驾驶控制接入后，本方法内部多一条"正常态交给模型"的分支，对调用方无感。
 
         契约（任何实现都必须满足）：
@@ -300,9 +314,14 @@ class SpeedRushModule(ActivityModule):
             return False
 
         recorder = self._begin_recording(phase, round_no) if self._record_mode else None
+        # HUD 读数挂在录制会话上：对齐目标就是同会话的 frames.jsonl（见 _begin_hud）
+        observer = self._begin_hud(recorder, phase, round_no) if recorder is not None else None
         try:
             return self._drive_loop(phase, recorder)
         finally:
+            if observer is not None:
+                observer.stop("phase_end" if self._running else "stopped")
+                self._hud = None
             if recorder is not None:
                 recorder.stop("phase_end" if self._running else "stopped")
                 self._recorder = None
@@ -435,6 +454,32 @@ class SpeedRushModule(ActivityModule):
             return None
         self._recorder = rec
         return rec
+
+    def _begin_hud(self, recorder: DriveRecorder, phase: int, round_no: int) -> HudObserver | None:
+        """在同一会话目录里起 HUD 读数观察线程；失败返回 None（读数失败不该中止对局）。
+
+        **为什么必须挂在录制会话上**：读数的用途是"与录制帧按 ``frame_id`` / ``ts_ns``
+        对齐"——没有会话目录就没有 ``frames.jsonl`` 可对，也没有地方落盘。故非录制模式
+        不产 ``hud.jsonl``（那条路上既无帧索引也无会话目录，见模块 _state 的 hud_* 项）。
+
+        **时机与录制器一致**：都在"已进入驾驶页"之后启动、在阶段结束的 finally 里停止。
+        区域真源缺失/非法时 ``HudObserver`` 构造即抛，这里降级为不读数并记 WARNING——
+        满载记分读数的缺失是可查的（_state.hud_recording 为假），不比中止对局更严重。
+        """
+        assert self.ctx is not None
+        try:
+            obs = HudObserver(
+                recorder.out_dir,
+                frame_source=self.ctx.capture.frame_with_age,
+                phase=phase,
+                round_no=round_no,
+            )
+            obs.start()
+        except Exception as exc:  # noqa: BLE001 —— 读数启动失败不阻断流程
+            logger.log(f"[极速狂飙] HUD 读数启动失败: {exc!r}", "WARNING")
+            return None
+        self._hud = obs
+        return obs
 
 
 def _demos_root() -> Path:
