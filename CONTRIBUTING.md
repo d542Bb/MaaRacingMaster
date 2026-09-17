@@ -87,6 +87,8 @@ pip install -r requirements.txt
 - 报 Bug 请使用 **Bug 模板**，尽量包含：复现步骤、期望行为、实际行为、日志 / 截图、环境信息（Python 版本、系统版本、分辨率）。
 - 提需求请使用 **Feature 模板**，说明使用场景与期望效果。
 
+**维护者台账（`label: self-todo`）：** 开发方向与未定性疑点记入常驻台账 issue——一行一条，只写「一句话 + 涉及位置」。满足任一条件即升级为独立 issue 并从台账删行：① 需跨会话追踪或与 commit 关联（`closes #N`）；② 需他人复现或讨论；③ 已进入实施、有独立验收面。已定性且另有归宿的直接迁走，不留副本。
+
 ### 2. 开发
 
 ```bash
@@ -97,7 +99,7 @@ git checkout -b feat/your-feature origin/master
 
 **开发约定：**
 
-- 新增模块必须走 `modules/` 注册表 + 能力接口，不直接引高权限宿主对象。
+- 新增模块必须走 `core/registry.py` 的插件发现（扫 `plugins/*/manifest.py`）+ 能力接口，不直接引高权限宿主对象。
 - 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/treasure/CODE_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
 - 遵守 [AGENTS.md](AGENTS.md) 的协作守则（面向用户的输出、代码注释与交付文档使用简体中文）；代码风格为 4 空格缩进。
 
@@ -110,6 +112,14 @@ git push -u origin feat/your-feature
 ```
 
 提交信息建议使用约定式提交：`feat:` / `fix:` / `refactor:` / `docs:` / `chore:` 等前缀。
+
+**提交前跑什么（跑触碰面，不跑全仓）：**
+
+- 改动相关的 `pytest` + 改动文件的 `ruff`；
+- 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/navkit/check_truth.py`；
+- 改到**跨模块共享契约**（core 能力接口、RPC 白名单、分层边）时建议自愿加跑全仓——影响面跨模块，早发现比等 CI 划算。
+
+全仓 `ruff` / `pyright` / 全量 `pytest` **不在提交路径上**：CI（`test.yml`，push 与 PR 触发）与发版（`release.yml` 发布前 gate）已经是全仓门禁，本地重跑一遍只是把等待时间翻倍。
 
 ### 4. 提 PR
 

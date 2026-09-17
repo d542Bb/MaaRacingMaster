@@ -10,6 +10,24 @@
 
 ## 2026-09-17
 
+### 暂存（未发布 · 待并入下一版本）AGENTS 减肥：只留每次会话都要用的规则 📐
+
+- **性质：** 未发版变更（纯文档：`AGENTS.md`、`docs/README.md`（新）、`CONTRIBUTING.md`、`tools/experiments/README.md`；master 直接提交、不 tag）
+
+- **起因：** `AGENTS.md` 从「行为操作系统」膨胀成「项目经验百科」——同时承担行为红线、知识路由、投毒防线、调试方法论、文档治理五类职责，而后两类属低频操作，不必每次注入上下文。旧模式的病灶是"发现事故 → 总结经验 → 写进 AGENTS"；正确路径应是先判知识生命周期，只有极少数进 AGENTS。
+
+- **收录标准（已写入文件头）：** 两条**同时**满足才进本文件——① 删掉它，Agent 就无法通过项目里某个具体入口找到（无家可归）；② 所有任务、所有模块、几乎每次会话都适用。
+
+- **结果：143 → 85 行。** 保留六块——角色与总原则（含生态优先两问）、知识路由（路由表 + 信源等级 L0–L4 + 权威度判据）、绝对红线（分层引用方向 / 投毒 / 破坏性操作 / 隐私 / 对外动作）、变更验证（改前影响面 + 改后实测）、诊断三原则、Git 与操作纪律；新增「细则指针」表指向各操作细则的家。
+
+- **迁出去向（无一份知识被删）：** 文档头模板、指针纪律、可机检数值禁令、plan 规范 → 新建 `docs/README.md`（`docs/` 此前无入口文件）；A/B/C 问题分级与 C 类实验两条硬约束（留痕、标尺独立于待验证对象）→ `tools/experiments/README.md`；提交前跑什么、维护者台账（`self-todo`）→ `CONTRIBUTING.md`；发版流程维持 `skills/project-update/SKILL.md` 指针。
+
+- **去重：** A/B/C 问题分级原在 `AGENTS.md` 与 `tools/experiments/README.md` 各有一份（第二真源），本次合并为一处；「改完以实际仓库状态与测试确认」原出现 4 次（执行纪律 / 改动影响自查 / 协作口径 / 修复纪律），收敛为 1 处。
+
+- **顺带修正：** `CONTRIBUTING.md` 残留的 v3 时代路径（「新增模块必须走 `modules/` 注册表」）改为 `core/registry.py` 的插件发现（扫 `plugins/*/manifest.py`）。
+
+- **验证：** 全量 `pytest` 664 passed / 1 skipped；入库 md 相对链接扫描零死链。
+
 ### 暂存（未发布 · 待并入下一版本）ADR-0005：GUI 标题栏定案补录，修正 L1 与代码现实的冲突 🖥️
 
 - **性质：** 未发版变更（纯文档：`docs/adr/`（新增 `0005-GUI标题栏移除系统标题栏.md`、`0004` 标 superseded、README 索引）、`apps/MaaRacingMaster.Shell/README.md`、`apps/MaaRacingMaster.Shell/frontend/README.md`、`docs/CODE_WIKI.md`；master 直接提交、不 tag）
