@@ -10,6 +10,18 @@
 
 ## 2026-09-17
 
+### 暂存（未发布 · 待并入下一版本）ADR-0005：GUI 标题栏定案补录，修正 L1 与代码现实的冲突 🖥️
+
+- **性质：** 未发版变更（纯文档：`docs/adr/`（新增 `0005-GUI标题栏移除系统标题栏.md`、`0004` 标 superseded、README 索引）、`apps/MaaRacingMaster.Shell/README.md`、`apps/MaaRacingMaster.Shell/frontend/README.md`、`docs/CODE_WIKI.md`；master 直接提交、不 tag）
+
+- **背景（知识链缺口）：** 2026-08-31 的 `ddc1504`（自绘标题栏窗口控制按钮，移除系统标题栏与置灰联动）未进入本文件 2026-08-31 小节（该节只记 v0.19.1 的 debug 与冗余剔除），架构形态变更在对外变更记录里缺位；随后知识归属重构时旧描述被上提为 ADR-0004，形成「L1 决策与代码现实冲突」——未来 agent 据 ADR-0004 反而可能把已落地的 HTML 标题栏改回系统按钮形态。
+
+- **修正方式（ADR 状态机，非原地改写）：** 新增 **ADR-0005** 记录当前形态——保留系统边框（`OverlappedPresenter.SetBorderAndTitleBar(true, false)`）、移除系统标题栏与 —□× 按钮、HTML `win-controls` 自绘窗口控制、`InputNonClientPointerSource` 双区域（`Draggable` 整条标题栏带 / `Passthrough` 交互区精确矩形，后者优先），并写明置灰联动（`SetCaptionButtonsDimmed` / `modalOpenCount` / `header-spacer`）已随该决策删除。ADR-0004 标 `superseded by ADR-0005`（**仅标题栏形态部分**；宿主选型与「不得回退到 WPF `WindowChrome` / `FormBorderStyle.None`」硬约束仍有效），正文按状态机保留不改写。
+
+- **L2 与指针同步：** `apps/MaaRacingMaster.Shell/README.md` 的「WinUI 3 关键 API」一节由 AppWindowTitleBar + drag region 挖孔改写为当前窗口形态；壳工程 README、前端 README、项目地图 §7 的 ADR 指针改指 0005。
+
+- **验证：** 全量 `pytest` 664 passed / 1 skipped；入库 md 相对链接扫描零死链。
+
 ### 暂存（未发布 · 待并入下一版本）知识归属重构：信源等级、统一文档头与 core 层知识落点 📄
 
 - **性质：** 未发版变更（纯文档 + 一处测试守卫扩围：`AGENTS.md`、`docs/CODE_WIKI.md`、`docs/adr/`（新增 `0004-GUI宿主定案.md`）、`maaracing_master/core/CODE_WIKI.md`（新）、各知识文档头、`tests/test_doc_no_copied_numbers.py`；master 直接提交、不 tag）

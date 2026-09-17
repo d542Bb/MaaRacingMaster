@@ -188,4 +188,4 @@ MaaRacingMaster/
 
 正式 GUI = `apps/MaaRacingMaster.Shell/`（WinUI 3 shell + WebView2 HTML 前端）+ `core/sidecar.py`（Python 业务后端，JSONL RPC）。
 
-**选型的理由、被否方案与硬约束（不得回退到 WPF `WindowChrome` 或 `FormBorderStyle.None` 类方案）见 [ADR-0004](adr/0004-GUI宿主定案.md)**；壳工程结构与构建坑见其 [README](../apps/MaaRacingMaster.Shell/README.md)。
+宿主选型的理由、被否方案与硬约束（不得回退到 WPF `WindowChrome` 或 `FormBorderStyle.None` 类方案）见 [ADR-0004](adr/0004-GUI宿主定案.md)；**标题栏形态**（移除系统标题栏，窗口控制由 HTML 自绘）见 [ADR-0005](adr/0005-GUI标题栏移除系统标题栏.md)；壳工程结构、窗口 API 与构建坑见其 [README](../apps/MaaRacingMaster.Shell/README.md)。
