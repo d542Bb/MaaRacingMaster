@@ -37,7 +37,10 @@ _FRAME_QUEUE_MAX = 64
 
 # 录制数据格式版本。字段语义变动时递增，供离线步骤识别。
 # v2：meta 增记帧图字节序（disk_pixel_order）。
-SCHEMA_VERSION = 2
+# v3：meta 增记 phase / round_no——**按场景分层**要的是「这一帧属于哪个阶段的第几轮」，
+#     此前阶段号只隐式存在于会话目录名的 `_p<N>` 后缀里、回合号则根本没有来源，
+#     离线按场景筛选只能靠解析目录名（脆且不完整）。
+SCHEMA_VERSION = 3
 
 
 class DriveRecorder:
@@ -45,6 +48,11 @@ class DriveRecorder:
 
     用法：``start()`` → 主循环反复 ``record_frame()`` → ``stop()``。
     帧写盘与手柄采样都在各自线程，调用方只做非阻塞入队。
+
+    场景分层元信息：``phase``（驾驶阶段号 1/2）与 ``round_no``（第几轮）由调用方注入，
+    写进 meta。**天光（晴/阴）尚未采集**——它没有可信来源：既无天气检测代码，也没做成
+    配置项。要记它得先有来源（GUI 配置项或实测出的图像判据），否则只会得到一个恒空的
+    字段；方案 §10.1 把它列为该记的项，缺口记在这里而不是留个假字段。
     """
 
     def __init__(
@@ -54,12 +62,17 @@ class DriveRecorder:
         jpeg_quality: int = 85,
         pad_poll_hz: float = 200.0,
         pad_slot: int | None = None,
+        phase: int | None = None,
+        round_no: int | None = None,
     ) -> None:
         self.out_dir = Path(out_dir)
         self.jpeg_quality = int(jpeg_quality)
         self.pad_poll_hz = float(pad_poll_hz)
         # None = 每次采样自动找第一个已连接手柄（适配用户插哪个槽都行）
         self.pad_slot = pad_slot
+        # 场景分层用：本次会话属于哪个驾驶阶段、第几轮
+        self.phase = phase
+        self.round_no = round_no
 
         self._frame_q: queue.Queue[tuple[int, int, int, float, Any]] = queue.Queue(
             _FRAME_QUEUE_MAX)
@@ -244,6 +257,9 @@ class DriveRecorder:
             "frame_h": h,
             "pad_slot": self.pad_slot,
             "pad_poll_hz": self.pad_poll_hz,
+            # 场景分层：阶段号 / 回合号（v3 新增）。None = 调用方没给
+            "phase": self.phase,
+            "round_no": self.round_no,
             "frames_written": self._frames_written,
             "frames_dropped": self._frames_dropped,
             "pad_samples": self._pad_samples,

@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -252,6 +254,9 @@ def test_drive_starts_and_stops_recorder_in_record_mode(env) -> None:
     assert sessions[0].name.endswith("_p1")
     assert (sessions[0] / "meta.json").is_file()
     assert (sessions[0] / "frames.jsonl").is_file()
+    # 场景分层字段由模块注入：阶段号来自调用点、回合号来自 _run_flow 的轮次计数
+    meta = json.loads((sessions[0] / "meta.json").read_text(encoding="utf-8"))
+    assert meta["phase"] == 1 and meta["round_no"] == 1
 
 
 def test_drive_without_record_mode_creates_no_session(env) -> None:

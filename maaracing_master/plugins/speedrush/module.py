@@ -259,14 +259,16 @@ class SpeedRushModule(ActivityModule):
     def _run_flow(self, index: int) -> None:
         """按 FLOW 推进；走完一轮回到循环体起点继续，直到收到停止信号。"""
         assert self._graph is not None
+        round_no = 0
         while self._running:
+            round_no += 1  # 场景分层用：录制 meta 要记"这一帧属于第几轮"
             while index < len(FLOW):
                 if not self._running:
                     return
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
                 if node is None:
-                    if not self._drive(phase):
+                    if not self._drive(phase, round_no):
                         logger.log(f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return
                 elif not self._graph.run(node, node):
@@ -275,7 +277,7 @@ class SpeedRushModule(ActivityModule):
                 index += 1
             index = LOOP_START_INDEX
 
-    def _drive(self, phase: int) -> bool:
+    def _drive(self, phase: int, round_no: int = 1) -> bool:
         """驾驶阶段（phase = 1/2）——驾驶控制方案的接口点。
 
         当前实现是**采集模式**：不操纵车辆，只等本阶段结束并按需录制演示数据。
@@ -297,7 +299,7 @@ class SpeedRushModule(ActivityModule):
         if not self._wait_drive_ready(phase):
             return False
 
-        recorder = self._begin_recording(phase) if self._record_mode else None
+        recorder = self._begin_recording(phase, round_no) if self._record_mode else None
         try:
             return self._drive_loop(phase, recorder)
         finally:
@@ -420,13 +422,13 @@ class SpeedRushModule(ActivityModule):
             f"[极速狂飙] 驾驶阶段 {phase}：循环结束，{frames} 轮 / {elapsed:.1f}s"
             f"（实际 {rate:.1f}Hz，目标 {DRIVE_TICK_HZ:.0f}Hz）", "INFO")
 
-    def _begin_recording(self, phase: int) -> DriveRecorder | None:
+    def _begin_recording(self, phase: int, round_no: int) -> DriveRecorder | None:
         """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。"""
         try:
             session = make_session_dir(_demos_root())
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
-            rec = DriveRecorder(session)
+            rec = DriveRecorder(session, phase=phase, round_no=round_no)
             rec.start()
         except Exception as exc:  # noqa: BLE001 —— 采集失败不阻断流程
             logger.log(f"[极速狂飙] 录制器启动失败: {exc!r}", "WARNING")

@@ -98,6 +98,24 @@ def test_meta_counts_and_schema(tmp_path) -> None:
     assert meta["frame_w"] == 32 and meta["frame_h"] == 16
     assert meta["stop_reason"] == "drive_phase_end"
     assert meta["monotonic_start_ns"] > 0
+    # 场景分层字段（v3）：调用方不给时为 None——"没采集到"必须是可辨认的显式状态。
+    # 靠键缺席来猜，正是 schema 1 那批数据认不出字节序的成因，别重演。
+    assert "phase" in meta and meta["phase"] is None
+    assert "round_no" in meta and meta["round_no"] is None
+
+
+def test_meta_records_scene_strata(tmp_path) -> None:
+    """阶段号 / 回合号必须落进 meta。
+
+    离线按场景分层（分组划分、按阶段筛选）靠它——此前阶段号只隐式存在于会话目录名的
+    `_p<N>` 后缀里、回合号则根本没有来源，筛选只能靠解析目录名。
+    """
+    rec = DriveRecorder(tmp_path / "s8", phase=2, round_no=3, pad_poll_hz=50.0)
+    rec.start()
+    rec.stop()
+
+    meta = json.loads((tmp_path / "s8" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["phase"] == 2 and meta["round_no"] == 3
 
 
 def test_queue_full_counts_drop_without_blocking(tmp_path) -> None:
