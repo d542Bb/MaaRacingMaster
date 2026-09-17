@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sqlite3
 import sys
@@ -60,13 +61,37 @@ def _conforming_income(result: str | None, final: int, total: int, income: int) 
     return False
 
 
+def _our_max_bid(row: sqlite3.Row) -> int | None:
+    """我方全程最高出价：槽位 = 玩家{my_rank}（上一轮审计已用日志逐条交叉验证）。"""
+    rank = row["my_rank"]
+    if not rank:
+        return None
+    try:
+        pb = json.loads(row["player_bids"] or "{}")
+    except (ValueError, TypeError):
+        return None
+    slot = pb.get(f"玩家{rank}")
+    if not isinstance(slot, list):
+        return None
+    vals = [x for x in slot if isinstance(x, int) and x > 0]
+    return max(vals) if vals else 0
+
+
 def plan_repairs(conn: sqlite3.Connection) -> dict:
-    """算出全部修复动作（纯读，不改库）。返回 {profit_fix, win_income_fix, fail_income_fix, unfixable}。"""
+    """算出全部修复动作（纯读，不改库）。
+
+    返回 {profit_fix, win_income_fix, fail_income_fix, unfixable}。收入修复的依据全是
+    RULES §3：拍中者收入 = 利润；未拍中者仅在赢家亏钱时按顺位拿 5/10/15%，否则 0。
+    「我方是否拍中」不看 `auction_result`（该字段 2026-09-06 漏读 21 场），改看
+    「我方槽位是否持有成交价」——成交价即赢家出价，我方最高出价等于它即我方拍中
+    （上一轮审计 §8.3 第 4 条推荐的回填判据）。
+    """
     conn.row_factory = sqlite3.Row
     profit_fix, win_income_fix, fail_income_fix, unfixable = [], [], [], []
     for r in conn.execute(
         "SELECT id, bucket, game_seq, auction_result, settle_final_price,"
-        " settle_total_price, settle_profit, settle_my_income FROM games ORDER BY bucket, game_seq"
+        " settle_total_price, settle_profit, settle_my_income, my_rank, player_bids"
+        " FROM games ORDER BY bucket, game_seq"
     ):
         final, total = r["settle_final_price"], r["settle_total_price"]
         if final is None or total is None:
@@ -77,14 +102,20 @@ def plan_repairs(conn: sqlite3.Connection) -> dict:
         income = r["settle_my_income"]
         if not isinstance(income, int):
             continue
-        if r["auction_result"] == "win":
+        result = r["auction_result"]
+        if result is None:
+            # 结果栏漏读：我方拍中与否由「是否持有成交价」判定（不猜标签，只修金额）
+            ours = _our_max_bid(r) == final
+        else:
+            ours = result == "win"
+        if ours:
             if income != derived:
                 win_income_fix.append((r["id"], r["bucket"], r["game_seq"], income, derived))
-        elif r["auction_result"] == "fail":
-            if derived >= 0 and income != 0:
+        elif derived >= 0:
+            if income != 0:
                 fail_income_fix.append((r["id"], r["bucket"], r["game_seq"], income, 0))
-            elif derived < 0 and not _conforming_income("fail", final, total, income):
-                unfixable.append((r["bucket"], r["game_seq"], final, total, income, -derived))
+        elif not _conforming_income("fail", final, total, income):
+            unfixable.append((r["bucket"], r["game_seq"], final, total, income, -derived))
     return {
         "profit_fix": profit_fix,
         "win_income_fix": win_income_fix,
