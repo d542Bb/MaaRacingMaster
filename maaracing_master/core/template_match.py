@@ -132,17 +132,25 @@ def best_match_score(frame: np.ndarray, template: np.ndarray, scales=DEFAULT_SCA
 
 
 def find_template(frame: np.ndarray, template: np.ndarray, threshold: float = 0.7,
-                  scales=DEFAULT_SCALES, roi: Box | None = None) -> tuple[Box | None, float]:
+                  scales=DEFAULT_SCALES, roi: Box | None = None,
+                  log_miss: bool = True) -> tuple[Box | None, float]:
     """在 frame 里多尺度匹配 template。
 
     roi：(x, y, w, h) 限定搜索区，缺省全图。
     返回 (命中框 x1y1x2y2, 置信度)；未命中返回 (None, 最高分)。
+
+    log_miss：是否打命中/未命中 DEBUG。**做跨模板仲裁的调用方应传 False**——
+    它会自己在聚合层打一条带节点名与最高分的日志（v4 `TemplateRecognizer` 即是），
+    逐模板再打一份就是同一件事的第二层表达：常驻锚点在厅里每帧必然不匹配，
+    实测这类逐帧重复占运行日志的大头（与 best_match_score 同款理由）。
     """
     best_box, best_val = _best_match(frame, template, scales, roi)
     if best_val < threshold or best_box is None:
-        logger.log(f"模板未命中: 最高分={best_val:.3f} < {threshold:.2f}", "DEBUG")
+        if log_miss:
+            logger.log(f"模板未命中: 最高分={best_val:.3f} < {threshold:.2f}", "DEBUG")
         return None, best_val
-    logger.log(f"模板命中: {best_box} 置信度={best_val:.3f}", "DEBUG")
+    if log_miss:
+        logger.log(f"模板命中: {best_box} 置信度={best_val:.3f}", "DEBUG")
     return best_box, best_val
 
 
@@ -224,7 +232,9 @@ def match_template_cs(frame: np.ndarray, tpl: np.ndarray, *, colorspace: str = "
         return (ml[0] + ox, ml[1] + oy, ml[0] + ox + tw, ml[1] + oy + th), float(mv)
     # gray 直走单通道匹配（find_template 与通道数无关；转三通道会白白 3 倍开销）
     f, t = _match_colorspace(frame, tpl, colorspace)
-    return find_template(f, t, threshold=threshold, scales=scales, roi=roi)
+    # log_miss=False：本函数的契约是「调用方自己做阈值/领先仲裁」（见 find_any_cs），
+    # 逐模板日志归聚合层——否则每帧每模板一条，把运行日志淹掉。
+    return find_template(f, t, threshold=threshold, scales=scales, roi=roi, log_miss=False)
 
 
 def find_any_cs(frame: np.ndarray, names: list[str], image_dirs: list[Path], *,

@@ -1065,6 +1065,10 @@ class TreasureModule(ActivityModule):
         # 结算字段连续一致确认闸的累计状态（P1-8）：字段名 → {cand, n}
         # （cand=最近读数，n=连续一致次数；换场/切阶段清空）
         self._settle_stable: dict[str, dict] = {}
+        # 点击失败链（P0「静默失败不再可能」的收口）：某 key 连续失败时首次必记，
+        # 其后按帧节流；成功即清链。只看帧号会把短失败链整段吞掉（见 _apply_click_failure）。
+        self._click_fail_key: str | None = None
+        self._click_fail_streak: int = 0
         # --------- 结算后弹窗（今日最高/奖励彩蛋）状态 ----------
         self._egg_counts: dict[str, int] | None = None  # 本场彩蛋 {red,yellow,blue}（仅记录，Phase2 填充）
         self._egg_read_done: bool = False              # 彩蛋数量已读完（稳定确认后置位）
@@ -3374,6 +3378,8 @@ class TreasureModule(ActivityModule):
         # 点击成功：更新指纹与时刻（失败时不更新 → 下帧意图相同会重试）
         self._last_click_fingerprint = fp
         self._last_click_time = time.monotonic()
+        self._click_fail_key = None      # 成功即清失败链（下次失败重新「首次必记」）
+        self._click_fail_streak = 0
         # 结算后弹窗（今日最高/彩蛋）点击关闭后进入冷却；领取分红「真领取」也需冷却
         # （弹窗/结算页转场动画期模板匹配不上，冷却帧内不产出新意图防点穿/跳过阶段）。
         if (key in (self.POPUP_HIGH_CONTINUE_KEY, self.POPUP_REWARD_CONTINUE_KEY)
@@ -3425,27 +3431,36 @@ class TreasureModule(ActivityModule):
                 f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
 
     def _apply_click_failure(self, res: dict, pending: dict) -> None:
-        """点击失败副作用：指纹不更新（下帧同意图重试），节流打失败日志。
+        """点击失败副作用：指纹不更新（下帧同意图重试），失败留痕（首次必记 + 节流）。
 
-        日志带落点误差与失败原因：只有「导航没到位」与「按键未被游戏接收」区分开了，
-        重试才有方向（不是一味重试）。
+        节流不能只看帧号：真机 2026-09-17 两次失败落在帧 24 / 46（`% 10` 均不整除），
+        运行日志里**一条都没留**——而 P0 的目标正是「静默失败不再可能」。
+        故改为**按失败链**判定：某 key 的连续失败链首次必记，其后按帧节流。
         """
         if not self.ctx.lifecycle.running:
             return  # 停止信号中止导航：不算执行失败，主循环即将退出
-        if self._frame_counter % 10 == 0:
-            key = pending.get("key", "?")
-            state = pending.get("state", "?")
-            center = pending.get("center") or (0, 0)
-            mode_label = pending.get("mode_label") or "?"
-            err = res.get("err")
-            err_str = f"{err:.1f}px" if isinstance(err, (int, float)) else "未测"
-            logger.log(
-                f"[鉴宝点击] 执行失败（将自动重试）key={key} state={state} "
-                f"方式={mode_label} "
-                f"归一化=({center[0]:.3f},{center[1]:.3f}) "
-                f"落点误差={err_str} 原因={res.get('reason') or '未到位'} "
-                f"（导航 {res.get('total_s')}s P={res.get('p_frames')} "
-                f"微调={res.get('micro_steps')}）", "WARNING")
+        key = pending.get("key", "?")
+        if key != self._click_fail_key:      # 换了 key → 新失败链，首次必记
+            self._click_fail_key = key
+            self._click_fail_streak = 1
+        else:
+            self._click_fail_streak += 1
+        first_of_streak = self._click_fail_streak == 1
+        if not first_of_streak and self._frame_counter % 10 != 0:
+            return
+        state = pending.get("state", "?")
+        center = pending.get("center") or (0, 0)
+        mode_label = pending.get("mode_label") or "?"
+        err = res.get("err")
+        err_str = f"{err:.1f}px" if isinstance(err, (int, float)) else "未测"
+        logger.log(
+            f"[鉴宝点击] 执行失败（将自动重试）key={key} state={state} "
+            f"方式={mode_label} "
+            f"归一化=({center[0]:.3f},{center[1]:.3f}) "
+            f"落点误差={err_str} 原因={res.get('reason') or '未到位'} "
+            f"（导航 {res.get('total_s')}s P={res.get('p_frames')} "
+            f"微调={res.get('micro_steps')}；本 key 连续第 {self._click_fail_streak} 次）",
+            "WARNING")
 
     def _execute_click(self, target: dict | None) -> None:
         """把当前点击意图提交为一次点击：异步协议（submit → consume）。

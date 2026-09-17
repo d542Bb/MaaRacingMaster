@@ -163,3 +163,108 @@ def test_snapshot_path_does_not_run_decision():
     decision_src = inspect.getsource(TreasureModule._decision_phase)
     assert "_resolve_action_target()" in decision_src, "决策段必须仍是决策入口的调用者"
     assert "_last_intent = intent" in decision_src, "决策段须发布 _last_intent 供快照只读"
+
+# ------------------------------------------------------------------
+#  4. 点击失败链：首次必记（P0「静默失败不再可能」的收口）
+# ------------------------------------------------------------------
+#
+# 真机 2026-09-17：两次点击失败落在帧 24 / 46（`_frame_counter % 10` 均不整除），
+# 运行日志里一条都没留——旧的「只看帧号」节流会把整段短失败链吞掉。
+# 改为按失败链判定：某 key 的连续失败首次无条件记，其后按帧节流；成功即清链。
+
+
+class _FailSelf:
+    """`_apply_click_failure` 最小桩（绑真身到桩，沿仓库既有手法）。"""
+
+    def __init__(self, frame: int):
+        self._frame_counter = frame
+        self._click_fail_key: str | None = None
+        self._click_fail_streak = 0
+        self.ctx = SimpleNamespace(lifecycle=SimpleNamespace(running=True))
+
+
+class _PermissiveSelf:
+    """`_apply_click_success` 桩：未建模字段一律中性值，把真身跑起来。"""
+
+    CLICK_RETRY_KEYS: frozenset = frozenset()
+
+    def __init__(self, **over):
+        self.__dict__.update(over)
+        self._record_click = lambda *a, **k: None
+        self._now_ms = TreasureModule._now_ms
+
+    def __getattr__(self, _name):        # 未建模字段：中性值（None/False 都够用）
+        return None
+
+
+class _ClickLogSelf:
+    """点击结果副作用桩：未建模字段一律中性值，让两个真身方法都能跑。
+
+    失败链状态（`_click_fail_key` / `_click_fail_streak`）必须真建模——被测的就是它；
+    成功路径读到的重试链/阶段/结算字段给中性值即可（本用例不验证那些分支）。
+    """
+
+    CLICK_RETRY_KEYS: frozenset = frozenset()
+
+    def __init__(self):
+        self._frame_counter = 0
+        self._click_fail_key: str | None = None
+        self._click_fail_streak = 0
+        self.ctx = SimpleNamespace(lifecycle=SimpleNamespace(running=True))
+        self._record_click = lambda *a, **k: None
+        self._now_ms = TreasureModule._now_ms
+
+    def __getattr__(self, _name):        # 未建模字段：中性值（None/False 都够用）
+        return None
+
+    def failure(self, frame: int, key: str = "session_master_badge") -> None:
+        self._frame_counter = frame
+        TreasureModule._apply_click_failure(self, {"reason": "光标丢失"}, {"key": key})
+
+    def success(self, key: str = "session_master_badge") -> None:
+        TreasureModule._apply_click_success(
+            self, {"key": key, "state": "auto", "fp": ("f",), "center": (0.5, 0.5)})
+
+
+def test_first_click_failure_of_a_streak_is_always_logged(recorder):
+    """失败链首次必须无条件留痕——**与帧号无关**（旧节流正是在这里漏掉两次失败）。"""
+    s = _ClickLogSelf()
+    s.failure(frame=24)                 # 24 % 10 != 0：旧口径必漏
+    warns = recorder.messages("WARNING")
+    assert len(warns) == 1, "失败链首次必须留痕"
+    assert "session_master_badge" in warns[0] and "连续第 1 次" in warns[0]
+    assert "原因=光标丢失" in warns[0]
+
+
+def test_repeats_of_same_streak_are_throttled_but_not_lost(recorder):
+    """同一失败链的后续：非整十帧不记，整十帧仍记（长链不会断供）。"""
+    s = _ClickLogSelf()
+    for frame in (24, 46, 47, 48):      # 全非整十
+        s.failure(frame=frame)
+    assert len(recorder.messages("WARNING")) == 1, "同一链的后续按帧节流"
+    s.failure(frame=50)                 # 整十帧
+    assert len(recorder.messages("WARNING")) == 2, "长链必须仍按节流记录"
+
+
+def test_new_key_starts_a_new_streak_and_logs(recorder):
+    """换 key 即新失败链 → 首次仍必记（不同按钮的失败不得互相掩护）。"""
+    s = _ClickLogSelf()
+    s.failure(frame=24, key="session_master_badge")
+    s.failure(frame=25, key="bid_confirm_red_btn")
+    warns = recorder.messages("WARNING")
+    assert len(warns) == 2
+    assert "bid_confirm_red_btn" in warns[1] and "连续第 1 次" in warns[1]
+
+
+def test_success_clears_the_failure_streak(recorder):
+    """点击成功即清链：此后再失败要重新「首次必记」。"""
+    s = _ClickLogSelf()
+    for frame in (24, 25, 26):
+        s.failure(frame=frame)
+    assert s._click_fail_streak == 3
+
+    s.success()
+    assert s._click_fail_key is None and s._click_fail_streak == 0, "成功必须清失败链"
+
+    s.failure(frame=30)
+    assert len(recorder.messages("WARNING")) == 2, "清链后再次失败必须重新记录"

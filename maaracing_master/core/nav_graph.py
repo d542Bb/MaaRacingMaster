@@ -104,6 +104,10 @@ class TemplateRecognizer(CustomRecognition):
         super().__init__()
         self._graph = graph
         self._cursor_pos_provider = cursor_pos_provider  # () -> (cx, cy) 归一化 | None
+        # 「识别未命中」按**边沿**记录：常驻图里没被命中的节点每帧都会走失败分支，
+        # 逐帧打就是稳态重复（实测单个常驻锚点每帧一条，占运行日志大头）。
+        # 只在「从未命中 → 未命中」那一刻记一次，命中后清位以便下次再记。
+        self._miss_nodes: set[str] = set()
 
     def analyze(self, context, argv):
         p = _parse(argv.custom_recognition_param)
@@ -136,9 +140,15 @@ class TemplateRecognizer(CustomRecognition):
             threshold=float(p.get("threshold", 0.75)),
             thresholds=arb, roi=roi)
         if box is None:
-            logger.log(f"[v4] 「{argv.node_name}」识别未命中（ROI 内最高分 "
-                       f"{score:.3f}，模板 {names}）", "DEBUG")
+            name = argv.node_name
+            if name not in self._miss_nodes:
+                # 边沿触发：只在进入「未命中」时记一次（常驻图里未被命中的节点
+                # 每帧都会到这里，逐帧打属稳态重复）。命中后清位，便于下次再记。
+                self._miss_nodes.add(name)
+                logger.log(f"[v4] 「{name}」识别未命中（ROI 内最高分 "
+                           f"{score:.3f}，模板 {names}）", "DEBUG")
             return self.AnalyzeResult(box=None, detail={"score": round(score, 3)})
+        self._miss_nodes.discard(argv.node_name)
 
         if guard.get("templates") and p.get("templates"):
             # template+guard：主命中后守卫必须同帧命中（保险丝）；point 的识别
