@@ -1,45 +1,110 @@
-"""speedrush 驾驶 HUD 文字定位与读数探针（区域标定用）。
+"""speedrush 驾驶 HUD 文字定位与读数探针（区域标定 + 记分时间线）。
 
-**要回答什么**：驾驶页 HUD 上哪些文字能被 OCR 出来、各自在画面上的什么位置，
-从而为「HUD 读数」定 ROI——用实测坐标，不靠目测。
+**要回答什么**：驾驶页 HUD 上哪些文字能被 OCR 出来、各自在画面上的什么位置，以及
+「分数是怎么来的」——为决策层收益模型提供系数（规则事实见 `RULES.md` §4.2/§4.8）。
 
-**两种模式**
-  discover  启用文本检测（det），在整帧/条带上找出所有文字块与其归一化坐标。
-            用于**标定**：先把文字找出来，再据此定紧贴的 ROI。
-  read      用给定的归一化 ROI 直接识别（关 det，与生产口径一致）——ROI 是固定
-            HUD 文字框时 det 是冗余计算，实测关 det 后单 ROI 从 ~1062ms 降到 ~12ms。
+**模式**
+  discover  启用文本检测（det），在条带上找出所有文字块与其归一化坐标。用于**标定**。
+  scan      跨会话抽样，**按位置**统计 HUD 元素——ROI 的定出方式，不是目测。
+  read      用给定 ROI 直接识别（关 det，与生产口径一致）。
+  timeline  顺序读一整段会话，出记分时间线与自洽性检验。
+  formula   跨会话验证「合计分值 = 里程 + 30 × 超车」并给出残差。
 
-**为什么要走 tools/experiments/**：speedrush 插件不能 import treasure 的 OCR
-（插件自包含契约：整个目录拷走即卸载）。实验脚本不受该约束——仓库已有 6 个实验
-脚本直接 import TreasureOcr 的先例。规则实测只需要**离线**读数，故本探针就是
-这一轮的读数入口；实时读数（模块内观察线程）要先把 OCR 引擎抽到 core 或复制，
-那是独立决策，不在本探针职责内。
+**为什么关 det**：ROI 是固定 HUD 文字框，det 属冗余计算（treasure 侧实测单 ROI 从
+~1062ms 降到 ~12ms）。
+
+**本脚本自包含**（`tools/experiments/README.md` 的目录约定）：不 import `maaracing_master`
+任何代码——OCR 引擎在脚本内最小自建（`HudOcr`），读盘走 PIL（标准像素序），demos 目录
+按 `--demos` 或环境变量推导。这样它既不依赖待验证对象，也不受插件自包含契约的牵连。
+（插件侧的实时读数需要自己的引擎，那是独立决策，不在本探针职责内。）
 
 用法：
-    .venv/Scripts/python.exe tools/experiments/speedrush_scoring/probe_hud_ocr.py discover [--frame <jpg>]
-    .venv/Scripts/python.exe tools/experiments/speedrush_scoring/probe_hud_ocr.py read --rects hud_regions.json [--session <dir>]
-
-不带 --frame 时自动取 demos 下最近会话的中段帧。
+    python tools/experiments/speedrush_scoring/probe_hud_ocr.py scan [--per-session 8]
+    python tools/experiments/speedrush_scoring/probe_hud_ocr.py timeline --session <会话目录> --rects hud_regions.json
+    python tools/experiments/speedrush_scoring/probe_hud_ocr.py formula --rects hud_regions.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-import sys
 from pathlib import Path
 
-import cv2
 import numpy as np
+from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
+# 录制会话根目录：默认按 Windows 用户数据目录推导，可用 --demos 或环境变量覆盖
+DEFAULT_DEMOS = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush" / "demos"
+DEMOS = DEFAULT_DEMOS
 
-from maaracing_master.core.image_io import read_rgb, to_bgr  # noqa: E402
-from maaracing_master.core.paths import data_dir  # noqa: E402
+# OCR 前预处理：PP-OCR rec 输入高固定 48px，先超采样到冗余像素再让它降采样，识别率更优；
+# gamma 1.15 轻度提亮文字边缘。口径与 treasure 侧同源（那边有完整解释），此处最小自建。
+TARGET_ROI_HEIGHT = 96
+CONTRAST_GAMMA = 1.15
+OCR_INTRA_OP_THREADS = 4
+OCR_INTER_OP_THREADS = 1
 
-DEMOS = data_dir() / "speedrush" / "demos"
+
+def load_rgb(path: Path) -> np.ndarray | None:
+    """读图为标准像素序 RGB（PIL 即标准语义，不需要 OpenCV 的通道翻转）。"""
+    try:
+        return np.asarray(Image.open(path).convert("RGB"))
+    except Exception:
+        return None
+
+
+def _to_bgr(arr: np.ndarray) -> np.ndarray:
+    """标准序 RGB → BGR（RapidOCR 基于 cv2，吃 BGR）。"""
+    return np.ascontiguousarray(arr[:, :, ::-1])
+
+
+def _preprocess(bgr: np.ndarray) -> np.ndarray:
+    import cv2
+    h = bgr.shape[0]
+    if h <= 0:
+        return bgr
+    scale = max(1.0, min(4.0, TARGET_ROI_HEIGHT / h))
+    if scale != 1.0:
+        interp = cv2.INTER_LANCZOS4 if scale >= 3.0 else cv2.INTER_CUBIC
+        bgr = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=interp)
+    inv = 1.0 / CONTRAST_GAMMA
+    table = (np.arange(256, dtype=np.float32) / 255.0) ** inv * 255.0
+    import cv2 as _cv2
+    return _cv2.LUT(bgr, table.clip(0, 255).astype(np.uint8))
+
+
+class HudOcr:
+    """最小 OCR 读数器：懒加载 RapidOCR（关 det/cls），对归一化 ROI 直接识别。
+
+    这与 treasure 的 `recognize_single` 同口径，但**不 import 它**——实验脚本自包含。
+    """
+
+    def __init__(self) -> None:
+        self._engine = None
+
+    def _get(self):
+        if self._engine is None:
+            from rapidocr import RapidOCR
+            self._engine = RapidOCR(params={
+                "Global.use_det": False, "Global.use_cls": False,
+                "EngineConfig.onnxruntime.intra_op_num_threads": OCR_INTRA_OP_THREADS,
+                "EngineConfig.onnxruntime.inter_op_num_threads": OCR_INTER_OP_THREADS,
+            })
+        return self._engine
+
+    def read(self, rgb: np.ndarray, rect_norm) -> str:
+        h, w = rgb.shape[:2]
+        x1, y1 = max(0, int(float(rect_norm[0]) * w)), max(0, int(float(rect_norm[1]) * h))
+        x2, y2 = min(w, int(float(rect_norm[2]) * w)), min(h, int(float(rect_norm[3]) * h))
+        if x2 <= x1 or y2 <= y1:
+            return ""
+        try:
+            out = self._get()(_preprocess(_to_bgr(rgb[y1:y2, x1:x2])))
+        except Exception:
+            return ""
+        return "".join(str(t) for t in (getattr(out, "txts", None) or []))
 
 
 def latest_mid_frame() -> Path:
@@ -60,7 +125,7 @@ def _engine_det():
 
 def cmd_discover(args) -> None:
     frame_path = Path(args.frame) if args.frame else latest_mid_frame()
-    rgb = read_rgb(frame_path)
+    rgb = load_rgb(frame_path)
     assert rgb is not None, frame_path
     H, W = rgb.shape[:2]
     print(f"帧 {frame_path.name}  {W}x{H}")
@@ -74,7 +139,7 @@ def cmd_discover(args) -> None:
     engine = _engine_det()
     for tag, (x1, y1, x2, y2) in strips.items():
         patch = rgb[y1:y2, x1:x2]
-        out = engine(to_bgr(patch))
+        out = engine(_to_bgr(patch))
         txts = getattr(out, "txts", None) or []
         boxes = getattr(out, "boxes", None)
         scores = getattr(out, "scores", None) or []
@@ -94,17 +159,14 @@ def cmd_discover(args) -> None:
 
 
 def cmd_read(args) -> None:
-    from maaracing_master.plugins.treasure.ocr import TreasureOcr
     frame_path = Path(args.frame) if args.frame else latest_mid_frame()
-    rgb = read_rgb(frame_path)
+    rgb = load_rgb(frame_path)
     assert rgb is not None, frame_path
-    ocr = TreasureOcr(ROOT / "maaracing_master" / "plugins" / "treasure")
+    ocr = HudOcr()
     regs = json.loads(Path(args.rects).read_text(encoding="utf-8"))
     print(f"帧 {frame_path.name}")
     for name, rect in regs.items():
-        got = ocr.recognize_single(rgb, rect)
-        text = (got or {}).get("text", "")
-        print(f"  {name:16s} rect={rect} → {text!r}")
+        print(f"  {name:16s} rect={rect} → {ocr.read(rgb, rect)!r}")
 
 
 def cmd_scan(args) -> None:
@@ -130,11 +192,11 @@ def cmd_scan(args) -> None:
         span = files[lo:hi]
         idxs = [round(i * (len(span) - 1) / max(1, per - 1)) for i in range(per)]
         for i in idxs:
-            rgb = read_rgb(span[i])
+            rgb = load_rgb(span[i])
             if rgb is None:
                 continue
             H, W = rgb.shape[:2]
-            out = engine(to_bgr(rgb))
+            out = engine(_to_bgr(rgb))
             n += 1
             txts = getattr(out, "txts", None)
             boxes = getattr(out, "boxes", None)
@@ -205,14 +267,12 @@ def _sample_rows(session: Path, regs: dict, every: int):
 
     左侧三列先过逐字段暗底闸门；不在场记 None，不拿天空凑数。
     """
-    from maaracing_master.plugins.treasure.ocr import TreasureOcr
-
     rows = [json.loads(x) for x in
             (session / "frames.jsonl").read_text(encoding="utf-8").splitlines() if x]
-    ocr = TreasureOcr(ROOT / "maaracing_master" / "plugins" / "treasure")
+    ocr = HudOcr()
     out = []
     for r in rows[::max(1, every)]:
-        rgb = read_rgb(session / "frames" / r["file"])
+        rgb = load_rgb(session / "frames" / r["file"])
         if rgb is None:
             continue
         vals: dict[str, str | None] = {}
@@ -220,7 +280,7 @@ def _sample_rows(session: Path, regs: dict, every: int):
             if n in PANEL_FIELDS and not field_on_dark(rgb, rect):
                 vals[n] = None
                 continue
-            vals[n] = (ocr.recognize_single(rgb, rect) or {}).get("text", "")
+            vals[n] = ocr.read(rgb, rect)
         out.append((r, vals))
     return rows, out
 
@@ -329,7 +389,11 @@ def main() -> None:
     ap.add_argument("--per-session", type=int, default=6)
     ap.add_argument("--every", type=int, default=5)
     ap.add_argument("--show-all", action="store_true")
+    ap.add_argument("--demos", default=None, help="录制会话根目录（默认按 APPDATA 推导）")
     args = ap.parse_args()
+    if args.demos:
+        global DEMOS
+        DEMOS = Path(args.demos)
     if args.mode == "discover":
         cmd_discover(args)
     elif args.mode == "scan":
