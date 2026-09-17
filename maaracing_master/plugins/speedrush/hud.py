@@ -192,12 +192,17 @@ def block_side(frame_rgb: Any, rect) -> str:
     会上下互换，故敌我判据只能来自颜色。
     """
     h, w = frame_rgb.shape[:2]
+    if frame_rgb.ndim != 3 or frame_rgb.shape[2] != 3:
+        # 非 3 通道时 reshape(-1, 3) 会把通道错位分组，算出一个**看着合理但错**的归属；
+        # 与其静默给错标签，不如说判不出（消费方据此不下结论）。
+        return "?"
     x1, y1, x2, y2 = _px_bounds(rect, w, h)
-    reg = frame_rgb[y1:y2, x1:x2].reshape(-1, 3).astype(float)
+    reg = frame_rgb[y1:y2, x1:x2]
     if reg.size == 0:
         return "?"
-    sat = reg.max(axis=1) - reg.min(axis=1)
-    sel = reg[sat > _SIDE_MIN_SAT]
+    flat = reg.reshape(-1, 3).astype(float)
+    sat = flat.max(axis=1) - flat.min(axis=1)
+    sel = flat[sat > _SIDE_MIN_SAT]
     if len(sel) < _SIDE_MIN_PIXELS:
         return "?"
     m = sel.mean(axis=0)
@@ -275,6 +280,8 @@ class HudObserver:
         self._samples_no_frame = 0
         self._ocr_no_result = 0
         self._ocr_errors = 0
+        self._read_errors = 0
+        self._write_errors = 0
         self._started_ns = 0
         self._started_iso = ""
         self._running = False
@@ -298,6 +305,8 @@ class HudObserver:
             "rows_flagged": self._rows_flagged,
             "samples_no_frame": self._samples_no_frame,
             "ocr_no_result": self._ocr_no_result,
+            "read_errors": self._read_errors,
+            "write_errors": self._write_errors,
         }
 
     def start(self) -> None:
@@ -375,7 +384,7 @@ class HudObserver:
         t0 = time.perf_counter()
         fields: dict[str, dict] = {}
         for name, rect in self._regions.items():
-            fields[name] = self._read_field(frame, name, rect)
+            fields[name] = self._read_field_safe(frame, name, rect)
         rec: dict = {
             "seq": self._seq,
             # frame_id / ts_ns 与 frames.jsonl 同源（同一帧号必带同一采集时刻），对齐靠它们
@@ -422,6 +431,25 @@ class HudObserver:
             return entry
         entry["trusted"] = True
         return entry
+
+    def _read_field_safe(self, frame: Any, name: str, rect: list[float]) -> dict:
+        """``_read_field`` 的护栏：单格读挂只废掉那一格，**绝不让异常逃到采样线程**。
+
+        为什么必须在这里兜：采样线程没有外层 try——异常一旦逃出去线程就静默死掉，
+        实机上的表现是"跑了一整轮却只有几行"，而且事后无从归因（meta 里没有任何一项
+        指向"线程死了"）。成因不是假想：块色判据要对切片 ``reshape(-1, 3)``，拿到非
+        3 通道的帧就抛；闸门也要按 ``shape[:2]`` 解包。判据本身照旧 fail loud（区域真源
+        非法时构造期就抛），这里兜的是**运行期单帧异常**这一类。
+        """
+        try:
+            return self._read_field(frame, name, rect)
+        except Exception as exc:  # noqa: BLE001 —— 单格异常按"该格读不出"处理
+            self._read_errors += 1
+            level = "WARNING" if self._read_errors == 1 else "DEBUG"
+            logger.log(
+                f"[极速狂飙] HUD 单格读数异常（{name}，累计 {self._read_errors}）: {exc!r}", level)
+            return {"gate": None, "text": None, "value": None, "trusted": False,
+                    "note": ["read_error"]}
 
     def _recognize(self, frame: Any, rect: list[float]) -> Any | None:
         """单 ROI 识别。引擎懒加载、不可用即返回 None（不抛、不阻塞观察线程）。"""
@@ -489,7 +517,12 @@ class HudObserver:
     # ---------- 落盘线程 ----------
 
     def _write_worker(self) -> None:
-        """hud.jsonl 的唯一写者，故无需加锁；逐行 flush（低频，代价可忽略）。"""
+        """hud.jsonl 的唯一写者，故无需加锁；逐行 flush（低频，代价可忽略）。
+
+        单行写失败**不终止写线程**（磁盘满、序列化意外都一样）：线程一死，队列再也不会
+        被排空、后续读数全部丢失，而这些只在事件结束时才被发现——计数与 WARNING 至少要
+        留下"丢在哪一步"的痕迹。
+        """
         path = self.out_dir / "hud.jsonl"
         with path.open("w", encoding="utf-8") as f:
             while True:
@@ -499,8 +532,15 @@ class HudObserver:
                     if self._stop.is_set():
                         break
                     continue
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                f.flush()
+                try:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    f.flush()
+                except Exception as exc:  # noqa: BLE001 —— 单行写失败不终止写线程
+                    self._write_errors += 1
+                    level = "WARNING" if self._write_errors == 1 else "DEBUG"
+                    logger.log(
+                        f"[极速狂飙] HUD 落盘失败（累计 {self._write_errors}）: {exc!r}", level)
+                    continue
                 self._rows_written += 1
                 if rec["flags"]:
                     self._rows_flagged += 1
@@ -526,6 +566,8 @@ class HudObserver:
             "rows_flagged": self._rows_flagged,
             "samples_no_frame": self._samples_no_frame,
             "ocr_no_result": self._ocr_no_result,
+            "read_errors": self._read_errors,
+            "write_errors": self._write_errors,
             "ocr_errors": self._ocr_errors,
             "stop_reason": reason,
         }

@@ -89,6 +89,18 @@ def _texts(**over: str) -> dict[tuple, str]:
     return {tuple(REGIONS[name]): text for name, text in base.items()}
 
 
+class _BadFrame:
+    """一个"取 shape 即抛"的帧替身，代表运行期单帧异常（真实成因之一是通道数不对）。
+
+    用它而不是造某种具体的坏帧：回归锁要锁的是"**异常被关在单格内**"这条契约，
+    不该依赖"某种坏输入恰好能触发异常"这种会随实现漂移的细节。
+    """
+
+    @property
+    def shape(self):
+        raise ValueError("bad frame")
+
+
 def _observer(tmp_path, engine, *, frame=None, absent=(), sides=None, **kw) -> hud.HudObserver:
     f = frame if frame is not None else _frame(absent=absent, sides=sides)
     obs = hud.HudObserver(
@@ -251,6 +263,41 @@ class TestReadingJudgements:
         rec = _sample(_observer(tmp_path, _Dead()))
         assert rec["fields"]["mileage"]["trusted"] is False
         assert "ocr_unavailable" in rec["fields"]["mileage"]["note"]
+
+    def test_one_bad_field_does_not_kill_the_row(self, tmp_path) -> None:
+        """单格读数异常只废掉那一格：记 read_error、不给可信值，且有累计计数。
+
+        成因不是假想：闸门要按 ``shape[:2]`` 解包、块色判据要按通道取值，任何一帧异常
+        都会从这里抛。异常若逃到采样线程，**整条观察会静默死掉**——实机上的表现是
+        "跑了一整轮却只有几行"，而 meta 里没有任何一项指向"线程死了"，事后无从归因。
+        """
+        obs = _observer(tmp_path, _FakeEngine(_texts()))
+        entry = obs._read_field_safe(_BadFrame(), "mileage", REGIONS["mileage"])
+        assert entry["trusted"] is False and "read_error" in entry["note"]
+        assert obs.stats["read_errors"] == 1
+
+    def test_bad_frame_does_not_kill_the_row(self, tmp_path) -> None:
+        """整帧异常也不终止观察：**碰帧的格子**标 read_error，行照旧落盘且还能继续采。
+
+        "碰帧的格子"就是过闸门的三格与判归属的两格（它们要解 shape / 取通道）；其余
+        格子只把 rect 交给引擎，坏帧影响不到它们——所以断言要精确到这两组，不能笼统
+        说"全行都挂"。
+        """
+        touching = (*hud.GATED_FIELDS, *hud.SIDE_FIELDS)
+        obs = _observer(tmp_path, _FakeEngine(_texts()), frame=_BadFrame())
+        for _ in range(2):
+            rec = _sample(obs)
+            for name in touching:
+                entry = rec["fields"][name]
+                assert entry["trusted"] is False and "read_error" in entry["note"]
+            assert rec["fields"]["timer"]["value"] is not None, "不碰帧的格子不该被牵连"
+            assert rec["regions"], "区域指纹照旧入行（这行读的是哪套框仍可查）"
+        assert obs.stats["read_errors"] == 2 * len(touching)
+
+    def test_non_three_channel_frame_never_lies_about_side(self) -> None:
+        """非 3 通道帧的归属说"判不出"，而不是把通道错位分组后给一个看着合理的错标签。"""
+        f = np.zeros((FRAME_H, FRAME_W, 4), dtype=np.uint8)
+        assert hud.block_side(f, REGIONS["score_top"]) == "?"
 
 
 # ----------------------------------------------------------------------
