@@ -156,6 +156,11 @@ class TreasureStore:
 
         调用时机：回大厅且确认为「完整走完一场」，且本场字段（结算/彩蛋/积分）尚未清空。
         失败仅告警不阻断主循环（数据记录不影响自动化决策）。
+
+        汇总口径（2026-09-17 定案）：
+          - `profit_sum` = 我方竞拍净利，只累加**我方拍中**场的 `settle_profit`；
+          - `income_sum` = 我方本场收入，全部场次都累加（拍中=利润、未拍中=分红）；
+          - 当日银币净变化（看板「银币盈亏」）= `income_sum` + 蛋奖励银币（`egg_coin`）。
         """
         conn = self._conn
         if conn is None:
@@ -195,7 +200,16 @@ class TreasureStore:
                 (bucket,),
             ).fetchone()
             g, w, fl, ps, inc, hs = row if row else (0, 0, 0, 0, 0, 0)
-            p = int(self._m._settle_profit) if isinstance(self._m._settle_profit, (int, float)) else 0
+            # profit_sum 记「我方竞拍净利」：只累加**我方拍中**场的利润。未中场的
+            # settle_profit 是中标者的盈亏（别人的钱，见 RULES §7 术语表），计进来等于
+            # 把对手的亏赚记成我方的——2026-09-17 桶据此存出 −980,069，无意义。
+            # 我方当日银币净变化 = income_sum + 彩蛋银币（收入已含未中场分红）。
+            p = (
+                int(self._m._settle_profit)
+                if self._m._auction_result == "win"
+                and isinstance(self._m._settle_profit, (int, float))
+                else 0
+            )
             inc_ = int(self._m._settle_my_income) if isinstance(self._m._settle_my_income, (int, float)) else 0
             hs_ = int(self._m._daily_high_score) if isinstance(self._m._daily_high_score, (int, float)) else 0
             conn.execute(
