@@ -435,12 +435,14 @@ class NavGraph:
 
         P4c 接线（宪法 §5 L1 防线的数据源）：真值来自手柄导航器对游戏渲染
         圆盘的最近识别位；real 鼠标模式 WGC 不采 OS 光标、手柄未绑定或从未
-        识别到时返回 None（识别节点按无光标处理）。
+        识别到时返回 None（识别节点按无光标处理）。**取位走遮挡证据专用入口**：
+        陈旧位（超 Clicker.CURSOR_POS_MAX_AGE_S）一律当无光标，不拿过期位置
+        否决模板命中——与 OCR 侧 _cursor_hits_rect 同一判据（不变量 8）。
         """
         clicker = self._clicker
         if clicker is None:
             return None
-        pos = clicker.gamepad_cursor_pos()
+        pos = clicker.gamepad_cursor_occlusion_pos()
         if not pos:
             return None
         W, H = self.frame_size()

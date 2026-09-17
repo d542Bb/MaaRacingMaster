@@ -117,6 +117,11 @@ def test_decision_tick_publishes_snapshot_but_owns_no_frame_number():
 
     fake._trace_writer = SimpleNamespace(write=lambda *_a: None)
     fake._frame_counter = 7                # 跳过首帧尺寸校验分支
+    fake._frame_abort = False              # 帧边界闸（P0-3）：未判终止才继续跑帧工作
+    fake._frame_error_count = 0            # 帧边界闸：非 fatal 异常计数（本用例不应有异常）
+    # 帧边界闸把帧工作拆成 _tick_once → _tick_frame_body 两层；桩不是 TreasureModule
+    # 子类，须显式绑上真身（否则 _tick_once 在桩上找不到该方法而走异常分支）。
+    fake._tick_frame_body = lambda: TreasureModule._tick_frame_body(fake)
     fake.DEBUG_LOG_INTERVAL = 999          # 跳过心跳段（它读一整套决策字段）
     fake._round_elapsed = 0
     fake._last_detection_result = None

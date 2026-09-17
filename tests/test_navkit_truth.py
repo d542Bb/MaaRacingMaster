@@ -58,7 +58,9 @@ def test_graph_clean_and_shaped(truth):
     # 引擎契约段：白名单计数见证（改契约 = 有意识的真源变更，须过本锁）
     ec = policy["engine_contract"]
     assert len(ec["facts"]) == 16
-    assert len(ec["state_fields"]) == 10
+    # 11 = 10 + now_ms（墙钟毫秒时钟源，配合 elapsed_ms 推导「重试已过去多久」；
+    #      settle_skip_since → settle_skip_since_ms 同期改名，不进位）
+    assert len(ec["state_fields"]) == 11
     assert len(ec["wait_keys"]) == 10
     assert ec["fallback"]["key"] == "stage_waiting"
 

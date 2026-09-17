@@ -235,14 +235,79 @@ def test_cursor_over_label_roi_detected():
     """光标盘压在按钮文字 ROI 内 → 判遮挡；移开/无光标（real 模式）→ 不判。"""
     fake = _FakeSelf(phase="wait_next", label="出价")
     # 盘中心 (610,596)：ROI 像素 x[551,670] y[579,617] 之内
-    fake._clicker = SimpleNamespace(gamepad_cursor_pos=lambda: (610, 596))
+    fake._clicker = SimpleNamespace(gamepad_cursor_occlusion_pos=lambda: (610, 596))
     assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is True
     # 移远 → 不相交
-    fake._clicker = SimpleNamespace(gamepad_cursor_pos=lambda: (100, 100))
+    fake._clicker = SimpleNamespace(gamepad_cursor_occlusion_pos=lambda: (100, 100))
     assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is False
     # 无光标（real 模式/未绑定/从未识别）→ 视为无光标，与模板侧 mask_cursor 同语义
     fake._clicker = None
     assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is False
+
+
+class _PadWithAge:
+    """带新鲜度的手柄导航器桩：只喂 gamepad_cursor_pos/age_s 真身要读的两个字段。"""
+
+    def __init__(self, pos, age_s: float):
+        self.last_pos = pos
+        self.last_pos_ts = 0.0 if age_s == float("inf") else time.monotonic() - age_s
+        self.miss_streak = 0
+
+    def is_busy(self):
+        return False
+
+
+def test_stale_cursor_pos_is_not_occlusion_evidence():
+    """陈旧光标位不得当作遮挡证据（P1-6 回归锁）。
+
+    真机 2026-09-16：last_pos 停在出价按钮文字 ROI 上、导航空闲后不再刷新，
+    该判断连续 76 次命中「被压住」→ OCR 读数恒不可信 → S1 空等 85s，期间
+    点击与避让都因槽忙不提交。时效闸统一由 Clicker.gamepad_cursor_occlusion_pos
+    提供（超龄即 None），OCR 侧与模板侧共用同一入口，故两路不可能分叉。
+    """
+    from maaracing_master.core.clicker import CURSOR_POS_MAX_AGE_S, Clicker
+
+    clicker = Clicker(hwnd=0, mode="gamepad")
+    fake = _FakeSelf(phase="wait_next", label="出价")
+    fake._clicker = clicker
+
+    # 新鲜位（0.5s 前识别）：照判遮挡
+    clicker._gamepad = _PadWithAge((610, 596), 0.5)
+    assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is True
+
+    # 陈旧位（超过时效上限）：位置仍落在 ROI 内，但不再当遮挡证据
+    clicker._gamepad = _PadWithAge((610, 596), CURSOR_POS_MAX_AGE_S + 1.0)
+    assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is False
+
+    # 从未识别到（龄 inf）：同样不判遮挡
+    clicker._gamepad = _PadWithAge((610, 596), float("inf"))
+    assert TreasureModule._cursor_hits_rect(fake, _LABEL_ROI, _FRAME) is False
+
+    # 原始真值仍带陈旧位（PEEP「上次光标在哪」要靠它）：时效闸只作用于遮挡证据入口
+    clicker._gamepad = _PadWithAge((610, 596), 99.0)
+    assert clicker.gamepad_cursor_pos() == (610, 596)
+    assert clicker.gamepad_cursor_occlusion_pos() is None
+
+
+def test_occlusion_entry_is_single_source_for_both_paths():
+    """不变量 8 的静态守卫：OCR 侧与模板侧必须共用同一个取位入口。
+
+    两路各自实现时效判定必然分叉（一边放行、一边仍拒绝），所以阈值与判据都
+    收在 `Clicker.gamepad_cursor_occlusion_pos`；本锁用源码守卫防"回退成直接
+    取原始真值"，免得靠记性维持这条约束。
+    """
+    import inspect
+
+    from maaracing_master.core.nav_graph import NavGraph
+
+    ocr_src = inspect.getsource(TreasureModule._cursor_hits_rect)
+    tpl_src = inspect.getsource(NavGraph.cursor_pos)
+    for name, src in (("OCR 侧 _cursor_hits_rect", ocr_src),
+                      ("模板侧 NavGraph.cursor_pos", tpl_src)):
+        assert "gamepad_cursor_occlusion_pos" in src, \
+            f"{name} 未走遮挡证据统一入口（时效阈值会被分裂成两份）"
+        assert "gamepad_cursor_pos()" not in src, \
+            f"{name} 直接取了原始真值（含陈旧位）——陈旧位不得当遮挡证据"
 
 
 def test_s2_requires_exact_cn_label():

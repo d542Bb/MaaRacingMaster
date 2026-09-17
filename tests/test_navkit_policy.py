@@ -4,7 +4,7 @@
 NavKit P1 决策策略层单测（纯标准库，CI 只装 pytest 即可运行）。
 
 覆盖 docs/plan/NAVKIT_P1_PLAN.md 的契约：
-- P0-6 DecisionFacts 冻结快照 / 派生事实（retry_elapsed / reward_elapsed / skip_cycle）
+- P0-6 DecisionFacts 冻结快照 / 派生事实（retry_elapsed_ms / reward_elapsed / skip_cycle）
 - P0-7 StateSnapshot 封闭白名单投影（未知字段 fail-closed）
 - §4 schema：parse_policies 结构错误（P01-P05）
 - §4.3 PolicyPlan 行为语义：各阶段决策/兜底/透传/冷却边界（单轨绝对断言）
@@ -58,7 +58,8 @@ def _make_facts(
     settle_income: int | None = None,
     clicked_once: bool = False,
     retry_count: int = 0,
-    settle_skip_since: int = 0,
+    now_ms: int = 0,
+    settle_skip_since_ms: int = 0,
     cooldown: int = 0,
     daily_high_score: int | None = None,
     egg_reading: bool = False,
@@ -71,7 +72,8 @@ def _make_facts(
         "settle_income": settle_income,
         "clicked_once": clicked_once,
         "retry_count": retry_count,
-        "settle_skip_since": settle_skip_since,
+        "now_ms": now_ms,
+        "settle_skip_since_ms": settle_skip_since_ms,
         "cooldown": cooldown,
         "daily_high_score": daily_high_score,
         "egg_reading": egg_reading,
@@ -104,7 +106,7 @@ def test_state_snapshot_projection_rejects_unknown_fields():
 def test_state_snapshot_projection_accepts_all_fields():
     snap = StateSnapshot.projection({
         "frame_counter": 1, "settle_income": None, "clicked_once": False,
-        "retry_count": 0, "settle_skip_since": 0, "cooldown": 0,
+        "retry_count": 0, "now_ms": 0, "settle_skip_since_ms": 0, "cooldown": 0,
         "daily_high_score": None, "egg_reading": False, "egg_read_done": False,
         "reward_enter_frame": 0,
     }, fields=_contract().state_fields)
@@ -117,10 +119,15 @@ def test_state_snapshot_projection_accepts_all_fields():
 
 
 def test_decision_facts_derived_fields():
-    facts = _make_facts(stage="settle", frame=20, clicked_once=True, settle_skip_since=5)
-    assert facts.get("retry_elapsed") == 15
+    facts = _make_facts(stage="settle", frame=20, clicked_once=True,
+                        now_ms=20_000, settle_skip_since_ms=5_000)
+    # 重试已过多久按**墙钟毫秒**差（不是帧号差）：v4 帧率由框架驱动，帧数口径会被稀释
+    assert facts.get("retry_elapsed_ms") == 15_000
     assert facts.get("skip_cycle") == 20 % 3
     assert facts.get("frame_counter") == 20
+    # 推导源（now_ms / settle_skip_since_ms）冻结后不出现在 facts 里
+    assert facts.get("now_ms") is None
+    assert facts.get("settle_skip_since_ms") is None
 
 
 def test_decision_facts_rejects_unknown_outputs():
@@ -328,22 +335,23 @@ def test_plan_deferred_sources_passthrough():
 
 
 def test_plan_settle_variants():
-    """settle 分支矩阵：首点/数据齐/等待/重试/致命。"""
+    """settle 分支矩阵：首点/数据齐/等待/重试/致命（重试节奏按墙钟毫秒）。"""
     plan = _compile()
-    # 点击后收入未读出、未超时 → 等待 OCR
-    d = plan.decide(_make_facts(stage="settle", frame=3, clicked_once=True, settle_income=None))
+    # 点击后收入未读出、距上次点击未到重试间隔 → 等待 OCR
+    d = plan.decide(_make_facts(stage="settle", frame=3, clicked_once=True, settle_income=None,
+                                now_ms=1_000, settle_skip_since_ms=1_000))
     assert d.key == "dividend_waiting"
     assert d.fatal is None and d.side_effects == ()
-    # 超时且重试次数未耗尽 → 重试点击 + settle_skip_retry 副作用
+    # 已过重试间隔且重试次数未耗尽 → 重试点击 + settle_skip_retry 副作用
     d = plan.decide(_make_facts(stage="settle", frame=20, clicked_once=True, settle_income=None,
-                                settle_skip_since=5, retry_count=1))
+                                now_ms=60_000, settle_skip_since_ms=1_000, retry_count=1))
     assert d.key == "settle_collect_red_btn"
     assert d.side_effects == ("settle_skip_retry",) and d.fatal is None
-    # 超时且重试耗尽 → fatal 终止指令
+    # 已过重试间隔且重试耗尽 → fatal 终止指令
     d = plan.decide(_make_facts(stage="settle", frame=30, clicked_once=True, settle_income=None,
-                                settle_skip_since=5, retry_count=3))
+                                now_ms=60_000, settle_skip_since_ms=1_000, retry_count=10))
     assert d.key == "settle_collect_red_btn"
-    assert d.fatal is not None and "重试 3 次" in d.fatal
+    assert d.fatal is not None and "跳过动画" in d.fatal
 
 
 def test_plan_popup_variants():
@@ -407,25 +415,27 @@ def test_tuning_reference_baked_at_compile_time():
             assert not (isinstance(cond.value, str) and cond.value.startswith("@")), (
                 f"规则 {rule.id} 的条件值未烘焙：{cond.value!r}"
             )
-    # 语义验证：settle 超时重试帧数 = tuning.policy.settle_skip_retry_frames
-    def decide(frame: int, retry_count: int = 1) -> str:
+    # 语义验证：settle 重试间隔 = tuning.policy.settle_skip_retry_ms（墙钟毫秒口径）
+    def decide(elapsed_ms: int, retry_count: int = 1) -> str:
         facts = _make_facts(
-            stage="settle", frame=frame, clicked_once=True,
-            settle_skip_since=1, retry_count=retry_count,
+            stage="settle", frame=10, clicked_once=True,
+            now_ms=100_000 + elapsed_ms, settle_skip_since_ms=100_000,
+            retry_count=retry_count,
         )
         return plan.decide(facts).key
 
-    frames = int(nav.policies.tuning["policy"]["settle_skip_retry_frames"])
-    assert decide(frame=frames) == "dividend_waiting"   # elapsed = frames - 1，未超时
-    assert decide(frame=frames + 1) == "settle_collect_red_btn"  # elapsed = frames，超时重试
+    interval = int(nav.policies.tuning["policy"]["settle_skip_retry_ms"])
+    assert decide(interval - 1) == "dividend_waiting"        # 未到间隔
+    assert decide(interval) == "settle_collect_red_btn"      # 到间隔 → 重试点击
     # 改 tuning → 重编译 → 阈值跟着变（证明非字面量硬编码）
-    nav.policies.tuning["policy"]["settle_skip_retry_frames"] = 5
+    nav.policies.tuning["policy"]["settle_skip_retry_ms"] = 500
     plan5 = compile_plan(nav.policies, nav.spec)
-    # frame=5 → elapsed=4 < 5 仍等待；frame=6 → elapsed=5 触发重试
-    assert plan5.decide(_make_facts(stage="settle", frame=5, clicked_once=True,
-                                    settle_skip_since=1)).key == "dividend_waiting"
-    assert plan5.decide(_make_facts(stage="settle", frame=6, clicked_once=True,
-                                    settle_skip_since=1)).key == "settle_collect_red_btn"
+    assert plan5.decide(_make_facts(stage="settle", frame=10, clicked_once=True,
+                                    now_ms=100_499, settle_skip_since_ms=100_000)
+                        ).key == "dividend_waiting"
+    assert plan5.decide(_make_facts(stage="settle", frame=10, clicked_once=True,
+                                    now_ms=100_500, settle_skip_since_ms=100_000)
+                        ).key == "settle_collect_red_btn"
 
 
 def test_tuning_unknown_reference_rejected():

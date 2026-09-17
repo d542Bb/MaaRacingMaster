@@ -1061,9 +1061,10 @@
     ],
     "derived": [
       {
-        "field": "retry_elapsed",
-        "from": "settle_skip_since",
-        "op": "elapsed"
+        "field": "retry_elapsed_ms",
+        "from": "settle_skip_since_ms",
+        "clock": "now_ms",
+        "op": "elapsed_ms"
       },
       {
         "field": "reward_elapsed",
@@ -1077,14 +1078,15 @@
       }
     ],
     "derived_sources": [
+      "now_ms",
       "reward_enter_frame",
-      "settle_skip_since"
+      "settle_skip_since_ms"
     ],
     "effect_required_conditions": {
       "settle_skip_retry": [
         "clicked_once",
         "retry_count",
-        "retry_elapsed",
+        "retry_elapsed_ms",
         "settle_income",
         "stage"
       ]
@@ -1104,7 +1106,7 @@
       "frame_counter",
       "popup_kind",
       "retry_count",
-      "retry_elapsed",
+      "retry_elapsed_ms",
       "reward_elapsed",
       "session_decision",
       "settle_income",
@@ -1125,10 +1127,11 @@
       "egg_read_done",
       "egg_reading",
       "frame_counter",
+      "now_ms",
       "retry_count",
       "reward_enter_frame",
       "settle_income",
-      "settle_skip_since"
+      "settle_skip_since_ms"
     ],
     "tuning_keys": {
       "execution": [
@@ -1148,8 +1151,8 @@
         "egg_ocr_timeout_frames",
         "popup_click_cooldown_frames",
         "popup_continue_retry_frames",
-        "settle_skip_retry_frames",
-        "settle_skip_retry_max"
+        "settle_skip_retry_max",
+        "settle_skip_retry_ms"
       ]
     },
     "wait_keys": [
@@ -2693,7 +2696,7 @@
       },
       {
         "decision": {
-          "fatal": "领取分红跳过动画点击重试 3 次仍无响应（本场收入始终未读出），请检查游戏界面/点击方式后重新开始",
+          "fatal": "领取分红跳过动画连续重试仍无响应（本场收入始终未读出），请检查游戏界面/点击方式后重新开始",
           "key": "settle_collect_red_btn"
         },
         "id": "settle_skip_fatal",
@@ -2702,8 +2705,8 @@
           "retry_count": {
             "gte": "@settle_skip_retry_max"
           },
-          "retry_elapsed": {
-            "gte": "@settle_skip_retry_frames"
+          "retry_elapsed_ms": {
+            "gte": "@settle_skip_retry_ms"
           },
           "settle_income": null,
           "stage": "settle"
@@ -2722,8 +2725,8 @@
           "retry_count": {
             "lt": "@settle_skip_retry_max"
           },
-          "retry_elapsed": {
-            "gte": "@settle_skip_retry_frames"
+          "retry_elapsed_ms": {
+            "gte": "@settle_skip_retry_ms"
           },
           "settle_income": null,
           "stage": "settle"
@@ -2940,8 +2943,8 @@
         "egg_ocr_timeout_frames": 8,
         "popup_click_cooldown_frames": 5,
         "popup_continue_retry_frames": 3,
-        "settle_skip_retry_frames": 10,
-        "settle_skip_retry_max": 3
+        "settle_skip_retry_ms": 2500,
+        "settle_skip_retry_max": 10
       }
     }
   }

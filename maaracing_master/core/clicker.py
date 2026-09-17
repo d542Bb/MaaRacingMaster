@@ -40,6 +40,11 @@ GAMEPAD_BOX_TOL_RATIO = 0.35
 GAMEPAD_LOST_REBUILD = 2
 GAMEPAD_REBUILD_COOLDOWN_S = 10.0
 
+# 光标真值作为「遮挡证据」的时效上限（秒）：超过此龄的位置不再采信。
+# 与 cursor_candidates 的默认新鲜度阈值同取 2s——同一份「光标位还能不能信」的口径，
+# 不另立一套。判据入口唯一：Clicker.gamepad_cursor_occlusion_pos。
+CURSOR_POS_MAX_AGE_S = 2.0
+
 
 class Clicker:
     """统一点击执行器：按 mode 执行点击/光标意图。
@@ -95,38 +100,48 @@ class Clicker:
 
     def submit_click(self, cx: float, cy: float, *,
                      box=None, tol_px=None,
-                     down_up_gap_ms: int = 30, move_pause_s: float = 0.4) -> bool:
+                     down_up_gap_ms: int = 30, move_pause_s: float = 0.4,
+                     label: str | None = None) -> bool:
         """提交一次点击（非阻塞）。True=已入队；False=槽忙/未绑定。
 
         gamepad → 提交导航任务（后台线程闭环），结果经 consume_result 取；
         real → 立即执行，结果入 real 槽（同一协议：submit 后 consume 可取）。
         语义：True = 已入队（不是点击成功）；成功与否看 consume_result。
+        label：提交方语义标签（如按钮 key），只进看门狗日志，便于「槽被谁卡住」可读。
         """
         if self.mode == "gamepad":
             return self._submit_gamepad("click", cx, cy, intent=self.intent,
-                                        box=box, tol_px=tol_px)
+                                        box=box, tol_px=tol_px, label=label)
         ok = self._click_real(cx, cy, down_up_gap_ms, move_pause_s)
-        self._real_result = {"type": "click", "ok": ok, "intent": self.intent}
+        self._real_result = {"type": "click", "ok": ok, "intent": self.intent,
+                             "label": label}
         return True
 
     def submit_move(self, cx: float, cy: float, *,
                     box=None, tol_px=None,
-                    down_up_gap_ms: int = 30, move_pause_s: float = 0.4) -> bool:
-        """提交一次只移动（光标移到位但不点击）。语义同 submit_click，但 intent 恒 True（不点击）。"""
+                    down_up_gap_ms: int = 30, move_pause_s: float = 0.4,
+                    label: str | None = None,
+                    budget_s: float | None = None) -> bool:
+        """提交一次只移动（光标移到位但不点击）。语义同 submit_click，但 intent 恒 True（不点击）。
+
+        budget_s：本次导航的时间预算（秒，仅手柄方式有意义；None=不设）。
+        """
         if self.mode == "gamepad":
             return self._submit_gamepad("move", cx, cy, intent=True,
-                                        box=box, tol_px=tol_px)
+                                        box=box, tol_px=tol_px, label=label,
+                                        budget_s=budget_s)
         prev = self.intent
         self.intent = True
         try:
             ok = self._click_real(cx, cy, down_up_gap_ms, move_pause_s)
         finally:
             self.intent = prev
-        self._real_result = {"type": "move", "ok": ok, "intent": True}
+        self._real_result = {"type": "move", "ok": ok, "intent": True, "label": label}
         return True
 
     def _submit_gamepad(self, task_type: str, cx: float, cy: float, *,
-                        intent: bool, box, tol_px) -> bool:
+                        intent: bool, box, tol_px, label: str | None = None,
+                        budget_s: float | None = None) -> bool:
         """gamepad 提交：归一化坐标 → 像素 → GamepadClicker.submit（非阻塞）。"""
         if self._gamepad is None:
             return False
@@ -145,13 +160,34 @@ class Clicker:
                 tol_px = None
         self._last_norm = (cx, cy)
         return self._gamepad.submit((px, py), intent=intent, tol_px=tol_px,
-                                    task_type=task_type)
+                                    task_type=task_type, label=label,
+                                    budget_s=budget_s)
 
     def is_busy(self) -> bool:
         """任务槽忙（含结果待消费 DONE 态）。gamepad 查导航器；real 查 real 槽。"""
         if self.mode == "gamepad":
             return self._gamepad is not None and self._gamepad.is_busy()
         return self._real_result is not None
+
+    def slot_diag(self) -> dict | None:
+        """任务槽诊断快照（占用时长/进度新鲜度/线程存活）；real 模式无导航槽 → None。"""
+        if self.mode != "gamepad" or self._gamepad is None:
+            return None
+        return self._gamepad.slot_diag()
+
+    def watchdog_tick(self) -> dict | None:
+        """任务槽看门狗（主循环每帧调用一次）：卡槽必须留痕且能恢复，命中返回诊断 dict。
+
+        判据与动作在 `GamepadClicker.watchdog`（分层：导航线程退出 / 进度停滞 /
+        占用硬上限 / 占用告警）。real 模式不参与——它的槽是同步执行后即可取的结果槽，
+        不存在「导航卡住」这一失败形态。
+
+        由宿主在决策段显式调用（在 consume 之前），**不藏进 consume_result**：
+        释放槽是副作用，不该搭在「取结果」的调用上。
+        """
+        if self.mode != "gamepad" or self._gamepad is None:
+            return None
+        return self._gamepad.watchdog()
 
     def consume_result(self) -> dict | None:
         """取走最近完成结果（无则 None）。取走即清空 → 允许下一任务。
@@ -233,6 +269,11 @@ class Clicker:
     SHOO_TOL_PX = 60.0    # 避让导航容差 px：只需把光标移出识别区（等效半径由宿主按
     # template_match.cursor_occlusion_radius_px 随帧宽算，1280 帧约 29px），
     # 无需精确到位；60px 大幅缩短同步导航耗时，避免避让阻塞吃掉转移信号窗口
+    # 避让导航的**时间预算**（秒）：避让只需把光标挪出识别区，不该与点击共用
+    # 「跑到步数上限」的长预算——单槽被一次避让长期占用会让点击与避让双双停摆
+    # （真机 2026-09-16：840 帧约 85s 零点击零避让）。超预算摇杆归零收尾，
+    # 下帧重新判定（避让是幂等的重复动作，重来一次无副作用）。
+    SHOO_BUDGET_S = 2.0
     # 光标连续未识别跳过避让的阈值：游戏转场期（点「开始匹配」后匹配加载遮罩
     # 隐藏光标、面板开关动画等）光标短暂不可见属正常，此时 last_pos 是陈旧
     # 位置，盲导航既挪不动又白白阻塞主循环 → 跳过，等光标重现/阶段切换。
@@ -270,6 +311,8 @@ class Clicker:
         防抖/互斥设计：
           • 冷却（monotonic 秒）：避让后 SHOO_COOLDOWN_S 内不再触发
           • 任务槽忙（点击/避让在跑或结果待消费）→ 跳过本次判定（click 优先）
+          • 短预算（SHOO_BUDGET_S）：避让不与点击共用长预算——它只需挪开光标，
+            超预算即摇杆归零收尾，不与点击争抢同一个单槽（同一导航器，不同预算）
           • 避让走 submit_move（intent=True），不产生点击
           • 光标位置取手柄导航器最近一次成功识别位；导航器未绑定/位置未知不触发
         """
@@ -326,7 +369,10 @@ class Clicker:
                 self._shoo_cooldown_until_ts = now + self.SHOO_COOLDOWN_S
                 # 宽松容差避让：只移出识别区即返回（无需精确微调）；异步提交，
                 # 导航线程后台执行，决策段不被阻塞（转移信号窗口不丢失）。
-                if self.submit_move(px_, py_, tol_px=self.SHOO_TOL_PX):
+                # 短预算：避让不占长预算（见 SHOO_BUDGET_S 说明）。
+                if self.submit_move(px_, py_, tol_px=self.SHOO_TOL_PX,
+                                    label=f"shoo:{hit_key}",
+                                    budget_s=self.SHOO_BUDGET_S):
                     sig = (hit_key, round(px_, 3), round(py_, 3))
                     if sig == self._shoo_repeat_sig:
                         self._shoo_repeat_count += 1
@@ -344,15 +390,34 @@ class Clicker:
         return None  # 邻域全是需识别区（少见），放弃避让保持现状
 
     def gamepad_cursor_pos(self) -> tuple[int, int] | None:
-        """手柄导航器最近一次识别到的游戏光标位置（截图帧像素坐标）。
+        """手柄导航器最近一次识别到的游戏光标位置（截图帧像素坐标）。**原始真值，含陈旧**。
 
-        遮挡过滤（MaaRM_Template mask_cursor）的光标真值来源；real 模式/未绑定/
-        从未识别到光标时为 None。转场期光标隐藏时返回的是陈旧位——消费方
-        （识别节点）自担时效，只有真压住命中框才生效，最坏多拒一帧。
+        给「上次光标在哪」这类诊断消费方（PEEP 叠加层：配 `gamepad_cursor_age_s()`
+        自报新鲜度）。**不作为遮挡证据**——遮挡判定走 `gamepad_cursor_occlusion_pos()`，
+        那里的时效闸是单一真源（见其说明）。real 模式/未绑定/从未识别到 → None。
         """
         if self._gamepad is None:
             return None
         return getattr(self._gamepad, "last_pos", None)
+
+    def gamepad_cursor_occlusion_pos(
+            self, *, max_age_s: float = CURSOR_POS_MAX_AGE_S) -> tuple[int, int] | None:
+        """**遮挡证据**用的光标位：龄超 `max_age_s` 一律视为「当前无光标」（返回 None）。
+
+        为什么需要时效闸：`last_pos` 只在导航器的 read_pos 成功时刷新，导航空闲期
+        不再更新，而游戏侧仍可能自行移动/重置光标（过场、物理摇杆）。无闸时一个
+        陈旧位会被当成「光标就压在这里」的永久证据——真机 2026-09-16：出价按钮
+        文字 ROI 的判断连续 76 次判「被压住」→ 读数恒不可信 → S1 空等 85s，
+        期间点击与避让都因槽忙不提交（见 AGENTS「诊断三原则」第 2 条）。
+        阈值只有 `CURSOR_POS_MAX_AGE_S` 一份，且 OCR 侧 `_cursor_hits_rect` 与
+        模板侧 `mask_cursor` 都经本方法取位——两路不可能分叉（不变量 8）。
+        """
+        pos = self.gamepad_cursor_pos()
+        if pos is None:
+            return None
+        if self.gamepad_cursor_age_s() > max_age_s:
+            return None
+        return pos
 
     def gamepad_cursor_age_s(self) -> float:
         """最近一次识别到光标距今的秒数（从未识别到 → inf）。

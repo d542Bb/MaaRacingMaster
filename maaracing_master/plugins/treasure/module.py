@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import traceback
 from collections import deque
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -470,6 +471,8 @@ class TreasureModule(ActivityModule):
     FRAME_INTERVAL_MS     = 300    # 帧数↔时间换算基准（毫秒），不是截图周期
     DEBUG_LOG_INTERVAL    = 1      # 验证期全量日志：每帧打一条 DEBUG 心跳（含阶段/H/出价/OCR指标）。
                                    # 验证完 OCR 尖峰修复后再考虑瘦身（如恢复 20 帧一次）
+    FRAME_ERROR_LOG_EVERY = 50     # 帧边界非 fatal 异常的重记节流：首个异常全量记录，此后每 N 帧一条
+    SLOT_BUSY_LOG_EVERY   = 10     # 槽忙跳过（点击/避让）的节流：每 N 帧一条（与前台校验告警同口径）
     # 观察通路节律（与决策段解耦；见 docs/plan/observe-split-plan.md）：存图挡取 150ms 是为
     # 了与拆分前真机观测密度（~150ms/帧）一致，零观感回归；仅预览时可提到 20fps——不写盘，
     # 队列满自然丢帧降密（IO_QUEUE_MAX），不需要额外降挡逻辑。
@@ -553,15 +556,16 @@ class TreasureModule(ActivityModule):
     CLICK_RETRY_FRAMES = 10        # 点击后等多少帧仍未切换 → 判定失败（主循环 ~300ms/帧 ≈ 3s，给足转场动画时间）
     CLICK_RETRY_MAX = 3            # 同一意图最多重试次数（含首点共 4 次），仍失败则停手并 WARNING
     # 领取分红「跳过动画」点击无响应兜底：跳过动画点击成功（ok=true）后，本场收入
-    # （_settle_my_income）应被 OCR 读出（动画跳过 → 数据出现）。若等待
-    # SETTLE_SKIP_RETRY_FRAMES 帧仍无收入 → 判定点击落空/游戏无响应（实测场景：
-    # 点领取后按钮/动画无反应，收入永远读不到而静默卡死）→ 清指纹重新点击，
-    # 最多 SETTLE_SKIP_RETRY_MAX 次仍无响应 → 抛 ClickRetryExhaustedError 终止模块。
+    # （_settle_my_income）应被 OCR 读出（动画跳过 → 数据出现）。若迟迟读不到 →
+    # 判定点击落空/游戏无响应 → 清指纹重新点击；连续重试仍无响应 → 抛
+    # ClickRetryExhaustedError 终止模块。
+    # **节奏与预算的真源是 policy.json 的 tuning.policy**（`settle_skip_retry_ms`
+    # 重试间隔、`settle_skip_retry_max` 次数上限），本模块不另存一份副本——
+    # 按时间口径（毫秒）判定：v4 帧率由框架驱动（真机 115~290ms/帧），帧数口径
+    # 会被稀释（旧口径 10 帧 × 3 次实际只给 2.5s，短于结算动画而被误判 fatal）。
     # 注意与「真领取」重试的区分（成功信号不同）：
-    #   - 跳过动画：成功信号 = 收入读出（OCR 字段变化），在本常量独立实现
+    #   - 跳过动画：成功信号 = 收入读出（OCR 字段变化），策略层规则独立实现
     #   - 真领取：  成功信号 = 阶段切走，复用 _maybe_retry_stage_click 的 stage 判定
-    SETTLE_SKIP_RETRY_FRAMES = 10  # 点击后等多少帧仍未读到收入 → 判定无响应（≈3s，给足动画+OCR 时间）
-    SETTLE_SKIP_RETRY_MAX = 3      # 最多重试次数（含首点共 4 次），仍无响应则终止模块
     # 面板内数字键（含 ✖ 清空）的「无响应兜底」：成功信号 = 面板读回变化。
     # 数字键指纹含 _bid_input_progress（清空键的成功信号是 B→0），输入框读数不推进
     # ⇒ 指纹不变 ⇒ 边沿触发永不重发 ⇒ 光标原地不动（真机 2026-09-15 07:17:34–07:17:58：
@@ -701,6 +705,12 @@ class TreasureModule(ActivityModule):
     #   未固化槽连续 BID_SLOT_MISS_LIMIT 次无输出 → 清空重读（防误读残留，-1 未读不激活）。
     BID_SLOT_STABLE_FRAMES = 3   # 槽固化：连续 N 次读取一致
     BID_SLOT_MISS_LIMIT = 3      # 槽清空：未固化连续 N 次无输出（已有值才计数）
+    # 结算页字段的连续一致确认闸（P1-8，与报价槽同口径）：结算页数字在动画期逐帧
+    # 滚动，而 0 是合法终值（0 分红）——「读到即认」会把滚动中的瞬时值当成
+    # 「本场收入已读出」，于是 settle_ready_click 在动画还没播完时就触发真领取
+    # （真机 2026-09-16：收入被读成 0 → 判已读出；跳过动画的三次点击因此白点）。
+    # 逐帧变值永远凑不满连续一致，动画停住后才固化。
+    SETTLE_STABLE_FRAMES = 3
     # 金额下限允许为 0 的字段：bid_result_amount_box 点击✖后输入框显示"0"是合法清空值，
     # settle_my_income / settle_profit = 0 也是合法值（0 分红 / 0 盈亏）
     # 默认 _extract_amount 的 MIN_AMOUNT=1万 会把 "0" 误滤成 None → 渲染显示 "-"
@@ -918,12 +928,24 @@ class TreasureModule(ActivityModule):
         #   _policy_plan = policy.json policy 段 → PolicyPlan（启动编译不可变，缺失/非法 = 启动失败）
         self._policy_plan = None
         self._policy_snapshot: dict | None = None  # 最近一帧 DecisionSnapshot（trace 决策契约）
-        # 帧内意图缓存：_resolve_action_target 每帧只允许真正决策一次（主循环 +
-        # _treasure_kwargs 的 peep 准星字段都会调用；同帧二次调用返回缓存）。
-        # 无缓存时同帧双决策会把重试意图覆盖成等待（副作用已执行、intent 丢弃），
-        # 实测领取分红跳过动画重试链被整体吞掉 → 卡动画不重试（2026-09-06）。
+        # 帧内意图缓存：_resolve_action_target 每帧只允许真正决策一次（同帧二次
+        # 调用返回缓存）。无缓存时同帧双决策会把重试意图覆盖成等待（副作用已
+        # 执行、intent 丢弃），实测领取分红跳过动画重试链被整体吞掉 → 卡动画
+        # 不重试（2026-09-06）。
         self._intent_cache_frame: int = -1
         self._intent_cache: dict | None = None
+        # 决策段产出的意图，供只读消费方（_treasure_kwargs 的 peep 准星字段）读取。
+        # **快照路径不得调用 _resolve_action_target()**——那是决策入口，带引擎副作用
+        # （重试计数/指纹重新 arm）与 fatal 抛出；快照在心跳与决策段之前执行，让它
+        # 触发决策等于把「终止模块」的指令抛在帧边界之外：每帧静默重抛、无心跳、
+        # 无决策 trace、也不真正终止（真机 2026-09-16 领取分红 11s 静默空转）。
+        # 故此处只保存上一帧结果（一帧滞后，准星显示可接受），决策只在决策段发生。
+        self._last_intent_frame: int = -1
+        self._last_intent: dict | None = None
+        # 帧边界异常可见化（P0-3）：fatal 终止指令只执行一次并短路后续帧；
+        # 非 fatal 异常按帧节流记录（防同类噪音刷屏）。
+        self._frame_abort: bool = False
+        self._frame_error_count: int = 0
 
         # P1 收编：感知匹配阈值/ROI 真源 = policies.tuning.perception（缺省回落代码常量）。
         _per = _perception_tuning()
@@ -1038,8 +1060,11 @@ class TreasureModule(ActivityModule):
         # --------- 问题5：领取分红"跳过动画点一次"标记，防连点 ---------
         self._settle_collect_clicked_once: bool = False
         # 跳过动画点击无响应兜底状态（点击成功 → 计时；收入读出/换场/切阶段归零）：
-        self._settle_skip_since: int = 0            # 最近一次跳过动画点击成功的帧号
-        self._settle_skip_retry_count: int = 0      # 无响应重试次数（达 SETTLE_SKIP_RETRY_MAX 终止）
+        self._settle_skip_since_ms: int = 0         # 最近一次跳过动画点击成功的时刻（单调墙钟 ms；0=未开始）
+        self._settle_skip_retry_count: int = 0      # 无响应重试次数（上限见 policy.json tuning）
+        # 结算字段连续一致确认闸的累计状态（P1-8）：字段名 → {cand, n}
+        # （cand=最近读数，n=连续一致次数；换场/切阶段清空）
+        self._settle_stable: dict[str, dict] = {}
         # --------- 结算后弹窗（今日最高/奖励彩蛋）状态 ----------
         self._egg_counts: dict[str, int] | None = None  # 本场彩蛋 {red,yellow,blue}（仅记录，Phase2 填充）
         self._egg_read_done: bool = False              # 彩蛋数量已读完（稳定确认后置位）
@@ -1505,8 +1530,9 @@ class TreasureModule(ActivityModule):
             # 跳过数据加载动画，防止连点把结算页直接关掉退出去）
             if stage_name == "领取分红":
                 self._settle_collect_clicked_once = False
-                self._settle_skip_since = 0
+                self._settle_skip_since_ms = 0
                 self._settle_skip_retry_count = 0
+                self._settle_stable.clear()   # 换场：连续一致计数不得跨场继承
             # 离开「结算弹窗」阶段 → 彩蛋识别窗口结束，清 _egg_reading
             if stage_name != "结算弹窗":
                 self._egg_reading = False
@@ -1543,8 +1569,9 @@ class TreasureModule(ActivityModule):
                     self._store.flush_game_record()
                 self._reset_round_state(reason=f"进入{stage_name}")
                 self._settle_my_income = None
-                self._settle_skip_since = 0
+                self._settle_skip_since_ms = 0
                 self._settle_skip_retry_count = 0
+                self._settle_stable.clear()   # 离开结算：滚动值不留到下一场
                 self._settle_final_price = None
                 self._settle_total_price = None
                 self._settle_profit = None
@@ -2059,12 +2086,15 @@ class TreasureModule(ActivityModule):
         光标盘停在按钮上时文字混进盘像素被读脏（2026-09-11 实机：出价按钮
         文字读成「出价.39,5」）。压住时该读数按不可信处理，等光标移开再读。
         real 模式/未绑定/从未识别到光标 → None → 视为无光标（WGC 不采 OS
-        光标，与模板侧 mask_cursor 同语义）；转场期陈旧位最多多拒一帧。
+        光标，与模板侧 mask_cursor 同语义）。
+        **取位走遮挡证据专用入口**（gamepad_cursor_occlusion_pos）：陈旧位当无光标，
+        否则一个过期位置会变成「光标永远压在这里」的永久证据——真机 2026-09-16
+        该判断连续 76 次命中，读数恒不可信、S1 空等 85s。与模板侧同一判据（不变量 8）。
         """
         clicker = self._clicker
         if clicker is None:
             return False
-        pos = clicker.gamepad_cursor_pos()
+        pos = clicker.gamepad_cursor_occlusion_pos()
         if not pos:
             return False
         H, W = frame_rgb.shape[:2]
@@ -2796,6 +2826,32 @@ class TreasureModule(ActivityModule):
         rev = {v: k for k, v in self._policy_plan.stage_map.items()}
         return rev.get(stage)
 
+    @staticmethod
+    def _now_ms() -> int:
+        """单调墙钟毫秒：决策事实的 `now_ms` 源（配合 `elapsed_ms` 推导重试已过去多久）。
+
+        与 `time.monotonic()` 同源——经过时长一律走单调钟（系统校时跳变不会让
+        「重试已过去多久」变负或暴涨），这是本仓库的固定口径。
+        """
+        return int(time.monotonic() * 1000)
+
+    def _settle_field_stable(self, field: str, amt: int) -> bool:
+        """结算字段的连续一致确认闸（P1-8，与报价槽 BID_SLOT_STABLE_FRAMES 同口径）。
+
+        返回 True=本次读数可固化（调用方写字段）；False=还在累积（本帧不写）。
+        为什么必须有这道闸：结算页数字在动画期逐帧滚动，而 0 是合法终值
+        （未分红）——「读到即认」会把滚动中的瞬时值当成「本场收入已读出」，
+        于是 `settle_ready_click` 在动画还没播完时就触发「真领取」，
+        跳过动画反而失去意义（真机 2026-09-16：收入读成 0 → 判已读出）。
+        逐帧变的值永远凑不满连续一致，动画停住后才固化。
+        """
+        st = self._settle_stable.get(field)
+        if st is None or st["cand"] != amt:
+            self._settle_stable[field] = {"cand": amt, "n": 1}
+            return False
+        st["n"] += 1
+        return st["n"] >= self.SETTLE_STABLE_FRAMES
+
     def _capture_decision_facts(self) -> DecisionFacts:
         """P0-6：本帧上游事实全部生产完后统一冻结（PolicyEngine 全程只读）。
 
@@ -2812,7 +2868,8 @@ class TreasureModule(ActivityModule):
             "settle_income": self._settle_my_income,
             "clicked_once": self._settle_collect_clicked_once,
             "retry_count": self._settle_skip_retry_count,
-            "settle_skip_since": self._settle_skip_since,
+            "now_ms": self._now_ms(),
+            "settle_skip_since_ms": self._settle_skip_since_ms,
             "cooldown": self._popup_click_cooldown,
             "daily_high_score": self._daily_high_score,
             "egg_reading": self._egg_reading,
@@ -2845,7 +2902,7 @@ class TreasureModule(ActivityModule):
                 self._popup_click_cooldown -= 1
             elif fx == "settle_skip_retry":
                 self._settle_skip_retry_count += 1
-                self._settle_skip_since = self._frame_counter
+                self._settle_skip_since_ms = self._now_ms()
                 self._last_click_fingerprint = None
         if decision.fatal:
             raise ClickRetryExhaustedError(decision.fatal)
@@ -2873,11 +2930,12 @@ class TreasureModule(ActivityModule):
     def _resolve_action_target(self) -> dict | None:
         """帧内缓存包装：同帧多次调用返回同一意图（一帧一决策，P0-6 语义）。
 
-        主循环（真实点击）与 _treasure_kwargs（peep 准星显示）都会调用本函数。
-        决策流水带引擎副作用（冷却递减/重试计数/skip_since），且重试类决策
-        「一帧内只在第一次出现」——同帧第二次决策时 skip_since 已被重置、
-        条件不再满足，会产出等待意图并覆盖快照，导致重试 intent 被丢弃：
-        实测领取分红跳过动画无响应重试链整体失效，卡动画直至 fatal（2026-09-06）。
+        **决策入口**，只允许决策段（`_decision_phase`）调用：带引擎副作用
+        （冷却递减/重试计数/skip_since）且可能抛 fatal。重试类决策「一帧内只在
+        第一次出现」——同帧第二次决策时 skip_since 已被重置、条件不再满足，
+        会产出等待意图并覆盖快照，导致重试 intent 被丢弃：实测领取分红跳过动画
+        无响应重试链整体失效，卡动画直至 fatal（2026-09-06）。
+        只读消费方（peep 准星/调试快照）读 `_last_intent`，不要调本函数。
         """
         if self._intent_cache_frame == self._frame_counter:
             return self._intent_cache
@@ -3169,6 +3227,30 @@ class TreasureModule(ActivityModule):
                 rects.append((self._BID_MAIN_LABEL_KEY, tuple(float(n) for n in rect)))
         return rects
 
+    def _log_slot_busy(self, action: str, key: str | None) -> None:
+        """槽忙导致跳过时留痕（按帧节流）：要说得出「槽被谁卡住、卡了多久」（P0-2）。
+
+        静默的原因是这条闸门把「本帧没点击/没避让」解释成「不需要」——决策段因此
+        看起来什么都没发生（真机 2026-09-16 的 840 帧/85s 零记录窗口）。日志带
+        槽内任务的 label/type/target 与占用时长，配合看门狗（P0-1）即可定位卡槽者。
+        """
+        if self._frame_counter % self.SLOT_BUSY_LOG_EVERY != 0:
+            return
+        diag = self._get_clicker().slot_diag()
+        key_str = f"，key={key}" if key else ""
+        if diag is None:
+            logger.log(
+                f"[鉴宝点击] 任务槽忙，本帧跳过{action}{key_str}"
+                f"（非手柄方式：上一帧结果尚未取走）", "WARNING")
+            return
+        task = diag.get("task") or {}
+        logger.log(
+            f"[鉴宝点击] 任务槽忙，本帧跳过{action}{key_str}：槽被 "
+            f"label={task.get('label')} type={task.get('type')} "
+            f"target={task.get('target')} 占用 {diag.get('occupied_s', 0.0):.1f}s，"
+            f"进度 {diag.get('progress_age_s', float('inf')):.1f}s 前更新"
+            f"（阶段={diag.get('progress_stage')}）", "WARNING")
+
     def _maybe_shoo_cursor(self, intent: dict | None) -> None:
         """光标驻留看守（决策段每帧调用，决策更新后）：光标压识别区则让核心避让。
 
@@ -3178,12 +3260,20 @@ class TreasureModule(ActivityModule):
         """
         if self.ctx.click_mode != "gamepad" or self._last_frame_rgb is None:
             return
+        clicker = self._get_clicker()
+        # 槽忙 → 本帧不避让（点击优先于避让，见 auto_shoo 的互斥设计）。此闸门过去
+        # 静默 return：与点击侧同一道闸一起造成「零点击零避让零日志」的 85s 窗口
+        # （真机 2026-09-16）。故留痕，且用本模块的帧节流——**不并入** auto_shoo
+        # 内部那条 1s 探测节流，两者叠加会把条数放大（§6.3-2）。
+        if clicker.is_busy():
+            self._log_slot_busy("避让", None)
+            return
         H, W = self._last_frame_rgb.shape[:2]
         rects = self._collect_guard_rects()
         if not rects:
             return
         center = intent.get("center") if intent else None
-        result = self._get_clicker().auto_shoo(
+        result = clicker.auto_shoo(
             rects, radius_px=cursor_occlusion_radius_px(W), frame_size=(W, H),
             next_center=(float(center[0]), float(center[1])) if center else None)
         if result:
@@ -3252,7 +3342,19 @@ class TreasureModule(ActivityModule):
                 "stage": self._current_stage,
                 "click_result": {"ok": bool(res.get("ok")),
                                  "key": (pending or {}).get("key"),
-                                 "device_lost": bool(res.get("device_lost", False))},
+                                 "device_lost": bool(res.get("device_lost", False)),
+                                 # 取证字段（P1-9）：落点误差 err_px / 实测按 A 时长
+                                 # confirm_ms / 导航耗时与步数 / 失败原因。
+                                 # 「光标没落到按钮上」与「动画期游戏不收该键」只有
+                                 # 这两项能区分——旧口径只记 ok，真机 2026-09-16 跳过
+                                 # 动画三次点击均报 ok 却未生效，因此无法定论（③(a)）。
+                                 "err_px": res.get("err"),
+                                 "confirm_ms": res.get("confirm_ms"),
+                                 "confirmed": res.get("confirmed"),
+                                 "total_s": res.get("total_s"),
+                                 "p_frames": res.get("p_frames"),
+                                 "micro_steps": res.get("micro_steps"),
+                                 "reason": res.get("reason")},
             })
         if res.get("ok"):
             self._apply_click_success(pending or {})
@@ -3290,7 +3392,7 @@ class TreasureModule(ActivityModule):
         if (key == "settle_collect_red_btn" and self._current_stage == "领取分红"
                 and self._settle_my_income is None):
             # 每次点击成功都重启无响应计时（含重试点击），防"重试后立即再重试"的连点风暴
-            self._settle_skip_since = self._frame_counter
+            self._settle_skip_since_ms = self._now_ms()
             if not self._settle_collect_clicked_once:
                 self._settle_collect_clicked_once = True
                 logger.log("[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...", "INFO")
@@ -3320,7 +3422,11 @@ class TreasureModule(ActivityModule):
                 f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
 
     def _apply_click_failure(self, res: dict, pending: dict) -> None:
-        """点击失败副作用：指纹不更新（下帧同意图重试），节流打失败日志。"""
+        """点击失败副作用：指纹不更新（下帧同意图重试），节流打失败日志。
+
+        日志带落点误差与失败原因：只有「导航没到位」与「按键未被游戏接收」区分开了，
+        重试才有方向（不是一味重试）。
+        """
         if not self.ctx.lifecycle.running:
             return  # 停止信号中止导航：不算执行失败，主循环即将退出
         if self._frame_counter % 10 == 0:
@@ -3328,10 +3434,15 @@ class TreasureModule(ActivityModule):
             state = pending.get("state", "?")
             center = pending.get("center") or (0, 0)
             mode_label = pending.get("mode_label") or "?"
+            err = res.get("err")
+            err_str = f"{err:.1f}px" if isinstance(err, (int, float)) else "未测"
             logger.log(
                 f"[鉴宝点击] 执行失败（将自动重试）key={key} state={state} "
                 f"方式={mode_label} "
-                f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
+                f"归一化=({center[0]:.3f},{center[1]:.3f}) "
+                f"落点误差={err_str} 原因={res.get('reason') or '未到位'} "
+                f"（导航 {res.get('total_s')}s P={res.get('p_frames')} "
+                f"微调={res.get('micro_steps')}）", "WARNING")
 
     def _execute_click(self, target: dict | None) -> None:
         """把当前点击意图提交为一次点击：异步协议（submit → consume）。
@@ -3370,8 +3481,11 @@ class TreasureModule(ActivityModule):
         clicker.set_mode(self.ctx.click_mode)
         clicker.set_intent(self.ctx.intent_mode)
         self._ensure_gamepad_bound()  # 仅 gamepad 模式实际绑定；real 模式不触碰手柄能力
-        # 任务槽忙（上一任务在跑 / 结果未消费）→ 本帧不再提交（consume 先行已消费）
+        # 任务槽忙（上一任务在跑 / 结果未消费）→ 本帧不再提交（consume 先行已消费）。
+        # 此处过去是静默 return：与避让侧同一道闸一起构成「零点击零避让零日志」的
+        # 85s 窗口（真机 2026-09-16，840 帧无任何点击/意图记录）——故留痕（节流）。
         if clicker.is_busy():
+            self._log_slot_busy("点击", key)
             return
         # 前台校验：仅前台(鼠标)模式需要（点后台(手柄)不需要前台）
         if clicker.need_foreground and not self.ctx.window_foreground:
@@ -3394,29 +3508,38 @@ class TreasureModule(ActivityModule):
         if now - self._last_click_time < self._click_cooldown_s:
             return
         # 提交（非阻塞）。失败 → 指纹不更新，下帧同意图自动重试。
-        if clicker.submit_click(
+        if not clicker.submit_click(
                 center[0], center[1],
                 down_up_gap_ms=self.CLICK_DOWN_UP_GAP_MS,
                 move_pause_s=self.CLICK_MOVE_PAUSE_S,
-                box=target.get("box")):
-            self._pending_click = {
-                "key": key, "state": state, "fp": fp, "center": center,
-                "mode_label": self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode),
-            }
-            # 数字键无响应兜底的计时基准：只在「换了新意图」时归零，重发自身不重置
-            # （否则重发→提交→归零 会变成无限重发，封顶形同虚设）。
-            if key.startswith("bid_numpad_") and self._panel_retry_sig != fp:
-                self._panel_retry_sig = fp
-                self._panel_retry_since_ts = now
-                self._panel_retry_count = 0
-            if self._trace_writer is not None:
-                self._trace_writer.write({
-                    "frame": self._frame_counter,
-                    "event": "intent_submitted",
-                    "stage": self._current_stage,
-                    "intent": {"key": key, "state": state, "center": center,
-                               "box": target.get("box")},
-                })
+                box=target.get("box"), label=key):
+            # 入队失败也是静默失败：槽忙已在上面判过，剩下未绑定/窗口尺寸取不到
+            # （手柄未绑定、hwnd 无效）。留痕说得出原因，别让点击无声消失。
+            if self._frame_counter % self.SLOT_BUSY_LOG_EVERY == 0:
+                logger.log(
+                    f"[鉴宝点击] 点击未入队 key={key}（方式="
+                    f"{self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)}，"
+                    f"手柄已绑定={clicker.gamepad_bound}）——下帧同意图自动重试",
+                    "WARNING")
+            return
+        self._pending_click = {
+            "key": key, "state": state, "fp": fp, "center": center,
+            "mode_label": self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode),
+        }
+        # 数字键无响应兜底的计时基准：只在「换了新意图」时归零，重发自身不重置
+        # （否则重发→提交→归零 会变成无限重发，封顶形同虚设）。
+        if key.startswith("bid_numpad_") and self._panel_retry_sig != fp:
+            self._panel_retry_sig = fp
+            self._panel_retry_since_ts = now
+            self._panel_retry_count = 0
+        if self._trace_writer is not None:
+            self._trace_writer.write({
+                "frame": self._frame_counter,
+                "event": "intent_submitted",
+                "stage": self._current_stage,
+                "intent": {"key": key, "state": state, "center": center,
+                           "box": target.get("box")},
+            })
 
     def _maybe_retry_panel_no_response(self, key: str, fp: tuple) -> None:
         """面板内数字键的「点了但输入框没反应」兜底：超时清指纹重发，封顶后终止。
@@ -3569,8 +3692,9 @@ class TreasureModule(ActivityModule):
             treasure_daily_high=self._daily_high_score,  # 结算弹窗①今日最高积分（仅记录）
             # 我方余额
             treasure_balance=self._my_balance,
-            # 准星模式：程序想点击的位置（peep 覆层用）
-            treasure_action=self._resolve_action_target(),  # {"key","center","hint"} | None
+            # 准星模式：程序想点击的位置（peep 覆层用）。只读上一帧决策段的结果——
+            # 快照路径不得触发决策（见 _last_intent 字段说明）。
+            treasure_action=self._last_intent,  # {"key","center","hint"} | None
             # 当前点击方式（peep 准星按方式区分显示：前台鼠标=青黄 / 后台手柄+A=紫粉）
             treasure_click_mode=getattr(self.ctx, "click_mode", "real"),
             # 手柄光标识别候选快照（peep 诊断：选中绿圈 / 次选黄圈，含低分拒识候选；
@@ -3637,8 +3761,8 @@ class TreasureModule(ActivityModule):
     def _observe_kwargs(self, idx: int, didx: int) -> dict:
         """观察线程用的 HUD 状态：取决策段最近一次发布的快照引用，只覆盖帧号。
 
-        绝不在这里调 _treasure_kwargs()——它内含 _resolve_action_target()（决策入口），
-        还会迭代 _player_bids / _bid_slots 活容器；两者都不属于观察线程的权限。
+        绝不在这里调 _treasure_kwargs()——它会迭代 _player_bids / _bid_slots 活容器，
+        那不属观察线程的权限（字段由决策段整份新建后发布，此处只覆盖帧号）。
         厅类阶段没有决策帧，快照为 None 时给一张最小快照，保证"有图可看"优先于"图上有数"。
         treasure_stage 一律读判定槽（stage-source-plan §9）：厅类 debug 覆盖层的阶段
         由此持续刷新（原 _current_stage 在厅类冻结 → 覆盖层阶段不同步）。
@@ -4304,6 +4428,37 @@ class TreasureModule(ActivityModule):
     # ==================================================================
 
     def _tick_once(self):
+        """帧边界（PolicyBridge 每帧一次）：包住帧工作，保证异常可见、fatal 真终止。
+
+        真机教训（2026-09-16 领取分红）：`ClickRetryExhaustedError` 从快照路径抛出，
+        位置早于心跳（本函数中段）与决策段（本函数末段）——每帧都死在同一处，
+        于是心跳与决策 trace 整段消失、也不真正终止，靠结算动画播完自愈，
+        11 秒完全不可观测（框架侧只见 policy_loop 每帧「成功」返回）。
+        故异常一律在本边界留痕：fatal 记 ERROR + 请求停止并短路后续帧；
+        非 fatal 记 ERROR（带 traceback）后按帧放行（保持「下帧重试」的既有语义）。
+        """
+        assert self.ctx is not None  # 仅运行态调用
+        if self._frame_abort:
+            return  # 已判定终止：不再执行帧工作，等框架停止链路收尾
+        try:
+            self._tick_frame_body()
+        except ClickRetryExhaustedError as e:
+            self._frame_abort = True
+            logger.log(
+                f"[鉴宝] 帧 #{self._frame_counter} 阶段=「{self._current_stage}」"
+                f"决策判定终止：{e} —— 已请求停止模块（后续帧不再执行帧工作）",
+                "ERROR")
+            self.ctx.lifecycle.request_stop()
+        except Exception as e:  # noqa: BLE001 —— 帧边界兜底：不让任何异常无声穿出
+            self._frame_error_count += 1
+            if (self._frame_error_count == 1
+                    or self._frame_error_count % self.FRAME_ERROR_LOG_EVERY == 0):
+                logger.log(
+                    f"[鉴宝] 帧 #{self._frame_counter} 阶段=「{self._current_stage}」"
+                    f"未预期异常（第 {self._frame_error_count} 次）：{e!r}\n"
+                    f"{traceback.format_exc()}", "ERROR")
+
+    def _tick_frame_body(self):
         assert self.ctx is not None  # 仅运行态调用
         now = time.perf_counter()
         if self._last_tick_at is not None:
@@ -4449,6 +4604,15 @@ class TreasureModule(ActivityModule):
         [JumpBack] 回 dwell 重判。
         """
         intent = self._resolve_action_target()
+        # 发布给只读消费方（peep 准星/调试快照）：决策只在本段发生一次，
+        # 快照路径读这里的结果而不是自己再决策一次（P0-4）。
+        self._last_intent_frame = self._frame_counter
+        self._last_intent = intent
+        # 任务槽看门狗（P0-1）：卡槽留痕 + 回收（进度停滞/导航空耗/导航线程退出）。
+        # 放在 consume 之前——槽若被占死，本帧的 consume 也取不到东西，先让看门狗
+        # 判定并（必要时）取消，决策段才可能在同一帧恢复提交。
+        if self._clicker is not None:
+            self._clicker.watchdog_tick()
         # 异步导航协议（2026-09-03）：consume → click 决策/提交 → shoo。
         self._consume_click_result()      # 先消费上一任务结果，应用指纹/时刻等副作用
         self._execute_click(intent)       # click 决策 + 提交（非阻塞，导航后台闭环）
@@ -5624,6 +5788,9 @@ class TreasureModule(ActivityModule):
             prev = getattr(self, attr)
             if prev == amt:
                 continue
+            # 连续一致确认闸（P1-8）：滚动动画期的瞬时值不固化（见 _settle_field_stable）
+            if not self._settle_field_stable(key, amt):
+                continue
             setattr(self, attr, amt)
             logger.log(f"[鉴宝] OCR {key} = {amt:,}" + (f"（覆盖旧值{prev:,}）" if prev else ""), "DEBUG")
         # settle_my_income 单独判定（本场收入/收益，正数=赚，负数=亏，0=未分红）：
@@ -5655,11 +5822,21 @@ class TreasureModule(ActivityModule):
                             f"[鉴宝] OCR settle_my_income = {amt:,} 丢弃：相对已有值 "
                             f"{prev:,} 突变超过 5 倍，判定为 ROI 串位错值", "WARNING",
                         )
-                    elif prev != amt:
+                    elif prev != amt and self._settle_field_stable("settle_my_income", amt):
                         self._settle_my_income = amt
                         # 收入读出 = 跳过动画已生效 → 无响应计时/重试计数归零
-                        self._settle_skip_since = 0
+                        self._settle_skip_since_ms = 0
                         self._settle_skip_retry_count = 0
+                        # 重试链主人交接（P1-7）：本 key 的「成功信号」在此刻从
+                        # 「收入读出」变成「阶段切走」，计时口径随之换主人——策略层
+                        # 的跳过动画链到此为止，代码层的阶段切换链由下一次真领取
+                        # 点击自行 arm（_apply_click_success）。不在这里收尾的话，
+                        # 代码层会继承跳动画那次点击的旧时刻，收入刚读出就被算成
+                        # 「已超时」并空记一次重试。
+                        if self._click_retry_key == "settle_collect_red_btn":
+                            self._click_retry_key = None
+                            self._click_retry_stage = None
+                            self._click_retry_count = 0
                         logger.log(
                             f"[鉴宝] OCR settle_my_income = {amt:,}"
                             + (f"（覆盖旧值{prev:,}）" if prev is not None else ""),

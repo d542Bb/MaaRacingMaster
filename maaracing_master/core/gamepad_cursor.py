@@ -26,6 +26,8 @@ from typing import Callable
 import numpy as np
 import cv2
 
+from maaracing_master.core.logger import logger
+
 # core 自带的摇杆-光标速度模型（cursor_refactor 标定产物，k/deadzone/resolution）。
 # GamepadClicker(model_path=None) 时默认加载；数值由离线探针 cursor_refactor 标定得到。
 _DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "resources" / "stick_speed_model.json"
@@ -85,6 +87,19 @@ MAX_MICRO_MISS = 6   # 微调连续识别丢失上限（约3s；按A后面板动
 
 MAX_AXIS = 32767
 POS_MED_FRAMES = 3
+
+# ---- 任务槽看门狗（P0-1）判据分层 ----
+# 背景：单槽单导航器是既有契约（同一个慢导航期间点击与避让都不发生），本身不坏；
+# 坏的是**无痕**——真机 2026-09-16 出现过 840 帧约 85s 零点击零避让零日志的窗口。
+# 故判据分两类：异常（必须回收槽）与告警（导航在推进时不该被打断）。
+SLOT_PROGRESS_STALL_S = 3.0   # 无进度上限：健康导航每步（≤0.25s）都发布进度，停滞即卡住
+SLOT_OCCUPIED_WARN_S = 30.0   # 占用过久告警（只记日志，不打断——导航可能只是慢）
+SLOT_MAX_OCCUPIED_S = 60.0    # 占用硬上限：超此取消（thrashing 导航；点击失败不更新指纹，
+                              # 下帧自动重试，不丢状态）
+SLOT_WARN_REPEAT_S = 10.0     # 同类告警重复间隔（秒）
+SLOT_THREAD_RESTART_COOLDOWN_S = 5.0  # 导航线程异常退出后的重启冷却（防重启风暴）
+
+CONFIRM_HOLD_S = 0.15         # 确认键标称按住时长（秒），press_confirm 默认值同源
 
 
 def _clamp(v, lo, hi):
@@ -347,14 +362,18 @@ class GamepadClicker:
       - 任务槽/结果槽经 `_nav_lock` 保护；状态机：IDLE → submit → RUNNING →
         worker complete → DONE(结果待消费，仍 busy) → consume_result → IDLE。
       - 契约：
-        1. `_result` 未消费前禁止覆盖（worker 写入前断言 `_result is None`）。
+        1. `_result` 未消费前禁止覆盖（worker 写入前检查）。违例时记 ERROR 并丢弃
+           新结果、释放任务槽——**不杀线程**：线程死了槽会被永久占用（P0-1 硬化）。
         2. `is_busy()` = 任务在跑 **或** 结果待消费（DONE 也算 busy）。
         3. 共享快照采用发布-订阅（snapshot publication）：生产线程只整体替换
            引用（last_pos/last_cands/_progress），消费线程只读，不原地修改。
         4. 取消用 `threading.Event`（abort_event），不靠跨线程改普通 bool。
         5. 光标丢失 → 结果带 `device_lost: True` → worker 回到等待态后，
            主循环 consume 时才允许重建设备（swap_gpad）。
+        6. 槽的时效真源 = 任务的 `submitted_ts` 与 `_progress["ts"]`；看门狗
+           （`watchdog`）是唯一消费者，不在别处另记一份占用时长。
       - vgamepad 唯一所有者是导航线程；主循环经 submit/cancel/swap_gpad 控制。
+      - 槽看门狗由主循环经 `Clicker.watchdog_tick()` 驱动（P0-1）。
     """
 
     def __init__(self, capture, gpad, model_path: Path | None = None,
@@ -378,13 +397,21 @@ class GamepadClicker:
         self.last_cands: tuple = ()
         self.last_cand_sel: int | None = None
         self.last_cands_ts: float = 0.0  # 快照时间戳（monotonic，消费方做陈旧丢弃）
+        # 最近一次确认键**实测**按住时长（ms，P1-9 取证）：导航线程写、同线程读并
+        # 随结果发布；None=本次未按确认键（意图导航/未到位）
+        self.last_confirm_hold_ms: int | None = None
         # ---- 任务/结果槽 + 进度快照（经 _nav_lock 保护）----
+        # label：提交方给的语义标签（如鉴宝的按钮 key），只进看门狗日志——
+        # 卡槽告警不说"哪个 key 被卡住"等于没说（真机 2026-09-16 的教训）。
         self._nav_lock = threading.Lock()
-        self._task: dict | None = None    # {type, target, intent, tol_px, abort_event}
+        self._task: dict | None = None    # {type, target, intent, tol_px, abort_event, submitted_ts, label}
         self._result: dict | None = None  # 最近完成结果（DONE 态，consume 后清空）
         self._progress = {                # 导航进度快照（PEEP 渲染用）
             "seq": 0, "stage": None, "pos": None, "target": None, "dist": None, "ts": 0.0,
         }
+        # 看门狗节流/重启状态（主循环线程独占写）
+        self._slot_warn_ts: dict[str, float] = {}
+        self._thread_restart_ts: float = 0.0
         self._shutdown = threading.Event()
         self._nav_thread = threading.Thread(target=self._nav_loop,
                                             name="gamepad-nav", daemon=True)
@@ -405,10 +432,15 @@ class GamepadClicker:
     # ---------- 任务/结果槽（主循环↔导航线程协议）----------
 
     def submit(self, target, *, intent: bool = False, tol_px: float | None = None,
-               task_type: str = "click") -> bool:
+               task_type: str = "click", label: str | None = None,
+               budget_s: float | None = None) -> bool:
         """提交导航任务（非阻塞）。返回 True=已入队；False=槽忙/结果未消费。
 
-        准入条件：`_task is None and _result is None`（DONE 态也算忙）。
+        准入条件：`_task is None and _result is None`（DONE 态也算 busy）。
+        label：提交方语义标签（只用于看门狗/日志），如鉴宝的按钮 key。
+        budget_s：本次导航的时间预算（None=不设，由步数上限与看门狗收口）。
+          避让（move）用短预算——它只需把光标挪出识别区，不该占着单槽跑到
+          步数上限（真机 2026-09-16：一次避让疑似占槽 85s，期间点击与避让全停）。
         """
         with self._nav_lock:
             if self._task is not None or self._result is not None:
@@ -419,6 +451,10 @@ class GamepadClicker:
                 "intent": intent,
                 "tol_px": tol_px,
                 "abort_event": threading.Event(),
+                # 提交时刻：看门狗据此算占用时长（槽的时效真源，不在消费方各自记）
+                "submitted_ts": time.monotonic(),
+                "label": label,
+                "budget_s": budget_s,
             }
             return True
 
@@ -438,6 +474,121 @@ class GamepadClicker:
         """读最近进度快照（PEEP 渲染用）。返回副本，seq 递增=有新进展。"""
         with self._nav_lock:
             return dict(self._progress)
+
+    # ---------- 任务槽看门狗（P0-1）----------
+
+    def slot_diag(self) -> dict:
+        """任务槽诊断快照（看门狗与日志用）：占用时长 / 进度新鲜度 / 线程存活。
+
+        时间真源只有两处：任务的 `submitted_ts`（占用起点）与 `_progress["ts"]`
+        （最近一次进展）——判据不各自记一份时长。
+        """
+        now = time.monotonic()
+        with self._nav_lock:
+            task = self._task
+            prog = dict(self._progress)
+            has_result = self._result is not None
+        ts = task.get("submitted_ts") if task else None
+        occupied_s = (now - ts) if ts else 0.0
+        progress_ts = prog["ts"]
+        progress_age_s = (now - progress_ts) if progress_ts else float("inf")
+        # 「无进展持续时长」= now - max(提交时刻, 最近进度时刻)。
+        # 不能直接拿 progress_age 当卡住判据：进度快照是**跨任务**共享的，刚提交的
+        # 任务还没发布过任何进度，此时 progress_age 是上一个任务的旧时间戳（或 inf）
+        # ——直接比阈值会把刚提交的正常任务判成卡住并取消。取两者较大者为基准，
+        # 即「任务开始之后确实没有任何进展」的那段时长。
+        silence_s = min(occupied_s, progress_age_s)
+        return {
+            "task": None if task is None else {
+                "type": task.get("type"), "target": task.get("target"),
+                "intent": bool(task.get("intent")), "label": task.get("label"),
+            },
+            "occupied_s": occupied_s,
+            "progress_age_s": progress_age_s,
+            "silence_s": silence_s,
+            "progress_stage": prog.get("stage"),
+            "progress_seq": prog.get("seq"),
+            "has_result": has_result,
+            "nav_alive": self._nav_thread.is_alive(),
+        }
+
+    def watchdog(self) -> dict | None:
+        """任务槽看门狗（主循环每帧调用）：卡槽必须留痕且能恢复。命中时返回诊断 dict。
+
+        判据分层（顺序即优先级）：
+          1. 导航线程已退出但任务仍在 → 槽永久占用（无人再写 `_result`）：
+             ERROR + 回收槽 + 尽力重启线程。**唯一允许旁路清 `_task` 的场合**——
+             保护「结果槽不覆盖」契约的线程已经不在了，不回收即永久卡死。
+          2. 无进展持续 ≥ `SLOT_PROGRESS_STALL_S`（基准 = max(提交时刻, 最近进度)）
+             → 导航卡住：WARNING + cancel()（cancel 走合法释放路径：worker 退出写
+             结果，主链路 consume 消化）。
+          3. 占用 ≥ `SLOT_MAX_OCCUPIED_S` → 导航空耗：WARNING + cancel()。
+          4. 占用 ≥ `SLOT_OCCUPIED_WARN_S` → 仅 WARNING（导航仍在推进，不打断）。
+
+        未命中返回 None。同类告警按 `SLOT_WARN_REPEAT_S` 节流。
+        """
+        diag = self.slot_diag()
+        task = diag["task"]
+        if task is None:
+            self._slot_warn_ts.clear()  # 槽空 → 节流状态归零，下次占用从第一条记起
+            return None
+        now = time.monotonic()
+        where = (f"label={task['label']} type={task['type']} target={task['target']} "
+                 f"已占 {diag['occupied_s']:.1f}s")
+        if not diag["nav_alive"]:
+            with self._nav_lock:
+                if self._nav_thread.is_alive():
+                    return None  # 竞态：线程刚活过来，交给正常路径
+                self._task = None  # 线程已死：契约的当事人不在了，不回收即永久占用
+            restarted = self._restart_nav_thread(now)
+            if self._warn_due("dead", now):
+                logger.log(
+                    f"[手柄导航] 导航线程已退出但任务仍在（{where}）——槽已回收，"
+                    f"线程重启{'成功' if restarted else '受冷却抑制'}；该次点击未获确认，"
+                    f"由提交方下帧重试", "ERROR")
+            return {**diag, "reason": "nav_thread_dead", "restarted": restarted}
+        if diag["silence_s"] >= SLOT_PROGRESS_STALL_S:
+            if self._warn_due("stall", now):
+                logger.log(
+                    f"[手柄导航] 导航进度停滞 {diag['silence_s']:.1f}s（{where}，"
+                    f"进度阶段={diag['progress_stage']} seq={diag['progress_seq']}）"
+                    f"——判定导航卡住，取消本次任务（提交方下帧重试）", "WARNING")
+            self.cancel()
+            return {**diag, "reason": "stalled"}
+        if diag["occupied_s"] >= SLOT_MAX_OCCUPIED_S:
+            if self._warn_due("max", now):
+                logger.log(
+                    f"[手柄导航] 任务槽占用 {diag['occupied_s']:.1f}s 超过硬上限 "
+                    f"{SLOT_MAX_OCCUPIED_S:.0f}s（{where}）——判定导航空耗，取消本次任务"
+                    f"（提交方下帧重试）", "WARNING")
+            self.cancel()
+            return {**diag, "reason": "occupied_too_long"}
+        if diag["occupied_s"] >= SLOT_OCCUPIED_WARN_S and self._warn_due("busy", now):
+            logger.log(
+                f"[手柄导航] 任务槽已占用 {diag['occupied_s']:.1f}s（{where}，"
+                f"导航仍在推进：{diag['progress_age_s']:.1f}s 前更新过进度）"
+                f"——期间点击与避让都会被跳过", "WARNING")
+            return {**diag, "reason": "occupied_warn"}
+        return None
+
+    def _warn_due(self, key: str, now: float) -> bool:
+        """同类看门狗告警节流：`SLOT_WARN_REPEAT_S` 内只记一条。"""
+        if now - self._slot_warn_ts.get(key, 0.0) < SLOT_WARN_REPEAT_S:
+            return False
+        self._slot_warn_ts[key] = now
+        return True
+
+    def _restart_nav_thread(self, now: float) -> bool:
+        """重启导航线程（仅在确认其已退出后调用），带冷却防重启风暴。"""
+        if self._shutdown.is_set():
+            return False
+        if now - self._thread_restart_ts < SLOT_THREAD_RESTART_COOLDOWN_S:
+            return False
+        self._thread_restart_ts = now
+        self._nav_thread = threading.Thread(target=self._nav_loop,
+                                            name="gamepad-nav", daemon=True)
+        self._nav_thread.start()
+        return True
 
     def cancel(self):
         """置中止标记（导航线程每步检查 abort_event）。"""
@@ -476,7 +627,13 @@ class GamepadClicker:
             }
 
     def _nav_loop(self):
-        """导航线程主循环：等任务 → 跑闭环 → 发布结果 → 回等待态。"""
+        """导航线程主循环：等任务 → 跑闭环 → 发布结果 → 回等待态。
+
+        **本线程绝不能死**：任务在飞而线程退出会让槽被永久占用（没有任何角色
+        再去写 `_result`，主链路只能永远看到 busy）。故完成写入段不用裸 assert——
+        契约1（结果未消费前禁止覆盖）违例时记 ERROR 并丢弃**本次**结果、清 `_task`，
+        保留上一个待消费结果给主链路：槽仍可恢复，线程存活。
+        """
         while not self._shutdown.is_set():
             with self._nav_lock:
                 task = self._task
@@ -489,8 +646,14 @@ class GamepadClicker:
                 res = {"type": task.get("type"), "ok": False,
                        "reason": f"导航线程异常: {e!r}"}
             with self._nav_lock:
-                # 契约1：结果未消费前禁止覆盖（绝不允许 A 完成后 B 又完成覆盖 A）
-                assert self._result is None, "result 未消费前禁止覆盖"
+                if self._result is not None:
+                    # 契约1 违例（不应发生：submit 的前置条件已排除双在飞任务）。
+                    # 丢弃新结果、清任务槽，把上一个未消费结果留给主链路 → 可恢复。
+                    self._task = None
+                    logger.log(
+                        "[手柄导航] 结果槽未消费即被覆盖（协议违例）：丢弃本次导航结果，"
+                        "保留待消费结果交主链路（槽已释放）", "ERROR")
+                    continue
                 self._task = None
                 self._result = res
 
@@ -579,10 +742,13 @@ class GamepadClicker:
         """注入确认按钮对象（如 vg.XUSB_BUTTON.XUSB_GAMEPAD_A）。"""
         self._confirm_btn = button
 
-    def press_confirm(self, button=None, duration: float = 0.15):
+    def press_confirm(self, button=None, duration: float = CONFIRM_HOLD_S):
         """按确认按钮触发点击（后台点击的「确认」动作）。
 
         button 为手柄按钮对象（如 vg.XUSB_BUTTON.XUSB_GAMEPAD_A）；为 None 时默认用 A。
+        **实测按住时长**记进 `last_confirm_hold_ms`（P1-9）：标称 150ms 与实际按下
+        时长会因调度负载而不同，而「游戏没收这次按键」的判据正是它——只记标称值
+        等于把待查变量写成了常量（真机 2026-09-16 ③(a) 因此无法定论）。
         """
         try:
             from maaracing_master.core.vgamepad_lazy import vg
@@ -594,9 +760,11 @@ class GamepadClicker:
             return False
         self._gpad.press_button(btn)
         gpad_update(self._gpad)
+        t_press = time.perf_counter()
         time.sleep(duration)
         self._gpad.release_button(btn)
         gpad_update(self._gpad)
+        self.last_confirm_hold_ms = int((time.perf_counter() - t_press) * 1000)
         return True
 
     def _aborted_evt(self, abort_event: threading.Event | None) -> bool:
@@ -614,7 +782,8 @@ class GamepadClicker:
     # ---------- 趋近 ----------
 
     def _phase_p(self, target, abort_event: threading.Event | None = None,
-                 tol_px: float | None = None) -> dict:
+                 tol_px: float | None = None,
+                 deadline_mono: float | None = None) -> dict:
         n_frames = 0
         miss = 0
         mag = 0
@@ -623,6 +792,11 @@ class GamepadClicker:
         while n_frames < MAX_P_STEPS:
             if self._aborted_evt(abort_event):
                 return {"p_frames": n_frames, "osc_flip": overshoot_flip, "aborted": True}
+            if deadline_mono is not None and time.monotonic() >= deadline_mono:
+                # 预算耗尽：与中止同路收尾（摇杆必须归零，否则残余杆量让光标漂飞）
+                self.stick_zero()
+                return {"p_frames": n_frames, "osc_flip": overshoot_flip,
+                        "budget_exhausted": True}
             pos = self.read_pos(1, timeout=0.2)
             if pos is None:
                 # 连续丢失计入独立上限（不占 n_frames）：超限快速失败返回 lost，
@@ -666,7 +840,8 @@ class GamepadClicker:
         return {"p_frames": n_frames, "osc_flip": overshoot_flip}
 
     def _phase_micro(self, target, abort_event: threading.Event | None = None,
-                     tol_px: float | None = None) -> dict:
+                     tol_px: float | None = None,
+                     deadline_mono: float | None = None) -> dict:
         # 按 A 容差：调用方提供 tol_px（目标框中心 70% 区域半径）时放宽，
         # 缺省用 TOL（中心 5px 精确微调）
         tol = tol_px if tol_px is not None else TOL
@@ -676,6 +851,10 @@ class GamepadClicker:
         while micro_steps < MAX_MICRO_STEPS:
             if self._aborted_evt(abort_event):
                 return {"micro_steps": micro_steps, "err": None, "ok": False, "aborted": True}
+            if deadline_mono is not None and time.monotonic() >= deadline_mono:
+                self.stick_zero()
+                return {"micro_steps": micro_steps, "err": None, "ok": False,
+                        "budget_exhausted": True}
             pos = self.read_pos(3, timeout=0.5)
             if pos is None:
                 # 连续丢失独立计数（不占 micro_steps）：超限快速失败交外层重试，
@@ -716,9 +895,11 @@ class GamepadClicker:
     def _approach_sync(self, task: dict) -> dict:
         """导航闭环执行体（**导航线程内运行**）。
 
-        task：submit 时的任务字典 {type, target, intent, tol_px, abort_event}。
+        task：submit 时的任务字典 {type, target, intent, tol_px, abort_event,
+              submitted_ts, label, budget_s}。
         同步跑完 P 趋近 + 微调 +（非意图）按 A；进度经 _publish_progress 发布，
-        中止经 abort_event（cancel/shutdown 置位）即时生效。
+        中止经 abort_event（cancel/shutdown 置位）即时生效；budget_s 给出时，
+        超预算即摇杆归零收尾（reason/`budget_exhausted` 标出，交提交方下次判定）。
         光标丢失（lost）快速失败返回 device_lost=True —— 由主循环 consume 后
         累计并触发设备重建（worker 已回到等待态，重建不冲突）。
         """
@@ -726,37 +907,67 @@ class GamepadClicker:
         intent = bool(task.get("intent"))
         tol_px = task.get("tol_px")
         abort_event = task.get("abort_event")
+        budget_s = task.get("budget_s")
+        # 预算以**提交时刻**为起点（不是本轮执行起点）：槽的占用时长即预算口径，
+        # 排队/调度延迟不得变成「额外的导航时间」。
+        submitted_ts = task.get("submitted_ts")
+        deadline_mono = (submitted_ts + budget_s) if (budget_s and submitted_ts) else None
         if self._aborted_evt(abort_event):
             return {"type": task.get("type"), "target": list(target),
                     "ok": False, "reason": "aborted"}
+        if deadline_mono is not None and time.monotonic() >= deadline_mono:
+            self.stick_zero()
+            return {"type": task.get("type"), "target": list(target), "ok": False,
+                    "reason": f"导航预算耗尽（{budget_s:.1f}s）", "budget_exhausted": True}
         t0 = time.perf_counter()
         self._publish_progress(stage="start", pos=self.last_pos, target=target)
-        p = self._phase_p(target, abort_event, tol_px=tol_px)
+        p = self._phase_p(target, abort_event, tol_px=tol_px, deadline_mono=deadline_mono)
         if p.get("aborted"):
             self._publish_progress(stage="abort", pos=None, target=target, done=True)
             return {"type": task.get("type"), "target": list(target), **p,
                     "ok": False, "reason": "aborted"}
+        if p.get("budget_exhausted"):
+            self._publish_progress(stage="budget", pos=None, target=target, done=True)
+            logger.log(
+                f"[手柄导航] {task.get('type')} 导航预算耗尽（{budget_s:.1f}s，"
+                f"label={task.get('label')}）：P 趋近未到位即收尾，交提交方下次判定",
+                "DEBUG")
+            return {"type": task.get("type"), "target": list(target), **p,
+                    "ok": False, "reason": f"导航预算耗尽（{budget_s:.1f}s）",
+                    "budget_exhausted": True}
         if p.get("lost"):
             # 光标持续不可见：快速失败 → 主循环 consume 后累计丢失 + 重建设备
             self._publish_progress(stage="lost", pos=None, target=target, done=True)
             return {"type": task.get("type"), "target": list(target), **p,
                     "ok": False, "reason": "光标丢失", "device_lost": True}
-        m = self._phase_micro(target, abort_event, tol_px=tol_px)
+        m = self._phase_micro(target, abort_event, tol_px=tol_px,
+                              deadline_mono=deadline_mono)
         if m.get("aborted"):
             self._publish_progress(stage="abort", pos=None, target=target, done=True)
             return {"type": task.get("type"), "target": list(target), **m,
                     "ok": False, "reason": "aborted"}
-        if m.get("lost"):
-            self._publish_progress(stage="lost", pos=None, target=target, done=True)
+        if m.get("budget_exhausted"):
+            self._publish_progress(stage="budget", pos=None, target=target, done=True)
+            logger.log(
+                f"[手柄导航] {task.get('type')} 导航预算耗尽（{budget_s:.1f}s，"
+                f"label={task.get('label')}）：微调未收敛即收尾，交提交方下次判定",
+                "DEBUG")
             return {"type": task.get("type"), "target": list(target), **m,
-                    "ok": False, "reason": "光标丢失", "device_lost": True}
+                    "ok": False, "reason": f"导航预算耗尽（{budget_s:.1f}s）",
+                    "budget_exhausted": True}
         dt = time.perf_counter() - t0
         ok = m.get("ok", False)
         self._publish_progress(stage="done", pos=None, target=target, ok=ok)
+        self.last_confirm_hold_ms = None
+        confirmed = False
         if ok and not intent:
-            self.press_confirm()
+            confirmed = bool(self.press_confirm())
         return {"type": task.get("type"), "target": list(target), **p, **m,
-                "total_s": round(dt, 2), "ok": ok}
+                "total_s": round(dt, 2), "ok": ok,
+                # 取证字段（P1-9）：到位误差 `err` 由 _phase_micro 给出（px，None=未测），
+                # 下面两项说清「按 A 到底按了多久」——落点没到 vs 游戏不收键靠它们区分
+                "confirmed": confirmed,
+                "confirm_ms": self.last_confirm_hold_ms}
 
     def approach(self, target: tuple, intent: bool = False,
                  on_progress: Callable | None = None,

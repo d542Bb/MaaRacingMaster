@@ -52,7 +52,7 @@ ENGINE_CONTRACT_SCHEMA_VER = 1
 # 条件算子白名单（P05）：只有六个原语，禁止表达式/函数/嵌套——引擎机制本体。
 OP_WHITELIST: frozenset[str] = frozenset({"eq", "neq", "gt", "gte", "lt", "lte"})
 
-_DERIVED_OPS: frozenset[str] = frozenset({"elapsed", "frame_mod"})
+_DERIVED_OPS: frozenset[str] = frozenset({"elapsed", "frame_mod", "elapsed_ms"})
 
 
 class PolicyError(ValueError):
@@ -82,7 +82,12 @@ class EngineContract:
     - `passthrough_effects`：规则显式声明 effect 即附加的合法集；
     - `effect_required_conditions`：effect → 声明该 effect 的规则必须覆盖的
       条件字段集（语义护栏，P05）；
-    - `derived`：冻结期推导注入（op ∈ {elapsed, frame_mod}，算子白名单受控）；
+    - `derived`：冻结期推导注入（op ∈ {elapsed, frame_mod, elapsed_ms}，
+      算子白名单受控）。`elapsed` 按**帧号差**、`elapsed_ms` 按**墙钟毫秒差**
+      （需另给 `clock` 源键）——重试/超时类窗口一律用 `elapsed_ms`：v4 帧率由
+      框架驱动（真机 115~290ms/帧），帧数口径会被稀释（同一份 tuning 里
+      「10 帧」在代码侧按 FRAME_INTERVAL_MS 换算成 3s、在策略侧仅约 1.1s，
+      结算跳过动画的重试预算因此只剩 2.5s，短于结算动画而被判 fatal）。
     - `derived_sources`：推导前体键——允许经 state 流入、冻结后不出现在 facts；
     - `tuning_keys`：policy.tuning 的段 → 键白名单（未知键 P01 防拼写漂移）。
     """
@@ -177,6 +182,12 @@ def parse_engine_contract(raw: Any) -> EngineContract:
             if not isinstance(d.get("from"), str) or not d["from"]:
                 raise PolicyError("P01", f"{path}.from", "elapsed 需要非空 from 前体键")
             derived_sources.add(d["from"])
+        elif d.get("op") == "elapsed_ms":
+            for need in ("from", "clock"):
+                if not isinstance(d.get(need), str) or not d[need]:
+                    raise PolicyError("P01", f"{path}.{need}",
+                                      "elapsed_ms 需要非空 from（起点）与 clock（当前时刻）键")
+                derived_sources.add(d[need])
         elif d.get("op") == "frame_mod":
             if isinstance(d.get("k"), bool) or not isinstance(d.get("k"), (int, float)):
                 raise PolicyError("P01", f"{path}.k", "frame_mod 需要数值 k")
@@ -288,6 +299,14 @@ class DecisionFacts:
             if d["op"] == "elapsed":
                 since = vals.get(d["from"])
                 vals[d["field"]] = None if since is None else frame_counter - since
+            elif d["op"] == "elapsed_ms":
+                # 墙钟毫秒差：起点与当前时刻都由 state 流入（derived_sources 声明），
+                # 冻结后两者都被弹出，facts 里只留派生结果。
+                since_ms = vals.get(d["from"])
+                now_ms = vals.get(d["clock"])
+                vals[d["field"]] = (
+                    None if (since_ms is None or now_ms is None) else now_ms - since_ms
+                )
             else:
                 vals[d["field"]] = frame_counter % d["k"]
         vals["frame_counter"] = frame_counter
