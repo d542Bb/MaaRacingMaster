@@ -62,6 +62,10 @@
 
 ***
 
+> **本文是什么**：面向使用者与访客的项目门面——定位、快速开始、环境要求与文档入口。
+> **本文不是什么**：不是架构与实现说明（见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)）；不是行为守则（见 [AGENTS.md](AGENTS.md)）。
+> **信源等级**：L3（导航与摘要）。
+
 ## 简介
 
 **MaaRacingMaster** 是一款模块化游戏自动化平台。
@@ -253,8 +257,7 @@ MaaRacingMaster/
 │   │   ├── base.py                # ActivityContext / ActivityModule 基类
 │   │   ├── yolo_detector.py / wgcap.py / window_utils.py / debug.py
 │   │   └── logger.py / paths.py / ...
-│   └── plugins/                   # 🧩 活动插件（一活动 = 一自包含目录）
-│       └── treasure/              # 各插件的功能说明见其目录内文档
+│   └── plugins/                   # 🧩 活动插件（一活动 = 一自包含目录，各含 CODE_WIKI.md）
 ├── apps/MaaRacingMaster.Shell/                # 🖥️ WinUI 3 图形界面（含 .sln）
 ├── templates/plugin/              # 🧪 插件开发样板（复制到 plugins/ 即成新模块）
 ├── assets/                        # 应用图标 / 演示素材 / 配置
@@ -283,7 +286,11 @@ MaaRacingMaster/
 
 - 快速诊断环境/依赖问题：[docs/SELF\_CHECK.md](docs/SELF_CHECK.md)
 
-- 完整架构 / API / 算法 / 坑点：[docs/CODE\_WIKI.md](docs/CODE_WIKI.md)
+- 项目地图与「我要改 X 应该去哪里」：[docs/CODE\_WIKI.md](docs/CODE_WIKI.md)
+
+- 平台核心层实现细节与坑点：[maaracing\_master/core/CODE\_WIKI.md](maaracing_master/core/CODE_WIKI.md)
+
+- 架构决策与理由：[docs/adr/](docs/adr/README.md)
 
 - 版本历史：[docs/update\_log.md](docs/update_log.md)
 

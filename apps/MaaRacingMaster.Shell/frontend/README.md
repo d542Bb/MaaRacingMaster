@@ -1,5 +1,10 @@
 # Shell 前端（WebView2）
 
+> **本文是什么**：Shell 前端的开发与图标规范——文件构成、图标唯一真源、`file://` 约束、无 CDN 硬约束。
+> **本文不是什么**：不是壳工程与 IPC 契约（见 [../README.md](../README.md)）；不是 GUI 宿主选型理由（见 [ADR-0004](../../../docs/adr/0004-GUI宿主定案.md)）。
+> **信源等级**：L2 —— 可作「前端怎么改、图标怎么加」的直接依据；图标数据真源 = [`icons.js`](./icons.js)。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../../AGENTS.md)。
+
 MaaRM GUI 的界面层：`index.html`（静态骨架）+ `app.js`（页面逻辑与 WebView2 桥）+
 `style.css`（样式）+ `icons.js`（图标真源）+ `vendor.morphicons.js`（图标变形动画库）。
 Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无构建链、无 npm 安装步骤、

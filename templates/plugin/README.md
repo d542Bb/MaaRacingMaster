@@ -1,5 +1,10 @@
 # 活动插件样板（Plugin Template）
 
+> **本文是什么**：活动插件样板的构成与契约——目录结构、改名步骤、能力接口用法。
+> **本文不是什么**：不是插件平台架构（见 [docs/CODE_WIKI.md](../../docs/CODE_WIKI.md) 与 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是 MaaFW 协议口径（见 [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md)）。
+> **信源等级**：L2 —— 可作「新插件怎么起」的直接依据；样板代码本身即真源（`templates/plugin/`）。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
+
 开发新活动插件的起点：本目录是一份**最小完整、可运行骨架**，演示平台对插件的全套契约。
 
 > **为什么放在 `templates/` 而不是 `maaracing_master/plugins/`**：

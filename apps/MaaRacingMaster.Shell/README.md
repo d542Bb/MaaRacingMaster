@@ -1,7 +1,9 @@
 # MaaRacingMaster.Shell — GUI 壳工程（WinUI 3 + WebView2）
 
 > **本文件是什么**：壳工程与 sidecar transport 的**施工事实**——锁定版本、WinUI 3 API 细节、构建坑、IPC 契约。
-> **本文件不是什么**：不是 GUI 宿主选型的理由（见 [docs/CODE_WIKI.md §11](../../docs/CODE_WIKI.md#11-gui-宿主定案winui-3)）、不是进程模型与启动流程（见 [docs/CODE_WIKI.md §4.4](../../docs/CODE_WIKI.md)）、不是前端与图标规范（见 [frontend/README.md](./frontend/README.md)）。
+> **本文件不是什么**：不是 GUI 宿主选型的理由（见 [ADR-0004](../../docs/adr/0004-GUI宿主定案.md)）、不是启动流程与进程模型（见 [docs/CODE_WIKI.md §4 运行流程](../../docs/CODE_WIKI.md)）、不是前端与图标规范（见 [frontend/README.md](./frontend/README.md)）。
+> **信源等级**：L2 —— 可作「壳工程怎么构建、IPC 契约是什么」的直接依据；不得作为宿主选型理由（L1，见 ADR-0004）与业务实现（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）的依据。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
 
 ## 职责边界
 

@@ -9,6 +9,13 @@
 > 社区经验信源：MaaHub <https://hub.maafw.com/>（Skills/Customs/Experiences）、
 > MaaPracticeBoilerplate、create-maa-project、M9A 仓库内规范。
 
+>
+> **本文是什么**：MaaFramework 的能力签名、Pipeline 协议口径、Custom 契约与本项目协议红线——项目内 MaaFW 用法的直接依据。
+> **本文不是什么**：不是官方文档的替代品（行为论断以官方文档与实测为准，差异处已标版本口径）；不是项目架构决策（见 [docs/adr/](adr/README.md)）；不是活动域知识（见 `plugins/<id>/CODE_WIKI.md`）。
+> **信源等级**：L2（其中协议事实为 L0 的项目内副本）—— 可作「MaaFW 怎么用、什么不能做」的直接依据；协议行为与官方文档冲突时**以官方文档为准**并回头修本文。
+> **真源路由**：签名与行为 = 官方文档 + `.venv` 锁定版本的 binding 源码与实测（底稿见 `tools/experiments/maafw-docs-constraints/`）；节点与锚点取值 = `plugins/*/resources/**`。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)。
+
 ***
 
 ## 1. 核心定位与适用边界（先读）

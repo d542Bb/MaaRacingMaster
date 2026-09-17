@@ -1,5 +1,11 @@
 # NavKit v4 工具链
 
+> **本文是什么**：NavKit v4 工具链的使用与流程——入口命令、Studio 三页、真源文件位置、**模板图采集工作流**、校验器护栏、MPE 排错。
+> **本文不是什么**：不是真源组织的规则与理由（见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向) / [ADR-0001](../../docs/adr/0001-分层靠引用方向不靠目录.md)）；不是引擎侧装配契约（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是节点 schema 定义（见 [NAVKIT_V4_PLAN.md §2](../../docs/NAVKIT_V4_PLAN.md)）。
+> **信源等级**：L2 —— 可作「工具怎么用、资产怎么采、校验怎么跑」的直接依据；不得作为真源规则（L1）与节点/锚点取值（L0）的最终依据。
+> **真源路由**：节点与策略真源 = `plugins/*/resources/**`（本文只写位置，不复制取值）；校验项 = [`check_truth.py`](./check_truth.py)。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
+
 > 画布编辑由 MPE 承担（round-trip 保真已实证）；ROI 校准台 / 策略表 / 模板截取由单进程单端口的 `studio_server.py` 承担（统一标签栏互切）。
 
 ## 入口
@@ -65,6 +71,40 @@ tools/navkit/
 校验（CI 同款）：`python tools/navkit/check_truth.py`
 
 > 真源数值等价性的历史对拍记录在 `tools/experiments/v4-p4b-source/`。
+
+### 校验器护栏（CI 同款）
+
+`check_truth.py` 的校验项：next/on\_error 引用闭合（含 **And/Or 按名子项**——框架只校验 `next`/`on_error`，子项拼错要到运行期才 `Bad sub ref` 静默失败）、入口可达、疑似重复识别告警、policy 数据面可装配、图↔spec 交叉互洽、方向红线（`namespace_checks`）、**两面同图**（templates 相同的图侧参数与 spec 锚点逐字段比对 `rect`/`threshold`/`arbitration`/`mode↔kind`/`colorspace`，任一面不等即拦）。
+
+配套 [`tests/test_navkit_truth.py`](../../tests/test_navkit_truth.py)：锁归位形态（真源全在模块命名空间、core 侧零节点、plugin 文件集）、锁**红线活性**（合成违规图必须报错，防校验退化成装饰）、图↔spec 交叉见证与节点/锚点计数见证防漂。
+
+颜色口径定案：**默认 gray，灰度拉不开差距才转 rgb**（2026-09-11 两面统一；依据 = 检测面 detector 早已按 `spec.arbitration.margin` 做领先判定，P4C 对拍 812 帧两引擎命中数相等、零翻转，gray 快 2.8 倍）。
+
+模板文件缺失由运行时 `load_template` 返回 None 降级 + 装载器 WARNING 暴露。**体积账**：单张 5\~60KB、全部模板预期 <1MB（对比 rapidocr 模型 30MB、onnx 12MB 不成量级）——要防的是"图死"（孤儿图定期对照 spec/节点引用清一次）不是"图多"。
+
+## 模板图采集工作流（2026-09-07 定案，v4 载体沿用）
+
+> 适用：为图节点 / policy `perception.spec` 锚点采集模板图。分工：**人工截图+裁剪标注 → 导出 regions.json + PNG → 工具侧换算入库**（rect 归一化/JSON/校验/提交均为工具侧职责）。
+
+**来源纪律**：只从 1280×720 运行帧截图裁剪（启动即统一 720p），1:1 像素裁剪、**永不缩放**（模板与运行帧同尺度，匹配单尺度 1.0）。
+
+**人工截图通道的坐标系换算（2026-09-16 实测）**：截图工具产出的是**带窗口边框的窗口截图**，实测 1281×759——比客户区多出左侧 1 px 边框与顶部 38 px 标题栏。此类 PNG 必须先裁出客户区（`img[38:758, 1:1281]`，恰 720×1280）再定位、算 rect，否则 ROI 整体偏移 38 px、运行期全部失配。校验办法：取一张来自真正运行帧的既有模板（如鉴宝域的 `hall_peak_appraise_card.png`）在该客户区上匹配，分数应达 ~1.0000。
+
+**裁剪纪律**：只装"一年后还长这样的像素"——角标/数字/倒计时/红点/限时横幅一律留在模板外。变化在模板图**外**（哪怕紧贴）不影响匹配得分；在图**内**才失效（阈值 0.75 容忍渲染抖动，不容忍结构性变化）。
+
+**半透明元素不宜作锚点**：压在动态画布上的 HUD 文字与进度条，其像素是逐帧与背景混合的结果，匹配分随背景大幅摆动。此类位置改取**不透明图标**替代，或退为多锚点 Or 组合兜底。
+
+背景干扰还有**第二个入口**：彩色匹配（`colorspace: rgb`）会把搜索区内的**背景颜色**一起算进相似度——换了不透明图标，分数照样会被天光拉低。只比形状（`gray`）可显著收敛，但**根治要靠"跨天光、多轮样本"标定阈值**：单轮样本读出的"稳定"是假象，阈值贴着实际分布的下缘画，就会在实机上抖动成假失配。各域的实测数据见其域文档（如 [speedrush 域 §1](../../maaracing_master/plugins/speedrush/CODE_WIKI.md)）。
+
+**命名**：`<页面>_<元素>[_限定词].png`，全小写下划线；首段页面名与页注册表一致（`hall_` / `rank_` / `speedrush_`…），看文件名即知归属。
+
+**位置跟 owner 走**：global 锚点 → `core/resources/image/`；模块锚点 → `plugins/<id>/resources/image/`。归属与物理位置矛盾由编辑评审盯。
+
+**回传**：标注工具导出 regions.json（像素区域 x/y/w/h）+ PNG → 换算归一化 rect（外扩 15% 宽 / 25% 高、4 位小数）写入真源。**JSON 真源由 MPE 画布 / Studio 工具链维护，人工不手改裸文件**；agent/脚本直改 JSON 后跑 `check_truth.py` 机检 + 提交。
+
+> **ROI 是「这个按钮可能出现在哪里」，不是「它上次出现在哪」**：一个节点服务多页时，ROI 必须覆盖各页位置的**并集**再留余量——按单帧模板外扩算出的 rect 会在同一按钮的另一页失配（2026-09-16 speedrush 结算页实证，见其域文档 §4）。
+
+**MAA 对照**：MaaFramework 侧仅约定"720p 无损原图裁剪勿缩放 + `roi`/`box`/`target` 三概念分离"（MAAFW_GUIDE §5.1/§5.2）；社区靠 ImageCropper 类工具 + 人工纪律，无结构化工作流。本仓库在其上加 regions 机器可读导出 + 校验守卫闭环。
 
 ## MPE 常见疑惑与排错
 

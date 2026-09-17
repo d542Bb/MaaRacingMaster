@@ -3,6 +3,9 @@
 > 公告是「用户可感知变化」的通知卡，展示于关于页内嵌卡片（info=公告 / warn=重要）。
 > 更新方式：编辑 `docs/announcement.json` 并推送 master。客户端经 GitHub raw（主源）+ jsdelivr CDN（回退）拉取，推送后约分钟级生效；网络异常/解析失败时前端显示「暂无公告」，不影响启动。
 
+> **信源等级**：L1（正式规范）—— 可作「公告写什么、什么时候发」的直接依据；公告内容真源 = [`announcement.json`](./announcement.json)。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)。
+
 ## 发布时机
 
 | 场景 | 发不发 | level | 示例 |

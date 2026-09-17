@@ -1,5 +1,10 @@
 # Runtime Closure Auditor (V0.1)
 
+> **本文是什么**：Runtime Closure Auditor 的用法——安装、命令、输出分类与删除信心分级。
+> **本文不是什么**：不是发行包体积账的结论（见 [docs/update_log.md](../../docs/update_log.md)）；不是发布流程（见 [skills/project-update/SKILL.md](../../skills/project-update/SKILL.md)）。
+> **信源等级**：L2 —— 可作「怎么跑这个审计工具」的直接依据。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
+
 自动分析发行目录中每个文件「为什么需要」，给出分类与删除信心，避免继续人工猜哪一刀该砍。
 
 ## 安装

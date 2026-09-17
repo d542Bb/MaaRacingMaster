@@ -15,7 +15,7 @@
 
 - [ ] 本地运行通过（无导入错误 / 无崩溃）
 - [ ] 相关模块流程无回归（鉴宝 / 导航等）
-- [ ] 已阅读 [CODE_WIKI 高频坑点](https://github.com/d542Bb/MaaRacingMaster/blob/master/docs/CODE_WIKI.md) 对应章节
+- [ ] 已阅读对应对象的知识文档（[项目地图](https://github.com/d542Bb/MaaRacingMaster/blob/master/docs/CODE_WIKI.md) 指路：平台核心层 / 活动域 / MaaFW 协议各见其 home）
 - [ ] 新增模块走了能力接口，未直接引用高权限宿主对象
 - [ ] 代码缩进 4 空格，注释为中文
 

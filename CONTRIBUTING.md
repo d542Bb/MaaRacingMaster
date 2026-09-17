@@ -1,8 +1,12 @@
 # 贡献指南（Contributing Guide）
 
+> **本文是什么**：面向贡献者的流程指南——怎么找任务、开发约定、提交与 PR 流程、发布规则。
+> **本文不是什么**：不是架构与实现说明（见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)）；不是 AI 协作守则（见 [AGENTS.md](AGENTS.md)）。
+> **信源等级**：L3（导航与摘要）—— 可作「怎么参与」的依据；架构与规则细节一律回到其 home。
+
 欢迎来到 **MaaRacingMaster** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **巅峰鉴宝**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
 
-在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（架构 / API / 算法 / 踩坑全记录）。
+在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与信源路由见 [AGENTS.md](AGENTS.md)。
 
 > **⚠️ 合规红线（必须遵守）**
 > 本项目为游戏自动化技术研究与学习项目，**严禁**用于代练、外挂、作弊、刷榜或任何影响游戏公平与服务器排名的用途。所有贡献必须服务于"技术学习与个人效率工具"这一定位。详见 [README 免责声明](README.md#免责与合规声明)。
@@ -44,7 +48,7 @@ pip install -r requirements.txt
 ```
 
 - 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
-- 独立调试 sidecar（不经 GUI）：`python -m maaracing_master`
+- 独立调试 sidecar（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`
 - 调试工具位于 `tools/`（训练 / 分析 / 调试分类）
 
 ---
@@ -59,18 +63,19 @@ pip install -r requirements.txt
 
 关键文件位置：
 
+关键文件位置（完整导航见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md) 的「我要改 X，应该去哪里」）：
+
 | 文件 | 职责 |
 |------|------|
-| `maaracing_master/controller.py` | 总控编排（生命周期 + 能力门面 `ActivityContext`） |
-| `maaracing_master/modules/capabilities.py` | 能力 Protocol + 最薄 adapter |
-| `maaracing_master/modules/base.py` | `ActivityContext` / `ActivityModule` 基类 |
-| `maaracing_master/modules/registry.py` | 模块注册表 |
+| `maaracing_master/core/controller.py` | 主控编排（生命周期 + 能力门面 `ActivityContext`） |
+| `maaracing_master/core/capabilities.py` | 能力 Protocol + 最薄 adapter |
+| `maaracing_master/core/base.py` | `ActivityContext` / `ActivityModule` 基类 |
+| `maaracing_master/core/registry.py` | 插件注册表 |
 | `maaracing_master/plugins/<id>/` | 活动插件（自包含目录，各含 `manifest.py` + `resources`） |
-| `maaracing_master/modules/treasure_module.py` | 巅峰鉴宝（主打） |
-| `maaracing_master/navigation.py` | 光标导航引擎 |
+| `maaracing_master/core/gamepad_cursor.py` | 光标导航引擎 |
 | `apps/MaaRacingMaster.Shell/` | WinUI 3 图形界面（Python sidecar 承载业务） |
 
-**完整 API / 算法 / 参数 / 坑点详见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md) 第 11 节「高频致命坑点」——改代码前务必阅读。**
+**改代码前请先读对应对象的知识文档**：平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)，活动域见 `plugins/<id>/CODE_WIKI.md`，MaaFW 协议与红线见 [docs/MAAFW_GUIDE.md](docs/MAAFW_GUIDE.md)。
 
 ---
 
@@ -93,8 +98,8 @@ git checkout -b feat/your-feature origin/master
 **开发约定：**
 
 - 新增模块必须走 `modules/` 注册表 + 能力接口，不直接引高权限宿主对象。
-- 涉及活动流程逻辑，先阅读 CODE_WIKI 对应节（鉴宝见 §11.6，导航见 §11.3）。
-- 遵守 [AGENTS.md](AGENTS.md) 的语言与规范要求（中文输出、4 空格缩进等）。
+- 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/treasure/CODE_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
+- 遵守 [AGENTS.md](AGENTS.md) 的协作守则（面向用户的输出、代码注释与交付文档使用简体中文）；代码风格为 4 空格缩进。
 
 ### 3. 提交与推送
 
