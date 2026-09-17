@@ -29,6 +29,13 @@
 是否过暗底闸门**、**比分块按颜色判出的归属**，以及逐字段的可信标志与理由；已知的
 假读形态（``合计 < 里程``、单字面板读数）落到 ``flags`` 与字段 ``note`` 里，行照旧落盘。
 
+**除了"读得对不对"，还得知道"读的是不是动画中间值"**：卡片出现时三行数字各自**滚动爬升**
+到定值（实测同一张卡片 268→292→317→338），爬升段的值看着合理却只是中间帧——拿它算增量
+会得到假来源，拿它验公式会得到假违例。故卡片三格另记 ``settled``：**本行与上一次可信采样
+同值**（相距 ≤ ``SETTLE_GAP_S``）。它是**过去向**判据（落盘是流式的，这一行写下去时下一拍
+还不存在），代价是每段平台的第一个采样点判不出定值；``trusted`` 不因未定值而变 False
+——读对了就是读对了，只是"还没涨到位"，判定与数据一起留下由消费方取用。
+
 **区域真源**：``resources/policy/hud_regions.json``（本插件内唯一一份，离线探针读同一份）。
 本模块不复制任何 rect 常量，也不假定键集——采样范围就是该文件的键集。
 
@@ -68,10 +75,15 @@ __all__ = [
 ]
 
 # 记录格式版本。字段语义变动时递增，供离线消费方识别。
-SCHEMA_VERSION = 1
+# v2：卡片三格（``GATED_FIELDS``）增记 ``settled``——见下方定值判据。
+SCHEMA_VERSION = 2
 
 # 采样间隔（秒）。理由见模块 docstring：面板在场约 3.5s → 约 7 个连续样本。
 SAMPLE_INTERVAL_S = 0.5
+
+# 「定值」的相邻上限（秒）：上一次可信采样与本行的帧时刻相差不超过它，才认"连续两次"。
+# 采样间隔 0.5s，取 3 倍留出抖动与一次丢样本的余量。
+SETTLE_GAP_S = 1.5
 
 # 采样队列容量（约 4 秒）。满则丢样本计数，绝不阻塞采样线程——反压口径照录制器
 # （``put_nowait`` + 丢弃计数），落盘慢不该拖住下一次取帧。
@@ -83,7 +95,9 @@ _QUEUE_MAX = 8
 DARK_LUM_MAX = 90.0
 FIELD_DARK_MIN = 0.35
 
-# 需要过暗底闸门的字段（左侧面板三格，顺序即面板自上而下的格序）
+# 需要过暗底闸门的字段（左侧面板三格，顺序即面板自上而下的格序）。
+# **这也是「定值」判据的作用域**：滚动爬升是这张卡片三行数字的动画形态，只有它们才有
+# "这一拍读到的是不是动画中间值"的问题；比分与速度是持续跳动的量，"同值两拍"对它们无意义。
 GATED_FIELDS: tuple[str, ...] = ("mileage", "overtake", "total_left")
 # 比分面板：位置会上下互换，敌我必须按块色判（见 ``block_side``）
 SIDE_FIELDS: tuple[str, ...] = ("score_top", "score_bottom")
@@ -285,6 +299,8 @@ class HudObserver:
         self._started_ns = 0
         self._started_iso = ""
         self._running = False
+        # 定值判据要跨采样比较：字段 → 上一次**可信**读数的 (值, 帧时刻)
+        self._prev_read: dict[str, tuple[int, int]] = {}
 
     # ---------- 生命周期 ----------
 
@@ -396,8 +412,40 @@ class HudObserver:
             "fields": fields,
             "flags": [],
         }
+        self._mark_settled(fields, int(ts_ns))
         self._apply_read_filters(rec)
         return rec
+
+    def _mark_settled(self, fields: dict[str, dict], ts_ns: int) -> None:
+        """给卡片三格标 ``settled``：**本行与上一次可信采样同值**（相距 ≤ ``SETTLE_GAP_S``）。
+
+        为什么这条判据必须在生产侧给出，而不是留给消费方：卡片出现时三行数字各自**滚动
+        爬升**到定值（实测同一张卡片 268→292→317→338），爬升段的值"看着合理"（都是合法
+        里程），但只是动画中间帧——拿它算增量会得到假来源，拿它验「合计 = 里程 + 30×超车」
+        会得到假违例（实测淡入中的卡片连「合计」那一行都还没显出来）。定值点才可用。
+
+        为什么是"与上一次相同"而不是"与下一次相同"：写盘是流式的，这一行落盘时下一拍尚不
+        存在。代价是**每段平台的第一个采样点**判不出定值（标 False，少一个可用点），换来的是
+        不需要缓冲一行、也不会在异常退出时丢掉最后一行。
+
+        ``trusted`` 不因未定值而变 False：数据本身是读对了的，只是"还没涨到位"——把拍到的
+        原始值一律留下，标出判定，让消费方自己决定要不要用（照本模块"假读标出、不静默丢"
+        的既定口径）。故 ``settled`` 也不进行级 ``flags``（那是假读清单，未定值不是假读）。
+        """
+        for name in GATED_FIELDS:
+            entry = fields.get(name)
+            if entry is None:
+                continue
+            if not entry.get("trusted"):
+                # 未读出/未过闸门：不判、也不更新基准（下一拍仍与最后那次有效读数比）
+                entry["settled"] = False
+                continue
+            value = entry.get("value")
+            prev = self._prev_read.get(name)
+            same = (prev is not None and prev[0] == value
+                    and abs(ts_ns - prev[1]) / 1e9 <= SETTLE_GAP_S)
+            entry["settled"] = bool(same)
+            self._prev_read[name] = (int(value), int(ts_ns))
 
     def _read_field(self, frame: Any, name: str, rect: list[float]) -> dict:
         """读一格：先过在场闸门（仅面板三格），再识别，最后给可信标志与理由。"""
@@ -561,6 +609,9 @@ class HudObserver:
             "gate_fields": list(GATED_FIELDS),
             "side_fields": list(SIDE_FIELDS),
             "single_char_suspect_fields": list(SINGLE_CHAR_SUSPECT_FIELDS),
+            # 带 settled 标志的字段与判据参数：消费方不必猜哪些字段有这一位、也不必抄死阈值
+            "settled_fields": list(GATED_FIELDS),
+            "settle_gap_s": SETTLE_GAP_S,
             "rows_written": self._rows_written,
             "rows_dropped": self._rows_dropped,
             "rows_flagged": self._rows_flagged,

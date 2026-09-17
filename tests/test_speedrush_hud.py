@@ -113,6 +113,37 @@ def _observer(tmp_path, engine, *, frame=None, absent=(), sides=None, **kw) -> h
     return obs
 
 
+class _MutableEngine:
+    """文本可换的引擎：定值判据跨采样比较，单帧造不出它。"""
+
+    def __init__(self, texts: dict[tuple, str]) -> None:
+        self.texts = texts
+
+    def recognize(self, frame_rgb, rect_norm) -> OcrText:
+        return OcrText(lines=(self.texts.get(tuple(rect_norm), ""),))
+
+
+def _walker(tmp_path, texts, *, ts0=5_000_000_000, **kw):
+    """可推进的采样器：返回 ``(观察者, 引擎, state)``。
+
+    ``state`` 里改 ``ts``（帧时刻）/ ``frame``（换画面）；``engine.texts`` 换读数。
+    """
+    state = {"ts": ts0, "frame": _frame(), "frame_id": 1001}
+    engine = _MutableEngine(texts)
+    obs = hud.HudObserver(
+        tmp_path,
+        frame_source=lambda: (state["frame"], state["frame_id"], state["ts"], 3.0),
+        engine=engine,
+        regions=REGIONS,
+        **kw,
+    )
+    return obs, engine, state
+
+
+def _tick(state, seconds: float = 0.5) -> None:
+    state["ts"] += int(seconds * 1e9)
+
+
 def _sample(obs: hud.HudObserver) -> dict:
     rec = obs._sample_once()
     assert rec is not None, "帧在场时采样必须产出记录"
@@ -298,6 +329,80 @@ class TestReadingJudgements:
         """非 3 通道帧的归属说"判不出"，而不是把通道错位分组后给一个看着合理的错标签。"""
         f = np.zeros((FRAME_H, FRAME_W, 4), dtype=np.uint8)
         assert hud.block_side(f, REGIONS["score_top"]) == "?"
+
+
+# ----------------------------------------------------------------------
+# 「定值」判据：卡片三格的读数是滚动爬升出来的，只有停住的值才是真值
+# ----------------------------------------------------------------------
+
+
+class TestSettleJudgement:
+    """实测形态（同一张卡片）：268 → 292 → 317 → 338 → 338 → 338。
+
+    爬升值"看着合理"（都是合法里程），但拿它算增量会得到假的分数来源、拿它验
+    「合计 = 里程 + 30×超车」会得到假违例——淡入中的卡片连「合计」那一行都还没显出来。
+    """
+
+    def test_settled_needs_two_equal_samples(self, tmp_path) -> None:
+        """连续两拍同值才算定值；爬升段既不丢数据（trusted 仍 True）也不算定值。"""
+        obs, engine, state = _walker(tmp_path, _texts(mileage="268"))
+        first = _sample(obs)["fields"]["mileage"]
+        assert first["settled"] is False, "首拍没有前值可比，不得判成定值"
+
+        _tick(state)
+        engine.texts = _texts(mileage="292")
+        ramp = _sample(obs)["fields"]["mileage"]
+        assert ramp["settled"] is False
+        assert ramp["trusted"] is True and ramp["value"] == 292, "爬升值照旧留下：判定与数据并存"
+
+        _tick(state)
+        plateau = _sample(obs)["fields"]["mileage"]
+        assert plateau["settled"] is True and plateau["value"] == 292
+
+        _tick(state)
+        engine.texts = _texts(mileage="317")
+        assert _sample(obs)["fields"]["mileage"]["settled"] is False, "又起一段爬升"
+
+    def test_settled_gap_limit(self, tmp_path) -> None:
+        """相隔超过 SETTLE_GAP_S 的同值不算"连续两拍"（丢样本 / 长间隔不成定值）。"""
+        obs, engine, state = _walker(tmp_path, _texts(mileage="338"))
+        _sample(obs)
+        _tick(state, hud.SETTLE_GAP_S + 0.5)
+        assert _sample(obs)["fields"]["mileage"]["settled"] is False
+        _tick(state, 0.5)
+        assert _sample(obs)["fields"]["mileage"]["settled"] is True, "间隔恢复后照常判"
+
+    def test_unread_sample_does_not_move_the_baseline(self, tmp_path) -> None:
+        """没读出（面板缺席）的那一拍不更新基准：下一拍仍与最后一次有效读数比。"""
+        obs, engine, state = _walker(tmp_path, _texts(mileage="338"))
+        _sample(obs)
+        _tick(state)
+        state["frame"] = _frame(absent=("mileage",))
+        absent = _sample(obs)["fields"]["mileage"]
+        assert absent["trusted"] is False and absent["settled"] is False
+        _tick(state)
+        state["frame"] = _frame()
+        assert _sample(obs)["fields"]["mileage"]["settled"] is True
+
+    def test_settled_only_on_card_fields(self, tmp_path) -> None:
+        """比分与速度是持续跳动的量，"同值两拍"对它们无意义 → 不产出这一位。"""
+        obs, engine, state = _walker(tmp_path, _texts())
+        rec = _sample(obs)
+        for name in hud.GATED_FIELDS:
+            assert "settled" in rec["fields"][name]
+        for name in (*hud.SIDE_FIELDS, "rate_top", "rate_bottom", "timer", "event_banner"):
+            assert "settled" not in rec["fields"][name]
+
+    def test_meta_declares_settle_contract(self, tmp_path) -> None:
+        """meta 声明哪些字段带 settled、阈值是多少：消费方不必猜、也不必抄死常量。"""
+        obs, engine, state = _walker(tmp_path, _texts(), interval_s=0.05)
+        obs.start()
+        time.sleep(0.12)
+        obs.stop("phase_end")
+        meta = json.loads((tmp_path / "hud_meta.json").read_text(encoding="utf-8"))
+        assert meta["schema"] == hud.SCHEMA_VERSION
+        assert meta["settled_fields"] == list(hud.GATED_FIELDS)
+        assert meta["settle_gap_s"] == hud.SETTLE_GAP_S
 
 
 # ----------------------------------------------------------------------

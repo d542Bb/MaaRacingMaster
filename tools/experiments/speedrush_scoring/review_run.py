@@ -14,7 +14,9 @@
 （首轮实机数据：268→292→317→338，随后 338 连续重复）。爬升段读到的值"看起来很合理"
 （338 与 292 都是合法里程），但它只是动画中间帧；拿它算增量会得到假的分数来源，拿它
 比对公式会得到假的违例。故对每个字段判「**连续两次采样相同**」才算定值，非定值的可信
-行标 `ramp`，增量归因与公式检验只用定值点。
+行标 `ramp`，增量归因与公式检验只用定值点。这条判据**已由生产侧给出**（`hud.py` 的
+`_mark_settled`，SCHEMA 2 起每格带 `settled`）——本工具优先读它，只有旧会话（SCHEMA 1）
+才按**同一规则**重算，两处不许各写一套。
 
 **判据二：不变量。** 两条，都只作用在定值点上：
   - **合计 = 里程 + 30 × 超车**（换算系数由探针 `formula` 模式给出，实机逐点确认）；
@@ -54,15 +56,16 @@ RATE_FIELDS: tuple[str, ...] = ("rate_top", "rate_bottom")
 # 合计 = 里程 + w×超车。w 由探针 formula 模式定出，本工具作不变量复核。
 OVERTAKE_WEIGHT = 30
 
-# 「连续两次采样相同」的相邻判定上限：采样间隔 0.5s，留抖动余量
-SETTLE_GAP_S = 1.2
+# 「连续两次采样相同」的相邻判定上限：与生产侧 `hud.SETTLE_GAP_S` 同值（口径见 settled_map）
+SETTLE_GAP_S = 1.5
 # 面板在场行之间超过这个间隔即算两个窗口（实测窗时长约 3.5s、间隔约 10s）
 BURST_GAP_S = 2.0
 # 与录制帧对齐的容差（实测同帧为 ts_ns 精确相等；容差只用于统计"邻近帧"）
 PAIR_TOL_NS = 50_000_000
 # 比分假读的"串位尖峰"判据：值高于前后可信点且超出量级（见 side_series）
 SPIKE_FACTOR = 3.0
-HUD_SCHEMA = 1
+# 认得的 `hud_meta.schema`：1 无 per-field `settled`，2 有（回退重算，见 settled_map）
+HUD_SCHEMAS = (1, 2)
 
 # 出图：卡片由「全帧缩略 + 左侧卡片放大 + 比分面板放大」三块拼成，标注条在底
 CELL_W = 1264
@@ -172,8 +175,8 @@ def load_session(path: Path) -> Session:
             f"启动：对齐要靠同会话的 frames.jsonl）")
     hud_meta = _json(path / "hud_meta.json")
     schema = hud_meta.get("schema")
-    if schema is not None and schema != HUD_SCHEMA:
-        raise SystemExit(f"{path} 的 hud_meta.schema={schema}，本工具按 {HUD_SCHEMA} 读——"
+    if schema is not None and schema not in HUD_SCHEMAS:
+        raise SystemExit(f"{path} 的 hud_meta.schema={schema}，本工具按 {HUD_SCHEMAS} 读——"
                          f"格式已变，先对齐字段语义再加模式")
     rows = []
     for r in _jsonl(path / "hud.jsonl"):
@@ -192,24 +195,30 @@ def load_session(path: Path) -> Session:
 # ---------------- 判据：定值 + 不变量 ----------------
 
 def settled_map(rows: list[Row], name: str) -> dict[int, bool]:
-    """每个可信采样点是否**定值**：前后相邻（间隔 ≤ SETTLE_GAP_S）存在同值可信点。
+    """每个可信采样点是否**定值**。
 
-    用"前或后任一相同"而不是"与上一个相同"：卡片稳定段的首个采样点只有后邻相同，
-    末个只有前邻相同，严格取"与上一个相同"会把稳定段两端误判成爬升。
+    口径与生产侧（`plugins/speedrush/hud.py` 的 `_mark_settled`）**逐字一致**：与**上一个**
+    可信采样同值、且间隔 ≤ ``SETTLE_GAP_S``。同一事实在两处各写一套判据迟早会分叉，故落盘行
+    里带 ``settled`` 时**直接取它**（生产侧算的那一位就是权威），只有 SCHEMA 1 的旧会话没有
+    这一位时才按同一规则重算——两条路的结果必然相同。
+
+    "与上一个相同"而非"与下一个相同"：写盘是流式的，生产侧那一拍看不到未来。复盘本可以看
+    未来（把每段平台的第一个采样点也认成定值），但那会让工具与生产侧对同一个值给出不同判定，
+    正是要避免的第二真源——所以这里不退让。
     """
     idx = [i for i, r in enumerate(rows) if r.trusted(name)]
     out: dict[int, bool] = {}
-    for k, i in enumerate(idx):
-        v = rows[i].val(name)
-        ok = False
-        for j in (idx[k - 1] if k else None, idx[k + 1] if k + 1 < len(idx) else None):
-            if j is None:
-                continue
-            if abs(rows[j].ts_ns - rows[i].ts_ns) / 1e9 <= SETTLE_GAP_S \
-                    and rows[j].val(name) == v:
-                ok = True
-                break
-        out[i] = ok
+    prev: tuple[int, int] | None = None      # (value, ts_ns) —— 上一个可信采样
+    for i in idx:
+        r = rows[i]
+        recorded = r.f(name).get("settled")
+        if recorded is None:                 # SCHEMA 1：无此位 → 按同一规则重算
+            same = (prev is not None and prev[0] == r.val(name)
+                    and abs(r.ts_ns - prev[1]) / 1e9 <= SETTLE_GAP_S)
+            out[i] = bool(same)
+        else:
+            out[i] = bool(recorded)
+        prev = (r.val(name), r.ts_ns)
     return out
 
 
@@ -411,6 +420,10 @@ def cmd_check(args) -> None:
         print(f"\n--- {s.name} ---")
         print(f"  区域指纹 {hm.get('regions')}  采样间隔 {hm.get('sample_interval_s')}s  "
               f"停止原因 {hm.get('stop_reason')}")
+        recorded = any(r.f(n).get("settled") is not None
+                       for r in s.rows for n in CARD_FIELDS)
+        print(f"  定值判据来源：{'落盘 settled 位（生产侧所判，权威）' if recorded else '按同一规则重算（旧格式无此位）'}"
+              f"  阈值 {hm.get('settle_gap_s') or SETTLE_GAP_S}s")
         mism = []
         for k, got, want in (("frames", len(s.frames), meta.get("frames_written")),
                              ("hud", len(s.rows), hm.get("rows_written")),
