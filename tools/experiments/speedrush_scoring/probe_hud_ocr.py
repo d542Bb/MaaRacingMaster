@@ -7,6 +7,9 @@
   discover  启用文本检测（det），在条带上找出所有文字块与其归一化坐标。用于**标定**。
   scan      跨会话抽样，**按位置**统计 HUD 元素——ROI 的定出方式，不是目测。
   read      用给定 ROI 直接识别（关 det，与生产口径一致）。
+  dump      逐 ROI 用 det 引擎摊开框内**全部**文字块——判断 ROI 粒度够不够。
+  find      在给定窗口内跨会话搜偶发文字——**定位**只在超车瞬间出现的元素。
+  overlay   把 ROI 画在真帧上（含框内实际读到的字），供**人工复核**区域压得准不准。
   timeline  顺序读一整段会话，出记分时间线与自洽性检验。
   formula   跨会话验证「合计分值 = 里程 + 30 × 超车」并给出残差。
 
@@ -20,6 +23,8 @@
 
 用法：
     python tools/experiments/speedrush_scoring/probe_hud_ocr.py scan [--per-session 8]
+    python tools/experiments/speedrush_scoring/probe_hud_ocr.py dump --rects hud_regions.json --frame <jpg>
+    python tools/experiments/speedrush_scoring/probe_hud_ocr.py overlay --rects hud_regions.json
     python tools/experiments/speedrush_scoring/probe_hud_ocr.py timeline --session <会话目录> --rects hud_regions.json
     python tools/experiments/speedrush_scoring/probe_hud_ocr.py formula --rects hud_regions.json
 """
@@ -169,6 +174,103 @@ def cmd_read(args) -> None:
         print(f"  {name:16s} rect={rect} → {ocr.read(rgb, rect)!r}")
 
 
+def cmd_dump(args) -> None:
+    """逐 ROI 用 det 引擎摊开框内**全部**文字块——复核 ROI 粒度是否够。
+
+    为什么需要它：生产口径关 det，整块 patch 当**一行**识别。若框里除了数字还压着
+    图标、进度条、说明文字，rec 会把它们连成一串，且两边都没有"错了"的信号——
+    实测 `score_self` 读出 `231,6`（数字后跟了个杂字）、`hp_opp` 读出 `血量:396%`
+    （标签文字与数字粘连）。本模式把"框里到底有几样东西"摊开：块数 > 1 就说明框太松，
+    块的位置贴边就说明框可能切字。
+    """
+    frame_path = Path(args.frame) if args.frame else latest_mid_frame()
+    rgb = load_rgb(frame_path)
+    assert rgb is not None, frame_path
+    regs = json.loads(Path(args.rects).read_text(encoding="utf-8"))
+    h, w = rgb.shape[:2]
+    engine = _engine_det()
+    print(f"帧 {frame_path.name}  {w}×{h}\n")
+    for name, rect in regs.items():
+        x1, y1, x2, y2 = _norm_to_px(rect, w, h)
+        rw, rh = max(1, x2 - x1), max(1, y2 - y1)
+        try:
+            out = engine(_to_bgr(rgb[y1:y2, x1:x2]))
+        except Exception as exc:  # 空 patch / 引擎异常不应中断整轮复核
+            print(f"[{name}] 识别失败：{exc}")
+            continue
+        txts = getattr(out, "txts", None) or []
+        boxes = getattr(out, "boxes", None)
+        flag = "⚠ 框太松" if len(txts) > 1 else ("⚠ 框内无字" if not txts else "")
+        print(f"[{name}] {rw}×{rh}@({x1},{y1})  框内 {len(txts)} 块 {flag}")
+        for i, t in enumerate(txts):
+            if boxes is None or i >= len(boxes):
+                print(f"    {t!r}")
+                continue
+            xs = [p[0] for p in boxes[i]]
+            ys = [p[1] for p in boxes[i]]
+            print(f"    {str(t)!r:26s} 框内归一化=({min(xs) / rw:.2f},{min(ys) / rh:.2f},"
+                  f"{max(xs) / rw:.2f},{max(ys) / rh:.2f})")
+
+
+def cmd_find(args) -> None:
+    """在给定窗口内跨会话搜"偶发"文字——**定位**只在某些时刻出现的 HUD 元素。
+
+    为什么不能拿固定 ROI 去复核偶发元素：事件横幅 / 浮字只在超车瞬间出现，绝大多数帧
+    那里是护栏或车尾；rec（关 det）被强制解码，会吐出 `-`、`甲`、`TXT` 这类噪声，
+    看上去"框里读到了东西"——实测正是这样把护栏认成了事件横幅、把车尾贴纸认成了浮字。
+    故顺序必须倒过来：**先扩大窗口找真实文字块**，命中位置给出该元素的真实坐标，
+    再由坐标定 ROI；不是先猜一个框、再去"验证"它（那只是自证）。
+
+    窗口故意比疑似 ROI 大得多（`--window 0,0.3,0.45,0.7` 之类），以免搜索被猜测限住。
+    """
+    win = [float(x) for x in args.window.split(",")]
+    if len(win) != 4:
+        raise SystemExit("--window 需要 x1,y1,x2,y2（归一化）")
+    pat = re.compile(args.match)
+    sessions = ([Path(args.session)] if args.session
+                else sorted(d for d in DEMOS.iterdir() if d.is_dir()))
+    if args.limit:
+        sessions = sessions[:args.limit]
+    engine = _engine_det()
+    print(f"窗口 {win}  正则 {pat.pattern!r}  会话 {len(sessions)}  每 {args.every} 帧\n")
+    hits = n = 0
+    for s in sessions:
+        rows = [json.loads(x) for x in
+                (s / "frames.jsonl").read_text(encoding="utf-8").splitlines() if x]
+        if len(rows) < 20:
+            continue
+        lo, hi = round(len(rows) * 0.05), round(len(rows) * 0.95)
+        for r in rows[lo:hi:max(1, args.every)]:
+            rgb = load_rgb(s / "frames" / r["file"])
+            if rgb is None:
+                continue
+            h, w = rgb.shape[:2]
+            x1, y1 = int(win[0] * w), int(win[1] * h)
+            x2, y2 = int(win[2] * w), int(win[3] * h)
+            if x2 <= x1 or y2 <= y1:
+                raise SystemExit("窗口为空")
+            try:
+                out = engine(_to_bgr(rgb[y1:y2, x1:x2]))
+            except Exception:
+                continue
+            n += 1
+            txts = getattr(out, "txts", None) or []
+            boxes = getattr(out, "boxes", None)
+            for i, t in enumerate(txts):
+                if not pat.search(str(t)):
+                    continue
+                hits += 1
+                if boxes is None or i >= len(boxes):
+                    print(f"  {s.name} seq={r['seq']:>4} {str(t)!r:20s} （无框）")
+                    continue
+                xs = [p[0] for p in boxes[i]]
+                ys = [p[1] for p in boxes[i]]
+                print(f"  {s.name} seq={r['seq']:>4} {str(t)!r:20s} 归一化="
+                      f"({(x1 + min(xs)) / w:.4f},{(y1 + min(ys)) / h:.4f},"
+                      f"{(x1 + max(xs)) / w:.4f},{(y1 + max(ys)) / h:.4f})")
+    print(f"\n扫 {n} 帧，命中 {hits} 处")
+
+
 def cmd_scan(args) -> None:
     """跨会话抽样若干帧，**按位置**统计 HUD 元素——ROI 标定的依据。
 
@@ -262,6 +364,152 @@ def field_on_dark(frame_rgb: np.ndarray, rect) -> bool:
     return float((lum < 90).mean()) > FIELD_DARK_MIN
 
 
+# 复核用的场景取帧。为什么按场景挑而不是随便取中段帧：各元素的在场条件不同，用一张
+# "什么都没有"的帧复核，等于没法判断框是压准了还是压空了。
+OVERLAY_SCENES = ("panel", "banner")
+SCENE_TITLE = {
+    "panel": "左侧信息面板在场（里程/超车/合计）",
+    "banner": "事件横幅在场（取文字最长的一帧——测右边界是否容得下 ×N）",
+}
+
+
+def _has_digit(text: str) -> bool:
+    return re.search(r"\d", text or "") is not None
+
+
+def _has_word(text: str) -> bool:
+    """含中文/字母/数字才算"真读到东西"。
+
+    只判"非空"会把护栏当成事件横幅：护栏上的水平高光被 rec 读成 `-` 这类纯符号，
+    实测正是这样选出了"事件横幅场景"帧，而框里其实是护栏。判据必须排除纯标点。
+    """
+    return re.search(r"[\u4e00-\u9fff\dA-Za-z]", text or "") is not None
+
+
+def _panel_ok(rgb: np.ndarray, ocr: HudOcr, regs: dict) -> bool:
+    """左侧信息面板"在场且读得出来"。
+
+    暗底闸门单独用会被深色棕榈树骗过（实测框内是树叶、暗底占比仍达标、读出 `D`）；
+    故要求"闸门 + 三个字段都读出数字"同时成立——这也正是消费方需要的条件。
+    """
+    return (all(field_on_dark(rgb, regs[f]) for f in PANEL_FIELDS)
+            and all(_has_digit(ocr.read(rgb, regs[f])) for f in PANEL_FIELDS))
+
+
+def _norm_to_px(rect, w: int, h: int) -> tuple[int, int, int, int]:
+    return (int(float(rect[0]) * w), int(float(rect[1]) * h),
+            int(float(rect[2]) * w), int(float(rect[3]) * h))
+
+
+def _font(size: int):
+    from PIL import ImageFont
+    for path in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/arial.ttf"):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _draw_overlay(rgb: np.ndarray, regs: dict, ocr: HudOcr, title: str):
+    """真帧 + 每个 ROI 的框 + **框内实际读到的字**——复核靠这三者同屏。"""
+    from PIL import ImageDraw
+    img = Image.fromarray(rgb).convert("RGB")
+    d = ImageDraw.Draw(img, "RGBA")
+    font = _font(15)
+    h, w = rgb.shape[:2]
+    d.rectangle([0, 0, w, 24], fill=(0, 0, 0, 190))
+    d.text((8, 4), title, font=font, fill=(255, 255, 255))
+    for name, rect in regs.items():
+        x1, y1, x2, y2 = _norm_to_px(rect, w, h)
+        gated = name in PANEL_FIELDS and not field_on_dark(rgb, rect)
+        got = "—（闸门判定不在场）" if gated else ocr.read(rgb, rect).strip()
+        d.rectangle([x1, y1, x2 - 1, y2 - 1], outline=(255, 64, 64, 255), width=2)
+        label = f"{name}: {got or '(空)'}"
+        if name.startswith("score_"):
+            label += f" [{block_side(rgb, rect)}]"
+        tw = d.textlength(label, font=font)
+        ly = y1 - 18 if y1 >= 18 else y2 + 2
+        d.rectangle([x1, ly, x1 + tw + 6, ly + 17], fill=(0, 0, 0, 200))
+        d.text((x1 + 3, ly + 1), label, font=font, fill=(255, 230, 120))
+    return img
+
+
+def cmd_overlay(args) -> None:
+    """把 ROI 画在真帧上出 PNG，供人工复核「区域压得准不准」。
+
+    每格同时标注**框内实际 OCR 到的字**：框压歪了会立刻从标签上看出来（读到半个字、
+    读到邻居、或读到天空/护栏）。左侧三列仍过逐字段暗底闸门，闸门判不在场的格显式标出，
+    免得把"没读出字"误当成"框画错了"。
+
+    横幅场景取**文字最长的一帧**而不是第一帧：横幅会从 `极限超车` 长到 `极限超车×6`，
+    取最长的那帧才能暴露右边界不够、把 `×N` 切掉的问题。
+    """
+    regs = json.loads(Path(args.rects).read_text(encoding="utf-8"))
+    out_dir = Path(args.out) if args.out else DEMOS.parent / "roi_review"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ocr = HudOcr()
+    sessions = [Path(args.session)] if args.session else sorted(d for d in DEMOS.iterdir() if d.is_dir())
+    picked: dict[str, tuple] = {}
+    banner_len = 0
+    scanned = 0
+    for s in sessions:
+        rows = [json.loads(x) for x in
+                (s / "frames.jsonl").read_text(encoding="utf-8").splitlines() if x]
+        if len(rows) < 20:
+            continue
+        lo, hi = round(len(rows) * 0.06), round(len(rows) * 0.94)
+        for r in rows[lo:hi:max(1, args.every)]:
+            rgb = load_rgb(s / "frames" / r["file"])
+            if rgb is None:
+                continue
+            scanned += 1
+            if "panel" not in picked and _panel_ok(rgb, ocr, regs):
+                picked["panel"] = (s, r, rgb)
+            txt = ocr.read(rgb, regs["event_banner"])
+            if _has_word(txt) and len(txt) > banner_len:
+                banner_len, picked["banner"] = len(txt), (s, r, rgb)
+    print(f"扫 {scanned} 帧，命中场景 {sorted(picked)}  输出目录 {out_dir}\n")
+    for tag in OVERLAY_SCENES:
+        if tag not in picked:
+            print(f"  [{tag}] 未命中——该场景在素材里没出现，或对应 ROI 需重标")
+            continue
+        s, r, rgb = picked[tag]
+        title = f"{SCENE_TITLE[tag]} | {s.name} seq={r['seq']} t={r['ts_ns'] / 1e9:.3f}s"
+        img = _draw_overlay(rgb, regs, ocr, title)
+        dest = out_dir / f"{tag}_{s.name}_seq{r['seq']}.png"
+        img.save(dest)
+        print(f"  [{tag}] {dest}")
+    print("\n=== ROI 像素坐标（1280×720 参考） ===")
+    for name, rect in regs.items():
+        x1, y1, x2, y2 = _norm_to_px(rect, 1280, 720)
+        print(f"  {name:16s} 归一化={[round(float(v), 4) for v in rect]}  像素=({x1},{y1})-({x2},{y2})  "
+              f"{x2 - x1}×{y2 - y1}")
+
+
+def block_side(rgb: np.ndarray, rect) -> str:
+    """该比分面板当前是"本机玩家（蓝）"还是"对手（红）"。
+
+    为什么必须判：两块比分面板会**上下互换**（实测一段内至少 3 次），所以**位置不等于敌我**——
+    按位置命名的 ROI 会把两家的分数混成一条序列（本轮就据此产出过一条无效结论）。
+
+    判据取该带内**饱和像素**的均色，而不是某个固定采样点：天空/路面是低饱和的，会被
+    固定点采样放进来（实测踩过——天空同样满足 B>R，于是"下方永远是我方"）。
+    """
+    h, w = rgb.shape[:2]
+    x1, y1 = int(float(rect[0]) * w), int(float(rect[1]) * h)
+    x2, y2 = int(float(rect[2]) * w), int(float(rect[3]) * h)
+    reg = rgb[max(0, y1):y2, max(0, x1):max(x2, w)].reshape(-1, 3).astype(float)
+    if reg.size == 0:
+        return "?"
+    sat = reg.max(axis=1) - reg.min(axis=1)
+    sel = reg[sat > 80]
+    if len(sel) < 50:
+        return "?"
+    m = sel.mean(axis=0)
+    return "本机(蓝)" if m[2] > m[0] else "对手(红)"
+
+
 def _sample_rows(session: Path, regs: dict, every: int):
     """顺序读会话的 HUD（关 det，与生产口径一致）→ [(帧索引行, 各区域文本)]。
 
@@ -297,20 +545,22 @@ def cmd_timeline(args) -> None:
     session = Path(args.session)
     regs = json.loads(Path(args.rects).read_text(encoding="utf-8"))
     rows, samples = _sample_rows(session, regs, args.every)
-    print(f"会话 {session.name}  帧 {len(rows)}  采样 {len(samples)}（每 {args.every} 帧）\n")
+    print(f"会话 {session.name}  帧 {len(rows)}  采样 {len(samples)}（每 {args.every} 帧）")
+    print("注意：`score`/`rate` 两列取的是**上块**，而上块可能是任一方——比分面板会上下互换，"
+          "判敌我要用 block_side()（见 README 复核结论）\n")
     print(f"{'seq':>5} {'t(s)':>6} {'计时':>6} {'里程':>5} {'超车':>5} {'合计':>6} "
-          f"{'我方分':>7} {'速度':>5}  事件/浮字")
+          f"{'上块分':>7} {'速度':>5}  事件/浮字")
     seq = []
     t0 = samples[0][0]["ts_ns"] if samples else 0
     for r, v in samples:
         cur = {
             "t": (r["ts_ns"] - t0) / 1e9,
-            "timer": _mmss(v["timer"]), "mileage": _digits(v["mileage"]),
-            "overtake": _digits(v["overtake"]), "total": _digits(v["total_left"]),
-            "score": _digits(v["score_self"]), "rate": _digits(v["rate_self"]),
+            "timer": _mmss(v.get("timer")), "mileage": _digits(v.get("mileage")),
+            "overtake": _digits(v.get("overtake")), "total": _digits(v.get("total_left")),
+            "score": _digits(v.get("score_top")), "rate": _digits(v.get("rate_top")),
         }
         seq.append(cur)
-        ev = f"{v['event_banner'].strip()} {v['center_popup'].strip()}".strip()
+        ev = f"{(v.get('event_banner') or '').strip()} {(v.get('center_popup') or '').strip()}".strip()
         print(f"{r['seq']:>5} {cur['t']:>6.1f} {str(cur['timer']):>6} "
               f"{str(cur['mileage']):>5} {str(cur['overtake']):>5} {str(cur['total']):>6} "
               f"{str(cur['score']):>7} {str(cur['rate']):>5}  {ev}")
@@ -382,10 +632,15 @@ def cmd_formula(args) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["discover", "read", "scan", "timeline", "formula"])
+    ap.add_argument("mode", choices=["discover", "read", "dump", "find", "scan", "overlay",
+                                    "timeline", "formula"])
     ap.add_argument("--frame", default=None)
     ap.add_argument("--rects", default=None)
     ap.add_argument("--session", default=None)
+    ap.add_argument("--out", default=None, help="overlay 输出目录（默认 demos 同级 roi_review）")
+    ap.add_argument("--window", default=None, help="find 搜索窗 x1,y1,x2,y2（归一化）")
+    ap.add_argument("--match", default=r"[\u4e00-\u9fff]", help="find 内容正则")
+    ap.add_argument("--limit", type=int, default=0, help="find 最多扫几个会话（0=全部）")
     ap.add_argument("--per-session", type=int, default=6)
     ap.add_argument("--every", type=int, default=5)
     ap.add_argument("--show-all", action="store_true")
@@ -398,6 +653,18 @@ def main() -> None:
         cmd_discover(args)
     elif args.mode == "scan":
         cmd_scan(args)
+    elif args.mode == "dump":
+        if not args.rects:
+            raise SystemExit("dump 需要 --rects")
+        cmd_dump(args)
+    elif args.mode == "find":
+        if not args.window:
+            raise SystemExit("find 需要 --window")
+        cmd_find(args)
+    elif args.mode == "overlay":
+        if not args.rects:
+            raise SystemExit("overlay 需要 --rects")
+        cmd_overlay(args)
     elif args.mode == "formula":
         if not args.rects:
             raise SystemExit("formula 需要 --rects")
