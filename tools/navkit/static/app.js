@@ -47,12 +47,18 @@ const CAT_LABELS = {
   ocr: "OCR 锚点",
   nodes: "节点 rect",
   tuning: "调参 rect",
+  speedrush_hud: "speedrush HUD",
 };
-// 只有 spec 锚点分组可新增/删除（nodes/tuning 是只读镜像面，图结构编辑归 MPE）
+// 只有 spec 锚点分组可新增/删除（nodes/tuning 只读镜像面指「不可增删锚点」，其 rect
+// 值仍可编辑并触发镜像联动；speedrush_hud 是另一回事，见下）
 const EDITABLE_CATS = new Set(["template", "point", "ocr"]);
+// 只读分类（speedrush HUD 复核通路）：只显示 + 读数；拖拽、改归一化值、新增/删除、
+// 保存 body 全部不接。与 EDITABLE_CATS 是两回事——后者只管 spec 锚点的增删。
+const READONLY_CATS = new Set(["speedrush_hud"]);
+function isReadonlyCat(cat) { return READONLY_CATS.has(cat); }
 // 当前 JSON 存在哪些分类（基于 state.rois 的键），未分配始终追加。
 // 顶层 `_meta` 等元数据按键前缀 `_` 或在 KNOWN 白名单中排除。
-const CAT_KEYS = new Set(["template", "point", "ocr", "nodes", "tuning"]);
+const CAT_KEYS = new Set(["template", "point", "ocr", "nodes", "tuning", "speedrush_hud"]);
 function catList() {
   const cats = Object.keys((state.rois && typeof state.rois === "object") ? state.rois : {})
     .filter((k) => CAT_KEYS.has(k)) // 只认已知分类，忽略 _schema_ver/reference_size 等元数据
@@ -62,6 +68,15 @@ function catList() {
 }
 
 const DEFAULT_MATCH_THRESHOLD = 0.75;
+
+// ---------------- 帧源（按分类切换） ----------------
+// treasure 校准台读 debug/<时间戳>/raw/NNNN_raw.*；speedrush HUD 复核读
+// demos/<时间戳>_p<N>/frames/NNNNNN.jpg。两套帧库的会话名/帧目录/帧名形态不同，
+// 与服务端各有一套白名单参数对应，故前端按当前分类选端点：切分类时若帧源家族变了，
+// 会话与帧列表必须重载（否则拿 treasure 的会话名去问 speedrush 端点，恒返回空）。
+const HUD_CAT = "speedrush_hud";
+function frameSource() { return state.currentCat === HUD_CAT ? "speedrush" : "treasure"; }
+function apiBase() { return frameSource() === "speedrush" ? "/api/speedrush" : "/api"; }
 
 const state = {
   sessions: [],
@@ -195,7 +210,7 @@ async function apiPost(url, body) {
 }
 
 async function loadSessions() {
-  state.sessions = await apiGet("/api/list_sessions");
+  state.sessions = await apiGet(apiBase() + "/list_sessions");
   state.session = state.sessions[0] || null;
   fillSelect($("sessionSelect"), state.sessions, state.session);
 }
@@ -211,7 +226,7 @@ async function loadTemplateStatus() {
   state.templateStatus = await apiGet("/api/template_status");
 }
 async function loadImages() {
-  state.images = await apiGet(`/api/list_images?session=${encodeURIComponent(state.session)}`);
+  state.images = await apiGet(`${apiBase()}/list_images?session=${encodeURIComponent(state.session)}`);
   state.image = state.images[state.images.length - 1] || null;
   fillSelect($("imageSelect"), state.images, state.image);
 }
@@ -240,8 +255,8 @@ function loadImage() {
       state.matchHit = null; // 新截图旧命中失效
       fitCanvas();
       done();
-      // 截图加载完毕后重跑一次（非 OCR→匹配；OCR→识别）
-      if (state.currentCat === "ocr") scheduleOcr(); else scheduleMatch();
+      // 截图加载完毕后重跑一次（非 OCR→匹配；OCR→识别；HUD 只读→读数）
+      if (state.currentCat === "ocr" || isReadonlyCat(state.currentCat)) scheduleOcr(); else scheduleMatch();
     };
     img.onerror = (e) => {
       clearTimeout(timer);
@@ -249,7 +264,7 @@ function loadImage() {
       flash("❌ 加载截图失败: " + state.image);
       done();
     };
-    img.src = `/api/image?session=${encodeURIComponent(state.session)}&name=${encodeURIComponent(state.image)}`;
+    img.src = `${apiBase()}/image?session=${encodeURIComponent(state.session)}&name=${encodeURIComponent(state.image)}`;
   });
 }
 
@@ -346,8 +361,9 @@ function draw() {
     const [x1, y1] = normToCanvas(r.rect[0], r.rect[1]);
     const [x2, y2] = normToCanvas(r.rect[2], r.rect[3]);
     const isSel = key === state.selected;
-    if (state.currentCat === "ocr") {
-      // OCR 分类：区域即 OCR 识别区 → 用 OCR 框样式（虚线 + 半透明 + pill 标签）
+    if (state.currentCat === "ocr" || isReadonlyCat(state.currentCat)) {
+      // OCR 分类与 speedrush HUD 分类：区域即 OCR 识别区 → 用 OCR 框样式
+      // （虚线 + 半透明 + pill 标签），与 treasure 的 OCR 框同一份画法
       drawOcrBox(x1, y1, x2, y2, color, key);
     } else {
       // 模板匹配分类：矩形只是搜索区 → 细实线 + 键名
@@ -358,8 +374,8 @@ function draw() {
       ctx.font = "12px sans-serif";
       ctx.fillText(key, x1 + 2, y1 - 4);
     }
-    if (isSel) {
-      // 右下角缩放手柄
+    if (isSel && !isReadonlyCat(state.currentCat)) {
+      // 右下角缩放手柄（只读分类不画：它不接缩放，画了就是假承诺）
       ctx.fillStyle = "#fff";
       ctx.fillRect(x2 - 8, y2 - 8, 8, 8);
       ctx.strokeStyle = color;
@@ -400,10 +416,17 @@ function renderCatTabs() {
     const b = document.createElement("button");
     b.className = "cat-tab" + (c.id === state.currentCat ? " active" : "");
     b.textContent = c.label;
-    b.onclick = () => {
+    b.onclick = async () => {
+      const prevSource = frameSource();
       state.currentCat = c.id;
       state.selected = roiKeys(c.id)[0] || null;
       state.matchHit = null; // 切分类旧命中失效
+      // 帧源家族变了（treasure 与 speedrush 之间）：会话/帧/画面按新源重载
+      if (frameSource() !== prevSource) {
+        await loadSessions();
+        await loadImages();
+        await loadImage();
+      }
       updatePreviewMode();
       renderCatTabs(); renderRoiList(); updatePropPanel(); draw();
     };
@@ -534,7 +557,8 @@ async function assignTemplate(name) {
 function updatePreviewMode() {
   const row = $("previewRow");
   if (!row) return;
-  if (state.currentCat === "ocr") {
+  // 只读 HUD 分类同样是「抠图 + 读数」形态（无模板可关联），与 OCR 分类共用预览布局
+  if (state.currentCat === "ocr" || isReadonlyCat(state.currentCat)) {
     row.classList.remove("preview-template");
     row.classList.add("preview-ocr-mode");
     // OCR 框默认 display:flex（preview-ocr-mode 下展开），但初始 hidden class 也要去掉
@@ -568,6 +592,7 @@ function updatePropPanel() {
   const isPoint = state.currentCat === "point"; // 点位锚点只用 rect 中心做准星目标，无模板图
   const isNode = state.currentCat === "nodes";  // 节点 rect：双真源可见性 + 镜像联动逃生口
   const isTuning = state.currentCat === "tuning"; // 调参 rect：spec 之外的第 54 个 rect
+  const isReadonly = isReadonlyCat(state.currentCat); // speedrush HUD：只显示 + 读数
   const addedEntry = (state.added[state.currentCat] || {})[key]; // 本次新增项：需补结构字段
   const addOpts = state.rois._meta || {};
   const addedGroupHtml = addedEntry ? `
@@ -620,7 +645,7 @@ function updatePropPanel() {
 
   // 色彩空间编辑（编辑面三件套之一；空 = 回落默认 rgb）
   const csOptions = ["", "rgb", "gray", "rgb_strict"];
-  const csHtml = (isOcr || isPoint || isNode) ? "" : `
+  const csHtml = (isOcr || isPoint || isNode || isReadonly) ? "" : `
     <label class="prop-row"><span class="k">colorspace</span>
       <select id="colorspaceSel" class="rect-input">
         ${csOptions.map(v => `<option value="${v}" ${(r.colorspace ?? "") === v ? "selected" : ""}>${v || "（默认 rgb）"}</option>`).join("")}
@@ -628,13 +653,22 @@ function updatePropPanel() {
     </label>
   `;
 
+  // rect 编辑块：只读分类渲染成纯文本（不给输入框、不给删除按钮）——只读就必须真的
+  // 读不出可写入口，否则改归一化值仍会进内存并 markDirty，与「只读」自相矛盾
+  const rectEditHtml = isReadonly ? `
+      <div class="prop-row"><span class="k">Normalized</span><span style="font-family:monospace">${rect.map(n => n.toFixed(4)).join(', ')}</span></div>
+      <div class="prop-row" style="color:var(--dim);font-size:12px">只读区域：不接拖拽/改值/增删/保存（区域真源在实验目录 <code>hud_regions.json</code>）</div>
+  ` : `
+      <div class="prop-row"><span class="k">Normalized</span></div>
+      <input id="rectInput" class="rect-input" value="${rect.map(n => n.toFixed(3)).join(', ')}">
+      <button id="delRoi" class="btn" style="margin-top:8px;width:100%;border-color:var(--bad);color:var(--bad)">删除</button>
+  `;
+
   panel.innerHTML = `
     <div class="prop-group">
       <h3>[${state.currentCat}] ${key}</h3>
       <div class="prop-row"><span class="k">Pixel</span><span id="pxText">${Math.round(x1)},${Math.round(y1)} → ${Math.round(x2)},${Math.round(y2)}</span></div>
-      <div class="prop-row"><span class="k">Normalized</span></div>
-      <input id="rectInput" class="rect-input" value="${rect.map(n => n.toFixed(3)).join(', ')}">
-      <button id="delRoi" class="btn" style="margin-top:8px;width:100%;border-color:var(--bad);color:var(--bad)">删除 {{key}}</button>
+      ${rectEditHtml}
     </div>
     ${addedGroupHtml}
     ${metaHtml}
@@ -654,6 +688,13 @@ function updatePropPanel() {
     <div class="prop-group">
       <h3>调参 rect（policy.tuning.perception）</h3>
       <div class="prop-row"><span class="k">说明</span><span>不在 spec 内的第 54 个 rect，仅此一处；拖框或改归一化值即可</span></div>
+    </div>
+    ` : (isReadonly ? `
+    <div class="prop-group">
+      <h3>speedrush HUD 区域（只读复核）</h3>
+      <div class="prop-row"><span class="k">引擎</span><span>core RapidOcrEngine</span></div>
+      <div class="prop-row"><span class="k">读数</span><span>选中即识别，结果显示在下方「OCR 识别结果」</span></div>
+      <div class="prop-row" style="color:var(--dim);font-size:12px">区域真源：tools/experiments/speedrush_scoring/hud_regions.json（实时读数落地后移入插件 resources）</div>
     </div>
     ` : `
     <div class="prop-group">
@@ -693,11 +734,14 @@ function updatePropPanel() {
       <div id="scoreBox" class="score-big score-dim">—</div>
       <div id="scoreNote" class="prop-row" style="justify-content:center">实时预览</div>
     </div>
-    `))}
+    `)))}
   `;
-  // 修正删除按钮文字
-  panel.querySelector("#delRoi").textContent = `删除 ${key}`;
-  panel.querySelector("#delRoi").onclick = () => deleteRoi(state.currentCat, key);
+  // 修正删除按钮文字（只读分类没有该按钮）
+  const delBtn = panel.querySelector("#delRoi");
+  if (delBtn) {
+    delBtn.textContent = `删除 ${key}`;
+    delBtn.onclick = () => deleteRoi(state.currentCat, key);
+  }
 
   if (addedEntry) {
     const pageSel = panel.querySelector("#addedPage");
@@ -722,8 +766,8 @@ function updatePropPanel() {
     };
   }
 
-  // 模板多选（OCR 区域、纯 rect 点位锚点、调参 rect 不显示模板，跳过）
-  if (!isOcr && !isPoint && !isTuning) {
+  // 模板多选（OCR 区域、纯 rect 点位锚点、调参 rect、只读 HUD 区域不显示模板，跳过）
+  if (!isOcr && !isPoint && !isTuning && !isReadonly) {
   const tplList = panel.querySelector("#tplList");
   const activeTpl = panel.querySelector("#activeTpl");
   state.templates.forEach((t) => {
@@ -860,9 +904,9 @@ function updatePropPanel() {
     else delete state.onlyThisSide[selTplKey];
   };
 
-  // 归一化输入
+  // 归一化输入（只读分类没有该输入框）
   const rectInput = panel.querySelector("#rectInput");
-  rectInput.onchange = () => {
+  if (rectInput) rectInput.onchange = () => {
     const parts = rectInput.value.split(/[,\s]+/).map(Number);
     if (parts.length === 4 && parts.every(n => !isNaN(n))) {
       r.rect = parts.map(n => Math.min(1, Math.max(0, n)));
@@ -874,7 +918,7 @@ function updatePropPanel() {
     }
   };
 
-  if (isOcr) scheduleOcr();
+  if (isOcr || isReadonly) scheduleOcr();
   else if (!isPoint && !isNode && state.currentCat !== "tuning") scheduleMatch();
 }
 
@@ -888,7 +932,7 @@ function scheduleMatch() {
 let ocrTimer = null;
 function scheduleOcr() {
   clearTimeout(ocrTimer);
-  ocrTimer = setTimeout(runOcr, 200);
+  ocrTimer = setTimeout(() => { isReadonlyCat(state.currentCat) ? runHudOcr() : runOcr(); }, 200);
 }
 
 async function runMatch() {
@@ -1029,6 +1073,55 @@ function htmlEscape(s) {
   }[c]));
 }
 
+// ---------------- speedrush HUD 只读读数 ----------------
+// 走 core 引擎端点（/api/speedrush/ocr），拿「合并文本 + 逐块文本」；刻意不渲染
+// treasure 那套金额（amount/amounts 是鉴宝领域语义，本通路没有领域解释）。
+async function runHudOcr() {
+  const box = $("ocrResult");
+  const cropImg = $("cropPreview");
+  if (!isReadonlyCat(state.currentCat)) return;
+  const rois = currentRois();
+  const key = state.selected;
+  if (!key || !rois[key] || !state.session || !state.image) {
+    if (box) box.innerHTML = `<div class="ocr-empty">请选择 HUD 区域并加载录制帧</div>`;
+    return;
+  }
+  const r = rois[key];
+  if (!r || !Array.isArray(r.rect)) return;
+  if (box) box.innerHTML = `<div class="ocr-empty"><span class="spinner"></span> 识别中…</div>`;
+  const cat = state.currentCat;
+  try {
+    const res = await apiPost("/api/speedrush/ocr", {
+      session: state.session, image: state.image,
+      key: key, rect: r.rect,
+    });
+    if (key !== state.selected || cat !== state.currentCat) return;
+    cropImg.src = res.crop_preview || "";
+    if (!box) return;
+    if (res.error) {
+      box.innerHTML = `<div class="ocr-meta"><span class="bad">❌ ${htmlEscape(res.error)}</span></div>`;
+      return;
+    }
+    const cs = res.crop_size || [0, 0];
+    const lines = Array.isArray(res.lines) ? res.lines : [];
+    const meta = [
+      `<span>区域 ${htmlEscape(key)}</span>`,
+      `<span>裁剪 ${cs[0]}×${cs[1]}</span>`,
+      `<span class="ok">耗时 ${res.duration_ms}ms</span>`,
+    ];
+    const bodyHtml = lines.length
+      ? lines.map((l, i) => `<div class="ocr-line">${htmlEscape(String(i + 1).padStart(2, " "))}. ${htmlEscape(l)}</div>`).join("")
+      : `<div class="ocr-line" style="color:var(--dim)">（无可识别行）</div>`;
+    // 合并文本与逐块都显示：det 关闭时通常只有一块、两者相同，但契约上是两个字段，
+    // 复核时"读到什么"必须能直接看见，不靠单块的巧合
+    const textHtml = `<div class="ocr-text-label">合并文本：</div>`
+      + `<div class="ocr-line">${res.text ? htmlEscape(res.text) : "（空）"}</div>`;
+    box.innerHTML = `<div class="ocr-meta">${meta.join("")}</div>${bodyHtml}${textHtml}`;
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="ocr-meta"><span class="bad">请求失败 ${htmlEscape(e.message || String(e))}</span></div>`;
+  }
+}
+
 // ---------------- 跨帧测试 ----------------
 $("testBtn").onclick = async () => {
   const key = state.selected;
@@ -1118,6 +1211,9 @@ function collectSaveBody(preview) {
   });
   // nodes 组：注入「仅改此面」勾选态（缺省 false = 联动同步写 spec 同名锚点）
   const rois = { ...state.rois };
+  // 只读分类不进保存 body：它们的真源不在本台（服务端也没有对应合并分支），
+  // 带上去只会让 preview 里出现一份"没有对应写面"的 payload
+  for (const cat of READONLY_CATS) delete rois[cat];
   if (state.rois && state.rois.nodes) {
     rois.nodes = {};
     for (const [k, v] of Object.entries(state.rois.nodes)) {
@@ -1305,6 +1401,8 @@ function hitTest(cx, cy) {
   //   • "all"      → 所有框正常响应
   if (state.currentCat === "unassigned") return null;
   if (state.showRois === "none") return null;
+  // 只读分类不参与命中测试 → 拖不动、也进不了 move/resize 分支
+  if (isReadonlyCat(state.currentCat)) return null;
   const rois = currentRois();
   const keys = Object.keys(rois).filter((k) => !k.startsWith("_"));
   for (let i = keys.length - 1; i >= 0; i--) {
@@ -1353,6 +1451,10 @@ function onDown(e) {
 
 function onMove(e) {
   if (!drag.mode) return;
+  // 只读分类不得进入 move/resize 分支：hitTest 已挡住起拖，这里是第二道门——
+  // 起拖后中途切到只读分类时，drag.key 指向的是**另一个分类**的同名键，
+  // 此时按当前分类写值会污染只读组（少这道门就是"只读"名不副实）。
+  if (isReadonlyCat(state.currentCat)) return;
   const rect = canvas.getBoundingClientRect();
   const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
   const [nx, ny] = canvasToNorm(cx, cy);

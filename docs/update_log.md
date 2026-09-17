@@ -120,6 +120,26 @@
 
 - **遗留（明确未做）：** `tools/navkit/studio_server.py` 未改（仍经 `plugins.treasure.ocr.TreasureOcr` 取引擎，属后续独立一步）；`tools/experiments/v4-p2b-smoke/diag_run25b_ocr_offline.py` 会失效，但它 import 的 `maaracing_assistant.*` 包名本就不存在（改动前即已坏），按实验脚本约定未动。
 
+### 暂存（未发布 · 待并入下一版本）Studio 第四面：speedrush HUD 只读复核通路 🔍
+
+- **性质：** 未发版变更（工具链：`tools/navkit/studio_sessions.py`、`tools/navkit/studio_server.py`、`tools/navkit/static/app.js`、`tools/navkit/README.md`；测试：新增 `tests/test_navkit_studio_speedrush.py`；**未动** `maaracing_master/**` 与 `tools/experiments/**`；master 直接提交、不 tag）
+
+- **起因：** speedrush 驾驶页 HUD 的区域此前只能在离线实验里复核（`probe_hud_ocr.py overlay`），改一处框就得跑脚本看图。本轮把「在真实速度录制的帧上显示 + 读一次文本」搬进 Studio 同一个 `/roi` 页，作为第四面。
+
+- **帧库参数化（而不是新增平行浏览器）：** `SessionBrowser` 的会话名正则 / 帧目录名 / 帧名正则 / 会话在场判据改为构造参数，缺省值即原 debug 截图会话形态——treasure 调用零改动、既有白名单测试全绿。起因是 speedrush 演示会话与 debug 会话**三处命名规则全不匹配**（`<时间戳>_p<N>` vs `<时间戳>`、`frames/` vs `raw/`、`000001.jpg` vs `0001_raw.png`）。参数化让**穿越防护仍只有 `is_relative_to` 一份实现**，而不是复制第二套白名单检查。
+
+- **读数走 core 唯一引擎：** 新端点 `POST /api/speedrush/ocr` 用上一条刚落地的 `core.ocr.RapidOcrEngine`，不经 treasure 的 `TreasureOcr`，故响应只有合并文本 `text` 与逐块 `lines`，**不带** `amount`/`amounts` 的鉴宝金额语义；帧读取走 `core.image_io.read_rgb`（不再引入读图路径的第二份实现）。
+
+- **区域真源刻意不搬家：** 本轮仍读实验目录的 `hud_regions.json`，不复制进插件 `resources`——插件尚无实时读数消费者，先建一份无人读的真源就是第二真源。代码注释写明「实时读数落地后本区域集会移入插件 resources」。
+
+- **只读需要独立集合（新增 `READONLY_CATS`）：** 「不进 `EDITABLE_CATS`」并不构成只读——`onMove()` 的 move/resize 分支会直接改 rect 并标脏（三处门只盖住锚点增删）。故新分类另立只读集合，门落三处：`hitTest` 不命中、`onMove` 入口第二道门（防起拖后切分类污染只读组）、`collectSaveBody` 剔除该组；属性面板对只读分类不渲染归一化输入框与删除按钮、不画缩放手柄。
+
+- **`nodes`/`tuning` 的 rect 编辑**是成文特性**，本轮**未改**：镜像联动与「仅改此面」逃生口写在 `tools/navkit/README.md`，`_merge_nodes_group`/`_merge_tuning_group` 专为接收这类编辑而存在，`TestMirrorLinkage` 把「改 nodes rect 必须同时写 pipeline 与 spec」锁成断言。服务端那句「nodes/tuning 是只读镜像面」的整句讲的是**锚点增删**、图结构编辑归 MPE。本轮把这层区分在 README 与注释里写清，免得后来者把「只读镜像面」误读成「rect 也不可编辑」。
+
+- **验证：** 全量 `pytest` **771 passed / 1 skipped**（新文件 60 用例：区域数从真源读出比对而不写死、treasure 计数由 policy 现算比对、会话与帧名越界多组拒绝、缺省布局回归锁、只读三处门的存在性锁）；`ruff check .` 全通过；`tools/navkit/check_truth.py` OK。真起 server 实测：4 个演示会话与帧可列，`/api/speedrush/image` 回真 jpg 字节（SOI/EOI 完整），十个区域全出文本（`阶段：1` / `00:24` / `338` / `1` / `368` / `722` / `632` / `41` / `1` / `极限变道`），把 `speedrush_hud` 塞进保存预览得 `diff` 全空、真源字节不变。其中帧 201 的 `338 / 1 / 368` 与实验记录里独立目视核对过的读数一致，构成区域真源、core 引擎与帧通路三方对齐的旁证。
+
+- **未做/未验：** 无浏览器截图（`browser-use` 技能明令子代理不得加载），前端「切 tab 换帧源、只读面板无输入框」只由测试锁住存在性、未人眼验证；非 ASCII 用户名下 `core.image_io.read_rgb` 走 `cv2.imread(str(path))` 的边界未验（本机用户名是 ASCII）；`rate_top`/`rate_bottom` 的语义仍未解。
+
 ## 2026-09-16
 
 ### 暂存（未发布 · 待并入下一版本）文档分层收敛：主 wiki 只留平台级事实 📄
