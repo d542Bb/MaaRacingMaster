@@ -560,6 +560,11 @@ class HudObserver:
                 return entry
             rect = self._regions[f"{name.split('_', 1)[0]}_{token}_{slot}"]
             entry["rect"] = f"{name.split('_', 1)[0]}_{token}_{slot}"
+        elif rect is None:
+            # 普通格的框由调用方从 _regions 迭代而来本不该为空；真到了这里就废这一格
+            # （与全模块「宁可为空不猜框」一致），同时收窄类型。
+            entry["note"].append("rect_missing")
+            return entry
         res = self._recognize(frame, rect)
         if res is None:
             entry["note"].append("ocr_unavailable")
