@@ -361,10 +361,13 @@ def _mmss(text: str) -> int | None:
 #      逐字段判暗底同时覆盖这两种情况，且纯 numpy、不消耗 OCR。
 FIELD_DARK_MIN = 0.35
 PANEL_FIELDS = ("mileage", "overtake", "total_left")
-# 比分面板两格：归属必须**成对判**（见 pair_sides）；位置名不等于敌我
-PAIR_FIELDS = ("score_a", "score_b")
-# 得分速度两格与同槽位的比分格配对（rate_a 在 score_a 上方）；**只为本方显示**
-RATE_FIELDS = ("rate_a", "rate_b")
+# 比分面板两格：归属必须**成对判**（见 pair_sides）；判色带与读数框分开——判身份不能
+# 依赖身份（读数框按"卡片色 × 槽位"取），且判色只吃像素、不做 OCR
+PAIR_FIELDS = ("pair_a", "pair_b")
+# 槽位后缀（a=上档、b=下档）：由判色带派生，不另抄一份
+SLOTS = tuple(n.rsplit("_", 1)[1] for n in PAIR_FIELDS)
+# 卡片色 → 敌我（读哪块框由它决定；两卡版式不同，见 hud.py 的模块说明）
+CARD_OF_SIDE = {"本机(蓝)": "blue", "对手(红)": "red"}
 
 
 def field_on_dark(frame_rgb: np.ndarray, rect) -> bool:
@@ -620,14 +623,18 @@ def cmd_timeline(args) -> None:
     seq = []
     t0 = samples[0][0]["ts_ns"] if samples else 0
     for r, v in samples:
-        # 速度格**按归属取**（只为本方显示）：归属来自 _sample_rows 里的成对判
-        own_slot = PAIR_FIELDS[1] if v.get("__side_a") == "对手(红)" else PAIR_FIELDS[0]
+        # 比分按**归属**取（读数框是"卡片色 × 槽位"，按槽位取会读到另一家的框）
+        side_a, side_b = v.get("__side_a"), v.get("__side_b")
+        own_slot = (SLOTS[0] if side_a == "本机(蓝)"
+                    else SLOTS[1] if side_b == "本机(蓝)" else None)
+        own_side = "本机(蓝)" if own_slot is not None else None
+        token = CARD_OF_SIDE.get(own_side or "")
         cur = {
             "t": (r["ts_ns"] - t0) / 1e9,
             "timer": _mmss(v.get("timer")), "mileage": _digits(v.get("mileage")),
             "overtake": _digits(v.get("overtake")), "total": _digits(v.get("total_left")),
-            "score": _digits(v.get("score_a")),
-            "rate": _digits(v.get("rate_a" if own_slot == PAIR_FIELDS[0] else "rate_b")),
+            "score": _digits(v.get(f"score_{token}_{own_slot}")) if token else None,
+            "rate": _digits(v.get(f"rate_blue_{own_slot}")) if own_slot else None,
         }
         seq.append(cur)
         ev = f"{(v.get('event_banner') or '').strip()} {(v.get('center_popup') or '').strip()}".strip()

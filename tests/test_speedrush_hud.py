@@ -52,10 +52,8 @@ def _px(rect: list[float]) -> tuple[int, int, int, int]:
 
 
 def _frame(*, absent: tuple[str, ...] = (), sides: dict[str, tuple] | None = None):
-    """造一帧：面板三格默认压在暗底（在场）；``absent`` 里的格换成亮底（面板缺席/矮版）。
-
-    暗底/亮底是闸门的唯一判据，故"面板在不在场"在测试里就是"那格暗不暗"。
-    """
+    """造一帧：``absent`` 里的格涂亮底（历史上用于"面板缺席"，现仅作坏场景用）；
+    ``sides`` 按**真源键名**涂纯色——判色读的是 ``pair_a`` / ``pair_b`` 两条判色带。"""
     f = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8)
     for name in absent:
         x1, y1, x2, y2 = _px(REGIONS[name])
@@ -79,11 +77,16 @@ class _FakeEngine:
 
 
 def _texts(**over: str) -> dict[tuple, str]:
-    """默认一套"面板与比分都在场"的读数；``over`` 按字段名覆盖。"""
+    """默认一套"面板与比分都在场"的读数；``over`` 按**真源键名**覆盖。
+
+    读数框按 (卡片色 × 槽位) 取，故四块比分框各带不同文本——"这一格读到的是哪块框"因此
+    在断言里可分辨（这正是本版改动的要害）。
+    """
     base = {
-        "stage": "阶段:1", "timer": "00:25", "mileage": "338", "overtake": "1",
-        "total_left": "368", "score_a": "560", "score_b": "593",
-        "rate_a": "41", "rate_b": "38", "event_banner": "极限超车×2",
+        "stage": "阶段:1", "timer": "00:25", "event_banner": "极限超车×2",
+        "score_blue_a": "560", "score_blue_b": "581",
+        "score_red_a": "593", "score_red_b": "612",
+        "rate_blue_a": "41", "rate_blue_b": "38",
     }
     base.update(over)
     return {tuple(REGIONS[name]): text for name, text in base.items()}
@@ -165,18 +168,43 @@ class TestRegionTruth:
         wrapped = {"speedrush_hud": {n: {"rect": r} for n, r in REGIONS.items()}}
         assert ct.rect_checks({}, wrapped) == []
 
-    def test_region_keys_carry_no_identity_assumption(self) -> None:
-        """区域键只描述**槽位/序号**，不得承载敌我或位置语义。
+    def test_region_keys_encode_only_verified_facts(self) -> None:
+        """区域键不得承载**未验证**的语义假设：位置词与"我是谁"这类词不许进键名。
 
         假设写进名字，读取路径就会按假设分支：`score_self/opp` 与 `score_top/bottom` 各诱导过
         一次错判（见 `plugins/speedrush/CODE_WIKI.md` §5「读数结论的标尺与纪律」第 3 条）。
-        敌我由数据里的 `side` 承担，名字里不许出现。
+        **位置尤其不许**——两块卡都会经过上下两个槽位，位置从来不决定任何事；故槽位一律用
+        `a`／`b`（或序号），敌我留在数据里的 `side`。
+
+        **例外是已验证的卡片色**（`blue` / `red`）：两块卡的版式实测不同（本机那张多一行速度、
+        比分右缘更靠左），读数框**必须**按卡片分开，而"蓝＝本机"有官方规则页 + 维护者口径 +
+        「得分速度」行只在本机卡上出现三重佐证——判据管的是**未验证的**假设，不是已验证的事实。
+        这里同时锁住"真源必须两色两槽齐备、且只有本机卡有速度行"：少一色就说明有人在按固定
+        朝向写框（换位后必错）。
         """
         forbidden = {"self", "opp", "own", "mine", "enemy", "ally", "top", "bottom",
                      "upper", "lower", "left_side", "right_side"}
         for name in REGIONS:
             assert not (set(name.lower().split("_")) & forbidden), \
                 f"{name} 的键名带身份/位置语义——改用槽位名或序号"
+        for card in ("blue", "red"):
+            for slot in ("a", "b"):
+                assert f"score_{card}_{slot}" in REGIONS, f"缺 {card} 卡在 {slot} 槽的比分框"
+        assert {"rate_blue_a", "rate_blue_b"} <= set(REGIONS)
+        assert not [n for n in REGIONS if n.startswith("rate_") and "red" in n], \
+            "对手卡没有「得分速度」行，不该有它的读数框"
+
+    def test_region_roles_cover_every_key(self) -> None:
+        """每个键都属于四种角色之一，且四种都非空——角色清单与读取路径不许脱节。"""
+        roles = hud.region_roles(REGIONS)
+        assert set(roles) == set(REGIONS), "有键没有角色（读取路径会当它不存在）"
+        assert set(roles.values()) == {"plain", "pair", "card", "skip"}
+        assert {n for n, r in roles.items() if r == "pair"} == set(hud.PAIR_FIELDS)
+        assert {n for n, r in roles.items() if r == "skip"} == set(hud.SKIPPED_FIELDS)
+        card = {n for n, r in roles.items() if r == "card"}
+        # 卡片框必须能由「两色 × 两槽 + 本机速度」完整推出来（不许多也不许少）
+        assert card == {f"score_{c}_{s}" for c in ("blue", "red") for s in ("a", "b")} | \
+                       {"rate_blue_a", "rate_blue_b"}
 
     @pytest.mark.parametrize("bad,needle", [
         ([0.9, 0.1, 0.2, 0.2], "x1<x2"),          # x 反序
@@ -194,16 +222,28 @@ class TestRegionTruth:
             hud.load_hud_regions(f)
 
     def test_loader_rejects_comment_key_and_missing_semantic_fields(self, tmp_path) -> None:
-        """真源是纯数据：说明键与"缺语义必填字段"都要拦（缺了比分格，敌我判据只能整段弃权）。"""
+        """真源是纯数据：说明键、缺读数框、缺判色带、多余的旧键都要拦。
+
+        半改名的真源最危险：旧键（`score_a`）留着会被当成普通格去读、新的读数框却没人用，
+        结果是"能跑、值不对"。故这四种情况一律 fail loud。
+        """
         comment = tmp_path / "a.json"
         comment.write_text(json.dumps({"_note": "说明", **REGIONS}), encoding="utf-8")
         with pytest.raises(ValueError, match="说明键"):
             hud.load_hud_regions(comment)
-        missing = tmp_path / "b.json"
-        missing.write_text(json.dumps({k: v for k, v in REGIONS.items()
-                                       if k != "score_a"}), encoding="utf-8")
-        with pytest.raises(ValueError, match="语义必需字段"):
-            hud.load_hud_regions(missing)
+        for drop, needle in (("rate_blue_b", "缺读数框"),
+                             ("pair_b", "缺判色带"),
+                             ("score_red_a", "缺读数框")):
+            p = tmp_path / f"miss_{drop}.json"
+            p.write_text(json.dumps({k: v for k, v in REGIONS.items() if k != drop}),
+                         encoding="utf-8")
+            with pytest.raises(ValueError, match=needle):
+                hud.load_hud_regions(p)
+        stray = tmp_path / "stray.json"
+        stray.write_text(json.dumps({**REGIONS, "score_a": REGIONS["score_blue_a"]}),
+                         encoding="utf-8")
+        with pytest.raises(ValueError, match="多余的比分/速度键"):
+            hud.load_hud_regions(stray)
 
     def test_default_path_is_the_plugin_truth(self) -> None:
         assert hud.load_hud_regions() == REGIONS
@@ -217,9 +257,16 @@ class TestRegionTruth:
         assert not offenders, f"仍引用已搬走的区域真源：{offenders}"
 
     def test_every_region_is_consumed(self, tmp_path) -> None:
-        """采样范围 == 真源键集 − 跳过名单（派生断言，不另抄一份字段清单）。"""
+        """采样范围 == 真源的**读格**（角色派生，不另抄一份字段清单）。
+
+        行内格 = 普通格 + 四个槽位卡格；判色带与跳过格**不进**行——它们在真源里有 rect，
+        但不该被当成读数写下来。
+        """
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts())))
-        assert set(rec["fields"]) == set(REGIONS) - set(hud.SKIPPED_FIELDS)
+        roles = hud.region_roles(REGIONS)
+        plain = {n for n, r in roles.items() if r == "plain"}
+        assert set(rec["fields"]) == plain | set(hud.SIDE_FIELDS) | set(hud.RATE_FIELDS)
+        assert not (set(rec["fields"]) & set(hud.PAIR_FIELDS)), "判色带不该被当成读数写下来"
         assert rec["regions"] == hud.region_digest(REGIONS)
 
 
@@ -230,19 +277,49 @@ class TestRegionTruth:
 
 class TestReadingJudgements:
     def test_side_attribution_lands_in_record(self, tmp_path) -> None:
-        """比分面板上下互换 → 归属由成对判给出，并逐格写进记录。"""
-        sides = {"score_a": (30, 60, 220), "score_b": (220, 60, 30)}
+        """比分面板上下互换 → 归属由成对判给出，并逐格写进记录；**用哪块框**也留痕。"""
+        sides = {"pair_a": (30, 60, 220), "pair_b": (220, 60, 30)}
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
         assert rec["fields"]["score_a"]["side"] == "本机(蓝)"
         assert rec["fields"]["score_b"]["side"] == "对手(红)"
-        # 位置与敌我解耦：读数照读，归属单列
+        # 位置与敌我解耦：读数照读，归属单列；读数框由归属选出（两卡版式不同）
         assert rec["fields"]["score_a"]["value"] == 560
+        assert rec["fields"]["score_a"]["rect"] == "score_blue_a"
+        assert rec["fields"]["score_b"]["value"] == 612
+        assert rec["fields"]["score_b"]["rect"] == "score_red_b"
+
+    def test_score_rect_follows_side_not_slot(self, tmp_path) -> None:
+        """同一槽位在两态下用**不同的框**：蓝在上 → 上槽读 ``score_blue_a``；蓝在下 → 读
+        ``score_red_a``。按槽位共用一块框正是本版要修的病（会把对手比分末位读掉）。"""
+        for blue_top in (True, False):
+            top = (30, 60, 220) if blue_top else (220, 60, 30)
+            bot = (220, 60, 30) if blue_top else (30, 60, 220)
+            engine = _FakeEngine(_texts())
+            rec = _sample(_observer(tmp_path, engine, sides={"pair_a": top, "pair_b": bot}))
+            want_a = "score_blue_a" if blue_top else "score_red_a"
+            want_b = "score_red_b" if blue_top else "score_blue_b"
+            assert rec["fields"]["score_a"]["rect"] == want_a
+            assert rec["fields"]["score_b"]["rect"] == want_b
+            # 未选中的那两块比分框一次都不该被识别
+            for unused in {"score_blue_a", "score_red_a", "score_blue_b", "score_red_b"} \
+                    - {want_a, want_b}:
+                assert tuple(REGIONS[unused]) not in engine.calls, f"{unused} 不该被识别"
 
     def test_pair_abstains_on_unsaturated_band(self, tmp_path) -> None:
-        """低饱和带（天空/路面）判不出归属 → 显式 ``?``，不猜。"""
+        """低饱和带（天空/路面）判不出归属 → 显式 ``?``，不猜；**比分格也不读**。
+
+        比值分格更要紧的一层：读数框按身份取，身份判不出就没有"该读哪块框"这回事——
+        读一个凑出来的框，等于把另一家的数字写成本方比分。
+        """
         gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
-        rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), frame=gray))
+        engine = _FakeEngine(_texts())
+        rec = _sample(_observer(tmp_path, engine, frame=gray))
         assert rec["fields"]["score_a"]["side"] == "?"
+        assert rec["fields"]["score_a"]["trusted"] is False
+        assert "side_unknown" in rec["fields"]["score_a"]["note"]
+        assert "rect" not in rec["fields"]["score_a"], "身份判不出时不该有框被选中"
+        for card_rect in ("score_blue_a", "score_red_a", "score_blue_b", "score_red_b"):
+            assert tuple(REGIONS[card_rect]) not in engine.calls
 
     def test_timer_value_is_seconds_not_first_int(self, tmp_path) -> None:
         """计时格按秒记：'04:46' 走通用取整会得到 4（分钟）——那是"读得出但解释错"的陷阱。"""
@@ -305,7 +382,7 @@ class TestReadingJudgements:
     def test_non_three_channel_frame_never_lies_about_side(self) -> None:
         """非 3 通道帧的归属说"判不出"，而不是把通道错位分组后给一个看着合理的错标签。"""
         f = np.zeros((FRAME_H, FRAME_W, 4), dtype=np.uint8)
-        assert hud.pair_sides(f, REGIONS["score_a"], REGIONS["score_b"]) == ("?", "?")
+        assert hud.pair_sides(f, REGIONS["pair_a"], REGIONS["pair_b"]) == ("?", "?")
 
 
 # ----------------------------------------------------------------------
@@ -323,7 +400,7 @@ class TestSidePairJudgement:
     def test_pair_recovers_attribution_under_common_bias(self, tmp_path) -> None:
         """两块都偏蓝时，更蓝的那块是本机。"""
         # 上块 B−R=+90（被蓝天染过），下块 +180（本机色条更实）
-        sides = {"score_a": (60, 90, 150), "score_b": (20, 80, 200)}
+        sides = {"pair_a": (60, 90, 150), "pair_b": (20, 80, 200)}
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
         assert rec["fields"]["score_a"]["side"] == "对手(红)"
         assert rec["fields"]["score_b"]["side"] == "本机(蓝)"
@@ -331,7 +408,7 @@ class TestSidePairJudgement:
 
     def test_pair_abstains_when_two_bands_are_alike(self, tmp_path) -> None:
         """差值太小 → 两块都弃权：多半是面板淡入/淡出，这一刻没有可用信号。"""
-        sides = {"score_a": (30, 60, 140), "score_b": (32, 61, 141)}
+        sides = {"pair_a": (30, 60, 140), "pair_b": (32, 61, 141)}
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
         assert rec["fields"]["score_a"]["side"] == "?"
         assert rec["fields"]["score_b"]["side"] == "?"
@@ -339,7 +416,7 @@ class TestSidePairJudgement:
     def test_unsaturated_band_abstains_in_pair_too(self) -> None:
         """低饱和带（天空/路面）连单块判都判不出 → 成对判同样弃权，不拿噪声凑。"""
         gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
-        assert hud.pair_sides(gray, REGIONS["score_a"], REGIONS["score_b"]) == ("?", "?")
+        assert hud.pair_sides(gray, REGIONS["pair_a"], REGIONS["pair_b"]) == ("?", "?")
 
     def test_pair_abstains_when_a_block_is_missing(self, tmp_path) -> None:
         """区域集缺一块（成对判无从谈起）时**弃权**，不拿单块绝对阈值凑一个身份。
@@ -348,10 +425,10 @@ class TestSidePairJudgement:
         没有它；`side_source` 如实记 `abstain`——留着这个值是为了让"这一拍的归属为什么空"
         在事后可归因。
         """
-        only = {n: REGIONS[n] for n in ("stage", "timer", "score_a")}
+        only = {n: REGIONS[n] for n in ("stage", "timer", "pair_a")}
         obs = hud.HudObserver(
             tmp_path,
-            frame_source=lambda: (_frame(sides={"score_a": (30, 60, 220)}), 1001, 5_000_000, 3.5),
+            frame_source=lambda: (_frame(sides={"pair_a": (30, 60, 220)}), 1001, 5_000_000, 3.5),
             engine=_FakeEngine(_texts()), regions=only)
         entry = _sample(obs)["fields"]["score_a"]
         assert entry["side"] == "?"
@@ -360,32 +437,37 @@ class TestSidePairJudgement:
     def test_enemy_rate_slot_is_not_read(self, tmp_path) -> None:
         """**对手那一格没有得分速度**：不识别、标 `not_displayed`；本方那一格照常读。
 
-        两种朝向都验（蓝在上 / 蓝在下各一次）：速度格跟随**同槽位比分格**的敌我，而不是
-        槽位本身——按槽位读会在互换后去读对手的空区（实测那块能读出背景值，看着像读数）。
+        两种朝向都验（蓝在上 / 蓝在下各一次）：速度格跟随**同槽位比分格**的敌我——按槽位读
+        会在互换后去读对手的空区（实测那块能读出背景值，看着像读数）。
         """
         for blue_top in (True, False):
             top = (30, 60, 220) if blue_top else (220, 60, 30)
             bot = (220, 60, 30) if blue_top else (30, 60, 220)
             engine = _FakeEngine(_texts())
-            rec = _sample(_observer(tmp_path, engine, sides={"score_a": top, "score_b": bot}))
-            own, enemy = (("rate_a", "rate_b") if blue_top else ("rate_b", "rate_a"))
-            assert rec["fields"]["score_a"]["side"] == ("本机(蓝)" if blue_top else "对手(红)")
-            assert rec["fields"][own]["side"] == "本机(蓝)"
-            assert rec["fields"][own]["trusted"] is True
-            assert rec["fields"][own]["value"] in (41, 38)     # 两槽各有自己的文本
-            assert rec["fields"][enemy]["trusted"] is False
-            assert "not_displayed" in rec["fields"][enemy]["note"]
-            assert tuple(REGIONS[enemy]) not in engine.calls, "对手那一格不该被识别"
+            rec = _sample(_observer(tmp_path, engine, sides={"pair_a": top, "pair_b": bot}))
+            own_slot, enemy_slot = (("a", "b") if blue_top else ("b", "a"))
+            assert rec["fields"][f"score_{own_slot}"]["side"] == "本机(蓝)"
+            own = rec["fields"][f"rate_{own_slot}"]
+            enemy = rec["fields"][f"rate_{enemy_slot}"]
+            assert own["side"] == "本机(蓝)"
+            assert own["trusted"] is True
+            assert own["value"] == (41 if own_slot == "a" else 38)   # 两槽各有自己的文本
+            assert own["rect"] == f"rate_blue_{own_slot}"
+            assert enemy["trusted"] is False
+            assert "not_displayed" in enemy["note"]
+            assert tuple(REGIONS[f"rate_blue_{enemy_slot}"]) not in engine.calls, \
+                "对手那一槽不该被识别"
 
     def test_rate_slot_not_read_when_side_unknown(self, tmp_path) -> None:
         """归属判不出时同样不读速度格：不知道这一槽是谁的，就没理由把那里的像素当读数。"""
         engine = _FakeEngine(_texts())
         gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
         rec = _sample(_observer(tmp_path, engine, frame=gray))
-        for name in hud.RATE_FIELDS:
-            assert rec["fields"][name]["trusted"] is False
-            assert "side_unknown" in rec["fields"][name]["note"]
-            assert tuple(REGIONS[name]) not in engine.calls
+        for slot in ("a", "b"):
+            entry = rec["fields"][f"rate_{slot}"]
+            assert entry["trusted"] is False
+            assert "side_unknown" in entry["note"]
+            assert tuple(REGIONS[f"rate_blue_{slot}"]) not in engine.calls
 
 
 # ----------------------------------------------------------------------
@@ -427,7 +509,7 @@ class TestHudJsonl:
             fid, ts = next(it, pairs[-1])
             return (_frame(), fid, ts, 2.0)
 
-        # 合计故意读成 2（矮版假读）：线上必须既产行、又带标记
+        # 合计格已停读（SCHEMA 5 起）：这里仍给它一段文本，只为确认它不进记录
         obs = hud.HudObserver(sess, frame_source=src, engine=_FakeEngine(_texts(total_left="2")),
                               regions=REGIONS, interval_s=0.05, phase=1, round_no=1)
         obs.start()
@@ -445,9 +527,11 @@ class TestHudJsonl:
             assert r["frame_id"] in idx, f"帧号 {r['frame_id']} 不在 frames.jsonl 里"
             assert r["ts_ns"] == idx[r["frame_id"]]
         assert {r["frame_id"] for r in rows} == {fid for fid, _ in pairs}
-        # 原始文本逐格齐全（可审计）；读到的格 == 真源键集 − 跳过名单
-        assert [n for n in rows[0]["fields"]] == [n for n in REGIONS
-                                                  if n not in hud.SKIPPED_FIELDS]
+        # 原始文本逐格齐全（可审计）；读到的格 == 真源的读格（角色派生）
+        roles = hud.region_roles(REGIONS)
+        assert [n for n in rows[0]["fields"]] == (
+            [n for n, r in roles.items() if r == "plain"]
+            + list(hud.SIDE_FIELDS) + list(hud.RATE_FIELDS))
         # 读到的格带原始文本；速度格可能整格不读（归属判不出 / 对手那一槽不显示），text 为 None
         assert isinstance(rows[0]["fields"]["stage"]["text"], str)
 

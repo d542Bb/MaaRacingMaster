@@ -40,7 +40,14 @@
 单块兜底已不在运行期：成对判不可用即整拍弃权。
 
 **区域真源**：``resources/policy/hud_regions.json``（本插件内唯一一份，离线探针读同一份）。
-本模块不复制任何 rect 常量，也不假定键集——采样范围就是该文件的键集。
+本模块不复制任何 rect 常量；真源里的键**按角色三分**（读格 / 判色带 / 跳过），角色之外没有
+第四种，缺角或半改名都会在加载期 fail loud。
+
+**读数框按「卡片色 × 槽位」取名**（``score_blue_a`` …）：两块卡的**版式不同**——本机那张多
+一行「得分速度」、比分字号更大、**比分右缘更靠左**（实测 ≈x1135，对手 ≈x1155），两卡的图标
+位置也不同。故同一个槽位里两块卡的数值带**并不重合**：按槽位取一个"够大的框"，会把对手比分
+的末位读掉（实测 8500→850）或把图标读进来。**身份先判、再按身份选题框**——判色带（``pair_*``）
+与读数框分开正是为此：判色不能依赖身份，否则就成了循环依赖（见 ``pair_sides``）。
 
 **敌我判据搬自实验探针**（``tools/experiments/speedrush_scoring/probe_hud_ocr.py`` 的
 ``pair_sides()``）：口径一致；探针按实验自包含约定自带一份代码副本（它不 import 本模块），
@@ -64,6 +71,7 @@ from maaracing_master.plugins.speedrush import HUD_REGIONS_FILE
 
 __all__ = [
     "HudObserver",
+    "PAIR_FIELDS",
     "SAMPLE_INTERVAL_S",
     "SCHEMA_VERSION",
     "SIDE_FIELDS",
@@ -75,6 +83,7 @@ __all__ = [
     "parse_int",
     "parse_value",
     "region_digest",
+    "region_roles",
 ]
 
 # 记录格式版本。字段语义变动时递增，供离线消费方识别。
@@ -87,7 +96,11 @@ __all__ = [
 # v5：**停读左侧卡片三格**（里程 / 超车 / 合计）——它只在周期后段约三秒可见、且值是
 #     **滞后一个周期**的快照（语义见 ``RULES.md`` §4.8），不适合作为实时判据；随之一并去掉
 #     在场闸门、定值判据与两类假读标记（它们只服务那三格）。字段集自此只剩右侧四格。
-SCHEMA_VERSION = 5
+# v6：**判色带与读数框分家**，读数框改按「卡片色 × 槽位」取（``score_blue_a`` …）——两卡版式
+#     不同（本机那张多一行速度、比分右缘更靠左），按槽位取一个够大的框会读掉对手比分末位、
+#     或把图标读进来（实测；见模块 docstring）。行内四格仍是槽位名，每格增记 ``rect``——那格
+#     这一次到底用哪块框读的。
+SCHEMA_VERSION = 6
 
 # 采样间隔（秒）：比分与速度是持续跳动的量，0.5s 足以看清增减；四格单 ROI OCR 实测
 # 10~30ms，一轮约 0.04~0.12s，且全程在独立线程里。
@@ -107,6 +120,21 @@ RATE_FIELDS: tuple[str, ...] = ("rate_a", "rate_b")
 # 本模块**不读**的区域：左侧卡片三格。真源里保留它们的 rect（离线探针要读），故这里是
 # **跳过名单**而不是读取名单——采样范围仍是"真源的键集减去这三个"，其余键集既不假定也不写死。
 SKIPPED_FIELDS: tuple[str, ...] = ("mileage", "overtake", "total_left")
+# **判色带**：只用于判归属，一次 OCR 都不做（判色靠像素饱和度，不需要读字）。它必须覆盖
+# 两块卡各自的色条；与读数框分开，是为了让"判身份"不依赖身份（否则是循环依赖）。
+PAIR_FIELDS: tuple[str, ...] = ("pair_a", "pair_b")
+
+# 槽位后缀（a=上档、b=下档）由比分格派生，不另抄一份。
+_SLOTS: tuple[str, ...] = tuple(n.rsplit("_", 1)[1] for n in SIDE_FIELDS)
+# 卡片色的取值与"敌我 → 颜色"的映射。**这条映射是已验证的**（官方规则页 + 维护者口径 +
+# 速度行只在本机卡上出现三重佐证），故可以进真源的键名——"名字不得承载**未验证**的语义假设"
+# 这条判据管的是未验证的假设，不是已验证的事实（见 CODE_WIKI §5）。
+_CARD_TOKENS: tuple[str, ...] = ("blue", "red")
+_CARD_OF_SIDE: dict[str, str] = {"本机(蓝)": "blue", "对手(红)": "red"}
+# 真源里属于"读数框"的键全集：比分两色 × 两槽，速度只在本机卡上（对手没有那一行）。
+_CARD_RECTS: tuple[str, ...] = tuple(
+    f"score_{c}_{s}" for c in _CARD_TOKENS for s in _SLOTS
+) + tuple(f"rate_blue_{s}" for s in _SLOTS)
 
 # 比分块归属的判据参数（口径源自探针的逐格复核，2026-09-17 起收窄到"最饱和一撮"）：
 # 用固定采样点会被天空骗过（天空同样满足 B>R）；用**全部**饱和像素会被半透明面板背后的
@@ -136,9 +164,10 @@ def load_hud_regions(path: Path | str | None = None) -> dict[str, list[float]]:
 
     校验口径与 ``tools/navkit/check_truth.py`` 的 ``rect_checks()`` 一致：4 元数值数组、
     值域 [0,1]、``x1<x2`` 且 ``y1<y2``——越界 rect 会静默读错区域，是最难发现的一类
-    数据错误。**额外要求**：不得有 ``_`` 前缀键（真源是纯数据、不放说明），且
-    ``SIDE_FIELDS`` 必须齐备——敌我判据硬依赖这两格，缺了只能整段弃权。真源里可以保留
-    别的键（例如左侧卡片三格），它们由 ``SKIPPED_FIELDS`` 声明为不读，其余键照读。
+    数据错误。**额外要求**：不得有 ``_`` 前缀键（真源是纯数据、不放说明）；角色的键必须齐备
+    ——判色带 ``PAIR_FIELDS``、读数框 ``_CARD_RECTS``（缺一个都只能整段弃权）；且不得出现
+    多余的 ``pair_*`` / ``score_*`` / ``rate_*`` 键（半改名会让某些格静默读到别的框）。
+    真源里可以保留别的键（例如左侧卡片三格），它们由 ``SKIPPED_FIELDS`` 声明为不读。
 
     非法即抛 ``ValueError``（fail loud）：调用方（``HudObserver``）捕获后停用观察线程
     并记 WARNING，不让读数链路带着错区域静默跑下去。
@@ -165,10 +194,42 @@ def load_hud_regions(path: Path | str | None = None) -> dict[str, list[float]]:
             raise ValueError(f"{name} 的 rect 必须满足 x1<x2 且 y1<y2: {rect!r}")
         out[name] = vals
 
-    missing = [f for f in SIDE_FIELDS if f not in out]
+    missing = [f for f in PAIR_FIELDS if f not in out]
     if missing:
-        raise ValueError(f"区域真源缺语义必需字段 {missing}（敌我判据依赖它们）")
+        raise ValueError(f"区域真源缺判色带 {missing}（归属判据依赖它们）")
+    missing = [f for f in _CARD_RECTS if f not in out]
+    if missing:
+        raise ValueError(
+            f"区域真源缺读数框 {missing}（行内 {list(SIDE_FIELDS + RATE_FIELDS)} 依赖它们）")
+    stray = sorted(n for n in out
+                   if n.split("_", 1)[0] in ("pair", "score", "rate")
+                   and n not in _CARD_RECTS and n not in PAIR_FIELDS)
+    if stray:
+        raise ValueError(f"区域真源有多余的比分/速度键 {stray}（半改名会静默读到别的框）")
     return out
+
+
+def region_roles(regions: dict[str, list[float]]) -> dict[str, str]:
+    """把真源键集判成**四种角色**（供机检与消费者对齐，不另抄一份清单）。
+
+    - ``plain``：普通读格（阶段 / 计时 / 横幅），照自己的框读、读进行内同名格。
+    - ``pair``：判色带，只用于判归属，不读字。
+    - ``card``：读数框，按「卡片色 × 槽位」取，读进行内 ``score_*`` / ``rate_*`` 槽位格。
+    - ``skip``：本模块不碰（左侧卡片三格，留给离线探针）。
+
+    角色之外没有第五种：任何键必须落在其中之一，否则就是真源与读取路径已经脱节。
+    """
+    roles: dict[str, str] = {}
+    for name in regions:
+        if name in SKIPPED_FIELDS:
+            roles[name] = "skip"
+        elif name in PAIR_FIELDS:
+            roles[name] = "pair"
+        elif name in _CARD_RECTS:
+            roles[name] = "card"
+        else:
+            roles[name] = "plain"
+    return roles
 
 
 def region_digest(regions: dict[str, list[float]]) -> str:
@@ -419,12 +480,20 @@ class HudObserver:
 
         self._seq += 1
         t0 = time.perf_counter()
-        pair = self._side_pair(frame)
+        sides = self._side_pair(frame)
         fields: dict[str, dict] = {}
+        # 普通格（阶段 / 计时 / 事件横幅）：各读各的框
         for name, rect in self._regions.items():
-            if name in SKIPPED_FIELDS:
+            if name in SKIPPED_FIELDS or name in PAIR_FIELDS or name in _CARD_RECTS:
                 continue
-            fields[name] = self._read_field_safe(frame, name, rect, pair.get(name))
+            fields[name] = self._read_field_safe(frame, name, rect)
+        # 行内四格用**槽位名**（敌我随面板换位而变）：先判身份，再按身份取那一块卡的框。
+        # 顺序按「两个比分 → 两个速度」（与真源里旧版的分组一致，读记录时不必重新拼）
+        for prefix in ("score", "rate"):
+            for slot in _SLOTS:
+                name = f"{prefix}_{slot}"
+                fields[name] = self._read_field_safe(
+                    frame, name, None, slot=slot, side=sides.get(slot))
         return {
             "seq": self._seq,
             # frame_id / ts_ns 与 frames.jsonl 同源（同一帧号必带同一采集时刻），对齐靠它们
@@ -436,14 +505,22 @@ class HudObserver:
             "fields": fields,
         }
 
+    def _row_fields(self) -> list[str]:
+        """行内格名（由真源角色派生，不另抄一份清单）：普通格 + 四个槽位卡格。"""
+        plain = [n for n in self._regions if n not in SKIPPED_FIELDS
+                 and n not in PAIR_FIELDS and n not in _CARD_RECTS]
+        return plain + list(SIDE_FIELDS) + list(RATE_FIELDS)
+
     def _side_pair(self, frame: Any) -> dict[str, str]:
-        """一次采样算一次各槽位的**敌我**：比分两格成对判，速度格跟随同槽的比分格。
+        """一次采样算一次各槽位的**敌我**：只用**判色带**成对判两块卡的颜色。
 
         为什么整帧只算一次：归属是一条**物理约束**下的联合判断（一蓝一红），逐格各判会
         退化成单块绝对判据——那正是实测出错的形态（白天蓝天场两块都判成"本机"）。这里
-        算错也只是本拍归属不可用（返回 ``?``），不影响其它格。
+        算错也只是本拍归属不可用（返回空 dict），不影响其它格。
+
+        判色**只用判色带**（不做 OCR）：读数框按身份取，若判身份也要先读字，就成了循环依赖。
         """
-        names = [n for n in SIDE_FIELDS if n in self._regions]
+        names = [n for n in PAIR_FIELDS if n in self._regions]
         if len(names) != 2:
             return {}
         try:
@@ -451,36 +528,38 @@ class HudObserver:
         except Exception as exc:  # noqa: BLE001 —— 归属算不出来就整拍弃权，不终止观察
             logger.log(f"[极速狂飙] HUD 归属成对判异常: {exc!r}", "DEBUG")
             return {}
-        out = {names[0]: a, names[1]: b}
-        # 速度格与同槽位的比分格同属一块面板 → 敌我直接沿用（后缀一致时）
-        for score_name, side in ((names[0], a), (names[1], b)):
-            rate_name = score_name.replace("score_", "rate_", 1)
-            if rate_name in self._regions:
-                out[rate_name] = side
-        return out
+        return {n.rsplit("_", 1)[1]: side for n, side in zip(names, (a, b))}
 
-    def _read_field(self, frame: Any, name: str, rect: list[float],
-                    side: str | None = None) -> dict:
-        """读一格：识别并给出可信标志与理由（归属由采样侧成对判传入）。
+    def _read_field(self, frame: Any, name: str, rect: list[float] | None,
+                    *, slot: str | None = None, side: str | None = None) -> dict:
+        """读一格：识别并给出可信标志与理由。
 
-        ``side`` 由采样侧成对判好传入（比分格）；**缺省弃权**（不拿单块绝对阈值兜底），
-        并把来源记进 ``side_source``——归属判错是本模块最难事后归因的一类故障（看着是数字对、
-        实为两家混一条序列），留下来源才查得动。
+        两类格子两条路：
+
+        - **普通格**（阶段 / 计时 / 横幅）：直接读自己的框。
+        - **行内卡格**（两个比分槽 + 两个速度槽，``slot`` 非空）：先看这一槽判出的**身份**，
+          再由身份选出**那一块卡**的读数框——两卡版式不同，框不能按槽位共用（见模块
+          docstring）。身份判不出（``?``）就**不读**：选框本身就需要身份，猜一个去读等于
+          把错框里的数字当读数。用哪块框记进 ``rect``，事后可查。
         """
         entry: dict = {"text": None, "value": None, "trusted": False, "note": []}
-        if name in SIDE_FIELDS or name in RATE_FIELDS:
-            # 敌我按块色判（槽位会上下互换），与文本是否读出无关。**只认成对判**：单块绝对
+        if slot is not None:
+            # 敌我按块色判（面板会上下互换），与文本是否读出无关。**只认成对判**：单块绝对
             # 阈值在强公共偏色下会把两块判成同一方（见 ``pair_sides`` 的实测），故成对判
             # 不可用时**弃权**——宁可为空，也不给一个看着合理的错身份。
             entry["side"] = side if side is not None else "?"
             entry["side_source"] = "pair" if side is not None else "abstain"
-            if name in RATE_FIELDS and entry["side"] != "本机(蓝)":
-                # 得分速度**只为本方显示**：对手那一格是空的/背景，识别只会产出垃圾
-                # （实测那块能读出 133 这种"蓝偏移"背景值）。判不出归属时同样不读——
-                # 不知道这一槽是谁的，就没有理由把那一格的像素当读数。
-                entry["note"].append("not_displayed" if entry["side"] == "对手(红)"
-                                     else "side_unknown")
+            token = _CARD_OF_SIDE.get(side or "")
+            if token is None:
+                entry["note"].append("side_unknown")
                 return entry
+            if name.startswith("rate_") and token != "blue":
+                # 得分速度**只为本方显示**：对手那一格是空的/背景，识别只会产出垃圾
+                # （实测那块能读出背景值）。那一格连识别都不做。
+                entry["note"].append("not_displayed")
+                return entry
+            rect = self._regions[f"{name.split('_', 1)[0]}_{token}_{slot}"]
+            entry["rect"] = f"{name.split('_', 1)[0]}_{token}_{slot}"
         res = self._recognize(frame, rect)
         if res is None:
             entry["note"].append("ocr_unavailable")
@@ -499,25 +578,29 @@ class HudObserver:
         entry["trusted"] = True
         return entry
 
-    def _read_field_safe(self, frame: Any, name: str, rect: list[float],
-                         side: str | None = None) -> dict:
+    def _read_field_safe(self, frame: Any, name: str, rect: list[float] | None,
+                         *, slot: str | None = None, side: str | None = None) -> dict:
         """``_read_field`` 的护栏：单格读挂只废掉那一格，**绝不让异常逃到采样线程**。
 
         为什么必须在这里兜：采样线程没有外层 try——异常一旦逃出去线程就静默死掉，
         实机上的表现是"跑了一整轮却只有几行"，而且事后无从归因（meta 里没有任何一项
         指向"线程死了"）。成因不是假想：块色判据要对切片 ``reshape(-1, 3)``，拿到非
-        3 通道的帧就抛；闸门也要按 ``shape[:2]`` 解包。判据本身照旧 fail loud（区域真源
-        非法时构造期就抛），这里兜的是**运行期单帧异常**这一类。
+        3 通道的帧就抛。判据本身照旧 fail loud（区域真源非法时构造期就抛），这里兜的是
+        **运行期单帧异常**这一类。
         """
         try:
-            return self._read_field(frame, name, rect, side)
+            return self._read_field(frame, name, rect, slot=slot, side=side)
         except Exception as exc:  # noqa: BLE001 —— 单格异常按"该格读不出"处理
             self._read_errors += 1
             level = "WARNING" if self._read_errors == 1 else "DEBUG"
             logger.log(
                 f"[极速狂飙] HUD 单格读数异常（{name}，累计 {self._read_errors}）: {exc!r}", level)
-            return {"text": None, "value": None, "trusted": False,
-                    "note": ["read_error"]}
+            entry: dict = {"text": None, "value": None, "trusted": False,
+                           "note": ["read_error"]}
+            if slot is not None:
+                entry["side"] = side if side is not None else "?"
+                entry["side_source"] = "pair" if side is not None else "abstain"
+            return entry
 
     def _recognize(self, frame: Any, rect: list[float]) -> Any | None:
         """单 ROI 识别。引擎懒加载、不可用即返回 None（不抛、不阻塞观察线程）。"""
@@ -593,10 +676,12 @@ class HudObserver:
             # 区域真源指纹 + 文件名（不落绝对路径：交付物不得含本机路径）
             "regions": self._digest,
             "regions_file": HUD_REGIONS_FILE.name,
-            "fields": [n for n in self._regions if n not in SKIPPED_FIELDS],
+            "fields": self._row_fields(),
             "skipped_fields": list(SKIPPED_FIELDS),
+            "pair_fields": list(PAIR_FIELDS),
             "side_fields": list(SIDE_FIELDS),
             "rate_fields": list(RATE_FIELDS),
+            "card_rects": list(_CARD_RECTS),
             "rows_written": self._rows_written,
             "rows_dropped": self._rows_dropped,
             "samples_no_frame": self._samples_no_frame,
