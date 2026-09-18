@@ -10,6 +10,18 @@
 
 ## 2026-09-18
 
+### 暂存（未发布 · 待并入下一版本）生产侧停读左侧卡片三格（里程 / 超车 / 合计）🧹
+
+- **性质：** 未发版变更（`plugins/speedrush/hud.py`（SCHEMA 4→5、读取范围、判据与标记下线）、`plugins/speedrush/module.py`（`hud_flagged` 下线）、`plugins/speedrush/CODE_WIKI.md`（§5 逐段同步）、`plugins/speedrush/RULES.md`（§4.8 口径与显示语义，见上一条）、`tests/test_speedrush_hud.py`、`tools/experiments/speedrush_scoring/review_run.py`（认 SCHEMA 5、卡片模式加门）；master 直接提交、不 tag）
+
+- **为什么停读：** 那张卡片每周期只在后段约三秒显示数字，随后进入"经过了一段时间"的状态——其间三格不显示而统计仍在后台累加；可见值是**滞后一个周期**的固化快照，作为实时判据不可用（口径与显示语义见 `RULES.md` §4.8）。
+
+- **改法（一次做完，不留半截）：** ① 读取范围改为「**真源键集 − `SKIPPED_FIELDS`**」——跳过名单而不是读取白名单：真源里保留三格的 rect 给离线探针，其余键照读，既不写死键集也不假定它；② 随之下线**只服务这三格**的机制：在场闸门（`field_on_dark` / `DARK_LUM_MAX` / `FIELD_DARK_MIN`）、定值（`settled` / `SETTLE_GAP_S` / `_prev_read`）、`合计 < 里程` 与单字可疑两类假读标记、行内 `flags` 字段与 `rows_flagged` 计数（含 `module.py` 暴露的 `hud_flagged`）；③ 单块判据 `block_side()` 一并删除——它的"给离线标注用"说法站不住（离线探针自带一份实现），插件内没有消费者；④ 记录版本递增到 5，`hud_meta.json` 改记 `fields`（实际读的格）与 `skipped_fields`（声明不读的格）。
+
+- **同步：** `CODE_WIKI.md` §5 的「是什么 / 标尺纪律第 2 条 / 已解问题 / 停读理由 / 记录可审计 / 读不到怎么办 / 区域真源 / 判据出处」逐段改到与代码一致；测试改为断言「读到的格 == 真源键集 − 跳过名单」，删除只服务已下线机制的用例（在场闸门 2 条、假读标记 2 条、定值 5 条、单块判据 1 条），坏帧用例改断言「归属整拍弃权」；复盘工具认 SCHEMA 5，`windows` / `sheet` 与卡片口径只对有卡片的会话生效（无卡片的会话印「—」并说明跳过，不再印 0 误导）。
+
+- **验证：** 全量 `pytest` **755 passed / 1 skipped**；`ruff` 通过；旧会话复盘实跑（`review_run check --session 20260917_220750_p2`）照常出报告；全仓 `grep` 已无被删标识符的引用（`docs/update_log.md` 的历史条目与 CODE_WIKI 的历史注记除外）。
+
 ### 暂存（未发布 · 待并入下一版本）定案：卡片三格的时间口径与显示语义（维护者口径） 🎯
 
 - **性质：** 未发版变更（`plugins/speedrush/RULES.md`（§4.8 新增口径与显示语义、§7 结案 #5）、`plugins/speedrush/CODE_WIKI.md`（§5 记实现后果）、`tools/experiments/speedrush_scoring/README.md`（缺口表 #5 → 已解）；master 直接提交、不 tag）

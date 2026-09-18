@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """speedrush 驾驶页 HUD 实时读数：低频采样 → ``hud.jsonl``。
 
-**要解决什么**：三个未解的规则问题（里程口径的两假说、面板在场时的假读过滤、分数增量
-归因）都卡在"没有连续序列"上——离线稀疏采样给不出「面板持续在场的一段连续读数」。
-本模块在驾驶途中以低频把记分读数落成 ``hud.jsonl``，供事后与同会话 ``frames.jsonl``
-按 ``frame_id`` / ``ts_ns`` 对齐（对齐方式与录制器同源：两者都取自
+**要解决什么**：驾驶途中的战况与得分是**持续跳动**的量，离线稀疏帧给不出连续序列。本模块
+在驾驶途中以低频把右侧四格（双方比分 + 我方得分速度）落成 ``hud.jsonl``，供事后与同会话
+``frames.jsonl`` 按 ``frame_id`` / ``ts_ns`` 对齐（对齐方式与录制器同源：两者都取自
 ``ctx.capture.frame_with_age()``，同一帧号必带同一采集时刻）。
+
+**它不读左侧卡片**（里程 / 超车 / 合计）：那张卡片每周期只在后段约三秒显示数字，随后进入
+"经过了一段时间"的状态——其间三格不显示而统计仍在后台累加，故可见值**滞后一个周期**（语义
+见 ``RULES.md`` §4.8）。它作为实时判据不可用，不在本模块的读取范围内；需要离线复算那三格时
+走实验探针（自包含，读同一份区域真源）。
 
 **产出形态**（写进录制会话目录，与 ``frames.jsonl`` / ``pads.jsonl`` 同级）::
 
@@ -24,31 +28,23 @@
 20~60%，且发生在独立线程；取 0.3s 只会把占用翻倍、换到边际收益很小的样本增量。
 首个样本**推迟一个间隔**：阶段短于一个间隔时全程不碰 OCR（启停代价为零）。
 
-**假读必须标出来、不能静默丢**：面板缺席时识别会强行解码出小数字（实验记录坑 6），
-消费方只看"有没有数字"是分不出来的。故每行同时记**原始文本**、**解析值**、**该字段
-是否过暗底闸门**、**比分块按颜色判出的归属**，以及逐字段的可信标志与理由；已知的
-假读形态（``合计 < 里程``、单字面板读数）落到 ``flags`` 与字段 ``note`` 里，行照旧落盘。
-
-**除了"读得对不对"，还得知道"读的是不是动画中间值"**：卡片出现时三行数字各自**滚动爬升**
-到定值（实测同一张卡片 268→292→317→338），爬升段的值看着合理却只是中间帧——拿它算增量
-会得到假来源，拿它验公式会得到假违例。故卡片三格另记 ``settled``：**本行与上一次可信采样
-同值**（相距 ≤ ``SETTLE_GAP_S``）。它是**过去向**判据（落盘是流式的，这一行写下去时下一拍
-还不存在），代价是每段平台的第一个采样点判不出定值；``trusted`` 不因未定值而变 False
-——读对了就是读对了，只是"还没涨到位"，判定与数据一起留下由消费方取用。
+**读不出来不静默丢、也不冒充读数**：每行同时记**原始文本**、**解析值**、**比分块按颜色判出的
+归属**，以及逐格的可信标志（``trusted``）与理由（``note``）。面板不在场或识别失败的那格只带
+理由、不带值——"没读到"与"读到 0"必须能分开，行照旧落盘。
 
 **比分面板的归属必须成对判**（``pair_sides``）：两块面板必是一蓝（本机）一红（对手），
 而面板是半透明的——背景景物会给**两块**染上同一偏色，单块绝对阈值在白天蓝天场会把两块
 都判成"本机"（实测 62/69 行错，且下游据此产出过 51 处假"比分回落"）。故按**两块之差**
 定归属（公共偏色被抵消），差太小则两块都弃权 ``?``；条带采样同时收窄到**最饱和的一撮**
 （色条本身），让色条而非背景主导。逐格记 ``side_source``（``pair``/``abstain``）留痕——
-单块兜底不在运行期，成对判不可用即弃权（见 ``block_side``）。
+单块兜底已不在运行期：成对判不可用即整拍弃权。
 
 **区域真源**：``resources/policy/hud_regions.json``（本插件内唯一一份，离线探针读同一份）。
 本模块不复制任何 rect 常量，也不假定键集——采样范围就是该文件的键集。
 
-**在场判据与敌我判据搬自实验探针**（``tools/experiments/speedrush_scoring/probe_hud_ocr.py``
-的 ``field_on_dark()`` / ``block_side()``）：那两条判据是逐格复核出来的，口径保持一致；
-探针按实验自包含约定自带一份代码副本（它不 import 本模块），只有区域**数据**是单一真源。
+**敌我判据搬自实验探针**（``tools/experiments/speedrush_scoring/probe_hud_ocr.py`` 的
+``pair_sides()``）：口径一致；探针按实验自包含约定自带一份代码副本（它不 import 本模块），
+只有区域**数据**是单一真源。
 """
 
 from __future__ import annotations
@@ -70,13 +66,10 @@ __all__ = [
     "HudObserver",
     "SAMPLE_INTERVAL_S",
     "SCHEMA_VERSION",
-    "GATED_FIELDS",
     "SIDE_FIELDS",
     "SIDE_PAIR_MIN_DELTA",
-    "SINGLE_CHAR_SUSPECT_FIELDS",
+    "SKIPPED_FIELDS",
     "band_blue_bias",
-    "block_side",
-    "field_on_dark",
     "load_hud_regions",
     "pair_sides",
     "parse_int",
@@ -85,35 +78,25 @@ __all__ = [
 ]
 
 # 记录格式版本。字段语义变动时递增，供离线消费方识别。
-# v2：卡片三格（``GATED_FIELDS``）增记 ``settled``——见下方定值判据。
+# v2：卡片三格增记 ``settled``（该三格与定值判据已于 v5 一并移除）。
 # v3：比分格增记 ``side_source``（归属来自成对判还是单块兜底），且归属改为成对判
 #     ——v2 及以前按单块绝对阈值判，白天蓝天场会把两块判成同一方（见 ``pair_sides``）。
 # v4：右侧四格由位置名改为**槽位名**（``score_a/b``、``rate_a/b``）——名字不再承载敌我；
 #     速度格只在"本槽是本机"时识别；成对判不可用时归属**弃权**，``side_source`` 取
-#     ``pair`` / ``abstain``（单块兜底退出运行期，理由见 ``block_side``）。
-SCHEMA_VERSION = 4
+#     ``pair`` / ``abstain``。
+# v5：**停读左侧卡片三格**（里程 / 超车 / 合计）——它只在周期后段约三秒可见、且值是
+#     **滞后一个周期**的快照（语义见 ``RULES.md`` §4.8），不适合作为实时判据；随之一并去掉
+#     在场闸门、定值判据与两类假读标记（它们只服务那三格）。字段集自此只剩右侧四格。
+SCHEMA_VERSION = 5
 
-# 采样间隔（秒）。理由见模块 docstring：面板在场约 3.5s → 约 7 个连续样本。
+# 采样间隔（秒）：比分与速度是持续跳动的量，0.5s 足以看清增减；四格单 ROI OCR 实测
+# 10~30ms，一轮约 0.04~0.12s，且全程在独立线程里。
 SAMPLE_INTERVAL_S = 0.5
-
-# 「定值」的相邻上限（秒）：上一次可信采样与本行的帧时刻相差不超过它，才认"连续两次"。
-# 采样间隔 0.5s，取 3 倍留出抖动与一次丢样本的余量。
-SETTLE_GAP_S = 1.5
 
 # 采样队列容量（约 4 秒）。满则丢样本计数，绝不阻塞采样线程——反压口径照录制器
 # （``put_nowait`` + 丢弃计数），落盘慢不该拖住下一次取帧。
 _QUEUE_MAX = 8
 
-# 左侧信息面板的在场闸门（口径搬自实验探针 ``field_on_dark``）：面板是半透明暗底，
-# 亮的是天空。**逐字段**判而不是整面板判——面板有"矮版"变体（不显示合计），
-# 整面板判在场会把合计那格放行到面板下方的天空上。
-DARK_LUM_MAX = 90.0
-FIELD_DARK_MIN = 0.35
-
-# 需要过暗底闸门的字段（左侧面板三格，顺序即面板自上而下的格序）。
-# **这也是「定值」判据的作用域**：滚动爬升是这张卡片三行数字的动画形态，只有它们才有
-# "这一拍读到的是不是动画中间值"的问题；比分与速度是持续跳动的量，"同值两拍"对它们无意义。
-GATED_FIELDS: tuple[str, ...] = ("mileage", "overtake", "total_left")
 # 比分面板：**位置会上下互换，故这两格是「槽位」而不是敌我**——a = 上档、b = 下档。
 # 敌我由块色成对判（见 ``pair_sides``）写进每格 ``side``；消费方按 ``side`` 取、不按槽位取。
 SIDE_FIELDS: tuple[str, ...] = ("score_a", "score_b")
@@ -121,12 +104,11 @@ SIDE_FIELDS: tuple[str, ...] = ("score_a", "score_b")
 # **它只为本方显示**（实测本机侧 100% 有读数、对手侧只有零星几处——那是背景的假读）：
 # 故只识别"本槽是蓝"的那一格，另一格连识别都不做（读到的是面板背景/空区）。
 RATE_FIELDS: tuple[str, ...] = ("rate_a", "rate_b")
-# 单字读数与噪声不可区分的字段：这两个计数的可信读数都是多位（由公式
-# 「合计 = 里程 + 30×超车」自身给出量级），单字只可能是面板缺席时被强行解码出来的
-# 碎片。``overtake`` 刻意不在内——它的合法域就是 0~5 这类单字。
-SINGLE_CHAR_SUSPECT_FIELDS: tuple[str, ...] = ("mileage", "total_left")
+# 本模块**不读**的区域：左侧卡片三格。真源里保留它们的 rect（离线探针要读），故这里是
+# **跳过名单**而不是读取名单——采样范围仍是"真源的键集减去这三个"，其余键集既不假定也不写死。
+SKIPPED_FIELDS: tuple[str, ...] = ("mileage", "overtake", "total_left")
 
-# 比分块归属的判据参数（口径搬自探针 ``block_side``，2026-09-17 起收窄到"最饱和一撮"）：
+# 比分块归属的判据参数（口径源自探针的逐格复核，2026-09-17 起收窄到"最饱和一撮"）：
 # 用固定采样点会被天空骗过（天空同样满足 B>R）；用**全部**饱和像素会被半透明面板背后的
 # 景物骗过（白天蓝天场两块条带都偏蓝，见 ``pair_sides``）。故先按饱和度筛，再只取最高的一撮。
 _SIDE_MIN_SAT = 80.0
@@ -155,8 +137,8 @@ def load_hud_regions(path: Path | str | None = None) -> dict[str, list[float]]:
     校验口径与 ``tools/navkit/check_truth.py`` 的 ``rect_checks()`` 一致：4 元数值数组、
     值域 [0,1]、``x1<x2`` 且 ``y1<y2``——越界 rect 会静默读错区域，是最难发现的一类
     数据错误。**额外要求**：不得有 ``_`` 前缀键（真源是纯数据、不放说明），且
-    ``GATED_FIELDS`` / ``SIDE_FIELDS`` 必须齐备——本模块的在场闸门与敌我判据硬依赖
-    这两组字段，缺了它们闸门就成了摆设（那正是"面板缺席读出垃圾值"的成因）。
+    ``SIDE_FIELDS`` 必须齐备——敌我判据硬依赖这两格，缺了只能整段弃权。真源里可以保留
+    别的键（例如左侧卡片三格），它们由 ``SKIPPED_FIELDS`` 声明为不读，其余键照读。
 
     非法即抛 ``ValueError``（fail loud）：调用方（``HudObserver``）捕获后停用观察线程
     并记 WARNING，不让读数链路带着错区域静默跑下去。
@@ -183,9 +165,9 @@ def load_hud_regions(path: Path | str | None = None) -> dict[str, list[float]]:
             raise ValueError(f"{name} 的 rect 必须满足 x1<x2 且 y1<y2: {rect!r}")
         out[name] = vals
 
-    missing = [f for f in (*GATED_FIELDS, *SIDE_FIELDS) if f not in out]
+    missing = [f for f in SIDE_FIELDS if f not in out]
     if missing:
-        raise ValueError(f"区域真源缺语义必需字段 {missing}（在场闸门/敌我判据依赖它们）")
+        raise ValueError(f"区域真源缺语义必需字段 {missing}（敌我判据依赖它们）")
     return out
 
 
@@ -207,20 +189,6 @@ def _px_bounds(rect, w: int, h: int) -> tuple[int, int, int, int]:
     x1, y1 = max(0, int(float(rect[0]) * w)), max(0, int(float(rect[1]) * h))
     x2, y2 = min(w, int(float(rect[2]) * w)), min(h, int(float(rect[3]) * h))
     return x1, y1, x2, y2
-
-
-def field_on_dark(frame_rgb: Any, rect) -> bool:
-    """该 ROI 是否主要压在暗底上（左侧面板在该字段处是否在场）。
-
-    纯 numpy，零 OCR 开销；实时采样每轮都要问一遍，故必须便宜。
-    """
-    h, w = frame_rgb.shape[:2]
-    x1, y1, x2, y2 = _px_bounds(rect, w, h)
-    reg = frame_rgb[y1:y2, x1:x2]
-    if reg.size == 0:
-        return False
-    lum = reg.mean(axis=2) if reg.ndim == 3 else reg
-    return float((lum < DARK_LUM_MAX).mean()) > FIELD_DARK_MIN
 
 
 def band_blue_bias(frame_rgb: Any, rect) -> float | None:
@@ -278,20 +246,6 @@ def pair_sides(frame_rgb: Any, rect_a, rect_b) -> tuple[str, str]:
     if a > b:
         return "本机(蓝)", "对手(红)"
     return "对手(红)", "本机(蓝)"
-
-
-def block_side(frame_rgb: Any, rect) -> str:
-    """**单块**颜色倾向：本机（蓝）/ 对手（红），判不出返回 ``"?"``。
-
-    **它不是权威判据**——单块绝对阈值在强公共偏色下会把两块判成同一方（见 ``pair_sides``
-    的实测）。保留它是给**离线逐格标注**用（探针与 Studio 在图上逐块画框，只需要这一块的
-    颜色倾向）；运行期归属一律走 ``pair_sides``，判不出就弃权——``_read_field`` 里没有对
-    本函数的调用，它的使用者只剩离线标注与测试。
-    """
-    bias = band_blue_bias(frame_rgb, rect)
-    if bias is None:
-        return "?"
-    return "本机(蓝)" if bias > 0 else "对手(红)"
 
 
 def parse_int(text: str | None) -> int | None:
@@ -361,7 +315,6 @@ class HudObserver:
         self._seq = 0
         self._rows_written = 0
         self._rows_dropped = 0
-        self._rows_flagged = 0
         self._samples_no_frame = 0
         self._ocr_no_result = 0
         self._ocr_errors = 0
@@ -370,8 +323,6 @@ class HudObserver:
         self._started_ns = 0
         self._started_iso = ""
         self._running = False
-        # 定值判据要跨采样比较：字段 → 上一次**可信**读数的 (值, 帧时刻)
-        self._prev_read: dict[str, tuple[int, int]] = {}
 
     # ---------- 生命周期 ----------
 
@@ -389,7 +340,6 @@ class HudObserver:
         return {
             "rows_written": self._rows_written,
             "rows_dropped": self._rows_dropped,
-            "rows_flagged": self._rows_flagged,
             "samples_no_frame": self._samples_no_frame,
             "ocr_no_result": self._ocr_no_result,
             "read_errors": self._read_errors,
@@ -429,7 +379,7 @@ class HudObserver:
         self._write_meta(reason)
         logger.log(
             f"[极速狂飙] HUD 读数结束：{self._rows_written} 行"
-            f"（标记假读 {self._rows_flagged}、丢 {self._rows_dropped}、"
+            f"（丢 {self._rows_dropped}、"
             f"缺帧 {self._samples_no_frame}、OCR 无结果 {self._ocr_no_result}）",
             "INFO" if self._rows_dropped == 0 and self._ocr_no_result == 0 else "WARNING")
 
@@ -472,8 +422,10 @@ class HudObserver:
         pair = self._side_pair(frame)
         fields: dict[str, dict] = {}
         for name, rect in self._regions.items():
+            if name in SKIPPED_FIELDS:
+                continue
             fields[name] = self._read_field_safe(frame, name, rect, pair.get(name))
-        rec: dict = {
+        return {
             "seq": self._seq,
             # frame_id / ts_ns 与 frames.jsonl 同源（同一帧号必带同一采集时刻），对齐靠它们
             "frame_id": int(frame_id),
@@ -482,42 +434,7 @@ class HudObserver:
             "read_ms": round((time.perf_counter() - t0) * 1000.0, 2),
             "regions": self._digest,
             "fields": fields,
-            "flags": [],
         }
-        self._mark_settled(fields, int(ts_ns))
-        self._apply_read_filters(rec)
-        return rec
-
-    def _mark_settled(self, fields: dict[str, dict], ts_ns: int) -> None:
-        """给卡片三格标 ``settled``：**本行与上一次可信采样同值**（相距 ≤ ``SETTLE_GAP_S``）。
-
-        为什么这条判据必须在生产侧给出，而不是留给消费方：卡片出现时三行数字各自**滚动
-        爬升**到定值（实测同一张卡片 268→292→317→338），爬升段的值"看着合理"（都是合法
-        里程），但只是动画中间帧——拿它算增量会得到假来源，拿它验「合计 = 里程 + 30×超车」
-        会得到假违例（实测淡入中的卡片连「合计」那一行都还没显出来）。定值点才可用。
-
-        为什么是"与上一次相同"而不是"与下一次相同"：写盘是流式的，这一行落盘时下一拍尚不
-        存在。代价是**每段平台的第一个采样点**判不出定值（标 False，少一个可用点），换来的是
-        不需要缓冲一行、也不会在异常退出时丢掉最后一行。
-
-        ``trusted`` 不因未定值而变 False：数据本身是读对了的，只是"还没涨到位"——把拍到的
-        原始值一律留下，标出判定，让消费方自己决定要不要用（照本模块"假读标出、不静默丢"
-        的既定口径）。故 ``settled`` 也不进行级 ``flags``（那是假读清单，未定值不是假读）。
-        """
-        for name in GATED_FIELDS:
-            entry = fields.get(name)
-            if entry is None:
-                continue
-            if not entry.get("trusted"):
-                # 未读出/未过闸门：不判、也不更新基准（下一拍仍与最后那次有效读数比）
-                entry["settled"] = False
-                continue
-            value = entry.get("value")
-            prev = self._prev_read.get(name)
-            same = (prev is not None and prev[0] == value
-                    and abs(ts_ns - prev[1]) / 1e9 <= SETTLE_GAP_S)
-            entry["settled"] = bool(same)
-            self._prev_read[name] = (int(value), int(ts_ns))
 
     def _side_pair(self, frame: Any) -> dict[str, str]:
         """一次采样算一次各槽位的**敌我**：比分两格成对判，速度格跟随同槽的比分格。
@@ -531,7 +448,7 @@ class HudObserver:
             return {}
         try:
             a, b = pair_sides(frame, self._regions[names[0]], self._regions[names[1]])
-        except Exception as exc:  # noqa: BLE001 —— 归属算不出来就交给单块兜底，不终止观察
+        except Exception as exc:  # noqa: BLE001 —— 归属算不出来就整拍弃权，不终止观察
             logger.log(f"[极速狂飙] HUD 归属成对判异常: {exc!r}", "DEBUG")
             return {}
         out = {names[0]: a, names[1]: b}
@@ -544,14 +461,13 @@ class HudObserver:
 
     def _read_field(self, frame: Any, name: str, rect: list[float],
                     side: str | None = None) -> dict:
-        """读一格：先过在场闸门（仅面板三格），再识别，最后给可信标志与理由。
+        """读一格：识别并给出可信标志与理由（归属由采样侧成对判传入）。
 
         ``side`` 由采样侧成对判好传入（比分格）；**缺省弃权**（不拿单块绝对阈值兜底），
         并把来源记进 ``side_source``——归属判错是本模块最难事后归因的一类故障（看着是数字对、
         实为两家混一条序列），留下来源才查得动。
         """
-        entry: dict = {"gate": None, "text": None, "value": None, "trusted": False,
-                       "note": []}
+        entry: dict = {"text": None, "value": None, "trusted": False, "note": []}
         if name in SIDE_FIELDS or name in RATE_FIELDS:
             # 敌我按块色判（槽位会上下互换），与文本是否读出无关。**只认成对判**：单块绝对
             # 阈值在强公共偏色下会把两块判成同一方（见 ``pair_sides`` 的实测），故成对判
@@ -565,14 +481,6 @@ class HudObserver:
                 entry["note"].append("not_displayed" if entry["side"] == "对手(红)"
                                      else "side_unknown")
                 return entry
-        if name in GATED_FIELDS:
-            dark = field_on_dark(frame, rect)
-            entry["gate"] = dark
-            if not dark:
-                # 面板不在场：不识别（省一次 OCR，且那里的字必然是垃圾）
-                entry["note"].append("panel_absent")
-                return entry
-
         res = self._recognize(frame, rect)
         if res is None:
             entry["note"].append("ocr_unavailable")
@@ -608,7 +516,7 @@ class HudObserver:
             level = "WARNING" if self._read_errors == 1 else "DEBUG"
             logger.log(
                 f"[极速狂飙] HUD 单格读数异常（{name}，累计 {self._read_errors}）: {exc!r}", level)
-            return {"gate": None, "text": None, "value": None, "trusted": False,
+            return {"text": None, "value": None, "trusted": False,
                     "note": ["read_error"]}
 
     def _recognize(self, frame: Any, rect: list[float]) -> Any | None:
@@ -644,36 +552,6 @@ class HudObserver:
             return None
         return self._engine
 
-    # ---------- 已知假读的过滤器 ----------
-
-    def _apply_read_filters(self, rec: dict) -> None:
-        """落实已知假读形态：标记而非丢弃（行照旧落盘，事后看得见"这个值不可信"）。
-
-        两条判据：
-        1. **``合计 < 里程`` 必是假读**——由公式「合计 = 里程 + 30×超车 ≥ 里程」自身导出。
-           实测成因是**卡片淡入中**：那时「合计」那一行还没显示出来，该处仍是暗底、闸门
-           拦不住，识别便强行解码出 ``1``/``92`` 这类小数字。
-        2. **单字面板读数与噪声不可区分**——面板缺席时被强行解码出的碎片与真值同形，
-           单帧无从分辨（见 ``SINGLE_CHAR_SUSPECT_FIELDS`` 的字段范围说明）；时间连续性
-           才是二次判据，故这里只标记。
-        """
-        fields = rec["fields"]
-        total = fields.get("total_left") or {}
-        mile = fields.get("mileage") or {}
-        if (total.get("value") is not None and mile.get("value") is not None
-                and total["value"] < mile["value"]):
-            total["trusted"] = False
-            total["note"].append("total_lt_mileage")
-            rec["flags"].append("total_lt_mileage")
-        for name in SINGLE_CHAR_SUSPECT_FIELDS:
-            entry = fields.get(name)
-            if entry is None or not entry["trusted"]:
-                continue
-            if len(str(entry["text"]).strip()) == 1:
-                entry["trusted"] = False
-                entry["note"].append("single_char")
-                rec["flags"].append(f"{name}_single_char")
-
     # ---------- 落盘线程 ----------
 
     def _write_worker(self) -> None:
@@ -702,8 +580,6 @@ class HudObserver:
                         f"[极速狂飙] HUD 落盘失败（累计 {self._write_errors}）: {exc!r}", level)
                     continue
                 self._rows_written += 1
-                if rec["flags"]:
-                    self._rows_flagged += 1
 
     def _write_meta(self, reason: str) -> None:
         meta = {
@@ -717,16 +593,12 @@ class HudObserver:
             # 区域真源指纹 + 文件名（不落绝对路径：交付物不得含本机路径）
             "regions": self._digest,
             "regions_file": HUD_REGIONS_FILE.name,
-            "fields": list(self._regions),
-            "gate_fields": list(GATED_FIELDS),
+            "fields": [n for n in self._regions if n not in SKIPPED_FIELDS],
+            "skipped_fields": list(SKIPPED_FIELDS),
             "side_fields": list(SIDE_FIELDS),
-            "single_char_suspect_fields": list(SINGLE_CHAR_SUSPECT_FIELDS),
-            # 带 settled 标志的字段与判据参数：消费方不必猜哪些字段有这一位、也不必抄死阈值
-            "settled_fields": list(GATED_FIELDS),
-            "settle_gap_s": SETTLE_GAP_S,
+            "rate_fields": list(RATE_FIELDS),
             "rows_written": self._rows_written,
             "rows_dropped": self._rows_dropped,
-            "rows_flagged": self._rows_flagged,
             "samples_no_frame": self._samples_no_frame,
             "ocr_no_result": self._ocr_no_result,
             "read_errors": self._read_errors,

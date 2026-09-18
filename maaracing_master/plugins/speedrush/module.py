@@ -184,10 +184,9 @@ class SpeedRushModule(ActivityModule):
                 "frames": int(stats["frames_written"]) if stats else 0,
                 "frames_dropped": int(stats["frames_dropped"]) if stats else 0,
                 "pad_samples": int(stats["pad_samples"]) if stats else 0,
-                # HUD 读数（与录制器同一时机启停；行数/标记数即"这个阶段的读数有没有产出"）
+                # HUD 读数（与录制器同一时机启停；行数即"这个阶段的读数有没有产出"）
                 "hud_recording": bool(hud is not None and hud.running),
                 "hud_rows": int(hud_stats["rows_written"]) if hud_stats else 0,
-                "hud_flagged": int(hud_stats["rows_flagged"]) if hud_stats else 0,
                 "demos_dir": str(_demos_root()),
             },
         }

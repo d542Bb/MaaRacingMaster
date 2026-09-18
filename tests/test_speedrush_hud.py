@@ -194,14 +194,14 @@ class TestRegionTruth:
             hud.load_hud_regions(f)
 
     def test_loader_rejects_comment_key_and_missing_semantic_fields(self, tmp_path) -> None:
-        """真源是纯数据：说明键与"缺语义必填字段"都要拦（后者会让在场闸门变摆设）。"""
+        """真源是纯数据：说明键与"缺语义必填字段"都要拦（缺了比分格，敌我判据只能整段弃权）。"""
         comment = tmp_path / "a.json"
         comment.write_text(json.dumps({"_note": "说明", **REGIONS}), encoding="utf-8")
         with pytest.raises(ValueError, match="说明键"):
             hud.load_hud_regions(comment)
         missing = tmp_path / "b.json"
         missing.write_text(json.dumps({k: v for k, v in REGIONS.items()
-                                       if k != "total_left"}), encoding="utf-8")
+                                       if k != "score_a"}), encoding="utf-8")
         with pytest.raises(ValueError, match="语义必需字段"):
             hud.load_hud_regions(missing)
 
@@ -217,41 +217,20 @@ class TestRegionTruth:
         assert not offenders, f"仍引用已搬走的区域真源：{offenders}"
 
     def test_every_region_is_consumed(self, tmp_path) -> None:
-        """采样范围 == 真源键集（派生断言，不另抄一份字段清单）。"""
+        """采样范围 == 真源键集 − 跳过名单（派生断言，不另抄一份字段清单）。"""
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts())))
-        assert set(rec["fields"]) == set(REGIONS)
+        assert set(rec["fields"]) == set(REGIONS) - set(hud.SKIPPED_FIELDS)
         assert rec["regions"] == hud.region_digest(REGIONS)
 
 
 # ----------------------------------------------------------------------
-# 在场闸门 / 敌我归属 / 假读标记
+# 读数可用性与敌我归属
 # ----------------------------------------------------------------------
 
 
 class TestReadingJudgements:
-    def test_dark_gate_blocks_absent_field(self, tmp_path) -> None:
-        """① 暗底闸门挡住不在场的字段：不识别（省一次 OCR），也不给可信值。"""
-        engine = _FakeEngine(_texts())
-        rec = _sample(_observer(tmp_path, engine, absent=("mileage",)))
-        mile = rec["fields"]["mileage"]
-        assert mile["gate"] is False
-        assert mile["value"] is None and mile["text"] is None
-        assert mile["trusted"] is False and "panel_absent" in mile["note"]
-        assert tuple(REGIONS["mileage"]) not in engine.calls, "闸门未拦住 OCR 调用"
-        # 对照组：在场那一格照旧读出可信值
-        assert rec["fields"]["stage"]["trusted"] is True
-        assert rec["fields"]["overtake"]["gate"] is True
-        assert rec["fields"]["overtake"]["value"] == 1
-
-    def test_short_panel_variant_yields_no_trusted_total(self, tmp_path) -> None:
-        """④ 面板矮版（无合计那一行）→ total_left 不得产出可信值。"""
-        rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), absent=("total_left",)))
-        total = rec["fields"]["total_left"]
-        assert total["gate"] is False and total["trusted"] is False
-        assert total["value"] is None and "panel_absent" in total["note"]
-
-    def test_block_side_attribution_lands_in_record(self, tmp_path) -> None:
-        """② 比分面板上下互换 → 归属按块色判，并逐格写进记录。"""
+    def test_side_attribution_lands_in_record(self, tmp_path) -> None:
+        """比分面板上下互换 → 归属由成对判给出，并逐格写进记录。"""
         sides = {"score_a": (30, 60, 220), "score_b": (220, 60, 30)}
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), sides=sides))
         assert rec["fields"]["score_a"]["side"] == "本机(蓝)"
@@ -259,28 +238,11 @@ class TestReadingJudgements:
         # 位置与敌我解耦：读数照读，归属单列
         assert rec["fields"]["score_a"]["value"] == 560
 
-    def test_block_side_abstains_on_unsaturated_band(self, tmp_path) -> None:
+    def test_pair_abstains_on_unsaturated_band(self, tmp_path) -> None:
         """低饱和带（天空/路面）判不出归属 → 显式 ``?``，不猜。"""
         gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
         rec = _sample(_observer(tmp_path, _FakeEngine(_texts()), frame=gray))
         assert rec["fields"]["score_a"]["side"] == "?"
-
-    def test_total_lt_mileage_marked_not_dropped(self, tmp_path) -> None:
-        """③ 合计 < 里程 必是假读 → 标记（行照旧产出、原始文本与值都留着）。"""
-        rec = _sample(_observer(tmp_path, _FakeEngine(_texts(total_left="2"))))
-        total = rec["fields"]["total_left"]
-        assert "total_lt_mileage" in rec["flags"]
-        assert total["trusted"] is False and "total_lt_mileage" in total["note"]
-        assert total["value"] == 2 and total["text"] == "2"   # 原始读数不丢
-        assert rec["fields"]["mileage"]["trusted"] is True     # 只废掉被证伪的那一格
-
-    def test_single_char_panel_reading_marked(self, tmp_path) -> None:
-        """单字面板读数与噪声不可区分 → 标记不可信；overtake 的合法单字不受影响。"""
-        rec = _sample(_observer(tmp_path, _FakeEngine(_texts(mileage="2", overtake="1"))))
-        mile = rec["fields"]["mileage"]
-        assert mile["trusted"] is False and "single_char" in mile["note"]
-        assert "mileage_single_char" in rec["flags"]
-        assert rec["fields"]["overtake"]["trusted"] is True
 
     def test_timer_value_is_seconds_not_first_int(self, tmp_path) -> None:
         """计时格按秒记：'04:46' 走通用取整会得到 4（分钟）——那是"读得出但解释错"的陷阱。"""
@@ -305,46 +267,45 @@ class TestReadingJudgements:
                 return None
 
         rec = _sample(_observer(tmp_path, _Dead()))
-        assert rec["fields"]["mileage"]["trusted"] is False
-        assert "ocr_unavailable" in rec["fields"]["mileage"]["note"]
+        assert rec["fields"]["stage"]["trusted"] is False
+        assert "ocr_unavailable" in rec["fields"]["stage"]["note"]
 
     def test_one_bad_field_does_not_kill_the_row(self, tmp_path) -> None:
         """单格读数异常只废掉那一格：记 read_error、不给可信值，且有累计计数。
 
-        成因不是假想：闸门要按 ``shape[:2]`` 解包、块色判据要按通道取值，任何一帧异常
-        都会从这里抛。异常若逃到采样线程，**整条观察会静默死掉**——实机上的表现是
-        "跑了一整轮却只有几行"，而 meta 里没有任何一项指向"线程死了"，事后无从归因。
+        成因不是假想：引擎对某格抛一次（模型/内存/尺寸都可能），异常若逃到采样线程，
+        **整条观察会静默死掉**——实机上的表现是"跑了一整轮却只有几行"，而 meta 里没有
+        任何一项指向"线程死了"，事后无从归因。
         """
+        def _boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
         obs = _observer(tmp_path, _FakeEngine(_texts()))
-        entry = obs._read_field_safe(_BadFrame(), "mileage", REGIONS["mileage"])
+        obs._read_field = _boom  # type: ignore[method-assign]
+        entry = obs._read_field_safe(_frame(), "stage", REGIONS["stage"])
         assert entry["trusted"] is False and "read_error" in entry["note"]
         assert obs.stats["read_errors"] == 1
 
-    def test_bad_frame_does_not_kill_the_row(self, tmp_path) -> None:
-        """整帧异常也不终止观察：**碰帧的格子**标 read_error，行照旧落盘且还能继续采。
+    def test_bad_frame_degrades_to_abstention(self, tmp_path) -> None:
+        """整帧异常不终止观察：归属整拍**弃权**，行照旧落盘、还能继续采。
 
-        "碰帧的格子"就是过闸门的三格（要解 shape）；判归属的两格**不碰帧**——归属来自采样侧
-        一次性成对判（它自己吞掉异常并弃权），故坏帧下它们记的是 `side_source=abstain`，
-        既不冒充一个身份、也不谎报读错。其余格子只把 rect 交给引擎，坏帧影响不到它们。
+        判归属要碰帧（解 shape、取通道），故坏帧下右侧四格一律 ``side=?`` 且
+        ``side_source=abstain``——既不冒充一个身份，也不谎报"读错"（成对判自己吞异常）。
+        其余格子只把 rect 交给引擎，不受影响。
         """
-        touching = hud.GATED_FIELDS
         obs = _observer(tmp_path, _FakeEngine(_texts()), frame=_BadFrame())
         for _ in range(2):
             rec = _sample(obs)
-            for name in touching:
-                entry = rec["fields"][name]
-                assert entry["trusted"] is False and "read_error" in entry["note"]
-            for name in hud.SIDE_FIELDS:
+            for name in (*hud.SIDE_FIELDS, *hud.RATE_FIELDS):
                 entry = rec["fields"][name]
                 assert entry["side"] == "?" and entry["side_source"] == "abstain"
             assert rec["fields"]["timer"]["value"] is not None, "不碰帧的格子不该被牵连"
             assert rec["regions"], "区域指纹照旧入行（这行读的是哪套框仍可查）"
-        assert obs.stats["read_errors"] == 2 * len(touching)
 
     def test_non_three_channel_frame_never_lies_about_side(self) -> None:
         """非 3 通道帧的归属说"判不出"，而不是把通道错位分组后给一个看着合理的错标签。"""
         f = np.zeros((FRAME_H, FRAME_W, 4), dtype=np.uint8)
-        assert hud.block_side(f, REGIONS["score_a"]) == "?"
+        assert hud.pair_sides(f, REGIONS["score_a"], REGIONS["score_b"]) == ("?", "?")
 
 
 # ----------------------------------------------------------------------
@@ -367,15 +328,6 @@ class TestSidePairJudgement:
         assert rec["fields"]["score_a"]["side"] == "对手(红)"
         assert rec["fields"]["score_b"]["side"] == "本机(蓝)"
         assert rec["fields"]["score_a"]["side_source"] == "pair"
-
-    def test_single_band_form_is_the_one_that_fails(self) -> None:
-        """把现场形态锁住：单块绝对判据在公共偏色下确实会两块同判（故它只配做离线标注）。"""
-        from maaracing_master.plugins.speedrush import hud as h
-        f = _frame(sides={"score_a": (60, 90, 150), "score_b": (20, 80, 200)})
-        assert h.block_side(f, REGIONS["score_a"]) == "本机(蓝)"     # 错：上块其实是对手
-        assert h.block_side(f, REGIONS["score_b"]) == "本机(蓝)"  # 对
-        assert h.pair_sides(f, REGIONS["score_a"], REGIONS["score_b"]) \
-            == ("对手(红)", "本机(蓝)")
 
     def test_pair_abstains_when_two_bands_are_alike(self, tmp_path) -> None:
         """差值太小 → 两块都弃权：多半是面板淡入/淡出，这一刻没有可用信号。"""
@@ -437,80 +389,6 @@ class TestSidePairJudgement:
 
 
 # ----------------------------------------------------------------------
-# 「定值」判据：卡片三格的读数是滚动爬升出来的，只有停住的值才是真值
-# ----------------------------------------------------------------------
-
-
-class TestSettleJudgement:
-    """实测形态（同一张卡片）：268 → 292 → 317 → 338 → 338 → 338。
-
-    爬升值"看着合理"（都是合法里程），但拿它算增量会得到假的分数来源、拿它验
-    「合计 = 里程 + 30×超车」会得到假违例——淡入中的卡片连「合计」那一行都还没显出来。
-    """
-
-    def test_settled_needs_two_equal_samples(self, tmp_path) -> None:
-        """连续两拍同值才算定值；爬升段既不丢数据（trusted 仍 True）也不算定值。"""
-        obs, engine, state = _walker(tmp_path, _texts(mileage="268"))
-        first = _sample(obs)["fields"]["mileage"]
-        assert first["settled"] is False, "首拍没有前值可比，不得判成定值"
-
-        _tick(state)
-        engine.texts = _texts(mileage="292")
-        ramp = _sample(obs)["fields"]["mileage"]
-        assert ramp["settled"] is False
-        assert ramp["trusted"] is True and ramp["value"] == 292, "爬升值照旧留下：判定与数据并存"
-
-        _tick(state)
-        plateau = _sample(obs)["fields"]["mileage"]
-        assert plateau["settled"] is True and plateau["value"] == 292
-
-        _tick(state)
-        engine.texts = _texts(mileage="317")
-        assert _sample(obs)["fields"]["mileage"]["settled"] is False, "又起一段爬升"
-
-    def test_settled_gap_limit(self, tmp_path) -> None:
-        """相隔超过 SETTLE_GAP_S 的同值不算"连续两拍"（丢样本 / 长间隔不成定值）。"""
-        obs, engine, state = _walker(tmp_path, _texts(mileage="338"))
-        _sample(obs)
-        _tick(state, hud.SETTLE_GAP_S + 0.5)
-        assert _sample(obs)["fields"]["mileage"]["settled"] is False
-        _tick(state, 0.5)
-        assert _sample(obs)["fields"]["mileage"]["settled"] is True, "间隔恢复后照常判"
-
-    def test_unread_sample_does_not_move_the_baseline(self, tmp_path) -> None:
-        """没读出（面板缺席）的那一拍不更新基准：下一拍仍与最后一次有效读数比。"""
-        obs, engine, state = _walker(tmp_path, _texts(mileage="338"))
-        _sample(obs)
-        _tick(state)
-        state["frame"] = _frame(absent=("mileage",))
-        absent = _sample(obs)["fields"]["mileage"]
-        assert absent["trusted"] is False and absent["settled"] is False
-        _tick(state)
-        state["frame"] = _frame()
-        assert _sample(obs)["fields"]["mileage"]["settled"] is True
-
-    def test_settled_only_on_card_fields(self, tmp_path) -> None:
-        """比分与速度是持续跳动的量，"同值两拍"对它们无意义 → 不产出这一位。"""
-        obs, engine, state = _walker(tmp_path, _texts())
-        rec = _sample(obs)
-        for name in hud.GATED_FIELDS:
-            assert "settled" in rec["fields"][name]
-        for name in (*hud.SIDE_FIELDS, "rate_a", "rate_b", "timer", "event_banner"):
-            assert "settled" not in rec["fields"][name]
-
-    def test_meta_declares_settle_contract(self, tmp_path) -> None:
-        """meta 声明哪些字段带 settled、阈值是多少：消费方不必猜、也不必抄死常量。"""
-        obs, engine, state = _walker(tmp_path, _texts(), interval_s=0.05)
-        obs.start()
-        time.sleep(0.12)
-        obs.stop("phase_end")
-        meta = json.loads((tmp_path / "hud_meta.json").read_text(encoding="utf-8"))
-        assert meta["schema"] == hud.SCHEMA_VERSION
-        assert meta["settled_fields"] == list(hud.GATED_FIELDS)
-        assert meta["settle_gap_s"] == hud.SETTLE_GAP_S
-
-
-# ----------------------------------------------------------------------
 # 落盘 + 与录制帧对齐
 # ----------------------------------------------------------------------
 
@@ -567,14 +445,11 @@ class TestHudJsonl:
             assert r["frame_id"] in idx, f"帧号 {r['frame_id']} 不在 frames.jsonl 里"
             assert r["ts_ns"] == idx[r["frame_id"]]
         assert {r["frame_id"] for r in rows} == {fid for fid, _ in pairs}
-        # 原始文本 + 解析值 + 判定标志三件齐全（可审计）
-        assert rows[0]["fields"]["mileage"]["text"] == "338"
-        assert rows[0]["fields"]["mileage"]["value"] == 338
-
-        flagged = [r for r in rows if "total_lt_mileage" in r["flags"]]
-        assert flagged, "假读行必须落盘并带标记（不得静默丢弃）"
-        assert flagged[0]["fields"]["total_left"]["value"] == 2
-        assert flagged[0]["fields"]["total_left"]["trusted"] is False
+        # 原始文本逐格齐全（可审计）；读到的格 == 真源键集 − 跳过名单
+        assert [n for n in rows[0]["fields"]] == [n for n in REGIONS
+                                                  if n not in hud.SKIPPED_FIELDS]
+        # 读到的格带原始文本；速度格可能整格不读（归属判不出 / 对手那一槽不显示），text 为 None
+        assert isinstance(rows[0]["fields"]["stage"]["text"], str)
 
         meta = json.loads((sess / "hud_meta.json").read_text(encoding="utf-8"))
         assert meta["schema"] == hud.SCHEMA_VERSION
@@ -679,7 +554,7 @@ class _SpyObserver:
 
     @property
     def stats(self) -> dict[str, int]:
-        return {"rows_written": 0, "rows_dropped": 0, "rows_flagged": 0,
+        return {"rows_written": 0, "rows_dropped": 0,
                 "samples_no_frame": 0, "ocr_no_result": 0}
 
     def start(self) -> None:
@@ -742,7 +617,7 @@ class TestModuleWiring:
         mod, _ = env
         state = mod.get_module_config()["_state"]
         assert state["hud_recording"] is False
-        assert state["hud_rows"] == 0 and state["hud_flagged"] == 0
+        assert state["hud_rows"] == 0
 
         spy = _SpyObserver(Path("."), phase=1)
         spy.running = True

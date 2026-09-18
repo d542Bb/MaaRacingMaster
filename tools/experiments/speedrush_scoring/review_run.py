@@ -61,7 +61,8 @@ LEGACY_FIELD_RENAMES = {"score_top": "score_a", "score_bottom": "score_b",
 # 合计 = 里程 + w×超车。w 由探针 formula 模式定出，本工具作不变量复核。
 OVERTAKE_WEIGHT = 30
 
-# 「连续两次采样相同」的相邻判定上限：与生产侧 `hud.SETTLE_GAP_S` 同值（口径见 settled_map）
+# 「连续两次采样相同」的相邻判定上限：旧会话靠落盘 `settle_gap_s`，缺此项时用本值回退。
+# 生产侧自 SCHEMA 5 起停读卡片、已无该判据，故这里只是旧格式的默认值（见 settled_map）
 SETTLE_GAP_S = 1.5
 # 面板在场行之间超过这个间隔即算两个窗口（实测窗时长约 3.5s、间隔约 10s）
 BURST_GAP_S = 2.0
@@ -70,8 +71,11 @@ PAIR_TOL_NS = 50_000_000
 # 比分假读的"串位尖峰"判据：值高于前后可信点且超出量级（见 side_series）
 SPIKE_FACTOR = 3.0
 # 认得的 `hud_meta.schema`：1 无 per-field `settled`；2 有（回退重算，见 settled_map）；
-# 3 归属改为成对判并记 `side_source`；4 右侧四格改槽位名、速度格按归属读、归属判不出即弃权
-HUD_SCHEMAS = (1, 2, 3, 4)
+# 3 归属改为成对判并记 `side_source`；4 右侧四格改槽位名、速度格按归属读、归属判不出即弃权；
+# 5 **生产侧停读左侧卡片三格**（滞后一个周期的快照，见 RULES §4.8）——该版记录里只有右侧四格
+HUD_SCHEMAS = (1, 2, 3, 4, 5)
+# 记录里带左侧卡片三格的版本：windows / sheet 与卡片口径的检查只对这些会话有意义
+CARD_SCHEMAS = (1, 2, 3, 4)
 
 # 出图：卡片由「全帧缩略 + 左侧卡片放大 + 比分面板放大」三块拼成，标注条在底
 CELL_W = 1264
@@ -205,14 +209,15 @@ def load_session(path: Path) -> Session:
 def settled_map(rows: list[Row], name: str) -> dict[int, bool]:
     """每个可信采样点是否**定值**。
 
-    口径与生产侧（`plugins/speedrush/hud.py` 的 `_mark_settled`）**逐字一致**：与**上一个**
-    可信采样同值、且间隔 ≤ ``SETTLE_GAP_S``。同一事实在两处各写一套判据迟早会分叉，故落盘行
-    里带 ``settled`` 时**直接取它**（生产侧算的那一位就是权威），只有 SCHEMA 1 的旧会话没有
-    这一位时才按同一规则重算——两条路的结果必然相同。
+    口径：与**上一个**可信采样同值、且间隔 ≤ ``SETTLE_GAP_S``。**落盘行自带 `settled` 位时
+    一律以它为权威**（SCHEMA 2~4 的生产侧算过这一位），只有 SCHEMA 1 的旧会话没有它时才按
+    同一规则重算——两条路的结果必然相同。
 
-    "与上一个相同"而非"与下一个相同"：写盘是流式的，生产侧那一拍看不到未来。复盘本可以看
-    未来（把每段平台的第一个采样点也认成定值），但那会让工具与生产侧对同一个值给出不同判定，
-    正是要避免的第二真源——所以这里不退让。
+    "与上一个相同"而非"与下一个相同"：写盘是流式的，那一拍看不到未来。复盘本可以看未来
+    （把每段平台的第一个采样点也认成定值），但那会与记录里的权威位给出不同判定，正是要避免
+    的第二真源——所以这里不退让。
+
+    生产侧自 SCHEMA 5 起停读卡片三格、已无此判据；本函数只为**旧会话**保留。
     """
     idx = [i for i, r in enumerate(rows) if r.trusted(name)]
     out: dict[int, bool] = {}
@@ -403,6 +408,25 @@ def resolve_sessions(args) -> list[Session]:
     return [load_session(d) for d in reversed(cands)]  # 按时间正序打印
 
 
+def has_card(sess) -> bool:
+    """本会话记录里是否有左侧卡片三格（SCHEMA 5 起生产侧停读，旧会话仍有）。"""
+    return any(n in r.fields for r in sess.rows for n in CARD_FIELDS)
+
+
+def _card_sessions(args):
+    """只留带卡片三格的会话；windows / sheet 与卡片口径只对它们有意义。"""
+    out = []
+    for s in resolve_sessions(args):
+        if has_card(s):
+            out.append(s)
+        else:
+            print(f"跳过 {s.name}：无左侧卡片三格（SCHEMA 5 起生产侧停读）")
+    if not out:
+        raise SystemExit("没有带左侧卡片三格的会话——windows / sheet 需要它；"
+                         "SCHEMA 5 起的会话请用 timeline 看右侧四格")
+    return out
+
+
 def cmd_check(args) -> None:
     sessions = resolve_sessions(args)
     print("=== 会话自检 ===")
@@ -416,6 +440,10 @@ def cmd_check(args) -> None:
                f"{len(s.frames):>5} {len(s.rows):>4} "
                f"{str(s.meta.get('frames_dropped')) + '/' + str(hm.get('rows_dropped')):>9} "
                f"{f.n_exact:>8} {f.n_near:>8} {f.n_no_frame:>4} ")
+        if not has_card(s):
+            # 卡片相关的列对它不适用：印 "—" 而不是 0（0 会被读成"卡片一直不在场"）
+            print(hdr + f"{'—':>14} {'—':>9} {'—':>5}")
+            continue
         cnt = []
         for n in CARD_FIELDS:
             t = sum(1 for r in s.rows if r.trusted(n))
@@ -653,7 +681,7 @@ def cmd_timeline(args) -> None:
 
 
 def cmd_windows(args) -> None:
-    sessions = resolve_sessions(args)
+    sessions = _card_sessions(args)
     all_periods: list[float] = []
     all_dur: list[float] = []
     all_settled: list[tuple[str, int, int, int]] = []
@@ -796,7 +824,7 @@ def interest_rows(sess: Session, f: Findings, limit: int) -> list[int]:
 
 
 def cmd_sheet(args) -> None:
-    sessions = resolve_sessions(args)
+    sessions = _card_sessions(args)
     out_root = Path(args.out) if args.out else Path(args.demos).parent / "hud_review"
     from PIL import Image
     for s in sessions:
