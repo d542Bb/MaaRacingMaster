@@ -10,6 +10,24 @@ MaaRM GUI 的界面层：`index.html`（静态骨架）+ `app.js`（页面逻辑
 Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无构建链、无 npm 安装步骤、
 **禁止引入任何 CDN 运行时依赖**（离线可用是硬约束）。
 
+## 远程数据渲染口径（硬约束）
+
+关于页的公告卡与「版本与更新」卡渲染的是**远程元数据**（公告 JSON、release 标记，规范见
+[`docs/announcement.md`](../../../docs/announcement.md)），一律按不可信输入对待：
+
+- **动态文本只走 `textContent` / DOM API**（用 `mkEl()` 建元素再填文本），不得拼字符串进
+  `innerHTML`。远程渲染路径上唯一允许 `innerHTML` 的位置是 `appendIcon()`——它只喂本仓库
+  静态 SVG 串。回归锁：[`tests/test_frontend_remote_render.py`](../../../tests/test_frontend_remote_render.py)。
+- **外链只报逻辑目标名**：`openTarget('home' | 'issue' | 'docs' | 'announcement' | 'download')`，
+  地址由 sidecar 侧白名单给出（[`core/remote_meta.py`](../../../maaracing_master/core/remote_meta.py)
+  的 `EXTERNAL_TARGETS`）；前端不持有、也不传递可打开的 URL。
+- `index.html` 里 `data-link` 的属性值**就是目标名**。新增外链入口必须同时在 `EXTERNAL_TARGETS`
+  里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
+
+理由：前端持有 `mra.call()` RPC 能力，远程数据一旦能形成 XSS，就会顺着 RPC 放大成
+「可信程序替攻击者打开任意站点」。两层防线各自独立成立——渲染层不把数据当标记解析，
+RPC 层不信任调用方给的地址。
+
 ## 图标规范
 
 - **唯一真源是 `icons.js`**（`window.MRAIcons`）。数据格式为 IconNode
@@ -138,3 +156,22 @@ msedge.exe --headless=new --screenshot=out.png --window-size=900,240 "file:///�
   比目视可靠——本次彩虹配色就是这么从 RGB／HSL 换到 OKLCH 的。
 - **查语法与特性支持**：`--dump-dom` 跑一个用 `CSS.supports()` 逐条打印结果的页面，
   拿到的是当前引擎的真实判定（比猜版本号可靠）。
+
+### 驱动真实 app.js 的桥桩探针（渲染路径验收）
+
+`app.js` 启动即访问 `window.chrome.webview`，直接开 `index.html` 会因无桥而中断。要验证
+「远程数据在**真实渲染路径**下的表现」（公告/更新卡是否只出纯文本、按钮发出的调用形态），
+用一份**临时副本**：复制 `index.html`，在 `<body>` 后插桥桩、在 `</body>` 前插判据脚本。
+
+- **桥桩**：`window.chrome = { webview: { addEventListener, postMessage } }`；`postMessage`
+  里按 `msg.method` 回包（`fetch_announcement` / `check_update` 喂构造好的 payload）。
+  回包必须 `setTimeout(..., 0)` **异步**派发——同步派发会让 app.js 的初始化在同一次调用里重入。
+- **判据**：点 `[data-tab="about"]` 切页、点卡片按钮，然后把桥桩记录的调用
+  （`window.__calls`）、两个卡片的 `innerHTML`、以及 `window.__xss` 有没有被
+  `onerror`/`onload` 置位，写进 `<pre id="probe-out">`。
+- **取回**：`--dump-dom` 抓判据，`--screenshot` 看版式（两条命令同上面的无头 Edge 用法）。
+  ⚠️ `--screenshot=` 要给 **Windows 路径**：Edge 不认 Git Bash 的 `/tmp/...`。
+- **读法**：payload 在卡片 `innerHTML` 里应呈现为 `&lt;img …&gt;`（转义文本）、`__xss`
+  保持 undefined、外链调用只有 `open_external_url {"target":"…"}` 形态。
+
+探针是临时验证产物，**用完即移出仓库**（见 [`AGENTS.md`](../../../AGENTS.md) 红线 4）。

@@ -46,6 +46,14 @@ from maaracing_master.core.registry import (
     module_expired,
 )
 from maaracing_master.core.paths import config_dir, data_dir, user_data_dir
+from maaracing_master.core.remote_meta import (
+    EXTERNAL_TARGETS,
+    GITHUB_REPO,
+    is_expired,
+    is_openable_url,
+    parse_announcement,
+    parse_release,
+)
 from maaracing_master.core.window_utils import ensure_dpi_aware, has_physical_controller
 
 # 协议转移用 stderr：_StdoutGuard 把误写 stdout 的第三方 print 转移到这里。
@@ -391,6 +399,9 @@ class SidecarService:
             self._stages = []
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
+        # 远程数据里**已校验通过**的可打开地址（公告详情 / 下载页）：前端只按逻辑目标名
+        # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
+        self._remote_urls: dict[str, str] = {}
         self._closed = False
         # 模块配置缓存：**按模块 id 分槽**，切走的模块配置留在自己的槽里不被覆盖。
         # 槽里只放纯配置数据，**绝不放模块实例**——实例持有线程/文件句柄等资源，
@@ -753,14 +764,35 @@ class SidecarService:
             self._controller.stop()
         return (True, None, None)
 
+    def _resolve_target(self, target) -> str:
+        """逻辑目标名 → 可打开地址；未知目标返回空串。
+
+        静态目标来自 `remote_meta.EXTERNAL_TARGETS`；`announcement` / `download` 是
+        「远程数据里已校验通过的地址」，取本进程最近一次解析结果——前端不传递 URL，
+        因此即使前端被完全控制，也只能请求这几个目标，无法指定打开哪里。
+        """
+        if not isinstance(target, str):
+            return ""
+        if target in EXTERNAL_TARGETS:
+            return EXTERNAL_TARGETS[target]
+        if target in ("announcement", "download"):
+            with self._lock:
+                remembered = self._remote_urls.get(target, "")
+            if remembered:
+                return remembered
+            # 远程没给（或给的地址不合规）时，下载页回退官方 release 页；
+            # 公告没有可回退的地址，返回空串让调用方报「暂不可用」。
+            return EXTERNAL_TARGETS["release"] if target == "download" else ""
+        return ""
+
     def open_vigembus_download(self, params):
         """在用户默认浏览器打开 ViGEmBus 官方下载页，引导安装驱动。
 
         训练/运行必需的内核驱动无法随包 app-local 分发，只能由用户手动安装一次。
-        返回是否已打开发布页（浏览器需保持默认配置）。
+        地址由本进程固定，不接受调用方传 URL；返回是否已打开发布页。
         """
         import webbrowser
-        url = params.get("url") or "https://github.com/nefarius/ViGEmBus/releases/latest"
+        url = EXTERNAL_TARGETS["vigembus"]
         try:
             webbrowser.open(url)
             return (True, {"opened": url}, None)
@@ -768,11 +800,18 @@ class SidecarService:
             return (False, None, f"打开 ViGEmBus 下载页失败: {exc}")
 
     def open_external_url(self, params):
-        """在用户默认浏览器打开外部链接（关于页跳转：项目主页 / 报告问题 / 使用文档）。"""
+        """按**逻辑目标名**在默认浏览器打开官方地址（关于页跳转 / 公告详情 / 下载页）。
+
+        调用方只报「打开哪个目标」（`target`），不报「打开哪里」——地址一律由本进程
+        决定：静态目标查 `EXTERNAL_TARGETS`，远程目标取已校验过的地址。放行前再过一次
+        `is_openable_url` 作纵深防御：不论地址从哪条路径攒出来，都逃不过官方白名单。
+        """
         import webbrowser
-        url = params.get("url") or ""
-        if not url.lower().startswith(("http://", "https://")):
-            return (False, None, "仅支持 http(s) 外部链接")
+        url = self._resolve_target(params.get("target"))
+        if not url:
+            return (False, None, f"未知或暂不可用的外部目标: {params.get('target')!r}")
+        if not is_openable_url(url):
+            return (False, None, "目标地址不在允许范围内")
         try:
             webbrowser.open(url)
             return (True, {"opened": url}, None)
@@ -961,11 +1000,12 @@ class SidecarService:
 
     # ---------- 关于页：检查更新 / 公告 ----------
 
-    _GITHUB_REPO = "d542Bb/MaaRacingMaster"
+    _GITHUB_REPO = GITHUB_REPO  # 唯一真源在 remote_meta（与官方域白名单同源，避免两处副本漂移）
     # CNB 镜像仓库（cnb.cool/MaaRacingMaster/MAIN）：只做 git 同步（mirror-to-cnb.yml），
     # 无发布包与匿名 releases API。「检测更新」改读版本标记文件 docs/latest_release.json
     # （release.yml 打 tag 时自动生成并回写 master，镜像随之同步）——CNB 优先（国内快），
     # GitHub raw / GitHub API 兜底。公告同理 CNB raw 优先。
+    # 所有源都只是「取字节」；「这些字节能不能信」由 remote_meta 的校验器统一判定。
     _CNB_RAW_BASE = "https://cnb.cool/MaaRacingMaster/MAIN/-/git/raw/master"
     _RELEASE_URLS = (
         f"{_CNB_RAW_BASE}/docs/latest_release.json",
@@ -992,14 +1032,17 @@ class SidecarService:
         多源顺序（CNB 优先，2026-09-04）：CNB raw 版本标记 → GitHub raw 版本标记 →
         GitHub API releases/latest。前两者读 release.yml 生成的 docs/latest_release.json
         （{tag, version, published_at, download_url}）；最后回退官方 API 原生字段。
+
+        每个源都过同一个校验器（`remote_meta.parse_release`）：tag 不合规的源按
+        「该源不可用」跳过、继续 fallback。`download_url` 只接受官方域，不合规即回退
+        官方 release 页——远程数据不得决定把用户带去哪个站点。
         """
         latest: str | None = None
         published = ""
         download_url = ""
         for url in self._RELEASE_URLS:
             try:
-                body = self._http_get(url)
-                rel = json.loads(body)
+                rel = parse_release(json.loads(self._http_get(url)))
             except HTTPError as exc:
                 if exc.code == 404 and url.startswith("https://api.github.com"):
                     # 仅 GitHub 官方 API 的 404 权威判定「仓库无 release」；CNB raw 404
@@ -1008,18 +1051,18 @@ class SidecarService:
                 continue
             except (URLError, TimeoutError, OSError, ValueError, TypeError):
                 continue
-            tag = str(rel.get("tag_name") or rel.get("version") or rel.get("tag") or "").lstrip("v")
-            if not tag:
+            if rel is None:
                 continue
-            latest = tag
-            published = str(rel.get("published_at") or "")[:10]
-            download_url = str(rel.get("download_url") or "") or \
-                f"https://github.com/{self._GITHUB_REPO}/releases/latest"
+            latest = rel["tag"]
+            published = rel["published_at"]
+            download_url = rel["download_url"] or EXTERNAL_TARGETS["release"]
             break
         if latest is None:
             return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试",
                            "status": "network"}, None)
 
+        with self._lock:
+            self._remote_urls["download"] = download_url
         cur = ".".join(str(x) for x in self._version_tuple())
         has_update = self._compare_versions(latest, cur) > 0
         return (True, {
@@ -1032,26 +1075,25 @@ class SidecarService:
         }, None)
 
     def fetch_announcement(self, params):
-        """拉取公告（CNB raw 优先 → GitHub raw → jsdelivr）。过期返回空；数据异常返回空。"""
+        """拉取公告（CNB raw 优先 → GitHub raw → jsdelivr）。过期返回空；数据异常返回空。
+
+        每个源都过同一个校验器（`remote_meta.parse_announcement`）：不合规的源按
+        「本条无效」跳过、继续 fallback，不存在「先渲染再校验」的路径。全部源都不可用时
+        返回 level=none（前端显示「暂无公告」），不影响启动。
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
         for url in self._ANNOUNCEMENT_URLS:
             try:
-                body = self._http_get(url)
-                data = json.loads(body)
+                data = json.loads(self._http_get(url))
             except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError):
                 continue
-            if not isinstance(data, dict):
-                continue
-            until = str(data.get("effective_until", "")).strip()
-            if until and until < datetime.now().strftime("%Y-%m-%d"):
-                continue  # 过期公告，跳过显示
-            return (True, {
-                "title": str(data.get("title", "")),
-                "body": str(data.get("body", "")),
-                "level": str(data.get("level", "info")),
-                "date": str(data.get("date", "")),
-                "url": str(data.get("url", "")) or "",
-                "url_text": str(data.get("url_text", "查看详情")) or "查看详情",
-            }, None)
+            ann = parse_announcement(data)
+            if ann is None or is_expired(ann["effective_until"], today):
+                continue  # 无效/过期公告：跳过该源，继续 fallback
+            with self._lock:
+                # 详情地址留在本进程：前端只按目标名请求打开（见 _resolve_target）
+                self._remote_urls["announcement"] = ann["url"]
+            return (True, ann, None)
         return (True, {"title": "", "body": "", "level": "none", "date": "", "url": "", "url_text": ""}, None)
 
     @staticmethod
