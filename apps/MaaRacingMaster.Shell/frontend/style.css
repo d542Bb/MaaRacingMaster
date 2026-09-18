@@ -367,7 +367,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .log-chev {
   width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
   color: var(--mra-foreground-muted);
-  transition: transform 0.15s ease;
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1); /* 与正文高度同拍，箭头不先到 */
 }
 .log-section--open .log-chev { transform: rotate(90deg); }
 .log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
@@ -380,9 +380,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .log-badge--warn { background: var(--mra-warning-bg); color: #b45309; }
 .log-badge--err { background: var(--mra-danger-bg); color: var(--mra-danger); }
 
-/* 区块正文：默认折叠，仅头部常显；展开后显示内部细节行 */
-.log-section-body { display: none; }
-.log-section--open .log-section-body { display: block; }
+/* 区块正文：默认折叠（高度 0，不占位）；点卡头展开，高度过渡即「卡头不动、内容向下推出」。
+   `interpolate-size: allow-keywords` 是 height: auto 能参与过渡的前提（Chromium 129+，
+   WebView2 常青自动更新；不支持时退化为瞬时开合，版式不受影响）。 */
+.log-section-body {
+  height: 0; overflow: hidden;
+  interpolate-size: allow-keywords;
+  transition: height 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.log-section--open .log-section-body { height: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .log-section-body { transition: none; }
+}
 
 /* 普通日志行：色点级别 + 消息，不再重复显示 [时间][级别] tag（减少重复、视线更顺） */
 .log-line {

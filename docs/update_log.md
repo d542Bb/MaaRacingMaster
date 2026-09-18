@@ -10,6 +10,18 @@
 
 ## 2026-09-18
 
+### 暂存（未发布 · 待并入下一版本）fix(shell)：运行日志卡片一律默认折叠 + 展开动画；面板首行不再裸挂 🔧
+
+- **性质：** **前端改动**（`apps/MaaRacingMaster.Shell/frontend/`：`app.js` 卡片状态机与滚动跟随、`style.css` 展开动画、`README.md` 记卡片不变量）；分支 `feat/log-cards-collapse`、不 tag。
+
+- **起因（维护者）：** 主控页「运行日志」里当前正在写入的卡始终默认展开、含错误的卡自动展开；且首个锚点之前的行（PEEP 预览 / 配置注入 / 连接窗口前）无处归卡，裸挂在面板上。
+
+- **改动：** ① 卡片**一律默认折叠**（含 ERROR 卡，错误靠卡头「!」徽章提示），展开只由点击决定；② 展开动画 = 正文 `height: 0 ↔ auto` 的高度过渡（前提是 `interpolate-size: allow-keywords`，Chromium 129+，WebView2 常青；箭头与正文同拍 0.18s；`prefers-reduced-motion` 下关闭过渡）；③ 面板**第一行按隐式锚点开卡**，首个锚点之前的运行环境行进卡，面板上不再有裸行旁路；④ 自动滚动改为**只在已贴底时才跟随**（贴底判定必须取在追加之前——追加会抬高 `scrollHeight`，追加后再比就永远算不出用户已翻上去）。
+
+- **顺带修掉两处既有缺陷（均为探针抓出，非本次引入）：** ① `updateSectionMeta` 用裸 `.log-badge` 取计数徽章，而「!」标记同样带这个类 → 标记被移除后 `insertBefore` 抛 `NotFoundError`，**该批次剩余的行整批静默丢失、计数从此冻结**（表现为含警告/错误的卡片其后细节行在界面上全部消失），改按专属类 `.log-badge--count` 取；② 未收尾的「当前卡」建卡时没绑点击开关（默认展开时看不出缺，默认折叠后表现为「点不开」）。
+
+- **验证：** 无头 Edge 桥桩探针（临时副本 + 桥桩驱动**真实 `app.js`**）19 项判据全绿——6 卡 / 0 裸行 / 6 张全折叠 / height 过渡存在且半程插值 113→118px、收起回 0 / 贴底跟随 215=215、翻到顶部不被拽走 / 服务行 47 = 渲染行 47（不再丢行）/ 控制台零异常；版式截图目视通过（默认折叠 + 展开态 + 红「!」徽章）。`tests/test_rpc_allowlist.py` 4 passed。
+
 ### 暂存（未发布 · 待并入下一版本）治理立法：实验与计划产物的生命周期契约（AGENTS 红线 6 + 机检棘轮）⚖️
 
 - **性质：** **规则改写 + 机检入库**（`AGENTS.md` 新增红线 6、`tools/experiments/README.md` 整篇重写、`docs/README.md` plan 规范重写；新增 `tools/check_repo_hygiene.py`（R1~R5）+ 基线 `tools/repo_hygiene_baseline.txt`（70 条存量豁免）+ 回归锁 `tests/test_repo_hygiene.py`（8 例，含真实仓库绿）；`test.yml` 与 `CONTRIBUTING.md` 触碰面接线）。维护者四项裁定全过，第③项按裁定修正：**存量不批量盖 active 章**。
