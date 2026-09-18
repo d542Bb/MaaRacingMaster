@@ -17,6 +17,7 @@
 | 用户数据目录结构 | [`core/paths.py`](./paths.py) |
 | 游戏分辨率 720p | [`core/window_utils.py`](./window_utils.py) `resize_game_window_720p`（连接时统一窗口，各插件 ROI / 按钮据此归一化） |
 | 文字识别引擎（跨插件共享） | [`core/ocr.py`](./ocr.py)（§1.11：调参、抠图边界与预处理口径的唯一真源） |
+| 远程元数据信任边界（公告/版本标记校验、外链目标白名单） | [`core/remote_meta.py`](./remote_meta.py)（§1.12） |
 | MaaFW 对象签名与红线 | [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md) |
 
 ***
@@ -276,6 +277,39 @@
 
 ***
 
+### 1.12 [remote_meta.py](./remote_meta.py) — 远程元数据信任边界
+
+**职责摘要**：判定「远程拿到的公告 / 版本标记字段能不能信、能信到什么程度」，并把「打开外链」
+收敛成一张逻辑目标表。不做网络、不碰渲染。
+
+| 出口 | 作用 |
+| --- | --- |
+| `parse_announcement(data)` | 公告 payload → 归一化 dict；必填字段不合规返回 `None`（整条作废） |
+| `parse_release(data)` | 版本标记 payload → `{tag, published_at, download_url}`；tag 不合规返回 `None`（该源不可用） |
+| `EXTERNAL_TARGETS` | 外链逻辑目标 → 官方地址（`home` / `issue` / `docs` / `release` / `vigembus`） |
+| `is_official_url` / `is_openable_url` | 远程数据可携带的链接白名单 / 交给浏览器前的最终放行判据 |
+| `is_date` / `is_expired` | 严格日期判定与过期比较 |
+
+**接法**：`sidecar.check_update` / `fetch_announcement` 的**每个源都过同一个校验器**（不合规即跳过
+该源、继续 fallback）；解析通过的地址记进 `SidecarService._remote_urls`，由 `open_external_url`
+按目标名 `announcement` / `download` 取用——前端只报「打开哪个目标」，不报「打开哪里」。字段级
+规范（必填/可选、长度、域白名单）真源在 [`docs/announcement.md`](../../docs/announcement.md)。
+
+| 坑点 | 说明 |
+| --- | --- |
+| 必须只依赖标准库 | sidecar 的导入链拉 cv2 / maa / vgamepad，挂在那边的校验逻辑在 Linux CI 上只能整文件 SKIP。本模块保持零重依赖，测试才在 CI 真跑 |
+| 内容像 HTML 不是本层的判据 | 本层只管字段形状；防 XSS 靠渲染层 `textContent`。在这里加「过滤尖括号」的假防线，只会掩盖真防线失效 |
+| 动作型字段从严、展示型字段从宽 | `url` / `download_url` 一旦被采信就有副作用（打开浏览器），不合规必须清空；`published_at` 格式不对只省略，不牵连整条更新提示 |
+| 白名单按路径**段边界**比对 | 纯 `startswith` 会把 `/MaaRacingMaster-evil` 放行；`is_official_url` 用 `== 前缀` 或 `前缀 + "/"` 判定 |
+| 仓库 slug 只有一份 | `GITHUB_REPO` 同时喂官方地址表、链接白名单与 sidecar 的更新源 URL——两处各写一遍，改一处漏一处就是白名单静默失效 |
+
+**机检**：[`tests/test_remote_meta.py`](../../tests/test_remote_meta.py)（字段口径 + 仓库实际投放数据）、
+[`tests/test_sidecar_external_rpc.py`](../../tests/test_sidecar_external_rpc.py)（端到端：构造出的恶意数据
+最终有没有被交给浏览器）、[`tests/test_frontend_remote_render.py`](../../tests/test_frontend_remote_render.py)
+（前端渲染路径静态锁）。
+
+***
+
 ## 2. 模块依赖与持有关系
 
 ### 2.1 导入关系图
@@ -285,6 +319,7 @@ core/sidecar.py（JSONL RPC handler）
   ├── core.controller.MaaRacingMasterController
   ├── core.logger.logger
   ├── core.window_utils.has_physical_controller
+  ├── core.remote_meta（远程元数据校验与外链目标表，§1.12）
   └── core.registry（插件自动扫描注册）
 
 MaaRacingMaster.Shell（C#，不导入 Python）
@@ -318,6 +353,9 @@ core/debug.py / core/debug_io.py
 core/window_utils.py
   ├── maa.toolkit.Toolkit
   └── core.logger.logger
+
+core/remote_meta.py（§1.12，只依赖标准库：被 sidecar 引用，但不经它拉任何重依赖）
+  └── （无 core 内部依赖）
 ```
 
 ### 2.2 运行时对象持有关系
