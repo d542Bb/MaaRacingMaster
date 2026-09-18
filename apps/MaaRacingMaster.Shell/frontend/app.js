@@ -1385,7 +1385,10 @@
   let _curSec = null; // { el, count, hasError, hasWarn }
 
   function updateSectionMeta(sec, count, hasError, hasWarn) {
-    const badge = sec.querySelector('.log-badge');
+    // 计数徽章按专属类取：`!` 标记也带 .log-badge，用裸 .log-badge 会取到标记本身，
+    // 标记在下面被移除后就变成「非本节点子节点」，insertBefore 抛 NotFoundError，
+    // 该批次剩余的行整批丢失（且计数从此不再更新）。
+    const badge = sec.querySelector('.log-badge--count');
     if (badge) badge.textContent = String(count || 0);
     const meta = sec.querySelector('.log-section-meta');
     if (!meta) return;
@@ -1408,7 +1411,8 @@
     });
   }
 
-  // 关闭当前区块：统计细节行数/告警、刷新徽章，并按是否含错误决定默认折叠/展开
+  // 关闭当前区块：统计细节行数/告警、刷新徽章（含错误/警告时卡头挂「!」标记），然后绑上点击开关。
+  // 展开态不在这里动——含错误的区块也折叠着交出去，错误靠徽章提示，点一下即可看细节。
   function finalizeSection(sec) {
     let count = 0, hasError = false, hasWarn = false;
     sec.querySelectorAll('.log-section-body .log-line').forEach((d) => {
@@ -1417,12 +1421,19 @@
       else if (d.classList.contains('log-line--WARNING')) hasWarn = true;
     });
     updateSectionMeta(sec, count, hasError, hasWarn);
-    sec.classList.toggle('log-section--open', hasError); // 含错误默认展开，其余折叠
     bindSectionToggle(sec);
+  }
+
+  // 「只在已贴底时才自动跟随」：判定必须在追加之前取——追加会抬高 scrollHeight，
+  // 追加后再比就永远算不出「用户已经翻上去了」。阈值覆盖 .log-area 的 12px 底部内边距。
+  const FOLLOW_BOTTOM_PX = 24;
+  function isNearBottom(el) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX;
   }
 
   function appendLogs(lines) {
     const area = $('log-area');
+    const followBottom = isNearBottom(area); // 整批共用一次判定：用户在翻旧卡时不许被拽回底部
     lines.forEach((raw) => {
       const div = document.createElement('div');
       div.className = 'log-line';
@@ -1437,52 +1448,51 @@
       const ts = m[1];
       const lvl = levelClassMap[m[2]] ? m[2] : 'INFO';
       const msg = m[3];
-      const anchorType = matchSectionAnchor(msg);
-      if (anchorType) {
-        // 锚点：先关闭上一区块（统计/折叠），再开新区块并把该行作为头部（核心状态常显）
-        if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
-        const sec = document.createElement('div');
-        sec.className = 'log-section log-section--' + anchorType + ' log-section--open';
-        const head = document.createElement('div');
-        head.className = 'log-line log-section-head';
-        head.dataset.raw = raw;
-        head.innerHTML =
-          '<span class="log-chev">▸</span>' +
-          '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
-          '<span class="log-section-meta">' +
-            '<span class="log-badge">0</span>' +
-            '<span class="log-time">' + ts + '</span>' +
-          '</span>';
-        const body = document.createElement('div');
-        body.className = 'log-section-body';
-        sec.appendChild(head);
-        sec.appendChild(body);
-        area.appendChild(sec);
-        _curSec = { el: sec, count: 0, hasError: false, hasWarn: false };
-      } else {
-        // 普通行：追加到当前区块正文（区块若已折叠则默认隐藏细节）
-        if (_curSec) {
-          const row = div;
-          row.classList.add('log-line--' + lvl);
-          row.innerHTML =
-            '<span class="log-dot"></span>' +
-            '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>';
-          _curSec.el.querySelector('.log-section-body').appendChild(row);
-          _curSec.count += 1;
-          if (lvl === 'ERROR') _curSec.hasError = true;
-          else if (lvl === 'WARNING') _curSec.hasWarn = true;
-          updateSectionMeta(_curSec.el, _curSec.count, _curSec.hasError, _curSec.hasWarn);
-        } else {
-          // 无区块（会话初始/散行）：直接显示
-          div.classList.add('log-line--' + lvl);
-          div.innerHTML =
-            '<span class="log-dot"></span>' +
-            '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>';
-          area.appendChild(div);
-        }
+      // 面板上的第一行也开卡：首个锚点之前还有一批运行环境行（PEEP 预览 / 配置注入 /
+      // 连接窗口之前），不这样它们只能裸挂在面板上、脱离卡片体系。
+      const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
+      if (!anchorType) {
+        // 非锚点行 → 追加到当前区块正文（卡片默认折叠，细节行展开后才看得见）。
+        // 走到这里必然已有当前区块：首行是结构化行时上面已把它当隐式锚点开了卡，
+        // 非结构化行则在前面就降级成散行返回了。
+        const row = div;
+        row.classList.add('log-line--' + lvl);
+        row.innerHTML =
+          '<span class="log-dot"></span>' +
+          '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>';
+        _curSec.el.querySelector('.log-section-body').appendChild(row);
+        _curSec.count += 1;
+        if (lvl === 'ERROR') _curSec.hasError = true;
+        else if (lvl === 'WARNING') _curSec.hasWarn = true;
+        updateSectionMeta(_curSec.el, _curSec.count, _curSec.hasError, _curSec.hasWarn);
+        return;
       }
+      // 锚点：先关闭上一区块（统计/徽章），再开新区块并把该行作为头部（核心状态常显）
+      if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
+      const sec = document.createElement('div');
+      // 新区块默认折叠：细节行随到达累积进正文与计数徽章，展开与否交给用户点击
+      sec.className = 'log-section log-section--' + anchorType;
+      const head = document.createElement('div');
+      head.className = 'log-line log-section-head';
+      head.dataset.raw = raw;
+      head.innerHTML =
+        '<span class="log-chev">▸</span>' +
+        '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
+        '<span class="log-section-meta">' +
+          '<span class="log-badge log-badge--count">0</span>' +
+          '<span class="log-time">' + ts + '</span>' +
+        '</span>';
+      const body = document.createElement('div');
+      body.className = 'log-section-body';
+      sec.appendChild(head);
+      sec.appendChild(body);
+      area.appendChild(sec);
+      // 建卡即绑开关：默认折叠后，未收尾的「当前卡」也必须能点开看细节
+      // （以前只在 finalizeSection 里绑，默认展开时看不出缺；bindSectionToggle 自带去重）
+      bindSectionToggle(sec);
+      _curSec = { el: sec, count: 0, hasError: false, hasWarn: false };
     });
-    area.scrollTop = area.scrollHeight;
+    if (followBottom) area.scrollTop = area.scrollHeight;
   }
 
   // ---------- 调试页 ----------
