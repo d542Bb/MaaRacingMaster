@@ -8,13 +8,10 @@
 - `/policy`     策略表薄页（读写 `treasure.policy.json` 的 `policy.rules`，原 policy_server 整体并入）
 - `/roi`        ROI 校准台（`/static/calibrator.html`，离线回放 + 快速选区 + 测分）
 - `/cropper`    模板截取（静态只读服务 `tools/template_cropper/index.html`）
-- `/roi_tuner`  HUD ROI 调整（静态只读服务 `tools/roi_tuner/index.html`；区域集从 `/api/rois`
-  的 `speedrush_hud` 组读、读数走 `/api/speedrush/ocr`，页面本身不内置任何矩形常量）
 
 数据面（本文件主体）：
 - 读面 `GET /api/rois` 输出 **flat 投影**：spec 三组（template/point/ocr）+ `nodes` 组（pipeline
-  两文件逐处 rect）+ `tuning` 组（第 54 个 rect）+ `speedrush_hud` 组（只读复核，区域真源在
-  实验目录）+ `_meta`。读盘**一律直读 JSON**，
+  两文件逐处 rect）+ `tuning` 组（第 54 个 rect）+ `_meta`。读盘**一律直读 JSON**，
   禁用 `load_nav_source`（其双层 lru_cache 冷生效，改完回读会拿旧值）。
 - 写面 `POST /api/rois` 管线（顺序锁定）：base_hash 比对(409) → 内存合并 → 结构校验 →
   `check_truth` 三闸（validate_graph + namespace_checks + cross_checks + rect_checks，
@@ -22,8 +19,6 @@
   响应 `{ok, diff, report, compile, source_hash_new, base_hash}`。
 - 测分/跨帧/OCR 走**生产同源**引擎：`maaracing_master.core.template_match.find_any_cs`、
   `maaracing_master.plugins.treasure.ocr.TreasureOcr.recognize_single`。
-- speedrush HUD 只读复核面（`/api/speedrush/*`）：真录制帧 + `core.ocr.RapidOcrEngine`
-  读数。与 treasure 面**完全分开**——帧库布局、OCR 引擎、响应字段都不共用（见各段注释）。
 
 写盘格式纪律（policy_server 范式）：indent=2、ensure_ascii=False、LF、尾换行、键序原样、
 float 全精度 repr 不回舍入；改完 diff 只许目标值那一行变化。
@@ -60,18 +55,6 @@ PIPELINE_DIR = RES / "pipeline"
 TEMPLATE_DIR = RES / "image"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CROPPER_HTML = REPO / "tools" / "template_cropper" / "index.html"
-# HUD ROI 调整页（静态只读；区域集从 /api/rois 的 speedrush_hud 组读，本页不内置矩形常量）
-ROI_TUNER_HTML = REPO / "tools" / "roi_tuner" / "index.html"
-
-# ---------------- speedrush HUD 只读复核（Studio 第四面） ----------------
-# 区域真源在**插件内**（`plugins/speedrush/resources/policy/hud_regions.json`）：它自
-# 2026-09-17 起有了真实消费者（插件侧实时读数 `speedrush/hud.py` 落 hud.jsonl），
-# 故与离线探针共用同一份、不再留在实验目录——两份 rect 会各自漂移。
-# 形状（纯数据）：`{区域名: [x1, y1, x2, y2]}` 归一化、x2/y2 排他。
-HUD_REGIONS_FILE = (REPO / "maaracing_master" / "plugins" / "speedrush"
-                    / "resources" / "policy" / "hud_regions.json")
-# 只读分类名（前端 `state.rois[cat]` 的键，同名字符串见 static/app.js READONLY_CATS）
-HUD_GROUP = "speedrush_hud"
 
 # pipeline 两真源（顺序固定，供 hash / 落盘 / 图装配共用）
 PIPELINE_FILES: dict[str, Path] = {
@@ -248,25 +231,6 @@ def _mirror_of(rect, spec: dict) -> str | None:
     return None
 
 
-def project_hud_regions() -> dict:
-    """speedrush 驾驶页 HUD 区域投影（**只读**；形状同前端 `state.rois[cat][key]`）。
-
-    区域真源 = `HUD_REGIONS_FILE`（见其注释：将来会移入插件 resources）。真源是纯
-    `{名字: [x1,y1,x2,y2]}`，没有 `kind`/`label`/`page`，故这里只填前端绘制矩形所需的
-    `rect` 与空 `templates`（前端只读分类不接模板，也不进保存 body）。
-
-    `_` 前缀键（真源内可能出现的说明性元数据）与非 4 元数组一律跳过，不投影。
-    """
-    if not HUD_REGIONS_FILE.is_file():
-        return {}
-    out: dict = {}
-    for name, rect in _load_json(HUD_REGIONS_FILE).items():
-        if name.startswith("_") or not (isinstance(rect, list) and len(rect) == 4):
-            continue
-        out[name] = {"rect": [float(x) for x in rect], "templates": []}
-    return out
-
-
 def project_rois() -> dict:
     """读面投影（形状锁定，前端 `state.rois[cat]` 消费）。"""
     policy = read_policy()
@@ -325,11 +289,6 @@ def project_rois() -> dict:
             "rect": [float(x) for x in appraiser_roi],
         }
     out["tuning"] = tuning
-
-    # speedrush HUD 组：只读复核面（区域真源在实验目录，见 HUD_REGIONS_FILE 注释）。
-    # 进投影是为了让前端当成一个可选分类渲染；它不在 SPEC_GROUPS/EDITABLE_GROUPS 里，
-    # 也没有写面合并分支 → 保存管线对它是无操作（前端另在 collectSaveBody 里剔除）。
-    out[HUD_GROUP] = project_hud_regions()
 
     definitions = perception["stages"].get("definitions") or {}
     out["_meta"] = {
@@ -714,98 +673,6 @@ def get_ocr():
 
 
 # ============================================================================
-# speedrush HUD 读数（core 引擎 + 唯一通道边界；与 treasure 面不共用任何件）
-# ============================================================================
-
-_HUD_OCR_LOCK = threading.Lock()
-_HUD_OCR = None
-
-
-def get_hud_ocr():
-    """进程内驻留的 **core** OCR 引擎单例（`core.ocr.RapidOcrEngine`，懒加载）。
-
-    与 treasure 绑定的 `get_ocr()` 分开：本通路只出文本（`lines` 逐块 / `text` 合并），
-    不引入鉴宝领域的金额语义（`TreasureOcr` 的 `amount`/`amounts`）。引擎内部自管懒加载
-    与失败降级（`recognize` 返回 None），故此处不需要失败标志。
-    """
-    global _HUD_OCR
-    if _HUD_OCR is None:
-        with _HUD_OCR_LOCK:
-            if _HUD_OCR is None:
-                if str(REPO) not in sys.path:
-                    sys.path.insert(0, str(REPO))
-                from maaracing_master.core.ocr import RapidOcrEngine
-                _HUD_OCR = RapidOcrEngine()
-    return _HUD_OCR
-
-
-def _read_hud_frame(path: Path):
-    """盘上录制帧 → RGB ndarray（走 `core.image_io.read_rgb`，即仓库唯一通道边界）。
-
-    刻意**不复用** `_read_frame_rgb()`：那个函数是 `read_rgb` 的第二份实现（自写
-    `imdecode` + `cvtColor(BGR2RGB)`），复用它等于在边界之外再放一条读图路径。
-    """
-    if str(REPO) not in sys.path:
-        sys.path.insert(0, str(REPO))
-    from maaracing_master.core.image_io import read_rgb
-    return read_rgb(path)
-
-
-def api_hud_sessions() -> list[str]:
-    """speedrush 演示会话列表（真源 = data_dir()/speedrush/demos）。"""
-    return HUD_BROWSER.list_sessions()
-
-
-def api_hud_frames(session: str) -> list[str]:
-    """会话内帧名列表（非法会话/越权返回空）。"""
-    return HUD_BROWSER.list_frames(session)
-
-
-def api_hud_ocr(body: dict) -> dict:
-    """speedrush HUD 单区读数：真录制帧 + core 引擎，返回合并文本与逐块文本。
-
-    响应**不带** treasure 的 `amount`/`amounts`（那是鉴宝的金额解析口径，本通路没有
-    领域解释——区域名只表示"画面上这块框"，读数怎么解释由复核者看）。
-    """
-    import time as _time
-
-    session = body.get("session")
-    image = body.get("image") or body.get("name")
-    rect = body.get("rect")
-    if not (session and image and isinstance(rect, list) and len(rect) == 4):
-        raise SaveRejected(400, {"error": "session/image/rect 必填"})
-    path = HUD_BROWSER.resolve_frame(session, image)
-    if path is None:
-        raise SaveRejected(404, {"error": f"帧不存在或越权: {session}/{image}"})
-    frame = _read_hud_frame(path)
-    if frame is None:
-        raise SaveRejected(400, {"error": f"帧解码失败: {image}"})
-
-    # 预览抠图用 studio 的 round 夹紧口径（`_norm_to_px`）；引擎内部用 int 截断口径
-    # （见 core.ocr.recognize 的说明）。两者最多差 1 px，且**预览不影响读数**——
-    # 读数一律是引擎自己抠的图，这里不重复实现一份裁剪口径。
-    x1, y1, x2, y2 = _norm_to_px(rect, frame.shape[1], frame.shape[0])
-    crop = frame[y1:y2, x1:x2]
-    ch, cw = crop.shape[:2]
-    preview = _encode_data_url(crop) if cw > 0 and ch > 0 else ""
-
-    engine = get_hud_ocr()
-    started = _time.perf_counter()
-    out = engine.recognize(frame, [float(x) for x in rect])
-    duration_ms = int((_time.perf_counter() - started) * 1000)
-    if out is None:
-        return {"error": "识别失败（OCR 引擎不可用或区域为空）",
-                "crop_size": [cw, ch], "crop_preview": preview}
-    return {
-        "text": out.text,               # 合并文本（"".join(lines)）
-        "lines": list(out.lines),       # 逐块文本
-        "crop_size": [cw, ch],
-        "crop_preview": preview,
-        "duration_ms": duration_ms,
-    }
-
-
-# ============================================================================
 # 各 API 实现
 # ============================================================================
 
@@ -1115,58 +982,6 @@ class _Browser:
 BROWSER = _Browser()
 
 
-class _HudBrowser:
-    """speedrush 演示帧库浏览器（根从 `core.paths.data_dir()` 派生，勿硬编码路径）。
-
-    与 treasure 的 `_Browser` **分开实例**：两套帧库的会话名/帧目录/帧名形态不同（参数
-    注入见 `studio_sessions`），但共用同一份穿越防护实现——这是不复用 `_Browser` 的原因
-    （它不是参数化的，硬套会写出一份平行的白名单检查）。
-
-    `root` 可注入（测试用 tmp_path 造帧库）；缺省按 `data_dir()/"speedrush"/"demos"`
-    推导，与 `plugins.speedrush.module._demos_root()` 同源。
-    """
-
-    def __init__(self, root: Path | None = None) -> None:
-        self._root = root
-        self._browser = None
-
-    def _ensure(self):
-        if self._browser is None:
-            if str(REPO) not in sys.path:
-                sys.path.insert(0, str(REPO))
-            from tools.navkit.studio_sessions import (
-                SPEEDRUSH_FRAME_DIR,
-                SPEEDRUSH_FRAME_RE,
-                SPEEDRUSH_SESSION_RE,
-                SPEEDRUSH_TRACE_NAME,
-                SessionBrowser,
-            )
-            root = self._root
-            if root is None:
-                from maaracing_master.core.paths import data_dir
-                root = data_dir() / "speedrush" / "demos"
-            self._browser = SessionBrowser(
-                root,
-                session_re=SPEEDRUSH_SESSION_RE,
-                frame_re=SPEEDRUSH_FRAME_RE,
-                frame_dir=SPEEDRUSH_FRAME_DIR,
-                trace_name=SPEEDRUSH_TRACE_NAME,
-            )
-        return self._browser
-
-    def list_sessions(self) -> list[str]:
-        return self._ensure().list_sessions()
-
-    def list_frames(self, session: str) -> list[str]:
-        return self._ensure().list_raw(session)
-
-    def resolve_frame(self, session: str, name: str):
-        return self._ensure().resolve_raw(session, name)
-
-
-HUD_BROWSER = _HudBrowser()
-
-
 # ============================================================================
 # 策略表页（原 policy_server.PAGE 整体并入）
 # ============================================================================
@@ -1374,12 +1189,6 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, CROPPER_HTML.read_bytes(),
                                "text/html; charset=utf-8", {"Cache-Control": "no-store"})
-            elif path in ("/roi_tuner", "/roi_tuner/"):
-                if not ROI_TUNER_HTML.is_file():
-                    self._txt(404, "roi_tuner/index.html 不存在")
-                else:
-                    self._send(200, ROI_TUNER_HTML.read_bytes(),
-                               "text/html; charset=utf-8", {"Cache-Control": "no-store"})
             elif path.startswith("/static/"):
                 self._serve_static(path[len("/static/"):])
             elif path == "/api/rois":
@@ -1390,12 +1199,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, BROWSER.list_raw(self._query().get("session", "")))
             elif path == "/api/image":
                 self._serve_frame()
-            elif path == "/api/speedrush/list_sessions":
-                self._json(200, api_hud_sessions())
-            elif path == "/api/speedrush/list_images":
-                self._json(200, api_hud_frames(self._query().get("session", "")))
-            elif path == "/api/speedrush/image":
-                self._serve_hud_frame()
             elif path == "/api/list_templates":
                 self._json(200, api_list_templates())
             elif path == "/api/template_status":
@@ -1415,15 +1218,6 @@ class Handler(BaseHTTPRequestHandler):
             self._txt(404, "not found")
             return
         self._send(200, path.read_bytes(), "image/png", {"Cache-Control": "no-store"})
-
-    def _serve_hud_frame(self) -> None:
-        """speedrush 录制帧直传（形状同 `/api/image`；帧恒为 jpg，故 Content-Type 据实）。"""
-        q = self._query()
-        path = HUD_BROWSER.resolve_frame(q.get("session", ""), q.get("name", ""))
-        if path is None:
-            self._txt(404, "not found")
-            return
-        self._send(200, path.read_bytes(), "image/jpeg", {"Cache-Control": "no-store"})
 
     # ---- SSE 长连接（空闲退出用） ----
     def _write_chunk(self, data: bytes) -> None:
@@ -1495,8 +1289,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, api_cross_frame_test(body))
             elif path == "/api/ocr_recognize":
                 self._json(200, api_ocr_recognize(body))
-            elif path == "/api/speedrush/ocr":
-                self._json(200, api_hud_ocr(body))
             elif path == "/api/crop_to_template":
                 self._json(200, api_crop_to_template(body))
             elif path == "/api/template_upload":

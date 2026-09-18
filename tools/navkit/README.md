@@ -43,46 +43,13 @@ ROI 校准台的数据面（`/api/rois` 读写）以 **v4 真源**为准：
 - 11 个两面同值锚点在 `nodes` 组编辑时默认同步写 spec 同名锚点（UI 提供「仅改此面」逃生口）；colorspace 两面各自维护（语义独立，台内如实呈现各自现值）；
 - 测分/跨帧/OCR 走**生产同源**引擎（`core.template_match.find_any_cs`、`plugins.treasure.ocr.TreasureOcr.recognize_single`）。
 
-### speedrush HUD 只读复核通路
-
-用途：在**真实速度录制的帧**上把 speedrush 驾驶页 HUD 区域画出来并读一次文本，供维护者复核
-区域压得准不准。入口与 treasure 校准台**同一台服务、同一个 `/roi` 页**，只在分类 tab 里多一组
-`speedrush HUD`——切到该组时，会话/帧下拉会自动换成速度录制库（帧源按分类切换）。
-
-| 面        | 端点                                                                              |
-| --------- | ------------------------------------------------------------------------------- |
-| 会话 / 帧列表 | `GET /api/speedrush/list_sessions` · `GET /api/speedrush/list_images?session=`   |
-| 帧图       | `GET /api/speedrush/image?session=&name=`（形状同 `/api/image`，逐字节直传录制 jpg）          |
-| 读数       | `POST /api/speedrush/ocr` `{session, image, rect}` → `{text, lines, crop_size, crop_preview, duration_ms}` |
-
-起法：`tools/navkit/studio.cmd`（或 `.venv\Scripts\python.exe tools\navkit\studio_server.py`），
-在 `/roi` 页切到 `speedrush HUD` 分类；选中任一区域即在下方「OCR 识别结果」出读数。
-
-**边界**：
-
-- **只读**：该分类不接拖拽、改值、新增、删除，也不进保存 body（`collectSaveBody` 剔除），
-  服务端 `apply_save` 没有它的合并分支——保存管线对它是无操作。三处门由
-  [`tests/test_navkit_studio_speedrush.py`](../../tests/test_navkit_studio_speedrush.py) 锁住。
-  注意这**不**涉及 treasure 的 `nodes`/`tuning`：它们的 rect 值仍可编辑并触发镜像联动
-  （只读的是「锚点增删」），这是成文语义且有测试锁（`test_navkit_studio_save_flow.py::TestMirrorLinkage`）。
-- **区域真源在插件内**：`maaracing_master/plugins/speedrush/resources/policy/hud_regions.json`
-  （纯 `{区域名: [x1, y1, x2, y2]}` 归一化、x2/y2 排他）。2026-09-17 该区域集有了真实消费者
-  ——插件侧实时读数 `speedrush/hud.py`（驾驶途中落 `hud.jsonl`）——故由实验目录搬进插件，
-  与离线探针 `probe_hud_ocr.py` 共用同一份（探针 `--rects` 缺省即指向它），**只留一份真源**。
-- **帧源**：`data/speedrush/demos/<会话>_p<N>/frames/NNNNNN.jpg`（根由 `core.paths.data_dir()`
-  派生，不硬编码路径）。会话名/帧目录/帧名三份白名单与 debug 截图会话不同，由
-  `studio_sessions.SessionBrowser` 的构造参数注入，**穿越防护（`is_relative_to` + 双白名单）
-  两处共用同一份实现**。
-- **读数引擎**：走 `maaracing_master.core.ocr.RapidOcrEngine`（core 唯一真源），**不经** treasure 的
-  `TreasureOcr`；故响应里没有 `amount`/`amounts` 这类鉴宝金额语义，区域名只表示"画面上这块框"。
-
 ## 目录
 
 ```
 tools/navkit/
 ├── studio.cmd           # 完整工作台入口（mpelb + studio_server 均隐藏窗口；必须 ASCII+CRLF）
 ├── studio_server.py     # 单进程三页服务（ROI 校准台 / 策略表 / 模板截取，端口 26530）
-├── studio_sessions.py   # 帧库（会话/帧/模板名白名单 + 目录穿越防护；布局由调用方注入）
+├── studio_sessions.py   # 帧库（会话/帧/模板名白名单 + 目录穿越防护）
 ├── static/              # ROI 校准台前端（shell.html + calibrator.html + app.js + history.js + style.css）
 ├── mpe.cmd              # MPE 入口（起 mpelb + studio_server；必须 ASCII+CRLF，见文件头 NOTE）
 ├── check_truth.py       # 真源自洽校验（图闭合+数据面装配+交叉互洽+几何+分层红线；CI 同款）

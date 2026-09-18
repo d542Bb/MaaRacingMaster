@@ -10,6 +10,18 @@
 
 ## 2026-09-18
 
+### 暂存（未发布 · 待并入下一版本）撤掉 Studio 的 speedrush 面：调框页、第四面与帧库参数化 🧹
+
+- **性质：** 未发版删除（`tools/roi_tuner/`（文件已由 6c1ee24 删除）、`tools/navkit/` 四个文件还原到第四面之前：`studio_server.py`、`static/app.js`、`studio_sessions.py`、`README.md`、`tests/test_navkit_studio_speedrush.py`（整文件删除）；master 直接提交、不 tag）
+
+- **为什么撤：** 这一批是"没有使用者却先建面"的形态。① `tools/roi_tuner/` 落地时自称一次性（"用完即删"），却被接进 Studio 的**常驻路由**——而 ROI 调整本可以**复制既有 `tools/template_cropper/index.html`**（已有导入图片、图上拖框、导出 JSON）小改而成；`tools/experiments/README.md` 的资产判据早就写着"换个人能否靠它复算出同一结论，答不能即临时产物"。② Studio 的「speedrush HUD 只读复核面」（第四面）**没有任何使用者**：只读面板给不出插件侧读不到的东西，而且它落地时就没被人眼验证过（当时更新日志自己记着"无浏览器截图……只由测试锁住存在性"），376 行测试锁的是尺寸与存在性。③ 那次改动还把帧库 `SessionBrowser` 从单一 treasure 形态**重新参数化**去容纳第二套布局，而它的第二个使用者正是这个没人用的面——面撤了，参数化也失去理由。
+
+- **改法：** 四个 navkit 文件**逐字还原**到第四面之前（复核：与 `c210555^` 的 diff 为空），并删除该面自己的测试文件。区域真源与其消费者不受影响：`hud_regions.json` 始终住在插件内，Studio 从来不是它的住户。
+
+- **订正（提交与报告口径）：** 6c1ee24 实际只删了 `tools/roi_tuner/index.html` 这一个文件，其提交信息与当轮报告里"Studio 三处接线已切断、全仓 grep 零命中"**就那份提交而言不成立**（接线改动当时仍挂在工作树）。成因：提交前没有 `git add`，且用 `git status -sb | head -1` 只看分支行就当作工作区干净——两个动作分别违反「确认退出状态」与「不得从截断摘要推断成功」。本次提交把接线清理并进来，并在提交后逐文件核对提交内容。
+
+- **验证：** `tools/navkit/` 与 `c210555^` 逐字相同；该目录内已无 speedrush 专用通路（残留提及只在既有 README 的域外举例里）；`ruff check tools/navkit/` 通过；全量 `pytest` **765 passed / 1 skipped**（较删除前少 60 条，即该面自己的测试）；删除走 git，内容仍在历史与 origin 上可取回。
+
 ### 暂存（未发布 · 待并入下一版本）读数结论的标尺与纪律：把返工的原因从实验记录提到域文档 🔬
 
 - **性质：** 未发版变更（`plugins/speedrush/hud.py`（记录版本 3→4、单块兜底退出运行期）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（README 标尺一段改写 + 复盘工具的 schema 门）、`tests/test_speedrush_hud.py`（改写 2 条、新增 1 条）；master 直接提交、不 tag）
@@ -46,15 +58,13 @@
 
 ### 暂存（未发布 · 待并入下一版本）比分面板改按「槽位 + 身份」读取：红那一格没有得分速度 🎯
 
-- **性质：** 未发版变更（`plugins/speedrush/resources/policy/hud_regions.json`（四个键改名）、`plugins/speedrush/hud.py`（右侧四格改槽位名，记录版本递增见 2026-09-18 条）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（探针与复盘工具）、`tools/roi_tuner/`（新增 ROI 调框页）、`tools/navkit/studio_server.py`（+10 行静态路由）、`tests/test_speedrush_hud.py`（+2 条）；master 直接提交、不 tag）
+- **性质：** 未发版变更（`plugins/speedrush/resources/policy/hud_regions.json`（四个键改名）、`plugins/speedrush/hud.py`（右侧四格改槽位名，记录版本递增见 2026-09-18 条）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（探针与复盘工具）、`tests/test_speedrush_hud.py`（+2 条）；master 直接提交、不 tag）
 
 - **起因（用户指出）：** "你不应该区分上下，而是蓝红……而且敌人没有得分速度"。上一轮虽然把归属改成了成对判（数据里记 `side`），但**区域名仍是 `score_top/bottom`、`rate_top/bottom`**——名字本身还在暗示"上＝我方"，而且读取侧对**两块速度格无条件识别**：红那一槽根本没有这个读数，识别到的是面板背景（用户在调框页上看到 `rate_top 暗0% 蓝133`，那就是背景值，不是读数）。
 
 - **改法（数据、读取、消费三层一起改）：** ① **真源改槽位名** `score_a`/`score_b`/`rate_a`/`rate_b`（a=上档、b=下档）——槽位会互换，故名字里不能带身份含义；身份由成对判写进每格 `side`，消费方按 `side` 取。② **读取侧只读"本槽是蓝"的速度格**：红那一槽连 OCR 都不做、标 `not_displayed`；归属判不出时同样不读（标 `side_unknown`）——不知道这一槽是谁的，就没理由把那里的像素当读数。③ **消费方全同步**：探针的 `timeline` 把比分/速度两列改成**按身份取**（列名「本方分」），`overlay` 标签标成对判结果；复盘工具加**旧会话兼容映射**（历史文件仍是位置名，载入时改名）并在「两块同判」时把归属按 `?` 处理。
 
 - **验证：** 全量 `pytest` **824 passed / 1 skipped**（新增 2 条锁：两种朝向下"红那一格不被识别且标 `not_displayed`"、归属未知时不读；并断言对手那一格的 rect **不在引擎调用记录**里——即真的没跑 OCR）；复盘工具在旧会话上复跑数字不变（公式 5/5、3/3、7/7）；探针 `timeline` 在本方上/下两种场次都取到本方速度。
-
-- **附带（一次性工具，不进测试与文档）：** 新增 `tools/roi_tuner/index.html`——把真帧（内置 6 张覆盖夜里/白天、两种朝向、卡片淡入中、横幅最长）与真源区域画在一起，可拖框改、实时显示两个判据量（在场闸门的暗底占比、归属判据的蓝偏移）、按 `Ctrl/Shift+方向键` 微调、双击读一次该框的文本，最后「复制区域 JSON」把结果带回来。区域集**打开时从真源读**（不内置矩形常量），读数走既有 `/api/speedrush/ocr`。Studio 只加了 10 行（一个常量 + 一个静态路由 `/roi_tuner`），用完删掉这三处即可。
 
 ### 暂存（未发布 · 待并入下一版本）比分归属改为「成对判」：半透明面板的公共偏色曾让两块同判 🎯
 
