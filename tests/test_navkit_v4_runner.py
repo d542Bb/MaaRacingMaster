@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -271,3 +272,85 @@ def test_input_action_rejects_unknown_button_names(pure_maa):
         argv.custom_action_param = json.dumps({"button": bad})
         assert act.run(None, argv) is False
     graph.press_gamepad_button.assert_not_called()
+
+
+# ---------- NavGraph.run 的完成轮询节拍（回归锁）----------
+#
+# 为什么单独立锁：`run()` 是**所有插件共用**的阻塞跑图入口，调用者里有**毫秒级完成**的
+# 图（speedrush 门控每 0.5s 复查一次驾驶页锚点，单节点模板匹配）。原先完成轮询写死
+# `time.sleep(0.2)`——任务早已完成却仍空等满 200ms，实测给该域驾驶主循环每 0.5s 插进
+# 一次 130~250ms 停顿（主循环被压到 15.3Hz、帧间隔 P95=200ms，见该域 CODE_WIKI §2.1）。
+# 改成自适应短间隔后，**这两个用例必须同时通过**：快图不等、慢图仍正常收尾。
+
+
+class _LateStatus:
+    """按墙钟判完成的状态桩：`done` 在 delay 秒后变真。"""
+
+    def __init__(self, delay: float):
+        self._until = time.monotonic() + delay
+
+    @property
+    def done(self) -> bool:
+        return time.monotonic() >= self._until
+
+
+class _LateJob:
+    """完成时间可控的任务桩（`succeeded` 恒真，只用来测等待节拍）。"""
+
+    def __init__(self, delay: float):
+        self.succeeded = True
+        self.status = _LateStatus(delay)
+
+    def wait(self):
+        return self
+
+
+def _nav_with_job(pure_maa, tmp_path, job):
+    nav = tmp_path / "nav"
+    nav.mkdir()
+    (nav / "t.json").write_text(
+        json.dumps({"t": {"recognition": "DirectHit", "action": "DoNothing"}}),
+        encoding="utf-8")
+    (tmp_path / "img").mkdir()
+    ctx = MagicMock()
+    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
+    v4 = ng.NavKitV4(ctx, pipeline_dirs=[nav], image_dirs=[tmp_path / "img"])
+    v4._resource.post_pipeline.return_value.wait.return_value.failed = False
+    # NavKitV4 与它内部的 NavGraph **各有各的 Tasker/Resource**（构造里各自 new），
+    # run() 走 NavGraph 那一套——桩要打在它身上，否则测的是另一个对象。
+    graph = v4._graph
+    graph._resource.post_pipeline.return_value.wait.return_value.failed = False
+    graph._tasker.post_task.return_value = job
+    assert v4.load() is True
+    return v4
+
+
+def test_run_returns_promptly_when_graph_finishes_fast(pure_maa, tmp_path):
+    """毫秒级完成的图不得被空等：20ms 完成的图，run() 必须在 0.1s 内返回。
+
+    这是本轮修复的**回归锁**——用旧的固定 `sleep(0.2)` 时本用例必红（至少 200ms）。
+    """
+    v4 = _nav_with_job(pure_maa, tmp_path, _LateJob(0.02))
+    t0 = time.monotonic()
+    assert v4._graph.run("t") is True
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.1, f"快图被空等：{elapsed * 1000:.0f}ms（应 <100ms）"
+
+
+def test_run_still_completes_grader_that_takes_several_polls(pure_maa, tmp_path):
+    """原本正常的场景也要在锁里：需要多轮轮询才完成的图，仍须正确等到并返回真。"""
+    v4 = _nav_with_job(pure_maa, tmp_path, _LateJob(0.12))
+    t0 = time.monotonic()
+    assert v4._graph.run("t") is True
+    elapsed = time.monotonic() - t0
+    assert 0.1 <= elapsed < 0.35, f"慢图等待异常：{elapsed * 1000:.0f}ms"
+
+
+def test_run_still_interrupts_on_lifecycle_stop(pure_maa, tmp_path):
+    """中断语义不得被节拍改动破坏：未完成 + 已停止 → 发 post_stop 并返回假。"""
+    v4 = _nav_with_job(pure_maa, tmp_path, _LateJob(5.0))
+    v4.ctx.lifecycle.running = False
+    t0 = time.monotonic()
+    assert v4._graph.run("t") is False
+    assert time.monotonic() - t0 < 0.1, "中断路径也不该空等"
+    assert v4._graph._tasker.post_stop.called

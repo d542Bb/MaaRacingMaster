@@ -63,6 +63,15 @@ from maaracing_master.core.template_match import (
 # core 自带资源根（stick_speed_model.json 也在这，不新开目录约定）
 CORE_RES_DIR = Path(__file__).resolve().parent / "resources"
 
+# `NavGraph.run` 完成轮询的自适应间隔（秒）：起步 1ms，按 ×2 退避到 20ms 上限。
+# **为什么不是固定值**：调用者里有**毫秒级完成**的图——speedrush 门控每 0.5s 复查一次
+# 驾驶页锚点（单节点模板匹配）。原先固定 `sleep(0.2)` 会在任务已经完成后仍空等满 200ms，
+# 使每次调用不低于 200ms；实测它给该域驾驶主循环每 0.5s 插进一次 130~250ms 的停顿，
+# 把主循环压到 15.3Hz、帧间隔 P95 达 200ms（见 `plugins/speedrush/CODE_WIKI.md` §2.1）。
+# 退避上限 20ms 兜住 CPU：多秒级的长图按 50 次/秒轮询状态，代价可忽略。
+RUN_POLL_MIN_S = 0.001
+RUN_POLL_MAX_S = 0.02
+
 RECOGNIZER_NAME = "MaaRM_Template"
 ACTION_NAME = "MaaRM_Click"
 # 输入原语：固定坐标点击 / 手柄按键——识别框帮不上的两种场合（唤醒点、页面回退）。
@@ -536,12 +545,16 @@ class NavGraph:
                     self.ctx.capture, gpad, confirm_button=BUTTON_A)
             logger.log(f"[跳转图] 起跑「{entry}」")
             job = self._tasker.post_task(entry)
+            # 完成轮询用**自适应短间隔**（见 RUN_POLL_MIN_S 的注释）：毫秒级完成的图
+            # 立刻返回，长图靠退避上限兜住 CPU。中断检查每轮都做，语义不变。
+            delay = RUN_POLL_MIN_S
             while not job.status.done:
                 if not self.ctx.lifecycle.running:
                     self._tasker.post_stop().wait()
                     logger.log("[跳转图] 收到停止信号，已中断跑图")
                     return False
-                time.sleep(0.2)
+                time.sleep(delay)
+                delay = min(delay * 2, RUN_POLL_MAX_S)
             ok = bool(job.succeeded)
             if ok and reached:
                 node = self._tasker.get_latest_node(reached)
