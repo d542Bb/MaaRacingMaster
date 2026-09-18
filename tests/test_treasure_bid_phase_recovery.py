@@ -265,7 +265,10 @@ def test_stale_cursor_pos_is_not_occlusion_evidence():
     点击与避让都因槽忙不提交。时效闸统一由 Clicker.gamepad_cursor_occlusion_pos
     提供（超龄即 None），OCR 侧与模板侧共用同一入口，故两路不可能分叉。
     """
-    from maaracing_master.core.clicker import CURSOR_POS_MAX_AGE_S, Clicker
+    try:
+        from maaracing_master.core.clicker import CURSOR_POS_MAX_AGE_S, Clicker
+    except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时跳过（同 _shoo_clicker 口径）
+        pytest.skip(f"需要完整运行时依赖（maa/…）：{exc}")
 
     clicker = Clicker(hwnd=0, mode="gamepad")
     fake = _FakeSelf(phase="wait_next", label="出价")
@@ -298,7 +301,10 @@ def test_occlusion_entry_is_single_source_for_both_paths():
     """
     import inspect
 
-    from maaracing_master.core.nav_graph import NavGraph
+    try:
+        from maaracing_master.core.nav_graph import NavGraph
+    except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时跳过（同 _shoo_clicker 口径）
+        pytest.skip(f"需要完整运行时依赖（maa/…）：{exc}")
 
     ocr_src = inspect.getsource(TreasureModule._cursor_hits_rect)
     tpl_src = inspect.getsource(NavGraph.cursor_pos)
