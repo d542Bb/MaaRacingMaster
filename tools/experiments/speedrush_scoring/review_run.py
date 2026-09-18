@@ -69,8 +69,9 @@ BURST_GAP_S = 2.0
 PAIR_TOL_NS = 50_000_000
 # 比分假读的"串位尖峰"判据：值高于前后可信点且超出量级（见 side_series）
 SPIKE_FACTOR = 3.0
-# 认得的 `hud_meta.schema`：1 无 per-field `settled`，2 有（回退重算，见 settled_map）
-HUD_SCHEMAS = (1, 2)
+# 认得的 `hud_meta.schema`：1 无 per-field `settled`；2 有（回退重算，见 settled_map）；
+# 3 归属改为成对判并记 `side_source`；4 右侧四格改槽位名、速度格按归属读、归属判不出即弃权
+HUD_SCHEMAS = (1, 2, 3, 4)
 
 # 出图：卡片由「全帧缩略 + 左侧卡片放大 + 比分面板放大」三块拼成，标注条在底
 CELL_W = 1264

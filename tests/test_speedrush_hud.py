@@ -165,6 +165,19 @@ class TestRegionTruth:
         wrapped = {"speedrush_hud": {n: {"rect": r} for n, r in REGIONS.items()}}
         assert ct.rect_checks({}, wrapped) == []
 
+    def test_region_keys_carry_no_identity_assumption(self) -> None:
+        """区域键只描述**槽位/序号**，不得承载敌我或位置语义。
+
+        假设写进名字，读取路径就会按假设分支：`score_self/opp` 与 `score_top/bottom` 各诱导过
+        一次错判（见 `plugins/speedrush/CODE_WIKI.md` §5「读数结论的标尺与纪律」第 3 条）。
+        敌我由数据里的 `side` 承担，名字里不许出现。
+        """
+        forbidden = {"self", "opp", "own", "mine", "enemy", "ally", "top", "bottom",
+                     "upper", "lower", "left_side", "right_side"}
+        for name in REGIONS:
+            assert not (set(name.lower().split("_")) & forbidden), \
+                f"{name} 的键名带身份/位置语义——改用槽位名或序号"
+
     @pytest.mark.parametrize("bad,needle", [
         ([0.9, 0.1, 0.2, 0.2], "x1<x2"),          # x 反序
         ([0.1, 0.9, 0.2, 0.2], "x1<x2"),          # y 反序
@@ -310,17 +323,20 @@ class TestReadingJudgements:
     def test_bad_frame_does_not_kill_the_row(self, tmp_path) -> None:
         """整帧异常也不终止观察：**碰帧的格子**标 read_error，行照旧落盘且还能继续采。
 
-        "碰帧的格子"就是过闸门的三格与判归属的两格（它们要解 shape / 取通道）；其余
-        格子只把 rect 交给引擎，坏帧影响不到它们——所以断言要精确到这两组，不能笼统
-        说"全行都挂"。
+        "碰帧的格子"就是过闸门的三格（要解 shape）；判归属的两格**不碰帧**——归属来自采样侧
+        一次性成对判（它自己吞掉异常并弃权），故坏帧下它们记的是 `side_source=abstain`，
+        既不冒充一个身份、也不谎报读错。其余格子只把 rect 交给引擎，坏帧影响不到它们。
         """
-        touching = (*hud.GATED_FIELDS, *hud.SIDE_FIELDS)
+        touching = hud.GATED_FIELDS
         obs = _observer(tmp_path, _FakeEngine(_texts()), frame=_BadFrame())
         for _ in range(2):
             rec = _sample(obs)
             for name in touching:
                 entry = rec["fields"][name]
                 assert entry["trusted"] is False and "read_error" in entry["note"]
+            for name in hud.SIDE_FIELDS:
+                entry = rec["fields"][name]
+                assert entry["side"] == "?" and entry["side_source"] == "abstain"
             assert rec["fields"]["timer"]["value"] is not None, "不碰帧的格子不该被牵连"
             assert rec["regions"], "区域指纹照旧入行（这行读的是哪套框仍可查）"
         assert obs.stats["read_errors"] == 2 * len(touching)
@@ -373,16 +389,21 @@ class TestSidePairJudgement:
         gray = np.full((FRAME_H, FRAME_W, 3), 120, dtype=np.uint8)
         assert hud.pair_sides(gray, REGIONS["score_a"], REGIONS["score_b"]) == ("?", "?")
 
-    def test_pair_falls_back_to_single_when_one_block_missing(self, tmp_path) -> None:
-        """只剩一块（区域集缺项）时回退单块判据，并如实记来源 ``single``。"""
+    def test_pair_abstains_when_a_block_is_missing(self, tmp_path) -> None:
+        """区域集缺一块（成对判无从谈起）时**弃权**，不拿单块绝对阈值凑一个身份。
+
+        单块绝对判据在公共偏色下会两块同判（见上一条锁），那是本模块证伪过的形态，故运行期
+        没有它；`side_source` 如实记 `abstain`——留着这个值是为了让"这一拍的归属为什么空"
+        在事后可归因。
+        """
         only = {n: REGIONS[n] for n in ("stage", "timer", "score_a")}
         obs = hud.HudObserver(
             tmp_path,
             frame_source=lambda: (_frame(sides={"score_a": (30, 60, 220)}), 1001, 5_000_000, 3.5),
             engine=_FakeEngine(_texts()), regions=only)
         entry = _sample(obs)["fields"]["score_a"]
-        assert entry["side"] == "本机(蓝)"
-        assert entry["side_source"] == "single"
+        assert entry["side"] == "?"
+        assert entry["side_source"] == "abstain"
 
     def test_enemy_rate_slot_is_not_read(self, tmp_path) -> None:
         """**对手那一格没有得分速度**：不识别、标 `not_displayed`；本方那一格照常读。

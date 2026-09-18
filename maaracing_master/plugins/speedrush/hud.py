@@ -40,7 +40,8 @@
 而面板是半透明的——背景景物会给**两块**染上同一偏色，单块绝对阈值在白天蓝天场会把两块
 都判成"本机"（实测 62/69 行错，且下游据此产出过 51 处假"比分回落"）。故按**两块之差**
 定归属（公共偏色被抵消），差太小则两块都弃权 ``?``；条带采样同时收窄到**最饱和的一撮**
-（色条本身），让色条而非背景主导。逐格记 ``side_source``（``pair``/``single``）留痕。
+（色条本身），让色条而非背景主导。逐格记 ``side_source``（``pair``/``abstain``）留痕——
+单块兜底不在运行期，成对判不可用即弃权（见 ``block_side``）。
 
 **区域真源**：``resources/policy/hud_regions.json``（本插件内唯一一份，离线探针读同一份）。
 本模块不复制任何 rect 常量，也不假定键集——采样范围就是该文件的键集。
@@ -87,7 +88,10 @@ __all__ = [
 # v2：卡片三格（``GATED_FIELDS``）增记 ``settled``——见下方定值判据。
 # v3：比分格增记 ``side_source``（归属来自成对判还是单块兜底），且归属改为成对判
 #     ——v2 及以前按单块绝对阈值判，白天蓝天场会把两块判成同一方（见 ``pair_sides``）。
-SCHEMA_VERSION = 3
+# v4：右侧四格由位置名改为**槽位名**（``score_a/b``、``rate_a/b``）——名字不再承载敌我；
+#     速度格只在"本槽是本机"时识别；成对判不可用时归属**弃权**，``side_source`` 取
+#     ``pair`` / ``abstain``（单块兜底退出运行期，理由见 ``block_side``）。
+SCHEMA_VERSION = 4
 
 # 采样间隔（秒）。理由见模块 docstring：面板在场约 3.5s → 约 7 个连续样本。
 SAMPLE_INTERVAL_S = 0.5
@@ -281,7 +285,8 @@ def block_side(frame_rgb: Any, rect) -> str:
 
     **它不是权威判据**——单块绝对阈值在强公共偏色下会把两块判成同一方（见 ``pair_sides``
     的实测）。保留它是给**离线逐格标注**用（探针与 Studio 在图上逐块画框，只需要这一块的
-    颜色倾向），运行期归属一律走 ``pair_sides``。
+    颜色倾向）；运行期归属一律走 ``pair_sides``，判不出就弃权——``_read_field`` 里没有对
+    本函数的调用，它的使用者只剩离线标注与测试。
     """
     bias = band_blue_bias(frame_rgb, rect)
     if bias is None:
@@ -541,17 +546,18 @@ class HudObserver:
                     side: str | None = None) -> dict:
         """读一格：先过在场闸门（仅面板三格），再识别，最后给可信标志与理由。
 
-        ``side`` 由采样侧成对判好传入（比分格）；缺省回退到单块判据，且把来源记进
-        ``side_source``——归属判错是本模块最难事后归因的一类故障（看着是数字对、实为两家
-        混一条序列），留下来源才查得动。
+        ``side`` 由采样侧成对判好传入（比分格）；**缺省弃权**（不拿单块绝对阈值兜底），
+        并把来源记进 ``side_source``——归属判错是本模块最难事后归因的一类故障（看着是数字对、
+        实为两家混一条序列），留下来源才查得动。
         """
         entry: dict = {"gate": None, "text": None, "value": None, "trusted": False,
                        "note": []}
         if name in SIDE_FIELDS or name in RATE_FIELDS:
-            # 敌我按块色判（槽位会上下互换），与文本是否读出无关
-            entry["side"] = side if side is not None else (
-                block_side(frame, rect) if name in SIDE_FIELDS else "?")
-            entry["side_source"] = "pair" if side is not None else "single"
+            # 敌我按块色判（槽位会上下互换），与文本是否读出无关。**只认成对判**：单块绝对
+            # 阈值在强公共偏色下会把两块判成同一方（见 ``pair_sides`` 的实测），故成对判
+            # 不可用时**弃权**——宁可为空，也不给一个看着合理的错身份。
+            entry["side"] = side if side is not None else "?"
+            entry["side_source"] = "pair" if side is not None else "abstain"
             if name in RATE_FIELDS and entry["side"] != "本机(蓝)":
                 # 得分速度**只为本方显示**：对手那一格是空的/背景，识别只会产出垃圾
                 # （实测那块能读出 133 这种"蓝偏移"背景值）。判不出归属时同样不读——

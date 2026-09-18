@@ -10,6 +10,18 @@
 
 ## 2026-09-18
 
+### 暂存（未发布 · 待并入下一版本）读数结论的标尺与纪律：把返工的原因从实验记录提到域文档 🔬
+
+- **性质：** 未发版变更（`plugins/speedrush/hud.py`（记录版本 3→4、单块兜底退出运行期）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（README 标尺一段改写 + 复盘工具的 schema 门）、`tests/test_speedrush_hud.py`（改写 2 条、新增 1 条）；master 直接提交、不 tag）
+
+- **起因（回望这条链的起点）：** speedrush 的返工不在"读数不准"上，而在**读数对、解释错**——左侧三格逐格都读对了（与画面数字逐一相符），却据"看起来单调递增"判成"本阶段累计里程"（后由连续读数推翻为约 10 秒的窗口小结）；同类还有"矮版变体"（实为同一张卡片淡入中）与右侧四格的身份（位置名诱导过一条无效结论）。代价之所以穿透得远，是因为同一个假设被同时写进**名字、真源与文档**三处，推翻时要一起改。更关键的是：这条教训当时只写在实验目录的"四个坑"里——那是 L4 过程材料，按信源等级**不得**作为当前实现的依据，做实现的人不会去读它。
+
+- **改法（把判据放到必须经过的位置）：** ① 域文档 `CODE_WIKI.md` §5 新增「读数结论的标尺与纪律」三条：独立标尺是**人眼看帧**（同一链路内部的多字段互证不算独立，它只证明仪器自洽）、语义结论必须回答**跨帧性质**（该不该单调 / 重置 / 上下互换）、**名字与真源不得承载未验证的语义假设**（键名只用槽位或序号，身份由数据里的 `side` 承担）。② **让代码与文档一致**：单块判据 `block_side()` 彻底退出运行期，成对判不可用时归属**弃权**，`side_source` 取 `pair`/`abstain`——此前文档称它"只留给离线标注"而代码仍在兜底，属于同一类"声明未核对"。③ 实验 README 那条坑改为指向域文档正本，并改正其中**站不住的标尺表述**（原文把"同一局内多字段互相印证"当成独立标尺，正是返工的入口）。④ 新增机检：区域键不得含敌我 / 位置词，锁住这类假设回流到名字里。
+
+- **顺带（让声明成真）：** `hud.py` 记录版本递增到 4（槽位名 + 速度格按归属读 + 判不出即弃权），复盘工具认得的 `hud_meta.schema` 同步放到 1–4，下一轮实机录制即可复盘。更新日志里 0014d90 那条曾把这次递增写进自己名下（该提交并未改动那个常量），已改回事实。
+
+- **验证：** `pytest tests/test_speedrush_hud.py` **40 passed**（改写「缺一块即弃权」「坏帧不谎报读错而记弃权」，新增「区域键中性名」）；改动文件 `ruff` All checks passed；全量 `pytest` **825 passed / 1 skipped**。
+
 ### 暂存（未发布 · 待并入下一版本）行为守则收口：交付物声明须核对，抽象判据进提交路径 📐
 
 - **性质：** 未发版变更（`AGENTS.md`、`CONTRIBUTING.md`、`.github/PULL_REQUEST_TEMPLATE.md`、`tools/experiments/README.md`；master 直接提交、不 tag）
@@ -34,7 +46,7 @@
 
 ### 暂存（未发布 · 待并入下一版本）比分面板改按「槽位 + 身份」读取：红那一格没有得分速度 🎯
 
-- **性质：** 未发版变更（`plugins/speedrush/resources/policy/hud_regions.json`（四个键改名）、`plugins/speedrush/hud.py`（`SCHEMA_VERSION` 3→4）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（探针与复盘工具）、`tools/roi_tuner/`（新增 ROI 调框页）、`tools/navkit/studio_server.py`（+10 行静态路由）、`tests/test_speedrush_hud.py`（+2 条）；master 直接提交、不 tag）
+- **性质：** 未发版变更（`plugins/speedrush/resources/policy/hud_regions.json`（四个键改名）、`plugins/speedrush/hud.py`（右侧四格改槽位名，记录版本递增见 2026-09-18 条）、`plugins/speedrush/CODE_WIKI.md`、`tools/experiments/speedrush_scoring/`（探针与复盘工具）、`tools/roi_tuner/`（新增 ROI 调框页）、`tools/navkit/studio_server.py`（+10 行静态路由）、`tests/test_speedrush_hud.py`（+2 条）；master 直接提交、不 tag）
 
 - **起因（用户指出）：** "你不应该区分上下，而是蓝红……而且敌人没有得分速度"。上一轮虽然把归属改成了成对判（数据里记 `side`），但**区域名仍是 `score_top/bottom`、`rate_top/bottom`**——名字本身还在暗示"上＝我方"，而且读取侧对**两块速度格无条件识别**：红那一槽根本没有这个读数，识别到的是面板背景（用户在调框页上看到 `rate_top 暗0% 蓝133`，那就是背景值，不是读数）。
 
