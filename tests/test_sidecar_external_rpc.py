@@ -22,13 +22,14 @@ import pytest
 try:
     from maaracing_master.core import sidecar as sc
     from maaracing_master.core.remote_meta import EXTERNAL_TARGETS
+    RELEASE_FALLBACK = EXTERNAL_TARGETS["release"]
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001
     _OK, _ERR = False, str(exc)
 
 pytestmark = pytest.mark.skipif(not _OK, reason=f"需要完整运行时依赖：{_ERR}")
-
-RELEASE_FALLBACK = EXTERNAL_TARGETS["release"]
+# RELEASE_FALLBACK 须在 try 内求值：try+skipif 的「缺重依赖整文件 SKIP」口径
+# （test_rpc_allowlist 同款）下，try 外的模块级引用会让收集期 NameError 先于 skipif 生效。
 
 GOOD_ANNOUNCEMENT = {
     "id": "2026-09-01-v2",
