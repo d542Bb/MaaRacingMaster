@@ -72,6 +72,24 @@
     showError._t = setTimeout(() => { toast.style.display = 'none'; }, 4000);
   }
 
+  // 建元素 + 纯文本：远程数据（公告/更新元数据）一律经 textContent 落地，
+  // 不参与 HTML 解析——它可能来自任何一处 CDN/镜像，一律视为不可信输入。
+  function mkEl(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  // 插入本地图标（icons.js 的静态 SVG 串）。这是远程渲染路径上唯一允许 innerHTML 的
+  // 地方：源串是本仓库静态资源、与远程数据无关，静态锁（tests/test_frontend_remote_render.py）
+  // 据此把「远程字段 + innerHTML」的组合钉死在这一处之外。
+  function appendIcon(node, name) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = MRAIcons.svg(name);
+    node.appendChild(tpl.content.firstElementChild);
+  }
+
   // ---------- 通用模态弹窗 ----------
   // overlay + 居中卡片；opts: { title, titleColor, bodyHtml, maxWidth, buttons:[{text, primary, asLink, href, onClick(modal)}] }
   // onClick 回调自主决定是否调用 modal.close()；点空白处默认关闭
@@ -142,14 +160,11 @@
   }
 
   // ---------- ViGEmBus 驱动缺失引导弹框 ----------
+  // 外链一律只报**逻辑目标名**（home / issue / docs / announcement / download / vigembus），
+  // 地址由 sidecar 侧白名单映射（core/remote_meta.py EXTERNAL_TARGETS）——前端与远程数据
+  // 都不持有可打开的 URL，XSS 也就无法把「打开浏览器」的能力用在别处。
+  // VIGEM_DL_URL 是本仓库静态常量（非远程数据），只用于弹框里的 <a> 与后端失败兜底。
   const VIGEM_DL_URL = 'https://github.com/nefarius/ViGEmBus/releases/latest';
-  // 关于页底部跳转链接
-  const REPO_URL = 'https://github.com/d542Bb/MaaRacingMaster';
-  const ABOUT_LINKS = {
-    home: REPO_URL,
-    issue: REPO_URL + '/issues',
-    docs: REPO_URL + '/blob/master/docs/CODE_WIKI.md',
-  };
   function showVigemDialog(detailMsg) {
     openModal({
       title: '缺少 ViGEmBus 驱动',
@@ -163,7 +178,7 @@
           text: '下载并安装 ViGEmBus 驱动', primary: true,
           onClick: async (modal) => {
             try {
-              await mra.call('open_vigembus_download', { url: VIGEM_DL_URL });
+              await mra.call('open_vigembus_download', {});
             } catch (err) {
               // 后端打开失败：前端兜底新开标签页
               window.open(VIGEM_DL_URL, '_blank');
@@ -455,13 +470,13 @@
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
   moveTabSlider('control'); // 初始：主控 tab 默认激活，滑块落地到首项
-  // 关于页底部跳转按钮（经 sidecar open_external_url 用默认浏览器打开）
+  // 关于页底部跳转按钮（data-link 值即逻辑目标名，经 sidecar 用默认浏览器打开）
   document.querySelectorAll('[data-link]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const url = ABOUT_LINKS[btn.dataset.link];
-      if (!url) return;
+      const target = btn.dataset.link;
+      if (!target) return;
       try {
-        await mra.call('open_external_url', { url });
+        await mra.call('open_external_url', { target });
       } catch (e) {
         showError('打开链接失败: ' + e.message);
       }
@@ -469,15 +484,20 @@
   });
 
   // ---------- 关于页：检查更新 / 公告 ----------
-  function openUrl(url) {
-    if (!url) return;
-    mra.call('open_external_url', { url }).catch((e) => showError('打开链接失败: ' + e.message));
+  // 打开外部目标：只传逻辑目标名，地址由 sidecar 侧白名单给出（前端不传 URL）。
+  function openTarget(target) {
+    if (!target) return;
+    mra.call('open_external_url', { target }).catch((e) => showError('打开链接失败: ' + e.message));
   }
 
-  // 渲染「版本与更新」卡状态
-  function renderUpdateStatus(statusEl, cls, html) {
+  // 渲染「版本与更新」卡状态：cls 决定配色，text 只作纯文本落地。
+  // 入参是字符串而不是 HTML——调用点会喂远程文案（latest_tag）与异常信息，一旦拼接
+  // 就等于把远程数据交给 HTML 解析器。
+  function renderUpdateStatus(statusEl, cls, text, opts) {
     statusEl.className = 'ver-status ' + cls;
-    statusEl.innerHTML = html;
+    statusEl.textContent = '';
+    if (opts && opts.spinner) statusEl.appendChild(mkEl('span', 'spinner'));
+    statusEl.appendChild(document.createTextNode(text));
   }
 
   async function checkUpdate() {
@@ -486,8 +506,7 @@
     const releaseEl = $('about-new-release');
     if (!btn || !statusEl) return;
     btn.disabled = true;
-    renderUpdateStatus(statusEl, 'ver-status--checking',
-      '<span class="spinner"></span>正在检查更新…');
+    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
     releaseEl.style.display = 'none';
     try {
       const d = await mra.call('check_update');
@@ -498,13 +517,18 @@
       } else if (d.has_update) {
         renderUpdateStatus(statusEl, 'ver-status--new', '发现新版本 v' + d.latest_tag);
         releaseEl.style.display = 'flex';
-        releaseEl.innerHTML =
-          '<div class="nr-info">' +
-            '<div class="nr-title">v' + d.latest_tag + ' 已发布</div>' +
-            '<div class="nr-sub">' + (d.published_at ? '发布于 ' + d.published_at + ' · ' : '') + '建议更新到最新版本</div>' +
-          '</div>' +
-          '<button class="mra-btn mra-btn--primary" id="btn-go-download" type="button">前往下载' + MRAIcons.svg('arrow-up-right') + '</button>';
-        $('btn-go-download').addEventListener('click', () => openUrl(d.download_url));
+        releaseEl.textContent = '';
+        const info = mkEl('div', 'nr-info');
+        info.appendChild(mkEl('div', 'nr-title', 'v' + d.latest_tag + ' 已发布'));
+        info.appendChild(mkEl('div', 'nr-sub',
+          (d.published_at ? '发布于 ' + d.published_at + ' · ' : '') + '建议更新到最新版本'));
+        releaseEl.appendChild(info);
+        const goBtn = mkEl('button', 'mra-btn mra-btn--primary', '前往下载');
+        goBtn.id = 'btn-go-download';
+        goBtn.type = 'button';
+        appendIcon(goBtn, 'arrow-up-right');
+        goBtn.addEventListener('click', () => openTarget('download'));
+        releaseEl.appendChild(goBtn);
       } else {
         renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本');
       }
@@ -516,37 +540,38 @@
     }
   }
 
-  // 拉取并渲染公告
+  // 拉取并渲染公告（title/date/url_text/body 全部走 textContent）
   async function fetchAnnouncement() {
     const bodyEl = $('about-announce-body');
     if (!bodyEl) return;
+    bodyEl.textContent = '';
     try {
       const d = await mra.call('fetch_announcement');
       if (!d || d.level === 'none' || !d.title) {
-        bodyEl.innerHTML = '<div class="about-announce-empty">暂无公告</div>';
+        bodyEl.appendChild(mkEl('div', 'about-announce-empty', '暂无公告'));
         return;
       }
       const cls = d.level === 'warn' ? 'about-announce--warn' : 'about-announce--info';
-      const badge = d.level === 'warn' ? '重要' : '公告';
-      const dateHtml = d.date ? '<span class="about-announce-date">' + d.date + '</span>' : '';
-      const linkHtml = d.url
-        ? '<button class="about-announce-link" id="btn-announce-link" type="button">' + (d.url_text || '查看详情') + '</button>'
-        : '';
-      bodyEl.innerHTML =
-        '<div class="about-announce ' + cls + '">' +
-          '<span class="about-announce-badge">' + badge + '</span>' +
-          '<div class="about-announce-main">' +
-            '<div class="about-announce-title">' + d.title + dateHtml + '</div>' +
-            (d.body ? '<div class="about-announce-body"></div>' : '') +
-            linkHtml +
-          '</div>' +
-        '</div>';
-      if (d.body) bodyEl.querySelector('.about-announce-body').textContent = d.body;
-      const linkBtn = $('btn-announce-link');
-      if (linkBtn) linkBtn.addEventListener('click', () => openUrl(d.url));
+      const card = mkEl('div', 'about-announce ' + cls);
+      card.appendChild(mkEl('span', 'about-announce-badge', d.level === 'warn' ? '重要' : '公告'));
+      const main = mkEl('div', 'about-announce-main');
+      const titleRow = mkEl('div', 'about-announce-title', d.title);
+      if (d.date) titleRow.appendChild(mkEl('span', 'about-announce-date', d.date));
+      main.appendChild(titleRow);
+      if (d.body) main.appendChild(mkEl('div', 'about-announce-body', d.body));
+      if (d.url) {
+        const linkBtn = mkEl('button', 'about-announce-link', d.url_text || '查看详情');
+        linkBtn.id = 'btn-announce-link';
+        linkBtn.type = 'button';
+        linkBtn.addEventListener('click', () => openTarget('announcement'));
+        main.appendChild(linkBtn);
+      }
+      card.appendChild(main);
+      bodyEl.appendChild(card);
     } catch (e) {
       console.error(e);
-      bodyEl.innerHTML = '<div class="about-announce-empty">暂无公告</div>';
+      bodyEl.textContent = '';
+      bodyEl.appendChild(mkEl('div', 'about-announce-empty', '暂无公告'));
     }
   }
 

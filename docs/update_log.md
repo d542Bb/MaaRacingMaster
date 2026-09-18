@@ -21,6 +21,19 @@
 - **顺带修掉两处既有缺陷（均为探针抓出，非本次引入）：** ① `updateSectionMeta` 用裸 `.log-badge` 取计数徽章，而「!」标记同样带这个类 → 标记被移除后 `insertBefore` 抛 `NotFoundError`，**该批次剩余的行整批静默丢失、计数从此冻结**（表现为含警告/错误的卡片其后细节行在界面上全部消失），改按专属类 `.log-badge--count` 取；② 未收尾的「当前卡」建卡时没绑点击开关（默认展开时看不出缺，默认折叠后表现为「点不开」）。
 
 - **验证：** 无头 Edge 桥桩探针（临时副本 + 桥桩驱动**真实 `app.js`**）19 项判据全绿——6 卡 / 0 裸行 / 6 张全折叠 / height 过渡存在且半程插值 113→118px、收起回 0 / 贴底跟随 215=215、翻到顶部不被拽走 / 服务行 47 = 渲染行 47（不再丢行）/ 控制台零异常；版式截图目视通过（默认折叠 + 展开态 + 红「!」徽章）。`tests/test_rpc_allowlist.py` 4 passed。
+### 暂存（未发布 · 待并入下一版本）安全：封住「远程更新/公告数据 → WebView → RPC」信任边界 🔒
+
+- **性质：** **安全修复**（新建 `core/remote_meta.py`；改写 `core/sidecar.py` 的外链 RPC 与远程元数据解析；`frontend/app.js` 关于页渲染改 DOM API；新增三组回归测试与文档同步）。分支 `fix/issue-6-remote-data-trust-boundary` 提交、不 tag，待合入 master。
+
+- **为什么：** 更新检查与公告链路的远程元数据存在未转义进入 WebView DOM 的路径，而前端持有 `mra.call()` RPC 能力——远程数据一旦形成 XSS 可继续调用 RPC。排查中还发现一条**不依赖 XSS 即成立**的同源问题：`download_url` 与公告 `url` 来自远程 JSON，未经校验就交给默认浏览器打开，等于「可信程序替远程数据打开任意站点」。
+
+- **改了什么：**
+  - **渲染层**：公告卡与「版本与更新」卡改用 DOM API + `textContent`（`mkEl()`），远程字段不再参与 HTML 拼接；`d.error` 与 `latest_tag`/`published_at` 一并纳入。
+  - **RPC 层**：`open_external_url` / `open_vigembus_download` 只收**逻辑目标名**（`home` / `issue` / `docs` / `announcement` / `download` / `vigembus`），地址由 sidecar 侧白名单给出；`announcement` / `download` 取自已校验的远程数据，前端不持有也不传递 URL。
+  - **校验层**：新模块 `core/remote_meta.py`（只依赖标准库）统一校验公告与版本标记——必填字段不合规整条作废、可选字段不合规只丢该字段、动作型字段（`url` / `download_url`）必须 https + 官方域；每个源都过同一校验器，不合规即继续 fallback。
+  - **文档**：公告字段约束与校验口径写入 `docs/announcement.md`；前端渲染口径写入 `frontend/README.md`；core 模块索引与导入图同步。
+
+- **验证：** 新增三组回归测试（字段口径与仓库实际投放数据 / 端到端「最终谁被交给浏览器」 / 前端渲染路径静态锁）与既有 RPC 白名单锁全绿，`ruff` 通过。无头 Edge 实跑真实 `app.js`：把含 `<img onerror>` / `<svg onload>` 的 title、date、url_text、latest_tag、published_at 喂进渲染路径，页面只显示纯文本、脚本未执行，两个按钮发出的调用是 `open_external_url {"target":"announcement"}` 与 `{"target":"download"}`（无 `url` 参数）。真机 GUI 走查（正常公告、更新提示、关于页三链接、ViGEmBus 引导）待补。
 
 ### 暂存（未发布 · 待并入下一版本）治理立法：实验与计划产物的生命周期契约（AGENTS 红线 6 + 机检棘轮）⚖️
 
