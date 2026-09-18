@@ -62,8 +62,11 @@ def analyze(sess: Path) -> dict:
     slow = dt > SLOW_MS
     slow_idx = np.where(slow)[0]
     gaps = np.diff(slow_idx) if len(slow_idx) > 1 else np.array([0])
-    # 源速率：用 id 增量 / 间隔算（慢间隔处最能代表源的真实产出）
-    src_rate = np.median(did / np.maximum(dt, 1e-6) * 1000.0) if len(did) else 0.0
+    # 源速率与"是否在丢源帧"：`frame_id` 增量 = 这段间隔里源**接受**了几帧。
+    # 用**全量**间隔算——早先只在"慢间隔"上取中位，慢间隔一少样本就只剩几个、数会乱跳
+    # （修复后慢间隔从 98 降到 5，该列立刻失真，故改为全量）。
+    src_rate = float(np.mean(did) / np.mean(dt) * 1000.0) if len(did) else 0.0
+    src_per_rec = float(np.mean(did)) if len(did) else 0.0
     return {
         "name": sess.name, "frames": len(rows), "span": t[-1] - t[0],
         "fps": len(rows) / max(t[-1] - t[0], 1e-9),
@@ -77,8 +80,7 @@ def analyze(sess: Path) -> dict:
         },
         "slow_n": int(slow.sum()), "slow_gap_mode": (Counter(gaps.tolist()).most_common(1)[0]
                                                     if len(gaps) else (0, 0)),
-        "src_rate": float(src_rate), "src_rate_slow": float(
-            np.median(did[slow] / np.maximum(dt[slow], 1e-6) * 1000.0) if slow.sum() else 0.0),
+        "src_rate": float(src_rate), "src_per_rec": float(src_per_rec),
         "age_med": float(np.nanmedian(age)), "age_max": float(np.nanmax(age)),
         "age_slow": float(np.nanmedian(age[1:][slow])) if slow.sum() else float("nan"),
         "age_fast": float(np.nanmedian(age[1:][~slow])) if (~slow).sum() else float("nan"),
@@ -103,8 +105,8 @@ def report_one(r: dict) -> None:
     print(f"  慢间隔 {r['slow_n']} 次  相邻慢间隔间距众数 **{r['slow_gap_mode'][0]} 帧**"
           f"（{r['slow_gap_mode'][1]} 次）→ {r['slow_gap_mode'][0] / max(r['fps'], 1e-9):.2f}s"
           f" 周期")
-    print(f"  源速率（frame_id 推进）{r['src_rate']:.0f} 帧/秒；**慢间隔处 {r['src_rate_slow']:.0f}**"
-          f" → 记录/接受 ≈ {r['fps'] / max(r['src_rate_slow'], 1e-9):.0%}")
+    print(f"  源速率（frame_id 推进）{r['src_rate']:.0f} 帧/秒；"
+          f"**每记录 1 帧之间源接受了 {r['src_per_rec']:.2f} 帧**（1.00 = 源帧无遗漏）")
     print(f"  age_ms 中位 {r['age_med']:.1f} 最大 {r['age_max']:.1f}"
           f"；慢间隔处 {r['age_slow']:.1f} vs 快间隔处 {r['age_fast']:.1f}（一样小=无积压）")
     print(f"  frames_dropped={r['dropped']}" + (f"  帧图 {r['jpeg_kb']:.0f} KB" if r["jpeg_kb"] else ""))
@@ -132,7 +134,8 @@ def main() -> None:
               f"（中位 {np.median([x['fps'] for x in rs]):.2f}）")
         print(f"  P95 间隔 {min(x['dt_p95'] for x in rs):.0f}~{max(x['dt_p95'] for x in rs):.0f} ms")
         print(f"  慢间隔间距众数 {[x['slow_gap_mode'][0] for x in rs]}")
-        print(f"  源速率（慢间隔处）{[round(x['src_rate_slow']) for x in rs]} 帧/秒")
+        print(f"  源速率 {[round(x['src_rate']) for x in rs]} 帧/秒；"
+              f"每记录 1 帧之间源接受 {[round(x['src_per_rec'], 2) for x in rs]} 帧")
         print(f"  frames_dropped {[x['dropped'] for x in rs]}")
         kb = [x["jpeg_kb"] for x in rs if x["jpeg_kb"]]
         if kb:
