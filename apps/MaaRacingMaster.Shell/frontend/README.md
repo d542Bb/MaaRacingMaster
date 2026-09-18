@@ -156,3 +156,22 @@ msedge.exe --headless=new --screenshot=out.png --window-size=900,240 "file:///�
   比目视可靠——本次彩虹配色就是这么从 RGB／HSL 换到 OKLCH 的。
 - **查语法与特性支持**：`--dump-dom` 跑一个用 `CSS.supports()` 逐条打印结果的页面，
   拿到的是当前引擎的真实判定（比猜版本号可靠）。
+
+### 驱动真实 app.js 的桥桩探针（渲染路径验收）
+
+`app.js` 启动即访问 `window.chrome.webview`，直接开 `index.html` 会因无桥而中断。要验证
+「远程数据在**真实渲染路径**下的表现」（公告/更新卡是否只出纯文本、按钮发出的调用形态），
+用一份**临时副本**：复制 `index.html`，在 `<body>` 后插桥桩、在 `</body>` 前插判据脚本。
+
+- **桥桩**：`window.chrome = { webview: { addEventListener, postMessage } }`；`postMessage`
+  里按 `msg.method` 回包（`fetch_announcement` / `check_update` 喂构造好的 payload）。
+  回包必须 `setTimeout(..., 0)` **异步**派发——同步派发会让 app.js 的初始化在同一次调用里重入。
+- **判据**：点 `[data-tab="about"]` 切页、点卡片按钮，然后把桥桩记录的调用
+  （`window.__calls`）、两个卡片的 `innerHTML`、以及 `window.__xss` 有没有被
+  `onerror`/`onload` 置位，写进 `<pre id="probe-out">`。
+- **取回**：`--dump-dom` 抓判据，`--screenshot` 看版式（两条命令同上面的无头 Edge 用法）。
+  ⚠️ `--screenshot=` 要给 **Windows 路径**：Edge 不认 Git Bash 的 `/tmp/...`。
+- **读法**：payload 在卡片 `innerHTML` 里应呈现为 `&lt;img …&gt;`（转义文本）、`__xss`
+  保持 undefined、外链调用只有 `open_external_url {"target":"…"}` 形态。
+
+探针是临时验证产物，**用完即移出仓库**（见 [`AGENTS.md`](../../../AGENTS.md) 红线 4）。
