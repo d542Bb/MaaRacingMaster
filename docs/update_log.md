@@ -10,6 +10,16 @@
 
 ## 2026-09-18
 
+### 暂存（未发布 · 待并入下一版本）治理立法：实验与计划产物的生命周期契约（AGENTS 红线 6 + 机检棘轮）⚖️
+
+- **性质：** **规则改写 + 机检入库**（`AGENTS.md` 新增红线 6、`tools/experiments/README.md` 整篇重写、`docs/README.md` plan 规范重写；新增 `tools/check_repo_hygiene.py`（R1~R5）+ 基线 `tools/repo_hygiene_baseline.txt`（70 条存量豁免）+ 回归锁 `tests/test_repo_hygiene.py`（8 例，含真实仓库绿）；`test.yml` 与 `CONTRIBUTING.md` 触碰面接线）。维护者四项裁定全过，第③项按裁定修正：**存量不批量盖 active 章**。
+
+- **病因（维护者诊断，核验属实）：** 守则教会了 agent「实验要留痕」，没教「实验何时退役」——`tools/experiments/` 自 09-17 起新增 7 主题、退役 0（现 34 主题 / 198 文件 / 24 无 README），且引用链把临时资产升格为永久依赖（实证三层全污染：L1 ADR→gitignored plan、L2 MAAFW_GUIDE→实验脚本当升版必跑、L0 RULES→实验 README 当证据链）。
+
+- **新契约（一句话版）：** `tools/experiments/` 只放活跃实验，**留痕 = 进 git 历史 + 结论进 home，不是目录永存**；实验关闭走四步（结论迁 home → 仪器提升 → 拔引用 → 删目录）；正式知识（L0~L3）与生产/测试代码**不得引用具体实验路径或 plan 文件，历史证据一律指向 commit**；`docs/plan/` 是工作台不是知识库——只向上产出、完成即删（走回收站，无 git 历史）、**`plan/archive/` 概念废除**（gitignored 归档 = 第二个垃圾场）；委托研究报告原文不进树。
+
+- **机检语义：** 棘轮——基线外的新违规 CI 红；基线只减不增，legacy 主题按触碰面分诊（在用→补 active / 仪器被消费→提升+删 / 结论已迁→删 / 废弃→删）。
+
 ### 暂存（未发布 · 待并入下一版本）地面标定实验立项：像素→车道坐标的反求方案定稿（外部调查采纳 + 三处更正）📐
 
 - **性质：** **方案裁定 + 实验目录建档**（新建 `tools/experiments/speedrush_calibration/`：外部调查报告归档（带溯源头）+ README（采纳/更正/验收闸门/实施顺序）；planning README 的时间轴标定条目重定向承接；本机路线文档更新）。**未实施**。

@@ -24,7 +24,7 @@
 - **活动域**（模块实现、策略、域内坑点）→ `plugins/<id>/CODE_WIKI.md`
 - **子系统施工事实**（GUI 壳、前端、工具链）→ 该子系统的 `README.md`
 - **当前版本方向与不变量** → `docs/NAVKIT_V4_PLAN.md` §1 宪法
-- **实验记录与探针** → `tools/experiments/<主题>/`
+- **实验记录与探针** → `tools/experiments/`（**仅活跃实验**；已退役实验的证据指向 commit，历史经 `git log` 查）
 - **维护者待办与疑点** → GitHub Issues，`label: self-todo`
 
 > 表内给的是**住户**，不是章节号——进文件后按标题或关键词 grep 定位；章节号会漂，指针会腐坏。
@@ -42,6 +42,7 @@
 3. **破坏性操作必须可回撤**：删除走回收站或等效机制；不做递归删除、批量重命名、通配符清理；动作前先列受影响清单并取得确认。**丢弃未提交的改动**（`git checkout --`、`git restore`、`git reset --hard`）视同删除，同样先列清单——「那是我自己刚改的」不构成豁免。
 4. **隐私**：任何入库文档与交付物不得含密钥与本机绝对路径。
 5. **对外可见的动作先取得明确指示**：push、开/改 issue、发布、改远端配置。内部动作（读、改、跑）可自主，对外动作不自主。
+6. **实验与计划产物只出不进**（机检 [`tools/check_repo_hygiene.py`](tools/check_repo_hygiene.py)，存量走棘轮基线）：正式知识（L0~L3）与生产/测试/运维代码不得引用 `tools/experiments/<主题>/` 具体路径或 `docs/plan/` 下的文件——历史证据一律指向 **commit**。`tools/experiments/` 只放**活跃**实验（README 含 `status: active` 入口护栏；在树即 active，退役即删除）；实验关闭 = 四步：**结论迁 home → 仪器提升 → 拔引用 → 删目录**。**"留痕"= 过程进 git 历史 + 结论进 home，不是目录永存**。委托研究（外部报告）原文不进树，采纳与更正写进实验 README。细则见 [tools/experiments/README.md](tools/experiments/README.md) 与 [docs/README.md](docs/README.md) plan 规范。
 
 ## 变更验证（改前 / 改后）
 

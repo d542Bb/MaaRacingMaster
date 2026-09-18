@@ -16,7 +16,7 @@
 | [adr/](./adr/README.md) | L1 | 架构决策与状态（准入条件、状态机见其 README） |
 | [announcement.md](./announcement.md) | L1 | 公告通知卡规范 |
 | [update_log.md](./update_log.md) | L4 | 对外变更记录（Release 正文由此抽取） |
-| [plan/](./plan/) | L4 | 计划与过程产物（gitignore 不入库；`archive/` 为归档） |
+| [plan/](./plan/) | — | 一次性**工作台**（gitignore 不入库；只能向上产出，禁止被正式文档引用；完成即删） |
 | [design/](./design/) | — | 前端设计稿（pages / token） |
 
 项目级导航（跨 `docs/`、`apps/`、`tools/` 的入口）见 [CODE_WIKI.md](./CODE_WIKI.md)；等级定义与冲突判据唯一载于 [AGENTS.md](../AGENTS.md)「知识路由」。
@@ -52,6 +52,14 @@ L3 / L4 导航型文档可省去「真源路由」一行。**只声明与指向�
 
 ## plan 规范（`docs/plan/`）
 
-AI 生成的实施计划、方案对比、验证报告放这里，**gitignore 不入库**——这是有意设计：经过验证且有长期价值的方案才上提到 `docs/`（ADR / 模块 wiki / 指南）纳入知识库。完成后移入 `plan/archive/`。
+`docs/plan/` 是**工作台，不是知识库**：AI 生成的实施计划、方案对比、验证报告落这里，gitignore 不入库。
 
-**较大改动的 plan 以行为契约开头**：依次写「目标行为 / 不变量 / 验收条件」，先定行为再谈技术方案；跨层、新模块、并发与资源类改动必写。
+- **只能向上产出**：plan → ADR / CODE_WIKI / 指南 / 实验 / issue / 生产实现。长期价值只存在于
+  被提炼的产出里；plan 本身不是任何知识的住户。
+- **禁止反向引用**：正式文档（L0~L3）与生产/运维代码不得引用 `docs/plan/` 下的具体文件
+  （机检 [`tools/check_repo_hygiene.py`](../tools/check_repo_hygiene.py) R3）；实验引用 plan
+  只作过程指针、不作事实依据。
+- **退役即删除**：产出提炼完成后删除工作台文件（走回收站——它没有 git 历史，删除不可经
+  git 回撤）。**不设 `plan/archive/`**：gitignored 的"归档"既不可追溯又暗示"仍属项目知识"，
+  是第二个垃圾场；plan 的历史若重要，应把结果留在它产出的 issue / commit / 最终文档里。
+- 较大改动的 plan 以行为契约开头：依次写「目标行为 / 不变量 / 验收条件」，先定行为再谈技术方案；跨层、新模块、并发与资源类改动必写。

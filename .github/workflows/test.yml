@@ -59,6 +59,10 @@ jobs:
         # 运行时读取路径由金标测试（test_navkit_v2_v3_runtime_equiv）看护。
         run: python tools/navkit/check_truth.py
 
+      - name: 仓库卫生检查（实验/计划生命周期契约，AGENTS 红线 6）
+        # 棘轮语义：存量违规在基线豁免，新增违规即红；基线只减不增。纯标准库，零依赖。
+        run: python tools/check_repo_hygiene.py
+
       - name: 安装 pytest 与轻量测试依赖
         # 注：不采用 `pip install -e .[test]`——会连带安装主依赖（onnxruntime-directml /
         # windows-capture 等仅 Windows 有 wheel），Linux runner 装不上。故只装 pytest +

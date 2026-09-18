@@ -117,6 +117,7 @@ git push -u origin feat/your-feature
 
 - 改动相关的 `pytest` + 改动文件的 `ruff`；
 - 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/navkit/check_truth.py`；
+- 动到 `tools/experiments/`、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6；基线只减不增，退役四步见 [tools/experiments/README.md](tools/experiments/README.md)）；
 - 改到**跨模块共享契约**（core 能力接口、RPC 白名单、分层边）时建议自愿加跑全仓——影响面跨模块，早发现比等 CI 划算。
 - 新增了抽象（core 目录、共用 pipeline、通用协议、新通路 / 新页面）时，先答一句「**第二个使用者是谁、今天是否真实存在**」——判据见 [AGENTS.md](AGENTS.md) 的「Git 与操作纪律」第 7 条；答不出就不抽。
 
