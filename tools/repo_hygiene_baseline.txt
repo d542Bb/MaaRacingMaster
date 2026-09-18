@@ -18,13 +18,11 @@ R1|ocr-gate-2026-09-15|缺 README.md
 R1|opencv-thread-starvation|缺 README.md
 R1|pipeline-inheritance|缺 README.md
 R1|shoo-stall-probe|缺 README.md
-R1|speedrush_calibration|README 缺 status: active 行
 R1|speedrush_drive|README 缺 status: active 行
 R1|speedrush_gating|缺 README.md
 R1|speedrush_planning|README 缺 status: active 行
 R1|speedrush_scoring|README 缺 status: active 行
 R1|speedrush_templates|缺 README.md
-R1|speedrush_trick|README 缺 status: active 行
 R1|speedrush_vision|README 缺 status: active 行
 R1|v4-box-passthrough|缺 README.md
 R1|v4-dwell-parity|缺 README.md
@@ -42,7 +40,6 @@ R2|docs/MAAFW_GUIDE.md|v4-frame-pacing
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|speedrush_gating
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|speedrush_scoring
 R2|maaracing_master/plugins/speedrush/RULES.md|speedrush_scoring
-R2|maaracing_master/plugins/speedrush/RULES.md|speedrush_trick
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|egg-claim-coin-read
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|frame-page-token
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|ocr-gate-2026-09-15
