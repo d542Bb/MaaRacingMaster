@@ -206,9 +206,11 @@ def _seg_sigma_d(coefs, lens, mids, p):
     return SIGMA_PX * np.sqrt(1.0 + 2.0 * (r / np.maximum(lens, 1.0)) ** 2)
 
 
-def estimate_vp(segs, rng_seed: int = 0, tol: float = 3.0, iters: int = 3000):
+def estimate_vp(segs, rng_seed: int = 0, tol: float = 3.0, iters: int = 3000,
+                y_band: tuple[float, float] | None = None):
     """VP = (VPx, y_h)：成对交点 RANSAC 投票 + IRLS 精化（逐段 σ_d 自适应权重），
-    y_h 受先验带边界。"""
+    y_h 受先验带边界（默认 [YH_LO, YH_HI]；真帧诊断可传宽带，合成自检走默认）。"""
+    y_lo, y_hi = y_band if y_band else (YH_LO, YH_HI)
     cand = [s for s in segs if _steep(s)]
     if len(cand) < 2:
         return None
@@ -226,7 +228,7 @@ def estimate_vp(segs, rng_seed: int = 0, tol: float = 3.0, iters: int = 3000):
             continue
         px = (m[0, 1] * m[1, 2] - m[1, 1] * m[0, 2]) / det
         py = (m[0, 2] * m[1, 0] - m[0, 0] * m[1, 2]) / det
-        if not (CX - 100 <= px <= CX + 100 and YH_LO <= py <= YH_HI):
+        if not (CX - 100 <= px <= CX + 100 and y_lo <= py <= y_hi):
             continue
         d = np.abs(coefs[:, :2] @ np.array([px, py]) + coefs[:, 2])
         n = int((d < 3 * _seg_sigma_d(coefs, lens, mids, (px, py)) + tol).sum())
@@ -258,7 +260,7 @@ def estimate_vp(segs, rng_seed: int = 0, tol: float = 3.0, iters: int = 3000):
             break
         best = new
     vp_x, y_h = best
-    y_h = float(np.clip(y_h, YH_LO, YH_HI))       # 先验带 = 拟合边界
+    y_h = float(np.clip(y_h, y_lo, y_hi))          # 先验带 = 拟合边界
     sig = _seg_sigma_d(coefs, lens, mids, (vp_x, y_h))
     # 协方差：IRLS 末次加权法方程 A=Σ w·n nᵀ（w=1/σ_d²）之逆 = 估计的标准差平方，
     # Gate −1 用它自检「误差与自报精度一致」、Gate 4 的跨会话 CV 也要它。
