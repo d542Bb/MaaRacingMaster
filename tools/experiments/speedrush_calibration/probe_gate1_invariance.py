@@ -168,7 +168,7 @@ def build_tracks(dets: list[dict], ivs: list[tuple[float, float]],
     """比赛时窗内（剔除自车变道窗）关联目标框。
     接地点 = 框底中点 (u_cx, v_bottom)；X = A_x·(u−vpx)/(v−y_h)（车道单位）。"""
     vpx, yh = cal["vpx"], cal["y_h"]
-    ax = cal.get("A_x_used", cal["A_x"])
+    ax = cal.get("A_x_used") or cal["A_x"]   # get 的默认值先求值，不能用 cal["A_x"] 兜底
     tracks: list[dict] = []
     live: dict[int, dict] = {}
     next_id = 0
@@ -470,7 +470,7 @@ def attribution(per: list[dict]) -> dict:
         return out
     a_ = np.array([p["a"] for p in per])
     b_ = np.array([p["b"] for p in per])
-    c_ = np.array([p["c"] for p in per])
+    c_ = np.array([p.get("c", 0.0) for p in per])
     M = np.stack([np.ones_like(a_), a_], 1)
     (p0, q), *_ = np.linalg.lstsq(M, b_, rcond=None)
     res = b_ - M @ np.array([p0, q])
