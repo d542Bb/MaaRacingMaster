@@ -94,9 +94,18 @@ def sagitta(pts: np.ndarray) -> float:
     return float(np.max(np.abs(u - (alpha * v + beta))))
 
 
+STRADDLE_PX = 80.0     # 跨线判定：近端截距落画面中心 ±80px 内 = 车压虚线
+
+
 def frame_straight(rgb) -> bool:
-    """两侧主族（截距最靠近 SCREEN_CX 的左/右各一）矢高皆 ≤SAG_MAX。"""
+    """两侧主族（截距最靠近 SCREEN_CX 的左/右各一）矢高皆 ≤SAG_MAX，
+    且**无跨线族**——自车处半道位时夹车虚线仍在 ±0.5 道、c_f 中点仍报 0
+    （c_f 对 ±0.5 道有周期歧义，扩样轮实证：A 场 2/4 轨、163152 场 4/9 轨
+    frac 稳定 0.38~0.58 且轨内 rms≤0.10——偏移稳定非噪声）。跨线帧直接剔除：
+    免标定、不读 X，与直道判据同族（纯像素几何）。"""
     fams = [f for f in line_families(rgb) if f[2] >= MIN_CLUSTER_SEGS]
+    if any(abs(f[0] - SCREEN_CX) < STRADDLE_PX for f in fams):
+        return False
     left = [f for f in fams if f[0] < SCREEN_CX]
     right = [f for f in fams if f[0] > SCREEN_CX]
     if not left or not right:
@@ -110,7 +119,7 @@ def straight_mask(sess_name: str, rows: list[dict]) -> np.ndarray:
     p = CACHE / f"straight_{sess_name}.json"
     if p.exists():
         d = json.loads(p.read_text(encoding="utf-8"))
-        if d.get("stride_ok", True):
+        if d.get("v") == 2:      # v2：含跨线帧剔除（v1 缓存作废重算）
             return np.array(d["mask"])
     sess = DEMOS / sess_name
     mask = []
@@ -121,7 +130,7 @@ def straight_mask(sess_name: str, rows: list[dict]) -> np.ndarray:
         if i % 100 == 0:
             print(f"  [{sess_name}] 直道门控 {i}/{len(rows)}"
                   f"（{time.perf_counter() - t0:.0f}s）", flush=True)
-    p.write_text(json.dumps({"mask": mask}), encoding="utf-8")
+    p.write_text(json.dumps({"mask": mask, "v": 2}), encoding="utf-8")
     return np.array(mask)
 
 
