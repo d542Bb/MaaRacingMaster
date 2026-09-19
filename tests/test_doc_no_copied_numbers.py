@@ -18,11 +18,12 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# 守卫范围按目录发现：全部知识文档 + 各插件域的 CODE_WIKI（插件增删自动伸缩，
+# 不再逐模块硬编码——删插件时这里跟着消失，而不是 FileNotFoundError）
 DOCS = [
     REPO / "docs" / "CODE_WIKI.md",
     REPO / "maaracing_master" / "core" / "CODE_WIKI.md",
-    REPO / "maaracing_master" / "plugins" / "treasure" / "CODE_WIKI.md",
-    REPO / "maaracing_master" / "plugins" / "speedrush" / "CODE_WIKI.md",
+    *sorted((REPO / "maaracing_master" / "plugins").glob("*/CODE_WIKI.md")),
 ]
 
 # 阶段数抄录：数字紧邻「阶段」（允许中间一个空格）；(?<![\d.]) 排除
