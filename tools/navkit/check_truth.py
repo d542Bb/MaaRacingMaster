@@ -21,7 +21,8 @@
 6. 输入通道（校验器第 8 条）：真源不得用框架内置输入 action（Click/Swipe/Key…）——
    v4 控制器的输入接口全是成功占位，内置 action 会假成功而屏幕上什么都不发生。
 7. 纯锚点形态（attach._anchor_only）：豁免「入口不可达」「无出口节点」两条 WARN，
-   但必须零路由且被至少一处引用，否则判孤儿真源。
+   但必须零路由且被消费——图内按名引用，或声明 attach._module_driven（模块代码
+   按节点名直驱）；两样皆无判孤儿真源。
 8. 页面清单等集（stage_face_checks）：dwell 顶层 focus ↔ policy stages.order ↔
    stages.definitions 三方互为等集，且 focus 全局唯一——显示态真源已收敛到「当前
    节点」，这三处是同一事实的三个面，协议层不校验一致，漏改即静默漂移。
@@ -40,14 +41,40 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
 PACK = REPO / "maaracing_master"
-# 真源按目录发现（不再硬编码文件名）：core 目录缺席是合法状态（尚无跨模块共用链）。
+# 真源按目录发现（不再硬编码文件名/模块名）：core 目录缺席是合法状态（尚无跨模块
+# 共用链）；插件侧同理——每个带 module.py 的插件目录自动进校验范围，插件增删、
+# 单插件退役都不需要回头改本文件。分层面（policy 表）是模块可选物：只对本域有
+# policy 表的插件做两面交叉校验（如 speedrush 的线性玩法无 policy，只进图侧校验）。
 CORE_PIPELINE_DIR = PACK / "core" / "resources" / "pipeline"
-PLUGIN_PIPELINE_DIRS = [PACK / "plugins" / "treasure" / "resources" / "pipeline"]
-TREASURE_TRUTH = PLUGIN_PIPELINE_DIRS[0] / "treasure.json"
-POLICY_TRUTH = PACK / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
-# 模块命名空间 = plugins/<id>/ 下带 module.py 的目录名（分层红线的判据来源）
-MODULE_NS = frozenset(p.name for p in (PACK / "plugins").iterdir()
-                      if p.is_dir() and (p / "module.py").is_file())
+PLUGINS_DIR = PACK / "plugins"
+
+
+def _module_dirs() -> list[Path]:
+    """plugins/ 下带 module.py 的插件目录（模块命名空间与校验范围的判据来源）。"""
+    if not PLUGINS_DIR.is_dir():
+        return []
+    return sorted(p for p in PLUGINS_DIR.iterdir()
+                  if p.is_dir() and (p / "module.py").is_file())
+
+
+MODULE_NS = frozenset(p.name for p in _module_dirs())
+PLUGIN_PIPELINE_DIRS = [d / "resources" / "pipeline" for d in _module_dirs()
+                        if (d / "resources" / "pipeline").is_dir()]
+PLUGIN_POLICY_FILES = sorted(f for d in _module_dirs()
+                             for f in (d / "resources" / "policy").glob("*.policy.json"))
+
+
+def module_policy_path(module: str) -> Path:
+    """模块 policy 表路径约定：<plugins>/<module>/resources/policy/<module>.policy.json。"""
+    return PLUGINS_DIR / module / "resources" / "policy" / f"{module}.policy.json"
+
+
+def scope_by_plugin(graph: dict, origin: dict, plugin_dir: Path) -> dict:
+    """按 origin 圈出属于某插件目录的节点子图。
+
+    多模块合并图中各模块的面互不相干：模板集比对、页面等集、spec 引用都只能在
+    本模块的子图上做（policy_checks 与测试同用这一份圈定口径）。"""
+    return {n: graph[n] for n, f in origin.items() if plugin_dir in f.parents}
 
 
 def att(n: dict) -> dict:
@@ -305,8 +332,10 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
                 dq.append(name)
     # 纯锚点节点（attach._anchor_only）= 只被引用的识别规格容器，自身不参与路由。
     # 「沿 next 可达」和「有出口」两条对它没有意义，故豁免；取而代之硬要求它**必须
-    # 被引用到**——纯锚点的全部存在理由就是被人抄进墙上清单，没人引用就是孤儿真源
-    # （历史上那张 hall_race_btn.png 就是这么躺着的）。
+    # 被消费到**——消费通道有两种：① 图内按名引用（And/Or 子项 / anchor value /
+    # next 表）；② 模块代码按节点名直驱（post_task/等待，如 speedrush 驾驶页锚点），
+    # 这条通道图级分析不可见，靠 attach._module_driven 显式声明。两样都没有就是
+    # 孤儿真源（历史上那张 hall_race_btn.png 就是这么躺着的）。
     anchors = {n for n, d in full.items() if att(d).get("_anchor_only")}
     unreachable = sorted(set(full) - seen - anchors)
     for u in unreachable:
@@ -319,9 +348,9 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
         if n.get("next") or n.get("on_error"):
             problems.append(f"{name}: 标了 attach._anchor_only 却带 next/on_error —— "
                             f"纯锚点必须零路由，否则搬进通用层时会点名业务层")
-        if name not in referenced:
+        if name not in referenced and not att(n).get("_module_driven"):
             problems.append(f"{name}: attach._anchor_only 但无任何节点引用它 —— "
-                            f"纯锚点没人抄就是孤儿真源")
+                            f"纯锚点没人抄就是孤儿真源（模块直驱请声明 attach._module_driven）")
     for name, n in full.items():
         a = att(n)
         if a.get("_anchor_only"):
@@ -459,9 +488,12 @@ def anchor_face_checks(graph: dict, policy: dict) -> tuple[list[str], list[str]]
     return errs, warns
 
 
-def rect_checks(graph: dict, policy: dict) -> list[str]:
+def rect_checks(graph: dict, policy: dict | None = None) -> list[str]:
     """校验器第 3 条：两面一切 `rect`/`roi`/`box` 几何字段——4 元数值、值域
-    [0,1]、x1<x2 / y1<y2（归一化矩形统一形；越界 rect 运行时静默错区）。"""
+    [0,1]、x1<x2 / y1<y2（归一化矩形统一形；越界 rect 运行时静默错区）。
+
+    policy 可缺省：几何合法性本身与 policy 无关，图侧可全量单独过闸
+    （多模块合并图中无 policy 的模块节点也要验几何）。"""
     errs: list[str] = []
 
     def walk(node: Any, path: str) -> None:
@@ -484,7 +516,7 @@ def rect_checks(graph: dict, policy: dict) -> list[str]:
                 walk(item, f"{path}[{i}]")
 
     walk(graph, "graph")
-    walk(policy, "policy")
+    walk(policy or {}, "policy")
     return errs
 
 
@@ -600,37 +632,58 @@ def page_checks(policy: dict) -> list[str]:
     return problems
 
 
+def policy_checks(graph: dict, origin: dict, policy_path: Path) -> tuple[list[str], list[str]]:
+    """单个模块 policy 数据面的两面交叉校验。
+
+    图侧按 origin 圈定到该插件目录内的节点：节点名全城唯一，但各模块的面互不相干
+    ——模板集比对（anchor_face_checks）、页面等集（stage_face_checks）、spec 引用
+    （cross_checks）拿别的模块的节点来比只会产出无意义的红。几何（rect_checks）
+    的 policy 侧在此按模块过，图侧已在 main 全量过。"""
+    plugin_dir = policy_path.parents[2]
+    scope = scope_by_plugin(graph, origin, plugin_dir)
+    errors: list[str] = []
+    warns: list[str] = []
+    policy_doc = None
+    try:
+        policy_doc = _load(policy_path)
+        errors += cross_checks(scope, policy_doc)
+        face_errors, face_warns = anchor_face_checks(scope, policy_doc)
+        errors += face_errors
+        warns += face_warns
+        errors += rect_checks({}, policy_doc)
+        errors += stage_face_checks(scope, policy_doc)
+        errors += page_checks(policy_doc)
+    except (KeyError, TypeError) as exc:
+        errors.append(f"{policy_path.name} 段结构非法: {exc}")
+    if policy_doc is not None:
+        sys.path.insert(0, str(REPO))
+        try:
+            from maaracing_master.core.navkit.v4_source import load_nav_source
+            load_nav_source(policy_path)
+        except Exception as exc:  # noqa: BLE001 —— 装配失败原因各异，原文即诊断
+            errors.append(f"{policy_path.name} 数据面装配失败: {exc}")
+    return errors, warns
+
+
 def main() -> int:
     graph, origin = load_graph()
     errors, warns = validate_graph(graph)
     errors += action_checks(graph)
     errors += namespace_checks(graph, origin)
-    policy_doc = None
-    try:
-        policy_doc = _load(POLICY_TRUTH)
-        errors += cross_checks(graph, policy_doc)
-        face_errors, face_warns = anchor_face_checks(graph, policy_doc)
-        errors += face_errors
-        warns += face_warns
-        errors += rect_checks(graph, policy_doc)
-        errors += stage_face_checks(graph, policy_doc)
-        errors += page_checks(policy_doc)
-    except (KeyError, TypeError) as exc:
-        errors.append(f"policy.json 段结构非法: {exc}")
-    if policy_doc is not None:
-        sys.path.insert(0, str(REPO))
-        try:
-            from maaracing_master.core.navkit.v4_source import load_nav_source
-            load_nav_source(POLICY_TRUTH)
-        except Exception as exc:
-            errors.append(f"policy.json 数据面装配失败: {exc}")
+    errors += rect_checks(graph)    # 图侧几何全量（含无 policy 的模块）
+    for policy_path in PLUGIN_POLICY_FILES:
+        p_errors, p_warns = policy_checks(graph, origin, policy_path)
+        errors += p_errors
+        warns += p_warns
     for w in warns:
         print(f"[warn] {w}")
     for e in errors:
         print(f"[error] {e}")
     if errors:
         return 1
-    print(f"[check_truth] OK：图 {len(graph)} 节点自洽，policy 数据面可装配且交叉互洽")
+    n_policies = len(PLUGIN_POLICY_FILES)
+    print(f"[check_truth] OK：图 {len(graph)} 节点自洽，"
+          f"{n_policies} 份 policy 数据面可装配且交叉互洽")
     return 0
 
 
