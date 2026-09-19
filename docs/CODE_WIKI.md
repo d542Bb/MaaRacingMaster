@@ -105,7 +105,7 @@ MaaRacingMaster/
 ├── tools/                     # 开发工具（navkit 工作台 / training / experiments / runtime_audit）
 ├── tests/                     # 单元测试与契约锁（CI 矩阵 3.11）
 ├── templates/plugin/          # 插件开发样板（复制到 plugins/ 即成新模块）
-├── scripts/release/           # 发布打包（assemble.ps1）与 changelog 抽取
+├── scripts/release/           # 发布打包（assemble.ps1：含过期模块分发剔除）、剔除判定与 changelog 抽取
 ├── assets/                    # 应用级资产（图标 / 演示素材 / 配置）
 ├── docs/                      # 信源文档根（信源路由见 AGENTS.md）
 │   ├── CODE_WIKI.md           # 本文（项目地图）· MAAFW_GUIDE.md · NAVKIT_V4_PLAN.md · SELF_CHECK.md

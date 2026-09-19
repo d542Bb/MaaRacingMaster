@@ -12,6 +12,9 @@
 #   -KeepGoing              continue on error (local debug); default fail-fast
 #   -SevenZ                 additionally build .7z primary artifact (solid LZMA2 256M, per C1-C bench) + .7z.sha256; zip always built as fallback
 #   -SevenZPath             7za.exe path (default: scripts\release\tools\7za.exe -> build\7z\extra\x64\7za.exe; missing => zip-only fallback, non-fatal)
+#   -ExcludeModules         人工兜底：在自动判定之外按 plugins/<目录名> 追加剔除（逗号分隔）
+#                           自动剔除：打包时刻已过 manifest VALID_UNTIL 的活动模块不随包分发，
+#                           判据与运行期置灰同源（core/module_validity），见 list_ship_excluded_modules.py
 # Internal experiment switches below (Remove*) are driven by -Configuration; ordinary release
 # does not need to pass them. See scripts/release/runtime-pruning-policy.md for the canonical whitelist.
 
@@ -29,6 +32,7 @@ param(
     [string]$VcVarsAll = '',   # native Launcher 编译用 MSVC vcvarsall.bat 路径（默认自动探测）
     [switch]$SkipPublish,
     [switch]$KeepGoing,
+    [string]$ExcludeModules = '',  # 人工兜底：按 plugins/<目录名> 追加剔除（逗号分隔）；自动剔除见 §3.5
     [switch]$SevenZ,        # 额外产出 .7z 主推档（solid LZMA2 256M, 参数同 C1-C 基准）+ .7z.sha256；zip 保底始终产出
     [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MaaRM zero usage)
@@ -602,6 +606,68 @@ foreach ($rel in @(
 }
 robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
 
+# ---------- 3.5 活动模块分发剔除（ship-exclusion，全配置执行） ----------
+# 打包时刻已过有效期（manifest VALID_UNTIL）的插件不随包分发。判据复用
+# core/module_validity（与运行期 registry 置灰同一口径，不建第二真相）；工具按目录
+# 发现插件并容错：端点非法/非字面量按「未声明」= 随包 + warning，宁可多分发不静默吞模块。
+# 仓库树保留全部插件——源码开发与 CI 门禁（check_truth / pytest）不受分发剔除影响。
+# VALID_FROM 在未来（活动未开放）不构成剔除：照常随包，运行期按窗口置灰。
+$ShipTool     = Join-Path $PSScriptRoot 'list_ship_excluded_modules.py'
+$PluginsSrc   = Join-Path $RepoRoot 'maaracing_master\plugins'
+$excludedIds  = @()
+$excludedDirs = @()
+$keptDirs     = @()
+if (-not (Test-Path $ShipTool)) {
+    $errors.Add('missing release tool: ' + $ShipTool)
+} else {
+    $shipRaw = @(& $HostPython $ShipTool $PluginsSrc)
+    $shipExit = $LASTEXITCODE
+    $ship = $null
+    try { if ($shipRaw) { $ship = ($shipRaw -join "`n") | ConvertFrom-Json } } catch { }
+    if ($shipExit -ne 0 -or -not $ship -or $null -eq $ship.expired) {
+        $errors.Add("SHIP-EXCLUSION-FAIL: 判定工具失败 (exit=$shipExit)，无法确定分发集——拒绝盲发")
+    } else {
+        foreach ($w in @($ship.warnings)) { Write-Host "[assemble][ship] warn: $w" -ForegroundColor Yellow }
+        $excludedIds  = @($ship.expired | ForEach-Object { $_.id })
+        $excludedDirs = @($ship.expired | ForEach-Object { $_.dir })
+        $keptDirs     = @($ship.kept | ForEach-Object { $_.dir })
+        Write-Host ("[assemble][ship] 分发剔除（打包时刻已失效）: {0}" -f ($excludedIds -join ', '))
+    }
+}
+# 人工兜底剔除：token 按 plugins/<token> 目录名解释；必须真实存在，防拼错后静默无效
+if ($ExcludeModules) {
+    foreach ($tok in ($ExcludeModules.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        if (-not (Test-Path (Join-Path $PluginsSrc $tok))) {
+            $errors.Add("SHIP-EXCLUSION-FAIL: -ExcludeModules '$tok' 不是 $PluginsSrc 下的插件目录")
+            continue
+        }
+        if ($excludedDirs -notcontains $tok) {
+            $excludedDirs += $tok
+            $keptDirs = @($keptDirs | Where-Object { $_ -ne $tok })
+        }
+        if ($excludedIds -notcontains $tok) { $excludedIds += $tok }
+    }
+    Write-Host ("[assemble][ship] 显式追加剔除: {0}" -f $ExcludeModules)
+}
+foreach ($rel in $excludedDirs) {
+    $dir = Join-Path $StageRoot (Join-Path 'maaracing_master\plugins' $rel)
+    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+}
+# 反向守卫（与 §5.5 同构）：应删不存在 / 应留存在 / 至少一个插件存活（拒绝静默发空壳包）
+foreach ($d in $excludedDirs) {
+    if (Test-Path (Join-Path $StageRoot (Join-Path 'maaracing_master\plugins' $d))) {
+        $errors.Add("SHIP-EXCLUSION-FAIL: '$d' 应已剔除但仍存在于 stage")
+    }
+}
+foreach ($k in $keptDirs) {
+    if (-not (Test-Path (Join-Path $StageRoot (Join-Path 'maaracing_master\plugins' $k)))) {
+        $errors.Add("SHIP-REGRESSION: 保留插件 '$k' 在 stage 缺失")
+    }
+}
+if ($keptDirs.Count -eq 0) {
+    $errors.Add('SHIP-EXCLUSION-FAIL: 全部活动模块均被剔除，拒绝发出空壳包')
+}
+
 # ---------- 4. _version.py ----------
 $verContent = @(
     '# file generated for release (no VCS)',
@@ -834,6 +900,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         delta_7z_mb = if ($d7z -ne $null) { [math]::Round($d7z,2) } else { $null }
         delta_total_mb = [math]::Round($dTotal,2); delta_zip_mb = [math]::Round($dZip,2)
         size_regression = $regression
+        ship_excluded_modules = ($excludedIds -join ',')
         generated = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
     }
     $ReportPath = Join-Path $OutRoot 'release-size-report.md'
@@ -846,6 +913,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
 - generated: $($reportData.generated)
 - configuration: Release (all SAFE pruning on)
 - git: $($reportData.git_commit)
+- 分发剔除模块（打包时刻已过有效期）: $(if($excludedIds){$excludedIds -join ', '}else{'（无）'})
 
 ## 1. 最终体积
 | part | MB |
