@@ -4,9 +4,6 @@
   "venv": ".venv",
   "pythonVersion": "3.11",
   "pythonPlatform": "Windows",
-  "extraPaths": [
-    "maaracing_master/plugins/treasure"
-  ],
   "typeCheckingMode": "basic",
   "exclude": [
     "tools/experiments",

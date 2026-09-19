@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """pytest 全局配置。
 
-为 `strategy`（原 bid_strategy）提供可导入路径：策略模块只依赖标准库，直接以「模块目录」导入，
-**不经过** maaracing_master 包的 __init__（会触发 registry → plugins/* 插件扫描，
-拉入 maa/vgamepad/opencv 等重依赖，拖慢单测并污染 CI）。
+把项目根加入 sys.path，使 `tools.navkit...` 等仓库内导入在 CI（`pytest` 不带
+`python -m`）下也可导入——cwd 非 project root 时不自动在 sys.path。
+
+插件代码的测试一律走绝对包路径导入（maaracing_master.plugins.<id>.…）：
+包 __init__ 与插件 __init__ 均为轻依赖（实测不拉 maa/opencv），且这是与生产
+代码一致的唯一导入口径——不再为个别测试保留 sys.path 平铺导入的旁门。
 """
 
 from __future__ import annotations
@@ -16,11 +19,6 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 _PROJ = Path(__file__).resolve().parent.parent
-
-# 把 treasure 插件目录加入 sys.path，使 `from strategy import ...` 生效
-_STRATEGY_DIR = _PROJ / "maaracing_master" / "plugins" / "treasure"
-if str(_STRATEGY_DIR) not in sys.path:
-    sys.path.insert(0, str(_STRATEGY_DIR))
 
 # 把项目根加入 sys.path，使 `from tools.navkit...`（P3）在 CI（`pytest` 不带
 # `python -m`）下也可导入——cwd 非 project root 时不自动在 sys.path。
