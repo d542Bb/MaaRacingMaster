@@ -134,6 +134,24 @@ def straight_mask(sess_name: str, rows: list[dict]) -> np.ndarray:
     return np.array(mask)
 
 
+def get_cal(s: str, race: list[dict]) -> dict | None:
+    """场级常数：vpx/y_h 冻结（gate1.json 优先），A_x_used 一律物理口径重算
+    ——Gate 1 连带定论：晶格锚在真帧被边线/护栏污染、跨场差达 5 倍
+    （0.413~2.049），用它当刻度会把 α 估计污染成刻度噪声；物理口径跨场
+    稳定（CV≈1.8%）。仅物理不可用时退回晶格。"""
+    from probe_gate1_invariance import (ax_physical, session_calib)
+    g1 = CACHE / "gate1.json"
+    if g1.exists() and s in json.loads(g1.read_text(encoding="utf-8"))["sessions"]:
+        cal = json.loads(g1.read_text(encoding="utf-8"))["sessions"][s]["cal"]
+    else:
+        cal = session_calib(s, race)
+        if not cal:
+            return None
+    phys = ax_physical(s, race, cal["vpx"], cal["y_h"])
+    cal["A_x_used"] = phys["A_x_phys"] if phys else cal["A_x"]
+    return cal
+
+
 def session_pipeline(s: str, stride: int, base: dict, verbose: bool = True):
     """单场：筛帧→场级标定→直道门控→直道轨拟合→直道接地点。返回数据 dict。"""
     rows, _ = analyze_series(s, stride)
@@ -143,22 +161,11 @@ def session_pipeline(s: str, stride: int, base: dict, verbose: bool = True):
         if verbose:
             print(f"== {s}: 比赛态帧不足，跳过")
         return None
-    from probe_gate1_invariance import (ax_physical, session_calib)
-    g1 = CACHE / "gate1.json"
-    if g1.exists() and s in json.loads(g1.read_text(encoding="utf-8"))["sessions"]:
-        cal = json.loads(g1.read_text(encoding="utf-8"))["sessions"][s]["cal"]
-    else:
-        cal = session_calib(s, race)
-        if not cal:
-            if verbose:
-                print(f"== {s}: 场级标定失败，跳过")
-            return None
-    # 刻度源 = 物理口径（近端截距间距）统一重算——Gate 1 连带定论：晶格锚在
-    # 真帧被边线/护栏污染、跨场差达 5 倍（0.413~2.049），用它当刻度会把
-    # α 估计污染成刻度噪声（第二轮交叉验证实证）；物理口径跨场稳定
-    # （CV≈1.8%）。vpx/y_h 冻结不动，仅 A_x_used 统一。
-    phys = ax_physical(s, race, cal["vpx"], cal["y_h"])
-    cal["A_x_used"] = phys["A_x_phys"] if phys else cal["A_x"]
+    cal = get_cal(s, race)
+    if not cal:
+        if verbose:
+            print(f"== {s}: 场级标定失败，跳过")
+        return None
     if verbose:
         print(f"   场级标定：VP=({cal['vpx']:.1f},{cal['y_h']:.1f}) "
               f"A_x={cal['A_x_used']:.3f}")
@@ -353,6 +360,131 @@ def validate(sessions: list[str], stride: int = 2) -> None:
         json.dumps(report, ensure_ascii=False), encoding="utf-8")
 
 
+# ---------- 仪器审计（维护者裁定 2026-09-19：不动任何标定参数） ----------
+# 问题收缩为：同一「车道宽」概念在两个公式下稳定差 ~9%——
+#   ax_physical：v=650 单行两拟合线截距差；
+#   s_med：dash 实际深度范围内逐 d 中点 X 差的中位。
+# 审计三问（判据先写死）：
+#   A 固定行扫描：Δx(v)/Δx(650) 在 v=550~700 漂移 >±5% → 固定行锚不稳定，
+#     ax_physical 需重定义；同时记录 v=650 是否落在两族真实支持区间内。
+#   B 同深度对比：各 d 分箱 du_obs（实测点中位差）/ du_fit（拟合线差），
+#     中位偏离 1 超 ±5% → 分歧在检测/聚类层；≈1 → 在几何映射链（y_h/vpx）。
+#   C 外部锚（RULES 车道宽/车宽）：A/B 排除内部管线错之前不引入。
+AUDIT_VS = [550.0, 575.0, 600.0, 625.0, 650.0, 675.0, 700.0]
+AUDIT_DBINS = [12, 100, 250, 400, 700]   # d=v−y_h 分箱（粗箱，见 B 注）
+
+
+def audit_spacing(sessions: list[str], stride: int = 2) -> None:
+    base = load_base()
+    if not base:
+        print("无冻结基准——先跑 probe_gate0_vp --freeze-base")
+        sys.exit(1)
+    all_A, all_B, all_sup = [], [], []
+    report = {}
+    for s in sessions:
+        rows, _ = analyze_series(s, stride)
+        rows = staged_filter(rows, base["base"], score_intervals(s))
+        race = [r for r in rows if r["stage"] == 4]
+        if len(race) < 15:
+            continue
+        cal = get_cal(s, race)
+        if not cal:
+            continue
+        ivs = score_intervals(s) or [(race[0]["ts"], race[-1]["ts"])]
+        lc = lane_change_times(s)
+        mask = straight_mask(s, rows)
+        sess = DEMOS / s
+        recs = []
+        for i, r in enumerate(rows):
+            if not (any(a <= r["ts"] <= b for a, b in ivs)
+                    and not any(r["ts"] >= t - LANE_CHANGE_PRE
+                                and r["ts"] <= t + LANE_CHANGE_POST
+                                for t in lc)):
+                continue
+            if not mask[i]:
+                continue
+            rgb = np.array(Image.open(sess / "frames" / r["file"]).convert("RGB"))
+            fams = [f for f in line_families(rgb) if f[2] >= MIN_CLUSTER_SEGS]
+            if any(abs(f[0] - SCREEN_CX) < STRADDLE_PX for f in fams):
+                continue
+            left = [f for f in fams if f[0] < SCREEN_CX]
+            right = [f for f in fams if f[0] > SCREEN_CX]
+            if not left or not right:
+                continue
+            lf = max(left, key=lambda f: f[0])
+            rf = min(right, key=lambda f: f[0])
+            if sagitta(lf[1]) > SAG_MAX or sagitta(rf[1]) > SAG_MAX:
+                continue
+            pl, pr = lf[1], rf[1]                 # (u,v) 点集
+            al, bl = np.polyfit(pl[:, 1], pl[:, 0], 1)
+            ar, br = np.polyfit(pr[:, 1], pr[:, 0], 1)
+            dx = {v: (ar * v + br) - (al * v + bl) for v in AUDIT_VS}
+            sup = (float(pl[:, 1].min()), float(pl[:, 1].max()),
+                   float(pr[:, 1].min()), float(pr[:, 1].max()))
+            # B：同 d 分箱 du_obs vs du_fit（每侧 ≥2 点、粗箱——8 点/侧的细箱
+            # 在虚线碎块密度下无数据，首跑实证）
+            bins = []
+            for lo, hi in zip(AUDIT_DBINS, AUDIT_DBINS[1:]):
+                ml = (pl[:, 1] - cal["y_h"] >= lo) & (pl[:, 1] - cal["y_h"] < hi)
+                mr = (pr[:, 1] - cal["y_h"] >= lo) & (pr[:, 1] - cal["y_h"] < hi)
+                if ml.sum() < 2 or mr.sum() < 2:
+                    continue
+                vm = float(np.median(np.r_[pl[ml, 1], pr[mr, 1]]))
+                du_obs = float(np.median(pr[mr, 0]) - np.median(pl[ml, 0]))
+                du_fit = (ar * vm + br) - (al * vm + bl)
+                if du_fit > 20:
+                    bins.append((vm - cal["y_h"], du_obs / du_fit))
+            recs.append({"seq": r["seq"], "dx": dx, "sup": sup, "bins": bins})
+        if not recs:
+            print(f"== {s}: 可审计帧 0")
+            continue
+        # 聚合
+        ratios = np.array([[rec["dx"][v] / rec["dx"][650.0] for v in AUDIT_VS]
+                           for rec in recs])
+        med_ratio = np.median(ratios, 0)
+        in_sup = np.mean([[rec["sup"][0] <= 650 <= rec["sup"][1]
+                           and rec["sup"][2] <= 650 <= rec["sup"][3]]
+                          for rec in recs])
+        bb = {}
+        for rec in recs:
+            for d, r in rec["bins"]:
+                for k in (100, 250, 400, 700):
+                    if d < k:
+                        bb.setdefault(k, []).append(r)
+                        break
+        bmed = {k: (float(np.median(v)), len(v)) for k, v in sorted(bb.items())
+                if len(v) >= 5}
+        print(f"== {s}: 审计帧 {len(recs)}")
+        print(f"   A Δx(v)/Δx(650) 中位 @ {AUDIT_VS}:\n"
+              f"     {[round(float(x), 3) for x in med_ratio]}"
+              f"  （v=650 双族支持内占比 {in_sup:.0%}）")
+        print(f"   B du_obs/du_fit 中位 @d<{{100,250,400,700}}: "
+              + "  ".join(f"d<{k}: {v:.3f}(n={n})" for k, (v, n) in bmed.items()))
+        all_A.append(med_ratio)
+        all_B.append(bmed)
+        all_sup.append(in_sup)
+        report[s] = {"n_frame": len(recs),
+                     "A_ratio": [round(float(x), 4) for x in med_ratio],
+                     "B": {str(k): v for k, v in bmed.items()},
+                     "in_support_frac": float(in_sup)}
+    if all_A:
+        A = np.median(np.array(all_A), 0)
+        print(f"\n== 跨场 A：Δx(v)/Δx(650) = "
+              f"{[round(float(x), 3) for x in A]}  最大漂移 "
+              f"{(A.max() - A.min()) * 100:.1f}%（阈 ±5%）→ "
+              f"{'固定行锚不稳，ax_physical 需重定义' if abs(A - 1).max() > 0.05 else '固定行锚稳定'}")
+        print(f"   v=650 在双族支持区间内占比中位 {np.median(all_sup):.0%}")
+        flatB = {}
+        for b in all_B:
+            for k, (v, n) in b.items():
+                flatB.setdefault(k, []).append(v)
+        print("== 跨场 B：du_obs/du_fit = "
+              + "  ".join(f"d<{k}: {np.median(v):.3f}(n={len(v)})"
+                          for k, v in sorted(flatB.items())))
+    (CACHE / "gate2_audit.json").write_text(json.dumps(report, ensure_ascii=False),
+                                             encoding="utf-8")
+
+
 def main(sessions: list[str], stride: int = 2) -> None:
     base = load_base()
     if not base:
@@ -496,8 +628,12 @@ if __name__ == "__main__":
                     help="留场验证场次（冻结参数，只验不改）")
     ap.add_argument("--validate", action="store_true",
                     help="正式口径：几何定尺度 + AI 轨交叉验证（A_x 冻结）")
+    ap.add_argument("--audit", action="store_true",
+                    help="仪器审计：ax_physical 与 s_med 的 9% 分歧定位（不动参数）")
     args = ap.parse_args()
-    if args.validate:
+    if args.audit:
+        audit_spacing(args.sessions)
+    elif args.validate:
         validate(args.sessions)
     elif args.rescale:
         rescale_holdout(args.rescale, args.holdout or args.sessions)
