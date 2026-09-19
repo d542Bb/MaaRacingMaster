@@ -24,7 +24,6 @@ try:
     from maaracing_master.core import sidecar as sc
     from maaracing_master.core import paths as core_paths
     from maaracing_master.core.sidecar import SidecarService  # noqa: F401
-    from maaracing_master.plugins.treasure import store as treasure_store
     from maaracing_master.plugins.treasure.module import TreasureModule
     from maaracing_master.plugins.treasure.store import read_today_stats
     _OK, _ERR = True, ""
