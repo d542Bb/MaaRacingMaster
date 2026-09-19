@@ -197,7 +197,7 @@ def staged_filter(rows: list[dict], yh_base: float | None,
          and np.isfinite(r["sig_vpx"]) and r["sig_vpx"] <= QUALITY_SIG
          and r["n_inl"] >= QUALITY_INL and DIAG_Y0 <= r["y_h"] <= DIAG_Y1]
     for r in rows:
-        r["stage"], r["reason"] = 0, "质量口径（σ/内点/带）"
+        r["stage"], r["reason"], r["killed"] = 0, "质量口径（σ/内点/带）", "qual"
     if yh_base is None:
         yh = np.array([r["y_h"] for r in q])
         if len(yh):
@@ -208,14 +208,19 @@ def staged_filter(rows: list[dict], yh_base: float | None,
     for r in q:
         if r["n_cand"] < S1_MIN_CAND:
             r["reason"] = f"S1 候选线少({r['n_cand']}<{S1_MIN_CAND})"
+            r["killed"] = "S1"
         elif r["n_long"] < S1_MIN_LONG:
             r["reason"] = f"S1 长线不足({r['n_long']}<{S1_MIN_LONG})"
+            r["killed"] = "S1"
         elif r["n_cut_clusters"] < S1_MIN_CLUSTERS:
             r["reason"] = f"S1 截距簇不足({r['n_cut_clusters']}<{S1_MIN_CLUSTERS})"
+            r["killed"] = "S1"
         elif r["n_strong"] < S2_MIN_STRONG:
             r["reason"] = f"S2 强内点不足({r['n_strong']}<{S2_MIN_STRONG})"
+            r["killed"] = "S2"
         elif r["zmed"] is None or r["zmed"] > S2_MAX_ZMED:
             r["reason"] = f"S2 强内点不共点(zmed={r['zmed']})"
+            r["killed"] = "S2"
         else:
             r["stage"] = 2
             s12.append(r)
@@ -226,6 +231,7 @@ def staged_filter(rows: list[dict], yh_base: float | None,
     for r in s12:
         if ivs and not in_race(r):
             r["reason"] = "S3 非比赛态(score 缺失)"
+            r["killed"] = "S3"
         else:
             r["stage"] = 3
             s3.append(r)
@@ -241,8 +247,10 @@ def staged_filter(rows: list[dict], yh_base: float | None,
         r["dx"], r["dy"] = dx, dy
         if abs(r["y_h"] - yh_base) > S4_YH_TOL:
             r["reason"] = f"S4 y_h 离基准({r['y_h']:.0f} vs {yh_base:.0f})"
+            r["killed"] = "S4"
         elif abs(dx) > S4_DX or abs(dy) > S4_DY:
             r["reason"] = f"S4 滑窗离群(dx={dx:+.0f},dy={dy:+.0f})"
+            r["killed"] = "S4"
         else:
             r["stage"] = 4
     return rows
@@ -333,6 +341,77 @@ def sheet(tiles: list[np.ndarray], path: Path):
     cv2.imwrite(str(path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
 
+CLS = {"A": (0, 190, 0), "qual": (190, 190, 70), "S1": (255, 160, 0),
+       "S2": (220, 40, 40), "S3": (60, 120, 255), "S4": (150, 150, 150),
+       "none": (35, 35, 35)}
+CLS_NAME = {"A": "比赛态", "qual": "质量口径未过", "S1": "S1 证据不足",
+            "S2": "S2 不共点", "S3": "S3 非比赛态", "S4": "S4 一致性",
+            "none": "VP 未估出"}
+
+
+def _row_class(r: dict) -> str:
+    if r["vpx"] is None:
+        return "none"
+    if r["stage"] == 4:
+        return "A"
+    return r.get("killed", "q")
+
+
+def audit_timeline(all_rows: dict[str, list[dict]]) -> None:
+    """时间轴审计：拒绝是否成段发生（成段 = 筛选器退化为特殊场景检测器）。"""
+    per, img_h = [], 46
+    for s, rows in all_rows.items():
+        cls = [_row_class(r) for r in rows]
+        n = len(cls)
+        cnt = {k: 100.0 * cls.count(k) / n for k in CLS}
+        dt = float(np.median(np.diff([r["ts"] for r in rows])))
+        run = best = 0
+        for x in cls:
+            run = 0 if x == "A" else run + 1
+            best = max(best, run)
+        per.append((s, cls, cnt, best * dt, dt))
+        print(f"   {s[-9:]}: A {cnt['A']:.0f}%  质量未过 {cnt['qual']:.0f}%  "
+              f"S1 {cnt['S1']:.0f}%  S2 {cnt['S2']:.0f}%  S3 {cnt['S3']:.0f}%  "
+              f"S4 {cnt['S4']:.0f}%  估不出 {cnt['none']:.0f}%  "
+              f"最长连续R段 {best * dt:.1f}s")
+    fw = 1280
+    img = np.full((img_h * len(per) + 26, fw, 3), 246, np.uint8)
+    for i, (s, cls, cnt, best, dt) in enumerate(per):
+        y = i * img_h + 26
+        step = fw / len(cls)
+        for j, k in enumerate(cls):
+            x0 = int(j * step)
+            cv2.rectangle(img, (x0, y), (int((j + 1) * step) - 1, y + img_h - 22),
+                          CLS[k], -1)
+        cv2.putText(img, f"{s[-9:]}  {cnt['A']:.0f}%A  maxR {best:.1f}s", (6, y + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (30, 30, 30), 1, cv2.LINE_AA)
+    leg = "  ".join(f"{k}:{CLS_NAME[k]}" for k in ("A", "qual", "S1", "S2", "S4"))
+    cv2.putText(img, leg, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (30, 30, 30),
+                1, cv2.LINE_AA)
+    cv2.imwrite(str(CACHE / "timeline_all.png"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    print(f"   时间轴图 → {CACHE / 'timeline_all.png'}")
+
+
+def s4_audit(all_rows: dict[str, list[dict]]) -> None:
+    """S4 职责审计：只剔尾巴（中位不动）还是塑造结果（中位移动）。"""
+    print("   场次        n3→n4   y_h 中位 前→后      y_h std 前→后     "
+          "VPx 中位 前→后")
+    for s, rows in all_rows.items():
+        pre = [r for r in rows if r["stage"] == 3]
+        post = [r for r in rows if r["stage"] == 4]
+        if not pre or not post:
+            print(f"   {s[-9:]}: n3={len(pre)} n4={len(post)}（样本不足）")
+            continue
+        y3 = np.array([r["y_h"] for r in pre])
+        y4 = np.array([r["y_h"] for r in post])
+        x3 = np.array([r["vpx"] for r in pre])
+        x4 = np.array([r["vpx"] for r in post])
+        print(f"   {s[-9:]}: {len(pre):3d}→{len(post):3d}   "
+              f"{np.median(y3):6.1f}→{np.median(y4):6.1f}        "
+              f"{np.std(y3):5.1f}→{np.std(y4):4.1f}         "
+              f"{np.median(x3):6.1f}→{np.median(x4):6.1f}")
+
+
 def report(sessions, stride, rng_seed: int = 7):
     all_rows, ivs_map, metas = {}, {}, {}
     for s in sessions:
@@ -371,6 +450,10 @@ def report(sessions, stride, rng_seed: int = 7):
         if tiles:
             sheet(tiles, od / "sheet.png")
             print(f"   比赛态叠图 → {od / 'sheet.png'}")
+    print("\n== 时间轴审计（拒绝成段 = 筛选器退化为特殊场景检测器）==")
+    audit_timeline(all_rows)
+    print("\n== S4 职责审计（只剔尾巴 = 中位不动；中位移动 = 在塑造结果）==")
+    s4_audit(all_rows)
     print("\n== 留出验证（B 段不参与基准/阈值，阈值先验固定）==")
     for k, v in holdout_report(all_rows, ivs_map).items():
         print(f"   {k}: {v}")
