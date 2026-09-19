@@ -110,6 +110,21 @@ def session_calib(sess_name: str, race: list[dict]) -> dict | None:
                              for q in (25, 75)], "n_ax_frames": len(per_frame)}
 
 
+def grid_A_x(sess_name: str, y_h: float) -> dict | None:
+    """全局格阵 L 口径（维护者裁定 2026-09-19）：A_x = (V_REF − y_h)/L。
+    L 由 probe_gate2_hist.py --globalL 跨帧联合估计（缓存 gate2_globalL.json），
+    边界 ∈ φ_f+(k+1/2)L 半整数格、φ_f 逐帧 nuisance——同一源公式重算刻度，
+    修 source 不修 output。source 优先级：格阵 > 物理 > 晶格。"""
+    p = CACHE / "gate2_globalL.json"
+    if not p.exists():
+        return None
+    rec = json.loads(p.read_text(encoding="utf-8")).get(sess_name)
+    if not rec or not rec.get("L_final"):
+        return None
+    return {"A_x": (V_REF - y_h) / rec["L_final"], "L": rec["L_final"],
+            "n_frame": rec.get("n_frame_scored")}
+
+
 def lane_change_times(sess_name: str) -> list[float]:
     p = TRICK_CACHE / f"banner_{sess_name}.json"
     if not p.exists():
@@ -592,6 +607,11 @@ def run(sessions: list[str], stride: int = 2) -> dict:
         else:
             cal["A_x_used"] = cal["A_x"]
             print("   A_x 物理口径证据不足（可用帧 <8）→ 投影刻度取晶格")
+        gs = grid_A_x(s, cal["y_h"])
+        if gs:
+            cal["A_x_used"], cal["ax_source"] = gs["A_x"], "grid"
+            print(f"   A_x 格阵口径 L={gs['L']:.0f}px（{gs['n_frame']} 计分帧）"
+                  f"→ {gs['A_x']:.3f}（source 优先级：格阵>物理>晶格）")
         # 跟踪时窗用 score 覆盖段（S3 同源，覆盖整场）；stage4 帧是稀疏标定
         # 证据点，拿它们聚段会把比赛时窗打碎成 10 段、轨迹无法成轨（实证）。
         ivs = score_intervals(s)

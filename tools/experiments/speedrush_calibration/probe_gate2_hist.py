@@ -139,7 +139,7 @@ def get_cal(s: str, race: list[dict]) -> dict | None:
     ——Gate 1 连带定论：晶格锚在真帧被边线/护栏污染、跨场差达 5 倍
     （0.413~2.049），用它当刻度会把 α 估计污染成刻度噪声；物理口径跨场
     稳定（CV≈1.8%）。仅物理不可用时退回晶格。"""
-    from probe_gate1_invariance import (ax_physical, session_calib)
+    from probe_gate1_invariance import (ax_physical, grid_A_x, session_calib)
     g1 = CACHE / "gate1.json"
     if g1.exists() and s in json.loads(g1.read_text(encoding="utf-8"))["sessions"]:
         cal = json.loads(g1.read_text(encoding="utf-8"))["sessions"][s]["cal"]
@@ -148,7 +148,15 @@ def get_cal(s: str, race: list[dict]) -> dict | None:
         if not cal:
             return None
     phys = ax_physical(s, race, cal["vpx"], cal["y_h"])
-    cal["A_x_used"] = phys["A_x_phys"] if phys else cal["A_x"]
+    gs = grid_A_x(s, cal["y_h"])
+    if gs:
+        cal["A_x_used"], cal["ax_source"] = gs["A_x"], "grid"
+    elif phys:
+        cal["A_x_used"] = phys["A_x_phys"]
+        cal["ax_source"] = "physical"
+    else:
+        cal["A_x_used"] = cal["A_x"]
+        cal["ax_source"] = "lattice"
     return cal
 
 
@@ -485,6 +493,183 @@ def audit_spacing(sessions: list[str], stride: int = 2) -> None:
                                              encoding="utf-8")
 
 
+# ---------- 全局车道格阵 L 估计（维护者裁定 2026-09-19 冻结版） ----------
+# 假设类批准：等距车道周期 L 跨观测联合恢复；φ_f 为逐帧 nuisance 相位——
+# 不设全局 φ（弯道/航向变化会让同一物理边界的参考行位置逐帧漂移），不预设
+# 左右对称（边界 ∈ φ_f+(k+1/2)·L 半整数格，k 整数，道路拓扑不进算法）。
+# 输入冻结：audit 同款筛帧（比赛态 + score 窗 + 变道窗剔除 + 直道门控 +
+# 跨线剔除）；帧内取**全部**合格线族（≥MIN_CLUSTER_SEGS 段、矢高≤SAG_MAX、
+# v 支持覆盖 V_REF±10px，否则外推不可信）的拟合线 u@650——只取左右最近族
+# 会把「逐帧配对」假设从输入端带回，与「缺失线/伪线/单边可见下恢复 L」的
+# 目标矛盾（几何必要性，非过闸调参）。
+# 估计规则（先写死，禁止为过闸搜索阈值）：
+#   候选 L：仅同帧线对 × m∈{1..4}（跨帧对含未知相位差，不构成 L 样本），
+#     L=|Δu|/m ∈ [350,1100]px（A_x∈[0.30,0.93] 几何合理域），1px 去重；
+#   残差阈 τ=15px：审计 B 实测 du_obs/du_fit 偏离 ±2%×~670px≈±13px 的
+#     散布底，不得再调；
+#   得分：n_obs≥2 的帧上，逐帧最优相位（t 扫 {c_i, c_i±τ} 断点集，c=u mod L；
+#     并列取内点残差和最小）下的内点率 r_f，跨帧取均值——按帧去重，碎片簇
+#     不得放大投票权；单线帧对任意 L 恒可解释，不计分；
+#   谐波破简并：argmax 只会落在真值的某个约分数 L/n 上（L/n 格 ⊇ L 格，
+#     得分随格细化单调不减）；在 L_top 的整数倍栈 m·L_top（m≤6）上取
+#     **最后一个**得分落差 ≤TIE 的倍数。TIE=0.05 两侧有余量：过走风险=
+#     2L 格上相邻边界对内点率 ≤0.5（落差 ≥0.15）；欠走风险=细格伪线意外
+#     内点膨胀 ≈2τ/L·n_伪/n_obs ≈ 0.01~0.03/帧；
+#   细化：L* 下同帧双内点对，m̂=round(|Δu|/L*)∈[1,6] 且 ||Δu|/m̂−L*|≤2τ，
+#     L_final=中位。
+# 输出：A_x = (V_REF − y_h)/L（与 ax_physical 同一源公式，修 source 不修
+#   output），source 优先级格阵 > 物理 > 晶格；668px 人工配对只做事后审计
+#   锚，不参与拟合、不参与参数选择、不参与阈值确定。
+GLOBAL_L_BAND = (350.0, 1100.0)
+GLOBAL_L_TAU = 15.0
+GLOBAL_L_TIE = 0.05
+GLOBAL_L_MS = (1, 2, 3, 4)
+GLOBAL_L_MWALK = 6
+V_SUP_MARGIN = 10.0
+
+
+def _frame_u650(fams) -> list[float]:
+    """帧内全部合格线族的拟合 u@650（v 支持须覆盖 V_REF±10px）。"""
+    out = []
+    for _, pts, nseg in fams:
+        if nseg < MIN_CLUSTER_SEGS or sagitta(pts) > SAG_MAX:
+            continue
+        if pts[:, 1].min() > V_REF - V_SUP_MARGIN \
+                or pts[:, 1].max() < V_REF + V_SUP_MARGIN:
+            continue
+        a, b = np.polyfit(pts[:, 1], pts[:, 0], 1)
+        u = float(a * V_REF + b)
+        if 0 < u < 1280:
+            out.append(u)
+    return out
+
+
+def _frame_fit(us: list[float], L: float) -> tuple[int, np.ndarray]:
+    """帧内最优相位 →（内点数, 内点掩码）。t 只扫 c_i±τ 断点集即完备。"""
+    c = np.mod(us, L)
+    tc = np.unique(np.round(np.r_[c, c - GLOBAL_L_TAU, c + GLOBAL_L_TAU] % L, 3))
+    best = (0, None, float("inf"))
+    for t in tc:
+        d = np.abs(c - t)
+        d = np.minimum(d, L - d)
+        mk = d <= GLOBAL_L_TAU
+        n_in, s = int(mk.sum()), float(d[mk].sum())
+        if n_in > best[0] or (n_in == best[0] and s < best[2]):
+            best = (n_in, mk, s)
+    return best[0], best[1]
+
+
+def _grid_score(frames_us: list[list[float]], L: float) -> float:
+    """按帧去重的格一致性得分：n_obs≥2 帧的内点率均值。"""
+    r = [_frame_fit(us, L)[0] / len(us) for us in frames_us if len(us) >= 2]
+    return float(np.mean(r)) if r else 0.0
+
+
+def global_L(sessions: list[str], stride: int = 2) -> None:
+    base = load_base()
+    if not base:
+        print("无冻结基准——先跑 probe_gate0_vp --freeze-base")
+        sys.exit(1)
+    report = {}
+    for s in sessions:
+        t0 = time.perf_counter()
+        rows, _ = analyze_series(s, stride)
+        rows = staged_filter(rows, base["base"], score_intervals(s))
+        race = [r for r in rows if r["stage"] == 4]
+        if len(race) < 15:
+            print(f"== {s}: 比赛态帧 {len(race)} 不足，跳过")
+            continue
+        ivs = score_intervals(s) or [(race[0]["ts"], race[-1]["ts"])]
+        lc = lane_change_times(s)
+        mask = straight_mask(s, rows)
+        sess = DEMOS / s
+        frames_us: list[list[float]] = []
+        for i, r in enumerate(rows):
+            if not (any(a <= r["ts"] <= b for a, b in ivs)
+                    and not any(r["ts"] >= t - LANE_CHANGE_PRE
+                                and r["ts"] <= t + LANE_CHANGE_POST
+                                for t in lc)):
+                continue
+            if not mask[i]:
+                continue
+            rgb = np.array(Image.open(sess / "frames" / r["file"]).convert("RGB"))
+            fams = line_families(rgb)
+            if any(abs(f[0] - SCREEN_CX) < STRADDLE_PX for f in fams):
+                continue
+            us = _frame_u650(fams)
+            if us:
+                frames_us.append(us)
+        n2 = sum(len(us) >= 2 for us in frames_us)
+        print(f"== {s}: 格阵帧 {len(frames_us)}（≥2 线 {n2}）", flush=True)
+        if n2 < 10:
+            print("   计分帧不足，跳过")
+            continue
+        cand = set()
+        for us in frames_us:
+            for a in range(len(us)):
+                for b2 in range(a + 1, len(us)):
+                    for m in GLOBAL_L_MS:
+                        L = abs(us[b2] - us[a]) / m
+                        if GLOBAL_L_BAND[0] <= L <= GLOBAL_L_BAND[1]:
+                            cand.add(round(L))
+        if not cand:
+            print("   无候选 L，跳过")
+            continue
+        scored = [(_grid_score(frames_us, float(L)), float(L))
+                  for L in sorted(cand)]
+        s_top, L_top = max(scored)
+        L_star, m_walk = L_top, 1
+        for m in range(2, GLOBAL_L_MWALK + 1):
+            Lm = L_top * m
+            if Lm > GLOBAL_L_BAND[1]:
+                break
+            if _grid_score(frames_us, Lm) >= s_top - GLOBAL_L_TIE:
+                L_star, m_walk = Lm, m
+        # 细化：同帧双内点对
+        pairs = []
+        for us in frames_us:
+            if len(us) < 2:
+                continue
+            _, mk = _frame_fit(us, L_star)
+            iu = [u for u, k in zip(us, mk) if k]
+            for a in range(len(iu)):
+                for b2 in range(a + 1, len(iu)):
+                    du = abs(iu[b2] - iu[a])
+                    mh = round(du / L_star)
+                    if 1 <= mh <= GLOBAL_L_MWALK \
+                            and abs(du / mh - L_star) <= 2 * GLOBAL_L_TAU:
+                        pairs.append(du / mh)
+        L_final = float(np.median(pairs)) if pairs else L_star
+        harm = {f"{k}": round(_grid_score(frames_us, L_final * k), 3)
+                for k in (0.5, 1.0, 1.5, 2.0)}
+        rec = {"n_frame": len(frames_us), "n_frame_scored": n2,
+               "n_obs_med": float(np.median([len(us) for us in frames_us])),
+               "L_top": round(L_top, 1), "score_top": round(s_top, 3),
+               "m_walk": m_walk, "L_star": round(L_star, 1),
+               "n_pairs": len(pairs),
+               "L_final": round(L_final, 1),
+               "L_iqr": [round(float(np.percentile(pairs, q)), 1)
+                         for q in (25, 75)] if pairs else None,
+               "harmonic_score": harm,
+               "anchor_668_ratio": round(L_final / 668.0, 4),
+               "sec": round(time.perf_counter() - t0, 1)}
+        print(f"   L_top={L_top:.0f}(score {s_top:.3f}) → 栈上 m={m_walk} "
+              f"L*={L_star:.0f} → 细化 L={L_final:.1f}"
+              f"（n={len(pairs)}，IQR {rec['L_iqr']}）")
+        print(f"   谐波审计 score@L{{/2,·1,·1.5,·2}}={harm}  "
+              f"668 锚比 {rec['anchor_668_ratio']:.3f}（事后审计，不入拟合）"
+              f"  [{rec['sec']}s]")
+        report[s] = rec
+    if report:
+        Ls = [r["L_final"] for r in report.values()]
+        print(f"\n== 跨场 L：{[round(x) for x in Ls]}  中位 {np.median(Ls):.1f}"
+              f"  CV {np.std(Ls) / np.mean(Ls):.1%}")
+    (CACHE / "gate2_globalL.json").write_text(json.dumps(report,
+                                                         ensure_ascii=False),
+                                              encoding="utf-8")
+    print(f"缓存 → {CACHE / 'gate2_globalL.json'}")
+
+
 def main(sessions: list[str], stride: int = 2) -> None:
     base = load_base()
     if not base:
@@ -630,8 +815,13 @@ if __name__ == "__main__":
                     help="正式口径：几何定尺度 + AI 轨交叉验证（A_x 冻结）")
     ap.add_argument("--audit", action="store_true",
                     help="仪器审计：ax_physical 与 s_med 的 9% 分歧定位（不动参数）")
+    ap.add_argument("--globalL", action="store_true",
+                    help="全局车道格阵 L 估计（维护者裁定冻结版：φ_f 逐帧、"
+                         "m∈1..4 枚举、按帧去重；输出 A_x=(V_REF−y_h)/L 新 source）")
     args = ap.parse_args()
-    if args.audit:
+    if args.globalL:
+        global_L(args.sessions)
+    elif args.audit:
         audit_spacing(args.sessions)
     elif args.validate:
         validate(args.sessions)
