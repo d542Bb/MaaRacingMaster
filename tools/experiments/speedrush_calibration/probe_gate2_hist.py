@@ -125,156 +125,149 @@ def straight_mask(sess_name: str, rows: list[dict]) -> np.ndarray:
     return np.array(mask)
 
 
+def session_pipeline(s: str, stride: int, base: dict, verbose: bool = True):
+    """单场：筛帧→场级标定→直道门控→直道轨拟合→直道接地点。返回数据 dict。"""
+    rows, _ = analyze_series(s, stride)
+    rows = staged_filter(rows, base["base"], score_intervals(s))
+    race = [r for r in rows if r["stage"] == 4]
+    if len(race) < 15:
+        if verbose:
+            print(f"== {s}: 比赛态帧不足，跳过")
+        return None
+    g1 = CACHE / "gate1.json"
+    if g1.exists() and s in json.loads(g1.read_text(encoding="utf-8"))["sessions"]:
+        cal = json.loads(g1.read_text(encoding="utf-8"))["sessions"][s]["cal"]
+    else:
+        from probe_gate1_invariance import (ax_physical, session_calib)
+        cal = session_calib(s, race)
+        if not cal:
+            if verbose:
+                print(f"== {s}: 场级标定失败，跳过")
+            return None
+        # 刻度源 = 物理口径（近端截距间距）优先——Gate 1 连带定论：晶格锚在
+        # 真帧被边线/护栏污染、跨场差达 5 倍（0.413~2.049），用它当刻度会把
+        # α 估计污染成刻度噪声（第二轮交叉验证实证）；物理口径四场
+        # 0.563/0.560/0.580/0.574，CV≈1.8%。仅物理不可用时退回晶格。
+        phys = ax_physical(s, race, cal["vpx"], cal["y_h"])
+        cal["A_x_used"] = phys["A_x_phys"] if phys else cal["A_x"]
+        if verbose:
+            print(f"   场级标定：VP=({cal['vpx']:.1f},{cal['y_h']:.1f}) "
+                  f"A_x={cal['A_x_used']:.3f}")
+    ivs = score_intervals(s)
+    if not ivs:   # 非 trick 场无 score 缓存：用 stage4 帧时域聚段回退
+        tss = sorted(r["ts"] for r in race)
+        ivs, a = [], tss[0]
+        for g, t in zip(np.diff(tss), tss[1:]):
+            if g > 1.0:
+                ivs.append((a, t))
+                a = t
+        ivs.append((a, tss[-1]))
+    lc = lane_change_times(s)
+    mask = straight_mask(s, rows)
+    good = np.array([m and not any(r["ts"] >= t - LANE_CHANGE_PRE
+                                   and r["ts"] <= t + LANE_CHANGE_POST
+                                   for t in lc)
+                     for m, r in zip(mask, rows)])
+    if verbose:
+        print(f"== {s}: 直道帧 {mask.mean():.0%}（{mask.sum()}/{len(mask)}），"
+              f"直道∧非变道 {good.mean():.0%}")
+    dets = json.loads((TRICK_CACHE / f"dets_{s}.json").read_text(encoding="utf-8"))
+    t_straight = sorted(r["ts"] for r, g in zip(rows, good) if g)
+
+    def near_straight(ts: float) -> bool:
+        # ±0.7s：直道帧在时间上连续（矢高是场景量，相邻直道帧之间不会
+        # 突然变弯），0.35s 覆盖出现空洞 → 轨被切碎（首跑实证 0 条过门槛）
+        i = np.searchsorted(t_straight, ts)
+        lo = t_straight[i - 1] if i > 0 else -1e9
+        hi = t_straight[i] if i < len(t_straight) else 1e9
+        return min(ts - lo, hi - ts) <= 0.7
+    import probe_gate1_invariance as g1m
+    g1m.TRACK_MIN_OBS = 8   # 非 trick 场车流稀（最长轨 31 观测），24 门槛不适用
+    tracks = build_tracks(dets, ivs, lc, cal)
+    ms = []
+    for t in tracks:
+        o = [x for x in t["obs"] if near_straight(x["ts"])]
+        if len(o) < 12:
+            continue
+        m = track_metrics(dict(t, obs=o))
+        if m["d_ratio"] < 1.3:      # 真的在接近，b 才有判除力（距离量，非 X）
+            continue
+        m["session"] = s
+        ms.append(m)
+    for m in ms:
+        o = sorted(m["obs"], key=lambda x: x["ts"])
+        d = np.array([x["d"] for x in o])
+        X = np.array([x["X"] for x in o])
+        A = np.stack([np.ones_like(d), 1.0 / d, d], 1)
+        (a, b, c), *_ = np.linalg.lstsq(A, X, rcond=None)
+        r = X - A @ np.array([a, b, c])
+        m["fit"] = {"id": m["id"], "n": len(o), "a": float(a), "b": float(b),
+                    "c": float(c), "rms": float(np.sqrt(np.mean(r ** 2))),
+                    "drift": m["drift"]}
+    c_ts, c_val = flanking_centers(s, rows, ivs, cal, lc)
+    xs_pt = []
+    for f in dets:
+        if not any(a <= f["ts"] <= b for a, b in ivs) or not near_straight(f["ts"]):
+            continue
+        if any(f["ts"] >= t - LANE_CHANGE_PRE and f["ts"] <= t + LANE_CHANGE_POST
+               for t in lc):
+            continue
+        for c in f["cars"]:
+            if c[0] != 1:
+                continue
+            u, v = float(c[2]), float(c[3])
+            if v - cal["y_h"] < 10 or v > 690:
+                continue
+            xs_pt.append((u, v, f["ts"]))
+    return {"s": s, "cal": cal, "ms": ms, "xs_pt": xs_pt,
+            "c_ts": c_ts, "c_val": c_val, "straight_frac": float(mask.mean())}
+
+
 def main(sessions: list[str], stride: int = 2) -> None:
     base = load_base()
     if not base:
         print("无冻结基准——先跑 probe_gate0_vp --freeze-base")
         sys.exit(1)
-    all_b, all_a, report = [], [], {}
+    all_a, report = [], {}
     for s in sessions:
-        rows, _ = analyze_series(s, stride)
-        rows = staged_filter(rows, base["base"], score_intervals(s))
-        race = [r for r in rows if r["stage"] == 4]
-        if len(race) < 15:
-            print(f"== {s}: 比赛态帧不足，跳过")
+        d = session_pipeline(s, stride, base)
+        if not d:
             continue
-        g1 = CACHE / "gate1.json"
-        if g1.exists() and s in json.loads(g1.read_text(encoding="utf-8"))["sessions"]:
-            cal = json.loads(g1.read_text(encoding="utf-8"))["sessions"][s]["cal"]
-        else:
-            from probe_gate1_invariance import (ax_physical, session_calib)
-            cal = session_calib(s, race)
-            if not cal:
-                print(f"== {s}: 场级标定失败，跳过")
-                continue
-            phys = ax_physical(s, race, cal["vpx"], cal["y_h"])
-            if phys and abs(cal["A_x"] - phys["A_x_phys"]) / phys["A_x_phys"] > 0.25:
-                cal["A_x_used"] = phys["A_x_phys"]
-            else:
-                cal["A_x_used"] = cal["A_x"]
-            print(f"   场级标定：VP=({cal['vpx']:.1f},{cal['y_h']:.1f}) "
-                  f"A_x={cal['A_x_used']:.3f}")
-        ivs = score_intervals(s)
-        if not ivs:   # 非 trick 场无 score 缓存：用 stage4 帧时域聚段回退
-            tss = sorted(r["ts"] for r in race)
-            ivs, a = [], tss[0]
-            for g, t in zip(np.diff(tss), tss[1:]):
-                if g > 1.0:
-                    ivs.append((a, t))
-                    a = t
-            ivs.append((a, tss[-1]))
-        lc = lane_change_times(s)
-        mask = straight_mask(s, rows)
-        # 直道且非变道窗
-        good = np.array([m and not any(r["ts"] >= t - LANE_CHANGE_PRE
-                                       and r["ts"] <= t + LANE_CHANGE_POST
-                                       for t in lc)
-                         for m, r in zip(mask, rows)])
-        print(f"== {s}: 直道帧 {mask.mean():.0%}（{mask.sum()}/{len(mask)}），"
-              f"直道∧非变道 {good.mean():.0%}")
-        # --- 复验一：Gate 1b 深度项（直道帧重建轨） ---
-        # 直道帧稀疏（stride2 网格上 ~5% 全场/35% 比赛段），容差 ±0.35s 把
-        # 相邻 dets 帧都挂上最近直道判定；轨门槛降到 12 观测（直道场内连续段）。
-        dets = json.loads((TRICK_CACHE / f"dets_{s}.json").read_text(encoding="utf-8"))
-        t_straight = sorted(r["ts"] for r, g in zip(rows, good) if g)
-
-        def near_straight(ts: float) -> bool:
-            # ±0.7s：直道帧在时间上连续（矢高是场景量，相邻直道帧之间不会
-            # 突然变弯），0.35s 覆盖出现空洞 → 轨被切碎（首跑实证 0 条过门槛）
-            i = np.searchsorted(t_straight, ts)
-            lo = t_straight[i - 1] if i > 0 else -1e9
-            hi = t_straight[i] if i < len(t_straight) else 1e9
-            return min(ts - lo, hi - ts) <= 0.7
-        ivs_str = [(a, b) for a, b in ivs]
-        import probe_gate1_invariance as g1
-        g1.TRACK_MIN_OBS = 8   # 非 trick 场车流稀（最长轨 31 观测），24 门槛不适用
-        tracks = build_tracks(dets, ivs_str, lc, cal)
-        ms = []
-        for t in tracks:
-            o = [x for x in t["obs"] if near_straight(x["ts"])]
-            if len(o) < 12:
-                continue
-            t2 = dict(t, obs=o)
-            m = track_metrics(t2)
-            if m["d_ratio"] < 1.3:      # 真的在接近，b 才有判除力（距离量，非 X）
-                continue
-            m["session"] = s
-            ms.append(m)
-        bs = []
-        for m in ms:
-            o = sorted(m["obs"], key=lambda x: x["ts"])
-            d = np.array([x["d"] for x in o])
-            X = np.array([x["X"] for x in o])
-            A = np.stack([np.ones_like(d), 1.0 / d, d], 1)
-            (a, b, c), *_ = np.linalg.lstsq(A, X, rcond=None)
-            r = X - A @ np.array([a, b, c])
-            bs.append((b, a))
-            m_fit = {"id": m["id"], "n": len(o), "a": float(a), "b": float(b),
-                     "c": float(c), "rms": float(np.sqrt(np.mean(r ** 2))),
-                     "drift": m["drift"]}
-            m["fit"] = m_fit
-        if bs:
-            b_arr = np.array([x[0] for x in bs])
-            neg = int((b_arr < 0).sum())
-            print(f"   复验一（直道轨 {len(bs)} 条）：b(X~1/d) 负号 {neg}/{len(bs)}，"
-                  f"中位 {np.median(b_arr):+.1f} 道·px（曲率假说预期：坍缩向 0）"
-                  f"；漂移中位 {np.median([m['drift'] for m in ms]):.3f} 道")
+        ms = d["ms"]
+        if ms:
+            b_arr = np.array([m["fit"]["b"] for m in ms])
+            print(f"   复验一（直道轨 {len(ms)} 条）：b(X~1/d) 负号 "
+                  f"{int((b_arr < 0).sum())}/{len(ms)}，中位 {np.median(b_arr):+.1f} 道·px"
+                  f"（曲率假说预期：坍缩向 0）；漂移中位 "
+                  f"{np.median([m['drift'] for m in ms]):.3f} 道")
             from probe_gate1_invariance import attribution
-            per = [{"id": m["id"], "n": m["n"], "a": m["fit"]["a"],
-                    "b": m["fit"]["b"], "c": m["fit"]["c"],
-                    "rms": m["fit"]["rms"], "drift": m["drift"]} for m in ms]
+            per = [{"a": m["fit"]["a"], "b": m["fit"]["b"],
+                    "c": m["fit"]["c"], "rms": m["fit"]["rms"]} for m in ms]
             at = attribution(per)
             if at.get("lane_reg"):
                 lr = at["lane_reg"]
                 print(f"     直道 lane 回归：零点偏 {lr['zero_bias']:+.3f} 道  "
                       f"尺度 α = {lr['scale_alpha']:.3f}  max|bias| "
                       f"{lr['max_abs_bias']:.2f} 道（n={lr['n']}）")
-            if at.get("dz_over_az") is not None:
-                print(f"     直道 Δz/A_z = {at['dz_over_az']:+.4f}")
-            all_b += [(s, *x) for x in bs]
-            all_a += [(s, m["fit"]["a"], m["fit"]["b"], m["fit"]["rms"])
-                      for m in ms]
-        # --- 复验二：Gate 2 histogram（直道帧接地点 X） ---
-        c_ts, c_val = flanking_centers(s, rows, ivs, cal, lc)
-        xs, xs_cm = [], []
-        for f in dets:
-            if not any(a <= f["ts"] <= b for a, b in ivs_str):
-                continue
-            if not near_straight(f["ts"]):
-                continue
-            if any(f["ts"] >= t - LANE_CHANGE_PRE and f["ts"] <= t + LANE_CHANGE_POST
-                   for t in lc):
-                continue
-            for c in f["cars"]:
-                if c[0] != 1:
-                    continue
-                u, v = float(c[2]), float(c[3])
-                d = v - cal["y_h"]
-                if d < 10 or v > 690:
-                    continue
-                X = cal["A_x_used"] * (u - cal["vpx"]) / d
-                xs.append(X)
-                if len(c_val) >= 3:
-                    cf = np.interp(f["ts"], c_ts, c_val - np.median(c_val))
-                    xs_cm.append(X - cf)
+            all_a += per
+        cal = d["cal"]
+        xs = [cal["A_x_used"] * (u - cal["vpx"]) / (v - cal["y_h"])
+              for u, v, _ in d["xs_pt"]]
         rep = hist_report(xs, "raw")
-        rep2 = hist_report(xs_cm, "c_f 消偏") if len(c_val) >= 3 else None
         print(f"   复验二（Gate 2，直道接地点 n={len(xs)}）：{rep}")
-        if rep2:
-            print(f"     c_f 消偏版（n={len(xs_cm)}）：{rep2}")
-        report[s] = {"straight_frac": float(mask.mean()),
-                     "tracks": [m.get("fit") for m in ms],
-                     "hist_raw": rep, "hist_cm": rep2}
+        report[s] = {"straight_frac": d["straight_frac"],
+                     "tracks": [m["fit"] for m in ms], "hist_raw": rep}
     (CACHE / "gate2.json").write_text(json.dumps(report, ensure_ascii=False),
                                        encoding="utf-8")
-    if len(all_b) >= 5:
-        b_arr = np.array([x[1] for x in all_b])
-        print(f"\n== 跨场复验一：直道轨 {len(all_b)} 条，b 负号 {int((b_arr < 0).sum())}"
-              f"/{len(all_b)}，中位 {np.median(b_arr):+.1f} 道·px")
-        print(f"   判读：|b| 中位较 Gate 1 全样本（−41）{'坍缩' if abs(np.median(b_arr)) < 20 else '未坍缩'}"
-              f" → 曲率假说{'支持' if abs(np.median(b_arr)) < 20 else '被否，回到零点/y_h/接地点之争'}")
+    if len(all_a) >= 5:
+        b_arr = np.array([p["b"] for p in all_a])
         from probe_gate1_invariance import attribution
-        pooled = attribution([{"a": a, "b": b, "rms": r} for _, a, b, r in all_a])
+        print(f"\n== 跨场复验一：直道轨 {len(all_a)} 条，b 负号 "
+              f"{int((b_arr < 0).sum())}/{len(all_a)}，中位 {np.median(b_arr):+.1f} 道·px")
+        print(f"   判读：|b| 中位较 Gate 1 全样本（−41）"
+              f"{'坍缩' if abs(np.median(b_arr)) < 20 else '未坍缩'}"
+              f" → 曲率假说{'支持' if abs(np.median(b_arr)) < 20 else '被否，回到零点/y_h/接地点之争'}")
+        pooled = attribution(all_a)
         if pooled.get("lane_reg"):
             lr = pooled["lane_reg"]
             print(f"   跨场直道 lane 回归：零点偏 {lr['zero_bias']:+.3f} 道  "
@@ -282,6 +275,74 @@ def main(sessions: list[str], stride: int = 2) -> None:
                   f"{lr['max_abs_bias']:.2f} 道（n={lr['n']}）")
 
 
+# ---------- 重定标 + 留场验证（维护者设计 2026-09-19） ----------
+# 判据先写死：留场（未参与 α 估计）上 lane 回归 α_val ∈ [0.95,1.05] 且
+# |zero_bias_val| < 0.25 道 → Gate 2 重定标通过；histogram 峰距如实报告为
+# 辅助材料。标定侧与验证侧都冻结 vpx/y_h/零点——只允许 A_x 一个参数动，
+# 防止「拿同一批数据修参数再拿同一批数据验参数」。
+
+def a_centered(m: dict, d: dict) -> float:
+    """轨 a 消自车横向偏移：减去该轨时间窗内 c_f（夹车虚线中心，像素共模
+    信号）的中位。lane 回归前提 = 自车在道中央；自车换道未计分则 banner 不
+    剔除（213104 实证：4 轨中 3 轨 a 落半道位，α 被拉至 0.754——非尺度错，
+    是前提破坏）。c_f 窗中位噪声 ~±0.08 道，半道位（0.5）可分。"""
+    if len(d["c_val"]) < 3:
+        return m["fit"]["a"]
+    ts = np.array([x["ts"] for x in m["obs"]])
+    return m["fit"]["a"] - float(np.median(
+        np.interp(ts, d["c_ts"], d["c_val"])))
+
+
+def rescale_holdout(calib: list[str], val: list[str], stride: int = 2) -> None:
+    base = load_base()
+    if not base:
+        print("无冻结基准——先跑 probe_gate0_vp --freeze-base")
+        sys.exit(1)
+    from probe_gate1_invariance import attribution
+    per_c = []
+    for s in calib:
+        d = session_pipeline(s, stride, base)
+        if not d:
+            return
+        per_c += [{"a": a_centered(m, d), "b": m["fit"]["b"],
+                   "c": m["fit"]["c"], "rms": m["fit"]["rms"]} for m in d["ms"]]
+    at = attribution(per_c)
+    if not at.get("lane_reg"):
+        print("标定侧直道轨不足，无法定 α")
+        return
+    alpha = at["lane_reg"]["scale_alpha"]
+    print(f"\n== 标定侧（{len(per_c)} 条直道轨，场 {calib}）：α = {alpha:.3f}"
+          f" → A_x ← A_x/α（×{1 / alpha:.3f}）；标定侧零点偏 "
+          f"{at['lane_reg']['zero_bias']:+.3f} 道")
+    for s in val:
+        d = session_pipeline(s, stride, base)
+        if not d:
+            continue
+        cal = d["cal"]
+        r = 1.0 / alpha                      # X_new = X_old · r（线性缩放）
+        per_v = [{"a": a_centered(m, d) * r, "b": m["fit"]["b"] * r,
+                  "c": m["fit"]["c"] * r, "rms": m["fit"]["rms"] * r}
+                 for m in d["ms"]]
+        atv = attribution(per_v)
+        xs = []
+        for u, v, t in d["xs_pt"]:
+            x = cal["A_x_used"] * r * (u - cal["vpx"]) / (v - cal["y_h"])
+            if len(d["c_val"]) >= 3:
+                x -= float(np.interp(t, d["c_ts"], d["c_val"] - np.median(d["c_val"])))
+            xs.append(x)
+        rep = hist_report(xs, "val")
+        lr = atv.get("lane_reg")
+        if lr:
+            ok = (0.95 <= lr["scale_alpha"] <= 1.05
+                  and abs(lr["zero_bias"]) < 0.25)
+            print(f"   留场 {s}（冻结 vpx/y_h，A_x {cal['A_x_used']:.3f}→"
+                  f"{cal['A_x_used'] * r:.3f}，n={lr['n']}）：α_val = "
+                  f"{lr['scale_alpha']:.3f}  零点偏 {lr['zero_bias']:+.3f} 道  "
+                  f"max|bias| {lr['max_abs_bias']:.2f} 道；hist 峰 "
+                  f"{rep['peaks']} 距 {rep['peak_gaps']} → "
+                  f"{'通过' if ok else '不通过'}")
+        else:
+            print(f"   留场 {s}：直道轨不足（n<3），无法回归")
 def hist_report(xs: list[float], tag: str) -> dict:
     """直方图多峰 + 峰距（判据：峰距≈1 车道宽）。"""
     if len(xs) < 30:
@@ -298,6 +359,13 @@ def hist_report(xs: list[float], tag: str) -> dict:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("sessions", nargs="+")
+    ap.add_argument("sessions", nargs="*", default=[])
+    ap.add_argument("--rescale", nargs="+", metavar="CALIB",
+                    help="标定侧场次（估 α、修 A_x）")
+    ap.add_argument("--holdout", nargs="+", metavar="VAL",
+                    help="留场验证场次（冻结参数，只验不改）")
     args = ap.parse_args()
-    main(args.sessions)
+    if args.rescale:
+        rescale_holdout(args.rescale, args.holdout or args.sessions)
+    else:
+        main(args.sessions)
