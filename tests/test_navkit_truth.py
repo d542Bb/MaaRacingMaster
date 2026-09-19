@@ -22,11 +22,21 @@ def _load(p: Path) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+TREASURE_DIR = REPO / "maaracing_master" / "plugins" / "treasure"
+
+
 @pytest.fixture(scope="module")
-def truth():
-    graph, _origin = ct.load_graph()
-    policy = _load(ct.POLICY_TRUTH)
-    return graph, policy
+def origin_graph():
+    """合并图 + origin（节点 → 来源文件）：多模块真源的加载口径与 CI 闸门一致。"""
+    return ct.load_graph()
+
+
+@pytest.fixture(scope="module")
+def truth(origin_graph):
+    """treasure 子图 + treasure policy：本文件绝大多数锁是 treasure 域契约，
+    按插件圈定后模块增删不影响这些断言的语义（合并图级断言见 origin_graph 系）。"""
+    graph, origin = origin_graph
+    return ct.scope_by_plugin(graph, origin, TREASURE_DIR), _load(ct.module_policy_path("treasure"))
 
 
 def test_graph_clean_and_shaped(truth):
@@ -344,20 +354,23 @@ def test_entry_chain_walk(truth):
     assert cur == "treasure.鉴宝大厅(选择场次).dwell"
 
 
-def test_namespace_partition(truth):
+def test_namespace_partition(origin_graph):
     """真源归位见证（2026-09-10）：大厅入口链与页面锚点属**模块知识**，全部住
     plugin；core 侧无 pipeline 真源（尚无跨模块共用链）。
 
     协议层节点名全城唯一、没有命名空间 ⇒ "core/plugin 分离"的可见形态只能是
     引用方向单向 + 命名空间归属诚实，而不是文件摆放位置。
     """
-    graph, origin = ct.load_graph()
+    graph, origin = origin_graph
     assert origin, "pipeline 真源发现为空（加载路径漂移）"
-    assert all(n.startswith("treasure.") for n in graph), \
-        [n for n in graph if not n.startswith("treasure.")]
     core_nodes = [n for n, f in origin.items() if ct.CORE_PIPELINE_DIR in f.parents]
     assert core_nodes == [], f"core 真源不得承载模块知识: {core_nodes}"
-    assert {f.name for f in origin.values()} == {"treasure.json", "treasure.entry.json"}
+    # 每份插件真源里的节点都落在其所在插件目录（= 模块命名空间）名下——
+    # 节点前缀与文件归属一致，跨模块"寄居"声明当场现形
+    for n, f in origin.items():
+        assert ct.CORE_PIPELINE_DIR not in f.parents, n
+        assert n.split(".", 1)[0] == f.parents[2].name, \
+            f"{n}: 节点前缀与来源插件 {f.parents[2].name} 不一致"
 
 
 def test_root_dollar_keys_never_become_nodes():
@@ -394,7 +407,7 @@ def test_custom_recognitions_covers_all_protocol_shapes(node):
     assert {t for _n, p in got for t in p.get("templates") or []} & {"a.png", "b.png"}
 
 
-def test_truth_source_normalized_to_v2(truth):
+def test_truth_source_normalized_to_v2(origin_graph):
     """项目规范形态 = **v2 归一**（框架内部规范形 + MPE 与官方 PipelineDumper 原生产）。
 
     v1 平铺在协议上仍合法（同一解析路径、新字段两边都生效），但仓库统一 v2：MPE 存盘
@@ -422,7 +435,7 @@ def test_truth_source_normalized_to_v2(truth):
                         check(sub, f"{where}.{key}.{branch}[{i}]")
         assert not (flat_custom & set(n)), f"{where} 残留 v1 平铺 Custom 字段"
 
-    full, _ = truth
+    full, _ = origin_graph
     for name, n in full.items():
         check(n, name)
 
@@ -432,7 +445,7 @@ def test_layering_red_line_is_live():
     fake = {"global.hall_dwell": {"next": ["treasure.foo.dwell"]},
             "treasure.foo.dwell": {}}
     fake_origin = {"global.hall_dwell": ct.CORE_PIPELINE_DIR / "core.json",
-                   "treasure.foo.dwell": ct.PLUGIN_PIPELINE_DIRS[0] / "t.json"}
+                   "treasure.foo.dwell": TREASURE_DIR / "resources" / "pipeline" / "t.json"}
     problems = ct.namespace_checks(fake, fake_origin)
     assert any("引用模块节点" in p for p in problems), f"core 点名模块节点未报: {problems}"
 
@@ -499,7 +512,10 @@ def test_builtin_input_action_is_error():
 
 
 def test_anchor_only_needs_no_route_but_needs_a_referrer():
-    """纯锚点：零路由不报「不可达/无出口」，但没人抄它就是孤儿真源。"""
+    """纯锚点：零路由不报「不可达/无出口」，但没人消费就是孤儿真源。
+
+    消费通道两种：图内按名引用；模块按节点名直驱（attach._module_driven 显式声明
+    ——图级引用分析看不见模块侧的 post_task 调用，豁免必须落在真源声明上）。"""
     anchored = {"入口": {"attach": {"_entry": True}, "next": ["公共.聊天框"]},
                 "公共.聊天框": {"attach": {"_anchor_only": True},
                                  "recognition": "DirectHit"}}
@@ -512,6 +528,14 @@ def test_anchor_only_needs_no_route_but_needs_a_referrer():
               "公共.聊天框": {"attach": {"_anchor_only": True}, "recognition": "DirectHit"}}
     errors, _ = ct.validate_graph(orphan)
     assert any("孤儿真源" in e for e in errors), errors
+
+    # 模块直驱通道：声明 _module_driven 即视为已被消费
+    driven = {"入口": {"attach": {"_entry": True}, "next": ["尾"]},
+              "尾": {"attach": {"_dwell": True}},
+              "公共.聊天框": {"attach": {"_anchor_only": True, "_module_driven": True},
+                               "recognition": "DirectHit"}}
+    errors, _ = ct.validate_graph(driven)
+    assert errors == [], errors
 
 
 def test_anchor_only_must_stay_route_free():
@@ -590,7 +614,7 @@ def test_cross_truth_gates_pass(truth):
     assert errors == []
     assert ct.cross_checks(full, policy) == []
     from maaracing_master.core.navkit.v4_source import load_nav_source
-    nav = load_nav_source(ct.POLICY_TRUTH)
+    nav = load_nav_source(ct.module_policy_path("treasure"))
     assert len(nav.plan.spec) == 65
     assert nav.plan.detect_anchors and len(nav.policies.rules) == 24
     # 待机的判定信号必须进 global_anchors：否则只有已判为待机时才扫它，而阶段又由它定
@@ -613,10 +637,13 @@ def test_schema_files_present_and_valid():
     assert "MaaRM_Policy" in json.dumps(action, ensure_ascii=False)
 
 
-def test_mra_template_nodes_match_schema_contract(truth):
-    """MaaRM_Template 参数面契约（v1 平铺 / v2 recognition.param 嵌套 / Or 分支全验）。"""
-    full, policy = truth
-    for name, n in {**full, **policy["actuators"]}.items():
+def test_mra_template_nodes_match_schema_contract(origin_graph, truth):
+    """MaaRM_Template 参数面契约（v1 平铺 / v2 recognition.param 嵌套 / Or 分支全验）。
+
+    跑在合并图上：全部模块的图侧节点 + treasure actuators（发现式扩围，新模块自动入锁）。"""
+    graph, _origin = origin_graph
+    _, policy = truth
+    for name, n in {**graph, **policy["actuators"]}.items():
         for reco_name, p in ct.custom_recognitions(n):
             assert reco_name == "MaaRM_Template", (name, reco_name)
             assert p.get("mode") in ("template", "point"), name

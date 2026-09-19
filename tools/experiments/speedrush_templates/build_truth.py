@@ -8,7 +8,9 @@
     的决策循环；speedrush 的 UI 流程是**线性**的，不需要决策引擎，因此真源只由两类
     节点构成：
       - 动作节点：识别（MaaRM_Template）+ 点击（MaaRM_Click），点完一律 next 回汇聚
-      - 纯锚点节点：`_anchor_only`，零路由，仅作页面感知规格，被汇聚节点的 Or 引用
+      - 纯锚点节点：`_anchor_only`，零路由，页面感知规格——消费通道分两种：被模块
+        代码按节点名直驱的标 `_module_driven`（真源机检承认的第二条消费通道）；
+        无人消费的不许入表（孤儿真源会被 check_truth 当场拦下）
     出口方向统一为"回到 __boot 重判"，不各自维护下一跳（符合项目"入口锚点点击后
     一律交汇聚重判"的既有纪律）。
 
@@ -71,15 +73,18 @@ ACTIONS: list[tuple[str, str, str, str]] = [
     (f"{MODULE}.点继续放弃", "speedrush_giveup_continue_btn", "giveup", "放弃确认框 → 点击继续放弃"),
 ]
 
+# 页面感知锚点（name, template, page, label）。**只收有真实消费者的条目**：
+# 消费通道 = 模块代码按节点名直驱（post_task/等待，须进 MODULE_DRIVEN 声明）或图内
+# 引用。曾有 6 个"先造出来等以后用"的锚点（商店页/回合结果页/极速狂飙tab/段位分
+# 结算页/活动页/生涯奖励入口）全仓零消费，2026-09-19 分发机检收编时按孤儿真源清除
+# ——要用时从本文件历史找回一行重新生成即可（步骤16 落地时同理）。
 ANCHORS: list[tuple[str, str, str, str]] = [
-    (f"{MODULE}.活动页锚点", "speedrush_title", "speedrush", "活动页主标题（页面感知）"),
-    (f"{MODULE}.商店页锚点", "speedrush_store_sell_title", "store", "策略商店售卖区标题（页面感知）"),
-    (f"{MODULE}.驾驶页锚点", "speedrush_drive_gear", "drive", "驾驶页 HUD 齿轮图标（页面感知）"),
-    (f"{MODULE}.回合结果页锚点", "speedrush_round_end_detail_btn", "result", "回合结果页回合详情按钮（页面感知）"),
-    (f"{MODULE}.段位分结算页锚点", "speedrush_rank_score_label", "settle", "段位分结算页段位分标签（页面感知）"),
-    (f"{MODULE}.极速狂飙tab锚点", "speedrush_badge", "speedrush", "左侧 tab 极速狂飙条目（页面感知）"),
-    (f"{MODULE}.生涯奖励入口", "speedrush_career_award", "speedrush", "活动页生涯奖励入口（步骤16 用，当前仅感知）"),
+    (f"{MODULE}.驾驶页锚点", "speedrush_drive_gear", "drive", "驾驶页 HUD 齿轮图标（页面感知，module 直驱判定是否在对局中）"),
 ]
+
+# 声明「本锚点由模块代码按节点名直驱」——图级引用分析看不见这条消费通道，
+# 真源机检（check_truth validate_graph）凭本声明豁免「孤儿真源」判定。
+MODULE_DRIVEN: frozenset[str] = frozenset({f"{MODULE}.驾驶页锚点"})
 
 
 def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
@@ -148,10 +153,13 @@ def main() -> None:
             "action": {"type": "Custom", "param": {"custom_action": "MaaRM_Click"}},
         }, tpl)
 
-    # 纯锚点节点：零路由，仅作页面感知规格
+    # 纯锚点节点：零路由，页面感知规格；模块直驱的按声明补 _module_driven
     for name, tpl, page, label in ANCHORS:
+        attach = {"_page": page, "_label": label, "_owner": MODULE, "_anchor_only": True}
+        if name in MODULE_DRIVEN:
+            attach["_module_driven"] = True
         graph[name] = _with_overrides({
-            "attach": {"_page": page, "_label": label, "_owner": MODULE, "_anchor_only": True},
+            "attach": attach,
             "recognition": recog(tpl, roi[tpl]["rect"], _threshold_for(tpl)),
             "action": {"type": "DoNothing", "param": {}},
         }, tpl)

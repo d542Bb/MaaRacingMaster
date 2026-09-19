@@ -14,7 +14,7 @@ docs/plan/archive/bid_audit_20260915/出价审计报告_20260915.md。
 
 from __future__ import annotations
 
-from strategy import (
+from maaracing_master.plugins.treasure.strategy import (
     BidContext,
     BidDecision,
     BidStrategy,

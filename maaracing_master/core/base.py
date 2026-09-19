@@ -246,6 +246,19 @@ class ActivityModule(ABC):
         """本次启动是否独占手柄（即：必须断开所有物理手柄）；默认取类属性声明。"""
         return cls.REQUIRES_GAMEPAD_EXCLUSIVE
 
+    # ---------- GUI 今日看板（可选，模块自述）----------
+    #
+    # 看板读什么表、哪些列、日界语义全部是模块业务（与 DEFAULT_MODULE_CONFIG 的
+    # "配置面由模块自述"同理）——core 只持有通用路由，不出现任何模块的 schema 字段。
+
+    @classmethod
+    def read_today_stats(cls) -> dict | None:
+        """读取本模块的今日看板数据；默认 None = 本模块无看板。
+
+        返回 {"bucket": 日界字符串, "summary": 汇总行或 None, "games": 明细列表}；
+        库不存在/读取失败由实现自行兜底为空看板，不抛错（GUI 显示空态）。"""
+        return None
+
     @property
     @abstractmethod
     def current_stage(self) -> str | None:
