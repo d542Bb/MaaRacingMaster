@@ -96,3 +96,8 @@ templates/plugin/
 无需任何配置：`scripts/release/assemble.ps1` 按 robocopy 整包复制
 `maaracing_master/` 目录，`plugins/<id>/`（含资源与模型）自动随包分发。
 `REQUIRED_ASSETS` 声明的文件缺失时，启动前会给出插件内具体路径提示。
+
+分发语义：打包时刻已过 `manifest.VALID_UNTIL` 的模块不随包分发（判定复用
+`core/module_validity`，与运行期置灰同一口径，见 `scripts/release/list_ship_excluded_modules.py`）；
+仓库树保留全部插件，源码开发与 CI 门禁不受影响。未到 `VALID_FROM` 的模块照常随包，
+由运行期按窗口置灰。
