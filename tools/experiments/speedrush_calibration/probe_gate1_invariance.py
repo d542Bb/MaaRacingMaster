@@ -256,8 +256,9 @@ def track_metrics(t: dict) -> dict:
             "drift": float(np.median(dev)), "p95_dev": float(np.percentile(dev, 95)),
             "X_med": float(np.median(X)), "d_first": d_f, "d_last": d_l,
             "d_ratio": d_l / max(d_f, 1.0),
-            "elig": (len(o) >= TRACK_MIN_OBS and ts[-1] - ts[0] >= TRACK_MIN_SPAN
-                     and d_l >= TRACK_D_RATIO * max(d_f, 1.0))}
+            "elig": bool(len(o) >= TRACK_MIN_OBS
+                         and ts[-1] - ts[0] >= TRACK_MIN_SPAN
+                         and d_l >= TRACK_D_RATIO * max(d_f, 1.0))}
 
 
 # ---------- 主仪器：框内夹车虚线间距不变性 ----------
