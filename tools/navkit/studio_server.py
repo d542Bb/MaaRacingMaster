@@ -46,9 +46,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 # ---------------- 真源定位（仓库内绝对定位，兼容从任意 cwd 启动） ----------------
+# 校准台当前服务 treasure：目标模块只在此声明一次（MODULE 由目录名派生），
+# 其余位置——actuators 的 `<模块>.` 前缀、debug 会话根——一律从这里派生，
+# 不再散写字面量；多模块化/换目标时只改本区。
 REPO = Path(__file__).resolve().parents[2]
 PACK = REPO / "maaracing_master"
 PLUGIN = PACK / "plugins" / "treasure"
+MODULE = PLUGIN.name
 RES = PLUGIN / "resources"
 POLICY_FILE = RES / "policy" / "treasure.policy.json"
 PIPELINE_DIR = RES / "pipeline"
@@ -308,7 +312,8 @@ def project_rois() -> dict:
 def find_references(name: str, policy: dict, docs: dict[str, dict]) -> list[str]:
     """列出仍引用 spec 锚点 `name` 的位置（删除前的防脱钩检查）。
 
-    两种口径都查：`guarded_by` 在 spec 侧是短名，`actuators` 侧是 `treasure.` 前缀名。
+    两种口径都查：`guarded_by` 在 spec 侧是短名，`actuators` 侧是 `<模块>.` 前缀名
+    （前缀从 PLUGIN 目录名派生，不散写字面量）。
     """
     refs: list[str] = []
     perception = policy["perception"]
@@ -326,8 +331,8 @@ def find_references(name: str, policy: dict, docs: dict[str, dict]) -> list[str]
         if anchor.get("guarded_by") == name:
             refs.append(f"perception.spec.{key}.guarded_by")
     actuators = policy.get("actuators") or {}
-    if f"treasure.{name}" in actuators:
-        refs.append(f"actuators.treasure.{name}")
+    if f"{MODULE}.{name}" in actuators:
+        refs.append(f"actuators.{MODULE}.{name}")
     return refs
 
 
@@ -871,7 +876,7 @@ def api_ocr_recognize(body: dict) -> dict:
 
 
 def api_crop_to_template(body: dict) -> dict:
-    """从盘帧裁剪写模板（服务端落盘到 `plugins/treasure/resources/image/`）。"""
+    """从盘帧裁剪写模板（服务端落盘到插件 TEMPLATE_DIR，见文件头真源定位区）。"""
     cv2 = _cv2()
     session = body.get("session")
     image = body.get("image") or body.get("name")
@@ -947,7 +952,7 @@ def api_list_templates() -> list[str]:
 
 
 # ============================================================================
-# 帧库浏览器（进程级；根 = maaracing_master.core.paths.debug_dir()/"treasure"）
+# 帧库浏览器（进程级；根 = maaracing_master.core.paths.debug_dir()/<MODULE>，模块名见文件头）
 # ============================================================================
 
 class _Browser:
@@ -962,7 +967,7 @@ class _Browser:
                 sys.path.insert(0, str(REPO))
             from maaracing_master.core.paths import debug_dir
             from tools.navkit.studio_sessions import SessionBrowser
-            self._browser = SessionBrowser(debug_dir() / "treasure")
+            self._browser = SessionBrowser(debug_dir() / MODULE)
         return self._browser
 
     def list_sessions(self) -> list[str]:
