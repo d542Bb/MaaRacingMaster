@@ -322,3 +322,70 @@ class TreasureStore:
             lines.append(f"  调试目录     : {m._session_dir}")
         for _ln in lines:
             logger.log(_ln, "INFO")
+
+
+# ---------- 今日看板读侧（GUI 今日看板数据源，模块自述契约） ----------
+# 读侧 schema 容错：新列的 ALTER 迁移由本模块（写侧）惰性建连时补，升级后存在
+# 「GUI 已启动、模块未跑过」的窗口——按 PRAGMA 实有列取交集查询，缺列按 0/None
+# 兜底，读侧永不依赖写侧启动时机，也不复制一份 DDL。
+
+# 看板读取列（白名单，兼作输出契约）：daily_summary 列名即输出键；games 为 输出键←列名。
+_SUMMARY_COLS = ("games", "win", "fail", "profit_sum", "income_sum", "highest_score",
+                 "egg_red", "egg_yellow", "egg_blue", "egg_coin", "egg_score")
+_GAMES_COLS = (("game_seq", "game_seq"), ("ts", "ts"),
+               ("auction_result", "auction_result"), ("final_price", "settle_final_price"),
+               ("total_price", "settle_total_price"), ("profit", "settle_profit"),
+               ("income", "settle_my_income"), ("egg_red", "egg_red"),
+               ("egg_yellow", "egg_yellow"), ("egg_blue", "egg_blue"),
+               ("strategy_mode", "strategy_mode"))
+
+
+def read_today_stats() -> dict:
+    """读取落盘库（data/treasure/treasure.db）今日统计数据（凌晨 5 点日界，与落盘一致）。
+
+    GUI 今日看板的路由在 core（sidecar.get_today_stats 经 ActivityModule.read_today_stats
+    分发到此处）；表结构、日界与兜底语义是本模块业务，住在插件内。
+    返回 {"bucket": 日界, "summary": daily_summary 今日行或 None, "games": 今日各场明细列表}；
+    库不存在/读取失败时 summary=None、games=[]（不抛错，前端显示空看板）。
+    """
+    from maaracing_master.core.paths import data_dir
+
+    now = datetime.now()
+    day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
+    bucket = day.isoformat()
+    db_path = data_dir() / "treasure" / "treasure.db"
+    if not db_path.exists():
+        return {"bucket": bucket, "summary": None, "games": []}
+    try:
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        try:
+            scols = {r[1] for r in conn.execute("PRAGMA table_info(daily_summary)").fetchall()}
+            sel_s = [c for c in _SUMMARY_COLS if c in scols]
+            summary = None
+            if sel_s:
+                row = conn.execute(
+                    f"SELECT {', '.join(sel_s)} FROM daily_summary WHERE bucket = ?",
+                    (bucket,),
+                ).fetchone()
+                if row is not None:
+                    got = dict(zip(sel_s, row))
+                    summary = {c: got.get(c, 0) for c in _SUMMARY_COLS}
+            gcols = {r[1] for r in conn.execute("PRAGMA table_info(games)").fetchall()}
+            pairs = [(k, c) for k, c in _GAMES_COLS if c in gcols]
+            games = []
+            if "bucket" in gcols and "game_seq" in gcols and pairs:
+                sel_g = ", ".join(c for _, c in pairs)
+                raw_rows = conn.execute(
+                    f"SELECT {sel_g} FROM games WHERE bucket = ? ORDER BY game_seq",
+                    (bucket,),
+                ).fetchall()
+                names = [c for _, c in pairs]
+                for r in raw_rows:
+                    vals = dict(zip(names, r))
+                    games.append({k: vals.get(c) for k, c in _GAMES_COLS})
+        finally:
+            conn.close()
+        return {"bucket": bucket, "summary": summary, "games": games}
+    except Exception as e:  # noqa: BLE001 —— 看板是附加功能，读失败降级为空态
+        logger.log(f"读取今日看板数据失败: {e}", "WARNING")
+        return {"bucket": bucket, "summary": None, "games": []}

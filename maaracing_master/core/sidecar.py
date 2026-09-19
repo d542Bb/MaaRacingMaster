@@ -45,7 +45,7 @@ from maaracing_master.core.registry import (
     get_module_info,
     module_expired,
 )
-from maaracing_master.core.paths import config_dir, data_dir, user_data_dir
+from maaracing_master.core.paths import config_dir, user_data_dir
 from maaracing_master.core.remote_meta import (
     EXTERNAL_TARGETS,
     GITHUB_REPO,
@@ -1127,68 +1127,19 @@ class SidecarService:
         result.extend(lines)
         return (True, {"lines": result}, None)
 
-    # 看板读取列（白名单，兼作输出契约）：daily_summary 列名即输出键；games 为 输出键←列名。
-    _SUMMARY_COLS = ("games", "win", "fail", "profit_sum", "income_sum", "highest_score",
-                     "egg_red", "egg_yellow", "egg_blue", "egg_coin", "egg_score")
-    _GAMES_COLS = (("game_seq", "game_seq"), ("ts", "ts"),
-                   ("auction_result", "auction_result"), ("final_price", "settle_final_price"),
-                   ("total_price", "settle_total_price"), ("profit", "settle_profit"),
-                   ("income", "settle_my_income"), ("egg_red", "egg_red"),
-                   ("egg_yellow", "egg_yellow"), ("egg_blue", "egg_blue"),
-                   ("strategy_mode", "strategy_mode"))
-
     def get_today_stats(self, params):
-        """读取鉴宝落盘库（data/treasure/treasure.db）今日统计数据（凌晨 5 点日界，与落盘一致）。
+        """今日看板路由：读法由各模块自述（ActivityModule.read_today_stats），core 不持有
+        任何模块的看板 schema（表结构、列名、日界语义全部住在插件内）。
 
-        返回 {"bucket": 日界, "summary": daily_summary 今日行或 None, "games": 今日各场明细列表}。
-        库不存在/读取失败时 summary=None、games=[]（不抛错，前端显示空看板）。
-        读侧 schema 容错：新列的 ALTER 迁移由鉴宝模块（写侧）惰性建连时补，升级后存在
-        「GUI 已启动、模块未跑过」的窗口——此处按 PRAGMA 实有列取交集查询，缺列按 0/None
-        兜底，读侧永不依赖写侧启动时机，也不复制一份 DDL。
+        返回 (True, {"bucket", "summary", "games"}, None)；模块未注册或未声明看板读法
+        时返回空看板（前端仅对声明了看板的模块轮询，此分支是删除模块后的健壮性兜底）。
         """
-        from datetime import datetime, timedelta
-        import sqlite3
-
-        now = datetime.now()
-        day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
-        bucket = day.isoformat()
-        db_path = data_dir() / "treasure" / "treasure.db"
-        if not db_path.exists():
-            return (True, {"bucket": bucket, "summary": None, "games": []}, None)
-        try:
-            conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
-            try:
-                scols = {r[1] for r in conn.execute("PRAGMA table_info(daily_summary)").fetchall()}
-                sel_s = [c for c in self._SUMMARY_COLS if c in scols]
-                summary = None
-                if sel_s:
-                    row = conn.execute(
-                        f"SELECT {', '.join(sel_s)} FROM daily_summary WHERE bucket = ?",
-                        (bucket,),
-                    ).fetchone()
-                    if row is not None:
-                        got = dict(zip(sel_s, row))
-                        summary = {c: got.get(c, 0) for c in self._SUMMARY_COLS}
-                gcols = {r[1] for r in conn.execute("PRAGMA table_info(games)").fetchall()}
-                pairs = [(k, c) for k, c in self._GAMES_COLS if c in gcols]
-                games = []
-                if "bucket" in gcols and "game_seq" in gcols and pairs:
-                    sel_g = ", ".join(c for _, c in pairs)
-                    raw_rows = conn.execute(
-                        f"SELECT {sel_g} FROM games WHERE bucket = ? ORDER BY game_seq",
-                        (bucket,),
-                    ).fetchall()
-                    names = [c for _, c in pairs]
-                    games = []
-                    for r in raw_rows:
-                        vals = dict(zip(names, r))
-                        games.append({k: vals.get(c) for k, c in self._GAMES_COLS})
-            finally:
-                conn.close()
-            return (True, {"bucket": bucket, "summary": summary, "games": games}, None)
-        except Exception as e:
-            logger.log(f"读取今日看板数据失败: {e}", "WARNING")
-            return (True, {"bucket": bucket, "summary": None, "games": []}, None)
+        module_id = params.get("module_id") if isinstance(params, dict) else None
+        cls = MODULE_REGISTRY.get(module_id) if isinstance(module_id, str) else None
+        reader = getattr(cls, "read_today_stats", None)
+        if reader is None:
+            return (True, {"bucket": None, "summary": None, "games": []}, None)
+        return (True, reader(), None)
 
     # ---------- 调试页 ----------
 

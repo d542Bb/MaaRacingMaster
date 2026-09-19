@@ -457,6 +457,15 @@ class TreasureModule(ActivityModule):
 
     REQUIRES_GAMEPAD_EXCLUSIVE = False
 
+    @classmethod
+    def read_today_stats(cls) -> dict:
+        """今日看板读法（模块自述契约，见 ActivityModule.read_today_stats）。
+
+        表结构、日界与兜底语义在 store（落盘子域）；core 路由只认本钩子，不持有
+        本模块的任何 schema 字段。"""
+        from maaracing_master.plugins.treasure.store import read_today_stats
+        return read_today_stats()
+
     # 两套点击方式的日志/peep 标签（与 core.clicker.CLICK_MODES 对齐）
     CLICK_MODE_LABELS = {"real": "前台鼠标", "gamepad": "后台手柄+A"}
 

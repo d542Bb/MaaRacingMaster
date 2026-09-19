@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
-"""今日看板读取（SidecarService.get_today_stats）的 schema 容错契约。
+"""今日看板契约：读侧在插件（treasure.store.read_today_stats），core 只做路由。
+
+分层（2026-09-19 解耦下沉）：看板的表结构、列名、日界语义全部是鉴宝业务，住在
+plugins/treasure/store.py；core.sidecar.get_today_stats 只按 module_id 分发到
+ActivityModule.read_today_stats 钩子，不持有任何模块的 schema 字段。
 
 背景：daily_summary 新列（egg_coin/egg_score）的 ALTER 迁移由鉴宝模块写侧惰性建连时执行；
 升级后存在「GUI 已启动、模块未跑过」的窗口，旧库缺列曾让看板每 3 秒报
 `no such column: egg_coin` 并整块空掉。读侧必须按实有列取交集、缺列兜底，
 永不依赖写侧启动时机。
-本文件导入 core.sidecar（经 controller 拉 maa 等重依赖），缺依赖时整文件 SKIP。
+
+路由分发测试需导入 core.sidecar / plugins.treasure.module（拉 maa/cv2 等重依赖）
+→ 整文件 SKIP；读侧 schema 测试只碰 plugins.treasure.store + core.paths，轻依赖必跑。
 """
 from __future__ import annotations
 
@@ -16,7 +22,11 @@ import pytest
 
 try:
     from maaracing_master.core import sidecar as sc
+    from maaracing_master.core import paths as core_paths
     from maaracing_master.core.sidecar import SidecarService  # noqa: F401
+    from maaracing_master.plugins.treasure import store as treasure_store
+    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins.treasure.store import read_today_stats
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001
     _OK, _ERR = False, str(exc)
@@ -34,7 +44,7 @@ def _today_bucket() -> str:
 
 def _make_db(tmp_path, monkeypatch, summary_cols, summary_vals,
              games_cols=None, games_vals=None):
-    """在 tmp_path 造 treasure/treasure.db，并把 data_dir 指过去。"""
+    """在 tmp_path 造 treasure/treasure.db，并把 data_dir 真源（core.paths）指过去。"""
     (tmp_path / "treasure").mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(tmp_path / "treasure" / "treasure.db"))
     conn.execute(
@@ -61,13 +71,12 @@ def _make_db(tmp_path, monkeypatch, summary_cols, summary_vals,
         )
     conn.commit()
     conn.close()
-    monkeypatch.setattr(sc, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(core_paths, "data_dir", lambda: tmp_path)
 
 
 def _read():
-    svc = object.__new__(SidecarService)  # 只测纯读取方法，不拉完整服务
-    ok, payload, err = SidecarService.get_today_stats(svc, None)
-    assert ok and err is None
+    payload = read_today_stats()
+    assert set(payload) == {"bucket", "summary", "games"}
     return payload
 
 
@@ -118,6 +127,54 @@ def test_board_games_rows_survive_missing_optional_columns(tmp_path, monkeypatch
 
 
 def test_board_missing_db_is_empty(tmp_path, monkeypatch):
-    monkeypatch.setattr(sc, "data_dir", lambda: tmp_path)
-    payload = _read()
+    _make_db(tmp_path, monkeypatch, summary_cols=["games"], summary_vals=[0])
+    (tmp_path / "treasure" / "treasure.db").unlink()
+    payload = read_today_stats()
     assert payload["summary"] is None and payload["games"] == []
+
+
+# ---------- core 路由分发（读法由模块自述，core 不持 schema） ----------
+
+def test_module_declares_today_stats_hook():
+    """契约接线锁：TreasureModule 必须覆写看板钩子——core 路由靠它分发，
+    漏写 = GUI 看板静默空掉（无 schema 机检可依，靠本锁）。"""
+    from maaracing_master.core.base import ActivityModule
+    assert TreasureModule.read_today_stats is not ActivityModule.read_today_stats
+
+
+def test_route_dispatches_to_module_reader(tmp_path, monkeypatch):
+    """路由按 module_id 分发到注册表中该模块的 read_today_stats 钩子。"""
+    _make_db(tmp_path, monkeypatch, summary_cols=["games"], summary_vals=[6])
+
+    class _Stub:
+        @classmethod
+        def read_today_stats(cls):
+            return read_today_stats()
+
+    monkeypatch.setitem(sc.MODULE_REGISTRY, "treasure", _Stub)
+    svc = object.__new__(SidecarService)  # 只测纯路由，不拉完整服务
+    ok, payload, err = SidecarService.get_today_stats(svc, {"module_id": "treasure"})
+    assert ok and err is None
+    assert payload["summary"]["games"] == 6
+
+
+def test_route_unknown_module_is_empty_board(monkeypatch):
+    """module_id 未注册 → 空看板（不抛错；删除模块后的健壮性兜底）。"""
+    monkeypatch.delitem(sc.MODULE_REGISTRY, "treasure", raising=False)
+    svc = object.__new__(SidecarService)
+    ok, payload, err = SidecarService.get_today_stats(svc, {"module_id": "treasure"})
+    assert ok and err is None
+    assert payload == {"bucket": None, "summary": None, "games": []}
+
+
+def test_route_hookless_module_is_empty_board(monkeypatch):
+    """已注册但未声明看板钩子的模块 → 空看板（本模块无看板是合法声明）。"""
+
+    class _NoBoard:
+        pass
+
+    monkeypatch.setitem(sc.MODULE_REGISTRY, "no_board", _NoBoard)
+    svc = object.__new__(SidecarService)
+    ok, payload, err = SidecarService.get_today_stats(svc, {"module_id": "no_board"})
+    assert ok and err is None
+    assert payload == {"bucket": None, "summary": None, "games": []}
