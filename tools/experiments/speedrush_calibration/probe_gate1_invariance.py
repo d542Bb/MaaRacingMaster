@@ -262,10 +262,17 @@ def track_metrics(t: dict) -> dict:
 
 # ---------- 主仪器：框内夹车虚线间距不变性 ----------
 DASH_MIN_DV = 60.0     # 线段纵向跨度下限：中点接地点误差 ∝ 厚度/跨度，短线不取
-DASH_D_MIN = 12.0      # 中点地面距离下限
+DASH_D_MIN = 150.0     # 有效观测域下限（维护者裁定 2026-09-19 冻结，原 12）：d<150
+                       # 处 X 灵敏度 ∝1/d 且相邻线族在 u 上仅距 0.56·d px 不可分，
+                       # 紧致过滤后仍 1.58~1.73 垃圾——定义为仪器域边界，不参与统计
 DASH_GAP = 0.35        # X 聚类断簇间隙（车道间距 1.0，护栏簇独立）
 DASH_BIN_MIN = 4       # 每三分位箱每侧最少端点数
 DASH_SP_LO, DASH_SP_HI = 0.6, 1.4   # 夹车两虚线间距合法带（车道单位）
+TIGHT_XRANGE = 0.15    # 紧致簇判据（维护者裁定 2026-09-19 冻结，禁二次搜索）：
+                       # 簇内 X 范围 ≤0.15 道才可参与配对——排除竖直结构（车体/
+                       # 护栏）沿深度涂抹的假簇；依据 =「涂抹假簇把夹 0 对单向
+                       # 拉向 >1」的删失混合机制（README dash 破案节），
+                       # 非「选更接近 1.0 的答案」
 
 
 def dash_invariance(sess_name: str, rows: list[dict], ivs: list[tuple[float, float]],
@@ -283,7 +290,14 @@ def dash_invariance(sess_name: str, rows: list[dict], ivs: list[tuple[float, flo
     护栏不污染近箱——整帧配对的版本被 #647 式误配证伪），drift = 各箱 s 的
     max−min；跨帧中位 <0.25 车道为绿。输入 = 时窗内全部帧（帧内差分不依赖
     帧间一致性，stage4 稀疏集只用于定常数；池化跨帧检验被自车横向漂移与密集
-    结构帧污染，首跑实证）。"""
+    结构帧污染，首跑实证）。
+
+    **仪器修复（维护者裁定 2026-09-19，参数冻结）**：原仪器 s_med 系统性 >1
+    （1.03~1.17）为删失混合伪像——dv≥60 段大量来自车体/护栏竖直边缘，其
+    X 沿深度涂抹成假簇；夹 0 假对只会把读数拉向 >1（结构性单向偏置）。
+    修复 = ① 有效观测域 d≥DASH_D_MIN(150)；② 紧致簇过滤 TIGHT_XRANGE(0.15)；
+    ③ **紧致对可用率 = Σlen(sbins)/Σn_att 进正式输出**（删失混合教训：统计量
+    必须与产生它的观测集合一起报告）。"""
     sess = DEMOS / sess_name
     frames, pts_all = [], []
     for r in rows:
@@ -311,11 +325,12 @@ def dash_invariance(sess_name: str, rows: list[dict], ivs: list[tuple[float, flo
             continue
         ds = np.sort([p[1] for p in pts])
         q1, q2 = ds[len(ds) // 3], ds[2 * len(ds) // 3]
-        sbins = []
+        sbins, n_att = [], 0
         for lo, hi in ((DASH_D_MIN, q1), (q1, q2), (q2, 1e9)):
             bp = np.array([p for p in pts if lo <= p[1] < hi])
             if len(bp) < 2 * DASH_BIN_MIN:
                 continue
+            n_att += 1
             bp = bp[np.argsort(bp[:, 0])]
             clu, cur = [], [bp[0]]
             for p in bp[1:]:
@@ -325,6 +340,9 @@ def dash_invariance(sess_name: str, rows: list[dict], ivs: list[tuple[float, flo
                 else:
                     cur.append(p)
             clu.append(np.array(cur))
+            # 紧致簇过滤（TIGHT_XRANGE 冻结）：涂抹假簇整体出局，不是二次选择
+            clu = [c for c in clu
+                   if c[:, 0].max() - c[:, 0].min() <= TIGHT_XRANGE]
             pairs = [(l, rr) for l in clu for rr in clu
                      if l[:, 0].mean() < 0 < rr[:, 0].mean()
                      and len(l) >= DASH_BIN_MIN and len(rr) >= DASH_BIN_MIN
@@ -342,6 +360,7 @@ def dash_invariance(sess_name: str, rows: list[dict], ivs: list[tuple[float, flo
         frames.append({"seq": r["seq"], "ts": r["ts"],
                        "drift": float(max(sv) - min(sv)),
                        "s_med": float(np.median(sv)),
+                       "n_att": n_att,
                        "sbins": [[round(a, 1), round(b, 3), c, k]
                                  for a, b, c, k in sbins]})
     return frames, pts_all
@@ -629,10 +648,16 @@ def run(sessions: list[str], stride: int = 2) -> dict:
         if dash:
             dr = np.array([c["drift"] for c in dash])
             sm = np.array([c["s_med"] for c in dash])
+            att = sum(c["n_att"] for c in dash)
+            tig = sum(len(c["sbins"]) for c in dash)
             print(f"   框内夹车虚线：有效帧 {len(dash)}（线采样 {len(pts)}），"
                   f"间距 s 中位 {np.median(sm):.3f} 车道（刻度核对≈1.0）、"
                   f"s(d) 漂移中位 {np.median(dr):.3f}  max {dr.max():.3f}"
-                  f"（判据 <{DRIFT_GATE}）")
+                  f"（判据 <{DRIFT_GATE}）、紧致对可用率 {tig / att:.0%}"
+                  f"（{tig}/{att} 箱）" if att else
+                  f"   框内夹车虚线：有效帧 {len(dash)}（线采样 {len(pts)}），"
+                  f"间距 s 中位 {np.median(sm):.3f} 车道、s(d) 漂移中位 "
+                  f"{np.median(dr):.3f}  max {dr.max():.3f}（判据 <{DRIFT_GATE}）")
             for c in sorted(dash, key=lambda c: -c["drift"])[:4]:
                 print(f"     #{c['seq']} s_med {c['s_med']:.2f} drift {c['drift']:.2f} "
                       f"sbins(d,s,nl,nr) {c['sbins']}")
@@ -705,9 +730,13 @@ def run(sessions: list[str], stride: int = 2) -> dict:
     if all_dash:
         dr = np.array([c["drift"] for c in all_dash])
         verdict_rel = bool(np.median(dr) < DRIFT_GATE)
-        print(f"\n== Gate 1 相对几何（框内夹车虚线间距 s(d)）：{len(all_dash)} 帧，"
+        att = sum(c["n_att"] for c in all_dash)
+        tig = sum(len(c["sbins"]) for c in all_dash)
+        print(f"\n== Gate 1 相对几何（框内夹车虚线间距 s(d)，修复仪器：紧致簇"
+              f"≤{TIGHT_XRANGE} 道 + d≥{DASH_D_MIN:.0f}）：{len(all_dash)} 帧，"
               f"s(d) 漂移中位 {np.median(dr):.3f} 车道  p75 {np.percentile(dr, 75):.3f}"
-              f"  max {dr.max():.3f}  → {'通过' if verdict_rel else '红'}"
+              f"  max {dr.max():.3f}  紧致对可用率 {tig / att:.0%}（{tig}/{att} 箱）"
+              f"  → {'通过' if verdict_rel else '红'}"
               f"（判据 <{DRIFT_GATE}；注意：间距对整体横向平移不变，不证绝对零点）")
     if all_lt:
         vd = np.array([p["drift"] for p in all_lt])

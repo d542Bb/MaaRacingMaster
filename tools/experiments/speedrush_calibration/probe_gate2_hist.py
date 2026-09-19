@@ -347,6 +347,16 @@ def validate(sessions: list[str], stride: int = 2) -> None:
                                      [(race[0]["ts"], race[-1]["ts"])],
                                      d["cal"], lane_change_times(s))
         smed = float(np.median([f["s_med"] for f in dash])) if dash else None
+        # 三件套（维护者裁定 2026-09-19）：统计量必须与产生它的观测集合一起报告
+        att = sum(f["n_att"] for f in dash)
+        tig = sum(len(f["sbins"]) for f in dash)
+        avail = (tig / att) if att else None
+        bins_flat = [(b[0], b[1]) for f in dash for b in f["sbins"]]
+        dband = {}
+        for lo, hi in ((150, 250), (250, 400), (400, 700)):
+            v = [sv for d, sv in bins_flat if lo <= d < hi]
+            if v:
+                dband[f"{lo}-{hi}"] = round(float(np.median(v)), 3)
         ok_geo = smed is not None and 0.9 <= smed <= 1.1
         ok_ai = (bc.get("n", 0) >= 3 and bc.get("viol", 1) == 0
                  and abs(bc.get("audit_slope", 1)) < AUDIT_SLOPE
@@ -359,10 +369,13 @@ def validate(sessions: list[str], stride: int = 2) -> None:
                   f"{bc['viol']}  δ~k 斜率 {bc['audit_slope']:+.3f}"
                   f"（审计阈 {AUDIT_SLOPE}）  k={bc['k']} δ={bc['delta']}")
         print(f"   几何判定：框内虚线 s_med = {smed if smed is None else round(smed, 3)}"
-              f"（判据 [0.9,1.1]）→ 几何 {'过' if ok_geo else '不过'} ∧ "
+              f"（判据 [0.9,1.1]）  紧致对可用率 "
+              f"{avail if avail is None else f'{avail:.0%}'}（{tig}/{att} 箱）  "
+              f"s(d) 分带中位 {dband or '—'}→ 几何 {'过' if ok_geo else '不过'} ∧ "
               f"AI {'过' if ok_ai else '不过'} → Gate 2 本场 "
               f"{'✅' if ok_geo and ok_ai else '🟡/❌'}")
-        report[s] = {"bounded": bc, "s_med": smed, "geo_ok": ok_geo,
+        report[s] = {"bounded": bc, "s_med": smed, "avail": avail,
+                     "d_band": dband, "geo_ok": ok_geo,
                      "ai_ok": ok_ai, "n_track": len(ms)}
     (CACHE / "gate2_validate.json").write_text(
         json.dumps(report, ensure_ascii=False), encoding="utf-8")
