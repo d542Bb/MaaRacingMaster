@@ -2,13 +2,16 @@
 
 **要回答什么**（README 闸门 0）：标定器在真实游戏帧上的 VP 是否
 「VPx 稳定、y_h 带内且帧间稳」——线段族是否纯净到能撑起标定。
-质量帧口径（sig_vpx ≤5、内点 ≥12、y_h 诊断带内）出统计与叠图；
-**叠图人工目视**（线簇真的射向该点）由维护者完成，本探针只出图。
-**本探针已实测的两条 Gate 0 发现**（详见 README「闸门实施记录」）：
-① y_h 实测 ≈324-335（跨帧跨场稳），与 README 更正 3 的先验带 [180,260] 冲突
-（「最远检出车底 y≈213」≠「最远可见路面」），故此处用宽诊断带 [150,420]；
-② VPx 中位 639~651 跨场一致但**逐帧散布 ±30px**，iters×5 对照排除 RANSAC
-欠采样——「帧间稳」判据红，归因线段族本质噪声。
+两级选帧：单帧自洽（sig_vpx ≤5、内点 ≥12、诊断带内）→ **比赛态多数决**
+（y_h 众数带 ±15：追车相机比赛段几何固定，四场实测众数 325；滑窗 ±15 帧中位
+残差 |dx|≤12、|dy|≤8 剔孤立离群）。维护者目视（2026-09-19）证实单帧自洽口径
+放行约 30% 明显错帧（候选线少而短时 σ_d 容差来者不拒，凑出自洽但错的交点），
+正确性必须靠跨帧多数决把关。**叠图人工目视**由维护者完成，本探针只出图。
+**本探针已实测的 Gate 0 发现**（详见 README「闸门实施记录」）：
+① y_h 比赛态实测 ≈323~325（跨帧跨场稳），与 README 更正 3 的先验带 [180,260]
+冲突（「最远检出车底 y≈213」≠「最远可见路面」），故用宽诊断带 [150,420]；
+② VPx 比赛态中位 640~643 跨场一致，逐帧散布收窄至 ±7~10px（单帧自洽口径
+为 ±30~40）。
 
 **管线**（合成自检已验过的同一实现）：帧 → 路面带裁剪（y≥170，去顶部 HUD）
 → Canny → HoughLinesP → `_steep` 粗筛 → `estimate_vp`（RANSAC iters=1200，
@@ -108,11 +111,11 @@ def vp_series(sess_name: str, stride: int) -> list[dict]:
 
 
 def quality(rows: list[dict]) -> list[dict]:
-    """质量帧：自报 σ ≤5、内点 ≥12、y_h 诊断带内——叠图与统计的样本集。
+    """单帧质量：自报 σ ≤5、内点 ≥12、y_h 诊断带内——只验「自洽」，不验「正确」。
 
-    帧间滑窗「平直」判据（WIN/JITTER）作为参考指标随 report 打印；实测
-    VPx 逐帧散布 ±30px 不满足原「帧间稳」期望，且 iters×5 对照排除欠采样
-    （归因 = 线段族本质噪声，见 README Gate 0 记录），故合格判定让位给人工目视。
+    维护者目视（2026-09-19）：此口径放行了约 30% 明显错帧——候选线少而短时
+    σ_d 容差吞掉全部候选（图证 21/26 内点），凑出自洽但错误的交点（VPx 466、
+    y_h 389）。正确性由 race_frames 的跨帧多数决把关。
     """
     out = []
     for r in rows:
@@ -124,26 +127,42 @@ def quality(rows: list[dict]) -> list[dict]:
     return out
 
 
-def flatness(rows: list[dict]) -> list[dict]:
-    """滑窗中位残差（参考指标）：返回每帧 VPx/y_h 相对 ±WIN 帧滑窗中位的偏差。"""
-    ok = quality(rows)
-    arr = {r["seq"]: r for r in ok}
-    seqs = [r["seq"] for r in ok]
-    for i, s in enumerate(seqs):
+def race_frames(rows: list[dict]) -> list[dict]:
+    """比赛态帧（正确性过滤，两步）：
+
+    ① y_h 众数带 ±15：追车相机在比赛段几何固定 ⇒ 比赛帧 y_h 恒定，四场实测
+      众数全部 = 325（10px bin）。相机动画/起步/失败簇的 y_h 系统性偏离
+      （389~395 一类），整帧剔除——这是对「单帧自洽但错」的唯一硬约束。
+    ② 滑窗 ±WIN 中位残差 |dx|≤12、|dy|≤8：剔众数带内的孤立离群（弯道口、
+      大车遮挡瞬间的错簇）。阈值宽松，只杀孤立点，不塑造分布。
+    """
+    q = quality(rows)
+    if not q:
+        return []
+    yh = np.array([r["y_h"] for r in q])
+    hist, edges = np.histogram(yh, bins=np.arange(DIAG_Y0, DIAG_Y1 + 1, 10))
+    peak = float(edges[np.argmax(hist)] + 5)
+    m = [r for r in q if abs(r["y_h"] - peak) <= 15]
+    seqs = [r["seq"] for r in m]
+    arr = {r["seq"]: r for r in m}
+    keep = []
+    for i, s_ in enumerate(seqs):
         win = seqs[max(0, i - WIN):i + WIN + 1]
-        arr[s]["dx"] = arr[s]["vpx"] - float(np.median([arr[q]["vpx"] for q in win]))
-        arr[s]["dy"] = arr[s]["y_h"] - float(np.median([arr[q]["y_h"] for q in win]))
-    return rows
+        dx = arr[s_]["vpx"] - float(np.median([arr[w]["vpx"] for w in win]))
+        dy = arr[s_]["y_h"] - float(np.median([arr[w]["y_h"] for w in win]))
+        if abs(dx) <= 12 and abs(dy) <= 8:
+            keep.append(arr[s_])
+    return keep
 
 
 def overlay(sess_name: str, rows: list[dict]):
-    """质量帧等距抽 SHEET_N 张叠图：内点绿/外点灰、VP 十字与 y_h 横线。"""
+    """比赛态帧等距抽 SHEET_N 张叠图：内点绿/外点灰、VP 十字与 y_h 横线。"""
     sess = DEMOS / sess_name
     od = CACHE / "gate0_overlay" / sess_name
     od.mkdir(parents=True, exist_ok=True)
-    picks_all = quality(rows)
+    picks_all = race_frames(rows)
     if not picks_all:
-        print(f"  [{sess_name}] 无质量帧，跳过叠图")
+        print(f"  [{sess_name}] 无比赛态帧，跳过叠图")
         return
     picks = [picks_all[i] for i in
              np.linspace(0, len(picks_all) - 1, min(SHEET_N, len(picks_all))).astype(int)]
@@ -184,25 +203,22 @@ def overlay(sess_name: str, rows: list[dict]):
 
 def report(sessions, stride):
     for s in sessions:
-        rows = flatness(vp_series(s, stride))
+        rows = vp_series(s, stride)
         est = [r for r in rows if r["vpx"] is not None]
         q = quality(rows)
+        race = race_frames(rows)
         print(f"\n== {s}：{len(rows)} 帧（stride {stride}），估出 VP {len(est)}，"
-              f"质量帧 {len(q)}")
-        if not q:
+              f"单帧自洽 {len(q)}，比赛态 {len(race)}（剔除 {len(q) - len(race)}）")
+        if not race:
             continue
-        vx = np.array([r["vpx"] for r in q])
-        yh = np.array([r["y_h"] for r in q])
-        print(f"  质量帧  VPx {np.median(vx):.1f}±{np.std(vx):.1f}  "
+        vx = np.array([r["vpx"] for r in race])
+        yh = np.array([r["y_h"] for r in race])
+        print(f"  比赛态  VPx {np.median(vx):.1f}±{np.std(vx):.1f}  "
               f"y_h {np.median(yh):.1f}±{np.std(yh):.1f}"
               f"（诊断带 [{DIAG_Y0:.0f},{DIAG_Y1:.0f}]）")
-        dx = np.array([abs(r["dx"]) for r in q if "dx" in r])
-        dy = np.array([abs(r["dy"]) for r in q if "dy" in r])
-        print(f"  滑窗±{WIN}帧中位残差 |d|≤2px：VPx {100 * np.mean(dx <= 2):.0f}%  "
-              f"y_h {100 * np.mean(dy <= 2):.0f}%（参考）")
-        n = len(q)
+        n = len(race)
         for k in range(5):
-            seg = q[k * n // 5:(k + 1) * n // 5]
+            seg = race[k * n // 5:(k + 1) * n // 5]
             print("   时段%d: VPx %6.1f  y_h %6.1f (n=%d)"
                   % (k, np.median([r["vpx"] for r in seg]),
                      np.median([r["y_h"] for r in seg]), len(seg)))
