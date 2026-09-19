@@ -1,13 +1,13 @@
 # NavKit V4 改造方案
 
-> 状态：已评审通过（2026-09-08）；**P0–P4 全部完成（2026-09-10）**——v4 为唯一执行通路，v3 全家已退役（各期明细见 §9 表与 docs/plan/v4-p4-retire.md）。遗留人工补齐项见 §10。
+> 状态：已评审通过（2026-09-08）；**P0–P4 全部完成（2026-09-10）**——v4 为唯一执行通路，v3 全家已退役（各期明细见 §9 表）。遗留人工补齐项见 §10。
 > 一句话：**真源只有一种——节点 JSON；Studio 画布编辑它，引擎直接跑它，中间什么都没有。**
 
 >
 > **本文是什么**：NavKit v4 的**版本宪法（§1 六条不变量）**与 v4 规格——节点模型（§2）、文件布局（§3）、运行时（§4）、校验器（§8）与迁移路线（§9）。
 > **本文不是什么**：不是当前实现说明（见 [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) 与各域文档）；不是决策记录与状态（见 [docs/adr/](adr/README.md)）；不是工具用法（见 [tools/navkit/README.md](../tools/navkit/README.md)）。
 > **信源等级**：**§1 = L1（本项目最高规则）**；§2–§8 为 v4 规格（L1/L2）；**§0 与 §9–§12 为迁移过程与历史（L4）**——历史章节不等于当前形态。
-> **真源路由**：不变量 = 本文 §1（其他文档引用它，不复制）；节点与策略取值 = `plugins/*/resources/**`；正文提及的旧文件在 `docs/plan/archive/`。
+> **真源路由**：不变量 = 本文 §1（其他文档引用它，不复制）；节点与策略取值 = `plugins/*/resources/**`；
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)。
 
 ***
@@ -32,7 +32,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 **继承（资产不废）**：模板图、ROI、OCR 逻辑、策略规则、wgcap 中心采集器、clicker、gamepad\_cursor、nav\_graph.py 的 MRA\_Template / MRA\_Click 桥、校准数据、preview/base\_hash 原子落盘管线。
 
-**废弃**：五段概念（anchors/stages/routes/transitions/policies 作为 schema）、编译器、graph\_api、E/P 校验系列、auto\_shoo 避让补丁、detector 灰度匹配与 module.py 内联匹配、parity 测试（实际拓扑=先接线后删，拆 a/b/c/d 四步，详见 docs/plan/v4-p4-retire.md）。
+**废弃**：五段概念（anchors/stages/routes/transitions/policies 作为 schema）、编译器、graph\_api、E/P 校验系列、auto\_shoo 避让补丁、detector 灰度匹配与 module.py 内联匹配、parity 测试（实际拓扑=先接线后删，拆 a/b/c/d 四步）。
 
 > **auto\_shoo 一条已于 2026-09-11 翻案**（其余仍成立）：P4c 当时以图内节点的 `mask_cursor` 遮挡过滤替代全部避让，但 `mask_cursor` 只装在模板识别桥上，**OCR 通路没有遮挡处理**，实机被读脏（出价按钮文字读成「出价.39,5」、输入框瞬空读振荡）。现按新证据重接为三层防线：主动避让（`Clicker.auto_shoo`，异步 `submit_move` 不点击）+ 消费侧读数剔除 + 判定精确化，口径见 treasure CODE\_WIKI。原「防反应式躲避被悄悄加回」的反向锁已改为正向锁并写明依据。
 
@@ -89,7 +89,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 > 文件根 = 纯节点映射（MaaFW/MPE 原生形态，P0 金样印证）；**不设** **`_schema_ver`/`nodes`** **包装**——版本承载走仓库级迁移脚本与 CI，嵌进 pipeline 文件反而会被加载器当节点。
 
-### 编辑器与加载器字段规则（P0 源码 + 金样 round-trip 实证，详见 docs/plan/archive/mpe-p0-verification.md）
+### 编辑器与加载器字段规则（P0 源码 + 金样 round-trip 实证）
 
 - **类型值白名单**：`recognition`/`action` 只接受 MaaFW 枚举；自定义识别/动作以 **v2 归一形**书写——`"recognition": {"type": "Custom", "param": {"custom_recognition": <注册名>, "custom_recognition_param": {...}}}`，动作同理（`custom_action` / `custom_action_param` 进 `action.param`）。v1 平铺协议仍合法（框架同一解析路径），但不再是项目形态。
 
@@ -252,9 +252,9 @@ E 级不落盘闸门逻辑保留。
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P0  | **MPE 选型验证**：`_` 字段 round-trip、param 透传、LocalBridge 对接 wgcap、iframe 嵌入可行性；schema v4 定稿 + JSON Schema 文件                                                               | 验证项全绿 + schema 评审                      | **验证三项全绿（2026-09-09）**；JSON Schema 文件与映射细则随 P1 落地                                                                                                                                                                                                                                                                                                                 |
 | P1  | v3→v4 迁移器（treasure + global），策略段拆表；继承 v3 资产（模板/ROI/OCR/策略规则/wgcap/clicker/gamepad\_cursor/nav\_graph 桥）                                                               | 生成图逐节点核对 ROI / next                    | **完成（2026-09-09）**：M0-M4 全绿，迁移器 + 真源图（global 7 + treasure 24）+ schema 三件套（commit 6bfb7f0）                                                                                                                                                                                                                                                                         |
-| P2a | 引擎接线：MaaFW 成唯一执行路径，CustomController 读 wgcap，MRA 桥落地遮挡 L1/L2/L3 + rgb\_strict + color\_assert                                                                          | 离线等价回放一致 + `$__mpe` 容忍与 `$` 字段忽略范围实机确认 | **完成（2026-09-09）**：Q1-Q5 全绿，全仓 464 测试（详见 docs/plan/archive/v4-p2a-engine.md）                                                                                                                                                                                                                                                                                              |
-| P2b | 真机性能验收（帧预算/CPU/导航线程不被饿）+ 光标与颜色真机调参                                                                                                                                    | 指标达标                                   | **完成（2026-09-09 用户真机验收）**：完整局端到端通过（寻路/出价/快照/落盘/结算全链），决策帧率实测优于 v3（OCR 108ms/13 区、帧间隔 \~125ms）；排障九炸全记录于 docs/plan/archive/v4-p2a-engine.md §3。L2 `_park` 标定依赖 P3 可视化，随 P3 落地                                                                                                                                                                                                          |
-| P3  | Studio：**C 形态 = MPE 即 Studio**（无壳）——`studio.cmd` 起 mpelb+开 MPE 满幅；`policy_server.py` 策略表独立薄页；真源目录 `pipeline/` 生态惯例；rgb\_strict 评估收口（13 节点全 gray 足够）。主 GUI/sidecar 零改动 | 编辑→保存→运行闭环（round-trip 保真已证）            | **完成（2026-09-09）**：P3a 实证（mpelb/MPE 保真）+ P3b 闭环 + P3c 策略表薄页 + P3d 交集归零；详见 docs/plan/archive/v4-p3-studio.md                                                                                                                                                                                                                                                               |
+| P2a | 引擎接线：MaaFW 成唯一执行路径，CustomController 读 wgcap，MRA 桥落地遮挡 L1/L2/L3 + rgb\_strict + color\_assert                                                                          | 离线等价回放一致 + `$__mpe` 容忍与 `$` 字段忽略范围实机确认 | **完成（2026-09-09）**：Q1-Q5 全绿，全仓 464 测试                                                                                                                                                                                                                                                                                              |
+| P2b | 真机性能验收（帧预算/CPU/导航线程不被饿）+ 光标与颜色真机调参                                                                                                                                    | 指标达标                                   | **完成（2026-09-09 用户真机验收）**：完整局端到端通过（寻路/出价/快照/落盘/结算全链），决策帧率实测优于 v3（OCR 108ms/13 区、帧间隔 \~125ms）；排障九炸记录于当期运行日志（过程材料已清）。L2 `_park` 标定依赖 P3 可视化，随 P3 落地                                                                                                                                                                                                          |
+| P3  | Studio：**C 形态 = MPE 即 Studio**（无壳）——`studio.cmd` 起 mpelb+开 MPE 满幅；`policy_server.py` 策略表独立薄页；真源目录 `pipeline/` 生态惯例；rgb\_strict 评估收口（13 节点全 gray 足够）。主 GUI/sidecar 零改动 | 编辑→保存→运行闭环（round-trip 保真已证）            | **完成（2026-09-09）**：P3a 实证（mpelb/MPE 保真）+ P3b 闭环 + P3c 策略表薄页 + P3d 交集归零                                                                                                                                                                                                                                                               |
 | P4  | **删除**：v3 解析器、编译器、E/P 校验、graph\_api、旧 trace、auto\_shoo、detector 灰度匹配与 module.py 内联匹配、parity 测试                                                                        | 仓库搜不到 v3                               | **完成（2026-09-10）**：默认通路切 v4（6621107）；P4a 整删批（b9e3b3f，-18757 行）；P4b 数据源切换（c963836，双跑对拍等价、金标直过、迁移器退役、check\_truth 接管 CI 闸门）；P4c 匹配收敛与遮挡替代（576e757：单一 template\_match 引擎+按锚点 colorspace，shoo 全家退役，859 帧同政策直跑 99.9% 一致；真机完整局验收通过）；P4d 开关删除与终局验收（NAVKIT\_SOURCE 本体+v3 主循环死路径+v2 回退常量清除，执行通路唯一；trace 经生态核查后用户拍板保留设施、删 plan\_version 字段；全仓去 v3 措辞，终局 grep 零活代码命中，243 全绿） |
 
 **P4 是最关键一步**——不删干净，V4 就是叠加在屎山上的新屎山。
@@ -326,5 +326,5 @@ E 级不落盘闸门逻辑保留。
 
 - 本仓库 docs/MAAFW\_GUIDE.md（§4 范式二 = 本 plan 的 Custom 形态依据；§9 API 红线）
 
-- **P0 验证报告：docs/plan/archive/mpe-p0-verification.md（金样对拍、源码行号证据、实测响应头全在）**
+- **P0 验证（2026-09-09 完成，过程材料已清）：金样对拍、源码行号证据、实测响应头全数核验**
 

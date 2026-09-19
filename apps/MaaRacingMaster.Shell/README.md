@@ -52,7 +52,7 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 3. **非客户区双区域**：`InputNonClientPointerSource` 注册两类——`Draggable` = 整条标题栏带（`SetDragRectangles`，空白处由系统处理拖动与双击最大化）、`Passthrough` = `.brand` / `.tabs` / `.win-controls` 的精确矩形（输入穿透交给 HTML）。**Passthrough 优先于 drag rects**，故交互区之间的空白仍可拖拽。
 4. **置灰联动整体删除**：自绘按钮是 HTML 元素，模态遮罩天然覆盖，不需要任何按钮状态同步。
 
-**为什么（取舍理由）**：定案 WinUI 3 宿主时，标题栏原取「HTML 自绘视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型过程见 [归档方案](../../docs/plan/archive/titlebar-convergence-plan.md)）。该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动。改自绘后模态与按钮的一致性由 DOM 层叠天然保证。
+**为什么（取舍理由）**：定案 WinUI 3 宿主时，标题栏原取「HTML 自绘视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型与判负记录见 [ADR-0004](../../docs/adr/0004-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）。该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动。改自绘后模态与按钮的一致性由 DOM 层叠天然保证。
 
 **代价与约束**：
 
@@ -63,7 +63,7 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 **被否方案**：
 
 - **native caption buttons overlay**——系统按钮与 HTML 模态层无法自动协同，需常驻一套置灰状态同步（已随本决策删除）；
-- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线，见[归档方案](../../docs/plan/archive/titlebar-convergence-plan.md)）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；现行形态的拖动仍由系统在 `Draggable` 区处理。
+- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线，判负记录见 [ADR-0004](../../docs/adr/0004-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；现行形态的拖动仍由系统在 `Draggable` 区处理。
 
 ### API 细节与坑
 

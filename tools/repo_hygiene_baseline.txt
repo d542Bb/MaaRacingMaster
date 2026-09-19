@@ -15,9 +15,7 @@ R1|maafw-docs-constraints|README 缺 status: active 行
 R1|mpe-p0|缺 README.md
 R1|observe-stage-cost|缺 README.md
 R1|ocr-gate-2026-09-15|缺 README.md
-R1|opencv-thread-starvation|缺 README.md
 R1|pipeline-inheritance|缺 README.md
-R1|shoo-stall-probe|缺 README.md
 R1|speedrush_drive|README 缺 status: active 行
 R1|speedrush_gating|缺 README.md
 R1|speedrush_planning|README 缺 status: active 行
@@ -32,7 +30,6 @@ R1|v4-p2b-smoke|缺 README.md
 R1|v4-p3-studio|缺 README.md
 R1|v4-p4b-source|缺 README.md
 R1|v4-p4c-match|缺 README.md
-R1|vgamepad-xinput-selftest|缺 README.md
 R2|docs/MAAFW_GUIDE.md|ecosystem-audit
 R2|docs/MAAFW_GUIDE.md|maafw-docs-constraints
 R2|docs/MAAFW_GUIDE.md|pipeline-inheritance
@@ -44,17 +41,6 @@ R2|maaracing_master/plugins/treasure/CODE_WIKI.md|egg-claim-coin-read
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|frame-page-token
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|ocr-gate-2026-09-15
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|v4-p4c-match
-R3|apps/MaaRacingMaster.Shell/README.md|docs/plan/archive/titlebar-convergence-plan.md
-R3|docs/NAVKIT_V4_PLAN.md|docs/plan/archive/
-R3|docs/NAVKIT_V4_PLAN.md|docs/plan/archive/mpe-p0-verification.md
-R3|docs/NAVKIT_V4_PLAN.md|docs/plan/archive/v4-p2a-engine.md
-R3|docs/NAVKIT_V4_PLAN.md|docs/plan/archive/v4-p3-studio.md
-R3|docs/NAVKIT_V4_PLAN.md|docs/plan/v4-p4-retire.md
-R3|docs/adr/0002-真源单一禁止生成物回读.md|docs/plan/archive/v4-p4-retire.md
-R3|docs/adr/0003-运行时拓扑硬约束.md|docs/plan/archive/observe-split-plan.md
-R3|docs/adr/0004-GUI宿主定案.md|docs/plan/archive/gui-host-selection.md
-R3|docs/adr/README.md|docs/plan/archive/
-R3|docs/adr/README.md|docs/plan/archive/doc-knowledge-baseline-plan.md
 R4|maaracing_master/core/navkit/v4_source.py
 R4|maaracing_master/plugins/speedrush/hud.py
 R4|maaracing_master/plugins/speedrush/module.py
