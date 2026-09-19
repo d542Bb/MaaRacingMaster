@@ -143,25 +143,25 @@ def session_pipeline(s: str, stride: int, base: dict, verbose: bool = True):
         if verbose:
             print(f"== {s}: 比赛态帧不足，跳过")
         return None
+    from probe_gate1_invariance import (ax_physical, session_calib)
     g1 = CACHE / "gate1.json"
     if g1.exists() and s in json.loads(g1.read_text(encoding="utf-8"))["sessions"]:
         cal = json.loads(g1.read_text(encoding="utf-8"))["sessions"][s]["cal"]
     else:
-        from probe_gate1_invariance import (ax_physical, session_calib)
         cal = session_calib(s, race)
         if not cal:
             if verbose:
                 print(f"== {s}: 场级标定失败，跳过")
             return None
-        # 刻度源 = 物理口径（近端截距间距）优先——Gate 1 连带定论：晶格锚在
-        # 真帧被边线/护栏污染、跨场差达 5 倍（0.413~2.049），用它当刻度会把
-        # α 估计污染成刻度噪声（第二轮交叉验证实证）；物理口径四场
-        # 0.563/0.560/0.580/0.574，CV≈1.8%。仅物理不可用时退回晶格。
-        phys = ax_physical(s, race, cal["vpx"], cal["y_h"])
-        cal["A_x_used"] = phys["A_x_phys"] if phys else cal["A_x"]
-        if verbose:
-            print(f"   场级标定：VP=({cal['vpx']:.1f},{cal['y_h']:.1f}) "
-                  f"A_x={cal['A_x_used']:.3f}")
+    # 刻度源 = 物理口径（近端截距间距）统一重算——Gate 1 连带定论：晶格锚在
+    # 真帧被边线/护栏污染、跨场差达 5 倍（0.413~2.049），用它当刻度会把
+    # α 估计污染成刻度噪声（第二轮交叉验证实证）；物理口径跨场稳定
+    # （CV≈1.8%）。vpx/y_h 冻结不动，仅 A_x_used 统一。
+    phys = ax_physical(s, race, cal["vpx"], cal["y_h"])
+    cal["A_x_used"] = phys["A_x_phys"] if phys else cal["A_x"]
+    if verbose:
+        print(f"   场级标定：VP=({cal['vpx']:.1f},{cal['y_h']:.1f}) "
+              f"A_x={cal['A_x_used']:.3f}")
     ivs = score_intervals(s)
     if not ivs:   # 非 trick 场无 score 缓存：用 stage4 帧时域聚段回退
         tss = sorted(r["ts"] for r in race)
@@ -230,6 +230,127 @@ def session_pipeline(s: str, stride: int, base: dict, verbose: bool = True):
             xs_pt.append((u, v, f["ts"]))
     return {"s": s, "cal": cal, "ms": ms, "xs_pt": xs_pt,
             "c_ts": c_ts, "c_val": c_val, "straight_frac": float(mask.mean())}
+
+
+# ---------- 维护者裁定 2026-09-19：a 轨迹卫生 + b 有界道内偏移模型 ----------
+# 原则：A_x 冻结为物理口径，AI 轨**不再反调尺度**——只承担交叉验证：
+#   a) 卫生：邻帧 u 跳变 = tracker 换车（#42 实锤），断轨取最长连续段；
+#   b) 真值模型 X_i = bias + α·k_i + δ_i（k_i 整数车道、|δ_i|≤0.5 道有界
+#      道内偏移——「固定车道」只保证横向恒定，不保证在道中心）；
+#   c) 审计：δ 对 k 回归斜率 c1 ≈ (α_true−α)/α——α 若错，道内偏移会随
+#      车道号系统性漂移。|c1| 小 = AI 轨独立佐证几何刻度；这不是反调，
+#      α 一个字都不改。
+DELTA_BOUND = 0.35     # 道内偏移物理界：车不压线 ⇒ |δ|≤(1−W_car)/2，
+                       # 游戏车宽 ≈0.3~0.4 道 → 0.35。取 0.5 时相邻 k 格
+                       # 互简并（格距 1.0、两侧各伸 0.5 恰好接满），且交替
+                       # 拟合小样本崩解（首跑实证 bias 飞到 +1.8、δ=±2.6）
+K_MAX = 3              # 车道号物理界：4 车道路相对自车最远 ±2，留 1 道余量。
+                       # k 无界时交替拟合有尺度简并——远车配假高阶 k 补偿 δ，
+                       # δ~k 审计被污染（首跑实证 k=11/12 而斜率仍 ≈0）
+AUDIT_SLOPE = 0.05     # δ~k 斜率审计阈（≈5% 尺度失配）
+JUMP_U0, JUMP_UD = 80.0, 0.5   # 断轨阈：|Δu| > max(80, 0.5·d) px @ Δt≤0.2s
+
+
+def hygiene_longest_run(ms: list[dict]) -> list[dict]:
+    """邻帧 u 跳变断轨，只留最长连续段（数据卫生，不碰任何标定参数）。"""
+    out = []
+    for m in ms:
+        o = sorted(m["obs"], key=lambda x: x["ts"])
+        runs, cur = [], [o[0]]
+        for p, q in zip(o, o[1:]):
+            if (q["ts"] - p["ts"] <= 0.2
+                    and abs(q["u"] - p["u"]) > max(JUMP_U0, JUMP_UD * p["d"])):
+                runs.append(cur)
+                cur = [q]
+            else:
+                cur.append(q)
+        runs.append(cur)
+        best = max(runs, key=len)
+        if len(best) >= 12 and len(best) < len(o):
+            m2 = dict(m, obs=best)
+            mm = track_metrics(m2)
+            if mm["d_ratio"] >= 1.3:
+                mm["fit"] = m["fit"]
+                mm["id"] = m["id"]
+                mm["session"] = m["session"]
+                mm["n_hygiene_cut"] = len(o) - len(best)
+                out.append(mm)
+                continue
+        out.append(m)
+    return out
+
+
+def bounded_check(ms: list[dict], alpha: float) -> dict:
+    """X_i = bias + α·k_i + δ_i 拟合（α 冻结、k 整数、δ 有界）+ δ~k 审计。"""
+    a = np.array([m["fit"]["a"] for m in ms])
+    if len(a) < 3:
+        return {"n": len(a)}
+    # 全局网格搜索 bias（交替局部解小样本崩解，见 DELTA_BOUND 注）：
+    # 每 bias 下 k 精确归属 = clip(round((a−bias)/α))，取 Σδ² 最小者。
+    best = None
+    for bias in np.arange(-0.6, 0.601, 0.02):
+        k = np.clip(np.round((a - bias) / alpha), -K_MAX, K_MAX)
+        delta = a - bias - alpha * k
+        s = float(np.sum(delta ** 2))
+        if best is None or s < best[0]:
+            best = (s, float(bias), k, delta)
+    _, bias, k, delta = best
+    viol = int((np.abs(delta) > DELTA_BOUND).sum())
+    M = np.stack([np.ones_like(k), k], 1)
+    (c0, c1), *_ = np.linalg.lstsq(M, delta, rcond=None)
+    return {"n": len(a), "bias": bias, "delta_med": float(np.median(delta)),
+            "delta_max": float(np.abs(delta).max()), "viol": viol,
+            "audit_slope": float(c1), "k": [int(x) for x in k],
+            "delta": [round(float(x), 3) for x in delta]}
+
+
+def validate(sessions: list[str], stride: int = 2) -> None:
+    """Gate 2 正式口径（维护者裁定）：尺度判定 = 道路几何（框内夹车虚线
+    s_med≈1.0，AI 无关）；AI 轨 = 交叉验证（卫生后过有界模型 + δ~k 审计
+    + bias 零点）。判据先写死：s_med∈[0.9,1.1] ∧ viol=0 ∧ |audit_slope|
+    <0.05 ∧ |bias|<0.25。A_x 全程冻结，任何结果都不回写标定。"""
+    base = load_base()
+    if not base:
+        print("无冻结基准——先跑 probe_gate0_vp --freeze-base")
+        sys.exit(1)
+    from probe_gate1_invariance import dash_invariance
+    rows_cache, report = {}, {}
+    for s in sessions:
+        d = session_pipeline(s, stride, base)
+        if not d:
+            continue
+        ms0 = d["ms"]
+        ms = hygiene_longest_run(ms0)
+        cut = len(ms0) - len([m for m in ms if "n_hygiene_cut" not in m])
+        bc = bounded_check(ms, d["cal"]["A_x_used"])
+        # 几何判定：框内夹车虚线间距 s_med（物理 A_x 下应 ≈1.0）
+        rows, _ = analyze_series(s, stride)
+        rows_f = staged_filter(rows, base["base"], score_intervals(s))
+        race = [r for r in rows_f if r["stage"] == 4]
+        dash, _pts = dash_invariance(s, rows_f,
+                                     score_intervals(s) or
+                                     [(race[0]["ts"], race[-1]["ts"])],
+                                     d["cal"], lane_change_times(s))
+        smed = float(np.median([f["s_med"] for f in dash])) if dash else None
+        ok_geo = smed is not None and 0.9 <= smed <= 1.1
+        ok_ai = (bc.get("n", 0) >= 3 and bc.get("viol", 1) == 0
+                 and abs(bc.get("audit_slope", 1)) < AUDIT_SLOPE
+                 and abs(bc.get("bias", 1)) < 0.25)
+        print(f"== {s}: 轨 {len(ms0)}→卫生后 {len(ms)}"
+              f"（断/弃 {len(ms0) - len(ms)}）")
+        if bc.get("n", 0) >= 3:
+            print(f"   AI 交叉验证：bias {bc['bias']:+.3f} 道  δ 中位 "
+                  f"{bc['delta_med']:+.2f} max {bc['delta_max']:.2f} 越界 "
+                  f"{bc['viol']}  δ~k 斜率 {bc['audit_slope']:+.3f}"
+                  f"（审计阈 {AUDIT_SLOPE}）  k={bc['k']} δ={bc['delta']}")
+        print(f"   几何判定：框内虚线 s_med = {smed if smed is None else round(smed, 3)}"
+              f"（判据 [0.9,1.1]）→ 几何 {'过' if ok_geo else '不过'} ∧ "
+              f"AI {'过' if ok_ai else '不过'} → Gate 2 本场 "
+              f"{'✅' if ok_geo and ok_ai else '🟡/❌'}")
+        report[s] = {"bounded": bc, "s_med": smed, "geo_ok": ok_geo,
+                     "ai_ok": ok_ai, "n_track": len(ms)}
+    (CACHE / "gate2_validate.json").write_text(
+        json.dumps(report, ensure_ascii=False), encoding="utf-8")
 
 
 def main(sessions: list[str], stride: int = 2) -> None:
@@ -370,11 +491,15 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("sessions", nargs="*", default=[])
     ap.add_argument("--rescale", nargs="+", metavar="CALIB",
-                    help="标定侧场次（估 α、修 A_x）")
+                    help="（历史模式，维护者裁定后不再用于定级）")
     ap.add_argument("--holdout", nargs="+", metavar="VAL",
                     help="留场验证场次（冻结参数，只验不改）")
+    ap.add_argument("--validate", action="store_true",
+                    help="正式口径：几何定尺度 + AI 轨交叉验证（A_x 冻结）")
     args = ap.parse_args()
-    if args.rescale:
+    if args.validate:
+        validate(args.sessions)
+    elif args.rescale:
         rescale_holdout(args.rescale, args.holdout or args.sessions)
     else:
         main(args.sessions)
