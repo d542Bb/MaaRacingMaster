@@ -63,10 +63,10 @@ S1_LONG_DV = 150.0
 S1_MIN_CLUSTERS = 3  # 近端截距簇：3 条分隔线可见即可判（虚线有空档，单行截距会缺位，
                      # v1 取 4 曾把虚线空档帧整批误杀）
 S1_CLUSTER_GAP = 60.0
-S2_MIN_STRONG = 3    # 强内点（σ_d≤12px）：过 VP 的长证据至少 3 条
-S2_STRONG_SIG = 12.0
-S2_MAX_ZMED = 4.0    # 强内点中位标准化残差：真帧 Canny/Hough 噪声下 2.5 过紧
-                     # （v1 实证把正常直道帧整批拒掉），4 仍要求「强线确实过点」
+S1_MIN_STRONG = 3    # 共点性子条件·强内点（σ_d≤12px）：过 VP 的长证据至少 3 条
+S1_STRONG_SIG = 12.0
+S1_MAX_ZMED = 4.0    # 共点性子条件·强内点中位标准化残差：真帧 Canny/Hough 噪声下
+                     # 2.5 过紧（实证把正常直道帧整批拒掉），4 仍要求「强线确实过点」
 S4_YH_TOL = 25.0
 S4_WIN = 15
 S4_DX, S4_DY = 12.0, 8.0
@@ -127,7 +127,7 @@ def analyze_frame(rgb: np.ndarray, seq: int) -> dict:
         mids = np.array([[(s[0] + s[2]) / 2, (s[1] + s[3]) / 2] for s in cand])
         sig = _seg_sigma_d(coefs, lens, mids, (vp["vpx"], vp["y_h"]))
         d = np.abs(coefs[:, :2] @ np.array([vp["vpx"], vp["y_h"]]) + coefs[:, 2])
-        strong = (d < sig * 3 + 3) & (sig <= S2_STRONG_SIG)
+        strong = (d < sig * 3 + 3) & (sig <= S1_STRONG_SIG)
         n_strong = int(strong.sum())
         if n_strong:
             zmed = float(np.median(d[strong] / sig[strong]))
@@ -186,24 +186,52 @@ def score_intervals(sess_name: str) -> list[tuple[float, float]]:
     return ivs
 
 
+def freeze_base(sessions: list[str], stride: int) -> dict:
+    """建立冻结 y_h 基准（S4 不变量的一半）：来自指定场次集合，写入
+    %TEMP%/sr_calib/yh_base.json（含来源），之后所有 S4 检查只读它。
+
+    不变量（维护者裁定 2026-09-19）：**S4 的基准永远来自当前被筛数据集之外**
+    ——其他场次或历史冻结值；任何「本场数据自定本场基准」的路径不存在。
+    """
+    yh = []
+    srcs = []
+    for s in sessions:
+        rows, _ = analyze_series(s, stride)
+        yh += [r["y_h"] for r in rows if r["vpx"] is not None
+               and r["sig_vpx"] is not None and np.isfinite(r["sig_vpx"])
+               and r["sig_vpx"] <= QUALITY_SIG and r["n_inl"] >= QUALITY_INL
+               and DIAG_Y0 <= r["y_h"] <= DIAG_Y1]
+        srcs.append(s)
+    hist, edges = np.histogram(yh, bins=np.arange(DIAG_Y0, DIAG_Y1 + 1, 10))
+    rec = {"base": float(edges[np.argmax(hist)] + 5),
+           "sources": srcs, "n": len(yh), "stride": stride}
+    (CACHE / "yh_base.json").write_text(json.dumps(rec), encoding="utf-8")
+    return rec
+
+
+def load_base() -> dict | None:
+    p = CACHE / "yh_base.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
 def staged_filter(rows: list[dict], yh_base: float | None,
                   ivs: list[tuple[float, float]]) -> list[dict]:
-    """分级筛帧。yh_base=None 时由本组数据自定（A 段）；给定则直接套用（B 段）。
+    """分级筛帧。yh_base 只允许两种来源：load_base() 冻结值，或留出集中的
+    **其他场次/其他时段**（holdout_report）——「本组数据自定本组基准」的路径
+    不存在；传 None = 无基准，S4 整级跳过并如实标注（跳过 ≠ 自定）。
 
-    每帧带 stage（通过的最深级）与 reason（首个未过级的原因+数值）。
-    S4 前的各级都是画面内容前提；S4 是结果一致性检查（单独归类）。
+    S1 = 证据充分性与几何可用性（候选线/长线/截距簇/共点性，原 S2 已并入为
+    子条件——四场实测其独立淘汰率恒为 0，无独立区分职责）；
+    S3 = 比赛态（辅助）；S4 = 一致性检查（鲁棒异常值剔除：**它会改变最终估计**
+    ——收缩分布、移动中位，这是设计目的；其正当性由留出验证背书：基准来自
+    其他场次时同样收窄，非自证）。
     """
     q = [r for r in rows if r["vpx"] is not None and r["sig_vpx"] is not None
          and np.isfinite(r["sig_vpx"]) and r["sig_vpx"] <= QUALITY_SIG
          and r["n_inl"] >= QUALITY_INL and DIAG_Y0 <= r["y_h"] <= DIAG_Y1]
     for r in rows:
         r["stage"], r["reason"], r["killed"] = 0, "质量口径（σ/内点/带）", "qual"
-    if yh_base is None:
-        yh = np.array([r["y_h"] for r in q])
-        if len(yh):
-            hist, edges = np.histogram(yh, bins=np.arange(DIAG_Y0, DIAG_Y1 + 1, 10))
-            yh_base = float(edges[np.argmax(hist)] + 5)
-    # S1/S2 在质量口径内逐帧判
+    # S1（含原 S2 子条件）在质量口径内逐帧判
     s12 = []
     for r in q:
         if r["n_cand"] < S1_MIN_CAND:
@@ -215,12 +243,12 @@ def staged_filter(rows: list[dict], yh_base: float | None,
         elif r["n_cut_clusters"] < S1_MIN_CLUSTERS:
             r["reason"] = f"S1 截距簇不足({r['n_cut_clusters']}<{S1_MIN_CLUSTERS})"
             r["killed"] = "S1"
-        elif r["n_strong"] < S2_MIN_STRONG:
-            r["reason"] = f"S2 强内点不足({r['n_strong']}<{S2_MIN_STRONG})"
-            r["killed"] = "S2"
-        elif r["zmed"] is None or r["zmed"] > S2_MAX_ZMED:
-            r["reason"] = f"S2 强内点不共点(zmed={r['zmed']})"
-            r["killed"] = "S2"
+        elif r["n_strong"] < S1_MIN_STRONG:
+            r["reason"] = f"S1 强内点不足({r['n_strong']}<{S1_MIN_STRONG})"
+            r["killed"] = "S1"
+        elif r["zmed"] is None or r["zmed"] > S1_MAX_ZMED:
+            r["reason"] = f"S1 强内点不共点(zmed={r['zmed']})"
+            r["killed"] = "S1"
         else:
             r["stage"] = 2
             s12.append(r)
@@ -235,7 +263,11 @@ def staged_filter(rows: list[dict], yh_base: float | None,
         else:
             r["stage"] = 3
             s3.append(r)
-    # S4 一致性检查（最后；淘汰单独归类）
+    # S4 一致性检查（最后；淘汰单独归类）。无冻结基准 = 整级跳过，不是自定基准。
+    if yh_base is None:
+        for r in s3:
+            r["reason"] = "S4 跳过（无冻结基准）"
+        return rows
     ok = [r for r in s3 if r["y_h"] is not None]
     arr = {r["seq"]: r for r in ok}
     seqs = [r["seq"] for r in ok]
@@ -342,11 +374,9 @@ def sheet(tiles: list[np.ndarray], path: Path):
 
 
 CLS = {"A": (0, 190, 0), "qual": (190, 190, 70), "S1": (255, 160, 0),
-       "S2": (220, 40, 40), "S3": (60, 120, 255), "S4": (150, 150, 150),
-       "none": (35, 35, 35)}
-CLS_NAME = {"A": "比赛态", "qual": "质量口径未过", "S1": "S1 证据不足",
-            "S2": "S2 不共点", "S3": "S3 非比赛态", "S4": "S4 一致性",
-            "none": "VP 未估出"}
+       "S3": (60, 120, 255), "S4": (150, 150, 150), "none": (35, 35, 35)}
+CLS_NAME = {"A": "比赛态", "qual": "质量口径未过", "S1": "S1 证据/几何",
+            "S3": "S3 非比赛态", "S4": "S4 一致性", "none": "VP 未估出"}
 
 
 def _row_class(r: dict) -> str:
@@ -371,7 +401,7 @@ def audit_timeline(all_rows: dict[str, list[dict]]) -> None:
             best = max(best, run)
         per.append((s, cls, cnt, best * dt, dt))
         print(f"   {s[-9:]}: A {cnt['A']:.0f}%  质量未过 {cnt['qual']:.0f}%  "
-              f"S1 {cnt['S1']:.0f}%  S2 {cnt['S2']:.0f}%  S3 {cnt['S3']:.0f}%  "
+              f"S1 {cnt['S1']:.0f}%  S3 {cnt['S3']:.0f}%  "
               f"S4 {cnt['S4']:.0f}%  估不出 {cnt['none']:.0f}%  "
               f"最长连续R段 {best * dt:.1f}s")
     fw = 1280
@@ -385,7 +415,7 @@ def audit_timeline(all_rows: dict[str, list[dict]]) -> None:
                           CLS[k], -1)
         cv2.putText(img, f"{s[-9:]}  {cnt['A']:.0f}%A  maxR {best:.1f}s", (6, y + 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (30, 30, 30), 1, cv2.LINE_AA)
-    leg = "  ".join(f"{k}:{CLS_NAME[k]}" for k in ("A", "qual", "S1", "S2", "S4"))
+    leg = "  ".join(f"{k}:{CLS_NAME[k]}" for k in ("A", "qual", "S1", "S4"))
     cv2.putText(img, leg, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (30, 30, 30),
                 1, cv2.LINE_AA)
     cv2.imwrite(str(CACHE / "timeline_all.png"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
@@ -413,19 +443,28 @@ def s4_audit(all_rows: dict[str, list[dict]]) -> None:
 
 
 def report(sessions, stride, rng_seed: int = 7):
+    base_rec = load_base()
+    if base_rec:
+        print(f"S4 冻结基准 y_h={base_rec['base']:.0f}"
+              f"（来源 {','.join(s[-9:] for s in base_rec['sources'])}，"
+              f"n={base_rec['n']}）")
+    else:
+        print("无冻结基准（%TEMP%/sr_calib/yh_base.json）——S4 跳过；"
+              "建基准：--freeze-base <session>...（≥2 场）")
     all_rows, ivs_map, metas = {}, {}, {}
     for s in sessions:
         rows, meta = analyze_series(s, stride)
         all_rows[s], ivs_map[s], metas[s] = rows, score_intervals(s), meta
         ivs = ivs_map[s]
-        rows = staged_filter(rows, None, ivs)
+        base = base_rec["base"] if base_rec else None
+        rows = staged_filter(rows, base, ivs)
         by_stage = {k: sum(1 for r in rows if r["stage"] == k) for k in range(5)}
         rej = [r for r in rows if r["stage"] < 4 and r["vpx"] is not None]
         print(f"\n== {s}：{len(rows)} 帧（stride {stride}）  S3 覆盖 "
               f"{sum(b - a for a, b in ivs):.0f}s / 场长 "
               f"{rows[-1]['ts'] - rows[0]['ts']:.0f}s")
         print(f"   通过：质量口径 {by_stage[0] + sum(by_stage.values()) - by_stage[0]}"
-              f" → S1/S2 共点 {by_stage[2] + by_stage[3] + by_stage[4]}"
+              f" → S1 证据/共点 {by_stage[2] + by_stage[3] + by_stage[4]}"
               f" → S3 比赛态 {by_stage[3] + by_stage[4]}"
               f" → S4 一致性 {by_stage[4]}")
         race = [r for r in rows if r["stage"] == 4]
@@ -463,5 +502,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("sessions", nargs="+")
     ap.add_argument("--stride", type=int, default=2)
+    ap.add_argument("--freeze-base", action="store_true",
+                    help="用给定场次建立冻结 y_h 基准（S4 不变量：基准来自被筛"
+                         "数据集之外），写 %TEMP%/sr_calib/yh_base.json")
     args = ap.parse_args()
+    if args.freeze_base:
+        rec = freeze_base(args.sessions, args.stride)
+        print(f"冻结基准 y_h={rec['base']:.1f}（来源 {rec['sources']}，n={rec['n']}）"
+              f" → {CACHE / 'yh_base.json'}")
+        sys.exit(0)
     report(args.sessions, args.stride)
