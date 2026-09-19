@@ -3,54 +3,31 @@
 # 键格式：规则|文件/主题|标识。语义见 tools/check_repo_hygiene.py 与 tools/experiments/README.md。
 R1|bid-pass-dialog|缺 README.md
 R1|bid-strategy-20260917|README 缺 status: active 行
-R1|clock-semantics|缺 README.md
 R1|dual-webview2|README 缺 status: active 行
-R1|ecosystem-audit|缺 README.md
-R1|egg-claim-coin-read|缺 README.md
 R1|frame-page-token|缺 README.md
 R1|gamepad-chain-starvation|缺 README.md
 R1|hall-dwell-flicker|缺 README.md
 R1|hall-popup|缺 README.md
-R1|maafw-docs-constraints|README 缺 status: active 行
-R1|mpe-p0|缺 README.md
 R1|observe-stage-cost|缺 README.md
 R1|ocr-gate-2026-09-15|缺 README.md
-R1|pipeline-inheritance|缺 README.md
 R1|speedrush_drive|README 缺 status: active 行
 R1|speedrush_gating|缺 README.md
 R1|speedrush_planning|README 缺 status: active 行
 R1|speedrush_scoring|README 缺 status: active 行
 R1|speedrush_templates|缺 README.md
 R1|speedrush_vision|README 缺 status: active 行
-R1|v4-box-passthrough|缺 README.md
-R1|v4-dwell-parity|缺 README.md
-R1|v4-frame-pacing|README 缺 status: active 行
-R1|v4-p2a-wiring|缺 README.md
-R1|v4-p2b-smoke|缺 README.md
-R1|v4-p3-studio|缺 README.md
-R1|v4-p4b-source|缺 README.md
-R1|v4-p4c-match|缺 README.md
 R2|docs/MAAFW_GUIDE.md|ecosystem-audit
 R2|docs/MAAFW_GUIDE.md|maafw-docs-constraints
-R2|docs/MAAFW_GUIDE.md|pipeline-inheritance
-R2|docs/MAAFW_GUIDE.md|v4-frame-pacing
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|speedrush_gating
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|speedrush_scoring
 R2|maaracing_master/plugins/speedrush/RULES.md|speedrush_scoring
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|egg-claim-coin-read
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|frame-page-token
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|ocr-gate-2026-09-15
-R2|maaracing_master/plugins/treasure/CODE_WIKI.md|v4-p4c-match
-R4|maaracing_master/core/navkit/v4_source.py
 R4|maaracing_master/plugins/speedrush/hud.py
 R4|maaracing_master/plugins/speedrush/module.py
-R4|maaracing_master/plugins/treasure/detector.py
 R4|maaracing_master/plugins/treasure/eggs.py
 R4|maaracing_master/plugins/treasure/module.py
-R4|maaracing_master/plugins/treasure/policy_bridge.py
 R4|tests/test_core_ocr.py
-R4|tests/test_navkit_runtime_golden.py
-R4|tests/test_navkit_truth.py
 R4|tests/test_speedrush_truth.py
 R4|tests/test_treasure_egg_claim.py
-R4|tests/test_treasure_policy_bridge.py

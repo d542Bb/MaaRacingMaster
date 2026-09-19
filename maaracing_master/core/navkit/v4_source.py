@@ -6,7 +6,7 @@ navkit v4 数据面 loader——policy.json → 运行时消费对象（P4b 引�
 运行时感知/决策数据的唯一真源：
 
 - `perception.{spec,stages,transitions,match}` → `DetectionPlan`
-  （detector 每帧扫描规格；等价性对拍见 tools/experiments/v4-p4b-source/）
+  （detector 每帧扫描规格；等价性对拍见 commit `24d831a`）
 - `policy` 段 → `Policies`（决策引擎 policy.py 原样复用，仅换装配口）
 
 `spec` 同时是 module 私有感知装载器（鉴宝师模板/勾选/场次面板/智能出价/

@@ -142,7 +142,7 @@ def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
 
 
 # ==================== 决策帧自节流闸门 ====================
-# 依据 5.12.3 实测（tools/experiments/v4-frame-pacing/）：命中 jump_back 兜底位后，
+# 依据 5.12.3 实测（commit `31ff5ba`）：命中 jump_back 兜底位后，
 # 父 dwell 的 rate_limit / pre_delay / post_delay 全部旁路，间隔 = 动作自身耗时。
 # 闸门只在这一层能拦住，故用可注入时钟做确定性验证（不靠真实 sleep 计时）。
 

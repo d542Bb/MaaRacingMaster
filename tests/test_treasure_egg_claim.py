@@ -190,7 +190,7 @@ def test_reward_card_geometry_on_synthetic_card():
 def test_egg_recognize_golden_frame_counts():
     """真帧端到端契约（第一阶段交付的教训：锚点参数必须过真帧，不再口头遵守）。
 
-    fixtures = tools/experiments/egg-claim-coin-read/claim_popup_0609.png
+    fixtures = tests/fixtures/claim_popup_0609.png
     （实验校准资产，缺失即 skip；期望值来自 card_geom_probe.py 实测 5/5）。
     只验数蛋通路（含 OCR）；medal 读金额与其同机制，链路上还需实机帧。
     """

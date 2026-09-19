@@ -10,7 +10,7 @@
 期望值**不是「正确的识别」，而是搬迁时的实际输出**（2026-09-17 实测）：本文件是
 漂移报警器，识别率优劣由 `tools/experiments/` 的探针另行判定，别在此处"顺手纠正"。
 
-**素材来源**：`tools/experiments/egg-claim-coin-read/claim_popup_0609.png` 是仓库里
+**素材来源**：`tests/fixtures/claim_popup_0609.png` 是仓库里
 仅有的入库真帧（720p 录屏帧），既有测试（`test_treasure_egg_claim`）已按「缺失即
 skip」用它；ROI 取生产 policy 的 ocr 锚点 rect（值抄自 `treasure.policy.json`，
 漂移锁另见 `test_navkit_runtime_golden`）。故本文件不新造任何资产。

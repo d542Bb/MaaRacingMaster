@@ -124,7 +124,7 @@ def ref_name(r: Any) -> str | None:
 def and_or_refs(node: dict) -> list[str]:
     """节点识别树里所有 And/Or（any_of/all_of）的**按名引用子项**，v1/v2 两种形态都走。
 
-    为什么必须自己闭合（5.12.3 实测，tools/experiments/pipeline-inheritance/）：
+    为什么必须自己闭合（5.12.3 实测，commit `47c3751`）：
       · `any_of: ["不存在的节点"]` → post_pipeline **不报错**，运行期才
         `PipelineTask collect_ocr_from_sub_recognitions: Bad sub ref` +
         `Recognizer::or_ failed to get pipeline data for node` → 整个 Or 判未命中，

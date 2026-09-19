@@ -70,7 +70,7 @@ tools/navkit/
 
 校验（CI 同款）：`python tools/navkit/check_truth.py`
 
-> 真源数值等价性的历史对拍记录在 `tools/experiments/v4-p4b-source/`。
+> 真源数值等价性的历史对拍记录见 commit `24d831a`。
 
 ### 校验器护栏（CI 同款）
 
@@ -218,7 +218,7 @@ if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { [IO.File]::WriteAl
 **想知道配置/日志在哪**
 不用手翻目录：`mpelb config open`（配置）、`mpelb config open-log`（日志）、`mpelb info`（路径）。
 日志 INFO 级**不打请求路径**，要查越界的具体路径就 `--log-level DEBUG` 重起，
-或自连 WS 探（可复用 `tools/experiments/v4-p3-studio/diag_lb_ws_permission.py` 里的
+或自连 WS 探（可复用 `tools/navkit/diag_lb_ws_permission.py` 里的
 `ws_connect` / `ws_send` / `FrameReader` / `read_until_response`）。
 
 **只想起 LocalBridge 不起 Studio 服务**

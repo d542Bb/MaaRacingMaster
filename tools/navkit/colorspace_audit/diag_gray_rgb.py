@@ -15,7 +15,7 @@
      与 detector._detect_legacy 逐行同构（per-模板 arb → spec.threshold → 默认）。
 
 用法：
-  .venv\\Scripts\\python.exe tools/experiments/v4-p4c-match/diag_p4c_gray_rgb.py \
+  .venv\\Scripts\\python.exe tools/navkit/colorspace_audit/diag_gray_rgb.py \
       [--sessions 20260906_181301,20260906_203109] [--per-anchor 25] [--miss 50] [--smoke]
 """
 from __future__ import annotations
@@ -233,7 +233,6 @@ def main():
                   "flip_g2r": []} for name, _, _ in anchors}
     timing = {"g": {}, "r": {}}
     n_total = 0
-    cursor_seen = cursor_none = 0
     for sess in [s.strip() for s in args.sessions.split(",") if s.strip()]:
         session_dir = DEBUG_ROOT / sess
         if not session_dir.is_dir():

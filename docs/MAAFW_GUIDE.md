@@ -313,7 +313,7 @@ tasker.post_task("日常清理").wait()
 - next **顺序检测、命中即中断** ⇒ 数组顺序就是优先级：优先抢占的（哪怕命中频率低的弹窗）
   排前面，避免"主界面也能匹配、弹窗永远轮不到"。
 
-- **`rate_limit`** **管不住** **`jump_back`** **回弹闭环**（5.12.3 实测，`tools/experiments/v4-frame-pacing/`）：
+- **`rate_limit`** **管不住** **`jump_back`** **回弹闭环**（5.12.3 实测，commit `31ff5ba`）：
   `rate_limit` 的作用域是「节点自己等后继命中的那段轮询」，`pre/post_delay` 只在**进入该节点执行时**
   付一次；一旦下一跳命中了挂 `jump_back` 的兜底节点，父节点的 `rate_limit`/`pre_delay`/`post_delay`
   **全部旁路**——实测把父 `rate_limit` 设 50 / 600 / 2000、`pre/post_delay` 设 0 / 200 / 500 任意组合，
@@ -480,7 +480,7 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
   模板继承复用、跨服资源叠加。
 
 - **协议自带的复用/变体位，优先于自研**（2026-09-11 按 5.12.3 实测重列，取证脚本
-  `tools/experiments/pipeline-inheritance/`）：
+  commit `47c3751`）：
   **`And`/`Or` 按节点名引用子条件**（v5.7；实测=运行期取被引节点的**识别定义**对当前帧
   重跑、只跑识别不执行其动作、可嵌套传递，是"引用而不复制识别规格"的唯一原生通路。
   代价：框架**不校验**这些名字，拼错要到运行期才 `Bad sub ref` 静默判该 Or 未命中，

@@ -101,7 +101,7 @@
   root 内不存在 → `FILE_NOT_FOUND`；**root 外 →** **`PERMISSION_DENIED`（reason=路径不在根目录范围内）**。
   所以看到权限码即可排除"文件被删/改名"，只查越界（常见来源：浏览器恢复了仓库外旧路径，如历史试验田）。
   INFO 级日志不打请求路径，需要时 `--log-level DEBUG` 或自连 WS 探（可复用
-  `tools/experiments/v4-p3-studio/diag_lb_ws_permission.py` 的客户端函数）。
+  `tools/navkit/diag_lb_ws_permission.py` 的客户端函数）。
 
 - **首次答题防呆跳过**：MPE 前端 dev 接口 `mpedev("skipNewcomer")`（浏览器控制台执行；
   官方文档站与 release 说明均未收录该接口，勿在文档里当作可依赖的稳定 API）。

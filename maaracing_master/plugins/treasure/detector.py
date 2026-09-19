@@ -13,7 +13,7 @@
      上层状态机按「最近一次稳定阶段 + 时间推移」自行推进即可。
   5. **色彩空间按锚点声明**（policy.json `perception.spec.<锚点>.colorspace`）：
      默认 rgb；回合横幅/结算横幅等高成本锚点声明 gray（帧预算与历史灰度校准
-     保真，见 tools/experiments/v4-p4c-match/ 对拍报告）。本文件不再有第二套
+     保真，对拍报告见 commit `0554f58`）。本文件不再有第二套
      匹配实现——缩放口径（整数尺寸 + AREA/CUBIC）已收敛进 find_template。
 
 用法：

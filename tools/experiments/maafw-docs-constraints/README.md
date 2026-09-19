@@ -1,5 +1,8 @@
 # maafw-docs-constraints — 官方文档论断在 5.12.3 的实测校准
 
+status: active
+
+
 回答「文档写的外部系统行为在**本项目实际安装的版本**上成立不成立」。
 文档口径 = maafw\.com（main，v5.13.0 后）；被测 = `.venv` 内 MaaFw 5.12.3。
 

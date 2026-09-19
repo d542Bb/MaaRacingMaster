@@ -3,7 +3,7 @@
 
 本套件看护 **落盘真源三件套本身** 的形态与行为契约——历史定案（真机五/七/
 八炸、P2b 节拍与起跑汇聚）逐条保留，fixture 直读盘上文件；等价性对拍记录见
-tools/experiments/v4-p4b-source/。
+commit `24d831a`。
 """
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def test_policy_loop_wired_into_every_dwell(truth):
 def test_spec_colorspace_contract(truth):
     """P4c 数据面契约：colorspace 三值合法；灰度豁免集 = 帧预算标定的声明集。
 
-    灰度集依据 tools/experiments/v4-p4c-match/ 对拍报告（rgb 2.3~2.8× 成本、
+    灰度集依据对拍报告 commit `0554f58`（脚本现居 tools/navkit/colorspace_audit/；rgb 2.3~2.8× 成本、
     selected_check 彩图松判、session_start_match_btn 边界翻转）；改这里=改帧率
     与识别行为，须重跑对拍。其余锚点缺省 rgb（宪法 §6 默认彩色）。
     """
@@ -257,7 +257,7 @@ def test_boot_node_aggregates_stage_signals(truth):
 
     引用化前后行为等价的依据（两条，缺一不可）：
       · 协议侧——Or/And 的字符串子项按名取**被引节点的识别定义**、只跑识别不跑其动作
-        （5.12.3 实测，tools/experiments/pipeline-inheritance/）；
+        （5.12.3 实测，commit `47c3751`）；
       · 真源侧——原 11 块内联参数与这 9 个被引节点的 11 处参数逐一全等（第 2~5 回合与
         第 1 回合同规格），由两面同图闸 anchor_face_checks 持续锁住。
     """
@@ -446,7 +446,7 @@ def test_layering_red_line_is_live():
 
 
 # ---------------- 引用位闭合 + 两面同图（2026-09-11 新增闸门） ----------------
-# 依据：MaaFW 5.12.3 实测（tools/experiments/pipeline-inheritance/）——And/Or 按名子项
+# 依据：MaaFW 5.12.3 实测（commit `47c3751`）——And/Or 按名子项
 # 是真引用（运行期取被引用节点的识别定义），但框架加载期不校验其名字，拼错要到运行期
 # 才 `Bad sub ref` 静默判该 Or 未命中；`[Anchor]名` 在子项里同样按字面节点名解析，不可用。
 

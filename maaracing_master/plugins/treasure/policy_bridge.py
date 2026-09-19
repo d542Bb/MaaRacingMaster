@@ -9,7 +9,7 @@
 意图解析 → 点击消费/提交 → 决策契约落盘），
 `[JumpBack]` 返回父 dwell 重判——「每帧重判」的图化。
 
-自节流为什么住在桥里（5.12.3 实测，见 tools/experiments/v4-frame-pacing/）：
+自节流为什么住在桥里（5.12.3 实测，commit `31ff5ba`）：
 `rate_limit` 的作用域只是「节点自己等后继命中的那段轮询」；一旦下一跳命中挂
 `jump_back` 的兜底节点，父 dwell 的 `rate_limit` 与 `pre_delay`/`post_delay`
 **全部旁路**，相邻决策帧间隔 = 兜底节点动作自身耗时 + ≈3.5ms 框架开销。
