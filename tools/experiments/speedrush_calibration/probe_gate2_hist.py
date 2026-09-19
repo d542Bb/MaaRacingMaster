@@ -683,6 +683,72 @@ def global_L(sessions: list[str], stride: int = 2) -> None:
     print(f"缓存 → {CACHE / 'gate2_globalL.json'}")
 
 
+# ---------- 数据集 manifest（维护者裁定 2026-09-19：数据治理三态） ----------
+# 状态口径：**VALID**=有观测、入统计分母；**INVALID**=处理阶段错误致无效、
+# 可剔除但须客观可复核原因（当前为空；剔除永不按 Gate 结果决定）；
+# **NO_OBSERVATION**=数据有效而仪器产率不足、保留在覆盖率统计中、不得伪装成
+# INVALID；**OUTLIER_REPLICATED_NOT**=保留并记录独立复核状态（163152：4 个
+# 同路独立片段未复现，暂结案）。DASH_BIN_MIN 等仪器定义不动（改门槛=改仪器
+# 定义，须裁定）；globalL 不作为 dash 的覆盖补位（口径不同源）。
+def manifest(sessions: list[str]) -> None:
+    import subprocess
+    rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                         cwd=HERE.parents[2], capture_output=True,
+                         text=True).stdout.strip()
+    val = json.loads((CACHE / "gate2_validate.json").read_text(encoding="utf-8")) \
+        if (CACHE / "gate2_validate.json").exists() else {}
+    gl = json.loads((CACHE / "gate2_globalL.json").read_text(encoding="utf-8")) \
+        if (CACHE / "gate2_globalL.json").exists() else {}
+    lines = ["# Gate 2 数据集 manifest", "",
+             f"生成于 commit `{rev}`；validate 缓存 {len(val)} 场、globalL 缓存 "
+             f"{len(gl)} 场。", "",
+             "| capture_id | source_valid | dash_observable | globalL_observable "
+             "| s_med | 紧致对可用率 | 几何判定 | 样本状态 | exclusion_reason |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    n = {"VALID": 0, "NO_OBSERVATION": 0, "OUTLIER_REPLICATED_NOT": 0,
+         "INVALID": 0}
+    for s in sessions:
+        v, glo = val.get(s), gl.get(s)
+        glo_s = "✓" if glo else "—"
+        sp = CACHE / f"straight_{s}.json"
+        n_straight = sum(bool(x) for x in json.loads(sp.read_text(
+            encoding="utf-8"))["mask"]) if sp.exists() else None
+        if v is None:
+            reason = ("无直道帧——Gate 2 适用域外（弯道素材）" if n_straight == 0
+                      else f"直道帧仅 {n_straight} 张，未产出可判定观测")
+            lines.append(f"| {s} | ✓ | — | {glo_s} | — | — | — | "
+                         f"NO_OBSERVATION | {reason} |")
+            n["NO_OBSERVATION"] += 1
+            continue
+        sm, av = v.get("s_med"), v.get("avail")
+        av_s = "—" if av is None else f"{av:.0%}"
+        if sm is None:
+            lines.append(f"| {s} | ✓ | ✗ | {glo_s} | — | —（0 箱） | — | "
+                         f"NO_OBSERVATION | 仪器产率不足（端点密度未达 "
+                         f"DASH_BIN_MIN） |")
+            n["NO_OBSERVATION"] += 1
+        elif v.get("geo_ok"):
+            lines.append(f"| {s} | ✓ | ✓ | {glo_s} | {sm:.3f} | {av_s} | 过 | "
+                         f"VALID | — |")
+            n["VALID"] += 1
+        else:
+            lines.append(f"| {s} | ✓ | ✓ | {glo_s} | {sm:.3f} | {av_s} | 不过 | "
+                         f"OUTLIER_REPLICATED_NOT | —（独立复核未复现，"
+                         f"暂结案保留历史） |")
+            n["OUTLIER_REPLICATED_NOT"] += 1
+    lines += ["", f"**合计**：VALID {n['VALID']} / NO_OBSERVATION "
+              f"{n['NO_OBSERVATION']} / OUTLIER_REPLICATED_NOT "
+              f"{n['OUTLIER_REPLICATED_NOT']} / INVALID {n['INVALID']}。", "",
+              "Gate 2 两项拆分（维护者裁定）：**A 几何正确性** = VALID 中几何过 "
+              f"{n['VALID']}（163152 除外全过）；**B 仪器可观测率** = 有数据 "
+              f"{n['VALID'] + n['OUTLIER_REPLICATED_NOT']}/{len(sessions)}。",
+              "B 未闭合不阻塞 A 的结论；若把 B 列为硬门槛，属新 Gate 定义，"
+              "须单独制定观测产率标准（不得以降低 DASH_BIN_MIN 实现）。"]
+    out = HERE / "DATASET_MANIFEST.md"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"manifest → {out}\n" + "\n".join(lines[7:]))
+
+
 def main(sessions: list[str], stride: int = 2) -> None:
     base = load_base()
     if not base:
@@ -831,8 +897,13 @@ if __name__ == "__main__":
     ap.add_argument("--globalL", action="store_true",
                     help="全局车道格阵 L 估计（维护者裁定冻结版：φ_f 逐帧、"
                          "m∈1..4 枚举、按帧去重；输出 A_x=(V_REF−y_h)/L 新 source）")
+    ap.add_argument("--manifest", action="store_true",
+                    help="数据集 manifest（三态治理：VALID/NO_OBSERVATION/"
+                         "OUTLIER_REPLICATED_NOT/INVALID）")
     args = ap.parse_args()
-    if args.globalL:
+    if args.manifest:
+        manifest(args.sessions)
+    elif args.globalL:
         global_L(args.sessions)
     elif args.audit:
         audit_spacing(args.sessions)
