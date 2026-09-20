@@ -632,13 +632,24 @@ class TreasureModule(ActivityModule):
     EGG_CHAIN_MAX_CLAIM_ROUNDS = 3     # 领取轮次上限（一次聚合弹窗通常 1 轮，防多弹窗兜底）
     EGG_CHAIN_CLICK_TIMEOUT_S = 6.0    # 单次点击等结果超时（提交被拒与结果超时共用）
     EGG_CHAIN_CLICK_RETRY_MAX = 3      # 单次点击的提交重试上限（含首点共 3 次）
+    # 聚合奖励弹窗识别窗：蛋卡/medal 卡逐帧飞入（完整帧仅约 1 帧），单帧识别撞上
+    # 空窗读出全 0 并照常关弹窗 → 奖励失录（真机 2026-09-20 22:32「红0 黄0 蓝0」，
+    # 游戏侧实得红2/蓝/金）。窗内轮询择优，最短观察窗不到不早退（纯零结果同样要
+    # 等过，防动画早期空帧假稳定）。
+    EGG_CHAIN_RECOGNIZE_WINDOW_S = 6.0    # 识别窗上限（含飞入动画 + 稳定确认）
+    EGG_CHAIN_RECOGNIZE_MIN_S = 2.0       # 最短观察窗
+    EGG_CHAIN_RECOGNIZE_STABLE_POLLS = 2  # 连续持平拍数（达标且过最短窗才提前收）
     # 两个「空白点击」坐标：链内唯一的裸坐标（关抽屉点左侧空地、关弹窗点屏幕中下部）。
     # 不登记为 spec 锚点的理由（评审结论，2026-09-14）：对象是空白处，没有识别物也没有
     # 模板，位置精度要求极低（点哪都行，只要不落在按钮上）；真源锚点的价值在「有模板/
     # 有精确边界需要标定」，空白点不具备该需求，登记只会把锚点计数锁与惰性机检一并牵动。
     # 若游戏 UI 改版使这两点落到按钮上，改这里即可。
     EGG_CHAIN_BLANK_NORM = (0.30, 0.50)    # 任务抽屉：点左侧空白 = 关抽屉（背景车场景空地，无可点物）
-    EGG_CHAIN_DISMISS_NORM = (0.50, 0.55)  # 奖励弹窗「点击屏幕继续」= 点中间偏下任意处
+    # 奖励弹窗「点击屏幕继续」= 点任意**非卡片区**。聚合「奖励」弹窗的卡片带在
+    # y 0.28~0.72（medal/蛋卡搜索区 0.28~0.60 + 详情卡下缘），旧点位 (0.50, 0.55)
+    # 正落带内，点开的会是卡片详情而不是推进页面（真机 2026-09-20 红色彩蛋详情卡
+    # 被误点开）——点位必须在卡片带下方。
+    EGG_CHAIN_DISMISS_NORM = (0.50, 0.85)
     # 链内惰性锚点：只在 spec 登记（不进 transitions/stages.active/global_anchors，
     # detector 零扫描、不参阶段判定）。本清单与真源的一致性由
     # tests/test_treasure_egg_claim.py 机检（测试直接 import 本常量，不再手抄副本）。
@@ -4305,6 +4316,59 @@ class TreasureModule(ActivityModule):
         n = parse_count_text(str(info.get("text") or ""))
         return n if n and n > 0 else 0
 
+    def _egg_recognize_stable(self, specs: dict[str, tuple] | None,
+                              budget_deadline: float | None):
+        """聚合奖励弹窗数蛋 + medal 读数：飞入动画窗内轮询择优，稳定即收。
+
+        蛋卡/medal 卡是逐帧飞入动画（完整帧仅约 1 帧，2026-08-18 结算链同款时序），
+        单帧识别撞上空窗读出全 0 → 照常关弹窗，奖励从此失录。故在窗内轮询：
+        counts 按「命中蛋种数 → 蛋总数」择优绝不降级（飞入期可见蛋只增不减），
+        银币/积分独立取窗内最大值（count-up 同为单调）；结果连续
+        EGG_CHAIN_RECOGNIZE_STABLE_POLLS 拍持平且已过最短观察窗才提前收——纯零
+        结果同样要过最短窗，防动画早期空帧假稳定。窗口受剩余预算 clamp。
+
+        返回 (counts|None, coin, score)：counts=None 表示整个窗口没拿到任何识别
+        结果（识别器缺失/帧不可用），金额仍返回窗内最大读数（照常入账）。
+        """
+        window = self.EGG_CHAIN_RECOGNIZE_WINDOW_S
+        if budget_deadline is not None:
+            window = min(window, max(0.0, budget_deadline - time.monotonic()))
+        start = time.monotonic()
+        deadline = start + window
+        best_counts = None
+        best_key = (-1, -1)
+        best_coin = best_score = 0
+        prev_sig = None
+        stable = 0
+        while time.monotonic() < deadline and self.ctx.lifecycle.running:
+            frame = self.ctx.capture.screenshot()
+            coin = score = 0
+            counts = None
+            if frame is not None:
+                coin = self._egg_chain_read_amount(specs, "claim_coin_medal", frame)
+                score = self._egg_chain_read_amount(specs, "claim_score_medal", frame)
+                best_coin = max(best_coin, coin)
+                best_score = max(best_score, score)
+                if self._egg_recognizer is not None:
+                    res = self._egg_recognizer.recognize(frame)
+                    counts = (res or {}).get("counts")
+                if counts is not None:
+                    key = (sum(1 for v in counts.values() if v), sum(counts.values()))
+                    if key > best_key:
+                        best_counts, best_key = counts, key
+            sig = None if counts is None else (tuple(counts.items()), coin, score)
+            if sig is not None and sig == prev_sig:
+                stable += 1
+            else:
+                stable = 1
+            prev_sig = sig
+            if (sig is not None
+                    and stable >= self.EGG_CHAIN_RECOGNIZE_STABLE_POLLS
+                    and time.monotonic() - start >= self.EGG_CHAIN_RECOGNIZE_MIN_S):
+                break
+            self.ctx.lifecycle.sleep(self.EGG_CHAIN_POLL_S)
+        return best_counts, best_coin, best_score
+
     def _egg_claim_steps(self, specs: dict[str, tuple] | None,
                          budget_deadline: float) -> None:
         """链主体（素材缺失=直接离场）。每步只记日志，超时/失败走离场路径。
@@ -4379,30 +4443,34 @@ class TreasureModule(ActivityModule):
             rounds += 1
             if title is None:
                 continue
-            frame = self.ctx.capture.screenshot()
-            coin_amt = self._egg_chain_read_amount(specs, "claim_coin_medal", frame)
-            score_amt = self._egg_chain_read_amount(specs, "claim_score_medal", frame)
-            if frame is not None and self._egg_recognizer is not None:
-                res = self._egg_recognizer.recognize(frame)
-                counts = (res or {}).get("counts")
-                if counts:
-                    self._store.record_egg_claim(counts, coin=coin_amt, score=score_amt)
-                    for k in total:
-                        total[k] += int(counts.get(k) or 0)
-                    total_coin += coin_amt
-                    total_score += score_amt
-                    log(f"[彩蛋收尾] 第 {rounds} 轮领取：红{counts.get('red', 0)} "
-                        f"黄{counts.get('yellow', 0)} 蓝{counts.get('blue', 0)} "
-                        f"银币+{coin_amt:,} 积分+{score_amt:,}", "INFO")
-                else:
-                    log(f"[彩蛋收尾] 第 {rounds} 轮弹窗未读到蛋数"
-                        f"（银币+{coin_amt:,} 积分+{score_amt:,} 照常入账）", "DEBUG")
-                    self._store.record_egg_claim({}, coin=coin_amt, score=score_amt)
-                    total_coin += coin_amt
-                    total_score += score_amt
-            self._egg_chain_click(*self.EGG_CHAIN_DISMISS_NORM, key="egg_dismiss_popup")
-            self._egg_chain_wait(specs, "egg_claim_title", 4.0, want=False,
-                                 budget_deadline=budget_deadline)
+            counts, coin_amt, score_amt = self._egg_recognize_stable(
+                specs, budget_deadline)
+            if counts is not None:
+                self._store.record_egg_claim(counts, coin=coin_amt, score=score_amt)
+                for k in total:
+                    total[k] += int(counts.get(k) or 0)
+                total_coin += coin_amt
+                total_score += score_amt
+                log(f"[彩蛋收尾] 第 {rounds} 轮领取：红{counts.get('red', 0)} "
+                    f"黄{counts.get('yellow', 0)} 蓝{counts.get('blue', 0)} "
+                    f"银币+{coin_amt:,} 积分+{score_amt:,}", "INFO")
+            else:
+                log(f"[彩蛋收尾] 第 {rounds} 轮弹窗未读到蛋数"
+                    f"（银币+{coin_amt:,} 积分+{score_amt:,} 照常入账）", "DEBUG")
+                self._store.record_egg_claim({}, coin=coin_amt, score=score_amt)
+                total_coin += coin_amt
+                total_score += score_amt
+            # 关弹窗：点卡片带下方空白；「点击屏幕继续」点任意非卡片区，但一下可能
+            # 只关掉卡片详情（若详情卡已开），故确认推进、未推进补点一次（封顶 2 击）。
+            for _attempt in (1, 2):
+                self._egg_chain_click(*self.EGG_CHAIN_DISMISS_NORM,
+                                      key="egg_dismiss_popup")
+                if self._egg_chain_wait(specs, "egg_claim_title", 4.0, want=False,
+                                        budget_deadline=budget_deadline):
+                    break
+                if _attempt == 1:
+                    log("[彩蛋收尾] 奖励弹窗未推进（可能点开了卡片详情），补点一次",
+                        "WARNING")
         if any(total.values()) or total_coin or total_score:
             log(f"[彩蛋收尾] 本次领取合计：红{total['red']} 黄{total['yellow']} "
                 f"蓝{total['blue']} 银币+{total_coin:,} 积分+{total_score:,}", "INFO")
