@@ -470,7 +470,7 @@ class SidecarService:
         """启动回填上次会话偏好：只取本程序认识的键，未知/非法内容一律忽略。
 
         - module_config → 按模块分槽回填 _module_config_cache（下次 start 注入新实例）；
-        - debug 段 → 直接恢复 controller 的调试/peep 开关状态。
+        - debug 段 → 直接恢复 controller 的调试开关状态（peep 是会话内开关，不持久化）。
         """
         data = _load_profile()
         if not data:
@@ -481,10 +481,6 @@ class SidecarService:
             dm = dbg.get("debug_mode")
             if isinstance(dm, bool):
                 self._controller.set_debug_mode(dm)
-            peep = dbg.get("peep_enabled")
-            if isinstance(peep, bool):
-                debug = self._controller.debug
-                debug.enable_peep() if peep else debug.disable_peep()
             acg = dbg.get("auto_close_game")
             aem = dbg.get("auto_exit_mra")
             if isinstance(acg, bool) or isinstance(aem, bool):
@@ -1179,15 +1175,12 @@ class SidecarService:
         return (True, {"file_logging": enabled}, None)
 
     def set_peep(self, params):
+        # peep 是会话内开关：不写 profile，启动保持默认关
         enabled = bool(params.get("enabled", False))
         if enabled:
             self._controller.debug.enable_peep()
         else:
             self._controller.debug.disable_peep()
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["peep_enabled"] = bool(enabled)
-        _save_profile({"debug": cur})
         logger.log(f"PEEP 实时预览: {'开启' if enabled else '关闭'}")
         return (True, {"peep_enabled": enabled}, None)
 
