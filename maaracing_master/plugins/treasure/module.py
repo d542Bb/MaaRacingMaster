@@ -3505,12 +3505,17 @@ class TreasureModule(ActivityModule):
             dec = self._bidding_last_decision
             if dec and dec.get("key") == key:
                 state = dec.get("state", "auto")
-        # 指纹：数字键带输入位锚点；领取分红两次点击用 clicked_once 区分。
+        # 指纹：数字键带输入位锚点；领取分红点击带「跳动画/真领取」判别位。
+        # clicked_once 一比特不够用：跳动画的重试点击发生时 clicked_once 已是 True，
+        # 其成功会把指纹固化成与真领取完全相同的形态，真领取被边沿触发永久拦截且无
+        # 恢复路径（真机 2026-09-20 20:48 场：收入读出后 137 帧意图 0 提交，卡死
+        # 107s 至游戏侧页面自行变化）。判别位取「收入是否已读出」：重试点击（skip）
+        # 与真领取（claim）指纹必不同，真领取恰好重新 arm 一次。
         fp = (key, state, round(center[0], 3), round(center[1], 3))
         if state.startswith("S3_edit_type"):
             fp = fp + (self._bid_input_progress,)
         elif key == "settle_collect_red_btn" and self._current_stage == "领取分红":
-            fp = fp + (self._settle_collect_clicked_once,)
+            fp = fp + ("claim" if self._settle_my_income is not None else "skip",)
         # 模式在"首部"（设置页）切换：这里每次执行前同步，运行中切换即时生效。
         clicker = self._get_clicker()
         clicker.set_mode(self.ctx.click_mode)
