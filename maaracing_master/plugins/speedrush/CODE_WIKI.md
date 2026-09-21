@@ -390,7 +390,9 @@ kind 常量，tracking 复用不复制（禁止第二份真相）。
 **关联口径**（v1 最小实现）：逐类贪心 1:1——门限 |Δcy−外推| ≤ `max_cy_step` 且
 （双方有横向读数 → |Δx_lane| ≤ `max_xlane_step`；否则 lane_side 必须同档）；
 遮挡期**横向保持最后读数、纵向按 rel_approach 匀速外推**；宽限退役后 id 永不复用
-（重识别 v1 不臆造，退役后再现按新检出）；`frame_id` 严格递增 fail-loud。
+（重识别 v1 不臆造，退役后再现按新检出）。帧号契约经 step 5 回放修正：**相等重复=合法
+（WGC 中心缓存两拍读同帧），原样重发缓存观测；倒退=fail-loud**——原「严格递增」会在
+实机接线第一天炸（回放第 833 帧置证）。
 `x_sigma = pos_err_px×a_x/denom`，与 §8 误差注记同源同量级（分母 20–50 → 0.24–0.59 车道）。
 
 **实机素材回放定档**（证据 commit `b1e6cb9`，35517 帧/42 场）：失联段三分——
@@ -456,6 +458,11 @@ v_ego>y_h）任一不过即拒载并写明原因；`allow_car_graze=true` 在 v1
 出局；**估计恒等于观测**（§三漏检纪律）。FSM 39 项全矩阵单测含 V0 直行门
 （`allow_all_moves=false`）与 CONSERVE 出口重置面断言。
 
-**状态**：决策层**未接 module**——§八 step 5 先跑离线回放（PerceptionResult→
-Tracker→Aggregator→DecisionEngine 全链），step 6 才进实机。timing 段的
-lane_change_base/k 是设计起值，[需实测 §七.1 变道时长剖面] 后只改 json 不改代码。
+**状态**：决策层**未接实机**——§八 step 5 离线全链路已跑通（到场轮 8 场 7188 帧，
+证据 commit `92656bb`），step 6 才进 module。两处实测修正已入：conf 折扣改分段爬坡
+（coin conf 中位 0.87，旧线性式系统性压低）；t_empty_s 1.5→2.0（真人局空街 P75=1.1s）。
+**行为基线**：v1 coin-only 真人局几乎不变道（7188 帧 1 次，门因分解见实验 README）——
+是否调低 min_score=20 属行为倾向，归维护者。timing 的 lane_change_base/k 经 §七.1
+两代方法仍信号不足（练习局连续打舵不可归因），维持设计起值，复测需孤立变道素材；
+boundary 残差实测 P50=0.68/P90=2.09——straight_residual_max 起值 0.6 定错档，
+接线校验时按 P90+ 重定。
