@@ -201,6 +201,10 @@
     }
     events.forEach((rec) => {
       if (rec.event_type === 'group_start') {
+        // 双管线交接：组卡开卡即关闭 legacy「当前卡」——treasure 锚点转组后，
+        // 无组散文行（controller/pipeline_logger 的有意无组日志）不能再埋进
+        // 早已过时的 legacy 卡（如「已连接窗口」），下一条散行自开新 implicit 卡。
+        if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
         const kind = (rec.kind === 'phase' || rec.kind === 'session' || rec.kind === 'loop')
           ? rec.kind : 'session';
         const title = rec.title || '';

@@ -39,7 +39,11 @@ status: active
   21 处机械注入、跨切面 16 处有意无组、run finally 落 incomplete、彩蛋正常收尾显式
   success；结构性锁测试禁止 INFO+ 裸 logger.log 逃逸无组白名单。worker 派发捕获
   group_id / 迟到旧 id 降级两锁入 logger 测试。351 相关回归全绿。
-- 待做：§8 第 8 步（sidecar/controller 行 + pipeline_logger 迁移）、第 9 步
-  （speedrush 自接后删 SECTION_ANCHORS/KW_RULES）、第 10 步（复制/导出含
-  seq/group_id、协议一致性）、第 11 步（结论迁 home、目录退役）。
-  卡片样式线（入场动画、回顶按钮）可并行。
+- §8 第 8 步已实施（本 commit）：core 行（已连接窗口/断点模式/紧急停止）与
+  pipeline_logger **有意保持无组**（sink 回调线程不读可变当前组——裁定规则 2；
+  跨切面无业务归属——规则 4），零 core 改动；前端补双管线交接锁：group_start
+  开卡即 finalize legacy「当前卡」，框架散行自开 implicit 新卡，不再埋进
+  「已连接窗口」旧卡（桥桩混合序列端到端验证）。
+- 待做：第 9 步（speedrush 自接组机制后删 SECTION_ANCHORS/KW_RULES——阻塞于
+  speedrush 维护者）、第 10 步（复制/导出含 seq/group_id、协议一致性测试）、
+  第 11 步（结论迁 home、目录退役）。卡片样式线（入场动画、回顶按钮）可并行。
