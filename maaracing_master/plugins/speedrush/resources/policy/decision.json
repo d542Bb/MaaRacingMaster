@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "_source": "行为参数真源（三源分立：游戏事实 RULES.md / 几何标定 gate0.json / 本文件）。带 [需实测] 的字段是设计稿起值，回放/到场校准后只改本文件不改代码。",
+  "_sources": {
+    "tau_resp_s": "实测 τ=0.130s n=51（输入→响应延迟，非变道时长；证据 commit 3847fae）",
+    "lane_change_base_s|lane_change_k_s_per_lane": "[需实测·前置 §7.1 变道时长剖面] 设计起值：Δx=1 车道≈0.7s，含起步开销",
+    "frame_rate_hz": "控制名义频率 20Hz（v2 §六口径：实测 ≈21Hz 留裕量；30Hz 是独立议题）",
+    "target_grace_s|group_grace_s": "[实测 b1e6cb9] 有效恢复窗右缘≈0.4s（秒口径，行数=秒×帧率换算在代码里做）",
+    "coin_value_per_unit": "游戏事实镜像（RULES §4.2 金币每枚 30 分）；RULES 变更时人工同步",
+    "switch_margin": "30 分档的一半（§三：加性门槛替代乘式门，对零分/负分成立）",
+    "x_lane_abs_max": "路面半宽 ≈2.5 车道 + 余量（CODE_WIKI 回放右路缘 +2.5 标定）"
+  },
+  "mode": {
+    "allow_all_moves": true,
+    "allow_car_graze": false,
+    "_note": "v1 = coin-only 保守基线（allow_car_graze 必为 false，复议条件见设计稿 §三）；allow_all_moves=false 为 V0 直行基线开关"
+  },
+  "control": {
+    "frame_rate_hz": 20.0,
+    "target_grace_s": 0.40,
+    "group_grace_s": 0.40,
+    "t_change_max_s": 2.0
+  },
+  "timing": {
+    "tau_resp_s": 0.130,
+    "lane_change_base_s": 0.30,
+    "lane_change_k_s_per_lane": 0.40,
+    "margin_s": 0.15
+  },
+  "scoring": {
+    "coin_value_per_unit": 30.0,
+    "conf_floor": 0.5,
+    "shift_cost_per_lane": 10.0,
+    "life_tau_s": 5.0
+  },
+  "hysteresis": {
+    "switch_margin": 15.0,
+    "min_score": 20.0,
+    "t_cool_s": 1.0,
+    "tau_filter_s": 0.15,
+    "dead_zone_lane": 0.15
+  },
+  "validate": {
+    "t_empty_s": 1.5,
+    "t_recover_s": 1.0,
+    "t_conserve_max_s": 10.0,
+    "x_lane_abs_max": 2.6,
+    "cy_jump_max_px": 90.0,
+    "straight_residual_max": 0.6
+  }
+}

@@ -19,9 +19,9 @@ from maaracing_master.plugins.speedrush.tracking import (
     SCHEMA_VERSION, DecisionOutput, DecisionState, FarTarget, LaneSide,
     PerceptionHealth, Tracker, TrackerParams, TrackedTarget, to_jsonable)
 from maaracing_master.plugins.speedrush.world_model import (
-    KIND_CAR, KIND_COIN, Calib, x_lane_of)
+    KIND_CAR, KIND_COIN, load_calib, x_lane_of)
 
-CAL = Calib()
+CAL = load_calib()
 
 
 def _per(fid: int, *, cars=(), coins=(), bonuses=()) -> PerceptionResult:

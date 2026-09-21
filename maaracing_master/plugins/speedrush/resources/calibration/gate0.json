@@ -1,0 +1,11 @@
+{
+  "_source": "Gate-0 地面标定收杆产物（38 场在场行中位的总中位；口径与误差注记见插件 CODE_WIKI 世界模型节）",
+  "schema_version": 1,
+  "vpx": 640.7,
+  "y_h": 324.2,
+  "a_x": 0.587,
+  "v_ego": 716.0,
+  "ego_cx": 640.0,
+  "min_denom": 20.0,
+  "_notes": "几何标定真源（与 RULES.md 游戏事实、policy/decision.json 行为参数三源分立）。vpx 场内 MAD 12–19px 是 x_sigma 模型主误差项；ego_cx 为追车相机把自车钉画面中央的 trick 硬事实；min_denom=20 由回放定档（分母<20 归一发散，目标降级为 lane_side 粗方向）。改数=重新标定收杆，不是调参。"
+}

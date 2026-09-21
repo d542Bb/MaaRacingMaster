@@ -29,7 +29,7 @@ from typing import Any
 
 from maaracing_master.plugins.speedrush.perception import PerceptionResult
 from maaracing_master.plugins.speedrush.world_model import (
-    KIND_BONUS, KIND_CAR, KIND_COIN, MIN_DENOM, Calib, x_lane_of)
+    KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, x_lane_of)
 
 SCHEMA_VERSION = 1
 
@@ -219,8 +219,10 @@ class _Track:
 class Tracker:
     """跨帧目标关联与观测组装。每 tick `update()` 一次，喂一帧感知结果。"""
 
-    def __init__(self, cal: Calib = Calib(), params: TrackerParams = TrackerParams()):
-        self.cal = cal
+    def __init__(self, cal: Calib | None = None,
+                 params: TrackerParams = TrackerParams()):
+        # cal 缺省读几何真源（gate0.json）；三源分立，代码不写标定字面量
+        self.cal = cal if cal is not None else load_calib()
         self.p = params
         self._tracks: list[_Track] = []
         self._next_id = 1
@@ -313,7 +315,7 @@ class Tracker:
                 denom = d.cy - self.cal.y_h
                 if denom <= 0:
                     continue  # 地平线以上：几何无效，丢弃（与 build_world 同口径）
-                x = x_lane_of(d.cx, d.cy, self.cal) if denom >= MIN_DENOM else None
+                x = x_lane_of(d.cx, d.cy, self.cal) if denom >= self.cal.min_denom else None
                 dx = d.cx - self.cal.vpx
                 side = (LaneSide.MID if abs(dx) < self.p.neutral_px
                         else LaneSide.RIGHT if dx > 0 else LaneSide.LEFT)

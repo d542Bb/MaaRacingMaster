@@ -12,9 +12,9 @@ import numpy as np
 
 from maaracing_master.plugins.speedrush.boundary import detect_boundary
 from maaracing_master.plugins.speedrush.tracking import BoundarySummary
-from maaracing_master.plugins.speedrush.world_model import Calib
+from maaracing_master.plugins.speedrush.world_model import load_calib
 
-CAL = Calib()          # vpx=640.7 y_h=324.2
+CAL = load_calib()   # 几何真源 gate0.json
 YELLOW = (255, 200, 40)  # RGB：H≈24 S 高 V 高，落在旧栈验证过的黄色范围内
 BG = (40, 45, 50)      # 非黄底色（沥青灰蓝）
 

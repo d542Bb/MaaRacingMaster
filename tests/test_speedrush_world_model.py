@@ -13,9 +13,9 @@ from __future__ import annotations
 import pytest
 
 from maaracing_master.plugins.speedrush.perception import Detection, PerceptionResult
-from maaracing_master.plugins.speedrush.world_model import Calib, EGO_CX, build_world
+from maaracing_master.plugins.speedrush.world_model import build_world, load_calib
 
-CAL = Calib()
+CAL = load_calib()
 
 
 def _per(cars=(), coins=(), bonuses=()):
@@ -25,7 +25,7 @@ def _per(cars=(), coins=(), bonuses=()):
 
 def _hand_x(cx: int, cy: int, cal: Calib = CAL) -> float:
     return ((cx - cal.vpx) / (cy - cal.y_h)
-            - (EGO_CX - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
+            - (cal.ego_cx - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
 
 
 class TestNormalize:
@@ -36,7 +36,7 @@ class TestNormalize:
 
     def test_ego_lane_reads_zero(self):
         # 正前方（自车列）的目标横向读 ~0
-        d = Detection(cx=int(EGO_CX), cy=520, w=50, h=60, conf=0.8)
+        d = Detection(cx=int(CAL.ego_cx), cy=520, w=50, h=60, conf=0.8)
         t = build_world(_per(cars=[d]))[0]
         assert abs(t.x_lane) < 0.01
 
@@ -55,7 +55,7 @@ class TestFilterAndOrder:
 
     def test_far_target_kept_with_none_xlane(self):
         # 适用域外（分母 < MIN_DENOM）：目标保留（距离序有效），横向量=None
-        from maaracing_master.plugins.speedrush.world_model import MIN_DENOM
+        MIN_DENOM = load_calib().min_denom
         far = Detection(cx=700, cy=int(CAL.y_h + MIN_DENOM) - 1, w=10, h=10, conf=0.7)
         near = Detection(cx=700, cy=int(CAL.y_h + MIN_DENOM) + 1, w=10, h=10, conf=0.7)
         out = build_world(_per(cars=[far, near]))

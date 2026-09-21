@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 from maaracing_master.plugins.speedrush.tracking import BoundarySummary
-from maaracing_master.plugins.speedrush.world_model import Calib, x_lane_of
+from maaracing_master.plugins.speedrush.world_model import Calib, load_calib, x_lane_of
 
 # 旧栈验证过的黄色范围（含阴影暗黄；S/V 下限沿用）
 _HSV_LOW = np.array([20, 80, 80], dtype=np.uint8)
@@ -67,12 +67,15 @@ def _edge_runs(mask_row: np.ndarray) -> tuple[int | None, int | None]:
     return left, right
 
 
-def detect_boundary(frame_rgb: np.ndarray, cal: Calib = Calib(),
+def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
                     scan_top_off: int = BAND_TOP_OFF,
                     scan_bot_off: int = BAND_BOT_OFF,
                     step: int = BAND_STEP) -> BoundarySummary:
     """一帧 → BoundarySummary。检不出来时 validity=False + 数值字段尽量给，
-    调用方（校验层）以 validity 为一票否决，不得消费半可信摘要。"""
+    调用方（校验层）以 validity 为一票否决，不得消费半可信摘要。
+    cal 缺省读几何真源（gate0.json）。"""
+    if cal is None:
+        cal = load_calib()
     h, w = frame_rgb.shape[:2]
     y0 = max(int(cal.y_h) + scan_top_off, 0)
     y1 = min(int(cal.y_h) + scan_bot_off, h)
