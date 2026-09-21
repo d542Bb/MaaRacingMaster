@@ -10,7 +10,7 @@
 - 「NavKit v3」——v3 五段 schema 已于 P4a 整删，现存形态为 v4。
 
 范围含全部知识文档（项目地图 / core 层 / 各活动域 CODE_WIKI）；update_log.md 与 RULES.md 不在内——
-changelog 记录版本事实、RULES 记录游戏事实，各有裁决者（见分层判据）。
+更新说明记录版本事实、RULES 记录游戏事实，各有裁决者（见分层判据）。
 """
 from __future__ import annotations
 

@@ -16,5 +16,5 @@ Source code: `https://www.7-zip.org/`
 
 > 合规说明：依据 7-Zip 许可要求，二进制再分发须随附本 README 与 7za\_License.txt；
 > 本项目已将二者与 7za.exe 一并入库 `scripts/release/tools/`，并在
-> `docs/update_log.md` 的 v0.21.0-dev.2 条目内声明 LGPL 使用。
+> `THIRD_PARTY_LICENSES.md` 的「GUI / 构建工具链」一节登记。
 

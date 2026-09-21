@@ -74,7 +74,7 @@
 ## 版本交付与协作
 
 - **No Negative Echo**：最终产物及其包装（标题、文件名、正文、注释、commit、PR、交付说明）只描述最终采用的状态，假设读者没看过本次会话——被否方案、中间尝试、"无 X"式声明不得成为命名或叙述中心；保留真实基线变化与必要诊断。细则见 [`skills/no-negative-echo/SKILL.md`](skills/no-negative-echo/SKILL.md)。
-- 对外变更记录在 `docs/update_log.md` 对应版本小节（Release 正文由 `scripts/release/extract_changelog.py` 抽取）。
+- 对外变更记录在 `docs/update_log.md` 对应版本小节——**面向玩家的更新说明**（收录判据见 [docs/README.md](docs/README.md)「update_log 收录判据」；Release 正文由 `scripts/release/extract_changelog.py` 抽取）。
 - 先沟通对齐再输出，关键决策必须确认；确定要动的地方直接动手，不做多余读取。思考聚焦「改哪些文件、怎么改、为什么」，不在心里拼完整代码；长代码给完整文件。兼容性优先、性能次之；不了解的技术先暂停调查。
 
 ## 细则指针（"怎么做"看这里）

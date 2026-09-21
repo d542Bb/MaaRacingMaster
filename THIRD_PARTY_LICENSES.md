@@ -52,9 +52,11 @@
 
 ---
 
-## 三、GUI / 构建工具链（非再分发，仅构建期引用）
+## 三、GUI / 构建工具链（不随发布包分发）
+
 - WinUI 3 / Windows App SDK：Microsoft 专有许可，构建产物自包含分发受微软条款约束；本项目不包含其源码。
 - .NET Runtime：由 `dotnet publish --self-contained` 随 `MaaRacingMaster.Shell.exe` 附带，遵循 .NET 开源许可。
+- **7-Zip**（`7za.exe` standalone）：**LGPL**，用于生成发行包 `.7z` 主推档；二进制入库于 `scripts/release/tools/7za.exe`，许可原文随附 `scripts/release/tools/7za_License.txt`，使用说明见其 [README](scripts/release/tools/README.md)。上游源码：<https://www.7-zip.org/>
 
 ---
 

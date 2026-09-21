@@ -208,7 +208,7 @@ class TreasureStageDetector:
 
         供 OCR worker 对**被识别的那一帧**现场取页面令牌——令牌与像素同源，取代
         「投递时快照观察线程的周期判定」那套跨线程搬运（搬运必有窗口，实证见
-        docs/update_log.md 的跨页串读条目：结算页 ROI 在已转场的大厅帧上读到 300000）。
+        commit 69f52e9：结算页 ROI 在已转场的大厅帧上读到 300000）。
 
         锚点集、阈值、尺度全部来自 policy 数据面，与 detect() 共用同一个 _scan；
         差别只在 record=False——不写实例状态（`_last_hit_roi_key` / `_last_detect_scores`
@@ -234,7 +234,7 @@ class TreasureStageDetector:
         判据是**两个来源互相印证**，不是单方作数：本帧文字解析出的回合号必须等于调用方
         给的 round_no（生产口径 = 该帧投递时快照的 `_round_no`，即阶段标签当时的答案）。
         任一方缺失或不等 → False，回到 fail-closed。理由两侧都有前科：阶段标签单独说过话
-        不算数（它曾在结算转场慢半拍，把大厅画面报成「领取分红」，见 docs/update_log.md
+        不算数（它曾在结算转场慢半拍，把大厅画面报成「领取分红」，见 commit d6181ca
         的 300000 条）；本帧文字单独说话也不算数（它只证明画面上写着「第 N 回合」，不证明
         这是哪一页——大厅/结算页顶部也可能出现数字）。
 

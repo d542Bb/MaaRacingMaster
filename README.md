@@ -292,7 +292,7 @@ MaaRacingMaster/
 
 - 架构决策与理由：[docs/adr/](docs/adr/README.md)
 
-- 版本历史：[docs/update\_log.md](docs/update_log.md)
+- 更新说明（每个版本改了什么）：[docs/update\_log.md](docs/update_log.md)
 
 ***
 

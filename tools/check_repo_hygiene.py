@@ -43,8 +43,8 @@ STATUS_LINE = re.compile(r"^\s*status:\s*active\b", re.I | re.M)
 
 FORMAL_GLOBS = ["AGENTS.md", "CONTRIBUTING.md", "docs/*.md", "docs/adr/*.md",
                 "maaracing_master/**/*.md", "apps/**/*.md"]
-# update_log 是 L4 历史；docs/README 自身要描述本规则——两者豁免
-FORMAL_EXCLUDE = {"docs/update_log.md", "docs/README.md"}
+# docs/README 自身要描述本规则——豁免；update_log 面向玩家、不引实验路径，同受引用纪律约束
+FORMAL_EXCLUDE = {"docs/README.md"}
 CODE_GLOBS = ["maaracing_master/**/*.py", "scripts/**/*.py", "tests/**/*.py",
               "apps/**/*.py", "apps/**/*.cs"]
 

@@ -77,17 +77,21 @@ description: "Performs MaaRacingMaster project release preparations: clean temp 
 
 ### ③ 更新文档
 
-更新 `docs/update_log.md`（在文件顶部最新 `## YYYY-MM-DD` 之后插入新条目，参考已有风格）：
+在 `docs/update_log.md` 顶部（最新 `## YYYY-MM-DD` 之后）插入新版本小节。**这是面向玩家的更新说明，不是开发日志**——收录判据与禁止项见 [`docs/README.md`](../../docs/README.md)「update_log 收录判据」。
 
 ```markdown
 ## YYYY-MM-DD
 
-### vX.Y.Z[-dev.N] 版本标题 🏷️
-- **版本号：** `vX.Y.Z[-dev.N]`（基于 v上一版本）
-- **变更内容：** 逐条列出本次发布的主要变更
-- **其他说明：** 如有需要
+### vX.Y.Z[-dev.N] 一句话主题 🏷️
+
+- **新增：** …
+- **改进：** …
+- **修复：** …
+- **移除：** …
 ```
 
+- 每条都过一遍判据：**玩家能看到什么不同？** 答不出的删掉；没有内容的分类不写
+- 变更来源是 `git log <上个 tag>..HEAD`——过程细节已在 commit message，不重复搬进本文
 - 让用户确认或编辑日志内容再写入
 
 - 若功能列表/项目结构等涉及 README.md，询问用户是否一并更新
@@ -152,7 +156,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 **不发版模式流程：**
 
 1. commit 到 master
-2. 在 `docs/update_log.md` 顶部补一条 **未发版变更** 条目（标题用「未发版变更：主题」，**不带版本号**，参考已有先例）
+2. **不写 update_log**——纯文档 / CI / 元数据改动玩家感知不到，按收录判据一律不进（过程已在 commit message）
 3. `git push origin master`（若需同步远程；只触发 test.yml 单测）
 4. **不打 tag、不触发 release**
 
@@ -184,7 +188,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - **版本号自动生成：** `pyproject.toml` → `setuptools-scm` → `maaracing_master/_version.py`
 
-- **更新日志：** `docs/update_log.md`
+- **更新说明：** `docs/update_log.md`（面向玩家，Release 正文信源）
 
 - **发布 CI/CD：** `.github/workflows/release.yml`（push tag `v*` 触发：test → release → win-build → cnb-release）
 

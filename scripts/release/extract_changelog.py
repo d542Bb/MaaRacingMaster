@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """从 docs/update_log.md 抽取指定版本小节，作为 GitHub Release 正文的信源。
 
-对外叙事层是人工撰写的修改日志，git DAG 是内部施工日志：Release 面向玩家，
-因此正文只取日志对应小节，不把 commit 标题直倒给用户。
+update_log 是面向玩家的更新说明，git DAG 是内部施工日志：Release 面向玩家，
+因此正文只取更新说明的对应小节，不把 commit 标题直倒给用户。
 
 用法：
     python scripts/release/extract_changelog.py <version> [--log PATH]
@@ -63,13 +63,13 @@ def main(argv=None):
     parser.add_argument(
         "--log",
         default="docs/update_log.md",
-        help="修改日志路径（默认 docs/update_log.md）",
+        help="更新说明路径（默认 docs/update_log.md）",
     )
     args = parser.parse_args(argv)
 
     path = Path(args.log)
     if not path.is_file():
-        print("修改日志不存在：{}".format(path), file=sys.stderr)
+        print("更新说明不存在：{}".format(path), file=sys.stderr)
         return 1
 
     body = extract(path.read_text(encoding="utf-8"), args.version)

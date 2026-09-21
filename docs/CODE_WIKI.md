@@ -21,7 +21,7 @@
 | 前端与图标 | [apps/MaaRacingMaster.Shell/frontend/README.md](../apps/MaaRacingMaster.Shell/frontend/README.md) | 图标真源 / file:// 约束 / 前端规范 |
 | NavKit 工具链 | [tools/navkit/README.md](../tools/navkit/README.md) | 入口命令 / 模板采集工作流 / 校验器护栏 |
 | 环境自检 | [SELF_CHECK.md](SELF_CHECK.md) | 分步验收清单（新环境 / 跨机器） |
-| 变更记录 | [update_log.md](update_log.md) | 对外变更（Release 正文由此抽取） |
+| 更新说明 | [update_log.md](update_log.md) | 面向玩家的更新说明（Release 正文由此抽取） |
 
 ***
 
@@ -112,7 +112,7 @@ MaaRacingMaster/
 │   ├── adr/                   # 架构决策记录（决策 + 理由 + 状态，只增不改）
 │   ├── announcement.md/.json  # 公告通知卡规范（关于页）
 │   ├── design/                # 前端设计稿
-│   └── update_log.md          # 对外变更记录（Release 正文由此抽取）
+│   └── update_log.md          # 面向玩家的更新说明（Release 正文由此抽取）
 └── .github/workflows/         # CI：test.yml（单测）、release.yml（发布）、mirror-to-cnb.yml
 ```
 
