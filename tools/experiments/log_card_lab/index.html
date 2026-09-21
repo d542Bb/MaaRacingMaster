@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>日志卡试验区 · step 4 —— 计数胶囊可点性 + 级别上色</title>
+<title>日志卡试验区 · step 5 —— 徽章承载卡头风险</title>
 <style>
 /* ==== 生产日志卡复刻基线：token 复制自 frontend/style.css；渲染管线与生产 js/log.js
      同构（双 renderer + 交接锁），并叠加试验区设计步进（step 1 状态槽、step 2 事件驱动）。
@@ -103,9 +103,10 @@ body {
 .log-section--expandable .log-section-head:hover .log-count,
 .log-section--open .log-count { background: var(--mra-border); color: var(--mra-foreground-secondary); }
 
-/* ==== step 1+2+4：卡状态槽——徽章只属于组卡（组有生命周期才有终态可言），
-   词与色由状态机给出；无组散行卡不发徽章——「记录」不是级别，
-   散行的级别由标题/正文文字颜色承载（WARNING 琥珀 / ERROR 红）。 */
+/* ==== step 1+2+4+5：卡状态槽——徽章承载「卡头风险」，词与色由状态机给出：
+   组卡=生命周期终态（进行中/成功/警告/失败/未完成）；散行卡=该行自身级别
+   （WARNING 警告 / ERROR 失败，Info 不发——「记录」不是级别）。
+   正文行无徽章槽，级别由文字色承载（W 琥珀 / E 红）。 */
 .log-status {
   flex-shrink: 0; font-size: 10px; font-weight: 600; line-height: 16px;
   padding: 0 7px; border-radius: 5px; letter-spacing: 0.5px;
@@ -152,10 +153,8 @@ body {
 .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
 .log-line--ERROR .log-msg { color: var(--mra-danger); }
 .log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
-/* step 4：正文行去彩点——级别信息此前由「彩点 + 文字颜色」双份承载，删点后不丢信息；
-   散行成卡的卡头同样吃上面两条文字色规则。 */
-.log-section-head.log-line--ERROR .log-msg { color: var(--mra-danger); }
-.log-section-head.log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
+/* step 4：正文行去彩点——级别信息此前由「彩点 + 文字颜色」双份承载，删点后不丢信息。
+   step 5：卡头风险改由徽章承载（组卡终态 / 散行自身级别），标题不再按级别上色。 */
 .log-kw { color: var(--mra-primary); font-weight: 500; }
 .log-kw--ok { color: var(--mra-success); font-weight: 500; }
 .log-kw--warn { color: var(--mra-warning); font-weight: 500; }
@@ -209,15 +208,19 @@ function highlightKeywords(s) {
   return s;
 }
 
-// 卡状态槽：词与色由状态机给出。徽章只发给组卡（组才有终态）；散行卡不发。
+// 卡状态槽：词与色由状态机给出。组卡=终态；散行卡=自身级别（Info 不发「记录」）。
 const STATUS = {
   run:  ['log-status--run', '进行中'], ok: ['log-status--ok', '成功'],
   warn: ['log-status--warn', '警告'],  err: ['log-status--err', '失败'],
   part: ['log-status--part', '未完成'],
 };
+// 徽章槽允许后发：散行卡建卡时无徽章，级别落定/升格时按需插入卡头首位。
 function setPill(sec, key) {
-  const pill = sec.querySelector('.log-status');
-  if (!pill) return;
+  let pill = sec.querySelector('.log-status');
+  if (!pill) {
+    pill = document.createElement('span');
+    sec.querySelector('.log-section-head').prepend(pill);
+  }
   pill.className = 'log-status ' + STATUS[key][0];
   pill.textContent = STATUS[key][1];
 }
@@ -225,12 +228,12 @@ function setPill(sec, key) {
 let _curSec = null;   // legacy（无组散行）管线的当前卡
 const _openGroups = new Map(); // 组管线：group_id → { sec, worst }
 
-// pillKey=null → 无徽章卡（散行卡）；lvl 非 INFO 时卡头挂级别类供文字上色。
-function _makeSection(kind, ts, msgHtml, rawText, pillKey, lvl) {
+// pillKey=null → 建卡时不发徽章（散行卡；级别落定后经 setPill 后发补上）。
+function _makeSection(kind, ts, msgHtml, rawText, pillKey) {
   const sec = document.createElement('div');
   sec.className = 'log-section log-section--' + kind;
   const head = document.createElement('div');
-  head.className = 'log-line log-section-head' + (lvl && lvl !== 'INFO' ? ' log-line--' + lvl : '');
+  head.className = 'log-line log-section-head';
   head.dataset.raw = rawText;
   head.title = rawText;
   head.innerHTML =
@@ -292,7 +295,7 @@ function _makeRow(lvl, msgHtml, rawText) {
   return row;
 }
 
-// ---- legacy 散行管线（与生产一致：锚点分段 + 首行成卡），散行卡无徽章、级别上色 ----
+// ---- legacy 散行管线（与生产一致：锚点分段 + 首行成卡），散行卡徽章=该行级别（Info 不发） ----
 function appendLogs(lines) {
   const area = $('log-area');
   const followBottom = isNearBottom(area);
@@ -310,10 +313,15 @@ function appendLogs(lines) {
     const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
     if (!anchorType) {
       addRow(_curSec.el, _makeRow(lvl, highlightKeywords(escapeHtml(msg)), raw));
+      if (lvl === 'ERROR') setPill(_curSec.el, 'err');
+      else if (lvl === 'WARNING' && !_curSec.el.querySelector('.log-status--err')) setPill(_curSec.el, 'warn');
       return;
     }
     if (_curSec) { _curSec = null; }
-    _curSec = { el: _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw, null, lvl) };
+    const sec = _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw, null);
+    if (lvl === 'ERROR') setPill(sec, 'err');
+    else if (lvl === 'WARNING') setPill(sec, 'warn');
+    _curSec = { el: sec };
   });
   fitTitles();
   if (followBottom) area.scrollTop = area.scrollHeight;
