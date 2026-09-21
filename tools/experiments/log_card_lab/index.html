@@ -2,10 +2,11 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>日志卡试验区 · step 0 —— 原版基线（重划后流）</title>
+<title>日志卡试验区 · step 2 —— 事件驱动 + 徽章状态机</title>
 <style>
-/* ==== 本文件 = 生产日志卡的逐字复刻：token / 组件样式复制自 frontend/style.css，
-     渲染管线移植自 frontend/js/log.js。step 0 起每步设计改动一个 commit。 ==== */
+/* ==== 生产日志卡复刻基线：token 复制自 frontend/style.css；渲染管线与生产 js/log.js
+     同构（双 renderer + 交接锁），并叠加试验区设计步进（step 1 状态槽、step 2 事件驱动）。
+     每步设计改动一个 commit。 ==== */
 :root {
   --mra-primary: #E5484D;
   --mra-primary-foreground: #FFFFFF;
@@ -21,6 +22,7 @@
   --mra-border-light: #EEF0F4;
   --mra-success: #10B981;
   --mra-success-bg: rgba(16, 185, 129, 0.1);
+  --mra-success-strong: #15803d;
   --mra-warning: #F59E0B;
   --mra-warning-bg: rgba(245, 158, 11, 0.1);
   --mra-warning-strong: #b45309;
@@ -43,7 +45,6 @@ body {
 }
 :focus-visible { outline: 2px solid var(--mra-primary); outline-offset: 2px; }
 
-/* card / card-head / icon-btn：复制自 style.css */
 .card {
   background: var(--mra-surface); border: 1px solid var(--mra-border);
   border-radius: var(--mra-radius-md); box-shadow: var(--mra-shadow-sm);
@@ -64,7 +65,7 @@ body {
 .icon-btn:hover { background: var(--mra-surface-hover); color: var(--mra-foreground-secondary); }
 .icon-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
-/* ==== 日志区样式：逐字复制自 style.css 364~446 ==== */
+/* ==== 日志区样式：复制自 style.css 364~446 ==== */
 .log-area {
   flex: 1; overflow-y: auto; min-height: 0;
   background: var(--mra-surface); padding: 12px;
@@ -84,9 +85,18 @@ body {
   margin-bottom: 2px;
   cursor: pointer; user-select: none;
 }
-/* step1（重做）：唯一状态槽——词徽章常驻行首，含义由词承载（参考 v-collapsible-9 的自洽性）。
-   类型维度由标题关键词着色承担，三色左边线废除；「进行中」用 info 蓝——
-   primary 是赛车红，与「失败」红语义撞车，色彩语义必须互斥。 */
+.log-chev {
+  width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
+  color: var(--mra-foreground-muted);
+  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
+}
+.log-section--open .log-chev { transform: rotate(90deg); }
+.log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.log-section-meta .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
+
+/* ==== step 1+2：卡状态槽——每张卡恰好一个徽章，含义由词承载 ====
+   组卡：outcome 驱动（进行中/成功/警告/失败/未完成）；
+   无组卡（controller/pipeline 散行）：中性「记录」，含 W/E 时升格 警告/失败。 */
 .log-status {
   flex-shrink: 0; font-size: 10px; font-weight: 600; line-height: 16px;
   padding: 0 7px; border-radius: 5px; letter-spacing: 0.5px;
@@ -95,18 +105,13 @@ body {
 .log-status--ok   { background: var(--mra-success-bg); color: var(--mra-success-strong); }
 .log-status--warn { background: var(--mra-warning-bg); color: var(--mra-warning-strong); }
 .log-status--err  { background: var(--mra-danger-bg); color: var(--mra-danger); }
+.log-status--idle { background: var(--mra-border-light); color: var(--mra-foreground-muted); }
+.log-status--part { background: var(--mra-border-light); color: var(--mra-foreground-secondary); }
 @keyframes mra-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .log-status--run { animation: none; } }
+
 .log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.log-chev {
-  width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
-  color: var(--mra-foreground-muted);
-  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
-}
-.log-section--open .log-chev { transform: rotate(90deg); }
-/* step1：右侧只剩时间 + 箭头（计数徽章废除——「里面几行」不值得常驻槽位） */
-.log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
-.log-section-meta .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
+
 .log-section-body {
   height: 0; overflow: hidden;
   interpolate-size: allow-keywords;
@@ -121,10 +126,8 @@ body {
 }
 .log-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
 .log-line--INFO .log-dot { background: var(--mra-info); }
-.log-line--OK .log-dot { background: var(--mra-success); }
 .log-line--WARNING .log-dot { background: var(--mra-warning); }
 .log-line--ERROR .log-dot { background: var(--mra-danger); }
-.log-line--DEBUG .log-dot { background: var(--mra-foreground-dim); }
 .log-msg { flex: 1; min-width: 0; }
 .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
 .log-line--ERROR .log-msg { color: var(--mra-danger); }
@@ -151,20 +154,18 @@ body {
 </div>
 
 <script>
-// ==== 渲染管线：js/log.js 逐字移植 ====
+// ==== 渲染管线 = 生产 js/log.js 双 renderer 同构（appendLogs + renderEvents + 交接锁），
+//      叠加试验区设计：卡状态槽（step 1）× 事件驱动（step 2）。 ====
 function $(id) { return document.getElementById(id); }
-const levelClassMap = { INFO: 'INFO', OK: 'OK', WARNING: 'WARNING', ERROR: 'ERROR', DEBUG: 'DEBUG' };
+const levelClassMap = { INFO: 'INFO', WARNING: 'WARNING', ERROR: 'ERROR' };
 const SECTION_ANCHORS = [
   { re: /^\[鉴宝\] 进入阶段\s*:/, type: 'phase' },
   { re: /^\[鉴宝\] 模块启动/, type: 'session' },
-  { re: /^\[鉴宝\] 从断点开始/, type: 'session' },
   { re: /^\[鉴宝循环\] 完成 \d+ 场/, type: 'loop' },
   { re: /^\[鉴宝循环\] 已到每日循环上限/, type: 'loop' },
   { re: /^鉴宝观察会话总结/, type: 'loop' },
   { re: /^已连接窗口 \(hWnd=/, type: 'session' },
   { re: /^断点模式\s*:/, type: 'session' },
-  { re: /^紧急停止/, type: 'session' },
-  { re: /^连接窗口超时/, type: 'session' },
 ];
 function matchSectionAnchor(msg) {
   for (const a of SECTION_ANCHORS) if (a.re.test(msg)) return a.type;
@@ -183,114 +184,182 @@ function highlightKeywords(s) {
   KW_RULES.forEach((r) => { s = s.replace(r.re, (m) => '<span class="' + r.cls + '">' + m + '</span>'); });
   return s;
 }
-let _curSec = null;
+
+// 卡状态槽：词与色由状态机给出，所有卡共用同一槽位。
+const STATUS = {
+  run:  ['log-status--run', '进行中'], ok: ['log-status--ok', '成功'],
+  warn: ['log-status--warn', '警告'],  err: ['log-status--err', '失败'],
+  part: ['log-status--part', '未完成'], idle: ['log-status--idle', '记录'],
+};
+function setPill(sec, key) {
+  const pill = sec.querySelector('.log-status');
+  if (!pill) return;
+  pill.className = 'log-status ' + STATUS[key][0];
+  pill.textContent = STATUS[key][1];
+}
+
+let _curSec = null;   // legacy（无组散行）管线的当前卡
+const _openGroups = new Map(); // 组管线：group_id → { sec, worst }
+
+function _makeSection(kind, ts, msgHtml, rawText, pillKey) {
+  const sec = document.createElement('div');
+  sec.className = 'log-section log-section--' + kind;
+  const head = document.createElement('div');
+  head.className = 'log-line log-section-head';
+  head.dataset.raw = rawText;
+  head.title = rawText;
+  head.innerHTML =
+    '<span class="log-chev">▸</span>' +
+    '<span class="log-status ' + STATUS[pillKey][0] + '">' + STATUS[pillKey][1] + '</span>' +
+    '<span class="log-msg">' + msgHtml + '</span>' +
+    '<span class="log-section-meta"><span class="log-time">' + ts + '</span></span>';
+  const body = document.createElement('div');
+  body.className = 'log-section-body';
+  sec.appendChild(head);
+  sec.appendChild(body);
+  $('log-area').appendChild(sec);
+  bindSectionToggle(sec);
+  return sec;
+}
 function bindSectionToggle(sec) {
   const head = sec.querySelector('.log-section-head');
   if (!head || head.dataset.bound) return;
   head.dataset.bound = '1';
   head.addEventListener('click', (ev) => { ev.preventDefault(); sec.classList.toggle('log-section--open'); });
 }
-// step1：收尾只改一件事——状态槽从「进行中」换成结果词（成功/警告/失败）
-function finalizeSection(cur) {
-  const pill = cur.el.querySelector('.log-status');
-  if (pill) {
-    const st = cur.hasError ? ['log-status--err', '失败'] : cur.hasWarn ? ['log-status--warn', '警告'] : ['log-status--ok', '成功'];
-    pill.className = 'log-status ' + st[0];
-    pill.textContent = st[1];
-  }
-  bindSectionToggle(cur.el);
-}
 const FOLLOW_BOTTOM_PX = 24;
 function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX; }
+
+function _makeRow(lvl, msgHtml, rawText) {
+  const row = document.createElement('div');
+  row.className = 'log-line log-line--' + lvl;
+  row.dataset.raw = rawText;
+  row.innerHTML = '<span class="log-dot"></span><span class="log-msg">' + msgHtml + '</span>';
+  return row;
+}
+
+// ---- legacy 散行管线（与生产一致：锚点分段 + 首行成卡），卡头带「记录」槽 ----
 function appendLogs(lines) {
   const area = $('log-area');
   const followBottom = isNearBottom(area);
   lines.forEach((raw) => {
-    const div = document.createElement('div');
-    div.className = 'log-line';
-    div.dataset.raw = raw;
     const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\] \[(\w+)\] ([\s\S]*)$/);
-    if (!m) { div.textContent = raw; area.appendChild(div); return; }
-    const ts = m[1];
-    const lvl = levelClassMap[m[2]] ? m[2] : 'INFO';
-    const msg = m[3];
-    const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
-    if (!anchorType) {
-      const row = div;
-      row.classList.add('log-line--' + lvl);
-      row.innerHTML = '<span class="log-dot"></span><span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>';
-      _curSec.el.querySelector('.log-section-body').appendChild(row);
-      if (lvl === 'ERROR') _curSec.hasError = true;
-      else if (lvl === 'WARNING') _curSec.hasWarn = true;
+    if (!m) {
+      const div = document.createElement('div');
+      div.className = 'log-line';
+      div.dataset.raw = raw;
+      div.textContent = raw;
+      area.appendChild(div);
       return;
     }
-    if (_curSec) { finalizeSection(_curSec); _curSec = null; }
-    const sec = document.createElement('div');
-    sec.className = 'log-section log-section--' + anchorType;
-    const head = document.createElement('div');
-    head.className = 'log-line log-section-head';
-    head.dataset.raw = raw;
-    head.title = msg; // 单行省略后的全文出口
-    // step1：行首唯一状态槽 + 标题 + 右侧时间/箭头
-    head.innerHTML =
-      '<span class="log-status log-status--run">进行中</span>' +
-      '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
-      '<span class="log-section-meta"><span class="log-time">' + ts + '</span><span class="log-chev">▸</span></span>';
-    const body = document.createElement('div');
-    body.className = 'log-section-body';
-    sec.appendChild(head);
-    sec.appendChild(body);
-    area.appendChild(sec);
-    bindSectionToggle(sec);
-    _curSec = { el: sec, hasError: false, hasWarn: false };
+    const ts = m[1], lvl = levelClassMap[m[2]] ? m[2] : 'INFO', msg = m[3];
+    const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
+    if (!anchorType) {
+      _curSec.el.querySelector('.log-section-body').appendChild(_makeRow(lvl, highlightKeywords(escapeHtml(msg)), raw));
+      if (lvl === 'ERROR') setPill(_curSec.el, 'err');
+      else if (lvl === 'WARNING' && !_curSec.el.querySelector('.log-status--err')) setPill(_curSec.el, 'warn');
+      return;
+    }
+    if (_curSec) { _curSec = null; }
+    _curSec = { el: _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw, 'idle') };
   });
   if (followBottom) area.scrollTop = area.scrollHeight;
 }
 
-// ==== 流数据：分级重划后「插件实际送进 GUI 的行」（措辞取自 plugins/treasure 真行）====
-// 级别在产生处声明（模拟 logger.log(msg, level) 调用点），此处即重划后的级别；
-// 与真 GUI 通道同机制（fetch_logs 只放行 INFO+），数据里不存在被过滤的行。
-const SESSION = [
-  ['14:02:11', 'INFO', '已连接窗口 (hWnd=196650, 巅峰极速)'],
-  ['14:02:14', 'INFO', '[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）'],
-  ['14:02:15', 'INFO', '[鉴宝] 进入阶段: 拍品观察 [expert]'],
-  ['14:02:19', 'WARNING', '[鉴宝点击] 任务槽忙，本帧跳过点击 key=stage_expert（非手柄方式：上一帧结果尚未取走）'],
-  ['14:02:24', 'WARNING', '[鉴宝出价] 数字键 3 点击后 800ms 输入框读数未变化，第 1/3 次重发（疑似点击未送达，详见日志上文点击记录）'],
-  ['14:06:40', 'INFO', '[鉴宝循环] 完成 1 场: 状态机侧累计 4 场（上限 8，OCR侧=4，已达上限停止开新场 = False）'],
-  ['14:06:41', 'INFO', '[鉴宝落盘] 已记录第 4 场: 策略=profit 结果=win 成交=51,000 利润=+7,000 收入=58,000'],
-  ['14:06:42', 'INFO', '[鉴宝] 进入阶段: 大师场 [master]'],
-  ['14:06:45', 'WARNING', '[鉴宝点击] key=master_confirm 点击后 2500ms 仍在「大师场」，第 1/3 次重试'],
-  ['14:06:48', 'WARNING', '[鉴宝点击] key=master_confirm 点击后 2500ms 仍在「大师场」，第 2/3 次重试'],
-  ['14:06:55', 'INFO', '[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...'],
-  ['14:06:57', 'INFO', '[鉴宝弹窗①] 今日最高积分上涨: 12,400'],
-  ['14:12:03', 'INFO', '鉴宝观察会话总结：出价 17 次，拍中 6 次，利润 +203,100'],
-  ['14:12:04', 'INFO', '[鉴宝循环] 已到每日循环上限 8 场，本场为最后一场，回鉴宝大厅确认后进入彩蛋任务收尾并自动停止。'],
-  ['14:12:05', 'INFO', '[彩蛋收尾] 已到每日循环上限，开始彩蛋任务领取链（总预算 90s，跑完自动停止）'],
-  ['14:12:41', 'INFO', '[彩蛋收尾] 收尾完成，请求停止模块'],
+// ---- 结构化管线（与生产同构 + 交接锁 + 状态槽） ----
+function renderEvents(events, truncated) {
+  const area = $('log-area');
+  const followBottom = isNearBottom(area);
+  if (truncated) {
+    const hint = document.createElement('div');
+    hint.className = 'log-line';
+    hint.textContent = '[!!] 日志界面因落后过多已自动截断，以下为最新日志';
+    area.appendChild(hint);
+  }
+  events.forEach((rec) => {
+    if (rec.event_type === 'group_start') {
+      if (_curSec) { _curSec = null; } // 交接：组卡接管「当前卡」
+      const kind = (rec.kind === 'phase' || rec.kind === 'session' || rec.kind === 'loop') ? rec.kind : 'session';
+      const title = rec.title || '';
+      const sec = _makeSection(kind, rec.ts, highlightKeywords(escapeHtml(title)),
+                               '[' + rec.ts + '] [INFO] ' + title, 'run');
+      _openGroups.set(rec.group_id, { sec, worst: null });
+      return;
+    }
+    if (rec.event_type === 'group_end') {
+      const g = _openGroups.get(rec.group_id);
+      if (!g) return;
+      setPill(g.sec, { success: 'ok', warning: 'warn', failure: 'err', incomplete: 'part' }[rec.outcome] || 'ok');
+      _openGroups.delete(rec.group_id);
+      return;
+    }
+    let g = rec.group_id ? _openGroups.get(rec.group_id) : null;
+    if (rec.group_id && !g) {
+      g = { sec: _makeSection('session', rec.ts, '…（更早的组头已截断）', '', 'idle'), worst: null };
+      _openGroups.set(rec.group_id, g);
+    }
+    const lvl = levelClassMap[rec.level] ? rec.level : 'INFO';
+    const suffix = rec.fields ? Object.keys(rec.fields).map((k) => ' · ' + k + ': ' + rec.fields[k]).join('') : '';
+    const rawText = '[' + rec.ts + '] [' + rec.level + '] ' + (rec.message || '') + suffix;
+    if (!g) { appendLogs([rawText]); return; }
+    g.sec.querySelector('.log-section-body').appendChild(
+      _makeRow(lvl, highlightKeywords(escapeHtml((rec.message || '') + suffix)), rawText));
+    if (lvl === 'ERROR') g.worst = 'err';
+    else if (lvl === 'WARNING' && g.worst !== 'err') g.worst = g.worst || 'warn';
+  });
+  if (followBottom) area.scrollTop = area.scrollHeight;
+}
+
+// ==== 事件流：treasure 迁移后的真实 GUI 流（组事件 + 无组散行混排）====
+const ev = (seq, type, o) => Object.assign({ seq, event_type: type, schema_version: 1, level: 'INFO' }, o);
+const EVENTS = [
+  ev(1, 'log', { group_id: null, ts: '14:02:11', channel: 'app', message: '已连接窗口 (hWnd=196650, 巅峰极速)' }),
+  ev(2, 'log', { group_id: null, ts: '14:02:12', channel: 'app', message: '断点模式: 从头开始' }),
+  ev(3, 'group_start', { group_id: 'g-3', ts: '14:02:14', channel: 'treasure', kind: 'session', title: '[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）', outcome: 'running' }),
+  ev(4, 'group_end', { group_id: 'g-3', ts: '14:02:14', channel: 'treasure', kind: 'session', title: '[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）', outcome: 'success', has_warning: false, has_error: false, duration_ms: 200 }),
+  ev(5, 'group_start', { group_id: 'g-5', ts: '14:02:15', channel: 'treasure', kind: 'phase', title: '[鉴宝] 进入阶段: 拍品观察 [expert]', outcome: 'running' }),
+  ev(6, 'log', { group_id: 'g-5', ts: '14:02:19', level: 'WARNING', channel: 'treasure', message: '[鉴宝点击] 任务槽忙，本帧跳过点击 key=stage_expert（非手柄方式：上一帧结果尚未取走）' }),
+  ev(7, 'log', { group_id: 'g-5', ts: '14:02:24', level: 'WARNING', channel: 'treasure', message: '[鉴宝出价] 数字键 3 点击后 800ms 输入框读数未变化，第 1/3 次重发（疑似点击未送达，详见日志上文点击记录）' }),
+  ev(8, 'group_end', { group_id: 'g-5', ts: '14:06:40', channel: 'treasure', kind: 'phase', outcome: 'warning', has_warning: true, has_error: false, duration_ms: 265000 }),
+  ev(9, 'group_start', { group_id: 'g-9', ts: '14:06:40', channel: 'treasure', kind: 'loop', title: '[鉴宝循环] 完成 1 场: 状态机侧累计 4 场（上限 8，OCR侧=4，已达上限停止开新场 = False）', outcome: 'running' }),
+  ev(10, 'log', { group_id: 'g-9', ts: '14:06:41', channel: 'treasure', message: '[鉴宝落盘] 已记录第 4 场: 策略=profit 结果=win 成交=51,000 利润=+7,000 收入=58,000' }),
+  ev(11, 'group_end', { group_id: 'g-9', ts: '14:06:41', channel: 'treasure', kind: 'loop', outcome: 'success', has_warning: false, has_error: false, duration_ms: 1000 }),
+  ev(12, 'group_start', { group_id: 'g-12', ts: '14:06:42', channel: 'treasure', kind: 'phase', title: '[鉴宝] 进入阶段: 大师场 [master]', outcome: 'running' }),
+  ev(13, 'log', { group_id: 'g-12', ts: '14:06:45', level: 'WARNING', channel: 'treasure', message: '[鉴宝点击] key=master_confirm 点击后 2500ms 仍在「大师场」，第 1/3 次重试' }),
+  ev(14, 'log', { group_id: 'g-12', ts: '14:06:48', level: 'WARNING', channel: 'treasure', message: '[鉴宝点击] key=master_confirm 点击后 2500ms 仍在「大师场」，第 2/3 次重试' }),
+  ev(15, 'log', { group_id: 'g-12', ts: '14:06:55', channel: 'treasure', message: '[鉴宝分红] 已点击领取，等待读取本场收入' }),
+  ev(16, 'log', { group_id: 'g-12', ts: '14:06:57', channel: 'treasure', message: '[鉴宝] 今日最高积分上涨至 12,400' }),
+  ev(17, 'log', { group_id: null, ts: '14:06:58', level: 'WARNING', channel: 'app', message: '[鉴宝] 动作失败 node=bid_confirm_red_btn reason=识别未命中' }),
+  ev(18, 'group_end', { group_id: 'g-12', ts: '14:12:03', channel: 'treasure', kind: 'phase', outcome: 'warning', has_warning: true, has_error: false, duration_ms: 321000 }),
+  ev(19, 'group_start', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', kind: 'loop', title: '鉴宝观察会话总结', outcome: 'running' }),
+  ev(20, 'log', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', message: '  本场结算     : 收入 58,000 / 利润 +7,000（成交价 51,000 / 估值 55,000）' }),
+  ev(21, 'log', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', message: '  今日最高积分 : 12,400' }),
+  ev(22, 'group_end', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', kind: 'loop', outcome: 'success', has_warning: false, has_error: false, duration_ms: 300 }),
+  ev(23, 'group_start', { group_id: 'g-23', ts: '14:12:04', channel: 'treasure', kind: 'loop', title: '[鉴宝循环] 已到每日循环上限 8 场，本场为最后一场，回鉴宝大厅确认后进入彩蛋任务收尾并自动停止。', outcome: 'running' }),
+  ev(24, 'log', { group_id: 'g-23', ts: '14:12:05', channel: 'treasure', message: '[彩蛋收尾] 开始领取彩蛋任务' }),
 ];
-// 活体尾巴：下一场持续到达的行
+// 活体尾巴：持续写入最后一个组
 const TAIL = [
-  ['INFO', '[鉴宝落盘] 已记录第 5 场: 策略=profit 结果=fail 成交=-- 利润=0 收入=132,000'],
-  ['WARNING', '[鉴宝点击] key=stage_next 点击后 2500ms 仍在「结算」，第 1/3 次重试'],
+  { level: 'INFO', message: '[鉴宝落盘] 领取数已累加(2026-09-21): 红+2 黄+1 蓝+0 银币+250,000 积分+30,000' },
+  { level: 'INFO', message: '[彩蛋收尾] 收尾完成，请求停止模块' },
 ];
 let idx = 0, tick = 0;
 function pump() {
-  if (idx < SESSION.length) {
-    const r = SESSION[idx];
-    appendLogs(['[' + r[0] + '] [' + r[1] + '] ' + r[2]]);
-    idx++;
-    setTimeout(pump, 420); // 仿 400ms 轮询拍
-  } else {
-    const r = TAIL[tick % TAIL.length];
-    const t = 14 * 3600 + 13 * 60 + tick * 2;
-    const ts = String(Math.floor(t / 3600) % 24).padStart(2, '0') + ':' + String(Math.floor(t / 60) % 60).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
-    appendLogs(['[' + ts + '] [' + r[0] + '] ' + r[1]]);
-    tick++;
-    setTimeout(pump, 3000);
+  if (idx < EVENTS.length) { renderEvents([EVENTS[idx]], false); idx++; setTimeout(pump, 500); return; }
+  if (tick >= TAIL.length) return; // 活体尾巴写完即止（g-23 收尾后不得再往里写）
+  const t = TAIL[tick];
+  const sec = 10 + tick * 4;
+  renderEvents([ev(100 + tick, 'log', Object.assign({ group_id: 'g-23', ts: '14:12:' + String(sec).padStart(2, '0'), channel: 'treasure' }, t))], false);
+  if (tick === TAIL.length - 1) {
+    renderEvents([ev(199, 'group_end', { group_id: 'g-23', ts: '14:12:55', channel: 'treasure', kind: 'loop', outcome: 'success', has_warning: false, has_error: false, duration_ms: 51000 })], false);
   }
+  tick++;
+  setTimeout(pump, 2600);
 }
 pump();
-$('btn-log-clear').addEventListener('click', () => { $('log-area').innerHTML = ''; _curSec = null; });
+$('btn-log-clear').addEventListener('click', () => {
+  $('log-area').innerHTML = ''; _curSec = null; _openGroups.clear();
+});
 </script>
 </body>
 </html>
