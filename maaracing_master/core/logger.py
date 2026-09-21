@@ -89,7 +89,11 @@ class _TierFile:
 class Logger:
     # 日志级别：TRACE < DEBUG < INFO < WARNING < ERROR
     LEVELS = {"TRACE": 0, "DEBUG": 1, "INFO": 2, "WARNING": 3, "ERROR": 4}
-    GUI_MIN_LEVEL = "INFO"  # GUI 只显示 INFO 及以上级别
+    # GUI 只显示 INFO 及以上级别。分级判据（写日志时自问）：这行是玩家事后想回看的
+    # 「发生了什么」（起停/阶段/场次结果/收益/降级/异常留痕），还是机件「怎么运转」
+    # （点击意图/状态机 phase·epoch/性能快照/配置装载）？后者一律 DEBUG——
+    # 落盘是单流全量，降下去不丢，排查照常用文件。异常留痕即使节流也保持 WARNING。
+    GUI_MIN_LEVEL = "INFO"
     DEFAULT_CHANNEL = "app" # 通道名：core 通用用 app；业务层用模块 id（core 不校验、不外显）
     # 进程内行缓冲上限。实测峰值约 4 行/秒，按最坏情况放大 25 倍取 100 行/秒，
     # 5000 行对应 50 秒最坏积压，安全裕度充足。

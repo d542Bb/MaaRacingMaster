@@ -1253,7 +1253,7 @@ class TreasureModule(ActivityModule):
             )
         if not runner.start(self._V4_ENTRY):
             raise RuntimeError("[鉴宝][v4] 常驻图加载失败，模块终止")
-        logger.log("[鉴宝][v4] 帧工作已移交 MaaFW Tasker 线程（policy 闭环桥）")
+        logger.log("[鉴宝][v4] 帧工作已移交 MaaFW Tasker 线程（policy 闭环桥）", "DEBUG")
         from maaracing_master.core.capabilities import BUTTON_A
         if self.ctx.click_mode == "gamepad":
             # v4 常驻图永不退出，导航器要**跨整个会话持有**同一设备 → 走
@@ -1272,11 +1272,11 @@ class TreasureModule(ActivityModule):
             clicker.bind_gamepad(self.ctx.capture, gpad, confirm_button=BUTTON_A,
                                  rebuild_cb=self._rebuild_gamepad_device)
             runner._graph._clicker = clicker
-            logger.log("[鉴宝][v4] 手柄已绑定（常驻持有者，不计租约；与决策段共享点击器）")
+            logger.log("[鉴宝][v4] 手柄已绑定（常驻持有者，不计租约；与决策段共享点击器）", "DEBUG")
         try:
             while self.ctx.lifecycle.running:
                 if not runner.poll():
-                    logger.log("[鉴宝][v4] 常驻图已退出，尝试重启", "WARNING")
+                    logger.log("[鉴宝][v4] 常驻图已退出，尝试重启", "DEBUG")
                     runner.start(self._V4_ENTRY)
                 self.ctx.lifecycle.sleep(1.0)
         finally:
@@ -1633,7 +1633,7 @@ class TreasureModule(ActivityModule):
                         logger.log(
                             f"[鉴宝循环] 已到每日循环上限 {lim} 场，"
                             f"本场为最后一场，回鉴宝大厅确认后进入彩蛋任务收尾并自动停止。",
-                            "WARNING",
+                            "INFO",
                         )
                 # 记下来，下次跳变用
                 self._prev_stage_for_loop_count = stage_name
@@ -1681,7 +1681,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝] set_h({value}) 丢弃：< 历史Hmax {max(valid_hist):,} 的 1/10，"
                 f"判定为 OCR 裁位误读（回合{self._round_no}未锁定/已锁定={prev_locked > 0}）",
-                "WARNING",
+                "DEBUG",
             )
             return
         # 该回合已有值 → 忽略后续（只保留第一次智能报价）
@@ -1698,7 +1698,7 @@ class TreasureModule(ActivityModule):
         m13 = self._sysmax_13
         if m13:
             extra = f"  (sysmax_13={m13:,} → 估值 {int(m13*1.35):,} ~ {int(m13*1.4):,})"
-        logger.log(f"[鉴宝] 回合{self._round_no} 系统报价 = {value:,}{extra}", "INFO")
+        logger.log(f"[鉴宝] 回合{self._round_no} 系统报价 = {value:,}{extra}", "DEBUG")
 
     def set_rank(self, rank: int) -> None:
         """设置我方所在面板槽号（1~4，OCR 从带「（我）」标记的玩家名行提取）。
@@ -1869,7 +1869,7 @@ class TreasureModule(ActivityModule):
                 if abs(ck_cxn - rx2) < 0.22:
                     confirm = self._action_centers.get("confirm_red_btn")
                     if confirm is None:
-                        logger.log("[鉴宝选师] 确认按钮(confirm_red_btn)未配置 rect，选中判定降级为指向头像", "WARNING")
+                        logger.log("[鉴宝选师] 确认按钮(confirm_red_btn)未配置 rect，选中判定降级为指向头像", "DEBUG")
                     else:
                         self._appraiser_confirmed_once = True
                         self._appr_last_decision = {
@@ -1880,7 +1880,7 @@ class TreasureModule(ActivityModule):
                         logger.log(
                             f"[鉴宝选师] 点击意图: 已选中 {key}（√S={ck_score:.2f}）→ 点确认 "
                             f"目标=({confirm[0]:.3f},{confirm[1]:.3f})",
-                            "INFO",
+                            "DEBUG",
                         )
                         return
                 # check 匹配上但位置不贴目标卡 → 可能在别的卡上（用户自己点了别的），
@@ -1909,7 +1909,7 @@ class TreasureModule(ActivityModule):
                 if confirm is None:
                     logger.log(
                         "[鉴宝选师] 确认按钮(confirm_red_btn)未配置 rect，兜底降级为指向中间卡",
-                        "WARNING",
+                        "DEBUG",
                     )
                 else:
                     self._appraiser_confirmed_once = True   # 问题1：过场期不再发 fallback
@@ -1921,7 +1921,7 @@ class TreasureModule(ActivityModule):
                     logger.log(
                         f"[鉴宝选师] 点击意图: 未识别到目标但已有卡被选中（√S={ck_score:.2f}）→ 点确认 "
                         f"目标=({confirm[0]:.3f},{confirm[1]:.3f})",
-                        "INFO",
+                        "DEBUG",
                     )
                     return
             # 问题1：用户反馈——点确认后有过场动画（卡片画面还在但细节变了，hits=空且 check=空），
@@ -1955,7 +1955,7 @@ class TreasureModule(ActivityModule):
         }
         logger.log(
             f"[鉴宝选师] 点击意图: {hint_msg} 目标=({cxn:.3f},{cyn:.3f})",
-            "INFO",
+            "DEBUG",
         )
 
     def _match_session_panel(
@@ -2013,7 +2013,7 @@ class TreasureModule(ActivityModule):
                 f"OCR读 {self._session_daily_ocr_count if self._session_daily_ocr_count is not None else '--'}）"
                 "，停止开新场"
             )
-            logger.log(f"[鉴宝循环] 场次选择拦截: {msg}", "WARNING")
+            logger.log(f"[鉴宝循环] 场次选择拦截: {msg}", "INFO")
             self._session_last_decision = {
                 "key": "session_daily_limit_reached",
                 "hint": msg,
@@ -2067,7 +2067,7 @@ class TreasureModule(ActivityModule):
         }
         logger.log(
             f"[鉴宝场次] 点击意图: {status} 目标=({center[0]:.3f},{center[1]:.3f})",
-            "INFO",
+            "DEBUG",
         )
 
     # ==================================================================
@@ -2234,7 +2234,7 @@ class TreasureModule(ActivityModule):
             f"（原始读数={any_bid_read_raw} 槽轮次={self._bid_slots_round} 同回合={same_round}）"
             f"缓冲={since_submit_ms:.0f}/{self.SUBMIT_ANIMATION_BUFFER_MS}ms "
             f"my_rank={my} 我方已提交={submitted} | 槽 hits/锁定={slots}",
-            "WARNING",
+            "DEBUG",
         )
 
     def _run_bidding_choice(self, frame_rgb: np.ndarray) -> None:
@@ -2271,7 +2271,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝出价] 点击意图: 放弃出价二级确认弹窗 → 点确认（落实 pass，S={d_score:.2f}）"
                 f" 目标=({d_cxn:.3f},{d_cyn:.3f})",
-                "INFO",
+                "DEBUG",
             )
             return
         # S0：回合切换转场期，动画残缺高发，不判定
@@ -2309,7 +2309,7 @@ class TreasureModule(ActivityModule):
             self._bid_input_progress = 0
             self._bid_confirm_streak = 0
             self._bid_zero_since_ts = None
-            logger.log(f"[鉴宝出价] 新 bidding epoch #{self._bid_epoch}（面板打开，输入框值已重置）")
+            logger.log(f"[鉴宝出价] 新 bidding epoch #{self._bid_epoch}（面板打开，输入框值已重置）", "DEBUG")
 
         # 下降沿（phase==bidding 时面板从稳定开到稳定关）= 用户点了确认出价，面板关闭 → 推进 wait_result。
         # 关键1：不跟"生成确认意图"绑定——否则准星指了一下确认就 phase→wait_result，下帧准星空。
@@ -2323,7 +2323,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝出价] epoch#{self._bid_epoch} 检测到面板关闭（用户已确认出价）"
                 "（phase→wait_result），等待公开报价，OCR 读 4 槽构建快照...",
-                "INFO",
+                "DEBUG",
             )
 
         # wait_result：已提交，等待公开报价（快照构建在 OCR 消费后由 _maybe_build_snapshot 完成）
@@ -2375,7 +2375,7 @@ class TreasureModule(ActivityModule):
                     f"[鉴宝出价] epoch#{self._bid_epoch} wait_result 动画缓冲期过后，"
                     f"4 槽未齐'已出价'且我方(槽位{self._my_rank})出价区仍明确'出价中' → "
                     "判定假下降沿（未提交成功），phase→wait_first 等面板重开重新报价",
-                    "WARNING",
+                    "DEBUG",
                 )
                 self._bidding_last_decision = {
                     "state": "S4_fake_fallback", "key": None, "center": None,
@@ -2395,7 +2395,7 @@ class TreasureModule(ActivityModule):
                 # H 未读 → 点「智能出价」拿 H
                 center = self._action_centers.get(_SMART_BID_KEY)
                 if center is None:
-                    logger.log("[鉴宝出价] 智能出价按钮(smart_bid_btn)未配置 rect，准星跳过", "WARNING")
+                    logger.log("[鉴宝出价] 智能出价按钮(smart_bid_btn)未配置 rect，准星跳过", "DEBUG")
                     self._bidding_last_decision = None
                     return
                 self._bidding_last_decision = {
@@ -2405,7 +2405,7 @@ class TreasureModule(ActivityModule):
                 }
                 logger.log(
                     f"[鉴宝出价] 点击意图: 面板已开 H 未读 → 点智能出价 目标=({center[0]:.3f},{center[1]:.3f})",
-                    "INFO",
+                    "DEBUG",
                 )
                 return
             # H 已读 → 若处于 bidding 相位，执行策略决策 + 输入链路
@@ -2432,7 +2432,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝出价] epoch#{self._bid_epoch} wait_first 中按钮 OCR 读到「已出价」→ "
                 "判定我方提交实际已成功（对手未齐报价），phase→wait_result 继续读公开报价",
-                "INFO",
+                "DEBUG",
             )
             self._bidding_last_decision = {
                 "state": "S4_wait_result", "key": None, "center": None,
@@ -2442,7 +2442,7 @@ class TreasureModule(ActivityModule):
             return
         main_btn = self._action_centers.get(self._BID_MAIN_BTN_KEY)
         if main_btn is None:
-            logger.log("[鉴宝出价] 主出价按钮(bid_main_red_btn)未配置 rect，准星跳过", "WARNING")
+            logger.log("[鉴宝出价] 主出价按钮(bid_main_red_btn)未配置 rect，准星跳过", "DEBUG")
             self._bidding_last_decision = None
             return
         if "等待出价" in label:
@@ -2464,7 +2464,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝出价] 点击意图: 出价按钮已亮（OCR={label or '?'}）→ 点出价 "
                 f"目标=({main_btn[0]:.3f},{main_btn[1]:.3f})",
-                "INFO",
+                "DEBUG",
             )
             return
         # 读不出 / 不匹配 → 保守等待（纯等待文字，无准星）
@@ -2566,7 +2566,7 @@ class TreasureModule(ActivityModule):
         logger.log(
             f"[鉴宝] 上一轮快照已构建: epoch#{snap.epoch} R{r} H={h:,} 我方={snap.our_bid:,} "
             f"对手={tuple(b for b in opponent_bids)}",
-            "INFO",
+            "DEBUG",
         )
         # 附加回合激活（收敛规则）：第 5 回合 4 人报价读全后，若第一名=第二名（平局）
         # 且未进入结算，游戏会追加第 6+ 回合（横幅模板只有 round1~5，识别不到 6+）→
@@ -2579,7 +2579,7 @@ class TreasureModule(ActivityModule):
                     logger.log(
                         f"[鉴宝] 第5回合平局（{top2[0]:,}={top2[1]:,}）→ "
                         "激活附加回合小字兜底识别",
-                        "INFO",
+                        "DEBUG",
                     )
 
     def _run_bidding_execute(self, frame_rgb: np.ndarray, s_score: float) -> None:
@@ -2634,7 +2634,7 @@ class TreasureModule(ActivityModule):
             if B > 0:
                 confirm = self._action_centers.get("bid_confirm_red_btn")
                 if confirm is None:
-                    logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "WARNING")
+                    logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "DEBUG")
                     self._bidding_last_decision = None
                     return
                 self._bidding_last_decision = {
@@ -2661,7 +2661,7 @@ class TreasureModule(ActivityModule):
             self._bid_confirm_streak = 0
             confirm = self._action_centers.get("bid_confirm_red_btn")
             if confirm is None:
-                logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "WARNING")
+                logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "DEBUG")
                 self._bidding_last_decision = None
                 return
             self._bidding_last_decision = {
@@ -2672,7 +2672,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝出价] 点击意图: [{dec.decision}] 目标价 {T:,} 已就位（B={B:,}）"
                 f"→ 点确认出价 目标=({confirm[0]:.3f},{confirm[1]:.3f}) | {dec.reason}",
-                "INFO",
+                "DEBUG",
             )
             return
 
@@ -2684,7 +2684,7 @@ class TreasureModule(ActivityModule):
             if self._bid_confirm_streak < self.BID_CONFIRM_STABLE_FRAMES:
                 confirm = self._action_centers.get("bid_confirm_red_btn")
                 if confirm is None:
-                    logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "WARNING")
+                    logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "DEBUG")
                     self._bidding_last_decision = None
                     return
                 self._bidding_last_decision = {
@@ -2698,7 +2698,7 @@ class TreasureModule(ActivityModule):
             self._bid_input_progress = 0
             logger.log(
                 f"[鉴宝出价] 确认态连续 {self.BID_CONFIRM_STABLE_FRAMES} 帧读到 B={B:,}≠{T:,}，"
-                f"判定输入被改动，重置后重输", "WARNING",
+                f"判定输入被改动，重置后重输", "DEBUG",
             )
 
         # 需要修改输入框：清空（前缀不匹配）→ 逐位输入
@@ -2716,7 +2716,7 @@ class TreasureModule(ActivityModule):
                 # 防御兜底：前缀匹配且锚点到位 → 理论已走 B==T 分支；此处指确认
                 confirm = self._action_centers.get("bid_confirm_red_btn")
                 if confirm is None:
-                    logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "WARNING")
+                    logger.log("[鉴宝出价] 面板确认按钮(bid_confirm_red_btn)未配置 rect", "DEBUG")
                     self._bidding_last_decision = None
                     return
                 self._bidding_last_decision = {
@@ -2729,7 +2729,7 @@ class TreasureModule(ActivityModule):
             key = f"bid_numpad_{next_digit}"
             center = self._action_centers.get(key)
             if center is None:
-                logger.log(f"[鉴宝出价] 数字键({key})未配置 rect", "WARNING")
+                logger.log(f"[鉴宝出价] 数字键({key})未配置 rect", "DEBUG")
                 self._bidding_last_decision = None
                 return
             self._bidding_last_decision = {
@@ -2740,7 +2740,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝出价] 点击意图: [{dec.decision}] 输入数字 {next_digit}（进度 {self._bid_input_progress}/{len(ts)} 位 → 目标 {ts}）"
                 f"目标=({center[0]:.3f},{center[1]:.3f}) | {dec.reason}",
-                "INFO",
+                "DEBUG",
             )
             return
         if B > 0:
@@ -2748,7 +2748,7 @@ class TreasureModule(ActivityModule):
             self._bid_input_progress = 0
             clear = self._action_centers.get("bid_numpad_clear")
             if clear is None:
-                logger.log("[鉴宝出价] 重置按钮(bid_numpad_clear)未配置 rect", "WARNING")
+                logger.log("[鉴宝出价] 重置按钮(bid_numpad_clear)未配置 rect", "DEBUG")
                 self._bidding_last_decision = None
                 return
             self._bidding_last_decision = {
@@ -2759,7 +2759,7 @@ class TreasureModule(ActivityModule):
             logger.log(
                 f"[鉴宝出价] 点击意图: [{dec.decision}] 目标价 {T:,} 残留输入框 {B:,} 前缀不匹配 → 点✖清空 "
                 f"目标=({clear[0]:.3f},{clear[1]:.3f}) | {dec.reason}",
-                "INFO",
+                "DEBUG",
             )
             return
         # 空（B==0）有两种可能：真清空（点✖后/用户手动清）与 OCR 瞬空读（框里其实有值）。
@@ -2775,7 +2775,7 @@ class TreasureModule(ActivityModule):
                 key = f"bid_numpad_{next_digit}"
                 center = self._action_centers.get(key)
                 if center is None:
-                    logger.log(f"[鉴宝出价] 数字键({key})未配置 rect", "WARNING")
+                    logger.log(f"[鉴宝出价] 数字键({key})未配置 rect", "DEBUG")
                     self._bidding_last_decision = None
                     return
                 self._bidding_last_decision = {
@@ -2788,12 +2788,12 @@ class TreasureModule(ActivityModule):
                     f"[鉴宝出价] 点击意图: [{dec.decision}] 输入数字 {next_digit}（OCR 空读锚点推进 "
                     f"{self._bid_input_progress}/{len(ts)} → 目标 {ts}）"
                     f"目标=({center[0]:.3f},{center[1]:.3f}) | {dec.reason}",
-                    "INFO",
+                    "DEBUG",
                 )
                 return
             logger.log(
                 f"[鉴宝出价] B=0 持续超 {self.BID_ZERO_STABLE_MS:.0f}ms，判真空清空，"
-                f"锚点 {self._bid_input_progress}→0 从首位重输", "INFO")
+                f"锚点 {self._bid_input_progress}→0 从首位重输", "DEBUG")
         # 真空（锚点=0，或上方判空重置）→ 输第一位
         self._bid_input_progress = 0
         self._bid_zero_since_ts = None
@@ -2801,7 +2801,7 @@ class TreasureModule(ActivityModule):
         key = f"bid_numpad_{next_digit}"
         center = self._action_centers.get(key)
         if center is None:
-            logger.log(f"[鉴宝出价] 数字键({key})未配置 rect", "WARNING")
+            logger.log(f"[鉴宝出价] 数字键({key})未配置 rect", "DEBUG")
             self._bidding_last_decision = None
             return
         self._bidding_last_decision = {
@@ -2812,7 +2812,7 @@ class TreasureModule(ActivityModule):
         logger.log(
             f"[鉴宝出价] 点击意图: [{dec.decision}] 输入数字 {next_digit}（已 '' → 目标 {ts}）"
             f"目标=({center[0]:.3f},{center[1]:.3f}) | {dec.reason}",
-            "INFO",
+            "DEBUG",
         )
 
     # ==================================================================
@@ -2838,7 +2838,7 @@ class TreasureModule(ActivityModule):
             raise
         logger.log(
             f"[鉴宝] 决策策略就绪: v4 policy 表（rules={len(self._policy_plan.rules)}）",
-            "INFO",
+            "DEBUG",
         )
 
     def _stage_id(self) -> str | None:
@@ -3134,7 +3134,7 @@ class TreasureModule(ActivityModule):
                                        model_path=None,
                                        confirm_button=BUTTON_A,
                                        rebuild_cb=self._rebuild_gamepad_device)
-            logger.log("[鉴宝点击] 后台手柄方式：已绑定手柄导航能力（首次点击按需创建虚拟手柄）", "INFO")
+            logger.log("[鉴宝点击] 后台手柄方式：已绑定手柄导航能力（首次点击按需创建虚拟手柄）", "DEBUG")
         except Exception as e:  # noqa: BLE001 —— 无 gamepad 能力/手柄不可用时降级
             logger.log(
                 f"[鉴宝点击] 手柄绑定失败，后台手柄方式不可用（前台鼠标方式不受影响）: {e}",
@@ -3159,7 +3159,7 @@ class TreasureModule(ActivityModule):
             logger.log("[鉴宝点击] 光标长时间丢失：已重建虚拟手柄并换绑导航器", "INFO")
             return True
         except Exception as e:  # noqa: BLE001 —— 重建失败不阻塞主循环，下帧重试
-            logger.log(f"[鉴宝点击] 虚拟手柄重建失败（下帧重试）: {e}", "WARNING")
+            logger.log(f"[鉴宝点击] 虚拟手柄重建失败（下帧重试）: {e}", "DEBUG")
             return False
 
     def _abort_inflight_nav(self, reason: str) -> None:
@@ -4207,7 +4207,7 @@ class TreasureModule(ActivityModule):
         self._ensure_gamepad_bound()
         mode_label = self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)
         if clicker.need_foreground and not self.ctx.window_foreground:
-            logger.log(f"[彩蛋收尾] 点击 {key} 取消：游戏窗口非前台（前台鼠标不抢前台）", "WARNING")
+            logger.log(f"[彩蛋收尾] 点击 {key} 取消：游戏窗口非前台（前台鼠标不抢前台）", "DEBUG")
             self._egg_chain_trace("click_skipped", key=key, reason="not_foreground")
             return False
         if not self._egg_chain_drain_slot(self.EGG_CHAIN_CLICK_TIMEOUT_S):
@@ -4217,7 +4217,7 @@ class TreasureModule(ActivityModule):
             # LifecycleAdapter.sleep），以及本处不消化中止结果导致下轮 submit 被拒。
             clicker.cancel()
             if not self._egg_chain_drain_slot(self.EGG_CHAIN_CLICK_TIMEOUT_S):
-                logger.log(f"[彩蛋收尾] 点击 {key} 取消：任务槽被占用未释放", "WARNING")
+                logger.log(f"[彩蛋收尾] 点击 {key} 取消：任务槽被占用未释放", "DEBUG")
                 self._egg_chain_trace("click_skipped", key=key, reason="slot_busy")
                 return False
         for _attempt in range(self.EGG_CHAIN_CLICK_RETRY_MAX):
@@ -4499,7 +4499,7 @@ class TreasureModule(ActivityModule):
             if home is not None and self._egg_chain_click(*home, key="hall_home_btn"):
                 self._egg_chain_wait(specs, self.EGG_CHAIN_LOBBY_ANCHOR, 8.0,
                                      budget_deadline=budget_deadline)
-        logger.log("[彩蛋收尾] 收尾完成，请求停止模块", "WARNING")
+        logger.log("[彩蛋收尾] 收尾完成，请求停止模块", "INFO")
         self.ctx.lifecycle.request_stop()
 
     def _run_egg_claim_chain(self) -> None:
@@ -4513,7 +4513,7 @@ class TreasureModule(ActivityModule):
         logger.log(
             f"[彩蛋收尾] 已到每日循环上限，开始彩蛋任务领取链"
             f"（总预算 {self.EGG_CHAIN_TOTAL_BUDGET_S:.0f}s，跑完自动停止）",
-            "WARNING",
+            "INFO",
         )
         deadline = time.monotonic() + self.EGG_CHAIN_TOTAL_BUDGET_S
         # 入口先作废主链路遗留的在途点击：上限拦截的 3 帧确认窗内主链路可能刚提交
@@ -4620,7 +4620,7 @@ class TreasureModule(ActivityModule):
                     f"（状态机 {self._session_daily_done_count} 场 / OCR"
                     f" {self._session_daily_ocr_count if self._session_daily_ocr_count is not None else '--'}），"
                     "停止开新场，进入彩蛋任务收尾",
-                    "WARNING",
+                    "DEBUG",
                 )
                 self._run_egg_claim_chain()
                 return
@@ -5548,7 +5548,7 @@ class TreasureModule(ActivityModule):
             f"（{io_['drop_ratio'] * 100:.1f}%）/ 队列峰值 {io_['queue_peak']}"
             f"/{io_['queue_max']} | 识别健康 {h['level']}"
             f"（{h.get('scope', '-')} {h.get('drop_ratio', 0) * 100:.1f}%）",
-            "INFO",
+            "DEBUG",
         )
 
 
@@ -5818,7 +5818,7 @@ class TreasureModule(ActivityModule):
                             f"[鉴宝] 槽{pid} 固化第{r}回合出价 = {amt:,}"
                             f"（连续{slot['stable']}次一致，"
                             f"消费{slot['consumed']}/输出{slot['output']}/命中{slot['hits']}）",
-                            "INFO",
+                            "DEBUG",
                         )
                 else:
                     slot["val"] = amt
@@ -5889,7 +5889,7 @@ class TreasureModule(ActivityModule):
                 if amt != 0 and 0 < abs(amt) < MIN_SETTLE_AMOUNT:
                     logger.log(
                         f"[鉴宝] OCR {key} = {amt:,} 丢弃：正数<{MIN_SETTLE_AMOUNT:,}，"
-                        f"判定为 OCR 裁位残缺", "WARNING",
+                        f"判定为 OCR 裁位残缺", "DEBUG",
                     )
                     continue
                 # 2) 相对历史 H 下限（sysmax_ref 存在时：最终竞拍价/总价都不该比
@@ -5899,7 +5899,7 @@ class TreasureModule(ActivityModule):
                     if abs(amt) < rel_floor:
                         logger.log(
                             f"[鉴宝] OCR {key} = {amt:,} 丢弃：< 历史Hmax {sysmax_ref:,} 的 1/20 "
-                            f"（阈值 {rel_floor:,}），判定为 OCR 裁位残缺", "WARNING",
+                            f"（阈值 {rel_floor:,}），判定为 OCR 裁位残缺", "DEBUG",
                         )
                         continue
                 prev = getattr(self, attr)
@@ -5930,7 +5930,7 @@ class TreasureModule(ActivityModule):
                 self._settle_profit_cross_seen = read
                 logger.log(
                     f"[鉴宝] 利润行 OCR = {read:,} 与派生值 {derived:,} 不符，"
-                    f"已按「拍品总价 − 最终竞拍价」计（排查 ROI 漂移用）", "WARNING",
+                    f"已按「拍品总价 − 最终竞拍价」计（排查 ROI 漂移用）", "DEBUG",
                 )
         # settle_my_income 单独判定（本场收入/收益，正数=赚，负数=亏【我方亏本拍中】，0=未分红）：
         # 只防 1 类误读：裁位残缺 → 个位/十位数字（|amt|<10 基本不可能是真实收入）。
@@ -5948,7 +5948,7 @@ class TreasureModule(ActivityModule):
                 if amt != 0 and abs(amt) < 10:
                     logger.log(
                         f"[鉴宝] OCR settle_my_income = {amt:,} 丢弃：|amt| < 10，"
-                        f"判定为 OCR 裁位残缺", "WARNING",
+                        f"判定为 OCR 裁位残缺", "DEBUG",
                     )
                 else:
                     prev = self._settle_my_income
@@ -5962,7 +5962,7 @@ class TreasureModule(ActivityModule):
                     if mutated:
                         logger.log(
                             f"[鉴宝] OCR settle_my_income = {amt:,} 丢弃：相对已有值 "
-                            f"{prev:,} 突变超过 5 倍，判定为 ROI 串位错值", "WARNING",
+                            f"{prev:,} 突变超过 5 倍，判定为 ROI 串位错值", "DEBUG",
                         )
                     elif prev != amt and self._settle_field_stable("settle_my_income", amt):
                         self._settle_my_income = amt
@@ -6061,7 +6061,7 @@ class TreasureModule(ActivityModule):
                     if self._frame_counter % 10 == 0:
                         logger.log(
                             f"[鉴宝] 阶段候选回退被拒绝：{cur_stage}(idx{cur_idx}) → "
-                            f"{new_stage}(idx{new_idx})，保持当前阶段不变", "WARNING",
+                            f"{new_stage}(idx{new_idx})，保持当前阶段不变", "DEBUG",
                         )
                     return (self._det_stage, self._det_round)
 
