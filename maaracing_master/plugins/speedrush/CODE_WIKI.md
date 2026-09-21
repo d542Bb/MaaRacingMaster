@@ -430,3 +430,32 @@ step 4 评分器须区别对待这两种"不完整"。多枚组占比低的真�
 
 **状态**：两模块 + 单测 31 项落地（commit `2e9068e`），**未接 module**（step 5 离线
 链路一起接）；聚合参数 step 4 进 decision.json，边界阈值待校验层定档测量。
+
+## 11. 参数真源三源分立与决策层 v1（阶段 B 第五块，2026-09-21 §八 step 4 落地）（本域）
+
+**三源分立**（v2 §六，禁止互相抄数）：游戏事实 = `RULES.md`（人工复核制，不进配置）；
+几何标定 = `resources/calibration/gate0.json`（唯一入口 `world_model.load_calib`，
+Gate-0 收杆产物，改数=重新标定）；行为参数 = `resources/policy/decision.json`
+（唯一入口 `config.load_decision`）。两个加载器都 **fail-loud**：schema_version、
+逐键范围、**段间依赖矛盾**（t_recover<t_conserve_max、死区<越界门、
+v_ego>y_h）任一不过即拒载并写明原因；`allow_car_graze=true` 在 v1 直接拒载
+（coin-only 基线的代码级护栏，复议=改代码而不是改配置）。代码内不留字面量默认值。
+
+**住户**：`decision.py` = ValidationWatch（§四）+ Scorer（§三）+ DecisionEngine
+（§二 FSM，五态全矩阵）。时钟用 tick 累计（回放与实机同一确定性，不读墙钟）；
+与日志的 `_log_grp` 同一 owner 线程纪律。输出 `DecisionOutput`（D3 可解释）。
+
+**v1 降级路径（如实声明，不是遗漏）**：规划反馈缺位（step 6 才有真值）时 CHANGE
+完成判据 = 目标 x 读数连续 2 tick 进死区（代理）+ t_change_max 超时保险双件，
+反馈到位后走 `executed≥demand×(1−ε)` 主路；直道校验信号等 boundary 接线才生效
+（watch 以 `straight_check_inactive` 注记不装作用）；CHANGE 改判只走加性 margin
+（换"去哪"不换"动不动"），失联/越界/致命才取消。
+
+**评分偏序锁**（验收 3）：枚数/距离/横移/conf 四向单调各一测；conf 线性斜坡
++地板（低于 conf_floor 直接 None）；远离目标 life 折扣归零；存续组 conf=0 自动
+出局；**估计恒等于观测**（§三漏检纪律）。FSM 39 项全矩阵单测含 V0 直行门
+（`allow_all_moves=false`）与 CONSERVE 出口重置面断言。
+
+**状态**：决策层**未接 module**——§八 step 5 先跑离线回放（PerceptionResult→
+Tracker→Aggregator→DecisionEngine 全链），step 6 才进实机。timing 段的
+lane_change_base/k 是设计起值，[需实测 §七.1 变道时长剖面] 后只改 json 不改代码。
