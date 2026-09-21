@@ -623,7 +623,7 @@
     return `
         <div class="card card-flex">
           <div class="card-head"><h3>性能监控</h3></div>
-          <div class="card-body" style="flex:1;display:flex;flex-direction:column;justify-content:space-around;min-height:0;">
+          <div class="card-body card-body--fill">
             <div class="perf-item">
               <div class="perf-head">
                 <span class="perf-label">帧率</span>
@@ -673,7 +673,7 @@
     return `
         <div class="card card-flex">
           <div class="card-head"><h3>性能监控</h3></div>
-          <div class="card-body" style="flex:1;display:flex;flex-direction:column;justify-content:space-around;min-height:0;">
+          <div class="card-body card-body--fill">
             <div class="perf-item">
               <div class="perf-head">
                 <span class="perf-label">画面响应</span>
@@ -760,7 +760,7 @@
         <!-- 调试选项 -->
         <div class="card">
           <div class="card-head"><h3>调试选项</h3></div>
-          <div class="card-body" style="display:flex;flex-direction:column;gap:16px;">
+          <div class="card-body card-body--col">
             <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
               <div class="option-main">
@@ -799,7 +799,7 @@
         <!-- 运行选项 -->
         <div class="card">
           <div class="card-head"><h3>运行选项</h3></div>
-          <div class="card-body" style="display:flex;flex-direction:column;gap:16px;">
+          <div class="card-body card-body--col">
             <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-mutegame" role="switch" aria-checked="false"></button>
               <div class="option-main">
@@ -888,7 +888,7 @@
           <div class="card-head"><h3>权限优化</h3></div>
           <div class="card-body">
             <p class="capture-note" style="margin:0 0 12px;">体检并修复 Windows 层面对自动化运行的干扰（ms-gamebar 弹窗、打字时弹手柄虚拟键盘等）；每项均可单独优化或恢复系统默认，附值路径与后果说明</p>
-            <button class="mra-tool-btn" id="btn-optimizer" style="width:100%;justify-content:center;">
+            <button class="mra-tool-btn mra-tool-btn--block" id="btn-optimizer">
               <span class="mra-tool-btn-label">打开权限优化中心</span>
             </button>
           </div>
@@ -914,7 +914,7 @@
             <p class="module-desc">录制开关在「主控」页的模块选项里。每段驾驶各写一个会话目录，
               含逐帧图与手柄序列；门控判定的日志带帧号（<code>frame=</code>），按它可回查
               判定时刻的画面。</p>
-            <button class="mra-tool-btn" id="${mid}-open-demos" style="width:100%;justify-content:center;margin-top:12px;">
+            <button class="mra-tool-btn mra-tool-btn--block" id="${mid}-open-demos" style="margin-top:12px;">
               <span class="mra-tool-btn-label">打开数据目录</span>
             </button>
           </div>

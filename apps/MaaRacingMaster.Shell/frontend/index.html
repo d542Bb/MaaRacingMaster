@@ -51,9 +51,9 @@
                  两行结构避免拥挤：
                  • treasure（鉴宝）第1行（整行）：刷到第几场；第2行（整行）：目标场次（互斥单选）
                  • speedrush（极速狂飙）：演示数据录制开关（驾驶阶段只采集、由用户手动驾驶） -->
-            <div class="module-options" id="module-options" style="display:none;margin-top:18px;">
+            <div class="module-options" id="module-options" style="display:none;">
               <div id="opt-treasure-block" style="display:none;">
-                <div class="module-options-row" style="display:grid;grid-template-columns:1fr;gap:14px;align-items:end;">
+                <div class="module-options-row module-options-row--stack">
                   <div class="mra-field">
                     <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
                     <div class="mra-field-control">
@@ -62,7 +62,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="module-options-row" style="margin-top:14px;">
+                <div class="module-options-row">
                   <div class="mra-field">
                     <label class="mra-field-label">目标场次<span class="field-hint">（每次回大厅先点对应场次标签，再点「开始匹配」）</span></label>
                     <div class="mra-segmented" id="opt-target-session" role="group" aria-label="目标场次">
@@ -123,7 +123,7 @@
         <div class="about-hero">
           <div class="about-hero-inner">
             <div class="about-icon"><img src="../../../assets/icon.ico" alt="MaaRacingMaster"></div>
-            <div style="flex:1;min-width:0;">
+            <div class="about-hero-text">
               <h1 class="about-title">MaaRacingMaster</h1>
               <p class="about-subtitle">模块化游戏自动化平台 —— MAA Framework × YOLOv8 × vgamepad</p>
               <div class="about-tags">
@@ -168,16 +168,16 @@
         </div>
 
         <div class="about-links">
-          <button class="mra-btn" style="width:auto;padding:0 16px;height:36px;background:var(--mra-surface);border:1px solid var(--mra-border);color:var(--mra-foreground-secondary);" data-link="home">
-            <i data-icon="github" style="width:16px;height:16px;"></i>
+          <button class="mra-btn" data-link="home">
+            <i data-icon="github"></i>
             项目主页
           </button>
-          <button class="mra-btn" style="width:auto;padding:0 16px;height:36px;background:var(--mra-surface);border:1px solid var(--mra-border);color:var(--mra-foreground-secondary);" data-link="issue">
-            <i data-icon="bot" style="width:16px;height:16px;"></i>
+          <button class="mra-btn" data-link="issue">
+            <i data-icon="bot"></i>
             报告问题
           </button>
-          <button class="mra-btn" style="width:auto;padding:0 16px;height:36px;background:var(--mra-surface);border:1px solid var(--mra-border);color:var(--mra-foreground-secondary);" data-link="docs">
-            <i data-icon="book-open" style="width:16px;height:16px;"></i>
+          <button class="mra-btn" data-link="docs">
+            <i data-icon="book-open"></i>
             使用文档
           </button>
         </div>
@@ -193,11 +193,11 @@
     </div>
     <div class="spacer"></div>
     <button class="mra-btn" id="btn-stop" disabled>
-      <i data-icon="media-stop" style="width:12px;height:12px;"></i>
+      <i data-icon="media-stop"></i>
       停止
     </button>
     <button class="mra-btn" id="btn-start">
-      <i data-icon="media-play" style="width:12px;height:12px;"></i>
+      <i data-icon="media-play"></i>
       开始运行
     </button>
   </footer>
