@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>日志卡试验区 · step 2 —— 事件驱动 + 徽章状态机</title>
+<title>日志卡试验区 · step 4 —— 计数胶囊可点性 + 级别上色</title>
 <style>
 /* ==== 生产日志卡复刻基线：token 复制自 frontend/style.css；渲染管线与生产 js/log.js
      同构（双 renderer + 交接锁），并叠加试验区设计步进（step 1 状态槽、step 2 事件驱动）。
@@ -75,28 +75,37 @@ body {
   background: var(--mra-sidebar);
   border: 1px solid var(--mra-border-light);
   border-radius: var(--mra-radius-md);
-  padding: 4px 12px 8px;
+  padding: 4px 12px;
   margin-bottom: 10px;
   overflow: hidden;
 }
-.log-section-head {
+.log-section--open { padding-bottom: 6px; }
+/* step 4：展开无箭头——可点性由「内容存在」本身承载：
+   首条正文落进卡体时才加 --expandable（指针光标 + 悬停底色 + 「N 条」计数胶囊），
+   空卡组头不可点的视觉承诺与行为一致。
+   注意：卡头同时挂 .log-line 与 .log-section-head，.log-line 的 align-items/padding
+   在后声明会顶掉卡头自身规则，故卡头几何一律用 .log-section .log-section-head 提权。 */
+.log-section .log-section-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 2px;
-  margin-bottom: 2px;
-  cursor: pointer; user-select: none;
+  padding: 6px 8px; margin: 0 -6px;
+  border-radius: var(--mra-radius-sm);
+  user-select: none;
+  transition: background var(--mra-duration-fast) ease;
 }
-.log-chev {
-  width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
-  color: var(--mra-foreground-muted);
-  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
-}
-.log-section--open .log-chev { transform: rotate(90deg); }
+.log-section--expandable .log-section-head { cursor: pointer; }
+.log-section--expandable .log-section-head:hover { background: var(--mra-border-light); }
 .log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
 .log-section-meta .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
+.log-count {
+  font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 8px;
+  background: var(--mra-border-light); color: var(--mra-foreground-muted);
+}
+.log-section--expandable .log-section-head:hover .log-count,
+.log-section--open .log-count { background: var(--mra-border); color: var(--mra-foreground-secondary); }
 
-/* ==== step 1+2：卡状态槽——每张卡恰好一个徽章，含义由词承载 ====
-   组卡：outcome 驱动（进行中/成功/警告/失败/未完成）；
-   无组卡（controller/pipeline 散行）：中性「记录」，含 W/E 时升格 警告/失败。 */
+/* ==== step 1+2+4：卡状态槽——徽章只属于组卡（组有生命周期才有终态可言），
+   词与色由状态机给出；无组散行卡不发徽章——「记录」不是级别，
+   散行的级别由标题/正文文字颜色承载（WARNING 琥珀 / ERROR 红）。 */
 .log-status {
   flex-shrink: 0; font-size: 10px; font-weight: 600; line-height: 16px;
   padding: 0 7px; border-radius: 5px; letter-spacing: 0.5px;
@@ -105,7 +114,6 @@ body {
 .log-status--ok   { background: var(--mra-success-bg); color: var(--mra-success-strong); }
 .log-status--warn { background: var(--mra-warning-bg); color: var(--mra-warning-strong); }
 .log-status--err  { background: var(--mra-danger-bg); color: var(--mra-danger); }
-.log-status--idle { background: var(--mra-border-light); color: var(--mra-foreground-muted); }
 .log-status--part { background: var(--mra-border-light); color: var(--mra-foreground-secondary); }
 @keyframes mra-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .log-status--run { animation: none; } }
@@ -140,14 +148,14 @@ body {
   padding: 2px 0 2px 10px; word-break: break-all;
   color: var(--mra-foreground-secondary);
 }
-.log-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
-.log-line--INFO .log-dot { background: var(--mra-info); }
-.log-line--WARNING .log-dot { background: var(--mra-warning); }
-.log-line--ERROR .log-dot { background: var(--mra-danger); }
 .log-msg { flex: 1; min-width: 0; }
 .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
 .log-line--ERROR .log-msg { color: var(--mra-danger); }
 .log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
+/* step 4：正文行去彩点——级别信息此前由「彩点 + 文字颜色」双份承载，删点后不丢信息；
+   散行成卡的卡头同样吃上面两条文字色规则。 */
+.log-section-head.log-line--ERROR .log-msg { color: var(--mra-danger); }
+.log-section-head.log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
 .log-kw { color: var(--mra-primary); font-weight: 500; }
 .log-kw--ok { color: var(--mra-success); font-weight: 500; }
 .log-kw--warn { color: var(--mra-warning); font-weight: 500; }
@@ -201,11 +209,11 @@ function highlightKeywords(s) {
   return s;
 }
 
-// 卡状态槽：词与色由状态机给出，所有卡共用同一槽位。
+// 卡状态槽：词与色由状态机给出。徽章只发给组卡（组才有终态）；散行卡不发。
 const STATUS = {
   run:  ['log-status--run', '进行中'], ok: ['log-status--ok', '成功'],
   warn: ['log-status--warn', '警告'],  err: ['log-status--err', '失败'],
-  part: ['log-status--part', '未完成'], idle: ['log-status--idle', '记录'],
+  part: ['log-status--part', '未完成'],
 };
 function setPill(sec, key) {
   const pill = sec.querySelector('.log-status');
@@ -217,16 +225,16 @@ function setPill(sec, key) {
 let _curSec = null;   // legacy（无组散行）管线的当前卡
 const _openGroups = new Map(); // 组管线：group_id → { sec, worst }
 
-function _makeSection(kind, ts, msgHtml, rawText, pillKey) {
+// pillKey=null → 无徽章卡（散行卡）；lvl 非 INFO 时卡头挂级别类供文字上色。
+function _makeSection(kind, ts, msgHtml, rawText, pillKey, lvl) {
   const sec = document.createElement('div');
   sec.className = 'log-section log-section--' + kind;
   const head = document.createElement('div');
-  head.className = 'log-line log-section-head';
+  head.className = 'log-line log-section-head' + (lvl && lvl !== 'INFO' ? ' log-line--' + lvl : '');
   head.dataset.raw = rawText;
   head.title = rawText;
   head.innerHTML =
-    '<span class="log-chev">▸</span>' +
-    '<span class="log-status ' + STATUS[pillKey][0] + '">' + STATUS[pillKey][1] + '</span>' +
+    (pillKey ? '<span class="log-status ' + STATUS[pillKey][0] + '">' + STATUS[pillKey][1] + '</span>' : '') +
     '<span class="log-msg">' + msgHtml + '</span>' +
     '<span class="log-section-meta"><span class="log-time">' + ts + '</span></span>';
   const body = document.createElement('div');
@@ -236,6 +244,19 @@ function _makeSection(kind, ts, msgHtml, rawText, pillKey) {
   $('log-area').appendChild(sec);
   bindSectionToggle(sec);
   return sec;
+}
+// 正文行统一入口：落进卡体的那一刻卡才获得可展开性（计数胶囊 + 指针光标 + 悬停底色）。
+function addRow(sec, rowEl) {
+  sec.querySelector('.log-section-body').appendChild(rowEl);
+  sec.classList.add('log-section--expandable');
+  const meta = sec.querySelector('.log-section-meta');
+  let chip = sec.querySelector('.log-count');
+  if (!chip) {
+    chip = document.createElement('span');
+    chip.className = 'log-count';
+    meta.insertBefore(chip, meta.firstChild);
+  }
+  chip.textContent = String(Number(chip.textContent || 0) + 1);
 }
 function bindSectionToggle(sec) {
   const head = sec.querySelector('.log-section-head');
@@ -267,11 +288,11 @@ function _makeRow(lvl, msgHtml, rawText) {
   const row = document.createElement('div');
   row.className = 'log-line log-line--' + lvl;
   row.dataset.raw = rawText;
-  row.innerHTML = '<span class="log-dot"></span><span class="log-msg">' + msgHtml + '</span>';
+  row.innerHTML = '<span class="log-msg">' + msgHtml + '</span>';
   return row;
 }
 
-// ---- legacy 散行管线（与生产一致：锚点分段 + 首行成卡），卡头带「记录」槽 ----
+// ---- legacy 散行管线（与生产一致：锚点分段 + 首行成卡），散行卡无徽章、级别上色 ----
 function appendLogs(lines) {
   const area = $('log-area');
   const followBottom = isNearBottom(area);
@@ -288,13 +309,11 @@ function appendLogs(lines) {
     const ts = m[1], lvl = levelClassMap[m[2]] ? m[2] : 'INFO', msg = m[3];
     const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
     if (!anchorType) {
-      _curSec.el.querySelector('.log-section-body').appendChild(_makeRow(lvl, highlightKeywords(escapeHtml(msg)), raw));
-      if (lvl === 'ERROR') setPill(_curSec.el, 'err');
-      else if (lvl === 'WARNING' && !_curSec.el.querySelector('.log-status--err')) setPill(_curSec.el, 'warn');
+      addRow(_curSec.el, _makeRow(lvl, highlightKeywords(escapeHtml(msg)), raw));
       return;
     }
     if (_curSec) { _curSec = null; }
-    _curSec = { el: _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw, 'idle') };
+    _curSec = { el: _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw, null, lvl) };
   });
   fitTitles();
   if (followBottom) area.scrollTop = area.scrollHeight;
@@ -329,15 +348,14 @@ function renderEvents(events, truncated) {
     }
     let g = rec.group_id ? _openGroups.get(rec.group_id) : null;
     if (rec.group_id && !g) {
-      g = { sec: _makeSection('session', rec.ts, '…（更早的组头已截断）', '', 'idle'), worst: null };
+      g = { sec: _makeSection('session', rec.ts, '…（更早的组头已截断）', '', null), worst: null };
       _openGroups.set(rec.group_id, g);
     }
     const lvl = levelClassMap[rec.level] ? rec.level : 'INFO';
     const suffix = rec.fields ? Object.keys(rec.fields).map((k) => ' · ' + k + ': ' + rec.fields[k]).join('') : '';
     const rawText = '[' + rec.ts + '] [' + rec.level + '] ' + (rec.message || '') + suffix;
     if (!g) { appendLogs([rawText]); return; }
-    g.sec.querySelector('.log-section-body').appendChild(
-      _makeRow(lvl, highlightKeywords(escapeHtml((rec.message || '') + suffix)), rawText));
+    addRow(g.sec, _makeRow(lvl, highlightKeywords(escapeHtml((rec.message || '') + suffix)), rawText));
     if (lvl === 'ERROR') g.worst = 'err';
     else if (lvl === 'WARNING' && g.worst !== 'err') g.worst = g.worst || 'warn';
   });
@@ -367,8 +385,8 @@ const EVENTS = [
   ev(17, 'log', { group_id: null, ts: '14:06:58', level: 'WARNING', channel: 'app', message: '[鉴宝] 动作失败 node=bid_confirm_red_btn reason=识别未命中' }),
   ev(18, 'group_end', { group_id: 'g-12', ts: '14:12:03', channel: 'treasure', kind: 'phase', outcome: 'warning', has_warning: true, has_error: false, duration_ms: 321000 }),
   ev(19, 'group_start', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', kind: 'loop', title: '鉴宝观察会话总结', outcome: 'running' }),
-  ev(20, 'log', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', message: '  本场结算     : 收入 58,000 / 利润 +7,000（成交价 51,000 / 估值 55,000）' }),
-  ev(21, 'log', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', message: '  今日最高积分 : 12,400' }),
+  ev(20, 'log', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', message: '[鉴宝落盘] 本场结算：收入 58,000 / 利润 +7,000（成交价 51,000 / 估值 55,000）' }),
+  ev(21, 'log', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', message: '[鉴宝] 今日最高积分：12,400' }),
   ev(22, 'group_end', { group_id: 'g-19', ts: '14:12:03', channel: 'treasure', kind: 'loop', outcome: 'success', has_warning: false, has_error: false, duration_ms: 300 }),
   ev(23, 'group_start', { group_id: 'g-23', ts: '14:12:04', channel: 'treasure', kind: 'loop', title: '[鉴宝循环] 已到每日循环上限 8 场，本场为最后一场，回鉴宝大厅确认后进入彩蛋任务收尾并自动停止。', outcome: 'running' }),
   ev(24, 'log', { group_id: 'g-23', ts: '14:12:05', channel: 'treasure', message: '[彩蛋收尾] 开始领取彩蛋任务' }),
