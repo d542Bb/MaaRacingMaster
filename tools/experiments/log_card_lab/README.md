@@ -34,6 +34,12 @@ status: active
 - §8 第 4-6 步已实施（`ed0cd25`）：`get_events_since` 结构化通道 + `fetch_logs` 双格式
   （legacy lines 逐字节兼容派生）+ 前端双 renderer（组事件驱动卡片；无 group_id 散文行
   回灌 legacy 锚点管线，迁移期未迁生产者观感不变）。桥桩探针端到端过。
-- **第 7 步（treasure 迁移）待裁**：锚点行转 group 后，非锚点的 ~130 条散行如何入组——
-  冻结契约下唯一合规路径是调用点显式 `group_id`（模块持当前组句柄 + AST 批量改写调用点）；
-  备选「通道级当前组注册表」是 API 扩张，需重开契约。
+- 第 7 步已实施（`92f03b6`，维护者裁定 A 案 + 边界规则五条）：模块级
+  `_tlog/_open_grp/_end_grp` 显式句柄机制、锚点转组（标题逐字保留）、STAGE_FLOW
+  21 处机械注入、跨切面 16 处有意无组、run finally 落 incomplete、彩蛋正常收尾显式
+  success；结构性锁测试禁止 INFO+ 裸 logger.log 逃逸无组白名单。worker 派发捕获
+  group_id / 迟到旧 id 降级两锁入 logger 测试。351 相关回归全绿。
+- 待做：§8 第 8 步（sidecar/controller 行 + pipeline_logger 迁移）、第 9 步
+  （speedrush 自接后删 SECTION_ANCHORS/KW_RULES）、第 10 步（复制/导出含
+  seq/group_id、协议一致性）、第 11 步（结论迁 home、目录退役）。
+  卡片样式线（入场动画、回顶按钮）可并行。
