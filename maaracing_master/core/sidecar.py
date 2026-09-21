@@ -37,7 +37,7 @@ from typing import Any, TextIO, cast
 from maaracing_master import __display_version__, __version__
 from maaracing_master.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
 from maaracing_master.core.controller import MaaRacingMasterController
-from maaracing_master.core.logger import logger
+from maaracing_master.core.logger import Logger, logger
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
@@ -1118,13 +1118,24 @@ class SidecarService:
     def fetch_logs(self, params):
         # 环形缓冲下「已返回行数」当游标语义失效，改用单调序列号。
         # 初值 0 → 首次拉取返回全部历史（现有行为保留）。
-        lines, new_seq, truncated = logger.get_lines_since(self._last_log_seq, "INFO")
+        # 双格式过渡（契约 §8 第 4-5 步）：结构化通道 get_events_since 为单一事实源，
+        # legacy lines 由 log 事件的 GUI 投影派生——与旧 get_lines_since 输出逐字节一致，
+        # 旧前端零感知；新前端吃 events（含组事件），truncated/gap 显式字段不再伪装文本行。
+        events, new_seq, truncated, gap = logger.get_events_since(self._last_log_seq, "INFO")
         self._last_log_seq = new_seq
         result = []
         if truncated:
             result.append("[!!] 日志界面因落后过多已自动截断，以下为最新日志")
-        result.extend(lines)
-        return (True, {"lines": result}, None)
+        result.extend(Logger._project_gui(e) for e in events if e["event_type"] == "log")
+        return (True, {
+            "lines": result,
+            "events": events,
+            "next_seq": new_seq,
+            "truncated": truncated,
+            "gap": gap,
+            "session_id": logger.session_id,
+            "schema_version": Logger.SCHEMA_VERSION,
+        }, None)
 
     def get_today_stats(self, params):
         """今日看板路由：读法由各模块自述（ActivityModule.read_today_stats），core 不持有

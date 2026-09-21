@@ -545,6 +545,33 @@ class Logger:
             new_seq = self._seq
         return out, new_seq, truncated
 
+    def get_events_since(self, seq: int, min_level: str = "INFO"):
+        """结构化 GUI 通道（契约 §6）：返回 (events, new_seq, truncated, gap)。
+
+        - events: `seq` 之后的记录副本——log 事件按级别过滤，**组事件不受级别
+          闸门约束**（结构完整性优先，见模块 docstring）。
+        - new_seq: 本次快照的总写入数（含结构事件号段），下一次 fetch 的游标。
+        - truncated / gap: 游标落在环形覆盖外时 gap 给出丢号区间 {from_seq, to_seq}，
+          由消费方显式渲染截断，不再伪装成文本行。
+        """
+        min_val = self.LEVELS.get(min_level, 2)
+        with self._lock:
+            out = []
+            truncated = False
+            gap = None
+            if self._lines:
+                oldest_seq = self._lines[0][0]
+                if seq < oldest_seq - 1:
+                    truncated = True
+                    gap = {"from_seq": seq + 1, "to_seq": oldest_seq - 1}
+                for s, rec in self._lines:
+                    if s <= seq:
+                        continue
+                    if rec["event_type"] == "log" and self.LEVELS.get(rec["level"], 2) < min_val:
+                        continue
+                    out.append(dict(rec))
+            return out, self._seq, truncated, gap
+
     @staticmethod
     def _extract_level(line: str) -> str:
         """从日志行中提取级别，如 [INFO] → INFO（兼容旧调用方；记录化后内部不再使用）"""

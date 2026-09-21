@@ -9,7 +9,12 @@
   async function pollLogs() {
     try {
       const d = await mra.call('fetch_logs');
-      if (d && d.lines && d.lines.length > 0) appendLogs(d.lines);
+      if (d && d.schema_version && Array.isArray(d.events)) {
+        // 结构化通道在场即唯一事实源（legacy lines 是同数据的派生投影，不再双吃）
+        if (d.events.length || d.truncated) renderEvents(d.events, d.truncated);
+      } else if (d && d.lines && d.lines.length > 0) {
+        appendLogs(d.lines); // 旧 sidecar：纯 legacy 管线
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -106,6 +111,30 @@
     return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX;
   }
 
+  // 区块骨架（锚点管线与结构化管线共用，保证两条路径的卡片逐字节同构）：
+  // 默认折叠，建卡即绑开关（未收尾的「当前卡」也必须能点开看细节；bindSectionToggle 自带去重）
+  function _makeSection(anchorType, ts, msgHtml, rawText) {
+    const sec = document.createElement('div');
+    sec.className = 'log-section log-section--' + anchorType;
+    const head = document.createElement('div');
+    head.className = 'log-line log-section-head';
+    head.dataset.raw = rawText; // 复制/导出保留原始完整行（含时间/级别）
+    head.innerHTML =
+      '<span class="log-chev">▸</span>' +
+      '<span class="log-msg">' + msgHtml + '</span>' +
+      '<span class="log-section-meta">' +
+        '<span class="log-badge log-badge--count">0</span>' +
+        '<span class="log-time">' + ts + '</span>' +
+      '</span>';
+    const body = document.createElement('div');
+    body.className = 'log-section-body';
+    sec.appendChild(head);
+    sec.appendChild(body);
+    $('log-area').appendChild(sec);
+    bindSectionToggle(sec);
+    return sec;
+  }
+
   function appendLogs(lines) {
     const area = $('log-area');
     const followBottom = isNearBottom(area); // 整批共用一次判定：用户在翻旧卡时不许被拽回底部
@@ -144,28 +173,74 @@
       }
       // 锚点：先关闭上一区块（统计/徽章），再开新区块并把该行作为头部（核心状态常显）
       if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
-      const sec = document.createElement('div');
-      // 新区块默认折叠：细节行随到达累积进正文与计数徽章，展开与否交给用户点击
-      sec.className = 'log-section log-section--' + anchorType;
-      const head = document.createElement('div');
-      head.className = 'log-line log-section-head';
-      head.dataset.raw = raw;
-      head.innerHTML =
-        '<span class="log-chev">▸</span>' +
-        '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
-        '<span class="log-section-meta">' +
-          '<span class="log-badge log-badge--count">0</span>' +
-          '<span class="log-time">' + ts + '</span>' +
-        '</span>';
-      const body = document.createElement('div');
-      body.className = 'log-section-body';
-      sec.appendChild(head);
-      sec.appendChild(body);
-      area.appendChild(sec);
-      // 建卡即绑开关：默认折叠后，未收尾的「当前卡」也必须能点开看细节
-      // （以前只在 finalizeSection 里绑，默认展开时看不出缺；bindSectionToggle 自带去重）
-      bindSectionToggle(sec);
+      const sec = _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw);
       _curSec = { el: sec, count: 0, hasError: false, hasWarn: false };
+    });
+    if (followBottom) area.scrollTop = area.scrollHeight;
+  }
+
+  // ---------- 结构化通道 renderer（契约 §8 第 4-6 步：双 renderer 并存） ----------
+  // 新 sidecar 返回 events（结构化记录）：group_start/group_end 驱动卡片开合，
+  // 带 group_id 的 log 事件进对应卡正文（fields 以通用 `key: value` 后缀呈现，先转义，
+  // 不做前端翻译表——契约 §4）；**无 group_id 的 log 事件（未迁移生产者：speedrush、
+  // sidecar 行）回灌 legacy appendLogs 锚点管线**——迁移期观感与现网逐字节一致。
+  // SECTION_ANCHORS/KW_RULES 等全部生产者迁完才退役（契约 §8 第 9 步）。
+  const _openGroups = new Map(); // group_id → { sec, count, hasError, hasWarn }
+  function _fieldsSuffix(fields) {
+    if (!fields) return '';
+    return Object.keys(fields).map((k) => ' · ' + k + ': ' + fields[k]).join('');
+  }
+  function renderEvents(events, truncated) {
+    const area = $('log-area');
+    const followBottom = isNearBottom(area);
+    if (truncated) {
+      const hint = document.createElement('div');
+      hint.className = 'log-line';
+      hint.textContent = '[!!] 日志界面因落后过多已自动截断，以下为最新日志';
+      area.appendChild(hint);
+    }
+    events.forEach((rec) => {
+      if (rec.event_type === 'group_start') {
+        const kind = (rec.kind === 'phase' || rec.kind === 'session' || rec.kind === 'loop')
+          ? rec.kind : 'session';
+        const title = rec.title || '';
+        const sec = _makeSection(kind, rec.ts, highlightKeywords(escapeHtml(title)),
+                                 '[' + rec.ts + '] [INFO] ' + title);
+        _openGroups.set(rec.group_id, { sec, count: 0, hasError: false, hasWarn: false });
+        return;
+      }
+      if (rec.event_type === 'group_end') {
+        const g = _openGroups.get(rec.group_id);
+        if (!g) return; // 无头组的 end 先到（start 被环形冲出）：正文行会建匿名卡，这里静默
+        updateSectionMeta(g.sec, g.count, !!rec.has_error, !!rec.has_warning);
+        _openGroups.delete(rec.group_id);
+        return;
+      }
+      // log 事件
+      let g = rec.group_id ? _openGroups.get(rec.group_id) : null;
+      if (rec.group_id && !g) {
+        // 无头组：组开事件已被环形缓冲冲出——建匿名卡收正文，不丢行
+        g = { sec: _makeSection('session', rec.ts, '…（更早的组头已截断）', ''), count: 0, hasError: false, hasWarn: false };
+        _openGroups.set(rec.group_id, g);
+      }
+      const lvl = levelClassMap[rec.level] ? rec.level : 'INFO';
+      const suffix = _fieldsSuffix(rec.fields);
+      const rawText = '[' + rec.ts + '] [' + rec.level + '] ' + (rec.message || '') + suffix;
+      const row = document.createElement('div');
+      row.className = 'log-line log-line--' + lvl;
+      row.dataset.raw = rawText;
+      row.innerHTML =
+        '<span class="log-dot"></span>' +
+        '<span class="log-msg">' + highlightKeywords(escapeHtml((rec.message || '') + suffix)) + '</span>';
+      if (!g) {
+        appendLogs([rawText]); // 未迁移生产者的散文行：交回锚点管线（其内部自管跟随滚动）
+        return;
+      }
+      g.sec.querySelector('.log-section-body').appendChild(row);
+      g.count += 1;
+      if (lvl === 'ERROR') g.hasError = true;
+      else if (lvl === 'WARNING') g.hasWarn = true;
+      updateSectionMeta(g.sec, g.count, g.hasError, g.hasWarn);
     });
     if (followBottom) area.scrollTop = area.scrollHeight;
   }
@@ -174,6 +249,7 @@
   $('btn-log-clear').addEventListener('click', () => {
     $('log-area').innerHTML = '';
     _curSec = null;
+    _openGroups.clear(); // 结构化通道的开组表随 DOM 一起作废
   });
   // 复制反馈：图标弹簧形变（morph-icon 换图标即形变，与预览卡放大按钮同款手法）——
   // 成功 copy→check、失败 copy→x，停 1.2s 滚回；失败文案与空日志提示走 toast
