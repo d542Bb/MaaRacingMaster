@@ -31,3 +31,9 @@ status: active
   GroupHandle 生命周期、双投影（GUI 文本字节兼容）、fields 净化管道、close 补 incomplete。
   三点实施裁决入代码：shutdown=Logger.close()（sidecar 唯一退出路径）单次执行；协议字段
   统一 schema_version；end 首次返回终态、重复幂等回读。插件迁移 / fetch_logs / 前端未动。
+- §8 第 4-6 步已实施（`ed0cd25`）：`get_events_since` 结构化通道 + `fetch_logs` 双格式
+  （legacy lines 逐字节兼容派生）+ 前端双 renderer（组事件驱动卡片；无 group_id 散文行
+  回灌 legacy 锚点管线，迁移期未迁生产者观感不变）。桥桩探针端到端过。
+- **第 7 步（treasure 迁移）待裁**：锚点行转 group 后，非锚点的 ~130 条散行如何入组——
+  冻结契约下唯一合规路径是调用点显式 `group_id`（模块持当前组句柄 + AST 批量改写调用点）；
+  备选「通道级当前组注册表」是 API 扩张，需重开契约。
