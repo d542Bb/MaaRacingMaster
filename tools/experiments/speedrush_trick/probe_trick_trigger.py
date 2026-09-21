@@ -209,7 +209,8 @@ def track_passes(dets):
             "min_gap": min(abs(p[2] - 640) for p in near),
             "gap_close": abs(closest[2] - 640),
             "max_h": max(p[4] for p in pts),
-            "dhdt": (tail[-1][4] - tail[0][4]) / max(tail[-1][0] - tail[0][0], 1e-6)})
+            "dhdt": (tail[-1][4] - tail[0][4]) / max(tail[-1][0] - tail[0][0], 1e-6),
+            "pts": pts})   # 2026-09-21 增补：透视归一重测（probe_trick_pxnear）需逐帧 (t,cls,cx,by,h)
     return passes
 
 
