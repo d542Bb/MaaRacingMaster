@@ -94,7 +94,7 @@
         </div>
       </div>
       <div class="col-right">
-        <div class="card card-flex">
+        <div class="card card-flex log-card">
           <div class="card-head">
             <h3>运行日志</h3>
             <div class="log-head-actions">
@@ -107,6 +107,12 @@
             </div>
           </div>
           <div class="log-area" id="log-area"></div>
+          <!-- 回顶按钮：随滚动位置换向——贴底时去最旧（顶部），翻上去时回最新（底部）；
+               内容不溢出时隐藏。图标两枚，CSS 按 --down 类切换。 -->
+          <button class="log-top-btn" id="btn-log-top" hidden aria-label="回到顶部（最旧日志）">
+            <svg class="log-top-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+            <svg class="log-top-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+          </button>
         </div>
       </div>
     </section>

@@ -367,45 +367,78 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font-family: var(--mra-font-sans); font-size: 12px; line-height: 1.7;
 }
 
-/* 区块（从锚点到下一锚点之间）：浅灰卡片 + 圆角 + 间距，视觉上「块与块分离」 */
+/* 日志卡：回顶按钮的定位上下文 */
+.log-card { position: relative; }
+
+/* 组卡（契约 §8 终态：卡片只来自组事件，无组散行=裸行）。
+   下内衬为展开正文预留，仅 --open 时出现——折叠卡底边不「胖」。
+   入场动画只在建卡瞬间播（CSS 动画随元素插入触发）。 */
 .log-section {
   background: var(--mra-sidebar);
   border: 1px solid var(--mra-border-light);
   border-radius: var(--mra-radius-md);
-  padding: 4px 12px 8px;
+  padding: 4px 12px;
   margin-bottom: 10px;
   overflow: hidden;
+  animation: mra-card-in var(--mra-duration-base) ease-out;
+}
+.log-section--open { padding-bottom: 6px; }
+@keyframes mra-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
 }
 
-/* 区块头部（锚点行）：左侧 2px 色条 + 加粗标题 + 右侧元信息（行数/告警/时间）；整行可点击展开/收起 */
-.log-section-head {
+/* 卡头：展开无箭头——可点性由「内容存在」本身承载：首条正文落进卡体时
+   渲染层才加 .log-section--expandable（指针光标 + 悬停底色 + 「N 条」计数胶囊），
+   空卡不给可点承诺，视觉承诺与行为一致。
+   注意：卡头同时挂 .log-line 与 .log-section-head，.log-line 的后声明同级规则会
+   顶掉卡头的居中与内衬（元素贴顶、内容贴边），故卡头几何一律提权选择器。 */
+.log-section .log-section-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 0 4px 6px;
-  border-left: 2px solid transparent;
-  margin-bottom: 2px;
-  cursor: pointer; user-select: none;
+  padding: 6px 8px; margin: 0 -6px;
+  border-radius: var(--mra-radius-sm);
+  user-select: none;
+  transition: background var(--mra-duration-fast) ease;
 }
-.log-section--phase .log-section-head { border-left-color: var(--mra-primary); }   /* 进入阶段：主分隔 */
-.log-section--session .log-section-head { border-left-color: var(--mra-info); }     /* 会话开始 */
-.log-section--loop .log-section-head { border-left-color: var(--mra-success); }     /* 场次分隔 */
-.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); }
-.log-chev {
-  width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
-  color: var(--mra-foreground-muted);
-  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1); /* 与正文高度同拍，箭头不先到 */
-}
-.log-section--open .log-chev { transform: rotate(90deg); }
+.log-section--expandable .log-section-head { cursor: pointer; }
+.log-section--expandable .log-section-head:hover { background: var(--mra-border-light); }
 .log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
 .log-section-meta .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
-.log-badge {
-  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-  font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
+.log-count {
+  font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 8px;
   background: var(--mra-border-light); color: var(--mra-foreground-muted);
 }
-.log-badge--warn { background: var(--mra-warning-bg); color: var(--mra-warning-strong); }
-.log-badge--err { background: var(--mra-danger-bg); color: var(--mra-danger); }
+.log-section--expandable .log-section-head:hover .log-count,
+.log-section--open .log-count { background: var(--mra-border); color: var(--mra-foreground-secondary); }
 
-/* 区块正文：默认折叠（高度 0，不占位）；点卡头展开，高度过渡即「卡头不动、内容向下推出」。
+/* 卡状态槽：徽章承载「卡头风险」= 组卡生命周期终态，词与色由
+   group_start.outcome / group_end.outcome 驱动，前端不再自行推导（契约 §8 第 9 步）。 */
+.log-status {
+  flex-shrink: 0; font-size: 10px; font-weight: 600; line-height: 16px;
+  padding: 0 7px; border-radius: 5px; letter-spacing: 0.5px;
+}
+.log-status--run  { background: color-mix(in srgb, var(--mra-info) 12%, transparent); color: var(--mra-info); animation: mra-status-pulse 1.4s ease-in-out infinite; }
+.log-status--ok   { background: var(--mra-success-bg); color: var(--mra-success-strong); }
+.log-status--warn { background: var(--mra-warning-bg); color: var(--mra-warning-strong); }
+.log-status--err  { background: var(--mra-danger-bg); color: var(--mra-danger); }
+.log-status--part { background: var(--mra-border-light); color: var(--mra-foreground-secondary); }
+@keyframes mra-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* 标题溢出：静止时右缘渐隐提示（无 ellipsis 断头感），悬停卡头慢速展卷露全文
+   （进 2.8s / 出 0.4s 快收）——常驻跑马灯对长驻面板是视觉噪音（WCAG 2.2.2）。
+   全文出口另有卡头 title 兜底。 */
+.log-section .log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); white-space: nowrap; overflow: hidden; }
+.log-msg--more { mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); }
+.log-msg-inner { display: inline-block; transition: transform 0.4s ease; }
+.log-section-head:hover .log-msg--more {
+  mask-image: linear-gradient(90deg, transparent, #000 10px, #000 calc(100% - 12px), transparent);
+}
+.log-section-head:hover .log-msg--more .log-msg-inner {
+  transform: translateX(var(--scroll-x, 0));
+  transition: transform 2.8s cubic-bezier(0.25, 0.5, 0.35, 1);
+}
+
+/* 卡体：默认折叠（高度 0，不占位）；点卡头展开，高度过渡即「卡头不动、内容向下推出」。
    `interpolate-size: allow-keywords` 是 height: auto 能参与过渡的前提（Chromium 129+，
    WebView2 常青自动更新；不支持时退化为瞬时开合，版式不受影响）。 */
 .log-section-body {
@@ -414,36 +447,41 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   transition: height var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
 }
 .log-section--open .log-section-body { height: auto; }
-@media (prefers-reduced-motion: reduce) {
-  .log-section-body { transition: none; }
-}
 
-/* 普通日志行：色点级别 + 消息，不再重复显示 [时间][级别] tag（减少重复、视线更顺） */
+/* 日志行（卡内正文行与无组裸行）：级别由文字色承载，无彩点无关键词着色
+   ——一个位置一种承载（卡头看词=徽章，正文看色）。裸行级别色挂整行自身。 */
 .log-line {
   display: flex; align-items: flex-start; gap: 8px;
   padding: 2px 0 2px 10px; word-break: break-all;
   color: var(--mra-foreground-secondary);
 }
-.log-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  margin-top: 6px; flex-shrink: 0;
-}
-.log-line--INFO .log-dot { background: var(--mra-info); }
-.log-line--OK .log-dot { background: var(--mra-success); }
-.log-line--WARNING .log-dot { background: var(--mra-warning); }
-.log-line--ERROR .log-dot { background: var(--mra-danger); }
-.log-line--DEBUG .log-dot { background: var(--mra-foreground-dim); }
 .log-msg { flex: 1; min-width: 0; }
 .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
+.log-line--ERROR, .log-line--ERROR .log-msg { color: var(--mra-danger); }
+.log-line--WARNING, .log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
 
-/* 错误/警告消息更醒目 */
-.log-line--ERROR .log-msg { color: var(--mra-danger); }
-.log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
+/* 回顶按钮：随滚动位置换向（贴底→去最旧 / 翻上去→回最新），不溢出不出现 */
+.log-top-btn {
+  position: absolute; right: 14px; bottom: 14px; z-index: 2;
+  width: 30px; height: 30px; border: 1px solid var(--mra-border);
+  border-radius: 50%; background: var(--mra-surface);
+  box-shadow: var(--mra-shadow-sm); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--mra-foreground-secondary);
+  transition: background var(--mra-duration-fast) ease, color var(--mra-duration-fast) ease;
+}
+.log-top-btn:hover { background: var(--mra-surface-hover); color: var(--mra-foreground); }
+.log-top-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.log-top-btn .log-top-down { display: none; }
+.log-top-btn--down .log-top-up { display: none; }
+.log-top-btn--down .log-top-down { display: block; }
 
-/* 关键词着色（模块前缀/阶段/加载/完成等） */
-.log-kw { color: var(--mra-primary); font-weight: 500; }
-.log-kw--ok { color: var(--mra-success); font-weight: 500; }
-.log-kw--warn { color: var(--mra-warning); font-weight: 500; }
+@media (prefers-reduced-motion: reduce) {
+  .log-section { animation: none; }
+  .log-section-body { transition: none; }
+  .log-status--run { animation: none; }
+  .log-section-head:hover .log-msg--more .log-msg-inner { transform: none; }
+}
 
 /* 今日看板（鉴宝数据页：读 treasure.db 今日统计） */
 .board-date { font-size: 11px; color: var(--mra-foreground-muted); }
