@@ -167,6 +167,18 @@
 
 > **通道维度**：级别与通道是正交的两件事——级别管「读的时候要不要看」（GUI 默认 INFO 及以上，导出可另设阈值）；通道管「这一行要不要打」（调级）。两者都**不影响写侧**：落盘是单流全量。未设置通道级别时全记录（兼容旧行为）。
 
+#### 1.5.2 组协议（结构化日志，ADR-0007）
+
+环形缓冲存 `(seq, record)`，**记录是唯一事实源**，文件与 GUI 是它的两份投影：
+
+- **事件三型**：`log` / `group_start` / `group_end`；record 字段含 `schema_version, seq, event_type, group_id, session_id, ts, channel, level, kind, title, message, fields, outcome, has_warning, has_error, duration_ms`。
+- **API**：`logger.group(title, kind, channel)` → `GroupHandle`（`.log()` / `.end(outcome=None)` / `with` 糖）；`log(msg, level, channel, *, group_id=, fields=)` 返回 seq。`end` **首调定终态、重复调幂等**（墓碑 + `double_end` 计数）；野 `group_id` 降级为无组 + 计数。跨线程传**捕获的 group_id**（句柄不跨线程传递，方案 A 裁定）。
+- **状态模型**：开组即 `running`；`end` 缺省按组内 ERROR/WARNING **自动推导** failure/warning/success；显式 success 可与 has_warning 并存（WARNING=可恢复降级约定）；`Logger.close()`（sidecar 唯一收尾路径）把开着的组补 `incomplete`，只执行一次。
+- **双投影**：文件=全事件流，组以 GH 风格 `::group:: 标题` / `::endgroup:: outcome` 标记（`%`→`%25`、`:`→`%3A`、换行→`%0A`）；GUI 文本行=仅 `log` 事件（`fetch_logs` 过渡期同返 `lines` 与 `events`，含 `next_seq/truncated/gap/schema_version/session_id`）。
+- **fields 先净化后入库**：JSON 标量、≤16 键 / 键 32 字符 / 串 200 字符、NaN/Inf→None、敏感键（password/token/secret/api_?key/cookie/authorization）剔除；违规只进 `internal_counters` 不记日志（防递归）、不向业务线程抛异常。
+- **channel 是写闸不是组归属**：组事件豁免级别门（结构完整性 > 体量控制，防无头组）；被门掉的行不参与终态推导。
+- **插件用法**：模块级 `_tlog/_open_grp/_end_grp` 三函数 + 类上薄包装 + `_log_grp` 句柄槽（照抄 treasure 形态）；跨切面日志有意保持无组。结构锁：`tests/test_treasure_log_groups.py`、`tests/test_speedrush_log_groups.py`（裸 INFO 注入必红）。
+
 ***
 
 ### 1.6 [window_utils.py](./window_utils.py) — 窗口与手柄检测

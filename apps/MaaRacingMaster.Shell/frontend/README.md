@@ -154,22 +154,32 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 ## 运行日志卡片
 
-主控页右栏的日志按**区块**渲染（`app.js` 的 `appendLogs` / `finalizeSection`），几条别改坏的不变量：
+主控页右栏由 `js/log.js` 渲染，数据源是 `fetch_logs` 的**结构化事件**（契约见 ADR-0007，
+实现真源 `core/logger.py`）。几条别改坏的不变量：
 
-- **面板上的第一行必定成卡**：命中锚点即开新区块，未命中锚点但当前无卡时也开（隐式锚点）——
-  首个锚点之前的运行环境行（PEEP 预览 / 配置注入 / 连接窗口前）同样在卡内，没有裸行旁路。
-  清空日志后同理，下一行重新开卡。
-- **卡片一律默认折叠**，展开与否全交给用户点击（含 ERROR 的卡也不自动展开）；细节行照常
-  追加进正文并按行数刷新徽章，含错误/警告时卡头挂「!」标记。**当前正在写入的那张卡也要绑
-  点击开关**——建卡时就得 `bindSectionToggle`，只在收尾时绑会让「当前卡点不开」。
-- **计数徽章必须按 `.log-badge--count` 取**，不能用裸 `.log-badge`：`!` 标记同样带
-  `.log-badge`，裸取会拿到标记本身，它被移除后 `insertBefore` 抛 `NotFoundError`，
-  整批剩余日志行静默丢失。
-- **展开动画**是正文的高度过渡（`height: 0` ↔ `height: auto`），靠 `interpolate-size:
-  allow-keywords` 才成立（Chromium 129+，WebView2 常青）；引擎不支持时只是退化为瞬时开合，
-  版式不受影响。箭头与正文同拍（同为 0.18s），`prefers-reduced-motion` 下过渡关闭。
-- **只在已贴底时才自动跟随**：贴底判定必须在追加之前取（追加会抬高 `scrollHeight`），
-  否则用户翻旧卡时每轮轮询都会被拽回底部。
+- **卡片只来自组事件**：`group_start` 建卡（徽章「进行中」脉冲蓝），`group_end` 按
+  `outcome` 落终态徽章（成功/警告/失败/未完成）——**前端不按行数自行推导状态**。
+  无 `group_id` 的散行 = 裸行，级别由整行文字色承载（WARNING 琥珀 / ERROR 红）。
+  一个位置一种承载：卡头看词（徽章），正文看色；无关键词着色、无彩点、无色条。
+- **可点性与内容一致**：首条正文落进卡体时 `addRow` 才挂 `.log-section--expandable`
+  （指针光标 + 悬停底色 + 「N 条」计数胶囊）；空卡不给可点承诺，也不显示展开箭头。
+  建卡即 `bindSectionToggle`（正在写入的卡也要点得开）。
+- **标题溢出**：nowrap + 右缘渐隐（`mask-image`），悬停卡头慢速展卷露全文（进 2.8s /
+  出 0.4s）；`fitTitles` 每卡只测一次（`dataset.fit` 去重）。reduced-motion 下不滚动，
+  全文出口退到卡头 `title`。
+- **展开动画**是正文高度过渡（`height: 0` ↔ `auto`），靠 `interpolate-size:
+  allow-keywords`（Chromium 129+，WebView2 常青）；不支持时退化瞬时开合，版式不受影响。
+- **只在已贴底时才自动跟随**：贴底判定必须在追加之前取（追加会抬高 `scrollHeight`）。
+  回顶按钮随位置换向：贴底→去最旧（顶部），翻上去→回最新（底部），不溢出不出现；
+  smooth 滚动在遮挡的 WebView 里会被合成器挂起（探针实测），`_scrollLogs` 带 600ms
+  未动兜底瞬移。
+- **一切动态文本经 `textContent` 落 DOM**，无 innerHTML 注入面（静态锁
+  `tests/test_frontend_remote_render.py`）。**复制文本由 `_records` 记录拼装**
+  （`#seq ts LEVEL [g=id] msg`，fields 逐行 `key: value`，组开合标 GROUP-START/END），
+  与文件日志的 `::group::` 标记和环形序号可对照；旧 sidecar 回退 `dataset.raw`。
+- 浏览器侧验证（无 WebView2 桥）：定义 `window.chrome.webview` 桩（`postMessage` 收
+  `{type:'call',callId,method}`、异步派发 `{type:'response',callId,ok,data}`）+ 脚本化
+  `fetch_logs` 批次，即可用真 `rpc.js`/`log.js` 渲染审计（探针手法同 `冒烟验证` 节）。
 
 ## 冒烟验证
 

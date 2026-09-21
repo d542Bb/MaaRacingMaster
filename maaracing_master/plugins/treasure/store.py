@@ -308,30 +308,33 @@ class TreasureStore:
     # ---------- 会话总结 ----------
 
     def log_session_summary(self):
-        """会话总结：逐行输出，首行「鉴宝观察会话总结」被前端识别为区块卡片头（可展开分组）。"""
+        """会话总结：首行为组标题（GUI 卡头），其余行进组正文（契约 §8 第 7 步）。
+
+        措辞走日志契约判据：常规陈述句，不做缩进列对齐——GUI 是比例字体，
+        对齐必歪；字段值本身承载信息，排版不承载。
+        """
         m = self._m
         lines: list[str] = ["鉴宝观察会话总结"]
-        lines.append(f"  阶段记录     : {m._current_stage or '-'}（结束时）")
+        lines.append(f"阶段记录: {m._current_stage or '-'}（结束时）")
         if m._round_no is not None:
-            lines.append(f"  结束回合     : {m._round_no}")
+            lines.append(f"结束回合: {m._round_no}")
         if m._h_prices:
-            lines.append(f"  系统 H 记录  : {m._h_prices}")
+            lines.append(f"系统 H 记录: {m._h_prices}")
         if m._our_bids:
-            lines.append(f"  我方出价记录 : {m._our_bids}")
+            lines.append(f"我方出价记录: {m._our_bids}")
         if m._h_prices and max(m._h_prices) > 0:
             H_max = max(x for x in m._h_prices if x > 0)
-            lines.append(f"  H_max        : {H_max:,}  → 估值区间 ≈ {int(H_max*1.33):,} ~ {int(H_max*1.44):,}")
+            lines.append(f"H_max: {H_max:,} → 估值区间 ≈ {int(H_max*1.33):,} ~ {int(H_max*1.44):,}")
         if m._settle_my_income is not None or m._settle_profit is not None:
             lines.append(
-                f"  本场结算     : 收入 {m._settle_my_income or 0:,} / 利润 {m._settle_profit or 0:,}"
+                f"本场结算: 收入 {m._settle_my_income or 0:,} / 利润 {m._settle_profit or 0:,}"
                 f"（成交价 {m._settle_final_price or 0:,} / 估值 {m._settle_total_price or 0:,}）"
             )
         if m._daily_high_score is not None:
-            lines.append(f"  今日最高积分 : {m._daily_high_score:,}")
+            lines.append(f"今日最高积分: {m._daily_high_score:,}")
         if m._session_dir:
-            lines.append(f"  保存帧数     : {m._saved_frames} (raw 全量) / {m._debug_saved} (debug 图)")
-            lines.append(f"  调试目录     : {m._session_dir}")
-        # 首行是组标题（GUI 卡头），其余进组正文（契约 §8 第 7 步）；
+            lines.append(f"保存帧数: {m._saved_frames} (raw 全量) / {m._debug_saved} (debug 图)")
+            lines.append(f"调试目录: {m._session_dir}")
         # 模块无组原语（测试桩）时回退 legacy 逐行 INFO，行为不变。
         if getattr(m, "_open_grp", None) is not None:
             m._open_grp(lines[0], "loop")
