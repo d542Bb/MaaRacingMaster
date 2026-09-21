@@ -110,7 +110,23 @@ body {
 @keyframes mra-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .log-status--run { animation: none; } }
 
-.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* step 3：标题溢出处理——静止时右缘渐隐（提示还有内容，无 ellipsis 断头感），
+   悬停该卡头时慢速展卷露出全文（进入 2.8s 慢滚、离开 0.4s 快收），
+   滚动只在 hover 期间发生：常驻跑马灯对长驻面板是视觉噪音，且移动文字可读性差。
+   prefers-reduced-motion 下不滚动，全文出口退到 title 悬停提示。 */
+.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); white-space: nowrap; overflow: hidden; }
+.log-msg--more { mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); }
+.log-msg-inner { display: inline-block; transition: transform 0.4s ease; }
+.log-section-head:hover .log-msg--more {
+  mask-image: linear-gradient(90deg, transparent, #000 10px, #000 calc(100% - 12px), transparent);
+}
+.log-section-head:hover .log-msg--more .log-msg-inner {
+  transform: translateX(var(--scroll-x, 0));
+  transition: transform 2.8s cubic-bezier(0.25, 0.5, 0.35, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .log-section-head:hover .log-msg--more .log-msg-inner { transform: none; }
+}
 
 .log-section-body {
   height: 0; overflow: hidden;
@@ -230,6 +246,23 @@ function bindSectionToggle(sec) {
 const FOLLOW_BOTTOM_PX = 24;
 function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX; }
 
+// step 3：溢出检测一次性接线——超宽的卡头标题包内层卷动体并量出位移。
+// dataset.fit 去重：每张卡只测一次（标题建卡后不再变化）。
+function fitTitles() {
+  document.querySelectorAll('.log-section-head .log-msg').forEach((el) => {
+    if (el.dataset.fit) return;
+    el.dataset.fit = '1';
+    if (el.scrollWidth <= el.clientWidth + 1) return;
+    el.classList.add('log-msg--more');
+    const inner = document.createElement('span');
+    inner.className = 'log-msg-inner';
+    while (el.firstChild) inner.appendChild(el.firstChild);
+    el.appendChild(inner);
+    el.style.setProperty('--scroll-x',
+      -(inner.scrollWidth - el.clientWidth + 8) + 'px');
+  });
+}
+
 function _makeRow(lvl, msgHtml, rawText) {
   const row = document.createElement('div');
   row.className = 'log-line log-line--' + lvl;
@@ -263,6 +296,7 @@ function appendLogs(lines) {
     if (_curSec) { _curSec = null; }
     _curSec = { el: _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw, 'idle') };
   });
+  fitTitles();
   if (followBottom) area.scrollTop = area.scrollHeight;
 }
 
@@ -307,6 +341,7 @@ function renderEvents(events, truncated) {
     if (lvl === 'ERROR') g.worst = 'err';
     else if (lvl === 'WARNING' && g.worst !== 'err') g.worst = g.worst || 'warn';
   });
+  fitTitles();
   if (followBottom) area.scrollTop = area.scrollHeight;
 }
 

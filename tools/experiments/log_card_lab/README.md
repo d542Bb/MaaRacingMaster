@@ -45,5 +45,10 @@ status: active
   开卡即 finalize legacy「当前卡」，框架散行自开 implicit 新卡，不再埋进
   「已连接窗口」旧卡（桥桩混合序列端到端验证）。
 - 待做：第 9 步（speedrush 自接组机制后删 SECTION_ANCHORS/KW_RULES——阻塞于
-  speedrush 维护者）、第 10 步（复制/导出含 seq/group_id、协议一致性测试）、
+  speedrush 维护者）、第 10 步（复制/导出含 seq/group_id、协议一致性）、
   第 11 步（结论迁 home、目录退役）。卡片样式线（入场动画、回顶按钮）可并行。
+- lab step 2（`a9943c8`）：事件驱动渲染器 + 徽章状态机——与生产 log.js 双 renderer
+  同构（组事件/散行/交接锁），outcome 驱动五态，无组散行卡统一中性「记录」槽。
+- lab step 3：标题溢出——静止时右缘渐隐提示（无 ellipsis 断头感），悬停卡头慢速
+  展卷露全文（进 2.8s / 出 0.4s 快收），reduced-motion 退到 title 提示。
+  否决常驻跑马灯：长驻面板的移动文字是视觉噪音且可读性差（WCAG 2.2.2）。
