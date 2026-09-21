@@ -102,6 +102,10 @@
     } else if (d.is_running || d.worker_active) {
       setStatus('停止中...', 'stopping');
       if (perfStage) perfStage.textContent = '停止中';
+    } else if (d.model_ok === false) {
+      // 资源缺失由轮询字段持续点亮（get_status.model_ok），资源恢复后自然回到就绪
+      setStatus('插件资源缺失', 'error');
+      if (perfStage) perfStage.textContent = '空闲中';
     } else {
       setStatus('系统就绪', 'ready');
       if (perfStage) perfStage.textContent = '空闲中';

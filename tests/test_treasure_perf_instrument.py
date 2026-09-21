@@ -270,6 +270,14 @@ class TestSidecarPassthrough:
         ok, payload, _ = TestSidecarPassthrough._service(_Bare()).get_status({})
         assert ok and payload["perf"] is None
 
+    def test_model_ok_in_get_status_payload(self):
+        # 结构锁：前端闲置态靠这个字段维持「插件资源缺失」提示，字段被删会静默回退
+        class _Bare:
+            pass
+
+        _, payload, _ = TestSidecarPassthrough._service(_Bare()).get_status({})
+        assert isinstance(payload.get("model_ok"), bool)
+
     def test_no_active_module_yields_none_perf(self):
         ok, payload, _ = TestSidecarPassthrough._service(None).get_status({})
         assert ok and payload["perf"] is None

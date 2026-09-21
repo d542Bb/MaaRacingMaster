@@ -606,6 +606,9 @@ class SidecarService:
             "current_stage": self._controller.current_stage,
             "worker_active": worker is not None and worker.is_alive(),
             "selected_module": selected,
+            # 资源齐备状态随轮询持续下发（前端闲置态据此维持「插件资源缺失」提示）；
+            # 实现只是几个 stat 调用，4Hz 轮询无压力
+            "model_ok": self._selected_module_assets_ok(),
             "perf": perf,
         }, None)
 
