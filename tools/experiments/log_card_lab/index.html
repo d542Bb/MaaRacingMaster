@@ -80,30 +80,33 @@ body {
 }
 .log-section-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 0 4px 6px;
-  border-left: 2px solid transparent;
+  padding: 6px 2px;
   margin-bottom: 2px;
   cursor: pointer; user-select: none;
 }
-.log-section--phase .log-section-head { border-left-color: var(--mra-primary); }
-.log-section--session .log-section-head { border-left-color: var(--mra-info); }
-.log-section--loop .log-section-head { border-left-color: var(--mra-success); }
-.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); }
+/* step1（重做）：唯一状态槽——词徽章常驻行首，含义由词承载（参考 v-collapsible-9 的自洽性）。
+   类型维度由标题关键词着色承担，三色左边线废除；「进行中」用 info 蓝——
+   primary 是赛车红，与「失败」红语义撞车，色彩语义必须互斥。 */
+.log-status {
+  flex-shrink: 0; font-size: 10px; font-weight: 600; line-height: 16px;
+  padding: 0 7px; border-radius: 5px; letter-spacing: 0.5px;
+}
+.log-status--run  { background: color-mix(in srgb, var(--mra-info) 12%, transparent); color: var(--mra-info); animation: mra-status-pulse 1.4s ease-in-out infinite; }
+.log-status--ok   { background: var(--mra-success-bg); color: var(--mra-success-strong); }
+.log-status--warn { background: var(--mra-warning-bg); color: var(--mra-warning-strong); }
+.log-status--err  { background: var(--mra-danger-bg); color: var(--mra-danger); }
+@keyframes mra-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .log-status--run { animation: none; } }
+.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .log-chev {
   width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
   color: var(--mra-foreground-muted);
   transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
 }
 .log-section--open .log-chev { transform: rotate(90deg); }
+/* step1：右侧只剩时间 + 箭头（计数徽章废除——「里面几行」不值得常驻槽位） */
 .log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
 .log-section-meta .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
-.log-badge {
-  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-  font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
-  background: var(--mra-border-light); color: var(--mra-foreground-muted);
-}
-.log-badge--warn { background: var(--mra-warning-bg); color: var(--mra-warning-strong); }
-.log-badge--err { background: var(--mra-danger-bg); color: var(--mra-danger); }
 .log-section-body {
   height: 0; overflow: hidden;
   interpolate-size: allow-keywords;
@@ -181,34 +184,21 @@ function highlightKeywords(s) {
   return s;
 }
 let _curSec = null;
-function updateSectionMeta(sec, count, hasError, hasWarn) {
-  const badge = sec.querySelector('.log-badge--count');
-  if (badge) badge.textContent = String(count || 0);
-  const meta = sec.querySelector('.log-section-meta');
-  if (!meta) return;
-  meta.querySelectorAll('.log-badge--warn, .log-badge--err').forEach((b) => b.remove());
-  if (hasError || hasWarn) {
-    const marker = document.createElement('span');
-    marker.className = hasError ? 'log-badge log-badge--err' : 'log-badge log-badge--warn';
-    marker.textContent = '!';
-    meta.insertBefore(marker, badge);
-  }
-}
 function bindSectionToggle(sec) {
   const head = sec.querySelector('.log-section-head');
   if (!head || head.dataset.bound) return;
   head.dataset.bound = '1';
   head.addEventListener('click', (ev) => { ev.preventDefault(); sec.classList.toggle('log-section--open'); });
 }
-function finalizeSection(sec) {
-  let count = 0, hasError = false, hasWarn = false;
-  sec.querySelectorAll('.log-section-body .log-line').forEach((d) => {
-    count++;
-    if (d.classList.contains('log-line--ERROR')) hasError = true;
-    else if (d.classList.contains('log-line--WARNING')) hasWarn = true;
-  });
-  updateSectionMeta(sec, count, hasError, hasWarn);
-  bindSectionToggle(sec);
+// step1：收尾只改一件事——状态槽从「进行中」换成结果词（成功/警告/失败）
+function finalizeSection(cur) {
+  const pill = cur.el.querySelector('.log-status');
+  if (pill) {
+    const st = cur.hasError ? ['log-status--err', '失败'] : cur.hasWarn ? ['log-status--warn', '警告'] : ['log-status--ok', '成功'];
+    pill.className = 'log-status ' + st[0];
+    pill.textContent = st[1];
+  }
+  bindSectionToggle(cur.el);
 }
 const FOLLOW_BOTTOM_PX = 24;
 function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX; }
@@ -230,29 +220,29 @@ function appendLogs(lines) {
       row.classList.add('log-line--' + lvl);
       row.innerHTML = '<span class="log-dot"></span><span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>';
       _curSec.el.querySelector('.log-section-body').appendChild(row);
-      _curSec.count += 1;
       if (lvl === 'ERROR') _curSec.hasError = true;
       else if (lvl === 'WARNING') _curSec.hasWarn = true;
-      updateSectionMeta(_curSec.el, _curSec.count, _curSec.hasError, _curSec.hasWarn);
       return;
     }
-    if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
+    if (_curSec) { finalizeSection(_curSec); _curSec = null; }
     const sec = document.createElement('div');
     sec.className = 'log-section log-section--' + anchorType;
     const head = document.createElement('div');
     head.className = 'log-line log-section-head';
     head.dataset.raw = raw;
+    head.title = msg; // 单行省略后的全文出口
+    // step1：行首唯一状态槽 + 标题 + 右侧时间/箭头
     head.innerHTML =
-      '<span class="log-chev">▸</span>' +
+      '<span class="log-status log-status--run">进行中</span>' +
       '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
-      '<span class="log-section-meta"><span class="log-badge log-badge--count">0</span><span class="log-time">' + ts + '</span></span>';
+      '<span class="log-section-meta"><span class="log-time">' + ts + '</span><span class="log-chev">▸</span></span>';
     const body = document.createElement('div');
     body.className = 'log-section-body';
     sec.appendChild(head);
     sec.appendChild(body);
     area.appendChild(sec);
     bindSectionToggle(sec);
-    _curSec = { el: sec, count: 0, hasError: false, hasWarn: false };
+    _curSec = { el: sec, hasError: false, hasWarn: false };
   });
   if (followBottom) area.scrollTop = area.scrollHeight;
 }
