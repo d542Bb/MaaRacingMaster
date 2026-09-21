@@ -115,6 +115,46 @@ def _frame_note(fid: int, age_ms: float) -> str:
     return f"frame={fid} age={age_ms:.0f}ms"
 
 
+# ---------- 结构化日志组归属（契约 §8 第 7 步同款，A 案显式句柄） ----------
+# 机制与形态照抄 treasure（见其「结构化日志组归属」段）：模块级函数 + 类上薄包装。
+# _log_grp 仅生命周期 owner 线程（start / _run_flow / _drive / run finally）读写；
+# worker 线程（recorder/HUD 观察线程）不得读取——本插件的 worker 内日志有意保持
+# 无组（落盘失败/写帧失败属跨切面），需要归组时在派发点捕获不可变 group_id
+# 显式 logger.log(group_id=...) 传参，迟到旧 id 由 logger 自动降级并计数。
+# 跨切面日志（启动前提/设备/落盘）不塞组：见结构锁的白名单。
+
+def _tlog(self, msg: str, level: str = "INFO", fields: dict | None = None) -> None:
+    """阶段流日志：开组期间归当前组，无组落 legacy 通道。"""
+    g = getattr(self, "_log_grp", None)
+    if g is not None:
+        g.log(msg, level, fields=fields)
+    elif fields is not None:
+        logger.log(msg, level, fields=fields)
+    else:
+        logger.log(msg, level)
+
+
+def _open_grp(self, title: str, kind: str) -> None:
+    """开业务组（GUI 卡片）；上一组先收尾（终态自动推导）。
+
+    logger 无 group()（测试桩）时回退 legacy 锚点行，行为与现网一致。
+    """
+    if getattr(logger, "group", None) is None:
+        logger.log(title)
+        return
+    _end_grp(self)
+    self._log_grp = logger.group(title, kind=kind)
+
+
+def _end_grp(self, outcome: str | None = None) -> None:
+    """收尾当前组；outcome 缺省时按组内 ERROR/WARNING 自动推导终态。"""
+    g = getattr(self, "_log_grp", None)
+    if g is None:
+        return
+    self._log_grp = None
+    g.end(outcome)
+
+
 class SpeedRushModule(ActivityModule):
     """极速狂飙：地铁跑酷式车道选择玩法。"""
 
@@ -169,6 +209,8 @@ class SpeedRushModule(ActivityModule):
         self._graph: NavGraph | None = None
         self._running = False
         self._stage_name: str | None = None
+        # 结构化日志当前组句柄：仅生命周期 owner 线程读写（见「结构化日志组归属」段）
+        self._log_grp = None
         # 录制模式：开启后驾驶阶段只采集（不操纵车辆），供维护者手动驾驶产出演示数据。
         self._record_mode = self.DEFAULT_RECORD_MODE
         self._recorder: DriveRecorder | None = None
@@ -268,9 +310,14 @@ class SpeedRushModule(ActivityModule):
             logger.log(f"[极速狂飙] 未知断点「{start_from}」，从流程起点开始", "WARNING")
 
         self._running = True
+        _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
+                        f"·感知{'开' if self._perception_mode else '关'}）", "session")
         try:
             self._run_flow(index)
         finally:
+            # 契约 §2：speedrush 的 start 无"自然完成"出口（循环至停止），
+            # 走到这里只有被停/阶段故障中止/异常三种，一律落 incomplete。
+            _end_grp(self, "incomplete")
             self._running = False
             self._stage_name = None
 
@@ -295,6 +342,17 @@ class SpeedRushModule(ActivityModule):
             self._graph = None
         self._stage_name = None
 
+    # ---------- 结构化日志组归属（类上薄包装，与模块级函数同源，treasure 同形态） ----------
+
+    def _tlog(self, msg: str, level: str = "INFO", fields: dict | None = None):
+        _tlog(self, msg, level, fields)
+
+    def _open_grp(self, title: str, kind: str) -> None:
+        _open_grp(self, title, kind)
+
+    def _end_grp(self, outcome: str | None = None) -> None:
+        _end_grp(self, outcome)
+
     # ---------- 流程推进 ----------
 
     def _run_flow(self, index: int) -> None:
@@ -303,6 +361,8 @@ class SpeedRushModule(ActivityModule):
         round_no = 0
         while self._running:
             round_no += 1  # 场景分层用：录制 meta 要记"这一帧属于第几轮"
+            # 组边界即场次边界（迁移裁定 2）：一"轮" = 一局完整对局（两个驾驶阶段+结算）
+            _open_grp(self, f"[极速狂飙] 第 {round_no} 场开始", "session")
             while index < len(FLOW):
                 if not self._running:
                     return
@@ -310,10 +370,10 @@ class SpeedRushModule(ActivityModule):
                 self._stage_name = stage
                 if node is None:
                     if not self._drive(phase, round_no):
-                        logger.log(f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
+                        _tlog(self, f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return
                 elif not self._graph.run(node, node):
-                    logger.log(f"[极速狂飙] 步骤「{stage}」未到位，本轮中止", "WARNING")
+                    _tlog(self, f"[极速狂飙] 步骤「{stage}」未到位，本轮中止", "WARNING")
                     return
                 index += 1
             index = LOOP_START_INDEX
@@ -338,21 +398,29 @@ class SpeedRushModule(ActivityModule):
         assert self.ctx is not None
         assert self._graph is not None
 
-        if not self._wait_drive_ready(phase):
-            return False
-
-        recorder = self._begin_recording(phase, round_no) if self._record_mode else None
-        # HUD 读数挂在录制会话上：对齐目标就是同会话的 frames.jsonl（见 _begin_hud）
-        observer = self._begin_hud(recorder, phase, round_no) if recorder is not None else None
+        # 阶段组开在等就绪之前：就绪判定的每条日志都属于这场驾驶（卡片要完整）
+        _open_grp(self, f"[极速狂飙] 驾驶阶段 {phase}"
+                        f"（{'录制采集' if self._record_mode else '等待阶段结束'}）", "phase")
         try:
-            return self._drive_loop(phase, recorder)
+            if not self._wait_drive_ready(phase):
+                return False
+
+            recorder = self._begin_recording(phase, round_no) if self._record_mode else None
+            # HUD 读数挂在录制会话上：对齐目标就是同会话的 frames.jsonl（见 _begin_hud）
+            observer = self._begin_hud(recorder, phase, round_no) if recorder is not None else None
+            try:
+                return self._drive_loop(phase, recorder)
+            finally:
+                if observer is not None:
+                    observer.stop("phase_end" if self._running else "stopped")
+                    self._hud = None
+                if recorder is not None:
+                    recorder.stop("phase_end" if self._running else "stopped")
+                    self._recorder = None
         finally:
-            if observer is not None:
-                observer.stop("phase_end" if self._running else "stopped")
-                self._hud = None
-            if recorder is not None:
-                recorder.stop("phase_end" if self._running else "stopped")
-                self._recorder = None
+            # 收口在录制器/HUD 线程都停干净之后（它们的落盘尾行不进组，属跨切面）；
+            # 停止信号打断的阶段归 incomplete，正常结束按组内 WARNING/ERROR 自动推导。
+            _end_grp(self, "incomplete" if not self._running else None)
 
     def _wait_drive_ready(self, phase: int) -> bool:
         """等到驾驶页稳定出现；连续命中 ``DRIVE_READY_HITS`` 次才算就绪（去抖）。
@@ -362,7 +430,7 @@ class SpeedRushModule(ActivityModule):
         """
         assert self.ctx is not None
         assert self._graph is not None
-        logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待进入驾驶页", "INFO")
+        _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：等待进入驾驶页", "INFO")
         hits = 0
         deadline = time.monotonic() + DRIVE_READY_TIMEOUT_S
         fid, age_ms = 0, 0.0
@@ -371,9 +439,9 @@ class SpeedRushModule(ActivityModule):
             if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
                 hits += 1
                 if hits >= DRIVE_READY_HITS:
-                    logger.log(
-                        f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页"
-                        f"（{_frame_note(fid, age_ms)}）", "INFO")
+                    _tlog(self,
+                          f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页"
+                          f"（{_frame_note(fid, age_ms)}）", "INFO")
                     return True
             else:
                 if hits:
@@ -386,9 +454,9 @@ class SpeedRushModule(ActivityModule):
             if not self.ctx.lifecycle.sleep(DRIVE_READY_POLL_S):
                 return False
         if self._running:
-            logger.log(
-                f"[极速狂飙] 驾驶阶段 {phase}：{DRIVE_READY_TIMEOUT_S:.0f}s 内未进入驾驶页"
-                f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：{DRIVE_READY_TIMEOUT_S:.0f}s 内未进入驾驶页"
+                  f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
 
     def _drive_loop(self, phase: int, recorder: DriveRecorder | None) -> bool:
@@ -406,10 +474,10 @@ class SpeedRushModule(ActivityModule):
         assert self.ctx is not None
         assert self._graph is not None
         if recorder is not None:
-            logger.log(
-                f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶（正在录制演示数据）", "INFO")
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶（正在录制演示数据）", "INFO")
         else:
-            logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（驾驶控制尚未实现）", "INFO")
+            _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（驾驶控制尚未实现）", "INFO")
         # 感知耗时记账按阶段清零（P50/P95 在循环出口随实际节拍一起报，见 _log_loop_pace）
         self._infer_times = []
 
@@ -447,9 +515,9 @@ class SpeedRushModule(ActivityModule):
                         f"[极速狂飙] 驾驶阶段 {phase}：锚点失配第 {miss} 次"
                         f"（{_frame_note(fid, age_ms)}）", "DEBUG")
                     if miss >= DRIVE_MISS_TOLERANCE:
-                        logger.log(
-                            f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
-                            f"（{_frame_note(fid, age_ms)}）", "INFO")
+                        _tlog(self,
+                              f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
+                              f"（{_frame_note(fid, age_ms)}）", "INFO")
                         self._log_loop_pace(phase, frames, loop_start)
                         return True
 
@@ -459,9 +527,9 @@ class SpeedRushModule(ActivityModule):
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
-        logger.log(
-            f"[极速狂飙] 驾驶阶段 {phase} 未在 {DRIVE_TIMEOUT_S:.0f}s 内结束"
-            f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
+        _tlog(self,
+              f"[极速狂飙] 驾驶阶段 {phase} 未在 {DRIVE_TIMEOUT_S:.0f}s 内结束"
+              f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
 
     def _ensure_perception(self) -> StreetPerception | None:
@@ -474,10 +542,10 @@ class SpeedRushModule(ActivityModule):
         try:
             t0 = time.monotonic()
             self._perception = StreetPerception(str(PERCEPTION_MODEL_FILE))
-            logger.log(f"[极速狂飙] 感知模型就绪（{time.monotonic() - t0:.1f}s）", "INFO")
+            _tlog(self, f"[极速狂飙] 感知模型就绪（{time.monotonic() - t0:.1f}s）", "INFO")
         except Exception as exc:  # noqa: BLE001 —— 感知故障不阻断对局流程
             self._perception_failed = True
-            logger.log(f"[极速狂飙] 感知初始化失败，本轮禁用感知: {exc!r}", "WARNING")
+            _tlog(self, f"[极速狂飙] 感知初始化失败，本轮禁用感知: {exc!r}", "WARNING")
             return None
         return self._perception
 
@@ -496,13 +564,13 @@ class SpeedRushModule(ActivityModule):
             n = len(srt)
             p50 = srt[n // 2]
             p95 = srt[min(n - 1, int(round(0.95 * (n - 1))))]
-            logger.log(
+            _tlog(self,
                 f"[极速狂飙] 驾驶阶段 {phase}：感知 n={n} "
                 f"P50={p50:.1f}ms P95={p95:.1f}ms（帧预算 {DRIVE_TICK_S * 1000:.0f}ms）",
                 "INFO")
         elapsed = time.monotonic() - loop_start
         rate = frames / elapsed if elapsed > 0 else 0.0
-        logger.log(
+        _tlog(self,
             f"[极速狂飙] 驾驶阶段 {phase}：循环结束，{frames} 轮 / {elapsed:.1f}s"
             f"（实际 {rate:.1f}Hz，目标 {DRIVE_TICK_HZ:.0f}Hz）", "INFO")
 
@@ -515,7 +583,7 @@ class SpeedRushModule(ActivityModule):
             rec = DriveRecorder(session, phase=phase, round_no=round_no)
             rec.start()
         except Exception as exc:  # noqa: BLE001 —— 采集失败不阻断流程
-            logger.log(f"[极速狂飙] 录制器启动失败: {exc!r}", "WARNING")
+            _tlog(self, f"[极速狂飙] 录制器启动失败: {exc!r}", "WARNING")
             return None
         self._recorder = rec
         return rec
@@ -541,7 +609,7 @@ class SpeedRushModule(ActivityModule):
             )
             obs.start()
         except Exception as exc:  # noqa: BLE001 —— 读数启动失败不阻断流程
-            logger.log(f"[极速狂飙] HUD 读数启动失败: {exc!r}", "WARNING")
+            _tlog(self, f"[极速狂飙] HUD 读数启动失败: {exc!r}", "WARNING")
             return None
         self._hud = obs
         return obs

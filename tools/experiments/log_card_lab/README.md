@@ -44,8 +44,16 @@ status: active
   跨切面无业务归属——规则 4），零 core 改动；前端补双管线交接锁：group_start
   开卡即 finalize legacy「当前卡」，框架散行自开 implicit 新卡，不再埋进
   「已连接窗口」旧卡（桥桩混合序列端到端验证）。
-- 待做：第 9 步（speedrush 自接组机制后删 SECTION_ANCHORS/KW_RULES——阻塞于
-  speedrush 维护者）、第 10 步（复制/导出含 seq/group_id、协议一致性）、
+- §8 第 7 步同款迁移已实施（speedrush 线，本 commit，维护者委托单六条裁定逐条执行）：
+  模块级 _tlog/_open_grp/_end_grp 三函数 + 类上薄包装 + _log_grp 句柄槽（照抄 treasure
+  形态）；线性组链 = 启动 session → 第 N 场 session → 驾驶阶段 phase（组边界即业务事件，
+  停止打断的阶段与 run finally 显式 incomplete、正常路径自动推导）；INFO+ 阶段流行 11 处
+  转 _tlog，无组白名单 5 条（窗口连接/比例/录制提示/导航图/未知断点——启动前提失败时
+  无"当前阶段"可归）；recorder/HUD worker 线程日志有意保持无组（规则 2/4，本插件无需
+  派发捕获）。结构锁 tests/test_speedrush_log_groups.py 双向验证（裸 INFO 注入必红）。
+  **第 9 步对 speedrush 的依赖已解除，可执行删锚点迁移。**
+- 待做：第 9 步（speedrush 依赖已解除——见上；删 SECTION_ANCHORS/KW_RULES）、
+  第 10 步（复制/导出含 seq/group_id、协议一致性）、
   第 11 步（结论迁 home、目录退役）。卡片样式线（入场动画、回顶按钮）可并行。
 - lab step 2（`a9943c8`）：事件驱动渲染器 + 徽章状态机——与生产 log.js 双 renderer
   同构（组事件/散行/交接锁），outcome 驱动五态，无组散行卡统一中性「记录」槽。
