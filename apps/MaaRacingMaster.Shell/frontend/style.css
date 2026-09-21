@@ -264,21 +264,56 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 /* 运行日志卡撑满窗口最大高度（四周留白由页面 padding + 列 gap 承担） */
 #page-control .col-right .card { flex: 1 1 0; min-height: 0; }
 
-/* 模块 select */
-.select-wrap { position: relative; }
-.select-wrap select {
-  width: 100%; height: 36px; padding: 0 36px 0 12px;
-  border-radius: var(--mra-radius-sm); border: 1px solid var(--mra-border);
+/* 模块下拉（自绘 combobox 投影层，js/select.js；值真源 = 隐藏原生 select） */
+.msel { position: relative; }
+.msel-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.msel-trigger {
+  width: 100%; height: 40px; padding: 0 40px 0 14px;
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--mra-border); border-radius: var(--mra-radius-md);
   background: var(--mra-surface); color: var(--mra-foreground);
-  font-size: 13px; font-family: var(--mra-font-sans);
-  appearance: none; cursor: pointer;
+  font-size: 13px; font-family: var(--mra-font-sans); text-align: left;
+  cursor: pointer;
+  transition: border-color var(--mra-duration-fast) ease;
 }
-.select-wrap select:focus { border-color: var(--mra-primary); }
-.select-wrap select:disabled { opacity: 0.6; cursor: not-allowed; }
-.select-wrap svg {
-  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-  width: 16px; height: 16px; color: var(--mra-foreground-muted); pointer-events: none;
+.msel-trigger:hover:not([aria-disabled="true"]) { border-color: var(--mra-foreground-dim); }
+.msel-trigger[aria-expanded="true"] { border-color: var(--mra-primary); }
+.msel-trigger[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; }
+.msel-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msel-label--empty { color: var(--mra-foreground-muted); }
+.msel-chev {
+  position: absolute; right: 12px; top: 50%;
+  width: 16px; height: 16px; color: var(--mra-foreground-muted);
+  transform: translateY(-50%) rotate(0deg); pointer-events: none;
+  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
 }
+.msel-trigger[aria-expanded="true"] .msel-chev { transform: translateY(-50%) rotate(180deg); }
+.msel-list {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
+  max-height: 280px; overflow-y: auto;
+  background: var(--mra-surface); border: 1px solid var(--mra-border);
+  border-radius: 10px; padding: 4px;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12), 0 2px 6px rgba(31, 35, 40, 0.08);
+  display: none;
+}
+.msel--open .msel-list { display: block; animation: msel-in var(--mra-duration-base) ease-out; }
+@keyframes msel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .msel--open .msel-list { animation: none; } }
+.msel-opt {
+  position: relative; display: flex; align-items: center;
+  height: 34px; padding: 0 10px 0 32px;
+  border-radius: var(--mra-radius-sm); cursor: pointer; color: var(--mra-foreground);
+}
+.msel-opt--active { background: var(--mra-surface-hover); }
+.msel-opt--selected { font-weight: 600; }
+.msel-opt--selected::before {
+  content: ''; position: absolute; left: 9px; top: 50%;
+  width: 12px; height: 7px; margin-top: -8px;
+  border-left: 2px solid var(--mra-primary); border-bottom: 2px solid var(--mra-primary);
+  transform: rotate(-45deg);
+}
+.msel-opt--expired { color: var(--mra-foreground-secondary); }
+.msel-suffix { margin-left: auto; font-size: 11px; color: var(--mra-foreground-muted); padding-left: 8px; }
 .module-desc { font-size: 12px; color: var(--mra-foreground-secondary); margin-top: 8px; line-height: 1.6; }
 
 /* 模块选项（2 列平行：循环次数 / 出价策略） */
@@ -317,7 +352,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
   font-size: 12px; color: var(--mra-foreground-muted); pointer-events: none;
 }
-.select-wrap--compact select { height: 36px; }
 .module-options-status {
   margin: 10px 0 0; min-height: 18px;
   font-size: 11px; color: var(--mra-foreground-muted);

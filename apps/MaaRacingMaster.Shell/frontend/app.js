@@ -451,6 +451,7 @@
     sel.appendChild(blank);
     sel.onchange = onModuleChange;
     updateModuleDesc(selectedId);
+    if (MRA.syncModuleSelect) MRA.syncModuleSelect(); // 自绘下拉投影跟进（js/select.js）
   }
 
   function updateModuleDesc(moduleId) {
@@ -514,6 +515,7 @@
       const confirmed = await confirmExpiredModule(mid);
       if (!confirmed) {
         sel.value = MRA.currentModuleId || ''; // 撤销选择：回到当前生效模块
+        if (MRA.syncModuleSelect) MRA.syncModuleSelect();
         return;
       }
       force = true;
@@ -533,6 +535,7 @@
       console.error(e);
       showError(e.message);
       sel.value = MRA.currentModuleId || ''; // 后端拒绝时同样撤销显示值，避免前后端不一致
+      if (MRA.syncModuleSelect) MRA.syncModuleSelect();
     }
   }
 

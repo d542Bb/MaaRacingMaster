@@ -42,9 +42,16 @@
         <div class="card">
           <div class="card-head"><h3>活动模块</h3></div>
           <div class="card-body">
-            <div class="select-wrap">
-              <select id="module-select"></select>
-              <i data-icon="chevron-down"></i>
+            <!-- 值真源 = 隐藏原生 select（app.js 填充/run.js 取值/settings.js 禁用），
+                 自绘 combobox 投影层见 js/select.js -->
+            <div class="msel" id="msel">
+              <select id="module-select" class="msel-native" aria-hidden="true"></select>
+              <button type="button" class="msel-trigger" id="msel-trigger"
+                      role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="msel-list">
+                <span class="msel-label" id="msel-label"></span>
+                <svg class="msel-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="msel-list" id="msel-list" role="listbox" tabindex="-1"></div>
             </div>
             <p class="module-desc" id="module-desc"></p>
             <!-- 模块专属选项：按当前模块显示对应块，其余模块整块隐藏（见 app.js refreshModuleOptions）。
@@ -222,6 +229,7 @@
   <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MRA 共享命名空间（必须最先），
        app.js 是启动装配入口（必须最后）；中间模块只经 window.MRA 互相取用。 -->
   <script src="js/rpc.js"></script>
+  <script src="js/select.js"></script>
   <script src="js/modal.js"></script>
   <script src="js/log.js"></script>
   <script src="js/preview.js"></script>

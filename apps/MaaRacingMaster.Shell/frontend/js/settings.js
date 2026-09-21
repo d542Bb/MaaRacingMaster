@@ -258,6 +258,7 @@
     if (sel) {
       sel.disabled = running;
       sel.title = running ? '运行中不允许切换活动模块，请先停止' : '';
+      if (MRA.syncModuleSelect) MRA.syncModuleSelect(); // 自绘下拉投影跟进（js/select.js）
     }
   }
 

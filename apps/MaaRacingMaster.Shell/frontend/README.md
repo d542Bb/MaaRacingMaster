@@ -76,6 +76,18 @@ RPC 层不信任调用方给的地址。
   写、开关带 id 即可**，不要手写 aria 属性；函数幂等，静态启动跑一次、模板重渲染在
   `bindModulePages` 再跑一次。
 
+## 活动模块下拉（自绘 combobox 投影层）
+
+视觉语言 = OriginUI Select（shadcn/Radix 家族），实现在 `js/select.js` + `.msel-*` 样式。
+**值真源是隐藏的原生 `<select id="module-select">`**——app.js 填充 options、run.js 读
+value、settings.js 切 disabled、`onModuleChange` 撤销回写，本层一律不碰，避免第二份真相。
+改这几处时必须跟着调 `MRA.syncModuleSelect()`（现有四个调用点：renderModuleSelect 末尾、
+onModuleChange 两处撤销回写、settings.js 运行锁定）——程序化赋值不派发 change，
+用户路径的 change 则由 select.js 派发到原生 select 上，过期确认弹窗等监听零改动。
+键盘：Enter/Space/方向键开合、↑↓/Home/End/typeahead、Enter 选中、Esc 归还焦点；
+`aria-expanded`/`aria-activedescendant`/`aria-disabled` 随状态挂。过期项渲染层剥掉
+「（已过期）」后缀改挂「已过期」小标签（数据仍来自 option 文本，不复制一份清单）。
+
 ## 文字扫描光效（`.mra-text-scan`）
 
 给任意文字元素加 `.mra-text-scan` 即生效，无需额外 DOM。两层背景裁进文字：底层铺基色、
