@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>日志卡试验区 · step 5 —— 徽章承载卡头风险</title>
+<title>日志卡试验区 · step 6 —— 终态：卡只来自组，散行=裸行</title>
 <style>
 /* ==== 生产日志卡复刻基线：token 复制自 frontend/style.css；渲染管线与生产 js/log.js
      同构（双 renderer + 交接锁），并叠加试验区设计步进（step 1 状态槽、step 2 事件驱动）。
@@ -151,13 +151,11 @@ body {
 }
 .log-msg { flex: 1; min-width: 0; }
 .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
-.log-line--ERROR .log-msg { color: var(--mra-danger); }
-.log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
 /* step 4：正文行去彩点——级别信息此前由「彩点 + 文字颜色」双份承载，删点后不丢信息。
-   step 5：卡头风险改由徽章承载（组卡终态 / 散行自身级别），标题不再按级别上色。 */
-.log-kw { color: var(--mra-primary); font-weight: 500; }
-.log-kw--ok { color: var(--mra-success); font-weight: 500; }
-.log-kw--warn { color: var(--mra-warning); font-weight: 500; }
+   step 5：卡头风险由徽章承载（组卡终态），标题不按级别上色。
+   step 6：级别色同时挂裸行自身（无组散行无 .log-msg 子节点）；关键词着色随 KW_RULES 退役。 */
+.log-line--ERROR, .log-line--ERROR .log-msg { color: var(--mra-danger); }
+.log-line--WARNING, .log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
 </style>
 </head>
 <body>
@@ -177,36 +175,10 @@ body {
 </div>
 
 <script>
-// ==== 渲染管线 = 生产 js/log.js 双 renderer 同构（appendLogs + renderEvents + 交接锁），
-//      叠加试验区设计：卡状态槽（step 1）× 事件驱动（step 2）。 ====
+// ==== 渲染管线 = 契约 §8 第 9 步后的终态：卡片只来自组事件，
+//      无组散行=裸行（级别文字色）；一切文本经 textContent 落 DOM，无 innerHTML 注入面。 ====
 function $(id) { return document.getElementById(id); }
 const levelClassMap = { INFO: 'INFO', WARNING: 'WARNING', ERROR: 'ERROR' };
-const SECTION_ANCHORS = [
-  { re: /^\[鉴宝\] 进入阶段\s*:/, type: 'phase' },
-  { re: /^\[鉴宝\] 模块启动/, type: 'session' },
-  { re: /^\[鉴宝循环\] 完成 \d+ 场/, type: 'loop' },
-  { re: /^\[鉴宝循环\] 已到每日循环上限/, type: 'loop' },
-  { re: /^鉴宝观察会话总结/, type: 'loop' },
-  { re: /^已连接窗口 \(hWnd=/, type: 'session' },
-  { re: /^断点模式\s*:/, type: 'session' },
-];
-function matchSectionAnchor(msg) {
-  for (const a of SECTION_ANCHORS) if (a.re.test(msg)) return a.type;
-  return null;
-}
-const KW_RULES = [
-  { re: /\[鉴宝循环\]/g, cls: 'log-kw--ok' },
-  { re: /\[鉴宝落盘\]/g, cls: 'log-kw--ok' },
-  { re: /\[鉴宝\]/g, cls: 'log-kw' },
-  { re: /进入阶段/g, cls: 'log-kw' },
-  { re: /完成 \d+ 场/g, cls: 'log-kw--ok' },
-  { re: /已到每日循环上限/g, cls: 'log-kw--warn' },
-];
-function escapeHtml(s) { return s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])); }
-function highlightKeywords(s) {
-  KW_RULES.forEach((r) => { s = s.replace(r.re, (m) => '<span class="' + r.cls + '">' + m + '</span>'); });
-  return s;
-}
 
 // 卡状态槽：词与色由状态机给出。组卡=终态；散行卡=自身级别（Info 不发「记录」）。
 const STATUS = {
@@ -225,21 +197,32 @@ function setPill(sec, key) {
   pill.textContent = STATUS[key][1];
 }
 
-let _curSec = null;   // legacy（无组散行）管线的当前卡
-const _openGroups = new Map(); // 组管线：group_id → { sec, worst }
+const _openGroups = new Map(); // 开组表：group_id → { sec, worst }
 
-// pillKey=null → 建卡时不发徽章（散行卡；级别落定后经 setPill 后发补上）。
-function _makeSection(kind, ts, msgHtml, rawText, pillKey) {
+function _makeSection(kind, ts, titleText, rawText, pillKey) {
   const sec = document.createElement('div');
   sec.className = 'log-section log-section--' + kind;
   const head = document.createElement('div');
   head.className = 'log-line log-section-head';
   head.dataset.raw = rawText;
   head.title = rawText;
-  head.innerHTML =
-    (pillKey ? '<span class="log-status ' + STATUS[pillKey][0] + '">' + STATUS[pillKey][1] + '</span>' : '') +
-    '<span class="log-msg">' + msgHtml + '</span>' +
-    '<span class="log-section-meta"><span class="log-time">' + ts + '</span></span>';
+  if (pillKey) {
+    const pill = document.createElement('span');
+    pill.className = 'log-status ' + STATUS[pillKey][0];
+    pill.textContent = STATUS[pillKey][1];
+    head.appendChild(pill);
+  }
+  const msg = document.createElement('span');
+  msg.className = 'log-msg';
+  msg.textContent = titleText;
+  head.appendChild(msg);
+  const meta = document.createElement('span');
+  meta.className = 'log-section-meta';
+  const time = document.createElement('span');
+  time.className = 'log-time';
+  time.textContent = ts;
+  meta.appendChild(time);
+  head.appendChild(meta);
   const body = document.createElement('div');
   body.className = 'log-section-body';
   sec.appendChild(head);
@@ -287,47 +270,33 @@ function fitTitles() {
   });
 }
 
-function _makeRow(lvl, msgHtml, rawText) {
+function _makeRow(lvl, msgText, rawText) {
   const row = document.createElement('div');
   row.className = 'log-line log-line--' + lvl;
   row.dataset.raw = rawText;
-  row.innerHTML = '<span class="log-msg">' + msgHtml + '</span>';
+  const msg = document.createElement('span');
+  msg.className = 'log-msg';
+  msg.textContent = msgText;
+  row.appendChild(msg);
   return row;
 }
 
-// ---- legacy 散行管线（与生产一致：锚点分段 + 首行成卡），散行卡徽章=该行级别（Info 不发） ----
+// ---- 无组散行 = 裸行（终态：不再锚点成卡；级别由整行文字色承载） ----
 function appendLogs(lines) {
   const area = $('log-area');
   const followBottom = isNearBottom(area);
   lines.forEach((raw) => {
-    const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\] \[(\w+)\] ([\s\S]*)$/);
-    if (!m) {
-      const div = document.createElement('div');
-      div.className = 'log-line';
-      div.dataset.raw = raw;
-      div.textContent = raw;
-      area.appendChild(div);
-      return;
-    }
-    const ts = m[1], lvl = levelClassMap[m[2]] ? m[2] : 'INFO', msg = m[3];
-    const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
-    if (!anchorType) {
-      addRow(_curSec.el, _makeRow(lvl, highlightKeywords(escapeHtml(msg)), raw));
-      if (lvl === 'ERROR') setPill(_curSec.el, 'err');
-      else if (lvl === 'WARNING' && !_curSec.el.querySelector('.log-status--err')) setPill(_curSec.el, 'warn');
-      return;
-    }
-    if (_curSec) { _curSec = null; }
-    const sec = _makeSection(anchorType, ts, highlightKeywords(escapeHtml(msg)), raw, null);
-    if (lvl === 'ERROR') setPill(sec, 'err');
-    else if (lvl === 'WARNING') setPill(sec, 'warn');
-    _curSec = { el: sec };
+    const div = document.createElement('div');
+    const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\] \[(\w+)\] /);
+    div.className = 'log-line' + (m && levelClassMap[m[2]] ? ' log-line--' + m[2] : '');
+    div.dataset.raw = raw;
+    div.textContent = raw;
+    area.appendChild(div);
   });
-  fitTitles();
   if (followBottom) area.scrollTop = area.scrollHeight;
 }
 
-// ---- 结构化管线（与生产同构 + 交接锁 + 状态槽） ----
+// ---- 结构化管线：组事件建卡/收尾，组内行进卡体，无组行落裸行 ----
 function renderEvents(events, truncated) {
   const area = $('log-area');
   const followBottom = isNearBottom(area);
@@ -339,11 +308,9 @@ function renderEvents(events, truncated) {
   }
   events.forEach((rec) => {
     if (rec.event_type === 'group_start') {
-      if (_curSec) { _curSec = null; } // 交接：组卡接管「当前卡」
       const kind = (rec.kind === 'phase' || rec.kind === 'session' || rec.kind === 'loop') ? rec.kind : 'session';
       const title = rec.title || '';
-      const sec = _makeSection(kind, rec.ts, highlightKeywords(escapeHtml(title)),
-                               '[' + rec.ts + '] [INFO] ' + title, 'run');
+      const sec = _makeSection(kind, rec.ts, title, '[' + rec.ts + '] [INFO] ' + title, 'run');
       _openGroups.set(rec.group_id, { sec, worst: null });
       return;
     }
@@ -363,7 +330,7 @@ function renderEvents(events, truncated) {
     const suffix = rec.fields ? Object.keys(rec.fields).map((k) => ' · ' + k + ': ' + rec.fields[k]).join('') : '';
     const rawText = '[' + rec.ts + '] [' + rec.level + '] ' + (rec.message || '') + suffix;
     if (!g) { appendLogs([rawText]); return; }
-    addRow(g.sec, _makeRow(lvl, highlightKeywords(escapeHtml((rec.message || '') + suffix)), rawText));
+    addRow(g.sec, _makeRow(lvl, (rec.message || '') + suffix, rawText));
     if (lvl === 'ERROR') g.worst = 'err';
     else if (lvl === 'WARNING' && g.worst !== 'err') g.worst = g.worst || 'warn';
   });
@@ -419,7 +386,7 @@ function pump() {
 }
 pump();
 $('btn-log-clear').addEventListener('click', () => {
-  $('log-area').innerHTML = ''; _curSec = null; _openGroups.clear();
+  $('log-area').innerHTML = ''; _openGroups.clear();
 });
 </script>
 </body>
