@@ -25,5 +25,9 @@ status: active
   （类型维度由标题关键词着色承担）；计数徽章与「!」标记废除（意义收进状态词，
   右侧只剩时间+箭头）；标题单行省略 + title 悬停全文；「进行中」用 info 蓝呼吸脉冲
   （primary 赛车红与「失败」红语义撞车，色彩语义互斥是底线）。
-- 设计稿 v1→v2（`61cbbfb`→本 commit）：外部审查 12 项采纳、3 项反驳（前端标签表破坏解耦 /
+- 设计稿 v1→v2（`61cbbfb`→`81c2eb2`）：外部审查 12 项采纳、3 项反驳（前端标签表破坏解耦 /
   v1 平铺不做嵌套 / 删 source+event_id 冗余），契约冻结见 `DESIGN_log_api.md`。
+- 契约 §8 第 2 步已实施（`3671551`，维护者批准范围：仅 core/logger + 单测）：记录化缓冲、
+  GroupHandle 生命周期、双投影（GUI 文本字节兼容）、fields 净化管道、close 补 incomplete。
+  三点实施裁决入代码：shutdown=Logger.close()（sidecar 唯一退出路径）单次执行；协议字段
+  统一 schema_version；end 首次返回终态、重复幂等回读。插件迁移 / fetch_logs / 前端未动。
