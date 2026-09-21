@@ -65,10 +65,18 @@ class WorldTarget:
     conf: float
 
 
-_KINDS = (("coin", "coins"), ("car", "cars"), ("bonus", "bonuses"))
+# 类别名唯一真源在此（感知层 PerceptionResult 字段 ↔ 域内 kind 字符串），
+# tracking.py 与测试一律从这里取，不再各自写字面量。
+KIND_COIN = "coin"
+KIND_CAR = "car"
+KIND_BONUS = "bonus"
+
+_KINDS = ((KIND_COIN, "coins"), (KIND_CAR, "cars"), (KIND_BONUS, "bonuses"))
 
 
-def _x_lane(cx: int, cy: int, cal: Calib) -> float:
+def x_lane_of(cx: int, cy: int, cal: Calib) -> float:
+    """A1 归一尺子（本模块 docstring 的公式）。公开供 tracking 层复用——
+    同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
     return ((cx - cal.vpx) / (cy - cal.y_h)
             - (EGO_CX - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
 
@@ -87,7 +95,7 @@ def build_world(per: PerceptionResult, cal: Calib = Calib()) -> list[WorldTarget
             denom = d.cy - cal.y_h
             if denom <= 0:
                 continue
-            x = _x_lane(d.cx, d.cy, cal) if denom >= MIN_DENOM else None
+            x = x_lane_of(d.cx, d.cy, cal) if denom >= MIN_DENOM else None
             out.append(WorldTarget(
                 kind=kind, x_lane=x, cy=d.cy, w=d.w, h=d.h, conf=d.conf))
     out.sort(key=lambda t: -t.cy)
