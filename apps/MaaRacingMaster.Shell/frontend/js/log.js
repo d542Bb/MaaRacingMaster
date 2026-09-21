@@ -253,6 +253,7 @@
     btn.hidden = area.scrollHeight - area.clientHeight <= FOLLOW_BOTTOM_PX;
     const atBottom = isNearBottom(area);
     btn.classList.toggle('log-top-btn--down', !atBottom);
+    if (btn.hidden) btn.classList.remove('log-top-btn--show');
     const label = atBottom ? '回到顶部（最旧日志）' : '回到底部（最新日志）';
     btn.title = label;
     btn.setAttribute('aria-label', label);
@@ -261,6 +262,24 @@
   $('btn-log-top').addEventListener('click', () => {
     _scrollLogs(isNearBottom($('log-area')) ? 'top' : 'bottom');
   });
+  // 浮现判定：鼠标进入按钮中心一小圈才亮（mousemove 只读不拦——悬浮层不挡日志点击）；
+  // 离开日志卡即收。键盘经 focus-visible 浮现（CSS），不依赖本判定。
+  const TOP_BTN_NEAR_PX = 64;
+  const _logCard = document.querySelector('.log-card');
+  if (_logCard) {
+    _logCard.addEventListener('mousemove', (e) => {
+      const btn = $('btn-log-top');
+      if (!btn || btn.hidden) return;
+      const r = btn.getBoundingClientRect();
+      const near = Math.hypot(e.clientX - (r.left + r.width / 2),
+                              e.clientY - (r.top + r.height / 2)) <= TOP_BTN_NEAR_PX;
+      btn.classList.toggle('log-top-btn--show', near);
+    });
+    _logCard.addEventListener('mouseleave', () => {
+      const btn = $('btn-log-top');
+      if (btn) btn.classList.remove('log-top-btn--show');
+    });
+  }
 
   // ---------- 日志按钮 ----------
   $('btn-log-clear').addEventListener('click', () => {

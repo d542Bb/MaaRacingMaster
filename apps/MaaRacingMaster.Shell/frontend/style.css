@@ -460,17 +460,25 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .log-line--ERROR, .log-line--ERROR .log-msg { color: var(--mra-danger); }
 .log-line--WARNING, .log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
 
-/* 回顶按钮：随滚动位置换向（贴底→去最旧 / 翻上去→回最新），不溢出不出现 */
+/* 回顶按钮：正下方居中，默认隐没——鼠标进入按钮附近一小圈（JS 距离判定）才浮现，
+   键盘 Tab 到它也必须浮现（focus-visible）；随滚动位置换向（贴底→最旧/翻上→最新），
+   内容不溢出不存在（hidden）。 */
 .log-top-btn {
-  position: absolute; right: 14px; bottom: 14px; z-index: 2;
+  position: absolute; left: 50%; bottom: 10px; z-index: 2;
   width: 30px; height: 30px; border: 1px solid var(--mra-border);
   border-radius: 50%; background: var(--mra-surface);
   box-shadow: var(--mra-shadow-sm); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   color: var(--mra-foreground-secondary);
-  transition: background var(--mra-duration-fast) ease, color var(--mra-duration-fast) ease;
+  transform: translateX(-50%) translateY(4px) scale(0.9);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--mra-duration-fast) ease, transform var(--mra-duration-fast) ease,
+              background var(--mra-duration-fast) ease, color var(--mra-duration-fast) ease;
 }
-.log-top-btn:hover { background: var(--mra-surface-hover); color: var(--mra-foreground); }
+.log-top-btn--show, .log-top-btn:focus-visible {
+  opacity: 1; transform: translateX(-50%) scale(1); pointer-events: auto;
+}
+.log-top-btn--show:hover, .log-top-btn:focus-visible:hover { background: var(--mra-surface-hover); color: var(--mra-foreground); }
 .log-top-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .log-top-btn .log-top-down { display: none; }
 .log-top-btn--down .log-top-up { display: none; }
