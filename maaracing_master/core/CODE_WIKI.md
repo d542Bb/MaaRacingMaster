@@ -82,7 +82,17 @@
 
 **核心类**：`YOLODetector`
 
-**类别映射与阈值**：检测器为跨活动基础设施，**类别集由所服务的活动定义**，不在 core 文档写死。当前无入库模块使用本检测器。阈值可在 `YOLODetector.CLASS_CONF` 覆盖。
+**类别映射与阈值（2026-09-21 参数化，commit `1c695ed`）**：检测器为跨活动基础设施，
+**类别集由所服务的活动定义**、core 不内置任何游戏的类别名与阈值（旧 `CLASS_CONF`
+类属性覆写通道已删）。类别表默认读模型 ONNX 元数据（Ultralytics 导出的 `names`），
+构造参数 `classes` 可显式覆盖（显式给定时校验前置于模型加载，fail-fast）；逐类阈值走
+`class_conf`（按类别名键，未覆盖类回退 `conf`）。返回 `(by_class, detections, all_raw_dets)`，
+`by_class` 对每个已声明类别有键。**当前使用者**：speedrush 感知层
+（[`plugins/speedrush/CODE_WIKI.md`](../plugins/speedrush/CODE_WIKI.md) §7）。
+
+**坑（测试侧）**：onnxruntime-directml 1.24.4 原生缺陷——任一 session 析构后再对另一
+存活 session `run()` 即段错误（CPU provider 无此问题）；多 detector 测试须全部保活至
+进程结束（见 `tests/test_yolo_detector.py` 的 `_KEEP_ALIVE`）。生产单实例常驻不触发。
 
 **模型训练 / 导出**：`tools/training/train.py`（Ultralytics yolo11n 微调 → ONNX），`dataset.yaml` 配类别、`auto_label.py` 自动标注。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
 

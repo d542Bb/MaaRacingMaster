@@ -32,8 +32,10 @@ from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.paths import data_dir
-from maaracing_master.plugins.speedrush import IMAGE_DIR, PIPELINE_DIR
+from maaracing_master.plugins.speedrush import (
+    IMAGE_DIR, PERCEPTION_MODEL_FILE, PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush.hud import HudObserver
+from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
 
 # 一轮完整流程。首三段（进入活动）只在首轮需要——每轮循环结束时会回到活动页，
@@ -123,10 +125,18 @@ class SpeedRushModule(ActivityModule):
     # 驾驶阶段全程占用手柄（油门常踩 + 横向连续转向）
     REQUIRES_GAMEPAD_EXCLUSIVE = True
     REQUIRES: frozenset[str] = frozenset({"capture", "gamepad"})
+    # 插件自带必需资源：物品感知模型权重（sidecar 启动前检查，缺失拦截并给出具体路径）
+    REQUIRED_ASSETS: tuple[str, ...] = (PERCEPTION_MODEL_REL,)
     # 录制开关的初值（False = 不录制，驾驶阶段只等本阶段结束）
     DEFAULT_RECORD_MODE = False
+    # 感知开关的初值（True = 驾驶阶段逐帧跑 YOLO 检测并记账；不操纵车辆，
+    # 与录制可并存。控制环未接线前，它是"感知在场"的验证形态）
+    DEFAULT_PERCEPTION_MODE = False
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
-    DEFAULT_MODULE_CONFIG: dict = {"record_mode": DEFAULT_RECORD_MODE}
+    DEFAULT_MODULE_CONFIG: dict = {
+        "record_mode": DEFAULT_RECORD_MODE,
+        "perception_mode": DEFAULT_PERCEPTION_MODE,
+    }
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
 
@@ -164,6 +174,14 @@ class SpeedRushModule(ActivityModule):
         self._recorder: DriveRecorder | None = None
         # HUD 读数观察者：挂在录制会话上（见 _begin_hud 为何必须如此）
         self._hud: HudObserver | None = None
+        # 感知模式：驾驶阶段逐帧物品检测（阶段 B 控制栈的第一路输入）。
+        # 实例跨阶段复用——模型加载秒级，一局两阶段只付一次。
+        self._perception_mode = self.DEFAULT_PERCEPTION_MODE
+        self._perception: StreetPerception | None = None
+        self._perception_failed = False
+        # 控制回路耗时记账（验收判据 §二.3 的 P50/P95 数据源），按阶段清零
+        self._infer_times: list[float] = []
+        self._last_perception: PerceptionResult | None = None
 
     @property
     def current_stage(self) -> str | None:
@@ -177,8 +195,10 @@ class SpeedRushModule(ActivityModule):
         stats = rec.stats if rec is not None else None
         hud = self._hud
         hud_stats = hud.stats if hud is not None else None
+        lp = self._last_perception
         return {
             "record_mode": bool(self._record_mode),
+            "perception_mode": bool(self._perception_mode),
             "_state": {
                 "recording": bool(rec is not None and rec.running),
                 "frames": int(stats["frames_written"]) if stats else 0,
@@ -188,6 +208,13 @@ class SpeedRushModule(ActivityModule):
                 "hud_recording": bool(hud is not None and hud.running),
                 "hud_rows": int(hud_stats["rows_written"]) if hud_stats else 0,
                 "demos_dir": str(_demos_root()),
+                # 感知实况：是否在跑 + 最近一帧的检出与耗时（GUI 展示用）
+                "perception_on": bool(lp is not None and self._perception is not None),
+                "perception_last": None if lp is None else {
+                    "frame_id": lp.frame_id,
+                    "cars": len(lp.cars), "coins": len(lp.coins), "bonuses": len(lp.bonuses),
+                    "infer_ms": round(lp.infer_ms, 1),
+                },
             },
         }
 
@@ -198,6 +225,8 @@ class SpeedRushModule(ActivityModule):
         """
         if isinstance(config, dict) and "record_mode" in config:
             self._record_mode = bool(config["record_mode"])
+        if isinstance(config, dict) and "perception_mode" in config:
+            self._perception_mode = bool(config["perception_mode"])
         return self.get_module_config()
 
     # ---------- 生命周期 ----------
@@ -381,6 +410,8 @@ class SpeedRushModule(ActivityModule):
                 f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶（正在录制演示数据）", "INFO")
         else:
             logger.log(f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（驾驶控制尚未实现）", "INFO")
+        # 感知耗时记账按阶段清零（P50/P95 在循环出口随实际节拍一起报，见 _log_loop_pace）
+        self._infer_times = []
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
@@ -395,6 +426,12 @@ class SpeedRushModule(ActivityModule):
             frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
             if recorder is not None and frame is not None:
                 recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
+            if self._perception_mode and frame is not None:
+                perc = self._ensure_perception(phase)
+                if perc is not None:
+                    result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
+                    self._last_perception = result
+                    self._infer_times.append(result.infer_ms)
             frames += 1
 
             now = time.monotonic()
@@ -427,13 +464,42 @@ class SpeedRushModule(ActivityModule):
             f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
 
+    def _ensure_perception(self) -> StreetPerception | None:
+        """懒加载感知模型（实例跨阶段复用，一局只付一次模型加载）；失败则本轮禁用。
+
+        失败不阻断驾驶流程（与录制器同一姿态：采集/观测件的故障不碰主循环）。
+        """
+        if self._perception is not None or self._perception_failed:
+            return self._perception
+        try:
+            t0 = time.monotonic()
+            self._perception = StreetPerception(str(PERCEPTION_MODEL_FILE))
+            logger.log(f"[极速狂飙] 感知模型就绪（{time.monotonic() - t0:.1f}s）", "INFO")
+        except Exception as exc:  # noqa: BLE001 —— 感知故障不阻断对局流程
+            self._perception_failed = True
+            logger.log(f"[极速狂飙] 感知初始化失败，本轮禁用感知: {exc!r}", "WARNING")
+            return None
+        return self._perception
+
     def _log_loop_pace(self, phase: int, frames: int, loop_start: float) -> None:
         """报一次本次循环的实际节拍。
 
         这是"采集能不能支撑训练"的第一手判据：训练侧按 30Hz 的时间窗重采样，实际节拍
         掉到几 Hz 时录下的帧根本喂不进那条契约；而日志里原先只有帧数、没有速率，
         这种偏差看不出来。三个出口（离开对局 / 停止 / 超时）都要报。
+
+        感知开启时同点报感知耗时的 P50/P95（验收判据 §二.3 的记账要求：
+        单帧控制回路耗时在帧预算内，且有 P50/P95）。
         """
+        if self._infer_times:
+            srt = sorted(self._infer_times)
+            n = len(srt)
+            p50 = srt[n // 2]
+            p95 = srt[min(n - 1, int(round(0.95 * (n - 1))))]
+            logger.log(
+                f"[极速狂飙] 驾驶阶段 {phase}：感知 n={n} "
+                f"P50={p50:.1f}ms P95={p95:.1f}ms（帧预算 {DRIVE_TICK_S * 1000:.0f}ms）",
+                "INFO")
         elapsed = time.monotonic() - loop_start
         rate = frames / elapsed if elapsed > 0 else 0.0
         logger.log(

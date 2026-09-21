@@ -17,10 +17,15 @@ from pathlib import Path
 
 # 插件根目录（plugins/speedrush/）
 PLUGIN_DIR = Path(__file__).resolve().parent
-# 资源根与分类目录（模板图 image/、图节点 pipeline/、纯数据 policy/）
+# 资源根与分类目录（模板图 image/、图节点 pipeline/、纯数据 policy/、模型权重 onnx/）
 RES_DIR = PLUGIN_DIR / "resources"
 IMAGE_DIR = RES_DIR / "image"
 PIPELINE_DIR = RES_DIR / "pipeline"
 POLICY_DIR = RES_DIR / "policy"
+ONNX_DIR = RES_DIR / "onnx"
 # 驾驶页 HUD 区域真源（照 core/roi_config 口径：归一化、x2/y2 排他）
 HUD_REGIONS_FILE = POLICY_DIR / "hud_regions.json"
+# 物品感知模型权重（AGPL-3.0 衍生不入库，部署时落本地；许可声明见 onnx/README.md。
+# REQUIRED_ASSETS 按相对路径声明，sidecar 启动前检查存在性；代码用绝对路径）
+PERCEPTION_MODEL_REL = "resources/onnx/model.onnx"
+PERCEPTION_MODEL_FILE = ONNX_DIR / "model.onnx"

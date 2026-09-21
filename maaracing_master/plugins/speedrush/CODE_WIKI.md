@@ -324,3 +324,33 @@
 
 **锁**：control-route「标定全绿前不得把像素横向差当距离用」的「全绿」= 本节定档，
 2026-09-21 起解锁。
+
+## 7. 物品感知层（阶段 B 第一块，2026-09-21 接线）（本域）
+
+**住户**：`perception.py::StreetPerception`——驾驶帧 → `PerceptionResult`
+（cars/coins/bonuses 三组 `Detection(cx,cy,w,h,conf)` + `infer_ms`），推理复用
+`core.yolo_detector`（方向 plugin→core）。**类别语义（car/coin/bonus_car 名字与
+阈值 0.35）由本插件声明**，core 不含任何游戏语义（红线 1；参数化契约见
+`core/CODE_WIKI.md` 与 commit `1c695ed`）。
+
+**口径与依据**（全部实测，过程记录见 commit `8f59837` 街车重测 / `3847fae` 到场轮）：
+- 阈值 conf=0.35 = 旧 racing 栈 CLASS_CONF 生效值，街车充分性重测（28329 帧）与
+  到场轮素材同口径成立；近/中距跨天况 conf 中位 0.87–0.89、自车区零误检。
+- **全帧推理、不设 ROI**：框 92–99% 自然落在路面带；"按 y 排距离、按 x 排横向"是
+  世界模型层职责（§6 尺子），感知层不越层。
+- 远距小目标（<50px）置信偏低（0.67–0.77）是已知弱点，前瞻需求已由 τ 实测定档
+  （τ=0.130s，帧预算充裕），暂不重训。
+
+**预算**（真模型 120 帧实测，DML）：P50 9.9ms / P95 12.8ms，帧预算 33ms（30Hz）✓。
+首帧 ~115ms 是 DML kernel 预热，进驾驶页的倒计时窗口吸收。`_log_loop_pace` 每阶段
+出口报感知 P50/P95（验收判据 §二.3 的记账要求，已内置）。
+
+**资产与开关**：模型权重 `resources/onnx/model.onnx`（AGPL-3.0 衍生**不入库**，
+`.gitignore` 排除、许可 README 入库，口径见 THIRD_PARTY_LICENSES「模型权重」节）；
+`REQUIRED_ASSETS` 声明 + sidecar 启动前检查（speedrush 是该机制第一个真实使用者）。
+配置键 `perception_mode`（默认 False，profile 白名单已加）：开启后驾驶阶段逐帧检测、
+结果存 `_last_perception` 并经 `get_module_config._state.perception_last` 透出 GUI；
+初始化失败自动禁用、不阻断对局（与录制器同一姿态）。
+
+**下游**：世界模型层（候选横向目标列表）接线在下一步；在那之前，perception_mode
+的用途是"感知在场"验证与预算记账。
