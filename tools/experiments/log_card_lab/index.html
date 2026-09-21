@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>日志卡试验区 · step 0 —— 原版基线（重划后流）</title>
+<style>
+/* ==== 本文件 = 生产日志卡的逐字复刻：token / 组件样式复制自 frontend/style.css，
+     渲染管线移植自 frontend/js/log.js。step 0 起每步设计改动一个 commit。 ==== */
+:root {
+  --mra-primary: #E5484D;
+  --mra-primary-foreground: #FFFFFF;
+  --mra-background: #F5F6FA;
+  --mra-surface: #FFFFFF;
+  --mra-surface-hover: #F8F9FC;
+  --mra-sidebar: #FAFBFD;
+  --mra-foreground: #1F2328;
+  --mra-foreground-secondary: #4A5160;
+  --mra-foreground-muted: #8B93A7;
+  --mra-foreground-dim: #B0B7C3;
+  --mra-border: #E5E7EB;
+  --mra-border-light: #EEF0F4;
+  --mra-success: #10B981;
+  --mra-success-bg: rgba(16, 185, 129, 0.1);
+  --mra-warning: #F59E0B;
+  --mra-warning-bg: rgba(245, 158, 11, 0.1);
+  --mra-warning-strong: #b45309;
+  --mra-danger: #EF4444;
+  --mra-danger-bg: rgba(239, 68, 68, 0.1);
+  --mra-info: #3B82F6;
+  --mra-radius-sm: 6px;
+  --mra-radius-md: 8px;
+  --mra-duration-fast: 0.15s;
+  --mra-duration-base: 0.2s;
+  --mra-font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  --mra-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--mra-background); color: var(--mra-foreground);
+  font-family: var(--mra-font-sans); font-size: 13px; line-height: 1.5;
+  user-select: none; display: flex; padding: 24px;
+}
+:focus-visible { outline: 2px solid var(--mra-primary); outline-offset: 2px; }
+
+/* card / card-head / icon-btn：复制自 style.css */
+.card {
+  background: var(--mra-surface); border: 1px solid var(--mra-border);
+  border-radius: var(--mra-radius-md); box-shadow: var(--mra-shadow-sm);
+  display: flex; flex-direction: column; overflow: hidden;
+  width: 430px; height: calc(100vh - 48px); margin: 0 auto;
+}
+.card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px; flex-shrink: 0;
+}
+.card-head h3 { font-size: 14px; font-weight: 600; color: var(--mra-foreground); }
+.log-head-actions { display: flex; gap: 4px; }
+.icon-btn {
+  width: 28px; height: 28px; border: none; border-radius: 4px; background: transparent;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  color: var(--mra-foreground-muted); transition: all var(--mra-duration-fast) ease;
+}
+.icon-btn:hover { background: var(--mra-surface-hover); color: var(--mra-foreground-secondary); }
+.icon-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ==== 日志区样式：逐字复制自 style.css 364~446 ==== */
+.log-area {
+  flex: 1; overflow-y: auto; min-height: 0;
+  background: var(--mra-surface); padding: 12px;
+  font-family: var(--mra-font-sans); font-size: 12px; line-height: 1.7;
+}
+.log-section {
+  background: var(--mra-sidebar);
+  border: 1px solid var(--mra-border-light);
+  border-radius: var(--mra-radius-md);
+  padding: 4px 12px 8px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.log-section-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0 4px 6px;
+  border-left: 2px solid transparent;
+  margin-bottom: 2px;
+  cursor: pointer; user-select: none;
+}
+.log-section--phase .log-section-head { border-left-color: var(--mra-primary); }
+.log-section--session .log-section-head { border-left-color: var(--mra-info); }
+.log-section--loop .log-section-head { border-left-color: var(--mra-success); }
+.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); }
+.log-chev {
+  width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
+  color: var(--mra-foreground-muted);
+  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
+}
+.log-section--open .log-chev { transform: rotate(90deg); }
+.log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.log-section-meta .log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
+.log-badge {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
+  background: var(--mra-border-light); color: var(--mra-foreground-muted);
+}
+.log-badge--warn { background: var(--mra-warning-bg); color: var(--mra-warning-strong); }
+.log-badge--err { background: var(--mra-danger-bg); color: var(--mra-danger); }
+.log-section-body {
+  height: 0; overflow: hidden;
+  interpolate-size: allow-keywords;
+  transition: height var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
+}
+.log-section--open .log-section-body { height: auto; }
+@media (prefers-reduced-motion: reduce) { .log-section-body { transition: none; } }
+.log-line {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 2px 0 2px 10px; word-break: break-all;
+  color: var(--mra-foreground-secondary);
+}
+.log-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+.log-line--INFO .log-dot { background: var(--mra-info); }
+.log-line--OK .log-dot { background: var(--mra-success); }
+.log-line--WARNING .log-dot { background: var(--mra-warning); }
+.log-line--ERROR .log-dot { background: var(--mra-danger); }
+.log-line--DEBUG .log-dot { background: var(--mra-foreground-dim); }
+.log-msg { flex: 1; min-width: 0; }
+.log-time { color: var(--mra-foreground-muted); flex-shrink: 0; }
+.log-line--ERROR .log-msg { color: var(--mra-danger); }
+.log-line--WARNING .log-msg { color: var(--mra-warning-strong); }
+.log-kw { color: var(--mra-primary); font-weight: 500; }
+.log-kw--ok { color: var(--mra-success); font-weight: 500; }
+.log-kw--warn { color: var(--mra-warning); font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="card-head">
+    <h3>运行日志</h3>
+    <div class="log-head-actions">
+      <button class="icon-btn" id="btn-log-clear" title="清空">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg>
+      </button>
+      <button class="icon-btn" title="复制">
+        <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="log-area" id="log-area"></div>
+</div>
+
+<script>
+// ==== 渲染管线：js/log.js 逐字移植 ====
+function $(id) { return document.getElementById(id); }
+const levelClassMap = { INFO: 'INFO', OK: 'OK', WARNING: 'WARNING', ERROR: 'ERROR', DEBUG: 'DEBUG' };
+const SECTION_ANCHORS = [
+  { re: /^\[鉴宝\] 进入阶段\s*:/, type: 'phase' },
+  { re: /^\[鉴宝\] 模块启动/, type: 'session' },
+  { re: /^\[鉴宝\] 从断点开始/, type: 'session' },
+  { re: /^\[鉴宝循环\] 完成 \d+ 场/, type: 'loop' },
+  { re: /^\[鉴宝循环\] 已到每日循环上限/, type: 'loop' },
+  { re: /^鉴宝观察会话总结/, type: 'loop' },
+  { re: /^已连接窗口 \(hWnd=/, type: 'session' },
+  { re: /^断点模式\s*:/, type: 'session' },
+  { re: /^紧急停止/, type: 'session' },
+  { re: /^连接窗口超时/, type: 'session' },
+];
+function matchSectionAnchor(msg) {
+  for (const a of SECTION_ANCHORS) if (a.re.test(msg)) return a.type;
+  return null;
+}
+const KW_RULES = [
+  { re: /\[鉴宝循环\]/g, cls: 'log-kw--ok' },
+  { re: /\[鉴宝落盘\]/g, cls: 'log-kw--ok' },
+  { re: /\[鉴宝\]/g, cls: 'log-kw' },
+  { re: /进入阶段/g, cls: 'log-kw' },
+  { re: /完成 \d+ 场/g, cls: 'log-kw--ok' },
+  { re: /已到每日循环上限/g, cls: 'log-kw--warn' },
+];
+function escapeHtml(s) { return s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])); }
+function highlightKeywords(s) {
+  KW_RULES.forEach((r) => { s = s.replace(r.re, (m) => '<span class="' + r.cls + '">' + m + '</span>'); });
+  return s;
+}
+let _curSec = null;
+function updateSectionMeta(sec, count, hasError, hasWarn) {
+  const badge = sec.querySelector('.log-badge--count');
+  if (badge) badge.textContent = String(count || 0);
+  const meta = sec.querySelector('.log-section-meta');
+  if (!meta) return;
+  meta.querySelectorAll('.log-badge--warn, .log-badge--err').forEach((b) => b.remove());
+  if (hasError || hasWarn) {
+    const marker = document.createElement('span');
+    marker.className = hasError ? 'log-badge log-badge--err' : 'log-badge log-badge--warn';
+    marker.textContent = '!';
+    meta.insertBefore(marker, badge);
+  }
+}
+function bindSectionToggle(sec) {
+  const head = sec.querySelector('.log-section-head');
+  if (!head || head.dataset.bound) return;
+  head.dataset.bound = '1';
+  head.addEventListener('click', (ev) => { ev.preventDefault(); sec.classList.toggle('log-section--open'); });
+}
+function finalizeSection(sec) {
+  let count = 0, hasError = false, hasWarn = false;
+  sec.querySelectorAll('.log-section-body .log-line').forEach((d) => {
+    count++;
+    if (d.classList.contains('log-line--ERROR')) hasError = true;
+    else if (d.classList.contains('log-line--WARNING')) hasWarn = true;
+  });
+  updateSectionMeta(sec, count, hasError, hasWarn);
+  bindSectionToggle(sec);
+}
+const FOLLOW_BOTTOM_PX = 24;
+function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX; }
+function appendLogs(lines) {
+  const area = $('log-area');
+  const followBottom = isNearBottom(area);
+  lines.forEach((raw) => {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    div.dataset.raw = raw;
+    const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\] \[(\w+)\] ([\s\S]*)$/);
+    if (!m) { div.textContent = raw; area.appendChild(div); return; }
+    const ts = m[1];
+    const lvl = levelClassMap[m[2]] ? m[2] : 'INFO';
+    const msg = m[3];
+    const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
+    if (!anchorType) {
+      const row = div;
+      row.classList.add('log-line--' + lvl);
+      row.innerHTML = '<span class="log-dot"></span><span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>';
+      _curSec.el.querySelector('.log-section-body').appendChild(row);
+      _curSec.count += 1;
+      if (lvl === 'ERROR') _curSec.hasError = true;
+      else if (lvl === 'WARNING') _curSec.hasWarn = true;
+      updateSectionMeta(_curSec.el, _curSec.count, _curSec.hasError, _curSec.hasWarn);
+      return;
+    }
+    if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
+    const sec = document.createElement('div');
+    sec.className = 'log-section log-section--' + anchorType;
+    const head = document.createElement('div');
+    head.className = 'log-line log-section-head';
+    head.dataset.raw = raw;
+    head.innerHTML =
+      '<span class="log-chev">▸</span>' +
+      '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
+      '<span class="log-section-meta"><span class="log-badge log-badge--count">0</span><span class="log-time">' + ts + '</span></span>';
+    const body = document.createElement('div');
+    body.className = 'log-section-body';
+    sec.appendChild(head);
+    sec.appendChild(body);
+    area.appendChild(sec);
+    bindSectionToggle(sec);
+    _curSec = { el: sec, count: 0, hasError: false, hasWarn: false };
+  });
+  if (followBottom) area.scrollTop = area.scrollHeight;
+}
+
+// ==== 流数据：分级重划后「插件实际送进 GUI 的行」（措辞取自 plugins/treasure 真行）====
+// 级别在产生处声明（模拟 logger.log(msg, level) 调用点），此处即重划后的级别；
+// 与真 GUI 通道同机制（fetch_logs 只放行 INFO+），数据里不存在被过滤的行。
+const SESSION = [
+  ['14:02:11', 'INFO', '已连接窗口 (hWnd=196650, 巅峰极速)'],
+  ['14:02:14', 'INFO', '[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）'],
+  ['14:02:15', 'INFO', '[鉴宝] 进入阶段: 拍品观察 [expert]'],
+  ['14:02:19', 'WARNING', '[鉴宝点击] 任务槽忙，本帧跳过点击 key=stage_expert（非手柄方式：上一帧结果尚未取走）'],
+  ['14:02:24', 'WARNING', '[鉴宝出价] 数字键 3 点击后 800ms 输入框读数未变化，第 1/3 次重发（疑似点击未送达，详见日志上文点击记录）'],
+  ['14:06:40', 'INFO', '[鉴宝循环] 完成 1 场: 状态机侧累计 4 场（上限 8，OCR侧=4，已达上限停止开新场 = False）'],
+  ['14:06:41', 'INFO', '[鉴宝落盘] 已记录第 4 场: 策略=profit 结果=win 成交=51,000 利润=+7,000 收入=58,000'],
+  ['14:06:42', 'INFO', '[鉴宝] 进入阶段: 大师场 [master]'],
+  ['14:06:45', 'WARNING', '[鉴宝点击] key=master_confirm 点击后 2500ms 仍在「大师场」，第 1/3 次重试'],
+  ['14:06:48', 'WARNING', '[鉴宝点击] key=master_confirm 点击后 2500ms 仍在「大师场」，第 2/3 次重试'],
+  ['14:06:55', 'INFO', '[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...'],
+  ['14:06:57', 'INFO', '[鉴宝弹窗①] 今日最高积分上涨: 12,400'],
+  ['14:12:03', 'INFO', '鉴宝观察会话总结：出价 17 次，拍中 6 次，利润 +203,100'],
+  ['14:12:04', 'INFO', '[鉴宝循环] 已到每日循环上限 8 场，本场为最后一场，回鉴宝大厅确认后进入彩蛋任务收尾并自动停止。'],
+  ['14:12:05', 'INFO', '[彩蛋收尾] 已到每日循环上限，开始彩蛋任务领取链（总预算 90s，跑完自动停止）'],
+  ['14:12:41', 'INFO', '[彩蛋收尾] 收尾完成，请求停止模块'],
+];
+// 活体尾巴：下一场持续到达的行
+const TAIL = [
+  ['INFO', '[鉴宝落盘] 已记录第 5 场: 策略=profit 结果=fail 成交=-- 利润=0 收入=132,000'],
+  ['WARNING', '[鉴宝点击] key=stage_next 点击后 2500ms 仍在「结算」，第 1/3 次重试'],
+];
+let idx = 0, tick = 0;
+function pump() {
+  if (idx < SESSION.length) {
+    const r = SESSION[idx];
+    appendLogs(['[' + r[0] + '] [' + r[1] + '] ' + r[2]]);
+    idx++;
+    setTimeout(pump, 420); // 仿 400ms 轮询拍
+  } else {
+    const r = TAIL[tick % TAIL.length];
+    const t = 14 * 3600 + 13 * 60 + tick * 2;
+    const ts = String(Math.floor(t / 3600) % 24).padStart(2, '0') + ':' + String(Math.floor(t / 60) % 60).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
+    appendLogs(['[' + ts + '] [' + r[0] + '] ' + r[1]]);
+    tick++;
+    setTimeout(pump, 3000);
+  }
+}
+pump();
+$('btn-log-clear').addEventListener('click', () => { $('log-area').innerHTML = ''; _curSec = null; });
+</script>
+</body>
+</html>
