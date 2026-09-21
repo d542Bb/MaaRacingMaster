@@ -403,3 +403,30 @@ kind 常量，tracking 复用不复制（禁止第二份真相）。
 **状态**：契约 + 关联 + 单测 29 项落地，**未接 module**（§八顺序：step 4 决策器就位后
 才把 build_world→Tracker 换进主循环）；`DecisionOutput` 生产者与 `TrackerParams` 落
 decision.json 同属 step 4。
+
+## 10. 边界摘要 v1 与金币组聚合（阶段 B 第四块，2026-09-21 §八 step 3 落地）（本域）
+
+**住户**：`boundary.py::detect_boundary(frame_rgb, Calib) → BoundarySummary`（边界感知层，
+古典 CV）与 `coin_group.py::CoinGroupAggregator`（世界模型与决策之间的独立组件）。
+路缘**不进目标候选集、不参与评分**（v2 §三对审查 §一.2 的裁定）：其消费者只有校验层
+（直道假设/横向越界信号）与位移代价项。`CoinGroup` 契约类型在 `tracking.py`，经聚合器
+回填 `WorldObservation.coin_groups`（加字段不破消费方，schema 仍 1）。
+
+**边界的免费强判据**（旧栈没有、我们有）：透视正确时直道路缘经 A1 归一后 x_lane
+沿行**恒定**（路缘是过 VP 的直线）——`straight_residual` 就是逐行 x_lane 的散布度，
+弯道帧系统性漂。HSV 黄色范围与形态学沿用旧栈（`archive/racing/loop.py` 口径），
+Hough 整套不要了。扫描带 y_h+30…+230 每 4 行，实测亚毫秒/帧。
+**未验证域如实**：隧道/夜雨黄线褪色未测，validity 只报"检到与否一致"，阈值起值。
+
+**聚合口径（回放实测一轮定档，证据 commit `a84f03b`）**：同帧双门链接聚类——
+Δx_lane≤0.3（组内邻距实测 0.1–0.3、组间 ≈5.0 车道，双峰分离干净）且 |Δcy|≤60
+（同组行距 P90=37，起值 40 切尾）；跨帧 Jaccard≥0.5 继承组 id（实测干净双峰、
+97% ≥0.8、<0.5 零样本）；组级宽限 8 行退役、id 不复用。**收益下限纪律**：
+估计=观测（宁可低估）；金币排布为**完美等距阵列**（三枚组 max/median 恒 1.0），
+gap 型 partial 实测零触发，现行 13% partial 全部是**存续组**（宽限期 0 成员）——
+step 4 评分器须区别对待这两种"不完整"。多枚组占比低的真因是币行天然在域外
+（cy 327–353），进域逐枚发生——far→near 晋升通道是组聚合的生命线（与 §9 晋升
+1456 次互证）；评分侧"组大小"近处才看全，early 预告只给枚数下限。
+
+**状态**：两模块 + 单测 31 项落地（commit `2e9068e`），**未接 module**（step 5 离线
+链路一起接）；聚合参数 step 4 进 decision.json，边界阈值待校验层定档测量。
