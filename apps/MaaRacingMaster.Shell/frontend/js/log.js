@@ -45,6 +45,34 @@
 
   const _openGroups = new Map(); // group_id → { sec }
 
+  // ---------- 复制/导出事实源（契约 §8 第 10 步）：渲染过的记录原样留存 ----------
+  // 显示文本由记录拼装（含 seq/ts/group_id，fields 逐行 `key: value`），与文件日志
+  // 的 ::group:: 标记和环形序号可对照；封顶与后端环形缓冲同阶，只丢最旧。
+  const _records = [];
+  const RECORDS_MAX = 2000;
+  function _remember(rec) {
+    _records.push(rec);
+    if (_records.length > RECORDS_MAX) _records.splice(0, _records.length - RECORDS_MAX);
+  }
+  function _copyText() {
+    const lines = [];
+    _records.forEach((rec) => {
+      const head = '#' + rec.seq + ' ' + rec.ts + ' ';
+      if (rec.event_type === 'group_start') {
+        lines.push(head + 'GROUP-START g=' + rec.group_id + ' ' + (rec.kind || '') + ' ' + (rec.title || ''));
+      } else if (rec.event_type === 'group_end') {
+        lines.push(head + 'GROUP-END g=' + rec.group_id + ' outcome=' + (rec.outcome || '') +
+                   ' duration_ms=' + (rec.duration_ms == null ? '' : rec.duration_ms));
+      } else {
+        lines.push(head + (rec.level || 'INFO') + (rec.group_id ? ' g=' + rec.group_id : '') + ' ' + (rec.message || ''));
+        if (rec.fields) Object.keys(rec.fields).forEach((k) => {
+          lines.push('#' + rec.seq + '   ' + k + ': ' + rec.fields[k]);
+        });
+      }
+    });
+    return lines.join('\n');
+  }
+
   function _makeSection(kind, ts, titleText, rawText, pillKey) {
     const sec = document.createElement('div');
     sec.className = 'log-section log-section--' + kind;
@@ -169,6 +197,7 @@
       area.appendChild(hint);
     }
     events.forEach((rec) => {
+      _remember(rec);
       if (rec.event_type === 'group_start') {
         const kind = (rec.kind === 'phase' || rec.kind === 'session' || rec.kind === 'loop')
           ? rec.kind : 'session';
@@ -237,6 +266,7 @@
   $('btn-log-clear').addEventListener('click', () => {
     $('log-area').innerHTML = '';
     _openGroups.clear(); // 开组表随 DOM 一起作废
+    _records.length = 0; // 复制事实源同步作废（清空即「不留可导出的历史」）
     _syncTopBtn();
   });
   // 复制反馈：图标弹簧形变（morph-icon 换图标即形变，与预览卡放大按钮同款手法）——
@@ -253,8 +283,12 @@
   }
   if (copyMorphEl) copyMorphEl.icon = COPY_ICON;
   $('btn-log-copy').addEventListener('click', async () => {
-    const text = Array.from($('log-area').querySelectorAll('.log-line'))
-      .map((d) => d.dataset.raw || d.textContent).join('\n');
+    // 结构化通道在场：复制文本由记录拼装（含 seq/ts/group_id，fields 逐行）；
+    // 旧 sidecar（无 events）回退 DOM 原始行。
+    const text = _records.length
+      ? _copyText()
+      : Array.from($('log-area').querySelectorAll('.log-line'))
+          .map((d) => d.dataset.raw || d.textContent).join('\n');
     if (!text) {
       showError('暂无日志可复制');
       return;

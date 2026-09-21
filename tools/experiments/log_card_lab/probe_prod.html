@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>探针：生产前端真文件（stub webview）</title>
+<link rel="stylesheet" href="http://127.0.0.1:8478/style.css">
+<style>
+  body { display: flex; padding: 20px; }
+  .card.log-card { width: 430px; height: 620px; margin: 0 auto; display: flex; flex-direction: column; overflow: hidden; }
+</style>
+<script>
+// ==== 桥接桩：rpc.js 的通信层只认 window.chrome.webview ====
+(function () {
+  const ev = (seq, type, o) => Object.assign({ seq, event_type: type, schema_version: 1, level: 'INFO' }, o);
+  const EVENTS = [
+    ev(1, 'log', { group_id: null, ts: '14:02:11', channel: 'app', message: '已连接窗口 (hWnd=196650, 巅峰极速)' }),
+    ev(2, 'log', { group_id: null, ts: '14:02:12', channel: 'app', message: '断点模式: 从头开始' }),
+    ev(3, 'group_start', { group_id: 'g-3', ts: '14:02:14', channel: 'treasure', kind: 'session', title: '[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）', outcome: 'running' }),
+    ev(4, 'group_end', { group_id: 'g-3', ts: '14:02:14', channel: 'treasure', kind: 'session', outcome: 'success', has_warning: false, has_error: false, duration_ms: 200 }),
+    ev(5, 'group_start', { group_id: 'g-5', ts: '14:02:15', channel: 'treasure', kind: 'phase', title: '[鉴宝] 进入阶段: 拍品观察 [expert]', outcome: 'running' }),
+    ev(6, 'log', { group_id: 'g-5', ts: '14:02:19', level: 'WARNING', channel: 'treasure', message: '[鉴宝点击] 任务槽忙，本帧跳过点击 key=stage_expert' }),
+    ev(7, 'log', { group_id: 'g-5', ts: '14:02:24', level: 'WARNING', channel: 'treasure', message: '[鉴宝出价] 数字键 3 点击后 800ms 输入框读数未变化，第 1/3 次重发' }),
+    ev(8, 'group_end', { group_id: 'g-5', ts: '14:06:40', channel: 'treasure', kind: 'phase', outcome: 'warning', has_warning: true, has_error: false, duration_ms: 265000 }),
+    ev(9, 'group_start', { group_id: 'g-9', ts: '14:06:40', channel: 'treasure', kind: 'loop', title: '[鉴宝循环] 完成 1 场: 状态机侧累计 4 场（上限 8）', outcome: 'running' }),
+    ev(10, 'log', { group_id: 'g-9', ts: '14:06:41', channel: 'treasure', message: '[鉴宝落盘] 已记录第 4 场: 策略=profit 结果=win 成交=51,000 利润=+7,000' }),
+    ev(11, 'group_end', { group_id: 'g-9', ts: '14:06:41', channel: 'treasure', kind: 'loop', outcome: 'success', has_warning: false, has_error: false, duration_ms: 1000 }),
+    ev(12, 'group_start', { group_id: 'g-12', ts: '14:06:42', channel: 'treasure', kind: 'phase', title: '[鉴宝] 进入阶段: 大师场 [master]', outcome: 'running' }),
+    ev(13, 'log', { group_id: 'g-12', ts: '14:06:45', level: 'WARNING', channel: 'treasure', message: '[鉴宝点击] key=master_confirm 点击后 2500ms 仍在「大师场」，第 1/3 次重试' }),
+    ev(14, 'log', { group_id: 'g-12', ts: '14:06:55', channel: 'treasure', message: '[鉴宝分红] 已点击领取，等待读取本场收入', fields: { income: 58000, egg: '红+2 黄+1' } }),
+    ev(15, 'group_end', { group_id: 'g-12', ts: '14:12:03', channel: 'treasure', kind: 'phase', outcome: 'warning', has_warning: true, has_error: false, duration_ms: 321000 }),
+    ev(16, 'log', { group_id: null, ts: '14:06:58', level: 'ERROR', channel: 'app', message: '[鉴宝] 动作失败 node=bid_confirm_red_btn reason=识别未命中' }),
+    ev(17, 'group_start', { group_id: 'g-17', ts: '14:12:03', channel: 'treasure', kind: 'loop', title: '鉴宝观察会话总结', outcome: 'running' }),
+    ev(18, 'log', { group_id: 'g-17', ts: '14:12:03', channel: 'treasure', message: '[鉴宝落盘] 本场结算：收入 58,000 / 利润 +7,000' }),
+    ev(19, 'log', { group_id: 'g-17', ts: '14:12:03', channel: 'treasure', message: '[鉴宝] 今日最高积分：12,400' }),
+    ev(20, 'group_end', { group_id: 'g-17', ts: '14:12:03', channel: 'treasure', kind: 'loop', outcome: 'success', has_warning: false, has_error: false, duration_ms: 300 }),
+  ];
+  let served = false;
+  window.chrome = { webview: {
+    _listeners: [],
+    postMessage(msg) {
+      const respond = (payload) => setTimeout(() => {
+        this._listeners.forEach((f) => f({ data: Object.assign({ type: 'response', callId: msg.callId, ok: true }, payload) }));
+      }, 30);
+      if (msg.type === 'call' && msg.method === 'fetch_logs') {
+        if (!served) {
+          served = true;
+          respond({ data: { lines: [], events: EVENTS, next_seq: 20, truncated: false, gap: null, session_id: 'probe', schema_version: 1 } });
+        } else {
+          respond({ data: { lines: [], events: [], next_seq: 20, truncated: false, gap: null, session_id: 'probe', schema_version: 1 } });
+        }
+      } else {
+        respond({ data: null });
+      }
+    },
+    addEventListener(t, f) { this._listeners.push(f); },
+  } };
+  // clipboard 桩：捕获 writeText 供断言
+  window.__copied = null;
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: (t) => { window.__copied = t; return Promise.resolve(); } },
+  });
+})();
+</script>
+</head>
+<body>
+<div class="card card-flex log-card">
+  <div class="card-head">
+    <h3>运行日志</h3>
+    <div class="log-head-actions">
+      <button class="icon-btn" id="btn-log-clear" title="清空"><i data-icon="trash"></i></button>
+      <button class="icon-btn" id="btn-log-copy" title="复制"><morph-icon reduced-motion="user"></morph-icon></button>
+    </div>
+  </div>
+  <div class="log-area" id="log-area"></div>
+  <button class="log-top-btn" id="btn-log-top" hidden aria-label="回到顶部（最旧日志）">
+    <svg class="log-top-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+    <svg class="log-top-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+  </button>
+</div>
+<div id="error-toast" style="display:none"></div>
+<script src="http://127.0.0.1:8478/icons.js"></script>
+<script src="http://127.0.0.1:8478/vendor.morphicons.js"></script>
+<script src="http://127.0.0.1:8478/js/rpc.js"></script>
+<script src="http://127.0.0.1:8478/js/log.js"></script>
+<script>MRA.pollLogs();</script>
+</body>
+</html>
