@@ -1,67 +1,127 @@
-# 日志结构化 API 设计提案（研究稿，未实施）
+# 日志结构化 API 契约（v2 · 契约冻结稿，待维护者批准实施）
 
 > 起因：step 1 后逐条改日志文案被维护者否决——「到处改输出是打补丁，需要 API 级规范与 GUI 联动，核心逻辑要复用」。
-> 本文 = 一手信源研究 + 设计方向 + 待裁决策点。**未拍板前不动生产代码。**
+> v1（研究稿）经外部审查后重写为本稿：补齐生命周期、状态模型、字段约束、RPC 契约、异常语义、兼容与迁移顺序。
+> 信源结论不变（Console API / GitHub Actions 流内命令 / OTel 数据模型 / MaaFW 现状，见文末附录）：**结构进 API，呈现归渲染器**。
 
-## 一、病根诊断
+## 1. 事件模型（单一真源）
 
-当前日志的**结构**（分组、状态、事件载荷）靠自然语言措辞隐式传递，两端各自硬撑：
+环形缓冲改存结构化记录 `(seq, record)`，文本行与 GUI 事件都是它的**投影**。记录字段：
 
-- 生产端（插件）：把「这是阶段边界」「组内有告警」「载荷字段是累计 4/8」全塞进一行散文——行越写越长，GUI 行与诊断载荷混在一句里；
-- 消费端（前端）：`SECTION_ANCHORS` 正则匹配措辞开卡、`KW_RULES` 正则着色、`finalizeSection` 数行算状态——**措辞一改前端就瞎**，这就是为什么只能"到处改输出"。
-
-## 二、一手信源结论（四家）
-
-| 系统 | 机制 | 出处 |
-|---|---|---|
-| Chrome DevTools Console | `group/groupCollapsed/groupEnd` 把层级做成 API 一等公民，渲染器据此建可折叠树；level 驱动过滤；`count/time` 把重复压缩为行内状态 | developer.chrome.com/docs/devtools/console/api |
-| GitHub Actions | **流内命令协议**：`::group::title` / `::endgroup::` / `::warning file=..,line=..::msg` 与普通文本行共存于同一 stdout 流；渲染端解析命令行，其余原样显示；`::stop-commands::{token}` 防误解析 | docs.github.com workflow-commands |
-| OpenTelemetry Logs Data Model | 记录 = 语义字段（SeverityNumber/Text、Body、Attributes、EventName）；**生产者只声明语义，展示/过滤/聚合全留给下游** | opentelemetry-specification logs/data-model |
-| MaaFramework（本仓库依赖） | 框架日志回调只有 level+message 字符串——**生态没有现成的结构化分组协议可抄**，这是我们要补的核 | docs/MAAFW_GUIDE.md、maa 包 |
-
-三家共同形状：**结构进 API，呈现归渲染器**。差别只在传输：Console 是活对象调用，GH 是流内命令，OTel 是结构化记录。
-
-## 三、设计方向（核心机制，插件无关）
-
-### 3.1 core/logger.py 增加分组原语
-
-```python
-logger.group("进入阶段: 拍品观察")        # 开卡（自动记 ts）
-logger.log("识别到 汝窑天青釉", "INFO")    # 组内普通行（现有签名不变）
-logger.group_end()                        # 收卡；状态自动推导：组内有 ERROR→失败 / WARNING→警告 / 否则→成功
-logger.group("模块启动", status="ok")      # 可选显式状态；kind= 可选分类（阶段/会话/循环），前端不再猜
+```json
+{
+  "schema_version": 1,
+  "seq": 42,
+  "event_type": "group_start | group_end | log",
+  "group_id": "g-<seq>",
+  "session_id": "20260921T140211-<rand>",
+  "ts": "14:02:15",
+  "channel": "treasure",
+  "level": "INFO",
+  "kind": "phase | session | loop | null",
+  "title": "拍品观察",
+  "message": "识别到目标",
+  "fields": {"item_name": "汝窑天青釉"},
+  "outcome": "running | success | warning | failure | incomplete | null"
+}
 ```
 
-- 环形缓冲改存**结构化记录**（ts, level, kind, title, msg, fields, group 开合），单一真源；
-- **落盘渲染器**把记录写成人类可读文本（现有格式兼容：`[ts] [LEVEL] msg`，组开合写 `::group::` 风格标记，grep 友好）；
-- **GUI 通道**（fetch_logs）返回记录数组（JSON），不再返回拼好的字符串行。
+- `title` 仅 group 事件有，只用于卡头；`message` 是事件文本；**中文是显示值，`kind`/`outcome`/`channel` 是稳定机器枚举**——API 分类值一律英文。
+- v1 **平铺不嵌套**：无 `parent_group_id`（出现真实嵌套消费者再加字段，向后兼容）；多开组靠 `group_id` 天然支持。
+- 不设 `source`/`event_id`：`channel` 与 `seq` 已覆盖。
 
-### 3.2 载荷与标题分离（治"啰嗦"的根）
+## 2. 生命周期与并发契约（P0 补齐项）
 
 ```python
-logger.log("完成 1 场", "INFO", fields={"累计": "4/8", "OCR侧": 4, "停止开新场": False})
+g = logger.group("拍品观察", kind="phase", channel="treasure")   # 返回 GroupHandle
+g.log("识别到目标", "INFO", fields={"item_name": "汝窑天青釉"})
+g.end()                                    # 不传 outcome → 按组内事件自动推导
+
+with logger.group("大师场", kind="phase") as g:   # 上下文糖：正常退出=自动推导，
+    ...                                          # 抛异常=outcome=failure 后**原异常照抛**
+
+logger.log("Pipeline 动作失败", "WARNING",
+           group_id=g.id, fields={"node": "bid_confirm_red_btn"})   # 跨线程显式挂组
 ```
 
-GUI 渲染 `title`（短事件句）；`fields` 进卡体行或悬停详情。诊断载荷**天然不上标题**——不再需要"这条写 INFO 还是 DEBUG"的措辞级纠结，级别管严重度，fields 管载荷。
+规则（全部有单测锁定）：
 
-### 3.3 前端 js/log.js 退化为纯渲染器
+| 场景 | 行为 |
+|---|---|
+| 并发/跨线程 | 组状态表挂在既有 `_lock` 下；**不依赖线程隐式栈**，异步路径必须显式 `group_id` |
+| `end()` 重复调用 | 幂等：第二次忽略，内部计数 +1（不回灌日志，防递归） |
+| `group_id` 不存在/已关 | 事件降级为无组 `log`，内部计数 |
+| 未收尾组 | shutdown 时统一补 `group_end(outcome="incomplete")`；GUI 显示「未完成」灰态 |
+| `fields` 序列化失败 | 保 message 丢 fields，内部计数；**日志失败永不抛进业务线程**（沿现有纪律） |
+| 参数非法（level/kind 不在枚举） | 开发期 assert；运行时回落 null/默认值并计数 |
 
-- `SECTION_ANCHORS` / `KW_RULES` / 前端 `finalizeSection` 状态推导**全部删除**——分组、状态、着色由记录字段驱动；
-- step 1 的状态词徽章槽位直接吃 `status` 字段；
-- 插件措辞怎么改都不会弄坏前端（解耦达成）。
+## 3. 状态模型（过程态与终态分离）
 
-### 3.4 复用面
+- `group_start` 记录 `outcome="running"` → GUI 状态槽「进行中」；
+- 终态由 `group_end(outcome=...)` 给出；**不显式传时自动推导**：组内有 ERROR→`failure`，否则有 WARNING→`warning`，否则 `success`；
+- 显式 `outcome="success"` 与组内出现过 WARNING **可以共存**——本项目 WARNING 惯例是「可恢复降级」，不必然污染整组终态；`has_warning/has_error` 作为推导输入记录在 end 事件里，GUI 可用于次级标记；
+- 枚举定版：`running / success / warning / failure / incomplete`（不设 cancelled——用户停止导致的未收尾就是 incomplete）。
 
-speedrush / 未来任何活动域零成本接入（调 group/group_end 即得同款卡）；sidecar 的 `[sidecar]` 行、pipeline_logger 的节点生命周期同样可以按记录走。这就是"核心逻辑复用"的落点。
+## 4. fields 约束
 
-## 四、待裁决策点
+- 值只允许 JSON 标量（str/int/float/bool/None）；非标量 `str()` 强转；NaN/Inf → None；
+- ≤16 键、键 ≤32 字符、字符串值 ≤200 字符，超限截断加 `…`；
+- 键名用**英文机器名**（`completed_count` 而非 `累计`）；**GUI 通用渲染 `key: value`，不做翻译表**——前端维护标签表等于把解耦又焊回去（对审查建议 R1 的反驳）；
+- 敏感数据规则不变：`input.password` 类字段禁入日志（fields 与 message 同规）。
 
-1. **传输形态**：GUI 通道返回结构化记录（干净，fetch_logs 契约变更，前后端同仓同发版——推荐）vs GH 式流内命令字符串（兼容任何行消费者，但前端仍要解析文本协议）。
-2. **落盘格式**：纯文本保持现状（组开合用注释性标记）vs 双写 JSONL（机器可再加工，体积翻倍）。
-3. **fields 的 GUI 呈现**：卡体行 vs 悬停详情 vs 折叠内二级展开——先选一种。
-4. **状态推导权**：logger 自动数组内级别（推荐，零心智）vs 调用点显式传。
-5. **迁移范围**：core + treasure 一次做完（speedrush 不动，等它自己接）vs 只做 core 机制 + 文档，插件迁移另开任务。
+## 5. channel 语义保留
 
-## 五、与已提交 step 1 的关系
+`channel` 是**写入闸门**（生成前过滤，沿现状），结构化后仍是顶层字段：
+- 组事件与组内事件各带自己的 channel；组默认继承 `group()` 调用点的 channel；
+- 被 channel 闸门挡掉的事件**不产生记录**，因此不参与 outcome 推导——闸门语义先于结构语义。
 
-step 1（状态词徽章，`628271c`）与本设计**正交**：徽章槽位保留，只是它的状态来源从"前端数行推导"换成"记录字段直给"。step 0/1 的卡样式结论不废弃。
+## 6. fetch_logs 契约
+
+```json
+{
+  "schema_version": 1,
+  "session_id": "20260921T140211-a3f",
+  "events": [ ... ],
+  "next_seq": 1234,
+  "truncated": false,
+  "gap": null
+}
+```
+
+- 游标语义不变：服务端 `_last_log_seq` 单调 seq（环形回绕不重不漏，沿现状）；`next_seq` 含被过滤记录占用的号段；
+- 溢出补偿：`truncated=true` + `gap={from_seq, to_seq}` **显式事件**，不再伪装成 `[!!] 文本行`；前端渲染为「早期日志已截断」占位卡；
+- 组开始事件已被环形冲出、正文还在：前端按「无头组」渲染（匿名卡收正文，不丢行）；
+- WebView 刷新/重连：`since_seq=0` 全量重放即可恢复未完成组（记录含 running 态）；
+- 多客户端：现状单 GUI 消费者，游标服务端持有；预留可选 `params.since_seq`（传入则不推进服务端游标），不实现多订阅扇出。
+
+## 7. 落盘投影（文本兼容）
+
+`.log` 文件保持人类可读单流全量按序：
+- `log` → `[ts] [LEVEL] msg`（现状不变，grep/测试零影响）；
+- `group_start/end` → `::group:: 标题` / `::endgroup:: success`（GH Actions 风格）；标题/消息中 `%`→`%25`、`:`→`%3A`、换行→`%0A`（沿 GH 转义规则）；
+- 轮转（`.log.1/.2/.3`）允许把组拆开到不同文件——排障按 ts 串联，不做跨文件缝合；
+- 不双写 JSONL（v1 无机器读盘消费者；出现时加伴生文件，不改主格式）。
+
+## 8. 兼容与迁移顺序（采纳审查十条，微调两处）
+
+1. 冻结本契约（=本文件，待批准）；
+2. core/logger 实现记录化 + 单测：并发、重复 end、野 group_id、异常穿透、shutdown 补 incomplete、环形截断含无头组；
+3. **保留** `log()/get_lines()/get_lines_since()` 旧签名（内部走投影）；
+4. `fetch_logs` 过渡期**同时返回 `lines`（投影）与 `events`**，加 `log_protocol_version` 字段；
+5. 前端加结构化 renderer，**legacy renderer 并存不删**；
+6. treasure 迁移（组边界 = 现 SECTION_ANCHORS 的十处措辞锚点）；
+7. sidecar `[sidecar]` 行、pipeline_logger 迁移（后者把 Notification 的结构化 details 放进 fields——对 v1 附录中「MaaFW 只有字符串」表述的更正：**上游回调带类型化 details，是我们 core API 停留在字符串**）；
+8. speedrush 由其维护者按契约自接（契约对插件的复用成本 = 声明组边界与终态，不是零迁移——修正 v1「零成本接入」的说法）；
+9. **全部生产者迁完**才删 `SECTION_ANCHORS`/`KW_RULES`/前端状态推导；
+10. 复制/导出：显示文本由记录经 textContent 拼装（fields 逐行 `key: value`），含 seq/ts/group_id；fields 渲染禁 innerHTML。
+
+## 9. 与 step 1 的关系（修正 v1 的「正交」说法）
+
+概念正交，代码尚未会师：状态词徽章目前只在试验区（`628271c`），生产前端没有状态字段。合流点 = 徽章槽位直接吃 `group_start.outcome` / `group_end.outcome`，前端不再自推。
+
+## 附录 · 信源
+
+- Chrome DevTools Console API（group/groupCollapsed/groupEnd、level 过滤、count/time 行内聚合）— developer.chrome.com/docs/devtools/console/api
+- GitHub Actions workflow commands（::group::/::endgroup::/::warning 参数形态、% 转义、stop-commands 令牌）— docs.github.com
+- OpenTelemetry Logs Data Model（severity/body/attributes 分层；生产者声明语义、下游决定呈现）— opentelemetry-specification
+- MaaFramework：本仓库 docs/MAAFW_GUIDE.md、core/pipeline_logger.py（NotificationType + details 的边沿去噪纪律）
