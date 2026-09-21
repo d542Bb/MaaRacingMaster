@@ -8,7 +8,9 @@
     "target_grace_s|group_grace_s": "[实测 b1e6cb9] 有效恢复窗右缘≈0.4s（秒口径，行数=秒×帧率换算在代码里做）",
     "coin_value_per_unit": "游戏事实镜像（RULES §4.2 金币每枚 30 分）；RULES 变更时人工同步",
     "switch_margin": "30 分档的一半（§三：加性门槛替代乘式门，对零分/负分成立）",
-    "x_lane_abs_max": "路面半宽 ≈2.5 车道 + 余量（CODE_WIKI 回放右路缘 +2.5 标定）"
+    "x_lane_abs_max": "路面半宽 ≈2.5 车道 + 余量（CODE_WIKI 回放右路缘 +2.5 标定）",
+    "conf_hi": "实测 coin conf 中位 0.87–0.89（证据 commit 8f59837）→ 折扣满权界；floor→hi 线性爬坡",
+    "t_empty_s": "§七.3 基线：真人局空街段 P50=0.5s / P75=1.1s（对局内）；1.5s 起值在回放误报 5 段（多为局首装载段，实机由就绪门吸收），抬到 2.0s"
   },
   "mode": {
     "allow_all_moves": true,
@@ -30,6 +32,7 @@
   "scoring": {
     "coin_value_per_unit": 30.0,
     "conf_floor": 0.5,
+    "conf_hi": 0.8,
     "shift_cost_per_lane": 10.0,
     "life_tau_s": 5.0
   },
@@ -41,7 +44,7 @@
     "dead_zone_lane": 0.15
   },
   "validate": {
-    "t_empty_s": 1.5,
+    "t_empty_s": 2.0,
     "t_recover_s": 1.0,
     "t_conserve_max_s": 10.0,
     "x_lane_abs_max": 2.6,

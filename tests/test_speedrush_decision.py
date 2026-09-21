@@ -85,6 +85,7 @@ def _decision_dict():
     (lambda d: d["mode"].update(allow_car_graze=True), "allow_car_graze"),
     (lambda d: d["mode"].update(allow_all_moves="true"), "非布尔"),
     (lambda d: d["scoring"].update(conf_floor=1.5), "越界"),
+    (lambda d: d["scoring"].update(conf_floor=0.9), "折扣区倒置"),
     (lambda d: d["control"].update(frame_rate_hz=0), "越界"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):

@@ -201,13 +201,22 @@ def test_stage_change_clears_all_tracks():
 
 # ---------- 契约杂项 ----------
 
-def test_frame_id_must_increase():
+def test_duplicate_frame_id_resends_cached_observation():
+    """WGC 中心缓存的合法重复（step 5 回放置证）：同帧号第二次输入不得重关联、
+    不得老化、不得把 rel_approach 抹零——原样重发上一份观测。"""
+    trk = Tracker()
+    trk.update(_per(5, cars=[_near_car(cy=480)]), frame_age_ms=10.0, stage=1)
+    o6 = trk.update(_per(6, cars=[_near_car(cy=520)]), frame_age_ms=10.0, stage=1)
+    dup = trk.update(_per(6, cars=[Detection(700, 60, 20, 20, 0.9)]),
+                     frame_age_ms=10.0, stage=1)   # 同帧号、不同像素
+    assert dup is o6                                # 缓存重发，像素差异被忽略
+
+
+def test_frame_id_regression_rejected():
     trk = Tracker()
     trk.update(_per(5), frame_age_ms=10.0, stage=1)
     with pytest.raises(ValueError):
-        trk.update(_per(5), frame_age_ms=10.0, stage=1)   # 重复帧
-    with pytest.raises(ValueError):
-        trk.update(_per(3), frame_age_ms=10.0, stage=1)   # 乱序帧
+        trk.update(_per(3), frame_age_ms=10.0, stage=1)   # 倒退=真乱序
 
 
 def test_targets_sorted_near_to_far():

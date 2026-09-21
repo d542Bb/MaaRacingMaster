@@ -116,8 +116,14 @@ class Scorer:
             return None  # 存续组（本帧无成员观测）：不配得分
         if g.conf_min < self.c.conf_floor:
             return None  # 置信折扣直接归零的下界（低于地板不做低信决策）
-        conf_factor = ((g.conf_min - self.c.conf_floor) / (1.0 - self.c.conf_floor)
-                       if self.c.conf_floor < 1.0 else 1.0)
+        # 置信折扣分段线性：floor→hi 爬坡、hi 以上满权——实测正常检测值
+        # （coin conf 中位 0.87，commit 8f59837）不该被罚；线性 ramp 到 1 的
+        # 旧式把 0.87 打成 0.74，§七.3 基线证实这是"119/123 被门拦"的主因。
+        if g.conf_min >= self.c.conf_hi:
+            conf_factor = 1.0
+        else:
+            conf_factor = ((g.conf_min - self.c.conf_floor)
+                           / (self.c.conf_hi - self.c.conf_floor))
         value = self.c.coin_value_per_unit * g.observed_count * conf_factor
         rate = self._approach_rate_px_s(g, obs)
         t_miss = math.inf if rate <= _EPS else max(0.0, self.cal.v_ego - g.cy_max) / rate

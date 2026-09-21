@@ -52,7 +52,8 @@ class Timing:
 @dataclass(frozen=True)
 class Scoring:
     coin_value_per_unit: float
-    conf_floor: float
+    conf_floor: float      # 置信折扣=0 的下界（低于此不给分）
+    conf_hi: float         # 置信折扣=1 的下界（实测正常检测值区满权，§7.2/重测 conf 中位 0.87）
     shift_cost_per_lane: float
     life_tau_s: float
 
@@ -134,6 +135,7 @@ def _read_decision(path: Path) -> DecisionConfig:
         scoring=Scoring(
             coin_value_per_unit=_num(d, "scoring", "coin_value_per_unit", lo=0),
             conf_floor=_num(d, "scoring", "conf_floor", lo=0, hi=0.999),
+            conf_hi=_num(d, "scoring", "conf_hi", lo=0, hi=0.999),
             shift_cost_per_lane=_num(d, "scoring", "shift_cost_per_lane",
                                      lo=0, lo_open=False),
             life_tau_s=_num(d, "scoring", "life_tau_s", lo=0)),
@@ -162,6 +164,10 @@ def _read_decision(path: Path) -> DecisionConfig:
     if h.dead_zone_lane >= v.x_lane_abs_max:
         raise ValueError(
             f"死区 {h.dead_zone_lane} ≥ 越界门 {v.x_lane_abs_max}（收敛与越界同时成立，判据矛盾）")
+    if not cfg.scoring.conf_floor < cfg.scoring.conf_hi:
+        raise ValueError(
+            f"[scoring] conf_floor={cfg.scoring.conf_floor} 必须 < conf_hi="
+            f"{cfg.scoring.conf_hi}（折扣区倒置）")
     if cfg.mode.allow_car_graze:
         raise ValueError(
             "mode.allow_car_graze=true 在 v1 拒绝启用（coin-only 保守基线；"

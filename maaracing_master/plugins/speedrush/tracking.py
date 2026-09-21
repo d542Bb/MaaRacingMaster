@@ -8,8 +8,13 @@
 **ID 与重识别规则（v1 最小实现）**：关联 = 逐类贪心最近邻（门限与代价值见
 `_gate_cost`）；命中即延续（first_seen 不改），失联在宽限窗 `grace_ticks` 内保持
 输出，**过期即退役、id 永不复用**——退役后同位再现按新检出处理（重识别口径是
-§七.5 前置测量项，v1 不臆造关联）。`frame_id` 必须严格递增，乱序/重复输入直接
-拒绝（fail-loud，回放与实机共用这条纪律）。
+§七.5 前置测量项，v1 不臆造关联）。
+
+**帧号契约（step 5 回放修正）**：`frame_id` 允许**相等重复**、拒绝倒退——采集端
+WGC 是中心缓存，主循环 ~21Hz 读 30Hz 画面合法地两拍读到同一帧（replay 实测
+抓到，若不修实机接线第一天就炸）。重复 fid 的第二次输入**不重关联、不计老化、
+不改 rel_approach**（同一帧喂两次会把速度估成 0），只按既有状态重发观测；
+倒退（真乱序）仍然 fail-loud。
 
 **外推纪律**（v2 §二）：遮挡期纵向（cy）按 `rel_approach` 匀速外推，横向（x_lane）
 **不外推**——保持最后一次域内读数，`FarTarget.last_x_lane` 承载它。外推 cy 只用于
@@ -228,6 +233,7 @@ class Tracker:
         self._next_id = 1
         self._last_fid: int | None = None
         self._stage: int | None = None
+        self._last_obs: WorldObservation | None = None
 
     def reset(self) -> None:
         """清空全部轨迹（阶段切换自动调用；校验层出口重置属 step 4 决定调不调）。
@@ -237,8 +243,12 @@ class Tracker:
     def update(self, per: PerceptionResult, frame_age_ms: float, stage: int,
                geometry_valid: bool = True, stage_transition: bool = False) -> WorldObservation:
         fid = per.frame_id
-        if self._last_fid is not None and fid <= self._last_fid:
-            raise ValueError(f"frame_id 必须严格递增：{fid} <= {self._last_fid}")
+        if self._last_fid is not None and fid < self._last_fid:
+            raise ValueError(f"frame_id 倒退（真乱序输入）：{fid} < {self._last_fid}")
+        if self._last_fid is not None and fid == self._last_fid:
+            # WGC 中心缓存的合法重复：同一帧不重关联、不老化、不改速度——原样重发
+            if self._last_obs is not None:
+                return self._last_obs
         if self._stage is not None and stage != self._stage:
             self.reset()
         self._stage = stage
@@ -301,10 +311,11 @@ class Tracker:
             geometry_valid=geometry_valid,
             target_presence=bool(targets or fars),
             stage_transition=stage_transition)
-        return WorldObservation(
+        self._last_obs = WorldObservation(
             schema_version=SCHEMA_VERSION, frame_id=fid, ts_ns=per.ts_ns,
             frame_age_ms=frame_age_ms, stage=stage, health=health,
             boundary=None, targets=tuple(targets), far_targets=tuple(fars))
+        return self._last_obs
 
     # ---------- 内部 ----------
 
