@@ -3210,11 +3210,12 @@ class TreasureModule(ActivityModule):
             # 经 capability 公开入口取新设备适配器（懒创建），与首次绑定同一条路径
             gpad = self.ctx.gamepad.persistent_adapter()
             clicker.swap_gamepad(gpad)  # 换绑到常驻导航线程（任务槽空闲才允许）
-            logger.log("[鉴宝点击] 光标长时间丢失：已重建虚拟手柄并换绑导航器", "INFO")
+            _tlog(self, "[鉴宝点击] 光标长时间丢失：已重建虚拟手柄并换绑导航器")
             return True
         except Exception as e:  # noqa: BLE001 —— 重建失败不阻塞主循环，下帧重试
-            # WARNING 是测试锁（test_capabilities_gamepad）：自愈失败必须可见，不得静默
-            logger.log(f"[鉴宝点击] 虚拟手柄重建失败（下帧重试）: {e}", "WARNING")
+            # WARNING 是测试锁（test_capabilities_gamepad）：自愈失败必须可见，不得静默。
+            # 本方法由主循环 consume 后调用（有当前组则归组），非 worker 线程。
+            _tlog(self, f"[鉴宝点击] 虚拟手柄重建失败（下帧重试）: {e}", "WARNING")
             return False
 
     def _abort_inflight_nav(self, reason: str) -> None:

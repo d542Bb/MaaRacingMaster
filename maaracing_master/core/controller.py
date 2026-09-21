@@ -33,6 +33,40 @@ from maaracing_master.core.base import ActivityContext, ModuleDependencyError
 from maaracing_master.core.registry import create_module
 
 
+class _NullGroup:
+    """测试桩 logger 无 group() 时的回退句柄：id 恒 None，log 落无组散行，end 空转。"""
+
+    id = None
+
+    def log(self, msg: str, level: str = "INFO") -> None:
+        logger.log(msg, level)
+
+    def end(self, outcome: str | None = None) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+def _run_group(title: str, kind: str = "session"):
+    """controller 生命周期组（运行启动/运行收尾）；桩无 group() 时回退 legacy 行。"""
+    if getattr(logger, "group", None) is None:
+        logger.log(title)
+        return _NullGroup()
+    return logger.group(title, kind=kind, channel="controller")
+
+
+def _clog(grp, msg: str, level: str = "INFO") -> None:
+    """有组句柄走组，无组（None/未迁移路径）保持散行——调用点不必各自分支。"""
+    if grp is not None:
+        grp.log(msg, level)
+    else:
+        logger.log(msg, level)
+
+
 class MaaRacingMasterController:
     """主控制器（AppController）：生命周期编排 + 共享能力提供，活动流程已迁入模块"""
 
@@ -121,55 +155,67 @@ class MaaRacingMasterController:
 
     def start_module(self, module_id: str, start_from: str | None = None,
                      module_config: dict | None = None):
-        """GUI 唯一入口：创建并运行指定活动模块（阻塞，运行于 worker 线程）"""
-        with self._lifecycle_lock:
-            if self.active_module is not None:
-                raise RuntimeError("已有模块在运行")
-            self.stop_event.clear()          # ★ 唯一 clear 位置
-            self._manual_stop = False
-            module = create_module(module_id, self.ctx)
-            if start_from and start_from not in module.STAGE_ORDER:
-                raise ValueError(f"断点 {start_from} 不属于模块 {module_id} 的阶段")
-            # fail-fast：启动前验证**本次配置下**需要的能力是否可用（固有能力 lifecycle 隐式满足）。
-            # 问 module.required_capabilities(config) 而非 module.REQUIRES：同一模块在不同
-            # 配置下需求可能不同（如 speedrush 的录制模式不操纵车辆、不需要手柄能力）。
-            missing = module.required_capabilities(module_config) - self.ctx.capabilities
-            if missing:
-                raise ModuleDependencyError(
-                    f"{module_id}: missing capabilities: {sorted(missing)}"
-                )
-            # 模块配置注入（GUI 设置的循环上限、策略 profile 等）：
-            # 模块未定义 set_module_config 时静默跳过（如 racing 暂不支持）。
-            if module_config:
-                setter = getattr(module, "set_module_config", None)
-                if callable(setter):
-                    try:
-                        setter(dict(module_config))
-                        logger.log(f"[controller] 模块{module_id!r}配置已注入: {sorted(module_config.keys())}")
-                    except Exception as exc:  # noqa: BLE001
-                        logger.log(f"[controller] 模块{module_id!r}配置注入失败: {exc}", "WARNING")
-            self.active_module = module
-        self._running = True
-        self._last_run_natural = False
-        # 「运行选项」运行时静音游戏：每次启动都静音（结束由 finally 统一恢复 100%）。
-        # 必须放在这里而非 connect()：connect 幂等（第二次启动直接短路返回），
-        # 放 connect 会导致"停止后再开始不再静音"（2026-09-01 实测 bug）。
-        # hwnd 取 self._hwnd（二次运行复用上次句柄）或 find_game_hwnd 兜底（首次运行）。
-        if self._mute_game_enabled:
-            self._apply_game_volume(0.0, "运行开始：静音游戏", verify=True)
-        # WGC 中心采集器前置条件：确保 _hwnd 已由 connect() 建立（connect 幂等，
-        # 二次运行直接短路返回；首次运行在此完成窗口连接生命周期）。
-        # 注意：不能把 connect 塞进 _start_wgc_capture——那是 WGC 生命周期函数，
-        # 职责只负责"假定 HWND 已存在后启动采集"；窗口连接归 connect() 所有。
-        # conn_ok=False 时跳过 WGC 与模块启动，但仍走 finally 统一清理
-        # （active_module/ctx/_running/音量恢复），避免裸 return 残留状态。
-        conn_ok = True
-        if not self._hwnd:
-            if not self.connect():
-                logger.log("窗口连接失败，模块终止", "ERROR")
-                conn_ok = False
-        if conn_ok:
-            self._start_wgc_capture()  # WGC 中心采集器（启动失败回退 MAA 截图，不阻断）
+        """GUI 唯一入口：创建并运行指定活动模块（阻塞，运行于 worker 线程）
+
+        生命周期归组（契约 §8 终态）：启动行（配置注入/静音/窗口连接/WGC）入
+        「运行启动」组，收尾行（资源释放/音量恢复/结束后行为）入「运行收尾」组——
+        这批行在 GUI 不再散作裸行。启动段异常路径把「运行启动」组以 failure 收尾；
+        「模块执行异常」保持裸 ERROR 行（发生即红，不并入收尾组——收尾组卡建在其后）。
+        """
+        g = _run_group("运行启动")
+        try:
+            with self._lifecycle_lock:
+                if self.active_module is not None:
+                    raise RuntimeError("已有模块在运行")
+                self.stop_event.clear()          # ★ 唯一 clear 位置
+                self._manual_stop = False
+                module = create_module(module_id, self.ctx)
+                if start_from and start_from not in module.STAGE_ORDER:
+                    raise ValueError(f"断点 {start_from} 不属于模块 {module_id} 的阶段")
+                # fail-fast：启动前验证**本次配置下**需要的能力是否可用（固有能力 lifecycle 隐式满足）。
+                # 问 module.required_capabilities(config) 而非 module.REQUIRES：同一模块在不同
+                # 配置下需求可能不同（如 speedrush 的录制模式不操纵车辆、不需要手柄能力）。
+                missing = module.required_capabilities(module_config) - self.ctx.capabilities
+                if missing:
+                    raise ModuleDependencyError(
+                        f"{module_id}: missing capabilities: {sorted(missing)}"
+                    )
+                # 模块配置注入（GUI 设置的循环上限、策略 profile 等）：
+                # 模块未定义 set_module_config 时静默跳过（如 racing 暂不支持）。
+                if module_config:
+                    setter = getattr(module, "set_module_config", None)
+                    if callable(setter):
+                        try:
+                            setter(dict(module_config))
+                            g.log(f"[controller] 模块{module_id!r}配置已注入: {sorted(module_config.keys())}")
+                        except Exception as exc:  # noqa: BLE001
+                            g.log(f"[controller] 模块{module_id!r}配置注入失败: {exc}", "WARNING")
+                self.active_module = module
+            self._running = True
+            self._last_run_natural = False
+            # 「运行选项」运行时静音游戏：每次启动都静音（结束由 finally 统一恢复 100%）。
+            # 必须放在这里而非 connect()：connect 幂等（第二次启动直接短路返回），
+            # 放 connect 会导致"停止后再开始不再静音"（2026-09-01 实测 bug）。
+            # hwnd 取 self._hwnd（二次运行复用上次句柄）或 find_game_hwnd 兜底（首次运行）。
+            if self._mute_game_enabled:
+                self._apply_game_volume(0.0, "运行开始：静音游戏", verify=True, grp=g)
+            # WGC 中心采集器前置条件：确保 _hwnd 已由 connect() 建立（connect 幂等，
+            # 二次运行直接短路返回；首次运行在此完成窗口连接生命周期）。
+            # 注意：不能把 connect 塞进 _start_wgc_capture——那是 WGC 生命周期函数，
+            # 职责只负责"假定 HWND 已存在后启动采集"；窗口连接归 connect() 所有。
+            # conn_ok=False 时跳过 WGC 与模块启动，但仍走 finally 统一清理
+            # （active_module/ctx/_running/音量恢复），避免裸 return 残留状态。
+            conn_ok = True
+            if not self._hwnd:
+                if not self.connect(grp=g):
+                    g.log("窗口连接失败，模块终止", "ERROR")
+                    conn_ok = False
+            if conn_ok:
+                self._start_wgc_capture(grp=g)  # WGC 中心采集器（启动失败回退 MAA 截图，不阻断）
+        except BaseException:
+            g.end("failure")
+            raise
+        g.end()
         try:
             if conn_ok:
                 module.start(start_from)
@@ -179,44 +225,50 @@ class MaaRacingMasterController:
         except Exception as e:
             logger.log(f"模块执行异常: {e}", "ERROR")
         finally:
+            cg = _run_group("运行收尾")
             try:
-                module.cleanup()
-            except Exception:
-                pass
-            # 断开栈帧引用：module 局部变量钉住 模块→点击器→手柄对象 整条链，
-            # 不置 None 的话 _destroy_gpad 里的 gc.collect() 回收不到它们。
-            module = None
-            # 释放模块期间 Context 登记的所有资源（renderer 等）。
-            # close() 调用权只在编排层；close 后置空，下次 start_module 新建全新 Context/ExitStack，
-            # 保证重复启停不累积 renderer/gamepad ownership。
-            if self._ctx is not None:
                 try:
-                    self._ctx.close()
-                except Exception as e:
-                    logger.log(f"Context 关闭异常: {e}", "ERROR")
-                self._ctx = None
-            with self._lifecycle_lock:
-                self.active_module = None
-            self._running = False
-            # 运行结束销毁虚拟手柄（懒创建：下次 start_module 首次用到手柄方式时重建）。
-            # 用户要求：GUI 点停止后系统内虚拟手柄应立即消失，不残留干扰手动游戏；
-            # 正常完成/异常退出同样销毁，保持"运行期才存在手柄"的生命周期约定。
-            # 此时模块主循环已退出（含停止信号中止的手柄导航），无并发使用，销毁安全。
-            self._destroy_gpad()
-            self._stop_wgc_capture()  # 运行结束停止 WGC 中心采集（资源不常驻，下次运行再启动）
-            # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
-            if self._mute_game_enabled:
-                self._apply_game_volume(1.0, "运行结束：恢复游戏音量为 100%")
-            # 运行结束后行为（GUI「运行选项」卡片）：仅"正常跑完"生效 ——
-            # 手动停止（_manual_stop）或报错退出（natural=False）不触发；
-            # 模块自己跑完（含每日循环到限自动停止）算正常完成，开关照常生效。
-            # 注意：不能以 stop_event 判定手动停止——模块到限自动停止也会置位它，
-            # 改用显式 _manual_stop 标志（stop() 置位，start_module 复位）。
-            if self._last_run_natural and not self._manual_stop:
-                logger.log("运行结束：任务正常完成，按「运行结束后」选项执行", "INFO")
-                self._maybe_auto_shutdown()
-            elif self._manual_stop:
-                logger.log("运行结束：手动停止，「运行结束后」开关不生效", "INFO")
+                    module.cleanup()
+                except Exception:
+                    pass
+                # 断开栈帧引用：module 局部变量钉住 模块→点击器→手柄对象 整条链，
+                # 不置 None 的话 _destroy_gpad 里的 gc.collect() 回收不到它们。
+                module = None
+                # 释放模块期间 Context 登记的所有资源（renderer 等）。
+                # close() 调用权只在编排层；close 后置空，下次 start_module 新建全新 Context/ExitStack，
+                # 保证重复启停不累积 renderer/gamepad ownership。
+                if self._ctx is not None:
+                    try:
+                        self._ctx.close()
+                    except Exception as e:
+                        cg.log(f"Context 关闭异常: {e}", "ERROR")
+                    self._ctx = None
+                with self._lifecycle_lock:
+                    self.active_module = None
+                self._running = False
+                # 运行结束销毁虚拟手柄（懒创建：下次 start_module 首次用到手柄方式时重建）。
+                # 用户要求：GUI 点停止后系统内虚拟手柄应立即消失，不残留干扰手动游戏；
+                # 正常完成/异常退出同样销毁，保持"运行期才存在手柄"的生命周期约定。
+                # 此时模块主循环已退出（含停止信号中止的手柄导航），无并发使用，销毁安全。
+                self._destroy_gpad()
+                self._stop_wgc_capture()  # 运行结束停止 WGC 中心采集（资源不常驻，下次运行再启动）
+                # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
+                if self._mute_game_enabled:
+                    self._apply_game_volume(1.0, "运行结束：恢复游戏音量为 100%", grp=cg)
+                # 运行结束后行为（GUI「运行结束后」卡片）：仅"正常跑完"生效 ——
+                # 手动停止（_manual_stop）或报错退出（natural=False）不触发；
+                # 模块自己跑完（含每日循环到限自动停止）算正常完成，开关照常生效。
+                # 注意：不能以 stop_event 判定手动停止——模块到限自动停止也会置位它，
+                # 改用显式 _manual_stop 标志（stop() 置位，start_module 复位）。
+                if self._last_run_natural and not self._manual_stop:
+                    cg.log("运行结束：任务正常完成，按「运行结束后」选项执行", "INFO")
+                    self._maybe_auto_shutdown(grp=cg)
+                elif self._manual_stop:
+                    cg.log("运行结束：手动停止，「运行结束后」开关不生效", "INFO")
+            except BaseException:
+                cg.end("failure")
+                raise
+            cg.end()
 
     def stop(self):
         """停止当前活动模块（幂等）。手动停止：自动关闭游戏/退出 MaaRM 开关不生效"""
@@ -263,46 +315,50 @@ class MaaRacingMasterController:
         """设置「运行时静音游戏」开关。运行期间由 start_module/finally 执行静音与恢复。"""
         self._mute_game_enabled = bool(enabled)
 
-    def _apply_game_volume(self, level: float, label: str, verify: bool = False) -> None:
+    def _apply_game_volume(self, level: float, label: str, verify: bool = False,
+                           grp=None) -> None:
         """把游戏进程音量设为 level（0~1），作用于其全部音频会话。
 
         verify=True 时设置后读回确认。失败仅 WARNING，不中断运行。
+        grp 非空时过程日志归入该组（运行启动/收尾生命周期组）。
         """
         try:
             from maaracing_master.core.audio_volume import get_game_volume, set_game_volume
-            hwnd = self._hwnd or find_game_hwnd()
+            hwnd = self._hwnd or find_game_hwnd(
+                group_id=grp.id if grp is not None else None)
             if not hwnd:
-                logger.log(f"{label}：未能定位游戏窗口，跳过音量设置", "WARNING")
+                _clog(grp, f"{label}：未能定位游戏窗口，跳过音量设置", "WARNING")
                 return
             n = set_game_volume(hwnd, level)
             if n == 0:
-                logger.log(f"{label}：未找到游戏音频会话（游戏可能尚未发声），音量设置未生效", "WARNING")
+                _clog(grp, f"{label}：未找到游戏音频会话（游戏可能尚未发声），音量设置未生效", "WARNING")
                 return
             if verify:
                 vols = get_game_volume(hwnd)
                 if vols and not all(abs(v - level) <= 0.01 for v in vols):
-                    logger.log(
-                        f"{label}：设置后读回音量={[round(v, 2) for v in vols]} ≠ 目标{level:.2f}，"
-                        "部分会话未生效", "WARNING")
+                    _clog(grp,
+                          f"{label}：设置后读回音量={[round(v, 2) for v in vols]} ≠ 目标{level:.2f}，"
+                          "部分会话未生效", "WARNING")
                     return
-            logger.log(f"{label}（游戏音量 {level:.0%}，会话×{n}）", "INFO")
+            _clog(grp, f"{label}（游戏音量 {level:.0%}，会话×{n}）", "INFO")
         except Exception as e:  # noqa: BLE001
-            logger.log(f"{label}：音量设置异常: {e}", "WARNING")
+            _clog(grp, f"{label}：音量设置异常: {e}", "WARNING")
 
-    def _maybe_auto_shutdown(self) -> None:
+    def _maybe_auto_shutdown(self, grp=None) -> None:
         """流程正常结束后执行：按开关关闭游戏进程（退出 MaaRM 由 sidecar 依 last_run_natural 发起，以保证时序）"""
         if not self._auto_close_game:
             return
-        hwnd = self._hwnd or find_game_hwnd()
+        hwnd = self._hwnd or find_game_hwnd(
+            group_id=grp.id if grp is not None else None)
         if not hwnd:
-            logger.log("运行结束自动关闭：未能定位游戏窗口，跳过关闭游戏进程", "WARNING")
+            _clog(grp, "运行结束自动关闭：未能定位游戏窗口，跳过关闭游戏进程", "WARNING")
             return
         try:
-            logger.log(f"运行结束自动关闭：正在关闭游戏进程 (hwnd={hwnd})…", "INFO")
+            _clog(grp, f"运行结束自动关闭：正在关闭游戏进程 (hwnd={hwnd})…", "INFO")
             terminate_process_by_hwnd(hwnd)
-            logger.log("运行结束自动关闭：游戏进程已关闭", "INFO")
+            _clog(grp, "运行结束自动关闭：游戏进程已关闭", "INFO")
         except Exception as e:  # noqa: BLE001
-            logger.log(f"运行结束自动关闭：关闭游戏进程失败: {e}", "WARNING")
+            _clog(grp, f"运行结束自动关闭：关闭游戏进程失败: {e}", "WARNING")
 
     # ---------- 紧急停止快捷键（GUI 调试选项卡开关控制）----------
 
@@ -352,19 +408,19 @@ class MaaRacingMasterController:
         self._debug_mode = enabled
         self.debug.enabled = enabled
 
-    def _start_wgc_capture(self) -> None:
+    def _start_wgc_capture(self, grp=None) -> None:
         """启动 WGC 中心采集器（幂等）：全模块截图统一读缓存，不再各自 post_screencap。
 
         启动失败即截图链路故障（宪法 6：帧只从中心缓存来，无 MAA 回退通道）——
         WARNING 后取帧方一律拿到 None，模块按"无帧"处理而非静默截旧帧。
+        grp 非空时过程日志归入该组（运行启动生命周期组）。
         """
         if not self._hwnd:
             # 与 docstring 契约一致：不静默。正常路径下 start_module 已建立
             # _hwnd 前置条件（P2），此分支仅作异常防御。
-            logger.log(
-                "WGC 中心采集器启动跳过：游戏窗口尚未连接，截图链路不可用",
-                "WARNING",
-            )
+            _clog(grp,
+                  "WGC 中心采集器启动跳过：游戏窗口尚未连接，截图链路不可用",
+                  "WARNING")
             return
         if self._wgc_capture is not None and self._wgc_capture.is_running:
             return
@@ -390,10 +446,10 @@ class MaaRacingMasterController:
                 cap.stop()
                 raise RuntimeError("WGC 启动后 2 秒未收到首帧")
             self._wgc_capture = cap
-            logger.log("WGC 中心采集器已就绪（全模块截图统一走缓存）", "INFO")
+            _clog(grp, "WGC 中心采集器已就绪（全模块截图统一走缓存）", "INFO")
         except Exception as e:  # noqa: BLE001 —— 启动失败即无帧可用，不回退 MAA 截图
             self._wgc_capture = None
-            logger.log(f"WGC 中心采集启动失败，截图链路不可用: {e}", "WARNING")
+            _clog(grp, f"WGC 中心采集启动失败，截图链路不可用: {e}", "WARNING")
 
     def _stop_wgc_capture(self) -> None:
         """停止 WGC 中心采集器（幂等）。"""
@@ -405,14 +461,17 @@ class MaaRacingMasterController:
             except Exception:
                 pass
 
-    def connect(self) -> bool:
-        """幂等窗口连接：仅创建 Win32Controller 并保存句柄，MAA 资源归活动模块创建"""
+    def connect(self, grp=None) -> bool:
+        """幂等窗口连接：仅创建 Win32Controller 并保存句柄，MAA 资源归活动模块创建。
+
+        grp 非空时连接过程日志归入该组（运行启动生命周期组）。
+        """
         if self.controller is not None:
             return True
 
-        hwnd = find_game_hwnd()
+        hwnd = find_game_hwnd(group_id=grp.id if grp is not None else None)
         if hwnd == 0:
-            logger.log("未找到游戏窗口", "ERROR")
+            _clog(grp, "未找到游戏窗口", "ERROR")
             return False
 
         self.controller = Win32Controller(hWnd=hwnd, screencap_method=MaaWin32ScreencapMethodEnum.FramePool)
@@ -433,16 +492,16 @@ class MaaRacingMasterController:
 
         threading.Thread(target=_wait_connection, daemon=True).start()
         if not conn_done.wait(10.0):
-            logger.log("连接窗口超时(10s)，请检查游戏是否正常运行/管理员权限", "ERROR")
+            _clog(grp, "连接窗口超时(10s)，请检查游戏是否正常运行/管理员权限", "ERROR")
             self.controller = None
             return False
         if not conn_ok[0]:
-            logger.log("连接失败，请检查游戏是否运行/管理员权限", "ERROR")
+            _clog(grp, "连接失败，请检查游戏是否运行/管理员权限", "ERROR")
             self.controller = None
             return False
 
         self._hwnd = hwnd
-        logger.log(f"已连接窗口 (hWnd={hwnd})")
+        _clog(grp, f"已连接窗口 (hWnd={hwnd})")
 
         # 按下开始后的窗口准备：仅「前台(鼠标)」模式切前台（用户明确操作）。
         # 「后台(手柄)」模式保留游戏在后台——后台点击的意义就是游戏留在后台，

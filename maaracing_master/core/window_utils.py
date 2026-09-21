@@ -474,7 +474,15 @@ def has_physical_controller() -> bool:
         return False
 
 
-def find_game_hwnd() -> int:
+def find_game_hwnd(group_id: str | None = None) -> int:
+    """查找游戏窗口句柄。group_id 非空时过程日志归入该组（契约方案 A：显式捕获，
+    调用方决定归属；默认无组散行，行为与旧一致）。"""
+    def _lg(msg: str, level: str = "INFO") -> None:
+        if group_id is not None:
+            logger.log(msg, level, group_id=group_id)
+        else:
+            logger.log(msg, level)
+
     # MAA user_path 指向 framework/ 子目录：maafw 产物（maafw.log/cache）与应用数据隔离，
     # 开发/发行一致且不受安装目录权限影响；路径解析失败时退回包根
     try:
@@ -492,18 +500,18 @@ def find_game_hwnd() -> int:
         for kw in keywords:
             if kw in win.window_name:
                 hwnd = int(win.hwnd)
-                logger.log(f"找到窗口(标题): hWnd={hwnd}, title={win.window_name}")
+                _lg(f"找到窗口(标题): hWnd={hwnd}, title={win.window_name}")
                 return hwnd
 
     GAME_PID = 0
     if GAME_PID:
         hwnd = hwnd_from_pid(GAME_PID)
         if hwnd:
-            logger.log(f"找到窗口(PID): hWnd={hwnd}")
+            _lg(f"找到窗口(PID): hWnd={hwnd}")
             return hwnd
 
-    logger.log("未找到游戏窗口，可用窗口前10个:", "ERROR")
+    _lg("未找到游戏窗口，可用窗口前10个:", "ERROR")
     for win in windows[:10]:
-        logger.log(f"  hWnd={win.hwnd}, class={win.class_name}, title={win.window_name}", "ERROR")
+        _lg(f"  hWnd={win.hwnd}, class={win.class_name}, title={win.window_name}", "ERROR")
 
     return 0
