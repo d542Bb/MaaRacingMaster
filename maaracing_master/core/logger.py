@@ -19,7 +19,7 @@ sidecar 启动时的 profile 回读启用。每次开启新建一个**会话目�
 - 按大小轮转 + 启动时按会话组保留清理，占用有上限。
 - 写盘持句柄 + Lock 跨线程安全。
 
-结构化记录（契约冻结稿：tools/experiments/log_card_lab/DESIGN_log_api.md v2）：
+结构化记录（契约 v2 冻结于 commit 81c2eb2，实验目录退役后本 docstring 即契约正文的 home）：
 - 环形缓冲存 `(seq, record)`；文本行是记录的**投影**——文件投影含全事件
   （group 开合渲染为 `::group:: 标题` / `::endgroup:: outcome`，GH Actions 风格，
   `% : 换行` 按 %25/%3A/%0A 转义）；GUI 文本投影只渲染 log 事件（过渡期前端仍靠

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """结构化日志记录与组生命周期单测。
 
-契约真源：tools/experiments/log_card_lab/DESIGN_log_api.md（v2 冻结稿）。
+契约 v2 冻结于 commit 81c2eb2（实验目录退役后 core/logger.py docstring 为 home）。
 本文件逐条锁死：生命周期语义（幂等 end / 野 id / shutdown 补 incomplete）、
 状态模型（自动推导 + 显式终态共存）、fields 净化管道、双投影（GUI 文本兼容 /
 文件 ::group:: 标记与转义）、通道继承与闸门、schema_version 统一命名。

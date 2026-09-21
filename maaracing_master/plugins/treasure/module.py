@@ -3213,7 +3213,8 @@ class TreasureModule(ActivityModule):
             logger.log("[鉴宝点击] 光标长时间丢失：已重建虚拟手柄并换绑导航器", "INFO")
             return True
         except Exception as e:  # noqa: BLE001 —— 重建失败不阻塞主循环，下帧重试
-            logger.log(f"[鉴宝点击] 虚拟手柄重建失败（下帧重试）: {e}", "DEBUG")
+            # WARNING 是测试锁（test_capabilities_gamepad）：自愈失败必须可见，不得静默
+            logger.log(f"[鉴宝点击] 虚拟手柄重建失败（下帧重试）: {e}", "WARNING")
             return False
 
     def _abort_inflight_nav(self, reason: str) -> None:

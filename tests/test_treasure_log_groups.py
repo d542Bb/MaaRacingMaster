@@ -83,6 +83,7 @@ _MODULE_UNGROUPED_PREFIXES = (
     "[鉴宝] policy 感知锚点", "[鉴宝] 窗口连接失败", "游戏窗口不是 16:9",
     "[鉴宝] 未加载", "[鉴宝] 未加载到动作按钮", "[鉴宝] 未加载任何鉴宝师",
     "[鉴宝] policies 编译失败", "[鉴宝点击] 手柄绑定失败", "[鉴宝点击] 光标长时间丢失",
+    "[鉴宝点击] 虚拟手柄重建失败",  # 自愈失败留痕：test_capabilities_gamepad 锁 WARNING，有意无组
     "[鉴宝] IO worker", "[鉴宝] 观察线程", "[鉴宝] OCR worker",
 )
 _STORE_UNGROUPED_PREFIXES = (
