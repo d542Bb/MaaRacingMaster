@@ -121,6 +121,19 @@ class TreasureStore:
         day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
         return day.isoformat()
 
+    def _mlog(self, msg: str, level: str = "INFO") -> None:
+        """阶段流日志经模块句柄归组（契约 §8 第 7 步：落盘结果行属结算/收尾组正文）。
+
+        模块无 _tlog（测试桩/独立使用）时回退 legacy 通道，行为不变。
+        本方法只在 Tasker 线程被调用（flush_game_record / record_egg_claim），
+        不违反「worker 不读可变当前组」——那两处调用点即归组线程本身。
+        """
+        tlog = getattr(self._m, "_tlog", None)
+        if tlog is not None:
+            tlog(msg, level)
+        else:
+            logger.log(msg, level)
+
     # ---------- DB 连接 ----------
 
     def ensure_db(self) -> None:
@@ -228,11 +241,10 @@ class TreasureStore:
                  ps + p, inc + inc_, max(hs, hs_)),
             )
             conn.commit()
-            logger.log(
+            self._mlog(
                 f"[鉴宝落盘] 已记录第 {game_seq} 场: 策略=profit 结果={self._m._auction_result or '-'} "
                 f"成交={self._m._settle_final_price or 0:,} 利润={self._m._settle_profit or 0:,} "
                 f"收入={self._m._settle_my_income or 0:,}",
-                "INFO",
             )
         except Exception as e:
             try:
@@ -281,10 +293,9 @@ class TreasureStore:
                 (bucket, red, yellow, blue, coin, score),
             )
             conn.commit()
-            logger.log(
+            self._mlog(
                 f"[鉴宝落盘] 领取数已累加({bucket}): 红+{red} 黄+{yellow} 蓝+{blue} "
                 f"银币+{coin:,} 积分+{score:,}",
-                "INFO",
             )
         except Exception as e:
             try:
@@ -320,8 +331,16 @@ class TreasureStore:
         if m._session_dir:
             lines.append(f"  保存帧数     : {m._saved_frames} (raw 全量) / {m._debug_saved} (debug 图)")
             lines.append(f"  调试目录     : {m._session_dir}")
-        for _ln in lines:
-            logger.log(_ln, "INFO")
+        # 首行是组标题（GUI 卡头），其余进组正文（契约 §8 第 7 步）；
+        # 模块无组原语（测试桩）时回退 legacy 逐行 INFO，行为不变。
+        if getattr(m, "_open_grp", None) is not None:
+            m._open_grp(lines[0], "loop")
+            for _ln in lines[1:]:
+                self._mlog(_ln)
+            m._end_grp()
+        else:
+            for _ln in lines:
+                logger.log(_ln, "INFO")
 
 
 # ---------- 今日看板读侧（GUI 今日看板数据源，模块自述契约） ----------

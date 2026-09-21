@@ -433,6 +433,46 @@ def _load_bid_pass_confirm_btn(
             threshold, anchor.colorspace)
 
 
+# ---------- 结构化日志组归属（契约 §8 第 7 步，A 案显式句柄） ----------
+# 模块级函数形态：测试以 SimpleNamespace/自造类当 self 直调方法时，缺 _log_grp
+# 属性自动落 legacy 通道，行为与现网一致；类上另有同名薄包装供外部（store）取用。
+# _log_grp 仅生命周期 owner 线程（start / Tasker / run finally）读写；worker 线程
+# 不得读取——需要归组在派发时捕获不可变 group_id 显式 logger.log(group_id=...) 传参。
+# 跨切面日志（初始化/绑定/worker 生命周期/落盘失败）有意保持无组：不为卡片覆盖率强塞。
+
+def _tlog(self, msg: str, level: str = "INFO", fields: dict | None = None) -> None:
+    """阶段流日志：开组期间归当前组，无组落 legacy 通道。"""
+    g = getattr(self, "_log_grp", None)
+    if g is not None:
+        g.log(msg, level, fields=fields)
+    elif fields is not None:
+        logger.log(msg, level, fields=fields)
+    else:
+        logger.log(msg, level)
+
+
+def _open_grp(self, title: str, kind: str) -> None:
+    """开业务组（GUI 卡片）；上一组先收尾（终态自动推导）。
+
+    logger 无 group()（测试 recorder/桩）时回退 legacy 锚点行——前端措辞锚点管线
+    接住，行为与现网一致。
+    """
+    if getattr(logger, "group", None) is None:
+        logger.log(title)
+        return
+    _end_grp(self)
+    self._log_grp = logger.group(title, kind=kind)
+
+
+def _end_grp(self, outcome: str | None = None) -> None:
+    """收尾当前组；outcome 缺省时按组内 ERROR/WARNING 自动推导终态。"""
+    g = getattr(self, "_log_grp", None)
+    if g is None:
+        return
+    self._log_grp = None
+    g.end(outcome)
+
+
 class TreasureModule(ActivityModule):
     """巅峰鉴宝：Debug 观察记录模式（阶段一）"""
 
@@ -874,9 +914,12 @@ class TreasureModule(ActivityModule):
         self._prev_gray: np.ndarray | None = None
         self._last_change_ts: float = 0.0       # 上次触发画面变化事件的时刻（monotonic 秒；CHANGE_COOLDOWN_S 冷却判定用）
 
-        # --------- 日志限流 ---------
+        # --------- 日志限流 / 结构化组归属（契约 §8 第 7 步，A 案显式句柄） ---------
         self._frame_counter = 0
         self._last_stage_logged: str | None = None
+        # 当前业务组句柄：仅生命周期 owner 线程（start / Tasker / run finally）读写；
+        # worker 线程不得读取——需要归组在派发时捕获不可变 group_id 显式传参。
+        self._log_grp = None
 
         # --------- 阶段切换类点击重试状态 ---------
         self._click_retry_key: str | None = None    # 正在等待"切换阶段"的 key
@@ -1402,14 +1445,14 @@ class TreasureModule(ActivityModule):
             self._current_stage = self.STAGE_ORDER[skip_until_idx]
             raw_r = self._extract_round_from_stage(self._current_stage)
             self._round_no = min(raw_r, 5) if raw_r is not None else None
-            logger.log(f"[鉴宝] 从断点开始: 「{self._current_stage}」(跳过前{skip_until_idx}个阶段)")
+            _open_grp(self, f"[鉴宝] 从断点开始: 「{self._current_stage}」(跳过前{skip_until_idx}个阶段)", "session")
         else:
             self._current_stage = self.STAGE_ORDER[0]
             self._round_no = None
 
         self._log_stage_changed(self._current_stage, "<启动>")
 
-        logger.log("[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）")
+        _open_grp(self, "[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）", "session")
         if self._session_dir:
             logger.log(f"[鉴宝] 调试截图目录: {self._session_dir}", "DEBUG")
         else:
@@ -1433,6 +1476,7 @@ class TreasureModule(ActivityModule):
             self._stop_ocr_worker()
             if self._clicker is not None:
                 self._clicker.shutdown()  # 停导航线程（异步导航收尾，daemon 不阻塞退出）
+            _end_grp(self, "incomplete")  # 契约 §2：被停止/异常打断的未完组落 incomplete
             self._store.close_db()  # 提交未完成事务并关闭落盘连接
             self._store.log_session_summary()
             # 性能汇总放在所有 worker 停完之后：此时计数才是本次运行的终值。
@@ -1445,6 +1489,16 @@ class TreasureModule(ActivityModule):
     def cleanup(self) -> None:
         assert self.ctx is not None  # 仅运行态调用
         # renderer 由 Context.close 释放，无需在此手动归还
+
+    # ---------- 组归属机制的类级薄包装（实现见模块级函数；store 等外部经此取用） ----------
+    def _tlog(self, msg: str, level: str = "INFO", fields: dict | None = None):
+        _tlog(self, msg, level, fields)
+
+    def _open_grp(self, title: str, kind: str) -> None:
+        _open_grp(self, title, kind)
+
+    def _end_grp(self, outcome: str | None = None) -> None:
+        _end_grp(self, outcome)
 
     # ==================================================================
     #  对外：状态设置接口（后续 OCR / 人工注入用）
@@ -1529,7 +1583,7 @@ class TreasureModule(ActivityModule):
         （如 6/7）才能让转场期（_round_elapsed）正确重置。
         """
         if stage_name not in self.STAGE_ORDER:
-            logger.log(f"[鉴宝] set_stage 失败，未知阶段: {stage_name}", "WARNING")
+            _tlog(self, f"[鉴宝] set_stage 失败，未知阶段: {stage_name}", "WARNING")
             return False
         if stage_name != self._current_stage:
             old = self._current_stage
@@ -1621,19 +1675,19 @@ class TreasureModule(ActivityModule):
                     self._session_daily_done_count += 1
                     lim = self._effective_daily_loop_limit()
                     reached = self._daily_loop_limit_reached()
-                    logger.log(
+                    _open_grp(self, 
                         f"[鉴宝循环] 完成 1 场: 状态机侧累计 {self._session_daily_done_count} 场"
                         f"（上限 {lim}，OCR侧={self._session_daily_ocr_count or '--'}，"
                         f"已达上限停止开新场 = {'是' if reached else '否'}）",
-                        "INFO",
+                        "loop",
                     )
                     if reached:
                         # 立即刷一条明显的 STOP 级提示到日志，GUI 运行日志会红字可见。
                         # 自动停止由 _tick_once 的连续 3 帧确认触发（回大厅即开始计数）。
-                        logger.log(
+                        _open_grp(self, 
                             f"[鉴宝循环] 已到每日循环上限 {lim} 场，"
                             f"本场为最后一场，回鉴宝大厅确认后进入彩蛋任务收尾并自动停止。",
-                            "INFO",
+                            "loop",
                         )
                 # 记下来，下次跳变用
                 self._prev_stage_for_loop_count = stage_name
@@ -2013,7 +2067,7 @@ class TreasureModule(ActivityModule):
                 f"OCR读 {self._session_daily_ocr_count if self._session_daily_ocr_count is not None else '--'}）"
                 "，停止开新场"
             )
-            logger.log(f"[鉴宝循环] 场次选择拦截: {msg}", "INFO")
+            _tlog(self, f"[鉴宝循环] 场次选择拦截: {msg}", "INFO")
             self._session_last_decision = {
                 "key": "session_daily_limit_reached",
                 "hint": msg,
@@ -2590,7 +2644,7 @@ class TreasureModule(ActivityModule):
         """
         ctx = self._build_bid_context()
         if ctx is None:
-            logger.log("[鉴宝出价] 决策上下文不可用（strategy 未初始化或回合号缺失）", "WARNING")
+            _tlog(self, "[鉴宝出价] 决策上下文不可用（strategy 未初始化或回合号缺失）", "WARNING")
             self._bidding_last_decision = None
             return
         if not ctx.h_seen:
@@ -2607,7 +2661,7 @@ class TreasureModule(ActivityModule):
         if ctx.balance != BALANCE_UNKNOWN and T > ctx.balance:
             original_T = T
             T = ctx.balance
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝出价] 余额不足: 目标 {original_T:,} > 余额 {ctx.balance:,}，钳制至 {T:,}",
                 "WARNING",
             )
@@ -3274,12 +3328,12 @@ class TreasureModule(ActivityModule):
         diag = self._get_clicker().slot_diag()
         key_str = f"，key={key}" if key else ""
         if diag is None:
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝点击] 任务槽忙，本帧跳过{action}{key_str}"
                 f"（非手柄方式：上一帧结果尚未取走）", "WARNING")
             return
         task = diag.get("task") or {}
-        logger.log(
+        _tlog(self, 
             f"[鉴宝点击] 任务槽忙，本帧跳过{action}{key_str}：槽被 "
             f"label={task.get('label')} type={task.get('type')} "
             f"target={task.get('target')} 占用 {diag.get('occupied_s', 0.0):.1f}s，"
@@ -3432,7 +3486,7 @@ class TreasureModule(ActivityModule):
             self._settle_skip_since_ms = self._now_ms()
             if not self._settle_collect_clicked_once:
                 self._settle_collect_clicked_once = True
-                logger.log("[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...", "INFO")
+                _tlog(self, "[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...", "INFO")
         self._record_click(key, state, center, mode_label, ok=True)
 
     def _record_click(self, key, state, center, mode_label, *, ok: bool) -> None:
@@ -3454,7 +3508,7 @@ class TreasureModule(ActivityModule):
                 "DEBUG",
             )
         else:
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝点击] 执行失败 key={key} state={state} 方式={mode_label} "
                 f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
 
@@ -3481,7 +3535,7 @@ class TreasureModule(ActivityModule):
         mode_label = pending.get("mode_label") or "?"
         err = res.get("err")
         err_str = f"{err:.1f}px" if isinstance(err, (int, float)) else "未测"
-        logger.log(
+        _tlog(self, 
             f"[鉴宝点击] 执行失败（将自动重试）key={key} state={state} "
             f"方式={mode_label} "
             f"归一化=({center[0]:.3f},{center[1]:.3f}) "
@@ -3541,7 +3595,7 @@ class TreasureModule(ActivityModule):
         # 前台校验：仅前台(鼠标)模式需要（点后台(手柄)不需要前台）
         if clicker.need_foreground and not self.ctx.window_foreground:
             if self._frame_counter % 10 == 0:
-                logger.log(
+                _tlog(self, 
                     f"[鉴宝点击] 前台校验失败：游戏窗口非前台，取消本次点击 key={key}"
                     f"（方式={self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)}；"
                     f"安全策略：前台鼠标点击不抢前台）", "WARNING",
@@ -3567,7 +3621,7 @@ class TreasureModule(ActivityModule):
             # 入队失败也是静默失败：槽忙已在上面判过，剩下未绑定/窗口尺寸取不到
             # （手柄未绑定、hwnd 无效）。留痕说得出原因，别让点击无声消失。
             if self._frame_counter % self.SLOT_BUSY_LOG_EVERY == 0:
-                logger.log(
+                _tlog(self, 
                     f"[鉴宝点击] 点击未入队 key={key}（方式="
                     f"{self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)}，"
                     f"手柄已绑定={clicker.gamepad_bound}）——下帧同意图自动重试",
@@ -3620,7 +3674,7 @@ class TreasureModule(ActivityModule):
             return
         if self._panel_retry_count >= self.BID_DIGIT_RETRY_MAX:
             attempts = self._panel_retry_count + 1
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝出价] 数字键 {key} 连点 {attempts} 次输入框读数仍无变化，"
                 f"判定该面板不接受本次输入（输入框未激活/被遮挡/按键未送达），"
                 f"终止模块待人工核查", "ERROR")
@@ -3630,7 +3684,7 @@ class TreasureModule(ActivityModule):
         self._panel_retry_count += 1
         self._panel_retry_since_ts = now
         self._last_click_fingerprint = None  # 重新 arm → 本帧即可重发同一意图
-        logger.log(
+        _tlog(self, 
             f"[鉴宝出价] 数字键 {key} 点击后 {self.BID_DIGIT_RETRY_MS:.0f}ms 输入框读数未变化，"
             f"第 {self._panel_retry_count}/{self.BID_DIGIT_RETRY_MAX} 次重发"
             f"（疑似点击未送达，详见日志上文点击记录）", "WARNING")
@@ -3684,7 +3738,7 @@ class TreasureModule(ActivityModule):
         if (time.monotonic() - self._click_retry_since_ts) * 1000 < retry_ms:
             return
         if self._click_retry_count >= self._click_retry_max:
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝点击] key={key} 重试 {self._click_retry_max} 次后仍无法切换页面"
                 f"（停留在「{self._click_retry_stage}」），判定点击失效，终止模块", "ERROR",
             )
@@ -3695,7 +3749,7 @@ class TreasureModule(ActivityModule):
         self._click_retry_count += 1
         self._last_click_fingerprint = None      # 重新 arm → 本帧同一意图可再次点击
         self._click_retry_since_ts = time.monotonic()
-        logger.log(
+        _tlog(self, 
             f"[鉴宝点击] key={key} 点击后 {retry_ms}ms 仍在「{self._click_retry_stage}」，"
             f"第 {self._click_retry_count}/{self._click_retry_max} 次重试", "WARNING",
         )
@@ -4499,7 +4553,8 @@ class TreasureModule(ActivityModule):
             if home is not None and self._egg_chain_click(*home, key="hall_home_btn"):
                 self._egg_chain_wait(specs, self.EGG_CHAIN_LOBBY_ANCHOR, 8.0,
                                      budget_deadline=budget_deadline)
-        logger.log("[彩蛋收尾] 收尾完成，请求停止模块", "INFO")
+        _tlog(self, "[彩蛋收尾] 收尾完成，请求停止模块")
+        _end_grp(self, "success")  # 正常跑完的收尾链终态是成功，不等 stop 路径的 incomplete
         self.ctx.lifecycle.request_stop()
 
     def _run_egg_claim_chain(self) -> None:
@@ -4510,10 +4565,10 @@ class TreasureModule(ActivityModule):
         日志文案里、各步各自计时，链整体实际没有上界。
         链内任何异常都不许打断停止——「有就领，没有就结束」，最坏路径也只是没领成。
         """
-        logger.log(
+        _open_grp(self, 
             f"[彩蛋收尾] 已到每日循环上限，开始彩蛋任务领取链"
             f"（总预算 {self.EGG_CHAIN_TOTAL_BUDGET_S:.0f}s，跑完自动停止）",
-            "INFO",
+            "loop",
         )
         deadline = time.monotonic() + self.EGG_CHAIN_TOTAL_BUDGET_S
         # 入口先作废主链路遗留的在途点击：上限拦截的 3 帧确认窗内主链路可能刚提交
@@ -4527,7 +4582,7 @@ class TreasureModule(ActivityModule):
         try:
             self._egg_claim_steps(self._egg_chain_load_specs(), deadline)
         except Exception as e:
-            logger.log(f"[彩蛋收尾] 链异常（不影响停止）：{e}", "WARNING")
+            _tlog(self, f"[彩蛋收尾] 链异常（不影响停止）：{e}", "WARNING")
             self._egg_chain_trace("error", error=repr(e))
             self.ctx.lifecycle.request_stop()
 
@@ -4552,7 +4607,7 @@ class TreasureModule(ActivityModule):
             self._tick_frame_body()
         except ClickRetryExhaustedError as e:
             self._frame_abort = True
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝] 帧 #{self._frame_counter} 阶段=「{self._current_stage}」"
                 f"决策判定终止：{e} —— 已请求停止模块（后续帧不再执行帧工作）",
                 "ERROR")
@@ -4561,7 +4616,7 @@ class TreasureModule(ActivityModule):
             self._frame_error_count += 1
             if (self._frame_error_count == 1
                     or self._frame_error_count % self.FRAME_ERROR_LOG_EVERY == 0):
-                logger.log(
+                _tlog(self, 
                     f"[鉴宝] 帧 #{self._frame_counter} 阶段=「{self._current_stage}」"
                     f"未预期异常（第 {self._frame_error_count} 次）：{e!r}\n"
                     f"{traceback.format_exc()}", "ERROR")
@@ -4903,7 +4958,7 @@ class TreasureModule(ActivityModule):
             self._egg_read_done = True
             eggs = self._egg_best_result.get("eggs") or []
             detail = "、".join(f"{e['color']}x{e['count']}" for e in eggs) or "无"
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝彩蛋] 奖励结算识别完成: 红={self._egg_counts.get('red', 0)} "
                 f"黄={self._egg_counts.get('yellow', 0)} 蓝={self._egg_counts.get('blue', 0)}"
                 f"（最优命中 {len(eggs)} 张卡: {detail}）", "INFO",
@@ -5567,7 +5622,7 @@ class TreasureModule(ActivityModule):
             self._daily_bucket = bucket
             self._session_daily_done_count = 0
             self._session_daily_ocr_count = None
-            logger.log(
+            _tlog(self, 
                 f"[鉴宝] 跨日（凌晨5点计日）：{bucket} 起新一轮，今日已完成场数重置为 0",
                 "INFO",
             )
@@ -5674,7 +5729,7 @@ class TreasureModule(ActivityModule):
         if amt is None:
             return  # 没读到数字（转场动画期字未稳），下帧重试
         self._daily_high_score = amt
-        logger.log(f"[鉴宝弹窗①] 今日最高积分上涨: {amt:,}", "INFO")
+        _tlog(self, f"[鉴宝弹窗①] 今日最高积分上涨: {amt:,}", "INFO")
 
     def _reset_bid_slots(self) -> None:
         """每回合首次消费报价时重置 4 槽固化状态（由 _consume_ocr_result 对比 _bid_slots_round 触发）。
@@ -6194,6 +6249,6 @@ class TreasureModule(ActivityModule):
         if new_stage == self._last_stage_logged:
             return
         self._last_stage_logged = new_stage
-        logger.log(f"[鉴宝] 进入阶段: {new_stage} [{reason}]", "INFO")
+        _open_grp(self, f"[鉴宝] 进入阶段: {new_stage} [{reason}]", "phase")
 
 

@@ -201,6 +201,32 @@ def test_channel_gate_drops_log_keeps_structure(log):
     assert len(_events(log, "group_start")) == 1
 
 
+# ---------- 派发捕获 / 迟到归属（裁定边界规则 2/5） ----------
+def test_worker_captured_group_id_routes_to_dispatch_group(log):
+    # worker 不读可变当前组：派发时捕获的 group_id 即使在别的组开着时也归原组。
+    g1 = log.group("派发组")
+    g2 = log.group("当前组")          # g1 未收尾，两组并存在开组表
+    log.log("worker 迟到结果", "INFO", group_id=g1.id)   # 显式捕获 id，不读 current
+    g2.end()
+    g1.end()
+    rows = [r for r in _events(log, "log")]
+    assert [r["group_id"] for r in rows] == [g1.id]
+    assert log.internal_counters == {}
+
+
+def test_late_log_after_end_degrades_not_retargeted(log):
+    # 组已收尾后的迟到旧 id：降级无组并计数，禁止自动改挂到新组。
+    g1 = log.group("旧组")
+    g1.end()
+    g2 = log.group("新组")
+    log.log("迟到", "INFO", group_id=g1.id)
+    rec = _records(log)[-1]
+    assert rec["group_id"] is None
+    assert log.internal_counters["unknown_group_id"] == 1
+    assert all(r["group_id"] != g2.id for r in _events(log, "log"))
+    g2.end()
+
+
 # ---------- 并发冒烟 ----------
 def test_concurrent_groups_no_cross_contamination(log):
     def worker(n):
