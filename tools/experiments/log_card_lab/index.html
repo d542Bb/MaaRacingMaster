@@ -88,21 +88,7 @@ body {
 .log-section--phase .log-section-head { border-left-color: var(--mra-primary); }
 .log-section--session .log-section-head { border-left-color: var(--mra-info); }
 .log-section--loop .log-section-head { border-left-color: var(--mra-success); }
-/* step1：标题单行省略（卡头等高、不折行破相），全文经 title 悬停看 */
-.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* step1：正在写入的卡——时间前呼吸点（回声环语言），finalize 摘除 */
-.log-section--running .log-section-meta::before {
-  content: ''; width: 6px; height: 6px; border-radius: 50%;
-  background: var(--mra-primary); flex-shrink: 0;
-  animation: mra-sec-running 1.4s ease-in-out infinite;
-}
-@keyframes mra-sec-running {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.8); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .log-section--running .log-section-meta::before { animation: none; }
-}
+.log-section-head .log-msg { font-weight: 600; color: var(--mra-foreground); }
 .log-chev {
   width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
   color: var(--mra-foreground-muted);
@@ -197,10 +183,7 @@ function highlightKeywords(s) {
 let _curSec = null;
 function updateSectionMeta(sec, count, hasError, hasWarn) {
   const badge = sec.querySelector('.log-badge--count');
-  if (badge) {
-    badge.textContent = String(count || 0);
-    badge.style.display = count > 0 ? '' : 'none'; // step1：0 计数不占位
-  }
+  if (badge) badge.textContent = String(count || 0);
   const meta = sec.querySelector('.log-section-meta');
   if (!meta) return;
   meta.querySelectorAll('.log-badge--warn, .log-badge--err').forEach((b) => b.remove());
@@ -225,7 +208,6 @@ function finalizeSection(sec) {
     else if (d.classList.contains('log-line--WARNING')) hasWarn = true;
   });
   updateSectionMeta(sec, count, hasError, hasWarn);
-  sec.classList.remove('log-section--running'); // step1：收尾即停呼吸
   bindSectionToggle(sec);
 }
 const FOLLOW_BOTTOM_PX = 24;
@@ -256,11 +238,10 @@ function appendLogs(lines) {
     }
     if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
     const sec = document.createElement('div');
-    sec.className = 'log-section log-section--' + anchorType + ' log-section--running'; // step1：新卡即「写入中」
+    sec.className = 'log-section log-section--' + anchorType;
     const head = document.createElement('div');
     head.className = 'log-line log-section-head';
     head.dataset.raw = raw;
-    head.title = msg; // step1：单行省略后的全文出口
     head.innerHTML =
       '<span class="log-chev">▸</span>' +
       '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
