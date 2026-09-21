@@ -19,7 +19,8 @@
   :411 记无信号），§7#2 判「现有框级感知不可判」结案转观察。
 
 **常数真源**：vpx/y_h 逐场取 %TEMP%/sr_calib/analyze_<session>.json 在场行中位（Gate 0
-仪器输出，仅读缓存不改它）；缺失即停并报，不猜常数。
+仪器输出，仅读缓存不改它）；缺失即停并报，不猜常数。该缓存由**已收杆归档的标定实验**的
+`probe_gate0_vp.py` 生成——溯源 commit [`db7a3fe`](https://github.com/d542Bb/MaaRacingMaster/commit/db7a3fe78973d9d155d350feac581d7530f5138a)，缓存失效时从该 commit 检出其实验目录物化后重跑（目录名见该 commit 文件清单），本探针不复制标定逻辑。
 
 用法（仓库根，需先跑过首轮三通道缓存）：
     .venv\\Scripts\\python.exe tools\\experiments\\speedrush_trick\\probe_trick_pxnear.py <session>...
