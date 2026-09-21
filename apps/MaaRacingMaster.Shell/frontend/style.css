@@ -79,6 +79,11 @@ body {
   user-select: none;
 }
 
+/* 键盘焦点环（全站唯一规则）：:focus-visible 只在键盘/程序化导航聚焦时命中，
+   鼠标点击不出环——因此各控件的 outline:none 抑制声明已删除，新增交互元素零成本继承。
+   窗控按钮贴屏幕边缘，环内收防裁切（见 .win-btn:focus-visible）。 */
+:focus-visible { outline: 2px solid var(--mra-primary); outline-offset: 2px; }
+
 /* ============ 顶部标题栏（Draggable/Passthrough 由 C# InputNonClientPointerSource 管理，窗口控制为自绘 HTML 按钮） ============ */
 header {
   height: 52px; flex-shrink: 0; display: flex; align-items: center;
@@ -114,7 +119,7 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
 /* 自绘窗口控制按钮：整块注册为 Passthrough 交互区（输入穿透非客户区交给 HTML） */
 .win-controls { display: flex; height: 100%; margin-left: auto; flex: 0 0 auto; }
 .win-btn {
-  width: 46px; height: 100%; padding: 0; border: 0; outline: none;
+  width: 46px; height: 100%; padding: 0; border: 0;
   background: transparent; color: var(--mra-foreground-secondary);
   display: flex; align-items: center; justify-content: center; cursor: default;
 }
@@ -122,6 +127,7 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
   width: 10px; height: 10px; fill: none; stroke: currentColor;
   stroke-width: 1; vector-effect: non-scaling-stroke;
 }
+.win-btn:focus-visible { outline-offset: -2px; } /* 贴屏幕边缘，环内收防被裁切 */
 .win-btn:hover { background: var(--mra-surface-hover); }
 .win-btn:active { background: var(--mra-surface-active); }
 .win-btn--close:hover { background: var(--mra-danger); color: #fff; }
@@ -265,7 +271,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   border-radius: var(--mra-radius-sm); border: 1px solid var(--mra-border);
   background: var(--mra-surface); color: var(--mra-foreground);
   font-size: 13px; font-family: var(--mra-font-sans);
-  appearance: none; outline: none; cursor: pointer;
+  appearance: none; cursor: pointer;
 }
 .select-wrap select:focus { border-color: var(--mra-primary); }
 .select-wrap select:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -303,7 +309,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   border-radius: var(--mra-radius-sm); border: 1px solid var(--mra-border);
   background: var(--mra-surface); color: var(--mra-foreground);
   font-size: 13px; font-family: var(--mra-font-sans);
-  outline: none; transition: border-color var(--mra-duration-fast);
+  transition: border-color var(--mra-duration-fast);
 }
 .mra-field-control input[type="number"]:focus { border-color: var(--mra-primary); }
 .mra-field-control input[type="number"]:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -492,7 +498,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .mra-toggle {
   position: relative; width: 40px; height: 24px; border-radius: 12px;
   background-color: var(--mra-border-strong); cursor: pointer; flex-shrink: 0;
-  transition: background-color var(--mra-duration-base) ease; border: none; outline: none;
+  transition: background-color var(--mra-duration-base) ease; border: none;
 }
 .mra-toggle::after {
   content: ''; position: absolute; top: 2px; left: 2px;
@@ -839,15 +845,35 @@ footer {
   padding: 0 16px;
 }
 .status { display: flex; align-items: center; gap: 6px; }
-.mra-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mra-foreground-muted); }
+.mra-status-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--mra-foreground-muted); }
 .mra-status-dot--ready { background: var(--mra-success); }
 .mra-status-dot--running { background: var(--mra-success); }
 .mra-status-dot--stopping { background: var(--mra-warning); }
 .mra-status-dot--error { background: var(--mra-danger); }
-.mra-status-dot--pulse { animation: mra-status-pulse 2s ease-in-out infinite; } /* 2s 为 keyframes 周期，非过渡时长，不套用 token */
-@keyframes mra-status-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--mra-success) 40%, transparent); }
-  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--mra-success) 0%, transparent); }
+/* 运行态指示：点本体呼吸辉光 + 双层回声环按半周期相位差向外扩散消散（两环错相，始终有其一在途中）。
+   环用伪元素实现，不依赖额外 DOM。2s 为 keyframes 周期，非过渡时长，不套用 token */
+.mra-status-dot--pulse { animation: mra-dot-glow 2s ease-in-out infinite; }
+.mra-status-dot--pulse::before,
+.mra-status-dot--pulse::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  border: 1px solid var(--mra-success);
+  animation: mra-dot-echo 2s cubic-bezier(0.17, 0.67, 0.4, 1) infinite;
+}
+.mra-status-dot--pulse::after { animation-delay: -1s; }
+@keyframes mra-dot-echo {
+  0%   { transform: scale(1);   opacity: 0.5; }
+  75%  { transform: scale(2.3); opacity: 0; }
+  100% { transform: scale(2.3); opacity: 0; }
+}
+@keyframes mra-dot-glow {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50%      { box-shadow: 0 0 4px 0 color-mix(in srgb, var(--mra-success) 35%, transparent); }
+}
+/* 减弱动效偏好：环隐藏、辉光静止（旧脉冲无此降级，顺带补齐） */
+@media (prefers-reduced-motion: reduce) {
+  .mra-status-dot--pulse::before,
+  .mra-status-dot--pulse::after { display: none; }
+  .mra-status-dot--pulse { animation: none; }
 }
 .status-text { font-size: 11px; color: var(--mra-foreground-secondary); }
 footer .spacer { flex: 1; }
@@ -874,12 +900,54 @@ footer .spacer { flex: 1; }
 }
 #btn-stop:disabled { opacity: 0.5; cursor: not-allowed; }
 #btn-start {
-  width: 120px; background: var(--mra-primary); color: var(--mra-primary-foreground);
+  width: 120px; padding: 0; display: inline-grid;
+  /* 双层滚动必须裁在按钮圆角内：出层上移 18px + 弹簧曲线回弹会过冲，不裁则文字越界浮到按钮外 */
+  overflow: hidden;
+  background: var(--mra-primary); color: var(--mra-primary-foreground);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mra-primary) 20%, transparent);
+  transition: background-color var(--mra-duration-slow) cubic-bezier(0.34, 1.3, 0.64, 1),
+              color var(--mra-duration-slow) ease,
+              transform var(--mra-duration-fast) ease;
 }
-#btn-start:hover { background: var(--mra-primary-hover); }
-#btn-start:active { background: var(--mra-primary-active); }
+#btn-start:hover:not(.mra-start--counting) { background: var(--mra-primary-hover); }
+#btn-start:active:not(:disabled) { background: var(--mra-primary-active); transform: scale(0.97); }
 #btn-start:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 开始按钮双层内容：闲置层 / armed 层是两个完整组合，grid 同格堆叠、各自独立双轴居中；
+   切换 = 整层纵向滚动互换（出层上滚+模糊，入层自下滚入），纯 y 轴、零回流。
+   armed 态同色系降饱和（实底→浅底红字），滚动弹簧曲线为字面量（易摔感，不套时长 token 表） */
+#btn-start.mra-start--counting {
+  background: color-mix(in srgb, var(--mra-primary) 12%, var(--mra-surface));
+  color: var(--mra-primary);
+}
+.mra-start-layer {
+  grid-area: 1 / 1;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  transition: transform var(--mra-duration-slow) cubic-bezier(0.34, 1.3, 0.64, 1),
+              opacity var(--mra-duration-slow) ease, filter var(--mra-duration-slow) ease;
+}
+.mra-start-layer--armed { transform: translateY(18px); opacity: 0; filter: blur(2px); pointer-events: none; }
+.mra-start--counting .mra-start-layer--idle { transform: translateY(-18px); opacity: 0; filter: blur(2px); }
+.mra-start--counting .mra-start-layer--armed { transform: translateY(0); opacity: 1; filter: blur(0); }
+/* armed 层内数字列：纯 CSS 逐格滚动（每秒一格，tabular-nums 防抖动）。
+   3s 周期与 run.js 倒计时 setTimeout(3000) 配对，改一处必须同步另一处 */
+.mra-start-digits { width: 10px; height: 16px; overflow: hidden; flex-shrink: 0; }
+.mra-start-digit-col {
+  display: flex; flex-direction: column; align-items: center;
+  font-size: 12px; font-weight: 600; line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.mra-start-digit-col span { height: 16px; }
+.mra-start--counting .mra-start-digit-col { animation: mra-start-digit-roll 3s linear forwards; }
+@keyframes mra-start-digit-roll {
+  0%, 32.5%    { transform: translateY(0); }
+  33.4%, 65.8% { transform: translateY(-16px); }
+  66.7%, 100%  { transform: translateY(-32px); }
+}
+/* 减弱动效偏好：层切换瞬切去模糊，数字保留逐格步进（steps 去平滑） */
+@media (prefers-reduced-motion: reduce) {
+  .mra-start-layer { transition: none; filter: none; }
+  .mra-start--counting .mra-start-digit-col { animation-timing-function: steps(1, end); }
+}
 
 /* 隐藏滚动条（保留滚动能力） */
 ::-webkit-scrollbar { display: none; }

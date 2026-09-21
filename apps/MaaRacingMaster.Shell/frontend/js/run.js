@@ -198,17 +198,18 @@
   }
 
   // ---------- 运行控制 ----------
+  // 三秒倒计时：按钮双层内容形变（样式见 style.css 的 mra-start-* 区块），JS 只切类与编排；
+  // 数字滚动是纯 CSS 数列，3s 与其 animation 周期配对，改一处必须同步另一处。
   let _startCountdownTimer = null;
-  let _startCountdownSec = 0;
-  const _startBtnOriginHTML = $('btn-start').innerHTML; // 备份原始按钮内容（图标+文字），倒计时结束/取消后还原
 
   function _cancelStartCountdown() {
     if (_startCountdownTimer) {
-      clearInterval(_startCountdownTimer);
+      clearTimeout(_startCountdownTimer);
       _startCountdownTimer = null;
     }
-    _startCountdownSec = 0;
-    $('btn-start').innerHTML = _startBtnOriginHTML;
+    const btn = $('btn-start');
+    btn.classList.remove('mra-start--counting');
+    btn.removeAttribute('aria-label');
   }
 
   async function _doStart(startFrom) {
@@ -233,21 +234,23 @@
       _cancelStartCountdown();
       return;
     }
+    // 空模块不进倒计时：后端同样拒绝，直接报错省下白等的三秒
+    const moduleId = $('module-select') ? $('module-select').value : '';
+    if (!moduleId) {
+      reportError('toast', '未选择活动模块');
+      return;
+    }
     const stage = state.stages[state.selected_index];
     const startFrom = stage && stage !== state.stages[0] ? stage : null;
-    // 三秒倒计时：给玩家切到游戏窗口/就位的时间；倒计时中再点按钮可取消
     const btn = $('btn-start');
-    _startCountdownSec = 3;
-    btn.textContent = _startCountdownSec + ' · 再点取消';
-    _startCountdownTimer = setInterval(() => {
-      _startCountdownSec -= 1;
-      if (_startCountdownSec > 0) {
-        btn.textContent = _startCountdownSec + ' · 再点取消';
-      } else {
-        _cancelStartCountdown(); // 恢复按钮原样
-        _doStart(startFrom);     // 倒计时结束才真正启动
-      }
-    }, 1000);
+    btn.classList.add('mra-start--counting');
+    btn.setAttribute('aria-label', '即将启动，倒计时 3 秒，再点一次取消');
+    _startCountdownTimer = setTimeout(() => {
+      _startCountdownTimer = null;
+      btn.classList.remove('mra-start--counting');
+      btn.removeAttribute('aria-label');
+      _doStart(startFrom); // 倒计时结束才真正启动
+    }, 3000);
   };
 
   $('btn-stop').onclick = async () => {

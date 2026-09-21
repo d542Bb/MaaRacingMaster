@@ -4,7 +4,7 @@
   'use strict';
 
   // 共享物导入（js/rpc.js 已先行加载）
-  const { mra, $ } = window.MRA;
+  const { mra, $, showError } = window.MRA;
 
   async function pollLogs() {
     try {
@@ -175,11 +175,34 @@
     $('log-area').innerHTML = '';
     _curSec = null;
   });
-  $('btn-log-copy').addEventListener('click', () => {
+  // 复制反馈：图标弹簧形变（morph-icon 换图标即形变，与预览卡放大按钮同款手法）——
+  // 成功 copy→check、失败 copy→x，停 1.2s 滚回；失败文案与空日志提示走 toast
+  // （错误协议：日志卡无行内落点，保持 toast）。
+  const COPY_ICON = MRAIcons.node('copy');
+  const copyMorphEl = document.querySelector('#btn-log-copy morph-icon');
+  let _copyRevertTimer = null;
+  function _flashCopyIcon(nodes) {
+    if (!copyMorphEl) return;
+    clearTimeout(_copyRevertTimer);
+    copyMorphEl.icon = nodes;
+    _copyRevertTimer = setTimeout(() => { copyMorphEl.icon = COPY_ICON; }, 1200);
+  }
+  if (copyMorphEl) copyMorphEl.icon = COPY_ICON;
+  $('btn-log-copy').addEventListener('click', async () => {
     const text = Array.from($('log-area').querySelectorAll('.log-line'))
       .map((d) => d.dataset.raw || d.textContent).join('\n');
-    if (!text) return;
-    navigator.clipboard.writeText(text).catch(() => {});
+    if (!text) {
+      showError('暂无日志可复制');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      _flashCopyIcon(MRAIcons.node('check'));
+    } catch (e) {
+      console.error(e);
+      _flashCopyIcon(MRAIcons.node('x'));
+      showError('复制失败: ' + (e.message || e));
+    }
   });
 
   // ---------- 导出到 window.MRA ----------

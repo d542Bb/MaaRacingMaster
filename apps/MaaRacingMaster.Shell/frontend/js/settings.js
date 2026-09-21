@@ -976,8 +976,28 @@
     refreshDebugState();
   }
 
+  // ---------- switch aria 通用接线（免维护：约定优于配置） ----------
+  // .option-row 结构里的 .mra-toggle[role=switch] 自动关联同排 .option-title（名称）
+  // 与 .option-desc（描述），引用 id 从开关自身 id 派生（<开关id>-label / -desc）。
+  // 新开关按既有结构写即自动获得读屏播报，无需逐实例手写 aria 属性；
+  // hasAttribute 守卫幂等，可对同一子树重复调用。
+  function wireSwitchAria(root) {
+    (root || document).querySelectorAll('.option-row').forEach((row) => {
+      const sw = row.querySelector('.mra-toggle[role="switch"]');
+      if (!sw || sw.hasAttribute('aria-labelledby') || !sw.id) return; // 无 id 无法建立引用，跳过
+      const title = row.querySelector('.option-title');
+      if (!title) return;
+      title.id = sw.id + '-label';
+      sw.setAttribute('aria-labelledby', title.id);
+      const desc = row.querySelector('.option-desc');
+      if (desc) { desc.id = sw.id + '-desc'; sw.setAttribute('aria-describedby', desc.id); }
+    });
+  }
+  wireSwitchAria(document); // 静态 HTML 里的开关（如录制演示）脚本加载即接线
+
   // 绑定当前模块卡片上的控件事件（渲染后调用；旧节点随 innerHTML 替换一并销毁，无重复绑定）
   function bindModulePages(moduleId) {
+    wireSwitchAria($('page-settings')); // 模板重渲染后新开关补接线（幂等）
     // 权限优化中心入口（设置页重渲染后按钮重建，须在此重绑；置于卫语句前防提前 return 漏绑）
     const btnOptimizer = document.getElementById('btn-optimizer');
     if (btnOptimizer) btnOptimizer.addEventListener('click', () => { openOptimizerCenter(); });

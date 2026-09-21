@@ -76,6 +76,8 @@
     });
     animatePageIn($('page-' + name), fromRight);
     moveTabSlider(name);
+    if (name === 'data') pollTodayBoard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
+    if (name === 'about') fetchAnnouncement(); // 切到关于页重拉公告，避免停留在启动时的旧缓存
   }
   // 滑块缓动平移到目标 tab 底部（用 offsetLeft/offsetWidth，不逐页遍历）
   // 宽度取 tab 的 85%，并在 tab 内水平居中
@@ -354,7 +356,12 @@
     });
   }
   reportDragExcludes();
-  window.addEventListener('resize', reportDragExcludes);
+  // resize：重报拖拽区 + tab 滑块按当前激活 tab 重定位（窗口宽窄变化会改变 tab 的
+  // offsetLeft/offsetWidth，不重算滑块会留在旧位置造成视觉错位）
+  window.addEventListener('resize', () => {
+    reportDragExcludes();
+    moveTabSlider(TAB_ORDER[_curTabIdx]);
+  });
 
   // ---------- 自绘窗口控制按钮 ----------
   // 点击 → C# win-action（最小化/最大化/关闭，postWindowAction 在 js/rpc.js）；

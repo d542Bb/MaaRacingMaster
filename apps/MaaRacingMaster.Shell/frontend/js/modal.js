@@ -8,15 +8,25 @@
   // overlay + 居中卡片；opts: { title, titleColor, bodyHtml, maxWidth, buttons:[{text, primary, asLink, href, onClick(modal)}] }
   // onClick 回调自主决定是否调用 modal.close()；点空白处或按 Esc 默认关闭（Esc 仅最顶层模态响应）。
   // 结构与配色由 style.css 的 mra-modal-* 类承载，这里只设动态值（maxWidth / titleColor）。
+  // 键盘可达性（所有弹窗经本函数免费获得）：开卡即聚焦卡内第一个可聚焦元素，
+  // Tab/Shift+Tab 在卡内首尾回环不逃逸，关闭后焦点归还触发元素；
+  // 卡片带 role=dialog + aria-modal + aria-labelledby（指向标题）。
+  let _modalTitleSeq = 0;
   function openModal(opts) {
+    const prevFocus = document.activeElement; // 关闭后焦点归还目标
     const overlay = document.createElement('div');
     overlay.className = 'mra-modal-overlay';
     const card = document.createElement('div');
     card.className = 'mra-modal-card mra-modal-card--enter';
+    card.tabIndex = -1; // 卡内无按钮时的兜底聚焦目标
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
     // 动态值：卡片最大宽度按场景传参，经 CSS 变量落到样式表定义的默认值之上
     if (opts.maxWidth) card.style.setProperty('--mra-modal-max-width', opts.maxWidth + 'px');
     const h3 = document.createElement('h3');
     h3.className = 'mra-modal-title';
+    h3.id = 'mra-modal-title-' + (++_modalTitleSeq);
+    card.setAttribute('aria-labelledby', h3.id);
     // 动态值：标题色按场景取状态色 token（danger/warning/info），缺省用类里的正文色
     if (opts.titleColor) h3.style.color = opts.titleColor;
     h3.textContent = opts.title || '';
@@ -26,23 +36,43 @@
     body.innerHTML = opts.bodyHtml || '';
     card.appendChild(body);
     const modal = { overlay, card, close };
-    // Esc 关闭：监听挂 document，仅最顶层（DOM 中最后一个 overlay）响应；close 时解绑防泄漏
-    document.addEventListener('keydown', onEscKey);
-    function onEscKey(ev) {
-      if (ev.key !== 'Escape') return;
-      const overlays = document.querySelectorAll('.mra-modal-overlay');
-      if (!overlays.length || overlays[overlays.length - 1] !== overlay) return;
-      ev.preventDefault();
-      modal.close();
+    // 卡内可聚焦元素（打开时实时查询：bodyHtml 里也可能有按钮/链接）
+    const focusables = () => Array.from(card.querySelectorAll(
+      'a[href], button:not(:disabled), input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )).filter((el) => el.offsetParent !== null);
+    // Esc 关闭 + Tab 焦点陷阱：监听挂 document，仅最顶层（DOM 中最后一个 overlay）响应；close 时解绑防泄漏
+    document.addEventListener('keydown', onKeydown);
+    function onKeydown(ev) {
+      if (ev.key === 'Escape') {
+        const overlays = document.querySelectorAll('.mra-modal-overlay');
+        if (!overlays.length || overlays[overlays.length - 1] !== overlay) return;
+        ev.preventDefault();
+        modal.close();
+        return;
+      }
+      if (ev.key !== 'Tab') return;
+      const els = focusables();
+      if (!els.length) { ev.preventDefault(); card.focus(); return; }
+      const first = els[0];
+      const last = els[els.length - 1];
+      const cur = document.activeElement;
+      if (ev.shiftKey) {
+        if (cur === first || cur === card) { ev.preventDefault(); last.focus(); }
+      } else if (cur === last || !card.contains(cur)) {
+        ev.preventDefault(); first.focus();
+      }
     }
     function close() {
       if (overlay._closing) return;
       overlay._closing = true;
-      document.removeEventListener('keydown', onEscKey);
+      document.removeEventListener('keydown', onKeydown);
       overlay.classList.add('mra-modal-overlay--closing');
       card.classList.add('mra-modal-card--closing');
-      // 与 --mra-duration-fast（0.15s）退出动画同拍，动画结束后移除节点
-      setTimeout(() => overlay.remove(), 160);
+      // 与 --mra-duration-fast（0.15s）退出动画同拍，动画结束后移除节点、焦点归还触发元素
+      setTimeout(() => {
+        overlay.remove();
+        if (prevFocus && typeof prevFocus.focus === 'function') prevFocus.focus();
+      }, 160);
     }
     if (Array.isArray(opts.buttons) && opts.buttons.length) {
       const row = document.createElement('div');
@@ -68,6 +98,7 @@
     overlay.appendChild(card);
     document.body.appendChild(overlay);
     overlay.addEventListener('click', (ev) => { if (ev.target === overlay) modal.close(); });
+    (focusables()[0] || card).focus(); // 开卡即把焦点请进卡内（陷阱的起点）
     // 进场动画结束后摘动画类：卡片回归主文档光栅化，避免非整数 DPI 下文字发虚（同 page-slide-in 手法）
     card.addEventListener('animationend', (ev) => {
       if (ev.animationName === 'modal-card-in') card.classList.remove('mra-modal-card--enter');

@@ -102,7 +102,7 @@
                 <i data-icon="trash"></i>
               </button>
               <button class="icon-btn" id="btn-log-copy" title="复制">
-                <i data-icon="copy"></i>
+                <morph-icon reduced-motion="user"></morph-icon>
               </button>
             </div>
           </div>
@@ -196,9 +196,16 @@
       <i data-icon="media-stop"></i>
       停止
     </button>
-    <button class="mra-btn" id="btn-start">
-      <i data-icon="media-play"></i>
-      开始运行
+    <button class="mra-btn mra-btn--start" id="btn-start">
+      <span class="mra-start-layer mra-start-layer--idle">
+        <i data-icon="media-play"></i>
+        开始运行
+      </span>
+      <span class="mra-start-layer mra-start-layer--armed" aria-hidden="true">
+        <i data-icon="x"></i>
+        再点取消
+        <span class="mra-start-digits" aria-hidden="true"><span class="mra-start-digit-col"><span>3</span><span>2</span><span>1</span></span></span>
+      </span>
     </button>
   </footer>
 

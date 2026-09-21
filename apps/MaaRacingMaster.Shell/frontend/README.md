@@ -56,9 +56,25 @@ RPC 层不信任调用方给的地址。
   上游是相对 import 的多 chunk ESM，`file://` 页面下模块静态 import 会被拦截。
   **升级时重新摊平，勿手改本文件函数体**。
 - 用法：`<morph-icon reduced-motion="user">` + `el.icon = MRAIcons.node(...)`
-  （换 icon 即弹簧变形）；`defineMorphIcon()` 已由 app.js 启动时调用。
-- 现成用例：数据页「实时预览」放大/还原按钮（scan ↔ shrink）。
+  （换 icon 即弹簧变形）；`defineMorphIcon()` 已由 rpc.js 启动时调用。
+- 现成用例：数据页「实时预览」放大/还原按钮（scan ↔ shrink）；
+  主控页日志复制按钮的结果反馈（copy ↔ check / x，见 `js/log.js`）。
   成就系统等后续动画场景直接复用这套模式。
+
+## 键盘可达性（免维护约定）
+
+- **焦点环**：style.css 顶部一条全局 `:focus-visible { outline: 2px solid var(--mra-primary) }`
+  覆盖所有交互元素；`:focus-visible` 只在键盘/程序化导航时命中，鼠标点击不出环，
+  所以**控件类里不要再写 `outline: none`**（旧四处已删）。特例只允许改偏移：
+  窗控按钮贴屏幕边缘用 `outline-offset: -2px` 内收。
+- **模态焦点陷阱**：`openModal`（js/modal.js）自带——开卡聚焦卡内第一个可聚焦元素、
+  Tab/Shift+Tab 卡内回环、关闭归还焦点、`role=dialog + aria-modal + aria-labelledby`。
+  经 openModal 的弹窗零成本继承；自绘浮层若要做陷阱，参照其实现而不是另起一套。
+- **开关 aria 接线**：`.option-row` 结构里的 `.mra-toggle[role="switch"]` 由
+  `wireSwitchAria`（js/settings.js）按结构自动挂 `aria-labelledby`/`aria-describedby`
+  （引用 id 从开关自身 id 派生 `-label`/`-desc`）。**新开关只要按 option-row 既有结构
+  写、开关带 id 即可**，不要手写 aria 属性；函数幂等，静态启动跑一次、模板重渲染在
+  `bindModulePages` 再跑一次。
 
 ## 文字扫描光效（`.mra-text-scan`）
 

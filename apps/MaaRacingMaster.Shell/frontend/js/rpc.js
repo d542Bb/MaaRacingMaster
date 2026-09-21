@@ -56,7 +56,8 @@ window.MRA = (function () {
   window.mra = mra;
 
   // 静态 HTML 的 <i data-icon> 占位替换为真源 SVG（icons.js 先于本文件加载）。
-  // 必须在其余模块脚本之前执行：run.js 加载时会备份「开始」按钮的 innerHTML（含已水合的图标）。
+  // 覆盖对象是 index.html 静态骨架；模块动态内容经 MRAIcons.svg / appendIcon 自取，
+  // 不依赖此处时序。
   MRAIcons.hydrate(document);
   // 注册 <morph-icon> 自定义元素（vendor.morphicons.js 先于本文件加载；幂等）
   if (window.MorphIcons) MorphIcons.defineMorphIcon();
