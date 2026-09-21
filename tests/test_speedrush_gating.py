@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -234,6 +235,33 @@ def test_frame_is_read_even_without_recorder(env) -> None:
     assert mod._drive(1) is True
     assert ctx.capture.calls > 0
     assert not (sr.data_dir() / "speedrush" / "demos").exists()
+
+
+# ---------- 感知接线（perception_mode） ----------
+
+
+def test_drive_loop_with_perception_mode_runs(env) -> None:
+    """感知模式开启时主循环的回归锁。
+
+    2026-09-21 审查发现：调用点曾把 phase 多传给了 _ensure_perception()（无参方法），
+    perception_mode 开启后每个 tick 都抛 TypeError——既有测试只覆盖了默认关闭的路径。
+    预置 _perception 绕开模型加载，锁的是调用点与消费路径本身。
+    """
+    mod, _, _ = env
+    calls: list[int] = []
+
+    def _detect(frame, frame_id=0, ts_ns=0):
+        calls.append(frame_id)
+        return SimpleNamespace(infer_ms=1.0)
+
+    mod._perception_mode = True
+    mod._perception = SimpleNamespace(detect=_detect)
+    _set_graph(mod, [True, False, False])
+
+    assert mod._drive_loop(1, None) is True
+    assert len(calls) >= 3  # 有帧的每个 tick 都应推理一次
+    assert mod._last_perception is not None
+    assert mod._infer_times  # 感知耗时进了节拍报告的记账
 
 
 # ---------- 录制接入 ----------

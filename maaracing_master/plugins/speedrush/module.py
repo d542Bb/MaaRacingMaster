@@ -427,7 +427,7 @@ class SpeedRushModule(ActivityModule):
             if recorder is not None and frame is not None:
                 recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
             if self._perception_mode and frame is not None:
-                perc = self._ensure_perception(phase)
+                perc = self._ensure_perception()
                 if perc is not None:
                     result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
                     self._last_perception = result
