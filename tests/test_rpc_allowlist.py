@@ -71,7 +71,11 @@ def test_cs_allowlist_matches_python_handlers():
 
 
 def test_frontend_calls_within_allowlist():
-    """前端所有 mra.call('name') 字面量必须在 C# 白名单内。"""
+    """前端所有 mra.call('name') 字面量必须在 C# 白名单内。
+
+    必须递归扫 frontend/：前端按 js/ 子目录分模块后，非递归 glob 只覆盖根层
+    文件，子目录里的调用点会静默脱离看护（实测从 28 处掉到 10 处）。
+    """
     src = RPC_BRIDGE.read_text(encoding="utf-8")
     m = re.search(
         r"AllowedMethods = new\(StringComparer\.Ordinal\)\s*\{(.*?)\};",
@@ -80,9 +84,11 @@ def test_frontend_calls_within_allowlist():
     assert m
     allowed = set(re.findall(r'"([a-z_]+)"', m.group(1)))
     called: set[str] = set()
-    for js in FRONTEND_DIR.glob("*.js"):
+    for js in FRONTEND_DIR.rglob("*.js"):
         called.update(re.findall(r"mra\.call\(\s*'([a-z_]+)'", js.read_text(encoding="utf-8")))
         called.update(re.findall(r'mra\.call\(\s*"([a-z_]+)"', js.read_text(encoding="utf-8")))
+    # 空过防护：抽取规则或扫描范围失效时报错，而不是静默通过
+    assert called, "未抽到任何 mra.call 字面量，扫描范围或抽取规则已失效"
     rogue = called - allowed
     assert not rogue, f"前端调用了白名单外方法：{sorted(rogue)}"
 

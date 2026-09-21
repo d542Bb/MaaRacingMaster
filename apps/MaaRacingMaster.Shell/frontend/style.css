@@ -51,6 +51,12 @@
   /* 字体 */
   --mra-font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
   --mra-font-mono: "Consolas", "JetBrains Mono", "Cascadia Code", "SF Mono", monospace;
+
+  /* 动效时长（就近归类既有字面量：0.12/0.15s → fast，0.18/0.2s → base，0.3/0.32s → slow。
+     keyframes 周期与需和 JS 计时器配对的个例仍写字面量，在各用处注释说明） */
+  --mra-duration-fast: 0.15s;
+  --mra-duration-base: 0.2s;
+  --mra-duration-slow: 0.3s;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -86,7 +92,7 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
   height: 100%; padding: 0 16px; border: none; background: transparent;
   font-size: 13px; font-weight: 400; color: var(--mra-foreground-secondary);
   cursor: pointer; font-family: var(--mra-font-sans);
-  transition: color 0.2s ease, font-weight 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: color var(--mra-duration-base) ease, font-weight var(--mra-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
 }
 .mra-tab:hover { color: var(--mra-foreground); }
 .mra-tab--active { font-weight: 600; color: var(--mra-foreground); }
@@ -94,7 +100,7 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
 .tab-slider {
   position: absolute; bottom: 0; left: 0; height: 2px;
   background: var(--mra-primary); border-radius: 1px 1px 0 0;
-  transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1), width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: left var(--mra-duration-slow) cubic-bezier(0.22, 1, 0.36, 1), width var(--mra-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
 /* 自绘窗口控制按钮：整块注册为 Passthrough 交互区（输入穿透非客户区交给 HTML） */
@@ -129,7 +135,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 
 /* Tab 切换滑动（缓动曲线）：仅对新页做单次滑入，方向由 JS 的 --slide-from 决定 */
 .page-slide-in {
-  animation: page-slide 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: page-slide var(--mra-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform, opacity;
 }
 @keyframes page-slide {
@@ -284,7 +290,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   border-radius: var(--mra-radius-sm); border: 1px solid var(--mra-border);
   background: var(--mra-surface); color: var(--mra-foreground);
   font-size: 13px; font-family: var(--mra-font-sans);
-  outline: none; transition: border-color 0.12s;
+  outline: none; transition: border-color var(--mra-duration-fast);
 }
 .mra-field-control input[type="number"]:focus { border-color: var(--mra-primary); }
 .mra-field-control input[type="number"]:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -308,7 +314,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .mra-breakpoint-item {
   display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 16px;
   cursor: default; border-left: 2px solid transparent; border-bottom: 1px solid var(--mra-border-light);
-  transition: background-color 0.12s ease; user-select: none;
+  transition: background-color var(--mra-duration-fast) ease; user-select: none;
 }
 /* 阶段进度只读：不提供可点击 hover 反馈 */
 .mra-breakpoint-item:hover { background: transparent; }
@@ -330,7 +336,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .icon-btn {
   width: 28px; height: 28px; border: none; border-radius: 4px; background: transparent;
   display: flex; align-items: center; justify-content: center; cursor: pointer;
-  color: var(--mra-foreground-muted); transition: all 0.15s ease;
+  color: var(--mra-foreground-muted); transition: all var(--mra-duration-fast) ease;
 }
 .icon-btn:hover { background: var(--mra-surface-hover); color: var(--mra-foreground-secondary); }
 .icon-btn svg { width: 14px; height: 14px; }
@@ -367,7 +373,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .log-chev {
   width: 14px; flex-shrink: 0; font-size: 10px; text-align: center;
   color: var(--mra-foreground-muted);
-  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1); /* 与正文高度同拍，箭头不先到 */
+  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1); /* 与正文高度同拍，箭头不先到 */
 }
 .log-section--open .log-chev { transform: rotate(90deg); }
 .log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
@@ -386,7 +392,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .log-section-body {
   height: 0; overflow: hidden;
   interpolate-size: allow-keywords;
-  transition: height 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: height var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
 }
 .log-section--open .log-section-body { height: auto; }
 @media (prefers-reduced-motion: reduce) {
@@ -442,7 +448,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .board-egg-num {
   font-size: 12px; font-weight: 600; line-height: 1;
   padding: 0 8px; font-variant-numeric: tabular-nums;
-  transition: opacity .2s ease;
+  transition: opacity var(--mra-duration-base) ease;
 }
 .board-egg-num + .board-egg-num { border-left: 1px solid rgba(74, 81, 96, 0.18); }
 .board-egg-num--red { color: var(--mra-danger); }
@@ -473,13 +479,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .mra-toggle {
   position: relative; width: 40px; height: 24px; border-radius: 12px;
   background-color: var(--mra-border-strong); cursor: pointer; flex-shrink: 0;
-  transition: background-color 0.2s ease; border: none; outline: none;
+  transition: background-color var(--mra-duration-base) ease; border: none; outline: none;
 }
 .mra-toggle::after {
   content: ''; position: absolute; top: 2px; left: 2px;
   width: 20px; height: 20px; border-radius: 50%;
   background-color: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-  transition: transform 0.2s ease;
+  transition: transform var(--mra-duration-base) ease;
 }
 .mra-toggle--active { background-color: var(--mra-primary); }
 .mra-toggle--active::after { transform: translateX(16px); }
@@ -494,7 +500,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .radio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .mra-radio-card {
   border: 1.5px solid var(--mra-border); border-radius: var(--mra-radius-md);
-  padding: 12px; cursor: pointer; transition: all 0.15s ease;
+  padding: 12px; cursor: pointer; transition: all var(--mra-duration-fast) ease;
   background-color: var(--mra-surface);
 }
 .mra-radio-card:hover { border-color: var(--mra-border-strong); }
@@ -509,7 +515,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .mra-radio-dot::after {
   content: ''; position: absolute; top: 50%; left: 50%;
   width: 8px; height: 8px; border-radius: 50%; background-color: var(--mra-primary);
-  transform: translate(-50%, -50%) scale(0); transition: transform 0.15s ease;
+  transform: translate(-50%, -50%) scale(0); transition: transform var(--mra-duration-fast) ease;
 }
 .radio-title { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--mra-foreground); }
 .radio-title strong { font-weight: 600; }
@@ -545,7 +551,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .perf-spark { display: block; width: 100%; height: 22px; margin: 2px 0 4px; }
 .perf-spark polyline { fill: none; stroke: var(--mra-foreground-muted); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
 .mra-perf-bar { height: 4px; border-radius: 2px; background-color: var(--mra-border-light); overflow: hidden; }
-.mra-perf-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
+.mra-perf-bar-fill { height: 100%; border-radius: 2px; transition: width var(--mra-duration-slow) ease; }
 .mra-perf-bar-fill--success { background-color: var(--mra-success); }
 .mra-perf-bar-fill--warning { background-color: var(--mra-warning); }
 .mra-perf-bar-fill--danger { background-color: var(--mra-danger); }
@@ -635,7 +641,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   padding: 14px 8px; border-radius: var(--mra-radius-md);
   background-color: var(--mra-surface); border: 1px solid var(--mra-border);
-  cursor: pointer; transition: all 0.15s ease; font-family: var(--mra-font-sans);
+  cursor: pointer; transition: all var(--mra-duration-fast) ease; font-family: var(--mra-font-sans);
 }
 .mra-tool-btn:hover { background-color: var(--mra-surface-hover); border-color: var(--mra-border-strong); }
 .mra-tool-btn:active { background-color: var(--mra-surface-active); }
@@ -675,18 +681,67 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font-family: var(--mra-font-mono); font-size: 16px; font-weight: 700;
   color: var(--mra-primary);
   text-shadow: 0 2px 10px rgba(229, 72, 77, 0.35);
+  /* 0.5s 淡出与 app.js spawnFallingText 的 setTimeout(500) 配对，不套用时长 token */
   will-change: transform, opacity; transition: opacity 0.5s ease;
 }
 
-/* 通用模态弹窗（app.js openModal）：WinUI 原生风格弹出/退出动画 */
-.mra-modal-overlay { animation: modal-overlay-in 0.15s ease-out both; }
-.mra-modal-overlay--closing { animation: modal-overlay-out 0.12s ease-in both; }
-.mra-modal-card { animation: modal-card-in 0.2s cubic-bezier(0.1, 0.9, 0.2, 1) both; }
-.mra-modal-card--closing { animation: modal-card-out 0.12s ease-in both; }
+/* 通用模态弹窗（js/modal.js openModal）：WinUI 原生风格弹出/退出动画。
+   结构与配色全部落在 mra-modal-* 类；JS 只设动态值（--mra-modal-max-width 与标题色）。 */
+.mra-modal-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  animation: modal-overlay-in var(--mra-duration-fast) ease-out both;
+}
+.mra-modal-overlay--closing { animation: modal-overlay-out var(--mra-duration-fast) ease-in both; }
+.mra-modal-card {
+  background: var(--mra-surface); border: 1px solid var(--mra-border);
+  border-radius: var(--mra-radius-xl); padding: 22px 24px;
+  max-width: var(--mra-modal-max-width, 420px); width: 92%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  display: flex; flex-direction: column; max-height: 86vh;
+}
+/* 进场动画单独成类：JS 在 animationend 后摘掉它（保留卡片布局类），让卡片回归主文档光栅化 */
+.mra-modal-card--enter { animation: modal-card-in var(--mra-duration-base) cubic-bezier(0.1, 0.9, 0.2, 1) both; }
+.mra-modal-card--closing { animation: modal-card-out var(--mra-duration-fast) ease-in both; }
 @keyframes modal-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modal-overlay-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes modal-card-in { from { opacity: 0; transform: scale(1.06); } to { opacity: 1; transform: scale(1); } }
 @keyframes modal-card-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(1.05); } }
+.mra-modal-title { margin: 0 0 10px; font-size: 15px; flex-shrink: 0; color: var(--mra-foreground); }
+/* 内容区滚动：标题/按钮固定，超出 86vh 只滚 body；长串（注册表路径等）强制断行防溢出 */
+.mra-modal-body { overflow-y: auto; min-height: 0; word-break: break-word; }
+.mra-modal-actions {
+  display: flex; gap: 10px; justify-content: flex-end; align-items: center;
+  margin-top: 14px; flex-shrink: 0;
+}
+.mra-modal-btn {
+  cursor: pointer; border-radius: var(--mra-radius-md); font-size: 13px; padding: 8px 16px;
+  border: 1px solid var(--mra-border); background: transparent;
+  color: var(--mra-foreground-secondary); font-family: var(--mra-font-sans);
+}
+.mra-modal-btn--primary {
+  border: none; background: var(--mra-primary); color: var(--mra-primary-foreground);
+}
+.mra-modal-link { font-size: 12px; color: var(--mra-info); }
+/* 弹窗正文内容类（各场景 bodyHtml 用） */
+.mra-modal-text { margin: 0 0 8px; font-size: 13px; line-height: 1.6; color: var(--mra-foreground); }
+.mra-modal-text--flush { margin: 0; }
+.mra-modal-text--sub { margin: 0; font-size: 12px; line-height: 1.6; color: var(--mra-foreground-secondary); }
+.mra-modal-error { margin: 0; font-size: 12px; color: var(--mra-danger); }
+/* 手柄须知：多段说明文字 */
+.mra-modal-notice { font-size: 13px; line-height: 1.7; color: var(--mra-foreground); }
+.mra-modal-notice p { margin: 0 0 10px; }
+.mra-modal-notice p.mra-modal-notice-hint { margin: 0; color: var(--mra-foreground-secondary); }
+/* 员工守则：图标 + 规则列表 */
+.mra-modal-rules { display: flex; gap: 14px; align-items: flex-start; }
+.mra-modal-rules-icon { width: 40px; height: 40px; flex-shrink: 0; margin-top: 4px; }
+.mra-modal-rules-list { flex: 1; min-width: 0; max-height: 56vh; overflow-y: auto; padding-right: 4px; }
+.mra-modal-rule {
+  display: flex; gap: 10px; margin: 0 0 10px;
+  font-size: 13px; line-height: 1.7; color: var(--mra-foreground);
+}
+.mra-modal-rule-num { flex-shrink: 0; color: var(--mra-primary); }
 .ver-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; min-height: 22px; }
 .ver-status--ok { color: var(--mra-success); }
 .ver-status--new { color: var(--mra-primary); font-weight: 500; }
@@ -706,7 +761,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .spinner {
   width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
   border: 2px solid var(--mra-border-strong); border-top-color: var(--mra-info);
-  animation: mra-spin 0.8s linear infinite;
+  animation: mra-spin 0.8s linear infinite; /* 0.8s 为 keyframes 周期，非过渡时长，不套用 token */
 }
 @keyframes mra-spin { to { transform: rotate(360deg); } }
 
@@ -738,7 +793,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .tech-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .tech-item {
   display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: var(--mra-radius-sm);
-  transition: background-color 0.15s ease;
+  transition: background-color var(--mra-duration-fast) ease;
 }
 .tech-item:hover { background: var(--mra-surface-hover); }
 .tech-icon {
@@ -772,7 +827,7 @@ footer {
 .mra-status-dot--running { background: var(--mra-success); }
 .mra-status-dot--stopping { background: var(--mra-warning); }
 .mra-status-dot--error { background: var(--mra-danger); }
-.mra-status-dot--pulse { animation: mra-status-pulse 2s ease-in-out infinite; }
+.mra-status-dot--pulse { animation: mra-status-pulse 2s ease-in-out infinite; } /* 2s 为 keyframes 周期，非过渡时长，不套用 token */
 @keyframes mra-status-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
   50% { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
@@ -788,7 +843,7 @@ footer .spacer { flex: 1; }
   background: var(--mra-surface);
   color: var(--mra-foreground-secondary);
   padding: 0 12px;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  transition: background var(--mra-duration-fast) ease, border-color var(--mra-duration-fast) ease, color var(--mra-duration-fast) ease, box-shadow var(--mra-duration-fast) ease;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -850,7 +905,7 @@ footer .spacer { flex: 1; }
   justify-content: center;
   gap: 7px;
   padding: 0 8px;
-  transition: all 0.15s ease;
+  transition: all var(--mra-duration-fast) ease;
 }
 .mra-segmented .seg-btn:hover {
   background: var(--mra-surface);
@@ -912,7 +967,7 @@ footer .spacer { flex: 1; }
   list-style: none; user-select: none; display: inline-flex; align-items: center; gap: 5px;
 }
 .opt-details > summary::-webkit-details-marker { display: none; }
-.opt-details > summary::before { content: '▸'; font-size: 9px; transition: transform 0.15s ease; }
+.opt-details > summary::before { content: '▸'; font-size: 9px; transition: transform var(--mra-duration-fast) ease; }
 .opt-details[open] > summary::before { transform: rotate(90deg); }
 .opt-details-body {
   margin-top: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.7;
@@ -935,7 +990,7 @@ footer .spacer { flex: 1; }
 .opt-btn {
   cursor: pointer; border-radius: var(--mra-radius-sm); font-size: 12px; padding: 5px 12px;
   font-family: var(--mra-font-sans); white-space: nowrap;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background var(--mra-duration-fast) ease, border-color var(--mra-duration-fast) ease, color var(--mra-duration-fast) ease;
 }
 .opt-btn--primary { border: none; background: var(--mra-primary); color: #fff; }
 .opt-btn--primary:hover:not(:disabled) { background: var(--mra-primary-hover); }

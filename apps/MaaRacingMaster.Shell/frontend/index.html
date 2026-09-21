@@ -206,6 +206,14 @@
   <script src="icons.js"></script>
   <script src="vendor.morphicons.js"></script>
   <script src="peep-consumer.js"></script>
+  <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MRA 共享命名空间（必须最先），
+       app.js 是启动装配入口（必须最后）；中间模块只经 window.MRA 互相取用。 -->
+  <script src="js/rpc.js"></script>
+  <script src="js/modal.js"></script>
+  <script src="js/log.js"></script>
+  <script src="js/preview.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/run.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

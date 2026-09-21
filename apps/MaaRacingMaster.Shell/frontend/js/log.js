@@ -1,0 +1,187 @@
+// MaaRM shell 前端 —— 运行日志：fetch_logs 轮询、区块化渲染（参考 MAA：锚点分段 +
+// 区块卡片 + 色点级别）、日志按钮（清空/复制）。跨文件调用经 window.MRA（见文件末尾导出）。
+(function () {
+  'use strict';
+
+  // 共享物导入（js/rpc.js 已先行加载）
+  const { mra, $ } = window.MRA;
+
+  async function pollLogs() {
+    try {
+      const d = await mra.call('fetch_logs');
+      if (d && d.lines && d.lines.length > 0) appendLogs(d.lines);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTimeout(pollLogs, 400);
+    }
+  }
+
+  const levelClassMap = { INFO: 'INFO', OK: 'OK', WARNING: 'WARNING', ERROR: 'ERROR', DEBUG: 'DEBUG' };
+
+  // 分段锚点：命中 → 关闭当前区块、开启新区块并把该行作为区块头部。
+  // type 决定区块配色：phase=进入阶段主分隔 / session=会话开始 / loop=场次分隔
+  const SECTION_ANCHORS = [
+    { re: /^\[鉴宝\] 进入阶段\s*:/, type: 'phase' },
+    { re: /^\[鉴宝\] 模块启动/, type: 'session' },
+    { re: /^\[鉴宝\] 从断点开始/, type: 'session' },
+    { re: /^\[鉴宝循环\] 完成 \d+ 场/, type: 'loop' },
+    { re: /^\[鉴宝循环\] 已到每日循环上限/, type: 'loop' },
+    { re: /^鉴宝观察会话总结/, type: 'loop' },
+    { re: /^已连接窗口 \(hWnd=/, type: 'session' },
+    { re: /^断点模式\s*:/, type: 'session' },
+    { re: /^紧急停止/, type: 'session' },
+    { re: /^连接窗口超时/, type: 'session' },
+  ];
+  function matchSectionAnchor(msg) {
+    for (const a of SECTION_ANCHORS) if (a.re.test(msg)) return a.type;
+    return null;
+  }
+  // 关键词着色规则（先长后短，避免 [鉴宝] 先匹配破坏 [鉴宝循环]/[鉴宝落盘]）
+  const KW_RULES = [
+    { re: /\[鉴宝循环\]/g, cls: 'log-kw--ok' },
+    { re: /\[鉴宝落盘\]/g, cls: 'log-kw--ok' },
+    { re: /\[鉴宝\]/g, cls: 'log-kw' },
+    { re: /进入阶段/g, cls: 'log-kw' },
+    { re: /完成 \d+ 场/g, cls: 'log-kw--ok' },
+    { re: /已到每日循环上限/g, cls: 'log-kw--warn' },
+  ];
+  function escapeHtml(s) {
+    return s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  }
+  function highlightKeywords(s) {
+    KW_RULES.forEach((r) => {
+      s = s.replace(r.re, (m) => '<span class="' + r.cls + '">' + m + '</span>');
+    });
+    return s;
+  }
+
+  // 当前区块状态（appendLogs 内部维护；清空日志时重置）
+  let _curSec = null; // { el, count, hasError, hasWarn }
+
+  function updateSectionMeta(sec, count, hasError, hasWarn) {
+    // 计数徽章按专属类取：`!` 标记也带 .log-badge，用裸 .log-badge 会取到标记本身，
+    // 标记在下面被移除后就变成「非本节点子节点」，insertBefore 抛 NotFoundError，
+    // 该批次剩余的行整批丢失（且计数从此不再更新）。
+    const badge = sec.querySelector('.log-badge--count');
+    if (badge) badge.textContent = String(count || 0);
+    const meta = sec.querySelector('.log-section-meta');
+    if (!meta) return;
+    meta.querySelectorAll('.log-badge--warn, .log-badge--err').forEach((b) => b.remove());
+    if (hasError || hasWarn) {
+      const marker = document.createElement('span');
+      marker.className = hasError ? 'log-badge log-badge--err' : 'log-badge log-badge--warn';
+      marker.textContent = '!';
+      meta.insertBefore(marker, badge);
+    }
+  }
+
+  function bindSectionToggle(sec) {
+    const head = sec.querySelector('.log-section-head');
+    if (!head || head.dataset.bound) return;
+    head.dataset.bound = '1';
+    head.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      sec.classList.toggle('log-section--open');
+    });
+  }
+
+  // 关闭当前区块：统计细节行数/告警、刷新徽章（含错误/警告时卡头挂「!」标记），然后绑上点击开关。
+  // 展开态不在这里动——含错误的区块也折叠着交出去，错误靠徽章提示，点一下即可看细节。
+  function finalizeSection(sec) {
+    let count = 0, hasError = false, hasWarn = false;
+    sec.querySelectorAll('.log-section-body .log-line').forEach((d) => {
+      count++;
+      if (d.classList.contains('log-line--ERROR')) hasError = true;
+      else if (d.classList.contains('log-line--WARNING')) hasWarn = true;
+    });
+    updateSectionMeta(sec, count, hasError, hasWarn);
+    bindSectionToggle(sec);
+  }
+
+  // 「只在已贴底时才自动跟随」：判定必须在追加之前取——追加会抬高 scrollHeight，
+  // 追加后再比就永远算不出「用户已经翻上去了」。阈值覆盖 .log-area 的 12px 底部内边距。
+  const FOLLOW_BOTTOM_PX = 24;
+  function isNearBottom(el) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX;
+  }
+
+  function appendLogs(lines) {
+    const area = $('log-area');
+    const followBottom = isNearBottom(area); // 整批共用一次判定：用户在翻旧卡时不许被拽回底部
+    lines.forEach((raw) => {
+      const div = document.createElement('div');
+      div.className = 'log-line';
+      div.dataset.raw = raw; // 复制/导出保留原始完整行（含时间/级别）
+      const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\] \[(\w+)\] ([\s\S]*)$/);
+      if (!m) {
+        // 无法识别格式的原始行：降级为散行直接显示，不落分段
+        div.textContent = raw;
+        area.appendChild(div);
+        return;
+      }
+      const ts = m[1];
+      const lvl = levelClassMap[m[2]] ? m[2] : 'INFO';
+      const msg = m[3];
+      // 面板上的第一行也开卡：首个锚点之前还有一批运行环境行（PEEP 预览 / 配置注入 /
+      // 连接窗口之前），不这样它们只能裸挂在面板上、脱离卡片体系。
+      const anchorType = matchSectionAnchor(msg) || (_curSec ? null : 'session');
+      if (!anchorType) {
+        // 非锚点行 → 追加到当前区块正文（卡片默认折叠，细节行展开后才看得见）。
+        // 走到这里必然已有当前区块：首行是结构化行时上面已把它当隐式锚点开了卡，
+        // 非结构化行则在前面就降级成散行返回了。
+        const row = div;
+        row.classList.add('log-line--' + lvl);
+        row.innerHTML =
+          '<span class="log-dot"></span>' +
+          '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>';
+        _curSec.el.querySelector('.log-section-body').appendChild(row);
+        _curSec.count += 1;
+        if (lvl === 'ERROR') _curSec.hasError = true;
+        else if (lvl === 'WARNING') _curSec.hasWarn = true;
+        updateSectionMeta(_curSec.el, _curSec.count, _curSec.hasError, _curSec.hasWarn);
+        return;
+      }
+      // 锚点：先关闭上一区块（统计/徽章），再开新区块并把该行作为头部（核心状态常显）
+      if (_curSec) { finalizeSection(_curSec.el); _curSec = null; }
+      const sec = document.createElement('div');
+      // 新区块默认折叠：细节行随到达累积进正文与计数徽章，展开与否交给用户点击
+      sec.className = 'log-section log-section--' + anchorType;
+      const head = document.createElement('div');
+      head.className = 'log-line log-section-head';
+      head.dataset.raw = raw;
+      head.innerHTML =
+        '<span class="log-chev">▸</span>' +
+        '<span class="log-msg">' + highlightKeywords(escapeHtml(msg)) + '</span>' +
+        '<span class="log-section-meta">' +
+          '<span class="log-badge log-badge--count">0</span>' +
+          '<span class="log-time">' + ts + '</span>' +
+        '</span>';
+      const body = document.createElement('div');
+      body.className = 'log-section-body';
+      sec.appendChild(head);
+      sec.appendChild(body);
+      area.appendChild(sec);
+      // 建卡即绑开关：默认折叠后，未收尾的「当前卡」也必须能点开看细节
+      // （以前只在 finalizeSection 里绑，默认展开时看不出缺；bindSectionToggle 自带去重）
+      bindSectionToggle(sec);
+      _curSec = { el: sec, count: 0, hasError: false, hasWarn: false };
+    });
+    if (followBottom) area.scrollTop = area.scrollHeight;
+  }
+
+  // ---------- 日志按钮 ----------
+  $('btn-log-clear').addEventListener('click', () => {
+    $('log-area').innerHTML = '';
+    _curSec = null;
+  });
+  $('btn-log-copy').addEventListener('click', () => {
+    const text = Array.from($('log-area').querySelectorAll('.log-line'))
+      .map((d) => d.dataset.raw || d.textContent).join('\n');
+    if (!text) return;
+    navigator.clipboard.writeText(text).catch(() => {});
+  });
+
+  // ---------- 导出到 window.MRA ----------
+  Object.assign(window.MRA, { pollLogs });
+})();
