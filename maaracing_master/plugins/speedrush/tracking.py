@@ -116,6 +116,26 @@ class FarTarget:
 
 
 @dataclass(frozen=True)
+class CoinGroup:
+    """金币组（v2 §三）：由 coin_group.CoinGroupAggregator 聚合产出，
+    经 attach 进 WorldObservation.coin_groups。评分器只吃组、不自行聚类。"""
+
+    group_id: int
+    member_ids: tuple[int, ...]        # 组内 TrackedTarget.id（跨帧由跟踪 id 维系）
+    observed_count: int
+    estimated_count: int               # v1 = observed（漏检折算待 §7.2 实测组内间距后升级）
+    x_center: float
+    x_span: float                      # 组横向占位（车道单位）
+    cy_min: int                        # 远端
+    cy_max: int                        # 近端
+    conf_min: float
+    partial_observation: bool          # 组内出现异常大间距 → 疑似漏检（宁可低估收益）
+    first_seen_fid: int
+    last_seen_fid: int
+    validity_until_fid: int
+
+
+@dataclass(frozen=True)
 class WorldObservation:
     schema_version: int
     frame_id: int
@@ -126,6 +146,7 @@ class WorldObservation:
     boundary: BoundarySummary | None
     targets: tuple[TrackedTarget, ...]     # 近→远（cy 降序）
     far_targets: tuple[FarTarget, ...]     # 近→远
+    coin_groups: tuple[CoinGroup, ...] = ()  # 契约扩展（加字段不破消费方，schema 仍 1）
 
 
 @dataclass(frozen=True)
