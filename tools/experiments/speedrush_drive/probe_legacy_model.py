@@ -42,7 +42,8 @@ def main() -> None:
     if not Path(MODEL).exists():
         print(f"模型不存在: {MODEL}")
         return
-    det = YOLODetector(MODEL, conf=0.25, iou=0.5)
+    # 有效阈值即旧栈 CLASS_CONF（三类均 0.35），conf 对全部类别生效
+    det = YOLODetector(MODEL, conf=0.35, iou=0.5)
     frames = sorted(glob.glob(FRAME_GLOB))
     print(f"模型: {MODEL}")
     print(f"帧数: {len(frames)}\n")
@@ -58,7 +59,7 @@ def main() -> None:
             print(f"{Path(f).name[:30]:>34s} 尺寸异常 {content.shape}")
             continue
         rgb = cv2.cvtColor(content, cv2.COLOR_BGR2RGB)
-        coins, cars, bonus, dets, raw = det(rgb)
+        by_class, dets, raw = det(rgb)
         by_cls: dict[str, list[float]] = {"coin": [], "car": [], "bonus_car": []}
         for d in dets:
             by_cls[d["class_name"]].append(d["confidence"])
@@ -67,8 +68,9 @@ def main() -> None:
             v = by_cls[k]
             return f"{max(v):.2f}" if v else "-"
 
-        print(f"{Path(f).name[:30]:>34s} {len(coins):>5d} {cmax('coin'):>6s} "
-              f"{len(cars):>4d} {cmax('car'):>6s} {len(bonus):>6d} {len(raw):>4d}")
+        print(f"{Path(f).name[:30]:>34s} {len(by_class['coin']):>5d} {cmax('coin'):>6s} "
+              f"{len(by_class['car']):>4d} {cmax('car'):>6s} "
+              f"{len(by_class['bonus_car']):>6d} {len(raw):>4d}")
 
 
 if __name__ == "__main__":

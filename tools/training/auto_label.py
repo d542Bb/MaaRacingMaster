@@ -33,14 +33,15 @@ def main():
         return
 
     # 预标用较低阈值（宁可多标假阳性，回头删比手标省事）
-    detector = YOLODetector(str(model_path), conf=0.25, iou=0.5)
-    # coin 和 bonus_car 再单独降低
-    detector.CLASS_CONF = {0: 0.15, 1: 0.30, 2: 0.15}
+    # car 走 conf 回退，coin / bonus_car 单独再降低
+    detector = YOLODetector(str(model_path), conf=0.30, iou=0.5,
+                            class_conf={"coin": 0.15, "bonus_car": 0.15})
+    name_to_id = {name: cid for cid, name in detector.classes.items()}
 
     images = sorted(img_dir.glob("*.jpg")) + sorted(img_dir.glob("*.png"))
     print(f"找到 {len(images)} 张图片")
 
-    total_labels = {0: 0, 1: 0, 2: 0}
+    total_labels = {name: 0 for name in name_to_id}
     skipped = 0
     auto_labeled = 0
 
@@ -59,14 +60,14 @@ def main():
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
         h, w = img_rgb.shape[:2]
-        coins, cars, bonus_cars, debug_dets, _all_raw = detector(img_rgb)
+        _by_class, debug_dets, _all_raw = detector(img_rgb)
 
         # 合并所有检测结果，转 YOLO 格式
         lines = []
         for d in debug_dets:
             x1, y1, x2, y2 = d["box"]
             cls_name = d["class_name"]
-            cls_id = {"coin": 0, "car": 1, "bonus_car": 2}.get(cls_name, -1)
+            cls_id = name_to_id.get(cls_name, -1)
             if cls_id < 0:
                 continue
 
@@ -79,7 +80,7 @@ def main():
             cx, cy = max(0, min(1, cx)), max(0, min(1, cy))
             bw, bh = max(0, min(1, bw)), max(0, min(1, bh))
             lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
-            total_labels[cls_id] = total_labels.get(cls_id, 0) + 1
+            total_labels[cls_name] += 1
 
         # 写入 .txt
         with open(label_path, "w") as f:
@@ -91,13 +92,12 @@ def main():
 
     print(f"\n完成！已有标注跳过 {skipped} 张，新预标 {auto_labeled} 张")
     print("标注统计（可手动修改 .txt 增删改）:")
-    print(f"  coin(0):       {total_labels[0]}")
-    print(f"  car(1):        {total_labels[1]}")
-    print(f"  bonus_car(2):  {total_labels[2]}")
-    print(f"  总计:          {sum(total_labels.values())}")
+    for cid, name in sorted(detector.classes.items()):
+        print(f"  {name}({cid}):{' ' * max(1, 12 - len(name))}{total_labels[name]}")
+    print(f"  总计:{' ' * 11}{sum(total_labels.values())}")
     print("\n下一步:")
     print("  1. 用 labelImg 打开检查/补标:")
-    print(f"     labelImg {img_dir} --labels coin,car,bonus_car")
+    print(f"     labelImg {img_dir} --labels {','.join(sorted(detector.classes.values()))}")
     print("  2. 补标完后复制到 dataset/images/train/ 和 dataset/labels/train/")
 
 
