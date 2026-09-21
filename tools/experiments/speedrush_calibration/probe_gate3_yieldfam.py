@@ -30,11 +30,13 @@ def main():
     base = load_base()
     tiles = []
     for lo, hi in BINS:
-        cands = []
+        cands, cands_curve = [], []
         for s, ds in by_sess.items():
             for d in ds:
-                if d["straight"] and d["rate"] is not None and lo <= d["rate"] < hi and d["n_sel"] >= 2:
-                    cands.append((s, d["seq"], d["n_sel"], d["rate"]))
+                if d["rate"] is not None and lo <= d["rate"] < hi and d["n_sel"] >= 2:
+                    (cands if d["straight"] else cands_curve).append((s, d["seq"], d["n_sel"], d["rate"]))
+        if len(cands) < 2:                      # 雨景直道门（hough 矢高）失效——退回弯道并标注
+            cands = [(s_, q_, n_, r_) for s_, q_, n_, r_ in cands_curve][:PER_BIN]
         cands.sort(key=lambda x: -x[2])
         picked, seen = [], set()
         for s, q, n, rt in cands:

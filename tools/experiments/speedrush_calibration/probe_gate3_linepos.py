@@ -24,6 +24,7 @@
 用法：.venv\\Scripts\\python.exe tools/experiments/speedrush_calibration/probe_gate3_linepos.py <session> [seq_start] [n_frames] [--intersect]
 """
 from __future__ import annotations
+import json
 import sys
 from pathlib import Path
 import numpy as np
@@ -109,10 +110,24 @@ def bimod(vals):
     return bc, float((q[2] - q[1]) / max(q[3] - q[0], 1e-6))
 
 
+def hud_race_mask(sess, rows):
+    """比赛态独立判据（2026-09-21 补采验收轮改）：HUD stage 字段==1/2（0.5s 采样，
+    最近邻 ±0.6s）。**不用 staged_filter stage4**——那是 VP 标定质量口径（内点数），
+    雨景新素材把它打死 83% 帧，但对线位/虚线检测无用且误杀（HUD 全程 stage=1）。"""
+    p = DEMOS / sess / "hud.jsonl"
+    seq_ts = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        h = json.loads(line)
+        v = h["fields"].get("stage", {}).get("value")
+        if v in (1, 2):
+            seq_ts.append(h["ts_ns"] / 1e9)
+    ts = np.array(seq_ts)
+    return np.array([bool(len(ts) and np.min(np.abs(ts - r["ts"])) <= 0.6) for r in rows])
+
+
 def window_race(sess, start, n):
-    base = load_base()
-    rows = staged_filter(g3.analyze_series1(sess), base["base"], score_intervals(sess))
-    race = [r for r in rows if r["stage"] == 4]
+    rows = g3.analyze_series1(sess)
+    race = [r for r, m in zip(rows, hud_race_mask(sess, rows)) if m]
     seqs = [r["seq"] for r in race]
     groups, cur = [], [seqs[0]]
     for s in seqs[1:]:
@@ -145,7 +160,7 @@ def main(sess, start=None, n=60, intersect=False):
     sm2 = straight_mask(sess, rows2)
     sms = {r["seq"]: bool(m) for r, m in zip(rows2, sm2)}
     frac = float(np.mean([sms.get(s, False) for s in win]))
-    cal = get_cal(sess, race)
+    cal = get_cal(sess, [r for r in race if r.get("vpx") is not None and r.get("y_h") is not None])
     y_h, vpx, ax = cal["y_h"], cal["vpx"], cal["A_x_used"]
     print(f"== 线位机械化(v3 逐轨) {sess}｜窗 seq {win[0]}~{win[-1]} n={len(win)}｜"
           f"直道占比 {frac:.0%}（Q4 输入）｜y_h={y_h:.1f} vpx={vpx:.1f} A_x={ax:.3f} ==")

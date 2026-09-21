@@ -59,14 +59,17 @@ def main(sessions):
             n_norate += 1
             continue
         rows, _ = analyze_series(sess, 2)
-        rows = staged_filter(rows, base["base"], score_intervals(sess))
         sm = straight_mask(sess, rows)
-        race = [(r, bool(m)) for r, m in zip(rows, sm) if r["stage"] == 4]
+        # 比赛态判据 = HUD stage∈{1,2}（补采验收轮改，同 linepos：staged_filter stage4
+        # 是 VP 标定质量口径，雨景误杀 83%）
+        from probe_gate3_linepos import hud_race_mask
+        hm = hud_race_mask(sess, rows)
+        race = [(r, bool(m)) for r, m, h in zip(rows, sm, hm) if h]
         if not race:
             continue
         step = max(1, len(race) // MAX_FRAMES)
         race = race[::step][:MAX_FRAMES]
-        cal = get_cal(sess, [r for r, _ in race])
+        cal = get_cal(sess, [r for r, _ in race if r.get("vpx") is not None and r.get("y_h") is not None])
         y_h, vpx, ax = cal["y_h"], cal["vpx"], cal["A_x_used"]
         ts = np.array([t for t, _ in hud])
         vs = np.array([v if v is not None else np.nan for _, v in hud])
