@@ -8,6 +8,28 @@
 > **信源等级**：L4（历史）—— 可作「当时改了什么、依据是什么」的依据；**不是**当前形态的依据（回真源与 L2 文档核对）。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)。
 
+## 2026-09-21
+
+### 暂存（未发布 · 待并入下一版本）refactor(shell/frontend)：app.js 拆为 js/ 六模块 + 错误反馈三级协议 + 样式 token 治理 🧱
+
+- **性质：** **前端重构**（`apps/MaaRacingMaster.Shell/frontend/`：`app.js` 拆分、新增 `js/` 六模块、`index.html` 引入序、`style.css` 动效 token 与模态类；另修 `tests/test_rpc_allowlist.py` 的前端扫描范围）。master 直提 `fade79d`、不 tag。
+
+- **起因：** 壳前端积了四项随时间复利的设计债——单文件 2430 行巨石、错误反馈三通道无协议、样式内联拼接脱离 token 体系、状态同步全靠轮询。越晚动迁移成本越高，且后续前端小修都建立在这之上。
+
+- **拆了什么：** `app.js` 2430 → 534 行（只留启动装配：tab 切换、窗口控制、模块下拉、关于页、init 装配）；新增 `frontend/js/` 六模块——`rpc` 159 / `modal` 97 / `log` 187 / `preview` 120 / `settings` 1233 / `run` 259。共享物（`mra` / `$` / `state` / `showError` / `reportError` / `setInlineStatus` / `mkEl` / `appendIcon` / `postWindowAction` / `currentModuleId`）只在 `js/rpc.js` 定义一次 `window.MRA`，其余模块在文件末尾 `Object.assign` 挂载、加载期从命名空间解构取用；`index.html` 按依赖序引入（`rpc` → `modal` → `log` → `preview` → `settings` → `run` → `app`）。两处跨文件前向引用（`preview.js` 取 `settings.js` 的 `refreshDebugState`、`run.js` 取 `app.js` 的 `showVigemDialog`）都发生在运行时回调内，非加载期。
+
+- **错误反馈协议：** 收敛为统一入口 `reportError('toast' | 'inline' | 'modal')`——系统级失败走 toast（4 s 自动消失）、操作级失败走行内状态（默认落主控页 `#module-options-status`，落点不可用回退 toast，错误不被吞）、需用户决策走模态；三级归类规则写在 `js/rpc.js` 文件头。51 个调用点逐处按协议归类核对，落地的是协议入口本身。
+
+- **样式治理：** 新增 `--mra-duration-fast/base/slow` 动效 token，就近归类既有字面量（0.12/0.15 s → fast、0.18/0.2 s → base、0.3/0.32 s → slow）；前端 `cssText` 清零，模态结构与配色由内联样式迁入 `mra-modal-*` 语义类，JS 只设动态值（最大宽度、标题色）。模态新增 Esc 关闭，且仅 DOM 中最顶层 overlay 响应（监听随 `close` 解绑）。
+
+- **状态推送可行性（只查证，本轮不改轮询）：** 结论**支持、无需新增通道**——Python→C# 已有 `type=event` 推送、C#→JS 已有 `PostWebMessageAsJson`，当前唯一断点是壳不转发。淘汰轮询的迁移留给后续版本。
+
+- **看护同步（拆分带来的连带修正）：** `tests/test_rpc_allowlist.py` 的前端扫描由非递归 `glob` 改 `rglob`。拆分后非递归只覆盖根层文件，`js/` 子目录里的 `mra.call` 字面量会**静默脱离看护**——实测抽取点从 28 处掉到 10 处（丢 `start` / `stop`、全部 `set_*` 配置项、`get_module_config`、`get_today_stats`、`fetch_logs`、registry 优化、`open_user_data_folder` 等 18 处）而测试仍绿。同时补非空断言，对齐 `test_frontend_remote_render.py` 既有的「空过防护」纪律。
+
+- **验证：** `node --check` 全部前端 JS 通过；`test_rpc_allowlist` + `test_frontend_remote_render` + `test_remote_meta` + `test_sidecar_external_rpc` 共 **93 passed**；`ruff` 通过。函数清单 HEAD 95 → 现在 99（新增 `reportError` / `setInlineStatus` / 模态的 `close` 与 `onEscKey`），无函数丢失；跨文件无重复定义。白名单锁**活性实证**：把 `frontend/` 复制到临时目录并注入一条白名单外的 `mra.call`，旧非递归 `glob` 抽到 10 处、rogue 为空（漏报），新 `rglob` 抽到 29 处、rogue 命中（报出）。打包侧无需改动——`scripts/release/assemble.ps1` 对 `frontend/` 整目录递归复制、`scripts/dev/run.ps1` 递归监视该目录，C# 与打包脚本中不存在前端文件白名单清单。**真实 WebView2 环境冒烟未跑**（静态校验 + 桩件为准），实机启动时留意控制台。
+
+- **行为影响：** 用户可感知的行为变化只有模态 Esc 关闭这一项。
+
 ## 2026-09-18
 
 ### 暂存（未发布 · 待并入下一版本）fix(shell)：运行日志卡片一律默认折叠 + 展开动画；面板首行不再裸挂 🔧
