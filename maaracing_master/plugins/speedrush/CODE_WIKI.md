@@ -378,3 +378,28 @@ v_ego=716 = ②c 主档。**升级路径是逐场在线校正，不是改判据*
 
 **状态**：契约 + 测试（8 项）落地，**未接 module**——消费方（决策层）就位才接线，
 不提前拉线。
+
+## 9. 跟踪层与世界观测契约（阶段 B 第三块，2026-09-21 §八 step 2 落地）（本域）
+
+**住户**：`tracking.py::Tracker.update(PerceptionResult, frame_age_ms, stage, …) →
+WorldObservation`——跨帧关联 + 观测组装。契约类型（`TrackedTarget`/`FarTarget`/
+`PerceptionHealth`/`BoundarySummary`/`DecisionOutput`）全部版本化并集中在此；
+决策层只吃 `WorldObservation`（不变量 D1）。`world_model` 提供公开 `x_lane_of` 与
+kind 常量，tracking 复用不复制（禁止第二份真相）。
+
+**关联口径**（v1 最小实现）：逐类贪心 1:1——门限 |Δcy−外推| ≤ `max_cy_step` 且
+（双方有横向读数 → |Δx_lane| ≤ `max_xlane_step`；否则 lane_side 必须同档）；
+遮挡期**横向保持最后读数、纵向按 rel_approach 匀速外推**；宽限退役后 id 永不复用
+（重识别 v1 不臆造，退役后再现按新检出）；`frame_id` 严格递增 fail-loud。
+`x_sigma = pos_err_px×a_x/denom`，与 §8 误差注记同源同量级（分母 20–50 → 0.24–0.59 车道）。
+
+**实机素材回放定档**（证据 commit `b1e6cb9`，35517 帧/42 场）：失联段三分——
+闪烁（1–2 行，99% 恢复）/ 过渡带（3–6 行）/ 物理退场（7–9 行，99% 不恢复，
+近场车从屏下退出或被自车过顶遮挡）。**有效恢复窗右缘 ≈6 素材行**，`grace_ticks`
+起值 15 过宽，step 4 参数表定 6–8（**按秒口径 ≈0.4s，不按行数**——素材行率 15.8Hz
+与实机 21Hz 不同）。far→near 晋升 1456 次：域外保身份是刚需（金币组天然从远处来）。
+决策层负载画像：近场 P50≤1 / P95≤4。
+
+**状态**：契约 + 关联 + 单测 29 项落地，**未接 module**（§八顺序：step 4 决策器就位后
+才把 build_world→Tracker 换进主循环）；`DecisionOutput` 生产者与 `TrackerParams` 落
+decision.json 同属 step 4。
