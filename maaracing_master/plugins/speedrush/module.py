@@ -852,8 +852,13 @@ class _EgoRoadObserver:
     - 双侧稳定：−(l+r)/2，同时学半路宽 EMA（路宽每场常数，好帧学一次存记忆）；
     - 仅单侧稳定：用学到的半宽反推路中心（见左缘 off=−(l+hw)，见右缘 off=−(r−hw)）；
     - 无记忆的单侧帧 / 无边界：None（退回纯模型积分，旧行为不变）；
-    - 护栏：推得的自车偏移出界（|off|>hw+0.5）判"缘"是虚目标（车道虚线/噪声）→ 弃。
+    - 护栏（20:45 局补装，此前两条都有漏）：半宽只学物理 plausible 区间
+      [1.5,3.2]（名义 2.0、实测 2.36、a_x 18% 标度误差留边）——无界学习=一帧垃圾
+      毒化整场记忆；最终 off 先过**绝对物理界 3.5**（不依赖 _hw——旧护栏阈值
+      _hw+0.5 会随被毒化的 _hw 一起放松），再过相对界 |off|≤_hw+0.5。
     ε 旋转污染（≤0.15 车道）在新息门 1.5 内，口径同 step 2.5。阶段级生命期=chain。"""
+
+    HW_MIN, HW_MAX, OFF_MAX = 1.5, 3.2, 3.5
 
     def __init__(self) -> None:
         self._hw: float | None = None
@@ -863,10 +868,12 @@ class _EgoRoadObserver:
             return None
         l, r = bnd.left_edge_lane, bnd.right_edge_lane
         if l is not None and r is not None:
-            off = -(l + r) / 2.0
             hw = (r - l) / 2.0
-            if hw > 0.5:
-                self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
+            if not (self.HW_MIN <= hw <= self.HW_MAX):
+                return None   # 对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
+                              # 落界内，20:45 锁测出）——整帧弃，只信合法对
+            off = -(l + r) / 2.0
+            self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
         elif self._hw is None:
             return None
         elif l is not None:
@@ -874,6 +881,8 @@ class _EgoRoadObserver:
         elif r is not None:
             off = -(r - self._hw)
         else:
+            return None
+        if abs(off) > self.OFF_MAX:
             return None
         if self._hw is not None and abs(off) > self._hw + 0.5:
             return None

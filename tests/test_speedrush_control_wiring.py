@@ -264,3 +264,25 @@ def test_bad_frame_cap_and_self_disable(monkeypatch, tmp_path):
     ch2 = _bad_chain()
     smod._maybe_save_bad_frame(ch2, None, _bad_bnd(), 1, 1, 0.0, 0)
     assert ch2["bad_frames"]["saved"] == smod.BAD_FRAME_MAX_PER_PHASE
+
+
+def test_ego_road_hw_learning_bounded():
+    """20:45 漏网锁：垃圾双侧帧（两假缘相距 21 车道）整帧弃——中点碰巧在界内
+    （off=−2.5）也不行：对宽不物理=两"缘"都不是路缘，off 同样不可信。"""
+    o = smod._EgoRoadObserver()
+    assert o.update(_bnd_edges(-8.0, 13.0)) is None       # hw=10.5 出 [1.5,3.2]
+    assert o._hw is None                                   # 不学记忆
+    assert o.update(_bnd_edges(-1.0, None)) is None        # 无合法记忆，单侧仍不猜
+    # 合法对照常放行并学习
+    assert o.update(_bnd_edges(-2.3, 2.4)) == pytest.approx(-0.05)
+    assert o._hw == pytest.approx(2.35)
+
+
+def test_ego_road_absolute_bound_without_memory():
+    """绝对物理界不依赖 _hw（旧护栏在 _hw=None 时整条旁路，±7 就是这么漏的）：
+    同侧双假缘 hw=4.0 出界弃；合法对但中点出界（|off|>3.5）也弃。"""
+    o = smod._EgoRoadObserver()
+    assert o.update(_bnd_edges(-9.0, -1.0)) is None        # hw=4.0 不物理
+    o2 = smod._EgoRoadObserver()
+    o2._hw = 2.35                                          # 有合法记忆
+    assert o2.update(_bnd_edges(None, 9.0)) is None        # off=−(9−2.35)=−6.65 超界
