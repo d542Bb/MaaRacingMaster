@@ -290,3 +290,80 @@ def test_lookahead_damps_overshoot():
     cmd = pl.update(_out(x_target=0.5, fid=1, valid=1), DT, 1)
     # x_pred = 0.4 + 3.0×0.25 = 1.15 > 0.5 → 误差为负 → 收力（不继续右打）
     assert cmd.steer_x <= 0
+
+
+# ---------- 路中心连续重锚（step 2.5：开环虚胖的闭环解） ----------
+
+def test_road_reanchor_pins_inflated_model():
+    """模型虚胖（a_lat_gain 偏大）跑过头：有路观测时 executed 被钉回观测值，
+    误差常驻→杆不提前松。对照组：无观测（road_offset=None）executed 一路冲高。"""
+    pl_open = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                       rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                       v_lat_max=1e9, tau_align_s=1e9)   # 纯积分，无回正
+    pl_obs = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                      rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                      v_lat_max=1e9, tau_align_s=1e9)
+    open_x, obs_x = [], []
+    for i in range(1, 12):
+        d = _out(x_target=1.0, fid=i, valid=i)
+        open_x.append(pl_open.update(d, DT, i).steer_x)
+        # 车其实纹丝不动：路观测恒 0（锚懒定为首帧 0→obs 恒 0）
+        c = pl_obs.update(d, DT, i, road_offset=0.0)
+        obs_x.append(c.steer_x)
+    # 无观测：模型冲到接近目标→杆回落到 0（提前松杆，V2 病灶）
+    assert pl_open.state.executed_lane > 0.7
+    assert abs(open_x[-1]) < abs(open_x[3])
+    # 有观测：executed 被钉在 0 附近，杆持续高（误差在，杆就在）
+    assert abs(pl_obs.state.executed_lane) < 0.15
+    assert abs(obs_x[-1]) > 20000
+    assert abs(obs_x[-1]) >= abs(open_x[-1])
+
+
+def test_road_reanchor_tracks_real_motion():
+    """车真在右移（路观测递增）：executed 跟上，v_lat 学出正速度。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)  # 模型不动，全靠观测
+    for i in range(1, 12):
+        pl.update(_out(x_target=1.0, fid=i, valid=i), DT, i,
+                  road_offset=0.05 * i)          # 每拍右移 0.05 车道
+    assert pl.state.executed_lane == pytest.approx(0.05 * 11, abs=0.08)
+    assert pl.state.v_lat_est > 0                # 学到正速度
+
+
+def test_road_jump_rejected():
+    """新息超 obs_jump_max_lane：坏检测，本拍弃观测，executed 不被拽飞。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
+                  obs_jump_max_lane=1.5)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)  # 锚定
+    before = pl.state.executed_lane
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=5.0)  # 跳变
+    assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
+
+
+def test_reanchor_event_resets_road_frame():
+    """事件重锚（金币完成）后路观测参考重懒定：不拿旧锚的 obs 去纠新帧的 executed。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.3)
+    assert pl._road_anchor == 0.3                 # executed=0 → anchor=0.3−0
+    pl.update(_out(x_target=0.0, fid=2, valid=2, reanchor=1.0), DT, 2,
+              road_offset=0.3)                    # 重锚拍：executed:=1.0，路锚重置
+    # 新不变量：anchor 按新 executed 重对齐（=0.3−1.0=−0.7），obs==executed→r=0 不拽
+    assert pl._road_anchor == pytest.approx(-0.7)
+    assert pl.state.executed_lane == pytest.approx(1.0, abs=1e-9)  # 未被旧帧拽向 0
+
+
+def test_no_road_offset_is_old_behavior():
+    """road_offset=None 逐拍=纯模型积分（旧行为不变，兼容红线）。"""
+    pl_a = _planner()
+    pl_b = _planner()
+    for i in range(1, 10):
+        d = _out(x_target=0.7, fid=i, valid=i)
+        ca = pl_a.update(d, DT, i)                # 默认 None
+        cb = pl_b.update(d, DT, i, road_offset=None)
+        assert ca.steer_x == cb.steer_x
+    assert pl_a.state.executed_lane == pytest.approx(pl_b.state.executed_lane)

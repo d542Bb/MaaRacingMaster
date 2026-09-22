@@ -104,6 +104,10 @@ class Planner:
     tau_align_s: float         # 松杆后横向速度自回正衰减时间常数（航向回正）[需实测 C2]
     v_lat_max: float           # 横向漂移速度上限（车道/s）：最大车头角的定圆饱和 [需实测 C3]
     hold_max_ticks: int        # 决策过期后最多保持拍数，第 +1 拍起按 CONSERVE
+    # —— 路中心连续重锚（step 2.5，2026-09-22：开环虚胖的闭环解）——
+    obs_alpha: float           # 位置修正增益（alpha-beta 滤波），有路缘观测拍生效 [需实测]
+    obs_beta: float            # 速度修正增益：r/dt 注入 v_lat，治"模型自说自话收敛" [需实测]
+    obs_jump_max_lane: float   # 新息门：|观测−预测| 超此值判坏检测，本拍弃观测
 
 
 @dataclass(frozen=True)
@@ -232,7 +236,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             a_lat_gain=_num(d, "planner", "a_lat_gain", lo=0),
             tau_align_s=_num(d, "planner", "tau_align_s", lo=0, lo_open=False),
             v_lat_max=_num(d, "planner", "v_lat_max", lo=0, lo_open=False),
-            hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1)),
+            hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1),
+            obs_alpha=_num(d, "planner", "obs_alpha", lo=0, hi=1),
+            obs_beta=_num(d, "planner", "obs_beta", lo=0, hi=1),
+            obs_jump_max_lane=_num(d, "planner", "obs_jump_max_lane", lo=0,
+                                   lo_open=False)),
         overtake=Overtake(
             value_base=_num(d, "overtake", "value_base", lo=0),
             value_limit=_num(d, "overtake", "value_limit", lo=0),

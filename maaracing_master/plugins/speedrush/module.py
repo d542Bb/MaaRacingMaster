@@ -619,7 +619,12 @@ class SpeedRushModule(ActivityModule):
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents))
-            cmd = planner.update(out, dt, current_fid=fid)
+            b = obs.boundary
+            road_offset = None
+            if b is not None and b.left_edge_lane is not None \
+                    and b.right_edge_lane is not None:
+                road_offset = -(b.left_edge_lane + b.right_edge_lane) / 2.0
+            cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -662,6 +667,8 @@ class SpeedRushModule(ActivityModule):
             # 双积分定档数据面：vp_x 横偏=航向观测量；sides=平移读数可信门
             "bnd_vp_x": None if b is None or b.vp_x is None else round(b.vp_x, 1),
             "bnd_sides": None if b is None else b.sides,
+            # step 2.5 闭环列：路中心观测值（None=该拍无双侧缘距）+ 修正后 executed/v
+            "road_offset": None if road_offset is None else round(road_offset, 4),
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
             "car_views": len(tviews),
             "passes": [round(e.d_min, 3) for e in tevents
