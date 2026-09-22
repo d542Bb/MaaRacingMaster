@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>员工守则试验区 · egg_lab（生产 6a048c2 同构副本）</title>
+<style>
+  /* ===== token（照抄 style.css）===== */
+  :root {
+    --mra-primary: #E5484D; --mra-primary-hover: #F05A5F; --mra-primary-foreground: #FFFFFF;
+    --mra-background: #F5F6FA; --mra-surface: #FFFFFF; --mra-sidebar: #FAFBFD;
+    --mra-foreground: #1F2328; --mra-foreground-secondary: #4A5160; --mra-foreground-muted: #8B93A7;
+    --mra-border: #E5E7EB; --mra-border-light: #EEF0F4; --mra-border-strong: #D1D5DB;
+    --mra-success: #10B981; --mra-danger: #EF4444;
+    --mra-radius-md: 8px; --mra-radius-lg: 10px; --mra-radius-xl: 12px;
+    --mra-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    --mra-font-mono: Consolas, monospace;
+    --mra-duration-fast: .15s; --mra-duration-base: .2s;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; padding-bottom: 80px; background: var(--mra-background);
+         color: var(--mra-foreground); font-family: var(--mra-font-sans); font-size: 13px; line-height: 1.6; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { color: var(--mra-foreground-muted); font-size: 12px; margin: 0 0 14px; }
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  .bar button { cursor: pointer; border: 1px solid var(--mra-border); background: var(--mra-surface);
+    border-radius: var(--mra-radius-md); padding: 7px 14px; font-family: var(--mra-font-sans);
+    font-size: 12px; color: var(--mra-foreground); }
+  .bar button:hover { border-color: var(--mra-foreground-muted); }
+  .vchip { font-family: var(--mra-font-mono); font-size: 12px; color: var(--mra-foreground-muted);
+    background: var(--mra-surface); border: 1px dashed var(--mra-border); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; user-select: none; }
+  #selftest { position: relative; background: var(--mra-surface); border: 1px solid var(--mra-border);
+    border-radius: var(--mra-radius-lg); padding: 12px 16px; margin-top: 16px;
+    font-family: var(--mra-font-mono); font-size: 12px; white-space: pre-wrap; }
+  #selftest .ok { color: var(--mra-success); } #selftest .bad { color: var(--mra-danger); }
+
+  /* ===== 以下全部照抄生产 style.css ===== */
+  .falling-text {
+    position: fixed; left: 0; top: 0; z-index: 9999;
+    pointer-events: none; user-select: none;
+    font-family: var(--mra-font-mono); font-size: 16px; font-weight: 700;
+    color: var(--mra-primary);
+    text-shadow: 0 2px 10px color-mix(in srgb, var(--mra-primary) 35%, transparent);
+    will-change: transform, opacity; transition: opacity 0.5s ease;
+  }
+  .mra-modal-overlay {
+    position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,0.45);
+    display: flex; align-items: center; justify-content: center;
+    animation: modal-overlay-in var(--mra-duration-fast) ease-out both;
+  }
+  .mra-modal-overlay--closing { animation: modal-overlay-out var(--mra-duration-fast) ease-in both; }
+  .mra-modal-card { background: var(--mra-surface); border: 1px solid var(--mra-border);
+    border-radius: var(--mra-radius-xl); padding: 22px 24px;
+    max-width: var(--mra-modal-max-width, 420px); width: 92%;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+    display: flex; flex-direction: column; max-height: 86vh; }
+  @keyframes modal-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes modal-overlay-out { from { opacity: 1; } to { opacity: 0; } }
+  .mra-modal-title { margin: 0 0 10px; font-size: 15px; flex-shrink: 0; color: var(--mra-foreground); }
+  .mra-modal-body { overflow-y: auto; min-height: 0; word-break: break-word; }
+  .mra-modal-actions { display: flex; gap: 10px; justify-content: flex-end; align-items: center;
+    margin-top: 14px; flex-shrink: 0; }
+  .mra-modal-btn { cursor: pointer; border-radius: var(--mra-radius-md); font-size: 13px; padding: 8px 16px;
+    border: 1px solid var(--mra-border); background: transparent;
+    color: var(--mra-foreground-secondary); font-family: var(--mra-font-sans); }
+  .mra-modal-btn--primary { border: none; background: var(--mra-primary); color: var(--mra-primary-foreground); }
+  .mra-modal-rule { display: flex; gap: 10px; margin: 0 0 10px;
+    font-size: 13px; line-height: 1.7; color: var(--mra-foreground); }
+  .mra-modal-rule-num { flex-shrink: 0; color: var(--mra-primary); }
+  .mra-modal-rule { opacity: 0; transform: translateY(5px); animation: mra-rule-in 0.5s ease forwards; }
+  @keyframes mra-rule-in { to { opacity: 1; transform: none; } }
+  .mra-modal-rule--meta { color: var(--mra-foreground-muted); font-style: italic; }
+  .mra-modal-rule--meta .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+  .mra-modal-rule--last { color: var(--mra-foreground); }
+  .mra-modal-rule--last .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+  .mra-modal-title--egg { animation: mra-egg-breathe 6s ease-in-out infinite; }
+  @keyframes mra-egg-breathe { 0%, 100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
+  .mra-modal-btn--egg { will-change: transform; }
+  .falling-text--egg { color: var(--mra-danger); border-color: transparent; }
+  .mra-dot-blink { animation: mra-dot-blink 0.3s ease 2; }
+  @keyframes mra-dot-blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .mra-modal-rule { animation: none; opacity: 1; transform: none; }
+    .mra-modal-title--egg { animation: none; }
+  }
+  .statusbar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--mra-surface);
+    border-top: 1px solid var(--mra-border-light); padding: 8px 24px; display: flex;
+    align-items: center; gap: 8px; font-size: 12px; color: var(--mra-foreground-muted); z-index: 10000; }
+  .mra-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mra-success); }
+</style>
+</head>
+<body>
+<h1>员工守则试验区</h1>
+<p class="sub">生产 6a048c2 的逐行同构副本 + [lab-fix] 三处（躲避越界 / 按钮宽度漂移 / 余量每帧实测）。手动玩 + 「跑自检」看断言。</p>
+<div class="bar">
+  <button id="btn-open">打开守则</button>
+  <span class="vchip" id="about-version">v0.23.0.dev1+252</span>
+  <span style="font-size:11px;color:var(--mra-foreground-muted);">（连点 10 次开守则，每次掉落有 1/5 混怪谈短语）</span>
+  <button id="btn-test">跑自检</button>
+</div>
+<div id="selftest">自检输出区（点「跑自检」）</div>
+<div class="statusbar"><span class="mra-status-dot" id="status-dot"></span><span id="status-text">系统就绪</span></div>
+
+<script>
+(function () {
+  'use strict';
+  var out = document.getElementById('selftest');
+  function log(msg, cls) {
+    var s = document.createElement('span');
+    if (cls) s.className = cls;
+    s.textContent = msg + '\n';
+    out.appendChild(s);
+  }
+  function clearLog() { out.textContent = ''; }
+
+  // ================= 以下与生产 app.js 6a048c2 同构 =================
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------- 关于页彩蛋：点击版本号掉落文字（同款 MAA） ----------
+  const FALLING_EGG_TEXTS = ['3:33', '不要清点', '它记得你'];
+  const FALLING_EGG_EVERY = 5;
+  const MAX_FALLING = 40;
+  let eggFallCount = 0;
+
+  // ---------- 员工守则 ----------
+  const EGG_RULE_META = '本守则会不定期修订。你读到的版本，就是你需要读的版本。';
+  const EGG_RULES_POOL = [
+    '正式版没有「调试模式」。如果你在任何页面看到它，不要点击，也不要截图。开发者会知道你来过。',
+    '运行前请断开所有物理手柄。如果你确定已经断开，界面却显示「已连接」，请相信你的手，不要相信界面。',
+    '运行期间游戏会被静音，结束后自动恢复。如果音量没有回来，先别动音量键——想一想，刚才那一场，是不是你没有开始过的。',
+    '日志按会话分目录，只保留最近若干份。如果某个目录的修改时间早于你安装软件的时间，不要打开它。里面没有你会想看的东西。',
+    '左下角的绿点表示系统就绪。它应该一直是静止的。如果你看到它闪了两下，那不是故障，是确认。',
+    '从关于页掉落的版本号是正常的。如果它们开始排队，请不要清点数量。',
+    '任务结束后它会关闭模拟器。它只会关闭模拟器。到目前为止，它只关闭模拟器。',
+    '「停止」按钮随时有效。如果它在你按下之前就已经变灰，说明有人替你停止了这一场。不要去查是谁。',
+    '软件不会在你睡觉时更新自己。如果你早上发现版本号变了，那不是更新。',
+    '数据页会如实记录今天的每一场。如果数字对不上，多出来的那一场，不算你的。',
+    '版本号由版本控制自动推导，任何人不得手改。如果你在关于页看到自己的名字，而你从没参与开发——这一版是专门为你编译的。',
+    '软件没有语音。如果你听到低语，先听清它在说什么。多数时候，它只是在重复你自己说过的话。'
+  ];
+  const EGG_RULE_LAST = '最后一条规则不存在。如果你已经数到了它，说明你数错了。这很正常。';
+  const EGG_RULE_SAMPLE = 8;
+
+  function blinkStatusDot() {
+    const dot = $('status-dot');
+    if (!dot) return;
+    dot.classList.remove('mra-dot-blink');
+    void dot.offsetWidth;
+    dot.classList.add('mra-dot-blink');
+  }
+
+  const EGG_DODGE = { radius: 120, reach: 72, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
+  const EGG_DODGE_TAUNTS = ['抓不到', '差一点', '太慢了', '好吧。你走吧。'];
+  function wireEggDodge(modal) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return null;
+    const field = modal.card.querySelector('.mra-modal-actions');
+    const btn = field ? field.querySelector('.mra-modal-btn') : null;
+    if (!field || !btn) return null;
+    btn.classList.add('mra-modal-btn--egg');
+    // [lab-fix] taunt 换字会改变按钮宽度：钉住初始宽度，flex-end 行内左缘不再跳动
+    btn.style.minWidth = btn.offsetWidth + 'px';
+    let dodges = 0, armed = true, raf = 0, bearing = 1, pointer = null;
+    const setTx = (tx, fleeing) => {
+      btn.style.transition = 'transform ' + (fleeing ? '.13s' : '.62s') + ' cubic-bezier('
+        + (fleeing ? '0.23, 1, 0.32, 1' : '0.34, 1.56, 0.64, 1') + ')';
+      btn.style.transform = 'translateX(' + tx + 'px)';
+    };
+    function frame() {
+      raf = 0;
+      if (!document.body.contains(btn)) return;
+      const rect = field.getBoundingClientRect();
+      const d = pointer
+        ? Math.hypot(pointer.x - (rect.left + rect.width / 2), pointer.y - (rect.top + rect.height / 2))
+        : Infinity;
+      if (d < EGG_DODGE.radius * EGG_DODGE.countLine && armed) {
+        armed = false;
+        dodges++;
+        if (dodges >= EGG_DODGE.patience) {
+          btn.textContent = EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1];
+          setTx(0, false);
+          return;
+        }
+        btn.textContent = EGG_DODGE_TAUNTS[Math.min(dodges - 1, EGG_DODGE_TAUNTS.length - 2)];
+      } else if (d > EGG_DODGE.radius) {
+        armed = true;
+      }
+      if (Number.isFinite(d) && d > 6) bearing = Math.sign(pointer.x - (rect.left + rect.width / 2)) || 1;
+      const flee = d < EGG_DODGE.radius && dodges < EGG_DODGE.patience
+        ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
+      // [lab-fix] 余量每帧按按钮实际 offsetLeft 实测（右对齐行，左右空间不对称）：
+      // 左移空间 = offsetLeft - inset；右移空间 = 行宽 - offsetLeft - 按钮宽 - inset
+      const bl = btn.offsetLeft;
+      const roomL = Math.max(0, bl - EGG_DODGE.inset);
+      const roomR = Math.max(0, field.clientWidth - bl - btn.offsetWidth - EGG_DODGE.inset);
+      const tx = -bearing * flee * EGG_DODGE.reach;
+      setTx(tx > 0 ? Math.min(roomR, tx) : Math.max(-roomL, tx), flee > 0);
+    }
+    const onMove = (e) => { pointer = { x: e.clientX, y: e.clientY }; if (!raf) raf = requestAnimationFrame(frame); };
+    const onLeave = () => { pointer = null; if (!raf) raf = requestAnimationFrame(frame); };
+    window.addEventListener('pointermove', onMove, { passive: true });
+    document.addEventListener('pointerleave', onLeave);
+    window.addEventListener('blur', onLeave);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerleave', onLeave);
+      window.removeEventListener('blur', onLeave);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }
+
+  function showRulesDialog() {
+    const pool = EGG_RULES_POOL.slice();
+    const picked = [];
+    while (picked.length < EGG_RULE_SAMPLE && pool.length) {
+      picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+    }
+    const rows = ['<p class="mra-modal-rule mra-modal-rule--meta"><b class="mra-modal-rule-num">0.</b>'
+      + '<span>' + EGG_RULE_META + '</span></p>'];
+    picked.forEach((r, i) => {
+      rows.push('<p class="mra-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
+        + '<b class="mra-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
+    });
+    rows.push('<p class="mra-modal-rule mra-modal-rule--last" style="animation-delay:'
+      + (picked.length * 100 + 250) + 'ms"><b class="mra-modal-rule-num">' + (picked.length + 1)
+      + '.</b><span>' + EGG_RULE_LAST + '</span></p>');
+    let cleanupDodge = null;
+    const modal = openModal({
+      title: '员工守则',
+      maxWidth: 580,
+      bodyHtml:
+        '<div class="mra-modal-rules">' +
+        '<img class="mra-modal-rules-icon" alt="">' +
+        '<div class="mra-modal-rules-list">' + rows.join('') + '</div>' +
+        '</div>',
+      onClose: () => {
+        blinkStatusDot();
+        if (cleanupDodge) cleanupDodge();
+      },
+      buttons: [
+        { text: '确定要退出吗？', primary: true, onClick: (m) => m.close() },
+      ],
+    });
+    const title = modal.card.querySelector('.mra-modal-title');
+    if (title) title.classList.add('mra-modal-title--egg');
+    cleanupDodge = wireEggDodge(modal);
+    return modal;
+  }
+
+  function spawnFallingText(text, cx, cy, isEgg) {
+    const alive = document.querySelectorAll('.falling-text');
+    if (alive.length >= MAX_FALLING) alive[0].remove();
+    const el = document.createElement('div');
+    el.className = 'falling-text' + (isEgg ? ' falling-text--egg' : '');
+    el.textContent = text;
+    document.body.appendChild(el);
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    let x = cx - w / 2;
+    let y = cy - h / 2;
+    let vx = (Math.random() - 0.5) * 240;
+    let vy = -80 - Math.random() * 100;
+    let rot = 0;
+    let vr = (Math.random() - 0.5) * 160;
+    let bounces = 0;
+    let gone = false;
+    let last = performance.now();
+    function step(now) {
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      vy += 1800 * dt;
+      x += vx * dt;
+      y += vy * dt;
+      rot += vr * dt;
+      const floor = window.innerHeight - h - 60;
+      if (y > floor) {
+        y = floor;
+        vy = -vy * 0.42;
+        vx *= 0.72;
+        vr *= 0.5;
+        if (++bounces > 3 || Math.abs(vy) < 60) gone = true;
+      }
+      el.style.transform = 'translate(' + x + 'px,' + y + 'px) rotate(' + rot + 'deg)';
+      if (gone) {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 500);
+        return;
+      }
+      requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // ---------- modal.js 复刻（含 onClose） ----------
+  function openModal(opts) {
+    const overlay = document.createElement('div');
+    overlay.className = 'mra-modal-overlay';
+    const card = document.createElement('div');
+    card.className = 'mra-modal-card';
+    card.style.setProperty('--mra-modal-max-width', (opts.maxWidth || 420) + 'px');
+    const h3 = document.createElement('h3');
+    h3.className = 'mra-modal-title';
+    h3.textContent = opts.title || '';
+    card.appendChild(h3);
+    const body = document.createElement('div');
+    body.className = 'mra-modal-body';
+    body.innerHTML = opts.bodyHtml || '';
+    card.appendChild(body);
+    const modal = { overlay, card, close };
+    function close() {
+      if (overlay._closing) return;
+      overlay._closing = true;
+      if (typeof opts.onClose === 'function') opts.onClose();
+      overlay.classList.add('mra-modal-overlay--closing');
+      setTimeout(() => overlay.remove(), 160);
+    }
+    if (Array.isArray(opts.buttons) && opts.buttons.length) {
+      const row = document.createElement('div');
+      row.className = 'mra-modal-actions';
+      opts.buttons.forEach((b) => {
+        const el = document.createElement('button');
+        el.className = 'mra-modal-btn' + (b.primary ? ' mra-modal-btn--primary' : '');
+        el.textContent = b.text;
+        if (b.onClick) el.addEventListener('click', () => b.onClick(modal));
+        row.appendChild(el);
+      });
+      card.appendChild(row);
+    }
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) modal.close(); });
+    return modal;
+  }
+
+  // ---------- 掉落混入逻辑（抽成可测函数，行为与生产一致） ----------
+  function mixFall(eggFallCount) {
+    const eggHit = Array.isArray(FALLING_EGG_TEXTS) && FALLING_EGG_TEXTS.length
+      && eggFallCount % FALLING_EGG_EVERY === 0;
+    return {
+      text: eggHit
+        ? FALLING_EGG_TEXTS[Math.floor(Math.random() * FALLING_EGG_TEXTS.length)]
+        : 'v0.23.0.dev1+252',
+      isEgg: eggHit
+    };
+  }
+
+  // ---------- 接线（与生产 initVersionEgg 同构） ----------
+  let eggClickCount = 0, eggLastClickAt = 0;
+  const EGG_DIALOG_CLICKS = 10;
+  $('about-version').addEventListener('click', (e) => {
+    const now = Date.now();
+    eggClickCount = now - eggLastClickAt < 2000 ? eggClickCount + 1 : 1;
+    eggLastClickAt = now;
+    if (eggClickCount >= EGG_DIALOG_CLICKS) {
+      eggClickCount = 0;
+      showRulesDialog();
+    }
+    eggFallCount++;
+    const f = mixFall(eggFallCount);
+    spawnFallingText(f.text, e.clientX, e.clientY, f.isEgg);
+  });
+  $('btn-open').addEventListener('click', () => showRulesDialog());
+
+  // ================= 自检 =================
+  const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  async function runSelfTest() {
+    clearLog();
+    const ok = (m) => log('✓ ' + m, 'ok');
+    const bad = (m) => log('✗ ' + m, 'bad');
+    // 1. 抽样形状
+    {
+      const pool = EGG_RULES_POOL.slice();
+      const picked = [];
+      while (picked.length < EGG_RULE_SAMPLE && pool.length) {
+        picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+      }
+      (picked.length === EGG_RULE_SAMPLE
+        && new Set(picked).size === EGG_RULE_SAMPLE
+        && picked.every((r) => EGG_RULES_POOL.includes(r)))
+        ? ok('抽样：8 条、不重复、出自池')
+        : bad('抽样形状异常');
+    }
+    // 2. 掉落混入频率：25 次点击恰 5 次怪谈
+    {
+      let eggs = 0;
+      for (let i = 1; i <= 25; i++) if (mixFall(i).isEgg) eggs++;
+      (eggs === 5) ? ok('掉落混入：25 点 5 中') : bad('掉落混入频率异常：' + eggs);
+    }
+    // 3. 躲避状态机 + 越界断言（驱动真实 DOM）
+    const modal = showRulesDialog();
+    const field = modal.card.querySelector('.mra-modal-actions');
+    const btn = field.querySelector('.mra-modal-btn');
+    const fr = () => field.getBoundingClientRect();
+    const pointerAt = async (x, y) => {
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, pointerType: 'mouse' }));
+      await raf2();
+    };
+    const btnCenter = () => {
+      const br = btn.getBoundingClientRect();
+      return { x: br.left + br.width / 2, y: br.top + br.height / 2 };
+    };
+    // 接近→逃离：transform 非零
+    let c = btnCenter();
+    await pointerAt(c.x, c.y);
+    const txAfter = /translateX\((-?[\d.]+)px\)/.exec(btn.style.transform);
+    (txAfter && parseFloat(txAfter[1]) !== 0)
+      ? ok('接近触发逃离：translateX = ' + txAfter[1] + 'px')
+      : bad('接近未触发逃离：' + btn.style.transform);
+    // 越界扫掠：指针绕按钮一圈 + 远近交替，右缘恒不越过操作行右缘 - inset
+    let overflow = 0;
+    for (let a = 0; a < 360; a += 15) {
+      const rad = a * Math.PI / 180;
+      const rr = fr();
+      const cx = rr.left + rr.width / 2 + Math.cos(rad) * (EGG_DODGE.radius + 40);
+      const cy = rr.top + rr.height / 2 + Math.sin(rad) * (EGG_DODGE.radius + 40);
+      await pointerAt(cx, cy);
+      // 每次先拉近再拉远，触发两次 armed 翻转
+      const cc = btnCenter();
+      await pointerAt(cc.x + Math.cos(rad) * 30, cc.y + Math.sin(rad) * 30);
+      const tr = /translateX\((-?[\d.]+)px\)/.exec(btn.style.transform);
+      const tx = tr ? parseFloat(tr[1]) : 0;
+      const baseLeft = btn.offsetLeft - tx; // 布局左缘（translate 不改 offsetLeft）
+      const rightEdge = baseLeft + tx + btn.offsetWidth;
+      if (rightEdge > fr().right - EGG_DODGE.inset + 0.5) overflow++;
+    }
+    (overflow === 0) ? ok('越界扫掠：36 位置右缘全部收在 inset 内')
+      : bad('越界 ' + overflow + ' 次（右缘越过操作行）');
+    // 忍耐 4 次后 relent 放行
+    for (let i = 0; i < 4; i++) {
+      let cc = btnCenter();
+      await pointerAt(cc.x + 200, cc.y + 200); // 拉出半径重置 armed
+      cc = btnCenter();
+      await pointerAt(cc.x, cc.y);             // 拉近触发一次 dodge
+    }
+    (btn.textContent === EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1] && btn.style.transform === 'translateX(0px)')
+      ? ok('忍耐 4 次后 relent：' + btn.textContent + '，位置归零放行')
+      : bad('relent 异常：' + btn.textContent + ' / ' + btn.style.transform);
+    // 4. onClose 单次 + 绿点闪烁类
+    let closed = 0;
+    const m2 = openModal({ title: 't', onClose: () => closed++, buttons: [{ text: 'x', primary: true, onClick: (m) => m.close() }] });
+    m2.close(); m2.close(); // 二次 close 走 _closing 守卫
+    (closed === 1) ? ok('onClose：多次 close 只触发一次') : bad('onClose 触发 ' + closed + ' 次');
+    modal.close();
+    (document.getElementById('status-dot').classList.contains('mra-dot-blink'))
+      ? ok('关闭回响：绿点闪烁类已挂')
+      : bad('关闭回响缺失');
+    await raf2();
+    log('—— 自检结束 ——');
+  }
+  $('btn-test').addEventListener('click', () => { runSelfTest().catch((e) => bad('自检异常: ' + e.message)); });
+})();
+</script>
+</body>
+</html>
