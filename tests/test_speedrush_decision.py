@@ -95,6 +95,8 @@ def _decision_dict():
     (lambda d: d.pop("overtake"), "overtake"),
     (lambda d: d["overtake"].update(value_limit=10.0), "倒置"),
     (lambda d: d["overtake"].update(d_hold_lane=0.8), "矛盾"),
+    (lambda d: d["control"].pop("abort_settle_v_lane_s"), "abort_settle"),
+    (lambda d: d["overtake"].pop("t_cool_pass_s"), "t_cool_pass"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
     d = _decision_dict()
@@ -579,3 +581,55 @@ def test_space_gate_disables_only_with_evidence():
     out = e3.update(_obs(fid=1, presence=True), DT,
                     traffic=_traffic([_cv(tid=9, x=-1.1)]))
     assert out.state is DecisionState.CHANGE
+
+
+# ---------- 19:44 复盘三刀：可行性门 / pass 短冷却 / ABORT 速率落稳 ----------
+
+def test_overtake_feasibility_gate():
+    """来不及贴的车不追：t_meet < 贴邻耗时+响应+余量 → 不成候选。"""
+    e = _eng(overtake=True)
+    near = _cv(tid=1, cy=650)          # t_meet=(716−650)/200=0.33s < ~0.77s
+    out = e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([near]))
+    assert "no_candidate" in out.reason
+    far = _cv(tid=2, cy=400)           # t_meet=1.58s > 0.77s
+    out = e.update(_obs(fid=2, presence=True), DT, traffic=_traffic([far]))
+    assert out.state is DecisionState.CHANGE
+
+
+def test_overtake_pass_short_cooling():
+    """pass 落定后短冷却（0.2s）：第 6 拍（0.3s）新车已可再选；旧 1s 口径下还在 cooling。"""
+    e = _eng(overtake=True)
+    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv(tid=5, cy=400)]))
+    out = e.update(_obs(fid=2, presence=True), DT,
+                   traffic=_traffic([], [_pass_ev(tid=5, fid=2)]))
+    assert "done:overtake_pass" in out.reason
+    out = e.update(_obs(fid=3, presence=True), DT,
+                   traffic=_traffic([_cv(tid=6, x=1.2, cy=400)]))
+    assert "cooling" in out.reason                # 0.05s：短冷却内，不误开
+    for i in range(4, 8):                          # 递减过 0.2s 窗尾（浮点尾差需多一拍）
+        out = e.update(_obs(fid=i, presence=True), DT,
+                       traffic=_traffic([_cv(tid=6, x=1.2, cy=400)]))
+    assert out.state is DecisionState.CHANGE       # 0.2s 窗过即重开（旧 1s 口径仍在 cooling）
+
+
+def test_abort_settles_on_velocity_zero():
+    """有反馈 ABORT：executed 停住（速率≤界）即落稳，不再一律冻满 2s。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT)                     # → CHANGE
+    e.update(_obs(fid=10, presence=True), DT)          # 组消失 → ABORT（executed None？）
+    # 上一拍 executed=None 直接落稳（v1 路）——本锁走有反馈路：
+    e2 = _eng()
+    e2.update(_good_obs(fid=1), DT, executed_lane=0.1)
+    out = e2.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)  # 进 ABORT
+    assert out.state is DecisionState.ABORT_CHANGE
+    out = e2.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)  # 首拍立参考
+    assert out.state is DecisionState.ABORT_CHANGE
+    out = e2.update(_obs(fid=12, presence=True), DT, executed_lane=0.2)  # v=0 → 落稳
+    assert out.state is DecisionState.CRUISE and "abort:settled" in out.reason
+    # 仍在横移：不落稳
+    e3 = _eng()
+    e3.update(_good_obs(fid=1), DT, executed_lane=0.1)
+    e3.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)
+    e3.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)          # 立参考
+    out = e3.update(_obs(fid=12, presence=True), DT, executed_lane=0.35)   # v=3>0.3
+    assert out.state is DecisionState.ABORT_CHANGE

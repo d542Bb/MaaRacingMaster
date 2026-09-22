@@ -45,6 +45,8 @@ class Overtake:
     t_pass_max_s: float      # 超车计划兜底超时（pass 事件迟迟不落定 → 强制 done）[C5]
     space_margin_lane: float  # 空间闸门余量：该侧缘距 < d_hold+此值 才判"没空间"禁用该向
                               # （决策默认左右对称，禁用必须有显式证据——维护者裁定）
+    t_cool_pass_s: float     # pass 落定后的短冷却（19:44 复盘：pass 高频，一律 1s 会
+                              # 烧掉 ~30% 对局时间且诱发左右横跳；金币完成仍用 1s）
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,9 @@ class Control:
     target_grace_s: float
     group_grace_s: float
     t_change_max_s: float
+    # ABORT 速率落稳界（车道/s）：executed 拍间变化率低于此判回稳——v1 注释里
+    # "有反馈等横向速率归零信号"的补装（19:44 复盘：此前从未实现，丢目标白冻 2s）
+    abort_settle_v_lane_s: float
 
 
 @dataclass(frozen=True)
@@ -195,7 +200,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             frame_rate_hz=_num(d, "control", "frame_rate_hz", lo=0),
             target_grace_s=_num(d, "control", "target_grace_s", lo=0),
             group_grace_s=_num(d, "control", "group_grace_s", lo=0),
-            t_change_max_s=_num(d, "control", "t_change_max_s", lo=0)),
+            t_change_max_s=_num(d, "control", "t_change_max_s", lo=0),
+            abort_settle_v_lane_s=_num(d, "control", "abort_settle_v_lane_s",
+                                       lo=0, lo_open=False)),
         timing=Timing(
             tau_resp_s=_num(d, "timing", "tau_resp_s", lo=0, lo_open=False),
             lane_change_base_s=_num(d, "timing", "lane_change_base_s", lo=0),
@@ -250,7 +257,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             lane_band_lo=_num(d, "overtake", "lane_band_lo", lo=0),
             lane_band_hi=_num(d, "overtake", "lane_band_hi", lo=0),
             t_pass_max_s=_num(d, "overtake", "t_pass_max_s", lo=0, lo_open=False),
-            space_margin_lane=_num(d, "overtake", "space_margin_lane", lo=0)),
+            space_margin_lane=_num(d, "overtake", "space_margin_lane", lo=0),
+            t_cool_pass_s=_num(d, "overtake", "t_cool_pass_s", lo=0)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),

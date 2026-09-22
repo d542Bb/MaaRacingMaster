@@ -21,7 +21,9 @@
     "overtake.p_center_lane|p_scale_lane": "[需实测 C4] P_limit logistic 两点锚（0.65/0.81，RULES §4.2 实测组）起值中心 0.73 尺度 0.06；banner×pass 离线配对回放定档",
     "overtake.d_hold_lane": "[需实测 C4] 贴邻保持窗中心（窗 [0.55,0.70] 中点）；**窗下沿=硬地板语义见设计稿 §〇.1，代价重则整窗右移**",
     "overtake.lane_band_lo|lane_band_hi": "相邻车道候选带（本车道车/掠过中不作候选；>1.6 杂框自卫）[需实测 C5]",
-    "overtake.t_pass_max_s": "[需实测 C5] pass 落定兜底（超车过程可比变道长，不共用 t_change_max）"
+    "overtake.t_pass_max_s": "[需实测 C5] pass 落定兜底（超车过程可比变道长，不共用 t_change_max）",
+    "control.abort_settle_v_lane_s": "[需实测] 19:44 复盘补装：v1 注释的'有反馈等横向速率归零'信号（此前未实现，丢目标白冻 2s）",
+    "overtake.t_cool_pass_s": "19:44 复盘：pass 高频事件短冷却（0.2s 起值）；金币完成仍用 hysteresis.t_cool_s=1s"
   },
   "mode": {
     "allow_all_moves": true,
@@ -33,7 +35,8 @@
     "frame_rate_hz": 20.0,
     "target_grace_s": 0.4,
     "group_grace_s": 0.4,
-    "t_change_max_s": 2.0
+    "t_change_max_s": 2.0,
+    "abort_settle_v_lane_s": 0.3
   },
   "timing": {
     "tau_resp_s": 0.13,
@@ -95,6 +98,7 @@
     "lane_band_lo": 0.65,
     "lane_band_hi": 1.6,
     "t_pass_max_s": 8.0,
-    "space_margin_lane": 0.15
+    "space_margin_lane": 0.15,
+    "t_cool_pass_s": 0.2
   }
 }

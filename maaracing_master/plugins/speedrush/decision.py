@@ -222,6 +222,7 @@ class DecisionEngine:
         self._ok_t = 0.0
         self._deadzone_ticks = 0
         self._abort_next = DecisionState.CRUISE
+        self._abort_ref: float | None = None   # ABORT 速率落稳参考（_enter_abort 重置）
         self._fault = False
         self._last_report_ok = True
         self._reanchor_pending: float | None = None
@@ -359,8 +360,9 @@ class DecisionEngine:
             if ev is not None and ev.outcome == OUTCOME_PASS:
                 self._done_pass_ids.add(ev.track_id)
                 # reanchor=None：超车完成拍没有"目标读数"可锚（车已出画）——
-                # executed_lane 继续积分，锚点面等 C7/planner §十一 的连续观测
-                return self._finish_change("overtake_pass")
+                # executed_lane 走路中心连续重锚（step 2.5），不吃事件锚
+                return self._finish_change(
+                    "overtake_pass", cool_s=self.cfg.overtake.t_cool_pass_s)
             self._enter_abort("target_lost")
             return "cancel:overtake_lost"
         better = self._select(obs, current=self._cur_score)
@@ -378,10 +380,20 @@ class DecisionEngine:
         return "moving:overtake"
 
     def _tick_abort(self, dt_s: float, executed: float | None) -> str:
-        # 有界完成：无反馈 1 tick 即认为回稳发出（v1）；有反馈等横向速率归零信号，
+        # 有界完成：无反馈 1 tick 即认为回稳发出（v1）；有反馈等横向速率归零信号
+        # （19:44 复盘补装——v1 注释写了这个信号但从未实现，丢目标一律白冻 2s），
         # 超时同样强制落位（回稳不能变成第二次变道）。
         self._change_t += dt_s
-        if executed is None or self._change_t >= self.cfg.control.t_change_max_s:
+        if executed is None:
+            settled = True
+        else:
+            v = (abs(executed - self._abort_ref) / dt_s
+                 if self._abort_ref is not None and dt_s > 0 else None)
+            self._abort_ref = executed
+            settled = ((v is not None
+                        and v <= self.cfg.control.abort_settle_v_lane_s)
+                       or self._change_t >= self.cfg.control.t_change_max_s)
+        if settled:
             # 有界回稳落定：按发起方指定去向（取消→CRUISE+冷却；校验打断→CONSERVE）
             if self._abort_next is DecisionState.CONSERVE:
                 self._abort_next = DecisionState.CRUISE   # 消费掉一次性去向
@@ -447,8 +459,13 @@ class DecisionEngine:
                 s = self.scorer.score_car(v)
                 if s is None or s.score < self.cfg.hysteresis.min_score:
                     continue
-                # 超车时机：车已在掠过带（t_meet≤响应延迟）不追——内贴已来不及
-                if s.t_miss_s <= self.cfg.timing.tau_resp_s:
+                # 可行性门（19:44 复盘补装，与金币路同形）：贴邻横移耗时+响应+余量
+                # 必须 < 相对接近时间——此前只挡掠过带，"来不及贴"的车照追，
+                # 产出远距离白超（d_min 中位 1.11 的主犯）
+                need = self.cfg.timing.lane_change_duration_s(
+                    abs(self.scorer.hug_goal(v.x_lane)))
+                if (need + self.cfg.timing.tau_resp_s
+                        + self.cfg.timing.margin_s) >= s.t_miss_s:
                     continue
                 # 空间闸门（维护者裁定 2026-09-22）：决策默认左右对称，禁用某方向
                 # 必须有"那侧没空间"的显式证据（缘距读数）；证据不足=两侧都放行。
@@ -485,6 +502,7 @@ class DecisionEngine:
     def _enter_abort(self, why: str) -> None:
         self._state = DecisionState.ABORT_CHANGE
         self._change_t = 0.0
+        self._abort_ref = None      # 速率参考从 ABORT 首拍重新起算
         self._abort_reason = why
 
     def _enter_conserve(self) -> None:
@@ -504,9 +522,12 @@ class DecisionEngine:
             return abs(executed) <= dz
         return executed * d > 0 and abs(executed) >= abs(d) * (1 - 1e-6) - dz
 
-    def _finish_change(self, why: str, reanchor: float | None = None) -> str:
+    def _finish_change(self, why: str, reanchor: float | None = None,
+                       cool_s: float | None = None) -> str:
         self._state = DecisionState.CRUISE
-        self._cool_t = self.cfg.hysteresis.t_cool_s   # 完成也要冷却（§三：三收尾同权）
+        # 完成也要冷却（§三：三收尾同权）；超车 pass 落定用短冷却（19:44 复盘：
+        # pass 高频事件，一律 1s 烧掉 ~30% 对局时间且诱发左右横跳）
+        self._cool_t = self.cfg.hysteresis.t_cool_s if cool_s is None else cool_s
         self._target_gid = None
         self._target_kind = None
         self._cur_score = -math.inf
