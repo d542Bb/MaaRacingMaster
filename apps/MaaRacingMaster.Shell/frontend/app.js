@@ -279,12 +279,26 @@
   const EGG_DODGE = { radius: 120, reach: 140, falloff: 2, inset: 12 };
   const EGG_CATCH_LINES = ['抓不到', '差一点', '太慢了', '别追了', '你为什么执意要走', '好吧。你走吧。'];
   function wireEggDodge(modal, chase) {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
-    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return null;
     const field = modal.card;
     const btn = field.querySelector('.mra-modal-btn');
     if (!field || !btn) return null;
     btn.classList.add('mra-modal-btn--egg');
+    // 抓到 = 亮下一句：pointerdown 无条件挂（按下瞬间即判定，逃跑中也能抓到）。
+    // 躲避受环境门控可缺席（reduced-motion/触屏/远桌面下 media query 不匹配），
+    // 但交互不能跟着缺席——否则按钮成死按钮，用户被困在弹层里。
+    btn.addEventListener('pointerdown', () => {
+      chase.catches++;
+      const idx = chase.catches - 1;
+      if (idx < EGG_CATCH_LINES.length) {
+        btn.textContent = EGG_CATCH_LINES[idx];
+        if (idx === EGG_CATCH_LINES.length - 1) chase.gave = true;
+        return;
+      }
+      modal.close();
+    });
+    // 移动层门控：动画缺席时交互退化为纯点击推进
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return null;
     btn.style.minWidth = btn.offsetWidth + 'px'; // 换字不抖行
     let raf = 0, pointer = null;
     let curX = 0, curY = 0; // 当前位移，用于从视觉矩形反推布局位
