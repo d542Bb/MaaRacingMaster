@@ -167,8 +167,10 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
         a = arr[~np.isnan(arr)]
         return float(a[0]) if a.size else None
 
-    left_edge_lane = _first_valid_lane(xl)
-    right_edge_lane = _first_valid_lane(xr)
+    # 缘距按**该侧稳定**门控（三局复盘 2026-09-22：单侧推断上线后，缘距消费者含
+    # 路观测推导——零星噪声行不得产出"路缘读数"）
+    left_edge_lane = _first_valid_lane(xl) if left_cov >= MIN_COVERAGE else None
+    right_edge_lane = _first_valid_lane(xr) if right_cov >= MIN_COVERAGE else None
 
     # vp_row / vp_x：左右缘各自线性拟合 x(y)，交点行对 y_h 的漂移 + 交点列。
     # vp_x 与校准 vpx 之差 ∝ 车头航向角（旋转观测量，设计稿 §十 v2）；需双侧稳定。

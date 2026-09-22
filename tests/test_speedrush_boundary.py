@@ -111,6 +111,8 @@ def test_single_side_degraded_valid():
     assert s.sides == 1
     assert np.isnan(s.road_width)                  # 单侧 → 路宽不可用
     assert s.vp_x is None                          # 单侧 → 交点不可解（航向观测量缺）
+    assert s.left_edge_lane is not None            # 稳定侧缘距给（单侧反推的原料）
+    assert s.right_edge_lane is None               # 不稳定侧不给（按侧门控，噪声行禁产出）
     assert not np.isnan(s.left_x)                  # 检到的那条边仍给
     assert s.straight_residual < 0.2               # 单侧 x_lane 恒定 → 残差仍可用（C1/直道判据）
 

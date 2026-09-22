@@ -167,3 +167,35 @@ def test_control_last_shape():
     assert set(m._control_last) == {"state", "reason", "steer", "frame_id", "executed_lane"}
     assert m._control_last["frame_id"] == 3
     assert isinstance(m._control_last["executed_lane"], float)
+
+
+# ---------- step 2.5b _EgoRoadObserver：单侧反推 + 半宽记忆 + 虚线护栏 ----------
+
+def _bnd_edges(l, r):
+    return SimpleNamespace(left_edge_lane=l, right_edge_lane=r)
+
+
+def test_ego_road_both_sides_and_memory():
+    o = smod._EgoRoadObserver()
+    assert o.update(_bnd_edges(-2.3, 2.4)) == pytest.approx(-0.05)   # 双侧直读
+    assert o._hw == pytest.approx(2.35)
+    # 单侧左缘：off = −(l + hw)
+    assert o.update(_bnd_edges(-1.3, None)) == pytest.approx(-1.05)
+    # 单侧右缘：off = −(r − hw)
+    assert o.update(_bnd_edges(None, 3.4)) == pytest.approx(-1.05)
+    assert o.update(_bnd_edges(None, None)) is None
+
+
+def test_ego_road_no_memory_single_side_is_none():
+    o = smod._EgoRoadObserver()
+    assert o.update(_bnd_edges(-1.0, None)) is None      # 没学过路宽，单侧不猜
+    assert o.update(None) is None
+
+
+def test_ego_road_dashed_guard():
+    """单侧"缘"其实是车道虚线：反推偏移出界（>hw+0.5）→ 弃观测，不喂假路中心。"""
+    o = smod._EgoRoadObserver()
+    o.update(_bnd_edges(-2.3, 2.3))                       # 学 hw≈2.3
+    assert o.update(_bnd_edges(-0.2, None)) == pytest.approx(-2.1)  # 界内放行
+    assert o.update(_bnd_edges(1.5, None)) is None        # −(1.5+2.3)=−3.8 |·|>2.8 出界弃
+    assert o.update(_bnd_edges(-1.0, None)) == pytest.approx(-1.3)

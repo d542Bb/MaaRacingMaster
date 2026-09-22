@@ -592,6 +592,7 @@ class SpeedRushModule(ActivityModule):
         cfg = load_decision()
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "traffic_obs": TrafficObserver(cfg.traffic),
+                "ego_road": _EgoRoadObserver(),
                 "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                 "prev_ts": None, "disabled": False, "trace": [],
                 "t_start": time.time()}
@@ -619,11 +620,7 @@ class SpeedRushModule(ActivityModule):
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents))
-            b = obs.boundary
-            road_offset = None
-            if b is not None and b.left_edge_lane is not None \
-                    and b.right_edge_lane is not None:
-                road_offset = -(b.left_edge_lane + b.right_edge_lane) / 2.0
+            road_offset = chain["ego_road"].update(obs.boundary)
             cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
@@ -796,6 +793,40 @@ def _demos_root() -> Path:
     更新不丢数据，也不污染仓库工作树。
     """
     return data_dir() / "speedrush" / "demos"
+
+
+class _EgoRoadObserver:
+    """road_offset 推导（step 2.5b，三局复盘 2026-09-22）：闭环命脉不得只挂双侧可见。
+
+    - 双侧稳定：−(l+r)/2，同时学半路宽 EMA（路宽每场常数，好帧学一次存记忆）；
+    - 仅单侧稳定：用学到的半宽反推路中心（见左缘 off=−(l+hw)，见右缘 off=−(r−hw)）；
+    - 无记忆的单侧帧 / 无边界：None（退回纯模型积分，旧行为不变）；
+    - 护栏：推得的自车偏移出界（|off|>hw+0.5）判"缘"是虚目标（车道虚线/噪声）→ 弃。
+    ε 旋转污染（≤0.15 车道）在新息门 1.5 内，口径同 step 2.5。阶段级生命期=chain。"""
+
+    def __init__(self) -> None:
+        self._hw: float | None = None
+
+    def update(self, bnd) -> float | None:
+        if bnd is None:
+            return None
+        l, r = bnd.left_edge_lane, bnd.right_edge_lane
+        if l is not None and r is not None:
+            off = -(l + r) / 2.0
+            hw = (r - l) / 2.0
+            if hw > 0.5:
+                self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
+        elif self._hw is None:
+            return None
+        elif l is not None:
+            off = -(l + self._hw)
+        elif r is not None:
+            off = -(r - self._hw)
+        else:
+            return None
+        if self._hw is not None and abs(off) > self._hw + 0.5:
+            return None
+        return off
 
 
 def _control_trace_root() -> Path:
