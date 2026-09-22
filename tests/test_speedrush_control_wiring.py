@@ -199,3 +199,68 @@ def test_ego_road_dashed_guard():
     assert o.update(_bnd_edges(-0.2, None)) == pytest.approx(-2.1)  # 界内放行
     assert o.update(_bnd_edges(1.5, None)) is None        # −(1.5+2.3)=−3.8 |·|>2.8 出界弃
     assert o.update(_bnd_edges(-1.0, None)) == pytest.approx(-1.3)
+
+
+# ---------- 坏帧采样器（三局复盘悬案取证：录控互斥不动，控制回路自存真帧） ----------
+
+import math
+import numpy as np
+import time as _time
+
+
+def _bad_bnd():
+    return BoundarySummary(schema_version=2, left_x=float("nan"),
+                           right_x=float("nan"), road_width=float("nan"),
+                           straight_residual=float("nan"), vp_row=None,
+                           validity=False, uncertainty=float("nan"), sides=0)
+
+
+def _good_bnd():
+    return BoundarySummary(schema_version=2, left_x=80.0, right_x=1200.0,
+                           road_width=1120.0, straight_residual=0.0, vp_row=None,
+                           validity=True, uncertainty=0.1, sides=2)
+
+
+def _bad_chain():
+    return {"bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
+            "t_start": _time.time()}
+
+
+def test_bad_frame_saved_and_indexed(monkeypatch, tmp_path):
+    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
+    ch = _bad_chain()
+    frame = np.zeros((60, 80, 3), np.uint8)
+    smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), 42, 1, 100.0, 999)
+    d = ch["bad_frames"]["dir"]
+    assert d is not None and (d / "fid_42.jpg").exists()
+    row = json.loads((d / "index.jsonl").read_text(encoding="utf-8"))
+    assert row["fid"] == 42 and row["ts_ns"] == 999 and row["steer_x"] == 0
+    # 节流窗内再来一帧：不落
+    smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), 43, 1, 100.5, 1000)
+    assert not (d / "fid_43.jpg").exists()
+    # 窗过后再来：落
+    smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), 44, 1, 102.5, 1001)
+    assert (d / "fid_44.jpg").exists()
+
+
+def test_good_frames_not_saved(monkeypatch, tmp_path):
+    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
+    ch = _bad_chain()
+    smod._maybe_save_bad_frame(ch, np.zeros((60, 80, 3), np.uint8),
+                               _good_bnd(), 1, 1, 0.0, 0)
+    assert ch["bad_frames"]["dir"] is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bad_frame_cap_and_self_disable(monkeypatch, tmp_path):
+    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
+    ch = _bad_chain()
+    frame = np.zeros((60, 80, 3), np.uint8)
+    for k in range(smod.BAD_FRAME_MAX_PER_PHASE + 10):
+        smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), k, 1,
+                                   float(k) * 3.0, k)
+    assert ch["bad_frames"]["saved"] == smod.BAD_FRAME_MAX_PER_PHASE
+    # 异常路径（frame=None → cvtColor 抛）：自禁且不外抛，驾驶链无感
+    ch2 = _bad_chain()
+    smod._maybe_save_bad_frame(ch2, None, _bad_bnd(), 1, 1, 0.0, 0)
+    assert ch2["bad_frames"]["saved"] == smod.BAD_FRAME_MAX_PER_PHASE

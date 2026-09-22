@@ -31,6 +31,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import cv2
+
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
@@ -595,6 +597,7 @@ class SpeedRushModule(ActivityModule):
                 "ego_road": _EgoRoadObserver(),
                 "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                 "prev_ts": None, "disabled": False, "trace": [],
+                "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
                 "t_start": time.time()}
 
     def _control_tick(self, chain: dict, gpad, frame, result: PerceptionResult,
@@ -632,6 +635,11 @@ class SpeedRushModule(ActivityModule):
         gpad.right_trigger(value=cmd.throttle)
         gpad.update()
         self._control_times.append((time.perf_counter() - t_c) * 1000.0)
+        # 坏帧取证采样（内部自带异常吞噬与自禁，绝不把驾驶链拖下水）
+        chain["bad_frames"]["last_steer"] = cmd.steer_x
+        if not obs.health.stage_transition:
+            _maybe_save_bad_frame(chain, frame, obs.boundary, fid, phase,
+                                  time.monotonic(), ts_ns)
         self._control_last = {
             "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
             "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3)}
@@ -691,6 +699,11 @@ class SpeedRushModule(ActivityModule):
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍 → {name}", "INFO")
+            bf = chain.get("bad_frames") or {}
+            if bf.get("saved"):
+                _tlog(self,
+                      f"[极速狂飙] 驾驶阶段 {phase}：坏帧（双侧路缘皆不稳）采样 "
+                      f"{bf['saved']} 张 → {bf['dir']}", "INFO")
         except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
 
@@ -793,6 +806,44 @@ def _demos_root() -> Path:
     更新不丢数据，也不污染仓库工作树。
     """
     return data_dir() / "speedrush" / "demos"
+
+
+# 坏帧采样器（三局复盘 2026-09-22 悬案取证：sides==0 占 58% 是场景褪色还是检测参数，
+# 唯一证据=真帧；录制与控制互斥是既有安全不变量，不动它——由控制回路自己按节流存帧，
+# fid 与 trace jsonl 对账。热路径纪律：≥2s 一张、每阶段封顶，写失败即自禁不重试刷屏）
+BAD_FRAME_MIN_INTERVAL_S = 2.0
+BAD_FRAME_MAX_PER_PHASE = 40
+
+
+def _maybe_save_bad_frame(chain: dict, frame, bnd, fid: int, phase: int,
+                          now: float, ts_ns: int) -> None:
+    """双侧路缘皆不稳（sides==0）的帧按节流存 JPEG + index.jsonl 行。"""
+    if bnd is None or bnd.sides != 0:
+        return
+    s = chain["bad_frames"]
+    if s["saved"] >= BAD_FRAME_MAX_PER_PHASE or now < s["next_at"]:
+        return
+    s["next_at"] = now + BAD_FRAME_MIN_INTERVAL_S
+    try:
+        if s["dir"] is None:
+            s["dir"] = _control_trace_root() / (
+                "badframes_"
+                + time.strftime("%Y%m%d_%H%M%S", time.localtime(chain["t_start"]))
+                + f"_p{phase}")
+            s["dir"].mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(s["dir"] / f"fid_{fid}.jpg"),
+                    cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        with open(s["dir"] / "index.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "fid": fid, "ts_ns": ts_ns,
+                "left_x": None if bnd.left_x != bnd.left_x else round(bnd.left_x, 1),
+                "right_x": None if bnd.right_x != bnd.right_x else round(bnd.right_x, 1),
+                "residual": (None if bnd.straight_residual != bnd.straight_residual
+                             else round(bnd.straight_residual, 3)),
+                "steer_x": s.get("last_steer", 0)}, ensure_ascii=False) + "\n")
+        s["saved"] += 1
+    except Exception:  # noqa: BLE001 —— 取证仪器失败绝不影响驾驶，且自禁
+        s["saved"] = BAD_FRAME_MAX_PER_PHASE
 
 
 class _EgoRoadObserver:
