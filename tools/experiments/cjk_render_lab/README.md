@@ -14,9 +14,24 @@ status: active
 - 维护者本机已装中文候选字体（PowerShell InstalledFontCollection 查询）：Microsoft YaHei UI（Regular/Bold/Light）、Noto Sans SC（思源黑体 Google 发行版，Thin–Black 全字重）、等线（Light/Regular）。
 - 雅黑真字重只有三档：CSS 请求 500 按字体匹配规则落到 Regular，600 落到 Bold；Noto Sans SC 的 500/600 有真字重面。
 
+## 字体选型许可核查（2026-09-22）
+
+采纳自委托研究（原文不进树；条款均为官方一手出处逐字核验，页面对象为厂商官网 / 官方包内协议）：
+
+| 候选 | 内嵌分发（随应用打包） | 义务与限制 | 全量体积 | 子集化/转格式 |
+|---|---|---|---|---|
+| MiSans（小米） | **❌ 明文禁止**：「不得……进一步分发字体软件或其任何副本」，豁免仅覆盖「用字体创作的作品」 | 需注明使用；不可改编 | 主包 227MB（全语言合集 379MB） | 未获允许 |
+| OPPO Sans 4.0 | ✅ 包内协议明示「embed, bundle, redistribute and/or sell unmodified copies with any software except for fonts software」 | 显著声明使用+随附协议副本；**不得修改**；revocable、non-transferable | 4.0 单 ttf 21.7MB（3 字重） | ❌ 不得修改 |
+| HarmonyOS Sans | ✅ 同上模板明示允许 | 同上 | SC 单字重 8.1–8.4MB × 6 字重 | ❌ 不得修改 |
+| Noto Sans SC（思源） | ✅ OFL 1.1：允许 bundled/embedded/redistributed and/or sold with any software | 随附 OFL.txt + 版权声明；不得单独出售字体；RFN「Source」限制改名 | 可变 ttf 16.9MB（wght 100–900） | ✅ 允许修改（子集化/woff2 均可） |
+
+出处：MiSans 协议 PDF（hyperos.mi.com/font-download/MiSans字体知识产权许可协议.pdf）；OPPO Sans 4.0 包内 License Agreement（coloros.com/article/A00000074/，CDN 直链 coloros-website-cn.allawnfs.com/font/OPPO_Sans_4.0.zip 需 Referer）；HarmonyOS Sans zip 内 LICENSE.txt（developer.huawei.com/consumer/cn/design/resource/，直链 developer.huawei.com/images/download/general/HarmonyOS-Sans.zip）；Noto OFL.txt（github.com/google/fonts ofl/notosanssc）。
+
+**打包技术关（待实测）**：壳前端以 file:// 直载 index.html，`@font-face` 引用本地字体文件可能被 Chromium 的字体 CORS 策略拦截；若被拦，宿主侧以 `SetVirtualHostNameToFolderMapping` 建虚拟主机映射为标准解法。落地前须在 WebView2 宿主实测本条。
+
 ## 假设清单
 
-- **H1 字体族**：雅黑小字号发灰、字形松散，对照软件用了更现代的字体 → 改 `--mra-font-sans`。注意：改字体栈只在本机有效，**玩家机器未必装了新字体，正式分发需打包字体文件**（思源/Noto 为 SIL OFL 许可，允许再分发；属第三方资产，落地前须确认）。
+- **H1 字体族**：雅黑小字号发灰、字形松散，对照软件用了更现代的字体 → 改 `--mra-font-sans`。候选许可核查见上节：MiSans 出局；OPPO/HarmonyOS 可嵌但不得修改（体积只能全量）；Noto 许可最自由。**玩家机器未必装了新字体，正式分发需打包字体文件（属第三方资产，按上节许可落地）。**
 - **H2 宿主锐度**：非整数 DPR / 缩放链路导致整体发虚 → 换字体无效，修宿主。PerMonitorV2 已声明，嫌疑较低；页内读数只提供线索。
 - **H3 排版参数**：小字号 + letter-spacing 0 + 行高密度 → 只调 token/CSS，零依赖小改动。
 - **H4 渲染链（逐层排除项）**：对照原生软件的观感差异，成因不做预设；仅当字体与参数实验均无明显改善、且软化特征跨字号一致时，才进入渲染链专项排查（系统 DPI → WebView2 viewport → 页面缩放 → CSS 布局 → 字体选择/fallback → 文本栅格化 → 屏幕像素）。
