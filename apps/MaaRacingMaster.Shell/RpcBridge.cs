@@ -30,6 +30,7 @@ internal static class RpcBridge
         "open_vigembus_download", "open_external_url", "open_user_data_folder",
         "get_registry_optimizations", "set_optimization_prompt_ignored",
         "set_registry_optimization",
+        "get_optional_dependencies",
         "check_update", "fetch_announcement",
         "fetch_logs", "get_today_stats", "get_debug_state",
         "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",

@@ -1,4 +1,4 @@
-// MaaRM shell 前端 —— 模块专属选项、toggle 开关、权限优化中心、模块「数据/设置」页
+// MaaRM shell 前端 —— 模块专属选项、toggle 开关、环境中心、模块「数据/设置」页
 // 模板渲染与控件绑定、今日看板。跨文件调用经 window.MRA（见文件末尾导出）。
 (function () {
   'use strict';
@@ -262,7 +262,7 @@
     }
   }
 
-  // ---------- 注册表权限优化（启动体检 + 设置页优化中心） ----------
+  // ---------- 注册表权限优化（启动体检 + 环境中心「权限优化」tab） ----------
   // 渲染单个优化项（三态行式卡片）：available===false→无需处理；optimized→已优化；否则待优化。
   // 状态 pill 与操作按钮同处底部一行紧邻；值/路径/后果等技术细节收进 <details> 默认折叠。
   // 样式统一走 style.css 的 .opt-* 类（复用设计令牌，不再堆内联样式）。
@@ -333,7 +333,75 @@
     }
   }
 
-  // 权限优化中心（设置页入口）：顶部汇总条（三档计数 + 一键全部优化）+ 三态卡片列表
+  // ---------- 环境中心：可选依赖 tab ----------
+  // 收录判据：缺失不阻断核心功能、降级路径一句话说得清、修复动作可引导；硬前置不进。
+  // 条目两类来源：字体由前端自检（document.fonts.check 是渲染层真源）；
+  // 驱动由侧车检测（get_optional_dependencies，与启动拦截 VIGEM_BUS_MISSING 同源）。
+  // 驱动类只引导到官方发布页，不代装；外链走逻辑目标名白名单（open_external_url）。
+  function fontDepItemHtml(ready) {
+    const actions = ready
+      ? '<span class="opt-item-note" style="margin-top:0">当前界面正在使用该字体</span>'
+      : '<button type="button" class="opt-btn opt-btn--primary dep-guide" data-target="noto_font">打开下载页</button>';
+    return '<div class="opt-item ' + (ready ? 'opt-item--done' : 'opt-item--todo') + '">'
+      + '<div class="opt-item-title">界面字体 Noto Sans SC（思源黑体）</div>'
+      + '<div class="opt-item-effect">思源字形：小字号更锐利，500/600 为真实字重，界面文字更清爽。'
+      + '未安装时界面回落微软雅黑，功能不受影响。</div>'
+      + '<details class="opt-details"><summary>技术细节</summary><div class="opt-details-body">'
+      + '<p>检测方式：页面内 document.fonts.check（渲染层真源，当前状态即实探结果）。</p>'
+      + '<p>降级路径：字体栈回落 Microsoft YaHei UI。</p>'
+      + '<p>后果：仅影响观感；安装到系统后重启本程序生效。</p>'
+      + '</div></details>'
+      + '<div class="opt-item-foot"><span class="opt-pill opt-pill--' + (ready ? 'done' : 'todo') + '">'
+      + (ready ? '已就绪' : '未检测到') + '</span>'
+      + '<span class="opt-actions">' + actions + '</span></div>'
+      + '</div>';
+  }
+
+  function depItemHtml(it) {
+    const ready = it.state === 'ready';
+    const actions = ready
+      ? '<span class="opt-item-note" style="margin-top:0">当前可用</span>'
+      : '<button type="button" class="opt-btn opt-btn--primary dep-guide" data-target="' + it.guide_target + '">'
+        + (it.guide_label || '打开官方页') + '</button>';
+    return '<div class="opt-item ' + (ready ? 'opt-item--done' : 'opt-item--todo') + '">'
+      + '<div class="opt-item-title">' + it.name + '</div>'
+      + '<div class="opt-item-effect">' + it.effect + '</div>'
+      + '<details class="opt-details"><summary>技术细节</summary><div class="opt-details-body">'
+      + '<p>降级路径：' + it.degrade + '</p>'
+      + '<p class="opt-path">官方页：' + it.official + '</p>'
+      + '<p>后果：' + it.detail + '</p>'
+      + '</div></details>'
+      + '<div class="opt-item-foot"><span class="opt-pill opt-pill--' + (ready ? 'done' : 'todo') + '">'
+      + (ready ? '已就绪' : '未检测到') + '</span>'
+      + '<span class="opt-actions">' + actions + '</span></div>'
+      + '</div>';
+  }
+
+  async function renderDepList(depEl) {
+    let items;
+    try {
+      const d = await mra.call('get_optional_dependencies');
+      items = d.items || [];
+    } catch (e) {
+      depEl.innerHTML = '<p class="mra-modal-error">读取可选依赖失败: ' + e.message + '</p>';
+      return;
+    }
+    let fontReady = false;
+    try { fontReady = document.fonts.check('12px "Noto Sans SC"'); } catch (e) { fontReady = false; }
+    const total = items.length + 1;
+    const missing = items.filter((it) => it.state !== 'ready').length + (fontReady ? 0 : 1);
+    const summary = missing
+      ? '<b class="opt-num--todo">' + missing + '</b> 项缺失（可选项） · <b class="opt-num--done">' + (total - missing) + '</b> 项就绪'
+      : '<b class="opt-num--done">' + total + '</b> 项可选依赖全部就绪';
+    depEl.innerHTML = '<div class="opt-summary"><span class="opt-summary-text">' + summary + '</span></div>'
+      + '<div class="dep-note">这里收录的都是可选项：缺失不影响核心功能，只影响体验与可选玩法；'
+      + '安装动作只做引导，由你确认后自行完成。</div>'
+      + fontDepItemHtml(fontReady)
+      + items.map(depItemHtml).join('');
+  }
+
+  // 环境中心（设置页入口）：tab「权限优化」（注册表优化，三档汇总 + 一键全部）
+  // + tab「可选依赖」（ViGEmBus 驱动 / 界面字体，检测 + 引导）
   async function openOptimizerCenter() {
     let items;
     try {
@@ -348,13 +416,20 @@
       return;
     }
     const modal = openModal({
-      title: '权限优化中心',
+      title: '环境中心',
       maxWidth: 540,
-      bodyHtml: '<div id="opt-summary"></div><div id="opt-center-list"></div>',
+      bodyHtml:
+        '<div class="env-tabs">'
+        + '<button type="button" class="env-tab env-tab--on" data-pane="pane-perm">权限优化</button>'
+        + '<button type="button" class="env-tab" data-pane="pane-dep">可选依赖</button>'
+        + '</div>'
+        + '<div class="env-pane env-pane--on" id="pane-perm"><div id="opt-summary"></div><div id="opt-center-list"></div></div>'
+        + '<div class="env-pane" id="pane-dep"><div id="dep-center-list"></div></div>',
       buttons: [{ text: '关闭', primary: true, onClick: (m) => m.close() }],
     });
     const summaryEl = modal.card.querySelector('#opt-summary');
     const listEl = modal.card.querySelector('#opt-center-list');
+    const depEl = modal.card.querySelector('#dep-center-list');
     // 汇总三档：待优化 / 已优化 / 无需处理。available===false 计入"无需处理"，不混入"已优化"
     function renderSummary(list) {
       const todo = list.filter((it) => it.available !== false && !it.optimized);
@@ -380,8 +455,24 @@
         listEl.innerHTML = '<p class="mra-modal-error">刷新失败: ' + e.message + '</p>';
       }
     }
-    // 事件委托到 modal.card：覆盖汇总条(一键全部)与列表(单项)，列表 innerHTML 重渲染不影响委托
+    // 事件委托到 modal.card：覆盖 tab 切换、依赖引导、汇总条(一键全部)与列表(单项)，
+    // 列表 innerHTML 重渲染不影响委托
     modal.card.addEventListener('click', async (ev) => {
+      const tabBtn = ev.target.closest('.env-tab');
+      if (tabBtn) {
+        modal.card.querySelectorAll('.env-tab').forEach((b) => b.classList.toggle('env-tab--on', b === tabBtn));
+        modal.card.querySelectorAll('.env-pane').forEach((p) => p.classList.toggle('env-pane--on', p.id === tabBtn.dataset.pane));
+        return;
+      }
+      const guideBtn = ev.target.closest('.dep-guide');
+      if (guideBtn) {
+        try {
+          await mra.call('open_external_url', { target: guideBtn.dataset.target });
+        } catch (e) {
+          showError('打开链接失败: ' + e.message);
+        }
+        return;
+      }
       const applyAllBtn = ev.target.closest('.opt-apply-all');
       if (applyAllBtn) {
         applyAllBtn.disabled = true;
@@ -411,6 +502,7 @@
       await refresh(); // 无论成败都刷新（失败项状态不变，按钮随重渲染恢复可用）
     });
     refresh();
+    renderDepList(depEl);
   }
 
   // 启动体检：存在未优化且未忽略的项则弹一键优化引导（按项忽略，新增优化项不受影响）
@@ -432,7 +524,7 @@
         '<p class="mra-modal-text">'
         + '<b>' + it.name + '</b>：' + it.effect + '</p>').join('')
         + '<p class="mra-modal-text--sub">'
-        + '详情与手动调整见 设置 → 权限优化。</p>',
+        + '详情与手动调整见 设置 → 运行环境。</p>',
       buttons: [
         {
           text: '一键优化（推荐）', primary: true,
@@ -457,7 +549,7 @@
               if (err) fails.push(it.name + '：' + err);
             }
             if (fails.length) showError('部分忽略失败：' + fails.join('；'));
-            else showError('已忽略启动提醒，可随时在 设置 → 权限优化 中心重新开启');
+            else showError('已忽略启动提醒，可随时在 设置 → 运行环境 中心重新开启');
             modal.close();
           }
         },
@@ -884,13 +976,13 @@
           </div>
         </div>
 
-        <!-- 权限优化 -->
+        <!-- 运行环境 -->
         <div class="card">
-          <div class="card-head"><h3>权限优化</h3></div>
+          <div class="card-head"><h3>运行环境</h3></div>
           <div class="card-body">
-            <p class="capture-note" style="margin:0 0 12px;">体检并修复 Windows 层面对自动化运行的干扰（ms-gamebar 弹窗、打字时弹手柄虚拟键盘等）；每项均可单独优化或恢复系统默认，附值路径与后果说明</p>
+            <p class="capture-note" style="margin:0 0 12px;">体检并修复 Windows 层面对自动化运行的干扰（ms-gamebar 弹窗、打字时弹手柄虚拟键盘等，均可单独优化或恢复系统默认，附值路径与后果说明）；可选依赖（手柄驱动、界面字体）的就绪状态与安装引导。均为可选项，缺失不影响核心功能</p>
             <button class="mra-tool-btn mra-tool-btn--block" id="btn-optimizer">
-              <span class="mra-tool-btn-label">打开权限优化中心</span>
+              <span class="mra-tool-btn-label">打开环境中心</span>
             </button>
           </div>
         </div>
@@ -999,7 +1091,7 @@
   // 绑定当前模块卡片上的控件事件（渲染后调用；旧节点随 innerHTML 替换一并销毁，无重复绑定）
   function bindModulePages(moduleId) {
     wireSwitchAria($('page-settings')); // 模板重渲染后新开关补接线（幂等）
-    // 权限优化中心入口（设置页重渲染后按钮重建，须在此重绑；置于卫语句前防提前 return 漏绑）
+    // 环境中心入口（设置页重渲染后按钮重建，须在此重绑；置于卫语句前防提前 return 漏绑）
     const btnOptimizer = document.getElementById('btn-optimizer');
     if (btnOptimizer) btnOptimizer.addEventListener('click', () => { openOptimizerCenter(); });
 
@@ -1189,7 +1281,7 @@
     document.querySelectorAll('.mra-tool-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const tool = btn.dataset.tool;
-        if (!tool) return; // 借用 .mra-tool-btn 样式但非快捷工具的按钮（如「打开权限优化中心」）交各自专属 handler，不在此报错
+        if (!tool) return; // 借用 .mra-tool-btn 样式但非快捷工具的按钮（如「打开环境中心」）交各自专属 handler，不在此报错
         if (tool === 'folder') {
           try {
             await mra.call('open_user_data_folder', {});

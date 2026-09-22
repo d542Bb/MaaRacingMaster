@@ -1100,7 +1100,7 @@ footer .spacer { flex: 1; }
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35), 0 0 0 1px rgba(0,0,0,0.08);
 }
 
-/* ============ 权限优化中心（app.js openOptimizerCenter / optimizerItemHtml） ============ */
+/* ============ 环境中心（settings.js openOptimizerCenter / optimizerItemHtml） ============ */
 /* 顶部汇总条：待优化/已优化/无需处理三档计数 + 一键全部优化 */
 .opt-summary {
   display: flex; align-items: center; gap: 12px;
@@ -1165,3 +1165,22 @@ footer .spacer { flex: 1; }
 .opt-btn--ghost { border: 1px solid var(--mra-border); background: transparent; color: var(--mra-foreground-secondary); }
 .opt-btn--ghost:hover:not(:disabled) { background: var(--mra-surface-hover); border-color: var(--mra-border-strong); }
 .opt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 环境中心 tab 条：视觉语言对齐顶部导航（文字 + 激活主色下划线），双 tab 切换 */
+.env-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--mra-border-light); margin-bottom: 12px; }
+.env-tab {
+  appearance: none; background: none; border: none; cursor: pointer;
+  font-family: var(--mra-font-sans); font-size: 13px; padding: 7px 12px 8px;
+  color: var(--mra-foreground-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.env-tab:hover { color: var(--mra-foreground); }
+.env-tab--on { color: var(--mra-primary); font-weight: 600; border-bottom-color: var(--mra-primary); }
+.env-pane { display: none; }
+.env-pane--on { display: block; }
+
+/* 可选依赖 tab 顶部说明条：收录原则的一句话用户版 */
+.dep-note {
+  font-size: 11px; color: var(--mra-foreground-muted); line-height: 1.6;
+  padding: 8px 12px; margin-bottom: 12px; background: var(--mra-sidebar);
+  border: 1px solid var(--mra-border-light); border-radius: var(--mra-radius-md);
+}

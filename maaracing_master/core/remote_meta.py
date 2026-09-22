@@ -41,6 +41,7 @@ EXTERNAL_TARGETS: dict[str, str] = {
     "docs": f"https://github.com/{GITHUB_REPO}/blob/master/docs/CODE_WIKI.md",
     "release": f"https://github.com/{GITHUB_REPO}/releases/latest",
     "vigembus": "https://github.com/nefarius/ViGEmBus/releases/latest",
+    "noto_font": "https://fonts.google.com/noto/specimen/Noto+Sans+SC",
 }
 
 # 允许**远程数据**携带的链接：主机 → 路径段前缀白名单。

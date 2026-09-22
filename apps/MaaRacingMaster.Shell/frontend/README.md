@@ -193,6 +193,27 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   `{type:'call',callId,method}`、异步派发 `{type:'response',callId,ok,data}`）+ 脚本化
   `fetch_logs` 批次，即可用真 `rpc.js`/`log.js` 渲染审计（探针手法同 `冒烟验证` 节）。
 
+## 环境中心（设置页）
+
+设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.mra-tool-btn--block` 不另设视觉）
+打开 `js/settings.js` `openOptimizerCenter()`：双 tab 弹层，tab 视觉对齐顶部导航
+（文字 + 主色下划线，`.env-tabs` / `.env-pane`）。
+
+- **「权限优化」tab**：注册表优化项（`get_registry_optimizations`），三态卡片
+  （待优化/已优化/无需处理）+ 汇总条一键全部；动作 = 优化 / 恢复系统默认，动的是
+  Windows 配置。启动体检 `checkRegistryOptimizations()` 只覆盖这批条目——
+  **可选项不参与启动提醒**（缺字体的提醒是噪音，缺驱动有启动时机的专属引导）。
+- **「可选依赖」tab**：收录判据三条同时满足才进——缺失不阻断核心功能、降级路径
+  一句话说得清、修复动作可引导；硬前置（.NET / WebView2，缺失即无法运行）不进。
+  条目两类来源：**字体由前端自检**（`document.fonts.check('12px "Noto Sans SC"')`
+  是渲染层真源，注册表/字体枚举代替不了）；**驱动由侧车检测**
+  （`get_optional_dependencies`，ViGEmBus 状态与启动拦截 `VIGEM_BUS_MISSING`
+  同源，复用 `gamepad_available()`）。动作 = 引导，外链走逻辑目标名白名单
+  （`open_external_url` + `remote_meta.py` `EXTERNAL_TARGETS`：`vigembus` /
+  `noto_font`），**驱动类只引导不代装**（内核驱动自动安装越权）。
+- 行为锁：`tests/test_sidecar_optional_deps.py`（条目形状 / 状态枚举 / 白名单目标 /
+  字体项不经后端返回）；RPC 白名单三方一致性由 `tests/test_rpc_allowlist.py` 锁。
+
 ## 冒烟验证
 
 无构建链也能验证：仓库根起临时 HTTP 服务指向本目录，浏览器打开

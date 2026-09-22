@@ -360,6 +360,8 @@ HANDLERS = frozenset({
     # 注册表优化建议
     "get_registry_optimizations", "set_optimization_prompt_ignored",
     "set_registry_optimization",
+    # 可选依赖就绪状态（环境中心「可选依赖」tab）
+    "get_optional_dependencies",
     # 更新与公告
     "check_update", "fetch_announcement",
     # 观测
@@ -885,6 +887,34 @@ class SidecarService:
                 "restore_label": opt["restore_label"],
                 "prompt_ignored": opt["id"] in ignored_ids,
             })
+        return (True, {"items": items}, None)
+
+    def get_optional_dependencies(self, params):
+        """读取可选依赖就绪状态（环境中心「可选依赖」tab 专用）。
+
+        收录判据：缺失不阻断核心功能、降级路径一句话说得清、修复动作可引导；
+        硬前置（.NET / WebView2 等，缺失即无法运行）不进本列表。
+        ViGEmBus 状态复用 gamepad_available()（与启动拦截 VIGEM_BUS_MISSING 同源，
+        结果已缓存，重复调用零开销）；字体项由前端自检——document.fonts.check 是
+        渲染层的真源，注册表/字体枚举都代替不了，故不经本接口返回。
+        """
+        try:
+            ready = self._controller.gamepad_available()
+        except Exception:  # noqa: BLE001
+            ready = False
+        items = [{
+            "id": "vigembus",
+            "name": "手柄驱动 ViGEmBus",
+            "effect": "后台手柄点击方式依赖。未安装时自动降级前台鼠标点击，"
+                      "仅显示视图与前台鼠标方式不受影响。",
+            "state": "ready" if ready else "missing",
+            "degrade": "自动降级前台鼠标点击（降级分支已内建于鉴宝点击模块）",
+            "guide_target": "vigembus",
+            "guide_label": "打开驱动发布页",
+            "official": "github.com/nefarius/ViGEmBus",
+            "detail": "内核级驱动无法随程序分发：只引导到官方发布页，由你自行下载安装"
+                      "（不代装），装后重试即可。",
+        }]
         return (True, {"items": items}, None)
 
     def set_optimization_prompt_ignored(self, params):
