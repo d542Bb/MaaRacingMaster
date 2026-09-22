@@ -3,9 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>员工守则试验区 · egg_lab（生产 6a048c2 同构副本）</title>
+<title>员工守则试验区 v2 · egg_lab</title>
 <style>
-  /* ===== token（照抄 style.css）===== */
   :root {
     --mra-primary: #E5484D; --mra-primary-hover: #F05A5F; --mra-primary-foreground: #FFFFFF;
     --mra-background: #F5F6FA; --mra-surface: #FFFFFF; --mra-sidebar: #FAFBFD;
@@ -30,12 +29,12 @@
   .vchip { font-family: var(--mra-font-mono); font-size: 12px; color: var(--mra-foreground-muted);
     background: var(--mra-surface); border: 1px dashed var(--mra-border); border-radius: 6px;
     padding: 4px 10px; cursor: pointer; user-select: none; }
-  #selftest { position: relative; background: var(--mra-surface); border: 1px solid var(--mra-border);
+  #selftest { background: var(--mra-surface); border: 1px solid var(--mra-border);
     border-radius: var(--mra-radius-lg); padding: 12px 16px; margin-top: 16px;
     font-family: var(--mra-font-mono); font-size: 12px; white-space: pre-wrap; }
   #selftest .ok { color: var(--mra-success); } #selftest .bad { color: var(--mra-danger); }
 
-  /* ===== 以下全部照抄生产 style.css ===== */
+  /* ===== 以下照抄生产 style.css ===== */
   .falling-text {
     position: fixed; left: 0; top: 0; z-index: 9999;
     pointer-events: none; user-select: none;
@@ -91,12 +90,12 @@
 </style>
 </head>
 <body>
-<h1>员工守则试验区</h1>
-<p class="sub">生产 6a048c2 的逐行同构副本 + [lab-fix] 三处（躲避越界 / 按钮宽度漂移 / 余量每帧实测）。手动玩 + 「跑自检」看断言。</p>
+<h1>员工守则试验区 v2</h1>
+<p class="sub">躲避场升级为整张弹层卡（二维逃跑、能扑到正文上），位移上限 110px、硬钳制在卡内 12px——逃得起来，也跑不丢。手动抓按钮玩手感，点「跑自检」看断言。</p>
 <div class="bar">
   <button id="btn-open">打开守则</button>
   <span class="vchip" id="about-version">v0.23.0.dev1+252</span>
-  <span style="font-size:11px;color:var(--mra-foreground-muted);">（连点 10 次开守则，每次掉落有 1/5 混怪谈短语）</span>
+  <span style="font-size:11px;color:var(--mra-foreground-muted);">（连点 10 次开守则，掉落 1/5 混怪谈短语）</span>
   <button id="btn-test">跑自检</button>
 </div>
 <div id="selftest">自检输出区（点「跑自检」）</div>
@@ -113,17 +112,14 @@
     out.appendChild(s);
   }
   function clearLog() { out.textContent = ''; }
-
-  // ================= 以下与生产 app.js 6a048c2 同构 =================
   var $ = function (id) { return document.getElementById(id); };
 
-  // ---------- 关于页彩蛋：点击版本号掉落文字（同款 MAA） ----------
+  // ================= 与生产 app.js 6a048c2 同构（wireEggDodge 为 v2 版） =================
   const FALLING_EGG_TEXTS = ['3:33', '不要清点', '它记得你'];
   const FALLING_EGG_EVERY = 5;
   const MAX_FALLING = 40;
   let eggFallCount = 0;
 
-  // ---------- 员工守则 ----------
   const EGG_RULE_META = '本守则会不定期修订。你读到的版本，就是你需要读的版本。';
   const EGG_RULES_POOL = [
     '正式版没有「调试模式」。如果你在任何页面看到它，不要点击，也不要截图。开发者会知道你来过。',
@@ -150,52 +146,66 @@
     dot.classList.add('mra-dot-blink');
   }
 
-  const EGG_DODGE = { radius: 120, reach: 72, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
+  // [lab-iter2] 躲避场 = 整张弹层卡，二维逃跑：
+  //   位移 = 背离光标方向 × 强度（随距离平方衰减）× reach，钳制在卡内 inset；
+  //   光标退开 radius 外 → 弹簧回布局位。感知基准 = 按钮视觉中心（你的手接近它）。
+  const EGG_DODGE = { radius: 120, reach: 110, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
   const EGG_DODGE_TAUNTS = ['抓不到', '差一点', '太慢了', '好吧。你走吧。'];
   function wireEggDodge(modal) {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
     if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return null;
-    const field = modal.card.querySelector('.mra-modal-actions');
-    const btn = field ? field.querySelector('.mra-modal-btn') : null;
+    const field = modal.card;
+    const btn = field.querySelector('.mra-modal-btn');
     if (!field || !btn) return null;
     btn.classList.add('mra-modal-btn--egg');
-    // [lab-fix] taunt 换字会改变按钮宽度：钉住初始宽度，flex-end 行内左缘不再跳动
-    btn.style.minWidth = btn.offsetWidth + 'px';
-    let dodges = 0, armed = true, raf = 0, bearing = 1, pointer = null;
-    const setTx = (tx, fleeing) => {
+    btn.style.minWidth = btn.offsetWidth + 'px'; // taunt 换字不抖行
+    let dodges = 0, armed = true, raf = 0, pointer = null;
+    let curX = 0, curY = 0; // 当前位移，用于从视觉矩形反推布局位
+    const setT = (tx, ty, fleeing) => {
       btn.style.transition = 'transform ' + (fleeing ? '.13s' : '.62s') + ' cubic-bezier('
         + (fleeing ? '0.23, 1, 0.32, 1' : '0.34, 1.56, 0.64, 1') + ')';
-      btn.style.transform = 'translateX(' + tx + 'px)';
+      btn.style.transform = 'translate(' + tx + 'px,' + ty + 'px)';
+      curX = tx; curY = ty;
     };
     function frame() {
       raf = 0;
       if (!document.body.contains(btn)) return;
-      const rect = field.getBoundingClientRect();
-      const d = pointer
-        ? Math.hypot(pointer.x - (rect.left + rect.width / 2), pointer.y - (rect.top + rect.height / 2))
-        : Infinity;
+      const cardR = field.getBoundingClientRect();
+      const btnR = btn.getBoundingClientRect();
+      const layoutL = btnR.left - curX, layoutT = btnR.top - curY;
+      const cx = btnR.left + btnR.width / 2, cy = btnR.top + btnR.height / 2;
+      const d = pointer ? Math.hypot(pointer.x - cx, pointer.y - cy) : Infinity;
       if (d < EGG_DODGE.radius * EGG_DODGE.countLine && armed) {
         armed = false;
         dodges++;
         if (dodges >= EGG_DODGE.patience) {
           btn.textContent = EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1];
-          setTx(0, false);
+          setT(0, 0, false);
           return;
         }
         btn.textContent = EGG_DODGE_TAUNTS[Math.min(dodges - 1, EGG_DODGE_TAUNTS.length - 2)];
       } else if (d > EGG_DODGE.radius) {
         armed = true;
       }
-      if (Number.isFinite(d) && d > 6) bearing = Math.sign(pointer.x - (rect.left + rect.width / 2)) || 1;
-      const flee = d < EGG_DODGE.radius && dodges < EGG_DODGE.patience
-        ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
-      // [lab-fix] 余量每帧按按钮实际 offsetLeft 实测（右对齐行，左右空间不对称）：
-      // 左移空间 = offsetLeft - inset；右移空间 = 行宽 - offsetLeft - 按钮宽 - inset
-      const bl = btn.offsetLeft;
-      const roomL = Math.max(0, bl - EGG_DODGE.inset);
-      const roomR = Math.max(0, field.clientWidth - bl - btn.offsetWidth - EGG_DODGE.inset);
-      const tx = -bearing * flee * EGG_DODGE.reach;
-      setTx(tx > 0 ? Math.min(roomR, tx) : Math.max(-roomL, tx), flee > 0);
+      let tx = 0, ty = 0, fleeing = false;
+      if (pointer && Number.isFinite(d) && d > 0 && dodges < EGG_DODGE.patience) {
+        const flee = d < EGG_DODGE.radius ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
+        if (flee > 0) {
+          const dx = pointer.x - cx, dy = pointer.y - cy;
+          const dd = Math.hypot(dx, dy) || 1;
+          tx = -(dx / dd) * flee * EGG_DODGE.reach;
+          ty = -(dy / dd) * flee * EGG_DODGE.reach;
+          fleeing = true;
+        }
+      }
+      // 出界钳制：视觉矩形任何时刻不得越过卡缘 - inset（逃得起来，跑不丢）
+      const minX = cardR.left + EGG_DODGE.inset - layoutL;
+      const maxX = cardR.right - EGG_DODGE.inset - btnR.width - layoutL;
+      const minY = cardR.top + EGG_DODGE.inset - layoutT;
+      const maxY = cardR.bottom - EGG_DODGE.inset - btnR.height - layoutT;
+      tx = Math.min(Math.max(tx, minX), Math.max(minX, maxX));
+      ty = Math.min(Math.max(ty, minY), Math.max(minY, maxY));
+      setT(tx, ty, fleeing);
     }
     const onMove = (e) => { pointer = { x: e.clientX, y: e.clientY }; if (!raf) raf = requestAnimationFrame(frame); };
     const onLeave = () => { pointer = null; if (!raf) raf = requestAnimationFrame(frame); };
@@ -292,7 +302,6 @@
     requestAnimationFrame(step);
   }
 
-  // ---------- modal.js 复刻（含 onClose） ----------
   function openModal(opts) {
     const overlay = document.createElement('div');
     overlay.className = 'mra-modal-overlay';
@@ -333,7 +342,6 @@
     return modal;
   }
 
-  // ---------- 掉落混入逻辑（抽成可测函数，行为与生产一致） ----------
   function mixFall(eggFallCount) {
     const eggHit = Array.isArray(FALLING_EGG_TEXTS) && FALLING_EGG_TEXTS.length
       && eggFallCount % FALLING_EGG_EVERY === 0;
@@ -345,7 +353,6 @@
     };
   }
 
-  // ---------- 接线（与生产 initVersionEgg 同构） ----------
   let eggClickCount = 0, eggLastClickAt = 0;
   const EGG_DIALOG_CLICKS = 10;
   $('about-version').addEventListener('click', (e) => {
@@ -368,7 +375,6 @@
     clearLog();
     const ok = (m) => log('✓ ' + m, 'ok');
     const bad = (m) => log('✗ ' + m, 'bad');
-    // 1. 抽样形状
     {
       const pool = EGG_RULES_POOL.slice();
       const picked = [];
@@ -381,17 +387,15 @@
         ? ok('抽样：8 条、不重复、出自池')
         : bad('抽样形状异常');
     }
-    // 2. 掉落混入频率：25 次点击恰 5 次怪谈
     {
       let eggs = 0;
       for (let i = 1; i <= 25; i++) if (mixFall(i).isEgg) eggs++;
       (eggs === 5) ? ok('掉落混入：25 点 5 中') : bad('掉落混入频率异常：' + eggs);
     }
-    // 3. 躲避状态机 + 越界断言（驱动真实 DOM）
+    // 躲避：二维自由度 + 出界钳制 + 跑距上限
     const modal = showRulesDialog();
-    const field = modal.card.querySelector('.mra-modal-actions');
-    const btn = field.querySelector('.mra-modal-btn');
-    const fr = () => field.getBoundingClientRect();
+    const btn = modal.card.querySelector('.mra-modal-btn');
+    const cardR = () => modal.card.getBoundingClientRect();
     const pointerAt = async (x, y) => {
       window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, pointerType: 'mouse' }));
       await raf2();
@@ -400,46 +404,47 @@
       const br = btn.getBoundingClientRect();
       return { x: br.left + br.width / 2, y: br.top + br.height / 2 };
     };
-    // 接近→逃离：transform 非零
     let c = btnCenter();
-    await pointerAt(c.x, c.y);
-    const txAfter = /translateX\((-?[\d.]+)px\)/.exec(btn.style.transform);
-    (txAfter && parseFloat(txAfter[1]) !== 0)
-      ? ok('接近触发逃离：translateX = ' + txAfter[1] + 'px')
+    await pointerAt(c.x, c.y); // 手按在按钮上：必须逃起来（位移非零）
+    let tr = /translate\((-?[\d.]+)px, ?(-?[\d.]+)px\)/.exec(btn.style.transform);
+    (tr && (Math.abs(parseFloat(tr[1])) > 0 || Math.abs(parseFloat(tr[2])) > 0))
+      ? ok('接近触发二维逃离：translate(' + tr[1] + ', ' + tr[2] + ')')
       : bad('接近未触发逃离：' + btn.style.transform);
-    // 越界扫掠：指针绕按钮一圈 + 远近交替，右缘恒不越过操作行右缘 - inset
-    let overflow = 0;
+    // 出界 + 跑距扫掠：指针绕按钮一圈交替远近
+    let overflow = 0, overreach = 0;
+    const homeL = btn.offsetLeft, homeT = btn.offsetTop;
     for (let a = 0; a < 360; a += 15) {
       const rad = a * Math.PI / 180;
-      const rr = fr();
-      const cx = rr.left + rr.width / 2 + Math.cos(rad) * (EGG_DODGE.radius + 40);
-      const cy = rr.top + rr.height / 2 + Math.sin(rad) * (EGG_DODGE.radius + 40);
-      await pointerAt(cx, cy);
-      // 每次先拉近再拉远，触发两次 armed 翻转
-      const cc = btnCenter();
-      await pointerAt(cc.x + Math.cos(rad) * 30, cc.y + Math.sin(rad) * 30);
-      const tr = /translateX\((-?[\d.]+)px\)/.exec(btn.style.transform);
-      const tx = tr ? parseFloat(tr[1]) : 0;
-      const baseLeft = btn.offsetLeft - tx; // 布局左缘（translate 不改 offsetLeft）
-      const rightEdge = baseLeft + tx + btn.offsetWidth;
-      if (rightEdge > fr().right - EGG_DODGE.inset + 0.5) overflow++;
+      let cc = btnCenter();
+      await pointerAt(cc.x + Math.cos(rad) * (EGG_DODGE.radius + 60), cc.y + Math.sin(rad) * (EGG_DODGE.radius + 60));
+      cc = btnCenter();
+      await pointerAt(cc.x + Math.cos(rad) * 20, cc.y + Math.sin(rad) * 20);
+      tr = /translate\((-?[\d.]+)px, ?(-?[\d.]+)px\)/.exec(btn.style.transform);
+      const tx = tr ? parseFloat(tr[1]) : 0, ty = tr ? parseFloat(tr[2]) : 0;
+      const br = btn.getBoundingClientRect(), cr = cardR();
+      if (br.left < cr.left + EGG_DODGE.inset - 0.5 || br.right > cr.right - EGG_DODGE.inset + 0.5
+        || br.top < cr.top + EGG_DODGE.inset - 0.5 || br.bottom > cr.bottom - EGG_DODGE.inset + 0.5) overflow++;
+      if (Math.abs(tx) > EGG_DODGE.reach + 0.5 || Math.abs(ty) > EGG_DODGE.reach + 0.5) overreach++;
     }
-    (overflow === 0) ? ok('越界扫掠：36 位置右缘全部收在 inset 内')
-      : bad('越界 ' + overflow + ' 次（右缘越过操作行）');
+    (overflow === 0) ? ok('出界扫掠：36 位置视觉矩形全部收在卡内 inset')
+      : bad('出界 ' + overflow + ' 次');
+    (overreach === 0) ? ok('跑距断言：位移全部 ≤ reach(' + EGG_DODGE.reach + 'px)')
+      : bad('超距 ' + overreach + ' 次');
+    void homeL; void homeT;
     // 忍耐 4 次后 relent 放行
     for (let i = 0; i < 4; i++) {
       let cc = btnCenter();
-      await pointerAt(cc.x + 200, cc.y + 200); // 拉出半径重置 armed
+      await pointerAt(cc.x + 260, cc.y + 260);
       cc = btnCenter();
-      await pointerAt(cc.x, cc.y);             // 拉近触发一次 dodge
+      await pointerAt(cc.x, cc.y);
     }
-    (btn.textContent === EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1] && btn.style.transform === 'translateX(0px)')
-      ? ok('忍耐 4 次后 relent：' + btn.textContent + '，位置归零放行')
+    (btn.textContent === EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1] && btn.style.transform === 'translate(0px, 0px)')
+      ? ok('忍耐 4 次后 relent：' + btn.textContent + '，归位放行')
       : bad('relent 异常：' + btn.textContent + ' / ' + btn.style.transform);
-    // 4. onClose 单次 + 绿点闪烁类
+    // onClose 单次 + 绿点回响
     let closed = 0;
     const m2 = openModal({ title: 't', onClose: () => closed++, buttons: [{ text: 'x', primary: true, onClick: (m) => m.close() }] });
-    m2.close(); m2.close(); // 二次 close 走 _closing 守卫
+    m2.close(); m2.close();
     (closed === 1) ? ok('onClose：多次 close 只触发一次') : bad('onClose 触发 ' + closed + ' 次');
     modal.close();
     (document.getElementById('status-dot').classList.contains('mra-dot-blink'))
