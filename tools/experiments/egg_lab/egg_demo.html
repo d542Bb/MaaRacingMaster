@@ -75,9 +75,10 @@
   .mra-modal-rule { opacity: 0; transform: translateY(5px); animation: mra-rule-in 0.5s ease forwards; }
   @keyframes mra-rule-in { to { opacity: 1; transform: none; } }
   .mra-modal-rule--ghost { color: var(--mra-foreground-muted); }
-  .mra-modal-rule--ghost .mra-modal-rule-num { color: var(--mra-foreground-muted); }
-  .mra-modal-rule--ghost .mra-modal-rule-secret { opacity: 0; transition: opacity var(--mra-duration-base) ease; }
-  .mra-modal-rule--ghost.revealed .mra-modal-rule-secret { opacity: 1; }
+  .mra-modal-rule--ghost .mra-modal-rule-num, .mra-modal-rule--ghost .mra-modal-rule-secret {
+    opacity: 0; transition: opacity var(--mra-duration-base) ease; }
+  .mra-modal-rule--ghost.revealed .mra-modal-rule-num, .mra-modal-rule--ghost.revealed .mra-modal-rule-secret {
+    opacity: 1; }
   .mra-modal-title--egg { animation: mra-egg-breathe 6s ease-in-out infinite; }
   @keyframes mra-egg-breathe { 0%, 100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
   .mra-modal-btn--egg { will-change: transform; }
@@ -185,9 +186,9 @@
       const layoutL = btnR.left - curX, layoutT = btnR.top - curY;
       const cx = btnR.left + btnR.width / 2, cy = btnR.top + btnR.height / 2;
       const d = pointer ? Math.hypot(pointer.x - cx, pointer.y - cy) : Infinity;
-      let tx = 0, ty = 0, fleeing = false;
+      let flee = 0, tx = 0, ty = 0, fleeing = false;
       if (!chase.gave && pointer && Number.isFinite(d) && d > 0) {
-        const flee = d < EGG_DODGE.radius ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
+        flee = d < EGG_DODGE.radius ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
         if (flee > 0) {
           const dx = pointer.x - cx, dy = pointer.y - cy;
           const dd = Math.hypot(dx, dy) || 1;
@@ -210,6 +211,32 @@
       const lostY = Math.abs(desiredY - ty);
       if (lostY > 0.5) tx = clamp(tx + Math.sign(desiredX || 1) * lostY, minX, maxX);
       if (lostX > 0.5) ty = clamp(ty + Math.sign(desiredY || 1) * lostX, minY, maxY);
+      // [lab-iter6] 角落反困死：主方向被两面墙同时吃掉时（残余压力大），把残余压力
+      // 转成墙向滑移——四个候选里选「离光标最远」的那个，总位移仍不超过 reach
+      const press = flee > 0 ? flee * EGG_DODGE.reach : 0;
+      const got = Math.hypot(tx, ty);
+      const residual = press - got;
+      if (residual > 6 && pointer) {
+        const dist2 = (vx, vy) => {
+          const px = layoutL + curX + vx + btnR.width / 2;
+          const py = layoutT + curY + vy + btnR.height / 2;
+          return (px - pointer.x) ** 2 + (py - pointer.y) ** 2;
+        };
+        const cands = [
+          [clamp(tx + residual, minX, maxX), ty],
+          [clamp(tx - residual, minX, maxX), ty],
+          [tx, clamp(ty + residual, minY, maxY)],
+          [tx, clamp(ty - residual, minY, maxY)],
+        ];
+        let best = null, bestD = -1;
+        for (const cd of cands) {
+          const mag = Math.hypot(cd[0], cd[1]);
+          const scale = mag > EGG_DODGE.reach ? EGG_DODGE.reach / mag : 1;
+          const dd2 = dist2(cd[0] * scale, cd[1] * scale);
+          if (dd2 > bestD) { bestD = dd2; best = [cd[0] * scale, cd[1] * scale]; }
+        }
+        if (best && bestD > dist2(tx, ty)) { tx = best[0]; ty = best[1]; }
+      }
       setT(tx, ty, fleeing);
     }
     // 抓到 = 亮下一句；末句亮起后不再躲避（gave），再抓一次才关门
@@ -236,7 +263,8 @@
     };
   }
 
-  // [lab-iter5] 第 10 条数字乱码：字符集内随机翻动，自左向右逐位落定为「10.」（DecryptedText 手法自实现）
+  // [lab-iter5] 第 10 条数字乱码：字符集内随机翻动，自左向右逐位落定为「10.」（DecryptedText 手法自实现）。
+  // [lab-iter6] 起播时机改为悬停触发（v5 在渐现延迟里起播，整行还透明，等于白播）；返回计时器便于重启前清理。
   function scrambleNumber(el, finalText) {
     const glyphs = '01<>#$%&@?!/\\_-';
     let frame = 0;
@@ -252,6 +280,7 @@
       el.textContent = s;
       if (frame >= total) { el.textContent = finalText; clearInterval(timer); }
     }, 40);
+    return timer;
   }
 
   function showRulesDialog() {
@@ -272,6 +301,7 @@
       + '<span class="mra-modal-rule-secret">' + EGG_RULE_LAST + '</span></p>');
     const chase = { catches: 0, gave: false };
     let cleanupDodge = null;
+    let scrTimer = null;
     const modal = openModal({
       title: '员工守则',
       maxWidth: 580,
@@ -284,6 +314,7 @@
       onClose: () => {
         blinkStatusDot();
         if (cleanupDodge) cleanupDodge();
+        if (scrTimer) clearInterval(scrTimer);
       },
       buttons: [
         { text: '确定要退出吗？', primary: true },
@@ -291,13 +322,17 @@
     });
     const title = modal.card.querySelector('.mra-modal-title');
     if (title) title.classList.add('mra-modal-title--egg');
-    // 第 10 条：悬停显影（JS 挂 enter/leave，可测）+ 数字乱码在渐现延迟后起播
+    // 第 10 条：整行（序号+正文）默认隐形；悬停时序号乱码解码 + 正文显影，移出复隐。
+    // 乱码起播改在悬停触发（v5 起播撞上渐现延迟，整行还透明，用户看不到效果）
     const ghost = modal.card.querySelector('.mra-modal-rule--ghost');
     if (ghost) {
-      ghost.addEventListener('mouseenter', () => ghost.classList.add('revealed'));
+      ghost.addEventListener('mouseenter', () => {
+        ghost.classList.add('revealed');
+        const num = ghost.querySelector('.mra-modal-rule-num');
+        if (scrTimer) clearInterval(scrTimer);
+        scrTimer = scrambleNumber(num, '10.');
+      });
       ghost.addEventListener('mouseleave', () => ghost.classList.remove('revealed'));
-      setTimeout(() => scrambleNumber(ghost.querySelector('.mra-modal-rule-num'), '10.'),
-        picked.length * 100 + 150);
     }
     cleanupDodge = wireEggDodge(modal, chase);
     return modal;
@@ -451,18 +486,21 @@
       ? ok('编号结构：1-8 随机 + 第 9 条修订声明常态化')
       : bad('编号结构异常：rows=' + rowsAll.length);
     const ghost = modal.card.querySelector('.mra-modal-rule--ghost');
-    const noReveal0 = !ghost.classList.contains('revealed');
+    const ghostNum = ghost.querySelector('.mra-modal-rule-num');
+    // 初始整行隐形：序号与正文 computed opacity 都是 0
+    const op0 = getComputedStyle(ghostNum).opacity === '0'
+      && getComputedStyle(ghost.querySelector('.mra-modal-rule-secret')).opacity === '0';
+    // 悬停：显影 + 乱码落定（悬停触发起播，1s 后应已落定为 10.）
     ghost.dispatchEvent(new MouseEvent('mouseenter'));
-    const revealedNow = ghost.classList.contains('revealed');
+    await new Promise((r) => setTimeout(r, 1000));
+    const settled = ghostNum.textContent === '10.';
+    const opRevealed = getComputedStyle(ghostNum).opacity === '1';
     ghost.dispatchEvent(new MouseEvent('mouseleave'));
-    const hiddenAgain = !ghost.classList.contains('revealed');
-    (noReveal0 && revealedNow && hiddenAgain)
-      ? ok('第 10 条：悬停显影 / 移出复隐')
-      : bad('第 10 条悬停显影异常');
-    await new Promise((r) => setTimeout(r, 2200)); // 等乱码落定（起播 ~0.95s + 翻动 0.8s）
-    (ghost.querySelector('.mra-modal-rule-num').textContent === '10.')
-      ? ok('乱码数字落定：10.')
-      : bad('乱码未落定：' + ghost.querySelector('.mra-modal-rule-num').textContent);
+    await new Promise((r) => setTimeout(r, 300)); // 复隐过渡 0.2s
+    const opHiddenAgain = getComputedStyle(ghostNum).opacity === '0';
+    (op0 && settled && opRevealed && opHiddenAgain)
+      ? ok('第 10 条：初始整行隐形 → 悬停显影+乱码落定 → 移出复隐')
+      : bad('第 10 条异常：op0=' + op0 + ' settled=' + settled + ' revealed=' + opRevealed + ' hidden=' + opHiddenAgain);
     const cardR = () => modal.card.getBoundingClientRect();
     const pointerAt = async (x, y) => {
       window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, pointerType: 'mouse' }));
@@ -498,6 +536,20 @@
       : bad('出界 ' + overflow + ' 次');
     (overreach === 0) ? ok('跑距断言：位移全部 ≤ reach(' + EGG_DODGE.reach + 'px)')
       : bad('超距 ' + overreach + ' 次');
+    // [lab-iter6] 角落反困死：从右下角方向反复逼近，按钮不得被钉在角上（与光标保持距离）
+    let minDist = Infinity;
+    for (let i = 0; i < 6; i++) {
+      let cc = btnCenter();
+      await pointerAt(cc.x + (EGG_DODGE.radius + 80), cc.y + (EGG_DODGE.radius + 80));
+      cc = btnCenter();
+      const px = cc.x + 10, py = cc.y + 10; // 从右下角方向贴近到 10px
+      await pointerAt(px, py);
+      const br2 = btn.getBoundingClientRect();
+      minDist = Math.min(minDist,
+        Math.hypot(px - (br2.left + br2.width / 2), py - (br2.top + br2.height / 2)));
+    }
+    (minDist >= 40) ? ok('角落反困死：右下角逼近最小距离 ' + Math.round(minDist) + 'px')
+      : bad('角落仍被困：最小距离 ' + Math.round(minDist) + 'px');
     void homeL; void homeT;
     // 抓捕序列：逐句亮起，末句后放弃躲避
     for (let i = 0; i < EGG_CATCH_LINES.length; i++) {
