@@ -154,17 +154,18 @@
   // [lab-iter2] 躲避场 = 整张弹层卡，二维逃跑：
   //   位移 = 背离光标方向 × 强度（随距离平方衰减）× reach，钳制在卡内 inset；
   //   光标退开 radius 外 → 弹簧回布局位。感知基准 = 按钮视觉中心（你的手接近它）。
-  const EGG_DODGE = { radius: 120, reach: 140, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
-  const EGG_DODGE_TAUNTS = ['抓不到', '差一点', '太慢了', '好吧。你走吧。'];
-  function wireEggDodge(modal) {
+  const EGG_DODGE = { radius: 120, reach: 140, falloff: 2, inset: 12 };
+  // [lab-iter4] 抓到一次亮一句；末句亮起后放弃躲避，再抓一次才放你走
+  const EGG_CATCH_LINES = ['抓不到', '差一点', '太慢了', '别追了', '你为什么执意要走', '好吧。你走吧。'];
+  function wireEggDodge(modal, chase) {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
     if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return null;
     const field = modal.card;
     const btn = field.querySelector('.mra-modal-btn');
     if (!field || !btn) return null;
     btn.classList.add('mra-modal-btn--egg');
-    btn.style.minWidth = btn.offsetWidth + 'px'; // taunt 换字不抖行
-    let dodges = 0, armed = true, raf = 0, pointer = null;
+    btn.style.minWidth = btn.offsetWidth + 'px'; // 换字不抖行
+    let raf = 0, pointer = null;
     let curX = 0, curY = 0; // 当前位移，用于从视觉矩形反推布局位
     const setT = (tx, ty, fleeing) => {
       btn.style.transition = 'transform ' + (fleeing ? '.13s' : '.62s') + ' cubic-bezier('
@@ -180,20 +181,8 @@
       const layoutL = btnR.left - curX, layoutT = btnR.top - curY;
       const cx = btnR.left + btnR.width / 2, cy = btnR.top + btnR.height / 2;
       const d = pointer ? Math.hypot(pointer.x - cx, pointer.y - cy) : Infinity;
-      if (d < EGG_DODGE.radius * EGG_DODGE.countLine && armed) {
-        armed = false;
-        dodges++;
-        if (dodges >= EGG_DODGE.patience) {
-          btn.textContent = EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1];
-          setT(0, 0, false);
-          return;
-        }
-        btn.textContent = EGG_DODGE_TAUNTS[Math.min(dodges - 1, EGG_DODGE_TAUNTS.length - 2)];
-      } else if (d > EGG_DODGE.radius) {
-        armed = true;
-      }
       let tx = 0, ty = 0, fleeing = false;
-      if (pointer && Number.isFinite(d) && d > 0 && dodges < EGG_DODGE.patience) {
+      if (!chase.gave && pointer && Number.isFinite(d) && d > 0) {
         const flee = d < EGG_DODGE.radius ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
         if (flee > 0) {
           const dx = pointer.x - cx, dy = pointer.y - cy;
@@ -219,6 +208,17 @@
       if (lostX > 0.5) ty = clamp(ty + Math.sign(desiredY || 1) * lostX, minY, maxY);
       setT(tx, ty, fleeing);
     }
+    // 抓到 = 亮下一句；末句亮起后不再躲避（gave），再抓一次才关门
+    btn.addEventListener('click', () => {
+      chase.catches++;
+      const idx = chase.catches - 1;
+      if (idx < EGG_CATCH_LINES.length) {
+        btn.textContent = EGG_CATCH_LINES[idx];
+        if (idx === EGG_CATCH_LINES.length - 1) chase.gave = true;
+        return;
+      }
+      modal.close();
+    });
     const onMove = (e) => { pointer = { x: e.clientX, y: e.clientY }; if (!raf) raf = requestAnimationFrame(frame); };
     const onLeave = () => { pointer = null; if (!raf) raf = requestAnimationFrame(frame); };
     window.addEventListener('pointermove', onMove, { passive: true });
@@ -247,6 +247,7 @@
     rows.push('<p class="mra-modal-rule mra-modal-rule--last" style="animation-delay:'
       + (picked.length * 100 + 250) + 'ms"><b class="mra-modal-rule-num">' + (picked.length + 1)
       + '.</b><span>' + EGG_RULE_LAST + '</span></p>');
+    const chase = { catches: 0, gave: false };
     let cleanupDodge = null;
     const modal = openModal({
       title: '员工守则',
@@ -256,17 +257,18 @@
         '<img class="mra-modal-rules-icon" alt="">' +
         '<div class="mra-modal-rules-list">' + rows.join('') + '</div>' +
         '</div>',
+      closeOnOverlay: false, // 不给逃课出口：点空白不关（Esc 仍可）
       onClose: () => {
         blinkStatusDot();
         if (cleanupDodge) cleanupDodge();
       },
       buttons: [
-        { text: '确定要退出吗？', primary: true, onClick: (m) => m.close() },
+        { text: '确定要退出吗？', primary: true },
       ],
     });
     const title = modal.card.querySelector('.mra-modal-title');
     if (title) title.classList.add('mra-modal-title--egg');
-    cleanupDodge = wireEggDodge(modal);
+    cleanupDodge = wireEggDodge(modal, chase);
     return modal;
   }
 
@@ -350,7 +352,10 @@
     }
     overlay.appendChild(card);
     document.body.appendChild(overlay);
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) modal.close(); });
+    overlay.addEventListener('click', (ev) => {
+      // closeOnOverlay: false = 点空白不关（守则弹层堵逃课出口用）；默认 true
+      if (ev.target === overlay && opts.closeOnOverlay !== false) modal.close();
+    });
     return modal;
   }
 
@@ -443,22 +448,38 @@
     (overreach === 0) ? ok('跑距断言：位移全部 ≤ reach(' + EGG_DODGE.reach + 'px)')
       : bad('超距 ' + overreach + ' 次');
     void homeL; void homeT;
-    // 忍耐 4 次后 relent 放行
-    for (let i = 0; i < 4; i++) {
-      let cc = btnCenter();
-      await pointerAt(cc.x + 260, cc.y + 260);
-      cc = btnCenter();
-      await pointerAt(cc.x, cc.y);
+    // 抓捕序列：逐句亮起，末句后放弃躲避
+    for (let i = 0; i < EGG_CATCH_LINES.length; i++) {
+      btn.click();
+      await raf2();
     }
-    (btn.textContent === EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1] && btn.style.transform === 'translate(0px, 0px)')
-      ? ok('忍耐 4 次后 relent：' + btn.textContent + '，归位放行')
-      : bad('relent 异常：' + btn.textContent + ' / ' + btn.style.transform);
-    // onClose 单次 + 绿点回响
-    let closed = 0;
-    const m2 = openModal({ title: 't', onClose: () => closed++, buttons: [{ text: 'x', primary: true, onClick: (m) => m.close() }] });
-    m2.close(); m2.close();
-    (closed === 1) ? ok('onClose：多次 close 只触发一次') : bad('onClose 触发 ' + closed + ' 次');
-    modal.close();
+    (btn.textContent === EGG_CATCH_LINES[EGG_CATCH_LINES.length - 1])
+      ? ok('抓捕序列：末句已亮（' + btn.textContent + '）')
+      : bad('抓捕序列异常：' + btn.textContent);
+    let cc = btnCenter();
+    await pointerAt(cc.x, cc.y);
+    (btn.style.transform === 'translate(0px, 0px)')
+      ? ok('末句后放弃躲避：手按在按钮上也不再逃')
+      : bad('末句后仍在逃：' + btn.style.transform);
+    // 点空白不关（逃课出口已堵）
+    modal.overlay.dispatchEvent(new MouseEvent('click'));
+    await raf2();
+    (document.body.contains(btn)) ? ok('点空白不关：逃课出口已堵') : bad('点空白仍会关');
+    // 通用弹层回归：默认仍可点空白关
+    let closed2 = 0;
+    const m2 = openModal({ title: 't', onClose: () => closed2++, buttons: [{ text: 'x', primary: true }] });
+    m2.overlay.dispatchEvent(new MouseEvent('click'));
+    await raf2();
+    (!document.body.contains(m2.card)) ? ok('通用弹层：点空白默认仍可关') : bad('通用弹层被误堵');
+    // onClose 单次（重复 close 走 _closing 守卫）
+    let closed3 = 0;
+    const m3 = openModal({ title: 't', onClose: () => closed3++ });
+    m3.close(); m3.close();
+    (closed3 === 1) ? ok('onClose：多次 close 只触发一次') : bad('onClose 触发 ' + closed3 + ' 次');
+    // 末句后再抓一次：关门 + 绿点回响
+    btn.click();
+    await raf2();
+    (!document.body.contains(btn)) ? ok('末句后再抓一次：关门') : bad('末句后点击未关门');
     (document.getElementById('status-dot').classList.contains('mra-dot-blink'))
       ? ok('关闭回响：绿点闪烁类已挂')
       : bad('关闭回响缺失');
