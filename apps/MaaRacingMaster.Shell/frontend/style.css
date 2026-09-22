@@ -57,7 +57,9 @@
   --mra-radius-xl: 12px;
 
   /* 字体 */
-  --mra-font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  /* 中文优先 Noto Sans SC（思源字形，小字号渲染优于雅黑；可变字体，500/600 为真字重），
+     未安装的机器回落雅黑——仅字体栈顺序变化，无打包无依赖 */
+  --mra-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   --mra-font-mono: "Consolas", "JetBrains Mono", "Cascadia Code", "SF Mono", monospace;
 
   /* 动效时长（就近归类既有字面量：0.12/0.15s → fast，0.18/0.2s → base，0.3/0.32s → slow。
