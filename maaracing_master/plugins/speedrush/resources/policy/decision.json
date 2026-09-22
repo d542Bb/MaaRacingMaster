@@ -10,7 +10,11 @@
     "switch_margin": "30 分档的一半（§三：加性门槛替代乘式门，对零分/负分成立）",
     "x_lane_abs_max": "路面半宽 ≈2.5 车道 + 余量（CODE_WIKI 回放右路缘 +2.5 标定）",
     "conf_hi": "实测 coin conf 中位 0.87–0.89（证据 commit 8f59837）→ 折扣满权界；floor→hi 线性爬坡",
-    "t_empty_s": "§七.3 基线：真人局空街段 P50=0.5s / P75=1.1s（对局内）；1.5s 起值在回放误报 5 段（多为局首装载段，实机由就绪门吸收），抬到 2.0s"
+    "t_empty_s": "§七.3 基线：真人局空街段 P50=0.5s / P75=1.1s（对局内）；1.5s 起值在回放误报 5 段（多为局首装载段，实机由就绪门吸收），抬到 2.0s",
+    "planner.lookahead_tau_s": "τ_resp 0.130 实测 + 惯性时间常数 [需实测 C2]；起值 0.25，加载器锁下界 ≥tau_resp_s",
+    "planner.v_lat_gain": "[需实测 C1 杆值→横向速度稳态增益] 起值按变道耗时口径反推：Δx=1 车道≈0.7s（timing 起值）满杆 → ≈1.5 车道/s",
+    "planner.inertia_tau_s": "[需实测 C2] 起值 0.15s（probe_tau_steer rise_s 列可离线再导出）",
+    "planner.rate_limit_raw|stick_deadzone_raw": "旧赛车栈已验证值（control-route §三移植清单）"
   },
   "mode": {
     "allow_all_moves": true,
@@ -50,5 +54,18 @@
     "x_lane_abs_max": 2.6,
     "cy_jump_max_px": 90.0,
     "straight_residual_max": 0.6
+  },
+  "planner": {
+    "lookahead_tau_s": 0.25,
+    "k_p": 1.2,
+    "k_d": 0.2,
+    "tau_steer_s": 0.10,
+    "rate_limit_raw": 22000.0,
+    "stick_deadzone_raw": 256.0,
+    "throttle_raw": 255,
+    "v_lat_gain": 1.5,
+    "inertia_tau_s": 0.15,
+    "hold_max_ticks": 3,
+    "_note": "延迟补偿前瞻 PD（planner 设计稿 §三）；k_p 起值=1/(v_lat_gain×T_eff)，T_eff≈0.55s"
   }
 }

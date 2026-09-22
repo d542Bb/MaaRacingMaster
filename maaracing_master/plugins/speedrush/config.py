@@ -68,6 +68,23 @@ class Hysteresis:
 
 
 @dataclass(frozen=True)
+class Planner:
+    """运动规划/控制层参数（planner 设计稿 §六）。命名按"延迟补偿前瞻 PD"口径——
+    黑箱物理下无车辆模型，不叫 Pure Pursuit 以免读者找曲率公式（设计稿 §三）。"""
+
+    lookahead_tau_s: float     # 外推提前量 = τ_resp + 惯性时间常数（下界由矛盾检查锁）
+    k_p: float                 # 车道误差 → 归一杆值 比例增益
+    k_d: float                 # 横向速度阻尼增益（≥0）
+    tau_steer_s: float         # 杆值低通时间基常数（α=1−exp(−dt/τ)，行为稿 §五纪律）
+    rate_limit_raw: float      # 每 tick 杆值变化上限（±32767 系）
+    stick_deadzone_raw: float  # |杆值| 低于此归 0（游戏手柄死区）
+    throttle_raw: int          # 右扳机恒值（RULES §4.1 权威：全程油门）
+    v_lat_gain: float          # 满杆稳态横向速度（车道/s）[需实测 C1]
+    inertia_tau_s: float       # v_lat 跟踪指令的一阶惯性常数 [需实测 C2]
+    hold_max_ticks: int        # 决策过期后最多保持拍数，第 +1 拍起按 CONSERVE
+
+
+@dataclass(frozen=True)
 class Validate:
     t_empty_s: float
     t_recover_s: float
@@ -85,6 +102,7 @@ class DecisionConfig:
     scoring: Scoring
     hysteresis: Hysteresis
     validate: Validate
+    planner: Planner
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -107,13 +125,23 @@ def _bool(d: dict, sec: str, key: str) -> bool:
     return v
 
 
+def _int(d: dict, sec: str, key: str, *, lo: int, hi: int | None = None) -> int:
+    v = d.get(sec, {}).get(key)
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise ValueError(f"decision.json [{sec}].{key} 缺失或非整数：{v!r}")
+    if v < lo or (hi is not None and v > hi):
+        raise ValueError(f"decision.json [{sec}].{key}={v} 越界（需 ∈[{lo},{hi}]）")
+    return v
+
+
 def _read_decision(path: Path) -> DecisionConfig:
     d = json.loads(path.read_text(encoding="utf-8"))
     if d.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             f"decision.json schema_version={d.get('schema_version')!r}，"
             f"代码只认 {SCHEMA_VERSION}")
-    for sec in ("mode", "control", "timing", "scoring", "hysteresis", "validate"):
+    for sec in ("mode", "control", "timing", "scoring", "hysteresis", "validate",
+                "planner"):
         if not isinstance(d.get(sec), dict):
             raise ValueError(f"decision.json 缺段「{sec}」")
 
@@ -153,7 +181,19 @@ def _read_decision(path: Path) -> DecisionConfig:
             x_lane_abs_max=_num(d, "validate", "x_lane_abs_max", lo=0),
             cy_jump_max_px=_num(d, "validate", "cy_jump_max_px", lo=0),
             straight_residual_max=_num(d, "validate", "straight_residual_max",
-                                       lo=0, lo_open=False)))
+                                       lo=0, lo_open=False)),
+        planner=Planner(
+            lookahead_tau_s=_num(d, "planner", "lookahead_tau_s", lo=0),
+            k_p=_num(d, "planner", "k_p", lo=0),
+            k_d=_num(d, "planner", "k_d", lo=0, lo_open=False),
+            tau_steer_s=_num(d, "planner", "tau_steer_s", lo=0),
+            rate_limit_raw=_num(d, "planner", "rate_limit_raw", lo=0),
+            stick_deadzone_raw=_num(d, "planner", "stick_deadzone_raw",
+                                    lo=0, lo_open=False),
+            throttle_raw=_int(d, "planner", "throttle_raw", lo=0, hi=255),
+            v_lat_gain=_num(d, "planner", "v_lat_gain", lo=0),
+            inertia_tau_s=_num(d, "planner", "inertia_tau_s", lo=0, lo_open=False),
+            hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis
@@ -172,6 +212,16 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             "mode.allow_car_graze=true 在 v1 拒绝启用（coin-only 保守基线；"
             "复议条件=近场 0.05 车道级精度实测，设计稿 §三）")
+    p, t = cfg.planner, cfg.timing
+    if p.lookahead_tau_s < t.tau_resp_s:
+        raise ValueError(
+            f"[planner] lookahead_tau_s={p.lookahead_tau_s} 低于实测响应延迟 "
+            f"tau_resp_s={t.tau_resp_s}（提前量无视延迟，planner 设计稿 §三）")
+    full_stroke_ticks = 2 * 32767 / p.rate_limit_raw if p.rate_limit_raw > 0 else 0
+    if full_stroke_ticks < 2:
+        raise ValueError(
+            f"[planner] rate_limit_raw={p.rate_limit_raw} 满行程仅 "
+            f"{full_stroke_ticks:.1f} tick（<2 tick 限幅形同虚设，是失效档位）")
     return cfg
 
 

@@ -87,6 +87,9 @@ def _decision_dict():
     (lambda d: d["scoring"].update(conf_floor=1.5), "越界"),
     (lambda d: d["scoring"].update(conf_floor=0.9), "折扣区倒置"),
     (lambda d: d["control"].update(frame_rate_hz=0), "越界"),
+    (lambda d: d.pop("planner"), "planner"),
+    (lambda d: d["planner"].update(lookahead_tau_s=0.05), "lookahead"),
+    (lambda d: d["planner"].update(rate_limit_raw=99999.0), "限幅"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
     d = _decision_dict()
@@ -348,9 +351,32 @@ def test_v0_straight_baseline_gate():
 def test_output_schema_and_validity_window():
     e = _eng()
     out = e.update(_good_obs(), DT)
-    assert out.schema_version == 1
+    assert out.schema_version == 2                 # v2：reanchor_lane 契约
     assert out.valid_until_fid > out.emitted_fid
     assert isinstance(out.reason, str) and out.reason
+    assert out.reanchor_lane is None               # 非完成拍不携带
+
+
+def test_signed_completion_rejects_reverse():
+    """有符号完成判据（planner 设计稿 §二，维护者裁定 2026-09-22）：
+    demand=+0.5 时反方向 executed=−0.45 绝对值够大也不得过收敛门。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT)                 # CHANGE demand=+0.5
+    out = e.update(_good_obs(fid=2), DT, executed_lane=-0.45)
+    assert "converged" not in out.reason
+    assert out.state is DecisionState.CHANGE
+    out = e.update(_good_obs(fid=3), DT, executed_lane=0.45)   # 同向才吃门
+    assert "converged:feedback" in out.reason
+
+
+def test_reanchor_lane_carried_once_signed():
+    """完成拍携带有符号目标读数（非裸 bool）；下一拍即清（一次性）。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT)
+    out = e.update(_good_obs(fid=2), DT, executed_lane=0.45)
+    assert out.reanchor_lane == pytest.approx(0.5)  # g.x_center 有符号
+    out = e.update(_obs(fid=3, presence=True), DT)
+    assert out.reanchor_lane is None
 
 
 def test_lowpass_is_time_based():

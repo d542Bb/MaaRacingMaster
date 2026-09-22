@@ -156,18 +156,21 @@ class WorldObservation:
 
 @dataclass(frozen=True)
 class DecisionOutput:
-    """决策层→规划层唯一出口（契约形状，生产者 step 4）。
+    """决策层→规划层唯一出口（契约形状，生产者 step 4；v2 加重锚通道）。
     `reason` 是机器可读码串（如 "score_win" / "validate_fail:frame_stale"），
     用 str 不用 Enum——码集会随实现扩充，state 才是锁死的枚举。"""
 
-    schema_version: int
+    schema_version: int          # v2：reanchor_lane 契约（planner 设计稿 §二）
     state: DecisionState
     target_id: int | None
     x_target: float | None
     move_allowed: bool
     reason: str
     emitted_fid: int
-    valid_until_fid: int
+    valid_until_fid: int         # 含边界：current_fid ≤ 此值为有效（planner 设计稿 §一）
+    # CHANGE 完成拍携带**有符号**目标观测读数（非裸 bool、非绝对位移）；
+    # 规划层该拍先应用锚点（executed_lane:=值、v_lat_est:=0）再算控制量。
+    reanchor_lane: float | None = None
 
 
 @dataclass(frozen=True)

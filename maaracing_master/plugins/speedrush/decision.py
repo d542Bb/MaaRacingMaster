@@ -33,7 +33,7 @@ from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionOutput, DecisionState, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import Calib, load_calib
 
-_SCHEMA = 1
+_SCHEMA = 2  # v2：DecisionOutput.reanchor_lane（planner 设计稿 §二，2026-09-22 用户裁定）
 _EPS = 1e-9
 
 
@@ -165,6 +165,7 @@ class DecisionEngine:
         self._abort_next = DecisionState.CRUISE
         self._fault = False
         self._last_report_ok = True
+        self._reanchor_pending: float | None = None
 
     # ---------- 主入口 ----------
 
@@ -205,11 +206,14 @@ class DecisionEngine:
         move_allowed = self._state in (DecisionState.CRUISE, DecisionState.CHANGE)
         if not self.cfg.mode.allow_all_moves:
             move_allowed = False
+        reanchor = self._reanchor_pending
+        self._reanchor_pending = None      # 一次性：只在完成拍携带
         return DecisionOutput(
             schema_version=_SCHEMA, state=self._state, target_id=self._target_gid,
             x_target=self._x_smooth if self._state is not DecisionState.CONSERVE else None,
             move_allowed=move_allowed, reason=reason, emitted_fid=obs.frame_id,
-            valid_until_fid=obs.frame_id + self._validity_ticks())
+            valid_until_fid=obs.frame_id + self._validity_ticks(),
+            reanchor_lane=reanchor)
 
     # ---------- 状态处理 ----------
 
@@ -222,7 +226,7 @@ class DecisionEngine:
             return "hold:no_candidate"
         self._target_gid = cand.group.group_id
         self._cur_score = cand.score
-        self._demand_lane = abs(cand.group.x_center)
+        self._demand_lane = cand.group.x_center   # 有符号需求（planner §二：反向不得过门）
         self._change_t = 0.0
         self._deadzone_ticks = 0
         self._state = DecisionState.CHANGE
@@ -242,13 +246,14 @@ class DecisionEngine:
         if better is not None and better.group.group_id != self._target_gid:
             self._target_gid = better.group.group_id
             self._cur_score = better.score
-            self._demand_lane = abs(better.group.x_center)
+            self._demand_lane = better.group.x_center
             self._deadzone_ticks = 0
             return "switch:score_win"
         if executed is not None:
-            # 反馈路完成判据：已执行位移吃掉需求 ×(1−ε) 且目标在场
-            if abs(executed) >= self._demand_lane * (1 - 1e-6) - self.cfg.hysteresis.dead_zone_lane:
-                return self._finish_change("converged:feedback")
+            # 反馈路完成判据（有符号）：executed 与需求同向且幅度吃掉需求×(1−ε) 且目标在场
+            # ——反向移动不得借绝对值过门（planner 设计稿 §二，2026-09-22 用户裁定）
+            if self._demand_consumed(executed):
+                return self._finish_change("converged:feedback", reanchor=g.x_center)
             # 越界复核（对当前目标）：归一发散现形 → 取消
             if abs(g.x_center) + g.x_span >= self.cfg.validate.x_lane_abs_max:
                 self._enter_abort("x_bound")
@@ -258,11 +263,11 @@ class DecisionEngine:
         if abs(g.x_center) <= self.cfg.hysteresis.dead_zone_lane:
             self._deadzone_ticks += 1
             if self._deadzone_ticks >= 2:
-                return self._finish_change("converged:proxy")
+                return self._finish_change("converged:proxy", reanchor=g.x_center)
         else:
             self._deadzone_ticks = 0
         if self._change_t >= self.cfg.control.t_change_max_s:
-            return self._finish_change("change_timeout")
+            return self._finish_change("change_timeout", reanchor=g.x_center)
         return "moving:proxy"
 
     def _tick_abort(self, dt_s: float, executed: float | None) -> str:
@@ -349,11 +354,21 @@ class DecisionEngine:
         self._target_gid = None
         self._cur_score = -math.inf
 
-    def _finish_change(self, why: str) -> str:
+    def _demand_consumed(self, executed: float) -> bool:
+        """有符号完成判据：executed 与需求同向、幅度吃掉 |demand|×(1−ε) 减死区。
+        需求≈0（原地起变道）时退化为 |executed| ≤ 死区。"""
+        dz = self.cfg.hysteresis.dead_zone_lane
+        d = self._demand_lane
+        if abs(d) <= dz:
+            return abs(executed) <= dz
+        return executed * d > 0 and abs(executed) >= abs(d) * (1 - 1e-6) - dz
+
+    def _finish_change(self, why: str, reanchor: float | None = None) -> str:
         self._state = DecisionState.CRUISE
         self._cool_t = self.cfg.hysteresis.t_cool_s   # 完成也要冷却（§三：三收尾同权）
         self._target_gid = None
         self._cur_score = -math.inf
+        self._reanchor_pending = reanchor   # 完成拍携带有符号目标读数（契约 v2）
         return f"done:{why}"
 
     def _group_of(self, obs: WorldObservation) -> CoinGroup | None:
