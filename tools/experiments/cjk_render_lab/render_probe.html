@@ -25,23 +25,31 @@
   tr:first-child td, tr:first-child th { border-top: none; }
   th { color: var(--fg3); font-weight: 400; font-size: 11px; }
   .lab { color: var(--fg3); font-size: 11px; white-space: nowrap; width: 190px; }
+  .tag { color: var(--fg3); font-size: 10px; font-weight: 400; }
+  .seclab { font-size: 12px; color: var(--fg2); font-weight: 600; margin: 14px 0 6px; }
+  .seclab:first-of-type { margin-top: 0; }
   .badge { display: inline-block; font-size: 11px; font-weight: 600; line-height: 16px; padding: 0 6px;
            border-radius: 8px; background: rgba(16,185,129,.1); color: #10B981; }
   .chip { display: inline-block; font-size: 10px; font-weight: 500; padding: 2px 6px; border-radius: 5px;
           background: rgba(229,72,77,.1); color: #E5484D; }
   .warn { color: #b45309; }
   .mono { font-family: var(--mono); }
-  .hair { height: 1px; background: #000; margin: 8px 0; }
-  .hair05 { height: 0.5px; background: #000; margin: 8px 0; }
   .env b { font-family: var(--mono); font-weight: 400; color: var(--fg); }
   .env span { margin-right: 20px; white-space: nowrap; }
-  .missing { color: var(--fg3); font-style: italic; }
-  .pgh { max-width: 560px; }
+  .fs13 { font-size: 13px; } .fs12 { font-size: 12px; } .fs11 { font-size: 11px; }
+  .c2 { color: var(--fg2); } .c3 { color: var(--fg3); }
+  .f-yhei { font-family: "Microsoft YaHei UI"; }
+  .f-yh   { font-family: "Microsoft YaHei"; }
+  .f-noto { font-family: "Noto Sans SC"; }
+  .f-deng { font-family: "DengXian"; }
+  .f-segoe { font-family: "Segoe UI"; }
+  .hairrow td { padding-top: 12px; padding-bottom: 12px; }
+  .hair { background: #000; }
 </style>
 </head>
 <body>
 <h1>中文渲染探针</h1>
-<p class="sub">目标：把「GUI 文字差点意思」拆成可判定的三类差异——字体族 / 排版参数 / 渲染锐度。本页自包含，无外部依赖。</p>
+<p class="sub">目标：把「GUI 文字差点意思」拆成可判定的三类差异——字体族 / 排版参数 / 渲染参照。页内自动读数只作线索，归因走逐层排除，不做单点定因。</p>
 
 <div class="card env" id="env">环境读数…</div>
 
@@ -63,11 +71,58 @@
 </div>
 
 <div class="card">
-  <h2>② 字体族对比（自动探测本机已装字体；未安装则标灰跳过）</h2>
-  <table id="fontMatrix">
+  <h2>② 字体族对比（静态清单，不做运行时安装探测）</h2>
+  <table>
     <tr><th>字体</th><th>13px 正文 · 12px 描述 · 11px 元信息 · 600 标题</th></tr>
+    <tr>
+      <td class="lab">Microsoft YaHei UI<br><span class="tag">现状字体 · 已装</span></td>
+      <td class="f-yhei">
+        <div class="fs13">已连接窗口，断点模式：从阶段 3 继续</div>
+        <div class="fs12 c2">进入阶段：雨夜冲刺 · 检测置信度 0.91</div>
+        <div class="fs11 c3">第 12 场 · 收入 1,284 · 我方利润 +326</div>
+        <div class="fs13" style="font-weight: 600">运行日志（600 标题）</div>
+      </td>
+    </tr>
+    <tr>
+      <td class="lab">Microsoft YaHei<br><span class="tag">已装</span></td>
+      <td class="f-yh">
+        <div class="fs13">已连接窗口，断点模式：从阶段 3 继续</div>
+        <div class="fs12 c2">进入阶段：雨夜冲刺 · 检测置信度 0.91</div>
+        <div class="fs11 c3">第 12 场 · 收入 1,284 · 我方利润 +326</div>
+        <div class="fs13" style="font-weight: 600">运行日志（600 标题）</div>
+      </td>
+    </tr>
+    <tr>
+      <td class="lab">Noto Sans SC<br><span class="tag">思源黑体 · 已装 · Thin–Black 全字重</span></td>
+      <td class="f-noto">
+        <div class="fs13">已连接窗口，断点模式：从阶段 3 继续</div>
+        <div class="fs12 c2">进入阶段：雨夜冲刺 · 检测置信度 0.91</div>
+        <div class="fs11 c3">第 12 场 · 收入 1,284 · 我方利润 +326</div>
+        <div class="fs13" style="font-weight: 600">运行日志（600 标题，真 SemiBold）</div>
+        <div class="fs13" style="font-weight: 500">运行日志（500 中字重，真 Medium）</div>
+      </td>
+    </tr>
+    <tr>
+      <td class="lab">等线 DengXian<br><span class="tag">已装 · Office 附带</span></td>
+      <td class="f-deng">
+        <div class="fs13">已连接窗口，断点模式：从阶段 3 继续</div>
+        <div class="fs12 c2">进入阶段：雨夜冲刺 · 检测置信度 0.91</div>
+        <div class="fs11 c3">第 12 场 · 收入 1,284 · 我方利润 +326</div>
+        <div class="fs13" style="font-weight: 600">运行日志（600 标题）</div>
+      </td>
+    </tr>
+    <tr>
+      <td class="lab">Segoe UI<br><span class="tag">系统自带 · 不含中文字形</span></td>
+      <td class="f-segoe">
+        <div class="fs13">已连接窗口，断点模式：从阶段 3 继续</div>
+        <div class="fs12 c2">进入阶段：雨夜冲刺 · 检测置信度 0.91</div>
+        <div class="fs11 c3">第 12 场 · 收入 1,284 · 我方利润 +326</div>
+        <div class="fs13" style="font-weight: 600">运行日志（600 标题）</div>
+      </td>
+    </tr>
   </table>
-  <p class="note">探测原理：候选字体不存在时文本回落到等宽字体，两组测宽一致即判「未安装」。维护者本机预查已知装有：雅黑 UI、Noto Sans SC（全字重）、等线。</p>
+  <p class="note">候选与安装状态为静态清单，来自维护者本机 PowerShell InstalledFontCollection 查询（2026-09-22），写死在本页；不做运行时安装探测——文本测宽启发式存在局部 fallback 误判空间，不作为实验结论依据。若在其他机器打开，请先核对清单与该机实际安装情况。</p>
+  <p class="note">Segoe UI 行的中文字形将回落到系统默认字体，此行仅用于观察拉丁字形与回落链，不参与中文判定。</p>
 </div>
 
 <div class="card">
@@ -84,35 +139,65 @@
         <td class="pgh" style="line-height: 1.5">收尾阶段：恢复音量、释放手柄、停止捕获。若启用了自动关机，将在本轮结算后 60 秒关闭模拟器。所有阶段记录已写入今日看板。</td></tr>
     <tr><td class="lab">行高 1.7（日志现状）</td>
         <td class="pgh" style="line-height: 1.7">收尾阶段：恢复音量、释放手柄、停止捕获。若启用了自动关机，将在本轮结算后 60 秒关闭模拟器。所有阶段记录已写入今日看板。</td></tr>
-    <tr><td class="lab">数字混排 · sans（现状）</td>
+    <tr><td class="lab">数字混排 · 全 sans（现状）</td>
         <td>第 12 场 · 收入 1,284 · +326 · 0.91 · ×12</td></tr>
-    <tr><td class="lab">数字混排 · mono</td>
-        <td><span class="mono">第 12 场 · 收入 1,284 · +326 · 0.91 · ×12</span></td></tr>
+    <tr><td class="lab">数字混排 · 仅数字 mono</td>
+        <td>第 <span class="mono">12</span> 场 · 收入 <span class="mono">1,284</span> · <span class="mono">+326</span> · <span class="mono">0.91</span> · <span class="mono">×12</span></td></tr>
   </table>
+  <p class="note">「仅数字 mono」行：中文保持 UI 字体，只有数字与符号切换等宽——测的是「数字套 mono 是否更好」，不是「整句换 mono」。</p>
 </div>
 
 <div class="card">
-  <h2>④ 锐度参照（判别是不是渲染层的问题）</h2>
-  <p>下面两条横线：正常应各为一条清晰的实线。若整体发糊或深浅异常 → 缩放/渲染层问题（对照上方 devicePixelRatio 是否非整数）。</p>
-  <div class="hair"></div>
-  <div class="hair05"></div>
-  <p style="margin-top: 10px">10px 与 11px 小字：<span style="font-size: 10px">十像素小字 ABC 123</span>&nbsp;&nbsp;<span style="font-size: 11px">十一像素小字 ABC 123</span></p>
-  <p class="note">宿主 app.manifest 已声明 PerMonitorV2；若宿主内本页 DPR 为正常值（1.0 / 1.25 / 1.5）且线条是实的，宿主嫌疑基本排除。</p>
+  <h2>④ 渲染参照（三段式 · 逐层观察，不做单点归因）</h2>
+
+  <p class="seclab">A · 几何栅格化参照 —— 只回答「页面是否存在明显的缩放 / 亚像素定位异常」。</p>
+  <p class="note" style="margin: 0 0 4px">线条是几何图形，不是文字；线条清晰与否不能用来判定中文文字的栅格化质量。</p>
+  <table>
+    <tr class="hairrow"><td class="lab">2px 实线</td><td><div class="hair" style="height: 2px"></div></td></tr>
+    <tr class="hairrow"><td class="lab">1px 实线</td><td><div class="hair" style="height: 1px"></div></td></tr>
+    <tr class="hairrow"><td class="lab">0.5px 线（亚像素覆盖样本）</td><td><div class="hair" style="height: 0.5px"></div></td></tr>
+  </table>
+  <p class="note">0.5px 本身就是容易产生亚像素覆盖的对象，边界发灰属预期现象，此行只作线索、不单独作结论。</p>
+
+  <p class="seclab">B · 文字锐度基准 —— 同一句话扫「字号 × 字重」，观察锐度是否在某个组合上突然改善。</p>
+  <table class="f-yhei">
+    <tr><th>字号 \ 字重</th><th>400</th><th>500</th><th>600</th></tr>
+    <tr><td class="lab">12px</td>
+        <td style="font-size: 12px">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 12px; font-weight: 500">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 12px; font-weight: 600">断点模式：从阶段 3 继续</td></tr>
+    <tr><td class="lab">13px</td>
+        <td style="font-size: 13px">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 13px; font-weight: 500">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 13px; font-weight: 600">断点模式：从阶段 3 继续</td></tr>
+    <tr><td class="lab">14px</td>
+        <td style="font-size: 14px">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 14px; font-weight: 500">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 14px; font-weight: 600">断点模式：从阶段 3 继续</td></tr>
+    <tr><td class="lab">16px</td>
+        <td style="font-size: 16px">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 16px; font-weight: 500">断点模式：从阶段 3 继续</td>
+        <td style="font-size: 16px; font-weight: 600">断点模式：从阶段 3 继续</td></tr>
+  </table>
+  <p class="note">雅黑 UI 的真字重只有 Regular / Bold / Light 三档：500 按字体匹配规则落到 Regular，600 落到 Bold——所以本表 400 与 500 两列相同、600 列是整档加粗，这是字体档位事实而非页面错误。要观察真 500/600，对照 ② 中 Noto Sans SC 行。</p>
+
+  <p class="seclab">C · 缩放基准 —— 区分系统 DPI 与页面缩放（读数见页面顶部）。</p>
+  <p>页面缩放（Ctrl + 滚轮）会并入 devicePixelRatio；visualViewport.scale 反映视口缩放（桌面端通常为 1）。判读协议：先按 Ctrl+0 归零页面缩放，再读顶部数值。</p>
 </div>
 
 <div class="card">
-  <h2>判读指南</h2>
-  <p>② 换字体明显更顺眼 → 结论「字体族」：先改 <b>--mra-font-sans</b> 真机验证；正式分发需打包字体文件（本机装了 ≠ 玩家装了；Noto/思源为 SIL OFL 许可可再分发，属第三方资产，落地前确认）。</p>
-  <p>③ 某参数明显改善 → 结论「排版参数」：改 token，改动小、零依赖。</p>
-  <p>④ 整体发虚 → 结论「宿主渲染」：换字体救不了，查 DPR / 缩放链路。</p>
-  <p>对照原生 Win32/Qt 软件（ClearType 子像素）总觉得不够「锐」→ 引擎级灰度抗锯齿差异，CSS 无法等价，只能靠字重/字号缓解——这是边界，不是没调好。</p>
+  <h2>判读指南（逐层排除，不跳步归因）</h2>
+  <p><b>第一步 · 字体层</b>：② 中若某个字体在同等字号下明显更清晰、更顺眼 → 字体族方向成立。改 <b>--mra-font-sans</b> 真机验证；正式分发需打包字体文件（本机装了 ≠ 玩家装了；思源/Noto 为 SIL OFL 许可可再分发，属第三方资产，落地前确认）。</p>
+  <p><b>第二步 · 参数层</b>：③ 与 ④B 中若某个字号 / 字重 / 间距组合明显改善 → 排版参数方向成立，改 token，改动小、零依赖。</p>
+  <p><b>第三步 · 渲染链</b>：仅当字体与参数实验均无明显改善、且不同字号下文本呈一致的软化特征时，才进入渲染链排查——系统 DPI → WebView2 viewport → 页面缩放 → CSS 布局 → 字体选择 / fallback → 文本栅格化 → 屏幕像素。④A 几何读数与顶部 DPR / scale 只提供线索，不单独定因。</p>
+  <p class="note">对照原生软件的观感差异，本页不做成因预设；若走到第三步仍无法解释，再另行设计渲染链专项实验。</p>
   <p class="note">在 Shell 宿主内看：F12 → Console → 把 location.href 指向本页在本机仓库中的 file:// 绝对路径，读数即真机宿主值。在浏览器里看请先 Ctrl+0 归零缩放。</p>
 </div>
 
 <script>
 (function () {
   'use strict';
-  // ---------- 环境读数 ----------
+  // ---------- 环境读数（只作线索，不作归因结论） ----------
   var env = document.getElementById('env');
   while (env.firstChild) env.removeChild(env.firstChild);
   function addSpan(label, value) {
@@ -124,80 +209,15 @@
     env.appendChild(s);
   }
   addSpan('devicePixelRatio =', String(window.devicePixelRatio));
+  addSpan('visualViewport.scale =',
+    (window.visualViewport && window.visualViewport.scale != null)
+      ? String(Number(window.visualViewport.scale.toFixed(3))) : '不可用');
   addSpan('屏幕 =', screen.width + '×' + screen.height + '（CSS 像素）');
   addSpan('引擎 =', (navigator.userAgent.match(/Chrome\/[\d.]+/) || ['未知'])[0]);
   var tip = document.createElement('div');
   tip.className = 'note';
-  tip.textContent = '浏览器缩放会改变 DPR：判读前先按 Ctrl+0 归零。';
+  tip.textContent = 'devicePixelRatio 受系统缩放与页面缩放共同影响：判读前先按 Ctrl+0 归零页面缩放。';
   env.appendChild(tip);
-
-  // ---------- 字体探测（文本测宽法） ----------
-  var PROBE_STR = '暮光赛车机械飞驰Il1O0@mW夏至';
-  function measure(familyCss) {
-    var el = document.createElement('span');
-    el.style.cssText = 'position:absolute;left:-9999px;top:-9999px;white-space:nowrap;visibility:hidden;font-size:64px;font-family:' + familyCss + ';';
-    el.textContent = PROBE_STR;
-    document.body.appendChild(el);
-    var w = el.getBoundingClientRect().width;
-    el.parentNode.removeChild(el);
-    return w;
-  }
-  function available(family) {
-    // 两个必然缺失的字体名都应回落到同一个等宽字体：宽度不等说明探测环境异常
-    var b1 = measure('"__mra_missing_a__", monospace');
-    var b2 = measure('"__mra_missing_b__", monospace');
-    if (b1 !== b2) return null;
-    return measure('"' + family + '", monospace') !== b1;
-  }
-  var CANDS = [
-    { css: 'Microsoft YaHei UI', label: 'Microsoft YaHei UI', tag: '现状字体' },
-    { css: 'Microsoft YaHei', label: 'Microsoft YaHei', tag: '' },
-    { css: 'Noto Sans SC', label: 'Noto Sans SC（思源黑体）', tag: '全字重已装' },
-    { css: 'DengXian', label: '等线 DengXian', tag: 'Office 附带' },
-    { css: 'Segoe UI', label: 'Segoe UI（拉丁对照）', tag: '不含中文，看回落' }
-  ];
-  function sampleBlock(fontFamily) {
-    var wrap = document.createElement('div');
-    function line(size, color, weight, text) {
-      var s = document.createElement('span');
-      s.style.cssText = 'font-family:' + fontFamily + ';font-size:' + size + 'px;' +
-        (color ? 'color:' + color + ';' : '') + (weight ? 'font-weight:' + weight + ';' : '');
-      s.textContent = text;
-      wrap.appendChild(s);
-      wrap.appendChild(document.createElement('br'));
-    }
-    line(13, '', 0, '已连接窗口，断点模式：从阶段 3 继续');
-    line(12, 'var(--fg2)', 0, '进入阶段：雨夜冲刺 · 检测置信度 0.91');
-    line(11, 'var(--fg3)', 0, '第 12 场 · 收入 1,284 · 我方利润 +326');
-    line(13, '', 600, '运行日志（600 标题）');
-    if (fontFamily.indexOf('Noto') !== -1) line(13, '', 500, '运行日志（500 中字重，Noto 有真字重）');
-    return wrap;
-  }
-  function buildMatrix() {
-    var table = document.getElementById('fontMatrix');
-    CANDS.forEach(function (c) {
-      var tr = document.createElement('tr');
-      var tdLab = document.createElement('td');
-      tdLab.className = 'lab';
-      tdLab.textContent = c.label + (c.tag ? '（' + c.tag + '）' : '');
-      var tdSmp = document.createElement('td');
-      var av = available(c.css);
-      if (av === null) {
-        tdSmp.className = 'missing';
-        tdSmp.textContent = '探测环境异常，跳过';
-      } else if (av) {
-        tdSmp.appendChild(sampleBlock(c.css));
-      } else {
-        tdSmp.className = 'missing';
-        tdSmp.textContent = '本机未安装，跳过';
-      }
-      tr.appendChild(tdLab);
-      tr.appendChild(tdSmp);
-      table.appendChild(tr);
-    });
-  }
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(buildMatrix);
-  else buildMatrix();
 })();
 </script>
 </body>
