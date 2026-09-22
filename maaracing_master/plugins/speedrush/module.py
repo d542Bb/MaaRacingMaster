@@ -45,6 +45,7 @@ from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
+from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
 from maaracing_master.plugins.speedrush.tracking import Tracker
 
 # 一轮完整流程。首三段（进入活动）只在首轮需要——每轮循环结束时会回到活动页，
@@ -590,13 +591,14 @@ class SpeedRushModule(ActivityModule):
         """
         cfg = load_decision()
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
+                "traffic_obs": TrafficObserver(cfg.traffic),
                 "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                 "prev_ts": None, "disabled": False, "trace": [],
                 "t_start": time.time()}
 
     def _control_tick(self, chain: dict, gpad, frame, result: PerceptionResult,
                       fid: int, ts_ns: int, age_ms: float, phase: int) -> None:
-        """一拍全链：感知→跟踪→聚合→边界→决策→规划→下发。
+        """一拍全链：感知→跟踪→聚合→边界→车流派生→决策→规划→下发。
 
         链上任一异常（如 frame_id 真乱序 fail-loud）按"停控保平安"处理：记一次
         WARNING、本阶段退出控制（转观测态），主循环继续跑阶段结束判定——绝不因
@@ -613,8 +615,10 @@ class SpeedRushModule(ActivityModule):
             obs = chain["agg"].update(obs)
             obs = replace(obs, boundary=detect_boundary(frame))
             planner: LateralPlanner = chain["planner"]
+            tviews, tevents = chain["traffic_obs"].update(obs)
             out = chain["engine"].update(
-                obs, dt, executed_lane=planner.state.executed_lane)
+                obs, dt, executed_lane=planner.state.executed_lane,
+                traffic=(tviews, tevents))
             cmd = planner.update(out, dt, current_fid=fid)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
@@ -658,6 +662,10 @@ class SpeedRushModule(ActivityModule):
             # 双积分定档数据面：vp_x 横偏=航向观测量；sides=平移读数可信门
             "bnd_vp_x": None if b is None or b.vp_x is None else round(b.vp_x, 1),
             "bnd_sides": None if b is None else b.sides,
+            # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
+            "car_views": len(tviews),
+            "passes": [round(e.d_min, 3) for e in tevents
+                       if e.outcome == OUTCOME_PASS],
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
             "presence": obs.health.target_presence})
 

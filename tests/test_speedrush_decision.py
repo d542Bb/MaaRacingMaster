@@ -16,6 +16,8 @@ import pytest
 from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.decision import (
     DecisionEngine, Scorer, ValidationWatch)
+from maaracing_master.plugins.speedrush.traffic import (
+    OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import _read_gate0, load_calib
@@ -90,6 +92,9 @@ def _decision_dict():
     (lambda d: d.pop("planner"), "planner"),
     (lambda d: d["planner"].update(lookahead_tau_s=0.05), "lookahead"),
     (lambda d: d["planner"].update(rate_limit_raw=99999.0), "限幅"),
+    (lambda d: d.pop("overtake"), "overtake"),
+    (lambda d: d["overtake"].update(value_limit=10.0), "倒置"),
+    (lambda d: d["overtake"].update(d_hold_lane=0.8), "矛盾"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
     d = _decision_dict()
@@ -208,12 +213,18 @@ def _eng(**over):
     import dataclasses
     # allow_all_moves 是**部署开关**（V0 直行 / V1 横向），不是测试夹具：
     # 矩阵测试需要能进 CHANGE，故基座强制 V1，与 decision.json 的当前态解耦；
-    # no_moves 显式转 V0（§〇 验收 V0 那条锁的就是它）。
+    # no_moves 显式转 V0（§〇 验收 V0 那条锁的就是它）；overtake=V2（阶段 C 超车）。
     cfg = dataclasses.replace(CFG, mode=dataclasses.replace(
         CFG.mode, allow_all_moves=True))
     if over.get("no_moves"):
         cfg = dataclasses.replace(cfg, mode=dataclasses.replace(
             cfg.mode, allow_all_moves=False))
+    if over.get("overtake"):
+        cfg = dataclasses.replace(cfg, mode=dataclasses.replace(
+            cfg.mode, allow_overtake=True))
+    if over.get("t_pass_max_s") is not None:
+        cfg = dataclasses.replace(cfg, overtake=dataclasses.replace(
+            cfg.overtake, t_pass_max_s=over["t_pass_max_s"]))
     return DecisionEngine(cfg)
 
 
@@ -413,3 +424,106 @@ def test_change_surviving_group_does_not_poison_x_target():
     out = e.update(_obs(fid=3, groups=(held,), presence=True), DT)
     assert not math.isnan(out.x_target)            # 核心断言：nan 不得穿透
     assert out.state is DecisionState.CHANGE       # 存续≠取消（宽限内继续计划）
+
+
+# ---------- 阶段 C step 2：超车候选（allow_overtake=V2） ----------
+
+def _cv(tid=5, x=1.1, cy=500, rel=10.0):
+    return CarView(id=tid, x_lane=x, cy=cy, rel_approach=rel,
+                   d_min=abs(x), age_ticks=10)
+
+
+def _traffic(views=(), events=()):
+    return (tuple(views), tuple(events))
+
+
+def _pass_ev(tid=5, d=0.63, fid=3):
+    return PassEvent(track_id=tid, outcome=OUTCOME_PASS, settled_fid=fid,
+                     d_min=d, age_ticks=30)
+
+
+def test_overtake_gate_closed_ignores_traffic():
+    """关闸（默认）：喂车流观测也不成候选——V0/V1 兼容性红线的行为锁。"""
+    e = _eng()   # allow_overtake=False
+    out = e.update(_obs(presence=True), DT, traffic=_traffic([_cv()]))
+    assert out.state is DecisionState.CRUISE and "no_candidate" in out.reason
+
+
+def test_overtake_select_track_and_pass_done():
+    e = _eng(overtake=True)
+    out = e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
+    assert out.state is DecisionState.CHANGE and out.reason == "select:score_win"
+    assert out.target_id == 5 and out.x_target > 0        # 右车内贴=向右小幅
+    # 在途：goal 跟车滚动（车横向读数变小，贴邻目标随之收缩）
+    out = e.update(_obs(fid=2, presence=True), DT,
+                   traffic=_traffic([_cv(x=0.8)]))
+    assert out.state is DecisionState.CHANGE and "moving:overtake" in out.reason
+    # pass 落定：done + 冷却；reanchor=None（超车完成拍无目标读数可锚，§六裁定）
+    out = e.update(_obs(fid=3, presence=True), DT,
+                   traffic=_traffic([], [_pass_ev()]))
+    assert out.state is DecisionState.CRUISE and "done:overtake_pass" in out.reason
+    assert out.reanchor_lane is None
+
+
+def test_overtake_lost_or_ghost_aborts():
+    for ev in (_pass_ev(fid=3).__class__(track_id=5, outcome=OUTCOME_LOST,
+                                         settled_fid=3, d_min=None, age_ticks=30),
+               _pass_ev(fid=3).__class__(track_id=5, outcome=OUTCOME_GHOST,
+                                         settled_fid=3, d_min=None, age_ticks=99)):
+        e = _eng(overtake=True)
+        e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
+        out = e.update(_obs(fid=3, presence=True), DT, traffic=_traffic([], [ev]))
+        assert out.state is DecisionState.ABORT_CHANGE             and out.reason == "cancel:overtake_lost"
+
+
+def test_overtake_vanish_without_event_aborts():
+    """车从视图消失且无落定事件（traffic 断供/异常）：保守走 ABORT 不硬猜 pass。"""
+    e = _eng(overtake=True)
+    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
+    out = e.update(_obs(fid=2, presence=True), DT, traffic=_traffic())
+    assert out.state is DecisionState.ABORT_CHANGE
+
+
+def test_passed_car_not_reselected_fresh_car_can():
+    e = _eng(overtake=True)
+    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
+    e.update(_obs(fid=2, presence=True), DT, traffic=_traffic([], [_pass_ev(fid=2)]))
+    for i in range(3, 30):                    # 过冷却窗（t_cool=1.0s=20 拍）
+        e.update(_obs(fid=i, presence=True), DT, traffic=_traffic())
+    out = e.update(_obs(fid=30, presence=True), DT, traffic=_traffic([_cv()]))
+    assert "no_candidate" in out.reason       # 同 track id 已落定，不重选
+    out = e.update(_obs(fid=31, presence=True),
+                   DT, traffic=_traffic([_cv(tid=6)]))
+    assert out.state is DecisionState.CHANGE  # 新车照常成候选
+
+
+def test_overtake_timeout_forces_done():
+    e = _eng(overtake=True, t_pass_max_s=0.2)
+    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
+    reasons = []
+    for i in range(2, 8):
+        out = e.update(_obs(fid=i, presence=True), DT,
+                       traffic=_traffic([_cv(cy=650)]))
+        reasons.append(out.reason)
+    assert any("done:pass_timeout" in r for r in reasons)   # 兜底强制落定
+    assert "moving:overtake" in reasons[0]                  # 落定前确在计划路上
+
+
+def test_hug_goal_inner_side_both_signs():
+    e = _eng(overtake=True)
+    d = CFG.overtake.d_hold_lane
+    assert e.scorer.hug_goal(1.1) == pytest.approx(1.1 - d)    # 右车从内侧贴
+    assert e.scorer.hug_goal(-1.2) == pytest.approx(-1.2 + d)  # 左车镜像
+
+
+def test_overtake_score_partial_order():
+    s = _eng(overtake=True).scorer
+    near = s.score_car(_cv(tid=1, cy=650))
+    far = s.score_car(_cv(tid=2, cy=450))
+    assert near.score > far.score                              # 同车越近越值
+    assert s.score_car(_cv(x=0.3)) is None                     # 本车道车不作候选
+    assert s.score_car(_cv(x=1.9)) is None                     # 带外杂框自卫
+    assert s.score_car(_cv(tid=3, x=-1.1, rel=0.0)) is None    # 不接近（等速在前）
+    left = s.score_car(_cv(tid=4, x=-1.1))
+    right = s.score_car(_cv(tid=5, x=1.1))
+    assert left.score == pytest.approx(right.score)            # 左右对称

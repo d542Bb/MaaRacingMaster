@@ -26,6 +26,23 @@ SCHEMA_VERSION = 1
 class Mode:
     allow_all_moves: bool
     allow_car_graze: bool
+    # 超车模式总闸（阶段 C 设计稿 §七：V2 开关，默认关；与 allow_car_graze 语义分离——
+    # 后者管"贴车是否算风险否决"，本闸管"超车是否进候选集"）
+    allow_overtake: bool = False
+
+
+@dataclass(frozen=True)
+class Overtake:
+    """超车候选评分参数（阶段 C 设计稿 §二/§四；[需实测] 项回放定档只改 json）。"""
+
+    value_base: float        # 单次超车分（RULES §4.11 游戏事实镜像 30）
+    value_limit: float       # 极限超车动作分（同上镜像 120）
+    p_center_lane: float     # P_limit logistic 中心（~0.73，两点锚 0.65/0.81 的中点）[C4]
+    p_scale_lane: float      # logistic 尺度（0.06：0.65→≈0.79，0.81→≈0.21 起步）[C4]
+    d_hold_lane: float       # 贴邻保持窗中心（[0.55,0.70] 起值中点）——窗下沿是硬地板
+    lane_band_lo: float      # 候选车横向带下沿（<此值=本车道车/正在掠过，不作候选）
+    lane_band_hi: float      # 上沿（对向斜穿/杂框自卫）
+    t_pass_max_s: float      # 超车计划兜底超时（pass 事件迟迟不落定 → 强制 done）[C5]
 
 
 @dataclass(frozen=True)
@@ -116,6 +133,7 @@ class DecisionConfig:
     hysteresis: Hysteresis
     validate: Validate
     planner: Planner
+    overtake: Overtake
     traffic: Traffic
 
 
@@ -132,10 +150,12 @@ def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
     return v
 
 
-def _bool(d: dict, sec: str, key: str) -> bool:
-    v = d.get(sec, {}).get(key)
+def _bool(d: dict, sec: str, key: str, default: bool | None = None) -> bool:
+    v = d.get(sec, {}).get(key, default)
+    if v is None:
+        raise ValueError(f"decision.json [{sec}].{key} 缺失")
     if not isinstance(v, bool):
-        raise ValueError(f"decision.json [{sec}].{key} 缺失或非布尔：{v!r}")
+        raise ValueError(f"decision.json [{sec}].{key} 非布尔：{v!r}")
     return v
 
 
@@ -162,7 +182,9 @@ def _read_decision(path: Path) -> DecisionConfig:
     cfg = DecisionConfig(
         mode=Mode(
             allow_all_moves=_bool(d, "mode", "allow_all_moves"),
-            allow_car_graze=_bool(d, "mode", "allow_car_graze")),
+            allow_car_graze=_bool(d, "mode", "allow_car_graze"),
+            # allow_overtake 缺省 False：老 json 不带键也安全（超车候选默认不进集）
+            allow_overtake=_bool(d, "mode", "allow_overtake", default=False)),
         control=Control(
             frame_rate_hz=_num(d, "control", "frame_rate_hz", lo=0),
             target_grace_s=_num(d, "control", "target_grace_s", lo=0),
@@ -209,6 +231,15 @@ def _read_decision(path: Path) -> DecisionConfig:
             tau_align_s=_num(d, "planner", "tau_align_s", lo=0, lo_open=False),
             v_lat_max=_num(d, "planner", "v_lat_max", lo=0, lo_open=False),
             hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1)),
+        overtake=Overtake(
+            value_base=_num(d, "overtake", "value_base", lo=0),
+            value_limit=_num(d, "overtake", "value_limit", lo=0),
+            p_center_lane=_num(d, "overtake", "p_center_lane", lo=0),
+            p_scale_lane=_num(d, "overtake", "p_scale_lane", lo=0, lo_open=False),
+            d_hold_lane=_num(d, "overtake", "d_hold_lane", lo=0, lo_open=False),
+            lane_band_lo=_num(d, "overtake", "lane_band_lo", lo=0),
+            lane_band_hi=_num(d, "overtake", "lane_band_hi", lo=0),
+            t_pass_max_s=_num(d, "overtake", "t_pass_max_s", lo=0, lo_open=False)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
@@ -242,6 +273,15 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             f"[planner] rate_limit_raw={p.rate_limit_raw} 满行程仅 "
             f"{full_stroke_ticks:.1f} tick（<2 tick 限幅形同虚设，是失效档位）")
+    ov = cfg.overtake
+    if not ov.value_base < ov.value_limit:
+        raise ValueError(
+            f"[overtake] value_base={ov.value_base} 应 < value_limit={ov.value_limit}"
+            "（极限超车是超车的进阶类型，RULES §4.2——镜像倒置即改错）")
+    if ov.d_hold_lane > ov.lane_band_lo or ov.d_hold_lane >= ov.lane_band_hi:
+        raise ValueError(
+            f"[overtake] 贴窗中心 {ov.d_hold_lane} 不得超出候选带下沿 "
+            f"{ov.lane_band_lo}（带缘车的内贴目标会越过自车道中心，判据矛盾）")
     return cfg
 
 
