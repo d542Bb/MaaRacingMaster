@@ -76,12 +76,27 @@ def test_no_lines_invalid_not_crash():
     assert np.isnan(s.road_width)
 
 
-def test_single_side_invalid():
-    """只检到左缘：coverage（双侧行占比）不达标——单边摘要不足以喂校验层。"""
+def test_single_side_degraded_valid():
+    """只检到左缘：单侧容忍下 validity=True 但 sides==1、road_width 不可用（需双侧）。
+
+    这是 step 6 的口径翻转——旧判据要求双侧 coverage 达标把单侧稳定帧判死，真机因此
+    0% 可用；现按"任一侧稳定即降级可用"，居中/路宽类量据 sides==2 才消费。
+    """
     img = _frame()
     _line(img, _straight(1.5))
     s = detect_boundary(img, CAL)
-    assert s.validity is False
+    assert s.validity is True
+    assert s.sides == 1
+    assert np.isnan(s.road_width)                  # 单侧 → 路宽不可用
+    assert not np.isnan(s.left_x)                  # 检到的那条边仍给
+    assert s.straight_residual < 0.2               # 单侧 x_lane 恒定 → 残差仍可用（C1/直道判据）
+
+
+def test_two_sides_full_geometry():
+    """双侧稳定：sides==2、road_width 可用（与单侧降级对照，锁 sides 语义）。"""
+    s = detect_boundary(_straight_frame(), CAL)
+    assert s.validity is True and s.sides == 2
+    assert s.road_width > 100 and not np.isnan(s.road_width)
 
 
 def test_noise_blobs_invalid():

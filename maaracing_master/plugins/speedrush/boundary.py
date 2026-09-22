@@ -16,6 +16,9 @@ A1 尺子（world_model.x_lane_of），于是拿到一条**免费的强判据**�
 地平线（远处归一发散，§8 误差注记同族；且带内黄线最长最稳）。
 **口径边界（如实声明）**：隧道/夜间/雨天黄线褪色属未验证域——validity 只报
 "检没检到、几不一致"，不报"检到的可信度"；阈值全部起值，定档走到场轮回放。
+**单侧容忍**：真机常只单侧黄线可见，validity 采"任一侧稳定即降级可用"，
+`sides`（0/1/2）显式记录稳定侧数——sides==1 时 road_width/vp_row 不可用（需双侧），
+居中/路宽类消费方须先看 sides==2（planner C1 只吃单侧路缘平移，单侧即可）。
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ BAND_TOP_OFF = 30      # 扫描带上沿相对地平线（px）
 BAND_BOT_OFF = 230     # 扫描带下沿相对地平线（px）
 BAND_STEP = 4          # 采样行距（px）
 MIN_RUN_PX = 6         # 单侧黄色连续段最小宽度（更窄当噪点）
-MIN_COVERAGE = 0.5     # 双侧检出行占比低于此 → validity False
+MIN_COVERAGE = 0.5     # 单侧稳定跟踪行占比阈值：任一侧 ≥ 此 → validity（sides 记侧数）
 KERNEL = np.ones((3, 3), np.uint8)
 
 _SCHEMA = 1
@@ -99,11 +102,17 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
         rows2.append(y)
         l2.append(lx if lx is not None else float("nan"))
         r2.append(rx if rx is not None else float("nan"))
-    both = sum(1 for a, b in zip(l2, r2) if not (np.isnan(a) or np.isnan(b)))
-    coverage = both / n_rows if n_rows else 0.0
-    valid = coverage >= MIN_COVERAGE
+    # 单侧容忍（step 6 待办）：真机常只单侧黄线可见（遮挡/出画面/磨损），旧判据
+    # 要求双侧 coverage≥0.5 → 单侧稳定帧被判无效、整层 0% 可用。改为**任一侧**稳定
+    # 跟踪即 validity，但 sides 记录稳定侧数——sides==1 时 road_width/vp_row 不可用
+    # （需双侧），消费者据 sides 决定是否用居中/路宽类量（planner §〇 C1 只吃单侧平移）。
+    n = n_rows or 1
+    left_cov = sum(1 for a in l2 if not np.isnan(a)) / n
+    right_cov = sum(1 for b in r2 if not np.isnan(b)) / n
+    sides = int(left_cov >= MIN_COVERAGE) + int(right_cov >= MIN_COVERAGE)
+    valid = sides >= 1
 
-    if not valid or both == 0:
+    if sides == 0:
         return BoundarySummary(
             schema_version=_SCHEMA,
             left_x=float(l2[0]) if l2 and not np.isnan(l2[0]) else float("nan"),
@@ -112,7 +121,8 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
             straight_residual=float("nan"),
             vp_row=None,
             validity=False,
-            uncertainty=float("nan"))
+            uncertainty=float("nan"),
+            sides=0)
 
     la = np.asarray(l2, dtype=float)
     ra = np.asarray(r2, dtype=float)
@@ -130,7 +140,10 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
 
     left_x = _first_valid(la, float("nan"))
     right_x = _first_valid(ra, float("nan"))
-    road_width = _last_valid(ra, float("nan")) - _last_valid(la, float("nan"))
+    # road_width 只在双侧稳定（sides==2）时可给——单侧帧另一边的"最右点"可能是零星
+    # 误检，用它算宽度是假的；居中/余量类消费方须先看 sides==2。
+    road_width = (_last_valid(ra, float("nan")) - _last_valid(la, float("nan"))
+                  if sides == 2 else float("nan"))
 
     # 直道残差：逐行 x_lane 的散布度——左右缘**各算各的**（并池切半会把两条
     # 本应分离的边线混成双峰，那测的是路宽不是直度），取更大的一侧。
@@ -145,11 +158,11 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
 
     residual = max(_disp(xl), _disp(xr))
 
-    # vp_row：左右缘各自线性拟合 x(y)，交点行对 y_h 的漂移；近平行（拟合退化）→ None
+    # vp_row：左右缘各自线性拟合 x(y)，交点行对 y_h 的漂移；需双侧稳定（sides==2）
     vp_row = None
     li = np.flatnonzero(~np.isnan(la))
     ri = np.flatnonzero(~np.isnan(ra))
-    if li.size >= 4 and ri.size >= 4:
+    if sides == 2 and li.size >= 4 and ri.size >= 4:
         pl = np.polyfit(ry[li], la[li], 1)
         pr = np.polyfit(ry[ri], ra[ri], 1)
         da = pl[0] - pr[0]
@@ -160,13 +173,16 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
             if 0.0 <= yv <= y1:
                 vp_row = float(drift)
 
-    # uncertainty：左缘对其线性拟合的残差 RMS（px），供校验层判"检到的线稳不稳"
+    # uncertainty：稳定侧对其线性拟合的残差 RMS（px），供校验层判"检到的线稳不稳"；
+    # 单侧帧用那一条稳定边算（左优先，缺则右）。
     unc = float("nan")
-    if li.size >= 4:
-        pl = np.polyfit(ry[li], la[li], 1)
-        unc = float(np.sqrt(np.mean((la[li] - np.polyval(pl, ry[li])) ** 2)))
+    fit = li if li.size >= 4 else (ri if ri.size >= 4 else None)
+    arr = la if fit is li else ra
+    if fit is not None:
+        pf = np.polyfit(ry[fit], arr[fit], 1)
+        unc = float(np.sqrt(np.mean((arr[fit] - np.polyval(pf, ry[fit])) ** 2)))
 
     return BoundarySummary(
         schema_version=_SCHEMA, left_x=left_x, right_x=right_x,
         road_width=float(road_width), straight_residual=residual,
-        vp_row=vp_row, validity=bool(valid), uncertainty=unc)
+        vp_row=vp_row, validity=bool(valid), uncertainty=unc, sides=sides)

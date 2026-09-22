@@ -85,6 +85,10 @@ class BoundarySummary:
     vp_row: float | None
     validity: bool
     uncertainty: float
+    # 稳定跟踪到的路缘侧数（0/1/2）。单侧容忍（step 6）：sides≥1 即 validity，
+    # 但 sides==1 时 road_width/vp_row 不可用（需双侧）——消费者据 sides 决定是否
+    # 用居中/路宽类量，不得假设单侧帧有完整路几何。
+    sides: int = 2
 
 
 @dataclass(frozen=True)
