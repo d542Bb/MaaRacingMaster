@@ -74,10 +74,10 @@
   .mra-modal-rule-num { flex-shrink: 0; color: var(--mra-primary); }
   .mra-modal-rule { opacity: 0; transform: translateY(5px); animation: mra-rule-in 0.5s ease forwards; }
   @keyframes mra-rule-in { to { opacity: 1; transform: none; } }
-  .mra-modal-rule--meta { color: var(--mra-foreground-muted); font-style: italic; }
-  .mra-modal-rule--meta .mra-modal-rule-num { color: var(--mra-foreground-muted); }
-  .mra-modal-rule--last { color: var(--mra-foreground); }
-  .mra-modal-rule--last .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+  .mra-modal-rule--ghost { color: var(--mra-foreground-muted); }
+  .mra-modal-rule--ghost .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+  .mra-modal-rule--ghost .mra-modal-rule-secret { opacity: 0; transition: opacity var(--mra-duration-base) ease; }
+  .mra-modal-rule--ghost.revealed .mra-modal-rule-secret { opacity: 1; }
   .mra-modal-title--egg { animation: mra-egg-breathe 6s ease-in-out infinite; }
   @keyframes mra-egg-breathe { 0%, 100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
   .mra-modal-btn--egg { will-change: transform; }
@@ -125,6 +125,10 @@
   const MAX_FALLING = 40;
   let eggFallCount = 0;
 
+  // 员工守则（规则怪谈，致敬 MAA）。结构：池中每次抽 EGG_RULE_SAMPLE 条（编号 1-8，随机）
+  // + 第 9 条固定（修订声明，给抽样一个"官方解释"）+ 第 10 条（数字乱码 + 悬停显影）。
+  // 条目锚点全部是 GUI 真实存在的元素（静音恢复/日志轮转/状态栏绿点/自动关机/数据页看板）；
+  // 口味：执行体口吻不许笑、暗示事件不解释、数字母题（清点/数错）贯穿首尾。
   const EGG_RULE_META = '本守则会不定期修订。你读到的版本，就是你需要读的版本。';
   const EGG_RULES_POOL = [
     '正式版没有「调试模式」。如果你在任何页面看到它，不要点击，也不要截图。开发者会知道你来过。',
@@ -232,21 +236,40 @@
     };
   }
 
+  // [lab-iter5] 第 10 条数字乱码：字符集内随机翻动，自左向右逐位落定为「10.」（DecryptedText 手法自实现）
+  function scrambleNumber(el, finalText) {
+    const glyphs = '01<>#$%&@?!/\\_-';
+    let frame = 0;
+    const total = 20; // 40ms × 20 ≈ 0.8s
+    const timer = setInterval(() => {
+      if (!document.body.contains(el)) { clearInterval(timer); return; }
+      frame++;
+      const settled = Math.floor((frame / total) * finalText.length);
+      let s = finalText.slice(0, settled);
+      for (let i = settled; i < finalText.length; i++) {
+        s += glyphs[Math.floor(Math.random() * glyphs.length)];
+      }
+      el.textContent = s;
+      if (frame >= total) { el.textContent = finalText; clearInterval(timer); }
+    }, 40);
+  }
+
   function showRulesDialog() {
     const pool = EGG_RULES_POOL.slice();
     const picked = [];
     while (picked.length < EGG_RULE_SAMPLE && pool.length) {
       picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
     }
-    const rows = ['<p class="mra-modal-rule mra-modal-rule--meta"><b class="mra-modal-rule-num">0.</b>'
-      + '<span>' + EGG_RULE_META + '</span></p>'];
+    const rows = [];
     picked.forEach((r, i) => {
       rows.push('<p class="mra-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
         + '<b class="mra-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
     });
-    rows.push('<p class="mra-modal-rule mra-modal-rule--last" style="animation-delay:'
-      + (picked.length * 100 + 250) + 'ms"><b class="mra-modal-rule-num">' + (picked.length + 1)
-      + '.</b><span>' + EGG_RULE_LAST + '</span></p>');
+    rows.push('<p class="mra-modal-rule" style="animation-delay:' + (picked.length * 100) + 'ms">'
+      + '<b class="mra-modal-rule-num">9.</b><span>' + EGG_RULE_META + '</span></p>');
+    rows.push('<p class="mra-modal-rule mra-modal-rule--ghost" style="animation-delay:'
+      + (picked.length * 100 + 150) + 'ms"><b class="mra-modal-rule-num" data-final="10.">10.</b>'
+      + '<span class="mra-modal-rule-secret">' + EGG_RULE_LAST + '</span></p>');
     const chase = { catches: 0, gave: false };
     let cleanupDodge = null;
     const modal = openModal({
@@ -268,6 +291,14 @@
     });
     const title = modal.card.querySelector('.mra-modal-title');
     if (title) title.classList.add('mra-modal-title--egg');
+    // 第 10 条：悬停显影（JS 挂 enter/leave，可测）+ 数字乱码在渐现延迟后起播
+    const ghost = modal.card.querySelector('.mra-modal-rule--ghost');
+    if (ghost) {
+      ghost.addEventListener('mouseenter', () => ghost.classList.add('revealed'));
+      ghost.addEventListener('mouseleave', () => ghost.classList.remove('revealed'));
+      setTimeout(() => scrambleNumber(ghost.querySelector('.mra-modal-rule-num'), '10.'),
+        picked.length * 100 + 150);
+    }
     cleanupDodge = wireEggDodge(modal, chase);
     return modal;
   }
@@ -412,6 +443,26 @@
     // 躲避：二维自由度 + 出界钳制 + 跑距上限
     const modal = showRulesDialog();
     const btn = modal.card.querySelector('.mra-modal-btn');
+    // 结构：10 行 = 抽 8 + 固定 9 + 幽灵 10
+    const rowsAll = modal.card.querySelectorAll('.mra-modal-rule');
+    (rowsAll.length === 10
+      && rowsAll[8].textContent.indexOf('本守则会不定期修订') !== -1
+      && rowsAll[8].querySelector('.mra-modal-rule-num').textContent === '9.')
+      ? ok('编号结构：1-8 随机 + 第 9 条修订声明常态化')
+      : bad('编号结构异常：rows=' + rowsAll.length);
+    const ghost = modal.card.querySelector('.mra-modal-rule--ghost');
+    const noReveal0 = !ghost.classList.contains('revealed');
+    ghost.dispatchEvent(new MouseEvent('mouseenter'));
+    const revealedNow = ghost.classList.contains('revealed');
+    ghost.dispatchEvent(new MouseEvent('mouseleave'));
+    const hiddenAgain = !ghost.classList.contains('revealed');
+    (noReveal0 && revealedNow && hiddenAgain)
+      ? ok('第 10 条：悬停显影 / 移出复隐')
+      : bad('第 10 条悬停显影异常');
+    await new Promise((r) => setTimeout(r, 2200)); // 等乱码落定（起播 ~0.95s + 翻动 0.8s）
+    (ghost.querySelector('.mra-modal-rule-num').textContent === '10.')
+      ? ok('乱码数字落定：10.')
+      : bad('乱码未落定：' + ghost.querySelector('.mra-modal-rule-num').textContent);
     const cardR = () => modal.card.getBoundingClientRect();
     const pointerAt = async (x, y) => {
       window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, pointerType: 'mouse' }));
