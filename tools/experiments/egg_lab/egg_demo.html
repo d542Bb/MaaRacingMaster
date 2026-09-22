@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>员工守则样本 · egg_lab</title>
+<style>
+  :root {
+    --mra-primary: #E5484D; --mra-primary-hover: #F05A5F; --mra-primary-foreground: #FFFFFF;
+    --mra-background: #F5F6FA; --mra-surface: #FFFFFF;
+    --mra-foreground: #1F2328; --mra-foreground-secondary: #4A5160; --mra-foreground-muted: #8B93A7;
+    --mra-border: #E5E7EB; --mra-border-light: #EEF0F4;
+    --mra-success: #10B981;
+    --mra-radius-md: 8px; --mra-radius-lg: 10px; --mra-radius-xl: 12px;
+    --mra-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    --mra-font-mono: Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: var(--mra-background); color: var(--mra-foreground);
+         font-family: var(--mra-font-sans); font-size: 13px; line-height: 1.6; min-height: 100vh; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { color: var(--mra-foreground-muted); font-size: 12px; margin: 0 0 16px; }
+  .bar { margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .bar button { cursor: pointer; border: 1px solid var(--mra-border); background: var(--mra-surface);
+    border-radius: var(--mra-radius-md); padding: 7px 14px; font-family: var(--mra-font-sans); font-size: 12px;
+    color: var(--mra-foreground); }
+  .bar button:hover { border-color: var(--mra-foreground-muted); }
+  .vchip { font-family: var(--mra-font-mono); font-size: 12px; color: var(--mra-foreground-muted);
+    background: var(--mra-surface); border: 1px dashed var(--mra-border); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; user-select: none; }
+  .vchip:active { transform: scale(0.96); }
+  .hint { font-size: 11px; color: var(--mra-foreground-muted); }
+
+  /* ===== modal 复刻（生产为 mra-modal-*，此处同视觉）===== */
+  .overlay { position: relative; background: rgba(31,35,40,.45); border-radius: var(--mra-radius-xl);
+    padding: 26px; }
+  .mcard { background: var(--mra-surface); border-radius: var(--mra-radius-xl);
+    box-shadow: 0 8px 32px rgba(0,0,0,.14); padding: 18px 20px 14px; max-width: 580px; margin: 0 auto; }
+  .mtitle { font-size: 15px; font-weight: 600; margin-bottom: 12px;
+    animation: egg-breathe 6s ease-in-out infinite; }
+  @keyframes egg-breathe { 0%,100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
+  @media (prefers-reduced-motion: reduce) { .mtitle { animation: none; } .mra-modal-rule { opacity: 1 !important; animation: none !important; } }
+
+  .mra-modal-rules { display: flex; gap: 14px; align-items: flex-start; }
+  .mra-modal-rules-icon { width: 40px; height: 40px; flex-shrink: 0; margin-top: 4px; }
+  .mra-modal-rules-list { flex: 1; min-width: 0; max-height: 56vh; overflow-y: auto; padding-right: 4px; }
+  .mra-modal-rule { display: flex; gap: 8px; margin: 0 0 10px; line-height: 1.65;
+    color: var(--mra-foreground-secondary); font-size: 12.5px;
+    opacity: 0; transform: translateY(5px);
+    animation: rule-in .5s ease forwards; }
+  @keyframes rule-in { to { opacity: 1; transform: none; } }
+  .mra-modal-rule-num { flex-shrink: 0; color: var(--mra-primary); font-weight: 600; }
+  .mra-modal-rule--meta { color: var(--mra-foreground-muted); font-style: italic; }
+  .mra-modal-rule--meta .mra-modal-rule-num { color: var(--mra-foreground-muted); font-weight: 400; }
+  .mra-modal-rule--last { color: var(--mra-foreground); }
+  .mra-modal-rule--last .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+
+  /* 按钮 hover 换字（生产走同一结构） */
+  .mbtn { display: block; margin-left: auto; border: none; cursor: pointer; border-radius: var(--mra-radius-md);
+    background: var(--mra-primary); color: var(--mra-primary-foreground); padding: 8px 16px;
+    font-family: var(--mra-font-sans); font-size: 13px; }
+  .mbtn .txt-a { display: inline; } .mbtn .txt-b { display: none; }
+  .mbtn:hover .txt-a { display: none; } .mbtn:hover .txt-b { display: inline; }
+
+  /* 模拟状态栏（关闭回响演示） */
+  .statusbar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--mra-surface);
+    border-top: 1px solid var(--mra-border-light); padding: 8px 24px; display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--mra-foreground-muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mra-success); }
+  .dot--blink { animation: dot-blink .3s ease 2; }
+  @keyframes dot-blink { 50% { opacity: 0; } }
+
+  /* 掉落文字（同生产 .falling-text 物理演示） */
+  .falling-text { position: fixed; left: 0; top: 0; z-index: 999; pointer-events: none;
+    font-family: var(--mra-font-mono); font-size: 14px; color: var(--mra-foreground-muted);
+    background: rgba(255,255,255,.85); border: 1px solid var(--mra-border); border-radius: 6px; padding: 2px 8px; }
+  .falling-text--egg { color: var(--mra-primary); border-color: var(--mra-primary); }
+</style>
+</head>
+<body>
+<h1>员工守则 · 文案重写与效果样本</h1>
+<p class="sub">点「打开守则」看新文案与效果；再点一次会换一批条目（第 0 条与末条固定）。点版本号碎片看掉落彩蛋。</p>
+
+<div class="bar">
+  <button id="btn-open">打开守则</button>
+  <span class="vchip" id="ver-chip">v0.23.0.dev1+252</span>
+  <span class="hint">（连点有惊喜）</span>
+  <label style="font-size:12px;color:var(--mra-foreground-secondary);display:flex;gap:5px;align-items:center;">
+    <input type="checkbox" id="fx-toggle" checked> 效果开
+  </label>
+</div>
+
+<div class="overlay">
+  <div class="mcard" id="mcard" style="display:none;">
+    <div class="mtitle" id="mtitle">员工守则</div>
+    <div class="mra-modal-rules">
+      <img class="mra-modal-rules-icon" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' rx='8' fill='%23E5484D'/%3E%3C/svg%3E">
+      <div class="mra-modal-rules-list" id="rules-list"></div>
+    </div>
+    <button class="mbtn" id="mclose">
+      <span class="txt-a">确定要退出吗？</span><span class="txt-b">现在退出还来得及</span>
+    </button>
+  </div>
+</div>
+
+<div class="statusbar"><span class="dot" id="status-dot"></span><span id="status-text">系统就绪</span></div>
+
+<script>
+(function () {
+  'use strict';
+  // ---------- 文案：0 号固定 + 池抽 8 + 末条固定 ----------
+  var RULE_META = '本守则会不定期修订。你读到的版本，就是你需要读的版本。';
+  var RULE_LAST = '最后一条规则不存在。如果你已经数到了它，说明你数错了。这很正常。';
+  var RULE_POOL = [
+    '正式版没有「调试模式」。如果你在任何页面看到它，不要点击，也不要截图。开发者会知道你来过。',
+    '运行前请断开所有物理手柄。如果你确定已经断开，界面却显示「已连接」，请相信你的手，不要相信界面。',
+    '运行期间游戏会被静音，结束后自动恢复。如果音量没有回来，先别动音量键——想一想，刚才那一场，是不是你没有开始过的。',
+    '日志按会话分目录，只保留最近若干份。如果某个目录的修改时间早于你安装软件的时间，不要打开它。里面没有你会想看的东西。',
+    '左下角的绿点表示系统就绪。它应该一直是静止的。如果你看到它闪了两下，那不是故障，是确认。',
+    '从关于页掉落的版本号是正常的。如果它们开始排队，请不要清点数量。',
+    '任务结束后它会关闭模拟器。它只会关闭模拟器。到目前为止，它只关闭模拟器。',
+    '「停止」按钮随时有效。如果它在你按下之前就已经变灰，说明有人替你停止了这一场。不要去查是谁。',
+    '软件不会在你睡觉时更新自己。如果你早上发现版本号变了，那不是更新。',
+    '数据页会如实记录今天的每一场。如果数字对不上，多出来的那一场，不算你的。',
+    '版本号由版本控制自动推导，任何人不得手改。如果你在关于页看到自己的名字，而你从没参与开发——这一版是专门为你编译的。',
+    '软件没有语音。如果你听到低语，先听清它在说什么。多数时候，它只是在重复你自己说过的话。'
+  ];
+  var SAMPLE_N = 8;
+
+  function sample() {
+    var pool = RULE_POOL.slice();
+    var picked = [];
+    while (picked.length < SAMPLE_N && pool.length) {
+      picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+    }
+    return picked;
+  }
+
+  var fxOn = true;
+  var card = document.getElementById('mcard');
+
+  function renderRules() {
+    var picked = sample();
+    var rows = [];
+    rows.push('<p class="mra-modal-rule mra-modal-rule--meta"><b class="mra-modal-rule-num">0.</b><span>'
+      + RULE_META + '</span></p>');
+    picked.forEach(function (r, i) {
+      var delay = fxOn ? ' style="animation-delay:' + (i * 100) + 'ms"' : ' style="opacity:1;transform:none;animation:none;"';
+      rows.push('<p class="mra-modal-rule"' + delay + '><b class="mra-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
+    });
+    rows.push('<p class="mra-modal-rule mra-modal-rule--last"' + (fxOn ? ' style="animation-delay:' + (picked.length * 100 + 250) + 'ms"' : ' style="opacity:1;transform:none;animation:none;"')
+      + '><b class="mra-modal-rule-num">' + (picked.length + 1) + '.</b><span>' + RULE_LAST + '</span></p>');
+    document.getElementById('rules-list').innerHTML = rows.join('');
+  }
+
+  function openRules() {
+    renderRules();
+    card.style.display = 'block';
+  }
+  document.getElementById('btn-open').addEventListener('click', openRules);
+  document.getElementById('mclose').addEventListener('click', function () {
+    card.style.display = 'none';
+    // 关闭回响：状态栏绿点连闪两下（呼应第 5 条）
+    if (fxOn) {
+      var dot = document.getElementById('status-dot');
+      dot.classList.remove('dot--blink');
+      void dot.offsetWidth;
+      dot.classList.add('dot--blink');
+      setTimeout(function () { dot.classList.remove('dot--blink'); }, 800);
+    }
+  });
+  document.getElementById('fx-toggle').addEventListener('change', function (e) {
+    fxOn = e.target.checked;
+    document.getElementById('mtitle').style.animation = fxOn ? '' : 'none';
+  });
+
+  // ---------- 掉落彩蛋：版本号流中低概率混入怪谈短语 ----------
+  var FALLING_EGG_TEXTS = ['3:33', '不要清点', '它记得你'];
+  var spawnCount = 0;
+  function spawnFalling(text, isEgg) {
+    var el = document.createElement('div');
+    el.className = 'falling-text' + (isEgg ? ' falling-text--egg' : '');
+    el.textContent = text;
+    document.body.appendChild(el);
+    var w = el.offsetWidth, h = el.offsetHeight;
+    var chip = document.getElementById('ver-chip').getBoundingClientRect();
+    var x = chip.left + chip.width / 2 - w / 2, y = chip.top - 10;
+    var vx = (Math.random() - 0.5) * 240, vy = -120 - Math.random() * 100;
+    var rot = 0, vr = (Math.random() - 0.5) * 160, bounces = 0, gone = false, last = performance.now();
+    (function step(now) {
+      var dt = Math.min((now - last) / 1000, 0.05); last = now;
+      vy += 1800 * dt; x += vx * dt; y += vy * dt; rot += vr * dt;
+      var floor = window.innerHeight - h - 60;
+      if (y > floor) { y = floor; vy = -vy * 0.42; vx *= 0.72; vr *= 0.5; if (++bounces > 3 || Math.abs(vy) < 60) gone = true; }
+      el.style.transform = 'translate(' + x + 'px,' + y + 'px) rotate(' + rot + 'deg)';
+      if (gone) { el.style.opacity = '0'; setTimeout(function () { el.remove(); }, 500); return; }
+      requestAnimationFrame(step);
+    })(performance.now());
+  }
+  document.getElementById('ver-chip').addEventListener('click', function () {
+    spawnCount++;
+    // 每第 5 次混入怪谈短语（生产实现：FALLING_EGG_TEXTS 池 + 低概率替换）
+    if (spawnCount % 5 === 0) {
+      spawnFalling(FALLING_EGG_TEXTS[Math.floor(Math.random() * FALLING_EGG_TEXTS.length)], true);
+    } else {
+      spawnFalling('v0.23.0.dev1+' + (200 + Math.floor(Math.random() * 90)), false);
+    }
+  });
+
+  openRules(); // 初始即开一版方便直读
+})();
+</script>
+</body>
+</html>
