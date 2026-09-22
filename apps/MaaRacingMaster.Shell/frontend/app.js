@@ -239,8 +239,8 @@
   let eggClickCount = 0;
   let eggLastClickAt = 0;
 
-  // 员工守则（规则怪谈，致敬 MAA）。结构：第 0 条固定（与随机抽样互为呼应——读者重开
-  // 守则会发现条目变了，而第 0 条早已告知）+ 池中每次抽 EGG_RULE_SAMPLE 条 + 末条固定。
+  // 员工守则（规则怪谈，致敬 MAA）。结构：池中每次抽 EGG_RULE_SAMPLE 条（编号 1-8，随机）
+  // + 第 9 条固定（修订声明，给抽样一个"官方解释"）+ 第 10 条（数字乱码 + 悬停显影）。
   // 条目锚点全部是 GUI 真实存在的元素（静音恢复/日志轮转/状态栏绿点/自动关机/数据页看板）；
   // 口味：执行体口吻不许笑、暗示事件不解释、数字母题（清点/数错）贯穿首尾。
   const EGG_RULE_META = '本守则会不定期修订。你读到的版本，就是你需要读的版本。';
@@ -269,50 +269,91 @@
     dot.classList.add('mra-dot-blink');
   }
 
-  // 离开按钮的 DodgeField：按钮在操作行内横向躲避光标，patience 次后放弃躲避并放行。
-  // 灵感来自 reactbits.dev 的 DodgeField（MIT + Commons Clause）——未复制其代码，
-  // 按同一交互机制自实现：接近触发 / 强度随距离衰减 / 忍耐后 relent / taunt 逐次换。
+  // 离开按钮的 DodgeField [v6]：躲避场 = 整张弹层卡，按钮二维逃跑（能扑到正文上）。
+  // 位移 = 背离光标方向 × 强度（随距离平方衰减）× reach；出界钳制 + 撞墙滑移（被夹掉的
+  // 分量沿自由轴重分配，角落困不死）+ 角落反困死（残余压力转墙向滑移选离光标最远候选）。
+  // 感知基准 = 按钮视觉中心。抓到 = 亮下一句（EGG_CATCH_LINES），末句亮起后放弃躲避，
+  // 再抓一次才关门。灵感来自 reactbits.dev 的 DodgeField / DecryptedText（MIT + Commons
+  // Clause）——未复制其代码，按公开交互行为 vanilla 自实现。
   // reduced-motion 与触屏不启用；监听挂 window，经返回的 cleanup 随弹层关闭解绑。
-  const EGG_DODGE = { radius: 120, reach: 72, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
-  const EGG_DODGE_TAUNTS = ['抓不到', '差一点', '太慢了', '好吧。你走吧。'];
-  function wireEggDodge(modal) {
+  const EGG_DODGE = { radius: 120, reach: 140, falloff: 2, inset: 12 };
+  const EGG_CATCH_LINES = ['抓不到', '差一点', '太慢了', '别追了', '你为什么执意要走', '好吧。你走吧。'];
+  function wireEggDodge(modal, chase) {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
     if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return null;
-    const field = modal.card.querySelector('.mra-modal-actions');
-    const btn = field ? field.querySelector('.mra-modal-btn') : null;
+    const field = modal.card;
+    const btn = field.querySelector('.mra-modal-btn');
     if (!field || !btn) return null;
     btn.classList.add('mra-modal-btn--egg');
-    const room = Math.max(0, (field.clientWidth - btn.offsetWidth) / 2 - EGG_DODGE.inset);
-    let dodges = 0, armed = true, raf = 0, bearing = 1, pointer = null;
-    const setTx = (tx, fleeing) => {
+    btn.style.minWidth = btn.offsetWidth + 'px'; // 换字不抖行
+    let raf = 0, pointer = null;
+    let curX = 0, curY = 0; // 当前位移，用于从视觉矩形反推布局位
+    const setT = (tx, ty, fleeing) => {
       // 逃离用短促缓出，返回用带回弹的长缓动（对齐原组件 flee/return 双段手感）
       btn.style.transition = 'transform ' + (fleeing ? '.13s' : '.62s') + ' cubic-bezier('
         + (fleeing ? '0.23, 1, 0.32, 1' : '0.34, 1.56, 0.64, 1') + ')';
-      btn.style.transform = 'translateX(' + tx + 'px)';
+      btn.style.transform = 'translate(' + tx + 'px,' + ty + 'px)';
+      curX = tx; curY = ty;
     };
     function frame() {
       raf = 0;
       if (!document.body.contains(btn)) return; // 弹层已卸载，正式清理走 cleanup
-      const rect = field.getBoundingClientRect();
-      const d = pointer
-        ? Math.hypot(pointer.x - (rect.left + rect.width / 2), pointer.y - (rect.top + rect.height / 2))
-        : Infinity;
-      if (d < EGG_DODGE.radius * EGG_DODGE.countLine && armed) {
-        armed = false;
-        dodges++;
-        if (dodges >= EGG_DODGE.patience) {
-          btn.textContent = EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1];
-          setTx(0, false);
-          return;
+      const cardR = field.getBoundingClientRect();
+      const btnR = btn.getBoundingClientRect();
+      const layoutL = btnR.left - curX, layoutT = btnR.top - curY;
+      const cx = btnR.left + btnR.width / 2, cy = btnR.top + btnR.height / 2;
+      const d = pointer ? Math.hypot(pointer.x - cx, pointer.y - cy) : Infinity;
+      let flee = 0, tx = 0, ty = 0, fleeing = false;
+      if (!chase.gave && pointer && Number.isFinite(d) && d > 0) {
+        flee = d < EGG_DODGE.radius ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
+        if (flee > 0) {
+          const dx = pointer.x - cx, dy = pointer.y - cy;
+          const dd = Math.hypot(dx, dy) || 1;
+          tx = -(dx / dd) * flee * EGG_DODGE.reach;
+          ty = -(dy / dd) * flee * EGG_DODGE.reach;
+          fleeing = true;
         }
-        btn.textContent = EGG_DODGE_TAUNTS[Math.min(dodges - 1, EGG_DODGE_TAUNTS.length - 2)];
-      } else if (d > EGG_DODGE.radius) {
-        armed = true;
       }
-      if (Number.isFinite(d) && d > 6) bearing = Math.sign(pointer.x - (rect.left + rect.width / 2)) || 1;
-      const flee = d < EGG_DODGE.radius && dodges < EGG_DODGE.patience
-        ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
-      setTx(Math.min(room, Math.max(-room, -bearing * flee * EGG_DODGE.reach)), flee > 0);
+      // 出界钳制 + 撞墙滑移：被夹掉的分量沿自由轴重分配——角落不再困死按钮
+      const minX = cardR.left + EGG_DODGE.inset - layoutL;
+      const maxX = cardR.right - EGG_DODGE.inset - btnR.width - layoutL;
+      const minY = cardR.top + EGG_DODGE.inset - layoutT;
+      const maxY = cardR.bottom - EGG_DODGE.inset - btnR.height - layoutT;
+      const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+      const desiredX = tx, desiredY = ty;
+      tx = clamp(desiredX, minX, maxX);
+      ty = clamp(desiredY, minY, maxY);
+      const lostX = Math.abs(desiredX - tx);
+      const lostY = Math.abs(desiredY - ty);
+      if (lostY > 0.5) tx = clamp(tx + Math.sign(desiredX || 1) * lostY, minX, maxX);
+      if (lostX > 0.5) ty = clamp(ty + Math.sign(desiredY || 1) * lostX, minY, maxY);
+      // 角落反困死：主方向被两面墙同时吃掉时（残余压力大），把残余压力转成墙向滑移——
+      // 四个候选里选「离光标最远」的那个，总位移仍不超过 reach
+      const press = flee > 0 ? flee * EGG_DODGE.reach : 0;
+      const got = Math.hypot(tx, ty);
+      const residual = press - got;
+      if (residual > 6 && pointer) {
+        const dist2 = (vx, vy) => {
+          const px = layoutL + curX + vx + btnR.width / 2;
+          const py = layoutT + curY + vy + btnR.height / 2;
+          return (px - pointer.x) ** 2 + (py - pointer.y) ** 2;
+        };
+        const cands = [
+          [clamp(tx + residual, minX, maxX), ty],
+          [clamp(tx - residual, minX, maxX), ty],
+          [tx, clamp(ty + residual, minY, maxY)],
+          [tx, clamp(ty - residual, minY, maxY)],
+        ];
+        let best = null, bestD = -1;
+        for (const cd of cands) {
+          const mag = Math.hypot(cd[0], cd[1]);
+          const scale = mag > EGG_DODGE.reach ? EGG_DODGE.reach / mag : 1;
+          const dd2 = dist2(cd[0] * scale, cd[1] * scale);
+          if (dd2 > bestD) { bestD = dd2; best = [cd[0] * scale, cd[1] * scale]; }
+        }
+        if (best && bestD > dist2(tx, ty)) { tx = best[0]; ty = best[1]; }
+      }
+      setT(tx, ty, fleeing);
     }
     const onMove = (e) => { pointer = { x: e.clientX, y: e.clientY }; if (!raf) raf = requestAnimationFrame(frame); };
     const onLeave = () => { pointer = null; if (!raf) raf = requestAnimationFrame(frame); };
@@ -327,22 +368,45 @@
     };
   }
 
+  // [v6] 第 10 条数字乱码：字符集内随机翻动，自左向右逐位落定为「10.」（DecryptedText 手法
+  // 自实现）。起播在悬停触发——若挂在渐现延迟里起播，整行还透明，等于白播。
+  function scrambleNumber(el, finalText) {
+    const glyphs = '01<>#$%&@?!/\\_-';
+    let frame = 0;
+    const total = 20; // 40ms × 20 ≈ 0.8s
+    const timer = setInterval(() => {
+      if (!document.body.contains(el)) { clearInterval(timer); return; }
+      frame++;
+      const settled = Math.floor((frame / total) * finalText.length);
+      let s = finalText.slice(0, settled);
+      for (let i = settled; i < finalText.length; i++) {
+        s += glyphs[Math.floor(Math.random() * glyphs.length)];
+      }
+      el.textContent = s;
+      if (frame >= total) { el.textContent = finalText; clearInterval(timer); }
+    }, 40);
+    return timer;
+  }
+
   function showRulesDialog() {
     const pool = EGG_RULES_POOL.slice();
     const picked = [];
     while (picked.length < EGG_RULE_SAMPLE && pool.length) {
       picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
     }
-    const rows = ['<p class="mra-modal-rule mra-modal-rule--meta"><b class="mra-modal-rule-num">0.</b>'
-      + '<span>' + EGG_RULE_META + '</span></p>'];
+    const rows = [];
     picked.forEach((r, i) => {
       rows.push('<p class="mra-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
         + '<b class="mra-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
     });
-    rows.push('<p class="mra-modal-rule mra-modal-rule--last" style="animation-delay:'
-      + (picked.length * 100 + 250) + 'ms"><b class="mra-modal-rule-num">' + (picked.length + 1)
-      + '.</b><span>' + EGG_RULE_LAST + '</span></p>');
+    rows.push('<p class="mra-modal-rule" style="animation-delay:' + (picked.length * 100) + 'ms">'
+      + '<b class="mra-modal-rule-num">9.</b><span>' + EGG_RULE_META + '</span></p>');
+    rows.push('<p class="mra-modal-rule mra-modal-rule--ghost" style="animation-delay:'
+      + (picked.length * 100 + 150) + 'ms"><b class="mra-modal-rule-num" data-final="10.">10.</b>'
+      + '<span class="mra-modal-rule-secret">' + EGG_RULE_LAST + '</span></p>');
+    const chase = { catches: 0, gave: false };
     let cleanupDodge = null;
+    let scrTimer = null;
     const modal = openModal({
       title: '员工守则',
       maxWidth: 580,
@@ -351,17 +415,30 @@
         '<img class="mra-modal-rules-icon" src="../../../assets/icon.ico" alt="">' +
         '<div class="mra-modal-rules-list">' + rows.join('') + '</div>' +
         '</div>',
+      closeOnOverlay: false, // 不给逃课出口：点空白不关（Esc 仍可）
       onClose: () => {
         blinkStatusDot();
         if (cleanupDodge) cleanupDodge();
+        if (scrTimer) clearInterval(scrTimer);
       },
       buttons: [
-        { text: '确定要退出吗？', primary: true, onClick: (m) => m.close() },
+        { text: '确定要退出吗？', primary: true },
       ],
     });
     const title = modal.card.querySelector('.mra-modal-title');
     if (title) title.classList.add('mra-modal-title--egg');
-    cleanupDodge = wireEggDodge(modal);
+    // 第 10 条：整行（序号+正文）默认隐形；悬停时序号乱码解码 + 正文显影，移出复隐
+    const ghost = modal.card.querySelector('.mra-modal-rule--ghost');
+    if (ghost) {
+      ghost.addEventListener('mouseenter', () => {
+        ghost.classList.add('revealed');
+        const num = ghost.querySelector('.mra-modal-rule-num');
+        if (scrTimer) clearInterval(scrTimer);
+        scrTimer = scrambleNumber(num, '10.');
+      });
+      ghost.addEventListener('mouseleave', () => ghost.classList.remove('revealed'));
+    }
+    cleanupDodge = wireEggDodge(modal, chase);
   }
 
   function spawnFallingText(text, cx, cy, isEgg) {

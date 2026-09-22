@@ -99,7 +99,10 @@
     }
     overlay.appendChild(card);
     document.body.appendChild(overlay);
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) modal.close(); });
+    overlay.addEventListener('click', (ev) => {
+      // closeOnOverlay: false = 点空白不关（员工守则弹层堵逃课出口用）；默认 true
+      if (ev.target === overlay && opts.closeOnOverlay !== false) modal.close();
+    });
     (focusables()[0] || card).focus(); // 开卡即把焦点请进卡内（陷阱的起点）
     // 进场动画结束后摘动画类：卡片回归主文档光栅化，避免非整数 DPI 下文字发虚（同 page-slide-in 手法）
     card.addEventListener('animationend', (ev) => {

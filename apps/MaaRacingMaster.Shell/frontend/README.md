@@ -218,15 +218,21 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 - **掉落文字**：连点关于页版本号触发物理掉落（`app.js` `spawnFallingText`）。每第 5 次
   混入怪谈短语池 `FALLING_EGG_TEXTS`（红字变体 `.falling-text--egg`），其余掉当前版本号。
-- **员工守则**：连点 10 次（2s 内）弹出。结构 = 第 0 条固定 + 池 12 条每次抽 8 + 末条固定，
-  **每次打开条目不同**（与第 0 条文案互为呼应——"你读到的版本就是你需要读的版本"）。
-  条目逐条渐现（内联 animation-delay，reduced-motion 退化直显）；标题字距呼吸
-  （`.mra-modal-title--egg`）。文案锚点全部取 GUI 真实元素，数字母题（清点/数错）贯穿首尾。
-- **离开按钮 DodgeField**：按钮在操作行内横向躲避光标（`app.js` `wireEggDodge`：接近
-  120px 触发、强度随距离衰减、位移上限 72px、忍耐 4 次后放弃躲避并放行），taunt 依次换
-  （抓不到 → 差一点 → 太慢了 → 好吧。你走吧。）。灵感来自 reactbits.dev 的 DodgeField
-  （MIT + Commons Clause）——未复制其代码，按同一交互机制 vanilla 自实现；
-  reduced-motion / 触屏不启用；监听经返回的 cleanup 随弹层关闭解绑。
+- **员工守则**：连点 10 次（2s 内）弹出。结构 = 池 12 条每次抽 8（编号 1-8）+ 第 9 条固定
+  （修订声明，给抽样一个"官方解释"）+ 第 10 条幽灵行——**每次打开条目不同**。条目逐条
+  渐现（内联 animation-delay，reduced-motion 退化直显）；标题字距呼吸
+  （`.mra-modal-title--egg`）；守则列表滚动条隐藏（滚动保留）。文案锚点全部取 GUI 真实
+  元素，数字母题（清点/数错）贯穿首尾。
+- **第 10 条幽灵行**：数字「10.」与正文默认整行隐形；悬停时数字乱码解码落定
+  （`scrambleNumber`，40ms×20 帧自左向右锁定；DecryptedText 手法自实现）+ 正文显影，
+  移出复隐。
+- **离开按钮 DodgeField [v6]**：躲避场 = 整张弹层卡，按钮二维逃跑（`app.js` `wireEggDodge`：
+  接近 120px 触发、强度随距离平方衰减、位移上限 140px、出界钳制卡内 12px、撞墙滑移 +
+  角落反困死——残余压力转墙向滑移选离光标最远候选）。**抓到 = 亮下一句**
+  （`EGG_CATCH_LINES` 六句），末句亮起后放弃躲避，再抓一次才关门；点空白不关
+  （`openModal` `closeOnOverlay: false`），Esc 仍可。灵感来自 reactbits.dev 的
+  DodgeField / DecryptedText（MIT + Commons Clause）——未复制其代码，按公开交互行为
+  vanilla 自实现；reduced-motion / 触屏不启用；监听经返回的 cleanup 随弹层关闭解绑。
 - **关闭回响**：`openModal` 新增可选 `onClose`（按钮/点空白/Esc 三条关闭路径都触发、
   仅一次）；守则关闭后状态栏绿点连闪两下（呼应第 5 条"如果你看到它闪了两下"）。
 

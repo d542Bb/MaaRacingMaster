@@ -839,7 +839,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 /* 员工守则：图标 + 规则列表 */
 .mra-modal-rules { display: flex; gap: 14px; align-items: flex-start; }
 .mra-modal-rules-icon { width: 40px; height: 40px; flex-shrink: 0; margin-top: 4px; }
-.mra-modal-rules-list { flex: 1; min-width: 0; max-height: 56vh; overflow-y: auto; padding-right: 4px; }
+.mra-modal-rules-list { flex: 1; min-width: 0; max-height: 56vh; overflow-y: auto; padding-right: 4px;
+  scrollbar-width: none; }
+.mra-modal-rules-list::-webkit-scrollbar { display: none; }
 .mra-modal-rule {
   display: flex; gap: 10px; margin: 0 0 10px;
   font-size: 13px; line-height: 1.7; color: var(--mra-foreground);
@@ -848,10 +850,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 /* 员工守则效果：逐条渐现（延迟由内联 animation-delay 控制）+ meta/末条变体 + 标题呼吸 */
 .mra-modal-rule { opacity: 0; transform: translateY(5px); animation: mra-rule-in 0.5s ease forwards; }
 @keyframes mra-rule-in { to { opacity: 1; transform: none; } }
-.mra-modal-rule--meta { color: var(--mra-foreground-muted); font-style: italic; }
-.mra-modal-rule--meta .mra-modal-rule-num { color: var(--mra-foreground-muted); }
-.mra-modal-rule--last { color: var(--mra-foreground); }
-.mra-modal-rule--last .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+.mra-modal-rule--ghost { color: var(--mra-foreground-muted); }
+.mra-modal-rule--ghost .mra-modal-rule-num, .mra-modal-rule--ghost .mra-modal-rule-secret {
+  opacity: 0; transition: opacity var(--mra-duration-base) ease; }
+.mra-modal-rule--ghost.revealed .mra-modal-rule-num, .mra-modal-rule--ghost.revealed .mra-modal-rule-secret {
+  opacity: 1; }
 .mra-modal-title--egg { animation: mra-egg-breathe 6s ease-in-out infinite; }
 @keyframes mra-egg-breathe { 0%, 100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
 /* DodgeField 离开按钮（app.js wireEggDodge）：位移走 transform，will-change 限守则弹层按钮 */
