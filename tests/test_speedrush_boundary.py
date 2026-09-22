@@ -24,7 +24,7 @@ def _frame() -> np.ndarray:
     return np.full((720, 1280, 3), BG, dtype=np.uint8)
 
 
-def _line(img: np.ndarray, x_of_y, width=8) -> None:
+def _line(img: np.ndarray, x_of_y, width=18) -> None:  # 18px≈真路缘带内宽（9px 会被 3×3 开运算吃掉斜线核心）
     for y in range(int(CAL.y_h) + 25, 720):
         xc = int(round(x_of_y(y)))
         if 0 <= xc < img.shape[1]:
@@ -38,8 +38,8 @@ def _straight(k: float):
 
 def test_straight_road_valid_and_low_residual():
     img = _frame()
-    _line(img, _straight(1.5))
-    _line(img, lambda y: CAL.vpx + 1.5 * (y - CAL.y_h))
+    _line(img, _straight(3.4))
+    _line(img, lambda y: CAL.vpx + 3.4 * (y - CAL.y_h))
     s = detect_boundary(img, CAL)
     assert isinstance(s, BoundarySummary)
     assert s.schema_version == 2
@@ -60,8 +60,8 @@ def test_vp_x_is_heading_observable():
     定档（a_lat_gain/tau_align）的数据前提。弯道帧仍 validity=True（边检得到）。"""
     dx = 40.0                              # 路缘整体右移 40px ≈ 车头左转的横偏
     img = _frame()
-    _line(img, lambda y: CAL.vpx + dx - 1.5 * (y - CAL.y_h))
-    _line(img, lambda y: CAL.vpx + dx + 1.5 * (y - CAL.y_h))
+    _line(img, lambda y: CAL.vpx + dx - 3.4 * (y - CAL.y_h))
+    _line(img, lambda y: CAL.vpx + dx + 3.4 * (y - CAL.y_h))
     s = detect_boundary(img, CAL)
     assert s.validity is True and s.sides == 2
     assert s.vp_x is not None and s.vp_x == pytest.approx(CAL.vpx + dx, abs=6)
@@ -76,8 +76,8 @@ def _first_left_baseline() -> float:
 def test_curve_raises_residual():
     """不过 VP 的"弯道"路缘：x_lane 沿行系统漂移——残差判**量级关系**不赌临界值。"""
     img = _frame()
-    _line(img, lambda y: CAL.vpx - 1.5 * (y - CAL.y_h) + 0.35 * (y - 500))
-    _line(img, lambda y: CAL.vpx + 1.5 * (y - CAL.y_h) - 0.35 * (y - 500))
+    _line(img, lambda y: CAL.vpx - 3.4 * (y - CAL.y_h) + 0.35 * (y - 500))
+    _line(img, lambda y: CAL.vpx + 3.4 * (y - CAL.y_h) - 0.35 * (y - 500))
     s = detect_boundary(img, CAL)
     assert s.validity is True                     # 检测本身有效……
     ref = detect_boundary(_straight_frame(), CAL)  # 同仪器直道对照
@@ -87,8 +87,8 @@ def test_curve_raises_residual():
 
 def _straight_frame() -> np.ndarray:
     img = _frame()
-    _line(img, _straight(1.5))
-    _line(img, lambda y: CAL.vpx + 1.5 * (y - CAL.y_h))
+    _line(img, _straight(3.4))
+    _line(img, lambda y: CAL.vpx + 3.4 * (y - CAL.y_h))
     return img
 
 
@@ -105,7 +105,7 @@ def test_single_side_degraded_valid():
     0% 可用；现按"任一侧稳定即降级可用"，居中/路宽类量据 sides==2 才消费。
     """
     img = _frame()
-    _line(img, _straight(1.5))
+    _line(img, _straight(3.4))
     s = detect_boundary(img, CAL)
     assert s.validity is True
     assert s.sides == 1
@@ -139,10 +139,10 @@ def test_noise_blobs_invalid():
 def test_summary_defaults_declared():
     """契约字段的口径注释（上沿取 x、下沿取宽）被合成帧锁定。"""
     img = _frame()
-    _line(img, _straight(1.5))
-    _line(img, lambda y: CAL.vpx + 1.5 * (y - CAL.y_h))
+    _line(img, _straight(3.4))
+    _line(img, lambda y: CAL.vpx + 3.4 * (y - CAL.y_h))
     s = detect_boundary(img, CAL)
     top_y = int(CAL.y_h) + 30
-    assert abs(s.left_x - (CAL.vpx - 1.5 * (top_y - CAL.y_h))) < 6   # 中点对中点，容画线厚度
+    assert abs(s.left_x - (CAL.vpx - 3.4 * (top_y - CAL.y_h))) < 6   # 中点对中点，容画线厚度
     # 上沿宽度 < 下沿宽度（透视收拢）：road_width 取下沿才是"最宽最稳"
     assert s.road_width > (s.right_x - s.left_x)
