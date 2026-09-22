@@ -64,6 +64,11 @@
     border: 1px solid var(--mra-border); background: transparent;
     color: var(--mra-foreground-secondary); font-family: var(--mra-font-sans); }
   .mra-modal-btn--primary { border: none; background: var(--mra-primary); color: var(--mra-primary-foreground); }
+  .mra-modal-rules { display: flex; gap: 14px; align-items: flex-start; }
+  .mra-modal-rules-icon { width: 40px; height: 40px; flex-shrink: 0; margin-top: 4px; }
+  .mra-modal-rules-list { flex: 1; min-width: 0; max-height: 56vh; overflow-y: auto; padding-right: 4px;
+    scrollbar-width: none; }
+  .mra-modal-rules-list::-webkit-scrollbar { display: none; }
   .mra-modal-rule { display: flex; gap: 10px; margin: 0 0 10px;
     font-size: 13px; line-height: 1.7; color: var(--mra-foreground); }
   .mra-modal-rule-num { flex-shrink: 0; color: var(--mra-primary); }
@@ -149,7 +154,7 @@
   // [lab-iter2] 躲避场 = 整张弹层卡，二维逃跑：
   //   位移 = 背离光标方向 × 强度（随距离平方衰减）× reach，钳制在卡内 inset；
   //   光标退开 radius 外 → 弹簧回布局位。感知基准 = 按钮视觉中心（你的手接近它）。
-  const EGG_DODGE = { radius: 120, reach: 110, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
+  const EGG_DODGE = { radius: 120, reach: 140, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
   const EGG_DODGE_TAUNTS = ['抓不到', '差一点', '太慢了', '好吧。你走吧。'];
   function wireEggDodge(modal) {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
@@ -198,13 +203,20 @@
           fleeing = true;
         }
       }
-      // 出界钳制：视觉矩形任何时刻不得越过卡缘 - inset（逃得起来，跑不丢）
+      // 出界钳制 + 撞墙滑移 [lab-iter3]：被夹掉的分量沿自由轴重分配——
+      // 角落不再困死按钮，贴着墙继续溜（更自由）；硬边界仍是卡内 inset
       const minX = cardR.left + EGG_DODGE.inset - layoutL;
       const maxX = cardR.right - EGG_DODGE.inset - btnR.width - layoutL;
       const minY = cardR.top + EGG_DODGE.inset - layoutT;
       const maxY = cardR.bottom - EGG_DODGE.inset - btnR.height - layoutT;
-      tx = Math.min(Math.max(tx, minX), Math.max(minX, maxX));
-      ty = Math.min(Math.max(ty, minY), Math.max(minY, maxY));
+      const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+      const desiredX = tx, desiredY = ty;
+      tx = clamp(desiredX, minX, maxX);
+      ty = clamp(desiredY, minY, maxY);
+      const lostX = Math.abs(desiredX - tx);
+      const lostY = Math.abs(desiredY - ty);
+      if (lostY > 0.5) tx = clamp(tx + Math.sign(desiredX || 1) * lostY, minX, maxX);
+      if (lostX > 0.5) ty = clamp(ty + Math.sign(desiredY || 1) * lostX, minY, maxY);
       setT(tx, ty, fleeing);
     }
     const onMove = (e) => { pointer = { x: e.clientX, y: e.clientY }; if (!raf) raf = requestAnimationFrame(frame); };
