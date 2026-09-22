@@ -78,6 +78,7 @@
     moveTabSlider(name);
     if (name === 'data') pollTodayBoard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
     if (name === 'about') fetchAnnouncement(); // 切到关于页重拉公告，避免停留在启动时的旧缓存
+    glitchVersionEgg(); // 1% 概率版本号乱码（彩蛋，详见 glitchVersionEgg 注释）
   }
   // 滑块缓动平移到目标 tab 底部（用 offsetLeft/offsetWidth，不逐页遍历）
   // 宽度取 tab 的 85%，并在 tab 内水平居中
@@ -384,10 +385,11 @@
 
   // [v6] 第 10 条数字乱码：字符集内随机翻动，自左向右逐位落定为「10.」（DecryptedText 手法
   // 自实现）。起播在悬停触发——若挂在渐现延迟里起播，整行还透明，等于白播。
-  function scrambleNumber(el, finalText) {
+  function scrambleNumber(el, finalText, frames) {
     const glyphs = '01<>#$%&@?!/\\_-';
     let frame = 0;
-    const total = 20; // 40ms × 20 ≈ 0.8s
+    // 帧数缺省按文本长度适配（40ms/帧）：版本号长串也来得及看清解码过程
+    const total = frames || Math.max(20, Math.ceil(finalText.length * 1.2));
     const timer = setInterval(() => {
       if (!document.body.contains(el)) { clearInterval(timer); return; }
       frame++;
@@ -400,6 +402,20 @@
       if (frame >= total) { el.textContent = finalText; clearInterval(timer); }
     }, 40);
     return timer;
+  }
+
+  // 1% 概率：切到关于页时版本号套一次乱码解码（与第 10 条同款手法，同源世界观）。
+  // 概率常量放在这里：想预览效果临时改成 1 即可。reduced-motion 下不出。
+  const EGG_VERSION_GLITCH_P = 0.01;
+  let versionScrTimer = null;
+  function glitchVersionEgg() {
+    if (Math.random() >= EGG_VERSION_GLITCH_P) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const n = $('about-version');
+    if (!n || !n.textContent) return;
+    if (versionScrTimer) clearInterval(versionScrTimer);
+    // 捕获触发时的文本作为落定值；期间若被更新检查重写，下一次重写会覆盖回来
+    versionScrTimer = scrambleNumber(n, n.textContent);
   }
 
   function showRulesDialog() {
