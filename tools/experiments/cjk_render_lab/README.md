@@ -24,6 +24,17 @@ status: active
 | OPPO Sans 4.0 | ✅ 包内协议明示「embed, bundle, redistribute and/or sell unmodified copies with any software except for fonts software」 | 显著声明使用+随附协议副本；**不得修改**；revocable、non-transferable | 4.0 单 ttf 21.7MB（3 字重） | ❌ 不得修改 |
 | HarmonyOS Sans | ✅ 同上模板明示允许 | 同上 | SC 单字重 8.1–8.4MB × 6 字重 | ❌ 不得修改 |
 | Noto Sans SC（思源） | ✅ OFL 1.1：允许 bundled/embedded/redistributed and/or sold with any software | 随附 OFL.txt + 版权声明；不得单独出售字体；RFN「Source」限制改名 | 可变 ttf 16.9MB（wght 100–900） | ✅ 允许修改（子集化/woff2 均可） |
+| Sarasa Gothic（更纱黑体） | ✅ SIL OFL 1.1（整字体开源，README 自述为 Inter + Iosevka + Source Han Sans 合成） | 子集属修改版：随附许可全文与版权声明；LICENSE 头部保留名仅「Source」（Adobe 部分继承），子集建议改名规避 | Gothic SC 全字重包 47.6MB（7z，Unhinted，v1.0.41），单 ttf 约 30–40MB | ✅ pyftsubset → woff2，子集 woff2 预估 3–5MB/字重 |
+
+Sarasa 构成要点：**Gothic（比例宽度）变体的拉丁为 Inter**，Iosevka 仅用于 Mono/Fixed/Term 等等宽变体；**汉字部分即 Source Han Sans，与 Noto Sans SC 同源**——两者的汉字观感差异应很小，差异主要在拉丁/数字与标点。出处：github.com/be5invis/Sarasa-Gothic（LICENSE 与 README，2026-09-22 核）。
+
+### 子集与更新策略（2026-09-22 定）
+
+**不做「每次编译自动更新子集」**：壳前端无构建步骤（纯静态 CSS/JS，宿主 file:// 直读仓库树），没有可挂载的「编译期」；且字体上游一年数版，每次构建联网拉取引入网络依赖与产物不确定性，无对应失败模式可防。改为**固定版本 + 生成脚本 + 产物入库**：
+
+1. 生成脚本按 manifest 记录的 release tag 下载官方包（v1.0.41 起 pinned）；
+2. `pyftsubset` 以语料裁剪——ASCII + GB2312 汉字 + 全半角标点 + CJK 常用符号（覆盖自产日志/UI 文案；超集缺字回落系统字体，可接受），输出 woff2 落 `frontend/fonts/`，子集家族改名规避保留名；
+3. 生成 manifest：源 tag、fonttools 版本、语料构成、sha256；升级 = 手动重跑脚本，构建/CI 只校验产物存在与哈希，不联网。
 
 出处：MiSans 协议 PDF（hyperos.mi.com/font-download/MiSans字体知识产权许可协议.pdf）；OPPO Sans 4.0 包内 License Agreement（coloros.com/article/A00000074/，CDN 直链 coloros-website-cn.allawnfs.com/font/OPPO_Sans_4.0.zip 需 Referer）；HarmonyOS Sans zip 内 LICENSE.txt（developer.huawei.com/consumer/cn/design/resource/，直链 developer.huawei.com/images/download/general/HarmonyOS-Sans.zip）；Noto OFL.txt（github.com/google/fonts ofl/notosanssc）。
 
