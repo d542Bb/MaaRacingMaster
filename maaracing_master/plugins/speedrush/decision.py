@@ -367,8 +367,12 @@ class DecisionEngine:
     def _current_goal(self, obs: WorldObservation) -> float:
         if self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
             g = self._group_of(obs)
-            if g is not None:
+            if g is not None and not math.isnan(g.x_center):
                 return g.x_center
+            # 组转存续态（本帧无成员观测，x_center=nan）：CHANGE 中保持最后 goal
+            # （= 当前平滑值），不外插 nan——回放抓到 nan 污染 x_smooth 的缺陷。
+            if self._state is DecisionState.CHANGE:
+                return self._x_smooth
         return 0.0
 
     def _validity_ticks(self) -> int:

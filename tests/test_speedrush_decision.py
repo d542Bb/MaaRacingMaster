@@ -367,3 +367,19 @@ def test_engine_reset_clears_everything():
     e.update(_good_obs(), DT)
     e.reset()
     assert e._state is DecisionState.CRUISE and e._x_smooth == 0.0
+
+def test_change_surviving_group_does_not_poison_x_target():
+    """回放抓到的缺陷：CHANGE 中组转存续态（x_center=nan）曾把 x_smooth 污染成
+    nan 直达输出——存续时保持最后 goal，不外插 nan。"""
+    import math
+    e = _eng()
+    e.update(_good_obs(fid=1), DT)                 # → CHANGE，x_smooth 开始爬向 0.5
+    assert not math.isnan(e.update(_good_obs(fid=2), DT).x_target)
+    # 组进存续：成员不在 targets、conf_min=0、x_center=nan（同聚合器真实输出形态）
+    held = CoinGroup(group_id=1, member_ids=(100, 101, 102), observed_count=3,
+                     estimated_count=3, x_center=float("nan"), x_span=0.3,
+                     cy_min=500, cy_max=506, conf_min=0.0, partial_observation=True,
+                     first_seen_fid=1, last_seen_fid=2, validity_until_fid=10)
+    out = e.update(_obs(fid=3, groups=(held,), presence=True), DT)
+    assert not math.isnan(out.x_target)            # 核心断言：nan 不得穿透
+    assert out.state is DecisionState.CHANGE       # 存续≠取消（宽限内继续计划）
