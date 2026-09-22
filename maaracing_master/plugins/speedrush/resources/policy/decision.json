@@ -13,7 +13,9 @@
     "t_empty_s": "§七.3 基线：真人局空街段 P50=0.5s / P75=1.1s（对局内）；1.5s 起值在回放误报 5 段（多为局首装载段，实机由就绪门吸收），抬到 2.0s",
     "planner.lookahead_tau_s": "τ_resp 0.130 实测 + 加速爬升时间 [需实测]；起值 0.25，加载器锁下界 ≥tau_resp_s",
     "planner.a_lat_gain|tau_align_s|v_lat_max": "[需实测 C1/C2/C3] 双积分运动学三参数（2026-09-22 真机证据链：单积分 K_v 口径证伪，杆是航向指令，满杆 x∝t²；证据见实验 README 同日节）——起值按 Δx=1 车道≈0.7s 满杆口径反推：满杆 0.6s 跨一道 → a≈6 车道/s²；tau_align 起值 0.5s（与旧 probe_tau_steer 的 rise 读数同量级但语义不同，须真机复核）；v_lat_max 起值 2.5 车道/s（定圆饱和）。trace 的 bnd_vp_x 列是航向观测量，回放标定 C1/C2 用",
-    "planner.rate_limit_raw|stick_deadzone_raw": "旧赛车栈已验证值（control-route §三移植清单）"
+    "planner.rate_limit_raw|stick_deadzone_raw": "旧赛车栈已验证值（control-route §三移植清单）",
+    "traffic.exit_margin_px": "[需实测 C5] 下带消失判据的余量（起值 80px）：last cy ≥ v_ego−此值 判\"从车尾侧出画\"；回放定档（阶段 C 设计稿 §三）",
+    "traffic.min_obs_ticks|ghost_max_age_ticks|ghost_rel_eps": "[需实测 C5] 闪现噪声自卫（3 次）；鬼影=超龄(200 拍≈10s，雨测 191 帧案)+低速(<1px/tick)的底边消失"
   },
   "mode": {
     "allow_all_moves": false,
@@ -67,5 +69,11 @@
     "v_lat_max": 2.5,
     "hold_max_ticks": 3,
     "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.7rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.22 偏欠阻尼——全部为起值，真机 trace 回放定档"
+  },
+  "traffic": {
+    "exit_margin_px": 80.0,
+    "min_obs_ticks": 3,
+    "ghost_max_age_ticks": 200,
+    "ghost_rel_eps": 1.0
   }
 }

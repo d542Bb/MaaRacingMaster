@@ -88,6 +88,16 @@ class Planner:
 
 
 @dataclass(frozen=True)
+class Traffic:
+    """车流观测层参数（阶段 C 设计稿 §三；起值 [需实测 C5]，回放定档只改 json）。"""
+
+    exit_margin_px: float      # 下带判据：last cy ≥ v_ego − 此值 → 从车尾侧消失
+    min_obs_ticks: int         # 观测次数不足不发事件（检测噪声自卫）
+    ghost_max_age_ticks: int   # 超龄且低速的"底边消失"判 ghost 不判 pass（191 帧案）
+    ghost_rel_eps: float       # "低速"的相对速率界（px/tick）
+
+
+@dataclass(frozen=True)
 class Validate:
     t_empty_s: float
     t_recover_s: float
@@ -106,6 +116,7 @@ class DecisionConfig:
     hysteresis: Hysteresis
     validate: Validate
     planner: Planner
+    traffic: Traffic
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -197,7 +208,12 @@ def _read_decision(path: Path) -> DecisionConfig:
             a_lat_gain=_num(d, "planner", "a_lat_gain", lo=0),
             tau_align_s=_num(d, "planner", "tau_align_s", lo=0, lo_open=False),
             v_lat_max=_num(d, "planner", "v_lat_max", lo=0, lo_open=False),
-            hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1)))
+            hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1)),
+        traffic=Traffic(
+            exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
+            min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
+            ghost_max_age_ticks=_int(d, "traffic", "ghost_max_age_ticks", lo=2),
+            ghost_rel_eps=_num(d, "traffic", "ghost_rel_eps", lo=0)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis
