@@ -5,6 +5,7 @@
 V0/V1 开关在不在位、异常降级停不亦），不重测各层内部（那些有各自的单测）。
 桩手柄记录调用，detect_boundary 打桩避开 CV 依赖。
 """
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -125,6 +126,36 @@ def test_control_mode_config_roundtrip():
     out = m.set_module_config({"control_mode": True})
     assert out["control_mode"] is True and m._control_mode is True
     assert m.set_module_config({"control_mode": False})["control_mode"] is False
+
+
+# ---------- 控制 trace：逐拍记录 + 阶段出口 flush ----------
+
+def test_control_trace_records_and_flushes(tmp_path, monkeypatch):
+    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    for fid in range(1, 6):
+        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
+    assert len(chain["trace"]) == 5
+    row = chain["trace"][-1]
+    # C1/§七.1 标定要的关键列都在
+    for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_x",
+              "executed_lane", "v_lat_est", "bnd_valid", "bnd_left_x", "bnd_right_x"):
+        assert k in row, k
+    m._flush_control_trace(chain, 1)
+    files = list(tmp_path.glob("trace_*_p1.jsonl"))
+    assert len(files) == 1
+    lines = files[0].read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5
+    assert json.loads(lines[0])["fid"] == 1
+
+
+def test_control_trace_empty_not_flushed(tmp_path, monkeypatch):
+    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
+    m = _module()
+    m._flush_control_trace({"trace": [], "t_start": 0.0}, 1)
+    assert list(tmp_path.glob("trace_*.jsonl")) == []   # 空 trace 不落盘
 
 
 # ---------- 控制实况字段形状（GUI 消费契约）----------

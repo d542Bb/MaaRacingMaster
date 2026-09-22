@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -523,48 +524,54 @@ class SpeedRushModule(ActivityModule):
         fid, ts_ns, age_ms = 0, 0, 0.0
         # 手柄租约覆盖整个控制阶段：进入取设备、退出归零归还（摇杆归中+松扳机）。
         # 循环内多处 return/raise 都经 with 收口，不留"退出后车还踩着油门"的尾巴。
-        with contextlib.ExitStack() as stack:
-            gpad = stack.enter_context(self.ctx.gamepad.acquire()) if control else None
-            while self._running and time.monotonic() < deadline:
-                t0 = time.monotonic()
-                # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
-                # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
-                frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
-                if recorder is not None and frame is not None:
-                    recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
-                result: PerceptionResult | None = None
-                if (self._perception_mode or control) and frame is not None:
-                    perc = self._ensure_perception()
-                    if perc is not None:
-                        result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
-                        self._last_perception = result
-                        self._infer_times.append(result.infer_ms)
-                if gpad is not None and result is not None:
-                    self._control_tick(chain, gpad, frame, result, fid, ts_ns, age_ms, phase)
-                frames += 1
+        # 控制 trace 在 finally 一次性 flush（正常结束/停止/异常都落盘，守热路径不逐帧写）。
+        try:
+            with contextlib.ExitStack() as stack:
+                gpad = stack.enter_context(self.ctx.gamepad.acquire()) if control else None
+                while self._running and time.monotonic() < deadline:
+                    t0 = time.monotonic()
+                    # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
+                    # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
+                    frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
+                    if recorder is not None and frame is not None:
+                        recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
+                    result: PerceptionResult | None = None
+                    if (self._perception_mode or control) and frame is not None:
+                        perc = self._ensure_perception()
+                        if perc is not None:
+                            result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
+                            self._last_perception = result
+                            self._infer_times.append(result.infer_ms)
+                    if gpad is not None and result is not None:
+                        self._control_tick(
+                            chain, gpad, frame, result, fid, ts_ns, age_ms, phase)
+                    frames += 1
 
-                now = time.monotonic()
-                if now >= next_anchor:
-                    next_anchor = now + DRIVE_ANCHOR_CHECK_S
-                    if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
-                        miss = 0
-                    else:
-                        miss += 1
-                        # 每次失配都记（DEBUG）：连续的失配序列正是"过场动画被误判为结束"
-                        # 与"真的离开了对局"的区别所在，只记最后一条就看不出这个区别。
-                        logger.log(
-                            f"[极速狂飙] 驾驶阶段 {phase}：锚点失配第 {miss} 次"
-                            f"（{_frame_note(fid, age_ms)}）", "DEBUG")
-                        if miss >= DRIVE_MISS_TOLERANCE:
-                            _tlog(self,
-                                  f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
-                                  f"（{_frame_note(fid, age_ms)}）", "INFO")
-                            self._log_loop_pace(phase, frames, loop_start)
-                            return True
+                    now = time.monotonic()
+                    if now >= next_anchor:
+                        next_anchor = now + DRIVE_ANCHOR_CHECK_S
+                        if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+                            miss = 0
+                        else:
+                            miss += 1
+                            # 每次失配都记（DEBUG）：连续的失配序列正是"过场动画被误判为结束"
+                            # 与"真的离开了对局"的区别所在，只记最后一条就看不出这个区别。
+                            logger.log(
+                                f"[极速狂飙] 驾驶阶段 {phase}：锚点失配第 {miss} 次"
+                                f"（{_frame_note(fid, age_ms)}）", "DEBUG")
+                            if miss >= DRIVE_MISS_TOLERANCE:
+                                _tlog(self,
+                                      f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
+                                      f"（{_frame_note(fid, age_ms)}）", "INFO")
+                                self._log_loop_pace(phase, frames, loop_start)
+                                return True
 
-                rest = DRIVE_TICK_S - (time.monotonic() - t0)
-                if rest > 0 and not self.ctx.lifecycle.sleep(rest):
-                    break
+                    rest = DRIVE_TICK_S - (time.monotonic() - t0)
+                    if rest > 0 and not self.ctx.lifecycle.sleep(rest):
+                        break
+        finally:
+            if control and chain:
+                self._flush_control_trace(chain, phase)
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
@@ -584,7 +591,8 @@ class SpeedRushModule(ActivityModule):
         cfg = load_decision()
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
-                "prev_ts": None, "disabled": False}
+                "prev_ts": None, "disabled": False, "trace": [],
+                "t_start": time.time()}
 
     def _control_tick(self, chain: dict, gpad, frame, result: PerceptionResult,
                       fid: int, ts_ns: int, age_ms: float, phase: int) -> None:
@@ -621,6 +629,55 @@ class SpeedRushModule(ActivityModule):
         self._control_last = {
             "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
             "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3)}
+        # 逐拍控制 trace（内存攒、阶段出口一次性 flush）：C1 定档 K_v 与 §七.1 复测的
+        # 数据源。boundary 路缘读数即自车真实横移的观测量（路缘平移法），与指令杆值
+        # 对齐可反推实际横向速度——不另录帧，守 §六热路径不逐帧写盘。
+        b = obs.boundary
+        # 候选诊断三列：金币组数 + 最高分 + 该组横向偏移——直接回答"有没有币/差多少分/
+        # 在几车道外"。评分器是纯函数、每拍已算，这里只多读一次结果，不改决策。
+        best: tuple[float, float] | None = None
+        for g in obs.coin_groups:
+            s = chain["engine"].scorer.score(g, obs)
+            if s is not None and (best is None or s.score > best[0]):
+                best = (s.score, g.x_center)
+        chain["trace"].append({
+            "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
+            "state": out.state.value, "reason": out.reason,
+            "x_target": out.x_target, "target_id": out.target_id,
+            "reanchor_lane": out.reanchor_lane,
+            "steer_norm": round(planner.state.steer_norm, 4), "steer_x": cmd.steer_x,
+            "executed_lane": round(planner.state.executed_lane, 4),
+            "v_lat_est": round(planner.state.v_lat_est, 4),
+            "n_groups": len(obs.coin_groups),
+            "best_score": None if best is None else round(best[0], 1),
+            "best_x": None if best is None else round(best[1], 2),
+            "bnd_valid": None if b is None else b.validity,
+            "bnd_left_x": None if b is None else round(b.left_x, 1),
+            "bnd_right_x": None if b is None else round(b.right_x, 1),
+            "bnd_residual": None if b is None else round(b.straight_residual, 3),
+            "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
+            "presence": obs.health.target_presence})
+
+    def _flush_control_trace(self, chain: dict, phase: int) -> None:
+        """阶段出口一次性落控制 trace（C1/§七.1 标定数据源）。
+
+        写运行数据目录（与 demos 同构，不污染仓库工作树）；空 trace 不落盘。
+        落盘失败只记 WARNING——标定数据缺失不该中止对局收尾（与录制器同一姿态）。
+        """
+        rows = chain.get("trace") or []
+        if not rows:
+            return
+        try:
+            root = _control_trace_root()
+            root.mkdir(parents=True, exist_ok=True)
+            name = f"trace_{time.strftime('%Y%m%d_%H%M%S', time.localtime(chain['t_start']))}_p{phase}.jsonl"
+            with open(root / name, "w", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍 → {name}", "INFO")
+        except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
+            _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
 
     def _ensure_perception(self) -> StreetPerception | None:
         """懒加载感知模型（实例跨阶段复用，一局只付一次模型加载）；失败则本轮禁用。
@@ -721,6 +778,11 @@ def _demos_root() -> Path:
     更新不丢数据，也不污染仓库工作树。
     """
     return data_dir() / "speedrush" / "demos"
+
+
+def _control_trace_root() -> Path:
+    """控制 trace 根目录（与 demos 同构，落用户数据目录、不污染仓库）。"""
+    return data_dir() / "speedrush" / "control_traces"
 
 
 def resolve_start_index(start_from: str | None) -> int:
