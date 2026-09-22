@@ -161,6 +161,15 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
 
     residual = max(_disp(xl), _disp(xr))
 
+    # 缘距观测量（超车空间闸门的证据源）：各侧稳定缘在带顶的 A1 读数（左负右正）。
+    # 该侧无稳定读数→None（=证据不足，闸门不得据此禁方向——维护者裁定 2026-09-22）。
+    def _first_valid_lane(arr: np.ndarray) -> float | None:
+        a = arr[~np.isnan(arr)]
+        return float(a[0]) if a.size else None
+
+    left_edge_lane = _first_valid_lane(xl)
+    right_edge_lane = _first_valid_lane(xr)
+
     # vp_row / vp_x：左右缘各自线性拟合 x(y)，交点行对 y_h 的漂移 + 交点列。
     # vp_x 与校准 vpx 之差 ∝ 车头航向角（旋转观测量，设计稿 §十 v2）；需双侧稳定。
     vp_row = None
@@ -192,4 +201,4 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
         schema_version=_SCHEMA, left_x=left_x, right_x=right_x,
         road_width=float(road_width), straight_residual=residual,
         vp_row=vp_row, validity=bool(valid), uncertainty=unc, sides=sides,
-        vp_x=vp_x)
+        vp_x=vp_x, left_edge_lane=left_edge_lane, right_edge_lane=right_edge_lane)

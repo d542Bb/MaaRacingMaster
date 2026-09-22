@@ -32,14 +32,14 @@ CFG = _read_decision(
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
-         geometry=True, transition=False):
+         geometry=True, transition=False, boundary=None):
     if presence is None:
         presence = bool(groups or targets)
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000, frame_age_ms=10.0,
         stage=1,
         health=PerceptionHealth(alive, fresh, geometry, presence, transition),
-        boundary=None, targets=targets, far_targets=(), coin_groups=groups)
+        boundary=boundary, targets=targets, far_targets=(), coin_groups=groups)
 
 
 def _members(fid, gid, n, x, cy, rel, conf=0.85):
@@ -527,3 +527,55 @@ def test_overtake_score_partial_order():
     left = s.score_car(_cv(tid=4, x=-1.1))
     right = s.score_car(_cv(tid=5, x=1.1))
     assert left.score == pytest.approx(right.score)            # 左右对称
+
+
+# ---------- 对称性原则（维护者裁定 2026-09-22：决策默认左右对称，禁用方向需显式证据） ----------
+
+def _bnd(left_edge=None, right_edge=None):
+    from maaracing_master.plugins.speedrush.tracking import BoundarySummary
+    return BoundarySummary(schema_version=2, left_x=300.0, right_x=980.0,
+                           road_width=680.0, straight_residual=0.1, vp_row=None,
+                           validity=True, uncertainty=1.0, sides=2,
+                           left_edge_lane=left_edge, right_edge_lane=right_edge)
+
+
+def test_mirror_symmetry_engine_and_planner():
+    """观测整体镜像喂入 → 决策输出与规划杆值必须严格镜像（对称性机检锁）。"""
+    from maaracing_master.plugins.speedrush.planner import LateralPlanner
+    e1, e2 = _eng(overtake=True), _eng(overtake=True)
+    p1, p2 = LateralPlanner(CFG.planner), LateralPlanner(CFG.planner)
+    for fid in range(1, 13):
+        x = 1.1 + 0.03 * fid
+        o1 = e1.update(_obs(fid=fid, presence=True), DT,
+                       traffic=_traffic([_cv(tid=5, x=x)]))
+        o2 = e2.update(_obs(fid=fid, presence=True), DT,
+                       traffic=_traffic([_cv(tid=5, x=-x)]))
+        assert o1.state is o2.state and o1.reason == o2.reason
+        assert o1.x_target == pytest.approx(-(o2.x_target or 0.0), abs=1e-12)
+        c1 = p1.update(o1, DT, fid)
+        c2 = p2.update(o2, DT, fid)
+        assert c1.steer_x == -c2.steer_x and c1.throttle == c2.throttle
+
+
+def test_space_gate_disables_only_with_evidence():
+    ov = CFG.overtake
+    tight = ov.d_hold_lane + ov.space_margin_lane - 0.05
+    # 左缘只剩 tight 的空间 → 左候选被禁、右候选照常
+    e = _eng(overtake=True)
+    out = e.update(_obs(fid=1, presence=True, boundary=_bnd(left_edge=-tight,
+                                                             right_edge=2.0)),
+                   DT, traffic=_traffic([_cv(tid=9, x=-1.1)]))
+    assert "no_candidate" in out.reason
+    out = e.update(_obs(fid=2, presence=True, boundary=_bnd(left_edge=-tight,
+                                                             right_edge=2.0)),
+                   DT, traffic=_traffic([_cv(tid=9, x=1.1)]))
+    assert out.state is DecisionState.CHANGE
+    # 证据不足（缘距 None）→ 两侧都放行（对称默认，不得无证据禁方向）
+    e2 = _eng(overtake=True)
+    out = e2.update(_obs(fid=1, presence=True, boundary=_bnd(None, None)), DT,
+                    traffic=_traffic([_cv(tid=9, x=-1.1)]))
+    assert out.state is DecisionState.CHANGE
+    e3 = _eng(overtake=True)
+    out = e3.update(_obs(fid=1, presence=True), DT,
+                    traffic=_traffic([_cv(tid=9, x=-1.1)]))
+    assert out.state is DecisionState.CHANGE

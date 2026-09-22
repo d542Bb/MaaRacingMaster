@@ -94,6 +94,11 @@ class BoundarySummary:
     # 平移假设下边界检测恰在控制动作时失明；vp_x 是航向的免费观测量，v2 trace
     # 落列供 C1/C2 定档，planner 现值不消费（不建立第二份真相：消费时由观测层给）。
     vp_x: float | None = None
+    # 左右路缘的 A1 读数（带顶行，左负右正；该侧稳定才有值，否则 None）。
+    # 消费者=超车空间闸门（设计稿 §四补：决策默认左右对称，禁用某方向必须拿
+    # "那侧没空间"的显式证据——None=证据不足=两侧都放行）。
+    left_edge_lane: float | None = None
+    right_edge_lane: float | None = None
 
 
 @dataclass(frozen=True)

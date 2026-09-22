@@ -43,6 +43,8 @@ class Overtake:
     lane_band_lo: float      # 候选车横向带下沿（<此值=本车道车/正在掠过，不作候选）
     lane_band_hi: float      # 上沿（对向斜穿/杂框自卫）
     t_pass_max_s: float      # 超车计划兜底超时（pass 事件迟迟不落定 → 强制 done）[C5]
+    space_margin_lane: float  # 空间闸门余量：该侧缘距 < d_hold+此值 才判"没空间"禁用该向
+                              # （决策默认左右对称，禁用必须有显式证据——维护者裁定）
 
 
 @dataclass(frozen=True)
@@ -239,7 +241,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             d_hold_lane=_num(d, "overtake", "d_hold_lane", lo=0, lo_open=False),
             lane_band_lo=_num(d, "overtake", "lane_band_lo", lo=0),
             lane_band_hi=_num(d, "overtake", "lane_band_hi", lo=0),
-            t_pass_max_s=_num(d, "overtake", "t_pass_max_s", lo=0, lo_open=False)),
+            t_pass_max_s=_num(d, "overtake", "t_pass_max_s", lo=0, lo_open=False),
+            space_margin_lane=_num(d, "overtake", "space_margin_lane", lo=0)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),

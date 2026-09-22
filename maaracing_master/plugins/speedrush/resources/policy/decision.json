@@ -23,10 +23,10 @@
     "overtake.t_pass_max_s": "[需实测 C5] pass 落定兜底（超车过程可比变道长，不共用 t_change_max）"
   },
   "mode": {
-    "allow_all_moves": false,
+    "allow_all_moves": true,
     "allow_car_graze": false,
-    "allow_overtake": false,
-    "_note": "v1 = coin-only 保守基线（allow_car_graze 必为 false，旧复议判据已被收益图景作废，处置见阶段 C 设计稿 §七）；allow_all_moves=false 为 V0 直行基线开关；allow_overtake=V2 超车总闸（默认关，开启前置=plant C7 定档）"
+    "allow_overtake": true,
+    "_note": "**本文件当前是标定态（V2 临开一场采 C7 plant 定档数据，2026-09-22 维护者批准；跑完归位 V0 提交默认，归位义务见实验 README）**。allow_car_graze 保持 false（语义不同门不搅，处置见阶段 C 设计稿 §七）；allow_all_moves=V0/V1 闸；allow_overtake=V2 超车总闸"
   },
   "control": {
     "frame_rate_hz": 20.0,
@@ -90,6 +90,7 @@
     "d_hold_lane": 0.625,
     "lane_band_lo": 0.65,
     "lane_band_hi": 1.6,
-    "t_pass_max_s": 8.0
+    "t_pass_max_s": 8.0,
+    "space_margin_lane": 0.15
   }
 }

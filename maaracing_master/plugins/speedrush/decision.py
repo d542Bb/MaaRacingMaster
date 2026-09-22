@@ -210,6 +210,7 @@ class DecisionEngine:
         self._state = DecisionState.CRUISE
         self._target_gid: int | None = None
         self._target_kind: str | None = None
+        self._boundary = None
         self._done_pass_ids: set[int] = set()   # 本阶段已落定 pass 的车（防重选中）；
         # track id 每阶段由新 Tracker 重卷，阶段边界随 reset 清空，语义自洽
         self._cur_score = -math.inf
@@ -236,6 +237,7 @@ class DecisionEngine:
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容性红线）。
         逐拍视图放实例通道（单线程 owner 纪律，与 _log_grp 同族）——helper 签名不扩散。"""
         self._views, self._events = traffic if traffic is not None else ((), ())
+        self._boundary = obs.boundary
         # 优先级（§二矩阵）：致命信号 > ABORT/收敛/超时 > 选择。本 tick 先处理转移，
         # 再按落定的状态发输出。
         report = self.watch.check(obs, dt_s)
@@ -448,6 +450,10 @@ class DecisionEngine:
                 # 超车时机：车已在掠过带（t_meet≤响应延迟）不追——内贴已来不及
                 if s.t_miss_s <= self.cfg.timing.tau_resp_s:
                     continue
+                # 空间闸门（维护者裁定 2026-09-22）：决策默认左右对称，禁用某方向
+                # 必须有"那侧没空间"的显式证据（缘距读数）；证据不足=两侧都放行。
+                if not self._side_has_space(v.x_lane):
+                    continue
                 if best is None or s.score > best.score:
                     best = s
         if best is None:
@@ -455,6 +461,21 @@ class DecisionEngine:
         if current is not None and best.score < current + self.cfg.hysteresis.switch_margin:
             return None
         return best
+
+    def _side_has_space(self, x_lane: float) -> bool:
+        """候选侧的路缘空间检查。左缘读数 left_edge_lane（负值，|·|=左缘距）、
+        右缘 right_edge_lane。None=该侧无证据 → **不否决**（对称默认）。
+        贴邻目标在候选的内侧（|hug|<|x|），但车本身占位，闸门按候选侧缘距判。"""
+        b = None
+        # boundary 摘要只在观测层有双侧稳定时给缘距；单侧 None 自动放行
+        if self._boundary is not None:
+            b = self._boundary
+        edge = (b.right_edge_lane if x_lane >= 0 else b.left_edge_lane) \
+            if b is not None else None
+        if edge is None:
+            return True
+        need = self.cfg.overtake.d_hold_lane + self.cfg.overtake.space_margin_lane
+        return abs(edge) >= need
 
     def _degraded(self, obs: WorldObservation) -> bool:
         """恢复判定：与致命信号同一合取的"健康面"——alive+fresh+presence 或过渡。"""
