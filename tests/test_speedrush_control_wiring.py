@@ -43,7 +43,7 @@ class StubPad:
 
 
 def _boundary():
-    return BoundarySummary(schema_version=1, left_x=80.0, right_x=1200.0,
+    return BoundarySummary(schema_version=2, left_x=80.0, right_x=1200.0,
                            road_width=1120.0, straight_residual=0.0, vp_row=None,
                            validity=True, uncertainty=0.1)
 

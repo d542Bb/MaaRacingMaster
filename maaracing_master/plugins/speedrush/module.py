@@ -655,6 +655,9 @@ class SpeedRushModule(ActivityModule):
             "bnd_left_x": None if b is None else round(b.left_x, 1),
             "bnd_right_x": None if b is None else round(b.right_x, 1),
             "bnd_residual": None if b is None else round(b.straight_residual, 3),
+            # 双积分定档数据面：vp_x 横偏=航向观测量；sides=平移读数可信门
+            "bnd_vp_x": None if b is None or b.vp_x is None else round(b.vp_x, 1),
+            "bnd_sides": None if b is None else b.sides,
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
             "presence": obs.health.target_presence})
 

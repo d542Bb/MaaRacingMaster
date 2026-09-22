@@ -7,13 +7,18 @@ plugin→core）。不读像素、不读检测框、不读 boundary——弯道/
 decision.ValidationWatch（不变量 C1：本层不重复造判据，只消费 FSM 状态）。
 
 **跟踪律命名**（维护者裁定 2026-09-22）：*延迟补偿前瞻 PD*——Pure Pursuit 取的是
-"提前量"精神（追视点外推到 t+τ 再入环，Autoware 式），**不是**几何 κ 公式：
-游戏物理是黑箱（杆值→转角→横向速度→位移无模型），κ 公式没有模型可代。
-后续读者不要在这里找车辆模型。
+"提前量"精神（追视点外推到 t+τ 再入环，Autoware 式），**不是**几何 κ 公式
+（黑箱物理下没有曲率可代）。控制律形式不随运动学改——`k_d` 速度阻尼本就是为
+双积分对象配的，v1 的误处在把 **plant（运动学）** 写成了单积分"杆→稳态速度"。
 
-**自车横向状态**（不变量 C2，设计稿 §二）：A1 归一下自车恒 0，画面推不出自车
-位移，``executed_lane`` 由本层开环积分唯一持有；CHANGE 完成拍经
-``DecisionOutput.reanchor_lane``（有符号观测读数）重锚清零积分误差。
+**自车横向运动学**（不变量 C2，设计稿 §二；v2 2026-09-22 真机证据链修正）：
+赛车机制下杆是**车头航向指令**不是平移速度指令——起步段 x∝t²（向心加速度），
+故 ``v_lat`` 经 ``a_lat_gain`` 积分而来、经 ``tau_align_s`` 自回正、被 ``v_lat_max``
+定圆饱和；**不存在**"杆值→稳态横向速度"的静态 K_v（原 v_lat_gain 前提证伪）。
+A1 归一下自车恒 0、画面推不出自车绝对位移，``executed_lane`` 仍由本层开环积分
+唯一持有，CHANGE 完成拍经 ``DecisionOutput.reanchor_lane`` 重锚清积分误差。
+航向分量可由路缘 vp 横偏反解（planner 设计稿 §七 v2），是"旋转下观察者不失明"的
+升级路径——本层暂以模型积分持有，接口已按双积分对齐。
 
 **纯函数纪律**（C3）：update 只吃 (decision, dt_s, current_fid) + 内部状态，
 喂同一输入流回放复现同一杆值流。
@@ -110,13 +115,14 @@ class LateralPlanner:
         alpha = 1.0 - math.exp(-dt_s / self.p.tau_steer_s)
         self.state.steer_norm += alpha * (steer_raw - self.state.steer_norm)
 
-        # ⑥ 横向运动学积分（一阶惯性跟踪指令；inertia_tau=0 退化为即时跟踪）
-        v_cmd = self.p.v_lat_gain * self.state.steer_norm
-        if self.p.inertia_tau_s > 0:
-            av = 1.0 - math.exp(-dt_s / self.p.inertia_tau_s)
-            self.state.v_lat_est += av * (v_cmd - self.state.v_lat_est)
-        else:
-            self.state.v_lat_est = v_cmd
+        # ⑥ 横向运动学（v2 双积分，2026-09-22 真机证据链证伪单积分 K_v）：
+        #    杆→横向加速度（车头转角带来的向心效应），起步段 x∝t²；松杆后经
+        #    tau_align_s 指数自回正（航向回零→横速归零），持续打舵有 v_lat_max 定圆饱和。
+        #    k_d 阻尼项本就是为双积分对象写的（单积分无需阻尼），v1 实现与裁定矛盾，此处对齐。
+        v_cmd = self.state.v_lat_est + (
+            self.p.a_lat_gain * self.state.steer_norm
+            - self.state.v_lat_est / self.p.tau_align_s) * dt_s
+        self.state.v_lat_est = max(-self.p.v_lat_max, min(self.p.v_lat_max, v_cmd))
         self.state.executed_lane += self.state.v_lat_est * dt_s
 
         # ⑦ 下发链：归一 → 限幅（每 tick 变化上限）→ 死区（<256 归 0，256 保留）

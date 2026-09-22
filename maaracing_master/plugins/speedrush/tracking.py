@@ -89,6 +89,11 @@ class BoundarySummary:
     # 但 sides==1 时 road_width/vp_row 不可用（需双侧）——消费者据 sides 决定是否
     # 用居中/路宽类量，不得假设单侧帧有完整路几何。
     sides: int = 2
+    # 两边线交点的横向位置（需 sides==2；与 vp_row 同门控同缺省）。与校准 vpx 的
+    # 横偏 ∝ 车头航向角——真机证据链（2026-09-22）：打舵画面是旋转不是平移，
+    # 平移假设下边界检测恰在控制动作时失明；vp_x 是航向的免费观测量，v2 trace
+    # 落列供 C1/C2 定档，planner 现值不消费（不建立第二份真相：消费时由观测层给）。
+    vp_x: float | None = None
 
 
 @dataclass(frozen=True)

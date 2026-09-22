@@ -206,14 +206,67 @@ def test_rate_limit_per_tick_semantics():
     (256 / 32767 / P.k_p, False),                 # raw=256 → 保留
 ])
 def test_deadzone_boundary_255_256(x_target, expect_zero):
-    # 隔离输出链边界：无 lookahead/阻尼/低通/限幅，且 v_lat 增益置零
+    # 隔离输出链边界：无 lookahead/阻尼/低通/限幅，且横向加速度增益置零
     # （executed 不漂移，PD 稳态恒等于 k_p·x_target）
     pl = _planner(k_d=0.0, lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, v_lat_gain=0.0)
+                  rate_limit_raw=999999.0, a_lat_gain=0.0)
     cmd = None
     for i in range(5):
         cmd = pl.update(_out(x_target=x_target, fid=i, valid=i), DT, i)
     assert (cmd.steer_x == 0) is expect_zero
+
+
+# ---------- 双积分运动学（v2，2026-09-22 真机证据链：杆是航向指令不是平移速度指令） ----------
+
+def _iso_planner(**over) -> LateralPlanner:
+    """隔离运动学的参数组合：杆一拍到位、无限幅死区、PD 不饱和（目标远置）。"""
+    base = dict(lookahead_tau_s=0.0, k_d=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    base.update(over)
+    return _planner(**base)
+
+
+def test_sustained_stick_is_convex_double_integrator():
+    """满杆按住：位移增量逐拍**递增**（x∝t² 的差分签名）。
+    被证伪的单积分模型（杆→稳态速度）在惯性爬升后增量走平——方向相反。"""
+    pl = _iso_planner(a_lat_gain=6.0, tau_align_s=1e9, v_lat_max=1e9)
+    xs = []
+    for i in range(10):
+        pl.update(_out(x_target=100.0, fid=i + 1, valid=i + 1), DT, i + 1)
+        xs.append(pl.state.executed_lane)
+    d1 = [xs[k + 1] - xs[k] for k in range(len(xs) - 1)]
+    assert all(d1[k + 1] > d1[k] for k in range(len(d1) - 1))   # 凸（加速中）
+    assert d1[0] > 0 and all(d > 0 for d in d1)
+    # 双积分的干净签名：恒杆下**二阶差分恒定 = a·dt²**（单积分会走平=0）
+    d2 = [d1[k + 1] - d1[k] for k in range(len(d1) - 1)]
+    for s in d2:
+        assert s == pytest.approx(6.0 * DT * DT, rel=1e-6)
+
+
+def test_release_decays_and_settles():
+    """回正语义：杆归零后 v_lat 经 tau_align 指数衰减、位移收敛（定值 =v0·τ），
+    不是无限漂移也不是瞬时停住。"""
+    pl = _iso_planner(a_lat_gain=0.0, tau_align_s=0.5, v_lat_max=1e9)
+    pl.state.v_lat_est = 2.0
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1)   # a=0：杆不注入
+    assert pl.state.v_lat_est == pytest.approx(2.0 * (1 - DT / 0.5), rel=1e-9)
+    for i in range(2, 400):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
+    assert pl.state.v_lat_est == pytest.approx(0.0, abs=1e-9)
+    # Euler 几何收敛的闭式：Σ v0·(1−dt/τ)^k·dt = v0·τ·(1−dt/τ) = 2.0·0.5·0.9
+    assert pl.state.executed_lane == pytest.approx(2.0 * 0.5 * (1 - DT / 0.5),
+                                                   abs=1e-6)
+
+
+def test_v_lat_saturates_no_runaway():
+    """持续满杆：v_lat 被 v_lat_max 定圆饱和钉住，位移退化为线性（双积分防发散）。"""
+    pl = _iso_planner(a_lat_gain=6.0, tau_align_s=1e9, v_lat_max=1.0)
+    for i in range(50):
+        pl.update(_out(x_target=100.0, fid=i + 1, valid=i + 1), DT, i + 1)
+    assert pl.state.v_lat_est == pytest.approx(1.0)
+    x_prev = pl.state.executed_lane
+    pl.update(_out(x_target=100.0, fid=52, valid=52), DT, 52)
+    assert pl.state.executed_lane - x_prev == pytest.approx(1.0 * DT, rel=1e-6)
 
 
 # ---------- 回放一致性（C3） ----------

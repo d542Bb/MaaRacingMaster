@@ -79,8 +79,11 @@ class Planner:
     rate_limit_raw: float      # 每 tick 杆值变化上限（±32767 系）
     stick_deadzone_raw: float  # |杆值| 低于此归 0（游戏手柄死区）
     throttle_raw: int          # 右扳机恒值（RULES §4.1 权威：全程油门）
-    v_lat_gain: float          # 满杆稳态横向速度（车道/s）[需实测 C1]
-    inertia_tau_s: float       # v_lat 跟踪指令的一阶惯性常数 [需实测 C2]
+    # —— 双积分横向运动学（v2，2026-09-22 真机证据链：杆是航向指令不是平移速度指令，
+    #    满杆按住 x∝t²；单积分 K_v 口径的 v_lat_gain/inertia_tau_s 已证伪删除）——
+    a_lat_gain: float          # 杆→横向加速度（车道/s²），起步段恒加速 [需实测 C1]
+    tau_align_s: float         # 松杆后横向速度自回正衰减时间常数（航向回正）[需实测 C2]
+    v_lat_max: float           # 横向漂移速度上限（车道/s）：最大车头角的定圆饱和 [需实测 C3]
     hold_max_ticks: int        # 决策过期后最多保持拍数，第 +1 拍起按 CONSERVE
 
 
@@ -191,8 +194,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             stick_deadzone_raw=_num(d, "planner", "stick_deadzone_raw",
                                     lo=0, lo_open=False),
             throttle_raw=_int(d, "planner", "throttle_raw", lo=0, hi=255),
-            v_lat_gain=_num(d, "planner", "v_lat_gain", lo=0),
-            inertia_tau_s=_num(d, "planner", "inertia_tau_s", lo=0, lo_open=False),
+            a_lat_gain=_num(d, "planner", "a_lat_gain", lo=0),
+            tau_align_s=_num(d, "planner", "tau_align_s", lo=0, lo_open=False),
+            v_lat_max=_num(d, "planner", "v_lat_max", lo=0, lo_open=False),
             hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦

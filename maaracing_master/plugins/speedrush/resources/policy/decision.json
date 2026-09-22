@@ -11,9 +11,8 @@
     "x_lane_abs_max": "路面半宽 ≈2.5 车道 + 余量（CODE_WIKI 回放右路缘 +2.5 标定）",
     "conf_hi": "实测 coin conf 中位 0.87–0.89（证据 commit 8f59837）→ 折扣满权界；floor→hi 线性爬坡",
     "t_empty_s": "§七.3 基线：真人局空街段 P50=0.5s / P75=1.1s（对局内）；1.5s 起值在回放误报 5 段（多为局首装载段，实机由就绪门吸收），抬到 2.0s",
-    "planner.lookahead_tau_s": "τ_resp 0.130 实测 + 惯性时间常数 [需实测 C2]；起值 0.25，加载器锁下界 ≥tau_resp_s",
-    "planner.v_lat_gain": "[需实测 C1 杆值→横向速度稳态增益] 起值按变道耗时口径反推：Δx=1 车道≈0.7s（timing 起值）满杆 → ≈1.5 车道/s",
-    "planner.inertia_tau_s": "[需实测 C2] 起值 0.15s（probe_tau_steer rise_s 列可离线再导出）",
+    "planner.lookahead_tau_s": "τ_resp 0.130 实测 + 加速爬升时间 [需实测]；起值 0.25，加载器锁下界 ≥tau_resp_s",
+    "planner.a_lat_gain|tau_align_s|v_lat_max": "[需实测 C1/C2/C3] 双积分运动学三参数（2026-09-22 真机证据链：单积分 K_v 口径证伪，杆是航向指令，满杆 x∝t²；证据见实验 README 同日节）——起值按 Δx=1 车道≈0.7s 满杆口径反推：满杆 0.6s 跨一道 → a≈6 车道/s²；tau_align 起值 0.5s（与旧 probe_tau_steer 的 rise 读数同量级但语义不同，须真机复核）；v_lat_max 起值 2.5 车道/s（定圆饱和）。trace 的 bnd_vp_x 列是航向观测量，回放标定 C1/C2 用",
     "planner.rate_limit_raw|stick_deadzone_raw": "旧赛车栈已验证值（control-route §三移植清单）"
   },
   "mode": {
@@ -63,9 +62,10 @@
     "rate_limit_raw": 22000.0,
     "stick_deadzone_raw": 256.0,
     "throttle_raw": 255,
-    "v_lat_gain": 1.5,
-    "inertia_tau_s": 0.15,
+    "a_lat_gain": 6.0,
+    "tau_align_s": 0.5,
+    "v_lat_max": 2.5,
     "hold_max_ticks": 3,
-    "_note": "延迟补偿前瞻 PD（planner 设计稿 §三）；k_p 起值=1/(v_lat_gain×T_eff)，T_eff≈0.55s"
+    "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.7rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.22 偏欠阻尼——全部为起值，真机 trace 回放定档"
   }
 }

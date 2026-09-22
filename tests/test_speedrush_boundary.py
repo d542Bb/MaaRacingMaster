@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from maaracing_master.plugins.speedrush.boundary import detect_boundary
 from maaracing_master.plugins.speedrush.tracking import BoundarySummary
@@ -41,7 +42,7 @@ def test_straight_road_valid_and_low_residual():
     _line(img, lambda y: CAL.vpx + 1.5 * (y - CAL.y_h))
     s = detect_boundary(img, CAL)
     assert isinstance(s, BoundarySummary)
-    assert s.schema_version == 1
+    assert s.schema_version == 2
     assert s.validity is True
     assert s.left_x < s.right_x
     assert s.road_width > 100
@@ -49,6 +50,27 @@ def test_straight_road_valid_and_low_residual():
     assert s.uncertainty == s.uncertainty and s.uncertainty < 3.0      # NaN-safe 且稳
     if s.vp_row is not None:
         assert abs(s.vp_row) < 15          # 交点就在地平线附近，漂移≈0
+    assert s.vp_x is not None              # sides==2 给航向观测量
+    assert abs(s.vp_x - CAL.vpx) < 15      # 直道交点列≈校准 vpx
+
+
+def test_vp_x_is_heading_observable():
+    """航向观测锁：整条路绕 VP 横移（模拟车头偏转→画面旋转）时，vp_x 随之偏移、
+    且左右缘同向等量平移——这是"打舵是旋转不是平移"的机检证据，也是双积分
+    定档（a_lat_gain/tau_align）的数据前提。弯道帧仍 validity=True（边检得到）。"""
+    dx = 40.0                              # 路缘整体右移 40px ≈ 车头左转的横偏
+    img = _frame()
+    _line(img, lambda y: CAL.vpx + dx - 1.5 * (y - CAL.y_h))
+    _line(img, lambda y: CAL.vpx + dx + 1.5 * (y - CAL.y_h))
+    s = detect_boundary(img, CAL)
+    assert s.validity is True and s.sides == 2
+    assert s.vp_x is not None and s.vp_x == pytest.approx(CAL.vpx + dx, abs=6)
+    assert s.left_x == pytest.approx(_first_left_baseline() + dx, abs=6)
+
+
+def _first_left_baseline() -> float:
+    s = detect_boundary(_straight_frame(), CAL)
+    return s.left_x
 
 
 def test_curve_raises_residual():
@@ -88,6 +110,7 @@ def test_single_side_degraded_valid():
     assert s.validity is True
     assert s.sides == 1
     assert np.isnan(s.road_width)                  # 单侧 → 路宽不可用
+    assert s.vp_x is None                          # 单侧 → 交点不可解（航向观测量缺）
     assert not np.isnan(s.left_x)                  # 检到的那条边仍给
     assert s.straight_residual < 0.2               # 单侧 x_lane 恒定 → 残差仍可用（C1/直道判据）
 

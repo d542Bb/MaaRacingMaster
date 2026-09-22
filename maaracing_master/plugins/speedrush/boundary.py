@@ -17,8 +17,11 @@ A1 尺子（world_model.x_lane_of），于是拿到一条**免费的强判据**�
 **口径边界（如实声明）**：隧道/夜间/雨天黄线褪色属未验证域——validity 只报
 "检没检到、几不一致"，不报"检到的可信度"；阈值全部起值，定档走到场轮回放。
 **单侧容忍**：真机常只单侧黄线可见，validity 采"任一侧稳定即降级可用"，
-`sides`（0/1/2）显式记录稳定侧数——sides==1 时 road_width/vp_row 不可用（需双侧），
-居中/路宽类消费方须先看 sides==2（planner C1 只吃单侧路缘平移，单侧即可）。
+`sides`（0/1/2）显式记录稳定侧数——sides==1 时 road_width/vp_row/vp_x 不可用（需双侧），
+居中/路宽类消费方须先看 sides==2。**vp_x（schema 2）**：两边线交点列，与校准 vpx
+的横偏 ∝ 车头航向角——真机证据链（2026-09-22）证明打舵画面是旋转不是平移，
+平移假设的归一尺子在打舵帧系统性失真（"观察者失明"），vp_x 是航向的免费观测量，
+trace 落列供双积分运动学参数（a_lat_gain/tau_align）回放定档。
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ MIN_RUN_PX = 6         # 单侧黄色连续段最小宽度（更窄当噪点）
 MIN_COVERAGE = 0.5     # 单侧稳定跟踪行占比阈值：任一侧 ≥ 此 → validity（sides 记侧数）
 KERNEL = np.ones((3, 3), np.uint8)
 
-_SCHEMA = 1
+_SCHEMA = 2  # v2：vp_x（航向观测量，2026-09-22 双积分证据链）
 
 
 def _edge_runs(mask_row: np.ndarray) -> tuple[int | None, int | None]:
@@ -158,8 +161,10 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
 
     residual = max(_disp(xl), _disp(xr))
 
-    # vp_row：左右缘各自线性拟合 x(y)，交点行对 y_h 的漂移；需双侧稳定（sides==2）
+    # vp_row / vp_x：左右缘各自线性拟合 x(y)，交点行对 y_h 的漂移 + 交点列。
+    # vp_x 与校准 vpx 之差 ∝ 车头航向角（旋转观测量，设计稿 §十 v2）；需双侧稳定。
     vp_row = None
+    vp_x = None
     li = np.flatnonzero(~np.isnan(la))
     ri = np.flatnonzero(~np.isnan(ra))
     if sides == 2 and li.size >= 4 and ri.size >= 4:
@@ -172,6 +177,7 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
             # 交点明显出带（曲率主导的假交点）不给 vp 数，宁缺毋滥
             if 0.0 <= yv <= y1:
                 vp_row = float(drift)
+                vp_x = float(np.polyval(pl, yv))
 
     # uncertainty：稳定侧对其线性拟合的残差 RMS（px），供校验层判"检到的线稳不稳"；
     # 单侧帧用那一条稳定边算（左优先，缺则右）。
@@ -185,4 +191,5 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
     return BoundarySummary(
         schema_version=_SCHEMA, left_x=left_x, right_x=right_x,
         road_width=float(road_width), straight_residual=residual,
-        vp_row=vp_row, validity=bool(valid), uncertainty=unc, sides=sides)
+        vp_row=vp_row, validity=bool(valid), uncertainty=unc, sides=sides,
+        vp_x=vp_x)
