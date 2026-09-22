@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""边界感知层 v1（古典 CV，沿用旧栈黄线口径）：驾驶帧 → BoundarySummary 摘要。
+"""边界感知层 v1（古典 CV，黄线 HSV 口已按本作真帧重定档，见 _HSV_LOW 注）：驾驶帧 → BoundarySummary 摘要。
 
 **分层归属**（control-route §一「边界感知」行；契约消费方是校验层与横向位移代价，
 **路缘不进目标候选集、不参与评分**——设计稿 v2 §三对审查 §一.2 的裁定）。
 
-**与旧栈的差异是升级不是重写**（archive/racing/loop.py::_detect_lane 的 HSV 黄色范围
-[20,80,80]–[30,255,255]、形态学去噪、左右分类三件沿用）：旧栈没有标定，只能靠
+**与旧栈的差异是升级不是重写**（形态学去噪、左右分类两件沿用；HSV 黄范围旧口
+[20,80,80]–[30,255,255] 已于 2026-09-22 按本作坏帧真帧验尸重定为 [8,45,80]–[32,255,255]，
+依据见常量注）：旧栈没有标定，只能靠
 Hough 直线 + 角度分类在像素空间里凑；本层有 Gate-0 常数（vpx/y_h，38 场收杆）与
 A1 尺子（world_model.x_lane_of），于是拿到一条**免费的强判据**——
 透视正确时，直道的路缘经归一后 `x_lane` 沿行恒定（路缘是过消失点的直线）。
@@ -32,9 +33,13 @@ import numpy as np
 from maaracing_master.plugins.speedrush.tracking import BoundarySummary
 from maaracing_master.plugins.speedrush.world_model import Calib, load_calib, x_lane_of
 
-# 旧栈验证过的黄色范围（含阴影暗黄；S/V 下限沿用）
-_HSV_LOW = np.array([20, 80, 80], dtype=np.uint8)
-_HSV_HIGH = np.array([30, 255, 255], dtype=np.uint8)
+# 黄色范围：旧栈 [20,80,80]-[30,255,255] 系旧游戏口径，**本作实测不适配**——
+# 2026-09-22 坏帧验尸（control_traces/badframes_*，29 张真帧）：肉眼清晰的橙黄路缘
+# 实测 H=9~17 / S=47~74，旧口整段漏检（坏帧双侧率 0%）。新口按实测下限留小边距：
+# H≥8（避开尾灯红带 0~5）、S≥45；好场景帧回放双侧率 100% 无退化、坏帧至少一侧 10%→79%。
+# 夜/雨/隧道仍未验证域（docstring 口径不变）；再定档需新坏帧。
+_HSV_LOW = np.array([8, 45, 80], dtype=np.uint8)
+_HSV_HIGH = np.array([32, 255, 255], dtype=np.uint8)
 
 BAND_TOP_OFF = 30      # 扫描带上沿相对地平线（px）
 BAND_BOT_OFF = 230     # 扫描带下沿相对地平线（px）
