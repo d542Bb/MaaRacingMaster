@@ -18,6 +18,26 @@
   let open = false, active = -1;
 
   function opts() { return Array.from(native.options); }
+
+  // 到期倒计时徽章：每次下拉展开重建列表（renderList），剩余时间随之刷新。
+  // valid_until 为 ISO 8601 含时区（manifest 声明），Date.parse 直接可比本地 now。
+  // 空选项与已过期项（已有「已过期」后缀）不显示；无声明 = 永久；
+  // 剩余不足 1 天显示「x小时x分」，否则「x天x小时」；3 天内底色转淡黄。
+  const SOON_MS = 3 * 24 * 60 * 60 * 1000;
+  function badgeText(o) {
+    if (!o.value || o.dataset.expired) return null;
+    const iso = o.dataset.validUntil;
+    if (!iso) return '永久';
+    const until = Date.parse(iso);
+    if (!Number.isFinite(until)) return null;
+    const ms = until - Date.now();
+    if (ms <= 0) return null; // 过期标记尚未轮询刷新的间隙，不显示倒计时
+    const totalMin = Math.floor(ms / 60000);
+    const d = Math.floor(totalMin / 1440);
+    const h = Math.floor((totalMin % 1440) / 60);
+    const m = totalMin % 60;
+    return d > 0 ? `${d}天${h}小时` : (h > 0 ? `${h}小时${m}分` : `${m}分`);
+  }
   function renderList() {
     list.innerHTML = '';
     opts().forEach((o, i) => {
@@ -32,6 +52,15 @@
       const txt = document.createElement('span');
       txt.textContent = o.textContent.replace(/（已过期）$/, '');
       row.appendChild(txt);
+      const badge = badgeText(o);
+      if (badge) {
+        const el = document.createElement('span');
+        el.className = 'msel-badge'
+          + (o.dataset.validUntil && Date.parse(o.dataset.validUntil) - Date.now() < SOON_MS
+            ? ' msel-badge--soon' : '');
+        el.textContent = badge;
+        row.appendChild(el);
+      }
       if (o.dataset.expired) {
         const sfx = document.createElement('span');
         sfx.className = 'msel-suffix';

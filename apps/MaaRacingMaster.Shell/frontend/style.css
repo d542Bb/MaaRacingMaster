@@ -316,6 +316,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .msel-opt--expired { color: var(--mra-foreground-secondary); }
 .msel-suffix { margin-left: auto; font-size: 11px; color: var(--mra-foreground-muted); padding-left: 8px; }
+.msel-badge {
+  margin-left: auto; flex: none; font-size: 10px; font-weight: 500;
+  color: var(--mra-foreground-muted); padding: 2px 6px;
+  border-radius: 4px; background: var(--mra-surface-active); white-space: nowrap;
+}
+.msel-badge--soon { color: var(--mra-warning-strong); background: #fef3c7; }
 .module-desc { font-size: 12px; color: var(--mra-foreground-secondary); margin-top: 8px; line-height: 1.6; }
 
 /* 模块选项（2 列平行：循环次数 / 出价策略） */

@@ -636,6 +636,8 @@
       const opt = document.createElement('option');
       opt.value = m.id;
       opt.textContent = m.expired ? `${m.id} — ${m.name}（已过期）` : `${m.id} — ${m.name}`;
+      // 到期时间给自绘下拉投影层算倒计时徽章（js/select.js）；缺省 = 永久
+      if (m.valid_until) opt.dataset.validUntil = m.valid_until;
       if (m.expired) {
         // 置灰只是视觉提示：仍然可选中，选中时由 onModuleChange 弹窗确认
         opt.dataset.expired = '1';
