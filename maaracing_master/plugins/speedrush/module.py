@@ -25,7 +25,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
@@ -34,9 +36,15 @@ from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.paths import data_dir
 from maaracing_master.plugins.speedrush import (
     IMAGE_DIR, PERCEPTION_MODEL_FILE, PERCEPTION_MODEL_REL, PIPELINE_DIR)
+from maaracing_master.plugins.speedrush.boundary import detect_boundary
+from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
+from maaracing_master.plugins.speedrush.config import load_decision
+from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
+from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
+from maaracing_master.plugins.speedrush.tracking import Tracker
 
 # 一轮完整流程。首三段（进入活动）只在首轮需要——每轮循环结束时会回到活动页，
 # 故其后每轮从「开始挑战」起。
@@ -172,10 +180,15 @@ class SpeedRushModule(ActivityModule):
     # 感知开关的初值（True = 驾驶阶段逐帧跑 YOLO 检测并记账；不操纵车辆，
     # 与录制可并存。控制环未接线前，它是"感知在场"的验证形态）
     DEFAULT_PERCEPTION_MODE = False
+    # 控制开关的初值（True = 驾驶阶段跑全链并接管手柄）。V0/V1 两级不在此开关——
+    # 由 decision.json 的 mode.allow_all_moves 决定（false=V0 只发油门走直线，
+    # true=V1 开横向）。默认 False：接线首启不接管车辆，显式开才动（实机安全边界）。
+    DEFAULT_CONTROL_MODE = False
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     DEFAULT_MODULE_CONFIG: dict = {
         "record_mode": DEFAULT_RECORD_MODE,
         "perception_mode": DEFAULT_PERCEPTION_MODE,
+        "control_mode": DEFAULT_CONTROL_MODE,
     }
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
@@ -221,9 +234,14 @@ class SpeedRushModule(ActivityModule):
         self._perception_mode = self.DEFAULT_PERCEPTION_MODE
         self._perception: StreetPerception | None = None
         self._perception_failed = False
+        # 控制模式：驾驶阶段跑全链并接管手柄（V0/V1 由 decision.json 决定，见类常量）
+        self._control_mode = self.DEFAULT_CONTROL_MODE
         # 控制回路耗时记账（验收判据 §二.3 的 P50/P95 数据源），按阶段清零
         self._infer_times: list[float] = []
+        self._control_times: list[float] = []
         self._last_perception: PerceptionResult | None = None
+        # 控制实况（GUI 展示：最近一拍的决策状态与下发杆值；控制关闭时为 None）
+        self._control_last: dict | None = None
 
     @property
     def current_stage(self) -> str | None:
@@ -241,6 +259,7 @@ class SpeedRushModule(ActivityModule):
         return {
             "record_mode": bool(self._record_mode),
             "perception_mode": bool(self._perception_mode),
+            "control_mode": bool(self._control_mode),
             "_state": {
                 "recording": bool(rec is not None and rec.running),
                 "frames": int(stats["frames_written"]) if stats else 0,
@@ -257,6 +276,8 @@ class SpeedRushModule(ActivityModule):
                     "cars": len(lp.cars), "coins": len(lp.coins), "bonuses": len(lp.bonuses),
                     "infer_ms": round(lp.infer_ms, 1),
                 },
+                # 控制实况：最近一拍决策状态/下发杆值/自车横向估计（控制关则 None）
+                "control_last": self._control_last,
             },
         }
 
@@ -269,6 +290,8 @@ class SpeedRushModule(ActivityModule):
             self._record_mode = bool(config["record_mode"])
         if isinstance(config, dict) and "perception_mode" in config:
             self._perception_mode = bool(config["perception_mode"])
+        if isinstance(config, dict) and "control_mode" in config:
+            self._control_mode = bool(config["control_mode"])
         return self.get_module_config()
 
     # ---------- 生命周期 ----------
@@ -473,13 +496,24 @@ class SpeedRushModule(ActivityModule):
         """
         assert self.ctx is not None
         assert self._graph is not None
+        # 控制接管的前提：非录制模式（录制期人驾，程序不碰车）+ control_mode 开关。
+        # 控制依赖感知产出观测，故控制开启隐含逐帧检测（不必另开 perception_mode）。
+        control = self._control_mode and recorder is None
         if recorder is not None:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶（正在录制演示数据）", "INFO")
+        elif control:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：控制环接管"
+                  f"（V0/V1 由 decision.json 的 allow_all_moves 决定）", "INFO")
         else:
-            _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（驾驶控制尚未实现）", "INFO")
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（未接管车辆）", "INFO")
         # 感知耗时记账按阶段清零（P50/P95 在循环出口随实际节拍一起报，见 _log_loop_pace）
         self._infer_times = []
+        self._control_times = []
+        self._control_last = None
+        chain = self._build_control_chain() if control else None
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
@@ -487,43 +521,50 @@ class SpeedRushModule(ActivityModule):
         miss = 0
         frames = 0
         fid, ts_ns, age_ms = 0, 0, 0.0
-        while self._running and time.monotonic() < deadline:
-            t0 = time.monotonic()
-            # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
-            # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
-            frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
-            if recorder is not None and frame is not None:
-                recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
-            if self._perception_mode and frame is not None:
-                perc = self._ensure_perception()
-                if perc is not None:
-                    result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
-                    self._last_perception = result
-                    self._infer_times.append(result.infer_ms)
-            frames += 1
+        # 手柄租约覆盖整个控制阶段：进入取设备、退出归零归还（摇杆归中+松扳机）。
+        # 循环内多处 return/raise 都经 with 收口，不留"退出后车还踩着油门"的尾巴。
+        with contextlib.ExitStack() as stack:
+            gpad = stack.enter_context(self.ctx.gamepad.acquire()) if control else None
+            while self._running and time.monotonic() < deadline:
+                t0 = time.monotonic()
+                # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
+                # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
+                frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
+                if recorder is not None and frame is not None:
+                    recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
+                result: PerceptionResult | None = None
+                if (self._perception_mode or control) and frame is not None:
+                    perc = self._ensure_perception()
+                    if perc is not None:
+                        result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
+                        self._last_perception = result
+                        self._infer_times.append(result.infer_ms)
+                if gpad is not None and result is not None:
+                    self._control_tick(chain, gpad, frame, result, fid, ts_ns, age_ms, phase)
+                frames += 1
 
-            now = time.monotonic()
-            if now >= next_anchor:
-                next_anchor = now + DRIVE_ANCHOR_CHECK_S
-                if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
-                    miss = 0
-                else:
-                    miss += 1
-                    # 每次失配都记（DEBUG）：连续的失配序列正是"过场动画被误判为结束"
-                    # 与"真的离开了对局"的区别所在，只记最后一条就看不出这个区别。
-                    logger.log(
-                        f"[极速狂飙] 驾驶阶段 {phase}：锚点失配第 {miss} 次"
-                        f"（{_frame_note(fid, age_ms)}）", "DEBUG")
-                    if miss >= DRIVE_MISS_TOLERANCE:
-                        _tlog(self,
-                              f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
-                              f"（{_frame_note(fid, age_ms)}）", "INFO")
-                        self._log_loop_pace(phase, frames, loop_start)
-                        return True
+                now = time.monotonic()
+                if now >= next_anchor:
+                    next_anchor = now + DRIVE_ANCHOR_CHECK_S
+                    if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+                        miss = 0
+                    else:
+                        miss += 1
+                        # 每次失配都记（DEBUG）：连续的失配序列正是"过场动画被误判为结束"
+                        # 与"真的离开了对局"的区别所在，只记最后一条就看不出这个区别。
+                        logger.log(
+                            f"[极速狂飙] 驾驶阶段 {phase}：锚点失配第 {miss} 次"
+                            f"（{_frame_note(fid, age_ms)}）", "DEBUG")
+                        if miss >= DRIVE_MISS_TOLERANCE:
+                            _tlog(self,
+                                  f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
+                                  f"（{_frame_note(fid, age_ms)}）", "INFO")
+                            self._log_loop_pace(phase, frames, loop_start)
+                            return True
 
-            rest = DRIVE_TICK_S - (time.monotonic() - t0)
-            if rest > 0 and not self.ctx.lifecycle.sleep(rest):
-                break
+                rest = DRIVE_TICK_S - (time.monotonic() - t0)
+                if rest > 0 and not self.ctx.lifecycle.sleep(rest):
+                    break
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
@@ -531,6 +572,55 @@ class SpeedRushModule(ActivityModule):
               f"[极速狂飙] 驾驶阶段 {phase} 未在 {DRIVE_TIMEOUT_S:.0f}s 内结束"
               f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
+
+    # ---------- 控制链（实机闭环，planner 设计稿 §九 step 3）----------
+
+    def _build_control_chain(self) -> dict:
+        """按阶段新建一份干净世界：跟踪/聚合/决策/规划各一，配置开局读一次。
+
+        阶段间不共享状态（行为稿 §九：阶段信息只进过渡窗判据，两阶段同一决策器），
+        新建即天然清空——与 DecisionEngine.reset 的"冷启动"语义一致。
+        """
+        cfg = load_decision()
+        return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
+                "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
+                "prev_ts": None, "disabled": False}
+
+    def _control_tick(self, chain: dict, gpad, frame, result: PerceptionResult,
+                      fid: int, ts_ns: int, age_ms: float, phase: int) -> None:
+        """一拍全链：感知→跟踪→聚合→边界→决策→规划→下发。
+
+        链上任一异常（如 frame_id 真乱序 fail-loud）按"停控保平安"处理：记一次
+        WARNING、本阶段退出控制（转观测态），主循环继续跑阶段结束判定——绝不因
+        控制故障把车 strand 在油门上，也绝不静默吞掉 fail-loud（日志留证）。
+        """
+        if chain["disabled"]:
+            return
+        t_c = time.perf_counter()
+        try:
+            prev = chain["prev_ts"]
+            dt = DRIVE_TICK_S if prev is None or ts_ns <= prev else (ts_ns - prev) / 1e9
+            chain["prev_ts"] = ts_ns
+            obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase)
+            obs = chain["agg"].update(obs)
+            obs = replace(obs, boundary=detect_boundary(frame))
+            planner: LateralPlanner = chain["planner"]
+            out = chain["engine"].update(
+                obs, dt, executed_lane=planner.state.executed_lane)
+            cmd = planner.update(out, dt, current_fid=fid)
+        except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
+            chain["disabled"] = True
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：控制链异常，本阶段停控转观测"
+                  f"（{exc!r}，{_frame_note(fid, age_ms)}）", "WARNING")
+            return
+        gpad.left_joystick(x_value=cmd.steer_x, y_value=0)
+        gpad.right_trigger(value=cmd.throttle)
+        gpad.update()
+        self._control_times.append((time.perf_counter() - t_c) * 1000.0)
+        self._control_last = {
+            "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
+            "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3)}
 
     def _ensure_perception(self) -> StreetPerception | None:
         """懒加载感知模型（实例跨阶段复用，一局只付一次模型加载）；失败则本轮禁用。
@@ -567,6 +657,15 @@ class SpeedRushModule(ActivityModule):
             _tlog(self,
                 f"[极速狂飙] 驾驶阶段 {phase}：感知 n={n} "
                 f"P50={p50:.1f}ms P95={p95:.1f}ms（帧预算 {DRIVE_TICK_S * 1000:.0f}ms）",
+                "INFO")
+        if self._control_times:
+            srt = sorted(self._control_times)
+            n = len(srt)
+            p50 = srt[n // 2]
+            p95 = srt[min(n - 1, int(round(0.95 * (n - 1))))]
+            _tlog(self,
+                f"[极速狂飙] 驾驶阶段 {phase}：控制链（跟踪+聚合+边界+决策+规划，不含感知） "
+                f"n={n} P50={p50:.1f}ms P95={p95:.1f}ms（验收判据 ≤2ms/tick）",
                 "INFO")
         elapsed = time.monotonic() - loop_start
         rate = frames / elapsed if elapsed > 0 else 0.0
