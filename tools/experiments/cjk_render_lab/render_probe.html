@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>中文渲染探针 · cjk_render_lab</title>
+<style>
+  :root {
+    --fg: #1F2328; --fg2: #4A5160; --fg3: #8B93A7;
+    --bg: #F5F6FA; --card: #FFFFFF; --border: #E5E7EB; --border-l: #EEF0F4;
+    --sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    --mono: Consolas, "JetBrains Mono", "Cascadia Code", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px 24px 48px; background: var(--bg); color: var(--fg);
+         font-family: var(--sans); font-size: 13px; line-height: 1.6; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+  .sub { color: var(--fg3); font-size: 12px; margin: 0 0 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          padding: 14px 16px; margin-bottom: 14px; }
+  .note { color: var(--fg3); font-size: 12px; margin: 10px 0 0; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 7px 10px; border-top: 1px solid var(--border-l); text-align: left; vertical-align: baseline; }
+  tr:first-child td, tr:first-child th { border-top: none; }
+  th { color: var(--fg3); font-weight: 400; font-size: 11px; }
+  .lab { color: var(--fg3); font-size: 11px; white-space: nowrap; width: 190px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; line-height: 16px; padding: 0 6px;
+           border-radius: 8px; background: rgba(16,185,129,.1); color: #10B981; }
+  .chip { display: inline-block; font-size: 10px; font-weight: 500; padding: 2px 6px; border-radius: 5px;
+          background: rgba(229,72,77,.1); color: #E5484D; }
+  .warn { color: #b45309; }
+  .mono { font-family: var(--mono); }
+  .hair { height: 1px; background: #000; margin: 8px 0; }
+  .hair05 { height: 0.5px; background: #000; margin: 8px 0; }
+  .env b { font-family: var(--mono); font-weight: 400; color: var(--fg); }
+  .env span { margin-right: 20px; white-space: nowrap; }
+  .missing { color: var(--fg3); font-style: italic; }
+  .pgh { max-width: 560px; }
+</style>
+</head>
+<body>
+<h1>中文渲染探针</h1>
+<p class="sub">目标：把「GUI 文字差点意思」拆成可判定的三类差异——字体族 / 排版参数 / 渲染锐度。本页自包含，无外部依赖。</p>
+
+<div class="card env" id="env">环境读数…</div>
+
+<div class="card">
+  <h2>① 现状基线（逐条复刻 GUI 当前 token：雅黑 UI + 实际字号/字重/配色）</h2>
+  <table>
+    <tr><th>GUI 角色</th><th>样张</th></tr>
+    <tr><td class="lab">卡片标题 13px / 600</td><td style="font-weight: 600">运行日志</td></tr>
+    <tr><td class="lab">正文 13px / 400</td><td>已连接窗口，断点模式：从阶段 3 继续</td></tr>
+    <tr><td class="lab">描述 12px / 次级色</td><td style="color: var(--fg2)">进入阶段：雨夜冲刺 · 检测置信度 0.91</td></tr>
+    <tr><td class="lab">日志正文 12px / 行高 1.7</td>
+        <td style="line-height: 1.7">[鉴宝循环] 第 12 场开始，当前策略：稳健收租（余蛋 4）<br>【出价】792 麦穗币 → 拍中，收入 1,284（“锐利边缘”参数校验通过）</td></tr>
+    <tr><td class="lab">元信息 11px / 弱色</td><td style="color: var(--fg3)">第 12 场 · 收入 1,284 · 我方利润 +326 · 用时 2′41″</td></tr>
+    <tr><td class="lab">徽章 / 小字 10–11px</td>
+        <td><span class="badge">运行中</span>&nbsp; <span class="chip">已过期</span>&nbsp;
+            <span class="warn" style="font-size: 11px">⚠ 虚拟手柄重建失败（下帧重试）</span></td></tr>
+  </table>
+  <p class="note">这张表就是「现在的 GUI」。先记住哪几行让你觉得差点意思，再到下面找替身。</p>
+</div>
+
+<div class="card">
+  <h2>② 字体族对比（自动探测本机已装字体；未安装则标灰跳过）</h2>
+  <table id="fontMatrix">
+    <tr><th>字体</th><th>13px 正文 · 12px 描述 · 11px 元信息 · 600 标题</th></tr>
+  </table>
+  <p class="note">探测原理：候选字体不存在时文本回落到等宽字体，两组测宽一致即判「未安装」。维护者本机预查已知装有：雅黑 UI、Noto Sans SC（全字重）、等线。</p>
+</div>
+
+<div class="card">
+  <h2>③ 排版参数（固定雅黑 UI，只动参数）</h2>
+  <table>
+    <tr><th>参数</th><th>12px 样张</th></tr>
+    <tr><td class="lab">letter-spacing: 0（现状）</td>
+        <td>进入阶段：雨夜冲刺，检测置信度 0.91，连击 ×12</td></tr>
+    <tr><td class="lab">letter-spacing: .015em</td>
+        <td style="letter-spacing: .015em">进入阶段：雨夜冲刺，检测置信度 0.91，连击 ×12</td></tr>
+    <tr><td class="lab">letter-spacing: .03em</td>
+        <td style="letter-spacing: .03em">进入阶段：雨夜冲刺，检测置信度 0.91，连击 ×12</td></tr>
+    <tr><td class="lab">行高 1.5</td>
+        <td class="pgh" style="line-height: 1.5">收尾阶段：恢复音量、释放手柄、停止捕获。若启用了自动关机，将在本轮结算后 60 秒关闭模拟器。所有阶段记录已写入今日看板。</td></tr>
+    <tr><td class="lab">行高 1.7（日志现状）</td>
+        <td class="pgh" style="line-height: 1.7">收尾阶段：恢复音量、释放手柄、停止捕获。若启用了自动关机，将在本轮结算后 60 秒关闭模拟器。所有阶段记录已写入今日看板。</td></tr>
+    <tr><td class="lab">数字混排 · sans（现状）</td>
+        <td>第 12 场 · 收入 1,284 · +326 · 0.91 · ×12</td></tr>
+    <tr><td class="lab">数字混排 · mono</td>
+        <td><span class="mono">第 12 场 · 收入 1,284 · +326 · 0.91 · ×12</span></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>④ 锐度参照（判别是不是渲染层的问题）</h2>
+  <p>下面两条横线：正常应各为一条清晰的实线。若整体发糊或深浅异常 → 缩放/渲染层问题（对照上方 devicePixelRatio 是否非整数）。</p>
+  <div class="hair"></div>
+  <div class="hair05"></div>
+  <p style="margin-top: 10px">10px 与 11px 小字：<span style="font-size: 10px">十像素小字 ABC 123</span>&nbsp;&nbsp;<span style="font-size: 11px">十一像素小字 ABC 123</span></p>
+  <p class="note">宿主 app.manifest 已声明 PerMonitorV2；若宿主内本页 DPR 为正常值（1.0 / 1.25 / 1.5）且线条是实的，宿主嫌疑基本排除。</p>
+</div>
+
+<div class="card">
+  <h2>判读指南</h2>
+  <p>② 换字体明显更顺眼 → 结论「字体族」：先改 <b>--mra-font-sans</b> 真机验证；正式分发需打包字体文件（本机装了 ≠ 玩家装了；Noto/思源为 SIL OFL 许可可再分发，属第三方资产，落地前确认）。</p>
+  <p>③ 某参数明显改善 → 结论「排版参数」：改 token，改动小、零依赖。</p>
+  <p>④ 整体发虚 → 结论「宿主渲染」：换字体救不了，查 DPR / 缩放链路。</p>
+  <p>对照原生 Win32/Qt 软件（ClearType 子像素）总觉得不够「锐」→ 引擎级灰度抗锯齿差异，CSS 无法等价，只能靠字重/字号缓解——这是边界，不是没调好。</p>
+  <p class="note">在 Shell 宿主内看：F12 → Console → 把 location.href 指向本页在本机仓库中的 file:// 绝对路径，读数即真机宿主值。在浏览器里看请先 Ctrl+0 归零缩放。</p>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  // ---------- 环境读数 ----------
+  var env = document.getElementById('env');
+  while (env.firstChild) env.removeChild(env.firstChild);
+  function addSpan(label, value) {
+    var s = document.createElement('span');
+    s.appendChild(document.createTextNode(label + ' '));
+    var b = document.createElement('b');
+    b.textContent = value;
+    s.appendChild(b);
+    env.appendChild(s);
+  }
+  addSpan('devicePixelRatio =', String(window.devicePixelRatio));
+  addSpan('屏幕 =', screen.width + '×' + screen.height + '（CSS 像素）');
+  addSpan('引擎 =', (navigator.userAgent.match(/Chrome\/[\d.]+/) || ['未知'])[0]);
+  var tip = document.createElement('div');
+  tip.className = 'note';
+  tip.textContent = '浏览器缩放会改变 DPR：判读前先按 Ctrl+0 归零。';
+  env.appendChild(tip);
+
+  // ---------- 字体探测（文本测宽法） ----------
+  var PROBE_STR = '暮光赛车机械飞驰Il1O0@mW夏至';
+  function measure(familyCss) {
+    var el = document.createElement('span');
+    el.style.cssText = 'position:absolute;left:-9999px;top:-9999px;white-space:nowrap;visibility:hidden;font-size:64px;font-family:' + familyCss + ';';
+    el.textContent = PROBE_STR;
+    document.body.appendChild(el);
+    var w = el.getBoundingClientRect().width;
+    el.parentNode.removeChild(el);
+    return w;
+  }
+  function available(family) {
+    // 两个必然缺失的字体名都应回落到同一个等宽字体：宽度不等说明探测环境异常
+    var b1 = measure('"__mra_missing_a__", monospace');
+    var b2 = measure('"__mra_missing_b__", monospace');
+    if (b1 !== b2) return null;
+    return measure('"' + family + '", monospace') !== b1;
+  }
+  var CANDS = [
+    { css: 'Microsoft YaHei UI', label: 'Microsoft YaHei UI', tag: '现状字体' },
+    { css: 'Microsoft YaHei', label: 'Microsoft YaHei', tag: '' },
+    { css: 'Noto Sans SC', label: 'Noto Sans SC（思源黑体）', tag: '全字重已装' },
+    { css: 'DengXian', label: '等线 DengXian', tag: 'Office 附带' },
+    { css: 'Segoe UI', label: 'Segoe UI（拉丁对照）', tag: '不含中文，看回落' }
+  ];
+  function sampleBlock(fontFamily) {
+    var wrap = document.createElement('div');
+    function line(size, color, weight, text) {
+      var s = document.createElement('span');
+      s.style.cssText = 'font-family:' + fontFamily + ';font-size:' + size + 'px;' +
+        (color ? 'color:' + color + ';' : '') + (weight ? 'font-weight:' + weight + ';' : '');
+      s.textContent = text;
+      wrap.appendChild(s);
+      wrap.appendChild(document.createElement('br'));
+    }
+    line(13, '', 0, '已连接窗口，断点模式：从阶段 3 继续');
+    line(12, 'var(--fg2)', 0, '进入阶段：雨夜冲刺 · 检测置信度 0.91');
+    line(11, 'var(--fg3)', 0, '第 12 场 · 收入 1,284 · 我方利润 +326');
+    line(13, '', 600, '运行日志（600 标题）');
+    if (fontFamily.indexOf('Noto') !== -1) line(13, '', 500, '运行日志（500 中字重，Noto 有真字重）');
+    return wrap;
+  }
+  function buildMatrix() {
+    var table = document.getElementById('fontMatrix');
+    CANDS.forEach(function (c) {
+      var tr = document.createElement('tr');
+      var tdLab = document.createElement('td');
+      tdLab.className = 'lab';
+      tdLab.textContent = c.label + (c.tag ? '（' + c.tag + '）' : '');
+      var tdSmp = document.createElement('td');
+      var av = available(c.css);
+      if (av === null) {
+        tdSmp.className = 'missing';
+        tdSmp.textContent = '探测环境异常，跳过';
+      } else if (av) {
+        tdSmp.appendChild(sampleBlock(c.css));
+      } else {
+        tdSmp.className = 'missing';
+        tdSmp.textContent = '本机未安装，跳过';
+      }
+      tr.appendChild(tdLab);
+      tr.appendChild(tdSmp);
+      table.appendChild(tr);
+    });
+  }
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(buildMatrix);
+  else buildMatrix();
+})();
+</script>
+</body>
+</html>
