@@ -81,8 +81,8 @@ def test_v0_straight_line(monkeypatch):
 # ---------- V1：横向通道在位（自车偏置 → 反向收力回中）----------
 
 def test_v1_lateral_channel_live(monkeypatch):
-    v1 = load_decision()
-    assert v1.mode.allow_all_moves is True
+    # 显式 V1（横向开），不依赖 decision.json 的当前部署态
+    v1 = replace(load_decision(), mode=replace(load_decision().mode, allow_all_moves=True))
     monkeypatch.setattr(smod, "load_decision", lambda: v1)
     m = _module()
     chain = m._build_control_chain()

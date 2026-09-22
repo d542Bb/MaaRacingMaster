@@ -206,7 +206,11 @@ def test_score_rejects_receding_target():
 
 def _eng(**over):
     import dataclasses
-    cfg = CFG
+    # allow_all_moves 是**部署开关**（V0 直行 / V1 横向），不是测试夹具：
+    # 矩阵测试需要能进 CHANGE，故基座强制 V1，与 decision.json 的当前态解耦；
+    # no_moves 显式转 V0（§〇 验收 V0 那条锁的就是它）。
+    cfg = dataclasses.replace(CFG, mode=dataclasses.replace(
+        CFG.mode, allow_all_moves=True))
     if over.get("no_moves"):
         cfg = dataclasses.replace(cfg, mode=dataclasses.replace(
             cfg.mode, allow_all_moves=False))

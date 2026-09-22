@@ -17,20 +17,20 @@
     "planner.rate_limit_raw|stick_deadzone_raw": "旧赛车栈已验证值（control-route §三移植清单）"
   },
   "mode": {
-    "allow_all_moves": true,
+    "allow_all_moves": false,
     "allow_car_graze": false,
     "_note": "v1 = coin-only 保守基线（allow_car_graze 必为 false，复议条件见设计稿 §三）；allow_all_moves=false 为 V0 直行基线开关"
   },
   "control": {
     "frame_rate_hz": 20.0,
-    "target_grace_s": 0.40,
-    "group_grace_s": 0.40,
+    "target_grace_s": 0.4,
+    "group_grace_s": 0.4,
     "t_change_max_s": 2.0
   },
   "timing": {
-    "tau_resp_s": 0.130,
-    "lane_change_base_s": 0.30,
-    "lane_change_k_s_per_lane": 0.40,
+    "tau_resp_s": 0.13,
+    "lane_change_base_s": 0.3,
+    "lane_change_k_s_per_lane": 0.4,
     "margin_s": 0.15
   },
   "scoring": {
@@ -59,7 +59,7 @@
     "lookahead_tau_s": 0.25,
     "k_p": 1.2,
     "k_d": 0.2,
-    "tau_steer_s": 0.10,
+    "tau_steer_s": 0.1,
     "rate_limit_raw": 22000.0,
     "stick_deadzone_raw": 256.0,
     "throttle_raw": 255,
