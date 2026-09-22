@@ -845,6 +845,25 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font-size: 13px; line-height: 1.7; color: var(--mra-foreground);
 }
 .mra-modal-rule-num { flex-shrink: 0; color: var(--mra-primary); }
+/* 员工守则效果：逐条渐现（延迟由内联 animation-delay 控制）+ meta/末条变体 + 标题呼吸 */
+.mra-modal-rule { opacity: 0; transform: translateY(5px); animation: mra-rule-in 0.5s ease forwards; }
+@keyframes mra-rule-in { to { opacity: 1; transform: none; } }
+.mra-modal-rule--meta { color: var(--mra-foreground-muted); font-style: italic; }
+.mra-modal-rule--meta .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+.mra-modal-rule--last { color: var(--mra-foreground); }
+.mra-modal-rule--last .mra-modal-rule-num { color: var(--mra-foreground-muted); }
+.mra-modal-title--egg { animation: mra-egg-breathe 6s ease-in-out infinite; }
+@keyframes mra-egg-breathe { 0%, 100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
+/* DodgeField 离开按钮（app.js wireEggDodge）：位移走 transform，will-change 限守则弹层按钮 */
+.mra-modal-btn--egg { will-change: transform; }
+.falling-text--egg { color: var(--mra-danger); border-color: transparent; }
+/* 关闭守则后的回响：状态栏绿点连闪两下（呼应第 5 条） */
+.mra-dot-blink { animation: mra-dot-blink 0.3s ease 2; }
+@keyframes mra-dot-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .mra-modal-rule { animation: none; opacity: 1; transform: none; }
+  .mra-modal-title--egg { animation: none; }
+}
 .ver-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; min-height: 22px; }
 .ver-status--ok { color: var(--mra-success); }
 .ver-status--new { color: var(--mra-primary); font-weight: 500; }

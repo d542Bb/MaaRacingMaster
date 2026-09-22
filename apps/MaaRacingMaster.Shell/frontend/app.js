@@ -229,56 +229,146 @@
   initAbout();
 
   // ---------- 关于页彩蛋：点击版本号掉落文字（同款 MAA） ----------
-  // 彩蛋内容占位：null = 掉落当前版本号；想好后填字符串数组即随机取用
-  const FALLING_EGG_TEXTS = null;
+  // 掉落池：怪谈短语，每第 FALLING_EGG_EVERY 次点击混入一条（其余掉当前版本号）
+  const FALLING_EGG_TEXTS = ['3:33', '不要清点', '它记得你'];
+  const FALLING_EGG_EVERY = 5;
   const MAX_FALLING = 40;
+  let eggFallCount = 0;
   // 连点 EGG_DIALOG_CLICKS 次（2s 内不中断）弹出「员工守则」
   const EGG_DIALOG_CLICKS = 10;
   let eggClickCount = 0;
   let eggLastClickAt = 0;
 
-  // 员工守则（规则怪谈，致敬 MAA）
-  const EGG_RULES = [
-    'MaaRacingMaster 正式版不会出现「调试模式」。如果你在运行时看到 Debug 选项，请立即关闭软件，不要点击它，并联系离你最近的开发者。',
-    '运行前请断开所有物理手柄。如果你已经断开了所有手柄，界面却显示「已连接」，请把它也拔掉。',
-    'AI 的出价建议仅供参考。如果 AI 建议你抵押房产，请重启软件，并道歉。',
-    '软件不会主动发送好友申请。如果你收到来自「MaaRM_System」的好友请求，不要接受，并删除该账号。',
-    '日志文件不应包含乱码。如果日志中出现「ERROR: 数据解析失败」以外的异常信息，删除日志并重新安装软件。',
+  // 员工守则（规则怪谈，致敬 MAA）。结构：第 0 条固定（与随机抽样互为呼应——读者重开
+  // 守则会发现条目变了，而第 0 条早已告知）+ 池中每次抽 EGG_RULE_SAMPLE 条 + 末条固定。
+  // 条目锚点全部是 GUI 真实存在的元素（静音恢复/日志轮转/状态栏绿点/自动关机/数据页看板）；
+  // 口味：执行体口吻不许笑、暗示事件不解释、数字母题（清点/数错）贯穿首尾。
+  const EGG_RULE_META = '本守则会不定期修订。你读到的版本，就是你需要读的版本。';
+  const EGG_RULES_POOL = [
+    '正式版没有「调试模式」。如果你在任何页面看到它，不要点击，也不要截图。开发者会知道你来过。',
+    '运行前请断开所有物理手柄。如果你确定已经断开，界面却显示「已连接」，请相信你的手，不要相信界面。',
+    '运行期间游戏会被静音，结束后自动恢复。如果音量没有回来，先别动音量键——想一想，刚才那一场，是不是你没有开始过的。',
+    '日志按会话分目录，只保留最近若干份。如果某个目录的修改时间早于你安装软件的时间，不要打开它。里面没有你会想看的东西。',
+    '左下角的绿点表示系统就绪。它应该一直是静止的。如果你看到它闪了两下，那不是故障，是确认。',
     '从关于页掉落的版本号是正常的。如果它们开始排队，请不要清点数量。',
-    '夜间运行是安全的。但如果软件在凌晨 3:33 自动启动并执行「未知任务」，请拔掉电源，等待日出后再使用。',
-    '请尊重每一位对手。哪怕他连续出价 72 小时没有停过，也不要去检查系统时间。',
-    'YOLO 模型是善良的。你只需付出小小的代价（显存），就能得到她的庇护。',
-    '软件不支持未来版本。如果软件自动更新到一个尚未发布的版本号（如 v99.0.0），不要运行，等待官方公告。',
-    '软件没有语音提示。如果听到低语声、笑声或非程序生成的语音，请关闭扬声器，并检查是否有未知脚本在运行。',
-    '软件不会在周日凌晨更新。如果收到更新提示，请忽略，不要查看更新公告，直到周一。',
-    '最后一条规则不存在。如果你看到了这条，请忘记它，并正常使用 MaaRacingMaster。',
+    '任务结束后它会关闭模拟器。它只会关闭模拟器。到目前为止，它只关闭模拟器。',
+    '「停止」按钮随时有效。如果它在你按下之前就已经变灰，说明有人替你停止了这一场。不要去查是谁。',
+    '软件不会在你睡觉时更新自己。如果你早上发现版本号变了，那不是更新。',
+    '数据页会如实记录今天的每一场。如果数字对不上，多出来的那一场，不算你的。',
+    '版本号由版本控制自动推导，任何人不得手改。如果你在关于页看到自己的名字，而你从没参与开发——这一版是专门为你编译的。',
+    '软件没有语音。如果你听到低语，先听清它在说什么。多数时候，它只是在重复你自己说过的话。'
   ];
+  const EGG_RULE_LAST = '最后一条规则不存在。如果你已经数到了它，说明你数错了。这很正常。';
+  const EGG_RULE_SAMPLE = 8;
+
+  function blinkStatusDot() {
+    const dot = $('status-dot');
+    if (!dot) return;
+    dot.classList.remove('mra-dot-blink');
+    void dot.offsetWidth; // 重置动画：摘类→强制回流→再挂
+    dot.classList.add('mra-dot-blink');
+  }
+
+  // 离开按钮的 DodgeField：按钮在操作行内横向躲避光标，patience 次后放弃躲避并放行。
+  // 灵感来自 reactbits.dev 的 DodgeField（MIT + Commons Clause）——未复制其代码，
+  // 按同一交互机制自实现：接近触发 / 强度随距离衰减 / 忍耐后 relent / taunt 逐次换。
+  // reduced-motion 与触屏不启用；监听挂 window，经返回的 cleanup 随弹层关闭解绑。
+  const EGG_DODGE = { radius: 120, reach: 72, falloff: 2, patience: 4, inset: 12, countLine: 0.55 };
+  const EGG_DODGE_TAUNTS = ['抓不到', '差一点', '太慢了', '好吧。你走吧。'];
+  function wireEggDodge(modal) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return null;
+    const field = modal.card.querySelector('.mra-modal-actions');
+    const btn = field ? field.querySelector('.mra-modal-btn') : null;
+    if (!field || !btn) return null;
+    btn.classList.add('mra-modal-btn--egg');
+    const room = Math.max(0, (field.clientWidth - btn.offsetWidth) / 2 - EGG_DODGE.inset);
+    let dodges = 0, armed = true, raf = 0, bearing = 1, pointer = null;
+    const setTx = (tx, fleeing) => {
+      // 逃离用短促缓出，返回用带回弹的长缓动（对齐原组件 flee/return 双段手感）
+      btn.style.transition = 'transform ' + (fleeing ? '.13s' : '.62s') + ' cubic-bezier('
+        + (fleeing ? '0.23, 1, 0.32, 1' : '0.34, 1.56, 0.64, 1') + ')';
+      btn.style.transform = 'translateX(' + tx + 'px)';
+    };
+    function frame() {
+      raf = 0;
+      if (!document.body.contains(btn)) return; // 弹层已卸载，正式清理走 cleanup
+      const rect = field.getBoundingClientRect();
+      const d = pointer
+        ? Math.hypot(pointer.x - (rect.left + rect.width / 2), pointer.y - (rect.top + rect.height / 2))
+        : Infinity;
+      if (d < EGG_DODGE.radius * EGG_DODGE.countLine && armed) {
+        armed = false;
+        dodges++;
+        if (dodges >= EGG_DODGE.patience) {
+          btn.textContent = EGG_DODGE_TAUNTS[EGG_DODGE_TAUNTS.length - 1];
+          setTx(0, false);
+          return;
+        }
+        btn.textContent = EGG_DODGE_TAUNTS[Math.min(dodges - 1, EGG_DODGE_TAUNTS.length - 2)];
+      } else if (d > EGG_DODGE.radius) {
+        armed = true;
+      }
+      if (Number.isFinite(d) && d > 6) bearing = Math.sign(pointer.x - (rect.left + rect.width / 2)) || 1;
+      const flee = d < EGG_DODGE.radius && dodges < EGG_DODGE.patience
+        ? Math.pow(1 - d / EGG_DODGE.radius, EGG_DODGE.falloff) : 0;
+      setTx(Math.min(room, Math.max(-room, -bearing * flee * EGG_DODGE.reach)), flee > 0);
+    }
+    const onMove = (e) => { pointer = { x: e.clientX, y: e.clientY }; if (!raf) raf = requestAnimationFrame(frame); };
+    const onLeave = () => { pointer = null; if (!raf) raf = requestAnimationFrame(frame); };
+    window.addEventListener('pointermove', onMove, { passive: true });
+    document.addEventListener('pointerleave', onLeave);
+    window.addEventListener('blur', onLeave);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerleave', onLeave);
+      window.removeEventListener('blur', onLeave);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }
 
   function showRulesDialog() {
-    const listHtml = EGG_RULES.map((r, i) =>
-      '<p class="mra-modal-rule">' +
-      '<b class="mra-modal-rule-num">' + (i + 1) + '.</b>' +
-      '<span>' + r + '</span></p>'
-    ).join('');
-    openModal({
+    const pool = EGG_RULES_POOL.slice();
+    const picked = [];
+    while (picked.length < EGG_RULE_SAMPLE && pool.length) {
+      picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+    }
+    const rows = ['<p class="mra-modal-rule mra-modal-rule--meta"><b class="mra-modal-rule-num">0.</b>'
+      + '<span>' + EGG_RULE_META + '</span></p>'];
+    picked.forEach((r, i) => {
+      rows.push('<p class="mra-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
+        + '<b class="mra-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
+    });
+    rows.push('<p class="mra-modal-rule mra-modal-rule--last" style="animation-delay:'
+      + (picked.length * 100 + 250) + 'ms"><b class="mra-modal-rule-num">' + (picked.length + 1)
+      + '.</b><span>' + EGG_RULE_LAST + '</span></p>');
+    let cleanupDodge = null;
+    const modal = openModal({
       title: '员工守则',
       maxWidth: 580,
       bodyHtml:
         '<div class="mra-modal-rules">' +
         '<img class="mra-modal-rules-icon" src="../../../assets/icon.ico" alt="">' +
-        '<div class="mra-modal-rules-list">' + listHtml + '</div>' +
+        '<div class="mra-modal-rules-list">' + rows.join('') + '</div>' +
         '</div>',
+      onClose: () => {
+        blinkStatusDot();
+        if (cleanupDodge) cleanupDodge();
+      },
       buttons: [
-        { text: '确定要退出吗？', primary: true, onClick: (modal) => modal.close() },
+        { text: '确定要退出吗？', primary: true, onClick: (m) => m.close() },
       ],
     });
+    const title = modal.card.querySelector('.mra-modal-title');
+    if (title) title.classList.add('mra-modal-title--egg');
+    cleanupDodge = wireEggDodge(modal);
   }
 
-  function spawnFallingText(text, cx, cy) {
+  function spawnFallingText(text, cx, cy, isEgg) {
     const alive = document.querySelectorAll('.falling-text');
     if (alive.length >= MAX_FALLING) alive[0].remove();
     const el = document.createElement('div');
-    el.className = 'falling-text';
+    el.className = 'falling-text' + (isEgg ? ' falling-text--egg' : '');
     el.textContent = text;
     document.body.appendChild(el);
     const w = el.offsetWidth;
@@ -330,10 +420,13 @@
           eggClickCount = 0;
           showRulesDialog();
         }
-        const t = Array.isArray(FALLING_EGG_TEXTS) && FALLING_EGG_TEXTS.length
+        eggFallCount++;
+        const eggHit = Array.isArray(FALLING_EGG_TEXTS) && FALLING_EGG_TEXTS.length
+          && eggFallCount % FALLING_EGG_EVERY === 0;
+        const t = eggHit
           ? FALLING_EGG_TEXTS[Math.floor(Math.random() * FALLING_EGG_TEXTS.length)]
           : n.textContent;
-        spawnFallingText(t, e.clientX, e.clientY);
+        spawnFallingText(t, e.clientX, e.clientY, eggHit);
       });
     });
   }

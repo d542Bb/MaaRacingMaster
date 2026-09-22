@@ -214,6 +214,22 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 - 行为锁：`tests/test_sidecar_optional_deps.py`（条目形状 / 状态枚举 / 白名单目标 /
   字体项不经后端返回）；RPC 白名单三方一致性由 `tests/test_rpc_allowlist.py` 锁。
 
+## 关于页彩蛋（版本号掉落 + 员工守则）
+
+- **掉落文字**：连点关于页版本号触发物理掉落（`app.js` `spawnFallingText`）。每第 5 次
+  混入怪谈短语池 `FALLING_EGG_TEXTS`（红字变体 `.falling-text--egg`），其余掉当前版本号。
+- **员工守则**：连点 10 次（2s 内）弹出。结构 = 第 0 条固定 + 池 12 条每次抽 8 + 末条固定，
+  **每次打开条目不同**（与第 0 条文案互为呼应——"你读到的版本就是你需要读的版本"）。
+  条目逐条渐现（内联 animation-delay，reduced-motion 退化直显）；标题字距呼吸
+  （`.mra-modal-title--egg`）。文案锚点全部取 GUI 真实元素，数字母题（清点/数错）贯穿首尾。
+- **离开按钮 DodgeField**：按钮在操作行内横向躲避光标（`app.js` `wireEggDodge`：接近
+  120px 触发、强度随距离衰减、位移上限 72px、忍耐 4 次后放弃躲避并放行），taunt 依次换
+  （抓不到 → 差一点 → 太慢了 → 好吧。你走吧。）。灵感来自 reactbits.dev 的 DodgeField
+  （MIT + Commons Clause）——未复制其代码，按同一交互机制 vanilla 自实现；
+  reduced-motion / 触屏不启用；监听经返回的 cleanup 随弹层关闭解绑。
+- **关闭回响**：`openModal` 新增可选 `onClose`（按钮/点空白/Esc 三条关闭路径都触发、
+  仅一次）；守则关闭后状态栏绿点连闪两下（呼应第 5 条"如果你看到它闪了两下"）。
+
 ## 冒烟验证
 
 无构建链也能验证：仓库根起临时 HTTP 服务指向本目录，浏览器打开

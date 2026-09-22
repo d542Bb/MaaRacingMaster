@@ -66,6 +66,8 @@
       if (overlay._closing) return;
       overlay._closing = true;
       document.removeEventListener('keydown', onKeydown);
+      // 关闭回调（可选）：三条关闭路径（按钮/空白/Esc）都会走到这里，只触发一次
+      if (typeof opts.onClose === 'function') opts.onClose();
       overlay.classList.add('mra-modal-overlay--closing');
       card.classList.add('mra-modal-card--closing');
       // 与 --mra-duration-fast（0.15s）退出动画同拍，动画结束后移除节点、焦点归还触发元素
