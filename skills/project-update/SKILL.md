@@ -1,8 +1,7 @@
-***
-
+---
 name: "project-update"
-description: "Performs MaaRacingMaster project release preparations: clean temp files, determine next dev version, update docs/update\_log.md, commit to master, create git tag and push to trigger CI/CD (GitHub Actions Release). Also supports optional local assemble.ps1 package verification. Invoke when user says '发布', '更新项目', '发版', 'release', or wants to prepare a new version."
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amend 边界、共享检出目录（并行会话）纪律，以及完整发版流程（清理临时文件 → 定版本号 → 更新 docs/update_log.md → 提交 → 打 tag 并 push 触发 CI/CD）。Invoke when the user says '发布', '更新项目', '发版', 'release', wants to prepare a new version, or whenever the task will touch the remote repository — push / push tag / push branch / open or merge PR / publish."
+---
 
 # 项目更新助手（MaaRacingMaster 发版流程）
 
@@ -16,6 +15,36 @@ description: "Performs MaaRacingMaster project release preparations: clean temp 
 - 各 harness 若以安装副本方式使用技能，副本放自己的安装目录（位置随工具的约定而定，**不构成团队约定**），发版前以本仓库权威文件核对一致后再执行。
 
 > 不做 agent 侧自动回写：方向无判据（「最新版本」缺可判定标准），且会把本机上下文带进仓库。
+
+***
+
+## 提交纪律（任何会写远端历史的操作都适用）
+
+本节是**操作手册**——口径细则在此，[AGENTS.md](../../AGENTS.md) 只保留红线声明。适用于**任何会写远端历史的操作**：push 分支、push master、打 tag、开 / 合 PR、发布，不限于发版。
+
+### commit 粒度
+
+- **一个 commit 是一个有意义的历史节点**：能独立解释、能独立回滚即可；开发期允许细粒度提交以便回溯、Review 与实验。
+- **交付面**（tag、`docs/update_log.md` 小节、Release 正文）才要求语义完整。
+- **push 是历史整理的不可逆分界**：未推送的本地提交可自由 `rebase -i` 归并 / 重排成语义节点——凡意图发布干净的共享历史，**归并必须发生在 push 之前（先整理、后推送）**；绝不可把细碎提交原样推上去再想收拾，那时唯一出路只剩被禁止的 force-push。
+- **禁止对已推送历史 rebase / squash / force push**（AGENTS.md 红线），修正一律新 commit 前进。
+
+### amend 的边界
+
+仅当**三条同时成立**才可 `git commit --amend` 并入上一提交：① 修改仍属于该提交同一逻辑任务的补充 / 修正；② 该提交**未推送**；③ **无并行会话**。其余情形一律新 commit 前进。
+
+### 共享检出目录（并行会话）纪律
+
+多会话共用同一工作区时（AGENTS.md 红线）：
+
+1. **禁止一切改写历史或丢弃未提交内容的操作**——`amend` / `rebase` / `reset --hard`。共享索引与工作树下，改史会掀掉他人未提交内容、或使其提交脱链。上面「未推送可自由归并」的许可在并行期一并收回。
+2. **提交一律 pathspec 直提**：`git commit -m "…" -- 路径`，不做「先 add 再裸 `git commit`」——裸提交与 amend 都吃整个索引，会卷入他人暂存内容。
+3. **提交前核对暂存区**：`git diff --cached --name-only` 只应含自己的文件。
+4. **需要真隔离用 `git worktree`** 独立工作树——只切分支不换工作树隔离不了暂存区，切分支本身还会改写工作区文件。
+
+### 对外动作先取得确认
+
+push、打 tag、开 / 改 issue、发布、改远端配置一律先向用户确认（AGENTS.md 红线）；发版动作不可逆。
 
 ***
 
@@ -96,7 +125,7 @@ description: "Performs MaaRacingMaster project release preparations: clean temp 
 
 - 若功能列表/项目结构等涉及 README.md，询问用户是否一并更新
 
-- 若本次是重写 skill/规范变更，同步更新 `AGENTS.md`「版本与交付」小节
+- 若本次是重写 skill/规范变更，同步更新 `AGENTS.md`「版本交付与协作」小节
 
 ### ④ 提交改动
 
@@ -166,7 +195,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 ## 版本管理规范（当前实际）
 
-版本规则以本 skill 为准，与 [AGENTS.md](../../AGENTS.md)（仓库根，自本文件所在目录上溯两级）「版本与交付」小节同源于 git tag 事实：
+版本规则以本 skill 为准，与 [CONTRIBUTING.md](../../CONTRIBUTING.md)（仓库根，自本文件所在目录上溯两级）「版本与发布」小节同源于 git tag 事实：
 
 | 变动                 | 版本格式                            | 示例                                |
 | ------------------ | ------------------------------- | --------------------------------- |
