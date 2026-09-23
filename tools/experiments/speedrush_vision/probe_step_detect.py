@@ -757,6 +757,94 @@ def cmd_morph(_args) -> None:
               f"{np.median(peaks) if peaks else float('nan'):.4f}")
 
 
+def _folded_sess(short: int):
+    """固定三维 free dim ⇒ 常量折叠（DirectML 拒 cubic Resize 的解法，见 README 折叠验证节）。"""
+    import onnxruntime as ort
+    so = ort.SessionOptions()
+    nh, nw = pd._resize_hw(720, 1280, short)      # 与 preprocess 同口径，勿硬编码
+    for n, v in (("batch_size", 1), ("height", nh), ("width", nw)):
+        so.add_free_dimension_override_by_name(n, v)
+    return ort.InferenceSession(str(pd.MODELS["small"]), so,
+                                providers=["DmlExecutionProvider"])
+
+
+def cmd_edgeprofile(args) -> None:
+    """黄线外侧到底有没有台阶、多高、第几像素起跳——沿行的横切面实测。
+
+    维护者指认：碰撞边界是**黄线外侧那道矮路缘**，不是显眼的护栏。此前 h/H≈0.20 的
+    读数很可能量的是人行道面/护墙。本命令用 HSV 定黄线列（2D 颜色事实，非被审对象），
+    再看深度在黄线外侧的偏离量 D/量程 何时起跳、跳多高。
+    """
+    sess_dir = pd.APP / "demos" / args.session / "frames"
+    if not sess_dir.is_dir():
+        raise SystemExit(f"无此会话帧目录：{sess_dir}")
+    fids = list(range(args.from_fid, args.to_fid + 1, args.step))
+    sess = _folded_sess(518)
+    sheets = []
+    print(f"== 黄线外侧横切面（{args.session}，{len(fids)} 帧，DA-S fp32@518 折叠会话）==")
+    print("每行：y  黄线列x  g(y)  黄线处D/量程  外侧+15  +35  +75  +150   峰值D/量程(外侧0~200px)")
+    for fid in fids:
+        fp = sess_dir / f"{fid:06d}.jpg"
+        if not fp.exists():
+            continue
+        key = pcq.frame_key(fp)
+        cache = NPY / f"{key}__da2s.npy"
+        rgb = cv2.cvtColor(cv2.imread(str(fp)), cv2.COLOR_BGR2RGB)
+        if cache.exists():
+            m = np.load(cache).astype(np.float32)
+        else:
+            m = pd.depth_map(sess, rgb, 518)
+            np.save(cache, m.astype(np.float16))
+        rng = road_range(m)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        ymask = cv2.inRange(hsv, pd.HSV_LO, pd.HSV_HI)
+        print()
+        print(f"  [{fid}]  量程={rng:.2f}  g=路面内部中位（黄线之间），非整行中位")
+        nrow = 0
+        edge_pts = []
+        for y in range(args.row_from, args.row_to, 20):
+            xs = np.where(ymask[y] > 0)[0]
+            L = xs[xs < VPX]
+            R = xs[xs > VPX]
+            if len(L) == 0 or len(R) == 0:
+                continue
+            xl, xr = int(L.min()), int(R.max())          # 路面内边界（左右黄线的外沿）
+            if xr - xl < 60:
+                continue
+            gv = float(np.median(m[y, xl:xr + 1]))       # 该行路面自身的视差
+            nrow += 1
+            edge_pts.append((xr, y))
+            offs = (0, 15, 35, 75, 150, 250)
+            vals = [(m[y, min(xr + d, 1279)] - gv) / rng for d in offs]
+            band = m[y, xr:min(xr + 250, 1280)]
+            pk = float(np.max(band - gv) / rng)
+            print(f"   y={y:3d} 路面[{xl:4d},{xr:4d}] 宽{xr-xl:4d} g={gv:6.3f} " +
+                  " ".join(f"{v:+6.3f}" for v in vals) + f"   峰值={pk:+.3f}")
+        if nrow == 0:
+            print("   （该行带内无双侧黄线，跳过）")
+        if args.sheet:
+            sheets.append((fid, rgb, m, rng, edge_pts))
+    if args.sheet and sheets:
+        from PIL import Image
+        pw, ph = 640, 360
+        out = Image.new("RGB", (2 * pw, len(sheets) * ph), "white")
+        for i, (fid, rgb, mm, rg, pts) in enumerate(sheets):
+            lo, hi = np.percentile(mm[Y0:DIAG_Y1][:, cols_of(mm)], [0.5, 99.5])
+            du = np.clip((mm - lo) / max(hi - lo, 1e-6) * 255, 0, 255).astype(np.uint8)
+            vis = cv2.cvtColor(cv2.applyColorMap(du, cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+            for xr, y in pts:
+                cv2.circle(vis, (xr, y), 3, (255, 255, 255), -1)
+            if pts:                                     # 黄线外沿拟合线
+                cv2.polylines(vis, [np.array(pts, np.int32)], False, (0, 255, 255), 2)
+            out.paste(Image.fromarray(cv2.resize(rgb, (pw, ph))), (0, i * ph))
+            out.paste(Image.fromarray(cv2.resize(vis, (pw, ph))), (pw, i * ph))
+        o = OUT / "edgeprofile_sheet.jpg"
+        out.save(o, quality=88)
+        print(f"[fig] {o}（左原帧 / 右视差，青线=HSV 认定的路面右沿，白点=逐行端点）")
+    print()
+    print("读法：外侧偏离为正 ⇒ 该处表面比同行路面更近 ⇒ 有抬升；峰值占量程即 h/H×(y−Y_H)/350。")
+
+
 def cmd_selftest(_args) -> None:
     print("== 合成自检（已知几何，验证索引与 θ↔h/H 关系）==")
     for kind in ("road", "raised", "wall"):
@@ -1059,6 +1147,14 @@ def main() -> None:
     sub.add_parser("horizon")
     sub.add_parser("figs")
     sub.add_parser("morph")
+    e = sub.add_parser("edgeprofile")
+    e.add_argument("--session", default="20260919_202138_p2")
+    e.add_argument("--from-fid", type=int, default=1150)
+    e.add_argument("--to-fid", type=int, default=1400)
+    e.add_argument("--step", type=int, default=50)
+    e.add_argument("--row-from", type=int, default=460)
+    e.add_argument("--row-to", type=int, default=700)
+    e.add_argument("--sheet", action="store_true")
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -1066,7 +1162,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
