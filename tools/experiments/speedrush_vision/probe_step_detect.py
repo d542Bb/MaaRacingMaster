@@ -845,6 +845,53 @@ def cmd_edgeprofile(args) -> None:
     print("读法：外侧偏离为正 ⇒ 该处表面比同行路面更近 ⇒ 有抬升；峰值占量程即 h/H×(y−Y_H)/350。")
 
 
+def cmd_kerb(args) -> None:
+    """路缘顶面给出的台阶比：h/H = (M−g)/g，**与行无关**——这是该量的正确归一方式。
+
+    维护者指认边界是黄线外侧的矮路缘（深色带=其前立面、亮面=人行道顶面）。本命令按
+    亮度分带（L>130 顶面 / L<55 立面）逐行测 (M−g)/g，并检查**跨行是否恒定**：
+    恒定 ⇒ 那是一个真水平抬升面（几何上 h/H 与行无关）；不恒定 ⇒ 是噪声或误带。
+    对照量 D/量程 跨行会变（∝ g(y)），故**门应当开在相对量上**，不是量程上。
+    """
+    sess_dir = pd.APP / "demos" / args.session / "frames"
+    print("== 路缘台阶比 h/H=(M−g)/g（逐行；恒定=真抬升面）==")
+    print("行带：亮面 L>130（人行道顶） / 暗带 L<55（路缘立面）")
+    for fid in range(args.from_fid, args.to_fid + 1, args.step):
+        fp = sess_dir / f"{fid:06d}.jpg"
+        if not fp.exists():
+            continue
+        key = pcq.frame_key(fp)
+        cache = NPY / f"{key}__da2s.npy"
+        rgb = cv2.cvtColor(cv2.imread(str(fp)), cv2.COLOR_BGR2RGB)
+        if cache.exists():
+            m = np.load(cache).astype(np.float32)
+        else:
+            m = pd.depth_map(_folded_sess(518), rgb, 518)
+            np.save(cache, m.astype(np.float16))
+        rng = road_range(m)
+        g = ground_model(m, rng)
+        lum = rgb.mean(axis=2)
+        print()
+        print(f"  [{fid}] 量程={rng:.2f}")
+        hs = []
+        for y in range(args.row_from, args.row_to, 40):
+            gv = g[y - Y0]
+            row_l, row_m = lum[y, :args.scan_w], m[y, :args.scan_w]
+            top = row_l > 130
+            face = (row_l < 55) & ~top
+            if top.sum() < 20:
+                continue
+            hh = float(np.median((row_m[top] - gv) / gv))
+            hs.append(hh)
+            f = (f"  立面{int(face.sum())}px h/H={(np.median((row_m[face]-gv)/gv) if face.sum()>10 else float('nan')):+.3f}"
+                 if face.sum() > 10 else "")
+            print(f"   y={y:3d} 顶面{int(top.sum()):3d}px x∈[{np.where(top)[0].min()},"
+                  f"{np.where(top)[0].max()}] h/H={hh:+.3f} D/量程={hh*gv/max(rng,1e-6):+.3f}{f}")
+        if len(hs) >= 3:
+            print(f"   → h/H 跨行：中位={np.median(hs):+.3f} 极差={max(hs)-min(hs):.3f}"
+                  f"  {'**恒定，真抬升面**' if max(hs)-min(hs) < 0.03 else '不恒定，存疑'}")
+
+
 def cmd_selftest(_args) -> None:
     print("== 合成自检（已知几何，验证索引与 θ↔h/H 关系）==")
     for kind in ("road", "raised", "wall"):
@@ -1155,6 +1202,14 @@ def main() -> None:
     e.add_argument("--row-from", type=int, default=460)
     e.add_argument("--row-to", type=int, default=700)
     e.add_argument("--sheet", action="store_true")
+    k = sub.add_parser("kerb")
+    k.add_argument("--session", default="20260919_202138_p2")
+    k.add_argument("--from-fid", type=int, default=1280)
+    k.add_argument("--to-fid", type=int, default=1340)
+    k.add_argument("--step", type=int, default=60)
+    k.add_argument("--row-from", type=int, default=520)
+    k.add_argument("--row-to", type=int, default=700)
+    k.add_argument("--scan-w", type=int, default=620)
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -1162,7 +1217,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
