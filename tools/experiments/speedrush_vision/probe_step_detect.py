@@ -52,6 +52,7 @@
     python $P horizon                      # 逐帧隐含地平线行（g(y) 零点）vs 冻结 Y_H
     python $P rayfit [--anchor frozen|est] # 掩码下沿点上的边界射线识别率
     python $P vpfit                        # 逐帧估 VP（两线交点）+ 锚点行/列缺口
+    python $P figs                         # 决策证据图：C3 贴墙帧 + VP 锚点缺口帧
 """
 
 from __future__ import annotations
@@ -598,6 +599,121 @@ def cmd_horizon(_args) -> None:
               f"一阶差分 std={np.diff(s).std():.1f}px  ← 逐帧估计可用性的判据")
 
 
+def _draw_line_pt(img, px: float, py: float, ang_deg: float, color, width: int = 2) -> None:
+    """过给定点、按方向角画一条贯穿画面的线（两端各延伸 1600px 后由画面裁剪）。"""
+    rr = np.radians(ang_deg)
+    dx, dy = np.cos(rr), np.sin(rr)
+    p0 = (int(px - 1600 * dx), int(py - 1600 * dy))
+    p1 = (int(px + 1600 * dx), int(py + 1600 * dy))
+    cv2.line(img, p0, p1, color, width)
+
+
+def cmd_figs(_args) -> None:
+    """两张决策图的证据：C3 贴墙帧（决策二）与"自由线能拟、冻结 VP 拟不出"帧（决策一）。
+
+    图与帧号都由本命令现算现出，不靠手工挑选——维护者要复核的是分类判据本身。
+    """
+    frames = pcq.all_frames()
+    c3, gap = [], []
+    for p in frames:
+        k = pcq.frame_key(p)
+        m = np.load(NPY / f"{k}__da2s.npy").astype(np.float32)
+        rng = road_range(m)
+        g = ground_model(m, rng)
+        xs, ys, _ = run_detect(m, g, rng, 0.06, "rel")
+        d = diag_frame(m, g, rng, xs, ys)
+        if not is_strong(d) and classify(d) == "C3_边界出画":
+            c3.append((k, p, d))
+        y0 = horizon_row(m, g)
+        y0 = Y_H if not np.isfinite(y0) else y0
+        bx, by, _ = detect_mask(m, g, rng, GATE)
+        fits = {}
+        for side, sign in (("l", -1), ("r", 1)):
+            sel = side_of(bx, by, sign)
+            hz = hough_rays(bx[sel], by[sel], min_slope=0.25, vp=(VPX, Y_H))
+            he = hough_rays(bx[sel], by[sel], min_slope=0.25, vp=(VPX, y0))
+            hf = hough_free(bx[sel], by[sel], min_slope=0.25)
+            fits[side] = (hz, he, hf, bx[sel], by[sel])
+        okf = lambda h: bool(h and h[0] >= RAY_SUP and h[3] >= RAY_MIN)  # noqa: E731
+        okz = lambda h: bool(h and h[1] >= RAY_SUP and h[2] >= RAY_MIN)  # noqa: E731
+        hit = [s for s in ("l", "r") if okf(fits[s][2]) and not okz(fits[s][0])]
+        if hit:
+            gap.append((k, p, y0, fits, hit))
+    print(f"C3 贴墙帧（墙脚已在画面外）= {len(c3)} 帧")
+    for k, _p, d in c3:
+        print(f"  {k}  边缘近区占比 左{d['edge_l']:.2f} 右{d['edge_r']:.2f}")
+    print(f"\n自由线可拟、冻结 VP 拟不出的帧 = {len(gap)} 帧（含侧别）")
+    for k, _p, y0, _f, hit in gap[:40]:
+        print(f"  {k}  隐含地平线行={y0:.0f}  侧={''.join(hit)}")
+    _sheet_c3(c3)
+    _sheet_gap(gap)
+
+
+def _sheet_c3(c3) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+    if not c3:
+        return
+    pw, ph, cols = 480, 270, 4
+    rows_n = (len(c3) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * pw, rows_n * (ph + 18)), "white")
+    dr = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    for i, (k, p, d) in enumerate(c3):
+        rgb = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+        x, y = (i % cols) * pw, (i // cols) * (ph + 18)
+        sheet.paste(Image.fromarray(cv2.resize(rgb, (pw, ph))), (x, y))
+        dr.text((x + 4, y + ph + 2), f"{k[:44]} 左{d['edge_l']:.2f} 右{d['edge_r']:.2f}",
+                fill="black", font=font)
+    o = OUT / "fig_c3_wallout.jpg"
+    sheet.save(o, quality=88)
+    print(f"\n[fig] {o}（决策二：{len(c3)} 帧贴墙，墙脚已在画面外）")
+
+
+def _draw_line_n(img, ang_deg: float, off: float, color, width: int = 2) -> None:
+    """画法向式直线 {p : p·(sin a, −cos a) = off}（hough_free 的输出形式）。"""
+    rr = np.radians(ang_deg)
+    n = np.array([np.sin(rr), -np.cos(rr)])
+    d = np.array([np.cos(rr), np.sin(rr)])
+    p0 = off * n
+    cv2.line(img, (int(p0[0] - 1600 * d[0]), int(p0[1] - 1600 * d[1])),
+             (int(p0[0] + 1600 * d[0]), int(p0[1] + 1600 * d[1])), color, width)
+
+
+def _sheet_gap(gap) -> None:
+    """决策一证据：掩码下沿候选点（白）+ 冻结 VP 拟出的线（红）/ 锚点修行后（青）/
+    不约束 VP 的自由线（绿）。左半原帧、右半证据图。"""
+    from PIL import Image, ImageDraw, ImageFont
+    if not gap:
+        return
+    picks = gap[:8]
+    pw, ph = 640, 360
+    sheet = Image.new("RGB", (2 * pw, len(picks) * (ph + 18)), "white")
+    dr = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    for i, (k, p, y0, fits, hit) in enumerate(picks):
+        rgb = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+        canvas = np.full((720, 1280, 3), 24, np.uint8)
+        for side in ("l", "r"):
+            hz, he, hf, px, py = fits[side]
+            for x, y in zip(px, py):
+                cv2.circle(canvas, (int(x), int(y)), 2, (200, 200, 200), -1)
+            if hz:
+                _draw_line_pt(canvas, VPX, Y_H, hz[0], (0, 0, 255))
+            if he:
+                _draw_line_pt(canvas, VPX, y0, he[0], (255, 200, 0))
+            if hf:
+                _draw_line_n(canvas, hf[1], hf[2], (0, 220, 0))
+        sheet.paste(Image.fromarray(cv2.resize(rgb, (pw, ph))), (0, i * (ph + 18)))
+        sheet.paste(Image.fromarray(cv2.resize(canvas, (pw, ph))), (pw, i * (ph + 18)))
+        dr.text((4, i * (ph + 18) + ph + 2),
+                f"{k[:40]} 隐含地平线行={y0:.0f}（冻结 324）侧={''.join(hit)} "
+                f"红=冻结VP 青=修行后 绿=自由线 白点=候选",
+                fill="black", font=font)
+    o = OUT / "fig_vp_anchor.jpg"
+    sheet.save(o, quality=88)
+    print(f"[fig] {o}（决策一证据，前 {len(picks)} 帧）")
+
+
 def cmd_selftest(_args) -> None:
     print("== 合成自检（已知几何，验证索引与 θ↔h/H 关系）==")
     for kind in ("road", "raised", "wall"):
@@ -898,6 +1014,7 @@ def main() -> None:
     s.add_argument("--anchor", choices=("frozen", "est"), default="frozen")
     sub.add_parser("vpfit")
     sub.add_parser("horizon")
+    sub.add_parser("figs")
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -905,7 +1022,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
