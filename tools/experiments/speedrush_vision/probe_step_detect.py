@@ -212,21 +212,23 @@ def side_of(xs: np.ndarray, ys: np.ndarray, sign: int) -> np.ndarray:
     return (xs < VPX) if sign < 0 else (xs > VPX)
 
 
-def shape_of(m: np.ndarray, g: np.ndarray, rng: float, x: int, y: int) -> tuple[str, float, int]:
-    """检测点上方非地面行程的形状 → ("face"|"raised"|"other"|"none", 台阶比, 行程长)。
+def shape_of(m: np.ndarray, g: np.ndarray, rng: float, x: int, y: int,
+           gate: float = GATE) -> tuple[str, float, int]:
+    """检测点上方非地面行程的形状 → ("wall"|"kerb"|"lower"|"none", 比值, 行程长)。
 
-    先按偏离符号定族，再验该族的几何不变量（符号与形状必须**同时**成立，否则
-    车体这类三维近区会被误判成抬升面）：
-      - 近区（D>0）：竖直墙面/车体正面 ⇒ M 沿列近常数 → "face"，
-        返回 mean(M)/mean(g) − 1（近于地面的相对量）。
-      - 远区（D<0）：抬升水平面 ⇒ M/g 近常数 → "raised"，返回 h/H = 1 − mean(M/g)。
-      - 不变量不成立 ⇒ "other"（三维车体、混合符号等）。
+    **符号不分族**：抬升水平面与竖直墙的偏离量 D=M−g 都为正（前者 M/g=1+h/H>1，
+    后者墙面比它遮挡的远处路面更近），只能靠**沿列不变量**分。
+    （2026-09-23 修正：此前按符号先分族，把真抬升面全打成 "other"、把"比路面更远"
+    的区域误记成 "raised"——"边界形态以竖直墙为绝对主导"那条读数由此作废。）
+      - "kerb" 抬升水平面：M/g 沿列近常数 → 返回 h/H = mean(M/g) − 1。
+      - "wall" 竖直面（墙/车体正面）：M 沿列近常数 → 返回 mean(M)/mean(g) − 1。
+      - "lower" 比路面更远（矮栏外的远处背景、凹坑）：D<0，不是可行驶边界。
     """
     rows = np.arange(y - 1, Y0 - 1, -1)
     if len(rows) < 3:
         return "none", 0.0, 0
     dv = m[rows, x] - g[rows - Y0]
-    ok = np.abs(dv) > GATE * rng
+    ok = np.abs(dv) > gate * rng
     if ok.sum() < 3:
         return "none", 0.0, int(ok.sum())
     run = 0
@@ -246,11 +248,12 @@ def shape_of(m: np.ndarray, g: np.ndarray, rng: float, x: int, y: int) -> tuple[
     ratio = mv / np.maximum(gv, 1e-6)
     cv_m = float(np.std(mv) / max(abs(np.mean(mv)), 1e-6))
     cv_r = float(np.std(ratio) / max(abs(np.mean(ratio)), 1e-6))
-    if float(np.median(dv[:run])) > 0:                      # 近区
-        return ("face", float(np.mean(mv) / max(abs(np.mean(gv)), 1e-6) - 1.0), run) \
-            if cv_m <= cv_r else ("other", 0.0, run)
-    return ("raised", float(1.0 - np.mean(ratio)), run) if cv_r <= cv_m \
-        else ("other", 0.0, run)
+    if float(np.median(dv[:run])) < 0:          # 比路面更远：矮栏外的远处背景/凹坑
+        return "lower", 0.0, run
+    # 抬升面与竖直墙的偏离量**都为正**（都比同行路面更近），只能靠沿列不变量分：
+    if cv_r < cv_m:
+        return "kerb", float(np.mean(ratio) - 1.0), run      # h/H（M/g = 1 + h/H）
+    return "wall", float(np.mean(mv) / max(abs(np.mean(gv)), 1e-6) - 1.0), run
 
 
 def max_run(mask: np.ndarray) -> int:
@@ -263,17 +266,18 @@ def max_run(mask: np.ndarray) -> int:
     return int(best.max()) if mask.size else 0
 
 
-def region_stats(m: np.ndarray, g: np.ndarray, rng: float, stride: int = 12):
+def region_stats(m: np.ndarray, g: np.ndarray, rng: float, stride: int = 12,
+                 gate: float = GATE):
     """用 15% 门定位非地面区下沿（与 θ 无关），再判其形状 → 该帧**存在什么**。
 
     归因需要"这一帧画面里到底有什么"，而不是"某个 θ 下检出了什么"。
     """
-    xs, ys, _ = detect_mask(m, g, rng, GATE)
+    xs, ys, _ = detect_mask(m, g, rng, gate)
     kinds, hhs = [], []
     for x, y in zip(xs[::stride], ys[::stride]):
-        k, hh, _ = shape_of(m, g, rng, int(x), int(y))
+        k, hh, _ = shape_of(m, g, rng, int(x), int(y), gate)
         kinds.append(k)
-        if k == "raised":
+        if k == "kerb":
             hhs.append(hh)
     return kinds, hhs
 
@@ -316,17 +320,17 @@ def diag_frame(m: np.ndarray, g: np.ndarray, rng: float, xs, ys) -> dict:
         for x, y in zip(xs[::step], ys[::step]):
             k, hh, _ = shape_of(m, g, rng, int(x), int(y))
             kinds.append(k)
-            if k == "raised":
+            if k == "kerb":
                 hhs.append(hh)
-    out["kind_face"] = kinds.count("face")
-    out["kind_raised"] = kinds.count("raised")
+    out["kind_wall"] = kinds.count("wall")
+    out["kind_kerb"] = kinds.count("kerb")
     out["kind_none"] = kinds.count("none")
     out["n_shape_sampled"] = len(kinds)
     out["hh_med"] = float(np.median(hhs)) if hhs else np.nan
     rk, rhh = region_stats(m, g, rng)
-    out["reg_face"] = rk.count("face")
-    out["reg_raised"] = rk.count("raised")
-    out["reg_other"] = rk.count("other")
+    out["reg_wall"] = rk.count("wall")
+    out["reg_kerb"] = rk.count("kerb")
+    out["reg_lower"] = rk.count("lower")
     out["reg_none"] = rk.count("none")
     out["reg_hh"] = float(np.median(rhh)) if rhh else np.nan
     # 掩码下边界（阈值无关参照）：非地面近区的下边界行，按门 0.05/0.10/0.15
@@ -355,13 +359,13 @@ def classify(d: dict) -> str:
         return "C1_地面签名失败"
     if d["edge_l"] >= 0.30 or d["edge_r"] >= 0.30:
         return "C3_边界出画"
-    if d["n_det"] == 0 and d["reg_face"] + d["reg_raised"] == 0:
+    if d["n_det"] == 0 and d["reg_wall"] + d["reg_kerb"] == 0:
         return "C5_画面内无台阶"
     if not (d["ray_l"] or d["ray_r"]):
         return "C6_检出散点非边界线"
-    if d["reg_face"] >= d["reg_raised"]:
-        return "C4a_有墙面但检不出"
-    return "C4b_抬升面低于阈值"
+    if d["reg_wall"] >= d["reg_kerb"]:
+        return "C4a_有竖直墙但检不出"
+    return "C4b_抬升路缘低于阈值"
 
 
 # ---------------------------------------------------------------- 合成自检
@@ -714,6 +718,45 @@ def _sheet_gap(gap) -> None:
     print(f"[fig] {o}（决策一证据，前 {len(picks)} 帧）")
 
 
+def cmd_morph(_args) -> None:
+    """门的灵敏度：非地面门取多细，才看得见普通路缘（2026-09-23，维护者确认"有可见台阶"后）。
+
+    推导给出 D/量程 ≈ (y−Y_H)/350 × h/H，带内 (y−Y_H)/350 最大仅 1.05 ⇒
+    **15% 门等价于"台阶必须高于 0.143 倍相机高"**（赛车相机约 1.2~1.5m ⇒ 需 17~21cm），
+    普通路缘 10~15cm 在整帧任何位置都过不了该门。本命令实测该结论。
+    """
+    frames = pcq.all_frames()
+    print("== 非地面门的灵敏度（141 帧，逐帧抽样列，形状按沿列不变量分 wall/kerb/lower）==")
+    print("门      有wall列的帧  有kerb列的帧  wall列合计  kerb列合计  kerb的h/H中位  峰值/量程中位")
+    for gate in (0.15, 0.05, 0.02, 0.01):
+        nw = nk = 0
+        cw = ck = 0
+        hhs, peaks = [], []
+        for p in frames:
+            m = np.load(NPY / f"{pcq.frame_key(p)}__da2s.npy").astype(np.float32)
+            rng = road_range(m)
+            g = ground_model(m, rng)
+            kinds, hh, pk = [], [], []
+            xs, ys, _ = detect_mask(m, g, rng, gate)
+            for x, y in zip(xs[::12], ys[::12]):
+                k, v, _r = shape_of(m, g, rng, int(x), int(y), gate)
+                kinds.append(k)
+                if k == "kerb":
+                    hh.append(v)
+                d = m[int(y) - 1, int(x)] - g[int(y) - 1 - Y0]
+                pk.append(abs(d) / rng)
+            w, b = kinds.count("wall"), kinds.count("kerb")
+            nw += w > 0
+            nk += b > 0
+            cw += w
+            ck += b
+            hhs += hh
+            peaks += pk
+        print(f"{gate:5.2f}  {nw:10d}/{len(frames)}  {nk:10d}/{len(frames)}  {cw:8d}  {ck:8d}"
+              f"      {np.median(hhs) if hhs else float('nan'):.3f}        "
+              f"{np.median(peaks) if peaks else float('nan'):.4f}")
+
+
 def cmd_selftest(_args) -> None:
     print("== 合成自检（已知几何，验证索引与 θ↔h/H 关系）==")
     for kind in ("road", "raised", "wall"):
@@ -835,13 +878,13 @@ def cmd_attrib(args) -> None:
         print(f"{k:20s} {v:4d}")
 
     print("\n-- 画面里有什么（15% 门定位非地面区下沿，与 θ 无关；抽样列）--")
-    print(f"面(face) 列合计={sum(r['reg_face'] for r in rows)} "
-          f"抬升面(raised) 列合计={sum(r['reg_raised'] for r in rows)} "
-          f"其他(other) 列合计={sum(r['reg_other'] for r in rows)} "
+    print(f"竖直墙(wall) 列合计={sum(r['reg_wall'] for r in rows)} "
+          f"抬升路缘(kerb) 列合计={sum(r['reg_kerb'] for r in rows)} "
+          f"远处/低洼(lower) 列合计={sum(r['reg_lower'] for r in rows)} "
           f"无 列合计={sum(r['reg_none'] for r in rows)}")
     rhh = np.array([r["reg_hh"] for r in rows if np.isfinite(r["reg_hh"])])
     if len(rhh):
-        print(f"抬升面 h/H 中位={np.median(rhh):.3f} "
+        print(f"抬升路缘 h/H 中位={np.median(rhh):.3f} "
               f"p25/p75={np.percentile(rhh, 25):.3f}/{np.percentile(rhh, 75):.3f} "
               f"（n={len(rhh)} 帧）")
     far_lat = np.array([r["far_lat"] for r in rows])
@@ -851,7 +894,7 @@ def cmd_attrib(args) -> None:
 
     print("\n-- 诊断量中位（非强检出 vs 强检出）--")
     keys = ("fit_inlier", "fit_mono", "far_area", "near_area", "occ_run",
-            "edge_l", "edge_r", "far_lat", "reg_face", "reg_raised", "reg_other",
+            "edge_l", "edge_r", "far_lat", "reg_wall", "reg_kerb", "reg_lower",
             "reg_hh", "line_cols", "line_len", "ray_l_sup", "ray_r_sup")
     print(f"{'量':12s} {'非强':>10s} {'强':>10s}")
     for k in keys:
@@ -860,12 +903,12 @@ def cmd_attrib(args) -> None:
         print(f"{k:12s} {a:10.4f} {b:10.4f}")
 
     print("\n-- 检出物形状（抽样列）--")
-    print(f"face 列合计={sum(r['kind_face'] for r in rows)} "
-          f"raised 列合计={sum(r['kind_raised'] for r in rows)} "
+    print(f"wall 列合计={sum(r['kind_wall'] for r in rows)} "
+          f"kerb 列合计={sum(r['kind_kerb'] for r in rows)} "
           f"none 列合计={sum(r['kind_none'] for r in rows)}")
     hh = np.array([r["hh_med"] for r in rows if np.isfinite(r["hh_med"])])
     if len(hh):
-        print(f"检出抬升面 h/H 中位={np.median(hh):.3f} "
+        print(f"检出 kerb 的 h/H 中位={np.median(hh):.3f} "
               f"p25/p75={np.percentile(hh, 25):.3f}/{np.percentile(hh, 75):.3f}")
 
     print("\n-- 覆盖率改口径（θ 无关的可用量；射线 = 1-D Hough 支持列数≥30 且延展≥100px）--")
@@ -921,8 +964,8 @@ def _sheet_rep(rows, maps, variant) -> None:
     """每类取 2 帧：RGB + 视差叠加（检出点 / 非地面近区 / 非地面远区）。"""
     from PIL import Image, ImageDraw, ImageFont
     picks = []
-    for lab in ("C1_地面签名失败", "C3_边界出画", "C4a_有墙面但检不出",
-                "C4b_抬升面低于阈值", "C5_画面内无台阶", "C6_检出散点非边界线"):
+    for lab in ("C1_地面签名失败", "C3_边界出画", "C4a_有竖直墙但检不出",
+                "C4b_抬升路缘低于阈值", "C5_画面内无台阶", "C6_检出散点非边界线"):
         g = [r for r in rows if r["label"] == lab][:2]
         picks += [(lab, r) for r in g]
     if not picks:
@@ -1015,6 +1058,7 @@ def main() -> None:
     sub.add_parser("vpfit")
     sub.add_parser("horizon")
     sub.add_parser("figs")
+    sub.add_parser("morph")
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -1022,7 +1066,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
