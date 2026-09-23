@@ -892,6 +892,63 @@ def cmd_kerb(args) -> None:
                   f"  {'**恒定，真抬升面**' if max(hs)-min(hs) < 0.03 else '不恒定，存疑'}")
 
 
+def cmd_noise(args) -> None:
+    """连续段上的深度噪声底 ⇒ 门该开多细，可计算，不需要标注（维护者指的方向）。
+
+    固定一块图像区域（用参考帧的亮度选出），在连续帧上取 (M−g)/g：
+      时间噪声 = 逐帧该区域中位的跨帧 std（同一块真实表面，读数应恒定）；
+      空间噪声 = 单帧该区域内部的 std（同一块表面自身的抖动）。
+    门的最小可用值 ≈ 3σ；σ 越小的区域越可信，故同时报若干候选区域。
+    """
+    sess_dir = pd.APP / "demos" / args.session / "frames"
+    fids = list(range(args.from_fid, args.to_fid + 1, args.step))
+    maps, lums = {}, {}
+    for fid in fids:
+        fp = sess_dir / f"{fid:06d}.jpg"
+        if not fp.exists():
+            continue
+        key = pcq.frame_key(fp)
+        cache = NPY / f"{key}__da2s.npy"
+        rgb = cv2.cvtColor(cv2.imread(str(fp)), cv2.COLOR_BGR2RGB)
+        if cache.exists():
+            m = np.load(cache).astype(np.float32)
+        else:
+            m = pd.depth_map(_folded_sess(518), rgb, 518)
+            np.save(cache, m.astype(np.float16))
+        maps[fid], lums[fid] = m, rgb.mean(axis=2)
+    fids = sorted(maps)
+    if len(fids) < 5:
+        raise SystemExit("连续帧不足")
+    ref = fids[0]
+    m0 = maps[ref]
+    rng0 = road_range(m0)
+    g0 = ground_model(m0, rng0)
+    print(f"== 连续段噪声底（{args.session} {fids[0]}..{fids[-1]}，{len(fids)} 帧）==")
+    print("区域（参考帧亮度选）      像素数  时间σ(跨帧)  空间σ(帧内)  建议最小门=3σ")
+    y0r, y1r = args.row_from, args.row_to
+    for name, lo, hi in (("路面 L60~120", 60, 120), ("暗带 L<55", 0, 55),
+                         ("亮面 L>130", 130, 999), ("中间调 L120~130", 120, 130)):
+        band = (lums[ref][y0r:y1r, :args.scan_w] >= lo) & (lums[ref][y0r:y1r, :args.scan_w] < hi)
+        if band.sum() < 300:
+            print(f"{name:22s} {int(band.sum()):6d}  样本不足")
+            continue
+        tmed, spat = [], []
+        for fid in fids:
+            rg = road_range(maps[fid])
+            gv = ground_model(maps[fid], rg)[y0r - Y0:y1r - Y0][:, None]
+            rel = (maps[fid][y0r:y1r, :args.scan_w] - gv) / np.maximum(np.abs(gv), 1e-6)
+            vals = rel[band]
+            tmed.append(float(np.median(vals)))
+            spat.append(float(np.std(vals)))
+        tstd = float(np.std(tmed))
+        sstd = float(np.median(spat))
+        print(f"{name:22s} {int(band.sum()):6d}    {tstd:.4f}      {sstd:.4f}      "
+              f"{3*max(tstd, sstd):.3f}")
+    print()
+    print("读法：同一块真实表面，(M−g)/g 跨帧应恒定；σ 即噪声底。"
+          "路面行的 σ 是地板（真值应为 0），亮面行的 σ 是台阶读数的不确定度。")
+
+
 def cmd_selftest(_args) -> None:
     print("== 合成自检（已知几何，验证索引与 θ↔h/H 关系）==")
     for kind in ("road", "raised", "wall"):
@@ -1210,6 +1267,14 @@ def main() -> None:
     k.add_argument("--row-from", type=int, default=520)
     k.add_argument("--row-to", type=int, default=700)
     k.add_argument("--scan-w", type=int, default=620)
+    n = sub.add_parser("noise")
+    n.add_argument("--session", default="20260919_202138_p2")
+    n.add_argument("--from-fid", type=int, default=1280)
+    n.add_argument("--to-fid", type=int, default=1460)
+    n.add_argument("--step", type=int, default=10)
+    n.add_argument("--row-from", type=int, default=520)
+    n.add_argument("--row-to", type=int, default=690)
+    n.add_argument("--scan-w", type=int, default=440)
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -1217,7 +1282,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb, "noise": cmd_noise,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
