@@ -1078,6 +1078,78 @@ def _row_runs(mask_row: np.ndarray) -> list[int]:
     return out
 
 
+def cmd_grid(args) -> None:
+    """三帧 × 三列九宫格：原图 | 深度伪彩（统一绝对色标）| 现方案采点。给人一眼看清现状。
+
+    采点列 = 青：HSV 黄线在该行的 run 中心；品红：现规则（由画面边向内找近区终止）
+    判定的深度边缘；黄绿线：把各行的深度边缘连起来（看得出它是断的、跳的）。
+    """
+    root = Path(__file__).resolve().parents[3]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from maaracing_master.plugins.speedrush.boundary import (
+        BAND_BOT_OFF, BAND_STEP, BAND_TOP_OFF, _HSV_HIGH, _HSV_LOW)
+    sess_dir = pd.APP / "demos" / args.session / "frames"
+    rows = list(range(int(Y_H) + BAND_TOP_OFF, int(Y_H) + BAND_BOT_OFF, BAND_STEP))
+    fids = [int(x) for x in args.fids.split(",")]
+    panels = []
+    for fid in fids:
+        fp = sess_dir / f"{fid:06d}.jpg"
+        if not fp.exists():
+            continue
+        key = pcq.frame_key(fp)
+        cache = NPY / f"{key}__da2s.npy"
+        rgb = cv2.cvtColor(cv2.imread(str(fp)), cv2.COLOR_BGR2RGB)
+        m = (np.load(cache).astype(np.float32) if cache.exists()
+             else pd.depth_map(_folded_sess(518), rgb, 518))
+        if not cache.exists():
+            np.save(cache, m.astype(np.float16))
+        rng = road_range(m)
+        g = ground_model(m, rng)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        canvas = rgb.copy()
+        pts = {1: [], -1: []}
+        for y in rows:
+            gv = g[y - Y0]
+            cen = _row_runs(cv2.inRange(hsv[y:y + 1], _HSV_LOW, _HSV_HIGH)[0])
+            for c in cen:
+                cv2.circle(canvas, (c, y), 2, (0, 220, 220), -1)
+            for sign in (-1, 1):
+                xe = _depth_edge_x(m[y], gv, sign, args.gate, args.hold)
+                if xe is None:
+                    continue
+                pts[sign].append((xe, y))
+                cv2.circle(canvas, (xe, y), 2, (255, 0, 255), -1)
+        for sign in (-1, 1):
+            if len(pts[sign]) > 2:
+                cv2.polylines(canvas, [np.array(pts[sign], np.int32)], False, (180, 255, 0), 2)
+        band = m[Y0:DIAG_Y1][:, cols_of(m)]
+        lo, hi = np.percentile(band, [0.5, 99.5])
+        du = np.clip((m - lo) / max(hi - lo, 1e-6) * 255, 0, 255).astype(np.uint8)
+        dep = cv2.cvtColor(cv2.applyColorMap(du, cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+        n = len(pts[1]) + len(pts[-1])
+        print(f"  [{fid}] 深度边缘采点 {n}/{2*len(rows)} 处"
+              f"（左 {len(pts[-1])}、右 {len(pts[1])}；扫描带 {len(rows)} 行×两侧）")
+        panels.append((fid, rgb, dep, canvas, n, len(rows) * 2))
+    from PIL import Image, ImageDraw, ImageFont
+    pw, ph, cap = 426, 240, 20
+    sheet = Image.new("RGB", (3 * pw, len(panels) * (ph + cap) + cap), "white")
+    dr = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    for j, t in enumerate(("原图", "深度伪彩（红=近 蓝=远，路面区统一色标）",
+                           "现方案采点（青=黄线 品红=深度边缘 黄绿=连线）")):
+        dr.text((j * pw + 6, len(panels) * (ph + cap) + 4), t, fill="black", font=font)
+    for i, (fid, a, b, c, n, tot) in enumerate(panels):
+        for j, im in enumerate((a, b, c)):
+            sheet.paste(Image.fromarray(cv2.resize(im, (pw, ph))),
+                        (j * pw, i * (ph + cap)))
+        dr.text((6, i * (ph + cap) + ph + 3), f"fid {fid}  采点 {n}/{tot} 行",
+                fill="black", font=font)
+    o = OUT / "edges_grid.jpg"
+    sheet.save(o, quality=90)
+    print(f"[fig] {o}")
+
+
 def cmd_selftest(_args) -> None:
     print("== 合成自检（已知几何，验证索引与 θ↔h/H 关系）==")
     for kind in ("road", "raised", "wall"):
@@ -1411,6 +1483,11 @@ def main() -> None:
     ee.add_argument("--step", type=int, default=60)
     ee.add_argument("--gate", type=float, default=0.02)
     ee.add_argument("--hold", type=int, default=12)
+    gg = sub.add_parser("grid")
+    gg.add_argument("--session", default="20260919_202138_p2")
+    gg.add_argument("--fids", default="1160,1280,1400")
+    gg.add_argument("--gate", type=float, default=0.02)
+    gg.add_argument("--hold", type=int, default=12)
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -1418,7 +1495,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb, "noise": cmd_noise, "edges": cmd_edges,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb, "noise": cmd_noise, "edges": cmd_edges, "grid": cmd_grid,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
