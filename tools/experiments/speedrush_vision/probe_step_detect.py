@@ -920,9 +920,6 @@ def cmd_noise(args) -> None:
     if len(fids) < 5:
         raise SystemExit("连续帧不足")
     ref = fids[0]
-    m0 = maps[ref]
-    rng0 = road_range(m0)
-    g0 = ground_model(m0, rng0)
     print(f"== 连续段噪声底（{args.session} {fids[0]}..{fids[-1]}，{len(fids)} 帧）==")
     print("区域（参考帧亮度选）      像素数  时间σ(跨帧)  空间σ(帧内)  建议最小门=3σ")
     y0r, y1r = args.row_from, args.row_to
@@ -947,6 +944,138 @@ def cmd_noise(args) -> None:
     print()
     print("读法：同一块真实表面，(M−g)/g 跨帧应恒定；σ 即噪声底。"
           "路面行的 σ 是地板（真值应为 0），亮面行的 σ 是台阶读数的不确定度。")
+
+
+def _ego_span(rel: np.ndarray, gate: float, start: int = 640) -> tuple[int, int]:
+    """自车轮廓在该行的列跨度 = 包含 x=start 的连续近区段（rel>gate）。
+
+    扫描带下半段就是自车尾翼/车顶，它比路面近得多；不先剔掉，"向外找台阶"
+    第一下就撞在自车轮廓上（实测黄绿线画在路中间，即此）。
+    """
+    if not (0 <= start < len(rel)) or rel[start] <= gate:
+        return start, start
+    a = start
+    while a > 0 and rel[a - 1] > gate:
+        a -= 1
+    b = start
+    while b < len(rel) - 1 and rel[b + 1] > gate:
+        b += 1
+    return a, b
+
+
+def _depth_edge_x(row: np.ndarray, gv: float, sign: int, gate: float,
+                  hold: int) -> int | None:
+    """路边缘 = **从画面边缘向内走，"比路面近"停住的地方**（不是"向外走第一个更近的东西"）。
+
+    向外走的版本会被路上任何近物劫持（实测：前车、货车、金币、坡道结构都被当成边缘，
+    黄绿线画在路中间）。而路面以外是**一路延伸到画面边**的，故从外向内找"近区终止"
+    天然跳过路内部的物体。hold 用于抗单像素噪声。
+    """
+    rel = (row - gv) / max(abs(gv), 1e-6)
+    n = len(rel)
+    if sign < 0:
+        seg = rel[:n][::-1]                      # 从 x=0 向内
+        idx0 = 0
+    else:
+        seg = rel[n - 1:][::-1]                  # 从 x=W-1 向内
+        idx0 = n - 1
+    if len(seg) <= hold or seg[0] <= gate:
+        return None                              # 画面边本身不是近区 ⇒ 该侧无边缘
+    below = seg <= gate
+    cs = np.concatenate(([0.0], np.cumsum(below)))
+    w = cs[hold:] - cs[:-hold]
+    idx = np.where(w == hold)[0]
+    if len(idx) == 0:
+        return None
+    k = idx[0] + hold                            # 近区终止处
+    return int(idx0 - k) if sign < 0 else int(idx0 + k)
+
+
+def cmd_edges(args) -> None:
+    """逐行并排两个传感器看到的边缘，出图给人判（维护者指示：不奉旧记录数据为圭臬）。
+
+     cyan  = HSV 黄线在该行的 run 中心（生产常量 import，不抄第二份）
+    品红  = 深度在该行找到的台阶边缘（相对偏离 (M−g)/g 超门、连续 hold px）
+    黄绿线 = 把各行的深度边缘连起来 ⇒ 若是曲线，直接看得出来（HSV 层拟合的是直线）
+    """
+    root = Path(__file__).resolve().parents[3]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from maaracing_master.plugins.speedrush.boundary import (
+        BAND_BOT_OFF, BAND_STEP, BAND_TOP_OFF, _HSV_HIGH, _HSV_LOW)
+    sess_dir = pd.APP / "demos" / args.session / "frames"
+    rows = list(range(int(Y_H) + BAND_TOP_OFF, int(Y_H) + BAND_BOT_OFF, BAND_STEP))
+    panels = []
+    for fid in range(args.from_fid, args.to_fid + 1, args.step):
+        fp = sess_dir / f"{fid:06d}.jpg"
+        if not fp.exists():
+            continue
+        key = pcq.frame_key(fp)
+        cache = NPY / f"{key}__da2s.npy"
+        rgb = cv2.cvtColor(cv2.imread(str(fp)), cv2.COLOR_BGR2RGB)
+        if cache.exists():
+            m = np.load(cache).astype(np.float32)
+        else:
+            m = pd.depth_map(_folded_sess(518), rgb, 518)
+            np.save(cache, m.astype(np.float16))
+        rng = road_range(m)
+        g = ground_model(m, rng)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        canvas = rgb.copy()
+        dep_pts, n_no_y, gaps = [], 0, []
+        for y in rows:
+            gv = g[y - Y0]
+            mr = cv2.inRange(hsv[y:y + 1], _HSV_LOW, _HSV_HIGH)[0]
+            cen = _row_runs(mr)
+            for c in cen:
+                cv2.circle(canvas, (c, y), 2, (0, 220, 220), -1)
+            for sign in (-1, 1):
+                xe = _depth_edge_x(m[y], gv, sign, args.gate, args.hold)
+                if xe is None:
+                    continue
+                dep_pts.append((xe, y, sign))
+                cv2.circle(canvas, (xe, y), 2, (255, 0, 255), -1)
+                same = [c for c in cen if (c < VPX) == (sign < 0)]
+                if not same:
+                    n_no_y += 1
+                else:
+                    gaps.append(min(abs(c - xe) for c in same))
+        for sign in (-1, 1):
+            pts = [(x, y) for x, y, sg in dep_pts if sg == sign]
+            if len(pts) > 2:
+                cv2.polylines(canvas, [np.array(pts, np.int32)], False, (180, 255, 0), 2)
+        txt = (f"深度边缘 {len(dep_pts)} 处；该行无黄线的深度边缘 {n_no_y} 处"
+               f"；两者横向差中位 {np.median(gaps) if gaps else float('nan'):.0f}px")
+        print(f"  [{fid}] {txt}")
+        panels.append((fid, rgb, canvas, txt))
+    from PIL import Image, ImageDraw, ImageFont
+    pw, ph = 640, 360
+    sheet = Image.new("RGB", (2 * pw, len(panels) * (ph + 18)), "white")
+    dr = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    for i, (fid, rgb0, canvas0, txt) in enumerate(panels):
+        sheet.paste(Image.fromarray(cv2.resize(rgb0, (pw, ph))), (0, i * (ph + 18)))
+        sheet.paste(Image.fromarray(cv2.resize(canvas0, (pw, ph))), (pw, i * (ph + 18)))
+        dr.text((4, i * (ph + 18) + ph + 2), f"{fid}  {txt[:96]}  青=黄线run 品红=深度边缘 黄绿=深度连线",
+                fill="black", font=font)
+    o = OUT / "edges_compare.jpg"
+    sheet.save(o, quality=88)
+    print(f"[fig] {o}")
+
+
+def _row_runs(mask_row: np.ndarray) -> list[int]:
+    """一行二值掩码的连续段中心（与生产 _row_run_centers 同语义，此处只要中心列表）。"""
+    out, st = [], None
+    for i, v in enumerate(mask_row):
+        if v and st is None:
+            st = i
+        elif not v and st is not None:
+            if i - st >= 2:
+                out.append((st + i) // 2)
+            st = None
+    if st is not None and len(mask_row) - st >= 2:
+        out.append((st + len(mask_row)) // 2)
+    return out
 
 
 def cmd_selftest(_args) -> None:
@@ -1275,6 +1404,13 @@ def main() -> None:
     n.add_argument("--row-from", type=int, default=520)
     n.add_argument("--row-to", type=int, default=690)
     n.add_argument("--scan-w", type=int, default=440)
+    ee = sub.add_parser("edges")
+    ee.add_argument("--session", default="20260919_202138_p2")
+    ee.add_argument("--from-fid", type=int, default=1160)
+    ee.add_argument("--to-fid", type=int, default=1460)
+    ee.add_argument("--step", type=int, default=60)
+    ee.add_argument("--gate", type=float, default=0.02)
+    ee.add_argument("--hold", type=int, default=12)
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -1282,7 +1418,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb, "noise": cmd_noise,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb, "noise": cmd_noise, "edges": cmd_edges,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
