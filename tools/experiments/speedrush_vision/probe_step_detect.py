@@ -49,6 +49,9 @@
     python $P attrib --variant rel         # 归因分类 + CSV + 两张目检拼图（--th 默认 0.06）
     python $P attrib --variant mask
     python $P jitter --variant rel         # 唯一真连续段（stab 100..140）跨帧抖动
+    python $P horizon                      # 逐帧隐含地平线行（g(y) 零点）vs 冻结 Y_H
+    python $P rayfit [--anchor frozen|est] # 掩码下沿点上的边界射线识别率
+    python $P vpfit                        # 逐帧估 VP（两线交点）+ 锚点行/列缺口
 """
 
 from __future__ import annotations
@@ -169,8 +172,8 @@ def jitter_pct(ys: np.ndarray) -> float:
 
 
 def hough_rays(xs: np.ndarray, ys: np.ndarray, res_deg: float = 0.25, tol: float = 3.0,
-               min_slope: float = 0.0):
-    """过消失点的 1-D Hough（角度扫描）：边界线必过 VP ⇒ 一条边界线 = 一个角度。
+               min_slope: float = 0.0, vp: tuple[float, float] = (VPX, Y_H)):
+    """过给定点（默认冻结消失点）的 1-D Hough（角度扫描）：边界线必过 VP ⇒ 一条线=一个角度。
 
     比固定角度分箱稳健——分箱会把一条略弯的边界线切碎（实测 0.5° 分箱下
     raylen_med = 0px）。`min_slope` 见 hough_free：与自由线对照时必须同设。
@@ -178,8 +181,9 @@ def hough_rays(xs: np.ndarray, ys: np.ndarray, res_deg: float = 0.25, tol: float
     """
     if len(xs) < 3:
         return None
-    ang = np.degrees(np.arctan2(ys - Y_H, xs - VPX))
-    rad = np.hypot(xs - VPX, ys - Y_H)
+    vpx, vpy = vp
+    ang = np.degrees(np.arctan2(ys - vpy, xs - vpx))
+    rad = np.hypot(xs - vpx, ys - vpy)
     grid = np.arange(-89.0, 89.0 + 1e-9, res_deg)
     if min_slope > 0:
         lim = np.degrees(np.arctan(min_slope))
@@ -413,11 +417,14 @@ def vp_x_of(ang_deg: float, off: float) -> float:
     return float((off + Y_H * np.cos(rr)) / sa) if abs(sa) > 1e-6 else np.nan
 
 
-def cmd_rayfit(_args) -> None:
+def cmd_rayfit(args) -> None:
     """§6 正确口径 + §4 前提检验：在**掩码下沿点**（θ 无关）上拟合边界射线。
 
-    argmax 检出点的最优射线会选到远场浅线（实测），不能当"边界识别率"；
+    argmax 检出点上的"最优射线"会选到远场浅线（实测），不能当"边界识别率"；
     掩码下沿点按构造就是边界候选。
+
+    `--anchor {frozen,est}`：射线锚点的**行**用冻结 Y_H 还是逐帧 g(y) 零点（列都用
+    冻结 VPX）。两者之差直接回答"识别率低是标定行偏了，还是横向（航向/弯道）不对"。
     """
     frames = pcq.all_frames()
     rec = []
@@ -426,11 +433,14 @@ def cmd_rayfit(_args) -> None:
         m = np.load(NPY / f"{k}__da2s.npy").astype(np.float32)
         rng = road_range(m)
         g = ground_model(m, rng)
+        y0 = horizon_row(m, g) if args.anchor == "est" else Y_H
+        if not np.isfinite(y0):
+            y0 = Y_H
         bx, by, _ = detect_mask(m, g, rng, GATE)
         row = {"key": k}
         for side, sign in (("l", -1), ("r", 1)):
             sel = side_of(bx, by, sign)
-            hv = hough_rays(bx[sel], by[sel], min_slope=0.25)
+            hv = hough_rays(bx[sel], by[sel], min_slope=0.25, vp=(VPX, y0))
             hf = hough_free(bx[sel], by[sel], min_slope=0.25)
             row[f"n_{side}"] = int(sel.sum())
             row[f"vp_{side}"] = int(bool(hv and hv[1] >= RAY_SUP and hv[2] >= RAY_MIN))
@@ -440,7 +450,8 @@ def cmd_rayfit(_args) -> None:
             row[f"drift_{side}"] = abs(vp_x_of(hf[1], hf[2]) - VPX) if hf else np.nan
         rec.append(row)
     n = len(rec)
-    print(f"== 掩码下沿点上的射线拟合（{n} 帧；射线口径 = 支持≥{RAY_SUP} 列且延展≥{RAY_MIN:.0f}px）==")
+    print(f"== 掩码下沿点上的射线拟合（{n} 帧；射线口径 = 支持≥{RAY_SUP} 列且延展≥"
+          f"{RAY_MIN:.0f}px；锚点行={args.anchor}）==")
     print(f"{'侧':4s} {'点数中位':>8s} {'VP约束识别':>10s} {'自由线识别':>10s} "
           f"{'支持中位VP':>10s} {'支持中位自由':>10s} {'VP漂移中位':>10s}")
     for side in ("l", "r"):
@@ -457,6 +468,134 @@ def cmd_rayfit(_args) -> None:
     both = sum(1 for r in rec if r["vp_l"] and r["vp_r"])
     anyv = sum(1 for r in rec if r["vp_l"] or r["vp_r"])
     print(f"VP 约束：两侧都识别={both}/{n} 至少一侧={anyv}/{n}")
+
+
+def line_intersect(a1: float, o1: float, a2: float, o2: float):
+    """两条线（方向角、法向偏移）的交点。法向 n=(sin a, −cos a)，线 = {p : p·n = off}。"""
+    r1, r2 = np.radians(a1), np.radians(a2)
+    A = np.array([[np.sin(r1), -np.cos(r1)], [np.sin(r2), -np.cos(r2)]], np.float64)
+    det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+    if abs(det) < 1e-6:
+        return np.nan, np.nan
+    b = np.array([o1, o2], np.float64)
+    return ((A[1, 1] * b[0] - A[0, 1] * b[1]) / det,
+            (A[0, 0] * b[1] - A[1, 0] * b[0]) / det)
+
+
+def cmd_vpfit(_args) -> None:
+    """逐帧估消失点：左右边界线各自自由拟合（不绑 VP），交点 = 该帧 VP。
+
+    回答三问：① 估出的 VP 与冻结值差多少（= 冻结标定在真实帧上的实际误差）；
+    ② 交点 y 与地平线行 Y_H 差多少（= "VP 落在地平线行"这个标定假设是否成立）；
+    ③ 用逐帧 VP 重跑"边界=过 VP 射线"的识别率，能否救回 `rayfit` 里冻结 VP 的低覆盖
+      ——这一条才是决定第一关参数化怎么写的答案。
+    """
+    frames = pcq.all_frames()
+    rec = []
+    for p in frames:
+        k = pcq.frame_key(p)
+        m = np.load(NPY / f"{k}__da2s.npy").astype(np.float32)
+        rng = road_range(m)
+        g = ground_model(m, rng)
+        bx, by, _ = detect_mask(m, g, rng, GATE)
+        row = {"key": k, "vx": np.nan, "vy": np.nan}
+        fits = {}
+        for side, sign in (("l", -1), ("r", 1)):
+            sel = side_of(bx, by, sign)
+            hf = hough_free(bx[sel], by[sel], min_slope=0.25)
+            ok = bool(hf and hf[0] >= 20 and hf[3] >= 80)
+            fits[side] = hf if ok else None
+            row[f"fit_{side}"] = int(ok)
+        if fits["l"] and fits["r"]:
+            row["vx"], row["vy"] = line_intersect(fits["l"][1], fits["l"][2],
+                                                  fits["r"][1], fits["r"][2])
+            for side, sign in (("l", -1), ("r", 1)):
+                sel = side_of(bx, by, sign)
+                he = hough_rays(bx[sel], by[sel], min_slope=0.25, vp=(row["vx"], row["vy"]))
+                hz = hough_rays(bx[sel], by[sel], min_slope=0.25)
+                row[f"est_{side}"] = int(bool(he and he[1] >= RAY_SUP and he[2] >= RAY_MIN))
+                row[f"frz_{side}"] = int(bool(hz and hz[1] >= RAY_SUP and hz[2] >= RAY_MIN))
+        rec.append(row)
+    n = len(rec)
+    got = [r for r in rec if np.isfinite(r["vx"])]
+    print(f"== 逐帧估 VP（{n} 帧；两侧都拟出直线 = {len(got)}）==")
+    print(f"单侧拟出：左 {sum(r['fit_l'] for r in rec)}/{n}  右 {sum(r['fit_r'] for r in rec)}/{n}")
+    if got:
+        dx = np.abs([r["vx"] - VPX for r in got])
+        dy = np.abs([r["vy"] - Y_H for r in got])
+        inframe = sum(1 for r in got if 0 <= r["vx"] < 1280)
+        print(f"VP 横向偏差 |vx−{VPX:.1f}|：中位={np.median(dx):.0f}px "
+              f"p90={np.percentile(dx, 90):.0f}px  估点落在画面内={inframe}/{len(got)}")
+        print(f"VP 纵向偏差 |vy−{Y_H:.1f}|（地平线行假设）：中位={np.median(dy):.0f}px "
+              f"p90={np.percentile(dy, 90):.0f}px")
+        print("\n-- 识别率对比（同一批掩码下沿点、同一口径：支持≥30 且延展≥100px）--")
+        print(f"{'':10s} {'左':>8s} {'右':>8s} {'两侧':>8s} {'至少一侧':>9s}")
+        for tag, pre in (("冻结 VP", "frz"), ("逐帧估 VP", "est")):
+            both = sum(1 for r in got if r[f"{pre}_l"] and r[f"{pre}_r"])
+            anyv = sum(1 for r in got if r[f"{pre}_l"] or r[f"{pre}_r"])
+            print(f"{tag:10s} {sum(r[f'{pre}_l'] for r in got):7d} "
+                  f"{sum(r[f'{pre}_r'] for r in got):8d} {both:8d} {anyv:9d}"
+                  f"   （/{len(got)} 帧）")
+    seg = [r for r in rec if r["key"].startswith(f"{pd.CTRL_SESSION.name}__")
+           and 100 <= int(r["key"].split("__")[1]) <= 140 and np.isfinite(r["vx"])]
+    if len(seg) > 3:
+        vx = np.array([r["vx"] for r in seg])
+        vy = np.array([r["vy"] for r in seg])
+        print(f"\n-- 连续段（100..140，估出 {len(seg)} 帧）的时序可用性 --")
+        print(f"vx 范围 [{vx.min():.0f}, {vx.max():.0f}] std={vx.std():.0f}px "
+              f"一阶差分 std={np.diff(vx).std():.0f}px")
+        print(f"vy 范围 [{vy.min():.0f}, {vy.max():.0f}] std={vy.std():.0f}px "
+              f"一阶差分 std={np.diff(vy).std():.0f}px")
+
+
+def horizon_row(m: np.ndarray, g: np.ndarray) -> float:
+    """g(y) 的零点 = 深度图自己承认的地平线行（不依赖直线拟合、不依赖 VP 假设）。
+
+    地面平面的视差严格正比于 (y − 地平线行)，故对 g 做一次稳健线性拟合取零点即可。
+    """
+    yy = np.arange(Y0, Y0 + len(g), dtype=np.float64)
+    ok = np.isfinite(g)
+    if ok.sum() < 50:
+        return np.nan
+    a, b = pcq.theil_sen(yy[ok], g[ok].astype(np.float64))
+    if not np.isfinite(a) or abs(a) < 1e-6:
+        return np.nan
+    return float(-b / a)
+
+
+def cmd_horizon(_args) -> None:
+    """冻结 Y_H 与深度图隐含地平线的对照（第一关几何锚点的选址依据）。"""
+    frames = pcq.all_frames()
+    y0, lin, resid = [], [], []
+    for p in frames:
+        m = np.load(NPY / f"{pcq.frame_key(p)}__da2s.npy").astype(np.float32)
+        rng = road_range(m)
+        g = ground_model(m, rng)[:Y1 - Y0].astype(np.float64)
+        yy = np.arange(Y0, Y1, dtype=np.float64)
+        ok = np.isfinite(g)
+        y0.append(horizon_row(m, g))
+        if ok.sum() < 50:
+            continue
+        a, b = pcq.theil_sen(yy[ok], g[ok])
+        lin.append(float(np.corrcoef(yy[ok], g[ok])[0, 1]))
+        resid.append(float(np.median(np.abs(g[ok] - (a * yy[ok] + b))) / max(rng, 1e-9)))
+    v = np.array(y0)
+    good = np.isfinite(v)
+    d = np.abs(v[good] - Y_H)
+    print(f"== 隐含地平线行（g(y) 零点，n={int(good.sum())}/{len(frames)}）==")
+    print(f"分位 5/25/50/75/95 = {np.round(np.percentile(v[good], [5, 25, 50, 75, 95]), 1)}")
+    print(f"vs 冻结 Y_H={Y_H}：偏差中位={np.median(v[good]) - Y_H:+.1f}px "
+          f"|偏差| 中位={np.median(d):.0f}px p90={np.percentile(d, 90):.0f}px "
+          f"落在 ±10px 内={int((d <= 10).sum())}/{int(good.sum())}")
+    print(f"g 对 y 线性相关：中位={np.median(lin):.4f} p5={np.percentile(lin, 5):.4f}；"
+          f"残差/量程：中位={np.median(resid):.4f} p90={np.percentile(resid, 90):.4f}")
+    seg = [v[i] for i, p in enumerate(frames)
+           if p.parent == pd.CTRL_SESSION and 100 <= int(p.stem) <= 140
+           and np.isfinite(v[i])]
+    if len(seg) > 3:
+        s = np.array(seg)
+        print(f"连续段（100..140，{len(s)} 帧）：std={s.std():.1f}px "
+              f"一阶差分 std={np.diff(s).std():.1f}px  ← 逐帧估计可用性的判据")
 
 
 def cmd_selftest(_args) -> None:
@@ -755,7 +894,10 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selftest")
     sub.add_parser("sweep")
-    sub.add_parser("rayfit")
+    s = sub.add_parser("rayfit")
+    s.add_argument("--anchor", choices=("frozen", "est"), default="frozen")
+    sub.add_parser("vpfit")
+    sub.add_parser("horizon")
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -763,6 +905,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
