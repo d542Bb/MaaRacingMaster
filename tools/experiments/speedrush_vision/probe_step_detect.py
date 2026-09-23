@@ -1150,6 +1150,279 @@ def cmd_grid(args) -> None:
     print(f"[fig] {o}")
 
 
+def region_inner(m: np.ndarray, rng: float, G: float = 0.02, hold: int = 12,
+                 N: int = 100) -> dict:
+    """无锚边界块的**唯一实现**：相对门→横向持续收紧→8 向连通块→触边跨行最大块。
+    → {side: (inner{y:x}, ymin, ymax) | None}。cmd_region 与 gold_score 共用。"""
+    g = ground_model(m, rng)
+    r = np.full(m.shape, np.nan, np.float32)
+    r[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
+    over = np.where(np.nan_to_num(r, nan=-1) > G, 1.0, 0.0)
+    # 自车守卫：ego_mask.npy（stab 连续段静态常驻 ∩ 中央带派生，见 README 金标评分节）
+    # 从块掩码中挖掉自车，断开"车身→护栏→墙"的合并桥。皮肤相关：换车需重算掩码。
+    em = OUT / "ego_mask.npy"
+    if em.exists():
+        over[np.load(em).astype(bool)] = 0.0
+    mask = (cv2.filter2D(over, -1, np.ones((1, hold), np.float32)) >= hold).astype(np.uint8)
+    ncc, lab = cv2.connectedComponents(mask, connectivity=8)[:2]
+    out = {}
+    for side in ("L", "R"):
+        best, span = None, 0
+        for c in range(1, ncc):
+            ys, xs = np.nonzero(lab == c)
+            touch = xs.min() <= 2 if side == "L" else xs.max() >= 1277
+            if touch and (ys.max() - ys.min()) > span:
+                span, best = int(ys.max() - ys.min()), (ys, xs)
+        if best is None or span < N:
+            out[side] = None
+            continue
+        ys, xs = best
+        inner: dict = {}
+        for y, x in zip(ys, xs):
+            if side == "R":
+                inner[y] = min(inner.get(y, 1 << 20), int(x))
+            else:
+                inner[y] = max(inner.get(y, -1), int(x))
+        out[side] = (inner, int(ys.min()), int(ys.max()))
+    return out
+
+
+def cmd_region(args) -> None:
+    """无锚边界搜索：非地面连通块 → 逐行内沿 → 与黄线锚定法对账（A 方案的兜底半边）。
+
+    判据全部来自已钉死的结论：单像素不可信 ⇒ 区域级；边界=贯穿多行朝 VP 收敛的线，
+    车/金币=行跨度有限的团块 ⇒ 连通块 + 触画面侧边 + 跨 ≥N 行。相对门 (M−g)/g>G。
+    对账两个方向：HSV 在场 ⇒ 位置一致性（region_x − x_lane，期望小正数=线外台阶/墙基）；
+    HSV 缺席 ⇒ 兜底产出率（弯道内侧、近排出画）。已知风险如实暴露：贴边大车（204603
+    加长车）会触边成块 ⇒ 表里以"region_x 异常外推"暴露，不掩盖。
+    """
+    if args.session:
+        sdir = pd.APP / "demos" / args.session / "frames"
+        if not sdir.is_dir():
+            raise SystemExit(f"无此会话帧目录：{sdir}")
+        frames = [sdir / f"{i:06d}.jpg" for i in range(args.from_fid, args.to_fid + 1)]
+        frames = [p for p in frames if p.exists()]
+    else:
+        frames = pcq.all_frames()
+    sess = None
+    trace = {int(x) for x in args.trace.split(",") if x.strip()}
+    G, N = args.gate, args.min_span
+    NH = args.min_rows
+    recs = []
+    sheets = []
+    for p in frames:
+        k = pcq.frame_key(p)
+        cache = NPY / f"{k}__da2s.npy"
+        rgb = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+        if cache.exists():
+            m = np.load(cache).astype(np.float32)
+        else:
+            if sess is None:
+                sess = _folded_sess(518)
+            m = pd.depth_map(sess, rgb, 518)
+            np.save(cache, m.astype(np.float16))
+        rng = road_range(m)
+        blobs = region_inner(m, rng, G, args.hold, N)
+        ymask = cv2.inRange(cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV), pd.HSV_LO, pd.HSV_HI)
+        fidnum = int(p.stem) if p.stem.isdigit() else -1
+        rec = {"key": k}
+        for side in ("L", "R"):
+            band = ymask[args.y0:args.y1]
+            cols = band[:, EGO[1] + 1:] if side == "R" else band[:, :EGO[0]]
+            rec[f"hsv_{side}"] = int((cols > 0).any(axis=1).sum())
+            b = blobs[side]
+            if b is None:
+                rec[f"reg_{side}"] = 0
+                rec[f"dx_{side}"] = np.nan
+                rec[f"ymin_{side}"] = -1
+                rec[f"ymax_{side}"] = -1
+                rec[f"slp_{side}"] = rec[f"res_{side}"] = rec[f"x320_{side}"] = np.nan
+                continue
+            inner, ymin_, ymax_ = b
+            rec[f"ymin_{side}"] = ymin_
+            rec[f"ymax_{side}"] = ymax_
+            iy = sorted(inner)
+            if args.sheet and rec[f"hsv_{side}"] < NH and len(iy) >= N:
+                sheets.append((p, m, side, inner))
+            near_rows = [y for y in iy if y >= 550]
+            rec[f"reg_{side}"] = len(iy)
+            # 与 HSV 对账（近带行）
+            diffs = []
+            for y in (near_rows or iy)[::4]:
+                xs_h = np.where(ymask[y] > 0)[0]
+                sel = xs_h[(xs_h > EGO[1])] if side == "R" else xs_h[(xs_h < EGO[0])]
+                if len(sel):
+                    x_lane = int(sel.max()) if side == "R" else int(sel.min())
+                    diffs.append(inner[y] - x_lane)
+            rec[f"dx_{side}"] = float(np.median(diffs)) if diffs else np.nan
+            # 内沿线几何：x(y) 线性拟合斜率 + 残差（墙=沿路收敛的斜线；车=侧壁近竖直
+            # 且车尾弦打高残差）。外推到 y=320 的横向位置供收敛性检查。
+            if len(iy) >= 20:
+                yy = np.array(iy, float)
+                xx = np.array([inner[y] for y in iy], float)
+                sl, ic = np.polyfit(yy, xx, 1)
+                rec[f"slp_{side}"] = float(sl)
+                rec[f"res_{side}"] = float(np.median(np.abs(xx - (sl * yy + ic))))
+                rec[f"x320_{side}"] = float(sl * 320 + ic)
+            else:
+                rec[f"slp_{side}"] = rec[f"res_{side}"] = rec[f"x320_{side}"] = np.nan
+            if fidnum in trace:
+                nx = [inner[y] for y in near_rows]
+                print(f"   [{p.stem} {side}] 块行数={len(iy)} 跨度={ymax_ - ymin_} "
+                      f"内沿近带中位={int(np.median(nx)) if nx else '-'} "
+                      f"dx={rec[f'dx_{side}'] if np.isfinite(rec[f'dx_{side}']) else float('nan'):.0f}")
+        recs.append(rec)
+    # 汇总：兜底率 = HSV 缺（行数<N_h）而 region 在场
+    print(f"== 无锚连通块边界（G={G} 触侧边 跨≥{N} 行；帧集={len(frames)}）==")
+    print(f"{'侧':4s}{'region在场':>9s}{'HSV在场':>8s}{'同在':>6s}{'HSV缺∧region在(兜底产出)':>22s}"
+          f"{'同在时dx中位':>12s}  斜率中位/残差中位")
+    for side in ("L", "R"):
+        reg = np.array([r[f"reg_{side}"] for r in recs]) >= N
+        hsv = np.array([r[f"hsv_{side}"] for r in recs]) >= NH
+        dx = np.array([r[f"dx_{side}"] for r in recs], float)
+        sl = np.array([r.get(f"slp_{side}", np.nan) for r in recs], float)
+        rs = np.array([r.get(f"res_{side}", np.nan) for r in recs], float)
+        both = reg & hsv
+        print(f"{side:4s}{int(reg.sum()):9d}{int(hsv.sum()):8d}{int(both.sum()):6d}"
+              f"{int(((~hsv) & reg).sum()):22d}", end="")
+        ok = both & np.isfinite(dx)
+        med = f"{np.median(dx[ok]):11.0f}px" if ok.sum() else "         -"
+        fin = np.isfinite(sl) & reg
+        med2 = f"  {np.median(sl[fin]):+.2f}px/px / {np.median(rs[fin]):.1f}px" if fin.sum() else ""
+        print(med + med2)
+    tag = f"_{args.session}{args.from_fid}" if args.session else "_corpus141"
+    if args.sheet and sheets:
+        from PIL import Image
+        pw, ph = 640, 360
+        out = Image.new("RGB", (2 * pw, min(len(sheets), 10) * ph), "white")
+        for i, (p, mm, side, inner) in enumerate(sheets[:10]):
+            rgb_i = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+            lo, hi = np.percentile(mm[300:DIAG_Y1][:, cols_of(mm)], [0.5, 99.5])
+            du = np.clip((mm - lo) / max(hi - lo, 1e-6) * 255, 0, 255).astype(np.uint8)
+            vis = cv2.cvtColor(cv2.applyColorMap(du, cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+            for y, x in inner.items():
+                if y % 4 == 0:
+                    cv2.circle(vis, (int(x), y), 2, (255, 255, 255), -1)
+            out.paste(Image.fromarray(cv2.resize(rgb_i, (pw, ph))), (0, i * ph))
+            out.paste(Image.fromarray(cv2.resize(vis, (pw, ph))), (pw, i * ph))
+        o = OUT / f"region_sheet{tag}.jpg"
+        out.save(o, quality=88)
+        print(f"[sheet] {o}（{len(sheets)} 帧兜底产出，左原帧/右块内沿白点）")
+    tag = f"_{args.session}{args.from_fid}" if args.session else "_corpus141"
+    out_csv = OUT / f"region_g{int(G*1000)}_n{N}_h{args.hold}{tag}.csv"
+    with out_csv.open("w", newline="", encoding="utf-8") as f:
+        wr = csv.DictWriter(f, fieldnames=list(recs[0]))
+        wr.writeheader()
+        wr.writerows(recs)
+    print(f"[CSV] {out_csv}")
+
+
+def cmd_verify(args) -> None:
+    """A 方案（维护者裁定）：黄线锚定的深度台阶验证器 + 联合覆盖表（141 帧，零标注）。
+
+    每帧每侧：HSV 黄线外沿 x_lane(y) → 外搜索窗 [x_lane+4, x_lane+95] →
+    r=(m−g_row)/g_row（g_row=该行路面内部中位，剔自车列）→ 首个持续 ≥hold px 的
+    r>G 起跳 = 台阶。跨行聚合：≥N 行给出 ⇒ 该侧深度在场。三个角色一次量出：
+    ① 确认（HSV 在场 ∧ 台阶在场，附外偏量 step−x_lane）；
+    ② 剔干扰（HSV 在场但窗内无台阶 ⇒ 该"黄线"不是路缘，HUD 弹字/建筑黄斑类）；
+    ③ 兜底需求规模（HSV 缺的帧数——黄线锚定失效、须另立无锚搜索的帧集）。
+    """
+    G, K, N, WIN = args.gate, args.hold, args.min_rows, args.win
+    if args.session:
+        sdir = pd.APP / "demos" / args.session / "frames"
+        if not sdir.is_dir():
+            raise SystemExit(f"无此会话帧目录：{sdir}")
+        frames = [sdir / f"{i:06d}.jpg" for i in range(args.from_fid, args.to_fid + 1)]
+        frames = [p for p in frames if p.exists()]
+    else:
+        frames = pcq.all_frames()
+    sess = None
+    trace = {int(x) for x in args.trace.split(",") if x.strip()}
+    recs = []
+    for p in frames:
+        k = pcq.frame_key(p)
+        cache = NPY / f"{k}__da2s.npy"
+        rgb = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+        if cache.exists():
+            m = np.load(cache).astype(np.float32)
+        else:
+            if sess is None:
+                sess = _folded_sess(518)
+            m = pd.depth_map(sess, rgb, 518)
+            np.save(cache, m.astype(np.float16))
+        ymask = cv2.inRange(cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV), pd.HSV_LO, pd.HSV_HI)
+        fidnum = int(p.stem) if p.stem.isdigit() else -1
+        rec = {"key": k}
+        for side in ("L", "R"):
+            offs, n_line, n_step = [], 0, 0
+            for y in range(args.y0, args.y1, 4):
+                xs = np.where(ymask[y] > 0)[0]
+                xs = xs[(xs > 20) & (xs < 1260)]
+                sel = xs[xs > EGO[1]] if side == "R" else xs[xs < EGO[0]]
+                if len(sel) == 0:
+                    continue
+                x_lane = int(sel.max()) if side == "R" else int(sel.min())
+                lo, hi = (x_lane + 4, min(x_lane + WIN + 1, 1279)) if side == "R" \
+                    else (max(x_lane - WIN, 1), x_lane - 3)
+                if hi - lo < K:
+                    continue
+                n_line += 1
+                # 路面参照：线内侧 ≥150px，剔自车列带
+                a, b = (max(x_lane - 260, 1), max(x_lane - 15, 1)) if side == "R" \
+                    else (min(x_lane + 15, 1279), min(x_lane + 260, 1279))
+                cols = np.arange(a, b)
+                cols = cols[(cols < EGO[0]) | (cols > EGO[1])]
+                if len(cols) < 30:
+                    continue
+                gv = float(np.median(m[y, cols]))
+                seg = m[y, lo:hi] if side == "R" else m[y, lo:hi][::-1]
+                r = (seg - gv) / max(gv, 1e-6)
+                hit = np.nonzero(np.convolve(r > G, np.ones(K), "valid") >= K)[0]
+                if len(hit):
+                    offs.append(4 + int(hit[0]))
+                    n_step += 1
+                    if fidnum in trace:
+                        print(f"   [{p.stem} {side}] y={y} x_lane={x_lane} 台阶@+{4+int(hit[0])}px")
+            rec[f"hsv_{side}"] = n_line
+            rec[f"dep_{side}"] = n_step
+            rec[f"off_{side}"] = float(np.median(offs)) if offs else np.nan
+        recs.append(rec)
+
+    def side_stat(S):
+        hsv = np.array([r[f"hsv_{S}"] for r in recs]) >= N
+        dep = np.array([r[f"dep_{S}"] for r in recs]) >= N
+        off = np.array([r[f"off_{S}"] for r in recs], float)
+        both = hsv & dep
+        conf = both & (np.abs(off) < np.inf)
+        return hsv, dep, both, off, conf
+
+    print(f"== A 方案联合覆盖（{len(recs)} 帧；门 G={G} 持续 K={K} 行聚合 N={N} 行带 y∈[{args.y0},{args.y1})）==")
+    print(f"{'侧':4s}{'HSV在场':>8s}{'深度在场':>9s}{'两者同在':>9s}{'HSV有但无台阶(剔干扰)':>20s}{'HSV缺(兜底需求)':>15s}")
+    for S in ("L", "R"):
+        hsv, dep, both, off, _ = side_stat(S)
+        print(f"{S:4s}{hsv.sum():8d}{dep.sum():9d}{both.sum():9d}"
+              f"{int((hsv & ~dep).sum()):20d}{int((~hsv).sum()):15d}")
+    for S in ("L", "R"):
+        off = np.array([r[f"off_{S}"] for r in recs], float)
+        ok = np.isfinite(off)
+        if ok.sum():
+            print(f"台阶外偏量 {S}: 中位={np.median(off[ok]):.0f}px "
+                  f"p25/p75={np.percentile(off[ok], 25):.0f}/{np.percentile(off[ok], 75):.0f}（n={int(ok.sum())}）")
+    hL, dL = np.array([r["hsv_L"] for r in recs]) >= N, np.array([r["dep_L"] for r in recs]) >= N
+    hR, dR = np.array([r["hsv_R"] for r in recs]) >= N, np.array([r["dep_R"] for r in recs]) >= N
+    any_side = (hL | dL) | (hR | dR)
+    print(f"\n至少一侧有 HSV 在场 = {int((hL | hR).sum())}/{len(recs)}；"
+          f"至少一侧 HSV∨深度在场 = {int(any_side.sum())}/{len(recs)}；"
+          f"两侧全盲（须桥接）= {int((~any_side).sum())}/{len(recs)}")
+    tag = f"_{args.session}{args.from_fid}" if args.session else "_corpus141"
+    out_csv = OUT / f"verifyA_g{int(G*1000)}_k{K}_n{N}_w{WIN}{tag}.csv"
+    with out_csv.open("w", newline="", encoding="utf-8") as f:
+        wr = csv.DictWriter(f, fieldnames=list(recs[0]))
+        wr.writeheader()
+        wr.writerows(recs)
+    print(f"[CSV] {out_csv}")
+
+
 def cmd_selftest(_args) -> None:
     print("== 合成自检（已知几何，验证索引与 θ↔h/H 关系）==")
     for kind in ("road", "raised", "wall"):
@@ -1488,6 +1761,29 @@ def main() -> None:
     gg.add_argument("--fids", default="1160,1280,1400")
     gg.add_argument("--gate", type=float, default=0.02)
     gg.add_argument("--hold", type=int, default=12)
+    vv = sub.add_parser("verify")
+    vv.add_argument("--gate", type=float, default=0.015)
+    vv.add_argument("--hold", type=int, default=12)
+    vv.add_argument("--min-rows", type=int, default=8)
+    vv.add_argument("--win", type=int, default=95)
+    vv.add_argument("--session", default=None)
+    vv.add_argument("--from-fid", type=int, default=0)
+    vv.add_argument("--to-fid", type=int, default=10**9)
+    vv.add_argument("--trace", default="", help="逗号分隔 fid：逐行打印台阶位置")
+    vv.add_argument("--y0", type=int, default=450)
+    vv.add_argument("--y1", type=int, default=690)
+    rg = sub.add_parser("region")
+    rg.add_argument("--gate", type=float, default=0.02)
+    rg.add_argument("--hold", type=int, default=12)
+    rg.add_argument("--min-span", type=int, default=100)
+    rg.add_argument("--min-rows", type=int, default=8)
+    rg.add_argument("--y0", type=int, default=450)
+    rg.add_argument("--y1", type=int, default=690)
+    rg.add_argument("--session", default=None)
+    rg.add_argument("--from-fid", type=int, default=0)
+    rg.add_argument("--to-fid", type=int, default=10**9)
+    rg.add_argument("--trace", default="")
+    rg.add_argument("--sheet", action="store_true")
     for name in ("attrib", "jitter"):
         s = sub.add_parser(name)
         s.add_argument("--variant", choices=("abs", "rel", "mask"), default="mask")
@@ -1495,7 +1791,7 @@ def main() -> None:
             s.add_argument("--th", type=float, default=0.06)
     args = ap.parse_args()
     {"selftest": cmd_selftest, "sweep": cmd_sweep, "rayfit": cmd_rayfit,
-     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb, "noise": cmd_noise, "edges": cmd_edges, "grid": cmd_grid,
+     "vpfit": cmd_vpfit, "horizon": cmd_horizon, "figs": cmd_figs, "morph": cmd_morph, "edgeprofile": cmd_edgeprofile, "kerb": cmd_kerb, "noise": cmd_noise, "edges": cmd_edges, "grid": cmd_grid, "verify": cmd_verify, "region": cmd_region,
      "attrib": cmd_attrib, "jitter": cmd_jitter}[args.cmd](args)
 
 
