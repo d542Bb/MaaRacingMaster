@@ -14,12 +14,13 @@
 - **区域而非逐行**：路面时间噪声地板 σ0.39%、台阶读数 4.5%（自身 4.2σ），
   单像素不可信；边界=贯穿多行朝消失点收敛的线，车/金币=行跨度有限的团块
   ⇒ 相对门 + 横向收紧 + 连通块 + 触画面侧边 + 跨行门槛。
-- **守卫**（122 帧标定，锚点全部分开）：①射线收敛——内沿 x(y) 稳健拟合
-  后外推到地平线须落在 VP 附近（拒 518 帧出租车伪块）；②侧别一致——近带
-  读数 x_lane 须在自己一侧（拒贴护栏帧的翻面块）；③近带行 ≥2——块主体在
-  远带（归一发散区）时读数本身不可用，整块弃权；④门本底——内沿内侧
-  40~120px 窗的相对偏离中位 >门的一半 ⇒ 门已失去物理语义，该侧弃权
-  （第一关终选附带守卫：跨档落分辨率时让失效档位主动交权）。
+- **守卫**（122 帧标定 + 金标 44 帧源行重考，锚点全部分开）：①射线收敛——内沿
+  x(y) 在**源行**（y−y_h ≥ FIT_FLOOR_PX）上稳健拟合、外推到地平线须落在 VP 附近
+  （拒出租车伪块；518 帧的出租车行由两轮剔点自动剔除、真右缘得以在场）；②侧别
+  一致——源行评估的 x_lane 须在自己一侧（拒贴护栏帧的翻面块）；③源行不足判
+  「远带」弃权（发散区读数误差 ∝ 1/(y−y_h)，不可信）；④门本底——内沿内侧
+  40~120px 窗（跟随评估行 ±60）的相对偏离中位 >门的一半 ⇒ 门失去物理语义，
+  该侧弃权（拒自车晕影连块产生的挖除切口伪影边）。
 
 **降级路径**：权重缺失/推理异常 → observe 返回 None，road_offset 链路退回
 纯模型积分（旧行为不变）；ego_mask 缺失 → 跳过挖除并 WARNING（合并桥风险
@@ -29,11 +30,14 @@
 使用本层——控制拍只付 push+take（≈0.15ms），observe 成本在后台线程；
 本模块的同步 observe 保留为纯函数面（测试与离线复算直接调用）。
 
-**@336 落档已撤回（2026-09-24 实机复核）**：实机两轮 road_offset 0/330——主场景读数带
-(550~700) 内边界线大多已出画（金标 R 51/54、L 28/54 帧在 y<550 出画），弃权主因在守卫
-之前；落档扫描只报了通过守卫子集（n=12）的误差、无覆盖率分母。正面结论保留：边界真在
-画面内且过守卫的帧精度良好（L 14 帧 dev 中位 −5px、p90 13px）——几何没错，错在读数带
-与上控制拍的时机。读数带重定与观测器下热路径待裁决（实验 README「实机复核」节）。
+**读数带（2026-09-24 重定，替代已撤回的 @336 固定近带落档）**：源行=块内
+y−y_h≥50 的行、评估行=其剔点后中位——不再绑死 [550,700]（金标 R 51/54 帧边线
+在 y<550 已出画，固定带内物理无边）。门 0.08：自车晕影（+3~6%）与墙台阶
+（+14~24%）之间取刀，金标 44 帧 @336：L 覆盖 79%、R 23%、双侧同帧 18%、
+dev p50 双侧 |·|≤0.14。**推理必须全帧**：带@280 裁天带实验被金标重考+渲染
+双重否决——DA 的相对视差按整帧自归一，天空是尺度锚，裁掉后墙/路对比度被
+压平（L 覆盖 79%→20%）。@518 在源行规则下覆盖反而更低（R≈0~3/44），维持
+质量上限参照档。双侧同帧的缺口由消费侧「每侧保鲜槽」解决（待施工，见 README）。
 
 **时延口径（折叠会话，2026-09-24 收口）**：本层时延数字一律为 load_session 的
 free-dim 折叠口径（@336 实测 p50 ≈20ms）；不折叠时图内唯一 cubic Resize（pos_embed
@@ -57,24 +61,31 @@ import onnxruntime as ort
 from maaracing_master.plugins.speedrush.world_model import Calib, x_lane_of
 
 # ── 流水常数（冻结口径，与三方同卷/守卫标定一致）────────────────────────
+# 推理必须吃全帧：DA-V2 的相对视差按整帧内容自归一（天空/远景是尺度锚），
+# 裁天带实验（2026-09-24，带@280）金标重考负结果 + 渲染定性——墙/路台阶对比
+# 被重新归一压平（L 覆盖 61%→20%）。天空不产读数，但产归一化，不能裁。
 Y0, Y1, DIAG_Y1 = 340, 690, 715   # 检测带 / 诊断带（含近场）
 EGO_COLS = (540, 740)             # 基线统计的非自车列带
-GATE = 0.05                       # 相对门 (M−g)/g：@336 落档重标值——g 随分辨率
-                                  # 压缩使相对门放大 ~2.6×，2%（@518 口径）在
-                                  # @336 等效 0.8%，重标 5% 后主场景回到参照水平
+GATE = 0.08                       # 相对门 (M−g)/g：自车晕影幅度 +3~6% 与墙台阶
+                                  # +14~24% 之间取刀（全帧@336 金标 44 帧网格：
+                                  # 0.05 时晕影入门、R 内沿钉上挖除切口 dev −0.18；
+                                  # 0.08 时 R dev p50 −0.02、p90 0.12；≥0.10 弱台阶
+                                  # 误伤回升。README「取证续」节）
 HOLD = 12                         # 横向持续收紧窗（px）
 MIN_SPAN = 100                    # 块最小跨行（行跨度有限的团块不够格当边界）
 Q_GROUND = 0.20                   # 全局逐行低分位（q20rescue 定案值）
-DEFAULT_SHORT = 336               # DA 推理短边（折叠口径 q4f16 p50 ≈20ms；@336 落档
-                                  # 已撤回见 docstring，@518 为质量上限参照档）
+DEFAULT_SHORT = 336               # DA 推理短边（折叠口径 q4f16 p50 ≈22ms；
+                                  # @518=91ms 为质量上限档，异步形态下可选，
+                                  # 决策数据见 README「全链路时延分解」+金标重考）
 
-# ── 守卫阈值（122 帧标定：conv/resid/侧别全过 + 近带行≥2；锚点 518L 留、
-#    518R 出租车拒、437R 留、437L 翻面拒、000420 横贯双侧拒、远带背景块拒）──
-NEAR_LO, NEAR_HI, MIN_NEAR = 550, 700, 2
+# ── 守卫阈值（源行规则，2026-09-24 读数带重定；旧"固定近带 550~700"把源行与
+#    评估行绑死、金标 R 51/54 帧带内无边——见 README「实机复核」节）──
+FIT_FLOOR_PX = 50    # 源行发散区下限：y − y_h ≥ 50（车道尺误差 ∝ 1/(y−y_h)）
+FIT_MIN_SRC = 20     # 源行数门槛（不足则该块该侧弃权「远带」）
 FIT_MIN_ROWS, FIT_RESID_PX = 20, 30.0
 CONV_MAX_PX = 350.0    # |x(Y_H) − vpx|：边界线外推须过 VP 附近
 RESID_MAX_PX = 45.0    # 内沿直线拟合的中位残差
-LANE_SIDE_MIN = 0.15   # 近带读数 x_lane 的侧别门（车道）
+LANE_SIDE_MIN = 0.15   # 源行读数 x_lane 的侧别门（车道）
 BASE_LO_PX, BASE_HI_PX = 40, 120   # 本底守卫窗：内沿内侧 40~120px（路面侧）
 
 
@@ -127,7 +138,7 @@ def load_session(weights: Path) -> ort.InferenceSession:
 
 
 def infer_map(sess: ort.InferenceSession, rgb: np.ndarray, short: int) -> np.ndarray:
-    """→ 原帧尺寸（720×1280）的 float32 视差图（大=近）。"""
+    """→ 原帧尺寸（720×1280）的 float32 视差图（大=近）。全帧输入，见上方归一化注。"""
     d = sess.run(None, {"pixel_values": preprocess(rgb, short)})[0][0]
     d = np.nan_to_num(d.astype(np.float32), nan=0.0)
     return cv2.resize(d, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_LINEAR)
@@ -188,16 +199,16 @@ def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
     return r, out
 
 
-def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str,
+def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str, y_ref: float,
                  gate: float = GATE) -> bool:
     """门本底守卫：内沿**内侧**（路面侧）40~120px 窗的相对偏离中位须 ≈0。
 
     门 ``gate`` 的物理语义是"路面 vs 边界外的高差"；本底窗已被门吃掉一半以上
     （>gate/2）时读数是"松门交点"而非边界——门已失效，该侧主动弃权。
-    跨档落分辨率时 g 随之压缩、本底抬升，此守卫让失效档位交出决策权
-    （第一关终选附带守卫，测量口=金标线内侧窗的生产化替代）。"""
+    窗随源行迁移（y_ref±60）：源行规则下边在哪些行可见逐帧不同，固定行窗会
+    整体跳过守卫（2026-09-24 读数带重定一并修正）。"""
     vals: list[float] = []
-    for y in range(NEAR_LO, NEAR_HI + 1, 5):
+    for y in range(int(y_ref) - 60, int(y_ref) + 60, 5):
         x0 = inner.get(y)
         if x0 is None:
             continue
@@ -216,24 +227,31 @@ def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str,
 
 
 def _fit(inner: dict[int, int], cal: Calib) -> dict | None:
-    """内沿几何特征 + 双守卫裁决 → None（<20 行不评）或 {dead, conv, resid, lane}。"""
-    ys = np.array(sorted(inner), float)
-    xs = np.array([inner[int(y)] for y in ys], float)
-    if len(ys) < FIT_MIN_ROWS:
+    """内沿几何特征 + 守卫裁决所需量 → None（<20 行不评）或 {dead, conv, resid, lane, y_ref}。
+
+    源行规则（2026-09-24 读数带重定）：车道量沿 3D 直线不变 ⇒ 读数不必绑死在固定
+    近带——凡 y−y_h ≥ FIT_FLOOR_PX 的行都是合法源行。**拟合也只在源行上做**：
+    发散区行的内沿噪声会把直线拽歪（金标 A/B：全行拟合 R dev p50 −0.20，
+    源行拟合 −0.02），源行不足 FIT_MIN_SRC 判「远带」弃权。"""
+    ys_all = np.array(sorted(inner), float)
+    if len(ys_all) < FIT_MIN_ROWS:
         return None
+    ys = ys_all[ys_all >= cal.y_h + FIT_FLOOR_PX]
+    if len(ys) < FIT_MIN_SRC:
+        return {"dead": True, "n": int(len(ys_all)), "near": int(len(ys))}
+    xs = np.array([inner[int(y)] for y in ys], float)
     sl, ic = np.polyfit(ys, xs, 1)
     keep = np.abs(xs - (sl * ys + ic)) <= FIT_RESID_PX
     if keep.sum() >= FIT_MIN_ROWS:
         sl, ic = np.polyfit(ys[keep], xs[keep], 1)
-    near = ys[(ys >= NEAR_LO) & (ys <= NEAR_HI)]
-    if len(near) < MIN_NEAR:
-        return {"dead": True, "n": int(len(ys)), "near": int(len(near))}
-    med_x = float(np.median([inner[int(y)] for y in near]))
-    return {"dead": False, "n": int(len(ys)), "near": int(len(near)),
+        ys, xs = ys[keep], xs[keep]   # 剔点后再取中位：keep 不对称时 med_x 会偏
+    med_x = float(np.median(xs))
+    y_ref = float(np.median(ys))
+    return {"dead": False, "n": int(len(ys_all)), "near": int(len(ys)),
             "conv": abs(float(sl * cal.y_h + ic) - cal.vpx),
             "resid": float(np.median(np.abs(xs - (sl * ys + ic)))),
-            "x_near": med_x,
-            "lane": x_lane_of(int(round(med_x)), int(np.median(near)), cal)}
+            "x_near": med_x, "y_ref": y_ref,
+            "lane": x_lane_of(int(round(med_x)), int(round(y_ref)), cal)}
 
 
 def _pass(f: dict, side: str) -> bool:
@@ -269,7 +287,7 @@ def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None,
                                   f"conv{f['conv']:.0f}/res{f['resid']:.0f}/"
                                   f"lane{f['lane']:+.2f}"))
                 continue
-            if not _baseline_ok(r, inner, side, gate):
+            if not _baseline_ok(r, inner, side, f["y_ref"], gate):
                 rejects.append(f"{side}:门本底失效")
                 continue
             edges[side] = (f["x_near"], f["lane"])

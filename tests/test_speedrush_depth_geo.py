@@ -6,9 +6,9 @@
   （中位数会被人行道捕获，518 帧实测三群体值）、直路双边界的读数与侧别、
   双守卫的逐个拒绝行为（收敛/侧别/远带）。合成深度图按透视口径构造：
   边界线过 (vpx, y_h)，路面占统计列 ≥20%（q20 适用条件，见 _ground_q20 注）。
-- **数据锚点**（skipif：无离线缓存则跳）：锁定骑路缘 518（L 在场 + R 出租车
-  伪块被拒）与贴护栏 437（R 在场 + L 翻面块被拒）的守卫裁决——标定锚点
-  （conv≤350 / resid≤45 / 侧别 0.15 / 近带行≥2）不许漂。
+- **数据锚点**（skipif：无离线缓存则跳）：锁定骑路缘 518（L 人行道 + R 真右缘，
+  出租车行被稳健拟合剔除）与贴护栏 437（R 在场 + L 翻面块被拒）的守卫裁决——
+  标定锚点（conv≤350 / resid≤45 / 侧别 0.15 / 源行≥20 且 y−y_h≥FLOOR）不许漂。
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ import numpy as np
 import pytest
 
 from maaracing_master.plugins.speedrush.depth_geo import (
-    AsyncDepthRoadObserver, NEAR_HI, NEAR_LO, DepthRoadObserver, DepthRoadReading,
-    _ground_q20, reading_from_map)
+    AsyncDepthRoadObserver, FIT_FLOOR_PX, DepthRoadObserver, DepthRoadReading,
+    _ground_q20, _rel_and_blocks, reading_from_map)
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
 CAL = load_calib()
 ROAD0, ROAD_SLOPE = 4.0, 1.0 / 375.0     # 路面视差 c(y)：y340→4.0、y714→5.0
-RAISE = 1.12                             # 边界外抬升面（+12% > 门 2%）
+RAISE = 1.12                             # 边界外抬升面（+12% > 门 8%）
 
 NPY = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data"
        / "speedrush" / "depth_review" / "npy")
@@ -75,15 +75,20 @@ def test_ground_q20_pins_minority_road_median_fails():
 
 
 def test_straight_road_both_edges_detected():
-    """直路双边界：双侧在场、内沿位置与车道单位落在真线附近。"""
+    """直路双边界：双侧在场、读数落在真线上（源行中位评估）。
+
+    注：合成楔形路在 y<544 占统计列 <20%，q20 适用条件外块不成立——
+    评估行取**当选块**的源行中位，不是假设全带都是块。"""
     m = _base_map()
     _draw_raised(m, _vp_line(0.95, "L"), "L", 340, 715)
     _draw_raised(m, _vp_line(0.95, "R"), "R", 340, 715)
     rd = reading_from_map(m, CAL, None)
     assert rd.sides == 2
-    # 近带中位行 y≈625 的真内沿
-    x_l = CAL.vpx - 0.95 * (625 - CAL.y_h)
-    x_r = CAL.vpx + 0.95 * (625 - CAL.y_h)
+    _, blocks = _rel_and_blocks(m, None)
+    bR = max((b for b in blocks if b[5]), key=lambda b: b[1] - b[0])
+    y_ref = float(np.median([y for y in bR[3] if y >= CAL.y_h + FIT_FLOOR_PX]))
+    x_l = CAL.vpx - 0.95 * (y_ref - CAL.y_h)
+    x_r = CAL.vpx + 0.95 * (y_ref - CAL.y_h)
     assert abs(rd.left_x - x_l) <= 8
     assert abs(rd.right_x - x_r) <= 8
     assert rd.left_edge_lane <= -0.15
@@ -113,12 +118,12 @@ def test_side_guard_rejects_crossing_block():
 
 
 def test_far_band_block_rejected():
-    """块主体在远带（近带无内沿行）→ 弃权，原因含 远带。"""
-    m = _base_map()
-    _draw_raised(m, lambda y: 1200.0, "R", 340, 478)
-    rd = reading_from_map(m, CAL, None)
-    assert rd.right_edge_lane is None
-    assert any("远带" in r for r in rd.rejects)
+    """源行不足（块行全在发散区 y−y_h<FLOOR）→ _fit 判 dead（读数带重定语义）。"""
+    from maaracing_master.plugins.speedrush.depth_geo import _fit
+    inner = {y: 1200 for y in range(340, int(CAL.y_h + FIT_FLOOR_PX))}
+    f = _fit(inner, CAL)
+    assert f is not None and f["dead"]
+    assert f["near"] == 0
 
 
 def test_baseline_guard_rejects_soft_gate():
@@ -129,9 +134,11 @@ def test_baseline_guard_rejects_soft_gate():
     m = _base_map()
     inner = _vp_line(0.95, "R")
     _draw_raised(m, inner, "R", 340, 715)
-    for y in range(NEAR_LO, NEAR_HI + 1):
+    # 本底窗跟随源行中位评估行（y_ref±60）；垫高 3% > 门/2(4%)? 门 0.08 → 垫到 5%
+    y_ref = int(np.median([y for y in range(340, 715) if y >= CAL.y_h + FIT_FLOOR_PX]))
+    for y in range(y_ref - 60, y_ref + 60):
         x0 = int(round(inner(y)))
-        m[y, x0 - 120:x0 - 40] = _road(y) * 1.03      # 松门本底（<5% 不自成块）
+        m[y, x0 - 120:x0 - 40] = _road(y) * 1.05      # 松门本底（<门 8% 不自成块）
     rd = reading_from_map(m, CAL, None)
     assert rd.right_edge_lane is None
     assert any("门本底" in r for r in rd.rejects)
@@ -196,12 +203,17 @@ def _cached_336(key: str) -> np.ndarray | None:
 @pytest.mark.skipif(_cached_map("frames__000518") is None,
                     reason="需离线深度缓存（APPDATA depth_review/npy）")
 def test_anchor_518_straddle():
-    """@518 参照口径（gate=0.02）：骑路缘 518 L=人行道右缘在场，R 出租车伪块被拒。"""
+    """@518 参照口径（gate=0.02）：骑路缘 518 双侧在场。
+
+    源行规则（2026-09-24）下的行为升级并案：L=人行道右缘 −0.394（旧锚点值不变）；
+    R=+0.90 真右缘在场——出租车污染的 375~440 行被两轮稳健拟合剔除（留点 416~714、
+    resid 6.5、conv 137 收敛），旧近带规则在此整侧弃权。钉住"剔点留线"的行为。"""
     m = _cached_map("frames__000518")
     rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask(), gate=0.02)
-    assert rd.left_edge_lane is not None and rd.left_edge_lane < -0.15
-    assert rd.right_edge_lane is None
-    assert any(r.startswith("R:") for r in rd.rejects)
+    assert rd.sides == 2
+    assert abs(rd.left_edge_lane - (-0.394)) < 0.05
+    assert abs(rd.right_edge_lane - 0.897) < 0.05
+    assert rd.rejects == ()
 
 
 @pytest.mark.skipif(_cached_map("frames__000437") is None,
@@ -218,7 +230,7 @@ def test_anchor_437_wallhug():
 @pytest.mark.skipif(_cached_336("wallhug_437") is None,
                     reason="需 @336 q4f16 离线缓存（rescale_gate_336.py infer）")
 def test_anchor_336_production_gate():
-    """@336 生产口径（gate=0.05）：贴墙场景门半失效（本底抬升）→ 诚实弃权。
+    """@336 生产口径（gate=0.08）：贴墙场景门半失效（本底抬升）→ 诚实弃权。
 
     锁定落档形态：贴护栏帧在本档退纯模型积分（守卫交权），而非给出松门读数。"""
     m = _cached_336("wallhug_437")
