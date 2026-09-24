@@ -158,6 +158,150 @@ def boot_ci(v: np.ndarray, iters: int = 10000, seed: int = 7) -> tuple[float, fl
     return float(np.percentile(meds, 2.5)), float(np.percentile(meds, 97.5))
 
 
+def _load_seg_csv(name: str, variant: str) -> dict:
+    rows = csv.DictReader((OUT / name).open(encoding="utf-8"))
+    return {(r["stratum"], r["frame"], r["side"], r["y"]): r
+            for r in rows if r["variant"] == variant and r.get("band") == "near"}
+
+
+def _p90_curve2(name: str, variant: str) -> float:
+    rows = csv.DictReader((OUT / name).open(encoding="utf-8"))
+    d = np.array([float(r["dev"]) for r in rows
+                  if r["variant"] == variant and r["stratum"] == "curve_cont2"
+                  and r.get("band") == "near" and "dev" in r])
+    med = float(np.median(d))
+    return float(np.percentile(np.abs(d - med), 90))
+
+
+def _fig(labels) -> None:
+    """大白话四联图：①同样台阶低分辨率报数更大 ②自洽门救回误差
+    ③剩余问题=双态认错块 ④721 帧实景桥位置。PIL 手画，零新依赖。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    def F(sz):
+        return ImageFont.truetype(r"C:\Windows\Fonts\msyh.ttc", sz)
+
+    W, H, M = 800, 560, 16
+    img = Image.new("RGB", (W * 2 + M * 3, H * 2 + 76 + M * 2), (250, 250, 248))
+    dr = ImageDraw.Draw(img)
+    dr.text((M, 12), "低分辨率的眼睛没花——是尺子刻度变了 + 挑块会粘连（depth_review/firstgate_plain.jpg）",
+            font=F(24), fill=(30, 30, 30))
+
+    # ── 面板 1：横切面（000714 帧 L 侧 y=600）──
+    p1 = Image.new("RGB", (W, H), "white")
+    d1 = ImageDraw.Draw(p1)
+    d1.text((M, 8), "① 同样一个台阶，低分辨率下报的数更大（000714 帧横切面）", font=F(22), fill=(0, 0, 0))
+    r714 = [r for r in labels if "000714" in r["path"]][0]
+    pth = Path(r714["path"])
+    xg = gold_x_at(r714, "l", 600)
+    ox0, oy0, pw, ph = 90, 40, 660, 400
+    ymax = 0.30
+    def X(o): return ox0 + (o + 220) / 440 * pw
+    def Y(v): return oy0 + ph - min(v, ymax) / ymax * ph
+    d1.line([(ox0, oy0 + ph), (ox0 + pw, oy0 + ph)], fill=(120, 120, 120), width=2)
+    for gate_v, col, lab in ((0.02, (220, 40, 40), "原门 2%（高清档标定）"),):
+        d1.line([(ox0, Y(gate_v)), (ox0 + pw, Y(gate_v))], fill=col, width=2)
+        d1.text((ox0 + pw - 240, Y(gate_v) - 26), lab, font=F(18), fill=col)
+    for v, fn, col in (("@518 高清", "__da2s_fp16@518.npy", (30, 80, 220)),
+                       ("@392", "__da2s_fp16@392.npy", (20, 140, 60)),
+                       ("@336", "__da2s_fp16@336.npy", (230, 130, 20))):
+        m = np.load(pcq.NPY / f"{pcq.frame_key(pth)}{fn}").astype(np.float32)
+        gy = float(np.median(np.r_[m[600, 200:520], m[600, 760:1100]]))
+        pts = []
+        for o in range(-220, 220, 6):
+            a, b = int(xg + o), int(xg + o + 6)
+            a, b = max(a, 0), min(b, 1279)
+            if b > a:
+                pts.append((X(o), Y(float(np.median((m[600, a:b] - gy) / gy)))))
+        d1.line(pts, fill=col, width=3, joint="curve")
+        d1.text((pts[2][0], pts[2][1] - 30), v, font=F(20), fill=col)
+    d1.text((ox0, oy0 + ph + 10), "← 墙（金标线左侧）      路面（应≈0）→", font=F(18), fill=(90, 90, 90))
+    d1.text((ox0 + 8, oy0 + 44), "三条曲线形状相同=台阶都在；但橙/绿整体抬高\n⇒ 红色 2% 门在低分辨率下切到了『半山腰』甚至路面",
+            font=F(18), fill=(60, 60, 60))
+    img.paste(p1, (M, 64))
+
+    # ── 面板 2：门刻度跟改 → 误差回位 ──
+    p2 = Image.new("RGB", (W, H), "white")
+    d2 = ImageDraw.Draw(p2)
+    d2.text((M, 8), "② 门的刻度跟着分辨率改，误差立刻回到高清水平", font=F(22), fill=(0, 0, 0))
+    bars = [("高清@518\n门 2%", _p90_curve2("firstgate_score.csv", "fp16@518"), (30, 80, 220)),
+            ("@392\n门仍 2%", _p90_curve2("firstgate_score.csv", "fp16@392"), (220, 40, 40)),
+            ("@392\n自洽门 4.2%", _p90_curve2("firstgate_score_selfgate.csv", "fp16@392"), (20, 140, 60)),
+            ("@336\n自洽门 5.5%", _p90_curve2("firstgate_score_selfgate.csv", "fp16@336"), (20, 140, 60))]
+    bx0, by0, bw, bh = 90, 90, 640, 360
+    bmax = 420
+    for i, (lab, v, col) in enumerate(bars):
+        x = bx0 + i * (bw / 4) + 20
+        h = v / bmax * bh
+        d2.rectangle([x, by0 + bh - h, x + 90, by0 + bh], fill=col)
+        d2.text((x - 4, by0 + bh - h - 30), f"{v:.0f}px", font=F(22), fill=col)
+        d2.multiline_text((x - 12, by0 + bh + 12), lab, font=F(18), fill=(60, 60, 60), spacing=4)
+    d2.text((bx0, by0 - 30), "边界误差（越小越好；柱上数字=像素）", font=F(18), fill=(90, 90, 90))
+    img.paste(p2, (W + M * 2, 64))
+
+    # ── 面板 3：双态序列 ──
+    p3 = Image.new("RGB", (W, H), "white")
+    d3 = ImageDraw.Draw(p3)
+    d3.text((M, 8), "③ 剩下的问题：15 帧里 5 帧把『别的块』当成了边界（双态）", font=F(22), fill=(0, 0, 0))
+    ox0, oy0, pw, ph = 90, 40, 660, 400
+    def X2(i): return ox0 + i / 14 * pw
+    def Y2(x): return oy0 + ph - x / 800 * ph
+    d3.line([(ox0, oy0 + ph), (ox0 + pw, oy0 + ph)], fill=(120, 120, 120), width=2)
+    for f in range(15):
+        d3.text((X2(f) - 14, oy0 + ph + 8), str(714 + f), font=F(16), fill=(90, 90, 90))
+    for v, col in (("fp16@518", (30, 80, 220)), ("fp16@392", None)):
+        for f in range(15):
+            r = _load_seg_csv("firstgate_score_selfgate.csv", v).get(("curve_cont2", f"{714+f:06d}.jpg", "l", "560"))
+            if not r:
+                continue
+            x = float(r["region"])
+            good = x < 500
+            col = (30, 80, 220) if v == "fp16@518" else ((20, 140, 60) if good else (220, 40, 40))
+            d3.ellipse([X2(f) - 7, Y2(x) - 7, X2(f) + 7, Y2(x) + 7], fill=col)
+    d3.text((ox0 + 10, Y2(310) - 36), "高清@518（蓝）与锁对块的 @392（绿）：完全重叠的水平线", font=F(18), fill=(30, 80, 220))
+    d3.text((ox0 + 150, Y2(690) - 36), "红：@392 有 5 帧把中央的近物粘进边界块", font=F(18), fill=(220, 40, 40))
+    d3.text((ox0, oy0 + ph + 34), "帧号（连续 15 帧）→   纵轴 = 边界在画面里的横向位置", font=F(18), fill=(90, 90, 90))
+    img.paste(p3, (M, 64 + H + M))
+
+    # ── 面板 4：721 帧实景 ──
+    p4 = Image.new("RGB", (W, H), "white")
+    d4 = ImageDraw.Draw(p4)
+    d4.text((M, 8), "④ 721 帧实景：红块的内沿被中央结构抢走，橙框=粘连的『桥』", font=F(22), fill=(0, 0, 0))
+    p721 = [r for r in labels if "000721" in r["path"]][0]
+    pth = Path(p721["path"])
+    rgb = cv2.cvtColor(cv2.imread(str(pth)), cv2.COLOR_BGR2RGB)
+    frame = Image.fromarray(rgb).resize((760, 428))
+    d4r = ImageDraw.Draw(frame)
+    m392 = np.load(pcq.NPY / f"{pcq.frame_key(pth)}__da2s_fp16@392.npy").astype(np.float32)
+    m518 = np.load(pcq.NPY / f"{pcq.frame_key(pth)}__da2s_fp16@518.npy").astype(np.float32)
+    G392 = json.loads((OUT / "firstgate_gate.json").read_text())["fp16@392"]
+    bl392 = psd.region_inner(m392, psd.road_range(m392), G=G392)["L"][0]
+    bl518 = psd.region_inner(m518, psd.road_range(m518))["L"][0]
+    S = 760 / 1280
+    def seg(drw, inner, col, w):
+        pts = [(x * S, y * S) for y, x in sorted(inner.items()) if 340 <= y <= 714]
+        drw.line(pts, fill=col, width=w)
+    seg(d4r, bl392, (255, 40, 40), 6)
+    seg(d4r, bl518, (40, 90, 255), 4)
+    d4r.rectangle([561 * S, 528 * S, 700 * S, 572 * S], outline=(255, 150, 0), width=5)
+    d4r.text((702 * S, 516 * S), "桥（把两块\n粘起来）", font=F(18), fill=(255, 150, 0))
+    d4r.text((24, 396), "红线=@392 被拉走的块内沿  蓝线=高清真墙  白线=人工金标", font=F(17), fill=(255, 255, 255))
+    xg721 = gold_x_at(p721, "l", 600)
+    if xg721:
+        nx, ny = float(p721["l_nx"]), float(p721["l_ny"])
+        fx, fy = float(p721["l_fx"]), float(p721["l_fy"])
+        d4r.line([(nx * S, ny * S), (fx * S, fy * S)], fill=(255, 255, 255), width=3)
+    d4.text((W + M * 2 + 790, 90), "蓝线=高清档的边界（真墙）\n红线=@392 某帧选中的『块』内沿\n"
+            "白线=人工金标\n橙框=把远带结构和真墙\n粘成一体的中央近物\n（读数放大后越门）",
+            font=F(19), fill=(60, 60, 60))
+    d4.text((W + M * 2, 64 + H + M - 34),
+            "⇒ 修『挑块』的守卫（与档位无关的老毛病），不是修眼睛也不是修门", font=F(19), fill=(60, 60, 60))
+    img.paste(frame, (W + M * 2, 64 + H + M + 6))
+    out = OUT / "firstgate_plain.jpg"
+    img.save(out, quality=92)
+    print(f"[fig] 已写 {out}")
+
+
 def main() -> None:
     argv = sys.argv[1:]
     ap = argv[0] if argv else ""
@@ -197,6 +341,10 @@ def main() -> None:
             gates[v] = G
         json.dump(gates, (OUT / "firstgate_gate.json").open("w"))
         print(f"[gate] 已写 {OUT / 'firstgate_gate.json'}")
+        return
+
+    if ap == "fig":
+        _fig(labels)
         return
 
     gates = {}
