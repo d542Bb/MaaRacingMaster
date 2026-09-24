@@ -604,7 +604,7 @@ def _ego_scan(labels) -> None:
     因此本扫描量三件事：
     ① g 敏感性：现状剔带 / 全列不剔（车全泄漏的最坏界）/ 全列纯中位（隔离
        25% 稳健化的贡献）/ 剔带±60（带过宽的成本），行覆盖远带 440~520（高区
-       泄漏的真正考验）与近带 560~700。判读尺度：门 G@518=2.76%。
+       泄漏的真正考验）与近带 560~700。判读尺度：门 G@518=2.0%（gate 标定只给 @392=4.23%/@336=5.52%，@518 为参照门）。
     ② 高区足迹剖面：中央带 rel 的跨帧 p95 包络随 y 的走向（=车在深度里的形状）。
     ③ wallhug 6 帧：金标线 y=600/688 与 [列带 ∪ mask 实测范围] 的相对位置——
        追车相机恒置中央，贴边时线是被挤到画面边（C 类单侧）还是被车身遮死。
@@ -628,7 +628,7 @@ def _ego_scan(labels) -> None:
             rec[f"dD{y}"] = round((float(g_wide[y - psd.Y0]) - a) / a, 5)
         recs.append(rec)
 
-    print(f"== ① g 敏感性（Δg/g，%；门 G@518=2.76%；n={len(recs)} 帧）==")
+    print(f"== ① g 敏感性（Δg/g，%；门 G@518=2.0%；n={len(recs)} 帧）==")
     print("行   |     B 全列不剔(车全泄)     |     C 全列纯中位      |     D 剔带±60")
     for y in rows_y:
         cells = []
@@ -754,9 +754,9 @@ def _fig_ego(labels, recs, prof, em_x) -> None:
     d3.line([(ox0, Y(0.0276)), (ox0 + pw, Y(0.0276))], fill=(220, 40, 40), width=1)
     pk = max(ys, key=lambda y: prof[y][0])
     d3.text((YX(pk) + 8, oy0 + 2), f"峰 {prof[pk][0]*100:+.0f}%（超出图）", font=F(15), fill=(200, 40, 40))
-    d3.text((YX(645) + 6, Y(0.0276) - 22), "近带读数 ~0.5% = 门的 1/5", font=F(15), fill=(200, 40, 40))
+    d3.text((YX(645) + 6, Y(0.0276) - 22), "近带读数 ~0.5% ≈ 门的 1/4", font=F(15), fill=(200, 40, 40))
     d3.text((M, 492), "上半身（y≈385~510）读数 +25%~+144% ⇒ ego_mask 挖掉的就是它（防『车→护栏→墙』合并桥）；\n"
-            "y≥560 与路面齐平（红线=门 2.76%）：下半身『不存在』，贴边也不产生伪边界。",
+            "y≥560 与路面齐平（红线=门 2.0%）：下半身『不存在』，贴边也不产生伪边界。",
             font=F(16), fill=(60, 60, 60))
     img.paste(p3, (M, 64 + H + M))
 
@@ -768,8 +768,8 @@ def _fig_ego(labels, recs, prof, em_x) -> None:
     vmin4, vmax4 = -1.0, 8.0
     def Y4(v): return oy0 + ph - (min(max(v, vmin4), vmax4) - vmin4) / (vmax4 - vmin4) * ph
     d4.line([(ox0, Y4(0)), (ox0 + pw, Y4(0))], fill=(120, 120, 120), width=1)
-    d4.line([(ox0, Y4(2.76)), (ox0 + pw, Y4(2.76))], fill=(220, 40, 40), width=2)
-    d4.text((ox0 + pw - 160, Y4(2.76) - 22), "门 G@518=2.76%", font=F(15), fill=(220, 40, 40))
+    d4.line([(ox0, Y4(2.0)), (ox0 + pw, Y4(2.0))], fill=(220, 40, 40), width=2)
+    d4.text((ox0 + pw - 160, Y4(2.0) - 22), "门 G@518=2.0%", font=F(15), fill=(220, 40, 40))
     bw = 30
     for gi, y in enumerate((440, 480, 520, 560, 600, 640, 700)):
         cx = ox0 + (gi + 0.5) / 7 * pw
@@ -789,6 +789,111 @@ def _fig_ego(labels, recs, prof, em_x) -> None:
     out = OUT / "firstgate_ego.jpg"
     img.save(out, quality=92)
     print(f"[fig_ego] 已写 {out}")
+
+
+def _wallhit(args) -> None:
+    """撞墙/贴边实景三链取证（维护者给帧发问：「撞在墙上还能搞清楚吗」）。
+
+    帧 → ① 生产 detect_boundary + _EgoRoadObserver 窗口逐帧重放（sides/Lx/Rx/
+    road_offset）② 目标帧 HSV 黄线 run 与左右缘读数落点 ③ 深度 @518
+    region_inner 兜底块（真边界 / 遮挡窄条 / 他车伪结构的区分）。出图
+    firstgate_wallhit.jpg：品红=HSV run、白圈=黄线层左右缘读数、青/橙=深度
+    region 右/左块内沿。"""
+    root = Path(__file__).resolve().parents[3]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from maaracing_master.plugins.speedrush.boundary import detect_boundary
+    from maaracing_master.plugins.speedrush.module import _EgoRoadObserver
+
+    specs = [(s.split(":")[0], int(s.split(":")[1]))
+             for s in args.spec.split(",") if s.strip()]
+    demos = pd.APP / "demos"
+    out_rows = []
+    for sess_name, fid0 in specs:
+        frames = demos / sess_name / "frames"
+        obs = _EgoRoadObserver()
+        win = []
+        for fid in range(fid0 - 15, fid0 + 16):
+            p = frames / f"{fid:06d}.jpg"
+            if not p.exists():
+                continue
+            rgb = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+            b = detect_boundary(rgb)
+            off = obs.update(b)
+            win.append({"fid": fid, "sides": b.sides, "valid": int(b.validity),
+                        "Lx": b.left_x, "Rx": b.right_x, "off": off})
+        n_none = sum(1 for w in win if w["off"] is None)
+        print(f"== {sess_name} fid{fid0} 窗口 ±15：road_offset None {n_none}/{len(win)} ==")
+        for w in win:
+            if abs(w["fid"] - fid0) <= 6:
+                print(f"  fid{w['fid']} sides={w['sides']} Lx={w['Lx']} Rx={w['Rx']} off={w['off']}")
+        # 深度 region 兜底
+        p0 = frames / f"{fid0:06d}.jpg"
+        key = pcq.frame_key(p0)
+        cache = pcq.NPY / f"{key}__da2s.npy"
+        rgb0 = cv2.cvtColor(cv2.imread(str(p0)), cv2.COLOR_BGR2RGB)
+        if cache.exists():
+            m = np.load(cache).astype(np.float32)
+        else:
+            sess = psd._folded_sess(518)
+            m = pd.depth_map(sess, rgb0, 518)
+            pcq.NPY.mkdir(parents=True, exist_ok=True)
+            np.save(cache, m.astype(np.float16))
+        blobs = psd.region_inner(m, psd.road_range(m), G=0.02)
+        hsv_row = cv2.inRange(cv2.cvtColor(rgb0, cv2.COLOR_RGB2HSV), pd.HSV_LO, pd.HSV_HI)
+        b0 = detect_boundary(rgb0)
+        out_rows.append({"sess": sess_name, "fid": fid0, "win": win, "blobs": blobs,
+                         "rgb": rgb0, "ym": hsv_row, "bnd": b0})
+        fmt = lambda blk: "无" if blk is None else f"y[{blk[1]},{blk[2]}]"
+        print(f"  深度 region：L={fmt(blobs['L'])}  R={fmt(blobs['R'])}")
+
+    _fig_wallhit(out_rows)
+
+
+def _fig_wallhit(rows) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    def F(sz):
+        return ImageFont.truetype(r"C:\Windows\Fonts\msyh.ttc", sz)
+
+    S = 760 / 1280
+    pw, ph, cap, M = 760, 428, 108, 16
+    img = Image.new("RGB", (len(rows) * (pw + M) + M, ph + cap + 64 + M * 2), (250, 250, 248))
+    dr = ImageDraw.Draw(img)
+    dr.text((M, 12), "撞墙/贴边实景取证：黄线层读数逐帧乱跳被物理护栏拒掉（弃权≠受骗），深度兜底现状如实画",
+            font=F(22), fill=(30, 30, 30))
+    for i, r in enumerate(rows):
+        fr = Image.fromarray(r["rgb"]).resize((pw, ph))
+        d = ImageDraw.Draw(fr)
+        y = 600
+        for a, b in _runs(r["ym"][y]):
+            d.line([(a * S, y * S), (b * S, y * S)], fill=(255, 0, 255), width=4)
+        for side, col in (("L", (255, 120, 30)), ("R", (0, 220, 220))):
+            blk = r["blobs"][side]
+            if blk is None:
+                continue
+            inner = blk[0]
+            for yy in range(430, 701, 10):
+                x = inner.get(yy)
+                if x is not None:
+                    d.ellipse([x * S - 3, yy * S - 3, x * S + 3, yy * S + 3], fill=col)
+        for xx in (r["bnd"].left_x, r["bnd"].right_x):
+            if xx == xx:
+                d.ellipse([xx * S - 7, y * S - 7, xx * S + 7, y * S + 7], outline=(255, 255, 255), width=2)
+        d.text((8, 8), f"{r['sess']} fid{r['fid']}", font=F(17), fill=(255, 255, 255),
+               stroke_width=2, stroke_fill=(0, 0, 0))
+        x0 = M + i * (pw + M)
+        img.paste(fr, (x0, 56))
+        d2 = ImageDraw.Draw(img)
+        n_none = sum(1 for w in r["win"] if w["off"] is None)
+        d2.text((x0, 56 + ph + 6),
+                f"品红=HSV 黄线@600  白圈=黄线层左右缘读数（fid{r['fid']}："
+                f"L={r['bnd'].left_x:.0f} R={r['bnd'].right_x:.0f}）\n"
+                f"青/橙点=深度 region 右/左块内沿；窗口 ±15 帧 road_offset None {n_none}/{len(r['win'])}",
+                font=F(16), fill=(60, 60, 60))
+    out = OUT / "firstgate_wallhit.jpg"
+    img.save(out, quality=92)
+    print(f"[fig_wallhit] 已写 {out}")
 
 
 def main() -> None:
@@ -843,6 +948,12 @@ def main() -> None:
         return
     if ap == "ego":
         _ego_scan(labels)
+        return
+    if ap == "wallhit":
+        class _A:
+            spec = next((a.split("=", 1)[1] for a in argv if a.startswith("--spec=")),
+                        "20260922_113932_p1:518,20260922_113610_p2:437")
+        _wallhit(_A)
         return
 
     gates = {}
