@@ -25,6 +25,10 @@
 纯模型积分（旧行为不变）；ego_mask 缺失 → 跳过挖除并 WARNING（合并桥风险
 回升，双守卫部分兜底）。
 
+**上拍形态**：生产经 AsyncDepthRoadObserver（异步 worker，协议同 treasure OCR）
+使用本层——控制拍只付 push+take（≈0.15ms），observe 成本在后台线程；
+本模块的同步 observe 保留为纯函数面（测试与离线复算直接调用）。
+
 **@336 落档已撤回（2026-09-24 实机复核）**：实机两轮 road_offset 0/330——主场景读数带
 (550~700) 内边界线大多已出画（金标 R 51/54、L 28/54 帧在 y<550 出画），弃权主因在守卫
 之前；落档扫描只报了通过守卫子集（n=12）的误差、无覆盖率分母。正面结论保留：边界真在
@@ -40,7 +44,9 @@ free-dim 折叠口径（@336 实测 p50 ≈20ms）；不折叠时图内唯一 cu
 from __future__ import annotations
 
 import json
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -323,3 +329,147 @@ class DepthRoadObserver:
         reading = reading_from_map(m, self._cal, self._ego_mask)
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0)
+
+    @property
+    def session_ready(self) -> bool:
+        return self._sess is not None
+
+
+class AsyncDepthRoadObserver:
+    """深度几何异步观测器（2026-09-24 解耦落地，协议与 treasure OCR worker 同构）。
+
+    为什么解耦这一层：observe ≈26ms p50 / 31.5ms p95（折叠 + 后处理向量化后的口径，
+    probe_latency 实测），同步形态把控制拍预算吃光（回路在 14~20Hz 间赌运气）。
+    路缘是**慢变量**——滞后 1~2 拍（50~100ms）读数仍有效；金币/街车是快变目标、
+    必须与本拍像素同源，所以感知与黄线层不做异步（treasure「令牌与读数字节同源」
+    的教训：跨线程搬运必有窗口，快变对象上窗口=脏读）。
+
+    协议（latest-only，无队列不积压）：
+    - push：主线程拷帧覆盖 pending 槽 + wakeup；worker 慢则丢中间帧（丢的是输入，
+      不是结果——路缘下一拍还会再来）。captured_ts 用 perf_counter（与耗时/时效
+      同族时钟；monotonic 在本机粒度 ~16ms 会把 age 量化）。
+    - worker：pop latest → 同步 observe → **非 None 才发布**结果槽（整包替换，
+      不原地改已发布对象）；顶层 try/except 计 failures，单帧异常不杀 daemon。
+    - take：主线程消费结果槽（取走即清，一拍最多应用一次）；
+      age = now − captured_ts 超 max_age_ms → 计 stale 丢弃、本拍返回 None
+      （road_offset 退纯模型积分——与 session 缺失同一降级路径，宁旧不如无）。
+    - health：applied/stale/failures 计数 + age/duration 滑窗——不达标报警数据面。
+    """
+
+    MAX_AGE_MS = 150.0    # 结果时效预算：20Hz 拍 ×3 拍；超龄读数按 stale 丢弃
+    PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
+
+    def __init__(self, observer: DepthRoadObserver,
+                 max_age_ms: float = MAX_AGE_MS) -> None:
+        self._obs = observer
+        self._max_age_ms = float(max_age_ms)
+        self._lock = threading.Lock()
+        self._pending: tuple[int, np.ndarray, float] | None = None
+        self._result: tuple[DepthRoadReading, float] | None = None
+        self._pushed = 0
+        self._applied = 0
+        self._stale_drops = 0
+        self._failures = 0
+        self._age_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
+        self._dur_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
+        self._stop = threading.Event()
+        self._wakeup = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.last_age_ms = 0.0
+
+    # ---------- 生命周期（阶段=chain：建即 start，收口 stop） ----------
+
+    def start(self) -> None:
+        """session 不可用则不起线程（push/take 全程空转，行为=session 缺失）。"""
+        if self._thread is not None or not self._obs.session_ready:
+            return
+        self._thread = threading.Thread(
+            target=self._loop, name="speedrush-depth-worker", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> bool:
+        """停 worker；返回是否干净退出（False=超时未退，调用方决定怎么报警——
+        本层不引 logger，日志归 module）。"""
+        if self._thread is None:
+            return True
+        self._stop.set()
+        self._wakeup.set()   # 唤醒阻塞在 wait 的 worker 立即退出
+        self._thread.join(timeout=timeout)
+        alive = self._thread.is_alive()
+        self._thread = None
+        return not alive
+
+    # ---------- 主线程面 ----------
+
+    def push(self, frame_rgb: np.ndarray) -> None:
+        """无 worker（session 缺失/start 未调）时直接空转：不拷帧、不计数——
+        阶段出口的"零结果"报警以 pushed>0 为前提，计数了就会误报。"""
+        if self._thread is None:
+            return
+        with self._lock:
+            self._pushed += 1
+            self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter())
+        self._wakeup.set()
+
+    def take(self) -> DepthRoadReading | None:
+        """消费最新结果（取走即清）。超龄返回 None 并计 stale——控制侧按"本拍无读数"处理。"""
+        with self._lock:
+            item = self._result
+            self._result = None
+            if item is None:
+                return None
+            reading, captured_ts = item
+        age_ms = (time.perf_counter() - captured_ts) * 1000.0
+        self.last_age_ms = age_ms
+        self._age_win.append(age_ms)
+        self._dur_win.append(reading.latency_ms)
+        if age_ms > self._max_age_ms:
+            with self._lock:
+                self._stale_drops += 1
+            return None
+        with self._lock:
+            self._applied += 1
+        return reading
+
+    def health(self) -> dict:
+        with self._lock:
+            pushed, applied, stale, failures = (
+                self._pushed, self._applied, self._stale_drops, self._failures)
+        ages, durs = list(self._age_win), list(self._dur_win)
+
+        def _p(xs: list[float], q: float) -> float:
+            return 0.0 if not xs else sorted(xs)[min(len(xs) - 1, int(q * (len(xs) - 1)))]
+
+        return {"pushed": pushed, "applied": applied, "stale_drops": stale,
+                "failures": failures,
+                "age_p50": _p(ages, 0.5), "age_p95": _p(ages, 0.95),
+                "dur_p50": _p(durs, 0.5), "dur_p95": _p(durs, 0.95),
+                "max_age_ms": self._max_age_ms}
+
+    # ---------- worker 线程 ----------
+
+    def _pop_latest(self) -> tuple[int, np.ndarray, float] | None:
+        with self._lock:
+            item, self._pending = self._pending, None
+            return item
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                item = self._pop_latest()
+                if item is None:
+                    self._wakeup.wait(timeout=0.5)
+                    self._wakeup.clear()
+                    continue
+            except Exception:  # noqa: BLE001 —— 取帧异常（理论不可达）不杀 daemon
+                self._failures += 1
+                continue
+            try:
+                reading = self._obs.observe(item[1])
+            except Exception:  # noqa: BLE001 —— 单帧异常计数后继续（与 treasure 同姿态）
+                self._failures += 1
+                continue
+            if reading is None:  # session 中途失效/推理异常：本帧无结果，不发布
+                continue
+            with self._lock:
+                self._result = (reading, item[2])  # captured_ts 随结果过闸（age 的锚）

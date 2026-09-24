@@ -44,7 +44,8 @@ from maaracing_master.plugins.speedrush.boundary import detect_boundary
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
-from maaracing_master.plugins.speedrush.depth_geo import DepthRoadObserver, load_session
+from maaracing_master.plugins.speedrush.depth_geo import (
+    AsyncDepthRoadObserver, DepthRoadObserver, load_session)
 from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
@@ -593,6 +594,7 @@ class SpeedRushModule(ActivityModule):
         finally:
             if control and chain:
                 self._flush_control_trace(chain, phase)
+                self._stop_depth_observer(chain, phase)
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
@@ -613,11 +615,14 @@ class SpeedRushModule(ActivityModule):
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "traffic_obs": TrafficObserver(cfg.traffic),
                 "ego_road": _EgoRoadObserver(),
-                # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人）。
-                # 会话为 None（权重缺失/加载失败）时 observe 恒 None——road_offset
-                # 退纯模型积分，黄线层不再补位（退役为骨架）。
-                "depth_geo": DepthRoadObserver(self._ensure_depth_session(),
-                                               load_calib()),
+                # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
+                # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
+                # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
+                # road_offset 退纯模型积分，黄线层不再补位（退役为骨架）。
+                # 生命周期=chain：这里 start，驾驶循环 finally 里 stop（见
+                # _stop_depth_observer 的收口与健康报警）。
+                "depth_geo": _started_async_depth(
+                    DepthRoadObserver(self._ensure_depth_session(), load_calib())),
                 "geo_master": self._geo_master,
                 "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                 "prev_ts": None, "disabled": False, "trace": [],
@@ -644,10 +649,13 @@ class SpeedRushModule(ActivityModule):
             # 黄线层（骨架化，2026-09-24 架构裁决）：照跑照记账（trace 保留 bnd_* 列、
             # 坏帧取证照旧），但不再是 road_offset 的证据源。
             obs = replace(obs, boundary=detect_boundary(frame))
-            # 深度几何读数（fail-safe：观察器异常不碰控制链，按"本拍无读数"处理）。
+            # 深度几何（异步解耦 2026-09-24，协议同 treasure OCR worker）：本帧交
+            # worker 后台推理，take() 只消费过了 age 闸的最新结果——控制拍不再付
+            # observe 成本。协议本身不抛，异常闸按观测件惯例保留（fail-safe）。
             dgeo = None
             try:
-                dgeo = chain["depth_geo"].observe(frame)
+                chain["depth_geo"].push(frame)
+                dgeo = chain["depth_geo"].take()
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             planner: LateralPlanner = chain["planner"]
@@ -720,7 +728,11 @@ class SpeedRushModule(ActivityModule):
             else round(dgeo.left_edge_lane, 3),
             "dgeo_right": None if dgeo is None or dgeo.right_edge_lane is None
             else round(dgeo.right_edge_lane, 3),
+            # dgeo_ms=worker 侧 observe 耗时（解耦后不再是控制拍成本）；
+            # dgeo_age_ms=消费时刻帧龄（age 闸的读数面，滞后与丢弃都在这列显形）
             "dgeo_ms": None if dgeo is None else round(dgeo.latency_ms, 1),
+            "dgeo_age_ms": None if dgeo is None
+            else round(chain["depth_geo"].last_age_ms, 1),
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
@@ -755,6 +767,32 @@ class SpeedRushModule(ActivityModule):
                       f"{bf['saved']} 张 → {bf['dir']}", "INFO")
         except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
+
+    def _stop_depth_observer(self, chain: dict, phase: int) -> None:
+        """停深度 worker + 阶段出口报一次健康——不达标报警的落点（判据移植 treasure）。
+
+        回归只发生在尾部，故判据用比值与 p95、不用均值：stale 丢弃率 ≥5% 或
+        age p95 超预算 75% → WARNING；push 了却整场零结果（worker 没产出，
+        实机 0/330 那类症状）→ WARNING；其余 INFO 汇总一行。
+        """
+        dg = chain.get("depth_geo")
+        if dg is None:
+            return
+        if not dg.stop():
+            _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：深度 worker 2s 内未退出（daemon 兜底）",
+                  "WARNING")
+        h = dg.health()
+        if not h["pushed"]:
+            return  # session 缺失/未跑过一帧：无数据面可报（缺失已在会话加载处 WARNING）
+        examined = h["applied"] + h["stale_drops"]
+        ratio = (h["stale_drops"] / examined) if examined else 0.0
+        line = (f"[极速狂飙] 驾驶阶段 {phase}：深度 worker 应用 {h['applied']}"
+                f"/超龄丢弃 {h['stale_drops']}（{ratio:.0%}）/异常 {h['failures']}"
+                f"/时效 p50 {h['age_p50']:.0f} p95 {h['age_p95']:.0f}ms"
+                f"（预算 {h['max_age_ms']:.0f}ms）"
+                f"/耗时 p50 {h['dur_p50']:.0f} p95 {h['dur_p95']:.0f}ms")
+        bad = (not examined) or ratio >= 0.05 or h["age_p95"] > h["max_age_ms"] * 0.75
+        _tlog(self, line, "WARNING" if bad else "INFO")
 
     def _ensure_perception(self) -> StreetPerception | None:
         """懒加载感知模型（实例跨阶段复用，一局只付一次模型加载）；失败则本轮禁用。
@@ -955,6 +993,15 @@ class _EgoRoadObserver:
         if self._hw is not None and abs(off) > self._hw + 0.5:
             return None
         return off
+
+
+def _started_async_depth(obs: DepthRoadObserver) -> AsyncDepthRoadObserver:
+    """构造即启动的异步深度观测器（session 不可用时 start 自为 no-op，见其 docstring）。
+
+    生命周期与 chain 同呼吸：这里 start，驾驶循环 finally 的 _stop_depth_observer 收口。"""
+    a = AsyncDepthRoadObserver(obs)
+    a.start()
+    return a
 
 
 def _control_trace_root() -> Path:

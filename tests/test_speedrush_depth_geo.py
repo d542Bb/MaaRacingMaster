@@ -20,7 +20,8 @@ import numpy as np
 import pytest
 
 from maaracing_master.plugins.speedrush.depth_geo import (
-    NEAR_HI, NEAR_LO, DepthRoadObserver, _ground_q20, reading_from_map)
+    AsyncDepthRoadObserver, NEAR_HI, NEAR_LO, DepthRoadObserver, DepthRoadReading,
+    _ground_q20, reading_from_map)
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
 CAL = load_calib()
@@ -248,3 +249,117 @@ def test_load_session_is_folded_static_shape():
     dims = _load_session_or_skip().get_inputs()[0].shape
     assert all(isinstance(d, int) for d in dims), f"输入维未静态化（折叠未生效）: {dims}"
     assert tuple(dims) == (1, 3, 336, 588)
+
+
+# ── 异步解耦协议（AsyncDepthRoadObserver，stub 零数据依赖）────────────────
+
+import time as _time  # noqa: E402
+
+
+def _mk_reading(lane: float = -0.4) -> DepthRoadReading:
+    return DepthRoadReading(left_edge_lane=lane, right_edge_lane=None,
+                            left_x=300.0, right_x=None, sides=1,
+                            latency_ms=1.0, rejects=("R:远带",))
+
+
+class _StubObserver:
+    """DepthRoadObserver 替身：按脚本回放 读数/None/异常，记录调用。"""
+
+    def __init__(self, script, session_ready: bool = True) -> None:
+        self._script = list(script)
+        self.session_ready = session_ready
+        self.calls = 0
+
+    def observe(self, frame):
+        self.calls += 1
+        item = self._script.pop(0) if self._script else None
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _wait_until(pred, timeout=2.0) -> bool:
+    end = _time.perf_counter() + timeout
+    while _time.perf_counter() < end:
+        if pred():
+            return True
+        _time.sleep(0.005)
+    return False
+
+
+def _frame() -> "object":
+    import numpy as np
+    return np.zeros((720, 1280, 3), np.uint8)
+
+
+def test_async_roundtrip_single_consume():
+    """push→worker→take 闭环；结果取走即清（一拍最多应用一次）。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: a.take() is not None), "worker 未在 2s 内发布结果"
+        assert a.take() is None, "结果槽未被取走即清（同帧二次应用）"
+        assert a.health()["applied"] == 1
+    finally:
+        assert a.stop() is True
+
+
+def test_async_stale_gate_drops():
+    """age 闸：max_age_ms≈0 时已发布结果按 stale 丢弃（take 返回 None）。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub, max_age_ms=0.001)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        # age 闸在消费侧（发布不判龄，take 时才判——treasure 同构）：轮询 take()
+        # 直到某次消费把已发布的结果判成 stale。
+        assert _wait_until(lambda: a.take() is None
+                           and (h := a.health())["applied"] + h["stale_drops"] >= 1), \
+            "消费侧未把超龄结果判为 stale"
+        assert a.health()["stale_drops"] == 1
+    finally:
+        a.stop()
+
+
+def test_async_worker_exception_survives():
+    """单帧异常计 failures 不杀 daemon：下一帧照常出结果。"""
+    stub = _StubObserver([RuntimeError("boom"), _mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: a.health()["failures"] >= 1)
+        a.push(_frame())
+        assert _wait_until(lambda: a.take() is not None), "异常后 worker 未恢复"
+        assert a.health()["failures"] == 1
+    finally:
+        a.stop()
+
+
+def test_async_no_session_no_thread():
+    """session 不可用：start 不起线程，push/take 空转（行为=session 缺失降级）。"""
+    a = AsyncDepthRoadObserver(_StubObserver([], session_ready=False))  # type: ignore[arg-type]
+    a.start()
+    assert a._thread is None
+    a.push(_frame())
+    assert a.take() is None
+    assert a.health()["pushed"] == 0, "无 worker 时 push 不得计数（零结果报警的前提）"
+    assert a.stop() is True
+
+
+def test_async_none_reading_not_published():
+    """observe 返回 None（推理失败）不发布结果、不污染计数。"""
+    stub = _StubObserver([None])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: stub.calls >= 1)
+        _time.sleep(0.05)  # 给 worker 足够时间把（错误地）发布暴露出来
+        assert a.take() is None
+        h = a.health()
+        assert h["applied"] == 0 and h["stale_drops"] == 0 and h["failures"] == 0
+    finally:
+        a.stop()
