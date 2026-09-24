@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """极速狂飙插件包。
 
-插件自包含契约：代码、模板图、图节点真源全部位于本目录 resources/ 内，
-registry 按 manifest.py 自动发现；整个目录拷走即卸载、放入即安装。
+插件自包含契约：代码、模板图、图节点真源、几何标定、行为参数、模型权重
+（resources/onnx/，含各权重许可声明 README）全部位于本目录内，registry 按
+manifest.py 自动发现；整个目录拷走即卸载、放入即安装。本域新增的一切
+（未来如 GUI 个性化卡片）同样住本目录，全局文档只放指向本目录的指针。
 
 UI 流程的识别与点击规格由图节点承载（resources/pipeline/speedrush.json）；
 驾驶决策的行为参数自阶段 B step 4 起住 **policy/decision.json**——本域自此有

@@ -35,7 +35,8 @@ class SampleModule(ActivityModule):
     REQUIRES_GAMEPAD_EXCLUSIVE = False
 
     # 插件自带必需资源（相对插件目录），启动前逐项检查存在性，缺失即拦截
-    # 示例：REQUIRED_ASSETS = ("resources/onnx/model.onnx",)
+    # 示例：REQUIRED_ASSETS = ("resources/onnx/perception/model.onnx",)
+    # 权重按用途在 onnx/ 下分子目录，许可声明 README 与权重同目录（真源在插件内）
     REQUIRED_ASSETS: tuple[str, ...] = ()
 
     def __init__(self, ctx: ActivityContext):

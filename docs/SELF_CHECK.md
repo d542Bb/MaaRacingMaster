@@ -89,10 +89,9 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 
 | 文件 | 路径 | 缺失后果 |
 |------|------|---------|
-| 模型权重（speedrush） | `plugins/speedrush/resources/onnx/perception/model.onnx`（感知，AGPL-3.0）
-`plugins/speedrush/resources/onnx/depth/depth_small_q4f16.onnx`（深度几何，Apache-2.0） | 感知缺失 sidecar 启动拦截；深度缺失则 road_offset 退纯模型积分（不阻断驾驶） |
+| 模型权重 | 各插件自带（真源：插件 `resources/` 内许可 README 与 `REQUIRED_ASSETS` 声明，sidecar 启动前机检存在性） | 按插件各自的降级口径（speedrush：感知缺失启动拦截；深度缺失 road_offset 退纯模型积分，不阻断驾驶） |
 
-> speedrush 两权重随包分发入库；含 YOLO 检测的模型训练导出见 `tools/training/train.py`。
+> speedrush 感知权重训练导出见 `tools/training/train.py`（产物直接落插件目录）。
 
 ---
 

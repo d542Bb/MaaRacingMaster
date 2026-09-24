@@ -5,10 +5,9 @@
 
 ## 项目自身许可（分层）
 - **本项目源码**（`maaracing_master/`、`apps/MaaRacingMaster.Shell/` 等）采用 **Apache-2.0**（见根目录 `LICENSE`）。
-- **模型权重**：随发布包分发（入库于各插件 `resources/onnx/`）。speedrush 插件现有两份：
-  物品感知权重单独沿用 **AGPL-3.0**、深度几何权重 **Apache-2.0**（均见下方「模型权重」一节
-  与插件内 `resources/onnx/README.md`）。AGPL 仅作用于对应权重文件本身，本项目其余代码
-  非其衍生作品，保留 Apache-2.0。
+- **模型权重**：随发布包分发，真源在各插件目录内（声明文件随文件走）；本文件「模型
+  权重」一节仅做许可类别登记与指向，不复制细节。AGPL 仅作用于对应权重文件本身，
+  本项目其余代码非其衍生作品，保留 Apache-2.0。
 
 ---
 
@@ -39,29 +38,19 @@
 
 ---
 
-## 二、模型权重（随包分发，入库于插件 resources/onnx/）
+## 二、模型权重（随包分发，真源在各插件目录内）
 
-### 二.1 物品感知权重（AGPL-3.0）
+插件自带权重随插件目录入库、随发布包分发；**每个权重的来源、上游与许可细节只写
+在插件目录内的许可 README（真源），本文件仅做随包许可的登记与指向**（登记行不含
+细节，细节改动不需要同步本文件）：
 
-speedrush 插件 `resources/onnx/perception/model.onnx`：
+| 权重文件（插件内相对路径） | 许可证 | 声明真源 |
+|---|---|---|
+| speedrush `resources/onnx/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/speedrush/resources/onnx/README.md](maaracing_master/plugins/speedrush/resources/onnx/README.md) |
+| speedrush `resources/onnx/depth/depth_small_q4f16.onnx` | Apache-2.0 | 同上 |
 
-- 此类权重由 **Ultralytics 官方预训练权重** `yolo11n.pt` + Ultralytics 训练代码在自有标注数据上微调导出（见 `tools/training/train.py`）。
-- 按 Ultralytics 的许可立场，该微调模型视为 **AGPL-3.0 衍生作品**，随本发布包再分发需遵循 AGPL-3.0。
-- 本项目运行时**未再分发任何 Ultralytics 软件代码**（YOLO 推理仅通过 ONNX Runtime 加载 ONNX 图）。
-- AGPL 义务仅挂在权重文件本身，本项目其余代码保留 Apache-2.0。
-- 上游: <https://github.com/ultralytics/ultralytics>　许可: <https://www.gnu.org/licenses/agpl-3.0.html>
-
-> 如需把此类模型用于**不开放源码 / 商业闭源**的场合，需另行取得 Ultralytics Enterprise License，
-> 见 <https://www.ultralytics.com/license>。
-
-### 二.2 深度几何权重（Apache-2.0）
-
-speedrush 插件 `resources/onnx/depth/depth_small_q4f16.onnx`：
-
-- Depth Anything V2 Small 官方权重的 ONNX q4f16 量化转换（onnx-community 转换产物）。
-- **Apache-2.0**（与上游权重同许可），可随发布包自由再分发；运行时推理仅通过
-  ONNX Runtime 加载 ONNX 图，不依赖上游仓库代码。
-- 上游: <https://github.com/DepthAnything/Depth-Anything-V2>　转换参考: <https://huggingface.co/onnx-community>
+AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0；
+发布包保留本文件与插件内声明文件，义务即满足。
 
 ---
 

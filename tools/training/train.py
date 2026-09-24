@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-YOLO11n 训练脚本：自动训练并导出 ONNX 到归档的 racing 插件资源目录
-（archive/racing/resources/onnx/，racing 插件的归档资源目录；模型随插件自包含分发，重写 racing 时从这里取用）。
+YOLO11n 训练脚本：自动训练并导出 ONNX 到 speedrush 插件的感知权重位
+（plugins/speedrush/resources/onnx/perception/model.onnx——插件自包含：
+模块自己用的东西住自己目录，本脚本只是往那个真源位覆盖产物）。
 
 许可证注意：本脚本用 Ultralytics 官方预训练权重 yolo11n.pt 微调导出，
-产出的 model.onnx 视为 AGPL-3.0 衍生作品（见同目录 resources/onnx/README.md）。
+产出的 model.onnx 视为 AGPL-3.0 衍生作品（声明见插件 onnx/README.md）。
 发布冒烟/CI 之外，请勿把该模型用于不开放源码的商业场合而未取得
 Ultralytics Enterprise License。
 """
@@ -37,7 +38,9 @@ def main():
     best.export(format="onnx", imgsz=640, simplify=True, opset=12)
     onnx_path = project_dir / "weights" / "best.onnx"
 
-    dst = tools_dir.parent / "archive" / "racing" / "resources" / "onnx" / "model.onnx"
+    repo_root = tools_dir.parent
+    dst = repo_root / "maaracing_master" / "plugins" / "speedrush" \
+        / "resources" / "onnx" / "perception" / "model.onnx"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(onnx_path, dst)
     print(f"导出完成: {onnx_path}")

@@ -88,7 +88,7 @@ MaaRacingMaster 是一款基于**计算机视觉**与**虚拟手柄控制**的�
 
 主控（controller）只做**生命周期与能力门面**，活动流程由插件模块承载：
 
-- **插件自包含**：一活动 = 一目录（`manifest.py` + `module.py` + `resources/`），由 `registry` 扫描 `plugins/*/manifest.py` 发现；放入即装、删除即卸。开发新插件从 [templates/plugin/](../templates/plugin/README.md) 样板起步。
+- **插件自包含**：一活动 = 一目录（`manifest.py` + `module.py` + `resources/`），由 `registry` 扫描 `plugins/*/manifest.py` 发现；放入即装、删除即卸。**模块自己用的一切都在自己目录里**——代码、模板、标定、行为参数、模型权重（含各自许可声明），未来扩展（如 GUI 个性化卡片）同样住插件目录；全局文档（许可汇总、自检清单等）对插件资产只做**指针登记，不复制内容**。开发新插件从 [templates/plugin/](../templates/plugin/README.md) 样板起步。
 - **能力经窄接口**：插件只能通过 `capture` / `gamepad` / `debug_renderer` 等 capability 接触宿主，拿不到高权限宿主对象；资源所有权经租约与 `ExitStack` 治理。
 - **阶段流转在模块内**：活动阶段状态机、策略与资产全部属于插件；阶段清单的唯一真源是该插件 `resources/policy/<id>.policy.json` 的 `perception.stages.order`，语义见对应域文档。
 
