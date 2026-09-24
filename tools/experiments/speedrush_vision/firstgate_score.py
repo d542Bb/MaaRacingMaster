@@ -896,6 +896,136 @@ def _fig_wallhit(rows) -> None:
     print(f"[fig_wallhit] 已写 {out}")
 
 
+def _g_q20(m: np.ndarray, rng: float, q: float = 0.20) -> np.ndarray:
+    """逐行全局低分位基线（ground_model v2 探针）：地面 = 该行最低的连片地面群体。
+
+    与滑动低分位的区别：滑窗是局部的，跨不过车身——骑路缘帧上人行道自己的下尾
+    就成了基线（修正失效）；全局 q20 才能把路面（少数群体）钉成地面。"""
+    cols = psd.cols_of(m)
+    out = np.full(m.shape[0], np.nan, np.float32)
+    for y in range(psd.Y0, psd.DIAG_Y1):
+        out[y] = np.quantile(m[y, cols], q)
+    return out[psd.Y0:psd.DIAG_Y1]
+
+
+def _blocks_with_g(m: np.ndarray, rng: float, gfn):
+    """以注入的 ground_model 跑 region_inner（唯一实现不改，探针用完即还原）。"""
+    orig = psd.ground_model
+    psd.ground_model = gfn
+    try:
+        return psd.region_inner(m, rng, G=0.02)
+    finally:
+        psd.ground_model = orig
+
+
+def _q20rescue(args) -> None:
+    """骑路缘帧的深度解锁探针（维护者追问：「为什么这帧不能用深度」）。
+
+    ① 三群体读数 vs g：证明行中位 g 被人行道捕获（车骑上 ⇒ 人行道占近半行宽）、
+       真边界成负台阶而现行只认正偏差。② 全局 q20 基线下 region_inner 的 L 块
+       复活情况与内沿轨迹 vs HSV 黄线。③ 金标抽查（curve/kerb/wall 各一帧）
+       q20 vs 现行的块范围/内沿差——回归风险如实列出。出图 firstgate_q20.jpg。"""
+    sess_name, fid0 = args.spec.split(":")[0], int(args.spec.split(":")[1])
+    p = pd.APP / "demos" / sess_name / "frames" / f"{fid0:06d}.jpg"
+    m = np.load(pcq.NPY / f"{pcq.frame_key(p)}__da2s.npy").astype(np.float32)
+    if not (pcq.NPY / f"{pcq.frame_key(p)}__da2s.npy").exists():
+        raise SystemExit(f"缺深度缓存 {pcq.frame_key(p)}__da2s.npy（先跑 ego/wallhit 补）")
+    rng = psd.road_range(m)
+    g_cur = psd.ground_model(m, rng)
+
+    print(f"== ① 三群体读数 vs 现行 g（{sess_name} fid{fid0}）==")
+    print("行   g(y)   左区[30,380]  右路[790,850]  远右[900,1250]（相对 g）")
+    for y in (560, 600, 640, 680):
+        gy = float(g_cur[y - psd.Y0])
+        z = [float(np.median(m[y, a:b])) for a, b in ((30, 381), (790, 851), (900, 1251))]
+        print(f"{y}  {gy:.3f}  " + "  ".join(f"{v:.3f} ({(v - gy) / gy:+.1%})" for v in z))
+
+    print("\n== ② 全局 q20：L 块内沿 vs HSV 黄线 ==")
+    cur = psd.ground_model
+    bl_q = _blocks_with_g(m, rng, _g_q20)
+    bl_c = _blocks_with_g(m, rng, cur)
+    rgb = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+    ym = cv2.inRange(cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV), pd.HSV_LO, pd.HSV_HI)
+    inner_q = bl_q["L"][0] if bl_q["L"] else {}
+    rng_of = lambda x: "无" if x is None else f"y[{x[1]},{x[2]}]"
+    print(f"L 块：现行 {rng_of(bl_c['L'])} → q20 {rng_of(bl_q['L'])}")
+    for y in range(560, 711, 15):
+        idx = np.where(ym[y] > 0)[0]
+        runs = []
+        if len(idx):
+            s = prev = idx[0]
+            for x in idx[1:]:
+                if x - prev > 4:
+                    runs.append((int(s), int(prev)))
+                    s = x
+                prev = x
+            runs.append((int(s), int(prev)))
+        print(f"  y{y}: 内沿{inner_q.get(y)}  HSV{runs}")
+
+    print("\n== ③ 金标抽查（q20 vs 现行）==")
+    labels = gold_rows()
+    seen = {}
+    for r in labels:
+        if r["stratum"] in ("curve_cont2", "kerb", "wall") and r["stratum"] not in seen:
+            seen[r["stratum"]] = r
+    spot = []
+    for st, r in seen.items():
+        pp = Path(r["path"])
+        mm = np.load(pcq.NPY / f"{pcq.frame_key(pp)}__da2s.npy").astype(np.float32)
+        rr = psd.road_range(mm)
+        a = _blocks_with_g(mm, rr, cur)
+        b = _blocks_with_g(mm, rr, _g_q20)
+        line = f"{st:11s} {pp.name}: "
+        for side in ("L", "R"):
+            line += f"{side} {rng_of(a[side])}→{rng_of(b[side])}  "
+            if a[side] and b[side]:
+                d = [f"y{y}:{(b[side][0].get(y) or 0) - (a[side][0].get(y) or 0):+d}"
+                     for y in (560, 600, 640)
+                     if a[side][0].get(y) is not None and b[side][0].get(y) is not None]
+                line += f"Δ{d} "
+        print(line)
+        spot.append((pp, m if pp == p else mm, a, b, ym if pp == p else None))
+
+    _fig_q20(p, m, bl_q, bl_c, ym)
+
+
+def _fig_q20(p, m, bl_q, bl_c, ym) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    def F(sz):
+        return ImageFont.truetype(r"C:\Windows\Fonts\msyh.ttc", sz)
+
+    S = 760 / 1280
+    W, H = 1620, 640
+    img = Image.new("RGB", (W, H), (250, 250, 248))
+    d = ImageDraw.Draw(img)
+    d.text((16, 10), "骑路缘帧的深度解锁：现行 g 被人行道捕获（左块死在 y564）→ 全局 q20 把地面钉回路面，边界复活",
+           font=F(22), fill=(30, 30, 30))
+    fr = Image.fromarray(cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)).resize((760, 428))
+    dd = ImageDraw.Draw(fr)
+    if bl_c["L"] is not None:
+        for yy, xx in bl_c["L"][0].items():
+            if 430 <= yy <= 564 and xx is not None:
+                dd.ellipse([xx * S - 2, yy * S - 2, xx * S + 2, yy * S + 2], fill=(170, 170, 170))
+    if bl_q["L"] is not None:
+        for yy, xx in bl_q["L"][0].items():
+            if 540 <= yy <= 710 and xx is not None:
+                dd.ellipse([xx * S - 4, yy * S - 4, xx * S + 4, yy * S + 4], fill=(255, 120, 20))
+    for yy in range(560, 711, 20):
+        for a, b in _runs(ym[yy]):
+            dd.line([(a * S, yy * S), (b * S, yy * S)], fill=(255, 0, 255), width=2)
+    img.paste(fr, (16, 56))
+    d.text((16, 56 + 428 + 8),
+           "灰点=现行 g 的 L 块（死在 y564，近带只剩边缘窄条）；橙点=全局 q20 的 L 块内沿 y[340,714]，"
+           "570~710 干净直线轨迹 472→384=人行道右缘；\n品红=HSV 黄线/砖区（线碎段在缘外 10~30px）。"
+           "y540~560 内沿被车身中段粘连（ego_mask 只盖到 y532）。回归抽查见 stdout：q20 非免费，"
+           "须配行内直线拟合+金标全量回归锁（ground_model v2，待裁）。",
+           font=F(16), fill=(60, 60, 60))
+    out = OUT / "firstgate_q20.jpg"
+    img.save(out, quality=92)
+    print(f"\n[fig_q20] 已写 {out}")
+
+
 def main() -> None:
     argv = sys.argv[1:]
     ap = argv[0] if argv else ""
@@ -954,6 +1084,12 @@ def main() -> None:
             spec = next((a.split("=", 1)[1] for a in argv if a.startswith("--spec=")),
                         "20260922_113932_p1:518,20260922_113610_p2:437")
         _wallhit(_A)
+        return
+    if ap == "q20rescue":
+        class _B:
+            spec = next((a.split("=", 1)[1] for a in argv if a.startswith("--spec=")),
+                        "20260922_113932_p1:518")
+        _q20rescue(_B)
         return
 
     gates = {}
