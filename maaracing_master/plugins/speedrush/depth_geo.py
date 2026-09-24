@@ -14,10 +14,12 @@
 - **区域而非逐行**：路面时间噪声地板 σ0.39%、台阶读数 4.5%（自身 4.2σ），
   单像素不可信；边界=贯穿多行朝消失点收敛的线，车/金币=行跨度有限的团块
   ⇒ 相对门 + 横向收紧 + 连通块 + 触画面侧边 + 跨行门槛。
-- **双守卫**（122 帧标定，锚点全部分开）：①射线收敛——内沿 x(y) 稳健拟合
+- **守卫**（122 帧标定，锚点全部分开）：①射线收敛——内沿 x(y) 稳健拟合
   后外推到地平线须落在 VP 附近（拒 518 帧出租车伪块）；②侧别一致——近带
   读数 x_lane 须在自己一侧（拒贴护栏帧的翻面块）；③近带行 ≥2——块主体在
-  远带（归一发散区）时读数本身不可用，整块弃权。
+  远带（归一发散区）时读数本身不可用，整块弃权；④门本底——内沿内侧
+  40~120px 窗的相对偏离中位 >门的一半 ⇒ 门已失去物理语义，该侧弃权
+  （第一关终选附带守卫：跨档落分辨率时让失效档位主动交权）。
 
 **降级路径**：权重缺失/推理异常 → observe 返回 None，road_offset 链路退回
 纯模型积分（旧行为不变）；ego_mask 缺失 → 跳过挖除并 WARNING（合并桥风险
@@ -57,6 +59,7 @@ FIT_MIN_ROWS, FIT_RESID_PX = 20, 30.0
 CONV_MAX_PX = 350.0    # |x(Y_H) − vpx|：边界线外推须过 VP 附近
 RESID_MAX_PX = 45.0    # 内沿直线拟合的中位残差
 LANE_SIDE_MIN = 0.15   # 近带读数 x_lane 的侧别门（车道）
+BASE_LO_PX, BASE_HI_PX = 40, 120   # 本底守卫窗：内沿内侧 40~120px（路面侧）
 
 
 @dataclass(frozen=True)
@@ -109,13 +112,14 @@ def _ground_q20(m: np.ndarray) -> np.ndarray:
     return np.quantile(m[Y0:DIAG_Y1][:, cols].astype(np.float32), Q_GROUND, axis=1)
 
 
-def _touch_blocks(m: np.ndarray, ego_mask: np.ndarray | None
-                  ) -> list[tuple[int, int, dict[int, int], dict[int, int], bool, bool]]:
-    """非地面区域块提取 → [(ymin, ymax, innerL, innerR, touchL, touchR)]。
+def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None
+                    ) -> tuple[np.ndarray,
+                               list[tuple[int, int, dict[int, int], dict[int, int], bool, bool]]]:
+    """相对偏离图 r=(M−g)/g + 非地面区域块提取。
 
-    相对门 → 挖自车（断车身→护栏→墙合并桥）→ 横向收紧 → 8 向连通块 →
-    触画面侧边且跨行 ≥MIN_SPAN 的块。innerL/innerR 按 x<640 分流取内沿
-    （横贯块两侧各自可用）。"""
+    块 = 相对门 → 挖自车（断车身→护栏→墙合并桥）→ 横向收紧 → 8 向连通块 →
+    触画面侧边且跨行 ≥MIN_SPAN。innerL/innerR 按 x<640 分流取内沿
+    （横贯块两侧各自可用）。r 供本底守卫复用（同一张图，不重算）。"""
     g = _ground_q20(m)
     r = np.full(m.shape, np.nan, np.float32)
     r[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
@@ -139,7 +143,33 @@ def _touch_blocks(m: np.ndarray, ego_mask: np.ndarray | None
             else:
                 innerL[y] = max(innerL.get(y, -1), int(x))
         out.append((int(ys.min()), int(ys.max()), innerL, innerR, touchL, touchR))
-    return out
+    return r, out
+
+
+def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str) -> bool:
+    """门本底守卫：内沿**内侧**（路面侧）40~120px 窗的相对偏离中位须 ≈0。
+
+    门 G 的物理语义是"路面 vs 边界外的高差"；本底窗已被门吃掉一半以上
+    （>GATE/2）时读数是"松门交点"而非边界——门已失效，该侧主动弃权。
+    跨档落分辨率时 g 随之压缩、本底抬升，此守卫让失效档位交出决策权
+    （第一关终选附带守卫，测量口=金标线内侧窗的生产化替代）。"""
+    vals: list[float] = []
+    for y in range(NEAR_LO, NEAR_HI + 1, 5):
+        x0 = inner.get(y)
+        if x0 is None:
+            continue
+        lo, hi = ((x0 + BASE_LO_PX, x0 + BASE_HI_PX) if side == "L"
+                  else (x0 - BASE_HI_PX, x0 - BASE_LO_PX))
+        lo, hi = max(lo, 0), min(hi, r.shape[1])
+        if hi - lo < 8:
+            continue
+        v = r[y, lo:hi]
+        v = v[np.isfinite(v)]
+        if len(v):
+            vals.append(float(np.median(v)))
+    if len(vals) < 3:
+        return True
+    return abs(float(np.median(vals))) <= GATE / 2.0
 
 
 def _fit(inner: dict[int, int], cal: Calib) -> dict | None:
@@ -175,7 +205,7 @@ def _pass(f: dict, side: str) -> bool:
 def reading_from_map(m: np.ndarray, cal: Calib,
                      ego_mask: np.ndarray | None) -> DepthRoadReading:
     """深度图 → 读数（纯函数，回归锁可直接喂缓存图；observe=推理+本函数）。"""
-    blocks = _touch_blocks(m, ego_mask)
+    r, blocks = _rel_and_blocks(m, ego_mask)
     edges: dict[str, tuple[float, float] | None] = {"L": None, "R": None}
     rejects: list[str] = []
     for side in ("L", "R"):
@@ -195,6 +225,9 @@ def reading_from_map(m: np.ndarray, cal: Calib,
                     f"{side}:" + ("远带" if f["dead"] else
                                   f"conv{f['conv']:.0f}/res{f['resid']:.0f}/"
                                   f"lane{f['lane']:+.2f}"))
+                continue
+            if not _baseline_ok(r, inner, side):
+                rejects.append(f"{side}:门本底失效")
                 continue
             edges[side] = (f["x_near"], f["lane"])
             break

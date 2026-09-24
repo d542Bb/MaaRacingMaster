@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from maaracing_master.plugins.speedrush.depth_geo import (
-    DepthRoadObserver, _ground_q20, reading_from_map)
+    NEAR_HI, NEAR_LO, DepthRoadObserver, _ground_q20, reading_from_map)
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
 CAL = load_calib()
@@ -118,6 +118,22 @@ def test_far_band_block_rejected():
     rd = reading_from_map(m, CAL, None)
     assert rd.right_edge_lane is None
     assert any("远带" in r for r in rd.rejects)
+
+
+def test_baseline_guard_rejects_soft_gate():
+    """内沿内侧 40~120px 本底窗被垫到 1.5%（>门/2、<门）→ 门失效弃权。
+
+    复刻第一关终选的跨档失效形态（块从路面里起跳、边界=松门交点）：
+    守卫让失去物理语义的门主动交出决策权，而不是继续伪装成功。"""
+    m = _base_map()
+    inner = _vp_line(0.95, "R")
+    _draw_raised(m, inner, "R", 340, 715)
+    for y in range(NEAR_LO, NEAR_HI + 1):
+        x0 = int(round(inner(y)))
+        m[y, x0 - 120:x0 - 40] = _road(y) * 1.015     # 松门本底（<2% 不自成块）
+    rd = reading_from_map(m, CAL, None)
+    assert rd.right_edge_lane is None
+    assert any("门本底" in r for r in rd.rejects)
 
 
 # ── 资产与会话降级 ──────────────────────────────────────────────────────
