@@ -38,7 +38,8 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.paths import data_dir
 from maaracing_master.plugins.speedrush import (
-    IMAGE_DIR, PERCEPTION_MODEL_FILE, PERCEPTION_MODEL_REL, PIPELINE_DIR)
+    DEPTH_MODEL_FILE, DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_FILE,
+    PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush.boundary import detect_boundary
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
@@ -179,8 +180,8 @@ class SpeedRushModule(ActivityModule):
     # 驾驶阶段全程占用手柄（油门常踩 + 横向连续转向）
     REQUIRES_GAMEPAD_EXCLUSIVE = True
     REQUIRES: frozenset[str] = frozenset({"capture", "gamepad"})
-    # 插件自带必需资源：物品感知模型权重（sidecar 启动前检查，缺失拦截并给出具体路径）
-    REQUIRED_ASSETS: tuple[str, ...] = (PERCEPTION_MODEL_REL,)
+    # 插件自带必需资源：两模型权重（sidecar 启动前检查，缺失拦截并给出具体路径）
+    REQUIRED_ASSETS: tuple[str, ...] = (PERCEPTION_MODEL_REL, DEPTH_MODEL_REL)
     # 录制开关的初值（False = 不录制，驾驶阶段只等本阶段结束）
     DEFAULT_RECORD_MODE = False
     # 感知开关的初值（True = 驾驶阶段逐帧跑 YOLO 检测并记账；不操纵车辆，
@@ -776,13 +777,13 @@ class SpeedRushModule(ActivityModule):
             return self._depth_sess
         try:
             t0 = time.monotonic()
-            self._depth_sess = load_session(DEPTH_WEIGHTS_FILE)
+            self._depth_sess = load_session(DEPTH_MODEL_FILE)
             _tlog(self, f"[极速狂飙] 深度几何模型就绪（{time.monotonic() - t0:.1f}s）",
                   "INFO")
         except Exception as exc:  # noqa: BLE001 —— 深度故障不阻断对局流程
             self._depth_failed = True
             _tlog(self, f"[极速狂飙] 深度几何初始化失败，road_offset 退纯模型积分"
-                        f"（权重: {DEPTH_WEIGHTS_FILE}）: {exc!r}", "WARNING")
+                        f"（权重: {DEPTH_MODEL_FILE}）: {exc!r}", "WARNING")
         return self._depth_sess
 
     def _log_loop_pace(self, phase: int, frames: int, loop_start: float) -> None:
@@ -953,14 +954,6 @@ class _EgoRoadObserver:
 def _control_trace_root() -> Path:
     """控制 trace 根目录（与 demos 同构，落用户数据目录、不污染仓库）。"""
     return data_dir() / "speedrush" / "control_traces"
-
-
-# 深度几何权重（DA-S q4f16，Apache-2.0，19MB；@336 落档口径）。权重文件按
-# 仓库既有模式不入库（.gitignore 忽略插件 onnx，部署时落数据目录；入库分发的
-# 许可与数据均已支持，是否打破「权重不入库」模式由维护者裁定）。加载失败时
-# 深度层禁用，road_offset 退纯模型积分。
-DEPTH_WEIGHTS_FILE = (data_dir() / "speedrush" / "depth_review" / "weights"
-                      / "oc_model_q4f16.onnx")
 
 
 def resolve_start_index(start_from: str | None) -> int:

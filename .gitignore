@@ -63,9 +63,8 @@ docs/design/validation-report.json
 # 归档（被 sidecar + WinUI3 取代的旧 GUI、历史 spike）
 archive/
 
-# 插件自带模型权重（AGPL-3.0 衍生不入库；许可声明 README.md 入库。部署时权重落
-# 插件目录，REQUIRED_ASSETS 按本地文件检查。口径见 THIRD_PARTY_LICENSES.md「模型权重」节）
-maaracing_master/plugins/*/resources/onnx/*.onnx
+# 插件模型权重随包分发入库（各权重许可与来源声明见对应插件 resources/onnx/
+# README 与 THIRD_PARTY_LICENSES.md「模型权重」节）
 
 # WinUI 3 / .NET 构建产物（apps/MaaRacingMaster.Shell）
 apps/MaaRacingMaster.Shell/bin/

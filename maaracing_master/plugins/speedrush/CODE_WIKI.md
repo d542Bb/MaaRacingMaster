@@ -345,9 +345,10 @@
 首帧 ~115ms 是 DML kernel 预热，进驾驶页的倒计时窗口吸收。`_log_loop_pace` 每阶段
 出口报感知 P50/P95（验收判据 §二.3 的记账要求，已内置）。
 
-**资产与开关**：模型权重 `resources/onnx/model.onnx`（AGPL-3.0 衍生**不入库**，
-`.gitignore` 排除、许可 README 入库，口径见 THIRD_PARTY_LICENSES「模型权重」节）；
-`REQUIRED_ASSETS` 声明 + sidecar 启动前检查（speedrush 是该机制第一个真实使用者）。
+**资产与开关**：模型权重 `resources/onnx/perception/model.onnx`（AGPL-3.0 衍生，
+**随包分发入库**，来源/许可声明见 `resources/onnx/README.md` 与 THIRD_PARTY_LICENSES
+「模型权重」节）；`REQUIRED_ASSETS` 声明 + sidecar 启动前检查（speedrush 是该机制
+第一个真实使用者，2026-09-24 起声明感知+深度两份权重）。
 配置键 `perception_mode`（默认 False，profile 白名单已加）：开启后驾驶阶段逐帧检测、
 结果存 `_last_perception` 并经 `get_module_config._state.perception_last` 透出 GUI；
 初始化失败自动禁用、不阻断对局（与录制器同一姿态）。
@@ -466,3 +467,32 @@ v_ego>y_h）任一不过即拒载并写明原因；`allow_car_graze=true` 在 v1
 两代方法仍信号不足（练习局连续打舵不可归因），维持设计起值，复测需孤立变道素材；
 boundary 残差实测 P50=0.68/P90=2.09——straight_residual_max 起值 0.6 定错档，
 接线校验时按 P90+ 重定。
+
+
+## 12. 深度几何观测层（road_offset 几何主人，2026-09-24 架构裁决接线）（本域）
+
+**住户**：`depth_geo.py::DepthRoadObserver`（阶段生命期=chain，ORT 会话经
+`module._ensure_depth_session` 跨阶段复用）+ 纯函数 `reading_from_map`（深度图→
+读数，回归锁可直接喂缓存图）。流水：DA-S 视差（@336 q4f16）→ 全局逐行 q20 地面
+基线 → 相对门 5% 区域块 → 挖除（上半身矩形 ∪ 中央带下延）→ 双守卫+本底守卫 →
+两侧内沿读数（车道单位，`left_edge_lane/right_edge_lane` 与 BoundarySummary 鸭子
+同构，`_EgoRoadObserver` 原样消费）。
+
+**读数纪律**：地面=该行**最低的连片群体**（全局 q20，非中位数——车骑上路缘时
+中位数把人行道当地面、真边界成负台阶）；路面须占统计列 ≥20% 否则基线漂（结构
+适用条件）；真边界=贯穿多行朝 VP 收敛的线 → 区域+触画面侧边+跨行 ≥100 才可信。
+守卫：①射线收敛 conv≤350px ②内沿直线残差 ≤45px ③侧别 |lane|≥0.15 ④近带行 ≥2
+⑤本底 ≤门/2——各拒一类已知失效（出租车伪块/翻面块/远带背景/松门交点），
+阈值证据指向 commit ef5a42d、baa0872、72b766a。
+
+**geo_master 开关**（module config，"depth"|"hsv" 默认 depth）：road_offset 证据源
+切换；黄线 `detect_boundary` 退役为骨架（照跑照记账、坏帧取证照旧，不再当证据源）。
+弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人，不用黄线补位）。
+
+**坑点**：
+- `ego_mask.json` 上半身矩形皮肤相关（换车重算）；**车带下延段不需要换车重算**
+  （真边界永不进中央列带的结构保证，见 commit 01b8fa5）。
+- @336 落档形态的已知弃权面：kerb 弱台阶层/贴墙窗/骑缘窗——退模型积分是降级
+  不是 bug（commit 8bd8150 的 README 节有代价表）。
+- 权重缺失/推理异常 → observe 恒 None，深度层静默禁用（WARNING 一次），控制链
+  不因感知停摆（与 perception 同一姿态）。

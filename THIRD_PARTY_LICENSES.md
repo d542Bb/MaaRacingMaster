@@ -5,8 +5,10 @@
 
 ## 项目自身许可（分层）
 - **本项目源码**（`maaracing_master/`、`apps/MaaRacingMaster.Shell/` 等）采用 **Apache-2.0**（见根目录 `LICENSE`）。
-- **模型权重**：当前版本不随发布包分发任何模型权重；若某活动插件自带 YOLO 等模型权重，则该权重单独沿用 **AGPL-3.0**
-  （见下方「模型权重」一节）。AGPL 仅作用于权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0。
+- **模型权重**：随发布包分发（入库于各插件 `resources/onnx/`）。speedrush 插件现有两份：
+  物品感知权重单独沿用 **AGPL-3.0**、深度几何权重 **Apache-2.0**（均见下方「模型权重」一节
+  与插件内 `resources/onnx/README.md`）。AGPL 仅作用于对应权重文件本身，本项目其余代码
+  非其衍生作品，保留 Apache-2.0。
 
 ---
 
@@ -37,9 +39,11 @@
 
 ---
 
-## 二、模型权重（AGPL-3.0）
+## 二、模型权重（随包分发，入库于插件 resources/onnx/）
 
-当前版本发布包**不随包分发模型权重**。若后续活动插件自带 YOLO 等模型权重并随包分发，则适用以下条款：
+### 二.1 物品感知权重（AGPL-3.0）
+
+speedrush 插件 `resources/onnx/perception/model.onnx`：
 
 - 此类权重由 **Ultralytics 官方预训练权重** `yolo11n.pt` + Ultralytics 训练代码在自有标注数据上微调导出（见 `tools/training/train.py`）。
 - 按 Ultralytics 的许可立场，该微调模型视为 **AGPL-3.0 衍生作品**，随本发布包再分发需遵循 AGPL-3.0。
@@ -49,6 +53,15 @@
 
 > 如需把此类模型用于**不开放源码 / 商业闭源**的场合，需另行取得 Ultralytics Enterprise License，
 > 见 <https://www.ultralytics.com/license>。
+
+### 二.2 深度几何权重（Apache-2.0）
+
+speedrush 插件 `resources/onnx/depth/depth_small_q4f16.onnx`：
+
+- Depth Anything V2 Small 官方权重的 ONNX q4f16 量化转换（onnx-community 转换产物）。
+- **Apache-2.0**（与上游权重同许可），可随发布包自由再分发；运行时推理仅通过
+  ONNX Runtime 加载 ONNX 图，不依赖上游仓库代码。
+- 上游: <https://github.com/DepthAnything/Depth-Anything-V2>　转换参考: <https://huggingface.co/onnx-community>
 
 ---
 

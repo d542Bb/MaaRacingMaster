@@ -33,7 +33,10 @@ HUD_REGIONS_FILE = POLICY_DIR / "hud_regions.json"
 DECISION_FILE = POLICY_DIR / "decision.json"
 # 几何标定真源（Gate-0 收杆产物；world_model.load_calib 唯一读法）
 GATE0_FILE = CALIB_DIR / "gate0.json"
-# 物品感知模型权重（AGPL-3.0 衍生不入库，部署时落本地；许可声明见 onnx/README.md。
+# 模型权重（随包分发入库；两权重两许可：perception/ AGPL-3.0 衍生、depth/
+# Apache-2.0——来源与许可声明见 onnx/README.md 与 THIRD_PARTY_LICENSES「模型权重」节。
 # REQUIRED_ASSETS 按相对路径声明，sidecar 启动前检查存在性；代码用绝对路径）
-PERCEPTION_MODEL_REL = "resources/onnx/model.onnx"
-PERCEPTION_MODEL_FILE = ONNX_DIR / "model.onnx"
+PERCEPTION_MODEL_REL = "resources/onnx/perception/model.onnx"
+PERCEPTION_MODEL_FILE = ONNX_DIR / "perception" / "model.onnx"
+DEPTH_MODEL_REL = "resources/onnx/depth/depth_small_q4f16.onnx"
+DEPTH_MODEL_FILE = ONNX_DIR / "depth" / "depth_small_q4f16.onnx"

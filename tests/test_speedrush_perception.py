@@ -100,7 +100,9 @@ class TestPluginDeclarations:
 
     def test_required_assets_declares_model(self):
         pytest.importorskip("maa")
-        assert self._module().REQUIRED_ASSETS == ("resources/onnx/model.onnx",)
+        assert self._module().REQUIRED_ASSETS == (
+            "resources/onnx/perception/model.onnx",
+            "resources/onnx/depth/depth_small_q4f16.onnx")
 
     def test_perception_mode_in_config_whitelist(self):
         pytest.importorskip("maa")
