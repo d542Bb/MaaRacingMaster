@@ -391,6 +391,167 @@ def _fig_steps(labels) -> None:
     print(f"[fig_steps] 已写 {out}（触边候选块：{[(c[0], c[3]) for c in cands[:4]]}）")
 
 
+def _row_line_fit(m: np.ndarray, y: int, rng: float) -> tuple[float, float, np.ndarray]:
+    """单行路面视差的行内线性拟合（透视修正演示）：剔自车列带；
+    迭代 = 粗中位先剔 |rel|>6% 的墙/车（25% 量程剔不掉它们——墙偏离 <25% 量程），
+    再行内线性拟合 + 25% 量程收尾。→ (a, b, 参与像素掩码)"""
+    xs = np.r_[np.arange(0, psd.EGO[0]), np.arange(psd.EGO[1], 1280)]
+    v = m[y, xs]
+    med0 = float(np.median(v))
+    keep = np.abs(v - med0) < 0.06 * max(med0, 1e-6)
+    if keep.sum() < 0.3 * xs.size:      # 粗门剔过头（大面积非路面行）则放宽
+        keep = np.ones(xs.size, bool)
+    a = b = 0.0
+    for _ in range(2):
+        cf = np.polyfit(xs[keep], v[keep], 1)
+        a, b = float(cf[1]), float(cf[0])
+        res = np.abs(v - (a + b * xs))
+        keep = keep & (res < 0.25 * rng)
+    return a, b, keep
+
+
+def _fig_ground(labels) -> None:
+    """路面判定可视化：g(y) 行内常数模型 vs 行内线性（透视修正）。
+    ① 行内视差剖面：同帧 @518 平 vs @392 斜（弯道透视+放大）
+    ② 行内梯度的帧间稳定性（弯道 vs 直道）
+    ③ 车辆剔除与稳健化（参与中位的像素）
+    ④ 修正预演：行内线性拟合后路面本底回零"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    def F(sz):
+        return ImageFont.truetype(r"C:\Windows\Fonts\msyh.ttc", sz)
+
+    W, H, M = 800, 560, 16
+    img = Image.new("RGB", (W * 2 + M * 3, H * 2 + 76 + M * 2), (250, 250, 248))
+    dr = ImageDraw.Draw(img)
+    dr.text((M, 12), "路面判定（g）解剖：行内常数模型漏了弯道透视，低分辨率把它放大 2~4 倍",
+            font=F(24), fill=(30, 30, 30))
+
+    r721 = [r for r in labels if "000721" in r["path"]][0]
+    pth = Path(r721["path"])
+    ms = {tag: np.load(pcq.NPY / f"{pcq.frame_key(pth)}{fn}").astype(np.float32)
+          for tag, fn in (("@518", "__da2s_fp16@518.npy"), ("@392", "__da2s_fp16@392.npy"))}
+    y = 560
+
+    # ── 面板 A：行内视差剖面 ──
+    p1 = Image.new("RGB", (W, H), "white")
+    d1 = ImageDraw.Draw(p1)
+    d1.text((M, 8), "① 同一帧 y=560 行的路面视差剖面：高清平（直/缓弯），@392 斜", font=F(21), fill=(0, 0, 0))
+    ox0, oy0, pw, ph = 90, 46, 650, 380
+    vmin, vmax = 3.8, 7.2
+    def X(x): return ox0 + x / 1279 * pw
+    def Y(v): return oy0 + ph - (v - vmin) / (vmax - vmin) * ph
+    d1.line([(ox0, oy0 + ph), (ox0 + pw, oy0 + ph)], fill=(150, 150, 150), width=2)
+    d1.line([(ox0, oy0), (ox0, oy0 + ph)], fill=(150, 150, 150), width=2)
+    for tag, col in (("@518", (30, 80, 220)), ("@392", (20, 140, 60))):
+        m = ms[tag]
+        pts = [(X(x), Y(float(np.median(m[y, max(x - 10, 0):x + 10]))))
+               for x in range(200, 1279, 24)]
+        d1.line(pts, fill=col, width=3, joint="curve")
+        a, b, _ = _row_line_fit(m, y, psd.road_range(m))
+        gx = [x for x in range(200, 1279, 24)]
+        d1.line([(X(x), Y(a + b * x)) for x in gx], fill=col, width=1)
+        d1.text((pts[-1][0] - 150, pts[-1][1] - 26), f"{tag}（斜率 {b * 1000:+.1f}px/千列）",
+                font=F(19), fill=col)
+    d4r = d1
+    d1.text((X(560) - 40, oy0 + ph + 8), "← 自车列带（g 剔除）→", font=F(16), fill=(200, 120, 0))
+    d1.line([(X(540), oy0 + ph + 2), (X(540), oy0 + ph + 8)], fill=(200, 120, 0), width=2)
+    d1.line([(X(740), oy0 + ph + 2), (X(740), oy0 + ph + 8)], fill=(200, 120, 0), width=2)
+    d1.text((ox0 + 8, oy0 + 4), "路面视差（视差大=近）", font=F(17), fill=(90, 90, 90))
+    d1.text((M, 470), "两条曲线都是『路面本身』：@518 几乎平（行内 ±1%）；@392 左高右低差 ~5%。\n"
+            "同帧同场景 ⇒ 不是场景几何，是低分辨率模型把行内梯度放大（直道无此现象）。",
+            font=F(18), fill=(60, 60, 60))
+    img.paste(p1, (M, 64))
+
+    # ── 面板 B：梯度稳定性 ──
+    p2 = Image.new("RGB", (W, H), "white")
+    d2 = ImageDraw.Draw(p2)
+    d2.text((M, 8), "② 行内梯度（左端−右端，相对 g）：弯道帧间极稳 ⇒ 可拟合修正", font=F(21), fill=(0, 0, 0))
+    ox0, oy0, pw, ph = 90, 46, 650, 380
+    vmin2, vmax2 = -0.04, 0.12
+    def Y2(v): return oy0 + ph - (min(max(v, vmin2), vmax2) - vmin2) / (vmax2 - vmin2) * ph
+    d2.line([(ox0, Y2(0)), (ox0 + pw, Y2(0))], fill=(120, 120, 120), width=1)
+    d2.line([(ox0, Y2(0.02)), (ox0 + pw, Y2(0.02))], fill=(220, 40, 40), width=2)
+    d2.text((ox0 + pw - 210, Y2(0.02) - 24), "2% 门（原高清门）", font=F(17), fill=(220, 40, 40))
+    seqs = {"@518": [], "@392": [], "@336": []}
+    for f in range(714, 729):
+        k = [r["path"] for r in labels if r["path"].endswith(f"{f:06d}.jpg")]
+        if not k:
+            continue
+        for tag, fn in (("@518", "__da2s_fp16@518.npy"), ("@392", "__da2s_fp16@392.npy"),
+                        ("@336", "__da2s_fp16@336.npy")):
+            m = np.load(pcq.NPY / f"{pcq.frame_key(Path(k[0]))}{fn}").astype(np.float32)
+            L = np.median(m[y, 200:540]); R = np.median(m[y, 900:1279])
+            seqs[tag].append(((L - R) / np.median(m[y, 200:1279])))
+    for tag, col, dx in (("@518", (30, 80, 220), -10), ("@392", (20, 140, 60), 0),
+                         ("@336", (230, 130, 20), 10)):
+        for i, v in enumerate(seqs[tag]):
+            cx = ox0 + (i + 0.5) / 15 * pw + dx
+            d2.ellipse([cx - 5, Y2(v) - 5, cx + 5, Y2(v) + 5], fill=col)
+        d2.text((ox0 + pw + 4, Y2(seqs[tag][-1]) - 8), tag, font=F(18), fill=col)
+    d2.text((ox0, 470), "弯道段（714~728）y=560：@518 +1.5~2.2%（真实弯道透视）；@392 +3.8~4.8%、\n"
+            "@336 +7.4~8.1%（低分辨率放大 2~4 倍）。帧间变化 <±0.5% ⇒ 行内线性拟合可吸收。",
+            font=F(18), fill=(60, 60, 60))
+    img.paste(p2, (W + M * 2, 64))
+
+    # ── 面板 C：车辆剔除与稳健化 ──
+    p3 = Image.new("RGB", (W, H), "white")
+    d3 = ImageDraw.Draw(p3)
+    d3.text((M, 8), "③ 车辆剔除：g 只用自车列带以外的像素 + 两轮 25% 量程稳健化", font=F(21), fill=(0, 0, 0))
+    rgb = cv2.cvtColor(cv2.imread(str(pth)), cv2.COLOR_BGR2RGB)
+    m = ms["@518"]
+    rng = psd.road_range(m)
+    a, b, keep = _row_line_fit(m, y, rng)
+    frame = Image.fromarray(rgb).resize((760, 428))
+    d3r = ImageDraw.Draw(frame)
+    S3 = 760 / 1280
+    xs_all = np.r_[np.arange(0, psd.EGO[0]), np.arange(psd.EGO[1], 1280)]
+    for x, kp in zip(xs_all, keep):
+        col = (60, 200, 60) if kp else (200, 200, 60)
+        d3r.line([(x * S3, y * S3), (x * S3, (y + 6) * S3)], fill=col, width=3)
+    d3r.line([(0, y * S3), (1279 * S3, y * S3)], fill=(255, 255, 255), width=1)
+    d3r.rectangle([psd.EGO[0] * S3, 0, psd.EGO[1] * S3, 428], outline=(200, 120, 0), width=2)
+    d3r.text((psd.EGO[0] * S3 + 6, 8), "自车列带（g 不用）", font=F(16), fill=(255, 200, 80))
+    d3.text((M, 492), "绿=参与拟合的像素，黄=被 25% 量程稳健化剔除（离群：车/墙/天空侧）。他车偏离 >25% 量程即被剔；\n"
+            "占行宽 <50% 时中位数本身也稳健，贴身占宽 >50% 才会污染（g 是一切涂色的分母，它错则全错）。",
+            font=F(17), fill=(60, 60, 60))
+    p3.paste(frame, (M + 20, 46 + 8))
+    img.paste(p3, (M, 64 + H + M))
+
+    # ── 面板 D：修正预演 ──
+    p4 = Image.new("RGB", (W, H), "white")
+    d4 = ImageDraw.Draw(p4)
+    d4.text((M, 8), "④ 修正预演：行内基线修正（@392，y=560）——线性不够，滑动低分位近带有效", font=F(21), fill=(0, 0, 0))
+    m = ms["@392"]
+    gy = float(np.median(m[y, 200:1279]))
+    a, b, _ = _row_line_fit(m, y, psd.road_range(m))
+    xs = range(330, 1051, 12)
+    ox0, oy0, pw, ph = 90, 46, 650, 380
+    vmin4, vmax4 = -0.06, 0.07
+    def X4(x): return ox0 + (x - 330) / (1050 - 330) * pw
+    def Y4(v): return oy0 + ph - (min(max(v, vmin4), vmax4) - vmin4) / (vmax4 - vmin4) * ph
+    d4.line([(ox0, Y4(0)), (ox0 + pw, Y4(0))], fill=(120, 120, 120), width=1)
+    d4.line([(ox0, Y4(0.02)), (ox0 + pw, Y4(0.02))], fill=(220, 40, 40), width=1)
+    d4.line([(ox0, Y4(0.0423)), (ox0 + pw, Y4(0.0423))], fill=(220, 40, 40), width=2)
+    d4.text((ox0 + pw - 230, Y4(0.0423) - 24), "自洽门 4.23%", font=F(17), fill=(220, 40, 40))
+    pts_med = [(X4(x), Y4((float(np.median(m[y, x:x + 12])) - gy) / gy)) for x in xs]
+    pts_lin = [(X4(x), Y4((float(np.median(m[y, x:x + 12])) - (a + b * x)) / (a + b * x))) for x in xs]
+    d4.line(pts_med, fill=(220, 40, 40), width=3, joint="curve")
+    d4.line(pts_lin, fill=(20, 140, 60), width=3, joint="curve")
+    d4.text((pts_med[2][0], pts_med[2][1] - 26), "行中位 g（现状）：路面本底 ±2% 斜坡", font=F(18), fill=(220, 40, 40))
+    d4.text((pts_lin[2][0], pts_lin[2][1] + 10), "行内线性 g(y,x)：剖面是曲线，直线只贴一头（350~700 仍超门）",
+            font=F(18), fill=(20, 140, 60))
+    d4.text((M, 470), "红=现状（行中位）：路面本底 ±2% 斜坡。绿=行内线性：不够——@392 行内剖面是曲线。\n"
+            "滑动低分位基线（实测）：近带有效（右路面 −2.0%→+0.7%、左墙 +12% 仍超门），\n"
+            "远带失效（路面占行宽不足，低分位被背景拖走 +3.8%）⇒ 修近带、远带交本底守卫弃权。",
+            font=F(17), fill=(60, 60, 60))
+    img.paste(p4, (W + M * 2, 64 + H + M))
+
+    out = OUT / "firstgate_ground.jpg"
+    img.save(out, quality=92)
+    print(f"[fig_ground] 已写 {out}")
+
+
 def main() -> None:
     argv = sys.argv[1:]
     ap = argv[0] if argv else ""
@@ -437,6 +598,9 @@ def main() -> None:
         return
     if ap == "fig_steps":
         _fig_steps(labels)
+        return
+    if ap == "fig_ground":
+        _fig_ground(labels)
         return
 
     gates = {}
