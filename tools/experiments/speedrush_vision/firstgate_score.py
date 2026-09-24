@@ -302,6 +302,95 @@ def _fig(labels) -> None:
     print(f"[fig] 已写 {out}")
 
 
+def _fig_steps(labels) -> None:
+    """挑块四步流水线演示（721 帧 @392 自洽门）：涂色 → 去虚 → 粘块 → 挑块。
+    中间产物为演示用重演（与 region_inner 同式），判据读数仍以 region_inner 为准。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    def F(sz):
+        return ImageFont.truetype(r"C:\Windows\Fonts\msyh.ttc", sz)
+
+    r721 = [r for r in labels if "000721" in r["path"]][0]
+    pth = Path(r721["path"])
+    rgb = cv2.cvtColor(cv2.imread(str(pth)), cv2.COLOR_BGR2RGB)
+    m = np.load(pcq.NPY / f"{pcq.frame_key(pth)}__da2s_fp16@392.npy").astype(np.float32)
+    G = json.loads((OUT / "firstgate_gate.json").read_text())["fp16@392"]
+    rng = psd.road_range(m)
+    g = psd.ground_model(m, rng)
+    rel = np.full(m.shape, np.nan, np.float32)
+    rel[psd.Y0:psd.DIAG_Y1] = ((m[psd.Y0:psd.DIAG_Y1] - g[:, None])
+                               / np.maximum(g[:, None], 1e-6))
+    over = (np.nan_to_num(rel, nan=-1) > G).astype(np.uint8)
+    em = psd.OUT / "ego_mask.npy"
+    if em.exists():
+        over[np.load(em).astype(bool)] = 0
+    mask = (cv2.filter2D(over.astype(np.float32), -1, np.ones((1, 12), np.float32))
+            >= 12).astype(np.uint8)
+    ncc, lab = cv2.connectedComponents(mask, connectivity=8)[:2]
+
+    # 每块 (行跨度, 触边) 表——谁被选中、为什么
+    cands = []
+    for c in range(1, ncc):
+        ys, xs = np.nonzero(lab == c)
+        touch = xs.min() <= 2
+        if touch:
+            cands.append((c, int(ys.min()), int(ys.max()), int(ys.max() - ys.min()),
+                          float(np.median(xs)) if xs.size else 0))
+    cands.sort(key=lambda t: -t[3])
+    chosen = cands[0][0] if cands else None
+
+    SW, SH = 620, 350
+    S = SW / 1280
+    tiles = []
+    frame_small = Image.fromarray(rgb).resize((SW, int(720 * S)))
+    ov_img = np.zeros((720, 1280, 3), np.uint8)
+    ov_img[over > 0] = (255, 60, 60)
+    ov_img[:psd.Y0] = (rgb[0] * 0 + np.array([40, 40, 40], np.uint8))[0]
+    lab_img = np.zeros((720, 1280, 3), np.uint8)
+    palette = [(60, 60, 200), (200, 60, 60), (60, 180, 60), (200, 160, 40),
+               (150, 60, 200), (60, 180, 200), (200, 100, 160), (120, 120, 60)]
+    for c in range(1, ncc):
+        ys, xs = np.nonzero(lab == c)
+        lab_img[ys, xs] = palette[c % len(palette)]
+        if c == chosen:
+            lab_img[ys, xs] = (255, 200, 0)
+    for base, title, note in (
+            (frame_small, "第 0 步：原始画面（721 帧）——真墙在左，中央的白车是自车",
+             "白线=金标边界。注意：自车就是接下来的麻烦来源"),
+            (Image.fromarray(cv2.addWeighted(rgb, 0.55, ov_img, 0.45, 0)).resize((SW, int(720 * S))),
+             f"第 1 步·涂色：比路面高出 {G:.1%} 以上的像素涂红",
+             "左墙涂红=真边界（对）。自车周围也涂红=车当然比路面近（也是真实读数）"),
+            (Image.fromarray(cv2.addWeighted(rgb, 0.55,
+             cv2.cvtColor(mask * 255, cv2.COLOR_GRAY2RGB), 0.45, 0)).resize((SW, int(720 * S))),
+             "第 2 步·去虚：横向连续 12px 都超门才保留",
+             "右侧远处的红块被滤掉（好）。但左墙和自车周围都留下、且连成一片"),
+            (Image.fromarray(cv2.addWeighted(rgb, 0.5, lab_img, 0.5, 0)).resize((SW, int(720 * S))),
+             "第 3+4 步·粘块+挑块：8 向连通成块，挑『摸到画面左缘、跨行最多』的块",
+             "黄色=被选中的块=墙+自车粘连体。『挑最大』根本没得挑——粘连发生在第 3 步")):
+        tile = Image.new("RGB", (SW, SH), "white")
+        d = ImageDraw.Draw(tile)
+        d.text((6, 4), title, font=F(17), fill=(0, 0, 0))
+        tile.paste(base, (6, 34))
+        d.text((6, 34 + int(720 * S) + 6), note, font=F(15), fill=(80, 80, 80))
+        tiles.append(tile)
+
+    img = Image.new("RGB", (SW * 2 + 30, (SH + 14) * 2 + 40), (250, 250, 248))
+    img.paste(tiles[0], (10, 10))
+    img.paste(tiles[1], (SW + 20, 10))
+    img.paste(tiles[2], (10, SH + 24))
+    img.paste(tiles[3], (SW + 20, SH + 24))
+    dd = ImageDraw.Draw(img)
+    sel = [c for c in cands if c[0] == chosen]
+    if sel:
+        dd.text((10, (SH + 14) * 2 + 22),
+                f"触边候选只有 {len(cands)} 块（跨 {sel[0][3]} 行）：真墙与自车周围高区在第 3 步已粘死，『挑最大』没得挑。"
+                "@518 上自车区读数低于 2% 门=隐形，跨档放大后显形——桥切断/跨帧连续性守卫是修法。",
+                font=F(16), fill=(180, 40, 40))
+    out = OUT / "firstgate_steps.jpg"
+    img.save(out, quality=92)
+    print(f"[fig_steps] 已写 {out}（触边候选块：{[(c[0], c[3]) for c in cands[:4]]}）")
+
+
 def main() -> None:
     argv = sys.argv[1:]
     ap = argv[0] if argv else ""
@@ -345,6 +434,9 @@ def main() -> None:
 
     if ap == "fig":
         _fig(labels)
+        return
+    if ap == "fig_steps":
+        _fig_steps(labels)
         return
 
     gates = {}
