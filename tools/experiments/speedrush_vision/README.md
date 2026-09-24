@@ -1341,6 +1341,43 @@ wallhug seg 最差（65 中位 max190 vs hsv 16/50）。R4：seg "54/54 全在�
 
 **复跑**：`python tools/experiments/speedrush_vision/tri_exam.py`（输出 tri_exam.csv）
 
+## 架构落地：深度几何进生产 + 守卫标定（`guard_calib.py` + `plugins/speedrush/depth_geo.py`，2026-09-24，维护者确认裁决后执行）
+
+**做了什么**：①双守卫阈值在 122 帧同卷上标定（`guard_calib.py`，输出 guard_calib.csv）；②生产新模块
+`depth_geo.py`——DA-S 视差 → 全局 q20 基线 → 相对门区域块 → 双守卫 → 两侧内沿读数（车道单位，与
+BoundarySummary 的 edge_lane 鸭子同构，_EgoRoadObserver 原样消费）；③module.py 接线：road_offset 证据源
+按 `geo_master`（module config，"depth"|"hsv"，默认 depth）切换，黄线 detect_boundary **退役为骨架**
+（照跑照记账不再当证据源），trace 加 dgeo_sides/left/right/ms/rejects 列；④ego_mask 以矩形 JSON 入库
+（`resources/calibration/ego_mask.json`，bbox y[351,532] x[512,765] 逐行满格；皮肤相关、换车重算）。
+
+**守卫标定**（以金标 dev 为真值的网格扫描）：`conv=|x(y_h)−vpx|≤350 ∧ 拟合中位残差≤45px ∧ 近带
+(550~700) 内沿中位 x_lane 侧别 |lane|≥0.15 ∧ 近带行≥2`，候选块按跨度降序逐个过守卫、首个全过者当选。
+锚点行为全部分开：518 L 真块过（conv12/res24）+ R 出租车伪块拒（res63）；437 R 真块过（conv50/res8）+
+L 翻面块拒（conv559）；000420 横贯块双侧拒（lane≈0）；wall 层远带背景块全被"近带无行"拒。resid=45 门在
+金标层把 curve_cont2 坏读数率 9%→3%、dev p90 29→27。
+
+**同卷复验**（生产实现 vs tri_exam 探针口径，122 帧）：坏读数率（|dev|>120px）curve_cont2 9%→0%、
+wall 22%→0%、wall p90|322|→|99|；在场率诚实下降（straddle L 24/37、wallhug L 0/31——翻面块清零，
+**侧别由深度独立裁决达成**：437 单侧 R 在场、518 单侧 L 在场）。锚点帧读数：518 L=−0.396 车道、
+437 R=+0.458 车道。**000660 雨天帧仍过守卫**（lane +0.28 在门内）——湿面阴影失效不因守卫消失，
+天气格折扣在案。
+
+**@392 复核（否决降档）**：部署规格裁定 @518 超线性出局、@392 为 15fps 档，故用常规会话在 @392 上
+复核守卫——结果**区域口径未过考**：真块被杀（000580 R resid 47>45）、437 L 翻面块复活（@518 时
+conv559 被拒）、金标层 obstacle 坏率 44%、wall/curve 层块形态劣化。⇒ 生产默认 short=**518**（同卷
+口径，质量已验）；@392/@336 落档前须重标守卫+复跑同卷，是**部署待办**而非配置改动。权重不入库
+（Apache-2.0，部署落数据目录 `depth_review/weights/da2_small.onnx`），缺失时深度层禁用、road_offset
+退纯模型积分（与既有降级同构）。
+
+**回归锁**：`tests/test_speedrush_depth_geo.py` 9 例——合成锁机制（q20 钉少数派路面 vs 中位数被捕获、
+直路双边界读数、三守卫逐个拒、ego_mask 资产、session 缺失降级）+ 数据锚点 skipif 锁 518/437 裁决。
+
+**未做（如实）**：ground_model v2 的行内直线拟合/ego_mask 下缘延长（518 y540~560 粘连段仍在，
+两轮剔点拟合兜住）；闭环 A/B 换尺（geo_master 开关已备，实机跑分/撞墙率对比待做）。
+
+**复跑**：`.venv/Scripts/python.exe tools/experiments/speedrush_vision/guard_calib.py`；
+`python -m pytest tests/test_speedrush_depth_geo.py`
+
 
 ## 部署规格修订（2026-09-23，第一关判据底座）
 
