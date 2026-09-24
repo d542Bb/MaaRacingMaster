@@ -149,26 +149,36 @@ def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
     g = _ground_q20(m)
     r = np.full(m.shape, np.nan, np.float32)
     r[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
-    over = np.where(np.nan_to_num(r, nan=-1) > gate, 1.0, 0.0)
+    # over = (r > gate)：NaN 与 gate 比较恒假，等价于原 nan_to_num(r,-1) > gate
+    # （省一次全图画幅拷贝），且用 float32 而非 float64 承载（filter2D 内存减半）。
+    over = (r > gate).astype(np.float32)
     if ego_mask is not None:
         over[ego_mask] = 0.0
     mask = (cv2.filter2D(over, -1, np.ones((1, HOLD), np.float32)) >= HOLD).astype(np.uint8)
-    ncc, lab = cv2.connectedComponents(mask, connectivity=8)[:2]
+    # 逐块内沿 = (块, 行) 分组的 L 侧 max x / R 侧 min x（x<640 归 L，x≥640 归 R）。
+    # 实现按 WithStats 的 bbox 裁到子区域再用 cv2.reduce 行归约——原逐像素 Python
+    # 循环是全链最大单项（每帧 ~19 万像素进解释器；commit 11babe4 cProfile 77%），
+    # 归约在 C 层一次算完。语义逐位等价：行内取极值与逐像素累积 min/max 同值，
+    # 块仅取 bbox 与全数组 nonzero 同集；块序 = 连通块标签序（供消费端稳定排序）。
+    ncc, lab, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     out = []
     for c in range(1, ncc):
-        ys, xs = np.nonzero(lab == c)
-        touchL = bool(xs.min() <= 2)
-        touchR = bool(xs.max() >= 1277)
-        if not (touchL or touchR) or ys.max() - ys.min() < MIN_SPAN:
+        x0, y0, w, h = (int(v) for v in stats[c, :4])
+        touchL = x0 <= 2
+        touchR = x0 + w - 1 >= 1277
+        if not (touchL or touchR) or h - 1 < MIN_SPAN:
             continue
-        innerL: dict[int, int] = {}
-        innerR: dict[int, int] = {}
-        for y, x in zip(ys, xs):
-            if x >= 640:
-                innerR[y] = min(innerR.get(y, 1 << 20), int(x))
-            else:
-                innerL[y] = max(innerL.get(y, -1), int(x))
-        out.append((int(ys.min()), int(ys.max()), innerL, innerR, touchL, touchR))
+        sel = lab[y0:y0 + h, x0:x0 + w] == c
+        grid = np.broadcast_to(np.arange(x0, x0 + w, dtype=np.float32), (h, w))
+        lcol = cv2.reduce(np.where(sel & (grid < 640), grid, np.float32(-1.0)),
+                          1, cv2.REDUCE_MAX).reshape(-1)
+        rows = np.nonzero(lcol >= 0)[0]
+        innerL = dict(zip((rows + y0).tolist(), lcol[rows].astype(np.int32).tolist()))
+        rcol = cv2.reduce(np.where(sel & (grid >= 640), grid, np.float32(1e9)),
+                          1, cv2.REDUCE_MIN).reshape(-1)
+        rows = np.nonzero(rcol <= 1279)[0]
+        innerR = dict(zip((rows + y0).tolist(), rcol[rows].astype(np.int32).tolist()))
+        out.append((y0, y0 + h - 1, innerL, innerR, touchL, touchR))
     return r, out
 
 
