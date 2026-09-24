@@ -955,10 +955,12 @@ def _control_trace_root() -> Path:
     return data_dir() / "speedrush" / "control_traces"
 
 
-# 深度几何权重（DA-S fp16，Apache-2.0；不入库，部署时落数据目录——与探针共用，
-# 122 帧同卷考试的口径即该文件）。缺失时深度层禁用，road_offset 退纯模型积分。
+# 深度几何权重（DA-S q4f16，Apache-2.0，19MB；@336 落档口径）。权重文件按
+# 仓库既有模式不入库（.gitignore 忽略插件 onnx，部署时落数据目录；入库分发的
+# 许可与数据均已支持，是否打破「权重不入库」模式由维护者裁定）。加载失败时
+# 深度层禁用，road_offset 退纯模型积分。
 DEPTH_WEIGHTS_FILE = (data_dir() / "speedrush" / "depth_review" / "weights"
-                      / "da2_small.onnx")
+                      / "oc_model_q4f16.onnx")
 
 
 def resolve_start_index(start_from: str | None) -> int:

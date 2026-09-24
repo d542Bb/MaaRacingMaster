@@ -25,9 +25,11 @@
 纯模型积分（旧行为不变）；ego_mask 缺失 → 跳过挖除并 WARNING（合并桥风险
 回升，双守卫部分兜底）。
 
-**部署待办**：默认 @518（fp16，同卷考试口径）；部署规格已裁定 @518 超线性
-出局、@392 为 15fps 档——但 @392 的区域口径未过考（同卷复核 obstacle 层
-坏率 44%、真块被守卫误杀），落档前须重标守卫并复跑同卷。
+**部署档（@336 q4f16，2026-09-24 落档）**：门重标 5% 后主场景（弯道连续层）dev
+回到 @518 参照水平（−5/12px vs −24/27px），时延 q4f16 p95 24.7ms 满足 30fps 预算；
+量化平滑在低档反转为优点（fp16@336 内沿噪声致拟合残差爆、10/15 帧被拒，q4f16 0 帧
+——同门同跨度对照）。如实代价：kerb 弱台阶层、贴墙窗、骑缘帧在本档退为守卫弃权
+（降级=纯模型积分，安全）；@518 保持质量上限参照档。实验：rescale_gate_336.py。
 """
 
 from __future__ import annotations
@@ -46,11 +48,14 @@ from maaracing_master.plugins.speedrush.world_model import Calib, x_lane_of
 # ── 流水常数（冻结口径，与三方同卷/守卫标定一致）────────────────────────
 Y0, Y1, DIAG_Y1 = 340, 690, 715   # 检测带 / 诊断带（含近场）
 EGO_COLS = (540, 740)             # 基线统计的非自车列带
-GATE = 0.02                       # 相对门 (M−g)/g：噪声地板 0.39% 与台阶 4.5% 的中间量
+GATE = 0.05                       # 相对门 (M−g)/g：@336 落档重标值——g 随分辨率
+                                  # 压缩使相对门放大 ~2.6×，2%（@518 口径）在
+                                  # @336 等效 0.8%，重标 5% 后主场景回到参照水平
 HOLD = 12                         # 横向持续收紧窗（px）
 MIN_SPAN = 100                    # 块最小跨行（行跨度有限的团块不够格当边界）
 Q_GROUND = 0.20                   # 全局逐行低分位（q20rescue 定案值）
-DEFAULT_SHORT = 518               # DA 推理短边（同卷口径；部署落档见模块头注）
+DEFAULT_SHORT = 336               # DA 推理短边（@336 落档，q4f16 p95 24.7ms；@518
+                                  # 质量上限参照档因超线性悬崖出局，见部署规格）
 
 # ── 守卫阈值（122 帧标定：conv/resid/侧别全过 + 近带行≥2；锚点 518L 留、
 #    518R 出租车拒、437R 留、437L 翻面拒、000420 横贯双侧拒、远带背景块拒）──
@@ -112,18 +117,20 @@ def _ground_q20(m: np.ndarray) -> np.ndarray:
     return np.quantile(m[Y0:DIAG_Y1][:, cols].astype(np.float32), Q_GROUND, axis=1)
 
 
-def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None
+def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
+                    gate: float = GATE
                     ) -> tuple[np.ndarray,
                                list[tuple[int, int, dict[int, int], dict[int, int], bool, bool]]]:
     """相对偏离图 r=(M−g)/g + 非地面区域块提取。
 
-    块 = 相对门 → 挖自车（断车身→护栏→墙合并桥）→ 横向收紧 → 8 向连通块 →
-    触画面侧边且跨行 ≥MIN_SPAN。innerL/innerR 按 x<640 分流取内沿
-    （横贯块两侧各自可用）。r 供本底守卫复用（同一张图，不重算）。"""
+    块 = 相对门（``gate``，落档实验参数化；生产=GATE）→ 挖自车（断车身→
+    护栏→墙合并桥）→ 横向收紧 → 8 向连通块 → 触画面侧边且跨行 ≥MIN_SPAN。
+    innerL/innerR 按 x<640 分流取内沿（横贯块两侧各自可用）。r 供本底守卫
+    复用（同一张图，不重算）。"""
     g = _ground_q20(m)
     r = np.full(m.shape, np.nan, np.float32)
     r[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
-    over = np.where(np.nan_to_num(r, nan=-1) > GATE, 1.0, 0.0)
+    over = np.where(np.nan_to_num(r, nan=-1) > gate, 1.0, 0.0)
     if ego_mask is not None:
         over[ego_mask] = 0.0
     mask = (cv2.filter2D(over, -1, np.ones((1, HOLD), np.float32)) >= HOLD).astype(np.uint8)
@@ -146,11 +153,12 @@ def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None
     return r, out
 
 
-def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str) -> bool:
+def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str,
+                 gate: float = GATE) -> bool:
     """门本底守卫：内沿**内侧**（路面侧）40~120px 窗的相对偏离中位须 ≈0。
 
-    门 G 的物理语义是"路面 vs 边界外的高差"；本底窗已被门吃掉一半以上
-    （>GATE/2）时读数是"松门交点"而非边界——门已失效，该侧主动弃权。
+    门 ``gate`` 的物理语义是"路面 vs 边界外的高差"；本底窗已被门吃掉一半以上
+    （>gate/2）时读数是"松门交点"而非边界——门已失效，该侧主动弃权。
     跨档落分辨率时 g 随之压缩、本底抬升，此守卫让失效档位交出决策权
     （第一关终选附带守卫，测量口=金标线内侧窗的生产化替代）。"""
     vals: list[float] = []
@@ -169,7 +177,7 @@ def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str) -> bool:
             vals.append(float(np.median(v)))
     if len(vals) < 3:
         return True
-    return abs(float(np.median(vals))) <= GATE / 2.0
+    return abs(float(np.median(vals))) <= gate / 2.0
 
 
 def _fit(inner: dict[int, int], cal: Calib) -> dict | None:
@@ -202,10 +210,10 @@ def _pass(f: dict, side: str) -> bool:
     return f["lane"] <= -LANE_SIDE_MIN if side == "L" else f["lane"] >= LANE_SIDE_MIN
 
 
-def reading_from_map(m: np.ndarray, cal: Calib,
-                     ego_mask: np.ndarray | None) -> DepthRoadReading:
+def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None,
+                     gate: float = GATE) -> DepthRoadReading:
     """深度图 → 读数（纯函数，回归锁可直接喂缓存图；observe=推理+本函数）。"""
-    r, blocks = _rel_and_blocks(m, ego_mask)
+    r, blocks = _rel_and_blocks(m, ego_mask, gate)
     edges: dict[str, tuple[float, float] | None] = {"L": None, "R": None}
     rejects: list[str] = []
     for side in ("L", "R"):
@@ -226,7 +234,7 @@ def reading_from_map(m: np.ndarray, cal: Calib,
                                   f"conv{f['conv']:.0f}/res{f['resid']:.0f}/"
                                   f"lane{f['lane']:+.2f}"))
                 continue
-            if not _baseline_ok(r, inner, side):
+            if not _baseline_ok(r, inner, side, gate):
                 rejects.append(f"{side}:门本底失效")
                 continue
             edges[side] = (f["x_near"], f["lane"])

@@ -121,7 +121,7 @@ def test_far_band_block_rejected():
 
 
 def test_baseline_guard_rejects_soft_gate():
-    """内沿内侧 40~120px 本底窗被垫到 1.5%（>门/2、<门）→ 门失效弃权。
+    """内沿内侧 40~120px 本底窗被垫到 3%（>门/2、<门）→ 门失效弃权。
 
     复刻第一关终选的跨档失效形态（块从路面里起跳、边界=松门交点）：
     守卫让失去物理语义的门主动交出决策权，而不是继续伪装成功。"""
@@ -130,7 +130,7 @@ def test_baseline_guard_rejects_soft_gate():
     _draw_raised(m, inner, "R", 340, 715)
     for y in range(NEAR_LO, NEAR_HI + 1):
         x0 = int(round(inner(y)))
-        m[y, x0 - 120:x0 - 40] = _road(y) * 1.015     # 松门本底（<2% 不自成块）
+        m[y, x0 - 120:x0 - 40] = _road(y) * 1.03      # 松门本底（<5% 不自成块）
     rd = reading_from_map(m, CAL, None)
     assert rd.right_edge_lane is None
     assert any("门本底" in r for r in rd.rejects)
@@ -172,6 +172,11 @@ def test_observer_without_session_returns_none():
 
 
 # ── 数据锚点（守卫标定不许漂；无离线缓存则跳）──────────────────────────
+#
+# 两层各锁一事：
+# - @518 缓存 + 显式 gate=0.02：守卫标定锚点（@518 参照口径下守卫的裁决）；
+# - @336 q4f16 缓存 + 生产默认 gate：落档后的生产行为（含本底守卫在
+#   @336 本底抬升下的弃权形态）。
 
 def _cached_map(key: str) -> np.ndarray | None:
     p = NPY / f"{key}__da2s.npy"
@@ -180,12 +185,19 @@ def _cached_map(key: str) -> np.ndarray | None:
     return np.load(p).astype(np.float32)
 
 
+def _cached_336(key: str) -> np.ndarray | None:
+    p = NPY / f"{key}__d336q4f16.npy"
+    if not p.exists():
+        return None
+    return np.load(p).astype(np.float32)
+
+
 @pytest.mark.skipif(_cached_map("frames__000518") is None,
                     reason="需离线深度缓存（APPDATA depth_review/npy）")
 def test_anchor_518_straddle():
-    """骑路缘 518：L=人行道右缘在场，R 出租车伪块被双守卫拒。"""
+    """@518 参照口径（gate=0.02）：骑路缘 518 L=人行道右缘在场，R 出租车伪块被拒。"""
     m = _cached_map("frames__000518")
-    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
+    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask(), gate=0.02)
     assert rd.left_edge_lane is not None and rd.left_edge_lane < -0.15
     assert rd.right_edge_lane is None
     assert any(r.startswith("R:") for r in rd.rejects)
@@ -194,9 +206,21 @@ def test_anchor_518_straddle():
 @pytest.mark.skipif(_cached_map("frames__000437") is None,
                     reason="需离线深度缓存（APPDATA depth_review/npy）")
 def test_anchor_437_wallhug():
-    """贴护栏 437：R=护栏基部在场，L 翻面块（conv 559）被拒——侧别由深度独立裁决。"""
+    """@518 参照口径（gate=0.02）：贴护栏 437 R=护栏基部在场，L 翻面块被拒。"""
     m = _cached_map("frames__000437")
-    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
+    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask(), gate=0.02)
     assert rd.right_edge_lane is not None and rd.right_edge_lane > 0.15
     assert rd.left_edge_lane is None
     assert any(r.startswith("L:") for r in rd.rejects)
+
+
+@pytest.mark.skipif(_cached_336("wallhug_437") is None,
+                    reason="需 @336 q4f16 离线缓存（rescale_gate_336.py infer）")
+def test_anchor_336_production_gate():
+    """@336 生产口径（gate=0.05）：贴墙场景门半失效（本底抬升）→ 诚实弃权。
+
+    锁定落档形态：贴护栏帧在本档退纯模型积分（守卫交权），而非给出松门读数。"""
+    m = _cached_336("wallhug_437")
+    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
+    assert rd.sides == 0
+    assert any("门本底" in r for r in rd.rejects)
