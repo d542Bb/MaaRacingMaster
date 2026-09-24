@@ -224,3 +224,27 @@ def test_anchor_336_production_gate():
     rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
     assert rd.sides == 0
     assert any("门本底" in r for r in rd.rejects)
+
+
+# ── 折叠锁（时延悬案的直接机制，不许静默回退）──────────────────────────
+
+def _load_session_or_skip():
+    from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE
+    from maaracing_master.plugins.speedrush.depth_geo import load_session
+    if not DEPTH_MODEL_FILE.exists():
+        pytest.skip("深度权重未随检出提供")
+    try:
+        return load_session(DEPTH_MODEL_FILE)
+    except Exception as exc:  # noqa: BLE001 —— 无 DML 且 CPU EP 起不了 q4f16 的环境
+        pytest.skip(f"本环境无法建会话: {exc!r}")
+
+
+def test_load_session_is_folded_static_shape():
+    """load_session 的输入维必须是编译期常量（batch/height/width 三 free dim 全固定）。
+
+    漏折叠的形态是"能跑但慢 6 倍"（cubic Resize 落 CPU，@336 实测 133 vs 20ms，
+    2026-09-24 实机复核收口）——性能回退不会红任何功能测试，只能由这条形状锁拦。
+    只固定 height/width 而漏 batch_size 同样锁得住：那时图不变、维仍是符号名。"""
+    dims = _load_session_or_skip().get_inputs()[0].shape
+    assert all(isinstance(d, int) for d in dims), f"输入维未静态化（折叠未生效）: {dims}"
+    assert tuple(dims) == (1, 3, 336, 588)

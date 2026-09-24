@@ -25,11 +25,16 @@
 纯模型积分（旧行为不变）；ego_mask 缺失 → 跳过挖除并 WARNING（合并桥风险
 回升，双守卫部分兜底）。
 
-**部署档（@336 q4f16，2026-09-24 落档）**：门重标 5% 后主场景（弯道连续层）dev
-回到 @518 参照水平（−5/12px vs −24/27px），时延 q4f16 p95 24.7ms 满足 30fps 预算；
-量化平滑在低档反转为优点（fp16@336 内沿噪声致拟合残差爆、10/15 帧被拒，q4f16 0 帧
-——同门同跨度对照）。如实代价：kerb 弱台阶层、贴墙窗、骑缘帧在本档退为守卫弃权
-（降级=纯模型积分，安全）；@518 保持质量上限参照档。实验：rescale_gate_336.py。
+**@336 落档已撤回（2026-09-24 实机复核）**：实机两轮 road_offset 0/330——主场景读数带
+(550~700) 内边界线大多已出画（金标 R 51/54、L 28/54 帧在 y<550 出画），弃权主因在守卫
+之前；落档扫描只报了通过守卫子集（n=12）的误差、无覆盖率分母。正面结论保留：边界真在
+画面内且过守卫的帧精度良好（L 14 帧 dev 中位 −5px、p90 13px）——几何没错，错在读数带
+与上控制拍的时机。读数带重定与观测器下热路径待裁决（实验 README「实机复核」节）。
+
+**时延口径（折叠会话，2026-09-24 收口）**：本层时延数字一律为 load_session 的
+free-dim 折叠口径（@336 实测 p50 ≈20ms）；不折叠时图内唯一 cubic Resize（pos_embed
+插值）被 DML 拒收落 CPU、占 ~85%（133ms）——落档期的 21.4/24.7ms 即折叠口径，生产
+接线一度漏装折叠，已在 load_session 补上。
 """
 
 from __future__ import annotations
@@ -54,8 +59,8 @@ GATE = 0.05                       # 相对门 (M−g)/g：@336 落档重标值�
 HOLD = 12                         # 横向持续收紧窗（px）
 MIN_SPAN = 100                    # 块最小跨行（行跨度有限的团块不够格当边界）
 Q_GROUND = 0.20                   # 全局逐行低分位（q20rescue 定案值）
-DEFAULT_SHORT = 336               # DA 推理短边（@336 落档，q4f16 p95 24.7ms；@518
-                                  # 质量上限参照档因超线性悬崖出局，见部署规格）
+DEFAULT_SHORT = 336               # DA 推理短边（折叠口径 q4f16 p50 ≈20ms；@336 落档
+                                  # 已撤回见 docstring，@518 为质量上限参照档）
 
 # ── 守卫阈值（122 帧标定：conv/resid/侧别全过 + 近带行≥2；锚点 518L 留、
 #    518R 出租车拒、437R 留、437L 翻面拒、000420 横贯双侧拒、远带背景块拒）──
@@ -94,11 +99,25 @@ def preprocess(rgb: np.ndarray, short: int) -> np.ndarray:
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
-    """DA-S ONNX 会话（DML 优先，逐级回退 CPU——权重是相对视差，与提供器无关）。"""
+    """DA-S 视差会话（DML 优先，逐级回退 CPU——权重是相对视差，与提供器无关）。
+
+    **折叠是时延成立的前提，不是优化项**：图内唯一一个 cubic Resize（pos_embed 插值）
+    被 DML 拒收、落 CPU 且卡在关键路径上，占每拍 ~85%（@336 实测 133ms vs 折叠 20ms，
+    2026-09-23 折叠验证 / 2026-09-24 实机复核收口）。把 batch/height/width 三个自由维
+    全部固定即触发常量折叠、DML 整图融为单节点——**只固定 height/width 而漏掉
+    batch_size 则图完全不变**（折叠验证读事 2，必要条件而非可选）。代价是会话只吃
+    preprocess 的定形输出（短边 DEFAULT_SHORT、按标定捕获几何 1280×720 定长宽）：
+    捕获几何一变，infer 立即抛形状错——observe 捕获后返回 None，road_offset 退回
+    纯模型积分（宁走降级路径，不回落到 133ms 的静默慢道）。"""
     avail = set(ort.get_available_providers())
     providers = [p for p in ("DmlExecutionProvider", "CUDAExecutionProvider",
                              "CPUExecutionProvider") if p in avail]
-    return ort.InferenceSession(str(weights), providers=providers)
+    probe = preprocess(np.zeros((720, 1280, 3), np.uint8), DEFAULT_SHORT)
+    so = ort.SessionOptions()
+    for name, dim in zip(("batch_size", "height", "width"),
+                         (probe.shape[0], probe.shape[2], probe.shape[3])):
+        so.add_free_dimension_override_by_name(name, int(dim))
+    return ort.InferenceSession(str(weights), sess_options=so, providers=providers)
 
 
 def infer_map(sess: ort.InferenceSession, rgb: np.ndarray, short: int) -> np.ndarray:
