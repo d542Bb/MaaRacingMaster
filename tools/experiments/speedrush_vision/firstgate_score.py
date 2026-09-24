@@ -489,8 +489,8 @@ def _fig_ground(labels) -> None:
             cx = ox0 + (i + 0.5) / 15 * pw + dx
             d2.ellipse([cx - 5, Y2(v) - 5, cx + 5, Y2(v) + 5], fill=col)
         d2.text((ox0 + pw + 4, Y2(seqs[tag][-1]) - 8), tag, font=F(18), fill=col)
-    d2.text((ox0, 470), "弯道段（714~728）y=560：@518 +1.5~2.2%（真实弯道透视）；@392 +3.8~4.8%、\n"
-            "@336 +7.4~8.1%（低分辨率放大 2~4 倍）。帧间变化 <±0.5% ⇒ 行内线性拟合可吸收。",
+    d2.text((ox0, 470), "弯道段（714~728）y=560：@518 +1.5~2.2%（模型先验漂移，非相机几何——相机恒不转头）；"
+            "@392 +3.8~4.8%、\n@336 +7.4~8.1%（低分辨率放大 2~4 倍）。帧间变化 <±0.5% ⇒ 行内线性拟合可吸收。",
             font=F(18), fill=(60, 60, 60))
     img.paste(p2, (W + M * 2, 64))
 
@@ -552,6 +552,245 @@ def _fig_ground(labels) -> None:
     print(f"[fig_ground] 已写 {out}")
 
 
+def _g_rows(m: np.ndarray, cols, rng: float) -> np.ndarray:
+    """ground_model 的列掩码参数化版（同一两轮 25% 稳健化，不抄第二份逻辑）。"""
+    p = m[psd.Y0:psd.DIAG_Y1][:, cols].astype(np.float32)
+    med = np.nanmedian(p, axis=1)
+    for _ in range(2):
+        dev = np.abs(p - med[:, None])
+        med = np.nanmedian(np.where(dev < 0.25 * rng, p, np.nan), axis=1)
+    return med
+
+
+def _car_span(rel: np.ndarray, gate: float = 0.05) -> tuple[int, int] | None:
+    """该行含画面中心（600~680 任一命中）的连续 rel>gate 区段 = 车身轮廓。
+
+    车身读数显著高于路面（自车守卫 r>0.25 的派生依据），路面时间噪声 σ≈0.4%，
+    门取 5% 远离两者。无命中行返回 None（车顶反光弱等），调用方跳过。
+    """
+    on = rel > gate
+    if not on[600:681].any():
+        return None
+    c0 = 600 + int(np.argmax(on[600:681]))
+    a = c0
+    while a > 0 and on[a - 1]:
+        a -= 1
+    b = c0
+    while b < rel.shape[0] - 1 and on[b + 1]:
+        b += 1
+    return a, b
+
+
+def _runs(ymrow) -> list:
+    """一行 HSV 掩码里的连续命中区段 [[a,b],...]（间隙 >4px 断开）。"""
+    idx = np.where(ymrow > 0)[0]
+    if len(idx) == 0:
+        return []
+    runs, s, prev = [], idx[0], idx[0]
+    for x in idx[1:]:
+        if x - prev > 4:
+            runs.append([int(s), int(prev)])
+            s = x
+        prev = x
+    runs.append([int(s), int(prev)])
+    return runs
+
+
+def _ego_scan(labels) -> None:
+    """自车列带 (540,740) 体检（维护者质疑：固定竖条剔车，换车/贴边怎么办）。
+
+    实测前提（先于一切结论）：自车在 @518 深度里的足迹 = 上半身高区
+    y[351,532] x[512,765]（ego_mask 即其数据派生），下半身 y≥560 与路面齐平。
+    因此本扫描量三件事：
+    ① g 敏感性：现状剔带 / 全列不剔（车全泄漏的最坏界）/ 全列纯中位（隔离
+       25% 稳健化的贡献）/ 剔带±60（带过宽的成本），行覆盖远带 440~520（高区
+       泄漏的真正考验）与近带 560~700。判读尺度：门 G@518=2.76%。
+    ② 高区足迹剖面：中央带 rel 的跨帧 p95 包络随 y 的走向（=车在深度里的形状）。
+    ③ wallhug 6 帧：金标线 y=600/688 与 [列带 ∪ mask 实测范围] 的相对位置——
+       追车相机恒置中央，贴边时线是被挤到画面边（C 类单侧）还是被车身遮死。
+    """
+    rows_y = (440, 480, 520, 560, 600, 640, 700)
+    em = np.load(OUT / "ego_mask.npy").astype(bool) if (OUT / "ego_mask.npy").exists() else None
+    em_x = (int(np.where(em.any(0))[0].min()), int(np.where(em.any(0))[0].max())) if em is not None else None
+    recs = []
+    for r in labels:
+        p = Path(r["path"])
+        m = np.load(pcq.NPY / f"{pcq.frame_key(p)}__da2s.npy").astype(np.float32)
+        rng = psd.road_range(m)
+        g = _g_rows(m, psd.cols_of(m), rng)
+        g_all = _g_rows(m, np.arange(m.shape[1]), rng)
+        g_wide = _g_rows(m, np.r_[0:psd.EGO[0] - 60, psd.EGO[1] + 60:m.shape[1]], rng)
+        rec = {"frame": p.name, "stratum": r["stratum"], "obstacle": r["obstacle"]}
+        for y in rows_y:
+            a = float(g[y - psd.Y0])
+            rec[f"dB{y}"] = round((float(g_all[y - psd.Y0]) - a) / a, 5)
+            rec[f"dC{y}"] = round((float(np.median(m[y])) - a) / a, 5)
+            rec[f"dD{y}"] = round((float(g_wide[y - psd.Y0]) - a) / a, 5)
+        recs.append(rec)
+
+    print(f"== ① g 敏感性（Δg/g，%；门 G@518=2.76%；n={len(recs)} 帧）==")
+    print("行   |     B 全列不剔(车全泄)     |     C 全列纯中位      |     D 剔带±60")
+    for y in rows_y:
+        cells = []
+        for t in ("B", "C", "D"):
+            v = np.array([rec[f"d{t}{y}"] for rec in recs]) * 100
+            cells.append(f"中位{np.median(v):+6.2f} p95|Δ|{np.percentile(np.abs(v), 95):5.2f}")
+        print(f"{y}  |  {cells[0]}  |  {cells[1]}  |  {cells[2]}")
+
+    print("\n== ② 高区足迹（中央带 x[450,830] rel 的跨帧包络，30 帧样本）==")
+    prof = {}
+    for y in range(360, 711, 25):
+        vals = []
+        for r in labels[:30]:
+            pth = Path(r["path"])
+            m = np.load(pcq.NPY / f"{pcq.frame_key(pth)}__da2s.npy").astype(np.float32)
+            g = _g_rows(m, psd.cols_of(m), psd.road_range(m))
+            rel = (m[y] - g[y - psd.Y0]) / np.maximum(g[y - psd.Y0], 1e-6)
+            vals.append(float(np.percentile(rel[450:831], 95)))
+        prof[y] = (float(np.median(vals)), float(np.percentile(vals, 90)))
+        print(f"  y={y}: 跨帧p95中位 {prof[y][0]*100:+5.1f}%   90分位 {prof[y][1]*100:+5.1f}%")
+    print(f"  ego_mask 实测范围: x{em_x}（列带 540–740 之外各漏 ~25px）")
+
+    print("\n== ③ wallhug 帧：金标线 vs 车身（列带∪mask）==")
+    lo = min(psd.EGO[0], em_x[0]) - 20
+    hi = max(psd.EGO[1], em_x[1]) + 20
+    for rec, lab in zip(recs, labels):
+        if rec["stratum"] != "wallhug":
+            continue
+        p = Path(lab["path"])
+        cells = []
+        for side in ("l", "r"):
+            for y in (600, 688):
+                gx = gold_x_at(lab, side, y)
+                if gx is not None:
+                    inside = lo <= gx <= hi
+                    cells.append(f"{side}@{y}: gold={gx:.0f}{'·在车身带内!' if inside else ''}")
+        rgb = cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2RGB)
+        ym = cv2.inRange(cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV), pd.HSV_LO, pd.HSV_HI)
+        print(f"{p.name}  {'  '.join(cells)}  黄线@600={_runs(ym[600])}")
+
+    with (OUT / "firstgate_ego.csv").open("w", newline="", encoding="utf-8") as f:
+        wr = csv.DictWriter(f, fieldnames=list(recs[0]))
+        wr.writeheader()
+        wr.writerows(recs)
+    print(f"\n[ego] 已写 {OUT / 'firstgate_ego.csv'}")
+    _fig_ego(labels, recs, prof, em_x)
+
+
+def _fig_ego(labels, recs, prof, em_x) -> None:
+    """自车剔除体检四联图：①②帧实拍（列带 vs mask 实测足迹）③高区剖面 ④Δg 扰动。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    def F(sz):
+        return ImageFont.truetype(r"C:\Windows\Fonts\msyh.ttc", sz)
+
+    W, H, M = 800, 560, 16
+    img = Image.new("RGB", (W * 2 + M * 3, H * 2 + 76 + M * 2), (250, 250, 248))
+    dr = ImageDraw.Draw(img)
+    dr.text((M, 12), "自车剔除体检：车在深度里只有上半身高区（ego_mask 管它），g 的固定列带几近无关",
+            font=F(23), fill=(30, 30, 30))
+    S = 760 / 1280
+
+    def overlay(lab, note):
+        """帧实拍 + 橙框=固定列带 + 红框=ego_mask 实测范围 + 白线=金标。"""
+        pth = Path(lab["path"])
+        rgb = cv2.cvtColor(cv2.imread(str(pth)), cv2.COLOR_BGR2RGB)
+        frame = Image.fromarray(rgb).resize((760, 428))
+        d = ImageDraw.Draw(frame)
+        d.rectangle([psd.EGO[0] * S, 0, psd.EGO[1] * S, 428], outline=(230, 140, 20), width=3)
+        d.rectangle([em_x[0] * S, 351 * S, em_x[1] * S, 532 * S], outline=(230, 30, 30), width=3)
+        for side in ("l", "r"):
+            if lab[side + "cls"] != "skip":
+                d.line([(float(lab[side + "_nx"]) * S, float(lab[side + "_ny"]) * S),
+                        (float(lab[side + "_fx"]) * S, float(lab[side + "_fy"]) * S)],
+                       fill=(255, 255, 255), width=2)
+        d.text((8, 8), note, font=F(17), fill=(255, 255, 255),
+               stroke_width=2, stroke_fill=(0, 0, 0))
+        return frame
+
+    # ── 面板 A：普通帧 ──
+    p1 = Image.new("RGB", (W, H), "white")
+    d1 = ImageDraw.Draw(p1)
+    d1.text((M, 8), "① 车在深度里的真实足迹：红=ego_mask 高区 y[351,532]（数据派生）", font=F(20), fill=(0, 0, 0))
+    la = labels[0]
+    fr = overlay(la, Path(la["path"]).name + f"（{la['stratum']}）")
+    p1.paste(fr, (M + 20, 40))
+    d1.text((M, 40 + 428 + 6), f"橙=固定列带 540–740（只影响 g/rng 统计）；红框=高区实测 x{em_x}，比列带宽 ~25px/侧。\n"
+            "下半身（y≥560）读数与路面齐平（±1.4%）——深度里车的下半身『不存在』。",
+            font=F(16), fill=(60, 60, 60))
+    img.paste(p1, (M, 64))
+
+    # ── 面板 B：wallhug 帧 ──
+    p2 = Image.new("RGB", (W, H), "white")
+    d2 = ImageDraw.Draw(p2)
+    d2.text((M, 8), "② wallhug（贴边）帧：线被挤向画面边，不是被车身遮死", font=F(20), fill=(0, 0, 0))
+    lb = [l for l in labels if l["stratum"] == "wallhug"][3]
+    fr = overlay(lb, Path(lb["path"]).name + "（wallhug）")
+    d = ImageDraw.Draw(fr)
+    rgb_b = cv2.cvtColor(cv2.imread(str(Path(lb["path"]))), cv2.COLOR_BGR2RGB)
+    ym = cv2.inRange(cv2.cvtColor(rgb_b, cv2.COLOR_RGB2HSV), pd.HSV_LO, pd.HSV_HI)
+    for a, b in _runs(ym[600]):
+        d.line([(a * S, 600 * S), (b * S, 600 * S)], fill=(255, 0, 255), width=4)
+    p2.paste(fr, (M + 20, 40))
+    d2.text((M, 40 + 428 + 6), "白=金标线，品红=HSV 黄线@600。追车相机恒置中央 ⇒ 贴边时线被压到画面边缘（单侧消失=C 类），\n"
+            "车身永远在屏幕中央，不构成遮挡。", font=F(16), fill=(60, 60, 60))
+    img.paste(p2, (W + M * 2, 64))
+
+    # ── 面板 C：高区足迹剖面 ──
+    p3 = Image.new("RGB", (W, H), "white")
+    d3 = ImageDraw.Draw(p3)
+    d3.text((M, 8), "③ 自车在深度里的剖面（中央带 rel 跨帧 p95 包络，30 帧样本）", font=F(20), fill=(0, 0, 0))
+    ox0, oy0, pw, ph = 90, 40, 620, 400
+    ys = sorted(prof)
+    vmin, vmax = -0.50, 0.30
+    def Y(v): return oy0 + ph - (min(max(v, vmin), vmax) - vmin) / (vmax - vmin) * ph
+    def YX(y): return ox0 + (y - 340) / (720 - 340) * pw
+    d3.line([(YX(560), oy0), (YX(560), oy0 + ph)], fill=(150, 150, 150), width=1)
+    d3.text((YX(560) + 4, oy0 + 4), "近带 560~", font=F(15), fill=(120, 120, 120))
+    pts_m = [(YX(y), Y(prof[y][0])) for y in ys]
+    pts_w = [(YX(y), Y(prof[y][1])) for y in ys]
+    d3.line(pts_w, fill=(230, 150, 60), width=2)
+    d3.line(pts_m, fill=(200, 40, 40), width=3, joint="curve")
+    d3.line([(ox0, Y(0.0276)), (ox0 + pw, Y(0.0276))], fill=(220, 40, 40), width=1)
+    pk = max(ys, key=lambda y: prof[y][0])
+    d3.text((YX(pk) + 8, oy0 + 2), f"峰 {prof[pk][0]*100:+.0f}%（超出图）", font=F(15), fill=(200, 40, 40))
+    d3.text((YX(645) + 6, Y(0.0276) - 22), "近带读数 ~0.5% = 门的 1/5", font=F(15), fill=(200, 40, 40))
+    d3.text((M, 492), "上半身（y≈385~510）读数 +25%~+144% ⇒ ego_mask 挖掉的就是它（防『车→护栏→墙』合并桥）；\n"
+            "y≥560 与路面齐平（红线=门 2.76%）：下半身『不存在』，贴边也不产生伪边界。",
+            font=F(16), fill=(60, 60, 60))
+    img.paste(p3, (M, 64 + H + M))
+
+    # ── 面板 D：Δg 扰动柱状 ──
+    p4 = Image.new("RGB", (W, H), "white")
+    d4 = ImageDraw.Draw(p4)
+    d4.text((M, 8), "④ 若把车放进 g 的统计里，g 会动多少？（Δg/g，%）", font=F(20), fill=(0, 0, 0))
+    ox0, oy0, pw, ph = 90, 46, 620, 380
+    vmin4, vmax4 = -1.0, 8.0
+    def Y4(v): return oy0 + ph - (min(max(v, vmin4), vmax4) - vmin4) / (vmax4 - vmin4) * ph
+    d4.line([(ox0, Y4(0)), (ox0 + pw, Y4(0))], fill=(120, 120, 120), width=1)
+    d4.line([(ox0, Y4(2.76)), (ox0 + pw, Y4(2.76))], fill=(220, 40, 40), width=2)
+    d4.text((ox0 + pw - 160, Y4(2.76) - 22), "门 G@518=2.76%", font=F(15), fill=(220, 40, 40))
+    bw = 30
+    for gi, y in enumerate((440, 480, 520, 560, 600, 640, 700)):
+        cx = ox0 + (gi + 0.5) / 7 * pw
+        for bi, (t, col) in enumerate((("B", (230, 140, 20)), ("D", (20, 140, 170)))):
+            v = np.array([r[f"d{t}{y}"] for r in recs]) * 100
+            med, p5, p95 = float(np.median(v)), float(np.percentile(v, 5)), float(np.percentile(v, 95))
+            bx = cx - bw / 2 + bi * bw - 4
+            y0, y1 = sorted((Y4(0), Y4(med)))
+            d4.rectangle([bx - bw / 2 + 10, y0, bx + bw / 2 + 10, y1], fill=col)
+            d4.line([(bx + 10, Y4(p5)), (bx + 10, Y4(p95))], fill=(60, 60, 60), width=2)
+        d4.text((cx - 16, oy0 + ph + 6), f"y={y}", font=F(15), fill=(60, 60, 60))
+    d4.text((M, 492), "橙=B 全列不剔（车 100% 泄漏最坏界）、青=D 剔带±60；灰须=p5~p95。近带 560~700 全变体 |Δg|≤0.3%；\n"
+            "远带 y=440 须线尖峰（p95 7.2%，最大 +17.8%）全来自他车帧——纯自车帧仅 0.14%。",
+            font=F(16), fill=(60, 60, 60))
+    img.paste(p4, (W + M * 2, 64 + H + M))
+
+    out = OUT / "firstgate_ego.jpg"
+    img.save(out, quality=92)
+    print(f"[fig_ego] 已写 {out}")
+
+
 def main() -> None:
     argv = sys.argv[1:]
     ap = argv[0] if argv else ""
@@ -601,6 +840,9 @@ def main() -> None:
         return
     if ap == "fig_ground":
         _fig_ground(labels)
+        return
+    if ap == "ego":
+        _ego_scan(labels)
         return
 
     gates = {}
