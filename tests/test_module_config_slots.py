@@ -310,9 +310,10 @@ def test_real_modules_declare_their_config_surface():
     assert "record_mode" in sr and sr["record_mode"] is False
     # 配置面的键与模块实际接受/返回的键必须一致（不多不少）
     # perception_mode：阶段 B 感知开关（2026-09-21 接线）；
-    # control_mode：实机闭环接管开关（2026-09-22 planner §九 step 3，默认关）。
+    # control_mode：实机闭环接管开关（2026-09-22 planner §九 step 3，默认关）；
+    # geo_master：闭环 A/B 换尺开关（2026-09-24 架构裁决，默认 depth，GUI 可切）。
     keys = set(sc._module_config_defaults("speedrush"))
-    assert keys == {"record_mode", "perception_mode", "control_mode"}
+    assert keys == {"record_mode", "perception_mode", "control_mode", "geo_master"}
 
     tr = set(sc._module_config_defaults("treasure"))
     assert tr == {"max_daily_loops", "target_session"}

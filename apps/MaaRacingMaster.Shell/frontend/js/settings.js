@@ -10,7 +10,7 @@
     setPreviewPlayState, enterPreviewFullscreen, exitPreviewFullscreen,
   } = window.MRA;
 
-  // -------- 模块专属选项（treasure：循环上限 / 目标场次；speedrush：演示录制开关）--------
+  // -------- 模块专属选项（treasure：循环上限 / 目标场次；speedrush：演示录制开关 + 几何尺）--------
   // 规则：按 MODULE_OPTION_BLOCKS 显示对应块；控件改动立即写 sidecar 的配置槽，
   // 下次「开始」注入新实例——不做运行中热更新，运行期间控件锁定（见 updateModuleOptionsDisabled）。
   let _optListenersBound = false;
@@ -39,12 +39,41 @@
     host.style.opacity = disabled ? '0.6' : '1';
     host.style.pointerEvents = disabled ? 'none' : 'auto';
   }
+  // 几何尺（speedrush 分段控件）：闭环 A/B 换尺开关，与目标场次同一交互范式
+  const VALID_GEO_MASTERS = new Set(['depth', 'hsv']);
+  function setGeoMasterOnUI(val) {
+    const host = $('opt-geo-master');
+    if (!host) return;
+    const target = VALID_GEO_MASTERS.has(val) ? val : 'depth';
+    host.querySelectorAll('.seg-btn').forEach((b) => {
+      b.classList.toggle('seg-btn--selected', !!(b.dataset && b.dataset.value === target));
+    });
+  }
+  function getGeoMasterFromUI() {
+    const host = $('opt-geo-master');
+    const sel = host && host.querySelector('.seg-btn--selected');
+    return sel && sel.dataset && VALID_GEO_MASTERS.has(sel.dataset.value) ? sel.dataset.value : 'depth';
+  }
+  function setGeoMasterDisabled(disabled) {
+    const host = $('opt-geo-master');
+    if (!host) return;
+    host.querySelectorAll('.seg-btn').forEach((b) => { b.disabled = !!disabled; });
+    host.style.opacity = disabled ? '0.6' : '1';
+    host.style.pointerEvents = disabled ? 'none' : 'auto';
+  }
   function bindModuleOptionsUI() {
     if (_optListenersBound) return;
     _optListenersBound = true;
     // 录制开关：绑在 treasure 控件的卫语句之前——那些控件缺失时不得连带漏绑
     const recToggle = $('opt-record-mode');
     if (recToggle) recToggle.addEventListener('click', onRecordToggleClick);
+    // 几何尺分段控件：点即切换并发送（同样绑在卫语句之前）
+    const geoHost = $('opt-geo-master');
+    if (geoHost) {
+      geoHost.querySelectorAll('.seg-btn').forEach((b) => {
+        b.addEventListener('click', () => onGeoMasterPick(b.dataset && b.dataset.value));
+      });
+    }
     const loops = $('opt-max-loops');
     const sessionHost = $('opt-target-session');
     if (!loops) return;
@@ -123,11 +152,12 @@
     );
   }
 
-  // 极速狂飙专属选项（演示数据录制开关）
+  // 极速狂飙专属选项（演示数据录制开关 + 几何尺）
   async function refreshSpeedrushOptions() {
     const btn = $('opt-record-mode');
     const cfg = await mra.call('get_module_config', { module_id: 'speedrush' });
     if (btn) setToggle(btn, !!(cfg && cfg.record_mode));
+    setGeoMasterOnUI(cfg && cfg.geo_master);
     renderSpeedrushStatus(cfg);
   }
 
@@ -187,6 +217,36 @@
     } catch (e) {
       console.error(e);
       setToggle(btn, !on); // 回滚
+      reportError('inline', '保存失败: ' + (e.message || e));
+    } finally {
+      _optionsSaving = false;
+    }
+  }
+
+  // 几何尺切换：只写 sidecar 缓存（下次 start 注入），与录制开关同一姿态
+  async function onGeoMasterPick(value) {
+    const host = $('opt-geo-master');
+    if (!host || host.style.pointerEvents === 'none' || _optionsSaving) return;
+    if (!VALID_GEO_MASTERS.has(value)) return;
+    const prev = getGeoMasterFromUI();
+    setGeoMasterOnUI(value); // 先翻转视觉状态
+    _optionsSaving = true;
+    setOptionsStatus('保存中...', '');
+    try {
+      const resp = await mra.call('set_module_config', {
+        module_id: 'speedrush',
+        config: { geo_master: value },
+      });
+      const saved = (resp && VALID_GEO_MASTERS.has(resp.geo_master)) ? resp.geo_master : 'depth';
+      setGeoMasterOnUI(saved); // 回显后端最终值
+      setOptionsStatus(
+        saved === 'hsv' ? '几何尺=黄线对照档（下次「开始」时生效）'
+                        : '几何尺=深度几何（下次「开始」时生效）',
+        'ok'
+      );
+    } catch (e) {
+      console.error(e);
+      setGeoMasterOnUI(prev); // 回滚
       reportError('inline', '保存失败: ' + (e.message || e));
     } finally {
       _optionsSaving = false;
@@ -253,6 +313,7 @@
     // 录制开关：运行中锁定（配置不做热更新，改动在下次「开始」时生效）
     const recToggle = $('opt-record-mode');
     if (recToggle) recToggle.disabled = running;
+    setGeoMasterDisabled(running);
     // 模块下拉：运行中禁止切换（后端同时拒绝，这里把入口也关掉，让"能不能切"一眼可见）
     const sel = $('module-select');
     if (sel) {

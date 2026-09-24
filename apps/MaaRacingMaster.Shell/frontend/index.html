@@ -57,7 +57,8 @@
             <!-- 模块专属选项：按当前模块显示对应块，其余模块整块隐藏（见 app.js refreshModuleOptions）。
                  两行结构避免拥挤：
                  • treasure（鉴宝）第1行（整行）：刷到第几场；第2行（整行）：目标场次（互斥单选）
-                 • speedrush（极速狂飙）：演示数据录制开关（驾驶阶段只采集、由用户手动驾驶） -->
+                 • speedrush（极速狂飙）第1行：演示数据录制开关（驾驶阶段只采集、由用户手动驾驶）；
+                   第2行：几何尺切换（道路横向定位证据源，闭环 A/B 换尺） -->
             <div class="module-options" id="module-options" style="display:none;">
               <div id="opt-treasure-block" style="display:none;">
                 <div class="module-options-row module-options-row--stack">
@@ -86,6 +87,15 @@
                   <div class="option-main">
                     <div class="option-title">录制演示数据</div>
                     <p class="option-desc">开启后驾驶阶段只采集、不操纵车辆（请自行手动驾驶），产出用于训练的数据集。改动在下次「开始」时生效。建议把设置页的点击方式保持为「前台鼠标」——「后台手柄」会创建虚拟手柄，可能与你的手柄冲突。</p>
+                  </div>
+                </div>
+                <div class="module-options-row">
+                  <div class="mra-field">
+                    <label class="mra-field-label">几何尺<span class="field-hint">（车辆横向定位的证据源；改动在下次「开始」时生效，运行日志与 trace 记录本局所用）</span></label>
+                    <div class="mra-segmented" id="opt-geo-master" role="group" aria-label="几何尺">
+                      <button type="button" class="seg-btn seg-btn--selected" data-value="depth">深度几何</button>
+                      <button type="button" class="seg-btn" data-value="hsv">黄线（对照）</button>
+                    </div>
                   </div>
                 </div>
               </div>

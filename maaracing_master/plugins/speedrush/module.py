@@ -192,10 +192,14 @@ class SpeedRushModule(ActivityModule):
     # true=V1 开横向）。默认 False：接线首启不接管车辆，显式开才动（实机安全边界）。
     DEFAULT_CONTROL_MODE = False
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
+    # 几何尺初值：闭环 A/B 的换尺开关（"depth"=深度区域 | "hsv"=黄线对照档），
+    # 进白名单即 GUI 可切、profile 可持久化（非法值在 set_module_config 里修正）
+    DEFAULT_GEO_MASTER = "depth"
     DEFAULT_MODULE_CONFIG: dict = {
         "record_mode": DEFAULT_RECORD_MODE,
         "perception_mode": DEFAULT_PERCEPTION_MODE,
         "control_mode": DEFAULT_CONTROL_MODE,
+        "geo_master": DEFAULT_GEO_MASTER,
     }
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
@@ -245,7 +249,7 @@ class SpeedRushModule(ActivityModule):
         self._control_mode = self.DEFAULT_CONTROL_MODE
         # 几何主人（架构裁决 2026-09-24）：road_offset 证据源。"depth"=深度区域
         # （黄线退役为骨架，照跑只记账）；"hsv"=黄线（A/B 对照档，闭环换尺用）。
-        self._geo_master = "depth"
+        self._geo_master = self.DEFAULT_GEO_MASTER
         # 深度几何的 ORT 会话：实例跨阶段复用（模型加载秒级，一局只付一次）；
         # 加载失败置 _depth_failed 后不再重试（降级为纯模型积分，不碰主循环）。
         self._depth_sess = None
@@ -352,7 +356,7 @@ class SpeedRushModule(ActivityModule):
 
         self._running = True
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
-                        f"·感知{'开' if self._perception_mode else '关'}）", "session")
+                        f"·感知{'开' if self._perception_mode else '关'}·几何{self._geo_master}）", "session")
         try:
             self._run_flow(index)
         finally:
@@ -708,7 +712,9 @@ class SpeedRushModule(ActivityModule):
             # step 2.5 闭环列：路中心观测值（None=该拍无双侧缘距）+ 修正后 executed/v
             "road_offset": None if road_offset is None else round(road_offset, 4),
             # 深度几何列（几何主人=depth 时的 road_offset 数据源；黄线层骨架化后
-            # 的 A/B 对照数据面）：在场侧数 + 两侧近带读数 + 时延 + 弃权原因
+            # 的 A/B 对照数据面）：本局尺子 + 在场侧数 + 两侧近带读数 + 时延 + 弃权原因
+            # （geo_master 逐拍随行：A/B 两轮各自的 jsonl 自证用的是哪把尺）
+            "geo_master": chain["geo_master"],
             "dgeo_sides": None if dgeo is None else dgeo.sides,
             "dgeo_left": None if dgeo is None or dgeo.left_edge_lane is None
             else round(dgeo.left_edge_lane, 3),
