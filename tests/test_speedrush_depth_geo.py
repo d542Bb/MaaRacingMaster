@@ -139,11 +139,30 @@ def test_baseline_guard_rejects_soft_gate():
 # ── 资产与会话降级 ──────────────────────────────────────────────────────
 
 def test_ego_mask_asset_loads():
-    """自车高区矩形资产：720×1280、bbox 与标定一致（皮肤相关，换车重算）。"""
+    """挖除区 = 上半身矩形（y351~532）∪ 车带下延（同列带到底，皮肤无关段）。"""
     mask = DepthRoadObserver._load_ego_mask()
     assert mask is not None and mask.shape == (720, 1280)
-    ys, xs = np.nonzero(mask)
-    assert (ys.min(), ys.max(), xs.min(), xs.max()) == (351, 532, 512, 765)
+    assert mask[351:532, 512:765].all()          # 上半身高区
+    assert mask[532:715, 512:765].all()          # 车带下延（粘连带整体排除）
+    assert not mask[:351, 512:766].any()         # 上缘之上不挖
+    assert not mask[:, :512].any() and not mask[:, 766:].any()
+
+
+def test_carband_breaks_tail_bridge():
+    """车尾粘连（内沿在 y540~565 段冲进中央列带）被车带下延挖除救回。
+
+    不挖除时粘连段污染内沿拟合（残差爆、整块被拒）；挖除后内沿回归
+    真边界线——按"真边界不进中央带"的结构事实泛化，无需精细车形。"""
+    inner = _vp_line(0.95, "L")
+    m = _base_map()
+    _draw_raised(m, inner, "L", 340, 715)
+    for y in range(540, 566):                    # 车尾粘连：内沿冲到中央带
+        m[y, :700] = _road(y) * RAISE
+    m[533:715, 512:765] = _road(600) * RAISE * 2  # 车身高读数（挖除区形状）
+    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
+    assert rd.left_edge_lane is not None and rd.left_edge_lane <= -0.15
+    rd_noguard = reading_from_map(m, CAL, None)
+    assert rd_noguard.left_edge_lane is None      # 不挖除：粘连桥污染被守卫拒
 
 
 def test_observer_without_session_returns_none():

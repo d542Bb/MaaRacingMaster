@@ -257,12 +257,19 @@ class DepthRoadObserver:
 
     @staticmethod
     def _load_ego_mask() -> np.ndarray | None:
-        """自车高区矩形（resources/calibration/ego_mask.json；皮肤相关，换车重算）。"""
+        """块掩码挖除区 = 自车高区矩形 ∪ 车带下延（同一 JSON 的列带向下到底）。
+
+        上半身矩形（y0~y1）是深度里看得见的车身高读数区，皮肤相关（换车重算）；
+        车带下延（y1~检测带底 × 同列带）按结构事实泛化：追车相机恒把车钉画面
+        中央 ⇒ 真边界永不进入中央列带（贴墙极限 x=217/1288 仍在带外），
+        下延挖多无伤——车尾/车身中段的粘连残迹（ego_mask 下缘之下）被整体
+        排除，不需要也不应该对"车屁股"做精细建模。"""
         p = Path(__file__).resolve().parent / "resources" / "calibration" / "ego_mask.json"
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
             mask = np.zeros((720, 1280), bool)
             mask[d["y0"]:d["y1"], d["x0"]:d["x1"]] = True
+            mask[d["y1"]:DIAG_Y1, d["x0"]:d["x1"]] = True
             return mask
         except Exception:
             return None
