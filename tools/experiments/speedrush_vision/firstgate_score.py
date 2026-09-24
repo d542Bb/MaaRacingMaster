@@ -27,6 +27,7 @@ region 边界产出与位置上是否可互换——终选判据 = 台阶边界�
 from __future__ import annotations
 
 import csv
+import json
 import math
 import sys
 from pathlib import Path
@@ -47,6 +48,7 @@ VARIANTS = {
     "fp32@518": (None, 518, "{key}__da2s.npy"),
     "fp16@336": ("da2_small_fp16.onnx", 336, "{key}__da2s_fp16@336.npy"),
     "q4f16@336": ("oc_model_q4f16.onnx", 336, "{key}__da2s_q4f16@336.npy"),
+    "fp16@392": ("da2_small_fp16.onnx", 392, "{key}__da2s_fp16@392.npy"),
     "fp16@518": ("da2_small_fp16.onnx", 518, "{key}__da2s_fp16@518.npy"),
     "q4f16@518": ("oc_model_q4f16.onnx", 518, "{key}__da2s_q4f16@518.npy"),
 }
@@ -84,8 +86,9 @@ def gold_rows():
     return list(csv.DictReader((OUT / "gold_labels.csv").open(encoding="utf-8")))
 
 
-def collect(variant: str, labels) -> list[dict]:
-    """一变体全金标 → 逐样本记录（P1/对比度/dev 同帧同侧同行可配对）。"""
+def collect(variant: str, labels, gate: float | None = None) -> list[dict]:
+    """一变体全金标 → 逐样本记录（P1/对比度/dev 同帧同侧同行可配对）。
+    gate=None 用 @518 口径原门 2%；--selfgate 时传该档自洽门（README @392 节）。"""
     recs = []
     for r in labels:
         p = Path(r["path"])
@@ -93,7 +96,7 @@ def collect(variant: str, labels) -> list[dict]:
         m = load_variant_map(variant, p, rgb)
         rng = psd.road_range(m)
         g = psd.ground_model(m, rng)
-        blobs = psd.region_inner(m, rng)
+        blobs = psd.region_inner(m, rng, G=gate if gate is not None else 0.02)
         for side in ("l", "r"):
             S = side.upper()
             rec = {"variant": variant, "stratum": r["stratum"], "frame": p.name,
@@ -156,7 +159,9 @@ def boot_ci(v: np.ndarray, iters: int = 10000, seed: int = 7) -> tuple[float, fl
 
 
 def main() -> None:
-    ap = sys.argv[1:] and sys.argv[1] or ""
+    argv = sys.argv[1:]
+    ap = argv[0] if argv else ""
+    selfgate = "--selfgate" in argv
     labels = gold_rows()
     if ap == "infer":
         for v in VARIANTS:
@@ -169,11 +174,43 @@ def main() -> None:
             print(f"[infer] {v} 完成 {len(labels)} 帧")
         return
 
+    if ap == "gate":
+        # 自洽门标定：近带台阶读数比（配对同帧同侧，窗由金标线定位、不依赖
+        # region 输出，无"用 A 拟合再用 A 评分"循环）→ G@档 = 2% × 比。
+        # 只标 near 带（region 比较行带）；远带本底抬升门救不了，交本底守卫弃权。
+        ref = "fp16@518"
+        ref_con = {(r["frame"], r["side"]): r["contrast_out"]
+                   for r in collect(ref, labels) if r.get("contrast_out") is not None}
+        gates = {}
+        for v in ("fp16@392", "fp16@336"):
+            con = {(r["frame"], r["side"]): (r["contrast_out"], r["contrast_in"])
+                   for r in collect(v, labels) if r.get("contrast_out") is not None}
+            keys = sorted(set(con) & set(ref_con))
+            ratios = np.array([con[k][0] / ref_con[k] for k in keys
+                               if ref_con[k] and ref_con[k] > 1e-6])
+            scale = float(np.median(ratios))
+            G = round(0.02 * scale, 5)
+            ins = np.array([con[k][1] for k in keys])
+            flags = "本底>门半(守卫会弃权)" if np.median(ins) > G / 2 else "本底<门半"
+            print(f"[gate] {v}: 台阶读数比中位 {scale:.2f}（n={len(keys)}）→ "
+                  f"G={G:.4f}；本底中位 {np.median(ins):+.4f} vs 门半 {G / 2:.4f} → {flags}")
+            gates[v] = G
+        json.dump(gates, (OUT / "firstgate_gate.json").open("w"))
+        print(f"[gate] 已写 {OUT / 'firstgate_gate.json'}")
+        return
+
+    gates = {}
+    if selfgate:
+        gj = OUT / "firstgate_gate.json"
+        gates = json.loads(gj.read_text(encoding="utf-8")) if gj.exists() else {}
+        print(f"[score] selfgate 口径：{gates}")
+
     allrecs: dict[str, list[dict]] = {}
     for v in VARIANTS:
-        allrecs[v] = collect(v, labels)
+        allrecs[v] = collect(v, labels, gate=gates.get(v))
         print(f"[score] {v}: {len(allrecs[v])} 样本")
-    with (OUT / "firstgate_score.csv").open("w", newline="", encoding="utf-8") as f:
+    csv_name = "firstgate_score_selfgate.csv" if selfgate else "firstgate_score.csv"
+    with (OUT / csv_name).open("w", newline="", encoding="utf-8") as f:
         wr = csv.DictWriter(f, fieldnames=sorted({k for rs in allrecs.values() for r in rs for k in r}))
         wr.writeheader()
         for rs in allrecs.values():
