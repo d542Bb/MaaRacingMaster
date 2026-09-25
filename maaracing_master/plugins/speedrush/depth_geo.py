@@ -191,7 +191,8 @@ def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
     # 纵向桥接（2026-09-25）：锐利权重（rel）的纹理阶跃会沿 y 把真边缘的超门
     # 带切碎（000420 实测最大纵向缺口 9 行，63+13 两段本是一条缘）——closing
     # 桥 ≤V_HOLD 行的纵向缺口，恢复「边界=长线」的物理本义；与横向 HOLD 对称。
-    # 车/金币团块仍由贴边 + 跨行门槛 + 四道守卫多层过滤。
+    # 注：贴边/跨度/守卫对「车/金币团块」的过滤是过渡期脚手架——目标架构里
+    # 物体身份由 YOLO 标签与深度块融合给出，这层几何猜测随之退役。
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
                             np.ones((V_HOLD, 1), np.uint8))
     # 逐块内沿 = (块, 行) 分组的 L 侧 max x / R 侧 min x（x<640 归 L，x≥640 归 R）。
