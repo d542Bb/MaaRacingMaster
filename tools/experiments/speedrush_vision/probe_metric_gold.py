@@ -154,14 +154,18 @@ def main() -> None:
     labels = {Path(r["path"]).stem: r for r in
               csv.DictReader((pd.OUT / "gold_labels.csv").open(encoding="utf-8"))}
 
-    print(f"== metric@{SHORT}[{tag}] 金标全卷（门 {dg.GATE}）==")
+    print(f"== metric@{SHORT}[{tag}] 金标全卷（生产 per-side 门）==")
     stats = {"L": [], "R": [], "cov": {"L": 0, "R": 0}, "den": {"L": 0, "R": 0},
              "bad": {"L": 0, "R": 0}, "ring": [], "s2": 0}
+    st_str = {}
     for stem, r in sorted(labels.items()):
         m = infer_f(cv2.cvtColor(cv2.imread(str(r["path"])), cv2.COLOR_BGR2RGB))
         rm = rel_map(m)
         stats["ring"].append(halo_ring_r(m))
-        rd = dg.reading_from_map(m, CAL, EGO, gate=dg.GATE)
+        rd = dg.reading_from_map(m, CAL, EGO)   # gate=None → 生产 per-side 门
+        st = st_str.setdefault(r["stratum"], {
+            "L": [], "R": [], "cov": {"L": 0, "R": 0}, "den": {"L": 0, "R": 0},
+            "bad": {"L": 0, "R": 0}, "s2": 0})
         cells, n2 = [], 0
         for side, lane in (("L", rd.left_edge_lane), ("R", rd.right_edge_lane)):
             glane, _ = gold_lane(r, side.lower())
@@ -169,18 +173,23 @@ def main() -> None:
                 cells.append(f"{side} -/-")
                 continue
             stats["den"][side] += 1
+            st["den"][side] += 1
             if lane is None or lane != lane:
                 cells.append(f"{side} 缺读")
                 continue
             n2 += 1
             stats["cov"][side] += 1
+            st["cov"][side] += 1
             d = float(lane - glane)
             stats[side].append(d)
+            st[side].append(d)
             bad = abs(d) > 0.5
             stats["bad"][side] += bad
+            st["bad"][side] += bad
             cells.append(f"{side} {d:+.2f}{'!' if bad else ''}")
         if n2 == 2:
             stats["s2"] += 1
+            st["s2"] += 1
         print(f"{stem[-6:]}: " + "  ".join(cells))
     ld, rd_ = stats["L"], stats["R"]
     print(f"\n汇总: 环带r={np.median(stats['ring']):.4f}  "
@@ -189,6 +198,14 @@ def main() -> None:
           f"R {stats['cov']['R']}/{stats['den']['R']}"
           f" (dev {pct(rd_, .5):+.2f}/{pct([abs(x) for x in rd_], .9):.2f} 坏{stats['bad']['R']}/{len(rd_)})  "
           f"双侧 {stats['s2']}/{len(labels)}")
+    print("\n分层（straddle_win/wallhug_win 为首见标定窗）:")
+    for name, st in sorted(st_str.items()):
+        l, rr = st["L"], st["R"]
+        print(f"  {name:14s} L {st['cov']['L']}/{st['den']['L']}"
+              f" ({pct(l, .5):+.2f}/{pct([abs(x) for x in l], .9):.2f} 坏{st['bad']['L']}/{len(l)})"
+              f"  R {st['cov']['R']}/{st['den']['R']}"
+              f" ({pct(rr, .5):+.2f}/{pct([abs(x) for x in rr], .9):.2f} 坏{st['bad']['R']}/{len(rr)})"
+              f"  双侧 {st['s2']}")
 
     # 相邻帧渲染：金标连排 + 紧邻连拍（同 demo）。连拍帧不在金标卷时，
     # 借最近金标帧的标线行（20 帧内路面位置漂移可忽略），只画模型读数。

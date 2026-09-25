@@ -2543,3 +2543,39 @@ tri_exam 两窗（骑缘 113932_p1 500~537、贴墙 113610_p2 422~453，共 68 �
 `straddle_win`/`wallhug_win`，帧集与 tri_exam DEMOS 逐帧一致，缺 0），
 `gold_annotate.py` 断点续标自动跳过已标 54 帧，待标 68。标注完成后跑
 hold-out 验证（label 分母纪律）+ per-side 门/保鲜槽效果的 122 帧全量口径。
+
+### 122 帧金标全量 hold-out（`probe_metric_gold.py` 升级 per-side 门+分层汇总，2026-09-25）
+
+维护者标完全部 122 帧（无缺字段、无 skip 侧、障碍 69）。考卷两模型同尺
+（生产 per-side 门，坏=|dev|>0.5 车道）：
+
+| 模型 | L 覆盖(dev p50/p90/坏) | R 覆盖(dev/坏) | 双侧 | 环带r |
+|---|---|---|---|---|
+| 现役 rel q4f16 | 47/121（−0.16/1.30/24） | 28/121（−2.69/17） | 18 | 0.0421 |
+| metric q4f16 | **99/121**（−0.27/1.76/60） | **37/121**（+0.01/16） | **28** | **0.0094** |
+
+分 54 帧原卷（门标定样本）与 68 帧 hold-out（straddle_win/wallhug_win，仅
+tri_exam 作过抖动尺）：
+
+- **原 54 帧**：metric 全面占优——L 48/49 vs 29/43（坏 9 vs 6）、R 17/28 vs
+  15/26、双侧 13 vs 11。
+- **hold-out 两窗双双系统性翻车，且方向逐窗一致**：straddle_win L dev 中位
+  −1.29（metric）/−1.15（rel）、R −4.04/−4.66，几乎逐帧全坏；wallhug_win L
+  +1.95/+2.12 全坏。**两个独立训练的权重在同一窗读出同方向同量级的偏**——
+  主嫌疑不在权重，在生产管线对极端偏心场景的假设：车骑/贴路缘时 A1 尺子的
+  固定 vpx、q20 地面基线、门本底窗的前提取舍其一或全部失效（两窗本就是
+  撞墙/骑缘复盘现场，属预注册的"必选难帧"）。
+- **可用性的双面性实锤**：metric 在 hold-out 读出率 82% 但几乎全错——
+  "错而在场"对闭环比 rel 的"诚实弃权"更危险（保鲜槽还会把错读散布 0.4s；
+  OFF_MAX 3.5 能拦 |dev|≈4.7 的 R，拦不住 ±1.3~2 的 L/合成中点）。
+- **结论**：metric 换装在 hold-out 上**不获支持**；下一步是把
+  straddle_win/wallhug_win 的系统偏归因到尺子/基线/守卫哪一层（换假设重查，
+  不是调门），归因清了再谈换装。另：两模型 R dev 同向 ~4 车道，建议维护者
+  抽查 straddle_win 的 R 金标线口径（拾取的是人行道右缘还是路面右缘）。
+
+渲染：holdout_straddle_win_{000508,000520}.jpg、holdout_wallhug_win_{000430,000437}.jpg
+（金标绿 + 读数黄，一眼可查口径分歧）。
+
+**复跑**：`python tools/experiments/speedrush_vision/probe_metric_gold.py [--rel]
+[--weights metric_vkitti_vits_336_q4f16.onnx]`（升级后默认生产 per-side 门；
+旧口径数字 = 显式 gate=0.08 的历史运行）
