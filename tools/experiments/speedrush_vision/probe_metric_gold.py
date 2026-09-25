@@ -130,14 +130,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gold-run", default="000260,000340,000420,000500")
     ap.add_argument("--burst", default="000260,000280,000300")
+    ap.add_argument("--weights", default=f"metric_vkitti_vits_{SHORT}.onnx")
+    ap.add_argument("--tag", default="")
     args = ap.parse_args()
+    tag = args.tag or ("q4f16" if "q4f16" in args.weights else "fp32")
 
-    sess = ort.InferenceSession(str(W / f"metric_vkitti_vits_{SHORT}.onnx"),
+    sess = ort.InferenceSession(str(W / args.weights),
                                 providers=["DmlExecutionProvider"])
     labels = {Path(r["path"]).stem: r for r in
               csv.DictReader((pd.OUT / "gold_labels.csv").open(encoding="utf-8"))}
 
-    print(f"== metric@{SHORT} 金标全卷（门 {dg.GATE}）==")
+    print(f"== metric@{SHORT}[{tag}] 金标全卷（门 {dg.GATE}）==")
     stats = {"L": [], "R": [], "cov": {"L": 0, "R": 0}, "den": {"L": 0, "R": 0},
              "bad": {"L": 0, "R": 0}, "ring": [], "s2": 0}
     for stem, r in sorted(labels.items()):
@@ -191,7 +194,7 @@ def main() -> None:
                     m = infer(sess, cv2.cvtColor(cv2.imread(str(r["path"])),
                                                  cv2.COLOR_BGR2RGB))
                     render(stem, r, m, rel_map(m),
-                           pd.OUT / f"metric_gold_{group}_{raw}.jpg")
+                           pd.OUT / f"metric_gold_{tag}_{group}_{raw}.jpg")
                     break
                 if allow_plain:
                     near = min(d, key=lambda k: abs(k - num))
@@ -205,7 +208,7 @@ def main() -> None:
                                                      cv2.COLOR_BGR2RGB))
                         render(stem if num == near else f"plain{num}", rr, m,
                                rel_map(m),
-                               pd.OUT / f"metric_gold_{group}_{raw}.jpg")
+                               pd.OUT / f"metric_gold_{tag}_{group}_{raw}.jpg")
                         break
 
     print("\n-- 金标连排（step 80）--")

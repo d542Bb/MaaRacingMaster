@@ -2459,3 +2459,28 @@ venv 导出静态形状 ONNX @336（metric 副本 forward：depth=head×80，输
 
 **复跑**：`python tools/experiments/speedrush_vision/probe_metric_gold.py`
 （`--gold-run`/`--burst` 自选帧组；连拍帧非金标时借最近金标行只画读数）。
+
+### Metric@336 fp32 vs q4f16 同卷对比（`quantize_metric_q4f16.py` + `probe_metric_gold.py --weights`，2026-09-25）
+
+维护者指出此前 metric 实验跑的是 fp32 导出（99MB）。补量化（与现役
+depth_small_q4f16 同配方：MatMulNBits 4-bit 权重 block32，激活 fp32；27.6MB）
+后同考卷复跑，量化器需 ORT≥1.30（临时环境执行）：
+
+| 口径 | fp32 | q4f16 |
+|---|---|---|
+| 环带 r | 0.0088 | 0.0061 |
+| L | 46/54（−0.33/1.18/坏11） | 41/54（**−0.11**/1.23/**坏7**） |
+| R | 17/54（+0.07/坏4） | **24/54**（−0.19/**0.51**/坏4） |
+| 双侧 | 15 | **19** |
+
+- **q4f16 精度与可用性全面持平略优**（L 偏置减半、坏帧 11→7、R 覆盖 +7、
+  双侧 15→19），目检无量化损伤（metric_gold_q4f16_*.jpg）——量化噪声对
+  纹理条纹类失效甚至有轻微正则化效果。段级稳定偏置模式与 fp32 完全一致。
+- **时延反常**：@336 DML q4f16 55.5ms vs fp32 34.2ms（整图单 DML 节点、
+  非 CPU 回退）——DML 的 int4 反量化核在此图上慢于 fp32 matmul，与现役
+  权重（折叠后 ~20ms）行为相反；疑现役图内含 fp16 精度管线而 metric 导出
+  图没有。换权重上线前需补一次导出/精度管线对齐实验。
+- 资产：metric_vkitti_vits_336_q4f16.onnx 入 weights/。
+
+**复跑**：`<da2_ft2>/python.exe tools/experiments/speedrush_vision/quantize_metric_q4f16.py`；
+`.venv/Scripts/python.exe tools/experiments/speedrush_vision/probe_metric_gold.py --weights metric_vkitti_vits_336_q4f16.onnx`
