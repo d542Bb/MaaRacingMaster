@@ -61,6 +61,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+from maaracing_master.core import dml_lock
 from maaracing_master.plugins.speedrush.world_model import Calib, x_lane_of
 
 # ── 流水常数（冻结口径，与三方同卷/守卫标定一致）────────────────────────
@@ -150,8 +151,18 @@ def load_session(weights: Path) -> ort.InferenceSession:
 
 
 def infer_map(sess: ort.InferenceSession, rgb: np.ndarray, short: int) -> np.ndarray:
-    """→ 原帧尺寸（720×1280）的 float32 视差图（大=近）。全帧输入，见上方归一化注。"""
-    d = sess.run(None, {"pixel_values": preprocess(rgb, short)})[0][0]
+    """→ 原帧尺寸（720×1280）的 float32 视差图（大=近）。全帧输入，见上方归一化注。
+
+    DML 互斥（core.dml_lock）：感知会话与深度会话并发 run 会段错误杀进程
+    （2026-09-25 实机 + 双线程复现），故 run 本体抢锁、抢不到抛 Busy 让调用方
+    跳帧——本层不等待，控制拍的感知优先。"""
+    blob = {"pixel_values": preprocess(rgb, short)}
+    if not dml_lock.LOCK.acquire(blocking=False):
+        raise dml_lock.Busy("DML 被感知推理占用，本帧放弃（latest-only 下一帧再来）")
+    try:
+        d = sess.run(None, blob)[0][0]
+    finally:
+        dml_lock.LOCK.release()
     d = np.nan_to_num(d.astype(np.float32), nan=0.0)
     return cv2.resize(d, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_LINEAR)
 
@@ -389,6 +400,8 @@ class DepthRoadObserver:
         t0 = time.perf_counter()
         try:
             m = infer_map(self._sess, frame_rgb, self._short)
+        except dml_lock.Busy:
+            raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
             return None, None
         ego = self._ego_mask
@@ -476,24 +489,33 @@ class AsyncDepthRoadObserver:
     - push：主线程拷帧覆盖 pending 槽 + wakeup；worker 慢则丢中间帧（丢的是输入，
       不是结果——路缘下一拍还会再来）。captured_ts 用 perf_counter（与耗时/时效
       同族时钟；monotonic 在本机粒度 ~16ms 会把 age 量化）。
-    - worker：pop latest → 同步 observe → **非 None 才发布**结果槽（整包替换，
-      不原地改已发布对象）；顶层 try/except 计 failures，单帧异常不杀 daemon。
+    - worker：节流窗（INFER_MIN_INTERVAL_S，压 DML 锁占空比）→ pop latest →
+      同步 observe（run 本体受 core.dml_lock 互斥：与控制拍感知并发 run 会段错误
+      杀进程，2026-09-25 实证；抢不到锁抛 Busy → 计 busy_skips 弃本帧，不排队）
+      → **非 None 才发布**结果槽（整包替换，不原地改已发布对象）；
+      顶层 try/except 计 failures，单帧异常不杀 daemon。
     - take：主线程消费结果槽（取走即清，一拍最多应用一次）；
       age = now − captured_ts 超 max_age_ms → 计 stale 丢弃、本拍返回 None
       （road_offset 退纯模型积分——与 session 缺失同一降级路径，宁旧不如无）。
-    - health：applied/stale/failures 计数 + age/duration 滑窗——不达标报警数据面。
+    - health：applied/stale/failures/busy_skips 计数 + age/duration 滑窗——
+      不达标报警数据面。
     """
 
-    MAX_AGE_MS = 150.0    # 结果时效预算：20Hz 拍 ×3 拍；超龄读数按 stale 丢弃
+    MAX_AGE_MS = 300.0    # 结果时效预算：节流窗(150ms)+一次推理+消费延迟的余量；
+                          # 超龄读数按 stale 丢弃。路缘是慢变量，保鲜槽 TTL 0.4s 同量级
+    INFER_MIN_INTERVAL_S = 0.15   # worker 出工下间隔：把 DML 锁占空比压到 ~20%，
+                                  # 控制拍感知（同锁）的碰撞等待才有上界（见 dml_lock）
     PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
 
     DEBUG_INTERVAL_S = 2.0   # 调试图节流（与坏帧取证同量级，封顶磁盘占用）
 
     def __init__(self, observer: DepthRoadObserver,
                  max_age_ms: float = MAX_AGE_MS,
-                 debug_dir: Path | None = None) -> None:
+                 debug_dir: Path | None = None,
+                 infer_min_interval_s: float = INFER_MIN_INTERVAL_S) -> None:
         self._obs = observer
         self._max_age_ms = float(max_age_ms)
+        self._infer_interval_s = float(infer_min_interval_s)
         self._debug_dir = Path(debug_dir) if debug_dir is not None else None
         self._debug_last = 0.0
         self._debug_seq = 0
@@ -504,6 +526,8 @@ class AsyncDepthRoadObserver:
         self._applied = 0
         self._stale_drops = 0
         self._failures = 0
+        self._busy_skips = 0
+        self._last_infer = 0.0
         self._age_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
         self._dur_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
         self._stop = threading.Event()
@@ -570,15 +594,16 @@ class AsyncDepthRoadObserver:
 
     def health(self) -> dict:
         with self._lock:
-            pushed, applied, stale, failures = (
-                self._pushed, self._applied, self._stale_drops, self._failures)
+            pushed, applied, stale, failures, busy = (
+                self._pushed, self._applied, self._stale_drops, self._failures,
+                self._busy_skips)
         ages, durs = list(self._age_win), list(self._dur_win)
 
         def _p(xs: list[float], q: float) -> float:
             return 0.0 if not xs else sorted(xs)[min(len(xs) - 1, int(q * (len(xs) - 1)))]
 
         return {"pushed": pushed, "applied": applied, "stale_drops": stale,
-                "failures": failures,
+                "failures": failures, "busy_skips": busy,
                 "age_p50": _p(ages, 0.5), "age_p95": _p(ages, 0.95),
                 "dur_p50": _p(durs, 0.5), "dur_p95": _p(durs, 0.95),
                 "max_age_ms": self._max_age_ms}
@@ -608,6 +633,13 @@ class AsyncDepthRoadObserver:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            # 节流窗内不出工也不取帧（取了也只能弃——age 闸会丢）：睡到窗尾，
+            # push 唤醒只提前醒来重新看窗。路缘慢变量，~7Hz 足够。
+            rest = self._infer_interval_s - (time.monotonic() - self._last_infer)
+            if rest > 0:
+                self._wakeup.wait(timeout=rest)
+                self._wakeup.clear()
+                continue
             try:
                 item = self._pop_latest()
                 if item is None:
@@ -619,9 +651,15 @@ class AsyncDepthRoadObserver:
                 continue
             try:
                 reading, m = self._obs.observe_debug(item[1], object_mask=item[3])
+            except dml_lock.Busy:
+                # DML 被控制拍感知占用：弃本帧不排队（latest-only，下一帧再来），
+                # 单独计数——这是让锁的常规代价，不是故障。
+                self._busy_skips += 1
+                continue
             except Exception:  # noqa: BLE001 —— 单帧异常计数后继续（与 treasure 同姿态）
                 self._failures += 1
                 continue
+            self._last_infer = time.monotonic()
             if reading is None:  # session 中途失效/推理异常：本帧无结果，不发布
                 continue
             if self._debug_dir is not None:

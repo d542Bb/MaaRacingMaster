@@ -15,6 +15,7 @@ import numpy as np
 import cv2
 import onnxruntime as ort
 
+from maaracing_master.core import dml_lock
 from maaracing_master.core.logger import logger
 
 
@@ -224,7 +225,11 @@ class YOLODetector:
         padded[pad_y: pad_y + nh, pad_x: pad_x + nw] = cv2.resize(orig, (nw, nh), interpolation=cv2.INTER_LINEAR)
         blob = padded.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
 
-        raw_outputs = self.session.run(None, {self.input_name: blob})
+        # DML 互斥（core.dml_lock）：控制拍感知是锁的阻塞持有方——本会话 run 与
+        # 其他 DML 会话（如深度 worker）并发 run 会段错误杀进程（2026-09-25
+        # 双线程复现），必须串行；感知不能跳拍，故阻塞等锁而非让锁。
+        with dml_lock.LOCK:
+            raw_outputs = self.session.run(None, {self.input_name: blob})
         outputs = raw_outputs[0]
         assert isinstance(outputs, np.ndarray), f"ONNX 返回非数组: {type(outputs)}"
         preds = outputs[0].transpose(1, 0)

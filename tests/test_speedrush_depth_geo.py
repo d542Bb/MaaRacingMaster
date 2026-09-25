@@ -19,9 +19,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from maaracing_master.core import dml_lock
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, FIT_FLOOR_PX, GATE_L, DepthRoadObserver, DepthRoadReading,
-    _ground_q20, _rel_and_blocks, reading_from_map)
+    _ground_q20, _rel_and_blocks, infer_map, reading_from_map)
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
 CAL = load_calib()
@@ -413,5 +414,62 @@ def test_async_none_reading_not_published():
         assert a.take() is None
         h = a.health()
         assert h["applied"] == 0 and h["stale_drops"] == 0 and h["failures"] == 0
+    finally:
+        a.stop()
+
+
+# ── DML 互斥（core.dml_lock）：两会话并发 run 会段错误杀进程，2026-09-25 实证 ──
+
+class _FakeSess:
+    """sess.run 替身：断言调用期间持有 DML 锁，返回定形视差图。"""
+
+    def run(self, _names, _feeds):
+        assert dml_lock.LOCK.locked(), "session.run 期间必须持有 DML 锁"
+        return [np.zeros((1, 90, 160), np.float32)]
+
+
+def _frame_np() -> "np.ndarray":
+    return np.zeros((720, 1280, 3), np.uint8)
+
+
+def test_infer_map_holds_dml_lock_during_run():
+    m = infer_map(_FakeSess(), _frame_np(), 336)
+    assert m.shape == (720, 1280)
+
+
+def test_infer_map_busy_raises_not_blocks():
+    """锁被占（控制拍感知在飞）：立即抛 Busy 让 worker 跳帧，不得阻塞等待。"""
+    with dml_lock.LOCK:
+        with pytest.raises(dml_lock.Busy):
+            infer_map(_FakeSess(), _frame_np(), 336)
+
+
+def test_async_dml_busy_skip_not_failure():
+    """worker 让锁跳帧：计 busy_skips、不计 failures，下一帧照常出结果。"""
+    stub = _StubObserver([dml_lock.Busy("busy"), _mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: a.health()["busy_skips"] >= 1)
+        a.push(_frame())
+        assert _wait_until(lambda: a.take() is not None), "让锁跳帧后 worker 未恢复"
+        assert a.health()["failures"] == 0
+    finally:
+        a.stop()
+
+
+def test_async_throttle_bounds_rate():
+    """节流窗：窗内不出工（第二帧压着不跑），窗过即恢复出工。"""
+    stub = _StubObserver([_mk_reading(), _mk_reading(), _mk_reading()])
+    a = AsyncDepthRoadObserver(stub, infer_min_interval_s=0.5)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: stub.calls >= 1)   # 首帧立即出工（_last_infer 初值 0）
+        a.push(_frame())
+        _time.sleep(0.15)                       # 窗内（0.5s）
+        assert stub.calls == 1, "节流窗内 worker 不得二次出工"
+        assert _wait_until(lambda: stub.calls >= 2, timeout=1.5), "窗过后未恢复出工"
     finally:
         a.stop()
