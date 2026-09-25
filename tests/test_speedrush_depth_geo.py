@@ -127,22 +127,35 @@ def test_far_band_block_rejected():
 
 
 def test_baseline_guard_rejects_soft_gate():
-    """内沿内侧 40~120px 本底窗被垫高（>该侧门/2、<门）→ 门失效弃权。
+    """台阶守卫（2026-09-25 差分口径）：跨沿台阶 <门/2 → 交点非边界，弃权。
 
-    复刻第一关终选的跨档失效形态（块从路面里起跳、边界=松门交点）：
-    守卫让失去物理语义的门主动交出决策权，而不是继续伪装成功。
-    per-side 门（2026-09-25）下 R 门 0.10 → 本底阈值门/2=5%，垫高须 >5%；
-    7% 同时高于 L 门半（4%），两侧语义都锁住。"""
+    复刻「松门交点」失效形态：块侧抬升面与路侧缓坡只差 1.8%（<门/2）——
+    交界处没有真实深度台阶，读数是门切进缓坡的交点。"""
     m = _base_map()
     inner = _vp_line(0.95, "R")
     _draw_raised(m, inner, "R", 340, 715)
     y_ref = int(np.median([y for y in range(340, 715) if y >= CAL.y_h + FIT_FLOOR_PX]))
     for y in range(y_ref - 60, y_ref + 60):
         x0 = int(round(inner(y)))
-        m[y, x0 - 120:x0 - 40] = _road(y) * 1.07      # 松门本底（<门 10% 不自成块）
+        m[y, x0 - 120:x0 - 40] = _road(y) * 1.10      # 路侧缓坡垫高（与块侧差 1.8%）
     rd = reading_from_map(m, CAL, None)
     assert rd.right_edge_lane is None
-    assert any("门本底" in r for r in rd.rejects)
+    assert any("边缘无台阶" in r for r in rd.rejects)
+
+
+def test_baseline_guard_tolerates_shifted_ground():
+    """骑缘救援（2026-09-25 差分口径）：路侧整体垫高 +5%（模拟骑缘时 q20 地面
+    基线漂移），但跨沿台阶 6.7% ≥ 门/2 → 真边缘照常读出，不再被绝对水平误杀
+    （202138_p2 000507 实测 +6.4% 误杀的合成复刻）。"""
+    m = _base_map()
+    inner = _vp_line(0.95, "R")
+    _draw_raised(m, inner, "R", 340, 715)
+    y_ref = int(np.median([y for y in range(340, 715) if y >= CAL.y_h + FIT_FLOOR_PX]))
+    for y in range(y_ref - 60, y_ref + 60):
+        x0 = int(round(inner(y)))
+        m[y, x0 - 120:x0 - 40] = _road(y) * 1.05      # 路侧整体抬 +5%（基线漂移）
+    rd = reading_from_map(m, CAL, None)
+    assert rd.right_edge_lane is not None and rd.right_edge_lane > 0.15
 
 
 def test_per_side_gate_r_strict_than_l():
@@ -249,13 +262,17 @@ def test_anchor_437_wallhug():
 @pytest.mark.skipif(_cached_336("wallhug_437") is None,
                     reason="需 @336 q4f16 离线缓存（rescale_gate_336.py infer）")
 def test_anchor_336_production_gate():
-    """@336 生产口径（gate=0.08）：贴墙场景门半失效（本底抬升）→ 诚实弃权。
+    """@336 生产口径（台阶守卫，2026-09-25 差分口径重钉）：贴护栏帧 R 读出。
 
-    锁定落档形态：贴护栏帧在本档退纯模型积分（守卫交权），而非给出松门读数。"""
+    旧版（行 q20 绝对水平守卫）在此帧因贴墙几何的基线漂移误弃权；差分口径下
+    R 跨沿台阶真实存在（护栏基座）→ 读出，且对金标 dev 仅 +0.032 车道
+    （0.445 vs 0.413）——旧弃权是过度保守，非正确行为。L 侧仍诚实弃权
+    （翻面块被 conv 守卫拒）。"""
     m = _cached_336("wallhug_437")
     rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
-    assert rd.sides == 0
-    assert any("门本底" in r for r in rd.rejects)
+    assert rd.sides == 1 and rd.right_edge_lane is not None
+    assert abs(rd.right_edge_lane - 0.413) <= 0.15
+    assert rd.left_edge_lane is None
 
 
 # ── 折叠锁（时延悬案的直接机制，不许静默回退）──────────────────────────

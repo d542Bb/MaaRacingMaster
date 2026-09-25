@@ -18,9 +18,10 @@
   x(y) 在**源行**（y−y_h ≥ FIT_FLOOR_PX）上稳健拟合、外推到地平线须落在 VP 附近
   （拒出租车伪块；518 帧的出租车行由两轮剔点自动剔除、真右缘得以在场）；②侧别
   一致——源行评估的 x_lane 须在自己一侧（拒贴护栏帧的翻面块）；③源行不足判
-  「远带」弃权（发散区读数误差 ∝ 1/(y−y_h)，不可信）；④门本底——内沿内侧
-  40~120px 窗（跟随评估行 ±60）的相对偏离中位 >门的一半 ⇒ 门失去物理语义，
-  该侧弃权（拒自车晕影连块产生的挖除切口伪影边）。
+  「远带」弃权（发散区读数误差 ∝ 1/(y−y_h)，不可信）；④边缘台阶——内沿两侧
+  取窗（块侧 20~60px / 路侧 40~120px，跟随评估行 ±60），跨沿台阶须 ≥门的一半
+  且块侧更近（拒晕影缓坡与松门交点：缓坡无台阶；旧版比对行 q20 绝对水平，
+  骑缘几何下地面基线漂移误杀真边缘，2026-09-25 改差分口径）。
 
 **降级路径**：权重缺失/推理异常 → observe 返回 None，road_offset 链路退回
 纯模型积分（旧行为不变）；ego_mask 缺失 → 跳过挖除并 WARNING（合并桥风险
@@ -90,7 +91,8 @@ FIT_MIN_ROWS, FIT_RESID_PX = 20, 30.0
 CONV_MAX_PX = 350.0    # |x(Y_H) − vpx|：边界线外推须过 VP 附近
 RESID_MAX_PX = 45.0    # 内沿直线拟合的中位残差
 LANE_SIDE_MIN = 0.15   # 源行读数 x_lane 的侧别门（车道）
-BASE_LO_PX, BASE_HI_PX = 40, 120   # 本底守卫窗：内沿内侧 40~120px（路面侧）
+EDGE_OUT_LO_PX, EDGE_OUT_HI_PX = 20, 60   # 台阶守卫块侧窗（001220 横切面定死：
+EDGE_IN_LO_PX, EDGE_IN_HI_PX = 40, 120    #  外 20~60 信号 / 内 40~120 本底）
 
 
 @dataclass(frozen=True)
@@ -207,31 +209,36 @@ def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
     return r, out
 
 
-def _baseline_ok(r: np.ndarray, inner: dict[int, int], side: str, y_ref: float,
-                 gate: float = GATE) -> bool:
-    """门本底守卫：内沿**内侧**（路面侧）40~120px 窗的相对偏离中位须 ≈0。
+def _baseline_ok(m: np.ndarray, inner: dict[int, int], side: str, y_ref: float,
+                 gate: float) -> bool:
+    """边缘台阶守卫：内沿两侧各取窗（块侧 20~60px / 路侧 40~120px，001220
+    横切面定死的窗几何），跨沿台阶 = (块侧中位 − 路侧中位)/路侧中位 须
+    ≥ gate/2 且方向正确（块侧更近）。
 
-    门 ``gate`` 的物理语义是"路面 vs 边界外的高差"；本底窗已被门吃掉一半以上
-    （>gate/2）时读数是"松门交点"而非边界——门已失效，该侧主动弃权。
-    窗随源行迁移（y_ref±60）：源行规则下边在哪些行可见逐帧不同，固定行窗会
-    整体跳过守卫（2026-09-24 读数带重定一并修正）。"""
-    vals: list[float] = []
+    旧版比对行 q20 的绝对水平（路侧窗 |r| ≤ gate/2）——骑缘几何下行的 q20
+    地面基线被钉在远端少数派上，路面自身相对基线天然 +3~6%，与阈值在刀刃
+    上重叠（202138_p2 000506 +3.1% 过、000507 +6.4% 挂，2026-09-25 实测），
+    真边缘被误杀；跨沿差分天然抵消地面基线漂移与晕影缓坡（缓坡无台阶）。"""
+    steps: list[float] = []
     for y in range(int(y_ref) - 60, int(y_ref) + 60, 5):
         x0 = inner.get(y)
         if x0 is None:
             continue
-        lo, hi = ((x0 + BASE_LO_PX, x0 + BASE_HI_PX) if side == "L"
-                  else (x0 - BASE_HI_PX, x0 - BASE_LO_PX))
-        lo, hi = max(lo, 0), min(hi, r.shape[1])
-        if hi - lo < 8:
+        lo_o, hi_o = ((x0 - EDGE_OUT_HI_PX, x0 - EDGE_OUT_LO_PX) if side == "L"
+                      else (x0 + EDGE_OUT_LO_PX, x0 + EDGE_OUT_HI_PX))
+        lo_i, hi_i = ((x0 + EDGE_IN_LO_PX, x0 + EDGE_IN_HI_PX) if side == "L"
+                      else (x0 - EDGE_IN_HI_PX, x0 - EDGE_IN_LO_PX))
+        lo_o, hi_o = max(lo_o, 0), min(hi_o, m.shape[1])
+        lo_i, hi_i = max(lo_i, 0), min(hi_i, m.shape[1])
+        if hi_i - lo_i < 8 or hi_o - lo_o < 8:
             continue
-        v = r[y, lo:hi]
-        v = v[np.isfinite(v)]
-        if len(v):
-            vals.append(float(np.median(v)))
-    if len(vals) < 3:
+        mo = float(np.median(m[y, lo_o:hi_o]))
+        mi = float(np.median(m[y, lo_i:hi_i]))
+        if mi > 0:
+            steps.append((mo - mi) / mi)
+    if len(steps) < 3:
         return True
-    return abs(float(np.median(vals))) <= gate / 2.0
+    return float(np.median(steps)) >= gate / 2.0
 
 
 def _fit(inner: dict[int, int], cal: Calib) -> dict | None:
@@ -302,8 +309,8 @@ def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None,
                                   f"conv{f['conv']:.0f}/res{f['resid']:.0f}/"
                                   f"lane{f['lane']:+.2f}"))
                 continue
-            if not _baseline_ok(r, inner, side, f["y_ref"], gl if side == "L" else gr):
-                rejects.append(f"{side}:门本底失效")
+            if not _baseline_ok(m, inner, side, f["y_ref"], gl if side == "L" else gr):
+                rejects.append(f"{side}:边缘无台阶")
                 continue
             edges[side] = (f["x_near"], f["lane"])
             break

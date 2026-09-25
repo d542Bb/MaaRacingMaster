@@ -90,7 +90,7 @@ def main() -> None:
                     break                      # 产码口径：行不足 break
                 if f.get("dead") or not dg._pass(f, side):
                     continue                   # 产码口径：守卫失败换下一候选
-                if not dg._baseline_ok(r_map, inner, side, f["y_ref"], dg.GATE):
+                if not dg._baseline_ok(m, inner, side, f["y_ref"], dg.GATE):
                     continue
                 entry = {**f, "inner": inner}
                 break
