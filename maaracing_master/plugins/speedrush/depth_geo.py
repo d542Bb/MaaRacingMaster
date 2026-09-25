@@ -77,7 +77,13 @@ GATE_R = 0.10                     # 右门：右台阶偏软，0.08 会放进晕
 GATE = GATE_L                     # 对称门（实验脚本覆写 gate= 时沿用；落档数字
                                   # 均为对称 0.08 口径，保留以可复现）
 HOLD = 12                         # 横向持续收紧窗（px）
-MIN_SPAN = 100                    # 块最小跨行（行跨度有限的团块不够格当边界）
+V_HOLD = 12                       # 纵向桥接窗（行）：锐利权重纹理切碎的真缘
+                                  # 带最大缺口 9 行（000420 实测），桥 ≤12 行
+MIN_SPAN = 80                     # 块最小跨行（行跨度有限的团块不够格当边界）。
+                                  # 9-22 时代按无碎片带定标 100；锐利权重的真缘
+                                  # 带被纹理切碎后落在 80~100（000420 实测 85），
+                                  # 2026-09-25 适配纵向桥接下调——车/金币团块由
+                                  # 贴边 + 守卫多层兜底，122 帧全卷验证 dev。
 Q_GROUND = 0.20                   # 全局逐行低分位（q20rescue 定案值）
 DEFAULT_SHORT = 336               # DA 推理短边（折叠口径 q4f16 p50 ≈22ms；
                                   # @518=91ms 为质量上限档，异步形态下可选，
@@ -182,6 +188,12 @@ def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
     if ego_mask is not None:
         over[ego_mask] = 0.0
     mask = (cv2.filter2D(over, -1, np.ones((1, HOLD), np.float32)) >= HOLD).astype(np.uint8)
+    # 纵向桥接（2026-09-25）：锐利权重（rel）的纹理阶跃会沿 y 把真边缘的超门
+    # 带切碎（000420 实测最大纵向缺口 9 行，63+13 两段本是一条缘）——closing
+    # 桥 ≤V_HOLD 行的纵向缺口，恢复「边界=长线」的物理本义；与横向 HOLD 对称。
+    # 车/金币团块仍由贴边 + 跨行门槛 + 四道守卫多层过滤。
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                            np.ones((V_HOLD, 1), np.uint8))
     # 逐块内沿 = (块, 行) 分组的 L 侧 max x / R 侧 min x（x<640 归 L，x≥640 归 R）。
     # 实现按 WithStats 的 bbox 裁到子区域再用 cv2.reduce 行归约——原逐像素 Python
     # 循环是全链最大单项（每帧 ~19 万像素进解释器；commit 11babe4 cProfile 77%），
