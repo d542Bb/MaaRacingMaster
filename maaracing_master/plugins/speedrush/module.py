@@ -32,6 +32,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
@@ -800,6 +801,7 @@ class SpeedRushModule(ActivityModule):
         ratio = (h["stale_drops"] / examined) if examined else 0.0
         line = (f"[极速狂飙] 驾驶阶段 {phase}：深度 worker 应用 {h['applied']}"
                 f"/超龄丢弃 {h['stale_drops']}（{ratio:.0%}）/异常 {h['failures']}"
+                f"/让锁跳帧 {h['busy_skips']}"
                 f"/时效 p50 {h['age_p50']:.0f} p95 {h['age_p95']:.0f}ms"
                 f"（预算 {h['max_age_ms']:.0f}ms）"
                 f"/耗时 p50 {h['dur_p50']:.0f} p95 {h['dur_p95']:.0f}ms")
@@ -1023,13 +1025,13 @@ class _EgoRoadObserver:
         return {"source": src, "off": off, "hw": self._hw,
                 "slot_l_ms": age("L"), "slot_r_ms": age("R")}
 
-    def _pair(self, l: float, r: float, learn: bool) -> float | None:
+    def _pair(self, el: float, er: float, learn: bool) -> float | None:
         """同帧/跨时刻对 → off；对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
         落界内，20:45 锁测出）→ None。"""
-        hw = (r - l) / 2.0
+        hw = (er - el) / 2.0
         if not (self.HW_MIN <= hw <= self.HW_MAX):
             return None
-        off = -(l + r) / 2.0
+        off = -(el + er) / 2.0
         if learn:
             self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
         return off
@@ -1037,37 +1039,37 @@ class _EgoRoadObserver:
     def update(self, bnd, now: float | None = None) -> float | None:
         if now is None:
             now = time.monotonic()
-        l = None if bnd is None else bnd.left_edge_lane
-        r = None if bnd is None else bnd.right_edge_lane
-        if l is not None and l == l:
-            self._slot["L"] = (l, now)
-        if r is not None and r == r:
-            self._slot["R"] = (r, now)
+        el = None if bnd is None else bnd.left_edge_lane
+        er = None if bnd is None else bnd.right_edge_lane
+        if el is not None and el == el:
+            self._slot["L"] = (el, now)
+        if er is not None and er == er:
+            self._slot["R"] = (er, now)
         lf, rf = self._fresh("L", now), self._fresh("R", now)
         off: float | None
         src = "none"
-        if l is not None and r is not None:
+        if el is not None and er is not None:
             src = "pair"
-            off = self._pair(l, r, learn=True)
+            off = self._pair(el, er, learn=True)
             if off is None:
                 self.last = self._snapshot(now, src, None)   # 垃圾对整帧弃（原语义）
                 return None
-        elif l is not None:
+        elif el is not None:
             if self._hw is not None:
                 src = "single_L"
-                off = -(l + self._hw)    # 单侧反推（原语义，优先于跨时刻合成）
+                off = -(el + self._hw)   # 单侧反推（原语义，优先于跨时刻合成）
             elif rf is not None:
                 src = "slot_pair"
-                off = self._pair(l, rf, learn=True)   # 冷启动：当前 L × 槽 R
+                off = self._pair(el, rf, learn=True)  # 冷启动：当前 L × 槽 R
             else:
                 off = None
-        elif r is not None:
+        elif er is not None:
             if self._hw is not None:
                 src = "single_R"
-                off = -(r - self._hw)
+                off = -(er - self._hw)
             elif lf is not None:
                 src = "slot_pair"
-                off = self._pair(lf, r, learn=True)   # 冷启动：槽 L × 当前 R
+                off = self._pair(lf, er, learn=True)  # 冷启动：槽 L × 当前 R
             else:
                 off = None
         elif self._hw is not None:

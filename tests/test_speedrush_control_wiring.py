@@ -330,3 +330,27 @@ def test_ego_road_same_frame_pair_still_wins_over_slots():
     # 槽里有 R=2.4，但当前帧 L=−1.3 走单侧反推（当前值+常数半宽，误差不随时延涨）
     assert o.update(_bnd_edges(-1.3, None), now=t + 0.05) == pytest.approx(-1.05)
     assert o._hw == pytest.approx(2.35)                             # 未被跨帧对污染
+
+
+# ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------
+
+def test_yolo_object_mask_boxes_with_margin():
+    d = Detection(cx=100, cy=100, w=40, h=20, conf=0.9)
+    mask = smod._yolo_object_mask(_perc(1, cars=(d,)))
+    assert mask is not None and mask.shape == (720, 1280)
+    ys, xs = np.nonzero(mask)
+    m = smod.YOLO_MASK_MARGIN
+    assert (int(xs.min()), int(xs.max())) == (100 - 20 - m, 100 + 20 + m)
+    assert (int(ys.min()), int(ys.max())) == (100 - 10 - m, 100 + 10 + m)
+
+
+def test_yolo_object_mask_edge_clamped():
+    """框贴画面边缘：外扩后夹在画面内，不越界。"""
+    d = Detection(cx=2, cy=2, w=40, h=40, conf=0.9)
+    mask = smod._yolo_object_mask(_perc(1, cars=(d,)))
+    assert mask is not None
+    assert mask[0, 0] and not mask[:, 43 + smod.YOLO_MASK_MARGIN:].any()
+
+
+def test_yolo_object_mask_none_when_no_detections():
+    assert smod._yolo_object_mask(_perc(1)) is None

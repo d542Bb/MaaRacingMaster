@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from maaracing_master.plugins.speedrush.config import Traffic
 from maaracing_master.plugins.speedrush.tracking import (
-    TrackedTarget, WorldObservation)
+    WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import (
     KIND_CAR, Calib, load_calib)
 
