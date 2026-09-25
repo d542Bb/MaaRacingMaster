@@ -47,7 +47,13 @@ def lane_px(lane: float, y0: int) -> float:
     return CAL.vpx + (y0 - CAL.y_h) * (lane / CAL.a_x + _K0)
 
 
-def infer(sess, rgb):
+def infer(sess, rgb, metric=True):
+    if not metric:
+        # 现役相对视差权重：输出即视差，无米制倒数
+        d = sess.run(None, {"pixel_values": dg.preprocess(rgb, SHORT)})[0][0]
+        d = np.nan_to_num(d.astype(np.float32), nan=0.0)
+        return cv2.resize(d, (rgb.shape[1], rgb.shape[0]),
+                          interpolation=cv2.INTER_LINEAR)
     d = sess.run(None, {"pixel_values": dg.preprocess(rgb, SHORT)})[0][0]
     return cv2.resize(1.0 / np.maximum(d.astype(np.float32), 0.1), (1280, 720),
                       interpolation=cv2.INTER_LINEAR)
@@ -132,11 +138,19 @@ def main() -> None:
     ap.add_argument("--burst", default="000260,000280,000300")
     ap.add_argument("--weights", default=f"metric_vkitti_vits_{SHORT}.onnx")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--rel", action="store_true",
+                    help="现役相对视差权重（resources onnx，输出不取倒数）")
     args = ap.parse_args()
     tag = args.tag or ("q4f16" if "q4f16" in args.weights else "fp32")
 
-    sess = ort.InferenceSession(str(W / args.weights),
-                                providers=["DmlExecutionProvider"])
+    if args.rel:
+        from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE
+        sess = dg.load_session(DEPTH_MODEL_FILE)
+        tag = "rel"
+    else:
+        sess = ort.InferenceSession(str(W / args.weights),
+                                    providers=["DmlExecutionProvider"])
+    infer_f = lambda rgb: infer(sess, rgb, metric=not args.rel)  # noqa: E731
     labels = {Path(r["path"]).stem: r for r in
               csv.DictReader((pd.OUT / "gold_labels.csv").open(encoding="utf-8"))}
 
@@ -144,7 +158,7 @@ def main() -> None:
     stats = {"L": [], "R": [], "cov": {"L": 0, "R": 0}, "den": {"L": 0, "R": 0},
              "bad": {"L": 0, "R": 0}, "ring": [], "s2": 0}
     for stem, r in sorted(labels.items()):
-        m = infer(sess, cv2.cvtColor(cv2.imread(str(r["path"])), cv2.COLOR_BGR2RGB))
+        m = infer_f(cv2.cvtColor(cv2.imread(str(r["path"])), cv2.COLOR_BGR2RGB))
         rm = rel_map(m)
         stats["ring"].append(halo_ring_r(m))
         rd = dg.reading_from_map(m, CAL, EGO, gate=dg.GATE)
@@ -191,7 +205,7 @@ def main() -> None:
             for demo, d in by_demo.items():
                 if num in d:
                     stem, r = d[num]
-                    m = infer(sess, cv2.cvtColor(cv2.imread(str(r["path"])),
+                    m = infer_f(cv2.cvtColor(cv2.imread(str(r["path"])),
                                                  cv2.COLOR_BGR2RGB))
                     render(stem, r, m, rel_map(m),
                            pd.OUT / f"metric_gold_{tag}_{group}_{raw}.jpg")
@@ -204,7 +218,7 @@ def main() -> None:
                         if not p.exists():
                             continue
                         rr = dict(r, path=str(p))
-                        m = infer(sess, cv2.cvtColor(cv2.imread(str(p)),
+                        m = infer_f(cv2.cvtColor(cv2.imread(str(p)),
                                                      cv2.COLOR_BGR2RGB))
                         render(stem if num == near else f"plain{num}", rr, m,
                                rel_map(m),
