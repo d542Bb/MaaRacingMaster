@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from maaracing_master.plugins.speedrush.depth_geo import (
-    AsyncDepthRoadObserver, FIT_FLOOR_PX, DepthRoadObserver, DepthRoadReading,
+    AsyncDepthRoadObserver, FIT_FLOOR_PX, GATE_L, DepthRoadObserver, DepthRoadReading,
     _ground_q20, _rel_and_blocks, reading_from_map)
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
@@ -127,21 +127,40 @@ def test_far_band_block_rejected():
 
 
 def test_baseline_guard_rejects_soft_gate():
-    """内沿内侧 40~120px 本底窗被垫到 3%（>门/2、<门）→ 门失效弃权。
+    """内沿内侧 40~120px 本底窗被垫高（>该侧门/2、<门）→ 门失效弃权。
 
     复刻第一关终选的跨档失效形态（块从路面里起跳、边界=松门交点）：
-    守卫让失去物理语义的门主动交出决策权，而不是继续伪装成功。"""
+    守卫让失去物理语义的门主动交出决策权，而不是继续伪装成功。
+    per-side 门（2026-09-25）下 R 门 0.10 → 本底阈值门/2=5%，垫高须 >5%；
+    7% 同时高于 L 门半（4%），两侧语义都锁住。"""
     m = _base_map()
     inner = _vp_line(0.95, "R")
     _draw_raised(m, inner, "R", 340, 715)
-    # 本底窗跟随源行中位评估行（y_ref±60）；垫高 3% > 门/2(4%)? 门 0.08 → 垫到 5%
     y_ref = int(np.median([y for y in range(340, 715) if y >= CAL.y_h + FIT_FLOOR_PX]))
     for y in range(y_ref - 60, y_ref + 60):
         x0 = int(round(inner(y)))
-        m[y, x0 - 120:x0 - 40] = _road(y) * 1.05      # 松门本底（<门 8% 不自成块）
+        m[y, x0 - 120:x0 - 40] = _road(y) * 1.07      # 松门本底（<门 10% 不自成块）
     rd = reading_from_map(m, CAL, None)
     assert rd.right_edge_lane is None
     assert any("门本底" in r for r in rd.rejects)
+
+
+def test_per_side_gate_r_strict_than_l():
+    """per-side 门（2026-09-25 落产码）：R 弱台阶（+9%）在 R 门 0.10 下不成块，
+    对称门覆写 0.08 时可读——右台阶偏软、0.08 会放进晕影缓坡（44 帧 per-side
+    网格验证），L 侧两档不受影响。"""
+    m = _base_map()
+    _draw_raised(m, _vp_line(0.95, "L"), "L", 340, 715)          # L 正常台阶 +12%
+    _draw_raised(m, _vp_line(0.95, "R"), "R", 340, 715)
+    ys = np.arange(720)
+    soft = (ROAD0 + (ys - 340).clip(0)[:, None] * ROAD_SLOPE) * 1.09   # R 弱台阶 +9%
+    inner = _vp_line(0.95, "R")
+    for y in range(340, 715):
+        m[y, int(round(inner(y))):] = soft[y, 0]
+    rd = reading_from_map(m, CAL, None)                          # 生产默认 per-side
+    assert rd.sides == 1 and rd.left_edge_lane is not None       # R 门 0.10 拒弱台阶
+    rd_sym = reading_from_map(m, CAL, None, gate=GATE_L)         # 对称 0.08 覆写
+    assert rd_sym.sides == 2                                     # 弱台阶入门可读
 
 
 # ── 资产与会话降级 ──────────────────────────────────────────────────────

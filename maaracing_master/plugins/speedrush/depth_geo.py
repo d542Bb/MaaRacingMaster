@@ -32,12 +32,14 @@
 
 **读数带（2026-09-24 重定，替代已撤回的 @336 固定近带落档）**：源行=块内
 y−y_h≥50 的行、评估行=其剔点后中位——不再绑死 [550,700]（金标 R 51/54 帧边线
-在 y<550 已出画，固定带内物理无边）。门 0.08：自车晕影（+3~6%）与墙台阶
-（+14~24%）之间取刀，金标 44 帧 @336：L 覆盖 79%、R 23%、双侧同帧 18%、
-dev p50 双侧 |·|≤0.14。**推理必须全帧**：带@280 裁天带实验被金标重考+渲染
-双重否决——DA 的相对视差按整帧自归一，天空是尺度锚，裁掉后墙/路对比度被
-压平（L 覆盖 79%→20%）。@518 在源行规则下覆盖反而更低（R≈0~3/44），维持
-质量上限参照档。双侧同帧的缺口由消费侧「每侧保鲜槽」解决（待施工，见 README）。
+在 y<550 已出画，固定带内物理无边）。门 per-side（2026-09-25）：L 0.08 /
+R 0.10（自车晕影 +3~6% 与墙台阶 +14~24% 之间取刀，R 台阶偏软、0.08 会放进
+晕影缓坡——44 帧 per-side 网格验证；对称覆写 gate= 供实验复现已落档口径）。
+金标 44 帧：L 覆盖 79%、R 23%、双侧同帧 18%、dev p50 双侧 |·|≤0.14。
+**推理必须全帧**：带@280 裁天带实验被金标重考+渲染双重否决——DA 的相对视差
+按整帧自归一，天空是尺度锚，裁掉后墙/路对比度被压平（L 覆盖 79%→20%）。
+@518 在源行规则下覆盖反而更低（R≈0~3/44），维持质量上限参照档。双侧同帧的
+缺口由消费侧「每侧保鲜槽」解决（2026-09-25 已落 module._EgoRoadObserver）。
 
 **时延口径（折叠会话，2026-09-24 收口）**：本层时延数字一律为 load_session 的
 free-dim 折叠口径（@336 实测 p50 ≈20ms）；不折叠时图内唯一 cubic Resize（pos_embed
@@ -66,11 +68,13 @@ from maaracing_master.plugins.speedrush.world_model import Calib, x_lane_of
 # 被重新归一压平（L 覆盖 61%→20%）。天空不产读数，但产归一化，不能裁。
 Y0, Y1, DIAG_Y1 = 340, 690, 715   # 检测带 / 诊断带（含近场）
 EGO_COLS = (540, 740)             # 基线统计的非自车列带
-GATE = 0.08                       # 相对门 (M−g)/g：自车晕影幅度 +3~6% 与墙台阶
-                                  # +14~24% 之间取刀（全帧@336 金标 44 帧网格：
-                                  # 0.05 时晕影入门、R 内沿钉上挖除切口 dev −0.18；
-                                  # 0.08 时 R dev p50 −0.02、p90 0.12；≥0.10 弱台阶
-                                  # 误伤回升。README「取证续」节）
+GATE_L = 0.08                     # 左门（相对 (M−g)/g）：自车晕影幅度 +3~6% 与墙
+GATE_R = 0.10                     # 右门：右台阶偏软，0.08 会放进晕影缓坡（44 帧
+                                  # 金标 per-side 网格 L0.08/R0.10 验证，R 覆盖
+                                  # 13/44、dev p50 +0.06；README「取证续」节）。
+                                  # 两侧门只在 640 列分界内生效（与内沿分流同界）。
+GATE = GATE_L                     # 对称门（实验脚本覆写 gate= 时沿用；落档数字
+                                  # 均为对称 0.08 口径，保留以可复现）
 HOLD = 12                         # 横向持续收紧窗（px）
 MIN_SPAN = 100                    # 块最小跨行（行跨度有限的团块不够格当边界）
 Q_GROUND = 0.20                   # 全局逐行低分位（q20rescue 定案值）
@@ -154,21 +158,25 @@ def _ground_q20(m: np.ndarray) -> np.ndarray:
 
 
 def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
-                    gate: float = GATE
+                    gate_l: float = GATE_L, gate_r: float = GATE_R
                     ) -> tuple[np.ndarray,
                                list[tuple[int, int, dict[int, int], dict[int, int], bool, bool]]]:
     """相对偏离图 r=(M−g)/g + 非地面区域块提取。
 
-    块 = 相对门（``gate``，落档实验参数化；生产=GATE）→ 挖自车（断车身→
-    护栏→墙合并桥）→ 横向收紧 → 8 向连通块 → 触画面侧边且跨行 ≥MIN_SPAN。
-    innerL/innerR 按 x<640 分流取内沿（横贯块两侧各自可用）。r 供本底守卫
-    复用（同一张图，不重算）。"""
+    块 = 相对门（per-side：``gate_l``/``gate_r`` 按图像 640 列分界各自生效，
+    与内沿 x<640 分流同界；对称覆写走 reading_from_map 的 ``gate``）→
+    挖自车（断车身→护栏→墙合并桥）→ 横向收紧 → 8 向连通块 →
+    触画面侧边且跨行 ≥MIN_SPAN。innerL/innerR 按 x<640 分流取内沿
+    （横贯块两侧各自可用）。r 供本底守卫复用（同一张图，不重算）。"""
     g = _ground_q20(m)
     r = np.full(m.shape, np.nan, np.float32)
     r[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
     # over = (r > gate)：NaN 与 gate 比较恒假，等价于原 nan_to_num(r,-1) > gate
     # （省一次全图画幅拷贝），且用 float32 而非 float64 承载（filter2D 内存减半）。
-    over = (r > gate).astype(np.float32)
+    # per-side 门以行向量广播：L/R 各用各的刀，一次比较同时出两侧掩码。
+    gate_row = np.where(np.arange(m.shape[1], dtype=np.float32) < m.shape[1] // 2,
+                        np.float32(gate_l), np.float32(gate_r))
+    over = (r > gate_row).astype(np.float32)
     if ego_mask is not None:
         over[ego_mask] = 0.0
     mask = (cv2.filter2D(over, -1, np.ones((1, HOLD), np.float32)) >= HOLD).astype(np.uint8)
@@ -264,9 +272,16 @@ def _pass(f: dict, side: str) -> bool:
 
 
 def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None,
-                     gate: float = GATE) -> DepthRoadReading:
-    """深度图 → 读数（纯函数，回归锁可直接喂缓存图；observe=推理+本函数）。"""
-    r, blocks = _rel_and_blocks(m, ego_mask, gate)
+                     gate: float | None = None) -> DepthRoadReading:
+    """深度图 → 读数（纯函数，回归锁可直接喂缓存图；observe=推理+本函数）。
+
+    ``gate=None``（生产默认）→ per-side 门 GATE_L/GATE_R；给值则对称覆写
+    （实验脚本复现已落档口径用，两侧同刀）。"""
+    if gate is None:
+        gl, gr = GATE_L, GATE_R
+    else:
+        gl = gr = gate
+    r, blocks = _rel_and_blocks(m, ego_mask, gl, gr)
     edges: dict[str, tuple[float, float] | None] = {"L": None, "R": None}
     rejects: list[str] = []
     for side in ("L", "R"):
@@ -287,7 +302,7 @@ def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None,
                                   f"conv{f['conv']:.0f}/res{f['resid']:.0f}/"
                                   f"lane{f['lane']:+.2f}"))
                 continue
-            if not _baseline_ok(r, inner, side, f["y_ref"], gate):
+            if not _baseline_ok(r, inner, side, f["y_ref"], gl if side == "L" else gr):
                 rejects.append(f"{side}:门本底失效")
                 continue
             edges[side] = (f["x_near"], f["lane"])
