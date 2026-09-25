@@ -318,7 +318,7 @@ class _StubObserver:
         self.session_ready = session_ready
         self.calls = 0
 
-    def observe(self, frame):
+    def observe(self, frame, object_mask=None):
         self.calls += 1
         item = self._script.pop(0) if self._script else None
         if isinstance(item, Exception):

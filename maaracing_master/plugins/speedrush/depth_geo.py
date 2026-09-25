@@ -370,8 +370,14 @@ class DepthRoadObserver:
         except Exception:
             return None
 
-    def observe(self, frame_rgb: np.ndarray) -> DepthRoadReading | None:
-        """一帧 → 读数（两侧可各自弃权）；推理失败 → None（不抛，控制链不因感知停摆）。"""
+    def observe(self, frame_rgb: np.ndarray,
+                object_mask: np.ndarray | None = None) -> DepthRoadReading | None:
+        """一帧 → 读数（两侧可各自弃权）；推理失败 → None（不抛，控制链不因感知停摆）。
+
+        ``object_mask``：YOLO 检测框（车/金币/奖励，外扩后）布尔掩码，与 ego
+        掩码同通道挖除——目标架构（YOLO 打身份 × 深度管几何）第一块：物体块
+        从源头消失，"穿车读墙"假缘不再产生（2026-09-25 融合首探，122 帧验证
+        R 侧坏率 35%→13%）。"""
         if self._sess is None:
             return None
         t0 = time.perf_counter()
@@ -379,7 +385,10 @@ class DepthRoadObserver:
             m = infer_map(self._sess, frame_rgb, self._short)
         except Exception:
             return None
-        reading = reading_from_map(m, self._cal, self._ego_mask)
+        ego = self._ego_mask
+        if object_mask is not None:
+            ego = object_mask if ego is None else (ego | object_mask)
+        reading = reading_from_map(m, self._cal, ego)
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0)
 
@@ -417,7 +426,7 @@ class AsyncDepthRoadObserver:
         self._obs = observer
         self._max_age_ms = float(max_age_ms)
         self._lock = threading.Lock()
-        self._pending: tuple[int, np.ndarray, float] | None = None
+        self._pending: tuple[int, np.ndarray, float, np.ndarray | None] | None = None
         self._result: tuple[DepthRoadReading, float] | None = None
         self._pushed = 0
         self._applied = 0
@@ -454,14 +463,17 @@ class AsyncDepthRoadObserver:
 
     # ---------- 主线程面 ----------
 
-    def push(self, frame_rgb: np.ndarray) -> None:
-        """无 worker（session 缺失/start 未调）时直接空转：不拷帧、不计数——
+    def push(self, frame_rgb: np.ndarray,
+             object_mask: np.ndarray | None = None) -> None:
+        """object_mask：本帧 YOLO 检测框掩码（与帧同源同拍，见 observe 注）。
+        无 worker（session 缺失/start 未调）时直接空转：不拷帧、不计数——
         阶段出口的"零结果"报警以 pushed>0 为前提，计数了就会误报。"""
         if self._thread is None:
             return
         with self._lock:
             self._pushed += 1
-            self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter())
+            self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter(),
+                             None if object_mask is None else object_mask.copy())
         self._wakeup.set()
 
     def take(self) -> DepthRoadReading | None:
@@ -501,7 +513,7 @@ class AsyncDepthRoadObserver:
 
     # ---------- worker 线程 ----------
 
-    def _pop_latest(self) -> tuple[int, np.ndarray, float] | None:
+    def _pop_latest(self) -> tuple[int, np.ndarray, float, np.ndarray | None] | None:
         with self._lock:
             item, self._pending = self._pending, None
             return item
@@ -518,7 +530,7 @@ class AsyncDepthRoadObserver:
                 self._failures += 1
                 continue
             try:
-                reading = self._obs.observe(item[1])
+                reading = self._obs.observe(item[1], object_mask=item[3])
             except Exception:  # noqa: BLE001 —— 单帧异常计数后继续（与 treasure 同姿态）
                 self._failures += 1
                 continue

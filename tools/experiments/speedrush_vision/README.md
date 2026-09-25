@@ -2735,3 +2735,23 @@ ego 掩码同通道；122 帧全卷、两权重、台阶守卫口径：
   （L −0.27、R p90 1.02、坏率 27%）——rel 赢精度与视觉，metric 赢出勤与
   绝对距离（米制输出可直接给"物体相对自车距离"）。
 - 融合读数与"物体距离"下一步：YOLO 框 × metric 深度 → 物体相对距离原型。
+
+### YOLO 融合接入产线 + 实机 debug 数据面（module/depth_geo，2026-09-25）
+
+维护者定向"YOLO 现在就进来"落地产线：感知结果（车/金币/奖励框，外扩
+`YOLO_MASK_MARGIN=10`px）构建物体掩码，随 `depth_geo.push(frame, object_mask)`
+交异步 worker，与 ego 掩码同通道挖除（`observe` 合并）。协议扩展向后兼容
+（object_mask=None 行为不变）。
+
+**实机复跑 debug 数据面（trace 新列）**：
+- `yolo_cars`：本拍检测框数（融合相关：有框拍 vs 无框拍的读数质量对照）；
+- `ro_source`：road_offset 证据来源（pair / single_L / single_R / slot_pair /
+  slot_single / none）——保鲜槽与单侧反推的实机行为直接可查；
+- `ro_hw`：半宽记忆 EMA（冷启动与学习曲线可见）；
+- `ro_slot_ms`：每侧槽龄（>400ms 即过期，宁退积分不用馊读数）；
+- `ro_off`：观测器原始输出（与 road_offset 最终值对账，弃权拍显形）；
+- `dgeo_rejects`：守卫拒因含新字符串"边缘无台阶"。
+
+**验收口径（不变）**：road_offset 非空率 >60%、无 WARNING、对比 9-22 hsv
+基线无回退。重点观察项：骑缘/贴墙段的 ro_source 分布（slot 救援频率）、
+ro_hw 收敛曲线、yolo_cars>0 拍的 dgeo_rejects 变化。

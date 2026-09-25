@@ -654,7 +654,7 @@ class SpeedRushModule(ActivityModule):
             # observe 成本。协议本身不抛，异常闸按观测件惯例保留（fail-safe）。
             dgeo = None
             try:
-                chain["depth_geo"].push(frame)
+                chain["depth_geo"].push(frame, object_mask=_yolo_object_mask(result))
                 dgeo = chain["depth_geo"].take()
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
@@ -719,6 +719,16 @@ class SpeedRushModule(ActivityModule):
             "bnd_sides": None if b is None else b.sides,
             # step 2.5 闭环列：路中心观测值（None=该拍无双侧缘距）+ 修正后 executed/v
             "road_offset": None if road_offset is None else round(road_offset, 4),
+            # YOLO×深度融合（2026-09-25）：本拍检测框数（物体掩码随帧入深度路径）
+            "yolo_cars": len(result.cars),
+            # road_offset 证据面（保鲜槽+单侧反推调试）：来源 / 半宽记忆 / 槽龄
+            "ro_source": chain["ego_road"].last.get("source"),
+            "ro_hw": None if chain["ego_road"].last.get("hw") is None
+            else round(chain["ego_road"].last["hw"], 3),
+            "ro_slot_ms": (f"L={chain['ego_road'].last['slot_l_ms']}"
+                           f";R={chain['ego_road'].last['slot_r_ms']}"),
+            "ro_off": None if chain["ego_road"].last.get("off") is None
+            else round(chain["ego_road"].last["off"], 4),
             # 深度几何列（几何主人=depth 时的 road_offset 数据源；黄线层骨架化后
             # 的 A/B 对照数据面）：本局尺子 + 在场侧数 + 两侧近带读数 + 时延 + 弃权原因
             # （geo_master 逐拍随行：A/B 两轮各自的 jsonl 自证用的是哪把尺）
@@ -917,8 +927,26 @@ def _demos_root() -> Path:
 # 坏帧采样器（三局复盘 2026-09-22 悬案取证：sides==0 占 58% 是场景褪色还是检测参数，
 # 唯一证据=真帧；录制与控制互斥是既有安全不变量，不动它——由控制回路自己按节流存帧，
 # fid 与 trace jsonl 对账。热路径纪律：≥2s 一张、每阶段封顶，写失败即自禁不重试刷屏）
+YOLO_MASK_MARGIN = 10             # 检测框外扩（px）：框缘深度过渡带不留在候选区
 BAD_FRAME_MIN_INTERVAL_S = 2.0
 BAD_FRAME_MAX_PER_PHASE = 40
+
+
+def _yolo_object_mask(result: PerceptionResult) -> np.ndarray | None:
+    """YOLO 检测框（车/金币/奖励，外扩 YOLO_MASK_MARGIN）→ 布尔掩码；
+    无检测返回 None（深度路径零成本）。目标架构：物体身份由语义说，
+    深度块在源头让位（穿车读墙假缘不再产生）。"""
+    dets = result.cars + result.coins + result.bonuses
+    if not dets:
+        return None
+    mask = np.zeros((720, 1280), bool)
+    for d in dets:
+        x0 = int(max(d.cx - d.w / 2 - YOLO_MASK_MARGIN, 0))
+        x1 = int(min(d.cx + d.w / 2 + YOLO_MASK_MARGIN, 1279))
+        y0 = int(max(d.cy - d.h / 2 - YOLO_MASK_MARGIN, 0))
+        y1 = int(min(d.cy + d.h / 2 + YOLO_MASK_MARGIN, 719))
+        mask[y0:y1 + 1, x0:x1 + 1] = True
+    return mask
 
 
 def _maybe_save_bad_frame(chain: dict, frame, bnd, fid: int, phase: int,
@@ -978,12 +1006,20 @@ class _EgoRoadObserver:
     def __init__(self) -> None:
         self._hw: float | None = None
         self._slot: dict[str, tuple[float, float]] = {}   # side → (lane, monotonic)
+        self.last: dict = {}                              # 实机 debug 数据面（ro_* 列）
 
     def _fresh(self, side: str, now: float) -> float | None:
         s = self._slot.get(side)
         if s is None or now - s[1] > self.SLOT_TTL_S:
             return None
         return s[0]
+
+    def _snapshot(self, now: float, src: str, off: float | None) -> dict:
+        def age(side):
+            s = self._slot.get(side)
+            return None if s is None else round((now - s[1]) * 1000.0)
+        return {"source": src, "off": off, "hw": self._hw,
+                "slot_l_ms": age("L"), "slot_r_ms": age("R")}
 
     def _pair(self, l: float, r: float, learn: bool) -> float | None:
         """同帧/跨时刻对 → off；对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
@@ -1007,21 +1043,28 @@ class _EgoRoadObserver:
             self._slot["R"] = (r, now)
         lf, rf = self._fresh("L", now), self._fresh("R", now)
         off: float | None
+        src = "none"
         if l is not None and r is not None:
+            src = "pair"
             off = self._pair(l, r, learn=True)
             if off is None:
-                return None              # 垃圾对整帧弃（原语义）
+                self.last = self._snapshot(now, src, None)   # 垃圾对整帧弃（原语义）
+                return None
         elif l is not None:
             if self._hw is not None:
+                src = "single_L"
                 off = -(l + self._hw)    # 单侧反推（原语义，优先于跨时刻合成）
             elif rf is not None:
+                src = "slot_pair"
                 off = self._pair(l, rf, learn=True)   # 冷启动：当前 L × 槽 R
             else:
                 off = None
         elif r is not None:
             if self._hw is not None:
+                src = "single_R"
                 off = -(r - self._hw)
             elif lf is not None:
+                src = "slot_pair"
                 off = self._pair(lf, r, learn=True)   # 冷启动：槽 L × 当前 R
             else:
                 off = None
@@ -1030,14 +1073,20 @@ class _EgoRoadObserver:
             best = max((s for s in (("L", lf), ("R", rf)) if s[1] is not None),
                        key=lambda s: self._slot[s[0]][1], default=None)
             if best is None:
+                self.last = self._snapshot(now, "none", None)
                 return None
+            src = "slot_single"
             off = -(best[1] + self._hw) if best[0] == "L" else -(best[1] - self._hw)
         elif lf is not None and rf is not None:
+            src = "slot_pair"
             off = self._pair(lf, rf, learn=True)      # 冷启动：双侧弃权拍
         else:
+            self.last = self._snapshot(now, "none", None)
             return None
         if off is None:
+            self.last = self._snapshot(now, src, None)
             return None
+        self.last = self._snapshot(now, src, off)
         if abs(off) > self.OFF_MAX:
             return None
         if self._hw is not None and abs(off) > self._hw + 0.5:
