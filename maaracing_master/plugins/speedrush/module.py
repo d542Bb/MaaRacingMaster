@@ -962,31 +962,81 @@ class _EgoRoadObserver:
       [1.5,3.2]（名义 2.0、实测 2.36、a_x 18% 标度误差留边）——无界学习=一帧垃圾
       毒化整场记忆；最终 off 先过**绝对物理界 3.5**（不依赖 _hw——旧护栏阈值
       _hw+0.5 会随被毒化的 _hw 一起放松），再过相对界 |off|≤_hw+0.5。
+    - **每侧保鲜槽**（2026-09-25 落产码，设计口径 README「取证续」节 5）：路缘是
+      慢变量而观测异步——每侧各自记「最近过守卫的车道量 + 时刻」，age 预算 0.4s。
+      与复盘原案（凡双侧槽新鲜一律跨时刻合成）的差异：单侧在场且已有半宽记忆时
+      **仍走单侧反推**——当前帧值 + 场景常数半宽，误差不随时延增长，优于拿陈值
+      合成；合成只用于两处：①冷启动（_hw 未知时跨时刻配对学半宽，双侧冷启动
+      待办就此吃掉）②双侧弃权拍（无当前读数时从槽反推/合成，宁给 0.4s 内的
+      旧证据也不退积分）。跨时刻配对同样过对宽物理界（虚线假缘与陈槽凑对会被
+      宽度校验拦下），age 预算到点即弃。
     ε 旋转污染（≤0.15 车道）在新息门 1.5 内，口径同 step 2.5。阶段级生命期=chain。"""
 
     HW_MIN, HW_MAX, OFF_MAX = 1.5, 3.2, 3.5
+    SLOT_TTL_S = 0.4                 # 每侧保鲜槽 age 预算（≈深度拍 8 拍 @20Hz）
 
     def __init__(self) -> None:
         self._hw: float | None = None
+        self._slot: dict[str, tuple[float, float]] = {}   # side → (lane, monotonic)
 
-    def update(self, bnd) -> float | None:
-        if bnd is None:
+    def _fresh(self, side: str, now: float) -> float | None:
+        s = self._slot.get(side)
+        if s is None or now - s[1] > self.SLOT_TTL_S:
             return None
-        l, r = bnd.left_edge_lane, bnd.right_edge_lane
-        if l is not None and r is not None:
-            hw = (r - l) / 2.0
-            if not (self.HW_MIN <= hw <= self.HW_MAX):
-                return None   # 对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
-                              # 落界内，20:45 锁测出）——整帧弃，只信合法对
-            off = -(l + r) / 2.0
+        return s[0]
+
+    def _pair(self, l: float, r: float, learn: bool) -> float | None:
+        """同帧/跨时刻对 → off；对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
+        落界内，20:45 锁测出）→ None。"""
+        hw = (r - l) / 2.0
+        if not (self.HW_MIN <= hw <= self.HW_MAX):
+            return None
+        off = -(l + r) / 2.0
+        if learn:
             self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
-        elif self._hw is None:
-            return None
+        return off
+
+    def update(self, bnd, now: float | None = None) -> float | None:
+        if now is None:
+            now = time.monotonic()
+        l = None if bnd is None else bnd.left_edge_lane
+        r = None if bnd is None else bnd.right_edge_lane
+        if l is not None and l == l:
+            self._slot["L"] = (l, now)
+        if r is not None and r == r:
+            self._slot["R"] = (r, now)
+        lf, rf = self._fresh("L", now), self._fresh("R", now)
+        off: float | None
+        if l is not None and r is not None:
+            off = self._pair(l, r, learn=True)
+            if off is None:
+                return None              # 垃圾对整帧弃（原语义）
         elif l is not None:
-            off = -(l + self._hw)
+            if self._hw is not None:
+                off = -(l + self._hw)    # 单侧反推（原语义，优先于跨时刻合成）
+            elif rf is not None:
+                off = self._pair(l, rf, learn=True)   # 冷启动：当前 L × 槽 R
+            else:
+                off = None
         elif r is not None:
-            off = -(r - self._hw)
+            if self._hw is not None:
+                off = -(r - self._hw)
+            elif lf is not None:
+                off = self._pair(lf, r, learn=True)   # 冷启动：槽 L × 当前 R
+            else:
+                off = None
+        elif self._hw is not None:
+            # 弃权拍：取最新鲜一侧 + 半宽记忆反推（0.4s 内的旧证据仍算证据）
+            best = max((s for s in (("L", lf), ("R", rf)) if s[1] is not None),
+                       key=lambda s: self._slot[s[0]][1], default=None)
+            if best is None:
+                return None
+            off = -(best[1] + self._hw) if best[0] == "L" else -(best[1] - self._hw)
+        elif lf is not None and rf is not None:
+            off = self._pair(lf, rf, learn=True)      # 冷启动：双侧弃权拍
         else:
+            return None
+        if off is None:
             return None
         if abs(off) > self.OFF_MAX:
             return None
