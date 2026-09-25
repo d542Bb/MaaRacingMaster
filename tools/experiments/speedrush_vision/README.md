@@ -2509,3 +2509,29 @@ depth_small_q4f16 同配方：MatMulNBits 4-bit 权重 block32，激活 fp32；2
   预测在合理值间摇摆→成块杂乱；而读数只取路面带，恰是它晕影最小的地方，
   故数据反占优。量化本身不是模糊源（fp32 vs q4f16 平均|Δlog|2.0%），
   三版梯度能量几乎相同（0.0014/0.0015/0.0015）。
+
+### metric q4f16 体积/时延归因与管线修复（`quantize_metric_q4f16.py`，2026-09-25）
+
+维护者质询"量化为何偏大、速度为何不够快"。上网查证（ORT 量化文档、float16
+转换指南、DML FP16 建议）+ 对现役 depth_small_q4f16 结构比对定位三个坑：
+
+1. **体积偏大**（27.6 vs 现役 19.1MB）：初版在 fp32 图上量化，除 int4 外的
+   全部权重仍是 fp32；现役是 onnx-community 的完整导出（git 历史 c890295
+   证实下载来源），整体含 fp16 权重。
+2. **速度慢**（55ms）：同根因——MatMulNBits 的 scale 是 fp32，DML 走慢路径。
+3. **修复中两坑**：fp16 转换必须排除 Resize（ORT 1.24.4 CPU 无 fp16 cubic
+   Resize 核，常量折叠失败 → pos_embed 插值每帧落 CPU，222ms 灾难，与
+   `load_session` docstring 记录同款）；量化器默认 `is_symmetric=False` 出
+   zero_points，DML 对「fp16 scale+zero_points」整图输出 NaN（CPU EP 正常、
+   图无损）——必须对称量化，与现役结构一致（现役无 zero_points 输入）。
+
+**最终配方**：fp32 图 → `MatMulNBitsQuantizer(bits=4, block_size=32,
+is_symmetric=True)` → `convert_float_to_float16(op_block_list=DEFAULT+
+{'Resize'}, keep_io_types=True)`。产物 20.1MB（现役 19.1），DML **14.2ms/帧**
+（fp32 25-34ms、现役折叠 ~20ms、fp16 纯转换 12.3ms 但 49MB）。
+
+**同卷复验**（54 帧，门 0.08）：环带 0.0063；L 48/54（−0.05/1.19/坏9）、
+R 18/54（−0.24/1.15/坏7）、双侧 18——与旧配方（L41/R24/双侧19）各有摆动、
+与 fp32 相比结论不变（精度持平略优）。上线前仍建议 122 帧重标卷 hold-out。
+
+**复跑**：`<da2_ft2>/python.exe tools/experiments/speedrush_vision/quantize_metric_q4f16.py`
