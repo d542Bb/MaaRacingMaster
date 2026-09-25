@@ -32,6 +32,12 @@ PLAN = [
                 [BAD / "badframes_20260922_201932_p2" / f"fid_{i}.jpg"
                  for i in (3072, 3306)] +
                 [BAD / "badframes_20260922_204519_p1" / "fid_1295.jpg"]),
+    # 122 帧全量重标（2026-09-25）：tri_exam 两窗补金标——此前只作抖动/在场率尺，
+    # R1/R2 位置尺分母仅 54。帧集与 tri_exam 的 DEMOS 窗口逐帧一致。
+    ("straddle_win", [DEMO / "20260922_113932_p1" / "frames" / f"{i:06d}.jpg"
+                      for i in range(500, 537)]),
+    ("wallhug_win", [DEMO / "20260922_113610_p2" / "frames" / f"{i:06d}.jpg"
+                     for i in range(422, 453)]),
 ]
 
 if __name__ == "__main__":

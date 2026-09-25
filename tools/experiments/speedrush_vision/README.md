@@ -2535,3 +2535,11 @@ R 18/54（−0.24/1.15/坏7）、双侧 18——与旧配方（L41/R24/双侧19�
 与 fp32 相比结论不变（精度持平略优）。上线前仍建议 122 帧重标卷 hold-out。
 
 **复跑**：`<da2_ft2>/python.exe tools/experiments/speedrush_vision/quantize_metric_q4f16.py`
+
+### 122 帧金标全量重标启动（`gold_select.py` 扩清单，2026-09-25）
+
+tri_exam 两窗（骑缘 113932_p1 500~537、贴墙 113610_p2 422~453，共 68 帧）此前只作
+抖动/在场率尺、无金标线，R1/R2 位置尺分母仅 54。清单扩至 122 帧（strata
+`straddle_win`/`wallhug_win`，帧集与 tri_exam DEMOS 逐帧一致，缺 0），
+`gold_annotate.py` 断点续标自动跳过已标 54 帧，待标 68。标注完成后跑
+hold-out 验证（label 分母纪律）+ per-side 门/保鲜槽效果的 122 帧全量口径。
