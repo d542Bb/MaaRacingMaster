@@ -622,7 +622,9 @@ class SpeedRushModule(ActivityModule):
                 # 生命周期=chain：这里 start，驾驶循环 finally 里 stop（见
                 # _stop_depth_observer 的收口与健康报警）。
                 "depth_geo": _started_async_depth(
-                    DepthRoadObserver(self._ensure_depth_session(), load_calib())),
+                    DepthRoadObserver(self._ensure_depth_session(), load_calib()),
+                    debug_dir=_control_trace_root() / ("depth_debug_"
+                    + time.strftime("%Y%m%d_%H%M%S"))),
                 "geo_master": self._geo_master,
                 "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                 "prev_ts": None, "disabled": False, "trace": [],
@@ -1094,11 +1096,14 @@ class _EgoRoadObserver:
         return off
 
 
-def _started_async_depth(obs: DepthRoadObserver) -> AsyncDepthRoadObserver:
+def _started_async_depth(obs: DepthRoadObserver,
+                         debug_dir: Path | None = None) -> AsyncDepthRoadObserver:
     """构造即启动的异步深度观测器（session 不可用时 start 自为 no-op，见其 docstring）。
 
-    生命周期与 chain 同呼吸：这里 start，驾驶循环 finally 的 _stop_depth_observer 收口。"""
-    a = AsyncDepthRoadObserver(obs)
+    debug_dir 给定时，worker 按 DEBUG_INTERVAL_S 节流落实机调试图（三行堆叠：
+    看了什么/算了什么/判了什么）。生命周期与 chain 同呼吸：这里 start，
+    驾驶循环 finally 的 _stop_depth_observer 收口。"""
+    a = AsyncDepthRoadObserver(obs, debug_dir=debug_dir)
     a.start()
     return a
 

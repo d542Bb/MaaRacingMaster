@@ -378,23 +378,89 @@ class DepthRoadObserver:
         掩码同通道挖除——目标架构（YOLO 打身份 × 深度管几何）第一块：物体块
         从源头消失，"穿车读墙"假缘不再产生（2026-09-25 融合首探，122 帧验证
         R 侧坏率 35%→13%）。"""
+        reading, _ = self.observe_debug(frame_rgb, object_mask)
+        return reading
+
+    def observe_debug(self, frame_rgb: np.ndarray, object_mask: np.ndarray | None = None
+                      ) -> tuple[DepthRoadReading | None, np.ndarray | None]:
+        """同 observe，另返回原始视差图（实机 debug 渲染用；与 reading 同源同拍）。"""
         if self._sess is None:
-            return None
+            return None, None
         t0 = time.perf_counter()
         try:
             m = infer_map(self._sess, frame_rgb, self._short)
         except Exception:
-            return None
+            return None, None
         ego = self._ego_mask
         if object_mask is not None:
             ego = object_mask if ego is None else (ego | object_mask)
         reading = reading_from_map(m, self._cal, ego)
         return replace(reading,
-                       latency_ms=(time.perf_counter() - t0) * 1000.0)
+                       latency_ms=(time.perf_counter() - t0) * 1000.0), m
 
     @property
     def session_ready(self) -> bool:
         return self._sess is not None
+
+
+def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
+                       reading: DepthRoadReading, ego_mask: np.ndarray | None,
+                       object_mask: np.ndarray | None = None) -> np.ndarray:
+    """实机可视化判据（三行堆叠，BGR）：程序看了什么、算了什么、判了什么。
+
+    ① 画面帧：ego 掩码橙描边 / YOLO 物体掩码蓝描边 / 读数黄竖线 + L/R 车道量；
+    ② 视差图（带内对数归一，与探针同一色标）；
+    ③ 相对高度图 + 全部候选块内沿（青点）+ 触边块（绿框）+ 弃权原因。
+    纯函数只渲染不落盘——落盘归异步 worker 节流。"""
+    h, w = m.shape[:2]
+    f = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    for mask, col in ((ego_mask, (255, 128, 0)), (object_mask, (255, 0, 0))):
+        if mask is None:
+            continue
+        cnts, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(f, cnts, -1, col, 2)
+    for x in (reading.left_x, reading.right_x):
+        if x is not None and x == x:
+            cv2.line(f, (int(x), 0), (int(x), h - 1), (0, 255, 255), 2)
+    lt = "-" if reading.left_edge_lane is None else f"{reading.left_edge_lane:+.2f}"
+    rt = "-" if reading.right_edge_lane is None else f"{reading.right_edge_lane:+.2f}"
+    cv2.putText(f, f"L {lt}  R {rt}  sides={reading.sides}", (8, 26),
+                cv2.FONT_HERSHEY_SIMPLEX, .8, (255, 255, 255), 2)
+
+    logs = np.log(np.clip(m[Y0:DIAG_Y1].ravel(), 1e-3, None))
+    lo, hi = np.percentile(logs, [2, 98])
+    disp = cv2.applyColorMap(
+        (np.clip((np.log(np.clip(m, 1e-3, None)) - lo) / max(hi - lo, 1e-6), 0, 1)
+         * 255).astype(np.uint8), cv2.COLORMAP_JET)
+
+    r, blocks = _rel_and_blocks(m, ego_mask)
+    g = _ground_q20(m)
+    rel = np.full(m.shape, np.nan, np.float32)
+    rel[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
+    ok = np.isfinite(rel[Y0:DIAG_Y1])
+    v = np.clip((rel[Y0:DIAG_Y1][ok] + 0.10) / 0.20, 0, 1)
+    xs = np.array([0.0, 0.5, 1.0])
+    hm = np.zeros((DIAG_Y1 - Y0, w, 3), np.uint8)
+    hm[ok] = np.stack([np.interp(v, xs, [255, 255, 0]),
+                       np.interp(v, xs, [0, 255, 0]),
+                       np.interp(v, xs, [0, 255, 255])], axis=-1)
+    for y0b, y1b, il, ir, tL, tR in blocks:
+        col = (0, 255, 0) if (tL or tR) else (128, 128, 128)
+        for inner in ((il if tL else None), (ir if tR else None)):
+            if not inner:
+                continue
+            for yy, xx in inner.items():
+                if 0 <= yy - Y0 < hm.shape[0]:
+                    hm[yy - Y0, int(xx)] = col
+    for x in (reading.left_x, reading.right_x):
+        if x is not None and x == x:
+            cv2.line(hm, (int(x), 0), (int(x), hm.shape[0] - 1), (0, 255, 255), 2)
+    rej = ";".join(reading.rejects)[:110]
+    if rej:
+        cv2.putText(hm, rej, (8, hm.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                    .55, (255, 255, 255), 1)
+    return np.vstack([f, disp[Y0:DIAG_Y1], hm])
 
 
 class AsyncDepthRoadObserver:
@@ -421,10 +487,16 @@ class AsyncDepthRoadObserver:
     MAX_AGE_MS = 150.0    # 结果时效预算：20Hz 拍 ×3 拍；超龄读数按 stale 丢弃
     PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
 
+    DEBUG_INTERVAL_S = 2.0   # 调试图节流（与坏帧取证同量级，封顶磁盘占用）
+
     def __init__(self, observer: DepthRoadObserver,
-                 max_age_ms: float = MAX_AGE_MS) -> None:
+                 max_age_ms: float = MAX_AGE_MS,
+                 debug_dir: Path | None = None) -> None:
         self._obs = observer
         self._max_age_ms = float(max_age_ms)
+        self._debug_dir = Path(debug_dir) if debug_dir is not None else None
+        self._debug_last = 0.0
+        self._debug_seq = 0
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None] | None = None
         self._result: tuple[DepthRoadReading, float] | None = None
@@ -513,6 +585,22 @@ class AsyncDepthRoadObserver:
 
     # ---------- worker 线程 ----------
 
+    def _write_debug(self, frame, m, reading, object_mask) -> None:
+        """节流落实机调试图（三行堆叠）。失败静默吞掉——debug 绝不干扰主路。"""
+        now = time.monotonic()
+        if now - self._debug_last < self.DEBUG_INTERVAL_S:
+            return
+        self._debug_last = now
+        try:
+            self._debug_dir.mkdir(parents=True, exist_ok=True)
+            self._debug_seq += 1
+            img = render_depth_debug(frame, m, reading,
+                                     self._obs._ego_mask, object_mask)
+            cv2.imwrite(str(self._debug_dir / f"d{self._debug_seq:05d}.jpg"),
+                        img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
+            pass
+
     def _pop_latest(self) -> tuple[int, np.ndarray, float, np.ndarray | None] | None:
         with self._lock:
             item, self._pending = self._pending, None
@@ -530,11 +618,13 @@ class AsyncDepthRoadObserver:
                 self._failures += 1
                 continue
             try:
-                reading = self._obs.observe(item[1], object_mask=item[3])
+                reading, m = self._obs.observe_debug(item[1], object_mask=item[3])
             except Exception:  # noqa: BLE001 —— 单帧异常计数后继续（与 treasure 同姿态）
                 self._failures += 1
                 continue
             if reading is None:  # session 中途失效/推理异常：本帧无结果，不发布
                 continue
+            if self._debug_dir is not None:
+                self._write_debug(item[1], m, reading, item[3])
             with self._lock:
                 self._result = (reading, item[2])  # captured_ts 随结果过闸（age 的锚）

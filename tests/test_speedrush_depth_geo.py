@@ -319,11 +319,15 @@ class _StubObserver:
         self.calls = 0
 
     def observe(self, frame, object_mask=None):
+        reading, _ = self.observe_debug(frame, object_mask)
+        return reading
+
+    def observe_debug(self, frame, object_mask=None):
         self.calls += 1
         item = self._script.pop(0) if self._script else None
         if isinstance(item, Exception):
             raise item
-        return item
+        return item, None
 
 
 def _wait_until(pred, timeout=2.0) -> bool:

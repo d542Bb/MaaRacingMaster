@@ -2755,3 +2755,23 @@ ego 掩码同通道；122 帧全卷、两权重、台阶守卫口径：
 **验收口径（不变）**：road_offset 非空率 >60%、无 WARNING、对比 9-22 hsv
 基线无回退。重点观察项：骑缘/贴墙段的 ro_source 分布（slot 救援频率）、
 ro_hw 收敛曲线、yolo_cars>0 拍的 dgeo_rejects 变化。
+
+### 实机调试图渲染（`render_depth_debug` + 异步节流落盘，2026-09-25）
+
+维护者要"可视化判据：程序看了什么、在做什么"。`render_depth_debug`（纯函数）
+三行堆叠：①画面帧 + ego 橙描边 + YOLO 物体掩码蓝描边 + 读数黄线 + L/R/出勤；
+②视差图（探针同款对数色标）；③相对高度图 + 全部候选块内沿（青）+ 弃权原因。
+`AsyncDepthRoadObserver(debug_dir=...)` worker 内按 `DEBUG_INTERVAL_S=2.0`
+节流落 `depth_debug_<ts>/d*.jpg`（失败静默，不碰主路）。module 每阶段建
+`control_traces/depth_debug_<ts>/`。样例：debug_sample_000507.jpg。
+
+### 清理（回收站）：无用权重/缓存/临时环境
+
+- 删 metric fp32 448/518 onnx（各 99MB，可由 pth 重导出）；保留 pth（母本）、
+  fp32@336（量化复现输入）、q4f16@336（挂起备选资产）、da2_small.onnx（rel
+  fp32 母本，动态形状）。
+- 删 npy 死缓存 448 个（`__da2s` 第一关参照 474 中的 472、`__d336fp16` 122、
+  `__band280` 被否决实验 54）；定点复原 518 时代锚点所需 2 个 `__da2s`
+  （frames__000518/000437）。保留 d336q4f16（122，测试+考卷）、d518q4f16（54）。
+- 删临时 torch 环境 /tmp/da2_ft2（1.1GB，分辨率议题闭环；重估
+  quantize_metric_q4f16.py 需重装 torch+onnxruntime+onnx_ir）。
