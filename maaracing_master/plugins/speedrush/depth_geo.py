@@ -517,7 +517,7 @@ class AsyncDepthRoadObserver:
         self._max_age_ms = float(max_age_ms)
         self._infer_interval_s = float(infer_min_interval_s)
         self._debug_dir = Path(debug_dir) if debug_dir is not None else None
-        self._debug_last = 0.0
+        self._debug_last = float("-inf")   # 「从未出工」：0 会在进程早期(monotonic<窗)误判窗内
         self._debug_seq = 0
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None] | None = None
@@ -527,7 +527,7 @@ class AsyncDepthRoadObserver:
         self._stale_drops = 0
         self._failures = 0
         self._busy_skips = 0
-        self._last_infer = 0.0
+        self._last_infer = float("-inf")   # 同上：进程早期不得被节流窗拦下首拍
         self._age_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
         self._dur_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
         self._stop = threading.Event()
@@ -611,7 +611,11 @@ class AsyncDepthRoadObserver:
     # ---------- worker 线程 ----------
 
     def _write_debug(self, frame, m, reading, object_mask) -> None:
-        """节流落实机调试图（三行堆叠）。失败静默吞掉——debug 绝不干扰主路。"""
+        """节流落实机调试图（三行堆叠）+ 可复现证据包（读数带视差 fp16 + 生效掩码）。
+
+        只有渲染图时读数故障无法离线复现（色标有损、看不到基线钉住了什么）——
+        视差带 + 合并掩码足以离线重放 reading_from_map 全程。失败静默吞掉——
+        debug 绝不干扰主路。"""
         now = time.monotonic()
         if now - self._debug_last < self.DEBUG_INTERVAL_S:
             return
@@ -619,10 +623,17 @@ class AsyncDepthRoadObserver:
         try:
             self._debug_dir.mkdir(parents=True, exist_ok=True)
             self._debug_seq += 1
+            stem = self._debug_dir / f"d{self._debug_seq:05d}"
             img = render_depth_debug(frame, m, reading,
                                      self._obs._ego_mask, object_mask)
-            cv2.imwrite(str(self._debug_dir / f"d{self._debug_seq:05d}.jpg"),
-                        img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            np.save(str(stem) + "_band.npy",
+                    m[Y0:DIAG_Y1].astype(np.float16))
+            merged = self._obs._ego_mask
+            if object_mask is not None:
+                merged = object_mask if merged is None else (merged | object_mask)
+            if merged is not None:
+                np.save(str(stem) + "_mask.npy", np.packbits(merged))
         except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
             pass
 

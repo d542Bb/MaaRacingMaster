@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from maaracing_master.core import dml_lock
+from maaracing_master.plugins.speedrush import depth_geo as dg
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, FIT_FLOOR_PX, GATE_L, DepthRoadObserver, DepthRoadReading,
     _ground_q20, _rel_and_blocks, infer_map, reading_from_map)
@@ -471,5 +472,35 @@ def test_async_throttle_bounds_rate():
         _time.sleep(0.15)                       # 窗内（0.5s）
         assert stub.calls == 1, "节流窗内 worker 不得二次出工"
         assert _wait_until(lambda: stub.calls >= 2, timeout=1.5), "窗过后未恢复出工"
+    finally:
+        a.stop()
+
+
+def test_async_debug_writes_replayable_evidence(tmp_path):
+    """调试图同拍落可复现证据包：读数带视差（fp16）+ 生效掩码——
+    只有有损渲染时，实机读数故障无法离线重放（2026-09-25 21:41 局的教训）。"""
+    stub = _StubObserver([_mk_reading()])
+    stub._ego_mask = np.zeros((720, 1280), bool)
+    stub._ego_mask[:10, :10] = True
+    def _map_observe(frame, object_mask=None):
+        stub.calls += 1
+        return _mk_reading(), np.full((720, 1280), 4.0, np.float32)
+    stub.observe_debug = _map_observe
+    a = AsyncDepthRoadObserver(stub, debug_dir=tmp_path)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: stub.calls >= 1)
+        # 渲染+JPEG 编码在 worker 线程要几百 ms：轮询等落盘，别按调用数硬等
+        band_p = next(iter(tmp_path.glob("d*_band.npy")), None) if _wait_until(
+            lambda: any(tmp_path.glob("d*_band.npy"))) else None
+        assert band_p is not None, "视差带未落盘"
+        band = np.load(band_p)
+        assert band.shape == (dg.DIAG_Y1 - dg.Y0, 1280)
+        assert band.dtype == np.float16
+        assert list(tmp_path.glob("d*.jpg")), "渲染图未落盘"
+        mask = np.unpackbits(np.load(next(iter(tmp_path.glob("d*_mask.npy")))))
+        mask = mask[: 720 * 1280].reshape(720, 1280).astype(bool)
+        assert mask[:10, :10].all() and not mask[100:, 100:].any()
     finally:
         a.stop()
