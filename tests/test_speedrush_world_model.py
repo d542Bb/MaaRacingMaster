@@ -13,7 +13,8 @@ from __future__ import annotations
 import pytest
 
 from maaracing_master.plugins.speedrush.perception import Detection, PerceptionResult
-from maaracing_master.plugins.speedrush.world_model import build_world, load_calib
+from maaracing_master.plugins.speedrush.world_model import (
+    Calib, build_world, load_calib)
 
 CAL = load_calib()
 

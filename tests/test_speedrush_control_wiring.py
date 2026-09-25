@@ -6,9 +6,11 @@ V0/V1 开关在不在位、异常降级停不亦），不重测各层内部（�
 桩手柄记录调用，detect_boundary 打桩避开 CV 依赖。
 """
 import json
+import time as _time
 from dataclasses import replace
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 try:
@@ -23,7 +25,6 @@ from maaracing_master.plugins.speedrush.boundary import BoundarySummary  # noqa:
 from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
 from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
     Detection, PerceptionResult)
-from maaracing_master.plugins.speedrush.planner import LateralPlanner  # noqa: E402
 
 
 class StubPad:
@@ -171,8 +172,8 @@ def test_control_last_shape():
 
 # ---------- step 2.5b _EgoRoadObserver：单侧反推 + 半宽记忆 + 虚线护栏 ----------
 
-def _bnd_edges(l, r):
-    return SimpleNamespace(left_edge_lane=l, right_edge_lane=r)
+def _bnd_edges(el, er):
+    return SimpleNamespace(left_edge_lane=el, right_edge_lane=er)
 
 
 def test_ego_road_both_sides_and_memory():
@@ -205,10 +206,6 @@ def test_ego_road_dashed_guard():
 
 
 # ---------- 坏帧采样器（三局复盘悬案取证：录控互斥不动，控制回路自存真帧） ----------
-
-import math
-import numpy as np
-import time as _time
 
 
 def _bad_bnd():

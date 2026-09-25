@@ -171,7 +171,14 @@ def _ground_q20(m: np.ndarray) -> np.ndarray:
     """全局逐行低分位地面基线 g(y)（长度 = DIAG_Y1−Y0）。
 
     全局（全行宽非自车列）而非局部窗：滑窗跨不过车身，骑缘帧上人行道自己的
-    下尾就成了基线；全局 q20 才把少数派路面钉成地面。"""
+    下尾就成了基线；全局 q20 才把少数派路面钉成地面。
+
+    已知破产场景（2026-09-25 22:04 局证据包实证，修复原型与金标 A/B 在
+    tools/experiments/speedrush_vision/probe_ground_ab.py）：追逐相机随转向
+    侧倾后 iso-深度线倾斜（急转帧 ~2-4°，行内视差左近右远差五成），逐行 q20
+    钉住行内最远列、其余路面成假隆起块——侧倾校正基线（沿等深度线取 q20）
+    实机解释率 +7~25%，但金标卷有代价（L p90 0.73→1.17、R 坏 1→3），门
+    0.08/0.10 是对本基线标定的，须重过门网格再落产码。"""
     cols = np.r_[0:EGO_COLS[0], EGO_COLS[1]:m.shape[1]]
     return np.quantile(m[Y0:DIAG_Y1][:, cols].astype(np.float32), Q_GROUND, axis=1)
 
