@@ -72,22 +72,66 @@ def test_throttle_constant_all_states():
 
 # ---------- 状态消费表 ----------
 
-def test_conserve_forces_zero():
+def test_conserve_holds_entry_lane():
+    """CONSERVE=保持入拍车道（13:02 局锁面变更：旧语义"归零直开"在弯道上=怼护栏）。
+    变道中被保守打断：先反打止漂，收敛后停在入拍车道位——不回道 0，末态仍归零
+    （直道无观测的旧行为兼容面：平衡点=保持位=杆 0）。"""
     pl = LateralPlanner(P)
-    _run_moving(pl, 1.0, ticks=5)                 # 移动中已打舵
+    _run_moving(pl, 1.0, ticks=5)                 # 变道中：向右漂移且已打舵
+    entry = pl.state.executed_lane
+    assert entry > 0.05
     prev = pl._last_raw
-    assert abs(prev) > 20000
     cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None, fid=99,
                          valid=99), DT, 99)
-    assert abs(cmd.steer_x) < abs(prev)
-    # 持续 CONSERVE → 归零（经限幅时间）
-    for i in range(20):
+    assert cmd.steer_x < prev                     # 入拍即接管（旧语义同向缓归零）
+    for i in range(10):
         cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
                              fid=100 + i, valid=100 + i), DT, 100 + i)
-    assert cmd.steer_x == 0
+    assert cmd.steer_x < 0                        # 数拍内反打（止漂+拉回，非归零直开）
+    for i in range(100):
+        cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                             fid=200 + i, valid=200 + i), DT, 200 + i)
+    assert cmd.steer_x == 0                       # 平衡点=保持位，杆终归零
+    assert pl.state.executed_lane == pytest.approx(entry, abs=0.15)  # 不回 0
 
 
-def test_fault_forces_zero_same_as_conserve():
+def test_conserve_hold_refreezes_on_reentry():
+    """离开 CONSERVE 再进：hold 重新冻结为新的入拍位（不吃陈旧冻结值）。"""
+    pl = LateralPlanner(P)
+    pl.state.executed_lane = 1.0
+    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                   fid=1, valid=1), DT, 1)
+    assert pl._conserve_hold == pytest.approx(1.0)
+    pl.update(_out(state=DecisionState.CRUISE, x_target=0.0,
+                   fid=2, valid=2), DT, 2)
+    assert pl._conserve_hold is None
+    pl.state.executed_lane = -0.5
+    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                   fid=3, valid=3), DT, 3)
+    assert pl._conserve_hold == pytest.approx(-0.5)
+
+
+def test_conserve_with_road_obs_steers_back_to_hold():
+    """有路观测拍：⑥b 把 executed 纠离 hold 后，PD 拉回 hold——
+    保持车道是闭环，不是把上一拍杆值冻住（弯道跟线的最小面）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.state.executed_lane = 0.5
+    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                   fid=1, valid=1), DT, 1)        # hold=0.5
+    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                   fid=2, valid=2), DT, 2, road_offset=0.5)   # 锚定：obs==executed
+    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                   fid=3, valid=3), DT, 3, road_offset=0.0)   # 路观测：车偏左了
+    assert pl.state.executed_lane < 0.45          # ⑥b 把 executed 拉回观测
+    cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                         fid=4, valid=4), DT, 4)
+    assert cmd.steer_x > 0                        # PD 拉回 hold（旧语义恒 0 不跟线）
+
+
+def test_fault_forces_zero():
+    """FAULT=几何不可信，归零直开是诚实兜底（与 CONSERVE 的保持语义相对）。"""
     pl = LateralPlanner(P)
     _run_moving(pl, 1.0, ticks=5)
     for i in range(30):
@@ -154,7 +198,8 @@ def test_expired_hold_then_conserve_at_plus_one():
 
 
 def test_conserve_priority_over_expired_hold():
-    """CONSERVE/FAULT 的强制归零优先级高于过期保持（维护者裁定 3）。"""
+    """CONSERVE/FAULT 的接管优先级高于过期保持（维护者裁定 3；CONSERVE 的接管
+    内容=入拍车道保持（13:02 局语义修正），过期保持的"杆值不动"让位于它）。"""
     pl = LateralPlanner(P)
     _run_moving(pl, 1.0, ticks=5)
     held = pl._last_raw

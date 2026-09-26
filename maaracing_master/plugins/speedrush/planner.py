@@ -68,6 +68,7 @@ class LateralPlanner:
         self._last_raw = 0            # 上一拍下发杆值（限幅起点）
         self._expired_ticks = 0
         self._abort_hold_lane: float | None = None
+        self._conserve_hold: float | None = None  # CONSERVE 入拍冻结的车道位（③）
         self._road_anchor: float | None = None   # 路观测参考帧懒定（⑥b）
         self._drift_n = 0                        # 同号超门新息连续计数（⑥b 漂移复位）
         self._drift_sign = 0.0
@@ -105,10 +106,23 @@ class LateralPlanner:
         self._expired_ticks = 0 if fresh else self._expired_ticks + 1
         stale_hold = (not fresh) and self._expired_ticks <= self.p.hold_max_ticks
 
-        # ③ 控制律（状态消费表，设计稿 §四；优先级：CONSERVE/FAULT 归零 > 过期保持）
+        # ③ 控制律（状态消费表，设计稿 §四；优先级：CONSERVE/FAULT 接管 > 过期保持）
         st = decision.state
-        if st in (DecisionState.CONSERVE, DecisionState.FAULT):
-            steer_raw = 0.0                      # 强制归零（平滑经低通+限幅）
+        if st is not DecisionState.CONSERVE:
+            self._conserve_hold = None
+        if st is DecisionState.CONSERVE:
+            # CONSERVE=**保持当前车道**（13:02 局复盘：旧实现归零=直开，弯道直开
+            # 怼护栏——badframe fid_2325 侧滑胎烟实证；设计文本本意"保持+禁变道"，
+            # 归零只在直道等价于保持）。入拍冻结 executed 为 hold 目标走 PD——
+            # 冻结值归属同 ABORT 先例（维护者裁定 2026-09-22，归本层不归决策层）。
+            # 直道无观测时平衡点仍是归零（旧行为逐拍兼容）；有路观测时随 ⑥b
+            # 纠回 hold 车道，禁的是变道追币，不是转向本身。
+            if self._conserve_hold is None:
+                self._conserve_hold = self.state.executed_lane
+            steer_raw = self._pd(self._conserve_hold)
+            self._abort_hold_lane = None
+        elif st is DecisionState.FAULT:
+            steer_raw = 0.0                      # 几何不可信：直开是诚实兜底
             self._abort_hold_lane = None
         elif stale_hold:
             steer_raw = self.state.steer_norm    # 过期保持：杆值不动（不归零，C4）
