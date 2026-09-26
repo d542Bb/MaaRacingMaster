@@ -117,6 +117,10 @@ class Planner:
     #    拍数门复位太慢=0 杆直开怼墙）——
     anchor_max_off: float      # 锚形成门：|road_offset| ≤ 此值才形成参考系 [需实测]
     anchor_stale_s: float      # 距上次被接受修正超此秒数（含断供）→ 陈旧重基到路上 [需实测]
+    # —— 维护性转向权限（2026-09-26 16:44 局复盘：定中心全权 PD=满舵绕桩，
+    #    257/267 饱和拍在保持态、速度起不来）——
+    hold_deadband_lane: float  # 死区：|前瞻误差| 小于此不发维护力（车道单位）[需实测]
+    hold_stick_max: float      # 维护性转向（定中心/保持/回稳）杆幅上限，CHANGE 全权 [需实测]
 
 
 @dataclass(frozen=True)
@@ -255,7 +259,10 @@ def _read_decision(path: Path) -> DecisionConfig:
             anchor_max_off=_num(d, "planner", "anchor_max_off", lo=0,
                                 lo_open=False),
             anchor_stale_s=_num(d, "planner", "anchor_stale_s", lo=0,
-                                lo_open=False)),
+                                lo_open=False),
+            hold_deadband_lane=_num(d, "planner", "hold_deadband_lane", lo=0,
+                                    lo_open=False),
+            hold_stick_max=_num(d, "planner", "hold_stick_max", lo=0, hi=1)),
         overtake=Overtake(
             value_base=_num(d, "overtake", "value_base", lo=0),
             value_limit=_num(d, "overtake", "value_limit", lo=0),

@@ -13,7 +13,7 @@ import math
 import pytest
 
 from maaracing_master.plugins.speedrush.config import Planner, _read_decision
-from maaracing_master.plugins.speedrush.planner import LateralPlanner
+from maaracing_master.plugins.speedrush.planner import _STICK_FULL, LateralPlanner
 from maaracing_master.plugins.speedrush.tracking import (
     DecisionOutput, DecisionState)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH
@@ -91,8 +91,10 @@ def test_conserve_holds_entry_lane():
     for i in range(100):
         cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
                              fid=200 + i, valid=200 + i), DT, 200 + i)
-    assert cmd.steer_x == 0                       # 平衡点=保持位，杆终归零
-    assert pl.state.executed_lane == pytest.approx(entry, abs=0.15)  # 不回 0
+    assert cmd.steer_x == 0                       # 平衡点=保持位死区内，杆终归零
+    # 死区语义（16:44 局后）：|误差|<hold_deadband 不发力——停在保持位死区内即可，
+    # 不得回 0（方向判据：entry>0 时若回 0 误差会超死区发力，这里必须同侧）
+    assert 0 < pl.state.executed_lane < entry + P.hold_deadband_lane
 
 
 def test_conserve_hold_refreezes_on_reentry():
@@ -167,11 +169,11 @@ def test_abort_freezes_executed_not_decision_x():
     cmd = pl.update(_out(state=DecisionState.ABORT_CHANGE, x_target=0.0,
                          fid=300, valid=300), DT, 300)
     assert cmd.steer_x >= 0                       # 不向左打回 0
-    # 持续 ABORT：跟踪冻结位，不随 x_target=0 漂移
+    # 持续 ABORT：跟踪冻结位（死区内收力），不随 x_target=0 漂移
     for i in range(1, 10):
         pl.update(_out(state=DecisionState.ABORT_CHANGE, x_target=0.0,
                        fid=300 + i, valid=300 + i), DT, 300 + i)
-    assert pl.state.executed_lane == pytest.approx(frozen, abs=0.15)
+    assert frozen <= pl.state.executed_lane <= frozen + P.hold_deadband_lane
     # 离开 ABORT 后恢复正常跟踪
     pl.update(_out(state=DecisionState.CRUISE, x_target=0.0,
                    fid=400, valid=400), DT, 400)
@@ -227,7 +229,8 @@ def test_lowpass_is_time_based_not_fixed_alpha():
     assert pl2.state.steer_norm > pl1.state.steer_norm
     a1 = 1 - math.exp(-0.05 / P.tau_steer_s)
     a2 = 1 - math.exp(-0.10 / P.tau_steer_s)
-    u0 = min(1.0, P.k_p)          # 首拍误差 1.0、v=0 → PD 原始输出（>1 才饱和截断）
+    # CRUISE=维护态：u 经 hold_stick_max 封顶（16:44 局后），e=1.0→min(k_p, cap)
+    u0 = min(1.0, P.k_p, P.hold_stick_max)
     assert pl1.state.steer_norm == pytest.approx(a1 * u0, rel=1e-6)
     assert pl2.state.steer_norm == pytest.approx(a2 * u0, rel=1e-6)
 
@@ -250,9 +253,11 @@ def test_rate_limit_per_tick_semantics():
 ])
 def test_deadzone_boundary_255_256(x_target, expect_zero):
     # 隔离输出链边界：无 lookahead/阻尼/低通/限幅，且横向加速度增益置零
-    # （executed 不漂移，PD 稳态恒等于 k_p·x_target）
+    # （executed 不漂移，PD 稳态恒等于 k_p·x_target）；维护权限全放开，
+    # 死区/封顶归上一节测，这里只测杆值输出链的 255/256 边界
     pl = _planner(k_d=0.0, lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, a_lat_gain=0.0)
+                  rate_limit_raw=999999.0, a_lat_gain=0.0,
+                  hold_deadband_lane=0.0, hold_stick_max=1.0)
     cmd = None
     for i in range(5):
         cmd = pl.update(_out(x_target=x_target, fid=i, valid=i), DT, i)
@@ -262,9 +267,11 @@ def test_deadzone_boundary_255_256(x_target, expect_zero):
 # ---------- 双积分运动学（v2，2026-09-22 真机证据链：杆是航向指令不是平移速度指令） ----------
 
 def _iso_planner(**over) -> LateralPlanner:
-    """隔离运动学的参数组合：杆一拍到位、无限幅死区、PD 不饱和（目标远置）。"""
+    """隔离运动学的参数组合：杆一拍到位、无限幅死区、PD 不饱和（目标远置）、
+    无维护权限封顶（测的是 plant 签名，不是 16:44 后的 gentle 通道）。"""
     base = dict(lookahead_tau_s=0.0, k_d=0.0, tau_steer_s=1e-9,
-                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                hold_deadband_lane=0.0, hold_stick_max=1.0)
     base.update(over)
     return _planner(**base)
 
@@ -353,12 +360,15 @@ def test_road_reanchor_pins_inflated_model():
         # 车其实纹丝不动：路观测恒 0（锚懒定为首帧 0→obs 恒 0）
         c = pl_obs.update(d, DT, i, road_offset=0.0)
         obs_x.append(c.steer_x)
-    # 无观测：模型冲到接近目标→杆回落到 0（提前松杆，V2 病灶）
-    assert pl_open.state.executed_lane > 0.5
+    # 无观测：模型冲到接近目标→杆回落到 0（提前松杆，V2 病灶；阈值含维护杆幅
+    # 封顶后的爬升减速）
+    assert pl_open.state.executed_lane > 0.35
     assert abs(open_x[-1]) < abs(open_x[3])
-    # 有观测：executed 被钉在 0 附近，杆持续高（误差在，杆就在）
+    # 有观测：executed 被钉在 0 附近，杆持续（误差在，杆就在；幅度受维护
+    # 杆幅上限约束——16:44 局后 CRUISE 不再满舵）
     assert abs(pl_obs.state.executed_lane) < 0.15
-    assert abs(obs_x[-1]) > 20000
+    assert abs(obs_x[-1]) > 10000
+    assert abs(obs_x[-1]) <= int(P.hold_stick_max * _STICK_FULL) + 100
     assert abs(obs_x[-1]) >= abs(open_x[-1])
 
 
@@ -451,6 +461,37 @@ def test_reanchor_event_resets_road_frame():
     # 新不变量：anchor 按新 executed 重对齐（=0.3−1.0=−0.7），obs==executed→r=0 不拽
     assert pl._road_anchor == pytest.approx(-0.7)
     assert pl.state.executed_lane == pytest.approx(1.0, abs=1e-9)  # 未被旧帧拽向 0
+
+
+# ---------- 维护性转向权限（16:44 局：定中心全权 PD=满舵绕桩） ----------
+
+def test_hold_authority_deadband_and_cap():
+    """保持态（CRUISE 定中心）：死区内不发力、死区外杆幅封顶；CHANGE 全权。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.state.executed_lane = 0.3                       # 误差 0.3 < 死区 0.5
+    c = pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1)
+    assert c.steer_x == 0                              # 不发力（旧语义会持续拽）
+    pl.state.executed_lane = 1.5                       # 误差 1.5：k_p0.7→u=1.05
+    c = pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
+    assert -int(P.hold_stick_max * _STICK_FULL) - 100 < c.steer_x < 0  # 封顶 0.45
+    pl.state.executed_lane = 0.0                       # 同误差 CHANGE 机动：全权
+    c = pl.update(_out(state=DecisionState.CHANGE, x_target=1.5,
+                       fid=3, valid=3), DT, 3)
+    assert c.steer_x > int(P.hold_stick_max * _STICK_FULL) + 100
+
+
+def test_obs_velocity_injection_respects_cap():
+    """⑥b β 注入在 v_lat_max 饱和内（16:44 局 |v_lat| 冲到 11.4 ≫ 2.5，
+    阻尼项 −k_d·v 随即满反打喂给极限环）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  a_lat_gain=0.0, tau_align_s=1e9)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)   # 锚=0
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.7)   # r=0.7
+    # 裸 β 注入 = 0.2·0.7/0.05 = 2.8 > v_lat_max=2.5 → 必须被夹住
+    assert pl.state.v_lat_est <= P.v_lat_max + 1e-9
 
 
 def test_no_road_offset_is_old_behavior():

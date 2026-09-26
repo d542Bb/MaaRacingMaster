@@ -115,8 +115,12 @@ def main() -> None:
     print(f"[基线] 生产配置整段指标: 饱和率={sat:.1%} 翻转={flips:.2f}/s "
           f"|exec|p90={p90:.2f} 最长饥饿={starve:.2f}s")
     if mean_d > 500:
-        print("!! 前缀复现不过（流重建有误），网格结论无效——先查 valid_until/dt/state。")
-        return
+        print("!! 前缀复现不过：流重建有误（valid_until/dt/state）或 trace 录于"
+              "语义变更前代码（如 16:44 流录于全权 CRUISE 时代）。"
+              + ("已 --skip-fidelity，基线/网格仅作探索。" if args.skip_fidelity
+                 else "网格结论无效——确认原因后重试或加 --skip-fidelity。"))
+        if not args.skip_fidelity:
+            return
 
     if not args.grid:
         return

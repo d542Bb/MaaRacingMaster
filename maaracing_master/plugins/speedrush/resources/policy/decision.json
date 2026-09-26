@@ -16,6 +16,7 @@
     "planner.rate_limit_raw|stick_deadzone_raw": "旧赛车栈已验证值（control-route §三移植清单）",
     "planner.obs_alpha|obs_beta|obs_jump_max_lane": "路中心连续重锚 alpha-beta 增益（step 2.5，2026-09-22 V2 复盘：开环虚胖=贴不近主因）。2026-09-26 13:02 局回放网格定档（证据 commit e269943）：新息门 1.5→0.8、k_p 1.2→0.7、obs_alpha 0.6→0.3——hsv 路观测噪声下旧增益组极限环（回放饱和率 23.3%/翻转 1.39 次每秒 → 4.1%/0.51）。pair 供数门（80e9a1c）已撤：13:29 局证明黑视比噪声更致命（死亡螺旋段 87/118 拍被挡），开环回放看不见锁死——该定档是回放盲点的产物",
     "planner.anchor_max_off|anchor_stale_s": "[需实测] 路锚卫生（12:39 局：ro=−2.77 骑缘拍定锚→道0=左护栏位钉死 818 拍；13:29 局：拍数门漂移复位太慢——黑视不计数、0.8 门收紧后喂入更少，ro=+1.9 全程喊、0 杆直开 5.5s 怼右墙时计数还差 9 次）：形成门=|road_offset|≤1.0 车道才定参考系；陈旧重基=距上次被接受修正超 1.0s（含断供计时）→exec:=ro、anchor:=0（道0=路中心）。anchor_drift_ticks 拍数判据已废",
+    "planner.hold_deadband_lane|hold_stick_max": "[需实测] 维护性转向权限（16:44 局：路中心定心全权 PD——保持态误差动辄 ±1.5 车道（k_p0.7 下 >1.43 即满舵），257/267 饱和拍在 CRUISE-hold/CONSERVE、满左满右交替 2-3s 绕桩、速度起不来；⑥b β 注入还绕过 v_lat_max（|v|→11.4 物理上限 2.5），阻尼项满反打喂给极限环）：死区 0.5 车道内不发力、维护杆幅 ≤0.45；CHANGE 机动保留全权。v_lat 饱和已收进 ⑥b",
     "traffic.exit_margin_px": "[需实测 C5] 下带消失判据的余量（起值 80px）：last cy ≥ v_ego−此值 判\"从车尾侧出画\"；回放定档（阶段 C 设计稿 §三）",
     "traffic.min_obs_ticks|ghost_max_age_ticks|ghost_rel_eps": "[需实测 C5] 闪现噪声自卫（3 次）；鬼影=超龄(200 拍≈10s，雨测 191 帧案)+低速(<1px/tick)的底边消失",
     "overtake.value_base|value_limit": "游戏事实镜像（RULES §4.11：单次超车 30 / 极限动作 120）；RULES 变更时人工同步",
@@ -84,6 +85,8 @@
     "obs_jump_max_lane": 0.8,
     "anchor_max_off": 1.0,
     "anchor_stale_s": 1.0,
+    "hold_deadband_lane": 0.5,
+    "hold_stick_max": 0.45,
     "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验"
   },
   "traffic": {

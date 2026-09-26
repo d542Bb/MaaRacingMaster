@@ -120,12 +120,11 @@ class LateralPlanner:
             self._abort_hold_lane = None
             if road_offset is not None:
                 ro_pred = road_offset + self.state.v_lat_est * self.p.lookahead_tau_s
-                u = self.p.k_p * (0.0 - ro_pred) - self.p.k_d * self.state.v_lat_est
-                steer_raw = max(-1.0, min(1.0, u))
+                steer_raw = self._law(0.0 - ro_pred, gentle=True)
             else:
                 if self._conserve_hold is None:
                     self._conserve_hold = self.state.executed_lane
-                steer_raw = self._pd(self._conserve_hold)
+                steer_raw = self._pd(self._conserve_hold, gentle=True)
         elif st is DecisionState.FAULT:
             steer_raw = 0.0                      # 几何不可信：直开是诚实兜底
             self._abort_hold_lane = None
@@ -137,10 +136,12 @@ class LateralPlanner:
             # 与"回中不总是安全"不一致，维护者裁定 2026-09-22）
             if self._abort_hold_lane is None:
                 self._abort_hold_lane = self.state.executed_lane
-            steer_raw = self._pd(self._abort_hold_lane)
+            steer_raw = self._pd(self._abort_hold_lane, gentle=True)
         elif decision.x_target is not None:
             self._abort_hold_lane = None
-            steer_raw = self._pd(decision.x_target)
+            # CHANGE=机动全权；CRUISE 的目标跟踪是维护性定中心——gentle（16:44 局）
+            steer_raw = self._pd(decision.x_target,
+                                 gentle=st is not DecisionState.CHANGE)
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
 
@@ -193,7 +194,12 @@ class LateralPlanner:
                 r = obs - self.state.executed_lane
                 if abs(r) <= self.p.obs_jump_max_lane:
                     self.state.executed_lane += self.p.obs_alpha * r
-                    self.state.v_lat_est += self.p.obs_beta * r / dt_s
+                    # β 注入也在 v_lat_max 饱和内（16:44 局 |v_lat| 冲到 11.4 ≫
+                    # 物理上限 2.5：⑥ 的饱和在 ⑥b 之前，大新息直注绕过了它，
+                    # 阻尼项 −k_d·v 随即满反打喂给极限环）
+                    self.state.v_lat_est = max(
+                        -self.p.v_lat_max, min(self.p.v_lat_max,
+                        self.state.v_lat_est + self.p.obs_beta * r / dt_s))
                     self._stale_t = 0.0
                 else:
                     self._stale_t += dt_s
@@ -222,9 +228,21 @@ class LateralPlanner:
         self._last_raw = raw
         return GamepadCommand(steer_x=raw, throttle=self.p.throttle_raw)
 
-    def _pd(self, target: float) -> float:
-        """延迟补偿前瞻 PD（设计稿 §三）：状态外推到 t+τ 再入环，阻尼项反向。"""
+    def _pd(self, target: float, gentle: bool = False) -> float:
+        """延迟补偿前瞻 PD（设计稿 §三）：状态外推到 t+τ 再入环，阻尼项反向。
+
+        gentle=维护性转向（定中心/保持车道，非变道机动）：误差过死区才发力、
+        杆幅限 hold_stick_max——16:44 局：回中心误差动辄 ±1.5 车道，全权 PD
+        满左满右交替 2-3s，33% 拍饱和、速度起不来（大杆=横向漂移，游戏掉速）。
+        变道（CHANGE）保留全权：机动要快是设计本意。"""
         x_pred = (self.state.executed_lane
                   + self.state.v_lat_est * self.p.lookahead_tau_s)
-        u = self.p.k_p * (target - x_pred) - self.p.k_d * self.state.v_lat_est
+        return self._law(target - x_pred, gentle)
+
+    def _law(self, e: float, gentle: bool) -> float:
+        if gentle and abs(e) < self.p.hold_deadband_lane:
+            e = 0.0
+        u = self.p.k_p * e - self.p.k_d * self.state.v_lat_est
+        if gentle:
+            u = max(-self.p.hold_stick_max, min(self.p.hold_stick_max, u))
         return max(-1.0, min(1.0, u))
