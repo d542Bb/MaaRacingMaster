@@ -672,14 +672,11 @@ class SpeedRushModule(ActivityModule):
                 road_offset = chain["ego_road"].update(obs.boundary)
             else:
                 road_offset = chain["ego_road"].update(dgeo)
-            # 闭环供数门（13:02 局回放网格定档，证据 commit 见 decision.json
-            # _sources）：只有**同帧双侧对**观测进 ⑥b——单侧/slot 合成是陈值+
-            # 半宽记忆的反推，回放同增益下饱和率 23% vs pair-only 4%。
-            # trace 的 road_offset 列如实记**实际进闭环的拍**（与回放判据同
-            # 口径），原始读数不丢（ro_off/ro_source/ro_hw 三列照旧）。
-            planner_ro = (road_offset if chain["ego_road"].last.get("source") == "pair"
-                          else None)
-            cmd = planner.update(out, dt, current_fid=fid, road_offset=planner_ro)
+            # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
+            # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
+            # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
+            # 噪声交给 0.8 新息门+1.0s 陈旧重基消化；trace road_offset 列=实际喂入。
+            cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -727,9 +724,9 @@ class SpeedRushModule(ActivityModule):
             # 双积分定档数据面：vp_x 横偏=航向观测量；sides=平移读数可信门
             "bnd_vp_x": None if b is None or b.vp_x is None else round(b.vp_x, 1),
             "bnd_sides": None if b is None else b.sides,
-            # step 2.5 闭环列：实际进闭环的路中心观测（None=本拍无同帧双侧对，
-            # 含单侧/slot 被供数门挡外的拍）+ 修正后 executed/v；原始读数见 ro_off
-            "road_offset": None if planner_ro is None else round(planner_ro, 4),
+            # step 2.5 闭环列：实际喂入 planner 的路中心观测（None=本拍弃权/垃圾对）
+            # + 修正后 executed/v
+            "road_offset": None if road_offset is None else round(road_offset, 4),
             # YOLO×深度融合（2026-09-25）：本拍检测框数（物体掩码随帧入深度路径）
             "yolo_cars": len(result.cars),
             # road_offset 证据面（保鲜槽+单侧反推调试）：来源 / 半宽记忆 / 槽龄

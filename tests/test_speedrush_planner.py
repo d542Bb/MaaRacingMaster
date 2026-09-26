@@ -111,23 +111,20 @@ def test_conserve_hold_refreezes_on_reentry():
     assert pl._conserve_hold == pytest.approx(-0.5)
 
 
-def test_conserve_with_road_obs_steers_back_to_hold():
-    """有路观测拍：⑥b 把 executed 纠离 hold 后，PD 拉回 hold——
-    保持车道是闭环，不是把上一拍杆值冻住（弯道跟线的最小面）。"""
+def test_conserve_with_road_obs_centers_to_road():
+    """CONSERVE+有 ro：直连路中心——ro 是直接观测，不经车道参考系。
+    13:29 局：参考系陈旧时 hold(−0.13) 与 ro(+1.9) 打架、杆恒 0 蹭右墙 5.5s。
+    无 ro 拍退回入拍 hold（c1512bf 语义，直道无观测平衡点仍是归零）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
-    pl.state.executed_lane = 0.5
-    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
-                   fid=1, valid=1), DT, 1)        # hold=0.5
-    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
-                   fid=2, valid=2), DT, 2, road_offset=0.5)   # 锚定：obs==executed
-    pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
-                   fid=3, valid=3), DT, 3, road_offset=0.0)   # 路观测：车偏左了
-    assert pl.state.executed_lane < 0.45          # ⑥b 把 executed 拉回观测
-    cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
-                         fid=4, valid=4), DT, 4)
-    assert cmd.steer_x > 0                        # PD 拉回 hold（旧语义恒 0 不跟线）
+    pl.state.executed_lane = -0.13
+    c = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                       fid=1, valid=1), DT, 1, road_offset=1.5)
+    assert c.steer_x < 0                          # 车在路右 1.5 → 向左回中心
+    c2 = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
+                        fid=2, valid=2), DT, 2)   # 断供拍：hold=−0.13，exec 未动
+    assert c2.steer_x == 0
 
 
 def test_fault_forces_zero():
@@ -389,54 +386,57 @@ def test_road_jump_rejected():
     assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
 
 
-def test_anchor_not_formed_at_road_edge():
-    """形成门回归（2026-09-26 12:39 局）：骑缘观测（|ro|≈半宽）不得定参考系。
-    毒化场景复现：ro=−2.7 连供 30 拍、目标 0——旧实现首拍定锚 anchor=−2.7，
-    此后 obs 恒正拽 executed 离 0 → PD 满左杆把车钉死在左护栏。"""
+def test_starved_frame_rebases_to_road():
+    """形成门饿死超时也重基（13:29 局开局：车在左缘 ro=−2.9，形成门拒定锚
+    7s、hold:0=杆恒 0 蹭墙）。预算内不定锚不打杆；超时重基 exec:=ro、道0=路中心，
+    PD 把车拉回带内。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
-    for i in range(1, 31):
-        c = pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=-2.7)
-        assert pl._road_anchor is None          # 骑缘拍：参考系不形成
-        assert c.steer_x == 0                   # 也不得产生左钉杆值
-    # 车回到中带：此拍才允许定锚，且锚=ro−executed
-    pl.update(_out(x_target=0.0, fid=31, valid=31), DT, 31, road_offset=-0.5)
-    assert pl._road_anchor == pytest.approx(-0.5)
-    # 之后车向路中心移动（ro→0）：obs=+0.5 被接受，PD 向左回正（正常闭环）。
-    # ⑥b 在 ③ 之后执行：修正后的 executed 下一拍才进环（一拍滞后，非缺陷）。
-    pl.update(_out(x_target=0.0, fid=32, valid=32), DT, 32, road_offset=0.0)
-    assert pl.state.executed_lane > 0.1
-    c = pl.update(_out(x_target=0.0, fid=33, valid=33), DT, 33, road_offset=0.0)
-    assert c.steer_x < 0
+    n_budget = int(P.anchor_stale_s / DT) - 1
+    for i in range(1, n_budget + 1):
+        c = pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=-2.9)
+        assert pl._road_anchor is None
+        assert c.steer_x == 0
+    pl.update(_out(x_target=0.0, fid=n_budget + 1, valid=n_budget + 1), DT,
+              n_budget + 1, road_offset=-2.9)      # 超预算：重基
+    assert pl._road_anchor == 0.0
+    assert pl.state.executed_lane == pytest.approx(-2.9)
+    c = pl.update(_out(x_target=0.0, fid=n_budget + 2, valid=n_budget + 2), DT,
+                  n_budget + 2, road_offset=-2.9)
+    assert c.steer_x > 0                           # 车在 −2.9、道0=中心 → 向右回
 
 
-def test_drift_reanchor_after_persistent_innovation():
-    """同号超门新息持续 N 拍 → 判参考系说谎：当前位置重定道0，闭环恢复。"""
+def test_stale_rejected_corrections_rebase():
+    """时间判据陈旧重基（13:29 死亡螺旋：ro=+1.9 全程、exec 冻结 −0.13、0 杆
+    5.5s 怼右墙——旧"连续 40 次喂入拒绝"判据只攒到 31 次，永不触发）。
+    重基后道0=路中心，闭环一拍复活。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)  # 锚=0
-    for i in range(2, 2 + P.anchor_drift_ticks):
-        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=4.0)
-    assert pl._road_anchor == pytest.approx(4.0)   # 重定：当前位置=道0
-    assert pl.state.executed_lane == pytest.approx(0.0)
-    # 复位后新观测恢复修正（r=−0.5 在新息门内，收 α·r）
-    pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99, road_offset=3.5)
-    assert pl.state.executed_lane == pytest.approx(-0.5 * P.obs_alpha)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.5)  # 锚=0.5
+    n = int(P.anchor_stale_s / DT)
+    for i in range(2, n + 2):                      # ro=+1.9 喂 1s：r=1.4 全拒
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=1.9)
+    assert pl._road_anchor == 0.0
+    assert pl.state.executed_lane == pytest.approx(1.9)
+    c = pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99, road_offset=1.9)
+    assert c.steer_x < 0                           # 道0=中心，车在 +1.9 → 向左回
 
 
-def test_drift_counter_needs_same_sign():
-    """异号超门=噪声振荡不是漂移：计数翻转重置，参考系不许被抖掉。"""
+def test_blackout_voids_frame():
+    """断供超预算=帧作废（黑视本身是漂移温床）：旧锚不得去拽新路上的车；
+    作废后按中带观测重懒定。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
-    for i in range(2, 82):
-        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
-                  road_offset=4.0 if i % 2 else -4.0)
-    assert pl._road_anchor == pytest.approx(0.0)
-    assert pl.state.executed_lane == pytest.approx(0.0)
+    n = int(P.anchor_stale_s / DT)
+    for i in range(2, n + 2):                      # 全程 ro=None
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
+    assert pl._road_anchor is None
+    pl.update(_out(x_target=0.0, fid=90, valid=90), DT, 90, road_offset=0.4)
+    assert pl._road_anchor == pytest.approx(0.4)   # 重懒定（exec≈0）
 
 
 def test_reanchor_event_resets_road_frame():

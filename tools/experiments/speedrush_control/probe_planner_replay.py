@@ -64,11 +64,15 @@ def replay(rows: list[dict], over: dict | None = None, pair_only: bool = False):
         if pair_only and r.get("ro_source") != "pair":
             ro = None
         cmd = pl.update(d, r["dt"], r["fid"], road_offset=ro)
-        out.append((cmd.steer_x, pl.state.executed_lane))
+        out.append((cmd.steer_x, pl.state.executed_lane, pl._stale_t,
+                    pl._road_anchor))
     return out
 
 
-def metrics(out, rows) -> tuple[float, float, float]:
+def metrics(out, rows) -> tuple[float, float, float, float]:
+    """(饱和率, 翻转/s, |exec|p90, 最长饥饿 s)。饥饿=距上次被接受修正的秒数
+    （planner._stale_t 直读）——13:02 网格只优化了前三项，看不见锁死，
+    pair-only 定档被 13:29 局证伪正出此盲点。"""
     steer = [o[0] for o in out]
     ex = [abs(o[1]) for o in out]
     sat = sum(1 for s in steer if abs(s) >= SAT_RAW) / len(steer)
@@ -76,7 +80,8 @@ def metrics(out, rows) -> tuple[float, float, float]:
     big = [s for s in steer if abs(s) > BIG_STICK]
     flips = sum(1 for a, b in zip(big, big[1:]) if a * b < 0) / max(t_tot, 1e-9)
     p90 = sorted(ex)[int(0.9 * (len(ex) - 1))]
-    return sat, flips, p90
+    starve = max((o[2] for o in out), default=0.0)
+    return sat, flips, p90, starve
 
 
 def fidelity(out, rows) -> tuple[float, float]:
@@ -104,11 +109,11 @@ def main() -> None:
     n_pre = next((i for i, r in enumerate(rows) if r["state"] == "CONSERVE"),
                  len(rows))
     mean_d, max_d = fidelity(base_out[:n_pre], rows[:n_pre])
-    sat, flips, p90 = metrics(base_out, rows)
+    sat, flips, p90, starve = metrics(base_out, rows)
     print(f"[复现] 首 CONSERVE 前 {n_pre} 拍逐拍对齐 mean|Δsteer|={mean_d:.1f} "
           f"max|Δ|={max_d}（其后分叉=CONSERVE 新语义，属预期）")
     print(f"[基线] 生产配置整段指标: 饱和率={sat:.1%} 翻转={flips:.2f}/s "
-          f"|exec|p90={p90:.2f}")
+          f"|exec|p90={p90:.2f} 最长饥饿={starve:.2f}s")
     if mean_d > 500:
         print("!! 前缀复现不过（流重建有误），网格结论无效——先查 valid_until/dt/state。")
         return
@@ -116,16 +121,18 @@ def main() -> None:
     if not args.grid:
         return
     print(f"\n{'obs_alpha':>9} {'obs_jump':>8} {'k_p':>4} {'k_d':>4} {'pair':>5} "
-          f"{'饱和率':>7} {'翻转/s':>7} {'|ex|p90':>8}")
+          f"{'饱和率':>7} {'翻转/s':>7} {'|ex|p90':>8} {'饥饿s':>7}")
     grid = []
     for alpha, jump, kp, kd, pair in itertools.product(
             (0.6, 0.3, 0.15), (1.5, 0.8), (1.2, 0.7), (0.2, 0.4), (False, True)):
         over = {"obs_alpha": alpha, "obs_jump_max_lane": jump, "k_p": kp, "k_d": kd}
         out = replay(rows, over, pair_only=pair)
         grid.append(((alpha, jump, kp, kd, pair), metrics(out, rows)))
-    for key, (sat, flips, p90) in sorted(grid, key=lambda g: g[1][0] + 0.1 * g[1][1]):
+    # 排序含饥饿惩罚：锁死（stale 顶到 anchor_stale_s）即判据失效信号
+    for key, (sat, flips, p90, starve) in sorted(
+            grid, key=lambda g: g[1][0] + 0.1 * g[1][1] + 0.05 * g[1][3]):
         print(f"{key[0]:>9} {key[1]:>8} {key[2]:>4} {key[3]:>4} {str(key[4]):>5} "
-              f"{sat:>6.1%} {flips:>7.2f} {p90:>8.2f}")
+              f"{sat:>6.1%} {flips:>7.2f} {p90:>8.2f} {starve:>7.2f}")
 
 
 if __name__ == "__main__":

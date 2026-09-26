@@ -70,8 +70,7 @@ class LateralPlanner:
         self._abort_hold_lane: float | None = None
         self._conserve_hold: float | None = None  # CONSERVE 入拍冻结的车道位（③）
         self._road_anchor: float | None = None   # 路观测参考帧懒定（⑥b）
-        self._drift_n = 0                        # 同号超门新息连续计数（⑥b 漂移复位）
-        self._drift_sign = 0.0
+        self._stale_t = 0.0                      # 距上次被接受修正的累计秒（⑥b 陈旧重基）
 
     # ---------- 主入口 ----------
 
@@ -111,16 +110,22 @@ class LateralPlanner:
         if st is not DecisionState.CONSERVE:
             self._conserve_hold = None
         if st is DecisionState.CONSERVE:
-            # CONSERVE=**保持当前车道**（13:02 局复盘：旧实现归零=直开，弯道直开
-            # 怼护栏——badframe fid_2325 侧滑胎烟实证；设计文本本意"保持+禁变道"，
-            # 归零只在直道等价于保持）。入拍冻结 executed 为 hold 目标走 PD——
-            # 冻结值归属同 ABORT 先例（维护者裁定 2026-09-22，归本层不归决策层）。
-            # 直道无观测时平衡点仍是归零（旧行为逐拍兼容）；有路观测时随 ⑥b
-            # 纠回 hold 车道，禁的是变道追币，不是转向本身。
-            if self._conserve_hold is None:
-                self._conserve_hold = self.state.executed_lane
-            steer_raw = self._pd(self._conserve_hold)
+            # CONSERVE=**回到并停在路中心**（13:02 局：归零直开弯道怼护栏，badframe
+            # fid_2325 侧滑胎烟；13:29 局二次修正：入拍冻结 executed 的"保持车道"
+            # 依赖车道参考系诚实，而参考系陈旧时 hold=−0.13 与 ro=+1.9 打架、杆恒 0
+            # 直开 5.5s 又怼右墙）。ro 是路相对的**直接观测**，不经参考系——有 ro
+            # 的拍就直连路中心（感知半死时"半死"的是金币检测，路几何活着；中心是
+            # 路上最安全的位置）；无 ro 拍退回入拍冻结 executed 走 PD（直道无观测
+            # 时平衡点仍是归零，旧行为兼容）。
             self._abort_hold_lane = None
+            if road_offset is not None:
+                ro_pred = road_offset + self.state.v_lat_est * self.p.lookahead_tau_s
+                u = self.p.k_p * (0.0 - ro_pred) - self.p.k_d * self.state.v_lat_est
+                steer_raw = max(-1.0, min(1.0, u))
+            else:
+                if self._conserve_hold is None:
+                    self._conserve_hold = self.state.executed_lane
+                steer_raw = self._pd(self._conserve_hold)
         elif st is DecisionState.FAULT:
             steer_raw = 0.0                      # 几何不可信：直开是诚实兜底
             self._abort_hold_lane = None
@@ -163,31 +168,50 @@ class LateralPlanner:
         #    令 obs==executed（anchor=road_offset−executed），此后只跟踪 Δroad_offset；
         #    事件重锚重置 anchor=None，下一拍按新 executed 重新对齐（不拿旧帧拽新值）。
         #    形成门（12:39 局教训）：骑缘拍（|ro|≈半宽）上定的"道0"=护栏位——PD 把车
-        #    满左杆钉在路缘 818 拍，真居中观测全被 1.5 车道跳变门当坏检测丢弃（182 拍），
-        #    闭环自锁。锚漂移复位（同号超门持续 N 拍）：新息**系统性地**超门说明说谎的
-        #    是参考系不是每拍观测，重定当前位置为道0（与事件重锚同一语义），而不是永远弃。
+        #    满左杆钉在路缘 818 拍，真居中观测全被跳变门当坏检测丢弃，闭环自锁。
+        #    陈旧重基（13:29 局二次教训）：漂移复位原按"连续 40 次喂入拒绝"计数——
+        #    供数黑视期不计数、跳变门收紧后喂入更少，车以 0 杆直开 5.5s 怼进右墙时
+        #    阈值还差 9 次。判据从"次数"换成"时间"：距上次被接受修正超 anchor_stale_s
+        #    即重基到路上（exec:=ro、anchor:=0，道0=路中心），断供同样计时。
         if road_offset is not None:
             if self._road_anchor is None:
                 if abs(road_offset) <= self.p.anchor_max_off:
                     self._road_anchor = road_offset - self.state.executed_lane
-                    self._drift_n = 0
+                    self._stale_t = 0.0
+                else:
+                    # 形成门饿死也要重基（13:29 局开局：车在左缘 ro=−2.9，形成门
+                    # 拒定锚 7s、hold:0=杆恒 0 蹭墙）——超 stale 预算说明"中带观测"
+                    # 等不来，直接重基到路上（exec:=ro、anchor:=0，道0=路中心）。
+                    self._stale_t += dt_s
+                    if self._stale_t >= self.p.anchor_stale_s:
+                        self.state.executed_lane = road_offset
+                        self.state.v_lat_est = 0.0
+                        self._road_anchor = 0.0
+                        self._stale_t = 0.0
             else:
                 obs = road_offset - self._road_anchor
                 r = obs - self.state.executed_lane
                 if abs(r) <= self.p.obs_jump_max_lane:
                     self.state.executed_lane += self.p.obs_alpha * r
                     self.state.v_lat_est += self.p.obs_beta * r / dt_s
-                    self._drift_n = 0
+                    self._stale_t = 0.0
                 else:
-                    sgn = 1.0 if r > 0 else -1.0
-                    self._drift_n = (self._drift_n + 1 if sgn == self._drift_sign
-                                     else 1)
-                    self._drift_sign = sgn
-                    if self._drift_n >= self.p.anchor_drift_ticks:
-                        self.state.executed_lane = 0.0
+                    self._stale_t += dt_s
+                    if self._stale_t >= self.p.anchor_stale_s:
+                        # 时间判据重基（13:29 局教训：拍数门 40 次**喂入**拒绝≈2s+，
+                        # 供数黑视期还根本不计数——车以 0 杆直开 5.5s 怼进右墙，
+                        # ro=+1.7~+2.1 全程在喊）。陈旧即重基到路上：exec:=ro、
+                        # anchor:=0——"道0"恢复路中心语义，闭环一拍复活。
+                        self.state.executed_lane = road_offset
                         self.state.v_lat_est = 0.0
-                        self._road_anchor = road_offset
-                        self._drift_n = 0
+                        self._road_anchor = 0.0
+                        self._stale_t = 0.0
+        elif self._road_anchor is not None:
+            # 断供计时：黑视本身=漂移温床，超预算则帧作废（下个中带观测重形成）
+            self._stale_t += dt_s
+            if self._stale_t >= self.p.anchor_stale_s:
+                self._road_anchor = None
+                self._stale_t = 0.0
 
         # ⑦ 下发链：归一 → 限幅（每 tick 变化上限）→ 死区（<256 归 0，256 保留）
         raw = int(round(self.state.steer_norm * _STICK_FULL))

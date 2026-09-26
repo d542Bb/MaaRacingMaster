@@ -113,9 +113,10 @@ class Planner:
     obs_alpha: float           # 位置修正增益（alpha-beta 滤波），有路缘观测拍生效 [需实测]
     obs_beta: float            # 速度修正增益：r/dt 注入 v_lat，治"模型自说自话收敛" [需实测]
     obs_jump_max_lane: float   # 新息门：|观测−预测| 超此值判坏检测，本拍弃观测
-    # —— 路锚卫生（2026-09-26 12:39 局复盘：骑缘拍毒化参考系→"保持道0"钉成贴护栏）——
+    # —— 路锚卫生（2026-09-26 12:39/13:29 两局复盘：骑缘拍毒化参考系；陈旧帧+
+    #    拍数门复位太慢=0 杆直开怼墙）——
     anchor_max_off: float      # 锚形成门：|road_offset| ≤ 此值才形成参考系 [需实测]
-    anchor_drift_ticks: int    # 同号新息连续超门拍数→判锚漂移，重定参考系（防跳变门锁死闭环）
+    anchor_stale_s: float      # 距上次被接受修正超此秒数（含断供）→ 陈旧重基到路上 [需实测]
 
 
 @dataclass(frozen=True)
@@ -253,7 +254,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                                    lo_open=False),
             anchor_max_off=_num(d, "planner", "anchor_max_off", lo=0,
                                 lo_open=False),
-            anchor_drift_ticks=_int(d, "planner", "anchor_drift_ticks", lo=2)),
+            anchor_stale_s=_num(d, "planner", "anchor_stale_s", lo=0,
+                                lo_open=False)),
         overtake=Overtake(
             value_base=_num(d, "overtake", "value_base", lo=0),
             value_limit=_num(d, "overtake", "value_limit", lo=0),
