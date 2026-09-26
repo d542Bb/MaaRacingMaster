@@ -101,6 +101,44 @@ def test_v1_lateral_channel_live(monkeypatch):
     assert chain["planner"].state.executed_lane < 1.0
 
 
+# ---------- 闭环供数门：只有同帧双侧对进闭环（13:02 局回放定档） ----------
+
+def _bnd_lanes(el, er, sides=2):
+    return BoundarySummary(schema_version=2, left_x=80.0, right_x=1200.0,
+                           road_width=1120.0, straight_residual=0.0, vp_row=None,
+                           validity=True, uncertainty=0.1, sides=sides,
+                           left_edge_lane=el, right_edge_lane=er)
+
+
+def test_road_offset_pair_only_feeds_loop(monkeypatch):
+    """pair 拍进闭环（trace road_offset=数值）；单侧合成拍只进记账
+    （ro_source/ro_off 照记，road_offset=None）——陈值反推不得驱动回路。"""
+    cur = {}
+    monkeypatch.setattr(smod, "detect_boundary", lambda frame, **kw: cur.get("b"))
+    m = _module()
+    chain = m._build_control_chain()
+    chain["geo_master"] = "hsv"
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    cur["b"] = _bnd_lanes(-1.5, 1.5)               # 同帧双侧对：off=0
+    t1 = tick()
+    assert t1["ro_source"] == "pair"
+    assert t1["road_offset"] == pytest.approx(0.0)  # 进闭环
+    cur["b"] = _bnd_lanes(-2.0, None, sides=1)      # 单侧：hw 记忆 1.5 反推 off=0.5
+    t2 = tick()
+    assert t2["ro_source"] == "single_L"
+    assert t2["road_offset"] is None                # 不进闭环
+    assert t2["ro_off"] == pytest.approx(0.5)       # 原始读数照记
+
+
 # ---------- 控制链异常 → 停控转观测，不崩主循环、不 strand 油门 ----------
 
 def test_chain_exception_disables_control():

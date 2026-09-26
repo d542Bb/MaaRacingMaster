@@ -42,7 +42,8 @@ BIG_STICK = 5000         # 翻转统计只数大杆段（死区边缘抖动不�
 
 
 def load_rows(path: Path) -> list[dict]:
-    rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
     rows.sort(key=lambda r: r["fid"])
     return rows
 

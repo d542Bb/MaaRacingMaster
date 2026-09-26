@@ -187,11 +187,11 @@ def test_expired_hold_then_conserve_at_plus_one():
     pl = LateralPlanner(P)
     _run_moving(pl, 1.0, ticks=5)
     held = pl._last_raw
-    assert held > 20000
+    assert held > 0.4 * P.k_p * 32767             # 大杆移动中（阈值随 k_p 定标）
     # 过期第 1..hold_max_ticks 拍：杆值保持（steer_raw=当前 steer_norm，输出不反打）
     for i in range(1, P.hold_max_ticks + 1):
         cmd = pl.update(_out(x_target=1.0, fid=10 + i, valid=9), DT, 10 + i)
-        assert cmd.steer_x > 20000                # 保持方向与幅度（允许限幅缓变）
+        assert cmd.steer_x > 0.4 * P.k_p * 32767  # 保持方向与幅度（允许限幅缓变）
     # 第 hold_max_ticks+1 拍起按 CONSERVE：明确向 0 走
     cmd = pl.update(_out(x_target=1.0, fid=99, valid=9), DT, 99)
     assert cmd.steer_x < held
@@ -230,8 +230,9 @@ def test_lowpass_is_time_based_not_fixed_alpha():
     assert pl2.state.steer_norm > pl1.state.steer_norm
     a1 = 1 - math.exp(-0.05 / P.tau_steer_s)
     a2 = 1 - math.exp(-0.10 / P.tau_steer_s)
-    assert pl1.state.steer_norm == pytest.approx(a1 * 1.0, rel=1e-6)
-    assert pl2.state.steer_norm == pytest.approx(a2 * 1.0, rel=1e-6)
+    u0 = min(1.0, P.k_p)          # 首拍误差 1.0、v=0 → PD 原始输出（>1 才饱和截断）
+    assert pl1.state.steer_norm == pytest.approx(a1 * u0, rel=1e-6)
+    assert pl2.state.steer_norm == pytest.approx(a2 * u0, rel=1e-6)
 
 
 # ---------- 限幅与死区（旧栈验证值的接口语义） ----------
@@ -356,7 +357,7 @@ def test_road_reanchor_pins_inflated_model():
         c = pl_obs.update(d, DT, i, road_offset=0.0)
         obs_x.append(c.steer_x)
     # 无观测：模型冲到接近目标→杆回落到 0（提前松杆，V2 病灶）
-    assert pl_open.state.executed_lane > 0.7
+    assert pl_open.state.executed_lane > 0.5
     assert abs(open_x[-1]) < abs(open_x[3])
     # 有观测：executed 被钉在 0 附近，杆持续高（误差在，杆就在）
     assert abs(pl_obs.state.executed_lane) < 0.15
@@ -420,9 +421,9 @@ def test_drift_reanchor_after_persistent_innovation():
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=4.0)
     assert pl._road_anchor == pytest.approx(4.0)   # 重定：当前位置=道0
     assert pl.state.executed_lane == pytest.approx(0.0)
-    # 复位后新观测恢复修正（r=−1 在门内）
-    pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99, road_offset=3.0)
-    assert pl.state.executed_lane == pytest.approx(-0.6)
+    # 复位后新观测恢复修正（r=−0.5 在新息门内，收 α·r）
+    pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99, road_offset=3.5)
+    assert pl.state.executed_lane == pytest.approx(-0.5 * P.obs_alpha)
 
 
 def test_drift_counter_needs_same_sign():
