@@ -69,6 +69,8 @@ class LateralPlanner:
         self._expired_ticks = 0
         self._abort_hold_lane: float | None = None
         self._road_anchor: float | None = None   # 路观测参考帧懒定（⑥b）
+        self._drift_n = 0                        # 同号超门新息连续计数（⑥b 漂移复位）
+        self._drift_sign = 0.0
 
     # ---------- 主入口 ----------
 
@@ -143,17 +145,35 @@ class LateralPlanner:
         #    同步收敛（不是纯 β 直注的发散），模型虚胖被钉回、误差常驻→杆常驻，
         #    "自说自话收敛→提前松杆"从此不可能。无观测拍退回纯模型（旧行为不变）。
         #    参考帧：executed 与 x_target 同为"绝对车道位"系（重锚置为读数），路观测
-        #    是"相对路中心"系，两者差一常数偏置——锚定不变量：首观测拍令
-        #    obs==executed（anchor=road_offset−executed），此后只跟踪 Δroad_offset；
+        #    是"相对路中心"系，两者差一常数偏置——锚定不变量：首个**过形成门**的观测拍
+        #    令 obs==executed（anchor=road_offset−executed），此后只跟踪 Δroad_offset；
         #    事件重锚重置 anchor=None，下一拍按新 executed 重新对齐（不拿旧帧拽新值）。
+        #    形成门（12:39 局教训）：骑缘拍（|ro|≈半宽）上定的"道0"=护栏位——PD 把车
+        #    满左杆钉在路缘 818 拍，真居中观测全被 1.5 车道跳变门当坏检测丢弃（182 拍），
+        #    闭环自锁。锚漂移复位（同号超门持续 N 拍）：新息**系统性地**超门说明说谎的
+        #    是参考系不是每拍观测，重定当前位置为道0（与事件重锚同一语义），而不是永远弃。
         if road_offset is not None:
             if self._road_anchor is None:
-                self._road_anchor = road_offset - self.state.executed_lane
-            obs = road_offset - self._road_anchor
-            r = obs - self.state.executed_lane
-            if abs(r) <= self.p.obs_jump_max_lane:
-                self.state.executed_lane += self.p.obs_alpha * r
-                self.state.v_lat_est += self.p.obs_beta * r / dt_s
+                if abs(road_offset) <= self.p.anchor_max_off:
+                    self._road_anchor = road_offset - self.state.executed_lane
+                    self._drift_n = 0
+            else:
+                obs = road_offset - self._road_anchor
+                r = obs - self.state.executed_lane
+                if abs(r) <= self.p.obs_jump_max_lane:
+                    self.state.executed_lane += self.p.obs_alpha * r
+                    self.state.v_lat_est += self.p.obs_beta * r / dt_s
+                    self._drift_n = 0
+                else:
+                    sgn = 1.0 if r > 0 else -1.0
+                    self._drift_n = (self._drift_n + 1 if sgn == self._drift_sign
+                                     else 1)
+                    self._drift_sign = sgn
+                    if self._drift_n >= self.p.anchor_drift_ticks:
+                        self.state.executed_lane = 0.0
+                        self.state.v_lat_est = 0.0
+                        self._road_anchor = road_offset
+                        self._drift_n = 0
 
         # ⑦ 下发链：归一 → 限幅（每 tick 变化上限）→ 死区（<256 归 0，256 保留）
         raw = int(round(self.state.steer_norm * _STICK_FULL))

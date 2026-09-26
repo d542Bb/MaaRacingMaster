@@ -343,6 +343,56 @@ def test_road_jump_rejected():
     assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
 
 
+def test_anchor_not_formed_at_road_edge():
+    """形成门回归（2026-09-26 12:39 局）：骑缘观测（|ro|≈半宽）不得定参考系。
+    毒化场景复现：ro=−2.7 连供 30 拍、目标 0——旧实现首拍定锚 anchor=−2.7，
+    此后 obs 恒正拽 executed 离 0 → PD 满左杆把车钉死在左护栏。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    for i in range(1, 31):
+        c = pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=-2.7)
+        assert pl._road_anchor is None          # 骑缘拍：参考系不形成
+        assert c.steer_x == 0                   # 也不得产生左钉杆值
+    # 车回到中带：此拍才允许定锚，且锚=ro−executed
+    pl.update(_out(x_target=0.0, fid=31, valid=31), DT, 31, road_offset=-0.5)
+    assert pl._road_anchor == pytest.approx(-0.5)
+    # 之后车向路中心移动（ro→0）：obs=+0.5 被接受，PD 向左回正（正常闭环）。
+    # ⑥b 在 ③ 之后执行：修正后的 executed 下一拍才进环（一拍滞后，非缺陷）。
+    pl.update(_out(x_target=0.0, fid=32, valid=32), DT, 32, road_offset=0.0)
+    assert pl.state.executed_lane > 0.1
+    c = pl.update(_out(x_target=0.0, fid=33, valid=33), DT, 33, road_offset=0.0)
+    assert c.steer_x < 0
+
+
+def test_drift_reanchor_after_persistent_innovation():
+    """同号超门新息持续 N 拍 → 判参考系说谎：当前位置重定道0，闭环恢复。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)  # 锚=0
+    for i in range(2, 2 + P.anchor_drift_ticks):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=4.0)
+    assert pl._road_anchor == pytest.approx(4.0)   # 重定：当前位置=道0
+    assert pl.state.executed_lane == pytest.approx(0.0)
+    # 复位后新观测恢复修正（r=−1 在门内）
+    pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99, road_offset=3.0)
+    assert pl.state.executed_lane == pytest.approx(-0.6)
+
+
+def test_drift_counter_needs_same_sign():
+    """异号超门=噪声振荡不是漂移：计数翻转重置，参考系不许被抖掉。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    for i in range(2, 82):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
+                  road_offset=4.0 if i % 2 else -4.0)
+    assert pl._road_anchor == pytest.approx(0.0)
+    assert pl.state.executed_lane == pytest.approx(0.0)
+
+
 def test_reanchor_event_resets_road_frame():
     """事件重锚（金币完成）后路观测参考重懒定：不拿旧锚的 obs 去纠新帧的 executed。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
