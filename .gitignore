@@ -49,6 +49,9 @@ debug.txt
 .junie/
 .aider*
 
+# Mimosa 安全扫描器本机状态（账本/历史/hook 状态，扫描产物不入库）
+.mimosa/
+
 # AI 生成的 plan 文档（过程产物，不入库；归档后移 archive/）
 docs/plan/
 
