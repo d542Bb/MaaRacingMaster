@@ -2,15 +2,15 @@
 """深度几何观测层（depth_geo）的回归锁。
 
 两层用例：
-- **合成**（零数据依赖）：锁读法机制——全局 q20 把少数派路面钉成地面
-  （中位数会被人行道捕获，518 帧实测三群体值）、直路双边界的读数与侧别、
-  双守卫的逐个拒绝行为（收敛/侧别/远带）。合成深度图按透视口径构造：
-  边界线过 (vpx, y_h)，路面占统计列 ≥20%（q20 适用条件，见 _ground_q20 注）。
-- **数据锚点**（skipif：无离线缓存则跳）：锁定骑路缘 518（L 人行道 + R 真右缘，
-  出租车行被稳健拟合剔除）与贴护栏 437（R 在场 + L 翻面块被拒）的守卫裁决——
-  标定锚点（conv≤350 / resid≤45 / 侧别 0.15 / 源行≥20 且 y−y_h≥FLOOR）不许漂。
-"""
+- **合成**（零数据依赖）：按度量几何构造视差图（平面相机模型 + 已知路宽/墙体/，
+  锁新读法机制——逐帧尺度自标定对输出不变、直路双缘读数与侧别、车框遮挡
+  逐行弃权、同行路障内沿夹紧、平面拟合失败的诚实弃权。
+- **数据锚点**（skipif：无离线缓存则跳）：金标 DA-V2s @336 视差场上的行为锁
+  （双侧在场帧 / 单侧帧 / 骑路缘帧），钉读数与金标结构的相对关系不许漂。
 
+合成场景构造口径：相机内参用产码钉定常量（FY/FX_FY/CX/CY），地面平面
+Y = b·Z + c（b 取实测典型 pitch 项，c=相机离地高），墙体为 X=±半宽的竖直面，
+视差 d = s_true/Z。"""
 from __future__ import annotations
 
 import os
@@ -22,160 +22,160 @@ import pytest
 from maaracing_master.core import dml_lock
 from maaracing_master.plugins.speedrush import depth_geo as dg
 from maaracing_master.plugins.speedrush.depth_geo import (
-    AsyncDepthRoadObserver, FIT_FLOOR_PX, GATE_L, DepthRoadObserver, DepthRoadReading,
-    _ground_q20, _rel_and_blocks, infer_map, reading_from_map)
-from maaracing_master.plugins.speedrush.world_model import load_calib
+    AsyncDepthRoadObserver, CX, CY, DepthRoadObserver, DepthRoadReading,
+    FX_FY, FY, S0, W_REF, Y0, DIAG_Y1, infer_map, reading_from_map)
+from maaracing_master.plugins.speedrush.world_model import load_calib, x_lane_of
 
 CAL = load_calib()
-ROAD0, ROAD_SLOPE = 4.0, 1.0 / 375.0     # 路面视差 c(y)：y340→4.0、y714→5.0
-RAISE = 1.12                             # 边界外抬升面（+12% > 门 8%）
+FX = FY * FX_FY
+H_CAM = 1.6          # 合成场景相机离地高（实测典型 1.61）
+PITCH_B = -0.06      # 合成场景平面 pitch 项（实测典型量级）
+S_TRUE = 24.0        # 合成视差的真尺度（≠ 种子 S0，锁自标定）
 
 NPY = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data"
        / "speedrush" / "depth_review" / "npy")
 
 
-def _road(y: int) -> float:
-    return ROAD0 + (y - 340) * ROAD_SLOPE
+# ── 合成度量场景 ────────────────────────────────────────────────────────
+
+def _ground_y(z):
+    """地面在深度 z 处的相机系高度（Y 向下为正）。"""
+    return H_CAM + PITCH_B * z
 
 
-def _base_map() -> np.ndarray:
-    """全路面楔形（近带占统计列 ≥20%，q20 可钉住）。"""
-    ys = np.arange(720)
-    return (ROAD0 + (ys - 340).clip(0)[:, None] * ROAD_SLOPE).astype(np.float32) \
-        * np.ones((1, 1280), np.float32)
+def _ground_z(v):
+    """行 v 的地面深度（X=0 列，倾角项并入分母，与 gold_line 同式）。"""
+    return H_CAM / ((v - CY) / FY - PITCH_B)
 
 
-def _draw_raised(m: np.ndarray, inner, side: str, y0: int, y1: int) -> None:
-    """画抬升块：内沿 x=inner(y)，L 侧填 [0,x)、R 侧填 [x,1280)，值=c(y)·RAISE。"""
-    for y in range(y0, y1):
-        xi = int(round(inner(y)))
-        if side == "L":
-            m[y, :max(xi, 0)] = _road(y) * RAISE
-        else:
-            m[y, min(xi, 1280):] = _road(y) * RAISE
+def _scene_map(x_left=W_REF, x_right=W_REF, cars=(), obstacles=(), s=S_TRUE):
+    """度量场景 → (全帧视差图, 车盒掩码)。逐像素光线取最近命中，d = s/Z；
+    无命中（天空）d=0。cars/obstacles: (x1, x2, z1, z2, top) 轴对齐盒，top=顶面
+    离地高；车盒是 YOLO 可见物（返回掩码模拟生产 object_mask），路障不是
+    （留在视差里走平面"上凸体"路径）。"""
+    m = np.zeros((720, 1280), np.float32)
+    cm = np.zeros((720, 1280), bool)
+    for v in range(Y0, DIAG_Y1):
+        for u in range(1280):
+            best = np.inf
+            kind = None
+            zg = _ground_z(v)
+            if zg > 0:
+                best, kind = zg, "ground"     # 地面（无限平面，恒有命中）
+            for x_wall, sgn in ((x_left, -1.0), (x_right, 1.0)):
+                if sgn * (u - CX) <= 0:
+                    continue                   # 墙在本列的远侧，光线到不了
+                zw = sgn * x_wall * FX / (u - CX)
+                y_ray = (v - CY) * zw / FY
+                if _ground_y(zw) - 60.0 <= y_ray <= _ground_y(zw) and zw < best:
+                    best, kind = zw, "wall"    # 竖直墙面（墙高 60m 内）
+            for (x1, x2, z1, z2, top) in (*cars, *obstacles):
+                den = u - CX
+                ta, tb = sorted((x1 * FX / den, x2 * FX / den))
+                if tb <= 0 or ta > z2 or tb < z1:
+                    continue
+                zc = max(ta, z1)               # 近侧面（或盒近缘）
+                if zc > z2:
+                    continue
+                y_ray = (v - CY) * zc / FY
+                if _ground_y(zc) - top <= y_ray <= _ground_y(zc) and zc < best:
+                    best, kind = zc, "box"
+            if np.isfinite(best) and best > 0:
+                m[v, u] = s / best
+                if kind == "box":
+                    cm[v, u] = True
+    return m, cm
 
 
-def _vp_line(k: float, side: str):
-    """过 VP 的边界线：x = vpx ± k·(y−y_h)。"""
-    sgn = -1.0 if side == "L" else 1.0
-    return lambda y: CAL.vpx + sgn * k * (y - CAL.y_h)
+def _lane_of_x(x_m, v):
+    """真值换算：地面上的横向米位置 x_m 在行 v 的像素 → 旧车道单位。"""
+    u = x_m * FX / _ground_z(v) + CX
+    return x_lane_of(int(round(u)), v, CAL), u
 
 
 # ── 读法机制 ────────────────────────────────────────────────────────────
 
-def test_ground_q20_pins_minority_road_median_fails():
-    """行内路面是少数派时：q20 钉住路面，中位数被人行道捕获（518 实测值）。"""
-    m = np.full((720, 1280), 5.316, np.float32)
-    m[:, :300] = 5.551                       # 人行道（统计列内 301）
-    m[:, 301:540] = 5.316                    # 路面（统计列内 239，22%）
-    m[:, 740:1000] = 5.551                   # 人行道（261）
-    m[:, 1000:] = 6.148                      # 出租车（280）
-    g = _ground_q20(m)
-    assert abs(float(g[600 - 340]) - 5.316) < 1e-3      # q20 = 路面
-    med = np.median(m[600, np.r_[0:540, 740:1280]])
-    assert abs(float(med) - 5.551) < 1e-3               # 中位数 = 人行道（失效）
-
-
-def test_straight_road_both_edges_detected():
-    """直路双边界：双侧在场、读数落在真线上（源行中位评估）。
-
-    注：合成楔形路在 y<544 占统计列 <20%，q20 适用条件外块不成立——
-    评估行取**当选块**的源行中位，不是假设全带都是块。"""
-    m = _base_map()
-    _draw_raised(m, _vp_line(0.95, "L"), "L", 340, 715)
-    _draw_raised(m, _vp_line(0.95, "R"), "R", 340, 715)
+def test_straight_road_both_edges():
+    """直路双墙：双侧在场、读数车道量落在真值上、px 诊断与参考行真缘一致。"""
+    m, _ = _scene_map()
     rd = reading_from_map(m, CAL, None)
-    assert rd.sides == 2
-    _, blocks = _rel_and_blocks(m, None)
-    bR = max((b for b in blocks if b[5]), key=lambda b: b[1] - b[0])
-    y_ref = float(np.median([y for y in bR[3] if y >= CAL.y_h + FIT_FLOOR_PX]))
-    x_l = CAL.vpx - 0.95 * (y_ref - CAL.y_h)
-    x_r = CAL.vpx + 0.95 * (y_ref - CAL.y_h)
-    assert abs(rd.left_x - x_l) <= 8
-    assert abs(rd.right_x - x_r) <= 8
-    assert rd.left_edge_lane <= -0.15
-    assert rd.right_edge_lane >= 0.15
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    lane_l, u_l = _lane_of_x(-W_REF, 560)
+    lane_r, u_r = _lane_of_x(W_REF, 560)
+    assert abs(rd.left_edge_lane - lane_l) < 0.15, \
+        f"{rd.left_edge_lane} vs {lane_l}"
+    assert abs(rd.right_edge_lane - lane_r) < 0.15
+    # 中位行像素落在缘线的行范围内（近行~远行之间，中位行在带中部）
+    assert 15.0 < rd.left_x < u_l + 400
+    assert 800.0 < rd.right_x < 1277.0
 
 
-# ── 双守卫的拒绝行为 ────────────────────────────────────────────────────
+def test_scale_drift_invariant_output():
+    """屏幕空间不变性（已实证推论成回归锁）：真尺度漂 ±25% 读数不变。
 
-def test_conv_guard_rejects_nonconverging_block():
-    """竖直内沿不过 VP（外推偏移 >350px）→ R 弃权，原因含 conv。"""
-    m = _base_map()
-    _draw_raised(m, lambda y: 1000.0, "R", 550, 715)
-    rd = reading_from_map(m, CAL, None)
+    度量场每帧尺度漂移（DA 归一化锚，CV≈14%）不得进入车道读数——
+    车道量对均匀缩放不变，逐帧 W_REF 标定把度量门限拉回自洽。"""
+    m1, _ = _scene_map(s=24.0)
+    m2, _ = _scene_map(s=30.0)
+    r1 = reading_from_map(m1, CAL, None)
+    r2 = reading_from_map(m2, CAL, None)
+    assert r1.sides == 2 and r2.sides == 2, f"rejects={r1.rejects}/{r2.rejects}"
+    assert abs(r1.left_edge_lane - r2.left_edge_lane) < 0.05
+    assert abs(r1.right_edge_lane - r2.right_edge_lane) < 0.05
+
+
+def test_car_box_left_occludes_left_rows_only():
+    """左侧低障（0.5m，|X|>1.5，骑在左缘上）遮挡左缘近行：左缘从未遮远行投影
+    读出（逐行弃权，非整侧弃权）。（1.3m 高盒的角跨度覆盖缘线全程，几何上
+    必然整帧遮挡——部分遮挡场景须低障构造。）"""
+    m, cm = _scene_map(cars=((-4.2, -3.2, 4.5, 5.5, 0.5),))
+    rd = reading_from_map(m, CAL, object_mask=cm)
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    lane_r, _ = _lane_of_x(W_REF, 560)
+    assert abs(rd.right_edge_lane - lane_r) < 0.15
+    lane_l, _ = _lane_of_x(-W_REF, 560)
+    assert rd.left_edge_lane is not None
+    assert abs(rd.left_edge_lane - lane_l) < 0.25
+
+
+def test_object_mask_occlusion_abstains_side():
+    """object_mask（生产 YOLO 掩码）盖住右半路近带全部行 → R 诚实弃权。"""
+    m, _ = _scene_map()
+    mask = np.zeros((720, 1280), bool)
+    mask[400:700, 780:1280] = True      # 右半路全部读数行（含右缘）
+    rd = reading_from_map(m, CAL, object_mask=mask)
     assert rd.right_edge_lane is None
-    assert any("conv" in r for r in rd.rejects)
+    assert any("R" in r for r in rd.rejects)
+    assert rd.left_edge_lane is not None
 
 
-def test_side_guard_rejects_crossing_block():
-    """横贯块的内沿落在画面中央（lane≈0）→ L 侧别拒；右缘不触边无 R 候选。"""
-    m = _base_map()
-    for y in range(550, 715):
-        m[y, :1000] = _road(y) * RAISE       # 触左缘、内沿 x=999 ≈ 中央
+def test_obstacle_clamps_inner_edge():
+    """同行路障（整段在路中心 GAP 外）夹紧内沿：右缘读路障近侧，不是穿车读墙。"""
+    m, _ = _scene_map(obstacles=((2.0, 3.0, 4.0, 8.0, 1.2),))
+    rd = reading_from_map(m, CAL, None)
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    lane_clamp, _ = _lane_of_x(2.0, 560)
+    assert abs(rd.right_edge_lane - lane_clamp) < 0.2
+
+
+def test_no_ground_abstains_honestly():
+    """近带无地面（全高墙场景）→ 平面拟合失败，双侧弃权并留原因。"""
+    m = np.zeros((720, 1280), np.float32)
+    m[Y0:DIAG_Y1, :] = 60.0             # 视差处处≈0（Z→∞，无地面种子）
+    rd = reading_from_map(m, CAL, None)
+    assert rd.sides == 0
+    assert rd.left_edge_lane is None and rd.right_edge_lane is None
+    assert rd.rejects
+
+
+def test_side_gate_rejects_crossing_edge():
+    """内沿落在画面中央（车道量 |·|<0.15）→ 侧别门拒，不成读数。"""
+    # 左墙推到 X=-0.2（几乎正中）：左缘 x_lane≈-0.07 被侧别门拒；右缘照常在场
+    m, _ = _scene_map(x_left=0.2, x_right=W_REF)
     rd = reading_from_map(m, CAL, None)
     assert rd.left_edge_lane is None
-    assert any("lane" in r for r in rd.rejects)
-    assert rd.right_edge_lane is None
-
-
-def test_far_band_block_rejected():
-    """源行不足（块行全在发散区 y−y_h<FLOOR）→ _fit 判 dead（读数带重定语义）。"""
-    from maaracing_master.plugins.speedrush.depth_geo import _fit
-    inner = {y: 1200 for y in range(340, int(CAL.y_h + FIT_FLOOR_PX))}
-    f = _fit(inner, CAL)
-    assert f is not None and f["dead"]
-    assert f["near"] == 0
-
-
-def test_baseline_guard_rejects_soft_gate():
-    """台阶守卫（2026-09-25 差分口径）：跨沿台阶 <门/2 → 交点非边界，弃权。
-
-    复刻「松门交点」失效形态：块侧抬升面与路侧缓坡只差 1.8%（<门/2）——
-    交界处没有真实深度台阶，读数是门切进缓坡的交点。"""
-    m = _base_map()
-    inner = _vp_line(0.95, "R")
-    _draw_raised(m, inner, "R", 340, 715)
-    y_ref = int(np.median([y for y in range(340, 715) if y >= CAL.y_h + FIT_FLOOR_PX]))
-    for y in range(y_ref - 60, y_ref + 60):
-        x0 = int(round(inner(y)))
-        m[y, x0 - 120:x0 - 40] = _road(y) * 1.10      # 路侧缓坡垫高（与块侧差 1.8%）
-    rd = reading_from_map(m, CAL, None)
-    assert rd.right_edge_lane is None
-    assert any("边缘无台阶" in r for r in rd.rejects)
-
-
-def test_baseline_guard_tolerates_shifted_ground():
-    """骑缘救援（2026-09-25 差分口径）：路侧整体垫高 +5%（模拟骑缘时 q20 地面
-    基线漂移），但跨沿台阶 6.7% ≥ 门/2 → 真边缘照常读出，不再被绝对水平误杀
-    （202138_p2 000507 实测 +6.4% 误杀的合成复刻）。"""
-    m = _base_map()
-    inner = _vp_line(0.95, "R")
-    _draw_raised(m, inner, "R", 340, 715)
-    y_ref = int(np.median([y for y in range(340, 715) if y >= CAL.y_h + FIT_FLOOR_PX]))
-    for y in range(y_ref - 60, y_ref + 60):
-        x0 = int(round(inner(y)))
-        m[y, x0 - 120:x0 - 40] = _road(y) * 1.05      # 路侧整体抬 +5%（基线漂移）
-    rd = reading_from_map(m, CAL, None)
-    assert rd.right_edge_lane is not None and rd.right_edge_lane > 0.15
-
-
-def test_per_side_gate_r_strict_than_l():
-    """per-side 门（2026-09-25 落产码）：R 弱台阶（+9%）在 R 门 0.10 下不成块，
-    对称门覆写 0.08 时可读——右台阶偏软、0.08 会放进晕影缓坡（44 帧 per-side
-    网格验证），L 侧两档不受影响。"""
-    m = _base_map()
-    _draw_raised(m, _vp_line(0.95, "L"), "L", 340, 715)          # L 正常台阶 +12%
-    _draw_raised(m, _vp_line(0.95, "R"), "R", 340, 715)
-    ys = np.arange(720)
-    soft = (ROAD0 + (ys - 340).clip(0)[:, None] * ROAD_SLOPE) * 1.09   # R 弱台阶 +9%
-    inner = _vp_line(0.95, "R")
-    for y in range(340, 715):
-        m[y, int(round(inner(y))):] = soft[y, 0]
-    rd = reading_from_map(m, CAL, None)                          # 生产默认 per-side
-    assert rd.sides == 1 and rd.left_edge_lane is not None       # R 门 0.10 拒弱台阶
-    rd_sym = reading_from_map(m, CAL, None, gate=GATE_L)         # 对称 0.08 覆写
-    assert rd_sym.sides == 2                                     # 弱台阶入门可读
+    assert any("L" in r for r in rd.rejects)
+    assert rd.right_edge_lane is not None
 
 
 # ── 资产与会话降级 ──────────────────────────────────────────────────────
@@ -190,91 +190,71 @@ def test_ego_mask_asset_loads():
     assert not mask[:, :512].any() and not mask[:, 766:].any()
 
 
-def test_carband_breaks_tail_bridge():
-    """车尾粘连（内沿在 y540~565 段冲进中央列带）被车带下延挖除救回。
-
-    不挖除时粘连段污染内沿拟合（残差爆、整块被拒）；挖除后内沿回归
-    真边界线——按"真边界不进中央带"的结构事实泛化，无需精细车形。"""
-    inner = _vp_line(0.95, "L")
-    m = _base_map()
-    _draw_raised(m, inner, "L", 340, 715)
-    for y in range(540, 566):                    # 车尾粘连：内沿冲到中央带
-        m[y, :700] = _road(y) * RAISE
-    m[533:715, 512:765] = _road(600) * RAISE * 2  # 车身高读数（挖除区形状）
-    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
-    assert rd.left_edge_lane is not None and rd.left_edge_lane <= -0.15
-    rd_noguard = reading_from_map(m, CAL, None)
-    assert rd_noguard.left_edge_lane is None      # 不挖除：粘连桥污染被守卫拒
-
-
 def test_observer_without_session_returns_none():
     """权重缺失（session=None）时 observe 恒 None——road_offset 退纯模型积分。"""
     obs = DepthRoadObserver(None, CAL)
     assert obs.observe(np.zeros((720, 1280, 3), np.uint8)) is None
 
 
-# ── 数据锚点（守卫标定不许漂；无离线缓存则跳）──────────────────────────
-#
-# 两层各锁一事：
-# - @518 缓存 + 显式 gate=0.02：守卫标定锚点（@518 参照口径下守卫的裁决）；
-# - @336 q4f16 缓存 + 生产默认 gate：落档后的生产行为（含本底守卫在
-#   @336 本底抬升下的弃权形态）。
+# ── 数据锚点（金标 DA-V2s @336 视差场；无离线缓存则跳）──────────────────
 
-def _cached_map(key: str) -> np.ndarray | None:
-    p = NPY / f"{key}__da2s.npy"
+def _cached_map(key: str, tag: str = "d336q4f16") -> np.ndarray | None:
+    p = NPY / f"frames__{key}__{tag}.npy"
     if not p.exists():
-        return None
+        p = NPY / f"frames__{key}__da2s.npy"
+        if not p.exists():
+            return None
     return np.load(p).astype(np.float32)
 
 
-def _cached_336(key: str) -> np.ndarray | None:
-    p = NPY / f"{key}__d336q4f16.npy"
-    if not p.exists():
-        return None
-    return np.load(p).astype(np.float32)
-
-
-@pytest.mark.skipif(_cached_map("frames__000518") is None,
+@pytest.mark.skipif(_cached_map("000100") is None,
                     reason="需离线深度缓存（APPDATA depth_review/npy）")
-def test_anchor_518_straddle():
-    """@518 参照口径（gate=0.02）：骑路缘 518 双侧在场。
+def test_anchor_000100_wall_both_sides():
+    """金标 wall 帧（000100）：双侧墙基在场，读数与金标结构同侧同量级。
 
-    源行规则（2026-09-24）下的行为升级并案：L=人行道右缘 −0.394（旧锚点值不变）；
-    R=+0.90 真右缘在场——出租车污染的 375~440 行被两轮稳健拟合剔除（留点 416~714、
-    resid 6.5、conv 137 收敛），旧近带规则在此整侧弃权。钉住"剔点留线"的行为。"""
-    m = _cached_map("frames__000518")
-    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask(), gate=0.02)
-    assert rd.sides == 2
-    assert abs(rd.left_edge_lane - (-0.394)) < 0.05
-    assert abs(rd.right_edge_lane - 0.897) < 0.05
-    assert rd.rejects == ()
+    锚点值=2026-09-27 新读法落产时的实测（±0.2 锁回归不锁真值；绝对量受
+    DA@336 雾带/墙基模糊限制，验收口径见模块头注三戒）。"""
+    m = _cached_map("000100")
+    rd = reading_from_map(m, CAL, ego_mask=DepthRoadObserver._load_ego_mask())
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    assert abs(rd.left_edge_lane - (-3.26)) < 0.2
+    assert abs(rd.right_edge_lane - 3.19) < 0.2
 
 
-@pytest.mark.skipif(_cached_map("frames__000437") is None,
+@pytest.mark.skipif(_cached_map("000714") is None,
                     reason="需离线深度缓存（APPDATA depth_review/npy）")
-def test_anchor_437_wallhug():
-    """@518 参照口径（gate=0.02）：贴护栏 437 R=护栏基部在场，L 翻面块被拒。"""
-    m = _cached_map("frames__000437")
-    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask(), gate=0.02)
-    assert rd.right_edge_lane is not None and rd.right_edge_lane > 0.15
-    assert rd.left_edge_lane is None
-    assert any(r.startswith("L:") for r in rd.rejects)
+def test_anchor_000714_curve():
+    """金标弯道帧（000714，curve_cont2）：双侧在场（弯道不把读数打飞）。"""
+    m = _cached_map("000714")
+    rd = reading_from_map(m, CAL, ego_mask=DepthRoadObserver._load_ego_mask())
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    assert abs(rd.left_edge_lane - (-1.47)) < 0.2
+    assert abs(rd.right_edge_lane - 1.72) < 0.2
 
 
-@pytest.mark.skipif(_cached_336("wallhug_437") is None,
-                    reason="需 @336 q4f16 离线缓存（rescale_gate_336.py infer）")
-def test_anchor_336_production_gate():
-    """@336 生产口径（台阶守卫，2026-09-25 差分口径重钉）：贴护栏帧 R 读出。
+@pytest.mark.skipif(_cached_map("000518", "da2s") is None,
+                    reason="需离线深度缓存（APPDATA depth_review/npy）")
+def test_anchor_000518_straddle():
+    """骑路缘 518（@518 场）：双侧在场，量级与旧 q20 锚点同域（L 人行道缘、
+    R 真右缘；新读法 L 读到人行道外缘——矮路缘石在 DA@336 场低于 15cm
+    上凸体门不可分辨，语义差异记录于此）。"""
+    m = _cached_map("000518", "da2s")
+    rd = reading_from_map(m, CAL, ego_mask=DepthRoadObserver._load_ego_mask())
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    assert -1.7 < rd.left_edge_lane < -1.2
+    assert 0.9 < rd.right_edge_lane < 1.3
 
-    旧版（行 q20 绝对水平守卫）在此帧因贴墙几何的基线漂移误弃权；差分口径下
-    R 跨沿台阶真实存在（护栏基座）→ 读出，且对金标 dev 仅 +0.032 车道
-    （0.445 vs 0.413）——旧弃权是过度保守，非正确行为。L 侧仍诚实弃权
-    （翻面块被 conv 守卫拒）。"""
-    m = _cached_336("wallhug_437")
-    rd = reading_from_map(m, CAL, DepthRoadObserver._load_ego_mask())
-    assert rd.sides == 1 and rd.right_edge_lane is not None
-    assert abs(rd.right_edge_lane - 0.413) <= 0.15
-    assert rd.left_edge_lane is None
+
+@pytest.mark.skipif(_cached_map("000437", "da2s") is None,
+                    reason="需离线深度缓存（APPDATA depth_review/npy）")
+def test_anchor_000437_wallhug():
+    """贴护栏 437（@518 场）：双侧在场（新读法比旧 q20 多读出左墙基——
+    黄线出画不等于深度出画），量级锚定不许漂。"""
+    m = _cached_map("000437", "da2s")
+    rd = reading_from_map(m, CAL, ego_mask=DepthRoadObserver._load_ego_mask())
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    assert abs(rd.left_edge_lane - (-1.27)) < 0.2
+    assert abs(rd.right_edge_lane - 1.02) < 0.2
 
 
 # ── 折叠锁（时延悬案的直接机制，不许静默回退）──────────────────────────
@@ -309,7 +289,7 @@ import time as _time  # noqa: E402
 def _mk_reading(lane: float = -0.4) -> DepthRoadReading:
     return DepthRoadReading(left_edge_lane=lane, right_edge_lane=None,
                             left_x=300.0, right_x=None, sides=1,
-                            latency_ms=1.0, rejects=("R:远带",))
+                            latency_ms=1.0, rejects=("R:遮挡",))
 
 
 class _StubObserver:

@@ -1,51 +1,48 @@
 # -*- coding: utf-8 -*-
-"""深度几何观测层（架构裁决 2026-09-24：三方同卷考试后，深度区域当几何主人）。
+"""深度几何观测层（架构裁决 2026-09-24：深度区域当 road_offset 几何主人）。
 
-**职责**：帧 → DA-S 视差 → 全局逐行 q20 地面基线 → 相对门区域块 → 双守卫
-（射线收敛 + 侧别一致）→ 两侧内沿读数（车道单位）。输出与 BoundarySummary 的
-``left_edge_lane / right_edge_lane`` 字段鸭子同构，_EgoRoadObserver 原样消费；
-黄线 detect_boundary 退役为骨架（照跑照记账，不再当 road_offset 的证据源）。
+**职责**：帧 → DA-S 视差 → 视差点云（近似米制）→ 倾角感知平面拟合分地/障 →
+逐行提边（同行路障内沿夹紧 + 车框遮挡逐行弃权）→ 两侧内沿读数（车道单位）。
+输出与 BoundarySummary 的 ``left_edge_lane / right_edge_lane`` 字段鸭子同构，
+_EgoRoadObserver 原样消费。
 
-**为什么是这套读法**（证据链 commit ef5a42d、1a08321；122 帧三方同卷 +
-守卫阈值标定）：
-- **全局 q20 基线而非行中位数**：车骑上路缘时人行道占近半行宽，中位数把
-  "最大连片群体"当地面 ⇒ 真边界成负台阶、只认正偏差的管线全盲；滑动低分位
-  是局部的、跨不过车身同样失效——全局低分位才能把少数派路面钉成地面。
-- **区域而非逐行**：路面时间噪声地板 σ0.39%、台阶读数 4.5%（自身 4.2σ），
-  单像素不可信；边界=贯穿多行朝消失点收敛的线，车/金币=行跨度有限的团块
-  ⇒ 相对门 + 横向收紧 + 连通块 + 触画面侧边 + 跨行门槛。
-- **守卫**（122 帧标定 + 金标 44 帧源行重考，锚点全部分开）：①射线收敛——内沿
-  x(y) 在**源行**（y−y_h ≥ FIT_FLOOR_PX）上稳健拟合、外推到地平线须落在 VP 附近
-  （拒出租车伪块；518 帧的出租车行由两轮剔点自动剔除、真右缘得以在场）；②侧别
-  一致——源行评估的 x_lane 须在自己一侧（拒贴护栏帧的翻面块）；③源行不足判
-  「远带」弃权（发散区读数误差 ∝ 1/(y−y_h)，不可信）；④边缘台阶——内沿两侧
-  取窗（块侧 20~60px / 路侧 40~120px，跟随评估行 ±60），跨沿台阶须 ≥门的一半
-  且块侧更近（拒晕影缓坡与松门交点：缓坡无台阶；旧版比对行 q20 绝对水平，
-  骑缘几何下地面基线漂移误杀真边缘，2026-09-25 改差分口径）。
+**为什么是这套读法**（55 金标帧同判据对比定案 2026-09-26，用户拍板）：
+- **平面拟合而非逐行基线**：旧消费算法（全局逐行 q20 低分位 + 固定相对门）已被
+  金标重考证伪（相对门对"高度"表征的依赖随距离衰减、远带 q20 锁雾），不再回退。
+  视差经近似内参反投影成 (X, Y, Z) 点云后，地面是 Y=aX+bZ+c 平面——弯道倾斜、
+  相机 pitch 全部被平面系数吸收，地面带 |res|<0.02Z+0.3、上凸体（墙/车/路障）
+  res<−0.15，物理量纲直读。
+- **逐帧尺度自标定**：DA 相对视差缺米制（Z=s/d 的 s 逐帧漂 CV≈14%，天空是
+  归一化锚）。产码禁依赖 UniDepth（不进包）——以**路半宽为已知常数**自标定：
+  种子尺度下平面拟合+提边量出近带半宽，s ← S0·W_REF/实测半宽（夹在种子 ±2 倍、
+  实测半宽须物理合理），第二遍在标定后的米制系里重跑拟合与提边。度量门限
+  （0.3m 地面带、1.5m 夹紧 GAP）由此逐帧自洽。
+- **车道量走 px+相机几何**（与黄线层/世界模型同一约定）：车道量对整帧均匀缩放
+  不变（u=fx·sX/sZ+cx 约掉 s）——尺度漂移对控制无害是本设计的承重推论；fx 绝对
+  值的误差进一步被逐帧标定吸收，内参只需承担 fx/fy 各向异性。
+- **车框遮挡逐行弃权**：YOLO 掩码（生产已有）∪ ego 静态掩码挖除 + 该行掩码像素
+  的 |X|>GAP 判该侧遮挡——遮挡行不产读数，宁缺毋假。
+
+**标定常量出处**（金标 54 帧 UniDepth fp32 场实测钉定，2026-09-27；改数=重跑
+标定探针，不是调参）：FY/fx 比/主点=UniDepth 自估内参跨帧中位（fx 逐帧漂 18%
+但 fx/fy 比值仅 4%——比值才可钉）；S0=视差×UniDepth Z 配准尺度中位（种子）；
+W_REF=近带半宽（wall/kerb/curve_cont 三可信层中位 3.7m；curve_cont2 层左缘出画、
+obstacle 层被路障夹紧，均为低估，不入选）。
 
 **降级路径**：权重缺失/推理异常 → observe 返回 None，road_offset 链路退回
-纯模型积分（旧行为不变）；ego_mask 缺失 → 跳过挖除并 WARNING（合并桥风险
-回升，双守卫部分兜底）。
+纯模型积分（旧行为不变）；平面拟合失败/行数不足 → 该侧弃权（None，rejects 留因）。
 
 **上拍形态**：生产经 AsyncDepthRoadObserver（异步 worker，协议同 treasure OCR）
 使用本层——控制拍只付 push+take（≈0.15ms），observe 成本在后台线程；
 本模块的同步 observe 保留为纯函数面（测试与离线复算直接调用）。
 
-**读数带（2026-09-24 重定，替代已撤回的 @336 固定近带落档）**：源行=块内
-y−y_h≥50 的行、评估行=其剔点后中位——不再绑死 [550,700]（金标 R 51/54 帧边线
-在 y<550 已出画，固定带内物理无边）。门 per-side（2026-09-25）：L 0.08 /
-R 0.10（自车晕影 +3~6% 与墙台阶 +14~24% 之间取刀，R 台阶偏软、0.08 会放进
-晕影缓坡——44 帧 per-side 网格验证；对称覆写 gate= 供实验复现已落档口径）。
-金标 44 帧：L 覆盖 79%、R 23%、双侧同帧 18%、dev p50 双侧 |·|≤0.14。
-**推理必须全帧**：带@280 裁天带实验被金标重考+渲染双重否决——DA 的相对视差
-按整帧自归一，天空是尺度锚，裁掉后墙/路对比度被压平（L 覆盖 79%→20%）。
-@518 在源行规则下覆盖反而更低（R≈0~3/44），维持质量上限参照档。双侧同帧的
-缺口由消费侧「每侧保鲜槽」解决（2026-09-25 已落 module._EgoRoadObserver）。
+**读数带**：逐行扫描只取行均深 Z∈[Z_LO, Z_HI)（近带 4~14m，标定与读数同带）。
+参考实现（55 帧、逐行中位口径）帧内一致性 MAD 0.45m；绝对量对标金标线受金标
+自身偏置限制（墙基恒定偏置、弯道帧失真、跨帧池化——三戒口径），验收看
+「每帧去偏 MAD + 半宽一致性 + 连续帧抖动」。
 
-**时延口径（折叠会话，2026-09-24 收口）**：本层时延数字一律为 load_session 的
-free-dim 折叠口径（@336 实测 p50 ≈20ms）；不折叠时图内唯一 cubic Resize（pos_embed
-插值）被 DML 拒收落 CPU、占 ~85%（133ms）——落档期的 21.4/24.7ms 即折叠口径，生产
-接线一度漏装折叠，已在 load_session 补上。
+**时延口径**：本层时延数字一律为 load_session 的 free-dim 折叠口径（@336 推理
+p50 ≈20ms）；平面拟合与逐行扫描为向量化 numpy，实测见实验区时延探针。
 """
 
 from __future__ import annotations
@@ -56,6 +53,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -64,42 +62,42 @@ import onnxruntime as ort
 from maaracing_master.core import dml_lock
 from maaracing_master.plugins.speedrush.world_model import Calib, x_lane_of
 
-# ── 流水常数（冻结口径，与三方同卷/守卫标定一致）────────────────────────
-# 推理必须吃全帧：DA-V2 的相对视差按整帧内容自归一（天空/远景是尺度锚），
-# 裁天带实验（2026-09-24，带@280）金标重考负结果 + 渲染定性——墙/路台阶对比
-# 被重新归一压平（L 覆盖 61%→20%）。天空不产读数，但产归一化，不能裁。
-Y0, Y1, DIAG_Y1 = 340, 690, 715   # 检测带 / 诊断带（含近场）
-EGO_COLS = (540, 740)             # 基线统计的非自车列带
-GATE_L = 0.08                     # 左门（相对 (M−g)/g）：自车晕影幅度 +3~6% 与墙
-GATE_R = 0.10                     # 右门：右台阶偏软，0.08 会放进晕影缓坡（44 帧
-                                  # 金标 per-side 网格 L0.08/R0.10 验证，R 覆盖
-                                  # 13/44、dev p50 +0.06；README「取证续」节）。
-                                  # 两侧门只在 640 列分界内生效（与内沿分流同界）。
-GATE = GATE_L                     # 对称门（实验脚本覆写 gate= 时沿用；落档数字
-                                  # 均为对称 0.08 口径，保留以可复现）
-HOLD = 12                         # 横向持续收紧窗（px）
-V_HOLD = 12                       # 纵向桥接窗（行）：锐利权重纹理切碎的真缘
-                                  # 带最大缺口 9 行（000420 实测），桥 ≤12 行
-MIN_SPAN = 80                     # 块最小跨行（行跨度有限的团块不够格当边界）。
-                                  # 9-22 时代按无碎片带定标 100；锐利权重的真缘
-                                  # 带被纹理切碎后落在 80~100（000420 实测 85），
-                                  # 2026-09-25 适配纵向桥接下调——车/金币团块由
-                                  # 贴边 + 守卫多层兜底，122 帧全卷验证 dev。
-Q_GROUND = 0.20                   # 全局逐行低分位（q20rescue 定案值）
-DEFAULT_SHORT = 336               # DA 推理短边（折叠口径 q4f16 p50 ≈22ms；
-                                  # @518=91ms 为质量上限档，异步形态下可选，
-                                  # 决策数据见 README「全链路时延分解」+金标重考）
+# ── 检测带（与既有捕获几何 1280×720 绑定；推理必须吃全帧，天空是尺度锚）────
+Y0, DIAG_Y1 = 340, 715
+DEFAULT_SHORT = 336   # DA 推理短边（折叠口径 q4f16 p50 ≈22ms；异步形态下可选档）
 
-# ── 守卫阈值（源行规则，2026-09-24 读数带重定；旧"固定近带 550~700"把源行与
-#    评估行绑死、金标 R 51/54 帧带内无边——见 README「实机复核」节）──
-FIT_FLOOR_PX = 50    # 源行发散区下限：y − y_h ≥ 50（车道尺误差 ∝ 1/(y−y_h)）
-FIT_MIN_SRC = 20     # 源行数门槛（不足则该块该侧弃权「远带」）
-FIT_MIN_ROWS, FIT_RESID_PX = 20, 30.0
-CONV_MAX_PX = 350.0    # |x(Y_H) − vpx|：边界线外推须过 VP 附近
-RESID_MAX_PX = 45.0    # 内沿直线拟合的中位残差
-LANE_SIDE_MIN = 0.15   # 源行读数 x_lane 的侧别门（车道）
-EDGE_OUT_LO_PX, EDGE_OUT_HI_PX = 20, 60   # 台阶守卫块侧窗（001220 横切面定死：
-EDGE_IN_LO_PX, EDGE_IN_HI_PX = 40, 120    #  外 20~60 信号 / 内 40~120 本底）
+# ── 相机内参（近似针孔，出处见模块头注；fx=FY·FX_FY）────────────────────
+FY = 851.4        # 纵向焦距中位
+FX_FY = 1.006     # fx/fy 比值中位（绝对 fx 逐帧漂 18% 不可钉，比值仅 4%）
+CX, CY = 643.2, 360.5   # 主点中位（主点误差被平面系数吸收，只需近似值）
+_FX = FY * FX_FY
+
+# ── 尺度自标定（出处见模块头注）─────────────────────────────────────────
+S0 = 24.06        # 种子尺度：视差→米的配准中位（只为度量门限提供初始米制）
+W_REF = 3.70      # 近带路半宽常数（逐帧标定锚，米）
+HW_LO, HW_HI = 1.5, 8.0   # 实测半宽物理合理域（出界=测量不可信，保种子）
+HW_PCT = 0.25             # 标定宽度取低分位：近带行的宽度（远行斜穿/雾胀是单侧离群）
+S_RATIO = (0.6, 1.6)      # 标定后尺度对种子的钳位比（DA 逐帧漂 ±14%，钳位防坏测量撬飞米制系）
+CAL_Z_HI = 9.0            # 标定带宽上限：近行近似垂直横穿路面，宽度诚实；弯道远行
+                          # 斜穿虚胀（金标 curve_cont 实测 7m），不入选（读数带仍到 Z_HI）
+
+# ── 平面拟合（Y = aX + bZ + c；阈值=参考实现口径，55 帧同判据验证）────────
+PLANE_ITERS = 3       # 近带种子迭代轮数
+PLANE_TOL = 0.02      # 地面带斜坡项 |res| < TOL·Z + OFF
+PLANE_OFF = 0.30
+ABOVE_M = 0.15        # 上凸体门：res < −ABOVE_M（高于平面 15cm）
+SEED_Z_LO, SEED_Z_HI, SEED_X_MAX = 3.0, 10.0, 5.0   # 近带种子（窄而准）
+FIT_Z_LO, FIT_Z_HI, FIT_X_MAX = 2.0, 45.0, 12.0     # 迭代域（雾带/远景出域）
+MIN_PLANE_PTS = 80
+
+# ── 逐行提边与读数 ──────────────────────────────────────────────────────
+Z_LO, Z_HI = 4.0, 14.0    # 读数/标定近带（行均深；远带发散弃权）
+MIN_ROW_GROUND = 15       # 行内地面像素下限
+MIN_ROWS = 5              # 侧读数最少行数
+MIN_SPAN_M = 1.0          # 行内路宽下限（米）
+GAP_M = 1.5               # 路障夹紧 GAP（米，路中心起算）+ 车框遮挡判据
+SEG_GAP_M = 0.6           # 路障分段间隙（米）
+LANE_SIDE_MIN = 0.15      # 侧别门：车道量须在自己一侧
 
 
 @dataclass(frozen=True)
@@ -167,200 +165,250 @@ def infer_map(sess: ort.InferenceSession, rgb: np.ndarray, short: int) -> np.nda
     return cv2.resize(d, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_LINEAR)
 
 
-def _ground_q20(m: np.ndarray) -> np.ndarray:
-    """全局逐行低分位地面基线 g(y)（长度 = DIAG_Y1−Y0）。
-
-    全局（全行宽非自车列）而非局部窗：滑窗跨不过车身，骑缘帧上人行道自己的
-    下尾就成了基线；全局 q20 才把少数派路面钉成地面。
-
-    已知破产场景（2026-09-25 22:04 局证据包实证，修复原型与金标 A/B 见
-    commit 5f83a84 的实验探针）：追逐相机随转向侧倾后 iso-深度线倾斜
-    （急转帧 ~2-4°，行内视差左近右远差五成），逐行 q20 钉住行内最远列、
-    其余路面成假隆起块——侧倾校正基线（沿等深度线取 q20）实机解释率
-    +7~25%，但金标卷有代价（L p90 0.73→1.17、R 坏 1→3），门 0.08/0.10
-    是对本基线标定的，须重过门网格再落产码。"""
-    cols = np.r_[0:EGO_COLS[0], EGO_COLS[1]:m.shape[1]]
-    return np.quantile(m[Y0:DIAG_Y1][:, cols].astype(np.float32), Q_GROUND, axis=1)
+def _band_grids() -> tuple[np.ndarray, np.ndarray]:
+    """检测带内 (u, v) 网格（列、行号），点云反投影共用。"""
+    vv, uu = np.mgrid[Y0:DIAG_Y1, 0:1280]
+    return uu.astype(np.float32), vv.astype(np.float32)
 
 
-def _rel_and_blocks(m: np.ndarray, ego_mask: np.ndarray | None,
-                    gate_l: float = GATE_L, gate_r: float = GATE_R
-                    ) -> tuple[np.ndarray,
-                               list[tuple[int, int, dict[int, int], dict[int, int], bool, bool]]]:
-    """相对偏离图 r=(M−g)/g + 非地面区域块提取。
+_UU, _VV = _band_grids()
 
-    块 = 相对门（per-side：``gate_l``/``gate_r`` 按图像 640 列分界各自生效，
-    与内沿 x<640 分流同界；对称覆写走 reading_from_map 的 ``gate``）→
-    挖自车（断车身→护栏→墙合并桥）→ 横向收紧 → 8 向连通块 →
-    触画面侧边且跨行 ≥MIN_SPAN。innerL/innerR 按 x<640 分流取内沿
-    （横贯块两侧各自可用）。r 供本底守卫复用（同一张图，不重算）。"""
-    g = _ground_q20(m)
-    r = np.full(m.shape, np.nan, np.float32)
-    r[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
-    # over = (r > gate)：NaN 与 gate 比较恒假，等价于原 nan_to_num(r,-1) > gate
-    # （省一次全图画幅拷贝），且用 float32 而非 float64 承载（filter2D 内存减半）。
-    # per-side 门以行向量广播：L/R 各用各的刀，一次比较同时出两侧掩码。
-    gate_row = np.where(np.arange(m.shape[1], dtype=np.float32) < m.shape[1] // 2,
-                        np.float32(gate_l), np.float32(gate_r))
-    over = (r > gate_row).astype(np.float32)
-    if ego_mask is not None:
-        over[ego_mask] = 0.0
-    mask = (cv2.filter2D(over, -1, np.ones((1, HOLD), np.float32)) >= HOLD).astype(np.uint8)
-    # 纵向桥接（2026-09-25）：锐利权重（rel）的纹理阶跃会沿 y 把真边缘的超门
-    # 带切碎（000420 实测最大纵向缺口 9 行，63+13 两段本是一条缘）——closing
-    # 桥 ≤V_HOLD 行的纵向缺口，恢复「边界=长线」的物理本义；与横向 HOLD 对称。
-    # 注：贴边/跨度/守卫对「车/金币团块」的过滤是过渡期脚手架——目标架构里
-    # 物体身份由 YOLO 标签与深度块融合给出，这层几何猜测随之退役。
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
-                            np.ones((V_HOLD, 1), np.uint8))
-    # 逐块内沿 = (块, 行) 分组的 L 侧 max x / R 侧 min x（x<640 归 L，x≥640 归 R）。
-    # 实现按 WithStats 的 bbox 裁到子区域再用 cv2.reduce 行归约——原逐像素 Python
-    # 循环是全链最大单项（每帧 ~19 万像素进解释器；commit 11babe4 cProfile 77%），
-    # 归约在 C 层一次算完。语义逐位等价：行内取极值与逐像素累积 min/max 同值，
-    # 块仅取 bbox 与全数组 nonzero 同集；块序 = 连通块标签序（供消费端稳定排序）。
-    ncc, lab, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    out = []
-    for c in range(1, ncc):
-        x0, y0, w, h = (int(v) for v in stats[c, :4])
-        touchL = x0 <= 2
-        touchR = x0 + w - 1 >= 1277
-        if not (touchL or touchR) or h - 1 < MIN_SPAN:
+
+def _cloud_band(m: np.ndarray, s: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """视差带 → (X, Y, Z) 点云带（Z=s/d，X/Y 沿针孔反投影；d≈0 出巨 Z 被后续域滤掉）。"""
+    d = np.nan_to_num(np.asarray(m, np.float32), nan=0.0,
+                      posinf=0.0, neginf=0.0)[Y0:DIAG_Y1]
+    Z = s / np.maximum(d, 1e-3)
+    X = (_UU - CX) * Z / _FX
+    Y = (_VV - CY) * Z / FY
+    return X.astype(np.float32), Y.astype(np.float32), Z.astype(np.float32)
+
+
+def _plane_fit_band(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, dig: np.ndarray,
+                    ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """倾角感知平面拟合 Y=aX+bZ+c（近带种子迭代）→ (coef, 地面掩码, 上凸体掩码)。
+
+    种子=近带窄域（Z 3~10、|X|<5：路面最可信处），每轮以 |res|<TOL·Z+OFF 重选
+    地面、法方程闭式解（N 可达数十万，SVD 不必要）；任何一轮地面点不足判失败
+    （None——近带无路面，诚实弃权）。上凸体=平面上方 15cm 内的域外点（墙/车/路障）。"""
+    ok = np.isfinite(Z) & (Z > 0)
+    sel = ok & (Z > SEED_Z_LO) & (Z < SEED_Z_HI) & (np.abs(X) < SEED_X_MAX) & ~dig
+    coef = res = None
+    for _ in range(PLANE_ITERS):
+        n = int(sel.sum())
+        if n < MIN_PLANE_PTS:
+            return None, None, None
+        A = np.empty((n, 3), np.float32)          # 法方程经 BLAS（N 数十万，SVD 不必要）
+        A[:, 0] = X[sel]
+        A[:, 1] = Z[sel]
+        A[:, 2] = 1.0
+        y = Y[sel]
+        mmat = (A.T @ A).astype(np.float64)
+        rhs = (A.T @ y).astype(np.float64)
+        try:
+            coef = np.linalg.solve(mmat, rhs)
+        except np.linalg.LinAlgError:
+            coef = np.linalg.lstsq(A.astype(np.float64), y.astype(np.float64),
+                                   rcond=None)[0]
+        res = Y - (coef[0] * X + coef[1] * Z + coef[2])
+        sel = ok & (res > -PLANE_TOL * Z - PLANE_OFF) & (res < PLANE_TOL * Z + PLANE_OFF) \
+            & (Z > FIT_Z_LO) & (Z < FIT_Z_HI) & (np.abs(X) < FIT_X_MAX) & ~dig
+    ground = sel & (res > -ABOVE_M)
+    # 最终地面标记收紧：拟合带对称（鲁棒），标记带与上凸体门互补——墙体下沿
+    # （DA 模糊把墙基拖进 0.3m 容差带）必须归"上凸体"，否则近行地面延伸到画框
+    # 缘、整段行被出画判据误杀，夹紧也没有材料（金标 000180 实证）。
+    above = ok & (res < -ABOVE_M) & (Z > FIT_Z_LO) & (Z < FIT_Z_HI) \
+        & (np.abs(X) < FIT_X_MAX) & ~dig
+    return coef, ground, above
+
+
+class _RowEdge(NamedTuple):
+    """一行的提边结果（米制位置 + 内沿像素 + 遮挡旗 + 行地面中位深）。"""
+
+    v: int
+    xl: float
+    xr: float
+    u_l: float
+    u_r: float
+    occ_l: bool
+    occ_r: bool
+    zmed: float
+
+
+def _row_scan(X: np.ndarray, Z: np.ndarray, ground: np.ndarray, above: np.ndarray,
+              dig: np.ndarray, obj: np.ndarray | None, coef: np.ndarray,
+              step: int = 1) -> list[_RowEdge]:
+    """近带逐行提边：地面 min/max X 为候选缘，同行上凸体整段越 GAP 才夹紧内沿。
+
+    遮挡旗只由 ``obj``（YOLO 物体掩码）触发：行内物体像素 |X|>GAP=该侧被
+    压缘遮挡，聚合时弃权。``dig``（ego∪object）只负责从点云挖除——ego 静态
+    掩码在远行的 |X| 本就 >GAP（自车身体在 11m 处横向 ±1.9m），拿它判遮挡
+    会把所有远行误杀（金标 000906 实证）。
+
+    内沿像素 u 一律经**拟合平面反投影**（u = X·FX/Z_edge + CX，Z_edge 由平面式
+    给出）：行内 X↔u 的单调性只对地面点成立——墙基滑带（0.3m 容差带内的墙面
+    像素）X 恒等于墙平面 X 而 u 任意，逐像素关联会产出噪声 u；夹紧缘是真实
+    上凸体像素，直接用其像素 u。``step``：行采样步长（标定遍减半省时）。"""
+    a_c, b_c, c_c = (float(coef[0]), float(coef[1]), float(coef[2]))
+    out: list[_RowEdge] = []
+    cntg = ground.sum(1)
+    for rb in range(0, Z.shape[0], step):
+        if cntg[rb] < MIN_ROW_GROUND:
             continue
-        sel = lab[y0:y0 + h, x0:x0 + w] == c
-        grid = np.broadcast_to(np.arange(x0, x0 + w, dtype=np.float32), (h, w))
-        lcol = cv2.reduce(np.where(sel & (grid < 640), grid, np.float32(-1.0)),
-                          1, cv2.REDUCE_MAX).reshape(-1)
-        rows = np.nonzero(lcol >= 0)[0]
-        innerL = dict(zip((rows + y0).tolist(), lcol[rows].astype(np.int32).tolist()))
-        rcol = cv2.reduce(np.where(sel & (grid >= 640), grid, np.float32(1e9)),
-                          1, cv2.REDUCE_MIN).reshape(-1)
-        rows = np.nonzero(rcol <= 1279)[0]
-        innerR = dict(zip((rows + y0).tolist(), rcol[rows].astype(np.int32).tolist()))
-        out.append((y0, y0 + h - 1, innerL, innerR, touchL, touchR))
-    return r, out
-
-
-def _baseline_ok(m: np.ndarray, inner: dict[int, int], side: str, y_ref: float,
-                 gate: float) -> bool:
-    """边缘台阶守卫：内沿两侧各取窗（块侧 20~60px / 路侧 40~120px，001220
-    横切面定死的窗几何），跨沿台阶 = (块侧中位 − 路侧中位)/路侧中位 须
-    ≥ gate/2 且方向正确（块侧更近）。
-
-    旧版比对行 q20 的绝对水平（路侧窗 |r| ≤ gate/2）——骑缘几何下行的 q20
-    地面基线被钉在远端少数派上，路面自身相对基线天然 +3~6%，与阈值在刀刃
-    上重叠（202138_p2 000506 +3.1% 过、000507 +6.4% 挂，2026-09-25 实测），
-    真边缘被误杀；跨沿差分天然抵消地面基线漂移与晕影缓坡（缓坡无台阶）。"""
-    steps: list[float] = []
-    for y in range(int(y_ref) - 60, int(y_ref) + 60, 5):
-        x0 = inner.get(y)
-        if x0 is None:
+        # 行带判据=行内**地面**像素的 Z 中位（全行均值会被墙面像素拉进近带——
+        # 墙占多数的远行看似"近行"，读数带被远景污染）
+        zmed = float(np.median(Z[rb][ground[rb]]))
+        if not (Z_LO <= zmed < Z_HI):
             continue
-        lo_o, hi_o = ((x0 - EDGE_OUT_HI_PX, x0 - EDGE_OUT_LO_PX) if side == "L"
-                      else (x0 + EDGE_OUT_LO_PX, x0 + EDGE_OUT_HI_PX))
-        lo_i, hi_i = ((x0 + EDGE_IN_LO_PX, x0 + EDGE_IN_HI_PX) if side == "L"
-                      else (x0 - EDGE_IN_HI_PX, x0 - EDGE_IN_LO_PX))
-        lo_o, hi_o = max(lo_o, 0), min(hi_o, m.shape[1])
-        lo_i, hi_i = max(lo_i, 0), min(hi_i, m.shape[1])
-        if hi_i - lo_i < 8 or hi_o - lo_o < 8:
+        v = rb + Y0
+        Xr = X[rb]
+        fin = np.isfinite(Xr)
+        g = ground[rb]
+        Xg = Xr[g]
+        xl, xr = float(Xg.min()), float(Xg.max())
+        med = float(np.median(Xg))
+        den = (v - CY) / FY - b_c
+        if den < 1e-4:
             continue
-        mo = float(np.median(m[y, lo_o:hi_o]))
-        mi = float(np.median(m[y, lo_i:hi_i]))
-        if mi > 0:
-            steps.append((mo - mi) / mi)
-    if len(steps) < 3:
-        return True
-    return float(np.median(steps)) >= gate / 2.0
+        z_edge = (c_c + a_c * xl) / den
+        z_edger = (c_c + a_c * xr) / den
+        u_l = xl * _FX / z_edge + CX
+        u_r = xr * _FX / z_edger + CX
+        occ_l = occ_r = False
+        if obj is not None:
+            dd = obj[rb]
+            if dd.any():
+                Xd = Xr[dd]
+                Xd = Xd[np.isfinite(Xd)]
+                if Xd.size:
+                    occ_l = bool((Xd < -GAP_M).any())
+                    occ_r = bool((Xd > GAP_M).any())
+        aa = above[rb] & fin
+        if aa.any():
+            ub = _UU[rb]
+            Xa = Xr[aa]
+            Ua = ub[aa]
+            order = np.argsort(Xa)
+            Xas, Uas = Xa[order], Ua[order]
+            start = 0
+            segs = []
+            for i in range(1, Xas.size):
+                if Xas[i] - Xas[i - 1] > SEG_GAP_M:
+                    segs.append((start, i - 1))
+                    start = i
+            segs.append((start, Xas.size - 1))
+            for s0i, s1i in segs:
+                if Xas[s0i] > med + GAP_M:          # 整段在右侧 GAP 外 → 夹右缘
+                    nx = float(Xas[s0i])
+                    if nx < xr - 0.05:              # 真路障（显著内收）→ 取其像素 u
+                        xr, u_r = nx, float(Uas[s0i])
+                    elif nx < xr:                   # 噪声级收紧（缘共面墙段）→ 保平面 u
+                        xr = nx
+                elif Xas[s1i] < med - GAP_M:        # 整段在左侧 GAP 外 → 夹左缘
+                    nx = float(Xas[s1i])
+                    if nx > xl + 0.05:
+                        xl, u_l = nx, float(Uas[s1i])
+                    elif nx > xl:
+                        xl = nx
+        if u_l <= 2.0 or u_r >= 1277.0:
+            continue    # 缘出画：读数是画框不是边界（贴边=单侧 C 类，该行弃权）
+        if xr - xl > MIN_SPAN_M:
+            out.append(_RowEdge(v, xl, xr, u_l, u_r, occ_l, occ_r, zmed))
+    return out
 
 
-def _fit(inner: dict[int, int], cal: Calib) -> dict | None:
-    """内沿几何特征 + 守卫裁决所需量 → None（<20 行不评）或 {dead, conv, resid, lane, y_ref}。
+def _side_from_rows(rows: list[_RowEdge], side: str,
+                    cal: Calib) -> tuple[float | None, float | None, str | None]:
+    """侧读数：该侧未遮挡行**逐行**取内沿车道量（x_lane_of(u, v)）后取中位。
 
-    源行规则（2026-09-24 读数带重定）：车道量沿 3D 直线不变 ⇒ 读数不必绑死在固定
-    近带——凡 y−y_h ≥ FIT_FLOOR_PX 的行都是合法源行。**拟合也只在源行上做**：
-    发散区行的内沿噪声会把直线拽歪（金标 A/B：全行拟合 R dev p50 −0.20，
-    源行拟合 −0.02），源行不足 FIT_MIN_SRC 判「远带」弃权。"""
-    ys_all = np.array(sorted(inner), float)
-    if len(ys_all) < FIT_MIN_ROWS:
-        return None
-    ys = ys_all[ys_all >= cal.y_h + FIT_FLOOR_PX]
-    if len(ys) < FIT_MIN_SRC:
-        return {"dead": True, "n": int(len(ys_all)), "near": int(len(ys))}
-    xs = np.array([inner[int(y)] for y in ys], float)
-    sl, ic = np.polyfit(ys, xs, 1)
-    keep = np.abs(xs - (sl * ys + ic)) <= FIT_RESID_PX
-    if keep.sum() >= FIT_MIN_ROWS:
-        sl, ic = np.polyfit(ys[keep], xs[keep], 1)
-        ys, xs = ys[keep], xs[keep]   # 剔点后再取中位：keep 不对称时 med_x 会偏
-    med_x = float(np.median(xs))
-    y_ref = float(np.median(ys))
-    return {"dead": False, "n": int(len(ys_all)), "near": int(len(ys)),
-            "conv": abs(float(sl * cal.y_h + ic) - cal.vpx),
-            "resid": float(np.median(np.abs(xs - (sl * ys + ic)))),
-            "x_near": med_x, "y_ref": y_ref,
-            "lane": x_lane_of(int(round(med_x)), int(round(y_ref)), cal)}
-
-
-def _pass(f: dict, side: str) -> bool:
-    """双守卫 + 近带行门槛的通过判据（阈值见模块头注标定锚点）。"""
-    if f["dead"]:
-        return False
-    if f["conv"] > CONV_MAX_PX or f["resid"] > RESID_MAX_PX:
-        return False
-    return f["lane"] <= -LANE_SIDE_MIN if side == "L" else f["lane"] >= LANE_SIDE_MIN
+    为什么不投影到固定参考行：投影沿消失点线把远行的边缘不确定性放大
+    (VREF−vp_y)/(v−vp_y) 倍（远行视差噪声本就大，放大 2~5 倍后中位被垃圾行
+    撬动，金标 000500 实证 R 偏 +2 车道）；逐行评估的误差不放大、一行一票，
+    中位数天然抗远行离群。代价是缘线上 x_lane 随行系统漂 ~±0.1 车道
+    （y_h/vpx 标定系与针孔地平线差 ~15px 所致）——行分布被遮挡推移时读数
+    随之小幅移动，实机验收口径内消化。"""
+    lanes: list[float] = []
+    us: list[float] = []
+    for r in rows:
+        if side == "L":
+            if r.occ_l:
+                continue
+            u = r.u_l
+        else:
+            if r.occ_r:
+                continue
+            u = r.u_r
+        lanes.append(x_lane_of(int(round(u)), r.v, cal))
+        us.append(u)
+    if len(lanes) < MIN_ROWS:
+        return None, None, f"{side}:行不足"
+    lane = float(np.median(lanes))
+    if abs(lane) < LANE_SIDE_MIN:
+        return None, None, f"{side}:lane{lane:+.2f}"
+    return lane, float(np.median(us)), None
 
 
-def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None,
-                     gate: float | None = None) -> DepthRoadReading:
-    """深度图 → 读数（纯函数，回归锁可直接喂缓存图；observe=推理+本函数）。
+def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None = None,
+                     object_mask: np.ndarray | None = None) -> DepthRoadReading:
+    """视差图 → 读数（纯函数，回归锁可直接喂缓存图；observe=推理+本函数）。
 
-    ``gate=None``（生产默认）→ per-side 门 GATE_L/GATE_R；给值则对称覆写
-    （实验脚本复现已落档口径用，两侧同刀）。"""
-    if gate is None:
-        gl, gr = GATE_L, GATE_R
-    else:
-        gl = gr = gate
-    r, blocks = _rel_and_blocks(m, ego_mask, gl, gr)
-    edges: dict[str, tuple[float, float] | None] = {"L": None, "R": None}
+    ``ego_mask``（ego 静态掩码）与 ``object_mask``（YOLO 物体掩码）都从点云
+    挖除（断车身→路面粘连）；侧遮挡判据只看 object_mask（语义=检测到的他车
+    压缘，见 _row_scan 注）。"""
+    t0 = time.perf_counter()
+
+    def _ret(lane_l, lane_r, u_l, u_r, rejects):
+        return DepthRoadReading(
+            left_edge_lane=lane_l, right_edge_lane=lane_r,
+            left_x=u_l, right_x=u_r,
+            sides=int(lane_l is not None) + int(lane_r is not None),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            rejects=tuple(rejects))
+
+    dig = _dig_band(ego_mask, m.shape[1])
+    if object_mask is not None:
+        dig = dig | _dig_band(object_mask, m.shape[1])
+    obj = None if object_mask is None else _dig_band(object_mask, m.shape[1])
     rejects: list[str] = []
-    for side in ("L", "R"):
-        tkey = 4 if side == "L" else 5
-        cands = sorted((b for b in blocks if b[tkey]),
-                       key=lambda b: b[1] - b[0], reverse=True)
-        for _, _, il, ir, _, _ in cands:
-            inner = il if side == "L" else ir
-            if not inner:
-                continue
-            f = _fit(inner, cal)
-            if f is None:
-                rejects.append(f"{side}:行不足")
-                break
-            if not _pass(f, side):
-                rejects.append(
-                    f"{side}:" + ("远带" if f["dead"] else
-                                  f"conv{f['conv']:.0f}/res{f['resid']:.0f}/"
-                                  f"lane{f['lane']:+.2f}"))
-                continue
-            if not _baseline_ok(m, inner, side, f["y_ref"], gl if side == "L" else gr):
-                rejects.append(f"{side}:边缘无台阶")
-                continue
-            edges[side] = (f["x_near"], f["lane"])
-            break
-    lx, rx = edges["L"], edges["R"]
-    return DepthRoadReading(
-        left_edge_lane=None if lx is None else lx[1],
-        right_edge_lane=None if rx is None else rx[1],
-        left_x=None if lx is None else lx[0],
-        right_x=None if rx is None else rx[0],
-        sides=int(lx is not None) + int(rx is not None),
-        latency_ms=0.0,
-        rejects=tuple(rejects))
+
+    X, Y, Z = _cloud_band(m, S0)
+    coef, ground, above = _plane_fit_band(X, Y, Z, dig)
+    if coef is None:
+        return _ret(None, None, None, None, ["平面拟合失败"])
+    rows = _row_scan(X, Z, ground, above, dig, obj, coef, step=2)
+
+    # 逐帧尺度自标定：种子系量近带半宽（低分位抗远行斜穿/雾胀）→ s 修正到
+    # W_REF，第二遍在标定系重跑。
+    hw = [(r.xr - r.xl) / 2.0 for r in rows
+          if not (r.occ_l or r.occ_r) and r.zmed < CAL_Z_HI]
+    s = S0
+    if len(hw) >= 3:
+        hwm = float(np.percentile(hw, HW_PCT * 100))
+        if HW_LO <= hwm <= HW_HI:
+            s = float(np.clip(S0 * W_REF / hwm, S0 * S_RATIO[0], S0 * S_RATIO[1]))
+    if abs(s / S0 - 1.0) > 0.02:
+        X, Y, Z = _cloud_band(m, s)
+        coef, ground, above = _plane_fit_band(X, Y, Z, dig)
+        if coef is None:
+            rejects.append("重标定后平面失败")
+            coef = None
+        else:
+            rows = _row_scan(X, Z, ground, above, dig, obj, coef)
+
+    lane_l, u_l, rej_l = _side_from_rows(rows, "L", cal)
+    lane_r, u_r, rej_r = _side_from_rows(rows, "R", cal)
+    if rej_l:
+        rejects.append(rej_l)
+    if rej_r:
+        rejects.append(rej_r)
+    return _ret(lane_l, lane_r, u_l, u_r, rejects)
 
 
 class DepthRoadObserver:
     """深度几何观测器（阶段生命期=chain；ORT session 跨阶段复用、外部注入）。
 
     session 为 None（权重缺失/加载失败）时 observe 恒 None——road_offset 退回
-    纯模型积分，与黄线层退役前的"无边界"路径行为一致。"""
+    纯模型积分，与"无边界"路径行为一致。"""
 
     def __init__(self, session: ort.InferenceSession | None,
                  cal: Calib, short: int = DEFAULT_SHORT) -> None:
@@ -393,9 +441,8 @@ class DepthRoadObserver:
         """一帧 → 读数（两侧可各自弃权）；推理失败 → None（不抛，控制链不因感知停摆）。
 
         ``object_mask``：YOLO 检测框（车/金币/奖励，外扩后）布尔掩码，与 ego
-        掩码同通道挖除——目标架构（YOLO 打身份 × 深度管几何）第一块：物体块
-        从源头消失，"穿车读墙"假缘不再产生（2026-09-25 融合首探，122 帧验证
-        R 侧坏率 35%→13%）。"""
+        掩码同通道挖除——物体从点云源头消失，"穿车读墙"假缘不再产生；
+        掩码像素的米制横向同时充当逐行遮挡判据（|X|>GAP 该侧行弃权）。"""
         reading, _ = self.observe_debug(frame_rgb, object_mask)
         return reading
 
@@ -411,10 +458,8 @@ class DepthRoadObserver:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
             return None, None
-        ego = self._ego_mask
-        if object_mask is not None:
-            ego = object_mask if ego is None else (ego | object_mask)
-        reading = reading_from_map(m, self._cal, ego)
+        reading = reading_from_map(m, self._cal, ego_mask=self._ego_mask,
+                                   object_mask=object_mask)
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0), m
 
@@ -430,7 +475,7 @@ def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
 
     ① 画面帧：ego 掩码橙描边 / YOLO 物体掩码蓝描边 / 读数黄竖线 + L/R 车道量；
     ② 视差图（带内对数归一，与探针同一色标）；
-    ③ 相对高度图 + 全部候选块内沿（青点）+ 触边块（绿框）+ 弃权原因。
+    ③ 平面残差图 + 地面（绿）/ 上凸体（青）+ 读数内沿（黄线）+ 弃权原因。
     纯函数只渲染不落盘——落盘归异步 worker 节流。"""
     h, w = m.shape[:2]
     f = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
@@ -454,25 +499,21 @@ def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
         (np.clip((np.log(np.clip(m, 1e-3, None)) - lo) / max(hi - lo, 1e-6), 0, 1)
          * 255).astype(np.uint8), cv2.COLORMAP_JET)
 
-    r, blocks = _rel_and_blocks(m, ego_mask)
-    g = _ground_q20(m)
-    rel = np.full(m.shape, np.nan, np.float32)
-    rel[Y0:DIAG_Y1] = (m[Y0:DIAG_Y1] - g[:, None]) / np.maximum(g[:, None], 1e-6)
-    ok = np.isfinite(rel[Y0:DIAG_Y1])
-    v = np.clip((rel[Y0:DIAG_Y1][ok] + 0.10) / 0.20, 0, 1)
-    xs = np.array([0.0, 0.5, 1.0])
+    dig = ego_mask
+    if object_mask is not None:
+        dig = object_mask if dig is None else (dig | object_mask)
+    X, Y, Z = _cloud_band(m, S0)
+    coef, ground, above = _plane_fit_band(X, Y, Z, _dig_band(dig, m.shape[1]))
     hm = np.zeros((DIAG_Y1 - Y0, w, 3), np.uint8)
-    hm[ok] = np.stack([np.interp(v, xs, [255, 255, 0]),
-                       np.interp(v, xs, [0, 255, 0]),
-                       np.interp(v, xs, [0, 255, 255])], axis=-1)
-    for y0b, y1b, il, ir, tL, tR in blocks:
-        col = (0, 255, 0) if (tL or tR) else (128, 128, 128)
-        for inner in ((il if tL else None), (ir if tR else None)):
-            if not inner:
-                continue
-            for yy, xx in inner.items():
-                if 0 <= yy - Y0 < hm.shape[0]:
-                    hm[yy - Y0, int(xx)] = col
+    if coef is not None:
+        res = Y - (coef[0] * X + coef[1] * Z + coef[2])
+        ok = np.isfinite(res)
+        v = np.clip((res[ok] + 0.45) / 0.90, 0, 1)     # ±0.45m 视窗
+        hm[ok] = np.stack([np.interp(v, [0, .5, 1], [255, 255, 0]),
+                           np.interp(v, [0, .5, 1], [0, 255, 0]),
+                           np.interp(v, [0, .5, 1], [0, 255, 255])], axis=-1)
+        hm[ground] = (0, 200, 0)
+        hm[above] = (255, 255, 0)
     for x in (reading.left_x, reading.right_x):
         if x is not None and x == x:
             cv2.line(hm, (int(x), 0), (int(x), hm.shape[0] - 1), (0, 255, 255), 2)
@@ -483,14 +524,21 @@ def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
     return np.vstack([f, disp[Y0:DIAG_Y1], hm])
 
 
+def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
+    """全帧掩码 → 检测带切片（None 给全假）。"""
+    if dig is None:
+        return np.zeros((DIAG_Y1 - Y0, width), bool)
+    return np.asarray(dig, bool)[Y0:DIAG_Y1]
+
+
 class AsyncDepthRoadObserver:
     """深度几何异步观测器（2026-09-24 解耦落地，协议与 treasure OCR worker 同构）。
 
-    为什么解耦这一层：observe ≈26ms p50 / 31.5ms p95（折叠 + 后处理向量化后的口径，
-    probe_latency 实测），同步形态把控制拍预算吃光（回路在 14~20Hz 间赌运气）。
-    路缘是**慢变量**——滞后 1~2 拍（50~100ms）读数仍有效；金币/街车是快变目标、
-    必须与本拍像素同源，所以感知与黄线层不做异步（treasure「令牌与读数字节同源」
-    的教训：跨线程搬运必有窗口，快变对象上窗口=脏读）。
+    为什么解耦这一层：observe 成本（推理 ≈20ms 折叠口径 + 点云/平面/逐行后处理）
+    同步形态把控制拍预算吃光；路缘是**慢变量**——滞后 1~2 拍（50~100ms）读数仍
+    有效；金币/街车是快变目标、必须与本拍像素同源，所以感知与黄线层不做异步
+    （treasure「令牌与读数字节同源」的教训：跨线程搬运必有窗口，快变对象上
+    窗口=脏读）。
 
     协议（latest-only，无队列不积压）：
     - push：主线程拷帧覆盖 pending 槽 + wakeup；worker 慢则丢中间帧（丢的是输入，
