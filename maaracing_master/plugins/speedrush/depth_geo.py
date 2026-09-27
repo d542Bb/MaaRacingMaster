@@ -36,7 +36,7 @@ obstacle 层被路障夹紧，均为低估，不入选）。
 使用本层——控制拍只付 push+take（≈0.15ms），observe 成本在后台线程；
 本模块的同步 observe 保留为纯函数面（测试与离线复算直接调用）。
 
-**读数带**：逐行扫描只取行均深 Z∈[Z_LO, Z_HI)（近带 4~14m，标定与读数同带）。
+**读数带**：逐行扫描只取行均深 Z∈[4, 8)（近带，越栏视线判据见常数注；标定与读数同带）。
 参考实现（55 帧、逐行中位口径）帧内一致性 MAD 0.45m；绝对量对标金标线受金标
 自身偏置限制（墙基恒定偏置、弯道帧失真、跨帧池化——三戒口径），验收看
 「每帧去偏 MAD + 半宽一致性 + 连续帧抖动」。
@@ -78,8 +78,6 @@ W_REF = 3.70      # 近带路半宽常数（逐帧标定锚，米）
 HW_LO, HW_HI = 1.5, 8.0   # 实测半宽物理合理域（出界=测量不可信，保种子）
 HW_PCT = 0.25             # 标定宽度取低分位：近带行的宽度（远行斜穿/雾胀是单侧离群）
 S_RATIO = (0.6, 1.6)      # 标定后尺度对种子的钳位比（DA 逐帧漂 ±14%，钳位防坏测量撬飞米制系）
-CAL_Z_HI = 9.0            # 标定带宽上限：近行近似垂直横穿路面，宽度诚实；弯道远行
-                          # 斜穿虚胀（金标 curve_cont 实测 7m），不入选（读数带仍到 Z_HI）
 
 # ── 平面拟合（Y = aX + bZ + c；阈值=参考实现口径，55 帧同判据验证）────────
 PLANE_ITERS = 3       # 近带种子迭代轮数
@@ -91,13 +89,17 @@ FIT_Z_LO, FIT_Z_HI, FIT_X_MAX = 2.0, 45.0, 12.0     # 迭代域（雾带/远景�
 MIN_PLANE_PTS = 80
 
 # ── 逐行提边与读数 ──────────────────────────────────────────────────────
-Z_LO, Z_HI = 4.0, 14.0    # 读数/标定近带（行均深；远带发散弃权）
+Z_LO, Z_HI = 4.0, 14.0    # 读数/标定带（行均深；宽路近行缘出画，须远行补位）
 MIN_ROW_GROUND = 15       # 行内地面像素下限
 MIN_ROWS = 5              # 侧读数最少行数
 MIN_SPAN_M = 1.0          # 行内路宽下限（米）
 GAP_M = 1.5               # 路障夹紧 GAP（米，路中心起算）+ 车框遮挡判据
 SEG_GAP_M = 0.6           # 路障分段间隙（米）
-LANE_SIDE_MIN = 0.15      # 侧别门：车道量须在自己一侧
+LANE_SIDE_MIN = 0.15      # 侧别门：车道量须在自己一侧（带符号）
+EDGE_IN_PCT = 20          # 聚合分位（向路心侧）：远行能越过矮护栏/路肩看到路外
+                          # 地表，把缘读宽（单侧危险方向，实机 173721 局近行
+                          # R+0.81=真护栏 vs 远行+1.94=栏外地面）——真缘簇在
+                          # 向路心侧，取分位而非中位；夹紧缘（路障）同样在窄侧。
 
 
 @dataclass(frozen=True)
@@ -342,8 +344,14 @@ def _side_from_rows(rows: list[_RowEdge], side: str,
         us.append(u)
     if len(lanes) < MIN_ROWS:
         return None, None, f"{side}:行不足"
-    lane = float(np.median(lanes))
-    if abs(lane) < LANE_SIDE_MIN:
+    # 向路心分位聚合（见 EDGE_IN_PCT 注）：L 的"窄"侧是更靠路心（大值），
+    # R 的"窄"侧是小值。
+    lane = float(np.percentile(lanes, 100 - EDGE_IN_PCT if side == "L"
+                               else EDGE_IN_PCT))
+    # 侧别门=带符号（L 须在自己一侧为负、R 为正）——只查幅度会放进对侧
+    # "缘"（实机 173721 局 L=+0.48 的被超车夹紧读数混进配对，2026-09-27）。
+    ok = lane <= -LANE_SIDE_MIN if side == "L" else lane >= LANE_SIDE_MIN
+    if not ok:
         return None, None, f"{side}:lane{lane:+.2f}"
     return lane, float(np.median(us)), None
 
@@ -380,7 +388,7 @@ def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None = No
     # 逐帧尺度自标定：种子系量近带半宽（低分位抗远行斜穿/雾胀）→ s 修正到
     # W_REF，第二遍在标定系重跑。
     hw = [(r.xr - r.xl) / 2.0 for r in rows
-          if not (r.occ_l or r.occ_r) and r.zmed < CAL_Z_HI]
+          if not (r.occ_l or r.occ_r) and r.zmed < Z_HI]
     s = S0
     if len(hw) >= 3:
         hwm = float(np.percentile(hw, HW_PCT * 100))
