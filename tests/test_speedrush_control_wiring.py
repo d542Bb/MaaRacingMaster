@@ -217,15 +217,15 @@ def _bnd_edges(el, er):
 def test_ego_road_both_sides_and_memory():
     o = smod._EgoRoadObserver()
     t = 1000.0
-    assert o.update(_bnd_edges(-2.3, 2.4), now=t) == pytest.approx(-0.05)  # 双侧直读
-    assert o._hw == pytest.approx(2.35)
+    assert o.update(_bnd_edges(-1.2, 1.3), now=t) == pytest.approx(-0.05)  # 双侧直读
+    assert o._hw == pytest.approx(1.25)
     # 单侧左缘：off = −(l + hw)
-    assert o.update(_bnd_edges(-1.3, None), now=t + 0.03) == pytest.approx(-1.05)
+    assert o.update(_bnd_edges(-0.8, None), now=t + 0.03) == pytest.approx(-0.45)
     # 单侧右缘：off = −(r − hw)
-    assert o.update(_bnd_edges(None, 3.4), now=t + 0.07) == pytest.approx(-1.05)
+    assert o.update(_bnd_edges(None, 1.7), now=t + 0.07) == pytest.approx(-0.45)
     # 全弃权拍：保鲜槽（2026-09-25）内仍有 0.4s 旧证据 → 取最新鲜槽 + 半宽反推
     # （此前返回 None 退纯模型积分；槽内证据自洽时同值）
-    assert o.update(None, now=t + 0.10) == pytest.approx(-1.05)
+    assert o.update(None, now=t + 0.10) == pytest.approx(-0.45)
 
 
 def test_ego_road_no_memory_single_side_is_none():
@@ -237,10 +237,10 @@ def test_ego_road_no_memory_single_side_is_none():
 def test_ego_road_dashed_guard():
     """单侧"缘"其实是车道虚线：反推偏移出界（>hw+0.5）→ 弃观测，不喂假路中心。"""
     o = smod._EgoRoadObserver()
-    o.update(_bnd_edges(-2.3, 2.3))                       # 学 hw≈2.3
-    assert o.update(_bnd_edges(-0.2, None)) == pytest.approx(-2.1)  # 界内放行
-    assert o.update(_bnd_edges(1.5, None)) is None        # −(1.5+2.3)=−3.8 |·|>2.8 出界弃
-    assert o.update(_bnd_edges(-1.0, None)) == pytest.approx(-1.3)
+    o.update(_bnd_edges(-1.2, 1.3))                       # 学 hw≈1.25
+    assert o.update(_bnd_edges(-0.2, None)) == pytest.approx(-1.05)  # 界内放行
+    assert o.update(_bnd_edges(1.5, None)) is None        # −(1.5+1.25)=−2.75 出界弃
+    assert o.update(_bnd_edges(-1.0, None)) == pytest.approx(-0.25)
 
 
 # ---------- 坏帧采样器（三局复盘悬案取证：录控互斥不动，控制回路自存真帧） ----------
@@ -308,22 +308,35 @@ def test_ego_road_hw_learning_bounded():
     """20:45 漏网锁：垃圾双侧帧（两假缘相距 21 车道）整帧弃——中点碰巧在界内
     （off=−2.5）也不行：对宽不物理=两"缘"都不是路缘，off 同样不可信。"""
     o = smod._EgoRoadObserver()
-    assert o.update(_bnd_edges(-8.0, 13.0)) is None       # hw=10.5 出 [1.5,3.2]
+    assert o.update(_bnd_edges(-8.0, 13.0)) is None       # hw=10.5 出 [0.8,2.2]
     assert o._hw is None                                   # 不学记忆
     assert o.update(_bnd_edges(-1.0, None)) is None        # 无合法记忆，单侧仍不猜
     # 合法对照常放行并学习
-    assert o.update(_bnd_edges(-2.3, 2.4)) == pytest.approx(-0.05)
-    assert o._hw == pytest.approx(2.35)
+    assert o.update(_bnd_edges(-1.2, 1.3)) == pytest.approx(-0.05)
+    assert o._hw == pytest.approx(1.25)
+
+
+def test_ego_road_hw_learn_gate_rejects_outlier_pair():
+    """半宽 EMA 一致性门（181518 局幸存者偏差教训）：对宽过物理界但偏离记忆
+    超 HW_LEARN_TOL 的对——当帧路心仍可信（off 照给），但不学记忆。"""
+    o = smod._EgoRoadObserver()
+    o.update(_bnd_edges(-1.2, 1.3), now=1000.0)            # hw≈1.25
+    # hw=2.1 界内但偏 0.85>0.6：off=−1.3 界内放行，EMA 不动
+    assert o.update(_bnd_edges(-0.8, 3.4), now=1000.03) == pytest.approx(-1.3)
+    assert o._hw == pytest.approx(1.25)
+    # 一致对正常学习（EMA 向 1.25 收敛）
+    o.update(_bnd_edges(-1.3, 1.3), now=1000.07)
+    assert o._hw == pytest.approx(1.25 * 0.7 + 1.3 * 0.3)
 
 
 def test_ego_road_absolute_bound_without_memory():
     """绝对物理界不依赖 _hw（旧护栏在 _hw=None 时整条旁路，±7 就是这么漏的）：
-    同侧双假缘 hw=4.0 出界弃；合法对但中点出界（|off|>3.5）也弃。"""
+    同侧双假缘 hw=4.0 出界弃；合法对但中点出界（|off|>2.5）也弃。"""
     o = smod._EgoRoadObserver()
     assert o.update(_bnd_edges(-9.0, -1.0)) is None        # hw=4.0 不物理
     o2 = smod._EgoRoadObserver()
-    o2._hw = 2.35                                          # 有合法记忆
-    assert o2.update(_bnd_edges(None, 9.0)) is None        # off=−(9−2.35)=−6.65 超界
+    o2._hw = 1.25                                          # 有合法记忆
+    assert o2.update(_bnd_edges(None, 9.0)) is None        # off=−(9−1.25)=−7.75 超界
 
 
 # ---------- 每侧保鲜槽（2026-09-25 落产码，README「取证续」节 5 设计） ----------
@@ -332,18 +345,18 @@ def test_ego_road_slot_cold_start_cross_frame_pair():
     """双侧从不同帧：L 槽 × 当前 R 跨时刻配对学半宽（冷启动待办就此吃掉）。"""
     o = smod._EgoRoadObserver()
     t = 2000.0
-    assert o.update(_bnd_edges(-2.3, None), now=t) is None          # 只有 L，无记忆
-    assert o.update(_bnd_edges(None, 2.5), now=t + 0.05) == pytest.approx(-0.1)
-    assert o._hw == pytest.approx(2.4)                              # 从跨帧对学到半宽
+    assert o.update(_bnd_edges(-1.2, None), now=t) is None          # 只有 L，无记忆
+    assert o.update(_bnd_edges(None, 1.5), now=t + 0.05) == pytest.approx(-0.15)
+    assert o._hw == pytest.approx(1.35)                             # 从跨帧对学到半宽
 
 
 def test_ego_road_slot_ttl_expiry():
     """age 预算到点即弃：0.4s 后槽不再供证据（宁退积分，不用馊读数）。"""
     o = smod._EgoRoadObserver()
     t = 3000.0
-    o.update(_bnd_edges(-2.3, 2.4), now=t)
-    o.update(_bnd_edges(None, 3.4), now=t + 0.03)                   # R 槽刷新
-    assert o.update(None, now=t + 0.05) == pytest.approx(-1.05)     # 取最新鲜槽（R）
+    o.update(_bnd_edges(-1.2, 1.3), now=t)
+    o.update(_bnd_edges(None, 1.7), now=t + 0.03)                   # R 槽刷新
+    assert o.update(None, now=t + 0.05) == pytest.approx(-0.45)     # 取最新鲜槽（R）
     assert o.update(None, now=t + 0.44) is None                     # R 槽过期（0.41s）
 
 
@@ -351,9 +364,9 @@ def test_ego_road_slot_unphysical_cross_pair_rejected():
     """虚线假缘 × 陈槽：跨帧对宽度校验拦下（不学 _hw、不供 off）。"""
     o = smod._EgoRoadObserver()
     t = 4000.0
-    o.update(_bnd_edges(None, 2.3), now=t)                          # 先立 R 槽
-    # L 假缘 −0.2 与槽 R 2.3 凑对 hw=1.25 不物理 → 弃
-    assert o.update(_bnd_edges(-0.2, None), now=t + 0.05) is None
+    o.update(_bnd_edges(None, 1.5), now=t)                          # 先立 R 槽
+    # L 假缘 0.9（对侧值）与槽 R 1.5 凑对 hw=0.3 不物理 → 弃
+    assert o.update(_bnd_edges(0.9, None), now=t + 0.05) is None
     assert o._hw is None
 
 
@@ -361,10 +374,10 @@ def test_ego_road_same_frame_pair_still_wins_over_slots():
     """同帧双缘走原语义（合成不覆盖同帧）；单侧在场且已有记忆时仍单侧反推。"""
     o = smod._EgoRoadObserver()
     t = 5000.0
-    o.update(_bnd_edges(-2.3, 2.4), now=t)
-    # 槽里有 R=2.4，但当前帧 L=−1.3 走单侧反推（当前值+常数半宽，误差不随时延涨）
-    assert o.update(_bnd_edges(-1.3, None), now=t + 0.05) == pytest.approx(-1.05)
-    assert o._hw == pytest.approx(2.35)                             # 未被跨帧对污染
+    o.update(_bnd_edges(-1.2, 1.3), now=t)
+    # 槽里有 R=1.3，但当前帧 L=−0.8 走单侧反推（当前值+常数半宽，误差不随时延涨）
+    assert o.update(_bnd_edges(-0.8, None), now=t + 0.05) == pytest.approx(-0.45)
+    assert o._hw == pytest.approx(1.25)                             # 未被跨帧对污染
 
 
 # ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------

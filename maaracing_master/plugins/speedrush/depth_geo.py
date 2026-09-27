@@ -97,6 +97,10 @@ GAP_M = 1.5               # 路障夹紧 GAP（米，路中心起算）+ 车框�
 SEG_GAP_M = 0.6           # 路障分段间隙（米）
 LANE_SIDE_MIN = 0.15      # 侧别门：车道量须在自己一侧（带符号）
 EDGE_IN_PCT = 20          # 聚合分位（向路心侧）：远行能越过矮护栏/路肩看到路外
+EGO_SEED_DILATE = 2       # 自车吸收种子外扩（迭代数，桥接静态掩码边缘小缝隙）
+EGO_ABSORB_Z = 10.0       # 自车吸收深度上限（自车 Z≈4~9；远场路墙投影会落进
+#                           静态矩形区，无此限会把整段墙链进吸收、拆掉夹紧材料）
+CLAMP_TOUCH_PX = 4        # 夹紧段贴挖除洞的判距（px）——自车伪缘保险丝
                           # 地表，把缘读宽（单侧危险方向，实机 173721 局近行
                           # R+0.81=真护栏 vs 远行+1.94=栏外地面）——真缘簇在
                           # 向路心侧，取分位而非中位；夹紧缘（路障）同样在窄侧。
@@ -174,6 +178,7 @@ def _band_grids() -> tuple[np.ndarray, np.ndarray]:
 
 
 _UU, _VV = _band_grids()
+_K3 = np.ones((3, 3), np.uint8)
 
 
 def _cloud_band(m: np.ndarray, s: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -222,6 +227,33 @@ def _plane_fit_band(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, dig: np.ndarray
     above = ok & (res < -ABOVE_M) & (Z > FIT_Z_LO) & (Z < FIT_Z_HI) \
         & (np.abs(X) < FIT_X_MAX) & ~dig
     return coef, ground, above
+
+
+def _grow_ego_above(above: np.ndarray, ego_band: np.ndarray,
+                    Z: np.ndarray) -> np.ndarray | None:
+    """动态自车吸收：与静态自车掩码连通的"上凸体"像素 → 并入挖除区。
+
+    静态矩形掩码（ego_mask.json）盖不全车形（尾翼/车顶附件出矩形）也跟不住
+    镜头位移（飞车镜头会动）；但车在点云里必然是"贴着静态掩码的高出地面
+    连通域"——连通域标记一次吸收整车，无需建模车形、无需逐皮肤标定。候选限
+    Z<EGO_ABSORB_Z（自车近场）：远场路墙投影会落进矩形区，不限深度会把整段
+    墙链进吸收、拆掉真路障的夹紧材料。远处真障碍物不与自车连通（画面上有
+    路面间隔），不进吸收。"""
+    if not ego_band.any() or not above.any():
+        return None
+    cand = above & (Z < EGO_ABSORB_Z)
+    if not cand.any():
+        return None
+    seed = cv2.dilate(ego_band.astype(np.uint8), _K3,
+                      iterations=EGO_SEED_DILATE).astype(bool)
+    lab = cv2.connectedComponents((cand | seed).astype(np.uint8),
+                                  connectivity=8)[1]
+    keep = np.unique(lab[seed])
+    keep = keep[keep > 0]
+    if keep.size == 0:
+        return None
+    grown = np.isin(lab, keep) & cand
+    return grown if grown.any() else None
 
 
 class _RowEdge(NamedTuple):
@@ -300,13 +332,26 @@ def _row_scan(X: np.ndarray, Z: np.ndarray, ground: np.ndarray, above: np.ndarra
                     start = i
             segs.append((start, Xas.size - 1))
             for s0i, s1i in segs:
+                # 保险丝：夹紧段贴着挖除洞（±CLAMP_TOUCH_PX）= 洞边缘泄漏的
+                # 自车/已检物像素（吸收偶尔漏边），该侧置遮挡弃权，绝不把
+                # 洞边当边界读出（防"自车当缘"残留）。
+                def _touches_hole(us: np.ndarray) -> bool:
+                    lo = max(int(us.min()) - CLAMP_TOUCH_PX, 0)
+                    hi = min(int(us.max()) + CLAMP_TOUCH_PX + 1, X.shape[1])
+                    return bool(dig[rb, lo:hi].any())
                 if Xas[s0i] > med + GAP_M:          # 整段在右侧 GAP 外 → 夹右缘
+                    if _touches_hole(Uas[s0i:s1i + 1]):
+                        occ_r = True
+                        continue
                     nx = float(Xas[s0i])
                     if nx < xr - 0.05:              # 真路障（显著内收）→ 取其像素 u
                         xr, u_r = nx, float(Uas[s0i])
                     elif nx < xr:                   # 噪声级收紧（缘共面墙段）→ 保平面 u
                         xr = nx
                 elif Xas[s1i] < med - GAP_M:        # 整段在左侧 GAP 外 → 夹左缘
+                    if _touches_hole(Uas[s0i:s1i + 1]):
+                        occ_l = True
+                        continue
                     nx = float(Xas[s1i])
                     if nx > xl + 0.05:
                         xl, u_l = nx, float(Uas[s1i])
@@ -383,6 +428,16 @@ def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None = No
     coef, ground, above = _plane_fit_band(X, Y, Z, dig)
     if coef is None:
         return _ret(None, None, None, None, ["平面拟合失败"])
+    # 动态自车吸收：静态矩形盖不全的车身（尾翼等）在点云里是"贴着掩码的
+    # 上凸体"，连通域一次并入挖除区后重拟合——不吸收时这些像素会被夹紧
+    # 判据当成边界（实机 181518 局右缘读成自车侧面 +0.35 道，金标目检实锤）。
+    ego_band = _dig_band(ego_mask, m.shape[1])
+    grown = _grow_ego_above(above, ego_band, Z) if ego_band.any() else None
+    if grown is not None:
+        dig = dig | grown
+        coef, ground, above = _plane_fit_band(X, Y, Z, dig)
+        if coef is None:
+            return _ret(None, None, None, None, ["自车吸收后平面失败"])
     rows = _row_scan(X, Z, ground, above, dig, obj, coef, step=2)
 
     # 逐帧尺度自标定：种子系量近带半宽（低分位抗远行斜穿/雾胀）→ s 修正到
@@ -512,6 +567,12 @@ def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
         dig = object_mask if dig is None else (dig | object_mask)
     X, Y, Z = _cloud_band(m, S0)
     coef, ground, above = _plane_fit_band(X, Y, Z, _dig_band(dig, m.shape[1]))
+    ego_band = _dig_band(ego_mask, m.shape[1])          # 与 reading 同口径：
+    if coef is not None and ego_band.any():             # 自车吸收进残差图
+        grown = _grow_ego_above(above, ego_band, Z)
+        if grown is not None:
+            coef, ground, above = _plane_fit_band(
+                X, Y, Z, _dig_band(dig, m.shape[1]) | grown)
     hm = np.zeros((DIAG_Y1 - Y0, w, 3), np.uint8)
     if coef is not None:
         res = Y - (coef[0] * X + coef[1] * Z + coef[2])
@@ -697,6 +758,9 @@ class AsyncDepthRoadObserver:
                 merged = object_mask if merged is None else (merged | object_mask)
             if merged is not None:
                 np.save(str(stem) + "_mask.npy", np.packbits(merged))
+            if self._obs._ego_mask is not None:
+                np.save(str(stem) + "_ego.npy",
+                        np.packbits(self._obs._ego_mask))
         except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
             pass
 

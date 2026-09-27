@@ -23,7 +23,8 @@ from maaracing_master.core import dml_lock
 from maaracing_master.plugins.speedrush import depth_geo as dg
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, CX, CY, DepthRoadObserver, DepthRoadReading,
-    FX_FY, FY, S0, W_REF, Y0, DIAG_Y1, infer_map, reading_from_map)
+    FX_FY, FY, S0, W_REF, Y0, DIAG_Y1, _FX, _UU, _row_scan, infer_map,
+    reading_from_map)
 from maaracing_master.plugins.speedrush.world_model import load_calib, x_lane_of
 
 CAL = load_calib()
@@ -160,6 +161,42 @@ def test_obstacle_clamps_inner_edge():
     assert rd.sides == 2, f"rejects={rd.rejects}"
     lane_clamp, _ = _lane_of_x(1.5, 560)
     assert abs(rd.right_edge_lane - lane_clamp) < 0.2
+
+
+def test_ego_absorb_wing_reads_road_edge():
+    """动态自车吸收：静态矩形没盖住的车身凸出（尾翼类）不再被夹成缘——
+    实机 181518 局右缘读成自车侧面（金标目检实锤）的回归锁。构造：右路
+    收窄把行地面中位压负，翼盒（贴自车矩形、旧读法被 GAP 夹紧判据读成
+    右缘 ≈0.5）吸收后缘回到路面收窄处（右缘 2.0 须在车带列带之外——
+    车带下延的结构假设：真边界不进中央列带）。"""
+    m, _ = _scene_map(x_right=2.0, obstacles=((0.5, 1.0, 5.0, 6.0, 0.8),))
+    rd = reading_from_map(m, CAL, ego_mask=DepthRoadObserver._load_ego_mask())
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    assert rd.right_edge_lane > _lane_of_x(1.1, 560)[0]   # 缘在翼盒之外
+    lane_r, _ = _lane_of_x(2.0, 560)
+    assert abs(rd.right_edge_lane - lane_r) < 0.35        # 收窄缘
+
+
+def test_row_scan_clamp_touching_dig_sets_occ():
+    """保险丝：夹紧段贴着挖除洞（±CLAMP_TOUCH_PX）→ 该侧置遮挡弃权，
+    绝不把洞边当边界；不贴洞的真路障照常夹紧。"""
+    H, W = DIAG_Y1 - Y0, 1280
+    Z = np.full((H, W), 6.0, np.float32)
+    X = (_UU - CX) * Z / _FX
+    ground = np.zeros((H, W), bool)
+    ground[:, 300:1000] = True                     # 平地 X −2.4~+2.5（Z=6）
+    above = np.zeros((H, W), bool)
+    above[:, 900:920] = True                       # 路障段 X ≈1.80~1.94
+    coef = np.array([0.0, 0.0, 1.6], np.float64)   # 平地平面（相机高 1.6）
+    r = next(r for r in _row_scan(X, Z, ground, above,
+                                  np.zeros((H, W), bool), None, coef)
+             if r.v == 600)
+    assert not r.occ_r and abs(r.u_r - 900) < 2    # 正常夹紧：取障碍像素 u
+    dig = np.zeros((H, W), bool)
+    dig[:, 895:925] = True                         # 洞贴着夹紧段
+    r2 = next(r for r in _row_scan(X, Z, ground, above, dig, None, coef)
+              if r.v == 600)
+    assert r2.occ_r and r2.xr > 2.3 and r2.u_r > 990   # 弃权 + 缘回平面位置
 
 
 def test_no_ground_abstains_honestly():

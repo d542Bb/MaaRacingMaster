@@ -995,10 +995,13 @@ class _EgoRoadObserver:
     - 双侧稳定：−(l+r)/2，同时学半路宽 EMA（路宽每场常数，好帧学一次存记忆）；
     - 仅单侧稳定：用学到的半宽反推路中心（见左缘 off=−(l+hw)，见右缘 off=−(r−hw)）；
     - 无记忆的单侧帧 / 无边界：None（退回纯模型积分，旧行为不变）；
-    - 护栏（20:45 局补装，此前两条都有漏）：半宽只学物理 plausible 区间
-      [1.5,3.2]（名义 2.0、实测 2.36、a_x 18% 标度误差留边）——无界学习=一帧垃圾
-      毒化整场记忆；最终 off 先过**绝对物理界 3.5**（不依赖 _hw——旧护栏阈值
-      _hw+0.5 会随被毒化的 _hw 一起放松），再过相对界 |off|≤_hw+0.5。
+    半宽守卫按**结构边界语义**重标（2026-09-27，181518 局金标量测 17 帧：深度链
+    读的是护栏/墙基，贴栏时结构半宽 p10≈0.9 道；旧界 [1.5,3.2] 是 hsv 黄线时代
+    口径，会把诚实配对全拒、只留越栏假宽对喂坏 EMA）：
+    - 物理区间 [0.8, 2.2]：下界放行贴栏诚实配对，上界拒越栏假宽；
+    - 半宽 EMA 一致性门：配对宽度与记忆差 > HW_LEARN_TOL 不学（防幸存者偏差
+      投毒——本局 EMA 被垃圾宽对喂到 2.03 的教训）；
+    - 绝对物理界 2.5 不依赖 _hw，再过相对界 |off|≤_hw+0.5。
     - **每侧保鲜槽**（2026-09-25 落产码，设计口径 README「取证续」节 5）：路缘是
       慢变量而观测异步——每侧各自记「最近过守卫的车道量 + 时刻」，age 预算 0.4s。
       与复盘原案（凡双侧槽新鲜一律跨时刻合成）的差异：单侧在场且已有半宽记忆时
@@ -1009,7 +1012,8 @@ class _EgoRoadObserver:
       宽度校验拦下），age 预算到点即弃。
     ε 旋转污染（≤0.15 车道）在新息门 1.5 内，口径同 step 2.5。阶段级生命期=chain。"""
 
-    HW_MIN, HW_MAX, OFF_MAX = 1.5, 3.2, 3.5
+    HW_MIN, HW_MAX, OFF_MAX = 0.8, 2.2, 2.5
+    HW_LEARN_TOL = 0.6               # 配对宽度偏离记忆超此值不学 EMA
     SLOT_TTL_S = 0.4                 # 每侧保鲜槽 age 预算（≈深度拍 8 拍 @20Hz）
 
     def __init__(self) -> None:
@@ -1032,12 +1036,15 @@ class _EgoRoadObserver:
 
     def _pair(self, el: float, er: float, learn: bool) -> float | None:
         """同帧/跨时刻对 → off；对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
-        落界内，20:45 锁测出）→ None。"""
+        落界内，20:45 锁测出）→ None。off 与学习解耦：对宽过物理界即可信当帧
+        路心，但偏离 EMA 记忆超 HW_LEARN_TOL 的对不学——真路宽是每场常数，
+        突变对是假缘（181518 局幸存者偏差喂坏 EMA 的教训）。"""
         hw = (er - el) / 2.0
         if not (self.HW_MIN <= hw <= self.HW_MAX):
             return None
         off = -(el + er) / 2.0
-        if learn:
+        if learn and (self._hw is None
+                      or abs(hw - self._hw) <= self.HW_LEARN_TOL):
             self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
         return off
 
