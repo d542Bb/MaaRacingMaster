@@ -351,13 +351,28 @@ def test_ego_road_slot_cold_start_cross_frame_pair():
 
 
 def test_ego_road_slot_ttl_expiry():
-    """age 预算到点即弃：0.4s 后槽不再供证据（宁退积分，不用馊读数）。"""
+    """age 预算到点即弃：0.4s 后槽不再供证据（宁退积分，不用馊读数）。
+    弃权拍双侧槽都新鲜时优先跨时刻合成（不依赖半宽记忆，不学）。"""
     o = smod._EgoRoadObserver()
     t = 3000.0
     o.update(_bnd_edges(-1.2, 1.3), now=t)
     o.update(_bnd_edges(None, 1.7), now=t + 0.03)                   # R 槽刷新
-    assert o.update(None, now=t + 0.05) == pytest.approx(-0.45)     # 取最新鲜槽（R）
-    assert o.update(None, now=t + 0.44) is None                     # R 槽过期（0.41s）
+    # 双槽新鲜：合成 off=−(−1.2+1.7)/2=−0.25，且不学（合成不是新证据）
+    assert o.update(None, now=t + 0.05) == pytest.approx(-0.25)
+    assert o._hw == pytest.approx(1.25)
+    assert o.update(None, now=t + 0.44) is None                     # 双槽过期（0.41s）
+
+
+def test_ego_road_ghost_slot_abstains_instead_of_single_infer():
+    """假宽缘躺在槽里时弃权拍整拍弃（1933 局蛇形根因的回归锁）：幽灵侧
+    单侧反推会给出 ±2 道的荒唐路心，绝不允许。"""
+    o = smod._EgoRoadObserver()
+    t = 6000.0
+    o.update(_bnd_edges(-1.2, 1.3), now=t)                          # hw≈1.25
+    # 当前帧只有 R=3.5（越栏假宽）：单侧反推 off=−(3.5−1.25)=−2.25 超相对界 → 弃
+    assert o.update(_bnd_edges(None, 3.5), now=t + 0.03) is None
+    # 但幽灵值已进 R 槽：弃权拍双槽合成对宽 2.35 出界 → 整拍弃，不退单侧
+    assert o.update(None, now=t + 0.06) is None
 
 
 def test_ego_road_slot_unphysical_cross_pair_rejected():

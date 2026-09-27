@@ -1007,9 +1007,9 @@ class _EgoRoadObserver:
       与复盘原案（凡双侧槽新鲜一律跨时刻合成）的差异：单侧在场且已有半宽记忆时
       **仍走单侧反推**——当前帧值 + 场景常数半宽，误差不随时延增长，优于拿陈值
       合成；合成只用于两处：①冷启动（_hw 未知时跨时刻配对学半宽，双侧冷启动
-      待办就此吃掉）②双侧弃权拍（无当前读数时从槽反推/合成，宁给 0.4s 内的
-      旧证据也不退积分）。跨时刻配对同样过对宽物理界（虚线假缘与陈槽凑对会被
-      宽度校验拦下），age 预算到点即弃。
+      待办就此吃掉）②双侧弃权拍（无当前读数时**优先双侧槽合成**——不依赖半宽
+      记忆，对宽出界=至少一侧假缘整拍弃；仅一侧新鲜才单侧反推）。跨时刻配对
+      同样过对宽物理界（虚线假缘与陈槽凑对会被宽度校验拦下），age 预算到点即弃。
     ε 旋转污染（≤0.15 车道）在新息门 1.5 内，口径同 step 2.5。阶段级生命期=chain。"""
 
     HW_MIN, HW_MAX, OFF_MAX = 0.8, 2.2, 2.5
@@ -1085,14 +1085,25 @@ class _EgoRoadObserver:
             else:
                 off = None
         elif self._hw is not None:
-            # 弃权拍：取最新鲜一侧 + 半宽记忆反推（0.4s 内的旧证据仍算证据）
-            best = max((s for s in (("L", lf), ("R", rf)) if s[1] is not None),
-                       key=lambda s: self._slot[s[0]][1], default=None)
-            if best is None:
-                self.last = self._snapshot(now, "none", None)
-                return None
-            src = "slot_single"
-            off = -(best[1] + self._hw) if best[0] == "L" else -(best[1] - self._hw)
+            # 弃权拍：双侧槽都新鲜 → 先跨时刻合成（不依赖半宽记忆——记忆误差
+            # 在单侧反推里被放大成路心误判，1933 局蛇形实证：对宽出界的假宽
+            # 对被拒后其单侧仍躺在槽里，反推出 ±2 道的荒唐路心）；合成对宽
+            # 出界=至少一侧假缘 → 整拍弃（不退单侧反推，一侧假时另一侧同样
+            # 不可信）。仅一侧新鲜 → 单侧+半宽反推。合成不是新证据，不学。
+            if lf is not None and rf is not None:
+                src = "slot_pair"
+                off = self._pair(lf, rf, learn=False)
+                if off is None:
+                    self.last = self._snapshot(now, src, None)
+                    return None
+            else:
+                best = max((s for s in (("L", lf), ("R", rf)) if s[1] is not None),
+                           key=lambda s: self._slot[s[0]][1], default=None)
+                if best is None:
+                    self.last = self._snapshot(now, "none", None)
+                    return None
+                src = "slot_single"
+                off = -(best[1] + self._hw) if best[0] == "L" else -(best[1] - self._hw)
         elif lf is not None and rf is not None:
             src = "slot_pair"
             off = self._pair(lf, rf, learn=True)      # 冷启动：双侧弃权拍

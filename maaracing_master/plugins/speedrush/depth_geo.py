@@ -366,33 +366,41 @@ def _row_scan(X: np.ndarray, Z: np.ndarray, ground: np.ndarray, above: np.ndarra
 
 def _side_from_rows(rows: list[_RowEdge], side: str,
                     cal: Calib) -> tuple[float | None, float | None, str | None]:
-    """侧读数：该侧未遮挡行**逐行**取内沿车道量（x_lane_of(u, v)）后取中位。
+    """侧读数：该侧未遮挡行**逐行**取内沿车道量（x_lane_of(u, v)）后聚合。
+
+    **近带优先双票**：远行视线可越过矮结构读到路外（越栏视线，只会读宽——
+    单向危险误差），近带行才是可信票；但按行数取固定分位会在近行占比低于
+    分位数时滑进远行（1933 局实证：近行 13% 的帧 20 分位摇摆于近/远之间，
+    读数帧间跳变）。而纯近带子集又会丢掉远行才看得到的障碍夹紧约束
+    （近行地面还在障碍之前）。修法=**双票取更绑**：全行集分位票之外，再取
+    zmed 最小半数行（≥MIN_ROWS 才成立）的子集分位票，每侧取更靠路心
+    （更窄=更约束）的——远行的单向读宽保证近带票不被幽灵污染，全行集票
+    保住夹紧约束，近行占比不足时子集≈全行集自动退化。
 
     为什么不投影到固定参考行：投影沿消失点线把远行的边缘不确定性放大
     (VREF−vp_y)/(v−vp_y) 倍（远行视差噪声本就大，放大 2~5 倍后中位被垃圾行
-    撬动，金标 000500 实证 R 偏 +2 车道）；逐行评估的误差不放大、一行一票，
-    中位数天然抗远行离群。代价是缘线上 x_lane 随行系统漂 ~±0.1 车道
-    （y_h/vpx 标定系与针孔地平线差 ~15px 所致）——行分布被遮挡推移时读数
-    随之小幅移动，实机验收口径内消化。"""
-    lanes: list[float] = []
-    us: list[float] = []
-    for r in rows:
-        if side == "L":
-            if r.occ_l:
-                continue
-            u = r.u_l
-        else:
-            if r.occ_r:
-                continue
-            u = r.u_r
-        lanes.append(x_lane_of(int(round(u)), r.v, cal))
-        us.append(u)
-    if len(lanes) < MIN_ROWS:
+    撬动，金标 000500 实证 R 偏 +2 车道）；逐行评估的误差不放大、一行一票。
+    代价是缘线上 x_lane 随行系统漂 ~±0.1 车道（y_h/vpx 标定系与针孔地平线
+    差 ~15px 所致）——行分布被遮挡推移时读数随之小幅移动，实机验收口径内
+    消化。"""
+    usable = [r for r in rows
+              if not (r.occ_l if side == "L" else r.occ_r)]
+
+    def _pct(rs: list[_RowEdge]) -> float:
+        ls = [x_lane_of(int(round(r.u_l if side == "L" else r.u_r)), r.v, cal)
+              for r in rs]
+        return float(np.percentile(ls, 100 - EDGE_IN_PCT if side == "L"
+                                   else EDGE_IN_PCT))
+
+    if len(usable) < MIN_ROWS:
         return None, None, f"{side}:行不足"
-    # 向路心分位聚合（见 EDGE_IN_PCT 注）：L 的"窄"侧是更靠路心（大值），
-    # R 的"窄"侧是小值。
-    lane = float(np.percentile(lanes, 100 - EDGE_IN_PCT if side == "L"
-                               else EDGE_IN_PCT))
+    lane = _pct(usable)
+    if len(usable) >= 2 * MIN_ROWS:              # 近带子集票（双票取更绑）
+        near = sorted(usable, key=lambda r: r.zmed)[: len(usable) // 2]
+        if len(near) >= MIN_ROWS:
+            lane_near = _pct(near)
+            lane = max(lane, lane_near) if side == "L" else min(lane, lane_near)
+    us = [r.u_l if side == "L" else r.u_r for r in usable]
     # 侧别门=带符号（L 须在自己一侧为负、R 为正）——只查幅度会放进对侧
     # "缘"（实机 173721 局 L=+0.48 的被超车夹紧读数混进配对，2026-09-27）。
     ok = lane <= -LANE_SIDE_MIN if side == "L" else lane >= LANE_SIDE_MIN

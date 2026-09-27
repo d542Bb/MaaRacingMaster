@@ -155,8 +155,9 @@ def test_object_mask_occlusion_abstains_side():
 
 def test_obstacle_clamps_inner_edge():
     """同行路障（整段在路中心 GAP 外）夹紧内沿：右缘读路障近侧，不是穿车读墙。"""
-    # 贯全带的竖薄墙（Z 4~60、全高）：每一行都夹到其近侧，聚合中位=夹紧值
-    m, _ = _scene_map(x_left=WALL, x_right=WALL, obstacles=((1.5, 2.2, 4.0, 60.0, 60.0),))
+    # 贯全带的竖薄墙（Z 5~60、全高；起点避开检测带下缘 Z=4 的层交界伪影；
+    # 路宽取默认 W_REF 避免 p25 尺度自标定与墙夹紧的病理交互）
+    m, _ = _scene_map(x_left=W_REF, x_right=W_REF, obstacles=((1.5, 2.2, 5.0, 60.0, 60.0),))
     rd = reading_from_map(m, CAL, None)
     assert rd.sides == 2, f"rejects={rd.rejects}"
     lane_clamp, _ = _lane_of_x(1.5, 560)
@@ -197,6 +198,22 @@ def test_row_scan_clamp_touching_dig_sets_occ():
     r2 = next(r for r in _row_scan(X, Z, ground, above, dig, None, coef)
               if r.v == 600)
     assert r2.occ_r and r2.xr > 2.3 and r2.u_r > 990   # 弃权 + 缘回平面位置
+
+
+def test_side_aggregation_near_half_subset():
+    """近带优先双票：远行越栏读宽是单向误差，近行占比低于分位数时固定分位
+    会滑进远行（1933 局实证）——全行集票之外再取最近半数行的子集票，取更绑
+    （更窄）者；障碍夹紧约束由全行集票保住。"""
+    def row(zmed, lane_r):
+        u = 1203.9 if abs(lane_r - 1.2) < 0.05 else 1581.2   # v=600 的像素位
+        return dg._RowEdge(600, -3.0, 3.0, 80.0, u, False, False, zmed)
+    rows = [row(5.0, 1.2)] * 5 + [row(10.0, 2.0)] * 20
+    lane, _, rej = dg._side_from_rows(rows, "R", load_calib())
+    assert rej is None and abs(lane - 1.2) < 0.1            # 不被 20 行远行淹没
+    # 近行不足双票门槛（<2×MIN_ROWS）不切子集，全行集票照出
+    rows2 = [row(5.0, 1.2)] * 5 + [row(10.0, 2.0)] * 3
+    lane2, _, rej2 = dg._side_from_rows(rows2, "R", load_calib())
+    assert rej2 is None and 1.1 < lane2 < 1.45
 
 
 def test_no_ground_abstains_honestly():
