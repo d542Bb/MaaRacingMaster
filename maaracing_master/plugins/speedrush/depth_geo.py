@@ -647,8 +647,9 @@ class AsyncDepthRoadObserver:
       杀进程，2026-09-25 实证；抢不到锁抛 Busy → 计 busy_skips 弃本帧，不排队）
       → **非 None 才发布**结果槽（整包替换，不原地改已发布对象）；
       顶层 try/except 计 failures，单帧异常不杀 daemon。
-    - take：主线程消费结果槽（取走即清，一拍最多应用一次）；
-      age = now − captured_ts 超 max_age_ms → 计 stale 丢弃、本拍返回 None
+    - take：主线程消费结果槽（**驻留**：闸内同一结果可被多拍反复消费，取走不清；
+      is_new=本拍是否首次消费该结果——消费端保鲜槽与学习只认新证据）；
+      age = now − captured_ts 超 max_age_ms → 计 stale、清槽、本拍返回 None
       （road_offset 退纯模型积分——与 session 缺失同一降级路径，宁旧不如无）。
     - health：applied/stale/failures/busy_skips 计数 + age/duration 滑窗——
       不达标报警数据面。
@@ -676,7 +677,8 @@ class AsyncDepthRoadObserver:
         self._debug_seq = 0
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None] | None = None
-        self._result: tuple[DepthRoadReading, float] | None = None
+        self._result: tuple[int, DepthRoadReading, float] | None = None
+        self._last_seq = -1               # 消费端已见结果序号（仅主线程触碰）
         self._pushed = 0
         self._applied = 0
         self._stale_drops = 0
@@ -727,25 +729,38 @@ class AsyncDepthRoadObserver:
                              None if object_mask is None else object_mask.copy())
         self._wakeup.set()
 
-    def take(self) -> DepthRoadReading | None:
-        """消费最新结果（取走即清）。超龄返回 None 并计 stale——控制侧按"本拍无读数"处理。"""
+    def take(self) -> tuple[DepthRoadReading | None, bool]:
+        """读最新驻留结果 → (reading | None, is_new)。
+
+        驻留语义（2026-09-28，"每结果只喂一拍"是闭眼主因之一）：结果不再
+        取走即清——同一结果在 age 闸内可被多个控制拍反复消费（路缘是慢
+        变量，闸内旧读数仍可用），无新结果的拍不再退纯模型积分。is_new
+        标记本拍是否首次消费该结果：路心合成可复用旧结果，但消费端的
+        保鲜槽与半宽学习只认新证据（**使用次数 ≠ 学习次数**——合成不是
+        新证据的同一条纪律）。超龄返回 (None, False)、清槽并计 stale
+        （每结果至多一次）。"""
         with self._lock:
             item = self._result
-            self._result = None
             if item is None:
-                return None
-            reading, captured_ts = item
+                return None, False
+            reading, captured_ts = item[1], item[2]
         age_ms = (time.perf_counter() - captured_ts) * 1000.0
         self.last_age_ms = age_ms
-        self._age_win.append(age_ms)
-        self._dur_win.append(reading.latency_ms)
+        is_new = item[0] != self._last_seq
+        if is_new:
+            self._last_seq = item[0]
+            self._age_win.append(age_ms)
+            self._dur_win.append(reading.latency_ms)
         if age_ms > self._max_age_ms:
-            with self._lock:
+            with self._lock:   # seq 比对防误删 worker 刚发布的新结果
+                if self._result is not None and self._result[0] == item[0]:
+                    self._result = None
                 self._stale_drops += 1
-            return None
-        with self._lock:
-            self._applied += 1
-        return reading
+            return None, False
+        if is_new:
+            with self._lock:
+                self._applied += 1
+        return reading, is_new
 
     def health(self) -> dict:
         with self._lock:
@@ -834,4 +849,4 @@ class AsyncDepthRoadObserver:
             if self._debug_dir is not None:
                 self._write_debug(item[1], m, reading, item[3])
             with self._lock:
-                self._result = (reading, item[2])  # captured_ts 随结果过闸（age 的锚）
+                self._result = (item[0], reading, item[2])  # (push 序号, 读数, captured_ts)

@@ -243,6 +243,32 @@ def test_ego_road_dashed_guard():
     assert o.update(_bnd_edges(-1.0, None)) == pytest.approx(-0.25)
 
 
+def test_ego_road_resident_replay_not_new_evidence():
+    """驻留协议（2026-09-28）：is_new=False 的旧读数复用——路心照出，但
+    槽时间戳不刷新（保鲜 TTL 不被推新）、半宽 EMA 不重学（使用次数≠学习次数）。"""
+    o = smod._EgoRoadObserver()
+    t = 1000.0
+    assert o.update(_bnd_edges(-1.2, 1.3), now=t) == pytest.approx(-0.05)
+    hw1 = o._hw
+    slot_t = o._slot["L"][1]
+    # 同一旧读数第二拍消费：is_new=False——pair 路心照出，但 EMA 不动
+    assert o.update(_bnd_edges(-1.2, 1.3), now=t + 0.05, is_new=False) \
+        == pytest.approx(-0.05)
+    assert o._hw == hw1, "驻留复用不得重学半宽"
+    assert o._slot["L"][1] == slot_t, "驻留复用不得刷新槽时间戳（TTL 语义）"
+    # 驻留读数也不得让过期槽"复活保鲜"：1s 后（TTL 0.4s 已过）无当前读数 → 弃权
+    assert o.update(None, now=t + 1.0) is None
+    # 单侧驻留读数反推照走（用记忆半宽），同样不学不刷
+    o2 = smod._EgoRoadObserver()
+    o2.update(_bnd_edges(-1.2, 1.3), now=t)
+    hw2 = o2._hw
+    o2.update(_bnd_edges(-0.8, None), now=t + 0.03)       # 单侧反推 −0.45
+    assert o2.update(_bnd_edges(-0.8, None), now=t + 0.06, is_new=False) \
+        == pytest.approx(-0.45)
+    assert o2._hw == hw2
+    assert o2._slot["L"][1] == t + 0.03, "槽停在最后一次新证据时刻"
+
+
 # ---------- 坏帧采样器（三局复盘悬案取证：录控互斥不动，控制回路自存真帧） ----------
 
 

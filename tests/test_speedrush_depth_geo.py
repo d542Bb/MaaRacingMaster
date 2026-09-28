@@ -384,22 +384,31 @@ def _frame() -> "object":
     return np.zeros((720, 1280, 3), np.uint8)
 
 
-def test_async_roundtrip_single_consume():
-    """push→worker→take 闭环；结果取走即清（一拍最多应用一次）。"""
+def test_async_roundtrip_resident_consume():
+    """push→worker→take 闭环；结果驻留：同一结果可多拍复用（is_new 首次 True
+    其后 False），applied 只计新结果一次——使用次数 ≠ 学习次数。"""
     stub = _StubObserver([_mk_reading()])
     a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
     a.start()
     try:
         a.push(_frame())
-        assert _wait_until(lambda: a.take() is not None), "worker 未在 2s 内发布结果"
-        assert a.take() is None, "结果槽未被取走即清（同帧二次应用）"
-        assert a.health()["applied"] == 1
+        r1, new1 = None, None
+        for _ in range(200):            # 轮询拿首读（worker 异步发布）
+            r1, new1 = a.take()
+            if r1 is not None:
+                break
+            _time.sleep(0.01)
+        assert r1 is not None and new1 is True, "首次消费应标记 is_new"
+        r2, new2 = a.take()
+        assert r2 is r1 and new2 is False, "驻留槽应复用同结果且不再标记新证据"
+        assert a.health()["applied"] == 1, "applied 只计新结果一次"
     finally:
         assert a.stop() is True
 
 
 def test_async_stale_gate_drops():
-    """age 闸：max_age_ms≈0 时已发布结果按 stale 丢弃（take 返回 None）。"""
+    """age 闸：max_age_ms≈0 时已发布结果按 stale 丢弃（take 返回 None），
+    驻留槽清空——后续拍持续 None 且 stale 不重复累计。"""
     stub = _StubObserver([_mk_reading()])
     a = AsyncDepthRoadObserver(stub, max_age_ms=0.001)  # type: ignore[arg-type]
     a.start()
@@ -407,9 +416,11 @@ def test_async_stale_gate_drops():
         a.push(_frame())
         # age 闸在消费侧（发布不判龄，take 时才判——treasure 同构）：轮询 take()
         # 直到某次消费把已发布的结果判成 stale。
-        assert _wait_until(lambda: a.take() is None
+        assert _wait_until(lambda: a.take()[0] is None
                            and (h := a.health())["applied"] + h["stale_drops"] >= 1), \
             "消费侧未把超龄结果判为 stale"
+        assert a.health()["stale_drops"] == 1
+        assert a.take() == (None, False), "清槽后不应重复计 stale 或吐旧结果"
         assert a.health()["stale_drops"] == 1
     finally:
         a.stop()
@@ -436,7 +447,7 @@ def test_async_no_session_no_thread():
     a.start()
     assert a._thread is None
     a.push(_frame())
-    assert a.take() is None
+    assert a.take() == (None, False)
     assert a.health()["pushed"] == 0, "无 worker 时 push 不得计数（零结果报警的前提）"
     assert a.stop() is True
 
@@ -450,7 +461,7 @@ def test_async_none_reading_not_published():
         a.push(_frame())
         assert _wait_until(lambda: stub.calls >= 1)
         _time.sleep(0.05)  # 给 worker 足够时间把（错误地）发布暴露出来
-        assert a.take() is None
+        assert a.take() == (None, False)
         h = a.health()
         assert h["applied"] == 0 and h["stale_drops"] == 0 and h["failures"] == 0
     finally:

@@ -656,9 +656,10 @@ class SpeedRushModule(ActivityModule):
             # worker 后台推理，take() 只消费过了 age 闸的最新结果——控制拍不再付
             # observe 成本。协议本身不抛，异常闸按观测件惯例保留（fail-safe）。
             dgeo = None
+            dgeo_new = False
             try:
                 chain["depth_geo"].push(frame, object_mask=_yolo_object_mask(result))
-                dgeo = chain["depth_geo"].take()
+                dgeo, dgeo_new = chain["depth_geo"].take()
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             planner: LateralPlanner = chain["planner"]
@@ -671,7 +672,9 @@ class SpeedRushModule(ActivityModule):
             if chain["geo_master"] == "hsv":
                 road_offset = chain["ego_road"].update(obs.boundary)
             else:
-                road_offset = chain["ego_road"].update(dgeo)
+                # is_new=False（驻留旧读数）：消费端槽不刷新、半宽不学——
+                # 路心合成照走（驻留协议见 AsyncDepthRoadObserver.take）。
+                road_offset = chain["ego_road"].update(dgeo, is_new=dgeo_new)
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -747,10 +750,12 @@ class SpeedRushModule(ActivityModule):
             "dgeo_right": None if dgeo is None or dgeo.right_edge_lane is None
             else round(dgeo.right_edge_lane, 3),
             # dgeo_ms=worker 侧 observe 耗时（解耦后不再是控制拍成本）；
-            # dgeo_age_ms=消费时刻帧龄（age 闸的读数面，滞后与丢弃都在这列显形）
+            # dgeo_age_ms=消费时刻帧龄（age 闸的读数面，滞后与丢弃都在这列显形）；
+            # dgeo_new=本拍是否新结果（False=驻留复用，驻留协议的离线审计列）
             "dgeo_ms": None if dgeo is None else round(dgeo.latency_ms, 1),
             "dgeo_age_ms": None if dgeo is None
             else round(chain["depth_geo"].last_age_ms, 1),
+            "dgeo_new": dgeo is not None and dgeo_new,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
@@ -1048,21 +1053,25 @@ class _EgoRoadObserver:
             self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
         return off
 
-    def update(self, bnd, now: float | None = None) -> float | None:
+    def update(self, bnd, now: float | None = None, *, is_new: bool = True) -> float | None:
         if now is None:
             now = time.monotonic()
         el = None if bnd is None else bnd.left_edge_lane
         er = None if bnd is None else bnd.right_edge_lane
-        if el is not None and el == el:
-            self._slot["L"] = (el, now)
-        if er is not None and er == er:
-            self._slot["R"] = (er, now)
+        # 驻留旧读数（is_new=False）不是新观测：槽时间戳不刷新（否则 0.4s TTL
+        # 被推成最长 0.7s，保鲜语义失效）、配对不学半宽（使用次数≠学习次数）；
+        # 路心合成/反推照走——这正是驻留的目的。
+        if is_new:
+            if el is not None and el == el:
+                self._slot["L"] = (el, now)
+            if er is not None and er == er:
+                self._slot["R"] = (er, now)
         lf, rf = self._fresh("L", now), self._fresh("R", now)
         off: float | None
         src = "none"
         if el is not None and er is not None:
             src = "pair"
-            off = self._pair(el, er, learn=True)
+            off = self._pair(el, er, learn=is_new)
             if off is None:
                 self.last = self._snapshot(now, src, None)   # 垃圾对整帧弃（原语义）
                 return None
@@ -1072,7 +1081,7 @@ class _EgoRoadObserver:
                 off = -(el + self._hw)   # 单侧反推（原语义，优先于跨时刻合成）
             elif rf is not None:
                 src = "slot_pair"
-                off = self._pair(el, rf, learn=True)  # 冷启动：当前 L × 槽 R
+                off = self._pair(el, rf, learn=is_new)  # 冷启动：当前 L × 槽 R
             else:
                 off = None
         elif er is not None:
@@ -1081,7 +1090,7 @@ class _EgoRoadObserver:
                 off = -(er - self._hw)
             elif lf is not None:
                 src = "slot_pair"
-                off = self._pair(lf, er, learn=True)  # 冷启动：槽 L × 当前 R
+                off = self._pair(lf, er, learn=is_new)  # 冷启动：槽 L × 当前 R
             else:
                 off = None
         elif self._hw is not None:
@@ -1106,7 +1115,8 @@ class _EgoRoadObserver:
                 off = -(best[1] + self._hw) if best[0] == "L" else -(best[1] - self._hw)
         elif lf is not None and rf is not None:
             src = "slot_pair"
-            off = self._pair(lf, rf, learn=True)      # 冷启动：双侧弃权拍
+            off = self._pair(lf, rf, learn=is_new)    # 冷启动：双侧弃权拍
+                                                      # （驻留拍 is_new=False 不重学）
         else:
             self.last = self._snapshot(now, "none", None)
             return None
