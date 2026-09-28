@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
@@ -52,7 +53,7 @@ from maaracing_master.plugins.speedrush.perception import PerceptionResult, Stre
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
-from maaracing_master.plugins.speedrush.tracking import Tracker
+from maaracing_master.plugins.speedrush.tracking import DecisionState, Tracker
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
 # 一轮完整流程。首三段（进入活动）只在首轮需要——每轮循环结束时会回到活动页，
@@ -672,9 +673,13 @@ class SpeedRushModule(ActivityModule):
             if chain["geo_master"] == "hsv":
                 road_offset = chain["ego_road"].update(obs.boundary)
             else:
-                # is_new=False（驻留旧读数）：消费端槽不刷新、半宽不学——
-                # 路心合成照走（驻留协议见 AsyncDepthRoadObserver.take）。
-                road_offset = chain["ego_road"].update(dgeo, is_new=dgeo_new)
+                # is_new=False（驻留旧读数）：槽不刷新、半宽不学，路心照走。
+                # can_learn=False（CHANGE/ABORT 变道期）：结构对在切换，半宽
+                # 冻结（稳态门见 _EgoRoadObserver._try_learn）。
+                road_offset = chain["ego_road"].update(
+                    dgeo, is_new=dgeo_new,
+                    can_learn=out.state not in (DecisionState.CHANGE,
+                                                DecisionState.ABORT_CHANGE))
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -1020,10 +1025,19 @@ class _EgoRoadObserver:
     HW_MIN, HW_MAX, OFF_MAX = 0.8, 2.2, 2.5
     HW_LEARN_TOL = 0.6               # 配对宽度偏离记忆超此值不学 EMA
     SLOT_TTL_S = 0.4                 # 每侧保鲜槽 age 预算（≈深度拍 8 拍 @20Hz）
+    # 稳态学习门（2026-09-28，1830 局实证）：「路宽常数」先验只在同车道稳态
+    # 成立——跨车道时"两侧最近结构对"切换，对宽 0.9~3.0 道乱跳，逐拍 EMA 被
+    # <TOL 的逐步漂拖到 0.9~2.0。乱跳期冻结、稳态窗内平滑学、连续一致且整体
+    # 偏离达 HW_REANCH_N 判结构对切换重锚。
+    HW_STEADY_N = 5                  # 学习候选下限（≈0.85s 当帧 pair）
+    HW_STEADY_SPREAD = 0.25          # 候选窗内对宽极差上限（超=乱跳期）
+    HW_REANCH_N = 8                  # 重锚所需连续一致样本数
+    HW_REANCH_WINDOW_S = 2.0         # 候选窗时长
 
     def __init__(self) -> None:
         self._hw: float | None = None
         self._slot: dict[str, tuple[float, float]] = {}   # side → (lane, monotonic)
+        self._cand: deque[tuple[float, float]] = deque()  # 稳态窗候选 (对宽, 时刻)
         self.last: dict = {}                              # 实机 debug 数据面（ro_* 列）
 
     def _fresh(self, side: str, now: float) -> float | None:
@@ -1039,28 +1053,53 @@ class _EgoRoadObserver:
         return {"source": src, "off": off, "hw": self._hw,
                 "slot_l_ms": age("L"), "slot_r_ms": age("R")}
 
-    def _pair(self, el: float, er: float, learn: bool) -> float | None:
+    def _pair(self, el: float, er: float, learn: bool, now: float) -> float | None:
         """同帧/跨时刻对 → off；对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
         落界内，20:45 锁测出）→ None。off 与学习解耦：对宽过物理界即可信当帧
-        路心，但偏离 EMA 记忆超 HW_LEARN_TOL 的对不学——真路宽是每场常数，
-        突变对是假缘（181518 局幸存者偏差喂坏 EMA 的教训）。"""
+        路心，学习交稳态门（_try_learn——1830 局实证逐拍平滑会被跨车道结构对
+        切换拖着漂，一致性门挡不住 <TOL 的逐步漂）。"""
         hw = (er - el) / 2.0
         if not (self.HW_MIN <= hw <= self.HW_MAX):
             return None
-        off = -(el + er) / 2.0
-        if learn and (self._hw is None
-                      or abs(hw - self._hw) <= self.HW_LEARN_TOL):
-            self._hw = hw if self._hw is None else 0.7 * self._hw + 0.3 * hw
-        return off
+        if learn:
+            self._try_learn(hw, now)
+        return -(el + er) / 2.0
 
-    def update(self, bnd, now: float | None = None, *, is_new: bool = True) -> float | None:
+    def _try_learn(self, hw: float, now: float) -> None:
+        """稳态门内才学：候选窗内样本不足或极差超限=乱跳期，冻结；稳态且在
+        一致性门内 → 0.7/0.3 平滑；连续一致且整体偏离 EMA 超 TOL 达
+        HW_REANCH_N → 判结构对切换，重锚到均值（跨车道后 EMA 卡死在旧结构
+        对的解法；连续 8 个当帧 pair ≈1.4s，假缘很少这么稳）。"""
+        self._cand.append((hw, now))
+        while self._cand and now - self._cand[0][1] > self.HW_REANCH_WINDOW_S:
+            self._cand.popleft()
+        if self._hw is None:
+            self._hw = hw          # 冷启动：首对即锚（无旧值可漂），窗重新开始
+            self._cand.clear()
+            return
+        if len(self._cand) < self.HW_STEADY_N:
+            return
+        hws = [h for h, _ in self._cand]
+        if max(hws) - min(hws) > self.HW_STEADY_SPREAD:
+            return
+        mean = sum(hws) / len(hws)
+        if abs(mean - self._hw) <= self.HW_LEARN_TOL:
+            self._hw = 0.7 * self._hw + 0.3 * mean
+        elif len(self._cand) >= self.HW_REANCH_N:
+            self._hw = mean
+            self._cand.clear()
+
+    def update(self, bnd, now: float | None = None, *, is_new: bool = True,
+               can_learn: bool = True) -> float | None:
         if now is None:
             now = time.monotonic()
         el = None if bnd is None else bnd.left_edge_lane
         er = None if bnd is None else bnd.right_edge_lane
         # 驻留旧读数（is_new=False）不是新观测：槽时间戳不刷新（否则 0.4s TTL
         # 被推成最长 0.7s，保鲜语义失效）、配对不学半宽（使用次数≠学习次数）；
-        # 路心合成/反推照走——这正是驻留的目的。
+        # 路心合成/反推照走——这正是驻留的目的。can_learn=False（变道期）：
+        # 结构对在切换，半宽冻结不学，槽照常保鲜。
+        learn = is_new and can_learn
         if is_new:
             if el is not None and el == el:
                 self._slot["L"] = (el, now)
@@ -1071,7 +1110,7 @@ class _EgoRoadObserver:
         src = "none"
         if el is not None and er is not None:
             src = "pair"
-            off = self._pair(el, er, learn=is_new)
+            off = self._pair(el, er, learn, now)
             if off is None:
                 self.last = self._snapshot(now, src, None)   # 垃圾对整帧弃（原语义）
                 return None
@@ -1081,7 +1120,7 @@ class _EgoRoadObserver:
                 off = -(el + self._hw)   # 单侧反推（原语义，优先于跨时刻合成）
             elif rf is not None:
                 src = "slot_pair"
-                off = self._pair(el, rf, learn=is_new)  # 冷启动：当前 L × 槽 R
+                off = self._pair(el, rf, learn, now)  # 冷启动：当前 L × 槽 R
             else:
                 off = None
         elif er is not None:
@@ -1090,7 +1129,7 @@ class _EgoRoadObserver:
                 off = -(er - self._hw)
             elif lf is not None:
                 src = "slot_pair"
-                off = self._pair(lf, er, learn=is_new)  # 冷启动：槽 L × 当前 R
+                off = self._pair(lf, er, learn, now)  # 冷启动：槽 L × 当前 R
             else:
                 off = None
         elif self._hw is not None:
@@ -1101,7 +1140,7 @@ class _EgoRoadObserver:
             # 不可信）。仅一侧新鲜 → 单侧+半宽反推。合成不是新证据，不学。
             if lf is not None and rf is not None:
                 src = "slot_pair"
-                off = self._pair(lf, rf, learn=False)
+                off = self._pair(lf, rf, False, now)
                 if off is None:
                     self.last = self._snapshot(now, src, None)
                     return None
@@ -1115,8 +1154,8 @@ class _EgoRoadObserver:
                 off = -(best[1] + self._hw) if best[0] == "L" else -(best[1] - self._hw)
         elif lf is not None and rf is not None:
             src = "slot_pair"
-            off = self._pair(lf, rf, learn=is_new)    # 冷启动：双侧弃权拍
-                                                      # （驻留拍 is_new=False 不重学）
+            off = self._pair(lf, rf, learn, now)      # 冷启动：双侧弃权拍
+                                                      # （驻留/变道拍不学）
         else:
             self.last = self._snapshot(now, "none", None)
             return None

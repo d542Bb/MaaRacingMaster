@@ -343,15 +343,21 @@ def test_ego_road_hw_learning_bounded():
 
 
 def test_ego_road_hw_learn_gate_rejects_outlier_pair():
-    """半宽 EMA 一致性门（181518 局幸存者偏差教训）：对宽过物理界但偏离记忆
-    超 HW_LEARN_TOL 的对——当帧路心仍可信（off 照给），但不学记忆。"""
+    """半宽 EMA 一致性门（181518 局幸存者偏差教训）+ 稳态门（1830 局教训）：
+    离群对——当帧路心仍可信（off 照给），不学记忆；且离群对进稳态窗后
+    2s 内极差超限 → 后续一致对也冻结（离群冷却期，垃圾对混喂的保守防线），
+    离群滚出候选窗后恢复学习。"""
     o = smod._EgoRoadObserver()
-    o.update(_bnd_edges(-1.2, 1.3), now=1000.0)            # hw≈1.25
+    o.update(_bnd_edges(-1.2, 1.3), now=1000.0)            # hw≈1.25（冷启动锚）
     # hw=2.1 界内但偏 0.85>0.6：off=−1.3 界内放行，EMA 不动
     assert o.update(_bnd_edges(-0.8, 3.4), now=1000.03) == pytest.approx(-1.3)
     assert o._hw == pytest.approx(1.25)
-    # 一致对正常学习（EMA 向 1.25 收敛）
+    # 冷却期内的一致对也不学（稳态窗被离群对撑爆，极差 0.8>0.25）
     o.update(_bnd_edges(-1.3, 1.3), now=1000.07)
+    assert o._hw == pytest.approx(1.25)
+    # 离群对滚出 2s 候选窗后，稳态一致对恢复学习（EMA 向 1.3 收敛）
+    for i in range(5):
+        o.update(_bnd_edges(-1.3, 1.3), now=1002.1 + i * 0.05)
     assert o._hw == pytest.approx(1.25 * 0.7 + 1.3 * 0.3)
 
 
@@ -419,6 +425,39 @@ def test_ego_road_same_frame_pair_still_wins_over_slots():
     # 槽里有 R=1.3，但当前帧 L=−0.8 走单侧反推（当前值+常数半宽，误差不随时延涨）
     assert o.update(_bnd_edges(-0.8, None), now=t + 0.05) == pytest.approx(-0.45)
     assert o._hw == pytest.approx(1.25)                             # 未被跨帧对污染
+
+
+def test_ego_road_steady_reanchor_after_lane_switch():
+    """稳态重锚（1830 局教训）：跨车道后结构对切换（对宽 1.9 稳定出现），
+    一致性门（差 0.65>TOL）会永远拒学、EMA 卡死旧值——连续 HW_REANCH_N 个
+    稳定一致的候选判结构对切换，重锚到均值。"""
+    o = smod._EgoRoadObserver()
+    t = 7000.0
+    o.update(_bnd_edges(-1.2, 1.3), now=t)                          # 锚 1.25,窗清空
+    # 新车道结构对 hw=1.9 稳定重复（间隔 0.2s,8 个候选跨 1.4s 在 2s 窗内）
+    for i in range(1, 8):
+        o.update(_bnd_edges(-1.9, 1.9), now=t + i * 0.2)
+    assert o._hw == pytest.approx(1.25)                             # 未达重锚数,不动
+    o.update(_bnd_edges(-1.9, 1.9), now=t + 8 * 0.2)
+    assert o._hw == pytest.approx(1.9)                              # 重锚
+    # 重锚后单侧反推用新半宽：off=−(−1.5+1.9)=−0.4
+    assert o.update(_bnd_edges(-1.5, None), now=t + 1.9) == pytest.approx(-0.4)
+
+
+def test_ego_road_lane_change_freezes_learning():
+    """变道冻结（can_learn=False）：CHANGE/ABORT 期结构对在切换,半宽不学,
+    槽照常保鲜（读数仍是真观测）。"""
+    o = smod._EgoRoadObserver()
+    t = 8000.0
+    o.update(_bnd_edges(-1.2, 1.3), now=t)                          # 锚 1.25
+    o.update(_bnd_edges(-1.6, 1.9), now=t + 0.05, can_learn=False)  # 变道期对
+    assert o._hw == pytest.approx(1.25)
+    assert o._slot["R"][0] == pytest.approx(1.9)                    # 槽照刷
+    assert o._slot["R"][1] == pytest.approx(t + 0.05)
+    # 变道结束恢复学习（稳态窗攒够 5 个一致候选）
+    for i in range(5):
+        o.update(_bnd_edges(-1.6, 1.9), now=t + 5.0 + i * 0.05)
+    assert o._hw != pytest.approx(1.25)
 
 
 # ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------
