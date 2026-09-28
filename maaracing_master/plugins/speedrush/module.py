@@ -1064,13 +1064,18 @@ class _EgoRoadObserver:
     HW_STEADY_SPREAD = 0.25          # 候选窗内对宽极差上限（超=乱跳期）
     HW_REANCH_N = 8                  # 重锚所需连续一致样本数
     HW_REANCH_WINDOW_S = 2.0         # 候选窗时长
+    LANE_COUNT = 4                   # 可用车道数（RULES §1 [权威]）
+    LANE_SWITCH_MARGIN = 0.1         # 车道归属迟滞（车道宽的 10%）：骑线在边界时
+                                     # 不因毫米级漂移来回改归属
 
     def __init__(self, semantics: str = "structure") -> None:
         for name, val in self._SEMANTICS[semantics].items():
             setattr(self, name, val)
+        self._sem = semantics
         self._hw: float | None = None
         self._slot: dict[str, tuple[float, float]] = {}   # side → (lane, monotonic)
         self._cand: deque[tuple[float, float]] = deque()  # 稳态窗候选 (对宽, 时刻)
+        self._lane_cur: int | None = None                 # 归属车道（黄线语义,迟滞）
         self.last: dict = {}                              # 实机 debug 数据面（ro_* 列）
 
     def _fresh(self, side: str, now: float) -> float | None:
@@ -1084,9 +1089,28 @@ class _EgoRoadObserver:
             s = self._slot.get(side)
             return None if s is None else round((now - s[1]) * 1000.0)
         return {"source": src, "off": off, "hw": self._hw,
+                "lane_cur": self._lane_cur,
                 "slot_l": self._slot["L"][0] if "L" in self._slot else None,
                 "slot_r": self._slot["R"][0] if "R" in self._slot else None,
                 "slot_l_ms": age("L"), "slot_r_ms": age("R")}
+
+    def _lane_center_off(self, p: float, lane_w: float) -> float:
+        """黄线语义的 off：**最近车道中心**相对自车（负=目标在左）。
+
+        p=自车距左路面缘（车道量），lane_w=路面宽/4（RULES §1 四车道 [权威]）。
+        归属带迟滞（LANE_SWITCH_MARGIN）：骑线在车道边界时毫米级漂移不得来回
+        改归属——这是 T2 价值表「自车在哪个车道」的地基组件（2026-09-28 纠偏：
+        旧 hsv 档的「回路面中心」语义与目标车道制冲突，此处修正为车道中心）。"""
+        k = min(int(p / lane_w), self.LANE_COUNT - 1)
+        prev = self._lane_cur
+        if prev is not None and k != prev:
+            d_prev = abs(p - (prev + 0.5) * lane_w)
+            d_cand = abs(p - (k + 0.5) * lane_w)
+            if d_cand < d_prev - self.LANE_SWITCH_MARGIN * lane_w:
+                self._lane_cur = k
+        else:
+            self._lane_cur = k
+        return (self._lane_cur + 0.5) * lane_w - p
 
     def _pair(self, el: float, er: float, learn: bool, now: float) -> float | None:
         """同帧/跨时刻对 → off；对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
@@ -1098,6 +1122,9 @@ class _EgoRoadObserver:
             return None
         if learn:
             self._try_learn(hw, now)
+        if self._sem == "lane_marking":
+            # 路面系：p=自车距左缘=−el；lane_w 优先用 EMA（当帧噪声大）
+            return self._lane_center_off(-el, (self._hw or hw) / 2.0)
         return -(el + er) / 2.0
 
     def _try_learn(self, hw: float, now: float) -> None:
@@ -1152,7 +1179,11 @@ class _EgoRoadObserver:
         elif el is not None:
             if self._hw is not None:
                 src = "single_L"
-                off = -(el + self._hw)   # 单侧反推（原语义，优先于跨时刻合成）
+                if self._sem == "lane_marking":
+                    # 路面系：p=自车距左缘=−el，W=2×EMA 半宽
+                    off = self._lane_center_off(-el, self._hw / 2.0)
+                else:
+                    off = -(el + self._hw)   # 单侧反推（原语义，优先于跨时刻合成）
             elif rf is not None:
                 src = "slot_pair"
                 off = self._pair(el, rf, learn, now)  # 冷启动：当前 L × 槽 R
@@ -1161,7 +1192,10 @@ class _EgoRoadObserver:
         elif er is not None:
             if self._hw is not None:
                 src = "single_R"
-                off = -(er - self._hw)
+                if self._sem == "lane_marking":
+                    off = self._lane_center_off(2.0 * self._hw - er, self._hw / 2.0)
+                else:
+                    off = -(er - self._hw)
             elif lf is not None:
                 src = "slot_pair"
                 off = self._pair(lf, er, learn, now)  # 冷启动：槽 L × 当前 R

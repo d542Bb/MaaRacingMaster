@@ -129,14 +129,16 @@ def test_road_offset_all_sources_feed_loop(monkeypatch):
                         fid * 50_000_000, 10.0, 1)
         return chain["trace"][-1]
 
-    cur["b"] = _bnd_lanes(-1.5, 1.5)               # 同帧双侧对：off=0
+    cur["b"] = _bnd_lanes(-1.5, 1.5)               # 同帧双侧对（黄线语义：车道中心）
     t1 = tick()
     assert t1["ro_source"] == "pair"
-    assert t1["road_offset"] == pytest.approx(0.0)
-    cur["b"] = _bnd_lanes(-2.0, None, sides=1)      # 单侧：hw 记忆 1.5 反推 off=0.5
+    # W=3.0 → lane_w=0.75,p=1.5 → 车道 2 中心 1.875 → off=+0.375
+    assert t1["road_offset"] == pytest.approx(0.375)
+    cur["b"] = _bnd_lanes(-2.0, None, sides=1)      # 单侧：路面半宽 1.5 → p=2.0
     t2 = tick()
     assert t2["ro_source"] == "single_L"
-    assert t2["road_offset"] == pytest.approx(0.5)  # 照喂
+    # 车道 2 中心 1.875 → off=−0.125（照喂，不黑视）
+    assert t2["road_offset"] == pytest.approx(-0.125)
 
 
 # ---------- 控制链异常 → 停控转观测，不崩主循环、不 strand 油门 ----------
@@ -463,22 +465,40 @@ def test_ego_road_lane_change_freezes_learning():
 
 
 def test_ego_road_lane_marking_semantics():
-    """黄线语义守卫（2026-09-28 T1 量测，52 demos 会话 855 双侧重放）：
-    检测器配对全路面两侧缘，对宽 3~5 道（半宽 1.5~2.7）；结构语义的合法对
-    （半宽 1.0）在黄线语义下不物理——语义错了守卫必须拦住。"""
+    """黄线语义（2026-09-28 T1 量测，52 demos 会话 855 双侧重放）：检测器配对
+    全路面两侧缘（对宽 3~5 道）；off=**最近车道中心**（非路面中心——2026-09-28
+    纠偏：回路面中心与 T2 目标车道制冲突）。结构语义的合法对（半宽 1.0）在
+    黄线语义下不物理。"""
     o = smod._EgoRoadObserver(semantics="lane_marking")
     assert o.HW_MIN == 1.5 and o.HW_MAX == 2.7 and o.OFF_MAX == 2.5
-    assert o._hw is None, "默认构造必须带语义,不留裸实例"
     t = 9000.0
-    # 路面对宽 4.24（p50）→ 半宽 2.12 界内：off=0 供出且学
-    assert o.update(_bnd_edges(-2.12, 2.12), now=t) == pytest.approx(0.0)
+    # 路面对宽 4.24（p50，lane_w=1.06）：车距左缘 2.0 → 车道 1，中心在 1.59
+    # → off=−0.41（小修正拉回本车道中心，不再被拽向路面中心）
+    assert o.update(_bnd_edges(-2.0, 2.24), now=t) == pytest.approx(-0.41)
     assert o._hw == pytest.approx(2.12)
+    assert o._lane_cur == 1
     # 半宽 1.0（结构语义的合法值）在黄线语义下不物理 → 整拍弃
     assert o.update(_bnd_edges(-1.0, 1.0), now=t + 0.05) is None
-    # 单侧反推用路面半宽语义：左缘 -0.35（车贴左标线）→ off=−(−0.35+2.12)=−1.77
+    # 单侧反推用路面半宽+车道中心：左缘 -0.35 → p=0.35 → 车道 0，off=+0.18
     o2 = smod._EgoRoadObserver(semantics="lane_marking")
-    o2.update(_bnd_edges(-2.12, 2.12), now=t)
-    assert o2.update(_bnd_edges(-0.35, None), now=t + 0.03) == pytest.approx(-1.77)
+    o2.update(_bnd_edges(-2.0, 2.24), now=t)
+    assert o2.update(_bnd_edges(-0.35, None), now=t + 0.03) == pytest.approx(0.18)
+    assert o2._lane_cur == 0
+
+
+def test_ego_road_lane_marking_hysteresis_on_boundary():
+    """车道归属迟滞：车骑在车道边界（p≈2×lane_w）时毫米级漂移不得来回改归属
+    （LANE_SWITCH_MARGIN=车道宽 10%）。"""
+    o = smod._EgoRoadObserver(semantics="lane_marking")
+    t = 9500.0
+    o.update(_bnd_edges(-2.0, 2.24), now=t)                 # 锚,p=2.0 → 车道 1
+    assert o._lane_cur == 1
+    # 漂过边界一点点（p=2.13,车道 2 侧）:距离差不显著 → 保持车道 1
+    o.update(_bnd_edges(-2.13, 2.11), now=t + 0.05)
+    assert o._lane_cur == 1
+    # 显著进入车道 2（p=2.6,中心 2.65 vs 车道1中心 1.59:差显著）→ 归属切换
+    o.update(_bnd_edges(-2.6, 1.64), now=t + 0.10)
+    assert o._lane_cur == 2
 
 
 def test_control_chain_ego_road_semantics_follows_geo_master():
