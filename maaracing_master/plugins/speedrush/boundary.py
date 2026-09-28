@@ -63,7 +63,7 @@ BAND_STEP = 4          # 采样行距（px）
 MIN_RUN_PX = 6         # 单侧黄色连续段最小宽度（更窄当噪点）
 KERNEL = np.ones((3, 3), np.uint8)
 
-_SCHEMA = 2  # v2：vp_x（航向观测量，2026-09-22 双积分证据链）
+_SCHEMA = 3  # v3：clusters（全部黄线簇车道坐标——车道栅格本身，2026-09-28）
 
 
 def _row_run_centers(mask_row: np.ndarray) -> list[float]:
@@ -164,6 +164,7 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
 
     cl = _cluster(votes)
     meds = [float(np.median([p[0] for p in c])) for c in cl]
+    cluster_lanes = tuple(sorted(meds))             # 全部簇（升序）——车道栅格本身
     pair: tuple[int, int, int] | None = None
     for i in range(len(cl)):
         for j in range(len(cl)):
@@ -193,7 +194,8 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
             vp_row=vp_row, validity=True,
             uncertainty=L["rms"] if L["rms"] == L["rms"] else R["rms"],
             sides=2, vp_x=vp_x,
-            left_edge_lane=L["med"], right_edge_lane=R["med"])
+            left_edge_lane=L["med"], right_edge_lane=R["med"],
+            clusters=cluster_lanes)
 
     if cl:
         # 单侧容忍（step 6 裁定沿用）：只有一条主簇时如实记 sides==1——
@@ -208,7 +210,8 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
             road_width=float("nan"), straight_residual=S["std"],
             vp_row=None, validity=True, uncertainty=S["rms"], sides=1,
             left_edge_lane=S["med"] if left else None,
-            right_edge_lane=S["med"] if not left else None)
+            right_edge_lane=S["med"] if not left else None,
+            clusters=cluster_lanes)
 
     return BoundarySummary(
         schema_version=_SCHEMA, left_x=float("nan"), right_x=float("nan"),

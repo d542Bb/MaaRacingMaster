@@ -42,7 +42,8 @@ def test_straight_road_valid_and_low_residual():
     _line(img, lambda y: CAL.vpx + 3.4 * (y - CAL.y_h))
     s = detect_boundary(img, CAL)
     assert isinstance(s, BoundarySummary)
-    assert s.schema_version == 2
+    assert s.schema_version == 3
+    assert s.clusters == tuple(sorted(s.clusters)) and len(s.clusters) >= 2
     assert s.validity is True
     assert s.left_x < s.right_x
     assert s.road_width > 100

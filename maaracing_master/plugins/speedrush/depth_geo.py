@@ -634,8 +634,7 @@ def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
     l1 += f"  elane={el:+.2f}" if isinstance(el, (int, float)) else ""
     def _f(v):
         return f"{v:+.2f}" if isinstance(v, (int, float)) else "-"
-    l2 = (f"ro={_f(ro)}[{note.get('src', '-')}] hw={_f(note.get('hw'))}"
-          f" slotL={_f(note.get('slot_l'))} slotR={_f(note.get('slot_r'))}"
+    l2 = (f"ro={_f(ro)}[{note.get('src', '-')}] lane_gap={note.get('gap', '-')}"
           f" age={note.get('age', '-')}ms new={note.get('new', '-')}")
     cv2.putText(band, l1, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 255, 255), 1)
     cv2.putText(band, l2, (8, 46), cv2.FONT_HERSHEY_SIMPLEX, .55, (200, 255, 200), 1)

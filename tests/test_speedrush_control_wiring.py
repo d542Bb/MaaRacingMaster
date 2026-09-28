@@ -103,11 +103,12 @@ def test_v1_lateral_channel_live(monkeypatch):
 
 # ---------- 闭环供数：pair 与单侧合成都喂（80e9a1c 供数门撤销锁） ----------
 
-def _bnd_lanes(el, er, sides=2):
-    return BoundarySummary(schema_version=2, left_x=80.0, right_x=1200.0,
+def _bnd_lanes(el, er, sides=2, clusters=()):
+    return BoundarySummary(schema_version=3, left_x=80.0, right_x=1200.0,
                            road_width=1120.0, straight_residual=0.0, vp_row=None,
                            validity=True, uncertainty=0.1, sides=sides,
-                           left_edge_lane=el, right_edge_lane=er)
+                           left_edge_lane=el, right_edge_lane=er,
+                           clusters=clusters)
 
 
 def test_road_offset_all_sources_feed_loop(monkeypatch):
@@ -118,7 +119,6 @@ def test_road_offset_all_sources_feed_loop(monkeypatch):
     monkeypatch.setattr(smod, "detect_boundary", lambda frame, **kw: cur.get("b"))
     m = _module()
     chain = m._build_control_chain()
-    chain["geo_master"] = "hsv"
     pad = StubPad()
     fid = 0
 
@@ -129,16 +129,14 @@ def test_road_offset_all_sources_feed_loop(monkeypatch):
                         fid * 50_000_000, 10.0, 1)
         return chain["trace"][-1]
 
-    cur["b"] = _bnd_lanes(-1.5, 1.5)               # 同帧双侧对（黄线语义：车道中心）
+    cur["b"] = _bnd_lanes(-1.5, 1.5, clusters=(-1.5, 1.5))   # 簇间隙 [-1.5,1.5]
     t1 = tick()
-    assert t1["ro_source"] == "pair"
-    # W=3.0 → lane_w=0.75,p=1.5 → 车道 2 中心 1.875 → off=+0.375
-    assert t1["road_offset"] == pytest.approx(0.375)
-    cur["b"] = _bnd_lanes(-2.0, None, sides=1)      # 单侧：路面半宽 1.5 → p=2.0
+    assert t1["ro_source"] == "gap"
+    assert t1["road_offset"] == pytest.approx(0.0)           # 0 在间隙中心
+    cur["b"] = _bnd_lanes(-2.0, None, sides=1)               # 单侧无簇:槽兜底
     t2 = tick()
-    assert t2["ro_source"] == "single_L"
-    # 车道 2 中心 1.875 → off=−0.125（照喂，不黑视）
-    assert t2["road_offset"] == pytest.approx(-0.125)
+    assert t2["ro_source"] == "gap_slot"
+    assert t2["road_offset"] == pytest.approx(0.0)           # 槽簇照喂(不黑视)
 
 
 # ---------- 控制链异常 → 停控转观测，不崩主循环、不 strand 油门 ----------
@@ -212,302 +210,56 @@ def test_control_last_shape():
     assert isinstance(m._control_last["executed_lane"], float)
 
 
-# ---------- step 2.5b _EgoRoadObserver：单侧反推 + 半宽记忆 + 虚线护栏 ----------
-
-def _bnd_edges(el, er):
-    return SimpleNamespace(left_edge_lane=el, right_edge_lane=er)
+# ---------- v3 _EgoRoadObserver：黄线簇间隙归属（2026-09-28 重写） ----------
 
 
-def test_ego_road_both_sides_and_memory():
+def _bnd_clusters(*clusters):
+    return SimpleNamespace(clusters=tuple(clusters))
+
+
+def test_ego_road_gap_center_feeds():
+    """0 落在簇间隙 → off=该间隙中心(负=目标在左)。"""
     o = smod._EgoRoadObserver()
-    t = 1000.0
-    assert o.update(_bnd_edges(-1.2, 1.3), now=t) == pytest.approx(-0.05)  # 双侧直读
-    assert o._hw == pytest.approx(1.25)
-    # 单侧左缘：off = −(l + hw)
-    assert o.update(_bnd_edges(-0.8, None), now=t + 0.03) == pytest.approx(-0.45)
-    # 单侧右缘：off = −(r − hw)
-    assert o.update(_bnd_edges(None, 1.7), now=t + 0.07) == pytest.approx(-0.45)
-    # 全弃权拍：保鲜槽（2026-09-25）内仍有 0.4s 旧证据 → 取最新鲜槽 + 半宽反推
-    # （此前返回 None 退纯模型积分；槽内证据自洽时同值）
-    assert o.update(None, now=t + 0.10) == pytest.approx(-0.45)
+    # 簇 -2.1 / 0.1 / 2.1:0 在 [-0.1? no——0 在 0.1 左侧 → 间隙[-2.1,0.1)?0<0.1 且 0>=-2.1 ✓
+    off = o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.0)
+    assert off == pytest.approx((-2.1 + 0.1) / 2)
+    assert o.last["source"] == "gap"
+    assert o._gap_cur == 0
 
 
-def test_ego_road_no_memory_single_side_is_none():
+def test_ego_road_gap_outside_pulls_back():
+    """0 越出簇范围(车骑到路面外,撞墙前兆)→ 指向最近边界的拉回信号。"""
     o = smod._EgoRoadObserver()
-    assert o.update(_bnd_edges(-1.0, None)) is None      # 没学过路宽，单侧不猜
-    assert o.update(None) is None
-
-
-def test_ego_road_dashed_guard():
-    """单侧"缘"其实是车道虚线：反推偏移出界（>hw+0.5）→ 弃观测，不喂假路中心。"""
-    o = smod._EgoRoadObserver()
-    o.update(_bnd_edges(-1.2, 1.3))                       # 学 hw≈1.25
-    assert o.update(_bnd_edges(-0.2, None)) == pytest.approx(-1.05)  # 界内放行
-    assert o.update(_bnd_edges(1.5, None)) is None        # −(1.5+1.25)=−2.75 出界弃
-    assert o.update(_bnd_edges(-1.0, None)) == pytest.approx(-0.25)
-
-
-def test_ego_road_resident_replay_not_new_evidence():
-    """驻留协议（2026-09-28）：is_new=False 的旧读数复用——路心照出，但
-    槽时间戳不刷新（保鲜 TTL 不被推新）、半宽 EMA 不重学（使用次数≠学习次数）。"""
-    o = smod._EgoRoadObserver()
-    t = 1000.0
-    assert o.update(_bnd_edges(-1.2, 1.3), now=t) == pytest.approx(-0.05)
-    hw1 = o._hw
-    slot_t = o._slot["L"][1]
-    # 同一旧读数第二拍消费：is_new=False——pair 路心照出，但 EMA 不动
-    assert o.update(_bnd_edges(-1.2, 1.3), now=t + 0.05, is_new=False) \
-        == pytest.approx(-0.05)
-    assert o._hw == hw1, "驻留复用不得重学半宽"
-    assert o._slot["L"][1] == slot_t, "驻留复用不得刷新槽时间戳（TTL 语义）"
-    # 驻留读数也不得让过期槽"复活保鲜"：1s 后（TTL 0.4s 已过）无当前读数 → 弃权
-    assert o.update(None, now=t + 1.0) is None
-    # 单侧驻留读数反推照走（用记忆半宽），同样不学不刷
+    # 簇全负=车在右路面外(冲右路缘)→ 目标=最右簇(左 1 道),off 负
+    assert o.update(_bnd_clusters(-2.9, -1.0), now=1000.0) == pytest.approx(-1.0)
+    # 簇全正=车在左路面外 → 目标=最左簇(右 0.5 道),off 正
     o2 = smod._EgoRoadObserver()
-    o2.update(_bnd_edges(-1.2, 1.3), now=t)
-    hw2 = o2._hw
-    o2.update(_bnd_edges(-0.8, None), now=t + 0.03)       # 单侧反推 −0.45
-    assert o2.update(_bnd_edges(-0.8, None), now=t + 0.06, is_new=False) \
-        == pytest.approx(-0.45)
-    assert o2._hw == hw2
-    assert o2._slot["L"][1] == t + 0.03, "槽停在最后一次新证据时刻"
+    assert o2.update(_bnd_clusters(0.5, 3.0), now=1000.0) == pytest.approx(0.5)
 
 
-# ---------- 坏帧采样器（三局复盘悬案取证：录控互斥不动，控制回路自存真帧） ----------
-
-
-def _bad_bnd():
-    return BoundarySummary(schema_version=2, left_x=float("nan"),
-                           right_x=float("nan"), road_width=float("nan"),
-                           straight_residual=float("nan"), vp_row=None,
-                           validity=False, uncertainty=float("nan"), sides=0)
-
-
-def _good_bnd():
-    return BoundarySummary(schema_version=2, left_x=80.0, right_x=1200.0,
-                           road_width=1120.0, straight_residual=0.0, vp_row=None,
-                           validity=True, uncertainty=0.1, sides=2)
-
-
-def _bad_chain():
-    return {"bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
-            "t_start": _time.time()}
-
-
-def test_bad_frame_saved_and_indexed(monkeypatch, tmp_path):
-    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
-    ch = _bad_chain()
-    frame = np.zeros((60, 80, 3), np.uint8)
-    smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), 42, 1, 100.0, 999)
-    d = ch["bad_frames"]["dir"]
-    assert d is not None and (d / "fid_42.jpg").exists()
-    row = json.loads((d / "index.jsonl").read_text(encoding="utf-8"))
-    assert row["fid"] == 42 and row["ts_ns"] == 999 and row["steer_x"] == 0
-    # 节流窗内再来一帧：不落
-    smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), 43, 1, 100.5, 1000)
-    assert not (d / "fid_43.jpg").exists()
-    # 窗过后再来：落
-    smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), 44, 1, 102.5, 1001)
-    assert (d / "fid_44.jpg").exists()
-
-
-def test_good_frames_not_saved(monkeypatch, tmp_path):
-    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
-    ch = _bad_chain()
-    smod._maybe_save_bad_frame(ch, np.zeros((60, 80, 3), np.uint8),
-                               _good_bnd(), 1, 1, 0.0, 0)
-    assert ch["bad_frames"]["dir"] is None
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_bad_frame_cap_and_self_disable(monkeypatch, tmp_path):
-    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
-    ch = _bad_chain()
-    frame = np.zeros((60, 80, 3), np.uint8)
-    for k in range(smod.BAD_FRAME_MAX_PER_PHASE + 10):
-        smod._maybe_save_bad_frame(ch, frame, _bad_bnd(), k, 1,
-                                   float(k) * 3.0, k)
-    assert ch["bad_frames"]["saved"] == smod.BAD_FRAME_MAX_PER_PHASE
-    # 异常路径（frame=None → cvtColor 抛）：自禁且不外抛，驾驶链无感
-    ch2 = _bad_chain()
-    smod._maybe_save_bad_frame(ch2, None, _bad_bnd(), 1, 1, 0.0, 0)
-    assert ch2["bad_frames"]["saved"] == smod.BAD_FRAME_MAX_PER_PHASE
-
-
-def test_ego_road_hw_learning_bounded():
-    """20:45 漏网锁：垃圾双侧帧（两假缘相距 21 车道）整帧弃——中点碰巧在界内
-    （off=−2.5）也不行：对宽不物理=两"缘"都不是路缘，off 同样不可信。"""
+def test_ego_road_gap_off_max_garbage_not_fed():
+    """间隙中心偏出 OFF_MAX(垃圾几何)→ 不喂(宁弃不喂假路心)。"""
     o = smod._EgoRoadObserver()
-    assert o.update(_bnd_edges(-8.0, 13.0)) is None       # hw=10.5 出 [0.8,2.2]
-    assert o._hw is None                                   # 不学记忆
-    assert o.update(_bnd_edges(-1.0, None)) is None        # 无合法记忆，单侧仍不猜
-    # 合法对照常放行并学习
-    assert o.update(_bnd_edges(-1.2, 1.3)) == pytest.approx(-0.05)
-    assert o._hw == pytest.approx(1.25)
+    # 0 贴着左簇线,间隙中心 -2.5+?构造:簇 -0.1 与 5.9(间隙 3.0 道宽,中心 2.9)
+    off = o.update(_bnd_clusters(-0.1, 5.9), now=1000.0)
+    assert off == pytest.approx(2.9)
+    assert o.update(_bnd_clusters(-0.05, 6.15), now=1000.05) is None  # 中心 3.05 出界
 
 
-def test_ego_road_hw_learn_gate_rejects_outlier_pair():
-    """半宽 EMA 一致性门（181518 局幸存者偏差教训）+ 稳态门（1830 局教训）：
-    离群对——当帧路心仍可信（off 照给），不学记忆；且离群对进稳态窗后
-    2s 内极差超限 → 后续一致对也冻结（离群冷却期，垃圾对混喂的保守防线），
-    离群滚出候选窗后恢复学习。"""
+def test_ego_road_gap_slot_fallback_and_ttl():
+    """当帧簇 <2 → 0.4s 内用最近簇集兜底(gap_slot),过期退 none。"""
     o = smod._EgoRoadObserver()
-    o.update(_bnd_edges(-1.2, 1.3), now=1000.0)            # hw≈1.25（冷启动锚）
-    # hw=2.1 界内但偏 0.85>0.6：off=−1.3 界内放行，EMA 不动
-    assert o.update(_bnd_edges(-0.8, 3.4), now=1000.03) == pytest.approx(-1.3)
-    assert o._hw == pytest.approx(1.25)
-    # 冷却期内的一致对也不学（稳态窗被离群对撑爆，极差 0.8>0.25）
-    o.update(_bnd_edges(-1.3, 1.3), now=1000.07)
-    assert o._hw == pytest.approx(1.25)
-    # 离群对滚出 2s 候选窗后，稳态一致对恢复学习（EMA 向 1.3 收敛）
-    for i in range(5):
-        o.update(_bnd_edges(-1.3, 1.3), now=1002.1 + i * 0.05)
-    assert o._hw == pytest.approx(1.25 * 0.7 + 1.3 * 0.3)
+    assert o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.0) == pytest.approx(-1.0)
+    assert o.update(None, now=1000.05) == pytest.approx(-1.0)     # 无检测,槽兜底
+    assert o.update(_bnd_clusters(0.5), now=1000.10) == pytest.approx(-1.0)  # 单簇,兜底
+    assert o.update(None, now=1000.5) is None                      # TTL 过期
 
 
-def test_ego_road_absolute_bound_without_memory():
-    """绝对物理界不依赖 _hw（旧护栏在 _hw=None 时整条旁路，±7 就是这么漏的）：
-    同侧双假缘 hw=4.0 出界弃；合法对但中点出界（|off|>2.5）也弃。"""
-    o = smod._EgoRoadObserver()
-    assert o.update(_bnd_edges(-9.0, -1.0)) is None        # hw=4.0 不物理
-    o2 = smod._EgoRoadObserver()
-    o2._hw = 1.25                                          # 有合法记忆
-    assert o2.update(_bnd_edges(None, 9.0)) is None        # off=−(9−1.25)=−7.75 超界
-
-
-# ---------- 每侧保鲜槽（2026-09-25 落产码，README「取证续」节 5 设计） ----------
-
-def test_ego_road_slot_cold_start_cross_frame_pair():
-    """双侧从不同帧：L 槽 × 当前 R 跨时刻配对学半宽（冷启动待办就此吃掉）。"""
-    o = smod._EgoRoadObserver()
-    t = 2000.0
-    assert o.update(_bnd_edges(-1.2, None), now=t) is None          # 只有 L，无记忆
-    assert o.update(_bnd_edges(None, 1.5), now=t + 0.05) == pytest.approx(-0.15)
-    assert o._hw == pytest.approx(1.35)                             # 从跨帧对学到半宽
-
-
-def test_ego_road_slot_ttl_expiry():
-    """age 预算到点即弃：0.4s 后槽不再供证据（宁退积分，不用馊读数）。
-    弃权拍双侧槽都新鲜时优先跨时刻合成（不依赖半宽记忆，不学）。"""
-    o = smod._EgoRoadObserver()
-    t = 3000.0
-    o.update(_bnd_edges(-1.2, 1.3), now=t)
-    o.update(_bnd_edges(None, 1.7), now=t + 0.03)                   # R 槽刷新
-    # 双槽新鲜：合成 off=−(−1.2+1.7)/2=−0.25，且不学（合成不是新证据）
-    assert o.update(None, now=t + 0.05) == pytest.approx(-0.25)
-    assert o._hw == pytest.approx(1.25)
-    assert o.update(None, now=t + 0.44) is None                     # 双槽过期（0.41s）
-
-
-def test_ego_road_ghost_slot_abstains_instead_of_single_infer():
-    """假宽缘躺在槽里时弃权拍整拍弃（1933 局蛇形根因的回归锁）：幽灵侧
-    单侧反推会给出 ±2 道的荒唐路心，绝不允许。"""
-    o = smod._EgoRoadObserver()
-    t = 6000.0
-    o.update(_bnd_edges(-1.2, 1.3), now=t)                          # hw≈1.25
-    # 当前帧只有 R=3.5（越栏假宽）：单侧反推 off=−(3.5−1.25)=−2.25 超相对界 → 弃
-    assert o.update(_bnd_edges(None, 3.5), now=t + 0.03) is None
-    # 但幽灵值已进 R 槽：弃权拍双槽合成对宽 2.35 出界 → 整拍弃，不退单侧
-    assert o.update(None, now=t + 0.06) is None
-
-
-def test_ego_road_slot_unphysical_cross_pair_rejected():
-    """虚线假缘 × 陈槽：跨帧对宽度校验拦下（不学 _hw、不供 off）。"""
-    o = smod._EgoRoadObserver()
-    t = 4000.0
-    o.update(_bnd_edges(None, 1.5), now=t)                          # 先立 R 槽
-    # L 假缘 0.9（对侧值）与槽 R 1.5 凑对 hw=0.3 不物理 → 弃
-    assert o.update(_bnd_edges(0.9, None), now=t + 0.05) is None
-    assert o._hw is None
-
-
-def test_ego_road_same_frame_pair_still_wins_over_slots():
-    """同帧双缘走原语义（合成不覆盖同帧）；单侧在场且已有记忆时仍单侧反推。"""
-    o = smod._EgoRoadObserver()
-    t = 5000.0
-    o.update(_bnd_edges(-1.2, 1.3), now=t)
-    # 槽里有 R=1.3，但当前帧 L=−0.8 走单侧反推（当前值+常数半宽，误差不随时延涨）
-    assert o.update(_bnd_edges(-0.8, None), now=t + 0.05) == pytest.approx(-0.45)
-    assert o._hw == pytest.approx(1.25)                             # 未被跨帧对污染
-
-
-def test_ego_road_steady_reanchor_after_lane_switch():
-    """稳态重锚（1830 局教训）：跨车道后结构对切换（对宽 1.9 稳定出现），
-    一致性门（差 0.65>TOL）会永远拒学、EMA 卡死旧值——连续 HW_REANCH_N 个
-    稳定一致的候选判结构对切换，重锚到均值。"""
-    o = smod._EgoRoadObserver()
-    t = 7000.0
-    o.update(_bnd_edges(-1.2, 1.3), now=t)                          # 锚 1.25,窗清空
-    # 新车道结构对 hw=1.9 稳定重复（间隔 0.2s,8 个候选跨 1.4s 在 2s 窗内）
-    for i in range(1, 8):
-        o.update(_bnd_edges(-1.9, 1.9), now=t + i * 0.2)
-    assert o._hw == pytest.approx(1.25)                             # 未达重锚数,不动
-    o.update(_bnd_edges(-1.9, 1.9), now=t + 8 * 0.2)
-    assert o._hw == pytest.approx(1.9)                              # 重锚
-    # 重锚后单侧反推用新半宽：off=−(−1.5+1.9)=−0.4
-    assert o.update(_bnd_edges(-1.5, None), now=t + 1.9) == pytest.approx(-0.4)
-
-
-def test_ego_road_lane_change_freezes_learning():
-    """变道冻结（can_learn=False）：CHANGE/ABORT 期结构对在切换,半宽不学,
-    槽照常保鲜（读数仍是真观测）。"""
-    o = smod._EgoRoadObserver()
-    t = 8000.0
-    o.update(_bnd_edges(-1.2, 1.3), now=t)                          # 锚 1.25
-    o.update(_bnd_edges(-1.6, 1.9), now=t + 0.05, can_learn=False)  # 变道期对
-    assert o._hw == pytest.approx(1.25)
-    assert o._slot["R"][0] == pytest.approx(1.9)                    # 槽照刷
-    assert o._slot["R"][1] == pytest.approx(t + 0.05)
-    # 变道结束恢复学习（稳态窗攒够 5 个一致候选）
-    for i in range(5):
-        o.update(_bnd_edges(-1.6, 1.9), now=t + 5.0 + i * 0.05)
-    assert o._hw != pytest.approx(1.25)
-
-
-def test_ego_road_lane_marking_semantics():
-    """黄线语义（2026-09-28 T1 量测，52 demos 会话 855 双侧重放）：检测器配对
-    全路面两侧缘（对宽 3~5 道）；off=**最近车道中心**（非路面中心——2026-09-28
-    纠偏：回路面中心与 T2 目标车道制冲突）。结构语义的合法对（半宽 1.0）在
-    黄线语义下不物理。"""
-    o = smod._EgoRoadObserver(semantics="lane_marking")
-    assert o.HW_MIN == 1.5 and o.HW_MAX == 2.7 and o.OFF_MAX == 2.5
-    t = 9000.0
-    # 路面对宽 4.24（p50，lane_w=1.06）：车距左缘 2.0 → 车道 1，中心在 1.59
-    # → off=−0.41（小修正拉回本车道中心，不再被拽向路面中心）
-    assert o.update(_bnd_edges(-2.0, 2.24), now=t) == pytest.approx(-0.41)
-    assert o._hw == pytest.approx(2.12)
-    assert o._lane_cur == 1
-    # 半宽 1.0（结构语义的合法值）在黄线语义下不物理 → 整拍弃
-    assert o.update(_bnd_edges(-1.0, 1.0), now=t + 0.05) is None
-    # 单侧反推用路面半宽+车道中心：左缘 -0.35 → p=0.35 → 车道 0，off=+0.18
-    o2 = smod._EgoRoadObserver(semantics="lane_marking")
-    o2.update(_bnd_edges(-2.0, 2.24), now=t)
-    assert o2.update(_bnd_edges(-0.35, None), now=t + 0.03) == pytest.approx(0.18)
-    assert o2._lane_cur == 0
-
-
-def test_ego_road_lane_marking_hysteresis_on_boundary():
-    """车道归属迟滞：车骑在车道边界（p≈2×lane_w）时毫米级漂移不得来回改归属
-    （LANE_SWITCH_MARGIN=车道宽 10%）。"""
-    o = smod._EgoRoadObserver(semantics="lane_marking")
-    t = 9500.0
-    o.update(_bnd_edges(-2.0, 2.24), now=t)                 # 锚,p=2.0 → 车道 1
-    assert o._lane_cur == 1
-    # 漂过边界一点点（p=2.13,车道 2 侧）:距离差不显著 → 保持车道 1
-    o.update(_bnd_edges(-2.13, 2.11), now=t + 0.05)
-    assert o._lane_cur == 1
-    # 显著进入车道 2（p=2.6,中心 2.65 vs 车道1中心 1.59:差显著）→ 归属切换
-    o.update(_bnd_edges(-2.6, 1.64), now=t + 0.10)
-    assert o._lane_cur == 2
-
-
-def test_control_chain_ego_road_semantics_follows_geo_master():
-    """chain 的 ego_road 守卫语义随 geo_master（T1：黄线供数默认档）。"""
+def test_control_chain_ego_road_gap_semantics():
+    """chain 的 ego_road 即簇间隙语义(v3 唯一语义,无 geo_master 分档)。"""
     m = _module()
-    m._geo_master = "hsv"
-    assert m._build_control_chain()["ego_road"].HW_MIN == 1.5
-    m._geo_master = "depth"
-    assert m._build_control_chain()["ego_road"].HW_MIN == 0.8
+    o = m._build_control_chain()["ego_road"]
+    assert o.OFF_MAX == 3.0 and not hasattr(o, "_sem")
 
 
 # ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------

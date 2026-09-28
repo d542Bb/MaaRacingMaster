@@ -99,6 +99,11 @@ class BoundarySummary:
     # "那侧没空间"的显式证据——None=证据不足=两侧都放行）。
     left_edge_lane: float | None = None
     right_edge_lane: float | None = None
+    # 全部可见黄线簇的车道坐标（升序，schema 3，2026-09-28）——**车道栅格本身**:
+    # 簇=车道边界线,间隙=车道,自车车道=包含 x=0 的间隙。配对(left/right)只是
+    # 路宽级两簇的特例;配对宽度天然多模态(212734 局实证:拍间 325→204→518px
+    # 乱跳),任何"路宽常数"先验对它都不成立——车道归属必须走间隙,不走配对宽度。
+    clusters: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)

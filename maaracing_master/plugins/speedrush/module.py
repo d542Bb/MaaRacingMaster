@@ -197,16 +197,10 @@ class SpeedRushModule(ActivityModule):
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     # 几何尺初值：闭环 A/B 的换尺开关（"depth"=深度区域 | "hsv"=黄线对照档），
     # 进白名单即 GUI 可切、profile 可持久化（非法值在 set_module_config 里修正）
-    # 几何主人默认档（2026-09-28 T1，BEV 设计稿 §2.4）：黄线供实时路心——
-    # 1951 局实证深度"结构对中点"语义在骑线姿态下恰好对称、闭环稳在骑线
-    # 工作点（血量被动流失）；黄线读的是全路面两侧缘，骑线立即偏离中心。
-    # 深度退役为标定职责（照跑记账 + 校验车道尺），不进实时回路。
-    DEFAULT_GEO_MASTER = "hsv"
     DEFAULT_MODULE_CONFIG: dict = {
         "record_mode": DEFAULT_RECORD_MODE,
         "perception_mode": DEFAULT_PERCEPTION_MODE,
         "control_mode": DEFAULT_CONTROL_MODE,
-        "geo_master": DEFAULT_GEO_MASTER,
     }
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
@@ -254,9 +248,8 @@ class SpeedRushModule(ActivityModule):
         self._perception_failed = False
         # 控制模式：驾驶阶段跑全链并接管手柄（V0/V1 由 decision.json 决定，见类常量）
         self._control_mode = self.DEFAULT_CONTROL_MODE
-        # 几何主人（架构裁决 2026-09-24）：road_offset 证据源。"depth"=深度区域
-        # （黄线退役为骨架，照跑只记账）；"hsv"=黄线（A/B 对照档，闭环换尺用）。
-        self._geo_master = self.DEFAULT_GEO_MASTER
+        # road_offset 证据源=黄线簇间隙（v3 唯一语义，2026-09-28 维护者裁定
+        # 删除 hsv 档）；深度退役为标定职责（照跑记账，不进实时回路）。
         # 深度几何的 ORT 会话：实例跨阶段复用（模型加载秒级，一局只付一次）；
         # 加载失败置 _depth_failed 后不再重试（降级为纯模型积分，不碰主循环）。
         self._depth_sess = None
@@ -285,7 +278,6 @@ class SpeedRushModule(ActivityModule):
             "record_mode": bool(self._record_mode),
             "perception_mode": bool(self._perception_mode),
             "control_mode": bool(self._control_mode),
-            "geo_master": self._geo_master,
             "_state": {
                 "recording": bool(rec is not None and rec.running),
                 "frames": int(stats["frames_written"]) if stats else 0,
@@ -318,9 +310,6 @@ class SpeedRushModule(ActivityModule):
             self._perception_mode = bool(config["perception_mode"])
         if isinstance(config, dict) and "control_mode" in config:
             self._control_mode = bool(config["control_mode"])
-        if isinstance(config, dict) and "geo_master" in config:
-            gm = str(config["geo_master"])
-            self._geo_master = gm if gm in ("depth", "hsv") else "depth"
         return self.get_module_config()
 
     # ---------- 生命周期 ----------
@@ -363,7 +352,7 @@ class SpeedRushModule(ActivityModule):
 
         self._running = True
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
-                        f"·感知{'开' if self._perception_mode else '关'}·几何{self._geo_master}）", "session")
+                        f"·感知{'开' if self._perception_mode else '关'}）", "session")
         try:
             self._run_flow(index)
         finally:
@@ -620,10 +609,7 @@ class SpeedRushModule(ActivityModule):
         cfg = load_decision()
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "traffic_obs": TrafficObserver(cfg.traffic),
-                # 守卫常量随供数语义（结构缘/黄线路面缘，见 _EgoRoadObserver._SEMANTICS）
-                "ego_road": _EgoRoadObserver(
-                    semantics="structure" if self._geo_master == "depth"
-                    else "lane_marking"),
+                "ego_road": _EgoRoadObserver(),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -634,8 +620,7 @@ class SpeedRushModule(ActivityModule):
                     DepthRoadObserver(self._ensure_depth_session(), load_calib()),
                     debug_dir=_control_trace_root() / ("depth_debug_"
                     + time.strftime("%Y%m%d_%H%M%S"))),
-                "geo_master": self._geo_master,
-                "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
+                    "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                 "prev_ts": None, "disabled": False, "trace": [],
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
                 "t_start": time.time()}
@@ -677,8 +662,7 @@ class SpeedRushModule(ActivityModule):
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
                           "ro": last.get("road_offset"), "src": snap.get("source"),
-                          "hw": snap.get("hw"), "slot_l": snap.get("slot_l"),
-                          "slot_r": snap.get("slot_r"),
+                          "gap": snap.get("gap"),
                           "age": last.get("dgeo_age"), "new": last.get("dgeo_new")})
                 dgeo, dgeo_new = chain["depth_geo"].take()
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
@@ -690,16 +674,7 @@ class SpeedRushModule(ActivityModule):
                 traffic=(tviews, tevents))
             # road_offset 证据源按几何主人切换：depth=深度区域（弃权拍=None，退
             # 纯模型积分，不用黄线补位——一个 job 一个主人）；hsv=A/B 对照档。
-            if chain["geo_master"] == "hsv":
-                road_offset = chain["ego_road"].update(obs.boundary)
-            else:
-                # is_new=False（驻留旧读数）：槽不刷新、半宽不学，路心照走。
-                # can_learn=False（CHANGE/ABORT 变道期）：结构对在切换，半宽
-                # 冻结（稳态门见 _EgoRoadObserver._try_learn）。
-                road_offset = chain["ego_road"].update(
-                    dgeo, is_new=dgeo_new,
-                    can_learn=out.state not in (DecisionState.CHANGE,
-                                                DecisionState.ABORT_CHANGE))
+            road_offset = chain["ego_road"].update(obs.boundary)
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -759,18 +734,12 @@ class SpeedRushModule(ActivityModule):
             "road_offset": None if road_offset is None else round(road_offset, 4),
             # YOLO×深度融合（2026-09-25）：本拍检测框数（物体掩码随帧入深度路径）
             "yolo_cars": len(result.cars),
-            # road_offset 证据面（保鲜槽+单侧反推调试）：来源 / 半宽记忆 / 槽龄
+            # road_offset 证据面（簇间隙归属调试）：来源 / 归属间隙
             "ro_source": chain["ego_road"].last.get("source"),
-            "ro_hw": None if chain["ego_road"].last.get("hw") is None
-            else round(chain["ego_road"].last["hw"], 3),
-            "ro_slot_ms": (f"L={chain['ego_road'].last['slot_l_ms']}"
-                           f";R={chain['ego_road'].last['slot_r_ms']}"),
+            "ro_gap": chain["ego_road"].last.get("gap"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
-            # 深度几何列（几何主人=depth 时的 road_offset 数据源；黄线层骨架化后
-            # 的 A/B 对照数据面）：本局尺子 + 在场侧数 + 两侧近带读数 + 时延 + 弃权原因
-            # （geo_master 逐拍随行：A/B 两轮各自的 jsonl 自证用的是哪把尺）
-            "geo_master": chain["geo_master"],
+            # 深度几何列（退役后的标定记账面）：在场侧数 + 两侧读数 + 时延 + 弃权原因
             "dgeo_sides": None if dgeo is None else dgeo.sides,
             "dgeo_left": None if dgeo is None or dgeo.left_edge_lane is None
             else round(dgeo.left_edge_lane, 3),
@@ -1022,221 +991,71 @@ def _maybe_save_bad_frame(chain: dict, frame, bnd, fid: int, phase: int,
 
 
 class _EgoRoadObserver:
-    """road_offset 推导（step 2.5b，三局复盘 2026-09-22）：闭环命脉不得只挂双侧可见。
+    """road_offset 推导（黄线簇间隙语义，2026-09-28 v3 重写——维护者裁定删除
+    hsv 档与配对宽度先验）。
 
-    - 双侧稳定：−(l+r)/2，同时学半路宽 EMA（路宽每场常数，好帧学一次存记忆）；
-    - 仅单侧稳定：用学到的半宽反推路中心（见左缘 off=−(l+hw)，见右缘 off=−(r−hw)）；
-    - 无记忆的单侧帧 / 无边界：None（退回纯模型积分，旧行为不变）；
-    半宽守卫按**结构边界语义**重标（2026-09-27，181518 局金标量测 17 帧：深度链
-    读的是护栏/墙基，贴栏时结构半宽 p10≈0.9 道；旧界 [1.5,3.2] 是 hsv 黄线时代
-    口径，会把诚实配对全拒、只留越栏假宽对喂坏 EMA）：
-    - 物理区间 [0.8, 2.2]：下界放行贴栏诚实配对，上界拒越栏假宽；
-    - 半宽 EMA 一致性门：配对宽度与记忆差 > HW_LEARN_TOL 不学（防幸存者偏差
-      投毒——本局 EMA 被垃圾宽对喂到 2.03 的教训）；
-    - 绝对物理界 2.5 不依赖 _hw，再过相对界 |off|≤_hw+0.5。
-    - **每侧保鲜槽**（2026-09-25 落产码，设计口径 README「取证续」节 5）：路缘是
-      慢变量而观测异步——每侧各自记「最近过守卫的车道量 + 时刻」，age 预算 0.4s。
-      与复盘原案（凡双侧槽新鲜一律跨时刻合成）的差异：单侧在场且已有半宽记忆时
-      **仍走单侧反推**——当前帧值 + 场景常数半宽，误差不随时延增长，优于拿陈值
-      合成；合成只用于两处：①冷启动（_hw 未知时跨时刻配对学半宽，双侧冷启动
-      待办就此吃掉）②双侧弃权拍（无当前读数时**优先双侧槽合成**——不依赖半宽
-      记忆，对宽出界=至少一侧假缘整拍弃；仅一侧新鲜才单侧反推）。跨时刻配对
-      同样过对宽物理界（虚线假缘与陈槽凑对会被宽度校验拦下），age 预算到点即弃。
-    ε 旋转污染（≤0.15 车道）在新息门 1.5 内，口径同 step 2.5。阶段级生命期=chain。"""
+    黄线簇=车道边界线（BoundarySummary.clusters），车道=相邻簇间隙，
+    自车车道=包含 x=0 的间隙，off=该间隙中心相对自车（负=目标在左）。
+    每拍当帧几何事实——**无 EMA、无路宽先验**：配对宽度天然多模态
+    （212734 局实证拍间 325→204→518px 乱跳），EMA/一致性门/稳态窗在
+    该语义下必然卡死乱锚，随 structure 死代码一并删除（删，不补）。
 
-    # 守卫常量按供数语义分两套（改数=重新量测，不是调参）：
-    # - "structure"（深度结构缘）：读两侧最近 3D 结构，车道内对宽 0.8~2.2 道
-    #   （181518 局金标 17 帧量测，2026-09-27）。
-    # - "lane_marking"（黄线路面缘，2026-09-28 T1 量测）：检测器配对的是全
-    #   路面两侧缘（52 demos 会话 855 双侧重放：对宽 p5 2.99 / p50 4.24 /
-    #   p95 5.10 道）→ 半宽 [1.5, 2.7]；off 语义=路面中心，骑线立即偏离。
-    _SEMANTICS = {
-        "structure": {"HW_MIN": 0.8, "HW_MAX": 2.2, "OFF_MAX": 2.5},
-        "lane_marking": {"HW_MIN": 1.5, "HW_MAX": 2.7, "OFF_MAX": 2.5},
-    }
-    HW_LEARN_TOL = 0.6               # 配对宽度偏离记忆超此值不学 EMA（两语义同构）
-    SLOT_TTL_S = 0.4                 # 每侧保鲜槽 age 预算（≈深度拍 8 拍 @20Hz）
-    # 稳态学习门（2026-09-28，1830 局实证）：「路宽常数」先验只在同车道稳态
-    # 成立——跨车道时"两侧最近结构对"切换，对宽 0.9~3.0 道乱跳，逐拍 EMA 被
-    # <TOL 的逐步漂拖到 0.9~2.0。乱跳期冻结、稳态窗内平滑学、连续一致且整体
-    # 偏离达 HW_REANCH_N 判结构对切换重锚。
-    HW_STEADY_N = 5                  # 学习候选下限（≈0.85s 当帧 pair）
-    HW_STEADY_SPREAD = 0.25          # 候选窗内对宽极差上限（超=乱跳期）
-    HW_REANCH_N = 8                  # 重锚所需连续一致样本数
-    HW_REANCH_WINDOW_S = 2.0         # 候选窗时长
-    LANE_COUNT = 4                   # 可用车道数（RULES §1 [权威]）
-    LANE_SWITCH_MARGIN = 0.1         # 车道归属迟滞（车道宽的 10%）：骑线在边界时
-                                     # 不因毫米级漂移来回改归属
+    - ≥2 簇：间隙归属，off=间隙中心；
+    - 0 越出簇范围（车骑到路面外，撞墙前兆）：给指向最近边界的拉回信号；
+    - <2 簇：slot 保鲜兜底（0.4s 内最近簇集），过期退纯模型积分（宁旧不如无）；
+    - OFF_MAX 超限的垃圾信号不喂（宁弃不喂假路心，用户先验）。
+    """
 
-    def __init__(self, semantics: str = "structure") -> None:
-        for name, val in self._SEMANTICS[semantics].items():
-            setattr(self, name, val)
-        self._sem = semantics
-        self._hw: float | None = None
-        self._slot: dict[str, tuple[float, float]] = {}   # side → (lane, monotonic)
-        self._cand: deque[tuple[float, float]] = deque()  # 稳态窗候选 (对宽, 时刻)
-        self._lane_cur: int | None = None                 # 归属车道（黄线语义,迟滞）
-        self.last: dict = {}                              # 实机 debug 数据面（ro_* 列）
+    SLOT_TTL_S = 0.4                 # 簇集保鲜预算（兜底单簇/缺失拍）
+    OFF_MAX = 3.0                    # 路面半宽级（4 车道 ≈ ±2 道）+ 机动余量
 
-    def _fresh(self, side: str, now: float) -> float | None:
-        s = self._slot.get(side)
+    def __init__(self) -> None:
+        self._slot: dict[str, tuple] = {}     # 最近簇集缓存（兜底）
+        self._gap_cur: int | None = None      # 归属间隙（debug 数据面）
+        self.last: dict = {}                  # 实机 debug 数据面（ro_* 列）
+
+    def _fresh(self, now: float) -> tuple[float, ...] | None:
+        s = self._slot.get("cl")
         if s is None or now - s[1] > self.SLOT_TTL_S:
             return None
         return s[0]
 
-    def _snapshot(self, now: float, src: str, off: float | None) -> dict:
-        def age(side):
-            s = self._slot.get(side)
-            return None if s is None else round((now - s[1]) * 1000.0)
-        return {"source": src, "off": off, "hw": self._hw,
-                "lane_cur": self._lane_cur,
-                "slot_l": self._slot["L"][0] if "L" in self._slot else None,
-                "slot_r": self._slot["R"][0] if "R" in self._slot else None,
-                "slot_l_ms": age("L"), "slot_r_ms": age("R")}
+    def _gap_off(self, cl: tuple[float, ...]) -> float | None:
+        """0 所在间隙的中心；0 越出簇范围时给指向最近边界的拉回信号。"""
+        for i in range(len(cl) - 1):
+            if cl[i] <= 0 < cl[i + 1]:
+                self._gap_cur = i
+                return (cl[i] + cl[i + 1]) / 2.0
+        if 0 > cl[-1]:                 # 右路面外：目标=最右簇（在其左，负）
+            self._gap_cur = len(cl) - 1
+            return cl[-1]
+        if 0 < cl[0]:                  # 左路面外：目标=最左簇（在其右，正）
+            self._gap_cur = -1
+            return cl[0]
+        return None
 
-    def _lane_center_off(self, p: float, lane_w: float) -> float:
-        """黄线语义的 off：**最近车道中心**相对自车（负=目标在左）。
-
-        p=自车距左路面缘（车道量），lane_w=路面宽/4（RULES §1 四车道 [权威]）。
-        归属带迟滞（LANE_SWITCH_MARGIN）：骑线在车道边界时毫米级漂移不得来回
-        改归属——这是 T2 价值表「自车在哪个车道」的地基组件（2026-09-28 纠偏：
-        旧 hsv 档的「回路面中心」语义与目标车道制冲突，此处修正为车道中心）。"""
-        k = min(int(p / lane_w), self.LANE_COUNT - 1)
-        prev = self._lane_cur
-        if prev is not None and k != prev:
-            d_prev = abs(p - (prev + 0.5) * lane_w)
-            d_cand = abs(p - (k + 0.5) * lane_w)
-            if d_cand < d_prev - self.LANE_SWITCH_MARGIN * lane_w:
-                self._lane_cur = k
-        else:
-            self._lane_cur = k
-        return (self._lane_cur + 0.5) * lane_w - p
-
-    def _pair(self, el: float, er: float, learn: bool, now: float) -> float | None:
-        """同帧/跨时刻对 → off；对宽不物理=两"缘"非路缘（垃圾对的中点也可能碰巧
-        落界内，20:45 锁测出）→ None。off 与学习解耦：对宽过物理界即可信当帧
-        路心，学习交稳态门（_try_learn——1830 局实证逐拍平滑会被跨车道结构对
-        切换拖着漂，一致性门挡不住 <TOL 的逐步漂）。"""
-        hw = (er - el) / 2.0
-        if not (self.HW_MIN <= hw <= self.HW_MAX):
-            return None
-        if learn:
-            self._try_learn(hw, now)
-        if self._sem == "lane_marking":
-            # 路面系：p=自车距左缘=−el；lane_w 优先用 EMA（当帧噪声大）
-            return self._lane_center_off(-el, (self._hw or hw) / 2.0)
-        return -(el + er) / 2.0
-
-    def _try_learn(self, hw: float, now: float) -> None:
-        """稳态门内才学：候选窗内样本不足或极差超限=乱跳期，冻结；稳态且在
-        一致性门内 → 0.7/0.3 平滑；连续一致且整体偏离 EMA 超 TOL 达
-        HW_REANCH_N → 判结构对切换，重锚到均值（跨车道后 EMA 卡死在旧结构
-        对的解法；连续 8 个当帧 pair ≈1.4s，假缘很少这么稳）。"""
-        self._cand.append((hw, now))
-        while self._cand and now - self._cand[0][1] > self.HW_REANCH_WINDOW_S:
-            self._cand.popleft()
-        if self._hw is None:
-            self._hw = hw          # 冷启动：首对即锚（无旧值可漂），窗重新开始
-            self._cand.clear()
-            return
-        if len(self._cand) < self.HW_STEADY_N:
-            return
-        hws = [h for h, _ in self._cand]
-        if max(hws) - min(hws) > self.HW_STEADY_SPREAD:
-            return
-        mean = sum(hws) / len(hws)
-        if abs(mean - self._hw) <= self.HW_LEARN_TOL:
-            self._hw = 0.7 * self._hw + 0.3 * mean
-        elif len(self._cand) >= self.HW_REANCH_N:
-            self._hw = mean
-            self._cand.clear()
-
-    def update(self, bnd, now: float | None = None, *, is_new: bool = True,
-               can_learn: bool = True) -> float | None:
+    def update(self, bnd, now: float | None = None) -> float | None:
         if now is None:
             now = time.monotonic()
-        el = None if bnd is None else bnd.left_edge_lane
-        er = None if bnd is None else bnd.right_edge_lane
-        # 驻留旧读数（is_new=False）不是新观测：槽时间戳不刷新（否则 0.4s TTL
-        # 被推成最长 0.7s，保鲜语义失效）、配对不学半宽（使用次数≠学习次数）；
-        # 路心合成/反推照走——这正是驻留的目的。can_learn=False（变道期）：
-        # 结构对在切换，半宽冻结不学，槽照常保鲜。
-        learn = is_new and can_learn
-        if is_new:
-            if el is not None and el == el:
-                self._slot["L"] = (el, now)
-            if er is not None and er == er:
-                self._slot["R"] = (er, now)
-        lf, rf = self._fresh("L", now), self._fresh("R", now)
-        off: float | None
-        src = "none"
-        if el is not None and er is not None:
-            src = "pair"
-            off = self._pair(el, er, learn, now)
-            if off is None:
-                self.last = self._snapshot(now, src, None)   # 垃圾对整帧弃（原语义）
-                return None
-        elif el is not None:
-            if self._hw is not None:
-                src = "single_L"
-                if self._sem == "lane_marking":
-                    # 路面系：p=自车距左缘=−el，W=2×EMA 半宽
-                    off = self._lane_center_off(-el, self._hw / 2.0)
-                else:
-                    off = -(el + self._hw)   # 单侧反推（原语义，优先于跨时刻合成）
-            elif rf is not None:
-                src = "slot_pair"
-                off = self._pair(el, rf, learn, now)  # 冷启动：当前 L × 槽 R
-            else:
-                off = None
-        elif er is not None:
-            if self._hw is not None:
-                src = "single_R"
-                if self._sem == "lane_marking":
-                    off = self._lane_center_off(2.0 * self._hw - er, self._hw / 2.0)
-                else:
-                    off = -(er - self._hw)
-            elif lf is not None:
-                src = "slot_pair"
-                off = self._pair(lf, er, learn, now)  # 冷启动：槽 L × 当前 R
-            else:
-                off = None
-        elif self._hw is not None:
-            # 弃权拍：双侧槽都新鲜 → 先跨时刻合成（不依赖半宽记忆——记忆误差
-            # 在单侧反推里被放大成路心误判，1933 局蛇形实证：对宽出界的假宽
-            # 对被拒后其单侧仍躺在槽里，反推出 ±2 道的荒唐路心）；合成对宽
-            # 出界=至少一侧假缘 → 整拍弃（不退单侧反推，一侧假时另一侧同样
-            # 不可信）。仅一侧新鲜 → 单侧+半宽反推。合成不是新证据，不学。
-            if lf is not None and rf is not None:
-                src = "slot_pair"
-                off = self._pair(lf, rf, False, now)
-                if off is None:
-                    self.last = self._snapshot(now, src, None)
-                    return None
-            else:
-                best = max((s for s in (("L", lf), ("R", rf)) if s[1] is not None),
-                           key=lambda s: self._slot[s[0]][1], default=None)
-                if best is None:
-                    self.last = self._snapshot(now, "none", None)
-                    return None
-                src = "slot_single"
-                off = -(best[1] + self._hw) if best[0] == "L" else -(best[1] - self._hw)
-        elif lf is not None and rf is not None:
-            src = "slot_pair"
-            off = self._pair(lf, rf, learn, now)      # 冷启动：双侧弃权拍
-                                                      # （驻留/变道拍不学）
+        cl = tuple(bnd.clusters) if (bnd is not None and bnd.clusters) else ()
+        src = "gap"
+        if len(cl) >= 2:
+            self._slot["cl"] = (cl, now)
         else:
-            self.last = self._snapshot(now, "none", None)
-            return None
-        if off is None:
-            self.last = self._snapshot(now, src, None)
-            return None
+            fresh = self._fresh(now)
+            if fresh is None:
+                self._gap_cur = None
+                self.last = self._snapshot(now, "none", None)
+                return None
+            cl, src = fresh, "gap_slot"
+        off = self._gap_off(cl)
+        if off is not None and abs(off) > self.OFF_MAX:
+            off = None                 # 垃圾信号不喂（宁弃不喂假路心）
         self.last = self._snapshot(now, src, off)
-        if abs(off) > self.OFF_MAX:
-            return None
-        if self._hw is not None and abs(off) > self._hw + 0.5:
-            return None
         return off
+
+    def _snapshot(self, now: float, src: str, off: float | None) -> dict:
+        return {"source": src, "off": off, "gap": self._gap_cur}
 
 
 def _started_async_depth(obs: DepthRoadObserver,
