@@ -674,7 +674,8 @@ class SpeedRushModule(ActivityModule):
                 traffic=(tviews, tevents))
             # road_offset 证据源按几何主人切换：depth=深度区域（弃权拍=None，退
             # 纯模型积分，不用黄线补位——一个 job 一个主人）；hsv=A/B 对照档。
-            road_offset = chain["ego_road"].update(obs.boundary)
+            road_offset = chain["ego_road"].update(
+                obs.boundary, ego_lane=planner.state.executed_lane)
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -991,27 +992,35 @@ def _maybe_save_bad_frame(chain: dict, frame, bnd, fid: int, phase: int,
 
 
 class _EgoRoadObserver:
-    """road_offset 推导（黄线簇间隙语义，2026-09-28 v3 重写——维护者裁定删除
-    hsv 档与配对宽度先验）。
+    """road_offset 推导（黄线簇间隙语义 + **目标锁定**，2026-09-28 v3.1）。
 
-    黄线簇=车道边界线（BoundarySummary.clusters），车道=相邻簇间隙，
-    自车车道=包含 x=0 的间隙，off=该间隙中心相对自车（负=目标在左）。
-    每拍当帧几何事实——**无 EMA、无路宽先验**：配对宽度天然多模态
-    （212734 局实证拍间 325→204→518px 乱跳），EMA/一致性门/稳态窗在
-    该语义下必然卡死乱锚，随 structure 死代码一并删除（删，不补）。
+    黄线簇=车道边界线（BoundarySummary.clusters），间隙=车道。v3 的教训：
+    间隙归属每拍重算 = **目标追车**——车被拉向间隙中心、跨过簇线后目标翻转
+    到车所在侧、再拉回、再跨线（212734 局后继局实证：归属 73s 跳变 148 次，
+    off 极性 0.68Hz，"怼完右边怼左边"）。正反馈振荡的根因是目标跟随车。
 
-    - ≥2 簇：间隙归属，off=间隙中心；
-    - 0 越出簇范围（车骑到路面外，撞墙前兆）：给指向最近边界的拉回信号；
-    - <2 簇：slot 保鲜兜底（0.4s 内最近簇集），过期退纯模型积分（宁旧不如无）；
-    - OFF_MAX 超限的垃圾信号不喂（宁弃不喂假路心，用户先验）。
+    v3.1 的语义：**目标锁定，车拉向目标**——
+    - 目标=锁定间隙的路心自车系偏移，每拍按自车横移（executed_lane 差分）
+      反向补偿（路静止、车动 → 目标路心的自车系坐标随车移动反向漂移）；
+    - 车仍在目标间隙附近（±GAP_FOLLOW_TOL）→ 目标微调跟随（吸收检测噪声）；
+    - 车跨线离开目标 → **不切换**，继续拉回（T1 无主动变道，跨线=扰动，
+      "保持车道"的语义就是拉回原车道）；
+    - 0 越出簇范围（撞墙前兆）→ 越界拉回信号**覆盖**目标（保命优先）；
+    - <2 簇走 0.4s 簇集保鲜槽；OFF_MAX 超限垃圾不喂。
+    目标间隙的显式切换（主动变道）是 T2 决策层的接口，本层只提供
+    ``retarget()``。
     """
 
     SLOT_TTL_S = 0.4                 # 簇集保鲜预算（兜底单簇/缺失拍）
     OFF_MAX = 3.0                    # 路面半宽级（4 车道 ≈ ±2 道）+ 机动余量
+    GAP_FOLLOW_TOL = 0.25            # 车在目标间隙附近 → 目标微调跟随的窗
 
     def __init__(self) -> None:
         self._slot: dict[str, tuple] = {}     # 最近簇集缓存（兜底）
-        self._gap_cur: int | None = None      # 归属间隙（debug 数据面）
+        self._gap_cur: int | None = None      # 当帧 0 所在间隙（debug 数据面）
+        self._target: float | None = None     # 锁定目标路心（自车系偏移）
+        self._prev_elane: float | None = None
+        self._was_off_road = False
         self.last: dict = {}                  # 实机 debug 数据面（ro_* 列）
 
     def _fresh(self, now: float) -> tuple[float, ...] | None:
@@ -1020,21 +1029,29 @@ class _EgoRoadObserver:
             return None
         return s[0]
 
-    def _gap_off(self, cl: tuple[float, ...]) -> float | None:
-        """0 所在间隙的中心；0 越出簇范围时给指向最近边界的拉回信号。"""
+    def _gap_center(self, cl: tuple[float, ...]) -> tuple[float | None, bool]:
+        """→ (0 所在间隙中心 | 越界拉回偏移, 是否越出路面)。
+        越出路面=撞墙前兆：拉回偏移**直接覆盖锁定目标**（保命优先）。"""
         for i in range(len(cl) - 1):
             if cl[i] <= 0 < cl[i + 1]:
                 self._gap_cur = i
-                return (cl[i] + cl[i + 1]) / 2.0
+                return (cl[i] + cl[i + 1]) / 2.0, False
         if 0 > cl[-1]:                 # 右路面外：目标=最右簇（在其左，负）
             self._gap_cur = len(cl) - 1
-            return cl[-1]
+            self._target = cl[-1]
+            return cl[-1], True
         if 0 < cl[0]:                  # 左路面外：目标=最左簇（在其右，正）
             self._gap_cur = -1
-            return cl[0]
-        return None
+            self._target = cl[0]
+            return cl[0], True
+        return None, False
 
-    def update(self, bnd, now: float | None = None) -> float | None:
+    def retarget(self, off: float | None) -> None:
+        """显式重设目标路心（T2 决策层主动变道的接口；None=下次自动归属）。"""
+        self._target = off
+
+    def update(self, bnd, now: float | None = None,
+               ego_lane: float | None = None) -> float | None:
         if now is None:
             now = time.monotonic()
         cl = tuple(bnd.clusters) if (bnd is not None and bnd.clusters) else ()
@@ -1045,10 +1062,29 @@ class _EgoRoadObserver:
             fresh = self._fresh(now)
             if fresh is None:
                 self._gap_cur = None
+                self._target = None
                 self.last = self._snapshot(now, "none", None)
                 return None
             cl, src = fresh, "gap_slot"
-        off = self._gap_off(cl)
+        # 自车横移补偿先于越界覆盖：车右移 Δ → 静止路心的自车系偏移左移 Δ
+        if self._target is not None and ego_lane is not None                 and self._prev_elane is not None:
+            self._target -= ego_lane - self._prev_elane
+        self._prev_elane = ego_lane
+        center, off_road = self._gap_center(cl)
+        # 越界覆盖的目标=边界簇位置（临时保命值）；车回到路面内的第一拍
+        # 重新自动归属到所在间隙中心，否则车会被拉向路缘骑线。
+        if not off_road and self._was_off_road and center is not None:
+            self._target = center
+        self._was_off_road = off_road
+        if center is None:
+            self.last = self._snapshot(now, src, None)
+            return None
+        if self._target is None:
+            self._target = center
+        elif abs(center - self._target) <= self.GAP_FOLLOW_TOL:
+            self._target = center      # 已在目标附近：微调跟随（吸收检测噪声）
+        # 否则：车跨线离开目标 → 目标不跟随，继续拉回
+        off = self._target
         if off is not None and abs(off) > self.OFF_MAX:
             off = None                 # 垃圾信号不喂（宁弃不喂假路心）
         self.last = self._snapshot(now, src, off)
