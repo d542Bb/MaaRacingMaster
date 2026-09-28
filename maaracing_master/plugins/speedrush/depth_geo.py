@@ -654,10 +654,12 @@ class AsyncDepthRoadObserver:
       不达标报警数据面。
     """
 
-    MAX_AGE_MS = 300.0    # 结果时效预算：节流窗(150ms)+一次推理+消费延迟的余量；
+    MAX_AGE_MS = 300.0    # 结果时效预算：节流窗(70ms)+一次推理+后处理+消费延迟的余量；
                           # 超龄读数按 stale 丢弃。路缘是慢变量，保鲜槽 TTL 0.4s 同量级
-    INFER_MIN_INTERVAL_S = 0.15   # worker 出工下间隔：把 DML 锁占空比压到 ~20%，
-                                  # 控制拍感知（同锁）的碰撞等待才有上界（见 dml_lock）
+    INFER_MIN_INTERVAL_S = 0.07   # worker 出工下间隔：锁内只有 run 本体（q4f16 实测
+                                  # ~19ms，锁占空比 ~11%），控制拍感知（同锁）的碰撞
+                                  # 等待有上界即可（见 dml_lock）；旧值 150ms 按当年
+                                  # "推理占大头"的误估留白（2026-09-28 实测修正）。
     PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
 
     DEBUG_INTERVAL_S = 2.0   # 调试图节流（与坏帧取证同量级，封顶磁盘占用）
@@ -801,7 +803,7 @@ class AsyncDepthRoadObserver:
     def _loop(self) -> None:
         while not self._stop.is_set():
             # 节流窗内不出工也不取帧（取了也只能弃——age 闸会丢）：睡到窗尾，
-            # push 唤醒只提前醒来重新看窗。路缘慢变量，~7Hz 足够。
+            # push 唤醒只提前醒来重新看窗。路缘慢变量，产出节奏≈窗+推理+后处理。
             rest = self._infer_interval_s - (time.monotonic() - self._last_infer)
             if rest > 0:
                 self._wakeup.wait(timeout=rest)
