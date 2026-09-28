@@ -462,6 +462,34 @@ def test_ego_road_lane_change_freezes_learning():
     assert o._hw != pytest.approx(1.25)
 
 
+def test_ego_road_lane_marking_semantics():
+    """黄线语义守卫（2026-09-28 T1 量测，52 demos 会话 855 双侧重放）：
+    检测器配对全路面两侧缘，对宽 3~5 道（半宽 1.5~2.7）；结构语义的合法对
+    （半宽 1.0）在黄线语义下不物理——语义错了守卫必须拦住。"""
+    o = smod._EgoRoadObserver(semantics="lane_marking")
+    assert o.HW_MIN == 1.5 and o.HW_MAX == 2.7 and o.OFF_MAX == 2.5
+    assert o._hw is None, "默认构造必须带语义,不留裸实例"
+    t = 9000.0
+    # 路面对宽 4.24（p50）→ 半宽 2.12 界内：off=0 供出且学
+    assert o.update(_bnd_edges(-2.12, 2.12), now=t) == pytest.approx(0.0)
+    assert o._hw == pytest.approx(2.12)
+    # 半宽 1.0（结构语义的合法值）在黄线语义下不物理 → 整拍弃
+    assert o.update(_bnd_edges(-1.0, 1.0), now=t + 0.05) is None
+    # 单侧反推用路面半宽语义：左缘 -0.35（车贴左标线）→ off=−(−0.35+2.12)=−1.77
+    o2 = smod._EgoRoadObserver(semantics="lane_marking")
+    o2.update(_bnd_edges(-2.12, 2.12), now=t)
+    assert o2.update(_bnd_edges(-0.35, None), now=t + 0.03) == pytest.approx(-1.77)
+
+
+def test_control_chain_ego_road_semantics_follows_geo_master():
+    """chain 的 ego_road 守卫语义随 geo_master（T1：黄线供数默认档）。"""
+    m = _module()
+    m._geo_master = "hsv"
+    assert m._build_control_chain()["ego_road"].HW_MIN == 1.5
+    m._geo_master = "depth"
+    assert m._build_control_chain()["ego_road"].HW_MIN == 0.8
+
+
 # ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------
 
 def test_yolo_object_mask_boxes_with_margin():

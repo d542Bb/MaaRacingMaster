@@ -197,7 +197,11 @@ class SpeedRushModule(ActivityModule):
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     # 几何尺初值：闭环 A/B 的换尺开关（"depth"=深度区域 | "hsv"=黄线对照档），
     # 进白名单即 GUI 可切、profile 可持久化（非法值在 set_module_config 里修正）
-    DEFAULT_GEO_MASTER = "depth"
+    # 几何主人默认档（2026-09-28 T1，BEV 设计稿 §2.4）：黄线供实时路心——
+    # 1951 局实证深度"结构对中点"语义在骑线姿态下恰好对称、闭环稳在骑线
+    # 工作点（血量被动流失）；黄线读的是全路面两侧缘，骑线立即偏离中心。
+    # 深度退役为标定职责（照跑记账 + 校验车道尺），不进实时回路。
+    DEFAULT_GEO_MASTER = "hsv"
     DEFAULT_MODULE_CONFIG: dict = {
         "record_mode": DEFAULT_RECORD_MODE,
         "perception_mode": DEFAULT_PERCEPTION_MODE,
@@ -616,7 +620,10 @@ class SpeedRushModule(ActivityModule):
         cfg = load_decision()
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "traffic_obs": TrafficObserver(cfg.traffic),
-                "ego_road": _EgoRoadObserver(),
+                # 守卫常量随供数语义（结构缘/黄线路面缘，见 _EgoRoadObserver._SEMANTICS）
+                "ego_road": _EgoRoadObserver(
+                    semantics="structure" if self._geo_master == "depth"
+                    else "lane_marking"),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -1037,8 +1044,17 @@ class _EgoRoadObserver:
       同样过对宽物理界（虚线假缘与陈槽凑对会被宽度校验拦下），age 预算到点即弃。
     ε 旋转污染（≤0.15 车道）在新息门 1.5 内，口径同 step 2.5。阶段级生命期=chain。"""
 
-    HW_MIN, HW_MAX, OFF_MAX = 0.8, 2.2, 2.5
-    HW_LEARN_TOL = 0.6               # 配对宽度偏离记忆超此值不学 EMA
+    # 守卫常量按供数语义分两套（改数=重新量测，不是调参）：
+    # - "structure"（深度结构缘）：读两侧最近 3D 结构，车道内对宽 0.8~2.2 道
+    #   （181518 局金标 17 帧量测，2026-09-27）。
+    # - "lane_marking"（黄线路面缘，2026-09-28 T1 量测）：检测器配对的是全
+    #   路面两侧缘（52 demos 会话 855 双侧重放：对宽 p5 2.99 / p50 4.24 /
+    #   p95 5.10 道）→ 半宽 [1.5, 2.7]；off 语义=路面中心，骑线立即偏离。
+    _SEMANTICS = {
+        "structure": {"HW_MIN": 0.8, "HW_MAX": 2.2, "OFF_MAX": 2.5},
+        "lane_marking": {"HW_MIN": 1.5, "HW_MAX": 2.7, "OFF_MAX": 2.5},
+    }
+    HW_LEARN_TOL = 0.6               # 配对宽度偏离记忆超此值不学 EMA（两语义同构）
     SLOT_TTL_S = 0.4                 # 每侧保鲜槽 age 预算（≈深度拍 8 拍 @20Hz）
     # 稳态学习门（2026-09-28，1830 局实证）：「路宽常数」先验只在同车道稳态
     # 成立——跨车道时"两侧最近结构对"切换，对宽 0.9~3.0 道乱跳，逐拍 EMA 被
@@ -1049,7 +1065,9 @@ class _EgoRoadObserver:
     HW_REANCH_N = 8                  # 重锚所需连续一致样本数
     HW_REANCH_WINDOW_S = 2.0         # 候选窗时长
 
-    def __init__(self) -> None:
+    def __init__(self, semantics: str = "structure") -> None:
+        for name, val in self._SEMANTICS[semantics].items():
+            setattr(self, name, val)
         self._hw: float | None = None
         self._slot: dict[str, tuple[float, float]] = {}   # side → (lane, monotonic)
         self._cand: deque[tuple[float, float]] = deque()  # 稳态窗候选 (对宽, 时刻)
