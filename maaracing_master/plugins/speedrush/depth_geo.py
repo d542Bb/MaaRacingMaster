@@ -562,7 +562,8 @@ class DepthRoadObserver:
 
 def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
                        reading: DepthRoadReading, ego_mask: np.ndarray | None,
-                       object_mask: np.ndarray | None = None) -> np.ndarray:
+                       object_mask: np.ndarray | None = None,
+                       note: dict | None = None) -> np.ndarray:
     """实机可视化判据（三行堆叠，BGR）：程序看了什么、算了什么、判了什么。
 
     ① 画面帧：ego 掩码橙描边 / YOLO 物体掩码蓝描边 / 读数黄竖线 + L/R 车道量；
@@ -619,7 +620,26 @@ def render_depth_debug(frame_rgb: np.ndarray, m: np.ndarray,
     if rej:
         cv2.putText(hm, rej, (8, hm.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX,
                     .55, (255, 255, 255), 1)
-    return np.vstack([f, disp[Y0:DIAG_Y1], hm])
+    body = np.vstack([f, disp[Y0:DIAG_Y1], hm])
+    if note is None:
+        return body
+    # 决策带：消费端一拍快照（state/reason/杆/喂入路心/来源/EMA/槽/帧龄）。
+    # 感知三联只回答"眼睛看到什么"，撞墙复盘还要"大脑当时拿了什么、怎么动"——
+    # 人工逐帧核对的账本（快照为 push 前一拍，与图帧差一拍 ≈50ms）。
+    band = np.full((56, w, 3), 30, np.uint8)
+    st = note.get("state", "?"); rs = note.get("reason", "?")
+    sn = note.get("steer"); ro = note.get("ro"); el = note.get("elane")
+    l1 = (f"D[{note.get('fid', '?')}] {st} {rs}  steer={sn:+.3f}"
+          if isinstance(sn, (int, float)) else f"D[{note.get('fid', '?')}] {st} {rs}")
+    l1 += f"  elane={el:+.2f}" if isinstance(el, (int, float)) else ""
+    def _f(v):
+        return f"{v:+.2f}" if isinstance(v, (int, float)) else "-"
+    l2 = (f"ro={_f(ro)}[{note.get('src', '-')}] hw={_f(note.get('hw'))}"
+          f" slotL={_f(note.get('slot_l'))} slotR={_f(note.get('slot_r'))}"
+          f" age={note.get('age', '-')}ms new={note.get('new', '-')}")
+    cv2.putText(band, l1, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 255, 255), 1)
+    cv2.putText(band, l2, (8, 46), cv2.FONT_HERSHEY_SIMPLEX, .55, (200, 255, 200), 1)
+    return np.vstack([body, band])
 
 
 def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
@@ -719,16 +739,20 @@ class AsyncDepthRoadObserver:
     # ---------- 主线程面 ----------
 
     def push(self, frame_rgb: np.ndarray,
-             object_mask: np.ndarray | None = None) -> None:
+             object_mask: np.ndarray | None = None,
+             note: dict | None = None) -> None:
         """object_mask：本帧 YOLO 检测框掩码（与帧同源同拍，见 observe 注）。
-        无 worker（session 缺失/start 未调）时直接空转：不拷帧、不计数——
-        阶段出口的"零结果"报警以 pushed>0 为前提，计数了就会误报。"""
+        note：消费端上一拍决策快照（只读小 dict，主线程每拍新建）——随帧进
+        调试图决策带，供人工核对。无 worker（session 缺失/start 未调）时直接
+        空转：不拷帧、不计数——阶段出口的"零结果"报警以 pushed>0 为前提，
+        计数了就会误报。"""
         if self._thread is None:
             return
         with self._lock:
             self._pushed += 1
             self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter(),
-                             None if object_mask is None else object_mask.copy())
+                             None if object_mask is None else object_mask.copy(),
+                             note)
         self._wakeup.set()
 
     def take(self) -> tuple[DepthRoadReading | None, bool]:
@@ -782,8 +806,9 @@ class AsyncDepthRoadObserver:
 
     # ---------- worker 线程 ----------
 
-    def _write_debug(self, frame, m, reading, object_mask) -> None:
-        """节流落实机调试图（三行堆叠）+ 可复现证据包（读数带视差 fp16 + 生效掩码）。
+    def _write_debug(self, frame, m, reading, object_mask, note=None) -> None:
+        """节流落实机调试图（三联图+决策带）+ 可复现证据包（读数带视差 fp16 +
+        生效掩码）。
 
         只有渲染图时读数故障无法离线复现（色标有损、看不到基线钉住了什么）——
         视差带 + 合并掩码足以离线重放 reading_from_map 全程。失败静默吞掉——
@@ -797,7 +822,7 @@ class AsyncDepthRoadObserver:
             self._debug_seq += 1
             stem = self._debug_dir / f"d{self._debug_seq:05d}"
             img = render_depth_debug(frame, m, reading,
-                                     self._obs._ego_mask, object_mask)
+                                     self._obs._ego_mask, object_mask, note)
             cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
             np.save(str(stem) + "_band.npy",
                     m[Y0:DIAG_Y1].astype(np.float16))
@@ -849,6 +874,6 @@ class AsyncDepthRoadObserver:
             if reading is None:  # session 中途失效/推理异常：本帧无结果，不发布
                 continue
             if self._debug_dir is not None:
-                self._write_debug(item[1], m, reading, item[3])
+                self._write_debug(item[1], m, reading, item[3], item[4])
             with self._lock:
                 self._result = (item[0], reading, item[2])  # (push 序号, 读数, captured_ts)

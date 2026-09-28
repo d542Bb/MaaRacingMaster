@@ -659,7 +659,20 @@ class SpeedRushModule(ActivityModule):
             dgeo = None
             dgeo_new = False
             try:
-                chain["depth_geo"].push(frame, object_mask=_yolo_object_mask(result))
+                # note=上一拍决策快照（state/杆/喂入路心/EMA/槽）：随帧进调试图
+                # 的决策带，供人工逐帧核对"大脑当时拿了什么"。不可变小 dict，
+                # 主线程每拍新建、不改旧对象，跨线程无竞争。
+                snap = chain["ego_road"].last
+                last = self._control_last or {}
+                chain["depth_geo"].push(
+                    frame, object_mask=_yolo_object_mask(result),
+                    note={"fid": last.get("frame_id"), "state": last.get("state"),
+                          "reason": last.get("reason"), "steer": last.get("steer"),
+                          "elane": last.get("executed_lane"),
+                          "ro": last.get("road_offset"), "src": snap.get("source"),
+                          "hw": snap.get("hw"), "slot_l": snap.get("slot_l"),
+                          "slot_r": snap.get("slot_r"),
+                          "age": last.get("dgeo_age"), "new": last.get("dgeo_new")})
                 dgeo, dgeo_new = chain["depth_geo"].take()
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
@@ -702,7 +715,9 @@ class SpeedRushModule(ActivityModule):
                                   time.monotonic(), ts_ns)
         self._control_last = {
             "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
-            "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3)}
+            "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3),
+            "road_offset": None if road_offset is None else round(road_offset, 3),
+            "dgeo_age": round(chain["depth_geo"].last_age_ms), "dgeo_new": dgeo_new}
         # 逐拍控制 trace（内存攒、阶段出口一次性 flush）：C1 定档 K_v 与 §七.1 复测的
         # 数据源。boundary 路缘读数即自车真实横移的观测量（路缘平移法），与指令杆值
         # 对齐可反推实际横向速度——不另录帧，守 §六热路径不逐帧写盘。
@@ -1051,6 +1066,8 @@ class _EgoRoadObserver:
             s = self._slot.get(side)
             return None if s is None else round((now - s[1]) * 1000.0)
         return {"source": src, "off": off, "hw": self._hw,
+                "slot_l": self._slot["L"][0] if "L" in self._slot else None,
+                "slot_r": self._slot["R"][0] if "R" in self._slot else None,
                 "slot_l_ms": age("L"), "slot_r_ms": age("R")}
 
     def _pair(self, el: float, er: float, learn: bool, now: float) -> float | None:
