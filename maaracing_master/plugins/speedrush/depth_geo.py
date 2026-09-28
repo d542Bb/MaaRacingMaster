@@ -199,17 +199,26 @@ def _plane_fit_band(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, dig: np.ndarray
     地面、法方程闭式解（N 可达数十万，SVD 不必要）；任何一轮地面点不足判失败
     （None——近带无路面，诚实弃权）。上凸体=平面上方 15cm 内的域外点（墙/车/路障）。"""
     ok = np.isfinite(Z) & (Z > 0)
-    sel = ok & (Z > SEED_Z_LO) & (Z < SEED_Z_HI) & (np.abs(X) < SEED_X_MAX) & ~dig
-    coef = res = None
+    absX = np.abs(X)                       # 逐轮不变量，外提（abs 确定性，逐位同）
+    notdig = ~dig
+    sel = ok & (Z > SEED_Z_LO) & (Z < SEED_Z_HI) & (absX < SEED_X_MAX) & notdig
+    fitdom = ok & (Z > FIT_Z_LO) & (Z < FIT_Z_HI) & (absX < FIT_X_MAX) & notdig
+    lo = -PLANE_TOL * Z - PLANE_OFF        # 地面带阈值逐轮不变，外提
+    hi = PLANE_TOL * Z + PLANE_OFF
+    t1 = np.empty_like(Z)
+    t2 = np.empty_like(Z)
+    res = np.empty_like(Z)
+    coef = None
     for _ in range(PLANE_ITERS):
         n = int(sel.sum())
         if n < MIN_PLANE_PTS:
             return None, None, None
+        idx = np.flatnonzero(sel)                 # 索引一次，三列共享
         A = np.empty((n, 3), np.float32)          # 法方程经 BLAS（N 数十万，SVD 不必要）
-        A[:, 0] = X[sel]
-        A[:, 1] = Z[sel]
+        A[:, 0] = X.take(idx)
+        A[:, 1] = Z.take(idx)
         A[:, 2] = 1.0
-        y = Y[sel]
+        y = Y.take(idx)
         mmat = (A.T @ A).astype(np.float64)
         rhs = (A.T @ y).astype(np.float64)
         try:
@@ -217,15 +226,17 @@ def _plane_fit_band(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, dig: np.ndarray
         except np.linalg.LinAlgError:
             coef = np.linalg.lstsq(A.astype(np.float64), y.astype(np.float64),
                                    rcond=None)[0]
-        res = Y - (coef[0] * X + coef[1] * Z + coef[2])
-        sel = ok & (res > -PLANE_TOL * Z - PLANE_OFF) & (res < PLANE_TOL * Z + PLANE_OFF) \
-            & (Z > FIT_Z_LO) & (Z < FIT_Z_HI) & (np.abs(X) < FIT_X_MAX) & ~dig
+        np.multiply(Z, coef[1], out=t1)
+        np.multiply(X, coef[0], out=t2)
+        np.add(t1, t2, out=t1)
+        np.add(t1, coef[2], out=t1)
+        np.subtract(Y, t1, out=res)
+        sel = fitdom & (res > lo) & (res < hi)
     ground = sel & (res > -ABOVE_M)
     # 最终地面标记收紧：拟合带对称（鲁棒），标记带与上凸体门互补——墙体下沿
     # （DA 模糊把墙基拖进 0.3m 容差带）必须归"上凸体"，否则近行地面延伸到画框
     # 缘、整段行被出画判据误杀，夹紧也没有材料（金标 000180 实证）。
-    above = ok & (res < -ABOVE_M) & (Z > FIT_Z_LO) & (Z < FIT_Z_HI) \
-        & (np.abs(X) < FIT_X_MAX) & ~dig
+    above = fitdom & (res < -ABOVE_M)
     return coef, ground, above
 
 
@@ -285,82 +296,92 @@ def _row_scan(X: np.ndarray, Z: np.ndarray, ground: np.ndarray, above: np.ndarra
     上凸体像素，直接用其像素 u。``step``：行采样步长（标定遍减半省时）。"""
     a_c, b_c, c_c = (float(coef[0]), float(coef[1]), float(coef[2]))
     out: list[_RowEdge] = []
+    nrows, ncols = Z.shape
     cntg = ground.sum(1)
-    for rb in range(0, Z.shape[0], step):
-        if cntg[rb] < MIN_ROW_GROUND:
+    fin2d = np.isfinite(X)
+    # 行内地面值逐行排序（Z/X 各一次，-inf 垫尾 → 地面段落位行尾 [ncols-cntg, ncols)），
+    # 中位/最小/最大全部转为按行 gather——等价于原逐行 median/min/max（偶数中位
+    # 仍按 float32 的 (a+b)/2 语义复刻），省掉每行一次的 numpy 调用开销。
+    zs = np.sort(np.where(ground, Z, -np.inf), axis=1)
+    xs = np.sort(np.where(ground, X, -np.inf), axis=1)
+    rbs = np.arange(0, nrows, step)
+    cgv = cntg[rbs]
+    rbv = rbs[cgv >= MIN_ROW_GROUND]
+    cgv = cntg[rbv]
+    s0v = ncols - cgv
+    # 行带判据=行内**地面**像素的 Z 中位（全行均值会被墙面像素拉进近带——
+    # 墙占多数的远行看似"近行"，读数带被远景污染）
+    zmed = ((zs[rbv, s0v + (cgv - 1) // 2] + zs[rbv, s0v + cgv // 2])
+            / np.float32(2.0))
+    xl = xs[rbv, s0v].astype(np.float64)
+    xr = xs[rbv, ncols - 1].astype(np.float64)
+    med = ((xs[rbv, s0v + (cgv - 1) // 2] + xs[rbv, s0v + cgv // 2])
+           / np.float32(2.0))
+    den = (rbv + Y0 - CY) / FY - b_c
+    base_ok = (zmed >= Z_LO) & (zmed < Z_HI) & (den >= 1e-4)
+    # den<1e-4 的行在原实现里先 continue 再除；向量化后用钳位值兜住除法
+    # （该行必被 base_ok 过滤，钳位值不参与任何读数）。
+    z_edge = (c_c + a_c * xl) / np.maximum(den, 1e-4)
+    z_edger = (c_c + a_c * xr) / np.maximum(den, 1e-4)
+    u_l = xl * _FX / z_edge + CX
+    u_r = xr * _FX / z_edger + CX
+    if obj is not None:
+        occ_l = (obj & fin2d & (X < -GAP_M)).any(axis=1)
+        occ_r = (obj & fin2d & (X > GAP_M)).any(axis=1)
+    else:
+        occ_l = occ_r = np.zeros(nrows, bool)
+    aa_any = (above & fin2d).any(axis=1)
+    for k, rb in enumerate(rbv):
+        if not base_ok[k]:
             continue
-        # 行带判据=行内**地面**像素的 Z 中位（全行均值会被墙面像素拉进近带——
-        # 墙占多数的远行看似"近行"，读数带被远景污染）
-        zmed = float(np.median(Z[rb][ground[rb]]))
-        if not (Z_LO <= zmed < Z_HI):
+        if not aa_any[rb]:
+            continue            # 无上凸体行：无夹紧材料，基础量即终值
+        aa = above[rb] & fin2d[rb]
+        Xa = X[rb][aa]
+        Ua = _UU[rb][aa]
+        order = np.argsort(Xa)
+        Xas, Uas = Xa[order], Ua[order]
+        start = 0
+        segs = []
+        for i in range(1, Xas.size):
+            if Xas[i] - Xas[i - 1] > SEG_GAP_M:
+                segs.append((start, i - 1))
+                start = i
+        segs.append((start, Xas.size - 1))
+        for s0i, s1i in segs:
+            # 保险丝：夹紧段贴着挖除洞（±CLAMP_TOUCH_PX）= 洞边缘泄漏的
+            # 自车/已检物像素（吸收偶尔漏边），该侧置遮挡弃权，绝不把
+            # 洞边当边界读出（防"自车当缘"残留）。
+            def _touches_hole(us: np.ndarray) -> bool:
+                lo = max(int(us.min()) - CLAMP_TOUCH_PX, 0)
+                hi = min(int(us.max()) + CLAMP_TOUCH_PX + 1, X.shape[1])
+                return bool(dig[rb, lo:hi].any())
+            if Xas[s0i] > med[k] + GAP_M:       # 整段在右侧 GAP 外 → 夹右缘
+                if _touches_hole(Uas[s0i:s1i + 1]):
+                    occ_r[rb] = True
+                    continue
+                nx = float(Xas[s0i])
+                if nx < xr[k] - 0.05:           # 真路障（显著内收）→ 取其像素 u
+                    xr[k], u_r[k] = nx, float(Uas[s0i])
+                elif nx < xr[k]:                # 噪声级收紧（缘共面墙段）→ 保平面 u
+                    xr[k] = nx
+            elif Xas[s1i] < med[k] - GAP_M:     # 整段在左侧 GAP 外 → 夹左缘
+                if _touches_hole(Uas[s0i:s1i + 1]):
+                    occ_l[rb] = True
+                    continue
+                nx = float(Xas[s1i])
+                if nx > xl[k] + 0.05:
+                    xl[k], u_l[k] = nx, float(Uas[s1i])
+                elif nx > xl[k]:
+                    xl[k] = nx
+    drop = (u_l <= 2.0) | (u_r >= 1277.0)       # 缘出画：读数是画框不是边界
+    span_ok = (xr - xl) > MIN_SPAN_M            # （贴边=单侧 C 类，该行弃权）
+    for k, rb in enumerate(rbv):
+        if not base_ok[k] or drop[k] or not span_ok[k]:
             continue
-        v = rb + Y0
-        Xr = X[rb]
-        fin = np.isfinite(Xr)
-        g = ground[rb]
-        Xg = Xr[g]
-        xl, xr = float(Xg.min()), float(Xg.max())
-        med = float(np.median(Xg))
-        den = (v - CY) / FY - b_c
-        if den < 1e-4:
-            continue
-        z_edge = (c_c + a_c * xl) / den
-        z_edger = (c_c + a_c * xr) / den
-        u_l = xl * _FX / z_edge + CX
-        u_r = xr * _FX / z_edger + CX
-        occ_l = occ_r = False
-        if obj is not None:
-            dd = obj[rb]
-            if dd.any():
-                Xd = Xr[dd]
-                Xd = Xd[np.isfinite(Xd)]
-                if Xd.size:
-                    occ_l = bool((Xd < -GAP_M).any())
-                    occ_r = bool((Xd > GAP_M).any())
-        aa = above[rb] & fin
-        if aa.any():
-            ub = _UU[rb]
-            Xa = Xr[aa]
-            Ua = ub[aa]
-            order = np.argsort(Xa)
-            Xas, Uas = Xa[order], Ua[order]
-            start = 0
-            segs = []
-            for i in range(1, Xas.size):
-                if Xas[i] - Xas[i - 1] > SEG_GAP_M:
-                    segs.append((start, i - 1))
-                    start = i
-            segs.append((start, Xas.size - 1))
-            for s0i, s1i in segs:
-                # 保险丝：夹紧段贴着挖除洞（±CLAMP_TOUCH_PX）= 洞边缘泄漏的
-                # 自车/已检物像素（吸收偶尔漏边），该侧置遮挡弃权，绝不把
-                # 洞边当边界读出（防"自车当缘"残留）。
-                def _touches_hole(us: np.ndarray) -> bool:
-                    lo = max(int(us.min()) - CLAMP_TOUCH_PX, 0)
-                    hi = min(int(us.max()) + CLAMP_TOUCH_PX + 1, X.shape[1])
-                    return bool(dig[rb, lo:hi].any())
-                if Xas[s0i] > med + GAP_M:          # 整段在右侧 GAP 外 → 夹右缘
-                    if _touches_hole(Uas[s0i:s1i + 1]):
-                        occ_r = True
-                        continue
-                    nx = float(Xas[s0i])
-                    if nx < xr - 0.05:              # 真路障（显著内收）→ 取其像素 u
-                        xr, u_r = nx, float(Uas[s0i])
-                    elif nx < xr:                   # 噪声级收紧（缘共面墙段）→ 保平面 u
-                        xr = nx
-                elif Xas[s1i] < med - GAP_M:        # 整段在左侧 GAP 外 → 夹左缘
-                    if _touches_hole(Uas[s0i:s1i + 1]):
-                        occ_l = True
-                        continue
-                    nx = float(Xas[s1i])
-                    if nx > xl + 0.05:
-                        xl, u_l = nx, float(Uas[s1i])
-                    elif nx > xl:
-                        xl = nx
-        if u_l <= 2.0 or u_r >= 1277.0:
-            continue    # 缘出画：读数是画框不是边界（贴边=单侧 C 类，该行弃权）
-        if xr - xl > MIN_SPAN_M:
-            out.append(_RowEdge(v, xl, xr, u_l, u_r, occ_l, occ_r, zmed))
+        out.append(_RowEdge(int(rb + Y0), float(xl[k]), float(xr[k]),
+                            float(u_l[k]), float(u_r[k]),
+                            bool(occ_l[rb]), bool(occ_r[rb]), float(zmed[k])))
     return out
 
 
