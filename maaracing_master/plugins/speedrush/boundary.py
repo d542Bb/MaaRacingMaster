@@ -164,7 +164,9 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
 
     cl = _cluster(votes)
     meds = [float(np.median([p[0] for p in c])) for c in cl]
-    cluster_lanes = tuple(sorted(meds))             # 全部簇（升序）——车道栅格本身
+    # clusters 延迟到配对判定后填：只带出**过门簇**（选择器判定的路缘对）——
+    # 配对前簇集含杂光簇（212734 局直方图四峰的真正机制），进消费方=栅格抖动。
+    cluster_lanes: tuple[float, ...] = ()
     pair: tuple[int, int, int] | None = None
     for i in range(len(cl)):
         for j in range(len(cl)):
@@ -195,7 +197,7 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
             uncertainty=L["rms"] if L["rms"] == L["rms"] else R["rms"],
             sides=2, vp_x=vp_x,
             left_edge_lane=L["med"], right_edge_lane=R["med"],
-            clusters=cluster_lanes)
+            clusters=tuple(sorted((L["med"], R["med"]))))
 
     if cl:
         # 单侧容忍（step 6 裁定沿用）：只有一条主簇时如实记 sides==1——
@@ -210,8 +212,7 @@ def detect_boundary(frame_rgb: np.ndarray, cal: Calib | None = None,
             road_width=float("nan"), straight_residual=S["std"],
             vp_row=None, validity=True, uncertainty=S["rms"], sides=1,
             left_edge_lane=S["med"] if left else None,
-            right_edge_lane=S["med"] if not left else None,
-            clusters=cluster_lanes)
+            right_edge_lane=S["med"] if not left else None)
 
     return BoundarySummary(
         schema_version=_SCHEMA, left_x=float("nan"), right_x=float("nan"),

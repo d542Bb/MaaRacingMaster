@@ -129,14 +129,48 @@ def test_road_offset_all_sources_feed_loop(monkeypatch):
                         fid * 50_000_000, 10.0, 1)
         return chain["trace"][-1]
 
-    cur["b"] = _bnd_lanes(-1.5, 1.5, clusters=(-1.5, 1.5))   # 簇间隙 [-1.5,1.5]
+    cur["b"] = _bnd_lanes(-1.5, 1.5, clusters=(-1.5, 1.5))   # 黄线双侧路缘,对称
     t1 = tick()
-    assert t1["ro_source"] == "gap"
-    assert t1["road_offset"] == pytest.approx(0.0)           # 0 在间隙中心
-    cur["b"] = _bnd_lanes(-2.0, None, sides=1)               # 单侧无簇:槽兜底
+    assert t1["ro_source"] == "pair"
+    assert t1["road_offset"] == pytest.approx(0.0)           # 车在路心
+    cur["b"] = _bnd_lanes(-2.0, None, sides=1)               # 单侧:有效对兜底
     t2 = tick()
-    assert t2["ro_source"] == "gap_slot"
-    assert t2["road_offset"] == pytest.approx(0.0)           # 槽簇照喂(不黑视)
+    assert t2["ro_source"] == "pair_slot"
+    assert t2["road_offset"] == pytest.approx(0.0)           # 槽照喂(不黑视)
+
+
+def test_cross_layer_polarity_and_mirror(monkeypatch):
+    """跨层极性契约（2026-09-30 复核裁决 P0：v3 三轮事故的总缺口——两侧各自
+    测符号、端到端只断言过 0.0，0 是符号不变量）。
+
+    场景：车在路心**右边** 1 道（黄线左缘 -2.9、右缘 -0.9，间隙中心 -1.9）。
+    planner 契约：road_offset = 自车相对路心的位置（右正）→ 必须 **+1.9**，
+    且闭环必须出**负杆**（向左修正）。镜像场景（车在路心左边）必须出正杆。
+    任何一侧单独改符号、或观测/消费语义换牌，此测试必须红。"""
+    cur = {}
+    monkeypatch.setattr(smod, "detect_boundary", lambda frame, **kw: cur.get("b"))
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    cur["b"] = _bnd_lanes(-2.9, -0.9, clusters=(-2.9, -0.9))  # 车在路心右 1.9 道
+    for _ in range(25):                    # 锚定形成门(|1.9|>1.0)→ stale 重基后闭环启动
+        t = tick()
+    assert t["road_offset"] == pytest.approx(+1.9), "极性:车在路心右→off 必须正"
+    assert t["steer_norm"] < 0, "车在路心右→必须向左修(负杆)"
+    cur["b"] = _bnd_lanes(+0.9, +2.9, clusters=(+0.9, +2.9))  # 镜像:路心左 1.9 道
+    for _ in range(25):
+        t2 = tick()
+    assert t2["road_offset"] == pytest.approx(-1.9)
+    assert t2["steer_norm"] > 0, "镜像:车在路心左→必须向右修(正杆)"
 
 
 # ---------- 控制链异常 → 停控转观测，不崩主循环、不 strand 油门 ----------
@@ -213,66 +247,51 @@ def test_control_last_shape():
 # ---------- v3.1 _EgoRoadObserver：簇间隙 + 目标锁定（2026-09-28 重写） ----------
 
 
-def _bnd_clusters(*clusters):
-    return SimpleNamespace(clusters=tuple(clusters))
+def _bnd_clusters(*clusters, sides=2):
+    l, r = (clusters[0], clusters[-1]) if len(clusters) >= 2 else (None, None)
+    return SimpleNamespace(validity=bool(clusters), sides=sides,
+                           left_edge_lane=l, right_edge_lane=r,
+                           clusters=tuple(clusters))
 
 
-def test_ego_road_gap_center_feeds():
-    """0 落在簇间隙 → off=该间隙中心(负=目标在左);目标随车到位后微调跟随。"""
+def test_ego_road_pair_off_polarity():
+    """观测层极性（v3.2）：off=自车相对路心（右正,planner 契约）——
+    黄线双侧路缘,off=−(左缘+右缘)/2。车在路心右 1.9 道必须出 +1.9。"""
     o = smod._EgoRoadObserver()
-    off = o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.0, ego_lane=0.0)
-    assert off == pytest.approx((-2.1 + 0.1) / 2)
-    assert o.last["source"] == "gap"
-    # 同位再拍:目标已锚定,off 持续同值(稳定点)
-    assert o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.05,
-                    ego_lane=0.0) == pytest.approx(off)
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
+    assert o.last["source"] == "pair"
+    o2 = smod._EgoRoadObserver()
+    assert o2.update(_bnd_clusters(0.9, 2.9), now=1000.0) == pytest.approx(-1.9)
+    assert o2.update(_bnd_clusters(1.0, 3.0), now=1000.05) == pytest.approx(-2.0)
 
 
-def test_ego_road_gap_target_lock_no_flip():
-    """振荡回归锁(212734 后继局实证:归属 73s 跳 148 次,怼完右怼左):
-    车跨过簇线后目标**不翻转**——继续拉回原目标间隙;车回到目标间隙附近
-    后目标才微调跟随。"""
+def test_ego_road_gate_sides2_and_slot_ttl():
+    """boundary 契约门：居中类消费方须 sides==2——单侧/无效不吃当帧值,
+    0.4s 内最近有效对保鲜兜底（pair_slot）,过期退 none（13:29 黑视教训:
+    兜底优先,单侧安全包线是 P1）。"""
     o = smod._EgoRoadObserver()
-    o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.0, ego_lane=0.0)  # 目标 -1.0
-    # 车右移 0.3 道跨过簇线 0.1:0 落进相邻间隙(中心 +0.8),但目标不翻转
-    off = o.update(_bnd_clusters(-2.4, -0.2, 1.8), now=1000.05, ego_lane=0.3)
-    assert off == pytest.approx(-1.3)   # 目标路心(路系 -1.0)补偿后在左 1.3 道
-    assert off != pytest.approx(0.8)    # 不翻转成当前所在间隙的中心
-    # 车被拉回原目标间隙内(executed 0.05)→ 目标微调跟随到 -1.05
-    off2 = o.update(_bnd_clusters(-2.15, 0.05, 2.15), now=1000.10, ego_lane=0.05)
-    assert off2 == pytest.approx(-1.05)
-
-
-def test_ego_road_gap_outside_pulls_back_and_overrides():
-    """0 越出簇范围(撞墙前兆)→ 指向最近边界的拉回信号,**覆盖**锁定目标
-    (保命优先);回到簇内后恢复目标语义。"""
-    o = smod._EgoRoadObserver()
-    o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.0, ego_lane=0.0)  # 目标 -1.0
-    # 车右冲出路面(簇全负=车在最右簇右侧):当帧几何拉回信号覆盖目标
-    off = o.update(_bnd_clusters(-3.9, -2.9), now=1000.05, ego_lane=1.5)
-    assert off == pytest.approx(-2.9)         # 目标=最右簇(左 2.9 道)
-    # 回到路面内第一拍:重新归属所在间隙中心(保命值不持久,否则被拉向路缘骑线)
-    assert o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.10,
-                    ego_lane=1.2) == pytest.approx(-1.0)
-
-
-def test_ego_road_gap_slot_fallback_and_ttl():
-    """当帧簇 <2 → 0.4s 内用最近簇集兜底(gap_slot),过期退 none;目标保持。"""
-    o = smod._EgoRoadObserver()
-    assert o.update(_bnd_clusters(-2.1, 0.1, 2.1), now=1000.0,
-                    ego_lane=0.0) == pytest.approx(-1.0)
-    assert o.update(None, now=1000.05, ego_lane=0.0) == pytest.approx(-1.0)
-    assert o.update(_bnd_clusters(0.5), now=1000.10,
-                    ego_lane=0.0) == pytest.approx(-1.0)      # 单簇,兜底
-    assert o.update(None, now=1000.5, ego_lane=0.0) is None       # TTL 过期
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
+    assert o.update(_bnd_lanes(5.0, None, sides=1), now=1000.05) == pytest.approx(+1.9)
+    assert o.last["source"] == "pair_slot"       # 单侧→兜底
+    assert o.update(None, now=1000.30) == pytest.approx(+1.9)
+    assert o.update(None, now=1000.60) is None   # TTL 过期
     assert o.last["source"] == "none"
 
 
+def test_ego_road_off_max_garbage_not_fed_nor_cached():
+    """|off|>OFF_MAX 的垃圾对不喂、不入槽（宁弃不喂假路心,也不留毒槽）。"""
+    o = smod._EgoRoadObserver()
+    assert o.update(_bnd_clusters(-6.0, -2.0), now=1000.0) is None  # off=+4.0
+    assert o.last["source"] == "pair"
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.05) == pytest.approx(+1.9)
+    assert o.last["source"] == "pair"            # 垃圾对未入槽,干净对直接生效
+
+
 def test_control_chain_ego_road_gap_semantics():
-    """chain 的 ego_road 即簇间隙+目标锁定语义(v3.1,无分档)。"""
+    """chain 的 ego_road 即 v3.2 pair 语义（无分档、无目标锁定机器）。"""
     m = _module()
     o = m._build_control_chain()["ego_road"]
-    assert o.OFF_MAX == 3.0 and hasattr(o, "retarget")
+    assert o.OFF_MAX == 3.0 and not hasattr(o, "retarget")
 
 
 # ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------
