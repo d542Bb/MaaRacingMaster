@@ -33,8 +33,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE  # noqa: E402
 from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
-from tools.experiments.speedrush_vision import compare_depth_sources as cds  # noqa: E402
 from tools.experiments.speedrush_vision import export_pointcloud_html as eph  # noqa: E402
 from tools.experiments.speedrush_vision import probe_boundary3d as pb  # noqa: E402
 
@@ -97,7 +97,7 @@ def main() -> None:
     dt_ms = float(np.median(np.diff(f_ts)) / 1e6)
     ego3d = load_ego3d()
     y0, y1, x0, x1 = RECT
-    sess = cds._moge_session(1032, wpath=pb.Q4_W)
+    sess = dg.load_session(DEPTH_MODEL_FILE)
 
     # 1) 逐帧：点云 → 平面（排除矩形）→ hgt → 找边样本；矩形裁剪留作分割
     lo, hi = max(0, args.start - WIN), min(len(frames), args.start + args.n + WIN)

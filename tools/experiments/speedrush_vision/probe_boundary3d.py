@@ -41,16 +41,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE  # noqa: E402
 from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
+from maaracing_master.plugins.speedrush import moge_post as mp  # noqa: E402
 from tools.experiments.speedrush_vision import compare_depth_sources as cds  # noqa: E402
 from tools.experiments.speedrush_vision import export_pointcloud_html as eph  # noqa: E402
-from tools.experiments.speedrush_vision import moge2_post as mp  # noqa: E402
 
 GOLD = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/"
             r"depth_review/gold_labels.csv")
 OUT = eph.OUT.parent / "boundary3d"
-Q4_W = (eph.OUT.parent / "weights"
-        / "moge2_vits_static_336x598_t1032_q4f16.onnx")
 
 # 找边常量反向引用产线（深度几何 v4 换装后阈值真源在 depth_geo 常量区；
 # 探针只复用不另立——否则两处必然漂移）。本探针仪器 = cloud_of/scan_side/
@@ -369,7 +368,7 @@ def main() -> None:
     # 3D 紧掩码：产线 v4 构造（仅车身矩形；列带下延的 2D 语义已随旧链退役）
     ego3d = dg.DepthRoadObserver._load_ego_mask()
     ego = ego3d
-    sess = cds._moge_session(1032, wpath=Q4_W)
+    sess = dg.load_session(DEPTH_MODEL_FILE)
     OUT.mkdir(parents=True, exist_ok=True)
 
     print(f"{'帧':30s} {'侧':2s} {'类':5s} {'对质Z':>6s} {'检出X':>9s} {'墙带X':>7s} {'误差m':>7s}")
