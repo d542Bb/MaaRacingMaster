@@ -78,6 +78,8 @@ W_REF = 3.70      # 近带路半宽常数（逐帧标定锚，米）
 HW_LO, HW_HI = 1.5, 8.0   # 实测半宽物理合理域（出界=测量不可信，保种子）
 HW_PCT = 0.25             # 标定宽度取低分位：近带行的宽度（远行斜穿/雾胀是单侧离群）
 S_RATIO = (0.6, 1.6)      # 标定后尺度对种子的钳位比（DA 逐帧漂 ±14%，钳位防坏测量撬飞米制系）
+CAL_SELF_TOL = 0.15       # 尺度协变自检容差：标定系里重测半宽须回到 W_REF±15%
+                          # （一步公式的前提是 hw∝s；超容差=行集/地面分类随尺度漂，米制不可信）
 
 # ── 平面拟合（Y = aX + bZ + c；阈值=参考实现口径，55 帧同判据验证）────────
 PLANE_ITERS = 3       # 近带种子迭代轮数
@@ -469,15 +471,29 @@ def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None = No
             return _ret(None, None, None, None, ["自车吸收后平面失败"])
     rows = _row_scan(X, Z, ground, above, dig, obj, coef, step=2)
 
-    # 逐帧尺度自标定：种子系量近带半宽（低分位抗远行斜穿/雾胀）→ s 修正到
-    # W_REF，第二遍在标定系重跑。
+    # 逐帧尺度自标定：种子系量近带半宽（低分位抗远行斜穿/雾胀）→ s 修正到 W_REF，
+    # 第二遍在标定系重跑。
+    #
+    # **本步只走一步，不许改成迭代**：X∝Z∝s ⇒ hw(s)∝s，故 s' = S0·W_REF/hw(s)
+    # = C/s 是**对合映射**（自己是自己的逆），迭代必然 2-周期振荡——一步公式本身
+    # 就是不动点。
+    # 反之，失效全在**静默兜底**：坏测量被悄悄吃成"种子值"（24.06）或"钳位值"，
+    # 下游分不清"标定成功"与"没标定"（两者可差近 2×）。故每一类失效都写进
+    # rejects——读数不自证清白，账目在 rejects。
     hw = [(r.xr - r.xl) / 2.0 for r in rows
           if not (r.occ_l or r.occ_r) and r.zmed < Z_HI]
     s = S0
-    if len(hw) >= 3:
+    if len(hw) < 3:
+        rejects.append(f"s:行不足({len(hw)})")
+    else:
         hwm = float(np.percentile(hw, HW_PCT * 100))
-        if HW_LO <= hwm <= HW_HI:
-            s = float(np.clip(S0 * W_REF / hwm, S0 * S_RATIO[0], S0 * S_RATIO[1]))
+        if not (HW_LO <= hwm <= HW_HI):
+            rejects.append(f"s:半宽出域({hwm:.1f})")
+        else:
+            s_raw = S0 * W_REF / hwm
+            s = float(np.clip(s_raw, S0 * S_RATIO[0], S0 * S_RATIO[1]))
+            if abs(s - s_raw) > 1e-6:
+                rejects.append(f"s:钳位({s_raw:.1f})")
     if abs(s / S0 - 1.0) > 0.02:
         X, Y, Z = _cloud_band(m, s)
         coef, ground, above = _plane_fit_band(X, Y, Z, dig)
@@ -486,6 +502,17 @@ def reading_from_map(m: np.ndarray, cal: Calib, ego_mask: np.ndarray | None = No
             coef = None
         else:
             rows = _row_scan(X, Z, ground, above, dig, obj, coef)
+            # 尺度协变自检：一步公式的前提是 hw∝s，故标定系里同一批行的半宽必须
+            # 回到 W_REF。超容差 = 行集/地面分类随尺度漂（振荡的实因），本帧米制
+            # 不可信——照实记账，不再冒充"已标定"。
+            hw2 = [(r.xr - r.xl) / 2.0 for r in rows
+                   if not (r.occ_l or r.occ_r) and r.zmed < Z_HI]
+            if len(hw2) < 3:
+                rejects.append(f"s:自检行不足({len(hw2)})")
+            else:
+                hwm2 = float(np.percentile(hw2, HW_PCT * 100))
+                if abs(hwm2 - W_REF) > CAL_SELF_TOL * W_REF:
+                    rejects.append(f"s:自检不过({hwm2:.1f})")
 
     lane_l, u_l, rej_l = _side_from_rows(rows, "L", cal)
     lane_r, u_r, rej_r = _side_from_rows(rows, "R", cal)
