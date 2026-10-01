@@ -40,5 +40,5 @@ GATE0_FILE = CALIB_DIR / "gate0.json"
 # REQUIRED_ASSETS 按相对路径声明，sidecar 启动前检查存在性；代码用绝对路径）
 PERCEPTION_MODEL_REL = "resources/onnx/perception/model.onnx"
 PERCEPTION_MODEL_FILE = ONNX_DIR / "perception" / "model.onnx"
-DEPTH_MODEL_REL = "resources/onnx/depth/depth_small_q4f16.onnx"
-DEPTH_MODEL_FILE = ONNX_DIR / "depth" / "depth_small_q4f16.onnx"
+DEPTH_MODEL_REL = "resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx"
+DEPTH_MODEL_FILE = ONNX_DIR / "depth" / "moge2_vits_static_336x598_t1032_q4f16.onnx"

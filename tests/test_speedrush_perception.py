@@ -102,7 +102,7 @@ class TestPluginDeclarations:
         pytest.importorskip("maa")
         assert self._module().REQUIRED_ASSETS == (
             "resources/onnx/perception/model.onnx",
-            "resources/onnx/depth/depth_small_q4f16.onnx")
+            "resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx")
 
     def test_perception_mode_in_config_whitelist(self):
         pytest.importorskip("maa")

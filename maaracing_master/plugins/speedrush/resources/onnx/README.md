@@ -5,8 +5,8 @@
 
 ```
 onnx/
-├── perception/model.onnx            # 物品感知（YOLO，AGPL-3.0 衍生）
-└── depth/depth_small_q4f16.onnx     # 深度几何（DA-S q4f16，Apache-2.0）
+├── perception/model.onnx                                    # 物品感知（YOLO，AGPL-3.0 衍生）
+└── depth/moge2_vits_static_336x598_t1032_q4f16.onnx         # 深度几何（MoGe-2 q4f16，Apache-2.0）
 ```
 
 `REQUIRED_ASSETS` 按相对路径声明两个权重，sidecar 启动前检查存在性。
@@ -23,11 +23,13 @@ onnx/
   [Ultralytics Enterprise License](https://www.ultralytics.com/license)。
 - 上游: <https://github.com/ultralytics/ultralytics>
 
-## depth/depth_small_q4f16.onnx —— 深度几何（Apache-2.0）
+## depth/moge2_vits_static_336x598_t1032_q4f16.onnx —— 深度几何（Apache-2.0）
 
-- **来源**：Depth Anything V2 Small 官方权重的 ONNX q4f16 量化转换
-  （onnx-community 转换产物），经离线同卷验证（@336 落档）后入库。
+- **来源**：Microsoft MoGe-2（ViT-S）官方 ONNX 导出权重的 q4f16 量化、
+  720×1280 输入折叠静态图（输出点图 336×598）；量化折叠产物经离线同卷
+  验证与金标回归后入库（2026-10-01 深度几何 v4 换装，取代 DA-S 视差权重）。
 - **许可**：Apache-2.0（上游权重与转换产物同许可），可随发布包自由再分发。
-- **运行时不依赖上游仓库代码**：推理仅通过 ONNX Runtime 加载本 ONNX 图。
-- 上游: <https://github.com/DepthAnything/Depth-Anything-V2>
-  （转换参考: <https://huggingface.co/onnx-community>）
+- **运行时不依赖上游仓库代码**：推理仅通过 ONNX Runtime 加载本 ONNX 图；
+  focal/shift 恢复与点图重建的后处理为本仓库复刻（`moge_post.py`，公式
+  对齐官方 geometry_numpy / v2.py）。
+- 上游: <https://github.com/microsoft/MoGe>

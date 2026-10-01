@@ -47,7 +47,7 @@
 | 权重文件（插件内相对路径） | 许可证 | 声明真源 |
 |---|---|---|
 | speedrush `resources/onnx/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/speedrush/resources/onnx/README.md](maaracing_master/plugins/speedrush/resources/onnx/README.md) |
-| speedrush `resources/onnx/depth/depth_small_q4f16.onnx` | Apache-2.0 | 同上 |
+| speedrush `resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx` | Apache-2.0 | 同上 |
 
 AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0；
 发布包保留本文件与插件内声明文件，义务即满足。

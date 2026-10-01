@@ -3,7 +3,8 @@
 """DirectML 推理互斥：同进程内任意两个 DML ``session.run`` 不得同时在飞。
 
 本机实证（2026-09-25，onnxruntime-directml 1.24.4 / NVIDIA 驱动 32.0.15.9649）：
-感知 model.onnx 与深度 depth_small_q4f16.onnx 各建一个 DML 会话——
+感知 model.onnx 与深度权重（时为 depth_small_q4f16.onnx，2026-10-01 换装
+moge2 q4f16，锁协议不变）各建一个 DML 会话——
 - 两线程并发 run：数秒内段错误杀进程（0xc0000005 @ nvwgf2umx.dll，NVIDIA 用户态
   驱动；2026-09-25 21:00 实机对局同型崩溃，进程带虚拟手柄一起消失）；
 - 同两会话单线程交替 run：1874 对 / 60s 干净；

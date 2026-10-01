@@ -49,6 +49,7 @@ class Calib:
     v_ego: float      # 自车接地点行（②c 主档）
     ego_cx: float     # 追车相机自车列（trick 硬事实：自车钉画面中央）
     min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → x_lane=None
+    lane_w_m: float   # 一条车道的米制宽（3D 找边的车道量换算锚；出处见 _notes）
 
 
 def _require(d: dict, key: str) -> float:
@@ -67,9 +68,10 @@ def _read_gate0(path) -> Calib:
     cal = Calib(
         vpx=_require(d, "vpx"), y_h=_require(d, "y_h"), a_x=_require(d, "a_x"),
         v_ego=_require(d, "v_ego"), ego_cx=_require(d, "ego_cx"),
-        min_denom=_require(d, "min_denom"))
+        min_denom=_require(d, "min_denom"), lane_w_m=_require(d, "lane_w_m"))
     # 依赖矛盾检查：尺子分母与自车项都不能退化
-    if not (cal.a_x > 0 and cal.min_denom > 0 and cal.vpx > 0 and cal.ego_cx > 0):
+    if not (cal.a_x > 0 and cal.min_denom > 0 and cal.vpx > 0 and cal.ego_cx > 0
+            and cal.lane_w_m > 0):
         raise ValueError(f"gate0.json 数值非法：{cal}")
     if cal.v_ego - cal.y_h <= 0:
         raise ValueError(f"自车行 v_ego={cal.v_ego} 必须低于地平线 y_h={cal.y_h}（ego 项分母退化）")
