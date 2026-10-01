@@ -409,8 +409,9 @@ decision.json 同属 step 4。
 
 ## 10. 边界摘要 v1 与金币组聚合（阶段 B 第四块，2026-09-21 §八 step 3 落地）（本域）
 
-**住户**：`boundary.py::detect_boundary(frame_rgb, Calib) → BoundarySummary`（边界感知层，
-古典 CV）与 `coin_group.py::CoinGroupAggregator`（世界模型与决策之间的独立组件）。
+**住户**：`coin_group.py::CoinGroupAggregator`（世界模型与决策之间的独立组件）。
+~~`boundary.py::detect_boundary`~~（边界感知层，古典 CV）**已随 v4 换装删除**
+（2026-10-01，见 §12.1；本节 boundary 相关段落留档，只描述历史形态）。
 路缘**不进目标候选集、不参与评分**（v2 §三对审查 §一.2 的裁定）：其消费者只有校验层
 （直道假设/横向越界信号）与位移代价项。`CoinGroup` 契约类型在 `tracking.py`，经聚合器
 回填 `WorldObservation.coin_groups`（加字段不破消费方，schema 仍 1）。
@@ -539,3 +540,38 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
   不因感知停摆（与 perception 同一姿态）。
 - 旧 q20 消费算法（全局逐行 q20 基线+固定相对门+双守卫）已被金标重考证伪，
   不得回退——过程与证据在 git 历史（ef5a42d~5f83a84 一代）与本区 README。
+
+### 12.1 v4 换装（2026-10-01）：MoGe 逐帧焦距点云 3D 找边当几何主人
+
+上节（§12）描述的 DA-S 视差链**整体退役**（用户拍板「只留 3D 链路」，证据
+commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为）：
+
+- **几何真源统一**：帧 → MoGe-2 q4f16 折叠静态图（权重
+  `resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx`，DA-S 权重
+  已删除）→ 点图 336×598 线性升采样全幅 → **逐帧自估焦距**（官方
+  recover_focal_shift 链路，后处理 `moge_post.py`：公式链对齐官方，shift 求解
+  用模式搜索替代 scipy——demo 帧与 LM 解一致 <1e-5 且快 30~100 倍）。静态内参
+  不再存在：仲裁口径=强制静态内参时 cam_h 跨帧漂移 2.5→3.9m（物理不可能），
+  逐帧自估稳定 1.8~2.2m。**3D 量的像素往返禁用任何写死焦距**。
+- **米制直读**：cam_h/路宽物理自洽，旧 W_REF 尺度自标定机制删除；车道量
+  `lane = x_m / cal.lane_w_m`（gate0 新键 lane_w_m=3.38，z=8m 剖面 13.53m÷4
+  实测定案）。
+- **找边算法**：Z 分箱（3→16m 五箱）横向 0.25m 格高度中位剖面 → **离地穿越**
+  （0.03m@3m +5mm/m、两格持续、先见地面）——「边」=可行驶路面消失处
+  （维护者口径），kerb/护栏通用；弯道无直线假设，逐箱独立读数天然描曲线；
+  桥/天空按 SKY_HGT=1.2m 剔除（桥点 hgt≥7.5m 实测）。
+- **平面拟合=路面走廊域版**（`_fit_road_plane`，从实验区晋升）：拟合域只收
+  |X|<4 且 Z∈[4,30] 的路面点（排除自车区∪掩码带）；金标双平面对照实锤——
+  旧 DA 链的宽域+距离缩放容差版误差中位 2.5m vs 走廊域 1.1m，域含墙/肩会
+  拽歪平面。**勿用其他域口径重写拟合**。
+- **ego 掩码只剩紧矩形**（ego_mask.json 车身矩形）：列带下延是 2D 逐行扫描
+  语义，随旧链删除——搬进 3D 分箱会把近处整段可见路面挖走（实证）。
+- **road_offset 主人切换**：`_EgoRoadObserver` 供数源=DepthRoadReading
+  （路心合成式 off=−(L+R)/2 与保鲜槽协议不变）；`boundary.py` 黄线检测删除，
+  trace 的 bnd_* 删除（dgeo_* 列即路缘读数面）；坏帧取证挂 dgeo sides==0。
+- **读数契约**：`DepthRoadReading` 与旧 BoundarySummary 鸭子同构（新增
+  edge_pts 诊断字段=各箱检出 (side, z_m, x_m)）；回归锁=合成点云找边机制 +
+  shift 求解器单元锁 + 金标帧锚点（npy_moge 离线缓存，skipif）。
+- **debug 证据包**：336×598 原生点图 fp16 + valid + 原生焦距（*_evid.npz，
+  ~1.2MB），按 depth_geo 模块头注「离线复算」口径逐位重放 reading_from_points。
+- 姿态探针（车身朝向/转向迟滞，probe_ego_pose）仍是实验区候选，未上产线。
