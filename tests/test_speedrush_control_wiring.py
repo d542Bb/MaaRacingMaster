@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """实机闭环接线锁（planner 设计稿 §九 step 3）：_drive_loop 的控制链装配与下发。
 
-锁的是**接线**（感知结果→跟踪→聚合→边界→决策→规划→手柄这条管道通不通、
+锁的是**接线**（感知结果→跟踪→聚合→深度供数→决策→规划→手柄这条管道通不通、
 V0/V1 开关在不在位、异常降级停不亦），不重测各层内部（那些有各自的单测）。
-桩手柄记录调用，detect_boundary 打桩避开 CV 依赖。
+桩手柄记录调用；深度几何经 take() 桩同步供数（不碰 GPU/线程）。
 """
 import json
-import time as _time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -21,8 +20,8 @@ except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… �
 
 pytestmark = pytest.mark.skipif(not _OK, reason=f"需要完整运行时依赖（maa/…）：{_ERR}")
 
-from maaracing_master.plugins.speedrush.boundary import BoundarySummary  # noqa: E402
 from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins.speedrush.depth_geo import DepthRoadReading  # noqa: E402
 from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
     Detection, PerceptionResult)
 
@@ -43,12 +42,6 @@ class StubPad:
         self.updates += 1
 
 
-def _boundary():
-    return BoundarySummary(schema_version=2, left_x=80.0, right_x=1200.0,
-                           road_width=1120.0, straight_residual=0.0, vp_row=None,
-                           validity=True, uncertainty=0.1)
-
-
 def _perc(fid, coins=(), cars=()):
     return PerceptionResult(frame_id=fid, ts_ns=fid * 50_000_000,
                             cars=list(cars), coins=list(coins), bonuses=[], infer_ms=1.0)
@@ -59,15 +52,23 @@ def _module():
 
 
 @pytest.fixture(autouse=True)
-def _stub_boundary(monkeypatch):
-    monkeypatch.setattr(smod, "detect_boundary", lambda frame, **kw: _boundary())
+def _stub_depth(monkeypatch):
+    """深度几何桩：session 加载置 None（不碰 GPU/权重），take() 同步回放
+    cur['r']（供数测试显式赋值；默认 None=无供数，退纯模型积分）。"""
+    cur = {"r": None}
+    monkeypatch.setattr(smod, "load_session", lambda w: None)
+
+    def _take(self):
+        return cur["r"], cur["r"] is not None
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+    yield cur
 
 
 # ---------- V0：allow_all_moves=false → 杆值恒 0、油门恒 255 ----------
 
-def test_v0_straight_line(monkeypatch):
-    v0 = replace(load_decision(), mode=replace(load_decision().mode, allow_all_moves=False))
-    monkeypatch.setattr(smod, "load_decision", lambda: v0)
+def test_v0_straight_line():
+    v0 = _decision_v0()
     m = _module()
     chain = m._build_control_chain()
     pad = StubPad()
@@ -80,12 +81,20 @@ def test_v0_straight_line(monkeypatch):
     assert m._control_last["state"] == "CRUISE"
 
 
+def _decision_v0():
+    d = load_decision()
+    return replace(d, mode=replace(d.mode, allow_all_moves=False))
+
+
+def _decision_v1():
+    d = load_decision()
+    return replace(d, mode=replace(d.mode, allow_all_moves=True))
+
+
 # ---------- V1：横向通道在位（自车偏置 → 反向收力回中）----------
 
-def test_v1_lateral_channel_live(monkeypatch):
-    # 显式 V1（横向开），不依赖 decision.json 的当前部署态
-    v1 = replace(load_decision(), mode=replace(load_decision().mode, allow_all_moves=True))
-    monkeypatch.setattr(smod, "load_decision", lambda: v1)
+def test_v1_lateral_channel_live():
+    v1 = _decision_v1()
     m = _module()
     chain = m._build_control_chain()
     chain["planner"].state.executed_lane = 1.0   # 自车在 +1 车道，无目标 → 应向左回中
@@ -103,20 +112,18 @@ def test_v1_lateral_channel_live(monkeypatch):
 
 # ---------- 闭环供数：pair 与单侧合成都喂（80e9a1c 供数门撤销锁） ----------
 
-def _bnd_lanes(el, er, sides=2, clusters=()):
-    return BoundarySummary(schema_version=3, left_x=80.0, right_x=1200.0,
-                           road_width=1120.0, straight_residual=0.0, vp_row=None,
-                           validity=True, uncertainty=0.1, sides=sides,
-                           left_edge_lane=el, right_edge_lane=er,
-                           clusters=clusters)
+def _dgeo_lanes(el, er):
+    return DepthRoadReading(left_edge_lane=el, right_edge_lane=er,
+                            left_x=None, right_x=None,
+                            sides=int(el is not None) + int(er is not None),
+                            latency_ms=1.0, rejects=())
 
 
-def test_road_offset_all_sources_feed_loop(monkeypatch):
+def test_road_offset_all_sources_feed_loop(_stub_depth):
     """单侧合成也进闭环（13:29 局证伪 pair-only：挡单侧=制造供数黑视，
     死亡螺旋段 87/118 拍被挡、陈旧重基与跳变门同时失效——黑视比噪声致命）。
     噪声由 0.8 新息门 + 1.0s 陈旧重基消化，不由接线层挡。"""
-    cur = {}
-    monkeypatch.setattr(smod, "detect_boundary", lambda frame, **kw: cur.get("b"))
+    cur = _stub_depth
     m = _module()
     chain = m._build_control_chain()
     pad = StubPad()
@@ -129,26 +136,25 @@ def test_road_offset_all_sources_feed_loop(monkeypatch):
                         fid * 50_000_000, 10.0, 1)
         return chain["trace"][-1]
 
-    cur["b"] = _bnd_lanes(-1.5, 1.5, clusters=(-1.5, 1.5))   # 黄线双侧路缘,对称
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)                        # 双侧路缘,对称
     t1 = tick()
     assert t1["ro_source"] == "pair"
     assert t1["road_offset"] == pytest.approx(0.0)           # 车在路心
-    cur["b"] = _bnd_lanes(-2.0, None, sides=1)               # 单侧:有效对兜底
+    cur["r"] = _dgeo_lanes(-2.0, None)                       # 单侧:有效对兜底
     t2 = tick()
     assert t2["ro_source"] == "pair_slot"
     assert t2["road_offset"] == pytest.approx(0.0)           # 槽照喂(不黑视)
 
 
-def test_cross_layer_polarity_and_mirror(monkeypatch):
+def test_cross_layer_polarity_and_mirror(_stub_depth):
     """跨层极性契约（2026-09-30 复核裁决 P0：v3 三轮事故的总缺口——两侧各自
     测符号、端到端只断言过 0.0，0 是符号不变量）。
 
-    场景：车在路心**右边** 1 道（黄线左缘 -2.9、右缘 -0.9，间隙中心 -1.9）。
+    场景：车在路心**右边** 1 道（3D 找边左缘 -2.9、右缘 -0.9，间隙中心 -1.9）。
     planner 契约：road_offset = 自车相对路心的位置（右正）→ 必须 **+1.9**，
     且闭环必须出**负杆**（向左修正）。镜像场景（车在路心左边）必须出正杆。
     任何一侧单独改符号、或观测/消费语义换牌，此测试必须红。"""
-    cur = {}
-    monkeypatch.setattr(smod, "detect_boundary", lambda frame, **kw: cur.get("b"))
+    cur = _stub_depth
     m = _module()
     chain = m._build_control_chain()
     pad = StubPad()
@@ -161,12 +167,12 @@ def test_cross_layer_polarity_and_mirror(monkeypatch):
                         fid * 50_000_000, 10.0, 1)
         return chain["trace"][-1]
 
-    cur["b"] = _bnd_lanes(-2.9, -0.9, clusters=(-2.9, -0.9))  # 车在路心右 1.9 道
-    for _ in range(25):                    # 锚定形成门(|1.9|>1.0)→ stale 重基后闭环启动
+    cur["r"] = _dgeo_lanes(-2.9, -0.9)   # 车在路心右 1.9 道
+    for _ in range(25):                  # 锚定形成门(|1.9|>1.0)→ stale 重基后闭环启动
         t = tick()
     assert t["road_offset"] == pytest.approx(+1.9), "极性:车在路心右→off 必须正"
     assert t["steer_norm"] < 0, "车在路心右→必须向左修(负杆)"
-    cur["b"] = _bnd_lanes(+0.9, +2.9, clusters=(+0.9, +2.9))  # 镜像:路心左 1.9 道
+    cur["r"] = _dgeo_lanes(+0.9, +2.9)   # 镜像:路心左 1.9 道
     for _ in range(25):
         t2 = tick()
     assert t2["road_offset"] == pytest.approx(-1.9)
@@ -214,7 +220,8 @@ def test_control_trace_records_and_flushes(tmp_path, monkeypatch):
     row = chain["trace"][-1]
     # C1/§七.1 标定要的关键列都在
     for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_x",
-              "executed_lane", "v_lat_est", "bnd_valid", "bnd_left_x", "bnd_right_x"):
+              "executed_lane", "v_lat_est", "road_offset",
+              "dgeo_sides", "dgeo_left", "dgeo_right"):
         assert k in row, k
     m._flush_control_trace(chain, 1)
     files = list(tmp_path.glob("trace_*_p1.jsonl"))
@@ -244,19 +251,19 @@ def test_control_last_shape():
     assert isinstance(m._control_last["executed_lane"], float)
 
 
-# ---------- v3.1 _EgoRoadObserver：簇间隙 + 目标锁定（2026-09-28 重写） ----------
+# ---------- _EgoRoadObserver：路心合成 + 保鲜槽（供数源=深度几何 v4 读数） ----------
 
 
 def _bnd_clusters(*clusters, sides=2):
+    """update() 的鸭子消费面：sides + 两侧 edge_lane（DepthRoadReading 形状）。"""
     l, r = (clusters[0], clusters[-1]) if len(clusters) >= 2 else (None, None)
-    return SimpleNamespace(validity=bool(clusters), sides=sides,
-                           left_edge_lane=l, right_edge_lane=r,
-                           clusters=tuple(clusters))
+    return SimpleNamespace(sides=sides, left_edge_lane=l, right_edge_lane=r)
 
 
 def test_ego_road_pair_off_polarity():
-    """观测层极性（v3.2）：off=自车相对路心（右正,planner 契约）——
-    黄线双侧路缘,off=−(左缘+右缘)/2。车在路心右 1.9 道必须出 +1.9。"""
+    """观测层极性（v3.2 契约沿用，供数源换 3D 找边）：off=自车相对路心
+    （右正,planner 契约）——双侧路缘,off=−(左缘+右缘)/2。车在路心右 1.9 道
+    必须出 +1.9。"""
     o = smod._EgoRoadObserver()
     assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
     assert o.last["source"] == "pair"
@@ -266,12 +273,12 @@ def test_ego_road_pair_off_polarity():
 
 
 def test_ego_road_gate_sides2_and_slot_ttl():
-    """boundary 契约门：居中类消费方须 sides==2——单侧/无效不吃当帧值,
+    """读数契约门：消费方须 sides==2 且两侧在场——单侧/无效不吃当帧值,
     0.4s 内最近有效对保鲜兜底（pair_slot）,过期退 none（13:29 黑视教训:
     兜底优先,单侧安全包线是 P1）。"""
     o = smod._EgoRoadObserver()
     assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
-    assert o.update(_bnd_lanes(5.0, None, sides=1), now=1000.05) == pytest.approx(+1.9)
+    assert o.update(_bnd_clusters((5.0,), sides=1), now=1000.05) == pytest.approx(+1.9)
     assert o.last["source"] == "pair_slot"       # 单侧→兜底
     assert o.update(None, now=1000.30) == pytest.approx(+1.9)
     assert o.update(None, now=1000.60) is None   # TTL 过期
@@ -288,7 +295,7 @@ def test_ego_road_off_max_garbage_not_fed_nor_cached():
 
 
 def test_control_chain_ego_road_gap_semantics():
-    """chain 的 ego_road 即 v3.2 pair 语义（无分档、无目标锁定机器）。"""
+    """chain 的 ego_road 即 pair 语义（无分档、无目标锁定机器）。"""
     m = _module()
     o = m._build_control_chain()["ego_road"]
     assert o.OFF_MAX == 3.0 and not hasattr(o, "retarget")

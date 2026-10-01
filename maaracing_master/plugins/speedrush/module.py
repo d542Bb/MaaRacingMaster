@@ -29,7 +29,6 @@ import contextlib
 import json
 import time
 from collections import deque
-from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -42,7 +41,6 @@ from maaracing_master.core.paths import data_dir
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_FILE, DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_FILE,
     PERCEPTION_MODEL_REL, PIPELINE_DIR)
-from maaracing_master.plugins.speedrush.boundary import detect_boundary
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
@@ -642,12 +640,11 @@ class SpeedRushModule(ActivityModule):
             chain["prev_ts"] = ts_ns
             obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase)
             obs = chain["agg"].update(obs)
-            # 黄线层（骨架化，2026-09-24 架构裁决）：照跑照记账（trace 保留 bnd_* 列、
-            # 坏帧取证照旧），但不再是 road_offset 的证据源。
-            obs = replace(obs, boundary=detect_boundary(frame))
-            # 深度几何（异步解耦 2026-09-24，协议同 treasure OCR worker）：本帧交
-            # worker 后台推理，take() 只消费过了 age 闸的最新结果——控制拍不再付
-            # observe 成本。协议本身不抛，异常闸按观测件惯例保留（fail-safe）。
+            # 深度几何（几何主人，v4 2026-10-01：MoGe 逐帧焦距点云 3D 找边当
+            # road_offset 供数源；黄线 2D 链路整体退役）。异步解耦协议同前：
+            # 本帧交 worker 后台推理，take() 只消费过了 age 闸的最新结果——
+            # 控制拍不再付 observe 成本。协议本身不抛，异常闸按观测件惯例
+            # 保留（fail-safe）。
             dgeo = None
             dgeo_new = False
             try:
@@ -671,9 +668,9 @@ class SpeedRushModule(ActivityModule):
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents))
-            # road_offset 证据源按几何主人切换：depth=深度区域（弃权拍=None，退
-            # 纯模型积分，不用黄线补位——一个 job 一个主人）；hsv=A/B 对照档。
-            road_offset = chain["ego_road"].update(obs.boundary)
+            # road_offset 供数源=深度几何读数（路心合成+保鲜槽在 _EgoRoadObserver
+            # 内）；dgeo 弃权拍=None，退纯模型积分——一个 job 一个主人。
+            road_offset = chain["ego_road"].update(dgeo)
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -692,7 +689,7 @@ class SpeedRushModule(ActivityModule):
         # 坏帧取证采样（内部自带异常吞噬与自禁，绝不把驾驶链拖下水）
         chain["bad_frames"]["last_steer"] = cmd.steer_x
         if not obs.health.stage_transition:
-            _maybe_save_bad_frame(chain, frame, obs.boundary, fid, phase,
+            _maybe_save_bad_frame(chain, frame, dgeo, fid, phase,
                                   time.monotonic(), ts_ns)
         self._control_last = {
             "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
@@ -700,9 +697,8 @@ class SpeedRushModule(ActivityModule):
             "road_offset": None if road_offset is None else round(road_offset, 3),
             "dgeo_age": round(chain["depth_geo"].last_age_ms), "dgeo_new": dgeo_new}
         # 逐拍控制 trace（内存攒、阶段出口一次性 flush）：C1 定档 K_v 与 §七.1 复测的
-        # 数据源。boundary 路缘读数即自车真实横移的观测量（路缘平移法），与指令杆值
-        # 对齐可反推实际横向速度——不另录帧，守 §六热路径不逐帧写盘。
-        b = obs.boundary
+        # 数据源。boundary 黄线列已随 2D 链路退役（v4 换装），路缘观测量看
+        # dgeo_left/dgeo_right 两列。
         # 候选诊断三列：金币组数 + 最高分 + 该组横向偏移——直接回答"有没有币/差多少分/
         # 在几车道外"。评分器是纯函数、每拍已算，这里只多读一次结果，不改决策。
         best: tuple[float, float] | None = None
@@ -721,23 +717,16 @@ class SpeedRushModule(ActivityModule):
             "n_groups": len(obs.coin_groups),
             "best_score": None if best is None else round(best[0], 1),
             "best_x": None if best is None else round(best[1], 2),
-            "bnd_valid": None if b is None else b.validity,
-            "bnd_left_x": None if b is None else round(b.left_x, 1),
-            "bnd_right_x": None if b is None else round(b.right_x, 1),
-            "bnd_residual": None if b is None else round(b.straight_residual, 3),
-            # 双积分定档数据面：vp_x 横偏=航向观测量；sides=平移读数可信门
-            "bnd_vp_x": None if b is None or b.vp_x is None else round(b.vp_x, 1),
-            "bnd_sides": None if b is None else b.sides,
             # step 2.5 闭环列：实际喂入 planner 的路中心观测（None=本拍弃权/垃圾对）
             # + 修正后 executed/v
             "road_offset": None if road_offset is None else round(road_offset, 4),
             # YOLO×深度融合（2026-09-25）：本拍检测框数（物体掩码随帧入深度路径）
             "yolo_cars": len(result.cars),
-            # road_offset 证据面（簇间隙归属调试）：来源 / 归属间隙
+            # road_offset 供数面（路心合成调试）：来源 / 归属读数
             "ro_source": chain["ego_road"].last.get("source"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
-            # 深度几何列（退役后的标定记账面）：在场侧数 + 两侧读数 + 时延 + 弃权原因
+            # 深度几何列（几何主人 v4）：在场侧数 + 两侧读数 + 时延 + 弃权原因
             "dgeo_sides": None if dgeo is None else dgeo.sides,
             "dgeo_left": None if dgeo is None or dgeo.left_edge_lane is None
             else round(dgeo.left_edge_lane, 3),
@@ -832,9 +821,9 @@ class SpeedRushModule(ActivityModule):
     def _ensure_depth_session(self):
         """懒加载深度几何的 ORT 会话（模式同 _ensure_perception）。
 
-        权重不入库（Apache-2.0，部署时落数据目录）；缺失时深度层禁用、
-        road_offset 走纯模型积分——与黄线层在场性不足时的既有降级同构。
-        """
+        权重随包分发入库（MoGe q4f16，Apache-2.0）；缺失/加载失败时深度层
+        禁用、road_offset 走纯模型积分（几何主人缺席=无供数，不回退 2D——
+        黄线链路已随 v4 换装整体退役）。"""
         if self._depth_sess is not None or self._depth_failed:
             return self._depth_sess
         try:
@@ -957,10 +946,14 @@ def _yolo_object_mask(result: PerceptionResult) -> np.ndarray | None:
     return mask
 
 
-def _maybe_save_bad_frame(chain: dict, frame, bnd, fid: int, phase: int,
+def _maybe_save_bad_frame(chain: dict, frame, dgeo, fid: int, phase: int,
                           now: float, ts_ns: int) -> None:
-    """双侧路缘皆不稳（sides==0）的帧按节流存 JPEG + index.jsonl 行。"""
-    if bnd is None or bnd.sides != 0:
+    """深度几何双侧皆弃权（sides==0）的帧按节流存 JPEG + index.jsonl 行。
+
+    ``dgeo`` 是异步驻留读数（慢变量）：sides==0 = 最近一次在场结果双侧皆
+    无穿越，取证语义=「引擎睁眼却找不到边」的真帧留证；dgeo None（超龄/
+    无结果）不算——那是链路缺席，不是找边失败。"""
+    if dgeo is None or dgeo.sides != 0:
         return
     s = chain["bad_frames"]
     if s["saved"] >= BAD_FRAME_MAX_PER_PHASE or now < s["next_at"]:
@@ -978,10 +971,9 @@ def _maybe_save_bad_frame(chain: dict, frame, bnd, fid: int, phase: int,
         with open(s["dir"] / "index.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps({
                 "fid": fid, "ts_ns": ts_ns,
-                "left_x": None if bnd.left_x != bnd.left_x else round(bnd.left_x, 1),
-                "right_x": None if bnd.right_x != bnd.right_x else round(bnd.right_x, 1),
-                "residual": (None if bnd.straight_residual != bnd.straight_residual
-                             else round(bnd.straight_residual, 3)),
+                "left_x": None if dgeo.left_x is None else round(dgeo.left_x, 1),
+                "right_x": None if dgeo.right_x is None else round(dgeo.right_x, 1),
+                "rejects": ";".join(dgeo.rejects) or None,
                 "steer_x": s.get("last_steer", 0)}, ensure_ascii=False) + "\n")
         s["saved"] += 1
     except Exception:  # noqa: BLE001 —— 取证仪器失败绝不影响驾驶，且自禁
@@ -989,12 +981,12 @@ def _maybe_save_bad_frame(chain: dict, frame, bnd, fid: int, phase: int,
 
 
 class _EgoRoadObserver:
-    """road_offset 推导（黄线路缘，v3.2 2026-09-30 极性修正）。
+    """road_offset 推导（供数源=深度几何 v4 读数，2026-10-01 主人切换）。
 
     planner 契约：``road_offset`` = **自车相对路心的位置**（车道单位，右正）。
-    RULES §4：车道分隔是白虚线，黄实线只有双侧路缘各一条 → 双侧黄线簇的
-    间隙 = 整条路面，间隙中心 = 路心，``off = −(左缘+右缘)/2``（回到
-    pre-v3 公式，语义同构，供数源换成黄线）。
+    深度几何读数的 left/right_edge_lane 是 3D 找边的两侧缘（车道单位，左负右
+    正，原点=车），双侧间隙中心 = 路心，``off = −(左缘+右缘)/2``——与黄线
+    v3.2 同式（供数源换成 3D 找边，消费语义不变）。
 
     v3 事故链的总缺口（2026-09-30 复核裁决）：v3 把输出改成了「目标的自车系
     坐标」（负=目标在左），与 planner 契约**互为相反数且中间无换算**——两侧
@@ -1002,9 +994,9 @@ class _EgoRoadObserver:
     这个缺口漏过。跨层极性契约测试（test_cross_layer_polarity_and_mirror）
     自此为门禁。
 
-    - 门：``validity`` 且 ``sides==2``（boundary 契约：居中/路宽类消费方须
-      先看 sides==2；单侧下间隙归属几何不可判定——102200 局「贴死左墙」
-      的肇因之一就是把单侧簇当完整栅格用）；
+    - 门：``sides==2`` 且两侧读数在场（3D 找边契约：单侧下间隙归属几何
+      不可判定——102200 局「贴死左墙」的肇因之一就是把单侧读数当完整
+      栅格用）；
     - 单侧/缺失：0.4s 内最近有效对保鲜兜底（13:29 供数黑视教训：黑视比
       噪声致命），过期退纯模型积分；单侧安全包线是 P1 议题；
     - |off|>OFF_MAX 垃圾不喂（宁弃不喂假路心）。
@@ -1024,9 +1016,10 @@ class _EgoRoadObserver:
         return s[0], s[1]
 
     def update(self, bnd, now: float | None = None) -> float | None:
+        """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。"""
         if now is None:
             now = time.monotonic()
-        ok = (bnd is not None and bnd.validity and bnd.sides == 2
+        ok = (bnd is not None and bnd.sides == 2
               and bnd.left_edge_lane is not None
               and bnd.right_edge_lane is not None)
         src = "pair"
