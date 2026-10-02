@@ -455,6 +455,19 @@ v_ego>y_h）任一不过即拒载并写明原因；`allow_car_graze=true` 在 v1
 （watch 以 `straight_check_inactive` 注记不装作用）；CHANGE 改判只走加性 margin
 （换"去哪"不换"动不动"），失联/越界/致命才取消。
 
+**阶段一换血（2026-10-02，外部对标 openpilot/Apollo/Werling/RSS 后的最小刀，
+trace 1836 两局病灶：执行滞后中位 0.45 道 / 目标掠过窗漂移 0.3 道 / 白超 1.15+）**：
+①可行性门从**执行回执**起算 `need=lane_change_duration_s(|目标−executed|)`——替换
+"自车瞬移"假设（need=|目标|×系数）；回执缺位维持 0 起算旧口径（v1 兼容红线）。
+②CHANGE 逐拍重评：机会窗剩余（coin=全场流积分到 cy_max；超车=逐轨接近）vs
+从执行位出发的剩余耗时+τ_resp+margin，连拍破判（`_REEVAL_STREAK=2`）即
+`cancel:infeasible` 走 ABORT——单拍破判只记 streak（噪声自卫）。③街车横向速率
+账本（traffic 层 `CarView.v_lat`，帧间差分 EMA，遮挡延续拍不投毒）+ **横向安全
+veto**（`LateralSafety`：自车按 v_lat_max 全速扫掠包络 × 街车 CV 外推，视野内
+预测最小车距 < `lat_veto_gap_lane` 即拦——选择期拦候选、CHANGE 中即时
+`cancel:lat_veto` 不吃防抖；独立几何判据**不进评分**，RSS 外挂校验器形状；
+回执缺位不判——假起点毒化几何）。
+
 **评分偏序锁**（验收 3）：枚数/距离/横移/conf 四向单调各一测；conf 线性斜坡
 +地板（低于 conf_floor 直接 None）；远离目标 life 折扣归零；存续组 conf=0 自动
 出局；**估计恒等于观测**（§三漏检纪律）。金币到站时间 t_miss 的速率场

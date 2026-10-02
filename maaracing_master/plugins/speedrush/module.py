@@ -742,7 +742,10 @@ class SpeedRushModule(ActivityModule):
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
+            # + 街车最大横向速率（阶段一 veto/v_lat_ema 定档的回放数据面）
             "car_views": len(tviews),
+            "car_vlat": None if not tviews else round(
+                max(abs(v.v_lat) for v in tviews), 3),
             "passes": [round(e.d_min, 3) for e in tevents
                        if e.outcome == OUTCOME_PASS],
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,

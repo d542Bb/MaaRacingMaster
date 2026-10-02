@@ -46,6 +46,8 @@ class CarView:
     rel_approach: float      # px/tick，正=接近（Tracker EMA 透传）
     d_min: float             # 自 track 出现以来的 min|x_lane|
     age_ticks: int
+    v_lat: float = 0.0       # 横向速率（车道/tick，右正；帧间差分 EMA——阶段一
+                             # CV 外推/横向安全 veto 的数据源，缺省 0=静止假设）
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,8 @@ class _Live:
     last_cy: float
     rel: float               # rel_approach 直接透传（不二次平滑：EMA 在 Tracker 已做）
     d_min: float
+    last_x: float | None = None   # 上次真实读数的 x_lane（横向速率差分基）
+    v_lat: float = 0.0            # 横向速率 EMA（车道/tick；只在真实读数拍更新）
 
 
 class TrafficObserver:
@@ -109,9 +113,15 @@ class TrafficObserver:
             rec.last_cy = t.cy
             rec.rel = t.rel_approach
             rec.d_min = min(rec.d_min, abs(t.x_lane))
+            # 横向速率只在真实读数拍差分（遮挡延续拍 x 是陈旧重复值，投毒 EMA）
+            if t.last_seen_fid == fid:
+                if rec.last_x is not None:
+                    inst = t.x_lane - rec.last_x
+                    rec.v_lat += self.p.v_lat_ema_alpha * (inst - rec.v_lat)
+                rec.last_x = t.x_lane
             views.append(CarView(id=t.id, x_lane=t.x_lane, cy=t.cy,
                                  rel_approach=t.rel_approach, d_min=rec.d_min,
-                                 age_ticks=fid - rec.first_fid))
+                                 age_ticks=fid - rec.first_fid, v_lat=rec.v_lat))
 
         events: list[PassEvent] = []
         for tid in sorted(set(self._live) - seen):

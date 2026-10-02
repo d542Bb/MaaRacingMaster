@@ -85,7 +85,8 @@ def test_ghost_when_aged_slow_then_bottom_exit():
 
 def test_bottom_exit_but_fast_still_pass_not_ghost():
     """超龄但 rel 超鬼影界 = 真慢车被追上也算超车，不误判 ghost。"""
-    over = Traffic(P.exit_margin_px, P.min_obs_ticks, P.ghost_max_age_ticks, 0.1)
+    over = Traffic(P.exit_margin_px, P.min_obs_ticks, P.ghost_max_age_ticks, 0.1,
+                   P.v_lat_ema_alpha)
     o = TrafficObserver(over, CAL)
     age = over.ghost_max_age_ticks + 2
     cars = {fid: [(9, CAL.v_ego - 5, 0.7, 8.0)] for fid in range(1, age + 1)}
@@ -125,3 +126,27 @@ def test_frame_id_regress_fail_loud():
     o.update(_obs(10, ()))
     with pytest.raises(ValueError):
         o.update(_obs(9, ()))
+
+
+# ---------- 阶段一：街车横向速率账本（CV 外推数据源） ----------
+
+def test_car_view_lateral_rate_ema():
+    """CarView.v_lat（车道/tick，右正）=帧间差分 EMA：横移车收敛正速率、
+    静止车恒零、遮挡延续拍（last_seen 落后于 fid）不投毒——x 突变的外推
+    读数不得被计成速率。"""
+    o = TrafficObserver(P, CAL)
+    v = ()
+    for fid in range(1, 11):                        # x 每 tick +0.02 = 0.4 车道/s
+        v, _ = o.update(_obs(fid, (_car(7, fid, CAL.y_h + 60, 1.0 + 0.02 * fid, 5),)))
+    assert v[0].v_lat == pytest.approx(0.02, abs=0.004)
+    o2 = TrafficObserver(P, CAL)
+    for fid in range(1, 8):
+        v, _ = o2.update(_obs(fid, (_car(7, fid, CAL.y_h + 60, 1.0, 5),)))
+    assert abs(v[0].v_lat) < 0.004
+    o3 = TrafficObserver(P, CAL)
+    o3.update(_obs(1, (_car(7, 1, CAL.y_h + 60, 1.0, 5),)))
+    stale = TrackedTarget(id=7, kind=KIND_CAR, x_lane=2.0, x_sigma=0.05,
+                          cy=int(CAL.y_h + 80), w=80, h=40, conf=0.9, rel_approach=5,
+                          first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
+    v, _ = o3.update(_obs(2, (stale,)))             # last_seen=1 < fid=2：延续拍
+    assert v[0].v_lat == pytest.approx(0.0, abs=1e-9)

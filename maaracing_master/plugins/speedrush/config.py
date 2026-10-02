@@ -131,6 +131,8 @@ class Traffic:
     min_obs_ticks: int         # 观测次数不足不发事件（检测噪声自卫）
     ghost_max_age_ticks: int   # 超龄且低速的"底边消失"判 ghost 不判 pass（191 帧案）
     ghost_rel_eps: float       # "低速"的相对速率界（px/tick）
+    v_lat_ema_alpha: float     # 街车横向速率 EMA α（帧间差分平滑，车道/tick 口径；
+                               # 遮挡延续拍不投毒——阶段一 CV 外推数据源）
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,10 @@ class Validate:
     x_lane_abs_max: float
     cy_jump_max_px: float
     straight_residual_max: float
+    # —— 横向几何安全 veto（阶段一 2026-10-02，RSS 形状外挂判据）——
+    lat_veto_gap_lane: float        # 接触界：预测最小车距低于此即 veto（车身中心距）
+    lat_veto_horizon_s: float       # 街车 CV 外推视野
+    lat_veto_car_vmax_lane_s: float # 街车横向速率封顶（防读数噪声尖峰 mass-veto）
 
 
 @dataclass(frozen=True)
@@ -238,7 +244,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             x_lane_abs_max=_num(d, "validate", "x_lane_abs_max", lo=0),
             cy_jump_max_px=_num(d, "validate", "cy_jump_max_px", lo=0),
             straight_residual_max=_num(d, "validate", "straight_residual_max",
-                                       lo=0, lo_open=False)),
+                                       lo=0, lo_open=False),
+            lat_veto_gap_lane=_num(d, "validate", "lat_veto_gap_lane", lo=0),
+            lat_veto_horizon_s=_num(d, "validate", "lat_veto_horizon_s", lo=0),
+            lat_veto_car_vmax_lane_s=_num(d, "validate", "lat_veto_car_vmax_lane_s",
+                                          lo=0)),
         planner=Planner(
             lookahead_tau_s=_num(d, "planner", "lookahead_tau_s", lo=0),
             k_p=_num(d, "planner", "k_p", lo=0),
@@ -278,7 +288,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
             ghost_max_age_ticks=_int(d, "traffic", "ghost_max_age_ticks", lo=2),
-            ghost_rel_eps=_num(d, "traffic", "ghost_rel_eps", lo=0)))
+            ghost_rel_eps=_num(d, "traffic", "ghost_rel_eps", lo=0),
+            v_lat_ema_alpha=_num(d, "traffic", "v_lat_ema_alpha", lo=0, hi=1)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis
@@ -316,6 +327,11 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             f"[overtake] 贴窗中心 {ov.d_hold_lane} 不得超出候选带下沿 "
             f"{ov.lane_band_lo}（带缘车的内贴目标会越过自车道中心，判据矛盾）")
+    if cfg.validate.lat_veto_gap_lane >= ov.d_hold_lane:
+        raise ValueError(
+            f"[validate] lat_veto_gap_lane={cfg.validate.lat_veto_gap_lane} "
+            f"≥ 贴窗中心 d_hold_lane={ov.d_hold_lane}"
+            f"（veto 接触界不小于贴窗距离=一切超车都被拦，判据矛盾）")
     return cfg
 
 

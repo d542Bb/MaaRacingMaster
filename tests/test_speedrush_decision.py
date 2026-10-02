@@ -99,6 +99,11 @@ def _decision_dict():
     (lambda d: d["overtake"].update(d_hold_lane=0.8), "矛盾"),
     (lambda d: d["control"].pop("abort_settle_v_lane_s"), "abort_settle"),
     (lambda d: d["overtake"].pop("t_cool_pass_s"), "t_cool_pass"),
+    (lambda d: d["validate"].pop("lat_veto_gap_lane"), "lat_veto_gap"),
+    (lambda d: d["validate"].update(lat_veto_gap_lane=0.7), "贴窗"),
+    (lambda d: d["validate"].pop("lat_veto_horizon_s"), "lat_veto_horizon"),
+    (lambda d: d["validate"].pop("lat_veto_car_vmax_lane_s"), "car_vmax"),
+    (lambda d: d["traffic"].pop("v_lat_ema_alpha"), "v_lat_ema"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
     d = _decision_dict()
@@ -666,3 +671,100 @@ def test_abort_settles_on_velocity_zero():
     e3.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)          # 立参考
     out = e3.update(_obs(fid=12, presence=True), DT, executed_lane=0.35)   # v=3>0.3
     assert out.state is DecisionState.ABORT_CHANGE
+
+
+# ---------- 阶段一（2026-10-02）：门吃执行回执 + 逐拍重评 + 横向安全 veto ----------
+# 病灶锚（真机第四轮 trace 1836 两局）：可行性门假设自车瞬移（滞后中位 0.45/纸 p90 0.9
+# 车道）、目标掠过窗漂移中位 0.3 道追不上、变道中不重评——三刀各一把锁。
+
+def test_gate_priced_from_execution_receipt():
+    """可行性门从执行回执起算（need=|目标−executed|），不再假设自车在 0：
+    同一候选（x=2.0，t_miss≈0.99s），无回执按旧口径 need(2.0)=1.1→1.38≥0.99 落选；
+    回执 executed=1.5 时 need(0.5)=0.5→0.78<0.99 入选。"""
+    e = _eng()
+    out = e.update(_good_obs(x=2.0, fid=1), DT)
+    assert out.state is DecisionState.CRUISE and "no_candidate" in out.reason
+    e2 = _eng()
+    out = e2.update(_good_obs(x=2.0, fid=1), DT, executed_lane=1.5)
+    assert out.state is DecisionState.CHANGE
+
+
+def test_overtake_gate_priced_from_receipt():
+    """超车门同刀：car x=1.1 cy=570（t_meet=0.73s）——从 0 起算
+    need(0.475)+0.28=0.77≥0.73 落选；从回执 0.35 起算 need(0.125)+0.28=0.63<0.73 入选。"""
+    e = _eng(overtake=True)
+    out = e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv(cy=570)]))
+    assert "no_candidate" in out.reason
+    e2 = _eng(overtake=True)
+    out = e2.update(_obs(fid=1, presence=True), DT, executed_lane=0.35,
+                    traffic=_traffic([_cv(cy=570)]))
+    assert out.state is DecisionState.CHANGE
+
+
+def test_change_aborts_when_window_missed():
+    """逐拍重评主锁：执行停滞 + 目标迫近（t_miss 缩到 need 以下）连拍破判 → ABORT，
+    不追注定错过的变道。破判轨迹：fid2/fid3 组 cy=585、rel=11（流场自洽，
+    k 与 fid1 同为 100/178²）→ t_miss≈0.38 < need(0.5)+0.28=0.78。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT, executed_lane=0.0)
+    near1, ms1 = _group(1, 2, 3, x=0.5, cy=585, rel=11.0)
+    out = e.update(_obs(fid=2, groups=(near1,), targets=ms1), DT, executed_lane=0.0)
+    assert out.state is DecisionState.CHANGE               # 单拍破判不动（防抖）
+    near2, ms2 = _group(1, 3, 3, x=0.5, cy=585, rel=11.0)
+    out = e.update(_obs(fid=3, groups=(near2,), targets=ms2), DT, executed_lane=0.0)
+    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:infeasible"
+
+
+def test_change_single_breach_does_not_abort():
+    """重评防抖锁：单拍破判（读数噪声量级）只记 streak，回落后清零——
+    两拍连破才 ABORT，噪声不得撕掉进行中的计划。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT, executed_lane=0.0)
+    near, ms = _group(1, 2, 3, x=0.5, cy=585, rel=11.0)
+    out = e.update(_obs(fid=2, groups=(near,), targets=ms), DT, executed_lane=0.0)
+    assert out.state is DecisionState.CHANGE
+    back, msb = _group(1, 3, 3, x=0.5, cy=500, rel=5)
+    out = e.update(_obs(fid=3, groups=(back,), targets=msb), DT, executed_lane=0.0)
+    assert out.state is DecisionState.CHANGE and "moving" in out.reason
+
+
+def test_overtake_aborts_when_target_escapes():
+    """超车逐拍重评：目标横漂远去（x 1.1→1.55）+ 迫近（cy 步进 ≤90px 不触
+    cy_jump）而执行位停在 0 → 需求涨到 0.925 道追不上 → 连拍破判弃追
+    （白超 1.15~1.29 道病灶的决策侧刀）。"""
+    e = _eng(overtake=True)
+    e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+             traffic=_traffic([_cv(cy=400)]))                   # t_meet=1.58，hug=0.475
+    out = e.update(_obs(fid=2, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(x=1.3, cy=480)]))      # hug=0.675，t_meet=1.18
+    assert out.state is DecisionState.CHANGE
+    out = e.update(_obs(fid=3, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(x=1.55, cy=560)]))     # hug=0.925 → 破判1
+    assert out.state is DecisionState.CHANGE
+    out = e.update(_obs(fid=4, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(x=1.55, cy=640)]))     # t_meet=0.38 → 破判2
+    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:infeasible"
+
+
+def test_safety_veto_blocks_candidate():
+    """横向安全 veto（RSS 形状外挂判据，不进评分）：机动走廊 [0→0.5] 终点
+    与走廊内街车的预测最小距 0.3 < 接触界 0.45 → 候选拦下；车在走廊外
+    （0.625≥0.45）同一候选照常入选。veto 只在有执行回执时判（假起点毒化几何）。"""
+    e = _eng()
+    out = e.update(_good_obs(fid=1), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.8, cy=650)]))
+    assert "no_candidate" in out.reason
+    e2 = _eng()
+    out = e2.update(_good_obs(fid=1), DT, executed_lane=0.0,
+                    traffic=_traffic([_cv(tid=9, x=1.1, cy=650)]))
+    assert out.state is DecisionState.CHANGE
+
+
+def test_safety_veto_aborts_mid_change():
+    """变道中走廊被占 → 立即 ABORT 有界回稳（安全 veto 不吃防抖连拍：
+    误弃一个候选的代价 ≪ 预测接触还继续扫的代价）。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT, executed_lane=0.0)
+    out = e.update(_good_obs(fid=2), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.75, cy=500)]))
+    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:lat_veto"
