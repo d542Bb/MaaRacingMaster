@@ -702,9 +702,10 @@ def test_overtake_gate_priced_from_receipt():
 
 
 def test_change_aborts_when_window_missed():
-    """逐拍重评主锁：执行停滞 + 目标迫近（t_miss 缩到 need 以下）连拍破判 → ABORT，
-    不追注定错过的变道。破判轨迹：fid2/fid3 组 cy=585、rel=11（流场自洽，
-    k 与 fid1 同为 100/178²）→ t_miss≈0.38 < need(0.5)+0.28=0.78。"""
+    """逐拍重评主锁（金币=及格制，到不了=零分）：执行停滞 + 目标迫近
+    （t_miss 缩到 need 以下）连拍破判 → ABORT，不追注定错过的变道。
+    破判轨迹：fid2/fid3 组 cy=585、rel=11（流场自洽，k 与 fid1 同为 100/178²）
+    → t_miss≈0.38 < need(0.5)+0.28=0.78。"""
     e = _eng()
     e.update(_good_obs(fid=1), DT, executed_lane=0.0)
     near1, ms1 = _group(1, 2, 3, x=0.5, cy=585, rel=11.0)
@@ -729,21 +730,50 @@ def test_change_single_breach_does_not_abort():
 
 
 def test_overtake_aborts_when_target_escapes():
-    """超车逐拍重评：目标横漂远去（x 1.1→1.55）+ 迫近（cy 步进 ≤90px 不触
-    cy_jump）而执行位停在 0 → 需求涨到 0.925 道追不上 → 连拍破判弃追
-    （白超 1.15~1.29 道病灶的决策侧刀）。"""
+    """超车逐拍重评（逃逸判据，第五轮裁定）：散布 > 贴窗距离且不收缩 → 连拍
+    弃追（白超 1.15~1.29 道病灶的决策侧刀）。目标横漂远去（x 1.1→1.55），
+    执行位停在 0，散布 0.475→0.675→0.925 后停住——贴窗外原地踏步同判。"""
     e = _eng(overtake=True)
     e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
              traffic=_traffic([_cv(cy=400)]))                   # t_meet=1.58，hug=0.475
     out = e.update(_obs(fid=2, presence=True), DT, executed_lane=0.0,
-                   traffic=_traffic([_cv(x=1.3, cy=480)]))      # hug=0.675，t_meet=1.18
+                   traffic=_traffic([_cv(x=1.3, cy=480)]))      # disp=0.675：首拍立基线不判
     assert out.state is DecisionState.CHANGE
     out = e.update(_obs(fid=3, presence=True), DT, executed_lane=0.0,
-                   traffic=_traffic([_cv(x=1.55, cy=560)]))     # hug=0.925 → 破判1
+                   traffic=_traffic([_cv(x=1.55, cy=560)]))     # disp=0.925，涨 → 破判1
     assert out.state is DecisionState.CHANGE
     out = e.update(_obs(fid=4, presence=True), DT, executed_lane=0.0,
-                   traffic=_traffic([_cv(x=1.55, cy=640)]))     # t_meet=0.38 → 破判2
+                   traffic=_traffic([_cv(x=1.55, cy=640)]))     # disp 停在 0.925，不收缩 → 破判2
     assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:infeasible"
+
+
+def test_overtake_survives_drift_and_completes_pass():
+    """第五轮 1742 案回归锁：已贴近（散布 ≤ 贴窗距离）时目标横漂/迫近不得弃追
+    ——超车是 pass 制不是到点制，车反正要过，弃追向中回拉只会贴得更远。
+    执行收敛、目标小幅横漂、cy 步进 80（不触 cy_jump）→ 计划存活 → pass 落定。"""
+    e = _eng(overtake=True)
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(cy=400)]))             # 选中，hug=0.475
+    assert out.state is DecisionState.CHANGE
+    for i, (x, cy, el) in enumerate(((1.15, 480, 0.10), (1.20, 560, 0.20),
+                                     (1.25, 640, 0.28)), start=2):
+        out = e.update(_obs(fid=i, presence=True), DT, executed_lane=el,
+                       traffic=_traffic([_cv(x=x, cy=cy)]))
+        assert out.state is DecisionState.CHANGE, out.reason
+    out = e.update(_obs(fid=5, presence=True), DT, executed_lane=0.30,
+                   traffic=_traffic([], [_pass_ev(tid=5, fid=5)]))
+    assert out.state is DecisionState.CRUISE and "done:overtake_pass" in out.reason
+
+
+def test_veto_horizon_clamped_by_pass_time():
+    """第五轮 2468 案几何修正：车过我们车头之后再怎么横漂也吹不到我们——
+    外推视野按逐车 pass 时间截断。此车全视野外推会扫过贴位（旧代码误 veto），
+    截断后最小距 0.51 ≥ 0.45 放行。"""
+    e = _eng()
+    car = CarView(id=9, x_lane=1.1, cy=656, rel_approach=10.0, d_min=1.1,
+                  age_ticks=5, v_lat=-0.015)     # 0.3 道/s 向左漂；t_pass=0.3s
+    out = e.update(_good_obs(fid=1), DT, executed_lane=0.0, traffic=_traffic([car]))
+    assert out.state is DecisionState.CHANGE
 
 
 def test_safety_veto_blocks_candidate():

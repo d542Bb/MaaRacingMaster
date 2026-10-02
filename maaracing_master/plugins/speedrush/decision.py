@@ -10,11 +10,13 @@ test_overtake_gate_closed 上锁）；开闸后超车与金币两类候选同一
 吐 `DecisionOutput`（D1：只吃结构化契约；D3：reason/valid_until 齐备可回放）。
 时钟用 tick 累计（`time.monotonic` 不进本模块——回放与实机同一确定性）。
 
-**阶段一升级（2026-10-02，外部对标后的最小换血）**：决策输出仍是「位置常量」，
-但三处投影先修——①可行性门从**执行回执**起算耗时（need=|目标−executed|，
-替换自车瞬移假设；回执缺位维持旧口径 0 起算，兼容红线）；②CHANGE 逐拍重评
-「剩余位移 ≤ 机会窗剩余」，连拍破判即 ABORT（不再追注定错过的变道）；
-③街车横向 CV 外推 + RSS 形状几何安全 veto（LateralSafety，独立判据不进评分）。
+**阶段一升级（2026-10-02，外部对标后的最小换血；第五轮 trace 对账后修标定）**：
+决策输出仍是「位置常量」，但三处投影先修——①可行性门从**执行回执**起算耗时
+（need=|目标−executed|，替换自车瞬移假设；回执缺位维持旧口径 0 起算，兼容红线）；
+②CHANGE 逐拍重评按 **收益制分形**：金币是及格制（到不了=零分），窗口剩余对
+剩余耗时连拍破判即弃追；超车是 pass 制（车反正要过，弃追只会贴得更远），只判
+**逃逸**（散布超贴窗距离且不收缩，首拍立基线）。③街车横向 CV 外推 + RSS 形状
+几何安全 veto（LateralSafety，独立判据不进评分；外推视野按逐车到站时间截断）。
 
 **FSM**（§二矩阵；转移优先级在 `_priority_order` 注释处落实）：
 CRUISE 选道 / CHANGE 移动 / ABORT_CHANGE 有界回稳 / CONSERVE 保持+禁变道 / FAULT 纯直行。
@@ -123,14 +125,25 @@ class LateralSafety:
     必然接近量」，本域横向操纵即时响应（τ_resp 0.130s 实测），接触界即够用
     （起值 [需实测]，真机第五轮回放定档）。
 
+    **视野按逐车 pass 时间截断**（第五轮 2468 案修正）：车过自车行之后就
+    吹不到我们了——外推只在 min(视野, 该车到站时间) 内做，过了站的车横漂
+    再猛也不产生虚警。到站时间与评分同口径（(v_ego−cy)/(rel·hz)），rel≤0
+    （不接近）→ 永不到站 → 全视野。
+
     **回执缺位不判**（veto_reason 收 None start）：几何检查不容假起点——
     无回执时自车真实位置未知，按 0 起算的包络是毒化判据；缺位=无此保护，
     与 v1 相同（不倒退也不臆造）。nan 目标（存续组）同跳过。"""
 
-    def __init__(self, cfg: DecisionConfig):
+    def __init__(self, cfg: DecisionConfig, cal: Calib):
         self.v = cfg.validate
+        self.cal = cal
         self.v_lat_max = cfg.planner.v_lat_max
         self.hz = cfg.control.frame_rate_hz
+
+    def _t_pass_s(self, v: "CarView") -> float:
+        """该车到自车行的秒数（与超车评分同一接近口径）；不接近 → 永不到站。"""
+        rate = v.rel_approach * self.hz
+        return max(0.0, self.cal.v_ego - v.cy) / rate if rate > _EPS else math.inf
 
     def min_gap_lane(self, start: float, goal: float,
                      views: tuple["CarView", ...]) -> float:
@@ -146,14 +159,15 @@ class LateralSafety:
         for v in views:
             vc = max(-self.v.lat_veto_car_vmax_lane_s,
                      min(self.v.lat_veto_car_vmax_lane_s, v.v_lat * self.hz))
-            if t_star <= t_h:
+            t_eff = min(t_h, self._t_pass_s(v))
+            if t_star <= t_eff:
                 gap = self._segment_min(start, v.x_lane, sgn * self.v_lat_max,
                                         vc, t_star)
                 gap = min(gap, self._segment_min(
-                    goal, v.x_lane + vc * t_star, 0.0, vc, t_h - t_star))
+                    goal, v.x_lane + vc * t_star, 0.0, vc, t_eff - t_star))
             else:
                 gap = self._segment_min(start, v.x_lane, sgn * self.v_lat_max,
-                                        vc, t_h)
+                                        vc, t_eff)
             gap_min = min(gap_min, gap)
         return gap_min
 
@@ -300,7 +314,7 @@ class DecisionEngine:
         self.cal = cal if cal is not None else load_calib()
         self.watch = ValidationWatch(cfg)
         self.scorer = Scorer(cfg, self.cal)
-        self.lateral = LateralSafety(cfg)
+        self.lateral = LateralSafety(cfg, self.cal)
         self.reset()
 
     def reset(self) -> None:
@@ -323,6 +337,7 @@ class DecisionEngine:
         self._abort_next = DecisionState.CRUISE
         self._abort_ref: float | None = None   # ABORT 速率落稳参考（_enter_abort 重置）
         self._late_streak = 0                  # 逐拍重评连破计数（_REEVAL_STREAK 判）
+        self._last_disp: float | None = None   # 超车逃逸判据的散布基线（select/switch 重置）
         self._fault = False
         self._last_report_ok = True
         self._reanchor_pending: float | None = None
@@ -398,6 +413,7 @@ class DecisionEngine:
         self._target_kind = cand.kind
         self._cur_score = cand.score
         self._late_streak = 0
+        self._last_disp = None   # 新目标新基线
         # 有符号需求（planner §二：反向不得过门）；超车候选的需求=选中拍内贴目标，
         # 但超车完成走 pass 事件不走 demand 门（§四换轴），demand 只服务回执/trace
         self._demand_lane = (cand.group.x_center if cand.kind == KIND_CAND_COIN
@@ -426,6 +442,7 @@ class DecisionEngine:
             self._target_kind = better.kind
             self._cur_score = better.score
             self._late_streak = 0
+            self._last_disp = None   # 新目标新基线
             self._demand_lane = (better.group.x_center if better.kind == KIND_CAND_COIN
                                  else self.scorer.hug_goal(better.car.x_lane))
             self._deadzone_ticks = 0
@@ -492,6 +509,7 @@ class DecisionEngine:
             self._target_kind = better.kind
             self._cur_score = better.score
             self._late_streak = 0
+            self._last_disp = None   # 新目标新基线
             self._demand_lane = (better.group.x_center if better.kind == KIND_CAND_COIN
                                  else self.scorer.hug_goal(better.car.x_lane))
             self._deadzone_ticks = 0
@@ -502,14 +520,15 @@ class DecisionEngine:
             self._enter_abort(veto)
             return f"cancel:{veto}"
         if executed is not None:
-            t_left = self._remaining_s(obs)
-            if t_left is not None and self._miss_breach(goal, executed, t_left):
+            disp = abs(goal - executed)
+            if self._escape_breach(disp):
                 self._late_streak += 1
                 if self._late_streak >= _REEVAL_STREAK:
                     self._enter_abort("infeasible")
                     return "cancel:infeasible"
             else:
                 self._late_streak = 0
+            self._last_disp = disp
         if self._change_t >= self.cfg.overtake.t_pass_max_s:
             return self._finish_change("pass_timeout")
         return "moving:overtake"
@@ -628,16 +647,10 @@ class DecisionEngine:
         return best
 
     def _remaining_s(self, obs: WorldObservation) -> float | None:
-        """当前目标机会窗剩余（秒）：coin=全场流积分到 cy_max（2026-10-02 换基
-        口径）；overtake=逐轨接近时间。无速率证据（全场无流 / rel≤0）→ None=
-        不判重评（缺证据不弃计划——与评分的无限远折扣同族安全默认，方向相反：
-        评分侧缺证据压收益，重评侧缺证据不动计划）。"""
-        if self._target_kind == KIND_CAND_OVERTAKE:
-            v = next((x for x in self._views if x.id == self._target_gid), None)
-            if v is None:
-                return None
-            rate = v.rel_approach * self.cfg.control.frame_rate_hz
-            return max(0.0, self.cal.v_ego - v.cy) / rate if rate > _EPS else None
+        """当前金币目标机会窗剩余（秒）=全场流积分到 cy_max（2026-10-02 换基
+        口径）。无速率证据（全场无流）→ None=不判重评（缺证据不弃计划，
+        与评分的无限远折扣同族安全默认，方向相反：评分侧缺证据压收益，
+        重评侧缺证据不动计划）。超车路不走窗口判据（见 _escape_breach）。"""
         g = self._group_of(obs)
         if g is None:
             return None
@@ -647,14 +660,24 @@ class DecisionEngine:
         return self.scorer._t_miss_ground_s(g.cy_max, k)
 
     def _miss_breach(self, x_target: float, executed: float, t_left: float) -> bool:
-        """机会窗破判：从执行位出发的剩余耗时（变道模型 + 响应 + 余量）
-        ≥ 窗剩余。已在死区内（位移≤dead_zone）不判——到达位附近没得可错过，
-        pass/收敛自会收尾。"""
+        """金币窗口破判（及格制：到不了=零分，弃追即止损）：从执行位出发的
+        剩余耗时（变道模型 + 响应 + 余量）≥ 窗剩余。已在死区内不判——到达位
+        附近没得可错过，收敛自会收尾。"""
         disp = abs(x_target - executed)
         if disp <= self.cfg.hysteresis.dead_zone_lane:
             return False
         t = self.cfg.timing
         return (t.lane_change_duration_s(disp) + t.tau_resp_s + t.margin_s) >= t_left
+
+    def _escape_breach(self, disp: float) -> bool:
+        """超车逃逸判据（第五轮 1742 案裁定）：超车是 **pass 制不是到点制**——
+        车反正要从身边过，贴到哪都至少是 30 分的一次 pass，弃追向中回拉只会
+        贴得更远。唯一纯浪费的形态是散布已超贴窗距离还不收缩：目标在逃或
+        原地踏步（横漂后停住同判），追下去只是拖着车白占车道。首拍只记基线
+        不判（无趋势可言）。"""
+        if self._last_disp is None:
+            return False
+        return disp > self.cfg.overtake.d_hold_lane and disp >= self._last_disp
 
     def _side_has_space(self, x_lane: float) -> bool:
         """候选侧的路缘空间检查。左缘读数 left_edge_lane（负值，|·|=左缘距）、
