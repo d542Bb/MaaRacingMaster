@@ -180,18 +180,37 @@ class Scorer:
             conf_factor = ((g.conf_min - self.c.conf_floor)
                            / (self.c.conf_hi - self.c.conf_floor))
         value = self.c.coin_value_per_unit * g.observed_count * conf_factor
-        rate = self._approach_rate_px_s(g, obs)
-        t_miss = math.inf if rate <= _EPS else max(0.0, self.cal.v_ego - g.cy_max) / rate
+        k = self._flow_k(obs)
+        t_miss = math.inf if k is None else self._t_miss_ground_s(g.cy_max, k)
         life = math.exp(-t_miss / self.c.life_tau_s) if math.isfinite(t_miss) else 0.0
         score = value * life - self.c.shift_cost_per_lane * abs(g.x_center)
         return Scored(group=g, score=score, t_miss_s=t_miss)
 
-    def _approach_rate_px_s(self, g: CoinGroup, obs: WorldObservation) -> float:
-        by_id = {t.id: t for t in obs.targets}
-        rs = [by_id[i].rel_approach for i in g.member_ids if i in by_id]
-        if not rs:
-            return 0.0
-        return (sum(rs) / len(rs)) * self.hz
+    def _flow_k(self, obs: WorldObservation) -> float | None:
+        """全场地面流系数（2026-10-02 换基）：静止世界里同一帧的所有地面目标
+        共享行速率场 r(cy) = k·(cy−y_h)²——针孔投影下恒速前进的必然形状，
+        不是近似选择。k 取全体健康 track（有速率测量、行号在归一适用域内）
+        的中位：单个 coin track 的断链/换 id 只伤它自己的时间累积账，伤不了
+        全场横截面这本账；磁暴提速时 k 逐帧重估自动跟变。本帧无任何健康
+        测量 → None，调用方按无限远折扣（与逐轨断供同一安全默认）。"""
+        hs = []
+        for t in obs.targets:
+            d = t.cy - self.cal.y_h
+            if t.rel_approach > _EPS and d >= self.cal.min_denom:
+                hs.append(t.rel_approach * self.hz / (d * d))
+        if not hs:
+            return None
+        hs.sort()
+        return hs[len(hs) // 2]
+
+    def _t_miss_ground_s(self, cy: float, k: float) -> float:
+        """地面目标行 cy → 到自车接地点行的恒速到站时间（流模型积分式）。
+
+        线性式 (v_ego−cy)/r(cy) 会低估不到站时间的一半量级——行速率随行号
+        二次增长，越近越快，剩余行程不是匀速的；对 1/r 沿行积分才是真时间。"""
+        a = 1.0 / (cy - self.cal.y_h)
+        b = 1.0 / (self.cal.v_ego - self.cal.y_h)
+        return max(0.0, (a - b) / k)
 
 
 class DecisionEngine:

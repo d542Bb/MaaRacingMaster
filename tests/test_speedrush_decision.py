@@ -60,10 +60,12 @@ def _group(gid, fid, n, x, cy, rel, conf=0.85):
     return g, tuple(ms)
 
 
-# 场景 A（默认"良候选"）：n=3 conf=0.85 x=0.5 cy=500 rel=10
-#   value=30·3·0.6=54；t_miss=(716−502)/200=1.07s；life=e^−1.07/5=0.81 → 43.7
-#   −shift 5 = 38.7 ≥ min 20 ✓；need=0.3+0.4·0.5+0.13+0.15=0.78 < 1.07 ✓可行
-GOOD = dict(gid=1, n=3, x=0.5, cy=500, rel=10)
+# 场景 A（默认"良候选"）：n=3 conf=0.85 x=0.5 cy=500 rel=5
+#   流口径（全场 k 中位 = rel·hz/(cy−y_h)²）：k=100/178²≈3.16e-3；
+#   t_miss=∫=(1/k)·(1/181.8−1/391.8)≈0.93s；life=e^−0.93/5≈0.83
+#   value=30·3·0.6=54 → 44.8 −shift 5 ≈ 39.8 ≥ min 20 ✓；
+#   need=0.3+0.4·0.5+0.13+0.15=0.78 < 0.93 ✓可行
+GOOD = dict(gid=1, n=3, x=0.5, cy=500, rel=5)
 
 
 def _good_obs(fid=1, **kw):
@@ -186,7 +188,12 @@ def test_score_monotone_in_count():
 
 
 def test_score_monotone_in_distance():
-    assert _score(cy=620).score > _score(cy=500).score > _score(cy=420).score
+    # 流口径下速率随行号二次增长，远行目标必须配按场一致的 rel（同一 k）——
+    # rel(cy) ∝ (cy−y_h)²，锚定 GOOD(cy=500, rel=5)；锁「越远时间越多」的序
+    def _rel(cy):
+        return 5.0 * (cy - load_calib().y_h) ** 2 / (500 - load_calib().y_h) ** 2
+    assert _score(cy=620, rel=_rel(620)).score \
+        > _score(cy=500).score > _score(cy=420, rel=_rel(420)).score
 
 
 def test_score_penalizes_lateral_shift():
@@ -207,6 +214,31 @@ def test_score_rejects_receding_target():
     """rel≤0（远离）：机会视为无限远 → 分数被折扣压到不可选（−cost）。"""
     s = _score(rel=-5)
     assert s is None or s.score < CFG.hysteresis.min_score
+
+
+def test_score_survives_member_id_churn_via_field_flow():
+    """换基主锁（2026-10-02）：组员 id 全断（不在 targets 里，逐轨账本旧法
+    必然饿死成 life=0）但场内另有健康 track——地面流是全场属性，k 从横截面
+    拟合出来，金币照常可选。旧逐轨实现下此锁必红。"""
+    g, _ = _group(7, 1, 3, x=0.5, cy=500, rel=0.0)     # 组员 rel=0 且不在 targets
+    # 场内两个健康 track（行号不同、速率按同一 k=100/178² 流场自洽）
+    flow = [TrackedTarget(
+        id=90 + i, kind="coin", x_lane=-0.8 + 1.6 * i, x_sigma=0.1,
+        cy=cy, w=20, h=20, conf=0.9,
+        rel_approach=100.0 * (cy - load_calib().y_h) ** 2 / (500 - load_calib().y_h) ** 2
+        / CFG.control.frame_rate_hz,
+        first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
+        for i, cy in enumerate((600, 450))]
+    s = Scorer(CFG, load_calib()).score(g, _obs(targets=flow))
+    assert s is not None and s.score > CFG.hysteresis.min_score
+
+
+def test_score_blackout_keeps_failsafe_discount():
+    """全场无任何速率测量（断供黑视）：无限远折扣 → 不可选——安全默认与
+    逐轨断供时代同形，不许在无证据时臆造可达性。"""
+    g, _ = _group(7, 1, 3, x=0.5, cy=500, rel=0.0)
+    s = Scorer(CFG, load_calib()).score(g, _obs(targets=()))
+    assert s is not None and s.score < CFG.hysteresis.min_score
 
 
 # ---------- FSM 全转移矩阵（§二优先级逐格） ----------
@@ -245,7 +277,8 @@ def test_cruise_low_score_holds():
 
 def test_cruise_infeasible_timing_holds():
     e = _eng()
-    # 近处大横移：t_miss=(716−656)/(50×20)=0.06s ≪ need=0.3+0.88+0.28=1.46s
+    # 近处大横移：k=1000/325.8²≈9.4e-3 → t_miss=(1/k)(1/331.8−1/391.8)≈0.05s
+    # ≪ need=0.3+0.88+0.28=1.46s
     out = e.update(_good_obs(x=2.2, cy=650, rel=50), DT)
     assert out.state is DecisionState.CRUISE
 
@@ -302,16 +335,16 @@ def test_change_fatal_goes_abort_to_conserve():
 
 def test_change_retargets_only_beyond_margin():
     e = _eng()
-    gA1, msA1 = _group(1, 1, n=3, x=0.5, cy=500, rel=10)
-    e.update(_obs(fid=1, groups=(gA1,), targets=msA1), DT)   # CHANGE A score≈38.7
-    # fid2：A 在场、B 更优过 margin（67 ≥ 38.7+15）→ 改判换目标
-    gA2, msA2 = _group(1, 2, n=3, x=0.5, cy=500, rel=10)
-    gB2, msB2 = _group(2, 2, n=6, x=0.3, cy=500, rel=10)
+    gA1, msA1 = _group(1, 1, n=3, x=0.5, cy=500, rel=5)
+    e.update(_obs(fid=1, groups=(gA1,), targets=msA1), DT)   # CHANGE A score≈39.8
+    # fid2：A 在场、B 更优过 margin（≈86.7 ≥ 39.8+15）→ 改判换目标
+    gA2, msA2 = _group(1, 2, n=3, x=0.5, cy=500, rel=5)
+    gB2, msB2 = _group(2, 2, n=6, x=0.3, cy=500, rel=5)
     out = e.update(_obs(fid=2, groups=(gA2, gB2), targets=msA2 + msB2), DT)
     assert out.reason == "switch:score_win" and out.target_id == 2
-    # fid3：不足 margin 的组合（C≈51.9 < 67.2+15）与自身回落都不触发再改判
-    gB3, msB3 = _group(2, 3, n=6, x=0.3, cy=500, rel=10)
-    gC3, msC3 = _group(3, 3, n=4, x=0.4, cy=500, rel=10)
+    # fid3：不足 margin 的组合（C≈56.4 < 86.7+15）与自身回落都不触发再改判
+    gB3, msB3 = _group(2, 3, n=6, x=0.3, cy=500, rel=5)
+    gC3, msC3 = _group(3, 3, n=4, x=0.4, cy=500, rel=5)
     out = e.update(_obs(fid=3, groups=(gB3, gC3), targets=msB3 + msC3), DT)
     assert "switch" not in out.reason and out.target_id == 2
 
