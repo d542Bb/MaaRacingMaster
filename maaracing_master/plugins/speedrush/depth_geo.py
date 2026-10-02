@@ -107,6 +107,8 @@ MIN_SIDE_PTS = 150    # 单箱单侧最少点数
 MIN_BOX_PTS = 300     # 单箱（双侧合计）最少点数
 EDGE_HT = 0.03        # 离地穿越阈值 @3m（金标校准：0.03~0.05 间最优）
 EDGE_HT_SLOPE = 0.005  # 阈值随 Z 放宽速率（米/米，跟平面残差与远场噪声同尺度）
+EDGE_MATCH_M = 0.8     # 「最近一致边界」的邻箱确认窗（米）：边界近于平行行进
+#                       方向，相邻箱 x 漂移实测 ≤0.5m；超窗=两箱看到不同结构
 SKY_HGT = 1.2         # 空中结构剔除阈：桥/天空域点 hgt≥7.5m，护栏 ≤1m
 
 
@@ -407,11 +409,24 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                 edge_pts.append((side, zc, ex))
 
     def _side(side: int) -> tuple[float | None, float | None, str | None]:
-        smp = [(zc, x) for s, zc, x in edge_pts if s == side]
+        smp = sorted((zc, x) for s, zc, x in edge_pts if s == side)
         if not smp:
             return None, None, f"{'L' if side < 0 else 'R'}:无穿越"
-        lane = float(np.median([x / cal.lane_w_m for _, x in smp]))
-        zn, xn = min(smp)                      # 最近箱为像素诊断锚
+        # 最近一致边界（2026-10-02 真机 d00003/08 取证后换装）：跨箱中位数把
+        # 「车道级」与「护栏级」两种语义的边界混进一个统计，箱可用性随点云
+        # 空洞翻转时读数参照系跟着翻（左缘在 −1 与 −3.4 车道间逐帧跳）。改为
+        # 取「被次近箱确认的最近箱穿越」——最近的双箱一致边界 = 最近的可信
+        # 约束；单箱孤证（阴影/漆线的假穿越，d00010 z6-8 箱 −1.26m 实证）被
+        # 排除；无一致对退回中位数（弯道逐箱漂移时保持旧行为）。
+        pick: float | None = None
+        for i in range(len(smp) - 1):
+            if abs(smp[i][1] - smp[i + 1][1]) <= EDGE_MATCH_M:
+                pick = smp[i][1]
+                break
+        if pick is None:
+            pick = float(np.median([x for _, x in smp]))
+        lane = float(pick / cal.lane_w_m)
+        zn, xn = smp[0]                        # 最近箱为像素诊断锚
         return lane, float(pts.shape[1] / 2.0 + xn * fx / zn), None
 
     lane_l, u_l, rej_l = _side(-1)

@@ -109,6 +109,58 @@ def test_single_side_abstains_honestly():
     assert any("L:无穿越" in r for r in rd.rejects)
 
 
+NEAR_BARRIER_X = 4.0    # 近场护栏内脸（米）：比远墙更近的绑定约束
+FAR_ONLY_LANES = WALL / CAL.lane_w_m
+
+
+def test_edge_nearest_consistent_prefers_near_boundary():
+    """最近一致边界：双箱一致的近场护栏压住远墙（读数≠跨箱中位）。
+
+    2026-10-02 换装锁：跨箱中位数在这里落在远墙（近远箱数打平后中位落远），
+    读数参照系随箱可用性翻转——最近的双箱一致边界才是驾驶要守的最近可信
+    约束。近场护栏只跨两箱（z5-9）是有意设计：测试相机 FOV 窄，更近的结构
+    出不了两箱（画界守卫裁掉），那正是「单箱孤证」要拒的形态。"""
+    pts = _scene_points(
+        x_left=WALL, x_right=WALL,
+        boxes=((-4.5, -NEAR_BARRIER_X, 5.0, 9.0, 0.8),))
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    want = -3.67 / CAL.lane_w_m                 # 近场护栏双箱一致穿越（实测）
+    assert abs(rd.left_edge_lane - want) < 0.15, \
+        f"L={rd.left_edge_lane} 应取近场护栏 {want:.2f}（而非远墙 {-FAR_ONLY_LANES:.2f}）"
+    assert abs(rd.right_edge_lane - LANE) < 0.15
+
+
+def test_edge_isolated_nearest_bin_rejected():
+    """最近箱孤证不盲取：仅一箱出穿越的近场假缘被邻箱一致性跳过。
+
+    d00010 真机实证（z6-8 箱 −1.26m 阴影假穿越）：单箱孤证不可信——「最近」
+    须带「一致」才算边界。锁钉读数落在双箱一致的真护栏，而非最近孤箱。"""
+    pts = _scene_points(
+        x_left=WALL, x_right=WALL,
+        boxes=((-2.4, -2.2, 3.0, 5.0, 0.6),      # 最近箱孤证：仅 z3-5 一箱
+               (-4.5, -4.0, 5.0, 9.0, 0.8)))     # 真护栏：z5-9 双箱一致
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.sides == 2, f"rejects={rd.rejects}"
+    want = -3.67 / CAL.lane_w_m                  # 真护栏双箱一致穿越（实测）
+    blind_nearest = -1.91 / CAL.lane_w_m         # 最近孤箱（若被盲取即中招）
+    assert abs(rd.left_edge_lane - want) < 0.15, f"L={rd.left_edge_lane} vs {want:.2f}"
+    assert abs(rd.left_edge_lane - blind_nearest) > 0.3, "最近孤证不应被盲取"
+
+
+def test_edge_all_bins_disagree_falls_back_to_median():
+    """弯道形态（逐箱 x 系统漂移、无一致对）：退回中位数，保持旧行为。"""
+    pts = _scene_points(
+        x_left=None, x_right=WALL,
+        boxes=((-2.75, -2.5, 3.0, 5.0, 1.0),
+               (-3.75, -3.5, 5.0, 7.0, 1.0),
+               (-4.75, -4.5, 7.0, 9.0, 1.0)))
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.left_edge_lane is not None, f"rejects={rd.rejects}"
+    want = -3.14 / CAL.lane_w_m                  # 三箱穿越（实测）的中位
+    assert abs(rd.left_edge_lane - want) < 0.2, f"L={rd.left_edge_lane} vs {want:.2f}"
+
+
 def test_object_mask_digs_objects_from_cloud():
     """YOLO 物体掩码从点云源头挖除：掩码盖掉右墙可见段 → 右侧诚实弃权，
     左侧照常读数（物体从源头消失，穿车读墙假缘不再产生）。"""
