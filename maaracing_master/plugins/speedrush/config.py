@@ -47,6 +47,9 @@ class Overtake:
                               # （决策默认左右对称，禁用必须有显式证据——维护者裁定）
     t_cool_pass_s: float     # pass 落定后的短冷却（19:44 复盘：pass 高频，一律 1s 会
                               # 烧掉 ~30% 对局时间且诱发左右横跳；金币完成仍用 1s）
+    ttc_dodge_s: float       # 本车道前车紧急回避的到站时间界（第七轮 2029 局：
+                              # 冷却/无候选盲持期间同车道逼近的车是纯碰撞等待，
+                              # near_dx 实测 0.00~0.04 道；绕过评分与冷却强制变道）
 
 
 @dataclass(frozen=True)
@@ -280,7 +283,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             lane_band_hi=_num(d, "overtake", "lane_band_hi", lo=0),
             t_pass_max_s=_num(d, "overtake", "t_pass_max_s", lo=0, lo_open=False),
             space_margin_lane=_num(d, "overtake", "space_margin_lane", lo=0),
-            t_cool_pass_s=_num(d, "overtake", "t_cool_pass_s", lo=0)),
+            t_cool_pass_s=_num(d, "overtake", "t_cool_pass_s", lo=0),
+            ttc_dodge_s=_num(d, "overtake", "ttc_dodge_s", lo=0)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),

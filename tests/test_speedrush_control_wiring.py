@@ -294,6 +294,22 @@ def test_ego_road_off_max_garbage_not_fed_nor_cached():
     assert o.last["source"] == "pair"            # 垃圾对未入槽,干净对直接生效
 
 
+def test_ego_road_median_filter_kills_outlier_pair():
+    """第七轮抽风转向供数面修正：ro 单对野值（一侧找边偶发锁错结构，实机
+    相邻拍 |Δro|>0.8 有 8~14 次）直注规划层 α/β 修正=抽风根因。近 3 对中值
+    杀单对野值；窗口未满（前两拍）直喂最新对、与旧版逐值同形；垃圾对不入窗。"""
+    o = smod._EgoRoadObserver()
+    # p1: 干净对（窗口 1，直喂）
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
+    # p2: 右缘野值（窗口 2 不足，直喂当拍——单发噪声由规划层新息门兜底）
+    assert o.update(_bnd_clusters(-2.9, +0.7), now=1000.05) == pytest.approx(+1.1)
+    # p3: 干净对（窗口满 3，中值右缘 = median(-0.9, +0.7, -0.9) = -0.9）→ 野值被杀
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.10) == pytest.approx(+1.9)
+    # 垃圾对不毒化窗口：随后一对仍按干净窗口中值出数
+    assert o.update(_bnd_clusters(-6.0, -2.0), now=1000.15) is None
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.20) == pytest.approx(+1.9)
+
+
 def test_control_chain_ego_road_gap_semantics():
     """chain 的 ego_road 即 pair 语义（无分档、无目标锁定机器）。"""
     m = _module()

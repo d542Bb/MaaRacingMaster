@@ -1014,6 +1014,9 @@ class _EgoRoadObserver:
 
     def __init__(self) -> None:
         self._slot: dict[str, tuple] = {}     # 最近有效对缓存 (el, er, 时刻)
+        self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口，
+                                              # 第七轮：ro 单对野值 ±0.8 道跳变
+                                              # 直注规划层=抽风转向的供数面根因）
         self.last: dict = {}                  # 实机 debug 数据面（ro_* 列）
 
     def _fresh(self, now: float) -> tuple[float, float] | None:
@@ -1032,6 +1035,16 @@ class _EgoRoadObserver:
         src = "pair"
         if ok:
             el, er = bnd.left_edge_lane, bnd.right_edge_lane
+            if abs((el + er) / 2.0) > self.OFF_MAX:
+                self.last = self._snapshot(now, src, None)
+                return None                 # 垃圾对：不喂、不入槽、不入窗
+            # 中值滤波（窗口未满时直喂最新对，前两拍行为与旧版逐值同形）：
+            # 单对野值（一侧找边偶发锁错结构）被近 3 对中值杀掉，真漂移经
+            # 2~3 对（约 0.5s）跟进——比 α/β 直注噪声便宜得多。
+            self._win.append((el, er))
+            if len(self._win) >= 3:
+                el = sorted(w[0] for w in self._win)[1]
+                er = sorted(w[1] for w in self._win)[1]
             self._slot["pair"] = (el, er, now)
         else:
             fresh = self._fresh(now)

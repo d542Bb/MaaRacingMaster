@@ -99,6 +99,7 @@ def _decision_dict():
     (lambda d: d["overtake"].update(d_hold_lane=0.8), "矛盾"),
     (lambda d: d["control"].pop("abort_settle_v_lane_s"), "abort_settle"),
     (lambda d: d["overtake"].pop("t_cool_pass_s"), "t_cool_pass"),
+    (lambda d: d["overtake"].pop("ttc_dodge_s"), "ttc_dodge"),
     (lambda d: d["validate"].pop("lat_veto_gap_lane"), "lat_veto_gap"),
     (lambda d: d["validate"].update(lat_veto_gap_lane=0.7), "贴窗"),
     (lambda d: d["validate"].pop("lat_veto_horizon_s"), "lat_veto_horizon"),
@@ -783,6 +784,56 @@ def test_veto_treats_cars_static_not_phantom_drift():
                   age_ticks=5, v_lat=0.05)     # 噪声读数：+1 道/s「向右飘走」
     out = e.update(_good_obs(fid=1), DT, executed_lane=0.0, traffic=_traffic([car]))
     assert "no_candidate" in out.reason         # 静态 0.75 距贴位 0.25 < 0.45 → 拦
+
+
+# ---------- 第七轮：本车道前车紧急回避 + σ 选中拍锁定 ----------
+
+def test_dodge_triggers_on_inlane_approaching_car():
+    """同车道逼近的车（ttc<1s、横距<接触界）绕过冷却与评分强制变道，
+    目标=远离车体一侧的贴邻位（自车 0.0 在车的左侧 → 向左避，不横穿）。"""
+    e = _eng(overtake=True)
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=600)]))   # ttc=0.58s
+    assert out.state is DecisionState.CHANGE and out.reason == "select:dodge"
+    assert out.target_id == 9 and out.x_target < 0
+
+
+def test_dodge_bypasses_cooling():
+    """冷却中的盲持是追尾窗口（2029 局 near_dx 0.00 全在 hold:cooling）——
+    威胁在场时冷却不作数。"""
+    e = _eng(overtake=True)
+    e._cool_t = 5.0
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=600)]))
+    assert out.state is DecisionState.CHANGE and out.reason == "select:dodge"
+
+
+def test_dodge_not_triggered_without_threat():
+    """车还在远处（ttc≥1s）或在邻道（横距≥接触界）：不回避，正常机制管。"""
+    e = _eng(overtake=True)
+    e._cool_t = 5.0
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=400)]))   # ttc=1.58s
+    assert out.state is DecisionState.CRUISE and "cooling" in out.reason
+    out = e.update(_obs(fid=2, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.8, cy=600)]))    # 横距 0.8
+    assert out.state is DecisionState.CRUISE
+
+
+def test_dodge_sigma_locked_goal_stays_away_side():
+    """σ 选中拍锁定（第七轮）：回避中车体横漂穿过中线，跟踪目标不得翻边横穿
+    车体（旧 hug_goal 按 sign(x) 翻侧，会把自车指挥到车的另一侧=对穿）。"""
+    e = _eng(overtake=True)
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=600)]))
+    assert out.reason == "select:dodge" and e._demand_lane < 0     # 左避
+    obs2 = _obs(fid=2, presence=True)
+    out = e.update(obs2, DT, executed_lane=-0.1,
+                   traffic=_traffic([_cv(tid=9, x=-0.10, cy=620)]))
+    assert out.state is DecisionState.CHANGE
+    # 跟踪目标（_current_goal）锁左：−0.10 + (−1)·0.625 = −0.725；旧语义翻到 +0.525
+    assert e._current_goal(obs2) == pytest.approx(
+        -0.10 - CFG.overtake.d_hold_lane)
 
 
 def test_safety_veto_blocks_candidate():
