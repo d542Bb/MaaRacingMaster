@@ -424,9 +424,9 @@ def test_stale_rejected_corrections_rebase():
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.5)  # 锚=0.5
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.5)  # 锚=0（道0=路心）
     n = int(P.anchor_stale_s / DT)
-    for i in range(2, n + 2):                      # ro=+1.9 喂 1s：r=1.4 全拒
+    for i in range(2, n + 2):                      # ro=+1.9 喂 1s：r≈1.4+ 全拒
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=1.9)
     assert pl._road_anchor == 0.0
     assert pl.state.executed_lane == pytest.approx(1.9)
@@ -436,7 +436,7 @@ def test_stale_rejected_corrections_rebase():
 
 def test_blackout_voids_frame():
     """断供超预算=帧作废（黑视本身是漂移温床）：旧锚不得去拽新路上的车；
-    作废后按中带观测重懒定。"""
+    作废后按中带观测重形成——道0=路中心（中轴巡航语义，anchor=0）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
@@ -446,21 +446,37 @@ def test_blackout_voids_frame():
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
     assert pl._road_anchor is None
     pl.update(_out(x_target=0.0, fid=90, valid=90), DT, 90, road_offset=0.4)
-    assert pl._road_anchor == pytest.approx(0.4)   # 重懒定（exec≈0）
+    assert pl._road_anchor == 0.0                  # 重形成：道0=路中心
 
 
 def test_reanchor_event_resets_road_frame():
-    """事件重锚（金币完成）后路观测参考重懒定：不拿旧锚的 obs 去纠新帧的 executed。"""
+    """事件重锚（金币完成）后路观测参考重形成：executed 向路心收敛（中轴
+    巡航语义）——事件拍的 executed 是决策系快照，路观测把它拉回道0=路中心
+    的参考系，此为期望行为而非"旧帧拽新值"。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.3)
-    assert pl._road_anchor == 0.3                 # executed=0 → anchor=0.3−0
+    assert pl._road_anchor == 0.0                  # 形成即道0=路中心
     pl.update(_out(x_target=0.0, fid=2, valid=2, reanchor=1.0), DT, 2,
               road_offset=0.3)                    # 重锚拍：executed:=1.0，路锚重置
-    # 新不变量：anchor 按新 executed 重对齐（=0.3−1.0=−0.7），obs==executed→r=0 不拽
-    assert pl._road_anchor == pytest.approx(-0.7)
-    assert pl.state.executed_lane == pytest.approx(1.0, abs=1e-9)  # 未被旧帧拽向 0
+    assert pl.state.executed_lane == pytest.approx(1.0, abs=1e-9)  # 重锚拍不被拽
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3, road_offset=0.3)
+    assert pl._road_anchor == 0.0                  # 重形成
+    assert pl.state.executed_lane == pytest.approx(1.0 + P.obs_alpha * (0.3 - 1.0))
+    assert pl.state.executed_lane < 1.0            # 向路心收敛
+
+
+def test_center_axis_cruise_converges_to_road_center():
+    """中轴巡航（2026-10-02 维护者裁定）：x_target=0 且车不在路心时，路观测
+    把 executed 收敛到 road_offset（自车相对路心）——道0=路中心，PD 持续
+    回轴。对照旧语义（锚=ro−exec）：executed 钉在形成时刻车位、车位即路径。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    for i in range(1, 20):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=0.6)
+    assert pl.state.executed_lane == pytest.approx(0.6, abs=0.05)  # 道上=路心
 
 
 # ---------- 维护性转向权限（16:44 局：定中心全权 PD=满舵绕桩） ----------

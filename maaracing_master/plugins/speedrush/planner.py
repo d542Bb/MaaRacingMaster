@@ -18,8 +18,10 @@ decision.ValidationWatch（不变量 C1：本层不重复造判据，只消费 F
 A1 归一下自车恒 0、**目标读数**推不出自车位移，但**路缘两侧读数**可以：
 路中心相对自车 = 自车横向位置的反号——``road_offset`` 入参（step 2.5，
 V2 复盘"开环虚胖提前松杆"的闭环解）在双侧缘距稳定拍经 alpha-beta 滤波器
-钉住 ``executed_lane``；无观测拍退回模型开环积分，CHANGE 完成拍仍经
-``DecisionOutput.reanchor_lane`` 事件重锚（并重置路观测参考帧）。
+钉住 ``executed_lane``；**参考系=道0 路中心**（2026-10-02 维护者裁定中轴
+巡航：x_target=0 即守路轴，牙子级边界信号不可依赖、守轴是唯一可守的安全
+面），大初差经新息门+陈旧重基消化；无观测拍退回模型开环积分，CHANGE 完成
+拍仍经 ``DecisionOutput.reanchor_lane`` 事件重锚（并重置路观测参考帧）。
 旋转污染 ε≈−δ·a_x（5.7° 航向仅 0.06 车道，二阶量）暂不修正，vp_x 去偏留后续。
 
 **纯函数纪律**（C3）：update 只吃 (decision, dt_s, current_fid) + 内部状态，
@@ -164,20 +166,22 @@ class LateralPlanner:
         #    新息 r=观测−预测，位置收 α·r、速度收 β·r/dt。恒位置误差下 r 随 x/v
         #    同步收敛（不是纯 β 直注的发散），模型虚胖被钉回、误差常驻→杆常驻，
         #    "自说自话收敛→提前松杆"从此不可能。无观测拍退回纯模型（旧行为不变）。
-        #    参考帧：executed 与 x_target 同为"绝对车道位"系（重锚置为读数），路观测
-        #    是"相对路中心"系，两者差一常数偏置——锚定不变量：首个**过形成门**的观测拍
-        #    令 obs==executed（anchor=road_offset−executed），此后只跟踪 Δroad_offset；
-        #    事件重锚重置 anchor=None，下一拍按新 executed 重新对齐（不拿旧帧拽新值）。
-        #    形成门（12:39 局教训）：骑缘拍（|ro|≈半宽）上定的"道0"=护栏位——PD 把车
-        #    满左杆钉在路缘 818 拍，真居中观测全被跳变门当坏检测丢弃，闭环自锁。
+        #    参考帧（2026-10-02 维护者裁定「中轴巡航」）：executed 与 x_target 同为
+        #    "绝对车道位"系，**道0=路中心**——首个过形成门的观测拍令 anchor=0，
+        #    executed 从此收敛到 road_offset（自车相对路心），x_target=0 即守中轴，
+        #    两侧到边界台阶的余量同时最大（牙子级信号不可依赖，守轴是唯一可守的
+        #    安全面——d00008 点云取证定案）。大初差由新息门+陈旧重基消化；事件重锚
+        #    重置 anchor=None，下一观测拍按同语义重形成（executed 向路心收敛）。
+        #    形成门（12:39 局教训）：|ro|>anchor_max_off 的骑缘拍不定锚，防垃圾
+        #    观测定义参考系。
         #    陈旧重基（13:29 局二次教训）：漂移复位原按"连续 40 次喂入拒绝"计数——
         #    供数黑视期不计数、跳变门收紧后喂入更少，车以 0 杆直开 5.5s 怼进右墙时
         #    阈值还差 9 次。判据从"次数"换成"时间"：距上次被接受修正超 anchor_stale_s
-        #    即重基到路上（exec:=ro、anchor:=0，道0=路中心），断供同样计时。
+        #    即重基（exec:=ro、anchor:=0），断供同样计时。
         if road_offset is not None:
             if self._road_anchor is None:
                 if abs(road_offset) <= self.p.anchor_max_off:
-                    self._road_anchor = road_offset - self.state.executed_lane
+                    self._road_anchor = 0.0          # 道0=路中心（中轴巡航）
                     self._stale_t = 0.0
                 else:
                     # 形成门饿死也要重基（13:29 局开局：车在左缘 ro=−2.9，形成门
