@@ -658,7 +658,9 @@ class SpeedRushModule(ActivityModule):
                     note={"fid": last.get("frame_id"), "state": last.get("state"),
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
+                          "xt": last.get("x_target"),
                           "ro": last.get("road_offset"), "src": snap.get("source"),
+                          "ro_raw": snap.get("off_raw"),
                           "age": last.get("dgeo_age"), "new": last.get("dgeo_new")})
                 dgeo, dgeo_new = chain["depth_geo"].take()
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
@@ -694,6 +696,7 @@ class SpeedRushModule(ActivityModule):
         self._control_last = {
             "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
             "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3),
+            "x_target": out.x_target,
             "road_offset": None if road_offset is None else round(road_offset, 3),
             "dgeo_age": round(chain["depth_geo"].last_age_ms), "dgeo_new": dgeo_new}
         # 逐拍控制 trace（内存攒、阶段出口一次性 flush）：C1 定档 K_v 与 §七.1 复测的
@@ -1033,8 +1036,10 @@ class _EgoRoadObserver:
               and bnd.left_edge_lane is not None
               and bnd.right_edge_lane is not None)
         src = "pair"
+        off_raw = None
         if ok:
             el, er = bnd.left_edge_lane, bnd.right_edge_lane
+            off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
             if abs((el + er) / 2.0) > self.OFF_MAX:
                 self.last = self._snapshot(now, src, None)
                 return None                 # 垃圾对：不喂、不入槽、不入窗
@@ -1061,8 +1066,9 @@ class _EgoRoadObserver:
         self.last = self._snapshot(now, src, off)
         return off
 
-    def _snapshot(self, now: float, src: str, off: float | None) -> dict:
-        return {"source": src, "off": off}
+    def _snapshot(self, now: float, src: str, off: float | None,
+                  off_raw: float | None = None) -> dict:
+        return {"source": src, "off": off, "off_raw": off_raw}
 
 
 def _started_async_depth(obs: DepthRoadObserver,

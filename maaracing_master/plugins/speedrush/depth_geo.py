@@ -16,7 +16,8 @@
   米制点云（物理自洽：cam_h≈2m、路宽≈13.5m≈四车道），整套尺度自标定机制随
   旧链退役。
 - **「边」= 可行驶路面消失处**（维护者口径 2026-10-01）：检出判据=离地穿越
-  （0.03m@3m 起每米 +5mm，两格持续 + 先见地面），kerb 与护栏两类通用；宽肩帧
+  （0.03m@3m 起每米 +5mm，两格持续 + 先见地面 + 尾部持续——缘后是缘体，
+  影子 bump/路面渐变穿过后回落），kerb 与护栏两类通用；宽肩帧
   的墙脚与检出差是口径差非误差。**弯道不做特殊优化**：逐 Z 箱独立读数无直线
   假设，天然描出弯道边线。
 - **车道量换算**：lane = x_m / cal.lane_w_m（gate0.json 几何标定真源，左负右
@@ -38,9 +39,9 @@
 observe 保留为纯函数面（测试与离线复算直接调用）。
 
 **离线复算**：debug 证据包（*_evid.npz）存 336×598 原生点图 fp16 + valid +
-原生焦距；复算 = load → 各通道 cv2.resize 到 1280×720（pts 线性/valid 最近邻）
-→ 焦距 ×(1280/598, 720/336) → invalid 置 nan → reading_from_points，与在线
-逐位一致。
+归一化焦距（reconstruct 口径 cx=cy=0.5）；复算 = load → 各通道 cv2.resize 到
+1280×720（pts 线性/valid 最近邻）→ 焦距 ×(1280, 720) 得全幅像素焦距 →
+invalid 置 nan → reading_from_points，与在线逐位一致。
 """
 
 from __future__ import annotations
@@ -107,6 +108,14 @@ MIN_SIDE_PTS = 150    # 单箱单侧最少点数
 MIN_BOX_PTS = 300     # 单箱（双侧合计）最少点数
 EDGE_HT = 0.03        # 离地穿越阈值 @3m（金标校准：0.03~0.05 间最优）
 EDGE_HT_SLOPE = 0.005  # 阈值随 Z 放宽速率（米/米，跟平面残差与远场噪声同尺度）
+EDGE_TAIL_FRAC = 0.6  # 尾部持续占比（穿越后剖面须仍高于阈值的格数占比，
+                      # 2026-10-02 真机剖面 d00003/17 取证换装）：缘后是缘体
+                      # （墙脸/kerb 台面=第二级平台，剖面持续高），影子 bump/
+                      # 路面渐变穿过后回落路面。**缓坡类假缘（平面残差单调爬
+                      # 坡，d00003 L 实测）尾部也持续，本门杀不掉**——其与真
+                      # kerb 的剖面形状不可分（000340 右 6.2m 真 kerb 阶差仅
+                      # 0.08 与缓坡同形），需离线语料级判据（跨箱稳定性/平台
+                      # 度）另立，见 CODE_WIKI 挂账。
 EDGE_MATCH_M = 0.8     # 「最近一致边界」的邻箱确认窗（米）：边界近于平行行进
 #                       方向，相邻箱 x 漂移实测 ≤0.5m；超窗=两箱看到不同结构
 SKY_HGT = 1.2         # 空中结构剔除阈：桥/天空域点 hgt≥7.5m，护栏 ≤1m
@@ -151,7 +160,7 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     nan；fx/fy 为全幅像素焦距（原生 336×598 焦距 × 上采样倍率，见 moge_post）。
 
     ``with_evidence`` 时第三返回值为原生证据 dict（pts=336×598 点图 fp32、
-    valid、fx/fy=原生焦距）——离线复算与实机渲染用，比全幅小 6 倍且复算逐位
+    valid、fx/fy=归一化焦距，复算 ×(W,H)）——离线复算与实机渲染用，比全幅小 6 倍且复算逐位
     一致（复算口径见模块 docstring）。
 
     DML 互斥（core.dml_lock）：感知会话与深度会话并发 run 会段错误杀进程
@@ -320,7 +329,9 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
 
     从路心向外扫 0.25m 格高度中位剖面（路缘在点云里是缓坡爬升不是竖直台阶）：
     先找地面（内侧格可能被自车/阴影抬高，跳过），穿越取阈值两格持续 + 相邻格
-    线性插值细分。画外格（|x|>extent·zc，u 越界）不参与。"""
+    线性插值细分 + **尾部持续门**（EDGE_TAIL_FRAC：影子 bump/路面渐变穿过后
+    回落路面，真缘后是缘体；未过门的穿越跳过继续向外找，全不入门=该箱该侧
+    弃权）。画外格（|x|>extent·zc，u 越界）不参与。"""
     sel = (xb * side > 0.2) & (np.abs(xb) <= X_MAX_M) & np.isfinite(xb) & np.isfinite(hb)
     if sel.sum() < MIN_SIDE_PTS:
         return np.nan
@@ -351,6 +362,11 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
         return np.nan
     for i in range(g + 1, len(px) - 1):
         if ph[i] > thr and ph[i + 1] > thr:  # 两格持续
+            # 尾部持续门（取第一个过门的穿越=最近可信缘；未过门的假缘跳过、
+            # 继续向外找——d00017：−1.5m 影子 bump 被拒后 −5.1m 真墙接棒）：
+            tail = ph[i + 2:]
+            if len(tail) and (tail > thr).mean() < EDGE_TAIL_FRAC:
+                continue
             f = (thr - ph[i - 1]) / (ph[i] - ph[i - 1])
             return float(px[i - 1] + f * (px[i] - px[i - 1]))
     return np.nan
@@ -564,9 +580,7 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
     cam_h: float | None = None
     if evid is not None:
         pts_n, valid_n = evid["pts"], evid["valid"]
-        ow, oh = pts_n.shape[1], pts_n.shape[0]
         fx_f = float(evid["fx"]) * w   # 归一化焦距 → 全幅像素焦距
-        fy_f = float(evid["fy"]) * h
         pts = np.stack([cv2.resize(pts_n[..., k], (w, h),
                                    interpolation=cv2.INTER_LINEAR) for k in range(3)], -1)
         valid = cv2.resize(valid_n.astype(np.float32), (w, h),
@@ -585,13 +599,26 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
             okm = np.isfinite(hgt)
             hm[okm] = _hgt_rgb(hgt[okm])
             cam_h = abs(c_c)                  # 平面在相机正下方的高度≈相机离地高
-            fy_f = float(evid["fy"]) * h / oh
             for _side, zc, xm in reading.edge_pts:
-                # 缘点回投到带内行：路面平面在 (0, zc) 处的图像行（同帧焦距）
-                v = int(round(h / 2.0 + (b_c * zc + c_c) * fy_f / zc)) - Y0
-                u = int(round(w / 2.0 + xm * fx_f / zc))
-                if 0 <= u < w and 0 <= v < hm.shape[0]:
-                    cv2.circle(hm, (u, v), 5, (0, 255, 255), 2)
+                # 锚点画在「检出穿越真实所在像素」：按 (side, zc, x_m) 反查带内
+                # 点云像素取中位，①原图与②高度图同位各画一圈。不做解析回投——
+                # 归一化/原生像素两套焦距单位在这里打过架（fy·h/oh 把黄圈全体
+                # 压到带顶，2026-10-02 挂账实证），像素真值零单位约定、零主点
+                # 假设，锚点语义=「这些像素的离地穿越被判成缘」。
+                # 近地面过滤（hgt≤0.15）：缘底在地面爬升起始处，X 窗内还有整面
+                # 缘体（墙脸/车身 hgt≥0.3），不过滤中位会被拽到结构中部。
+                m = ((Z >= zc - 1.0) & (Z < zc + 1.0) & (_side * X > 0.2)
+                     & (np.abs(X - xm) < 0.4) & np.isfinite(X) & np.isfinite(Z))
+                if m.any():
+                    mg = m & np.isfinite(hgt) & (hgt <= 0.15)
+                    if mg.any():
+                        m = mg
+                if not m.any():
+                    continue
+                rr, cc = np.nonzero(m)
+                u, v = int(round(np.median(cc))), int(round(np.median(rr)))
+                cv2.circle(hm, (u, v), 5, (0, 255, 255), 2)
+                cv2.circle(f, (u, v + Y0), 6, (0, 255, 255), 2)
     rej = ";".join(reading.rejects)[:110]
     if rej:
         cv2.putText(hm, rej, (8, hm.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX,
@@ -606,9 +633,11 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
     l1 = (f"D[{note.get('fid', '?')}] {st} {rs}  steer={sn:+.3f}"
           if isinstance(sn, (int, float)) else f"D[{note.get('fid', '?')}] {st} {rs}")
     l1 += f"  elane={el:+.2f}" if isinstance(el, (int, float)) else ""
+    l1 += f"  xt={_f(note.get('xt'))}"
     def _f(v):
         return f"{v:+.2f}" if isinstance(v, (int, float)) else "-"
     l2 = (f"ro={_f(ro)}[{note.get('src', '-')}]"
+          f" raw={_f(note.get('ro_raw'))}"
           f" age={note.get('age', '-')}ms new={note.get('new', '-')}"
           f"  fx={fx_f:.0f} cam_h={_f(cam_h)}")
     cv2.putText(band, l1, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 255, 255), 1)
@@ -655,7 +684,9 @@ class AsyncDepthRoadObserver:
                                   # 感知（同锁）的碰撞等待有上界即可（见 dml_lock）
     PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
 
-    DEBUG_INTERVAL_S = 2.0   # 调试图节流（与坏帧取证同量级，封顶磁盘占用）
+    DEBUG_INTERVAL_S = 0.5   # 调试图节流（2026-10-02 从 2.0 收紧：2s 一帧在找边
+                             # 假设漂移的取证节奏下漏帧——漂移拍与调试图对不上；
+                             # 磁盘代价 ≈90 帧/局 ×1.3MB，取证局可承受）
 
     def __init__(self, observer: DepthRoadObserver,
                  max_age_ms: float = MAX_AGE_MS,
@@ -778,7 +809,7 @@ class AsyncDepthRoadObserver:
 
     def _write_debug(self, frame, evid, reading, object_mask, note=None) -> None:
         """节流落实机调试图（三行堆叠）+ 可复现证据包（336×598 原生点图 fp16 +
-        valid + 原生焦距 + 生效掩码）。
+        valid + 归一化焦距 + 生效掩码）。
 
         只有渲染图时读数故障无法离线复现（色标有损、看不到平面钉住了什么）——
         证据包按模块 docstring「离线复算」口径可逐位重放 reading_from_points。
@@ -794,6 +825,11 @@ class AsyncDepthRoadObserver:
             img = render_depth_debug(frame, evid, reading,
                                      self._obs._ego_mask, object_mask, note)
             cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            # 原图半幅缩略（证据包只有点云没有帧——离线重渲染叠锚点/叠新覆盖
+            # 层时没有原图寸步难行，2026-10-02 取证实证）
+            cv2.imwrite(str(stem) + "_frame.jpg",
+                        cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)[::2, ::2],
+                        [cv2.IMWRITE_JPEG_QUALITY, 85])
             np.savez(str(stem) + "_evid.npz",
                      pts=evid["pts"].astype(np.float16),
                      valid=np.packbits(evid["valid"].ravel()),

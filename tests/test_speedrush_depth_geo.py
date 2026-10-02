@@ -679,3 +679,111 @@ def test_anchor_clean_straight_frames(stem, l_lo, l_hi, r_lo, r_hi):
     assert rd.sides == 2, f"rejects={rd.rejects}"
     assert l_lo <= rd.left_edge_lane <= l_hi, f"L={rd.left_edge_lane}"
     assert r_lo <= rd.right_edge_lane <= r_hi, f"R={rd.right_edge_lane}"
+
+
+# ---------- render_depth_debug：锚点画回真实像素（Y 轴约定无关） ----------
+
+def _yellow_px(img):
+    """纯黄 (0,255,255) 像素坐标 (row, col)。"""
+    return np.argwhere((img[:, :, 0] < 60) & (img[:, :, 1] > 200)
+                       & (img[:, :, 2] > 200))
+
+
+@pytest.mark.parametrize("up_positive", [False, True],
+                         ids=["y_down", "y_up"])
+def test_render_anchors_at_true_pixels(up_positive):
+    """调试图黄锚必须落在「检出穿越真实所在像素」（①原图 + ②高度图同位）。
+
+    旧解析回投 v = h/2 + (b·zc+c)·fy/zc 直接吃平面系数、不走 hgt 的 sgn
+    翻转——点云 Y 轴约定朝上时行数为负，黄圈全部画飞（2026-10-02 挂账实证：
+    恰好挡住「锚到底锁在哪个结构」的肉眼复核）。改按 (side, zc, x_m) 反查
+    带内点云像素取中位后，两种约定下锚点都必须压在缘底上。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL)
+    if up_positive:
+        pts = pts * np.array([1.0, -1.0, 1.0], np.float32)
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.edge_pts, f"场景须有检出缘 rejects={rd.rejects}"
+    evid = {"pts": pts.astype(np.float32),
+            "valid": np.isfinite(pts[..., 0]),
+            "fx": np.float64(FX / 1280), "fy": np.float64(FY / 720)}
+    img = dg.render_depth_debug(np.full((720, 1280, 3), 128, np.uint8),
+                                evid, rd, None, None, None)
+    band_h = dg.DIAG_Y1 - dg.Y0
+    ys = _yellow_px(img[720:720 + band_h])
+    assert len(ys) > 0, "高度图带内无黄锚（画飞或未画）"
+    # 真值（解析，约定无关——翻转 Y 不动 (X,Z)，缘底像素两场景同位）：
+    # 检出穿越 (xm, zc) 的投影列 + 该深度的地面行。
+    wr = 0
+    for _s, zc, xm in rd.edge_pts:
+        u_t = CX + xm * FX / zc
+        v_t = CY + FY * (H_CAM + PITCH_B * zc) / zc
+        pts2 = np.stack([ys[:, 1], ys[:, 0] + dg.Y0], 1).astype(float)
+        d = np.hypot(pts2[:, 0] - u_t, pts2[:, 1] - v_t)
+        wr += int((d < 15).sum())
+    assert wr >= len(rd.edge_pts), f"黄锚未全部压在缘底真值上（命中 {wr}）"
+    ytop = _yellow_px(img[:720])
+    assert len(ytop) > 0, "原图未画锚"
+    hit = 0
+    for _s, zc, xm in rd.edge_pts:
+        u_t = CX + xm * FX / zc
+        v_t = CY + FY * (H_CAM + PITCH_B * zc) / zc
+        d = np.hypot(ytop[:, 1].astype(float) - u_t,
+                     ytop[:, 0].astype(float) - v_t)
+        hit += int((d < 15).sum())
+    assert hit >= len(rd.edge_pts), "原图黄锚未压在缘底真值上"
+
+
+# ---------- _scan_side 穿越质量门：缘阶差 + 尾部持续（2026-10-02 真机剖面） ----
+
+def _profile_points(spec, side=1, noise=0.01, seed=11):
+    """侧向剖面 spec=[(x_m, h_m), ...]（格中心,格中位高）→ _scan_side 直吃点集。
+
+    每格撒 MIN_BIN_PTS 个点（格内均匀 + 噪声），构造出与实机同形的横向剖面。
+    格心必须对齐扫描网格（−X_MAX+DX/2 起 0.25 步进），错位会把点摊进邻格
+    饿死 MIN_BIN_PTS。"""
+    rng = np.random.default_rng(seed)
+    xs, hs = [], []
+    grid = -dg.X_MAX_M + dg.XBIN_DX / 2 + dg.XBIN_DX * np.arange(
+        int(2 * dg.X_MAX_M / dg.XBIN_DX))
+    for x, h in spec:
+        gx = grid[int(np.argmin(np.abs(grid - x)))]   # 吸附到最近格心
+        n = dg.MIN_BIN_PTS
+        xs.append(gx - dg.XBIN_DX / 2 + dg.XBIN_DX * (np.arange(n) + 0.5) / n)
+        hs.append(np.full(n, h) + rng.normal(0, noise, n))
+    x = np.concatenate(xs)
+    return (x * side).astype(np.float32), np.concatenate(hs).astype(np.float32)
+
+
+_ROAD = [(x * dg.XBIN_DX + dg.XBIN_DX / 2, 0.0)
+         for x in range(16)]                    # 0~4m 平路面
+
+
+def test_scan_side_wall_step_detected():
+    """真缘（墙台阶 0.45m）→ 穿越检出在台阶处。"""
+    wall = [(4.125 + 0.25 * k, h) for k, h in enumerate((0.45, 0.70, 0.85))]
+    xb, hb = _profile_points(_ROAD + wall)
+    ex = dg._scan_side(xb, hb, 1, zc=5.0, extent=3.0)
+    assert np.isfinite(ex) and 3.85 < ex < 4.15, f"ex={ex}"
+
+
+def test_scan_side_rejects_two_bin_bump():
+    """两格宽影子 bump（d00017 L 实测形态 +0.06/+0.09 后回落）→ 无穿越。
+
+    「两格持续」挡不住恰好两格宽的 bump；尾部持续门：bump 后剖面回落路面。
+    （平面残差缓坡类假缘尾部也持续，本门杀不掉——与真 kerb 剖面同形，
+    离线语料级判据另立，见 depth_geo EDGE_TAIL_FRAC 注释挂账。）"""
+    bump = list(_ROAD)
+    bump[5] = (5 * dg.XBIN_DX + dg.XBIN_DX / 2, 0.06)
+    bump[6] = (6 * dg.XBIN_DX + dg.XBIN_DX / 2, 0.09)
+    xb, hb = _profile_points(bump)
+    ex = dg._scan_side(xb, hb, 1, zc=5.0, extent=3.0)
+    assert not np.isfinite(ex), f"bump 被当缘：ex={ex}"
+
+
+def test_scan_side_kerb_step_detected():
+    """矮 kerb（0.15m 台阶，缘后持续抬高）→ 检出（kerb 与护栏两类通用口径）。"""
+    kerb = [(x * dg.XBIN_DX + dg.XBIN_DX / 2, 0.15 + 0.01 * x)
+            for x in range(12, 16)]
+    xb, hb = _profile_points(_ROAD + kerb)
+    ex = dg._scan_side(xb, hb, 1, zc=5.0, extent=3.0)
+    assert np.isfinite(ex) and 2.9 < ex < 3.2, f"ex={ex}"

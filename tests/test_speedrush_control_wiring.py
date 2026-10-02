@@ -245,7 +245,7 @@ def test_control_last_shape():
     chain = m._build_control_chain()
     m._control_tick(chain, StubPad(), None, _perc(3), 3, 3 * 50_000_000, 10.0, 1)
     assert set(m._control_last) == {"state", "reason", "steer", "frame_id",
-                                    "executed_lane", "road_offset",
+                                    "executed_lane", "x_target", "road_offset",
                                     "dgeo_age", "dgeo_new"}
     assert m._control_last["frame_id"] == 3
     assert isinstance(m._control_last["executed_lane"], float)
