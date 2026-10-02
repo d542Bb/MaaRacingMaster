@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import ctypes
 import os
 import time as _time
 from pathlib import Path
@@ -90,7 +91,7 @@ LANE = WALL / CAL.lane_w_m
 def test_straight_road_both_edges():
     """直路双墙：双侧在场、车道量落在 x_m/lane_w 真值上。"""
     pts = _scene_points(x_left=WALL, x_right=WALL)
-    rd = reading_from_points(pts, FX, CAL)
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
     assert rd.sides == 2, f"rejects={rd.rejects}"
     assert abs(rd.left_edge_lane + LANE) < 0.15, f"{rd.left_edge_lane} vs {-LANE:.2f}"
     assert abs(rd.right_edge_lane - LANE) < 0.15
@@ -101,7 +102,7 @@ def test_straight_road_both_edges():
 def test_single_side_abstains_honestly():
     """单侧墙：该侧读数、对侧 None + rejects 留因（宁缺毋假）。"""
     pts = _scene_points(x_right=WALL)
-    rd = reading_from_points(pts, FX, CAL)
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
     assert rd.sides == 1, f"rejects={rd.rejects}"
     assert abs(rd.right_edge_lane - LANE) < 0.15
     assert rd.left_edge_lane is None
@@ -114,7 +115,7 @@ def test_object_mask_digs_objects_from_cloud():
     pts = _scene_points(x_left=WALL, x_right=WALL)
     obj = np.zeros((720, 1280), bool)
     obj[:, 900:] = True                    # 右墙可见段（z≳7.4 时 u≥934）
-    rd = reading_from_points(pts, FX, CAL, object_mask=obj)
+    rd = reading_from_points(pts, FX, CAL, object_mask=obj, fy=FY)
     assert rd.right_edge_lane is None, f"rejects={rd.rejects}"
     assert any("R:无穿越" in r for r in rd.rejects)
     assert rd.left_edge_lane is not None
@@ -128,23 +129,42 @@ def test_plane_fit_fail_abstains():
     assert any("平面拟合失败" in r for r in rd.rejects)
 
 
-def test_fit_road_plane_resists_wall_tilt():
-    """走廊域拟合抗墙歪斜：域内混入高墙点不改变路面平面钉结果。
+def test_fit_road_plane_feature_seed_resists_wall_tilt():
+    """特征种子拟合抗墙歪斜：墙在走廊域外/内都不改变路面平面钉结果。
 
-    历史定案（2026-09-30 指正 + 2026-10-01 双平面回归实锤）：拟合域含墙/肩
-    会把平面拽歪——本锁钉「域只收路面点」这一定案不许回退。"""
-    pts = _scene_points(x_left=WALL, x_right=WALL)
+    历史定案：拟合起步种子被墙劫持会把平面拽歪（000660 实测被拽 5.25°，
+    路自身平面 -2.06°/99% 内点；2026-09-30 指正、2026-10-01 双平面回归、
+    2026-10-02 列剖面特征换装）。墙基与路面相连、迭代内点沿墙爬升的病理
+    由特征种子切断——走廊内墙（000660 形态，墙基在 |X|<4 内）同样不许拽歪。
+    fy=None 的旧位置圈地路径是回退开关，其抗墙性由走廊外墙用例一并锁定。"""
     dig = np.zeros((dg.DIAG_Y1 - dg.Y0, 1280), bool)
-    X, Y, Z = pts[dg.Y0:dg.DIAG_Y1, :, 0], pts[dg.Y0:dg.DIAG_Y1, :, 1], pts[dg.Y0:dg.DIAG_Y1, :, 2]
-    coef = dg._fit_road_plane(X, Y, Z, dig)
-    assert coef is not None
-    # 纯地面场景的平面（无墙）作参照：两 coef 应一致（墙点没进拟合域）
+
+    def _band_coefs(pts, fy):
+        X, Y, Z = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
+        return dg._fit_road_plane(X, Y, Z, dig, fy=fy)
+
     pts_open = _scene_points(x_left=None, x_right=None)
-    X2, Y2, Z2 = (pts_open[dg.Y0:dg.DIAG_Y1, :, 0], pts_open[dg.Y0:dg.DIAG_Y1, :, 1],
-                  pts_open[dg.Y0:dg.DIAG_Y1, :, 2])
-    coef_open = dg._fit_road_plane(X2, Y2, Z2, dig)
+    X2, Y2, Z2 = (pts_open[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
+    coef_open = dg._fit_road_plane(X2, Y2, Z2, dig, fy=FY)
     assert coef_open is not None
+
+    # 特征种子路径（产线）：走廊外墙与走廊内墙（000660 形态）都不拽歪
+    coef = _band_coefs(_scene_points(x_left=WALL, x_right=WALL), FY)
+    assert coef is not None
     np.testing.assert_allclose(coef, coef_open, atol=1e-3)
+    coef_in = _band_coefs(_scene_points(x_left=3.0, x_right=3.0), FY)
+    assert coef_in is not None
+    # 走廊内墙基的 15cm 内点带会把截距拖 ~1.3cm（远小于找边阈值量级），
+    # 角度项钉死、截距放宽到 2cm
+    assert abs(coef_in[0] - coef_open[0]) < 2e-4
+    assert abs(coef_in[1] - coef_open[1]) < 1e-3
+    assert abs(coef_in[2] - coef_open[2]) < 0.02
+
+    # 回退路径（fy=None）：走廊外墙不进旧拟合域，平面钉结果同样不变
+    coef_leg = _band_coefs(_scene_points(x_left=WALL, x_right=WALL), None)
+    coef_leg_open = dg._fit_road_plane(X2, Y2, Z2, dig, fy=None)
+    assert coef_leg is not None and coef_leg_open is not None
+    np.testing.assert_allclose(coef_leg, coef_leg_open, atol=1e-3)
 
 
 def test_ego_mask_asset_loads_tight_rect():
@@ -247,6 +267,138 @@ def test_infer_points_busy_raises_not_blocks():
     with dml_lock.LOCK:
         with pytest.raises(dml_lock.Busy):
             infer_points(_FakeMogeSess(), _frame_np())
+
+
+# ── forward 的 IO binding（固定输入/输出缓冲，抗显存分页）──────────────────
+
+class _BindableSess:
+    """io_binding 接口替身：记录绑定次数与 run 时缓冲内容，回放定形输出。"""
+
+    def __init__(self):
+        self.io_binding_calls = 0
+        self.run_calls = 0
+        self.run_seen_input_head = None
+        self._pts, self._mask = _synthetic_affine_points(1.5)
+
+    def get_inputs(self):
+        class _In:
+            name = "image"
+        return [_In()]
+
+    def get_outputs(self):
+        class _Out:
+            def __init__(self, name):
+                self.name = name
+        return [_Out("points"), _Out("normal"), _Out("mask"), _Out("scale")]
+
+    def io_binding(self):
+        self.io_binding_calls += 1
+        return _FakeBinding()
+
+    def run_with_iobinding(self, bind, _opts):
+        self.run_calls += 1
+        self.run_seen_input_head = float(bind.xbuf_view[0, 0, 0, 0])
+        bind.outputs = [self._pts[None], np.zeros((1, 8, 598, 3), np.float32),
+                        self._mask[None].astype(np.float32),
+                        np.array([1.0], np.float32)]
+
+    def run(self, _names, _feeds):
+        self.run_calls += 1
+        return [self._pts[None], np.zeros((1, 8, 598, 3), np.float32),
+                self._mask[None].astype(np.float32),
+                np.array([1.0], np.float32)]
+
+
+class _FakeBinding:
+    """SessionIOBinding 替身：bind_input 记录指针，按地址重建缓冲视图。"""
+
+    def __init__(self):
+        self.xbuf_view = None
+
+    def bind_input(self, _name, _dev, _did, dtype, shape, ptr):
+        dt = np.dtype(dtype)
+        n = int(np.prod(shape))
+        buf = (ctypes.c_ubyte * (dt.itemsize * n)).from_address(ptr)
+        self.xbuf_view = np.frombuffer(buf, dtype=dt).reshape(shape)
+
+    def bind_output(self, *_a, **_k):
+        pass
+
+    def copy_outputs_to_cpu(self):
+        return self.outputs
+
+
+def test_forward_binding_caches_and_overwrites_input():
+    """binding 只建一次（会话级缓存），新帧内容覆写进同一固定缓冲。"""
+    import ctypes
+    moge_post._BINDINGS.clear()
+    sess = _BindableSess()
+    img1 = np.zeros((1, 3, 720, 1280), np.float32)
+    pts, mask, ms = moge_post.forward(sess, img1, 1032)
+    assert sess.io_binding_calls == 1 and sess.run_calls == 1
+    assert pts.shape == (336, 598, 3) and ms == 1.0   # 原生点图（升采样在 infer_points）
+    img2 = np.full((1, 3, 720, 1280), 0.5, np.float32)
+    moge_post.forward(sess, img2, 1032)
+    assert sess.io_binding_calls == 1          # 缓存复用：不重建 binding
+    assert sess.run_calls == 2
+    assert sess.run_seen_input_head == pytest.approx(0.5)  # 新帧已覆写进缓冲
+
+
+class _NonBindableSess:
+    """io_binding 缺失的会话替身（forward 负缓存路径锁）：读属性即抛。"""
+
+    def __init__(self):
+        self.attempts = 0
+        self.run_calls = 0
+        self._pts, self._mask = _synthetic_affine_points(1.5)
+
+    def get_inputs(self):
+        class _In:
+            name = "image"
+        return [_In()]
+
+    def get_outputs(self):
+        class _Out:
+            def __init__(self, name):
+                self.name = name
+        return [_Out("points"), _Out("normal"), _Out("mask"), _Out("scale")]
+
+    @property
+    def io_binding(self):
+        self.attempts += 1
+        raise AttributeError("no io_binding")
+
+    def run(self, _names, _feeds):
+        self.run_calls += 1
+        return [self._pts[None], np.zeros((1, 8, 598, 3), np.float32),
+                self._mask[None].astype(np.float32),
+                np.array([1.0], np.float32)]
+
+
+def test_forward_falls_back_and_negatively_caches_non_bindable():
+    """无 io_binding 能力的会话（测试桩类）：降级普通 run，且只试探一次。"""
+    moge_post._BINDINGS.clear()
+    sess = _NonBindableSess()
+    img = np.zeros((1, 3, 720, 1280), np.float32)
+    for _ in range(2):
+        pts, mask, ms = moge_post.forward(sess, img, 1032)
+        assert pts.shape == (336, 598, 3) and ms == 1.0
+    assert sess.run_calls == 2                # 两帧都走普通 run
+    assert sess.attempts == 1                 # 负缓存：第二次不再试探
+
+
+def test_forward_shape_drift_drops_binding_for_that_frame():
+    """输入形状漂移：该帧走普通 run，不把漂移帧写进固定缓冲。"""
+    moge_post._BINDINGS.clear()
+    sess = _BindableSess()
+    img = np.zeros((1, 3, 720, 1280), np.float32)
+    moge_post.forward(sess, img, 1032)
+    assert sess.run_calls == 1
+    odd = np.zeros((1, 3, 640, 960), np.float32)
+    moge_post.forward(sess, odd, 1032)
+    assert sess.run_calls == 2                   # 漂移帧降级
+    moge_post.forward(sess, img, 1032)
+    assert sess.run_calls == 3 and sess.io_binding_calls == 1  # 常规帧仍走 binding
 
 
 # ── 异步解耦协议（AsyncDepthRoadObserver，stub 零数据依赖）────────────────

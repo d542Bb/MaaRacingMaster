@@ -76,6 +76,27 @@ ROAD_Z_LO, ROAD_Z_HI = 4.0, 30.0
 EGO_ABS_X, EGO_ABS_Z = 1.3, 10.0   # 自车区排除（车是路面上的隆起物）
 MIN_PLANE_PTS = 500
 
+# ── 列剖面路面特征（2026-10-02 定案：拟合起步种子由「位置圈地」换成「特征
+#    识别路面」）─────────────────────────────────────────────────────────
+# 针孔几何（dv/dz = −fy·h/z²，与坡度无关——坡度只平移路面在画面里的位置）：
+# 同列深度自底向上平滑递增，逐行增量 ≈ z²/fy；墙=列内近恒深、车=深度骤降、
+# 天空=深度跳变。自底向上逐列行走，违反即停。判据定值出自 000660/000100/
+# 000260 三帧（2026-10-01 会话），并经金标仓 122 帧回归 + 合成坡道（±10%
+# 恢复精确）/墙体干扰验证定案（2026-10-02，证据指针见当次提交）。旧法的病理
+# 在起步种子被墙劫持（墙面
+# 点把 000660 平面拽歪 5.25°，路自身平面实测 -2.06°/99% 内点），不在走廊重选
+# 本身——故特征只做种子，走廊重选动力学原样保留。
+WALK_Z_MIN = 0.5        # 深度有效下限（米）
+WALK_Z_BACK = 0.85      # 深度允许下界（×前一有效深度）
+WALK_Z_FWD = 1.4        # 深度允许上界（×前一有效深度）
+WALK_INC_LO = -0.35     # 逐行增量下界（×理论增量）
+WALK_INC_HI = 3.0       # 逐行增量上界（×理论增量）
+WALK_INC_FLOOR = 0.05   # 理论增量下限（米；z 小时理论增量趋 0，噪声即越界）
+WALK_MISS_STOP = 6      # 连续违反 >6 次断列（第 7 次停）
+WALK_MIN_COL_PTS = 10   # 单列有效像素下限（少于则整列弃权）
+WALK_COL_STRIDE = 4     # 隔列采样（特征逐列独立，跳列不影响别的列；算力档）
+WALK_ROW_STRIDE = 2     # 隔行采样（增量理论值同比放大，行走轮数减半；算力档）
+
 # ── 3D 找边（Z 分箱横向剖面离地穿越；金标 MoGe 点云校准 2026-10-01）─────
 ZBIN = ((3, 5), (5, 7), (7, 9), (9, 12), (12, 16))  # 深度箱（米）；弯道无直线
 #                                                   # 假设，逐箱独立读数
@@ -165,28 +186,129 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
         else (pts, float(fx), float(fy))
 
 
-def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
-                    dig: np.ndarray | None) -> np.ndarray | None:
-    """路面走廊域平面拟合 Y=aX+bZ+c → coef；走廊内点不足判失败（None，诚实弃权）。
+def _road_by_column_profile(Z: np.ndarray, fy: float, bad: np.ndarray) -> np.ndarray:
+    """检测带深度图 → 路面点布尔图（列剖面特征行走，列间并行向量化）。
 
-    路面点 = |X|<ROAD_X_MAX 且 Z∈[ROAD_Z_LO, ROAD_Z_HI]，排除自车区（车是
-    隆起物）与 ``dig``（ego∪YOLO 掩码带）；每轮以 |res|<PLANE_TOL 重选走廊内点
-    再拟合（lstsq，N 数万量级）。**拟合域含墙/肩会把平面拽歪**——域收窄是
-    本拟合的全部要点，见常量区注。"""
+    每列自最底有效像素起、沿最近有效行向上走：深度落在 [WALK_Z_BACK,
+    WALK_Z_FWD]×前值 且逐行增量落在 [WALK_INC_LO, WALK_INC_HI]×理论量
+    （z²/fy·WALK_ROW_STRIDE，下限 WALK_INC_FLOOR）内即判路面并续行；连续
+    违反 WALK_MISS_STOP+1 次断列。``bad``（挖除区/无效像素）整格跳过且不计
+    违反。实现在列间并行（每步一个 (W,) 向量运算，活跃列递减出队），
+    nxt 表 = where(valid, v, -1) 沿行向 cumulative-max 下移一行（最近上方
+    有效行）。采样 WALK_COL_STRIDE/WALK_ROW_STRIDE，返回全幅布尔图（仅被
+    采样的行列可能为真）。耗 时 ~10ms/帧（产线预算内，2026-10-02 实测）。"""
+    Hb, W = Z.shape
+    Zs = Z[::WALK_ROW_STRIDE, ::WALK_COL_STRIDE]
+    bads = bad[::WALK_ROW_STRIDE, ::WALK_COL_STRIDE]
+    fy_s = fy * WALK_ROW_STRIDE     # 跳行后相邻采样行的深度增量理论值同比放大
+    valid = np.isfinite(Zs) & (Zs > WALK_Z_MIN) & ~bads
+    idx = np.arange(Zs.shape[0], dtype=np.int32)[:, None]
+    fill = np.maximum.accumulate(np.where(valid, idx, np.int32(-1)), axis=0)
+    nxt = np.empty_like(fill)
+    nxt[0] = -1
+    nxt[1:] = fill[:-1]
+
+    road = np.zeros((Hb, W), bool)
+    road_s = road[::WALK_ROW_STRIDE, ::WALK_COL_STRIDE]   # 基础切片视图，写穿
+    cur = np.where(valid, idx, np.int32(-1)).max(0)
+    active = valid.any(0) & (valid.sum(0) >= WALK_MIN_COL_PTS)
+    if not active.any():
+        return road
+    act = np.nonzero(active)[0]
+    road_s[cur[act], act] = True
+    cur = cur[act].astype(np.int32)
+    prev_z = Zs[cur, act].astype(np.float32)
+    miss = np.zeros(len(act), np.int32)
+
+    while len(act):
+        nx = nxt[cur, act]
+        cont = (cur >= 0) & (nx >= 0) & (prev_z < np.float32(ROAD_Z_HI))
+        if not cont.any():
+            break
+        z = Zs[nx, act]
+        inc = np.maximum(prev_z * prev_z / np.float32(fy_s),
+                         np.float32(WALK_INC_FLOOR))
+        d = z - prev_z
+        good = cont & (z >= WALK_Z_BACK * prev_z) & (z <= WALK_Z_FWD * prev_z) \
+            & (d >= WALK_INC_LO * inc) & (d <= WALK_INC_HI * inc)
+        road_s[nx[good], act[good]] = True
+        prev_z = np.where(good, z, prev_z)
+        miss = np.where(cont & ~good, miss + 1, np.where(cont, 0, miss))
+        cur = np.where(cont, nx, cur)
+        keep = ~(cont & ~good & (miss > WALK_MISS_STOP))
+        if not keep.all():
+            act = act[keep]
+            cur = cur[keep]
+            prev_z = prev_z[keep]
+            miss = miss[keep]
+    return road
+
+
+def _fit_road_plane_seed(road: np.ndarray, X: np.ndarray, Y: np.ndarray,
+                         Z: np.ndarray) -> np.ndarray | None:
+    """特征路面点上的种子平面拟合（15cm 内点重选，域窗=走廊域常量）。
+
+    走廊窗（ROAD_*）在这里只是远场翘曲限幅——路面识别已由特征行走完成，
+    与旧法「走廊=识别手段」语义不同。域点集静态（road 窗内逐点判定），一次
+    抽取后域内迭代，避免每轮全幅残差广播。"""
+    sel = (road & np.isfinite(X) & np.isfinite(Y) & np.isfinite(Z)
+           & (Z > ROAD_Z_LO) & (Z < ROAD_Z_HI) & (np.abs(X) < ROAD_X_MAX))
+    n = int(sel.sum())
+    if n < MIN_PLANE_PTS:
+        return None
+    xs, ys, zs = X[sel], Y[sel], Z[sel]
+    ones = np.ones(n, np.float32)
+    m = np.ones(n, bool)
+    coef = None
+    for _ in range(PLANE_ITERS):
+        if int(m.sum()) < MIN_PLANE_PTS:
+            return None
+        A = np.stack([xs[m], zs[m], ones[m]], 1)
+        coef = np.linalg.lstsq(A, ys[m], rcond=None)[0]
+        m = np.abs(ys - (coef[0] * xs + coef[1] * zs + coef[2])) < PLANE_TOL
+    return coef
+
+
+def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
+                    dig: np.ndarray | None, fy: float | None = None
+                    ) -> np.ndarray | None:
+    """路面平面拟合 Y=aX+bZ+c → coef；域内点不足判失败（None，诚实弃权）。
+
+    两段式（2026-10-02 换装）：**特征种子**——列剖面特征识别的路面点先拟合
+    出起步平面（墙/天空/车辆/路外不进种子）；**走廊收敛**——从种子平面起
+    按旧动力学（走廊域 15cm 内点重选 lstsq）收敛。旧法病理在起步种子被墙
+    劫持（墙面点与路面相连、迭代内点沿墙爬升，000660 被拽 5.25°），不在
+    走廊重选本身；好种子进不了坏盆地，远场覆盖由走廊重选全数找回。
+    ``fy``=None 走纯旧位置圈地路径（回退开关）；特征种子失败同样回退。
+    走廊域逐点静态，一次抽取域点集后域内迭代（布尔掩码保序，与逐轮全幅
+    重选逐位等价）。"""
     ok = np.isfinite(X) & np.isfinite(Y) & np.isfinite(Z) & (Z > 0)
     road = (ok & (np.abs(X) < ROAD_X_MAX) & (Z > ROAD_Z_LO) & (Z < ROAD_Z_HI)
             & ~((np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)))
     if dig is not None:
         road = road & ~dig
-    sel = road
+    n = int(road.sum())
+    if n < MIN_PLANE_PTS:
+        return None
+    xs, ys, zs = X[road], Y[road], Z[road]
+    ones = np.ones(n, np.float32)
+    m = None
+    if fy is not None:
+        bad = ~np.isfinite(Z) | (Z <= WALK_Z_MIN)
+        if dig is not None:
+            bad = bad | dig
+        seed = _fit_road_plane_seed(_road_by_column_profile(Z, fy, bad), X, Y, Z)
+        if seed is not None:
+            m = np.abs(ys - (seed[0] * xs + seed[1] * zs + seed[2])) < PLANE_TOL
+    if m is None:
+        m = np.ones(n, bool)        # 旧法起步：全域进第一轮
     coef = None
     for _ in range(PLANE_ITERS):
-        if int(sel.sum()) < MIN_PLANE_PTS:
+        if int(m.sum()) < MIN_PLANE_PTS:
             return None
-        A = np.stack([X[sel], Z[sel], np.ones(int(sel.sum()))], 1)
-        coef = np.linalg.lstsq(A, Y[sel], rcond=None)[0]
-        res = Y - (coef[0] * X + coef[1] * Z + coef[2])
-        sel = road & (np.abs(res) < PLANE_TOL)
+        A = np.stack([xs[m], zs[m], ones[m]], 1)
+        coef = np.linalg.lstsq(A, ys[m], rcond=None)[0]
+        m = np.abs(ys - (coef[0] * xs + coef[1] * zs + coef[2])) < PLANE_TOL
     return coef
 
 
@@ -235,12 +357,16 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
 def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                         ego_mask: np.ndarray | None = None,
                         object_mask: np.ndarray | None = None,
+                        fy: float | None = None,
                         ) -> DepthRoadReading:
     """点图 → 读数（纯函数，回归锁可直接喂缓存点云；observe=推理+本函数）。
 
     ``pts`` 全幅 (720,1280,3)、无效像素 nan；``fx`` 同帧全幅焦距（横向剖面画外
-    守卫与诊断回投共用）。``ego_mask``（紧矩形）与 ``object_mask``（YOLO 框）
-    都从点云挖除（断车身→路面粘连）。"""
+    守卫与诊断回投共用）。``fy`` 同帧纵向焦距（列剖面特征行走的增量理论值用）；
+    None 时回退 fx——MoGe 归一化内参约定下横纵焦距差实测 ~0.1%，远小于行走
+    容差窗（离线点云缓存只存了 fx，故回退合法；产线 observe 传真值）。
+    ``ego_mask``（紧矩形）与 ``object_mask``（YOLO 框）都从点云挖除（断车身
+    →路面粘连）。"""
     t0 = time.perf_counter()
 
     def _ret(lane_l, lane_r, u_l, u_r, rejects, edge_pts=()):
@@ -256,7 +382,7 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
         dig = dig | _dig_band(object_mask, pts.shape[1])
 
     X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
-    coef = _fit_road_plane(X, Y, Z, dig)
+    coef = _fit_road_plane(X, Y, Z, dig, fy=fx if fy is None else fy)
     if coef is None:
         return _ret(None, None, None, None, ["平面拟合失败"])
     a, b, c = (float(coef[0]), float(coef[1]), float(coef[2]))
@@ -359,13 +485,13 @@ class DepthRoadObserver:
             return None, None
         t0 = time.perf_counter()
         try:
-            pts, fx, _fy, evid = infer_points(self._sess, frame_rgb, with_evidence=True)
+            pts, fx, fy, evid = infer_points(self._sess, frame_rgb, with_evidence=True)
         except dml_lock.Busy:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
             return None, None
         reading = reading_from_points(pts, fx, self._cal, ego_mask=self._ego_mask,
-                                      object_mask=object_mask)
+                                      object_mask=object_mask, fy=fy)
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0), evid
 
@@ -501,10 +627,15 @@ class AsyncDepthRoadObserver:
       不达标报警数据面。
     """
 
-    MAX_AGE_MS = 150.0    # 结果时效预算=复用上限：闸内读数才喂控制（1830 局实证：
-                          # 300ms 复用窗让新值与旧值交替成方波踢 planner，翻转率
-                          # 反升）。150ms 内路心漂移在机动横移下 ≤~0.25 道；超龄
-                          # 清槽退纯模型积分，路缘慢变量、保鲜槽 TTL 0.4s 同量级
+    MAX_AGE_MS = 350.0    # 结果时效预算=复用上限：闸内读数才喂控制。**口径含
+                          # worker 自己的推理时延**（2026-10-01 实测定案）：单帧
+                          # 135ms + 排队 ~50ms 下 150ms 闸注定 78% 超龄丢弃（健康
+                          # 日志「应用 49/超龄丢弃 176」），road_offset 覆盖率只剩
+                          # 43%——转向间歇的直接病灶。350 与消费端保鲜槽 TTL
+                          # 0.4s 对齐（入口比出口严本就矛盾）；读数语义=v4 几何
+                          # 路心（缓变量），非黄线时代的间隙中心——1830 局「300ms
+                          # 复用窗方波踢 planner」的教训在旧语义+无保鲜槽下成立，
+                          # 若实机翻转率反升（trace steer 拍间反打）再回撤
     INFER_MIN_INTERVAL_S = 0.07   # worker 出工下间隔：锁内只有 run 本体，控制拍
                                   # 感知（同锁）的碰撞等待有上界即可（见 dml_lock）
     PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
