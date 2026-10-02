@@ -7,6 +7,10 @@
   1. 各金标帧的逐箱检出与金标边线的米制差（直路帧 ≤1m 口径）；
   2. lane_w_m 定案数据：可信帧 z=8m 剖面的 L/R 路宽（÷4=车道宽）；
   3. cam_h（|c|）跨帧稳定性——逐帧焦距仲裁的持续监视口径。
+  4. **换装差分**（2026-10-02 换装后口径）：产线面 = reading_from_points 本体
+     （特征种子 + 走廊收敛，含自车矩形挖除）；回退面 = _fit_road_plane fy=None
+     的旧位置圈地路径。差分回答「换装带来什么」；对质锚用产线面射线（锚一致
+     才可比）。注：实验区混合复刻与产线版差一处（自车挖除），以产线版为准。
 
 对质几何：金标像素线两端点经**产线平面**射线求交得 (X, Z)（同帧 fx/fy，
 禁静态内参——第二信源教训），对质 z 以近点为锚夹进检出覆盖域后线性插值。
@@ -14,6 +18,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import sys
 from pathlib import Path
@@ -32,7 +37,13 @@ GOLD = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/"
             r"depth_review/gold_labels.csv")
 
 
-def pick_frames(rows):
+def pick_frames(rows, dedup_class: bool = False):
+    """金标帧集：默认**全量**。按 (lcls,rcls) 去重只留 6 帧会把同类的难帧静默
+    丢掉——000660（雨天湿面、滚转 −7.3°）与 000100 同类，整轮 v4 验收因此没看过
+    它，而它恰是产线读数塌掉的那一帧（2026-10-02 实测）。`--dedup-class` 恢复
+    旧的冒烟口径。"""
+    if not dedup_class:
+        return list(rows)
     seen: dict = {}
     order = []
     for r in rows:
@@ -71,13 +82,17 @@ def eval_at(samples, z: float):
 
 def main() -> None:
     rows = list(csv.DictReader(GOLD.open(encoding="utf-8")))
-    frames = pick_frames(rows)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dedup-class", action="store_true",
+                    help="按 (lcls,rcls) 去重只留 6 帧（旧冒烟口径）")
+    frames = pick_frames(rows, ap.parse_args().dedup_class)
     cal = load_calib()
     sess = dg.load_session(DEPTH_MODEL_FILE)
     ego = dg.DepthRoadObserver._load_ego_mask()
     print(f"lane_w_m={cal.lane_w_m}  frames={len(frames)}")
-    print(f"{'帧':26s} {'侧':2s} {'类':10s} {'对质Z':>6s} {'产线差m':>8s} {'探针面差m':>9s}")
+    print(f"{'帧':26s} {'侧':2s} {'类':10s} {'对质Z':>6s} {'产线差m':>8s} {'回退差m':>8s} {'探针差m':>8s}")
     errs = []
+    errs_leg = []
     errs_eph = []
     widths = []
     cam_hs = []
@@ -85,7 +100,7 @@ def main() -> None:
         stem = Path(r["path"]).stem
         img = cv2.cvtColor(cv2.imread(r["path"]), cv2.COLOR_BGR2RGB)
         pts, fx, fy = dg.infer_points(sess, img)
-        rd = dg.reading_from_points(pts, fx, cal, ego_mask=ego)
+        rd = dg.reading_from_points(pts, fx, cal, ego_mask=ego, fy=fy)
         # 差分对照：同一份点云，产线平面 vs 实验区平面，各自走产线找边
         X, Y, Z = pts[dg.Y0:dg.DIAG_Y1, :, 0], pts[dg.Y0:dg.DIAG_Y1, :, 1], pts[dg.Y0:dg.DIAG_Y1, :, 2]
         dig = dg._dig_band(ego, pts.shape[1])
@@ -99,11 +114,17 @@ def main() -> None:
         rd_e = None
         if coef_e is not None:
             rd_e = _reading_with_coef(X, Y, Z, coef_e, fx, cal, dig, pts.shape)
+        # 回退面 = 旧位置圈地路径（fy=None 开关），差分回答「换装带来什么」
+        coef_l = dg._fit_road_plane(X, Y, Z, dig)
+        rd_l = (_reading_with_coef(X, Y, Z, coef_l, fx, cal, dig, pts.shape)
+                if coef_l is not None else None)
         for key, side in (("l", -1), ("r", 1)):
             cls = r[f"{key}cls"]
             smp = [(zc, x) for s, zc, x in rd.edge_pts if s == side]
             smp_e = ([(zc, x) for s, zc, x in rd_e["edge_pts"] if s == side]
                      if rd_e is not None else [])
+            smp_l = ([(zc, x) for s, zc, x in rd_l["edge_pts"] if s == side]
+                     if rd_l is not None else [])
             u_n, v_n = float(r[f"{key}_nx"]), float(r[f"{key}_ny"])
             u_f, v_f = float(r[f"{key}_fx"]), float(r[f"{key}_fy"])
             xn, zn = gold_ray_ground(u_n, v_n, coef, fx, fy, pts.shape[1] / 2, pts.shape[0] / 2)
@@ -112,12 +133,15 @@ def main() -> None:
                 continue
             e_prod = _eval_err(smp, xn, zn)
             e_eph = _eval_err(smp_e, xn, zn) if smp_e else np.nan
+            e_leg = _eval_err(smp_l, xn, zn) if smp_l else np.nan
             if cls in ("wall", "kerb") and np.isfinite(e_prod):
                 errs.append((stem, key, cls, e_prod))
             if cls in ("wall", "kerb") and np.isfinite(e_eph):
                 errs_eph.append((stem, key, cls, e_eph))
+            if cls in ("wall", "kerb") and np.isfinite(e_leg):
+                errs_leg.append((stem, key, cls, e_leg))
             fmt = lambda e: f"{e:8.2f}" if np.isfinite(e) else f"{'—':>8s}"
-            print(f"{stem:26s} {key.upper():2s} {cls:10s} {zn:6.1f} {fmt(e_prod)} {fmt(e_eph):>9s}")
+            print(f"{stem:26s} {key.upper():2s} {cls:10s} {zn:6.1f} {fmt(e_prod)} {fmt(e_leg):>8s} {fmt(e_eph):>8s}")
         l8 = [x for s, zc, x in rd.edge_pts if s == -1 and abs(zc - 8) < 1.6]
         r8 = [x for s, zc, x in rd.edge_pts if s == 1 and abs(zc - 8) < 1.6]
         if l8 and r8:
@@ -127,7 +151,7 @@ def main() -> None:
         rej = ";".join(rd.rejects) or "—"
         print(f"    读数 L{lt} R{rt} sides={rd.sides} rejects={rej} fx={fx:.0f} cam_h={abs(c):.2f}")
     print("\n== 汇总 ==")
-    for name, ee in (("产线平面", errs), ("探针平面", errs_eph)):
+    for name, ee in (("产线面", errs), ("回退面", errs_leg), ("探针面", errs_eph)):
         if ee:
             abs_errs = [abs(e) for *_, e in ee]
             over = [f"{s}/{k}" for s, k, _c, e in ee if abs(e) > 1.0]
