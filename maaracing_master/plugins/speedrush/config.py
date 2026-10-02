@@ -145,8 +145,7 @@ class Validate:
     straight_residual_max: float
     # —— 横向几何安全 veto（阶段一 2026-10-02，RSS 形状外挂判据）——
     lat_veto_gap_lane: float        # 接触界：预测最小车距低于此即 veto（车身中心距）
-    lat_veto_horizon_s: float       # 街车 CV 外推视野
-    lat_veto_car_vmax_lane_s: float # 街车横向速率封顶（防读数噪声尖峰 mass-veto）
+    lat_veto_horizon_s: float       # 自车扫掠包络的判距视野（街车静态，无外推视野）
 
 
 @dataclass(frozen=True)
@@ -246,9 +245,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             straight_residual_max=_num(d, "validate", "straight_residual_max",
                                        lo=0, lo_open=False),
             lat_veto_gap_lane=_num(d, "validate", "lat_veto_gap_lane", lo=0),
-            lat_veto_horizon_s=_num(d, "validate", "lat_veto_horizon_s", lo=0),
-            lat_veto_car_vmax_lane_s=_num(d, "validate", "lat_veto_car_vmax_lane_s",
-                                          lo=0)),
+            lat_veto_horizon_s=_num(d, "validate", "lat_veto_horizon_s", lo=0)),
         planner=Planner(
             lookahead_tau_s=_num(d, "planner", "lookahead_tau_s", lo=0),
             k_p=_num(d, "planner", "k_p", lo=0),

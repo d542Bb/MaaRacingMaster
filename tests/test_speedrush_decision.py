@@ -102,7 +102,6 @@ def _decision_dict():
     (lambda d: d["validate"].pop("lat_veto_gap_lane"), "lat_veto_gap"),
     (lambda d: d["validate"].update(lat_veto_gap_lane=0.7), "贴窗"),
     (lambda d: d["validate"].pop("lat_veto_horizon_s"), "lat_veto_horizon"),
-    (lambda d: d["validate"].pop("lat_veto_car_vmax_lane_s"), "car_vmax"),
     (lambda d: d["traffic"].pop("v_lat_ema_alpha"), "v_lat_ema"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
@@ -766,14 +765,24 @@ def test_overtake_survives_drift_and_completes_pass():
 
 
 def test_veto_horizon_clamped_by_pass_time():
-    """第五轮 2468 案几何修正：车过我们车头之后再怎么横漂也吹不到我们——
-    外推视野按逐车 pass 时间截断。此车全视野外推会扫过贴位（旧代码误 veto），
-    截断后最小距 0.51 ≥ 0.45 放行。"""
+    """危险窗按到站时间截断：车马上过我们车头（t_pass=0.1s）时，包络还没扫到
+    它的地盘 → 放行；若无截断，包络驻停位与它的静态位置只差 0.25 → 误 veto。"""
     e = _eng()
-    car = CarView(id=9, x_lane=1.1, cy=656, rel_approach=10.0, d_min=1.1,
-                  age_ticks=5, v_lat=-0.015)     # 0.3 道/s 向左漂；t_pass=0.3s
+    car = CarView(id=9, x_lane=0.75, cy=int(load_calib().v_ego) - 20, rel_approach=10.0,
+                  d_min=0.75, age_ticks=5, v_lat=0.0)   # t_pass=20px/200px/s=0.1s
     out = e.update(_good_obs(fid=1), DT, executed_lane=0.0, traffic=_traffic([car]))
     assert out.state is DecisionState.CHANGE
+
+
+def test_veto_treats_cars_static_not_phantom_drift():
+    """第六轮正中靶心案回归锁：x_lane 读数噪声（EMA 后 ±1 道/s 级）不得被当成
+    真实运动外推——噪声方向「飘走」曾把实际停在走廊里的车外推出走廊 → 全速
+    扫上去正中靶心。静态判据下它留在原地 → veto 拦下。"""
+    e = _eng()
+    car = CarView(id=9, x_lane=0.75, cy=500, rel_approach=10.0, d_min=0.75,
+                  age_ticks=5, v_lat=0.05)     # 噪声读数：+1 道/s「向右飘走」
+    out = e.update(_good_obs(fid=1), DT, executed_lane=0.0, traffic=_traffic([car]))
+    assert "no_candidate" in out.reason         # 静态 0.75 距贴位 0.25 < 0.45 → 拦
 
 
 def test_safety_veto_blocks_candidate():

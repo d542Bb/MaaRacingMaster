@@ -26,10 +26,9 @@
     "overtake.t_pass_max_s": "[需实测 C5] pass 落定兜底（超车过程可比变道长，不共用 t_change_max）",
     "control.abort_settle_v_lane_s": "[需实测] 19:44 复盘补装：v1 注释的'有反馈等横向速率归零'信号（此前未实现，丢目标白冻 2s）",
     "overtake.t_cool_pass_s": "19:44 复盘：pass 高频事件短冷却（0.2s 起值）；金币完成仍用 hysteresis.t_cool_s=1s",
-    "validate.lat_veto_gap_lane": "阶段一横向安全 veto 接触界起值 0.45 车道（车身中心距）：RULES §4.2 极限超车触发档 0.65/0.81 之下的车身级距离，对贴窗 0.625 留 0.175 漂移预算；[需实测] 真机第五轮回放定档",
-    "validate.lat_veto_horizon_s": "阶段一街车 CV 外推视野 1.5s（调研结论：≤2s 短视野 CV 与学习型预测差距很小；同构 Apollo free_move 恒速外推）",
-    "validate.lat_veto_car_vmax_lane_s": "街车横向速率封顶 1.0 车道/s（街车横向机动慢的物理上限；封顶防读数噪声尖峰诱发 mass-veto）[需实测]",
-    "traffic.v_lat_ema_alpha": "阶段一街车横向速率 EMA α=0.3（帧间差分平滑，车道/tick 口径；遮挡延续拍不投毒）"
+    "validate.lat_veto_gap_lane": "阶段一横向安全 veto 接触界起值 0.45 车道（车身中心距）：RULES §4.2 极限超车触发档 0.65/0.81 之下的车身级距离，对贴窗 0.625 留 0.175 漂移预算；[需实测] 真机回放定档",
+    "validate.lat_veto_horizon_s": "自车扫掠包络的判距视野 1.5s（街车静态参与判距、危险窗再按逐车到站时间截断；曾有 CV 外推，第六轮因读数噪声 ±0.3 道/拍统计上不可分辨真漂移而撤销）",
+    "traffic.v_lat_ema_alpha": "街车横向速率 EMA α=0.3（帧间差分，车道/tick 口径；遮挡延续拍不投毒）。注意：读数噪声主导（P90≈3.8 道/s 物理不可能），仅供 trace 观测，禁止当真实运动外推"
   },
   "mode": {
     "allow_all_moves": true,
@@ -72,8 +71,7 @@
     "cy_jump_max_px": 90.0,
     "straight_residual_max": 0.6,
     "lat_veto_gap_lane": 0.45,
-    "lat_veto_horizon_s": 1.5,
-    "lat_veto_car_vmax_lane_s": 1.0
+    "lat_veto_horizon_s": 1.5
   },
   "planner": {
     "lookahead_tau_s": 0.25,

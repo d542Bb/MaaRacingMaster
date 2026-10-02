@@ -15,8 +15,9 @@ test_overtake_gate_closed 上锁）；开闸后超车与金币两类候选同一
 （need=|目标−executed|，替换自车瞬移假设；回执缺位维持旧口径 0 起算，兼容红线）；
 ②CHANGE 逐拍重评按 **收益制分形**：金币是及格制（到不了=零分），窗口剩余对
 剩余耗时连拍破判即弃追；超车是 pass 制（车反正要过，弃追只会贴得更远），只判
-**逃逸**（散布超贴窗距离且不收缩，首拍立基线）。③街车横向 CV 外推 + RSS 形状
-几何安全 veto（LateralSafety，独立判据不进评分；外推视野按逐车到站时间截断）。
+**逃逸**（散布超贴窗距离且不收缩，首拍立基线）。③街车静态参与判距的 RSS 形状
+几何安全 veto（LateralSafety，独立判据不进评分；危险窗按逐车到站时间截断；
+CV 外推已撤销——读数噪声统计上不可分辨真漂移，第六轮正中靶心案根因）。
 
 **FSM**（§二矩阵；转移优先级在 `_priority_order` 注释处落实）：
 CRUISE 选道 / CHANGE 移动 / ABORT_CHANGE 有界回稳 / CONSERVE 保持+禁变道 / FAULT 纯直行。
@@ -117,18 +118,19 @@ class LateralSafety:
     """横向几何安全校验（阶段一 2026-10-02）：RSS 形状的外挂 veto。
 
     职责切分（behavior-design §四）不变：评分层选目标，本校验器只回答
-    「这个横向机动会不会撞上外推后的街车」——独立几何判据，**不进收益评分**。
+    「这个横向机动会不会撞上街车」——独立几何判据，**不进收益评分**。
 
     几何：自车按横向速率上限从 executed 向 goal 全速扫掠（包络=最坏情况），
-    街车按 CarView.v_lat 恒速外推（CV；速率封顶防读数噪声尖峰），视野内
-    取预测最小车距，低于接触界即 veto。RSS 的白盒精神在「响应时间内的
-    必然接近量」，本域横向操纵即时响应（τ_resp 0.130s 实测），接触界即够用
-    （起值 [需实测]，真机第五轮回放定档）。
+    **街车一律按静态位置参与判距**。曾经用帧间差分 EMA 做 CV 外推（第六轮
+    撤销）：x_lane 读数噪声 ±0.3 道/拍，20Hz 差分的 EMA 速率实测 P90≈3.8
+    道/s（物理不可能）——真漂移 0.2~0.4 道/s 被噪声淹没 10 倍，统计上不可
+    分辨；外推等于让每辆车按噪声方向幻影瞬移，既误杀好追击、又把实际停在
+    走廊里的车"外推飘走"造成正中靶心。静态判据 + **逐拍当前位置重查**等效
+    于接近监视：真向我们漂的车几拍内当前位置就进走廊触发 veto，且不被噪声骗。
 
-    **视野按逐车 pass 时间截断**（第五轮 2468 案修正）：车过自车行之后就
-    吹不到我们了——外推只在 min(视野, 该车到站时间) 内做，过了站的车横漂
-    再猛也不产生虚警。到站时间与评分同口径（(v_ego−cy)/(rel·hz)），rel≤0
-    （不接近）→ 永不到站 → 全视野。
+    **危险窗按逐车到站时间截断**：车过自车行之后就吹不到我们了——判距只在
+    min(视野, 该车到站时间) 内做。到站时间与评分同口径（(v_ego−cy)/(rel·hz)），
+    rel≤0（不接近）→ 永不到站 → 全视野。
 
     **回执缺位不判**（veto_reason 收 None start）：几何检查不容假起点——
     无回执时自车真实位置未知，按 0 起算的包络是毒化判据；缺位=无此保护，
@@ -147,27 +149,23 @@ class LateralSafety:
 
     def min_gap_lane(self, start: float, goal: float,
                      views: tuple["CarView", ...]) -> float:
-        """自车扫掠包络 × 街车 CV 外推在视野内的最小车距（车道，中心距）。
+        """自车扫掠包络 × 街车静态位置在危险窗内的最小车距（车道，中心距）。
 
-        包络两段线性（到达 goal 前全速、之后驻停），各段对街车线性外推的
-        |差| 取极值（端点或段内相交=0）。views 空 → inf。"""
+        包络两段线性（到达 goal 前全速、之后驻停），段内 |差| 极值在端点或
+        相交（=0）。views 空 → inf。"""
         gap_min = math.inf
-        t_h = self.v.lat_veto_horizon_s
         d = goal - start
         sgn = 1.0 if d >= 0 else -1.0
         t_star = abs(d) / self.v_lat_max if self.v_lat_max > _EPS else math.inf
         for v in views:
-            vc = max(-self.v.lat_veto_car_vmax_lane_s,
-                     min(self.v.lat_veto_car_vmax_lane_s, v.v_lat * self.hz))
-            t_eff = min(t_h, self._t_pass_s(v))
+            t_eff = min(self.v.lat_veto_horizon_s, self._t_pass_s(v))
             if t_star <= t_eff:
                 gap = self._segment_min(start, v.x_lane, sgn * self.v_lat_max,
-                                        vc, t_star)
-                gap = min(gap, self._segment_min(
-                    goal, v.x_lane + vc * t_star, 0.0, vc, t_eff - t_star))
+                                        0.0, t_star)
+                gap = min(gap, abs(goal - v.x_lane))
             else:
                 gap = self._segment_min(start, v.x_lane, sgn * self.v_lat_max,
-                                        vc, t_eff)
+                                        0.0, t_eff)
             gap_min = min(gap_min, gap)
         return gap_min
 
