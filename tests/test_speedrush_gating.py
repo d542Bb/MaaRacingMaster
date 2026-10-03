@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -368,3 +369,119 @@ def test_base_default_follows_class_attributes() -> None:
     assert ActivityModule.required_capabilities(None) == ActivityModule.REQUIRES
     assert ActivityModule.requires_exclusive_gamepad(None) == \
         ActivityModule.REQUIRES_GAMEPAD_EXCLUSIVE
+
+
+# ---------- 直行基线档：全程接线（手柄下发 + trace + HUD 读数） ----------
+
+
+class _FakeTimeFull:
+    """time 模块的最小桩：monotonic 委托受控时钟，time/strftime 恒定
+    （trace 与 hud 目录名由此确定）。"""
+
+    def __init__(self, clock) -> None:
+        self._clock = clock
+
+    def time(self) -> float:
+        return 1_000_000.0
+
+    def monotonic(self) -> float:
+        return self._clock.t
+
+    def strftime(self, fmt, t=None):
+        return "20261003_190000"
+
+    def localtime(self, t):
+        return t
+
+
+class _StraightPadLease:
+    """直行档手柄租约桩：记录下发，供断言。"""
+
+    def __init__(self) -> None:
+        self.joy: list = []
+        self.trig: list = []
+        self.updates = 0
+
+    def left_joystick(self, x_value=0, y_value=0):
+        self.joy.append((x_value, y_value))
+
+    def right_trigger(self, value=0):
+        self.trig.append(value)
+
+    def update(self):
+        self.updates += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _hud_stub(created: list):
+    class _Hud:
+        def __init__(self, out_dir, frame_source=None, phase=0, round_no=0):
+            created.append(Path(out_dir))
+            self.running = False
+
+        def start(self):
+            self.running = True
+
+        def stop(self, reason="normal"):
+            self.stopped = reason
+
+    return _Hud
+
+
+def test_straight_mode_full_run(env, monkeypatch, tmp_path) -> None:
+    """直行基线档 _drive_loop 全程：接管手柄零杆满油门、trace 落盘、
+    HUD 读数观察线程起停——HUD 是基线金币率的数据源，缺它基线测不了。"""
+    mod, ctx, clock = env
+    mod._straight_mode = True
+    mod._running = True
+    _set_graph(mod, [True, False, False])
+
+    pad = _StraightPadLease()
+    ctx.gamepad = SimpleNamespace(acquire=lambda: pad)
+    monkeypatch.setattr(sr, "time", _FakeTimeFull(clock))
+    monkeypatch.setattr(sr, "_control_trace_root", lambda: tmp_path)
+    created: list = []
+    monkeypatch.setattr(sr, "HudObserver", _hud_stub(created))
+
+    assert mod._drive_loop(1, None) is True
+    assert mod._hud is None  # 退出后释放引用（_state.hud_recording 不许悬挂为真）
+    assert len(created) == 1
+    assert created[0].name == "hud_20261003_190000_p1"  # 与 trace 同时刻命名
+    assert pad.updates >= 3 and all(t == 255 for t in pad.trig)
+    assert all(j == (0, 0) for j in pad.joy)
+    # trace：STRAIGHT 行落盘
+    files = list(tmp_path.glob("trace_20261003_190000_p1.jsonl"))
+    assert len(files) == 1
+    rows = [json.loads(line) for line in
+            files[0].read_text(encoding="utf-8").splitlines()]
+    assert rows and all(r["state"] == "STRAIGHT" for r in rows)
+
+
+def test_straight_mode_skips_perception(env, monkeypatch, tmp_path) -> None:
+    """直行档即使 perception_mode 开着也不跑感知——基线度量的是无感知地板。"""
+    mod, ctx, clock = env
+    mod._straight_mode = True
+    mod._perception_mode = True
+    mod._running = True
+    _set_graph(mod, [True, False, False])
+
+    ctx.gamepad = SimpleNamespace(acquire=lambda: _StraightPadLease())
+    calls: list = []
+
+    def _detect(frame, frame_id=0, ts_ns=0):
+        calls.append(frame_id)
+        return SimpleNamespace(infer_ms=1.0)
+
+    mod._perception = SimpleNamespace(detect=_detect)
+    monkeypatch.setattr(sr, "time", _FakeTimeFull(clock))
+    monkeypatch.setattr(sr, "_control_trace_root", lambda: tmp_path)
+    monkeypatch.setattr(sr, "HudObserver", _hud_stub([]))
+
+    assert mod._drive_loop(1, None) is True
+    assert calls == []  # 一次推理都没跑
+    assert mod._last_perception is None

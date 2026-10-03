@@ -455,9 +455,9 @@ class SpeedRushModule(ActivityModule):
 
             recorder = self._begin_recording(phase, round_no) if self._record_mode else None
             # HUD 读数挂在录制会话上：对齐目标就是同会话的 frames.jsonl（见 _begin_hud）
-            observer = self._begin_hud(recorder, phase, round_no) if recorder is not None else None
+            observer = self._begin_hud(recorder.out_dir, phase, round_no) if recorder is not None else None
             try:
-                return self._drive_loop(phase, recorder)
+                return self._drive_loop(phase, recorder, round_no)
             finally:
                 if observer is not None:
                     observer.stop("phase_end" if self._running else "stopped")
@@ -507,7 +507,8 @@ class SpeedRushModule(ActivityModule):
                   f"（最后 {_frame_note(fid, age_ms)}）", "WARNING")
         return False
 
-    def _drive_loop(self, phase: int, recorder: DriveRecorder | None) -> bool:
+    def _drive_loop(self, phase: int, recorder: DriveRecorder | None,
+                    round_no: int = 1) -> bool:
         """采集/控制主循环：按目标节拍取帧，锚点降频复查阶段是否已结束。
 
         节拍与锚点复查**故意解耦**——锚点识别走框架（单轮耗时不定），若每帧都塞一次
@@ -550,6 +551,15 @@ class SpeedRushModule(ActivityModule):
         straight_chain = ({"trace": [], "t_start": time.time(), "bad_frames": {}}
                           if straight else None)
         straight_throttle = load_decision().planner.throttle_raw if straight else 0
+        # 直行档同点起 HUD 读数（基线金币率的数据源）：目录与 trace 同时刻命名，
+        # 事后按 fid/ts_ns 对齐（见 _begin_hud 直行形态）。失败降级为无读数，不阻断。
+        straight_hud = None
+        if straight:
+            hud_dir = _control_trace_root() / (
+                "hud_" + time.strftime(
+                    "%Y%m%d_%H%M%S", time.localtime(straight_chain["t_start"]))
+                + f"_p{phase}")
+            straight_hud = self._begin_hud(hud_dir, phase, round_no)
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
@@ -571,7 +581,7 @@ class SpeedRushModule(ActivityModule):
                     if recorder is not None and frame is not None:
                         recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
                     result: PerceptionResult | None = None
-                    if (self._perception_mode or (control and not straight)) \
+                    if not straight and (self._perception_mode or control) \
                             and frame is not None:
                         perc = self._ensure_perception()
                         if perc is not None:
@@ -616,6 +626,9 @@ class SpeedRushModule(ActivityModule):
                 self._stop_depth_observer(chain, phase)
             elif straight and straight_chain is not None:
                 self._flush_control_trace(straight_chain, phase)
+                if straight_hud is not None:
+                    straight_hud.stop("phase_end" if self._running else "stopped")
+                    self._hud = None
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
@@ -937,21 +950,18 @@ class SpeedRushModule(ActivityModule):
         self._recorder = rec
         return rec
 
-    def _begin_hud(self, recorder: DriveRecorder, phase: int, round_no: int) -> HudObserver | None:
-        """在同一会话目录里起 HUD 读数观察线程；失败返回 None（读数失败不该中止对局）。
+    def _begin_hud(self, out_dir: Path, phase: int, round_no: int) -> HudObserver | None:
+        """在指定目录起 HUD 读数观察线程；失败返回 None（读数失败不该中止对局）。
 
-        **为什么必须挂在录制会话上**：读数的用途是"与录制帧按 ``frame_id`` / ``ts_ns``
-        对齐"——没有会话目录就没有 ``frames.jsonl`` 可对，也没有地方落盘。故非录制模式
-        不产 ``hud.jsonl``（那条路上既无帧索引也无会话目录，见模块 _state 的 hud_* 项）。
-
-        **时机与录制器一致**：都在"已进入驾驶页"之后启动、在阶段结束的 finally 里停止。
-        区域真源缺失/非法时 ``HudObserver`` 构造即抛，这里降级为不读数并记 WARNING——
-        满载记分读数的缺失是可查的（_state.hud_recording 为假），不比中止对局更严重。
+        两个调用形态，取帧源同一（``frame_with_age``，fid/ts_ns 对齐链路不变）：
+        录制模式传录制会话目录（对齐目标=同会话 ``frames.jsonl``）；直行基线档传
+        control trace 根下的 ``hud_<时刻>_p<阶段>`` 目录（对齐目标=同时刻命名的
+        ``trace_*.jsonl``——直行档没有录制帧，时间轴锚点就是 trace 的时间轴）。
         """
         assert self.ctx is not None
         try:
             obs = HudObserver(
-                recorder.out_dir,
+                out_dir,
                 frame_source=self.ctx.capture.frame_with_age,
                 phase=phase,
                 round_no=round_no,
