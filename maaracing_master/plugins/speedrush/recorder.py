@@ -272,7 +272,11 @@ class DriveRecorder:
             logger.log(f"[极速狂飙] 录制 meta 写入失败: {exc!r}", "WARNING")
 
 
-def make_session_dir(root: Path) -> Path:
-    """按时间戳建会话目录（与 debug 会话同构），供调用方传入 DriveRecorder。"""
+def make_session_dir(root: Path, tag: str | None = None) -> Path:
+    """按时间戳建会话目录（与 debug 会话同构），供调用方传入 DriveRecorder。
+
+    ``tag`` 进目录名前缀（如 ``manual_20260916_120000``）：人工驾驶语料局与
+    历史纯时间戳会话一眼可分——阶段二参考线语料按 ``manual_`` 前缀取。"""
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path(root) / stamp
+    name = f"{tag}_{stamp}" if tag else stamp
+    return Path(root) / name

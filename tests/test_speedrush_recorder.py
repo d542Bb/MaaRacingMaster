@@ -177,3 +177,14 @@ def test_make_session_dir_uses_timestamp(tmp_path) -> None:
     d = make_session_dir(tmp_path)
     assert d.parent == tmp_path
     assert len(d.name) == len("20260916_120000")
+
+
+def test_make_session_dir_tag_prefixes_name(tmp_path) -> None:
+    """用途标签进目录名（维护者裁定 2026-10-03）：人工驾驶语料局必须是
+    manual_<时间戳>，与历史纯时间戳会话一眼可分——阶段二参考线语料按此前缀取。"""
+    d = make_session_dir(tmp_path, tag="manual")
+    assert d.parent == tmp_path
+    assert d.name.startswith("manual_")
+    assert len(d.name) == len("manual_20260916_120000")
+    # 无标签 = 旧行为（纯时间戳），历史消费方不受影响
+    assert make_session_dir(tmp_path).name.startswith("2")

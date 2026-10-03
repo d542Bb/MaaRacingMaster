@@ -940,7 +940,9 @@ class SpeedRushModule(ActivityModule):
     def _begin_recording(self, phase: int, round_no: int) -> DriveRecorder | None:
         """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。"""
         try:
-            session = make_session_dir(_demos_root())
+            # manual=人工驾驶语料（录制模式必然人驾）：目录名一眼可分历史会话，
+            # 阶段二参考线语料按 manual_ 前缀取（2026-10-03 维护者裁定）
+            session = make_session_dir(_demos_root(), tag="manual")
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
             rec = DriveRecorder(session, phase=phase, round_no=round_no)
