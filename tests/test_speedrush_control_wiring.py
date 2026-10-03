@@ -347,6 +347,44 @@ def test_control_chain_ego_road_gap_semantics():
     assert o.OFF_MAX == 3.0 and not hasattr(o, "retarget")
 
 
+# ---------- 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽的中位数 + ±40% 门 ----------
+
+def test_ego_road_width_forms_from_clean_pairs():
+    """W=中值滤波后双侧对宽 (R−L) 的中位数；样本满 W_MIN_SAMPLES 才成形。
+    语义=碰撞边界到碰撞边界（RULES：黄线外台阶），车道单位。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES):
+        o.update(_bnd_clusters(-2.23, +2.23), now=1000.0 + 0.05 * k)
+    assert o.width == pytest.approx(4.46)
+    assert o.last["width"] == pytest.approx(4.46)   # debug 数据面同值
+
+
+def test_ego_road_width_none_before_enough_samples():
+    o = smod._EgoRoadObserver()
+    o.update(_bnd_clusters(-2.23, +2.23), now=1000.0)
+    o.update(_bnd_clusters(-2.23, +2.23), now=1000.05)
+    assert o.width is None and o.last["width"] is None
+
+
+def test_ego_road_width_guard_rejects_pollution():
+    """成形后 |对宽−W|>±40% 的污染对不进统计（找边锁错结构时 W 不被拽走）。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES):
+        o.update(_bnd_clusters(-2.23, +2.23), now=1000.0 + 0.05 * k)
+    for k in range(10):                              # 宽 8.9 道的污染对
+        o.update(_bnd_clusters(-4.45, +4.45), now=1100.0 + 0.05 * k)
+    assert o.width == pytest.approx(4.46)
+
+
+def test_ego_road_width_ignores_garbage_and_single_side():
+    """垃圾对（|off|>OFF_MAX）与单侧拍不进宽度统计（与供数门同一入口纪律）。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES + 5):
+        o.update(_bnd_clusters(-6.0, -2.0), now=1000.0 + 0.05 * k)   # off=+4 垃圾
+    o.update(_bnd_clusters((5.0,), sides=1), now=1100.0)             # 单侧
+    assert o.width is None
+
+
 # ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------
 
 def test_yolo_object_mask_boxes_with_margin():

@@ -1069,12 +1069,22 @@ class _EgoRoadObserver:
 
     SLOT_TTL_S = 0.4                 # 有效对保鲜预算（兜底单侧/缺失拍）
     OFF_MAX = 3.0                    # 路面半宽级（4 车道 ≈ ±2 道）+ 机动余量
+    # 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽 (R−L) 的中位数——语义=
+    # 碰撞边界到碰撞边界（RULES：黄线外台阶），车道单位。缓变量统计：
+    # 双侧对在场率 ~50% 无妨，几十个样本即成形；±40% 门把找边锁错结构的
+    # 污染对挡在统计外。**离线回放两轮证伪的深度前瞻几何线不在此处**——
+    # 远场（z≥10）点云 X 被深度噪声涂抹（图像上几像素行高的条带），前瞻
+    # 线不可测；参考线=路心锚（本类 off）+ 车头向轴 + W 兜底界。
+    W_MIN_SAMPLES = 30               # 成形所需最少对宽数
+    W_KEEP_SAMPLES = 200             # 滑动样本窗上限（路型缓变，旧样本滚出）
+    W_GUARD_FRAC = 0.4               # 对宽超出 W±此比例 → 污染，不进统计
 
     def __init__(self) -> None:
         self._slot: dict[str, tuple] = {}     # 最近有效对缓存 (el, er, 时刻)
         self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口，
                                               # 第七轮：ro 单对野值 ±0.8 道跳变
                                               # 直注规划层=抽风转向的供数面根因）
+        self._w_samples: deque = deque(maxlen=self.W_KEEP_SAMPLES)
         self.last: dict = {}                  # 实机 debug 数据面（ro_* 列）
 
     def _fresh(self, now: float) -> tuple[float, float] | None:
@@ -1106,6 +1116,7 @@ class _EgoRoadObserver:
                 el = sorted(w[0] for w in self._win)[1]
                 er = sorted(w[1] for w in self._win)[1]
             self._slot["pair"] = (el, er, now)
+            self._feed_width(el, er)
         else:
             fresh = self._fresh(now)
             if fresh is None:
@@ -1121,9 +1132,26 @@ class _EgoRoadObserver:
         self.last = self._snapshot(now, src, off)
         return off
 
+    def _feed_width(self, el: float, er: float) -> None:
+        """中值滤波后的双侧对宽进 W 统计（垃圾对/单侧/保鲜拍不进——与供数门
+        同一入口纪律）。成形前收全部对宽；成形后 ±40% 门。"""
+        w = er - el
+        formed = self.width
+        if formed is not None and abs(w - formed) > self.W_GUARD_FRAC * formed:
+            return
+        self._w_samples.append(w)
+
+    @property
+    def width(self) -> float | None:
+        """成形路宽 W（道，碰撞边界到碰撞边界）；样本不足 None。"""
+        if len(self._w_samples) < self.W_MIN_SAMPLES:
+            return None
+        return float(np.median(self._w_samples))
+
     def _snapshot(self, now: float, src: str, off: float | None,
                   off_raw: float | None = None) -> dict:
-        return {"source": src, "off": off, "off_raw": off_raw}
+        return {"source": src, "off": off, "off_raw": off_raw,
+                "width": self.width}
 
 
 def _started_async_depth(obs: DepthRoadObserver,
