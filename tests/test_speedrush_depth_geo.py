@@ -662,9 +662,13 @@ def _anchor_rows():
 
 
 @pytest.mark.parametrize("stem,l_lo,l_hi,r_lo,r_hi", [
-    # 读数锁（车道单位）：直路帧干净侧 ≤0.5m 口径（对质验收 2026-10-01）
-    ("000906", -3.6, -2.6, 1.4, 2.4),
-    ("000340", -3.2, -2.2, 1.2, 2.2),
+    # 读数锁（车道单位）：真实路物（墙基/kerb 台阶）±0.5m 口径（2026-10-03
+    # 语料普查重推导：缘体证据门换装后读数落在固定路物上——000100 双侧墙基、
+    # 000906 R 墙基、000340 L 墙基为重推导区间；000906 L 读数未变沿用原区间；
+    # 000340 R 为真 kerb（四箱一致），沿用对质验收原值）
+    ("000100", -3.07, -2.77, 2.63, 2.92),
+    ("000906", -3.6, -2.6, 2.66, 2.96),
+    ("000340", -3.14, -2.85, 1.2, 2.2),
 ])
 def test_anchor_clean_straight_frames(stem, l_lo, l_hi, r_lo, r_hi):
     if not NPY.exists():
@@ -787,3 +791,53 @@ def test_scan_side_kerb_step_detected():
     xb, hb = _profile_points(_ROAD + kerb)
     ex = dg._scan_side(xb, hb, 1, zc=5.0, extent=3.0)
     assert np.isfinite(ex) and 2.9 < ex < 3.2, f"ex={ex}"
+
+
+def test_scan_side_rejects_pure_residual_ramp():
+    """平面残差缓坡（单调爬坡越阈、缘后持续爬升）→ 无穿越。
+
+    第八轮挂账案（211445/d00003 L 实测 0.085/m 爬升、跨箱仅漂 0.79——跨箱
+    稳定性杀不掉）：逐格 0.02 爬升，穿越后剖面持续高（过尾部持续门）但既无
+    脸（单格增量 ≤0.02 < EDGE_FACE_MIN）也无平台。"""
+    ramp = [(4.125 + 0.25 * k, 0.02 * (k + 1)) for k in range(12)]
+    xb, hb = _profile_points(_ROAD + ramp)
+    ex = dg._scan_side(xb, hb, 1, zc=5.0, extent=10.0)
+    assert not np.isfinite(ex), f"缓坡被当缘：ex={ex}"
+
+
+def test_scan_side_ramp_lands_on_wall_behind():
+    """缓坡接真墙：缓坡段穿越全被缘体证据门否决，检出落到墙台阶。
+
+    墙台阶以 above-above 对出现（缓坡尾格已在阈上）——缘基取对首格
+    px[i]，禁 (i−1→i) 线性外插（000906 R zc10 外插出 −5.6/+30.6 幽灵
+    穿越实证；旧码此处先被缓坡穿越截住，两处修复共同落位）。"""
+    ramp = [(4.125 + 0.25 * k, 0.02 * (k + 1)) for k in range(8)]   # 0.02~0.16
+    wall = [(6.125 + 0.25 * k, h) for k, h in enumerate((0.50, 0.52, 0.51))]
+    xb, hb = _profile_points(_ROAD + ramp + wall)
+    ex = dg._scan_side(xb, hb, 1, zc=5.0, extent=10.0)
+    assert np.isfinite(ex) and 5.4 <= ex <= 6.1, f"ex={ex}"
+
+
+def test_scan_side_rejects_low_shoulder_plateau():
+    """缓坡肩台（平台高度 1.25×阈 <1.5×）≠ 缘体 → 无穿越。
+
+    000906 R zc10 语料形态：缓坡爬到 0.077~0.081（1.13~1.19×阈）后近平，
+    平台形状成立但高度不够——肩台不是物体。"""
+    shoulder = [(4.125 + 0.25 * k, h) for k, h in enumerate(
+        (0.02, 0.04, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05))]
+    xb, hb = _profile_points(_ROAD + shoulder)
+    ex = dg._scan_side(xb, hb, 1, zc=5.0, extent=10.0)
+    assert not np.isfinite(ex), f"肩台被当缘：ex={ex}"
+
+
+def test_scan_side_smeared_far_kerb_kept_by_plateau():
+    """远场 smeared kerb（逐格爬 0.015 不足脸、顶部平台 0.145=1.7×阈）→ 检出。
+
+    000340 R zc14 语料形态：脸门单独会误杀远缘，平台条款兜底——回归锁，
+    拆平台条款此测红。"""
+    kerb = [(4.125 + 0.25 * k, h) for k, h in enumerate(
+        (0.069, 0.080, 0.095, 0.109, 0.128, 0.145,
+         0.145, 0.144, 0.145, 0.143))]
+    xb, hb = _profile_points(_ROAD + kerb)
+    ex = dg._scan_side(xb, hb, 1, zc=14.0, extent=10.0)
+    assert np.isfinite(ex) and 4.3 < ex < 4.6, f"ex={ex}"

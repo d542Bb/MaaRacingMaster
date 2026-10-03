@@ -116,6 +116,19 @@ EDGE_TAIL_FRAC = 0.6  # 尾部持续占比（穿越后剖面须仍高于阈值�
                       # kerb 的剖面形状不可分（000340 右 6.2m 真 kerb 阶差仅
                       # 0.08 与缓坡同形），需离线语料级判据（跨箱稳定性/平台
                       # 度）另立，见 CODE_WIKI 挂账。
+# ── 缘体证据门（2026-10-03 语料普查换装，杀缓坡类假缘）──────────────────
+# 普查实证（63 帧=三局证据包+3 金标帧，tools/experiments census_crossbin）：
+# 真缘剖面在穿越后必有「脸」（骤升：单格增量 ≥0.04，金标 kerb 0.075~0.09、
+# 墙 0.3~0.5）或「平台」（到顶：连续 ≥3 格 |增量| ≤0.004 且高度 ≥1.5×阈，
+# kerb 台面 0.14~0.21=1.7~4.7×阈）；缓坡假缘两者皆无——逐格增量 ≤0.026
+# （d00003 L 陡缓坡 0.085/m 实测）、永不到顶（高度只爬到 1.1~1.5×阈的肩台，
+# 000340 L/000906 R 实证），单帧形状判据（阶差门）在此判据下重新可分。
+# 跨箱稳定性作过主判据候选被否：陡缓坡跨箱仅漂 0.79m（真缘 ≤0.6 缓坡
+# ≥3.0 的分离只对浅缓坡成立），见 CODE_WIKI 第九轮。
+EDGE_FACE_MIN = 0.04  # 脸：单格增量下限（米）；脸窗=穿阈上升+对后两格
+EDGE_PLAT_EPS = 0.004  # 平台：单格 |增量| 上限（米/格）
+EDGE_PLAT_K = 1.5      # 平台高度下限（×阈）：肩台 1.1~1.49× 不算缘体，
+                       # 真 kerb 远场平台 1.7×（000340 R zc14 0.145/0.085）
 EDGE_MATCH_M = 0.8     # 「最近一致边界」的邻箱确认窗（米）：边界近于平行行进
 #                       方向，相邻箱 x 漂移实测 ≤0.5m；超窗=两箱看到不同结构
 SKY_HGT = 1.2         # 空中结构剔除阈：桥/天空域点 hgt≥7.5m，护栏 ≤1m
@@ -323,15 +336,42 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     return coef
 
 
+def _edge_body_evidence(ph: np.ndarray, i: int, thr: float,
+                        genuine: bool) -> bool:
+    """穿越候选 (i, i+1) 的缘体证据：脸（骤升）或平台（到顶）。
+
+    残差缓坡的剖面以缓斜率单调爬升、永不到顶——脸与平台皆无即判缓坡。
+    脸窗含真穿越对的穿阈上升本身（一格脸的 kerb：0→0.15 后顶缓升，合成
+    用例；缓坡穿阈上升仅 0.005~0.026 不会误入）；平台高度下限
+    （EDGE_PLAT_K×阈）把缓坡肩台与真缘顶分开。"""
+    lo = i - 1 if genuine else i
+    face = np.diff(ph[lo:min(i + 3, len(ph))])
+    if face.size and face.max() >= EDGE_FACE_MIN:
+        return True
+    steps = np.diff(ph[i:])
+    body = ph[i + 1:]
+    need = EDGE_PLAT_K * thr
+    run = 0
+    for k, s in enumerate(steps):
+        run = run + 1 if abs(s) <= EDGE_PLAT_EPS else 0
+        if run >= 3 and body[k - 2:k + 1].min() >= need:
+            return True
+    return False
+
+
 def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
                extent: float) -> float:
     """单 Z 箱单侧的离地穿越位置（米）；找不到为 nan。side=+1 右 / -1 左。
 
     从路心向外扫 0.25m 格高度中位剖面（路缘在点云里是缓坡爬升不是竖直台阶）：
     先找地面（内侧格可能被自车/阴影抬高，跳过），穿越取阈值两格持续 + 相邻格
-    线性插值细分 + **尾部持续门**（EDGE_TAIL_FRAC：影子 bump/路面渐变穿过后
-    回落路面，真缘后是缘体；未过门的穿越跳过继续向外找，全不入门=该箱该侧
-    弃权）。画外格（|x|>extent·zc，u 越界）不参与。"""
+    线性插值 + **尾部持续门**（EDGE_TAIL_FRAC：影子 bump/路面渐变穿过后回落
+    路面，真缘后是缘体；未过门的穿越跳过继续向外找，全不入门=该箱该侧弃权）
+    + **缘体证据门**（脸或平台，见 EDGE_* 注释：缓坡类假缘穿越跳过继续向外
+    找——缓坡后方常接真墙，d00003 L/000906 R 语料实证）。对内台阶对（前格
+    已在阈上，缘基在 i→i+1 间）穿越取对首格 px[i]，禁 (i−1→i) 线性外插——
+    外插在平缓对上放大噪声出幽灵位置（000906 R zc10 实测 −5.6/+30.6）。
+    画外格（|x|>extent·zc，u 越界）不参与。"""
     sel = (xb * side > 0.2) & (np.abs(xb) <= X_MAX_M) & np.isfinite(xb) & np.isfinite(hb)
     if sel.sum() < MIN_SIDE_PTS:
         return np.nan
@@ -367,8 +407,14 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
             tail = ph[i + 2:]
             if len(tail) and (tail > thr).mean() < EDGE_TAIL_FRAC:
                 continue
-            f = (thr - ph[i - 1]) / (ph[i] - ph[i - 1])
-            return float(px[i - 1] + f * (px[i] - px[i - 1]))
+            # 缘体证据门：脸或平台皆无=残差缓坡，跳过继续向外找
+            genuine = ph[i - 1] <= thr
+            if not _edge_body_evidence(ph, i, thr, genuine):
+                continue
+            if genuine:  # 真越阈对：i−1→i 线性插值
+                f = (thr - ph[i - 1]) / (ph[i] - ph[i - 1])
+                return float(px[i - 1] + f * (px[i] - px[i - 1]))
+            return float(px[i])  # 对内台阶对：缘基取对首格
     return np.nan
 
 
