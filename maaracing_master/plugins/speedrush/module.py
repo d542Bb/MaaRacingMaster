@@ -551,15 +551,16 @@ class SpeedRushModule(ActivityModule):
         straight_chain = ({"trace": [], "t_start": time.time(), "bad_frames": {}}
                           if straight else None)
         straight_throttle = load_decision().planner.throttle_raw if straight else 0
-        # 直行档同点起 HUD 读数（基线金币率的数据源）：目录与 trace 同时刻命名，
-        # 事后按 fid/ts_ns 对齐（见 _begin_hud 直行形态）。失败降级为无读数，不阻断。
-        straight_hud = None
-        if straight:
+        # 控制两档（智能/直行）同点起 HUD 读数：分数流是验收②「智能 vs 直行基线」
+        # 对比的数据面。目录与 trace 同时刻命名，事后按 fid/ts_ns 对齐（见
+        # _begin_hud）。失败降级为无读数，不阻断。
+        drive_hud = None
+        if control:
+            src = chain if chain is not None else straight_chain
             hud_dir = _control_trace_root() / (
                 "hud_" + time.strftime(
-                    "%Y%m%d_%H%M%S", time.localtime(straight_chain["t_start"]))
-                + f"_p{phase}")
-            straight_hud = self._begin_hud(hud_dir, phase, round_no)
+                    "%Y%m%d_%H%M%S", time.localtime(src["t_start"])) + f"_p{phase}")
+            drive_hud = self._begin_hud(hud_dir, phase, round_no)
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
@@ -626,9 +627,9 @@ class SpeedRushModule(ActivityModule):
                 self._stop_depth_observer(chain, phase)
             elif straight and straight_chain is not None:
                 self._flush_control_trace(straight_chain, phase)
-                if straight_hud is not None:
-                    straight_hud.stop("phase_end" if self._running else "stopped")
-                    self._hud = None
+            if drive_hud is not None:
+                drive_hud.stop("phase_end" if self._running else "stopped")
+                self._hud = None
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False

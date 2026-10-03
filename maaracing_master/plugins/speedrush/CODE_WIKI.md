@@ -615,9 +615,9 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 深度几何/全程直行）：False=正常全链驾驶；True=**全程直行基线**——接管手柄后方向归零、
 油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
 不起深度 worker，perception_mode 开着也不跑），trace 只记时间轴与常量列（state=STRAIGHT，
-复用 `_flush_control_trace` 落盘协议）。同点起 HUD 读数观察线程（目录与 trace 同时刻
-命名 `hud_<时刻>_p<阶段>/hud.jsonl`，按 fid/ts_ns 与 trace 对齐）——HUD 分数流是直行
-基线金币率的数据源（control-route 验收②的分母）。
+复用 `_flush_control_trace` 落盘协议）。控制两档（智能/直行）都在 `_drive_loop` 内同点起
+HUD 读数观察线程（目录与 trace 同时刻命名 `hud_<时刻>_p<阶段>/hud.jsonl`，按 fid/ts_ns
+与 trace 对齐）——分数流是验收②「智能 vs 直行基线」对比的数据面。
 弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人）的语义不变。
 
 **坑点**：

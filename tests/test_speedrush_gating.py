@@ -387,6 +387,9 @@ class _FakeTimeFull:
     def monotonic(self) -> float:
         return self._clock.t
 
+    def perf_counter(self) -> float:
+        return self._clock.t
+
     def strftime(self, fmt, t=None):
         return "20261003_190000"
 
@@ -485,3 +488,24 @@ def test_straight_mode_skips_perception(env, monkeypatch, tmp_path) -> None:
     assert mod._drive_loop(1, None) is True
     assert calls == []  # 一次推理都没跑
     assert mod._last_perception is None
+
+
+def test_control_mode_also_records_hud(env, monkeypatch, tmp_path) -> None:
+    """智能驾驶档（control_mode、非直行）也起 HUD 读数——验收②要智能 vs
+    直行基线的分数流对比，两档的数据面必须对称。"""
+    mod, ctx, clock = env
+    mod._control_mode = True
+    mod._running = True
+    _set_graph(mod, [True, False, False])
+
+    ctx.gamepad = SimpleNamespace(acquire=lambda: _StraightPadLease())
+    monkeypatch.setattr(sr, "time", _FakeTimeFull(clock))
+    monkeypatch.setattr(sr, "_control_trace_root", lambda: tmp_path)
+    created: list = []
+    monkeypatch.setattr(sr, "HudObserver", _hud_stub(created))
+    monkeypatch.setattr(sr, "load_session", lambda w: None)  # 深度会话桩：不碰 GPU
+
+    assert mod._drive_loop(1, None) is True
+    assert len(created) == 1
+    assert created[0].name == "hud_20261003_190000_p1"
+    assert mod._hud is None  # 退出释放引用
