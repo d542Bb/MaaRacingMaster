@@ -207,6 +207,36 @@ def test_control_mode_config_roundtrip():
     assert m.set_module_config({"control_mode": False})["control_mode"] is False
 
 
+# ---------- 直行基线档：配置读写 + 直行拍下发（V0 语义，不碰感知/深度） ----------
+
+def test_straight_mode_config_roundtrip():
+    m = _module()
+    assert m._straight_mode is False             # 默认走正常深度几何驾驶
+    assert smod.SpeedRushModule.DEFAULT_MODULE_CONFIG["straight_mode"] is False
+    out = m.set_module_config({"straight_mode": True})
+    assert out["straight_mode"] is True and m._straight_mode is True
+    assert m.set_module_config({"straight_mode": False})["straight_mode"] is False
+
+
+def test_straight_tick_zero_steer_full_throttle():
+    """直行拍：方向恒零、油门恒踩（throttle_raw 读 decision.json 单一真源）；
+    trace 只记时间轴（fid/ts_ns）+ 常量列，供事后对齐 HUD 分数事件。"""
+    m = _module()
+    pad = StubPad()
+    rows: list[dict] = []
+    for fid in range(1, 6):
+        m._straight_tick(pad, fid, fid * 50_000_000, rows,
+                         throttle_raw=load_decision().planner.throttle_raw)
+        assert pad.joy == (0, 0)                 # 横向恒零
+        assert pad.trig == 255                   # 油门恒满（decision.json throttle_raw）
+    assert pad.updates == 5
+    assert [r["fid"] for r in rows] == [1, 2, 3, 4, 5]
+    for r in rows:
+        assert r["state"] == "STRAIGHT"
+        assert r["x_target"] == 0.0 and r["steer_x"] == 0
+        assert "ts_ns" in r
+
+
 # ---------- 控制 trace：逐拍记录 + 阶段出口 flush ----------
 
 def test_control_trace_records_and_flushes(tmp_path, monkeypatch):

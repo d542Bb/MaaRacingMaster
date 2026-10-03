@@ -611,9 +611,12 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 读到的是人行道外缘（语义与旧 q20 的"人行道内缘"锚点不同，已记录于回归锁锚点注）。
 时延：推理 ~20ms（折叠口径）+ 后处理 p50 ≈80ms，异步 worker 承载（150ms 窗）。
 
-**geo_master 开关**（module config，"depth"|"hsv" 默认 depth）：road_offset 证据源
-切换；黄线 `detect_boundary` 退役为骨架（照跑照记账、坏帧取证照旧，不再当证据源）。
-弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人，不用黄线补位）。
+**驾驶模式档**（module config `straight_mode`，默认 False；GUI「驾驶模式」分段控件
+深度几何/全程直行）：False=正常全链驾驶；True=**全程直行基线**——接管手柄后方向归零、
+油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
+不起深度 worker），trace 只记时间轴与常量列（state=STRAIGHT，复用 `_flush_control_trace`
+落盘协议），供 HUD 分数按 fid/ts_ns 对齐测直行基线金币率（control-route 验收②的分母）。
+弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人）的语义不变。
 
 **坑点**：
 - `ego_mask.json` 上半身矩形皮肤相关（换车重算）；**车带下延段不需要换车重算**

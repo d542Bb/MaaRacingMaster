@@ -58,7 +58,7 @@
                  两行结构避免拥挤：
                  • treasure（鉴宝）第1行（整行）：刷到第几场；第2行（整行）：目标场次（互斥单选）
                  • speedrush（极速狂飙）第1行：演示数据录制开关（驾驶阶段只采集、由用户手动驾驶）；
-                   第2行：几何尺切换（道路横向定位证据源，闭环 A/B 换尺） -->
+                   第2行：驾驶模式切换（深度几何=正常自动驾驶 | 全程直行=直行基线，不加载感知与深度） -->
             <div class="module-options" id="module-options" style="display:none;">
               <div id="opt-treasure-block" style="display:none;">
                 <div class="module-options-row module-options-row--stack">
@@ -91,10 +91,10 @@
                 </div>
                 <div class="module-options-row">
                   <div class="mra-field">
-                    <label class="mra-field-label">几何尺<span class="field-hint">（车辆横向定位的证据源；改动在下次「开始」时生效，运行日志与 trace 记录本局所用）</span></label>
-                    <div class="mra-segmented" id="opt-geo-master" role="group" aria-label="几何尺">
+                    <label class="mra-field-label">驾驶模式</label>
+                    <div class="mra-segmented" id="opt-drive-mode" role="group" aria-label="驾驶模式">
                       <button type="button" class="seg-btn seg-btn--selected" data-value="depth">深度几何</button>
-                      <button type="button" class="seg-btn" data-value="hsv">黄线（对照）</button>
+                      <button type="button" class="seg-btn" data-value="straight">全程直行</button>
                     </div>
                   </div>
                 </div>

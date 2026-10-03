@@ -311,9 +311,11 @@ def test_real_modules_declare_their_config_surface():
     # 配置面的键与模块实际接受/返回的键必须一致（不多不少）
     # perception_mode：阶段 B 感知开关（2026-09-21 接线）；
     # control_mode：实机闭环接管开关（2026-09-22 planner §九 step 3，默认关）；
+    # straight_mode：全程直行基线档（2026-10-03，直行基线测量仪器）；
     # geo_master 已删（2026-09-28 v3：黄线簇为唯一供数，A/B 换尺档废弃）。
     keys = set(sc._module_config_defaults("speedrush"))
-    assert keys == {"record_mode", "perception_mode", "control_mode"}
+    assert keys == {"record_mode", "perception_mode", "control_mode",
+                    "straight_mode"}
 
     tr = set(sc._module_config_defaults("treasure"))
     assert tr == {"max_daily_loops", "target_session"}

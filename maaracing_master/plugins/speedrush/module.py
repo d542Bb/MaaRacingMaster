@@ -192,13 +192,16 @@ class SpeedRushModule(ActivityModule):
     # 由 decision.json 的 mode.allow_all_moves 决定（false=V0 只发油门走直线，
     # true=V1 开横向）。默认 False：接线首启不接管车辆，显式开才动（实机安全边界）。
     DEFAULT_CONTROL_MODE = False
+    # 直行基线档的初值（False = 正常深度几何驾驶）。True = 驾驶阶段接管手柄后
+    # 方向归零、油门恒踩，感知与深度都不加载（V0 语义：决策禁动恒 x_target=0）
+    # ——「全程直行」基线金币率的测量仪器（control-route 验收②的分母）。
+    DEFAULT_STRAIGHT_MODE = False
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
-    # 几何尺初值：闭环 A/B 的换尺开关（"depth"=深度区域 | "hsv"=黄线对照档），
-    # 进白名单即 GUI 可切、profile 可持久化（非法值在 set_module_config 里修正）
     DEFAULT_MODULE_CONFIG: dict = {
         "record_mode": DEFAULT_RECORD_MODE,
         "perception_mode": DEFAULT_PERCEPTION_MODE,
         "control_mode": DEFAULT_CONTROL_MODE,
+        "straight_mode": DEFAULT_STRAIGHT_MODE,
     }
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
@@ -246,6 +249,8 @@ class SpeedRushModule(ActivityModule):
         self._perception_failed = False
         # 控制模式：驾驶阶段跑全链并接管手柄（V0/V1 由 decision.json 决定，见类常量）
         self._control_mode = self.DEFAULT_CONTROL_MODE
+        # 直行基线档：接管手柄后只踩油门（感知/深度不加载，见类常量注释）
+        self._straight_mode = self.DEFAULT_STRAIGHT_MODE
         # road_offset 证据源=黄线簇间隙（v3 唯一语义，2026-09-28 维护者裁定
         # 删除 hsv 档）；深度退役为标定职责（照跑记账，不进实时回路）。
         # 深度几何的 ORT 会话：实例跨阶段复用（模型加载秒级，一局只付一次）；
@@ -276,6 +281,7 @@ class SpeedRushModule(ActivityModule):
             "record_mode": bool(self._record_mode),
             "perception_mode": bool(self._perception_mode),
             "control_mode": bool(self._control_mode),
+            "straight_mode": bool(self._straight_mode),
             "_state": {
                 "recording": bool(rec is not None and rec.running),
                 "frames": int(stats["frames_written"]) if stats else 0,
@@ -308,6 +314,8 @@ class SpeedRushModule(ActivityModule):
             self._perception_mode = bool(config["perception_mode"])
         if isinstance(config, dict) and "control_mode" in config:
             self._control_mode = bool(config["control_mode"])
+        if isinstance(config, dict) and "straight_mode" in config:
+            self._straight_mode = bool(config["straight_mode"])
         return self.get_module_config()
 
     # ---------- 生命周期 ----------
@@ -350,7 +358,8 @@ class SpeedRushModule(ActivityModule):
 
         self._running = True
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
-                        f"·感知{'开' if self._perception_mode else '关'}）", "session")
+                        f"·感知{'开' if self._perception_mode else '关'}"
+                        f"·直行{'开' if self._straight_mode else '关'}）", "session")
         try:
             self._run_flow(index)
         finally:
@@ -512,12 +521,18 @@ class SpeedRushModule(ActivityModule):
         """
         assert self.ctx is not None
         assert self._graph is not None
-        # 控制接管的前提：非录制模式（录制期人驾，程序不碰车）+ control_mode 开关。
-        # 控制依赖感知产出观测，故控制开启隐含逐帧检测（不必另开 perception_mode）。
-        control = self._control_mode and recorder is None
+        # 控制接管的前提：非录制模式（录制期人驾，程序不碰车）+ control_mode 开关
+        # 或直行基线档（该档本身就是接管形态）。控制依赖感知产出观测，故正常控制
+        # 隐含逐帧检测（不必另开 perception_mode）；直行档例外——感知/深度都不加载。
+        straight = self._straight_mode and recorder is None
+        control = (self._control_mode or straight) and recorder is None
         if recorder is not None:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶（正在录制演示数据）", "INFO")
+        elif straight:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：全程直行基线（感知/深度不加载，只踩油门）",
+                  "INFO")
         elif control:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：控制环接管"
@@ -529,7 +544,12 @@ class SpeedRushModule(ActivityModule):
         self._infer_times = []
         self._control_times = []
         self._control_last = None
-        chain = self._build_control_chain() if control else None
+        chain = self._build_control_chain() if (control and not straight) else None
+        # 直行档 trace（stub chain 复用 _flush_control_trace 的落盘协议）；
+        # 油门取 decision.json 的 throttle_raw 单一真源，不另抄数值。
+        straight_chain = ({"trace": [], "t_start": time.time(), "bad_frames": {}}
+                          if straight else None)
+        straight_throttle = load_decision().planner.throttle_raw if straight else 0
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
@@ -551,15 +571,21 @@ class SpeedRushModule(ActivityModule):
                     if recorder is not None and frame is not None:
                         recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
                     result: PerceptionResult | None = None
-                    if (self._perception_mode or control) and frame is not None:
+                    if (self._perception_mode or (control and not straight)) \
+                            and frame is not None:
                         perc = self._ensure_perception()
                         if perc is not None:
                             result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
                             self._last_perception = result
                             self._infer_times.append(result.infer_ms)
-                    if gpad is not None and result is not None:
-                        self._control_tick(
-                            chain, gpad, frame, result, fid, ts_ns, age_ms, phase)
+                    if gpad is not None:
+                        if straight:
+                            self._straight_tick(gpad, fid, ts_ns,
+                                                straight_chain["trace"],
+                                                straight_throttle)
+                        elif result is not None:
+                            self._control_tick(
+                                chain, gpad, frame, result, fid, ts_ns, age_ms, phase)
                     frames += 1
 
                     now = time.monotonic()
@@ -588,6 +614,8 @@ class SpeedRushModule(ActivityModule):
             if control and chain:
                 self._flush_control_trace(chain, phase)
                 self._stop_depth_observer(chain, phase)
+            elif straight and straight_chain is not None:
+                self._flush_control_trace(straight_chain, phase)
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
@@ -757,6 +785,20 @@ class SpeedRushModule(ActivityModule):
                        if e.outcome == OUTCOME_PASS],
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
             "presence": obs.health.target_presence})
+
+    def _straight_tick(self, gpad, fid: int, ts_ns: int, rows: list[dict],
+                       throttle_raw: int) -> None:
+        """直行基线一拍：方向归零、油门恒踩（V0 语义：决策禁动恒 x_target=0）。
+
+        感知与深度都不进本路径——基线要度量的正是"无驾驶智能"的地板收益
+        （control-route 验收②的分母）。trace 只记时间轴与常量列：事后把 HUD
+        分数事件按 fid/ts_ns 对齐到拍，金币率才有分母。
+        """
+        gpad.left_joystick(x_value=0, y_value=0)
+        gpad.right_trigger(value=throttle_raw)
+        gpad.update()
+        rows.append({"fid": fid, "ts_ns": ts_ns, "state": "STRAIGHT",
+                     "x_target": 0.0, "steer_x": 0, "throttle": throttle_raw})
 
     def _flush_control_trace(self, chain: dict, phase: int) -> None:
         """阶段出口一次性落控制 trace（C1/§七.1 标定数据源）。
