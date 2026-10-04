@@ -3140,3 +3140,28 @@ with_evidence=False 返回 3 元组按 4 解包、异常被 try 吞掉导致 ro 
   两引擎 A1/路心系数值经 ro 换算追同一目标，落位与币/车一致。
 
 产物 `.workbuddy-ai/replay_dual/`（逐拍 jsonl + summary + 渲染），会话级不入库。
+
+## 深度管线性能归因（`probe_depth_pipeline_attribution.py` / `probe_moge_stage_decompose.py`，2026-10-04）
+
+只读归因：worker 耗时 p50 130~153ms 拆到段。**报告全文见
+[`DEPTH_PIPELINE_ATTRIBUTION_20261004.md`](DEPTH_PIPELINE_ATTRIBUTION_20261004.md)**（结论、
+证据链、改进选项表、复现指引均在其中，本节只留指针与仪器入口）。
+
+- **耗时构成**：后处理（上采样 13% + 3D 找边 45%）**≈58%**、MoGe DML 推理 **≈30%**、
+  preprocess+reconstruct ≈12%（同进程顺序计时；证据包离线重放独立复核到 0.3~0.7ms）。
+- **推理不是算力瓶颈**：整图融合成单 DML 节点（executor 0.3ms），`model_run` 52~55ms 落在
+  DML EP 每帧 I/O 与 CPU↔GPU 同步；减输出体积无效 → 同步主导。
+- **丢弃率随 worker 耗时单调升**（dur 130→29~30%，dur 148~153→50~51%），机制=节流窗 70ms
+  + observe 耗时构成 ~200~235ms 产出间隔越 350ms 闸；**与锁让路次数无关**。
+- **graph capture 的 30x 是假象**（捕获图冻结输入，重放不随帧更新）；`cpu_sync_spinning` 无收益。
+
+```bash
+.venv/Scripts/python.exe tools/experiments/speedrush_vision/probe_depth_pipeline_attribution.py   # CPU 侧，无 GPU
+.venv/Scripts/python.exe tools/experiments/speedrush_vision/probe_moge_stage_decompose.py --n 50 --stride 12 --with-observe
+```
+
+**后续：后处理向量化已落地**（`depth_geo.py` 后处理段 + `tests/test_speedrush_depth_geo.py`
+等价回归锁；`reading_from_points` **−23% p50**，**441 帧逐位一致**，observe −9%）——
+细节见报告文末「后处理向量化」节。
+
+边界：本机测量**未跑游戏**（空载口径），GPU 侧绝对值需与游戏并发实机复核。
