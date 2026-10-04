@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -24,9 +25,13 @@ from maaracing_master.plugins.speedrush.world_model import _read_gate0, load_cal
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH, GATE0_FILE as GATE0_PATH
 
 DT = 0.05          # 20Hz 名义 tick
-CFG = _read_decision(
+# 本文件锁的是 legacy 决策语义：闸值自钉关，不随部署 decision.json 的
+# trajectory_sampling 运行态漂（验收期部署文件开闸，语义测试不跟着翻）。
+_CFG_BASE = _read_decision(
     __import__("maaracing_master.plugins.speedrush", fromlist=["DECISION_FILE"])
     .DECISION_FILE)
+CFG = replace(_CFG_BASE,
+              mode=replace(_CFG_BASE.mode, trajectory_sampling=False))
 
 
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------

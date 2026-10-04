@@ -5,6 +5,7 @@
 选择保留，只换「计划」的形态与输出点。d 坐标系=路心系（道0=路心）。"""
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -16,7 +17,11 @@ from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
 
 DT = 0.05
-CFG = _read_decision(DECISION_FILE)
+# 本文件锁的是轨迹模式接线语义：关闸基座自钉，不随部署 decision.json 的
+# trajectory_sampling 运行态漂（验收期部署文件开闸，语义测试不跟着翻）。
+_CFG_BASE = _read_decision(DECISION_FILE)
+CFG = replace(_CFG_BASE,
+              mode=replace(_CFG_BASE.mode, trajectory_sampling=False))
 CFG_TRAJ = replace(CFG, mode=replace(CFG.mode, trajectory_sampling=True))
 
 
@@ -56,8 +61,14 @@ class _Car:
         self.age_ticks = 1
 
 
-def test_config_gate_default_off_and_roundtrip() -> None:
-    assert CFG.mode.trajectory_sampling is False       # 缺键安全（老 json）
+def test_config_gate_default_off_and_roundtrip(tmp_path) -> None:
+    # 缺键安全（老 json）：不带 trajectory_sampling 键 → 闸默认关
+    d = json.loads(DECISION_FILE.read_text(encoding="utf-8"))
+    d["mode"].pop("trajectory_sampling", None)
+    old = tmp_path / "decision_old.json"
+    old.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    assert _read_decision(old).mode.trajectory_sampling is False
+    assert CFG.mode.trajectory_sampling is False
     assert CFG_TRAJ.mode.trajectory_sampling is True
 
 

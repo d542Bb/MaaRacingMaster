@@ -65,6 +65,16 @@ def _stub_depth(monkeypatch):
     yield cur
 
 
+@pytest.fixture(autouse=True)
+def _pin_gate_off(monkeypatch):
+    """决策闸自钉关：本文件锁的是 legacy 接线管道语义，不随部署
+    decision.json 的 trajectory_sampling 运行态漂（验收期部署文件开闸）。"""
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, mode=replace(d.mode, trajectory_sampling=False)))
+
+
 # ---------- V0：allow_all_moves=false → 杆值恒 0、油门恒 255 ----------
 
 def test_v0_straight_line():
