@@ -678,6 +678,51 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                 counts.reshape(GRID_NZ, GRID_NX), int(dug_mask.sum()))
 
 
+# ── 走廊供数（阶段二第一刀：pair 黑视拍的 road_offset 补位源）──────────────
+# 消费契约见 _EgoRoadObserver（module.py）：pair 在场用 pair，pair 断供才吃走廊。
+# 诚实弃权：含自车的 run 由**严格 DRIVABLE 格**构成（挖洞/无证据格断 run），
+# 行数/宽度不足即 None——不编答案。带取近中段（z≤10m）：远场坏尾（红区不可信）
+# 不参与供数。
+GRID_CORRIDOR_Z_HI = 10.0    # 走廊带纵向上沿（米）
+GRID_CORRIDOR_MIN_ROWS = 6   # 带内至少多少行给出「含自车 run」才成形
+GRID_CORRIDOR_MIN_W = 2.0    # run 最窄（米）：再窄=证据撑不起「这是路」
+
+
+def grid_corridor_center(grid: DrivableGrid, *,
+                         x_ego: float = 0.0) -> tuple[float, float, int] | None:
+    """可行驶栅格 → 含自车可走走廊 ``(中心x米, 宽米, 行数)``；无诚实答案给 None。
+
+    逐行（z ∈ [GRID_Z_LO, GRID_CORRIDOR_Z_HI)）找**含自车格**的连续 DRIVABLE
+    run：自车格非可走（挖洞/无证据/误红）的行不出证——挖洞是「证据被主动移除」，
+    不允许被走廊跨越。行数 ≥ MIN_ROWS 且中位宽 ≥ MIN_W 才成形；中心/宽取各行
+    中位（单行野值不进数）。``x_ego``：自车横坐标（米，缺省 0=栅格原点即车）。"""
+    ix_ego = int(np.floor((x_ego + GRID_X_MAX) / GRID_CELL))
+    if not (0 <= ix_ego < GRID_NX):
+        return None
+    zc = GRID_Z_LO + (np.arange(GRID_NZ) + 0.5) * GRID_CELL
+    rows = np.nonzero(zc < GRID_CORRIDOR_Z_HI)[0]
+    centers: list[float] = []
+    widths: list[float] = []
+    for iz in rows:
+        row = grid.state[iz]
+        if row[ix_ego] != GRID_DRIVABLE:
+            continue
+        l = r = ix_ego
+        while l > 0 and row[l - 1] == GRID_DRIVABLE:
+            l -= 1
+        while r < GRID_NX - 1 and row[r + 1] == GRID_DRIVABLE:
+            r += 1
+        centers.append(-GRID_X_MAX + (l + r + 1) * 0.5 * GRID_CELL)
+        widths.append((r - l + 1) * GRID_CELL)
+    if len(centers) < GRID_CORRIDOR_MIN_ROWS:
+        return None
+    center = float(np.median(centers))
+    width = float(np.median(widths))
+    if width < GRID_CORRIDOR_MIN_W:
+        return None
+    return center, width, len(centers)
+
+
 def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
     """全帧掩码 → 检测带切片（None 给全假）。"""
     if dig is None:
@@ -957,7 +1002,7 @@ class AsyncDepthRoadObserver:
         self._debug_seq = 0
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None] | None = None
-        self._result: tuple[int, DepthRoadReading, float] | None = None
+        self._result: tuple[int, DepthRoadReading, float, DrivableGrid | None] | None = None
         self._last_seq = -1               # 消费端已见结果序号（仅主线程触碰）
         self._pushed = 0
         self._applied = 0
@@ -971,6 +1016,7 @@ class AsyncDepthRoadObserver:
         self._wakeup = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_age_ms = 0.0
+        self.last_grid: DrivableGrid | None = None   # 驻留结果的同行栅格（take 维护）
 
     # ---------- 生命周期（阶段=chain：建即 start，收口 stop） ----------
 
@@ -1026,10 +1072,12 @@ class AsyncDepthRoadObserver:
         with self._lock:
             item = self._result
             if item is None:
+                self.last_grid = None
                 return None, False
-            reading, captured_ts = item[1], item[2]
+            reading, captured_ts, grid = item[1], item[2], item[3]
         age_ms = (time.perf_counter() - captured_ts) * 1000.0
         self.last_age_ms = age_ms
+        self.last_grid = grid          # 与 reading 同源同拍：驻留则同行驻留
         is_new = item[0] != self._last_seq
         if is_new:
             self._last_seq = item[0]
@@ -1040,6 +1088,7 @@ class AsyncDepthRoadObserver:
                 if self._result is not None and self._result[0] == item[0]:
                     self._result = None
                 self._stale_drops += 1
+            self.last_grid = None
             return None, False
         if is_new:
             with self._lock:
@@ -1143,4 +1192,7 @@ class AsyncDepthRoadObserver:
             if self._debug_dir is not None:
                 self._write_debug(item[1], evid, reading, item[3], item[4])
             with self._lock:
-                self._result = (item[0], reading, item[2])  # (push 序号, 读数, captured_ts)
+                # (push 序号, 读数, captured_ts, 同帧可行驶栅格——evid 附带物,
+                #  与读数同源同拍，经 take().last_grid 供给决策层走廊补位)
+                self._result = (item[0], reading, item[2],
+                                evid.get("grid") if evid else None)

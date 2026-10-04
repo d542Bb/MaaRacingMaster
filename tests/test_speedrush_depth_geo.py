@@ -1131,6 +1131,79 @@ def test_drivable_grid_shared_coef_bitwise_identical():
     assert g_shared.coef == g_self.coef
 
 
+def test_grid_corridor_center_symmetric_road():
+    """双墙对称路：走廊含自车、中心≈0、宽≈路宽（格粒度内）。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL)
+    g = dg.drivable_grid_from_points(pts, FX, FY)
+    cor = dg.grid_corridor_center(g)
+    assert cor is not None
+    center, width, nrows = cor
+    assert center == pytest.approx(0.0, abs=0.3)
+    assert width == pytest.approx(2 * WALL, abs=0.75)
+    assert nrows >= dg.GRID_CORRIDOR_MIN_ROWS
+
+
+def test_grid_corridor_center_asymmetric_road_polarity():
+    """偏心路（左缘 −3 右缘 +5.5）：中心 +1.25——ro 消费极性与 pair 同式
+    （off=−center，车道换算在消费端），跨层极性契约由 wiring 测试锁。"""
+    pts = _scene_points(x_left=3.0, x_right=WALL)
+    g = dg.drivable_grid_from_points(pts, FX, FY)
+    cor = dg.grid_corridor_center(g)
+    assert cor is not None
+    center, width, _ = cor
+    assert center == pytest.approx((-3.0 + WALL) / 2, abs=0.5)
+    assert width == pytest.approx(WALL + 3.0, abs=0.75)
+
+
+def _hand_grid(drivable):
+    """手搓 DrivableGrid：``drivable(iz)`` 给出该行可走列的迭代。"""
+    state = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    for iz in range(dg.GRID_NZ):
+        for ix in drivable(iz):
+            state[iz, ix] = dg.GRID_DRIVABLE
+    return dg.DrivableGrid(state=state, coef=(0.0, 0.0, 0.0),
+                           counts=np.ones_like(state, np.int32),
+                           dig_cells=0, latency_ms=0.0)
+
+
+def _cols(lo_m: float, hi_m: float):
+    lo = int(np.ceil((lo_m + dg.GRID_X_MAX) / dg.GRID_CELL - 1e-9))
+    hi = int(np.ceil((hi_m + dg.GRID_X_MAX) / dg.GRID_CELL - 1e-9))
+    return range(max(lo, 0), min(hi, dg.GRID_NX))
+
+
+def test_grid_corridor_narrow_run_abstains():
+    """含自车 run 窄于 MIN_W → None（证据撑不起「这是路」，不硬编中心）。"""
+    g = _hand_grid(lambda iz: _cols(-0.875, 0.875))     # 宽 1.75m
+    assert dg.grid_corridor_center(g) is None
+
+
+def test_grid_corridor_ego_cell_dug_all_rows_abstains():
+    """自车列全行非可走（如挖洞盖住自车近场）→ 每行无含自车 run → None——
+    挖洞是证据被主动移除，走廊不得跨越编一个中心出来。"""
+    ego_ix = int(np.floor((0.0 + dg.GRID_X_MAX) / dg.GRID_CELL))
+
+    def drivable(iz):
+        return (ix for ix in _cols(-5.0, 5.0) if ix != ego_ix)
+
+    g = _hand_grid(drivable)
+    assert dg.grid_corridor_center(g) is None
+
+
+def test_grid_corridor_min_rows_abstains():
+    """含自车 run 行数不足 MIN_ROWS → None（零星几行不构成走廊证据）。"""
+    def drivable(iz):
+        return _cols(-5.0, 5.0) if iz < dg.GRID_CORRIDOR_MIN_ROWS - 1 else ()
+
+    g = _hand_grid(drivable)
+    assert dg.grid_corridor_center(g) is None
+    # 恰好达标的行数：成形
+    g_ok = _hand_grid(lambda iz: _cols(-5.0, 5.0) if iz < dg.GRID_CORRIDOR_MIN_ROWS
+                      else ())
+    cor = dg.grid_corridor_center(g_ok)
+    assert cor is not None and cor[0] == pytest.approx(0.0, abs=0.3)
+
+
 def test_drivable_grid_plane_fit_fail_all_unknown():
     """平面拟合失败（域内点不足）→ 全未知、coef=None、不抛异常（诚实弃权）。"""
     pts = np.full((720, 1280, 3), np.nan, np.float32)
