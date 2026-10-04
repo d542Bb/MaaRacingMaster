@@ -676,12 +676,13 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
     band = np.full((56, w, 3), 30, np.uint8)
     st = note.get("state", "?"); rs = note.get("reason", "?")
     sn = note.get("steer"); ro = note.get("ro"); el = note.get("elane")
+
+    def _f(v):
+        return f"{v:+.2f}" if isinstance(v, (int, float)) else "-"
     l1 = (f"D[{note.get('fid', '?')}] {st} {rs}  steer={sn:+.3f}"
           if isinstance(sn, (int, float)) else f"D[{note.get('fid', '?')}] {st} {rs}")
     l1 += f"  elane={el:+.2f}" if isinstance(el, (int, float)) else ""
     l1 += f"  xt={_f(note.get('xt'))}"
-    def _f(v):
-        return f"{v:+.2f}" if isinstance(v, (int, float)) else "-"
     l2 = (f"ro={_f(ro)}[{note.get('src', '-')}]"
           f" raw={_f(note.get('ro_raw'))}"
           f" age={note.get('age', '-')}ms new={note.get('new', '-')}"

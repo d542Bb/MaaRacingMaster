@@ -713,7 +713,7 @@ class SpeedRushModule(ActivityModule):
             # 内）；dgeo 弃权拍=None，退纯模型积分——一个 job 一个主人。
             # 提前于 engine.update：轨迹模式（阶段二）决策层同吃路心锚与 W
             # 兜底宽度；legacy 模式消费序不变（engine 不吃这两路）。
-            road_offset = chain["ego_road"].update(dgeo)
+            road_offset = chain["ego_road"].update(dgeo, new=dgeo_new)
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents),
@@ -1097,8 +1097,15 @@ class _EgoRoadObserver:
             return None
         return s[0], s[1]
 
-    def update(self, bnd, now: float | None = None) -> float | None:
-        """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。"""
+    def update(self, bnd, now: float | None = None, *,
+               new: bool = True) -> float | None:
+        """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
+
+        ``new``：本拍读数是否新证据（异步驻留协议 take() 的 is_new）。中值窗、
+        保鲜槽与 W 统计只认新证据（使用次数≠学习次数，同 take() 的纪律）——
+        驻留复用拍走槽值；否则同一读数 age 闸内被逐拍重复计入窗，窗内独立
+        读数退化为 1~2 个：真变化滞后 ~0.3s 后台阶跳变、单对野值凭重复入窗
+        赢得中值（实机 10-04 两局取证：79 次 >0.3 道 ro 台阶 0 次在新读数拍）。"""
         if now is None:
             now = time.monotonic()
         ok = (bnd is not None and bnd.sides == 2
@@ -1106,7 +1113,7 @@ class _EgoRoadObserver:
               and bnd.right_edge_lane is not None)
         src = "pair"
         off_raw = None
-        if ok:
+        if ok and new:
             el, er = bnd.left_edge_lane, bnd.right_edge_lane
             off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
             if abs((el + er) / 2.0) > self.OFF_MAX:

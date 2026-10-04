@@ -737,6 +737,20 @@ def test_render_anchors_at_true_pixels(up_positive):
     assert hit >= len(rd.edge_pts), "原图黄锚未压在缘底真值上"
 
 
+def test_render_decision_band_note_dict_does_not_throw():
+    """决策带（note 非 None）必须可渲染——曾 _f 先用后定义 UnboundLocalError
+    被 _write_debug 的静默 try 吞掉，实机调试图零产出（10-03/10-04 四局
+    depth_debug 目录全空、mkdir 有目录无文件）。note 每拍必传，此路径必炸。"""
+    rd = dg.DepthRoadReading(left_edge_lane=-2.0, right_edge_lane=2.0,
+                             left_x=100, right_x=540, sides=2, latency_ms=130.0)
+    note = {"fid": 123, "state": "CRUISE", "reason": "hold:no_candidate",
+            "steer": 0.1, "elane": 0.2, "xt": 0.3, "ro": -0.1, "src": "pair",
+            "ro_raw": -0.12, "age": 301.0, "new": False}
+    img = dg.render_depth_debug(np.full((720, 1280, 3), 128, np.uint8),
+                                None, rd, None, None, note)
+    assert img.shape == (720 + (dg.DIAG_Y1 - dg.Y0) + 56, 1280, 3)
+
+
 # ---------- _scan_side 穿越质量门：缘阶差 + 尾部持续（2026-10-02 真机剖面） ----
 
 def _profile_points(spec, side=1, noise=0.01, seed=11):

@@ -350,6 +350,32 @@ def test_ego_road_median_filter_kills_outlier_pair():
     assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.20) == pytest.approx(+1.9)
 
 
+def test_ego_road_reuse_tick_consumes_no_new_evidence():
+    """驻留复用拍（take() 的 is_new=False）不重复入中值窗、不喂 W、不刷新槽龄
+    ——窗只认新证据（使用次数≠学习次数）。实机 10-04 两局取证：读数有效到达
+    ~4.5Hz，同一读数 age 闸内被逐拍重复计入窗，窗内独立读数退化为 1~2 个
+    （79 次 >0.3 道 ro 台阶 0 次在新读数拍、67 次旧值停滞≥2 拍后跳）——真变化
+    滞后 ~0.3s 台阶跳变，单对野值凭重复入窗赢得中值。复用拍输出=槽值，
+    source 记 pair_slot。"""
+    o = smod._EgoRoadObserver()
+    o.update(_bnd_clusters(-2.9, -0.9), now=1000.00)
+    o.update(_bnd_clusters(-2.9, -0.9), now=1000.05)
+    base = o.update(_bnd_clusters(-2.9, -0.9), now=1000.10)   # 窗满
+    n_win, n_w = len(o._win), len(o._w_samples)
+    for k in range(1, 5):                                     # 驻留重投 4 拍
+        assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.10 + 0.05 * k,
+                        new=False) == pytest.approx(base)
+        assert o.last["source"] == "pair_slot"
+    assert len(o._win) == n_win and len(o._w_samples) == n_w
+    # 右缘野值（新对）：满窗中值杀掉；随后野值重投不能再凭重复入窗翻面
+    killed = o.update(_bnd_clusters(-2.9, +0.7), now=1000.35)
+    assert killed == pytest.approx(1.9)   # median(-0.9,-0.9,+0.7)=-0.9
+    for k in range(1, 4):
+        assert o.update(_bnd_clusters(-2.9, +0.7), now=1000.40 + 0.05 * k,
+                        new=False) == pytest.approx(killed)
+    assert len(o._win) == 3
+
+
 def test_control_chain_ego_road_gap_semantics():
     """chain 的 ego_road 即 pair 语义（无分档、无目标锁定机器）。"""
     m = _module()
