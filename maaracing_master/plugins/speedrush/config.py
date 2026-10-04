@@ -29,6 +29,9 @@ class Mode:
     # 超车模式总闸（阶段 C 设计稿 §七：V2 开关，默认关；与 allow_car_graze 语义分离——
     # 后者管"贴车是否算风险否决"，本闸管"超车是否进候选集"）
     allow_overtake: bool = False
+    # 横向轨迹采样评分闸（阶段二设计稿 §2.3，默认关=现役栈逐拍不变）：开闸后
+    # 决策输出从 x_target 位置常量换为采样轨迹的前瞻点（滚动重评，破判 ABORT）
+    trajectory_sampling: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,7 +214,10 @@ def _read_decision(path: Path) -> DecisionConfig:
             allow_all_moves=_bool(d, "mode", "allow_all_moves"),
             allow_car_graze=_bool(d, "mode", "allow_car_graze"),
             # allow_overtake 缺省 False：老 json 不带键也安全（超车候选默认不进集）
-            allow_overtake=_bool(d, "mode", "allow_overtake", default=False)),
+            allow_overtake=_bool(d, "mode", "allow_overtake", default=False),
+            # trajectory_sampling 缺省 False：老 json 不带键也安全（现役栈逐拍不变）
+            trajectory_sampling=_bool(d, "mode", "trajectory_sampling",
+                                      default=False)),
         control=Control(
             frame_rate_hz=_num(d, "control", "frame_rate_hz", lo=0),
             target_grace_s=_num(d, "control", "target_grace_s", lo=0),

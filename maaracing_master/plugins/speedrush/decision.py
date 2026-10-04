@@ -48,6 +48,8 @@ import math
 from dataclasses import dataclass
 
 from maaracing_master.plugins.speedrush.config import DecisionConfig
+from maaracing_master.plugins.speedrush.latsample import (
+    LatTrajectorySampler, eval_traj)
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -341,6 +343,14 @@ class DecisionEngine:
         self.watch = ValidationWatch(cfg)
         self.scorer = Scorer(cfg, self.cal)
         self.lateral = LateralSafety(cfg, self.cal)
+        # 轨迹采样器（阶段二 §2.3；闸默认关=None=现役栈逐拍不变）：参数复用
+        # 既有安全/运动面——横向可达域=v_lat_max、危险窗=lat_veto_horizon_s、
+        # 接触界=lat_veto_gap_lane，与 LateralSafety 同源不另立真值。
+        self.traj = LatTrajectorySampler(
+            v_lat_max=cfg.planner.v_lat_max, v_ego_row=self.cal.v_ego,
+            horizon_s=cfg.validate.lat_veto_horizon_s,
+            gap_lane=cfg.validate.lat_veto_gap_lane,
+        ) if cfg.mode.trajectory_sampling else None
         self.reset()
 
     def reset(self) -> None:
@@ -368,19 +378,33 @@ class DecisionEngine:
         self._fault = False
         self._last_report_ok = True
         self._reanchor_pending: float | None = None
+        # 轨迹模式状态（阶段二）：初态速度来自执行回执差分 EMA（回执缺位 0）；
+        # _traj_last_dt=上一拍轨迹目标（组转存续态保持，与 _current_goal 同语义）
+        self._prev_exec: float | None = None
+        self._vd = 0.0
+        self._traj_last_dt: float | None = None
+        self._ro: float | None = None
+        self._rwidth: float | None = None
 
     # ---------- 主入口 ----------
 
     def update(self, obs: WorldObservation, dt_s: float,
                executed_lane: float | None = None,
                traffic: tuple[tuple[CarView, ...],
-                              tuple[PassEvent, ...]] | None = None) -> DecisionOutput:
+                              tuple[PassEvent, ...]] | None = None,
+               road_offset: float | None = None,
+               road_width: float | None = None) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
-        缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容性红线）。
-        逐拍视图放实例通道（单线程 owner 纪律，与 _log_grp 同族）——helper 签名不扩散。"""
+        缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
+        逐拍视图放实例通道（单线程 owner 纪律，与 _log_grp 同族）——helper 签名不扩散。
+
+        ``road_offset``/``road_width``（阶段二 §一）：路心锚与 W 兜底宽度，仅
+        轨迹模式消费；ro 缺席拍轨迹诚实降级回 legacy 输出形成（不臆造路心系）。"""
         self._views, self._events = traffic if traffic is not None else ((), ())
         self._boundary = obs.boundary
+        self._ro = road_offset
+        self._rwidth = road_width
         # 优先级（§二矩阵）：致命信号 > ABORT/收敛/超时 > 选择。本 tick 先处理转移，
         # 再按落定的状态发输出。
         report = self.watch.check(obs, dt_s)
@@ -409,10 +433,46 @@ class DecisionEngine:
         else:  # CRUISE
             reason = self._tick_cruise(obs, executed_lane)
 
-        # 输出目标：保持/移动路都指向当前组的横向中心；无目标回落自车道 0
+        # 执行回执差分 → 初态横向速度 EMA（轨迹模式初态续接的测量面；回执
+        # 缺位保持旧值，饱和在 v_lat_max 内）
+        if executed_lane is not None and dt_s > 0:
+            if self._prev_exec is not None:
+                lim = self.cfg.planner.v_lat_max
+                inst = max(-lim, min(lim, (executed_lane - self._prev_exec) / dt_s))
+                self._vd += (1.0 - math.exp(-dt_s / 0.2)) * (inst - self._vd)
+            self._prev_exec = executed_lane
+
+        # 输出目标：轨迹模式=每拍重采样、输出选中轨迹的前瞻点（§2.3 滚动重评，
+        # 破判连拍达 _REEVAL_STREAK 即 ABORT——防抖与 _miss_breach 同源纪律）；
+        # 闸关/回执缺位/ro 缺席/非巡航变道态 → legacy x_smooth 位置常量路径。
+        xt = None
+        if self.traj is not None and executed_lane is not None \
+                and self._ro is not None \
+                and self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
+            d_t = self._traj_d_target(obs)
+            if d_t is not None:
+                rep = self.traj.update(
+                    d0=executed_lane, vd0=self._vd, ad0=0.0, d_target=d_t,
+                    cars=self._views, width=self._rwidth, ro=self._ro,
+                    hz=self.cfg.control.frame_rate_hz)
+                if rep.ok:
+                    self._traj_prev = rep.best
+                    self._traj_last_dt = d_t
+                    xt = eval_traj(rep.best.coeffs,
+                                   min(self.cfg.planner.lookahead_tau_s,
+                                       rep.best.T))
+                if not rep.ok and self._state is DecisionState.CHANGE:
+                    self._late_streak += 1
+                    if self._late_streak >= _REEVAL_STREAK:
+                        self._enter_abort("traj_blocked")
+                        reason = "cancel:traj_blocked"
+                elif rep.ok and self._state is DecisionState.CHANGE:
+                    self._late_streak = 0
+
         goal = self._current_goal(obs)
         alpha = 1.0 - math.exp(-dt_s / self.cfg.hysteresis.tau_filter_s)
-        self._x_smooth += alpha * (goal - self._x_smooth)
+        self._x_smooth += alpha * ((xt if xt is not None else goal)
+                                   - self._x_smooth)
         move_allowed = self._state in (DecisionState.CRUISE, DecisionState.CHANGE)
         if not self.cfg.mode.allow_all_moves:
             move_allowed = False
@@ -420,10 +480,27 @@ class DecisionEngine:
         self._reanchor_pending = None      # 一次性：只在完成拍携带
         return DecisionOutput(
             schema_version=_SCHEMA, state=self._state, target_id=self._target_gid,
-            x_target=self._x_smooth if self._state is not DecisionState.CONSERVE else None,
+            x_target=(xt if xt is not None else self._x_smooth)
+            if self._state is not DecisionState.CONSERVE else None,
             move_allowed=move_allowed, reason=reason, emitted_fid=obs.frame_id,
             valid_until_fid=obs.frame_id + self._validity_ticks(),
             reanchor_lane=reanchor)
+
+    def _traj_d_target(self, obs: WorldObservation) -> float | None:
+        """轨迹目标（路心系，道）：金币=ro+组心、超车=ro+锁定侧贴邻位、
+        巡航=0（守轴）。组转存续态（nan/缺位）保持上一拍目标——与
+        _current_goal 的"不外插 nan"同语义；无处可保持才 None（降级）。"""
+        if self._state is DecisionState.CHANGE:
+            if self._target_kind == KIND_CAND_OVERTAKE:
+                v = next((x for x in self._views if x.id == self._target_gid), None)
+                if v is not None:
+                    return self._ro + self._overtake_goal(v.x_lane)
+                return self._traj_last_dt
+            g = self._group_of(obs)
+            if g is not None and not math.isnan(g.x_center):
+                return self._ro + g.x_center
+            return self._traj_last_dt
+        return 0.0
 
     # ---------- 状态处理 ----------
 
@@ -509,15 +586,17 @@ class DecisionEngine:
                 self._enter_abort(veto)
                 return f"cancel:{veto}"
             # 逐拍重评（阶段一）：执行停滞/目标迫近时机会窗是否还够用——
-            # 连拍破判即弃追，不追注定错过的变道（废变道病灶）。
-            t_left = self._remaining_s(obs)
-            if t_left is not None and self._miss_breach(g.x_center, executed, t_left):
-                self._late_streak += 1
-                if self._late_streak >= _REEVAL_STREAK:
-                    self._enter_abort("infeasible")
-                    return "cancel:infeasible"
-            else:
-                self._late_streak = 0
+            # 连拍破判即弃追，不追注定错过的变道（废变道病灶）。轨迹模式下
+            # 由采样器破判接管（update 内 traj_blocked），此处跳过防双重计账。
+            if self.traj is None:
+                t_left = self._remaining_s(obs)
+                if t_left is not None and self._miss_breach(g.x_center, executed, t_left):
+                    self._late_streak += 1
+                    if self._late_streak >= _REEVAL_STREAK:
+                        self._enter_abort("infeasible")
+                        return "cancel:infeasible"
+                else:
+                    self._late_streak = 0
             # 越界复核（对当前目标）：归一发散现形 → 取消
             if abs(g.x_center) + g.x_span >= self.cfg.validate.x_lane_abs_max:
                 self._enter_abort("x_bound")
@@ -572,7 +651,9 @@ class DecisionEngine:
         if veto is not None:
             self._enter_abort(veto)
             return f"cancel:{veto}"
-        if executed is not None:
+        if executed is not None and self.traj is None:
+            # 逃逸判据（第五轮）仅 legacy 计划形态需要——轨迹模式滚动重评
+            # 天然跟车，破判路由采样器接管（update 内 traj_blocked）。
             disp = abs(goal - executed)
             if self._escape_breach(disp):
                 self._late_streak += 1
@@ -803,9 +884,14 @@ class DecisionEngine:
 
     def _demand_consumed(self, executed: float) -> bool:
         """有符号完成判据：executed 与需求同向、幅度吃掉 |demand|×(1−ε) 减死区。
-        需求≈0（原地起变道）时退化为 |executed| ≤ 死区。"""
+        需求≈0（原地起变道）时退化为 |executed| ≤ 死区。
+        轨迹模式需求=滚动 d_target（路心系，_traj_last_dt）——executed 已是
+        路心系回执，与 A1 系的 _demand_lane 不同参考系（阶段二 §2.3）。"""
         dz = self.cfg.hysteresis.dead_zone_lane
-        d = self._demand_lane
+        if self.traj is not None and self._traj_last_dt is not None:
+            d = self._traj_last_dt
+        else:
+            d = self._demand_lane
         if abs(d) <= dz:
             return abs(executed) <= dz
         return executed * d > 0 and abs(executed) >= abs(d) * (1 - 1e-6) - dz

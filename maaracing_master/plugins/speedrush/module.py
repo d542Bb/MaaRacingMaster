@@ -709,12 +709,16 @@ class SpeedRushModule(ActivityModule):
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             planner: LateralPlanner = chain["planner"]
             tviews, tevents = chain["traffic_obs"].update(obs)
-            out = chain["engine"].update(
-                obs, dt, executed_lane=planner.state.executed_lane,
-                traffic=(tviews, tevents))
             # road_offset 供数源=深度几何读数（路心合成+保鲜槽在 _EgoRoadObserver
             # 内）；dgeo 弃权拍=None，退纯模型积分——一个 job 一个主人。
+            # 提前于 engine.update：轨迹模式（阶段二）决策层同吃路心锚与 W
+            # 兜底宽度；legacy 模式消费序不变（engine 不吃这两路）。
             road_offset = chain["ego_road"].update(dgeo)
+            out = chain["engine"].update(
+                obs, dt, executed_lane=planner.state.executed_lane,
+                traffic=(tviews, tevents),
+                road_offset=road_offset,
+                road_width=chain["ego_road"].width)
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
