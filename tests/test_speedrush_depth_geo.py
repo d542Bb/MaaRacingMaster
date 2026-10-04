@@ -855,3 +855,194 @@ def test_scan_side_smeared_far_kerb_kept_by_plateau():
     xb, hb = _profile_points(_ROAD + kerb)
     ex = dg._scan_side(xb, hb, 1, zc=14.0, extent=10.0)
     assert np.isfinite(ex) and 4.3 < ex < 4.6, f"ex={ex}"
+
+
+# ---------- 后处理向量化的等价回归锁（2026-10-04）------------------------
+#
+# 改造把 _scan_side 的「逐格 while 循环 + 逐格 np.median」换成「一次算格号 +
+# 复合键排序取格中位」，并把 Z 无关掩码提出 ZBIN 循环、给平面迭代加提前收敛。
+# 本锁把**改造前的逐格实现**原样留在测试里当参照，对随机点云、格边界应力集与
+# 既有合成场景断言两者输出**严格相等**（不是近似）——等价性由这一节守，不靠
+# 一次性人工比对。
+
+
+def _ref_scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
+                   extent: float) -> float:
+    """改造前实现（逐格循环 + 逐格 np.median）——参照，勿随产线改动。"""
+    sel = (xb * side > 0.2) & (np.abs(xb) <= dg.X_MAX_M) \
+        & np.isfinite(xb) & np.isfinite(hb)
+    if sel.sum() < dg.MIN_SIDE_PTS:
+        return np.nan
+    xs, hs = xb[sel], hb[sel]
+    prof_x: list[float] = []
+    prof_h: list[float] = []
+    x0 = -dg.X_MAX_M + dg.XBIN_DX / 2
+    while x0 < dg.X_MAX_M:
+        if x0 * side > 0 and abs(x0) <= extent * zc:
+            m = (xs >= x0 - dg.XBIN_DX / 2) & (xs < x0 + dg.XBIN_DX / 2)
+            if m.sum() >= dg.MIN_BIN_PTS:
+                prof_x.append(float(x0))
+                prof_h.append(float(np.median(hs[m])))
+        x0 += dg.XBIN_DX
+    if len(prof_x) < 3:
+        return np.nan
+    px = np.array(prof_x)
+    ph = np.array(prof_h)
+    srt = np.argsort(px * side)
+    px, ph = px[srt], ph[srt]
+    thr = dg.EDGE_HT + dg.EDGE_HT_SLOPE * max(0.0, zc - 3.0)
+    g = -1
+    for i in range(len(px)):
+        if ph[i] <= thr:
+            g = i
+            break
+    if g < 0:
+        return np.nan
+    for i in range(g + 1, len(px) - 1):
+        if ph[i] > thr and ph[i + 1] > thr:
+            tail = ph[i + 2:]
+            if len(tail) and (tail > thr).mean() < dg.EDGE_TAIL_FRAC:
+                continue
+            genuine = ph[i - 1] <= thr
+            if not dg._edge_body_evidence(ph, i, thr, genuine):
+                continue
+            if genuine:
+                f = (thr - ph[i - 1]) / (ph[i] - ph[i - 1])
+                return float(px[i - 1] + f * (px[i] - px[i - 1]))
+            return float(px[i])
+    return np.nan
+
+
+def _assert_same_ex(a: float, b: float, msg: str) -> None:
+    """严格相等（nan==nan 视为相等；不做近似）。"""
+    if np.isnan(a) and np.isnan(b):
+        return
+    assert a == b, f"{msg}: ref={a!r} new={b!r}"
+
+
+@pytest.mark.parametrize("seed", range(24))
+def test_scan_side_matches_reference_on_random_clouds(seed):
+    """随机点云（含 nan/±inf/野值）上新旧 _scan_side 输出严格相等。"""
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(200, 5000))
+    xb = rng.uniform(-14.0, 14.0, n).astype(np.float32)
+    # 外侧（|x|>4）抬高一截，制造真缘/缓坡混合剖面
+    hb = (rng.normal(0.0, 0.05, n)
+          + (np.abs(xb) > 4.0) * rng.uniform(0.0, 0.8, n)).astype(np.float32)
+    k = int(rng.integers(1, max(2, n // 20)))
+    idx = rng.choice(n, size=min(k, n), replace=False)
+    xb[idx[: len(idx) // 2]] = np.nan
+    hb[idx[len(idx) // 2:]] = np.nan
+    for j in rng.choice(n, size=min(4, n), replace=False):
+        hb[j] = rng.choice([np.inf, -np.inf, 1e6, -1e6])
+    for j in rng.choice(n, size=min(4, n), replace=False):
+        xb[j] = rng.choice([np.inf, -np.inf, 13.9, -13.9])
+    for side in (1, -1):
+        for zc in (4.0, 5.0, 10.0, 14.0):
+            for extent in (2.0, 3.0, 10.0):
+                a = _ref_scan_side(xb, hb, side, zc, extent)
+                b = dg._scan_side(xb, hb, side, zc, extent)
+                _assert_same_ex(a, b, f"seed={seed} side={side} zc={zc} ext={extent}")
+
+
+def test_scan_side_matches_reference_on_bin_edges():
+    """格边界归属（左闭右开 [−12+0.25k, −12+0.25(k+1))）上新旧同判定。
+
+    点精确落在格边界上是最容易分箱漂的位置（浮点 floor vs 区间比较）；
+    每个边界塞 MIN_BIN_PTS 个点，保证相邻格都有剖面值。"""
+    edges = -dg.X_MAX_M + dg.XBIN_DX * np.arange(dg.N_XBIN + 1)
+    xs = np.concatenate([np.full(dg.MIN_BIN_PTS, e, np.float32) for e in edges])
+    hs = np.concatenate([np.full(dg.MIN_BIN_PTS, 0.02 * i, np.float32)
+                         for i in range(edges.size)])
+    for side in (1, -1):
+        for zc in (5.0, 14.0):
+            a = _ref_scan_side(xs, hs, side, zc, 10.0)
+            b = dg._scan_side(xs, hs, side, zc, 10.0)
+            _assert_same_ex(a, b, f"edges side={side} zc={zc}")
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_binned_median_matches_numpy_median(seed):
+    """复合键分箱中位数与逐格 ``np.median`` **逐位**同值（含偶数格均值）。"""
+    rng = np.random.default_rng(2000 + seed)
+    n = int(rng.integers(40, 6000))
+    scale = (1.0, 1e-3, 1e3, 1e6)[seed % 4]
+    vals = (rng.normal(0.0, 1.0, n) * scale).astype(np.float32)
+    nb = int(rng.integers(3, 50))
+    bi = rng.integers(0, nb, n).astype(np.int64)
+    counts = np.bincount(bi, minlength=nb)
+    want = np.nonzero(counts)[0]
+    if want.size == 0:
+        return
+    got = dg._binned_median(vals, bi, want, counts)
+    exp = np.array([np.median(vals[bi == k]) for k in want], np.float64)
+    assert got.dtype == np.float64
+    np.testing.assert_array_equal(got.view(np.uint64), exp.view(np.uint64))
+
+
+@pytest.mark.parametrize("case", [
+    "both_walls", "single_wall", "object_mask", "near_barrier", "bend_bins",
+])
+def test_reading_from_points_matches_reference_pipeline(monkeypatch, case):
+    """端到端等价：把 _scan_side 换回逐格参照实现，reading_from_points 的全部
+    输出字段（lane/像素锚/sides/rejects/edge_pts）必须一字不差。
+
+    这一条同时覆盖「掩码提出 ZBIN 循环」与「平面迭代提前收敛」两处改动。"""
+    if case == "both_walls":
+        pts = _scene_points(x_left=WALL, x_right=WALL)
+        obj = None
+    elif case == "single_wall":
+        pts = _scene_points(x_right=WALL)
+        obj = None
+    elif case == "object_mask":
+        pts = _scene_points(x_left=WALL, x_right=WALL)
+        obj = np.zeros((720, 1280), bool)
+        obj[:, 900:] = True
+    elif case == "near_barrier":
+        pts = _scene_points(x_left=WALL, x_right=WALL,
+                            boxes=((-4.5, -NEAR_BARRIER_X, 5.0, 9.0, 0.8),))
+        obj = None
+    else:                                   # 弯道形态：逐箱漂移、退回中位
+        pts = _scene_points(x_left=None, x_right=WALL, boxes=(
+            (-2.75, -2.5, 3.0, 5.0, 1.0), (-3.75, -3.5, 5.0, 7.0, 1.0),
+            (-4.75, -4.5, 7.0, 9.0, 1.0)))
+        obj = None
+    ego = DepthRoadObserver._load_ego_mask()
+    new = reading_from_points(pts, FX, CAL, ego_mask=ego, object_mask=obj, fy=FY)
+    monkeypatch.setattr(dg, "_scan_side", _ref_scan_side)
+    old = reading_from_points(pts, FX, CAL, ego_mask=ego, object_mask=obj, fy=FY)
+    assert (old.left_edge_lane, old.right_edge_lane, old.left_x, old.right_x,
+            old.sides, old.rejects, old.edge_pts) == \
+           (new.left_edge_lane, new.right_edge_lane, new.left_x, new.right_x,
+            new.sides, new.rejects, new.edge_pts), case
+
+
+def test_reading_from_points_abstain_paths_match_reference(monkeypatch):
+    """弃权路径等价：全 nan（平面拟合失败）与单侧无墙（一侧弃权）两路上，
+    新旧实现同样一字不差——提前收敛改动不许改弃权行为。"""
+    ego = DepthRoadObserver._load_ego_mask()
+    for pts in (np.full((720, 1280, 3), np.nan, np.float32),
+                _scene_points(x_right=WALL)):
+        new = reading_from_points(pts, FX, CAL, ego_mask=ego, fy=FY)
+        monkeypatch.setattr(dg, "_scan_side", _ref_scan_side)
+        old = reading_from_points(pts, FX, CAL, ego_mask=ego, fy=FY)
+        monkeypatch.undo()
+        assert (old.left_edge_lane, old.right_edge_lane, old.left_x, old.right_x,
+                old.sides, old.rejects, old.edge_pts) == \
+               (new.left_edge_lane, new.right_edge_lane, new.left_x, new.right_x,
+                new.sides, new.rejects, new.edge_pts)
+
+
+def test_fit_road_plane_early_exit_matches_full_iterations(monkeypatch):
+    """平面迭代提前收敛不改结果：把 PLANE_ITERS 临时放大到 6 轮（早收失效、
+    必跑满），系数必须与产线路径逐位相同。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL)
+    X, Y, Z = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
+    dig = np.zeros((dg.DIAG_Y1 - dg.Y0, 1280), bool)
+    for fy in (FY, None):        # 特征种子路径 + fy=None 回退路径
+        fast = dg._fit_road_plane(X, Y, Z, dig, fy=fy)
+        monkeypatch.setattr(dg, "PLANE_ITERS", 6)
+        slow = dg._fit_road_plane(X, Y, Z, dig, fy=fy)
+        monkeypatch.undo()
+        assert fast is not None and slow is not None, f"fy={fy}"
+        np.testing.assert_array_equal(fast, slow)

@@ -103,6 +103,12 @@ ZBIN = ((3, 5), (5, 7), (7, 9), (9, 12), (12, 16))  # 深度箱（米）；弯�
 #                                                   # 假设，逐箱独立读数
 XBIN_DX = 0.25        # 横向格宽（米，路心两侧各 12m）
 X_MAX_M = 12.0        # 剖面横向域（米）
+# 扫描格心表（−X_MAX 起 DX 步进，共 N_XBIN 个）——分箱向量化后按索引取格心。
+# 直接算式与旧 while 的逐次累加**逐位同值**：0.125=2⁻³ 的整数倍，且 |x|<16 时
+# ulp≤2⁻²⁰ 整除 2⁻³，故累加/直算都无舍入（这是「格边界判定不变」的前提）。
+N_XBIN = int(2 * X_MAX_M / XBIN_DX)
+XBIN_CENTERS = (-X_MAX_M + XBIN_DX / 2
+                + XBIN_DX * np.arange(N_XBIN, dtype=np.float64))
 MIN_BIN_PTS = 15      # 单格剖面最少点数
 MIN_SIDE_PTS = 150    # 单箱单侧最少点数
 MIN_BOX_PTS = 300     # 单箱（双侧合计）最少点数
@@ -246,7 +252,9 @@ def _road_by_column_profile(Z: np.ndarray, fy: float, bad: np.ndarray) -> np.nda
 
     while len(act):
         nx = nxt[cur, act]
-        cont = (cur >= 0) & (nx >= 0) & (prev_z < np.float32(ROAD_Z_HI))
+        # cur≥0 是不变量（初值取有效行最大下标，循环内只在 cont⊆(nx≥0) 时改写），
+        # 故省掉该比较——与旧式 `(cur>=0)&(nx>=0)&…` 逐位同结果。
+        cont = (nx >= 0) & (prev_z < np.float32(ROAD_Z_HI))
         if not cont.any():
             break
         z = Zs[nx, act]
@@ -257,9 +265,10 @@ def _road_by_column_profile(Z: np.ndarray, fy: float, bad: np.ndarray) -> np.nda
             & (d >= WALK_INC_LO * inc) & (d <= WALK_INC_HI * inc)
         road_s[nx[good], act[good]] = True
         prev_z = np.where(good, z, prev_z)
-        miss = np.where(cont & ~good, miss + 1, np.where(cont, 0, miss))
+        bad_step = cont & ~good          # 复用（miss 与 keep 各用一次）
+        miss = np.where(bad_step, miss + 1, np.where(cont, 0, miss))
         cur = np.where(cont, nx, cur)
-        keep = ~(cont & ~good & (miss > WALK_MISS_STOP))
+        keep = ~(bad_step & (miss > WALK_MISS_STOP))
         if not keep.all():
             act = act[keep]
             cur = cur[keep]
@@ -289,7 +298,12 @@ def _fit_road_plane_seed(road: np.ndarray, X: np.ndarray, Y: np.ndarray,
             return None
         A = np.stack([xs[m], zs[m], ones[m]], 1)
         coef = np.linalg.lstsq(A, ys[m], rcond=None)[0]
-        m = np.abs(ys - (coef[0] * xs + coef[1] * zs + coef[2])) < PLANE_TOL
+        m_next = np.abs(ys - (coef[0] * xs + coef[1] * zs + coef[2])) < PLANE_TOL
+        # 内点集不动 ⇒ 下一轮 lstsq 吃同一矩阵、出同一 coef、再得同一内点集，
+        # 提前收（逐位等价：只是跳过若干次结果相同的迭代，不改返回值）。
+        if np.array_equal(m_next, m):
+            break
+        m = m_next
     return coef
 
 
@@ -332,7 +346,10 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
             return None
         A = np.stack([xs[m], zs[m], ones[m]], 1)
         coef = np.linalg.lstsq(A, ys[m], rcond=None)[0]
-        m = np.abs(ys - (coef[0] * xs + coef[1] * zs + coef[2])) < PLANE_TOL
+        m_next = np.abs(ys - (coef[0] * xs + coef[1] * zs + coef[2])) < PLANE_TOL
+        if np.array_equal(m_next, m):   # 同 _fit_road_plane_seed：内点集不动即收
+            break
+        m = m_next
     return coef
 
 
@@ -359,6 +376,36 @@ def _edge_body_evidence(ph: np.ndarray, i: int, thr: float,
     return False
 
 
+def _binned_median(values: np.ndarray, bin_idx: np.ndarray, want: np.ndarray,
+                   counts: np.ndarray) -> np.ndarray:
+    """按格分组的中位数（float32 值 → float64 返回），与逐格 ``np.median`` 逐位同值。
+
+    实现：把「格号 | 顺序保持的 float32 位模式」拼成一个 int64 复合键，**一次
+    排序**即得「按格分组、格内升序」；中位取段中项，偶数格取两中项均值——均值
+    在 float32 内做，与 ``np.median`` 的 ``mean(part[i-1:i+1])``（float32 累加后
+    除 2，除 2 精确）逐位同值。位模式变换是双射且保序（负数段整体映射到低位
+    段），故排序结果与按数值排序同序；排序只改排列不改多重集，中位值与之无关。
+    ``counts`` 为全格点数（调用方已算好）。"""
+    bits = values.view(np.uint32).astype(np.int64)
+    key = (bin_idx.astype(np.int64) << 32) | np.where(
+        bits >= 0x80000000, 0xFFFFFFFF - bits, bits + 0x80000000)
+    key.sort()
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    mid = starts[want] + (counts[want] >> 1)
+
+    def _decode(k: np.ndarray) -> np.ndarray:
+        m = k & 0xFFFFFFFF
+        b = np.where(m >= 0x80000000, m - 0x80000000, 0xFFFFFFFF - m)
+        return b.astype(np.uint32).view(np.float32)
+
+    out = _decode(key[mid])
+    even = (counts[want] & 1) == 0
+    if even.any():
+        out = out.copy()
+        out[even] = (_decode(key[mid[even] - 1]) + out[even]) * np.float32(0.5)
+    return out.astype(np.float64)
+
+
 def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
                extent: float) -> float:
     """单 Z 箱单侧的离地穿越位置（米）；找不到为 nan。side=+1 右 / -1 左。
@@ -371,25 +418,31 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
     找——缓坡后方常接真墙，d00003 L/000906 R 语料实证）。对内台阶对（前格
     已在阈上，缘基在 i→i+1 间）穿越取对首格 px[i]，禁 (i−1→i) 线性外插——
     外插在平缓对上放大噪声出幽灵位置（000906 R zc10 实测 −5.6/+30.6）。
-    画外格（|x|>extent·zc，u 越界）不参与。"""
-    sel = (xb * side > 0.2) & (np.abs(xb) <= X_MAX_M) & np.isfinite(xb) & np.isfinite(hb)
+    画外格（|x|>extent·zc，u 越界）不参与。
+
+    分箱与中位走向量化（2026-10-04）：格 = [−X_MAX+k·DX, −X_MAX+(k+1)·DX)，索引
+    由 ``floor((x+X_MAX)/DX)`` 一次算出（float64 下 +X_MAX 精确、DX=0.25 是 2 的
+    幂故除法精确，与旧码逐格 ``(x>=lo)&(x<hi)`` 逐位同判定）；格中位按索引一次
+    分组求取。格心侧别/画界门只依赖 k，先算成掩码再取点。"""
+    # 选点化简（逐位等价）：side=±1 下 |xb|≤X_MAX ⟺ xb·side≤X_MAX（另一半由
+    # xb·side>0.2 蕴含），且 NaN/±inf 经两次比较自然出局——故 isfinite(xb) 与
+    # abs() 都可省。isfinite(hb) 保留（NaN 会污染 median，语义需要）。
+    s = xb * side
+    sel = (s > 0.2) & (s <= X_MAX_M) & np.isfinite(hb)
     if sel.sum() < MIN_SIDE_PTS:
         return np.nan
     xs, hs = xb[sel], hb[sel]
-    prof_x: list[float] = []
-    prof_h: list[float] = []
-    x0 = -X_MAX_M + XBIN_DX / 2
-    while x0 < X_MAX_M:
-        if x0 * side > 0 and abs(x0) <= extent * zc:
-            m = (xs >= x0 - XBIN_DX / 2) & (xs < x0 + XBIN_DX / 2)
-            if m.sum() >= MIN_BIN_PTS:
-                prof_x.append(float(x0))
-                prof_h.append(float(np.median(hs[m])))
-        x0 += XBIN_DX
-    if len(prof_x) < 3:
+    bi = np.floor((xs.astype(np.float64) + X_MAX_M) / XBIN_DX).astype(np.int64)
+    inb = (bi >= 0) & (bi < N_XBIN)           # x==+X_MAX 恰落域外（末格右开）
+    bi = np.where(inb, bi, 0)
+    k_ok = (XBIN_CENTERS * side > 0) & (np.abs(XBIN_CENTERS) <= extent * zc)
+    keep = inb & k_ok[bi]
+    counts = np.bincount(bi[keep], minlength=N_XBIN)
+    want = np.nonzero(k_ok & (counts >= MIN_BIN_PTS))[0]
+    if want.size < 3:
         return np.nan
-    px = np.array(prof_x)
-    ph = np.array(prof_h)
+    px = XBIN_CENTERS[want]
+    ph = _binned_median(hs[keep], bi[keep], want, counts)
     srt = np.argsort(px * side)  # 路心 → 外
     px, ph = px[srt], ph[srt]
     thr = EDGE_HT + EDGE_HT_SLOPE * max(0.0, zc - 3.0)
@@ -459,9 +512,11 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
 
     edge_pts: list[tuple[int, float, float]] = []
     rejects: list[str] = []
+    # 与 Z 无关的掩码提出循环（布尔与可交换结合，逐位同结果）：5 个 ZBIN 各
+    # 少算 3 遍全带布尔运算。
+    base = np.isfinite(X) & np.isfinite(hgt) & (~dig) & (~sky)
     for z0, z1 in ZBIN:
-        m = ((Z >= z0) & (Z < z1) & np.isfinite(X) & np.isfinite(hgt)
-             & (~dig) & (~sky))
+        m = base & (Z >= z0) & (Z < z1)
         if m.sum() < MIN_BOX_PTS:
             continue
         zc = (z0 + z1) / 2
