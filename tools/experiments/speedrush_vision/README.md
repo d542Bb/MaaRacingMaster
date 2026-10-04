@@ -3120,3 +3120,23 @@ cmp_*.png 对比图）。证据包格式新增 `_ego.npy`（ego 静态掩码导�
 产物：`.workbuddy-ai/refline_support/`（逐箱分色干净标注图 `*_v2clean.jpg`
 最判读）与 `.workbuddy-ai/refline_prod/`（产线回放+`*_mask.jpg` 掩码叠图），
 均会话级不入库；候选模块 `refline.py`（前瞻线）证伪后退役。
+
+## 双决策器离线回放（`replay_dual_decision.py`，2026-10-04）
+
+阶段二 §三.1 首轮：manual 两段语料全帧离线供数（感知+聚合+深度路心链），
+同观测流喂现役栈与轨迹模式（trajectory_sampling=true），自车执行位=road_offset
+观测（**开环口径：人开的车，只比决策不比结局分数——闭环只能实机 V2**；
+深度逐帧同步供数，产线异步带龄，此处上界质量）。曾因 infer_points
+with_evidence=False 返回 3 元组按 4 解包、异常被 try 吞掉导致 ro 全场 None
+（第一轮回放作废）——**教训：回放工具的吞异常路径必须先验证 ro_present>0**。
+
+结果（p1 894 拍 ro 95.2% / p2 1037 拍 ro 91.6%，W 成形 4.39/4.32 道）：
+- **目标选择一致率 100%**（p1 114 / p2 244 个双 CHANGE 拍）——选择逻辑
+  未动，符合预期，锁「轨迹模式不改变选谁」；
+- **traj_blocked_ticks = 0**（两段）——采样器在真实车流下无一次全灭破判；
+- ABORT 拍 traj 少于 legacy（p1 9 vs 12、p2 14 vs 32）：feedback 路完成
+  更多、proxy/超时更少——输出形态换血的预期收益方向；
+- 看图（`*_dual.jpg`）：LEG 守轴常量 0、TRAJ 前瞻点带动量回轴；CHANGE 拍
+  两引擎 A1/路心系数值经 ro 换算追同一目标，落位与币/车一致。
+
+产物 `.workbuddy-ai/replay_dual/`（逐拍 jsonl + summary + 渲染），会话级不入库。

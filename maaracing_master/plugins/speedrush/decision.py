@@ -382,6 +382,7 @@ class DecisionEngine:
         # _traj_last_dt=上一拍轨迹目标（组转存续态保持，与 _current_goal 同语义）
         self._prev_exec: float | None = None
         self._vd = 0.0
+        self._traj_prev = None                 # 上一拍中选轨迹（调试/续接面）
         self._traj_last_dt: float | None = None
         self._ro: float | None = None
         self._rwidth: float | None = None
