@@ -139,6 +139,48 @@ EDGE_MATCH_M = 0.8     # 「最近一致边界」的邻箱确认窗（米）：�
 #                       方向，相邻箱 x 漂移实测 ≤0.5m；超窗=两箱看到不同结构
 SKY_HGT = 1.2         # 空中结构剔除阈：桥/天空域点 hgt≥7.5m，护栏 ≤1m
 
+# ── 可行驶栅格（2026-10-04 离线调查落产线）──────────────────────────────
+# 与找边读数并行、互不影响的可行驶域观测：点云 → BEV 三态格。判据=格内非挖洞点
+# 的 hgt 中位（|中位|≤容差 → 可走；>容差 → 不可走）；挖洞（ego/物体框）覆盖的
+# 格一律判未知——证据被主动移除处不得声明可走。离线调查（2026-10-04，三会话
+# 149 帧）实测：有有效点的格近场 85.8%/远场 80.3% 判可走，挖空格 0 误判
+# （证据指针见当次提交，不引实验路径）。
+#
+# 已知局限（如实记录，本次不修）：① 远场可走覆盖率有坏尾——148 帧中 21 帧远场
+# 「可见即可走」<60%（无深度点的涂抹区）；② 0.15m 容差未做敏感性扫描，与 kerb
+# 顶（0.14~0.21m）在同量级，缘顶格可能落进可走带。
+GRID_CELL = 0.25        # 格边长（米）
+GRID_X_MAX = 10.5       # 横向半窗（米）：覆盖金标墙基（实测 ±10m）
+GRID_Z_LO, GRID_Z_HI = 3.0, 16.0   # 纵向窗（米，车前方）
+GRID_TOL = PLANE_TOL    # 可走容差（米，= 平面内点阈）
+GRID_MIN_PTS = 3        # 单格判「已知」的最少有效点数
+GRID_NX = int(round(2.0 * GRID_X_MAX / GRID_CELL))          # 84
+GRID_NZ = int(round((GRID_Z_HI - GRID_Z_LO) / GRID_CELL))   # 52
+GRID_UNKNOWN, GRID_DRIVABLE, GRID_BLOCKED = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class DrivableGrid:
+    """一帧的可行驶栅格（BEV 三态）。**消费契约**（2026-10-04 定）：
+
+    - ``state == GRID_BLOCKED`` (2) = **软代价**：高于路面的静态结构（墙/路缘/
+      桥），供避让/横向代价用，**不否决**规划——它不是硬边界。
+    - ``state == GRID_UNKNOWN`` (0) = **无证据**：无有效点，或被挖洞（ego/物体框）
+      覆盖。既不得当可走用，也不得当障碍用。
+    - ``state == GRID_DRIVABLE`` (1) = **唯一正向证据**：格内有地面点且高度对路面
+      平面残差在容差内。只有这一态可作为「可走」的正向依据。
+
+    坐标：``state[iz, ix]``；x = −GRID_X_MAX + (ix+0.5)·GRID_CELL（左负右正），
+    z = GRID_Z_LO + (iz+0.5)·GRID_CELL（车前方）。``coef`` 为路面平面
+    Y=aX+bZ+c；拟合失败（域内点不足）时为 None，此时 ``state`` 全 0（与
+    reading 的弃权语义同型，不抛异常）。"""
+
+    state: np.ndarray        # (GRID_NZ, GRID_NX) int8：0 未知 / 1 可走 / 2 不可走
+    coef: tuple[float, float, float] | None
+    counts: np.ndarray       # (GRID_NZ, GRID_NX) int32：逐格非挖洞有效点数
+    dig_cells: int           # 被挖洞覆盖的格数（这些格判未知）
+    latency_ms: float
+
 
 @dataclass(frozen=True)
 class DepthRoadReading:
@@ -154,6 +196,8 @@ class DepthRoadReading:
     latency_ms: float
     rejects: tuple[str, ...] = field(default_factory=tuple)
     edge_pts: tuple[tuple[int, float, float], ...] = ()
+    coef: tuple[float, float, float] | None = None   # 路面平面 Y=aX+bZ+c；供
+    # drivable_grid 共享（同带同掩码拟合，逐位同值），省一次列剖面重算
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
@@ -492,7 +536,9 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
             left_x=u_l, right_x=u_r,
             sides=int(lane_l is not None) + int(lane_r is not None),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
-            rejects=tuple(rejects), edge_pts=edge_pts)
+            rejects=tuple(rejects), edge_pts=edge_pts,
+            coef=(None if coef is None
+                  else (float(coef[0]), float(coef[1]), float(coef[2]))))
 
     dig = _dig_band(ego_mask, pts.shape[1])
     if object_mask is not None:
@@ -563,6 +609,75 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     return _ret(lane_l, lane_r, u_l, u_r, rejects, tuple(edge_pts))
 
 
+def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
+                              ego: np.ndarray | None = None,
+                              obj: np.ndarray | None = None,
+                              coef: tuple[float, float, float] | None = None
+                              ) -> DrivableGrid:
+    """点图 → 可行驶栅格（纯函数；与 ``reading_from_points`` 并行、互不影响）。
+
+    ``pts``/``fx``/``fy``/``ego``/``obj`` 口径与 ``reading_from_points`` 一致
+    （全幅点图、同帧全幅焦距、ego 紧矩形与物体框掩码）。复用 ``_fit_road_plane``
+    与 ``_binned_median``（只调用不复制）：平面与 reading 同源，格中位与找边剖面
+    同值。``coef`` 传 reading 的 ``DepthRoadReading.coef``（同带同掩码拟合出的
+    同一平面）即跳过本函数内的重复拟合——调用点必须传，单独调用才允许缺省。
+
+    **耗时**（2026-10-04 实测，本机空载）：自拟合口径 p50 ≈ 34ms / 帧（6 帧
+    33~74ms，随机器负载浮动），主因是列剖面平面拟合（占 ~60%），共享 coef 后
+    剩格中位与逐格归约。调用点在异步 worker 线程内，不占控制拍。
+
+    **失败语义**：平面拟合失败（域内点不足）→ ``coef=None``、``state`` 全 0、
+    ``counts`` 全 0、``dig_cells=0``；不抛异常（与 reading 的诚实弃权同型）。
+    """
+    t0 = time.perf_counter()
+
+    def _ret(state, coef, counts, dig_cells):
+        return DrivableGrid(state=state, coef=coef, counts=counts,
+                            dig_cells=dig_cells,
+                            latency_ms=(time.perf_counter() - t0) * 1000.0)
+
+    dig = _dig_band(ego, pts.shape[1])
+    if obj is not None:
+        dig = dig | _dig_band(obj, pts.shape[1])
+    Xb, Yb, Zb = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
+    if coef is None:
+        coef = _fit_road_plane(Xb, Yb, Zb, dig, fy=fy)
+        if coef is None:
+            return _ret(np.zeros((GRID_NZ, GRID_NX), np.int8), None,
+                        np.zeros((GRID_NZ, GRID_NX), np.int32), 0)
+    a, b, c = (float(coef[0]), float(coef[1]), float(coef[2]))
+    sgn = -1.0 if b * 5.0 + c > 0 else 1.0      # 同 reading：hgt 以高出路面为正
+    hgt = sgn * (Yb - (a * Xb + b * Zb + c))
+    ok = (np.isfinite(Xb) & np.isfinite(Yb) & np.isfinite(Zb) & np.isfinite(hgt)
+          & (Xb >= -GRID_X_MAX) & (Xb < GRID_X_MAX)
+          & (Zb >= GRID_Z_LO) & (Zb < GRID_Z_HI))
+    # 格号：−GRID_X_MAX 起 0.25 步进（GRID_CELL=2⁻² 的幂，+X_MAX 与除法均精确；
+    # ok 已保证落窗，格号必在 [0,NX)×[0,NZ) 内，无需 clip）。
+    ncell = GRID_NX * GRID_NZ
+    ix = np.floor((Xb[ok] + GRID_X_MAX) / GRID_CELL).astype(np.int64)
+    iz = np.floor((Zb[ok] - GRID_Z_LO) / GRID_CELL).astype(np.int64)
+    flat = (iz * GRID_NX + ix)
+    dug = dig[ok]
+    hv = np.ascontiguousarray(hgt[ok], np.float32)
+
+    nod = ~dug
+    flat_nod = flat[nod]
+    counts = np.bincount(flat_nod, minlength=ncell).astype(np.int32)
+    med = np.full(ncell, np.nan, np.float64)
+    want = np.nonzero(counts > 0)[0]
+    if want.size:
+        med[want] = _binned_median(hv[nod], flat_nod, want, counts)
+    dug_mask = np.zeros(ncell, bool)
+    if dug.any():
+        dug_mask[np.unique(flat[dug])] = True
+    state = np.full(ncell, GRID_UNKNOWN, np.int8)
+    known = (counts >= GRID_MIN_PTS) & (~dug_mask)
+    state[known & (np.abs(med) <= GRID_TOL)] = GRID_DRIVABLE
+    state[known & (np.abs(med) > GRID_TOL)] = GRID_BLOCKED
+    return _ret(state.reshape(GRID_NZ, GRID_NX), (a, b, c),
+                counts.reshape(GRID_NZ, GRID_NX), int(dug_mask.sum()))
+
+
 def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
     """全帧掩码 → 检测带切片（None 给全假）。"""
     if dig is None:
@@ -624,6 +739,12 @@ class DepthRoadObserver:
             return None, None
         reading = reading_from_points(pts, fx, self._cal, ego_mask=self._ego_mask,
                                       object_mask=object_mask, fy=fy)
+        # 可行驶栅格：与读数同源同拍、并行产出（不替换、不接决策层）。在 worker
+        # 线程内算，不占控制拍；平面共享 reading 的拟合结果（同带同掩码，逐位
+        # 同值），避免列剖面重算（自拟合口径 ~34ms/帧）。
+        grid = drivable_grid_from_points(pts, fx, fy, self._ego_mask, object_mask,
+                                         coef=reading.coef)
+        evid["grid"] = grid
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0), evid
 
@@ -653,16 +774,48 @@ def _hgt_rgb(h: np.ndarray) -> np.ndarray:
     return out
 
 
+def _grid_rgb(state: np.ndarray) -> np.ndarray:
+    """三态栅格 → BGR（绿=可走/红=不可走/灰=未知；与离线探针同配色）。"""
+    out = np.zeros(state.shape + (3,), np.uint8)
+    out[state == GRID_UNKNOWN] = (128, 128, 128)
+    out[state == GRID_DRIVABLE] = (0, 190, 0)
+    out[state == GRID_BLOCKED] = (0, 0, 220)
+    return out
+
+
+def _grid_panel(grid: DrivableGrid, width: int, scale: int = 4) -> np.ndarray:
+    """可行驶栅格小图（BEV 俯视，z16 在上、z3 在下；x 左负右正）+ 图例。"""
+    g = _grid_rgb(grid.state)[::-1]          # 行 0 = z16（远）
+    img = cv2.resize(g, (GRID_NX * scale, GRID_NZ * scale),
+                     interpolation=cv2.INTER_NEAREST)
+    head = 22
+    panel = np.full((img.shape[0] + head, width, 3), 25, np.uint8)
+    panel[head:head + img.shape[0], :img.shape[1]] = img
+    r9 = int((GRID_Z_HI - 9.0) / (GRID_Z_HI - GRID_Z_LO) * GRID_NZ * scale) + head
+    cv2.line(panel, (0, r9), (GRID_NX * scale, r9), (0, 200, 255), 1)
+    c0 = GRID_NX * scale // 2
+    cv2.line(panel, (c0, head), (c0, head + img.shape[0]), (0, 200, 255), 1)
+    cv2.putText(panel,
+                f"drivable grid  z3(bottom)..z16(top)  x{GRID_X_MAX:.1f}m  "
+                f"绿=可走 红=不可走 灰=未知  dig_cells={grid.dig_cells}  "
+                f"{grid.latency_ms:.1f}ms",
+                (GRID_NX * scale + 10, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (220, 220, 220), 1)
+    return panel
+
+
 def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
                        reading: DepthRoadReading, ego_mask: np.ndarray | None,
                        object_mask: np.ndarray | None = None,
-                       note: dict | None = None) -> np.ndarray:
+                       note: dict | None = None,
+                       grid: DrivableGrid | None = None) -> np.ndarray:
     """实机可视化判据（三行堆叠，BGR）：程序看了什么、算了什么、判了什么。
 
     ① 画面帧：ego 掩码橙描边 / YOLO 物体掩码蓝描边 / 检出缘像素锚黄点 + L/R 车道量；
     ② 高出路面图（蓝=低于、灰=路面、橙红=抬高）+ 各箱检出缘黄圈；
-    ③ 弃权原因 + 焦距/相机高度诊断带。纯函数只渲染不落盘——落盘归异步 worker
-    节流。evid=None（推理失败的空拍）时只出①③。"""
+    ③ 弃权原因 + 焦距/相机高度诊断带。``grid`` 非 None 时在②③之间插一行 BEV
+    可行驶栅格小图（绿=可走/红=不可走/灰=未知，与离线探针同配色）。纯函数只渲染
+    不落盘——落盘归异步 worker 节流。evid=None（推理失败的空拍）时只出①③。"""
     h, w = frame_rgb.shape[:2]
     f = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     for mask, col in ((ego_mask, (255, 128, 0)), (object_mask, (255, 0, 0))):
@@ -725,6 +878,8 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
         cv2.putText(hm, rej, (8, hm.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX,
                     .55, (255, 255, 255), 1)
     body = np.vstack([f, hm])
+    if grid is not None:
+        body = np.vstack([body, _grid_panel(grid, w)])
     if note is None:
         return body
     # 决策带：消费端一拍快照（state/reason/杆/喂入路心/来源/帧龄）。
@@ -925,7 +1080,8 @@ class AsyncDepthRoadObserver:
             self._debug_seq += 1
             stem = self._debug_dir / f"d{self._debug_seq:05d}"
             img = render_depth_debug(frame, evid, reading,
-                                     self._obs._ego_mask, object_mask, note)
+                                     self._obs._ego_mask, object_mask, note,
+                                     grid=evid.get("grid") if evid else None)
             cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
             # 原图半幅缩略（证据包只有点云没有帧——离线重渲染叠锚点/叠新覆盖
             # 层时没有原图寸步难行，2026-10-02 取证实证）

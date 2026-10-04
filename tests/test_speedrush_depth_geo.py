@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import cv2
 
 from maaracing_master.core import dml_lock
 from maaracing_master.plugins.speedrush import depth_geo as dg
@@ -1046,3 +1047,204 @@ def test_fit_road_plane_early_exit_matches_full_iterations(monkeypatch):
         monkeypatch.undo()
         assert fast is not None and slow is not None, f"fy={fy}"
         np.testing.assert_array_equal(fast, slow)
+
+
+# ---------- 可行驶栅格 drivable_grid_from_points（2026-10-04 离线调查落产线）----
+#
+# 三态：0 未知（无证据）/ 1 可走 / 2 不可走（软代价）。判据=格内非挖洞点 hgt 中位：
+# |中位|≤GRID_TOL → 可走，>TOL → 不可走；挖洞（ego/物体框）覆盖的格一律未知。
+
+
+def _cell_state(grid, x_m: float, z_m: float) -> int:
+    ix = int(np.floor((x_m + dg.GRID_X_MAX) / dg.GRID_CELL))
+    iz = int(np.floor((z_m - dg.GRID_Z_LO) / dg.GRID_CELL))
+    return int(grid.state[iz, ix])
+
+
+def _band_rows(z0: float, z1: float) -> np.ndarray:
+    iz = np.arange(dg.GRID_NZ)
+    zc = dg.GRID_Z_LO + (iz + 0.5) * dg.GRID_CELL
+    return (zc >= z0) & (zc < z1)
+
+
+def test_drivable_grid_double_wall_road_green_walls_red():
+    """双墙：路中可走、墙格不可走、墙外无点未知——三态各就位。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL)
+    g = dg.drivable_grid_from_points(pts, FX, FY)
+    assert g.coef is not None
+    assert _cell_state(g, 0.0, 6.0) == dg.GRID_DRIVABLE
+    # 墙在 |x|=WALL=5.5；z=12 时在视锥内（半宽 12·640/857≈9.0 > 5.5）
+    assert _cell_state(g, WALL, 12.0) == dg.GRID_BLOCKED
+    assert _cell_state(g, -WALL, 12.0) == dg.GRID_BLOCKED
+    # 墙外（|x|>WALL）无点 → 未知（不得外推成可走）
+    assert _cell_state(g, WALL + 2.0, 12.0) == dg.GRID_UNKNOWN
+
+
+def test_drivable_grid_single_wall_other_side_unknown():
+    """单侧无墙：该侧缘外无点（模拟缘外虚空）→ 未知，不被外推成可走。"""
+    pts = _scene_points(x_right=WALL)
+    pts = pts.copy()
+    pts[pts[..., 0] < -(WALL - 0.2)] = np.nan    # 左缘外抹掉证据（缘外虚空）
+    g = dg.drivable_grid_from_points(pts, FX, FY)
+    assert g.coef is not None
+    assert _cell_state(g, 0.0, 6.0) == dg.GRID_DRIVABLE
+    assert _cell_state(g, WALL, 12.0) == dg.GRID_BLOCKED      # 右墙仍在场
+    assert _cell_state(g, -8.0, 8.0) == dg.GRID_UNKNOWN       # 左缘外无证据
+
+
+def test_drivable_grid_dug_cells_all_unknown():
+    """挖洞格全未知、0 误判：ego/物体框覆盖的格一律未知（证据被主动移除）。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL)
+    X, Z = pts[..., 0], pts[..., 2]
+    ego = np.isfinite(X) & (np.abs(X) < 1.5) & (Z > 4.5) & (Z < 8.0)
+    g = dg.drivable_grid_from_points(pts, FX, FY, ego, None)
+    assert g.coef is not None and g.dig_cells > 0
+    # 洞内（略内缩避边界格）全未知；洞外照常可走
+    for x in np.arange(-1.3, 1.4, 0.25):
+        for z in np.arange(4.7, 7.9, 0.25):
+            assert _cell_state(g, x, z) == dg.GRID_UNKNOWN, (x, z)
+    assert _cell_state(g, 0.0, 12.0) == dg.GRID_DRIVABLE, "洞外路面被误杀"
+    # 反查实现登记的挖洞格：无一被声明为可走/不可走
+    Xb, Yb, Zb = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
+    ok = (np.isfinite(Xb) & np.isfinite(Yb) & np.isfinite(Zb)
+          & (Xb >= -dg.GRID_X_MAX) & (Xb < dg.GRID_X_MAX)
+          & (Zb >= dg.GRID_Z_LO) & (Zb < dg.GRID_Z_HI))
+    du = dg._dig_band(ego, 1280) & ok
+    assert du.any()
+    ix = np.floor((Xb[du] + dg.GRID_X_MAX) / dg.GRID_CELL).astype(int)
+    iz = np.floor((Zb[du] - dg.GRID_Z_LO) / dg.GRID_CELL).astype(int)
+    st = g.state[iz, ix]
+    assert (st == dg.GRID_UNKNOWN).all(), f"挖洞格出现非未知态：{np.unique(st)}"
+
+
+def test_drivable_grid_shared_coef_bitwise_identical():
+    """coef 共享：传 reading 的平面与函数自拟合，栅格逐位同值——观察链传
+    reading.coef 免掉一次列剖面重算（自拟合口径 ~34ms/帧），不允许改结果。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL)
+    rd = dg.reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.coef is not None
+    g_shared = dg.drivable_grid_from_points(pts, FX, FY, coef=rd.coef)
+    g_self = dg.drivable_grid_from_points(pts, FX, FY)
+    assert (g_shared.state == g_self.state).all()
+    assert (g_shared.counts == g_self.counts).all()
+    assert g_shared.dig_cells == g_self.dig_cells
+    assert g_shared.coef == g_self.coef
+
+
+def test_drivable_grid_plane_fit_fail_all_unknown():
+    """平面拟合失败（域内点不足）→ 全未知、coef=None、不抛异常（诚实弃权）。"""
+    pts = np.full((720, 1280, 3), np.nan, np.float32)
+    g = dg.drivable_grid_from_points(pts, FX, FY)
+    assert g.coef is None
+    assert (g.state == dg.GRID_UNKNOWN).all()
+    assert int(g.counts.sum()) == 0 and g.dig_cells == 0
+
+
+# ---- 代表帧回归（skipif：证据包不在盘则跳；assemble 口径同离线探针）--------
+
+EV = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data"
+      / "speedrush" / "control_traces")
+
+# 140930/d00009 近场带 3~9m 内判 2（不可走）的格数基线（干净晴天宽路帧；含墙/
+# 路缘/影；防恶化锁）。本值=本实现实测（±10.5m 窗、0.15m 容差、挖洞判未知）。
+D09_NEAR_BLOCKED_BASELINE = 367
+
+
+def _assemble_evid(stem: Path):
+    """证据包 → (全幅点云, fx, fy, ego, obj)；口径同产线离线复算
+    （336×598 fp16 点图各通道 resize 到 1280×720 + valid 最近邻 + invalid 置
+    nan；ego 取资源紧矩形，obj = *_mask.npy 减 ego）。"""
+    z = np.load(str(stem) + "_evid.npz")
+    valid = np.unpackbits(z["valid"])[: 336 * 598].reshape(336, 598).astype(bool)
+    pn = z["pts"].astype(np.float32)
+    pts = np.stack([cv2.resize(pn[..., k], (1280, 720),
+                               interpolation=cv2.INTER_LINEAR) for k in range(3)], -1)
+    vf = cv2.resize(valid.astype(np.float32), (1280, 720),
+                    interpolation=cv2.INTER_NEAREST).astype(bool)
+    pts = pts.copy()
+    pts[~vf] = np.nan
+    ego = DepthRoadObserver._load_ego_mask()
+    obj = None
+    mp = Path(str(stem) + "_mask.npy")
+    if mp.exists():
+        merged = np.unpackbits(np.load(mp))[: 1280 * 720] \
+            .reshape(720, 1280).astype(bool)
+        obj = merged & ~ego
+    return pts, float(z["fx"]) * 1280, float(z["fy"]) * 720, ego, obj
+
+
+def _evid_or_skip(dirname: str, seq: int) -> Path:
+    stem = EV / dirname / f"d{seq:05d}"
+    if not Path(str(stem) + "_evid.npz").exists():
+        pytest.skip(f"证据包不在盘：{stem}")
+    return stem
+
+
+def test_drivable_grid_frame_anchor_dug_all_unknown():
+    """175855/d00055（雨天超车帧）：挖洞格全灰——0 误判锁。"""
+    stem = _evid_or_skip("depth_debug_20261004_175855", 55)
+    pts, fx, fy, ego, obj = _assemble_evid(stem)
+    g = dg.drivable_grid_from_points(pts, fx, fy, ego, obj)
+    assert g.coef is not None and g.dig_cells > 0
+    dig = dg._dig_band(ego, 1280)
+    if obj is not None:
+        dig = dig | dg._dig_band(obj, 1280)
+    Xb, Yb, Zb = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
+    ok = (np.isfinite(Xb) & np.isfinite(Yb) & np.isfinite(Zb)
+          & (Xb >= -dg.GRID_X_MAX) & (Xb < dg.GRID_X_MAX)
+          & (Zb >= dg.GRID_Z_LO) & (Zb < dg.GRID_Z_HI))
+    du = dig & ok
+    assert du.any(), "该帧应有挖洞格（超车帧 ego/物体框覆盖）"
+    ix = np.floor((Xb[du] + dg.GRID_X_MAX) / dg.GRID_CELL).astype(int)
+    iz = np.floor((Zb[du] - dg.GRID_Z_LO) / dg.GRID_CELL).astype(int)
+    st = g.state[iz, ix]
+    assert (st == dg.GRID_UNKNOWN).all(), \
+        f"挖洞格出现非未知态：{np.unique(st)}"
+
+
+def test_drivable_grid_frame_anchor_clean_frame_baseline():
+    """140930/d00009（晴天宽路帧）：近场不可走格数不超基线——防恶化锁。"""
+    stem = _evid_or_skip("depth_debug_20261004_140930", 9)
+    pts, fx, fy, ego, obj = _assemble_evid(stem)
+    g = dg.drivable_grid_from_points(pts, fx, fy, ego, obj)
+    assert g.coef is not None
+    n = int((g.state[_band_rows(dg.GRID_Z_LO, 9.0)] == dg.GRID_BLOCKED).sum())
+    assert n <= D09_NEAR_BLOCKED_BASELINE, \
+        f"近场不可走格数 {n} 超基线 {D09_NEAR_BLOCKED_BASELINE}"
+
+
+def test_drivable_grid_obs_debug_attaches_grid():
+    """observe_debug 在 reading 旁挂栅格：evid['grid'] 是 DrivableGrid 且与
+    reading 同拍（异步 worker 消费链的数据面）。"""
+    pts, mask = _synthetic_affine_points(0.652)
+
+    class _Sess:
+        def get_inputs(self):
+            class _In:
+                name = "image"
+            return [_In()]
+
+        def run(self, _n, _f):
+            return [pts[None], np.zeros((1, 8, 598, 3), np.float32),
+                    mask[None].astype(np.float32), np.array([1.0], np.float32)]
+
+    obs = DepthRoadObserver(_Sess(), CAL)   # type: ignore[arg-type]
+    reading, evid = obs.observe_debug(_frame_np())
+    assert reading is not None and evid is not None
+    assert isinstance(evid.get("grid"), dg.DrivableGrid)
+    assert evid["grid"].state.shape == (dg.GRID_NZ, dg.GRID_NX)
+
+
+def test_render_depth_debug_grid_panel_shape():
+    """render 叠栅格小图：grid 非 None 时图高增加一栏；None 时形状不变。"""
+    rd = dg.DepthRoadReading(left_edge_lane=-2.0, right_edge_lane=2.0,
+                             left_x=100, right_x=540, sides=2, latency_ms=130.0)
+    frame = np.full((720, 1280, 3), 128, np.uint8)
+    base = dg.render_depth_debug(frame, None, rd, None, None, None)
+    assert base.shape == (720 + (dg.DIAG_Y1 - dg.Y0), 1280, 3)
+    g = dg.DrivableGrid(state=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int8),
+                        coef=(0.0, 0.0, 2.0),
+                        counts=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int32),
+                        dig_cells=3, latency_ms=5.0)
+    withg = dg.render_depth_debug(frame, None, rd, None, None, None, grid=g)
+    assert withg.shape[1] == 1280 and withg.shape[0] > base.shape[0]
