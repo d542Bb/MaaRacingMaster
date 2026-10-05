@@ -414,6 +414,26 @@ def test_ego_road_width_guard_rejects_pollution():
     assert o.width == pytest.approx(4.46)
 
 
+def test_ego_road_polluted_width_pair_not_fed():
+    """W 成形后对宽超 ±40% 的污染对**不供数**（实机 2026-10-05 案：车流走廊
+    对宽 1.7 道直喂 ro=中线漂移根因，W 门原先只挡统计不挡供数）——同垃圾对
+    路径：不喂、不入槽、不入窗，保鲜槽保持污染前好对。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES):
+        o.update(_bnd_clusters(-2.23, +2.23), now=1000.0 + 0.05 * k)
+    assert o.update(_bnd_clusters(-2.23, +2.23), now=1100.0) == pytest.approx(0.0)
+    # 对宽 1.7 道的车流走廊对：|1.7−4.46|=2.76 > 0.4·4.46 → 拒
+    assert o.update(_bnd_clusters(-0.4, +1.3), now=1100.10) is None
+    assert o.last["source"] == "pair"
+    # 槽未被污染对顶掉：单侧拍保鲜兜底仍是污染前好对的路心
+    assert o.update(_bnd_clusters((1.0,), sides=1), now=1100.15) == pytest.approx(0.0)
+    # 连续污染对耗不过门：窗/槽全程无污染（持续车流遮挡时 ro 诚实弃权）
+    for k in range(5):
+        assert o.update(_bnd_clusters(-0.4, +1.3),
+                        now=1100.2 + 0.05 * k) is None
+    assert o.width == pytest.approx(4.46)
+
+
 def test_ego_road_width_ignores_garbage_and_single_side():
     """垃圾对（|off|>OFF_MAX）与单侧拍不进宽度统计（与供数门同一入口纪律）。"""
     o = smod._EgoRoadObserver()
