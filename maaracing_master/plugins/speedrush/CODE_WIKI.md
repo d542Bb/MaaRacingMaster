@@ -679,9 +679,12 @@ commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为
   HUD 比分（`HudObserver.latest()` 最新行槽）；右联=BEV 可行驶栅格三态+挖洞格+
   路心/左右缘叠层+检测反投影标记+z/x 距离标尺+d(t) 规划曲线子带。
 - **口径同源**：BEV 坐标与 `_grid_penalty` 同源（x 原点=相机光轴，d→X=
-  (d−ro)·lane_w_m）；反投影 Z=c/(v−a·u−b) 用 `DepthRoadReading` 自带的同帧
-  coef/fx/fy（fx/fy 为 2026-10-05 新增契约字段）。轨迹是 d(t) 时间参数化，
-  本域无前向速度估计——**规划曲线不臆造 t→z 映射**，以子带呈现。
+  (d−ro)·lane_w_m）；**渲染近下远上**（z=Z_LO 在画布底，与 depth_geo 取证面板
+  z3(bottom)..z16(top) 同约定，自车标在底=近端；曾画反过一次，测试
+  `test_render_hud_bev_orientation_near_bottom_far_top` 锁死）；反投影
+  Z=c/(v−a·u−b) 用 `DepthRoadReading` 自带的同帧 coef/fx/fy（fx/fy 为
+  2026-10-05 新增契约字段）。轨迹是 d(t) 时间参数化，本域无前向速度估计——
+  **规划曲线不臆造 t→z 映射**，以子带呈现。
 - **与 depth_geo 证据包的关系**：取证写手（`_evid.npz` 点云证据）独立照旧，
   不受 debug 开关门管——两者互补（一个供管线离线复算，一个供驾驶面目检）。
 - **消费链**：`engine.traj_plan`（中选轨迹本体，coeffs 不进 trace）为调试图

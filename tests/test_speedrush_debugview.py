@@ -87,6 +87,22 @@ def test_render_hud_full_snapshot_paints_bev(frame):
     assert (int(b), int(g), int(r)) == (50, 50, 220)
 
 
+def test_render_hud_bev_orientation_near_bottom_far_top(frame):
+    """BEV 朝向锁：近端行（iz0）渲染在画布**底**、远端在顶——与 depth_geo
+    取证面板 z3(bottom)..z16(top) 同约定，自车标（画在底）落在近端。"""
+    st = np.full((GRID_NZ, GRID_NX), GRID_UNKNOWN, np.int8)
+    st[:4] = GRID_DRIVABLE          # z 3~4.1m 近端带可走，其余未知
+    g = DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                     counts=np.full((GRID_NZ, GRID_NX), 9, np.int32),
+                     dig_cells=0, latency_ms=1.0)
+    out = render_hud(frame, _snap(grid=g, frame_shape=(H, W, 3)), None)
+    x = W + 320                     # x≈+1m：避开 0/5 竖刻度线
+    b, gr, r = out[int(H * 0.56) - 8, x]
+    assert (int(b), int(gr), int(r)) == (70, 140, 70)     # 底带=近端可走绿
+    b, gr, r = out[dv._TITLE_H + 14, x]
+    assert (int(b), int(gr), int(r)) == (64, 64, 64)      # 顶带=远端未知灰
+
+
 def test_render_hud_grid_none_shows_placeholder(frame):
     out = render_hud(frame, _snap(grid=None, frame_shape=(H, W, 3)), None)
     # 无栅格：绘图区只画边框不涂色，底色保持面板深灰

@@ -14,9 +14,10 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
            + 距离标尺（z 每 3m、x 每 5m 刻度）+ d(t) 规划曲线子带
 
 **BEV 口径**（与 _grid_penalty 同源，不另立坐标）：栅格 x 原点=相机光轴=自车，
-格 (ix, iz) → X=ix·CELL−X_MAX、Z=Z_LO+iz·CELL；路心系 d（道）→ 相机轴米
-X=(d−ro)·lane_w_m。检测标记：框底中心像素经同帧焦距 + 路面平面反投影
-（Z=c/(v−a·u−b)，X=u·Z），域外点丢弃。
+格 (ix, iz) → X=ix·CELL−X_MAX、Z=Z_LO+iz·CELL；**渲染近下远上**（z=Z_LO 在
+画布底，与 depth_geo 取证面板 z3(bottom)..z16(top) 同约定，自车标在底=近端）；
+路心系 d（道）→ 相机轴米 X=(d−ro)·lane_w_m。检测标记：框底中心像素经同帧焦距
++ 路面平面反投影（Z=c/(v−a·u−b)，X=u·Z），域外点丢弃。
 
 **规划曲线为何不进 BEV**：轨迹是时间参数化的 d(t)，本域没有自车前向速度估计，
 臆造 t→z 映射就是把假数据画进证据面——以 d(t) 子带呈现（横轴秒、纵轴道）。
@@ -61,10 +62,11 @@ _X_TICK_M = (-10.0, -5.0, 0.0, 5.0, 10.0)
 
 @dataclass(frozen=True)
 class _BevMap:
-    """BEV 绘图映射：栅格域 → 右联画布像素。"""
+    """BEV 绘图映射：栅格域 → 右联画布像素。近端（z=Z_LO）在画布**底**、远端
+    在顶（与 depth_geo 取证面板 z3(bottom)..z16(top) 同约定，自车标在底=近端）。"""
 
     x0: int                      # 绘图区左
-    y0: int                      # 绘图区上
+    y1: int                      # 绘图区底（近端 z=GRID_Z_LO）
     sx: float                    # 像素/格（横向）
     sy: float                    # 像素/格（纵深）
 
@@ -72,7 +74,7 @@ class _BevMap:
         return int(self.x0 + (x_m + GRID_X_MAX) / GRID_CELL * self.sx)
 
     def py(self, z_m: float) -> int:
-        return int(self.y0 + (z_m - GRID_Z_LO) / GRID_CELL * self.sy)
+        return int(self.y1 - (z_m - GRID_Z_LO) / GRID_CELL * self.sy)
 
 
 def _project_detection(px: int, py: int, coef, fx: float, fy: float,
@@ -101,7 +103,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     plot_y0, plot_y1 = _TITLE_H + 6, int(H * 0.56)
     sx = (plot_x1 - plot_x0) / GRID_NX
     sy = (plot_y1 - plot_y0) / GRID_NZ
-    bm = _BevMap(plot_x0, plot_y0, sx, sy)
+    bm = _BevMap(plot_x0, plot_y1, sx, sy)
 
     grid = snap.get("grid")
     reading = snap.get("reading")
@@ -111,8 +113,9 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
             img[grid.state == st] = col
         if grid.dig_mask is not None:
             img[grid.dig_mask] = _DIG_BGR
+        # state 行序 iz0=近端，渲染翻成近下远上（与 py()/标尺/自车标同约定）
         canvas[plot_y0:plot_y1, plot_x0:plot_x1] = cv2.resize(
-            img, (plot_x1 - plot_x0, plot_y1 - plot_y0),
+            img[::-1], (plot_x1 - plot_x0, plot_y1 - plot_y0),
             interpolation=cv2.INTER_NEAREST)
     else:
         cv2.rectangle(canvas, (plot_x0, plot_y0), (plot_x1, plot_y1),
