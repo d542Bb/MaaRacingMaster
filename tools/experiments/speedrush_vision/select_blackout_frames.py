@@ -165,10 +165,12 @@ def _frame_gray(stem: Path) -> float:
     return float(img[:img.shape[0] // 3].mean())
 
 
-def _frame_path(stem: Path) -> Path:
-    """标注底图路径：优先 _frame.jpg（纯原图），老包回退 d*.jpg（自带标注层）。"""
+def _frame_path(stem: Path) -> Path | None:
+    """标注底图路径：仅认 _frame.jpg（纯原图）。老包的 d*.jpg 是三行堆叠
+    调试图（检测框/点云/决策带全叠在上面），不是干净标注底图——不进金标
+    清单（维护者判决 2026-10-05：混入标注流的堆叠图整批剔除）。"""
     f = Path(str(stem) + "_frame.jpg")
-    return f if f.exists() else Path(str(stem) + ".jpg")
+    return f if f.exists() else None
 
 
 def _obj_dig_frac(stem: Path, obj: np.ndarray | None, pts: np.ndarray) -> float:
@@ -332,6 +334,7 @@ def main() -> None:
         for tag in (ep["tags"] or {"成因未判"}):
             buckets.setdefault(tag, []).append(ep)
     shortlist, sheet_jobs = [], {}
+    n_skip_base = 0
     for tag, eps in sorted(buckets.items()):
         eps.sort(key=lambda e: (-e["dur_s"], -e["n"]))
         picked, per_sess = [], Counter()
@@ -343,8 +346,12 @@ def main() -> None:
             picked.append(ep)
             per_sess[ep["session"]] += 1
         for ep in picked:
+            base = _frame_path(ep["mid"]["stem"])
+            if base is None:      # 老包无干净原图：堆叠调试图不进标注流
+                n_skip_base += 1
+                continue
             shortlist.append({
-                "path": str(_frame_path(ep["mid"]["stem"])),
+                "path": str(base),
                 "stratum": f"黑视_{tag}", "session": ep["session"],
                 "seq": ep["mid"]["seq"], "fid": ep["fid"] or "",
                 "sides": ep["mid"]["sides"], "missing": ep["mid"]["miss"],
@@ -353,12 +360,15 @@ def main() -> None:
                 "tags": "|".join(ep["tags"])})
             sheet_jobs.setdefault(tag, []).append(ep)
         print(f"桶[{tag}]: 候选段 {len(eps)} → 选 {len(picked)}")
+    if n_skip_base:
+        print(f"剔除无干净原图（老包堆叠图）条目 {n_skip_base} 个")
 
     # ── 输出 ─────────────────────────────────────────────────────────
     import csv
     sl = OUT / "shortlist.csv"
     if shortlist:
-        with sl.open("w", newline="", encoding="utf-8-sig") as f:
+        with sl.open("w", newline="", encoding="utf-8") as f:
+            # 无 BOM：gold_annotate 按 utf-8 读列名，BOM 会把首列变成 \ufeffpath
             w = csv.DictWriter(f, fieldnames=list(shortlist[0]))
             w.writeheader()
             w.writerows(shortlist)
