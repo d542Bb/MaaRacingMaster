@@ -3165,3 +3165,34 @@ with_evidence=False 返回 3 元组按 4 解包、异常被 try 吞掉导致 ro 
 细节见报告文末「后处理向量化」节。
 
 边界：本机测量**未跑游戏**（空载口径），GPU 侧绝对值需与游戏并发实机复核。
+
+## 黑视帧金标集选帧（`select_blackout_frames.py`，2026-10-05）
+
+拆桥退役（f125af5）后的先决条件：任何补位候选上产线前，必须在**黑视帧**
+上有独立人工金标——教训是补位类修复必须对被补位的帧验值，双源在场帧的一致性验不出
+补位错（选择偏差）。
+
+- **方法**：证据包 evid 离线复算找边读数（产线同口径，ego/object 掩码同喂）→ 连续
+  sides<2 且估时跨过保鲜槽 TTL（0.4s）=黑视段 → 成因分桶（夜间=帧亮度、雨天=人工指定
+  会话、挖洞=object 掩码盖近场点比例、双缘齐缺/单缘缺=sides 形态）→ 每桶按时长选代表，
+  跨会话轮转防单会话垄断。
+- **非驾驶过滤（首跑教训）**：回合结算/暂停画面找边全瞎，会混进黑视桶——顶半幅强红
+  占比 ≥0.03 判非驾驶（实测驾驶帧 ≤0.013、结算/暂停 ≥0.06，分离干净；select_dirty_frames
+  的 badframes 教训重演）。
+- **结论（17 会话）**：10 个有证据包帧，黑视段共 69 个，四桶短名单 16 帧；**夜间桶空**
+  （在盘会话游戏内全是白天，亮度中位 94~127——21 点的局不等于游戏内夜场）；7 个会话
+  证据目录空（未落盘）；10-02 前老包缺 `_frame.jpg`（亮度回退调试图顶行、标注底图回退
+  `d*.jpg`）。
+- **证据包 fid**：`depth_geo` npz 补存决策带快照 fid（0c7490d），今后新包免人工誊录
+  SEQ2FID 表。
+- **输出**：`APPDATA/MaaRacingMaster/data/speedrush/depth_review/blackout_gold/`
+  （shortlist.csv 兼容 gold_annotate、拼版 PNG、stats.json）——人工标注真路心/碰撞
+  边界后即成黑视金标集。
+
+```bash
+.venv/Scripts/python.exe tools/experiments/speedrush_vision/select_blackout_frames.py   # 全部会话
+.venv/Scripts/python.exe tools/experiments/speedrush_vision/select_blackout_frames.py --dirs depth_debug_20261005_113349   # 单会话
+```
+
+边界：脚本自包含（assemble/ego 掩码/SEQ2FID 誊录表内联，实验自包含约定，不依赖未入库
+脚本）；黑视帧只有半幅 `_frame.jpg`（证据包固有），标注在它之上做。
