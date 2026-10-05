@@ -77,6 +77,58 @@ def grid_lane_span(state: np.ndarray, lane_lo: float, lane_hi: float,
              ("blocked", dg.GRID_BLOCKED))}
 
 
+def intrusion_clusters(state: np.ndarray, counts: np.ndarray,
+                       lane_lo: float, lane_hi: float, lw: float
+                       ) -> tuple[list[int], list[int]]:
+    """检验 B 收紧口径：近场带 z∈[3,9)（金标近带可信域）内域 blocked 按
+    4-连通分片，≥3 格的片算「侵入墙」；片内任一格 8 邻域含无点格
+    （counts==0：挖洞/无点云）的片记为洞边残点——平面中位在洞边失真是
+    已知伪影源，不算「可走地被标红」。返回（侵入墙片格数列表, 残点片格数列表）。"""
+    x_lo = lane_lo * lw - dg.GRID_CELL / 2
+    x_hi = lane_hi * lw + dg.GRID_CELL / 2
+    ix_lo = max(0, int(np.ceil((x_lo + dg.GRID_X_MAX) / dg.GRID_CELL)))
+    ix_hi = min(dg.GRID_NX, int(np.ceil((x_hi + dg.GRID_X_MAX) / dg.GRID_CELL)))
+    sub = state[:NEAR_IZ, ix_lo:ix_hi] == dg.GRID_BLOCKED
+    cnts_sub = counts[:NEAR_IZ, ix_lo:ix_hi]
+    h, w = sub.shape
+    seen = np.zeros_like(sub, bool)
+    walls, frags = [], []
+    wall_cells: list[tuple[int, int]] = []   # 侵入墙格（近场带局部坐标）
+    for i in range(h):
+        for j in range(w):
+            if not sub[i, j] or seen[i, j]:
+                continue
+            stack, cells = [(i, j)], []
+            seen[i, j] = True
+            while stack:
+                y, x = stack.pop()
+                cells.append((y, x))
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        yy, xx = y + dy, x + dx
+                        if 0 <= yy < h and 0 <= xx < w and sub[yy, xx] \
+                                and not seen[yy, xx]:
+                            seen[yy, xx] = True
+                            stack.append((yy, xx))
+            near_hole = any(counts_or_zero(cnts_sub, cy, cx)
+                            for cy, cx in cells)
+            (frags if near_hole else walls).append(len(cells))
+            if not near_hole:
+                wall_cells.extend(cells)
+    return walls, frags, wall_cells
+
+
+def counts_or_zero(cnts: np.ndarray, y: int, x: int) -> bool:
+    """格 (y,x) 的 8 邻域（含自身）是否存在无点格。"""
+    h, w = cnts.shape
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            yy, xx = y + dy, x + dx
+            if 0 <= yy < h and 0 <= xx < w and cnts[yy, xx] == 0:
+                return True
+    return False
+
+
 def nearest_blocked(state: np.ndarray, side: int, lane_w_m: float
                     ) -> float | None:
     """z∈[3,9) 带内该侧最近 blocked 格的格心 x_m；无 blocked → None。"""
@@ -125,6 +177,63 @@ def bev_sheet(tiles: list[tuple[str, np.ndarray, tuple[float, float] | None,
         print(f"检验 B 目视拼版 → {out_path}")
 
 
+def load_trace_steers(session: str) -> dict[int, float | None]:
+    """trace jsonl → {seq: steer_norm}（经 SEQ2FID 誊录；无 trace 的会话返回空）。"""
+    f = next(sbf.TRACES.glob(f"trace_{session[len('depth_debug_'):]}*.jsonl"),
+             None)
+    if f is None:
+        return {}
+    by_fid = {r["fid"]: r for r in
+              (json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()
+               if l.strip())}
+    return {seq: by_fid.get(fid, {}).get("steer_norm")
+            for seq, fid in sbf.SEQ2FID.get(session, {}).items()}
+
+
+def c_seq_sheet(c_seqs: dict, lw: float, out_path: Path) -> None:
+    """检验 C 目视拼版：每侧最近 blocked 边界横向位置的时序折线。
+    层翻转的形态=两级台阶来回跳（跳幅≈黄线↔护栏层距）；供数缺口的形态=
+    缺口两侧单边跳；几何移动=缓变。人工分形定案，不看 flip 率数字下结论。"""
+    PANEL_W, PANEL_H = 640, 180
+    Y_MAX_L = 3.5            # 纵轴 ±道（GRID_X_MAX 10.5m ≈ ±3.1 道）
+    tiles = []
+    for sess, sides in c_seqs.items():
+        for key, seq in sides.items():
+            img = np.full((PANEL_H, PANEL_W, 3), 255, np.uint8)
+            for gy in range(0, PANEL_H, PANEL_H // 4):
+                cv2.line(img, (0, gy), (PANEL_W - 1, gy), (220, 220, 220), 1)
+            cv2.line(img, (0, PANEL_H // 2), (PANEL_W - 1, PANEL_H // 2),
+                     (150, 150, 150), 1)
+            n = max(len(seq), 2)
+            pts = []
+            for i, (x, straight) in enumerate(seq):
+                if x is None:
+                    continue
+                lane = x / lw
+                px = int(i * (PANEL_W - 1) / (n - 1))
+                py = int(PANEL_H / 2 - lane / Y_MAX_L * (PANEL_H / 2 - 4))
+                col = (0, 160, 0) if straight else (180, 180, 180)
+                cv2.circle(img, (px, py), 2, col, -1)
+                pts.append((px, py))
+            for p1, p2 in zip(pts, pts[1:]):
+                cv2.line(img, p1, p2, (120, 120, 120), 1)
+            cv2.putText(img, f"{sess[12:]} {key} n={len(seq)}",
+                        (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                        (0, 0, 0), 1)
+            tiles.append(img)
+    cols = 2
+    rows_n = (len(tiles) + cols - 1) // cols
+    canvas = np.full((rows_n * PANEL_H, cols * PANEL_W, 3), 30, np.uint8)
+    for i, t in enumerate(tiles):
+        rr, cc = divmod(i, cols)
+        canvas[rr * PANEL_H:rr * PANEL_H + PANEL_H,
+               cc * PANEL_W:cc * PANEL_W + PANEL_W] = t
+    ok, buf = cv2.imencode(".png", canvas)
+    if ok:
+        out_path.write_bytes(buf.tobytes())
+        print(f"检验 C 时序拼版 → {out_path}")
+
+
 def main() -> None:
     cal = load_calib()
     lw = cal.lane_w_m
@@ -158,27 +267,18 @@ def main() -> None:
         out["a_blackout_coverage"].append({"frame": p.name, "span": span,
                                            **{k: round(v, 3)
                                               for k, v in frac.items()}})
-        # 内域 blocked 的最近 |lane|（距路心最近 = 侵入最深）
-        intr = None
-        if cnt["blocked"]:
-            x_lo, x_hi = span[0] * lw, span[1] * lw
-            ix_lo = max(0, int(np.ceil((x_lo + dg.GRID_X_MAX) / dg.GRID_CELL)))
-            ix_hi = min(dg.GRID_NX,
-                        int(np.ceil((x_hi + dg.GRID_X_MAX) / dg.GRID_CELL)))
-            sub = grid.state[:, ix_lo:ix_hi] == dg.GRID_BLOCKED
-            if sub.any():
-                ixs = np.nonzero(sub.any(axis=0))[0]
-                xs = (-dg.GRID_X_MAX + (ixs + ix_lo + 0.5) * dg.GRID_CELL)
-                intr = float(np.min(np.abs(xs)) / lw)
-        out["b_blocked_intrusion"].append({"frame": p.name, "blocked_in": cnt[
-            "blocked"], "min_abs_lane": None if intr is None else round(intr, 3),
-            "gold_edge": round(min(abs(span[0]), abs(span[1])), 3)})
+        # 检验 B 收紧口径：近场成片侵入（孤点/洞边残点不算「可走地被标红」）
+        walls, frags, wall_cells = intrusion_clusters(grid.state, grid.counts,
+                                                      span[0], span[1], lw)
+        out["b_blocked_intrusion"].append({
+            "frame": p.name, "walls": walls, "hole_frags": frags,
+            "wall_cells": [[int(iz), int(ix)] for iz, ix in wall_cells]})
         u = frac["unknown"]
         tiles.append((p.name, grid.state, span, frac))
         print(f"A {p.name} 内域[{span[0]:+.2f},{span[1]:+.2f}]道: "
               f"unknown={u:.0%} drivable={frac['drivable']:.0%} "
               f"blocked={frac['blocked']:.0%}"
-              + (f" | B 侵入最深 {intr:.2f} 道" if intr else " | B 无侵入"))
+              f" | B 近场侵入墙{walls} 洞边残点{frags}")
 
     nA = len(out["a_blackout_coverage"])
     if nA:
@@ -186,18 +286,24 @@ def main() -> None:
                                  out["a_blackout_coverage"]]))
         verdict_a = "FAIL(unknown主导)" if u_med > 0.5 else "PASS"
         print(f"== 检验 A：{nA} 帧内域 unknown 中位 {u_med:.0%} → {verdict_a}")
-        n_intr = sum(1 for x in out["b_blocked_intrusion"]
-                     if x["blocked_in"] > 0)
-        print(f"== 检验 B：{n_intr}/{nA} 帧内域 blocked 侵入"
-              f"（侵入深度明细见 json；目视裁决 → bev_sheet）")
+        n_intr = sum(1 for x in out["b_blocked_intrusion"] if x["walls"])
+        print(f"== 检验 B（收紧口径：近场带+连通≥3格+排除洞边）："
+              f"{n_intr}/{nA} 帧有成片侵入墙"
+              f"（明细见 json；目视裁决 → bev_sheet）")
         bev_sheet(tiles, lw, sbf.OUT / "s2b_bev_sheet.png")
 
-    # ── 检验 C：3 会话逐帧边界层稳定性 ───────────────────────────────
+    # ── 检验 C：3 会话逐帧边界层稳定性（直道子集为主判据：弯道/横移时
+    #    墙相对车的绝对横向位置本来就在动，只有直道帧才能暴露「层跳变」）──
+    seqs_all: dict[str, dict] = {}
     for sess in C_SESSIONS:
         t0 = time.monotonic()
         stems = sbf._session_stems(sess)
-        seqs = {"L": [], "R": []}   # (idx, x_m|None)
-        for i, st in enumerate(stems):
+        steers = load_trace_steers(sess)
+        seqs: dict[str, list] = {"L": [], "R": []}
+        for st in stems:
+            seq = int(st.name[1:])
+            steer = steers.get(seq)
+            straight = steer is not None and abs(steer) <= 0.35
             pts, fx, fy, ego, obj = sbf.assemble(st)
             rd = dg.reading_from_points(pts, fx, cal, ego_mask=ego,
                                         object_mask=obj, fy=fy)
@@ -206,28 +312,44 @@ def main() -> None:
             if grid.coef is None:
                 continue
             for side, key in ((-1, "L"), (1, "R")):
-                seqs[key].append(nearest_blocked(grid.state, side, lw))
-        st_out = {}
-        for key, seq in seqs.items():
-            pairs = [(seq[i], seq[i + 1]) for i in range(len(seq) - 1)
-                     if seq[i] is not None and seq[i + 1] is not None]
+                seqs[key].append((nearest_blocked(grid.state, side, lw),
+                                  straight))
+
+        def _stat(pairs: list[tuple[float, float]]) -> dict:
             d = np.array([abs(p2 - p1) / lw for p1, p2 in pairs]) \
                 if pairs else np.array([])
-            gaps = sum(1 for x in seq if x is None)
-            st_out[key] = {"n": len(seq), "无blocked帧": gaps,
-                           "flip率": round(float(np.mean(d > FLIP_LANE)), 3)
-                           if d.size else None,
-                           "帧间|Δ|中位_道": round(float(np.median(d)), 3)
-                           if d.size else None,
-                           "p90_道": round(float(np.percentile(d, 90)), 3)
-                           if d.size else None}
+            return {"n": len(pairs),
+                    "flip率": round(float(np.mean(d > FLIP_LANE)), 3)
+                    if d.size else None,
+                    "帧间|Δ|中位_道": round(float(np.median(d)), 3)
+                    if d.size else None,
+                    "p90_道": round(float(np.percentile(d, 90)), 3)
+                    if d.size else None}
+
+        st_out = {}
+        for key, seq in seqs.items():
+            allp = [(a, b) for (a, _), (b, _) in zip(seq, seq[1:])
+                    if a is not None and b is not None]
+            strp = [(a, b) for (a, sa), (b, sb_) in zip(seq, seq[1:])
+                    if sa and sb_ and a is not None and b is not None]
+            jumps = sorted((abs(b - a) / lw for a, b in strp
+                            if abs(b - a) / lw > 0.75), reverse=True)
+            st_out[key] = {"全量": _stat(allp), "直道": _stat(strp),
+                           "无blocked帧": sum(1 for x, _ in seq if x is None),
+                           "直道大跳_道": [round(x, 2) for x in jumps[:8]]}
             print(f"C {sess[12:]} {key}: {st_out[key]}")
         out["c_stability"][sess] = st_out
+        seqs_all[sess] = seqs
         print(f"   ({time.monotonic()-t0:.0f}s)")
+    out["c_seqs"] = {sess: {k: [(None if x is None else round(x, 2), bool(s))
+                                for x, s in seq]
+                            for k, seq in seqs_all[sess].items()}
+                     for sess in C_SESSIONS}
 
     dst = sbf.OUT / "s2b_falsify.json"
     dst.write_text(json.dumps(out, ensure_ascii=False, indent=1),
                    encoding="utf-8")
+    c_seq_sheet(out["c_seqs"], lw, sbf.OUT / "s2b_c_seq_sheet.png")
     print(f"明细 → {dst}")
 
 
