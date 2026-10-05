@@ -1092,7 +1092,9 @@ class AsyncDepthRoadObserver:
                      pts=evid["pts"].astype(np.float16),
                      valid=np.packbits(evid["valid"].ravel()),
                      valid_shape=np.array(evid["valid"].shape, np.int64),
-                     fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]))
+                     fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
+                     fid=np.int64(note["fid"]) if note and note.get("fid") is not None
+                     else np.int64(-1))
             merged = self._obs._ego_mask
             if object_mask is not None:
                 merged = object_mask if merged is None else (merged | object_mask)
