@@ -543,8 +543,11 @@ select:dodge 出现、超车完成 ≥3、cancel:lat_veto 仅真威胁。
 FSM 39 项全矩阵单测含 V0 直行门
 （`allow_all_moves=false`）与 CONSERVE 出口重置面断言。
 
-**状态**：决策层**未接实机**——§八 step 5 离线全链路已跑通（到场轮 8 场 7188 帧，
-证据 commit `92656bb`），step 6 才进 module。两处实测修正已入：conf 折扣改分段爬坡
+**状态**：决策层**已接实机**（控制链 `_control_tick` 全链：感知→跟踪→聚合→深度
+几何→决策→规划→手柄；阶段二轨迹采样与 S2-B 栅格裁决已产线，验收面=trace
+`traj_diag` 列）——本行 2026-10-05 修正，原文「未接实机」已过时；接入前证据=
+§八 step 5 离线全链路（到场轮 8 场 7188 帧，证据 commit `92656bb`）。
+两处实测修正已入：conf 折扣改分段爬坡
 （coin conf 中位 0.87，旧线性式系统性压低）；t_empty_s 1.5→2.0（真人局空街 P75=1.1s）。
 **行为基线**：v1 coin-only 真人局几乎不变道（7188 帧 1 次，门因分解见实验 README）——
 是否调低 min_score=20 属行为倾向，归维护者。timing 的 lane_change_base/k 经 §七.1
@@ -663,3 +666,23 @@ commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为
 - **debug 证据包**：336×598 原生点图 fp16 + valid + 原生焦距（*_evid.npz，
   ~1.2MB），按 depth_geo 模块头注「离线复算」口径逐位重放 reading_from_points。
 - 姿态探针（车身朝向/转向迟滞，probe_ego_pose）仍是实验区候选，未上产线。
+
+## 13. 实机调试图（treasure 规范接入，2026-10-05）（本域）
+
+**住户**：`debugview.py::DebugPairWriter`（生命周期=chain，`_build_control_chain`
+按 `ctx.debug.enabled` 门创建；控制拍 `tick()` 只入队引用，IO daemon 3fps 节流
+渲染+落盘）。
+
+- **目录契约**：`debug/speedrush/<ts>_p<阶段>/` + `raw/` 子目录——
+  `<seq:04d>_raw.jpg`（q95 底图）/ `<seq:04d>_hud.jpg`（q85 双联渲染图）。
+- **双联**：左联=画面+YOLO 框（coin 黄/car 红/bonus 品红）+决策/供数读数带+
+  HUD 比分（`HudObserver.latest()` 最新行槽）；右联=BEV 可行驶栅格三态+挖洞格+
+  路心/左右缘叠层+检测反投影标记+z/x 距离标尺+d(t) 规划曲线子带。
+- **口径同源**：BEV 坐标与 `_grid_penalty` 同源（x 原点=相机光轴，d→X=
+  (d−ro)·lane_w_m）；反投影 Z=c/(v−a·u−b) 用 `DepthRoadReading` 自带的同帧
+  coef/fx/fy（fx/fy 为 2026-10-05 新增契约字段）。轨迹是 d(t) 时间参数化，
+  本域无前向速度估计——**规划曲线不臆造 t→z 映射**，以子带呈现。
+- **与 depth_geo 证据包的关系**：取证写手（`_evid.npz` 点云证据）独立照旧，
+  不受 debug 开关门管——两者互补（一个供管线离线复算，一个供驾驶面目检）。
+- **消费链**：`engine.traj_plan`（中选轨迹本体，coeffs 不进 trace）为调试图
+  专用只读面。

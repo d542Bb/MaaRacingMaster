@@ -384,6 +384,7 @@ class HudObserver:
         self._started_ns = 0
         self._started_iso = ""
         self._running = False
+        self._latest: dict | None = None   # 最新成功采样行（latest() 消费；调试图读数面）
 
     # ---------- 生命周期 ----------
 
@@ -406,6 +407,17 @@ class HudObserver:
             "read_errors": self._read_errors,
             "write_errors": self._write_errors,
         }
+
+    def latest(self) -> dict | None:
+        """最新一次成功采样的行（行与 fields 都浅拷隔离；None=尚无样本）。
+        调试图叠加读数用——行由采样线程整条替换、发布后不再改动，消费方拿
+        快照即可，改快照不污染采样侧。"""
+        rec = self._latest
+        if rec is None:
+            return None
+        snap = dict(rec)
+        snap["fields"] = dict(rec.get("fields") or {})
+        return snap
 
     def start(self) -> None:
         if self._running:
@@ -456,6 +468,7 @@ class HudObserver:
             rec = self._sample_once()
             if rec is None:
                 continue
+            self._latest = rec        # 最新行槽（调试图读数面；整条替换不改旧对象）
             self._enqueue(rec)
 
     def _enqueue(self, rec: dict) -> None:

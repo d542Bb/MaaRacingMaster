@@ -200,6 +200,8 @@ class DepthRoadReading:
     edge_pts: tuple[tuple[int, float, float], ...] = ()
     coef: tuple[float, float, float] | None = None   # 路面平面 Y=aX+bZ+c；供
     # drivable_grid 共享（同带同掩码拟合，逐位同值），省一次列剖面重算
+    fx: float | None = None    # 同帧全幅焦距（调试图把检测框反投影回 BEV 用；
+    fy: float | None = None    #  离线缓存路径 fy 缺=回退 fx，与平面拟合同约定）
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
@@ -540,7 +542,8 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
             latency_ms=(time.perf_counter() - t0) * 1000.0,
             rejects=tuple(rejects), edge_pts=edge_pts,
             coef=(None if coef is None
-                  else (float(coef[0]), float(coef[1]), float(coef[2]))))
+                  else (float(coef[0]), float(coef[1]), float(coef[2]))),
+            fx=float(fx), fy=float(fy if fy is not None else fx))
 
     dig = _dig_band(ego_mask, pts.shape[1])
     if object_mask is not None:

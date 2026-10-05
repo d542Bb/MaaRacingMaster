@@ -50,7 +50,7 @@ from dataclasses import dataclass
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.depth_geo import DrivableGrid
 from maaracing_master.plugins.speedrush.latsample import (
-    LatTrajectorySampler, eval_traj)
+    LatTrajectorySampler, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -515,6 +515,12 @@ class DecisionEngine:
         ok/why/n_eval/否决分项（n_grid 栅格/n_col 街车/n_reach 可达域/n_bound
         边界）/中选 [d1, T]。"""
         return self._traj_diag
+
+    @property
+    def traj_plan(self) -> "SampledTraj | None":
+        """上一拍中选轨迹本体（调试图渲染面；coeffs 体积大，不进 trace）：
+        d1/T/cost/coeffs，None=非轨迹拍或全灭。只读透传，消费方不得改。"""
+        return self._traj_prev
 
     def _traj_d_target(self, obs: WorldObservation) -> float | None:
         """轨迹目标（路心系，道）：金币=ro+组心、超车=ro+锁定侧贴邻位、

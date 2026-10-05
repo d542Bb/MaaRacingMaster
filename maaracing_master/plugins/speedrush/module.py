@@ -37,13 +37,14 @@ import numpy as np
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
-from maaracing_master.core.paths import data_dir
+from maaracing_master.core.paths import data_dir, debug_dir
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_FILE, DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_FILE,
     PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
+from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, load_session)
 from maaracing_master.plugins.speedrush.hud import HudObserver
@@ -545,7 +546,7 @@ class SpeedRushModule(ActivityModule):
         self._infer_times = []
         self._control_times = []
         self._control_last = None
-        chain = self._build_control_chain() if (control and not straight) else None
+        chain = self._build_control_chain(phase) if (control and not straight) else None
         # 直行档 trace（stub chain 复用 _flush_control_trace 的落盘协议）；
         # 油门取 decision.json 的 throttle_raw 单一真源，不另抄数值。
         straight_chain = ({"trace": [], "t_start": time.time(), "bad_frames": {}}
@@ -561,6 +562,8 @@ class SpeedRushModule(ActivityModule):
                 "hud_" + time.strftime(
                     "%Y%m%d_%H%M%S", time.localtime(src["t_start"])) + f"_p{phase}")
             drive_hud = self._begin_hud(hud_dir, phase, round_no)
+            if chain is not None:
+                chain["hud_ref"] = drive_hud   # 调试图读数带吃 HUD 最新行
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
@@ -623,6 +626,9 @@ class SpeedRushModule(ActivityModule):
                         break
         finally:
             if control and chain:
+                dbg = chain.get("debug")
+                if dbg is not None:
+                    dbg.stop("chain_end")
                 self._flush_control_trace(chain, phase)
                 self._stop_depth_observer(chain, phase)
             elif straight and straight_chain is not None:
@@ -640,7 +646,12 @@ class SpeedRushModule(ActivityModule):
 
     # ---------- 控制链（实机闭环，planner 设计稿 §九 step 3）----------
 
-    def _build_control_chain(self) -> dict:
+    def _debug_enabled(self) -> bool:
+        """调试图存盘开关（treasure 规范口径：ctx.debug.enabled；ctx 无该面=关）。
+        只管 raw/hud 双图（debugview）；depth_geo 取证写手是既有证据面，不受此门。"""
+        return bool(getattr(getattr(self.ctx, "debug", None), "enabled", False))
+
+    def _build_control_chain(self, phase: int = 0) -> dict:
         """按阶段新建一份干净世界：跟踪/聚合/决策/规划各一，配置开局读一次。
 
         阶段间不共享状态（行为稿 §九：阶段信息只进过渡窗判据，两阶段同一决策器），
@@ -662,6 +673,13 @@ class SpeedRushModule(ActivityModule):
                     debug_dir=_control_trace_root() / ("depth_debug_"
                     + time.strftime("%Y%m%d_%H%M%S"))),
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
+                # raw/hud 调试图落盘器（treasure 规范，3fps；ctx.debug.enabled 门，
+                # 测试 ctx=None → None → tick 空转）。生命周期=chain，finally 收口。
+                "debug": DebugPairWriter(
+                    debug_dir() / "speedrush" / (
+                        time.strftime("%Y%m%d_%H%M%S") + f"_p{phase}"), cal=cal)
+                if self._debug_enabled() else None,
+                "hud_ref": None,
                 "prev_ts": None, "disabled": False, "trace": [],
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
                 "t_start": time.time()}
@@ -811,6 +829,19 @@ class SpeedRushModule(ActivityModule):
                        if e.outcome == OUTCOME_PASS],
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
             "presence": obs.health.target_presence})
+        # 调试图快照（debugview 3fps 节流；writer=None=闸关/测试，零开销）
+        dbg = chain.get("debug")
+        if dbg is not None:
+            dbg.tick(frame, {
+                "fid": fid, "phase": phase,
+                "result": result, "reading": dgeo, "grid": dgrid,
+                "road_offset": road_offset,
+                "decision": self._control_last,   # 本拍决策/供数快照（新建不改旧）
+                "hud": (chain["hud_ref"].latest()
+                        if chain.get("hud_ref") is not None else None),
+                "plan": chain["engine"].traj_plan,
+                "diag": chain["engine"].traj_diag,
+                "n_groups": len(obs.coin_groups)})
 
     def _straight_tick(self, gpad, fid: int, ts_ns: int, rows: list[dict],
                        throttle_raw: int) -> None:
