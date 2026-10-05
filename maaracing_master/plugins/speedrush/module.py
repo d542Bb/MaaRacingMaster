@@ -689,6 +689,7 @@ class SpeedRushModule(ActivityModule):
             # 控制拍不再付 observe 成本。协议本身不抛，异常闸按观测件惯例
             # 保留（fail-safe）。
             dgeo = None
+            dgrid = None
             dgeo_new = False
             try:
                 # note=上一拍决策快照（state/杆/喂入路心/EMA/槽）：随帧进调试图

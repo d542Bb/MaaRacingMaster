@@ -68,11 +68,13 @@ def _stub_depth(monkeypatch):
 @pytest.fixture(autouse=True)
 def _pin_gate_off(monkeypatch):
     """决策闸自钉关：本文件锁的是 legacy 接线管道语义，不随部署
-    decision.json 的运行态漂（验收期部署文件开闸）。"""
+    decision.json 的运行态漂（验收期部署文件开闸）。grid_veto 同钉——
+    否则部署开闸后本文件跑在「轨迹关+栅格闸开」的杂交态。"""
     d = load_decision()
     monkeypatch.setattr(
         smod, "load_decision",
-        lambda: replace(d, mode=replace(d.mode, trajectory_sampling=False)))
+        lambda: replace(d, mode=replace(d.mode, trajectory_sampling=False),
+                        grid_veto=replace(d.grid_veto, enabled=False)))
 
 
 # ---------- V0：allow_all_moves=false → 杆值恒 0、油门恒 255 ----------
@@ -443,3 +445,38 @@ def test_yolo_object_mask_edge_clamped():
 
 def test_yolo_object_mask_none_when_no_detections():
     assert smod._yolo_object_mask(_perc(1)) is None
+
+# ---------- S2-B 开闸态全链（部署 grid_veto.enabled=true 的验收数据面） ----------
+
+def test_grid_veto_on_full_chain_feeds_trace(monkeypatch):
+    """部署开闸态（grid_veto.enabled=true + trajectory_sampling=true）全链：
+    栅格随 take 进 engine 轨迹评分，trace 行携带 traj_diag——防「开闸后验收
+    黑箱」回归。压墙候选被否决在本列显形（n_grid>0）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush import depth_geo as dg
+    d = load_decision()
+    assert d.grid_veto.enabled and d.mode.trajectory_sampling,         "本测试锁部署开闸态；归位（enabled=false）后应随归位改写"
+    monkeypatch.setattr(smod, "load_decision", lambda: d)
+    state = np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int8)
+    state[:24, 42] = dg.GRID_BLOCKED            # 自车近场正前方立墙
+    wall = dg.DrivableGrid(state=state, coef=(0.0, 0.0, -2.0),
+                           counts=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int32),
+                           dig_cells=0, latency_ms=0.0)
+    reading = _dgeo_lanes(-1.5, 1.5)
+
+    def _take(self):
+        return reading, wall, True
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    for fid in range(1, 6):
+        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000,
+                        10.0, 1)
+    assert chain["disabled"] is False
+    diag = chain["trace"][-1]["traj_diag"]
+    assert diag is not None, "开闸+ro 在场拍应有采样诊断"
+    assert diag["n_grid"] >= 1, "近场正前方的墙应否决部分候选"
+    # ix=42 距自车 ~0.19 道（贴身）：包络必含 → 全灭是正确语义（ABORT 交 FSM）
+    assert diag["ok"] is False and diag["why"], "贴身墙应全灭且 why 可读"
