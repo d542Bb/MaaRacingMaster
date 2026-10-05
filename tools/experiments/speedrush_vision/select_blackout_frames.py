@@ -13,10 +13,11 @@
   ② 黑视段检测：连续 sides<2 的帧按 debug 节流间隔估时长，跨过保鲜槽 TTL
      （0.4s）才算黑视段——单拍缺陷会被 slot 兜住，不构成供数缺口。
   ③ 成因分桶（启发式，最终以人工看拼版图确认为准）：
-     - 夜间：frame.jpg 亮度（会话中位）低于阈值；
      - 超车挖洞：object 掩码盖掉近场路域有效点的比例高；
      - 双缘齐缺：sides==0（宽路近场双缘出视野的典型形态）；
      - 雨天：--rain-dirs 手工指定会话（沿用 probe 惯例，图像判雨不可靠）。
+     游戏无夜间场景（维护者口径 2026-10-05，RULES.md 天气维度无昼夜），
+     frame.jpg 亮度中位只作逐会话诊断输出，不构成分桶。
   ④ 输出（APPDATA depth_review/blackout_gold/）：shortlist.csv（gold_annotate
      兼容 path,stratum 列）+ 审阅拼版 PNG（调试图三行堆叠=自带标注底图）+
      stats.json（逐会话 sides 分布与分段统计）。
@@ -117,7 +118,6 @@ OUT = DATA / "depth_review" / "blackout_gold"
 
 SLOT_TTL_S = 0.4          # _EgoRoadObserver.SLOT_TTL_S：跨过它才算真黑视段
 DEBUG_INTERVAL_S = 0.5    # depth_geo 异步 worker 的调试图节流（帧间隔估计值）
-NIGHT_GRAY = 70           # 会话 frame.jpg 灰度中位低于此 → 夜间
 DIG_FRAC = 0.15           # object 掩码盖掉近场有效点比例高于此 → 挖洞嫌疑
 DIG_BAND = (3.0, 9.0)     # 近场带（米，z 向）——视锥盲区的主战场
 SHEET_COLS = 4            # 拼版列数
@@ -209,7 +209,6 @@ def _banner_white(stem: Path) -> bool:
 def classify_session(session: str, grays: list[float], rain_dirs: set[str]) -> dict:
     g = np.nanmedian(grays) if grays else float("nan")
     return {"gray_med": round(g, 1) if g == g else None,
-            "night": bool(g == g and g < NIGHT_GRAY),
             "rain": session in rain_dirs}
 
 
@@ -316,8 +315,6 @@ def main() -> None:
         env = classify_session(sess, [f["gray"] for f in frames], rain)
         for fr in frames:
             tags = set()
-            if env["night"]:
-                tags.add("夜间")
             if env["rain"]:
                 tags.add("雨天")
             if fr["dig"] >= DIG_FRAC:
@@ -341,7 +338,7 @@ def main() -> None:
         print(f"[{si+1}/{len(sessions)}] {sess}: {len(frames)}帧 "
               f"sides分布={dict(sorted(dist.items()))} 黑视段={len(eps)} "
               f"非驾驶={nmenu} "
-              f"亮度中位={env['gray_med']} 夜间={env['night']} "
+              f"亮度中位={env['gray_med']} "
               f"({time.monotonic()-ts:.0f}s)")
 
     # ── 分桶选代表：每桶按时长降序、跨会话轮转，会话内不过量 ──────────
