@@ -3279,3 +3279,28 @@ with_evidence=False 返回 3 元组按 4 解包、异常被 try 吞掉导致 ro 
     单边跳（1.0~2.0 道）→ 轨迹裁决必须按「轨迹带覆盖格」计代价而非边界线，
     内收 margin 下限 0.5 道（decision 域，实机回放再校）。
   - 三检验全绿 → S2-B 准入产线接线方案（行为闸默认关，接线与验证不同轮）。
+
+**S2-B 产线接线方案稿（2026-10-05，待维护者确认后动代码）**：
+
+- **挂点=既有候选轨迹采样器，不新造裁决层**：`latsample.py` 已是五次多项式
+  终点采样评分器（D_GRID×T_GRID 候选、静态街车 veto、jerk/time/offset 代价），
+  S2-B 是给它**加一项栅格代价**，不是平行新链——候选轨迹 d(t) 本来就在，
+  缺的只是"路告诉轨迹哪里不能走"这一项证据。
+- **数据通道（一条缝）**：`AsyncDepthRoadObserver` 结果槽 `(seq, reading, ts)`
+  扩一位带 grid（worker 的 `observe_debug` 已每拍产出 `evid["grid"]`，当前只
+  进调试图）——同拍同源随 reading 走，不另开通道不另拍；`take()` 返回签名
+  同步扩位，module 把 grid 传 `engine.update` → `traj.update`。
+- **代价项（三检验约束的落实）**：候选轨迹按既有 COLL_DT_S=0.2s 步采样，
+  纵向 z=车速×t（恒速假设同现役），横向带=轨迹点 ± 半车宽+margin_lane；
+  带内格逐格计代价：blocked 任意 → 该候选一票否决；unknown → k_unknown×格数
+  小代价；drivable → 零。**margin_lane 下限 0.5 道**（检验 C 的边界抖动量化）、
+  按轨迹带覆盖计（检验 C：边界线有偶发单边跳，不可作线判）。
+- **行为闸**：decision.json 新键 `grid_veto {enabled:false, margin_lane:0.5,
+  k_unknown:…}`——enabled=false 时 traj.update 不触栅格代价，行为与现役逐位
+  一致（回归锁钉住）；数值全走 decision 域（行为参数），不写字面量进代码。
+- **测试**：①闸关=现役逐位等价；②闸开单测：合成栅格 blocked 在轨迹带→候选
+  灭→ABORT 语义；unknown 小代价翻转候选选择；margin 内缩生效；③黑视金标
+  10 帧离线复判（闸开回放：候选选择变化与 ABORT 率如实报）。
+- **明确不做**：栅格不进 road_offset（pair-only 契约不动）、不进走廊/中线判定
+  （维护者裁决：不影响模糊走廊与中线）、不做纵向采样、blocked 不改语义
+  （护栏层原样，内收在 margin 做）。
