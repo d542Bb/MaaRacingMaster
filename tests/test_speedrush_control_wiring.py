@@ -59,7 +59,7 @@ def _stub_depth(monkeypatch):
     monkeypatch.setattr(smod, "load_session", lambda w: None)
 
     def _take(self):
-        return cur["r"], cur["r"] is not None
+        return cur["r"], None, cur["r"] is not None
 
     monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
     yield cur

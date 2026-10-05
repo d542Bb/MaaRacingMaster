@@ -48,6 +48,7 @@ import math
 from dataclasses import dataclass
 
 from maaracing_master.plugins.speedrush.config import DecisionConfig
+from maaracing_master.plugins.speedrush.depth_geo import DrivableGrid
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, eval_traj)
 from maaracing_master.plugins.speedrush.traffic import (
@@ -350,6 +351,9 @@ class DecisionEngine:
             v_lat_max=cfg.planner.v_lat_max, v_ego_row=self.cal.v_ego,
             horizon_s=cfg.validate.lat_veto_horizon_s,
             gap_lane=cfg.validate.lat_veto_gap_lane,
+            grid_margin_lane=cfg.grid_veto.margin_lane,
+            grid_car_half_m=cfg.grid_veto.car_half_lane_m,
+            k_grid_unknown=cfg.grid_veto.k_unknown,
         ) if cfg.mode.trajectory_sampling else None
         self.reset()
 
@@ -386,6 +390,7 @@ class DecisionEngine:
         self._traj_last_dt: float | None = None
         self._ro: float | None = None
         self._rwidth: float | None = None
+        self._grid: DrivableGrid | None = None
 
     # ---------- 主入口 ----------
 
@@ -394,18 +399,22 @@ class DecisionEngine:
                traffic: tuple[tuple[CarView, ...],
                               tuple[PassEvent, ...]] | None = None,
                road_offset: float | None = None,
-               road_width: float | None = None) -> DecisionOutput:
+               road_width: float | None = None,
+               grid: DrivableGrid | None = None) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
         逐拍视图放实例通道（单线程 owner 纪律，与 _log_grp 同族）——helper 签名不扩散。
 
         ``road_offset``/``road_width``（阶段二 §一）：路心锚与 W 兜底宽度，仅
-        轨迹模式消费；ro 缺席拍轨迹诚实降级回 legacy 输出形成（不臆造路心系）。"""
+        轨迹模式消费；ro 缺席拍轨迹诚实降级回 legacy 输出形成（不臆造路心系）。
+        ``grid``（S2-B）：同拍可行驶栅格，仅轨迹模式且 grid_veto 闸开时进
+        轨迹评分；闸关/None=不触栅格代价，与关闸前逐拍一致。"""
         self._views, self._events = traffic if traffic is not None else ((), ())
         self._boundary = obs.boundary
         self._ro = road_offset
         self._rwidth = road_width
+        self._grid = grid if self.cfg.grid_veto.enabled else None
         # 优先级（§二矩阵）：致命信号 > ABORT/收敛/超时 > 选择。本 tick 先处理转移，
         # 再按落定的状态发输出。
         report = self.watch.check(obs, dt_s)
@@ -455,7 +464,8 @@ class DecisionEngine:
                 rep = self.traj.update(
                     d0=executed_lane, vd0=self._vd, ad0=0.0, d_target=d_t,
                     cars=self._views, width=self._rwidth, ro=self._ro,
-                    hz=self.cfg.control.frame_rate_hz)
+                    hz=self.cfg.control.frame_rate_hz,
+                    grid=self._grid, lane_w_m=self.cal.lane_w_m)
                 if rep.ok:
                     self._traj_prev = rep.best
                     self._traj_last_dt = d_t

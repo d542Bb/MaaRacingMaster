@@ -180,6 +180,8 @@ class DrivableGrid:
     counts: np.ndarray       # (GRID_NZ, GRID_NX) int32：逐格非挖洞有效点数
     dig_cells: int           # 被挖洞覆盖的格数（这些格判未知）
     latency_ms: float
+    dig_mask: np.ndarray | None = None   # (GRID_NZ, GRID_NX) bool：挖洞格掩码
+    # （S2-B 裁决的洞边清洗用；None=旧构造/测试桩，消费方回退 counts==0 近似）
 
 
 @dataclass(frozen=True)
@@ -631,10 +633,11 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     """
     t0 = time.perf_counter()
 
-    def _ret(state, coef, counts, dig_cells):
+    def _ret(state, coef, counts, dig_cells, dig_mask=None):
         return DrivableGrid(state=state, coef=coef, counts=counts,
                             dig_cells=dig_cells,
-                            latency_ms=(time.perf_counter() - t0) * 1000.0)
+                            latency_ms=(time.perf_counter() - t0) * 1000.0,
+                            dig_mask=dig_mask)
 
     dig = _dig_band(ego, pts.shape[1])
     if obj is not None:
@@ -675,7 +678,8 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     state[known & (np.abs(med) <= GRID_TOL)] = GRID_DRIVABLE
     state[known & (np.abs(med) > GRID_TOL)] = GRID_BLOCKED
     return _ret(state.reshape(GRID_NZ, GRID_NX), (a, b, c),
-                counts.reshape(GRID_NZ, GRID_NX), int(dug_mask.sum()))
+                counts.reshape(GRID_NZ, GRID_NX), int(dug_mask.sum()),
+                dug_mask.reshape(GRID_NZ, GRID_NX))
 
 
 def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
@@ -957,7 +961,8 @@ class AsyncDepthRoadObserver:
         self._debug_seq = 0
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None] | None = None
-        self._result: tuple[int, DepthRoadReading, float] | None = None
+        self._result: tuple[int, DepthRoadReading, DrivableGrid | None,
+                            float] | None = None
         self._last_seq = -1               # 消费端已见结果序号（仅主线程触碰）
         self._pushed = 0
         self._applied = 0
@@ -1013,21 +1018,24 @@ class AsyncDepthRoadObserver:
                              note)
         self._wakeup.set()
 
-    def take(self) -> tuple[DepthRoadReading | None, bool]:
-        """读最新驻留结果 → (reading | None, is_new)。
+    def take(self) -> tuple[DepthRoadReading | None, DrivableGrid | None, bool]:
+        """读最新驻留结果 → (reading | None, grid | None, is_new)。
+
+        栅格与读数同帧同拍（同一证据包产出），随结果槽驻留复用——闸内旧
+        栅格对轨迹裁决仍是可用证据（与读数同一条慢变量纪律）。超龄返回
+        (None, None, False)、清槽并计 stale（每结果至多一次）。
 
         驻留语义（2026-09-28，"每结果只喂一拍"是闭眼主因之一）：结果不再
         取走即清——同一结果在 age 闸内可被多个控制拍反复消费（路缘是慢
         变量，闸内旧读数仍可用），无新结果的拍不再退纯模型积分。is_new
         标记本拍是否首次消费该结果：路心合成可复用旧结果，但消费端的
         保鲜槽与半宽学习只认新证据（**使用次数 ≠ 学习次数**——合成不是
-        新证据的同一条纪律）。超龄返回 (None, False)、清槽并计 stale
-        （每结果至多一次）。"""
+        新证据的同一条纪律）。"""
         with self._lock:
             item = self._result
             if item is None:
-                return None, False
-            reading, captured_ts = item[1], item[2]
+                return None, None, False
+            reading, grid, captured_ts = item[1], item[2], item[3]
         age_ms = (time.perf_counter() - captured_ts) * 1000.0
         self.last_age_ms = age_ms
         is_new = item[0] != self._last_seq
@@ -1040,11 +1048,11 @@ class AsyncDepthRoadObserver:
                 if self._result is not None and self._result[0] == item[0]:
                     self._result = None
                 self._stale_drops += 1
-            return None, False
+            return None, None, False
         if is_new:
             with self._lock:
                 self._applied += 1
-        return reading, is_new
+        return reading, grid, is_new
 
     def health(self) -> dict:
         with self._lock:
@@ -1145,4 +1153,7 @@ class AsyncDepthRoadObserver:
             if self._debug_dir is not None:
                 self._write_debug(item[1], evid, reading, item[3], item[4])
             with self._lock:
-                self._result = (item[0], reading, item[2])  # (push 序号, 读数, captured_ts)
+                # (push 序号, 读数, 可行驶栅格, captured_ts)——栅格与读数同帧
+                # 同拍（observe_debug 内共享平面拟合产出），S2-B 轨迹裁决消费
+                self._result = (item[0], reading,
+                                evid.get("grid") if evid else None, item[2])

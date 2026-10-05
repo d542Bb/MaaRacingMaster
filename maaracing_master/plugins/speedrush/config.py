@@ -35,6 +35,21 @@ class Mode:
 
 
 @dataclass(frozen=True)
+class GridVeto:
+    """S2-B 栅格裁决行为闸（三检验 2026-10-05 全绿后接线；整段可选，老 json
+    不带段=全默认=关，与 trajectory_sampling 同一条兼容纪律）。
+
+    语义：开闸后轨迹采样器对每条候选按「近场带 z 3~9m × 轨迹横向包络」查
+    可行驶栅格——压 blocked 一票否决、unknown 每格小代价、drivable 零。
+    margin_lane 是检验 C 量出的边界抖动内收下限；数值回放校准只改 json。"""
+
+    enabled: bool = False
+    margin_lane: float = 0.5      # 内收下限（道）＝检验 C 边界抖动量化
+    car_half_lane_m: float = 0.9  # 车半宽（米）
+    k_unknown: float = 0.05       # 每格 unknown 代价（回放校准起值）
+
+
+@dataclass(frozen=True)
 class Overtake:
     """超车候选评分参数（阶段 C 设计稿 §二/§四；[需实测] 项回放定档只改 json）。"""
 
@@ -165,6 +180,7 @@ class DecisionConfig:
     planner: Planner
     overtake: Overtake
     traffic: Traffic
+    grid_veto: GridVeto = GridVeto()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -196,6 +212,15 @@ def _int(d: dict, sec: str, key: str, *, lo: int, hi: int | None = None) -> int:
     if v < lo or (hi is not None and v > hi):
         raise ValueError(f"decision.json [{sec}].{key}={v} 越界（需 ∈[{lo},{hi}]）")
     return v
+
+
+def _num_def(d: dict, sec: str, key: str, default: float, *,
+             lo: float | None = None, hi: float | None = None,
+             lo_open: bool = True) -> float:
+    """可选数值键：段/键缺失回默认（行为闸整段可选的兼容面），存在则按 _num 校验。"""
+    if key not in d.get(sec, {}):
+        return default
+    return _num(d, sec, key, lo=lo, hi=hi, lo_open=lo_open)
 
 
 def _read_decision(path: Path) -> DecisionConfig:
@@ -296,7 +321,14 @@ def _read_decision(path: Path) -> DecisionConfig:
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
             ghost_max_age_ticks=_int(d, "traffic", "ghost_max_age_ticks", lo=2),
             ghost_rel_eps=_num(d, "traffic", "ghost_rel_eps", lo=0),
-            v_lat_ema_alpha=_num(d, "traffic", "v_lat_ema_alpha", lo=0, hi=1)))
+            v_lat_ema_alpha=_num(d, "traffic", "v_lat_ema_alpha", lo=0, hi=1)),
+        grid_veto=GridVeto(
+            enabled=_bool(d, "grid_veto", "enabled", default=False),
+            margin_lane=_num_def(d, "grid_veto", "margin_lane", 0.5,
+                                 lo=0, lo_open=False),
+            car_half_lane_m=_num_def(d, "grid_veto", "car_half_lane_m", 0.9,
+                                     lo=0),
+            k_unknown=_num_def(d, "grid_veto", "k_unknown", 0.05, lo=0)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis

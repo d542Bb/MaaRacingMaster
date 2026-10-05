@@ -506,12 +506,12 @@ def test_async_roundtrip_resident_consume():
         a.push(_frame())
         r1, new1 = None, None
         for _ in range(200):            # 轮询拿首读（worker 异步发布）
-            r1, new1 = a.take()
+            r1, g1, new1 = a.take()
             if r1 is not None:
                 break
             _time.sleep(0.01)
         assert r1 is not None and new1 is True, "首次消费应标记 is_new"
-        r2, new2 = a.take()
+        r2, g2, new2 = a.take()
         assert r2 is r1 and new2 is False, "驻留槽应复用同结果且不再标记新证据"
         assert a.health()["applied"] == 1, "applied 只计新结果一次"
     finally:
@@ -530,7 +530,7 @@ def test_async_stale_gate_drops():
                            and (h := a.health())["applied"] + h["stale_drops"] >= 1), \
             "消费侧未把超龄结果判为 stale"
         assert a.health()["stale_drops"] == 1
-        assert a.take() == (None, False), "清槽后不应重复计 stale 或吐旧结果"
+        assert a.take() == (None, None, False), "清槽后不应重复计 stale 或吐旧结果"
         assert a.health()["stale_drops"] == 1
     finally:
         a.stop()
@@ -557,7 +557,7 @@ def test_async_no_session_no_thread():
     a.start()
     assert a._thread is None
     a.push(_frame())
-    assert a.take() == (None, False)
+    assert a.take() == (None, None, False)
     assert a.health()["pushed"] == 0, "无 worker 时 push 不得计数（零结果报警的前提）"
     assert a.stop() is True
 
@@ -571,7 +571,7 @@ def test_async_none_reading_not_published():
         a.push(_frame())
         assert _wait_until(lambda: stub.calls >= 1)
         _time.sleep(0.05)  # 给 worker 足够时间把（错误地）发布暴露出来
-        assert a.take() == (None, False)
+        assert a.take() == (None, None, False)
         h = a.health()
         assert h["applied"] == 0 and h["stale_drops"] == 0 and h["failures"] == 0
     finally:

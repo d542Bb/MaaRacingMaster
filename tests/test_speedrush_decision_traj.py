@@ -166,3 +166,127 @@ def test_traj_completion_in_road_frame() -> None:
                    traffic=((), ()), road_offset=0.65, road_width=None)
     assert out.state is DecisionState.CRUISE
     assert out.reason.startswith("done:")
+
+# ---------- S2-B 栅格裁决（2026-10-05 三检验全绿后接线，方案稿见实验 README） ----------
+
+import numpy as np
+
+from maaracing_master.plugins.speedrush import depth_geo as dg
+from maaracing_master.plugins.speedrush.latsample import LatTrajectorySampler
+from maaracing_master.plugins.speedrush.world_model import load_calib
+
+_LW = load_calib().lane_w_m
+
+
+def _synth_grid(blocked_ix=(), unknown_ix=()):
+    """合成近场栅格：blocked/unknown 铺在 z 3~9m 带（近场裁决域），其余绿。"""
+    state = np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int8)
+    for ix in blocked_ix:
+        state[:24, ix] = dg.GRID_BLOCKED
+    for ix in unknown_ix:
+        state[:24, ix] = dg.GRID_UNKNOWN
+    return dg.DrivableGrid(
+        state=state, coef=(0.0, 0.0, -2.0),
+        counts=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int32),
+        dig_cells=0, latency_ms=0.0)
+
+
+def _sampler(**kw):
+    base = dict(v_lat_max=2.0, v_ego_row=500.0, horizon_s=2.5, gap_lane=0.3)
+    base.update(kw)
+    return LatTrajectorySampler(**base)
+
+
+def test_grid_veto_config_roundtrip(tmp_path) -> None:
+    # 缺段安全（老 json）：整段缺失=全默认=关
+    d = json.loads(DECISION_FILE.read_text(encoding="utf-8"))
+    d.pop("grid_veto", None)
+    old = tmp_path / "decision_old.json"
+    old.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    cfg = _read_decision(old)
+    assert cfg.grid_veto.enabled is False
+    assert cfg.grid_veto.margin_lane == 0.5 and cfg.grid_veto.k_unknown == 0.05
+    assert _CFG_BASE.grid_veto.enabled is False   # 部署文件当前关（回放校准前）
+
+
+def test_sampler_grid_blocks_path_to_wall() -> None:
+    """blocked 竖墙立在 +1 道路径的近场带内 → 该候选一票否决。"""
+    s = _sampler()
+    rep0 = s.update(0.0, 0.0, 0.0, d_target=1.0, cars=(), width=None,
+                    ro=0.0, hz=20.0)
+    assert rep0.ok and rep0.best.d1 == pytest.approx(1.0)
+    assert rep0.n_reject_grid == 0
+    ix = int((1.0 * _LW + dg.GRID_X_MAX) / dg.GRID_CELL)   # d=1 道的格列
+    rep = s.update(0.0, 0.0, 0.0, d_target=1.0, cars=(), width=None,
+                   ro=0.0, hz=20.0,
+                   grid=_synth_grid(blocked_ix=[ix]), lane_w_m=_LW)
+    assert rep.n_reject_grid >= 1
+    assert not rep.ok or rep.best.d1 != pytest.approx(1.0)
+
+
+def test_sampler_grid_unknown_cost_flips_choice() -> None:
+    """近场全 unknown：带越宽的候选 unknown 格越多 → 代价把选择从 +1 翻回轴。"""
+    s = _sampler(k_grid_unknown=0.2)
+    rep0 = s.update(0.0, 0.0, 0.0, d_target=1.0, cars=(), width=None,
+                    ro=0.0, hz=20.0)
+    assert rep0.best.d1 == pytest.approx(1.0)
+    rep = s.update(0.0, 0.0, 0.0, d_target=1.0, cars=(), width=None,
+                   ro=0.0, hz=20.0,
+                   grid=_synth_grid(unknown_ix=range(dg.GRID_NX)),
+                   lane_w_m=_LW)
+    assert rep.ok and rep.best.d1 != pytest.approx(1.0)
+
+
+def test_sampler_grid_margin_keeps_center_off_wall() -> None:
+    """内收语义：墙在 +0.9 道（> 车半宽+margin 0.77 道包络）不挡中心候选，
+    但 +1 道候选压墙被灭——贴墙机动被挤走、守轴不受伤。"""
+    ix = int((0.9 * _LW + dg.GRID_X_MAX) / dg.GRID_CELL)
+    s = _sampler()
+    rep = s.update(0.0, 0.0, 0.0, d_target=1.0, cars=(), width=None,
+                   ro=0.0, hz=20.0,
+                   grid=_synth_grid(blocked_ix=[ix]), lane_w_m=_LW)
+    assert rep.ok and rep.best.d1 == pytest.approx(0.0)
+    assert rep.n_reject_grid >= 1
+
+
+def test_sampler_grid_all_veto_aborts() -> None:
+    """墙贴身（+0.55 道 < 半宽+margin 包络）：任何横移都压墙 → 全灭诚实弃权
+    （ABORT 语义交 FSM），不假装能走。"""
+    ix = int((0.55 * _LW + dg.GRID_X_MAX) / dg.GRID_CELL)
+    s = _sampler()
+    rep = s.update(0.0, 0.0, 0.0, d_target=0.0, cars=(), width=None,
+                   ro=0.0, hz=20.0,
+                   grid=_synth_grid(blocked_ix=[ix]), lane_w_m=_LW)
+    assert not rep.ok and rep.n_reject_grid > 0
+
+
+def test_decision_grid_gate_off_ignores_grid() -> None:
+    """兼容红线（decision 级）：grid_veto 闸关时喂 blocked 栅格与不喂，输出
+    逐字段相同——闸关不触栅格代价。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    wall = _synth_grid(blocked_ix=[48])
+    e1 = DecisionEngine(CFG_TRAJ)
+    e2 = DecisionEngine(CFG_TRAJ)
+    o1 = e1.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+                   traffic=((), ()), road_offset=0.5, road_width=None,
+                   grid=wall)
+    o2 = e2.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+                   traffic=((), ()), road_offset=0.5, road_width=None)
+    assert o1 == o2
+
+
+def test_decision_grid_gate_on_blocks_path_to_wall() -> None:
+    """闸开：blocked 墙立在 d=1.0 目标路径 → 输出点不再朝目标推进
+    （压墙候选被否决，选择退守轴侧）。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    cfg_on = replace(CFG_TRAJ, grid_veto=replace(CFG_TRAJ.grid_veto,
+                                                 enabled=True))
+    e_off = DecisionEngine(CFG_TRAJ)
+    e_on = DecisionEngine(cfg_on)
+    o_off = e_off.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+                         traffic=((), ()), road_offset=0.5, road_width=None)
+    o_on = e_on.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+                        traffic=((), ()), road_offset=0.5, road_width=None,
+                        grid=_synth_grid(blocked_ix=[48]))
+    assert o_off.x_target is not None and o_on.x_target is not None
+    assert o_on.x_target < o_off.x_target
