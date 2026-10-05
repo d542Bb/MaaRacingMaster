@@ -32,10 +32,6 @@ class Mode:
     # 横向轨迹采样评分闸（阶段二设计稿 §2.3，默认关=现役栈逐拍不变）：开闸后
     # 决策输出从 x_target 位置常量换为采样轨迹的前瞻点（滚动重评，破判 ABORT）
     trajectory_sampling: bool = False
-    # 栅格走廊供数闸（阶段二第一刀，默认关=现役栈逐拍不变）：开闸后 pair 读数
-    # 断供（双侧缘缺席且保鲜槽过期）的拍由可行驶栅格的含自车走廊中心补位——
-    # 只补黑视不换主人；关闸一键回到现状
-    grid_corridor_supply: bool = False
 
 
 @dataclass(frozen=True)
@@ -221,10 +217,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             allow_overtake=_bool(d, "mode", "allow_overtake", default=False),
             # trajectory_sampling 缺省 False：老 json 不带键也安全（现役栈逐拍不变）
             trajectory_sampling=_bool(d, "mode", "trajectory_sampling",
-                                      default=False),
-            # grid_corridor_supply 缺省 False：同上（老 json 逐拍不变）
-            grid_corridor_supply=_bool(d, "mode", "grid_corridor_supply",
-                                       default=False)),
+                                      default=False)),
         control=Control(
             frame_rate_hz=_num(d, "control", "frame_rate_hz", lo=0),
             target_grace_s=_num(d, "control", "target_grace_s", lo=0),

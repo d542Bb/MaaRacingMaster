@@ -35,8 +35,8 @@
     "allow_all_moves": true,
     "allow_car_graze": false,
     "allow_overtake": true,
-    "trajectory_sampling": false,
-    "_note": "**本文件当前是标定态（V2 临开一场采 C7 plant 定档数据，2026-09-22 维护者批准；跑完归位 V0 提交默认，归位义务见实验 README）**。allow_car_graze 保持 false（语义不同门不搅，处置见阶段 C 设计稿 §七）；allow_all_moves=V0/V1 闸；allow_overtake=V2 超车总闸；trajectory_sampling=阶段二横向轨迹采样闸（默认 false=现役栈逐拍不变；离线回放对比通过前不开）"
+    "trajectory_sampling": true,
+    "_note": "**本文件当前是标定态（V2 临开一场采 C7 plant 定档数据，2026-09-22 维护者批准；跑完归位 V0 提交默认，归位义务见实验 README）**。allow_car_graze 保持 false（语义不同门不搅，处置见阶段 C 设计稿 §七）；allow_all_moves=V0/V1 闸；allow_overtake=V2 超车总闸；trajectory_sampling=阶段二横向轨迹采样闸（离线双决策器回放已过，实机 V2 验收期临时开）"
   },
   "control": {
     "frame_rate_hz": 20.0,

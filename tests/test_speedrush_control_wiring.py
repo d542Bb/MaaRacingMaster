@@ -72,8 +72,7 @@ def _pin_gate_off(monkeypatch):
     d = load_decision()
     monkeypatch.setattr(
         smod, "load_decision",
-        lambda: replace(d, mode=replace(d.mode, trajectory_sampling=False,
-                                        grid_corridor_supply=False)))
+        lambda: replace(d, mode=replace(d.mode, trajectory_sampling=False)))
 
 
 # ---------- V0：allow_all_moves=false → 杆值恒 0、油门恒 255 ----------
@@ -382,78 +381,6 @@ def test_control_chain_ego_road_gap_semantics():
     m = _module()
     o = m._build_control_chain()["ego_road"]
     assert o.OFF_MAX == 3.0 and not hasattr(o, "retarget")
-
-
-# ---------- 栅格走廊补位（阶段二第一刀）：pair 黑视拍的 road_offset 补位源 ----------
-
-def _corridor(lo_m: float, hi_m: float):
-    """手搓 DrivableGrid：x∈[lo,hi) 的列在 z<10m 全行可走，其余未知。"""
-    dg = smod.dg
-    st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
-    nrows = int(np.ceil((dg.GRID_CORRIDOR_Z_HI - dg.GRID_Z_LO) / dg.GRID_CELL - 1e-9))
-    lo = max(int(np.ceil((lo_m + dg.GRID_X_MAX) / dg.GRID_CELL - 1e-9)), 0)
-    hi = min(int(np.ceil((hi_m + dg.GRID_X_MAX) / dg.GRID_CELL - 1e-9)), dg.GRID_NX)
-    st[:nrows, lo:hi] = dg.GRID_DRIVABLE
-    return dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.0),
-                           counts=np.ones_like(st, np.int32),
-                           dig_cells=0, latency_ms=0.0)
-
-
-def test_ego_road_grid_corridor_fills_blackout():
-    """黑视补位：pair 断供（无对+槽过期）拍由走廊中心出 ro，极性与 pair 同式
-    （中心在左 −0.75m → off=+0.22 道正）；走廊宽进 debug 数据面。"""
-    o = smod._EgoRoadObserver(lane_w_m=3.38)
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
-    assert len(o._win) == 1
-    cor = _corridor(-3.0, 1.5)                    # 中心 −0.75m、宽 4.5m
-    got = o.update(None, now=1000.60, grid=cor)
-    assert got == pytest.approx(0.75 / 3.38)
-    assert o.last["source"] == "grid_corridor"
-    assert o.last["grid_w_m"] == pytest.approx(4.5 / 3.38, abs=1e-3)
-    assert len(o._win) == 1                       # 异质证据不进对窗/对宽统计
-    assert o.width is None
-
-
-def test_ego_road_pair_and_slot_beat_grid():
-    """pair 在场（含保鲜槽）永远优先，栅格只补真黑视——增量最小红线。"""
-    o = smod._EgoRoadObserver(lane_w_m=3.38)
-    cor = _corridor(-3.0, 1.5)
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
-                    grid=cor) == pytest.approx(+1.9)
-    assert o.last["source"] == "pair"
-    assert o.update(None, now=1000.30, grid=cor) == pytest.approx(+1.9)
-    assert o.last["source"] == "pair_slot"        # 槽未过期：栅格不上位
-    assert o.update(None, now=1000.60, grid=cor) == pytest.approx(0.75 / 3.38)
-    assert o.last["source"] == "grid_corridor"    # 槽过期：补位接手
-
-
-def test_ego_road_grid_garbage_not_fed():
-    """走廊无诚实答案（自车列被挖/行数不足）或 |off|>OFF_MAX：不喂、源=none。"""
-    o = smod._EgoRoadObserver(lane_w_m=3.38)
-    o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)
-    dg = smod.dg
-    ego_ix = int(np.floor(dg.GRID_X_MAX / dg.GRID_CELL))
-    st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
-    st[:, :] = dg.GRID_DRIVABLE                   # 全绿但自车列挖空
-    st[:, ego_ix] = dg.GRID_UNKNOWN
-    dug = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.0),
-                          counts=np.ones_like(st, np.int32), dig_cells=1,
-                          latency_ms=0.0)
-    assert o.update(None, now=1000.60, grid=dug) is None
-    assert o.last["source"] == "none"
-    o2 = smod._EgoRoadObserver(lane_w_m=1.0)      # 小标定下远心走廊超 OFF_MAX
-    o2.update(_bnd_clusters(-0.9, 0.9), now=1000.0)
-    far = _corridor(8.5, 10.5)                    # 中心 9.5m → off=−9.5 道
-    assert o2.update(None, now=1000.60, grid=far) is None
-    assert o2.last["source"] == "none"
-
-
-def test_ego_road_grid_needs_lane_calibration():
-    """未配车道标定（旧构造）：补位关闭，黑视拍行为与旧版逐值同形。"""
-    o = smod._EgoRoadObserver()
-    o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)
-    assert o.update(None, now=1000.60, grid=_corridor(-3.0, 1.5)) is None
-    assert o.last["source"] == "none"
 
 
 # ---------- 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽的中位数 + ±40% 门 ----------
