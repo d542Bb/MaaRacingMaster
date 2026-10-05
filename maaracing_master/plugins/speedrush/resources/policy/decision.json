@@ -121,6 +121,6 @@
     "margin_lane": 0.5,
     "car_half_lane_m": 0.9,
     "k_unknown": 0.05,
-    "_note": "S2-B 栅格裁决闸（三检验 2026-10-05 全绿后接线，方案稿见实验 README）：enabled=false 时轨迹采样器不触栅格代价，与关闸前逐拍一致。开闸后按「近场带 z3~9m × 轨迹横向包络±(车半宽+margin)」查同拍可行驶栅格：压 blocked 一票否决、unknown 每格 k_unknown 小代价、drivable 零。margin_lane=0.5 是边界抖动的内收下限（检验 C 实测 0.3~0.5 道），数值回放校准只改本文件。"
+    "_note": "S2-B 栅格裁决闸。**运行态：enabled=true＝实机验收期（维护者批准开闸 2026-10-05；依据=三检验全绿（A 供数覆盖/B 真侵入 0/10/C 层翻转不存在）+ 黑视 10 帧离线回放过线（方向与金标逐帧一致、ABORT 1/10、金标安全终点 3/3），证据与口径见实验 README S2-B 节）**。语义：按「近场带 z3~9m × 轨迹横向包络±(车半宽+margin)」查同拍可行驶栅格——压 blocked 一票否决、unknown 每格 k_unknown 小代价、drivable 零；挖洞邻域片不计墙（dig_mask 清洗）。验收面=trace traj_diag 列（n_grid 否决频次/why 全灭原因/ABORT 增量）与转向质量；margin_lane=0.5 为边界抖动内收下限（检验 C 实测 0.3~0.5 道）。归位义务：实机验收出结论后，数值定档只改本文件；若判据 翻面（误否决/ABORT 升）enabled 归 false 并回实验区归因。"
   }
 }

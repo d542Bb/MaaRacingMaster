@@ -391,6 +391,7 @@ class DecisionEngine:
         self._ro: float | None = None
         self._rwidth: float | None = None
         self._grid: DrivableGrid | None = None
+        self._traj_diag: dict | None = None   # 逐拍采样诊断（trace 消费）
 
     # ---------- 主入口 ----------
 
@@ -456,6 +457,7 @@ class DecisionEngine:
         # 破判连拍达 _REEVAL_STREAK 即 ABORT——防抖与 _miss_breach 同源纪律）；
         # 闸关/回执缺位/ro 缺席/非巡航变道态 → legacy x_smooth 位置常量路径。
         xt = None
+        self._traj_diag = None
         if self.traj is not None and executed_lane is not None \
                 and self._ro is not None \
                 and self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
@@ -466,6 +468,16 @@ class DecisionEngine:
                     cars=self._views, width=self._rwidth, ro=self._ro,
                     hz=self.cfg.control.frame_rate_hz,
                     grid=self._grid, lane_w_m=self.cal.lane_w_m)
+                # 逐拍采样诊断（S2-B 验收观测面）：否决分项与中选终点——
+                # trace 消费，无此列则实机否决频次/ABORT 增量不可验
+                self._traj_diag = {
+                    "ok": rep.ok, "why": rep.why, "n_eval": rep.n_eval,
+                    "n_grid": rep.n_reject_grid,
+                    "n_col": rep.n_reject_collision,
+                    "n_reach": rep.n_reject_reach,
+                    "n_bound": rep.n_reject_bound,
+                    "best": None if rep.best is None
+                    else [round(rep.best.d1, 3), rep.best.T]}
                 if rep.ok:
                     self._traj_prev = rep.best
                     self._traj_last_dt = d_t
@@ -496,6 +508,13 @@ class DecisionEngine:
             move_allowed=move_allowed, reason=reason, emitted_fid=obs.frame_id,
             valid_until_fid=obs.frame_id + self._validity_ticks(),
             reanchor_lane=reanchor)
+
+    @property
+    def traj_diag(self) -> dict | None:
+        """上一拍轨迹采样诊断（S2-B 验收观测面，trace 消费；None=非轨迹拍）：
+        ok/why/n_eval/否决分项（n_grid 栅格/n_col 街车/n_reach 可达域/n_bound
+        边界）/中选 [d1, T]。"""
+        return self._traj_diag
 
     def _traj_d_target(self, obs: WorldObservation) -> float | None:
         """轨迹目标（路心系，道）：金币=ro+组心、超车=ro+锁定侧贴邻位、

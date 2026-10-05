@@ -794,6 +794,9 @@ class SpeedRushModule(ActivityModule):
             "dgeo_new": dgeo is not None and dgeo_new,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
+            # S2-B 采样诊断（dict|None）：ok/why/否决分项/中选 [d1,T]——
+            # grid_veto 开闸后的否决频次与 ABORT 增量的验收列
+            "traj_diag": chain["engine"].traj_diag,
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
             # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
             # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
