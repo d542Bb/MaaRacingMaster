@@ -117,7 +117,7 @@
     "ttc_dodge_s": 1.0
   },
   "grid_veto": {
-    "enabled": false,
+    "enabled": true,
     "margin_lane": 0.5,
     "car_half_lane_m": 0.9,
     "k_unknown": 0.05,

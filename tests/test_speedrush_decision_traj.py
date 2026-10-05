@@ -20,7 +20,8 @@ DT = 0.05
 # 本文件锁的是轨迹模式接线语义：关闸基座自钉，不随部署 decision.json 的
 # 运行态漂（验收期部署文件开闸，语义测试不跟着翻）。
 _CFG_BASE = _read_decision(DECISION_FILE)
-CFG = replace(_CFG_BASE, mode=replace(_CFG_BASE.mode, trajectory_sampling=False))
+CFG = replace(_CFG_BASE, mode=replace(_CFG_BASE.mode, trajectory_sampling=False),
+              grid_veto=replace(_CFG_BASE.grid_veto, enabled=False))
 CFG_TRAJ = replace(CFG, mode=replace(CFG.mode, trajectory_sampling=True))
 
 
@@ -206,7 +207,7 @@ def test_grid_veto_config_roundtrip(tmp_path) -> None:
     cfg = _read_decision(old)
     assert cfg.grid_veto.enabled is False
     assert cfg.grid_veto.margin_lane == 0.5 and cfg.grid_veto.k_unknown == 0.05
-    assert _CFG_BASE.grid_veto.enabled is False   # 部署文件当前关（回放校准前）
+    assert CFG.grid_veto.enabled is False   # 语义测试基座自钉关（部署运行态不随之漂）
 
 
 def test_sampler_grid_blocks_path_to_wall() -> None:
