@@ -181,6 +181,82 @@ def test_bonus_contact_completes_on_arrival():
     assert "bonus_contact" in out.reason
 
 
+# ---------- 解约与重选（V0：目标消失→解约重选）----------
+
+def test_target_lost_aborts_then_reselects():
+    """bonus 计划中目标消失（宽限耗尽）：ABORT 有界回稳 → 出口重选在场候选
+    （解约免费，P3 失效语义）。"""
+    g, ms = _group(3, 1, x=0.5)
+    e = DecisionEngine(CFG_PLAN)
+    e.update(_obs(fid=1, groups=(g,),
+                  targets=ms + (_bonus(555, 1),)), DT, executed_lane=0.2)
+    assert e.target_kind == "bonus"
+    # 目标消失（组仍在场）：lost → ABORT
+    out = e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.5)
+    assert out.state is DecisionState.ABORT_CHANGE
+    assert "overtake_lost" in out.reason
+    # 有界回稳落定 → CRUISE 重选在场金币组（解约免费：无冷却罚加）
+    out = e.update(_obs(fid=3, groups=(g,), targets=ms), DT, executed_lane=0.5)
+    assert out.state in (DecisionState.ABORT_CHANGE, DecisionState.CRUISE)
+    for fid in range(4, 40):
+        out = e.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
+                       executed_lane=0.5)
+        if out.state is DecisionState.CHANGE:
+            break
+    assert out.state is DecisionState.CHANGE
+    assert e.target_kind == "coin"
+
+
+# ---------- 资格判例（V0：候选资格）----------
+
+def test_bonus_not_approaching_rejected():
+    """bonus 不接近（rel≤0）＝永远撞不上 → 不作候选；coin 兜底。"""
+    g, ms = _group(3, 1, x=0.5)
+    e = DecisionEngine(CFG_PLAN)
+    out = e.update(_obs(fid=1, groups=(g,),
+                        targets=ms + (_bonus(555, 1, rel=0.0),)),
+                   DT, executed_lane=0.2)
+    assert e.target_kind == "coin"
+
+
+def test_bonus_unreachable_rejected():
+    """bonus 到站时间 < 变道耗时+响应+余量（贴脸快车）＝撞不上 → 不作候选。"""
+    g, ms = _group(3, 1, x=0.5)
+    e = DecisionEngine(CFG_PLAN)
+    out = e.update(_obs(fid=1, groups=(g,),
+                        targets=ms + (_bonus(555, 1, cy=700, rel=60.0),)),
+                   DT, executed_lane=0.2)
+    assert e.target_kind == "coin"
+
+
+def test_coin_conf_floor_still_enforced():
+    """计划层不废质量门：组置信低于地板 → 不作候选（分数退出≠门槛全拆）。"""
+    g, ms = _group(3, 1, x=0.5, conf=0.2)   # 低于 conf_floor=0.5
+    e = DecisionEngine(CFG_PLAN)
+    out = e.update(_obs(fid=1, groups=(g,), targets=ms), DT, executed_lane=0.2)
+    assert out.state is DecisionState.CRUISE
+    assert e.target_kind is None
+
+
+# ---------- 帧抖动注入（V0：抖动不撕计划）----------
+
+def test_bonus_flicker_across_slow_evals_never_switches():
+    """慢拍级抖动：合格 bonus 在第 1 次重评在场、第 2 次消失——streak 归零，
+    永远到不了 K=2，计划不撕（比单帧 age 门槛更强的抖动注入）。"""
+    g, ms = _group(3, 1, x=0.5)
+    e = DecisionEngine(CFG_PLAN)
+    e.update(_obs(fid=1, groups=(g,), targets=ms), DT, executed_lane=0.2)
+    assert e.target_kind == "coin"
+    fid = 1
+    for i in range(6):                        # 在场/消失交替 × 3 轮慢拍
+        fid += 1
+        tgt = ms + (_bonus(555, fid),) if i % 2 == 0 else ms
+        out = e.update(_obs(fid=fid, groups=(g,), targets=tgt),
+                       0.6, executed_lane=0.3)
+        assert e.target_kind == "coin"
+    assert out.state is DecisionState.CHANGE
+
+
 # ---------- V0 红线 ----------
 
 def test_allow_all_moves_gate_not_bypassed():

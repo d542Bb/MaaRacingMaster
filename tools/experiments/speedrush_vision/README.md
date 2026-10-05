@@ -3312,3 +3312,19 @@ with_evidence=False 返回 3 元组按 4 解包、异常被 try 吞掉导致 ro 
   复用产线 `_grid_penalty` 同一实现）：黑视 10 帧裁决方向与金标逐帧一致，
   ABORT 1/10（挖洞帧贴身，保守弃权），金标安全终点存活 3/3；全量回归 1270
   过、闸关逐位等价。
+
+## 计划层 V0 验收回放（2026-10-05，commit f9d4944 的验收面）
+
+`probe_plan_replay.py`：构造 30s 候选流（金币兜底 → bonus 出现→持续性升级→
+接触兑现 → 超车候选闪现抖动→连续在场→pass 兑现 → 目标消失→解约）逐拍喂
+产线 DecisionEngine（plan_layer 闸开、轨迹采样关=决策语义隔离），零复刻。
+输出 `plan_review/plan_replay_{events.csv,timeline.png}`（离散决策的目检面）。
+
+回放结果（时间线已目检）：bonus 计划连续承诺 5.9s（t=2.6~8.5）到站兑现
+`bonus_contact`；闪现期两次 CRUISE 抢入均因候选消失走 `overtake_lost` 有界
+回稳（解约免费语义，代价≈1s），CHANGE 期间慢拍持续性门无一次误换（全程
+switch:score_win=0 与单测 `test_persistence_gate_delays_upgrade` 互补）；连续
+在场后超车 2.1s 兑现 `overtake_pass`；金币目标消失 `cancel:target_lost` →
+重选；末段无候选 2s 触发 `target_empty`→CONSERVE（legacy 校验闸语义，非
+计划层行为）。场景构造两处踩到资格门的正确拒绝：车太近太快（t_meet<变道
+耗时）与无候选空窗（target_empty），均为产线语义非缺陷。
