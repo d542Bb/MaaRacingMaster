@@ -1083,10 +1083,10 @@ class AsyncDepthRoadObserver:
                                      self._obs._ego_mask, object_mask, note,
                                      grid=evid.get("grid") if evid else None)
             cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-            # 原图半幅缩略（证据包只有点云没有帧——离线重渲染叠锚点/叠新覆盖
-            # 层时没有原图寸步难行，2026-10-02 取证实证）
+            # 原图全幅落盘（人工金标标注/离线重渲染叠锚点都要全分辨率底图；
+            # 证据包只有点云没有帧寸步难行，2026-10-02 取证实证）
             cv2.imwrite(str(stem) + "_frame.jpg",
-                        cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)[::2, ::2],
+                        cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
                         [cv2.IMWRITE_JPEG_QUALITY, 85])
             np.savez(str(stem) + "_evid.npz",
                      pts=evid["pts"].astype(np.float16),
