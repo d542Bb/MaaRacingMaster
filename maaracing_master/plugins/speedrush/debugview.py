@@ -10,7 +10,8 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
   `<seq:04d>_hud.jpg`   双联渲染图（q85）：
     左联 = 画面叠加：YOLO 框（coin 黄 / car 红 / bonus 品红）+ 决策/供数读数带
            + HUD 比分读数（HudObserver 最新行，score/rate × a/b 槽位）
-    右联 = BEV 俯视：可行驶栅格三态 + 挖洞格 + 路心/左右缘叠层 + 检测反投影标记
+    右联 = BEV 俯视：可行驶栅格三态 + 挖洞格 + 路心/左右缘叠层（C=滤波 ro、
+           c0=当帧原始 (L+R)/2，两者分离=时间链效应）+ 检测反投影标记
            + 距离标尺（z 每 3m、x 每 5m 刻度）+ d(t) 规划曲线子带
 
 **BEV 口径**（与 _grid_penalty 同源，不另立坐标）：栅格 x 原点=相机光轴=自车，
@@ -152,6 +153,18 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                 _vline(reading.left_edge_lane, (255, 255, 0), "L")
             if reading.right_edge_lane is not None:
                 _vline(reading.right_edge_lane, (255, 255, 0), "R")
+            # 当帧原始路心 c0=((L+R)/2)·lane_w_m（自车系米，直接定位，不经
+            # _vline 的 d−ro 换算）：与滤波 C 并排。两者分离=中值窗/保鲜槽/
+            # 链路滞后的时间链效应，不是路心合成式错（2026-10-05 实机排障）。
+            if reading.left_edge_lane is not None \
+                    and reading.right_edge_lane is not None:
+                xp = bm.px((reading.left_edge_lane + reading.right_edge_lane)
+                           / 2.0 * lwm)
+                if plot_x0 <= xp <= plot_x1:
+                    cv2.line(canvas, (xp, plot_y0), (xp, plot_y1),
+                             (80, 170, 255), 1)
+                    _put_text(canvas, "c0", (xp + 2, plot_y0 + 12), scale=0.36,
+                              color=(80, 170, 255))
 
     # 自车标记（X=0、域底）
     cv2.drawMarker(canvas, (bm.px(0.0), plot_y1 - 6), (0, 255, 0),
