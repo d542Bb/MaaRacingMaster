@@ -133,6 +133,27 @@ def score_sheet(frame_ctx: dict, cal, out_path: Path) -> None:
         print(f"计分拼版 → {out_path}")
 
 
+def gold_lanes_at(r: dict, side: str, coef, fx: float, fy: float,
+                  lane_w_m: float) -> dict[int, float | None]:
+    """金标线 → 查询带各行的车道量（平面反投影，与产线 edge_lane 同坐标系）。
+    coef None / 反投影异常的行值为 None。"""
+    if coef is None or r[side + "cls"] == "skip":
+        return {yh: None for yh in YS_HALF}
+    a, b, c = coef
+    out: dict[int, float | None] = {}
+    for yh in YS_HALF:
+        gx = gold_x_at(r, side, yh)
+        if gx is None:
+            out[yh] = None
+            continue
+        u = (gx * 2.0 - FULL_W / 2.0) / fx
+        v = (yh * 2.0 - FULL_H / 2.0) / fy
+        den = v - a * u - b
+        z = c / den if den != 0 else float("nan")
+        out[yh] = (u * z) / lane_w_m if (np.isfinite(z) and z > 0.5) else None
+    return out
+
+
 def main() -> None:
     cal = load_calib()
     labels = list(csv.DictReader((sbf.OUT / "gold_labels.csv")
@@ -150,6 +171,7 @@ def main() -> None:
         n0 = len(rows)
         for side in ("l", "r"):
             cand = rd.left_edge_lane if side == "l" else rd.right_edge_lane
+            g_lanes = gold_lanes_at(r, side, rd.coef, fx, fy, cal.lane_w_m)
             for yh in YS_HALF:
                 gx_half = gold_x_at(r, side, yh)
                 if gx_half is None:
@@ -158,21 +180,13 @@ def main() -> None:
                        "y_half": yh, "cand_lane": "" if cand is None
                        else round(cand, 3), "gold_lane": "", "err": "",
                        "danger": "", "note": ""}
-                if rd.coef is None:
-                    row["note"] = "平面拟合失败,金标不可折算"
+                gold_lane = g_lanes[yh]
+                if gold_lane is None:
+                    row["note"] = ("平面拟合失败,金标不可折算"
+                                   if rd.coef is None else "反投影异常")
                     rows.append(row)
                     continue
-                a, b, c = rd.coef
-                x_full, y_full = gx_half * 2.0, yh * 2.0
-                u = (x_full - FULL_W / 2.0) / fx
-                v = (y_full - FULL_H / 2.0) / fy
-                den = v - a * u - b
-                z = c / den if den != 0 else float("nan")
-                if not (np.isfinite(z) and z > 0.5):
-                    row["note"] = f"反投影异常 z={z:.1f}"
-                    rows.append(row)
-                    continue
-                gold_lane = (u * z) / cal.lane_w_m
+                gold_lane = float(gold_lane)
                 row["gold_lane"] = round(gold_lane, 3)
                 if cand is None:
                     row["note"] = "候选弃权(该侧无读数)"
