@@ -50,6 +50,19 @@ class GridVeto:
 
 
 @dataclass(frozen=True)
+class PlanLayer:
+    """三类字典序计划层行为闸（设计稿 docs/plan/speedrush-plan-layer-design.md
+    v2；整段可选，老 json 不带段=全默认=关，与 grid_veto 同一条兼容纪律）。
+
+    语义：开闸后 decision._select 分流到 plan.PlanSelector——bonus＞极限超车＞
+    coin 字典序选计划、CHANGE 改判走慢拍+持续性门槛；min_score/life_tau/
+    switch_margin 退出选择链。数值（K）是整数持续性计数，不是标定权重。"""
+
+    enabled: bool = False
+    switch_streak: int = 2        # 换计划持续性门槛 K（连续 K 次慢拍重评居其位）
+
+
+@dataclass(frozen=True)
 class Overtake:
     """超车候选评分参数（阶段 C 设计稿 §二/§四；[需实测] 项回放定档只改 json）。"""
 
@@ -181,6 +194,7 @@ class DecisionConfig:
     overtake: Overtake
     traffic: Traffic
     grid_veto: GridVeto = GridVeto()
+    plan_layer: PlanLayer = PlanLayer()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -221,6 +235,14 @@ def _num_def(d: dict, sec: str, key: str, default: float, *,
     if key not in d.get(sec, {}):
         return default
     return _num(d, sec, key, lo=lo, hi=hi, lo_open=lo_open)
+
+
+def _int_def(d: dict, sec: str, key: str, default: int, *,
+             lo: int, hi: int | None = None) -> int:
+    """可选整数键：段/键缺失回默认，存在则按 _int 校验。"""
+    if key not in d.get(sec, {}):
+        return default
+    return _int(d, sec, key, lo=lo, hi=hi)
 
 
 def _read_decision(path: Path) -> DecisionConfig:
@@ -328,7 +350,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                                  lo=0, lo_open=False),
             car_half_lane_m=_num_def(d, "grid_veto", "car_half_lane_m", 0.9,
                                      lo=0),
-            k_unknown=_num_def(d, "grid_veto", "k_unknown", 0.05, lo=0)))
+            k_unknown=_num_def(d, "grid_veto", "k_unknown", 0.05, lo=0)),
+        plan_layer=PlanLayer(
+            enabled=_bool(d, "plan_layer", "enabled", default=False),
+            switch_streak=_int_def(d, "plan_layer", "switch_streak", 2, lo=1)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis

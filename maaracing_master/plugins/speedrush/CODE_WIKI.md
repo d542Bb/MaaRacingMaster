@@ -686,3 +686,26 @@ commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为
   不受 debug 开关门管——两者互补（一个供管线离线复算，一个供驾驶面目检）。
 - **消费链**：`engine.traj_plan`（中选轨迹本体，coeffs 不进 trace）为调试图
   专用只读面。
+
+## 14. 计划层（三类字典序选择门，2026-10-05 落地、闸默认关）（本域）
+
+**住户**：`plan.py`（选择域：`Scored`/`KIND_CAND_*` 常数迁入于此 +
+`PlanSelector`）——decision.py 经 import 消费，`_select` 头部分流：
+`plan_layer.enabled` 开才走计划层，闸关旧路径逐位不变（兼容纪律同 grid_veto）。
+
+- **选择语义**：bonus（撞上去）＞极限超车（贴邻）＞coin（兜底/顺路）字典序，
+  类内按到达时间升序、破平用几何量（超车=所需横移、金币=枚数）——
+  **无标定数值**：min_score/life_tau/switch_margin 退出选择链。
+- **承诺与反抖**：CRUISE（无计划）即时选；CHANGE 改判走 0.5s 慢拍 + 连续
+  `switch_streak`(K=2) 次仍居其位才换——旧 switch_margin 是分数单位不可再用，
+  换成整数持续性计数。t_cool 时间冷却沿用。
+- **bonus 接触豁免由构造保证**：bonus 不进车流 views（TrafficObserver 只收
+  kind==car），横向 veto 与轨迹采样天然看不见目标本体；兑现=几何接触判定
+  （目标 cy 到自车行），出画不作成功证明。目标视图查找统一走
+  `_car_target_of`（views 优先、bonus 走 obs.targets 按 kind 取）。
+- **V1 简化（如实记录）**：街车 contact 走廊分层暂缓——需要 LateralSafety
+  暴露拦截车 id；现结构下街车接触不可能被计划选中执行（比设计稿更保守）。
+  跨类「顺路扫币」破平同样暂缓（字典序下跨类只有严格胜出）。
+- **观测面**：trace 新列 `target_kind`（V1 验收面：三类候选分布与切换频率）；
+  兑现 reason 码 `bonus_contact`。V0 直行门（allow_all_moves）在计划层
+  分流路径同位保留（红线不旁路）。

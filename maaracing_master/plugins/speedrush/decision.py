@@ -55,7 +55,10 @@ from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionOutput, DecisionState, WorldObservation)
-from maaracing_master.plugins.speedrush.world_model import Calib, load_calib
+from maaracing_master.plugins.speedrush.world_model import (
+    KIND_BONUS, Calib, load_calib)
+from maaracing_master.plugins.speedrush.plan import (
+    KIND_CAND_BONUS, KIND_CAND_COIN, KIND_CAND_OVERTAKE, PlanSelector, Scored)
 
 _SCHEMA = 2  # v2：DecisionOutput.reanchor_lane（planner 设计稿 §二，2026-09-22 用户裁定）
 # 阶段 C step 2 **不再升 schema**：超车能力扩的是决策层内部（Scored/选择/完成判据分派）
@@ -65,8 +68,8 @@ _EPS = 1e-9
 # _deadzone_ticks>=2 同款自卫）
 _REEVAL_STREAK = 2
 
-KIND_CAND_COIN = "coin"
-KIND_CAND_OVERTAKE = "overtake"
+# KIND_CAND_* 与 Scored 已迁 plan.py（选择域住户，2026-10-05 计划层落地）；
+# 本模块经 import 继续消费，旧引用面不变。
 
 
 def _hug_sigma_of(ref: float, x_lane: float) -> float:
@@ -221,28 +224,6 @@ class LateralSafety:
         return best
 
 
-@dataclass(frozen=True)
-class Scored:
-    """一次评分的完整依据（reason 码与迟滞比较都要它）。
-
-    阶段 C step 2：候选泛化为两类——coin（group=CoinGroup）与 overtake
-    （car=CarView，group=None）；`kind` 判别，两类的 score 同一分式形状产出
-    （期望分×时间折扣−横向代价），min_score/switch_margin 的绝对分语义不变。"""
-
-    group: CoinGroup | None
-    score: float
-    t_miss_s: float
-    kind: str = KIND_CAND_COIN
-    car: CarView | None = None
-
-    @property
-    def cand_id(self) -> int:
-        """跨类统一的候选标识（coin=组号 / overtake=track_id，两 id 空间由 kind 分隔）。"""
-        if self.kind == KIND_CAND_COIN:
-            return self.group.group_id
-        return self.car.id
-
-
 class Scorer:
     """§三 评分（coin-only）：收益 × 时间折扣 − 横向位移代价。
 
@@ -344,6 +325,10 @@ class DecisionEngine:
         self.watch = ValidationWatch(cfg)
         self.scorer = Scorer(cfg, self.cal)
         self.lateral = LateralSafety(cfg, self.cal)
+        # 计划层选择门（设计稿 v2；闸默认关=None=legacy _select 逐位不变）：
+        # bonus＞极限超车＞coin 字典序 + CHANGE 改判慢拍+持续性门（plan.py）
+        self._plan_sel = (PlanSelector(cfg, self.cal, self.scorer, self.lateral)
+                          if cfg.plan_layer.enabled else None)
         # 轨迹采样器（阶段二 §2.3；闸默认关=None=现役栈逐拍不变）：参数复用
         # 既有安全/运动面——横向可达域=v_lat_max、危险窗=lat_veto_horizon_s、
         # 接触界=lat_veto_gap_lane，与 LateralSafety 同源不另立真值。
@@ -360,6 +345,8 @@ class DecisionEngine:
     def reset(self) -> None:
         """阶段切换/保守态出口/接线重入（重置面见 §二：全清，id 语义归上游）。"""
         self.watch.reset()
+        if self._plan_sel is not None:
+            self._plan_sel.reset()       # 计划承诺不跨阶段/不跨恢复
         self._state = DecisionState.CRUISE
         self._target_gid: int | None = None
         self._target_kind: str | None = None
@@ -379,6 +366,7 @@ class DecisionEngine:
         self._late_streak = 0                  # 逐拍重评连破计数（_REEVAL_STREAK 判）
         self._last_disp: float | None = None   # 超车逃逸判据的散布基线（select/switch 重置）
         self._hug_sigma: float | None = None   # 贴邻侧别（选中拍按自车位置锁定，第七轮）
+        self._dt_last: float = 0.05            # 上一拍 dt（计划层慢拍计时基；reset 兜底值）
         self._fault = False
         self._last_report_ok = True
         self._reanchor_pending: float | None = None
@@ -411,6 +399,7 @@ class DecisionEngine:
         轨迹模式消费；ro 缺席拍轨迹诚实降级回 legacy 输出形成（不臆造路心系）。
         ``grid``（S2-B）：同拍可行驶栅格，仅轨迹模式且 grid_veto 闸开时进
         轨迹评分；闸关/None=不触栅格代价，与关闸前逐拍一致。"""
+        self._dt_last = dt_s               # 计划层慢拍计时基（selector 累计）
         self._views, self._events = traffic if traffic is not None else ((), ())
         self._boundary = obs.boundary
         self._ro = road_offset
@@ -522,15 +511,24 @@ class DecisionEngine:
         d1/T/cost/coeffs，None=非轨迹拍或全灭。只读透传，消费方不得改。"""
         return self._traj_prev
 
+    @property
+    def target_kind(self) -> str | None:
+        """当前目标类（trace 消费；计划层 V1 验收面：bonus/overtake/coin 的
+        候选分布与切换频率从这列读）。"""
+        return self._target_kind
+
     def _traj_d_target(self, obs: WorldObservation) -> float | None:
         """轨迹目标（路心系，道）：金币=ro+组心、超车=ro+锁定侧贴邻位、
         巡航=0（守轴）。组转存续态（nan/缺位）保持上一拍目标——与
         _current_goal 的"不外插 nan"同语义；无处可保持才 None（降级）。"""
         if self._state is DecisionState.CHANGE:
-            if self._target_kind == KIND_CAND_OVERTAKE:
-                v = next((x for x in self._views if x.id == self._target_gid), None)
+            if self._target_kind in (KIND_CAND_OVERTAKE, KIND_CAND_BONUS):
+                v = self._car_target_of(obs, self._target_gid)
                 if v is not None:
-                    return self._ro + self._overtake_goal(v.x_lane)
+                    goal = (self._overtake_goal(v.x_lane)
+                            if self._target_kind == KIND_CAND_OVERTAKE
+                            else v.x_lane)   # bonus=撞上去：目标车体位
+                    return self._ro + goal
                 return self._traj_last_dt
             g = self._group_of(obs)
             if g is not None and not math.isnan(g.x_center):
@@ -574,9 +572,10 @@ class DecisionEngine:
                                          cand.car.x_lane)
                            if cand.kind == KIND_CAND_OVERTAKE else None)
         # 有符号需求（planner §二：反向不得过门）；超车候选的需求=选中拍锁定侧的
-        # 贴邻目标，但超车完成走 pass 事件不走 demand 门（§四换轴），demand 只服务
-        # 回执/trace
+        # 贴邻目标，bonus=目标车体位（撞上去，维护者裁定）；超车完成走 pass 事件
+        # 不走 demand 门（§四换轴），demand 只服务回执/trace
         self._demand_lane = (cand.group.x_center if cand.kind == KIND_CAND_COIN
+                             else cand.car.x_lane if cand.kind == KIND_CAND_BONUS
                              else self._overtake_goal(cand.car.x_lane))
         self._change_t = 0.0
         self._deadzone_ticks = 0
@@ -585,7 +584,7 @@ class DecisionEngine:
 
     def _tick_change(self, obs: WorldObservation, dt_s: float,
                      executed: float | None) -> str:
-        if self._target_kind == KIND_CAND_OVERTAKE:
+        if self._target_kind in (KIND_CAND_OVERTAKE, KIND_CAND_BONUS):
             return self._tick_change_overtake(obs, dt_s, executed)
         self._change_t += dt_s
         g = self._group_of(obs)
@@ -597,7 +596,8 @@ class DecisionEngine:
         # 换的是"去哪"（x_goal/需求重捕），不是重新起变道——迟滞防的就是拉扯。
         better = self._select(obs, current=self._cur_score, executed=executed)
         if better is not None and \
-                (better.kind, better.cand_id) != (KIND_CAND_COIN, self._target_gid):
+                (better.kind, better.cand_id) != (self._target_kind,
+                                                  self._target_gid):
             self._target_gid = better.cand_id
             self._target_kind = better.kind
             self._cur_score = better.score
@@ -606,7 +606,10 @@ class DecisionEngine:
             self._hug_sigma = (_hug_sigma_of(executed if executed is not None else 0.0,
                                              better.car.x_lane)
                                if better.kind == KIND_CAND_OVERTAKE else None)
-            self._demand_lane = (better.group.x_center if better.kind == KIND_CAND_COIN
+            self._demand_lane = (better.group.x_center
+                                 if better.kind == KIND_CAND_COIN
+                                 else better.car.x_lane
+                                 if better.kind == KIND_CAND_BONUS
                                  else self._overtake_goal(better.car.x_lane))
             self._deadzone_ticks = 0
             return "switch:score_win"
@@ -656,7 +659,7 @@ class DecisionEngine:
         不走 demand 收敛与死区代理——移动目标永远"走不到正中间"（维护者口径第 4 条）。
         阶段一：贴邻目标逐拍重评机会窗 + 横向安全 veto（含目标车自身的外推漂移）。"""
         self._change_t += dt_s
-        v = next((x for x in self._views if x.id == self._target_gid), None)
+        v = self._car_target_of(obs, self._target_gid)
         if v is None:
             ev = next((e for e in self._events if e.track_id == self._target_gid), None)
             if ev is not None and ev.outcome == OUTCOME_PASS:
@@ -667,9 +670,16 @@ class DecisionEngine:
                     "overtake_pass", cool_s=self.cfg.overtake.t_cool_pass_s)
             self._enter_abort("target_lost")
             return "cancel:overtake_lost"
+        if self._target_kind == KIND_CAND_BONUS and v.cy >= self.cal.v_ego:
+            # bonus 兑现=几何接触判定（车到自车行=接触窗，设计稿 §四.3）：
+            # 撞上去（维护者裁定）——出画不作成功证明，到行即兑现
+            self._done_pass_ids.add(v.id)
+            return self._finish_change("bonus_contact",
+                                       cool_s=self.cfg.overtake.t_cool_pass_s)
         better = self._select(obs, current=self._cur_score, executed=executed)
         if better is not None and \
-                (better.kind, better.cand_id) != (KIND_CAND_OVERTAKE, self._target_gid):
+                (better.kind, better.cand_id) != (self._target_kind,
+                                                  self._target_gid):
             self._target_gid = better.cand_id
             self._target_kind = better.kind
             self._cur_score = better.score
@@ -678,7 +688,10 @@ class DecisionEngine:
             self._hug_sigma = (_hug_sigma_of(executed if executed is not None else 0.0,
                                              better.car.x_lane)
                                if better.kind == KIND_CAND_OVERTAKE else None)
-            self._demand_lane = (better.group.x_center if better.kind == KIND_CAND_COIN
+            self._demand_lane = (better.group.x_center
+                                 if better.kind == KIND_CAND_COIN
+                                 else better.car.x_lane
+                                 if better.kind == KIND_CAND_BONUS
                                  else self._overtake_goal(better.car.x_lane))
             self._deadzone_ticks = 0
             return "switch:score_win"
@@ -764,10 +777,25 @@ class DecisionEngine:
         """候选=金币组（+ allow_overtake 时的超车机会）；门=最低分 + 切换加性阈 +
         时机成立（§三公式；阶段 C §二：两类分数同分式形状，直接同秤比较）。
 
+        计划层闸开时整条分流 plan.PlanSelector（三类字典序+持续性门，设计稿
+        v2）：current 语义从「分数基准」换为「(kind,id) 身份」——分数已退出
+        选择链；CRUISE（current=None）即时选，CHANGE 改判走慢拍+K 连续门。
+
         阶段一（2026-10-02）：need 从**执行回执**起算（need=|目标−executed|，
         替换自车瞬移假设——执行滞后中位 0.45/纸 p90 0.9 车道的肇因）；回执缺位
         维持 0 起算旧口径（v1 兼容红线）。回执在场时另过横向安全 veto（假起点
         不判几何）。"""
+        if self._plan_sel is not None:
+            if not self.cfg.mode.allow_all_moves:
+                return None               # V0 直行门与 legacy 同位（红线不旁路）
+            return self._plan_sel.select(
+                obs, self._views, executed,
+                current=(None if current is None
+                         else (self._target_kind, self._target_gid)),
+                cooling=self._cool_t > 0,
+                done_pass_ids=self._done_pass_ids,
+                side_has_space=self._side_has_space,
+                dt_s=self._dt_last)
         if self._cool_t > 0 or not self.cfg.mode.allow_all_moves:
             return None
         start = executed if executed is not None else 0.0
@@ -952,12 +980,29 @@ class DecisionEngine:
                 return g
         return None
 
+    def _car_target_of(self, obs: WorldObservation, gid: int):
+        """超车/bonus 目标的当拍视图：车流 views（CarView）优先；bonus 不进
+        车流账本（TrafficObserver 只收 kind==car），走 obs.targets 按 kind 取，
+        宽限过期=None（lost 语义）。TrackedTarget 鸭子 CarView（x_lane/cy/
+        rel_approach/id 同名）。"""
+        v = next((x for x in self._views if x.id == gid), None)
+        if v is not None:
+            return v
+        t = next((x for x in obs.targets
+                  if x.kind == KIND_BONUS and x.id == gid), None)
+        if t is None or t.validity_until_fid <= obs.frame_id:
+            return None
+        return t
+
     def _current_goal(self, obs: WorldObservation) -> float:
         if self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
-            if self._target_kind == KIND_CAND_OVERTAKE:
-                v = next((x for x in self._views if x.id == self._target_gid), None)
+            if self._target_kind in (KIND_CAND_OVERTAKE, KIND_CAND_BONUS):
+                v = self._car_target_of(obs, self._target_gid)
                 if v is not None:
-                    return self._overtake_goal(v.x_lane)   # 时变轨迹（σ 锁定侧跟车）
+                    # 时变轨迹（σ 锁定侧跟车）；bonus=撞上去（车体位）
+                    return (self._overtake_goal(v.x_lane)
+                            if self._target_kind == KIND_CAND_OVERTAKE
+                            else v.x_lane)
                 if self._state is DecisionState.CHANGE:
                     return self._x_smooth                    # 落定拍前不外插假读数
                 return 0.0

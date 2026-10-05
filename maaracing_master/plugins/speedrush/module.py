@@ -782,6 +782,7 @@ class SpeedRushModule(ActivityModule):
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
             "state": out.state.value, "reason": out.reason,
             "x_target": out.x_target, "target_id": out.target_id,
+            "target_kind": chain["engine"].target_kind,
             "reanchor_lane": out.reanchor_lane,
             "steer_norm": round(planner.state.steer_norm, 4), "steer_x": cmd.steer_x,
             "executed_lane": round(planner.state.executed_lane, 4),

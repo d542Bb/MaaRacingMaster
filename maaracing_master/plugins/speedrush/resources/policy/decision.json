@@ -122,5 +122,10 @@
     "car_half_lane_m": 0.9,
     "k_unknown": 0.05,
     "_note": "S2-B 栅格裁决闸。**运行态：enabled=true＝实机验收期（维护者批准开闸 2026-10-05；依据=三检验全绿（A 供数覆盖/B 真侵入 0/10/C 层翻转不存在）+ 黑视 10 帧离线回放过线（方向与金标逐帧一致、ABORT 1/10、金标安全终点 3/3），证据与口径见实验 README S2-B 节）**。语义：按「近场带 z3~9m × 轨迹横向包络±(车半宽+margin)」查同拍可行驶栅格——压 blocked 一票否决、unknown 每格 k_unknown 小代价、drivable 零；挖洞邻域片不计墙（dig_mask 清洗）。验收面=trace traj_diag 列（n_grid 否决频次/why 全灭原因/ABORT 增量）与转向质量；margin_lane=0.5 为边界抖动内收下限（检验 C 实测 0.3~0.5 道）。归位义务：实机验收出结论后，数值定档只改本文件；若判据 翻面（误否决/ABORT 升）enabled 归 false 并回实验区归因。"
+  },
+  "plan_layer": {
+    "enabled": false,
+    "switch_streak": 2,
+    "_note": "三类字典序计划层闸：bonus＞极限超车＞coin 选计划、CHANGE 改判走 0.5s 慢拍+连续 switch_streak 次持续性门；min_score/life_tau/switch_margin 退出选择链（闸关时原路径逐位不变）。实现住户 plan.py（选择域），机制说明见域内 CODE_WIKI 计划层节。**运行态：enabled=false＝默认关，待离线回放三检验（候选资格判例/帧抖动注入/字典序构造用例）+ 实机 V1 验收面（计划切换频率/bonus 兑现/无收益摆动）过线后由维护者批准开闸**。switch_streak 是整数持续性计数（反抖），不是标定权重。"
   }
 }
