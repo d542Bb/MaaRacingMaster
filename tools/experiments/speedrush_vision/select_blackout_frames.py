@@ -190,6 +190,22 @@ def _fid_of(session: str, seq: int) -> int | None:
     return SEQ2FID.get(session, {}).get(seq)
 
 
+def _banner_white(stem: Path) -> bool:
+    """白色横幅检测（红幕过滤的补集）：会话尾部的阶段转换横幅（如「进入策略
+    商店」）是白心横带，红幕掩码抓不到——y∈[120,260] 内近白(min BGR>200)行
+    占比 >0.5 的行 ≥3 判非驾驶。实测判决 d00057：white_max=0.75/55 行，其余
+    全部 ≤0.22/0 行。只查 _frame.jpg（老包本就不进标注流）。"""
+    f = Path(str(stem) + "_frame.jpg")
+    if not f.exists():
+        return False
+    img = cv2.imread(str(f))
+    if img is None:
+        return False
+    band = img[120:260]
+    frac = (band.min(axis=2) > 200).mean(axis=1)
+    return int((frac > 0.5).sum()) >= 3
+
+
 def classify_session(session: str, grays: list[float], rain_dirs: set[str]) -> dict:
     g = np.nanmedian(grays) if grays else float("nan")
     return {"gray_med": round(g, 1) if g == g else None,
@@ -295,7 +311,7 @@ def main() -> None:
             fr = {"session": sess, "seq": seq, "sides": rd.sides, "miss": miss,
                   "gray": _frame_gray(st), "stem": st,
                   "dig": _obj_dig_frac(st, obj, pts),
-                  "menu": _menu_red(st) >= MENU_RED}
+                  "menu": _menu_red(st) >= MENU_RED or _banner_white(st)}
             frames.append(fr)
         env = classify_session(sess, [f["gray"] for f in frames], rain)
         for fr in frames:
