@@ -277,8 +277,12 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
         else (pts, float(fx), float(fy))
 
 
-# infer_points 最近一帧的分段耗时（ms，pre/forward/reconstruct/upsize）——
-# observe_debug 取走后进 _stage_win 滑窗。单 worker 线程调用，无竞争。
+# 最近一帧的分段耗时（ms），单 worker 线程调用，无竞争：
+#   infer_points 四段   pre / forward / reconstruct / upsize
+#   后处理三段          plane=路面平面拟合（reading_from_points 内）
+#                       edges=找边全段、grid=栅格构建（observe_debug 内）
+# scan（找边扣除平面拟合）= edges−plane，离线导出。observe_debug 取走后进
+# _stage_win 滑窗；worker 发布时随帧快照，进 trace dgeo_seg.stages。
 LAST_STAGE_MS: dict[str, float] = {}
 
 
@@ -581,7 +585,11 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
         dig = dig | _dig_band(object_mask, pts.shape[1])
 
     X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
+    t_p = time.perf_counter()
     coef = _fit_road_plane(X, Y, Z, dig, fy=fx if fy is None else fy)
+    # 平面拟合单列分段（worker 单线程写；scan=edges−plane 离线导出）。
+    # 输出仍纯：计时副作用不改变任何返回值。
+    LAST_STAGE_MS["plane"] = (time.perf_counter() - t_p) * 1000.0
     if coef is None:
         return _ret(None, None, None, None, ["平面拟合失败"])
     a, b, c = (float(coef[0]), float(coef[1]), float(coef[2]))
@@ -836,7 +844,8 @@ class DepthRoadObserver:
         # observe 分段滑窗（worker 单线程写；分段口径见 LAST_STAGE_MS）
         self._stage_win: dict[str, deque] = {
             k: deque(maxlen=200)
-            for k in ("pre", "forward", "reconstruct", "upsize", "edges", "grid")}
+            for k in ("pre", "forward", "reconstruct", "upsize",
+                      "plane", "edges", "grid")}
 
     @staticmethod
     def _load_ego_mask() -> np.ndarray | None:
@@ -878,18 +887,21 @@ class DepthRoadObserver:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
             return None, None
-        stage = dict(LAST_STAGE_MS)
+        stage = {k: LAST_STAGE_MS[k] for k in
+                 ("pre", "forward", "reconstruct", "upsize")}
         t_e = time.perf_counter()
         reading = reading_from_points(pts, fx, self._cal, ego_mask=self._ego_mask,
                                       object_mask=object_mask, fy=fy)
-        stage["edges"] = (time.perf_counter() - t_e) * 1000.0
+        stage["edges"] = LAST_STAGE_MS["edges"] = \
+            (time.perf_counter() - t_e) * 1000.0
         # 可行驶栅格：与读数同源同拍、并行产出（不替换、不接决策层）。在 worker
         # 线程内算，不占控制拍；平面共享 reading 的拟合结果（同带同掩码，逐位
         # 同值），避免列剖面重算（自拟合口径 ~34ms/帧）。
         t_g = time.perf_counter()
         grid = drivable_grid_from_points(pts, fx, fy, self._ego_mask, object_mask,
                                          coef=reading.coef)
-        stage["grid"] = (time.perf_counter() - t_g) * 1000.0
+        stage["grid"] = LAST_STAGE_MS["grid"] = \
+            (time.perf_counter() - t_g) * 1000.0
         for k, v in stage.items():
             self._stage_win[k].append(v)
         evid["grid"] = grid

@@ -619,6 +619,16 @@ def test_async_segments_on_new_evidence_only():
         assert a.stop() is True
 
 
+def test_stage_plane_key_written_by_reading():
+    """plane 分段由 reading_from_points 写入 LAST_STAGE_MS（逐帧快照键位锁）
+    ——后处理拆账的三段（plane/edges/grid）必须都能进 dgeo_seg.stages；
+    平面拟合失败早退路径也落计时。"""
+    pts = np.full((720, 1280, 3), np.nan, np.float32)
+    r = dg.reading_from_points(pts, 1000.0, None)
+    assert r.sides == 0 and "平面拟合失败" in r.rejects
+    assert dg.LAST_STAGE_MS["plane"] >= 0.0
+
+
 # ── DML 互斥（core.dml_lock）：两会话并发 run 会段错误杀进程，2026-09-25 实证 ──
 
 def test_async_dml_busy_skip_not_failure():
