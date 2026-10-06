@@ -13,7 +13,7 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
     右联 = BEV 俯视：可行驶栅格三态 + 挖洞格 + 路心/左右缘叠层（C=滤波 ro、
            c0=当帧原始 (L+R)/2，两者分离=时间链效应；cg=同拍栅格 wmid 路心，
            与 c0 分离=互证分歧面）+ 检测反投影标记
-           + 距离标尺（z 每 3m、x 每 5m 刻度）+ d(t) 规划曲线子带
+           + 距离标尺（z 近场每 3m、远场每 5m，x 每 5m 刻度）+ d(t) 规划曲线子带
 
 **BEV 口径**（与 _grid_penalty 同源，不另立坐标）：栅格 x 原点=相机光轴=自车，
 格 (ix, iz) → X=ix·CELL−X_MAX、Z=Z_LO+iz·CELL；**渲染近下远上**（z=Z_LO 在
@@ -58,9 +58,11 @@ _CLS_BGR = {"coins": (0, 255, 255), "cars": (0, 0, 255),
 
 _PANEL_W = 560                    # 右联宽
 _TITLE_H = 26                     # 右联标题条
-_Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0)   # 标尺（含目检延伸区）
+_Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0)
+# 标尺：近场（供数域）每 3m、远场（目检延伸区）每 5m
 _X_TICK_M = (-10.0, -5.0, 0.0, 5.0, 10.0)
-_RENDER_Z_HI = 24.0               # BEV 渲染上限（> 栅格采集窗 16m）：目检延伸区
+_RENDER_Z_HI = 40.0               # BEV 渲染上限（> 栅格采集窗 16m）：目检延伸区
+_PLOT_Y1_FRAC = 0.66              # BEV 绘图区底 = 画布高 × 此值（竖长化，下余 d(t) 子带）
 _LIMIT_BGR = (0, 215, 255)        # 程序接受域上限虚线（亮黄）
 
 
@@ -105,12 +107,13 @@ def _project_detection(px: int, py: int, coef, fx: float, fy: float,
 def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     """右联：栅格三态 + 路面叠层 + 标尺 + d(t) 规划子带（全部 None 安全）。
 
-    渲染域 z 到 _RENDER_Z_HI（24m）：栅格只占 3~16m 采集窗，其上为目检延伸
-    区（检测反投影标记照画，程序供数不收）——虚线亮黄标出采集窗上限，
-    「线以上程序不接受」一眼可见（维护者要求，方便目检车/币的真实纵深）。"""
+    渲染域 z 到 _RENDER_Z_HI（40m）：栅格只占 3~16m 采集窗，其上为目检延伸
+    区（深灰底，检测反投影标记照画，程序供数不收）——虚线亮黄标出采集窗上限，
+    「线以上程序不接受」一眼可见（维护者要求，方便目检车/币的真实纵深）。
+    绘图区竖长化（画布高 × _PLOT_Y1_FRAC），下余给 d(t) 规划子带。"""
     H = canvas.shape[0]
     plot_x0, plot_x1 = 46, _PANEL_W - 12
-    plot_y0, plot_y1 = _TITLE_H + 6, int(H * 0.56)
+    plot_y0, plot_y1 = _TITLE_H + 6, int(H * _PLOT_Y1_FRAC)
     sx = (plot_x1 - plot_x0) / GRID_NX
     sy = (plot_y1 - plot_y0) / ((_RENDER_Z_HI - GRID_Z_LO) / GRID_CELL)
     bm = _BevMap(plot_x0, plot_y1, sx, sy)

@@ -83,7 +83,7 @@ def test_render_hud_full_snapshot_paints_bev(frame):
     out = render_hud(frame, _snap(frame_shape=(H, W, 3)), None)
     assert out.shape[:2] == (H, W + dv._PANEL_W)
     # 绘图区内部取点（避开刻度线：z≈8m、x≈1m 处），应为 blocked 红
-    y, x = 200, W + 320
+    y, x = int(H * dv._PLOT_Y1_FRAC) - 60, W + 320
     b, g, r = out[y, x]
     assert (int(b), int(g), int(r)) == (50, 50, 220)
 
@@ -91,7 +91,7 @@ def test_render_hud_full_snapshot_paints_bev(frame):
 def test_render_hud_bev_orientation_near_bottom_far_top(frame):
     """BEV 朝向锁：近端行（iz0）渲染在画布**底**、远端在顶——与 depth_geo
     取证面板 z3(bottom)..z16(top) 同约定，自车标（画在底）落在近端。
-    顶带 z≈23.5m 已在栅格采集窗（16m）之外=目检延伸区深灰（38,38,38）。"""
+    顶带 z≈39.3m 已在栅格采集窗（16m）之外=目检延伸区深灰（38,38,38）。"""
     st = np.full((GRID_NZ, GRID_NX), GRID_UNKNOWN, np.int8)
     st[:4] = GRID_DRIVABLE          # z 3~4.1m 近端带可走，其余未知
     g = DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
@@ -99,7 +99,7 @@ def test_render_hud_bev_orientation_near_bottom_far_top(frame):
                      dig_cells=0, latency_ms=1.0)
     out = render_hud(frame, _snap(grid=g, frame_shape=(H, W, 3)), None)
     x = W + 320                     # x≈+1m：避开 0/5 竖刻度线
-    b, gr, r = out[int(H * 0.56) - 8, x]
+    b, gr, r = out[int(H * dv._PLOT_Y1_FRAC) - 8, x]
     assert (int(b), int(gr), int(r)) == (70, 140, 70)     # 底带=近端可走绿
     b, gr, r = out[dv._TITLE_H + 14, x]
     assert (int(b), int(gr), int(r)) == (38, 38, 38)      # 顶带=目检延伸区
@@ -109,7 +109,7 @@ def test_render_hud_bev_grid_limit_dashed_line(frame):
     """程序接受域上限：z=16m 采集窗顶画亮黄虚线，线以上只画不收（维护者
     要求：目检延伸区与供数域一眼可分）。虚线上=延伸区底、虚线下=栅格带。"""
     out = render_hud(frame, _snap(frame_shape=(H, W, 3)), None)
-    plot_y1 = int(H * 0.56)
+    plot_y1 = int(H * dv._PLOT_Y1_FRAC)
     sy = (plot_y1 - (dv._TITLE_H + 6)) / ((dv._RENDER_Z_HI - 3.0) / 0.25)
     y_limit = int(plot_y1 - (13.0 / 0.25) * sy)      # z=16m 行
     row = out[y_limit, W:]
@@ -154,11 +154,11 @@ def test_project_detection_roundtrip():
 
 
 def test_project_detection_rejects_out_of_domain():
-    # Z≈18m 在渲染延伸域内（>栅格窗 16m、≤24m，标记照画供目检）；
-    # Z≈28.8m 超渲染域 → None；分母退化（v=a·u+b）→ None
+    # Z≈18m 在渲染延伸域内（>栅格窗 16m、≤40m，标记照画供目检）；
+    # Z≈72m 超渲染域 → None；分母退化（v=a·u+b）→ None
     hit = _project_detection(640, 400, (0.0, 0.0, 0.72), 1000.0, 1000.0, W, H)
     assert hit is not None and hit[1] == pytest.approx(18.0)
-    assert _project_detection(640, 385, (0.0, 0.0, 0.72),
+    assert _project_detection(640, 370, (0.0, 0.0, 0.72),
                               1000.0, 1000.0, W, H) is None
     assert _project_detection(640, 360, (0.0, 0.0, 0.72),
                               1000.0, 1000.0, W, H) is None
