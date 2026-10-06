@@ -63,6 +63,25 @@ class PlanLayer:
 
 
 @dataclass(frozen=True)
+class GridXcheck:
+    """路心互证闸（2026-10-06 局定案：找边逐帧翻跳——新鲜对 24 次 >0.25 道
+    跳变、v_lat 饱和 29 拍→lat_veto 假否决+巡航画龙）。整段可选，老 json
+    不带段=全默认=关，与 plan_layer 同一条兼容纪律。
+
+    语义：开闸后 `_EgoRoadObserver` 把同拍可行驶栅格全带 wmid 路心
+    （`depth_geo.grid_center_lane`，离线基线 commit f9a9a80 胜出口径）与
+    找边新鲜对比一致性——|差|>tol_lane 的新鲜对按污染对路径不供数（不喂、
+    不入槽、不入窗）；连续 veto 达 bypass_streak 放行本对并清零（供数黑视
+    比噪声致命，13:29 局教训——闸不得制造黑视）。栅格与找边共用 MoGe 点云/
+    平面/挖洞掩码，不是独立传感器：本闸只抓「找边锁错结构」，深度共同错误
+    兜不住，故互证通过不加分、只在不一致时行使否决。"""
+
+    enabled: bool = False
+    tol_lane: float = 0.45      # 互证容差（道）：|找边路心−栅格路心| 超此判分歧
+    bypass_streak: int = 8      # 连续分歧 veto 达此数放行（≈2s，防供数黑视）
+
+
+@dataclass(frozen=True)
 class Overtake:
     """超车候选评分参数（阶段 C 设计稿 §二/§四；[需实测] 项回放定档只改 json）。"""
 
@@ -195,6 +214,7 @@ class DecisionConfig:
     traffic: Traffic
     grid_veto: GridVeto = GridVeto()
     plan_layer: PlanLayer = PlanLayer()
+    grid_xcheck: GridXcheck = GridXcheck()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -353,7 +373,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             k_unknown=_num_def(d, "grid_veto", "k_unknown", 0.05, lo=0)),
         plan_layer=PlanLayer(
             enabled=_bool(d, "plan_layer", "enabled", default=False),
-            switch_streak=_int_def(d, "plan_layer", "switch_streak", 2, lo=1)))
+            switch_streak=_int_def(d, "plan_layer", "switch_streak", 2, lo=1)),
+        grid_xcheck=GridXcheck(
+            enabled=_bool(d, "grid_xcheck", "enabled", default=False),
+            tol_lane=_num_def(d, "grid_xcheck", "tol_lane", 0.45, lo=0),
+            bypass_streak=_int_def(d, "grid_xcheck", "bypass_streak", 8, lo=1)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis

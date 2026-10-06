@@ -46,7 +46,8 @@ from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
-    AsyncDepthRoadObserver, DepthRoadObserver, load_session)
+    AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
+    load_session)
 from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
@@ -696,7 +697,8 @@ class SpeedRushModule(ActivityModule):
         cal = load_calib()   # 标定真源一次读入（深度观测器同源）
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "traffic_obs": TrafficObserver(cfg.traffic),
-                "ego_road": _EgoRoadObserver(),
+                # lane_w_m 供栅格路心互证的米→道换算（world_model 同源锚）
+                "ego_road": _EgoRoadObserver(cfg.grid_xcheck, cal.lane_w_m),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -770,7 +772,8 @@ class SpeedRushModule(ActivityModule):
             # 兜底宽度；legacy 模式消费序不变（engine 不吃这两路）。
             # dgrid（S2-B）：同拍栅格，仅 grid_veto 闸开时进轨迹评分（闸关
             # 时 engine 忽略）。
-            road_offset = chain["ego_road"].update(dgeo, new=dgeo_new)
+            road_offset = chain["ego_road"].update(dgeo, new=dgeo_new,
+                                                   grid=dgrid)
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents),
@@ -781,7 +784,10 @@ class SpeedRushModule(ActivityModule):
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
             # 噪声交给 0.8 新息门+1.0s 陈旧重基消化；trace road_offset 列=实际喂入。
-            cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset)
+            # road_offset_new：复用拍喂的是槽值旧证据，planner β 速度修正只认
+            # 新鲜拍（重复记账曾把单次找边翻跳放大成饱和侧滑，2026-10-06 局）。
+            cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset,
+                                 road_offset_new=dgeo_new)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -834,6 +840,12 @@ class SpeedRushModule(ActivityModule):
             "ro_source": chain["ego_road"].last.get("source"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
+            # 路心互证审计列（2026-10-06）：同拍栅格 wmid 路心（off 系，右正）
+            # + 新鲜对互证判定（agree/veto/bypass；复用/闸关/栅格弃权=None）。
+            # 闸关也照记——开闸前的分歧率审计就吃这两列。
+            "ro_grid": None if chain["ego_road"].last.get("grid_off") is None
+            else round(chain["ego_road"].last["grid_off"], 4),
+            "ro_agree": chain["ego_road"].last.get("xcheck"),
             # 深度几何列（几何主人 v4）：在场侧数 + 两侧读数 + 时延 + 弃权原因
             "dgeo_sides": None if dgeo is None else dgeo.sides,
             "dgeo_left": None if dgeo is None or dgeo.left_edge_lane is None
@@ -872,6 +884,7 @@ class SpeedRushModule(ActivityModule):
                 "fid": fid, "phase": phase,
                 "result": result, "reading": dgeo, "grid": dgrid,
                 "road_offset": road_offset,
+                "grid_off": chain["ego_road"].last.get("grid_off"),
                 "decision": self._control_last,   # 本拍决策/供数快照（新建不改旧）
                 "hud": (chain["hud_ref"].latest()
                         if chain.get("hud_ref") is not None else None),
@@ -1187,7 +1200,10 @@ class _EgoRoadObserver:
     W_KEEP_SAMPLES = 200             # 滑动样本窗上限（路型缓变，旧样本滚出）
     W_GUARD_FRAC = 0.4               # 对宽超出 W±此比例 → 污染，不进统计
 
-    def __init__(self) -> None:
+    def __init__(self, xcheck=None, lane_w_m: float | None = None) -> None:
+        self._xc = xcheck            # GridXcheck | None（None/闸关=互证不参与供数）
+        self._lane_w_m = lane_w_m
+        self._xc_streak = 0          # 连续互证 veto 计数（达 bypass 预算放行）
         self._slot: dict[str, tuple] = {}     # 最近有效对缓存 (el, er, 时刻)
         self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口，
                                               # 第七轮：ro 单对野值 ±0.8 道跳变
@@ -1202,7 +1218,8 @@ class _EgoRoadObserver:
         return s[0], s[1]
 
     def update(self, bnd, now: float | None = None, *,
-               new: bool = True) -> float | None:
+               new: bool = True,
+               grid: DrivableGrid | None = None) -> float | None:
         """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
 
         ``new``：本拍读数是否新证据（异步驻留协议 take() 的 is_new）。中值窗、
@@ -1211,10 +1228,15 @@ class _EgoRoadObserver:
         读数退化为 1~2 个：真变化滞后 ~0.3s 后台阶跳变、单对野值凭重复入窗
         赢得中值（实机 10-04 两局取证：79 次 >0.3 道 ro 台阶 0 次在新读数拍）。
 
+        ``grid``：同拍可行驶栅格（互证审计面）。闸关也只算不判——栅格 wmid
+        路心随拍进 last（trace ro_grid 列 / BEV cg 线），供数否决仅当
+        cfg.grid_xcheck.enabled 且新鲜对分歧超容限（见 _xc 逻辑）。
+
         黑视（无有效对且保鲜槽过期）给 None——横向位置未知时诚实弃权，
         交 planner 既有 machinery（陈旧重基/开环）消化，不造观测。"""
         if now is None:
             now = time.monotonic()
+        grid_off = self._grid_off(grid)     # 互证审计面：闸关也常算
         ok = (bnd is not None and bnd.sides == 2
               and bnd.left_edge_lane is not None
               and bnd.right_edge_lane is not None)
@@ -1224,7 +1246,7 @@ class _EgoRoadObserver:
             el, er = bnd.left_edge_lane, bnd.right_edge_lane
             off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
             if abs((el + er) / 2.0) > self.OFF_MAX:
-                self.last = self._snapshot(now, src, None)
+                self.last = self._snapshot(now, src, None, off_raw, grid_off)
                 return None                 # 垃圾对：不喂、不入槽、不入窗
             # 对宽一致性门（实机 2026-10-05 案）：W 成形后对宽超出 W±40% 的
             # 对=找边锁错结构的污染对（车流走廊对宽 1.7 道、邻车侧面当"边"），
@@ -1233,8 +1255,25 @@ class _EgoRoadObserver:
             formed = self.width
             if formed is not None and \
                     abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
-                self.last = self._snapshot(now, src, None)
+                self.last = self._snapshot(now, src, None, off_raw, grid_off)
                 return None                 # 污染对：不喂、不入槽、不入窗
+            # 路心互证（cfg.grid_xcheck 闸，默认关）：新鲜对与同拍栅格 wmid
+            # 路心分歧超容限 → 疑似找边锁错结构，同污染对路径不供数；连续
+            # veto 达 bypass_streak 放行并清零（黑视比噪声致命，13:29 局教训
+            # ——闸不得制造供数黑视）。比对对象=原始对路心（滤波前证据）。
+            xcheck = None
+            if self._xc is not None and self._xc.enabled \
+                    and grid_off is not None:
+                if abs(off_raw - grid_off) > self._xc.tol_lane:
+                    self._xc_streak += 1
+                    if self._xc_streak < self._xc.bypass_streak:
+                        self.last = self._snapshot(now, src, None, off_raw,
+                                                   grid_off, "veto")
+                        return None
+                    xcheck = "bypass"       # 连续分歧达预算：放行，防黑视
+                else:
+                    xcheck = "agree"
+                self._xc_streak = 0
             # 中值滤波（窗口未满时直喂最新对，前两拍行为与旧版逐值同形）：
             # 单对野值（一侧找边偶发锁错结构）被近 3 对中值杀掉，真漂移经
             # 2~3 对（约 0.5s）跟进——比 α/β 直注噪声便宜得多。
@@ -1247,17 +1286,29 @@ class _EgoRoadObserver:
         else:
             fresh = self._fresh(now)
             if fresh is None:
-                self.last = self._snapshot(now, "none", None)
+                self.last = self._snapshot(now, "none", None, None, grid_off)
                 return None
             el, er = fresh
             src = "pair_slot"
         center = (el + er) / 2.0        # 路心（自车系）
         off = -center                   # 契约：自车相对路心（右正）
         if abs(off) > self.OFF_MAX:
-            self.last = self._snapshot(now, src, None)
+            self.last = self._snapshot(now, src, None, off_raw, grid_off)
             return None                 # 垃圾信号不喂（宁弃不喂假路心）
-        self.last = self._snapshot(now, src, off)
+        if ok and new:
+            self.last = self._snapshot(now, src, off, off_raw, grid_off,
+                                       xcheck)
+        else:
+            self.last = self._snapshot(now, src, off, None, grid_off)
         return off
+
+    def _grid_off(self, grid: DrivableGrid | None) -> float | None:
+        """同拍栅格 → 栅格路心观测（off 系，右正）：off=−grid_center_lane，
+        与 off=−(L+R)/2 同式。无栅格/无标定/无绿行=弃权。"""
+        if grid is None or self._lane_w_m is None:
+            return None
+        c = grid_center_lane(grid, self._lane_w_m)
+        return None if c is None else -c
 
     def _feed_width(self, el: float, er: float) -> None:
         """中值滤波后的双侧对宽进 W 统计（垃圾对/单侧/保鲜拍不进——与供数门
@@ -1276,9 +1327,13 @@ class _EgoRoadObserver:
         return float(np.median(self._w_samples))
 
     def _snapshot(self, now: float, src: str, off: float | None,
-                  off_raw: float | None = None) -> dict:
+                  off_raw: float | None = None,
+                  grid_off: float | None = None,
+                  xcheck: str | None = None) -> dict:
+        """debug/trace 数据面（ro_* 列）：来源、喂入值、原始对、同拍栅格路心
+        与互证判定（agree/veto/bypass；复用拍、闸关、栅格弃权=None）。"""
         return {"source": src, "off": off, "off_raw": off_raw,
-                "width": self.width}
+                "width": self.width, "grid_off": grid_off, "xcheck": xcheck}
 
 
 def _started_async_depth(obs: DepthRoadObserver,

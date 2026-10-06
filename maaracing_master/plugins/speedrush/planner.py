@@ -78,14 +78,20 @@ class LateralPlanner:
 
     def update(self, decision: DecisionOutput, dt_s: float,
                current_fid: int,
-               road_offset: float | None = None) -> GamepadCommand:
+               road_offset: float | None = None,
+               road_offset_new: bool = True) -> GamepadCommand:
         """一个控制 tick。dt_s 非法即 fail-loud（帧号倒退同一纪律：
         静默吞掉病态输入比中断危险——时间基低通会被 0/NaN 污染成永久状态）。
 
-        ``road_offset``（step 2.2.5 闭环）：自车相对路中心的位置（车道单位，右正，
+        ``road_offset``（step 2.2.5 闭环）：自车相对路心的位置（车道单位，右正，
         −(左右缘 x_lane 均值)，双侧稳定拍才有值）。有值即对本拍积分结果做
         alpha-beta 修正——治 V2 复盘实锤的"开环虚胖提前松杆"。None=无观测，
-        纯模型积分（旧行为逐拍不变）。"""
+        纯模型积分（旧行为逐拍不变）。
+
+        ``road_offset_new``：本拍 road_offset 是否**新证据**（异步驻留协议下，
+        保鲜槽复用拍喂的是同一套旧读数）。速度修正（β·r/dt）只在新证据拍生效，
+        复用拍只收位置（α·r）——同一新息反复注入曾把单次找边翻跳放大成饱和
+        侧滑（2026-10-06 局 id17 取证）。默认 True=旧调用方行为不变。"""
         if not (isinstance(dt_s, (int, float)) and math.isfinite(dt_s)) or dt_s <= 0:
             raise ValueError(f"dt_s 非法（需有限正数）：{dt_s!r}")
         if not math.isfinite(decision.x_target if decision.x_target is not None else 0.0) \
@@ -198,12 +204,17 @@ class LateralPlanner:
                 r = obs - self.state.executed_lane
                 if abs(r) <= self.p.obs_jump_max_lane:
                     self.state.executed_lane += self.p.obs_alpha * r
-                    # β 注入也在 v_lat_max 饱和内（16:44 局 |v_lat| 冲到 11.4 ≫
-                    # 物理上限 2.5：⑥ 的饱和在 ⑥b 之前，大新息直注绕过了它，
-                    # 阻尼项 −k_d·v 随即满反打喂给极限环）
-                    self.state.v_lat_est = max(
-                        -self.p.v_lat_max, min(self.p.v_lat_max,
-                        self.state.v_lat_est + self.p.obs_beta * r / dt_s))
+                    # β 速度修正只认新证据拍：异步驻留协议下一套读数被多拍复用，
+                    # 复用拍对同一新息重复注入曾把 0.36 道的找边翻跳 3 拍内放大
+                    # 成 v_lat 饱和 ±2.5（2026-10-06 局 id17：实拍数据+产线增益
+                    # 手算复现）——复用拍只收位置，速度修正留给下一套新读数。
+                    if road_offset_new:
+                        # β 注入也在 v_lat_max 饱和内（16:44 局 |v_lat| 冲到 11.4 ≫
+                        # 物理上限 2.5：⑥ 的饱和在 ⑥b 之前，大新息直注绕过了它，
+                        # 阻尼项 −k_d·v 随即满反打喂给极限环）
+                        self.state.v_lat_est = max(
+                            -self.p.v_lat_max, min(self.p.v_lat_max,
+                            self.state.v_lat_est + self.p.obs_beta * r / dt_s))
                     self._stale_t = 0.0
                 else:
                     self._stale_t += dt_s

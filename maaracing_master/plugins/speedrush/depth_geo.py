@@ -163,8 +163,10 @@ GRID_UNKNOWN, GRID_DRIVABLE, GRID_BLOCKED = 0, 1, 2
 class DrivableGrid:
     """一帧的可行驶栅格（BEV 三态）。**消费契约**（2026-10-04 定）：
 
-    - ``state == GRID_BLOCKED`` (2) = **软代价**：高于路面的静态结构（墙/路缘/
-      桥），供避让/横向代价用，**不否决**规划——它不是硬边界。
+    - ``state == GRID_BLOCKED`` (2) = **硬否决**：高于路面的静态结构（墙/路缘/
+      桥）。近场带轨迹裁决（``latsample._grid_penalty``）压到即一票否决——
+      消费语义以 latsample 实代码与 decision.json grid_veto._note 为准，本文
+      曾写"软代价不否决"是 S2-B 定案前的旧稿，已按实装更正（2026-10-06）。
     - ``state == GRID_UNKNOWN`` (0) = **无证据**：无有效点，或被挖洞（ego/物体框）
       覆盖。既不得当可走用，也不得当障碍用。
     - ``state == GRID_DRIVABLE`` (1) = **唯一正向证据**：格内有地面点且高度对路面
@@ -699,6 +701,38 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     return _ret(state.reshape(GRID_NZ, GRID_NX), (a, b, c),
                 counts.reshape(GRID_NZ, GRID_NX), int(dug_mask.sum()),
                 dug_mask.reshape(GRID_NZ, GRID_NX))
+
+
+def grid_center_lane(grid: DrivableGrid, lane_w_m: float) -> float | None:
+    """可行驶栅格全带路心（车道单位，右正，原点=相机光轴/自车）。
+
+    口径=离线基线胜出的「宽度加权中位」（2026-10-05 两场 25 帧人工判读，
+    证据 commit f9a9a80：mean 0.31 道/大错 8%/覆盖 100%，同尺对照找边
+    0.52/22%/72%）：逐行取绿区 [min,max] **范围中点**（非质心——ego 挖洞楔
+    居中挖走中央证据，范围中点对它免疫），行中点按绿区宽度加权取中位数。
+    无绿行（全 unknown/blocked 或 coef 拟合失败的全 0 栅格）→ None=弃权。
+
+    极性契约（v3 事故链门禁同款）：绿区居 X=+1m → 返回 +1/lane_w_m（正值=
+    路心在右）；消费方 `_EgoRoadObserver` 取 off=−值，与 off=−(L+R)/2 同式。
+    栅格与找边共用 MoGe 点云/平面/挖洞掩码——本读数不是独立传感器，只作
+    「找边锁错结构」的互证面（消费闸见 decision.json grid_xcheck）。"""
+    if not (lane_w_m > 0):
+        return None
+    drivable = grid.state == GRID_DRIVABLE
+    has = drivable.any(axis=1)
+    if not has.any():
+        return None
+    cols = np.arange(grid.state.shape[1])
+    lo_ix = np.where(drivable, cols, grid.state.shape[1]).min(axis=1)[has]
+    hi_ix = np.where(drivable, cols, -1).max(axis=1)[has]
+    lo_m = -GRID_X_MAX + lo_ix * GRID_CELL
+    hi_m = -GRID_X_MAX + (hi_ix + 1) * GRID_CELL
+    mids = (lo_m + hi_m) / 2.0
+    weights = hi_m - lo_m
+    order = np.argsort(mids)
+    cw = np.cumsum(weights[order])
+    mid = float(mids[order][np.searchsorted(cw, cw[-1] / 2.0)])
+    return mid / lane_w_m
 
 
 def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:

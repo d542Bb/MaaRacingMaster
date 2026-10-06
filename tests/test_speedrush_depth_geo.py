@@ -1248,3 +1248,55 @@ def test_render_depth_debug_grid_panel_shape():
                         dig_cells=3, latency_ms=5.0)
     withg = dg.render_depth_debug(frame, None, rd, None, None, None, grid=g)
     assert withg.shape[1] == 1280 and withg.shape[0] > base.shape[0]
+
+
+# ---------- grid_center_lane：栅格全带 wmid 路心（路心互证的供数口径） ----------
+
+def _xg_grid(rows_cols, coef=(0.0, 0.0, 0.72)):
+    """构造 DrivableGrid：rows_cols = [(行号, 列lo, 列hi), ...]，其余全 unknown。
+    列→X 映射用真 GRID_NX（84 列），行数任意（跨行只做宽度加权）。"""
+    st = np.full((4, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    for r, c0, c1 in rows_cols:
+        st[r, c0:c1 + 1] = dg.GRID_DRIVABLE
+    return dg.DrivableGrid(state=st, coef=coef,
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=1.0)
+
+
+def test_grid_center_lane_polarity_and_value():
+    """极性契约（v3 事故链同款门禁）：绿区在 X=+1m → 返回 +1/lane_w_m
+    （正值=路心在右）；消费方取 off=−值，与 off=−(L+R)/2 同式。列 44~47 的
+    格界 [0.5, 1.5]m，范围中点恰为 +1m。"""
+    g = _xg_grid([(1, 44, 47)])
+    c = dg.grid_center_lane(g, 2.75)
+    assert c == pytest.approx(1.0 / 2.75)
+    assert c > 0
+
+
+def test_grid_center_lane_range_midpoint_survives_wedge_split():
+    """口径锁：逐行取绿区 [min,max] **范围中点**而非质心——ego 挖洞楔居中
+    劈开绿区时中点仍落在真路心，质心会被楔拽偏。列 40~43 与 48~51 两段，
+    格界 [−0.5, 2.5]m → 中点 +1.0m（质心不等值）。"""
+    g = _xg_grid([(2, 40, 43), (2, 48, 51)])
+    assert dg.grid_center_lane(g, 2.75) == pytest.approx(1.0 / 2.75)
+
+
+def test_grid_center_lane_width_weighted_median_across_rows():
+    """跨行按绿区宽度加权取中位：宽行压过窄行，单侧窄证据带不拽走全带路心。
+    宽行 X∈[0.5,1.5]（中点 +1m，权重 1m）+ 窄行 X∈[−2.25,−2.0]（列 33，
+    中点 −2.125m，权重 0.25m）→ 加权中位仍 +1m。"""
+    g = _xg_grid([(0, 44, 47), (2, 33, 33)])
+    assert dg.grid_center_lane(g, 2.75) == pytest.approx(1.0 / 2.75)
+
+
+def test_grid_center_lane_honest_abstain():
+    """无绿行（全 unknown / 拟合失败全 0 栅格）与非法 lane_w_m → None 弃权，
+    不造观测。"""
+    empty = _xg_grid([])
+    assert dg.grid_center_lane(empty, 2.75) is None
+    zero = dg.DrivableGrid(state=np.zeros((4, dg.GRID_NX), np.int8),
+                           coef=None, counts=np.zeros((4, dg.GRID_NX), np.int32),
+                           dig_cells=0, latency_ms=1.0)
+    assert dg.grid_center_lane(zero, 2.75) is None
+    g = _xg_grid([(1, 44, 47)])
+    assert dg.grid_center_lane(g, 0.0) is None

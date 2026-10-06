@@ -520,3 +520,43 @@ def test_no_road_offset_is_old_behavior():
         cb = pl_b.update(d, DT, i, road_offset=None)
         assert ca.steer_x == cb.steer_x
     assert pl_a.state.executed_lane == pytest.approx(pl_b.state.executed_lane)
+
+
+def test_velocity_correction_only_on_fresh_reading():
+    """β 速度修正只认新证据拍，复用拍只收位置（α）——异步驻留协议下同一套
+    旧读数不得反复当速度新证据（重复记账曾把 2026-10-06 局 id17 的 0.36 道
+    找边翻跳 3 拍内放大成 v_lat 饱和 ±2.5，lat_veto 被假侧滑触发）。
+
+    锚定后喂一次 +0.4 道新鲜跳变（一次踢足 β·r/dt≈1.6），随后 3 拍同值复用：
+    fresh_only 序列 |v_lat| 只准衰减；对照旧行为（复用拍 road_offset_new=True
+    直喂）同一新息被重复注入、|v_lat| 反超新鲜拍峰值=放大现象。"""
+    def run(new_on_reuse):
+        pl = _planner()
+        pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)   # 锚=0（道0=路心）
+        pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.4,
+                  road_offset_new=True)                            # 新鲜跳变
+        vs = [pl.state.v_lat_est]
+        for i in range(3):                                         # 驻留复用 3 拍
+            pl.update(_out(fid=3 + i, valid=3 + i), DT, 3 + i,
+                      road_offset=0.4, road_offset_new=new_on_reuse)
+            vs.append(pl.state.v_lat_est)
+        return vs
+
+    fresh_only = run(False)
+    assert abs(fresh_only[0]) > 1.2            # 新鲜拍一次踢足（β·r/dt=1.6）
+    assert all(abs(fresh_only[k + 1]) <= abs(fresh_only[k]) + 1e-9
+               for k in range(3))              # 复用拍：只衰减，无重复注入
+    old = run(True)
+    assert max(abs(v) for v in old[1:]) > abs(fresh_only[0]) + 0.3
+
+
+def test_reuse_ticks_still_converge_position():
+    """复用拍 α 位置修正不缺席：跳变后同值复用数拍，executed 应向 0.4 收敛
+    （β 停了，位置参考还在——保鲜槽语义=维持位置参考）。"""
+    pl = _planner()
+    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.4, road_offset_new=True)
+    for i in range(6):
+        pl.update(_out(fid=3 + i, valid=3 + i), DT, 3 + i,
+                  road_offset=0.4, road_offset_new=False)
+    assert abs(pl.state.executed_lane - 0.4) < 0.2

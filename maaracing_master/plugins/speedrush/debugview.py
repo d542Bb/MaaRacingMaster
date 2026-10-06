@@ -11,7 +11,8 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
     左联 = 画面叠加：YOLO 框（coin 黄 / car 红 / bonus 品红）+ 决策/供数读数带
            + HUD 比分读数（HudObserver 最新行，score/rate × a/b 槽位）
     右联 = BEV 俯视：可行驶栅格三态 + 挖洞格 + 路心/左右缘叠层（C=滤波 ro、
-           c0=当帧原始 (L+R)/2，两者分离=时间链效应）+ 检测反投影标记
+           c0=当帧原始 (L+R)/2，两者分离=时间链效应；cg=同拍栅格 wmid 路心，
+           与 c0 分离=互证分歧面）+ 检测反投影标记
            + 距离标尺（z 每 3m、x 每 5m 刻度）+ d(t) 规划曲线子带
 
 **BEV 口径**（与 _grid_penalty 同源，不另立坐标）：栅格 x 原点=相机光轴=自车，
@@ -165,6 +166,16 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                              (80, 170, 255), 1)
                     _put_text(canvas, "c0", (xp + 2, plot_y0 + 12), scale=0.36,
                               color=(80, 170, 255))
+        # 栅格路心 cg（同拍可行驶栅格全带 wmid，grid_center_lane 口径）：
+        # 快照带 off 系 grid_off，路心位 X=−grid_off·lane_w_m。与找边 c0 并排
+        # ——两线分离=找边锁错结构或深度共同错误的互证分歧面（2026-10-06）。
+        go = snap.get("grid_off")
+        if go is not None:
+            xp = bm.px(-go * lwm)
+            if plot_x0 <= xp <= plot_x1:
+                cv2.line(canvas, (xp, plot_y0), (xp, plot_y1), (80, 220, 80), 1)
+                _put_text(canvas, "cg", (xp + 2, plot_y0 + 24), scale=0.36,
+                          color=(80, 220, 80))
 
     # 自车标记（X=0、域底）
     cv2.drawMarker(canvas, (bm.px(0.0), plot_y1 - 6), (0, 255, 0),

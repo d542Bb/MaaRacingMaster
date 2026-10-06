@@ -127,5 +127,11 @@
     "enabled": false,
     "switch_streak": 2,
     "_note": "三类字典序计划层闸：bonus＞极限超车＞coin 选计划、CHANGE 改判走 0.5s 慢拍+连续 switch_streak 次持续性门；min_score/life_tau/switch_margin 退出选择链（闸关时原路径逐位不变）。实现住户 plan.py（选择域），机制说明见域内 CODE_WIKI 计划层节。**运行态：enabled=false＝默认关，待离线回放三检验（候选资格判例/帧抖动注入/字典序构造用例）+ 实机 V1 验收面（计划切换频率/bonus 兑现/无收益摆动）过线后由维护者批准开闸**。switch_streak 是整数持续性计数（反抖），不是标定权重。"
+  },
+  "grid_xcheck": {
+    "enabled": false,
+    "tol_lane": 0.45,
+    "bypass_streak": 8,
+    "_note": "路心互证闸（2026-10-06 局定案：找边逐帧翻跳——新鲜对 24 次 >0.25 道跳变、v_lat 饱和 29 拍→lat_veto 假否决与巡航画龙）。语义：同拍可行驶栅格全带 wmid 路心（depth_geo.grid_center_lane，离线基线 commit f9a9a80 胜出口径）与找边新鲜对比一致性——|差|>tol_lane 的新鲜对按污染对路径不供数（不喂、不入槽、不入窗），连续 veto 达 bypass_streak 放行并清零（供数黑视比噪声致命，13:29 局教训）。栅格与找边共用 MoGe 点云/平面/挖洞掩码，不是独立传感器——本闸只抓「找边锁错结构」，深度共同错误兜不住，故互证一致不加分、只在不一致时否决。**运行态：enabled=false＝默认关，先吃 trace ro_grid/ro_agree 审计列与 BEV cg 线看实机分歧率，维护者批准后开闸**。bypass_streak 是整数次数（防黑视预算），不是标定权重。"
   }
 }

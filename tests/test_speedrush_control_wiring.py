@@ -500,3 +500,81 @@ def test_grid_veto_on_full_chain_feeds_trace(monkeypatch):
     assert diag["n_grid"] >= 1, "近场正前方的墙应否决部分候选"
     # ix=42 距自车 ~0.19 道（贴身）：包络必含 → 全灭是正确语义（ABORT 交 FSM）
     assert diag["ok"] is False and diag["why"], "贴身墙应全灭且 why 可读"
+
+
+# ---------- 路心互证（grid_xcheck 闸）：栅格 wmid 路心 × 找边新鲜对一致性 ----------
+
+def _xg_grid(col_lo: int, col_hi: int):
+    """单行绿区 DrivableGrid：列号→X 用真 GRID_NX 映射（−10.5+0.25·ix）。"""
+    from maaracing_master.plugins.speedrush import depth_geo as dg
+    st = np.full((4, dg.GRID_NX), 0, np.int8)
+    st[1, col_lo:col_hi + 1] = dg.GRID_DRIVABLE
+    return dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=1.0)
+
+
+def test_ego_road_xcheck_off_is_bit_identical():
+    """闸关（缺省/显式 disabled）：grid 参数只进审计面（last.grid_off），
+    供数路径与无栅格版逐位同形——互证不开闸不得改变任何供数结果。"""
+    g_audit = _xg_grid(40, 43)         # 路心 0.0m → off=0.0，仅作审计值
+    for ctor in (lambda: smod._EgoRoadObserver(),
+                 lambda: smod._EgoRoadObserver(load_decision().grid_xcheck,
+                                               2.75)):
+        o = ctor()
+        assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                        grid=g_audit) == pytest.approx(+1.9)
+        assert o.last["source"] == "pair" and o.last["xcheck"] is None
+    o_audit = smod._EgoRoadObserver(lane_w_m=2.75)
+    o_plain = smod._EgoRoadObserver()
+    assert o_audit.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                          grid=g_audit) == pytest.approx(+1.9)
+    assert o_plain.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == \
+        pytest.approx(+1.9)
+    assert o_audit.last["grid_off"] is not None   # 审计面在场
+    assert o_plain.last["grid_off"] is None       # 无栅格=弃权
+
+
+def test_ego_road_xcheck_agree_feeds_veto_rejects():
+    """闸开：一致（|off_raw−grid_off|≤tol）照喂记 agree；分歧超容限的新鲜对
+    同污染对路径——不喂、不入槽、不入窗，复用拍仍走旧槽值（黑视兜底不破）。"""
+    from maaracing_master.plugins.speedrush.config import GridXcheck
+    # agree 栅格：绿区列 20~22 → X∈[−5.5,−4.75]，路心 −5.125m → off=+1.864
+    g_agree = _xg_grid(20, 22)
+    # veto 栅格：绿区列 48~51 → X∈[1.5,2.5]，路心 +2.0m → off=−0.727，
+    # 与对路心 +1.9 差 2.63 道远超容差
+    g_veto = _xg_grid(48, 51)
+    o = smod._EgoRoadObserver(GridXcheck(enabled=True, tol_lane=0.45,
+                                         bypass_streak=8), 2.75)
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                    grid=g_agree) == pytest.approx(+1.9, abs=0.01)
+    assert o.last["xcheck"] == "agree"
+    # 分歧新鲜对：None + veto 判定；槽里还是上一致对的值
+    assert o.update(_bnd_clusters(-0.9, +0.9), now=1000.05,
+                    grid=g_veto) is None
+    assert o.last["xcheck"] == "veto" and o.last["source"] == "pair"
+    assert len(o._win) == 1            # 野值对未入窗
+    assert o.update(_bnd_clusters(-0.9, +0.9), now=1000.10,
+                    grid=g_veto, new=False) == pytest.approx(+1.9, abs=0.01)
+    assert o.last["source"] == "pair_slot"   # 复用走槽值，槽未被毒化
+
+
+def test_ego_road_xcheck_bypass_after_streak():
+    """连续 veto 达 bypass_streak 放行本对并清零（13:29 黑视教训：闸不得制造
+    供数黑视）——放行后计数从头起，下一次分歧重新计。"""
+    from maaracing_master.plugins.speedrush.config import GridXcheck
+    g_veto = _xg_grid(48, 51)          # off=−0.727，与对 +1.9 恒分歧
+    o = smod._EgoRoadObserver(GridXcheck(enabled=True, tol_lane=0.45,
+                                         bypass_streak=3), 2.75)
+    for k in range(2):
+        assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0 + 0.05 * k,
+                        grid=g_veto) is None
+    assert o._xc_streak == 2
+    # 第 3 次连续分歧：streak 达预算 → 放行（bypass），清零
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.10,
+                    grid=g_veto) == pytest.approx(+1.9)
+    assert o.last["xcheck"] == "bypass" and o._xc_streak == 0
+    # 放行后的下一次分歧从 1 重新计
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.15,
+                    grid=g_veto) is None
+    assert o._xc_streak == 1
