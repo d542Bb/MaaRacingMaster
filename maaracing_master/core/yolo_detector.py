@@ -10,6 +10,7 @@ YOLO 目标检测模块：基于 ONNX Runtime 的 YOLOv8 推理封装
 from __future__ import annotations
 
 import ast
+import time
 
 import numpy as np
 import cv2
@@ -132,6 +133,10 @@ class YOLODetector:
             self._conf_by_id = _resolve_conf_by_id(meta, class_conf)
         # 模型输出类别维与类别表不一致时只告警一次（避免静默错映射）
         self._class_dim_checked = False
+        # 最近一次推理的分段耗时（等 DML 锁 / run 本体，ms）——时序归因插桩，
+        # 调用方单线程，无跨线程竞争
+        self.last_wait_ms = 0.0
+        self.last_run_ms = 0.0
 
     def _empty_by_class(self) -> dict[str, list]:
         """按类别表建空结果容器（每个已声明类别都有键，值为空列表）"""
@@ -228,8 +233,13 @@ class YOLODetector:
         # DML 互斥（core.dml_lock）：控制拍感知是锁的阻塞持有方——本会话 run 与
         # 其他 DML 会话（如深度 worker）并发 run 会段错误杀进程（2026-09-25
         # 双线程复现），必须串行；感知不能跳拍，故阻塞等锁而非让锁。
+        # 等锁与 run 分段计时：环频归因要分得清「锁等出来的」和「run 本身慢」。
+        t_wait = time.perf_counter()
         with dml_lock.LOCK:
+            self.last_wait_ms = (time.perf_counter() - t_wait) * 1000.0
+            t_run = time.perf_counter()
             raw_outputs = self.session.run(None, {self.input_name: blob})
+            self.last_run_ms = (time.perf_counter() - t_run) * 1000.0
         outputs = raw_outputs[0]
         assert isinstance(outputs, np.ndarray), f"ONNX 返回非数组: {type(outputs)}"
         preds = outputs[0].transpose(1, 0)

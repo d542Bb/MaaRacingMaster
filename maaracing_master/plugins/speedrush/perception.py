@@ -10,7 +10,9 @@
   按 x 排横向」是世界模型层的职责（A1 尺子口径见 ``CODE_WIKI.md`` §6），本层不越层；
 - 全帧推理、不设 ROI：街车重测（2026-09-21，28329 帧）实证框 92–99% 自然落在路面带、
   自车区零误检，硬编码 ROI 反而挡住远处目标；
-- ``infer_ms`` 随结果产出：控制回路 P50/P95 记账的数据源（验收判据 §二.3）。
+- ``infer_ms`` 随结果产出：控制回路 P50/P95 记账的数据源（验收判据 §二.3）；
+  ``wait_ms``/``run_ms`` 把等 DML 锁与 run 本体拆开——环频归因要分得清
+  「锁等出来的」和「推理本身慢」。
 
 **阈值口径**：conf=0.35 = 旧 racing 栈 CLASS_CONF 生效值；街车充分性重测与 τ 到场轮
 素材均在此口径下成立（证据 commit `8f59837` / `3847fae`，过程记录在实验 README）。
@@ -56,6 +58,8 @@ class PerceptionResult:
     coins: list[Detection] = field(default_factory=list)
     bonuses: list[Detection] = field(default_factory=list)
     infer_ms: float = 0.0
+    wait_ms: float = 0.0   # infer_ms 内等 DML 锁的时长（含锁竞争，见 yolo_detector）
+    run_ms: float = 0.0    # infer_ms 内 DML run 本体时长
 
 
 def _to_detections(dets: list[dict], class_name: str) -> list[Detection]:
@@ -91,4 +95,6 @@ class StreetPerception:
             cars=_to_detections(dets, CLASS_CARS),
             coins=_to_detections(dets, CLASS_COINS),
             bonuses=_to_detections(dets, CLASS_BONUS),
-            infer_ms=infer_ms)
+            infer_ms=infer_ms,
+            wait_ms=self.det.last_wait_ms,
+            run_ms=self.det.last_run_ms)

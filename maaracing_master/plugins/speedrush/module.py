@@ -100,7 +100,13 @@ DRIVE_MISS_TOLERANCE = 2
 # ---------- 驾驶主循环节拍 ----------
 
 # 主循环目标频率。与后续模型输入契约的采样率一致（"K 帧堆叠"的时间跨度按此定义）。
-DRIVE_TICK_HZ = 30.0
+# 20Hz 定案（2026-10-06，运动学正推）：贴身目标容差 80px（=车道分离尺度 320px×¼）
+# 对相对横向速度 p50 788px/s 给出数据年龄预算 ~101ms；τ 转向死区 130ms（n=51）
+# 要求 T ≤ τ/2——两判据交汇 15~20Hz，30Hz 只多买 8ms 余量却多付感知锁占空比，
+# 10Hz 余量仅 14% 撑不住 p95 抖动。与帧源 20fps 一致互为佐证（非匹配关系）。
+# 挤出的预算（锁占空比 ~8%、年龄余量 ~40ms）留作新鲜度与低性能设备冗余，
+# 不回填别的频率。
+DRIVE_TICK_HZ = 20.0
 DRIVE_TICK_S = 1.0 / DRIVE_TICK_HZ
 
 # 驾驶页锚点复查间隔。锚点识别走框架（post_task + 等待，单轮毫秒级），不必每帧跑；
@@ -544,6 +550,11 @@ class SpeedRushModule(ActivityModule):
                   f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（未接管车辆）", "INFO")
         # 感知耗时记账按阶段清零（P50/P95 在循环出口随实际节拍一起报，见 _log_loop_pace）
         self._infer_times = []
+        self._wait_times = []   # 等锁/run 分段（环频归因：锁等 vs 推理本身慢）
+        self._run_times = []
+        self._pace_body = []    # 环拍分解：环体 / 睡眠 / 睡醒空隙（13ms 悬案探针）
+        self._pace_sleep = []
+        self._pace_wake = []
         self._control_times = []
         self._control_last = None
         chain = self._build_control_chain(phase) if (control and not straight) else None
@@ -577,8 +588,23 @@ class SpeedRushModule(ActivityModule):
         try:
             with contextlib.ExitStack() as stack:
                 gpad = stack.enter_context(self.ctx.gamepad.acquire()) if control else None
+                # 环拍分解探针（2026-10-06）：拍间隔 = 环体 + 睡眠 + 睡醒空隙。
+                # 首轮实测揪出 20Hz 之谜——monotonic 粗钟（步长 ~15.6ms）把环体
+                # 量化成 0、又让 sleep deadline 过冲（33ms 请求实睡 46.8ms）。
+                # pacing 全线改 perf_counter 后本探针留作常驻节拍观测。
+                # 记账记在上一拍头上（下一拍 t0 才能闭合拍间隔），随
+                # _log_loop_pace 出口汇报。
+                prev_t0: float | None = None
+                prev_body = 0.0
+                prev_sleep = 0.0
                 while self._running and time.monotonic() < deadline:
-                    t0 = time.monotonic()
+                    t0 = time.perf_counter()
+                    if prev_t0 is not None:
+                        self._pace_body.append(prev_body * 1000.0)
+                        self._pace_sleep.append(prev_sleep * 1000.0)
+                        self._pace_wake.append(
+                            max(0.0, (t0 - prev_t0 - prev_body - prev_sleep) * 1000.0))
+                    prev_t0 = t0
                     # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
                     # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
                     frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
@@ -592,6 +618,8 @@ class SpeedRushModule(ActivityModule):
                             result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
                             self._last_perception = result
                             self._infer_times.append(result.infer_ms)
+                            self._wait_times.append(result.wait_ms)
+                            self._run_times.append(result.run_ms)
                     if gpad is not None:
                         if straight:
                             self._straight_tick(gpad, fid, ts_ns,
@@ -621,9 +649,16 @@ class SpeedRushModule(ActivityModule):
                                 self._log_loop_pace(phase, frames, loop_start)
                                 return True
 
-                    rest = DRIVE_TICK_S - (time.monotonic() - t0)
-                    if rest > 0 and not self.ctx.lifecycle.sleep(rest):
-                        break
+                    t_sl = time.perf_counter()
+                    rest = DRIVE_TICK_S - (t_sl - t0)
+                    prev_body = t_sl - t0
+                    prev_sleep = 0.0
+                    if rest > 0:
+                        if not self.ctx.lifecycle.sleep(rest):
+                            break
+                        # 与 t_sl 同钟（perf_counter）：monotonic 差 ~163ms 固定
+                        # 偏移，混用会把睡眠读成负值、空隙虚高同量级（首局实证）
+                        prev_sleep = time.perf_counter() - t_sl
         finally:
             if control and chain:
                 dbg = chain.get("debug")
@@ -903,7 +938,9 @@ class SpeedRushModule(ActivityModule):
         examined = h["applied"] + h["stale_drops"]
         ratio = (h["stale_drops"] / examined) if examined else 0.0
         line = (f"[极速狂飙] 驾驶阶段 {phase}：深度 worker 应用 {h['applied']}"
-                f"/超龄丢弃 {h['stale_drops']}（{ratio:.0%}）/异常 {h['failures']}"
+                f"/超龄丢弃 {h['stale_drops']}（{ratio:.0%}）"
+                f"/首次消费即超龄 {h['stale_new_drops']}"
+                f"/异常 {h['failures']}"
                 f"/让锁跳帧 {h['busy_skips']}"
                 f"/时效 p50 {h['age_p50']:.0f} p95 {h['age_p95']:.0f}ms"
                 f"（预算 {h['max_age_ms']:.0f}ms）"
@@ -966,6 +1003,28 @@ class SpeedRushModule(ActivityModule):
                 f"[极速狂飙] 驾驶阶段 {phase}：感知 n={n} "
                 f"P50={p50:.1f}ms P95={p95:.1f}ms（帧预算 {DRIVE_TICK_S * 1000:.0f}ms）",
                 "INFO")
+            # 等锁/run 分段：环频瓶颈归因的直接判据（等锁大→调度问题；
+            # run 大→推理本身慢，调度层无解）
+            for label, xs in (("等锁", self._wait_times), ("run", self._run_times)):
+                if not xs:
+                    continue
+                srt = sorted(xs)
+                n = len(srt)
+                p50 = srt[n // 2]
+                p95 = srt[min(n - 1, int(round(0.95 * (n - 1))))]
+                _tlog(self,
+                    f"[极速狂飙] 驾驶阶段 {phase}：感知{label}分段 "
+                    f"n={n} P50={p50:.1f}ms P95={p95:.1f}ms", "INFO")
+        if self._pace_body:
+            for label, xs in (("环体", self._pace_body), ("睡眠", self._pace_sleep),
+                              ("睡醒空隙", self._pace_wake)):
+                srt = sorted(xs)
+                n = len(srt)
+                p50 = srt[n // 2]
+                p95 = srt[min(n - 1, int(round(0.95 * (n - 1))))]
+                _tlog(self,
+                    f"[极速狂飙] 驾驶阶段 {phase}：环拍分解-{label} "
+                    f"n={n} P50={p50:.1f}ms P95={p95:.1f}ms", "INFO")
         if self._control_times:
             srt = sorted(self._control_times)
             n = len(srt)

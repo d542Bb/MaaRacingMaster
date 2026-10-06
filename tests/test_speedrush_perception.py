@@ -35,6 +35,9 @@ class FakeDetector:
         self.classes = classes
         self._dets = dets
         self.calls = []
+        # 分段计时插桩（与 YOLODetector 契约对齐）：等锁 / run 本体
+        self.last_wait_ms = 0.0
+        self.last_run_ms = 0.0
 
     def __call__(self, img_rgb, roi=None):
         self.calls.append((img_rgb.shape, roi))
