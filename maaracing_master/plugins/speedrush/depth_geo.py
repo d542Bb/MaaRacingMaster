@@ -922,7 +922,8 @@ class AsyncDepthRoadObserver:
     - push：主线程拷帧覆盖 pending 槽 + wakeup；worker 慢则丢中间帧（丢的是输入，
       不是结果——路缘下一拍还会再来）。captured_ts 用 perf_counter（与耗时/时效
       同族时钟；monotonic 在本机粒度 ~16ms 会把 age 量化）。
-    - worker：节流窗（INFER_MIN_INTERVAL_S，压 DML 锁占空比）→ pop latest →
+    - worker：节流窗（INFER_MIN_INTERVAL_S，开工时刻起算——产出间隔=max(窗,
+      observe 耗时)，压 DML 锁占空比）→ pop latest →
       同步 observe（run 本体受 core.dml_lock 互斥：与控制拍感知并发 run 会段错误
       杀进程，2026-09-25 实证；抢不到锁抛 Busy → 计 busy_skips 弃本帧，不排队）
       → **非 None 才发布**结果槽（整包替换，不原地改已发布对象）；
@@ -970,6 +971,8 @@ class AsyncDepthRoadObserver:
         self._pushed = 0
         self._applied = 0
         self._stale_drops = 0
+        self._stale_new_drops = 0   # 首次消费即超龄（=真浪费，读数从未喂过控制拍）；
+                                    # 与 _stale_drops 的差 = 先用后超龄的复用拍数
         self._failures = 0
         self._busy_skips = 0
         self._last_infer = float("-inf")   # 同上：进程早期不得被节流窗拦下首拍
@@ -1051,6 +1054,8 @@ class AsyncDepthRoadObserver:
                 if self._result is not None and self._result[0] == item[0]:
                     self._result = None
                 self._stale_drops += 1
+                if is_new:   # 发布后一拍都没喂上就超龄：时效链路的真浪费口径
+                    self._stale_new_drops += 1
             return None, None, False
         if is_new:
             with self._lock:
@@ -1059,15 +1064,16 @@ class AsyncDepthRoadObserver:
 
     def health(self) -> dict:
         with self._lock:
-            pushed, applied, stale, failures, busy = (
-                self._pushed, self._applied, self._stale_drops, self._failures,
-                self._busy_skips)
+            pushed, applied, stale, stale_new, failures, busy = (
+                self._pushed, self._applied, self._stale_drops,
+                self._stale_new_drops, self._failures, self._busy_skips)
         ages, durs = list(self._age_win), list(self._dur_win)
 
         def _p(xs: list[float], q: float) -> float:
             return 0.0 if not xs else sorted(xs)[min(len(xs) - 1, int(q * (len(xs) - 1)))]
 
         return {"pushed": pushed, "applied": applied, "stale_drops": stale,
+                "stale_new_drops": stale_new,
                 "failures": failures, "busy_skips": busy,
                 "age_p50": _p(ages, 0.5), "age_p95": _p(ages, 0.95),
                 "dur_p50": _p(durs, 0.5), "dur_p95": _p(durs, 0.95),
@@ -1124,9 +1130,14 @@ class AsyncDepthRoadObserver:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            # 节流窗内不出工也不取帧（取了也只能弃——age 闸会丢）：睡到窗尾，
-            # push 唤醒只提前醒来重新看窗。路缘慢变量，产出节奏≈窗+推理+后处理。
-            rest = self._infer_interval_s - (time.monotonic() - self._last_infer)
+            # 节流窗按「开工时刻」计时（2026-10-06 实测定案）：产出间隔 =
+            # max(窗, observe 耗时)。旧基准（observe 返回后才起算）在 observe
+            # 耗时 > 窗时每周期白付一个窗的死等——实机 age p50 188ms ≈ 窗 70
+            # + observe 139，白付占结果年龄近四成。窗内不取帧的理由不变
+            # （取了也只能弃——age 闸会丢），push 唤醒只提前醒来重新看窗。
+            # 时钟用 perf_counter：monotonic 步长 ~15.6ms 会把窗过冲成
+            # 粗粒度台阶（capabilities.sleep 同案，2026-10-06）。
+            rest = self._infer_interval_s - (time.perf_counter() - self._last_infer)
             if rest > 0:
                 self._wakeup.wait(timeout=rest)
                 self._wakeup.clear()
@@ -1140,6 +1151,9 @@ class AsyncDepthRoadObserver:
             except Exception:  # noqa: BLE001 —— 取帧异常（理论不可达）不杀 daemon
                 self._failures += 1
                 continue
+            # 开工即起算节流窗：Busy/异常路径也吃窗（自然退避——感知持锁期间
+            # 不再每拍白付一次 preprocess 重试；代价是锁释放瞬间不再立刻补拍）
+            self._last_infer = time.perf_counter()
             try:
                 reading, evid = self._obs.observe_debug(item[1], object_mask=item[3])
             except dml_lock.Busy:
@@ -1150,13 +1164,14 @@ class AsyncDepthRoadObserver:
             except Exception:  # noqa: BLE001 —— 单帧异常计数后继续（与 treasure 同姿态）
                 self._failures += 1
                 continue
-            self._last_infer = time.monotonic()
             if reading is None:  # session 中途失效/推理异常：本帧无结果，不发布
                 continue
-            if self._debug_dir is not None:
-                self._write_debug(item[1], evid, reading, item[3], item[4])
             with self._lock:
                 # (push 序号, 读数, 可行驶栅格, captured_ts)——栅格与读数同帧
                 # 同拍（observe_debug 内共享平面拟合产出），S2-B 轨迹裁决消费
                 self._result = (item[0], reading,
                                 evid.get("grid") if evid else None, item[2])
+            # 落盘在发布之后：写盘的几十 ms 不该加进 debug 帧的 age（captured_ts
+            # 从 push 起算，落盘挡在发布前 = 每张调试图凭空变旧一段）
+            if self._debug_dir is not None:
+                self._write_debug(item[1], evid, reading, item[3], item[4])
