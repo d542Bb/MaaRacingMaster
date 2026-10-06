@@ -69,12 +69,14 @@ def _stub_depth(monkeypatch):
 def _pin_gate_off(monkeypatch):
     """决策闸自钉关：本文件锁的是 legacy 接线管道语义，不随部署
     decision.json 的运行态漂（验收期部署文件开闸）。grid_veto 同钉——
-    否则部署开闸后本文件跑在「轨迹关+栅格闸开」的杂交态。"""
+    否则部署开闸后本文件跑在「轨迹关+栅格闸开」的杂交态；grid_xcheck
+    钉 off（供数主人语义回归 legacy 找边对，master 语义有专属测试）。"""
     d = load_decision()
     monkeypatch.setattr(
         smod, "load_decision",
         lambda: replace(d, mode=replace(d.mode, trajectory_sampling=False),
-                        grid_veto=replace(d.grid_veto, enabled=False)))
+                        grid_veto=replace(d.grid_veto, enabled=False),
+                        grid_xcheck=replace(d.grid_xcheck, mode="off")))
 
 
 # ---------- V0：allow_all_moves=false → 杆值恒 0、油门恒 255 ----------
@@ -476,7 +478,9 @@ def test_grid_veto_on_full_chain_feeds_trace(monkeypatch):
     from maaracing_master.plugins.speedrush import depth_geo as dg
     d = load_decision()
     assert d.grid_veto.enabled and d.mode.trajectory_sampling,         "本测试锁部署开闸态；归位（enabled=false）后应随归位改写"
-    monkeypatch.setattr(smod, "load_decision", lambda: d)
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="off")))
     state = np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int8)
     state[:24, 42] = dg.GRID_BLOCKED            # 自车近场正前方立墙
     wall = dg.DrivableGrid(state=state, coef=(0.0, 0.0, -2.0),
@@ -544,8 +548,8 @@ def test_ego_road_xcheck_agree_feeds_veto_rejects():
     # veto 栅格：绿区列 48~51 → X∈[1.5,2.5]，路心 +2.0m → off=−0.727，
     # 与对路心 +1.9 差 2.63 道远超容差
     g_veto = _xg_grid(48, 51)
-    o = smod._EgoRoadObserver(GridXcheck(enabled=True, tol_lane=0.45,
-                                         bypass_streak=8), 2.75)
+    o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
+                       bypass_streak=8), 2.75)
     assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
                     grid=g_agree) == pytest.approx(+1.9, abs=0.01)
     assert o.last["xcheck"] == "agree"
@@ -564,8 +568,8 @@ def test_ego_road_xcheck_bypass_after_streak():
     供数黑视）——放行后计数从头起，下一次分歧重新计。"""
     from maaracing_master.plugins.speedrush.config import GridXcheck
     g_veto = _xg_grid(48, 51)          # off=−0.727，与对 +1.9 恒分歧
-    o = smod._EgoRoadObserver(GridXcheck(enabled=True, tol_lane=0.45,
-                                         bypass_streak=3), 2.75)
+    o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
+                       bypass_streak=3), 2.75)
     for k in range(2):
         assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0 + 0.05 * k,
                         grid=g_veto) is None
@@ -578,3 +582,75 @@ def test_ego_road_xcheck_bypass_after_streak():
     assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.15,
                     grid=g_veto) is None
     assert o._xc_streak == 1
+
+
+# ---------- 供数主人=绿区边界（grid_xcheck.mode=master）全链 ----------
+
+def test_master_mode_region_feeds_and_edge_audited(monkeypatch):
+    """master 全链：供数 off=区读数（绿区 wmid 口径），找边对降交叉验证——
+    骑黄线自锁走廊（L=−1.32/R=+0.53 报"正中"）被区读数顶替；trace 三列
+    ro_off（区主人）/ro_grid（区审计）/ro_edge（降级前主人）同场可对。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush import depth_geo as dg
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
+    st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    st[:, 36:60] = dg.GRID_DRIVABLE        # 绿区 X∈[−1.5,+4.5]m → 路心 +1.5m
+    grid = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=0.0)
+    reading = _dgeo_lanes(-1.32, 0.53)     # 找边自锁走廊：对心 ≈ −0.4 → off≈+0.4
+
+    def _take(self):
+        return reading, grid, True
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    for fid in range(1, 6):
+        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000,
+                        10.0, 1)
+    assert chain["disabled"] is False
+    row = chain["trace"][-1]
+    assert row["ro_source"] == "pair" and row["ro_off"] is not None
+    exp_off = -1.5 / chain["lane_w_m"]     # 车在路心左 1.5m → off=−1.5m/道宽
+    assert row["ro_off"] == pytest.approx(exp_off, abs=0.01), \
+        "master 模式供数应为区路心，不是找边对"
+    assert row["ro_edge"] == pytest.approx(+0.4, abs=0.01), \
+        "找边对心降级进审计列（骑线自锁走廊的假'正中'在此显形）"
+    assert row["ro_grid"] == pytest.approx(row["ro_off"], abs=0.02), \
+        "区读数中心与 wmid 审计列同源同值"
+
+
+def test_master_mode_region_abstain_honest_none(monkeypatch):
+    """master 模式区弃权（无绿行）→ 供数 None（slot 兜底照旧），**不回退找边**
+    ——双主人切换=0.8 道级 ro 台阶，宁黑视不换尺（13:29 黑视由 slot/None 链路
+    与陈旧重基消化）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush import depth_geo as dg
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
+    empty = dg.DrivableGrid(
+        state=np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int8), coef=(0.0, 0.0, 0.72),
+        counts=np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int32),
+        dig_cells=0, latency_ms=0.0)
+    reading = _dgeo_lanes(-1.32, 0.53)
+
+    def _take(self):
+        return reading, empty, True
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
+    row = chain["trace"][-1]
+    assert row["ro_source"] == "none" and row["ro_off"] is None
+    assert row["road_offset"] is None, "区弃权拍不供数，找边读数不得顶替"
+    assert row["ro_edge"] == pytest.approx(+0.4, abs=0.01), \
+        "找边对仍在审计列（降级可见），但不进供数"

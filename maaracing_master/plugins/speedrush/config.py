@@ -64,21 +64,26 @@ class PlanLayer:
 
 @dataclass(frozen=True)
 class GridXcheck:
-    """路心互证闸（2026-10-06 局定案：找边逐帧翻跳——新鲜对 24 次 >0.25 道
-    跳变、v_lat 饱和 29 拍→lat_veto 假否决+巡航画龙）。整段可选，老 json
-    不带段=全默认=关，与 plan_layer 同一条兼容纪律。
+    """路心供数主人闸（2026-10-06 两局定案：找边锁「以车为中心的走廊」——
+    骑黄线段 L=−1.32/R=+0.53 报"正中"，对宽 2.68 道像真路所以宽门/中值窗
+    全失明；与栅格路心的分歧是系统性单边（Δ p50=+0.45、57% 超容差、符号
+    几乎不翻），**否决闸治不了系统性偏差**（会否决 57% 新鲜对→黑视循环，
+    veto 模式只为回放对比保留）。整段可选，老 json 不带段=全默认=off。
 
-    语义：开闸后 `_EgoRoadObserver` 把同拍可行驶栅格全带 wmid 路心
-    （`depth_geo.grid_center_lane`，离线基线 commit f9a9a80 胜出口径）与
-    找边新鲜对比一致性——|差|>tol_lane 的新鲜对按污染对路径不供数（不喂、
-    不入槽、不入窗）；连续 veto 达 bypass_streak 放行本对并清零（供数黑视
-    比噪声致命，13:29 局教训——闸不得制造黑视）。栅格与找边共用 MoGe 点云/
-    平面/挖洞掩码，不是独立传感器：本闸只抓「找边锁错结构」，深度共同错误
-    兜不住，故互证通过不加分、只在不一致时行使否决。"""
+    mode 语义：
+    - ``off``＝找边对当主人（旧行为逐位不变；栅格路心只进审计面）。
+    - ``master``＝**绿区边界当主人**（depth_geo.region_reading：路=可行驶
+      区域的物理边界，左缘/右缘/区宽一个语义出三个量；找边降为交叉验证
+      审计 ro_edge 列）。绿区人行道因高出路平面被判 blocked，想跟着车跑
+      都做不到——这正是找边走廊锁错的对症语义。区弃权拍走保鲜槽/诚实
+      None（13:29 黑视纪律同前），**不回退找边**（双主人切换=0.8 道级
+      ro 台阶）。
+    - ``veto``＝旧否决语义（分歧超 tol_lane 拒供、bypass_streak 放行），
+      保留作回放对比，生产不开。"""
 
-    enabled: bool = False
-    tol_lane: float = 0.45      # 互证容差（道）：|找边路心−栅格路心| 超此判分歧
-    bypass_streak: int = 8      # 连续分歧 veto 达此数放行（≈2s，防供数黑视）
+    mode: str = "off"           # off | master | veto
+    tol_lane: float = 0.45      # veto/审计容差（道）：|找边路心−栅格路心|
+    bypass_streak: int = 8      # veto 模式连续分歧放行预算（≈2s，防黑视）
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,16 @@ def _int_def(d: dict, sec: str, key: str, default: int, *,
     return _int(d, sec, key, lo=lo, hi=hi)
 
 
+def _str_def(d: dict, sec: str, key: str, default: str,
+             choices: tuple[str, ...]) -> str:
+    """可选枚举键：段/键缺失回默认，存在则必须在枚举内（fail-loud）。"""
+    v = d.get(sec, {}).get(key, default)
+    if v not in choices:
+        raise ValueError(
+            f"decision.json [{sec}].{key}={v!r} 不在枚举 {choices} 内")
+    return v
+
+
 def _read_decision(path: Path) -> DecisionConfig:
     d = json.loads(path.read_text(encoding="utf-8"))
     if d.get("schema_version") != SCHEMA_VERSION:
@@ -375,7 +390,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             enabled=_bool(d, "plan_layer", "enabled", default=False),
             switch_streak=_int_def(d, "plan_layer", "switch_streak", 2, lo=1)),
         grid_xcheck=GridXcheck(
-            enabled=_bool(d, "grid_xcheck", "enabled", default=False),
+            mode=_str_def(d, "grid_xcheck", "mode", "off",
+                          ("off", "master", "veto")),
             tol_lane=_num_def(d, "grid_xcheck", "tol_lane", 0.45, lo=0),
             bypass_streak=_int_def(d, "grid_xcheck", "bypass_streak", 8, lo=1)))
 

@@ -703,6 +703,27 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                 dug_mask.reshape(GRID_NZ, GRID_NX))
 
 
+def _row_intervals(grid: DrivableGrid) -> tuple[np.ndarray, np.ndarray] | None:
+    """绿区逐行横向区间（米，格界）：行序无关直接按 Z 分箱。无绿行 → None。"""
+    drivable = grid.state == GRID_DRIVABLE
+    has = drivable.any(axis=1)
+    if not has.any():
+        return None
+    cols = np.arange(grid.state.shape[1])
+    lo_ix = np.where(drivable, cols, grid.state.shape[1]).min(axis=1)[has]
+    hi_ix = np.where(drivable, cols, -1).max(axis=1)[has]
+    lo_m = -GRID_X_MAX + lo_ix * GRID_CELL
+    hi_m = -GRID_X_MAX + (hi_ix + 1) * GRID_CELL
+    return lo_m, hi_m
+
+
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """宽度加权中位：按权重累积取 1/2 处的值（与离线基线同式）。"""
+    order = np.argsort(values)
+    cw = np.cumsum(weights[order])
+    return float(values[order][np.searchsorted(cw, cw[-1] / 2.0)])
+
+
 def grid_center_lane(grid: DrivableGrid, lane_w_m: float) -> float | None:
     """可行驶栅格全带路心（车道单位，右正，原点=相机光轴/自车）。
 
@@ -718,21 +739,67 @@ def grid_center_lane(grid: DrivableGrid, lane_w_m: float) -> float | None:
     「找边锁错结构」的互证面（消费闸见 decision.json grid_xcheck）。"""
     if not (lane_w_m > 0):
         return None
-    drivable = grid.state == GRID_DRIVABLE
-    has = drivable.any(axis=1)
-    if not has.any():
+    iv = _row_intervals(grid)
+    if iv is None:
         return None
-    cols = np.arange(grid.state.shape[1])
-    lo_ix = np.where(drivable, cols, grid.state.shape[1]).min(axis=1)[has]
-    hi_ix = np.where(drivable, cols, -1).max(axis=1)[has]
-    lo_m = -GRID_X_MAX + lo_ix * GRID_CELL
-    hi_m = -GRID_X_MAX + (hi_ix + 1) * GRID_CELL
+    lo_m, hi_m = iv
     mids = (lo_m + hi_m) / 2.0
     weights = hi_m - lo_m
-    order = np.argsort(mids)
-    cw = np.cumsum(weights[order])
-    mid = float(mids[order][np.searchsorted(cw, cw[-1] / 2.0)])
-    return mid / lane_w_m
+    return _weighted_median(mids, weights) / lane_w_m
+
+
+@dataclass(frozen=True)
+class RegionReading:
+    """可行驶区域边界读数（路的定义=绿区物理边界，非车道线）。
+
+    左右缘=逐行绿区 [min,max] 边界按行宽加权的**加权中位**（车道单位，左负
+    右正，与 DepthRoadReading 同鸭子面：sides + 两侧 edge_lane）——
+    `grid_region` 供数主人的产数口。sides 诚实降级：绿行不足/单侧触窗
+    （±GRID_X_MAX 被截断的边界是假缘）不给 2；``*_clip_frac`` 留审计。"""
+
+    sides: int
+    left_edge_lane: float | None
+    right_edge_lane: float | None
+    left_clip_frac: float = 0.0
+    right_clip_frac: float = 0.0
+    n_rows: int = 0
+
+
+def region_reading(grid: DrivableGrid, lane_w_m: float,
+                   clip_frac: float = 0.34) -> RegionReading:
+    """绿区 → 路的左右缘（RegionReading）。与 `grid_center_lane` 同源
+    （_row_intervals/_weighted_median 只调用不复制）：区中心=−(L+R)/2、
+    区宽=R−L 与离线基线 wmid 同族。挖洞楔在绿区**中部**挖走证据、车盒把
+    绿区劈洞——都不动 [min,max] 边界，天然免疫。"""
+    if not (lane_w_m > 0):
+        return RegionReading(0, None, None)
+    iv = _row_intervals(grid)
+    if iv is None:
+        return RegionReading(0, None, None)
+    lo_m, hi_m = iv
+    lo_lane = lo_m / lane_w_m
+    hi_lane = hi_m / lane_w_m
+    weights = hi_lane - lo_lane
+    left = _weighted_median(lo_lane, weights)
+    right = _weighted_median(hi_lane, weights)
+    # 触窗=假缘：该侧在超过 clip_frac 比例的绿行里贴住 ±GRID_X_MAX
+    drivable = grid.state == GRID_DRIVABLE
+    has = drivable.any(axis=1)
+    n_rows = int(has.sum())
+    lo_ix = np.where(drivable, np.arange(grid.state.shape[1]),
+                     grid.state.shape[1]).min(axis=1)[has]
+    hi_ix = np.where(drivable, np.arange(grid.state.shape[1]),
+                     -1).max(axis=1)[has]
+    l_clip = float((lo_ix == 0).sum() / n_rows)
+    r_clip = float((hi_ix == grid.state.shape[1] - 1).sum() / n_rows)
+    sides = 2
+    if l_clip > clip_frac:
+        sides -= 1
+    if r_clip > clip_frac:
+        sides -= 1
+    if sides == 2:
+        return RegionReading(2, left, right, l_clip, r_clip, n_rows)
+    return RegionReading(sides, None, None, l_clip, r_clip, n_rows)
 
 
 def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:

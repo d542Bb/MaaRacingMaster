@@ -47,7 +47,7 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    load_session)
+    load_session, region_reading)
 from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
@@ -697,7 +697,8 @@ class SpeedRushModule(ActivityModule):
         cal = load_calib()   # 标定真源一次读入（深度观测器同源）
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "traffic_obs": TrafficObserver(cfg.traffic),
-                # lane_w_m 供栅格路心互证的米→道换算（world_model 同源锚）
+                # lane_w_m 供栅格区域读数的米→道换算（world_model 同源锚）
+                "lane_w_m": cal.lane_w_m,
                 "ego_road": _EgoRoadObserver(cfg.grid_xcheck, cal.lane_w_m),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
@@ -772,7 +773,24 @@ class SpeedRushModule(ActivityModule):
             # 兜底宽度；legacy 模式消费序不变（engine 不吃这两路）。
             # dgrid（S2-B）：同拍栅格，仅 grid_veto 闸开时进轨迹评分（闸关
             # 时 engine 忽略）。
-            road_offset = chain["ego_road"].update(dgeo, new=dgeo_new,
+            # 供数主人选择（grid_xcheck.mode）：master=绿区边界当主人（路的
+            # 定义=可行驶区域的物理边界，非车道线；找边降为交叉验证审计，
+            # 不回退——双主人切换=0.8 道级 ro 台阶）；off/veto=找边对当主人
+            # （旧行为）。区弃权拍走保鲜槽/诚实 None，黑视纪律同前。
+            supply = dgeo
+            edge_off = None
+            if chain["cfg"].grid_xcheck.mode == "master":
+                supply = None
+                if dgrid is not None:
+                    reg = region_reading(dgrid, chain["lane_w_m"])
+                    if reg.sides == 2:
+                        supply = reg
+                if dgeo is not None and dgeo.sides == 2 \
+                        and dgeo.left_edge_lane is not None \
+                        and dgeo.right_edge_lane is not None:
+                    edge_off = -((dgeo.left_edge_lane + dgeo.right_edge_lane)
+                                 / 2.0)   # 找边对心（交叉验证审计面）
+            road_offset = chain["ego_road"].update(supply, new=dgeo_new,
                                                    grid=dgrid)
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
@@ -842,10 +860,12 @@ class SpeedRushModule(ActivityModule):
             else round(chain["ego_road"].last["off"], 4),
             # 路心互证审计列（2026-10-06）：同拍栅格 wmid 路心（off 系，右正）
             # + 新鲜对互证判定（agree/veto/bypass；复用/闸关/栅格弃权=None）。
-            # 闸关也照记——开闸前的分歧率审计就吃这两列。
+            # ro_edge=找边对心（off 系）——master 模式下找边降交叉验证，此列
+            # 即"降级后的前主人"读数，与 ro_off（区主人）的分离即分歧面。
             "ro_grid": None if chain["ego_road"].last.get("grid_off") is None
             else round(chain["ego_road"].last["grid_off"], 4),
             "ro_agree": chain["ego_road"].last.get("xcheck"),
+            "ro_edge": None if edge_off is None else round(edge_off, 4),
             # 深度几何列（几何主人 v4）：在场侧数 + 两侧读数 + 时延 + 弃权原因
             "dgeo_sides": None if dgeo is None else dgeo.sides,
             "dgeo_left": None if dgeo is None or dgeo.left_edge_lane is None
@@ -1228,9 +1248,9 @@ class _EgoRoadObserver:
         读数退化为 1~2 个：真变化滞后 ~0.3s 后台阶跳变、单对野值凭重复入窗
         赢得中值（实机 10-04 两局取证：79 次 >0.3 道 ro 台阶 0 次在新读数拍）。
 
-        ``grid``：同拍可行驶栅格（互证审计面）。闸关也只算不判——栅格 wmid
-        路心随拍进 last（trace ro_grid 列 / BEV cg 线），供数否决仅当
-        cfg.grid_xcheck.enabled 且新鲜对分歧超容限（见 _xc 逻辑）。
+        ``grid``：同拍可行驶栅格（互证审计面）。栅格 wmid 路心随拍进 last
+        （trace ro_grid 列 / BEV cg 线）；供数否决仅当 mode=veto 且新鲜对
+        分歧超容限（legacy 语义，生产走 master=供数主人在 module 侧换区读数）。
 
         黑视（无有效对且保鲜槽过期）给 None——横向位置未知时诚实弃权，
         交 planner 既有 machinery（陈旧重基/开环）消化，不造观测。"""
@@ -1257,12 +1277,12 @@ class _EgoRoadObserver:
                     abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
                 self.last = self._snapshot(now, src, None, off_raw, grid_off)
                 return None                 # 污染对：不喂、不入槽、不入窗
-            # 路心互证（cfg.grid_xcheck 闸，默认关）：新鲜对与同拍栅格 wmid
-            # 路心分歧超容限 → 疑似找边锁错结构，同污染对路径不供数；连续
-            # veto 达 bypass_streak 放行并清零（黑视比噪声致命，13:29 局教训
-            # ——闸不得制造供数黑视）。比对对象=原始对路心（滤波前证据）。
+            # 路心互证（grid_xcheck.mode=veto 专用，生产走 master）：新鲜对与
+            # 同拍栅格 wmid 路心分歧超容限 → 疑似找边锁错结构，同污染对路径
+            # 不供数；连续 veto 达 bypass_streak 放行并清零（黑视比噪声致命，
+            # 13:29 局教训——闸不得制造供数黑视）。比对对象=原始对路心。
             xcheck = None
-            if self._xc is not None and self._xc.enabled \
+            if self._xc is not None and self._xc.mode == "veto" \
                     and grid_off is not None:
                 if abs(off_raw - grid_off) > self._xc.tol_lane:
                     self._xc_streak += 1

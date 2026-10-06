@@ -58,8 +58,10 @@ _CLS_BGR = {"coins": (0, 255, 255), "cars": (0, 0, 255),
 
 _PANEL_W = 560                    # 右联宽
 _TITLE_H = 26                     # 右联标题条
-_Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0)      # 距离标尺（栅格域 z 3~16m）
+_Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0)   # 标尺（含目检延伸区）
 _X_TICK_M = (-10.0, -5.0, 0.0, 5.0, 10.0)
+_RENDER_Z_HI = 24.0               # BEV 渲染上限（> 栅格采集窗 16m）：目检延伸区
+_LIMIT_BGR = (0, 215, 255)        # 程序接受域上限虚线（亮黄）
 
 
 @dataclass(frozen=True)
@@ -81,7 +83,10 @@ class _BevMap:
 
 def _project_detection(px: int, py: int, coef, fx: float, fy: float,
                        frame_w: int, frame_h: int) -> tuple[float, float] | None:
-    """检测框底中心像素 → 路面 (X, Z) 米（相机轴系）；退化/域外返回 None。"""
+    """检测框底中心像素 → 路面 (X, Z) 米（相机轴系）；退化/域外返回 None。
+
+    z 上限=_RENDER_Z_HI（渲染域）而非栅格采集窗——16m 外的检测标记画进目检
+    延伸区供人看，程序供数仍止步于栅格窗。"""
     if coef is None or not fx or not fy:
         return None
     a, b, c = coef
@@ -92,20 +97,24 @@ def _project_detection(px: int, py: int, coef, fx: float, fy: float,
         return None
     z = c / den
     x = u * z
-    if not (GRID_Z_LO <= z <= GRID_Z_LO + GRID_NZ * GRID_CELL) \
-            or abs(x) > GRID_X_MAX:
+    if not (GRID_Z_LO <= z <= _RENDER_Z_HI) or abs(x) > GRID_X_MAX:
         return None
     return x, z
 
 
 def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
-    """右联：栅格三态 + 路面叠层 + 标尺 + d(t) 规划子带（全部 None 安全）。"""
+    """右联：栅格三态 + 路面叠层 + 标尺 + d(t) 规划子带（全部 None 安全）。
+
+    渲染域 z 到 _RENDER_Z_HI（24m）：栅格只占 3~16m 采集窗，其上为目检延伸
+    区（检测反投影标记照画，程序供数不收）——虚线亮黄标出采集窗上限，
+    「线以上程序不接受」一眼可见（维护者要求，方便目检车/币的真实纵深）。"""
     H = canvas.shape[0]
     plot_x0, plot_x1 = 46, _PANEL_W - 12
     plot_y0, plot_y1 = _TITLE_H + 6, int(H * 0.56)
     sx = (plot_x1 - plot_x0) / GRID_NX
-    sy = (plot_y1 - plot_y0) / GRID_NZ
+    sy = (plot_y1 - plot_y0) / ((_RENDER_Z_HI - GRID_Z_LO) / GRID_CELL)
     bm = _BevMap(plot_x0, plot_y1, sx, sy)
+    grid_y0 = bm.py(GRID_Z_LO + GRID_NZ * GRID_CELL)   # 栅格采集窗顶（16m）
 
     grid = snap.get("grid")
     reading = snap.get("reading")
@@ -115,14 +124,24 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
             img[grid.state == st] = col
         if grid.dig_mask is not None:
             img[grid.dig_mask] = _DIG_BGR
-        # state 行序 iz0=近端，渲染翻成近下远上（与 py()/标尺/自车标同约定）
-        canvas[plot_y0:plot_y1, plot_x0:plot_x1] = cv2.resize(
-            img[::-1], (plot_x1 - plot_x0, plot_y1 - plot_y0),
+        # state 行序 iz0=近端，渲染翻成近下远上（与 py()/标尺/自车标同约定）；
+        # 只铺采集窗带 [grid_y0, plot_y1]，其上是目检延伸区（深灰底）
+        cv2.rectangle(canvas, (plot_x0, plot_y0), (plot_x1, grid_y0),
+                      (38, 38, 38), -1)
+        canvas[grid_y0:plot_y1, plot_x0:plot_x1] = cv2.resize(
+            img[::-1], (plot_x1 - plot_x0, plot_y1 - grid_y0),
             interpolation=cv2.INTER_NEAREST)
     else:
         cv2.rectangle(canvas, (plot_x0, plot_y0), (plot_x1, plot_y1),
                       (90, 90, 90), 1)
         _put_text(canvas, "grid: none", (plot_x0 + 8, plot_y0 + 20))
+
+    # 程序接受域上限虚线（z=16m 栅格采集窗顶）：线以下=供数域，线以上=只画不收
+    for xd in range(plot_x0, plot_x1, 14):
+        cv2.line(canvas, (xd, grid_y0), (min(xd + 7, plot_x1), grid_y0),
+                 _LIMIT_BGR, 1)
+    _put_text(canvas, "grid<=16m", (plot_x0 + 8, grid_y0 - 6), scale=0.36,
+              color=_LIMIT_BGR)
 
     # 距离标尺：z 每 3m 横线+标签、x 每 5m 刻度
     for z in _Z_TICK_M:

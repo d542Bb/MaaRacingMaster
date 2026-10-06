@@ -1300,3 +1300,40 @@ def test_grid_center_lane_honest_abstain():
     assert dg.grid_center_lane(zero, 2.75) is None
     g = _xg_grid([(1, 44, 47)])
     assert dg.grid_center_lane(g, 0.0) is None
+
+
+# ---------- region_reading：绿区边界=路的物理边界（供数主人口径） ----------
+
+def test_region_reading_sides2_and_polarity():
+    """区读数极性与找边同鸭子面：绿区 X∈[0.5,1.5]m → 左缘 +0.5/2.75、右缘
+    +1.5/2.75（左负右正，原点=车）；区中心 −(L+R)/2=−1.0/2.75 与 wmid 同值。"""
+    g = _xg_grid([(1, 44, 47)])
+    rr = dg.region_reading(g, 2.75)
+    assert rr.sides == 2
+    assert rr.left_edge_lane == pytest.approx(0.5 / 2.75)
+    assert rr.right_edge_lane == pytest.approx(1.5 / 2.75)
+    assert rr.n_rows == 1 and rr.left_clip_frac == 0.0 and rr.right_clip_frac == 0.0
+
+
+def test_region_reading_interior_hole_immune():
+    """车盒把绿区劈洞（列 44~47 被挖空、两侧绿）：[min,max] 边界不动——
+    挖洞在中部对区缘免疫（与 wmid 同一构造性优势）。"""
+    g = _xg_grid([(1, 40, 43), (1, 48, 51)])
+    rr = dg.region_reading(g, 2.75)
+    assert rr.sides == 2
+    assert rr.left_edge_lane == pytest.approx(-0.5 / 2.75)
+    assert rr.right_edge_lane == pytest.approx(2.5 / 2.75)
+
+
+def test_region_reading_clip_side_honest():
+    """绿区贴住横窗边界（列 0 起）→ 该侧是截断假缘：超 clip_frac 判 sides
+    降级，不给 2（单侧诚实弃权，交保鲜槽/None 链路）。"""
+    st = np.full((4, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    st[1, 0:40] = dg.GRID_DRIVABLE          # 左缘贴窗（lo_ix==0 比例 100%）
+    g = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                        counts=np.full(st.shape, 9, np.int32),
+                        dig_cells=0, latency_ms=1.0)
+    rr = dg.region_reading(g, 2.75)
+    assert rr.sides == 1 and rr.left_edge_lane is None
+    assert rr.left_clip_frac == pytest.approx(1.0)
+    assert dg.region_reading(_xg_grid([]), 2.75).sides == 0
