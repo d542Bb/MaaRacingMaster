@@ -160,6 +160,25 @@ def test_road_offset_all_sources_feed_loop(_stub_depth):
     assert t2["road_offset"] == pytest.approx(0.0)           # 槽照喂(不黑视)
 
 
+def test_trace_row_carries_dgeo_seg(_stub_depth):
+    """dgeo_seg 列直通观察器分段计时：新证据拍把 last_segments 引用写进行，
+    弃权拍列 None。分段包本体由真实 worker/take 打点（depth_geo 侧自锁），
+    本测试只锁行拼装管道——防「分段落了地 trace 却看不见」回归。"""
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    chain["depth_geo"].last_segments = {"cap_ms": 1.0, "queue_ms": 2.0,
+                                        "pub_ms": 3.0, "stages": {}}
+    pad = StubPad()
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)
+    m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
+    seg = chain["trace"][-1]["dgeo_seg"]
+    assert seg is not None and seg["queue_ms"] == 2.0, "新证据拍应带分段包"
+    cur["r"] = None                                          # 弃权拍
+    m._control_tick(chain, pad, None, _perc(2), 2, 100_000_000, 10.0, 1)
+    assert chain["trace"][-1]["dgeo_seg"] is None
+
+
 def test_cross_layer_polarity_and_mirror(_stub_depth):
     """跨层极性契约（2026-09-30 复核裁决 P0：v3 三轮事故的总缺口——两侧各自
     测符号、端到端只断言过 0.0，0 是符号不变量）。

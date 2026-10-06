@@ -755,6 +755,7 @@ class SpeedRushModule(ActivityModule):
                 last = self._control_last or {}
                 chain["depth_geo"].push(
                     frame, object_mask=_yolo_object_mask(result),
+                    frame_ts_ns=ts_ns,
                     note={"fid": last.get("frame_id"), "state": last.get("state"),
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
@@ -879,6 +880,12 @@ class SpeedRushModule(ActivityModule):
             "dgeo_age_ms": None if dgeo is None
             else round(chain["depth_geo"].last_age_ms, 1),
             "dgeo_new": dgeo is not None and dgeo_new,
+            # dgeo_seg=新证据拍端到端分段（ms dict|None）：cap=采集回调→入队
+            # （age 起点之外、此前不可见的段）、queue=入队→worker 开工、
+            # pub=发布→本拍消费，与 dgeo_ms 相加≈age；stages=MoGe 四段快照。
+            # 仅新证据拍记录（驻留复用拍重复无信息），见 _timing_segments
+            "dgeo_seg": None if not (dgeo is not None and dgeo_new)
+            else chain["depth_geo"].last_segments,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
             # S2-B 采样诊断（dict|None）：ok/why/否决分项/中选 [d1,T]——

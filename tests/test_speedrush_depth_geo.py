@@ -578,6 +578,47 @@ def test_async_none_reading_not_published():
         a.stop()
 
 
+# ---------- 分段计时（端到端延迟归因：cap/queue/pub 三段 + MoGe stages）----------
+
+def test_timing_segments_math():
+    """纯函数口径：三段=已知打点差；缺 cap_ns 无该键（age 外段不可得）；
+    跨线程时钟微抖夹紧 0 不产假负段。"""
+    seg = dg._timing_segments(1_000_000_000, 1.5, 1.6, 1.7, 1.75)
+    assert seg["cap_ms"] == pytest.approx(500.0)      # 入队 − 采集回调
+    assert seg["queue_ms"] == pytest.approx(100.0)    # 开工 − 入队
+    assert seg["pub_ms"] == pytest.approx(50.0)       # 消费 − 发布
+    assert "cap_ms" not in dg._timing_segments(None, 1.5, 1.6, 1.7, 1.75)
+    clamp = dg._timing_segments(None, 1.6, 1.5, 1.7, 1.69)
+    assert clamp["queue_ms"] == 0.0 and clamp["pub_ms"] == 0.0
+
+
+def test_async_segments_on_new_evidence_only():
+    """分段随新证据消费落位：cap 段覆盖 push 前预设的采集回调延迟；
+    驻留复用拍不刷新 last_segments。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame(), frame_ts_ns=_time.perf_counter_ns() - 8_000_000)
+        r, new = None, False
+        for _ in range(200):
+            r, _, new = a.take()
+            if r is not None:
+                break
+            _time.sleep(0.01)
+        assert r is not None and new, "新证据首拍才落分段"
+        seg = a.last_segments
+        assert seg is not None and seg["cap_ms"] >= 8.0, \
+            "cap 段应覆盖采集回调→入队（含预设 8ms）"
+        assert seg["queue_ms"] >= 0.0 and seg["pub_ms"] >= 0.0
+        assert isinstance(seg["stages"], dict)
+        keep = dict(seg)
+        a.take()                                    # 驻留复用拍
+        assert a.last_segments == keep, "复用拍重复记录无信息，不得刷新"
+    finally:
+        assert a.stop() is True
+
+
 # ── DML 互斥（core.dml_lock）：两会话并发 run 会段错误杀进程，2026-09-25 实证 ──
 
 def test_async_dml_busy_skip_not_failure():

@@ -282,6 +282,19 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
 LAST_STAGE_MS: dict[str, float] = {}
 
 
+def _timing_segments(frame_ts_ns: int | None, t_push: float, t_start: float,
+                     t_pub: float, t_consume: float) -> dict:
+    """一帧深读数的端到端分段（ms）。与 reading.latency_ms（observe 本体）
+    相加≈age；cap 段在 age 之外——age 从入队起算，采集回调→入队此前不可见
+    （2026-10-06 分段计时定案：两端同 perf_counter 钟，WGC 回调打
+    perf_counter_ns）。负值夹紧 0：跨线程时钟微抖不产生假负段。"""
+    seg = {"queue_ms": max(0.0, (t_start - t_push) * 1000.0),
+           "pub_ms": max(0.0, (t_consume - t_pub) * 1000.0)}
+    if frame_ts_ns:
+        seg["cap_ms"] = max(0.0, (t_push * 1e9 - frame_ts_ns) / 1e6)
+    return seg
+
+
 def _road_by_column_profile(Z: np.ndarray, fy: float, bad: np.ndarray) -> np.ndarray:
     """检测带深度图 → 路面点布尔图（列剖面特征行走，列间并行向量化）。
 
@@ -1092,9 +1105,10 @@ class AsyncDepthRoadObserver:
         self._debug_last = float("-inf")   # 「从未出工」：0 会在进程早期(monotonic<窗)误判窗内
         self._debug_seq = 0
         self._lock = threading.Lock()
-        self._pending: tuple[int, np.ndarray, float, np.ndarray | None] | None = None
+        self._pending: tuple[int, np.ndarray, float, np.ndarray | None,
+                             dict | None, int | None] | None = None
         self._result: tuple[int, DepthRoadReading, DrivableGrid | None,
-                            float] | None = None
+                            float, dict] | None = None
         self._last_seq = -1               # 消费端已见结果序号（仅主线程触碰）
         self._pushed = 0
         self._applied = 0
@@ -1110,6 +1124,7 @@ class AsyncDepthRoadObserver:
         self._wakeup = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_age_ms = 0.0
+        self.last_segments: dict | None = None   # 最近一次新消费的分段计时（take 内写）
 
     # ---------- 生命周期（阶段=chain：建即 start，收口 stop） ----------
 
@@ -1137,19 +1152,22 @@ class AsyncDepthRoadObserver:
 
     def push(self, frame_rgb: np.ndarray,
              object_mask: np.ndarray | None = None,
-             note: dict | None = None) -> None:
+             note: dict | None = None,
+             frame_ts_ns: int | None = None) -> None:
         """object_mask：本帧 YOLO 检测框掩码（与帧同源同拍，见 observe 注）。
         note：消费端上一拍决策快照（只读小 dict，主线程每拍新建）——随帧进
-        调试图决策带，供人工核对。无 worker（session 缺失/start 未调）时直接
-        空转：不拷帧、不计数——阶段出口的"零结果"报警以 pushed>0 为前提，
-        计数了就会误报。"""
+        调试图决策带，供人工核对。frame_ts_ns：本帧到达采集回调的时刻
+        （perf_counter_ns，frame_with_age 同源）——分段计时 cap 段的起点；
+        不传则分段缺 cap（仍记 queue/pub）。无 worker（session 缺失/start
+        未调）时直接空转：不拷帧、不计数——阶段出口的"零结果"报警以
+        pushed>0 为前提，计数了就会误报。"""
         if self._thread is None:
             return
         with self._lock:
             self._pushed += 1
             self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter(),
                              None if object_mask is None else object_mask.copy(),
-                             note)
+                             note, frame_ts_ns)
         self._wakeup.set()
 
     def take(self) -> tuple[DepthRoadReading | None, DrivableGrid | None, bool]:
@@ -1177,6 +1195,15 @@ class AsyncDepthRoadObserver:
             self._last_seq = item[0]
             self._age_win.append(age_ms)
             self._dur_win.append(reading.latency_ms)
+            # 分段计时（仅新证据拍）：queue/pub 段此刻才能封口（pub 段终点
+            # =本拍消费时刻）；驻留复用拍重复记录无信息，不刷新
+            tg = item[4] if len(item) > 4 else None
+            if tg is not None:
+                seg = _timing_segments(tg.get("cap_ns"), captured_ts,
+                                       tg["t_start"], tg["t_pub"],
+                                       time.perf_counter())
+                seg["stages"] = tg.get("stages")
+                self.last_segments = seg
         if age_ms > self._max_age_ms:
             with self._lock:   # seq 比对防误删 worker 刚发布的新结果
                 if self._result is not None and self._result[0] == item[0]:
@@ -1256,7 +1283,8 @@ class AsyncDepthRoadObserver:
         except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
             pass
 
-    def _pop_latest(self) -> tuple[int, np.ndarray, float, np.ndarray | None] | None:
+    def _pop_latest(self) -> tuple[int, np.ndarray, float, np.ndarray | None,
+                                   dict | None, int | None] | None:
         with self._lock:
             item, self._pending = self._pending, None
             return item
@@ -1286,7 +1314,7 @@ class AsyncDepthRoadObserver:
                 continue
             # 开工即起算节流窗：Busy/异常路径也吃窗（自然退避——感知持锁期间
             # 不再每拍白付一次 preprocess 重试；代价是锁释放瞬间不再立刻补拍）
-            self._last_infer = time.perf_counter()
+            t_start = self._last_infer = time.perf_counter()
             try:
                 reading, evid = self._obs.observe_debug(item[1], object_mask=item[3])
             except dml_lock.Busy:
@@ -1299,11 +1327,18 @@ class AsyncDepthRoadObserver:
                 continue
             if reading is None:  # session 中途失效/推理异常：本帧无结果，不发布
                 continue
+            # 分段计时随帧封包（cap_ns=采集回调时刻、t_start=开工、t_pub=发布；
+            # 消费时刻由 take() 补——pub 段终点在控制拍）。LAST_STAGE_MS 快照
+            # 属本帧（worker 串行，此刻字典内容即本帧 observe 的四段）
+            timing = {"t_start": t_start, "t_pub": time.perf_counter(),
+                      "stages": dict(LAST_STAGE_MS), "cap_ns": item[5]}
             with self._lock:
-                # (push 序号, 读数, 可行驶栅格, captured_ts)——栅格与读数同帧
-                # 同拍（observe_debug 内共享平面拟合产出），S2-B 轨迹裁决消费
+                # (push 序号, 读数, 可行驶栅格, captured_ts, 计时包)——栅格与
+                # 读数同帧同拍（observe_debug 内共享平面拟合产出），S2-B 轨迹
+                # 裁决消费
                 self._result = (item[0], reading,
-                                evid.get("grid") if evid else None, item[2])
+                                evid.get("grid") if evid else None, item[2],
+                                timing)
             # 落盘在发布之后：写盘的几十 ms 不该加进 debug 帧的 age（captured_ts
             # 从 push 起算，落盘挡在发布前 = 每张调试图凭空变旧一段）
             if self._debug_dir is not None:
