@@ -29,9 +29,11 @@ class _FakeApp:
 
 
 def _sleep_wallclock(lc: LifecycleAdapter, seconds: float) -> tuple[bool, float]:
-    t0 = time.monotonic()
+    # 计时必须用 perf_counter：monotonic 在 Windows 步长 ~15.6ms（GetTickCount64），
+    # 睡满 50ms 会被量化读成 47ms，制造"睡眠不足"假红（2026-10-06 实证）。
+    t0 = time.perf_counter()
     ret = lc.sleep(seconds)
-    return ret, time.monotonic() - t0
+    return ret, time.perf_counter() - t0
 
 
 def test_sleep_sub_granularity_meets_wall_clock():

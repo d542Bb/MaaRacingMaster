@@ -254,12 +254,16 @@ class LifecycleAdapter:
         # 饿死导航 worker 与观察线程），非整数倍入参也被向下截断。故改为
         # deadline 分片：每片 ≤0.1s 保可中断性，末片补齐余数保墙钟下界。
         # 「睡眠时长 ≥ 入参」由 tests/test_capabilities_lifecycle_sleep.py 机检。
+        # deadline 用 perf_counter 而非 monotonic（2026-10-06）：monotonic 在
+        # Windows 上是 GetTickCount64，本机步长 ~15.6ms——精准的 time.sleep 配
+        # 粗钟 deadline 校验会整片过冲（请求 33ms 实睡 46.8ms），控制环 30Hz
+        # 目标因此实跑 ~20Hz。perf_counter 是 QPC 细粒度钟，语义同为单调墙钟。
         import time
-        deadline = time.monotonic() + max(seconds, 0.0)
+        deadline = time.perf_counter() + max(seconds, 0.0)
         while True:
             if not self._app._running or self._app.stop_event.is_set():
                 return False
-            remaining = deadline - time.monotonic()
+            remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 return True
             time.sleep(min(remaining, 0.1))
