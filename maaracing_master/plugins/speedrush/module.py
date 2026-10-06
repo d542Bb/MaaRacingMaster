@@ -945,6 +945,9 @@ class SpeedRushModule(ActivityModule):
                 f"/时效 p50 {h['age_p50']:.0f} p95 {h['age_p95']:.0f}ms"
                 f"（预算 {h['max_age_ms']:.0f}ms）"
                 f"/耗时 p50 {h['dur_p50']:.0f} p95 {h['dur_p95']:.0f}ms")
+        if h.get("forward_p50"):
+            line += (f"/分段 p50 前向 {h['forward_p50']:.0f} 找边 {h['edges_p50']:.0f}"
+                     f" 栅格 {h['grid_p50']:.0f}ms")
         bad = (not examined) or ratio >= 0.05 or h["age_p95"] > h["max_age_ms"] * 0.75
         _tlog(self, line, "WARNING" if bad else "INFO")
 

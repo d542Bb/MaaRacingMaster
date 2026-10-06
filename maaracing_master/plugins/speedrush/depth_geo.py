@@ -233,17 +233,27 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     DML 互斥（core.dml_lock）：感知会话与深度会话并发 run 会段错误杀进程
     （2026-09-25 实机 + 双线程复现），故 run 本体抢锁、抢不到抛 Busy 让调用方
     跳帧——本层不等待，控制拍的感知优先。"""
+    # 分段计时（单 worker 线程调用，无竞争）：observe_debug 取走后进观测面。
+    # 离线分解见 probe_moge_stage_decompose；在线口径盯 forward 漂移（显存
+    # 吃紧时普通路径会翻倍，IO binding 定案的实机哨）。
+    t_pre = time.perf_counter()
     blob = moge_post.preprocess(rgb, MOGE_IN_W, MOGE_IN_H)
+    LAST_STAGE_MS["pre"] = (time.perf_counter() - t_pre) * 1000.0
     if not dml_lock.LOCK.acquire(blocking=False):
         raise dml_lock.Busy("DML 被感知推理占用，本帧放弃（latest-only 下一帧再来）")
     try:
+        t_fwd = time.perf_counter()
         points, mask, metric_scale = moge_post.forward(sess, blob, 1032)
+        LAST_STAGE_MS["forward"] = (time.perf_counter() - t_fwd) * 1000.0
     finally:
         dml_lock.LOCK.release()
+    t_rec = time.perf_counter()
     res = moge_post.reconstruct(points, mask, metric_scale)
+    LAST_STAGE_MS["reconstruct"] = (time.perf_counter() - t_rec) * 1000.0
     pts = res["pts"]
     ow, oh = points.shape[1], points.shape[0]
     evidence = None
+    t_up = time.perf_counter()
     if (oh, ow) != (MOGE_IN_H, MOGE_IN_W):
         if with_evidence:
             evidence = {"pts": pts, "valid": res["valid"],
@@ -255,6 +265,7 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
                            interpolation=cv2.INTER_NEAREST).astype(bool)
     else:
         valid = res["valid"]
+    LAST_STAGE_MS["upsize"] = (time.perf_counter() - t_up) * 1000.0
     pts = pts.copy()
     pts[~valid] = np.nan
     # 归一化焦距（u∈[0,1] 口径）→ 全幅像素焦距：u_full = (X/Z)·fx_norm·W_full + W/2
@@ -262,6 +273,11 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     fy = res["fy"] * MOGE_IN_H
     return (pts, float(fx), float(fy), evidence) if with_evidence \
         else (pts, float(fx), float(fy))
+
+
+# infer_points 最近一帧的分段耗时（ms，pre/forward/reconstruct/upsize）——
+# observe_debug 取走后进 _stage_win 滑窗。单 worker 线程调用，无竞争。
+LAST_STAGE_MS: dict[str, float] = {}
 
 
 def _road_by_column_profile(Z: np.ndarray, fy: float, bad: np.ndarray) -> np.ndarray:
@@ -703,6 +719,10 @@ class DepthRoadObserver:
         self._sess = session
         self._cal = cal
         self._ego_mask = self._load_ego_mask()
+        # observe 分段滑窗（worker 单线程写；分段口径见 LAST_STAGE_MS）
+        self._stage_win: dict[str, deque] = {
+            k: deque(maxlen=200)
+            for k in ("pre", "forward", "reconstruct", "upsize", "edges", "grid")}
 
     @staticmethod
     def _load_ego_mask() -> np.ndarray | None:
@@ -744,13 +764,20 @@ class DepthRoadObserver:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
             return None, None
+        stage = dict(LAST_STAGE_MS)
+        t_e = time.perf_counter()
         reading = reading_from_points(pts, fx, self._cal, ego_mask=self._ego_mask,
                                       object_mask=object_mask, fy=fy)
+        stage["edges"] = (time.perf_counter() - t_e) * 1000.0
         # 可行驶栅格：与读数同源同拍、并行产出（不替换、不接决策层）。在 worker
         # 线程内算，不占控制拍；平面共享 reading 的拟合结果（同带同掩码，逐位
         # 同值），避免列剖面重算（自拟合口径 ~34ms/帧）。
+        t_g = time.perf_counter()
         grid = drivable_grid_from_points(pts, fx, fy, self._ego_mask, object_mask,
                                          coef=reading.coef)
+        stage["grid"] = (time.perf_counter() - t_g) * 1000.0
+        for k, v in stage.items():
+            self._stage_win[k].append(v)
         evid["grid"] = grid
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0), evid
@@ -1072,12 +1099,17 @@ class AsyncDepthRoadObserver:
         def _p(xs: list[float], q: float) -> float:
             return 0.0 if not xs else sorted(xs)[min(len(xs) - 1, int(q * (len(xs) - 1)))]
 
+        # observe 分段 p50（离线分解的在线哨：盯 forward 漂移=显存压力，
+        # 分段口径见 infer_points.LAST_STAGE_MS；桩 observer 无窗则缺省）
+        stage = {f"{k}_p50": _p(list(w), 0.5)
+                 for k, w in getattr(self._obs, "_stage_win", {}).items()}
+
         return {"pushed": pushed, "applied": applied, "stale_drops": stale,
                 "stale_new_drops": stale_new,
                 "failures": failures, "busy_skips": busy,
                 "age_p50": _p(ages, 0.5), "age_p95": _p(ages, 0.95),
                 "dur_p50": _p(durs, 0.5), "dur_p95": _p(durs, 0.95),
-                "max_age_ms": self._max_age_ms}
+                "max_age_ms": self._max_age_ms, **stage}
 
     # ---------- worker 线程 ----------
 
