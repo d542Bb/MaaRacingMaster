@@ -936,8 +936,11 @@ class SpeedRushModule(ActivityModule):
             "near_dx": None if not tviews else round(
                 min(abs(v.x_lane - planner.state.executed_lane) for v in tviews), 2),
             "near_cy": None if not tviews else min(v.cy for v in tviews),
-            "passes": [round(e.d_min, 3) for e in tevents
-                       if e.outcome == OUTCOME_PASS],
+            # passes 带 track_id：决策拍 target_id 与 pass track_id 同 id 空间，
+            # 跨拍 join 即可把结局归因到具体那辆车（米制决策价值验证的归因键；
+            # 2026-10-07 前的旧 trace 此列为纯浮点列表，离线分析按类型兼容）
+            "passes": [{"id": e.track_id, "d_min": round(e.d_min, 3)}
+                       for e in tevents if e.outcome == OUTCOME_PASS],
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
             "presence": obs.health.target_presence})
         # 调试图快照（debugview 3fps 节流；writer=None=闸关/测试，零开销）
