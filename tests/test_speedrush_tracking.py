@@ -59,7 +59,7 @@ def test_empty_frame_presence_false_and_no_targets():
 
 
 def test_above_horizon_dropped():
-    """cy ≤ y_h（地平线以上）几何无效，直接丢——与 build_world 同口径。"""
+    """cy ≤ y_h（地平线以上）几何无效，直接丢（归一发散口径，world_model.x_lane_of 同式）。"""
     trk = Tracker()
     obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 5)]),
                      frame_age_ms=10.0, stage=1)

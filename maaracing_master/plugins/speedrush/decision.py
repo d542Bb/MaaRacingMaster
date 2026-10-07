@@ -936,7 +936,6 @@ class DecisionEngine:
         self._state = DecisionState.ABORT_CHANGE
         self._change_t = 0.0
         self._abort_ref = None      # 速率参考从 ABORT 首拍重新起算
-        self._abort_reason = why
 
     def _enter_conserve(self) -> None:
         self._state = DecisionState.CONSERVE

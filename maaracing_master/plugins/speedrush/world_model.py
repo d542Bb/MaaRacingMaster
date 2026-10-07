@@ -31,7 +31,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from maaracing_master.plugins.speedrush import GATE0_FILE
-from maaracing_master.plugins.speedrush.perception import PerceptionResult
 
 
 @dataclass(frozen=True)
@@ -83,25 +82,11 @@ def load_calib() -> Calib:
     return _read_gate0(GATE0_FILE)
 
 
-@dataclass(frozen=True)
-class WorldTarget:
-    """一个候选横向目标：观测量齐备，收益/风险由决策层叠加。"""
-
-    kind: str            # "coin" | "car" | "bonus"
-    x_lane: float | None # 归一横向（车道单位，本车=0，右为正）；适用域外=None
-    cy: int              # 距离代理：行越大越近（设计决定 6）
-    w: int
-    h: int
-    conf: float
-
-
-# 类别名唯一真源在此（感知层 PerceptionResult 字段 ↔ 域内 kind 字符串），
-# tracking.py 与测试一律从这里取，不再各自写字面量。
+# 类别名唯一真源在此（感知层 Detection 类别 ↔ 域内 kind 字符串），
+# tracking/plan/coin_group 一律从这里取，不再各自写字面量。
 KIND_COIN = "coin"
 KIND_CAR = "car"
 KIND_BONUS = "bonus"
-
-_KINDS = ((KIND_COIN, "coins"), (KIND_CAR, "cars"), (KIND_BONUS, "bonuses"))
 
 
 def x_lane_of(cx: int, cy: int, cal: Calib) -> float:
@@ -110,26 +95,3 @@ def x_lane_of(cx: int, cy: int, cal: Calib) -> float:
     return ((cx - cal.vpx) / (cy - cal.y_h)
             - (cal.ego_cx - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
 
-
-def build_world(per: PerceptionResult, cal: Calib | None = None) -> list[WorldTarget]:
-    """感知结果 → 候选目标列表，按距离**由近及远**排序（cy 降序）。
-    cal 缺省读几何真源（gate0.json）。
-
-    两档处理（§6 适用域纪律）：
-    - cy ≤ y_h（地平线以上）：几何无效，直接丢弃；
-    - y_h < cy 且分母 (cy − y_h) < min_denom（远处）：目标保留（距离序仍有效），
-      但 **x_lane=None**——归一量发散，禁止带病数值参与横向选择（②c by>380 同族）。
-    """
-    if cal is None:
-        cal = load_calib()
-    out: list[WorldTarget] = []
-    for kind, attr in _KINDS:
-        for d in getattr(per, attr):
-            denom = d.cy - cal.y_h
-            if denom <= 0:
-                continue
-            x = x_lane_of(d.cx, d.cy, cal) if denom >= cal.min_denom else None
-            out.append(WorldTarget(
-                kind=kind, x_lane=x, cy=d.cy, w=d.w, h=d.h, conf=d.conf))
-    out.sort(key=lambda t: -t.cy)
-    return out

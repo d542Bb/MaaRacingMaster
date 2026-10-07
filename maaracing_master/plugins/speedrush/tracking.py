@@ -347,7 +347,7 @@ class Tracker:
             for d in getattr(per, attr):
                 denom = d.cy - self.cal.y_h
                 if denom <= 0:
-                    continue  # 地平线以上：几何无效，丢弃（与 build_world 同口径）
+                    continue  # 地平线以上：几何无效，丢弃（归一发散口径，world_model.x_lane_of 同式）
                 x = x_lane_of(d.cx, d.cy, self.cal) if denom >= self.cal.min_denom else None
                 dx = d.cx - self.cal.vpx
                 side = (LaneSide.MID if abs(dx) < self.p.neutral_px
