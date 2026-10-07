@@ -830,6 +830,85 @@ def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
     return np.asarray(dig, bool)[Y0:DIAG_Y1]
 
 
+# ---------- 物体锚点清单（混合测距刀一：detection-keyed 度量的免费副产品） ----------
+#
+# 契约（docs/plan/speedrush-hybrid-ranging-design.md §5）：本清单只含
+# frame/detection 身份，**深度域不认识 track_id，永不该认识**——归轨道是
+# 消费端（Tracker）用自家帧映射表做的事。逐框 Z 与路面读数同源同拍（同一份
+# 原生点图上裁框），点图未挖物体（object_mask 只在路面读数/栅格口径挖除），
+# 这里不付任何额外推理成本。
+
+ANCHOR_Z_LO, ANCHOR_Z_HI = 2.0, 90.0   # 测量有效域（米；anchor-age 实验真值域口径）
+
+
+@dataclass(frozen=True)
+class AnchorEntry:
+    """一个车框在本深度帧上的米制锚点。bbox 是**原始框**（不外扩）——
+    外扩口径会把框内混进背景，直方图主簇翻跳（实验实录的语义污染）正是
+    这么来的。"""
+
+    det_idx: int          # 本帧 result.cars 内序号（消费端帧映射表的 key 之一）
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    z_m: float            # 框内点云 24bin 最密簇中位（probe_approach_ab.entity_z 逐位同口径）
+    h_px: int             # 锚点帧框高——h 重标的比例基线（Z_now = Z_a × h_a / h_now）
+    cy_px: float
+
+
+@dataclass(frozen=True)
+class DepthAnchorSheet:
+    """一帧深度推理的逐车框锚点清单（与 DrivableGrid 同源同拍、同包 take）。
+    entries 可为空（本帧有推理但无有效锚点）——「有证据但量不出」与「没证据」
+    是两回事，消费端据此区分弃权原因。"""
+
+    fid: int
+    ts_ns: int            # 锚点帧到达采集回调的时刻（perf_counter_ns，frame_with_age 同钟）
+    entries: tuple[AnchorEntry, ...]
+
+
+def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | None:
+    """框内 Z = 24bin 直方图最密簇中位（与实验 entity_z 逐位同口径：2~98 分位
+    域上分箱、最密 bin 中心 ±1bin 宽度收簇取中位）。框过小/有效点不足 → None。"""
+    gh, gw = pts.shape[:2]
+    x0 = max(0, int(box[0] * gw / 1280))
+    y0 = max(0, int(box[1] * gh / 720))
+    x1 = min(gw, int(box[2] * gw / 1280))
+    y1 = min(gh, int(box[3] * gh / 720))
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return None
+    zv = pts[y0:y1, x0:x1, 2]
+    zv = zv[np.isfinite(zv)]
+    if zv.size < 10:
+        return None
+    lo, hi = np.percentile(zv, [2, 98])
+    hist, edges = np.histogram(zv, bins=24, range=(lo, hi))
+    c = 0.5 * (edges[hist.argmax()] + edges[hist.argmax() + 1])
+    core = np.abs(zv - c) < (hi - lo) / 24
+    if core.sum() < 10:
+        core = np.ones(zv.size, bool)
+    return float(np.median(zv[core]))
+
+
+def anchor_sheet_from_detections(pts: np.ndarray, detections, fid: int,
+                                 ts_ns: int) -> DepthAnchorSheet | None:
+    """逐车框算锚点 → 清单。detections = (det_idx, x0, y0, x1, y1) 全分辨率
+    原始框序列。出域（ANCHOR_Z_LO/HI）或量不出的框**静默弃权**（清单少一条
+    = 消费端「无锚」语义，不造假锚）；detections 为空 → None（零成本路径）。"""
+    if not detections:
+        return None
+    entries: list[AnchorEntry] = []
+    for det_idx, x0, y0, x1, y1 in detections:
+        z = _box_anchor_z(pts, (x0, y0, x1, y1))
+        if z is None or not ANCHOR_Z_LO <= z <= ANCHOR_Z_HI:
+            continue
+        entries.append(AnchorEntry(
+            det_idx=det_idx, x0=int(x0), y0=int(y0), x1=int(x1), y1=int(y1),
+            z_m=z, h_px=int(y1 - y0), cy_px=0.5 * (y0 + y1)))
+    return DepthAnchorSheet(fid=fid, ts_ns=ts_ns, entries=tuple(entries))
+
+
 class DepthRoadObserver:
     """深度几何观测器（阶段生命期=chain；ORT session 跨阶段复用、外部注入）。
 
@@ -873,11 +952,16 @@ class DepthRoadObserver:
         return reading
 
     def observe_debug(self, frame_rgb: np.ndarray, object_mask: np.ndarray | None = None,
+                      detections: tuple | None = None, fid: int | None = None,
+                      frame_ts_ns: int | None = None,
                       ) -> tuple[DepthRoadReading | None, dict | None]:
         """同 observe，另返回原生证据包（离线复算+实机渲染用；与 reading 同源同拍）。
 
         证据包 dict：pts=336×598 原生点图 fp32、valid、fx/fy=原生归一化焦距。
-        复算口径见模块 docstring「离线复算」。"""
+        复算口径见模块 docstring「离线复算」。
+        detections/fid/frame_ts_ns：混合测距锚点清单供数（刀一）——三者齐备时
+        在同一份点图上逐车框裁 Z，清单挂 ``evid["anchors"]``；缺任一不产清单
+        （年龄诚实：没有帧时刻就没法算锚点年龄）。"""
         if self._sess is None:
             return None, None
         t0 = time.perf_counter()
@@ -905,6 +989,10 @@ class DepthRoadObserver:
         for k, v in stage.items():
             self._stage_win[k].append(v)
         evid["grid"] = grid
+        if detections and fid is not None and frame_ts_ns is not None:
+            sheet = anchor_sheet_from_detections(pts, detections, fid, frame_ts_ns)
+            if sheet is not None:
+                evid["anchors"] = sheet
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0), evid
 
@@ -1118,9 +1206,11 @@ class AsyncDepthRoadObserver:
         self._debug_seq = 0
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None,
-                             dict | None, int | None] | None = None
+                             dict | None, int | None,
+                             tuple | None, int | None] | None = None
         self._result: tuple[int, DepthRoadReading, DrivableGrid | None,
-                            float, dict] | None = None
+                            float, dict, DepthAnchorSheet | None] | None = None
+        self.last_sheet: DepthAnchorSheet | None = None   # 最近一次**新证据**拍的锚点清单（take 内写，同 last_segments 口径）
         self._last_seq = -1               # 消费端已见结果序号（仅主线程触碰）
         self._pushed = 0
         self._applied = 0
@@ -1165,21 +1255,24 @@ class AsyncDepthRoadObserver:
     def push(self, frame_rgb: np.ndarray,
              object_mask: np.ndarray | None = None,
              note: dict | None = None,
-             frame_ts_ns: int | None = None) -> None:
+             frame_ts_ns: int | None = None,
+             detections: tuple | None = None,
+             fid: int | None = None) -> None:
         """object_mask：本帧 YOLO 检测框掩码（与帧同源同拍，见 observe 注）。
         note：消费端上一拍决策快照（只读小 dict，主线程每拍新建）——随帧进
         调试图决策带，供人工核对。frame_ts_ns：本帧到达采集回调的时刻
         （perf_counter_ns，frame_with_age 同源）——分段计时 cap 段的起点；
-        不传则分段缺 cap（仍记 queue/pub）。无 worker（session 缺失/start
-        未调）时直接空转：不拷帧、不计数——阶段出口的"零结果"报警以
-        pushed>0 为前提，计数了就会误报。"""
+        不传则分段缺 cap（仍记 queue/pub）。detections/fid：混合测距锚点
+        清单供数（(det_idx,x0,y0,x1,y1) 原始车框序列 + 帧号；刀一只收车框）。
+        无 worker（session 缺失/start 未调）时直接空转：不拷帧、不计数——阶段
+        出口的"零结果"报警以 pushed>0 为前提，计数了就会误报。"""
         if self._thread is None:
             return
         with self._lock:
             self._pushed += 1
             self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter(),
                              None if object_mask is None else object_mask.copy(),
-                             note, frame_ts_ns)
+                             note, frame_ts_ns, detections, fid)
         self._wakeup.set()
 
     def take(self) -> tuple[DepthRoadReading | None, DrivableGrid | None, bool]:
@@ -1207,6 +1300,9 @@ class AsyncDepthRoadObserver:
             self._last_seq = item[0]
             self._age_win.append(age_ms)
             self._dur_win.append(reading.latency_ms)
+            # 锚点清单随新证据拍面世（复用拍不重复供数——"使用次数≠学习次数"
+            # 同一条纪律，消费端按 is_new 决定是否 ingest）；超龄清槽时一并清
+            self.last_sheet = item[5] if len(item) > 5 else None
             # 分段计时（仅新证据拍）：queue/pub 段此刻才能封口（pub 段终点
             # =本拍消费时刻）；驻留复用拍重复记录无信息，不刷新
             tg = item[4] if len(item) > 4 else None
@@ -1223,6 +1319,7 @@ class AsyncDepthRoadObserver:
                 self._stale_drops += 1
                 if is_new:   # 发布后一拍都没喂上就超龄：时效链路的真浪费口径
                     self._stale_new_drops += 1
+            self.last_sheet = None   # 超龄读数作废，锚点随之作废（同源同拍同命运）
             return None, None, False
         if is_new:
             with self._lock:
@@ -1328,7 +1425,9 @@ class AsyncDepthRoadObserver:
             # 不再每拍白付一次 preprocess 重试；代价是锁释放瞬间不再立刻补拍）
             t_start = self._last_infer = time.perf_counter()
             try:
-                reading, evid = self._obs.observe_debug(item[1], object_mask=item[3])
+                reading, evid = self._obs.observe_debug(
+                    item[1], object_mask=item[3], detections=item[6],
+                    fid=item[7], frame_ts_ns=item[5])
             except dml_lock.Busy:
                 # DML 被控制拍感知占用：弃本帧不排队（latest-only，下一帧再来），
                 # 单独计数——这是让锁的常规代价，不是故障。
@@ -1345,12 +1444,13 @@ class AsyncDepthRoadObserver:
             timing = {"t_start": t_start, "t_pub": time.perf_counter(),
                       "stages": dict(LAST_STAGE_MS), "cap_ns": item[5]}
             with self._lock:
-                # (push 序号, 读数, 可行驶栅格, captured_ts, 计时包)——栅格与
-                # 读数同帧同拍（observe_debug 内共享平面拟合产出），S2-B 轨迹
-                # 裁决消费
+                # (push 序号, 读数, 可行驶栅格, captured_ts, 计时包, 锚点清单)
+                # ——栅格与读数同帧同拍（observe_debug 内共享平面拟合产出），
+                # S2-B 轨迹裁决消费；锚点清单同源同拍（混合测距刀一）
                 self._result = (item[0], reading,
                                 evid.get("grid") if evid else None, item[2],
-                                timing)
+                                timing,
+                                evid.get("anchors") if evid else None)
             # 落盘在发布之后：写盘的几十 ms 不该加进 debug 帧的 age（captured_ts
             # 从 push 起算，落盘挡在发布前 = 每张调试图凭空变旧一段）
             if self._debug_dir is not None:

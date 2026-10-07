@@ -475,7 +475,8 @@ class _StubObserver:
         reading, _ = self.observe_debug(frame, object_mask)
         return reading
 
-    def observe_debug(self, frame, object_mask=None):
+    def observe_debug(self, frame, object_mask=None, detections=None,
+                      fid=None, frame_ts_ns=None):
         self.calls += 1
         item = self._script.pop(0) if self._script else None
         if isinstance(item, Exception):
@@ -673,7 +674,8 @@ def test_async_debug_writes_replayable_evidence(tmp_path):
     stub = _StubObserver([_mk_reading()])
     stub._ego_mask = np.zeros((720, 1280), bool)
     stub._ego_mask[:10, :10] = True
-    def _evid_observe(frame, object_mask=None):
+    def _evid_observe(frame, object_mask=None, detections=None,
+                      fid=None, frame_ts_ns=None):
         stub.calls += 1
         return _mk_reading(), _mk_evid()
     stub.observe_debug = _evid_observe

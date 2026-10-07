@@ -737,16 +737,17 @@ class SpeedRushModule(ActivityModule):
             prev = chain["prev_ts"]
             dt = DRIVE_TICK_S if prev is None or ts_ns <= prev else (ts_ns - prev) / 1e9
             chain["prev_ts"] = ts_ns
-            obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase)
-            obs = chain["agg"].update(obs)
             # 深度几何（几何主人，v4 2026-10-01：MoGe 逐帧焦距点云 3D 找边当
             # road_offset 供数源；黄线 2D 链路整体退役）。异步解耦协议同前：
             # 本帧交 worker 后台推理，take() 只消费过了 age 闸的最新结果——
             # 控制拍不再付 observe 成本。协议本身不抛，异常闸按观测件惯例
-            # 保留（fail-safe）。
+            # 保留（fail-safe）。push/take 前移到 tracker 之前：锚点清单随
+            # take 面世（dgeo_new 才有效，复用拍不重复供数），供本拍
+            # tracker.update 合成混合测距读数（trace-only，不进决策）。
             dgeo = None
             dgrid = None
             dgeo_new = False
+            anchor_sheet = None
             try:
                 # note=上一拍决策快照（state/杆/喂入路心/EMA/槽）：随帧进调试图
                 # 的决策带，供人工逐帧核对"大脑当时拿了什么"。不可变小 dict，
@@ -756,6 +757,7 @@ class SpeedRushModule(ActivityModule):
                 chain["depth_geo"].push(
                     frame, object_mask=_yolo_object_mask(result),
                     frame_ts_ns=ts_ns,
+                    detections=_yolo_car_boxes(result), fid=fid,
                     note={"fid": last.get("frame_id"), "state": last.get("state"),
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
@@ -764,8 +766,13 @@ class SpeedRushModule(ActivityModule):
                           "ro_raw": snap.get("off_raw"),
                           "age": last.get("dgeo_age"), "new": last.get("dgeo_new")})
                 dgeo, dgrid, dgeo_new = chain["depth_geo"].take()
+                if dgeo_new:
+                    anchor_sheet = chain["depth_geo"].last_sheet
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
+            obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase,
+                                          anchors=anchor_sheet)
+            obs = chain["agg"].update(obs)
             planner: LateralPlanner = chain["planner"]
             tviews, tevents = chain["traffic_obs"].update(obs)
             # road_offset 供数源=深度几何读数（路心合成+保鲜槽在 _EgoRoadObserver
@@ -855,6 +862,17 @@ class SpeedRushModule(ActivityModule):
             "road_offset": None if road_offset is None else round(road_offset, 4),
             # YOLO×深度融合（2026-09-25）：本拍检测框数（物体掩码随帧入深度路径）
             "yolo_cars": len(result.cars),
+            # 混合测距刀一（trace-only，不进决策）：距离读数+出处——验收六项
+            # （回弹/churn/污染漏网/UNKNOWN 恢复/gate lead-lag/零回归）的数据源
+            "dist": [
+                {"id": d.target_id, "src": d.source.value,
+                 "m": None if d.metric_distance_m is None
+                 else round(d.metric_distance_m, 2),
+                 "method": None if d.method is None else d.method.value,
+                 "age": None if d.anchor_age_ms is None
+                 else round(d.anchor_age_ms, 1),
+                 "why": None if d.reason is None else d.reason.value}
+                for d in obs.distances] or None,
             # road_offset 供数面（路心合成调试）：来源 / 归属读数
             "ro_source": chain["ego_road"].last.get("source"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
@@ -1155,6 +1173,18 @@ def _yolo_object_mask(result: PerceptionResult) -> np.ndarray | None:
         y1 = int(min(d.cy + d.h / 2 + YOLO_MASK_MARGIN, 719))
         mask[y0:y1 + 1, x0:x1 + 1] = True
     return mask
+
+
+def _yolo_car_boxes(result: PerceptionResult) -> tuple | None:
+    """车框清单（**原始框**，不外扩）→ 深度侧逐框锚点度量（混合测距刀一）。
+    刀一只收车（刚体 looming 最纯；币/奖励不进锚点契约，设计稿 §5）。序号
+    = result.cars 内下标，与 Tracker 的 det_key (KIND_CAR, i) 对齐——深度域
+    只见 (fid, det_idx)，归轨道是 Tracker 的事。无车 → None（零成本路径）。"""
+    boxes = tuple(
+        (i, int(d.cx - d.w / 2), int(d.cy - d.h / 2),
+         int(d.cx + d.w / 2), int(d.cy + d.h / 2))
+        for i, d in enumerate(result.cars))
+    return boxes or None
 
 
 def _maybe_save_bad_frame(chain: dict, frame, dgeo, fid: int, phase: int,

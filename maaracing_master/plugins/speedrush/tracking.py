@@ -28,10 +28,12 @@ WGC 是中心缓存，主循环 ~21Hz 读 30Hz 画面合法地两拍读到同一
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum, IntEnum
 from typing import Any
 
+from maaracing_master.plugins.speedrush.depth_geo import DepthAnchorSheet
 from maaracing_master.plugins.speedrush.perception import PerceptionResult
 from maaracing_master.plugins.speedrush.world_model import (
     KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, x_lane_of)
@@ -160,6 +162,50 @@ class CoinGroup:
 
 
 @dataclass(frozen=True)
+class ObjectDistance:
+    """物体距离读数（混合测距刀一，trace-only 不进决策）。
+    契约见 docs/plan/speedrush-hybrid-ranging-design.md §2/§4：三态互斥完备；
+    UNKNOWN 的 ``metric_distance_m`` 恒为 None（类型层防"有序无米"被当数用）；
+    不设连续置信分——没有实验支持的分位数都是编的，弃权是硬边界。"""
+
+    target_id: int
+    source: DistanceSource
+    metric_distance_m: float | None
+    method: DistanceMethod | None
+    anchor_age_ms: float | None   # 锚点年龄（深度帧距今）；UNKNOWN 无锚时为 None
+    obs_age_ms: float             # 本拍 2D 观测年龄——与锚点年龄是两个时钟
+    reason: DistanceReason | None  # UNKNOWN 时必填
+
+
+class DistanceSource(str, Enum):
+    """出处标签（设计稿 §2）：ANCHOR=锚点生命周期内从未确认接近，直接持锚；
+    RESCALED_ANCHOR=曾确认接近，持续 h 重标（进 RESCALED 是单行道，退出唯一
+    路径是新锚点重置基线）；UNKNOWN=无有效锚点。"""
+
+    ANCHOR = "ANCHOR"
+    RESCALED_ANCHOR = "RESCALED_ANCHOR"
+    UNKNOWN = "UNKNOWN"
+
+
+class DistanceMethod(str, Enum):
+    """距离合成方式。刀一只有 HOLD / HEIGHT_RATIO（h 重标）——cy 传播与融合
+    是未来带实验的候选，没有实验支持的 fallback 不进契约（设计稿 §6）。"""
+
+    HOLD = "HOLD"
+    HEIGHT_RATIO = "HEIGHT_RATIO"
+
+
+class DistanceReason(str, Enum):
+    """UNKNOWN 弃权原因（层一=测量有效性，层二=身份有效性，分开答）。"""
+
+    NO_ANCHOR_YET = "NO_ANCHOR_YET"          # 从未锚定（含深度侧无有效清单条目）
+    CLUSTER_SWITCH = "CLUSTER_SWITCH"        # 层一：主簇跳变（车体↔背景语义污染）
+    ASSOC_FAIL = "ASSOC_FAIL"                # 层二：清单条目归不到轨道
+    TRACK_LOST = "TRACK_LOST"                # 层二：本拍丢框（宽限期内锚点保留）
+    EXPIRED = "EXPIRED"                      # 锚点超工程闸顶（非物理失效点）
+
+
+@dataclass(frozen=True)
 class WorldObservation:
     schema_version: int
     frame_id: int
@@ -171,6 +217,7 @@ class WorldObservation:
     targets: tuple[TrackedTarget, ...]     # 近→远（cy 降序）
     far_targets: tuple[FarTarget, ...]     # 近→远
     coin_groups: tuple[CoinGroup, ...] = ()  # 契约扩展（加字段不破消费方，schema 仍 1）
+    distances: tuple[ObjectDistance, ...] = ()  # 同上（混合测距刀一；车轨每拍一条）
 
 
 @dataclass(frozen=True)
@@ -203,11 +250,22 @@ class TrackerParams:
     pos_err_px: float = 15.0     # x_sigma 模型的分子（§6 场内 vpx 误差 MAD 12–19）
     fresh_max_ms: float = 100.0  # frame_fresh 判据（v2 §六 P95≤100ms 同源）
     ema_alpha: float = 0.5       # rel_approach 平滑系数
+    # ---- 混合测距（刀一 trace-only；全部**实验候选参数**，trace 定版前不是
+    # ---- 系统真理——依据与口径见 docs/plan/speedrush-hybrid-ranging-design.md §3/§4）
+    gate_dlogh: float = 0.046    # Δlog h 门控阈值/拍（≈1.1× 量化地板 ln(24/23)；AUC 仅
+                                 # 0.668，N 帧确认才是使门成立的那一刀）
+    gate_confirm: int = 2        # 连续确认拍数（与 decision._REEVAL_STREAK 同源纪律）
+    anchor_max_age_ms: float = 350.0  # 锚点工程闸顶（沿用深度 age 闸；非物理失效点）
+    cluster_switch_m: float = 20.0    # 层一有效性：锚点簇跳变弃权门（trace 标定候选）
+    assoc_window: int = 12       # detection→track 帧映射窗（拍数；≥ 锚点最大年龄）
 
     def __post_init__(self) -> None:
         if (self.grace_ticks < 1 or self.max_cy_step <= 0 or self.max_xlane_step <= 0
                 or self.neutral_px <= 0 or self.pos_err_px <= 0
-                or self.fresh_max_ms <= 0 or not 0.0 <= self.ema_alpha < 1.0):
+                or self.fresh_max_ms <= 0 or not 0.0 <= self.ema_alpha < 1.0
+                or self.gate_dlogh <= 0 or self.gate_confirm < 1
+                or self.anchor_max_age_ms <= 0 or self.cluster_switch_m <= 0
+                or self.assoc_window < 1):
             raise ValueError(f"跟踪参数非法：{self}")
 
 
@@ -223,6 +281,7 @@ class _Obs:
     x_lane: float | None
     x_sigma: float
     lane_side: int
+    det_key: tuple[str, int] = ("", -1)   # (kind, kind 内序号)——深度锚点帧映射表的 key
 
 
 @dataclass
@@ -241,6 +300,13 @@ class _Track:
     first_seen: int
     last_seen: int
     matched: bool = False
+    # ---- 混合测距锚点状态（刀一 trace-only，不进决策；语义见设计稿 §2/§4）----
+    anchor_z: float | None = None        # 米制锚点（None=无有效锚）
+    anchor_h: int = 0                    # 锚点帧框高（h 重标比例基线）
+    anchor_ts_ns: int = 0                # 锚点帧采集时刻（perf_counter_ns）
+    approach_confirmed_at: int | None = None   # 本锚点生命周期内确认帧号（≠ is_approaching）
+    gate_streak: int = 0                 # Δlog h 连续超阈拍数
+    last_dist_reason: DistanceReason | None = None
 
 
 class Tracker:
@@ -256,14 +322,19 @@ class Tracker:
         self._last_fid: int | None = None
         self._stage: int | None = None
         self._last_obs: WorldObservation | None = None
+        self._frame_tracks: dict[int, dict[tuple[str, int], int]] = {}  # fid → det_key→track_id
+        self._sheet_orphan = False   # 本拍清单有条目但整张无法归轨（worker 滞后超窗）
 
     def reset(self) -> None:
         """清空全部轨迹（阶段切换自动调用；校验层出口重置属 step 4 决定调不调）。
         id 计数器不回卷——回放里 id 全局单调才好对账。"""
         self._tracks.clear()
+        self._frame_tracks.clear()
+        self._sheet_orphan = False
 
     def update(self, per: PerceptionResult, frame_age_ms: float, stage: int,
-               geometry_valid: bool = True, stage_transition: bool = False) -> WorldObservation:
+               geometry_valid: bool = True, stage_transition: bool = False,
+               anchors: DepthAnchorSheet | None = None) -> WorldObservation:
         fid = per.frame_id
         if self._last_fid is not None and fid < self._last_fid:
             raise ValueError(f"frame_id 倒退（真乱序输入）：{fid} < {self._last_fid}")
@@ -286,6 +357,17 @@ class Tracker:
             age = fid - t.last_seen
             inst = (o.cy - t.cy) / age if age > 0 else 0.0
             t.rel_approach = self.p.ema_alpha * t.rel_approach + (1 - self.p.ema_alpha) * inst
+            # 混合测距门控（刀一）：Δlog h 逐拍确认。跨遮挡拍（age>1）的帧间
+            # 速率未定义——实验 N=2 口径是逐帧连续，跨拍复用会放大噪声，清零。
+            if t.kind == KIND_CAR:
+                if age == 1 and t.h > 0:
+                    dlh = math.log(o.h / t.h)
+                    t.gate_streak = t.gate_streak + 1 if dlh > self.p.gate_dlogh else 0
+                    if (t.gate_streak >= self.p.gate_confirm
+                            and t.approach_confirmed_at is None):
+                        t.approach_confirmed_at = fid
+                else:
+                    t.gate_streak = 0
             t.kind, t.w, t.h, t.conf = o.kind, o.w, o.h, o.conf
             t.cy, t.x_lane, t.x_sigma, t.lane_side = o.cy, o.x_lane, o.x_sigma, o.lane_side
             if o.x_lane is not None:
@@ -293,6 +375,12 @@ class Tracker:
             t.last_seen = fid
             t.matched = True
 
+        # 混合测距帧映射表（刀一）：detection → track id，供锚点清单归轨道——
+        # 深度域只给 (fid, det_idx)，归轨道是本层自己的事（设计稿 §5 不变量：
+        # 深度域不认识 track_id，永不该认识）
+        frame_map: dict[tuple[str, int], int] = {}
+        for ti, oi in matches.items():
+            frame_map[obs[oi].det_key] = self._tracks[ti].id
         for oi, o in enumerate(obs):
             if any(v == oi for v in matches.values()):
                 continue
@@ -301,10 +389,24 @@ class Tracker:
                 x_lane=o.x_lane, x_known=o.x_lane, x_sigma=o.x_sigma,
                 lane_side=o.lane_side, rel_approach=0.0,
                 first_seen=fid, last_seen=fid, matched=True))
+            frame_map[o.det_key] = self._next_id
             self._next_id += 1
+        if frame_map:
+            self._frame_tracks[fid] = frame_map
+            while len(self._frame_tracks) > self.p.assoc_window:
+                self._frame_tracks.pop(next(iter(self._frame_tracks)))
 
         self._tracks = [t for t in self._tracks
                         if fid - t.last_seen <= self.p.grace_ticks]
+
+        if anchors is not None:
+            self._ingest_anchors(anchors)
+            # 清单有条目却整张归不了轨 = 帧映射窗被 worker 滞后击穿：如实报
+            # ASSOC_FAIL（与"深度侧根本没量出锚点"的 NO_ANCHOR_YET 分开）
+            self._sheet_orphan = bool(anchors.entries
+                                      and anchors.fid not in self._frame_tracks)
+        else:
+            self._sheet_orphan = False
 
         targets: list[TrackedTarget] = []
         fars: list[FarTarget] = []
@@ -333,10 +435,13 @@ class Tracker:
             geometry_valid=geometry_valid,
             target_presence=bool(targets or fars),
             stage_transition=stage_transition)
+        distances = tuple(self._distance_of(t, per.ts_ns, frame_age_ms)
+                          for t in self._tracks if t.kind == KIND_CAR)
         self._last_obs = WorldObservation(
             schema_version=SCHEMA_VERSION, frame_id=fid, ts_ns=per.ts_ns,
             frame_age_ms=frame_age_ms, stage=stage, health=health,
-            boundary=None, targets=tuple(targets), far_targets=tuple(fars))
+            boundary=None, targets=tuple(targets), far_targets=tuple(fars),
+            distances=distances)
         return self._last_obs
 
     # ---------- 内部 ----------
@@ -344,7 +449,7 @@ class Tracker:
     def _observe(self, per: PerceptionResult) -> list[_Obs]:
         out: list[_Obs] = []
         for kind, attr in _KIND_ATTRS:
-            for d in getattr(per, attr):
+            for ki, d in enumerate(getattr(per, attr)):
                 denom = d.cy - self.cal.y_h
                 if denom <= 0:
                     continue  # 地平线以上：几何无效，丢弃（归一发散口径，world_model.x_lane_of 同式）
@@ -355,8 +460,71 @@ class Tracker:
                 out.append(_Obs(
                     kind=kind, cy=d.cy, w=d.w, h=d.h, conf=d.conf,
                     x_lane=x, x_sigma=self.p.pos_err_px * self.cal.a_x / denom,
-                    lane_side=int(side)))
+                    lane_side=int(side), det_key=(kind, ki)))
         return out
+
+    # ---------- 混合测距（刀一 trace-only；语义与参数出处见设计稿） ----------
+
+    def _ingest_anchors(self, sheet: DepthAnchorSheet) -> None:
+        """detection-keyed 锚点清单 → 轨道锚点。归轨道走本层的帧映射表
+        （深度域不认识 track_id）；本帧 fid 不在映射窗内的清单条目只能丢弃——
+        那意味着 worker 滞后超过窗长，锚点年龄本来也要超闸。"""
+        fmap = self._frame_tracks.get(sheet.fid)
+        by_id = {t.id: t for t in self._tracks}
+        for e in sheet.entries:
+            tid = None if fmap is None else fmap.get((KIND_CAR, e.det_idx))
+            t = by_id.get(tid) if tid is not None else None
+            if t is None:
+                continue
+            if t.anchor_z is not None and abs(e.z_m - t.anchor_z) > self.p.cluster_switch_m:
+                # 层一测量有效性：主簇跳变（实验实录帧间数十米假跳）——量错对象
+                # 的锚点救不了，弃权等重拍；阈值是 trace 标定候选
+                t.anchor_z = None
+                t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
+                continue
+            t.anchor_z, t.anchor_h = e.z_m, e.h_px
+            t.anchor_ts_ns = sheet.ts_ns
+            t.approach_confirmed_at = None   # 新锚点 = 新生命周期（设计稿 §2 规则 2）
+            t.last_dist_reason = None
+
+    def _distance_of(self, t: _Track, ts_ns: int, obs_age_ms: float) -> ObjectDistance:
+        """三态合成（设计稿 §2 状态机）。RESCALED 是锚点生命周期状态：确认过
+        接近的锚点，原始值永不重新暴露；退出唯一路径是新锚点重置基线。"""
+        if t.anchor_z is None:
+            return ObjectDistance(
+                target_id=t.id, source=DistanceSource.UNKNOWN,
+                metric_distance_m=None, method=None, anchor_age_ms=None,
+                obs_age_ms=obs_age_ms,
+                reason=t.last_dist_reason or (
+                    DistanceReason.ASSOC_FAIL if self._sheet_orphan
+                    else DistanceReason.NO_ANCHOR_YET))
+        if not t.matched:
+            # 本拍丢框：h 不再更新，持锚/重标都失去当前证据——弃权但锚点保留
+            #（复匹配后未超龄即恢复；超龄由下一分支收口）
+            return ObjectDistance(
+                target_id=t.id, source=DistanceSource.UNKNOWN,
+                metric_distance_m=None, method=None,
+                anchor_age_ms=(ts_ns - t.anchor_ts_ns) / 1e6,
+                obs_age_ms=obs_age_ms, reason=DistanceReason.TRACK_LOST)
+        age_ms = (ts_ns - t.anchor_ts_ns) / 1e6
+        if age_ms > self.p.anchor_max_age_ms:
+            t.anchor_z = None
+            t.last_dist_reason = DistanceReason.EXPIRED
+            return ObjectDistance(
+                target_id=t.id, source=DistanceSource.UNKNOWN,
+                metric_distance_m=None, method=None, anchor_age_ms=age_ms,
+                obs_age_ms=obs_age_ms, reason=DistanceReason.EXPIRED)
+        if t.approach_confirmed_at is not None:
+            metric = t.anchor_z * t.anchor_h / max(t.h, 1)
+            return ObjectDistance(
+                target_id=t.id, source=DistanceSource.RESCALED_ANCHOR,
+                metric_distance_m=float(metric),
+                method=DistanceMethod.HEIGHT_RATIO, anchor_age_ms=age_ms,
+                obs_age_ms=obs_age_ms, reason=None)
+        return ObjectDistance(
+            target_id=t.id, source=DistanceSource.ANCHOR,
+            metric_distance_m=float(t.anchor_z), method=DistanceMethod.HOLD,
+            anchor_age_ms=age_ms, obs_age_ms=obs_age_ms, reason=None)
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
         """逐对算代价值 → 全局按代价升序贪心 1:1 配对。
