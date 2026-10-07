@@ -878,6 +878,19 @@ class SpeedRushModule(ActivityModule):
             "car_h": [{"id": t.id, "h": t.h, "conf": round(t.conf, 2)}
                       for t in (*obs.targets, *obs.far_targets)
                       if t.kind == KIND_CAR] or None,
+            # TTC 消费端准入供数（刀二）：逐车横向道/行号/接近率。与 car_h 同 id
+            # join 后可拆 looming-TTC 对实际掠过时刻的系统性高估（探针
+            # probe_ttc_looming：p50 +60~90%）里「估计器误差」与「回避成功的
+            # 反事实差」各占多少——前者才拦换装，后者恰是安全消费端要的值。
+            # 域外轨无横向数值与接近率（FarTarget 契约如此），如实落 None。
+            "car_pos": [
+                {"id": t.id, "x": round(t.x_lane, 3), "cy": t.cy,
+                 "rel": round(t.rel_approach, 2)}
+                for t in obs.targets if t.kind == KIND_CAR] + [
+                {"id": g.id,
+                 "x": None if g.last_x_lane is None else round(g.last_x_lane, 3),
+                 "cy": g.cy, "rel": None}
+                for g in obs.far_targets if g.kind == KIND_CAR] or None,
             # road_offset 供数面（路心合成调试）：来源 / 归属读数
             "ro_source": chain["ego_road"].last.get("source"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
