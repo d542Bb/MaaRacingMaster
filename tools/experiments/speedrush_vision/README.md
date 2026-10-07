@@ -3359,3 +3359,25 @@ airborne 探测器，记账待用。
 **口径偏离声明**：本节探针 import 生产 `depth_geo`/`core.yolo_detector`（测产线行为
 原样），不满足实验区「自包含、不 import 业务代码」约定——主题内既有惯例（多份历史
 探针同型），后续 probe_approach_ab.py（物体层 A/B）回归自包含写法。
+
+## 未跟踪探针分诊台账（2026-10-07，触碰分诊：留痕批提交 + 删除候选挂账）
+
+判据：被已提交内容（README/探针）引用、或属生产资产（静态折叠 q4f16 权重）的复算仪器
+→ 必须留痕提交；零引用的一次性门探针 → 删除候选，但「结论迁 home」未逐个核销前不删
+（生命周期出口第 1 步先行）。
+
+**留痕批（本提交）**：moge2_post.py（4 处引用，实验区 MoGe 后处理共用仪器）、
+moge2_static_fold.py + quantize_moge_q4f16.py（生产权重 moge2_vits_static_336x598
+t1032_q4f16.onnx 的复算仪器链）、export_pointcloud_html.py（7 处引用）、
+select_dirty_frames.py（README+select_blackout_frames 引用）、probe_dml_orchestration.py
+（DEPTH_PIPELINE_ATTRIBUTION_20261004.md 引用）、probe_drivable_grid.py
+（select_blackout_frames 引用）、probe_update_rate.py（README 引用）、
+DRIVABLE_GRID_20261004.md（产线 drivable_grid 的调查记录，先例同 CENTER_BASELINE/
+DEPTH_PIPELINE_ATTRIBUTION 两份已提交 md）。
+
+**删除候选（结论迁 home 核销前不动，逐个过目后走回收站）**：detect_road_edges.py
+（被产线找边取代的 v1）、probe_age_damage.py、probe_depth_farfield.py、
+probe_dml_capture_stress.py、probe_edge_scan_forensics.py、probe_gold_intrinsics.py、
+probe_lateral3d.py、probe_moge2.py、probe_moge2_pipeline.py、probe_moge2_quality.py、
+probe_q4_latency.py、probe_road_region.py、probe_scale_consistency.py（职责已被
+probe_depth_jitter 接管）、probe_vertical_lean.py（docstring 自记已结案）。
