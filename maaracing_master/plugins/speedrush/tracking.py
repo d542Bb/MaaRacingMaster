@@ -135,6 +135,8 @@ class FarTarget:
     lane_side: int               # LaneSide 值：-1 / 0 / +1
     cy: int
     conf: float
+    h: int                       # 框高（px）——混合测距门控的 2D 量（trace 供数；
+                                 # 域外车恰是门控最需要覆盖的区段，契约加法扩展）
     last_x_lane: float | None    # 进域前的最后读数（从未进域则 None）
     first_seen_fid: int
     last_seen_fid: int
@@ -423,7 +425,7 @@ class Tracker:
             else:
                 fars.append(FarTarget(
                     id=t.id, kind=t.kind, lane_side=t.lane_side, cy=cy_out,
-                    conf=t.conf, last_x_lane=t.x_known,
+                    conf=t.conf, h=t.h, last_x_lane=t.x_known,
                     first_seen_fid=t.first_seen, last_seen_fid=t.last_seen,
                     validity_until_fid=valid_until))
         targets.sort(key=lambda x: -x.cy)

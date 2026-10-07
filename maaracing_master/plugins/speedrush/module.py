@@ -54,7 +54,7 @@ from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
 from maaracing_master.plugins.speedrush.tracking import DecisionState, Tracker
-from maaracing_master.plugins.speedrush.world_model import load_calib
+from maaracing_master.plugins.speedrush.world_model import KIND_CAR, load_calib
 
 # 一轮完整流程。首三段（进入活动）只在首轮需要——每轮循环结束时会回到活动页，
 # 故其后每轮从「开始挑战」起。
@@ -873,6 +873,11 @@ class SpeedRushModule(ActivityModule):
                  else round(d.anchor_age_ms, 1),
                  "why": None if d.reason is None else d.reason.value}
                 for d in obs.distances] or None,
+            # 门控重标定供数：逐车轨框高流（与 dist 同 id 同拍 join）——
+            # 轨道 id 天然绑定 h 与锚值，免离线复算的对齐/翻转/混叠三坑
+            "car_h": [{"id": t.id, "h": t.h, "conf": round(t.conf, 2)}
+                      for t in (*obs.targets, *obs.far_targets)
+                      if t.kind == KIND_CAR] or None,
             # road_offset 供数面（路心合成调试）：来源 / 归属读数
             "ro_source": chain["ego_road"].last.get("source"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
