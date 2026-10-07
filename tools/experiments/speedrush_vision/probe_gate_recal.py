@@ -58,7 +58,7 @@ def track_streams(rows: list[dict]) -> dict[int, list[dict]]:
     streams: dict[int, list[dict]] = {}
     for r in rows:
         hmap = {c["id"]: c["h"] for c in (r.get("car_h") or [])}
-        mmap = {d["target_id"]: d for d in (r.get("dist") or [])}
+        mmap = {d["id"]: d for d in (r.get("dist") or [])}
         for tid in set(hmap) | set(mmap):
             m = None
             d = mmap.get(tid)

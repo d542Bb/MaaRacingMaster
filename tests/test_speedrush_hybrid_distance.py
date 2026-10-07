@@ -84,21 +84,38 @@ def test_single_frame_h_jump_does_not_trigger_rescale():
     trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
                anchors=_sheet(1))
     obs = trk.update(_per(3, cars=[_car(h=60)]), frame_age_ms=10.0, stage=1)  # 孤立跳变
-    assert _dist(obs).source is DistanceSource.ANCHOR   # N=2 防抖：单帧不触发
+    assert _dist(obs).source is DistanceSource.ANCHOR   # 锚龄 33ms < 评估下限：门不开
 
 
-def test_two_frame_approach_confirms_rescale_and_formula_direction():
+def test_gate_needs_two_consecutive_positive_evaluations():
+    """锚龄达评估下限后，单拍速度尖峰（量化跳变）被 N=2 灭掉。"""
     trk = Tracker()
     trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
     trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
                anchors=_sheet(1, z_m=50.0, h_px=40))
-    trk.update(_per(3, cars=[_car(h=44)]), frame_age_ms=10.0, stage=1)   # ln(44/40)≈0.095>T
-    obs = trk.update(_per(4, cars=[_car(h=48)]), frame_age_ms=10.0, stage=1)
-    d = _dist(obs)
+    for fid in range(3, 7):                       # h 不动：锚龄涨到 132ms，门仍不开
+        trk.update(_per(fid, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(7, cars=[_car(h=60)]), frame_age_ms=10.0, stage=1)  # 尖峰拍(165ms)
+    assert _dist(obs).source is DistanceSource.ANCHOR
+    obs = trk.update(_per(8, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)  # 回落
+    assert _dist(obs).source is DistanceSource.ANCHOR   # streak 清零，未确认
+
+
+def test_interval_velocity_gate_confirms_rescale_and_formula_direction():
+    """持续接近：锚龄过评估下限后 v̂=Z_a×ln(h/h_a)/(t−t_a) 连续 2 拍超阈 →
+    RESCALED；公式方向：目标变大（接近）→ 距离变近。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=50.0, h_px=40))
+    hs = {3: 40, 4: 41, 5: 42, 6: 43, 7: 44, 8: 45}   # 165ms 起 v̂≈29>16，连续确认
+    for fid, h in hs.items():
+        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    d = _dist(obs)                                    # fid=8：锚龄 198ms，已确认
     assert d.source is DistanceSource.RESCALED_ANCHOR
     assert d.method is DistanceMethod.HEIGHT_RATIO
-    # 公式方向：目标变大（接近）→ 距离变近（<锚点值）。Z_now = Z_a × h_a / h_now
-    assert d.metric_distance_m == pytest.approx(50.0 * 40 / 48)
+    assert d.metric_distance_m == pytest.approx(50.0 * 40 / 45)
+    assert d.anchor_age_ms == pytest.approx(7 * NS / 1e6, rel=1e-3)
 
 
 def test_rescaled_is_one_way_until_new_anchor():
@@ -108,17 +125,17 @@ def test_rescaled_is_one_way_until_new_anchor():
     trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
     trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
                anchors=_sheet(1, z_m=50.0, h_px=40))
-    trk.update(_per(3, cars=[_car(h=44)]), frame_age_ms=10.0, stage=1)
-    trk.update(_per(4, cars=[_car(h=48)]), frame_age_ms=10.0, stage=1)
+    for fid, h in ((3, 40), (4, 41), (5, 42), (6, 43), (7, 44), (8, 45)):
+        trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
     assert _dist(trk._last_obs).source is DistanceSource.RESCALED_ANCHOR
     # gate 退出（框缩小=远离）：仍是 RESCALED，公式跟随新 h，绝不吐原始 50
-    obs = trk.update(_per(5, cars=[_car(h=46)]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(9, cars=[_car(h=44)]), frame_age_ms=10.0, stage=1)
     d = _dist(obs)
     assert d.source is DistanceSource.RESCALED_ANCHOR
-    assert d.metric_distance_m == pytest.approx(50.0 * 40 / 46)
+    assert d.metric_distance_m == pytest.approx(50.0 * 40 / 44)
     # 新锚点 = 新生命周期：无接近 → 回 ANCHOR，基线重置
-    obs = trk.update(_per(6, cars=[_car(h=46)]), frame_age_ms=10.0, stage=1,
-                     anchors=_sheet(5, z_m=42.0, h_px=46))
+    obs = trk.update(_per(10, cars=[_car(h=44)]), frame_age_ms=10.0, stage=1,
+                     anchors=_sheet(9, z_m=42.0, h_px=44))
     d = _dist(obs)
     assert d.source is DistanceSource.ANCHOR
     assert d.metric_distance_m == pytest.approx(42.0)

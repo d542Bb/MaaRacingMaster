@@ -252,10 +252,12 @@ class TrackerParams:
     pos_err_px: float = 15.0     # x_sigma 模型的分子（§6 场内 vpx 误差 MAD 12–19）
     fresh_max_ms: float = 100.0  # frame_fresh 判据（v2 §六 P95≤100ms 同源）
     ema_alpha: float = 0.5       # rel_approach 平滑系数
-    # ---- 混合测距（刀一 trace-only；全部**实验候选参数**，trace 定版前不是
-    # ---- 系统真理——依据与口径见 docs/plan/speedrush-hybrid-ranging-design.md §3/§4）
-    gate_dlogh: float = 0.046    # Δlog h 门控阈值/拍（≈1.1× 量化地板 ln(24/23)；AUC 仅
-                                 # 0.668，N 帧确认才是使门成立的那一刀）
+    # ---- 混合测距（trace-only；全部**实验候选参数**，trace 定版前不是系统真理
+    # ---- ——依据与口径见 docs/plan/speedrush-hybrid-ranging-design.md §3/§8.1）
+    gate_v_mps: float = 16.0     # 门控阈值：估计接近速度 m/s（trace_213150 标定
+                                 # Youden T≈16，物理口径吻合：16m/s×250ms≈4m 持锚误差）
+    gate_eval_min_ms: float = 150.0  # 锚龄下限：新鲜锚直接持锚无需门控；且区间估计
+                                     # 在短 dt 下被量化噪声支配（实机实测 r≈-0.08）
     gate_confirm: int = 2        # 连续确认拍数（与 decision._REEVAL_STREAK 同源纪律）
     anchor_max_age_ms: float = 350.0  # 锚点工程闸顶（沿用深度 age 闸；非物理失效点）
     cluster_switch_m: float = 20.0    # 层一有效性：锚点簇跳变弃权门（trace 标定候选）
@@ -265,7 +267,8 @@ class TrackerParams:
         if (self.grace_ticks < 1 or self.max_cy_step <= 0 or self.max_xlane_step <= 0
                 or self.neutral_px <= 0 or self.pos_err_px <= 0
                 or self.fresh_max_ms <= 0 or not 0.0 <= self.ema_alpha < 1.0
-                or self.gate_dlogh <= 0 or self.gate_confirm < 1
+                or self.gate_v_mps <= 0 or self.gate_eval_min_ms <= 0
+                or self.gate_confirm < 1
                 or self.anchor_max_age_ms <= 0 or self.cluster_switch_m <= 0
                 or self.assoc_window < 1):
             raise ValueError(f"跟踪参数非法：{self}")
@@ -307,7 +310,7 @@ class _Track:
     anchor_h: int = 0                    # 锚点帧框高（h 重标比例基线）
     anchor_ts_ns: int = 0                # 锚点帧采集时刻（perf_counter_ns）
     approach_confirmed_at: int | None = None   # 本锚点生命周期内确认帧号（≠ is_approaching）
-    gate_streak: int = 0                 # Δlog h 连续超阈拍数
+    gate_streak: int = 0                 # 估计接近速度连续超阈拍数
     last_dist_reason: DistanceReason | None = None
 
 
@@ -359,12 +362,16 @@ class Tracker:
             age = fid - t.last_seen
             inst = (o.cy - t.cy) / age if age > 0 else 0.0
             t.rel_approach = self.p.ema_alpha * t.rel_approach + (1 - self.p.ema_alpha) * inst
-            # 混合测距门控（刀一）：Δlog h 逐拍确认。跨遮挡拍（age>1）的帧间
-            # 速率未定义——实验 N=2 口径是逐帧连续，跨拍复用会放大噪声，清零。
-            if t.kind == KIND_CAR:
-                if age == 1 and t.h > 0:
-                    dlh = math.log(o.h / t.h)
-                    t.gate_streak = t.gate_streak + 1 if dlh > self.p.gate_dlogh else 0
+            # 混合测距门控：区间估计接近速度 v̂ = Z_a×ln(h/h_a)/(t−t_a)——与重标
+            # 公式同源，区间累积自带抗噪；逐拍差分在短 dt 下被量化噪声支配
+            # （实机 trace_213150 实测短区间 r≈-0.08，见设计稿 §8.1）。锚龄达
+            # eval_min 才评估：新鲜锚直接持锚无需门控，且随锚龄增长分母变大、
+            # 估计更稳——门在锚开始变旧的时机恰好开，重标恰好接住最差区段。
+            if t.kind == KIND_CAR and t.anchor_z is not None:
+                anchor_age_ms = (per.ts_ns - t.anchor_ts_ns) / 1e6
+                if anchor_age_ms >= self.p.gate_eval_min_ms and o.h > 0 and t.anchor_h > 0:
+                    v_hat = t.anchor_z * math.log(o.h / t.anchor_h) / (anchor_age_ms / 1000.0)
+                    t.gate_streak = t.gate_streak + 1 if v_hat > self.p.gate_v_mps else 0
                     if (t.gate_streak >= self.p.gate_confirm
                             and t.approach_confirmed_at is None):
                         t.approach_confirmed_at = fid
