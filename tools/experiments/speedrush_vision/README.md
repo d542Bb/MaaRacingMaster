@@ -1,7 +1,11 @@
 # speedrush 视觉可行性（C 类实验，2026-09-18）
 
+status: active
+
 > **本文是什么**：旧检测模型在**新录帧**上还能不能用的一次测量——结论、证据与复跑命令。
 > 它是收益模型（`docs/plan/speedrush-control-route.md` 阶段 C）与感知层（阶段 B）的**前置事实**。
+> 2026-09-18 立规时的 legacy 存量，2026-10-07 触碰分诊：主题仍活跃（深度几何/实体时序线
+> 进行中），补 status 转 active，机检基线对应豁免行同步删除。
 > **本文不是什么**：不是控制方案，也不是"该用哪个模型"的选型结论；域内实现与规则真源归
 > [`plugins/speedrush/RULES.md`](../../../maaracing_master/plugins/speedrush/RULES.md) 与
 > 各 `CODE_WIKI.md`。
@@ -3328,3 +3332,30 @@ switch:score_win=0 与单测 `test_persistence_gate_delays_upgrade` 互补）；
 重选；末段无候选 2s 触发 `target_empty`→CONSERVE（legacy 校验闸语义，非
 计划层行为）。场景构造两处踩到资格门的正确拒绝：车太近太快（t_meet<变道
 耗时）与无候选空窗（target_empty），均为产线语义非缺陷。
+
+## 深度源端抖动与实体时序量化（2026-10-07，全面转 3D 前置测量，commit a013e61）
+
+`probe_depth_jitter.py` / `probe_entity_z_jitter.py` / `probe_jitter_vis.py`（可视化
+`--mode edge/entity/scene`）。三个问题各一组数：产线 ro 翻跳的主源、实体 Z 的跨帧噪声、
+深度证据的时效。口径：demo 全速率连续帧按低运动分选窗，产线同款管线（infer_points +
+reading_from_points + drivable_grid_from_points，含 YOLO 掩码），二阶差分分离真实运动
+与噪声；实体侧 IoU 跨帧关联取 Z 直方图最密簇中位。
+
+- **翻跳主源=找边锁错结构，非 MoGe 噪声**：近静止窗栅格路心二阶差 P90 多数 0~0.11 道
+  （多窗精确 0）、平面法向 0.1~0.35°；同场景找边左右缘二阶差达 1.8/1.9 道且在两个离散
+  结构间横跳（seq748~763：左缘 −2.6 ↔ −1.7，栅格路心同窗纹丝不动）。grid_xcheck
+  master 模式（栅格区读数当供数主人）被数据直接背书。fx 逐帧抖 2~6% 被几何吸收，非主因。
+- **实体 Z 米级抖**：近静止 13m 车辆 Z_med 帧间二阶差 P90 1.5m（同轨像素行恒定）、9m 币
+  0.7m；实战远场更差（最密簇跨模式跳，数十米级）。直接差分替换 2D 行号速率不可行。
+- **深度证据时效**：实机三局 trace 证据年龄 p50≈250ms / p90≈310ms / 350ms 闸顶，新证据
+  占比 ~29%（有效更新率约 6Hz 对控制 21Hz）。对路面缓变量够用；对物体到站时间未验证。
+
+判读注意：静止窗选窗按画面运动分自动挑，会选中挂 UI 横幅的准静止场景——证据以
+`--mode scene`（车+币同屏实战段）复核为准；远场实体 Z 摆动混有深度噪声与 IoU 关联
+换人两种成分，归因到纯深度噪声以近场静止数据为准。飞坡（20261005_215624_p1 HUD 帧
+1779/1802 grid:none）为诚实弃权链正常运转，无需专门优化；ego hgt 尖峰可作免费
+airborne 探测器，记账待用。
+
+**口径偏离声明**：本节探针 import 生产 `depth_geo`/`core.yolo_detector`（测产线行为
+原样），不满足实验区「自包含、不 import 业务代码」约定——主题内既有惯例（多份历史
+探针同型），后续 probe_approach_ab.py（物体层 A/B）回归自包含写法。

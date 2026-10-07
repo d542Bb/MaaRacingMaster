@@ -15,7 +15,6 @@ R1|speedrush_gating|缺 README.md
 R1|speedrush_planning|README 缺 status: active 行
 R1|speedrush_scoring|README 缺 status: active 行
 R1|speedrush_templates|缺 README.md
-R1|speedrush_vision|README 缺 status: active 行
 R2|docs/MAAFW_GUIDE.md|ecosystem-audit
 R2|docs/MAAFW_GUIDE.md|maafw-docs-constraints
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|speedrush_gating
