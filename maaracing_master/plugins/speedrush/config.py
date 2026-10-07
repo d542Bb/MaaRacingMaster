@@ -188,7 +188,7 @@ class Traffic:
     exit_margin_px: float      # 下带判据：last cy ≥ v_ego − 此值 → 从车尾侧消失
     min_obs_ticks: int         # 观测次数不足不发事件（检测噪声自卫）
     ghost_max_age_ticks: int   # 超龄且低速的"底边消失"判 ghost 不判 pass（191 帧案）
-    ghost_rel_eps: float       # "低速"的相对速率界（px/tick）
+    ghost_rel_eps: float       # "低速"的相对速率界（px/fid，与 rel_approach 同单位）
     v_lat_ema_alpha: float     # 街车横向速率 EMA α（帧间差分平滑，车道/tick 口径；
                                # 遮挡延续拍不投毒——阶段一 CV 外推数据源）
 

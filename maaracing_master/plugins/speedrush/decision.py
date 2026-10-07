@@ -252,7 +252,10 @@ class Scorer:
         if not (self.ov.lane_band_lo <= ax < self.ov.lane_band_hi) \
                 or view.rel_approach <= _EPS:
             return None
-        rate = view.rel_approach * self.hz          # px/s（rel_approach 为 px/tick）
+        # px/s 量纲名不副实：rel_approach 实为 px/fid（fid 率 ~38/s），此处按
+        # px/tick 乘 20/s 消费=恒定高估 TTC ~1.9x；ttc_dodge_s 等阈值是经验
+        # 标定已吸收该偏差（设计稿 §4）——勿单独修单位，动则连阈值一起重标
+        rate = view.rel_approach * self.hz
         t_meet = max(0.0, self.cal.v_ego - view.cy) / rate
         life = math.exp(-t_meet / self.c.life_tau_s)
         goal = self.hug_goal(view.x_lane)

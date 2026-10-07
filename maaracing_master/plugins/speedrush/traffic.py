@@ -43,7 +43,8 @@ class CarView:
     id: int
     x_lane: float
     cy: int
-    rel_approach: float      # px/tick，正=接近（Tracker EMA 透传）
+    rel_approach: float      # px/fid，正=接近（Tracker EMA 透传；单位陷阱
+                             # 见 tracking.TrackedTarget）
     d_min: float             # 自 track 出现以来的 min|x_lane|
     age_ticks: int
     v_lat: float = 0.0       # 横向速率（车道/tick，右正；帧间差分 EMA——阶段一

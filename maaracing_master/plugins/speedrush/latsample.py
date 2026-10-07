@@ -195,7 +195,7 @@ class LatTrajectorySampler:
         """一拍采样评分。
 
         ``cars``：CarView 鸭子（x_lane= A1 系读数，本方法按 ro 换算到路心系；
-        cy=行号、rel_approach=px/tick）。``width``：路宽 W（道，碰撞边界到
+        cy=行号、rel_approach=px/fid）。``width``：路宽 W（道，碰撞边界到
         碰撞边界）；None=未成形不钳制。返回中选轨迹或诚实弃权。
         ``grid``：同拍可行驶栅格（None=不触栅格代价，闸关路径）；``lane_w_m``
         车道米宽（道↔米换算锚，栅格裁决启用时必传）。"""

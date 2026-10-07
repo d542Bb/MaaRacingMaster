@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
-"""looming-TTC 离线探针（刀二消费端准入证据，stdout-only 零文件写）。
+"""TTC 估计器对照探针 v3（刀二消费端准入证据，stdout-only 零文件写）。
 
-问题：尺度无关 TTC = Δt / ln(h_now/h_prev)（纯框高流，不依赖锚点刻度）
-能否当「到掠过时刻的倒计时」用——对照真值 = 该轨峰值框高拍（车掠过相机）。
+问题：换装 TTC 消费点前，incumbent 线性行模型与 looming（尺度无关）谁更准——
+  E1 looming = Δt / ln(h_now/h_prev)   （纯框高流，免疫锚刻度偏差与重标锯齿）
+  E2 线性行 = (v_ego − cy) / (rel·hz)  （现产线三消费点用的式子）
+真值 = 该轨峰值框高拍（掠过相机）的实际倒计时。
 
-背景：三个像素系 TTC 消费点（score_car t_meet / dodge ttc / LateralSafety
-_eta）全用线性行模型 (v_ego−cy)/(rel·hz)，_t_miss_ground_s 注释自证该式在
-远行低估一半量级。若 looming-TTC 无偏，消费端可以不碰绝对距离（免疫锚点
-刻度偏差与重标锯齿）直接换时间量。
+v3 修订（v1/v2 的教训，两处结构性污染）：
+  1. **滑行段**：遮挡期跟踪层按外推纪律滑行——h/x/rel 冻结、cy 合成。滑行拍
+     不是观测（h 流已死），喂估计器必爆（ln 分母趋零）；峰值 h 拍也因滑行
+     提前，真值本身错。修法：拍级「新鲜过滤」（h 或 rel 相对前拍有变化）+
+     真值集只收「尾部仍新鲜」的轨（检测撑到近掠过才丢）。
+  2. **机动/横向分层**（car_pos 列，commit 8493016）：无机动·邻道桶的实际
+     掠过 ≈ 反事实——此桶偏差才是估计器误差；机动桶混入反事实差（安全
+     消费端要的恰是估计器读到的「不机动会怎样」）。
 
-用法：.venv python probe_ttc_looming.py <trace.jsonl> [第二个 ...]
+用法：.venv python probe_ttc_looming.py <trace.jsonl> [--v-ego=716.0]
+（car_pos 缺失的旧 trace 自动退化为仅 E1、无分层。）
 """
 
 from __future__ import annotations
@@ -19,106 +26,153 @@ import math
 import sys
 from collections import defaultdict
 
-DT_BEAT_MS = 33.0          # 控制拍周期（30fps）
 PASS_MIN_H = 150           # 峰值框高阈值：确实掠过近处的轨才进真值集
 PASS_END_FRAC = 0.6        # 末拍框高 ≥ 峰值的 60%：丢在近处（掠过）而非远处淡出
+FRESH_TAIL_BEATS = 2       # 峰值前 N 拍须新鲜（检测撑到近掠过），否则真值不可知
 WINDOWS_MS = (200.0, 250.0, 350.0, 500.0)
 TTC_CAP_S = 30.0           # h 几乎不涨时 ln→0，封顶
-MIN_GROWTH = 1.02          # 区间增长 <2% 视为不接近，报 inf
+MIN_GROWTH = 1.02          # 区间增长 <2% 视为不接近
+HZ = 20.0                  # 控制名义频率（decision.json control.frame_rate_hz）
+TRUE_LO, TRUE_HI = 0.3, 3.0   # 消费端相关真值区间（s）
+MANEUVER_LANES = 0.25      # 掠过前 ego 横移超此值 = 机动
+OUR_LANE_GAP = 0.6         # 横向间隔 < 此值（道）= 本车道
 
 
-def load_tracks(path: str) -> dict[int, list[tuple[int, int]]]:
-    tracks: dict[int, list[tuple[int, int]]] = defaultdict(list)
+def load(path: str):
     with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            b = json.loads(line)
-            for e in b.get("car_h") or []:
-                tracks[e["id"]].append((b["fid"], e["h"]))
-    return {k: sorted(v) for k, v in tracks.items()}
+        beats = [json.loads(l) for l in f if l.strip()]
+    beats.sort(key=lambda b: b["fid"])
+    tracks: dict[int, list[dict]] = defaultdict(list)
+    for b in beats:
+        pos = {e["id"]: e for e in b.get("car_pos") or []}
+        for e in b.get("car_h") or []:
+            p = pos.get(e["id"], {})
+            tracks[e["id"]].append({
+                "fid": b["fid"], "ts": b["ts_ns"], "h": e["h"],
+                "x": p.get("x"), "cy": p.get("cy"), "rel": p.get("rel"),
+                "exec": b.get("executed_lane")})
+    out = {}
+    for k, seq in tracks.items():
+        seq.sort(key=lambda r: r["fid"])
+        for i, r in enumerate(seq):   # 新鲜 = h 或 rel 相对前拍有变化（滑行段两者全冻）
+            prev = seq[i - 1] if i else None
+            r["fresh"] = prev is not None and (
+                r["h"] != prev["h"]
+                or (r["rel"] is not None and prev["rel"] is not None
+                    and r["rel"] != prev["rel"]))
+        out[k] = seq
+    return out
 
 
-def pass_fid(seq: list[tuple[int, int]]) -> int | None:
-    """掠过拍 = 峰值框高拍；末拍仍须占峰值六成以上（丢在近处=掠过，
-    远处淡出=中途脱靶，不配当真值）。"""
+def pass_ts(seq: list[dict]) -> float | None:
+    """掠过拍 = 峰值框高拍；峰值及其前 FRESH_TAIL_BEATS 拍须新鲜，
+    且末拍框高 ≥ 峰值六成（丢在近处而非远处淡出）。"""
     if len(seq) < 10:
         return None
-    hmax = max(h for _, h in seq)
-    if hmax < PASS_MIN_H:
+    hmax = max(r["h"] for r in seq)
+    if hmax < PASS_MIN_H or seq[-1]["h"] < PASS_END_FRAC * hmax:
         return None
-    if seq[-1][1] < PASS_END_FRAC * hmax:
+    peak = max(seq, key=lambda r: r["h"])
+    pi = seq.index(peak)
+    if pi < FRESH_TAIL_BEATS or not all(
+            seq[j]["fresh"] for j in range(pi - FRESH_TAIL_BEATS, pi + 1)):
         return None
-    return max(seq, key=lambda x: x[1])[0]
+    return peak["ts"]
 
 
-def looming_ttc(h_now: int, h_prev: int, win_ms: float) -> float:
-    if h_now <= 0 or h_prev <= 0 or h_now < h_prev * MIN_GROWTH:
-        return TTC_CAP_S
-    return min(win_ms / math.log(h_now / h_prev) / 1000.0, TTC_CAP_S)
+def looming_ttc(seq: list[dict], i: int, w_ms: float) -> float | None:
+    """h 流上找 dt 最接近 w 的前一拍，TTC = dt/ln 比。只在新鲜拍上算。"""
+    r = seq[i]
+    prev = None
+    for j in range(i - 1, -1, -1):
+        dt_ms = (r["ts"] - seq[j]["ts"]) / 1e6
+        if dt_ms > w_ms + 60:
+            break
+        if seq[j]["fresh"]:
+            prev = (dt_ms, seq[j]["h"])
+    if prev is None:
+        return None
+    return min(prev[0] / math.log(r["h"] / prev[1]) / 1000.0, TTC_CAP_S) \
+        if r["h"] >= prev[1] * MIN_GROWTH and prev[1] > 0 else TTC_CAP_S
+
+
+def pixel_ttc(r: dict, v_ego_row: float) -> float | None:
+    if r["rel"] is None or r["rel"] <= 1e-9 or r["cy"] is None:
+        return None
+    return max(0.0, v_ego_row - r["cy"]) / (r["rel"] * HZ)
 
 
 def main() -> None:
-    for path in sys.argv[1:]:
-        tracks = load_tracks(path)
-        n_tracks = len(tracks)
-        n_pass = 0
-        # 误差桶：按真值 TTC 分桶 + 按框高分桶（远距量化噪声的量级实测）
-        err_by_ttc: dict[str, list[float]] = defaultdict(list)
-        err_by_h: dict[str, list[float]] = defaultdict(list)
-        bias_by_win: dict[float, list[float]] = defaultdict(list)
+    # v_ego 行号出处：plugins/<id>/resources 的标定（world_model.load_calib 读数，
+    # 2026-10-07 为 716.0）——实验探针不 import 生产代码，标定变了这里要跟
+    v_ego_row = 716.0
+    args = []
+    for a in sys.argv[1:]:
+        if a.startswith("--v-ego="):
+            v_ego_row = float(a.split("=", 1)[1])
+        else:
+            args.append(a)
+
+    for path in args:
+        tracks = load(path)
+        rows: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+        n_pass = n_coast = 0
         for seq in tracks.values():
-            pf = pass_fid(seq)
-            if pf is None:
+            pts = pass_ts(seq)
+            if pts is None:
                 continue
             n_pass += 1
-            hmap = dict(seq)
-            for i, (fid, h) in enumerate(seq):
-                if fid >= pf:
+            for i, r in enumerate(seq):
+                if not r["fresh"] or r["ts"] >= pts:
                     continue
-                true_s = (pf - fid) * DT_BEAT_MS / 1000.0
-                if true_s < 0.1:
+                true_s = (pts - r["ts"]) / 1e9
+                if not (TRUE_LO <= true_s <= TRUE_HI):
                     continue
-                for w in WINDOWS_MS:
-                    prev = None
-                    for j in range(i - 1, -1, -1):
-                        dt_ms = (fid - seq[j][0]) * DT_BEAT_MS
-                        if dt_ms > w + DT_BEAT_MS:
-                            break
-                        prev = (dt_ms, seq[j][1])   # 取 dt≤w+一拍 内最远一拍
-                    if prev is None:
-                        continue
-                    est = looming_ttc(h, prev[1], prev[0])
-                    rel = (est - true_s) / true_s
-                    bias_by_win[w].append(rel)
-                    if w == WINDOWS_MS[0]:
-                        bucket = ("<0.5" if true_s < 0.5 else
-                                  "0.5-1" if true_s < 1.0 else
-                                  "1-2" if true_s < 2.0 else ">2")
-                        err_by_ttc[bucket].append(rel)
-                        hb = ("h<40" if h < 40 else
-                              "40-100" if h < 100 else "h>100")
-                        err_by_h[hb].append(rel)
+                if r["x"] is None:
+                    cls = "域外"        # 无横向读数：不做机动/横向分层
+                else:
+                    execs = [q["exec"] for q in seq[i:]
+                             if q["exec"] is not None and q["ts"] <= pts]
+                    maneuvered = (max(execs) - min(execs) > MANEUVER_LANES) \
+                        if len(execs) >= 2 else True
+                    gap = abs(r["x"] - (r["exec"] or 0.0))
+                    cls = ("机动" if maneuvered else
+                           "无机动·本道" if gap < OUR_LANE_GAP else "无机动·邻道")
+                e1 = looming_ttc(seq, i, 250.0)
+                if e1 is not None:
+                    rows[(cls, "E1_looming", "all")].append((e1 - true_s) / true_s)
+                    if cls == "无机动·邻道":
+                        rows[(cls, "E1_looming",
+                              "真值<1s" if true_s < 1.0 else "真值≥1s")].append(
+                                  (e1 - true_s) / true_s)
+                e2 = pixel_ttc(r, v_ego_row)
+                if e2 is not None:
+                    rows[(cls, "E2_pixel", "all")].append((e2 - true_s) / true_s)
+                    if cls == "无机动·邻道":
+                        rows[(cls, "E2_pixel",
+                              "真值<1s" if true_s < 1.0 else "真值≥1s")].append(
+                                  (e2 - true_s) / true_s)
 
         def _stat(xs: list[float]) -> str:
             if not xs:
                 return "n=0"
             xs = sorted(xs)
-            p50 = xs[len(xs) // 2]
-            p10, p90 = xs[int(len(xs) * 0.1)], xs[int(len(xs) * 0.9)]
-            return f"n={len(xs)} 偏差 p50={p50:+.2f} p10={p10:+.2f} p90={p90:+.2f}"
+            return (f"n={len(xs)} 偏差 p50={xs[len(xs)//2]:+.2f} "
+                    f"p10={xs[int(len(xs)*0.1)]:+.2f} p90={xs[int(len(xs)*0.9)]:+.2f}")
 
         print(f"\n=== {path.rsplit('/', 1)[-1].rsplit(chr(92), 1)[-1]} ===")
-        print(f"轨总数 {n_tracks}，有效掠过轨 {n_pass}")
-        for w, xs in sorted(bias_by_win.items()):
-            print(f"[窗口 {w:.0f}ms] 总体相对误差: {_stat(xs)}")
-        print("按真值倒计时分桶（窗口 250ms）:")
-        for k in ("<0.5", "0.5-1", "1-2", ">2"):
-            print(f"  true TTC {k:>5}s: {_stat(err_by_ttc.get(k, []))}")
-        print("按当拍框高分桶（窗口 250ms）:")
-        for k in ("h<40", "40-100", "h>100"):
-            print(f"  {k:>7}: {_stat(err_by_h.get(k, []))}")
+        print(f"有效掠过轨 {n_pass}（真值区间 {TRUE_LO}~{TRUE_HI}s，窗口 250ms，"
+              f"仅新鲜拍；滑行穿场的轨已从真值集剔除）")
+        for cls in ("无机动·邻道", "无机动·本道", "机动", "域外"):
+            for est in ("E1_looming", "E2_pixel"):
+                xs = [v for (c, e, _), vs in rows.items() if c == cls and e == est
+                      for v in vs]
+                if xs:
+                    print(f"  {cls} {est}: {_stat(xs)}")
+        print("  [判决桶·无机动·邻道 分真值]")
+        for est in ("E1_looming", "E2_pixel"):
+            for b in ("真值<1s", "真值≥1s"):
+                print(f"    {est} {b}: {_stat(rows.get(('无机动·邻道', est, b), []))}")
 
 
 if __name__ == "__main__":

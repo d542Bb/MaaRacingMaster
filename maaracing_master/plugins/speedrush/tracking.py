@@ -120,7 +120,10 @@ class TrackedTarget:
     w: int
     h: int
     conf: float
-    rel_approach: float          # px/tick，正 = 接近（cy 增速的 EMA）
+    rel_approach: float          # px/fid（Δcy/Δfid 的 EMA），正 = 接近。
+                                 # 非 px/tick：decision 侧乘 hz(20/s) 消费=
+                                 # 恒定高估 TTC ~1.9x，经验阈值已吸收
+                                 # （设计稿 §4），勿单独修单位
     first_seen_fid: int
     last_seen_fid: int
     validity_until_fid: int      # 宽限截止帧号（last_seen + grace）
