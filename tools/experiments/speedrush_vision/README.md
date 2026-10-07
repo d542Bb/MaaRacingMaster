@@ -3375,12 +3375,24 @@ select_dirty_frames.py（README+select_blackout_frames 引用）、probe_dml_orc
 DRIVABLE_GRID_20261004.md（产线 drivable_grid 的调查记录，先例同 CENTER_BASELINE/
 DEPTH_PIPELINE_ATTRIBUTION 两份已提交 md）。
 
-**删除候选（结论迁 home 核销前不动，逐个过目后走回收站）**：detect_road_edges.py
-（被产线找边取代的 v1）、probe_age_damage.py、probe_depth_farfield.py、
-probe_dml_capture_stress.py、probe_edge_scan_forensics.py、probe_gold_intrinsics.py、
-probe_lateral3d.py、probe_moge2.py、probe_moge2_pipeline.py、probe_moge2_quality.py、
-probe_q4_latency.py、probe_road_region.py、probe_scale_consistency.py（职责已被
-probe_depth_jitter 接管）、probe_vertical_lean.py（docstring 自记已结案）。
+**删除核销清单（2026-10-07 逐件核销、用户过目放行，走回收站；均零外部引用，grep 留痕）**：
+
+| 件 | 结论与去向（home） |
+|---|---|
+| detect_road_edges.py | 找边器 v1（单参数 λ 化归），已被 3D 找边产线取代——见「3D 找边上产线」节（moge_post 晋升/depth_geo 重写，commit 证据在该节） |
+| probe_age_damage.py | 陈旧观测伤害测量（分步差对 age 回归口径）→ 时效结论入「深度源端抖动与实体时序量化」节 + 保鲜槽 age 预算（「每侧独立保鲜槽 ~400ms」节） |
+| probe_depth_farfield.py | 远场可见性结论（路面高度残差渲染到 40m）→ BEV 栅格 z 3~16m 设计窗依据，见 DRIVABLE_GRID_20261004.md |
+| probe_dml_capture_stress.py | graph capture 与 YOLO DML 在 dml_lock 协议下共存不崩 → 产线 capture 上线的压测前提，capture 结论入 README capture 节拍相关段 |
+| probe_edge_scan_forensics.py | 找边锁错根因取证（列剖面双峰/穿越选择）→ 「实机取证面双修」commit 5d184d3 与 wallhit/取证系列节 |
+| probe_gold_intrinsics.py | 122 帧金标独立测内参（cx≈640、v_h≈320、k≈4.06）→ 常量落在 gate0.json，方法论入「消失点的可辨识性」等金标系列节 |
+| probe_lateral3d.py | 3D 去旋转横向信号 vs A1 尺子 → 结论（vpx 横偏是航向信号非误差）入横向/航向相关节 |
+| probe_moge2.py | MoGe-2 ViT-S @4060 DML 纯推理时延闸门（p50≤65ms 定调）→ 「深度模型最大预算（定调）」节 |
+| probe_moge2_pipeline.py | 串行 vs 流水线重叠原型 → 耗时归因与调度结论入 DEPTH_PIPELINE_ATTRIBUTION_20261004.md |
+| probe_moge2_quality.py | 预注册判据评分（金标 54 帧三源对比）→ MoGe-2 选型结论入量化/选型系列节 |
+| probe_q4_latency.py | q4f16 对 fp32 常载时延对比 → 「体积线复查：量化变体实测」节（q4f16 19.1 MB 达标） |
+| probe_road_region.py | 最大连通平面域分割 vs 金标像素级检出率 → 「无锚连通块边界：兜底半边首版」节 |
+| probe_scale_consistency.py | 逐帧尺度一致性闸门（深度差分测速前提）→ 职责已由 probe_depth_jitter 二阶差分口径接管，尺度漂移判定另见金标尺度漂移节 |
+| probe_vertical_lean.py | 竖直结构测 roll 原理上不可行（docstring 自记结案）→ 同源结论「同形竖直结构，单帧不可分」与「滚转读数的性质」节 |
 
 ## 物体层时序口径 A/B：Δlog h 对 Z 判决（2026-10-07，`probe_approach_ab.py`）
 
