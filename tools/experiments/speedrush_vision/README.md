@@ -3381,3 +3381,26 @@ probe_dml_capture_stress.py、probe_edge_scan_forensics.py、probe_gold_intrinsi
 probe_lateral3d.py、probe_moge2.py、probe_moge2_pipeline.py、probe_moge2_quality.py、
 probe_q4_latency.py、probe_road_region.py、probe_scale_consistency.py（职责已被
 probe_depth_jitter 接管）、probe_vertical_lean.py（docstring 自记已结案）。
+
+## 物体层时序口径 A/B：Δlog h 对 Z 判决（2026-10-07，`probe_approach_ab.py`）
+
+预注册砍线判据（跑数前锁定）：最干净车窗（车+币同屏、排除飞坡帧、车类轨迹
+≥10 帧、身份帧条目检通过）上，Δlog h 信噪比 ≤ Z 信噪比 → 2D 时序替代线砍掉。
+
+结果（两 demo × 静止零点窗 + 实战窗，判决轨迹均过身份目检——远处真车小框）：
+
+- **实战 SNR**：Δlog h 0.570（p2 seq23~32）/ 0.543（215150 seq641~656）对
+  Z 0.136 / 0.167——Δlog h 胜出 3~4 倍，**预注册判据通过，2D 时序替代深度
+  差分成立**；方向一致率 Δlog h 0.73~0.78 对 Z 0.53~0.73（近抛硬币）。
+- **零点噪声地板**（真静止窗，真值=零接近）：车框 log_h 二阶差 P90=0（像素
+  纹丝不动）、Z 0.10~0.20m（深度自己在抖）——尺子差距的物理来源。
+- **cy/bottom_y 仍是最佳 2D 时序量**（SNR 0.86~1.0、方向一致率 0.87~1.00）：
+  产线现役 rel_approach 口径不必换；Δlog h 的价值是「确认可用的备胎」——
+  cy 退化场景（同Row 横移/遮挡复入）与 anchor-age 外推的形状项。
+- **流残差不加分**：SNR 0.06~0.15，k 耦合全场估计的噪声盖过单实体信号——
+  ego-motion 分解路线在当前流模型精度下无增益，挂账不推进。
+- 探针自包含（moge2_post + 自建 YOLO，含修复后 xywh NMS）；自建与生产框存在
+  ≤10px 级小框偏移（疑 NMS 保留项差异，判决机制不受影响）。
+
+下一站（Phase 4，另行排期）：anchor-age 衰减实验——深度锚点 + 2D 外推在
+100/200/300ms 后的误差曲线，直接打 250ms 时效墙。
