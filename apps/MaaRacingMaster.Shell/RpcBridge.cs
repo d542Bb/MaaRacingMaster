@@ -36,6 +36,7 @@ internal static class RpcBridge
         "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
         "set_emergency_stop", "set_click_mode", "set_intent_mode",
         "set_auto_close_game", "set_auto_exit_mra", "set_mute_game",
+        "set_boost_priority",
     };
 
     private static PythonSidecar? s_sidecar;

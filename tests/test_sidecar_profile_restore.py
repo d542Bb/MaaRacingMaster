@@ -107,3 +107,28 @@ def test_set_peep_does_not_persist(monkeypatch):
     assert data == {"peep_enabled": True}
     assert svc._controller.debug.enabled is True
     assert svc.saved_profiles == []  # 一次落盘都不发生
+
+
+def test_boost_priority_restore_and_persist(monkeypatch):
+    """性能优先开关：启动重放按开关方向走 apply/revert（不真改本测试进程优先级）；
+    set_boost_priority 落盘 profile 并回写运行态（GUI 开关链路回归锁）。"""
+    calls = []
+    monkeypatch.setattr(sc.process_priority, "apply_boost",
+                        lambda: calls.append("apply") or {"cpu": True, "io": False})
+    monkeypatch.setattr(sc.process_priority, "revert",
+                        lambda: calls.append("revert") or {"cpu": True, "io": True})
+
+    svc_on = _svc(monkeypatch, {"debug": {"boost_priority": True}})
+    svc_on._restore_profile()
+    assert svc_on._boost_priority_enabled is True
+
+    svc_off = _svc(monkeypatch, {"debug": {"boost_priority": False}})
+    svc_off._restore_profile()
+    assert svc_off._boost_priority_enabled is False
+    assert calls == ["apply", "revert"]  # 各按开关方向重放一次
+
+    ok, data, err = svc_off.set_boost_priority({"enabled": True})
+    assert ok is True and err is None
+    assert data == {"boost_priority": True}
+    assert svc_off._boost_priority_enabled is True
+    assert svc_off.saved_profiles == [{"debug": {"boost_priority": True}}]

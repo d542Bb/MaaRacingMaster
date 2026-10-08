@@ -980,6 +980,14 @@
               </div>
               <span class="option-note">建议先勾选关闭游戏</span>
             </div>
+            <div class="option-row">
+              <button class="mra-toggle" id="${mid}-toggle-boostprio" role="switch" aria-checked="false"></button>
+              <div class="option-main">
+                <div class="option-title">性能优先</div>
+                <p class="option-desc">提高本程序进程的 CPU 优先级，感知与控制在系统繁忙时少排队；立即生效，重启后保持</p>
+              </div>
+              <span class="option-note">GPU/IO 提级系统未开放</span>
+            </div>
           </div>
         </div>
 
@@ -1278,6 +1286,21 @@
       });
     }
 
+    const tBoostPrio = p('toggle-boostprio');
+    if (tBoostPrio) {
+      tBoostPrio.addEventListener('click', async () => {
+        const on = !toggleState(tBoostPrio);
+        setToggle(tBoostPrio, on); // 先翻转视觉状态
+        try {
+          await mra.call('set_boost_priority', { enabled: on });
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+          setToggle(tBoostPrio, !on); // 回滚
+        }
+      });
+    }
+
     // 实时预览卡：三个图标按钮 —— 悬浮窗 / 全屏 / 开关（三态互斥，见 previewMode）
     const previewToggle = p('btn-preview-toggle');
     const previewMax = p('btn-preview-max');
@@ -1374,6 +1397,7 @@
       safeToggle('toggle-closegame', !!d.auto_close_game);
       safeToggle('toggle-exitmra', !!d.auto_exit_mra);
       safeToggle('toggle-mutegame', !!d.mute_game);
+      safeToggle('toggle-boostprio', !!d.boost_priority);
       safeToggle('toggle-intent', !!d.intent_mode);
       // 点击方式选中态
       document.querySelectorAll('.mra-radio-card').forEach((card) => {

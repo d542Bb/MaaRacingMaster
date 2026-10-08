@@ -38,6 +38,7 @@ from maaracing_master import __display_version__, __version__
 from maaracing_master.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
 from maaracing_master.core.controller import MaaRacingMasterController
 from maaracing_master.core.logger import Logger, logger
+from maaracing_master.core import process_priority
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
@@ -371,6 +372,7 @@ HANDLERS = frozenset({
     # 行为开关
     "set_emergency_stop", "set_click_mode", "set_intent_mode",
     "set_auto_close_game", "set_auto_exit_mra", "set_mute_game",
+    "set_boost_priority",
 })
 
 # 在途请求并发上限：stdin reader 永不阻塞是协议铁律，超限直接拒（前端按
@@ -409,6 +411,8 @@ class SidecarService:
         # 槽里只放纯配置数据，**绝不放模块实例**——实例持有线程/文件句柄等资源，
         # 缓存若持有实例，等于把"已经切走的模块"留在内存里继续活着。
         self._module_config_cache: dict[str, dict] = {}
+        # 性能优先开关的进程内状态（sidecar 自有，不经 controller；_restore_profile 回放）
+        self._boost_priority_enabled = False
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
         self._restore_profile()
 
@@ -503,6 +507,15 @@ class SidecarService:
             mg = dbg.get("mute_game")
             if isinstance(mg, bool):
                 self._controller.set_mute_game(mg)
+            bp = dbg.get("boost_priority")
+            if isinstance(bp, bool):
+                # 性能优先：sidecar 进程级开关，重放=按开关方向重新应用（值来自
+                # profile，不回写落盘）；不真改 controller，状态自持
+                applied = (process_priority.apply_boost() if bp
+                           else process_priority.revert())
+                self._boost_priority_enabled = bp
+                logger.log(f"性能优先({'提级' if bp else '恢复'}): "
+                           f"{process_priority.describe(applied)}", "DEBUG")
         # 2) 模块配置 → 按模块分槽回填；键白名单由各模块的 DEFAULT_MODULE_CONFIG 声明
         slots: dict[str, dict] = {}
         for mid, flat in _parse_module_config_slots(data.get("module_config")).items():
@@ -1195,6 +1208,7 @@ class SidecarService:
             "auto_close_game": bool(self._controller.auto_close_game),
             "auto_exit_mra": bool(self._controller.auto_exit_mra),
             "mute_game": bool(self._controller.mute_game_enabled),
+            "boost_priority": bool(self._boost_priority_enabled),
         }, None)
 
     def set_debug_mode(self, params):
@@ -1306,6 +1320,23 @@ class SidecarService:
         _save_profile({"debug": cur})
         logger.log(f"运行时静音游戏: {'开启' if enabled else '关闭'}")
         return (True, {"mute_game": enabled}, None)
+
+    def set_boost_priority(self, params):
+        """「运行选项」性能优先开关：对本进程（sidecar）提 CPU/IO/内存优先级。
+
+        立即生效（进程常驻，与运行时序解耦）；GPU 无公开优先级旋钮，显存争用
+        由推理侧缓冲固定另行解决（见 core/process_priority.py 模块注）。"""
+        enabled = bool(params.get("enabled", False))
+        applied = process_priority.apply_boost() if enabled else process_priority.revert()
+        self._boost_priority_enabled = enabled
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["boost_priority"] = enabled
+        _save_profile({"debug": cur})
+        action = "提级" if enabled else "恢复"
+        logger.log(f"性能优先({action}): {process_priority.describe(applied)}",
+                   None if enabled else "DEBUG")
+        return (True, {"boost_priority": enabled}, None)
 
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker + 关写盘句柄。"""
