@@ -871,6 +871,7 @@ class SpeedRushModule(ActivityModule):
                  "method": None if d.method is None else d.method.value,
                  "age": None if d.anchor_age_ms is None
                  else round(d.anchor_age_ms, 1),
+                 "v": None if d.v_close_mps is None else round(d.v_close_mps, 2),
                  "why": None if d.reason is None else d.reason.value}
                 for d in obs.distances] or None,
             # 门控重标定供数：逐车轨框高流（与 dist 同 id 同拍 join）——

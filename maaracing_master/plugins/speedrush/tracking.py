@@ -180,6 +180,9 @@ class ObjectDistance:
     anchor_age_ms: float | None   # 锚点年龄（深度帧距今）；UNKNOWN 无锚时为 None
     obs_age_ms: float             # 本拍 2D 观测年龄——与锚点年龄是两个时钟
     reason: DistanceReason | None  # UNKNOWN 时必填
+    v_close_mps: float | None = None  # 门控区间速度估计（v̂>0=接近，z(t+Δ)≈m−v̂Δ）。
+                                      # 与锚点同生命周期；未知为 None——刀二消费面
+                                      # （新鲜度分带+预测投影）的数据载体，本刀 trace-only
 
 
 class DistanceSource(str, Enum):
@@ -314,6 +317,9 @@ class _Track:
     anchor_ts_ns: int = 0                # 锚点帧采集时刻（perf_counter_ns）
     approach_confirmed_at: int | None = None   # 本锚点生命周期内确认帧号（≠ is_approaching）
     gate_streak: int = 0                 # 估计接近速度连续超阈拍数
+    v_close_mps: float | None = None     # 门控区间速度估计落轨（L2 状态载体）：
+                                         # 与锚点同生命周期（新锚/簇跳/超龄即清），
+                                         # 消费政策（新鲜度分带/预测投影）在刀二带闸
     last_dist_reason: DistanceReason | None = None
 
 
@@ -374,6 +380,7 @@ class Tracker:
                 anchor_age_ms = (per.ts_ns - t.anchor_ts_ns) / 1e6
                 if anchor_age_ms >= self.p.gate_eval_min_ms and o.h > 0 and t.anchor_h > 0:
                     v_hat = t.anchor_z * math.log(o.h / t.anchor_h) / (anchor_age_ms / 1000.0)
+                    t.v_close_mps = v_hat   # 速度落轨：L2 状态载体（trace 供数，刀二消费）
                     t.gate_streak = t.gate_streak + 1 if v_hat > self.p.gate_v_mps else 0
                     if (t.gate_streak >= self.p.gate_confirm
                             and t.approach_confirmed_at is None):
@@ -492,10 +499,12 @@ class Tracker:
                 # 层一测量有效性：主簇跳变（实验实录帧间数十米假跳）——量错对象
                 # 的锚点救不了，弃权等重拍；阈值是 trace 标定候选
                 t.anchor_z = None
+                t.v_close_mps = None            # 速度与锚点同生命周期
                 t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
                 continue
             t.anchor_z, t.anchor_h = e.z_m, e.h_px
             t.anchor_ts_ns = sheet.ts_ns
+            t.v_close_mps = None                # 新锚点 = 新估计窗口
             t.approach_confirmed_at = None   # 新锚点 = 新生命周期（设计稿 §2 规则 2）
             t.last_dist_reason = None
 
@@ -506,7 +515,7 @@ class Tracker:
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None, anchor_age_ms=None,
-                obs_age_ms=obs_age_ms,
+                obs_age_ms=obs_age_ms, v_close_mps=None,
                 reason=t.last_dist_reason or (
                     DistanceReason.ASSOC_FAIL if self._sheet_orphan
                     else DistanceReason.NO_ANCHOR_YET))
@@ -517,26 +526,30 @@ class Tracker:
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None,
                 anchor_age_ms=(ts_ns - t.anchor_ts_ns) / 1e6,
-                obs_age_ms=obs_age_ms, reason=DistanceReason.TRACK_LOST)
+                obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps,
+                reason=DistanceReason.TRACK_LOST)
         age_ms = (ts_ns - t.anchor_ts_ns) / 1e6
         if age_ms > self.p.anchor_max_age_ms:
             t.anchor_z = None
+            t.v_close_mps = None                # 速度与锚点同生命周期
             t.last_dist_reason = DistanceReason.EXPIRED
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None, anchor_age_ms=age_ms,
-                obs_age_ms=obs_age_ms, reason=DistanceReason.EXPIRED)
+                obs_age_ms=obs_age_ms, v_close_mps=None,
+                reason=DistanceReason.EXPIRED)
         if t.approach_confirmed_at is not None:
             metric = t.anchor_z * t.anchor_h / max(t.h, 1)
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.RESCALED_ANCHOR,
                 metric_distance_m=float(metric),
                 method=DistanceMethod.HEIGHT_RATIO, anchor_age_ms=age_ms,
-                obs_age_ms=obs_age_ms, reason=None)
+                obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps, reason=None)
         return ObjectDistance(
             target_id=t.id, source=DistanceSource.ANCHOR,
             metric_distance_m=float(t.anchor_z), method=DistanceMethod.HOLD,
-            anchor_age_ms=age_ms, obs_age_ms=obs_age_ms, reason=None)
+            anchor_age_ms=age_ms, obs_age_ms=obs_age_ms,
+            v_close_mps=t.v_close_mps, reason=None)
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
         """逐对算代价值 → 全局按代价升序贪心 1:1 配对。

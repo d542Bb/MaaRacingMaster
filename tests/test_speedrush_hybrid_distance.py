@@ -118,6 +118,39 @@ def test_interval_velocity_gate_confirms_rescale_and_formula_direction():
     assert d.anchor_age_ms == pytest.approx(7 * NS / 1e6, rel=1e-3)
 
 
+def test_gate_velocity_persisted_on_track_state():
+    """L2 状态载体（时序状态层刀一）：门控区间速度 v̂ 落轨并透传
+    ObjectDistance——此前算完即扔只用于确认位；值与公式同源可复算。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=50.0, h_px=40))
+    for fid, h in ((3, 40), (4, 41), (5, 42), (6, 43), (7, 44), (8, 45)):
+        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    d = _dist(obs)
+    expect = 50.0 * np.log(45 / 40) / (7 * NS / 1e9)   # 7 帧龄≈231ms→0.231s，与门控同式
+    assert d.v_close_mps == pytest.approx(expect, rel=1e-3)
+
+
+def test_velocity_resets_with_anchor_lifecycle():
+    """速度与锚点同生命周期：无锚恒 None；新锚点重置估计窗（旧速度清零），
+    锚龄未达评估下限期间保持 None——不拿旧窗速度冒充新锚状态。"""
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
+    assert _dist(obs).v_close_mps is None              # 无锚：UNKNOWN 恒 None
+    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=50.0, h_px=40))
+    for fid, h in ((3, 41), (4, 42), (5, 43), (6, 44), (7, 45), (8, 46)):
+        trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(9, cars=[_car(h=47)]), frame_age_ms=10.0, stage=1)
+    assert _dist(obs).v_close_mps is not None          # 锚窗内已落轨
+    trk.update(_per(10, cars=[_car(h=47)]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(9, z_m=45.0, h_px=47))
+    d = _dist(trk.update(_per(11, cars=[_car(h=47)]), frame_age_ms=10.0, stage=1))
+    assert d.v_close_mps is None                       # 新锚点 = 新估计窗
+    assert d.source is DistanceSource.ANCHOR           # 锚龄 2 帧 < 评估下限：直接持锚
+
+
 def test_rescaled_is_one_way_until_new_anchor():
     """RESCALED 是锚点生命周期状态：gate 退出不回 ANCHOR（防 42→51 回弹），
     新锚点到达重置基线后才重新判。"""
