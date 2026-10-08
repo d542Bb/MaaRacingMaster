@@ -18,7 +18,8 @@ from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.decision import (
     DecisionEngine, Scorer, ValidationWatch)
 from maaracing_master.plugins.speedrush.traffic import (
-    OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, CarView, PassEvent)
+    OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, OUTCOME_PRESUMED_PASS, CarView,
+    PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import _read_gate0, load_calib
@@ -482,8 +483,8 @@ def _traffic(views=(), events=()):
     return (tuple(views), tuple(events))
 
 
-def _pass_ev(tid=5, d=0.63, fid=3):
-    return PassEvent(track_id=tid, outcome=OUTCOME_PASS, settled_fid=fid,
+def _pass_ev(tid=5, d=0.63, fid=3, outcome=OUTCOME_PASS):
+    return PassEvent(track_id=tid, outcome=outcome, settled_fid=fid,
                      d_min=d, age_ticks=30)
 
 
@@ -519,6 +520,17 @@ def test_overtake_lost_or_ghost_aborts():
         e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
         out = e.update(_obs(fid=3, presence=True), DT, traffic=_traffic([], [ev]))
         assert out.state is DecisionState.ABORT_CHANGE             and out.reason == "cancel:overtake_lost"
+
+
+def test_overtake_presumed_pass_same_settlement_distinct_reason():
+    """presumed_pass 与 pass 同路径结算（完成+短冷却），trace reason 分开记。"""
+    e = _eng(overtake=True)
+    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
+    out = e.update(_obs(fid=3, presence=True), DT,
+                   traffic=_traffic([], [_pass_ev(outcome=OUTCOME_PRESUMED_PASS)]))
+    assert out.state is DecisionState.CRUISE \
+        and "done:overtake_pass_presumed" in out.reason
+    assert out.reanchor_lane is None
 
 
 def test_overtake_vanish_without_event_aborts():

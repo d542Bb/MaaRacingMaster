@@ -186,6 +186,10 @@ class Traffic:
     """车流观测层参数（阶段 C 设计稿 §三；起值 [需实测 C5]，回放定档只改 json）。"""
 
     exit_margin_px: float      # 下带判据：last cy ≥ v_ego − 此值 → 从车尾侧消失
+    presumed_cy_px: float      # 推定超越：真检贴身阈值（绝对画面纵坐标；检测下界
+                               # ≈575 高于 636 判据线，慢速超越在死区内记 lost 的
+                               # 修复判据，2026-10-08 取证预演定档，设计稿 §4A）
+    presumed_lane_max: float   # 推定超越：邻道横向界（|x_lane|，道）
     min_obs_ticks: int         # 观测次数不足不发事件（检测噪声自卫）
     ghost_max_age_ticks: int   # 超龄且低速的"底边消失"判 ghost 不判 pass（191 帧案）
     ghost_rel_eps: float       # "低速"的相对速率界（px/fid，与 rel_approach 同单位）
@@ -375,6 +379,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             ttc_dodge_s=_num(d, "overtake", "ttc_dodge_s", lo=0)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
+            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
+            presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
             ghost_max_age_ticks=_int(d, "traffic", "ghost_max_age_ticks", lo=2),
             ghost_rel_eps=_num(d, "traffic", "ghost_rel_eps", lo=0),

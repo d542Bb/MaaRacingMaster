@@ -10,6 +10,12 @@ planner 不读本层。
 本文件不写字面量）：
 - **超车完成**：track 于自车行下带消失（last cy ≥ v_ego − exit_margin_px）。
   游戏语义：街车从屏幕下沿出画 = 我们越过了它。
+- **推定超越（presumed_pass）**：track 死亡时最后一次**真实**读数已贴身
+  （cy ≥ presumed_cy_px）且在邻道内（|x_lane| ≤ presumed_lane_max）且仍在
+  下滑（rel > 0，消失方向指向下缘）——判"正在被超越时消失"。动机：检测
+  下界（cy≈575，自车遮挡+画角裁切）高于 636 判据线，真检永远到不了下带，
+  51/51 pass 全靠遮挡外推跨线、慢速超越系统性记 lost（2026-10-08 取证，
+  设计稿 §4A；判据预演 26 lost 晋升 16、远车零泄漏、pass 组 51/51 自洽）。
 - **没超成（lost）**：其余位置消失——**保守不得分**（错判的 d_min 会污染 §二 的
   期望收益与 C4 标定面；漏判不损失任何东西，密度排序自然会再选中别的目标车）。
 - **鬼影（ghost）**：长寿命、相对速率近零、最后却"从下面消失"（雨测 191 帧收敛点
@@ -32,6 +38,7 @@ from maaracing_master.plugins.speedrush.world_model import (
     KIND_CAR, Calib, load_calib)
 
 OUTCOME_PASS = "pass"
+OUTCOME_PRESUMED_PASS = "presumed_pass"
 OUTCOME_LOST = "lost"
 OUTCOME_GHOST = "ghost"
 
@@ -53,10 +60,11 @@ class CarView:
 
 @dataclass(frozen=True)
 class PassEvent:
-    """track 出画落定事件（一次性；d_min 仅 pass 有效）。"""
+    """track 出画落定事件（一次性；d_min 仅 pass/presumed_pass 有效）。"""
 
     track_id: int
-    outcome: str             # OUTCOME_PASS / OUTCOME_LOST / OUTCOME_GHOST
+    outcome: str             # OUTCOME_PASS / OUTCOME_PRESUMED_PASS / OUTCOME_LOST /
+                             # OUTCOME_GHOST
     settled_fid: int         # 检出消失的拍号（≈ grace 过期帧，非真实越线帧——
                              #  离线配对 d_min/速度时按 settle − grace 回推）
     d_min: float | None
@@ -70,6 +78,8 @@ class _Live:
     first_fid: int
     n_obs: int
     last_cy: float
+    last_cy_real: float      # 最后一次真实读数的 cy（遮挡延续拍不更新——
+                             # presumed 判据吃真检位，外推值会漏进远车）
     rel: float               # rel_approach 直接透传（不二次平滑：EMA 在 Tracker 已做）
     d_min: float
     last_x: float | None = None   # 上次真实读数的 x_lane（横向速率差分基）
@@ -108,6 +118,7 @@ class TrafficObserver:
             rec = self._live.get(t.id)
             if rec is None:
                 rec = _Live(first_fid=fid, n_obs=0, last_cy=t.cy,
+                            last_cy_real=t.cy,
                             rel=t.rel_approach, d_min=abs(t.x_lane))
                 self._live[t.id] = rec
             rec.n_obs += 1
@@ -116,6 +127,7 @@ class TrafficObserver:
             rec.d_min = min(rec.d_min, abs(t.x_lane))
             # 横向速率只在真实读数拍差分（遮挡延续拍 x 是陈旧重复值，投毒 EMA）
             if t.last_seen_fid == fid:
+                rec.last_cy_real = t.cy
                 if rec.last_x is not None:
                     inst = t.x_lane - rec.last_x
                     rec.v_lat += self.p.v_lat_ema_alpha * (inst - rec.v_lat)
@@ -131,7 +143,8 @@ class TrafficObserver:
             if outcome is not None:
                 events.append(PassEvent(
                     track_id=tid, outcome=outcome, settled_fid=fid,
-                    d_min=rec.d_min if outcome == OUTCOME_PASS else None,
+                    d_min=rec.d_min if outcome in (OUTCOME_PASS,
+                                                   OUTCOME_PRESUMED_PASS) else None,
                     age_ticks=fid - rec.first_fid))
 
         self._last_fid = fid
@@ -144,6 +157,11 @@ class TrafficObserver:
             return None                       # 闪现噪声：不记账
         bottom_exit = rec.last_cy >= self.cal.v_ego - self.p.exit_margin_px
         if not bottom_exit:
+            if (rec.last_cy_real >= self.p.presumed_cy_px
+                    and rec.last_x is not None
+                    and abs(rec.last_x) <= self.p.presumed_lane_max
+                    and rec.rel > 0):
+                return OUTCOME_PRESUMED_PASS
             return OUTCOME_LOST               # 远端/侧向消失：没超成
         if ((fid - rec.first_fid) >= self.p.ghost_max_age_ticks
                 and abs(rec.rel) < self.p.ghost_rel_eps):

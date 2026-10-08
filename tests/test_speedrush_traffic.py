@@ -7,11 +7,14 @@ v_ego 为基准构造（不写像素字面量——同三源分立纪律）。
 """
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from maaracing_master.plugins.speedrush.config import Traffic, load_decision
 from maaracing_master.plugins.speedrush.traffic import (
-    OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, TrafficObserver)
+    OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, OUTCOME_PRESUMED_PASS,
+    TrafficObserver)
 from maaracing_master.plugins.speedrush.tracking import (
     PerceptionHealth, TrackedTarget, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import KIND_CAR, KIND_COIN, load_calib
@@ -85,13 +88,61 @@ def test_ghost_when_aged_slow_then_bottom_exit():
 
 def test_bottom_exit_but_fast_still_pass_not_ghost():
     """超龄但 rel 超鬼影界 = 真慢车被追上也算超车，不误判 ghost。"""
-    over = Traffic(P.exit_margin_px, P.min_obs_ticks, P.ghost_max_age_ticks, 0.1,
-                   P.v_lat_ema_alpha)
+    over = dataclasses.replace(P, ghost_rel_eps=0.1)
     o = TrafficObserver(over, CAL)
     age = over.ghost_max_age_ticks + 2
     cars = {fid: [(9, CAL.v_ego - 5, 0.7, 8.0)] for fid in range(1, age + 1)}
     _, evs = _drive(o, cars)
     assert [e.outcome for e in evs] == [OUTCOME_PASS]
+
+
+# ---------- 推定超越（presumed_pass，2026-10-08 §4A 取证定档）----------
+
+def test_presumed_pass_when_dies_beside_ego_sliding():
+    """检测死区修复：真检贴身（≥presumed_cy_px）+ 邻道 + 仍下滑 → 推定超越。"""
+    o = TrafficObserver(P, CAL)
+    hi = P.presumed_cy_px + 30
+    cars = {1: [(7, P.presumed_cy_px - 40, 1.3, 20)],
+            2: [(7, P.presumed_cy_px, 1.35, 18)],
+            3: [(7, hi, 1.4, 15)],
+            4: []}                      # 检测死区：车没被再看到，轨迹消失
+    _, evs = _drive(o, cars)
+    assert [e.outcome for e in evs] == [OUTCOME_PRESUMED_PASS]
+    assert evs[0].d_min == 1.3          # 推定超越也是真超越，d_min 进标定面
+
+
+def test_lost_when_dies_below_presumed_band():
+    """远车夭折（真检 cy 在地平线带）不晋升——404~431 数据缺口防泄漏位。"""
+    o = TrafficObserver(P, CAL)
+    cars = {1: [(7, P.presumed_cy_px - 60, 1.2, 20)],
+            2: [(7, P.presumed_cy_px - 50, 1.2, 18)],
+            3: [(7, P.presumed_cy_px - 55, 1.2, 16)],
+            4: []}
+    _, evs = _drive(o, cars)
+    assert [e.outcome for e in evs] == [OUTCOME_LOST]
+    assert evs[0].d_min is None
+
+
+def test_lost_when_receding_at_death():
+    """rel<0（cy 收缩=车在上移远离）：贴身也不算超越中消失。"""
+    o = TrafficObserver(P, CAL)
+    cars = {1: [(7, P.presumed_cy_px + 40, 1.3, 10)],
+            2: [(7, P.presumed_cy_px + 30, 1.3, -25)],
+            3: [(7, P.presumed_cy_px + 20, 1.3, -30)],
+            4: []}
+    _, evs = _drive(o, cars)
+    assert [e.outcome for e in evs] == [OUTCOME_LOST]
+
+
+def test_lost_when_dies_beyond_adjacent_band():
+    """横向超出邻道界（|x_lane|>presumed_lane_max）：不判推定超越。"""
+    o = TrafficObserver(P, CAL)
+    cars = {1: [(7, P.presumed_cy_px + 30, 3.0, 20)],
+            2: [(7, P.presumed_cy_px + 40, 3.0, 15)],
+            3: [(7, P.presumed_cy_px + 50, 3.0, 12)],
+            4: []}
+    _, evs = _drive(o, cars)
+    assert [e.outcome for e in evs] == [OUTCOME_LOST]
 
 
 # ---------- 自卫与契约 ----------

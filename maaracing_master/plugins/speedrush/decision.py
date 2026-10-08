@@ -52,7 +52,7 @@ from maaracing_master.plugins.speedrush.depth_geo import DrivableGrid
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.traffic import (
-    OUTCOME_PASS, CarView, PassEvent)
+    OUTCOME_PASS, OUTCOME_PRESUMED_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionOutput, DecisionState, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import (
@@ -665,12 +665,16 @@ class DecisionEngine:
         v = self._car_target_of(obs, self._target_gid)
         if v is None:
             ev = next((e for e in self._events if e.track_id == self._target_gid), None)
-            if ev is not None and ev.outcome == OUTCOME_PASS:
+            if ev is not None and ev.outcome in (OUTCOME_PASS,
+                                                 OUTCOME_PRESUMED_PASS):
                 self._done_pass_ids.add(ev.track_id)
                 # reanchor=None：超车完成拍没有"目标读数"可锚（车已出画）——
                 # executed_lane 走路中心连续重锚（step 2.5），不吃事件锚
+                # presumed_pass 与 pass 同路径结算；trace reason 分开记，账本不混
+                reason = ("overtake_pass" if ev.outcome == OUTCOME_PASS
+                          else "overtake_pass_presumed")
                 return self._finish_change(
-                    "overtake_pass", cool_s=self.cfg.overtake.t_cool_pass_s)
+                    reason, cool_s=self.cfg.overtake.t_cool_pass_s)
             self._enter_abort("target_lost")
             return "cancel:overtake_lost"
         if self._target_kind == KIND_CAND_BONUS and v.cy >= self.cal.v_ego:

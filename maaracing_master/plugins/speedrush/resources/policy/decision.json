@@ -19,6 +19,7 @@
     "planner.hold_deadband_lane|hold_stick_max": "[需实测] 维护性转向权限（16:44 局：路中心定心全权 PD——保持态误差动辄 ±1.5 车道（k_p0.7 下 >1.43 即满舵），257/267 饱和拍在 CRUISE-hold/CONSERVE、满左满右交替 2-3s 绕桩、速度起不来；⑥b β 注入还绕过 v_lat_max（|v|→11.4 物理上限 2.5），阻尼项满反打喂给极限环）：死区 0.5 车道内不发力、维护杆幅 ≤0.45；CHANGE 机动保留全权。v_lat 饱和已收进 ⑥b",
     "traffic.exit_margin_px": "[需实测 C5] 下带消失判据的余量（起值 80px）：last cy ≥ v_ego−此值 判\"从车尾侧出画\"；回放定档（阶段 C 设计稿 §三）",
     "traffic.min_obs_ticks|ghost_max_age_ticks|ghost_rel_eps": "[需实测 C5] 闪现噪声自卫（3 次）；鬼影=超龄(200 拍≈10s，雨测 191 帧案)+低速(<1px/tick)的底边消失",
+    "traffic.presumed_cy_px|presumed_lane_max": "[2026-10-08 取证预演定档] 推定超越判据：真检 cy≥430（绝对画面纵坐标，真检数据缺口 404~431 之间取中）且 |x_lane|≤2.5 且 rel>0（消失方向指向下缘）→ presumed_pass。动机=检测下界≈575 高于 636 判据线（下带是检测死区），51/51 pass 均为遮挡外推跨线、慢速超越系统性记 lost；预演 26 lost 晋升 16、远车 10 零泄漏、pass 组 51/51 自洽（probe_lost_vanish，设计稿 §4A）",
     "overtake.value_base|value_limit": "游戏事实镜像（RULES §4.11：单次超车 30 / 极限动作 120）；RULES 变更时人工同步",
     "overtake.p_center_lane|p_scale_lane": "[需实测 C4] P_limit logistic 两点锚（0.65/0.81，RULES §4.2 实测组）起值中心 0.73 尺度 0.06；banner×pass 离线配对回放定档",
     "overtake.d_hold_lane": "[需实测 C4] 贴邻保持窗中心（窗 [0.55,0.70] 中点）；**窗下沿=硬地板语义见设计稿 §〇.1，代价重则整窗右移**",
@@ -98,6 +99,8 @@
   },
   "traffic": {
     "exit_margin_px": 80.0,
+    "presumed_cy_px": 430.0,
+    "presumed_lane_max": 2.5,
     "min_obs_ticks": 3,
     "ghost_max_age_ticks": 200,
     "ghost_rel_eps": 1.0,
