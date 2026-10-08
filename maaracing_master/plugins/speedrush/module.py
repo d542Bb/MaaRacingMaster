@@ -600,23 +600,37 @@ class SpeedRushModule(ActivityModule):
                 prev_sleep = 0.0
                 while self._running and time.monotonic() < deadline:
                     t0 = time.perf_counter()
+                    pace_ms: tuple | None = None
                     if prev_t0 is not None:
-                        self._pace_body.append(prev_body * 1000.0)
-                        self._pace_sleep.append(prev_sleep * 1000.0)
-                        self._pace_wake.append(
-                            max(0.0, (t0 - prev_t0 - prev_body - prev_sleep) * 1000.0))
+                        body_ms = prev_body * 1000.0
+                        sleep_ms = prev_sleep * 1000.0
+                        # 环拍三列（ms）随行进 trace：dt 是帧时戳间隔、三列是
+                        # 环迭代墙钟——同拍同区间对照，dt 三模态 33/50/66 的
+                        # 逐拍归因面（帧供数节律 vs 环体超预算 vs 睡醒空隙）
+                        pace_ms = (body_ms, sleep_ms,
+                                   max(0.0, (t0 - prev_t0 - prev_body
+                                             - prev_sleep) * 1000.0))
+                        self._pace_body.append(pace_ms[0])
+                        self._pace_sleep.append(pace_ms[1])
+                        self._pace_wake.append(pace_ms[2])
                     prev_t0 = t0
                     # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
                     # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
                     frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
+                    t_pick = time.perf_counter()
                     if recorder is not None and frame is not None:
                         recorder.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
+                        t_rec: float | None = time.perf_counter()
+                    else:
+                        t_rec = None
                     result: PerceptionResult | None = None
+                    t_det: float | None = None
                     if not straight and (self._perception_mode or control) \
                             and frame is not None:
                         perc = self._ensure_perception()
                         if perc is not None:
                             result = perc.detect(frame, frame_id=fid, ts_ns=ts_ns)
+                            t_det = time.perf_counter()
                             self._last_perception = result
                             self._infer_times.append(result.infer_ms)
                             self._wait_times.append(result.wait_ms)
@@ -627,8 +641,14 @@ class SpeedRushModule(ActivityModule):
                                                 straight_chain["trace"],
                                                 straight_throttle)
                         elif result is not None:
+                            # cap 段内段原料：拍内时间戳链（拾取/录制/检测），
+                            # 掩码段与拷贝段在 _control_tick/push 内补齐——
+                            # 同钟伸缩 Σ内段 ≡ cap（见 depth_geo._timing_segments）
                             self._control_tick(
-                                chain, gpad, frame, result, fid, ts_ns, age_ms, phase)
+                                chain, gpad, frame, result, fid, ts_ns, age_ms,
+                                phase, pace_ms=pace_ms,
+                                cap_ts={"pick": t_pick, "rec": t_rec,
+                                        "det": t_det})
                     frames += 1
 
                     now = time.monotonic()
@@ -723,7 +743,9 @@ class SpeedRushModule(ActivityModule):
                 "t_start": time.time()}
 
     def _control_tick(self, chain: dict, gpad, frame, result: PerceptionResult,
-                      fid: int, ts_ns: int, age_ms: float, phase: int) -> None:
+                      fid: int, ts_ns: int, age_ms: float, phase: int,
+                      pace_ms: tuple | None = None,
+                      cap_ts: dict | None = None) -> None:
         """一拍全链：感知→跟踪→聚合→边界→车流派生→决策→规划→下发。
 
         链上任一异常（如 frame_id 真乱序 fail-loud）按"停控保平安"处理：记一次
@@ -754,10 +776,16 @@ class SpeedRushModule(ActivityModule):
                 # 主线程每拍新建、不改旧对象，跨线程无竞争。
                 snap = chain["ego_road"].last
                 last = self._control_last or {}
+                # 掩码段终点戳：检测段（det）之后 tick 前奏+掩码构建到此为止，
+                # push 锁内拷贝+入队为终点段（cap_copy），见 depth_geo._timing_segments
+                mask = _yolo_object_mask(result)
+                boxes = _yolo_car_boxes(result)
+                if cap_ts is not None:
+                    cap_ts = dict(cap_ts, mask=time.perf_counter())
                 chain["depth_geo"].push(
-                    frame, object_mask=_yolo_object_mask(result),
+                    frame, object_mask=mask,
                     frame_ts_ns=ts_ns,
-                    detections=_yolo_car_boxes(result), fid=fid,
+                    detections=boxes, fid=fid, cap_pre=cap_ts,
                     note={"fid": last.get("frame_id"), "state": last.get("state"),
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
@@ -847,6 +875,11 @@ class SpeedRushModule(ActivityModule):
                 best = (s.score, g.x_center)
         chain["trace"].append({
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
+            # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
+            # 三模态 33/50/66 的逐拍归因面；首拍无上区间为 None
+            "pace_body": None if pace_ms is None else round(pace_ms[0], 1),
+            "pace_sleep": None if pace_ms is None else round(pace_ms[1], 1),
+            "pace_wake": None if pace_ms is None else round(pace_ms[2], 1),
             "state": out.state.value, "reason": out.reason,
             "x_target": out.x_target, "target_id": out.target_id,
             "target_kind": chain["engine"].target_kind,
@@ -918,7 +951,9 @@ class SpeedRushModule(ActivityModule):
             else round(chain["depth_geo"].last_age_ms, 1),
             "dgeo_new": dgeo is not None and dgeo_new,
             # dgeo_seg=新证据拍端到端分段（ms dict|None）：cap=采集回调→入队
-            # （age 起点之外、此前不可见的段）、queue=入队→worker 开工、
+            # （age 起点之外、此前不可见的段；内段 cap_pick/rec/det/mask/copy_ms
+            # =拾取/录制/检测/掩码/入队拷贝，同钟伸缩 Σ内段≡cap，2026-10-08
+            # 性能第二批插桩）、queue=入队→worker 开工、
             # pub=发布→本拍消费，与 dgeo_ms 相加≈age；stages=MoGe 四段快照。
             # 仅新证据拍记录（驻留复用拍重复无信息），见 _timing_segments
             "dgeo_seg": None if not (dgeo is not None and dgeo_new)

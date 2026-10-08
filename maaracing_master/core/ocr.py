@@ -57,9 +57,14 @@ USE_DET = False
 # （每 ROI 多 1 次方向分类推理；关闭后 18 ROI 每帧省 30~50ms）。保留开关便于回滚。
 USE_CLS = False
 
-# onnxruntime 推理线程数。实测 CPU 多核并行对 rec 小模型无收益反而变慢
-# （default 用满 12 核 → 9-ROI 一轮 ~515ms；intra_op=4 → ~105ms）。固定合理值护系统稳定。
-OCR_INTRA_OP_THREADS = 4
+# onnxruntime 推理线程数。档位重标定（2026-10-08，真实 HUD ROI × 产线预处理链
+# 受控复现，2Hz 节奏 30 轮）：一轮墙钟 P50 = 229 / 132 / 86ms（intra=1/2/4），
+# 全程平均核数 = 0.38 / 1.28 / 3.12——多档收益差全部来自 ORT 线程池在两次识别
+# 之间的自旋（识别期真工作量三档同为 ~0.4 核级）。HUD 2Hz 预算 500ms，取
+# intra=1：轮时长 229ms 落在产线预期区间（0.1~0.3s，见 hud.py 代价注释），
+# 释放 ~2.7 核给深度/感知。旧注（default 12 核 9-ROI 515ms / intra=4 105ms）
+# 为早期口径，已被本轮真 ROI 数据取代。
+OCR_INTRA_OP_THREADS = 1
 OCR_INTER_OP_THREADS = 1
 
 # --------- CPU 亲和性（本机混合架构优化） ---------

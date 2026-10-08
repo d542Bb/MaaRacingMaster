@@ -537,6 +537,102 @@ def test_async_stale_gate_drops():
         a.stop()
 
 
+def test_async_stale_at_start_counted():
+    """开工即超龄的启动记 stale_starts（浪费算力账）：行为不变（observe 仍
+    执行），只记账——为 value-driven 调度攒「哪些计算不该启动」的判据。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub, max_age_ms=0.001)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: a.health()["stale_starts"] >= 1), \
+            "开工时帧龄已超 age 闸的启动应计入 stale_starts"
+        assert stub.calls == 1, "stale 账不改行为：observe 仍应执行"
+    finally:
+        a.stop()
+
+
+def test_async_cap_pre_segments_telescope():
+    """cap 内段拆解（性能第二批）：push 携带拍内时间戳链（拾取→录制→检测
+    →掩码，perf_counter 秒、与 frame_ts_ns 同钟）→ last_segments 展开
+    cap_* 五段；同钟同线程严格伸缩，Σ内段 ≡ cap_ms。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        now = _time.perf_counter()
+        a.push(_frame(), frame_ts_ns=int((now - 0.040) * 1e9),
+               cap_pre={"pick": now - 0.030, "rec": now - 0.028,
+                        "det": now - 0.015, "mask": now - 0.001})
+        r = None
+        for _ in range(200):
+            r, _, new = a.take()
+            if r is not None:
+                break
+            _time.sleep(0.005)
+        assert r is not None
+        seg = a.last_segments
+        assert seg["cap_ms"] == pytest.approx(40.0, abs=3.0)
+        assert seg["cap_pick_ms"] == pytest.approx(10.0, abs=1.0)
+        assert seg["cap_rec_ms"] == pytest.approx(2.0, abs=1.0)
+        assert seg["cap_det_ms"] == pytest.approx(13.0, abs=1.0)
+        assert seg["cap_mask_ms"] == pytest.approx(14.0, abs=1.0)
+        assert seg["cap_copy_ms"] == pytest.approx(1.0, abs=3.0)
+        total = sum(seg[k] for k in ("cap_pick_ms", "cap_rec_ms",
+                                     "cap_det_ms", "cap_mask_ms",
+                                     "cap_copy_ms"))
+        assert total == pytest.approx(seg["cap_ms"], abs=1.0)
+        # worker 封包的启动分账随段走到消费面（trace dgeo_seg.reason 的供数源）
+        assert seg["reason"] in ("interval_due", "stale_at_start")
+    finally:
+        a.stop()
+
+
+def test_async_cap_pre_partial_and_legacy_shape():
+    """cap_pre 缺环（录制关闭→rec=None）：相邻在环段照算、缺环段不出现；
+    不传 cap_pre 保持旧三段形态（cap/queue/pub），无 cap_* 内段。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        now = _time.perf_counter()
+        a.push(_frame(), frame_ts_ns=int((now - 0.020) * 1e9),
+               cap_pre={"pick": now - 0.010, "rec": None, "det": now - 0.005})
+        r = None
+        for _ in range(200):
+            r, _, new = a.take()
+            if r is not None:
+                break
+            _time.sleep(0.005)
+        assert r is not None
+        seg = a.last_segments
+        assert seg["cap_pick_ms"] == pytest.approx(10.0, abs=1.0)
+        assert "cap_rec_ms" not in seg
+        assert seg["cap_det_ms"] == pytest.approx(5.0, abs=1.0)
+        assert "cap_mask_ms" not in seg
+        assert "cap_copy_ms" in seg
+    finally:
+        a.stop()
+
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        a.push(_frame(), frame_ts_ns=int(_time.perf_counter() * 1e9))
+        r = None
+        for _ in range(200):
+            r, _, new = a.take()
+            if r is not None:
+                break
+            _time.sleep(0.005)
+        assert r is not None
+        seg = a.last_segments
+        assert "cap_ms" in seg and "queue_ms" in seg
+        assert not [k for k in seg if k.startswith("cap_") and k != "cap_ms"]
+    finally:
+        a.stop()
+
+
 def test_async_worker_exception_survives():
     """单帧异常计 failures 不杀 daemon：下一帧照常出结果。"""
     stub = _StubObserver([RuntimeError("boom"), _mk_reading()])

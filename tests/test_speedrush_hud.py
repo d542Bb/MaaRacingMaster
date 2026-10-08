@@ -583,6 +583,10 @@ class _Clock:
     def monotonic(self) -> float:
         return self.t
 
+    def perf_counter(self) -> float:
+        # pacing 全线 perf_counter（2026-10-06）后驱动环也读细钟——委托受控值
+        return self.t
+
 
 class _FakeLifecycle:
     def __init__(self, clock: _Clock) -> None:

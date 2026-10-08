@@ -67,7 +67,9 @@ def test_core_ocr_engine_params_locked():
     这些数值的实测依据在 core/ocr.py 的常量注释里，不在本文重复；本文只做机检。
     """
     assert (core_ocr.USE_DET, core_ocr.USE_CLS) == (False, False)
-    assert (core_ocr.OCR_INTRA_OP_THREADS, core_ocr.OCR_INTER_OP_THREADS) == (4, 1)
+    # intra=1：真 HUD ROI×产线预处理链重标定（2026-10-08，一轮 229/132/86ms
+    # × 全程 0.38/1.28/3.12 核 @ intra 1/2/4，多档收益差全部来自线程池自旋）
+    assert (core_ocr.OCR_INTRA_OP_THREADS, core_ocr.OCR_INTER_OP_THREADS) == (1, 1)
     assert core_ocr.PIN_P_CORE_AFFINITY == list(range(8))
     assert (core_ocr.TARGET_ROI_HEIGHT, core_ocr.UPSCALE_MAX,
             core_ocr.UPSCALE_HQ_THRESHOLD, core_ocr.CONTRAST_GAMMA) == (96, 6.0, 3.0, 1.15)

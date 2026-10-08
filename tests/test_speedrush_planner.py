@@ -498,6 +498,63 @@ def test_hold_authority_deadband_and_cap():
     assert c.steer_x > int(P.hold_stick_max * _STICK_FULL) + 100
 
 
+# ---------- ⑥b 速度修正时间基（2026-10-08 判据冻结，台账 §4A） ----------
+
+def test_beta_denominator_is_evidence_interval():
+    """稀疏新证据（驻留协议产线节奏 ~200ms 一套）：β 注入分母=自上次速度
+    修正以来模型跑过的累计帧钟（Δt_e），不是控制拍 dt——r 的速度承载项是
+    (u−v)·Δt_e，按拍间隔归账曾放大 4~6×（v_lat_est ±1 道/s 拍级振荡的
+    机制根因）。复用拍只收位置、不重置累计器。"""
+    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
+                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    for i in range(2, 6):          # 4 个复用拍：位置修正照跑、速度不修正
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
+                  road_offset=0.0, road_offset_new=False)
+    assert pl.state.v_lat_est == 0.0
+    pl.update(_out(x_target=0.0, fid=6, valid=6), DT, 6, road_offset=0.5)
+    # T_e = 5·DT（锚形成后 5 拍无速度修正）：β·0.5/0.25 = 0.4
+    # （旧口径 β·0.5/0.05 = 2.0——本断言在旧代码下红）
+    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.5 / (5 * DT))
+
+
+def test_beta_accumulator_survives_reuse_ticks():
+    """复用拍位置修正（α·r 照跑）不重置速度修正累计器——速度承载项按完整
+    新证据间隔归账；逐拍新证据的锚点值不变（T_e=dt，旧数学逐位保留）。"""
+    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
+                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.4)
+    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / DT)  # T_e=DT
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
+              road_offset=0.4, road_offset_new=False)                  # 复用拍
+    # 注入干净基线（本文件既有手法）隔离单变量：复用拍之后新证据的 T_e
+    # 须含复用拍——否则说明复用错误地清了累计器
+    pl.state.executed_lane = 0.0
+    pl.state.v_lat_est = 0.0
+    pl.update(_out(x_target=0.0, fid=4, valid=4), DT, 4, road_offset=0.4)
+    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / (2 * DT))
+
+
+def test_beta_accumulator_resets_on_reanchor():
+    """重锚（v:=0）清零累计器：重锚同拍来新证据按单拍归账（T_e=dt，
+    判据冻结的边界语义）；黑视期累计器继续走（模型在无修正地跑）。"""
+    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
+                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.update(_out(x_target=0.0, fid=2, valid=2, reanchor=0.0), DT, 2,
+              road_offset=0.4)
+    assert pl.state.v_lat_est == 0.0                       # 重锚拍 v 清零
+    # 黑视 2 拍（ro=None）→ 新证据：T_e = 3·DT
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3)
+    pl.update(_out(x_target=0.0, fid=4, valid=4), DT, 4)
+    pl.update(_out(x_target=0.0, fid=5, valid=5), DT, 5, road_offset=0.4)
+    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / (3 * DT))
+
+
 def test_obs_velocity_injection_respects_cap():
     """⑥b β 注入在 v_lat_max 饱和内（16:44 局 |v_lat| 冲到 11.4 ≫ 2.5，
     阻尼项 −k_d·v 随即满反打喂给极限环）。"""
@@ -527,23 +584,27 @@ def test_velocity_correction_only_on_fresh_reading():
     旧读数不得反复当速度新证据（重复记账曾把 2026-10-06 局 id17 的 0.36 道
     找边翻跳 3 拍内放大成 v_lat 饱和 ±2.5，lat_veto 被假侧滑触发）。
 
-    锚定后喂一次 +0.4 道新鲜跳变（一次踢足 β·r/dt≈1.6），随后 3 拍同值复用：
-    fresh_only 序列 |v_lat| 只准衰减；对照旧行为（复用拍 road_offset_new=True
-    直喂）同一新息被重复注入、|v_lat| 反超新鲜拍峰值=放大现象。"""
+    锚定后喂一次 +0.2 道新鲜跳变（一次踢足 β·r/dt≈2.0，v_lat_max=2.5 真轨
+    之内）。控制律摘除（a_lat_gain=0、无自回正）只留 ⑥b 动力学——否则 PD
+    会在小跳变下把放大现象压没；随后 3 拍同值复用：fresh_only 序列 |v_lat|
+    只准不增（无重复注入）；对照旧行为（复用拍 road_offset_new=True 直喂）
+    同一新息被重复注入、|v_lat| 反超新鲜拍峰值=放大现象（id17 机理）。"""
     def run(new_on_reuse):
-        pl = _planner()
+        pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
+                      lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                      rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
         pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)   # 锚=0（道0=路心）
-        pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.4,
+        pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.2,
                   road_offset_new=True)                            # 新鲜跳变
         vs = [pl.state.v_lat_est]
         for i in range(3):                                         # 驻留复用 3 拍
             pl.update(_out(fid=3 + i, valid=3 + i), DT, 3 + i,
-                      road_offset=0.4, road_offset_new=new_on_reuse)
+                      road_offset=0.2, road_offset_new=new_on_reuse)
             vs.append(pl.state.v_lat_est)
         return vs
 
     fresh_only = run(False)
-    assert abs(fresh_only[0]) > 1.2            # 新鲜拍一次踢足（β·r/dt=1.6）
+    assert abs(fresh_only[0]) > 1.5            # 新鲜拍一次踢足（β·r/dt=2.0）
     assert all(abs(fresh_only[k + 1]) <= abs(fresh_only[k]) + 1e-9
                for k in range(3))              # 复用拍：只衰减，无重复注入
     old = run(True)

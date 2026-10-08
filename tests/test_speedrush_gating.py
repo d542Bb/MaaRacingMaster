@@ -31,12 +31,19 @@ pytestmark = pytest.mark.skipif(not _OK, reason=f"需要完整运行时依赖：
 
 
 class _Clock:
-    """受控单调时钟：sleep 推进它，使超时判据在测试中可控且瞬时。"""
+    """受控单调时钟：sleep 推进它，使超时判据在测试中可控且瞬时。
+
+    perf_counter 委托受控值（2026-10-06 起 pacing 全线改细钟，驱动环环拍
+    记账与 rest 计算也读 perf_counter——假钟必须同名供给，否则驱动环
+    AttributeError；两钟同值保持确定性）。"""
 
     def __init__(self) -> None:
         self.t = 0.0
 
     def monotonic(self) -> float:
+        return self.t
+
+    def perf_counter(self) -> float:
         return self.t
 
 
@@ -253,7 +260,8 @@ def test_drive_loop_with_perception_mode_runs(env) -> None:
 
     def _detect(frame, frame_id=0, ts_ns=0):
         calls.append(frame_id)
-        return SimpleNamespace(infer_ms=1.0)
+        # wait_ms/run_ms：等锁/run 分段记账列（2026-10-06 起）同样进节拍报告
+        return SimpleNamespace(infer_ms=1.0, wait_ms=0.0, run_ms=1.0)
 
     mod._perception_mode = True
     mod._perception = SimpleNamespace(detect=_detect)
@@ -263,6 +271,7 @@ def test_drive_loop_with_perception_mode_runs(env) -> None:
     assert len(calls) >= 3  # 有帧的每个 tick 都应推理一次
     assert mod._last_perception is not None
     assert mod._infer_times  # 感知耗时进了节拍报告的记账
+    assert mod._wait_times and mod._run_times
 
 
 # ---------- 录制接入 ----------

@@ -73,6 +73,9 @@ class LateralPlanner:
         self._conserve_hold: float | None = None  # CONSERVE 入拍冻结的车道位（③）
         self._road_anchor: float | None = None   # 路观测参考帧懒定（⑥b）
         self._stale_t = 0.0                      # 距上次被接受修正的累计秒（⑥b 陈旧重基）
+        # 自上次速度修正（或滤波重置）以来模型积分跑过的帧钟累计——⑥b 速度
+        # 修正的时间基（2026-10-08 判据冻结，台账 §4A）
+        self._t_vcorr = 0.0
 
     # ---------- 主入口 ----------
 
@@ -100,6 +103,9 @@ class LateralPlanner:
                 or (road_offset is not None and not math.isfinite(road_offset)):
             raise ValueError(f"decision 携带非有限值：x_target={decision.x_target!r} "
                              f"reanchor={decision.reanchor_lane!r} road={road_offset!r}")
+        # 速度修正时间基累计：本拍模型又跑过 dt_s（帧钟）。修正在 ⑥b（⑥ 之后）
+        # 消费，重锚/形成/重基各自清零——见 ⑥b 注
+        self._t_vcorr += dt_s
 
         # ① 重锚先于控制（设计稿 §二：锚点与指令同拍生效，不留旧状态发指令的窗口）
         #    事件重锚同时重置路观测参考（帧变了：executed 被覆写，路中心锚须重新懒定）
@@ -107,6 +113,7 @@ class LateralPlanner:
             self.state.executed_lane = decision.reanchor_lane
             self.state.v_lat_est = 0.0
             self._road_anchor = None
+            self._t_vcorr = 0.0               # v 已清零，速度基线重新起算
 
         # ② 过期判定（valid_until_fid 含边界；第 4 个连续过期拍起按 CONSERVE）
         fresh = current_fid <= decision.valid_until_fid
@@ -189,6 +196,7 @@ class LateralPlanner:
                 if abs(road_offset) <= self.p.anchor_max_off:
                     self._road_anchor = 0.0          # 道0=路中心（中轴巡航）
                     self._stale_t = 0.0
+                    self._t_vcorr = 0.0              # 滤波（重）初始化：速度基线起算
                 else:
                     # 形成门饿死也要重基（13:29 局开局：车在左缘 ro=−2.9，形成门
                     # 拒定锚 7s、hold:0=杆恒 0 蹭墙）——超 stale 预算说明"中带观测"
@@ -199,6 +207,7 @@ class LateralPlanner:
                         self.state.v_lat_est = 0.0
                         self._road_anchor = 0.0
                         self._stale_t = 0.0
+                        self._t_vcorr = 0.0
             else:
                 obs = road_offset - self._road_anchor
                 r = obs - self.state.executed_lane
@@ -208,13 +217,19 @@ class LateralPlanner:
                     # 复用拍对同一新息重复注入曾把 0.36 道的找边翻跳 3 拍内放大
                     # 成 v_lat 饱和 ±2.5（2026-10-06 局 id17：实拍数据+产线增益
                     # 手算复现）——复用拍只收位置，速度修正留给下一套新读数。
+                    # 时间基（2026-10-08 判据冻结）：r 的速度承载项=模型速度误差
+                    # ×新证据间隔（obs 差携带真位移 u·Δt_e、模型同期走 v·Δt_e），
+                    # 分母=自上次速度修正以来模型实际跑过的帧钟累计 T_e——驻留
+                    # 协议下新证据 ~200ms 一套，旧口径按控制拍 33~66ms 归账放大
+                    # 4~6×（v_lat_est ±1 道/s 拍级振荡根因）。逐拍新证据（测试/
+                    # 合成模式）T_e=dt，数学与旧口径逐位一致。β 注入仍在
+                    # v_lat_max 饱和内（16:44 局红线）。
                     if road_offset_new:
-                        # β 注入也在 v_lat_max 饱和内（16:44 局 |v_lat| 冲到 11.4 ≫
-                        # 物理上限 2.5：⑥ 的饱和在 ⑥b 之前，大新息直注绕过了它，
-                        # 阻尼项 −k_d·v 随即满反打喂给极限环）
+                        t_e = max(self._t_vcorr, dt_s)
                         self.state.v_lat_est = max(
                             -self.p.v_lat_max, min(self.p.v_lat_max,
-                            self.state.v_lat_est + self.p.obs_beta * r / dt_s))
+                            self.state.v_lat_est + self.p.obs_beta * r / t_e))
+                        self._t_vcorr = 0.0
                     self._stale_t = 0.0
                 else:
                     self._stale_t += dt_s
@@ -227,6 +242,7 @@ class LateralPlanner:
                         self.state.v_lat_est = 0.0
                         self._road_anchor = 0.0
                         self._stale_t = 0.0
+                        self._t_vcorr = 0.0
         elif self._road_anchor is not None:
             # 断供计时：黑视本身=漂移温床，超预算则帧作废（下个中带观测重形成）
             self._stale_t += dt_s

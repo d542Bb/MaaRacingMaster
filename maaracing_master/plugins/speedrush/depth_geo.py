@@ -287,15 +287,32 @@ LAST_STAGE_MS: dict[str, float] = {}
 
 
 def _timing_segments(frame_ts_ns: int | None, t_push: float, t_start: float,
-                     t_pub: float, t_consume: float) -> dict:
+                     t_pub: float, t_consume: float,
+                     cap_pre: dict | None = None) -> dict:
     """一帧深读数的端到端分段（ms）。与 reading.latency_ms（observe 本体）
     相加≈age；cap 段在 age 之外——age 从入队起算，采集回调→入队此前不可见
     （2026-10-06 分段计时定案：两端同 perf_counter 钟，WGC 回调打
-    perf_counter_ns）。负值夹紧 0：跨线程时钟微抖不产生假负段。"""
+    perf_counter_ns）。负值夹紧 0：跨线程时钟微抖不产生假负段。
+
+    cap_pre：拍内时间戳链（perf_counter 秒、按拍内先后有序；拾取 pick/
+    录制 rec/检测 det/掩码 mask，缺环节点传 None）。在链上逐段伸缩相减
+    得 cap 内段（cap_pick/rec/det/mask_ms），终点段 cap_copy_ms=入队时刻
+    −最后一戳（push 锁内拷贝+入队）。同钟同线程 ⇒ Σ内段 ≡ cap_ms
+    （性能第二批实机拆解：cap 26ms 归因到段）。"""
     seg = {"queue_ms": max(0.0, (t_start - t_push) * 1000.0),
            "pub_ms": max(0.0, (t_consume - t_pub) * 1000.0)}
     if frame_ts_ns:
         seg["cap_ms"] = max(0.0, (t_push * 1e9 - frame_ts_ns) / 1e6)
+    if cap_pre:
+        prev_t = frame_ts_ns / 1e9 if frame_ts_ns else None
+        for k, t in cap_pre.items():
+            if t is None:
+                continue
+            if prev_t is not None:
+                seg[f"cap_{k}_ms"] = max(0.0, (t - prev_t) * 1000.0)
+            prev_t = t
+        if prev_t is not None:
+            seg["cap_copy_ms"] = max(0.0, (t_push - prev_t) * 1000.0)
     return seg
 
 
@@ -1219,6 +1236,8 @@ class AsyncDepthRoadObserver:
                                     # 与 _stale_drops 的差 = 先用后超龄的复用拍数
         self._failures = 0
         self._busy_skips = 0
+        self._stale_starts = 0   # 开工即超龄的启动数（浪费算力账：observe 仍
+                                 # 执行，只记账——value-driven 判据的原始数据）
         self._last_infer = float("-inf")   # 同上：进程早期不得被节流窗拦下首拍
         self._age_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
         self._dur_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
@@ -1257,22 +1276,26 @@ class AsyncDepthRoadObserver:
              note: dict | None = None,
              frame_ts_ns: int | None = None,
              detections: tuple | None = None,
-             fid: int | None = None) -> None:
+             fid: int | None = None,
+             cap_pre: dict | None = None) -> None:
         """object_mask：本帧 YOLO 检测框掩码（与帧同源同拍，见 observe 注）。
         note：消费端上一拍决策快照（只读小 dict，主线程每拍新建）——随帧进
         调试图决策带，供人工核对。frame_ts_ns：本帧到达采集回调的时刻
         （perf_counter_ns，frame_with_age 同源）——分段计时 cap 段的起点；
         不传则分段缺 cap（仍记 queue/pub）。detections/fid：混合测距锚点
         清单供数（(det_idx,x0,y0,x1,y1) 原始车框序列 + 帧号；刀一只收车框）。
-        无 worker（session 缺失/start 未调）时直接空转：不拷帧、不计数——阶段
-        出口的"零结果"报警以 pushed>0 为前提，计数了就会误报。"""
+        cap_pre：拍内时间戳链（perf_counter 秒，与 frame_ts_ns 同钟；键有序
+        pick/rec/det/mask，缺环节点值 None）——cap 段内段拆解的原料，见
+        _timing_segments。无 worker（session 缺失/start 未调）时直接空转：
+        不拷帧、不计数——阶段出口的"零结果"报警以 pushed>0 为前提，计数了
+        就会误报。"""
         if self._thread is None:
             return
         with self._lock:
             self._pushed += 1
             self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter(),
                              None if object_mask is None else object_mask.copy(),
-                             note, frame_ts_ns, detections, fid)
+                             note, frame_ts_ns, detections, fid, cap_pre)
         self._wakeup.set()
 
     def take(self) -> tuple[DepthRoadReading | None, DrivableGrid | None, bool]:
@@ -1309,8 +1332,10 @@ class AsyncDepthRoadObserver:
             if tg is not None:
                 seg = _timing_segments(tg.get("cap_ns"), captured_ts,
                                        tg["t_start"], tg["t_pub"],
-                                       time.perf_counter())
+                                       time.perf_counter(),
+                                       cap_pre=tg.get("cap_pre"))
                 seg["stages"] = tg.get("stages")
+                seg["reason"] = tg.get("reason")   # 分账面随段走（worker 封包→消费面）
                 self.last_segments = seg
         if age_ms > self._max_age_ms:
             with self._lock:   # seq 比对防误删 worker 刚发布的新结果
@@ -1328,9 +1353,10 @@ class AsyncDepthRoadObserver:
 
     def health(self) -> dict:
         with self._lock:
-            pushed, applied, stale, stale_new, failures, busy = (
+            pushed, applied, stale, stale_new, failures, busy, stale_starts = (
                 self._pushed, self._applied, self._stale_drops,
-                self._stale_new_drops, self._failures, self._busy_skips)
+                self._stale_new_drops, self._failures, self._busy_skips,
+                self._stale_starts)
         ages, durs = list(self._age_win), list(self._dur_win)
 
         def _p(xs: list[float], q: float) -> float:
@@ -1343,6 +1369,7 @@ class AsyncDepthRoadObserver:
 
         return {"pushed": pushed, "applied": applied, "stale_drops": stale,
                 "stale_new_drops": stale_new,
+                "stale_starts": stale_starts,
                 "failures": failures, "busy_skips": busy,
                 "age_p50": _p(ages, 0.5), "age_p95": _p(ages, 0.95),
                 "dur_p50": _p(durs, 0.5), "dur_p95": _p(durs, 0.95),
@@ -1424,6 +1451,10 @@ class AsyncDepthRoadObserver:
             # 开工即起算节流窗：Busy/异常路径也吃窗（自然退避——感知持锁期间
             # 不再每拍白付一次 preprocess 重试；代价是锁释放瞬间不再立刻补拍）
             t_start = self._last_infer = time.perf_counter()
+            stale_at_start = (t_start - item[2]) * 1000.0 > self._max_age_ms
+            if stale_at_start:
+                with self._lock:
+                    self._stale_starts += 1
             try:
                 reading, evid = self._obs.observe_debug(
                     item[1], object_mask=item[3], detections=item[6],
@@ -1442,7 +1473,10 @@ class AsyncDepthRoadObserver:
             # 消费时刻由 take() 补——pub 段终点在控制拍）。LAST_STAGE_MS 快照
             # 属本帧（worker 串行，此刻字典内容即本帧 observe 的四段）
             timing = {"t_start": t_start, "t_pub": time.perf_counter(),
-                      "stages": dict(LAST_STAGE_MS), "cap_ns": item[5]}
+                      "stages": dict(LAST_STAGE_MS), "cap_ns": item[5],
+                      "cap_pre": item[8] if len(item) > 8 else None,
+                      "reason": "stale_at_start" if stale_at_start
+                      else "interval_due"}
             with self._lock:
                 # (push 序号, 读数, 可行驶栅格, captured_ts, 计时包, 锚点清单)
                 # ——栅格与读数同帧同拍（observe_debug 内共享平面拟合产出），
