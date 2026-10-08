@@ -32,7 +32,10 @@ trace 重建的两个关键事实：
 """
 from __future__ import annotations
 
+import glob
 import json
+import os
+import statistics
 import sys
 from pathlib import Path
 
@@ -202,13 +205,80 @@ def main() -> None:
     if not any_hit:
         print("  （无——lost 目标消失后 0.6s 内均无异 id 邻位重现）")
 
-    # pass 对照：终拍 cy 分布（口径自洽检验）
+    # pass 对照：终拍 cy 分布 + 真越线/幽灵越线拆分
     pw = [p for p in plans if p["outcome"] == "pass"]
     if pw:
         lows = [p for p in pw if p["fin_cy"] < bottom_thr]
         cys = sorted(p["fin_cy"] for p in pw)
         print(f"\n[pass 对照] n={len(pw)}  终拍 cy p50={cys[len(cys)//2]:.0f} "
               f"min={cys[0]:.0f}  低于 {bottom_thr:.0f} 的 {len(lows)} 个")
+        real = [p for p in pw if p["true_cy"] is not None and p["true_cy"] >= bottom_thr]
+        ghost = [p for p in pw if p["true_cy"] is not None and p["true_cy"] < bottom_thr]
+        print(f"  真实检测越线（真检 cy≥{bottom_thr:.0f}）: {len(real)}"
+              f"  幽灵 coast 越线（真检 cy<{bottom_thr:.0f}）: {len(ghost)}"
+              f"  → pass 的 {len(ghost) / max(len(pw), 1) * 100:.0f}% 最后一程靠外推走完")
+        coasts = sorted(p["coast"] for p in pw)
+        print(f"  pass 组 coast 拍数 p50={coasts[len(coasts)//2]}  "
+              f"max={coasts[-1]}（幽灵框在宽限期内跨线才判 pass）")
+
+    # 游戏判分对照（RULES §494：超车=超相邻车道车辆每辆 30 分；rate_b 含全部
+    # 来源且 30 分单位无法区分超车/金币/动作 → 只做组间差分，不做事件判定）
+    print("\n[游戏判分对照] rate_b 在真检窗口的 +30 跳变命中（≥25 分差）")
+    hud_map: dict[str, list[tuple[float, float, int]]] = {}   # stem → [(t, fid, rate)]
+    for path in sys.argv[1:]:
+        stem = Path(path).stem.replace("trace_", "")
+        hpath = os.path.join(os.path.dirname(path), f"hud_{stem}", "hud.jsonl")
+        if not os.path.exists(hpath):
+            continue
+        rows = [json.loads(l) for l in open(hpath, encoding="utf-8") if l.strip()]
+        fr = [(r["frame_id"], r["ts_ns"]) for r in rows]
+        rate = [((r["frame_id"], r["ts_ns"]), r["fields"]["rate_b"]["value"])
+                for r in rows if (r["fields"].get("rate_b") or {}).get("trusted")]
+        if len(fr) < 2 or not rate:
+            continue
+        def t_of(f: int) -> float | None:
+            if f < fr[0][0] or f > fr[-1][0]:
+                return None
+            for (f0, t0), (f1, t1) in zip(fr, fr[1:]):
+                if f0 <= f <= f1:
+                    return (t0 + (t1 - t0) * (f - f0) / max(f1 - f0, 1)) / 1e9
+            return None
+        hud_map[stem] = [(t_of(f), f, v) for (f, _), v in rate if t_of(f) is not None]
+
+    def group_of(p: dict) -> str:
+        if p["outcome"] == "pass":
+            return "pass"
+        if p["form"] == "inframe" and (p["true_h"] or 0) < 147:
+            return "lost远车"
+        if p["form"] == "inframe":
+            return "lost近距"
+        return f"lost{p['form']}"
+
+    for p in plans:
+        if p["outcome"] not in ("pass", "lost"):
+            continue
+        p["grp"] = group_of(p)
+        p["game_hit"] = None
+        ser = hud_map.get(p["file"])
+        if not ser or p["true_cy"] is None:
+            continue
+        t_true = next((t for t, f, _ in ser if abs(f - p["true_fid"]) < 1), None)
+        if t_true is None:
+            t_true = min(ser, key=lambda r: abs(r[1] - p["true_fid"]))[0]
+        base = [v for t, _, v in ser if t_true - 3.5 <= t <= t_true - 1.0]
+        peak = [v for t, _, v in ser if t_true - 0.5 <= t <= t_true + 2.0]
+        if base and peak:
+            p["game_hit"] = (max(peak) - statistics.median(base)) >= 25
+    for g in ("pass", "lost近距", "lost远车", "lostside_left", "lostside_right"):
+        xs = [p for p in plans if p.get("grp") == g and p["game_hit"] is not None]
+        if not xs:
+            continue
+        hit = sum(1 for p in xs if p["game_hit"])
+        # 判读警告：+30 跳变含金币/动作/无关超车，窗口命中率 ~60% 与背景事件率
+        # 同量级（pass 59% ≈ lost远车 67%）——本段只能证伪"组间差异巨大"，
+        # 不能证明单个计划被游戏判分；事件级真值需 hud 捕获左上"超车"计数。
+        print(f"  {g:<16} n={len(xs):>3}  +30跳变命中 {hit}（{hit / len(xs) * 100:.0f}%）"
+              f"（背景事件率同量级，无组间区分力）")
 
 
 if __name__ == "__main__":
