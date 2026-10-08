@@ -168,21 +168,32 @@ class CoinGroup:
 
 @dataclass(frozen=True)
 class ObjectDistance:
-    """物体距离读数（混合测距刀一，trace-only 不进决策）。
+    """物体距离状态（混合测距，trace-only 不进决策）。
     契约见 docs/plan/speedrush-hybrid-ranging-design.md §2/§4：三态互斥完备；
     UNKNOWN 的 ``metric_distance_m`` 恒为 None（类型层防"有序无米"被当数用）；
-    不设连续置信分——没有实验支持的分位数都是编的，弃权是硬边界。"""
+    不设连续置信分——没有实验支持的分位数都是编的，弃权是硬边界。
+
+    时间语义（2026-10-08 时间链台账钉死，全部 perf_counter_ns 同钟族）：
+    ``anchor_age_ms`` 零点 = 深度帧**采集回调**时刻（sheet.ts=frame_ts_ns，
+    非推理完成时刻、非 push 时刻）；``obs_age_ms`` 零点 = 本拍 2D 帧采集时刻。
+    决策时刻米制年龄 ≈ anchor_age_ms + 本拍帧龄（trace 顶层 oage，拍级现算）
+    ——两零点同族，相加无重复计账。注意与 dgeo_age_ms（零点=push 墙钟的
+    服务年龄）不可相加。WGC 重复帧拍整个 obs 冻结（age 不再增长）——重复
+    拍的年龄语义以 fid 判重后另行外推，契约不谎报新鲜。"""
 
     target_id: int
     source: DistanceSource
     metric_distance_m: float | None
     method: DistanceMethod | None
-    anchor_age_ms: float | None   # 锚点年龄（深度帧距今）；UNKNOWN 无锚时为 None
-    obs_age_ms: float             # 本拍 2D 观测年龄——与锚点年龄是两个时钟
+    anchor_age_ms: float | None   # 锚点年龄（深度帧采集距今）；UNKNOWN 无锚时为 None
+    obs_age_ms: float             # 本拍 2D 观测年龄——与锚点年龄是两个参考帧（同时钟族）
     reason: DistanceReason | None  # UNKNOWN 时必填
     v_close_mps: float | None = None  # 门控区间速度估计（v̂>0=接近，z(t+Δ)≈m−v̂Δ）。
-                                      # 与锚点同生命周期；未知为 None——刀二消费面
-                                      # （新鲜度分带+预测投影）的数据载体，本刀 trace-only
+                                      # 与锚点同生命周期；未知为 None。**定位：已保存
+                                      # 的运动观测，不是已验证的运动状态**——稳定性
+                                      # 与投影地平线待带 v 的实机 trace 检验（设计稿
+                                      # §4 刀二判据），消费面（分带/投影）刀二带闸。
+                                      # source 有效 + None = 新鲜锚尚未开评（非异常）
 
 
 class DistanceSource(str, Enum):

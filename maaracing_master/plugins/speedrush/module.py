@@ -943,7 +943,12 @@ class SpeedRushModule(ActivityModule):
             "passes": [{"id": e.track_id, "d_min": round(e.d_min, 3)}
                        for e in tevents if e.outcome == OUTCOME_PASS],
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
-            "presence": obs.health.target_presence})
+            "presence": obs.health.target_presence,
+            # oage：本拍 2D 帧龄（frame_with_age 抓取时现算，拍级新鲜）——
+            # 决策时刻米制真实年龄 ≈ dist[].age（锚龄，零点=深度帧采集）+
+            # oage（零点=2D 帧采集）；两零点同钟族（perf_counter_ns），相加
+            # 无重复计账。WGC 重复帧拍 obs 整体冻结，本列不受影响（拍级）。
+            "oage": round(age_ms, 1)})
         # 调试图快照（debugview 3fps 节流；writer=None=闸关/测试，零开销）
         dbg = chain.get("debug")
         if dbg is not None:
