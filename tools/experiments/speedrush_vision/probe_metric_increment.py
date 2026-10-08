@@ -114,7 +114,8 @@ def main() -> None:
                 if r.startswith("switch:"):
                     outcome = "switched"
                     break
-                if r in ("done:overtake_pass", "pass_timeout"):
+                if r in ("done:overtake_pass", "done:overtake_pass_presumed",
+                         "pass_timeout"):
                     outcome = "pass"
                     break
                 if r.startswith("cancel:"):

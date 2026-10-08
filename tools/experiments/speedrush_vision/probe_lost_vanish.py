@@ -40,9 +40,11 @@ import sys
 from pathlib import Path
 
 HZ_BEATS_PER_06S = 12   # 决策拍 20Hz → 0.6s ≈ 12 拍
-EDGE_PX = 20.0          # 真检末点的画缘余量
+EDGE_PX = 20.0          # 画缘余量
 REAP_R_PX = 150.0       # 邻位重现半径
 BOTTOM_MARGIN = 80.0    # 产线 exit_margin_px（decision.json）
+CY_NEAR = 430.0         # 判据预演：纵向贴身阈值（真检 cy 数据缺口 404~437 之间）
+ADJ_LANE = 2.5          # 判据预演：邻道横向界（道）
 
 _CAL = Path(__file__).resolve().parents[3] / \
     "maaracing_master/plugins/speedrush/resources/calibration/gate0.json"
@@ -98,7 +100,8 @@ def main() -> None:
                 if r.startswith("switch:"):
                     outcome = "switched"
                     break
-                if r in ("done:overtake_pass", "pass_timeout"):
+                if r in ("done:overtake_pass", "done:overtake_pass_presumed",
+                         "pass_timeout"):
                     outcome, o_fid = "pass", b2["fid"]
                     break
                 if r.startswith("cancel:"):
@@ -155,7 +158,7 @@ def main() -> None:
                 "outcome": outcome, "sel_fid": b["fid"], "o_fid": o_fid,
                 "n_seen": len(sightings), "last_fid": fin[0],
                 "true_fid": true[0], "true_cx": t_cx, "true_cy": true[2],
-                "true_h": true[4], "true_rel": true[3],
+                "true_x": true[1], "true_h": true[4], "true_rel": true[3],
                 "fin_cx": f_cx, "fin_cy": f_cy, "coast": coast,
                 "form": form, "beats": beats,
             })
@@ -220,6 +223,34 @@ def main() -> None:
         coasts = sorted(p["coast"] for p in pw)
         print(f"  pass 组 coast 拍数 p50={coasts[len(coasts)//2]}  "
               f"max={coasts[-1]}（幽灵框在宽限期内跨线才判 pass）")
+
+    # 判据预演（用户提案 2026-10-08）：近自车 + 消失方向指向屏幕外
+    #   presumed_pass ⟺ 真检 cy ≥ CY_NEAR（纵向贴身）且 |x_lane| ≤ ADJ_LANE
+    #   （邻道内）且 rel > 0（还在下滑——消失方向指向下缘）。三字段全是
+    #   CarView 现成量，判据一行，不添传感器。离线预演 77 计划看召回/误伤。
+    print(f"\n[判据预演] presumed_pass ⟺ 真检 cy≥{CY_NEAR:.0f} 且 |x_lane|≤{ADJ_LANE} "
+          f"且 rel>0")
+    promo: list[dict] = []
+    for p in lost:
+        hit = (p["true_cy"] is not None and p["true_cy"] >= CY_NEAR
+               and p["true_x"] is not None and abs(p["true_x"]) <= ADJ_LANE
+               and p["true_rel"] is not None and p["true_rel"] > 0)
+        p["rule_presumed"] = hit
+        if hit:
+            promo.append(p)
+    print(f"  lost → presumed_pass 晋升 {len(promo)}/26：")
+    for p in sorted(promo, key=lambda q: q["true_cy"]):
+        print(f"    {p['file']} tid{p['tid']} {p['form']:<11} "
+              f"cy={p['true_cy']:.0f} x={p['true_x']:+.2f} rel={p['true_rel']:.2f}")
+    stayed = [p for p in lost if not p["rule_presumed"]]
+    stay_ids = [f"{p['file'][-6:]}tid{p['tid']}(cy{p['true_cy']:.0f})" for p in stayed]
+    print(f"  保持 lost {len(stayed)}：{stay_ids}")
+    ok = [p for p in plans if p["outcome"] == "pass"]
+    agree = sum(1 for p in ok if p["true_cy"] is not None and p["true_cy"] >= CY_NEAR
+                and (p["true_x"] is None or abs(p["true_x"]) <= ADJ_LANE)
+                and (p["true_rel"] is None or p["true_rel"] > 0))
+    print(f"  pass 组一致性：{agree}/{len(ok)} 也满足本判据"
+          f"（真检贴身下滑的真值自洽检查）")
 
     # 游戏判分对照（RULES §494：超车=超相邻车道车辆每辆 30 分；rate_b 含全部
     # 来源且 30 分单位无法区分超车/金币/动作 → 只做组间差分，不做事件判定）
