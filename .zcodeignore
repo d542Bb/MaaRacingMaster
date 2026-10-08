@@ -1,0 +1,148 @@
+# Python
+__pycache__/
+*.pyc
+
+# setuptools-scm 自动生成（版本号从 Git Tag 推导）
+maaracing_master/_version.py
+*.pyo
+*.egg-info/
+.venv/
+env/
+venv/
+
+# 数据集（大文件）
+dataset/images/
+dataset/labels/
+runs/
+tools/*.pt
+
+# 训练数据暂存（仅项目根）
+/training/
+
+# 日志
+logs/
+*.log
+debug.txt
+/debug/
+
+# 运行时数据（鉴宝结构化落盘数据库 data/treasure/treasure.db）
+/data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 本机 harness 配置（各 coding agent 在工作区落盘的目录/文件，不同步到远端；
+# .trae/ 下已跟踪的旧文件用 git rm --cached 移出。共享规则文件 AGENTS.md 不在此列，始终入库）
+.zcode/
+.workbuddy-ai/
+.trae/
+.trae-cn/
+.claude/
+.cursor/
+.windsurf/
+.codeium/
+.qoder/
+.gemini/
+.continue/
+.junie/
+.aider*
+
+# Mimosa 安全扫描器本机状态（账本/历史/hook 状态，扫描产物不入库）
+.mimosa/
+
+# AI 生成的 plan 文档（过程产物，不入库；归档后移 archive/）
+docs/plan/
+
+# 本机 harness 配置说明（含本机路径，仅本地参考）
+docs/trae-dsh-config-share.md
+
+# 前端设计稿：只保留 pages/ 与 token 文件，忽略预检/报告等过程产物
+docs/design/.preflight/
+docs/design/runtime-orchestration-summary.json
+docs/design/validation-report.json
+
+# 归档（被 sidecar + WinUI3 取代的旧 GUI、历史 spike）
+archive/
+
+# 插件模型权重随包分发入库（各权重许可与来源声明见对应插件 resources/onnx/
+# README 与 THIRD_PARTY_LICENSES.md「模型权重」节）
+
+# WinUI 3 / .NET 构建产物（apps/MaaRacingMaster.Shell）
+apps/MaaRacingMaster.Shell/bin/
+apps/MaaRacingMaster.Shell/obj/
+
+# 本地构建缓存/实验/验证产物目录（整体忽略：zip/dll/runtime-cache/publish-cache/C1 基准/7z 下载缓存等均不入库；
+# 唯一入库的 7za.exe 已在 scripts/release/tools/ 单独跟踪）
+build/
+
+# 发布打包产物（体积大，不入库；本地 staging/zip/sha256 放这里）
+build/release/
+# 探索/验证用临时运行时（spike 的完整 python runtime 数百 MB，不入库）
+build/spike/
+# 体积优化实验产物与全量 runtime 临时目录（exp1..expN / runtime-full，可由 assemble 重建，不入库）
+build/exp*/
+build/runtime-full/
+
+# 本地复用缓存（已验证 runtime 依赖 + 已编译 GUI，跳过重复下载/编译）
+build/runtime-cache/
+build/publish-cache/
+
+# PoC / 本地打包测试产物（native Launcher 编译输出、临时测试布局、组装测试目录）
+build/poc/
+build/poc-app/
+build/PoC */
+build/assemble-test/
+build/zip-e2e/
+
+# assemble.ps1 本地打包产物（默认输出到 scripts/release；CI 输出到 build/release 已忽略）
+scripts/release/MaaRacingMaster-*/
+scripts/release/MaaRacingMaster-*.zip
+scripts/release/MaaRacingMaster-*.zip.sha256
+
+# 系统
+Thumbs.db
+.DS_Store
+
+# 本机启动快捷方式（指向机器相关构建产物路径，仅本地使用，不同步）
+*.lnk
+
+# cursor_refactor 光标训练/趋近工具：只入库脚本，忽略采集帧与模型产物（体积大）
+cursor_refactor/captures/
+cursor_refactor/models/
+cursor_refactor/__pycache__/
+
+# NavKit 本地工具与历史产物目录（mpelb 二进制 / MPE dist / 旧控制台缓存等；不入库）
+tools/navkit/dev/
+tools/navkit/out/
+tools/navkit/frontend/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+site-packages/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
