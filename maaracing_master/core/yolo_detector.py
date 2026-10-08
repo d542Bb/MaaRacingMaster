@@ -188,7 +188,11 @@ class YOLODetector:
             cls_mask = classes_arr == cls
             # cls_local[j] = 第 j 个属于该类别的元素在 masked 数组中的位置
             cls_local = np.where(cls_mask)[0]
-            cls_boxes = xyxy[mask][cls_mask].tolist()
+            b = xyxy[mask][cls_mask]
+            # NMSBoxes 只认 [x,y,w,h]：直接喂 xyxy 会把 x2/y2 当宽高算 IoU，
+            # 横向错位不大的两辆真车互相误压（2026-10-07 0068 帧实拍 + 两行复现）
+            cls_boxes = np.stack([b[:, 0], b[:, 1],
+                                  b[:, 2] - b[:, 0], b[:, 3] - b[:, 1]], 1).tolist()
             cls_scores = scores[mask][cls_mask].tolist()
             if not cls_boxes:
                 continue
