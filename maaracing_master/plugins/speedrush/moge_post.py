@@ -28,10 +28,15 @@ recover_focal_shift → z 加 shift → force_projection 重投影 → ×metric_
 
 from __future__ import annotations
 
+import weakref
+
 import cv2
 import numpy as np
 
 DOWN = 64  # 官方 recover_focal_shift 的下采样网格 (width, height)
+
+# 会话级 IO binding 缓存（key=sess 弱引用，见 _iobinding_for）
+_BINDINGS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
 def normalized_view_plane_uv(width: int, height: int) -> np.ndarray:
@@ -136,13 +141,68 @@ def preprocess(img_rgb_u8: np.ndarray, W: int, H: int) -> np.ndarray:
     return x.transpose(2, 0, 1)[None]
 
 
+def _iobinding_for(sess, image_input: np.ndarray, num_tokens: int):
+    """取/建会话级 IO binding（固定 CPU 输入缓冲 + CPU 输出绑定）。
+
+    **为什么必须固定缓冲**（2026-10-01 性能解剖定案）：显存吃紧时 ORT 默认 run
+    的临时输出分配与读回会触发显存分页，实测 8GB 卡水位逼近物理上限时单帧
+    59→136ms 且随溢出加深持续恶化；固定缓冲路径全水位恒定 ~48ms。新帧内容
+    原地覆写进预缓冲，run 间零临时分配。
+
+    **每帧必须重调 bind_input**（2026-10-02 实测）：DML 在 bind_input 那一刻
+    取走输入，此后原地覆写缓冲内容它看不见——只覆写不重绑时每次 run 都返回
+    第一帧的结果（同一会话连喂三帧不同画面，输出逐位相同；普通 run 与每帧
+    重绑两路都逐帧正确，时延同为 ~47ms）。故缓冲仍固定，但每帧按同一指针
+    重绑一次，代价可忽略。
+
+    返回 None = 会话不可绑定（测试桩，负缓存不再重试）或输入形状变化，
+    调用方走普通 run。"""
+    entry = _BINDINGS.get(sess)
+    if entry is None:
+        try:
+            b = sess.io_binding()
+            inputs = sess.get_inputs()
+            in_name = inputs[0].name
+            xbuf = np.ascontiguousarray(image_input)
+            tbuf = None
+            if any(i.name == "num_tokens" for i in inputs):
+                tbuf = np.array(num_tokens, np.int64)
+            for o in sess.get_outputs():
+                b.bind_output(o.name, "cpu", 0)
+            entry = {"bind": b, "in_name": in_name, "xbuf": xbuf, "tbuf": tbuf}
+        except Exception:
+            entry = {"bind": None}   # 负缓存：不可绑定会话（测试桩）不再重试
+        _BINDINGS[sess] = entry
+    bind = entry["bind"]
+    if bind is None:
+        return None
+    xbuf = entry["xbuf"]
+    if xbuf.shape != image_input.shape:
+        return None   # 输入形状漂移（产线不应发生）：该帧走普通 run
+    np.copyto(xbuf, image_input)
+    bind.bind_input(entry["in_name"], "cpu", 0, xbuf.dtype, xbuf.shape,
+                    xbuf.ctypes.data)
+    if entry["tbuf"] is not None:
+        entry["tbuf"][...] = num_tokens
+        bind.bind_input("num_tokens", "cpu", 0, entry["tbuf"].dtype,
+                        entry["tbuf"].shape, entry["tbuf"].ctypes.data)
+    return bind
+
+
 def forward(sess, image_input: np.ndarray, num_tokens: int):
-    """raw forward（动态/静态会话自适应）。返回 points(H,W,3)、mask(H,W)、metric_scale。"""
-    names = {i.name for i in sess.get_inputs()}
-    feed = {"image": image_input}
-    if "num_tokens" in names:
-        feed["num_tokens"] = np.array(num_tokens, np.int64)
-    out = sess.run(None, feed)
+    """raw forward（动态/静态会话自适应）。返回 points(H,W,3)、mask(H,W)、metric_scale。
+
+    可绑定会话走 IO binding（固定缓冲，抗显存分页，见 _iobinding_for），
+    其余（测试桩/形状漂移）走普通 run，输出语义两路一致。"""
+    bind = _iobinding_for(sess, image_input, num_tokens)
+    if bind is not None:
+        sess.run_with_iobinding(bind, None)
+        out = bind.copy_outputs_to_cpu()
+    else:
+        feed = {"image": image_input}
+        if any(i.name == "num_tokens" for i in sess.get_inputs()):
+            feed["num_tokens"] = np.array(num_tokens, np.int64)
+        out = sess.run(None, feed)
     points, mask, metric_scale = out[0][0], out[2][0], float(out[3][0])
     mask = (mask > 0.5) & np.isfinite(points).all(-1)
     return points.astype(np.float32), mask, metric_scale
