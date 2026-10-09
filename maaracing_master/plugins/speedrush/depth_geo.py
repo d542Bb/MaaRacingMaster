@@ -87,6 +87,11 @@ PLANE_INLIER_MIN = 0.70   # 质量评判路区内点率下限（拟合没解释�
 PLANE_QUALITY_Z_HI = 14.0  # 质量评判路区纵向上限（远场翘曲区不进评判）
 PLANE_ROLL_MAX_DEG = 15.0  # 角度 sanity：仅挡病态拟合（车/相机不可能的滚转）
 PLANE_PITCH_MAX_DEG = 15.0  # 同上（对称界：点云 Y 轴 y_up/y_down 两种约定都合法）
+OBJ_KNIFE_HGT = PLANE_TOL  # 剃本体刀位（物体矩形内高出路面 0.15m 以上=本体点）；
+                           # 路面像素与贴地币（hgt≈0）留在候选区，不是障碍
+DIG_CELL_FRAC = 0.5        # 格级挖除占比：刀是逐点的，格是 0.25m 的——挖除点
+                           # 占比达此值才算挖除格（本体占据），零星噪声尾点
+                           # 不饿死整格；ego 掩码整格挖（占比 1.0）语义不变
 
 # ── 列剖面路面特征（2026-10-02 定案：拟合起步种子由「位置圈地」换成「特征
 #    识别路面」）─────────────────────────────────────────────────────────
@@ -633,9 +638,10 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                   else (float(coef[0]), float(coef[1]), float(coef[2]))),
             fx=float(fx), fy=float(fy if fy is not None else fx))
 
-    dig = _dig_band(ego_mask, pts.shape[1])
-    if object_mask is not None:
-        dig = dig | _dig_band(object_mask, pts.shape[1])
+    dig_ego = _dig_band(ego_mask, pts.shape[1])
+    dig_obj = (_dig_band(object_mask, pts.shape[1])
+               if object_mask is not None else None)
+    dig = dig_ego if dig_obj is None else dig_ego | dig_obj
 
     X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
     t_p = time.perf_counter()
@@ -654,13 +660,19 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     sgn = -1.0 if b * 5.0 + c > 0 else 1.0
     hgt = sgn * (Y - (a * X + b * Z + c))
     sky = np.isfinite(hgt) & (hgt > SKY_HGT)
+    # 剃本体（2026-10-09 定案）：物体矩形内只挖高出路面的点（hgt>OBJ_KNIFE_HGT），
+    # 路面像素留在候选区——矩形挖整块让真缘陪葬、格子饿死（三级对质定案 ×）。
+    # 物体点混进拟合不拽歪平面（走廊收敛自动拒离面点，83 包实测系数逐位一致），
+    # 拟合保留矩形挖口径不动。币贴地（hgt≈0）不挖——币不是路面障碍。
+    scan_dig = (dig_ego if dig_obj is None
+                else dig_ego | (dig_obj & (hgt > OBJ_KNIFE_HGT)))
     extent = (pts.shape[1] / 2.0) / fx   # 画面横边界比 |X|/Z（同帧焦距，禁写死）
 
     edge_pts: list[tuple[int, float, float]] = []
     rejects: list[str] = []
     # 与 Z 无关的掩码提出循环（布尔与可交换结合，逐位同结果）：5 个 ZBIN 各
     # 少算 3 遍全带布尔运算。
-    base = np.isfinite(X) & np.isfinite(hgt) & (~dig) & (~sky)
+    base = np.isfinite(X) & np.isfinite(hgt) & (~scan_dig) & (~sky)
     for z0, z1 in ZBIN:
         m = base & (Z >= z0) & (Z < z1)
         if m.sum() < MIN_BOX_PTS:
@@ -741,9 +753,9 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                             latency_ms=(time.perf_counter() - t0) * 1000.0,
                             dig_mask=dig_mask)
 
-    dig = _dig_band(ego, pts.shape[1])
-    if obj is not None:
-        dig = dig | _dig_band(obj, pts.shape[1])
+    dig_ego = _dig_band(ego, pts.shape[1])
+    dig_obj = _dig_band(obj, pts.shape[1]) if obj is not None else None
+    dig = dig_ego if dig_obj is None else dig_ego | dig_obj
     Xb, Yb, Zb = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
     if coef is None:
         coef = _fit_road_plane(Xb, Yb, Zb, dig, fy=fy)
@@ -764,7 +776,12 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     ix = np.floor((Xb[ok] + GRID_X_MAX) / GRID_CELL).astype(np.int64)
     iz = np.floor((Zb[ok] - GRID_Z_LO) / GRID_CELL).astype(np.int64)
     flat = (iz * GRID_NX + ix)
-    dug = dig[ok]
+    # 剃本体（2026-10-09 定案，同 reading 找边口径）：物体矩形内只挖高出路面的
+    # 点（hgt>OBJ_KNIFE_HGT），矩形内路面像素留在栅格——矩形挖整块让格子饿死
+    # （d00080/81 左半不可走 0~1% 的帮凶之一）。拟合保留矩形挖（物体点混进拟合
+    # 不拽歪平面，83 包实测系数逐位一致）。
+    dug = (dig_ego if dig_obj is None
+           else dig_ego | (dig_obj & (hgt > OBJ_KNIFE_HGT)))[ok]
     hv = np.ascontiguousarray(hgt[ok], np.float32)
 
     nod = ~dug
@@ -774,9 +791,14 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     want = np.nonzero(counts > 0)[0]
     if want.size:
         med[want] = _binned_median(hv[nod], flat_nod, want, counts)
+    # 格级挖除判据（剃本体配套）：刀是逐点的，格是 0.25m 的——路面格里零星
+    # 噪声尾点（hgt 略超刀位）不该饿死整格；本体占据（挖除点占比 ≥
+    # DIG_CELL_FRAC）才算挖除格。ego 掩码整格挖（占比 1.0）语义不变。
     dug_mask = np.zeros(ncell, bool)
     if dug.any():
-        dug_mask[np.unique(flat[dug])] = True
+        frac = np.bincount(flat[dug], minlength=ncell) / np.maximum(
+            np.bincount(flat, minlength=ncell), 1)
+        dug_mask = frac >= DIG_CELL_FRAC
     state = np.full(ncell, GRID_UNKNOWN, np.int8)
     known = (counts >= GRID_MIN_PTS) & (~dug_mask)
     state[known & (np.abs(med) <= GRID_TOL)] = GRID_DRIVABLE

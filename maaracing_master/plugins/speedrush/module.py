@@ -1223,7 +1223,9 @@ BAD_FRAME_MAX_PER_PHASE = 40
 def _yolo_object_mask(result: PerceptionResult) -> np.ndarray | None:
     """YOLO 检测框（车/金币/奖励，外扩 YOLO_MASK_MARGIN）→ 布尔掩码；
     无检测返回 None（深度路径零成本）。目标架构：物体身份由语义说，
-    深度块在源头让位（穿车读墙假缘不再产生）。"""
+    深度块在源头让位（穿车读墙假缘不再产生）。剃本体（2026-10-09）：
+    矩形掩码只是候选区，depth_geo 在消费端按 hgt 刀只挖矩形内高出路面的
+    本体点（OBJ_KNIFE_HGT），矩形内路面像素留在找边/栅格（格子不再饿死）。"""
     dets = result.cars + result.coins + result.bonuses
     if not dets:
         return None

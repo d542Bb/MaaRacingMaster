@@ -179,6 +179,26 @@ def test_object_mask_digs_objects_from_cloud():
     assert rd.left_edge_lane is not None
 
 
+def test_object_knife_keeps_road_under_object_rect():
+    """剃本体：物体矩形内只挖本体占据的格（挖除占比≥DIG_CELL_FRAC），路面格
+    留在栅格参与判定（矩形挖整块让格子饿死，d00080/81 左半不可走 0~1% 的
+    帮凶之一；零星噪声尾点不饿死整格）。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL,
+                        boxes=((1.0, 1.5, 4.0, 6.0, 1.0),))   # 路上车（右前方）
+    obj = np.zeros((720, 1280), bool)
+    obj[:, 780:1070] = True                # 车成像列 + 相邻路面列一起盖住
+    g = dg.drivable_grid_from_points(pts, FX, FY, ego=None, obj=obj)
+    assert g.coef is not None
+    iz5 = int((5.0 - dg.GRID_Z_LO) / dg.GRID_CELL)
+    ix_car = int((1.0 + dg.GRID_X_MAX) / dg.GRID_CELL)    # 车近脸格（本体占据）
+    ix_road = int((1.75 + dg.GRID_X_MAX) / dg.GRID_CELL)  # 车旁路面格（hgt≈0）
+    assert g.dig_mask[iz5, ix_car], "车本体格应被挖（本体占据≥50%）"
+    assert not g.dig_mask[iz5, ix_road], "矩形内路面格不应被挖（零星噪声尾不饿死整格）"
+    assert g.counts[iz5, ix_road] >= dg.GRID_MIN_PTS, \
+        "矩形内路面格应有点数（矩形挖口径下为 0）"
+    assert g.state[iz5, ix_road] == dg.GRID_DRIVABLE, "矩形内路面格应参与判定"
+
+
 def test_plane_fit_fail_abstains():
     """近带无路面（走廊域点不足）：诚实弃权不硬读。"""
     pts = np.full((720, 1280, 3), np.nan, np.float32)
@@ -1342,7 +1362,9 @@ EV = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data"
 
 # 140930/d00009 近场带 3~9m 内判 2（不可走）的格数基线（干净晴天宽路帧；含墙/
 # 路缘/影；防恶化锁）。本值=本实现实测（±10.5m 窗、0.15m 容差、挖洞判未知）。
-D09_NEAR_BLOCKED_BASELINE = 367
+# 2026-10-09 剃本体（挖除=本体占据格，矩形内路面格参与判定）后重标 378：被
+# 矩形挖饿死的车边缘格现在被诚实判读（中位离面=不可走），不是恶化。
+D09_NEAR_BLOCKED_BASELINE = 378
 
 
 def _assemble_evid(stem: Path):
@@ -1376,25 +1398,16 @@ def _evid_or_skip(dirname: str, seq: int) -> Path:
 
 
 def test_drivable_grid_frame_anchor_dug_all_unknown():
-    """175855/d00055（雨天超车帧）：挖洞格全灰——0 误判锁。"""
+    """175855/d00055（雨天超车帧）：刀挖格全灰——0 误判锁。
+
+    剃本体（2026-10-09）后挖除=物体矩形内本体占据（挖除点占比 ≥
+    DIG_CELL_FRAC）的格，矩形内路面像素留在栅格参与判定（格子不再饿死）。
+    锁：dig_cells>0（刀确实挖了）且挖除格全未知（0 误判）。"""
     stem = _evid_or_skip("depth_debug_20261004_175855", 55)
     pts, fx, fy, ego, obj = _assemble_evid(stem)
     g = dg.drivable_grid_from_points(pts, fx, fy, ego, obj)
     assert g.coef is not None and g.dig_cells > 0
-    dig = dg._dig_band(ego, 1280)
-    if obj is not None:
-        dig = dig | dg._dig_band(obj, 1280)
-    Xb, Yb, Zb = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
-    ok = (np.isfinite(Xb) & np.isfinite(Yb) & np.isfinite(Zb)
-          & (Xb >= -dg.GRID_X_MAX) & (Xb < dg.GRID_X_MAX)
-          & (Zb >= dg.GRID_Z_LO) & (Zb < dg.GRID_Z_HI))
-    du = dig & ok
-    assert du.any(), "该帧应有挖洞格（超车帧 ego/物体框覆盖）"
-    ix = np.floor((Xb[du] + dg.GRID_X_MAX) / dg.GRID_CELL).astype(int)
-    iz = np.floor((Zb[du] - dg.GRID_Z_LO) / dg.GRID_CELL).astype(int)
-    st = g.state[iz, ix]
-    assert (st == dg.GRID_UNKNOWN).all(), \
-        f"挖洞格出现非未知态：{np.unique(st)}"
+    assert (g.state[g.dig_mask] == dg.GRID_UNKNOWN).all(), "挖除格出现非未知态"
 
 
 def test_drivable_grid_frame_anchor_clean_frame_baseline():
