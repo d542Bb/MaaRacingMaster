@@ -77,6 +77,17 @@ ROAD_Z_LO, ROAD_Z_HI = 4.0, 30.0
 EGO_ABS_X, EGO_ABS_Z = 1.3, 10.0   # 自车区排除（车是路面上的隆起物）
 MIN_PLANE_PTS = 500
 
+# ── 拟合质量门（2026-10-09 定案：坏拟合的判据是路区残差/内点率，不是角度）──
+# 83 包标定（depth_debug_20261008_183813，ego+objects 掩码重放）：坏拟合簇
+# （弯道帧被远场翘曲劫持，d00039/74/79/14/32/38/78/77/35/40）内点率 ≤65%、
+# 残差 p50 5.7~45cm；好拟合簇 ≥70%、残差 p50 ≤3.2cm，中缝干净。相机过弯
+# 自带滚转实测可达 −5.26° 且拟合正确（d00065 残差 3.0cm 干净斜平面）——
+# 纯角度门被 d00019/65/55 否决，角度只留病态 sanity。
+PLANE_INLIER_MIN = 0.70   # 质量评判路区内点率下限（拟合没解释住路 → 弃权）
+PLANE_QUALITY_Z_HI = 14.0  # 质量评判路区纵向上限（远场翘曲区不进评判）
+PLANE_ROLL_MAX_DEG = 15.0  # 角度 sanity：仅挡病态拟合（车/相机不可能的滚转）
+PLANE_PITCH_MAX_DEG = 15.0  # 同上（对称界：点云 Y 轴 y_up/y_down 两种约定都合法）
+
 # ── 列剖面路面特征（2026-10-02 定案：拟合起步种子由「位置圈地」换成「特征
 #    识别路面」）─────────────────────────────────────────────────────────
 # 针孔几何（dv/dz = −fy·h/z²，与坡度无关——坡度只平移路面在画面里的位置）：
@@ -454,6 +465,30 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     return coef
 
 
+def _plane_plausible(coef, X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
+                     dig: np.ndarray) -> bool:
+    """拟合质量门（2026-10-09 定案）：路区内点率为主判据 + 角度病态 sanity。
+
+    坏拟合（弯道帧被远场翘曲劫持，d00039/74/79 实测）的共同特征是路区残差
+    7~45cm、内点率 41~66%，不是角度大——相机过弯自带滚转（d00065 −5.26°
+    残差 3.0cm 干净斜平面）属正常拟合，纯角度门会误杀。不合格 → 调用点
+    诚实弃权（coef=None），降级语义与拟合失败同型（宁可盲不可错；保鲜
+    复用旧平面被否——平面角随相机滚转真实变化，旧平面会注入 tan(roll)·X
+    假梯度）。"""
+    a, b = float(coef[0]), float(coef[1])
+    if abs(np.degrees(np.arctan(a))) > PLANE_ROLL_MAX_DEG:
+        return False
+    if abs(np.degrees(np.arctan(b))) > PLANE_PITCH_MAX_DEG:
+        return False
+    hgt = Y - (coef[0] * X + coef[1] * Z + coef[2])
+    road = (np.isfinite(hgt) & (np.abs(X) < ROAD_X_MAX)
+            & (Z >= ROAD_Z_LO) & (Z < PLANE_QUALITY_Z_HI) & (~dig))
+    if road.sum() < MIN_PLANE_PTS:
+        return True    # 路区点太少无从评判——拟合自身域内点数已把关，放行
+    inl = road & (np.abs(hgt) < PLANE_TOL)
+    return float(inl.sum()) / float(road.sum()) >= PLANE_INLIER_MIN
+
+
 def _edge_body_evidence(ph: np.ndarray, i: int, thr: float,
                         genuine: bool) -> bool:
     """穿越候选 (i, i+1) 的缘体证据：脸（骤升）或平台（到顶）。
@@ -605,11 +640,14 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
     t_p = time.perf_counter()
     coef = _fit_road_plane(X, Y, Z, dig, fy=fx if fy is None else fy)
+    reject = None
+    if coef is not None and not _plane_plausible(coef, X, Y, Z, dig):
+        coef, reject = None, "平面质量门拒绝"
     # 平面拟合单列分段（worker 单线程写；scan=edges−plane 离线导出）。
     # 输出仍纯：计时副作用不改变任何返回值。
     LAST_STAGE_MS["plane"] = (time.perf_counter() - t_p) * 1000.0
     if coef is None:
-        return _ret(None, None, None, None, ["平面拟合失败"])
+        return _ret(None, None, None, None, [reject or "平面拟合失败"])
     a, b, c = (float(coef[0]), float(coef[1]), float(coef[2]))
     # Y 向下为正 → 残差符号随平面高度（c）走：取 z=5m 处路面 Y 的符号定翻转，
     # hgt 统一为「高出路面为正」。
@@ -691,7 +729,8 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     33~74ms，随机器负载浮动），主因是列剖面平面拟合（占 ~60%），共享 coef 后
     剩格中位与逐格归约。调用点在异步 worker 线程内，不占控制拍。
 
-    **失败语义**：平面拟合失败（域内点不足）→ ``coef=None``、``state`` 全 0、
+    **失败语义**：平面拟合失败（域内点不足）或拟合质量门拒绝（路区内点率
+    低于 PLANE_INLIER_MIN，坏拟合诚实弃权）→ ``coef=None``、``state`` 全 0、
     ``counts`` 全 0、``dig_cells=0``；不抛异常（与 reading 的诚实弃权同型）。
     """
     t0 = time.perf_counter()
@@ -708,6 +747,8 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     Xb, Yb, Zb = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
     if coef is None:
         coef = _fit_road_plane(Xb, Yb, Zb, dig, fy=fy)
+        if coef is not None and not _plane_plausible(coef, Xb, Yb, Zb, dig):
+            coef = None
         if coef is None:
             return _ret(np.zeros((GRID_NZ, GRID_NX), np.int8), None,
                         np.zeros((GRID_NZ, GRID_NX), np.int32), 0)

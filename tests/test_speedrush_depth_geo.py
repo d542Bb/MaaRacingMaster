@@ -72,8 +72,12 @@ def _scene_points(x_left=None, x_right=None, boxes=(), wall_h=30.0,
         with np.errstate(divide="ignore", invalid="ignore"):
             ta = np.minimum(x1 * FX / (us - CX), x2 * FX / (us - CX))
         zc = np.maximum(ta, z1)
+        xh = dx * zc
+        # x 范围带浮点容差：恰从近脸进入的射线 xh==x2±eps，无容差时约半数
+        # 边界像素的遮挡被击穿，漏出地面薄带（幽灵命中修复 2026-10-09）
         hit = (np.isfinite(zc) & (zc <= z2) & (zc >= z1) & (zc < best)
-               & (dy * zc >= H_CAM + PITCH_B * zc - top))
+               & (dy * zc >= H_CAM + PITCH_B * zc - top)
+               & (xh >= x1 - 1e-6) & (xh <= x2 + 1e-6))
         best = np.where(hit, zc, best)
     ok = np.isfinite(best) & (best < np.inf)
     safe = np.where(ok, best, 1.0)
@@ -115,18 +119,19 @@ FAR_ONLY_LANES = WALL / CAL.lane_w_m
 
 
 def test_edge_nearest_consistent_prefers_near_boundary():
-    """最近一致边界：双箱一致的近场护栏压住远墙（读数≠跨箱中位）。
+    """最近一致边界：连续近场护栏压住远墙（读数≠跨箱中位）。
 
     2026-10-02 换装锁：跨箱中位数在这里落在远墙（近远箱数打平后中位落远），
-    读数参照系随箱可用性翻转——最近的双箱一致边界才是驾驶要守的最近可信
-    约束。近场护栏只跨两箱（z5-9）是有意设计：测试相机 FOV 窄，更近的结构
-    出不了两箱（画界守卫裁掉），那正是「单箱孤证」要拒的形态。"""
+    读数参照系随箱可用性翻转——最近的连续边界才是驾驶要守的最近可信约束。
+    护栏从内脸（−4.0）延到与墙相接（−5.5）：真护栏是连续结构，身后不留
+    地面空隙（_scene_points 幽灵命中修复后，窄块+空隙的旧形态按尾部持续
+    门判据本就该跳过取墙——那是障碍物不是边界，walls-only 语义下墙赢）。"""
     pts = _scene_points(
         x_left=WALL, x_right=WALL,
-        boxes=((-4.5, -NEAR_BARRIER_X, 5.0, 9.0, 0.8),))
+        boxes=((-WALL, -NEAR_BARRIER_X, 5.0, 9.0, 0.8),))
     rd = reading_from_points(pts, FX, CAL, fy=FY)
     assert rd.sides == 2, f"rejects={rd.rejects}"
-    want = -3.67 / CAL.lane_w_m                 # 近场护栏双箱一致穿越（实测）
+    want = -4.05 / CAL.lane_w_m                 # 近场护栏内脸穿越（连续护栏重标）
     assert abs(rd.left_edge_lane - want) < 0.15, \
         f"L={rd.left_edge_lane} 应取近场护栏 {want:.2f}（而非远墙 {-FAR_ONLY_LANES:.2f}）"
     assert abs(rd.right_edge_lane - LANE) < 0.15
@@ -136,14 +141,14 @@ def test_edge_isolated_nearest_bin_rejected():
     """最近箱孤证不盲取：仅一箱出穿越的近场假缘被邻箱一致性跳过。
 
     d00010 真机实证（z6-8 箱 −1.26m 阴影假穿越）：单箱孤证不可信——「最近」
-    须带「一致」才算边界。锁钉读数落在双箱一致的真护栏，而非最近孤箱。"""
+    须带「一致」才算边界。锁钉读数落在连续的真护栏，而非最近孤箱。"""
     pts = _scene_points(
         x_left=WALL, x_right=WALL,
         boxes=((-2.4, -2.2, 3.0, 5.0, 0.6),      # 最近箱孤证：仅 z3-5 一箱
-               (-4.5, -4.0, 5.0, 9.0, 0.8)))     # 真护栏：z5-9 双箱一致
+               (-WALL, -4.0, 5.0, 9.0, 0.8)))    # 真护栏：z5-9 双箱一致、连墙
     rd = reading_from_points(pts, FX, CAL, fy=FY)
     assert rd.sides == 2, f"rejects={rd.rejects}"
-    want = -3.67 / CAL.lane_w_m                  # 真护栏双箱一致穿越（实测）
+    want = -4.05 / CAL.lane_w_m                  # 真护栏内脸穿越（连续护栏重标）
     blind_nearest = -1.91 / CAL.lane_w_m         # 最近孤箱（若被盲取即中招）
     assert abs(rd.left_edge_lane - want) < 0.15, f"L={rd.left_edge_lane} vs {want:.2f}"
     assert abs(rd.left_edge_lane - blind_nearest) > 0.3, "最近孤证不应被盲取"
@@ -180,6 +185,47 @@ def test_plane_fit_fail_abstains():
     rd = reading_from_points(pts, FX, CAL)
     assert rd.sides == 0 and rd.left_edge_lane is None
     assert any("平面拟合失败" in r for r in rd.rejects)
+
+
+def _roll_pts(pts: np.ndarray, deg: float) -> np.ndarray:
+    """绕前向轴 Z 滚转整幅点云（模拟游戏相机过弯自带滚转，d00065 实测
+    −5.26° 且残差 3.0cm 干净斜平面——拟合正确，不许被门误杀）。"""
+    th = np.radians(deg)
+    c, s = np.cos(th), np.sin(th)
+    out = pts.copy()
+    x, y = pts[..., 0], pts[..., 1]
+    out[..., 0] = c * x - s * y
+    out[..., 1] = s * x + c * y
+    return out
+
+
+def test_plane_gate_rejects_warped_far_field():
+    """远场翘曲劫持拟合（d00079 型，路区内点率掉到一半）：质量门诚实弃权。"""
+    pts = _scene_points(x_left=None, x_right=None)
+    warp = pts[..., 2] > 7.0
+    pts[..., 1] = np.where(warp, pts[..., 1] + 0.6, pts[..., 1])
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.coef is None and rd.sides == 0, f"rejects={rd.rejects}"
+    assert any("平面质量门拒绝" in r for r in rd.rejects)
+    g = dg.drivable_grid_from_points(pts, FX, FY)
+    assert g.coef is None and int(np.count_nonzero(g.state)) == 0
+
+
+def test_plane_gate_keeps_clean_camera_roll():
+    """相机滚转 −5°（干净斜平面，d00065 型）：拟合正确 capture 滚转，不许拒。"""
+    pts = _roll_pts(_scene_points(x_left=None, x_right=None), -5.0)
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.coef is not None, f"rejects={rd.rejects}"
+    assert not any("平面质量门拒绝" in r for r in rd.rejects)
+    assert abs(np.degrees(np.arctan(rd.coef[0])) + 5.0) < 1.0
+
+
+def test_plane_gate_rejects_absurd_roll():
+    """病态滚转 −20°（车/相机不可能的角度）：角度 sanity 拒绝。"""
+    pts = _roll_pts(_scene_points(x_left=None, x_right=None), -20.0)
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.coef is None and rd.sides == 0, f"rejects={rd.rejects}"
+    assert any("平面质量门拒绝" in r for r in rd.rejects)
 
 
 def test_fit_road_plane_feature_seed_resists_wall_tilt():
