@@ -155,10 +155,14 @@ def test_project_detection_roundtrip():
 
 def test_project_detection_rejects_out_of_domain():
     # Z≈18m 在渲染延伸域内（>栅格窗 16m、≤40m，标记照画供目检）；
-    # Z≈72m 超渲染域 → None；分母退化（v=a·u+b）→ None
+    # Z≈72m 超渲染域但仍在深度锚点域（≤90m）→ 照常投影，消费端钉顶缘
+    # +距离标注（远距感知可见面）；Z>90（超锚点域）与分母退化 → None
     hit = _project_detection(640, 400, (0.0, 0.0, 0.72), 1000.0, 1000.0, W, H)
     assert hit is not None and hit[1] == pytest.approx(18.0)
-    assert _project_detection(640, 370, (0.0, 0.0, 0.72),
+    hit = _project_detection(640, 370, (0.0, 0.0, 0.72),
+                             1000.0, 1000.0, W, H)
+    assert hit is not None and hit[1] == pytest.approx(72.0)
+    assert _project_detection(640, 365, (0.0, 0.0, 0.72),
                               1000.0, 1000.0, W, H) is None
     assert _project_detection(640, 360, (0.0, 0.0, 0.72),
                               1000.0, 1000.0, W, H) is None

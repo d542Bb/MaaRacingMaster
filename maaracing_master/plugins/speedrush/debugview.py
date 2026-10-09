@@ -38,8 +38,8 @@ import numpy as np
 
 from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
-    GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_NX, GRID_NZ, GRID_SHOULDER,
-    GRID_UNKNOWN, GRID_X_MAX, GRID_Z_LO)
+    ANCHOR_Z_HI, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_NX, GRID_NZ,
+    GRID_SHOULDER, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_LO)
 from maaracing_master.plugins.speedrush.latsample import (
     GRID_CAR_HALF_LANE_M, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.world_model import (
@@ -94,8 +94,9 @@ def _project_detection(px: int, py: int, coef, fx: float, fy: float,
                        frame_w: int, frame_h: int) -> tuple[float, float] | None:
     """检测框底中心像素 → 路面 (X, Z) 米（相机轴系）；退化/域外返回 None。
 
-    z 上限=_RENDER_Z_HI（渲染域）而非栅格采集窗——16m 外的检测标记画进目检
-    延伸区供人看，程序供数仍止步于栅格窗。"""
+    z 上限=深度锚点有效域（ANCHOR_Z_HI=90m，真源 depth_geo）——40m 外的
+    远距检测照常投影，画不画、画在哪由消费端定（钉绘图区顶缘+距离标注，
+    「程序能看多远」一目了然）；程序供数仍止步于栅格窗。"""
     if coef is None or not fx or not fy:
         return None
     a, b, c = coef
@@ -106,7 +107,7 @@ def _project_detection(px: int, py: int, coef, fx: float, fy: float,
         return None
     z = c / den
     x = u * z
-    if not (GRID_Z_LO <= z <= _RENDER_Z_HI) or abs(x) > GRID_X_MAX:
+    if not (GRID_Z_LO <= z <= ANCHOR_Z_HI):
         return None
     return x, z
 
@@ -257,15 +258,15 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                   color=(200, 200, 200))
         ly += 18
     ly += 2
-    sx = plot_x0 + 8
+    lx = plot_x0 + 8                     # 图例游标（勿用 sx——那是 BEV 横向比例尺）
     for label, col in (("U", _STATE_BGR[GRID_UNKNOWN]),
                        ("D", _STATE_BGR[GRID_DRIVABLE]),
                        ("B", _STATE_BGR[GRID_BLOCKED]),
                        ("S", _STATE_BGR[GRID_SHOULDER])):
-        cv2.rectangle(canvas, (sx, ly - 9), (sx + 12, ly + 3), col, -1)
-        _put_text(canvas, label, (sx + 15, ly - 5), scale=0.36,
+        cv2.rectangle(canvas, (lx, ly - 9), (lx + 12, ly + 3), col, -1)
+        _put_text(canvas, label, (lx + 15, ly - 5), scale=0.36,
                   color=(200, 200, 200))
-        sx += 46
+        lx += 46
 
     # 检测反投影标记：框底中心 → (X,Z)，域内画点
     result = snap.get("result")
@@ -289,8 +290,23 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                                              fx, fy, fw, fh)
                     if hit is None:
                         continue
-                    cv2.circle(canvas, (bm.px(hit[0]), bm.py(hit[1])),
-                               rad, color, -1 if filled else 1)
+                    x_m, z_m = hit
+                    if z_m > _RENDER_Z_HI:
+                        # 40m 外（渲染域上限）：标记钉在绘图区顶缘、距离如实
+                        # 标注——「程序能看多远」一目了然；横向位置=投影 x
+                        # 夹到域内（俯视正交，远处方向仍真实）。程序供数仍
+                        # 止步于栅格窗，此层只回答"看见了"。
+                        xp = max(bm.px(-GRID_X_MAX) + 2,
+                                 min(bm.px(GRID_X_MAX) - 2, bm.px(x_m)))
+                        yp = plot_y0 + 5
+                        cv2.circle(canvas, (xp, yp), rad, color,
+                                   -1 if filled else 1)
+                        _put_text(canvas, f"{int(z_m)}m",
+                                  (xp + rad + 2, yp - 5), scale=0.34,
+                                  color=color)
+                    else:
+                        cv2.circle(canvas, (bm.px(x_m), bm.py(z_m)),
+                                   rad, color, -1 if filled else 1)
 
     # d(t) 规划子带（时间参数化轨迹，诚实呈现；不臆造 t→z）
     py0 = plot_y1 + 30
