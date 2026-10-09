@@ -48,6 +48,7 @@ import math
 from dataclasses import dataclass
 
 from maaracing_master.plugins.speedrush.config import DecisionConfig
+from maaracing_master.plugins.speedrush.corridor import UNKNOWN, Corridor
 from maaracing_master.plugins.speedrush.depth_geo import DrivableGrid
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, SampledTraj, eval_traj)
@@ -382,6 +383,7 @@ class DecisionEngine:
         self._ro: float | None = None
         self._rwidth: float | None = None
         self._grid: DrivableGrid | None = None
+        self._corridor: Corridor | None = None
         self._traj_diag: dict | None = None   # 逐拍采样诊断（trace 消费）
 
     # ---------- 主入口 ----------
@@ -392,7 +394,8 @@ class DecisionEngine:
                               tuple[PassEvent, ...]] | None = None,
                road_offset: float | None = None,
                road_width: float | None = None,
-               grid: DrivableGrid | None = None) -> DecisionOutput:
+               grid: DrivableGrid | None = None,
+               corridor: Corridor | None = None) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
@@ -401,10 +404,13 @@ class DecisionEngine:
         ``road_offset``/``road_width``（阶段二 §一）：路心锚与 W 兜底宽度，仅
         轨迹模式消费；ro 缺席拍轨迹诚实降级回 legacy 输出形成（不臆造路心系）。
         ``grid``（S2-B）：同拍可行驶栅格，仅轨迹模式且 grid_veto 闸开时进
-        轨迹评分；闸关/None=不触栅格代价，与关闸前逐拍一致。"""
+        轨迹评分；闸关/None=不触栅格代价，与关闸前逐拍一致。
+        ``corridor``（第 6 步）：同拍分带走廊，仅侧别空间检查消费
+        （_side_has_space 按带来源规则）；None=无证据，对称默认不否决。"""
         self._dt_last = dt_s               # 计划层慢拍计时基（selector 累计）
         self._views, self._events = traffic if traffic is not None else ((), ())
         self._boundary = obs.boundary
+        self._corridor = corridor
         self._ro = road_offset
         self._rwidth = road_width
         self._grid = grid if self.cfg.grid_veto.enabled else None
@@ -920,19 +926,24 @@ class DecisionEngine:
         return cands[0][1], cands[0][2]
 
     def _side_has_space(self, x_lane: float) -> bool:
-        """候选侧的路缘空间检查。左缘读数 left_edge_lane（负值，|·|=左缘距）、
-        右缘 right_edge_lane。None=该侧无证据 → **不否决**（对称默认）。
-        贴邻目标在候选的内侧（|hug|<|x|），但车本身占位，闸门按候选侧缘距判。"""
-        b = None
-        # boundary 摘要只在观测层有双侧稳定时给缘距；单侧 None 自动放行
-        if self._boundary is not None:
-            b = self._boundary
-        edge = (b.right_edge_lane if x_lane >= 0 else b.left_edge_lane) \
-            if b is not None else None
-        if edge is None:
+        """候选侧的路缘空间检查（第 6 步走廊带来源规则）。
+
+        近带（bands[0]，z 3~6m）该侧边界证据按来源判：measured/occluded/
+        inferred 有边界位置都按「边界距 < 需求 → 否决」（墙永远赢：物理墙
+        与先验空气墙都不许挤，occluded 用最近已知位置+保守，inferred 用先验
+        空气墙+保守）；unknown（无证据带）保持对称默认**不否决**——旧
+        None 不否决的默认只对"无证据"保留，不对"有证据"（接口统一不得成为
+        绕过旧否决的理由）。贴邻目标在候选的内侧（|hug|<|x|），闸门按候选
+        侧缘距判。走廊缺席（corridor=None）=旧对称默认。"""
+        c = self._corridor
+        if c is None or not c.bands:
             return True
-        need = self.cfg.overtake.d_hold_lane + self.cfg.overtake.space_margin_lane
-        return abs(edge) >= need
+        b = c.bands[0].left if x_lane < 0 else c.bands[0].right
+        if b.src == UNKNOWN or b.x_m is None:
+            return True
+        need_m = (self.cfg.overtake.d_hold_lane
+                  + self.cfg.overtake.space_margin_lane) * self.cal.lane_w_m
+        return abs(b.x_m) >= need_m
 
     def _degraded(self, obs: WorldObservation) -> bool:
         """恢复判定：与致命信号同一合取的"健康面"——alive+fresh+presence 或过渡。"""

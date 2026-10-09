@@ -323,16 +323,22 @@ def _bnd_clusters(*clusters, sides=2):
     return SimpleNamespace(sides=sides, left_edge_lane=l, right_edge_lane=r)
 
 
+def _off(c):
+    """corridor → off（planner 契约：−center_lane，右正；None 直通）。
+    第 6 步 update 吐分带走廊，数值断言经此换算（极性与旧 off 同式）。"""
+    return None if c is None else -c.center_lane
+
+
 def test_ego_road_pair_off_polarity():
     """观测层极性（v3.2 契约沿用，供数源换 3D 找边）：off=自车相对路心
     （右正,planner 契约）——双侧路缘,off=−(左缘+右缘)/2。车在路心右 1.9 道
     必须出 +1.9。"""
     o = smod._EgoRoadObserver()
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == pytest.approx(+1.9)
     assert o.last["source"] == "pair"
     o2 = smod._EgoRoadObserver()
-    assert o2.update(_bnd_clusters(0.9, 2.9), now=1000.0) == pytest.approx(-1.9)
-    assert o2.update(_bnd_clusters(1.0, 3.0), now=1000.05) == pytest.approx(-2.0)
+    assert _off(o2.update(_bnd_clusters(0.9, 2.9), now=1000.0)) == pytest.approx(-1.9)
+    assert _off(o2.update(_bnd_clusters(1.0, 3.0), now=1000.05)) == pytest.approx(-2.0)
 
 
 def test_ego_road_gate_sides2_and_slot_ttl():
@@ -340,10 +346,10 @@ def test_ego_road_gate_sides2_and_slot_ttl():
     0.4s 内最近有效对保鲜兜底（pair_slot）,过期退 none（13:29 黑视教训:
     兜底优先,单侧安全包线是 P1）。"""
     o = smod._EgoRoadObserver()
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
-    assert o.update(_bnd_clusters((5.0,), sides=1), now=1000.05) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters((5.0,), sides=1), now=1000.05)) == pytest.approx(+1.9)
     assert o.last["source"] == "pair_slot"       # 单侧→兜底
-    assert o.update(None, now=1000.30) == pytest.approx(+1.9)
+    assert _off(o.update(None, now=1000.30)) == pytest.approx(+1.9)
     assert o.update(None, now=1000.60) is None   # TTL 过期
     assert o.last["source"] == "none"
 
@@ -351,9 +357,9 @@ def test_ego_road_gate_sides2_and_slot_ttl():
 def test_ego_road_off_max_garbage_not_fed_nor_cached():
     """|off|>OFF_MAX 的垃圾对不喂、不入槽（宁弃不喂假路心,也不留毒槽）。"""
     o = smod._EgoRoadObserver()
-    assert o.update(_bnd_clusters(-6.0, -2.0), now=1000.0) is None  # off=+4.0
+    assert _off(o.update(_bnd_clusters(-6.0, -2.0), now=1000.0)) is None  # off=+4.0
     assert o.last["source"] == "pair"
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.05) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.05)) == pytest.approx(+1.9)
     assert o.last["source"] == "pair"            # 垃圾对未入槽,干净对直接生效
 
 
@@ -363,14 +369,14 @@ def test_ego_road_median_filter_kills_outlier_pair():
     杀单对野值；窗口未满（前两拍）直喂最新对、与旧版逐值同形；垃圾对不入窗。"""
     o = smod._EgoRoadObserver()
     # p1: 干净对（窗口 1，直喂）
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == pytest.approx(+1.9)
     # p2: 右缘野值（窗口 2 不足，直喂当拍——单发噪声由规划层新息门兜底）
-    assert o.update(_bnd_clusters(-2.9, +0.7), now=1000.05) == pytest.approx(+1.1)
+    assert _off(o.update(_bnd_clusters(-2.9, +0.7), now=1000.05)) == pytest.approx(+1.1)
     # p3: 干净对（窗口满 3，中值右缘 = median(-0.9, +0.7, -0.9) = -0.9）→ 野值被杀
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.10) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10)) == pytest.approx(+1.9)
     # 垃圾对不毒化窗口：随后一对仍按干净窗口中值出数
-    assert o.update(_bnd_clusters(-6.0, -2.0), now=1000.15) is None
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.20) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters(-6.0, -2.0), now=1000.15)) is None
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.20)) == pytest.approx(+1.9)
 
 
 def test_ego_road_reuse_tick_consumes_no_new_evidence():
@@ -383,19 +389,19 @@ def test_ego_road_reuse_tick_consumes_no_new_evidence():
     o = smod._EgoRoadObserver()
     o.update(_bnd_clusters(-2.9, -0.9), now=1000.00)
     o.update(_bnd_clusters(-2.9, -0.9), now=1000.05)
-    base = o.update(_bnd_clusters(-2.9, -0.9), now=1000.10)   # 窗满
+    base = _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10))   # 窗满
     n_win, n_w = len(o._win), len(o._w_samples)
     for k in range(1, 5):                                     # 驻留重投 4 拍
-        assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.10 + 0.05 * k,
-                        new=False) == pytest.approx(base)
+        assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10 + 0.05 * k,
+                        new=False)) == pytest.approx(base)
         assert o.last["source"] == "pair_slot"
     assert len(o._win) == n_win and len(o._w_samples) == n_w
     # 右缘野值（新对）：满窗中值杀掉；随后野值重投不能再凭重复入窗翻面
-    killed = o.update(_bnd_clusters(-2.9, +0.7), now=1000.35)
+    killed = _off(o.update(_bnd_clusters(-2.9, +0.7), now=1000.35))
     assert killed == pytest.approx(1.9)   # median(-0.9,-0.9,+0.7)=-0.9
     for k in range(1, 4):
-        assert o.update(_bnd_clusters(-2.9, +0.7), now=1000.40 + 0.05 * k,
-                        new=False) == pytest.approx(killed)
+        assert _off(o.update(_bnd_clusters(-2.9, +0.7), now=1000.40 + 0.05 * k,
+                        new=False)) == pytest.approx(killed)
     assert len(o._win) == 3
 
 
@@ -442,16 +448,16 @@ def test_ego_road_polluted_width_pair_not_fed():
     o = smod._EgoRoadObserver()
     for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES):
         o.update(_bnd_clusters(-2.23, +2.23), now=1000.0 + 0.05 * k)
-    assert o.update(_bnd_clusters(-2.23, +2.23), now=1100.0) == pytest.approx(0.0)
+    assert _off(o.update(_bnd_clusters(-2.23, +2.23), now=1100.0)) == pytest.approx(0.0)
     # 对宽 1.7 道的车流走廊对：|1.7−4.46|=2.76 > 0.4·4.46 → 拒
-    assert o.update(_bnd_clusters(-0.4, +1.3), now=1100.10) is None
+    assert _off(o.update(_bnd_clusters(-0.4, +1.3), now=1100.10)) is None
     assert o.last["source"] == "pair"
     # 槽未被污染对顶掉：单侧拍保鲜兜底仍是污染前好对的路心
-    assert o.update(_bnd_clusters((1.0,), sides=1), now=1100.15) == pytest.approx(0.0)
+    assert _off(o.update(_bnd_clusters((1.0,), sides=1), now=1100.15)) == pytest.approx(0.0)
     # 连续污染对耗不过门：窗/槽全程无污染（持续车流遮挡时 ro 诚实弃权）
     for k in range(5):
-        assert o.update(_bnd_clusters(-0.4, +1.3),
-                        now=1100.2 + 0.05 * k) is None
+        assert _off(o.update(_bnd_clusters(-0.4, +1.3),
+                        now=1100.2 + 0.05 * k)) is None
     assert o.width == pytest.approx(4.46)
 
 
@@ -541,18 +547,20 @@ def test_ego_road_xcheck_off_is_bit_identical():
     """闸关（缺省/显式 disabled）：grid 参数只进审计面（last.grid_off），
     供数路径与无栅格版逐位同形——互证不开闸不得改变任何供数结果。"""
     g_audit = _xg_grid(40, 43)         # 路心 0.0m → off=0.0，仅作审计值
+    from maaracing_master.plugins.speedrush.config import GridXcheck
     for ctor in (lambda: smod._EgoRoadObserver(),
-                 lambda: smod._EgoRoadObserver(load_decision().grid_xcheck,
-                                               2.75)):
+                 # 显式 off（第 6 步观察器自读 mode：master 语义有专属测试，
+                 # 本用例锁的是闸关=找边对当主人、栅格只进审计面的语义）
+                 lambda: smod._EgoRoadObserver(GridXcheck(mode="off"), 2.75)):
         o = ctor()
-        assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
-                        grid=g_audit) == pytest.approx(+1.9)
+        assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                        grid=g_audit)) == pytest.approx(+1.9)
         assert o.last["source"] == "pair" and o.last["xcheck"] is None
     o_audit = smod._EgoRoadObserver(lane_w_m=2.75)
     o_plain = smod._EgoRoadObserver()
-    assert o_audit.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
-                          grid=g_audit) == pytest.approx(+1.9)
-    assert o_plain.update(_bnd_clusters(-2.9, -0.9), now=1000.0) == \
+    assert _off(o_audit.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                          grid=g_audit)) == pytest.approx(+1.9)
+    assert _off(o_plain.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == \
         pytest.approx(+1.9)
     assert o_audit.last["grid_off"] is not None   # 审计面在场
     assert o_plain.last["grid_off"] is None       # 无栅格=弃权
@@ -569,16 +577,16 @@ def test_ego_road_xcheck_agree_feeds_veto_rejects():
     g_veto = _xg_grid(48, 51)
     o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
                        bypass_streak=8), 2.75)
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
-                    grid=g_agree) == pytest.approx(+1.9, abs=0.01)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                    grid=g_agree)) == pytest.approx(+1.9, abs=0.01)
     assert o.last["xcheck"] == "agree"
     # 分歧新鲜对：None + veto 判定；槽里还是上一致对的值
-    assert o.update(_bnd_clusters(-0.9, +0.9), now=1000.05,
-                    grid=g_veto) is None
+    assert _off(o.update(_bnd_clusters(-0.9, +0.9), now=1000.05,
+                    grid=g_veto)) is None
     assert o.last["xcheck"] == "veto" and o.last["source"] == "pair"
     assert len(o._win) == 1            # 野值对未入窗
-    assert o.update(_bnd_clusters(-0.9, +0.9), now=1000.10,
-                    grid=g_veto, new=False) == pytest.approx(+1.9, abs=0.01)
+    assert _off(o.update(_bnd_clusters(-0.9, +0.9), now=1000.10,
+                    grid=g_veto, new=False)) == pytest.approx(+1.9, abs=0.01)
     assert o.last["source"] == "pair_slot"   # 复用走槽值，槽未被毒化
 
 
@@ -590,12 +598,12 @@ def test_ego_road_xcheck_bypass_after_streak():
     o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
                        bypass_streak=3), 2.75)
     for k in range(2):
-        assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.0 + 0.05 * k,
-                        grid=g_veto) is None
+        assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0 + 0.05 * k,
+                        grid=g_veto)) is None
     assert o._xc_streak == 2
     # 第 3 次连续分歧：streak 达预算 → 放行（bypass），清零
-    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.10,
-                    grid=g_veto) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10,
+                    grid=g_veto)) == pytest.approx(+1.9)
     assert o.last["xcheck"] == "bypass" and o._xc_streak == 0
     # 放行后的下一次分歧从 1 重新计
     assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.15,
@@ -606,9 +614,9 @@ def test_ego_road_xcheck_bypass_after_streak():
 # ---------- 供数主人=绿区边界（grid_xcheck.mode=master）全链 ----------
 
 def test_master_mode_region_feeds_and_edge_audited(monkeypatch):
-    """master 全链：供数 off=区读数（绿区 wmid 口径），找边对降交叉验证——
-    骑黄线自锁走廊（L=−1.32/R=+0.53 报"正中"）被区读数顶替；trace 三列
-    ro_off（区主人）/ro_grid（区审计）/ro_edge（降级前主人）同场可对。"""
+    """master 全链（第 6 步合并后）：供数 off=区读数（绿区 wmid 口径），找边对
+    不进供数——骑黄线自锁走廊（L=−1.32/R=+0.53 报"正中"）被区读数顶替；
+    trace 三列 ro_off（区主人）/ro_grid（区审计）/ro_edge（找边对审计）同场可对。"""
     import numpy as np
     from maaracing_master.plugins.speedrush import depth_geo as dg
     d = load_decision()
@@ -634,7 +642,7 @@ def test_master_mode_region_feeds_and_edge_audited(monkeypatch):
                         10.0, 1)
     assert chain["disabled"] is False
     row = chain["trace"][-1]
-    assert row["ro_source"] == "pair" and row["ro_off"] is not None
+    assert row["ro_source"] == "region" and row["ro_off"] is not None
     exp_off = -1.5 / chain["lane_w_m"]     # 车在路心左 1.5m → off=−1.5m/道宽
     assert row["ro_off"] == pytest.approx(exp_off, abs=0.01), \
         "master 模式供数应为区路心，不是找边对"

@@ -31,9 +31,9 @@ def test_wall_track_accumulates_confidence():
     t.update(_StubReading([(-1, 14.0, -10.6)]), fid=101)
     bins = t.bins(-1)
     assert len(bins) == 1
-    zc, pos, conf, state = bins[0]
+    zc, pos, conf, state, last_fid = bins[0]
     assert zc == 14.0 and abs(pos + 10.6) < 1e-6
-    assert conf == 2.0 and state == "measured"
+    assert conf == 2.0 and state == "measured" and last_fid == 101
 
 
 def test_wall_track_resets_on_jump():
@@ -43,7 +43,7 @@ def test_wall_track_resets_on_jump():
     t.update(_StubReading([(-1, 14.0, -10.7)]), fid=101)
     assert t.bins(-1)[0][2] == 2.0
     t.update(_StubReading([(-1, 14.0, -10.7 - TOL_M - 0.5)]), fid=102)
-    zc, pos, conf, state = t.bins(-1)[0]
+    zc, pos, conf, state, last_fid = t.bins(-1)[0]
     assert conf == 1.0, "跳变后必须重置，不许沿用旧置信"
     assert abs(pos + 10.7 + TOL_M + 0.5) < 1e-6
 
@@ -54,7 +54,7 @@ def test_wall_track_marks_occluded_with_history():
     t.update(_StubReading([(-1, 14.0, -10.7), (-1, 8.0, -5.0)]), fid=100)
     t.update(_StubReading([(-1, 14.0, -10.7), (-1, 8.0, -5.0)]), fid=101)
     t.update(_StubReading([(-1, 14.0, -10.7)]), fid=102)   # zc=8 本帧被挡
-    d = {zc: (pos, conf, st) for zc, pos, conf, st in t.bins(-1)}
+    d = {zc: (pos, conf, st) for zc, pos, conf, st, _f in t.bins(-1)}
     assert d[14.0][2] == "measured"
     assert d[8.0][2] == OCCLUDED, "攒到门槛的被挡箱应标遮挡"
     assert abs(d[8.0][0] + 5.0) < 1e-6, "遮挡段位置沿用上一帧"
@@ -85,6 +85,20 @@ def test_wall_track_fid_repeats_and_rewinds_skipped():
     assert t.bins(-1)[0][2] == 1.0, "同 fid 不许重复攒置信"
     t.update(_StubReading([(-1, 14.0, -10.7)]), fid=99)    # 倒退
     assert t.bins(-1)[0][2] == 1.0
+
+
+def test_wall_track_reobserve_unoccludes():
+    """遮挡墙重新可见：状态回 measured（重观测=重新在场），置信续攒。"""
+    t = WallTrack(CAL)
+    t.update(_StubReading([(-1, 14.0, -10.7), (-1, 8.0, -5.0)]), fid=100)
+    t.update(_StubReading([(-1, 14.0, -10.7), (-1, 8.0, -5.0)]), fid=101)
+    t.update(_StubReading([(-1, 14.0, -10.7)]), fid=102)   # zc=8 被挡 → occluded
+    d = {zc: st for zc, _p, _c, st, _f in t.bins(-1)}
+    assert d[8.0] == OCCLUDED
+    t.update(_StubReading([(-1, 8.0, -5.0)]), fid=103)     # 车挪开：重新可见
+    d = {zc: (conf, st) for zc, _p, conf, st, _f in t.bins(-1)}
+    assert d[8.0][1] == "measured", "重观测必须解除遮挡"
+    assert d[8.0][0] > 1.0, "遮挡期衰减后重观测续攒置信"
 
 
 def test_wall_track_confidence_capped():

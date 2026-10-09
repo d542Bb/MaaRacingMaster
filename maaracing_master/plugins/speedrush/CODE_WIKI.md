@@ -774,3 +774,38 @@ commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为
   采集窗，其上为目检延伸区（深灰底，检测反投影标记照画）；z=16m 处亮黄
   **虚线=程序接受域上限**（"线以上只画不收"），维护者要求（BEV 画太短、
   滞后一帧的目检补偿——滞后本身待运动补偿治）。
+
+
+## 16. 分带走廊统一供数（第 6 步，2026-10-09）（本域）
+
+**住户**：`corridor.py`（Corridor/CorridorBand/BandBoundary + build_corridor
+拼装）+ `module.py::_EgoRoadObserver`（供数门→优先级链）+ `wall_track.py::WallTrack`
+（墙实体，第 5 步）。update 吐 **Corridor**（不再吐单值 off）；planner 吃
+road_offset=−corridor.center_lane（极性与旧式同，跨层极性契约门禁不豁免），
+engine 吃走廊带来源规则（`decision._side_has_space`）。
+
+**供数合并成一条优先级链**（mode 只决定候选排序，旧两路降级审计面）：
+- off/veto：pair → wall → pair_slot → region → None；
+- master：region（走同一套门禁/中值窗/槽/W 统计）→ pair_slot → wall → None。
+拒绝与缺席分两条路：候选对被门禁拒绝（垃圾/W±20%/互证 veto）=当帧证据坏，
+诚实弃权不兜底（宁弃不喂假路心）；候选缺席（单侧/无效/复用拍过期）才走
+候选链——墙实体路径 src=wall（live 箱，conf≥FLOOR）/wall_occl（遮挡箱，
+conf≥OCCL_MIN_CONF 的历史证据）把 sides=1/0 型从全盲变半盲供数。
+
+**带内来源四态**（每一带每侧，评审验收面：每带说明边界来自哪里、证据多新、
+当前允许做什么）：墙箱（measured/occluded，WallTrack 攒的置信+last_fid）>
+绿区范围（measured 低置信，栅格实测路面）> 空气墙（inferred，center±W/2，
+永远 inferred 不冒充实测）> unknown（无证据）。far_trend（远场墙走向斜率，
+只预判不硬否决）与 plane_health（ok/degraded/none）随走廊走。
+
+**消费端**：`_side_has_space` 改吃走廊近带（bands[0]）来源规则——
+measured/occluded/inferred 有边界位置都按「边界距<需求→否决」（墙永远赢），
+unknown 保持对称默认不否决（旧 obs.boundary 通道 v4 恒 None，已退役）。
+β 速度修正只认新鲜实测（pair/wall/region 新拍；pair_slot/wall_occl 复用/
+历史证据只收 α 位置）。
+
+**验收**（83 包影子重放逐帧对账，证据指向当次提交）：master 口径（部署
+配置）值分歧 0 帧——区主人语义逐帧一致，合并未改变任何既供数帧的值；新供数
+12 帧（墙实体路径把区弃权黑视段救活，含 2 帧遮挡标记穿越 sides=0 全盲）；
+新弃权 1 帧（区读宽 4.88 道超 W±20% 门、旧 ±40% 放行——计划内收紧，诚实
+弃权）。trace 新增 cor_w/cor_ph 两列（走廊宽+平面健康）。

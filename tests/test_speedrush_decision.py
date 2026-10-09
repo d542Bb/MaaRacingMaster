@@ -588,12 +588,18 @@ def test_overtake_score_partial_order():
 
 # ---------- 对称性原则（维护者裁定 2026-09-22：决策默认左右对称，禁用方向需显式证据） ----------
 
-def _bnd(left_edge=None, right_edge=None):
-    from maaracing_master.plugins.speedrush.tracking import BoundarySummary
-    return BoundarySummary(schema_version=2, left_x=300.0, right_x=980.0,
-                           road_width=680.0, straight_residual=0.1, vp_row=None,
-                           validity=True, uncertainty=1.0, sides=2,
-                           left_edge_lane=left_edge, right_edge_lane=right_edge)
+def _corridor(left_m=None, right_m=None):
+    """单带走廊（_side_has_space 消费面）：米制入参，obs.boundary 通道
+    v4 恒 None 已退役（第 6 步侧别检查改吃走廊带）。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand, UNKNOWN)
+    band = CorridorBand(
+        z0=3.0, z1=6.0,
+        left=BandBoundary(left_m, "measured") if left_m is not None
+        else BandBoundary(None, UNKNOWN),
+        right=BandBoundary(right_m, "measured") if right_m is not None
+        else BandBoundary(None, UNKNOWN))
+    return Corridor((band,), None, None, "pair", "ok", None)
 
 
 def test_mirror_symmetry_engine_and_planner():
@@ -617,20 +623,21 @@ def test_mirror_symmetry_engine_and_planner():
 def test_space_gate_disables_only_with_evidence():
     ov = CFG.overtake
     tight = ov.d_hold_lane + ov.space_margin_lane - 0.05
-    # 左缘只剩 tight 的空间 → 左候选被禁、右候选照常
     e = _eng(overtake=True)
-    out = e.update(_obs(fid=1, presence=True, boundary=_bnd(left_edge=-tight,
-                                                             right_edge=2.0)),
-                   DT, traffic=_traffic([_cv(tid=9, x=-1.1)]))
+    lw = e.cal.lane_w_m
+    # 左缘只剩 tight 的空间 → 左候选被禁、右候选照常（走廊带来源规则）
+    c = _corridor(left_m=-tight * lw, right_m=2.0 * lw)
+    out = e.update(_obs(fid=1, presence=True), DT,
+                   traffic=_traffic([_cv(tid=9, x=-1.1)]), corridor=c)
     assert "no_candidate" in out.reason
-    out = e.update(_obs(fid=2, presence=True, boundary=_bnd(left_edge=-tight,
-                                                             right_edge=2.0)),
-                   DT, traffic=_traffic([_cv(tid=9, x=1.1)]))
+    out = e.update(_obs(fid=2, presence=True), DT,
+                   traffic=_traffic([_cv(tid=9, x=1.1)]), corridor=c)
     assert out.state is DecisionState.CHANGE
-    # 证据不足（缘距 None）→ 两侧都放行（对称默认，不得无证据禁方向）
+    # 证据不足（unknown 带）→ 两侧都放行（对称默认，不得无证据禁方向）
     e2 = _eng(overtake=True)
-    out = e2.update(_obs(fid=1, presence=True, boundary=_bnd(None, None)), DT,
-                    traffic=_traffic([_cv(tid=9, x=-1.1)]))
+    out = e2.update(_obs(fid=1, presence=True), DT,
+                    traffic=_traffic([_cv(tid=9, x=-1.1)]),
+                    corridor=_corridor(None, None))
     assert out.state is DecisionState.CHANGE
     e3 = _eng(overtake=True)
     out = e3.update(_obs(fid=1, presence=True), DT,

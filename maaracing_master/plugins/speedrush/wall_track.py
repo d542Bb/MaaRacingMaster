@@ -54,11 +54,13 @@ class WallTrack:
         self._last_fid = -1
 
     def update(self, reading, fid: int) -> None:
-        """一帧墙观测进账（reading.edge_pts: (side, zc, x_m)；fid 重复帧跳过）。"""
+        """一帧墙观测进账（reading.edge_pts 或直接给 (side, zc, x_m) 序列；
+        fid 重复帧跳过）。复用/弃权拍给空序列=只走衰减（置信是时间的函数）。"""
         if fid <= self._last_fid:
             return
+        frames = reading.edge_pts if hasattr(reading, "edge_pts") else reading
         seen: set[tuple[int, float]] = set()
-        for s, zc, x_m in reading.edge_pts:
+        for s, zc, x_m in frames:
             key = (s, zc)
             slot = self._bins.get(key)
             if slot is None or abs(x_m - slot.pos_m) > TOL_M:
@@ -67,6 +69,7 @@ class WallTrack:
                 slot.pos_m = float(x_m)
                 slot.conf = min(slot.conf + 1.0, CONF_CAP)
                 slot.last_fid = fid
+                slot.state = MEASURED       # 重观测=重新在场（遮挡解除）
             seen.add(key)
         for key, slot in self._bins.items():
             if key in seen:
@@ -78,8 +81,9 @@ class WallTrack:
                 slot.state = ""
         self._last_fid = fid
 
-    def bins(self, side: int) -> list[tuple[float, float, float, str]]:
-        """该侧的墙假设清单 [(zc, pos_m, conf, state)]；state 为 '' 的不吐。"""
-        return sorted((zc, sl.pos_m, sl.conf, sl.state)
+    def bins(self, side: int) -> list[tuple[float, float, float, str, int]]:
+        """该侧的墙假设清单 [(zc, pos_m, conf, state, last_fid)]；state 为 ''
+        的不吐（last_fid=证据年龄，走廊标注"证据有多新"用）。"""
+        return sorted((zc, sl.pos_m, sl.conf, sl.state, sl.last_fid)
                       for (s, zc), sl in self._bins.items()
                       if s == side and sl.state and sl.conf >= CONF_FLOOR)

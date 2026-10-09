@@ -43,11 +43,14 @@ from maaracing_master.plugins.speedrush import (
     PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
+from maaracing_master.plugins.speedrush.corridor import Corridor, build_corridor
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
     load_session, region_reading)
+from maaracing_master.plugins.speedrush.wall_track import (
+    CONF_FLOOR, MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
@@ -715,11 +718,13 @@ class SpeedRushModule(ActivityModule):
         """
         cfg = load_decision()
         cal = load_calib()   # 标定真源一次读入（深度观测器同源）
+        wt = WallTrack(cal)  # 墙实体（第 5 步）：逐箱跨帧假设，ego_road 持有
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 "traffic_obs": TrafficObserver(cfg.traffic),
                 # lane_w_m 供栅格区域读数的米→道换算（world_model 同源锚）
                 "lane_w_m": cal.lane_w_m,
-                "ego_road": _EgoRoadObserver(cfg.grid_xcheck, cal.lane_w_m),
+                "wall_track": wt,
+                "ego_road": _EgoRoadObserver(cfg.grid_xcheck, cal.lane_w_m, wt),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -803,45 +808,40 @@ class SpeedRushModule(ActivityModule):
             obs = chain["agg"].update(obs)
             planner: LateralPlanner = chain["planner"]
             tviews, tevents = chain["traffic_obs"].update(obs)
-            # road_offset 供数源=深度几何读数（路心合成+保鲜槽在 _EgoRoadObserver
-            # 内）；dgeo 弃权拍=None，退纯模型积分——一个 job 一个主人。
+            # road_offset 供数源=分带走廊（第 6 步统一供数路）：供数主人选择
+            # （off/veto→找边对、master→区读数）合并进 _EgoRoadObserver 内部的
+            # 一条优先级链（mode 只决定候选排序），此处不再两条供数路互相顶替；
+            # 找边对心保留为审计列（ro_edge）。走廊 None=诚实弃权拍，退纯模型
+            # 积分——一个 job 一个主人。
             # 提前于 engine.update：轨迹模式（阶段二）决策层同吃路心锚与 W
             # 兜底宽度；legacy 模式消费序不变（engine 不吃这两路）。
             # dgrid（S2-B）：同拍栅格，仅 grid_veto 闸开时进轨迹评分（闸关
             # 时 engine 忽略）。
-            # 供数主人选择（grid_xcheck.mode）：master=绿区边界当主人（路的
-            # 定义=可行驶区域的物理边界，非车道线；找边降为交叉验证审计，
-            # 不回退——双主人切换=0.8 道级 ro 台阶）；off/veto=找边对当主人
-            # （旧行为）。区弃权拍走保鲜槽/诚实 None，黑视纪律同前。
-            supply = dgeo
             edge_off = None
-            if chain["cfg"].grid_xcheck.mode == "master":
-                supply = None
-                if dgrid is not None:
-                    reg = region_reading(dgrid, chain["lane_w_m"])
-                    if reg.sides == 2:
-                        supply = reg
-                if dgeo is not None and dgeo.sides == 2 \
-                        and dgeo.left_edge_lane is not None \
-                        and dgeo.right_edge_lane is not None:
-                    edge_off = -((dgeo.left_edge_lane + dgeo.right_edge_lane)
-                                 / 2.0)   # 找边对心（交叉验证审计面）
-            road_offset = chain["ego_road"].update(supply, new=dgeo_new,
-                                                   grid=dgrid)
+            if dgeo is not None and dgeo.sides == 2 \
+                    and dgeo.left_edge_lane is not None \
+                    and dgeo.right_edge_lane is not None:
+                edge_off = -((dgeo.left_edge_lane + dgeo.right_edge_lane)
+                             / 2.0)   # 找边对心（审计面）
+            corridor = chain["ego_road"].update(dgeo, new=dgeo_new,
+                                                grid=dgrid, fid=fid)
+            road_offset = None if corridor is None else -corridor.center_lane
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents),
                 road_offset=road_offset,
-                road_width=chain["ego_road"].width,
-                grid=dgrid)
+                road_width=None if corridor is None else corridor.width_lane,
+                grid=dgrid, corridor=corridor)
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
             # 噪声交给 0.8 新息门+1.0s 陈旧重基消化；trace road_offset 列=实际喂入。
-            # road_offset_new：复用拍喂的是槽值旧证据，planner β 速度修正只认
-            # 新鲜拍（重复记账曾把单次找边翻跳放大成饱和侧滑，2026-10-06 局）。
+            # road_offset_new：复用拍喂的是槽值旧证据、遮挡墙中心是历史证据，
+            # β 速度修正只认新鲜实测（pair/wall/region 新拍）；planner 侧语义
+            # 同前（重复记账曾把单次找边翻跳放大成饱和侧滑，2026-10-06 局）。
             cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset,
-                                 road_offset_new=dgeo_new)
+                                 road_offset_new=dgeo_new and corridor is not None
+                                 and corridor.src not in ("pair_slot", "wall_occl"))
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -960,6 +960,11 @@ class SpeedRushModule(ActivityModule):
             else chain["depth_geo"].last_segments,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
+            # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账
+            # 与影子重放的验收面（带来源明细在 debugview/offline 重放）
+            "cor_w": None if corridor is None
+            else round(corridor.width_lane, 3),
+            "cor_ph": None if corridor is None else corridor.plane_health,
             # S2-B 采样诊断（dict|None）：ok/why/否决分项/中选 [d1,T]——
             # grid_veto 开闸后的否决频次与 ABORT 增量的验收列
             "traj_diag": chain["engine"].traj_diag,
@@ -1285,143 +1290,251 @@ def _maybe_save_bad_frame(chain: dict, frame, dgeo, fid: int, phase: int,
         s["saved"] = BAD_FRAME_MAX_PER_PHASE
 
 
+class _EdgePtsView:
+    """update() 喂墙实体的鸭子面：原始 (side, zc, x_m) 序列包成 edge_pts。"""
+
+    __slots__ = ("edge_pts",)
+
+    def __init__(self, pts) -> None:
+        self.edge_pts = pts
+
+
 class _EgoRoadObserver:
-    """road_offset 推导（供数源=深度几何 v4 读数，2026-10-01 主人切换）。
+    """分带走廊供数（第 6 步统一供数路，2026-10-09）。
 
-    planner 契约：``road_offset`` = **自车相对路心的位置**（车道单位，右正）。
-    深度几何读数的 left/right_edge_lane 是 3D 找边的两侧缘（车道单位，左负右
-    正，原点=车），双侧间隙中心 = 路心，``off = −(左缘+右缘)/2``——与黄线
-    v3.2 同式（供数源换成 3D 找边，消费语义不变）。
+    planner 契约不变：``road_offset`` = **自车相对路心的位置**（车道单位，
+    右正）= −corridor.center_lane，与旧 off=−(左缘+右缘)/2 同式——跨层极性
+    契约测试（test_cross_layer_polarity_and_mirror）门禁不豁免。
 
-    v3 事故链的总缺口（2026-09-30 复核裁决）：v3 把输出改成了「目标的自车系
-    坐标」（负=目标在左），与 planner 契约**互为相反数且中间无换算**——两侧
-    各自有符号测试、端到端只断言过 0.0（0 是符号不变量），三轮补丁全部从
-    这个缺口漏过。跨层极性契约测试（test_cross_layer_polarity_and_mirror）
-    自此为门禁。
+    供数合并成**一条优先级链**（mode 只决定候选排序，不再是两条供数路互相
+    顶替；旧两路的 read-only 审计面=trace ro_grid/ro_edge 列）：
 
-    - 门：``sides==2`` 且两侧读数在场（3D 找边契约：单侧下间隙归属几何
-      不可判定——102200 局「贴死左墙」的肇因之一就是把单侧读数当完整
-      栅格用）；W 成形后对宽超 W±40% 的污染对同垃圾对路径（2026-10-05：
-      车流场景下邻车侧面/挖洞洞缘会被当"边"，对宽 1.15~6.21 道乱跳，
-      只挡统计不挡供数时中线被车流走廊拽着漂）；
-    - 单侧/缺失：0.4s 内最近有效对保鲜兜底（13:29 供数黑视教训：黑视比
-      噪声致命），过期退纯模型积分；单侧安全包线是 P1 议题；
-    - |off|>OFF_MAX 垃圾不喂（宁弃不喂假路心）。
+    - off/veto：pair（双侧找边对，门禁全在候选上）→ wall（墙实体+W 先验）
+      → pair_slot（0.4s 保鲜）→ region（绿区中心，独立来源兜底）→ None；
+    - master：region（区读数当主人，系统性偏差防护保留，走同一套门禁/中值窗/
+      槽/W 统计）→ pair_slot → wall → None（找边降审计列，不回退找边——
+      双主人切换=0.8 道级 ro 台阶的教训保留）。
+
+    **拒绝与缺席分两条路**：候选对被门禁拒绝（垃圾/污染/互证否决）=当帧证据
+    坏，诚实弃权不兜底（宁弃不喂假路心）；候选缺席（单侧/无效/复用拍过期）
+    才走候选链——469 拍 sides=1 型从全盲变半盲供数（墙实体路径 src=wall，
+    遮挡墙 src=wall_occl），黑视比噪声致命的教训在候选链里消化。
+
+    门禁（全部随迁）：|center|>OFF_MAX 垃圾不喂；对宽超 W±20% 污染不喂
+    （2026-10-05 案：车流走廊对宽 1.7 道拽着中线漂；收紧自 ±40%，实机对账
+    可再收 ±15%）；互证 veto（mode=veto）带 bypass 预算；中值窗/保鲜槽原样
+    保留（复用拍不重复入窗/不喂 W）。
     """
 
     SLOT_TTL_S = 0.4                 # 有效对保鲜预算（兜底单侧/缺失拍）
     OFF_MAX = 3.0                    # 路面半宽级（4 车道 ≈ ±2 道）+ 机动余量
-    # 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽 (R−L) 的中位数——语义=
-    # 碰撞边界到碰撞边界（RULES：黄线外台阶），车道单位。缓变量统计：
-    # 双侧对在场率 ~50% 无妨，几十个样本即成形；±40% 门把找边锁错结构的
-    # 污染对挡在统计外。**离线回放两轮证伪的深度前瞻几何线不在此处**——
-    # 远场（z≥10）点云 X 被深度噪声涂抹（图像上几像素行高的条带），前瞻
-    # 线不可测；参考线=路心锚（本类 off）+ 车头向轴 + W 兜底界。
+    # 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽 (R−L) 的中位数，车道单位。
+    # 只认 pair 候选（master=区读数候选）——候选链（墙/槽/区兜底）不进统计，
+    # 避免混尺。W 是墙实体单侧定位走廊中心的先验（wall 路径的 W/2）。
     W_MIN_SAMPLES = 30               # 成形所需最少对宽数
     W_KEEP_SAMPLES = 200             # 滑动样本窗上限（路型缓变，旧样本滚出）
-    W_GUARD_FRAC = 0.4               # 对宽超出 W±此比例 → 污染，不进统计
+    W_GUARD_FRAC = 0.2               # 对宽超出 W±此比例 → 污染（收紧自 ±40%）
 
-    def __init__(self, xcheck=None, lane_w_m: float | None = None) -> None:
+    def __init__(self, xcheck=None, lane_w_m: float | None = None,
+                 wall_track=None) -> None:
         self._xc = xcheck            # GridXcheck | None（None/闸关=互证不参与供数）
         self._lane_w_m = lane_w_m
+        self._wt = wall_track        # WallTrack | None（None=无墙实体路径）
         self._xc_streak = 0          # 连续互证 veto 计数（达 bypass 预算放行）
         self._slot: dict[str, tuple] = {}     # 最近有效对缓存 (el, er, 时刻)
-        self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口，
-                                              # 第七轮：ro 单对野值 ±0.8 道跳变
-                                              # 直注规划层=抽风转向的供数面根因）
+        self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口）
         self._w_samples: deque = deque(maxlen=self.W_KEEP_SAMPLES)
         self.last: dict = {}                  # 实机 debug 数据面（ro_* 列）
+
+    def update(self, bnd, now: float | None = None, *,
+               new: bool = True,
+               grid: DrivableGrid | None = None,
+               fid: int | None = None) -> Corridor | None:
+        """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
+
+        ``new``：本拍读数是否新证据（异步驻留协议 take() 的 is_new）。中值窗、
+        保鲜槽与 W 统计只认新证据——驻留复用拍走槽值（pair_slot）。
+
+        ``grid``：同拍可行驶栅格（区兜底/互证审计面）。``fid``：墙实体进账
+        的帧号（新证据帧喂观测，复用/弃权拍只走衰减——置信是时间的函数）。
+
+        返回分带走廊（None=诚实弃权，交 planner 既有 machinery 消化，不造
+        观测）；planner 吃 road_offset=−corridor.center_lane，engine 吃走廊
+        带来源规则（decision._side_has_space）。"""
+        if now is None:
+            now = time.monotonic()
+        grid_off = self._grid_off(grid)     # 互证审计面：闸关也常算
+        if self._wt is not None and fid is not None:
+            pts = (list(getattr(bnd, "edge_pts", ()) or ())
+                   if (new and bnd is not None) else [])
+            self._wt.update(_EdgePtsView(pts), fid)
+        master = self._xc is not None and self._xc.mode == "master"
+
+        # master：区读数当主人（独立于 bnd，区弃权拍不回退找边）
+        if new and master:
+            reg = region_reading(grid, self._lane_w_m) \
+                if grid is not None else None
+            if reg is not None and reg.sides == 2 \
+                    and reg.left_edge_lane is not None \
+                    and reg.right_edge_lane is not None:
+                return self._pair_tick(reg.left_edge_lane,
+                                       reg.right_edge_lane, now, grid_off,
+                                       "region", bnd, grid, fid)
+            # 区弃权：候选链（槽 → 墙），找边不接棒（ro 台阶教训保留）
+            return self._fallback(now, grid, bnd, fid, master=True, new=new,
+                                  grid_off=grid_off)
+        ok = (bnd is not None and bnd.sides == 2
+              and bnd.left_edge_lane is not None
+              and bnd.right_edge_lane is not None)
+        if new and ok:
+            return self._pair_tick(bnd.left_edge_lane, bnd.right_edge_lane,
+                                   now, grid_off, "pair", bnd, grid, fid)
+        return self._fallback(now, grid, bnd, fid, master=master, new=new,
+                              grid_off=grid_off)
+
+    def _pair_tick(self, el: float, er: float, now: float,
+                   grid_off: float | None, src: str, bnd, grid,
+                   fid: int | None) -> Corridor | None:
+        """主候选一拍（pair 或 master 的区读数）：门禁→中值窗→槽/W→走廊。
+        拒绝返回 None（诚实弃权，无兜底），接受返回走廊。"""
+        off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
+        if abs((el + er) / 2.0) > self.OFF_MAX:
+            self.last = self._snapshot(now, src, None, off_raw, grid_off)
+            return None                 # 垃圾对：不喂、不入槽、不入窗
+        # 对宽一致性门（实机 2026-10-05 案）：W 成形后对宽超出 W±20% 的对=
+        # 找边锁错结构的污染对（车流走廊对宽 1.7 道、邻车侧面当"边"），同
+        # 垃圾对路径不供数。
+        formed = self.width
+        if formed is not None and \
+                abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
+            self.last = self._snapshot(now, src, None, off_raw, grid_off)
+            return None                 # 污染对：不喂、不入槽、不入窗
+        # 路心互证（grid_xcheck.mode=veto 专用）：新鲜对与同拍栅格 wmid 路心
+        # 分歧超容限 → 疑似找边锁错结构，同污染对路径不供数；连续 veto 达
+        # bypass_streak 放行并清零（黑视比噪声致命，闸不得制造供数黑视）。
+        xcheck = None
+        if self._xc is not None and self._xc.mode == "veto" \
+                and grid_off is not None:
+            if abs(off_raw - grid_off) > self._xc.tol_lane:
+                self._xc_streak += 1
+                if self._xc_streak < self._xc.bypass_streak:
+                    self.last = self._snapshot(now, src, None, off_raw,
+                                               grid_off, "veto")
+                    return None
+                xcheck = "bypass"       # 连续分歧达预算：放行，防黑视
+            else:
+                xcheck = "agree"
+            self._xc_streak = 0
+        # 中值滤波（窗口未满时直喂最新对）：单对野值被近 3 对中值杀掉，
+        # 真漂移经 2~3 对（约 0.5s）跟进。
+        self._win.append((el, er))
+        if len(self._win) >= 3:
+            el = sorted(w[0] for w in self._win)[1]
+            er = sorted(w[1] for w in self._win)[1]
+        self._slot["pair"] = (el, er, now)
+        self._feed_width(el, er)
+        center = (el + er) / 2.0        # 路心（自车系）
+        if abs(center) > self.OFF_MAX:
+            self.last = self._snapshot(now, src, None, off_raw, grid_off)
+            return None                 # 垃圾信号不喂（中值后复查，宁弃不喂假路心）
+        corridor = self._build(bnd, grid, fid, center, er - el, src)
+        self.last = self._snapshot(now, src, -center, off_raw, grid_off,
+                                   xcheck)
+        return corridor
+
+    def _fallback(self, now: float, grid, bnd, fid: int | None,
+                  master: bool, new: bool = True,
+                  grid_off: float | None = None) -> Corridor | None:
+        """候选链（候选缺席/复用拍）：墙实体与保鲜槽谁先、区兜底只在新鲜拍
+        ——复用拍的栅格是旧证据，不得冒充新鲜（黑视纪律：宁可 None）。"""
+        def slot_c():
+            fresh = self._fresh(now)
+            if fresh is None:
+                return None
+            el, er = fresh
+            center = (el + er) / 2.0
+            if abs(center) > self.OFF_MAX:
+                return None
+            return self._build(bnd, grid, fid, center, er - el, "pair_slot")
+
+        def wall_c():
+            wc = self._wall_center()
+            if wc is None:
+                return None
+            return self._build(bnd, grid, fid, wc[0], wc[1], wc[2])
+
+        def region_c():
+            rc = self._region_center(grid)
+            if rc is None:
+                return None
+            return self._build(bnd, grid, fid, rc[0], rc[1], "region")
+
+        if master:
+            order = (slot_c, wall_c)
+        else:
+            # off/veto：墙（新证据）→ 槽 → 区（区兜底只在新鲜拍）
+            order = ((wall_c, slot_c, region_c) if new
+                     else (wall_c, slot_c))
+        for f in order:
+            out = f()
+            if out is not None:
+                self.last = self._snapshot(now, out.src, -out.center_lane,
+                                           None, grid_off)
+                return out
+        self.last = self._snapshot(now, "none", None, None, grid_off)
+        return None
+
+    def _wall_center(self) -> tuple[float, float, str] | None:
+        """墙实体单侧中心：最近带 live 墙（conf≥FLOOR）优先、遮挡墙
+        （conf≥OCCL）次之；中心=墙 ∓ W/2（W 先验成形才有值——单侧间隙归属
+        靠先验，不臆造）。|center|>OFF_MAX 的远墙假设弃权（单侧墙不冒充完整
+        走廊，102200 贴死左墙的教训）。"""
+        formed = self.width
+        if formed is None or self._wt is None \
+                or not (self._lane_w_m and self._lane_w_m > 0):
+            return None
+        for state, floor in ((MEASURED, CONF_FLOOR), (OCCLUDED, OCCL_MIN_CONF)):
+            cands = [(zc, side, pos) for side in (-1, 1)
+                     for zc, pos, conf, st, _f in self._wt.bins(side)
+                     if st == state and conf >= floor]
+            if not cands:
+                continue
+            _zc, side, pos = min(cands)          # 最近带优先（深度噪声随 z 涨）
+            wall_lane = pos / self._lane_w_m
+            if -0.15 < wall_lane < 0.15:
+                continue                 # 车底下/正侧方的墙不定位走廊
+            center = wall_lane + formed / 2.0 if wall_lane < 0 \
+                else wall_lane - formed / 2.0
+            if abs(center) > self.OFF_MAX:
+                continue                 # 远墙假设（人行道墙）当不了走廊中心
+            return center, formed, ("wall" if state == MEASURED else "wall_occl")
+        return None
+
+    def _region_center(self, grid) -> tuple[float, float] | None:
+        """绿区中心（区读数语义收进走廊兜底）：sides==2 才给（clip 假缘诚实
+        降级），|center|>OFF_MAX 同垃圾门。"""
+        if grid is None or not (self._lane_w_m and self._lane_w_m > 0):
+            return None
+        reg = region_reading(grid, self._lane_w_m)
+        if reg.sides != 2 or reg.left_edge_lane is None \
+                or reg.right_edge_lane is None:
+            return None
+        center = (reg.left_edge_lane + reg.right_edge_lane) / 2.0
+        if abs(center) > self.OFF_MAX:
+            return None
+        return center, reg.right_edge_lane - reg.left_edge_lane
+
+    def _build(self, bnd, grid, fid: int | None, center: float,
+               width: float, src: str) -> Corridor:
+        return build_corridor(bnd, grid, self._wt, fid,
+                              center_lane=center, width_lane=width, src=src,
+                              lane_w_m=self._lane_w_m)
 
     def _fresh(self, now: float) -> tuple[float, float] | None:
         s = self._slot.get("pair")
         if s is None or now - s[2] > self.SLOT_TTL_S:
             return None
         return s[0], s[1]
-
-    def update(self, bnd, now: float | None = None, *,
-               new: bool = True,
-               grid: DrivableGrid | None = None) -> float | None:
-        """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
-
-        ``new``：本拍读数是否新证据（异步驻留协议 take() 的 is_new）。中值窗、
-        保鲜槽与 W 统计只认新证据（使用次数≠学习次数，同 take() 的纪律）——
-        驻留复用拍走槽值；否则同一读数 age 闸内被逐拍重复计入窗，窗内独立
-        读数退化为 1~2 个：真变化滞后 ~0.3s 后台阶跳变、单对野值凭重复入窗
-        赢得中值（实机 10-04 两局取证：79 次 >0.3 道 ro 台阶 0 次在新读数拍）。
-
-        ``grid``：同拍可行驶栅格（互证审计面）。栅格 wmid 路心随拍进 last
-        （trace ro_grid 列 / BEV cg 线）；供数否决仅当 mode=veto 且新鲜对
-        分歧超容限（legacy 语义，生产走 master=供数主人在 module 侧换区读数）。
-
-        黑视（无有效对且保鲜槽过期）给 None——横向位置未知时诚实弃权，
-        交 planner 既有 machinery（陈旧重基/开环）消化，不造观测。"""
-        if now is None:
-            now = time.monotonic()
-        grid_off = self._grid_off(grid)     # 互证审计面：闸关也常算
-        ok = (bnd is not None and bnd.sides == 2
-              and bnd.left_edge_lane is not None
-              and bnd.right_edge_lane is not None)
-        src = "pair"
-        off_raw = None
-        if ok and new:
-            el, er = bnd.left_edge_lane, bnd.right_edge_lane
-            off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
-            if abs((el + er) / 2.0) > self.OFF_MAX:
-                self.last = self._snapshot(now, src, None, off_raw, grid_off)
-                return None                 # 垃圾对：不喂、不入槽、不入窗
-            # 对宽一致性门（实机 2026-10-05 案）：W 成形后对宽超出 W±40% 的
-            # 对=找边锁错结构的污染对（车流走廊对宽 1.7 道、邻车侧面当"边"），
-            # 同垃圾对路径不供数——W ±40% 门原先只挡统计不挡供数，中线被
-            # 车流走廊拽着漂（trace 对宽 1.15~6.21 道乱跳、ro 摆 ±0.5+）。
-            formed = self.width
-            if formed is not None and \
-                    abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
-                self.last = self._snapshot(now, src, None, off_raw, grid_off)
-                return None                 # 污染对：不喂、不入槽、不入窗
-            # 路心互证（grid_xcheck.mode=veto 专用，生产走 master）：新鲜对与
-            # 同拍栅格 wmid 路心分歧超容限 → 疑似找边锁错结构，同污染对路径
-            # 不供数；连续 veto 达 bypass_streak 放行并清零（黑视比噪声致命，
-            # 13:29 局教训——闸不得制造供数黑视）。比对对象=原始对路心。
-            xcheck = None
-            if self._xc is not None and self._xc.mode == "veto" \
-                    and grid_off is not None:
-                if abs(off_raw - grid_off) > self._xc.tol_lane:
-                    self._xc_streak += 1
-                    if self._xc_streak < self._xc.bypass_streak:
-                        self.last = self._snapshot(now, src, None, off_raw,
-                                                   grid_off, "veto")
-                        return None
-                    xcheck = "bypass"       # 连续分歧达预算：放行，防黑视
-                else:
-                    xcheck = "agree"
-                self._xc_streak = 0
-            # 中值滤波（窗口未满时直喂最新对，前两拍行为与旧版逐值同形）：
-            # 单对野值（一侧找边偶发锁错结构）被近 3 对中值杀掉，真漂移经
-            # 2~3 对（约 0.5s）跟进——比 α/β 直注噪声便宜得多。
-            self._win.append((el, er))
-            if len(self._win) >= 3:
-                el = sorted(w[0] for w in self._win)[1]
-                er = sorted(w[1] for w in self._win)[1]
-            self._slot["pair"] = (el, er, now)
-            self._feed_width(el, er)
-        else:
-            fresh = self._fresh(now)
-            if fresh is None:
-                self.last = self._snapshot(now, "none", None, None, grid_off)
-                return None
-            el, er = fresh
-            src = "pair_slot"
-        center = (el + er) / 2.0        # 路心（自车系）
-        off = -center                   # 契约：自车相对路心（右正）
-        if abs(off) > self.OFF_MAX:
-            self.last = self._snapshot(now, src, None, off_raw, grid_off)
-            return None                 # 垃圾信号不喂（宁弃不喂假路心）
-        if ok and new:
-            self.last = self._snapshot(now, src, off, off_raw, grid_off,
-                                       xcheck)
-        else:
-            self.last = self._snapshot(now, src, off, None, grid_off)
-        return off
 
     def _grid_off(self, grid: DrivableGrid | None) -> float | None:
         """同拍栅格 → 栅格路心观测（off 系，右正）：off=−grid_center_lane，
