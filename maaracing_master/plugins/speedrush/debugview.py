@@ -38,8 +38,8 @@ import numpy as np
 
 from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
-    GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_NX, GRID_NZ, GRID_UNKNOWN,
-    GRID_X_MAX, GRID_Z_LO)
+    GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_NX, GRID_NZ, GRID_SHOULDER,
+    GRID_UNKNOWN, GRID_X_MAX, GRID_Z_LO)
 from maaracing_master.plugins.speedrush.latsample import SampledTraj, eval_traj
 from maaracing_master.plugins.speedrush.world_model import (
     Calib, load_calib)
@@ -51,7 +51,8 @@ _QUEUE_MAX = 4                    # IO 有界队列：满则丢新快照（观�
 # 三态着色（BGR）：unknown 灰 / drivable 暗绿 / blocked 红；挖洞格橄榄描重
 _STATE_BGR = {GRID_UNKNOWN: (64, 64, 64),
               GRID_DRIVABLE: (70, 140, 70),
-              GRID_BLOCKED: (50, 50, 220)}
+              GRID_BLOCKED: (50, 50, 220),
+              GRID_SHOULDER: (60, 110, 160)}
 _DIG_BGR = (30, 100, 110)
 _CLS_BGR = {"coins": (0, 255, 255), "cars": (0, 0, 255),
             "bonuses": (255, 0, 255)}
