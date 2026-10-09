@@ -14,8 +14,8 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
            供数窗内「两边墙」可见）+ 路心/左右缘叠层（C=滤波 ro、c0=当帧原始
            (L+R)/2，两者分离=时间链效应；cg=同拍栅格 wmid 路心，与 c0 分离=
            互证分歧面）+ 分带走廊边界（来源着色）+ 检测反投影标记（40m 外钉顶缘
-           +距离标注）+ 距离（近场 z 等值线每 3m=前向距离/供数语义、远场等距弧环
-           每 5m=距自车直线距离/雷达语义）+ 三层窗口标注（供数 16m/平面拟合
+           +距离标注）+ 距离标尺（z 等值线近场每 3m/远场每 5m，全图统一
+           前向距离口径）+ 三层窗口标注（供数 16m/平面拟合
            30m/锚点 90m）+ d(t) 规划曲线子带
 
 **BEV 口径**（与 _grid_penalty 同源，不另立坐标）：栅格 x 原点=相机光轴=自车，
@@ -30,7 +30,6 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
 
 from __future__ import annotations
 
-import math
 import queue
 import threading
 import time
@@ -64,10 +63,9 @@ _CLS_BGR = {"coins": (0, 255, 255), "cars": (0, 0, 255),
 
 _PANEL_W = 560                    # 右联宽
 _TITLE_H = 26                     # 右联标题条
-_Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0)
-# 近场 z 等值线（供数域）：前向距离=供数/规划语义，与栅格读数对齐；远场
-# （>16m 目检延伸区）换等距弧环——z 等值线在远场没有供数语义
-_RING_RADII_M = (20.0, 25.0, 30.0, 35.0, 40.0)
+_Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0)
+# 距离口径全图统一=前向距离（z 等值线横线）：供数窗/TTC/检测反投影标注全是
+# 向前量的直线距离，程序无半径消费方——弧环读数与 52m 标注对不上账（2026-10-10）
 _X_TICK_M = (-10.0, -5.0, 0.0, 5.0, 10.0)
 _RENDER_Z_HI = 40.0               # BEV 渲染上限（> 栅格采集窗 16m）：目检延伸区
 _PLOT_Y1_FRAC = 0.66              # BEV 绘图区底 = 画布高 × 此值（竖长化，下余 d(t) 子带）
@@ -124,22 +122,9 @@ def _edge_side_pts(eps, side: int) -> list[tuple[float, float]]:
     return sorted(((z, x) for s, z, x in eps if s == side), key=lambda p: p[0])
 
 
-def _ring_points(bm: _BevMap, r_m: float, n: int = 48) -> list[tuple[int, int]]:
-    """到自车等距弧的像素采样（雷达半径距离）：俯视正交坐标里圆弧就是
-    「距自车 r 米」的真实等距线（z 等值线是前向距离，弧是直线距离——远场
-    目检延伸区用弧，近场供数窗保留 z 等值线）。横向超域的点裁掉。"""
-    pts = []
-    for k in range(n + 1):
-        th = math.radians(-40.0 + 80.0 * k / n)
-        x, z = r_m * math.sin(th), r_m * math.cos(th)
-        if abs(x) <= GRID_X_MAX:
-            pts.append((bm.px(x), bm.py(z)))
-    return pts
-
-
 def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
-    """右联：栅格三态 + 墙检出折线 + 路面叠层 + 距离（等值线/弧环）+ d(t)
-    规划子带（全部 None 安全）。
+    """右联：栅格三态 + 墙检出折线 + 路面叠层 + 距离标尺 + d(t) 规划子带
+    （全部 None 安全）。
 
     渲染域 z 到 _RENDER_Z_HI（40m）：栅格只占 3~16m 采集窗，其上为目检延伸
     区（深灰底，检测反投影标记照画，程序供数不收）——虚线亮黄标出采集窗上限，
@@ -186,8 +171,8 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
         _put_text(canvas, ";".join(reading.rejects)[:44],
                   (plot_x0 + 8, plot_y1 - 20), scale=0.4, color=(0, 200, 255))
 
-    # 距离标尺：近场 z 等值线每 3m 横线+标签（前向距离=供数/规划语义）、
-    # x 每 5m 刻度
+    # 距离标尺：z 等值线每 3m 近场/5m 远场 横线+标签（全图统一前向距离口径：
+    # 与供数窗/TTC/检测反投影标注同口径，对账一致）、x 每 5m 刻度
     for z in _Z_TICK_M:
         y = bm.py(z)
         cv2.line(canvas, (plot_x0 - 4, y), (plot_x1, y), (120, 120, 120), 1)
@@ -198,16 +183,6 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
         cv2.line(canvas, (xp, plot_y0), (xp, plot_y1 + 4), (120, 120, 120), 1)
         _put_text(canvas, f"{int(x)}", (xp - 8, plot_y1 + 16), scale=0.38,
                   color=(200, 200, 200))
-
-    # 远场等距弧环（20~40m 每 5m，雷达半径距离）：俯视正交下圆弧=「距自车
-    # r 米」的真实等距线，数字标在环与中线交点（x=0 处即 z=r）——延伸区
-    # 「看得多远」雷达式可读（维护者要求，2026-10-09）
-    for r_m in _RING_RADII_M:
-        pts = _ring_points(bm, r_m)
-        for p, q in zip(pts, pts[1:]):
-            cv2.line(canvas, p, q, (95, 95, 130), 1)
-        _put_text(canvas, f"{int(r_m)}m", (bm.px(0.0) + 4, bm.py(r_m) + 4),
-                  scale=0.34, color=(140, 140, 190))
 
     # 路面叠层：路心 / 左右缘（路心系 d → 相机轴米 X=(d−ro)·lane_w_m）
     ro = snap.get("road_offset")

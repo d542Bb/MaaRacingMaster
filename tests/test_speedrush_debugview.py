@@ -168,7 +168,7 @@ def test_project_detection_rejects_out_of_domain():
                               1000.0, 1000.0, W, H) is None
 
 
-# ---------- 雷达叠层（墙折线/等距弧环） ----------
+# ---------- 雷达叠层（墙折线） ----------
 
 def test_edge_side_pts_splits_and_sorts():
     """edge_pts 分侧按 z 排序：side 过滤、乱序输入 → z 升序 (z, x)。"""
@@ -178,26 +178,6 @@ def test_edge_side_pts_splits_and_sorts():
     assert left == [(6.0, -3.0), (10.0, -4.0)]
     right = dv._edge_side_pts(eps, 1)
     assert right == [(4.0, 1.5), (8.0, 2.0), (12.0, 2.5)]
-
-
-def test_ring_points_within_domain_and_symmetric():
-    """弧点全部落在横向域内、左右对称（±θ 同 r）。"""
-    from maaracing_master.plugins.speedrush.debugview import _BevMap
-    bm = _BevMap(x0=46, y1=475, sx=5.0, sy=3.0)
-    pts = dv._ring_points(bm, 25.0)
-    assert pts, "弧点不应为空"
-    # 逐点反解横向米：|x_m| ≤ GRID_X_MAX（域内裁剪）
-    for p in pts:
-        x_m = (p[0] - bm.x0) / bm.sx * 0.25 - 10.5
-        assert abs(x_m) <= 10.5 + 1e-9
-    # 左右对称：按 y 分组后左右 x 偏移关于中线等值反号
-    by_y = {}
-    for p in pts:
-        by_y.setdefault(p[1], []).append(p[0])
-    mid = bm.px(0.0)
-    for x_list in by_y.values():
-        if len(x_list) == 2:
-            assert abs((x_list[0] - mid) + (x_list[1] - mid)) <= 2
 
 
 # ---------- 写入器 ----------
