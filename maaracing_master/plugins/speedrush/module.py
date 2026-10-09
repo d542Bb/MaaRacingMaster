@@ -997,6 +997,7 @@ class SpeedRushModule(ActivityModule):
                 "result": result, "reading": dgeo, "grid": dgrid,
                 "road_offset": road_offset,
                 "grid_off": chain["ego_road"].last.get("grid_off"),
+                "corridor": corridor,   # 分带走廊（debugview 逐带来源叠层）
                 "decision": self._control_last,   # 本拍决策/供数快照（新建不改旧）
                 "hud": (chain["hud_ref"].latest()
                         if chain.get("hud_ref") is not None else None),

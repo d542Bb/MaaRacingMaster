@@ -65,6 +65,11 @@ _X_TICK_M = (-10.0, -5.0, 0.0, 5.0, 10.0)
 _RENDER_Z_HI = 40.0               # BEV 渲染上限（> 栅格采集窗 16m）：目检延伸区
 _PLOT_Y1_FRAC = 0.66              # BEV 绘图区底 = 画布高 × 此值（竖长化，下余 d(t) 子带）
 _LIMIT_BGR = (0, 215, 255)        # 程序接受域上限虚线（亮黄）
+# 走廊边界来源配色（第 6 步）：每带每侧的边界假设按来源画——实测墙=亮橙实线，
+# 遮挡墙（历史证据）=暗橙虚线，空气墙（先验，永远 inferred）=紫虚线
+_COR_SRC_BGR = {"measured": (0, 170, 255),
+                "occluded": (30, 110, 190),
+                "inferred": (255, 90, 255)}
 
 
 @dataclass(frozen=True)
@@ -147,6 +152,12 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     _put_text(canvas, "grid<=16m", (plot_x0 + 8, grid_y0 - 6), scale=0.36,
               color=_LIMIT_BGR)
 
+    # 质量门/拟合失败提示：栅格全灰（coef=None）时一眼知道为什么
+    if grid is not None and reading is not None and reading.coef is None \
+            and reading.rejects:
+        _put_text(canvas, ";".join(reading.rejects)[:44],
+                  (plot_x0 + 8, plot_y1 - 20), scale=0.4, color=(0, 200, 255))
+
     # 距离标尺：z 每 3m 横线+标签、x 每 5m 刻度
     for z in _Z_TICK_M:
         y = bm.py(z)
@@ -203,6 +214,55 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     # 自车标记（X=0、域底）
     cv2.drawMarker(canvas, (bm.px(0.0), plot_y1 - 6), (0, 255, 0),
                    cv2.MARKER_TRIANGLE_UP, 12, 2)
+
+    # 分带走廊叠层（第 6 步）：逐带边界按来源着色——每带一段竖线（近下远上），
+    # 「程序这一带相信哪道墙、信多少」一眼可见；unknown（无证据）不画。
+    # 旧 L/R 线只画 dgeo 当帧缘——质量门黑视/单侧帧 dgeo 无缘而走廊仍供数
+    # （wall/region 路径），此叠层就是那个差异的可见面。
+    corridor = snap.get("corridor")
+    if corridor is not None:
+        for b in corridor.bands:
+            y_top, y_bot = bm.py(b.z1), bm.py(b.z0)
+            for bb in (b.left, b.right):
+                if bb.x_m is None or bb.src == "unknown":
+                    continue
+                xp = bm.px(bb.x_m)
+                if not (plot_x0 <= xp <= plot_x1):
+                    continue
+                col = _COR_SRC_BGR.get(bb.src)
+                if bb.src == "measured":
+                    cv2.line(canvas, (xp, y_top), (xp, y_bot), col, 2)
+                else:                      # occluded/inferred=半可信：虚线
+                    for y in range(y_top, y_bot, 8):
+                        cv2.line(canvas, (xp, y), (xp, min(y + 4, y_bot)),
+                                 col, 1)
+    # 供数摘要 + 图例（目检延伸区左上：栅格采集窗上方的深灰带）——
+    # corridor=None（黑视拍）也画：图例不缺席，"全灰=U 无证据"在黑视帧可读
+    _put_text(canvas,
+              f"cor={'none' if corridor is None else corridor.src}"
+              f" w={_fmt(None if corridor is None or corridor.width_lane is None else round(corridor.width_lane, 2))}"
+              f" ph={'-' if corridor is None else corridor.plane_health}",
+              (plot_x0 + 8, plot_y0 + 8), scale=0.4, color=(230, 230, 230))
+    ly = plot_y0 + 28
+    for label, col, dashed in (("wall", _COR_SRC_BGR["measured"], False),
+                               ("occl", _COR_SRC_BGR["occluded"], True),
+                               ("air", _COR_SRC_BGR["inferred"], True)):
+        for x in range(plot_x0 + 8, plot_x0 + 34, 8):
+            cv2.line(canvas, (x, ly), (x + 4, ly), col,
+                     2 if not dashed else 1)
+        _put_text(canvas, label, (plot_x0 + 38, ly - 5), scale=0.36,
+                  color=(200, 200, 200))
+        ly += 18
+    ly += 2
+    sx = plot_x0 + 8
+    for label, col in (("U", _STATE_BGR[GRID_UNKNOWN]),
+                       ("D", _STATE_BGR[GRID_DRIVABLE]),
+                       ("B", _STATE_BGR[GRID_BLOCKED]),
+                       ("S", _STATE_BGR[GRID_SHOULDER])):
+        cv2.rectangle(canvas, (sx, ly - 9), (sx + 12, ly + 3), col, -1)
+        _put_text(canvas, label, (sx + 15, ly - 5), scale=0.36,
+                  color=(200, 200, 200))
+        sx += 46
 
     # 检测反投影标记：框底中心 → (X,Z)，域内画点
     result = snap.get("result")
@@ -291,6 +351,10 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
         f" bonus={len(result.bonuses) if result else 0}"
         f" groups={snap.get('n_groups', 0)}",
     ]
+    c = snap.get("corridor")
+    if c is not None:
+        lines.append(f"cor={c.src} w={_fmt(None if c.width_lane is None else round(c.width_lane, 2))}"
+                     f" ph={c.plane_health} bands={len(c.bands)}")
     for i, text in enumerate(lines):
         _put_text(img_bgr, text, (8, 18 + i * 18), scale=0.45)
 
@@ -298,7 +362,7 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     canvas = np.zeros((H, W + _PANEL_W, 3), np.uint8)
     canvas[:, :W] = img_bgr
     canvas[:, W:] = (28, 28, 28)
-    _put_text(canvas, "speedrush hud  ·  BEV drivable grid + plan",
+    _put_text(canvas, "speedrush hud  ·  BEV grid + corridor + plan",
               (W + 8, 17), scale=0.48)
     _draw_bev(canvas[:, W:], snap, cal)
     return canvas
