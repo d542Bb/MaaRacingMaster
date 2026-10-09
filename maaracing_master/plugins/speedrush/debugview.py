@@ -40,7 +40,8 @@ from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
     GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_NX, GRID_NZ, GRID_SHOULDER,
     GRID_UNKNOWN, GRID_X_MAX, GRID_Z_LO)
-from maaracing_master.plugins.speedrush.latsample import SampledTraj, eval_traj
+from maaracing_master.plugins.speedrush.latsample import (
+    GRID_CAR_HALF_LANE_M, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.world_model import (
     Calib, load_calib)
 
@@ -211,9 +212,11 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                 _put_text(canvas, "cg", (xp + 2, plot_y0 + 24), scale=0.36,
                           color=(80, 220, 80))
 
-    # 自车标记（X=0、域底）
+    # 自车标记（X=0、域底）：三角大小=米制车半宽（俯视正交下恒定像素，
+    # 与车标记同尺——BEV 里的米数对得上真实车宽）
+    ego_r = max(8, int(GRID_CAR_HALF_LANE_M / GRID_CELL * sx))
     cv2.drawMarker(canvas, (bm.px(0.0), plot_y1 - 6), (0, 255, 0),
-                   cv2.MARKER_TRIANGLE_UP, 12, 2)
+                   cv2.MARKER_TRIANGLE_UP, ego_r, 2)
 
     # 分带走廊叠层（第 6 步）：逐带边界按来源着色——每带一段竖线（近下远上），
     # 「程序这一带相信哪道墙、信多少」一眼可见；unknown（无证据）不画。
@@ -273,8 +276,13 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
         fx, fy = reading.fx, reading.fy
         fh, fw = int(shape[0]), int(shape[1])
         if coef is not None and fx and fy:
-            marks = (("coins", 3), ("cars", 5), ("bonuses", 5))
-            for cls, rad in marks:
+            # 车标记=米制半径（车半宽，latsample.GRID_CAR_HALF_LANE_M 真源：
+            # BEV 俯视正交下恒定像素、不随 z 缩放——远近的车一样大才对得上
+            # 真实米数），空心不遮栅格；币/奖励=点目标固定像素（无尺寸信源）
+            car_r = max(3, int(GRID_CAR_HALF_LANE_M / GRID_CELL * sx))
+            marks = (("coins", 3, True), ("cars", car_r, False),
+                     ("bonuses", 5, True))
+            for cls, rad, filled in marks:
                 color = _CLS_BGR[cls]
                 for d in getattr(result, cls):
                     hit = _project_detection(d.cx, d.cy + d.h // 2, coef,
@@ -282,7 +290,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                     if hit is None:
                         continue
                     cv2.circle(canvas, (bm.px(hit[0]), bm.py(hit[1])),
-                               rad, color, -1)
+                               rad, color, -1 if filled else 1)
 
     # d(t) 规划子带（时间参数化轨迹，诚实呈现；不臆造 t→z）
     py0 = plot_y1 + 30
