@@ -254,15 +254,53 @@ def _roll_pts(pts: np.ndarray, deg: float) -> np.ndarray:
 
 
 def test_plane_gate_rejects_warped_far_field():
-    """远场翘曲劫持拟合（d00079 型，路区内点率掉到一半）：质量门诚实弃权。"""
+    """远场翘曲劫持拟合（d00079 型，过半路点被拽离平面、内点率掉到一半
+    以下）：质量门诚实弃权。残差中位旁路（2026-10-09）只放行「拟合仍解释
+    住半数以上路点」的贴护栏场景——过半翘曲两条都不满足照拒。"""
     pts = _scene_points(x_left=None, x_right=None)
-    warp = pts[..., 2] > 7.0
+    warp = pts[..., 2] > 6.0
     pts[..., 1] = np.where(warp, pts[..., 1] + 0.6, pts[..., 1])
     rd = reading_from_points(pts, FX, CAL, fy=FY)
     assert rd.coef is None and rd.sides == 0, f"rejects={rd.rejects}"
     assert any("平面质量门拒绝" in r for r in rd.rejects)
     g = dg.drivable_grid_from_points(pts, FX, FY)
     assert g.coef is None and int(np.count_nonzero(g.state)) == 0
+
+
+def test_plane_gate_bypass_passes_roadside_outliers():
+    """贴右护栏的路肩落空结构（2026-10-09 实机 24 帧同一签名，单元级直测
+    _plane_plausible）：右侧 x>1、低于拟合平面 0.4~1.7m 的真实路侧地形把
+    内点率压到 0.7 以下，但残差中位 ≤4.6cm=拟合仍解释住绝大多数路点——
+    残差中位旁路放行（旧内点率单判据误杀，实机开局段 50 拍黑视根因）。
+    端到端合成不复刻：落空在真实场景是台阶状、列剖面行走停走、种子只吃
+    干净列（24 帧实测拟合干净），覆写式合成会让行走踩进落空区污染种子。"""
+    rng = np.random.default_rng(3)
+    n_in, n_out = 42000, 19000                       # 内点率 ~0.69（实机 0.56~0.65）
+    X = np.concatenate([rng.uniform(-3.9, 3.9, n_in),
+                        rng.uniform(1.0, 3.9, n_out)]).astype(np.float32)
+    Z = np.concatenate([rng.uniform(4.0, 13.9, n_in),
+                        rng.uniform(4.0, 6.0, n_out)]).astype(np.float32)
+    Y = np.concatenate([rng.normal(0, 0.03, n_in),
+                        -rng.uniform(0.4, 1.7, n_out)]).astype(np.float32)
+    coef = np.array([0.0, 0.0, 0.0], np.float32)     # 拟合平面 y=0（干净）
+    rate = float((np.abs(Y) < dg.PLANE_TOL).mean())
+    assert 0.5 <= rate < dg.PLANE_INLIER_MIN, f"场景须落在旁路窗内：rate={rate:.2f}"
+    assert dg._plane_plausible(coef, X, Y, Z, np.zeros(X.shape, bool)) is True
+
+
+def test_plane_gate_bypass_still_rejects_warped():
+    """真坏拟合（实机 6 帧签名：残差中位 9.6~48cm）不被旁路放行——中位对
+    过半离群不稳健，两条判据都不满足照拒。"""
+    rng = np.random.default_rng(5)
+    n = 60000
+    X = rng.uniform(-3.9, 3.9, n).astype(np.float32)
+    Z = rng.uniform(4.0, 13.9, n).astype(np.float32)
+    Y = rng.normal(0, 0.03, n).astype(np.float32)
+    bad = rng.uniform(0, 1, n) < 0.6                 # 过半路点被拽离平面
+    Y[bad] = rng.choice([-1.0, 1.0], size=int(bad.sum())) * rng.uniform(
+        0.2, 0.5, size=int(bad.sum())).astype(np.float32)
+    coef = np.array([0.0, 0.0, 0.0], np.float32)
+    assert dg._plane_plausible(coef, X, Y, Z, np.zeros(X.shape, bool)) is False
 
 
 def test_plane_gate_keeps_clean_camera_roll():

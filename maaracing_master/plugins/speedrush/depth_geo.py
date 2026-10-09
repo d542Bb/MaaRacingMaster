@@ -87,6 +87,15 @@ PLANE_INLIER_MIN = 0.70   # 质量评判路区内点率下限（拟合没解释�
 PLANE_QUALITY_Z_HI = 14.0  # 质量评判路区纵向上限（远场翘曲区不进评判）
 PLANE_ROLL_MAX_DEG = 15.0  # 角度 sanity：仅挡病态拟合（车/相机不可能的滚转）
 PLANE_PITCH_MAX_DEG = 15.0  # 同上（对称界：点云 Y 轴 y_up/y_down 两种约定都合法）
+# 残差中位旁路（2026-10-09 实机两局定案，ego+objects 掩码重放 126 包拆解）：
+# 车贴右护栏时路区窗（|X|<ROAD_X_MAX）把右侧路肩/落空结构（低于拟合平面
+# 0.4~1.7m）包进内点率分母，好拟合被压到 0.56~0.65（24 帧同一签名：残差
+# p50 ≤4.6cm、离群点 100% 右侧且在平面下）。中位对 ≤35% 离群尾稳健：p50
+# ≤ PLANE_RESID_P50_MAX 且内点率 ≥ PLANE_INLIER_FLOOR（解释住半数以上路点）
+# 即放行；真坏拟合（实机 6 帧 p50 9.6~48cm）两条都不满足照拒。0.06 取两簇
+# 实测空档（4.6~9.6cm）的保守侧，0.5=半数路面。
+PLANE_INLIER_FLOOR = 0.5
+PLANE_RESID_P50_MAX = 0.06
 OBJ_KNIFE_HGT = PLANE_TOL  # 剃本体刀位（物体矩形内高出路面 0.15m 以上=本体点）；
                            # 路面像素与贴地币（hgt≈0）留在候选区，不是障碍
 DIG_CELL_FRAC = 0.5        # 格级挖除占比：刀是逐点的，格是 0.25m 的——挖除点
@@ -499,7 +508,15 @@ def _plane_plausible(coef, X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     if road.sum() < MIN_PLANE_PTS:
         return True    # 路区点太少无从评判——拟合自身域内点数已把关，放行
     inl = road & (np.abs(hgt) < PLANE_TOL)
-    return float(inl.sum()) / float(road.sum()) >= PLANE_INLIER_MIN
+    rate = float(inl.sum()) / float(road.sum())
+    if rate >= PLANE_INLIER_MIN:
+        return True
+    # 残差中位旁路（常量区注释有标定）：贴右护栏场景的路肩/落空结构是真实
+    # 路侧地形不是坏拟合——中位对离群尾稳健，拟合仍解释住半数以上路点即放行
+    if rate < PLANE_INLIER_FLOOR:
+        return False
+    resid = float(np.nanmedian(np.abs(hgt[road])))
+    return resid <= PLANE_RESID_P50_MAX
 
 
 def _edge_body_evidence(ph: np.ndarray, i: int, thr: float,
