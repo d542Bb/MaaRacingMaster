@@ -200,8 +200,8 @@ class DepthRoadReading:
     latency_ms: float
     rejects: tuple[str, ...] = field(default_factory=tuple)
     edge_pts: tuple[tuple[int, float, float], ...] = ()
-    coef: tuple[float, float, float] | None = None   # 路面平面 Y=aX+bZ+c；供
-    # drivable_grid 共享（同带同掩码拟合，逐位同值），省一次列剖面重算
+    coef: tuple[float, float, float] | None = None   # 路面平面 Y=aX+bZ+c（诊断与
+    # 离线复算用；产线栅格 2026-10-09 起并行自拟合，不再消费此字段）
     fx: float | None = None    # 同帧全幅焦距（调试图把检测框反投影回 BEV 用；
     fy: float | None = None    #  离线缓存路径 fy 缺=回退 fx，与平面拟合同约定）
 
@@ -268,7 +268,8 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     else:
         valid = res["valid"]
     LAST_STAGE_MS["upsize"] = (time.perf_counter() - t_up) * 1000.0
-    pts = pts.copy()
+    # np.stack 产物独占（无别名持有；with_evidence 持有的是上游原生点图，另一对象），
+    # nan 写原地做，省一次全幅拷贝（~3ms，2026-10-09 实测）
     pts[~valid] = np.nan
     # 归一化焦距（u∈[0,1] 口径）→ 全幅像素焦距：u_full = (X/Z)·fx_norm·W_full + W/2
     fx = res["fx"] * MOGE_IN_W
@@ -680,8 +681,11 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     ``pts``/``fx``/``fy``/``ego``/``obj`` 口径与 ``reading_from_points`` 一致
     （全幅点图、同帧全幅焦距、ego 紧矩形与物体框掩码）。复用 ``_fit_road_plane``
     与 ``_binned_median``（只调用不复制）：平面与 reading 同源，格中位与找边剖面
-    同值。``coef`` 传 reading 的 ``DepthRoadReading.coef``（同带同掩码拟合出的
-    同一平面）即跳过本函数内的重复拟合——调用点必须传，单独调用才允许缺省。
+    同值。``coef`` 缺省时本函数自拟合平面（同函数同输入，与 reading 的拟合
+    确定性逐位同结果）——**产线调用点自 2026-10-09 起走并行路径不传 coef**
+    （两路只读共享点云、不共享可变状态；多付的一次拟合被并行隐藏，探针
+    1.52~1.60× 已含自拟合口径）；``coef`` 传已有平面即跳过拟合（离线复算/
+    单独调用允许）。
 
     **耗时**（2026-10-04 实测，本机空载）：自拟合口径 p50 ≈ 34ms / 帧（6 帧
     33~74ms，随机器负载浮动），主因是列剖面平面拟合（占 ~60%），共享 coef 后
@@ -991,16 +995,31 @@ class DepthRoadObserver:
         stage = {k: LAST_STAGE_MS[k] for k in
                  ("pre", "forward", "reconstruct", "upsize")}
         t_e = time.perf_counter()
+        t_g = time.perf_counter()
+        # 找边与栅格并行（2026-10-09 空载探针 1.52~1.60×，GIL 未缩水）：
+        # 两路只读共享点云/掩码，输出各自独立。栅格自拟合平面（同函数同输入，
+        # 确定性逐位同结果），不再依赖 reading.coef——并行语义下不共享可变状态。
+        # 异常在 join 处原样重抛，保持 observe 的降级语义（不吞错不换错）。
+        th_err: list[BaseException] = []
+        grid_box: list = []
+
+        def _grid_worker():
+            try:
+                grid_box.append(drivable_grid_from_points(
+                    pts, fx, fy, self._ego_mask, object_mask))
+            except BaseException as e:   # noqa: BLE001 —— join 处重抛，见 th_err
+                th_err.append(e)
+
+        th = threading.Thread(target=_grid_worker, daemon=True)
+        th.start()
         reading = reading_from_points(pts, fx, self._cal, ego_mask=self._ego_mask,
                                       object_mask=object_mask, fy=fy)
         stage["edges"] = LAST_STAGE_MS["edges"] = \
             (time.perf_counter() - t_e) * 1000.0
-        # 可行驶栅格：与读数同源同拍、并行产出（不替换、不接决策层）。在 worker
-        # 线程内算，不占控制拍；平面共享 reading 的拟合结果（同带同掩码，逐位
-        # 同值），避免列剖面重算（自拟合口径 ~34ms/帧）。
-        t_g = time.perf_counter()
-        grid = drivable_grid_from_points(pts, fx, fy, self._ego_mask, object_mask,
-                                         coef=reading.coef)
+        th.join()
+        if th_err:
+            raise th_err[0]
+        grid = grid_box[0] if grid_box else None
         stage["grid"] = LAST_STAGE_MS["grid"] = \
             (time.perf_counter() - t_g) * 1000.0
         for k, v in stage.items():
