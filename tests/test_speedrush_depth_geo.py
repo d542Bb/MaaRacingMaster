@@ -1400,6 +1400,25 @@ def test_drivable_grid_shared_coef_bitwise_identical():
     assert g_shared.coef == g_self.coef
 
 
+def test_drivable_grid_shared_coef_gate_rejects_too():
+    """共享 coef 也判质量门（2026-10-10 实机 d00048 实证）：门只挂自拟合
+    分支时，共享路径把被 reading 拒掉的坏平面喂进了栅格（弯道横坡帧栅格
+    满图假可走而 reading 已弃权，两路判定脱钩）。锁：传被门拒的 coef →
+    栅格全未知，与 reading 弃权同判。"""
+    pts = _scene_points(x_left=None, x_right=None)
+    warp = pts[..., 2] > 6.0
+    pts[..., 1] = np.where(warp, pts[..., 1] + 0.6, pts[..., 1])
+    X, Y, Z = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
+    bad = dg._fit_road_plane(X, Y, Z, fy=FY)   # 拟合域收敛的坏平面（门拒）
+    assert bad is not None
+    assert not dg._plane_plausible(
+        bad, X, Y, Z, np.zeros((dg.DIAG_Y1 - dg.Y0, 1280), bool))
+    g = dg.drivable_grid_from_points(pts, FX, FY,
+                                     coef=tuple(float(v) for v in bad))
+    assert g.coef is None
+    assert int(np.count_nonzero(g.state)) == 0
+
+
 def test_drivable_grid_plane_fit_fail_all_unknown():
     """平面拟合失败（域内点不足）→ 全未知、coef=None、不抛异常（诚实弃权）。"""
     pts = np.full((720, 1280, 3), np.nan, np.float32)

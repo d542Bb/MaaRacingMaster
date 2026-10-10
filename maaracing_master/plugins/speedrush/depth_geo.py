@@ -833,16 +833,19 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     Xb, Yb, Zb = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
     if coef is None:
         coef = _fit_road_plane(Xb, Yb, Zb, fy=fy)
-        if coef is not None:
-            a0, b0, c0 = (float(coef[0]), float(coef[1]), float(coef[2]))
-            sgn0 = -1.0 if b0 * 5.0 + c0 > 0 else 1.0
-            hgt0 = sgn0 * (Yb - (a0 * Xb + b0 * Zb + c0))
-            if not _plane_plausible(coef, Xb, Yb, Zb,
-                                    _dig_3d_mask(Xb, Zb, hgt0, obj_band)):
-                coef = None
-        if coef is None:
-            return _ret(np.zeros((GRID_NZ, GRID_NX), np.int8), None,
-                        np.zeros((GRID_NZ, GRID_NX), np.int32), 0)
+    # 质量门对两种 coef 来源同判（共享 coef 也判——2026-10-10 实机 d00048
+    # 实证：门只挂在自拟合分支时，共享路径把被 reading 拒掉的坏平面喂进了
+    # 栅格，弯道横坡帧栅格满图假可走而 reading 已弃权，两路判定脱钩）。
+    if coef is not None:
+        a0, b0, c0 = (float(coef[0]), float(coef[1]), float(coef[2]))
+        sgn0 = -1.0 if b0 * 5.0 + c0 > 0 else 1.0
+        hgt0 = sgn0 * (Yb - (a0 * Xb + b0 * Zb + c0))
+        if not _plane_plausible(coef, Xb, Yb, Zb,
+                                _dig_3d_mask(Xb, Zb, hgt0, obj_band)):
+            coef = None
+    if coef is None:
+        return _ret(np.zeros((GRID_NZ, GRID_NX), np.int8), None,
+                    np.zeros((GRID_NZ, GRID_NX), np.int32), 0)
     a, b, c = (float(coef[0]), float(coef[1]), float(coef[2]))
     sgn = -1.0 if b * 5.0 + c > 0 else 1.0      # 同 reading：hgt 以高出路面为正
     hgt = sgn * (Yb - (a * Xb + b * Zb + c))
