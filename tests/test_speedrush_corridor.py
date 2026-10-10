@@ -15,7 +15,8 @@ import pytest
 from maaracing_master.plugins.speedrush import module as smod
 from maaracing_master.plugins.speedrush.corridor import (
     INFERRED, UNKNOWN, Corridor, build_corridor)
-from maaracing_master.plugins.speedrush.depth_geo import DepthRoadReading
+from maaracing_master.plugins.speedrush.depth_geo import (
+    GRID_DRIVABLE, GRID_UNKNOWN, DepthRoadReading)
 from maaracing_master.plugins.speedrush.wall_track import OCCLUDED, WallTrack
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
@@ -31,13 +32,18 @@ def _bnd(el=None, er=None, edge_pts=()):
                             coef=(0.0, 0.0, 0.5))
 
 
-def _grid(rows, col_lo=36, col_hi=59):
+def _grid(rows, col_lo=36, col_hi=59, blk_lo=0, blk_hi=0):
     """绿区 DrivableGrid：行号直接给（zc=3+(iz+0.5)·0.25），列 36~60 =
-    X∈[−1.5,+4.5]m。"""
+    X∈[−1.5,+4.5]m。blk_lo/blk_hi>0 时左/右外侧邻格给 blocked（观测到的
+    高结构=实测绿区边界的证据面）。"""
     from maaracing_master.plugins.speedrush import depth_geo as dg
     st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
     for iz in rows:
         st[iz, col_lo:col_hi + 1] = dg.GRID_DRIVABLE
+        if blk_lo:
+            st[iz, col_lo - blk_lo:col_lo] = dg.GRID_BLOCKED
+        if blk_hi:
+            st[iz, col_hi + 1:col_hi + 1 + blk_hi] = dg.GRID_BLOCKED
     return dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
                            counts=np.full(st.shape, 9, np.int32),
                            dig_cells=0, latency_ms=0.0)
@@ -50,11 +56,12 @@ def _off(c):
 # ---------- 带内来源优先级：墙箱 > 绿区 > 空气墙 > unknown ----------
 
 def test_band_priority_wall_beats_green_beats_air():
-    """同一带墙箱/绿区同场：墙赢（物理边界）；无墙带绿区接棒（measured 低
-    置信）；两路都缺席带空气墙（inferred，center±W/2）。"""
+    """同一带墙箱/绿区同场：墙赢（物理边界）；无墙带绿区接棒（外邻格
+    blocked=观测到的高结构，measured）；两路都缺席带空气墙（inferred，
+    center±W/2）。"""
     wt = WallTrack(CAL)
     wt.update(SimpleNamespace(edge_pts=[(-1, 4.0, -5.5)]), fid=10)
-    grid = _grid(range(12, 24))              # 绿区 z 6~9m（带 6-9）
+    grid = _grid(range(12, 24), blk_lo=1)    # 绿区 z 6~9m（带 6-9），左外邻 blocked
     c = build_corridor(_bnd(), grid, wt, fid=11,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     assert c.bands[0].left.src == "measured"          # 墙箱赢
@@ -66,6 +73,51 @@ def test_band_priority_wall_beats_green_beats_air():
     assert c.bands[1].left.src == "measured"          # 绿区接棒（带 6-9）
     assert c.bands[1].left.conf == 1.0
     assert c.plane_health == "ok"
+
+
+def test_green_boundary_data_edge_falls_to_air():
+    """绿区到头是 unknown（数据到头：视锥截断/点饥饿）≠ 实测边界 → 不给
+    measured 绿区边界，带落空气墙（宁缺勿假——d00036 近带绿左逐行贴视锥
+    边界 0.1~0.3m，2026-10-10 定案：数据截断不冒充实测）。"""
+    grid = _grid(range(12, 24))              # 外侧邻格全 unknown
+    c = build_corridor(_bnd(), grid, None, fid=11,
+                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
+    assert c.bands[1].left.src == INFERRED
+    assert c.bands[1].left.x_m == pytest.approx(-2.0 * LW)
+    assert c.bands[1].left.conf == 0.0
+
+
+def test_green_boundary_window_edge_falls_to_air():
+    """绿区顶到栅格窗缘（列 0，外邻格出窗）= 数据边界，同 unknown 判 →
+    落空气墙（窗缘也是数据到头，不是墙）。"""
+    grid = _grid(range(12, 24), col_lo=0)
+    c = build_corridor(_bnd(), grid, None, fid=11,
+                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
+    assert c.bands[1].left.src == INFERRED
+
+
+def test_green_boundary_median_over_observed_rows_only():
+    """带内部分行外邻格是 unknown（数据到头）：中位只在 observed 行上取
+    （unknown 邻格行不进中位）。"""
+    from maaracing_master.plugins.speedrush import corridor as corr
+    grid = _grid(range(12, 24), blk_lo=1)
+    # 前 4 行 observed（edge 列 36）；后 8 行绿区右移 4 列且外邻格 unknown
+    # ——若 unknown 邻格行进中位，中位被拽到列 40（x=−0.375）
+    grid.state[16:24, 35:41] = GRID_UNKNOWN
+    grid.state[16:24, 40] = GRID_DRIVABLE
+    b = corr._green_boundary(grid, -1, 6.0, 9.0)
+    assert b is not None and b.src == "measured"
+    assert b.x_m == pytest.approx(-10.5 + 36.5 * 0.25)
+
+
+def test_green_boundary_below_min_observed_falls_to_air():
+    """observed 行不足下限（单行 blocked 邻格=单行噪声）→ 不冒充实测，
+    落空气墙。"""
+    grid = _grid(range(12, 24), blk_lo=1)
+    grid.state[13:24, 35] = GRID_UNKNOWN          # 只剩 1 行 observed
+    c = build_corridor(_bnd(), grid, None, fid=11,
+                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
+    assert c.bands[1].left.src == INFERRED
 
 
 def test_band_unknown_when_no_center():

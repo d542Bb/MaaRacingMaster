@@ -23,7 +23,8 @@ import numpy as np
 from dataclasses import dataclass
 
 from maaracing_master.plugins.speedrush.depth_geo import (
-    GRID_CELL, GRID_DRIVABLE, GRID_X_MAX, GRID_Z_HI, GRID_Z_LO)
+    GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_UNKNOWN, GRID_X_MAX,
+    GRID_Z_HI, GRID_Z_LO)
 from maaracing_master.plugins.speedrush.wall_track import MEASURED, OCCLUDED
 
 # 边界来源四态（wall_track 的 measured/occluded 同名复用，不建第二真源）
@@ -32,6 +33,10 @@ INFERRED, UNKNOWN = "inferred", "unknown"
 BAND_LEN_M = 3.0
 # 末带 15~16m 不足 3m 照收（1m 带，诚实标注 z1）
 N_BANDS = int(-(-(GRID_Z_HI - GRID_Z_LO) // BAND_LEN_M))    # ceil → 5
+# 绿区边界的 observed 行下限（3/12 行=0.75m）：单行噪声邻格不冒充实测边界
+# （d00036 逐行实测：真边界带外邻 blocked 10~12 行、假墙带（视锥截断）0 行，
+# 2026-10-10 定案）。
+GREEN_OBS_ROWS_MIN = 3
 
 
 @dataclass(frozen=True)
@@ -101,21 +106,38 @@ def _wall_boundary(wall_track, side: int, z0: float, z1: float) -> BandBoundary 
 
 
 def _green_boundary(grid, side: int, z0: float, z1: float) -> BandBoundary | None:
-    """带内该侧的绿区范围边界（栅格实测路面，measured 低置信——绿区边界是
-    地面证据消失处，不是墙；只在带内有绿行时给）。"""
+    """带内该侧的绿区范围边界（栅格实测路面）。
+
+    边界语义二分（2026-10-10 视锥截断定案）：绿区到头有两种——外邻格
+    **blocked**（观测到的高结构挡住=实测边界）与外邻格 **unknown/窗缘**
+    （数据到头：视锥截断/点饥饿，不是墙）。只有前者算 measured，带内
+    observed 行 < GREEN_OBS_ROWS_MIN 回退空气墙（返回 None，宁缺勿假——
+    近带绿左逐行贴视锥边界 0.1~0.3m，d00036 实测）。中位只在 observed
+    行上取；无绿行的行不进中位（旧码把 n_ix/−1 混进中位）。"""
     if grid is None:
         return None
     rows = _band_rows_mask(grid, z0, z1)
-    drivable = (grid.state[rows] == GRID_DRIVABLE)
+    st = grid.state[rows]
+    drivable = st == GRID_DRIVABLE
     if not drivable.any():
         return None
-    n_ix = grid.state.shape[1]
+    n_ix = st.shape[1]
     ix = np.arange(n_ix)
     if side < 0:
-        edge_ix = np.where(drivable, ix, n_ix).min(axis=1)   # 逐行绿区左边界
+        edge = np.where(drivable, ix, n_ix).min(axis=1)    # 逐行绿区左边界
+        nbr = edge - 1                                     # 外侧邻格
     else:
-        edge_ix = np.where(drivable, ix, -1).max(axis=1)     # 逐行绿区右边界
-    x_m = -GRID_X_MAX + (float(np.median(edge_ix)) + 0.5) * GRID_CELL
+        edge = np.where(drivable, ix, -1).max(axis=1)      # 逐行绿区右边界
+        nbr = edge + 1
+    has = (edge >= 0) & (edge < n_ix)                      # 有绿行
+    inb = (nbr >= 0) & (nbr < n_ix)                        # 邻格在窗内（出窗=数据到头）
+    nb = np.full(edge.shape, GRID_UNKNOWN, np.int8)        # 默认值不出 observed
+    ri = np.arange(edge.shape[0])
+    nb[inb] = st[ri[inb], nbr[inb]]
+    observed = has & inb & (nb == GRID_BLOCKED)
+    if int(observed.sum()) < GREEN_OBS_ROWS_MIN:
+        return None
+    x_m = -GRID_X_MAX + (float(np.median(edge[observed])) + 0.5) * GRID_CELL
     return BandBoundary(x_m, MEASURED, 1.0, None)
 
 
