@@ -960,6 +960,15 @@ class SpeedRushModule(ActivityModule):
             else chain["depth_geo"].last_segments,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
+            # 尺度观测三列（尺度审计 2026-10-10：ms 瞬态段 1.3~1.7× 名义值静默
+            # 通过平面门，先落盘可见再谈防护，只写不读）：MoGe 尺度头原始输出
+            # + 全幅焦距 + 平面 c（=cam_h，名义 ~1.9m，瞬态段 3.9~5.7）
+            "dgeo_ms": None if dgeo is None or dgeo.metric_scale is None
+            else round(dgeo.metric_scale, 3),
+            "dgeo_focal": None if dgeo is None or dgeo.fx is None
+            else round(dgeo.fx, 1),
+            "dgeo_cam_h": None if dgeo is None or dgeo.coef is None
+            else round(abs(dgeo.coef[2]), 3),
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账
             # 与影子重放的验收面（带来源明细在 debugview/offline 重放）
             "cor_w": None if corridor is None

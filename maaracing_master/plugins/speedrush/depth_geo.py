@@ -252,6 +252,9 @@ class DepthRoadReading:
     # 离线复算用；产线栅格 2026-10-09 起并行自拟合，不再消费此字段）
     fx: float | None = None    # 同帧全幅焦距（调试图把检测框反投影回 BEV 用；
     fy: float | None = None    #  离线缓存路径 fy 缺=回退 fx，与平面拟合同约定）
+    metric_scale: float | None = None   # MoGe 尺度头原始输出（观测面，只写不读
+    # ——尺度审计 2026-10-10：ms 瞬态段 1.3~1.7× 名义值静默通过平面门，先落盘
+    # 可见再谈防护；c=coef[2] 即 cam_h，同属观测面）
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
@@ -307,7 +310,8 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     if (oh, ow) != (MOGE_IN_H, MOGE_IN_W):
         if with_evidence:
             evidence = {"pts": pts, "valid": res["valid"],
-                        "fx": res["fx"], "fy": res["fy"]}
+                        "fx": res["fx"], "fy": res["fy"],
+                        "ms": float(metric_scale)}
         pts = np.stack([cv2.resize(pts[..., k], (MOGE_IN_W, MOGE_IN_H),
                                    interpolation=cv2.INTER_LINEAR)
                         for k in range(3)], -1)
@@ -1192,7 +1196,8 @@ class DepthRoadObserver:
             if sheet is not None:
                 evid["anchors"] = sheet
         return replace(reading,
-                       latency_ms=(time.perf_counter() - t0) * 1000.0), evid
+                       latency_ms=(time.perf_counter() - t0) * 1000.0,
+                       metric_scale=evid["ms"]), evid
 
     @property
     def session_ready(self) -> bool:
@@ -1560,7 +1565,7 @@ class AsyncDepthRoadObserver:
 
     def _write_debug(self, frame, evid, reading, object_mask, note=None) -> None:
         """节流落实机调试图（三行堆叠）+ 可复现证据包（336×598 原生点图 fp16 +
-        valid + 归一化焦距 + 生效掩码）。
+        valid + 归一化焦距 + metric_scale + 生效掩码）。
 
         只有渲染图时读数故障无法离线复现（色标有损、看不到平面钉住了什么）——
         证据包按模块 docstring「离线复算」口径可逐位重放 reading_from_points。
@@ -1587,6 +1592,7 @@ class AsyncDepthRoadObserver:
                      valid=np.packbits(evid["valid"].ravel()),
                      valid_shape=np.array(evid["valid"].shape, np.int64),
                      fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
+                     ms=np.float64(evid.get("ms", -1.0)),
                      fid=np.int64(note["fid"]) if note and note.get("fid") is not None
                      else np.int64(-1))
             merged = self._obs._ego_mask
