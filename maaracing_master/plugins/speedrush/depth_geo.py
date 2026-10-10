@@ -623,6 +623,9 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
         if ph[i] > thr and ph[i + 1] > thr:  # 两格持续
             # 尾部持续门（取第一个过门的穿越=最近可信缘；未过门的假缘跳过、
             # 继续向外找——d00017：−1.5m 影子 bump 被拒后 −5.1m 真墙接棒）：
+            # 空 tail=薄墙（竖直平面无宽度，真缘后没有数据格），放行是设计
+            # 选择；可见域缘（k_ok 限/扫描域缘）的空 tail 穿越=数据截断，
+            # 扩窗把视锥边缘新纳入点云时才需要单独拒——2026-10-10 定案。
             tail = ph[i + 2:]
             if len(tail) and (tail > thr).mean() < EDGE_TAIL_FRAC:
                 continue
