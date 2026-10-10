@@ -975,7 +975,7 @@ class SpeedRushModule(ActivityModule):
             "dgeo_shift": None if dgeo is None or not dgeo.solver
             else round(float(dgeo.solver.get("shift", float("nan"))), 4),
             "dgeo_resid": None if dgeo is None or not dgeo.solver
-            else round(float(dgeo.solver.get("resid_mean", float("nan"))), 4),
+            else round(float(dgeo.solver.get("resid_mean", float("nan"))), 6),
             "dgeo_nsol": None if dgeo is None or not dgeo.solver
             else int(dgeo.solver.get("n", -1)),
             "dgeo_cam_h": None if dgeo is None or dgeo.coef is None
