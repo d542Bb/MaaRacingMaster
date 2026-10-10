@@ -24,8 +24,10 @@
   正，与退役像素尺同号约定）。
 - **空中结构剔除**：SKY_HGT=1.2m——桥/天空域点 hgt 实测 ≥7.5m，护栏 ≤1m，
   间隙巨大；不剔会把远端 Z 箱中位整体抬高、穿越在桥带内缘误触发。
-- **ego 掩码=紧矩形**（ego_mask.json 车身矩形）：旧「列带下延」是 2D 逐行
-  扫描语义（「下延挖多无伤」），搬进 3D 分箱会把近处整段可见路面挖走（实证）。
+- **挖除一条缝**（2026-10-10 合并定案）：自车 3D 框（|X|<EGO_ABS_X &
+  Z<EGO_ABS_Z）∪ 物体候选区，逐点 × 剃本体刀（hgt>OBJ_KNIFE_HGT）——找边/
+  栅格/质量门共用同一口径；旧 ego 2D 紧矩形（ego_mask.json，41 帧统计包络比
+  车顶高 ~20px：盖掉 22-35m 可见路面格、跳坡误盖、换车须重算）随合并退役。
 
 **标定常量出处**：平面拟合阈值=55 帧口径沿用（2026-09-26 定案）；找边阈值
 （EDGE_HT/ZBIN 等）=金标帧 MoGe 点云校准（2026-10-01，探针定案后随产线实现
@@ -46,7 +48,6 @@ invalid 置 nan → reading_from_points，与在线逐位一致。
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from collections import deque
@@ -68,11 +69,11 @@ MOGE_IN_W, MOGE_IN_H = 1280, 720    # 折叠静态输入（free-dim 覆盖，见
 # ── 相机系→车头系基准（2026-10-10 挪正：只挪显示/表示面，不进测量与判据）──
 # 全部 z 距离的测量帧是相机系（点云、ZBIN、栅格、拟合域原样不动）；用户可见
 # 的距离标签（BEV 刻度、走廊带标、检测标注）以车为原点才诚实——车头在相机
-# 前 ~5m，相机系"3m"其实在车底下。基准=着地点（ego 掩码底行，车与路面相接
-# 处）z p50=5.00m（n=67 包，p5~p95 4.17~5.58；旧会话同口径 5.69，跨局散布
-# ±0.35m，场景俯仰所致）——车头（前保险杠）掩码拖尾不可直测（ego z p90 混
-# 远景 p50=21m），车尾（ego 最近点）p50=4.52 为下界佐证。用旧值 5.7 的差异
-# 在 25m 量程上 ~3%，不构成换基准的理由。
+# 前 ~5m，相机系"3m"其实在车底下。基准=着地点（自车点云密集段底行，车与路
+# 面相接处）z p50=5.00m（n=67 包，p5~p95 4.17~5.58；旧会话同口径 5.69，跨局
+# 散布 ±0.35m，场景俯仰所致）——车头（前保险杠）点云拖尾不可直测（自车点云
+# z p90 混远景 p50=21m），车尾（自车点云最近点）p50=4.52 为下界佐证。用旧值
+# 5.7 的差异在 25m 量程上 ~3%，不构成换基准的理由。
 CAM_Z_DATUM_M = 5.0
 
 # ── 平面拟合（路面走廊域，Y = aX + bZ + c）──────────────────────────────
@@ -84,7 +85,8 @@ PLANE_ITERS = 3       # 走廊迭代轮数
 PLANE_TOL = 0.15      # 走廊残差容差（固定；路面本身是平的，不随 Z 放宽）
 ROAD_X_MAX = 4.0      # 路面点横向域（米）
 ROAD_Z_LO, ROAD_Z_HI = 4.0, 30.0
-EGO_ABS_X, EGO_ABS_Z = 1.3, 10.0   # 自车区排除（车是路面上的隆起物）
+EGO_ABS_X, EGO_ABS_Z = 1.3, 10.0   # 自车 3D 框（拟合域排除 + 挖除缝）：车与相机
+                                   # 刚性连接，跳坡/换车时车体 Z 域不变仍落框内
 MIN_PLANE_PTS = 500
 
 # ── 拟合质量门（2026-10-09 定案：坏拟合的判据是路区残差/内点率，不是角度）──
@@ -106,11 +108,12 @@ PLANE_PITCH_MAX_DEG = 15.0  # 同上（对称界：点云 Y 轴 y_up/y_down 两�
 # 实测空档（4.6~9.6cm）的保守侧，0.5=半数路面。
 PLANE_INLIER_FLOOR = 0.5
 PLANE_RESID_P50_MAX = 0.06
-OBJ_KNIFE_HGT = PLANE_TOL  # 剃本体刀位（物体矩形内高出路面 0.15m 以上=本体点）；
-                           # 路面像素与贴地币（hgt≈0）留在候选区，不是障碍
+OBJ_KNIFE_HGT = PLANE_TOL  # 剃本体刀位（挖除区内高出路面 0.15m 以上=本体点，
+                           # 自车 3D 框与物体候选区同刀）；路面像素与贴地币
+                           # （hgt≈0）留在候选区，不是障碍
 DIG_CELL_FRAC = 0.5        # 格级挖除占比：刀是逐点的，格是 0.25m 的——挖除点
                            # 占比达此值才算挖除格（本体占据），零星噪声尾点
-                           # 不饿死整格；ego 掩码整格挖（占比 1.0）语义不变
+                           # 不饿死整格
 
 # ── 列剖面路面特征（2026-10-02 定案：拟合起步种子由「位置圈地」换成「特征
 #    识别路面」）─────────────────────────────────────────────────────────
@@ -471,23 +474,23 @@ def _fit_road_plane_seed(road: np.ndarray, X: np.ndarray, Y: np.ndarray,
 
 
 def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
-                    dig: np.ndarray | None, fy: float | None = None
-                    ) -> np.ndarray | None:
+                    fy: float | None = None) -> np.ndarray | None:
     """路面平面拟合 Y=aX+bZ+c → coef；域内点不足判失败（None，诚实弃权）。
 
-    两段式（2026-10-02 换装）：**特征种子**——列剖面特征识别的路面点先拟合
-    出起步平面（墙/天空/车辆/路外不进种子）；**走廊收敛**——从种子平面起
-    按旧动力学（走廊域 15cm 内点重选 lstsq）收敛。旧法病理在起步种子被墙
-    劫持（墙面点与路面相连、迭代内点沿墙爬升，000660 被拽 5.25°），不在
-    走廊重选本身；好种子进不了坏盆地，远场覆盖由走廊重选全数找回。
-    ``fy``=None 走纯旧位置圈地路径（回退开关）；特征种子失败同样回退。
-    走廊域逐点静态，一次抽取域点集后域内迭代（布尔掩码保序，与逐轮全幅
-    重选逐位等价）。"""
+    拟合域只收「路面点」（定案口径，见模块头「平面拟合」注释）：域窗=走廊
+    常量，自车区由 3D 框排除——物体候选区不进拟合域排除（物体点混进拟合
+    不拽歪平面，走廊收敛自动拒离面点，83 包实测系数逐位一致），挖除语义
+    统一进 ``_dig_3d_mask`` 一条缝（2026-10-10 合并定案）。两段式（2026-10-02
+    换装）：**特征种子**——列剖面特征识别的路面点先拟合出起步平面（墙/天空/
+    车辆/路外不进种子）；**走廊收敛**——从种子平面起按旧动力学（走廊域
+    15cm 内点重选 lstsq）收敛。旧法病理在起步种子被墙劫持（墙面点与路面
+    相连、迭代内点沿墙爬升，000660 被拽 5.25°），不在走廊重选本身；好种子
+    进不了坏盆地，远场覆盖由走廊重选全数找回。``fy``=None 走纯旧位置圈地
+    路径（回退开关）；特征种子失败同样回退。走廊域逐点静态，一次抽取域点集
+    后域内迭代（布尔掩码保序，与逐轮全幅重选逐位等价）。"""
     ok = np.isfinite(X) & np.isfinite(Y) & np.isfinite(Z) & (Z > 0)
     road = (ok & (np.abs(X) < ROAD_X_MAX) & (Z > ROAD_Z_LO) & (Z < ROAD_Z_HI)
             & ~((np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)))
-    if dig is not None:
-        road = road & ~dig
     n = int(road.sum())
     if n < MIN_PLANE_PTS:
         return None
@@ -495,10 +498,10 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     ones = np.ones(n, np.float32)
     m = None
     if fy is not None:
-        bad = ~np.isfinite(Z) | (Z <= WALK_Z_MIN)
-        if dig is not None:
-            bad = bad | dig
-        seed = _fit_road_plane_seed(_road_by_column_profile(Z, fy, bad), X, Y, Z)
+        bad = (~np.isfinite(Z) | (Z <= WALK_Z_MIN)
+               | ((np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)))
+        seed = _fit_road_plane_seed(
+            _road_by_column_profile(Z, fy, bad), X, Y, Z)
         if seed is not None:
             m = np.abs(ys - (seed[0] * xs + seed[1] * zs + seed[2])) < PLANE_TOL
     if m is None:
@@ -669,10 +672,26 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
     return np.nan
 
 
+def _dig_3d_mask(X: np.ndarray, Z: np.ndarray, hgt: np.ndarray,
+                 obj_band: np.ndarray | None) -> np.ndarray:
+    """统一挖除缝（2026-10-10 合并定案）：自车 3D 框 ∪ 物体候选区，逐点 × 刀。
+
+    「挖什么」只留一条缝，找边/栅格/质量门消费同一口径——旧态是拟合/找边/
+    栅格三处三套答案（ego 2D 紧矩形整挖 + obj 矩形×刀），2D 矩形与车顶的
+    相对位置随车型/机位漂移（统计包络比车顶高 ~20px：盖掉 22-35m 可见路面
+    格、跳坡误盖、换车须重算），ego_mask.json 整体退役。3D 框 + 刀自动适应：
+    车与相机刚性连接，跳坡/换车时车体 Z 域不变仍落框内。hgt 缺失（nan）的
+    点不挖——它们本就被下游 isfinite 检查排除。"""
+    dig = (np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)
+    if obj_band is not None:
+        dig = dig | obj_band
+    return dig & (hgt > OBJ_KNIFE_HGT)
+
+
 def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
-                        ego_mask: np.ndarray | None = None,
                         object_mask: np.ndarray | None = None,
                         fy: float | None = None,
+                        coef: tuple[float, float, float] | None = None,
                         ) -> DepthRoadReading:
     """点图 → 读数（纯函数，回归锁可直接喂缓存点云；observe=推理+本函数）。
 
@@ -680,8 +699,10 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     守卫与诊断回投共用）。``fy`` 同帧纵向焦距（列剖面特征行走的增量理论值用）；
     None 时回退 fx——MoGe 归一化内参约定下横纵焦距差实测 ~0.1%，远小于行走
     容差窗（离线点云缓存只存了 fx，故回退合法；产线 observe 传真值）。
-    ``ego_mask``（紧矩形）与 ``object_mask``（YOLO 框）都从点云挖除（断车身
-    →路面粘连）。"""
+    ``object_mask``（YOLO 框）为候选区，按统一挖除缝（自车 3D 框 ∪ 候选区）×
+    剃本体刀挖除（断车身→路面粘连）。``coef`` 传入已有平面即跳过拟合（产线
+    observe_debug 一帧一拟共享，2026-10-10 合并定案；离线复算/单独调用缺省
+    自拟合）——质量门仍在本函数内判（门判据=挖除缝内残差，随平面走）。"""
     t0 = time.perf_counter()
 
     def _ret(lane_l, lane_r, u_l, u_r, rejects, edge_pts=()):
@@ -695,34 +716,27 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                   else (float(coef[0]), float(coef[1]), float(coef[2]))),
             fx=float(fx), fy=float(fy if fy is not None else fx))
 
-    dig_ego = _dig_band(ego_mask, pts.shape[1])
-    dig_obj = (_dig_band(object_mask, pts.shape[1])
-               if object_mask is not None else None)
-    dig = dig_ego if dig_obj is None else dig_ego | dig_obj
+    obj_band = _dig_band(object_mask, pts.shape[1])
 
     X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
     t_p = time.perf_counter()
-    coef = _fit_road_plane(X, Y, Z, dig, fy=fx if fy is None else fy)
-    reject = None
-    if coef is not None and not _plane_plausible(coef, X, Y, Z, dig):
-        coef, reject = None, "平面质量门拒绝"
-    # 平面拟合单列分段（worker 单线程写；scan=edges−plane 离线导出）。
-    # 输出仍纯：计时副作用不改变任何返回值。
-    LAST_STAGE_MS["plane"] = (time.perf_counter() - t_p) * 1000.0
     if coef is None:
-        return _ret(None, None, None, None, [reject or "平面拟合失败"])
+        coef = _fit_road_plane(X, Y, Z, fy=fx if fy is None else fy)
+        LAST_STAGE_MS["plane"] = (time.perf_counter() - t_p) * 1000.0
+    if coef is None:
+        return _ret(None, None, None, None, ["平面拟合失败"])
     a, b, c = (float(coef[0]), float(coef[1]), float(coef[2]))
     # Y 向下为正 → 残差符号随平面高度（c）走：取 z=5m 处路面 Y 的符号定翻转，
     # hgt 统一为「高出路面为正」。
     sgn = -1.0 if b * 5.0 + c > 0 else 1.0
     hgt = sgn * (Y - (a * X + b * Z + c))
+    # 统一挖除缝 + 质量门：门判据=缝内残差/内点率，缝随平面走——先算缝再判门。
+    dig_3d = _dig_3d_mask(X, Z, hgt, obj_band)
+    if not _plane_plausible(coef, X, Y, Z, dig_3d):
+        coef = None    # 被拒平面不进返回值（_ret 闭包读当前 coef）
+        return _ret(None, None, None, None, ["平面质量门拒绝"])
     sky = np.isfinite(hgt) & (hgt > SKY_HGT)
-    # 剃本体（2026-10-09 定案）：物体矩形内只挖高出路面的点（hgt>OBJ_KNIFE_HGT），
-    # 路面像素留在候选区——矩形挖整块让真缘陪葬、格子饿死（三级对质定案 ×）。
-    # 物体点混进拟合不拽歪平面（走廊收敛自动拒离面点，83 包实测系数逐位一致），
-    # 拟合保留矩形挖口径不动。币贴地（hgt≈0）不挖——币不是路面障碍。
-    scan_dig = (dig_ego if dig_obj is None
-                else dig_ego | (dig_obj & (hgt > OBJ_KNIFE_HGT)))
+    scan_dig = dig_3d
     extent = (pts.shape[1] / 2.0) / fx   # 画面横边界比 |X|/Z（同帧焦距，禁写死）
 
     edge_pts: list[tuple[int, float, float]] = []
@@ -782,7 +796,6 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
 
 
 def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
-                              ego: np.ndarray | None = None,
                               obj: np.ndarray | None = None,
                               coef: tuple[float, float, float] | None = None,
                               center_m: float | None = None,
@@ -790,14 +803,15 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                               ) -> DrivableGrid:
     """点图 → 可行驶栅格（纯函数；与 ``reading_from_points`` 并行、互不影响）。
 
-    ``pts``/``fx``/``fy``/``ego``/``obj`` 口径与 ``reading_from_points`` 一致
-    （全幅点图、同帧全幅焦距、ego 紧矩形与物体框掩码）。复用 ``_fit_road_plane``
-    与 ``_binned_median``（只调用不复制）：平面与 reading 同源，格中位与找边剖面
-    同值。``coef`` 缺省时本函数自拟合平面（同函数同输入，与 reading 的拟合
-    确定性逐位同结果）——**产线调用点自 2026-10-09 起走并行路径不传 coef**
-    （两路只读共享点云、不共享可变状态；多付的一次拟合被并行隐藏，探针
-    1.52~1.60× 已含自拟合口径）；``coef`` 传已有平面即跳过拟合（离线复算/
-    单独调用允许）。
+    ``pts``/``fx``/``fy``/``obj`` 口径与 ``reading_from_points`` 一致（全幅
+    点图、同帧全幅焦距、物体框候选区）。复用 ``_fit_road_plane`` 与
+    ``_binned_median``（只调用不复制）。挖除语义=统一缝 ``_dig_3d_mask``
+    （自车 3D 框 ∪ 候选区 × 剃本体刀，2026-10-10 合并定案，与找边同口径）。
+    ``coef`` 传入已有平面即跳过拟合——**产线调用点自 2026-10-10 起吃
+    observe_debug 一帧一拟的共享 coef**（一份真值，省一次列剖面重算 ~34ms/
+    帧；两路只读共享点云/掩码/coef、不共享可变状态，挖除缝与门各自用同一
+    coef 独立计算，同输入逐位同结果）；``coef`` 缺省时本函数自拟合（离线
+    复算/单独调用允许，同函数同输入与 reading 的拟合确定性逐位同结果）。
 
     **耗时**（2026-10-04 实测，本机空载）：自拟合口径 p50 ≈ 34ms / 帧（6 帧
     33~74ms，随机器负载浮动），主因是列剖面平面拟合（占 ~60%），共享 coef 后
@@ -815,14 +829,17 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                             latency_ms=(time.perf_counter() - t0) * 1000.0,
                             dig_mask=dig_mask)
 
-    dig_ego = _dig_band(ego, pts.shape[1])
-    dig_obj = _dig_band(obj, pts.shape[1]) if obj is not None else None
-    dig = dig_ego if dig_obj is None else dig_ego | dig_obj
+    obj_band = _dig_band(obj, pts.shape[1]) if obj is not None else None
     Xb, Yb, Zb = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
     if coef is None:
-        coef = _fit_road_plane(Xb, Yb, Zb, dig, fy=fy)
-        if coef is not None and not _plane_plausible(coef, Xb, Yb, Zb, dig):
-            coef = None
+        coef = _fit_road_plane(Xb, Yb, Zb, fy=fy)
+        if coef is not None:
+            a0, b0, c0 = (float(coef[0]), float(coef[1]), float(coef[2]))
+            sgn0 = -1.0 if b0 * 5.0 + c0 > 0 else 1.0
+            hgt0 = sgn0 * (Yb - (a0 * Xb + b0 * Zb + c0))
+            if not _plane_plausible(coef, Xb, Yb, Zb,
+                                    _dig_3d_mask(Xb, Zb, hgt0, obj_band)):
+                coef = None
         if coef is None:
             return _ret(np.zeros((GRID_NZ, GRID_NX), np.int8), None,
                         np.zeros((GRID_NZ, GRID_NX), np.int32), 0)
@@ -838,12 +855,10 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     ix = np.floor((Xb[ok] + GRID_X_MAX) / GRID_CELL).astype(np.int64)
     iz = np.floor((Zb[ok] - GRID_Z_LO) / GRID_CELL).astype(np.int64)
     flat = (iz * GRID_NX + ix)
-    # 剃本体（2026-10-09 定案，同 reading 找边口径）：物体矩形内只挖高出路面的
-    # 点（hgt>OBJ_KNIFE_HGT），矩形内路面像素留在栅格——矩形挖整块让格子饿死
-    # （d00080/81 左半不可走 0~1% 的帮凶之一）。拟合保留矩形挖（物体点混进拟合
-    # 不拽歪平面，83 包实测系数逐位一致）。
-    dug = (dig_ego if dig_obj is None
-           else dig_ego | (dig_obj & (hgt > OBJ_KNIFE_HGT)))[ok]
+    # 统一挖除缝（2026-10-10 合并定案，同 reading 找边口径）：自车 3D 框 ∪
+    # 物体候选区，逐点 × 剃本体刀（hgt>OBJ_KNIFE_HGT）——矩形内路面像素留在
+    # 栅格（矩形挖整块让格子饿死，d00080/81 左半不可走 0~1% 的帮凶之一）。
+    dug = _dig_3d_mask(Xb, Zb, hgt, obj_band)[ok]
     hv = np.ascontiguousarray(hgt[ok], np.float32)
 
     nod = ~dug
@@ -855,7 +870,7 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
         med[want] = _binned_median(hv[nod], flat_nod, want, counts)
     # 格级挖除判据（剃本体配套）：刀是逐点的，格是 0.25m 的——路面格里零星
     # 噪声尾点（hgt 略超刀位）不该饿死整格；本体占据（挖除点占比 ≥
-    # DIG_CELL_FRAC）才算挖除格。ego 掩码整格挖（占比 1.0）语义不变。
+    # DIG_CELL_FRAC）才算挖除格。
     dug_mask = np.zeros(ncell, bool)
     if dug.any():
         frac = np.bincount(flat[dug], minlength=ncell) / np.maximum(
@@ -1116,35 +1131,19 @@ class DepthRoadObserver:
                  cal: Calib) -> None:
         self._sess = session
         self._cal = cal
-        self._ego_mask = self._load_ego_mask()
         # observe 分段滑窗（worker 单线程写；分段口径见 LAST_STAGE_MS）
         self._stage_win: dict[str, deque] = {
             k: deque(maxlen=200)
             for k in ("pre", "forward", "reconstruct", "upsize",
                       "plane", "edges", "grid")}
 
-    @staticmethod
-    def _load_ego_mask() -> np.ndarray | None:
-        """3D 挖除区 = 自车高区矩形（ego_mask.json 的 y0~y1/x0~x1）。
-
-        只取紧矩形：矩形下缘之下是可见路面，多挖一寸都是把真路面从点云里
-        抹掉（3D 分箱口径下的实证）；旧「列带下延」是 2D 逐行扫描的防漏
-        语义，随旧链退役，不再共用一个构造。"""
-        p = Path(__file__).resolve().parent / "resources" / "calibration" / "ego_mask.json"
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-            mask = np.zeros((720, 1280), bool)
-            mask[d["y0"]:d["y1"], d["x0"]:d["x1"]] = True
-            return mask
-        except Exception:
-            return None
-
     def observe(self, frame_rgb: np.ndarray,
                 object_mask: np.ndarray | None = None) -> DepthRoadReading | None:
         """一帧 → 读数（两侧可各自弃权）；推理失败 → None（不抛，控制链不因感知停摆）。
 
-        ``object_mask``：YOLO 检测框（车/金币/奖励，外扩后）布尔掩码，与 ego
-        掩码同通道挖除——物体从点云源头消失，"穿车读墙"假缘不再产生。"""
+        ``object_mask``：YOLO 检测框（车/金币/奖励，外扩后）布尔掩码候选区，
+        按统一挖除缝（自车 3D 框 ∪ 候选区）× 剃本体刀挖除——物体从点云源头
+        消失，"穿车读墙"假缘不再产生。"""
         reading, _ = self.observe_debug(frame_rgb, object_mask)
         return reading
 
@@ -1171,25 +1170,33 @@ class DepthRoadObserver:
         stage = {k: LAST_STAGE_MS[k] for k in
                  ("pre", "forward", "reconstruct", "upsize")}
         t_e = time.perf_counter()
+        # 一帧一拟（2026-10-10 合并定案）：平面在 observe 拟一次，找边与栅格
+        # 只读共享 coef——栅格不再自拟合，省一次列剖面重算（~34ms/帧）。并行
+        # 语义下不共享可变状态：两路各自用同一 coef 独立算挖除缝与质量门，
+        # 同输入逐位同结果。异常在 join 处原样重抛，保持 observe 的降级语义
+        # （不吞错不换错）。
+        X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
+        t_p = time.perf_counter()
+        coef = _fit_road_plane(X, Y, Z, fy=fy)
+        stage["plane"] = LAST_STAGE_MS["plane"] = \
+            (time.perf_counter() - t_p) * 1000.0
         t_g = time.perf_counter()
         # 找边与栅格并行（2026-10-09 空载探针 1.52~1.60×，GIL 未缩水）：
-        # 两路只读共享点云/掩码，输出各自独立。栅格自拟合平面（同函数同输入，
-        # 确定性逐位同结果），不再依赖 reading.coef——并行语义下不共享可变状态。
-        # 异常在 join 处原样重抛，保持 observe 的降级语义（不吞错不换错）。
+        # 两路只读共享点云/掩码/coef，输出各自独立。
         th_err: list[BaseException] = []
         grid_box: list = []
 
         def _grid_worker():
             try:
                 grid_box.append(drivable_grid_from_points(
-                    pts, fx, fy, self._ego_mask, object_mask))
+                    pts, fx, fy, object_mask, coef=coef))
             except BaseException as e:   # noqa: BLE001 —— join 处重抛，见 th_err
                 th_err.append(e)
 
         th = threading.Thread(target=_grid_worker, daemon=True)
         th.start()
-        reading = reading_from_points(pts, fx, self._cal, ego_mask=self._ego_mask,
-                                      object_mask=object_mask, fy=fy)
+        reading = reading_from_points(pts, fx, self._cal, object_mask=object_mask,
+                                      fy=fy, coef=coef)
         stage["edges"] = LAST_STAGE_MS["edges"] = \
             (time.perf_counter() - t_e) * 1000.0
         th.join()
@@ -1268,25 +1275,23 @@ def _grid_panel(grid: DrivableGrid, width: int, scale: int = 4) -> np.ndarray:
 
 
 def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
-                       reading: DepthRoadReading, ego_mask: np.ndarray | None,
+                       reading: DepthRoadReading,
                        object_mask: np.ndarray | None = None,
                        note: dict | None = None,
                        grid: DrivableGrid | None = None) -> np.ndarray:
     """实机可视化判据（三行堆叠，BGR）：程序看了什么、算了什么、判了什么。
 
-    ① 画面帧：ego 掩码橙描边 / YOLO 物体掩码蓝描边 / 检出缘像素锚黄点 + L/R 车道量；
+    ① 画面帧：YOLO 物体掩码蓝描边 / 检出缘像素锚黄点 + L/R 车道量；
     ② 高出路面图（蓝=低于、灰=路面、橙红=抬高）+ 各箱检出缘黄圈；
     ③ 弃权原因 + 焦距/相机高度诊断带。``grid`` 非 None 时在②③之间插一行 BEV
     可行驶栅格小图（绿=可走/红=不可走/灰=未知，与离线探针同配色）。纯函数只渲染
     不落盘——落盘归异步 worker 节流。evid=None（推理失败的空拍）时只出①③。"""
     h, w = frame_rgb.shape[:2]
     f = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-    for mask, col in ((ego_mask, (255, 128, 0)), (object_mask, (255, 0, 0))):
-        if mask is None:
-            continue
-        cnts, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL,
+    if object_mask is not None:
+        cnts, _ = cv2.findContours(object_mask.astype(np.uint8), cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(f, cnts, -1, col, 2)
+        cv2.drawContours(f, cnts, -1, (255, 0, 0), 2)
     lt = "-" if reading.left_edge_lane is None else f"{reading.left_edge_lane:+.2f}"
     rt = "-" if reading.right_edge_lane is None else f"{reading.right_edge_lane:+.2f}"
     cv2.putText(f, f"L {lt}  R {rt}  sides={reading.sides}", (8, 26),
@@ -1305,10 +1310,7 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
         pts = pts.copy()
         pts[~valid] = np.nan
         X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
-        dig = _dig_band(ego_mask, w)
-        if object_mask is not None:
-            dig = dig | _dig_band(object_mask, w)
-        coef = _fit_road_plane(X, Y, Z, dig)
+        coef = _fit_road_plane(X, Y, Z)
         if coef is not None:
             a_c, b_c, c_c = (float(coef[0]), float(coef[1]), float(coef[2]))
             sgn = -1.0 if b_c * 5.0 + c_c > 0 else 1.0
@@ -1577,10 +1579,12 @@ class AsyncDepthRoadObserver:
 
     def _write_debug(self, frame, evid, reading, object_mask, note=None) -> None:
         """节流落实机调试图（三行堆叠）+ 可复现证据包（336×598 原生点图 fp16 +
-        valid + 归一化焦距 + metric_scale + 生效掩码）。
+        valid + 归一化焦距 + metric_scale + 物体候选区掩码）。
 
         只有渲染图时读数故障无法离线复现（色标有损、看不到平面钉住了什么）——
         证据包按模块 docstring「离线复算」口径可逐位重放 reading_from_points。
+        ``_mask.npy`` 自 2026-10-10 起为 obj 候选区（ego 由 3D 框处理不再落盘；
+        旧包同文件=ego∪obj 合并掩码，重放口径见测试 ``_assemble_evid``）。
         失败静默吞掉——debug 绝不干扰主路。"""
         now = time.monotonic()
         if now - self._debug_last < self.DEBUG_INTERVAL_S:
@@ -1590,8 +1594,7 @@ class AsyncDepthRoadObserver:
             self._debug_dir.mkdir(parents=True, exist_ok=True)
             self._debug_seq += 1
             stem = self._debug_dir / f"d{self._debug_seq:05d}"
-            img = render_depth_debug(frame, evid, reading,
-                                     self._obs._ego_mask, object_mask, note,
+            img = render_depth_debug(frame, evid, reading, object_mask, note,
                                      grid=evid.get("grid") if evid else None)
             cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
             # 原图全幅落盘（人工金标标注/离线重渲染叠锚点都要全分辨率底图；
@@ -1607,14 +1610,8 @@ class AsyncDepthRoadObserver:
                      ms=np.float64(evid.get("ms", -1.0)),
                      fid=np.int64(note["fid"]) if note and note.get("fid") is not None
                      else np.int64(-1))
-            merged = self._obs._ego_mask
             if object_mask is not None:
-                merged = object_mask if merged is None else (merged | object_mask)
-            if merged is not None:
-                np.save(str(stem) + "_mask.npy", np.packbits(merged))
-            if self._obs._ego_mask is not None:
-                np.save(str(stem) + "_ego.npy",
-                        np.packbits(self._obs._ego_mask))
+                np.save(str(stem) + "_mask.npy", np.packbits(object_mask))
         except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
             pass
 

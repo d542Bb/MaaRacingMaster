@@ -16,7 +16,6 @@
 墙体为 X=±半宽的竖直面，全帧逐像素取最近命中。"""
 from __future__ import annotations
 
-import json
 import ctypes
 import os
 import time as _time
@@ -187,7 +186,7 @@ def test_object_knife_keeps_road_under_object_rect():
                         boxes=((1.0, 1.5, 4.0, 6.0, 1.0),))   # 路上车（右前方）
     obj = np.zeros((720, 1280), bool)
     obj[:, 780:1070] = True                # 车成像列 + 相邻路面列一起盖住
-    g = dg.drivable_grid_from_points(pts, FX, FY, ego=None, obj=obj)
+    g = dg.drivable_grid_from_points(pts, FX, FY, obj=obj)
     assert g.coef is not None
     iz5 = int((5.0 - dg.GRID_Z_LO) / dg.GRID_CELL)
     ix_car = int((1.0 + dg.GRID_X_MAX) / dg.GRID_CELL)    # 车近脸格（本体占据）
@@ -209,11 +208,11 @@ def test_grid_wall_line_and_shoulder():
     ix_edge = int((4.5 + dg.GRID_X_MAX) / dg.GRID_CELL)    # x≈4.5：墙前路肩带
     ix_beyond = int((5.75 + dg.GRID_X_MAX) / dg.GRID_CELL)  # x≈5.75：墙后无数据
     # 不给路宽：墙线即路面 span，墙内平地照常可走
-    g0 = dg.drivable_grid_from_points(pts, FX, FY, ego=None, obj=None)
+    g0 = dg.drivable_grid_from_points(pts, FX, FY)
     assert g0.state[iz, ix_road] == dg.GRID_DRIVABLE
     assert g0.state[iz, ix_edge] == dg.GRID_DRIVABLE
     # 给中线 0 + 路宽 8m（空气墙 ±4）：4~5.5 之间判路肩，路面照常，墙外无数据仍未知
-    g = dg.drivable_grid_from_points(pts, FX, FY, ego=None, obj=None,
+    g = dg.drivable_grid_from_points(pts, FX, FY, obj=None,
                                      center_m=0.0, width_m=8.0)
     assert g.state[iz, ix_road] == dg.GRID_DRIVABLE
     assert g.state[iz, ix_edge] == dg.GRID_SHOULDER
@@ -224,7 +223,7 @@ def test_grid_wall_line_ignores_car_on_road():
     """路面上的车不算墙：车后混有路面格 → 该侧不产墙线，路面照常判读。"""
     pts = _scene_points(x_left=WALL, x_right=WALL,
                         boxes=((1.0, 1.5, 4.0, 6.0, 1.0),))   # 路上车
-    g = dg.drivable_grid_from_points(pts, FX, FY, ego=None, obj=None)
+    g = dg.drivable_grid_from_points(pts, FX, FY)
     iz5 = int((5.0 - dg.GRID_Z_LO) / dg.GRID_CELL)
     # 车右侧的路面格（x≈2.5）仍在路面 span 内：不被车"墙线"划成路肩
     ix_beyond_car = int((2.5 + dg.GRID_X_MAX) / dg.GRID_CELL)
@@ -328,15 +327,14 @@ def test_fit_road_plane_feature_seed_resists_wall_tilt():
     2026-10-02 列剖面特征换装）。墙基与路面相连、迭代内点沿墙爬升的病理
     由特征种子切断——走廊内墙（000660 形态，墙基在 |X|<4 内）同样不许拽歪。
     fy=None 的旧位置圈地路径是回退开关，其抗墙性由走廊外墙用例一并锁定。"""
-    dig = np.zeros((dg.DIAG_Y1 - dg.Y0, 1280), bool)
 
     def _band_coefs(pts, fy):
         X, Y, Z = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
-        return dg._fit_road_plane(X, Y, Z, dig, fy=fy)
+        return dg._fit_road_plane(X, Y, Z, fy=fy)
 
     pts_open = _scene_points(x_left=None, x_right=None)
     X2, Y2, Z2 = (pts_open[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
-    coef_open = dg._fit_road_plane(X2, Y2, Z2, dig, fy=FY)
+    coef_open = dg._fit_road_plane(X2, Y2, Z2, fy=FY)
     assert coef_open is not None
 
     # 特征种子路径（产线）：走廊外墙与走廊内墙（000660 形态）都不拽歪
@@ -353,20 +351,9 @@ def test_fit_road_plane_feature_seed_resists_wall_tilt():
 
     # 回退路径（fy=None）：走廊外墙不进旧拟合域，平面钉结果同样不变
     coef_leg = _band_coefs(_scene_points(x_left=WALL, x_right=WALL), None)
-    coef_leg_open = dg._fit_road_plane(X2, Y2, Z2, dig, fy=None)
+    coef_leg_open = dg._fit_road_plane(X2, Y2, Z2, fy=None)
     assert coef_leg is not None and coef_leg_open is not None
     np.testing.assert_allclose(coef_leg, coef_leg_open, atol=1e-3)
-
-
-def test_ego_mask_asset_loads_tight_rect():
-    """ego 掩码资产在场且=紧矩形（3D 语义；列带下延是已退役的 2D 构造）。"""
-    m = DepthRoadObserver._load_ego_mask()
-    assert m is not None and m.shape == (720, 1280)
-    d = json.loads((Path(dg.__file__).parent / "resources" / "calibration"
-                    / "ego_mask.json").read_text(encoding="utf-8"))
-    expect = np.zeros((720, 1280), bool)
-    expect[d["y0"]:d["y1"], d["x0"]:d["x1"]] = True
-    np.testing.assert_array_equal(m, expect)
 
 
 # ── moge_post 后处理单元 ────────────────────────────────────────────────
@@ -906,8 +893,6 @@ def test_async_debug_writes_replayable_evidence(tmp_path):
     """调试图同拍落可复现证据包：336×598 原生点图 fp16 + valid + 原生焦距——
     只有有损渲染时，实机读数故障无法离线重放（2026-09-25 21:41 局的教训）。"""
     stub = _StubObserver([_mk_reading()])
-    stub._ego_mask = np.zeros((720, 1280), bool)
-    stub._ego_mask[:10, :10] = True
     def _evid_observe(frame, object_mask=None, detections=None,
                       fid=None, frame_ts_ns=None):
         stub.calls += 1
@@ -966,8 +951,7 @@ def test_anchor_clean_straight_frames(stem, l_lo, l_hi, r_lo, r_hi):
         pytest.skip(f"该帧未缓存：{f}")
     z = np.load(f)
     pts = z["pts"].astype(np.float32)
-    rd = reading_from_points(pts, float(z["fx"]), CAL,
-                             ego_mask=DepthRoadObserver._load_ego_mask())
+    rd = reading_from_points(pts, float(z["fx"]), CAL)
     assert rd.sides == 2, f"rejects={rd.rejects}"
     assert l_lo <= rd.left_edge_lane <= l_hi, f"L={rd.left_edge_lane}"
     assert r_lo <= rd.right_edge_lane <= r_hi, f"R={rd.right_edge_lane}"
@@ -999,7 +983,7 @@ def test_render_anchors_at_true_pixels(up_positive):
             "valid": np.isfinite(pts[..., 0]),
             "fx": np.float64(FX / 1280), "fy": np.float64(FY / 720)}
     img = dg.render_depth_debug(np.full((720, 1280, 3), 128, np.uint8),
-                                evid, rd, None, None, None)
+                                evid, rd, None, None)
     band_h = dg.DIAG_Y1 - dg.Y0
     ys = _yellow_px(img[720:720 + band_h])
     assert len(ys) > 0, "高度图带内无黄锚（画飞或未画）"
@@ -1035,7 +1019,7 @@ def test_render_decision_band_note_dict_does_not_throw():
             "steer": 0.1, "elane": 0.2, "xt": 0.3, "ro": -0.1, "src": "pair",
             "ro_raw": -0.12, "age": 301.0, "new": False}
     img = dg.render_depth_debug(np.full((720, 1280, 3), 128, np.uint8),
-                                None, rd, None, None, note)
+                                None, rd, None, note)
     assert img.shape == (720 + (dg.DIAG_Y1 - dg.Y0) + 56, 1280, 3)
 
 
@@ -1295,10 +1279,9 @@ def test_reading_from_points_matches_reference_pipeline(monkeypatch, case):
             (-2.75, -2.5, 3.0, 5.0, 1.0), (-3.75, -3.5, 5.0, 7.0, 1.0),
             (-4.75, -4.5, 7.0, 9.0, 1.0)))
         obj = None
-    ego = DepthRoadObserver._load_ego_mask()
-    new = reading_from_points(pts, FX, CAL, ego_mask=ego, object_mask=obj, fy=FY)
+    new = reading_from_points(pts, FX, CAL, object_mask=obj, fy=FY)
     monkeypatch.setattr(dg, "_scan_side", _ref_scan_side)
-    old = reading_from_points(pts, FX, CAL, ego_mask=ego, object_mask=obj, fy=FY)
+    old = reading_from_points(pts, FX, CAL, object_mask=obj, fy=FY)
     assert (old.left_edge_lane, old.right_edge_lane, old.left_x, old.right_x,
             old.sides, old.rejects, old.edge_pts) == \
            (new.left_edge_lane, new.right_edge_lane, new.left_x, new.right_x,
@@ -1308,12 +1291,11 @@ def test_reading_from_points_matches_reference_pipeline(monkeypatch, case):
 def test_reading_from_points_abstain_paths_match_reference(monkeypatch):
     """弃权路径等价：全 nan（平面拟合失败）与单侧无墙（一侧弃权）两路上，
     新旧实现同样一字不差——提前收敛改动不许改弃权行为。"""
-    ego = DepthRoadObserver._load_ego_mask()
     for pts in (np.full((720, 1280, 3), np.nan, np.float32),
                 _scene_points(x_right=WALL)):
-        new = reading_from_points(pts, FX, CAL, ego_mask=ego, fy=FY)
+        new = reading_from_points(pts, FX, CAL, fy=FY)
         monkeypatch.setattr(dg, "_scan_side", _ref_scan_side)
-        old = reading_from_points(pts, FX, CAL, ego_mask=ego, fy=FY)
+        old = reading_from_points(pts, FX, CAL, fy=FY)
         monkeypatch.undo()
         assert (old.left_edge_lane, old.right_edge_lane, old.left_x, old.right_x,
                 old.sides, old.rejects, old.edge_pts) == \
@@ -1326,11 +1308,10 @@ def test_fit_road_plane_early_exit_matches_full_iterations(monkeypatch):
     必跑满），系数必须与产线路径逐位相同。"""
     pts = _scene_points(x_left=WALL, x_right=WALL)
     X, Y, Z = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
-    dig = np.zeros((dg.DIAG_Y1 - dg.Y0, 1280), bool)
     for fy in (FY, None):        # 特征种子路径 + fy=None 回退路径
-        fast = dg._fit_road_plane(X, Y, Z, dig, fy=fy)
+        fast = dg._fit_road_plane(X, Y, Z, fy=fy)
         monkeypatch.setattr(dg, "PLANE_ITERS", 6)
-        slow = dg._fit_road_plane(X, Y, Z, dig, fy=fy)
+        slow = dg._fit_road_plane(X, Y, Z, fy=fy)
         monkeypatch.undo()
         assert fast is not None and slow is not None, f"fy={fy}"
         np.testing.assert_array_equal(fast, slow)
@@ -1338,8 +1319,9 @@ def test_fit_road_plane_early_exit_matches_full_iterations(monkeypatch):
 
 # ---------- 可行驶栅格 drivable_grid_from_points（2026-10-04 离线调查落产线）----
 #
-# 三态：0 未知（无证据）/ 1 可走 / 2 不可走（软代价）。判据=格内非挖洞点 hgt 中位：
-# |中位|≤GRID_TOL → 可走，>TOL → 不可走；挖洞（ego/物体框）覆盖的格一律未知。
+# 三态：0 未知（无证据）/ 1 可走 / 2 不可走（软代价）。判据=格内非挖除点 hgt 中位：
+# |中位|≤GRID_TOL → 可走，>TOL → 不可走；挖除缝（自车 3D 框 ∪ 物体候选区 × 刀）
+# 覆盖达 DIG_CELL_FRAC 的格一律未知。
 
 
 def _cell_state(grid, x_m: float, z_m: float) -> int:
@@ -1380,29 +1362,28 @@ def test_drivable_grid_single_wall_other_side_unknown():
     assert _cell_state(g, -8.0, 8.0) == dg.GRID_UNKNOWN       # 左缘外无证据
 
 
-def test_drivable_grid_dug_cells_all_unknown():
-    """挖洞格全未知、0 误判：ego/物体框覆盖的格一律未知（证据被主动移除）。"""
+def test_drivable_grid_dig_seam_car_body_dug_road_kept():
+    """统一挖除缝（2026-10-10 合并定案）：自车 3D 框 ∪ 物体候选区 × 剃本体刀
+    ——车身（高出路面 ≥ 刀位）格全未知；框外路面照常。旧 ego 2D 紧矩形
+    （整挖 + 盖掉远场路面）随合并退役。"""
     pts = _scene_points(x_left=WALL, x_right=WALL)
+    # 自车车身：|X|<1.2、Z 5~9 的整车块（合成场景 Y 向下为正，高出路面 0.8m
+    # =Y 减 0.8 ≥ 刀位，落在 3D 框内）
     X, Z = pts[..., 0], pts[..., 2]
-    ego = np.isfinite(X) & (np.abs(X) < 1.5) & (Z > 4.5) & (Z < 8.0)
-    g = dg.drivable_grid_from_points(pts, FX, FY, ego, None)
+    car = np.isfinite(X) & (np.abs(X) < 1.2) & (Z > 5.0) & (Z < 9.0)
+    pts = pts.copy()
+    pts[car, 1] -= 0.8
+    g = dg.drivable_grid_from_points(pts, FX, FY)
     assert g.coef is not None and g.dig_cells > 0
-    # 洞内（略内缩避边界格）全未知；洞外照常可走
-    for x in np.arange(-1.3, 1.4, 0.25):
-        for z in np.arange(4.7, 7.9, 0.25):
+    # 车身格（略内缩避边界格）全未知；框外路面照常可走
+    for x in np.arange(-1.0, 1.1, 0.25):
+        for z in np.arange(5.3, 8.7, 0.25):
             assert _cell_state(g, x, z) == dg.GRID_UNKNOWN, (x, z)
-    assert _cell_state(g, 0.0, 12.0) == dg.GRID_DRIVABLE, "洞外路面被误杀"
-    # 反查实现登记的挖洞格：无一被声明为可走/不可走
-    Xb, Yb, Zb = (pts[dg.Y0:dg.DIAG_Y1, :, k] for k in (0, 1, 2))
-    ok = (np.isfinite(Xb) & np.isfinite(Yb) & np.isfinite(Zb)
-          & (Xb >= -dg.GRID_X_MAX) & (Xb < dg.GRID_X_MAX)
-          & (Zb >= dg.GRID_Z_LO) & (Zb < dg.GRID_Z_HI))
-    du = dg._dig_band(ego, 1280) & ok
-    assert du.any()
-    ix = np.floor((Xb[du] + dg.GRID_X_MAX) / dg.GRID_CELL).astype(int)
-    iz = np.floor((Zb[du] - dg.GRID_Z_LO) / dg.GRID_CELL).astype(int)
-    st = g.state[iz, ix]
-    assert (st == dg.GRID_UNKNOWN).all(), f"挖洞格出现非未知态：{np.unique(st)}"
+    assert _cell_state(g, 0.0, 12.0) == dg.GRID_DRIVABLE, "框外路面被误杀"
+    # 反查实现登记的挖除格（本体占据 ≥ DIG_CELL_FRAC）：无一被声明为可走/
+    # 不可走；边界零星尾点格（frac < DIG_CELL_FRAC）留在判定内是格级判据的
+    # 设计语义（不饿死整格），不在此锁内。
+    assert (g.state[g.dig_mask] == dg.GRID_UNKNOWN).all(), "挖除格出现非未知态"
 
 
 def test_drivable_grid_shared_coef_bitwise_identical():
@@ -1441,9 +1422,11 @@ D09_NEAR_BLOCKED_BASELINE = 378
 
 
 def _assemble_evid(stem: Path):
-    """证据包 → (全幅点云, fx, fy, ego, obj)；口径同产线离线复算
+    """证据包 → (全幅点云, fx, fy, obj)；口径同产线离线复算
     （336×598 fp16 点图各通道 resize 到 1280×720 + valid 最近邻 + invalid 置
-    nan；ego 取资源紧矩形，obj = *_mask.npy 减 ego）。"""
+    nan；obj = *_mask.npy）。旧包该文件=ego∪obj 合并掩码（2026-10-10 起
+    ego 由 3D 框处理不再落盘，新包纯 obj 候选区）——矩形作候选区进统一
+    挖除缝，语义与旧 ego 矩形近似（矩形内路面像素由刀保留）。"""
     z = np.load(str(stem) + "_evid.npz")
     valid = np.unpackbits(z["valid"])[: 336 * 598].reshape(336, 598).astype(bool)
     pn = z["pts"].astype(np.float32)
@@ -1453,14 +1436,12 @@ def _assemble_evid(stem: Path):
                     interpolation=cv2.INTER_NEAREST).astype(bool)
     pts = pts.copy()
     pts[~vf] = np.nan
-    ego = DepthRoadObserver._load_ego_mask()
     obj = None
     mp = Path(str(stem) + "_mask.npy")
     if mp.exists():
-        merged = np.unpackbits(np.load(mp))[: 1280 * 720] \
+        obj = np.unpackbits(np.load(mp))[: 1280 * 720] \
             .reshape(720, 1280).astype(bool)
-        obj = merged & ~ego
-    return pts, float(z["fx"]) * 1280, float(z["fy"]) * 720, ego, obj
+    return pts, float(z["fx"]) * 1280, float(z["fy"]) * 720, obj
 
 
 def _evid_or_skip(dirname: str, seq: int) -> Path:
@@ -1477,8 +1458,8 @@ def test_drivable_grid_frame_anchor_dug_all_unknown():
     DIG_CELL_FRAC）的格，矩形内路面像素留在栅格参与判定（格子不再饿死）。
     锁：dig_cells>0（刀确实挖了）且挖除格全未知（0 误判）。"""
     stem = _evid_or_skip("depth_debug_20261004_175855", 55)
-    pts, fx, fy, ego, obj = _assemble_evid(stem)
-    g = dg.drivable_grid_from_points(pts, fx, fy, ego, obj)
+    pts, fx, fy, obj = _assemble_evid(stem)
+    g = dg.drivable_grid_from_points(pts, fx, fy, obj)
     assert g.coef is not None and g.dig_cells > 0
     assert (g.state[g.dig_mask] == dg.GRID_UNKNOWN).all(), "挖除格出现非未知态"
 
@@ -1486,8 +1467,8 @@ def test_drivable_grid_frame_anchor_dug_all_unknown():
 def test_drivable_grid_frame_anchor_clean_frame_baseline():
     """140930/d00009（晴天宽路帧）：近场不可走格数不超基线——防恶化锁。"""
     stem = _evid_or_skip("depth_debug_20261004_140930", 9)
-    pts, fx, fy, ego, obj = _assemble_evid(stem)
-    g = dg.drivable_grid_from_points(pts, fx, fy, ego, obj)
+    pts, fx, fy, obj = _assemble_evid(stem)
+    g = dg.drivable_grid_from_points(pts, fx, fy, obj)
     assert g.coef is not None
     n = int((g.state[_band_rows(dg.GRID_Z_LO, 9.0)] == dg.GRID_BLOCKED).sum())
     assert n <= D09_NEAR_BLOCKED_BASELINE, \
@@ -1521,13 +1502,13 @@ def test_render_depth_debug_grid_panel_shape():
     rd = dg.DepthRoadReading(left_edge_lane=-2.0, right_edge_lane=2.0,
                              left_x=100, right_x=540, sides=2, latency_ms=130.0)
     frame = np.full((720, 1280, 3), 128, np.uint8)
-    base = dg.render_depth_debug(frame, None, rd, None, None, None)
+    base = dg.render_depth_debug(frame, None, rd, None, None)
     assert base.shape == (720 + (dg.DIAG_Y1 - dg.Y0), 1280, 3)
     g = dg.DrivableGrid(state=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int8),
                         coef=(0.0, 0.0, 2.0),
                         counts=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int32),
                         dig_cells=3, latency_ms=5.0)
-    withg = dg.render_depth_debug(frame, None, rd, None, None, None, grid=g)
+    withg = dg.render_depth_debug(frame, None, rd, None, None, grid=g)
     assert withg.shape[1] == 1280 and withg.shape[0] > base.shape[0]
 
 
