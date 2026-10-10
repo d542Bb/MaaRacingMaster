@@ -1316,7 +1316,6 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
                                    interpolation=cv2.INTER_LINEAR) for k in range(3)], -1)
         valid = cv2.resize(valid_n.astype(np.float32), (w, h),
                            interpolation=cv2.INTER_NEAREST).astype(bool)
-        pts = pts.copy()
         pts[~valid] = np.nan
         X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
         coef = _fit_road_plane(X, Y, Z)
