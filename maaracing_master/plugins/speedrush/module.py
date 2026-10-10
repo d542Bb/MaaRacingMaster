@@ -962,11 +962,22 @@ class SpeedRushModule(ActivityModule):
             else ";".join(dgeo.rejects),
             # 尺度观测三列（尺度审计 2026-10-10：ms 瞬态段 1.3~1.7× 名义值静默
             # 通过平面门，先落盘可见再谈防护，只写不读）：MoGe 尺度头原始输出
-            # + 全幅焦距 + 平面 c（=cam_h，名义 ~1.9m，瞬态段 3.9~5.7）
-            "dgeo_ms": None if dgeo is None or dgeo.metric_scale is None
+            # + 全幅焦距 + 平面 c（=cam_h，名义 ~1.9m，瞬态段 3.9~5.7）。
+            # 列名 dgeo_metric（2026-10-10 焦距治理修正）：曾与上方耗时列重名
+            # dgeo_ms——同 dict 后键胜出，耗时列被静默覆盖。
+            "dgeo_metric": None if dgeo is None or dgeo.metric_scale is None
             else round(dgeo.metric_scale, 3),
             "dgeo_focal": None if dgeo is None or dgeo.fx is None
             else round(dgeo.fx, 1),
+            # 焦距求解器诊断（焦距漂移治理 2026-10-10，观测面只写不读）：
+            # shift=深度偏移解、resid=逐样本平均残差（uv² 单位，跨帧可比）、
+            # nsol=64×64 采样有效样本数（GPT 审查 P0：残差必须随 n 归一）
+            "dgeo_shift": None if dgeo is None or not dgeo.solver
+            else round(float(dgeo.solver.get("shift", float("nan"))), 4),
+            "dgeo_resid": None if dgeo is None or not dgeo.solver
+            else round(float(dgeo.solver.get("resid_mean", float("nan"))), 4),
+            "dgeo_nsol": None if dgeo is None or not dgeo.solver
+            else int(dgeo.solver.get("n", -1)),
             "dgeo_cam_h": None if dgeo is None or dgeo.coef is None
             else round(abs(dgeo.coef[2]), 3),
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账

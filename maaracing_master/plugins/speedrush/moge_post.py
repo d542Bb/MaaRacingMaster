@@ -82,34 +82,48 @@ def _minimize_local(fn, step: float) -> float:
 
 
 def _solve_shift(uv: np.ndarray, xy: np.ndarray, z: np.ndarray,
-                 focal: float | None) -> tuple[float, float | None]:
+                 focal: float | None, diag: dict | None = None) -> tuple[float, float | None]:
     """solve_optimal_focal_shift / solve_optimal_shift 的产线实现。
 
     focal=None 时先在 shift=0 处闭式回代 focal（官方先解 focal 再解 shift 的
-    联合格局等价于：对每个 shift 取内层闭式 focal 后的最小残差）。"""
+    联合格局等价于：对每个 shift 取内层闭式 focal 后的最小残差）。
+
+    ``diag`` 传入 dict 时填求解器诊断（尺度审计 2026-10-10：焦距逐帧漂移的
+    治理先落盘可见——n=参与样本数、z_med/step0=搜索尺度、evals=残差求值次数、
+    resid/resid_mean=终解残差平方和与逐样本均值（uv² 归一单位））。"""
     if uv.shape[0] < 2:
         return 0.0, focal
+
+    evals = 0
 
     def _focal_at(s: float) -> float:
         xy_proj = xy / (z + s)[:, None]
         return float((xy_proj * uv).sum() / np.square(xy_proj).sum())
 
     def resid(s: float) -> float:
+        nonlocal evals
+        evals += 1
         xy_proj = xy / (z + s)[:, None]
         f = (xy_proj * uv).sum() / np.square(xy_proj).sum()
         d = f * xy_proj - uv
         return float((d * d).sum())
 
     z_med = float(np.median(z[np.isfinite(z) & (z > 0)])) or 1.0
-    shift = _minimize_local(resid, step=0.05 * z_med)
+    step0 = 0.05 * z_med
+    shift = _minimize_local(resid, step=step0)
     if focal is None:
         focal = _focal_at(shift)
+    if diag is not None:
+        r_final = resid(shift)
+        diag.update(n=int(uv.shape[0]), z_med=z_med, step0=step0,
+                    evals=evals, shift=float(shift), focal=float(focal),
+                    resid=r_final, resid_mean=r_final / max(1, uv.shape[0]))
     return shift, focal
 
 
 def recover_focal_shift(points: np.ndarray, mask: np.ndarray,
-                        focal: float | None = None):
-    """官方 infer 的 focal/shift 恢复，返回 (focal, shift)。"""
+                        focal: float | None = None, diag: dict | None = None):
+    """官方 infer 的 focal/shift 恢复，返回 (focal, shift)。``diag`` 见 _solve_shift。"""
     H, W = points.shape[:2]
     uv_full = normalized_view_plane_uv(W, H)
     uv, m = _masked_nearest_resize(uv_full, mask)
@@ -122,7 +136,7 @@ def recover_focal_shift(points: np.ndarray, mask: np.ndarray,
     xy = pts_s[..., :2].astype(np.float64)
     z = pts_s[..., 2].astype(np.float64)
     z = np.maximum(z, 1e-6)          # z+shift 的极点防护（官方靠 LM 域约束隐式承担）
-    shift, focal_out = _solve_shift(uv_s.astype(np.float64), xy, z, focal)
+    shift, focal_out = _solve_shift(uv_s.astype(np.float64), xy, z, focal, diag)
     return (focal_out if focal_out is not None else 1.0), shift
 
 
@@ -213,9 +227,11 @@ def reconstruct(points: np.ndarray, mask: np.ndarray, metric_scale: float,
     """官方 infer 的 force_projection 链路。
 
     focal=None 自行恢复。返回 dict：pts(H,W,3) 点图、depth(H,W)、focal、shift、
-    fx、fy、valid。X/Y/Z 同为「向下/向右为正」的相机系。"""
+    fx、fy、valid、solver（求解器诊断 dict，见 _solve_shift；观测面只写不读）。
+    X/Y/Z 同为「向下/向右为正」的相机系。"""
     H, W = points.shape[:2]
-    focal_, shift = recover_focal_shift(points, mask, focal=focal)
+    solver: dict = {}
+    focal_, shift = recover_focal_shift(points, mask, focal=focal, diag=solver)
     fx, fy = focal_to_normalized_intrinsics(focal_, W, H)
     z = points[..., 2] + shift
     valid = mask & (z > 0)
@@ -226,4 +242,5 @@ def reconstruct(points: np.ndarray, mask: np.ndarray, metric_scale: float,
     pts = np.stack([X, Y, z], -1) * metric_scale
     return {"pts": pts.astype(np.float32),
             "depth": (z * metric_scale).astype(np.float32),
-            "focal": focal_, "shift": shift, "fx": fx, "fy": fy, "valid": valid}
+            "focal": focal_, "shift": shift, "fx": fx, "fy": fy, "valid": valid,
+            "solver": solver}

@@ -268,6 +268,8 @@ class DepthRoadReading:
     metric_scale: float | None = None   # MoGe 尺度头原始输出（观测面，只写不读
     # ——尺度审计 2026-10-10：ms 瞬态段 1.3~1.7× 名义值静默通过平面门，先落盘
     # 可见再谈防护；c=coef[2] 即 cam_h，同属观测面）
+    solver: dict | None = None   # 焦距求解器诊断（shift/resid/n/step0/evals，见
+    # moge_post._solve_shift；焦距漂移治理 2026-10-10 观测面，只写不读）
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
@@ -324,7 +326,7 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
         if with_evidence:
             evidence = {"pts": pts, "valid": res["valid"],
                         "fx": res["fx"], "fy": res["fy"],
-                        "ms": float(metric_scale)}
+                        "ms": float(metric_scale), "solver": res["solver"]}
         pts = np.stack([cv2.resize(pts[..., k], (MOGE_IN_W, MOGE_IN_H),
                                    interpolation=cv2.INTER_LINEAR)
                         for k in range(3)], -1)
@@ -1217,7 +1219,8 @@ class DepthRoadObserver:
                 evid["anchors"] = sheet
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0,
-                       metric_scale=evid["ms"]), evid
+                       metric_scale=evid["ms"],
+                       solver=evid.get("solver")), evid
 
     @property
     def session_ready(self) -> bool:
@@ -1365,6 +1368,11 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
           f" raw={_f(note.get('ro_raw'))}"
           f" age={note.get('age', '-')}ms new={note.get('new', '-')}"
           f"  fx={fx_f:.0f} cam_h={_f(cam_h)}")
+    sol = (evid or {}).get("solver") or {}
+    if sol:
+        l2 += (f" sh={sol.get('shift', float('nan')):+.3f}"
+               f" R̄={sol.get('resid_mean', float('nan')):.3f}"
+               f" n={sol.get('n', '-')}")
     cv2.putText(band, l1, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 255, 255), 1)
     cv2.putText(band, l2, (8, 46), cv2.FONT_HERSHEY_SIMPLEX, .55, (200, 255, 200), 1)
     return np.vstack([body, band])
@@ -1605,12 +1613,16 @@ class AsyncDepthRoadObserver:
             cv2.imwrite(str(stem) + "_frame.jpg",
                         cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
                         [cv2.IMWRITE_JPEG_QUALITY, 85])
+            sol = (evid or {}).get("solver") or {}
             np.savez(str(stem) + "_evid.npz",
                      pts=evid["pts"].astype(np.float16),
                      valid=np.packbits(evid["valid"].ravel()),
                      valid_shape=np.array(evid["valid"].shape, np.int64),
                      fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
                      ms=np.float64(evid.get("ms", -1.0)),
+                     sol_sh=np.float64(sol.get("shift", np.nan)),
+                     sol_resid=np.float64(sol.get("resid", np.nan)),
+                     sol_n=np.int64(sol.get("n", -1)),
                      fid=np.int64(note["fid"]) if note and note.get("fid") is not None
                      else np.int64(-1))
             if object_mask is not None:

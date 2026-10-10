@@ -395,6 +395,25 @@ def test_moge_shift_solver_beats_shallow_valley_trap():
     assert abs(x + 0.05 / 1.1) < 1e-4, f"{x}"
 
 
+def test_moge_solver_diag_fields():
+    """求解器诊断（焦距漂移治理 2026-10-10 P0 仪表）：diag 填全八字段、
+    与解自洽、reconstruct 透传同值——trace/证据包两路（dgeo_shift/resid/
+    nsol 列与 evid npz sol_*）都从这份 dict 派生，字段漂移在此拦。"""
+    pts, mask = _synthetic_affine_points(1.5)
+    d: dict = {}
+    focal, shift = moge_post.recover_focal_shift(pts, mask, diag=d)
+    assert abs(shift) < 1e-3 and abs(focal - 1.5) < 1e-3
+    assert {"n", "z_med", "step0", "evals", "shift", "focal",
+            "resid", "resid_mean"} <= set(d)
+    assert d["n"] >= 2 and d["evals"] > 0 and d["step0"] > 0 and d["z_med"] > 0
+    assert d["shift"] == shift and d["focal"] == focal
+    assert d["resid"] >= 0.0
+    assert abs(d["resid_mean"] - d["resid"] / d["n"]) < 1e-12
+    res = moge_post.reconstruct(pts, mask, 10.0)
+    assert res["solver"]["n"] == d["n"]
+    assert res["solver"]["shift"] == d["shift"]
+
+
 # ── 会话与推理封装 ──────────────────────────────────────────────────────
 
 def _load_session_or_skip():
