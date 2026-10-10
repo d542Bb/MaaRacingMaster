@@ -106,12 +106,12 @@ def test_render_hud_bev_orientation_near_bottom_far_top(frame):
 
 
 def test_render_hud_bev_grid_limit_dashed_line(frame):
-    """程序接受域上限：z=16m 采集窗顶画亮黄虚线，线以上只画不收（维护者
+    """程序接受域上限：z=GRID_Z_HI 采集窗顶画亮黄虚线，线以上只画不收（维护者
     要求：目检延伸区与供数域一眼可分）。虚线上=延伸区底、虚线下=栅格带。"""
     out = render_hud(frame, _snap(frame_shape=(H, W, 3)), None)
     plot_y1 = int(H * dv._PLOT_Y1_FRAC)
     sy = (plot_y1 - (dv._TITLE_H + 6)) / ((dv._RENDER_Z_HI - 3.0) / 0.25)
-    y_limit = int(plot_y1 - (13.0 / 0.25) * sy)      # z=16m 行
+    y_limit = int(plot_y1 - (27.0 / 0.25) * sy)      # z=GRID_Z_HI 行
     row = out[y_limit, W:]
     lim = np.all(np.abs(row.astype(int) - dv._LIMIT_BGR) <= 2, axis=-1)
     assert lim.any(), "采集窗上限虚线应在场"

@@ -16,7 +16,7 @@ from maaracing_master.plugins.speedrush import module as smod
 from maaracing_master.plugins.speedrush.corridor import (
     INFERRED, UNKNOWN, Corridor, build_corridor)
 from maaracing_master.plugins.speedrush.depth_geo import (
-    GRID_DRIVABLE, GRID_UNKNOWN, DepthRoadReading)
+    GRID_DRIVABLE, GRID_UNKNOWN, GRID_X_MAX, DepthRoadReading)
 from maaracing_master.plugins.speedrush.wall_track import OCCLUDED, WallTrack
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
@@ -32,8 +32,8 @@ def _bnd(el=None, er=None, edge_pts=()):
                             coef=(0.0, 0.0, 0.5))
 
 
-def _grid(rows, col_lo=36, col_hi=59, blk_lo=0, blk_hi=0):
-    """绿区 DrivableGrid：行号直接给（zc=3+(iz+0.5)·0.25），列 36~60 =
+def _grid(rows, col_lo=50, col_hi=73, blk_lo=0, blk_hi=0):
+    """绿区 DrivableGrid：行号直接给（zc=3+(iz+0.5)·0.25），列 50~73 =
     X∈[−1.5,+4.5]m。blk_lo/blk_hi>0 时左/右外侧邻格给 blocked（观测到的
     高结构=实测绿区边界的证据面）。"""
     from maaracing_master.plugins.speedrush import depth_geo as dg
@@ -102,19 +102,19 @@ def test_green_boundary_median_over_observed_rows_only():
     from maaracing_master.plugins.speedrush import corridor as corr
     grid = _grid(range(12, 24), blk_lo=1)
     # 前 4 行 observed（edge 列 36）；后 8 行绿区右移 4 列且外邻格 unknown
-    # ——若 unknown 邻格行进中位，中位被拽到列 40（x=−0.375）
-    grid.state[16:24, 35:41] = GRID_UNKNOWN
-    grid.state[16:24, 40] = GRID_DRIVABLE
+    # ——若 unknown 邻格行进中位，中位被拽到列 54（x=−0.375）
+    grid.state[16:24, 49:55] = GRID_UNKNOWN
+    grid.state[16:24, 54] = GRID_DRIVABLE
     b = corr._green_boundary(grid, -1, 6.0, 9.0)
     assert b is not None and b.src == "measured"
-    assert b.x_m == pytest.approx(-10.5 + 36.5 * 0.25)
+    assert b.x_m == pytest.approx(-GRID_X_MAX + 50.5 * 0.25)
 
 
 def test_green_boundary_below_min_observed_falls_to_air():
     """observed 行不足下限（单行 blocked 邻格=单行噪声）→ 不冒充实测，
     落空气墙。"""
     grid = _grid(range(12, 24), blk_lo=1)
-    grid.state[13:24, 35] = GRID_UNKNOWN          # 只剩 1 行 observed
+    grid.state[13:24, 49] = GRID_UNKNOWN          # 只剩 1 行 observed
     c = build_corridor(_bnd(), grid, None, fid=11,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     assert c.bands[1].left.src == INFERRED

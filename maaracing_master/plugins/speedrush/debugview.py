@@ -42,7 +42,7 @@ import numpy as np
 from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
     ANCHOR_Z_HI, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_NX, GRID_NZ,
-    GRID_SHOULDER, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_LO)
+    GRID_SHOULDER, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI, GRID_Z_LO)
 from maaracing_master.plugins.speedrush.latsample import (
     GRID_CAR_HALF_LANE_M, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.world_model import (
@@ -67,7 +67,7 @@ _Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0)
 # 距离口径全图统一=前向距离（z 等值线横线）：供数窗/TTC/检测反投影标注全是
 # 向前量的直线距离，程序无半径消费方——弧环读数与 52m 标注对不上账（2026-10-10）
 _X_TICK_M = (-10.0, -5.0, 0.0, 5.0, 10.0)
-_RENDER_Z_HI = 40.0               # BEV 渲染上限（> 栅格采集窗 16m）：目检延伸区
+_RENDER_Z_HI = 40.0               # BEV 渲染上限（> 栅格采集窗 30m）：目检延伸区
 _PLOT_Y1_FRAC = 0.66              # BEV 绘图区底 = 画布高 × 此值（竖长化，下余 d(t) 子带）
 _LIMIT_BGR = (0, 215, 255)        # 程序接受域上限虚线（亮黄）
 _EDGE_BGR = (0, 255, 170)         # 当帧原始墙检出折线（edge_pts）
@@ -126,7 +126,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     """右联：栅格三态 + 墙检出折线 + 路面叠层 + 距离标尺 + d(t) 规划子带
     （全部 None 安全）。
 
-    渲染域 z 到 _RENDER_Z_HI（40m）：栅格只占 3~16m 采集窗，其上为目检延伸
+    渲染域 z 到 _RENDER_Z_HI（40m）：栅格只占 3~30m 采集窗，其上为目检延伸
     区（深灰底，检测反投影标记照画，程序供数不收）——虚线亮黄标出采集窗上限，
     「线以上程序不接受」一眼可见（维护者要求，方便目检车/币的真实纵深）。
     绘图区竖长化（画布高 × _PLOT_Y1_FRAC），下余给 d(t) 规划子带。"""
@@ -136,7 +136,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     sx = (plot_x1 - plot_x0) / GRID_NX
     sy = (plot_y1 - plot_y0) / ((_RENDER_Z_HI - GRID_Z_LO) / GRID_CELL)
     bm = _BevMap(plot_x0, plot_y1, sx, sy)
-    grid_y0 = bm.py(GRID_Z_LO + GRID_NZ * GRID_CELL)   # 栅格采集窗顶（16m）
+    grid_y0 = bm.py(GRID_Z_LO + GRID_NZ * GRID_CELL)   # 栅格采集窗顶
 
     grid = snap.get("grid")
     reading = snap.get("reading")
@@ -158,13 +158,6 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                       (90, 90, 90), 1)
         _put_text(canvas, "grid: none", (plot_x0 + 8, plot_y0 + 20))
 
-    # 程序接受域上限虚线（z=16m 栅格采集窗顶）：线以下=供数域，线以上=只画不收
-    for xd in range(plot_x0, plot_x1, 14):
-        cv2.line(canvas, (xd, grid_y0), (min(xd + 7, plot_x1), grid_y0),
-                 _LIMIT_BGR, 1)
-    _put_text(canvas, "grid<=16m", (plot_x0 + 8, grid_y0 - 6), scale=0.36,
-              color=_LIMIT_BGR)
-
     # 质量门/拟合失败提示：栅格全灰（coef=None）时一眼知道为什么
     if grid is not None and reading is not None and reading.coef is None \
             and reading.rejects:
@@ -183,6 +176,15 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
         cv2.line(canvas, (xp, plot_y0), (xp, plot_y1 + 4), (120, 120, 120), 1)
         _put_text(canvas, f"{int(x)}", (xp - 8, plot_y1 + 16), scale=0.38,
                   color=(200, 200, 200))
+
+    # 程序接受域上限虚线（z=GRID_Z_HI 栅格采集窗顶）：线以下=供数域，线以上=
+    # 只画不收。后画压过同行的 z 刻度灰线（GRID_Z_HI=30 后窗顶与 30m 刻度
+    # 重合，先画会被盖）。
+    for xd in range(plot_x0, plot_x1, 14):
+        cv2.line(canvas, (xd, grid_y0), (min(xd + 7, plot_x1), grid_y0),
+                 _LIMIT_BGR, 1)
+    _put_text(canvas, f"grid<={int(GRID_Z_HI)}m", (plot_x0 + 8, grid_y0 - 6),
+              scale=0.36, color=_LIMIT_BGR)
 
     # 路面叠层：路心 / 左右缘（路心系 d → 相机轴米 X=(d−ro)·lane_w_m）
     ro = snap.get("road_offset")
@@ -295,9 +297,9 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
         _put_text(canvas, label, (lx + 15, ly - 5), scale=0.36,
                   color=(200, 200, 200))
         lx += 46
-    # 三层窗口标注（2026-10-09 普查定案）：供数/墙检测箱 16m、平面拟合域
+    # 三层窗口标注（2026-10-10 扩窗定案）：栅格/远箱 30m、车道读数箱 16m、平面拟合域
     # 30m、深度锚点测量域 90m——「程序各层看多远」在图上一行读尽
-    _put_text(canvas, "win: grid/scan<=16m plane<=30m anchor<=90m",
+    _put_text(canvas, "win: grid<=30 scan<=12x lane16 plane<=30 anchor<=90",
               (plot_x0 + 8, ly + 8), scale=0.36, color=(160, 160, 160))
 
     # 检测反投影标记：框底中心 → (X,Z)，域内画点

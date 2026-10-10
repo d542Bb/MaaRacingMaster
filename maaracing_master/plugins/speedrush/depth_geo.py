@@ -124,17 +124,29 @@ WALK_COL_STRIDE = 4     # 隔列采样（特征逐列独立，跳列不影响别
 WALK_ROW_STRIDE = 2     # 隔行采样（增量理论值同比放大，行走轮数减半；算力档）
 
 # ── 3D 找边（Z 分箱横向剖面离地穿越；金标 MoGe 点云校准 2026-10-01）─────
-ZBIN = ((3, 5), (5, 7), (7, 9), (9, 12), (12, 16))  # 深度箱（米）；弯道无直线
-#                                                   # 假设，逐箱独立读数
+ZBIN = ((3, 5), (5, 7), (7, 9), (9, 12), (12, 16), (16, 20), (20, 25),
+        (25, 30))       # 深度箱（米）；弯道无直线假设，逐箱独立读数
+#                       # 2026-10-10 扩窗（纵深 16→30，用户拍板）：远场实测
+#                       # 替代 far_trend 外推；箱随 z 加宽（2→5m）跟点密度走
 XBIN_DX = 0.25        # 横向格宽（米，路心两侧各 12m）
-X_MAX_M = 12.0        # 剖面横向域（米；2026-10-09 扩窗 15 试装退役：83 包实测
-#                       12m 外墙结构仅 3 帧，而金标锚点 000340 的 pick 被远场
-#                       配对拽出容差 0.33m——扩窗收益不抵污染，留待墙假设
-#                       跨帧交叉验证（第 5 步）后以 far_trend 评估）
+X_MAX_M = 12.0        # 剖面横向域（米）。2026-10-10 扩 14 试装回滚（金标三帧
+#                       实证）：①近箱读数被改（000340 zc10.5 L −10.12→−9.0，
+#                       护栏内沿影子 bump 靠更宽 tail 过门）；②远箱互相配对把
+#                       pick 拽到远处建筑（000340 L −10.12→−12.88）。扩窗收益
+#                       不抵污染，与 2026-10-09 退役记录同判；横向扩窗待远箱
+#                       与车道读数分离后以 far_trend 再评
 # 扫描格心表（−X_MAX 起 DX 步进，共 N_XBIN 个）——分箱向量化后按索引取格心。
 # 直接算式与旧 while 的逐次累加**逐位同值**：0.125=2⁻³ 的整数倍，且 |x|<16 时
 # ulp≤2⁻²⁰ 整除 2⁻³，故累加/直算都无舍入（这是「格边界判定不变」的前提）。
 N_XBIN = int(2 * X_MAX_M / XBIN_DX)
+# 近场车道级约束域（米）：_side() 车道读数箱上限 + _row_intervals 路心/区读数
+# 行上限。远箱/远行（扩窗 16~30m）看到的是不同结构（弯道/退让建筑），进近场
+# 约束会拽歪读数（金标三帧 + 68 包 A/B 实证）——远箱走 wall_track/far_trend/BEV。
+NEAR_Z = 16.0
+REGION_X_MAX = 10.5    # 区读数/路心横向域（米，2026-10-05 校准域）：扩窗宽列
+#                       （±10.5~14）只进墙线/BEV/走廊远带——窗外平地格（路肩/
+#                       泄流）把绿区 [min,max] 撑宽拽路心（A/B 实测 30 帧
+#                       0.25m 中位/2.375m max，校准域语义不得漂）
 XBIN_CENTERS = (-X_MAX_M + XBIN_DX / 2
                 + XBIN_DX * np.arange(N_XBIN, dtype=np.float64))
 MIN_BIN_PTS = 15      # 单格剖面最少点数
@@ -179,12 +191,15 @@ SKY_HGT = 1.2         # 空中结构剔除阈：桥/天空域点 hgt≥7.5m，�
 # 「可见即可走」<60%（无深度点的涂抹区）；② 0.15m 容差未做敏感性扫描，与 kerb
 # 顶（0.14~0.21m）在同量级，缘顶格可能落进可走带。
 GRID_CELL = 0.25        # 格边长（米）
-GRID_X_MAX = 10.5       # 横向半窗（米）：覆盖金标墙基（实测 ±10m）
-GRID_Z_LO, GRID_Z_HI = 3.0, 16.0   # 纵向窗（米，车前方）
+GRID_X_MAX = 14.0       # 横向半窗（米）：2026-10-10 扩窗（用户拍板，10.5→14），
+#                         视锥 @16m 张开到 14.5~18.5m，扩窗白送；耗时实测 0.97×
+GRID_Z_LO, GRID_Z_HI = 3.0, 30.0   # 纵向窗（米，车前方）；2026-10-10 扩 16→30，
+#                         远场实测替代 far_trend 外推；路面残差 16m 外超旁路阈
+#                         的普查记录仍是远场"可见即可走"的已知坏尾（不冒充）
 GRID_TOL = PLANE_TOL    # 可走容差（米，= 平面内点阈）
 GRID_MIN_PTS = 3        # 单格判「已知」的最少有效点数
-GRID_NX = int(round(2.0 * GRID_X_MAX / GRID_CELL))          # 84
-GRID_NZ = int(round((GRID_Z_HI - GRID_Z_LO) / GRID_CELL))   # 52
+GRID_NX = int(round(2.0 * GRID_X_MAX / GRID_CELL))          # 112
+GRID_NZ = int(round((GRID_Z_HI - GRID_Z_LO) / GRID_CELL))   # 108
 GRID_UNKNOWN, GRID_DRIVABLE, GRID_BLOCKED = 0, 1, 2
 GRID_SHOULDER = 3       # 路肩：路面 span 之外、墙线之外的已知格（不是路也不是
                         # 碰撞界；空气墙~墙之间与墙外同归此类，消费端按"非路"读）
@@ -712,7 +727,10 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                 edge_pts.append((side, zc, ex))
 
     def _side(side: int) -> tuple[float | None, float | None, str | None]:
-        smp = sorted((zc, x) for s, zc, x in edge_pts if s == side)
+        # 车道读数只吃近箱（NEAR_Z）：远箱是不同结构（弯道/退让建筑），
+        # 进配对/中位会拽歪读数（000340/000906 金标实证，2026-10-10）。
+        smp = sorted((zc, x) for s, zc, x in edge_pts
+                     if s == side and zc <= NEAR_Z)
         if not smp:
             return None, None, f"{'L' if side < 0 else 'R'}:无穿越"
         # 最近一致边界（2026-10-02 真机 d00003/08 取证后换装）：跨箱中位数把
@@ -882,8 +900,16 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
 
 
 def _row_intervals(grid: DrivableGrid) -> tuple[np.ndarray, np.ndarray] | None:
-    """绿区逐行横向区间（米，格界）：行序无关直接按 Z 分箱。无绿行 → None。"""
-    drivable = grid.state == GRID_DRIVABLE
+    """绿区逐行横向区间（米，格界）：行序无关直接按 Z 分箱。无绿行 → None。
+    行域上限=NEAR_Z：远行（扩窗 16~30m，弯道处远端绿区偏移）不进近场约束
+    ——路心/区读数是车道级近场供数，2026-10-10 A/B 实测 51/68 帧被远行拽
+    中位 0.625m（p90 2.25m）。横向域=REGION_X_MAX：扩窗宽列的平地格（路肩/
+    泄流）撑宽绿区拽路心（A/B 实测 30 帧 0.25m 中位/2.375m max）。"""
+    drivable = (grid.state == GRID_DRIVABLE)
+    zc = GRID_Z_LO + (np.arange(grid.state.shape[0]) + 0.5) * GRID_CELL
+    drivable[zc >= NEAR_Z] = False
+    xs_c = -GRID_X_MAX + (np.arange(grid.state.shape[1]) + 0.5) * GRID_CELL
+    drivable[:, np.abs(xs_c) > REGION_X_MAX] = False
     has = drivable.any(axis=1)
     if not has.any():
         return None

@@ -507,7 +507,7 @@ def test_grid_veto_on_full_chain_feeds_trace(monkeypatch):
         smod, "load_decision",
         lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="off")))
     state = np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int8)
-    state[:24, 42] = dg.GRID_BLOCKED            # 自车近场正前方立墙
+    state[:24, 56] = dg.GRID_BLOCKED            # 自车近场正前方立墙（列随 GRID_X_MAX 平移）
     wall = dg.DrivableGrid(state=state, coef=(0.0, 0.0, -2.0),
                            counts=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int32),
                            dig_cells=0, latency_ms=0.0)
@@ -527,7 +527,7 @@ def test_grid_veto_on_full_chain_feeds_trace(monkeypatch):
     diag = chain["trace"][-1]["traj_diag"]
     assert diag is not None, "开闸+ro 在场拍应有采样诊断"
     assert diag["n_grid"] >= 1, "近场正前方的墙应否决部分候选"
-    # ix=42 距自车 ~0.19 道（贴身）：包络必含 → 全灭是正确语义（ABORT 交 FSM）
+    # ix=56（列随 GRID_X_MAX 平移）距自车 ~0.19 道（贴身）：包络必含 → 全灭是正确语义
     assert diag["ok"] is False and diag["why"], "贴身墙应全灭且 why 可读"
 
 
@@ -546,7 +546,7 @@ def _xg_grid(col_lo: int, col_hi: int):
 def test_ego_road_xcheck_off_is_bit_identical():
     """闸关（缺省/显式 disabled）：grid 参数只进审计面（last.grid_off），
     供数路径与无栅格版逐位同形——互证不开闸不得改变任何供数结果。"""
-    g_audit = _xg_grid(40, 43)         # 路心 0.0m → off=0.0，仅作审计值
+    g_audit = _xg_grid(54, 57)         # 路心 0.0m → off=0.0，仅作审计值
     from maaracing_master.plugins.speedrush.config import GridXcheck
     for ctor in (lambda: smod._EgoRoadObserver(),
                  # 显式 off（第 6 步观察器自读 mode：master 语义有专属测试，
@@ -571,10 +571,10 @@ def test_ego_road_xcheck_agree_feeds_veto_rejects():
     同污染对路径——不喂、不入槽、不入窗，复用拍仍走旧槽值（黑视兜底不破）。"""
     from maaracing_master.plugins.speedrush.config import GridXcheck
     # agree 栅格：绿区列 20~22 → X∈[−5.5,−4.75]，路心 −5.125m → off=+1.864
-    g_agree = _xg_grid(20, 22)
+    g_agree = _xg_grid(34, 36)
     # veto 栅格：绿区列 48~51 → X∈[1.5,2.5]，路心 +2.0m → off=−0.727，
     # 与对路心 +1.9 差 2.63 道远超容差
-    g_veto = _xg_grid(48, 51)
+    g_veto = _xg_grid(62, 65)
     o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
                        bypass_streak=8), 2.75)
     assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
@@ -594,7 +594,7 @@ def test_ego_road_xcheck_bypass_after_streak():
     """连续 veto 达 bypass_streak 放行本对并清零（13:29 黑视教训：闸不得制造
     供数黑视）——放行后计数从头起，下一次分歧重新计。"""
     from maaracing_master.plugins.speedrush.config import GridXcheck
-    g_veto = _xg_grid(48, 51)          # off=−0.727，与对 +1.9 恒分歧
+    g_veto = _xg_grid(62, 65)          # off=−0.727，与对 +1.9 恒分歧
     o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
                        bypass_streak=3), 2.75)
     for k in range(2):
@@ -624,7 +624,7 @@ def test_master_mode_region_feeds_and_edge_audited(monkeypatch):
         smod, "load_decision",
         lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
     st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
-    st[:, 36:60] = dg.GRID_DRIVABLE        # 绿区 X∈[−1.5,+4.5]m → 路心 +1.5m
+    st[:, 50:74] = dg.GRID_DRIVABLE        # 绿区 X∈[−1.5,+4.5]m → 路心 +1.5m（列随 GRID_X_MAX 平移）
     grid = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
                            counts=np.full(st.shape, 9, np.int32),
                            dig_cells=0, latency_ms=0.0)

@@ -1546,9 +1546,9 @@ def _xg_grid(rows_cols, coef=(0.0, 0.0, 0.72)):
 
 def test_grid_center_lane_polarity_and_value():
     """极性契约（v3 事故链同款门禁）：绿区在 X=+1m → 返回 +1/lane_w_m
-    （正值=路心在右）；消费方取 off=−值，与 off=−(L+R)/2 同式。列 44~47 的
+    （正值=路心在右）；消费方取 off=−值，与 off=−(L+R)/2 同式。列 58~61 的
     格界 [0.5, 1.5]m，范围中点恰为 +1m。"""
-    g = _xg_grid([(1, 44, 47)])
+    g = _xg_grid([(1, 58, 61)])
     c = dg.grid_center_lane(g, 2.75)
     assert c == pytest.approx(1.0 / 2.75)
     assert c > 0
@@ -1556,17 +1556,17 @@ def test_grid_center_lane_polarity_and_value():
 
 def test_grid_center_lane_range_midpoint_survives_wedge_split():
     """口径锁：逐行取绿区 [min,max] **范围中点**而非质心——ego 挖洞楔居中
-    劈开绿区时中点仍落在真路心，质心会被楔拽偏。列 40~43 与 48~51 两段，
+    劈开绿区时中点仍落在真路心，质心会被楔拽偏。列 54~57 与 62~65 两段，
     格界 [−0.5, 2.5]m → 中点 +1.0m（质心不等值）。"""
-    g = _xg_grid([(2, 40, 43), (2, 48, 51)])
+    g = _xg_grid([(2, 54, 57), (2, 62, 65)])
     assert dg.grid_center_lane(g, 2.75) == pytest.approx(1.0 / 2.75)
 
 
 def test_grid_center_lane_width_weighted_median_across_rows():
     """跨行按绿区宽度加权取中位：宽行压过窄行，单侧窄证据带不拽走全带路心。
-    宽行 X∈[0.5,1.5]（中点 +1m，权重 1m）+ 窄行 X∈[−2.25,−2.0]（列 33，
+    宽行 X∈[0.5,1.5]（中点 +1m，权重 1m）+ 窄行 X∈[−2.25,−2.0]（列 47，
     中点 −2.125m，权重 0.25m）→ 加权中位仍 +1m。"""
-    g = _xg_grid([(0, 44, 47), (2, 33, 33)])
+    g = _xg_grid([(0, 58, 61), (2, 47, 47)])
     assert dg.grid_center_lane(g, 2.75) == pytest.approx(1.0 / 2.75)
 
 
@@ -1579,7 +1579,7 @@ def test_grid_center_lane_honest_abstain():
                            coef=None, counts=np.zeros((4, dg.GRID_NX), np.int32),
                            dig_cells=0, latency_ms=1.0)
     assert dg.grid_center_lane(zero, 2.75) is None
-    g = _xg_grid([(1, 44, 47)])
+    g = _xg_grid([(1, 58, 61)])
     assert dg.grid_center_lane(g, 0.0) is None
 
 
@@ -1588,7 +1588,7 @@ def test_grid_center_lane_honest_abstain():
 def test_region_reading_sides2_and_polarity():
     """区读数极性与找边同鸭子面：绿区 X∈[0.5,1.5]m → 左缘 +0.5/2.75、右缘
     +1.5/2.75（左负右正，原点=车）；区中心 −(L+R)/2=−1.0/2.75 与 wmid 同值。"""
-    g = _xg_grid([(1, 44, 47)])
+    g = _xg_grid([(1, 58, 61)])
     rr = dg.region_reading(g, 2.75)
     assert rr.sides == 2
     assert rr.left_edge_lane == pytest.approx(0.5 / 2.75)
@@ -1599,7 +1599,7 @@ def test_region_reading_sides2_and_polarity():
 def test_region_reading_interior_hole_immune():
     """车盒把绿区劈洞（列 44~47 被挖空、两侧绿）：[min,max] 边界不动——
     挖洞在中部对区缘免疫（与 wmid 同一构造性优势）。"""
-    g = _xg_grid([(1, 40, 43), (1, 48, 51)])
+    g = _xg_grid([(1, 54, 57), (1, 62, 65)])
     rr = dg.region_reading(g, 2.75)
     assert rr.sides == 2
     assert rr.left_edge_lane == pytest.approx(-0.5 / 2.75)
