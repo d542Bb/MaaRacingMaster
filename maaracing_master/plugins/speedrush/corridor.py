@@ -23,16 +23,16 @@ import numpy as np
 from dataclasses import dataclass
 
 from maaracing_master.plugins.speedrush.depth_geo import (
-    GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_UNKNOWN, GRID_X_MAX,
-    GRID_Z_HI, GRID_Z_LO)
+    CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_UNKNOWN,
+    GRID_X_MAX, GRID_Z_HI, GRID_Z_LO)
 from maaracing_master.plugins.speedrush.wall_track import MEASURED, OCCLUDED
 
 # 边界来源四态（wall_track 的 measured/occluded 同名复用，不建第二真源）
 INFERRED, UNKNOWN = "inferred", "unknown"
 
 BAND_LEN_M = 3.0
-# 末带 15~16m 不足 3m 照收（1m 带，诚实标注 z1）
-N_BANDS = int(-(-(GRID_Z_HI - GRID_Z_LO) // BAND_LEN_M))    # ceil → 5
+# 末带不足 3m 照收（诚实标注 z1）
+N_BANDS = int(-(-(GRID_Z_HI - GRID_Z_LO) // BAND_LEN_M))    # ceil → 9
 # 绿区边界的 observed 行下限（3/12 行=0.75m）：单行噪声邻格不冒充实测边界
 # （d00036 逐行实测：真边界带外邻 blocked 10~12 行、假墙带（视锥截断）0 行，
 # 2026-10-10 定案）。
@@ -55,7 +55,8 @@ class CorridorBand:
     """一个 3m 带：左右边界 + 带内有效点数（unknown 的判据面——点数不足
     的带如实标注，不静默补成安全道路）。"""
 
-    z0: float                # 带起点（米，车前方）
+    z0: float                # 带起点（米，车头前，负=车头后；相机系 z 减
+                             # CAM_Z_DATUM_M——带内匹配仍走相机系，见 build_corridor）
     z1: float
     left: BandBoundary
     right: BandBoundary
@@ -77,6 +78,7 @@ class Corridor:
 
 
 def _band_bounds(i: int) -> tuple[float, float]:
+    """带 i 的相机系 z 界（带内匹配用；对外带标由 build_corridor 挪车头系）。"""
     z0 = GRID_Z_LO + i * BAND_LEN_M
     return z0, min(GRID_Z_HI, z0 + BAND_LEN_M)
 
@@ -199,6 +201,9 @@ def build_corridor(reading, grid, wall_track, fid: int | None, *,
         if grid is not None:
             rows = _band_rows_mask(grid, z0, z1)
             n_pts = int(grid.counts[rows].sum())
-        bands.append(CorridorBand(z0, z1, sides[-1], sides[1], n_pts))
+        # 带标挪正（2026-10-10）：对外字段车头系（z 减 CAM_Z_DATUM_M），带内
+        # 匹配（wall bins/栅格行）仍走相机系——测量帧不变，表示面诚实
+        bands.append(CorridorBand(z0 - CAM_Z_DATUM_M, z1 - CAM_Z_DATUM_M,
+                                  sides[-1], sides[1], n_pts))
     return Corridor(tuple(bands), center_lane, width_lane, src,
                     _plane_health(reading), _far_trend(wall_track))

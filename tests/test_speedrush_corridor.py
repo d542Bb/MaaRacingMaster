@@ -218,3 +218,20 @@ def test_master_mode_region_first():
     c = o.update(_bnd(-2.0, 2.0), now=1000.0, grid=g, fid=1)
     assert c is not None and c.src == "region"
     assert _off(c) == pytest.approx(-1.5 / LW, abs=0.01)
+
+
+# ---------- 带标车头系（2026-10-10 挪正） ----------
+
+def test_band_z_labels_head_frame():
+    """带标挪正：CorridorBand.z0/z1 = 相机系减 CAM_Z_DATUM_M（车头前，负=
+    车头后）；带内匹配仍走相机系——band 0 覆盖相机 [GRID_Z_LO, +3m)，带内
+    wall bins/栅格行匹配与带标一致（同一条带的两侧标对了才叫挪正）。"""
+    from maaracing_master.plugins.speedrush import depth_geo as dg
+    c = build_corridor(_bnd(), _grid(range(12, 24)), None, fid=1,
+                       center_lane=0.0, width_lane=None, src="pair",
+                       lane_w_m=LW)
+    assert len(c.bands) == 9
+    b0 = c.bands[0]
+    assert b0.z0 == pytest.approx(dg.GRID_Z_LO - dg.CAM_Z_DATUM_M)
+    assert b0.z1 == pytest.approx(dg.GRID_Z_LO + 3.0 - dg.CAM_Z_DATUM_M)
+    assert c.bands[-1].z1 == pytest.approx(dg.GRID_Z_HI - dg.CAM_Z_DATUM_M)

@@ -15,8 +15,8 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
            (L+R)/2，两者分离=时间链效应；cg=同拍栅格 wmid 路心，与 c0 分离=
            互证分歧面）+ 分带走廊边界（来源着色）+ 检测反投影标记（40m 外钉顶缘
            +距离标注）+ 距离标尺（z 等值线近场每 3m/远场每 5m，全图统一
-           前向距离口径）+ 三层窗口标注（供数 16m/平面拟合
-           30m/锚点 90m）+ d(t) 规划曲线子带
+           车头系口径）+ 三层窗口标注（供数 11m/平面拟合
+           25m/锚点 85m，车头系）+ d(t) 规划曲线子带
 
 **BEV 口径**（与 _grid_penalty 同源，不另立坐标）：栅格 x 原点=相机光轴=自车，
 格 (ix, iz) → X=ix·CELL−X_MAX、Z=Z_LO+iz·CELL；**渲染近下远上**（z=Z_LO 在
@@ -41,8 +41,9 @@ import numpy as np
 
 from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
-    ANCHOR_Z_HI, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_NX, GRID_NZ,
-    GRID_SHOULDER, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI, GRID_Z_LO)
+    ANCHOR_Z_HI, CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE,
+    GRID_NX, GRID_NZ, GRID_SHOULDER, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI,
+    GRID_Z_LO, NEAR_Z, ROAD_Z_HI, X_MAX_M)
 from maaracing_master.plugins.speedrush.latsample import (
     GRID_CAR_HALF_LANE_M, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.world_model import (
@@ -64,8 +65,9 @@ _CLS_BGR = {"coins": (0, 255, 255), "cars": (0, 0, 255),
 _PANEL_W = 560                    # 右联宽
 _TITLE_H = 26                     # 右联标题条
 _Z_TICK_M = (3.0, 6.0, 9.0, 12.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0)
-# 距离口径全图统一=前向距离（z 等值线横线）：供数窗/TTC/检测反投影标注全是
-# 向前量的直线距离，程序无半径消费方——弧环读数与 52m 标注对不上账（2026-10-10）
+# 距离口径全图统一=车头系前向距离（2026-10-10 挪正：标签=相机系 z 减
+# CAM_Z_DATUM_M，0m=车头着地点；供数窗/检测反投影标注同口径对账一致。
+# 旧口径"前向距离"以相机为原点，"3m"其实在车底下——用户指正挪正）
 _X_TICK_M = (-10.0, -5.0, 0.0, 5.0, 10.0)
 _RENDER_Z_HI = 40.0               # BEV 渲染上限（> 栅格采集窗 30m）：目检延伸区
 _PLOT_Y1_FRAC = 0.66              # BEV 绘图区底 = 画布高 × 此值（竖长化，下余 d(t) 子带）
@@ -164,13 +166,14 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
         _put_text(canvas, ";".join(reading.rejects)[:44],
                   (plot_x0 + 8, plot_y1 - 20), scale=0.4, color=(0, 200, 255))
 
-    # 距离标尺：z 等值线每 3m 近场/5m 远场 横线+标签（全图统一前向距离口径：
-    # 与供数窗/TTC/检测反投影标注同口径，对账一致）、x 每 5m 刻度
+    # 距离标尺：z 等值线每 3m 近场/5m 远场 横线+标签（全图统一车头系口径
+    # 2026-10-10 挪正：标签=相机系 z 减 CAM_Z_DATUM_M，"0m"=车头着地点；
+    # 刻度位置仍走相机系映射——栅格/检出折线是相机系数据面）、x 每 5m 刻度
     for z in _Z_TICK_M:
         y = bm.py(z)
         cv2.line(canvas, (plot_x0 - 4, y), (plot_x1, y), (120, 120, 120), 1)
-        _put_text(canvas, f"{int(z)}m", (plot_x0 - 42, y + 4), scale=0.38,
-                  color=(200, 200, 200))
+        _put_text(canvas, f"{int(z - CAM_Z_DATUM_M)}m", (plot_x0 - 42, y + 4),
+                  scale=0.38, color=(200, 200, 200))
     for x in _X_TICK_M:
         xp = bm.px(x)
         cv2.line(canvas, (xp, plot_y0), (xp, plot_y1 + 4), (120, 120, 120), 1)
@@ -183,8 +186,8 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     for xd in range(plot_x0, plot_x1, 14):
         cv2.line(canvas, (xd, grid_y0), (min(xd + 7, plot_x1), grid_y0),
                  _LIMIT_BGR, 1)
-    _put_text(canvas, f"grid<={int(GRID_Z_HI)}m", (plot_x0 + 8, grid_y0 - 6),
-              scale=0.36, color=_LIMIT_BGR)
+    _put_text(canvas, f"grid<={int(GRID_Z_HI - CAM_Z_DATUM_M)}m",
+              (plot_x0 + 8, grid_y0 - 6), scale=0.36, color=_LIMIT_BGR)
 
     # 路面叠层：路心 / 左右缘（路心系 d → 相机轴米 X=(d−ro)·lane_w_m）
     ro = snap.get("road_offset")
@@ -227,10 +230,11 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                 _put_text(canvas, "cg", (xp + 2, plot_y0 + 24), scale=0.36,
                           color=(80, 220, 80))
 
-    # 自车标记（X=0、域底）：三角大小=米制车半宽（俯视正交下恒定像素，
+    # 自车标记（X=0、车头着地点 z=CAM_Z_DATUM_M——车头系 0m 处，与距离标尺
+    # 同基准）：三角大小=米制车半宽（俯视正交下恒定像素，
     # 与车标记同尺——BEV 里的米数对得上真实车宽）
     ego_r = max(8, int(GRID_CAR_HALF_LANE_M / GRID_CELL * sx))
-    cv2.drawMarker(canvas, (bm.px(0.0), plot_y1 - 6), (0, 255, 0),
+    cv2.drawMarker(canvas, (bm.px(0.0), bm.py(CAM_Z_DATUM_M)), (0, 255, 0),
                    cv2.MARKER_TRIANGLE_UP, ego_r, 2)
 
     # 当帧原始墙检出折线（reading.edge_pts，5 深度箱每侧一检出）：分侧按 z
@@ -255,7 +259,8 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     corridor = snap.get("corridor")
     if corridor is not None:
         for b in corridor.bands:
-            y_top, y_bot = bm.py(b.z1), bm.py(b.z0)
+            # 带标已挪车头系（corridor 对外字段），画回相机系映射
+            y_top, y_bot = bm.py(b.z1 + CAM_Z_DATUM_M), bm.py(b.z0 + CAM_Z_DATUM_M)
             for bb in (b.left, b.right):
                 if bb.x_m is None or bb.src == "unknown":
                     continue
@@ -297,9 +302,15 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
         _put_text(canvas, label, (lx + 15, ly - 5), scale=0.36,
                   color=(200, 200, 200))
         lx += 46
-    # 三层窗口标注（2026-10-10 扩窗定案）：栅格/远箱 30m、车道读数箱 16m、平面拟合域
-    # 30m、深度锚点测量域 90m——「程序各层看多远」在图上一行读尽
-    _put_text(canvas, "win: grid<=30 scan<=12x lane16 plane<=30 anchor<=90",
+    # 三层窗口标注（2026-10-10 扩窗定案 + 同日车头系挪正）：各层窗口常量派生
+    # （z 层减 CAM_Z_DATUM_M 与标尺同基准；scan 是横向域不减）——「程序各层
+    # 看多远」在图上一行读尽，数值不漂
+    _put_text(canvas,
+              f"win: grid<={int(GRID_Z_HI - CAM_Z_DATUM_M)} "
+              f"scan<={int(X_MAX_M)}x "
+              f"lane{int(NEAR_Z - CAM_Z_DATUM_M)} "
+              f"plane<={int(ROAD_Z_HI - CAM_Z_DATUM_M)} "
+              f"anchor<={int(ANCHOR_Z_HI - CAM_Z_DATUM_M)}",
               (plot_x0 + 8, ly + 8), scale=0.36, color=(160, 160, 160))
 
     # 检测反投影标记：框底中心 → (X,Z)，域内画点
@@ -335,7 +346,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                         yp = plot_y0 + 5
                         cv2.circle(canvas, (xp, yp), rad, color,
                                    -1 if filled else 1)
-                        _put_text(canvas, f"{int(z_m)}m",
+                        _put_text(canvas, f"{int(z_m - CAM_Z_DATUM_M)}m",
                                   (xp + rad + 2, yp - 5), scale=0.34,
                                   color=color)
                     else:

@@ -65,6 +65,16 @@ from maaracing_master.plugins.speedrush.world_model import Calib
 Y0, DIAG_Y1 = 340, 715
 MOGE_IN_W, MOGE_IN_H = 1280, 720    # 折叠静态输入（free-dim 覆盖，见 load_session）
 
+# ── 相机系→车头系基准（2026-10-10 挪正：只挪显示/表示面，不进测量与判据）──
+# 全部 z 距离的测量帧是相机系（点云、ZBIN、栅格、拟合域原样不动）；用户可见
+# 的距离标签（BEV 刻度、走廊带标、检测标注）以车为原点才诚实——车头在相机
+# 前 ~5m，相机系"3m"其实在车底下。基准=着地点（ego 掩码底行，车与路面相接
+# 处）z p50=5.00m（n=67 包，p5~p95 4.17~5.58；旧会话同口径 5.69，跨局散布
+# ±0.35m，场景俯仰所致）——车头（前保险杠）掩码拖尾不可直测（ego z p90 混
+# 远景 p50=21m），车尾（ego 最近点）p50=4.52 为下界佐证。用旧值 5.7 的差异
+# 在 25m 量程上 ~3%，不构成换基准的理由。
+CAM_Z_DATUM_M = 5.0
+
 # ── 平面拟合（路面走廊域，Y = aX + bZ + c）──────────────────────────────
 # 拟合域只收「路面点」是定案口径（2026-09-30 点云指正、2026-10-01 金标双平面
 # 对照实锤）：拟合域含墙/肩/远景时平面被拽歪，路面残差"随距离增长"的假象；
@@ -1235,7 +1245,7 @@ def _grid_rgb(state: np.ndarray) -> np.ndarray:
 
 
 def _grid_panel(grid: DrivableGrid, width: int, scale: int = 4) -> np.ndarray:
-    """可行驶栅格小图（BEV 俯视，z16 在上、z3 在下；x 左负右正）+ 图例。"""
+    """可行驶栅格小图（BEV 俯视，远端在上、近端在下；x 左负右正）+ 图例。"""
     g = _grid_rgb(grid.state)[::-1]          # 行 0 = z16（远）
     img = cv2.resize(g, (GRID_NX * scale, GRID_NZ * scale),
                      interpolation=cv2.INTER_NEAREST)
@@ -1247,7 +1257,9 @@ def _grid_panel(grid: DrivableGrid, width: int, scale: int = 4) -> np.ndarray:
     c0 = GRID_NX * scale // 2
     cv2.line(panel, (c0, head), (c0, head + img.shape[0]), (0, 200, 255), 1)
     cv2.putText(panel,
-                f"drivable grid  z3(bottom)..z16(top)  x{GRID_X_MAX:.1f}m  "
+                f"drivable grid  z{GRID_Z_LO - CAM_Z_DATUM_M:.0f}(bottom)"
+                f"..z{GRID_Z_HI - CAM_Z_DATUM_M:.0f}(top) 车头系  "
+                f"x{GRID_X_MAX:.1f}m  "
                 f"绿=可走 红=不可走 灰=未知  dig_cells={grid.dig_cells}  "
                 f"{grid.latency_ms:.1f}ms",
                 (GRID_NX * scale + 10, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
