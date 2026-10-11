@@ -238,6 +238,18 @@ class LaneScoring:
 
 
 @dataclass(frozen=True)
+class MetricCars:
+    """车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。
+
+    语义：开闸后 `WorldObservation.metric_cars` 喂道评分（影子列）与 ledger
+    米制列——**不改行为**（band/dodge/veto/traj 的车仪器仍走像素系）；行为
+    路径换米制优先是 V2 的事。闸关=影子列回像素仪器，与旧 trace 逐位同构。
+    米制量本身由锚点链路自况有效性（无锚=UNKNOWN 弃权），本闸只管供不供。"""
+
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class DecisionConfig:
     mode: Mode
     control: Control
@@ -252,6 +264,7 @@ class DecisionConfig:
     plan_layer: PlanLayer = PlanLayer()
     grid_xcheck: GridXcheck = GridXcheck()
     lane_scoring: LaneScoring = LaneScoring()
+    metric_cars: MetricCars = MetricCars()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -443,7 +456,9 @@ def _read_decision(path: Path) -> DecisionConfig:
                                    100.0, lo=0),
             pass_value=_num_def(d, "lane_scoring", "pass_value", 30.0, lo=0),
             far_coin_weight=_num_def(d, "lane_scoring", "far_coin_weight",
-                                     0.3, lo=0, hi=1, lo_open=False)))
+                                     0.3, lo=0, hi=1, lo_open=False)),
+        metric_cars=MetricCars(
+            enabled=_bool(d, "metric_cars", "enabled", default=True)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis

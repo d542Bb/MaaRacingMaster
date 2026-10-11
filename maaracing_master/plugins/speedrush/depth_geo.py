@@ -1151,11 +1151,17 @@ class AnchorEntry:
 class DepthAnchorSheet:
     """一帧深度推理的逐车框锚点清单（与 DrivableGrid 同源同拍、同包 take）。
     entries 可为空（本帧有推理但无有效锚点）——「有证据但量不出」与「没证据」
-    是两回事，消费端据此区分弃权原因。"""
+    是两回事，消费端据此区分弃权原因。
+
+    fx：同帧全幅像素焦距——车框横向米制位 x_m=(cx−vpx)·z/fx 的换算锚（C 线
+    米制车状态，2026-10-12）。fx 与 z_m 同帧同拍：焦距随内容漂移（模块头
+    活体审计），横向反投影必须吃锚点帧自己的焦距，不吃常数不吃他帧。
+    None=旧路径未传（消费端 x_m 弃权，z 仍供）。"""
 
     fid: int
     ts_ns: int            # 锚点帧到达采集回调的时刻（perf_counter_ns，frame_with_age 同钟）
     entries: tuple[AnchorEntry, ...]
+    fx: float | None = None
 
 
 def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | None:
@@ -1182,7 +1188,8 @@ def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | No
 
 
 def anchor_sheet_from_detections(pts: np.ndarray, detections, fid: int,
-                                 ts_ns: int) -> DepthAnchorSheet | None:
+                                 ts_ns: int, fx: float | None = None
+                                 ) -> DepthAnchorSheet | None:
     """逐车框算锚点 → 清单。detections = (det_idx, x0, y0, x1, y1) 全分辨率
     原始框序列。出域（ANCHOR_Z_LO/HI）或量不出的框**静默弃权**（清单少一条
     = 消费端「无锚」语义，不造假锚）；detections 为空 → None（零成本路径）。"""
@@ -1196,7 +1203,8 @@ def anchor_sheet_from_detections(pts: np.ndarray, detections, fid: int,
         entries.append(AnchorEntry(
             det_idx=det_idx, x0=int(x0), y0=int(y0), x1=int(x1), y1=int(y1),
             z_m=z, h_px=int(y1 - y0), cy_px=0.5 * (y0 + y1)))
-    return DepthAnchorSheet(fid=fid, ts_ns=ts_ns, entries=tuple(entries))
+    return DepthAnchorSheet(fid=fid, ts_ns=ts_ns, entries=tuple(entries),
+                            fx=None if fx is None else float(fx))
 
 
 class DepthRoadObserver:
@@ -1287,7 +1295,8 @@ class DepthRoadObserver:
             self._stage_win[k].append(v)
         evid["grid"] = grid
         if detections and fid is not None and frame_ts_ns is not None:
-            sheet = anchor_sheet_from_detections(pts, detections, fid, frame_ts_ns)
+            sheet = anchor_sheet_from_detections(pts, detections, fid,
+                                                 frame_ts_ns, fx=fx)
             if sheet is not None:
                 evid["anchors"] = sheet
         return replace(reading,

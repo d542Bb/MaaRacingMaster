@@ -12,6 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from dataclasses import replace
+
 from maaracing_master.plugins.speedrush.depth_geo import (
     DepthAnchorSheet, AnchorEntry, anchor_sheet_from_detections)
 from maaracing_master.plugins.speedrush.perception import Detection, PerceptionResult
@@ -277,3 +279,117 @@ def test_anchor_sheet_drops_out_of_domain_and_degenerate_boxes():
     tiny = anchor_sheet_from_detections(_pts_with_cluster(),
                                         [(0, 636, 356, 640, 360)], fid=1, ts_ns=1)
     assert tiny.entries == ()
+
+
+# ---------- 米制车状态（C 线 2026-10-12：车世界模型搬米制系，计划稿 §5C） ----------
+
+def _mstate(obs, tid=1):
+    return next(m for m in obs.metric_cars if m.target_id == tid)
+
+
+def test_metric_state_unknown_without_anchor():
+    """无锚：metric_cars 仍逐车产出（身份对齐 distances），z/x/v/t 全 None
+    ——消费端回退像素仪器，不臆造米制。"""
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    m = _mstate(obs)
+    assert m.source is DistanceSource.UNKNOWN
+    assert m.z_m is None and m.x_m is None
+    assert m.v_close_mps is None and m.t_meet_s is None
+
+
+def test_metric_state_hold_z_and_x_projection():
+    """持锚：z=锚原值；x_m=(cx−vpx)·z/fx（同帧焦距反投影，1280 全幅基准）；
+    锚龄 < 评估下限 → v/t 弃权（估计窗未开，消费端回退像素）。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car(cx=800)]), frame_age_ms=10.0, stage=1)
+    sheet = replace(_sheet(1, z_m=50.0), fx=700.0)
+    obs = trk.update(_per(2, cars=[_car(cx=800)]), frame_age_ms=10.0, stage=1,
+                     anchors=sheet)
+    m = _mstate(obs)
+    assert m.source is DistanceSource.ANCHOR
+    assert m.z_m == pytest.approx(50.0)
+    assert m.x_m == pytest.approx((800.0 - CAL.vpx) * 50.0 / 700.0)
+    assert m.v_close_mps is None and m.t_meet_s is None
+
+
+def test_metric_state_rescaled_t_meet():
+    """RESCALED：z=锚×框高比；v_close>0 → t_meet=z/v（一步除法，无 px/fid
+    换算、无 fid 率耦合）。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
+               anchors=replace(_sheet(1, z_m=50.0, h_px=40), fx=700.0))
+    for fid, h in ((3, 40), (4, 41), (5, 42), (6, 43), (7, 44), (8, 45)):
+        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    m = _mstate(obs)
+    z = 50.0 * 40 / 45
+    assert m.z_m == pytest.approx(z)
+    assert m.t_meet_s == pytest.approx(z / m.v_close_mps)
+    assert m.t_meet_s > 0
+
+
+def test_metric_state_receding_car_is_pacing_not_unknown():
+    """远离车（h 缩小 → v̂<0）：source 仍有效、t=None——占用语义与「无锚」
+    分流靠 source/vcls，消费端不回退像素（米制说话算数）。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car(h=60)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car(h=60)]), frame_age_ms=10.0, stage=1,
+               anchors=replace(_sheet(1, z_m=50.0, h_px=60), fx=700.0))
+    for fid, h in ((3, 60), (4, 58), (5, 56), (6, 54), (7, 52), (8, 50)):
+        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    m = _mstate(obs)
+    assert m.source is DistanceSource.ANCHOR
+    assert m.v_close_mps is not None and m.v_close_mps < 0
+    assert m.t_meet_s is None
+
+
+def test_metric_state_without_fx_abstains_lateral_only():
+    """锚点清单缺焦距（旧路径）：x_m 弃权、z 照供——不拿常数焦距冒充同帧。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
+                     anchors=_sheet(1, z_m=50.0))          # fx=None（默认）
+    m = _mstate(obs)
+    assert m.z_m == pytest.approx(50.0)
+    assert m.x_m is None
+
+
+def test_far_track_still_gets_metric_state():
+    """地平线退化带住户（denom<min_denom 降级 far 轨）：米制态照产出——
+    这正是本次搬家要治的盲区本体，far 不再等于决策不可见。"""
+    trk = Tracker()
+    far = _car(cx=660, cy=335)                # denom=335−324.2≈11 < 20：far
+    trk.update(_per(1, cars=[far]), frame_age_ms=10.0, stage=1)
+    assert trk.update(_per(2, cars=[far]), frame_age_ms=10.0, stage=1,
+                      anchors=replace(_sheet(1, z_m=40.0), fx=700.0)) \
+        .far_targets                          # 确在 far（x_lane 无效）
+    obs = trk.update(_per(3, cars=[far]), frame_age_ms=10.0, stage=1)
+    assert obs.targets == ()                  # 像素域内无它
+    m = _mstate(obs)
+    assert m.z_m == pytest.approx(40.0)
+    assert m.x_m == pytest.approx((660.0 - CAL.vpx) * 40.0 / 700.0)
+
+
+def test_cluster_switch_clears_fx_with_anchor():
+    """焦距锚与 z 锚同生命周期：簇跳清锚后 x_m 一并弃权，重锚恢复。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car(cx=800)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car(cx=800)]), frame_age_ms=10.0, stage=1,
+               anchors=replace(_sheet(1, z_m=50.0), fx=700.0))
+    trk.update(_per(3, cars=[_car(cx=800)]), frame_age_ms=10.0, stage=1,
+               anchors=replace(_sheet(3, z_m=89.0), fx=700.0))   # 跳变 >20m：清锚
+    m = _mstate(trk.update(_per(4, cars=[_car(cx=800)]),
+                           frame_age_ms=10.0, stage=1))
+    assert m.z_m is None and m.x_m is None
+    assert m.source is DistanceSource.UNKNOWN
+
+
+def test_sheet_carries_frame_focal():
+    """锚点清单携带同帧焦距（契约加法）：fx 原样透传，缺省 None。"""
+    pts = _pts_with_cluster()
+    s = anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)], fid=7,
+                                     ts_ns=700, fx=697.3)
+    assert s.fx == pytest.approx(697.3)
+    assert anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)],
+                                        fid=7, ts_ns=700).fx is None

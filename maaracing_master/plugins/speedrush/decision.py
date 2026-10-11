@@ -395,6 +395,8 @@ class DecisionEngine:
         self.lane_scorer = (LaneScorer(cfg, self.cal, self.scorer)
                             if cfg.lane_scoring.enabled else None)
         self._lane_report = None
+        # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
+        self._metric_cars: tuple = ()
         self.reset()
 
     def reset(self) -> None:
@@ -461,6 +463,9 @@ class DecisionEngine:
         （_side_has_space 按带来源规则）；None=无证据，对称默认不否决。"""
         self._dt_last = dt_s               # 计划层慢拍计时基（selector 累计）
         self._views, self._events = traffic if traffic is not None else ((), ())
+        # 车米制状态实例通道（C 线 2026-10-12，闸 metric_cars.enabled）：道评分
+        # 与 ledger 米制列消费；行为路径不读它（V2 才换仪器）。闸关=空（回退路径）。
+        self._metric_cars = obs.metric_cars if self.cfg.metric_cars.enabled else ()
         # 采集帧率逐拍喂入评分器（car_t_meet_s 的 px/fid→秒换算锚；None=
         # 预热未达，评分器自决退回旧口径）
         self.scorer.fid_hz = obs.fid_rate_hz
@@ -549,7 +554,8 @@ class DecisionEngine:
         # 影子道收益（闸开才算）：逐拍 LaneReport 供 trace 对照列，不进选择
         self._lane_report = (
             self.lane_scorer.benefits(obs, self._views, executed_lane,
-                                      road_width=self._rwidth)
+                                      road_width=self._rwidth,
+                                      metric_cars=self._metric_cars)
             if self.lane_scorer is not None else None)
 
         goal = self._current_goal(obs)
@@ -585,7 +591,10 @@ class DecisionEngine:
         cars 行 why ∈ {done_pass, band, approach, score, feas, veto, side,
         None=过全门}，带 x（单拍读数）/x_memb（车道成员位|None，三件套②）/
         cy/rel/age/w_m（TrafficObserver 有效性面产物，三件套③，过期转
-        unknown 不落列）+w_m_age/w_px/conf；
+        unknown 不落列）+w_m_age/w_px/conf+米制列（C 线 2026-10-12，闸
+        metric_cars：z=米制距离 m、x_mtr=米制横位 m、vcls=接近速度 m/s、
+        t_mtr=米制到站 s——None 且有 vcls=pacing 占用，None 且无 vcls=估计窗
+        未开回退像素；far 轨不落行，其米制态只进道评分）；
         coins 行 why ∈ {conf, score, feas, veto, None}；bonus 行只落原料
         （x/cy/rel/w/conf/age，legacy 路不评 bonus）。
         None=本拍未跑选择（CONSERVE/ABORT/致命/冷却拍），不留旧账。"""
@@ -947,6 +956,7 @@ class DecisionEngine:
             if best is None or s.score > best.score:
                 best = s
         if self.cfg.mode.allow_overtake:
+            metric_by_id = {m.target_id: m for m in self._metric_cars}
             for v in self._views:
                 s, why = self.scorer._score_car_reason(v)
                 memb = getattr(v, "x_memb", None)
@@ -956,6 +966,20 @@ class DecisionEngine:
                        "age": v.age_ticks,
                        "why": "done_pass" if v.id in self._done_pass_ids
                        else why}
+                m = metric_by_id.get(v.id)
+                if m is not None and m.z_m is not None:
+                    # 米制列（C 线影子面）：z/vcls/t_mtr 齿对齐 MetricCarState；
+                    # t_mtr=None 且 vcls≤0=pacing 占用语义，t_mtr=None 且无
+                    # vcls=估计窗未开（消费端回退像素，ledger 顶层的像素 t_meet
+                    # 列即是）。far 轨不在本循环（只遍历 _views），其米制态
+                    # 只进道评分——ledger 缺它属已知盲区，验收面用道评分列看。
+                    row["z"] = round(m.z_m, 1)
+                    if m.x_m is not None:
+                        row["x_mtr"] = round(m.x_m, 2)
+                    if m.v_close_mps is not None:
+                        row["vcls"] = round(m.v_close_mps, 2)
+                    row["t_mtr"] = None if m.t_meet_s is None \
+                        else round(m.t_meet_s, 2)
                 w_m = getattr(v, "w_m", None)
                 if w_m is not None:
                     # 宽度走 TrafficObserver 有效性面（年龄/置信门+TTL，三件套③）：

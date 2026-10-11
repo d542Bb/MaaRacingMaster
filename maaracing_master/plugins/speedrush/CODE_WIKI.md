@@ -882,3 +882,34 @@ unknown 保持对称默认不否决（旧 obs.boundary 通道 v4 恒 None，已�
 验收基线（2026-10-11 改造前 15 trace 聚合）：cars 行 4078，why 直方图
 band 76%/feas 9%/score 7%/approach 3%/过门 4%；旧式 t_meet 对实际错身时刻
 配对误差（n=252，cy 跨 v_ego 的到站车）P75=+3.0s 高估尾巴。
+
+## 18. 车世界模型搬米制系（C 线，2026-10-12 影子验收归因）（本域）
+
+影子道评分首局验收（trace_20261011_202931_p1）判**输入层饥饿**：lane_b 85%
+拍全零、撞车惩罚只在撞前 1~2 拍闪现；YOLO 每帧检出车但决策层 37% 检出拍
+零车视图（最长 1.6s）、39s 生出 42 个车 id。病根是**坐标系**：车的全部
+像素仪器都从透视除法 `(cx−vpx)·a_x/(cy−y_h)` 导出，而匀速跟车的前车恰好
+悬在 denom≈min_denom(20) 的地平线退化带（本局车读数 44% 落 cy<360）——
+分母趋于零处任何导数都救不动，逐仪补丁是抢救退化导数。**根治=车搬进
+depth_geo v4 的米制世界**（路面几何 10-01 已完成同款搬家，车是旧像素系
+最后的住户）；地平线从此不是特殊位置——没有任何仪器再除以 (cy−y_h)。
+
+- **锚点清单带同帧焦距**（`DepthAnchorSheet.fx`，契约加法）：横向米制位
+  x_m=(cx−vpx)·z/fx 必须吃锚点帧自己的焦距（fx 随内容漂移，模块头活体
+  审计）；缺 fx=x_m 弃权、z 照供，不拿常数焦距冒充同帧。
+- **Tracker 产 `WorldObservation.metric_cars`**（逐车 `MetricCarState`：
+  source/z_m/x_m/v_close_mps/t_meet_s/anchor_age_ms，与 distances 同序同
+  id）：z 复用混合测距状态机（RESCALED=锚×框高比、ANCHOR=持锚，无第二套
+  公式）；t_meet=z/v_close 一步除法（无 px/fid 换算、无 fid 率耦合）；
+  v_close≤0=掠过/远离（t=None **占用语义**），v=None=锚新估计窗未开（回退
+  像素）——分流靠 source/v_close，不靠消费端猜。**far 轨同样产出**（cx 恒
+  在，米制态不依赖 x_lane 有效性）——退化带住户不再等于决策不可见。
+- **分流纪律**：`metric_cars.enabled` 闸（部署=true 影子期）——道评分
+  lane_b 改**米制优先、像素回退**（无锚车走像素仪器；只活在米制里的 far
+  轨入账），ledger cars 行加 z/x_mtr/vcls/t_mtr 列；**行为路径（band/
+  dodge/veto/traj）逐位不动**，换仪器是 V2 的事。闸关=与 C 线前 trace
+  逐位同构。金币不搬（贴地、地面流可用），min_denom/y_h 标定真源不动
+  （继续服务像素回退路径）。
+- **验收面**（计划稿 §5C③，下一局 trace）：米制覆盖率（锚龄合格拍占比，
+  分远近场）、同车米制 vs 像素 t_meet 分差、lane_b 非零率（对照 15%）、
+  撞前可动窗（lane_b 出 −100 时距撞时间，对照 1~2 拍）。

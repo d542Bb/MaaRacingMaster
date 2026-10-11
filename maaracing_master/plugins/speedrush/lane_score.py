@@ -19,9 +19,11 @@ latsample 采样器（终点=道心）；本模块只回答「哪条道的当期
 - 占用/碰撞：本道有车在「我们到得了的时刻」（t_meet ≥ 变道需求）到达 →
   到站 < crash_t 判碰撞（负额大惩罚），否则该时段内本道币被遮挡不可收。
 
-**时间口径**：车 t_meet 走 `Scorer.car_t_meet_s`（地面流积分+聚合式 fid 率，
-单一公式真源）；币到站走 `Scorer.score` 的 t_miss（与评分同一仪器——coins
-的全场流 k 仍是 rel×hz 旧时基（挂账），本模块继承同一偏差，不另建第二份）。
+**时间口径**：车 t_meet **米制优先**（C 线 2026-10-12：锚点 z/v_close，锚新
+估计窗未开或无锚回退像素）、像素回退走 `Scorer.car_t_meet_s`（地面流积分+
+聚合式 fid 率，单一公式真源）；币到站走 `Scorer.score` 的 t_miss（与评分同一
+仪器——coins 的全场流 k 仍是 rel×hz 旧时基（挂账），本模块继承同一偏差，不
+另建第二份）。
 
 **相对序**：输出按收益降序；道格锚=供数路心（executed 帧道0=路中心），
 残余 0.3~0.6 道语义差（找边 vs 供数，见计划稿 §5）只影响绝对道号、不影响
@@ -69,11 +71,17 @@ class LaneScorer:
 
     def benefits(self, obs: WorldObservation, views: tuple["CarView", ...],
                  executed: float | None,
-                 *, road_width: float | None) -> LaneReport | None:
+                 *, road_width: float | None,
+                 metric_cars: tuple = ()) -> LaneReport | None:
         """一拍评定。executed 缺席=无路心锚（诚实弃权，None 不臆造道格）；
         road_width 缺席用 4.4 道先验半宽。
 
         ``views``：CarView 序列（鸭子同构可——cand_x/t_meet 走 scorer 通道）。
+        ``metric_cars``：tracking.MetricCarState 序列（C 线 2026-10-12，闸
+        `metric_cars.enabled`）——**米制优先、像素回退**：有锚车吃米制 z/x_m
+        /t_meet（v_close≤0=掠过=占用语义；估计窗未开=回退像素），无锚车走
+        像素仪器；只活在米制里的远轨（x_lane 无效被降级 far 的车，恰是地平线
+        退化带住户）同样入账——那是本次搬家要治的盲区本体。
         空旷路=合法结果（道间等价，pick=当前道）。"""
         if executed is None:
             return None
@@ -82,19 +90,29 @@ class LaneScorer:
 
         # ---- 车流：路心系入道 + 到站时刻（pacing=整窗占用） ----
         lane_car_t: dict[float, list[float | None]] = {L: [] for L in LANES}
-        for v in views:
-            x = self.scorer.cand_x(v)
-            if x != x:
-                continue                    # nan（病态行）不入账
-            xr = x + executed
-            if abs(xr) > half:
-                continue                    # 出界=膨胀读数，不入道格
-            L = self._lane_of(xr)
-            if L is None or v.cy >= self.cal.v_ego:
-                continue                    # 出格/已过自车行：不占道
-            tm = (self.scorer.car_t_meet_s(v.rel_approach, v.cy)
-                  if v.rel_approach > 0 else None)
-            lane_car_t[L].append(tm)
+        by_id = {v.id: v for v in views}
+        metric_seen: set[int] = set()
+        for m in metric_cars:
+            v = by_id.get(m.target_id)
+            if v is not None and v.cy >= self.cal.v_ego:
+                metric_seen.add(m.target_id)
+                continue                # 已过自车行：不占道（米制无 cy，随视图判）
+            if m.z_m is not None:
+                x = (m.x_m / self.cal.lane_w_m if m.x_m is not None
+                     else (self.scorer.cand_x(v) if v is not None else None))
+                tm = self._metric_t(m, v)
+            elif v is not None:
+                x, tm = self._pixel_instruments(v)      # 无锚：像素回退
+            else:
+                continue                # 无视图的远轨必有锚（far 轨本就 x 无效）；
+                                        # 连锚都没有时它在 obs 里也没参赌资格
+            metric_seen.add(m.target_id)
+            self._enter_lane(x, tm, executed, half, lane_car_t)
+        for vid, v in by_id.items():
+            if vid in metric_seen or v.cy >= self.cal.v_ego:
+                continue                # 米制路径已入账，不双计；已过自车行不占道
+            x, tm = self._pixel_instruments(v)
+            self._enter_lane(x, tm, executed, half, lane_car_t)
 
         # ---- 币：组值 + 到站（与评分同一 t_miss 仪器） ----
         coin_items = []                     # (lane, group, t_miss|None)
@@ -156,6 +174,42 @@ class LaneScorer:
         return LaneReport(tuple(out), pick, half)
 
     # ---- 内部 ----
+
+    def _metric_t(self, m, v) -> float | None:
+        """米制到站时刻（分流语义见 MetricCarState docstring）：
+        v_close>0 → z/v_close；v_close≤0 → None（掠过/远离=占用）；
+        v_close None（锚新估计窗未开）→ 像素回退（有视图才退得动）。"""
+        if m.v_close_mps is not None:
+            return m.t_meet_s
+        if v is None:
+            return None
+        return (self.scorer.car_t_meet_s(v.rel_approach, v.cy)
+                if v.rel_approach > 0 else None)
+
+    def _pixel_instruments(self, v) -> tuple[float, float | None]:
+        """像素仪器（回退路径，与搬家前逐位同式）：cand_x（成员位优先）+
+        地面流 t_meet（pacing=非正 rel → None=占用）。"""
+        x = self.scorer.cand_x(v)
+        tm = (self.scorer.car_t_meet_s(v.rel_approach, v.cy)
+              if v.rel_approach > 0 else None)
+        return x, tm
+
+    def _enter_lane(self, x: float | None, tm: float | None,
+                    executed: float, half: float,
+                    lane_car_t: dict[float, list[float | None]]) -> None:
+        """路心系横坐标入道格（病态行/出界不入账——与搬家前同一判据面；
+        米制 x 不经过成员位投票，米制读数本身即整道归属）。已过自车行的
+        排除在调用侧做（只有那里知道 cy）。"""
+        if x is None or x != x:
+            return                            # 缺读数/nan（病态行）不入账
+        xr = x + executed
+        if abs(xr) > half:
+            return                            # 出界=膨胀读数，不入道格
+        L = self._lane_of(xr)
+        if L is None:
+            return
+        lane_car_t[L].append(tm)
+
 
     @staticmethod
     def _lane_of(xr: float) -> float | None:

@@ -225,6 +225,33 @@ class DistanceReason(str, Enum):
 
 
 @dataclass(frozen=True)
+class MetricCarState:
+    """一辆车的米制状态（C 线 2026-10-12：车世界模型搬米制系）。
+
+    全部量在**车头系米制**（右正，x 自路面锚/路心换算由消费端做——本层只供
+    自车系）。z/x 都不除以 (cy−y_h)：z 是点云锚实测（锚间框高重标），x_m 是
+    同帧焦距反投影——地平线退化带不再特殊。None=该量弃权（原因见 source/
+    reason），消费端回退像素仪器，不臆造。
+
+    - z_m：当前米制距离（RESCALED=锚点×框高比，ANCHOR=持锚原值）。
+    - x_m = (cx−vpx)·z/fx：cx=当前框心、fx=锚点帧焦距、z=当前米制距离——
+      三个量各差半拍（锚点帧 vs 当前帧），横向慢变量，误差二阶，如实记。
+    - v_close_mps：锚点门控估计（锚龄 ≥ gate_eval_min_ms 才出，None=估计窗
+      未开——消费端此时回退像素 t_meet，不算 pacing）。
+    - t_meet_s = z/v_close（v_close ≤ 0 = 掠过/远离 → None，**与「估计窗未开」
+      同值不同义**——区分靠 source：source 非 UNKNOWN 且 t None= pacing/远离
+      占用语义；source=UNKNOWN=无锚，回退像素）。"""
+
+    target_id: int
+    source: DistanceSource
+    z_m: float | None
+    x_m: float | None
+    v_close_mps: float | None
+    t_meet_s: float | None
+    anchor_age_ms: float | None
+
+
+@dataclass(frozen=True)
 class WorldObservation:
     schema_version: int
     frame_id: int
@@ -241,6 +268,9 @@ class WorldObservation:
     # 的单位是 px/fid，换算秒必须知道 fid 率——控制拍率(20)不是 fid 率，旧消费
     # 口径恒定高估 TTC。EMA 预热未达样本数前为 None，消费方自决退路。
     fid_rate_hz: float | None = None
+    # 逐车米制状态（C 线 2026-10-12；与 distances 同序同 id 一一对应，只含车）。
+    # 影子期消费面=道评分+ledger；行为路径切换属 V2。契约加法扩展，schema 仍 1。
+    metric_cars: tuple[MetricCarState, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -301,6 +331,7 @@ class _Obs:
 
     kind: str
     cy: int
+    cx: float               # 框心 x（全幅 px，1280 基准）——米制 x_m 反投影的横向原料
     w: int
     h: int
     conf: float
@@ -315,6 +346,7 @@ class _Track:
     id: int
     kind: str
     cy: int
+    cx: float               # 最近框心 x（全幅 px；匹配拍刷新，遮挡期保持）
     w: int
     h: int
     conf: float
@@ -330,6 +362,7 @@ class _Track:
     anchor_z: float | None = None        # 米制锚点（None=无有效锚）
     anchor_h: int = 0                    # 锚点帧框高（h 重标比例基线）
     anchor_ts_ns: int = 0                # 锚点帧采集时刻（perf_counter_ns）
+    anchor_fx: float | None = None       # 锚点帧全幅焦距（x_m 反投影换算锚；随锚生灭）
     approach_confirmed_at: int | None = None   # 本锚点生命周期内确认帧号（≠ is_approaching）
     gate_streak: int = 0                 # 估计接近速度连续超阈拍数
     v_close_mps: float | None = None     # 门控区间速度估计落轨（L2 状态载体）：
@@ -412,7 +445,8 @@ class Tracker:
                 else:
                     t.gate_streak = 0
             t.kind, t.w, t.h, t.conf = o.kind, o.w, o.h, o.conf
-            t.cy, t.x_lane, t.x_sigma, t.lane_side = o.cy, o.x_lane, o.x_sigma, o.lane_side
+            t.cy, t.cx = o.cy, o.cx
+            t.x_lane, t.x_sigma, t.lane_side = o.x_lane, o.x_sigma, o.lane_side
             if o.x_lane is not None:
                 t.x_known = o.x_lane
             t.last_seen = fid
@@ -428,9 +462,9 @@ class Tracker:
             if any(v == oi for v in matches.values()):
                 continue
             self._tracks.append(_Track(
-                id=self._next_id, kind=o.kind, cy=o.cy, w=o.w, h=o.h, conf=o.conf,
-                x_lane=o.x_lane, x_known=o.x_lane, x_sigma=o.x_sigma,
-                lane_side=o.lane_side, rel_approach=0.0,
+                id=self._next_id, kind=o.kind, cy=o.cy, cx=o.cx, w=o.w, h=o.h,
+                conf=o.conf, x_lane=o.x_lane, x_known=o.x_lane,
+                x_sigma=o.x_sigma, lane_side=o.lane_side, rel_approach=0.0,
                 first_seen=fid, last_seen=fid, matched=True))
             frame_map[o.det_key] = self._next_id
             self._next_id += 1
@@ -480,6 +514,12 @@ class Tracker:
             stage_transition=stage_transition)
         distances = tuple(self._distance_of(t, per.ts_ns, frame_age_ms)
                           for t in self._tracks if t.kind == KIND_CAR)
+        # 逐车米制状态（C 线）：与 distances 同序同 id，z/x/v/t 全从锚点链路
+        # 直读（公式见 MetricCarState）；无锚=source UNKNOWN，z/x/v/t 全 None，
+        # 消费端回退像素仪器。far 轨同样产出（米制态不依赖 x_lane 有效性）。
+        by_id = {t.id: t for t in self._tracks if t.kind == KIND_CAR}
+        metric_cars = tuple(self._metric_of(d, by_id[d.target_id])
+                            for d in distances)
         self._last_fid_seen, self._last_ts_seen = fid, per.ts_ns
         fid_hz = (self.fid_rate_hz
                   if self._fid_hz_n >= self._FID_HZ_WARM_N else None)
@@ -487,7 +527,7 @@ class Tracker:
             schema_version=SCHEMA_VERSION, frame_id=fid, ts_ns=per.ts_ns,
             frame_age_ms=frame_age_ms, stage=stage, health=health,
             boundary=None, targets=tuple(targets), far_targets=tuple(fars),
-            distances=distances, fid_rate_hz=fid_hz)
+            distances=distances, metric_cars=metric_cars, fid_rate_hz=fid_hz)
         return self._last_obs
 
     # ---------- 内部 ----------
@@ -528,7 +568,7 @@ class Tracker:
                 side = (LaneSide.MID if abs(dx) < self.p.neutral_px
                         else LaneSide.RIGHT if dx > 0 else LaneSide.LEFT)
                 out.append(_Obs(
-                    kind=kind, cy=d.cy, w=d.w, h=d.h, conf=d.conf,
+                    kind=kind, cy=d.cy, cx=float(d.cx), w=d.w, h=d.h, conf=d.conf,
                     x_lane=x, x_sigma=self.p.pos_err_px * self.cal.a_x / denom,
                     lane_side=int(side), det_key=(kind, ki)))
         return out
@@ -550,10 +590,12 @@ class Tracker:
                 # 层一测量有效性：主簇跳变（实验实录帧间数十米假跳）——量错对象
                 # 的锚点救不了，弃权等重拍；阈值是 trace 标定候选
                 t.anchor_z = None
+                t.anchor_fx = None              # 焦距锚与 z 锚同生命周期
                 t.v_close_mps = None            # 速度与锚点同生命周期
                 t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
                 continue
             t.anchor_z, t.anchor_h = e.z_m, e.h_px
+            t.anchor_fx = sheet.fx              # 同帧焦距（x_m 反投影换算锚）
             t.anchor_ts_ns = sheet.ts_ns
             t.v_close_mps = None                # 新锚点 = 新估计窗口
             t.approach_confirmed_at = None   # 新锚点 = 新生命周期（设计稿 §2 规则 2）
@@ -601,6 +643,23 @@ class Tracker:
             metric_distance_m=float(t.anchor_z), method=DistanceMethod.HOLD,
             anchor_age_ms=age_ms, obs_age_ms=obs_age_ms,
             v_close_mps=t.v_close_mps, reason=None)
+
+    def _metric_of(self, d: ObjectDistance, t: _Track) -> MetricCarState:
+        """ObjectDistance → 米制状态（C 线；z 复用 _distance_of 的当前米制值——
+        RESCALED=锚×框高比、ANCHOR=持锚，无第二套公式）。x_m=(cx−vpx)·z/fx：
+        cx 当前框、fx 锚点帧焦距、z 当前米制——三者各差半拍（锚帧 vs 当前帧），
+        横向慢变量误差二阶（MetricCarState docstring）。t_meet 只在 v_close>0
+        时出：≤0=掠过/远离（占用语义），None（有锚）=估计窗未开（回退像素），
+        None（UNKNOWN）=无锚（回退像素）——消费端靠 source 分流。"""
+        z = d.metric_distance_m
+        x_m = None
+        if z is not None and t.anchor_fx and t.anchor_fx > 0:
+            x_m = (t.cx - self.cal.vpx) * z / t.anchor_fx
+        v = d.v_close_mps
+        t_meet = z / v if (z is not None and v is not None and v > 0.0) else None
+        return MetricCarState(
+            target_id=t.id, source=d.source, z_m=z, x_m=x_m,
+            v_close_mps=v, t_meet_s=t_meet, anchor_age_ms=d.anchor_age_ms)
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
         """逐对算代价值 → 全局按代价升序贪心 1:1 配对。

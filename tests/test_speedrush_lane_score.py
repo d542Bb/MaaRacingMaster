@@ -16,7 +16,8 @@ from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine, Scorer
 from maaracing_master.plugins.speedrush.lane_score import LANES, LaneScorer
 from maaracing_master.plugins.speedrush.tracking import (
-    CoinGroup, PerceptionHealth, TrackedTarget, WorldObservation)
+    CoinGroup, DistanceSource, MetricCarState, PerceptionHealth,
+    TrackedTarget, WorldObservation)
 from maaracing_master.plugins.speedrush.traffic import CarView
 from maaracing_master.plugins.speedrush.world_model import load_calib
 from dataclasses import replace
@@ -184,3 +185,88 @@ def test_engine_shadow_gate_on_off():
     assert e_off.lane_scorer is None
     e_off.update(_obs(), DT, executed_lane=0.0)
     assert e_off.lane_report is None
+
+
+# ---------- 米制优先、像素回退（C 线 2026-10-12，计划稿 §5C） ----------
+
+def _ms(tid=9, *, z=10.0, x_m=1.69, v=5.0, t=2.0,
+        src=DistanceSource.RESCALED_ANCHOR):
+    """米制车 fixture：x_m=1.69m≈半道（lane_w_m 3.38）→ 道 +0.5；
+    t=2.0s 缺省在窗外（占用但不撞不挡错身）。"""
+    return MetricCarState(target_id=tid, source=src, z_m=z, x_m=x_m,
+                          v_close_mps=v, t_meet_s=t, anchor_age_ms=200.0)
+
+
+def test_metric_car_crash_lane():
+    """米制到站 0.6s ∈ [need, crash_t) 且 x_m 落 +0.5 道 → 碰撞负额；
+    像素视图不参与（同 id 不双计）。"""
+    ms = _ms(t=0.6)
+    rep = _ls().benefits(_obs((), ()), (_cv(tid=9),), 0.0, road_width=None,
+                         metric_cars=(ms,))
+    assert dict(zip(LANES, rep.benefits))[0.5] == pytest.approx(-100.0)
+
+
+def test_metric_far_only_car_enters_lane():
+    """只活在米制里的 far 轨（无 CarView——地平线退化带住户）同样入账：
+    整窗占用挡掉本道币。这是本次搬家要治的盲区本体。"""
+    g, msgs = _group(x=0.5)
+    ms = _ms(v=-0.5, t=None)                   # 远离车：占用语义
+    rep = _ls().benefits(_obs((g,), msgs), (), 0.0, road_width=None,
+                         metric_cars=(ms,))
+    assert dict(zip(LANES, rep.benefits))[0.5] == pytest.approx(0.0)
+
+
+def test_metric_pacing_takes_precedence_over_pixel():
+    """米制说 pacing（v_close<0）→ 不回退像素 t（像素 rel>0 的噪声不翻案）：
+    占用而非碰撞——车道币被挡但不判 −100。"""
+    g, msgs = _group(x=0.5)
+    ms = _ms(v=-0.5, t=None)
+    car = _cv(tid=9, x=0.5, cy=600, rel=10.0)  # 像素口径 t=0.58 会判碰撞
+    rep = _ls().benefits(_obs((g,), msgs), (car,), 0.0, road_width=None,
+                         metric_cars=(ms,))
+    assert dict(zip(LANES, rep.benefits))[0.5] == pytest.approx(0.0)
+
+
+def test_metric_fresh_anchor_falls_back_to_pixel_t():
+    """锚新估计窗未开（v_close=None）→ 像素 t_meet 顶上：像素 0.58s 到站
+    判碰撞（米制 x_m 已生效定道）。"""
+    ms = _ms(v=None, t=None)
+    car = _cv(tid=9, x=0.5, cy=600, rel=10.0)  # 像素 t=0.58 ∈ [need 0.5, 0.8)
+    rep = _ls().benefits(_obs((), ()), (car,), 0.0, road_width=None,
+                         metric_cars=(ms,))
+    assert dict(zip(LANES, rep.benefits))[0.5] == pytest.approx(-100.0)
+
+
+def test_no_anchor_pixel_fallback_counted_once():
+    """无锚车（UNKNOWN）：像素仪器回退且只记一次（不与米制路径双计）。"""
+    ms = _ms(src=DistanceSource.UNKNOWN, z=None, x_m=None, v=None, t=None)
+    car = _cv(tid=9, x=0.5, cy=600, rel=10.0)
+    rep = _ls().benefits(_obs((), ()), (car,), 0.0, road_width=None,
+                         metric_cars=(ms,))
+    assert dict(zip(LANES, rep.benefits))[0.5] == pytest.approx(-100.0)
+
+
+def test_metric_x_uses_lane_width_conversion():
+    """米制横位按 lane_w_m 换道（1.69m≈0.5 道）：x_m 定道，不经过成员位
+    投票——米制读数本身即整道归属。"""
+    g, msgs = _group(x=0.5)
+    ms = _ms(x_m=1.69, v=-0.5, t=None)         # 道 +0.5：币被占
+    rep = _ls().benefits(_obs((g,), msgs), (), 0.0, road_width=None,
+                         metric_cars=(ms,))
+    assert dict(zip(LANES, rep.benefits))[0.5] == pytest.approx(0.0)
+    assert dict(zip(LANES, rep.benefits))[1.5] == pytest.approx(0.0)
+
+
+def test_engine_metric_gate():
+    """供数闸：默认开（部署 json metric_cars.enabled=true）→ 实例通道透传；
+    闸关 → 引擎不吃 obs.metric_cars（回退=与 C 线前逐位同构）。"""
+    ms = _ms()
+    obs = _obs((), ())
+    obs = replace(obs, metric_cars=(ms,))
+    e_on = DecisionEngine(CFG)                  # CFG.metric_cars 默认开
+    e_on.update(obs, DT, executed_lane=0.0)
+    assert e_on._metric_cars == (ms,)
+    e_off = DecisionEngine(replace(CFG, metric_cars=replace(
+        CFG.metric_cars, enabled=False)))
+    e_off.update(obs, DT, executed_lane=0.0)
+    assert e_off._metric_cars == ()
