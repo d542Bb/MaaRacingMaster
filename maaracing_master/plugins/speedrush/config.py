@@ -195,6 +195,16 @@ class Traffic:
     ghost_rel_eps: float       # "低速"的相对速率界（px/fid，与 rel_approach 同单位）
     v_lat_ema_alpha: float     # 街车横向速率 EMA α（帧间差分平滑，车道/tick 口径；
                                # 遮挡延续拍不投毒——阶段一 CV 外推数据源）
+    # —— 车道成员资格投票（2026-10-11 前置三件套②；起值 [需实测]，回放定档只改 json）——
+    lane_vote_decay: float = 0.7    # 票仓逐真实读数拍的质量衰减系数：真横移连续
+                                    # 新票数拍内压过衰减旧票（及时响应边界）
+    lane_memb_min_weight: float = 1.5  # 成员位成立下限：最大票质量低于此=证据不足，
+                                       # CarView.x_memb=None 消费方退回单拍读数
+    lane_vote_sigma_max: float = 0.6   # 读数 σ 超此不投票（远场/弯道失真不进票仓，
+                                       # 近场保守——σ 模型见 tracking docstring）
+    # —— 宽度有效性（2026-10-11 前置三件套③；起值 [需实测]）——
+    width_ttl_ticks: int = 6   # 宽度遮挡沿用有效期（tick）：过期显式转 unknown
+                               # 不冒充有效；0.3s@20Hz 起值，遮挡崩坏 TTL 界
 
 
 @dataclass(frozen=True)
@@ -384,7 +394,14 @@ def _read_decision(path: Path) -> DecisionConfig:
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
             ghost_max_age_ticks=_int(d, "traffic", "ghost_max_age_ticks", lo=2),
             ghost_rel_eps=_num(d, "traffic", "ghost_rel_eps", lo=0),
-            v_lat_ema_alpha=_num(d, "traffic", "v_lat_ema_alpha", lo=0, hi=1)),
+            v_lat_ema_alpha=_num(d, "traffic", "v_lat_ema_alpha", lo=0, hi=1),
+            lane_vote_decay=_num_def(d, "traffic", "lane_vote_decay", 0.7,
+                                     lo=0, hi=1, lo_open=False),
+            lane_memb_min_weight=_num_def(d, "traffic", "lane_memb_min_weight",
+                                          1.5, lo=0),
+            lane_vote_sigma_max=_num_def(d, "traffic", "lane_vote_sigma_max",
+                                         0.6, lo=0, lo_open=False),
+            width_ttl_ticks=_int_def(d, "traffic", "width_ttl_ticks", 6, lo=0)),
         grid_veto=GridVeto(
             enabled=_bool(d, "grid_veto", "enabled", default=False),
             margin_lane=_num_def(d, "grid_veto", "margin_lane", 0.5,

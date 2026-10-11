@@ -307,3 +307,28 @@ def test_different_kinds_never_associate():
     assert len(b.targets) == 2                    # 旧车进宽限 + 新金币
     coin = [t for t in b.targets if t.kind == KIND_COIN][0]
     assert coin.id != a.targets[0].id
+
+
+# ---------- 采集帧率估计（2026-10-11 车流 t_meet 换基的时基锚） ----------
+
+def test_fid_rate_estimator_warms_up_and_converges():
+    """_per 的 ts 节律 = 33ms/fid（30.3Hz）：预热未达样本数 obs 带 None，
+    达标后收敛到真值附近；重复 fid 拍（WGC 合法重发）不投毒。"""
+    trk = Tracker()
+    obs = None
+    for fid in range(1, 13):
+        obs = trk.update(_per(fid, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+        if fid < Tracker._FID_HZ_WARM_N + 1:
+            assert obs.fid_rate_hz is None        # 预热期不外供半熟估计
+    assert obs.fid_rate_hz == pytest.approx(30.3, rel=0.05)
+    dup = trk.update(_per(12, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    assert dup.fid_rate_hz == obs.fid_rate_hz     # 同 fid 重发：估计不动
+
+
+def test_fid_rate_survives_stage_reset():
+    """fid 率是采集流属性：阶段切换重卷轨迹不清估计。"""
+    trk = Tracker()
+    for fid in range(1, 13):
+        trk.update(_per(fid), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(20), frame_age_ms=10.0, stage=2)   # 阶段切换
+    assert obs.targets == () and obs.fid_rate_hz == pytest.approx(30.3, rel=0.05)

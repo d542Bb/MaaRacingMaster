@@ -720,7 +720,10 @@ class SpeedRushModule(ActivityModule):
         cal = load_calib()   # 标定真源一次读入（深度观测器同源）
         wt = WallTrack(cal)  # 墙实体（第 5 步）：逐箱跨帧假设，ego_road 持有
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
-                "traffic_obs": TrafficObserver(cfg.traffic),
+                # conf_floor：宽度有效性门的置信地板（真源=scoring.conf_floor，
+                # 传入不抄第二份）
+                "traffic_obs": TrafficObserver(cfg.traffic,
+                                               conf_floor=cfg.scoring.conf_floor),
                 # lane_w_m 供栅格区域读数的米→道换算（world_model 同源锚）
                 "lane_w_m": cal.lane_w_m,
                 "wall_track": wt,

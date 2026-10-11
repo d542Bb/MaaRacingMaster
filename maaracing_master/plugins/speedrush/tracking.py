@@ -237,6 +237,10 @@ class WorldObservation:
     far_targets: tuple[FarTarget, ...]     # 近→远
     coin_groups: tuple[CoinGroup, ...] = ()  # 契约扩展（加字段不破消费方，schema 仍 1）
     distances: tuple[ObjectDistance, ...] = ()  # 同上（混合测距刀一；车轨每拍一条）
+    # 采集帧率估计（Hz，fid 时基；2026-10-11 车流 t_meet 换基引入）。rel_approach
+    # 的单位是 px/fid，换算秒必须知道 fid 率——控制拍率(20)不是 fid 率，旧消费
+    # 口径恒定高估 TTC。EMA 预热未达样本数前为 None，消费方自决退路。
+    fid_rate_hz: float | None = None
 
 
 @dataclass(frozen=True)
@@ -349,6 +353,12 @@ class Tracker:
         self._last_obs: WorldObservation | None = None
         self._frame_tracks: dict[int, dict[tuple[str, int], int]] = {}  # fid → det_key→track_id
         self._sheet_orphan = False   # 本拍清单有条目但整张无法归轨（worker 滞后超窗）
+        # 采集帧率估计（fid 时基，2026-10-11 车流 t_meet 换基）：fid 率是采集流
+        # 属性，不随 track/stage 生命期走——reset 不清，阶段切换重卷后估计仍在
+        self._rate_fid: int | None = None
+        self._rate_ts_ns: int | None = None
+        self._fid_hz_ema: float | None = None
+        self._fid_hz_n = 0
 
     def reset(self) -> None:
         """清空全部轨迹（阶段切换自动调用；校验层出口重置属 step 4 决定调不调）。
@@ -367,6 +377,7 @@ class Tracker:
             # WGC 中心缓存的合法重复：同一帧不重关联、不老化、不改速度——原样重发
             if self._last_obs is not None:
                 return self._last_obs
+        self._update_fid_rate(fid, per.ts_ns)
         if self._stage is not None and stage != self._stage:
             self.reset()
         self._stage = stage
@@ -467,14 +478,39 @@ class Tracker:
             stage_transition=stage_transition)
         distances = tuple(self._distance_of(t, per.ts_ns, frame_age_ms)
                           for t in self._tracks if t.kind == KIND_CAR)
+        fid_hz = (self._fid_hz_ema
+                  if self._fid_hz_n >= self._FID_HZ_WARM_N else None)
         self._last_obs = WorldObservation(
             schema_version=SCHEMA_VERSION, frame_id=fid, ts_ns=per.ts_ns,
             frame_age_ms=frame_age_ms, stage=stage, health=health,
             boundary=None, targets=tuple(targets), far_targets=tuple(fars),
-            distances=distances)
+            distances=distances, fid_rate_hz=fid_hz)
         return self._last_obs
 
     # ---------- 内部 ----------
+
+    # 采集帧率估计的 EMA 系数与预热样本数：单样本 = Δfid/Δt，拍间时戳抖动下
+    # 噪声 ~±15%，EMA 压平；预热期估计不外供（None=消费方自决退路，不半熟冒充）
+    _FID_HZ_ALPHA = 0.2
+    _FID_HZ_WARM_N = 8
+
+    def _update_fid_rate(self, fid: int, ts_ns: int) -> None:
+        """采集帧率在线估计：inst = Δfid/Δt（同钟 ns 差）。只在新帧上更新
+        （重复 fid 已在 update 头部拦截）；Δt≤0 的病态样本丢弃不投毒。"""
+        if self._rate_fid is not None and ts_ns > self._rate_ts_ns:
+            inst = (fid - self._rate_fid) / ((ts_ns - self._rate_ts_ns) / 1e9)
+            if inst > 0:
+                if self._fid_hz_ema is None:
+                    self._fid_hz_ema = inst
+                else:
+                    self._fid_hz_ema += self._FID_HZ_ALPHA * (inst - self._fid_hz_ema)
+                self._fid_hz_n += 1
+        self._rate_fid, self._rate_ts_ns = fid, ts_ns
+
+    @property
+    def fid_rate_hz(self) -> float | None:
+        """当前采集帧率估计（预热未达标 = None）。"""
+        return self._fid_hz_ema if self._fid_hz_n >= self._FID_HZ_WARM_N else None
 
     def _observe(self, per: PerceptionResult) -> list[_Obs]:
         out: list[_Obs] = []

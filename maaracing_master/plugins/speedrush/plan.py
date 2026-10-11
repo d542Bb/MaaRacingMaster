@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.tracking import WorldObservation
-from maaracing_master.plugins.speedrush.world_model import KIND_BONUS, Calib
+from maaracing_master.plugins.speedrush.world_model import KIND_BONUS
 
 if TYPE_CHECKING:  # 循环导入只活在类型检查期：Scorer 留在 decision.py（执行态机侧）
     from maaracing_master.plugins.speedrush.coin_group import CoinGroup
@@ -75,10 +75,9 @@ class PlanSelector:
     """三类字典序选择门（设计稿 §四.2）。纯编排：资格判据全部复用
     Scorer/LateralSafety/timing 既有实现，本类不复制任何几何/时机公式。"""
 
-    def __init__(self, cfg: DecisionConfig, cal: Calib,
+    def __init__(self, cfg: DecisionConfig,
                  scorer: "Scorer", lateral) -> None:
         self._cfg = cfg
-        self._cal = cal
         self._scorer = scorer
         self._lateral = lateral
         self._reeval_t = 0.0        # CHANGE 慢拍计时（累计 dt，到 _REEVAL_S 重评）
@@ -135,7 +134,6 @@ class PlanSelector:
               done_pass_ids, side_has_space) -> Scored | None:
         start = executed if executed is not None else 0.0
         t = self._cfg.timing
-        hz = self._cfg.control.frame_rate_hz
 
         def _feasible(goal: float, t_miss: float) -> bool:
             need = t.lane_change_duration_s(goal - start)
@@ -150,8 +148,9 @@ class PlanSelector:
                 continue                  # track 年龄门槛：单帧噪声进不了选择门
             if b.rel_approach <= 0.0:
                 continue                  # 不接近=永远撞不上
-            rate = b.rel_approach * hz
-            t_meet = max(0.0, self._cal.v_ego - b.cy) / rate
+            # 到站时间与 legacy 超车评分同口径（Scorer.car_t_meet_s，2026-10-11
+            # 换基：地面流积分+fid 时基，不复制第二份公式）
+            t_meet = self._scorer.car_t_meet_s(b.rel_approach, b.cy)
             if not _feasible(b.x_lane, t_meet):
                 continue                  # 它到站前我们到不了它的道=撞不上
             bonus.append(Scored(group=None, score=self._cfg.hysteresis.min_score,
@@ -167,13 +166,13 @@ class PlanSelector:
             s = self._scorer.score_car(v)
             if s is None:
                 continue                  # 候选带/接近方向资格（分值不参与排序）
-            goal = self._scorer.hug_goal(v.x_lane, ref=start)
+            goal = self._scorer.hug_goal(self._scorer.cand_x(v), ref=start)
             if not _feasible(goal, s.t_miss_s):
                 continue
             if executed is not None and \
                     self._lateral.veto_reason(executed, goal, views) is not None:
                 continue
-            if not side_has_space(v.x_lane):
+            if not side_has_space(self._scorer.cand_x(v)):
                 continue
             overtake.append(Scored(group=None, score=s.score,
                                    t_miss_s=s.t_miss_s,
@@ -181,7 +180,8 @@ class PlanSelector:
         if overtake:
             overtake.sort(key=lambda s: (
                 s.t_miss_s,
-                abs(self._scorer.hug_goal(s.car.x_lane, ref=start) - start)))
+                abs(self._scorer.hug_goal(self._scorer.cand_x(s.car),
+                                          ref=start) - start)))
             return overtake[0]
 
         coin: list[Scored] = []

@@ -63,7 +63,8 @@ def main() -> None:
     eng_traj = DecisionEngine(cfg_traj)
     tracker = Tracker()
     agg = CoinGroupAggregator()
-    traffic_obs = TrafficObserver(cfg.traffic)
+    traffic_obs = TrafficObserver(cfg.traffic,
+                                  conf_floor=cfg.scoring.conf_floor)
     ego_road = _EgoRoadObserver()
     cal = load_calib()
 

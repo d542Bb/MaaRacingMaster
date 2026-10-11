@@ -539,7 +539,10 @@ select:dodge 出现、超车完成 ≥3、cancel:lat_veto 仅真威胁。
 （2026-10-02 换基）= 全场地面流拟合 `r(cy)=k·(cy−y_h)²`（k 取全体健康 track
 中位，静止世界恒速前进的投影必然形状；积分式对 1/r 沿行求时间，线性式会
 低估）——单 coin track 断链/换 id 只伤自己的累积账，不伤横截面这本账；
-超车候选仍用自身 rel_approach（实证可用，且 >0 门兼方向自卫语义）。
+超车候选也用同一积分形状（2026-10-11 换基：per-car k=rel/(cy−y_h)²，rel 本
+就是相对接近率，他车非静止天然在内；换算秒吃采集帧率 fid_rate_hz——Tracker
+逐拍在线估计随 obs 下发，px/fid≠px/tick 的旧消费口径恒定高估 TTC ~1.9x，
+ttc_dodge_s 已随 1.0→0.55 重标保触发点）；rel>0 门兼方向自卫语义不变。
 FSM 39 项全矩阵单测含 V0 直行门
 （`allow_all_moves=false`）与 CONSERVE 出口重置面断言。
 
@@ -845,3 +848,37 @@ unknown 保持对称默认不否决（旧 obs.boundary 通道 v4 恒 None，已�
 12 帧（墙实体路径把区弃权黑视段救活，含 2 帧遮挡标记穿越 sides=0 全盲）；
 新弃权 1 帧（区读宽 4.88 道超 W±20% 门、旧 ±40% 放行——计划内收紧，诚实
 弃权）。trace 新增 cor_w/cor_ph 两列（走廊宽+平面健康）。
+
+## 17. 决策输入契约三件套（V0 归因落地，2026-10-11）（本域）
+
+8 局门账本闭合「开得不积极」归因：门不紧、感知供数在，是**接近段目标读数
+质量撑不起选线**（band 拒 77%、远车 x 噪声 ±0.5 道、车的 t_meet 线性式
+虚高、w_m 遮挡崩坏 3.6→0.3m）。三件套各带独立回放验收（验收面=账本分析
+探针 `probe_decision_ledger.py` 的验收三节，仪器住本域实验区）：
+
+- **①车流 t_meet 地面流化**：`world_model.t_meet_car_s` 单一公式真源——
+  per-car k=rel/(cy−y_h)² 对 1/r 沿行积分（rel 本就是相对接近率，他车非
+  静止天然在内），换算秒吃**采集帧率** `fid_rate_hz`（Tracker 逐拍在线估计、
+  EMA 预热 8 样本后随 obs 下发；px/fid≠px/tick 的旧消费口径恒定高估 TTC
+  ~1.9x）。消费面：超车评分/带门、`LateralSafety` 危险窗截断（注入同一
+  callable 不复制公式）、dodge ttc（`ttc_dodge_s` 1.0→0.55 重标保触发点）、
+  plan 层 bonus 可行性。**金币路未动**：`_flow_k` 仍是 rel×hz 旧时基（同款
+  单位偏差在 coins 侧未修，阈值围绕它标定，动须独立回放验收）。fid 率缺供
+  （预热期/旧 obs）全链退回旧线性行率式——行为不静默换式。
+- **②车道成员资格**：TrafficObserver 生命期票仓（逐 track id 生灭，track
+  切换不继承）——单拍 x 按整道栅格（ego=0、邻道 ±1）投票，逐真实读数拍
+  衰减 0.7：真横移连续新票数拍内翻位（及时响应边界）、偶发噪声票停留
+  少数派；σ>0.6 道的失真读数（远场/弯道）不进票仓=近场保守。票质量
+  ≥1.5 成员位才成立，`CarView.x_memb` 出场；决策带门/贴位目标/可行门/
+  侧空间门吃 `Scorer.cand_x`（成员位优先、未成立退单拍），**安全几何
+  （veto 判距、回避车体判距）仍吃原始物理位**。
+- **③宽度有效性面**：有效 w_m 只在真实读数拍按三门（track 年龄≥min_obs_ticks、
+  conf≥置信地板（真源 scoring.conf_floor 装配侧传入）、归一分母在适用域）
+  重算；遮挡延续拍保持最后有效值并带龄（外推 cy 配陈旧框宽=崩坏机制）；
+  超 `width_ttl_ticks`(6) 显式转 unknown 不冒充有效。`CarView.w_m/w_m_age`
+  出场，账本 v=2 透传（decision 不再自行换算宽度）。
+
+账本 schema v=2：顶层加 `fid_hz`，cars 行加 `x_memb`/`w_m`/`w_m_age`。
+验收基线（2026-10-11 改造前 15 trace 聚合）：cars 行 4078，why 直方图
+band 76%/feas 9%/score 7%/approach 3%/过门 4%；旧式 t_meet 对实际错身时刻
+配对误差（n=252，cy 跨 v_ego 的到站车）P75=+3.0s 高估尾巴。

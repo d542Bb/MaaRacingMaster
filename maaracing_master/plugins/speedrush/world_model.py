@@ -27,6 +27,7 @@ RULES / 几何标定 gate0 / 行为参数 decision），经 `load_calib()` fail-
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -94,4 +95,31 @@ def x_lane_of(cx: int, cy: int, cal: Calib) -> float:
     同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
     return ((cx - cal.vpx) / (cy - cal.y_h)
             - (cal.ego_cx - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
+
+
+def t_meet_car_s(rel_px_per_fid: float, cy: float, cal: Calib,
+                 fid_rate_hz: float) -> float:
+    """车流到自车行的秒数（地面流积分式，2026-10-11 V0 归因后 cars 换基）。
+
+    线性行率式 (v_ego−cy)/(rel·hz) 有两处契约错误：① rel 单位是 px/fid
+    不是 px/tick（fid 率 ≠ 控制拍率，消费偏差恒定高估 TTC）；② 行速率随
+    行号二次增长（针孔投影下恒定相对纵向速度的必然形状 r ∝ (cy−y_h)²），
+    线性式把剩余行程当匀速，远车到站时间虚高一个量级。本式对 1/r 沿行
+    积分：k = rel/(cy−y_h)²（**per-car**——rel 本就是相对接近率，他车非
+    静止的修正天然在内，他车加减速经 EMA 在数拍内进入 k），
+
+        t = ∫ dy/(k(y−y_h)²) = (1/d − 1/D)/k = d(D−d)/(D·rel·f_fid)
+
+    其中 d=cy−y_h、D=v_ego−y_h、f_fid=采集帧率（px/fid→秒的换算锚，
+    由 Tracker 逐拍在线估计随 obs 下发）。不接近（rel≤0）或已在行上
+    （cy≥v_ego 积分为负）→ 0/inf 语义与旧式一致；fid_rate_hz 必须>0
+    （供数缺位时调用方自决退路，本函数不代作主张）。"""
+    if fid_rate_hz <= 0:
+        raise ValueError(f"fid_rate_hz={fid_rate_hz} 非正（px/fid→秒无换算锚）")
+    d = cy - cal.y_h
+    if rel_px_per_fid <= 0 or d <= 0:
+        return math.inf if rel_px_per_fid <= 0 else 0.0
+    D = cal.v_ego - cal.y_h
+    t_fid = d * (D - d) / (D * rel_px_per_fid)
+    return max(0.0, t_fid) / fid_rate_hz
 

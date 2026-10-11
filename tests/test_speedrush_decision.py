@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 
 import pytest
@@ -22,7 +23,8 @@ from maaracing_master.plugins.speedrush.traffic import (
     PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
-from maaracing_master.plugins.speedrush.world_model import _read_gate0, load_calib
+from maaracing_master.plugins.speedrush.world_model import (
+    _read_gate0, load_calib, t_meet_car_s)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH, GATE0_FILE as GATE0_PATH
 
 DT = 0.05          # 20Hz 名义 tick
@@ -38,14 +40,15 @@ CFG = replace(_CFG_BASE,
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
-         geometry=True, transition=False, boundary=None):
+         geometry=True, transition=False, boundary=None, fid_hz=None):
     if presence is None:
         presence = bool(groups or targets)
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000, frame_age_ms=10.0,
         stage=1,
         health=PerceptionHealth(alive, fresh, geometry, presence, transition),
-        boundary=boundary, targets=targets, far_targets=(), coin_groups=groups)
+        boundary=boundary, targets=targets, far_targets=(), coin_groups=groups,
+        fid_rate_hz=fid_hz)
 
 
 def _members(fid, gid, n, x, cy, rel, conf=0.85):
@@ -474,9 +477,10 @@ def test_change_surviving_group_does_not_poison_x_target():
 
 # ---------- 阶段 C step 2：超车候选（allow_overtake=V2） ----------
 
-def _cv(tid=5, x=1.1, cy=500, rel=10.0):
+def _cv(tid=5, x=1.1, cy=500, rel=10.0, x_memb=None, w_m=None, w_m_age=None):
     return CarView(id=tid, x_lane=x, cy=cy, rel_approach=rel,
-                   d_min=abs(x), age_ticks=10)
+                   d_min=abs(x), age_ticks=10, x_memb=x_memb,
+                   w_m=w_m, w_m_age=w_m_age)
 
 
 def _traffic(views=(), events=()):
@@ -894,11 +898,12 @@ def _car_tgt(tid, x, cy, rel, w=40, conf=0.9, fid=1):
 
 
 def test_gate_ledger_rows_and_reasons():
-    """账本逐车落行、拒绝原因来自唯一判定处（_score_car_reason）；带
-    TrackedTarget 时框宽米换算 w_m 落列（带噪估计，只记数不裁决）。"""
+    """账本逐车落行、拒绝原因来自唯一判定处（_score_car_reason）；宽度列走
+    CarView 有效性面（TrafficObserver 年龄/置信门+TTL 产物，三件套③——
+    decision 只透传不换算；w_m 缺席=无效/过期显式 unknown 不冒充）。"""
     e = _eng(overtake=True)
-    views = [_cv(tid=9, x=1.1, cy=500, rel=10.0),    # 带内良候选：应过全门
-             _cv(tid=10, x=0.2, cy=500, rel=10.0),   # 本车道：band 拒
+    views = [_cv(tid=9, x=1.1, cy=500, rel=10.0, w_m=1.72, w_m_age=0),
+             _cv(tid=10, x=0.2, cy=500, rel=10.0, w_m=1.8, w_m_age=2),
              _cv(tid=11, x=1.1, cy=500, rel=-2.0)]   # 不接近：approach 拒
     obs = _obs(fid=1, presence=True,
                targets=(_car_tgt(9, 1.1, 500, 10.0),
@@ -906,12 +911,13 @@ def test_gate_ledger_rows_and_reasons():
                         _car_tgt(11, 1.1, 500, -2.0)))
     out = e.update(obs, DT, traffic=_traffic(views))
     led = e.gate_ledger
-    assert led is not None and led["v"] == 1
+    assert led is not None and led["v"] == 2 and led["fid_hz"] is None
     rows = {r["id"]: r for r in led["cars"]}
     assert rows[9]["why"] is None and rows[9]["score"] >= 20.0
-    assert rows[9]["w_px"] == 40 and 0.0 < rows[9]["w_m"] < 3.0
-    assert rows[10]["why"] == "band" and "w_m" in rows[10]
-    assert rows[11]["why"] == "approach"
+    assert rows[9]["w_m"] == 1.72 and rows[9]["w_m_age"] == 0
+    assert rows[9]["w_px"] == 40                      # 原料列照落（对账用）
+    assert rows[10]["why"] == "band" and rows[10]["w_m"] == 1.8
+    assert rows[11]["why"] == "approach" and "w_m" not in rows[11]
     assert out.target_id == 9                        # 账本没改判：选择照旧
 
 
@@ -952,3 +958,68 @@ def test_gate_ledger_coin_rows():
     e2 = _eng()
     e2.update(_good_obs(fid=1, conf=0.52), DT)
     assert e2.gate_ledger["coins"][0]["why"] in ("conf", "score")
+
+
+# ---------- 前置三件套①：车流 t_meet 地面流化（2026-10-11 V0 归因） ----------
+
+def test_car_t_meet_ground_flow_and_fallback():
+    """fid 率有供=地面流积分式（对 1/r 沿行积分的闭式对账）；缺供=退回旧
+    行率式（已知 TTC 高估方向的旧消费口径，行为不静默换式）。"""
+    cal = load_calib()
+    d, D, rel, f = 200.0, cal.v_ego - cal.y_h, 4.0, 30.0
+    assert t_meet_car_s(rel, cal.y_h + d, cal, f) == \
+        pytest.approx(d * (D - d) / (D * rel) / f)
+    assert math.isinf(t_meet_car_s(-1.0, 500.0, cal, f))   # 不接近→永不到站
+    assert t_meet_car_s(4.0, cal.v_ego + 5, cal, f) == 0.0  # 已在行上
+    with pytest.raises(ValueError):
+        t_meet_car_s(4.0, 500.0, cal, 0.0)
+    e = _eng(overtake=True)
+    v = _cv(tid=1, cy=cal.y_h + d, rel=rel)
+    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([v]))
+    # 缺供退路=旧线性式（rel 按 px/tick 消费），与三件套①前的行为逐位同
+    assert e.scorer.car_t_meet_s(rel, cal.y_h + d) == \
+        pytest.approx((cal.v_ego - cal.y_h - d) / (rel * 20.0))
+    # 引擎逐拍喂 fid 率后换积分式
+    e.update(_obs(fid=2, presence=True, fid_hz=f), DT, traffic=_traffic([v]))
+    assert e.scorer.fid_hz == f
+    assert e.scorer.car_t_meet_s(rel, cal.y_h + d) == \
+        pytest.approx(d * (D - d) / (D * rel) / f)
+
+
+def test_far_car_passes_score_gate_with_ground_flow():
+    """V0 病灶②行为锁：同一辆远车（rel 按 px/fid 如实透传），旧口径
+    t_meet≈9.5s 被分数门拒；换地面流+fid 时基后到站秒级——分数门放行。
+    这就是「开得不积极」的输入侧修正，行为可从账本 why 翻转直接读。"""
+    cal = load_calib()
+    cy, rel = int(cal.y_h) + 316, 0.4        # 旧口径 t=(D−316)/(0.4·20)≈9.5s
+    e_old = _eng(overtake=True)
+    e_old.update(_obs(fid=1, presence=True), DT,
+                 traffic=_traffic([_cv(tid=12, cy=cy, rel=rel)]))
+    rows = {r["id"]: r for r in e_old.gate_ledger["cars"]}
+    assert rows[12]["why"] == "score"          # 旧口径：分数门拒（原锁保留）
+    e_new = _eng(overtake=True)
+    e_new.update(_obs(fid=1, presence=True, fid_hz=30.0), DT,
+                 traffic=_traffic([_cv(tid=12, cy=cy, rel=rel)]))
+    rows = {r["id"]: r for r in e_new.gate_ledger["cars"]}
+    assert rows[12]["why"] is None             # 新口径：t≈5.1s，分数门放行
+
+
+def test_membership_picked_for_band_and_goal():
+    """三件套②决策面：成员位成立时带门/贴位目标吃成员位（整道中心），
+    单拍读数出带（V0 病灶①的 1.34→2.38→1.44 形态）不再误拒。"""
+    e = _eng(overtake=True)
+    # 单拍 x=1.44 落带内，但历史读数确证它在 2 道：成员位 2.0 → band 拒
+    v_far = _cv(tid=21, x=1.44, cy=400, rel=8.0, x_memb=2.0)
+    # 单拍 x=2.38 出带，但成员位确证 1 道：带门放行
+    v_in = _cv(tid=22, x=2.38, cy=500, rel=10.0, x_memb=1.0)
+    e.update(_obs(fid=1, presence=True), DT,
+             traffic=_traffic([v_far, v_in]))
+    rows = {r["id"]: r for r in e.gate_ledger["cars"]}
+    assert rows[21]["why"] == "band"
+    assert rows[22]["why"] is None
+    # 成员位未成立（None）退回单拍读数：行为与三件套②前逐位同
+    e2 = _eng(overtake=True)
+    e2.update(_obs(fid=1, presence=True), DT,
+              traffic=_traffic([_cv(tid=23, x=2.38, cy=500, rel=10.0)]))
+    rows = {r["id"]: r for r in e2.gate_ledger["cars"]}
+    assert rows[23]["why"] == "band"           # 单拍 2.38 出带照拒

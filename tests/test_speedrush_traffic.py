@@ -201,3 +201,103 @@ def test_car_view_lateral_rate_ema():
                           first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
     v, _ = o3.update(_obs(2, (stale,)))             # last_seen=1 < fid=2：延续拍
     assert v[0].v_lat == pytest.approx(0.0, abs=1e-9)
+
+
+# ---------- 车道成员资格投票（2026-10-11 前置三件套②） ----------
+
+def test_membership_votes_through_noise():
+    """带内车 x 读数噪声/膨胀（V0 病灶①，car 51 案形态 1.34→2.38→1.44）：
+    偶发出带读数停留少数派不翻成员位，连续一致读数成立成员位=整道中心。"""
+    o = TrafficObserver(P, CAL)
+    v = ()
+    for f, x in {1: 1.3, 2: 2.4, 3: 1.4, 4: 1.1, 5: 1.2, 6: 1.35}.items():
+        v, _ = o.update(_obs(f, (_car(51, f, 400.0, x, 5.0),)))
+    assert v[0].x_memb == 1.0                        # 2.4 的噪声票没翻位
+
+
+def test_membership_follows_true_lane_change():
+    """真横移要及时响应（验证边界②）：稳定 1 道后真实变到 2 道，连续新读数
+    数拍内翻成员位（衰减票仓 0.7：旧质量 2.77，两拍新票即反超）。"""
+    o = TrafficObserver(P, CAL)
+    v = ()
+    for fid in range(1, 12):
+        x = 1.2 if fid < 6 else 2.1
+        v, _ = o.update(_obs(fid, (_car(7, fid, 450.0, x, 5.0),)))
+    assert v[0].x_memb == 2.0
+
+
+def test_membership_does_not_inherit_across_track_switch():
+    """身份连续性边界（验证边界①）：track 切换（同位再现按新 id，旧 id 消失
+    落定）不继承旧票仓——单拍读数不成成员位。"""
+    o = TrafficObserver(P, CAL)
+    for fid in range(1, 6):
+        o.update(_obs(fid, (_car(7, fid, 450.0, 1.2, 5.0),)))
+    v, _ = o.update(_obs(6, (_car(8, 6, 450.0, 2.4, 5.0),)))
+    assert [x.id for x in v] == [8]
+    assert v[0].x_memb is None                       # 一拍读数不成成员位
+
+
+def test_membership_sigma_gate_keeps_distorted_readings_out():
+    """σ 超门的失真读数（远场/弯道）不进票仓：近场保守，弯道退化安全形态。"""
+    o = TrafficObserver(P, CAL)
+    v = ()
+    for fid in range(1, 8):
+        t = TrackedTarget(id=9, kind=KIND_CAR, x_lane=2.4, x_sigma=0.9,
+                          cy=450, w=80, h=40, conf=0.9, rel_approach=5.0,
+                          first_seen_fid=1, last_seen_fid=fid,
+                          validity_until_fid=fid + 8)
+        v, _ = o.update(_obs(fid, (t,)))
+    assert v[0].x_memb is None
+
+
+def test_membership_holds_through_occlusion():
+    """遮挡延续拍成员位保持（票仓只在真实读数拍动）：宽限内不闪退单拍。"""
+    o = TrafficObserver(P, CAL)
+    for fid in range(1, 5):
+        o.update(_obs(fid, (_car(7, fid, 450.0, 1.2, 5.0),)))
+    stale = TrackedTarget(id=7, kind=KIND_CAR, x_lane=1.2, x_sigma=0.05,
+                          cy=470, w=80, h=40, conf=0.9, rel_approach=5,
+                          first_seen_fid=1, last_seen_fid=3, validity_until_fid=11)
+    v, _ = o.update(_obs(5, (stale,)))              # last_seen=3 < fid=5：延续拍
+    assert v[0].x_memb == 1.0
+
+
+# ---------- 宽度有效性面（2026-10-11 前置三件套③） ----------
+
+def test_width_validity_hold_and_ttl_expiry():
+    """有效读数出 w_m（年龄/置信/分母三门）；遮挡延续拍保持最后有效值并带
+    龄；超 TTL 显式转 None 不冒充有效。"""
+    o = TrafficObserver(P, CAL, conf_floor=0.5)
+    for fid in range(1, 6):                         # 5 拍真实读数：f3 起年龄达标
+        o.update(_obs(fid, (_car(7, fid, 500.0, 1.2, 5.0),)))
+    v, _ = o.update(_obs(5, (_car(7, 5, 500.0, 1.2, 5.0),)))
+    assert v[0].w_m is not None and v[0].w_m_age == 0
+    exp_w = 80 * CAL.a_x * CAL.lane_w_m / (500.0 - CAL.y_h)
+    assert v[0].w_m == pytest.approx(exp_w, rel=1e-6)
+    for age in range(1, P.width_ttl_ticks + 1):     # 遮挡延续：保持+带龄
+        stale = TrackedTarget(id=7, kind=KIND_CAR, x_lane=1.2, x_sigma=0.05,
+                              cy=int(500.0 + 20 * age), w=80, h=40, conf=0.9,
+                              rel_approach=5, first_seen_fid=1, last_seen_fid=5,
+                              validity_until_fid=20)
+        v, _ = o.update(_obs(5 + age, (stale,)))
+        assert v[0].w_m == pytest.approx(exp_w, rel=1e-6)   # 外推 cy 不重算
+        assert v[0].w_m_age == age
+    stale = TrackedTarget(id=7, kind=KIND_CAR, x_lane=1.2, x_sigma=0.05,
+                          cy=700, w=80, h=40, conf=0.9, rel_approach=5,
+                          first_seen_fid=1, last_seen_fid=5, validity_until_fid=30)
+    v, _ = o.update(_obs(5 + P.width_ttl_ticks + 1, (stale,)))
+    assert v[0].w_m is None and v[0].w_m_age is None   # 过期=显式 unknown
+
+
+def test_width_gates_low_conf_and_missing_floor():
+    """置信低于地板不出宽度；conf_floor 未供（None）宽度面整体不出——
+    诚实降级不装懂。"""
+    o = TrafficObserver(P, CAL, conf_floor=0.5)
+    low = TrackedTarget(id=7, kind=KIND_CAR, x_lane=1.2, x_sigma=0.05,
+                        cy=500, w=80, h=40, conf=0.3, rel_approach=5.0,
+                        first_seen_fid=1, last_seen_fid=6, validity_until_fid=14)
+    v, _ = o.update(_obs(6, (low,)))
+    assert v[0].w_m is None
+    o2 = TrafficObserver(P, CAL)                    # 缺省无地板：宽度面不出
+    v, _ = o2.update(_obs(6, (_car(7, 6, 500.0, 1.2, 5.0),)))
+    assert v[0].w_m is None
