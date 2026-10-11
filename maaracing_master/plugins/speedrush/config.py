@@ -221,6 +221,23 @@ class Validate:
 
 
 @dataclass(frozen=True)
+class LaneScoring:
+    """道级收益评分参数（2026-10-12 设计裁决：决策单位=道；整段可选，老 json
+    不带段=全默认=关，与 plan_layer 同一条兼容纪律）。
+
+    语义：开闸后引擎逐拍算 LaneReport（lane_score.LaneScorer）供 trace/影子
+    对照——**不改行为**（shadow 先行）；行为切换（选道输出接 latsample）是
+    V2 A/B 的事，届时另立闸或复用本闸升级语义。数值全部 [需实测] 起值。"""
+
+    enabled: bool = False
+    horizon_s: float = 2.0        # 收益前瞻（s）：提前量 P50 1.06s 的 ~2 倍
+    crash_t_s: float = 0.8        # 到站短于此判碰撞（s；≈变道需求 0.73 上浮）
+    crash_penalty: float = 100.0  # 碰撞道负额（分；压过任何币/错身收益）
+    pass_value: float = 30.0      # 邻道错身保底（分；RULES §4.11 普通档镜像）
+    far_coin_weight: float = 0.3  # 前瞻窗外币的远权（方向信息仍在，当期吃不到）
+
+
+@dataclass(frozen=True)
 class DecisionConfig:
     mode: Mode
     control: Control
@@ -234,6 +251,7 @@ class DecisionConfig:
     grid_veto: GridVeto = GridVeto()
     plan_layer: PlanLayer = PlanLayer()
     grid_xcheck: GridXcheck = GridXcheck()
+    lane_scoring: LaneScoring = LaneScoring()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -416,7 +434,16 @@ def _read_decision(path: Path) -> DecisionConfig:
             mode=_str_def(d, "grid_xcheck", "mode", "off",
                           ("off", "master", "veto")),
             tol_lane=_num_def(d, "grid_xcheck", "tol_lane", 0.45, lo=0),
-            bypass_streak=_int_def(d, "grid_xcheck", "bypass_streak", 8, lo=1)))
+            bypass_streak=_int_def(d, "grid_xcheck", "bypass_streak", 8, lo=1)),
+        lane_scoring=LaneScoring(
+            enabled=_bool(d, "lane_scoring", "enabled", default=False),
+            horizon_s=_num_def(d, "lane_scoring", "horizon_s", 2.0, lo=0),
+            crash_t_s=_num_def(d, "lane_scoring", "crash_t_s", 0.8, lo=0),
+            crash_penalty=_num_def(d, "lane_scoring", "crash_penalty",
+                                   100.0, lo=0),
+            pass_value=_num_def(d, "lane_scoring", "pass_value", 30.0, lo=0),
+            far_coin_weight=_num_def(d, "lane_scoring", "far_coin_weight",
+                                     0.3, lo=0, hi=1, lo_open=False)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis

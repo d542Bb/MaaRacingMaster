@@ -52,6 +52,7 @@ from maaracing_master.plugins.speedrush.corridor import UNKNOWN, Corridor
 from maaracing_master.plugins.speedrush.depth_geo import DrivableGrid
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, SampledTraj, eval_traj)
+from maaracing_master.plugins.speedrush.lane_score import LaneScorer
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_PASS, OUTCOME_PRESUMED_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -388,6 +389,12 @@ class DecisionEngine:
             grid_car_half_m=cfg.grid_veto.car_half_lane_m,
             k_grid_unknown=cfg.grid_veto.k_unknown,
         ) if cfg.mode.trajectory_sampling else None
+        # 道级收益评定器（2026-10-12 设计裁决；闸默认关=None=零开销，行为
+        # 逐位不变）。shadow 先行：闸开只增加逐拍 LaneReport 计算与 trace
+        # 对照列，选道输出仍是现役栈——行为切换是 V2 A/B 的事。
+        self.lane_scorer = (LaneScorer(cfg, self.cal, self.scorer)
+                            if cfg.lane_scoring.enabled else None)
+        self._lane_report = None
         self.reset()
 
     def reset(self) -> None:
@@ -429,6 +436,7 @@ class DecisionEngine:
         self._grid: DrivableGrid | None = None
         self._corridor: Corridor | None = None
         self._traj_diag: dict | None = None   # 逐拍采样诊断（trace 消费）
+        self._lane_report = None              # 影子道收益（闸开才有值）
 
     # ---------- 主入口 ----------
 
@@ -538,6 +546,12 @@ class DecisionEngine:
                 elif rep.ok and self._state is DecisionState.CHANGE:
                     self._late_streak = 0
 
+        # 影子道收益（闸开才算）：逐拍 LaneReport 供 trace 对照列，不进选择
+        self._lane_report = (
+            self.lane_scorer.benefits(obs, self._views, executed_lane,
+                                      road_width=self._rwidth)
+            if self.lane_scorer is not None else None)
+
         goal = self._current_goal(obs)
         alpha = 1.0 - math.exp(-dt_s / self.cfg.hysteresis.tau_filter_s)
         self._x_smooth += alpha * ((xt if xt is not None else goal)
@@ -576,6 +590,13 @@ class DecisionEngine:
         （x/cy/rel/w/conf/age，legacy 路不评 bonus）。
         None=本拍未跑选择（CONSERVE/ABORT/致命/冷却拍），不留旧账。"""
         return self._gate_ledger
+
+    @property
+    def lane_report(self) -> "LaneReport | None":
+        """上一拍道收益评定（lane_scoring 闸开才有值；trace lane_b/lane_pick
+        列与影子对照的数据源，不进决策——V2 行为切换另立闸）。None=闸关/
+        无路心锚拍。"""
+        return self._lane_report
 
     @property
     def traj_plan(self) -> "SampledTraj | None":

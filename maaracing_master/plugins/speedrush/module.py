@@ -1001,6 +1001,12 @@ class SpeedRushModule(ActivityModule):
             # None=本拍未跑选择（CONSERVE/ABORT/致命/冷却拍）。2D 帧龄拍级已有
             # oage 列（同拍目标共享同一帧，帧龄即目标龄），账本不重复落。
             "ledger": chain["engine"].gate_ledger,
+            # 影子道收益（lane_scoring 闸开才有值）：逐道收益与建议道——
+            # 「按道选线 vs 实际走道」的离线对照数据源，不改行为（计划稿 §5）
+            "lane_b": None if chain["engine"].lane_report is None else
+            [round(b, 1) for b in chain["engine"].lane_report.benefits],
+            "lane_pick": None if chain["engine"].lane_report is None
+            else chain["engine"].lane_report.pick,
             "car_vlat": None if not tviews else round(
                 max(abs(v.v_lat) for v in tviews), 3),
             "near_dx": None if not tviews else round(

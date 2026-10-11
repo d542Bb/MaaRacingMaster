@@ -143,5 +143,14 @@
     "tol_lane": 0.45,
     "bypass_streak": 8,
     "_note": "路心供数主人闸（2026-10-06 两局定案：找边锁「以车为中心的走廊」——骑黄线段 L=−1.32/R=+0.53 报正中、对宽 2.68 道像真路所以宽门/中值窗全失明；与栅格路心分歧系统性单边 Δ p50=+0.45 道、57% 超容差、符号几乎不翻，物理目检三帧（帧 0039/0042/0054 骑黄线）+离线基线 f9a9a80（栅格 mean 0.31 道/大错 8% vs 找边 0.52/22%）同证）。mode 语义：off=找边对当主人（旧行为逐位不变）；master=绿区边界当主人（depth_geo.region_reading，路=可行驶区域物理边界，区弃权走保鲜槽/None 不回退找边）；veto=旧分歧否决语义（对系统性偏差会否决 57% 新鲜对→黑视循环，只留回放对比）。**运行态：mode=master＝实机验收期（维护者批准 2026-10-06「先只修1」）；验收面=trace ro_off/ro_grid/ro_edge 三列（骑线段消失、executed 贴物理位）+ BEV cg 线与 C 线重合；若区读数覆盖/质量翻车，mode 归 off 并回实验区归因**。已知边界：栅格与找边同源（MoGe 点云/平面/挖洞），深度共同错误与 ~250ms 链路滞后（运动补偿，维护者研究中）本闸不治。"
+  },
+  "lane_scoring": {
+    "enabled": true,
+    "horizon_s": 2.0,
+    "crash_t_s": 0.8,
+    "crash_penalty": 100.0,
+    "pass_value": 30.0,
+    "far_coin_weight": 0.3,
+    "_note": "道级收益评分闸（2026-10-12 设计裁决：决策单位=道，逐车仪器降级为输入；实施顺序与验收判据见计划稿 §5 Track B）。**运行态：enabled=true＝影子期——每拍算 LaneReport 落 trace lane_b/lane_pick 对照列，选道输出仍是现役栈，行为逐位不变；行为切换（选道接 latsample）是 V2 A/B 的事，届时升级本闸语义并维护者批准。数值全部 [需实测] 起值：horizon 2s=提前量 P50 1.06s 的 ~2 倍；crash_t 0.8s≈变道需求 0.73s 上浮；crash_penalty 100 压过任何币/错身收益；pass_value=30 为 RULES §4.11 普通档镜像（极限 120 走 p̂ 两层结构，影子期不上）。验收面=同批 trace 离线重放（lane_b 一致率/道热避开率/收益差），探针 probe_lane_counterfactual 为仪器。"
   }
 }
