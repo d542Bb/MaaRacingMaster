@@ -1018,6 +1018,10 @@ class SpeedRushModule(ActivityModule):
             # oage（零点=2D 帧采集）；两零点同钟族（perf_counter_ns），相加
             # 无重复计账。WGC 重复帧拍 obs 整体冻结，本列不受影响（拍级）。
             "oage": round(age_ms, 1)})
+        # 增量落盘（2026-10-12）：每 100 拍追加一次——硬杀进程 finally 不执行，
+        # 阶段出口一次性 flush 会丢尾部（185122_p2 实证丢最后 ~5s 案发段）
+        if len(chain["trace"]) - chain.get("trace_flushed", 0) >= 100:
+            self._flush_control_trace(chain, phase, final=False)
         # 调试图快照（debugview 3fps 节流；writer=None=闸关/测试，零开销）
         dbg = chain.get("debug")
         if dbg is not None:
@@ -1048,29 +1052,38 @@ class SpeedRushModule(ActivityModule):
         rows.append({"fid": fid, "ts_ns": ts_ns, "state": "STRAIGHT",
                      "x_target": 0.0, "steer_x": 0, "throttle": throttle_raw})
 
-    def _flush_control_trace(self, chain: dict, phase: int) -> None:
-        """阶段出口一次性落控制 trace（C1/§七.1 标定数据源）。
+    def _flush_control_trace(self, chain: dict, phase: int,
+                             final: bool = True) -> None:
+        """落控制 trace（C1/§七.1 标定数据源）。
 
-        写运行数据目录（与 demos 同构，不污染仓库工作树）；空 trace 不落盘。
-        落盘失败只记 WARNING——标定数据缺失不该中止对局收尾（与录制器同一姿态）。
+        增量落盘（2026-10-12）：final=False 由控制环每 100 拍追加一次——
+        硬杀进程时 finally 不执行，一次性 flush 会丢尾部（185122_p2 实证
+        丢最后 ~5s，恰好盖住案发段）；final=True 收尾写余量。写运行数据
+        目录（与 demos 同构，不污染仓库工作树）；空 trace 不落盘。落盘
+        失败只记 WARNING——标定数据缺失不该中止对局收尾（与录制器同一姿态）。
         """
         rows = chain.get("trace") or []
-        if not rows:
+        flushed = chain.get("trace_flushed", 0)
+        if len(rows) <= flushed:
             return
         try:
             root = _control_trace_root()
             root.mkdir(parents=True, exist_ok=True)
             name = f"trace_{time.strftime('%Y%m%d_%H%M%S', time.localtime(chain['t_start']))}_p{phase}.jsonl"
-            with open(root / name, "w", encoding="utf-8") as f:
-                for r in rows:
+            mode = "a" if flushed else "w"
+            with open(root / name, mode, encoding="utf-8") as f:
+                for r in rows[flushed:]:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
-            _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍 → {name}", "INFO")
-            bf = chain.get("bad_frames") or {}
-            if bf.get("saved"):
+            chain["trace_flushed"] = len(rows)
+            if final:
                 _tlog(self,
-                      f"[极速狂飙] 驾驶阶段 {phase}：坏帧（双侧路缘皆不稳）采样 "
-                      f"{bf['saved']} 张 → {bf['dir']}", "INFO")
+                      f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍 → {name}",
+                      "INFO")
+                bf = chain.get("bad_frames") or {}
+                if bf.get("saved"):
+                    _tlog(self,
+                          f"[极速狂飙] 驾驶阶段 {phase}：坏帧（双侧路缘皆不稳）采样 "
+                          f"{bf['saved']} 张 → {bf['dir']}", "INFO")
         except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
 

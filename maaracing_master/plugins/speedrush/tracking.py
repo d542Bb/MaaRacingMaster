@@ -354,10 +354,12 @@ class Tracker:
         self._frame_tracks: dict[int, dict[tuple[str, int], int]] = {}  # fid → det_key→track_id
         self._sheet_orphan = False   # 本拍清单有条目但整张无法归轨（worker 滞后超窗）
         # 采集帧率估计（fid 时基，2026-10-11 车流 t_meet 换基）：fid 率是采集流
-        # 属性，不随 track/stage 生命期走——reset 不清，阶段切换重卷后估计仍在
+        # 属性，不随 track/stage 生命期走——reset 不清，阶段切换重卷后估计仍在。
+        # 聚合式需要估计起点与"当前帧"两个锚，_last_*_seen 每 new frame 更新
         self._rate_fid: int | None = None
         self._rate_ts_ns: int | None = None
-        self._fid_hz_ema: float | None = None
+        self._last_fid_seen: int | None = None
+        self._last_ts_seen: int | None = None
         self._fid_hz_n = 0
 
     def reset(self) -> None:
@@ -478,7 +480,8 @@ class Tracker:
             stage_transition=stage_transition)
         distances = tuple(self._distance_of(t, per.ts_ns, frame_age_ms)
                           for t in self._tracks if t.kind == KIND_CAR)
-        fid_hz = (self._fid_hz_ema
+        self._last_fid_seen, self._last_ts_seen = fid, per.ts_ns
+        fid_hz = (self.fid_rate_hz
                   if self._fid_hz_n >= self._FID_HZ_WARM_N else None)
         self._last_obs = WorldObservation(
             schema_version=SCHEMA_VERSION, frame_id=fid, ts_ns=per.ts_ns,
@@ -489,28 +492,29 @@ class Tracker:
 
     # ---------- 内部 ----------
 
-    # 采集帧率估计的 EMA 系数与预热样本数：单样本 = Δfid/Δt，拍间时戳抖动下
-    # 噪声 ~±15%，EMA 压平；预热期估计不外供（None=消费方自决退路，不半熟冒充）
-    _FID_HZ_ALPHA = 0.2
+    # 采集帧率估计：**累计聚合式**（总帧数/总时长，自估计起点起算）——
+    # 拍间 inst=Δfid/Δt 双峰（帧供数节律 33/50/66ms 混合）会把 EMA 钉在
+    # 偏低值（2026-10-12 实测 EMA 中位 33 vs 聚合 38，t_meet 尺度差 15%），
+    # 聚合比率对节律波动与卡顿间隙都稳健。预热未达样本数不外供（None=
+    # 消费方自决退路，不半熟冒充）。
     _FID_HZ_WARM_N = 8
 
     def _update_fid_rate(self, fid: int, ts_ns: int) -> None:
-        """采集帧率在线估计：inst = Δfid/Δt（同钟 ns 差）。只在新帧上更新
-        （重复 fid 已在 update 头部拦截）；Δt≤0 的病态样本丢弃不投毒。"""
-        if self._rate_fid is not None and ts_ns > self._rate_ts_ns:
-            inst = (fid - self._rate_fid) / ((ts_ns - self._rate_ts_ns) / 1e9)
-            if inst > 0:
-                if self._fid_hz_ema is None:
-                    self._fid_hz_ema = inst
-                else:
-                    self._fid_hz_ema += self._FID_HZ_ALPHA * (inst - self._fid_hz_ema)
-                self._fid_hz_n += 1
-        self._rate_fid, self._rate_ts_ns = fid, ts_ns
+        """采集帧率在线估计（聚合式）：fid 率是采集流属性，率计起点不随
+        track/stage 生命期走——reset 不清；重复 fid 已在 update 头部拦截。"""
+        if self._rate_fid is None:
+            self._rate_fid, self._rate_ts_ns = fid, ts_ns
+        self._fid_hz_n += 1
 
     @property
     def fid_rate_hz(self) -> float | None:
         """当前采集帧率估计（预热未达标 = None）。"""
-        return self._fid_hz_ema if self._fid_hz_n >= self._FID_HZ_WARM_N else None
+        if self._fid_hz_n < self._FID_HZ_WARM_N or self._rate_ts_ns is None:
+            return None
+        dt = self._last_ts_seen - self._rate_ts_ns
+        if dt <= 0:
+            return None
+        return (self._last_fid_seen - self._rate_fid) / (dt / 1e9)
 
     def _observe(self, per: PerceptionResult) -> list[_Obs]:
         out: list[_Obs] = []
