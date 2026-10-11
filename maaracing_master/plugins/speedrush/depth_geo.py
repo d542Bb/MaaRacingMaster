@@ -118,6 +118,25 @@ DIG_CELL_FRAC = 0.5        # 格级挖除占比：刀是逐点的，格是 0.25m
                            # 占比达此值才算挖除格（本体占据），零星噪声尾点
                            # 不饿死整格
 
+# ── 降级补考（2026-10-11 定案，主门拒后的路区重判）────────────────────────
+# 贴栏/近旁大车帧 MoGe 深度整体放歪（弯曲残余是相机位姿不变量，后处理不可
+# 救，349 帧普查钉死），但维护者目检 141218_0113~0117 实证其中一部分帧
+# 「地面大体还是平的」——主门一刀切弃权损失可用供数帧。补考过了保留原平面
+# 打 degraded 继续供数；rejects 记「质量门降级放行」，corridor._plane_health
+# 现有契约（含「质量门」→"degraded"）自动接住，零新增管线。
+DEGRADED_HGT_CLIP = 0.30       # 剪枝阈：剔墙面/车身这类被放歪上抬的结构点
+DEGRADED_QUAD_MIN = 200        # 四象限（X<0/≥0 × Z 近/远段）各需点数——半幅
+                               # 崩坏帧剪后必然塌一块
+DEGRADED_INLIER_MIN = 0.85     # 剪后内点率地板（比主门 0.70 严：主门已拒，
+                               # 只有贴得非常平才有救）
+DEGRADED_RESID_P50_MAX = 0.06  # 剪后残差中位上限（与主门旁路同值）
+DEGRADED_CAM_H_LO, DEGRADED_CAM_H_HI = 1.40, 2.20   # 尺度 sanity：cam_h 与待
+                               # 验平面同源（平面放歪读数跟着错），不是平面
+                               # 正确性的独立证据，只挡 UI/结算帧这类 grossly
+                               # 异常尺度。边界依据实测分布（干净 1.73~2.09/
+                               # 真拒 1.49~1.81/UI 异常 2.45~5.6）；主门在前
+                               # 已挡角度/内点病态，此处只兜极端
+
 # ── 列剖面路面特征（2026-10-02 定案：拟合起步种子由「位置圈地」换成「特征
 #    识别路面」）─────────────────────────────────────────────────────────
 # 针孔几何（dv/dz = −fy·h/z²，与坡度无关——坡度只平移路面在画面里的位置）：
@@ -273,6 +292,9 @@ class DepthRoadReading:
     # 可见再谈防护；c=coef[2] 即 cam_h，同属观测面）
     solver: dict | None = None   # 焦距求解器诊断（shift/resid/n/step0/evals，见
     # moge_post._solve_shift；焦距漂移治理 2026-10-10 观测面，只写不读）
+    degraded: bool = False   # 主质量门拒、降级补考放行（常量区注释有定案背
+    # 景）；消费语义第一版不变（下游不读，审计面经 rejects「质量门降级放行」
+    # →corridor._plane_health="degraded" 透出）
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
@@ -556,6 +578,44 @@ def _plane_plausible(coef, X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     return resid <= PLANE_RESID_P50_MAX
 
 
+def _plane_degraded_ok(coef, X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
+                       dig: np.ndarray) -> bool:
+    """降级补考（常量区注释有定案背景）：主质量门拒后的路区重判。
+
+    判据链依序：① 角度 sanity（与主门同界——主门拒可能因角度病态，补考
+    不得复活车/相机不可能的姿态）；② 剪枝只收 |hgt|≤DEGRADED_HGT_CLIP 的
+    点；③ 剪后点数 ≥ MIN_PLANE_PTS；④ 四象限覆盖各 ≥ DEGRADED_QUAD_MIN
+    （半幅崩坏帧剪后必然塌一块）；⑤ 致密度（剪后内点率与残差中位双判）；
+    ⑥ cam_h 尺度 sanity。
+
+    **覆盖是必要条件不是充分条件**：剪枝用被评平面选点再证明该平面（循环
+    依赖），平面错误的主防线是⑤——全域轻微倾斜的平面剪后覆盖完整但残差
+    超标照拒（test_plane_degraded_rejects_poisoned_plane 锁死）。主门与补考
+    的 hgt 口径一致（Y−平面，|·| 后符号无关，无需 sgn 翻转）。"""
+    if abs(np.degrees(np.arctan(float(coef[0])))) > PLANE_ROLL_MAX_DEG:
+        return False
+    if abs(np.degrees(np.arctan(float(coef[1])))) > PLANE_PITCH_MAX_DEG:
+        return False
+    hgt = Y - (coef[0] * X + coef[1] * Z + coef[2])
+    road = (np.isfinite(hgt) & (np.abs(X) < ROAD_X_MAX)
+            & (Z >= ROAD_Z_LO) & (Z < PLANE_QUALITY_Z_HI) & (~dig))
+    clip = road & (np.abs(hgt) <= DEGRADED_HGT_CLIP)
+    n = int(clip.sum())
+    if n < MIN_PLANE_PTS:
+        return False
+    xl, zmid = X[clip] < 0, Z[clip] < 8.0
+    for qx in (~xl, xl):
+        for qz in (~zmid, zmid):
+            if int((qx & qz).sum()) < DEGRADED_QUAD_MIN:
+                return False
+    inl = np.abs(hgt[clip]) < PLANE_TOL
+    if float(inl.sum()) / n < DEGRADED_INLIER_MIN:
+        return False
+    if float(np.nanmedian(np.abs(hgt[clip]))) > DEGRADED_RESID_P50_MAX:
+        return False
+    return DEGRADED_CAM_H_LO <= abs(float(coef[2])) <= DEGRADED_CAM_H_HI
+
+
 def _edge_body_evidence(ph: np.ndarray, i: int, thr: float,
                         genuine: bool) -> bool:
     """穿越候选 (i, i+1) 的缘体证据：脸（骤升）或平台（到顶）。
@@ -710,7 +770,8 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     自拟合）——质量门仍在本函数内判（门判据=挖除缝内残差，随平面走）。"""
     t0 = time.perf_counter()
 
-    def _ret(lane_l, lane_r, u_l, u_r, rejects, edge_pts=()):
+    def _ret(lane_l, lane_r, u_l, u_r, rejects, edge_pts=(),
+             degraded=False):
         return DepthRoadReading(
             left_edge_lane=lane_l, right_edge_lane=lane_r,
             left_x=u_l, right_x=u_r,
@@ -719,7 +780,8 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
             rejects=tuple(rejects), edge_pts=edge_pts,
             coef=(None if coef is None
                   else (float(coef[0]), float(coef[1]), float(coef[2]))),
-            fx=float(fx), fy=float(fy if fy is not None else fx))
+            fx=float(fx), fy=float(fy if fy is not None else fx),
+            degraded=degraded)
 
     obj_band = _dig_band(object_mask, pts.shape[1])
 
@@ -737,15 +799,22 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     hgt = sgn * (Y - (a * X + b * Z + c))
     # 统一挖除缝 + 质量门：门判据=缝内残差/内点率，缝随平面走——先算缝再判门。
     dig_3d = _dig_3d_mask(X, Z, hgt, obj_band)
+    rejects: list[str] = []
+    degraded = False
     if not _plane_plausible(coef, X, Y, Z, dig_3d):
-        coef = None    # 被拒平面不进返回值（_ret 闭包读当前 coef）
-        return _ret(None, None, None, None, ["平面质量门拒绝"])
+        if _plane_degraded_ok(coef, X, Y, Z, dig_3d):
+            # 降级补考放行（常量区注释有定案背景）：保留原平面继续供数，
+            # rejects 打标走 cor_ph="degraded" 现有审计契约。
+            rejects.append("质量门降级放行")
+            degraded = True
+        else:
+            coef = None    # 被拒平面不进返回值（_ret 闭包读当前 coef）
+            return _ret(None, None, None, None, ["平面质量门拒绝"])
     sky = np.isfinite(hgt) & (hgt > SKY_HGT)
     scan_dig = dig_3d
     extent = (pts.shape[1] / 2.0) / fx   # 画面横边界比 |X|/Z（同帧焦距，禁写死）
 
     edge_pts: list[tuple[int, float, float]] = []
-    rejects: list[str] = []
     # 与 Z 无关的掩码提出循环（布尔与可交换结合，逐位同结果）：5 个 ZBIN 各
     # 少算 3 遍全带布尔运算。
     base = np.isfinite(X) & np.isfinite(hgt) & (~scan_dig) & (~sky)
@@ -797,7 +866,8 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     if lane_r is not None and lane_r < 0.15:
         rejects.append(f"R:lane{lane_r:+.2f}")
         lane_r = u_r = None
-    return _ret(lane_l, lane_r, u_l, u_r, rejects, tuple(edge_pts))
+    return _ret(lane_l, lane_r, u_l, u_r, rejects, tuple(edge_pts),
+                degraded)
 
 
 def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,

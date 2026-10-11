@@ -319,6 +319,158 @@ def test_plane_gate_rejects_absurd_roll():
     assert any("平面质量门拒绝" in r for r in rd.rejects)
 
 
+def _flat_to_frame(X: np.ndarray, Y: np.ndarray, Z: np.ndarray) -> np.ndarray:
+    """平面度量样片（1D）→ 全幅点云（铺进诊断带，门判据与行位无关）。"""
+    pts = np.full((720, 1280, 3), np.nan, np.float32)
+    band, cap = dg.DIAG_Y1 - dg.Y0, (dg.DIAG_Y1 - dg.Y0) * 1280
+    assert X.size <= cap
+
+    def _fill(v):
+        f = np.full(cap, np.nan, np.float32)
+        f[:v.size] = v
+        return f.reshape(band, 1280)
+
+    pts[dg.Y0:dg.DIAG_Y1, :, 0] = _fill(X)
+    pts[dg.Y0:dg.DIAG_Y1, :, 1] = _fill(Y)
+    pts[dg.Y0:dg.DIAG_Y1, :, 2] = _fill(Z)
+    return pts
+
+
+def _degraded_scene(rng, n_in=55000, n_out=45000, keep_clean=None):
+    """降级补考样片：干净路面（Y=2±0.05）+ 深落空离群（平面上方 0.35~0.6m，
+    超 DEGRADED_HGT_CLIP 会被剪掉），两组独立采样。keep_clean(X,Z)→bool 掩码
+    只筛干净点。主门签名：内点率 ~0.5、残差中位 ~0.08（双判据皆拒）；补考
+    签名：剪后全干净。"""
+    Xi = rng.uniform(-3.9, 3.9, n_in).astype(np.float32)
+    Zi = rng.uniform(4.0, 13.9, n_in).astype(np.float32)
+    Yi = (2.0 + rng.normal(0, 0.05, n_in)).astype(np.float32)
+    if keep_clean is not None:
+        k = keep_clean(Xi, Zi)
+        Xi, Yi, Zi = Xi[k], Yi[k], Zi[k]
+    Xo = rng.uniform(-3.9, 3.9, n_out).astype(np.float32)
+    Zo = rng.uniform(4.0, 13.9, n_out).astype(np.float32)
+    Yo = (2.0 - rng.uniform(0.35, 0.6, n_out)).astype(np.float32)
+    return Xi, Yi, Zi, Xo, Yo, Zo
+
+
+COEF_FLAT = (0.0, 0.0, 2.0)   # 平面 Y=2（cam_h=2.0，实测典型尺度）
+
+
+def test_plane_degraded_second_chance():
+    """主门拒、补考过（端到端）：地面平但 45% 深落空离群压垮主门内点率与
+    残差中位——剪枝剔掉落空后致密度满分，保留原平面继续供数并打标。"""
+    rng = np.random.default_rng(11)
+    Xi, Yi, Zi, Xo, Yo, Zo = _degraded_scene(rng)
+    X = np.concatenate([Xi, Xo])
+    Y = np.concatenate([Yi, Yo])
+    Z = np.concatenate([Zi, Zo])
+    rd = reading_from_points(_flat_to_frame(X, Y, Z), FX, CAL, fy=FY,
+                             coef=COEF_FLAT)
+    assert rd.degraded is True
+    assert rd.coef is not None
+    np.testing.assert_allclose(rd.coef, COEF_FLAT, atol=1e-6)
+    assert any("质量门降级放行" in r for r in rd.rejects)
+
+
+def test_plane_degraded_local_cluster():
+    """半幅崩坏型（端到端）：干净点塌到三象限、右远象限只剩深落空——剪后
+    右远象限无点，四象限覆盖不过，补考仍拒（诚实弃权不变）。"""
+    rng = np.random.default_rng(12)
+    Xi, Yi, Zi, Xo, Yo, Zo = _degraded_scene(
+        rng, keep_clean=lambda X, Z: ~((X >= 0) & (Z >= 8.0)))
+    X = np.concatenate([Xi, Xo])
+    Y = np.concatenate([Yi, Yo])
+    Z = np.concatenate([Zi, Zo])
+    rd = reading_from_points(_flat_to_frame(X, Y, Z), FX, CAL, fy=FY,
+                             coef=COEF_FLAT)
+    assert rd.coef is None and rd.degraded is False, f"rejects={rd.rejects}"
+    assert any("平面质量门拒绝" in r for r in rd.rejects)
+
+
+def test_plane_degraded_rejects_poisoned_plane():
+    """覆盖充足但平面错误的独立反例（补考的循环依赖钉子）：干净平面样片
+    配轻微倾斜 coef——剪后四象限覆盖全部达标，但倾斜残差把剪后内点率压到
+    地板以下。锁死「覆盖是必要条件非充分条件」：剪枝用被评平面选点再证明
+    该平面，平面错误的主防线是致密度。"""
+    rng = np.random.default_rng(13)
+    n = 80000
+    X = rng.uniform(-3.9, 3.9, n).astype(np.float32)
+    Z = rng.uniform(4.0, 13.9, n).astype(np.float32)
+    Y = (2.0 + rng.normal(0, 0.03, n)).astype(np.float32)
+    poison = np.array([0.08, 0.0, 2.0], np.float32)   # 真平面 y=2 上加 4.6° 倾斜
+    hgt = Y - (poison[0] * X + poison[2])
+    clip = np.abs(hgt) <= dg.DEGRADED_HGT_CLIP
+    xl, zm = X[clip] < 0, Z[clip] < 8.0
+    for qx in (~xl, xl):
+        for qz in (~zm, zm):
+            assert int((qx & qz).sum()) >= dg.DEGRADED_QUAD_MIN  # 覆盖充足
+    rate = float((np.abs(hgt[clip]) < dg.PLANE_TOL).sum() / int(clip.sum()))
+    assert rate < dg.DEGRADED_INLIER_MIN             # 拒因是致密度不是覆盖
+    assert dg._plane_degraded_ok(poison, X, Y, Z,
+                                 np.zeros(X.shape, bool)) is False
+
+
+def test_plane_degraded_cannot_save_warped_far_field():
+    """远场翘曲（d00079 型）补考也救不回：翘曲点剪掉后远象限无点、四象限
+    覆盖不过——弯曲残余不是剪枝可剔的局部离群。"""
+    pts = _scene_points(x_left=None, x_right=None)
+    warp = pts[..., 2] > 6.0
+    pts[..., 1] = np.where(warp, pts[..., 1] + 0.6, pts[..., 1])
+    rd = reading_from_points(pts, FX, CAL, fy=FY)
+    assert rd.coef is None and rd.degraded is False, f"rejects={rd.rejects}"
+    assert any("平面质量门拒绝" in r for r in rd.rejects)
+
+
+def test_plane_degraded_unit_criteria():
+    """`_plane_degraded_ok` 判据链逐条（单元级）：点数 / 单象限 / 致密度 /
+    cam_h 尺度界。"""
+    rng = np.random.default_rng(17)
+    n = 60000
+    X = rng.uniform(-3.9, 3.9, n).astype(np.float32)
+    Z = rng.uniform(4.0, 13.9, n).astype(np.float32)
+    Y = (2.0 + rng.normal(0, 0.03, n)).astype(np.float32)
+    dig = np.zeros(X.shape, bool)
+    coef = np.array(COEF_FLAT, np.float32)
+    assert dg._plane_degraded_ok(coef, X, Y, Z, dig) is True     # 基准全过
+    keep = np.zeros(n, bool)
+    keep[:400] = True                                            # ① 点数不足
+    assert dg._plane_degraded_ok(coef, X[keep], Y[keep], Z[keep],
+                                 dig[keep]) is False
+    idx_far = np.nonzero((X >= 0) & (Z >= 8.0))[0]               # ② 单象限差一点
+    drop = idx_far[:len(idx_far) - (dg.DEGRADED_QUAD_MIN - 1)]
+    keep = np.ones(n, bool)
+    keep[drop] = False
+    assert dg._plane_degraded_ok(coef, X[keep], Y[keep], Z[keep],
+                                 dig[keep]) is False
+    Y2 = Y.copy()                                                # ③ 致密度差一点
+    bad = rng.uniform(0, 1, n) < 0.16        # 界内离群（0.2∈(TOL,CLIP]）压内点率
+    Y2[bad] += 0.2
+    assert dg._plane_degraded_ok(coef, X, Y2, Z, dig) is False
+    Ylo = (1.0 + rng.normal(0, 0.03, n)).astype(np.float32)      # ④ cam_h 下越界
+    assert dg._plane_degraded_ok(np.array([0.0, 0.0, 1.0], np.float32),
+                                 X, Ylo, Z, dig) is False
+    Yhi = (2.5 + rng.normal(0, 0.03, n)).astype(np.float32)      #    cam_h 上越界
+    assert dg._plane_degraded_ok(np.array([0.0, 0.0, 2.5], np.float32),
+                                 X, Yhi, Z, dig) is False
+    Ymid = (1.5 + rng.normal(0, 0.03, n)).astype(np.float32)     #    界内放行
+    assert dg._plane_degraded_ok(np.array([0.0, 0.0, 1.5], np.float32),
+                                 X, Ymid, Z, dig) is True
+    tilt = np.array([0.5, 0.0, 2.0], np.float32)                 # ⑤ 滚转 26.6° 病态
+    Yt = (2.0 + tilt[0] * X + rng.normal(0, 0.03, n)).astype(np.float32)
+    assert dg._plane_degraded_ok(tilt, X, Yt, Z, dig) is False   #    补考不复活
+
+
+def test_plane_gate_normal_frames_not_degraded():
+    """正常场景回归：过门帧不进补考路径——degraded 恒 False、rejects 无
+    「质量门」字样（cor_ph 保持 "ok"）。"""
+    for pts in (_scene_points(x_left=None, x_right=None),
+                _scene_points(x_left=WALL, x_right=WALL)):
+        rd = reading_from_points(pts, FX, CAL, fy=FY)
+        assert rd.coef is not None, f"rejects={rd.rejects}"
+        assert rd.degraded is False
+        assert not any("质量门" in r for r in rd.rejects)
+
+
 def test_fit_road_plane_feature_seed_resists_wall_tilt():
     """特征种子拟合抗墙歪斜：墙在走廊域外/内都不改变路面平面钉结果。
 
