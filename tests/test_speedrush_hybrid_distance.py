@@ -145,22 +145,43 @@ def test_gate_velocity_persisted_on_track_state():
 
 
 def test_velocity_persists_across_new_anchor():
-    """区间速度跨锚有效（2026-10-13 语义变更）：新锚不清 v_close——清零曾造成
-    每锚 150ms 的 t_meet 断供，far 轨威胁信号以 MoGe 节拍闪现（2026-10-12 局）。
-    新 v_inst 在下一区间形成后到龄顶替；approach_confirmed 照旧重置。"""
+    """区间速度到锚即发布（2026-10-13 语义修订）：v 的证据在区间完成瞬间成立，
+    不再等锚龄 150ms——旧口径白丢 150ms，快会车整场等不到 v（第三局实测
+    vcls 覆盖骤降的主因之一）。新锚 v_inst=0（z 原地）当拍生效；
+    approach_confirmed 照旧重置。"""
     trk = Tracker()
     _two_anchor_setup(trk)
     for fid in range(8, 13):
         trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
     assert _dist(trk._last_obs).v_close_mps is not None      # 已落轨
-    # 新锚（z 原地：Δ6<跳变门，接受）：approach_confirmed 重置 → 回 ANCHOR，
-    # 但 v_close 保留旧区间值（最佳可用速度证据）
+    # 新锚（z 原地：Δ6<门限，接受）：approach_confirmed 重置 → 回 ANCHOR，
+    # 新区间 v_inst=0 到锚即发布
     trk.update(_per(13, cars=[_car()]), frame_age_ms=10.0, stage=1,
                anchors=_sheet(12, z_m=44.0))
     d = _dist(trk.update(_per(14, cars=[_car()]), frame_age_ms=10.0, stage=1))
     assert d.source is DistanceSource.ANCHOR           # 新锚点 = 新生命周期
-    assert d.v_close_mps is not None                   # 速度跨锚保留
+    assert d.v_close_mps == pytest.approx(0.0, abs=1e-9)   # 新区间即时生效
     assert d.metric_distance_m == pytest.approx(44.0)  # ANCHOR=持锚原值
+
+
+def test_jump_gate_scales_with_interval():
+    """门限随锚间 dt 缩放（2026-10-13 第三局实测修正）：MoGe 节奏拉长到
+    0.3s 时，真闭速 13m 的正常锚不得被定限误杀（定限 12m 在此带宽会把
+    43m/s 的真接近当翻跳丢掉）。dt>0.35s 的更大间隙走超龄重基线，不归本门。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=40.0))
+    for fid in range(3, 11):                  # dt=(10−1)×33≈0.30s（<超龄 0.35）
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    # 真闭速：Δ=13m @0.30s ≈ 44m/s，物理上真实 → 必须接受并出速度
+    trk.update(_per(11, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(10, z_m=27.0))
+    obs = trk.update(_per(12, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    d = _dist(obs)
+    assert d.metric_distance_m == pytest.approx(27.0)      # 锚被接受
+    v = 13.0 / (9 * NS / 1e9)
+    assert d.v_close_mps == pytest.approx(v)               # 区间速度即时发布
 
 
 def test_new_anchor_resets_rescaled_lifecycle():

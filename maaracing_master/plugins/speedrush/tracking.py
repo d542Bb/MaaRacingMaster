@@ -308,14 +308,17 @@ class TrackerParams:
     gate_v_mps: float = 16.0     # 门控阈值：估计接近速度 m/s（trace_213150 标定
                                  # Youden T≈16，物理口径吻合：16m/s×250ms≈4m 持锚误差；
                                  # 2026-10-13 v̂ 换锚间区间差分后为**再标定候选**）
-    gate_eval_min_ms: float = 150.0  # 锚龄下限：新鲜锚直接持锚无需门控；且区间估计
-                                     # 在短 dt 下被量化噪声支配（实机实测 r≈-0.08）
+    gate_eval_min_ms: float = 150.0  # 区间下限：短于 此的锚间差分被量化噪声支配
+                                     # （实机实测 r≈-0.08），不发布速度
     gate_confirm: int = 2        # 连续确认拍数（与 decision._REEVAL_STREAK 同源纪律）
     anchor_max_age_ms: float = 350.0  # 锚点工程闸顶（沿用深度 age 闸；非物理失效点）
     cluster_switch_m: float = 20.0    # 层一有效性：锚点簇跳变弃权门（trace 标定候选）
-    z_jump_m: float = 12.0       # 亚门限翻跳丢弃门（2026-10-13）：相邻锚 |Δz| 超此
-                                 # 丢弃该锚保旧锚（物理界≈最大闭速 45m/s×锚间
-                                 # 0.2s=9m+余量）；超龄自愈，重基线无需专用通道
+    z_jump_base_m: float = 2.0   # 亚门限翻跳丢弃门（2026-10-13）：相邻锚 |Δz| 超
+                                 # `base + mps×dt` 丢弃该锚保旧锚——门限必须随锚间
+                                 # dt 缩放（MoGe 卡顿把 dt 拉到 0.4s 时真闭速
+                                 # 15m 的正常锚会被定限误杀，轨道饿到超龄——
+                                 # 2026-10-13 第三局 trace 实测覆盖率掉 40%→28%）
+    z_jump_mps: float = 45.0     # 丢门的闭速界（m/s）：ego 极速量级；超界=量错不是真动
     assoc_window: int = 12       # detection→track 帧映射窗（拍数；≥ 锚点最大年龄）
 
     def __post_init__(self) -> None:
@@ -325,7 +328,8 @@ class TrackerParams:
                 or self.gate_v_mps <= 0 or self.gate_eval_min_ms <= 0
                 or self.gate_confirm < 1
                 or self.anchor_max_age_ms <= 0 or self.cluster_switch_m <= 0
-                or self.z_jump_m <= 0 or self.assoc_window < 1):
+                or self.z_jump_base_m <= 0 or self.z_jump_mps <= 0
+                or self.assoc_window < 1):
             raise ValueError(f"跟踪参数非法：{self}")
 
 
@@ -434,19 +438,16 @@ class Tracker:
             age = fid - t.last_seen
             inst = (o.cy - t.cy) / age if age > 0 else 0.0
             t.rel_approach = self.p.ema_alpha * t.rel_approach + (1 - self.p.ema_alpha) * inst
-            # 混合测距门控：区间速度 v̂ 在锚点 ingest 时按锚间差分算好（见
-            # _ingest_anchors），本循环只做**到龄发布**——锚龄达 eval_min 才把
-            # v_inst 落到 v_close（估计窗纪律不变）；N=2 连续确认防单拍尖峰。
-            if t.kind == KIND_CAR and t.anchor_z is not None:
-                anchor_age_ms = (per.ts_ns - t.anchor_ts_ns) / 1e6
-                if anchor_age_ms >= self.p.gate_eval_min_ms and t.v_inst is not None:
-                    t.v_close_mps = t.v_inst   # 速度落轨：L2 状态载体（刀二消费）
-                    t.gate_streak = t.gate_streak + 1 if t.v_inst > self.p.gate_v_mps else 0
-                    if (t.gate_streak >= self.p.gate_confirm
-                            and t.approach_confirmed_at is None):
-                        t.approach_confirmed_at = fid
-                else:
-                    t.gate_streak = 0
+            # 混合测距门控：区间速度 v̂ 在锚点 ingest 时算好并**即时发布**到
+            # v_close（见 _ingest_anchors）；本循环只做 N=2 连续确认（防单锚
+            # 尖峰触发接近位）。
+            if t.kind == KIND_CAR and t.anchor_z is not None and t.v_inst is not None:
+                t.gate_streak = t.gate_streak + 1 if t.v_inst > self.p.gate_v_mps else 0
+                if (t.gate_streak >= self.p.gate_confirm
+                        and t.approach_confirmed_at is None):
+                    t.approach_confirmed_at = fid
+            else:
+                t.gate_streak = 0
             t.kind, t.w, t.h, t.conf = o.kind, o.w, o.h, o.conf
             t.cy, t.cx = o.cy, o.cx
             t.x_lane, t.x_sigma, t.lane_side = o.x_lane, o.x_sigma, o.lane_side
@@ -599,18 +600,21 @@ class Tracker:
                 t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
                 continue
             if t.anchor_z is not None:
-                if abs(e.z_m - t.anchor_z) > self.p.z_jump_m:
-                    # 亚门限翻跳（近簇修正的残余）：丢弃该锚保旧锚——物理上
-                    # 闭速有界（45m/s×锚间 0.2s≈9m），超界=量错不是真动；
-                    # 超龄（EXPIRED 清锚）后自然重基线，无需专用通道
+                dt_s = (sheet.ts_ns - t.anchor_ts_ns) / 1e9
+                if abs(e.z_m - t.anchor_z) > (self.p.z_jump_base_m
+                                              + self.p.z_jump_mps * dt_s):
+                    # 亚门限翻跳（近簇修正的残余）：丢弃该锚保旧锚——量错不是
+                    # 真动；门限随 dt 缩放（MoGe 卡顿拉长 dt 时真闭速锚不得
+                    # 误杀），超龄（EXPIRED 清锚）后自然重基线
                     t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
                     continue
-                dt_s = (sheet.ts_ns - t.anchor_ts_ns) / 1e9
                 if dt_s > 0 and dt_s * 1000.0 >= self.p.gate_eval_min_ms:
                     # 锚间区间差分 v̂（2026-10-13 换装，替代 log-h 框高式——
-                    # 实机生命表证伪：框高在"框头/框全车"间翻，v̂ 荒值 40~70m/s；
-                    # z 是近簇修正+跳变门后的量，区间 ≥ eval_min）
+                    # 实机生命表证伪：框高在"框头/框全车"间翻，v̂ 荒值 40~70m/s）。
+                    # 到锚即发布：速度证据在区间完成瞬间就成立，再等锚龄是旧
+                    # 逐帧锚时代的惯性（白丢 150ms，快会车整场等不到 v）
                     t.v_inst = (t.anchor_z - e.z_m) / dt_s
+                    t.v_close_mps = t.v_inst
             t.anchor_z = e.z_m
             t.anchor_fx = sheet.fx              # 同帧焦距（x_m 反投影换算锚）
             t.anchor_ts_ns = sheet.ts_ns
