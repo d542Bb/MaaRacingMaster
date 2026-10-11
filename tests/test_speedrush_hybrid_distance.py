@@ -103,77 +103,86 @@ def test_gate_needs_two_consecutive_positive_evaluations():
     assert _dist(obs).source is DistanceSource.ANCHOR   # streak 清零，未确认
 
 
+def _two_anchor_setup(trk, *, z1=50.0, z2=44.0):
+    """两锚接近场景：fid2 挂锚 z1（ts=fid1），fid3~6 供帧（帧映射表），
+    fid7 挂锚 z2 → 锚间 dt=5×33ms=165ms ≥ 评估下限，v_inst=(z1−z2)/0.165。"""
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=z1))
+    for fid in range(3, 7):
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(7, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(6, z_m=z2))
+
+
 def test_interval_velocity_gate_confirms_rescale_and_formula_direction():
-    """持续接近：锚龄过评估下限后 v̂=Z_a×ln(h/h_a)/(t−t_a) 连续 2 拍超阈 →
-    RESCALED；公式方向：目标变大（接近）→ 距离变近。"""
+    """持续接近：锚间区间差分 v̂（2026-10-13 换装，替代 log-h 框高式——框高
+    抖动直接打进 v̂，实机生命表实测荒值 40~70m/s）连续 2 拍超阈 → RESCALED；
+    当前距离 = 锚点按 v 外推（RANGE_PROP），方向：目标变近 → 距离 < 锚值。"""
     trk = Tracker()
-    trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
-    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
-               anchors=_sheet(1, z_m=50.0, h_px=40))
-    hs = {3: 40, 4: 41, 5: 42, 6: 43, 7: 44, 8: 45}   # 165ms 起 v̂≈29>16，连续确认
-    for fid, h in hs.items():
-        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
-    d = _dist(obs)                                    # fid=8：锚龄 198ms，已确认
+    _two_anchor_setup(trk)                    # v=(50−44)/0.165≈36.4 > 16
+    obs = None
+    for fid in range(8, 13):                  # fid11 到龄发布，fid12 N=2 确认
+        obs = trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    d = _dist(obs)                            # fid=12：锚龄 198ms，已确认
     assert d.source is DistanceSource.RESCALED_ANCHOR
-    assert d.method is DistanceMethod.HEIGHT_RATIO
-    assert d.metric_distance_m == pytest.approx(50.0 * 40 / 45)
-    assert d.anchor_age_ms == pytest.approx(7 * NS / 1e6, rel=1e-3)
+    assert d.method is DistanceMethod.RANGE_PROP
+    v = (50.0 - 44.0) / (5 * NS / 1e9)
+    assert d.v_close_mps == pytest.approx(v)
+    assert d.metric_distance_m == pytest.approx(44.0 - v * 6 * NS / 1e9)
+    assert d.anchor_age_ms == pytest.approx(6 * NS / 1e6, rel=1e-3)
 
 
 def test_gate_velocity_persisted_on_track_state():
-    """L2 状态载体（时序状态层刀一）：门控区间速度 v̂ 落轨并透传
-    ObjectDistance——此前算完即扔只用于确认位；值与公式同源可复算。"""
+    """L2 状态载体：区间速度在 ingest 落 v_inst、到龄发布到 v_close——
+    值与锚间差分同源可复算。"""
     trk = Tracker()
-    trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
-    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
-               anchors=_sheet(1, z_m=50.0, h_px=40))
-    for fid, h in ((3, 40), (4, 41), (5, 42), (6, 43), (7, 44), (8, 45)):
-        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    _two_anchor_setup(trk)
+    obs = trk.update(_per(11, cars=[_car()]), frame_age_ms=10.0, stage=1)
     d = _dist(obs)
-    expect = 50.0 * np.log(45 / 40) / (7 * NS / 1e9)   # 7 帧龄≈231ms→0.231s，与门控同式
+    expect = (50.0 - 44.0) / (5 * NS / 1e9)
     assert d.v_close_mps == pytest.approx(expect, rel=1e-3)
 
 
-def test_velocity_resets_with_anchor_lifecycle():
-    """速度与锚点同生命周期：无锚恒 None；新锚点重置估计窗（旧速度清零），
-    锚龄未达评估下限期间保持 None——不拿旧窗速度冒充新锚状态。"""
+def test_velocity_persists_across_new_anchor():
+    """区间速度跨锚有效（2026-10-13 语义变更）：新锚不清 v_close——清零曾造成
+    每锚 150ms 的 t_meet 断供，far 轨威胁信号以 MoGe 节拍闪现（2026-10-12 局）。
+    新 v_inst 在下一区间形成后到龄顶替；approach_confirmed 照旧重置。"""
     trk = Tracker()
-    obs = trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
-    assert _dist(obs).v_close_mps is None              # 无锚：UNKNOWN 恒 None
-    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
-               anchors=_sheet(1, z_m=50.0, h_px=40))
-    for fid, h in ((3, 41), (4, 42), (5, 43), (6, 44), (7, 45), (8, 46)):
-        trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
-    obs = trk.update(_per(9, cars=[_car(h=47)]), frame_age_ms=10.0, stage=1)
-    assert _dist(obs).v_close_mps is not None          # 锚窗内已落轨
-    trk.update(_per(10, cars=[_car(h=47)]), frame_age_ms=10.0, stage=1,
-               anchors=_sheet(9, z_m=45.0, h_px=47))
-    d = _dist(trk.update(_per(11, cars=[_car(h=47)]), frame_age_ms=10.0, stage=1))
-    assert d.v_close_mps is None                       # 新锚点 = 新估计窗
-    assert d.source is DistanceSource.ANCHOR           # 锚龄 2 帧 < 评估下限：直接持锚
+    _two_anchor_setup(trk)
+    for fid in range(8, 13):
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    assert _dist(trk._last_obs).v_close_mps is not None      # 已落轨
+    # 新锚（z 原地：Δ6<跳变门，接受）：approach_confirmed 重置 → 回 ANCHOR，
+    # 但 v_close 保留旧区间值（最佳可用速度证据）
+    trk.update(_per(13, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(12, z_m=44.0))
+    d = _dist(trk.update(_per(14, cars=[_car()]), frame_age_ms=10.0, stage=1))
+    assert d.source is DistanceSource.ANCHOR           # 新锚点 = 新生命周期
+    assert d.v_close_mps is not None                   # 速度跨锚保留
+    assert d.metric_distance_m == pytest.approx(44.0)  # ANCHOR=持锚原值
 
 
-def test_rescaled_is_one_way_until_new_anchor():
-    """RESCALED 是锚点生命周期状态：gate 退出不回 ANCHOR（防 42→51 回弹），
-    新锚点到达重置基线后才重新判。"""
+def test_new_anchor_resets_rescaled_lifecycle():
+    """RESCALED 是锚点生命周期状态：确认后**新锚**重置生命周期（approach_
+    confirmed 清零）——新区间速度低于阈值不再确认，回 ANCHOR 持锚，但区间
+    速度 v_close 照常发布（跨锚保留语义）。（旧 log-h 时代的"gate 退出不回
+    ANCHOR"指同锚生命周期内逐拍回落——v_inst 固定后该场景不复存在。）"""
     trk = Tracker()
-    trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
-    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
-               anchors=_sheet(1, z_m=50.0, h_px=40))
-    for fid, h in ((3, 40), (4, 41), (5, 42), (6, 43), (7, 44), (8, 45)):
-        trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    _two_anchor_setup(trk)
+    for fid in range(8, 13):
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
     assert _dist(trk._last_obs).source is DistanceSource.RESCALED_ANCHOR
-    # gate 退出（框缩小=远离）：仍是 RESCALED，公式跟随新 h，绝不吐原始 50
-    obs = trk.update(_per(9, cars=[_car(h=44)]), frame_age_ms=10.0, stage=1)
-    d = _dist(obs)
-    assert d.source is DistanceSource.RESCALED_ANCHOR
-    assert d.metric_distance_m == pytest.approx(50.0 * 40 / 44)
-    # 新锚点 = 新生命周期：无接近 → 回 ANCHOR，基线重置
-    obs = trk.update(_per(10, cars=[_car(h=44)]), frame_age_ms=10.0, stage=1,
-                     anchors=_sheet(9, z_m=42.0, h_px=44))
-    d = _dist(obs)
+    # 新锚（新区间几乎无接近）：生命周期重置 → ANCHOR 持锚；速度照常发布
+    trk.update(_per(13, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(12, z_m=43.0))           # v=(44−43)/0.198≈5.1<16
+    for fid in range(14, 18):                 # fid17 到龄发布
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    d = _dist(trk._last_obs)
+    v2 = 1.0 / (6 * NS / 1e9)                          # 锚间 dt=(12−6)×33ms
     assert d.source is DistanceSource.ANCHOR
-    assert d.metric_distance_m == pytest.approx(42.0)
+    assert d.v_close_mps == pytest.approx(v2)          # 区间速度跨锚照常发布
+    assert d.metric_distance_m == pytest.approx(43.0)  # ANCHOR=持锚原值
 
 
 # ---------- 弃权链 ----------
@@ -314,30 +323,27 @@ def test_metric_state_hold_z_and_x_projection():
 
 
 def test_metric_state_rescaled_t_meet():
-    """RESCALED：z=锚×框高比；v_close>0 → t_meet=z/v（一步除法，无 px/fid
-    换算、无 fid 率耦合）。"""
+    """RESCALED：z=锚按区间速度外推；v_close>0 → t_meet=z/v（一步除法，无
+    px/fid 换算、无 fid 率耦合）。"""
     trk = Tracker()
-    trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
-    trk.update(_per(2, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1,
-               anchors=replace(_sheet(1, z_m=50.0, h_px=40), fx=700.0))
-    for fid, h in ((3, 40), (4, 41), (5, 42), (6, 43), (7, 44), (8, 45)):
-        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    _two_anchor_setup(trk, z1=50.0, z2=44.0)
+    for fid in range(8, 13):
+        obs = trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
     m = _mstate(obs)
-    z = 50.0 * 40 / 45
+    v = (50.0 - 44.0) / (5 * NS / 1e9)
+    z = 44.0 - v * 6 * NS / 1e9
     assert m.z_m == pytest.approx(z)
-    assert m.t_meet_s == pytest.approx(z / m.v_close_mps)
+    assert m.v_close_mps == pytest.approx(v)
+    assert m.t_meet_s == pytest.approx(z / v)
     assert m.t_meet_s > 0
 
 
 def test_metric_state_receding_car_is_pacing_not_unknown():
-    """远离车（h 缩小 → v̂<0）：source 仍有效、t=None——占用语义与「无锚」
-    分流靠 source/vcls，消费端不回退像素（米制说话算数）。"""
+    """远离车（锚间 z 增大 → v̂<0）：source 仍有效、t=None——占用语义与
+    「无锚」分流靠 source/vcls，消费端不回退像素（米制说话算数）。"""
     trk = Tracker()
-    trk.update(_per(1, cars=[_car(h=60)]), frame_age_ms=10.0, stage=1)
-    trk.update(_per(2, cars=[_car(h=60)]), frame_age_ms=10.0, stage=1,
-               anchors=replace(_sheet(1, z_m=50.0, h_px=60), fx=700.0))
-    for fid, h in ((3, 60), (4, 58), (5, 56), (6, 54), (7, 52), (8, 50)):
-        obs = trk.update(_per(fid, cars=[_car(h=h)]), frame_age_ms=10.0, stage=1)
+    _two_anchor_setup(trk, z1=44.0, z2=50.0)          # 远离：z 增
+    obs = trk.update(_per(11, cars=[_car()]), frame_age_ms=10.0, stage=1)
     m = _mstate(obs)
     assert m.source is DistanceSource.ANCHOR
     assert m.v_close_mps is not None and m.v_close_mps < 0
@@ -393,3 +399,39 @@ def test_sheet_carries_frame_focal():
     assert s.fx == pytest.approx(697.3)
     assert anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)],
                                         fid=7, ts_ns=700).fx is None
+
+
+def test_jump_gate_drops_flip_and_keeps_old_anchor():
+    """亚门限翻跳丢弃门（2026-10-13）：相邻锚 |Δz| 超过物理闭速界 → 丢弃该锚
+    保旧锚（z 与锚龄都不动），下一正常锚恢复区间差分——量错不是真动。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=44.0))
+    for fid in range(3, 7):
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    # Δ=13m > z_jump_m(12) 且 < cluster_switch_m(20)：丢弃，不清锚
+    trk.update(_per(7, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(6, z_m=57.0))
+    d = _dist(trk.update(_per(11, cars=[_car()]), frame_age_ms=10.0, stage=1))
+    assert d.source is DistanceSource.ANCHOR
+    assert d.metric_distance_m == pytest.approx(44.0)     # 旧锚原值
+    # 下一正常锚（Δ=0.5）：接受，区间差分从旧锚起算（dt=10 帧）
+    trk.update(_per(12, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(11, z_m=44.5))
+    obs = trk.update(_per(16, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    d2 = _dist(obs)
+    assert d2.v_close_mps == pytest.approx((44.0 - 44.5) / (10 * NS / 1e9))
+
+
+def test_box_anchor_z_prefers_near_cluster():
+    """近簇选择（2026-10-13 换装）：远车框里背景簇比车身簇更密时取**车身**
+    （近）簇——实心物体对背景，比车更近的只有噪声级散点；旧"最密簇"口径
+    在此场景翻到背景（生命表实测逐锚跳 10~15m）。密度比按实机紧框量级
+    （背景:车身 ≈ 5:3，翻跳正发生在这量级）。"""
+    pts = np.full((598, 336, 3), np.nan, np.float64)
+    pts[300:320, 150:175, 2] = 60.0                       # 背景 60m：500 像素
+    pts[300:315, 150:170, 2] = 25.0                       # 车身 25m：300 像素（近）
+    sheet = anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)],
+                                         fid=1, ts_ns=1)
+    assert sheet.entries[0].z_m == pytest.approx(25.0, abs=1.5)

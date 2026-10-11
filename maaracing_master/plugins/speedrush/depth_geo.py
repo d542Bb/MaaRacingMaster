@@ -1129,6 +1129,9 @@ def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
 # 这里不付任何额外推理成本。
 
 ANCHOR_Z_LO, ANCHOR_Z_HI = 2.0, 90.0   # 测量有效域（米；anchor-age 实验真值域口径）
+# 近簇选择阈值（2026-10-13）：候选 bin 计数须达最密 bin 的此份额才算"有料"——
+# 挡近端散点小计数；起值 [需实测]，过低会抓散点、过高退回最密簇（翻跳复发）
+_NEAR_CLUSTER_FRAC = 0.4
 
 
 @dataclass(frozen=True)
@@ -1165,8 +1168,16 @@ class DepthAnchorSheet:
 
 
 def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | None:
-    """框内 Z = 24bin 直方图最密簇中位（与实验 entity_z 逐位同口径：2~98 分位
-    域上分箱、最密 bin 中心 ±1bin 宽度收簇取中位）。框过小/有效点不足 → None。"""
+    """框内 Z = 直方图**近簇**中位（2026-10-13 修正：原"最密簇"在远车框上
+    会在车身簇/背景簇间翻跳——车箱远框点少，背景（车顶上方越过的远路面）
+    常比车身更密，实机生命表实测逐锚跳 10~15m、t_meet 随之闪现）。
+
+    近簇选择的几何依据：实心物体对背景，框内比车**更近**的只有噪声级散点
+    （框底=车接地面，就在车距）；车身簇永远不晚于背景簇出现。实现：2~98
+    分位域 24bin（分箱口径不变），从近端向远端扫，第一个计数 ≥
+    _NEAR_CLUSTER_FRAC×最密 bin 的 bin 即取（近端散点小计数被阈值挡住）；
+    其中心 ±1bin 收簇取中位。全车近框（无背景混入）时最密簇即车身，行为
+    与旧口径一致。框过小/有效点不足 → None。"""
     gh, gw = pts.shape[:2]
     x0 = max(0, int(box[0] * gw / 1280))
     y0 = max(0, int(box[1] * gh / 720))
@@ -1180,7 +1191,13 @@ def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | No
         return None
     lo, hi = np.percentile(zv, [2, 98])
     hist, edges = np.histogram(zv, bins=24, range=(lo, hi))
-    c = 0.5 * (edges[hist.argmax()] + edges[hist.argmax() + 1])
+    densest = hist.max()
+    pick = int(hist.argmax())               # 缺省=最密（近框无背景时即车身）
+    for i in range(len(hist)):
+        if hist[i] >= _NEAR_CLUSTER_FRAC * densest:
+            pick = i                        # 从近端数第一个有料的 bin = 车身簇
+            break
+    c = 0.5 * (edges[pick] + edges[pick + 1])
     core = np.abs(zv - c) < (hi - lo) / 24
     if core.sum() < 10:
         core = np.ones(zv.size, bool)

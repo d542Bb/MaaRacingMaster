@@ -28,7 +28,6 @@ WGC 是中心缓存，主循环 ~21Hz 读 30Hz 画面合法地两拍读到同一
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum, IntEnum
 from typing import Any
@@ -207,11 +206,12 @@ class DistanceSource(str, Enum):
 
 
 class DistanceMethod(str, Enum):
-    """距离合成方式。刀一只有 HOLD / HEIGHT_RATIO（h 重标）——cy 传播与融合
-    是未来带实验的候选，没有实验支持的 fallback 不进契约（设计稿 §6）。"""
+    """距离合成方式：HOLD（持锚）/ RANGE_PROP（锚+区间速度外推；2026-10-13
+    替代 HEIGHT_RATIO 框高重标——框高抖动直接打进距离，实机生命表证伪）。
+    cy 传播与融合仍是未来带实验的候选，没有实验支持的 fallback 不进契约。"""
 
     HOLD = "HOLD"
-    HEIGHT_RATIO = "HEIGHT_RATIO"
+    RANGE_PROP = "RANGE_PROP"
 
 
 class DistanceReason(str, Enum):
@@ -233,7 +233,7 @@ class MetricCarState:
     同帧焦距反投影——地平线退化带不再特殊。None=该量弃权（原因见 source/
     reason），消费端回退像素仪器，不臆造。
 
-    - z_m：当前米制距离（RESCALED=锚点×框高比，ANCHOR=持锚原值）。
+    - z_m：当前米制距离（RESCALED=锚点按区间速度外推，ANCHOR=持锚原值）。
     - x_m = (cx−vpx)·z/fx：cx=当前框心、fx=锚点帧焦距、z=当前米制距离——
       三个量各差半拍（锚点帧 vs 当前帧），横向慢变量，误差二阶，如实记。
     - v_close_mps：锚点门控估计（锚龄 ≥ gate_eval_min_ms 才出，None=估计窗
@@ -306,12 +306,16 @@ class TrackerParams:
     # ---- 混合测距（trace-only；全部**实验候选参数**，trace 定版前不是系统真理
     # ---- ——依据与口径见 docs/plan/speedrush-hybrid-ranging-design.md §3/§8.1）
     gate_v_mps: float = 16.0     # 门控阈值：估计接近速度 m/s（trace_213150 标定
-                                 # Youden T≈16，物理口径吻合：16m/s×250ms≈4m 持锚误差）
+                                 # Youden T≈16，物理口径吻合：16m/s×250ms≈4m 持锚误差；
+                                 # 2026-10-13 v̂ 换锚间区间差分后为**再标定候选**）
     gate_eval_min_ms: float = 150.0  # 锚龄下限：新鲜锚直接持锚无需门控；且区间估计
                                      # 在短 dt 下被量化噪声支配（实机实测 r≈-0.08）
     gate_confirm: int = 2        # 连续确认拍数（与 decision._REEVAL_STREAK 同源纪律）
     anchor_max_age_ms: float = 350.0  # 锚点工程闸顶（沿用深度 age 闸；非物理失效点）
     cluster_switch_m: float = 20.0    # 层一有效性：锚点簇跳变弃权门（trace 标定候选）
+    z_jump_m: float = 12.0       # 亚门限翻跳丢弃门（2026-10-13）：相邻锚 |Δz| 超此
+                                 # 丢弃该锚保旧锚（物理界≈最大闭速 45m/s×锚间
+                                 # 0.2s=9m+余量）；超龄自愈，重基线无需专用通道
     assoc_window: int = 12       # detection→track 帧映射窗（拍数；≥ 锚点最大年龄）
 
     def __post_init__(self) -> None:
@@ -321,7 +325,7 @@ class TrackerParams:
                 or self.gate_v_mps <= 0 or self.gate_eval_min_ms <= 0
                 or self.gate_confirm < 1
                 or self.anchor_max_age_ms <= 0 or self.cluster_switch_m <= 0
-                or self.assoc_window < 1):
+                or self.z_jump_m <= 0 or self.assoc_window < 1):
             raise ValueError(f"跟踪参数非法：{self}")
 
 
@@ -358,11 +362,13 @@ class _Track:
     first_seen: int
     last_seen: int
     matched: bool = False
-    # ---- 混合测距锚点状态（刀一 trace-only，不进决策；语义见设计稿 §2/§4）----
-    anchor_z: float | None = None        # 米制锚点（None=无有效锚）
-    anchor_h: int = 0                    # 锚点帧框高（h 重标比例基线）
+    # ---- 混合测距锚点状态（语义见设计稿 §2/§4；C 线 2026-10-13 起为决策供数）----
+    anchor_z: float | None = None        # 米制锚点（None=无有效锚；近簇修正+跳变门后的值）
     anchor_ts_ns: int = 0                # 锚点帧采集时刻（perf_counter_ns）
     anchor_fx: float | None = None       # 锚点帧全幅焦距（x_m 反投影换算锚；随锚生灭）
+    v_inst: float | None = None          # 锚到锚区间差分速度（m/s，+ = 接近；publish
+                                         # 闸后的 v_close 数据源——log-h 框高式已被
+                                         # 实机生命表证伪退役，见 _ingest_anchors）
     approach_confirmed_at: int | None = None   # 本锚点生命周期内确认帧号（≠ is_approaching）
     gate_streak: int = 0                 # 估计接近速度连续超阈拍数
     v_close_mps: float | None = None     # 门控区间速度估计落轨（L2 状态载体）：
@@ -428,17 +434,14 @@ class Tracker:
             age = fid - t.last_seen
             inst = (o.cy - t.cy) / age if age > 0 else 0.0
             t.rel_approach = self.p.ema_alpha * t.rel_approach + (1 - self.p.ema_alpha) * inst
-            # 混合测距门控：区间估计接近速度 v̂ = Z_a×ln(h/h_a)/(t−t_a)——与重标
-            # 公式同源，区间累积自带抗噪；逐拍差分在短 dt 下被量化噪声支配
-            # （实机 trace_213150 实测短区间 r≈-0.08，见设计稿 §8.1）。锚龄达
-            # eval_min 才评估：新鲜锚直接持锚无需门控，且随锚龄增长分母变大、
-            # 估计更稳——门在锚开始变旧的时机恰好开，重标恰好接住最差区段。
+            # 混合测距门控：区间速度 v̂ 在锚点 ingest 时按锚间差分算好（见
+            # _ingest_anchors），本循环只做**到龄发布**——锚龄达 eval_min 才把
+            # v_inst 落到 v_close（估计窗纪律不变）；N=2 连续确认防单拍尖峰。
             if t.kind == KIND_CAR and t.anchor_z is not None:
                 anchor_age_ms = (per.ts_ns - t.anchor_ts_ns) / 1e6
-                if anchor_age_ms >= self.p.gate_eval_min_ms and o.h > 0 and t.anchor_h > 0:
-                    v_hat = t.anchor_z * math.log(o.h / t.anchor_h) / (anchor_age_ms / 1000.0)
-                    t.v_close_mps = v_hat   # 速度落轨：L2 状态载体（trace 供数，刀二消费）
-                    t.gate_streak = t.gate_streak + 1 if v_hat > self.p.gate_v_mps else 0
+                if anchor_age_ms >= self.p.gate_eval_min_ms and t.v_inst is not None:
+                    t.v_close_mps = t.v_inst   # 速度落轨：L2 状态载体（刀二消费）
+                    t.gate_streak = t.gate_streak + 1 if t.v_inst > self.p.gate_v_mps else 0
                     if (t.gate_streak >= self.p.gate_confirm
                             and t.approach_confirmed_at is None):
                         t.approach_confirmed_at = fid
@@ -592,12 +595,28 @@ class Tracker:
                 t.anchor_z = None
                 t.anchor_fx = None              # 焦距锚与 z 锚同生命周期
                 t.v_close_mps = None            # 速度与锚点同生命周期
+                t.v_inst = None
                 t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
                 continue
-            t.anchor_z, t.anchor_h = e.z_m, e.h_px
+            if t.anchor_z is not None:
+                if abs(e.z_m - t.anchor_z) > self.p.z_jump_m:
+                    # 亚门限翻跳（近簇修正的残余）：丢弃该锚保旧锚——物理上
+                    # 闭速有界（45m/s×锚间 0.2s≈9m），超界=量错不是真动；
+                    # 超龄（EXPIRED 清锚）后自然重基线，无需专用通道
+                    t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
+                    continue
+                dt_s = (sheet.ts_ns - t.anchor_ts_ns) / 1e9
+                if dt_s > 0 and dt_s * 1000.0 >= self.p.gate_eval_min_ms:
+                    # 锚间区间差分 v̂（2026-10-13 换装，替代 log-h 框高式——
+                    # 实机生命表证伪：框高在"框头/框全车"间翻，v̂ 荒值 40~70m/s；
+                    # z 是近簇修正+跳变门后的量，区间 ≥ eval_min）
+                    t.v_inst = (t.anchor_z - e.z_m) / dt_s
+            t.anchor_z = e.z_m
             t.anchor_fx = sheet.fx              # 同帧焦距（x_m 反投影换算锚）
             t.anchor_ts_ns = sheet.ts_ns
-            t.v_close_mps = None                # 新锚点 = 新估计窗口
+            # v_close 不随新锚清零（区间估计跨锚有效：上一个区间是当前最佳
+            # 速度证据，新锚到龄后由新 v_inst 顶替）——清零曾造成每锚 150ms
+            # 的 t_meet 断供，far 轨威胁信号以 MoGe 节拍闪现（2026-10-12 局）
             t.approach_confirmed_at = None   # 新锚点 = 新生命周期（设计稿 §2 规则 2）
             t.last_dist_reason = None
 
@@ -632,11 +651,15 @@ class Tracker:
                 obs_age_ms=obs_age_ms, v_close_mps=None,
                 reason=DistanceReason.EXPIRED)
         if t.approach_confirmed_at is not None:
-            metric = t.anchor_z * t.anchor_h / max(t.h, 1)
+            # 当前米制距离 = 锚点值按区间速度外推（2026-10-13 换装，替代框高
+            # 重标 Z_a·h_a/h——框高抖动直接打进距离，生命表实测 z 逐锚跳
+            # 10~15m；v_close 为 None 时保守持锚不外推）
+            age_s = age_ms / 1000.0
+            metric = t.anchor_z - (t.v_close_mps or 0.0) * age_s
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.RESCALED_ANCHOR,
                 metric_distance_m=float(metric),
-                method=DistanceMethod.HEIGHT_RATIO, anchor_age_ms=age_ms,
+                method=DistanceMethod.RANGE_PROP, anchor_age_ms=age_ms,
                 obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps, reason=None)
         return ObjectDistance(
             target_id=t.id, source=DistanceSource.ANCHOR,
@@ -646,7 +669,7 @@ class Tracker:
 
     def _metric_of(self, d: ObjectDistance, t: _Track) -> MetricCarState:
         """ObjectDistance → 米制状态（C 线；z 复用 _distance_of 的当前米制值——
-        RESCALED=锚×框高比、ANCHOR=持锚，无第二套公式）。x_m=(cx−vpx)·z/fx：
+        RESCALED=锚+速度外推、ANCHOR=持锚，无第二套公式）。x_m=(cx−vpx)·z/fx：
         cx 当前框、fx 锚点帧焦距、z 当前米制——三者各差半拍（锚帧 vs 当前帧），
         横向慢变量误差二阶（MetricCarState docstring）。t_meet 只在 v_close>0
         时出：≤0=掠过/远离（占用语义），None（有锚）=估计窗未开（回退像素），
