@@ -311,7 +311,11 @@ class TrackerParams:
     gate_eval_min_ms: float = 150.0  # 区间下限：短于 此的锚间差分被量化噪声支配
                                      # （实机实测 r≈-0.08），不发布速度
     gate_confirm: int = 2        # 连续确认拍数（与 decision._REEVAL_STREAK 同源纪律）
-    anchor_max_age_ms: float = 350.0  # 锚点工程闸顶（沿用深度 age 闸；非物理失效点）
+    anchor_max_age_ms: float = 600.0  # 锚点工程闸顶（非物理失效点；2026-10-13
+                                      # 350→600：实测 worker 滞后 P50 250ms/P90
+                                      # 334ms，350ms 闸下锚出生即半老、只剩 1~3 拍
+                                      # 可用=覆盖率主犯；区间速度+传播后长锚是
+                                      # 诚实的，z 误差由 v 精度界）
     cluster_switch_m: float = 20.0    # 层一有效性：锚点簇跳变弃权门（trace 标定候选）
     z_jump_base_m: float = 2.0   # 亚门限翻跳丢弃门（2026-10-13）：相邻锚 |Δz| 超
                                  # `base + mps×dt` 丢弃该锚保旧锚——门限必须随锚间
@@ -319,7 +323,9 @@ class TrackerParams:
                                  # 15m 的正常锚会被定限误杀，轨道饿到超龄——
                                  # 2026-10-13 第三局 trace 实测覆盖率掉 40%→28%）
     z_jump_mps: float = 45.0     # 丢门的闭速界（m/s）：ego 极速量级；超界=量错不是真动
-    assoc_window: int = 12       # detection→track 帧映射窗（拍数；≥ 锚点最大年龄）
+    assoc_window: int = 18       # detection→track 帧映射窗（拍数）：须盖过最大清单
+                                 # 滞后（P90 334ms≈13fid@38fps + 余量）——12 曾让
+                                 # P90 滞后的整张清单归不了轨（ASSOC_FAIL）
 
     def __post_init__(self) -> None:
         if (self.grace_ticks < 1 or self.max_cy_step <= 0 or self.max_xlane_step <= 0

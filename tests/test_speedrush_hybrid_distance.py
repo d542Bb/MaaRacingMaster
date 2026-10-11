@@ -239,10 +239,11 @@ def test_expired_anchor_abstains():
     trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
     trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
                anchors=_sheet(1, z_m=50.0))
-    obs = trk.update(_per(15, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    for fid in range(3, 21):   # 逐帧驱动（跨 grace 界会让旧轨退役、重开新轨）
+        obs = trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
     d = _dist(obs)
     assert d.reason is DistanceReason.EXPIRED
-    assert d.anchor_age_ms > 350.0
+    assert d.anchor_age_ms > 600.0   # 2026-10-13 锚寿 350→600（worker 滞后吃掉大半寿命）
 
 
 def test_assoc_fail_when_sheet_frame_outside_map_window():
