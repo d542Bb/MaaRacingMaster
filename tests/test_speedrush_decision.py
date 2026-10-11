@@ -17,12 +17,13 @@ import pytest
 
 from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.decision import (
-    DecisionEngine, Scorer, ValidationWatch)
+    DecisionEngine, LateralSafety, Scorer, ValidationWatch)
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, OUTCOME_PRESUMED_PASS, CarView,
     PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
-    CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
+    CoinGroup, DecisionState, DistanceSource, MetricCarState,
+    PerceptionHealth, TrackedTarget, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import (
     _read_gate0, load_calib, t_meet_car_s)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH, GATE0_FILE as GATE0_PATH
@@ -34,7 +35,9 @@ _CFG_BASE = _read_decision(
     __import__("maaracing_master.plugins.speedrush", fromlist=["DECISION_FILE"])
     .DECISION_FILE)
 CFG = replace(_CFG_BASE,
-              mode=replace(_CFG_BASE.mode, trajectory_sampling=False))
+              mode=replace(_CFG_BASE.mode, trajectory_sampling=False),
+              lane_scoring=replace(_CFG_BASE.lane_scoring, control=False),
+              metric_cars=replace(_CFG_BASE.metric_cars, fusion=False))
 
 
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
@@ -1023,3 +1026,79 @@ def test_membership_picked_for_band_and_goal():
               traffic=_traffic([_cv(tid=23, x=2.38, cy=500, rel=10.0)]))
     rows = {r["id"]: r for r in e2.gate_ledger["cars"]}
     assert rows[23]["why"] == "band"           # 单拍 2.38 出带照拒
+
+
+# ---------- V2 行为闸：dodge ttc / veto 危险窗米制融合（metric_cars.fusion） ----------
+
+def _mc(tid, *, z=4.0, v=10.0, x_m=0.05):
+    """米制车：v>0 → t=z/v；v≤0 → t=None（pacing 占用）；v=None=估计窗未开。"""
+    return MetricCarState(target_id=tid, source=DistanceSource.ANCHOR,
+                          z_m=z, x_m=x_m, v_close_mps=v,
+                          t_meet_s=z / v if v is not None and v > 0 else None,
+                          anchor_age_ms=200.0)
+
+
+def _fus_eng():
+    """fusion 闸开 + 超车开（与 _eng 同基座纪律：部署开关显式翻转）。"""
+    return DecisionEngine(replace(
+        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
+        metric_cars=replace(CFG.metric_cars, fusion=True)))
+
+
+def test_dodge_fusion_metric_sees_pixel_blind():
+    """像素 rel≤0（退化带盲区）但米制报逼近 t=0.4s<0.55 → dodge 照触发
+    ——逼近门放宽为任一仪器报逼近，恰是地平线带的结构性治愈。"""
+    e = _fus_eng()
+    mc = _mc(9)                                # t=0.4
+    out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
+                   executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=620, rel=0.0)]))
+    assert out.state is DecisionState.CHANGE and out.reason == "select:dodge"
+    assert out.target_id == 9 and out.x_target < 0
+
+
+def test_dodge_fusion_off_keeps_pixel_gate():
+    """回滚红线：fusion 关时同一像素盲区场景不触发（rel≤0 门原样）。"""
+    e = _eng(overtake=True)
+    mc = _mc(9)
+    out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
+                   executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=620, rel=0.0)]))
+    assert out.state is DecisionState.CRUISE and "dodge" not in out.reason
+
+
+def test_dodge_fusion_metric_advances_trigger():
+    """像素读远处（t=1.08s≥0.55 不触发）、米制读近处（t=0.4）→ 取较小者
+    提前触发——先到者先防。"""
+    e = _fus_eng()
+    mc = _mc(9)                                # t=0.4 < 像素 (716−500)/200≈1.08
+    out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
+                   executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=500, rel=10.0)]))
+    assert out.reason == "select:dodge"
+
+
+def test_dodge_metric_pacing_does_not_suppress_pixel():
+    """米制 pacing（v_close≤0 → t=None）不造到站也不压像素：像素报逼近
+    （t=0.48）照旧触发——pacing 占用语义归道评分，不进 dodge。"""
+    e = _fus_eng()
+    mc = _mc(9, v=-2.0)
+    out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
+                   executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.05, cy=620, rel=10.0)]))
+    assert out.reason == "select:dodge"
+
+
+def test_veto_window_fusion_truncates_only_later():
+    """LateralSafety 危险窗截断融合（V2）：两仪器都有正到站取较晚（截断只许
+    更晚不许更早）；pacing=永不到站=全窗；估计窗未开/闸关=纯像素。"""
+    lat = LateralSafety(CFG, load_calib(), t_meet_fn=lambda rel, cy: 2.0)
+    car = _cv(tid=9, x=0.8, cy=500, rel=10.0)
+    assert lat.metric_map is None
+    assert lat._t_pass_s(car) == pytest.approx(2.0)
+    lat.metric_map = {9: _mc(9, z=10.0, v=2.0)}          # t=5.0 > 像素 2.0
+    assert lat._t_pass_s(car) == pytest.approx(5.0)
+    lat.metric_map = {9: _mc(9, v=-1.0)}                 # pacing：全窗
+    assert lat._t_pass_s(car) == math.inf
+    lat.metric_map = {9: _mc(9, v=None)}                 # 窗未开：像素
+    assert lat._t_pass_s(car) == pytest.approx(2.0)

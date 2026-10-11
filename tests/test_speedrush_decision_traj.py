@@ -14,14 +14,17 @@ from maaracing_master.plugins.speedrush import DECISION_FILE
 from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.tracking import (
-    CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
+    CoinGroup, DecisionState, DistanceSource, MetricCarState,
+    PerceptionHealth, TrackedTarget, WorldObservation)
 
 DT = 0.05
 # 本文件锁的是轨迹模式接线语义：关闸基座自钉，不随部署 decision.json 的
 # 运行态漂（验收期部署文件开闸，语义测试不跟着翻）。
 _CFG_BASE = _read_decision(DECISION_FILE)
 CFG = replace(_CFG_BASE, mode=replace(_CFG_BASE.mode, trajectory_sampling=False),
-              grid_veto=replace(_CFG_BASE.grid_veto, enabled=False))
+              grid_veto=replace(_CFG_BASE.grid_veto, enabled=False),
+              lane_scoring=replace(_CFG_BASE.lane_scoring, control=False),
+              metric_cars=replace(_CFG_BASE.metric_cars, fusion=False))
 CFG_TRAJ = replace(CFG, mode=replace(CFG.mode, trajectory_sampling=True))
 
 
@@ -291,3 +294,107 @@ def test_decision_grid_gate_on_blocks_path_to_wall() -> None:
                         grid=_synth_grid(blocked_ix=[48]))
     assert o_off.x_target is not None and o_on.x_target is not None
     assert o_on.x_target < o_off.x_target
+
+
+# ---------- V2 行为闸：道收益接 CRUISE 轨迹目标（lane_scoring.control） ----------
+
+def _mc(tid, *, z=6.0, x_m=0.0, v=10.0):
+    """米制车：t_meet=z/v（v≤0 → None=pacing 占用）；x_m 是自车系米
+    （executed=0.5 时 x_m=0 → 路心系 0.5=持守道）。"""
+    return MetricCarState(target_id=tid, source=DistanceSource.ANCHOR,
+                          z_m=z, x_m=x_m, v_close_mps=v,
+                          t_meet_s=z / v if v > 0 else None,
+                          anchor_age_ms=200.0)
+
+
+def _lane_cfg(**ls):
+    """control 闸测试基座：enabled 一并自钉（enabled 语义属影子面，测试
+    不随部署 json 漂）。"""
+    return replace(CFG_TRAJ, lane_scoring=replace(CFG_TRAJ.lane_scoring,
+                                                  enabled=True, control=True,
+                                                  **ls))
+
+
+def test_control_off_keeps_axis_with_traffic() -> None:
+    """回滚红线：control 闸关时路内有米制车，CRUISE 目标仍是守轴（行为
+    与 V2 前逐位同），持守面不启用。"""
+    e = DecisionEngine(CFG_TRAJ)
+    obs = replace(_obs(fid=1), metric_cars=(_mc(7),))
+    out = e.update(obs, DT, executed_lane=0.5, traffic=((), ()),
+                   road_offset=0.0, road_width=4.4)
+    assert e.lane_hold is None
+    assert out.x_target is not None and out.x_target < 0.5
+
+
+def test_cruise_hold_initializes_to_nearest_lane() -> None:
+    """control 开：空路 hold 初始化=最近道心（0.6→0.5）；全零收益差不过
+    举证门槛（margin），不漂向 argmax 首格。"""
+    e = DecisionEngine(_lane_cfg())
+    out = e.update(_obs(), DT, executed_lane=0.6, traffic=((), ()),
+                   road_offset=0.6, road_width=4.4)
+    assert e.lane_hold == 0.5
+    assert out.x_target is not None and out.x_target < 0.6
+
+
+def test_crash_lane_flips_after_confirm_streak() -> None:
+    """持守道有到站 0.6s 的车（<crash_t 0.8）：本道 -100，举证门槛
+    （差 100 ≥ margin 20）连续 3 拍满足 → 第 3 拍改判离场。"""
+    e = DecisionEngine(_lane_cfg())
+    mc = _mc(7)                               # x_m=0 → 路心系 0.5=持守道
+    for i in range(1, 4):
+        obs = replace(_obs(fid=i), metric_cars=(mc,))
+        out = e.update(obs, DT, executed_lane=0.5, traffic=((), ()),
+                       road_offset=0.0, road_width=4.4)
+        if i < 3:
+            assert e.lane_hold == 0.5         # 举证未满：不翻面
+    assert e.lane_hold == -1.5                # argmax 并列取道格序低者
+    assert out.x_target is not None and out.x_target < 0.5
+
+
+def test_pacing_occupancy_below_margin_does_not_flip() -> None:
+    """pacing 占用车（v_close≤0 → t=None）：无碰撞额、无错身额，收益差
+    0 < margin——occupancy 表达不造车道梯度（梯度由币密度/接近车供）。"""
+    e = DecisionEngine(_lane_cfg())
+    mc = _mc(7, v=-2.0)
+    obs = replace(_obs(fid=1), metric_cars=(mc,))
+    e.update(obs, DT, executed_lane=0.5, traffic=((), ()),
+             road_offset=0.0, road_width=4.4)
+    assert e.lane_hold == 0.5
+
+
+def test_streak_interruption_resets_evidence() -> None:
+    """举证必须连续：2 拍胜出 + 1 拍证据中断（车消失，收益差归零）清零，
+    重计 3 拍才改判——总胜出 5 拍但第 6 拍才翻。"""
+    e = DecisionEngine(_lane_cfg())
+    mc = _mc(7)
+    for i in (1, 2):
+        e.update(replace(_obs(fid=i), metric_cars=(mc,)), DT, executed_lane=0.5,
+                 traffic=((), ()), road_offset=0.0, road_width=4.4)
+    e.update(_obs(fid=3), DT, executed_lane=0.5, traffic=((), ()),
+             road_offset=0.0, road_width=4.4)          # 中断拍
+    for i in (4, 5):
+        e.update(replace(_obs(fid=i), metric_cars=(mc,)), DT, executed_lane=0.5,
+                 traffic=((), ()), road_offset=0.0, road_width=4.4)
+        assert e.lane_hold == 0.5                      # 5 拍总证据仍未满连续 3
+    obs = replace(_obs(fid=6), metric_cars=(mc,))
+    e.update(obs, DT, executed_lane=0.5, traffic=((), ()),
+             road_offset=0.0, road_width=4.4)
+    assert e.lane_hold == -1.5
+
+
+def test_hold_reanchors_after_maneuver() -> None:
+    """机动收尾回巡航：hold 失锚（None），按下个有报告拍的自车位置重初始化
+    ——旧持守不得拖着车开回几秒前的道。"""
+    e = DecisionEngine(_lane_cfg())
+    e.update(_obs(), DT, executed_lane=0.6, traffic=((), ()),
+             road_offset=0.6, road_width=4.4)
+    assert e.lane_hold == 0.5
+    g, ms = _group(3, fid=2, x=0.5)
+    out = e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.6,
+                   traffic=((), ()), road_offset=0.6, road_width=4.4)
+    assert out.state is DecisionState.CHANGE
+    e._finish_change("unit")
+    assert e._lane_hold is None
+    e.update(_obs(fid=3), DT, executed_lane=-1.0, traffic=((), ()),
+             road_offset=-1.0, road_width=4.4)
+    assert e.lane_hold == -1.5                     # 按新位置重初始化

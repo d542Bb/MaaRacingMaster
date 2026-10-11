@@ -52,7 +52,7 @@ from maaracing_master.plugins.speedrush.corridor import UNKNOWN, Corridor
 from maaracing_master.plugins.speedrush.depth_geo import DrivableGrid
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, SampledTraj, eval_traj)
-from maaracing_master.plugins.speedrush.lane_score import LaneScorer
+from maaracing_master.plugins.speedrush.lane_score import LANES, LaneScorer
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_PASS, OUTCOME_PRESUMED_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -168,14 +168,31 @@ class LateralSafety:
         # 到站时间函数（引擎注入 Scorer.car_t_meet_s）；缺省=本类内旧行率式
         # （直构测试/旧装配的兼容退路，语义与旧实现逐位同形）
         self._t_meet = t_meet_fn if t_meet_fn is not None else self._t_pass_legacy
+        # 车米制状态（V2 行为闸 metric_cars.fusion，引擎逐拍喂入的单线程
+        # owner 实例通道，与 Scorer.fid_hz 同族纪律）：{track_id: MetricCarState}。
+        # None=闸关/无供数，_t_pass_s 纯像素（与旧实现逐位同形）。
+        self.metric_map: dict | None = None
 
     def _t_pass_legacy(self, rel: float, cy: float) -> float:
         rate = rel * self.hz
         return max(0.0, self.cal.v_ego - cy) / rate if rate > _EPS else math.inf
 
     def _t_pass_s(self, v: "CarView") -> float:
-        """该车到自车行的秒数（与超车评分同一接近口径）；不接近 → 永不到站。"""
-        return self._t_meet(v.rel_approach, v.cy)
+        """该车到自车行的秒数（与超车评分同一接近口径）；不接近 → 永不到站。
+        米制融合（V2）：无锚/估计窗未开=像素；pacing（v_close≤0，米制口径
+        永不到站）=全窗；两仪器都有正到站取**较晚**者——危险窗截断的物理口径
+        是「过自车行才吹不到」，截断只许更晚不许更早（不因单一仪器低估而提前
+        放行；早期截断=把还在逼近段的车当已错身， Unsafe 方向）。"""
+        t = self._t_meet(v.rel_approach, v.cy)
+        mm = self.metric_map
+        if mm is None:
+            return t
+        m = mm.get(v.id)
+        if m is None or m.v_close_mps is None:
+            return t
+        if m.t_meet_s is None:
+            return math.inf
+        return max(m.t_meet_s, t)
 
     def min_gap_lane(self, start: float, goal: float,
                      views: tuple["CarView", ...]) -> float:
@@ -397,6 +414,7 @@ class DecisionEngine:
         self._lane_report = None
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
+        self._metric_by_id: dict = {}    # 逐车米制索引（fusion 消费面）
         self.reset()
 
     def reset(self) -> None:
@@ -439,6 +457,11 @@ class DecisionEngine:
         self._corridor: Corridor | None = None
         self._traj_diag: dict | None = None   # 逐拍采样诊断（trace 消费）
         self._lane_report = None              # 影子道收益（闸开才有值）
+        # V2 选道持守（lane_scoring.control 闸）：CRUISE 轨迹目标=持守道心；
+        # None=失锚（下个有报告拍按最近道心重初始化）。挑战者=举证门槛防抖态。
+        self._lane_hold: float | None = None
+        self._lane_ch: float | None = None
+        self._lane_ch_streak: int = 0
 
     # ---------- 主入口 ----------
 
@@ -466,6 +489,11 @@ class DecisionEngine:
         # 车米制状态实例通道（C 线 2026-10-12，闸 metric_cars.enabled）：道评分
         # 与 ledger 米制列消费；行为路径不读它（V2 才换仪器）。闸关=空（回退路径）。
         self._metric_cars = obs.metric_cars if self.cfg.metric_cars.enabled else ()
+        # V2 行为面（fusion 闸）：逐车米制索引供 dodge ttc 融合；LateralSafety
+        # 危险窗截断吃同源通道（None=闸关，纯像素逐位不变）
+        self._metric_by_id = {m.target_id: m for m in self._metric_cars}
+        self.lateral.metric_map = (self._metric_by_id
+                                   if self.cfg.metric_cars.fusion else None)
         # 采集帧率逐拍喂入评分器（car_t_meet_s 的 px/fid→秒换算锚；None=
         # 预热未达，评分器自决退回旧口径）
         self.scorer.fid_hz = obs.fid_rate_hz
@@ -512,6 +540,14 @@ class DecisionEngine:
                 self._vd += (1.0 - math.exp(-dt_s / 0.2)) * (inst - self._vd)
             self._prev_exec = executed_lane
 
+        # 道收益评定（lane_scoring 闸开才算；前移到轨迹目标之前——control 闸
+        # 下同拍消费 pick，不隔拍）。
+        self._lane_report = (
+            self.lane_scorer.benefits(obs, self._views, executed_lane,
+                                      road_width=self._rwidth,
+                                      metric_cars=self._metric_cars)
+            if self.lane_scorer is not None else None)
+
         # 输出目标：轨迹模式=每拍重采样、输出选中轨迹的前瞻点（§2.3 滚动重评，
         # 破判连拍达 _REEVAL_STREAK 即 ABORT——防抖与 _miss_breach 同源纪律）；
         # 闸关/回执缺位/ro 缺席/非巡航变道态 → legacy x_smooth 位置常量路径。
@@ -520,7 +556,7 @@ class DecisionEngine:
         if self.traj is not None and executed_lane is not None \
                 and self._ro is not None \
                 and self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
-            d_t = self._traj_d_target(obs)
+            d_t = self._traj_d_target(obs, executed_lane)
             if d_t is not None:
                 rep = self.traj.update(
                     d0=executed_lane, vd0=self._vd, ad0=0.0, d_target=d_t,
@@ -550,13 +586,6 @@ class DecisionEngine:
                         reason = "cancel:traj_blocked"
                 elif rep.ok and self._state is DecisionState.CHANGE:
                     self._late_streak = 0
-
-        # 影子道收益（闸开才算）：逐拍 LaneReport 供 trace 对照列，不进选择
-        self._lane_report = (
-            self.lane_scorer.benefits(obs, self._views, executed_lane,
-                                      road_width=self._rwidth,
-                                      metric_cars=self._metric_cars)
-            if self.lane_scorer is not None else None)
 
         goal = self._current_goal(obs)
         alpha = 1.0 - math.exp(-dt_s / self.cfg.hysteresis.tau_filter_s)
@@ -619,10 +648,12 @@ class DecisionEngine:
         候选分布与切换频率从这列读）。"""
         return self._target_kind
 
-    def _traj_d_target(self, obs: WorldObservation) -> float | None:
+    def _traj_d_target(self, obs: WorldObservation,
+                       executed: float) -> float | None:
         """轨迹目标（路心系，道）：金币=ro+组心、超车=ro+锁定侧贴邻位、
-        巡航=0（守轴）。组转存续态（nan/缺位）保持上一拍目标——与
-        _current_goal 的"不外插 nan"同语义；无处可保持才 None（降级）。"""
+        巡航=道收益持守道（V2 control 闸）或 0（守轴旧语义）。组转存续态
+        （nan/缺位）保持上一拍目标——与 _current_goal 的"不外插 nan"同语义；
+        无处可保持才 None（降级）。"""
         if self._state is DecisionState.CHANGE:
             if self._target_kind in (KIND_CAND_OVERTAKE, KIND_CAND_BONUS):
                 v = self._car_target_of(obs, self._target_gid)
@@ -636,7 +667,54 @@ class DecisionEngine:
             if g is not None and not math.isnan(g.x_center):
                 return self._ro + g.x_center
             return self._traj_last_dt
+        if self.cfg.lane_scoring.control:
+            return self._lane_pick_target(executed)
         return 0.0
+
+    def _lane_pick_target(self, executed: float) -> float:
+        """CRUISE 轨迹目标=道收益持守道心（V2 行为闸 lane_scoring.control，
+        计划稿 §6 防抖四件套②的举证门槛）。挑战者=逐道收益 argmax（并列取
+        道格序低者，确定性破平），**不直接吃 rep.pick**——报告层的平手取当前
+        道在「当前道碰撞、两邻道并列」时会把 pick 钉在碰撞道上；本层 margin
+        +confirm 自带防抖，报告层的防抖不重复生效。评分每拍重算 ≠ 行为每拍
+        翻面：挑战者须**连续 pick_confirm 拍以 ≥pick_margin 分胜出**才改判；
+        报告缺席拍（无路心锚等）持旧目标不翻面；hold 失锚（机动后重进巡航）
+        按下个有报告拍的自车位置重初始化。"""
+        rep = self._lane_report
+        if rep is None:
+            self._lane_ch = None
+            self._lane_ch_streak = 0
+            return self._lane_hold if self._lane_hold is not None else 0.0
+        if self._lane_hold is None:
+            self._lane_hold = min(LANES, key=lambda L: abs(L - executed))
+        best_i = max(range(len(LANES)), key=lambda i: rep.benefits[i])
+        cand = LANES[best_i]
+        if cand == self._lane_hold:
+            self._lane_ch = None
+            self._lane_ch_streak = 0
+            return self._lane_hold
+        if rep.benefits[best_i] >= \
+                rep.benefits[LANES.index(self._lane_hold)] \
+                + self.cfg.lane_scoring.pick_margin:
+            if cand == self._lane_ch:
+                self._lane_ch_streak += 1
+            else:
+                self._lane_ch = cand
+                self._lane_ch_streak = 1
+            if self._lane_ch_streak >= self.cfg.lane_scoring.pick_confirm:
+                self._lane_hold = cand
+                self._lane_ch = None
+                self._lane_ch_streak = 0
+        else:
+            self._lane_ch = None
+            self._lane_ch_streak = 0
+        return self._lane_hold
+
+    @property
+    def lane_hold(self) -> float | None:
+        """上一拍 CRUISE 选道持守道心（control 闸消费面；trace lane_hold 列
+        与 lane_pick 对照——翻面率=防抖门槛的验收观测面）。None=闸关/失锚拍。"""
+        return self._lane_hold
 
     # ---------- 状态处理 ----------
 
@@ -1088,14 +1166,22 @@ class DecisionEngine:
         逼近的车是纯碰撞等待（near_dx 实测 0.00~0.04 道、pass d_min 0.23）。
         绕过评分与冷却强制起变道，目标=远离车体一侧的贴邻位；走廊仍过 veto
         （另一辆车占着回避侧就换下一辆）。回执缺位不判（横向几何纪律）。
-        归 allow_overtake 闸管：V0/V1 兼容红线（关闸时行为逐拍不变）。"""
+        归 allow_overtake 闸管：V0/V1 兼容红线（关闸时行为逐拍不变）。
+        ttc 米制融合（V2，闸 metric_cars.fusion）：像素逼近门放宽为「任一
+        仪器报逼近」——地平线退化带 rel 读数失真恰是米制仪器的治愈对象；
+        到站取两仪器较小者（先到者先防）。"""
         if not self.cfg.mode.allow_overtake or executed is None or not self._views:
             return None
+        fusion = self.cfg.metric_cars.fusion
         cands: list[tuple[float, CarView, float]] = []
         for v in self._views:
-            if v.rel_approach <= _EPS:
-                continue
-            ttc = self.scorer.car_t_meet_s(v.rel_approach, v.cy)
+            m = self._metric_by_id.get(v.id) if fusion else None
+            m_t = (m.t_meet_s if m is not None and m.v_close_mps is not None
+                   and m.v_close_mps > 0 else None)
+            if v.rel_approach <= _EPS and m_t is None:
+                continue                # 两仪器都说不逼近：正常机制管
+            pixel = self.scorer.car_t_meet_s(v.rel_approach, v.cy)
+            ttc = min(m_t, pixel) if m_t is not None else pixel
             if not (0.0 <= ttc < self.cfg.overtake.ttc_dodge_s):
                 continue                      # 不到站/还在远处：正常机制管
             if abs(v.x_lane - executed) >= self.cfg.validate.lat_veto_gap_lane:
@@ -1146,6 +1232,7 @@ class DecisionEngine:
         self._target_gid = None
         self._target_kind = None
         self._cur_score = -math.inf
+        self._lane_hold = None              # 保守出口重进巡航：选道失锚重初始化
 
     def _demand_consumed(self, executed: float) -> bool:
         """有符号完成判据：executed 与需求同向、幅度吃掉 |demand|×(1−ε) 减死区。
@@ -1171,6 +1258,7 @@ class DecisionEngine:
         self._target_kind = None
         self._cur_score = -math.inf
         self._reanchor_pending = reanchor   # 完成拍携带有符号目标读数（契约 v2）
+        self._lane_hold = None              # 机动终点≠道收益判断：回巡航失锚重初始化
         return f"done:{why}"
 
     def _group_of(self, obs: WorldObservation) -> CoinGroup | None:

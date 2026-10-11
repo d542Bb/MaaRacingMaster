@@ -225,9 +225,10 @@ class LaneScoring:
     """道级收益评分参数（2026-10-12 设计裁决：决策单位=道；整段可选，老 json
     不带段=全默认=关，与 plan_layer 同一条兼容纪律）。
 
-    语义：开闸后引擎逐拍算 LaneReport（lane_score.LaneScorer）供 trace/影子
-    对照——**不改行为**（shadow 先行）；行为切换（选道输出接 latsample）是
-    V2 A/B 的事，届时另立闸或复用本闸升级语义。数值全部 [需实测] 起值。"""
+    语义：`enabled` 开闸后引擎逐拍算 LaneReport（lane_score.LaneScorer）落
+    trace 对照列；`control` 是 V2 行为闸（计划稿 §6）——CRUISE 轨迹目标改吃
+    道收益 pick（举证门槛防抖），回滚=false 即回守轴旧行为。数值全部
+    [需实测] 起值。"""
 
     enabled: bool = False
     horizon_s: float = 2.0        # 收益前瞻（s）：提前量 P50 1.06s 的 ~2 倍
@@ -235,18 +236,24 @@ class LaneScoring:
     crash_penalty: float = 100.0  # 碰撞道负额（分；压过任何币/错身收益）
     pass_value: float = 30.0      # 邻道错身保底（分；RULES §4.11 普通档镜像）
     far_coin_weight: float = 0.3  # 前瞻窗外币的远权（方向信息仍在，当期吃不到）
+    control: bool = False         # V2 行为闸：CRUISE d_target=pick（false=守轴）
+    pick_margin: float = 20.0     # 举证门槛：挑战者须以 ≥此分差胜出（≈一个错身
+                                  # 保底的价值差才值得动道）
+    pick_confirm: int = 3         # 连续胜出拍数（计划稿 §6 防抖四件套②）
 
 
 @dataclass(frozen=True)
 class MetricCars:
     """车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。
 
-    语义：开闸后 `WorldObservation.metric_cars` 喂道评分（影子列）与 ledger
-    米制列——**不改行为**（band/dodge/veto/traj 的车仪器仍走像素系）；行为
-    路径换米制优先是 V2 的事。闸关=影子列回像素仪器，与旧 trace 逐位同构。
+    语义：`enabled` 开闸后 `WorldObservation.metric_cars` 喂道评分与 ledger
+    米制列；`fusion` 是 V2 行为闸（计划稿 §6）——dodge ttc 与横向 veto 危险
+    窗吃米制融合（dodge 取两仪器较小到站、veto 截断取较晚到站，各自保守向），
+    回滚=false 即纯像素旧行为。闸关=影子列回像素仪器，与旧 trace 逐位同构。
     米制量本身由锚点链路自况有效性（无锚=UNKNOWN 弃权），本闸只管供不供。"""
 
     enabled: bool = True
+    fusion: bool = False
 
 
 @dataclass(frozen=True)
@@ -456,9 +463,13 @@ def _read_decision(path: Path) -> DecisionConfig:
                                    100.0, lo=0),
             pass_value=_num_def(d, "lane_scoring", "pass_value", 30.0, lo=0),
             far_coin_weight=_num_def(d, "lane_scoring", "far_coin_weight",
-                                     0.3, lo=0, hi=1, lo_open=False)),
+                                     0.3, lo=0, hi=1, lo_open=False),
+            control=_bool(d, "lane_scoring", "control", default=False),
+            pick_margin=_num_def(d, "lane_scoring", "pick_margin", 20.0, lo=0),
+            pick_confirm=_int_def(d, "lane_scoring", "pick_confirm", 3, lo=1)),
         metric_cars=MetricCars(
-            enabled=_bool(d, "metric_cars", "enabled", default=True)))
+            enabled=_bool(d, "metric_cars", "enabled", default=True),
+            fusion=_bool(d, "metric_cars", "fusion", default=False)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis
