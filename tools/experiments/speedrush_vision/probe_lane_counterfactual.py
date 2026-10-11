@@ -46,12 +46,16 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
 
 LANES = (-1.5, -0.5, 0.5, 1.5)   # 4 道路心的整道栅格（道，右正，原点=路中心）
 LANE_HALF = 0.75                 # 道归属半宽（道）——车/币入道的横向判据
+ROAD_HALF_MAX = 2.2              # 出界丢弃门（道）：4.4 道宽半宽+容差——远场
+                                 # A1 膨胀读数（|x|>半宽=几何胡话）不入道格
 HORIZON_S = 2.0                  # 收益前瞻（s）
 CRASH_T = 0.8                    # 到站短于此 = 道热（不可收币；自车道=碰撞拍）
 COIN_VALUE = 30.0                # RULES §4.2 镜像（探针自持，不进决策链）
 
 
 def _nearest_lane(xr: float) -> float | None:
+    if abs(xr) > ROAD_HALF_MAX:
+        return None                  # 出界=膨胀读数，不入道格（不归最近道）
     best = min(LANES, key=lambda L: abs(xr - L))
     return best if abs(xr - best) <= LANE_HALF else None
 
