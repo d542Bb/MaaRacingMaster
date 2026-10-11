@@ -882,3 +882,73 @@ def test_safety_veto_aborts_mid_change():
     out = e.update(_good_obs(fid=2), DT, executed_lane=0.0,
                    traffic=_traffic([_cv(tid=9, x=0.75, cy=500)]))
     assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:lat_veto"
+
+
+# ---------- V0 门账本（docs/plan/speedrush-score-routing §4；只记账不改判） ----------
+
+def _car_tgt(tid, x, cy, rel, w=40, conf=0.9, fid=1):
+    return TrackedTarget(id=tid, kind="car", x_lane=x, x_sigma=0.1, cy=cy,
+                         w=w, h=30, conf=conf, rel_approach=rel,
+                         first_seen_fid=fid, last_seen_fid=fid,
+                         validity_until_fid=fid + 8)
+
+
+def test_gate_ledger_rows_and_reasons():
+    """账本逐车落行、拒绝原因来自唯一判定处（_score_car_reason）；带
+    TrackedTarget 时框宽米换算 w_m 落列（带噪估计，只记数不裁决）。"""
+    e = _eng(overtake=True)
+    views = [_cv(tid=9, x=1.1, cy=500, rel=10.0),    # 带内良候选：应过全门
+             _cv(tid=10, x=0.2, cy=500, rel=10.0),   # 本车道：band 拒
+             _cv(tid=11, x=1.1, cy=500, rel=-2.0)]   # 不接近：approach 拒
+    obs = _obs(fid=1, presence=True,
+               targets=(_car_tgt(9, 1.1, 500, 10.0),
+                        _car_tgt(10, 0.2, 500, 10.0),
+                        _car_tgt(11, 1.1, 500, -2.0)))
+    out = e.update(obs, DT, traffic=_traffic(views))
+    led = e.gate_ledger
+    assert led is not None and led["v"] == 1
+    rows = {r["id"]: r for r in led["cars"]}
+    assert rows[9]["why"] is None and rows[9]["score"] >= 20.0
+    assert rows[9]["w_px"] == 40 and 0.0 < rows[9]["w_m"] < 3.0
+    assert rows[10]["why"] == "band" and "w_m" in rows[10]
+    assert rows[11]["why"] == "approach"
+    assert out.target_id == 9                        # 账本没改判：选择照旧
+
+
+def test_gate_ledger_done_pass_and_low_score():
+    """done_pass 车标记独立于评分；低分车 why=score（分数门读数面）。
+    注意分数门量级：E≈132（勘误后），t_meet=1.9s 的远车分数 ~80 照样过——
+    造"分数不过"必须 t_meet≈9.5s（rel=0.4），顺带就是勘误的行为锁。"""
+    e = _eng(overtake=True)
+    out = e.update(_obs(fid=1, presence=True), DT,
+                   traffic=_traffic([_cv(tid=9, x=1.1, cy=500, rel=10.0)]))
+    assert out.state is DecisionState.CHANGE           # 锁定 9 号
+    out = e.update(_obs(fid=3, presence=True), DT,
+                   traffic=_traffic([], (_pass_ev(tid=9, fid=3),)))
+    assert "done:overtake_pass" in out.reason          # 正常结算路径入 done_pass
+    # pass 冷却（t_cool_pass_s=0.2）走完再给车流：冷却拍 _select 不跑
+    e.update(_obs(fid=4, presence=True), 0.3)
+    e.update(_obs(fid=5, presence=True), DT,
+             traffic=_traffic([_cv(tid=9, x=1.1, cy=500, rel=10.0),
+                               _cv(tid=12, x=1.3, cy=640, rel=0.4)]))
+    rows = {r["id"]: r for r in e.gate_ledger["cars"]}
+    assert rows[9]["why"] == "done_pass" and "score" not in rows[9]
+    assert rows[12]["why"] == "score" and rows[12]["t_meet"] > 8.0
+
+
+def test_gate_ledger_none_without_select():
+    """未跑选择的拍（致命→CONSERVE）不留旧账：gate_ledger=None。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT)
+    e.update(_obs(fid=2, alive=False), DT)
+    assert e.gate_ledger is None
+
+
+def test_gate_ledger_coin_rows():
+    """金币行：好组 why=None；低信组读数面落在 conf/score（不细分，账面如实）。"""
+    e = _eng()
+    e.update(_good_obs(fid=1), DT)
+    assert e.gate_ledger["coins"][0]["why"] is None
+    e2 = _eng()
+    e2.update(_good_obs(fid=1, conf=0.52), DT)
+    assert e2.gate_ledger["coins"][0]["why"] in ("conf", "score")

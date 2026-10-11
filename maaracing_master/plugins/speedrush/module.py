@@ -992,6 +992,12 @@ class SpeedRushModule(ActivityModule):
             # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
             # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
             "car_views": len(tviews),
+            # V0 逐候选门账本（docs/plan/speedrush-score-routing §4）：逐车/
+            # 组/奖励车的门判定与拒绝原因、框宽米换算（带噪估计）、错身原料——
+            # no_candidate 归因的数据源。行结构见 decision.gate_ledger docstring；
+            # None=本拍未跑选择（CONSERVE/ABORT/致命/冷却拍）。2D 帧龄拍级已有
+            # oage 列（同拍目标共享同一帧，帧龄即目标龄），账本不重复落。
+            "ledger": chain["engine"].gate_ledger,
             "car_vlat": None if not tviews else round(
                 max(abs(v.v_lat) for v in tviews), 3),
             "near_dx": None if not tviews else round(

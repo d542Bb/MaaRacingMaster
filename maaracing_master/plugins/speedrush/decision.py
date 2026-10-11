@@ -249,10 +249,17 @@ class Scorer:
 
         候选带/接近方向自卫见 §四：本车道车（|x|<band_lo）与掠过中（<下沿）不作候选；
         d̂_min<窗下沿的"更贴"不奖励——窗中心是唯一目标（硬地板语义，设计稿 §〇.1）。"""
+        return self._score_car_reason(view)[0]
+
+    def _score_car_reason(self, view: CarView) -> tuple[Scored | None, str | None]:
+        """score_car 带拒绝原因形态（V0 门账本消费）：账本读拒绝面但不能有
+        第二套门公式——本方法是唯一判定处，score_car 只是它的无原因透传。
+        reason ∈ {"band", "approach"}；None=出了 Scored。"""
         ax = abs(view.x_lane)
         if not (self.ov.lane_band_lo <= ax < self.ov.lane_band_hi) \
                 or view.rel_approach <= _EPS:
-            return None
+            return None, ("band" if not (self.ov.lane_band_lo <= ax
+                                         < self.ov.lane_band_hi) else "approach")
         # px/s 量纲名不副实：rel_approach 实为 px/fid（fid 率 ~38/s），此处按
         # px/tick 乘 20/s 消费=恒定高估 TTC ~1.9x；ttc_dodge_s 等阈值是经验
         # 标定已吸收该偏差（设计稿 §4）——勿单独修单位，动则连阈值一起重标
@@ -263,7 +270,7 @@ class Scorer:
         score = self._e_overtake * life \
             - self.c.shift_cost_per_lane * abs(goal)
         return Scored(group=None, score=score, t_miss_s=t_meet,
-                      kind=KIND_CAND_OVERTAKE, car=view)
+                      kind=KIND_CAND_OVERTAKE, car=view), None
 
     def hug_goal(self, x_lane: float, ref: float = 0.0) -> float:
         """贴邻目标（§四裁定）：在 ref（=自车位置）与目标同侧、距目标 d_hold 处。
@@ -329,6 +336,9 @@ class DecisionEngine:
         self.watch = ValidationWatch(cfg)
         self.scorer = Scorer(cfg, self.cal)
         self.lateral = LateralSafety(cfg, self.cal)
+        # V0 逐候选门账本（本计划 §4）：_select 每拍重建，tick 入口清旧账；
+        # trace 经 gate_ledger 属性消费，None=本拍未跑选择
+        self._gate_ledger: dict | None = None
         # 计划层选择门（设计稿 v2；闸默认关=None=legacy _select 逐位不变）：
         # bonus＞极限超车＞coin 字典序 + CHANGE 改判慢拍+持续性门（plan.py）
         self._plan_sel = (PlanSelector(cfg, self.cal, self.scorer, self.lateral)
@@ -414,6 +424,7 @@ class DecisionEngine:
         self._ro = road_offset
         self._rwidth = road_width
         self._grid = grid if self.cfg.grid_veto.enabled else None
+        self._gate_ledger = None           # 每拍清账：本拍没跑 _select=无账，不读旧账
         # 优先级（§二矩阵）：致命信号 > ABORT/收敛/超时 > 选择。本 tick 先处理转移，
         # 再按落定的状态发输出。
         report = self.watch.check(obs, dt_s)
@@ -513,6 +524,18 @@ class DecisionEngine:
         ok/why/n_eval/否决分项（n_grid 栅格/n_col 街车/n_reach 可达域/n_bound
         边界）/中选 [d1, T]。"""
         return self._traj_diag
+
+    @property
+    def gate_ledger(self) -> dict | None:
+        """本拍逐候选门账本（V0 账本，docs/plan/speedrush-score-routing §4；
+        trace 消费）：
+        {"v": 1, "cars": [...], "coins": [...], "bonus": [...]}——
+        cars 行 why ∈ {done_pass, band, approach, score, feas, veto, side,
+        None=过全门}，带 x/cy/rel/age/框宽米换算（w_m，带噪估计）；
+        coins 行 why ∈ {conf, score, feas, veto, None}；bonus 行只落原料
+        （x/cy/rel/w/conf/age，legacy 路不评 bonus）。
+        None=本拍未跑选择（CONSERVE/ABORT/致命/冷却拍），不留旧账。"""
+        return self._gate_ledger
 
     @property
     def traj_plan(self) -> "SampledTraj | None":
@@ -812,14 +835,50 @@ class DecisionEngine:
         if self._cool_t > 0 or not self.cfg.mode.allow_all_moves:
             return None
         start = executed if executed is not None else 0.0
+        t = self.cfg.timing
+        min_score = self.cfg.hysteresis.min_score
+        # V0 门账本（docs/plan/speedrush-score-routing §4）：与下方选择共用
+        # 同一批判定，账本行是判定的读数面而非第二套门——公式单一真源=
+        # 本函数+Scorer/LateralSafety。只记账不改判。
+        tgt = {x.id: x for x in obs.targets}
+        cars_rows: list[dict] = []
+        coins_rows: list[dict] = []
+        bonus_rows = [
+            {"id": x.id, "x": None if x.x_lane is None else round(x.x_lane, 3),
+             "cy": x.cy, "rel": round(x.rel_approach, 2), "w_px": x.w,
+             "conf": round(x.conf, 2), "age": obs.frame_id - x.first_seen_fid}
+            for x in obs.targets if x.kind == KIND_BONUS]
         best: Scored | None = None
         for g in obs.coin_groups:
             s = self.scorer.score(g, obs)
-            if s is None or s.score < self.cfg.hysteresis.min_score:
+            row: dict = {"id": g.group_id, "x": round(g.x_center, 3),
+                         "conf": round(g.conf_min, 3), "n": g.observed_count,
+                         "score": None if s is None else round(s.score, 2),
+                         "t_miss": None if s is None
+                         or not math.isfinite(s.t_miss_s)
+                         else round(s.t_miss_s, 2), "why": None}
+            if s is None:
+                row["why"] = "conf"
+            else:
+                ok = s.score >= min_score
+                need = t.lane_change_duration_s(g.x_center - start)
+                feas = not (need + t.tau_resp_s + t.margin_s >= s.t_miss_s)
+                veto = None if executed is None else \
+                    self.lateral.veto_reason(executed, g.x_center, self._views)
+                row["feas"] = feas
+                row["veto"] = veto
+                if not ok:
+                    row["why"] = "score"
+                elif not feas:
+                    row["why"] = "feas"
+                elif veto is not None:
+                    row["why"] = "veto"
+            coins_rows.append(row)
+            if s is None or s.score < min_score:
                 continue
             # 时机：从执行位出发的变道耗时 + 响应延迟 + 余量 < 错过时间
-            need = self.cfg.timing.lane_change_duration_s(g.x_center - start)
-            if need + self.cfg.timing.tau_resp_s + self.cfg.timing.margin_s >= s.t_miss_s:
+            need = t.lane_change_duration_s(g.x_center - start)
+            if need + t.tau_resp_s + t.margin_s >= s.t_miss_s:
                 continue
             if executed is not None and \
                     self.lateral.veto_reason(executed, g.x_center, self._views):
@@ -828,18 +887,54 @@ class DecisionEngine:
                 best = s
         if self.cfg.mode.allow_overtake:
             for v in self._views:
+                s, why = self.scorer._score_car_reason(v)
+                row = {"id": v.id, "x": round(v.x_lane, 3), "cy": v.cy,
+                       "rel": round(v.rel_approach, 2), "age": v.age_ticks,
+                       "why": "done_pass" if v.id in self._done_pass_ids
+                       else why}
+                tinfo = tgt.get(v.id)
+                if tinfo is not None and tinfo.w:
+                    row["w_px"] = tinfo.w
+                    row["conf"] = round(tinfo.conf, 2)
+                    denom = v.cy - self.cal.y_h
+                    if denom >= self.cal.min_denom:
+                        # 框宽→米：该行横向像素尺度 = a_x·lane_w_m/(cy−y_h)
+                        #（与 x_lane_of 同一地面尺；带噪估计非真值，语义见
+                        # 计划 §4 的宽度不确定度条款）
+                        row["w_m"] = round(
+                            tinfo.w * self.cal.a_x * self.cal.lane_w_m / denom, 3)
+                if s is not None and row["why"] is None:
+                    row["score"] = round(s.score, 2)
+                    row["t_meet"] = round(s.t_miss_s, 2)
+                    goal = self.scorer.hug_goal(v.x_lane, ref=start)
+                    need = t.lane_change_duration_s(goal - start)
+                    feas = not (need + t.tau_resp_s + t.margin_s >= s.t_miss_s)
+                    veto = None if executed is None else \
+                        self.lateral.veto_reason(executed, goal, self._views)
+                    side = self._side_has_space(v.x_lane)
+                    row["feas"] = feas
+                    row["veto"] = veto
+                    row["side"] = side
+                    if s.score < min_score:
+                        row["why"] = "score"
+                    elif not feas:
+                        row["why"] = "feas"
+                    elif veto is not None:
+                        row["why"] = "veto"
+                    elif not side:
+                        row["why"] = "side"
+                cars_rows.append(row)
                 if v.id in self._done_pass_ids:
                     continue
-                s = self.scorer.score_car(v)
-                if s is None or s.score < self.cfg.hysteresis.min_score:
+                if s is None or s.score < min_score:
                     continue
                 # 可行性门（19:44 复盘补装，与金币路同形）：从执行位到内贴目标的
                 # 耗时+响应+余量必须 < 相对接近时间——"来不及贴"的车不追
                 #（远距离白超 d_min 中位 1.11 的主犯；阶段一补执行回执口径）
                 goal = self.scorer.hug_goal(v.x_lane, ref=start)
-                need = self.cfg.timing.lane_change_duration_s(goal - start)
-                if (need + self.cfg.timing.tau_resp_s
-                        + self.cfg.timing.margin_s) >= s.t_miss_s:
+                need = t.lane_change_duration_s(goal - start)
+                if (need + t.tau_resp_s
+                        + t.margin_s) >= s.t_miss_s:
                     continue
                 # 横向安全 veto（阶段一）：机动走廊撞外推街车 → 拦下，不进评分
                 if executed is not None and \
@@ -851,6 +946,8 @@ class DecisionEngine:
                     continue
                 if best is None or s.score > best.score:
                     best = s
+        self._gate_ledger = {"v": 1, "cars": cars_rows,
+                             "coins": coins_rows, "bonus": bonus_rows}
         if best is None:
             return None
         if current is not None and best.score < current + self.cfg.hysteresis.switch_margin:
