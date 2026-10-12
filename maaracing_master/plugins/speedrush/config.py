@@ -257,6 +257,21 @@ class MetricCars:
 
 
 @dataclass(frozen=True)
+class DebugDump:
+    """调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验）。
+
+    off：深度观测器不建 debug_dir，证据包零落盘。events：worker 内存 ring
+    留最近 ``ring`` 次捕获，push 快照（滞后 1 拍）报事件——state=CONSERVE
+    或 reason 含 dodge——时落盘 ring+后续 ``event_window`` 帧；真正消费的
+    是 dodge/conserving 时刻±窗口，恒开全量是探针期残留。full：现状全量
+    0.5s 节流（感知排错期用）。"""
+
+    mode: str = "events"
+    ring: int = 10
+    event_window: int = 20
+
+
+@dataclass(frozen=True)
 class DecisionConfig:
     mode: Mode
     control: Control
@@ -272,6 +287,7 @@ class DecisionConfig:
     grid_xcheck: GridXcheck = GridXcheck()
     lane_scoring: LaneScoring = LaneScoring()
     metric_cars: MetricCars = MetricCars()
+    debug_dump: DebugDump = DebugDump()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -342,6 +358,11 @@ def _read_decision(path: Path) -> DecisionConfig:
                 "planner"):
         if not isinstance(d.get(sec), dict):
             raise ValueError(f"decision.json 缺段「{sec}」")
+    _dump_mode = str((d.get("debug_dump") or {}).get("mode") or "events")
+    if _dump_mode not in ("off", "events", "full"):
+        raise ValueError(
+            f"[debug_dump] mode={_dump_mode!r} 不在 off/events/full"
+            "（off=零落盘，events=事件触发 ring+窗口，full=恒开全量）")
 
     cfg = DecisionConfig(
         mode=Mode(
@@ -469,7 +490,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             pick_confirm=_int_def(d, "lane_scoring", "pick_confirm", 3, lo=1)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
-            fusion=_bool(d, "metric_cars", "fusion", default=False)))
+            fusion=_bool(d, "metric_cars", "fusion", default=False)),
+        debug_dump=DebugDump(
+            mode=_dump_mode,
+            ring=_int_def(d, "debug_dump", "ring", 10, lo=0),
+            event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis

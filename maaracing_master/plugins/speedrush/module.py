@@ -736,8 +736,13 @@ class SpeedRushModule(ActivityModule):
                 # _stop_depth_observer 的收口与健康报警）。
                 "depth_geo": _started_async_depth(
                     DepthRoadObserver(self._ensure_depth_session(), cal),
-                    debug_dir=_control_trace_root() / ("depth_debug_"
-                    + time.strftime("%Y%m%d_%H%M%S"))),
+                    # 证据包三态闸（debug_dump，2026-10-12 设计裁决）：off=零
+                    # 落盘；events=事件触发（dodge/conserving 时刻 ring+窗口）；
+                    # full=恒开全量（感知排错期）。文件格式三态同构
+                    debug_dir=(None if cfg.debug_dump.mode == "off"
+                               else _control_trace_root() / ("depth_debug_"
+                               + time.strftime("%Y%m%d_%H%M%S"))),
+                    dump=None if cfg.debug_dump.mode == "off" else cfg.debug_dump),
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                 # raw/hud 调试图落盘器（treasure 规范，3fps；ctx.debug.enabled 门，
                 # 测试 ctx=None → None → tick 空转）。生命周期=chain，finally 收口。
@@ -876,6 +881,7 @@ class SpeedRushModule(ActivityModule):
             s = chain["engine"].scorer.score(g, obs)
             if s is not None and (best is None or s.score > best[0]):
                 best = (s.score, g.x_center)
+        h_score, h_rate = _ego_hud_readout(chain.get("hud_ref"))
         chain["trace"].append({
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
             # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
@@ -1008,6 +1014,10 @@ class SpeedRushModule(ActivityModule):
             "lane_pick": None if chain["engine"].lane_report is None
             else chain["engine"].lane_report.pick,
             "lane_hold": chain["engine"].lane_hold,
+            # HUD 本机读数（hud_ref 挂载；rate 只在蓝卡识别=有 rate 的槽位即
+            # 本机）：局结局程序化取数面（得分/得分速度），缺失拍诚实 None
+            # （对手卡读数是背景假读，按槽位猜会静默读错）；血量格未读另案
+            "hud_score": h_score, "hud_rate": h_rate,
             "car_vlat": None if not tviews else round(
                 max(abs(v.v_lat) for v in tviews), 3),
             "near_dx": None if not tviews else round(
@@ -1083,6 +1093,7 @@ class SpeedRushModule(ActivityModule):
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             chain["trace_flushed"] = len(rows)
             if final:
+                self._write_game_summary(chain, phase, rows)
                 _tlog(self,
                       f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍 → {name}",
                       "INFO")
@@ -1093,6 +1104,51 @@ class SpeedRushModule(ActivityModule):
                           f"{bf['saved']} 张 → {bf['dir']}", "INFO")
         except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
+
+    def _write_game_summary(self, chain: dict, phase: int,
+                            rows: list[dict]) -> None:
+        """局汇总一行/阶段，追加写 ``game_summary.jsonl``（与 trace 同目录）。
+
+        消费者=局级验收/A/B：得分/得分速度/时长/事件计数程序化取数——
+        2026-10-12 4v4 分析实证主指标要翻 20+ 帧人工 OCR，收口后由 hud_score/
+        hud_rate 末值直接给。血量格 HudObserver 未读、胜负=回合结束屏，均不
+        在此列（另案）。失败只记 WARNING——汇总缺失不该中止收尾。"""
+        try:
+            score = rate = None
+            dodges = conserve = cons_segments = 0
+            prev_dodge = False
+            for r in rows:
+                if r.get("reason") == "select:dodge":
+                    if not prev_dodge:
+                        dodges += 1
+                    prev_dodge = True
+                else:
+                    prev_dodge = False
+                if r["state"] == "CONSERVE":
+                    if conserve == 0:
+                        cons_segments += 1
+                    conserve += 1
+                else:
+                    conserve = 0
+                if r.get("hud_score") is not None:
+                    score = r["hud_score"]
+                if r.get("hud_rate") is not None:
+                    rate = r["hud_rate"]
+            root = _control_trace_root()
+            root.mkdir(parents=True, exist_ok=True)
+            rec = {
+                "ts": time.strftime("%Y%m%d_%H%M%S",
+                                    time.localtime(chain["t_start"])),
+                "phase": phase, "ticks": len(rows), "score": score,
+                "rate": rate,
+                "dur_s": round((rows[-1]["ts_ns"] - rows[0]["ts_ns"]) / 1e9, 1),
+                "dodge_episodes": dodges,
+                "conserve_segments": cons_segments,
+            }
+            with open(root / "game_summary.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001 —— 汇总缺失不阻断收尾
+            _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：局汇总落盘失败: {exc!r}", "WARNING")
 
     def _stop_depth_observer(self, chain: dict, phase: int) -> None:
         """停深度 worker + 阶段出口报一次健康——不达标报警的落点（判据移植 treasure）。
@@ -1621,15 +1677,46 @@ class _EgoRoadObserver:
 
 
 def _started_async_depth(obs: DepthRoadObserver,
-                         debug_dir: Path | None = None) -> AsyncDepthRoadObserver:
+                         debug_dir: Path | None = None,
+                         dump=None) -> AsyncDepthRoadObserver:
     """构造即启动的异步深度观测器（session 不可用时 start 自为 no-op，见其 docstring）。
 
-    debug_dir 给定时，worker 按 DEBUG_INTERVAL_S 节流落实机调试图（三行堆叠：
-    看了什么/算了什么/判了什么）。生命周期与 chain 同呼吸：这里 start，
-    驾驶循环 finally 的 _stop_depth_observer 收口。"""
-    a = AsyncDepthRoadObserver(obs, debug_dir=debug_dir)
+    debug_dir 给定时，worker 按 dump 三态闸落盘（off 不建 dir=零落盘；
+    events=事件触发 ring+窗口；full=0.5s 节流全量）。生命周期与 chain 同
+    呼吸：这里 start，驾驶循环 finally 的 _stop_depth_observer 收口。"""
+    a = AsyncDepthRoadObserver(obs, debug_dir=debug_dir, dump=dump)
     a.start()
     return a
+
+
+def _ego_hud_readout(hud) -> tuple[float | None, float | None]:
+    """HUD 读数的本机（蓝卡）得分与得分速度（局结局程序化取数面）。
+
+    rate 行只在本机卡上识别（hud.py v4 判据：对手侧只有背景假读），故
+    「有 rate 的槽位」即本机槽位——按槽位本身猜会在换位拍静默读错。
+    rate 缺失拍不臆造归属（诚实 None）。None 输入=未挂载/无样本；对象缺
+    latest()（读数线程退化的鸭子）同样返回 None——本函数在控制拍热路径，
+    不得因读数侧异常炸驾驶循环。"""
+    if hud is None:
+        return None, None
+    latest_fn = getattr(hud, "latest", None)
+    if latest_fn is None:
+        return None, None
+    try:
+        latest = latest_fn()
+        fields = latest.get("fields") or {}
+
+        def _v(name: str):
+            cell = fields.get(name)
+            return cell.get("value") if isinstance(cell, dict) else None
+
+        if _v("rate_a") is not None:
+            return _v("score_a"), _v("rate_a")
+        if _v("rate_b") is not None:
+            return _v("score_b"), _v("rate_b")
+        return None, None
+    except Exception:  # noqa: BLE001 —— 读数侧异常不炸驾驶循环（诚实 None）
+        return None, None
 
 
 def _control_trace_root() -> Path:

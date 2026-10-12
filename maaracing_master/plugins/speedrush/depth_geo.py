@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import threading
 import time
+import io
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1523,11 +1524,22 @@ class AsyncDepthRoadObserver:
     def __init__(self, observer: DepthRoadObserver,
                  max_age_ms: float = MAX_AGE_MS,
                  debug_dir: Path | None = None,
-                 infer_min_interval_s: float = INFER_MIN_INTERVAL_S) -> None:
+                 infer_min_interval_s: float = INFER_MIN_INTERVAL_S,
+                 dump=None) -> None:
         self._obs = observer
         self._max_age_ms = float(max_age_ms)
         self._infer_interval_s = float(infer_min_interval_s)
         self._debug_dir = Path(debug_dir) if debug_dir is not None else None
+        # 证据包三态闸（DebugDump，config 真源）：None=off/full 外的缺省=full。
+        # events：内存 ring 留最近 ring 次捕获（渲染+编码字节，~2-3MB/次），
+        # push 快照报事件时落盘 ring+后续 event_window 帧
+        self._dump = dump
+        self._dump_ring: deque | None = (
+            deque(maxlen=int(dump.ring))
+            if dump is not None and getattr(dump, "mode", "full") == "events"
+            else None)
+        self._event_window = int(getattr(dump, "event_window", 20)) if dump else 20
+        self._event_left = 0
         self._debug_last = float("-inf")   # 「从未出工」：0 会在进程早期(monotonic<窗)误判窗内
         self._debug_seq = 0
         self._lock = threading.Lock()
@@ -1699,6 +1711,9 @@ class AsyncDepthRoadObserver:
         if now - self._debug_last < self.DEBUG_INTERVAL_S:
             return
         self._debug_last = now
+        if self._dump is not None and getattr(self._dump, "mode", "full") == "events":
+            self._write_debug_events(frame, evid, reading, object_mask, note)
+            return
         try:
             self._debug_dir.mkdir(parents=True, exist_ok=True)
             self._debug_seq += 1
@@ -1726,6 +1741,82 @@ class AsyncDepthRoadObserver:
             if object_mask is not None:
                 np.save(str(stem) + "_mask.npy", np.packbits(object_mask))
         except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
+            pass
+
+    def _write_debug_events(self, frame, evid, reading, object_mask,
+                            note=None) -> None:
+        """events 模式：内存 ring 留最近 ring 次捕获，事件触发落盘 ring+窗口。
+
+        事件判据=push 快照（滞后 1 拍，采集节流 0.5s 下可接受）：state=
+        CONSERVE 或 reason 含 dodge——真正消费的是 dodge/conserving 时刻±
+        窗口（2026-10-12 设计裁决）。触发时 ring 先落（前情）+本帧，再
+        event_window−1 帧直写（后果）。full 路径不经过这里（imwrite 直写
+        逐位不动）。"""
+        payload = self._encode_debug_payload(frame, evid, reading, object_mask,
+                                             note)
+        if payload is None:
+            return
+        if self._event_left > 0:
+            self._event_left -= 1
+            self._dump_stem(payload)
+            return
+        note_d = note or {}
+        reason = str(note_d.get("reason") or "")
+        if note_d.get("state") == "CONSERVE" or "dodge" in reason:
+            ring = self._dump_ring
+            while ring:
+                self._dump_stem(ring.popleft())
+            self._event_left = max(0, self._event_window - 1)
+            self._dump_stem(payload)
+            return
+        self._dump_ring.append(payload)
+
+    def _encode_debug_payload(self, frame, evid, reading, object_mask,
+                              note=None) -> dict | None:
+        """渲染+编码单次捕获（events 模式内存载荷；full 模式 imwrite 直写
+        路径逐位不动）。内容与 full 同构：同渲染函数、同编码器参数、同
+        evid 口径。失败返回 None——debug 绝不干扰主路。"""
+        try:
+            img = render_depth_debug(frame, evid, reading, object_mask, note,
+                                     grid=evid.get("grid") if evid else None)
+            sol = (evid or {}).get("solver") or {}
+            buf = io.BytesIO()
+            np.savez(buf,
+                     pts=evid["pts"].astype(np.float16),
+                     valid=np.packbits(evid["valid"].ravel()),
+                     valid_shape=np.array(evid["valid"].shape, np.int64),
+                     fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
+                     ms=np.float64(evid.get("ms", -1.0)),
+                     sol_sh=np.float64(sol.get("shift", np.nan)),
+                     sol_resid=np.float64(sol.get("resid", np.nan)),
+                     sol_n=np.int64(sol.get("n", -1)),
+                     fid=np.int64(note["fid"]) if note and note.get("fid") is not None
+                     else np.int64(-1))
+            return {
+                "img.jpg": cv2.imencode(
+                    ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes(),
+                "frame.jpg": cv2.imencode(
+                    ".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
+                    [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes(),
+                "evid.npz": buf.getvalue(),
+                "mask.npy": None if object_mask is None
+                else np.packbits(object_mask).tobytes(),
+            }
+        except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
+            return None
+
+    def _dump_stem(self, payload: dict) -> None:
+        """顺序落一帧证据包（events 模式；文件名协议与 full 同构）。"""
+        try:
+            self._debug_dir.mkdir(parents=True, exist_ok=True)
+            self._debug_seq += 1
+            stem = self._debug_dir / f"d{self._debug_seq:05d}"
+            (Path(str(stem) + ".jpg")).write_bytes(payload["img.jpg"])
+            (Path(str(stem) + "_frame.jpg")).write_bytes(payload["frame.jpg"])
+            (Path(str(stem) + "_evid.npz")).write_bytes(payload["evid.npz"])
+            if payload["mask.npy"] is not None:
+                (Path(str(stem) + "_mask.npy")).write_bytes(payload["mask.npy"])
+        except Exception:  # noqa: BLE001 —— 落盘失败不碰主路
             pass
 
     def _pop_latest(self) -> tuple[int, np.ndarray, float, np.ndarray | None,
