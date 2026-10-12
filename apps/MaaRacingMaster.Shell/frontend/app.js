@@ -600,7 +600,7 @@
       updateModuleOptionsDisabled(!!data.is_running);
       state.stages = data.stages || [];
       renderStageList();
-      // 初始化模块选项（仅 treasure 展示）
+      // 初始化模块专属选项控件（各模块自述配置面，见 settings.js 的模块页定义表）
       bindModuleOptionsUI();
       refreshModuleOptions(data.selected_module);
       // 按当前模块渲染「数据/设置」页卡片

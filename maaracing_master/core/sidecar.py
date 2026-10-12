@@ -66,8 +66,9 @@ _STDERR = cast(TextIO, sys.__stderr__)
 # 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
 # --------------------------------------------------------------------------
 _PROFILE_FILENAME = "profile.json"
-# 默认选中模块 id（仅作 id 引用，不直接 import 插件包；GUI 进入默认展示鉴宝）
-_DEFAULT_MODULE_ID = "treasure"
+# 默认选中模块：**不硬编码任何具体模块 id**——预选注册顺序里第一个仍在有效期内的模块，
+# 全部不可用时不预选（GUI「（空）」承担该状态）。写死某个活动会把该活动固化成特权模块，
+# 且它退役后常量即悬空；core 也不得出现模块 id 字面量。
 # 模块配置的键白名单不在这里定义：它由各模块类的 DEFAULT_MODULE_CONFIG 声明
 # （配置面由模块自述，见 ActivityModule 的契约）。core 不得出现任何模块的字段名
 # ——否则每加一个配置项都要回头改这里。
@@ -389,14 +390,9 @@ class SidecarService:
         self._controller = MaaRacingMasterController()
         self._lock = threading.RLock()
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
-        # 默认选中鉴宝模块（GUI 进入即默认展示鉴宝；未注册或已过期时回退到第一个
-        # 仍在有效期内的模块；全部不可用则不预选，由 GUI「（空）」承担该状态）。
-        # 以模块 id 常量引用，避免 sidecar 耦合具体插件包。
-        self._selected_module = (
-            _DEFAULT_MODULE_ID
-            if _DEFAULT_MODULE_ID in MODULE_REGISTRY and not module_expired(_DEFAULT_MODULE_ID)
-            else first_available_module_id()
-        )
+        # 默认选中注册顺序里第一个仍在有效期内的模块；全部不可用时不预选，由 GUI
+        # 「（空）」承担该状态。不硬编码任何具体模块 id（见文件头默认模块说明）。
+        self._selected_module = first_available_module_id()
         try:
             self._stages = get_module_info(self._selected_module)["stages"] if self._selected_module else []
         except KeyError:

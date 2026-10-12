@@ -148,8 +148,9 @@ window.MRA = (function () {
   }
 
   // 当前活动模块 id（可变共享状态）：一律经 MRA.currentModuleId 读写（下方访问器），
-  // 保证唯一真源在本文件。
-  let currentModuleId = 'treasure';
+  // 保证唯一真源在本文件。初始为空（未选择）——真实值由初始化时按后端注册表给出的
+  // selected_module 写入；不硬编码任何模块 id，那会把某个活动固化成特权模块。
+  let currentModuleId = '';
 
   const MRA = { mra, $, state, showError, reportError, setInlineStatus, mkEl, appendIcon, postWindowAction };
   Object.defineProperty(MRA, 'currentModuleId', {

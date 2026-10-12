@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """RapidOCR 文字识别引擎（core 公共层）：单 ROI 抠图识别 + 硬测出来的引擎调参。
 
-**为什么住在 core**：这是插件间共享的识别底座——plugins/treasure 的出价/结算读数、
-`tools/navkit/studio_server.py` 的 ROI 校准台都要用它，后续 speedrush 的 HUD 读数也要。
-插件自包含契约禁止插件互相 import（见 `plugins/treasure/__init__.py`），故公共层只能在 core。
+**为什么住在 core**：这是插件间共享的识别底座——speedrush 的 HUD 读数、treasure 的出价/结算
+读数（该活动已退役，见 `plugins/treasure/RETIRED.md`）、`tools/navkit/studio_server.py` 的 ROI
+校准台都在用它。插件自包含契约禁止插件互相 import（见 `plugins/treasure/__init__.py`），
+故公共层只能在 core。
 **本模块是这套调参的唯一真源**：出现第二份副本，ORT 线程数与绑核那套实测定下的值就会分叉。
 
 **本模块只做引擎**：抠图 → 预处理 → 推理 → 交出文本。
