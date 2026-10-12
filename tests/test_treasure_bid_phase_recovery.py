@@ -25,9 +25,9 @@ except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
     TreasureModule = None
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
-)
+)]
 
 _FRAME = np.zeros((720, 1280, 3), dtype=np.uint8)
 

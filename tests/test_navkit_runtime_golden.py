@@ -25,9 +25,9 @@ try:
 except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"运行时金标测试需要完整依赖（maa/cv2/…）：{_RUNTIME_ERR}"
-)
+)]
 
 _PROJ = POLICY_PATH.parent.parent if _RUNTIME_OK else None  # resources 目录
 TOL = 1e-4  # 金标为历代一致值（6dp 记录），容差仅吸收浮点噪声，足以抓真实漂移

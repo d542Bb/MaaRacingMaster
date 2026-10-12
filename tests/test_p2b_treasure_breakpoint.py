@@ -1,30 +1,20 @@
 # -*- coding: utf-8 -*-
-"""treasure 统一接入（P2b 接入点）等价性单测：断点换算 → StageTracker。
+"""断点换算 → StageTracker 的等价性单测（core/stage_tracker 契约）。
 
-treasure start() 的断点解析已收敛到统一底座 StageTracker，但保留「先 in STAGE_ORDER
-判断、非法/None 回退 0」的旧观测语义（对照 racing P4 的做法）。本测试用 treasure 真实
-STAGE_ORDER 做 before/after 比对，满足「同输入下观测一致」不变量。
-
-treasure 的 STAGE_ORDER 从模块类读取（不 import module.py，避免拉入 cv2/maa 重依赖）。
+统一底座 StageTracker 必须保留「先 in STAGE_ORDER 判断、非法/None 回退 0」的旧观测语义。
+本测试用中性阶段清单做 before/after 比对，满足「同输入下观测一致」不变量——样本与任何
+具体活动无关，故不随活动退役而失效（原样本取自 treasure，见 plugins/treasure/RETIRED.md）。
 """
 from __future__ import annotations
-
-import json
-from pathlib import Path
 
 import pytest
 
 from maaracing_master.core.stage_tracker import StageTracker
 
-REPO = Path(__file__).resolve().parents[1]
-
-# 阶段清单真源 = policy.json perception.stages.order（TreasureModule.STAGE_ORDER 由它派生）。
-# 直读盘上真源而非镜像常量：手抄镜像正是 a1a6424 那类漂移的发生地；也不 import module.py，
-# 避免拉入 cv2/maa 重依赖。
-STAGE_ORDER = json.loads(
-    (REPO / "maaracing_master" / "plugins" / "treasure" / "resources"
-     / "policy" / "treasure.policy.json").read_text(encoding="utf-8")
-)["perception"]["stages"]["order"]
+# 中性阶段清单：本文件锁的是 StageTracker 的断点换算语义（core 契约），与任何具体活动的
+# 阶段名无关。原先直读 treasure 的 policy.json 真源做样本，随其退役（见
+# plugins/treasure/RETIRED.md）改为中性样本——core 的契约锁不应依赖退役模块的资源。
+STAGE_ORDER = ["s1", "s2", "s3", "s4", "s5"]
 
 
 def _legacy_skip(start_from: str | None):
@@ -59,8 +49,6 @@ class TestTreasureBreakpointEquivalence:
             tracker.resolve_start_from("不存在的阶段")
 
     def test_mid_stage_index(self):
-        assert _legacy_skip("中标结算") == STAGE_ORDER.index("中标结算")
-        # 流程首尾形态锁：开头按真实启动流程排（进游戏先待机 → 手柄指引弹窗 → 才到大厅），
-        # 不锁具体索引数字——写死 10 就是上一次加页面时差点绊倒的那类断言。
-        assert STAGE_ORDER[:3] == ["待机", "控制器指引弹窗", "游戏大厅"]
-        assert STAGE_ORDER[-1] == "结算弹窗"
+        # 取中间样本，覆盖非首非尾的真实中间态
+        mid = STAGE_ORDER[len(STAGE_ORDER) // 2]
+        assert _legacy_skip(mid) == STAGE_ORDER.index(mid)

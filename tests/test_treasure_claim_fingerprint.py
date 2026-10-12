@@ -18,6 +18,9 @@ from __future__ import annotations
 import pytest
 
 
+pytestmark = pytest.mark.retired
+
+
 def _load_module():
     try:
         from maaracing_master.plugins.treasure import module as mod

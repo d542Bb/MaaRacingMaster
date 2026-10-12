@@ -15,6 +15,9 @@ import time
 import pytest
 
 
+pytestmark = pytest.mark.retired
+
+
 def _load_module():
     """取 treasure.module 模块对象（类 + 模块级异常都要用；缺运行时依赖则跳过）。"""
     try:

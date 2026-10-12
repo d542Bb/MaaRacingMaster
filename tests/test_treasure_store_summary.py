@@ -22,6 +22,9 @@ import pytest
 from maaracing_master.plugins.treasure.store import TreasureStore
 
 
+pytestmark = pytest.mark.retired
+
+
 class _FakeModule:
     """flush_game_record / record_egg_claim 读到的字段全集（无逻辑，纯数据）。"""
 

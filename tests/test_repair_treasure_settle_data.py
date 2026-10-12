@@ -31,7 +31,7 @@ try:
 except Exception as exc:  # noqa: BLE001
     _OK, _ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(not _OK, reason=f"无法加载修复脚本：{_ERR}")
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(not _OK, reason=f"无法加载修复脚本：{_ERR}")]
 
 BUCKET = "2026-09-17"
 

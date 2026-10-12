@@ -41,7 +41,13 @@ include = ["maaracing_master*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # 单测只覆盖纯逻辑模块，避免拉入 maa/opencv 等重量级依赖
-addopts = "-ra"
+# retired：已退役活动模块（treasure）的回归锁——默认不跑，避免死模块的测试反向约束
+# core 演进（core 改接口→退役模块测试红→被迫修死模块或留兼容垫）。需要考古或复活时
+# 显式 `pytest -m retired`（addopts 被前置进命令行，-m 为 store 语义，后出现的赢）。
+addopts = "-ra -m 'not retired'"
+markers = [
+    "retired: 已退役活动模块的回归锁，CI 默认不跑",
+]
 python_files = ["test_*.py", "*_test.py"]
 
 [tool.ruff]

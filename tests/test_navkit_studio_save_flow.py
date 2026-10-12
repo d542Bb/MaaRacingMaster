@@ -21,6 +21,9 @@ import pytest
 from tools.navkit import studio_server as s
 
 
+pytestmark = pytest.mark.retired
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """真源副本 + 路径常量重定向；返回 tmp 路径与原字节快照。"""

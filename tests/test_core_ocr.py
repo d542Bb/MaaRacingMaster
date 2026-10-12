@@ -26,7 +26,7 @@ import pytest
 from maaracing_master.core import ocr as core_ocr
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-FIXTURE = REPO / "tools" / "experiments" / "egg-claim-coin-read" / "claim_popup_0609.png"
+FIXTURE = REPO / "tests" / "fixtures" / "claim_popup_0609.png"
 
 # {ROI 名: (归一化 rect, 实测文本)}；rect 抄自 treasure.policy.json 的 ocr 锚点
 GOLDEN = {
@@ -47,8 +47,7 @@ def test_core_ocr_recognize_golden_on_real_frame():
     pytest.importorskip("rapidocr")
     from maaracing_master.core.image_io import read_rgb
 
-    if not FIXTURE.exists():
-        pytest.skip("实验真帧 fixtures 未入库")
+    assert FIXTURE.is_file(), f"真帧素材缺失（正式资产应随仓库入库）：{FIXTURE}"
     frame = read_rgb(FIXTURE)
     assert frame is not None, "真帧解码失败"
 

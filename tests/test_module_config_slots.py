@@ -294,7 +294,7 @@ def test_merge_handles_missing_sides():
 # ---------- 真实模块的回归锁（缺插件注册时跳过）----------
 
 @pytest.mark.skipif(
-    not (_OK and "speedrush" in sc.MODULE_REGISTRY and "treasure" in sc.MODULE_REGISTRY),
+    not (_OK and "speedrush" in sc.MODULE_REGISTRY),
     reason="真实插件未注册（依赖缺失时 registry 会跳过该插件）",
 )
 def test_real_modules_declare_their_config_surface():
@@ -304,7 +304,6 @@ def test_real_modules_declare_their_config_surface():
     """
     from maaracing_master.core.registry import MODULE_REGISTRY as real_registry
     speedrush = real_registry["speedrush"]
-    treasure = real_registry["treasure"]
 
     sr = dict(speedrush.DEFAULT_MODULE_CONFIG)
     assert "record_mode" in sr and sr["record_mode"] is False
@@ -316,7 +315,3 @@ def test_real_modules_declare_their_config_surface():
     keys = set(sc._module_config_defaults("speedrush"))
     assert keys == {"record_mode", "perception_mode", "control_mode",
                     "straight_mode"}
-
-    tr = set(sc._module_config_defaults("treasure"))
-    assert tr == {"max_daily_loops", "target_session"}
-    assert tr <= set(treasure.DEFAULT_MODULE_CONFIG)

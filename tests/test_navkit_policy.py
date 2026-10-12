@@ -36,6 +36,9 @@ _POLICY_PATH = (
 )
 
 
+pytestmark = pytest.mark.retired
+
+
 def _load_nav():
     """policy.json 数据面（P4b 起本套件的唯一输入源）。"""
     from maaracing_master.core.navkit.v4_source import load_nav_source

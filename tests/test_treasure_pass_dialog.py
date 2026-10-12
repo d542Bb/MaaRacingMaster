@@ -29,7 +29,7 @@ try:
 except Exception as exc:  # noqa: BLE001
     _OK, _ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(not _OK, reason=f"需要 cv2/template_match 运行时依赖：{_ERR}")
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(not _OK, reason=f"需要 cv2/template_match 运行时依赖：{_ERR}")]
 
 # dialog_crop.jpg = 全帧 (640,180)-(1280,520) 裁剪（1280×720 基准），无玩家 ID 水印区。
 _FULL_W, _FULL_H = 1280, 720
@@ -91,9 +91,8 @@ def test_pass_confirm_matches_dialog_frame():
 
 def test_pass_confirm_no_hit_on_claim_popup_frame():
     """聚合奖励弹窗（红蛋/红礼物区同屏）按同一 ROI 匹配不得命中——防串环境。"""
-    other = _REPO / "tools" / "experiments" / "egg-claim-coin-read" / "claim_popup_0609.png"
-    if not other.exists():
-        pytest.skip("奖励弹窗真帧 fixtures 未入库")
+    other = _REPO / "tests" / "fixtures" / "claim_popup_0609.png"
+    assert other.is_file(), f"真帧素材缺失（正式资产应随仓库入库）：{other}"
     a = _spec_anchor()
     tpl = cv2.cvtColor(cv2.imread(str(IMAGE_DIR / a["templates"][0])), cv2.COLOR_BGR2RGB)
     frame = cv2.cvtColor(cv2.imread(str(other)), cv2.COLOR_BGR2RGB)

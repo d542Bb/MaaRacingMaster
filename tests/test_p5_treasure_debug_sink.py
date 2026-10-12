@@ -13,6 +13,7 @@ update_peep 的副本语义，无需依赖 JPEG 编码细节。
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from pathlib import Path
 
 from maaracing_master.core.debug import NavigationDebugger
@@ -57,6 +58,9 @@ class TestUpdatePeep:
         d.update_peep(f)
 
 
+# 本测试锁的是 treasure 的代码形态（源码文本断言），随 treasure 退役（见 plugins/treasure/RETIRED.md）；
+# 同文件的 TestUpdatePeep 锁的是 core/debug 的公开接口契约，保留。
+@pytest.mark.retired
 def test_treasure_no_private_debug_member_access():
     """treasure/module.py 不再直接访问 debug 的私有帧成员（P5 红线）。
 

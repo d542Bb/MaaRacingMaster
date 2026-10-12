@@ -15,6 +15,8 @@ import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from maaracing_master.core.module_validity import (
     GAME_TZ,
     game_now,
@@ -107,8 +109,13 @@ class TestWindowPredicate:
         assert game_now(_WINDOW_END.astimezone(timezone.utc)) == _WINDOW_END
 
 
+@pytest.mark.retired
 class TestTreasureManifestWindow:
-    """契约锁：treasure 声明的活动窗口 = 2026-08-06 05:00 — 2026-09-23 04:59（UTC+8）。"""
+    """契约锁：treasure 声明的活动窗口 = 2026-08-06 05:00 — 2026-09-23 04:59（UTC+8）。
+
+    随 treasure 退役（见 plugins/treasure/RETIRED.md）：锁的是该活动的声明值本身，
+    活动已下线，此锁失去对象。
+    """
 
     def test_declared_window(self):
         m = _load_manifest(_TREASURE_MANIFEST)

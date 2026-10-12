@@ -14,6 +14,8 @@ docs/plan/archive/bid_audit_20260915/出价审计报告_20260915.md。
 
 from __future__ import annotations
 
+import pytest
+
 from maaracing_master.plugins.treasure.strategy import (
     BidContext,
     BidDecision,
@@ -25,6 +27,9 @@ from maaracing_master.plugins.treasure.strategy import (
     DECISION_PASS,
     BALANCE_UNKNOWN,
 )
+
+
+pytestmark = pytest.mark.retired
 
 
 def snap(round_no, h, our, opp_bids, epoch=1, my_rank=4):

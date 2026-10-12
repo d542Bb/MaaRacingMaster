@@ -24,6 +24,9 @@ import pytest
 from maaracing_master.plugins.treasure.store import TreasureStore
 
 
+pytestmark = pytest.mark.retired
+
+
 class _FakeModule:
     """store 只依赖 module._data_dir；其余字段 flush 时才用，测试不走 flush。"""
 

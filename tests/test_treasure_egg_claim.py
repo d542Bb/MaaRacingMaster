@@ -21,6 +21,9 @@ POLICY_PATH = (Path(__file__).resolve().parents[1]
                / "resources" / "policy" / "treasure.policy.json")
 
 
+pytestmark = pytest.mark.retired
+
+
 def _load_module_class():
     """取 TreasureModule —— 链内锚点清单的唯一真源（本文件不再手抄副本）。
 
@@ -190,8 +193,7 @@ def test_reward_card_geometry_on_synthetic_card():
 def test_egg_recognize_golden_frame_counts():
     """真帧端到端契约（第一阶段交付的教训：锚点参数必须过真帧，不再口头遵守）。
 
-    fixtures = tests/fixtures/claim_popup_0609.png
-    （实验校准资产，缺失即 skip；期望值来自 card_geom_probe.py 实测 5/5）。
+    fixtures = tests/fixtures/claim_popup_0609.png（正式资产；期望值来自 card_geom_probe.py 实测 5/5）。
     只验数蛋通路（含 OCR）；medal 读金额与其同机制，链路上还需实机帧。
     """
     cv2 = pytest.importorskip("cv2")
@@ -199,10 +201,8 @@ def test_egg_recognize_golden_frame_counts():
     from maaracing_master.plugins.treasure.eggs import EggRewardRecognizer
     from maaracing_master.plugins.treasure.ocr import TreasureOcr
 
-    fixture = (Path(__file__).resolve().parents[1]
-               / "tools" / "experiments" / "egg-claim-coin-read" / "claim_popup_0609.png")
-    if not fixture.exists():
-        pytest.skip("实验真帧 fixtures 未入库")
+    fixture = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "claim_popup_0609.png"
+    assert fixture.is_file(), f"真帧素材缺失（正式资产应随仓库入库）：{fixture}"
     frame = cv2.cvtColor(cv2.imread(str(fixture)), cv2.COLOR_BGR2RGB)
     rec = EggRewardRecognizer(Path(__file__).resolve().parents[1],
                               ocr=TreasureOcr(Path(__file__).resolve().parents[1]))

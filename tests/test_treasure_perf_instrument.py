@@ -34,9 +34,9 @@ except Exception as exc:  # noqa: BLE001
 
 IS_WINDOWS = sys.platform.startswith("win")
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
-)
+)]
 
 
 def _mk(*, applied=0, stale=0, expired=0, wr_applied=0, wr_stale=0, wr_expired=0, ages=()):
