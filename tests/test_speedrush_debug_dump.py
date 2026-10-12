@@ -127,8 +127,8 @@ def test_game_summary_row_appended(tmp_path: Path, monkeypatch) -> None:
     ]
     plugin = SpeedRushModule.__new__(SpeedRushModule)   # 方法只用 _tlog（失败路径）
     monkeypatch.setattr(
-        "maaracing_master.plugins.speedrush.module._control_trace_root",
-        lambda: tmp_path)
+        "maaracing_master.plugins.speedrush.module._run_dir",
+        lambda *a, **k: tmp_path)
     plugin._write_game_summary({"t_start": 0.0}, 1, rows)
     out = json.loads(
         (tmp_path / "game_summary.jsonl").read_text(encoding="utf-8").splitlines()[-1])

@@ -571,11 +571,11 @@ class SpeedRushModule(ActivityModule):
         # 对比的数据面。目录与 trace 同时刻命名，事后按 fid/ts_ns 对齐（见
         # _begin_hud）。失败降级为无读数，不阻断。
         drive_hud = None
-        if control:
+        if control and self._debug_enabled():
+            # HUD 读数落 run_dir/hud（debug/ 产物面，受 debug 开关；局结局
+            # 取数面随之受闸——用户裁决 2026-10-12，trace/hud 同开关）
             src = chain if chain is not None else straight_chain
-            hud_dir = _control_trace_root() / (
-                "hud_" + time.strftime(
-                    "%Y%m%d_%H%M%S", time.localtime(src["t_start"])) + f"_p{phase}")
+            hud_dir = _run_dir(src["t_start"], phase) / "hud"
             drive_hud = self._begin_hud(hud_dir, phase, round_no)
             if chain is not None:
                 chain["hud_ref"] = drive_hud   # 调试图读数带吃 HUD 最新行
@@ -706,8 +706,12 @@ class SpeedRushModule(ActivityModule):
     # ---------- 控制链（实机闭环，planner 设计稿 §九 step 3）----------
 
     def _debug_enabled(self) -> bool:
-        """调试图存盘开关（treasure 规范口径：ctx.debug.enabled；ctx 无该面=关）。
-        只管 raw/hud 双图（debugview）；depth_geo 取证写手是既有证据面，不受此门。"""
+        """debug/ 产物面总闸（ctx.debug.enabled；ctx 无该面=关）。
+
+        管整个 debug/speedrush/<会话>/：trace/局汇总（落盘闸，追加点在内存
+        不闸）、raw/hud 双图、hud 读数、badframes 取证、depth_debug 证据包
+        （密度另受 debug_dump 三态闸 off/events/full）。开关关=debug/ 下零
+        产物；data/（业务数据 DB）与 logs/（阶段状态）不受此门。"""
         return bool(getattr(getattr(self.ctx, "debug", None), "enabled", False))
 
     def _build_control_chain(self, phase: int = 0) -> dict:
@@ -719,6 +723,9 @@ class SpeedRushModule(ActivityModule):
         cfg = load_decision()
         cal = load_calib()   # 标定真源一次读入（深度观测器同源）
         wt = WallTrack(cal)  # 墙实体（第 5 步）：逐箱跨帧假设，ego_road 持有
+        t_start = time.time()
+        run_dir = _run_dir(t_start, phase)
+        dbg_on = self._debug_enabled()
         return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
                 # conf_floor：宽度有效性门的置信地板（真源=scoring.conf_floor，
                 # 传入不抄第二份）
@@ -736,24 +743,20 @@ class SpeedRushModule(ActivityModule):
                 # _stop_depth_observer 的收口与健康报警）。
                 "depth_geo": _started_async_depth(
                     DepthRoadObserver(self._ensure_depth_session(), cal),
-                    # 证据包三态闸（debug_dump，2026-10-12 设计裁决）：off=零
-                    # 落盘；events=事件触发（dodge/conserving 时刻 ring+窗口）；
-                    # full=恒开全量（感知排错期）。文件格式三态同构
-                    debug_dir=(None if cfg.debug_dump.mode == "off"
-                               else _control_trace_root() / ("depth_debug_"
-                               + time.strftime("%Y%m%d_%H%M%S"))),
+                    # 证据包落点=run_dir/depth_debug；双闸：debug 开关（debug/
+                    # 产物面总闸）×debug_dump 三态（off=零落盘；events=事件触发
+                    # ring+窗口；full=恒开全量，感知排错期）。文件格式三态同构
+                    debug_dir=(None if not dbg_on or cfg.debug_dump.mode == "off"
+                               else run_dir / "depth_debug"),
                     dump=None if cfg.debug_dump.mode == "off" else cfg.debug_dump),
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
-                # raw/hud 调试图落盘器（treasure 规范，3fps；ctx.debug.enabled 门，
-                # 测试 ctx=None → None → tick 空转）。生命周期=chain，finally 收口。
-                "debug": DebugPairWriter(
-                    debug_dir() / "speedrush" / (
-                        time.strftime("%Y%m%d_%H%M%S") + f"_p{phase}"), cal=cal)
-                if self._debug_enabled() else None,
+                # raw/hud 调试图落盘器（3fps；debug 开关闸，测试 ctx=None → None →
+                # tick 空转）。生命周期=chain，finally 收口。
+                "debug": DebugPairWriter(run_dir, cal=cal) if dbg_on else None,
                 "hud_ref": None,
                 "prev_ts": None, "disabled": False, "trace": [],
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
-                "t_start": time.time()}
+                "t_start": t_start}
 
     def _control_tick(self, chain: dict, gpad, frame, result: PerceptionResult,
                       fid: int, ts_ns: int, age_ms: float, phase: int,
@@ -860,9 +863,10 @@ class SpeedRushModule(ActivityModule):
         gpad.right_trigger(value=cmd.throttle)
         gpad.update()
         self._control_times.append((time.perf_counter() - t_c) * 1000.0)
-        # 坏帧取证采样（内部自带异常吞噬与自禁，绝不把驾驶链拖下水）
+        # 坏帧取证采样（内部自带异常吞噬与自禁，绝不把驾驶链拖下水）；
+        # debug/ 产物面总闸：开关关=取证也停
         chain["bad_frames"]["last_steer"] = cmd.steer_x
-        if not obs.health.stage_transition:
+        if not obs.health.stage_transition and self._debug_enabled():
             _maybe_save_bad_frame(chain, frame, dgeo, fid, phase,
                                   time.monotonic(), ts_ns)
         self._control_last = {
@@ -1081,10 +1085,12 @@ class SpeedRushModule(ActivityModule):
         """
         rows = chain.get("trace") or []
         flushed = chain.get("trace_flushed", 0)
-        if len(rows) <= flushed:
+        if len(rows) <= flushed or not self._debug_enabled():
+            # debug 开关关=debug/ 下零产物：trace 只在内存记账不落盘（追加点
+            # 不闸，内存成本 ~1KB/拍可忽略）；局汇总随之不写
             return
         try:
-            root = _control_trace_root()
+            root = _run_dir(chain["t_start"], phase)
             root.mkdir(parents=True, exist_ok=True)
             name = f"trace_{time.strftime('%Y%m%d_%H%M%S', time.localtime(chain['t_start']))}_p{phase}.jsonl"
             mode = "a" if flushed else "w"
@@ -1134,7 +1140,7 @@ class SpeedRushModule(ActivityModule):
                     score = r["hud_score"]
                 if r.get("hud_rate") is not None:
                     rate = r["hud_rate"]
-            root = _control_trace_root()
+            root = _run_dir(chain["t_start"], phase)
             root.mkdir(parents=True, exist_ok=True)
             rec = {
                 "ts": time.strftime("%Y%m%d_%H%M%S",
@@ -1377,10 +1383,7 @@ def _maybe_save_bad_frame(chain: dict, frame, dgeo, fid: int, phase: int,
     s["next_at"] = now + BAD_FRAME_MIN_INTERVAL_S
     try:
         if s["dir"] is None:
-            s["dir"] = _control_trace_root() / (
-                "badframes_"
-                + time.strftime("%Y%m%d_%H%M%S", time.localtime(chain["t_start"]))
-                + f"_p{phase}")
+            s["dir"] = _run_dir(chain["t_start"], phase) / "badframes"
             s["dir"].mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(s["dir"] / f"fid_{fid}.jpg"),
                     cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -1719,9 +1722,15 @@ def _ego_hud_readout(hud) -> tuple[float | None, float | None]:
         return None, None
 
 
-def _control_trace_root() -> Path:
-    """控制 trace 根目录（与 demos 同构，落用户数据目录、不污染仓库）。"""
-    return data_dir() / "speedrush" / "control_traces"
+def _run_dir(t_start: float, phase: int) -> Path:
+    """一局一产物目录（2026-10-12 布局收口，paths.py 五类契约）：debug/<module>/<会话>/。
+
+    speedrush 运行产物（trace/局汇总/证据包/hud/badframes）全在
+    ``debug/speedrush/<时刻>_p<阶段>/``——一局一目录，清当批=删一个目录；
+    ``data/`` 只留结构化业务数据（DB）。整个目录受 debug 开关管辖（关=零
+    产物）；帧证据包密度另受 debug_dump 三态闸（off/events/full）。"""
+    return debug_dir() / "speedrush" / (
+        time.strftime("%Y%m%d_%H%M%S", time.localtime(t_start)) + f"_p{phase}")
 
 
 def resolve_start_index(start_from: str | None) -> int:

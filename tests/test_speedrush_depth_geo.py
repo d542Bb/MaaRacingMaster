@@ -1600,9 +1600,11 @@ def test_drivable_grid_plane_fit_fail_all_unknown():
 
 
 # ---- 代表帧回归（skipif：证据包不在盘则跳；assemble 口径同离线探针）--------
+# 2026-10-12 布局收口：存量平移至 debug/speedrush/legacy_control_traces（探针期
+# 证据包已清，本节用例正常长期 skip，基线值留档）
 
-EV = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data"
-      / "speedrush" / "control_traces")
+EV = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "debug"
+      / "speedrush" / "legacy_control_traces")
 
 # 140930/d00009 近场带 3~9m 内判 2（不可走）的格数基线（干净晴天宽路帧；含墙/
 # 路缘/影；防恶化锁）。本值=本实现实测（±10.5m 窗、0.15m 容差、挖洞判未知）。

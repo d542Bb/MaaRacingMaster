@@ -78,6 +78,7 @@ class _FakeCtx:
     def __init__(self, clock: _Clock) -> None:
         self.lifecycle = _FakeLifecycle(clock)
         self.capture = _FakeCapture()
+        self.debug = SimpleNamespace(enabled=True)   # debug/ 产物面总闸：默认开
 
 
 class _FakeGraph:
@@ -442,6 +443,9 @@ def _hud_stub(created: list):
         def stop(self, reason="normal"):
             self.stopped = reason
 
+        def latest(self):
+            return None   # 读数面契约（Real HudObserver 同名）；桩无样本
+
     return _Hud
 
 
@@ -456,17 +460,17 @@ def test_straight_mode_full_run(env, monkeypatch, tmp_path) -> None:
     pad = _StraightPadLease()
     ctx.gamepad = SimpleNamespace(acquire=lambda: pad)
     monkeypatch.setattr(sr, "time", _FakeTimeFull(clock))
-    monkeypatch.setattr(sr, "_control_trace_root", lambda: tmp_path)
+    monkeypatch.setattr(sr, "_run_dir", lambda *a, **k: tmp_path)
     created: list = []
     monkeypatch.setattr(sr, "HudObserver", _hud_stub(created))
 
     assert mod._drive_loop(1, None) is True
     assert mod._hud is None  # 退出后释放引用（_state.hud_recording 不许悬挂为真）
     assert len(created) == 1
-    assert created[0].name == "hud_20261003_190000_p1"  # 与 trace 同时刻命名
+    assert created[0] == tmp_path / "hud"  # hud 落 run_dir 子目录（布局收口）
     assert pad.updates >= 3 and all(t == 255 for t in pad.trig)
     assert all(j == (0, 0) for j in pad.joy)
-    # trace：STRAIGHT 行落盘
+    # trace：STRAIGHT 行落盘（run_dir=tmp_path，文件名协议不变）
     files = list(tmp_path.glob("trace_20261003_190000_p1.jsonl"))
     assert len(files) == 1
     rows = [json.loads(line) for line in
@@ -491,7 +495,7 @@ def test_straight_mode_skips_perception(env, monkeypatch, tmp_path) -> None:
 
     mod._perception = SimpleNamespace(detect=_detect)
     monkeypatch.setattr(sr, "time", _FakeTimeFull(clock))
-    monkeypatch.setattr(sr, "_control_trace_root", lambda: tmp_path)
+    monkeypatch.setattr(sr, "_run_dir", lambda *a, **k: tmp_path)
     monkeypatch.setattr(sr, "HudObserver", _hud_stub([]))
 
     assert mod._drive_loop(1, None) is True
@@ -509,12 +513,12 @@ def test_control_mode_also_records_hud(env, monkeypatch, tmp_path) -> None:
 
     ctx.gamepad = SimpleNamespace(acquire=lambda: _StraightPadLease())
     monkeypatch.setattr(sr, "time", _FakeTimeFull(clock))
-    monkeypatch.setattr(sr, "_control_trace_root", lambda: tmp_path)
+    monkeypatch.setattr(sr, "_run_dir", lambda *a, **k: tmp_path)
     created: list = []
     monkeypatch.setattr(sr, "HudObserver", _hud_stub(created))
     monkeypatch.setattr(sr, "load_session", lambda w: None)  # 深度会话桩：不碰 GPU
 
     assert mod._drive_loop(1, None) is True
     assert len(created) == 1
-    assert created[0].name == "hud_20261003_190000_p1"
+    assert created[0] == tmp_path / "hud"  # hud 落 run_dir 子目录（布局收口）
     assert mod._hud is None  # 退出释放引用

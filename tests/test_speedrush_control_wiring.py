@@ -273,8 +273,9 @@ def test_straight_tick_zero_steer_full_throttle():
 # ---------- 控制 trace：逐拍记录 + 阶段出口 flush ----------
 
 def test_control_trace_records_and_flushes(tmp_path, monkeypatch):
-    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
+    monkeypatch.setattr(smod, "_run_dir", lambda *a, **k: tmp_path)
     m = _module()
+    m._debug_enabled = lambda: True   # 落盘闸：本用例开 debug（关=debug/ 零产物）
     chain = m._build_control_chain()
     pad = StubPad()
     for fid in range(1, 6):
@@ -295,8 +296,9 @@ def test_control_trace_records_and_flushes(tmp_path, monkeypatch):
 
 
 def test_control_trace_empty_not_flushed(tmp_path, monkeypatch):
-    monkeypatch.setattr(smod, "_control_trace_root", lambda: tmp_path)
+    monkeypatch.setattr(smod, "_run_dir", lambda *a, **k: tmp_path)
     m = _module()
+    m._debug_enabled = lambda: True
     m._flush_control_trace({"trace": [], "t_start": 0.0}, 1)
     assert list(tmp_path.glob("trace_*.jsonl")) == []   # 空 trace 不落盘
 
