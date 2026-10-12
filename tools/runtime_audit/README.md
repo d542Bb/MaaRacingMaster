@@ -5,6 +5,11 @@
 > **信源等级**：L2 —— 可作「怎么跑这个审计工具」的直接依据。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
 
+> **已过时（2026-10-12）**：目标配置仍指向旧包名旧版本的发行包（`DEFAULT_EXP_ROOT` 指向
+> `MaaRacingAssistant-0.19.0`），`audit/config.py` 的 `PLUGINS = ("treasure",)` 与 trace 序列
+> 已随 treasure 退役（见 [RETIRED.md](../../maaracing_master/plugins/treasure/RETIRED.md)）失效；
+> 本工具不在发布链路（scripts/ 与 CI 均无引用）。保留仅为溯源，不再投资改造。
+
 自动分析发行目录中每个文件「为什么需要」，给出分类与删除信心，避免继续人工猜哪一刀该砍。
 
 ## 安装

@@ -17,6 +17,8 @@ PY_PACKAGES_REL = "runtime/python/packages"
 # 各层入口：sidecar 顶层包 + 插件
 SIDECAR_TOP = "maaracing_master"
 SIDECAR_MAIN = "maaracing_master.__main__"
+# 已过时（2026-10-12）：treasure 已退役（见 plugins/treasure/RETIRED.md），本清单与下方
+# RUNTIME_TRACE_IMPORTS 均不再对应当前的活动插件集；本工具不在发布链路，保留仅为溯源。
 PLUGINS = ("treasure",)
 
 # native 扩展后缀
