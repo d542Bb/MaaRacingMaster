@@ -151,14 +151,14 @@
     "crash_penalty": 100.0,
     "pass_value": 30.0,
     "far_coin_weight": 0.3,
-    "control": false,
+    "control": true,
     "pick_margin": 20.0,
     "pick_confirm": 3,
-    "_note": "道级收益评分闸（2026-10-12 设计裁决：决策单位=道，逐车仪器降级为输入；实施顺序与验收判据见计划稿 §5 Track B / §6）。**运行态：control=false＝A/B 老臂采数期（新臂 4 局已采，2026-10-12）——对照旧行为；新臂运行态见计划稿 §5C 追记。A/B 样本口径与收案/翻补条款见 §5C 的 A/B 样本裁决（4v4 收案）。回滚=control 归 true（V2 行为，CRUISE 轨迹目标吃道收益持守道心，举证门槛防抖=挑战者道须连续 pick_confirm 拍以 ≥pick_margin 分胜出才改判）；enabled=false 连影子列一起关。数值 [需实测] 起值：pick_margin=20≈一个错身保底的价值差；horizon 2s=提前量 P50 1.06s 的 ~2 倍；crash_t 0.8s≈变道需求 0.73s 上浮；crash_penalty 100 压过任何币/错身收益；pass_value=30 为 RULES §4.11 普通档镜像（极限 120 走 p̂ 两层结构，未上）。验收面=§8 实机 A/B + trace lane_b/lane_pick/lane_hold 对照列。"
+    "_note": "道级收益评分闸（2026-10-12 设计裁决：决策单位=道，逐车仪器降级为输入；实施顺序与验收判据见计划稿 §5 Track B / §6）。**运行态：control=true＝A/B 收案后常驻（2026-10-12 用户裁决「新臂更好一点」，4v4 验收见计划稿 §5D——无回归+方向性收益 2胜2负 vs 0胜4负，量级不惊艳）——CRUISE 轨迹目标吃道收益持守道心（gold 币组/超车目标仍走既有实体目标链）；举证门槛防抖=挑战者道须连续 pick_confirm 拍以 ≥pick_margin 分胜出才改判。回滚=control 归 false（守轴旧行为逐位恢复）；enabled=false 连影子列一起关。数值 [需实测] 起值：pick_margin=20≈一个错身保底的价值差；horizon 2s=提前量 P50 1.06s 的 ~2 倍；crash_t 0.8s≈变道需求 0.73s 上浮；crash_penalty 100 压过任何币/错身收益；pass_value=30 为 RULES §4.11 普通档镜像（极限 120 走 p̂ 两层结构，未上）。观测面=trace lane_b/lane_pick/lane_hold 对照列。"
   },
   "metric_cars": {
     "enabled": true,
-    "fusion": false,
-    "_note": "车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。**运行态：fusion=false＝A/B 老臂采数期（新臂 4 局已采，2026-10-12）——对照纯像素行为。新臂运行态：dodge ttc 与横向 veto 危险窗截断吃米制融合——dodge 取两仪器较小到站（先到者先防），逼近门放宽为任一仪器报逼近（像素 rel 门在退化带失真恰是米制治愈对象）；veto 截断取较晚到站（只许更晚不许更早）。米制速度陈旧上界 ~1 个锚区间（≤220ms），融合方向各自保守。回滚=fusion 归 true（V2 行为）；enabled=false 连影子列/ledger 米制列一起关。验收面同 §8 A/B。"
+    "fusion": true,
+    "_note": "车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。**运行态：fusion=true＝A/B 收案后常驻（2026-10-12 用户裁决，验收见计划稿 §5D）——dodge ttc 与横向 veto 危险窗截断吃米制融合：dodge 取两仪器较小到站（先到者先防），逼近门放宽为任一仪器报逼近（像素 rel 门在退化带失真恰是米制治愈对象）；veto 截断取较晚到站（只许更晚不许更早）。米制速度陈旧上界 ~1 个锚区间（≤220ms），融合方向各自保守。回滚=fusion 归 false（纯像素逐位恢复）；enabled=false 连影子列/ledger 米制列一起关。"
   }
 }
