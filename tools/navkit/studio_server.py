@@ -5,7 +5,7 @@
 一个 `ThreadingHTTPServer` 同时承载三件事，浏览器只开一个端口（26530）：
 
 - `/`           壳页（统一标签栏 + iframe 切三页）
-- `/policy`     策略表薄页（读写 `treasure.policy.json` 的 `policy.rules`，原 policy_server 整体并入）
+- `/policy`     策略表薄页（读写目标模块策略表真源的 `policy.rules`，原 policy_server 整体并入）
 - `/roi`        ROI 校准台（`/static/calibrator.html`，离线回放 + 快速选区 + 测分）
 - `/cropper`    模板截取（静态只读服务 `tools/template_cropper/index.html`）
 
@@ -18,13 +18,13 @@
   import 复用）→ preview 则回 diff/report 不落盘 → 落盘（逐文件 mkstemp + os.replace）→
   响应 `{ok, diff, report, compile, source_hash_new, base_hash}`。
 - 测分/跨帧/OCR 走**生产同源**引擎：`maaracing_master.core.template_match.find_any_cs`、
-  `maaracing_master.plugins.treasure.ocr.TreasureOcr.recognize_single`。
+  目标模块的插件级 OCR（`plugins/<id>/ocr.py` 的 `recognize_single`；模块无此文件时该能力降级）。
 
 写盘格式纪律（policy_server 范式）：indent=2、ensure_ascii=False、LF、尾换行、键序原样、
 float 全精度 repr 不回舍入；改完 diff 只许目标值那一行变化。
 
 用法：
-    python studio_server.py [--port 26530]
+    python studio_server.py [--port 26530] [--module <活动模块 id>]
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ import argparse
 import base64
 import binascii
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -46,26 +47,84 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 # ---------------- 真源定位（仓库内绝对定位，兼容从任意 cwd 启动） ----------------
-# 校准台当前服务 treasure：目标模块只在此声明一次（MODULE 由目录名派生），
-# 其余位置——actuators 的 `<模块>.` 前缀、debug 会话根——一律从这里派生，
-# 不再散写字面量；多模块化/换目标时只改本区。
+# 目标模块由 --module 决定（见 main()），缺省取 plugins/ 下第一个可服务的插件。
+# 目标模块只在此区解析一次；其余位置——actuators 的 `<模块>.` 前缀、debug 会话根、
+# policy/pipeline 真源——一律从 MODULE 派生，不再散写字面量。
 REPO = Path(__file__).resolve().parents[2]
 PACK = REPO / "maaracing_master"
-PLUGIN = PACK / "plugins" / "treasure"
-MODULE = PLUGIN.name
-RES = PLUGIN / "resources"
-POLICY_FILE = RES / "policy" / "treasure.policy.json"
-PIPELINE_DIR = RES / "pipeline"
-TEMPLATE_DIR = RES / "image"
+PLUGINS_DIR = PACK / "plugins"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CROPPER_HTML = REPO / "tools" / "template_cropper" / "index.html"
 
-# pipeline 两真源（顺序固定，供 hash / 落盘 / 图装配共用）
-PIPELINE_FILES: dict[str, Path] = {
-    "treasure": PIPELINE_DIR / "treasure.json",
-    "entry": PIPELINE_DIR / "treasure.entry.json",
-}
-HASH_KEYS = ("policy", "treasure", "entry")
+# 下列真源由 _configure_module() 绑定（import 期即绑缺省模块，保持既有导入语义）
+PLUGIN: Path
+MODULE: str
+RES: Path
+POLICY_FILE: Path
+PIPELINE_DIR: Path
+TEMPLATE_DIR: Path
+PIPELINE_FILES: dict[str, Path]
+HASH_KEYS: tuple[str, ...]
+
+
+def _discover_default_module() -> str:
+    """缺省目标模块：plugins/ 下第一个同时含 manifest.py 与 resources/ 的目录。"""
+    for entry in sorted(PLUGINS_DIR.iterdir()):
+        if entry.is_dir() and (entry / "manifest.py").is_file() \
+                and (entry / "resources").is_dir():
+            return entry.name
+    raise SystemExit(f"plugins/ 下没有可服务的模块：{PLUGINS_DIR}")
+
+
+def _discover_policy(module: str, res: Path) -> Path:
+    """策略表真源：policy/ 下优先 `<module>.policy.json`，否则第一个 .json。
+
+    各模块命名不统一（treasure 用 `<id>.policy.json`，speedrush 用 decision.json），
+    故按目录发现而非命名约定。
+    """
+    pdir = res / "policy"
+    named = pdir / f"{module}.policy.json"
+    if named.is_file():
+        return named
+    jsons = sorted(pdir.glob("*.json")) if pdir.is_dir() else []
+    if not jsons:
+        raise SystemExit(f"模块 {module} 缺策略表真源（{pdir} 下无 .json）")
+    return jsons[0]
+
+
+def _discover_pipelines(module: str, res: Path) -> dict[str, Path]:
+    """pipeline 真源表：`<module>.json` → key=`<module>`；`<module>.<tag>.json` → key=`<tag>`；
+    其余文件名 → key=文件名主干。key 即乐观锁与落盘用的 tag。"""
+    pdir = res / "pipeline"
+    out: dict[str, Path] = {}
+    if not pdir.is_dir():
+        return out
+    # 主图（`<module>.json`）排在附属图之前：key 顺序即乐观锁校验与落盘的次序，
+    # 与单模块硬编码时代保持一致，避免无谓的行为漂移。
+    files = sorted(pdir.glob("*.json"), key=lambda p: (p.stem != module, p.name))
+    for p in files:
+        stem = p.stem
+        key = stem[len(module) + 1:] if stem.startswith(module + ".") else stem
+        out[key] = p
+    return out
+
+
+def _configure_module(module_id: str | None = None) -> None:
+    """绑定目标模块与其真源路径；--module 由 main() 传入，缺省取第一个可服务插件。"""
+    global PLUGIN, MODULE, RES, POLICY_FILE, PIPELINE_DIR, TEMPLATE_DIR, PIPELINE_FILES, HASH_KEYS
+    MODULE = module_id or _discover_default_module()
+    PLUGIN = PLUGINS_DIR / MODULE
+    if not PLUGIN.is_dir():
+        raise SystemExit(f"目标模块目录不存在：{PLUGIN}")
+    RES = PLUGIN / "resources"
+    POLICY_FILE = _discover_policy(MODULE, RES)
+    PIPELINE_DIR = RES / "pipeline"
+    TEMPLATE_DIR = RES / "image"
+    PIPELINE_FILES = _discover_pipelines(MODULE, RES)
+    HASH_KEYS = ("policy", *PIPELINE_FILES)
+
+
+_configure_module()
 
 # spec 三组 = kind 三值（template / point / ocr）
 SPEC_GROUPS = ("template", "point", "ocr")
@@ -118,12 +177,11 @@ def _sha256_file(path: Path) -> str:
 
 
 def base_hashes() -> dict[str, str]:
-    """三真源当前指纹（乐观锁基线）。"""
-    return {
-        "policy": _sha256_file(POLICY_FILE),
-        "treasure": _sha256_file(PIPELINE_FILES["treasure"]),
-        "entry": _sha256_file(PIPELINE_FILES["entry"]),
-    }
+    """真源当前指纹（乐观锁基线）：policy + 各 pipeline 文件。"""
+    out = {"policy": _sha256_file(POLICY_FILE)}
+    for tag, path in PIPELINE_FILES.items():
+        out[tag] = _sha256_file(path)
+    return out
 
 
 def read_policy() -> dict:
@@ -659,7 +717,11 @@ _OCR_FAILED = False
 
 
 def get_ocr():
-    """进程内驻留的 TreasureOcr 单例（RapidOCR 首载数秒，懒加载）。"""
+    """进程内驻留的插件级 OCR 单例（RapidOCR 首载数秒，懒加载）。
+
+    插件级 OCR 不是平台契约（speedrush 走共享的 core/ocr.py，无插件级 ocr 模块）——
+    目标模块缺 ocr.py 时返回 None，调用方按「本模块无插件级 OCR」降级。
+    """
     global _OCR_INSTANCE, _OCR_FAILED
     if _OCR_FAILED:
         return None
@@ -669,8 +731,9 @@ def get_ocr():
                 try:
                     if str(REPO) not in sys.path:
                         sys.path.insert(0, str(REPO))
-                    from maaracing_master.plugins.treasure.ocr import TreasureOcr
-                    _OCR_INSTANCE = TreasureOcr(PLUGIN)
+                    mod = importlib.import_module(
+                        f"maaracing_master.plugins.{MODULE}.ocr")
+                    _OCR_INSTANCE = mod.TreasureOcr(PLUGIN)
                 except Exception:
                     _OCR_FAILED = True
                     return None
@@ -1328,10 +1391,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=26530)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--module", default=None,
+                    help="目标活动模块 id（缺省：plugins/ 下第一个含 manifest.py 与 resources/ 的插件）")
     ap.add_argument("--idle-exit", type=int, default=IDLE_EXIT_DEFAULT,
                     help="最后一个页面断开后自动退出的秒数；0 = 常驻不退出（脚本/curl 调试用）")
     args = ap.parse_args()
     _idle_exit_s = max(0, args.idle_exit)
+    _configure_module(args.module)
 
     for p in (POLICY_FILE, *PIPELINE_FILES.values()):
         if not p.exists():

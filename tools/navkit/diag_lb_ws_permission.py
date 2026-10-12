@@ -1,5 +1,9 @@
 """mpelb LocalBridge 权限报错复现实验（C 类最小实验）。
 
+**已过时（2026-10-12）**：脚本内仍含旧包名 `maaracing_assistant` 路径与本机绝对路径，
+且原属 `tools/experiments/`（实验区）；其结论已兑现（权限面只由 validatePath 越界触发），
+保留仅为溯源。
+
 目的：证实 [PERMISSION_DENIED] 权限不足或路径非法 的唯一触发面是
 validatePath 越界检查（路径不在 --root 范围内），且正常 root 内
 open_file 不会报错。纯标准库 WebSocket 客户端，零新增依赖。
