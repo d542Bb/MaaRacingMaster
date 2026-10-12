@@ -5,6 +5,8 @@ d 坐标系=路心系（道0=路中心，中轴巡航定案）：全部入参出
 碰撞过滤沿用第六轮判据（静态+到站截断，f1f0259：CV 外推=幻影碰撞）。"""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -156,3 +158,43 @@ def test_start_state_continuity() -> None:
     v_now = np.polyval(np.polyder(r.best.coeffs[::-1], 1), 0.0)
     assert d_now == pytest.approx(1.0, abs=1e-9)
     assert v_now == pytest.approx(-0.6, abs=1e-9)
+
+
+# ---------- V2：到站函数注入（px/fid 单位病修）+ 危险窗米制融合 ----------
+
+def test_t_pass_injection_used_when_supplied() -> None:
+    """到站函数注入（与 LateralSafety/评分同一 callable，不复制公式）：
+    注入优先；本类内旧行率式（px/fid 读数×控制拍率，TTC 恒定高估 ~1.9x 的
+    §17 同类旧单位病）退为缺省兼容退路。"""
+    s = _sampler(t_meet_fn=lambda rel, cy: 1.23)
+    car = _Car(x_lane=1.0, cy=650, rel=5.0)
+    assert s._t_pass_s(car, 20.0) == pytest.approx(1.23)
+
+
+def test_t_pass_legacy_without_injection() -> None:
+    s = _sampler()
+    car = _Car(x_lane=1.0, cy=650, rel=5.0)    # (716-650)/(5*20)=0.66s
+    assert s._t_pass_s(car, 20.0) == pytest.approx(0.66)
+
+
+def test_veto_window_metric_fusion_truncates_only_later() -> None:
+    """危险窗截断融合（与 LateralSafety 同口径）：两仪器取较晚（截断只许
+    更晚不许更早）；pacing=永不到站=全窗；缺锚/窗未开/闸关=像素。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    s = _sampler(t_meet_fn=lambda rel, cy: 1.0, horizon_s=2.5)
+    car = _Car(x_lane=1.0, cy=650, rel=5.0)
+    car.id = 9
+    assert s.metric_map is None
+    assert s._t_pass_fused(car, 20.0) == pytest.approx(1.0)
+
+    def mc(v, t):
+        return MetricCarState(target_id=9, source=DistanceSource.ANCHOR,
+                              z_m=10.0, x_m=1.0, v_close_mps=v,
+                              t_meet_s=t, anchor_age_ms=200.0)
+    s.metric_map = {9: mc(2.0, 5.0)}
+    assert s._t_pass_fused(car, 20.0) == pytest.approx(5.0)   # max(5, 1)
+    s.metric_map = {9: mc(-1.0, None)}
+    assert s._t_pass_fused(car, 20.0) == math.inf             # pacing=全窗
+    s.metric_map = {9: mc(None, None)}
+    assert s._t_pass_fused(car, 20.0) == pytest.approx(1.0)   # 窗未开=像素

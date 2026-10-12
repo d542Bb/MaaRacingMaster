@@ -405,6 +405,7 @@ class DecisionEngine:
             grid_margin_lane=cfg.grid_veto.margin_lane,
             grid_car_half_m=cfg.grid_veto.car_half_lane_m,
             k_grid_unknown=cfg.grid_veto.k_unknown,
+            t_meet_fn=self.scorer.car_t_meet_s,
         ) if cfg.mode.trajectory_sampling else None
         # 道级收益评定器（2026-10-12 设计裁决；闸默认关=None=零开销，行为
         # 逐位不变）。shadow 先行：闸开只增加逐拍 LaneReport 计算与 trace
@@ -492,8 +493,10 @@ class DecisionEngine:
         # V2 行为面（fusion 闸）：逐车米制索引供 dodge ttc 融合；LateralSafety
         # 危险窗截断吃同源通道（None=闸关，纯像素逐位不变）
         self._metric_by_id = {m.target_id: m for m in self._metric_cars}
-        self.lateral.metric_map = (self._metric_by_id
-                                   if self.cfg.metric_cars.fusion else None)
+        _metric_map = self._metric_by_id if self.cfg.metric_cars.fusion else None
+        self.lateral.metric_map = _metric_map
+        if self.traj is not None:
+            self.traj.metric_map = _metric_map
         # 采集帧率逐拍喂入评分器（car_t_meet_s 的 px/fid→秒换算锚；None=
         # 预热未达，评分器自决退回旧口径）
         self.scorer.fid_hz = obs.fid_rate_hz

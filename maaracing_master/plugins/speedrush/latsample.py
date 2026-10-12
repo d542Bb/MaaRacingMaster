@@ -171,7 +171,8 @@ class LatTrajectorySampler:
                  w_margin_lane: float = W_MARGIN_LANE,
                  grid_margin_lane: float = GRID_VETO_MARGIN_LANE,
                  grid_car_half_m: float = GRID_CAR_HALF_LANE_M,
-                 k_grid_unknown: float = GRID_K_UNKNOWN) -> None:
+                 k_grid_unknown: float = GRID_K_UNKNOWN,
+                 t_meet_fn=None) -> None:
         self.v_lat_max = v_lat_max
         self.v_ego_row = v_ego_row
         self.horizon_s = horizon_s
@@ -186,6 +187,12 @@ class LatTrajectorySampler:
         self.grid_margin_lane = grid_margin_lane
         self.grid_car_half_m = grid_car_half_m
         self.k_grid_unknown = k_grid_unknown
+        # 到站时间函数（引擎注入 Scorer.car_t_meet_s，与 LateralSafety 同一
+        # 纪律：不复制公式）；缺省=本类内旧行率式。V2 前本类用 hz（控制拍率）
+        # 消费 px/fid 读数——TTC 恒定高估 ~1.9x 的旧单位病，同 §17 三件套①。
+        self._t_meet = t_meet_fn
+        # 车米制状态（V2 闸 metric_cars.fusion，引擎逐拍喂；None=闸关纯像素）
+        self.metric_map: dict | None = None
 
     def update(self, d0: float, vd0: float, ad0: float, d_target: float,
                cars, width: float | None, *,
@@ -279,21 +286,43 @@ class LatTrajectorySampler:
         return False, int((sub == GRID_UNKNOWN).sum())
 
     def _t_pass_s(self, car, hz: float) -> float:
-        """该车到自车行的秒数（与 LateralSafety 同一口径）；不接近→永不到站。"""
+        """该车到自车行的秒数：注入到站函数（与 LateralSafety/评分同一
+        callable，px/fid→秒换算吃聚合帧率）优先；缺省=本类内旧行率式
+        （直构测试兼容退路）。注入侧 fid_hz 未预热时 scorer 自退旧口径，
+        与本式逐位同形。"""
+        if self._t_meet is not None:
+            return self._t_meet(car.rel_approach, car.cy)
         rate = car.rel_approach * hz
         return max(0.0, self.v_ego_row - car.cy) / rate if rate > 1e-9 \
             else math.inf
+
+    def _t_pass_fused(self, car, hz: float) -> float:
+        """危险窗截断用的到站估计（V2 融合口径，与 LateralSafety._t_pass_s
+        同构）：米制缺锚/估计窗未开=像素；pacing（v_close≤0）=永不到站；
+        两仪器都有正到站取较晚——截断只许更晚不许更早。"""
+        t = self._t_pass_s(car, hz)
+        mm = self.metric_map
+        if mm is None:
+            return t
+        m = mm.get(car.id)
+        if m is None or m.v_close_mps is None:
+            return t
+        if m.t_meet_s is None:
+            return math.inf
+        return max(m.t_meet_s, t)
 
     def _vetoed(self, c: tuple[float, ...], T: float, d1: float, d0: float,
                 cars, ro: float, hz: float) -> bool:
         """拦截语义=**机动使距离恶化才拦**（第七轮裁定，与 LateralSafety
         同式）：候选轨迹逐 COLL_DT_S 采样（T 后驻停 d1）对每辆车在危险窗内
         取最小距；min_gap < gap_lane 且 **min_gap < 当前距** 才拦——保持/远离
-        不自否，切入/贴掠才拦。rel≤0（不接近）按全视野算（与生产同）。"""
+        不自否，切入/贴掠才拦。rel≤0（不接近）按全视野算（与生产同）。
+        危险窗截断融合米制到站（V2，引擎喂 metric_map 通道）：两仪器取较晚
+        （截断只许更晚不许更早，与 LateralSafety 同口径）；pacing=全窗。"""
         for car in cars:
             if car.x_lane is None or car.x_lane != car.x_lane:
                 continue                       # nan（存续组）同跳过
-            t_eff = min(self.horizon_s, self._t_pass_s(car, hz))
+            t_eff = min(self.horizon_s, self._t_pass_fused(car, hz))
             if t_eff <= 0.0:
                 continue                       # 已过自车行：pass 制语义接管
             d_road = ro + car.x_lane           # A1→路心系

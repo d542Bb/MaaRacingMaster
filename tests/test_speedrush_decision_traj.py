@@ -398,3 +398,19 @@ def test_hold_reanchors_after_maneuver() -> None:
     e.update(_obs(fid=3), DT, executed_lane=-1.0, traffic=((), ()),
              road_offset=-1.0, road_width=4.4)
     assert e.lane_hold == -1.5                     # 按新位置重初始化
+
+
+def test_traj_metric_map_wired_with_fusion() -> None:
+    """V2 接线：fusion 开时轨迹采样器吃同一米制索引（危险窗截断融合面）；
+    闸关=None（纯像素逐位不变）。"""
+    cfg = replace(CFG_TRAJ, metric_cars=replace(CFG_TRAJ.metric_cars,
+                                                fusion=True))
+    e = DecisionEngine(cfg)
+    mc = _mc(7)
+    e.update(replace(_obs(fid=1), metric_cars=(mc,)), DT, executed_lane=0.5,
+             traffic=((), ()), road_offset=0.0, road_width=4.4)
+    assert e.traj.metric_map == {7: mc}
+    e2 = DecisionEngine(CFG_TRAJ)                  # 闸关
+    e2.update(replace(_obs(fid=1), metric_cars=(mc,)), DT, executed_lane=0.5,
+              traffic=((), ()), road_offset=0.0, road_width=4.4)
+    assert e2.traj.metric_map is None
