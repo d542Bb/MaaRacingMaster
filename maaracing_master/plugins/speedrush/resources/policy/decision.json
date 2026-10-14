@@ -164,6 +164,18 @@
     "pick_confirm": 3,
     "_note": "道级收益评分闸（2026-10-12 设计裁决：决策单位=道，逐车仪器降级为输入；实施顺序与验收判据见计划稿 §5 Track B / §6）。**运行态：control=true＝A/B 收案后常驻（2026-10-12 用户裁决「新臂更好一点」，4v4 验收见计划稿 §5D——无回归+方向性收益 2胜2负 vs 0胜4负，量级不惊艳）——CRUISE 轨迹目标吃道收益持守道心（gold 币组/超车目标仍走既有实体目标链）；举证门槛防抖=挑战者道须连续 pick_confirm 拍以 ≥pick_margin 分胜出才改判。回滚=control 归 false（守轴旧行为逐位恢复）；enabled=false 连影子列一起关。数值 [需实测] 起值：pick_margin=20≈一个错身保底的价值差；horizon 2s=提前量 P50 1.06s 的 ~2 倍；crash_t 0.8s≈变道需求 0.73s 上浮；crash_penalty 100 压过任何币/错身收益；pass_value=30 为 RULES §4.11 普通档镜像（极限 120 走 p̂ 两层结构，未上）。观测面=trace lane_b/lane_pick/lane_hold 对照列。"
   },
+  "corridor_reach": {
+    "enabled": false,
+    "control": false,
+    "step_m": 0.5,
+    "horizon_s": 2.0,
+    "crash_t_s": 0.8,
+    "crash_penalty": 100.0,
+    "pass_value": 30.0,
+    "far_coin_weight": 0.3,
+    "tie_margin": 20.0,
+    "_note": "走廊收益场选路径闸（2026-10-14 设计稿 §3.2-§3.4：米制连续坐标综合收益评估，解耦车道定义——决策坐标=米制 x_m，lane_w_m 换算只在进决策边界一次）。四要素：语义（走廊收益场选路径+路径预估显示，用户六点 2026-10-14）；运行态（验收期，验收面=trace cr_* 对照列+金币 feas 拒+CHANGE 提前量 P50）；归位义务（验收出结论只改本文件，判据翻面 enabled 归 false 回实验区归因）；互斥（control=true 时 lane_scoring.control 必须为 false，两控制器不得并跑——加载器拦）。enabled=shadow：每拍算收益场+路径落 trace cr_* 对照列，行为零变化；control=行为切换：CRUISE 选择来源换血（select:reach_win），回滚=归 false（legacy band/feas 链逐位恢复）。数值 [需实测] 起值：step 0.5m 与栅格格宽同量级（span 8m→16 候选）；horizon 2s/crash_t 0.8s/crash_penalty 100/pass_value 30/远权 0.3 沿 lane_scoring 同源起值；tie_margin=20≈一个错身保底的价值差。"
+  },
   "metric_cars": {
     "enabled": true,
     "fusion": true,

@@ -45,6 +45,8 @@ if TYPE_CHECKING:  # 循环导入只活在类型检查期：Scorer 留在 decisi
 KIND_CAND_COIN = "coin"
 KIND_CAND_OVERTAKE = "overtake"
 KIND_CAND_BONUS = "bonus"          # 计划层新增类（撞上去，维护者裁定 2026-10-05）
+KIND_CAND_REACH = "reach"          # 走廊收益场目标类（corridor_reach.control 闸，
+                                   # 2026-10-14 设计稿 §3.3：目标=走廊路径位，非实体）
 
 _REEVAL_S = 0.5                    # CHANGE 改判慢拍周期（设计稿 §二：0.5s 兜底）
 

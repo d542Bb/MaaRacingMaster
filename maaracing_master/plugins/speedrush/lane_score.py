@@ -100,9 +100,9 @@ class LaneScorer:
             if m.z_m is not None:
                 x = (m.x_m / self.cal.lane_w_m if m.x_m is not None
                      else (self.scorer.cand_x(v) if v is not None else None))
-                tm = self._metric_t(m, v)
+                tm = self.metric_t(m, v)
             elif v is not None:
-                x, tm = self._pixel_instruments(v)      # 无锚：像素回退
+                x, tm = self.pixel_instruments(v)      # 无锚：像素回退
             else:
                 continue                # 无视图的远轨必有锚（far 轨本就 x 无效）；
                                         # 连锚都没有时它在 obs 里也没参赌资格
@@ -111,7 +111,7 @@ class LaneScorer:
         for vid, v in by_id.items():
             if vid in metric_seen or v.cy >= self.cal.v_ego:
                 continue                # 米制路径已入账，不双计；已过自车行不占道
-            x, tm = self._pixel_instruments(v)
+            x, tm = self.pixel_instruments(v)
             self._enter_lane(x, tm, executed, half, lane_car_t)
 
         # ---- 币：组值 + 到站（与评分同一 t_miss 仪器） ----
@@ -176,10 +176,11 @@ class LaneScorer:
 
     # ---- 内部 ----
 
-    def _metric_t(self, m, v) -> float | None:
+    def metric_t(self, m, v) -> float | None:
         """米制到站时刻（分流语义见 MetricCarState docstring）：
         v_close>0 → z/v_close；v_close≤0 → None（掠过/远离=占用）；
-        v_close None（锚新估计窗未开）→ 像素回退（有视图才退得动）。"""
+        v_close None（锚新估计窗未开）→ 像素回退（有视图才退得动）。
+        corridor_reach 接线同源消费（车道单位换算在边界）。"""
         if m.v_close_mps is not None:
             return m.t_meet_s
         if v is None:
@@ -187,9 +188,10 @@ class LaneScorer:
         return (self.scorer.car_t_meet_s(v.rel_approach, v.cy)
                 if v.rel_approach > 0 else None)
 
-    def _pixel_instruments(self, v) -> tuple[float, float | None]:
+    def pixel_instruments(self, v) -> tuple[float, float | None]:
         """像素仪器（回退路径，与搬家前逐位同式）：cand_x（成员位优先）+
-        地面流 t_meet（pacing=非正 rel → None=占用）。"""
+        地面流 t_meet（pacing=非正 rel → None=占用）。corridor_reach 接线
+        同源消费。"""
         x = self.scorer.cand_x(v)
         tm = (self.scorer.car_t_meet_s(v.rel_approach, v.cy)
               if v.rel_approach > 0 else None)

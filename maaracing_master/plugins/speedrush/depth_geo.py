@@ -1453,6 +1453,38 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
             okm = np.isfinite(hgt)
             hm[okm] = _hgt_rgb(hgt[okm])
             cam_h = abs(c_c)                  # 平面在相机正下方的高度≈相机离地高
+            # 路径预估叠加（corridor_reach 闸开才有值）：绿点=规划路径、蓝点=
+            # 当前横向线（x=0），标注「横向@距离」。投影与检测反投影同口径
+            # （u=x/z、v=a·u+b+c/z，当帧归一化焦距，禁写死焦距）；质量门拒帧
+            # coef=None 投不出去，诚实不画——路径预估与平面证据同源。
+            cr_path = (note or {}).get("cr_path") or []
+            if cr_path:
+                fx_px, fy_px = float(evid["fx"]) * w, float(evid["fy"]) * h
+
+                def _proj(zh: float, x_self: float):
+                    z = zh + CAM_Z_DATUM_M           # 车头系→相机系
+                    if z <= 0.5:
+                        return None
+                    u = x_self / z
+                    v = a_c * u + b_c + c_c / z
+                    return int(u * fx_px + w / 2), int(v * fy_px + h / 2)
+
+                for zh, xs in cr_path:
+                    hit = _proj(zh, xs)
+                    if hit is None or not (0 <= hit[0] < w):
+                        continue
+                    cv2.circle(f, hit, 3, (255, 200, 0), -1)      # 绿点=规划路径
+                    cur = _proj(zh, 0.0)
+                    if cur is not None and 0 <= cur[0] < w:
+                        cv2.circle(f, cur, 2, (255, 120, 0), -1)  # 蓝点=当前线
+                for idx in {0, len(cr_path) // 2, len(cr_path) - 1}:
+                    zh, xs = cr_path[idx]
+                    hit = _proj(zh, xs)
+                    if hit is None or not (0 <= hit[0] < w):
+                        continue
+                    cv2.putText(f, f"{xs:+.1f}m@{zh:.0f}m",
+                                (hit[0] + 4, hit[1] - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, .35, (255, 200, 0), 1)
             for _side, zc, xm in reading.edge_pts:
                 # 锚点画在「检出穿越真实所在像素」：按 (side, zc, x_m) 反查带内
                 # 点云像素取中位，①原图与②高度图同位各画一圈。不做解析回投——
@@ -1491,8 +1523,13 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
         return f"{v:+.2f}" if isinstance(v, (int, float)) else "-"
     l1 = (f"D[{note.get('fid', '?')}] {st} {rs}  steer={sn:+.3f}"
           if isinstance(sn, (int, float)) else f"D[{note.get('fid', '?')}] {st} {rs}")
-    l1 += f"  elane={el:+.2f}" if isinstance(el, (int, float)) else ""
-    l1 += f"  xt={_f(note.get('xt'))}"
+    l1 += (f"  elane={el:+.2f}" if isinstance(el, (int, float)) else "")
+    if note.get("cr_best") is not None:
+        # 路径预估取代 dx 标量显示（2026-10-14 设计稿 §3.5）：reach 开时决策带
+        # 读规划横向（自车系米），xt 不再显示——闸关拍无 cr_best 逐位不变
+        l1 += f"  cr={note.get('cr_best'):+.2f}m"
+    else:
+        l1 += f"  xt={_f(note.get('xt'))}"
     l2 = (f"ro={_f(ro)}[{note.get('src', '-')}]"
           f" raw={_f(note.get('ro_raw'))}"
           f" age={note.get('age', '-')}ms new={note.get('new', '-')}"
