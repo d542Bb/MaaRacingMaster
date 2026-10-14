@@ -56,10 +56,12 @@
   },
   "scoring": {
     "coin_value_per_unit": 30.0,
+    "coin_group_min_count": 3.0,
     "conf_floor": 0.5,
     "conf_hi": 0.8,
     "shift_cost_per_lane": 10.0,
-    "life_tau_s": 5.0
+    "life_tau_s": 5.0,
+    "_note_group_floor": "组下限（RULES 2026-10-14 定案）：一组不会少于 3 枚——观测面上 1~2 枚是残缺视图（距离/遮挡/置信门削剩的头部），价值按整组计不按观测枚数折算。消费点=decision.scorer.score 与 lane_score 币密度，max(observed, 3)。半空组 4 枚的整组 120 分只在满观测时自然取到——组内无空/地标志，残缺半空组按 90 计（宁可低估，与 partial_observation 同侧）。"
   },
   "hysteresis": {
     "switch_margin": 15.0,

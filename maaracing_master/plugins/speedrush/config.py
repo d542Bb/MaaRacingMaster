@@ -134,6 +134,8 @@ class Timing:
 @dataclass(frozen=True)
 class Scoring:
     coin_value_per_unit: float
+    coin_group_min_count: float  # 组下限（RULES 2026-10-14 定案）：观测 1~2 枚是
+                                 # 残缺视图，价值按整组 ≥3 枚计，不按枚数折算
     conf_floor: float      # 置信折扣=0 的下界（低于此不给分）
     conf_hi: float         # 置信折扣=1 的下界（实测正常检测值区满权，§7.2/重测 conf 中位 0.87）
     shift_cost_per_lane: float
@@ -388,6 +390,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             margin_s=_num(d, "timing", "margin_s", lo=0, lo_open=False)),
         scoring=Scoring(
             coin_value_per_unit=_num(d, "scoring", "coin_value_per_unit", lo=0),
+            coin_group_min_count=_num(d, "scoring", "coin_group_min_count",
+                                      lo=0),
             conf_floor=_num(d, "scoring", "conf_floor", lo=0, hi=0.999),
             conf_hi=_num(d, "scoring", "conf_hi", lo=0, hi=0.999),
             shift_cost_per_lane=_num(d, "scoring", "shift_cost_per_lane",

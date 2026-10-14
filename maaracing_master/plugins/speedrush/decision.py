@@ -342,7 +342,13 @@ class Scorer:
         else:
             conf_factor = ((g.conf_min - self.c.conf_floor)
                            / (self.c.conf_hi - self.c.conf_floor))
-        value = self.c.coin_value_per_unit * g.observed_count * conf_factor
+        # 组下限（RULES 2026-10-14 定案）：观测 1~2 枚是残缺视图（距离/遮挡/置信
+        # 门削剩的头部），价值按整组 ≥3 枚计，不按观测枚数折算——n=1 的组按 30
+        # 分基值再被车道惩罚一压连 min_score 都过不了（20261014 实测 score 拒
+        # 106~119 次/局，金币候选 ok 每局 1 拍）。残缺半空组按 90 计（组内无
+        # 空/地标志，宁可低估）。
+        value = (self.c.coin_value_per_unit
+                 * max(g.observed_count, self.c.coin_group_min_count) * conf_factor)
         k = self._flow_k(obs)
         t_miss = math.inf if k is None else self._t_miss_ground_s(g.cy_max, k)
         life = math.exp(-t_miss / self.c.life_tau_s) if math.isfinite(t_miss) else 0.0

@@ -146,7 +146,8 @@ class LaneScorer:
                 if cl != L:
                     continue
                 val = (self.scorer.c.coin_value_per_unit
-                       * g.observed_count * g.conf_min)
+                       * max(g.observed_count, self.scorer.c.coin_group_min_count)
+                       * g.conf_min)
                 if t_miss is not None and math.isfinite(t_miss) \
                         and t_miss <= self.c.horizon_s:
                     if not any(tt is None or tt <= t_miss for tt in tms):

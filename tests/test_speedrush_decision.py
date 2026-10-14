@@ -204,6 +204,32 @@ def test_score_monotone_in_count():
     assert _score(n=4).score > _score(n=3).score
 
 
+def test_score_group_floor_partial_view():
+    """组下限（RULES 2026-10-14 定案）：观测 1~2 枚是残缺视图（距离/遮挡/置信
+    门削剩的头部），价值按整组 ≥3 枚计，不按观测枚数折算——n=1 组按 30 分
+    基值再被车道惩罚一压连 min_score 都过不了（20261014 实机 score 拒
+    106~119 次/局、金币候选 ok 每局 1 拍）。锁：同几何下 n=1 与 n=3 同值
+    （残缺视图按整组计）且过 min_score；n=4 仍严格更高（test_monotone 已锁）。"""
+    def _g_with(n):
+        ms = _members(1, 1, n, 0.5, 500, 5)
+        g = CoinGroup(group_id=1, member_ids=tuple(m.id for m in ms),
+                      observed_count=n, estimated_count=n, x_center=0.5,
+                      x_span=0.0, cy_min=500, cy_max=500, conf_min=0.85,
+                      partial_observation=False,
+                      first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
+        return g, ms
+
+    s = Scorer(CFG, load_calib())
+    g1, ms1 = _g_with(1)
+    g3, ms3 = _g_with(3)
+    s1 = s.score(g1, _obs(groups=(g1,), targets=ms1))
+    s3 = s.score(g3, _obs(groups=(g3,), targets=ms3))
+    assert s1 is not None and s3 is not None
+    # 组值项逐值同（max(1,3)=3）；t_miss 的全场 k 随组员集中位略差，放宽到 2%
+    assert s1.score == pytest.approx(s3.score, rel=0.02)
+    assert s1.score >= CFG.hysteresis.min_score
+
+
 def test_score_monotone_in_distance():
     # 流口径下速率随行号二次增长，远行目标必须配按场一致的 rel（同一 k）——
     # rel(cy) ∝ (cy−y_h)²，锚定 GOOD(cy=500, rel=5)；锁「越远时间越多」的序
