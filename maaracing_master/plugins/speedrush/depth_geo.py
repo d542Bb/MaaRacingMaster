@@ -1473,10 +1473,10 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
                     hit = _proj(zh, xs)
                     if hit is None or not (0 <= hit[0] < w):
                         continue
-                    cv2.circle(f, hit, 3, (255, 200, 0), -1)      # 绿点=规划路径
+                    cv2.circle(f, hit, 3, (0, 255, 0), -1)        # 绿点=规划路径
                     cur = _proj(zh, 0.0)
                     if cur is not None and 0 <= cur[0] < w:
-                        cv2.circle(f, cur, 2, (255, 120, 0), -1)  # 蓝点=当前线
+                        cv2.circle(f, cur, 2, (255, 80, 0), -1)   # 蓝点=当前线
                 for idx in {0, len(cr_path) // 2, len(cr_path) - 1}:
                     zh, xs = cr_path[idx]
                     hit = _proj(zh, xs)
@@ -1484,7 +1484,7 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
                         continue
                     cv2.putText(f, f"{xs:+.1f}m@{zh:.0f}m",
                                 (hit[0] + 4, hit[1] - 4),
-                                cv2.FONT_HERSHEY_SIMPLEX, .35, (255, 200, 0), 1)
+                                cv2.FONT_HERSHEY_SIMPLEX, .45, (0, 255, 0), 1)
             for _side, zc, xm in reading.edge_pts:
                 # 锚点画在「检出穿越真实所在像素」：按 (side, zc, x_m) 反查带内
                 # 点云像素取中位，①原图与②高度图同位各画一圈。不做解析回投——
