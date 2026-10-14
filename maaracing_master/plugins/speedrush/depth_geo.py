@@ -147,7 +147,10 @@ DEGRADED_CAM_H_LO, DEGRADED_CAM_H_HI = 1.40, 2.20   # 尺度 sanity：cam_h 与�
 # 恢复精确）/墙体干扰验证定案（2026-10-02，证据指针见当次提交）。旧法的病理
 # 在起步种子被墙劫持（墙面
 # 点把 000660 平面拽歪 5.25°，路自身平面实测 -2.06°/99% 内点），不在走廊重选
-# 本身——故特征只做种子，走廊重选动力学原样保留。
+# 本身——故特征只做种子，走廊重选动力学原样保留。种子单候选对贴栏场景仍不
+# 够（2026-10-14 实锤：护栏沿纵深后退，逐行深度行为与路面同型，躲得过增量
+# 判据；右半特征点自成陡斜面被全域种子折衷进平面，3034/3178 被拽 5~6° 全弃
+# 权）——种子三候选竞争选优，判据见 _pick_seed_candidate。
 WALK_Z_MIN = 0.5        # 深度有效下限（米）
 WALK_Z_BACK = 0.85      # 深度允许下界（×前一有效深度）
 WALK_Z_FWD = 1.4        # 深度允许上界（×前一有效深度）
@@ -501,6 +504,32 @@ def _fit_road_plane_seed(road: np.ndarray, X: np.ndarray, Y: np.ndarray,
     return coef
 
 
+def _pick_seed_candidate(walk: np.ndarray, X: np.ndarray, Y: np.ndarray,
+                         Z: np.ndarray, corr: np.ndarray) -> np.ndarray | None:
+    """三候选种子竞争：全域/左半/右半特征种子，紧容差内点数选优（2026-10-14）。
+
+    墙面点躲得过深度增量判据：护栏沿纵深后退，逐行深度行为与路面同型——
+    贴栏帧右半特征点自成一个比路面陡 5~28° 的斜面（比左半路面高 0.4~1.9m，
+    3034/3178 实测），全域种子是「左路 + 右墙」两簇的最小二乘折衷，被拽歪
+    5~6° 后走廊 15cm 内点带以错误平面为参照稳定收敛到错误答案（左半干净
+    −0.4~−0.55° 与通过帧一致，右半 −11.7°/−27.9°）。判据不消费待估平面：
+    路面是一个平面——半幅一致时全域种子的紧容差（半走廊容差）内点数与左/
+    右半同量级（干净帧 189k/190k/186k），墙面簇让全域骤降（贴栏帧 58k vs
+    左半 97k）→ 左半胜出，单一一致面天然赢过两簇折衷。计分域=走廊域
+    （corr，与收敛域同口径）。全候选失败 → None（回退旧法起步）。"""
+    tight = PLANE_TOL * 0.5
+    best, best_n = None, -1
+    for sel in (walk, walk & (X < 0), walk & (X >= 0)):
+        cand = _fit_road_plane_seed(sel, X, Y, Z)
+        if cand is None:
+            continue
+        n = int((np.abs(Y[corr] - (cand[0] * X[corr] + cand[1] * Z[corr]
+                                   + cand[2])) < tight).sum())
+        if n > best_n:
+            best, best_n = cand, n
+    return best
+
+
 def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
                     fy: float | None = None) -> np.ndarray | None:
     """路面平面拟合 Y=aX+bZ+c → coef；域内点不足判失败（None，诚实弃权）。
@@ -508,14 +537,15 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     拟合域只收「路面点」（定案口径，见模块头「平面拟合」注释）：域窗=走廊
     常量，自车区由 3D 框排除——物体候选区不进拟合域排除（物体点混进拟合
     不拽歪平面，走廊收敛自动拒离面点，83 包实测系数逐位一致），挖除语义
-    统一进 ``_dig_3d_mask`` 一条缝（2026-10-10 合并定案）。两段式（2026-10-02
-    换装）：**特征种子**——列剖面特征识别的路面点先拟合出起步平面（墙/天空/
-    车辆/路外不进种子）；**走廊收敛**——从种子平面起按旧动力学（走廊域
-    15cm 内点重选 lstsq）收敛。旧法病理在起步种子被墙劫持（墙面点与路面
-    相连、迭代内点沿墙爬升，000660 被拽 5.25°），不在走廊重选本身；好种子
-    进不了坏盆地，远场覆盖由走廊重选全数找回。``fy``=None 走纯旧位置圈地
-    路径（回退开关）；特征种子失败同样回退。走廊域逐点静态，一次抽取域点集
-    后域内迭代（布尔掩码保序，与逐轮全幅重选逐位等价）。"""
+    统一进 ``_dig_3d_mask`` 一条缝（2026-10-10 合并定案）。**特征种子**——列
+    剖面特征识别的路面点先拟合出起步平面，三候选竞争选优（全域/左半/右半，
+    判据与病理见 ``_pick_seed_candidate``：墙面点躲得过深度增量判据，全域
+    单种子被「左路 + 右墙」折衷拽歪 5~6°）；**走廊收敛**——从种子平面起按
+    旧动力学（走廊域 15cm 内点重选 lstsq）收敛。旧法病理在起步种子被墙劫持
+    （墙面点与路面相连、迭代内点沿墙爬升，000660 被拽 5.25°），不在走廊重选
+    本身；好种子进不了坏盆地，远场覆盖由走廊重选全数找回。``fy``=None 走纯
+    旧位置圈地路径（回退开关）；特征种子失败同样回退。走廊域逐点静态，一次
+    抽取域点集后域内迭代（布尔掩码保序，与逐轮全幅重选逐位等价）。"""
     ok = np.isfinite(X) & np.isfinite(Y) & np.isfinite(Z) & (Z > 0)
     road = (ok & (np.abs(X) < ROAD_X_MAX) & (Z > ROAD_Z_LO) & (Z < ROAD_Z_HI)
             & ~((np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)))
@@ -528,8 +558,8 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     if fy is not None:
         bad = (~np.isfinite(Z) | (Z <= WALK_Z_MIN)
                | ((np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)))
-        seed = _fit_road_plane_seed(
-            _road_by_column_profile(Z, fy, bad), X, Y, Z)
+        seed = _pick_seed_candidate(
+            _road_by_column_profile(Z, fy, bad), X, Y, Z, road)
         if seed is not None:
             m = np.abs(ys - (seed[0] * xs + seed[1] * zs + seed[2])) < PLANE_TOL
     if m is None:
