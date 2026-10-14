@@ -1,3 +1,8 @@
+---
+name: architecture-self-review
+description: "Challenge an architecture or design proposal before implementation: concrete problem, ownership boundaries, coupling, change propagation, KISS/YAGNI, DRY, and failure visibility. Invoke when a design is hard to justify, a new abstraction or indirection is being introduced, a cross-module refactor is proposed, or the user asks for an architecture review or second-opinion challenge. Not for ordinary implementation work."
+---
+
 # Architecture Self-Review
 
 ## Trigger
