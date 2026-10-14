@@ -145,7 +145,9 @@ def main() -> None:
           f"hold 拍全车过门但未选中 {all_pass_ticks}（>0 需查改判路径）")
     print(f"cars 行 {rows}，why 直方图：{dict(why_hist.most_common())}")
     print(f"w_m 覆盖：行级 {rows_with_w}/{rows}")
-    print(f"账本版本分布 {dict(led_versions)}；fid_hz 读数 {sorted(fid_hz_seen)}")
+    print(f"账本版本分布 {dict(led_versions)}；fid_hz 读数 "
+          f"{sorted(x for x in fid_hz_seen if x is not None)} "
+          f"(None 拍 {sum(1 for x in fid_hz_seen if x is None)} 组)")
 
     print(f"\n== 错身壳距原料（重叠半窗 ±{args.win_px:.0f}px）==")
     for tid, obs in sorted(per_car.items()):

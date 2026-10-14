@@ -191,7 +191,7 @@ def _calib_scale(m_full: np.ndarray, ego_band: np.ndarray, obj_band: np.ndarray)
                          dg.S0 * dg.S_RATIO[0], dg.S0 * dg.S_RATIO[1]))
 
 
-def _grid_axes(y0: float, x_span: float = 10.0, z_span: float = 30.0, step: float = 1.0):
+def _grid_axes(y0: float, x_span: float = 15.0, z_span: float = 60.0, step: float = 1.0):
     """世界系参考物：y=y0 处 1m 地面网格（灰）+ 过原点三轴（红X/绿Y/蓝Z）。
     采样点画法（canvas 软渲染只有点），密度按 0.25m。"""
     pts, cols = [], []
@@ -213,6 +213,46 @@ def _grid_axes(y0: float, x_span: float = 10.0, z_span: float = 30.0, step: floa
     line((0, y0, 0), (6, y0, 0), (255, 60, 60))    # X 红=右
     line((0, y0, 0), (0, y0 + 5, 0), (60, 255, 60))   # Y 绿=上
     line((0, y0, 0), (0, y0, 12), (60, 120, 255))  # Z 蓝=前
+    return np.asarray(pts, np.float32), np.asarray(cols, np.uint8)
+
+
+# 点阵数字（3×5，每点 0.25m 间距）——地面距离标注用
+_DIGITS = {
+    "0": ("111", "101", "101", "101", "111"),
+    "1": ("010", "110", "010", "010", "111"),
+    "2": ("111", "001", "111", "100", "111"),
+    "3": ("111", "001", "111", "001", "111"),
+    "4": ("101", "101", "111", "001", "001"),
+    "5": ("111", "100", "111", "001", "111"),
+    "6": ("111", "100", "111", "101", "111"),
+    "7": ("111", "001", "001", "001", "001"),
+    "8": ("111", "101", "111", "101", "111"),
+    "9": ("111", "101", "111", "001", "111"),
+}
+
+
+def _ring_axes(y0: float, radii=(5, 10, 15, 20, 25, 30, 40, 50, 60)):
+    """y=y0 处半径距离环（黄，5m 步进）+ 环上点阵距离标注（白）。
+
+    标注平躺在 +X 侧（右）环外 0.6m，列沿 +x 行沿 +z——自原点上空俯视读正。
+    与 ``_grid_axes`` 同采样密度（0.25m），返回独立点块供查看器单独开关。"""
+    pts, cols = [], []
+    ring_c, label_c = (255, 220, 60), (240, 240, 240)
+
+    for r in radii:
+        n = int(2 * np.pi * r / 0.25) + 1
+        for t in np.linspace(0, 2 * np.pi, n):
+            pts.append([r * np.cos(t), y0, r * np.sin(t)])
+            cols.append(ring_c)
+        # 距离标注：点阵数字，列=+x 行=+z，起点 (r+0.6, y0, 0)
+        for i, ch in enumerate(str(r)):
+            rows = _DIGITS[ch]
+            for ri, row in enumerate(rows):
+                for ci, on in enumerate(row):
+                    if on == "1":
+                        pts.append([r + 0.6 + ci * 0.25, y0,
+                                    0.6 + (4 - ri) * 0.25 + i * 1.0])
+                        cols.append(label_c)
     return np.asarray(pts, np.float32), np.asarray(cols, np.uint8)
 
 

@@ -97,25 +97,61 @@ html,body{margin:0;height:100%;background:#000;color:#ddd;font:13px/1.4 system-u
 button{background:#222;color:#ddd;border:1px solid #555;border-radius:6px;padding:5px 10px;cursor:pointer}
 button:hover{background:#333}
 #thumb{position:absolute;left:12px;bottom:12px;border:1px solid #555;border-radius:6px;display:block}
+#lvl{position:absolute;right:12px;bottom:12px;background:rgba(0,0,0,.55);padding:8px 12px;border-radius:8px;font:12px/1.6 system-ui,sans-serif}
+#lvl input[type=range]{width:150px;vertical-align:middle}
+#lvl .v{display:inline-block;width:52px;color:#7fd}
 </style></head><body>
 <canvas id="c"></canvas>
 <img id="thumb" width="__TW__">
+<div id="lvl">手动摆正（自动拟合歪时的兜底）<br>
+滚转 <input type="range" id="lr" min="-15" max="15" step="0.1" value="0"><span class="v" id="vr">+0.0°</span><br>
+俯仰 <input type="range" id="lp" min="-15" max="15" step="0.1" value="0"><span class="v" id="vp">+0.0°</span><br>
+<button id="b9">归零</button></div>
 <div id="hud"><b>__STEM__</b> · <span id="srclbl"></span><br><span id="hud2"></span><br>
 拖=旋转 · 滚轮=缩放 · 右键拖=平移 · 颜色：<span id="mode">原帧 RGB</span><br>
-网格=1m 参考面（y=0）；<b>红=X(右) 绿=Y(上) 蓝=Z(前)</b><br>
+网格=1m 参考面（y=0）；<b>黄环=半径 5m 步进</b>，环上白字=距离(米)；<b>红=X(右) 绿=Y(上) 蓝=Z(前)</b><br>
 平面拟合只在工作检测带（原图红线间）内做；<b>带外与远场点全部保留</b>，用右侧开关切换口径</div>
 <div id="btns"><button id="b3">切数据源 ▶</button><button id="b1">切色 RGB/高度</button>
 <button id="b4">范围: <b>全幅</b>/检测带</button><button id="b5">远场: <b>全部</b>/≤45m</button>
-<button id="b6">原图 开/关</button><button id="b2">复位</button></div>
+<button id="b6">原图 开/关</button><button id="b7">网格 开/关</button><button id="b8">环距 开/关</button>
+<button id="b2">复位</button></div>
 <script>
 function f32(b){const s=atob(b),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return new Float32Array(u.buffer)}
 function u8(b){const s=atob(b),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return new Uint8Array(u.buffer)}
-const GP=f32(`__GP__`), GC=u8(`__GC__`);
+// 参考几何（线段，JS 生成——参考面是规则几何，不进点云）：1m 网格 + 三轴 + 半径环
+const SEGS=[];
+const XS=15, ZS=60;
+for(let x=-XS;x<=XS;x++)SEGS.push(x,0,0, x,0,ZS, x===0?200:150,x===0?200:150,x===0?200:150);
+for(let z=0;z<=ZS;z++)SEGS.push(-XS,0,z, XS,0,z, 110,110,110);
+SEGS.push(0,0,0, 6,0,0, 255,60,60);     // X 红=右
+SEGS.push(0,0,0, 0,5,0, 60,255,60);     // Y 绿=上
+SEGS.push(0,0,0, 0,0,12, 60,120,255);   // Z 蓝=前
+const LBL=[];
+for(const r of [5,10,15,20,25,30,40,50,60]){
+  for(let i=0;i<96;i++){
+    const t0=i/96*2*Math.PI, t1=(i+1)/96*2*Math.PI;
+    SEGS.push(r*Math.cos(t0),0,r*Math.sin(t0), r*Math.cos(t1),0,r*Math.sin(t1), 255,220,60);
+  }
+  LBL.push([r+0.6,0,1.2,String(r)]);
+}
 const SRC=__SRC__;
 const c=document.getElementById('c'), ctx=c.getContext('2d');
 const thumb=document.getElementById('thumb');
 let cur=0, XYZ,RGB,HT,BD,NP,COL,COLH, cx=0,cy=0,cz=0,span=10;
-let yaw=-0.55,pitch=0.28,camD=20,panX=0,panY=0,mode=0,showAll=true,cap45=false;
+let yaw=-0.55,pitch=0.28,camD=20,panX=0,panY=0,mode=0,showAll=true,cap45=false,showGrid=true,showRings=true;
+let rollU=0,pitchU=0,cl=1,sl=0,clp=1,slp=0;   // 手动摆正（自动拟合歪时的兜底）
+let COLH2=[];                                  // 摆正后残差（手动摆正几何上重算）
+function recomputeLvlColors(){
+  COLH2=[];
+  for(let k=0;k<NP;k++){
+    let x=XYZ[3*k], y=-XYZ[3*k+1], z=XYZ[3*k+2];   // world y-up（路面已落 0）
+    if(rollU!==0||pitchU!==0){
+      const xr=cl*x-sl*y; y=sl*x+cl*y; x=xr;        // 与 proj 同式（绕世界原点）
+      const yp=clp*y-slp*z; z=slp*y+clp*z; y=yp;
+    }
+    COLH2.push(hue((Math.max(-0.35,Math.min(0.35,-y))+0.35)/0.7));  // 负=高出路面
+  }
+}
 const hue=t=>`hsl(${240-240*Math.max(0,Math.min(1,t))},95%,`+(35+35*Math.max(0,Math.min(1,t)))+`%)`;
 function setSrc(i){
   cur=i; const s=SRC[i];
@@ -125,6 +161,7 @@ function setSrc(i){
     COL.push(`rgb(${RGB[3*k]},${RGB[3*k+1]},${RGB[3*k+2]})`);
     COLH.push(hue((Math.max(-0.35,Math.min(0.35,HT[k]))+0.35)/0.7));
   }
+  recomputeLvlColors();
   cx=0;cy=0;cz=0;
   for(let k=0;k<NP;k++){cx+=XYZ[3*k];cy+=XYZ[3*k+1];cz+=XYZ[3*k+2]}
   cx/=NP;cy/=NP;cz/=NP;
@@ -144,7 +181,13 @@ function vis(k){
 }
 function render(){
   const f=1.15*Math.min(W,H), cyw=Math.cos(yaw),syw=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
-  const proj=(x,y,z,out)=>{
+  const proj=(x,y,z,out,lvl=true)=>{
+    if(lvl&&(rollU!==0||pitchU!==0)){
+      x+=cx; y-=cy; z+=cz;                          // 回世界原点系（y 上正）
+      const xr=cl*x-sl*y; y=sl*x+cl*y; x=xr;        // 滚转：绕前向轴 Z
+      const yp=clp*y-slp*z; z=slp*y+clp*z; y=yp;    // 俯仰：绕右向轴 X
+      x-=cx; y+=cy; z-=cz;                          // 回质心系——绕原点转，路面不动
+    }
     x-=cx;y=-(y-cy);z-=cz;
     const x1=cyw*x+syw*z, z1=-syw*x+cyw*z;
     const y1=cp*y-sp*z1, z2=sp*y+cp*z1;
@@ -162,13 +205,27 @@ function render(){
   }
   buf.sort((a,b)=>b[0]-a[0]);
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
-  const PAL=mode? COLH:COL;
+  const PAL=mode===0?COL:(mode===1?COLH:COLH2);
   for(let k=0;k<buf.length;k++){const b=buf[k]; ctx.fillStyle=PAL[b[3]]; ctx.fillRect(b[1],b[2],1.6,1.6)}
-  const NGP=GP.length/3, p=[0,0,0];
-  for(let i=0;i<NGP;i++){
-    if(proj(GP[3*i],GP[3*i+1],GP[3*i+2],p)){
-      ctx.fillStyle=`rgb(${GC[3*i]},${GC[3*i+1]},${GC[3*i+2]})`;
-      ctx.fillRect(p[0],p[1],1.4,1.4);
+  // 参考面：线段渲染（lvl=false——摆正只转点云，参考面不动）。
+  // SEGS 前 (2*XS+1)+(ZS+1)+3 段=网格+三轴（b7 门控），其后=半径环（b8 门控）
+  const NBASE=((2*XS+1)+(ZS+1)+3)*9;
+  const p1=[0,0,0], p2=[0,0,0];
+  ctx.lineWidth=1;
+  for(let i=showGrid?0:NBASE, end=showRings?SEGS.length:NBASE; i<end; i+=9){
+    const ok1=proj(SEGS[i],SEGS[i+1],SEGS[i+2],p1,false);
+    const ok2=proj(SEGS[i+3],SEGS[i+4],SEGS[i+5],p2,false);
+    if(!ok1||!ok2)continue;
+    ctx.strokeStyle=`rgb(${SEGS[i+6]},${SEGS[i+7]},${SEGS[i+8]})`;
+    ctx.beginPath(); ctx.moveTo(p1[0],p1[1]); ctx.lineTo(p2[0],p2[1]); ctx.stroke();
+  }
+  if(showRings){
+    ctx.fillStyle='#fff'; ctx.textAlign='left';
+    for(const L of LBL){
+      if(!proj(L[0],L[1],L[2],p1,false))continue;
+      const fs=Math.max(9, 1.2*f/p1[2]);
+      ctx.font=`bold ${fs.toFixed(0)}px system-ui`;
+      ctx.fillText(L[3]+'m', p1[0], p1[1]);
     }
   }
 }
@@ -181,10 +238,22 @@ c.addEventListener('mousemove',e=>{if(!drag)return;const dx=e.clientX-lx,dy=e.cl
 c.addEventListener('contextmenu',e=>e.preventDefault());
 c.addEventListener('wheel',e=>{e.preventDefault();camD*=Math.exp(e.deltaY*0.0012);render()},{passive:false});
 document.getElementById('b3').onclick=()=>{setSrc((cur+1)%SRC.length)};
-document.getElementById('b1').onclick=()=>{mode=1-mode;document.getElementById('mode').textContent=mode?'高度残差(负=高出路面)':'原帧 RGB';render()};
+document.getElementById('b1').onclick=()=>{mode=(mode+1)%3;
+  document.getElementById('mode').textContent=
+    mode===0?'原帧 RGB':(mode===1?'程序残差(负=高出路面)':'摆正后残差(负=高出路面)');render()};
 document.getElementById('b4').onclick=()=>{showAll=!showAll;render()};
 document.getElementById('b5').onclick=()=>{cap45=!cap45;render()};
 document.getElementById('b6').onclick=()=>{thumb.style.display=thumb.style.display==='none'?'block':'none'};
+document.getElementById('b7').onclick=()=>{showGrid=!showGrid;render()};
+document.getElementById('b8').onclick=()=>{showRings=!showRings;render()};
+const lr=document.getElementById('lr'), lpe=document.getElementById('lp');
+const setLvl=()=>{rollU=+lr.value*Math.PI/180;pitchU=+lpe.value*Math.PI/180;
+  cl=Math.cos(rollU);sl=Math.sin(rollU);clp=Math.cos(pitchU);slp=Math.sin(pitchU);
+  document.getElementById('vr').textContent=(+lr.value>=0?'+':'')+(+lr.value).toFixed(1)+'°';
+  document.getElementById('vp').textContent=(+lpe.value>=0?'+':'')+(+lpe.value).toFixed(1)+'°';
+  recomputeLvlColors();render();};
+lr.oninput=setLvl; lpe.oninput=setLvl;
+document.getElementById('b9').onclick=()=>{lr.value=0;lpe.value=0;setLvl()};
 document.getElementById('b2').onclick=()=>{yaw=-0.55;pitch=0.28;camD=span*1.6;panX=panY=0;render()};
 setSrc(0);
 </script></body></html>"""
@@ -341,8 +410,6 @@ def main() -> None:
                               ego_full, None, STEP,
                               band_mask=band_mask_full,
                               note=f"全幅 · 模型mask剔除{(1-valid.mean()):.0%}"))
-    gpts, gcols = eph._grid_axes(0.0)
-
     # 原图缩略图（带检测带边界线）
     th = frame.copy()
     for yy, col in ((dg.Y0, (255, 60, 60)), (dg.DIAG_Y1, (255, 60, 60))):
@@ -357,8 +424,7 @@ def main() -> None:
         'xyz:f32(`' + b64(s["xyz"]) + '`),rgb:u8(`' + b64(s["rgb"]) + '`),ht:f32(`' + b64(s["ht"]) + '`),'
         'bd:u8(`' + b64(s["bd"]) + '`)}'
         for s in srcs) + "]"
-    html = (HTML.replace("__STEM__", stem).replace("__GP__", b64(gpts))
-            .replace("__GC__", b64(gcols)).replace("__SRC__", src_js)
+    html = (HTML.replace("__STEM__", stem).replace("__SRC__", src_js)
             .replace("__TW__", "480"))
     html = html.replace('<img id="thumb" width="480">',
                         f'<img id="thumb" width="480" src="data:image/jpeg;base64,{thumb_b64}">')

@@ -12,7 +12,8 @@
 用法（仓库根 .venv）：
     python tools/experiments/speedrush_vision/export_debug_cloud.py \
         --dir "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/control_traces/depth_debug_20261002_162102" \
-        --d 3 --d 8 --d 10
+        --d 3 8 10
+    （--d 是 nargs="+" 多值旗标，重复 --d 会被 argparse 覆盖只留最后一个）
 """
 from __future__ import annotations
 
@@ -40,7 +41,12 @@ def _unpack(packed: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
 
 
 def _load_frame(stem: Path) -> np.ndarray:
-    """调试渲染图顶部 720 行 = 原帧（含掩码描边）。"""
+    """上色帧：dXXXXX_frame.jpg 干净 raw（无描边）；旧目录无 _frame 时回退调试
+    渲染图上 720 行——渲染图带掩码描边，点云继承描边框（2026-10-09 维护者
+    发现的"框"：蓝框=ego 掩码描边、彩框=检测框描边，都不是场景色）。"""
+    clean = Path(str(stem) + "_frame.jpg")
+    if clean.exists():
+        return cv2.cvtColor(cv2.imread(str(clean)), cv2.COLOR_BGR2RGB)
     bgr = cv2.imread(str(stem) + ".jpg")
     return cv2.cvtColor(bgr[:720], cv2.COLOR_BGR2RGB)
 
@@ -55,7 +61,10 @@ def load_cloud(stem: Path):
     valid = cv2.resize(valid.astype(np.float32), (1280, 720),
                        interpolation=cv2.INTER_NEAREST).astype(bool)
     pts[~valid] = np.nan
-    fy = float(d["fy"]) * (720 / oh)
+    # evid fy=归一化焦距（u∈[0,1]，生产还原口径 ×MOGE_IN_H，depth_geo infer_points
+    # 注释与 line 345-346 同源）；oh 是原生点图行数，与归一化基无关——2026-10-11
+    # A/B 实测旧式 ×(720/oh) 把 fy 压成 ~1.9px，d00039 拟合 roll −0.04° 翻成 +7.04°。
+    fy = float(d["fy"]) * 720
     ego = _unpack(np.load(str(stem) + "_ego.npy"), (720, 1280))
     objm = _unpack(np.load(str(stem) + "_mask.npy"), (720, 1280))
     obj = objm & ~ego
@@ -81,7 +90,6 @@ def main() -> None:
                 X, Y, Z, excl, fy=fy)))
         print(f"d{i:05d}: done")
 
-    gpts, gcols = eph._grid_axes(0.0)
     b64 = lambda a: base64.b64encode(np.ascontiguousarray(a).tobytes()).decode()
     src_js = "[" + ",".join(
         '{name:"' + s["name"] + '",hud:`' + s["hud"] + '`,'
@@ -89,8 +97,7 @@ def main() -> None:
         'ht:f32(`' + b64(s["ht"]) + '`),bd:u8(`' + b64(s["bd"]) + '`)}'
         for s in srcs) + "]"
     stem = root.name
-    html = (cds.HTML.replace("__STEM__", stem).replace("__GP__", b64(gpts))
-            .replace("__GC__", b64(gcols)).replace("__SRC__", src_js)
+    html = (cds.HTML.replace("__STEM__", stem).replace("__SRC__", src_js)
             .replace("__TW__", "480"))
     OUT.mkdir(parents=True, exist_ok=True)
     out = OUT / f"{stem}_debug.html"
