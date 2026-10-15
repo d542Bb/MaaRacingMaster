@@ -24,7 +24,10 @@ from dataclasses import replace
 
 CAL = load_calib()
 _BASE = _read_decision(DECISION_FILE)
-CFG = replace(_BASE, lane_scoring=replace(_BASE.lane_scoring, enabled=True))
+CFG = replace(_BASE, lane_scoring=replace(_BASE.lane_scoring, enabled=True),
+              # 走廊收益场闸显式钉死（不继承部署态，rollout 翻转不漂）
+              corridor_reach=replace(_BASE.corridor_reach,
+                                     enabled=False, control=False))
 
 DT = 0.05
 

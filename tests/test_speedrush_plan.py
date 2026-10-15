@@ -22,7 +22,10 @@ _CFG_BASE = _read_decision(DECISION_FILE)
 CFG_PLAN = replace(_CFG_BASE,
                    plan_layer=replace(_CFG_BASE.plan_layer, enabled=True),
                    mode=replace(_CFG_BASE.mode, trajectory_sampling=False),
-                   grid_veto=replace(_CFG_BASE.grid_veto, enabled=False))
+                   grid_veto=replace(_CFG_BASE.grid_veto, enabled=False),
+                   # 走廊收益场闸显式钉死（不继承部署态，rollout 翻转不漂）
+                   corridor_reach=replace(_CFG_BASE.corridor_reach,
+                                          enabled=False, control=False))
 
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None):

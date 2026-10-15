@@ -97,6 +97,8 @@ class CandidateScore:
     shift_cost: float           # 横向位移代价（正值，扣项）
     reachable_coins: int        # 计入整组值的币组数（审计面）
     far_coins: int              # 记远权的币组数（审计面）
+    coin_t: tuple[float, ...] = ()   # 可收整组币的到站 t_miss（提前量仪器，
+                                     # 20261015 control 期 instrumentation 补齐）
 
 
 @dataclass(frozen=True)
@@ -107,9 +109,9 @@ class ReachReport:
     best_x_m: float             # 胜出横向位（argmax；平手选离中心近者）
     center_x_m: float           # 近场走廊中心（平手偏好的参照）
     path: tuple[tuple[float, float], ...]   # (z_m, x_m) 近→远：近端=executed，
-
-
-# 远端=best，逐带线性插值
+    #   远端=best，逐带线性插值
+    best_coin_t: tuple[float, ...] = ()     # 胜出候选的可收币 t_miss（提前量仪器，
+    #   20261015 control 期 instrumentation 补齐）
 
 
 def _coin_group_value(coin: CoinSource, p: ReachParams) -> float:
@@ -163,6 +165,7 @@ def evaluate(bands: Sequence[CorridorBandSpan],
             continue
         coin_value = 0.0
         n_reach = n_far = 0
+        coin_ts: list[float] = []           # 可收整组币的到站（提前量仪器）
         for coin in coins:
             if abs(coin.x_m - x) > params.attribution_half_m:
                 continue                    # 横向不落归属半宽：不是这条路径的币
@@ -180,9 +183,9 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                             or need <= c.t_meet_s <= coin.t_miss_s)
                        for c in cars):
                     continue
-                    continue
                 coin_value += val
                 n_reach += 1
+                coin_ts.append(coin.t_miss_s)
             else:
                 coin_value += params.far_coin_weight * val   # 远币：方向信息仍在
                 n_far += 1
@@ -199,7 +202,8 @@ def evaluate(bands: Sequence[CorridorBandSpan],
         out.append(CandidateScore(
             x, coin_value + pass_sum - params.shift_cost_per_m * abs(x - executed_x),
             False, coin_value, pass_sum,
-            params.shift_cost_per_m * abs(x - executed_x), n_reach, n_far))
+            params.shift_cost_per_m * abs(x - executed_x), n_reach, n_far,
+            tuple(coin_ts)))
 
     # ---- 胜出：argmax；平手（差 < tie_margin）选离走廊中心近者（六点 1） ----
     best = max(out, key=lambda c: (c.score, -abs(c.x_m - center)))
@@ -207,7 +211,7 @@ def evaluate(bands: Sequence[CorridorBandSpan],
     best = min(tied, key=lambda c: abs(c.x_m - center))
 
     path = _path_preview(bands, executed_x, best.x_m)
-    return ReachReport(tuple(out), best.x_m, center, path)
+    return ReachReport(tuple(out), best.x_m, center, path, best.coin_t)
 
 
 def _path_preview(bands: Sequence[CorridorBandSpan], x_from: float, x_to: float,

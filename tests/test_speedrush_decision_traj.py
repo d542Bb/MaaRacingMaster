@@ -24,7 +24,10 @@ _CFG_BASE = _read_decision(DECISION_FILE)
 CFG = replace(_CFG_BASE, mode=replace(_CFG_BASE.mode, trajectory_sampling=False),
               grid_veto=replace(_CFG_BASE.grid_veto, enabled=False),
               lane_scoring=replace(_CFG_BASE.lane_scoring, control=False),
-              metric_cars=replace(_CFG_BASE.metric_cars, fusion=False))
+              metric_cars=replace(_CFG_BASE.metric_cars, fusion=False),
+              # 走廊收益场闸显式钉死（不继承部署态，rollout 翻转不漂）
+              corridor_reach=replace(_CFG_BASE.corridor_reach,
+                                     enabled=False, control=False))
 CFG_TRAJ = replace(CFG, mode=replace(CFG.mode, trajectory_sampling=True))
 
 

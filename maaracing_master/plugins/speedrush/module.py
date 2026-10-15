@@ -1046,6 +1046,11 @@ class SpeedRushModule(ActivityModule):
             "cr_path": None if chain["engine"].reach_report is None
             else [[round(z, 3), round(x, 3)]
                   for z, x in chain["engine"].reach_report.path],
+            # 胜出候选的可收币 t_miss（提前量仪器，20261015 instrumentation 补齐：
+            # control 期 CHANGE 目标=走廊路径位无实体 t_miss，reach_win 拍取
+            # min(cr_coins) 的 P50 即提前量）
+            "cr_coins": None if chain["engine"].reach_report is None
+            else [round(t, 3) for t in chain["engine"].reach_report.best_coin_t],
             # HUD 本机读数（hud_ref 挂载；rate 只在蓝卡识别=有 rate 的槽位即
             # 本机）：局结局程序化取数面（得分/得分速度），缺失拍诚实 None
             # （对手卡读数是背景假读，按槽位猜会静默读错）；血量格未读另案

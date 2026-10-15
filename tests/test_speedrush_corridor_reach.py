@@ -53,13 +53,17 @@ def _best_by_x(rep):
 
 def test_two_coin_groups_accumulate_along_path():
     """沿线两个币组都可收：候选拿两组整组值累加（不盯一个目标锁）。"""
-    rep = evaluate(_bands(), (_coin(0.0), _coin(0.5)), (), 0.0, _params())
+    rep = evaluate(_bands(), (_coin(0.0), _coin(0.5, t_miss=1.6)), (), 0.0,
+                   _params())
     assert rep is not None
     by_x = _best_by_x(rep)
     c = by_x[0.25]                      # 两个组的归属半宽都罩住它
     assert c.coin_value == pytest.approx(2 * VAL)
     assert c.reachable_coins == 2
     assert c.score == pytest.approx(2 * VAL)
+    # 提前量仪器（20261015 instrumentation 补齐）：可收币到站随候选透出
+    assert list(c.coin_t) == pytest.approx([1.5, 1.6])
+    assert list(rep.best_coin_t) == pytest.approx([1.5, 1.6])
 
 
 def test_crash_candidate_drops_all_benefits():

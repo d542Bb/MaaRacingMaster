@@ -28,9 +28,12 @@ _BASE = _read_decision(CFG_PATH)
 # 测试基线必须自持，不随部署漂）
 CFG_OFF = replace(_BASE, corridor_reach=replace(_BASE.corridor_reach,
                                                 enabled=False, control=False))
-# 影子期：enabled=true、control=false（lane_scoring.control 常驻态原样）
-CFG_SHADOW = replace(_BASE, corridor_reach=replace(_BASE.corridor_reach,
-                                                   enabled=True))
+# 影子期：enabled=true、control=false（含 lane_scoring.control=false——shadow
+# 语义与 lane control 无关，两者都要钉死不继承部署态）
+CFG_SHADOW = replace(_BASE,
+                     lane_scoring=replace(_BASE.lane_scoring, control=False),
+                     corridor_reach=replace(_BASE.corridor_reach,
+                                            enabled=True, control=False))
 # control 期：行为闸开（lane_scoring.control 归 false——互斥）
 CFG_CTRL = replace(_BASE,
                    lane_scoring=replace(_BASE.lane_scoring, control=False),
@@ -132,9 +135,11 @@ def test_shadow_with_lane_control_bit_identical():
 
 def test_mutual_exclusion_loader_rejects():
     """corridor_reach.control=true 与 lane_scoring.control=true 并存 → 加载器
-    拒绝（设计稿 §3.4 互斥）。"""
+    拒绝（设计稿 §3.4 互斥）。两闸都显式置 true（不继承部署态——部署 json
+    在 rollout 中会翻转）。"""
     d = json.loads(CFG_PATH.read_text(encoding="utf-8"))
-    d["corridor_reach"]["control"] = True      # lane_scoring.control 已是 true
+    d["corridor_reach"]["control"] = True
+    d["lane_scoring"]["control"] = True
     tmp = CFG_PATH.parent / "_test_mutual.json"
     tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
     try:
