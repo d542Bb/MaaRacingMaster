@@ -89,6 +89,30 @@ def _hug_sigma_of(ref: float, x_lane: float) -> float:
     return 1.0 if d > 0 else -1.0
 
 
+@dataclass
+class _Intent:
+    """追逐意图（设计稿 §8.2 需求面承诺制：corridor_reach 集生命周期状态面，
+    不新增 FSM 状态）。承诺的是「去 d0 所在的目的地带」而非某一组币——组会
+    流过，带才是骑线对象（半宽=LANE_HALF，与归属半宽同源）。
+
+    生灭：select:reach_win 换新、switch:reach_upgrade 整体替换；finish/abort
+    保留（行为上不可达——所有读者都 gated 在 CHANGE+KIND_CAND_REACH，而
+    reach 集必经 select 重建），done/cancel 拍 trace 取证用；conserve 硬清。
+    计数器全部机检可复算（§8.4 证据列）：band_empty_s/pick_out_ticks=放弃门
+    两条件、stay_ticks=次判据贴车序列、up_ticks=升级序列、absence_s=报告缺
+    席时长、reanchors=重锚次数。"""
+
+    d0: float                       # 目的地中心（路心系车道坐标，可重锚变换）
+    basis_ids: frozenset[int]       # select 拍带内币组 id（审计起点，逐拍按带查）
+    cs_center: float | None = None  # 走廊 center_lane 基线（重锚信号，道/车系）
+    absence_s: float = 0.0
+    band_empty_s: float = 0.0
+    pick_out_ticks: int = 0
+    stay_ticks: int = 0
+    up_ticks: int = 0
+    reanchors: int = 0
+
+
 @dataclass(frozen=True)
 class ValidationReport:
     """校验层输出（致命 = 一票否决，D2）。reasons 只装非致命注记。"""
@@ -495,6 +519,10 @@ class DecisionEngine:
         # 不跨阶段（__init__ 构造，reset 不重建）
         self._reach_report: ReachReport | None = None
         self._reach_goal: float | None = None
+        # 需求面承诺制（§8）：追逐意图随集生灭（纪律见 _Intent），_intent_hold
+        # 是单拍冻结声明（缺席/gap 持位），update() 输出段读后即清
+        self._intent: _Intent | None = None
+        self._intent_hold = False
 
     # ---------- 主入口 ----------
 
@@ -583,11 +611,19 @@ class DecisionEngine:
         # 输出目标：轨迹模式=每拍重采样、输出选中轨迹的前瞻点（§2.3 滚动重评，
         # 破判连拍达 _REEVAL_STREAK 即 ABORT——防抖与 _miss_breach 同源纪律）；
         # 闸关/回执缺位/ro 缺席/非巡航变道态 → legacy x_smooth 位置常量路径。
+        # 需求面承诺制（§8.4.4/§8.4.2）：意图持位拍（缺席记忆/gap 等下一组）
+        # 不采样轨迹（滚动目标是塌回点，采样即执行过期方向），x_target 冻结
+        # executed——与 Track 1 暂停同一条输出通道（绕开平滑器防漂移）。
+        intent_hold = self._intent_hold
+        self._intent_hold = False           # 单拍声明，读后即清
         xt = None
         pause_hold = None
+        if intent_hold and executed_lane is not None:
+            pause_hold = executed_lane
         self._traj_diag = None
         if self.traj is not None and executed_lane is not None \
                 and self._ro is not None \
+                and not intent_hold \
                 and self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
             d_t = self._traj_d_target(obs, executed_lane)
             if d_t is not None:
@@ -806,11 +842,13 @@ class DecisionEngine:
             enter(None if x is None else x * lane_w, tm)
         return out
 
-    def _tick_cruise_reach(self, executed: float | None) -> str:
+    def _tick_cruise_reach(self, obs: WorldObservation,
+                           executed: float | None) -> str:
         """CRUISE 走廊收益场选择（corridor_reach.control 闸，设计稿 §3.3）：
         胜出 x_goal 与 executed 差超死区 → CHANGE（select:reach_win）；否则
         持守（hold:reach_hold），轨迹目标吃路径近带点。报告缺席拍（无路心锚/
-        走廊缺席/黑视）持守不翻面——不臆造可达性。"""
+        走廊缺席/黑视）持守不翻面——不臆造可达性。需求面承诺制（§8.2）：选中
+        拍锁定追逐意图（d0=本场选点，basis=带内币组，cs_center=重锚基线）。"""
         rep = self._reach_report
         if rep is None:
             self._reach_goal = None
@@ -832,32 +870,85 @@ class DecisionEngine:
         self._last_disp = None
         self._change_t = 0.0
         self._deadzone_ticks = 0
+        self._intent = (_Intent(
+            d0=goal_lane,
+            basis_ids=self._band_coin_ids(obs, goal_lane),
+            cs_center=None if self._corridor is None
+            else self._corridor.center_lane)
+            if self.cfg.commitment.demand_enabled else None)
         self._state = DecisionState.CHANGE
         return "select:reach_win"
 
     def _tick_change_reach(self, obs: WorldObservation, dt_s: float,
                            executed: float | None) -> str:
         """走廊收益场计划路（corridor_reach.control 闸，设计稿 §3.3）：目标=
-        走廊路径位（非实体）。报告缺席（走廊看不全且无朝向记忆）=ABORT 有界
-        回稳；收敛=反馈路完成判据（同向吃掉死区）；横向安全 veto 原样；
-        x_goal 每拍滚动重评——收益场每拍重算，tie_margin+位移代价自带稳定，
-        不另设慢拍反抖。"""
+        走廊路径位（非实体）。报告缺席：承诺制 §8.4.4 预算内记忆续跑（保留
+        意图、x_target 冻结 executed），超预算/闸关/executed 缺席=既有取消。
+        demand_enabled（§8）：完成/放弃判据吃受管意图而非滚动选点——逐拍
+        优先级=重锚断裂 > 依据死亡 > 完成（主/次判据） > 安全 veto > gap
+        持位 > 升级；x_goal 仍每拍滚动重评（运动与观测归场，承诺只接管
+        「何谓到达」与「何时放弃」）。横向安全 veto 原样，意图不豁免。"""
         self._change_t += dt_s
         rep = self._reach_report
         if rep is None:
+            if (self.cfg.commitment.memory_enabled
+                    and self._intent is not None and executed is not None):
+                self._intent.absence_s += dt_s
+                if self._intent.absence_s > \
+                        self.cfg.commitment.memory_budget_s:
+                    self._enter_abort("target_lost")
+                    return "cancel:reach_lost"
+                self._intent_hold = True   # 缺席拍冻结（Track 1 §3.3 同语义）
+                return "hold:reach_absent"
             self._enter_abort("target_lost")
             return "cancel:reach_lost"
         goal_lane = rep.best_x_m / self.cal.lane_w_m
         self._reach_goal = rep.best_x_m
-        self._demand_lane = goal_lane
+        if self._intent is not None:
+            blocked = self._intent_reanchor()
+            if blocked is None:
+                blocked = self._intent_basis(obs, rep, goal_lane, dt_s,
+                                             executed)
+            if blocked is not None:
+                return blocked
+            self._demand_lane = self._intent.d0   # 意图镜面（降级/trace 消费）
+        else:
+            self._demand_lane = goal_lane
         if executed is not None:
-            if self._demand_consumed(executed):
+            if self._intent is not None:
+                # 主判据（§8.3）：对齐 d0——d0 是有受管生命周期的意图状态，
+                # 滚动选点不再参与完成判定（坍缩假到达的根治点）
+                if abs(executed - self._intent.d0) <= \
+                        self.cfg.hysteresis.dead_zone_lane:
+                    return self._finish_change("converged:feedback",
+                                               reanchor=self._intent.d0)
+                # 次判据（场自己说「留在这」）：贴车 k_stay 序列 + 近旁币组
+                # 实证（收益在场，不是缺席）；守门：带内依据仍活且场选点已
+                # 离带 → 不是留驻是坍缩（fid2348 形态由此拦截）
+                if (self._intent.stay_ticks >= self.cfg.commitment.k_stay
+                        and self._near_car_coin(obs, executed) is not None
+                        and not (self._intent.band_empty_s <= 0.0
+                                 and abs(goal_lane - self._intent.d0)
+                                 > LANE_HALF)):
+                    return self._finish_change("converged:proxy",
+                                               reanchor=self._intent.d0)
+            elif self._demand_consumed(executed):
                 return self._finish_change("converged:feedback",
                                            reanchor=goal_lane)
             veto = self.lateral.veto_reason(executed, goal_lane, self._views)
             if veto is not None:
                 self._enter_abort(veto)
                 return f"cancel:{veto}"
+            if self._intent is not None:
+                # gap 持位（§8.4.2）：空窗期场选点塌回路心是反骑线机理——
+                # 意图保留、车持位等下一组（冻结走 _intent_hold 输出通道）
+                if self._intent.band_empty_s > 0.0:
+                    self._intent_hold = True
+                    return "hold:reach_gap"
+                # 升级（§8.4.3）：带外新目的地连续 k_up 拍超在场带候选
+                # tie_margin——换目标≠放弃，整体替换意图继续 CHANGE
+                if self._intent.up_ticks >= self.cfg.commitment.k_up:
+                    return self._intent_upgrade(rep, goal_lane, obs)
             return "moving:reach"
         # 无反馈降级：目标连读 2 拍进死区视为收敛，超时强制落位（金币分支同款）
         if abs(rep.best_x_m) / self.cal.lane_w_m \
@@ -873,11 +964,129 @@ class DecisionEngine:
                                        reanchor=self._demand_lane)
         return "moving:reach"
 
+    def _intent_reanchor(self) -> str | None:
+        """坐标系重锚（§8.3，评审边界 A）：corridor.center_lane 相邻拍跳变超
+        reanchor_eps 即换版，d0'=d0−Δc——executed 侧由回执链同帧平移，变换
+        保持相对需求（=物理指向）不变；超 reanchor_break 判坐标系断裂 →
+        有证据放弃（cancel:frame_break），不无条件追逐过期坐标。center 缺席
+        拍重置基线：跨观测缺口不臆造跳变。返回非 None=本拍已被拦截收场。"""
+        it = self._intent
+        c_now = (self._corridor.center_lane
+                 if self._corridor is not None else None)
+        if c_now is None or it.cs_center is None:
+            it.cs_center = c_now
+            return None
+        dc, it.cs_center = c_now - it.cs_center, c_now
+        if abs(dc) <= self.cfg.commitment.reanchor_eps_lane:
+            return None
+        if abs(dc) > self.cfg.commitment.reanchor_break_lane:
+            self._enter_abort("frame_break")
+            return "cancel:frame_break"
+        it.d0 -= dc
+        it.reanchors += 1
+        return None
+
+    def _intent_basis(self, obs: WorldObservation, rep: ReachReport,
+                      goal_lane: float, dt_s: float,
+                      executed: float | None) -> str | None:
+        """收益依据逐拍维护（§8.4.2，评审边界 B，全部机检可复算）：带内可见
+        性计时 band_empty_s（>0=gap 态：空窗骑线语义，意图保留车持位）、场
+        选点带外连续拍 pick_out_ticks；两者同时成立才判死（任一恢复计数归零
+        即回 alive）——短暂看不到 ≠ 不存在，场偶发选偏 ≠ 弃追。stay/up 序列
+        一并更新（次判据与升级门的连续性证据）。返回非 None=本拍已判死。"""
+        it = self._intent
+        c = self.cfg.commitment
+        it.absence_s = 0.0            # 报告在场=无缺席（§8.4.4 恢复拍清零）
+        if self._band_coin_ids(obs, it.d0):
+            it.band_empty_s = 0.0
+        else:
+            it.band_empty_s += dt_s
+        if abs(goal_lane - it.d0) <= LANE_HALF:
+            it.pick_out_ticks = 0
+        else:
+            it.pick_out_ticks += 1
+        if executed is not None:
+            if abs(goal_lane - executed) <= \
+                    self.cfg.hysteresis.dead_zone_lane:
+                it.stay_ticks += 1
+            else:
+                it.stay_ticks = 0
+            inband = [cd.score for cd in rep.candidates
+                      if abs(cd.x_m / self.cal.lane_w_m - it.d0) <= LANE_HALF]
+            if (inband
+                    and max(cd.score for cd in rep.candidates)
+                    >= max(inband) + self.cfg.corridor_reach.tie_margin
+                    and abs(goal_lane - it.d0) > LANE_HALF):
+                it.up_ticks += 1
+            else:
+                it.up_ticks = 0
+        else:
+            it.stay_ticks = 0     # 无回执拍不积累贴车证据（无观测无序列）
+        if it.band_empty_s >= c.basis_grace_s \
+                and it.pick_out_ticks >= c.k_out:
+            self._enter_abort("basis_dead")
+            return "cancel:basis_dead"
+        return None
+
+    def _intent_upgrade(self, rep: ReachReport, goal_lane: float,
+                        obs: WorldObservation) -> str:
+        """目标升级（§8.4.3）：d0/带/basis 整体替换、计数器随新承诺清零。
+        协议四要素（同拍同场评分、连续 k_up、差 ≥ tie_margin、带变化）已在
+        _intent_basis 的 up_ticks 序列里逐拍机检，此处只做替换与集簿记
+        （switch 位同款纪律：计时/防抖/位移基线全部重起）。"""
+        old = self._intent
+        self._intent = _Intent(
+            d0=goal_lane,
+            basis_ids=self._band_coin_ids(obs, goal_lane),
+            cs_center=old.cs_center,      # 坐标系连续：重锚基线与次数顺延
+            reanchors=old.reanchors)
+        self._cur_score = max(rep.candidates,
+                              key=lambda c: c.score).score
+        self._demand_lane = goal_lane
+        self._change_t = 0.0
+        self._deadzone_ticks = 0
+        self._last_disp = None
+        self._late_streak = 0
+        self._blocked_s = 0.0
+        return "switch:reach_upgrade"
+
+    def _band_coin_ids(self, obs: WorldObservation,
+                       d0: float) -> frozenset[int]:
+        """目的地带（d0±LANE_HALF）内可见币组 id（可见性来源=obs.coin_groups
+        位置，与场评分无关——依据在不在场看位置，值不值钱看场；nan 心存续组
+        不入账）。"""
+        return frozenset(
+            g.group_id for g in obs.coin_groups
+            if g.x_center == g.x_center and abs(g.x_center - d0) <= LANE_HALF)
+
+    def _near_car_coin(self, obs: WorldObservation,
+                       executed: float) -> int | None:
+        """自车近旁（±LANE_HALF）可见币组 id（次判据的「收益在场」实证）。"""
+        for g in obs.coin_groups:
+            if g.x_center == g.x_center \
+                    and abs(g.x_center - executed) <= LANE_HALF:
+                return g.group_id
+        return None
+
     @property
     def reach_report(self) -> "ReachReport | None":
         """上一拍走廊收益评定（corridor_reach 闸开才有值；trace cr_* 对照列
         的数据源，不进决策——行为切换在 control 闸）。None=闸关/弃权拍。"""
         return self._reach_report
+
+    @property
+    def intent_state(self) -> dict | None:
+        """当前追逐意图观测面（§8.2；trace intent 列数据源；None=闸关/
+        demand 关/集外无意图）。计数器与转移全部机检可复算（§8.4 证据列）。"""
+        it = self._intent
+        if it is None or not self.cfg.commitment.demand_enabled:
+            return None
+        return {"d0": round(it.d0, 3), "basis_ids": sorted(it.basis_ids),
+                "absence_s": round(it.absence_s, 3),
+                "band_empty_s": round(it.band_empty_s, 3),
+                "pick_out": it.pick_out_ticks, "stay": it.stay_ticks,
+                "up": it.up_ticks, "reanchors": it.reanchors,
+                "basis": "gap" if it.band_empty_s > 0.0 else "alive"}
 
     # ---------- 状态处理 ----------
 
@@ -900,7 +1109,7 @@ class DecisionEngine:
         if self.cfg.corridor_reach.control:
             # 走廊收益场选择（corridor_reach.control 闸）：换血 legacy band/feas
             # 选择链——收益场即选择器，金币/错身/碰撞以收益形式进入候选计分
-            return self._tick_cruise_reach(executed)
+            return self._tick_cruise_reach(obs, executed)
         cand = self._select(obs, current=None, executed=executed)
         if cand is None:
             self._target_gid = None
@@ -1419,6 +1628,7 @@ class DecisionEngine:
         self._target_gid = None
         self._target_kind = None
         self._cur_score = -math.inf
+        self._intent = None            # 保守态硬清意图（致命收场不留追逐态）
 
     def _demand_consumed(self, executed: float) -> bool:
         """有符号完成判据：executed 与需求同向、幅度吃掉 |demand|×(1−ε) 减死区。

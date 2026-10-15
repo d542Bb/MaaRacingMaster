@@ -15,7 +15,7 @@ from dataclasses import replace
 import pytest
 
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH
-from maaracing_master.plugins.speedrush.config import _read_decision
+from maaracing_master.plugins.speedrush.config import Commitment, _read_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
@@ -23,17 +23,22 @@ from maaracing_master.plugins.speedrush.tracking import (
 DT = 0.05
 _BASE = _read_decision(CFG_PATH)
 # 闸状态显式钉死（不继承部署态——部署 json 在 rollout 中会翻转 shadow→control，
-# 测试基线必须自持，不随部署漂）
+# 测试基线必须自持，不随部署漂）。commitment 同钉关：§8 需求面在专门文件测，
+# 本文件锁的是 reach 场本身的 FSM 契约。
+_OFF_CMT = Commitment()
 CFG_OFF = replace(_BASE, corridor_reach=replace(_BASE.corridor_reach,
-                                                enabled=False, control=False))
+                                                enabled=False, control=False),
+                  commitment=_OFF_CMT)
 # 影子期：enabled=true、control=false（闸态全部钉死不继承部署态）
 CFG_SHADOW = replace(_BASE,
                      corridor_reach=replace(_BASE.corridor_reach,
-                                            enabled=True, control=False))
+                                            enabled=True, control=False),
+                     commitment=_OFF_CMT)
 # control 期：行为闸开（lane_scoring 已退役删除，互斥检查随迁）
 CFG_CTRL = replace(_BASE,
                    corridor_reach=replace(_BASE.corridor_reach,
-                                          enabled=True, control=True))
+                                          enabled=True, control=True),
+                   commitment=_OFF_CMT)
 
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, fid_hz=None):

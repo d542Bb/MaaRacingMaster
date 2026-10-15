@@ -173,6 +173,15 @@
   "commitment": {
     "pause_enabled": true,
     "pause_budget_s": 1.0,
-    "_note": "决策承诺制 Track 1（2026-10-15 设计稿 v2 §3：traj_blocked 暂停不弃追；Track 2 reach_lost 记忆实施时再增设字段，不预置幽灵旋钮）。语义：traj 采样连续破判达 _REEVAL_STREAK 后，预算内暂停——保留原改道任务、x_target 冻结在 executed（绕开平滑器，防 CHANGE 平滑器朝旧 goal 漂移），reason=pause:blocked；超预算（=单次连续阻塞时长，dt_s 累计、traj 恢复一拍清零、新集清零）才作废（旧行为 cancel:traj_blocked）。安全不承诺（硬边界不变量 §3.2）：lat_veto/致命校验/目标过期判定先行，不受预算延迟；executed 缺席拍不进暂停（§3.3 沿用既有降级）。运行态：**pause_enabled=true＝实机 A/B 期**，病灶=改道集 58% 被 traj_blocked 掐断（106 集=44 完成+61 打断，中位 0.34s、完成集位移 ~0.1 道碎步）；验收面=episode active_movement_s 后实际横向位移（主判据，总时长可被暂停刷过只算生命周期观察）+collect_coin/P2 分数；lat_veto 频次不得上升（安全不让步）。归位义务：A/B 出结论只改本文件；判据翻面（位移/收益不动）归 pause_enabled=false 回实验区归因。预算 1.0s 为未实测起值（≈一个币窗，先例只支撑「等临时遮挡」方向不支撑数值）。"
+    "demand_enabled": true,
+    "memory_enabled": true,
+    "memory_budget_s": 0.5,
+    "basis_grace_s": 0.5,
+    "reanchor_eps_lane": 0.2,
+    "reanchor_break_lane": 0.5,
+    "k_stay": 2,
+    "k_out": 2,
+    "k_up": 2,
+    "_note": "决策承诺制（设计稿 v2 §3 Track 1 + §8 需求面承诺制，只作用于 corridor_reach 集）。【pause（Track 1，已 A/B 收案常驻观察）】traj 采样连续破判达 _REEVAL_STREAK 后预算内暂停——保留原改道任务、x_target 冻结在 executed（绕开平滑器），reason=pause:blocked；超预算（=单次连续阻塞时长）作废（cancel:traj_blocked）。【demand（§8，本轮 A/B）】select:reach_win 锁定追逐意图（d0=select 拍场选点，目的地=带 ±0.75 道而非某一组币），完成判据对齐 d0（不再吃滚动选点——A/B 逐集证据：坍缩集想挪 P50 0.76-0.79 道全被「场选点塌回自车被判到达」假完成，fid2348 原始需求 1.93 道位移 0.59 道即宣收敛）；显式放弃=收益依据死亡（带内连续 basis_grace_s 无可见币组 且 场选点连续 k_out 拍带外，两条件同时成立，reason=cancel:basis_dead；gap 期间持位等下一组 reason=hold:reach_gap）与坐标系断裂（center_lane 跳变超 reanchor_break，reason=cancel:frame_break；eps~break 间重锚 d0'=d0−Δc 保持物理指向）；升级=带外新目的地连续 k_up 拍、同拍同场评分超在场带候选 ≥ corridor_reach.tie_margin（reason=switch:reach_upgrade；同带内漂移不算）。次判据=场选点连续 k_stay 拍贴自车且自车近旁（±0.75 道）有可见币组才准 done:converged:proxy，带内依据仍活且场选点已离带时拦下（fid2348 形态）。【memory（§8.4.4，Track 2 并入）】收益报告缺席不再单拍 cancel:reach_lost：预算内保留意图、x_target 冻结 executed（reason=hold:reach_absent），超 memory_budget_s 或 executed 缺席走既有取消；生效前提=意图在场。【安全不承诺（红线）】fatal/lat_veto/validate/x_bound 逐拍先行，任何意图/记忆状态不豁免。【运行态】demand/memory=true＝实机 A/B 期；验收=§8.6 分层：L1 机制离线（坍缩桶清零、cancel:reach_lost 仅剩预算耗尽形态、转移各有证据列）→ L2 行为（大需求存活率 P50 分母=完成集、骑线率分母=有币拍、collect_coin 基线 18/人工 55——全部待检验不是修复承诺）→ L3 安全（lat_veto 基线 6/回合不升 + conserving/crash 代理）。【归位义务】A/B 出结论只改本文件；机制不达标修实现，判据翻面 demand/memory 各归 false 回实验区归因（与 pause_enabled 互不捆绑）。全部数值 [需实测] 起值，依据见各字段与设计稿 §8。"
   }
 }

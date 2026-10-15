@@ -1072,6 +1072,10 @@ class SpeedRushModule(ActivityModule):
             # min(cr_coins) 的 P50 即提前量）
             "cr_coins": None if chain["engine"].reach_report is None
             else [round(t, 3) for t in chain["engine"].reach_report.best_coin_t],
+            # 需求面承诺制意图观测面（§8.2，demand 闸开才有值）：d0/带内依据
+            # id/缺席时长与放弃·升级·次判据的机检计数——逐集核对与 §8.6 L1
+            # 验收的复算面；None=demand 关/集外无意图
+            "intent": chain["engine"].intent_state,
             # HUD 本机读数（hud_ref 挂载；rate 只在蓝卡识别=有 rate 的槽位即
             # 本机）：局结局程序化取数面（得分/得分速度），缺失拍诚实 None
             # （对手卡读数是背景假读，按槽位猜会静默读错）；血量格未读另案
