@@ -1775,6 +1775,18 @@ class AsyncDepthRoadObserver:
         旧包同文件=ego∪obj 合并掩码，重放口径见测试 ``_assemble_evid``）。
         失败静默吞掉——debug 绝不干扰主路。"""
         now = time.monotonic()
+        # 单拍事件即时判定（20261015_093323 实证：9 dodge 0 落盘）：dodge 只
+        # 持续 1 拍（50ms），判定排 0.5s 节流后边界落在窗内概率 ~10%——单拍
+        # 事件几乎必然错过。判定=字符串检查 per publish 成本可忽略；触发即时
+        # 落盘（ring 前情+窗口后果照旧），未触发/后果窗口内照旧走节流。
+        if self._dump is not None \
+                and getattr(self._dump, "mode", "full") == "events" \
+                and self._event_left <= 0:
+            note_d = note or {}
+            if note_d.get("state") == "CONSERVE" \
+                    or "dodge" in str(note_d.get("reason") or ""):
+                self._write_debug_events(frame, evid, reading, object_mask, note)
+                return
         if now - self._debug_last < self.DEBUG_INTERVAL_S:
             return
         self._debug_last = now
@@ -1814,11 +1826,11 @@ class AsyncDepthRoadObserver:
                             note=None) -> None:
         """events 模式：内存 ring 留最近 ring 次捕获，事件触发落盘 ring+窗口。
 
-        事件判据=push 快照（滞后 1 拍，采集节流 0.5s 下可接受）：state=
-        CONSERVE 或 reason 含 dodge——真正消费的是 dodge/conserving 时刻±
-        窗口（2026-10-12 设计裁决）。触发时 ring 先落（前情）+本帧，再
-        event_window−1 帧直写（后果）。full 路径不经过这里（imwrite 直写
-        逐位不动）。"""
+        事件判据=push 快照（滞后 1 拍）：state=CONSERVE 或 reason 含 dodge——
+        真正消费的是 dodge/conserving 时刻±窗口（2026-10-12 设计裁决）。判定
+        在 _write_debug 入口先于节流（20261015 实证节流挡掉单拍 dodge：9 dodge
+        0 落盘），触发时 ring 先落（前情）+本帧，再 event_window−1 帧直写
+        （后果）。full 路径不经过这里（imwrite 直写逐位不动）。"""
         payload = self._encode_debug_payload(frame, evid, reading, object_mask,
                                              note)
         if payload is None:

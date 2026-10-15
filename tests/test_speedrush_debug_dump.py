@@ -78,6 +78,30 @@ def test_events_mode_dodge_reason_triggers() -> None:
     assert obs._event_left == 0
 
 
+def test_write_debug_dodge_trigger_bypasses_throttle() -> None:
+    """单拍事件即时判定（20261015_093323 实证 9 dodge 0 落盘）：_write_debug
+    入口的 dodge 触发不吃 0.5s 节流；未触发与后果窗口内照旧节流。"""
+    import time
+
+    obs, dumped = _events_observer(ring=1, window=2)
+    cruise = {"state": "CRUISE", "reason": "hold:x", "fid": 0}
+    obs._debug_last = float("-inf")
+    obs._write_debug(None, None, None, None, cruise)
+    assert not dumped and len(obs._dump_ring) == 1     # 未触发：按节流进 ring
+    obs._debug_last = time.monotonic()                 # 节流状态刚刷新
+    obs._write_debug(None, None, None, None, cruise)
+    assert not dumped                                  # 无触发：节流挡住
+    obs._write_debug(None, None, None, None,
+                     {"state": "CRUISE", "reason": "select:dodge", "fid": 1})
+    assert len(dumped) == 2 and obs._event_left == 1   # 触发不吃节流：前情+本帧
+    obs._debug_last = time.monotonic()
+    obs._write_debug(None, None, None, None, cruise)
+    assert len(dumped) == 2                            # 后果窗口内：节流挡住
+    obs._debug_last = float("-inf")
+    obs._write_debug(None, None, None, None, cruise)
+    assert len(dumped) == 3 and obs._event_left == 0   # 节流过后：后果帧直写
+
+
 # ---------- HUD 本机归属 ----------
 
 class _Hud:
