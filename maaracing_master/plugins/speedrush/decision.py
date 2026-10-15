@@ -796,7 +796,8 @@ class DecisionEngine:
         self._reach_goal = rep.best_x_m
         goal_lane = rep.best_x_m / self.cal.lane_w_m
         if executed is None or \
-                abs(goal_lane - executed) <= self.cfg.hysteresis.dead_zone_lane:
+                abs(goal_lane - executed) <= \
+                self.cfg.corridor_reach.trigger_dead_zone_lane:
             return "hold:reach_hold"
         self._target_gid = None                 # 走廊路径位目标，无实体 gid
         self._target_kind = KIND_CAND_REACH

@@ -236,6 +236,7 @@ class CorridorReach:
 
     enabled: bool = False
     control: bool = False
+    trigger_dead_zone_lane: float = 0.35  # reach_win 触发死区（道）——独立于
     step_m: float = 0.5                  # 候选步进（米，与栅格格宽同量级）
     horizon_s: float = 2.0               # 收益前瞻（s）
     crash_t_s: float = 0.8               # 到站短于此判碰撞（s）
@@ -485,6 +486,9 @@ def _read_decision(path: Path) -> DecisionConfig:
         corridor_reach=CorridorReach(
             enabled=_bool(d, "corridor_reach", "enabled", default=False),
             control=_bool(d, "corridor_reach", "control", default=False),
+            trigger_dead_zone_lane=_num_def(d, "corridor_reach",
+                                            "trigger_dead_zone_lane", 0.35,
+                                            lo=0),
             step_m=_num_def(d, "corridor_reach", "step_m", 0.5, lo=0),
             horizon_s=_num_def(d, "corridor_reach", "horizon_s", 2.0, lo=0),
             crash_t_s=_num_def(d, "corridor_reach", "crash_t_s", 0.8, lo=0),

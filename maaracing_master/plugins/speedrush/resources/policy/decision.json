@@ -155,6 +155,7 @@
   "corridor_reach": {
     "enabled": true,
     "control": true,
+    "trigger_dead_zone_lane": 0.35,
     "step_m": 0.5,
     "horizon_s": 2.0,
     "crash_t_s": 0.8,
@@ -162,7 +163,7 @@
     "pass_value": 30.0,
     "far_coin_weight": 0.3,
     "tie_margin": 20.0,
-    "_note": "走廊收益场选路径闸（2026-10-14 设计稿 §3.2-§3.4：米制连续坐标综合收益评估，解耦车道定义——决策坐标=米制 x_m，lane_w_m 换算只在进决策边界一次）。四要素：语义（走廊收益场选路径+路径预估显示，用户六点 2026-10-14）；运行态（验收期，验收面=trace cr_* 对照列+金币 feas 拒+CHANGE 提前量 P50）；归位义务（验收出结论只改本文件，判据翻面 enabled 归 false 回实验区归因）；互斥（control=true 时 lane_scoring.control 必须为 false，两控制器不得并跑——加载器拦）。enabled=shadow：每拍算收益场+路径落 trace cr_* 对照列，行为零变化；control=行为切换：CRUISE 选择来源换血（select:reach_win），回滚=归 false（legacy band/feas 链逐位恢复）。数值 [需实测] 起值：step 0.5m 与栅格格宽同量级（span 8m→16 候选）；horizon 2s/crash_t 0.8s/crash_penalty 100/pass_value 30/远权 0.3 沿 lane_scoring 同源起值；tie_margin=20≈一个错身保底的价值差。"
+    "_note": "走廊收益场选路径闸（2026-10-14 设计稿 §3.2-§3.4：米制连续坐标综合收益评估，解耦车道定义——决策坐标=米制 x_m，lane_w_m 换算只在进决策边界一次）。四要素：语义（走廊收益场选路径+路径预估显示，用户六点 2026-10-14）；运行态（验收期，验收面=trace cr_* 对照列+金币 feas 拒+CHANGE 提前量 P50）；归位义务（验收出结论只改本文件，判据翻面 enabled 归 false 回实验区归因）；互斥（control=true 时 lane_scoring.control 必须为 false，两控制器不得并跑——加载器拦）。enabled=shadow：每拍算收益场+路径落 trace cr_* 对照列，行为零变化；control=行为切换：CRUISE 选择来源换血（select:reach_win），回滚=归 false（legacy band/feas 链逐位恢复）。数值 [需实测] 起值：step 0.5m 与栅格格宽同量级（span 8m→16 候选）；horizon 2s/crash_t 0.8s/crash_penalty 100/pass_value 30/远权 0.3 沿 lane_scoring 同源起值；tie_margin=20≈一个错身保底的价值差。trigger_dead_zone_lane=0.35 道（2026-10-15 实机 A/B 期，四回合人工对照诊断依据：智能局 CHANGE 系状态占 87% 时间（每回合 80-100 次改道尝试，均值 ~1s/次）、reach_win 想挪距离 P50 0.09-0.14 道贴旧死区 0.15 边缘、26-37% 相邻触发换向、持守时过车率 0.29/s vs 改道中 0.15/s）——旧触发死区 0.5m < 收益场选点噪声（P50 0.3-0.5m），边缘性触发驱动改道churn把过车窗口让掉；0.35 道（≈1.2m）拦掉边缘性挪动。触发死区独立于 hysteresis.dead_zone_lane（0.15，完成容差/无反馈收敛/金币窗口破判仍走旧值）——完成容差未诊断，不与触发捆同一旋钮（2026-10-15 plan 测试实证：共用旋钮让 CHANGE 提前收敛、回滚态币收不到位）。验收面=实机 A/B（P2 过车数+分数 vs 人工基线 23-24 辆/10747-10801 分）；归位义务：A/B 出结论后数值定档只改本文件，判据翻面（过车数不升/分数回退）归 0.15 并回实验区归因。"
   },
   "metric_cars": {
     "enabled": true,
