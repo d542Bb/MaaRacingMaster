@@ -148,6 +148,10 @@
 - **录制模式放宽两条启动约束**：不要求断开物理手柄（录制正要用物理手柄驾驶）、不需要手柄
   能力（录制期不创建虚拟设备，机器没装 ViGEmBus 也能录）。机制见主文档关于
   `ActivityModule` 启动约束的说明。
+- **录制模式同时跑决策链影子观察**：人驾期间感知→决策→规划照跑但不接入手柄（不下发，
+  车只听人），trace 与控制局同列同语义——`steer` 列=本应下发的反事实杆值、`cr_best`=
+  走廊收益场本拍选点、`executed_lane`=深度路心观测重锚的人工实际横位。trace 落
+  `debug/speedrush/<会话>/trace/`（受 debug 总闸），与录制帧、HUD 读数同会话对齐。
 - 门控判定日志带 `frame=`，与 `frames.jsonl` 的 `frame_id` 对齐（日志墙钟只到秒，帧号才是
   可靠的共同坐标）。导出判定时刻的画面用
   `tools/experiments/speedrush_gating/export_gating_marks.py`。

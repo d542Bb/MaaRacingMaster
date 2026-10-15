@@ -46,6 +46,17 @@ class _Clock:
     def perf_counter(self) -> float:
         return self.t
 
+    def time(self) -> float:
+        # 录制影子接线后 _build_control_chain 也读 time.time（run_dir 命名锚）
+        return self.t
+
+    def strftime(self, fmt, t=None):
+        # _run_dir 产物目录名由此确定（恒定值保测试确定性）
+        return "20000101_000000"
+
+    def localtime(self, t=None):
+        return t
+
 
 class _FakeLifecycle:
     def __init__(self, clock: _Clock) -> None:

@@ -538,9 +538,15 @@ class SpeedRushModule(ActivityModule):
         # 隐含逐帧检测（不必另开 perception_mode）；直行档例外——感知/深度都不加载。
         straight = self._straight_mode and recorder is None
         control = (self._control_mode or straight) and recorder is None
+        # 录制模式影子观察（2026-10-15 对照臂接线）：人驾期间决策链照跑但不下发
+        # （不接入手柄）——trace 与智能局同列同语义（cr_best=收益场本拍选点、
+        # steer=本应下发的反事实杆值、executed=深度路心观测重锚的人工实际横位），
+        # 人工对照局才有决策面可比。零下发：gpad 不 acquire，车只听人的。
+        shadow = recorder is not None
         if recorder is not None:
             _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶（正在录制演示数据）", "INFO")
+                  f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶"
+                  f"（正在录制演示数据，决策链影子观察中）", "INFO")
         elif straight:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：全程直行基线（感知/深度不加载，只踩油门）",
@@ -561,7 +567,8 @@ class SpeedRushModule(ActivityModule):
         self._pace_wake = []
         self._control_times = []
         self._control_last = None
-        chain = self._build_control_chain(phase) if (control and not straight) else None
+        chain = self._build_control_chain(phase) \
+            if ((control and not straight) or shadow) else None
         # 直行档 trace（stub chain 复用 _flush_control_trace 的落盘协议）；
         # 油门取 decision.json 的 throttle_raw 单一真源，不另抄数值。
         straight_chain = ({"trace": [], "t_start": time.time(), "bad_frames": {}}
@@ -628,7 +635,8 @@ class SpeedRushModule(ActivityModule):
                         t_rec = None
                     result: PerceptionResult | None = None
                     t_det: float | None = None
-                    if not straight and (self._perception_mode or control) \
+                    if not straight and (self._perception_mode or control
+                                         or shadow) \
                             and frame is not None:
                         perc = self._ensure_perception()
                         if perc is not None:
@@ -652,6 +660,14 @@ class SpeedRushModule(ActivityModule):
                                 phase, pace_ms=pace_ms,
                                 cap_ts={"pick": t_pick, "rec": t_rec,
                                         "det": t_det})
+                    elif shadow and result is not None:
+                        # 影子拍：同链不接入手柄（gpad=None→tick 内不下发），
+                        # trace 记反事实杆值与 cr_best——对照局的决策数据面
+                        self._control_tick(
+                            chain, None, frame, result, fid, ts_ns, age_ms,
+                            phase, pace_ms=pace_ms,
+                            cap_ts={"pick": t_pick, "rec": t_rec,
+                                    "det": t_det})
                     frames += 1
 
                     now = time.monotonic()
@@ -692,6 +708,13 @@ class SpeedRushModule(ActivityModule):
                 self._stop_depth_observer(chain, phase)
             elif straight and straight_chain is not None:
                 self._flush_control_trace(straight_chain, phase)
+            elif shadow and chain is not None:
+                # 影子链收口与控制链同协议：调试图/深度观察器停干净再 flush
+                dbg = chain.get("debug")
+                if dbg is not None:
+                    dbg.stop("chain_end")
+                self._flush_control_trace(chain, phase)
+                self._stop_depth_observer(chain, phase)
             if drive_hud is not None:
                 drive_hud.stop("phase_end" if self._running else "stopped")
                 self._hud = None
@@ -765,6 +788,10 @@ class SpeedRushModule(ActivityModule):
                       pace_ms: tuple | None = None,
                       cap_ts: dict | None = None) -> None:
         """一拍全链：感知→跟踪→聚合→边界→车流派生→决策→规划→下发。
+
+        影子拍（``gpad=None``，录制模式对照臂）：同链照跑不接入手柄——
+        trace 与实况照记（steer=本应下发的反事实杆值，executed=深度路心观测
+        重锚的人工实际横位），不下发，车只听人。
 
         链上任一异常（如 frame_id 真乱序 fail-loud）按"停控保平安"处理：记一次
         WARNING、本阶段退出控制（转观测态），主循环继续跑阶段结束判定——绝不因
@@ -863,9 +890,10 @@ class SpeedRushModule(ActivityModule):
                   f"[极速狂飙] 驾驶阶段 {phase}：控制链异常，本阶段停控转观测"
                   f"（{exc!r}，{_frame_note(fid, age_ms)}）", "WARNING")
             return
-        gpad.left_joystick(x_value=cmd.steer_x, y_value=0)
-        gpad.right_trigger(value=cmd.throttle)
-        gpad.update()
+        if gpad is not None:   # 影子拍 gpad=None：不下发（对照臂只记录）
+            gpad.left_joystick(x_value=cmd.steer_x, y_value=0)
+            gpad.right_trigger(value=cmd.throttle)
+            gpad.update()
         self._control_times.append((time.perf_counter() - t_c) * 1000.0)
         # 坏帧取证采样（内部自带异常吞噬与自禁，绝不把驾驶链拖下水）；
         # debug/ 产物面总闸：开关关=取证也停
