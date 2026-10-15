@@ -1131,3 +1131,33 @@ def test_veto_window_fusion_truncates_only_later():
     assert lat._t_pass_s(car) == math.inf
     lat.metric_map = {9: _mc(9, v=None)}                 # 窗未开：像素
     assert lat._t_pass_s(car) == pytest.approx(2.0)
+
+
+def test_hold_returns_to_grid_green_center():
+    """hold 回中锚（2026-10-15 贴墙诊断）：无候选时 x_target 朝栅格绿区路心
+    回中，不再守走廊中心——pair_slot 车锚走廊「骑黄线报正中」（域内 gate
+    note 实录），守中心=守原地，贴墙不回。绿区路心在左 → x_target 负；
+    栅格弃权（state 全 0）→ 回退 0（旧行为逐位）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.corridor import Corridor
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_DRIVABLE, GRID_NX, GRID_NZ, GRID_UNKNOWN, DrivableGrid)
+    # 绿区路心在左 ~−3.25m（列 41~42 的格界 [−3.5,−3.0]m，中点 −3.25）
+    st = np.full((GRID_NZ, GRID_NX), GRID_UNKNOWN, np.int8)
+    st[:, 41:43] = GRID_DRIVABLE
+    g = DrivableGrid(state=st, coef=(0.0, 0.0, 2.0),
+                     counts=np.full(st.shape, 9, np.int32),
+                     dig_cells=0, latency_ms=1.0)
+    c = Corridor((), 0.0, None, "pair_slot", "ok", None)   # 车锚走廊：报居中
+    e = DecisionEngine(CFG)
+    out = e.update(_obs(fid=1, presence=True), DT, corridor=c, grid=g)
+    assert out.state is DecisionState.CRUISE
+    assert out.reason == "hold:no_candidate"
+    assert out.x_target is not None and out.x_target < 0   # 朝绿区路心回中
+    # 栅格弃权（state 全 0=拟合失败）→ 回退 0
+    g0 = DrivableGrid(state=np.zeros((GRID_NZ, GRID_NX), np.int8),
+                      coef=None, counts=np.zeros(st.shape, np.int32),
+                      dig_cells=0, latency_ms=1.0)
+    e0 = DecisionEngine(CFG)
+    out0 = e0.update(_obs(fid=1, presence=True), DT, corridor=c, grid=g0)
+    assert out0.x_target == pytest.approx(0.0, abs=1e-12)

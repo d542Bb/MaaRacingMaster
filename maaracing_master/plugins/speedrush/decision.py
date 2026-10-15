@@ -51,7 +51,8 @@ from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import UNKNOWN, Corridor
 from maaracing_master.plugins.speedrush.corridor_reach import (
     CarSource, CoinSource, CorridorBandSpan, ReachParams, ReachReport, evaluate)
-from maaracing_master.plugins.speedrush.depth_geo import DrivableGrid
+from maaracing_master.plugins.speedrush.depth_geo import (
+    DrivableGrid, grid_center_lane)
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.corridor_reach import (
@@ -484,6 +485,9 @@ class DecisionEngine:
         self._ro: float | None = None
         self._rwidth: float | None = None
         self._grid: DrivableGrid | None = None
+        # hold 回中锚的栅格（与 _grid 分开存：_grid 受 grid_veto 闸，锚是
+        # 独立消费者，不跟 veto 闸联动）
+        self._grid_hold: DrivableGrid | None = None
         self._corridor: Corridor | None = None
         self._traj_diag: dict | None = None   # 逐拍采样诊断（trace 消费）
         # 走廊收益场逐拍态（corridor_reach 闸）：报告/目标跨阶段清——参数面
@@ -529,6 +533,7 @@ class DecisionEngine:
         self.scorer.fid_hz = obs.fid_rate_hz
         self._boundary = obs.boundary
         self._corridor = corridor
+        self._grid_hold = grid
         self._ro = road_offset
         self._rwidth = road_width
         self._grid = grid if self.cfg.grid_veto.enabled else None
@@ -1438,7 +1443,7 @@ class DecisionEngine:
                             else v.x_lane)
                 if self._state is DecisionState.CHANGE:
                     return self._x_smooth                    # 落定拍前不外插假读数
-                return 0.0
+                return self._hold_center_goal()
             g = self._group_of(obs)
             if g is not None and not math.isnan(g.x_center):
                 return g.x_center
@@ -1446,7 +1451,23 @@ class DecisionEngine:
             # （= 当前平滑值），不外插 nan——回放抓到 nan 污染 x_smooth 的缺陷。
             if self._state is DecisionState.CHANGE:
                 return self._x_smooth
-        return 0.0
+        return self._hold_center_goal() if self._state is DecisionState.CRUISE \
+            else 0.0
+
+    def _hold_center_goal(self) -> float:
+        """hold 回中锚（2026-10-15 币渠道/贴墙诊断）：无候选时不守走廊中心——
+        pair_slot 车锚走廊「骑黄线报正中」（域内 gate note 实录），守中心=守
+        原地，贴墙不回、币线在旁边也永远不横穿。改用栅格绿区路心（
+        grid_center_lane，非车锚：绿区物理边界的宽度加权中位，离线基线
+        f9a9a80 验证）做回中目标；返回值是走廊系 goal（=绿区路心 ego 道 −
+        走廊中心 ego 道）。栅格弃权/走廊缺席回退 0（旧行为逐位）。"""
+        if self._grid_hold is None or self._corridor is None \
+                or self._corridor.center_lane is None:
+            return 0.0
+        g = grid_center_lane(self._grid_hold, self.cal.lane_w_m)
+        if g is None:
+            return 0.0
+        return g - self._corridor.center_lane
 
     def _validity_ticks(self) -> int:
         return max(2, int(round(0.1 * self.cfg.control.frame_rate_hz)))
