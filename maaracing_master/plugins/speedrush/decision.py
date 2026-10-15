@@ -470,6 +470,7 @@ class DecisionEngine:
         self._abort_next = DecisionState.CRUISE
         self._abort_ref: float | None = None   # ABORT 速率落稳参考（_enter_abort 重置）
         self._late_streak = 0                  # 逐拍重评连破计数（_REEVAL_STREAK 判）
+        self._blocked_s = 0.0                  # 承诺制：单次连续阻塞时长（恢复/新集清零）
         self._last_disp: float | None = None   # 超车逃逸判据的散布基线（select/switch 重置）
         self._hug_sigma: float | None = None   # 贴邻侧别（选中拍按自车位置锁定，第七轮）
         self._dt_last: float = 0.05            # 上一拍 dt（计划层慢拍计时基；reset 兜底值）
@@ -583,6 +584,7 @@ class DecisionEngine:
         # 破判连拍达 _REEVAL_STREAK 即 ABORT——防抖与 _miss_breach 同源纪律）；
         # 闸关/回执缺位/ro 缺席/非巡航变道态 → legacy x_smooth 位置常量路径。
         xt = None
+        pause_hold = None
         self._traj_diag = None
         if self.traj is not None and executed_lane is not None \
                 and self._ro is not None \
@@ -613,15 +615,31 @@ class DecisionEngine:
                 if not rep.ok and self._state is DecisionState.CHANGE:
                     self._late_streak += 1
                     if self._late_streak >= _REEVAL_STREAK:
-                        self._enter_abort("traj_blocked")
-                        reason = "cancel:traj_blocked"
+                        # 承诺制 Track 1（设计稿 v2 §3）：预算内暂停不弃追，
+                        # 恢复优先（rep.ok 拍走上面分支自然续跑并清零重计）；
+                        # 闸关/超预算=旧行为立即作废。
+                        pause_hold = self._commitment_pause(dt_s, executed_lane)
+                        if pause_hold is None:
+                            self._enter_abort("traj_blocked")
+                            reason = "cancel:traj_blocked"
+                        else:
+                            reason = "pause:blocked"
                 elif rep.ok and self._state is DecisionState.CHANGE:
                     self._late_streak = 0
+                    self._blocked_s = 0.0
 
         goal = self._current_goal(obs)
         alpha = 1.0 - math.exp(-dt_s / self.cfg.hysteresis.tau_filter_s)
-        self._x_smooth += alpha * ((xt if xt is not None else goal)
-                                   - self._x_smooth)
+        if pause_hold is not None:
+            # 暂停拍冻结横位（设计稿 v2 §3.3 生效点）：x_target 直通 executed
+            # 绕开平滑器——CHANGE 平滑器仍朝旧 goal 收敛，会顶着阻塞继续挪；
+            # _x_smooth 同步到冻结位，恢复拍无跳变。
+            self._x_smooth = pause_hold
+        else:
+            self._x_smooth += alpha * ((xt if xt is not None else goal)
+                                       - self._x_smooth)
+        x_out = pause_hold if pause_hold is not None \
+            else (xt if xt is not None else self._x_smooth)
         move_allowed = self._state in (DecisionState.CRUISE, DecisionState.CHANGE)
         if not self.cfg.mode.allow_all_moves:
             move_allowed = False
@@ -629,8 +647,7 @@ class DecisionEngine:
         self._reanchor_pending = None      # 一次性：只在完成拍携带
         return DecisionOutput(
             schema_version=_SCHEMA, state=self._state, target_id=self._target_gid,
-            x_target=(xt if xt is not None else self._x_smooth)
-            if self._state is not DecisionState.CONSERVE else None,
+            x_target=x_out if self._state is not DecisionState.CONSERVE else None,
             move_allowed=move_allowed, reason=reason, emitted_fid=obs.frame_id,
             valid_until_fid=obs.frame_id + self._validity_ticks(),
             reanchor_lane=reanchor)
@@ -811,6 +828,7 @@ class DecisionEngine:
         self._hug_sigma = None
         self._demand_lane = goal_lane
         self._late_streak = 0
+        self._blocked_s = 0.0
         self._last_disp = None
         self._change_t = 0.0
         self._deadzone_ticks = 0
@@ -896,6 +914,7 @@ class DecisionEngine:
         self._target_kind = cand.kind
         self._cur_score = cand.score
         self._late_streak = 0
+        self._blocked_s = 0.0
         self._last_disp = None
         self._hug_sigma = (_hug_sigma_of(executed if executed is not None else 0.0,
                                          cand.car.x_lane)
@@ -933,6 +952,7 @@ class DecisionEngine:
             self._target_kind = better.kind
             self._cur_score = better.score
             self._late_streak = 0
+            self._blocked_s = 0.0
             self._last_disp = None   # 新目标新基线
             self._hug_sigma = (_hug_sigma_of(executed if executed is not None else 0.0,
                                              better.car.x_lane)
@@ -1019,6 +1039,7 @@ class DecisionEngine:
             self._target_kind = better.kind
             self._cur_score = better.score
             self._late_streak = 0
+            self._blocked_s = 0.0
             self._last_disp = None   # 新目标新基线
             self._hug_sigma = (_hug_sigma_of(executed if executed is not None else 0.0,
                                              better.car.x_lane)
@@ -1371,10 +1392,25 @@ class DecisionEngine:
         h = obs.health
         return not (h.perception_alive and h.frame_fresh)
 
+    def _commitment_pause(self, dt_s: float,
+                          executed: float | None) -> float | None:
+        """承诺制 Track 1（设计稿 v2 §3）：traj 连续破判达标后预算内暂停——
+        返回冻结横位（executed）；None=不暂停（闸关/executed 缺席/超预算），
+        走既有作废。预算=单次连续阻塞时长（dt_s 累计；恢复拍在 traj ok 分支
+        清零，新集在 select/switch 位清零），跨过预算的阻塞拍作废——恢复优先
+        （恢复拍根本不进本函数）。"""
+        if not self.cfg.commitment.pause_enabled or executed is None:
+            return None
+        self._blocked_s += dt_s
+        if self._blocked_s >= self.cfg.commitment.pause_budget_s:
+            return None
+        return executed
+
     def _enter_abort(self, why: str) -> None:
         self._state = DecisionState.ABORT_CHANGE
         self._change_t = 0.0
         self._abort_ref = None      # 速率参考从 ABORT 首拍重新起算
+        self._blocked_s = 0.0       # 集已终止，阻塞计时随集走
 
     def _enter_conserve(self) -> None:
         self._state = DecisionState.CONSERVE

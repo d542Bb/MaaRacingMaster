@@ -11,7 +11,7 @@ from dataclasses import replace
 import pytest
 
 from maaracing_master.plugins.speedrush import DECISION_FILE
-from maaracing_master.plugins.speedrush.config import _read_decision
+from maaracing_master.plugins.speedrush.config import Commitment, _read_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, DistanceSource, MetricCarState,
@@ -26,7 +26,9 @@ CFG = replace(_CFG_BASE, mode=replace(_CFG_BASE.mode, trajectory_sampling=False)
               metric_cars=replace(_CFG_BASE.metric_cars, fusion=False),
               # 走廊收益场闸显式钉死（不继承部署态，rollout 翻转不漂）
               corridor_reach=replace(_CFG_BASE.corridor_reach,
-                                     enabled=False, control=False))
+                                     enabled=False, control=False),
+              # 承诺制闸自钉关：traj_blocked 旧行为（立即作废）是本文件回归锁
+              commitment=Commitment())
 CFG_TRAJ = replace(CFG, mode=replace(CFG.mode, trajectory_sampling=True))
 
 
@@ -325,3 +327,215 @@ def test_traj_metric_map_wired_with_fusion() -> None:
     e2.update(replace(_obs(fid=1), metric_cars=(mc,)), DT, executed_lane=0.5,
               traffic=((), ()), road_offset=0.0, road_width=4.4)
     assert e2.traj.metric_map is None
+
+
+# ---------- 承诺制 Track 1（2026-10-15 设计稿 v2 §3：traj_blocked 暂停不弃追） ----------
+
+def _cfg_pause(budget: float = 0.3):
+    return replace(CFG_TRAJ, commitment=replace(CFG_TRAJ.commitment,
+                                                pause_enabled=True,
+                                                pause_budget_s=budget))
+
+
+def _block_cars():
+    """合围车流（沿用 test_traj_persistent_block_aborts 的几何）：目标位驻留 +
+    贴身退路，两车都在扫掠恶化判据外（不触发 lat_veto，纯采样器破判）。"""
+    return _Car(x_lane=0.2, cy=650, rel=0.0), _Car(x_lane=-0.8, cy=650, rel=0.0)
+
+
+def test_commitment_config_roundtrip(tmp_path) -> None:
+    # 缺段安全（老 json）：整段缺失=全默认=关
+    d = json.loads(DECISION_FILE.read_text(encoding="utf-8"))
+    d.pop("commitment", None)
+    old = tmp_path / "decision_old.json"
+    old.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    cfg = _read_decision(old)
+    assert cfg.commitment.pause_enabled is False
+    assert cfg.commitment.pause_budget_s == pytest.approx(1.0)
+    assert CFG.commitment.pause_enabled is False       # 语义基座自钉关
+
+
+def test_commitment_pause_holds_within_budget_then_aborts() -> None:
+    """连续破判：预算内暂停不弃追（state 保持 CHANGE、x_target 冻结在
+    executed、target_id 不丢）；连续阻塞跨过预算才作废（旧行为）。
+    DT=0.05/预算 0.3 → 1 拍防抖 + 5 拍暂停（0.05..0.25s），第 6 个失败拍
+    （0.30s）作废。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    car_t, car_n = _block_cars()
+    e = DecisionEngine(_cfg_pause())
+    o = e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((), ()), road_offset=0.5, road_width=None)
+    assert o.state is DecisionState.CHANGE             # 干净拍先选中
+    pauses = []
+    for fid in range(2, 12):
+        o = e.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
+                     executed_lane=0.2,
+                     traffic=((car_t, car_n), ()), road_offset=0.5,
+                     road_width=None)
+        if o.state is DecisionState.ABORT_CHANGE:
+            break
+        if o.reason == "pause:blocked":
+            pauses.append(o)
+    assert len(pauses) == 5
+    assert all(p.state is DecisionState.CHANGE for p in pauses)
+    assert all(p.x_target == pytest.approx(0.2) for p in pauses)
+    assert all(p.target_id == 3 for p in pauses)       # 原改道任务保留
+    assert o.state is DecisionState.ABORT_CHANGE
+    assert "traj_blocked" in o.reason
+
+
+def test_commitment_pause_freeze_syncs_smoother() -> None:
+    """§3.3 冻结生效点：暂停拍 x_target 直通 executed 绕开平滑器，_x_smooth
+    同步到冻结位——随后降级拍（ro 缺席走平滑器流）从冻结位小步出发，不朝
+    旧 goal 跳。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    car_t, car_n = _block_cars()
+    e = DecisionEngine(_cfg_pause())
+    e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((), ()), road_offset=0.5, road_width=None)
+    e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    out = e.update(_obs(fid=3, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                   traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert out.reason == "pause:blocked"
+    assert e._x_smooth == pytest.approx(0.2)           # 同步，无旧平滑残留
+    out2 = e.update(_obs(fid=4, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                    traffic=((car_t, car_n), ()), road_offset=None,
+                    road_width=None)
+    # 平滑器从 0.2 朝 goal=0.5 走一步：alpha=1−exp(−1/3)≈0.28 → ≈0.285
+    assert out2.x_target == pytest.approx(0.2, abs=0.1)
+
+
+def test_commitment_pause_recovery_resumes_and_recounts() -> None:
+    """恢复优先 + 预算=单次连续阻塞（§3.4）：traj 恢复一拍即续跑原需求并清零
+    重计——阻断→恢复→再阻断累计超预算不作废，只有第二段连续阻塞跨线才作废。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    car_t, car_n = _block_cars()
+    e = DecisionEngine(_cfg_pause())
+    o = e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((), ()), road_offset=0.5, road_width=None)
+    assert o.state is DecisionState.CHANGE
+    # 第一段阻塞：1 拍防抖 + 1 拍暂停（0.05s）
+    o = e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert o.reason != "pause:blocked"                 # 防抖拍不撕计划
+    o = e.update(_obs(fid=3, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert o.reason == "pause:blocked"
+    # 恢复拍：续跑原需求（仍 CHANGE，输出回到轨迹前瞻推进）
+    o = e.update(_obs(fid=4, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((), ()), road_offset=0.5, road_width=None)
+    assert o.state is DecisionState.CHANGE and o.reason == "moving:feedback"
+    assert o.x_target > 0.2
+    # 第二段阻塞：防抖 1 拍 + 暂停 0.05..0.25s（整集累计 0.30s 若累计早已越线）
+    for fid in range(5, 11):
+        o = e.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
+                     executed_lane=0.2,
+                     traffic=((car_t, car_n), ()), road_offset=0.5,
+                     road_width=None)
+        if fid == 5:
+            assert o.reason != "pause:blocked"         # 新段从防抖重新起算
+        else:
+            assert o.reason == "pause:blocked" \
+                and o.state is DecisionState.CHANGE
+    # 第二段连续阻塞跨过 0.3s（第 6 个失败拍）才作废
+    o = e.update(_obs(fid=11, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert o.state is DecisionState.ABORT_CHANGE
+    assert "traj_blocked" in o.reason
+
+
+def test_commitment_pause_does_not_delay_lat_veto() -> None:
+    """横向安全 veto 先行（§3.2 硬边界）：暂停期间机动走廊被街车占据 → 立即
+    既有回稳，不等预算（安全面不承诺）。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    car_t, car_n = _block_cars()
+    e = DecisionEngine(_cfg_pause())
+    e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((), ()), road_offset=0.5, road_width=None)
+    e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    o = e.update(_obs(fid=3, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert o.reason == "pause:blocked"                 # 暂停中
+    veto_car = _Car(x_lane=0.35, cy=650, rel=0.0)      # 扫掠走廊 [0.2→0.5] 内
+    o = e.update(_obs(fid=4, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((car_t, car_n, veto_car), ()), road_offset=0.5,
+                 road_width=None)
+    assert o.state is DecisionState.ABORT_CHANGE
+    assert o.reason == "cancel:lat_veto"
+
+
+def test_commitment_pause_does_not_delay_fatal() -> None:
+    """致命校验先行（§3.2 硬边界）：暂停期间帧过旧 → 既有 validate_fail 流程
+    立即接管，不因预算未耗尽而等待。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    car_t, car_n = _block_cars()
+    e = DecisionEngine(_cfg_pause())
+    e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((), ()), road_offset=0.5, road_width=None)
+    e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    o = e.update(_obs(fid=3, groups=(g,), targets=ms), DT, executed_lane=0.2,
+                 traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert o.reason == "pause:blocked"
+    stale = replace(_obs(fid=4, groups=(g,), targets=ms),
+                    health=PerceptionHealth(True, False, True, True, False))
+    o = e.update(stale, DT, executed_lane=0.2,
+                 traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert o.state is DecisionState.ABORT_CHANGE
+    assert o.reason == "validate_fail:frame_stale"
+
+
+def test_commitment_pause_does_not_protect_expired_target() -> None:
+    """目标过期先行（§3.2 硬边界）：暂停期间金币组过宽限期 → 既有
+    cancel:target_lost 立即接管，预算未耗尽也不保留过期任务。"""
+    g, ms = _group(3, fid=1, x=0.5)                    # 组有效期至 fid=41
+    car_t, car_n = _block_cars()
+    e = DecisionEngine(_cfg_pause(budget=5.0))         # 预算远长于过期窗
+    e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((), ()), road_offset=0.5, road_width=None)
+    n_pause = 0
+    o = None
+    for fid in range(2, 45):
+        o = e.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
+                     executed_lane=0.2,
+                     traffic=((car_t, car_n), ()), road_offset=0.5,
+                     road_width=None)
+        if o.reason == "pause:blocked":
+            n_pause += 1
+        if o.state is DecisionState.ABORT_CHANGE:
+            break
+    assert n_pause > 0                                 # 过期前确实在暂停
+    assert o.state is DecisionState.ABORT_CHANGE
+    assert o.reason == "cancel:target_lost"
+
+
+def test_commitment_pause_absent_executed_no_pause() -> None:
+    """executed 缺席拍不进暂停（§3.3）：回执缺位走既有降级流（诚实降级），
+    不发 pause 语义。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    car_t, car_n = _block_cars()
+    e = DecisionEngine(_cfg_pause())
+    e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.2,
+             traffic=((), ()), road_offset=0.5, road_width=None)
+    o = e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=None,
+                 traffic=((car_t, car_n), ()), road_offset=0.5, road_width=None)
+    assert o.state is DecisionState.CHANGE
+    assert o.reason != "pause:blocked"
+
+
+def test_commitment_pause_on_clean_traj_bit_identical() -> None:
+    """回归锁（含正常场景）：pause_enabled=true 但 traj 全程 ok → 与闸关输出
+    逐位相同（承诺制只在破判拍生效，正常改道零干扰）。"""
+    g, ms = _group(3, fid=1, x=0.5)
+    e1 = DecisionEngine(CFG_TRAJ)                      # 闸关
+    e2 = DecisionEngine(_cfg_pause())                  # 闸开
+    for fid in (1, 2, 3, 4):
+        o1 = e1.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
+                       executed_lane=0.2 + 0.05 * fid,
+                       traffic=((), ()), road_offset=0.5, road_width=None)
+        o2 = e2.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
+                       executed_lane=0.2 + 0.05 * fid,
+                       traffic=((), ()), road_offset=0.5, road_width=None)
+        assert o1 == o2

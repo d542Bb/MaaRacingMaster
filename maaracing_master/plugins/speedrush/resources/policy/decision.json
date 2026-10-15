@@ -169,5 +169,10 @@
     "enabled": true,
     "fusion": true,
     "_note": "车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。**运行态：fusion=true＝A/B 收案后常驻（2026-10-12 用户裁决，验收见计划稿 §5D）——dodge ttc 与横向 veto 危险窗截断吃米制融合：dodge 取两仪器较小到站（先到者先防），逼近门放宽为任一仪器报逼近（像素 rel 门在退化带失真恰是米制治愈对象）；veto 截断取较晚到站（只许更晚不许更早）。米制速度陈旧上界 ~1 个锚区间（≤220ms），融合方向各自保守。回滚=fusion 归 false（纯像素逐位恢复）；enabled=false 连影子列/ledger 米制列一起关。"
+  },
+  "commitment": {
+    "pause_enabled": true,
+    "pause_budget_s": 1.0,
+    "_note": "决策承诺制 Track 1（2026-10-15 设计稿 v2 §3：traj_blocked 暂停不弃追；Track 2 reach_lost 记忆实施时再增设字段，不预置幽灵旋钮）。语义：traj 采样连续破判达 _REEVAL_STREAK 后，预算内暂停——保留原改道任务、x_target 冻结在 executed（绕开平滑器，防 CHANGE 平滑器朝旧 goal 漂移），reason=pause:blocked；超预算（=单次连续阻塞时长，dt_s 累计、traj 恢复一拍清零、新集清零）才作废（旧行为 cancel:traj_blocked）。安全不承诺（硬边界不变量 §3.2）：lat_veto/致命校验/目标过期判定先行，不受预算延迟；executed 缺席拍不进暂停（§3.3 沿用既有降级）。运行态：**pause_enabled=true＝实机 A/B 期**，病灶=改道集 58% 被 traj_blocked 掐断（106 集=44 完成+61 打断，中位 0.34s、完成集位移 ~0.1 道碎步）；验收面=episode active_movement_s 后实际横向位移（主判据，总时长可被暂停刷过只算生命周期观察）+collect_coin/P2 分数；lat_veto 频次不得上升（安全不让步）。归位义务：A/B 出结论只改本文件；判据翻面（位移/收益不动）归 pause_enabled=false 回实验区归因。预算 1.0s 为未实测起值（≈一个币窗，先例只支撑「等临时遮挡」方向不支撑数值）。"
   }
 }

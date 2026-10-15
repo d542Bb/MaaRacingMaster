@@ -276,6 +276,23 @@ class DebugDump:
 
 
 @dataclass(frozen=True)
+class Commitment:
+    """决策承诺制闸（2026-10-15 设计稿 v2 §3：traj_blocked 暂停不弃追）。
+    整段可选，老 json 不带段=全默认=关（与 grid_veto 同一条兼容纪律）。
+
+    语义：traj 采样连续破判达 _REEVAL_STREAK 后，预算内**暂停**——保留原
+    改道任务、x_target 冻结在 executed（绕开平滑器，防朝旧 goal 漂移）；
+    预算=单次连续阻塞时长（dt_s 累计，traj 恢复一拍清零、新集清零），超
+    预算才作废（旧行为）。安全不承诺（硬边界不变量 §3.2）：lat_veto/致命
+    校验/目标过期判定先行，不受预算延迟；executed 缺席拍不进暂停。"""
+
+    pause_enabled: bool = False
+    pause_budget_s: float = 1.0     # [需实测] 起值≈一个币窗；先例（Nav2 恢复
+                                    # 阶梯）只支撑「等临时遮挡」方向，不支撑
+                                    # 数值——A/B 后归位只改本 json
+
+
+@dataclass(frozen=True)
 class DecisionConfig:
     mode: Mode
     control: Control
@@ -293,6 +310,7 @@ class DecisionConfig:
     corridor_reach: CorridorReach = CorridorReach()
     metric_cars: MetricCars = MetricCars()
     debug_dump: DebugDump = DebugDump()
+    commitment: Commitment = Commitment()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -504,7 +522,11 @@ def _read_decision(path: Path) -> DecisionConfig:
         debug_dump=DebugDump(
             mode=_dump_mode,
             ring=_int_def(d, "debug_dump", "ring", 10, lo=0),
-            event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)))
+            event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)),
+        commitment=Commitment(
+            pause_enabled=_bool(d, "commitment", "pause_enabled", default=False),
+            pause_budget_s=_num_def(d, "commitment", "pause_budget_s", 1.0,
+                                    lo=0, lo_open=False)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis
