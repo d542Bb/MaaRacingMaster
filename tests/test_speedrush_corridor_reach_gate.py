@@ -24,6 +24,10 @@ from maaracing_master.plugins.speedrush.tracking import (
 
 DT = 0.05
 _BASE = _read_decision(CFG_PATH)
+# 闸状态显式钉死（不继承部署态——部署 json 在 rollout 中会翻转 shadow→control，
+# 测试基线必须自持，不随部署漂）
+CFG_OFF = replace(_BASE, corridor_reach=replace(_BASE.corridor_reach,
+                                                enabled=False, control=False))
 # 影子期：enabled=true、control=false（lane_scoring.control 常驻态原样）
 CFG_SHADOW = replace(_BASE, corridor_reach=replace(_BASE.corridor_reach,
                                                    enabled=True))
@@ -96,7 +100,7 @@ def test_shadow_on_off_bit_identical():
     g, ms = _group()
     cor = _corridor()
     e_on = DecisionEngine(CFG_SHADOW)
-    e_off = DecisionEngine(_BASE)
+    e_off = DecisionEngine(CFG_OFF)
     o_on = e_on.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
                        corridor=cor)
     o_off = e_off.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
@@ -113,7 +117,7 @@ def test_shadow_with_lane_control_bit_identical():
     g, ms = _group()
     cor = _corridor()
     cfg_on = replace(CFG_SHADOW)
-    cfg_off = _BASE
+    cfg_off = CFG_OFF
     e_on = DecisionEngine(cfg_on)
     e_off = DecisionEngine(cfg_off)
     for fid in (1, 2):
@@ -179,8 +183,8 @@ def test_control_off_keeps_legacy_select():
     """回滚红线：control=false 时 legacy band/feas 选择链原样——同一良候选
     场景走 select:score_win（金币实体目标），不是 reach_win。"""
     g, ms = _group()
-    cfg_legacy = replace(_BASE, lane_scoring=replace(_BASE.lane_scoring,
-                                                     control=False))
+    cfg_legacy = replace(CFG_OFF, lane_scoring=replace(_BASE.lane_scoring,
+                                                       control=False))
     e = DecisionEngine(cfg_legacy)
     out = e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
                    corridor=_corridor())

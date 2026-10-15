@@ -880,10 +880,11 @@ class SpeedRushModule(ActivityModule):
             "road_offset": None if road_offset is None else round(road_offset, 3),
             "dgeo_age": round(chain["depth_geo"].last_age_ms), "dgeo_new": dgeo_new}
         # 走廊收益场路径预估（corridor_reach 闸开才有值；调试图渲染面）：
-        # 路径换算自车系米（x_self=x_road−executed×lane_w，近端=0），z=车头系
+        # 路径换算自车系米（x_self=x_road−executed×lane_w，近端=0），z=车头系。
+        # lane_w 走 chain 单源锚（_build_control_chain 暴露）——本函数无 cal
         rep = chain["engine"].reach_report
         if rep is not None:
-            lwm = cal.lane_w_m
+            lwm = chain["lane_w_m"]
             off = planner.state.executed_lane * lwm
             self._control_last["reach_best"] = round(rep.best_x_m - off, 3)
             self._control_last["reach_path"] = [
