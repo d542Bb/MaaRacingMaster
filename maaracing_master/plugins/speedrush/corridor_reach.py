@@ -13,10 +13,11 @@
 由调用方完成——timing 的变道耗时模型天然以道计，调用方以 ``need_of_dx_m``
 闭包注入，本模块内无车道单位）；不执行轨迹（路径近带点喂 planner PD 链）。
 
-**语义真源**：收益构成沿 lane_score.benefits 摊开到连续坐标（事件语义——每个
-对象记一次，不按可见拍重复计）：币整组值 = coin_value_per_unit × max(观测枚数,
+**语义真源**：收益构成沿退役前 lane_score.benefits 摊开到连续坐标（事件语义——每个
+对象记一次，不按可见拍重复计；lane_score 于 20261015 被本模块取代删除，历史
+结论由 commit 指针回溯）：币整组值 = coin_value_per_unit × max(观测枚数,
 组下限) × conf（组下限 7c28ce9 复用，残缺视图按整组计）；车 t_meet 的占用/
-碰撞/错身三分与 lane_score 同判；远币（到站 > 前瞻窗或仪器无读数）记远权，
+碰撞/错身三分与退役前 lane_score 同判；远币（到站 > 前瞻窗或仪器无读数）记远权，
 方向信息仍在。金币「可收」三条件：横向落候选归属半宽内、可达（need+tau+
 margin < t_miss）、无先于币到达的车遮挡——不可达**不计入也不降权**（时序窗
 病理的反面：来不及的目标不追，不再被 feas 门否掉整个 CHANGE）。
@@ -28,6 +29,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Callable, Sequence
+
+# 道归属半宽（道，右正）：币/车横向归属判据的换算件（attribution_half_m =
+# LANE_HALF × lane_w_m 在进决策边界算）。原 lane_score 住户，20261015 退役随迁。
+LANE_HALF = 0.75
 
 
 @dataclass(frozen=True)
@@ -153,8 +158,8 @@ def evaluate(bands: Sequence[CorridorBandSpan],
     out: list[CandidateScore] = []
     for x in xs:
         need = need_of(x)
-        # 碰撞：到得了之后才到、到站短于 crash_t 的车（lane_score 同判；
-        # pacing 车 t=None 是占用不是碰撞）
+        # 碰撞：到得了之后才到、到站短于 crash_t 的车（与退役前 lane_score
+        # 同判；pacing 车 t=None 是占用不是碰撞）
         tms = car_in_path(x)
         crash = any(t is not None and need <= t < params.crash_t_s for t in tms)
         if crash:
@@ -173,11 +178,11 @@ def evaluate(bands: Sequence[CorridorBandSpan],
             if coin.t_miss_s is not None and math.isfinite(coin.t_miss_s) \
                     and coin.t_miss_s <= params.horizon_s:
                 # 可达性即门槛：耗时+τ+margin < t_miss 才计入（提前量天然编码；
-                # crash/pass 用纯耗时 need——与 lane_score 同判）
+                # crash/pass 用纯耗时 need——与退役前 lane_score 同判）
                 if not need + params.tau_s + params.margin_s < coin.t_miss_s:
                     continue                # 来不及：不追（不计入也不降权）
                 # 遮挡：先于币到达的车把币挡住（我们赶到前已过的车 t<need
-                # 不挡、pacing 车 t=None 整窗占用——lane_score 同判）
+                # 不挡、pacing 车 t=None 整窗占用——与退役前 lane_score 同判）
                 if any(abs(c.x_m - coin.x_m) <= params.attribution_half_m
                        and (c.t_meet_s is None
                             or need <= c.t_meet_s <= coin.t_miss_s)

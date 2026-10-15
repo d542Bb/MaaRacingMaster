@@ -2,16 +2,14 @@
 """走廊收益场闸（corridor_reach，2026-10-14 设计稿 §3.4）的回归锁。
 
 锁面：shadow on/off 行为逐位（enabled 只加 reach_report，行为零变化）、
-lane_scoring.control 常驻态下 shadow 同样零变化、回滚逐位（control=false=
-legacy band/feas 链原样）、加载器互斥（control=true 时 lane_scoring.control
-必须为 false）、FSM 契约（select:reach_win 进 CHANGE、moving:reach 滚动重评、
-走廊缺席 hold:reach_hold 不臆造）。
+回滚逐位（control=false=legacy band/feas 链原样）、FSM 契约（select:reach_win
+进 CHANGE、moving:reach 滚动重评、走廊缺席 hold:reach_hold 不臆造）。
+（lane_scoring 互斥锁随 lane_scoring 退役删除 20261015，两控制器前提不存在。）
 场景数值以 decision.json 起值反推（死区 0.15 道、need=0.3+0.4|dx|道+0.28、
 attribution 0.75 道×lane_w 3.38），改参数会红——参数与场景是契约面。
 """
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 
 import pytest
@@ -28,15 +26,12 @@ _BASE = _read_decision(CFG_PATH)
 # 测试基线必须自持，不随部署漂）
 CFG_OFF = replace(_BASE, corridor_reach=replace(_BASE.corridor_reach,
                                                 enabled=False, control=False))
-# 影子期：enabled=true、control=false（含 lane_scoring.control=false——shadow
-# 语义与 lane control 无关，两者都要钉死不继承部署态）
+# 影子期：enabled=true、control=false（闸态全部钉死不继承部署态）
 CFG_SHADOW = replace(_BASE,
-                     lane_scoring=replace(_BASE.lane_scoring, control=False),
                      corridor_reach=replace(_BASE.corridor_reach,
                                             enabled=True, control=False))
-# control 期：行为闸开（lane_scoring.control 归 false——互斥）
+# control 期：行为闸开（lane_scoring 已退役删除，互斥检查随迁）
 CFG_CTRL = replace(_BASE,
-                   lane_scoring=replace(_BASE.lane_scoring, control=False),
                    corridor_reach=replace(_BASE.corridor_reach,
                                           enabled=True, control=True))
 
@@ -114,39 +109,9 @@ def test_shadow_on_off_bit_identical():
     assert e_off.reach_report is None
 
 
-def test_shadow_with_lane_control_bit_identical():
-    """lane_scoring.control=true（部署常驻态）下 shadow 同样零变化：开/关
-    两引擎同输入逐位相同（互斥只管 control，影子不并跑约束）。"""
-    g, ms = _group()
-    cor = _corridor()
-    cfg_on = replace(CFG_SHADOW)
-    cfg_off = CFG_OFF
-    e_on = DecisionEngine(cfg_on)
-    e_off = DecisionEngine(cfg_off)
-    for fid in (1, 2):
-        o_on = e_on.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
-                           executed_lane=0.0, corridor=cor)
-        o_off = e_off.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
-                             executed_lane=0.0, corridor=cor)
-        assert _out_fields(o_on) == _out_fields(o_off)
+# ---------- 加载器 ----------
 
-
-# ---------- 加载器互斥（两控制器不得并跑） ----------
-
-def test_mutual_exclusion_loader_rejects():
-    """corridor_reach.control=true 与 lane_scoring.control=true 并存 → 加载器
-    拒绝（设计稿 §3.4 互斥）。两闸都显式置 true（不继承部署态——部署 json
-    在 rollout 中会翻转）。"""
-    d = json.loads(CFG_PATH.read_text(encoding="utf-8"))
-    d["corridor_reach"]["control"] = True
-    d["lane_scoring"]["control"] = True
-    tmp = CFG_PATH.parent / "_test_mutual.json"
-    tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-    try:
-        with pytest.raises(ValueError, match="corridor_reach"):
-            _read_decision(tmp)
-    finally:
-        tmp.unlink()
+# （互斥锁测试随 lane_scoring 退役删除 20261015：两控制器并存前提不存在）
 
 
 # ---------- control 行为闸（FSM 契约） ----------
@@ -188,9 +153,7 @@ def test_control_off_keeps_legacy_select():
     """回滚红线：control=false 时 legacy band/feas 选择链原样——同一良候选
     场景走 select:score_win（金币实体目标），不是 reach_win。"""
     g, ms = _group()
-    cfg_legacy = replace(CFG_OFF, lane_scoring=replace(_BASE.lane_scoring,
-                                                       control=False))
-    e = DecisionEngine(cfg_legacy)
+    e = DecisionEngine(CFG_OFF)
     out = e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
                    corridor=_corridor())
     assert out.reason == "select:score_win"

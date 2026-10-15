@@ -36,7 +36,6 @@ _CFG_BASE = _read_decision(
     .DECISION_FILE)
 CFG = replace(_CFG_BASE,
               mode=replace(_CFG_BASE.mode, trajectory_sampling=False),
-              lane_scoring=replace(_CFG_BASE.lane_scoring, control=False),
               metric_cars=replace(_CFG_BASE.metric_cars, fusion=False),
               # 走廊收益场闸显式钉死（legacy 行为测试不继承部署态——部署闸
               # 在 rollout 中翻转 shadow→control，测试基线必须自持）

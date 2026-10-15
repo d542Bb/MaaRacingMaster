@@ -223,39 +223,16 @@ class Validate:
 
 
 @dataclass(frozen=True)
-class LaneScoring:
-    """道级收益评分参数（2026-10-12 设计裁决：决策单位=道；整段可选，老 json
-    不带段=全默认=关，与 plan_layer 同一条兼容纪律）。
-
-    语义：`enabled` 开闸后引擎逐拍算 LaneReport（lane_score.LaneScorer）落
-    trace 对照列；`control` 是 V2 行为闸（计划稿 §6）——CRUISE 轨迹目标改吃
-    道收益 pick（举证门槛防抖），回滚=false 即回守轴旧行为。数值全部
-    [需实测] 起值。"""
-
-    enabled: bool = False
-    horizon_s: float = 2.0        # 收益前瞻（s）：提前量 P50 1.06s 的 ~2 倍
-    crash_t_s: float = 0.8        # 到站短于此判碰撞（s；≈变道需求 0.73 上浮）
-    crash_penalty: float = 100.0  # 碰撞道负额（分；压过任何币/错身收益）
-    pass_value: float = 30.0      # 邻道错身保底（分；RULES §4.11 普通档镜像）
-    far_coin_weight: float = 0.3  # 前瞻窗外币的远权（方向信息仍在，当期吃不到）
-    control: bool = False         # V2 行为闸：CRUISE d_target=pick（false=守轴）
-    pick_margin: float = 20.0     # 举证门槛：挑战者须以 ≥此分差胜出（≈一个错身
-                                  # 保底的价值差才值得动道）
-    pick_confirm: int = 3         # 连续胜出拍数（计划稿 §6 防抖四件套②）
-
-
-@dataclass(frozen=True)
 class CorridorReach:
     """走廊收益场选路径参数（2026-10-14 设计稿 §3.2-§3.4：米制连续坐标综合
     收益评估，解耦车道定义；整段可选，老 json 不带段=全默认=关，与
-    lane_scoring 同一条兼容纪律）。
+    plan_layer 同一条兼容纪律）。
 
     语义：`enabled` 开闸后引擎逐拍算 ReachReport（corridor_reach.evaluate）
     落 trace cr_* 对照列；`control` 是行为闸——CRUISE 选择来源换血为走廊
     收益场（select:reach_win），回滚=false 即回 legacy band/feas 链（逐位）。
     车道换算件（timing 变道耗时 need_of_dx_m、lane_w_m）在 decision.py 进
-    决策边界注入，本表不带车道单位。互斥：control=true 时
-    lane_scoring.control 必须为 false（两控制器不得并跑，加载器拦）。"""
+    决策边界注入，本表不带车道单位。"""
 
     enabled: bool = False
     control: bool = False
@@ -311,7 +288,7 @@ class DecisionConfig:
     grid_veto: GridVeto = GridVeto()
     plan_layer: PlanLayer = PlanLayer()
     grid_xcheck: GridXcheck = GridXcheck()
-    lane_scoring: LaneScoring = LaneScoring()
+    # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
     metric_cars: MetricCars = MetricCars()
     debug_dump: DebugDump = DebugDump()
@@ -505,18 +482,6 @@ def _read_decision(path: Path) -> DecisionConfig:
                           ("off", "master", "veto")),
             tol_lane=_num_def(d, "grid_xcheck", "tol_lane", 0.45, lo=0),
             bypass_streak=_int_def(d, "grid_xcheck", "bypass_streak", 8, lo=1)),
-        lane_scoring=LaneScoring(
-            enabled=_bool(d, "lane_scoring", "enabled", default=False),
-            horizon_s=_num_def(d, "lane_scoring", "horizon_s", 2.0, lo=0),
-            crash_t_s=_num_def(d, "lane_scoring", "crash_t_s", 0.8, lo=0),
-            crash_penalty=_num_def(d, "lane_scoring", "crash_penalty",
-                                   100.0, lo=0),
-            pass_value=_num_def(d, "lane_scoring", "pass_value", 30.0, lo=0),
-            far_coin_weight=_num_def(d, "lane_scoring", "far_coin_weight",
-                                     0.3, lo=0, hi=1, lo_open=False),
-            control=_bool(d, "lane_scoring", "control", default=False),
-            pick_margin=_num_def(d, "lane_scoring", "pick_margin", 20.0, lo=0),
-            pick_confirm=_int_def(d, "lane_scoring", "pick_confirm", 3, lo=1)),
         corridor_reach=CorridorReach(
             enabled=_bool(d, "corridor_reach", "enabled", default=False),
             control=_bool(d, "corridor_reach", "control", default=False),
@@ -578,10 +543,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             f"[validate] lat_veto_gap_lane={cfg.validate.lat_veto_gap_lane} "
             f"≥ 贴窗中心 d_hold_lane={ov.d_hold_lane}"
             f"（veto 接触界不小于贴窗距离=一切超车都被拦，判据矛盾）")
-    if cfg.corridor_reach.control and cfg.lane_scoring.control:
-        raise ValueError(
-            "[corridor_reach] control=true 时 lane_scoring.control 必须为 "
-            "false（两控制器不得并跑，设计稿 §3.4 互斥）")
     return cfg
 
 

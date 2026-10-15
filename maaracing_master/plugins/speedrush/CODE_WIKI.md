@@ -954,16 +954,12 @@ overtake 61 拍、lane_b 非零 46%、撞车惩罚连续段最长 7 拍（对照
 
 **③ V2 行为切换（2026-10-11 维护者批准，实机 A/B 验收期）**：影子证据链闭合
 后两把行为闸开闸（各自可独立回滚，闸关=旧行为逐位恢复）：
-- **道收益接选道**（`lane_scoring.control`）：CRUISE 轨迹目标从守轴 0 改吃
-  道收益**持守道心**（`Decision._lane_pick_target`）——pacing 前车占道、币
-  密度偏侧等「无候选可选拍」的横向梯度首次有执行出口（此前 CRUISE 只守轴，
-  选线全靠四门出候选）。防抖=计划稿 §6 举证门槛：挑战者道须连续
-  `pick_confirm`(3) 拍以 ≥`pick_margin`(20 分) 胜出才改判（影子期 61/741
-  pick 翻面率的治理面）。挑战者=逐道收益 argmax（并列取道格序低者），
-  **不直接吃 LaneReport.pick**——报告层平手取当前道会把 pick 钉在「本道
-  碰撞、两邻道并列」的碰撞道上。报告缺席拍持旧目标；机动收尾/保守出口后
-  hold 失锚重初始化（旧持守不拖车回几秒前的道）。币组/超车/回避仍走既有
-  实体目标链，本闸只管巡航段。
+- **道收益接选道**（`lane_scoring.control`）：**已退役删除**（20261015）——
+  被走廊收益场（`corridor_reach`，见下节）取代：道格量化+lane_w 单点标定锚
+  对全决策链的放大、band 拒 278~536 次/局的宽路匹配问题，由米制连续坐标
+  收益场解耦。lane_score.py/LaneScoring 配置段/lane_b·lane_pick·lane_hold
+  trace 列一并删除，历史结论（影子期标定、翻面率治理）由 commit 指针回溯；
+  上述 `Decision._lane_pick_target` 机制描述为退役前行为存档。
 - **dodge/veto 米制融合**（`metric_cars.fusion`）：dodge ttc 取两仪器较小
   到站（先到者先防），逼近门放宽为「任一仪器报逼近」——像素 rel 门在退化
   带失真恰是米制治愈对象；LateralSafety 危险窗截断取较晚到站（物理口径
@@ -972,6 +968,19 @@ overtake 61 拍、lane_b 非零 46%、撞车惩罚连续段最长 7 拍（对照
   轨迹采样器同批接入：到站函数改引擎注入（`t_meet_fn`，与 LateralSafety
   同一 callable——修掉本类用控制拍率消费 px/fid 读数、TTC 恒定高估 ~1.9x
   的 §17 同类旧单位病）+ 危险窗截断同口径融合（`metric_map` 通道）。
-- **观测面**：trace 新增 `lane_hold` 列（持守道 vs `lane_pick` 对照=防抖
-  翻面率验收面）。验收=计划稿 §8 实机 A/B（样本口径与收案条款见 §5C
-  追记的 A/B 样本裁决；老臂=两闸归 false）。
+- **观测面**：`lane_hold` 列随 lane_scoring 退役删除（20261015）；现役观测面
+  =走廊收益场的 `cr_*` 对照列（见下节）。验收=计划稿 §8 实机 A/B（样本口径
+  与收案条款见 §5C 追记的 A/B 样本裁决；老臂=两闸归 false）。
+
+**④ 走廊收益场接选道（2026-10-15 验收收案，`corridor_reach.control` 现役）**：
+CRUISE 选择来源换血为米制连续坐标收益场（`corridor_reach.evaluate`，取代
+lane_scoring 的 4 道格）——决策坐标=米制 x_m（走廊缘/目标/自车同一系，
+lane_w_m 换算在进决策边界一次），候选=近场 span 0.5m 步进，逐候选综合计分
+（可收币组整组值+错身 pass_value−碰撞大负罚−位移代价+远币远权），可达性即
+门槛（need+τ+margin < t_miss 才计入，不可达不追也不降权）；胜出=argmax，
+平手（tie_margin 内）选离走廊中心近者。胜出位离自车超死区 → `select:reach_win`
+进 CHANGE（目标类 reach=走廊路径位非实体），x_goal 每拍滚动重评，收敛=反馈
+路完成判据，横向 veto 原样。弯道帧走廊不可读按朝向记忆延伸（EMA+TTL 2s，
+`cor_src=memory` 列）。观测面=trace `cr_best`/`cr_scores`/`cr_path`/`cr_coins`
+（胜出候选可收币 t_miss=提前量仪器）。验收三局（p2 4765/5033 vs 基线 3663、
+提前量 P50 1.36~1.60s、贴身过车同量级）。rollback=control 归 false。

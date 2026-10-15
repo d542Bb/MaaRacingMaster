@@ -152,18 +152,6 @@
     "event_window": 20,
     "_note": "调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验，缺口=恒开全量 ~200MB/局）。off=深度观测器不建 debug_dir，零落盘；events=worker 内存 ring 留最近 ring 次捕获，push 快照（滞后 1 拍）报事件（state=CONSERVE 或 reason 含 dodge）时落盘 ring+后续 event_window 帧——真正消费的是 dodge/conserving 时刻±窗口；full=恒开 0.5s 全量节流（感知排错期用）。落盘文件格式与 full 逐位同构（同编码器参数）。"
   },
-  "lane_scoring": {
-    "enabled": true,
-    "horizon_s": 2.0,
-    "crash_t_s": 0.8,
-    "crash_penalty": 100.0,
-    "pass_value": 30.0,
-    "far_coin_weight": 0.3,
-    "control": false,
-    "pick_margin": 20.0,
-    "pick_confirm": 3,
-    "_note": "道级收益评分闸（2026-10-12 设计裁决：决策单位=道，逐车仪器降级为输入；实施顺序与验收判据见计划稿 §5 Track B / §6）。**运行态：control=true＝A/B 收案后常驻（2026-10-12 用户裁决「新臂更好一点」，4v4 验收见计划稿 §5D——无回归+方向性收益 2胜2负 vs 0胜4负，量级不惊艳）——CRUISE 轨迹目标吃道收益持守道心（gold 币组/超车目标仍走既有实体目标链）；举证门槛防抖=挑战者道须连续 pick_confirm 拍以 ≥pick_margin 分胜出才改判。回滚=control 归 false（守轴旧行为逐位恢复）；enabled=false 连影子列一起关。数值 [需实测] 起值：pick_margin=20≈一个错身保底的价值差；horizon 2s=提前量 P50 1.06s 的 ~2 倍；crash_t 0.8s≈变道需求 0.73s 上浮；crash_penalty 100 压过任何币/错身收益；pass_value=30 为 RULES §4.11 普通档镜像（极限 120 走 p̂ 两层结构，未上）。观测面=trace lane_b/lane_pick/lane_hold 对照列。"
-  },
   "corridor_reach": {
     "enabled": true,
     "control": true,
