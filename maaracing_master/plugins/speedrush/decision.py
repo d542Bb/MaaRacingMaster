@@ -889,6 +889,13 @@ class DecisionEngine:
         持位 > 升级；x_goal 仍每拍滚动重评（运动与观测归场，承诺只接管
         「何谓到达」与「何时放弃」）。横向安全 veto 原样，意图不豁免。"""
         self._change_t += dt_s
+        # 重锚先行于报告判定（20261016 A/B 教训：收益报告缺席 ≠ 坐标系停表
+        # ——缺席期 center 变化无人跟踪，恢复拍跨基线一次性比对会误判
+        # frame_break；信号源=corridor.center_lane，与收益报告无关）
+        if self._intent is not None:
+            blocked = self._intent_reanchor()
+            if blocked is not None:
+                return blocked
         rep = self._reach_report
         if rep is None:
             if (self.cfg.commitment.memory_enabled
@@ -905,10 +912,8 @@ class DecisionEngine:
         goal_lane = rep.best_x_m / self.cal.lane_w_m
         self._reach_goal = rep.best_x_m
         if self._intent is not None:
-            blocked = self._intent_reanchor()
-            if blocked is None:
-                blocked = self._intent_basis(obs, rep, goal_lane, dt_s,
-                                             executed)
+            blocked = self._intent_basis(obs, rep, goal_lane, dt_s,
+                                         executed)
             if blocked is not None:
                 return blocked
             self._demand_lane = self._intent.d0   # 意图镜面（降级/trace 消费）
@@ -939,6 +944,15 @@ class DecisionEngine:
             if veto is not None:
                 self._enter_abort(veto)
                 return f"cancel:{veto}"
+            # 超时出口（20261016 A/B 补既有缺口：t_change_max_s 的检查原本
+            # 只在 executed 缺席的降级分支——旧判据集 2s 内必收敛用不着；
+            # 意图生命周期把集拉长后（空窗持位 P1 实测 25.1s/30s），executed
+            # 在场的集必须同享超时强制落位，否则持位无期）
+            if self._change_t >= self.cfg.control.t_change_max_s:
+                return self._finish_change(
+                    "change_timeout",
+                    reanchor=self._intent.d0 if self._intent is not None
+                    else self._demand_lane)
             if self._intent is not None:
                 # gap 持位（§8.4.2）：空窗期场选点塌回路心是反骑线机理——
                 # 意图保留、车持位等下一组（冻结走 _intent_hold 输出通道）

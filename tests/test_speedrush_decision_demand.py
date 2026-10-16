@@ -18,6 +18,8 @@ from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH
 from maaracing_master.plugins.speedrush.config import (
     Commitment, _read_decision)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
+from maaracing_master.plugins.speedrush.corridor_reach import (
+    LANE_HALF as LANE_HALF_TEST)
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
 
@@ -369,6 +371,76 @@ def test_demand_reanchor_small_jumps_ignored():
     assert out.reason == "moving:reach"
     assert e.intent_state["d0"] == pytest.approx(d0)
     assert e.intent_state["reanchors"] == 0
+
+
+# ---------- 20261016 A/B 收案修复锁（P1 时间线诊断） ----------
+
+def _corridor_blind(center=0.0):
+    """center 在场、全带缺证据的走廊（黑视形态）：evaluate 诚实弃权 None
+    （rep 缺席）但 center_lane 仍供数——缺席期重锚跟踪的信号源。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, CAM_Z_DATUM_M, Corridor, CorridorBand)
+    from maaracing_master.plugins.speedrush.depth_geo import GRID_Z_LO
+    from maaracing_master.plugins.speedrush.wall_track import MEASURED
+    bands = tuple(
+        CorridorBand(GRID_Z_LO + i * 3.0 - CAM_Z_DATUM_M,
+                     GRID_Z_LO + (i + 1) * 3.0 - CAM_Z_DATUM_M,
+                     BandBoundary(None, MEASURED, 1.0),
+                     BandBoundary(None, MEASURED, 1.0))
+        for i in range(9))
+    return Corridor(bands, center, 8.4 / _BASE_cal_lane_w(), "pair",
+                    "ok", None)
+
+
+def test_demand_timeout_exits_gap_hold():
+    """超时出口（20261016 A/B 缺口修复）：t_change_max_s 原本只查 executed
+    缺席的降级分支，意图生命周期拉长集后持位无期（P1 实测 gap 持位
+    25.1s/30s）——executed 在场的集同享超时强制落位。构造：车在 −0.5 道、
+    币在 1.2 道（归属半宽罩不到车旁候选、t_miss 够变道耗时）→ 锁 d0≈路心；
+    空场后场选点塌回车旁（带内，pick_out 恒 0，dead 门盲区）→ 持位到 2s
+    被超时收场。"""
+    g, ms = _group(gid=1, x=1.2, rel=3)
+    e = DecisionEngine(CFG_DM)
+    _run(e, _obs(groups=(g,), targets=ms), executed_lane=-0.5,
+         corridor=_corridor())
+    d0 = e.intent_state["d0"]
+    assert abs(d0) < LANE_HALF_TEST                # 带含塌回点（dead 门盲区）
+    # 带外远币（cy 大到 t_miss 无穷：位置在场撑 presence、进不了场分）
+    decoy, dms = _group(gid=9, x=2.5, cy=1500, rel=1)
+    reason = None
+    for fid in range(2, 60):
+        out = _run(e, _obs(fid=fid, groups=(decoy,), targets=dms),
+                   executed_lane=-0.5, corridor=_corridor())
+        reason = out.reason
+        if out.state is not DecisionState.CHANGE:
+            break
+    assert reason == "done:change_timeout"
+    assert out.state is DecisionState.CRUISE
+
+
+def test_demand_reanchor_tracked_during_absence():
+    """缺席期重锚跟踪（20261016 A/B 修复）：收益报告缺席 ≠ 坐标系停表——
+    P1 实测 frame_break 7 次中 4 次发生在缺席恢复拍（跨基线一次性比对）。
+    缺席期间 center 跳变照常变换/判裂，恢复拍不误判。"""
+    g, ms = _group(gid=1, x=1.5, rel=3)
+    e = DecisionEngine(CFG_DM)
+    _run(e, _obs(groups=(g,), targets=ms), corridor=_corridor())
+    d0 = e.intent_state["d0"]
+    out = _run(e, _obs(fid=2), executed_lane=0.2,
+               corridor=_corridor_blind(center=0.3))
+    assert out.reason == "hold:reach_absent"       # eps~break 间：照常重锚
+    assert e.intent_state["d0"] == pytest.approx(d0 - 0.3, abs=1e-3)
+    assert e.intent_state["reanchors"] == 1
+    g2, ms2 = _group(gid=1, x=1.2, rel=3)          # 新帧下的同一物理世界
+    out = _run(e, _obs(fid=3, groups=(g2,), targets=ms2), executed_lane=-0.3,
+               corridor=_corridor(center=0.3))
+    assert out.reason == "moving:reach"            # 恢复拍不误判断裂
+    e2 = DecisionEngine(CFG_DM)
+    _run(e2, _obs(groups=(g,), targets=ms), corridor=_corridor())
+    out = _run(e2, _obs(fid=2), executed_lane=0.2,
+               corridor=_corridor_blind(center=1.0))
+    assert out.reason == "cancel:frame_break"      # 缺席期跳超 break：直接判裂
+    assert out.state is DecisionState.ABORT_CHANGE
 
 
 # ---------- 加载器 ----------
