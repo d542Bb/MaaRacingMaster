@@ -244,6 +244,14 @@ class CorridorReach:
     pass_value: float = 30.0             # 错身保底（分）
     far_coin_weight: float = 0.3         # 前瞻窗外币的远权
     tie_margin: float = 20.0             # 平手阈（分）：差 < 此值偏向走廊中心
+    # ---- R3 贴身猎车（2026-10-16 设计稿 §2.2/§3；默认关=逐位回今天）----
+    overtake_hunting: bool = False       # 贴身猎车总闸（false=逐位回今天；
+                                         #   R2 前瞻外方向权为另一独立位，随 R2 入）
+    hug_value: bool = False              # R3 贴身收益分开关（shadow→实机 A/B 分刀验收）
+    hug_half_width_lane: float = 0.075   # 贴身平台窗半宽（道）：d_hold_lo/hi =
+                                         #   d_hold_lane ∓ 半宽（派生值，非独立真源）；
+                                         #   窗整体落在归属半宽（0.75 道）内 = in-path 区，
+                                         #   占用/遮挡/碰撞判据对窗内前车照旧，只有价值面翻转
 
 
 @dataclass(frozen=True)
@@ -538,7 +546,12 @@ def _read_decision(path: Path) -> DecisionConfig:
             pass_value=_num_def(d, "corridor_reach", "pass_value", 30.0, lo=0),
             far_coin_weight=_num_def(d, "corridor_reach", "far_coin_weight",
                                      0.3, lo=0, hi=1, lo_open=False),
-            tie_margin=_num_def(d, "corridor_reach", "tie_margin", 20.0, lo=0)),
+            tie_margin=_num_def(d, "corridor_reach", "tie_margin", 20.0, lo=0),
+            overtake_hunting=_bool(d, "corridor_reach", "overtake_hunting",
+                                   default=False),
+            hug_value=_bool(d, "corridor_reach", "hug_value", default=False),
+            hug_half_width_lane=_num_def(d, "corridor_reach",
+                                         "hug_half_width_lane", 0.075, lo=0)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
             fusion=_bool(d, "metric_cars", "fusion", default=False)),
@@ -611,6 +624,13 @@ def _read_decision(path: Path) -> DecisionConfig:
             f"[commitment] reanchor_break_lane={cmt.reanchor_break_lane} "
             f"必须 > reanchor_eps_lane={cmt.reanchor_eps_lane}"
             f"（eps~break 之间重锚、超 break 断裂——倒置则断裂门永不触发，判据矛盾）")
+    cr = cfg.corridor_reach
+    if cr.overtake_hunting and cr.hug_value \
+            and not 0 < cfg.overtake.d_hold_lane - cr.hug_half_width_lane:
+        raise ValueError(
+            f"[corridor_reach] 贴身窗半宽 {cr.hug_half_width_lane} ≥ 平台中心 "
+            f"d_hold_lane={cfg.overtake.d_hold_lane}"
+            f"（窗下沿=d_hold−half 必须 >0，0 < lo < center ≤ hi，设计稿 §2.2）")
     return cfg
 
 

@@ -771,9 +771,22 @@ class DecisionEngine:
         """走廊收益场参数面（进决策边界换算，车道单位不外漏）：need=timing
         变道耗时模型（天然以道计，|Δx|/lane_w 换算）；位移价/归属半宽/错身带
         沿既有语义换算成米制（单一真源不复制）；tau/margin=feas 同源
-        （plan._feasible 的 tau_resp+margin，时序窗病理的反面编码处）。"""
+        （plan._feasible 的 tau_resp+margin，时序窗病理的反面编码处）。
+        R3 贴身猎车（§2.2）：总闸+分开关都开才挂贴身参数——窗沿/P 曲线/极限
+        动作分全部由 overtake 节与 hug_half_width_lane 在边界换算成米制
+        （派生关系：lo/hi = d_hold ∓ half），闸关=不带字段=逐位回今天。"""
         lane_w = self.cal.lane_w_m
         c = self.cfg.corridor_reach
+        hug_kw = {}
+        if c.overtake_hunting and c.hug_value:
+            ov = self.cfg.overtake
+            center_m = ov.d_hold_lane * lane_w
+            half_m = c.hug_half_width_lane * lane_w
+            hug_kw = dict(hug_d_lo_m=center_m - half_m,
+                          hug_d_hi_m=center_m + half_m,
+                          hug_p_center_m=ov.p_center_lane * lane_w,
+                          hug_p_scale_m=ov.p_scale_lane * lane_w,
+                          hug_value_limit=ov.value_limit)
         return ReachParams(
             step_m=c.step_m, horizon_s=c.horizon_s, crash_t_s=c.crash_t_s,
             crash_penalty=c.crash_penalty, pass_value=c.pass_value,
@@ -785,7 +798,8 @@ class DecisionEngine:
             tau_s=self.cfg.timing.tau_resp_s,
             margin_s=self.cfg.timing.margin_s,
             need_of_dx_m=lambda dx_m: self.cfg.timing.lane_change_duration_s(
-                abs(dx_m) / lane_w))
+                abs(dx_m) / lane_w),
+            **hug_kw)
 
     def _reach_evaluate(self, obs: WorldObservation,
                         executed_lane: float | None) -> ReachReport | None:
@@ -827,9 +841,11 @@ class DecisionEngine:
         seen: set[int] = set()
         out: list[CarSource] = []
 
-        def enter(x: float | None, tm: float | None) -> None:
+        def enter(x: float | None, tm: float | None,
+                  t_ov: float | None = None) -> None:
             if x is not None and x == x:
-                out.append(CarSource(x_m=x + off, t_meet_s=tm))
+                out.append(CarSource(x_m=x + off, t_meet_s=tm,
+                                     t_overtake_s=t_ov))
 
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
@@ -841,13 +857,23 @@ class DecisionEngine:
                      else (self.scorer.cand_x(v) * lane_w
                            if v is not None else None))
                 tm = self.scorer.metric_t(m, v)
+                # R3 前车仪器（2026-10-16 设计稿 §2.1）：t_overtake 只吃米制
+                # t_meet（z/v_close，单一公式真源 MetricCarState；v_close>0=
+                # 被接近的前车——设计稿原文 v_close<0 系符号笔误，与 L0 契约
+                # 及实机 trace 对账（符号一致率 70.8%、近距离车 87% 为正）均
+                # v>0=接近，数值同为 z/|v_close|）。**不走 tm**（metric_t 在
+                # 估计窗未开时回退像素，估计窗未开=弃权不追）；t≤0（z 已过
+                # datum）/v_close 缺位=None=仪器缺位弃权
+                t_ov = m.t_meet_s if (m.t_meet_s is not None
+                                      and m.t_meet_s > 0.0) else None
             elif v is not None:
                 x, tm = self.scorer.pixel_instruments(v)
+                t_ov = None                     # 像素回退车无米制锚：旧错身项
                 x = None if x is None else x * lane_w
             else:
                 continue                        # 无视图的远轨必有锚
             seen.add(m.target_id)
-            enter(x, tm)
+            enter(x, tm, t_ov)
         for vid, v in by_id.items():
             if vid in seen or v.cy >= self.cal.v_ego:
                 continue                        # 米制路径已入账，不双计

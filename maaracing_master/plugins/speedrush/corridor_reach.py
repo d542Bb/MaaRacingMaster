@@ -47,10 +47,18 @@ class CoinSource:
 
 @dataclass(frozen=True)
 class CarSource:
-    """一辆车的米制到站仪器（占用/碰撞/错身三分共用）。"""
+    """一辆车的米制到站仪器（占用/碰撞/错身三分共用）。
+
+    t_overtake_s 是 R3 贴身猎车的**被超前车仪器**（2026-10-16 设计稿 §2.1）：
+    米制锚齐备（z_m/v_close>0）的前车边界预计算 t=z/v_close——v_close>0=被
+    接近（设计稿原文写 v_close<0 系符号笔误，L0 契约 MetricCarState 与实机
+    trace 对账（符号一致率 70.8%、近距离车 87% 为正）均 v>0=接近，数值同为
+    z/|v_close|）；估计窗未开/远离/已过（t≤0）=None=不追（仪器缺位弃权）。
+    None 的车走旧错身项，行为逐位回今天。"""
 
     x_m: float                 # 车横位（米，自车系）
     t_meet_s: float | None     # 到站时刻；None=pacing/掠过（占用语义，不判碰撞）
+    t_overtake_s: float | None = None   # 被超时刻（R3 前车仪器）；None=无米制锚
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,13 @@ class ReachParams:
     need_of_dx_m: Callable[[float], float] = None  # type: ignore[assignment]
     #   变道耗时模型 need(|Δx|)（秒）——timing 线性模型天然以道计，调用方在
     #   边界闭包换算（|Δx|/lane_w_m 后 lane_change_duration_s），本模块无车道单位
+    # ---- R3 贴身猎车（2026-10-16 设计稿 §2.2；米制，全 None=闸关=逐位回今天）----
+    hug_d_lo_m: float | None = None      # 贴身窗下沿（米）：d̂<此值=同车道贴尾不是错身，0 分
+    hug_d_hi_m: float | None = None      # 上沿（米）：窗内=平台常数，窗外 logistic 连续衰减
+    hug_p_center_m: float | None = None  # P_limit logistic 中心（米；真源 overtake.p_center_lane，
+                                         #   调用方在边界 ×lane_w 换算，本表不复制数值）
+    hug_p_scale_m: float | None = None   # logistic 尺度（米，同上）
+    hug_value_limit: float = 0.0         # 极限动作分（RULES §4.11 镜像，真源 overtake.value_limit）
 
 
 @dataclass(frozen=True)
@@ -104,6 +119,9 @@ class CandidateScore:
     far_coins: int              # 记远权的币组数（审计面）
     coin_t: tuple[float, ...] = ()   # 可收整组币的到站 t_miss（提前量仪器，
                                      # 20261015 control 期 instrumentation 补齐）
+    hug_value: float = 0.0      # R3 贴身 E 项累加（审计面；互斥分支——出此值的车
+                                # 不进旧错身项 pass_value_sum，同一辆车不双计）
+    hug_cars: int = 0           # 计入贴身 E 项的前车数（审计面）
 
 
 @dataclass(frozen=True)
@@ -123,6 +141,14 @@ def _coin_group_value(coin: CoinSource, p: ReachParams) -> float:
     """整组值 = 单枚 × max(观测枚数, 组下限) × conf（组下限 7c28ce9 复用）。"""
     n = max(coin.observed_count, p.coin_group_min_count)
     return p.coin_value_per_unit * n * coin.conf
+
+
+def _hug_p(d_m: float, p: ReachParams) -> float:
+    """P_limit logistic（米制连续坐标，与道单位形状逐点等价——线性缩放）。
+    参数真源 overtake 节（p_center/p_scale），调用方边界换算进表；本函数只管
+    曲线形状不认数值。贴身窗平台值 = pass_value + limit × P(平台中心)（真源
+    推导非手选）：lane_w=3.38 时 P(0.625 道)≈0.852 → 平台 ≈132。"""
+    return 1.0 / (1.0 + math.exp((d_m - p.hug_p_center_m) / p.hug_p_scale_m))
 
 
 def evaluate(bands: Sequence[CorridorBandSpan],
@@ -148,6 +174,9 @@ def evaluate(bands: Sequence[CorridorBandSpan],
 
     def need_of(x: float) -> float:
         return params.need_of_dx_m(abs(x - executed_x))
+
+    # R3 贴身猎车总开关（参数全缺=None=逐位回今天；分开关语义在 config）
+    hug_on = params.hug_d_lo_m is not None
 
     # ---- 车三分预备（事件语义：每车记一次） ----
     # 本道（归属半宽内）的车：碰撞/遮挡判据面；先于币到达的车把币挡住
@@ -194,10 +223,38 @@ def evaluate(bands: Sequence[CorridorBandSpan],
             else:
                 coin_value += params.far_coin_weight * val   # 远币：方向信息仍在
                 n_far += 1
-        # 错身：归属半宽外一圈的车（错身带内），来得及且在窗内才计
+        # 错身/贴身：R3 贴身猎车按仪器**互斥分支**（2026-10-16 设计稿 §2.2，
+        # 同一辆车不双计）——米制锚前车（t_overtake 非 None）走贴身 E 项，
+        # 其余车（像素仪器）走旧错身项逐位不变。占用/遮挡/碰撞判据面不动
+        # （car_in_path 照旧含贴身窗前车：窗在归属半宽内，crash 判据照旧护
+        # 第三方接近车）。
         pass_sum = 0.0
+        hug_sum = 0.0
+        n_hug = 0
         for c in cars:
             d = abs(c.x_m - x)
+            if hug_on and c.t_overtake_s is not None:
+                if c.t_overtake_s > params.horizon_s:
+                    continue                    # 窗外：无价值（旧错身同判）
+                # 可达性唯一门（与币门同式同真源）：过近/来不及即自然失败，
+                # 不再另设 minActionTime 门
+                if not (need + params.tau_s + params.margin_s
+                        <= c.t_overtake_s):
+                    continue
+                if d < params.hug_d_lo_m:
+                    continue                    # 硬地板：同车道贴尾不是错身
+                if d <= params.hug_d_hi_m:
+                    # 平台常数：P 在窗中心取值（真源推导）；窗内各候选同分，
+                    # 选中位由位移代价与平局规则决定（有意语义：减少无谓横移）
+                    hug_sum += params.pass_value + params.hug_value_limit * _hug_p(
+                        (params.hug_d_lo_m + params.hug_d_hi_m) / 2.0, params)
+                else:
+                    # 窗上沿外：logistic 连续衰减（上沿处 ≈105，约 27 分出窗
+                    # 跳变——与下沿 0→132 并列为待测边界行为）
+                    hug_sum += params.pass_value + params.hug_value_limit * _hug_p(
+                        d, params)
+                n_hug += 1
+                continue
             if not (params.attribution_half_m < d
                     <= params.attribution_half_m + params.pass_band_m):
                 continue
@@ -205,10 +262,11 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                     and need <= c.t_meet_s <= params.horizon_s:
                 pass_sum += params.pass_value
         out.append(CandidateScore(
-            x, coin_value + pass_sum - params.shift_cost_per_m * abs(x - executed_x),
+            x, coin_value + pass_sum + hug_sum
+            - params.shift_cost_per_m * abs(x - executed_x),
             False, coin_value, pass_sum,
             params.shift_cost_per_m * abs(x - executed_x), n_reach, n_far,
-            tuple(coin_ts)))
+            tuple(coin_ts), hug_sum, n_hug))
 
     # ---- 胜出：argmax；平手（差 < tie_margin）选离走廊中心近者（六点 1） ----
     best = max(out, key=lambda c: (c.score, -abs(c.x_m - center)))
