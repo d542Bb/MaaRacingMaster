@@ -774,7 +774,9 @@ class DecisionEngine:
         （plan._feasible 的 tau_resp+margin，时序窗病理的反面编码处）。
         R3 贴身猎车（§2.2）：总闸+分开关都开才挂贴身参数——窗沿/P 曲线/极限
         动作分全部由 overtake 节与 hug_half_width_lane 在边界换算成米制
-        （派生关系：lo/hi = d_hold ∓ half），闸关=不带字段=逐位回今天。"""
+        （派生关系：lo/hi = d_hold ∓ half），闸关=不带字段=逐位回今天。
+        R2 前瞻外方向权（§2.4）：far_direction 开才挂——远权/作用域上界/
+        聚合语义随参数入表；E 曲线复用 R3 贴身同一条（无 R3 参数时无 E）。"""
         lane_w = self.cal.lane_w_m
         c = self.cfg.corridor_reach
         hug_kw = {}
@@ -787,6 +789,10 @@ class DecisionEngine:
                           hug_p_center_m=ov.p_center_lane * lane_w,
                           hug_p_scale_m=ov.p_scale_lane * lane_w,
                           hug_value_limit=ov.value_limit)
+            if c.far_direction:
+                hug_kw.update(far_car_weight=c.far_car_weight,
+                              hunt_horizon_s=c.hunt_horizon_s,
+                              far_aggregation=c.far_aggregation)
         return ReachParams(
             step_m=c.step_m, horizon_s=c.horizon_s, crash_t_s=c.crash_t_s,
             crash_penalty=c.crash_penalty, pass_value=c.pass_value,

@@ -103,6 +103,17 @@ class ReachParams:
                                          #   调用方在边界 ×lane_w 换算，本表不复制数值）
     hug_p_scale_m: float | None = None   # logistic 尺度（米，同上）
     hug_value_limit: float = 0.0         # 极限动作分（RULES §4.11 镜像，真源 overtake.value_limit）
+    # ---- R2 前瞻外方向权（2026-10-16 设计稿 §2.4；米制，hunt_horizon None=闸关）----
+    # 奖励相对远车预选未来通过侧（非泛义"车流密集车道占位"——那是车道级密度
+    # 吸引，另一机制，本表不做）；E 复用 R3 贴身同一条曲线（机制同源）：
+    # d̂=0（正对远车）为 0、贴身窗最大、窗外衰减。作用域=近场 horizon 外、
+    # hunt_horizon 内的米制锚前车（t_overtake 仅可测才计，估计缺位不奖）；
+    # 近场 horizon 内是 R3 的地盘，不双计。
+    far_car_weight: float = 0.0          # 远车方向权（标定对象随胜出聚合语义定）
+    hunt_horizon_s: float | None = None  # 前瞻外作用域上界（s，建议 6s [需实测]）；
+                                         #   None=R2 关
+    far_aggregation: str = "max"         # 多车聚合三语义：max | sum | capped
+                                         #   （capped 上限=value_limit+pass_value）
 
 
 @dataclass(frozen=True)
@@ -122,6 +133,7 @@ class CandidateScore:
     hug_value: float = 0.0      # R3 贴身 E 项累加（审计面；互斥分支——出此值的车
                                 # 不进旧错身项 pass_value_sum，同一辆车不双计）
     hug_cars: int = 0           # 计入贴身 E 项的前车数（审计面）
+    far_value: float = 0.0      # R2 前瞻外方向权累加（审计面，w 折前；近场车不双计）
 
 
 @dataclass(frozen=True)
@@ -151,6 +163,19 @@ def _hug_p(d_m: float, p: ReachParams) -> float:
     return 1.0 / (1.0 + math.exp((d_m - p.hug_p_center_m) / p.hug_p_scale_m))
 
 
+def _hug_e(d_m: float, p: ReachParams) -> float:
+    """贴身 E 曲线（R3/R2 机制同源的单一真源，2026-10-16 设计稿 §2.2/§2.4）：
+    d̂ < 下沿 = 0（硬地板，同车道贴尾/正对远车不是通过侧）；窗内 = 平台常数
+    （P 在窗中心取值）；窗外 = pass + limit × P(d̂) logistic 连续衰减。
+    R3 直接消费此值；R2 以 w_far_car 折权后消费同一形状。"""
+    if d_m < p.hug_d_lo_m:
+        return 0.0
+    if d_m <= p.hug_d_hi_m:
+        return p.pass_value + p.hug_value_limit * _hug_p(
+            (p.hug_d_lo_m + p.hug_d_hi_m) / 2.0, p)
+    return p.pass_value + p.hug_value_limit * _hug_p(d_m, p)
+
+
 def evaluate(bands: Sequence[CorridorBandSpan],
              coins: Sequence[CoinSource],
              cars: Sequence[CarSource],
@@ -175,8 +200,10 @@ def evaluate(bands: Sequence[CorridorBandSpan],
     def need_of(x: float) -> float:
         return params.need_of_dx_m(abs(x - executed_x))
 
-    # R3 贴身猎车总开关（参数全缺=None=逐位回今天；分开关语义在 config）
+    # R3/R2 总开关（参数缺=None=逐位回今天；分开关语义在 config）
     hug_on = params.hug_d_lo_m is not None
+    far_on = (params.hunt_horizon_s is not None and params.far_car_weight > 0
+              and hug_on)   # R2 复用贴身窗沿曲线，无 R3 参数时无 E 可言
 
     # ---- 车三分预备（事件语义：每车记一次） ----
     # 本道（归属半宽内）的车：碰撞/遮挡判据面；先于币到达的车把币挡住
@@ -223,16 +250,24 @@ def evaluate(bands: Sequence[CorridorBandSpan],
             else:
                 coin_value += params.far_coin_weight * val   # 远币：方向信息仍在
                 n_far += 1
-        # 错身/贴身：R3 贴身猎车按仪器**互斥分支**（2026-10-16 设计稿 §2.2，
-        # 同一辆车不双计）——米制锚前车（t_overtake 非 None）走贴身 E 项，
+        # 错身/贴身/前瞻外：R3 贴身猎车按仪器**互斥分支**（2026-10-16 设计稿
+        # §2.2，同一辆车不双计）——米制锚前车（t_overtake 非 None）走贴身 E 项，
         # 其余车（像素仪器）走旧错身项逐位不变。占用/遮挡/碰撞判据面不动
         # （car_in_path 照旧含贴身窗前车：窗在归属半宽内，crash 判据照旧护
-        # 第三方接近车）。
+        # 第三方接近车）。R2 前瞻外方向权（§2.4）作用于近场 horizon 外、
+        # hunt_horizon 内的米制锚前车——近场是 R3 的地盘，按 t_overtake 区间
+        # 互斥不双计。
         pass_sum = 0.0
         hug_sum = 0.0
         n_hug = 0
+        far_es: list[float] = []
         for c in cars:
             d = abs(c.x_m - x)
+            if far_on and c.t_overtake_s is not None \
+                    and params.horizon_s < c.t_overtake_s <= params.hunt_horizon_s:
+                # R2：远车预选未来通过侧——E 复用贴身曲线（机制同源），
+                # 正对远车（d̂=0，硬地板下）为 0、贴身窗最大
+                far_es.append(_hug_e(d, params))
             if hug_on and c.t_overtake_s is not None:
                 if c.t_overtake_s > params.horizon_s:
                     continue                    # 窗外：无价值（旧错身同判）
@@ -241,32 +276,36 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                 if not (need + params.tau_s + params.margin_s
                         <= c.t_overtake_s):
                     continue
-                if d < params.hug_d_lo_m:
-                    continue                    # 硬地板：同车道贴尾不是错身
-                if d <= params.hug_d_hi_m:
-                    # 平台常数：P 在窗中心取值（真源推导）；窗内各候选同分，
-                    # 选中位由位移代价与平局规则决定（有意语义：减少无谓横移）
-                    hug_sum += params.pass_value + params.hug_value_limit * _hug_p(
-                        (params.hug_d_lo_m + params.hug_d_hi_m) / 2.0, params)
-                else:
-                    # 窗上沿外：logistic 连续衰减（上沿处 ≈105，约 27 分出窗
-                    # 跳变——与下沿 0→132 并列为待测边界行为）
-                    hug_sum += params.pass_value + params.hug_value_limit * _hug_p(
-                        d, params)
-                n_hug += 1
-                continue
+                e = _hug_e(d, params)
+                if e > 0.0:
+                    hug_sum += e
+                    n_hug += 1
+                continue                        # d̂<下沿：硬地板 0（不进旧错身项）
             if not (params.attribution_half_m < d
                     <= params.attribution_half_m + params.pass_band_m):
                 continue
             if c.t_meet_s is not None \
                     and need <= c.t_meet_s <= params.horizon_s:
                 pass_sum += params.pass_value
+        # R2 多车聚合（三语义，影子对比后定档）：max / sum / sum 封顶
+        # （上限=value_limit+pass_value——单次全价值动作的规模，防多车求和
+        # 吹爆候选分）
+        far_value = 0.0
+        if far_es:
+            if params.far_aggregation == "max":
+                far_value = max(far_es)
+            elif params.far_aggregation == "sum":
+                far_value = sum(far_es)
+            else:
+                far_value = min(sum(far_es),
+                                params.hug_value_limit + params.pass_value)
+            far_value *= params.far_car_weight
         out.append(CandidateScore(
-            x, coin_value + pass_sum + hug_sum
+            x, coin_value + pass_sum + hug_sum + far_value
             - params.shift_cost_per_m * abs(x - executed_x),
             False, coin_value, pass_sum,
             params.shift_cost_per_m * abs(x - executed_x), n_reach, n_far,
-            tuple(coin_ts), hug_sum, n_hug))
+            tuple(coin_ts), hug_sum, n_hug, far_value))
 
     # ---- 胜出：argmax；平手（差 < tie_margin）选离走廊中心近者（六点 1） ----
     best = max(out, key=lambda c: (c.score, -abs(c.x_m - center)))

@@ -51,7 +51,9 @@ from maaracing_master.plugins.speedrush.world_model import (  # noqa: E402
 
 
 def build_params():
-    """产线参数面单一真源：引擎直构（闸开）拿 ReachParams，闸关副本派生。"""
+    """产线参数面单一真源：引擎直构（闸开）拿 ReachParams，闸关副本派生。
+    R2 副本：hug+far（w=1 定标，扫描时按 w 线性缩放——capped 封顶在聚合内，
+    w 缩放保持线性）；R3-only 副本（far 关）作 R2 影子的基线。"""
     cfg = load_decision()
     cfg = replace(cfg, corridor_reach=replace(
         cfg.corridor_reach, overtake_hunting=True, hug_value=True))
@@ -59,7 +61,10 @@ def build_params():
     p_off = replace(p_on, hug_d_lo_m=None, hug_d_hi_m=None,
                     hug_p_center_m=None, hug_p_scale_m=None,
                     hug_value_limit=0.0)
-    return p_on, p_off
+    p_r2 = replace(p_on, far_car_weight=1.0, hunt_horizon_s=6.0,
+                   far_aggregation="max")
+    p_r3 = replace(p_on, far_car_weight=0.0, hunt_horizon_s=None)
+    return p_on, p_off, p_r2, p_r3
 
 
 def load_ticks(ph):
@@ -68,9 +73,11 @@ def load_ticks(ph):
 
 
 class Replayer:
-    def __init__(self, p_on, p_off):
+    def __init__(self, p_on, p_off, p_r2, p_r3):
         self.p_on = p_on
         self.p_off = p_off
+        self.p_r2 = p_r2
+        self.p_r3 = p_r3
         self.cal = load_calib()
         self.lane_w = self.cal.lane_w_m
 
@@ -102,32 +109,39 @@ class Replayer:
             out.append((cid, x_lane * self.lane_w, t, None, False))
         return out
 
-    def replay_tick(self, d, fid_hz, p_on, p_off):
-        """一拍 → (评估结果 dict | None, 跳过原因 | None)。
-
-        span 重建：中心=ro_off 空气墙口径（ro_off=−center_lane 是引擎路心锚），
-        宽度=日志候选数×步进（带缘证据不落 trace，边缘误差 ≤半候选）；逐拍
-        len 对账不再跳过（保真面=cr_best 界外计数）。"""
-        ro, cw, cr_scores = d.get("ro_off"), d.get("cor_w"), d.get("cr_scores")
+    def _reconstruct(self, d):
+        """一拍重建 → (xs, sources, shift, cr_scores | None, 跳过原因)。
+        span 重建：中心=ro_off 空气墙口径，宽度=日志候选数×步进（带缘证据
+        不落 trace，边缘误差 ≤半候选；保真面=cr_best 界外计数）。"""
+        ro, cr_scores = d.get("ro_off"), d.get("cr_scores")
         executed = d.get("executed_lane")
         if ro is None or cr_scores is None or executed is None or not cr_scores:
-            return None, "no_input"
+            return None, None, None, None, "no_input"
         shift = executed * self.lane_w
-        center_lane = -ro                       # ro_off = −center_lane
-        center = center_lane * self.lane_w + shift
+        center = (-ro) * self.lane_w + shift
         n = len(cr_scores)
-        width = n * p_on.step_m
-        left, right = center - width / 2.0, center + width / 2.0
-        bands = [CorridorBandSpan(0.0, 3.0, left, right)]
-        step = p_on.step_m
-        xs = [center - width / 2.0 + (i + 0.5) * step for i in range(n)]
-        cars = self.tick_cars(d, fid_hz)
+        width = n * self.p_on.step_m
+        xs = [center - width / 2.0 + (i + 0.5) * self.p_on.step_m
+              for i in range(n)]
         sources = [CarSource(x_m=x + shift, t_meet_s=tm, t_overtake_s=tov)
-                   for _cid, x, tm, tov, _met in cars]
+                   for _cid, x, tm, tov, _met in self.tick_cars(d, d.get("_fid_hz"))]
+        return xs, sources, shift, cr_scores, None
+
+    def replay_tick(self, d, fid_hz, p_on, p_off):
+        """一拍 → (评估结果 dict | None, 跳过原因 | None)。R3 贴身 E 项的
+        逐候选增量 Δ（闸开−闸关，coins=[] 使币侧抵消）。"""
+        d = dict(d, _fid_hz=fid_hz)
+        xs, sources, shift, cr_scores, why = self._reconstruct(d)
+        if why is not None:
+            return None, why
+        left, right = xs[0] - self.p_on.step_m / 2.0, xs[-1] + self.p_on.step_m / 2.0
+        bands = [CorridorBandSpan(0.0, 3.0, left, right)]
+        cars = self.tick_cars(d, fid_hz)
         rep_on = evaluate(bands, (), sources, shift, p_on)
         rep_off = evaluate(bands, (), sources, shift, p_off)
         if rep_on is None or rep_off is None:
             return None, "eval_none"
+        n = len(cr_scores)
         delta = []
         for i in range(n):
             if cr_scores[i] is not None and cr_scores[i] <= -99.0:
@@ -138,6 +152,37 @@ class Replayer:
         new_scores = [s + dl for s, dl in zip(cr_scores, delta)]
         return dict(xs=xs, cars=cars, shift=shift, delta=delta,
                     new_scores=new_scores, left=left, right=right), None
+
+    def far_values_tick(self, d, fid_hz):
+        """一拍 R2 原料：w=1 的逐候选 far_value（三聚合）+ hug 增量 + 车侧。
+        R2 影子基线=R3 已应用分（cr+hug 增量），变体=+w×far 原始值。"""
+        d = dict(d, _fid_hz=fid_hz)
+        xs, sources, shift, cr_scores, why = self._reconstruct(d)
+        if why is not None:
+            return None, why
+        left, right = xs[0] - self.p_on.step_m / 2.0, xs[-1] + self.p_on.step_m / 2.0
+        bands = [CorridorBandSpan(0.0, 3.0, left, right)]
+        cars = self.tick_cars(d, fid_hz)
+        rep_r2 = evaluate(bands, (), sources, shift, self.p_r2)
+        rep_r3 = evaluate(bands, (), sources, shift, self.p_r3)
+        rep_off = evaluate(bands, (), sources, shift, self.p_off)
+        if rep_r2 is None or rep_r3 is None or rep_off is None:
+            return None, "eval_none"
+        n = len(cr_scores)
+        far_raw = {agg: [c.far_value for c in
+                         evaluate(bands, (), sources, shift,
+                                  replace(self.p_r2, far_aggregation=agg))
+                         .candidates]
+                   for agg in ("max", "sum", "capped")}
+        hug_delta = [rep_r2.candidates[i].hug_value
+                     - rep_off.candidates[i].hug_value for i in range(n)]
+        baseline = []
+        for i in range(n):
+            s = cr_scores[i]
+            dl = 0.0 if (s is not None and s <= -99.0) else hug_delta[i]
+            baseline.append((s or 0.0) + dl)
+        return dict(xs=xs, cars=cars, shift=shift, baseline=baseline,
+                    far_raw=far_raw), None
 
 
 def metric_cars(cars, horizon):
@@ -277,18 +322,82 @@ def _print_game(name, ticks, gaps, s, segs):
               f"窗crash={g['crash']}")
 
 
+def r2_report(name, phases, rep, weight_grid=(0.1, 0.2, 0.3, 0.5, 0.8, 1.0)):
+    """R2 影子（设计稿 §2.4）：三聚合 × 权重网格的预注册门槛四项。
+    基线=R3 已应用分（cr+hug 增量），变体=基线+w×far 原始值（far_value
+    即 R2 逐候选增量，审计面直接读）。门槛：①hunt 目标拍覆盖率（w 无关）
+    ②候选排名改变次数 ③改变后方向可达率（新胜出位落某远车贴邻窗=预选位
+    达成，离线代理）④veto/取消增量代理（新胜出位距任一车 < veto 接触界）。"""
+    ticks = []
+    for ph in phases:
+        ticks += load_ticks(ph)
+    fid_hz_of = {}
+    for i in range(1, len(ticks)):
+        dt = (ticks[i]["ts_ns"] - ticks[i - 1]["ts_ns"]) / 1e9
+        df = ticks[i]["fid"] - ticks[i - 1]["fid"]
+        if dt > 0 and df > 0:
+            fid_hz_of[i] = df / dt
+    stats = dict(evaluable=0, skips={}, covered=0, cr_best_out=0)
+    rows = {agg: {w: dict(change=0, pre=0, veto=0) for w in weight_grid}
+            for agg in ("max", "sum", "capped")}
+    veto_gap_m = 0.45 * rep.lane_w
+    for i, d in enumerate(ticks):
+        r, why = rep.far_values_tick(d, fid_hz_of.get(i))
+        if r is None:
+            stats["skips"][why] = stats["skips"].get(why, 0) + 1
+            continue
+        stats["evaluable"] += 1
+        xs, cars, far_raw = r["xs"], r["cars"], r["far_raw"]
+        if any(tov is not None and 2.0 < tov <= 6.0
+               for _c, _x, tm, tov, met in cars if met):
+            stats["covered"] += 1
+        baseline = r["baseline"]
+        old_i = max(range(len(baseline)), key=lambda k: baseline[k])
+        for agg in ("max", "sum", "capped"):
+            for w in weight_grid:
+                variant = [b + w * f for b, f in zip(baseline, far_raw[agg])]
+                new_i = max(range(len(variant)), key=lambda k: variant[k])
+                if new_i == old_i:
+                    continue
+                dx = abs(xs[new_i] - xs[old_i])
+                if dx < CHANGE_EPS_M:
+                    continue
+                row = rows[agg][w]
+                row["change"] += 1
+                best_x = xs[new_i]
+                # ③ 预选位达成：新胜出位落某远车（t_ov∈(2,6]）贴邻窗内
+                if any(rep.p_on.hug_d_lo_m <= abs(cx - best_x)
+                       <= rep.p_on.hug_d_hi_m
+                       for _c, cx, tm, tov, met in cars
+                       if met and tov is not None and 2.0 < tov <= 6.0):
+                    row["pre"] += 1
+                # ④ veto 代理：新胜出位距任一车 < 接触界
+                if any(abs(cx - best_x) < veto_gap_m
+                       for _c2, cx, _tm, _tov, _m in cars):
+                    row["veto"] += 1
+    n = max(1, stats["evaluable"])
+    print(f"\n== R2 影子 {name}：可评估 {stats['evaluable']}（跳过 {stats['skips']}）==")
+    print(f"  ① hunt 目标拍覆盖率（远车 t_ov∈(2,6]） {stats['covered']}/{n}"
+          f"（{100*stats['covered']/n:.1f}%）")
+    for agg in ("max", "sum", "capped"):
+        for w in weight_grid:
+            row = rows[agg][w]
+            ch = row["change"]
+            print(f"    {agg:6s} w={w:.1f}: ②改变 {ch:3d}（{100*ch/n:4.1f}%）  "
+                  f"③预选位达成 {row['pre']:3d}（{100*row['pre']/max(1,ch):4.0f}%）  "
+                  f"④veto代理 {row['veto']:3d}（{100*row['veto']/max(1,ch):4.0f}%）")
+
+
 def main():
-    p_on, p_off = build_params()
-    plat = p_on.pass_value + p_on.hug_value_limit / (
-        1.0 + math.exp((p_on.hug_d_lo_m - p_on.hug_p_center_m)
-                       / p_on.hug_p_scale_m))
+    p_on, p_off, p_r2, p_r3 = build_params()
     print(f"参数面：lo={p_on.hug_d_lo_m:.3f}m hi={p_on.hug_d_hi_m:.3f}m "
           f"P中心={p_on.hug_p_center_m:.3f}m 尺度={p_on.hug_p_scale_m:.3f}m "
           f"limit={p_on.hug_value_limit:.0f} horizon={p_on.horizon_s}s "
-          f"（窗下沿处值 ≈{plat:.0f}，窗内平台见 evaluate）")
-    rep = Replayer(p_on, p_off)
+          f"hunt_horizon={p_r2.hunt_horizon_s}s")
+    rep = Replayer(p_on, p_off, p_r2, p_r3)
     for name, phases in GAMES.items():
         game_report(name, phases, rep)
+        r2_report(name, phases, rep)
 
 
 if __name__ == "__main__":

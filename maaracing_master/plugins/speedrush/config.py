@@ -245,13 +245,22 @@ class CorridorReach:
     far_coin_weight: float = 0.3         # 前瞻窗外币的远权
     tie_margin: float = 20.0             # 平手阈（分）：差 < 此值偏向走廊中心
     # ---- R3 贴身猎车（2026-10-16 设计稿 §2.2/§3；默认关=逐位回今天）----
-    overtake_hunting: bool = False       # 贴身猎车总闸（false=逐位回今天；
-                                         #   R2 前瞻外方向权为另一独立位，随 R2 入）
+    overtake_hunting: bool = False       # 贴身猎车总闸（false=逐位回今天）
     hug_value: bool = False              # R3 贴身收益分开关（shadow→实机 A/B 分刀验收）
     hug_half_width_lane: float = 0.075   # 贴身平台窗半宽（道）：d_hold_lo/hi =
                                          #   d_hold_lane ∓ 半宽（派生值，非独立真源）；
                                          #   窗整体落在归属半宽（0.75 道）内 = in-path 区，
                                          #   占用/遮挡/碰撞判据对窗内前车照旧，只有价值面翻转
+    # ---- R2 前瞻外方向权（2026-10-16 设计稿 §2.4；默认关；R3 的 hug 参数是
+    #      其 E 曲线前提，两分开关独立验收）----
+    far_direction: bool = False          # R2 远车方向权分开关
+    far_car_weight: float = 0.0          # 远车方向权（标定对象随胜出聚合语义定，
+                                         #   不预先单选）
+    hunt_horizon_s: float = 6.0          # 前瞻外作用域上界（s，[需实测]；近场
+                                         #   horizon_s 内是 R3 的地盘不双计）
+    far_aggregation: str = "max"         # 多车聚合三语义：max | sum | capped
+                                         #   （capped 上限=value_limit+pass_value）；
+                                         #   影子对比后定档
 
 
 @dataclass(frozen=True)
@@ -551,7 +560,15 @@ def _read_decision(path: Path) -> DecisionConfig:
                                    default=False),
             hug_value=_bool(d, "corridor_reach", "hug_value", default=False),
             hug_half_width_lane=_num_def(d, "corridor_reach",
-                                         "hug_half_width_lane", 0.075, lo=0)),
+                                         "hug_half_width_lane", 0.075, lo=0),
+            far_direction=_bool(d, "corridor_reach", "far_direction",
+                                default=False),
+            far_car_weight=_num_def(d, "corridor_reach", "far_car_weight",
+                                    0.0, lo=0, lo_open=False),
+            hunt_horizon_s=_num_def(d, "corridor_reach", "hunt_horizon_s",
+                                    6.0, lo=0),
+            far_aggregation=_str_def(d, "corridor_reach", "far_aggregation",
+                                     "max", ("max", "sum", "capped"))),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
             fusion=_bool(d, "metric_cars", "fusion", default=False)),
