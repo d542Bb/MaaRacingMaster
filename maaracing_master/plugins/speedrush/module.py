@@ -1072,6 +1072,17 @@ class SpeedRushModule(ActivityModule):
             # min(cr_coins) 的 P50 即提前量）
             "cr_coins": None if chain["engine"].reach_report is None
             else [round(t, 3) for t in chain["engine"].reach_report.best_coin_t],
+            # R3 归因面（20261016 实机 3 局初筛后补观测缺口）：逐车米制状态
+            # 快照（横向位/纵向距/到站/接近速/锚龄，与 dist 同 id 同拍 join）
+            # + 胜出候选贴身审计（hug_value/hug_cars）——机会漏点（侧移可达门
+            # vs 碰撞判据）的离线复算输入；None=metric_cars 关/无车/闸关弃权拍
+            "mcars": chain["engine"].metric_cars_snap or None,
+            "cr_hug": None if chain["engine"].reach_report is None
+            else round(max(chain["engine"].reach_report.candidates,
+                           key=lambda c: c.score).hug_value, 1),
+            "cr_hug_cars": None if chain["engine"].reach_report is None
+            else max(chain["engine"].reach_report.candidates,
+                     key=lambda c: c.score).hug_cars,
             # 需求面承诺制意图观测面（§8.2，demand 闸开才有值）：d0/带内依据
             # id/缺席时长与放弃·升级·次判据的机检计数——逐集核对与 §8.6 L1
             # 验收的复算面；None=demand 关/集外无意图

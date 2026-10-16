@@ -1147,6 +1147,22 @@ class DecisionEngine:
         return self.lateral.last_veto_cars
 
     @property
+    def metric_cars_snap(self) -> list[dict]:
+        """上一拍车米制状态快照（观测面，trace mcars 列数据源；R3 归因面）：
+        逐车横向位/纵向距/到站/接近速/锚龄——机会漏点（可达门 vs 碰撞判据）
+        的离线复算输入。t_ov 沿 _reach_car_sources 同式（≤0=仪器缺位弃权）。
+        空表=metric_cars 关或无车。"""
+        return [{"id": m.target_id, "src": m.source.value,
+                 "x": None if m.x_m is None else round(m.x_m, 2),
+                 "z": None if m.z_m is None else round(m.z_m, 2),
+                 "t_ov": None if (m.t_meet_s is None or m.t_meet_s <= 0.0)
+                 else round(m.t_meet_s, 3),
+                 "v": None if m.v_close_mps is None else round(m.v_close_mps, 2),
+                 "age": None if m.anchor_age_ms is None
+                 else round(m.anchor_age_ms, 1)}
+                for m in self._metric_cars]
+
+    @property
     def intent_state(self) -> dict | None:
         """当前追逐意图观测面（§8.2；trace intent 列数据源；None=闸关/
         demand 关/集外无意图）。计数器与转移全部机检可复算（§8.4 证据列）。"""
