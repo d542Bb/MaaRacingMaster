@@ -138,7 +138,7 @@ def main() -> int:
     prev = sys_snapshot()
     prev_t = time.monotonic()
     thread_meta_written = False
-    fh = open(a.out, "w", encoding="utf-8")
+    fh = open(out_p, "w", encoding="utf-8")
     n = 0
 
     while time.monotonic() - t0 < a.duration:

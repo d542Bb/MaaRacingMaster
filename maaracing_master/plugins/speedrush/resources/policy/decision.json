@@ -147,10 +147,10 @@
     "_note": "路心供数主人闸（2026-10-06 两局定案：找边锁「以车为中心的走廊」——骑黄线段 L=−1.32/R=+0.53 报正中、对宽 2.68 道像真路所以宽门/中值窗全失明；与栅格路心分歧系统性单边 Δ p50=+0.45 道、57% 超容差、符号几乎不翻，物理目检三帧（帧 0039/0042/0054 骑黄线）+离线基线 f9a9a80（栅格 mean 0.31 道/大错 8% vs 找边 0.52/22%）同证）。mode 语义：off=找边对当主人（旧行为逐位不变）；master=绿区边界当主人（depth_geo.region_reading，路=可行驶区域物理边界，区弃权走保鲜槽/None 不回退找边）；veto=旧分歧否决语义（对系统性偏差会否决 57% 新鲜对→黑视循环，只留回放对比）。**运行态：mode=master＝实机验收期（维护者批准 2026-10-06「先只修1」）；验收面=trace ro_off/ro_grid/ro_edge 三列（骑线段消失、executed 贴物理位）+ BEV cg 线与 C 线重合；若区读数覆盖/质量翻车，mode 归 off 并回实验区归因**。已知边界：栅格与找边同源（MoGe 点云/平面/挖洞），深度共同错误与 ~250ms 链路滞后（运动补偿，维护者研究中）本闸不治。"
   },
   "debug_dump": {
-    "mode": "full",
+    "mode": "events",
     "ring": 10,
     "event_window": 20,
-    "_note": "调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验，缺口=恒开全量 ~200MB/局）。off=深度观测器不建 debug_dir，零落盘；events=worker 内存 ring 留最近 ring 次捕获，push 快照（滞后 1 拍）报事件（state=CONSERVE 或 reason 含 dodge）时落盘 ring+后续 event_window 帧——真正消费的是 dodge/conserving 时刻±窗口；full=恒开 0.5s 全量节流（感知排错期用）。落盘文件格式与 full 逐位同构（同编码器参数）。20261016 R3 归因诊断局临时开 full（行为零变化，跑完归 events）。"
+    "_note": "调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验，缺口=恒开全量 ~200MB/局）。off=深度观测器不建 debug_dir，零落盘；events=worker 内存 ring 留最近 ring 次捕获，push 快照（滞后 1 拍）报事件（state=CONSERVE 或 reason 含 dodge）时落盘 ring+后续 event_window 帧——真正消费的是 dodge/conserving 时刻±窗口；full=恒开 0.5s 全量节流（感知排错期用）。落盘文件格式与 full 逐位同构（同编码器参数）。20261016 R3 诊断记录局临时开 full 后归 events。"
   },
   "corridor_reach": {
     "enabled": true,

@@ -115,7 +115,7 @@ def main() -> int:
 
     nproc = psutil.cpu_count(logical=True)
     t0 = time.monotonic()
-    fh = open(a.out, "w", encoding="utf-8")
+    fh = open(out_p, "w", encoding="utf-8")
     prev = snapshot_threads()
     prev_t = time.monotonic()
     prev_proc = {}
@@ -174,7 +174,7 @@ def main() -> int:
         n += 1
 
     fh.close()
-    print(f"[thread-cpu] {n} 条样本 → {a.out}", flush=True)
+    print(f"[thread-cpu] {n} 条样本 → {out_p}", flush=True)
     return 0
 
 
