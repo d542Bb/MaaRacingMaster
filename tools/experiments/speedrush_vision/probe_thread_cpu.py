@@ -109,6 +109,8 @@ def main() -> int:
     a = ap.parse_args()
 
     # 输出路径约束（安全扫描：--out 不接受任意路径写入）
+    if ".." in Path(a.out).parts:
+        ap.error("--out 不接受 .. 路径分量")
     out_p = Path(a.out).resolve()
     if Path(__file__).resolve().parent not in out_p.parents:
         ap.error(f"--out 必须在本探针目录下：{Path(__file__).resolve().parent}")
