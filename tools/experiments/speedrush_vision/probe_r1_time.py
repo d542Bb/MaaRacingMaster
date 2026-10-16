@@ -52,7 +52,6 @@ def analyze(name, phases):
     gaps = [(pass_times[i], pass_times[i + 1])
             for i in range(len(pass_times) - 1)
             if (pass_times[i + 1] - pass_times[i]) / 1e9 > GAP_MIN]
-    all_pass_ids = {pid for _t, ids in pass_ts for pid in ids}
 
     # ---- 状态时间占比 + 冷却 ----
     state_t = defaultdict(float)
@@ -97,12 +96,32 @@ def analyze(name, phases):
         if d.get("state") == "CHANGE":
             ep_reason_t[d.get("reason")] += d.get("dt") or 0.0
 
-    # 结局分类 + pass 转化
+    # 结局分类 + pass 转化（**每次 pass 只归一个 episode**：归给 timestamp
+    # 所在的 episode，否则归给结束于其前 ≤1.5s 的最近 episode——episode 窗
+    # 互相重叠，旧口径把一次 pass 记给多个 episode，转化率虚高）
     end_kind = defaultdict(int)
     end_t = defaultdict(float)
     conv = dict(hit=0, total=0)
     conv_by_kind = defaultdict(lambda: [0, 0])
-    pass_by_time = pass_times
+    ep_bounds = [(e["ts_end"] - int(e["dt"] * 1e9), e["ts_end"], e)
+                 for e in eps if e["ts_end"]]
+    for pt, ids in pass_ts:
+        owner = next((e for s, t, e in ep_bounds if s <= pt <= t), None)
+        if owner is None:
+            owner = next((e for s, t, e in ep_bounds
+                          if 0 < pt - t <= int(PASS_AFTER_S * 1e9)), None)
+        if owner is None:
+            continue                        # 冷却/CRUISE 期间的 pass：不归 episode
+        conv["total"] += 1
+        main_kind = max(owner["kinds"], key=lambda k: owner["kinds"][k]) \
+            if owner["kinds"] else None
+        conv_by_kind[main_kind][1] += 1
+        owner["_pass"] = True
+        conv["hit"] += 1                    # 被归到的 pass 总数（每 pass 至多一次）
+    # episode 级转化：分母=episode 数，分子=有 pass 归入的 episode 数
+    ep_with_pass = sum(1 for e in eps if e.get("_pass"))
+    conv["ep_total"] = len(eps)
+    conv["ep_hit"] = ep_with_pass
     for e in eps:
         r = e["end"] or "?"
         kind = ("done" if r.startswith("done") else
@@ -110,22 +129,9 @@ def analyze(name, phases):
                 "switch/transition")
         end_kind[kind] += 1
         end_t[kind] += e["dt"]
-        # 转化：overtake/bonus 目标按 track_id join；reach/无实体按窗内任意 pass
         main_kind = max(e["kinds"], key=lambda k: e["kinds"][k]) \
             if e["kinds"] else None
-        hit = False
-        if main_kind in ("overtake", "bonus") and e["tid"] is not None:
-            if e["tid"] in all_pass_ids:
-                hit = True
-        else:
-            # episode 窗内（结束前 0.5s ~ 结束后 1.5s）任意 pass
-            t0 = e["ts_end"] - e["dt"] * 1e9 if e["ts_end"] else 0
-            hit = any(t0 - int(0.5e9) <= pt <= e["ts_end"] + int(PASS_AFTER_S * 1e9)
-                      for pt in pass_by_time) if e["ts_end"] else False
-        conv["total"] += 1
-        conv_by_kind[main_kind][1] += 1
-        if hit:
-            conv["hit"] += 1
+        if e.get("_pass"):
             conv_by_kind[main_kind][0] += 1
 
     # ---- 短间隔段 vs 长空窗内的时间构成 ----
@@ -156,8 +162,9 @@ def analyze(name, phases):
     print(f"  ① 每次 CHANGE 均值 {statistics.mean(ep_dur):.2f}s / "
           f"P50 {statistics.median(ep_dur):.2f}s / max {max(ep_dur):.1f}s")
     print(f"  ② CHANGE 累计 {ep_t:.1f}s（{100*ep_t/total_t:.1f}% 对局时间）")
-    print(f"  ③ CHANGE→真实通过转化 {conv['hit']}/{conv['total']}"
-          f"（{100*conv['hit']/max(1,conv['total']):.0f}%）"
+    print(f"  ③ pass 归属（每 pass 至多归一 episode）：归入 episode 的 pass "
+          f"{conv['hit']}/{len(pass_ts)}，落在 {conv['ep_hit']}/{conv['ep_total']}"
+          f" 个 CHANGE episode（{100*conv['ep_hit']/max(1,conv['ep_total']):.0f}%）"
           + "".join(f"  [{k}: {v[0]}/{v[1]}]" for k, v in conv_by_kind.items()))
     print("  episode 结局（离开 CHANGE 拍的 reason）：")
     for k in sorted(end_kind, key=lambda k: -end_t[k]):
