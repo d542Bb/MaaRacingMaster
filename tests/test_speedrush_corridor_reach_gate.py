@@ -163,3 +163,65 @@ def test_control_off_keeps_legacy_select():
                    corridor=_corridor())
     assert out.reason == "select:score_win"
     assert e.reach_report is None              # 闸关连影子列一起关
+
+
+# ---------- 冷却接线 + veto 判定面快照（20261016 P2 收案修复） ----------
+
+class _CarV:
+    """traffic 视图 duck-type（traj 测试 _Car 同款最小面）。"""
+
+    def __init__(self, cid=7, x_lane=0.2, cy=650, rel=0.0):
+        self.id = cid
+        self.x_lane = x_lane
+        self.cy = cy
+        self.rel_approach = rel
+        self.d_min = 1.0
+        self.age_ticks = 1
+
+
+def test_reach_select_gated_by_cooling():
+    """冷却接线（20261016 P2 缺口）：_tick_abort 落定时设的 t_cool_s 此前在
+    reach 选择分支无人消费——veto→回稳 0.1s→立即重选（循环周期 0.2-0.3s，
+    P2 veto 18 次聚成 5 簇）。接线后冷却期 hold:cooling 不承诺，约 1s 后才
+    select。场景=生产同款链路：select→veto→abort→settled→冷却。"""
+    g, ms = _group(gid=1, x=1.5, rel=3)
+    e = DecisionEngine(CFG_CTRL)
+    out = e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
+                   corridor=_corridor())
+    assert out.reason == "select:reach_win"
+    car = _CarV(cid=7, x_lane=0.2, cy=650, rel=0.0)
+    out = e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.0,
+                   corridor=_corridor(), traffic=((car,), ()))
+    assert out.reason == "cancel:lat_veto"
+    reasons = [out.reason]
+    for fid in range(3, 40):
+        out = e.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
+                       executed_lane=0.0, corridor=_corridor())
+        reasons.append(out.reason)
+        if out.reason == "select:reach_win":
+            break
+    assert "abort:settled" in reasons              # 回稳落定（携 1s 冷却）
+    settled_i = reasons.index("abort:settled")
+    assert reasons[settled_i + 1] == "hold:cooling"    # 落定次拍不再立即重选
+    assert set(reasons[settled_i + 1:-1]) == {"hold:cooling"}
+    assert len(reasons) - settled_i - 2 >= 18      # 冷却确实挡了 ~1s
+    assert out.reason == "select:reach_win"        # 冷却结束恢复承诺
+
+
+def test_veto_snapshot_recorded_and_cleared():
+    """veto 判定面快照（观测面缺口补齐）：否决拍落参与车（id/横位/到站/
+    两判距），无否决拍清空——离线复核 veto 真伪不再靠推演。"""
+    g, ms = _group(gid=1, x=1.5, rel=3)
+    e = DecisionEngine(CFG_CTRL)
+    e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
+             corridor=_corridor())
+    car = _CarV(cid=7, x_lane=0.2, cy=650, rel=0.0)    # 不接近：全危险窗
+    out = e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.0,
+                   corridor=_corridor(), traffic=((car,), ()))
+    assert out.reason == "cancel:lat_veto"
+    assert e.veto_cars == [{"id": 7, "x": 0.2, "t_pass": None,
+                            "gap": 0.0, "cur": 0.2}]   # 扫掠横穿该车：gap=0
+    out = e.update(_obs(fid=3, groups=(g,), targets=ms), DT, executed_lane=0.0,
+                   corridor=_corridor())
+    assert out.reason == "aborting"                    # veto 后进有界回稳
+    assert e.veto_cars is None                         # 每拍清账：回稳拍不带旧快照

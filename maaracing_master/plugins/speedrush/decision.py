@@ -202,6 +202,10 @@ class LateralSafety:
         # owner 实例通道，与 Scorer.fid_hz 同族纪律）：{track_id: MetricCarState}。
         # None=闸关/无供数，_t_pass_s 纯像素（与旧实现逐位同形）。
         self.metric_map: dict | None = None
+        # 上一拍否决判定面快照（观测面，trace veto_cars 列）：参与否决的车与
+        # 两判距——离线复核 veto 真伪用（20261016 缺口：此前 veto 拍无邻车几何
+        # 可复核）。None=本拍调用未否决。
+        self.last_veto_cars: list[dict] | None = None
 
     def _t_pass_legacy(self, rel: float, cy: float) -> float:
         rate = rel * self.hz
@@ -251,6 +255,7 @@ class LateralSafety:
 
     def veto_reason(self, start: float | None, goal: float,
                     views: tuple["CarView", ...]) -> str | None:
+        self.last_veto_cars = None          # 每拍清账：本拍没否决=无快照
         if start is None or not views or goal != goal:
             return None
         d = goal - start
@@ -262,6 +267,13 @@ class LateralSafety:
             # 身上（这正是要逃的位置），未来距单调增大——不得自否；真正的
             # 危险是扫掠把距离压得比现在更近且跌破接触界（横穿/贴近）。
             if gap < self.v.lat_veto_gap_lane and gap < abs(start - v.x_lane):
+                # 判定面快照（观测面）：该车到站时间/两判距入 trace，离线复核
+                tp = self._t_pass_s(v)
+                self.last_veto_cars = [{
+                    "id": v.id, "x": round(v.x_lane, 2),
+                    "t_pass": round(tp, 2) if math.isfinite(tp) else None,
+                    "gap": round(gap, 2),
+                    "cur": round(abs(start - v.x_lane), 2)}]
                 return "lat_veto"
         return None
 
@@ -546,6 +558,7 @@ class DecisionEngine:
         ``corridor``（第 6 步）：同拍分带走廊，仅侧别空间检查消费
         （_side_has_space 按带来源规则）；None=无证据，对称默认不否决。"""
         self._dt_last = dt_s               # 计划层慢拍计时基（selector 累计）
+        self.lateral.last_veto_cars = None # 每拍清账：快照只反映本拍判定
         self._views, self._events = traffic if traffic is not None else ((), ())
         # 车米制状态实例通道（C 线 2026-10-12，闸 metric_cars.enabled）：道评分
         # 与 ledger 米制列消费；行为路径不读它（V2 才换仪器）。闸关=空（回退路径）。
@@ -855,6 +868,13 @@ class DecisionEngine:
             return "hold:reach_hold"
         self._reach_goal = rep.best_x_m
         goal_lane = rep.best_x_m / self.cal.lane_w_m
+        if self._cool_t > 0:
+            # 冷却中不发起新承诺（20261016 接线修复：_finish_change/_tick_abort
+            # 落定时设的 t_cool_s 在 legacy 链有 hold:cooling 消费，reach 换血时
+            # 漏接——veto/完成后 0.2s 即重选，邻车来不及演变，P2 实测 veto 18 次
+            # 聚成 5 簇）。持守语义不变：轨迹目标仍吃场选点（traj 碰撞采样护航，
+            # 车流挡路时自然回退路心等待），冷却只管「承诺」不管「缓移」。
+            return "hold:cooling"
         if executed is None or \
                 abs(goal_lane - executed) <= \
                 self.cfg.corridor_reach.trigger_dead_zone_lane:
@@ -1087,6 +1107,12 @@ class DecisionEngine:
         """上一拍走廊收益评定（corridor_reach 闸开才有值；trace cr_* 对照列
         的数据源，不进决策——行为切换在 control 闸）。None=闸关/弃权拍。"""
         return self._reach_report
+
+    @property
+    def veto_cars(self) -> list[dict] | None:
+        """上一拍 veto 判定的参与车快照（观测面，trace veto_cars 列数据源；
+        None=本拍无 veto 判定）。"""
+        return self.lateral.last_veto_cars
 
     @property
     def intent_state(self) -> dict | None:

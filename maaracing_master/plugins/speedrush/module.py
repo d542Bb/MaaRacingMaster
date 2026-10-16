@@ -1076,6 +1076,9 @@ class SpeedRushModule(ActivityModule):
             # id/缺席时长与放弃·升级·次判据的机检计数——逐集核对与 §8.6 L1
             # 验收的复算面；None=demand 关/集外无意图
             "intent": chain["engine"].intent_state,
+            # veto 判定面快照（20261016 补观测缺口）：本拍 lat_veto 的参与车
+            # （id/横位/到站/两判距）——离线复核 veto 真伪；None=本拍无否决
+            "veto_cars": chain["engine"].veto_cars,
             # HUD 本机读数（hud_ref 挂载；rate 只在蓝卡识别=有 rate 的槽位即
             # 本机）：局结局程序化取数面（得分/得分速度），缺失拍诚实 None
             # （对手卡读数是背景假读，按槽位猜会静默读错）；血量格未读另案
