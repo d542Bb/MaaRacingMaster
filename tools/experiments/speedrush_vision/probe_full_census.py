@@ -12,6 +12,8 @@
 内核返回全系统进程/线程表，每线程带 UserTime/KernelTime（elevated 目标也可读）。
 """
 import argparse
+
+from pathlib import Path
 import ctypes
 import json
 import struct
@@ -108,6 +110,11 @@ def main() -> int:
                     help="线程级低于此核数不入账")
     ap.add_argument("--gpu-every", type=int, default=2, help="每 N 个样本采一次 GPU")
     a = ap.parse_args()
+
+    # 输出路径约束（安全扫描：--out 不接受任意路径写入）
+    out_p = Path(a.out).resolve()
+    if Path(__file__).resolve().parent not in out_p.parents:
+        ap.error(f"--out 必须在本探针目录下：{Path(__file__).resolve().parent}")
 
     ncpu = psutil.cpu_count(logical=True)
     me = psutil.Process().pid

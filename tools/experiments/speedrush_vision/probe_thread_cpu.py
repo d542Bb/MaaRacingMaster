@@ -12,6 +12,8 @@
 "sidecar 吃几个核"精确落到具体线程。
 """
 import argparse
+
+from pathlib import Path
 import ctypes
 import json
 import struct
@@ -105,6 +107,11 @@ def main() -> int:
     ap.add_argument("--duration", type=float, default=300.0)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+
+    # 输出路径约束（安全扫描：--out 不接受任意路径写入）
+    out_p = Path(a.out).resolve()
+    if Path(__file__).resolve().parent not in out_p.parents:
+        ap.error(f"--out 必须在本探针目录下：{Path(__file__).resolve().parent}")
 
     nproc = psutil.cpu_count(logical=True)
     t0 = time.monotonic()
