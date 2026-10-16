@@ -400,8 +400,11 @@ def test_boundary_injects_overtake_and_hug_params():
     assert p.hug_d_hi_m == pytest.approx((0.625 + 0.075) * lane_w)
     assert p.hug_p_center_m == pytest.approx(0.73 * lane_w)
     assert p.hug_value_limit == 120.0
-    # 闸关（部署 json 默认）：贴身字段全缺
-    eng_off = DecisionEngine(base)
+    # 闸关（显式构造，不依赖部署 json 当前闸态——部署文件随实机 A/B 翻闸）：
+    # 贴身字段全缺
+    eng_off = DecisionEngine(dreplace(
+        base, corridor_reach=dreplace(base.corridor_reach,
+                                      overtake_hunting=False, hug_value=False)))
     p_off = eng_off._reach_params
     assert p_off.hug_d_lo_m is None and p_off.hug_value_limit == 0.0
 

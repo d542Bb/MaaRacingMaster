@@ -227,6 +227,9 @@ def test_boundary_attaches_far_params():
     p = eng_on._reach_params
     assert p.far_car_weight == 0.3 and p.hunt_horizon_s == 6.0
     assert p.far_aggregation == "capped"
-    eng_off = DecisionEngine(base)
+    eng_off = DecisionEngine(dreplace(
+        base, corridor_reach=dreplace(base.corridor_reach,
+                                      overtake_hunting=False, hug_value=False,
+                                      far_direction=False)))
     p_off = eng_off._reach_params
     assert p_off.hunt_horizon_s is None and p_off.far_car_weight == 0.0
