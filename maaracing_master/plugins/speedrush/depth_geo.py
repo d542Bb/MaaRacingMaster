@@ -70,6 +70,23 @@ from maaracing_master.plugins.speedrush.world_model import Calib
 Y0, DIAG_Y1 = 340, 715
 MOGE_IN_W, MOGE_IN_H = 1280, 720    # 折叠静态输入（free-dim 覆盖，见 load_session）
 
+# ── 几何块抽取因子（2026-10-17 链路提速）──
+# MoGe 原生输出 336×598，infer_points 上采样到 720×1280 供调试图与锚点框裁切；
+# 平面拟合/找边/栅格在这份 4.6× 插值冗余的点上做全幅统计，时延里没有一分来自
+# 新测量。2×2 抽取到 360×640（≈原生分辨率）后三段各降 3~4×（离线实测 plane
+# 4.2× / edges 4.6× / grid 3.2×，读数同判见
+# tools/experiments/speedrush_vision/DEPTH_CHAIN_LATENCY_20261017.md）。
+# 抽取后带区与像素诊断按 _band_rows / ds 折算——常数 Y0/DIAG_Y1 仍是 720 行口径。
+GEO_DS = 2
+
+
+def _band_rows(h: int) -> tuple[int, int]:
+    """检测带行区间（按输入高度缩放）。
+
+    Y0/DIAG_Y1 是 720 行口径的常数；几何块按 GEO_DS 抽取后输入高度变小，
+    带必须同比缩放才落在同一物理行域（h=720 时逐位等于 (Y0, DIAG_Y1)）。"""
+    return (Y0 * h // 720, DIAG_Y1 * h // 720)
+
 # ── 相机系→车头系基准（2026-10-10 挪正：只挪显示/表示面，不进测量与判据）──
 # 全部 z 距离的测量帧是相机系（点云、ZBIN、栅格、拟合域原样不动）；用户可见
 # 的距离标签（BEV 刻度、走廊带标、检测标注）以车为原点才诚实——车头在相机
@@ -788,6 +805,7 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                         object_mask: np.ndarray | None = None,
                         fy: float | None = None,
                         coef: tuple[float, float, float] | None = None,
+                        ds: int = 1,
                         ) -> DepthRoadReading:
     """点图 → 读数（纯函数，回归锁可直接喂缓存点云；observe=推理+本函数）。
 
@@ -798,8 +816,15 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     ``object_mask``（YOLO 框）为候选区，按统一挖除缝（自车 3D 框 ∪ 候选区）×
     剃本体刀挖除（断车身→路面粘连）。``coef`` 传入已有平面即跳过拟合（产线
     observe_debug 一帧一拟共享，2026-10-10 合并定案；离线复算/单独调用缺省
-    自拟合）——质量门仍在本函数内判（门判据=挖除缝内残差，随平面走）。"""
+    自拟合）——质量门仍在本函数内判（门判据=挖除缝内残差，随平面走）。
+
+    ``ds``：几何块抽取因子（见 GEO_DS）。pts/object_mask 是抽取后的点图与掩码，
+    而 ``fx``/``fy``/``left_x``/``right_x`` 保持**全幅像素**契约——内部按 ds
+    折算到点图自己的像素系（带区、画外守卫、诊断回投），返回的 fx/fy 与 u 都不
+    改口径（调试图反投影与 trace 消费端无感）。ds=1 时逐位等于旧路径。"""
     t0 = time.perf_counter()
+    fx_d = float(fx) / ds
+    fy_d = float(fx if fy is None else fy) / ds
 
     def _ret(lane_l, lane_r, u_l, u_r, rejects, edge_pts=(),
              degraded=False):
@@ -814,12 +839,13 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
             fx=float(fx), fy=float(fy if fy is not None else fx),
             degraded=degraded)
 
-    obj_band = _dig_band(object_mask, pts.shape[1])
+    obj_band = _dig_band(object_mask, pts)
 
-    X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
+    y0, y1 = _band_rows(pts.shape[0])
+    X, Y, Z = pts[y0:y1, :, 0], pts[y0:y1, :, 1], pts[y0:y1, :, 2]
     t_p = time.perf_counter()
     if coef is None:
-        coef = _fit_road_plane(X, Y, Z, fy=fx if fy is None else fy)
+        coef = _fit_road_plane(X, Y, Z, fy=fy_d)
         LAST_STAGE_MS["plane"] = (time.perf_counter() - t_p) * 1000.0
     if coef is None:
         return _ret(None, None, None, None, ["平面拟合失败"])
@@ -843,7 +869,7 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
             return _ret(None, None, None, None, ["平面质量门拒绝"])
     sky = np.isfinite(hgt) & (hgt > SKY_HGT)
     scan_dig = dig_3d
-    extent = (pts.shape[1] / 2.0) / fx   # 画面横边界比 |X|/Z（同帧焦距，禁写死）
+    extent = (pts.shape[1] / 2.0) / fx_d   # 画面横边界比 |X|/Z（同帧焦距，禁写死）
 
     edge_pts: list[tuple[int, float, float]] = []
     # 与 Z 无关的掩码提出循环（布尔与可交换结合，逐位同结果）：5 个 ZBIN 各
@@ -881,7 +907,8 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
             pick = float(np.median([x for _, x in smp]))
         lane = float(pick / cal.lane_w_m)
         zn, xn = smp[0]                        # 最近箱为像素诊断锚
-        return lane, float(pts.shape[1] / 2.0 + xn * fx / zn), None
+        # 诊断回投换回全幅像素（消费端 u 的契约是 1280 宽口径；抽取只是内部口径）
+        return lane, float((pts.shape[1] / 2.0 + xn * fx_d / zn) * ds), None
 
     lane_l, u_l, rej_l = _side(-1)
     lane_r, u_r, rej_r = _side(1)
@@ -906,6 +933,7 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                               coef: tuple[float, float, float] | None = None,
                               center_m: float | None = None,
                               width_m: float | None = None,
+                              ds: int = 1,
                               ) -> DrivableGrid:
     """点图 → 可行驶栅格（纯函数；与 ``reading_from_points`` 并行、互不影响）。
 
@@ -926,6 +954,11 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     **失败语义**：平面拟合失败（域内点不足）或拟合质量门拒绝（路区内点率
     低于 PLANE_INLIER_MIN，坏拟合诚实弃权）→ ``coef=None``、``state`` 全 0、
     ``counts`` 全 0、``dig_cells=0``；不抛异常（与 reading 的诚实弃权同型）。
+
+    ``ds``：几何块抽取因子，口径同 ``reading_from_points``（pts/obj 抽取后，
+    fx/fy 仍全幅；栅格输出是米制格，与像素口径无关）。抽取后格内点数同比降，
+    远场稀疏格会更早跌破 ``GRID_MIN_PTS`` 落 UNKNOWN——`grid_veto` 只吃
+    z3~9m 近场带，该带同判率实测 99.4%（见 DEPTH_CHAIN_LATENCY_20261017.md）。
     """
     t0 = time.perf_counter()
 
@@ -935,10 +968,11 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                             latency_ms=(time.perf_counter() - t0) * 1000.0,
                             dig_mask=dig_mask)
 
-    obj_band = _dig_band(obj, pts.shape[1]) if obj is not None else None
-    Xb, Yb, Zb = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
+    obj_band = _dig_band(obj, pts) if obj is not None else None
+    y0, y1 = _band_rows(pts.shape[0])
+    Xb, Yb, Zb = pts[y0:y1, :, 0], pts[y0:y1, :, 1], pts[y0:y1, :, 2]
     if coef is None:
-        coef = _fit_road_plane(Xb, Yb, Zb, fy=fy)
+        coef = _fit_road_plane(Xb, Yb, Zb, fy=float(fy) / ds)
     # 质量门对两种 coef 来源同判（共享 coef 也判——2026-10-10 实机 d00048
     # 实证：门只挂在自拟合分支时，共享路径把被 reading 拒掉的坏平面喂进了
     # 栅格，弯道横坡帧栅格满图假可走而 reading 已弃权，两路判定脱钩）。
@@ -1144,11 +1178,12 @@ def region_reading(grid: DrivableGrid, lane_w_m: float,
     return RegionReading(sides, None, None, l_clip, r_clip, n_rows)
 
 
-def _dig_band(dig: np.ndarray | None, width: int) -> np.ndarray:
-    """全帧掩码 → 检测带切片（None 给全假）。"""
+def _dig_band(dig: np.ndarray | None, pts: np.ndarray) -> np.ndarray:
+    """全帧掩码 → 检测带切片（None 给全假，形状随点图高度——抽取后同比）。"""
+    y0, y1 = _band_rows(pts.shape[0])
     if dig is None:
-        return np.zeros((DIAG_Y1 - Y0, width), bool)
-    return np.asarray(dig, bool)[Y0:DIAG_Y1]
+        return np.zeros((y1 - y0, pts.shape[1]), bool)
+    return np.asarray(dig, bool)[y0:y1]
 
 
 # ---------- 物体锚点清单（混合测距刀一：detection-keyed 度量的免费副产品） ----------
@@ -1309,9 +1344,19 @@ class DepthRoadObserver:
         # 语义下不共享可变状态：两路各自用同一 coef 独立算挖除缝与质量门，
         # 同输入逐位同结果。异常在 join 处原样重抛，保持 observe 的降级语义
         # （不吞错不换错）。
-        X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
+        #
+        # 几何块按 GEO_DS 抽取（2026-10-17 链路提速）：只作用于平面/找边/栅格，
+        # 锚点清单仍吃全幅点图（框内裁 Z 要全分辨率，且它是米制供数主路）。
+        if GEO_DS > 1:
+            pts_g = np.ascontiguousarray(pts[::GEO_DS, ::GEO_DS])
+            mask_g = (None if object_mask is None
+                      else np.ascontiguousarray(object_mask[::GEO_DS, ::GEO_DS]))
+        else:
+            pts_g, mask_g = pts, object_mask
+        y0, y1 = _band_rows(pts_g.shape[0])
+        X, Y, Z = pts_g[y0:y1, :, 0], pts_g[y0:y1, :, 1], pts_g[y0:y1, :, 2]
         t_p = time.perf_counter()
-        coef = _fit_road_plane(X, Y, Z, fy=fy)
+        coef = _fit_road_plane(X, Y, Z, fy=fy / GEO_DS)
         stage["plane"] = LAST_STAGE_MS["plane"] = \
             (time.perf_counter() - t_p) * 1000.0
         t_g = time.perf_counter()
@@ -1323,14 +1368,14 @@ class DepthRoadObserver:
         def _grid_worker():
             try:
                 grid_box.append(drivable_grid_from_points(
-                    pts, fx, fy, object_mask, coef=coef))
+                    pts_g, fx, fy, mask_g, coef=coef, ds=GEO_DS))
             except BaseException as e:   # noqa: BLE001 —— join 处重抛，见 th_err
                 th_err.append(e)
 
         th = threading.Thread(target=_grid_worker, daemon=True)
         th.start()
-        reading = reading_from_points(pts, fx, self._cal, object_mask=object_mask,
-                                      fy=fy, coef=coef)
+        reading = reading_from_points(pts_g, fx, self._cal, object_mask=mask_g,
+                                      fy=fy, coef=coef, ds=GEO_DS)
         stage["edges"] = LAST_STAGE_MS["edges"] = \
             (time.perf_counter() - t_e) * 1000.0
         th.join()
@@ -1565,7 +1610,7 @@ class AsyncDepthRoadObserver:
       顶层 try/except 计 failures，单帧异常不杀 daemon。
     - take：主线程消费结果槽（**驻留**：闸内同一结果可被多拍反复消费，取走不清；
       is_new=本拍是否首次消费该结果——消费端保鲜槽与学习只认新证据）；
-      age = now − captured_ts 超 max_age_ms → 计 stale、清槽、本拍返回 None
+      age = now − **帧采集回调时刻** 超 max_age_ms → 计 stale、清槽、本拍返回 None
       （road_offset 退纯模型积分——与 session 缺失同一降级路径，宁旧不如无）。
     - health：applied/stale/failures/busy_skips 计数 + age/duration 滑窗——
       不达标报警数据面。
@@ -1579,9 +1624,17 @@ class AsyncDepthRoadObserver:
                           # 0.4s 对齐（入口比出口严本就矛盾）；读数语义=v4 几何
                           # 路心（缓变量），非黄线时代的间隙中心——1830 局「300ms
                           # 复用窗方波踢 planner」的教训在旧语义+无保鲜槽下成立，
-                          # 若实机翻转率反升（trace steer 拍间反打）再回撤
-    INFER_MIN_INTERVAL_S = 0.07   # worker 出工下间隔：锁内只有 run 本体，控制拍
-                                  # 感知（同锁）的碰撞等待有上界即可（见 dml_lock）
+                          # 若实机翻转率反升（trace steer 拍间反打）再回撤。
+                          # 2026-10-17 起起点改采集回调时刻（见 take），本预算
+                          # 即**内容陈旧度**上限：净效果比旧口径紧 cap 段（P50
+                          # 21.7ms），实测超龄丢弃率变化见 DEPTH_CHAIN_LATENCY
+                          # _20261017.md §5
+    INFER_MIN_INTERVAL_S = 0.04   # worker 出工下间隔：锁内只有 run 本体，控制拍
+                                  # 感知（同锁）的碰撞等待有上界即可（见 dml_lock）。
+                                  # 2026-10-17 从 0.07 降到 0.04：几何块抽取后
+                                  # observe P50 落到 ~86ms，窗仍不咬合（产出间隔
+                                  # =observe 耗时）；降窗只是把"窗成为新瓶颈"的
+                                  # 门槛让开，当前产出间隔不变
     PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
 
     DEBUG_INTERVAL_S = 0.5   # 调试图节流（2026-10-02 从 2.0 收紧：2s 一帧在找边
@@ -1698,13 +1751,21 @@ class AsyncDepthRoadObserver:
         变量，闸内旧读数仍可用），无新结果的拍不再退纯模型积分。is_new
         标记本拍是否首次消费该结果：路心合成可复用旧结果，但消费端的
         保鲜槽与半宽学习只认新证据（**使用次数 ≠ 学习次数**——合成不是
-        新证据的同一条纪律）。"""
+        新证据的同一条纪律）。
+
+        **age 起点 = 帧采集回调时刻**（2026-10-17 口径收口）：读数描述的是采集
+        那一刻的画面，cap 段（采集→入队，P50 21.7ms）也是陈旧度的一部分；
+        旧口径从 push 起算，读数实际比闸认为的更旧。同一条钟与锚点 ts、
+        锚龄、EXPIRED 判据同源（tracking 侧 anchor_ts_ns=sheet.ts_ns）。
+        ``max_age_ms`` 因此是**内容龄预算**（350ms），不再是"入队后预算"。"""
         with self._lock:
             item = self._result
             if item is None:
                 return None, None, False
             reading, grid, captured_ts = item[1], item[2], item[3]
-        age_ms = (time.perf_counter() - captured_ts) * 1000.0
+            frame_ts_ns = item[6] if len(item) > 6 else None
+        age_ms = (time.perf_counter()
+                  - (frame_ts_ns / 1e9 if frame_ts_ns else captured_ts)) * 1000.0
         self.last_age_ms = age_ms
         is_new = item[0] != self._last_seq
         if is_new:
@@ -1930,7 +1991,9 @@ class AsyncDepthRoadObserver:
             # 开工即起算节流窗：Busy/异常路径也吃窗（自然退避——感知持锁期间
             # 不再每拍白付一次 preprocess 重试；代价是锁释放瞬间不再立刻补拍）
             t_start = self._last_infer = time.perf_counter()
-            stale_at_start = (t_start - item[2]) * 1000.0 > self._max_age_ms
+            # 开工即超龄的记账面：口径与 take() 同一把钟（帧采集时刻，2026-10-17）
+            stale_at_start = (t_start - (item[5] / 1e9 if item[5] else item[2])
+                              ) * 1000.0 > self._max_age_ms
             if stale_at_start:
                 with self._lock:
                     self._stale_starts += 1
@@ -1957,13 +2020,15 @@ class AsyncDepthRoadObserver:
                       "reason": "stale_at_start" if stale_at_start
                       else "interval_due"}
             with self._lock:
-                # (push 序号, 读数, 可行驶栅格, captured_ts, 计时包, 锚点清单)
-                # ——栅格与读数同帧同拍（observe_debug 内共享平面拟合产出），
-                # S2-B 轨迹裁决消费；锚点清单同源同拍（混合测距刀一）
+                # (push 序号, 读数, 可行驶栅格, captured_ts, 计时包, 锚点清单,
+                #  帧采集时刻) ——栅格与读数同帧同拍（observe_debug 内共享平面
+                # 拟合产出），S2-B 轨迹裁决消费；锚点清单同源同拍（混合测距
+                # 刀一）。frame_ts_ns 供 take() 算**内容龄**（2026-10-17）
                 self._result = (item[0], reading,
                                 evid.get("grid") if evid else None, item[2],
                                 timing,
-                                evid.get("anchors") if evid else None)
+                                evid.get("anchors") if evid else None,
+                                item[5])
             # 落盘在发布之后：写盘的几十 ms 不该加进 debug 帧的 age（captured_ts
             # 从 push 起算，落盘挡在发布前 = 每张调试图凭空变旧一段）
             if self._debug_dir is not None:

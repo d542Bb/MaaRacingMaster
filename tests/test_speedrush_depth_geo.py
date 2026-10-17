@@ -319,6 +319,23 @@ def test_plane_gate_rejects_absurd_roll():
     assert any("平面质量门拒绝" in r for r in rd.rejects)
 
 
+def test_reading_decimated_matches_full_res():
+    """几何块抽取（GEO_DS）坐标口径锁：同帧点图 2×2 抽取 + ds=2 与全幅读数
+    同判。抽取要同时折三处口径——带区按输入高度缩放（_band_rows）、fx/fy 按
+    ds 折算、extent 与诊断回投换回全幅像素；任一漏折都会让读数漂一档。
+    抽掉的是上采样插值冗余（MoGe 原生 336×598 → 720×1280），不是测量。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL,
+                        boxes=((1.2, 2.6, 8.0, 12.0, 1.5),))
+    full = reading_from_points(pts, FX, CAL, fy=FY)
+    dec = reading_from_points(np.ascontiguousarray(pts[::2, ::2]), FX, CAL,
+                              fy=FY, ds=2)
+    assert full.sides == dec.sides == 2, (full.rejects, dec.rejects)
+    assert abs(full.left_edge_lane - dec.left_edge_lane) < 0.05
+    assert abs(full.right_edge_lane - dec.right_edge_lane) < 0.05
+    # 诊断回投 u 仍是全幅像素口径（不是抽取后的 640 宽口径）
+    assert abs(full.right_x - dec.right_x) < 40.0
+
+
 def _flat_to_frame(X: np.ndarray, Y: np.ndarray, Z: np.ndarray) -> np.ndarray:
     """平面度量样片（1D）→ 全幅点云（铺进诊断带，门判据与行位无关）。"""
     pts = np.full((720, 1280, 3), np.nan, np.float32)
@@ -829,6 +846,22 @@ def test_async_stale_gate_drops():
         assert a.health()["stale_drops"] == 1
         assert a.take() == (None, None, False), "清槽后不应重复计 stale 或吐旧结果"
         assert a.health()["stale_drops"] == 1
+    finally:
+        a.stop()
+
+
+def test_async_age_starts_at_capture():
+    """age 起点 = 帧采集回调时刻（2026-10-17）：push 带 frame_ts_ns 时 take 的
+    last_age_ms 含「采集→入队」那段 cap，不只是入队后的时间——读数描述的是
+    采集那一刻的画面，旧口径（push 起算）会让闸以为读数比实际新。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    a.start()
+    try:
+        now = _time.perf_counter()
+        a.push(_frame(), frame_ts_ns=int((now - 0.120) * 1e9))
+        assert _wait_until(lambda: a.take()[0] is not None), "未取到读数"
+        assert a.last_age_ms >= 120.0, f"age 未含 cap 段：{a.last_age_ms:.1f}ms"
     finally:
         a.stop()
 
