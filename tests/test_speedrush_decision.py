@@ -248,7 +248,11 @@ def test_score_penalizes_lateral_shift():
 
 def test_score_conf_ramp_and_floor():
     assert _score(conf=0.99).score > _score(conf=0.7).score
-    assert _score(conf=0.4) is None          # 地板下不低信决策
+    # 20261017 教训：地板降到检测门槛 0.35（日落逆光场景 conf 帧间 0.42~0.83
+    # 剧烈跳，0.5 切在区间正中把肉眼可见的币整组拒掉）——0.4 进低权坡度不拒
+    assert _score(conf=0.4) is not None      # 低权计入（折扣代替拒收）
+    assert _score(conf=0.4).score < _score(conf=0.7).score
+    assert _score(conf=0.34) is None         # 地板（=检测门槛）下不低信决策
     held = CoinGroup(group_id=9, member_ids=(1,), observed_count=1, estimated_count=1,
                      x_center=0.5, x_span=0, cy_min=500, cy_max=500, conf_min=0.0,
                      partial_observation=True, first_seen_fid=0, last_seen_fid=0,
@@ -317,7 +321,7 @@ def test_cruise_selects_feasible_candidate():
 
 def test_cruise_low_score_holds():
     e = _eng()
-    out = e.update(_good_obs(conf=0.52), DT)      # 折扣后 < min_score
+    out = e.update(_good_obs(conf=0.4), DT)       # 低权坡度底（0.35 地板）后 < min_score
     assert out.state is DecisionState.CRUISE and "no_candidate" in out.reason
 
 
@@ -988,7 +992,7 @@ def test_gate_ledger_coin_rows():
     e.update(_good_obs(fid=1), DT)
     assert e.gate_ledger["coins"][0]["why"] is None
     e2 = _eng()
-    e2.update(_good_obs(fid=1, conf=0.52), DT)
+    e2.update(_good_obs(fid=1, conf=0.34), DT)    # 地板（检测门槛）下 → why="conf"
     assert e2.gate_ledger["coins"][0]["why"] in ("conf", "score")
 
 

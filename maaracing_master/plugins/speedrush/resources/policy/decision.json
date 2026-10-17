@@ -57,11 +57,12 @@
   "scoring": {
     "coin_value_per_unit": 30.0,
     "coin_group_min_count": 3.0,
-    "conf_floor": 0.5,
+    "conf_floor": 0.35,
     "conf_hi": 0.8,
     "shift_cost_per_lane": 10.0,
     "life_tau_s": 5.0,
-    "_note_group_floor": "组下限（RULES 2026-10-14 定案）：一组不会少于 3 枚——观测面上 1~2 枚是残缺视图（距离/遮挡/置信门削剩的头部），价值按整组计不按观测枚数折算。消费点=decision.scorer.score 与 lane_score 币密度，max(observed, 3)。半空组 4 枚的整组 120 分只在满观测时自然取到——组内无空/地标志，残缺半空组按 90 计（宁可低估，与 partial_observation 同侧）。"
+    "_note_group_floor": "组下限（RULES 2026-10-14 定案）：一组不会少于 3 枚——观测面上 1~2 枚是残缺视图（距离/遮挡/置信门削剩的头部），价值按整组计不按观测枚数折算。消费点=decision.scorer.score 与 lane_score 币密度，max(observed, 3)。半空组 4 枚的整组 120 分只在满观测时自然取到——组内无空/地标志，残缺半空组按 90 计（宁可低估，与 partial_observation 同侧）。",
+    "_note_conf": "置信折扣=0 的下界（低于此不给分）。**20261017 A/B 教训（193629_p1 币组错过归因）**：日落逆光场景 coin conf 帧间 0.42~0.83 剧烈跳（同一枚清晰可见的币，帧 19 置信 0.83、帧 20 没检出、帧 21 置信 0.49），floor 0.5 切在摆动区间正中——约一半的拍把肉眼可见的币整组拒掉（t=8.0 conf=0.49 差 0.01 被拒），加上币线每帧只出最近一枚框（轨道身份频繁重建）、地面流 k 依赖健康轨道，能吃状态翻脸四次、承诺永远凑不齐。floor 降到检测门槛 0.35（检测以下不存在）：0.35~0.5 的拍从整组丢变低权计入（坡度 0.49→0.31→值 28）；共享真源，宽度有效性门（traffic 宽度门）同步松到检测下界。已定案不动：组下限 1~2 枚按 3 计（维护者口径，_note_group_floor）。"
   },
   "hysteresis": {
     "switch_margin": 15.0,
