@@ -54,6 +54,9 @@ class BonusSource:
     x_m: float                 # 车体位（米，自车系，左负右正）
     t_miss_s: float            # 到站时刻（Scorer.car_t_meet_s 仪器）
     conf: float                # 置信（审计面）
+    tol_m: float | None = None  # 归属半容差（R5 §10 契约加法：远场粗源设宽值
+                                # 「大可以模糊」，None=走 params.attribution_half_m
+                                # 近场原值）
 
 
 @dataclass(frozen=True)
@@ -272,7 +275,8 @@ def evaluate(bands: Sequence[CorridorBandSpan],
             else:
                 coin_value += params.far_coin_weight * val   # 远币：方向信息仍在
                 n_far += 1
-        # 奖励车项（R5 层 1，设计稿 §9.1）：与币同门同式——横向归属半宽、
+        # 奖励车项（R5 层 1，设计稿 §9.1）：与币同门同式——横向归属半容差
+        # （每源 tol_m，远场粗源设宽值 §10）、
         # 可达门 need+τ+margin < t_miss ≤ 前瞻窗、先到的车遮挡；闸关
         # （bonus_value=0 或 bonuses 空）恒 0=逐位回今天。撞上去是收益入口
         # 不是障碍（奖励车不在车流 views 里，碰撞判据面天然不含它）。
@@ -280,12 +284,14 @@ def evaluate(bands: Sequence[CorridorBandSpan],
         n_bonus = 0
         if params.bonus_value > 0.0:
             for b in bonuses:
-                if abs(b.x_m - x) > params.attribution_half_m:
-                    continue                    # 横向不落归属半宽：不是这条路径的奖励车
+                tol = b.tol_m if b.tol_m is not None \
+                    else params.attribution_half_m
+                if abs(b.x_m - x) > tol:
+                    continue                    # 横向不落归属半容差：不是这条路径的奖励车
                 if not (need + params.tau_s + params.margin_s < b.t_miss_s
                         <= params.horizon_s):
                     continue                    # 来不及/窗外：不追（不计入也不降权）
-                if any(abs(c.x_m - b.x_m) <= params.attribution_half_m
+                if any(abs(c.x_m - b.x_m) <= tol
                        and (c.t_meet_s is None
                             or need <= c.t_meet_s <= b.t_miss_s)
                        for c in cars):

@@ -63,7 +63,7 @@ from maaracing_master.plugins.speedrush.traffic import (
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionOutput, DecisionState, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import (
-    KIND_BONUS, Calib, load_calib, t_meet_car_s)
+    KIND_BONUS, Calib, load_calib, t_meet_car_s, x_lane_of)
 from maaracing_master.plugins.speedrush.plan import (
     KIND_CAND_BONUS, KIND_CAND_COIN, KIND_CAND_OVERTAKE, KIND_CAND_REACH,
     PlanSelector, Scored)
@@ -856,8 +856,57 @@ class DecisionEngine:
                 bonuses.append(BonusSource(
                     x_m=(b.x_lane + executed_lane) * lane_w,
                     t_miss_s=t_miss, conf=b.conf))
+            # 远场粗源（R5 §10，设计稿 §10.1）：奖励车整个可见生命在远场
+            # （§9.4 归因），obs.targets 循环见不到——扩到 far_targets 用
+            # x_lane_of 同一公式真源读粗横位（X/H 比值与距离无关，发散的是
+            # 噪声放大），夹进走廊已知路缘兜住误差；宽容差 tol_m=模糊处理
+            # （维护者口径：远场大可以模糊，不必给出精确值）
+            bonuses.extend(self._reach_bonus_far_sources(obs, executed_lane))
         return evaluate(bands, coins, self._reach_car_sources(executed_lane),
                         shift, self._reach_params, bonuses=bonuses)
+
+    def _reach_bonus_far_sources(self, obs: WorldObservation,
+                                 executed_lane: float) -> list[BonusSource]:
+        """远场奖励车粗源（R5 §10.1）：far_targets（横位缺位、弱读带）走
+        x_lane_of 同一公式真源读粗横位，夹进走廊 band edges 并集（米→道，
+        误差被路宽兜住），到站走 car_t_meet_s 同一仪器链，每源宽容差
+        bonus_far_tol_m。门同式：年龄门槛/不接近不收/到站有限。"""
+        lane_w = self.cal.lane_w_m
+        edges: list[float] = []
+        if self._corridor is not None:
+            for band in self._corridor.bands:
+                if band.left.x_m is not None:
+                    edges.append(band.left.x_m)
+                if band.right.x_m is not None:
+                    edges.append(band.right.x_m)
+        span = (min(edges) / lane_w, max(edges) / lane_w) if edges else None
+        tol = self.cfg.corridor_reach.bonus_far_tol_m
+        out: list[BonusSource] = []
+        for b in obs.far_targets:
+            if b.kind != KIND_BONUS:
+                continue
+            if obs.frame_id - b.first_seen_fid < self.cfg.traffic.min_obs_ticks:
+                continue                        # track 年龄门槛：同近场源
+            if b.rel_approach <= 0.0:
+                continue                        # 不接近=永远撞不上
+            d = b.cy - self.cal.y_h
+            if d <= 0:
+                continue                        # 地平线上：公式分母退化（构造端已弃，防御）
+            # 粗横位吃框底边（cy+h/2=地面触点代理）：平台是抬升物体，框中心
+            # 比触点更贴地平线，X/H 按 ground 平面投影会系统性放大横位；
+            # 到站仍吃框心（与 rel_approach 同一 tracked 点，同近场源）
+            x_coarse = x_lane_of(b.cx, b.cy + b.h // 2, self.cal)
+            if not math.isfinite(x_coarse):
+                continue                        # 粗读无解：不入账
+            if span is not None:
+                x_coarse = min(max(x_coarse, span[0]), span[1])   # 夹进走廊路缘
+            t_miss = self.scorer.car_t_meet_s(b.rel_approach, b.cy)
+            if not math.isfinite(t_miss):
+                continue                        # 到站仪器无解：不追
+            out.append(BonusSource(
+                x_m=(x_coarse + executed_lane) * lane_w,
+                t_miss_s=t_miss, conf=b.conf, tol_m=tol))
+        return out
 
     def _reach_car_sources(self, executed_lane: float) -> list[CarSource]:
         """车米制仪器链（与 lane_score.benefits 同一优先级与仪器：米制优先、

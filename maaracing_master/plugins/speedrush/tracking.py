@@ -143,6 +143,10 @@ class FarTarget:
     first_seen_fid: int
     last_seen_fid: int
     validity_until_fid: int
+    cx: int = 0                  # 像素位（R5 §10 契约加法：远场粗横向的 bearing
+                                 # 源，_Track 已有直读；0=构造方未供，消费端自决）
+    rel_approach: float = 0.0    # px/fid（同 TrackedTarget，全 kind 配对轨都更新；
+                                 # 远场粗源的到站仪器输入，正=接近）
 
 
 @dataclass(frozen=True)
@@ -517,7 +521,8 @@ class Tracker:
                     id=t.id, kind=t.kind, lane_side=t.lane_side, cy=cy_out,
                     conf=t.conf, h=t.h, last_x_lane=t.x_known,
                     first_seen_fid=t.first_seen, last_seen_fid=t.last_seen,
-                    validity_until_fid=valid_until))
+                    validity_until_fid=valid_until,
+                    cx=t.cx, rel_approach=t.rel_approach))
         targets.sort(key=lambda x: -x.cy)
         fars.sort(key=lambda x: -x.cy)
 

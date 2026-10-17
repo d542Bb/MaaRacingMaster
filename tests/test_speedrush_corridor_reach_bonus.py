@@ -143,3 +143,40 @@ def test_combo_bonus_plus_coin_sums():
     assert c.bonus_value == pytest.approx(BONUS_V)
     assert c.coin_value == pytest.approx(90.0)
     assert c.score == pytest.approx(BONUS_V + 90.0)
+
+
+# ---------- R5 §10 远场粗源：每源容差（tol_m，None=近场原值） ----------
+
+def test_tol_wide_source_counts_beyond_half():
+    """tol_m=3.4 宽容差：d=2.75 > attribution_half 2.535 但 ≤ tol → 计入；
+    同位置 tol_m=None（近场原值）拒绝——容差是每源的，近场源不受影响。"""
+    near_tol = _bonus(4.0)              # tol_m=None → attribution_half
+    wide = BonusSource(x_m=4.0, t_miss_s=1.5, conf=0.9, tol_m=3.4)
+    rep = evaluate(_bands(), (), (), 0.0, _params(), (near_tol,))
+    assert rep is not None
+    assert _best_by_x(rep)[1.25].bonus_cars == 0    # d=2.75 > 2.535 拒
+    rep2 = evaluate(_bands(), (), (), 0.0, _params(), (wide,))
+    assert rep2 is not None
+    c = _best_by_x(rep2)[1.25]          # need=0.325，门 0.605<1.5 过
+    assert c.bonus_cars == 1
+    assert c.bonus_value == pytest.approx(BONUS_V)
+
+
+def test_gate_off_with_tol_source_identical():
+    """闸关：带 tol_m 的远场源也逐位回今天（容差不破闸关语义）。"""
+    b = BonusSource(x_m=1.0, t_miss_s=1.5, conf=0.9, tol_m=3.4)
+    rep_with = evaluate(_bands(), (), (), 0.0, _params(bonus_value=0.0), (b,))
+    rep_without = evaluate(_bands(), (), (), 0.0, _params(bonus_value=0.0), ())
+    assert rep_with is not None and rep_without is not None
+    for c1, c2 in zip(rep_with.candidates, rep_without.candidates):
+        assert c1 == c2
+
+
+def test_occlusion_uses_per_source_tol():
+    """遮挡同样吃每源容差：车在 tol 内、归属半宽外也挡（远场粗源位置噪声大，
+    遮挡判据与归属同容差语义一致）。"""
+    blocker = CarSource(x_m=2.0, t_meet_s=1.0, t_overtake_s=None)
+    wide = BonusSource(x_m=4.0, t_miss_s=1.5, conf=0.9, tol_m=3.4)
+    rep = evaluate(_bands(), (), (blocker,), 0.0, _params(), (wide,))
+    assert rep is not None
+    assert _best_by_x(rep)[1.25].bonus_cars == 0    # 车距 bonus 2.0 ≤ 3.4 且先到 → 挡
