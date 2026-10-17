@@ -402,6 +402,7 @@ class Tracker:
         self._last_obs: WorldObservation | None = None
         self._frame_tracks: dict[int, dict[tuple[str, int], int]] = {}  # fid → det_key→track_id
         self._sheet_orphan = False   # 本拍清单有条目但整张无法归轨（worker 滞后超窗）
+        self._ingest_stats: dict | None = None   # 最近一次清单对账面（trace 消费）
         # 采集帧率估计（fid 时基，2026-10-11 车流 t_meet 换基）：fid 率是采集流
         # 属性，不随 track/stage 生命期走——reset 不清，阶段切换重卷后估计仍在。
         # 聚合式需要估计起点与"当前帧"两个锚，_last_*_seen 每 new frame 更新
@@ -417,6 +418,7 @@ class Tracker:
         self._tracks.clear()
         self._frame_tracks.clear()
         self._sheet_orphan = False
+        self._ingest_stats = None
 
     def update(self, per: PerceptionResult, frame_age_ms: float, stage: int,
                geometry_valid: bool = True, stage_transition: bool = False,
@@ -492,8 +494,11 @@ class Tracker:
             # ASSOC_FAIL（与"深度侧根本没量出锚点"的 NO_ANCHOR_YET 分开）
             self._sheet_orphan = bool(anchors.entries
                                       and anchors.fid not in self._frame_tracks)
+            if self._ingest_stats is not None:
+                self._ingest_stats["orphan"] = self._sheet_orphan
         else:
             self._sheet_orphan = False
+            self._ingest_stats = None       # 本拍无新清单：对账面如实缺位
 
         targets: list[TrackedTarget] = []
         fars: list[FarTarget] = []
@@ -591,11 +596,13 @@ class Tracker:
         那意味着 worker 滞后超过窗长，锚点年龄本来也要超闸。"""
         fmap = self._frame_tracks.get(sheet.fid)
         by_id = {t.id: t for t in self._tracks}
+        mapped = 0
         for e in sheet.entries:
             tid = None if fmap is None else fmap.get((KIND_CAR, e.det_idx))
             t = by_id.get(tid) if tid is not None else None
             if t is None:
                 continue
+            mapped += 1
             if t.anchor_z is not None and abs(e.z_m - t.anchor_z) > self.p.cluster_switch_m:
                 # 层一测量有效性：主簇跳变（实验实录帧间数十米假跳）——量错对象
                 # 的锚点救不了，弃权等重拍；阈值是 trace 标定候选
@@ -629,6 +636,11 @@ class Tracker:
             # 的 t_meet 断供，far 轨威胁信号以 MoGe 节拍闪现（2026-10-12 局）
             t.approach_confirmed_at = None   # 新锚点 = 新生命周期（设计稿 §2 规则 2）
             t.last_dist_reason = None
+        # 清单对账面（20261016 归因：零锚轨损失在检测→清单→轨道之间——条目数
+        # vs 映射成功数 vs fid 滞后，trace asheet 列消费；orphan 由 update 补）
+        self._ingest_stats = {"entries": len(sheet.entries), "mapped": mapped,
+                              "fid_lag": None if self._last_fid is None
+                              else self._last_fid - sheet.fid}
 
     def _distance_of(self, t: _Track, ts_ns: int, obs_age_ms: float) -> ObjectDistance:
         """三态合成（设计稿 §2 状态机）。RESCALED 是锚点生命周期状态：确认过
@@ -738,6 +750,15 @@ class Tracker:
 
     def _clamp_cy(self, cy: int) -> int:
         return max(cy, int(self.cal.y_h) + 1)
+
+    @property
+    def ingest_stats(self) -> dict | None:
+        """最近一次锚点清单对账面（trace asheet 列数据源；20261016 归因：零锚
+        轨损失在检测→清单→轨道之间）。entries=清单条目数、mapped=成功映射到
+        轨道数（差值=映射失败或滞后整帧丢弃）、fid_lag=清单帧落后当前帧数
+        （>0=worker 滞后）、orphan=整张无法归轨。None=本拍无新清单（深度
+        证据拍才有）。"""
+        return self._ingest_stats
 
 
 def to_jsonable(x: Any) -> Any:

@@ -967,6 +967,11 @@ class SpeedRushModule(ActivityModule):
             "car_h": [{"id": t.id, "h": t.h, "conf": round(t.conf, 2)}
                       for t in (*obs.targets, *obs.far_targets)
                       if t.kind == KIND_CAR] or None,
+            # 锚点清单对账面（20261016 归因：零锚轨损失在检测→清单→轨道之间
+            # ——映射失败/worker 滞后整帧丢弃，dist.why 留不下痕迹）：条目数/
+            # 映射成功数/fid 滞后/orphan，与 dist/car_h 同拍 join 即逐拍复算
+            # "条目→映射→锚"漏斗；None=本拍无新清单（深度证据拍才有）
+            "asheet": chain["tracker"].ingest_stats,
             # TTC 消费端准入供数（刀二）：逐车横向道/行号/接近率。与 car_h 同 id
             # join 后可拆 looming-TTC 对实际掠过时刻的系统性高估（探针
             # probe_ttc_looming：p50 +60~90%）里「估计器误差」与「回避成功的
