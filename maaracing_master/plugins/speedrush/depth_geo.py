@@ -80,6 +80,17 @@ MOGE_IN_W, MOGE_IN_H = 1280, 720    # 折叠静态输入（free-dim 覆盖，见
 # 抽取后带区与像素诊断按 _band_rows / ds 折算——常数 Y0/DIAG_Y1 仍是 720 行口径。
 GEO_DS = 2
 
+# ── 几何块直接吃原生点图（2026-10-17 定案，替代 upsize+抽取的往返搬运）──
+# 抽取到 360×640 与原生 336×598 分辨率几乎相同（面积比 0.87）——几何块从未
+# 用到 1280×720 的信息，upsize 出来的 4/5 像素是插值且随即被抽掉。改吃原生后
+# 省掉 upsize（P50 5.4ms，探针口径 15ms）与抽取的连续化拷贝（~10ms），读数逐帧
+# 差 P50 0.000 / P90 0.004 lane、cam_h 0.0%（30 帧实测，§9）。
+# **回滚开关**：置 False 即回「upsize + GEO_DS 抽取」旧路径，逐位一致。
+# 像素契约不变：reading 的 fx/fy/left_x/right_x 仍是**全幅像素**（按 ds=W_full/
+# W_pts 折算，见 reading_from_points 的 ds 参数）；锚点框裁切按 _box_anchor_z 的
+# 尺寸归一化，调试图自包含（自己把证据包放大到全幅），均无需改。
+NATIVE_GEO = True
+
 
 def _band_rows(h: int) -> tuple[int, int]:
     """检测带行区间（按输入高度缩放）。
@@ -337,13 +348,19 @@ def load_session(weights: Path) -> ort.InferenceSession:
 
 
 def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
-                 with_evidence: bool = False):
-    """一帧 → (全幅点图, fx, fy[, 证据包])。点图 (720,1280,3) float32，无效像素
-    nan；fx/fy 为全幅像素焦距（原生 336×598 焦距 × 上采样倍率，见 moge_post）。
+                 with_evidence: bool = False, native: bool = False):
+    """一帧 → (点图, fx, fy[, 证据包])。无效像素 nan。
 
-    ``with_evidence`` 时第三返回值为原生证据 dict（pts=336×598 点图 fp32、
-    valid、fx/fy=归一化焦距，复算 ×(W,H)）——离线复算与实机渲染用，比全幅小 6 倍且复算逐位
-    一致（复算口径见模块 docstring）。
+    ``native=False``（缺省）点图 (720,1280,3) 全幅；``native=True`` 直接给模型
+    原生点图（336×598）**不做上采样**——几何块本来就在这个量级工作（GEO_DS=2
+    抽取后 360×640），upsize 是纯搬运（2026-10-17 实测省 15ms、读数差 P50
+    0.000 lane，见 NATIVE_GEO 注释）。
+    fx/fy **两种模式都返回全幅像素焦距**（口径不变：消费端按点图宽度自算倍率
+    ds = 全幅宽 / pts.shape[1]，见 reading_from_points）。
+
+    ``with_evidence`` 时返回原生证据 dict（pts=336×598 点图 fp32、valid、
+    fx/fy=归一化焦距，复算 ×(W,H)）——离线复算与实机渲染用，比全幅小 6 倍且
+    复算逐位一致（复算口径见模块 docstring）。
 
     DML 互斥（core.dml_lock）：感知会话与深度会话并发 run 会段错误杀进程
     （2026-09-25 实机 + 双线程复现），故 run 本体抢锁、抢不到抛 Busy 让调用方
@@ -369,7 +386,16 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     ow, oh = points.shape[1], points.shape[0]
     evidence = None
     t_up = time.perf_counter()
-    if (oh, ow) != (MOGE_IN_H, MOGE_IN_W):
+    if native:
+        # 原生直吃：不做上采样。evidence 持有 reconstruct 的原对象（未写 nan，
+        # 与旧路径同语义），pts 取副本——下面要原地写 nan，不能污染证据包。
+        if with_evidence:
+            evidence = {"pts": pts, "valid": res["valid"],
+                        "fx": res["fx"], "fy": res["fy"],
+                        "ms": float(metric_scale), "solver": res["solver"]}
+        pts = np.array(pts, copy=True)
+        valid = res["valid"]
+    elif (oh, ow) != (MOGE_IN_H, MOGE_IN_W):
         if with_evidence:
             evidence = {"pts": pts, "valid": res["valid"],
                         "fx": res["fx"], "fy": res["fy"],
@@ -382,8 +408,8 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     else:
         valid = res["valid"]
     LAST_STAGE_MS["upsize"] = (time.perf_counter() - t_up) * 1000.0
-    # np.stack 产物独占（无别名持有；with_evidence 持有的是上游原生点图，另一对象），
-    # nan 写原地做，省一次全幅拷贝（~3ms，2026-10-09 实测）
+    # np.stack / np.array(copy=True) 产物独占（无别名持有；with_evidence 持有的是
+    # 上游原生点图，另一对象），nan 写原地做，省一次拷贝（~3ms，2026-10-09 实测）
     pts[~valid] = np.nan
     # 归一化焦距（u∈[0,1] 口径）→ 全幅像素焦距：u_full = (X/Z)·fx_norm·W_full + W/2
     fx = res["fx"] * MOGE_IN_W
@@ -806,7 +832,7 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                         object_mask: np.ndarray | None = None,
                         fy: float | None = None,
                         coef: tuple[float, float, float] | None = None,
-                        ds: int = 1,
+                        ds: float = 1.0,
                         ) -> DepthRoadReading:
     """点图 → 读数（纯函数，回归锁可直接喂缓存点云；observe=推理+本函数）。
 
@@ -819,10 +845,19 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     observe_debug 一帧一拟共享，2026-10-10 合并定案；离线复算/单独调用缺省
     自拟合）——质量门仍在本函数内判（门判据=挖除缝内残差，随平面走）。
 
-    ``ds``：几何块抽取因子（见 GEO_DS）。pts/object_mask 是抽取后的点图与掩码，
-    而 ``fx``/``fy``/``left_x``/``right_x`` 保持**全幅像素**契约——内部按 ds
-    折算到点图自己的像素系（带区、画外守卫、诊断回投），返回的 fx/fy 与 u 都不
-    改口径（调试图反投影与 trace 消费端无感）。ds=1 时逐位等于旧路径。"""
+    ``ds``：点图像素 → **全幅像素**的倍率（= 全幅宽 / pts.shape[1]；抽取路径是
+    整数 GEO_DS，原生直吃是 1280/598≈2.14 这类非整数）。pts/object_mask 是
+    点图自己的像素系，而 ``fx``/``fy``/``left_x``/``right_x`` 保持**全幅像素**
+    契约——内部按 ds 折算到点图像素系（带区、画外守卫、诊断回投），返回的
+    fx/fy 与 u 都不改口径（调试图反投影与 trace 消费端无感）。ds=1 时逐位等于
+    旧路径。
+
+    掩码尺寸必须与点图一致（不一致是调用方漏了缩放，**静默错位**且不抛异常的
+    那类坑）——入口显式拒绝，把哑巴亏变成大声失败。"""
+    if object_mask is not None and object_mask.shape != pts.shape[:2]:
+        raise ValueError(
+            f"掩码与点图尺寸不一致：mask{object_mask.shape} vs pts{pts.shape[:2]}"
+            "（掩码须与点图同一像素系，见 ds 契约）")
     t0 = time.perf_counter()
     fx_d = float(fx) / ds
     fy_d = float(fx if fy is None else fy) / ds
@@ -934,7 +969,7 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                               coef: tuple[float, float, float] | None = None,
                               center_m: float | None = None,
                               width_m: float | None = None,
-                              ds: int = 1,
+                              ds: float = 1.0,
                               ) -> DrivableGrid:
     """点图 → 可行驶栅格（纯函数；与 ``reading_from_points`` 并行、互不影响）。
 
@@ -956,11 +991,16 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     低于 PLANE_INLIER_MIN，坏拟合诚实弃权）→ ``coef=None``、``state`` 全 0、
     ``counts`` 全 0、``dig_cells=0``；不抛异常（与 reading 的诚实弃权同型）。
 
-    ``ds``：几何块抽取因子，口径同 ``reading_from_points``（pts/obj 抽取后，
-    fx/fy 仍全幅；栅格输出是米制格，与像素口径无关）。抽取后格内点数同比降，
-    远场稀疏格会更早跌破 ``GRID_MIN_PTS`` 落 UNKNOWN——`grid_veto` 只吃
-    z3~9m 近场带，该带同判率实测 99.4%（见 DEPTH_CHAIN_LATENCY_20261017.md）。
+    ``ds``：点图像素 → 全幅像素的倍率，口径同 ``reading_from_points``（pts/obj
+    是点图像素系，fx/fy 仍全幅；栅格输出是米制格，与像素口径无关）。抽取或
+    原生直吃后格内点数同比降，远场稀疏格会更早跌破 ``GRID_MIN_PTS`` 落
+    UNKNOWN——`grid_veto` 只吃 z3~9m 近场带，该带同判率实测 99.4%
+    （见 DEPTH_CHAIN_LATENCY_20261017.md）。
     """
+    if obj is not None and obj.shape != pts.shape[:2]:
+        raise ValueError(
+            f"掩码与点图尺寸不一致：obj{obj.shape} vs pts{pts.shape[:2]}"
+            "（掩码须与点图同一像素系，见 ds 契约）")
     t0 = time.perf_counter()
 
     def _ret(state, coef, counts, dig_cells, dig_mask=None):
@@ -1332,7 +1372,9 @@ class DepthRoadObserver:
             return None, None
         t0 = time.perf_counter()
         try:
-            pts, fx, fy, evid = infer_points(self._sess, frame_rgb, with_evidence=True)
+            pts, fx, fy, evid = infer_points(self._sess, frame_rgb,
+                                             with_evidence=True,
+                                             native=NATIVE_GEO)
         except dml_lock.Busy:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
@@ -1346,18 +1388,30 @@ class DepthRoadObserver:
         # 同输入逐位同结果。异常在 join 处原样重抛，保持 observe 的降级语义
         # （不吞错不换错）。
         #
-        # 几何块按 GEO_DS 抽取（2026-10-17 链路提速）：只作用于平面/找边/栅格，
-        # 锚点清单仍吃全幅点图（框内裁 Z 要全分辨率，且它是米制供数主路）。
-        if GEO_DS > 1:
-            pts_g = np.ascontiguousarray(pts[::GEO_DS, ::GEO_DS])
+        # 点图来源两路（NATIVE_GEO，2026-10-17）：
+        #  - True：infer_points 给原生 336×598，不再 upsize 也不抽取——几何块
+        #    本来就在这个量级工作；掩码同比缩到点图系（NEAREST，实测边缘差
+        #    P90 0.002 lane）；ds=全幅宽/点图宽（≈2.14）折回全幅像素契约。
+        #  - False：旧路径（upsize 到 720×1280 + GEO_DS 抽取），回滚用。
+        if NATIVE_GEO:
+            pts_g = pts
+            ds = MOGE_IN_W / float(pts.shape[1])
             mask_g = (None if object_mask is None
-                      else np.ascontiguousarray(object_mask[::GEO_DS, ::GEO_DS]))
+                      else cv2.resize(object_mask.astype(np.uint8),
+                                      (pts.shape[1], pts.shape[0]),
+                                      interpolation=cv2.INTER_NEAREST).astype(bool))
         else:
-            pts_g, mask_g = pts, object_mask
+            ds = float(GEO_DS)
+            if GEO_DS > 1:
+                pts_g = np.ascontiguousarray(pts[::GEO_DS, ::GEO_DS])
+                mask_g = (None if object_mask is None
+                          else np.ascontiguousarray(object_mask[::GEO_DS, ::GEO_DS]))
+            else:
+                pts_g, mask_g = pts, object_mask
         y0, y1 = _band_rows(pts_g.shape[0])
         X, Y, Z = pts_g[y0:y1, :, 0], pts_g[y0:y1, :, 1], pts_g[y0:y1, :, 2]
         t_p = time.perf_counter()
-        coef = _fit_road_plane(X, Y, Z, fy=fy / GEO_DS)
+        coef = _fit_road_plane(X, Y, Z, fy=fy / ds)
         stage["plane"] = LAST_STAGE_MS["plane"] = \
             (time.perf_counter() - t_p) * 1000.0
         t_g = time.perf_counter()
@@ -1369,14 +1423,14 @@ class DepthRoadObserver:
         def _grid_worker():
             try:
                 grid_box.append(drivable_grid_from_points(
-                    pts_g, fx, fy, mask_g, coef=coef, ds=GEO_DS))
+                    pts_g, fx, fy, mask_g, coef=coef, ds=ds))
             except BaseException as e:   # noqa: BLE001 —— join 处重抛，见 th_err
                 th_err.append(e)
 
         th = threading.Thread(target=_grid_worker, daemon=True)
         th.start()
         reading = reading_from_points(pts_g, fx, self._cal, object_mask=mask_g,
-                                      fy=fy, coef=coef, ds=GEO_DS)
+                                      fy=fy, coef=coef, ds=ds)
         stage["edges"] = LAST_STAGE_MS["edges"] = \
             (time.perf_counter() - t_e) * 1000.0
         th.join()

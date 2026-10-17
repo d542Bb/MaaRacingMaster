@@ -336,6 +336,44 @@ def test_reading_decimated_matches_full_res():
     assert abs(full.right_x - dec.right_x) < 40.0
 
 
+def test_reading_native_scale_ds():
+    """原生直吃（NATIVE_GEO）坐标口径锁：点图缩到模型原生 336×598、ds 是
+    **非整数倍率** 1280/598，读数与全幅同判、诊断列仍换回全幅像素。
+
+    与 ds=2 的唯一差别是倍率不是整数——这正是原生路径的真实形态（598 宽不是
+    1280 的整数分之一），任何把 ds 当 int 用、或假设 pts.shape[1]*ds==1280
+    精确成立的地方，都会在这条用例上露出来。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL,
+                        boxes=((1.2, 2.6, 8.0, 12.0, 1.5),))
+    full = reading_from_points(pts, FX, CAL, fy=FY)
+    nw, nh = 598, 336
+    nat = np.stack([cv2.resize(pts[..., k], (nw, nh),
+                               interpolation=cv2.INTER_LINEAR)
+                    for k in range(3)], -1)
+    rd = reading_from_points(nat, FX, CAL, fy=FY, ds=1280.0 / nw)
+    assert rd.sides == full.sides == 2, (full.rejects, rd.rejects)
+    assert abs(full.left_edge_lane - rd.left_edge_lane) < 0.10
+    assert abs(full.right_edge_lane - rd.right_edge_lane) < 0.10
+    # 诊断回投 u 仍是全幅像素口径（不是 598 宽口径）
+    assert abs(full.right_x - rd.right_x) < 60.0
+    # fx/fy 契约：两种口径都返回全幅焦距，不随点图尺寸变
+    assert abs(rd.fx - full.fx) < 1e-6 and abs(rd.fy - full.fy) < 1e-6
+
+
+def test_mask_size_mismatch_rejected():
+    """掩码与点图不同像素系 → 显式拒绝（把静默错位变成大声失败）。
+
+    原生直吃上线后，「掩码是全幅、点图是原生」是最容易漏的一处，且漏了不抛
+    异常、读数只是悄悄错位。入口校验是这条链唯一的运行时护栏。"""
+    pts = _scene_points(x_left=WALL, x_right=WALL)
+    dec = np.ascontiguousarray(pts[::2, ::2])          # 360×640
+    bad = np.zeros((720, 1280), bool)                  # 全幅掩码（漏缩放）
+    with pytest.raises(ValueError, match="掩码与点图尺寸不一致"):
+        reading_from_points(dec, FX, CAL, object_mask=bad, fy=FY, ds=2)
+    with pytest.raises(ValueError, match="掩码与点图尺寸不一致"):
+        dg.drivable_grid_from_points(dec, FX, FY, bad)
+
+
 def _flat_to_frame(X: np.ndarray, Y: np.ndarray, Z: np.ndarray) -> np.ndarray:
     """平面度量样片（1D）→ 全幅点云（铺进诊断带，门判据与行位无关）。"""
     pts = np.full((720, 1280, 3), np.nan, np.float32)
