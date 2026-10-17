@@ -22,7 +22,8 @@ DBG = Path(os.environ["APPDATA"]) / "MaaRacingMaster" / "debug" / "speedrush"
 BATCHES = {
     "改前": ["20261017_115032_p1", "20261017_115107_p2",
              "20261017_115223_p1", "20261017_115308_p2"],
-    "改后": ["20261017_130315_p1", "20261017_130400_p2"],
+    "几何提速后": ["20261017_130315_p1", "20261017_130400_p2"],
+    "落盘搬线程后": ["20261017_132405_p1"],
 }
 if os.environ.get("SR_TRACES"):
     BATCHES = {"当前": [s for s in os.environ["SR_TRACES"].split(",") if s]}
