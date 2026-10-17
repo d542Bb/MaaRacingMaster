@@ -157,6 +157,60 @@ def test_hug_logistic_above_hi():
     assert _best_by_x(rep2)[4.25].hug_value == pytest.approx(EDGE, rel=1e-3)
 
 
+# ---------- R5 层 2：hug 分支扩到像素仪器车（2026-10-17 设计稿 §9.2） ----------
+
+def test_hug_visual_gate_off_pixel_car_byte_identical():
+    """hug_visual 关（默认）：无米制锚的车走旧路径（t_overtake None→旧错身
+    项判据；d̂=2.05 在归属区 ≤ 半宽 → 无错身值），逐位回今天。"""
+    car = _car(2.2, t_overtake=None, t_meet=1.5)
+    rep = evaluate(_bands(), (), (car,), 0.0, _params(hug_visual=False))
+    assert rep is not None
+    c = _best_by_x(rep)[4.25]           # d̂=2.05 ∈ 窗内——但闸关不进贴身分支
+    assert c.hug_cars == 0 and c.hug_value == 0.0
+    assert c.pass_value_sum == 0.0      # d̂ ≤ 归属半宽：旧错身项也不计
+    assert c.score == 0.0
+
+
+def test_hug_visual_pixel_car_gets_platform():
+    """hug_visual 开：无米制锚的车回退 t_meet 过同一门与 E 曲线——窗内
+    平台 ≈132（不再是 0），互斥不进旧错身项。"""
+    car = _car(2.2, t_overtake=None, t_meet=1.5)
+    rep = evaluate(_bands(), (), (car,), 0.0, _params(hug_visual=True))
+    assert rep is not None
+    c = _best_by_x(rep)[4.25]
+    assert c.hug_cars == 1
+    assert c.hug_value == pytest.approx(PLATFORM)
+    assert c.pass_value_sum == 0.0      # 互斥分支：同一辆车不双计
+    assert c.score == pytest.approx(PLATFORM)
+
+
+def test_hug_visual_pixel_car_gate_rejects():
+    """hug_visual 开：回退 t_meet 也过可达门——t_meet ≤ need+τ+margin 拒
+    （硬地板 0，不落旧错身项）；窗外（> 前瞻窗）同拒。"""
+    near = _car(2.2, t_overtake=None, t_meet=0.6)   # need=0.505，门 0.785>0.6
+    rep = evaluate(_bands(), (), (near,), 0.0, _params(hug_visual=True))
+    assert _best_by_x(rep)[4.25].hug_cars == 0
+    assert _best_by_x(rep)[4.25].score == 0.0
+    far = _car(2.2, t_overtake=None, t_meet=2.5)    # > 前瞻窗 2.0
+    rep2 = evaluate(_bands(), (), (far,), 0.0, _params(hug_visual=True))
+    assert _best_by_x(rep2)[4.25].hug_cars == 0
+
+
+def test_hug_visual_pass_band_gets_e_curve():
+    """hug_visual 开：旧错身带（d̂ ∈ (半宽, 半宽+道宽]）的车从平价 30 换成
+    E 曲线（30+limit×P(d̂) 衰减区 ≥ 30）——擦边倾向的连续价值面。"""
+    car = _car(2.2, t_overtake=None, t_meet=1.5)
+    rep = evaluate(_bands(), (), (car,), 0.0, _params(hug_visual=True))
+    assert rep is not None
+    c = _best_by_x(rep)[5.25]           # d̂=3.05 ∈ (2.535, 5.915]
+    assert c.hug_cars == 1
+    assert c.pass_value_sum == 0.0      # 互斥：出 E 值不进旧错身项
+    e_expected = 30.0 + LIMIT * _p(3.05)
+    assert c.hug_value == pytest.approx(e_expected)
+    assert c.score == pytest.approx(e_expected)
+    assert c.score >= 30.0              # E 曲线在错身带处处 ≥ 保底
+
+
 # ---------- 可达性唯一门（极短相遇） ----------
 
 def test_hug_gate_rejects_unreachable():

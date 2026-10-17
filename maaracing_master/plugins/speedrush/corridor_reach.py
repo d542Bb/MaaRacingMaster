@@ -128,6 +128,11 @@ class ReachParams:
     # ---- R5 四层优先级（2026-10-17 设计稿 §9.1；bonus_value=0=闸关=逐位回今天）----
     bonus_value: float = 0.0             # 奖励车收益分（0=闸关；起值 120=一次极限
                                          #   动作分 [需实测]）
+    # ---- R5 层 2 擦边倾向（2026-10-17 设计稿 §9.2；hug_visual=False=逐位回今天）----
+    hug_visual: bool = False             # hug 分支扩到像素仪器车：t_overtake 缺位
+                                         #   （米制锚未成形，覆盖仅 5%）的车回退
+                                         #   t_meet_s（仪器链米制优先像素回退同源）
+                                         #   过同一可达门与 E 曲线
 
 
 @dataclass(frozen=True)
@@ -305,19 +310,25 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                 # R2：远车预选未来通过侧——E 复用贴身曲线（机制同源），
                 # 正对远车（d̂=0，硬地板下）为 0、贴身窗最大
                 far_es.append(_hug_e(d, params))
-            if hug_on and c.t_overtake_s is not None:
-                if c.t_overtake_s > params.horizon_s:
-                    continue                    # 窗外：无价值（旧错身同判）
-                # 可达性唯一门（与币门同式同真源）：过近/来不及即自然失败，
-                # 不再另设 minActionTime 门
-                if not (need + params.tau_s + params.margin_s
-                        <= c.t_overtake_s):
-                    continue
-                e = _hug_e(d, params)
-                if e > 0.0:
-                    hug_sum += e
-                    n_hug += 1
-                continue                        # d̂<下沿：硬地板 0（不进旧错身项）
+            if hug_on:
+                # R5 层 2（设计稿 §9.2）：闸 hug_visual 开时，t_overtake 缺位
+                # （米制锚未成形）的车回退 t_meet_s（像素仪器）过同一可达门与
+                # E 曲线——擦边倾向不再依赖米制锚覆盖；闸关=逐位回今天
+                t_pass = c.t_overtake_s
+                if t_pass is None and params.hug_visual:
+                    t_pass = c.t_meet_s
+                if t_pass is not None:
+                    if t_pass > params.horizon_s:
+                        continue                    # 窗外：无价值（旧错身同判）
+                    # 可达性唯一门（与币门同式同真源）：过近/来不及即自然失败，
+                    # 不再另设 minActionTime 门
+                    if not (need + params.tau_s + params.margin_s <= t_pass):
+                        continue
+                    e = _hug_e(d, params)
+                    if e > 0.0:
+                        hug_sum += e
+                        n_hug += 1
+                    continue                        # d̂<下沿：硬地板 0（不进旧错身项）
             if not (params.attribution_half_m < d
                     <= params.attribution_half_m + params.pass_band_m):
                 continue

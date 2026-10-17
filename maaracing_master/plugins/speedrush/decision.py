@@ -806,6 +806,7 @@ class DecisionEngine:
             need_of_dx_m=lambda dx_m: self.cfg.timing.lane_change_duration_s(
                 abs(dx_m) / lane_w),
             bonus_value=c.bonus_car_value if c.bonus_value else 0.0,
+            hug_visual=c.hug_visual,
             **hug_kw)
 
     def _reach_evaluate(self, obs: WorldObservation,
