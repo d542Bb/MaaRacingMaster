@@ -266,8 +266,10 @@ class CorridorReach:
     bonus_car_value: float = 120.0       # 奖励车收益分（起值=一次极限动作分 [需实测]）
     hug_visual: bool = False             # 层 2 擦边倾向：hug 分支扩到像素仪器车
                                          #   （t_overtake 缺位回退 t_meet_s 过同一门）
-    bonus_far_tol_m: float = 3.4         # 远场粗源归属半容差（米，R5 §10；起值≈1 道
-                                         #   半宽 [需实测]，维护者口径「远场大可以模糊」）
+    bonus_tol_m: float = 0.75            # 奖励车归属半容差（米，近远场同源，R5 §10；
+                                         #   起值≈0.22 道 [需实测]：宽了平价 120 摊成
+                                         #   平台被平手阈拉回路心，窄了平台只剩 2~3
+                                         #   候选、胜出位落源 ±0.5m 内且 30>20 真胜出）
 
 
 @dataclass(frozen=True)
@@ -582,8 +584,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                                      120.0, lo=0),
             hug_visual=_bool(d, "corridor_reach", "hug_visual",
                              default=False),
-            bonus_far_tol_m=_num_def(d, "corridor_reach", "bonus_far_tol_m",
-                                     3.4, lo=0)),
+            bonus_tol_m=_num_def(d, "corridor_reach", "bonus_tol_m",
+                                 0.75, lo=0)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
             fusion=_bool(d, "metric_cars", "fusion", default=False)),

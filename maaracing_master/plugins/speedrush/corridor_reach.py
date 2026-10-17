@@ -136,6 +136,10 @@ class ReachParams:
                                          #   （米制锚未成形，覆盖仅 5%）的车回退
                                          #   t_meet_s（仪器链米制优先像素回退同源）
                                          #   过同一可达门与 E 曲线
+    # ---- R5 §10 奖励车归属容差（近远场同源；20261017 A/B 两轮教训定窄）----
+    bonus_tol_m: float = 0.75            # 奖励车归属半容差（米）：宽了平价 120 摊成
+                                         #   平台被平手阈拉回路心（fid1493 实测）；
+                                         #   0.75 平台 2~3 候选，胜出位落源 ±0.5m 内
 
 
 @dataclass(frozen=True)
@@ -276,17 +280,21 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                 coin_value += params.far_coin_weight * val   # 远币：方向信息仍在
                 n_far += 1
         # 奖励车项（R5 层 1，设计稿 §9.1）：与币同门同式——横向归属半容差
-        # （每源 tol_m，远场粗源设宽值 §10）、
+        # （每源 tol_m，默认 params.bonus_tol_m）、
         # 可达门 need+τ+margin < t_miss ≤ 前瞻窗、先到的车遮挡；闸关
         # （bonus_value=0 或 bonuses 空）恒 0=逐位回今天。撞上去是收益入口
         # 不是障碍（奖励车不在车流 views 里，碰撞判据面天然不含它）。
+        # **窄容差平价**（20261017 实机 A/B 两轮教训）：平价 120 在宽容差内
+        # 摊成平价平台，平手阈「差<20 选离中心近者」把胜出位拉回路心（宽
+        # 容差 3.4 实测 11 候选平台、cr_best=0.17）；就近衰减又把峰值降到
+        # 108，90 分金币候选进平手集同样翻面。窄容差（0.75m）平台只剩
+        # 2~3 候选：胜出位落在源 ±0.5m 内，且 120−90=30 > 20 峰值真胜出。
         bonus_sum = 0.0
         n_bonus = 0
         if params.bonus_value > 0.0:
             for b in bonuses:
-                tol = b.tol_m if b.tol_m is not None \
-                    else params.attribution_half_m
-                if abs(b.x_m - x) > tol:
+                tol = b.tol_m if b.tol_m is not None else params.bonus_tol_m
+                if abs(b.x_m - x) >= tol:
                     continue                    # 横向不落归属半容差：不是这条路径的奖励车
                 if not (need + params.tau_s + params.margin_s < b.t_miss_s
                         <= params.horizon_s):

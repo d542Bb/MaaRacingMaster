@@ -2,9 +2,13 @@
 """R5 层 1 奖励车项（corridor_reach.bonus_value，2026-10-17 设计稿 §9.1）的回归锁。
 
 锁面：闸关逐位（bonus_value=0 或 bonuses 空=与无奖励车基线逐位一致）、评分
-与币同门同式（横向归属半宽/可达门 need+τ+margin<t_miss≤前瞻窗/先到的车
+与币同门同式（横向归属半容差/可达门 need+τ+margin<t_miss≤前瞻窗/先到的车
 遮挡）、优先级排序（奖励车 120 压过金币组 90，argmax 即「排最前面的胜出」）、
 顺手捎上（同候选分项求和）、审计面（bonus_value/bonus_cars）。
+**窄容差平价**（20261017 实机 A/B 两轮教训）：容差 0.75 平台只剩 2~3 候选，
+胜出位落源 ±0.5m 内且 120−90=30>平手阈 20——宽容差 3.4 的 11 候选平台被
+平手阈拉回路心（fid1493 实测），就近衰减又让 90 分金币候选进平手集翻面；
+窄容差语义锁在 test_peak_wins_at_source。
 行为收益不在此锁（那是实机 A/B 与离线回放的验收面）。
 
 场景几何：need(dx)=0.3+0.1·dx（秒）、attribution_half=2.535m、
@@ -72,16 +76,31 @@ def test_empty_bonuses_no_change():
 # ---------- 评分与门（与币同门同式） ----------
 
 def test_bonus_attracts_nearby_candidates():
-    """奖励车 120 计入归属半宽内候选，审计面 bonus_value/bonus_cars。"""
+    """奖励车项按就近衰减计入归属半容差内候选（峰值在源位），审计面
+    bonus_value/bonus_cars。"""
     rep = evaluate(_bands(), (), (), 0.0, _params(), (_bonus(1.0),))
     assert rep is not None
     by_x = _best_by_x(rep)
-    c = by_x[1.25]                      # d=0.25 ∈ 半宽；need=0.325，门 0.605<1.5 过
+    c = by_x[1.25]                      # d=0.25 ∈ 半容差；need=0.325，门 0.605<1.5 过
     assert c.bonus_cars == 1
     assert c.bonus_value == pytest.approx(BONUS_V)
-    assert c.score == pytest.approx(BONUS_V)   # 无其他项：score=bonus
-    out = by_x[5.75]                    # d=4.75 > 半宽：不计
+    out = by_x[5.75]                    # d=4.75 > 半容差：不计
     assert out.bonus_cars == 0 and out.bonus_value == 0.0
+
+
+def test_peak_wins_at_source():
+    """窄容差平台胜出在源位（20261017 回归锁）：容差 0.75 平台只剩 2~3
+    候选，胜出位落在源附近，不被平手阈拉回路心——宽容差 3.4 的 11 候选
+    平台会被拉回（fid1493 实测）。"""
+    rep = evaluate(_bands(), (), (), 0.0, _params(), (_bonus(3.0),))
+    assert rep is not None
+    by_x = _best_by_x(rep)
+    # 源 3.0 两侧候选 d=0.25 → 平价 120；路心候选 d=2.75 出窄容差 → 0
+    assert by_x[2.75].bonus_value == pytest.approx(BONUS_V)
+    assert by_x[0.25].bonus_value == 0.0            # 路心不沾光（宽容差时才沾）
+    best = by_x[round(rep.best_x_m, 6)]
+    assert abs(rep.best_x_m - 3.0) <= 0.5           # 胜出位在源附近
+    assert best.bonus_value == pytest.approx(BONUS_V)
 
 
 def test_unreachable_bonus_not_counted():
@@ -118,8 +137,8 @@ def test_occluding_car_blocks_bonus():
 # ---------- 优先级排序（层 1 > 层 3） ----------
 
 def test_bonus_outranks_coin():
-    """奖励车 120 > 金币组 90：胜出的是奖励车候选（排最前面的胜出；平手
-    tie_margin 内偏中心——胜出位必是 bonus 候选，金币候选仍在不被删）。"""
+    """奖励车 120（峰值）> 金币组 90：胜出的是奖励车候选（排最前面的胜出；
+    平手 tie_margin 内偏中心——胜出位必是 bonus 候选，金币候选仍在不被删）。"""
     coin = CoinSource(x_m=-5.0, observed_count=3.0, conf=1.0, t_miss_s=1.0)
     bonus = _bonus(4.0)                 # 两源相隔远，无重叠候选
     rep = evaluate(_bands(), (coin,), (), 0.0, _params(), (bonus,))
@@ -135,7 +154,7 @@ def test_bonus_outranks_coin():
 
 
 def test_combo_bonus_plus_coin_sums():
-    """顺手捎上：同候选分项求和（奖励车+金币组同候选 → 和）。"""
+    """顺手捎上：同候选分项求和（奖励车平价值+金币组同候选 → 和）。"""
     coin = CoinSource(x_m=1.0, observed_count=3.0, conf=1.0, t_miss_s=1.0)
     rep = evaluate(_bands(), (coin,), (), 0.0, _params(), (_bonus(1.0),))
     by_x = _best_by_x(rep)
@@ -159,7 +178,7 @@ def test_tol_wide_source_counts_beyond_half():
     assert rep2 is not None
     c = _best_by_x(rep2)[1.25]          # need=0.325，门 0.605<1.5 过
     assert c.bonus_cars == 1
-    assert c.bonus_value == pytest.approx(BONUS_V)
+    assert c.bonus_value == pytest.approx(BONUS_V)   # 平价 120（每源 tol_m=3.4 内）
 
 
 def test_gate_off_with_tol_source_identical():

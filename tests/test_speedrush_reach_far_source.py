@@ -83,7 +83,7 @@ def test_far_bonus_source_built():
     s = out[0]
     assert s.x_m == pytest.approx(3.29, abs=0.05)   # 算式见文件头
     assert math.isfinite(s.t_miss_s) and s.t_miss_s > 0.0
-    assert s.tol_m == pytest.approx(3.4)
+    assert s.tol_m is None              # 缺省=bonus_tol_m（近远场同源，evaluate 端默认）
     assert s.conf == pytest.approx(0.9)
 
 

@@ -807,6 +807,7 @@ class DecisionEngine:
                 abs(dx_m) / lane_w),
             bonus_value=c.bonus_car_value if c.bonus_value else 0.0,
             hug_visual=c.hug_visual,
+            bonus_tol_m=c.bonus_tol_m,
             **hug_kw)
 
     def _reach_evaluate(self, obs: WorldObservation,
@@ -880,7 +881,6 @@ class DecisionEngine:
                 if band.right.x_m is not None:
                     edges.append(band.right.x_m)
         span = (min(edges) / lane_w, max(edges) / lane_w) if edges else None
-        tol = self.cfg.corridor_reach.bonus_far_tol_m
         out: list[BonusSource] = []
         for b in obs.far_targets:
             if b.kind != KIND_BONUS:
@@ -905,7 +905,7 @@ class DecisionEngine:
                 continue                        # 到站仪器无解：不追
             out.append(BonusSource(
                 x_m=(x_coarse + executed_lane) * lane_w,
-                t_miss_s=t_miss, conf=b.conf, tol_m=tol))
+                t_miss_s=t_miss, conf=b.conf))  # tol_m 缺省=bonus_tol_m（近远场同源）
         return out
 
     def _reach_car_sources(self, executed_lane: float) -> list[CarSource]:
