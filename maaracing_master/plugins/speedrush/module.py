@@ -943,6 +943,14 @@ class SpeedRushModule(ActivityModule):
             "executed_lane": round(planner.state.executed_lane, 4),
             "v_lat_est": round(planner.state.v_lat_est, 4),
             "n_groups": len(obs.coin_groups),
+            # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
+            # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
+            # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）
+            "cgroups": [
+                {"id": g.group_id, "cm": round(g.conf_min, 2),
+                 "obs": g.observed_count, "last": g.last_seen_fid,
+                 "part": g.partial_observation}
+                for g in obs.coin_groups] or None,
             "best_score": None if best is None else round(best[0], 1),
             "best_x": None if best is None else round(best[1], 2),
             # step 2.5 闭环列：实际喂入 planner 的路中心观测（None=本拍弃权/垃圾对）
@@ -997,6 +1005,17 @@ class SpeedRushModule(ActivityModule):
             else round(chain["ego_road"].last["grid_off"], 4),
             "ro_agree": chain["ego_road"].last.get("xcheck"),
             "ro_edge": None if edge_off is None else round(edge_off, 4),
+            # 主候选供数门分账列（2026-10-17 归因：走廊缺席拍 9 成以上=主候选
+            # 被供数门拒绝，垃圾对/对宽门/路心超限三道门未分账）：本拍原始对
+            # + 对宽（二元定一对）+ W 真值 + 拒绝原因——与 ro_source 拒绝拍
+            # 同拍 join 即复算三者的缺席拍占比，门标定（OFF_MAX/对宽容忍）有数
+            "ro_off_raw": None if chain["ego_road"].last.get("off_raw") is None
+            else round(chain["ego_road"].last["off_raw"], 4),
+            "ro_w": None if chain["ego_road"].last.get("width") is None
+            else round(chain["ego_road"].last["width"], 4),
+            "ro_pair_w": None if chain["ego_road"].last.get("pair_w") is None
+            else round(chain["ego_road"].last["pair_w"], 4),
+            "ro_reject": chain["ego_road"].last.get("reject"),
             # 深度几何列（几何主人 v4）：在场侧数 + 两侧读数 + 时延 + 弃权原因
             "dgeo_sides": None if dgeo is None else dgeo.sides,
             "dgeo_left": None if dgeo is None or dgeo.left_edge_lane is None
@@ -1601,8 +1620,10 @@ class _EgoRoadObserver:
         """主候选一拍（pair 或 master 的区读数）：门禁→中值窗→槽/W→走廊。
         拒绝返回 None（诚实弃权，无兜底），接受返回走廊。"""
         off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
+        pair_w = er - el               # 本拍对宽（供数门分账审计面，滤波前）
         if abs((el + er) / 2.0) > self.OFF_MAX:
-            self.last = self._snapshot(now, src, None, off_raw, grid_off)
+            self.last = self._snapshot(now, src, None, off_raw, grid_off,
+                                       pair_w=pair_w, reject="off_max")
             return None                 # 垃圾对：不喂、不入槽、不入窗
         # 对宽一致性门（实机 2026-10-05 案）：W 成形后对宽超出 W±20% 的对=
         # 找边锁错结构的污染对（车流走廊对宽 1.7 道、邻车侧面当"边"），同
@@ -1610,7 +1631,8 @@ class _EgoRoadObserver:
         formed = self.width
         if formed is not None and \
                 abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
-            self.last = self._snapshot(now, src, None, off_raw, grid_off)
+            self.last = self._snapshot(now, src, None, off_raw, grid_off,
+                                       pair_w=pair_w, reject="width_guard")
             return None                 # 污染对：不喂、不入槽、不入窗
         # 路心互证（grid_xcheck.mode=veto 专用）：新鲜对与同拍栅格 wmid 路心
         # 分歧超容限 → 疑似找边锁错结构，同污染对路径不供数；连续 veto 达
@@ -1622,7 +1644,8 @@ class _EgoRoadObserver:
                 self._xc_streak += 1
                 if self._xc_streak < self._xc.bypass_streak:
                     self.last = self._snapshot(now, src, None, off_raw,
-                                               grid_off, "veto")
+                                               grid_off, "veto",
+                                               pair_w=pair_w, reject="veto")
                     return None
                 xcheck = "bypass"       # 连续分歧达预算：放行，防黑视
             else:
@@ -1638,12 +1661,13 @@ class _EgoRoadObserver:
         self._feed_width(el, er)
         center = (el + er) / 2.0        # 路心（自车系）
         if abs(center) > self.OFF_MAX:
-            self.last = self._snapshot(now, src, None, off_raw, grid_off)
+            self.last = self._snapshot(now, src, None, off_raw, grid_off,
+                                       pair_w=pair_w, reject="center_max")
             return None                 # 垃圾信号不喂（中值后复查，宁弃不喂假路心）
         corridor = self._build(bnd, grid, fid, center, er - el, src)
         self._mem = self._mem_update(center, er - el, now)
         self.last = self._snapshot(now, src, -center, off_raw, grid_off,
-                                   xcheck)
+                                   xcheck, pair_w=pair_w)
         return corridor
 
     def _fallback(self, now: float, grid, bnd, fid: int | None,
@@ -1789,11 +1813,16 @@ class _EgoRoadObserver:
     def _snapshot(self, now: float, src: str, off: float | None,
                   off_raw: float | None = None,
                   grid_off: float | None = None,
-                  xcheck: str | None = None) -> dict:
+                  xcheck: str | None = None,
+                  pair_w: float | None = None,
+                  reject: str | None = None) -> dict:
         """debug/trace 数据面（ro_* 列）：来源、喂入值、原始对、同拍栅格路心
-        与互证判定（agree/veto/bypass；复用拍、闸关、栅格弃权=None）。"""
+        与互证判定（agree/veto/bypass；复用拍、闸关、栅格弃权=None）。
+        pair_w=本拍对宽（与 off_raw 二元定一对）；reject=主候选供数门拒绝
+        原因（off_max/width_guard/veto/center_max）——拒绝拍分账审计面。"""
         return {"source": src, "off": off, "off_raw": off_raw,
-                "width": self.width, "grid_off": grid_off, "xcheck": xcheck}
+                "width": self.width, "grid_off": grid_off, "xcheck": xcheck,
+                "pair_w": pair_w, "reject": reject}
 
 
 def _started_async_depth(obs: DepthRoadObserver,

@@ -198,6 +198,40 @@ def test_rejected_pair_stays_none_even_with_region():
                     fid=1) is None
 
 
+# ---------- 主候选供数门分账（2026-10-17 拒绝拍审计面） ----------
+
+def test_rejected_pair_records_reject_and_pair_w():
+    """垃圾对拒绝拍：reject=off_max、off_raw/pair_w 落快照——三道门分账
+    审计面（trace ro_off_raw/ro_w/ro_pair_w/ro_reject 列数据源）。"""
+    o = smod._EgoRoadObserver(lane_w_m=LW)
+    o.update(_bnd(-6.0, -2.0), now=1000.0, grid=_grid(range(12, 24)), fid=1)
+    assert o.last["reject"] == "off_max"
+    assert o.last["off_raw"] == pytest.approx(4.0, abs=0.01)   # -((-6−2)/2)
+    assert o.last["pair_w"] == pytest.approx(4.0, abs=0.01)    # -2−(−6)
+
+
+def test_width_guard_reject_recorded():
+    """对宽门拒绝拍：W 成形后对宽超出 ±20% 的对 reject=width_guard，
+    pair_w=原始对宽（滤波前）。"""
+    o = smod._EgoRoadObserver(lane_w_m=LW)
+    for i in range(30):                       # W 成形所需最少对宽数
+        assert o.update(_bnd(-2.0, 2.0), now=1000.0 + 0.05 * i,
+                        grid=_grid(range(12, 24)), fid=i + 1) is not None
+    assert o.width == pytest.approx(4.0)
+    assert o.update(_bnd(-1.0, 0.2), now=1002.0,
+                    grid=_grid(range(12, 24)), fid=31) is None
+    assert o.last["reject"] == "width_guard"
+    assert o.last["pair_w"] == pytest.approx(1.2, abs=0.01)
+
+
+def test_accepted_pair_reject_none():
+    """接受拍 reject=None（拒绝标记只在拒绝拍出场）。"""
+    o = smod._EgoRoadObserver(lane_w_m=LW)
+    assert o.update(_bnd(-2.0, 2.0), now=1000.0, grid=_grid(range(12, 24)),
+                    fid=1) is not None
+    assert o.last["reject"] is None
+
+
 def test_region_fallback_on_fresh_tick_only():
     """候选缺席的新鲜拍：墙/槽全空 → 区读数接棒（src=region）；复用拍
     （new=False）区不接棒（旧栅格不冒充新鲜）。"""
