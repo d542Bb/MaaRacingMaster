@@ -749,7 +749,12 @@ class SpeedRushModule(ActivityModule):
         t_start = time.time()
         run_dir = _run_dir(t_start, phase)
         dbg_on = self._debug_enabled()
-        return {"cfg": cfg, "tracker": Tracker(), "agg": CoinGroupAggregator(),
+        return {"cfg": cfg,
+                # 速度像素桥（闸 metric_bridge.enabled，默认关=逐位回今天）：
+                # 闸与迟滞驻留由链构建传入，tracking 层不读配置
+                "tracker": Tracker(bridge_enabled=cfg.metric_bridge.enabled,
+                                   bridge_stay=cfg.metric_bridge.stay),
+                "agg": CoinGroupAggregator(),
                 # conf_floor：宽度有效性门的置信地板（真源=scoring.conf_floor，
                 # 传入不抄第二份）
                 "traffic_obs": TrafficObserver(cfg.traffic,

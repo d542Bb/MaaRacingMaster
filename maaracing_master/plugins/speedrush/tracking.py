@@ -35,7 +35,8 @@ from typing import Any
 from maaracing_master.plugins.speedrush.depth_geo import DepthAnchorSheet
 from maaracing_master.plugins.speedrush.perception import PerceptionResult
 from maaracing_master.plugins.speedrush.world_model import (
-    KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, x_lane_of)
+    KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, t_meet_car_s,
+    x_lane_of)
 
 SCHEMA_VERSION = 1
 
@@ -253,6 +254,13 @@ class MetricCarState:
     v_close_mps: float | None
     t_meet_s: float | None
     anchor_age_ms: float | None
+    # 速度像素桥（闸 metric_bridge.enabled，默认关=逐位回今天）：米制 t_meet
+    # 缺席的拍（UNKNOWN 五因/估计窗未开/丢框保锚）以 rel_approach 纵向行运动
+    # 桥接 t_meet（同一公式真源 t_meet_car_s）；bridged=True=本行 t_meet_s 是
+    # 桥接值（不确定度走消费端降权/裕度），bridge_reason=进入桥接的原因
+    # （UNKNOWN 五因值或 est_window=有锚估计窗未开）。契约加法扩展。
+    bridged: bool = False
+    bridge_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -389,16 +397,30 @@ class _Track:
                                          # 与锚点同生命周期（新锚/簇跳/超龄即清），
                                          # 消费政策（新鲜度分带/预测投影）在刀二带闸
     last_dist_reason: DistanceReason | None = None
+    # ---- 速度像素桥迟滞态（闸 metric_bridge.enabled，默认关不消费）----
+    # src_mode=当前供数侧（metric=米制锚 / bridge=像素桥）；src_dwell=当前侧
+    # 连续驻留拍数（初值=2：从未锚定的车没有米制驻留可言，首个缺席拍即进桥
+    # ——追尾案"从未/刚锚定"场景恰好靠这个进入）；bridge_reason=进入原因，
+    # 换回米制侧清零
+    src_mode: str = "metric"
+    src_dwell: int = 2
+    bridge_reason: str | None = None
 
 
 class Tracker:
     """跨帧目标关联与观测组装。每 tick `update()` 一次，喂一帧感知结果。"""
 
     def __init__(self, cal: Calib | None = None,
-                 params: TrackerParams = TrackerParams()):
+                 params: TrackerParams = TrackerParams(),
+                 bridge_enabled: bool = False,
+                 bridge_stay: int = 2):
         # cal 缺省读几何真源（gate0.json）；三源分立，代码不写标定字面量
         self.cal = cal if cal is not None else load_calib()
         self.p = params
+        # 速度像素桥（闸 metric_bridge.enabled，默认关）：闸与迟滞驻留由
+        # decision.json 传入（tracking 层不读配置，配置流向单点在链构建）
+        self._bridge_on = bridge_enabled
+        self._bridge_stay = bridge_stay
         self._tracks: list[_Track] = []
         self._next_id = 1
         self._last_fid: int | None = None
@@ -700,16 +722,48 @@ class Tracker:
         cx 当前框、fx 锚点帧焦距、z 当前米制——三者各差半拍（锚帧 vs 当前帧），
         横向慢变量误差二阶（MetricCarState docstring）。t_meet 只在 v_close>0
         时出：≤0=掠过/远离（占用语义），None（有锚）=估计窗未开（回退像素），
-        None（UNKNOWN）=无锚（回退像素）——消费端靠 source 分流。"""
+        None（UNKNOWN）=无锚（回退像素）——消费端靠 source 分流。
+
+        速度像素桥（闸 metric_bridge.enabled，默认关=逐位回今天）：米制
+        t_meet 缺席（UNKNOWN 五因/估计窗未开/丢框保锚——v_close 已发布但
+        t=None 是占用语义，不桥）的拍以 rel_approach 纵向行运动桥接 t_meet
+        （t_meet_car_s 同一公式真源，免二次标定）。进入/退出迟滞：意图换侧
+        须当前侧驻留 ≥ stay 拍（防双源翻脸），从未锚定的车初驻留即满（首个
+        缺席拍即进桥）；进入原因记 UNKNOWN 五因值或 est_window（有锚估计窗
+        未开），换回米制清零。桥接段 fid 率未热/不接近（rel≤0）=无桥接值，
+        下拍再试。"""
         z = d.metric_distance_m
         x_m = None
         if z is not None and t.anchor_fx and t.anchor_fx > 0:
             x_m = (t.cx - self.cal.vpx) * z / t.anchor_fx
         v = d.v_close_mps
         t_meet = z / v if (z is not None and v is not None and v > 0.0) else None
+        bridged = False
+        bridge_reason = None
+        if self._bridge_on:
+            meter = t_meet is not None
+            if meter != (t.src_mode == "metric"):
+                # 意图换侧：当前侧驻留满 stay 拍才换（防双源翻脸）
+                if t.src_dwell >= self._bridge_stay:
+                    t.src_mode = "metric" if meter else "bridge"
+                    t.src_dwell = 1
+                    t.bridge_reason = None if meter else (
+                        d.reason.value if d.reason is not None
+                        else "est_window")
+                else:
+                    t.src_dwell += 1
+            else:
+                t.src_dwell += 1
+            if t.src_mode == "bridge":
+                bridge_reason = t.bridge_reason
+                rel, fid = t.rel_approach, self.fid_rate_hz
+                if rel > 0.0 and fid:
+                    t_meet = t_meet_car_s(rel, t.cy, self.cal, fid)
+                    bridged = True
         return MetricCarState(
             target_id=t.id, source=d.source, z_m=z, x_m=x_m,
-            v_close_mps=v, t_meet_s=t_meet, anchor_age_ms=d.anchor_age_ms)
+            v_close_mps=v, t_meet_s=t_meet, anchor_age_ms=d.anchor_age_ms,
+            bridged=bridged, bridge_reason=bridge_reason)
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
         """逐对算代价值 → 全局按代价升序贪心 1:1 配对。

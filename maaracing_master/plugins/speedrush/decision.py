@@ -340,9 +340,12 @@ class Scorer:
     def metric_t(self, m, v) -> float | None:
         """米制到站时刻（分流语义见 MetricCarState docstring）：
         v_close>0 → z/v_close；v_close≤0 → None（掠过/远离=占用）；
-        v_close None（锚新估计窗未开）→ 像素回退（有视图才退得动）。
-        原 lane_score 住户，20261015 退役随迁（走廊收益场接线同源消费）。"""
+        v_close None（锚新估计窗未开）→ 桥接值（闸 metric_bridge.enabled）
+        → 像素回退（有视图才退得动）。原 lane_score 住户，20261015 退役随迁
+        （走廊收益场接线同源消费）。"""
         if m.v_close_mps is not None:
+            return m.t_meet_s
+        if getattr(m, "bridged", False) and m.t_meet_s is not None:
             return m.t_meet_s
         if v is None:
             return None
@@ -780,6 +783,11 @@ class DecisionEngine:
         lane_w = self.cal.lane_w_m
         c = self.cfg.corridor_reach
         hug_kw = {}
+        if self.cfg.metric_bridge.enabled:
+            # 速度像素桥不确定度（闸 metric_bridge.enabled，闸关不传=None=
+            # 逐位回今天）：威胁降权 + 桥接车可达门裕度放宽
+            hug_kw["bridge_weight"] = self.cfg.metric_bridge.weight
+            hug_kw["bridge_margin_add_s"] = self.cfg.metric_bridge.margin_add_s
         if c.overtake_hunting and c.hug_value:
             ov = self.cfg.overtake
             center_m = ov.d_hold_lane * lane_w
@@ -919,16 +927,18 @@ class DecisionEngine:
         out: list[CarSource] = []
 
         def enter(x: float | None, tm: float | None,
-                  t_ov: float | None = None) -> None:
+                  t_ov: float | None = None,
+                  bridged: bool = False) -> None:
             if x is not None and x == x:
                 out.append(CarSource(x_m=x + off, t_meet_s=tm,
-                                     t_overtake_s=t_ov))
+                                     t_overtake_s=t_ov, bridged=bridged))
 
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
             if v is not None and v.cy >= self.cal.v_ego:
                 seen.add(m.target_id)           # 已过自车行：不占道
                 continue
+            bridged = getattr(m, "bridged", False)
             if m.z_m is not None:
                 x = (m.x_m if m.x_m is not None
                      else (self.scorer.cand_x(v) * lane_w
@@ -940,17 +950,22 @@ class DecisionEngine:
                 # 及实机 trace 对账（符号一致率 70.8%、近距离车 87% 为正）均
                 # v>0=接近，数值同为 z/|v_close|）。**不走 tm**（metric_t 在
                 # 估计窗未开时回退像素，估计窗未开=弃权不追）；t≤0（z 已过
-                # datum）/v_close 缺位=None=仪器缺位弃权
+                # datum）/v_close 缺位/桥接段=None=仪器缺位弃权
                 t_ov = m.t_meet_s if (m.t_meet_s is not None
-                                      and m.t_meet_s > 0.0) else None
+                                      and m.t_meet_s > 0.0
+                                      and not bridged) else None
             elif v is not None:
                 x, tm = self.scorer.pixel_instruments(v)
                 t_ov = None                     # 像素回退车无米制锚：旧错身项
                 x = None if x is None else x * lane_w
+                # 速度像素桥（闸 metric_bridge.enabled）：桥接 t 与像素同式
+                # 真源，优先取桥接值（携带 bridged 标记供不确定度分权）
+                if bridged and m.t_meet_s is not None:
+                    tm = m.t_meet_s
             else:
                 continue                        # 无视图的远轨必有锚
             seen.add(m.target_id)
-            enter(x, tm, t_ov)
+            enter(x, tm, t_ov, bridged=bridged)
         for vid, v in by_id.items():
             if vid in seen or v.cy >= self.cal.v_ego:
                 continue                        # 米制路径已入账，不双计
@@ -1221,16 +1236,20 @@ class DecisionEngine:
     def metric_cars_snap(self) -> list[dict]:
         """上一拍车米制状态快照（观测面，trace mcars 列数据源；R3 归因面）：
         逐车横向位/纵向距/到站/接近速/锚龄——机会漏点（可达门 vs 碰撞判据）
-        的离线复算输入。t_ov 沿 _reach_car_sources 同式（≤0=仪器缺位弃权）。
-        空表=metric_cars 关或无车。"""
+        的离线复算输入。t_ov 沿 _reach_car_sources 同式（≤0/桥接段=仪器缺位
+        弃权）。b/bwhy=速度像素桥标记与进入原因（闸 metric_bridge.enabled，
+        默认关恒 False/None）。空表=metric_cars 关或无车。"""
         return [{"id": m.target_id, "src": m.source.value,
                  "x": None if m.x_m is None else round(m.x_m, 2),
                  "z": None if m.z_m is None else round(m.z_m, 2),
-                 "t_ov": None if (m.t_meet_s is None or m.t_meet_s <= 0.0)
+                 "t_ov": None if (m.t_meet_s is None or m.t_meet_s <= 0.0
+                                  or getattr(m, "bridged", False))
                  else round(m.t_meet_s, 3),
                  "v": None if m.v_close_mps is None else round(m.v_close_mps, 2),
                  "age": None if m.anchor_age_ms is None
-                 else round(m.anchor_age_ms, 1)}
+                 else round(m.anchor_age_ms, 1),
+                 "b": bool(getattr(m, "bridged", False)),
+                 "bwhy": getattr(m, "bridge_reason", None)}
                 for m in self._metric_cars]
 
     @property

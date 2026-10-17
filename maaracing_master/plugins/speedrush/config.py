@@ -287,6 +287,24 @@ class MetricCars:
 
 
 @dataclass(frozen=True)
+class MetricBridge:
+    """速度像素桥闸（证据闪 2026-10-17 两局实测：簇跳变清零 7.7~16.2% 拍 +
+    无锚段 P90=36 拍，米制 t_meet 在关键逼近段段状缺席——追尾案速度在撞击前
+    0.3s 才成形）。
+
+    语义：`enabled` 开闸后，米制 t_meet 缺席的拍（UNKNOWN 五因/有锚估计窗
+    未开/丢框保锚）以 rel_approach 纵向行运动桥接 t_meet（同一公式真源
+    t_meet_car_s，免二次标定），桥接段不确定度走 threat 权重与可达裕度
+    （消费面 corridor_reach）；`stay` 是每侧最短驻留（防双源翻脸，与
+    commitment k_stay 同族纪律）。闸关=逐位回今天（桥接行无桥接量）。"""
+
+    enabled: bool = False
+    stay: int = 2                # 每侧最短驻留（拍）
+    weight: float = 0.5          # 威胁降权初值（碰撞/遮挡时间放大 1/weight）
+    margin_add_s: float = 0.15   # 桥接车可达门裕度放宽量（实机标定候选）
+
+
+@dataclass(frozen=True)
 class DebugDump:
     """调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验）。
 
@@ -358,6 +376,7 @@ class DecisionConfig:
     # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
     metric_cars: MetricCars = MetricCars()
+    metric_bridge: MetricBridge = MetricBridge()
     debug_dump: DebugDump = DebugDump()
     commitment: Commitment = Commitment()
 
@@ -589,6 +608,13 @@ def _read_decision(path: Path) -> DecisionConfig:
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
             fusion=_bool(d, "metric_cars", "fusion", default=False)),
+        metric_bridge=MetricBridge(
+            enabled=_bool(d, "metric_bridge", "enabled", default=False),
+            stay=_int_def(d, "metric_bridge", "stay", 2, lo=1),
+            weight=_num_def(d, "metric_bridge", "weight", 0.5,
+                            lo=0, lo_open=False),
+            margin_add_s=_num_def(d, "metric_bridge", "margin_add_s", 0.15,
+                                  lo=0, lo_open=False)),
         debug_dump=DebugDump(
             mode=_dump_mode,
             ring=_int_def(d, "debug_dump", "ring", 10, lo=0),

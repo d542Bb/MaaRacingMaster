@@ -73,6 +73,9 @@ class CarSource:
     x_m: float                 # 车横位（米，自车系）
     t_meet_s: float | None     # 到站时刻；None=pacing/掠过（占用语义，不判碰撞）
     t_overtake_s: float | None = None   # 被超时刻（R3 前车仪器）；None=无米制锚
+    # 速度像素桥（闸 metric_bridge.enabled，默认关=False=逐位回今天）：
+    # True=本车 t_meet_s 是桥接值（不确定度走 bridge_weight/bridge_margin_add_s）
+    bridged: bool = False
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,11 @@ class ReachParams:
     hug_visual: bool = False             # hug 分支扩到像素仪器车：t_overtake 缺位
                                          #   （米制锚未成形，覆盖仅 5%）的车回退
                                          #   t_meet_s（仪器链米制优先像素回退同源）
+    # ---- 速度像素桥不确定度（2026-10-17 两局实测；None=闸关=逐位回今天）----
+    # 桥接车 t_meet_s 的不确定度走消费面分权：threat 权重作用于碰撞/遮挡
+    # 判据（时间放大 1/weight=威胁减半），裕度放宽作用于贴身可达门。
+    bridge_weight: float | None = None   # 威胁降权（初值 0.5，实机标定候选）
+    bridge_margin_add_s: float | None = None  # 桥接车可达门裕度放宽量（s）
                                          #   过同一可达门与 E 曲线
     # ---- R5 §10 奖励车归属容差（近远场同源；20261017 A/B 两轮教训定窄）----
     bonus_tol_m: float = 0.75            # 奖励车归属半容差（米）：宽了平价 120 摊成
@@ -235,9 +243,18 @@ def evaluate(bands: Sequence[CorridorBandSpan],
               and hug_on)   # R2 复用贴身窗沿曲线，无 R3 参数时无 E 可言
 
     # ---- 车三分预备（事件语义：每车记一次） ----
-    # 本道（归属半宽内）的车：碰撞/遮挡判据面；先于币到达的车把币挡住
+    # 本道（归属半宽内）的车：碰撞/遮挡判据面；先于币到达的车把币挡住。
+    # 威胁读数：桥接车（metric_bridge 闸开才可能有）t_meet_s 不确定度走
+    # 降权——时间放大 1/weight（weight=0.5 → 威胁减半，实机标定候选）；
+    # 闸关/非桥接=原值逐位回今天。
+    def threat_t(c) -> float | None:
+        t = c.t_meet_s
+        if t is not None and c.bridged and params.bridge_weight:
+            return t / params.bridge_weight
+        return t
+
     def car_in_path(x: float) -> list[float | None]:
-        return [c.t_meet_s for c in cars
+        return [threat_t(c) for c in cars
                 if abs(c.x_m - x) <= params.attribution_half_m]
 
     out: list[CandidateScore] = []
@@ -267,10 +284,11 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                 if not need + params.tau_s + params.margin_s < coin.t_miss_s:
                     continue                # 来不及：不追（不计入也不降权）
                 # 遮挡：先于币到达的车把币挡住（我们赶到前已过的车 t<need
-                # 不挡、pacing 车 t=None 整窗占用——与退役前 lane_score 同判）
+                # 不挡、pacing 车 t=None 整窗占用——与退役前 lane_score 同判；
+                # 桥接车威胁降权同 crash 判据）
                 if any(abs(c.x_m - coin.x_m) <= params.attribution_half_m
                        and (c.t_meet_s is None
-                            or need <= c.t_meet_s <= coin.t_miss_s)
+                            or need <= threat_t(c) <= coin.t_miss_s)
                        for c in cars):
                     continue
                 coin_value += val
@@ -301,7 +319,7 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                     continue                    # 来不及/窗外：不追（不计入也不降权）
                 if any(abs(c.x_m - b.x_m) <= tol
                        and (c.t_meet_s is None
-                            or need <= c.t_meet_s <= b.t_miss_s)
+                            or need <= threat_t(c) <= b.t_miss_s)
                        for c in cars):
                     continue                    # 遮挡：先到的车挡住（赶到前已过的车不挡）
                 bonus_sum += params.bonus_value
@@ -335,8 +353,12 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                     if t_pass > params.horizon_s:
                         continue                    # 窗外：无价值（旧错身同判）
                     # 可达性唯一门（与币门同式同真源）：过近/来不及即自然失败，
-                    # 不再另设 minActionTime 门
-                    if not (need + params.tau_s + params.margin_s <= t_pass):
+                    # 不再另设 minActionTime 门。桥接车 t_meet_s 不确定度走
+                    # 裕度放宽（margin_add_s，闸开才可能非 None）
+                    margin = params.margin_s
+                    if c.bridged and params.bridge_margin_add_s is not None:
+                        margin += params.bridge_margin_add_s
+                    if not (need + params.tau_s + margin <= t_pass):
                         continue
                     e = _hug_e(d, params)
                     if e > 0.0:
