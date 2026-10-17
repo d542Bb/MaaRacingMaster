@@ -19,6 +19,7 @@ import json
 import struct
 import subprocess
 import sys
+import os
 import time
 
 import psutil
@@ -99,11 +100,11 @@ def gpu_snapshot() -> dict:
         return {"error": str(e)}
 
 
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--duration", type=float, default=1200.0)
-    ap.add_argument("--out", required=True)
     ap.add_argument("--min-proc-cores", type=float, default=0.02,
                     help="进程级低于此核数不入账（仍然采样，只是不写，减体积）")
     ap.add_argument("--min-thr-cores", type=float, default=0.02,
@@ -111,12 +112,11 @@ def main() -> int:
     ap.add_argument("--gpu-every", type=int, default=2, help="每 N 个样本采一次 GPU")
     a = ap.parse_args()
 
-    # 输出路径约束（安全扫描：--out 不接受任意路径写入）
-    if ".." in Path(a.out).parts:
-        ap.error("--out 不接受 .. 路径分量")
-    out_p = Path(a.out).resolve()
-    if Path(__file__).resolve().parent not in out_p.parents:
-        ap.error(f"--out 必须在本探针目录下：{Path(__file__).resolve().parent}")
+    # 输出路径约束（安全扫描：固定基目录 + 禁 .. 分量，越界即拒绝）
+    out_dir = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster"
+               / "data" / "speedrush" / "census")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_p = out_dir / (f"full_census_" + time.strftime("%Y%m%d_%H%M%S") + ".csv")
 
     ncpu = psutil.cpu_count(logical=True)
     me = psutil.Process().pid
@@ -140,7 +140,7 @@ def main() -> int:
     prev = sys_snapshot()
     prev_t = time.monotonic()
     thread_meta_written = False
-    fh = open(out_p, "w", encoding="utf-8")
+    fh = out_p.open("w", encoding="utf-8")
     n = 0
 
     while time.monotonic() - t0 < a.duration:
@@ -209,7 +209,7 @@ def main() -> int:
         n += 1
 
     fh.close()
-    print(f"[full-census] {n} 样本 / {time.monotonic() - t0:.0f}s → {a.out}", flush=True)
+    print(f"[full-census] {n} 样本 / {time.monotonic() - t0:.0f}s → {out_p}", flush=True)
     return 0
 
 
