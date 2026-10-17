@@ -1088,6 +1088,15 @@ class SpeedRushModule(ActivityModule):
             "cr_hug_cars": None if chain["engine"].reach_report is None
             else max(chain["engine"].reach_report.candidates,
                      key=lambda c: c.score).hug_cars,
+            # R5 奖励车审计面（20261017 设计稿 §9.1）：胜出候选奖励车项累加
+            # 与计入车数——离线回放对账「排最前面的优先」与撞奖励车行为的
+            # 复算输入；闸关恒 0，None=reach 弃权拍
+            "cr_bonus": None if chain["engine"].reach_report is None
+            else max(chain["engine"].reach_report.candidates,
+                     key=lambda c: c.score).bonus_value,
+            "cr_bonus_cars": None if chain["engine"].reach_report is None
+            else max(chain["engine"].reach_report.candidates,
+                     key=lambda c: c.score).bonus_cars,
             # 需求面承诺制意图观测面（§8.2，demand 闸开才有值）：d0/带内依据
             # id/缺席时长与放弃·升级·次判据的机检计数——逐集核对与 §8.6 L1
             # 验收的复算面；None=demand 关/集外无意图

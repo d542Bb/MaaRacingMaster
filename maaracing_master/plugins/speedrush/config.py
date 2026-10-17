@@ -261,6 +261,9 @@ class CorridorReach:
     far_aggregation: str = "max"         # 多车聚合三语义：max | sum | capped
                                          #   （capped 上限=value_limit+pass_value）；
                                          #   影子对比后定档
+    # ---- R5 四层优先级（2026-10-17 设计稿 §9；默认关=逐位回今天）----
+    bonus_value: bool = False            # 层 1 奖励车项分开关（false=逐位回今天）
+    bonus_car_value: float = 120.0       # 奖励车收益分（起值=一次极限动作分 [需实测]）
 
 
 @dataclass(frozen=True)
@@ -568,7 +571,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             hunt_horizon_s=_num_def(d, "corridor_reach", "hunt_horizon_s",
                                     6.0, lo=0),
             far_aggregation=_str_def(d, "corridor_reach", "far_aggregation",
-                                     "max", ("max", "sum", "capped"))),
+                                     "max", ("max", "sum", "capped")),
+            bonus_value=_bool(d, "corridor_reach", "bonus_value",
+                              default=False),
+            bonus_car_value=_num_def(d, "corridor_reach", "bonus_car_value",
+                                     120.0, lo=0)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
             fusion=_bool(d, "metric_cars", "fusion", default=False)),

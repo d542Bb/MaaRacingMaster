@@ -46,6 +46,17 @@ class CoinSource:
 
 
 @dataclass(frozen=True)
+class BonusSource:
+    """一辆奖励车（R5 层 1，2026-10-17 设计稿 §9.1；plan.py bonus 候选同源
+    几何，单一真源不复制）。撞上去触发退场 180×N / barrelRoll 120——收益
+    入口不是障碍（不在车流 views 里，veto/采样天然不拦）。"""
+
+    x_m: float                 # 车体位（米，自车系，左负右正）
+    t_miss_s: float            # 到站时刻（Scorer.car_t_meet_s 仪器）
+    conf: float                # 置信（审计面）
+
+
+@dataclass(frozen=True)
 class CarSource:
     """一辆车的米制到站仪器（占用/碰撞/错身三分共用）。
 
@@ -114,6 +125,9 @@ class ReachParams:
                                          #   None=R2 关
     far_aggregation: str = "max"         # 多车聚合三语义：max | sum | capped
                                          #   （capped 上限=value_limit+pass_value）
+    # ---- R5 四层优先级（2026-10-17 设计稿 §9.1；bonus_value=0=闸关=逐位回今天）----
+    bonus_value: float = 0.0             # 奖励车收益分（0=闸关；起值 120=一次极限
+                                         #   动作分 [需实测]）
 
 
 @dataclass(frozen=True)
@@ -134,6 +148,8 @@ class CandidateScore:
                                 # 不进旧错身项 pass_value_sum，同一辆车不双计）
     hug_cars: int = 0           # 计入贴身 E 项的前车数（审计面）
     far_value: float = 0.0      # R2 前瞻外方向权累加（审计面，w 折前；近场车不双计）
+    bonus_value: float = 0.0    # R5 奖励车项累加（审计面；闸关恒 0）
+    bonus_cars: int = 0         # 计入奖励车项的车数（审计面）
 
 
 @dataclass(frozen=True)
@@ -180,7 +196,8 @@ def evaluate(bands: Sequence[CorridorBandSpan],
              coins: Sequence[CoinSource],
              cars: Sequence[CarSource],
              executed_x: float,
-             params: ReachParams) -> ReachReport | None:
+             params: ReachParams,
+             bonuses: Sequence[BonusSource] = ()) -> ReachReport | None:
     """一拍走廊收益评定。无近场可行驶域（全带缺证据）=诚实弃权（None）；
     空旷路=合法结果（候选间只有位移代价差，胜出=离自车最近的可行位）。"""
     span = next(((b.left, b.right) for b in bands
@@ -250,6 +267,26 @@ def evaluate(bands: Sequence[CorridorBandSpan],
             else:
                 coin_value += params.far_coin_weight * val   # 远币：方向信息仍在
                 n_far += 1
+        # 奖励车项（R5 层 1，设计稿 §9.1）：与币同门同式——横向归属半宽、
+        # 可达门 need+τ+margin < t_miss ≤ 前瞻窗、先到的车遮挡；闸关
+        # （bonus_value=0 或 bonuses 空）恒 0=逐位回今天。撞上去是收益入口
+        # 不是障碍（奖励车不在车流 views 里，碰撞判据面天然不含它）。
+        bonus_sum = 0.0
+        n_bonus = 0
+        if params.bonus_value > 0.0:
+            for b in bonuses:
+                if abs(b.x_m - x) > params.attribution_half_m:
+                    continue                    # 横向不落归属半宽：不是这条路径的奖励车
+                if not (need + params.tau_s + params.margin_s < b.t_miss_s
+                        <= params.horizon_s):
+                    continue                    # 来不及/窗外：不追（不计入也不降权）
+                if any(abs(c.x_m - b.x_m) <= params.attribution_half_m
+                       and (c.t_meet_s is None
+                            or need <= c.t_meet_s <= b.t_miss_s)
+                       for c in cars):
+                    continue                    # 遮挡：先到的车挡住（赶到前已过的车不挡）
+                bonus_sum += params.bonus_value
+                n_bonus += 1
         # 错身/贴身/前瞻外：R3 贴身猎车按仪器**互斥分支**（2026-10-16 设计稿
         # §2.2，同一辆车不双计）——米制锚前车（t_overtake 非 None）走贴身 E 项，
         # 其余车（像素仪器）走旧错身项逐位不变。占用/遮挡/碰撞判据面不动
@@ -301,11 +338,11 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                                 params.hug_value_limit + params.pass_value)
             far_value *= params.far_car_weight
         out.append(CandidateScore(
-            x, coin_value + pass_sum + hug_sum + far_value
+            x, coin_value + pass_sum + hug_sum + far_value + bonus_sum
             - params.shift_cost_per_m * abs(x - executed_x),
             False, coin_value, pass_sum,
             params.shift_cost_per_m * abs(x - executed_x), n_reach, n_far,
-            tuple(coin_ts), hug_sum, n_hug, far_value))
+            tuple(coin_ts), hug_sum, n_hug, far_value, bonus_sum, n_bonus))
 
     # ---- 胜出：argmax；平手（差 < tie_margin）选离走廊中心近者（六点 1） ----
     best = max(out, key=lambda c: (c.score, -abs(c.x_m - center)))

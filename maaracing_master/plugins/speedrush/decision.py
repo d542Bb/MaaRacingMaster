@@ -56,8 +56,8 @@ from maaracing_master.plugins.speedrush.depth_geo import (
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.corridor_reach import (
-    LANE_HALF, CarSource, CoinSource, CorridorBandSpan, ReachParams,
-    ReachReport, evaluate)
+    LANE_HALF, BonusSource, CarSource, CoinSource, CorridorBandSpan,
+    ReachParams, ReachReport, evaluate)
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_PASS, OUTCOME_PRESUMED_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -805,6 +805,7 @@ class DecisionEngine:
             margin_s=self.cfg.timing.margin_s,
             need_of_dx_m=lambda dx_m: self.cfg.timing.lane_change_duration_s(
                 abs(dx_m) / lane_w),
+            bonus_value=c.bonus_car_value if c.bonus_value else 0.0,
             **hug_kw)
 
     def _reach_evaluate(self, obs: WorldObservation,
@@ -834,8 +835,28 @@ class DecisionEngine:
                 x_m=(g.x_center + executed_lane) * lane_w,
                 observed_count=g.observed_count, conf=g.conf_min,
                 t_miss_s=s.t_miss_s))
+        # 奖励车源（R5 层 1，设计稿 §9.1）：几何与到站复用 plan.py bonus 候选
+        # 同源设计（撞上去，维护者裁定 2026-10-05）——视觉体位 x_lane、
+        # car_t_meet_s 到站、track 年龄门槛、不接近不收；闸关=空列表=逐位回今天
+        bonuses: list[BonusSource] = []
+        if self.cfg.corridor_reach.bonus_value:
+            for b in obs.targets:
+                if b.kind != KIND_BONUS:
+                    continue
+                if obs.frame_id - b.first_seen_fid < self.cfg.traffic.min_obs_ticks:
+                    continue                    # track 年龄门槛：单帧噪声进不了评分
+                if b.rel_approach <= 0.0:
+                    continue                    # 不接近=永远撞不上
+                if b.x_lane is None or b.x_lane != b.x_lane:
+                    continue                    # 横位缺位/存续 nan：不入账
+                t_miss = self.scorer.car_t_meet_s(b.rel_approach, b.cy)
+                if not math.isfinite(t_miss):
+                    continue                    # 到站仪器无解：不追
+                bonuses.append(BonusSource(
+                    x_m=(b.x_lane + executed_lane) * lane_w,
+                    t_miss_s=t_miss, conf=b.conf))
         return evaluate(bands, coins, self._reach_car_sources(executed_lane),
-                        shift, self._reach_params)
+                        shift, self._reach_params, bonuses=bonuses)
 
     def _reach_car_sources(self, executed_lane: float) -> list[CarSource]:
         """车米制仪器链（与 lane_score.benefits 同一优先级与仪器：米制优先、
