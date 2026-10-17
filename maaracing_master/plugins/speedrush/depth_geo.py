@@ -54,6 +54,7 @@ from __future__ import annotations
 import threading
 import time
 import io
+import queue
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -403,10 +404,10 @@ LAST_STAGE_MS: dict[str, float] = {}
 def _timing_segments(frame_ts_ns: int | None, t_push: float, t_start: float,
                      t_pub: float, t_consume: float,
                      cap_pre: dict | None = None) -> dict:
-    """一帧深读数的端到端分段（ms）。与 reading.latency_ms（observe 本体）
-    相加≈age；cap 段在 age 之外——age 从入队起算，采集回调→入队此前不可见
-    （2026-10-06 分段计时定案：两端同 perf_counter 钟，WGC 回调打
-    perf_counter_ns）。负值夹紧 0：跨线程时钟微抖不产生假负段。
+    """一帧深读数的端到端分段（ms）。与 reading.latency_ms（observe 本体）相加
+    ≈age；cap 段**在 age 之内**（2026-10-17 起 age 从帧采集回调起算，此前从入队
+    起算、cap 在 age 之外）——两端同 perf_counter 钟，WGC 回调打
+    perf_counter_ns。负值夹紧 0：跨线程时钟微抖不产生假负段。
 
     cap_pre：拍内时间戳链（perf_counter 秒、按拍内先后有序；拾取 pick/
     录制 rec/检测 det/掩码 mask，缺环节点传 None）。在链上逐段伸缩相减
@@ -1641,6 +1642,10 @@ class AsyncDepthRoadObserver:
                              # 假设漂移的取证节奏下漏帧——漂移拍与调试图对不上；
                              # 磁盘代价 ≈90 帧/局 ×1.3MB，取证局可承受）
 
+    DEBUG_WRITE_QUEUE = 6    # 调试落盘待写包上限（每包≈帧 2.7MB + 原生点图 2.4MB）：
+                             # 写盘跟不上就丢新包——debug 不得反压推理（丢包计数见
+                             # health()["debug_dropped"]）
+
     def __init__(self, observer: DepthRoadObserver,
                  max_age_ms: float = MAX_AGE_MS,
                  debug_dir: Path | None = None,
@@ -1662,6 +1667,15 @@ class AsyncDepthRoadObserver:
         self._event_left = 0
         self._debug_last = float("-inf")   # 「从未出工」：0 会在进程早期(monotonic<窗)误判窗内
         self._debug_seq = 0
+        # 调试落盘 writer（2026-10-17）：渲染 78ms + 编码/写盘 12ms 留在 worker 线程
+        # 时，每 0.5s 就把一次推理周期从 93ms 顶到 ~180ms——被顶的那一拍结果凭空老
+        # 90ms，且 worker 相位被踢得乱跳（pub 双峰：发布总落在 take 之后，多等满一
+        # 拍）。渲染/编码/写盘整段搬出 worker，worker 只做「要不要写」的判定与入队
+        # （µs 级）。events 模式的编码仍留在 worker：ring 存的是已编码字节，改存
+        # 原始帧会让 ring 内存从 ~2MB/包 涨到 ~5MB/包。
+        self._dbg_q: queue.Queue = queue.Queue(maxsize=self.DEBUG_WRITE_QUEUE)
+        self._dbg_thread: threading.Thread | None = None
+        self._dbg_dropped = 0     # 写盘跟不上时丢的新包数（debug 绝不反压推理）
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None,
                              dict | None, int | None,
@@ -1694,13 +1708,21 @@ class AsyncDepthRoadObserver:
         """session 不可用则不起线程（push/take 全程空转，行为=session 缺失）。"""
         if self._thread is not None or not self._obs.session_ready:
             return
+        self._stop.clear()   # 复用同一实例重启：stop() 置过的事件不清会让新线程立刻退出
         self._thread = threading.Thread(
             target=self._loop, name="speedrush-depth-worker", daemon=True)
         self._thread.start()
+        if self._debug_dir is not None:
+            self._dbg_thread = threading.Thread(
+                target=self._dbg_loop, name="speedrush-depth-dbg", daemon=True)
+            self._dbg_thread.start()
 
     def stop(self, timeout: float = 2.0) -> bool:
-        """停 worker；返回是否干净退出（False=超时未退，调用方决定怎么报警——
-        本层不引 logger，日志归 module）。"""
+        """停 worker（+ 调试 writer）；返回是否干净退出（False=超时未退，调用方
+        决定怎么报警——本层不引 logger，日志归 module）。
+
+        writer 是**排空式**退出：已入队的包照写，队列空了才退——收局后取证包
+        不会因为停机丢掉（写盘 90ms/包 × 队列上限 6 ≈ 0.5s，落在 timeout 内）。"""
         if self._thread is None:
             return True
         self._stop.set()
@@ -1708,6 +1730,9 @@ class AsyncDepthRoadObserver:
         self._thread.join(timeout=timeout)
         alive = self._thread.is_alive()
         self._thread = None
+        if self._dbg_thread is not None:
+            self._dbg_thread.join(timeout=timeout)
+            self._dbg_thread = None
         return not alive
 
     # ---------- 主线程面 ----------
@@ -1820,6 +1845,7 @@ class AsyncDepthRoadObserver:
                 "stale_new_drops": stale_new,
                 "stale_starts": stale_starts,
                 "failures": failures, "busy_skips": busy,
+                "debug_dropped": self._dbg_dropped,
                 "age_p50": _p(ages, 0.5), "age_p95": _p(ages, 0.95),
                 "dur_p50": _p(durs, 0.5), "dur_p95": _p(durs, 0.95),
                 "max_age_ms": self._max_age_ms, **stage}
@@ -1827,14 +1853,15 @@ class AsyncDepthRoadObserver:
     # ---------- worker 线程 ----------
 
     def _write_debug(self, frame, evid, reading, object_mask, note=None) -> None:
-        """节流落实机调试图（三行堆叠）+ 可复现证据包（336×598 原生点图 fp16 +
-        valid + 归一化焦距 + metric_scale + 物体候选区掩码）。
+        """调试图入队（worker 线程）：只做「要不要写」的判定 + 交包，**不渲染**。
 
-        只有渲染图时读数故障无法离线复现（色标有损、看不到平面钉住了什么）——
-        证据包按模块 docstring「离线复算」口径可逐位重放 reading_from_points。
-        ``_mask.npy`` 自 2026-10-10 起为 obj 候选区（ego 由 3D 框处理不再落盘；
-        旧包同文件=ego∪obj 合并掩码，重放口径见测试 ``_assemble_evid``）。
-        失败静默吞掉——debug 绝不干扰主路。"""
+        渲染 78ms + JPEG 编码 7ms + 写盘 5ms 全在 `_dbg_write`（writer 线程）——
+        留在 worker 上每 0.5s 把一次推理周期从 93ms 顶到 ~180ms，被顶那一拍的结果
+        凭空老 90ms，worker 相位也被踢乱（pub 双峰、多等满一拍）。
+
+        events 模式仍走 worker 内联编码：ring 存已编码字节（~2-3MB/包），改存原始
+        帧会涨到 ~5MB/包 × ring 长。取证包口径（336×598 原生点图 fp16 + valid +
+        原生焦距，可按模块 docstring「离线复算」逐位重放）不变。"""
         now = time.monotonic()
         # 单拍事件即时判定（20261015_093323 实证：9 dodge 0 落盘）：dodge 只
         # 持续 1 拍（50ms），判定排 0.5s 节流后边界落在窗内概率 ~10%——单拍
@@ -1854,34 +1881,67 @@ class AsyncDepthRoadObserver:
         if self._dump is not None and getattr(self._dump, "mode", "full") == "events":
             self._write_debug_events(frame, evid, reading, object_mask, note)
             return
+        self._dbg_submit({"frame": frame, "evid": evid, "reading": reading,
+                          "mask": object_mask, "note": note})
+
+    def _dbg_submit(self, payload: dict) -> None:
+        """交包给 writer；队列满=写盘跟不上，丢新包并计数（绝不阻塞 worker）。"""
         try:
-            self._debug_dir.mkdir(parents=True, exist_ok=True)
-            self._debug_seq += 1
-            stem = self._debug_dir / f"d{self._debug_seq:05d}"
-            img = render_depth_debug(frame, evid, reading, object_mask, note,
-                                     grid=evid.get("grid") if evid else None)
-            cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-            # 原图全幅落盘（人工金标标注/离线重渲染叠锚点都要全分辨率底图；
-            # 证据包只有点云没有帧寸步难行，2026-10-02 取证实证）
-            cv2.imwrite(str(stem) + "_frame.jpg",
-                        cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
-                        [cv2.IMWRITE_JPEG_QUALITY, 85])
-            sol = (evid or {}).get("solver") or {}
-            np.savez(str(stem) + "_evid.npz",
-                     pts=evid["pts"].astype(np.float16),
-                     valid=np.packbits(evid["valid"].ravel()),
-                     valid_shape=np.array(evid["valid"].shape, np.int64),
-                     fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
-                     ms=np.float64(evid.get("ms", -1.0)),
-                     sol_sh=np.float64(sol.get("shift", np.nan)),
-                     sol_resid=np.float64(sol.get("resid", np.nan)),
-                     sol_n=np.int64(sol.get("n", -1)),
-                     fid=np.int64(note["fid"]) if note and note.get("fid") is not None
-                     else np.int64(-1))
-            if object_mask is not None:
-                np.save(str(stem) + "_mask.npy", np.packbits(object_mask))
-        except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
-            pass
+            self._dbg_q.put_nowait(payload)
+        except queue.Full:
+            self._dbg_dropped += 1
+
+    def _dbg_loop(self) -> None:
+        """调试 writer：排空式（停机时已入队的包照写）。"""
+        while True:
+            try:
+                payload = self._dbg_q.get(timeout=0.1)
+            except queue.Empty:
+                if self._stop.is_set():
+                    return
+                continue
+            try:
+                self._dbg_write(payload)
+            except Exception:  # noqa: BLE001 —— 可视化判据失败不碰主路
+                pass
+            finally:
+                self._dbg_q.task_done()
+
+    def _dbg_write(self, payload: dict) -> None:
+        """渲染三行调试图 + 落可复现证据包（writer 线程；失败静默吞掉）。
+
+        ``_mask.npy`` 自 2026-10-10 起为 obj 候选区（ego 由 3D 框处理不再落盘；
+        旧包同文件=ego∪mask 合并掩码，重放口径见测试 ``_assemble_evid``）。"""
+        frame = payload["frame"]
+        evid = payload["evid"]
+        reading = payload["reading"]
+        object_mask = payload["mask"]
+        note = payload["note"]
+        self._debug_dir.mkdir(parents=True, exist_ok=True)
+        self._debug_seq += 1
+        stem = self._debug_dir / f"d{self._debug_seq:05d}"
+        img = render_depth_debug(frame, evid, reading, object_mask, note,
+                                 grid=evid.get("grid") if evid else None)
+        cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        # 原图全幅落盘（人工金标标注/离线重渲染叠锚点都要全分辨率底图；
+        # 证据包只有点云没有帧寸步难行，2026-10-02 取证实证）
+        cv2.imwrite(str(stem) + "_frame.jpg",
+                    cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
+                    [cv2.IMWRITE_JPEG_QUALITY, 85])
+        sol = (evid or {}).get("solver") or {}
+        np.savez(str(stem) + "_evid.npz",
+                 pts=evid["pts"].astype(np.float16),
+                 valid=np.packbits(evid["valid"].ravel()),
+                 valid_shape=np.array(evid["valid"].shape, np.int64),
+                 fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
+                 ms=np.float64(evid.get("ms", -1.0)),
+                 sol_sh=np.float64(sol.get("shift", np.nan)),
+                 sol_resid=np.float64(sol.get("resid", np.nan)),
+                 sol_n=np.int64(sol.get("n", -1)),
+                 fid=np.int64(note["fid"]) if note and note.get("fid") is not None
+                 else np.int64(-1))
+        if object_mask is not None:
+            np.save(str(stem) + "_mask.npy", np.packbits(object_mask))
 
     def _write_debug_events(self, frame, evid, reading, object_mask,
                             note=None) -> None:

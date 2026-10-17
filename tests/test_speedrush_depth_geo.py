@@ -1127,6 +1127,31 @@ def test_async_debug_writes_replayable_evidence(tmp_path):
         a.stop()
 
 
+def test_async_debug_write_off_worker_thread(tmp_path):
+    """调试渲染/落盘不得占 worker 周期：`_write_debug` 只做节流判定 + 入队
+    （µs 级），慢写归 writer 线程。实测渲染 78ms + 编码/写盘 12ms，留在 worker
+    上每 0.5s 把一次推理周期从 93ms 顶到 ~180ms（发布间隔 P90 96→206ms）。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub, debug_dir=tmp_path)  # type: ignore[arg-type]
+    done: list = []
+
+    def _slow(payload):
+        _time.sleep(0.15)
+        done.append(payload)
+
+    a._dbg_write = _slow  # type: ignore[method-assign]
+    a.start()
+    try:
+        t = _time.perf_counter()
+        a._write_debug(_frame(), _mk_evid(), _mk_reading(), None, {"fid": 1})
+        dt = _time.perf_counter() - t
+        assert dt < 0.05, f"入队被写盘阻塞：{dt * 1000:.0f}ms"
+        assert not done, "落盘不该在调用线程内完成"
+        assert _wait_until(lambda: len(done) == 1), "writer 线程未取走"
+    finally:
+        a.stop()
+
+
 # ── 数据锚点（skipif：无离线缓存则跳；缓存=金标帧 MoGe 点云）─────────────
 
 def _anchor_rows():
