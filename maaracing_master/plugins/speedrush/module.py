@@ -47,7 +47,8 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    blocked_inner_reading, load_session, region_reading)
+    blocked_inner_reading, load_session, region_reading,
+    wall_corridor_reading)
 from maaracing_master.plugins.speedrush.wall_track import (
     CONF_FLOOR, MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
@@ -936,6 +937,15 @@ class SpeedRushModule(ActivityModule):
         # 生产判定路径不消费。
         blk = (blocked_inner_reading(dgrid, chain["lane_w_m"])
                if dgrid is not None else None)
+        # 墙走廊影子读数（2026-10-18 用户定案：墙锚定走廊）：绿包红剔除 +
+        # 两侧墙内缘中位 + 过宽裁墙间中点±2 道。trace-only 对照列，生产
+        # 判定不消费；连通行按栅格身份缓存（驻留复用拍不重算）
+        wc = None
+        if dgrid is not None:
+            if getattr(self, "_wc_cache", (None, None))[0] != id(dgrid):
+                self._wc_cache = (id(dgrid), wall_corridor_reading(
+                    dgrid, chain["lane_w_m"]))
+            wc = self._wc_cache[1]
         h_score, h_rate = _ego_hud_readout(chain.get("hud_ref"))
         chain["trace"].append({
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
@@ -960,6 +970,19 @@ class SpeedRushModule(ActivityModule):
             "blk_r": None if blk is None or blk.right_lane is None
             else round(blk.right_lane, 3),
             "blk_rows": None if blk is None else blk.rows,
+            # 墙走廊影子列（墙锚定走廊）：两侧墙内缘 + 墙间中心/宽（过宽
+            # 已裁±2 道）+ 裁剪标记 + 两侧覆盖行数——与绿区读数（ro_*）同拍
+            # 对照，墙走廊跨帧稳即主供数候选成立；绿包红已先剔除
+            "wc_l": None if wc is None or wc.left_lane is None
+            else round(wc.left_lane, 3),
+            "wc_r": None if wc is None or wc.right_lane is None
+            else round(wc.right_lane, 3),
+            "wc_c": None if wc is None or wc.center_lane is None
+            else round(wc.center_lane, 3),
+            "wc_w": None if wc is None or wc.width_lane is None
+            else round(wc.width_lane, 3),
+            "wc_clip": None if wc is None else wc.clipped,
+            "wc_rows": None if wc is None else (wc.rows_l, wc.rows_r),
             # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
             # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
             # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）

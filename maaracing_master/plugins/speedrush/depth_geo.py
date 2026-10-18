@@ -279,6 +279,16 @@ GRID_NX = int(round(2.0 * GRID_X_MAX / GRID_CELL))          # 112
 GRID_NZ = int(round((GRID_Z_HI - GRID_Z_LO) / GRID_CELL))   # 108
 GRID_UNKNOWN, GRID_DRIVABLE, GRID_BLOCKED = 0, 1, 2
 
+# ── 墙走廊（2026-10-18 用户定案：墙锚定走廊，影子期）──────────────────
+# 设计三条：①只看明显的墙、看得够远（跨多行、跨多远 z）划分走廊；
+# ②走廊过宽取墙间中点±2 道（四车道）裁剪，窄了不处理；③被绿区包围的
+# 红区（路上的车/杂块）剔除，不当墙。绿区逐帧边界在路缘外条带上翻面
+# （可走分类逐帧翻，栅格探针 0031/0032 帧级实证）——墙锚定绕开该脆弱层。
+WALL_Z_LO = 6.0        # 墙走廊可见带下限（米）：z<6 视锥装不下 ±5.5m 墙
+WALL_MIN_ROWS = 8      # 单侧墙最少覆盖行数（2m 纵深；看得够远才作数）
+WALL_FULL_LANES = 4.0  # 四车道全宽（道）：走廊过宽裁剪的目标宽
+WALL_CLIP_MARGIN = 0.5  # 过宽判据余量（道）：宽 > FULL+MARGIN 才裁
+
 
 @dataclass(frozen=True)
 class DrivableGrid:
@@ -1147,7 +1157,8 @@ class BlockedReading:
     """红块内缘读数（"整块"边界候选，方向 3 任务 2 前置数据面）。
 
     护栏/墙块（不可走格）逐行内缘的**加权中位**（车道单位，左负右正）——
-    绿区逐帧边界在护栏根部逐帧摆动（对宽门拒绝的根因：阴影让真缘塌陷），
+    绿区逐帧边界在路缘外条带上翻面（对宽门拒绝的根因：条带可走分类
+    逐帧翻，栅格探针 0031/0032 帧级实证），
     红块是大结构跨帧稳。行域上限=NEAR_Z、横向域=REGION_X_MAX（与
     _row_intervals 同族裁剪）；左右内缘=该行 x<0 侧红块的最内列 /
     x>0 侧的最内列（=块的朝路面一侧），行权重=行内绿区到块内缘的跨距。
@@ -1192,6 +1203,110 @@ def blocked_inner_reading(grid: DrivableGrid, lane_w_m: float) -> BlockedReading
     left = _weighted_median(lo_lane, weights)
     right = _weighted_median(hi_lane, weights)
     return BlockedReading(left, right, int(both.sum()))
+
+
+@dataclass(frozen=True)
+class WallCorridor:
+    """墙走廊读数（2026-10-18 用户定案：墙锚定走廊，影子期）。
+
+    明显的墙之间的区间当走廊（车道单位，左负右正，原点=自车）：
+    ``left/right``=两侧墙内缘（z∈[WALL_Z_LO, NEAR_Z) 可见带逐行内缘的
+    中位）、``center/width``=墙间中点与墙距（过宽已按中点±2 道裁剪，
+    ``clipped``=本拍是否触发裁剪）、``rows_l/rows_r``=两侧墙覆盖行数
+    （< WALL_MIN_ROWS 的侧=None 弃权，看得够远才作数）。
+    trace-only 数据面（生产判定路径不消费）；红块已先剔绿区包围块。"""
+
+    center_lane: float | None
+    width_lane: float | None
+    left_lane: float | None
+    right_lane: float | None
+    clipped: bool
+    rows_l: int
+    rows_r: int
+
+
+def _strip_enclosed_red(state: np.ndarray) -> np.ndarray:
+    """绿区包围的红区剔除（墙走廊候选的预清洗；返回副本，不改动生产栅格）。
+
+    设计③（2026-10-18 用户定案）：路上的车/杂块产生红块，被绿区包围的
+    不是墙。连通块（4 邻接）四向邻格都有绿区=被绿区包围 → 改判未知
+    （仍是障碍，栅格 veto 语义不变；只是不进墙走廊候选）。贴栅格窗缘
+    （左右 x 窗缘）的块不剔——墙沿路向远处延伸不可能是被围住的车。"""
+    cleaned = state.copy()
+    blocked = state == GRID_BLOCKED
+    visited = np.zeros_like(blocked, dtype=bool)
+    nz, nx = state.shape
+    for sy in range(nz):
+        for sx in range(nx):
+            if not blocked[sy, sx] or visited[sy, sx]:
+                continue
+            visited[sy, sx] = True
+            comp = [(sy, sx)]
+            stack = [(sy, sx)]
+            touch_x_edge = False
+            nbr_green = [False, False, False, False]   # z− z+ x− x+
+            while stack:
+                y, x = stack.pop()
+                if x == 0 or x == nx - 1:
+                    touch_x_edge = True
+                for dy, dx, k in ((-1, 0, 0), (1, 0, 1), (0, -1, 2), (0, 1, 3)):
+                    yy, xx = y + dy, x + dx
+                    if not (0 <= yy < nz and 0 <= xx < nx):
+                        continue
+                    s = state[yy, xx]
+                    if s == GRID_DRIVABLE:
+                        nbr_green[k] = True
+                    elif blocked[yy, xx] and not visited[yy, xx]:
+                        visited[yy, xx] = True
+                        comp.append((yy, xx))
+                        stack.append((yy, xx))
+            if touch_x_edge or not all(nbr_green):
+                continue
+            for y, x in comp:
+                cleaned[y, x] = GRID_UNKNOWN
+    return cleaned
+
+
+def wall_corridor_reading(grid: DrivableGrid, lane_w_m: float) -> WallCorridor:
+    """墙走廊（2026-10-18 用户定案，影子期）：明显的墙之间的区间当走廊。
+
+    ①绿区包围的红区先剔除（_strip_enclosed_red，副本不改生产栅格）；
+    ②两侧墙内缘取 z∈[WALL_Z_LO, NEAR_Z) 可见带的中位，单侧覆盖行
+    < WALL_MIN_ROWS 该侧弃权（看得够远才作数，不臆造单侧）；③走廊宽
+    > WALL_FULL_LANES+WALL_CLIP_MARGIN 道 → 墙间中点±2 道裁剪（四车道
+    全宽），窄了不处理。调用方注意：逐拍连通行算力档——按栅格身份缓存
+    （驻留复用拍不重算）。"""
+    if not (lane_w_m > 0):
+        return WallCorridor(None, None, None, None, False, 0, 0)
+    cleaned = _strip_enclosed_red(grid.state)
+    zc = GRID_Z_LO + (np.arange(grid.state.shape[0]) + 0.5) * GRID_CELL
+    band = (zc >= WALL_Z_LO) & (zc < NEAR_Z)
+    blocked = (cleaned == GRID_BLOCKED) & band[:, None]
+    xs_c = -GRID_X_MAX + (np.arange(grid.state.shape[1]) + 0.5) * GRID_CELL
+    neg = blocked & (xs_c < 0)[None, :]
+    pos = blocked & (xs_c > 0)[None, :]
+    cols = np.arange(grid.state.shape[1])
+    in_l = neg.any(axis=1)
+    in_r = pos.any(axis=1)
+    rows_l, rows_r = int(in_l.sum()), int(in_r.sum())
+    left = right = None
+    if rows_l >= WALL_MIN_ROWS:
+        lo_m = (-GRID_X_MAX
+                + (np.where(neg, cols, -1).max(axis=1)[in_l] + 0.5) * GRID_CELL)
+        left = float(np.median(lo_m)) / lane_w_m
+    if rows_r >= WALL_MIN_ROWS:
+        hi_m = (-GRID_X_MAX
+                + (np.where(pos, cols, grid.state.shape[1]).min(axis=1)[in_r]
+                   + 0.5) * GRID_CELL)
+        right = float(np.median(hi_m)) / lane_w_m
+    if left is None or right is None:
+        return WallCorridor(None, None, left, right, False, rows_l, rows_r)
+    width = right - left
+    center = 0.5 * (left + right)
+    clipped = width > WALL_FULL_LANES + WALL_CLIP_MARGIN
+    if clipped:
+        width = WALL_FULL_LANES
+    return WallCorridor(center, width, left, right, clipped, rows_l, rows_r)
 
 
 def region_reading(grid: DrivableGrid, lane_w_m: float,
