@@ -24,8 +24,16 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
 路心系 d（道）→ 相机轴米 X=(d−ro)·lane_w_m。检测标记：框底中心像素经同帧焦距
 + 路面平面反投影（Z=c/(v−a·u−b)，X=u·Z），域外点丢弃。
 
-**规划曲线为何不进 BEV**：轨迹是时间参数化的 d(t)，本域没有自车前向速度估计，
-臆造 t→z 映射就是把假数据画进证据面——以 d(t) 子带呈现（横轴秒、纵轴道）。
+**规划曲线为何不进 BEV**：轨迹是时间参数化的 d(t)，本域没有自车前向速度估计
+（HUD「得分速度」是 OCR 的分速率，不是车速），臆造 t→z 映射就是把假数据画进
+证据面——以 d(t) 子带呈现（横轴秒、纵轴道）。
+
+**子带是定轴期望轨迹**（智驾惯例 d(t)，2026-10-18 用户定案）：横轴固定
+[0, 2.5s]=采样器 T_GRID 上界、每 0.5s 刻度，不随中选 T 伸缩——旧画法横轴
+归一化到 T，T 逐拍变导致曲线形状即使计划没动也在变形，帧间不可比（用户体感
+「两头都能动」）。d(0)=当前横向位（起点跟自车是锚的本义）；T 后持守 d1
+（终端零速零加速度的自然外推=执行层超时后的稳态），不外推五次多项式
+（高次项发散）。
 """
 
 from __future__ import annotations
@@ -351,29 +359,37 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                         cv2.circle(canvas, (bm.px(x_m), bm.py(z_m)),
                                    rad, color, -1 if filled else 1)
 
-    # d(t) 规划子带（时间参数化轨迹，诚实呈现；不臆造 t→z）
+    # 期望轨迹子带（定轴 d(t)，诚实呈现；不臆造 t→z）：横轴固定不随 T 伸缩，
+    # T 后持守 d1——帧间可比（曲线动=计划真动了），形状语义见模块 docstring
     py0 = plot_y1 + 30
     py1 = H - 24
     cv2.rectangle(canvas, (plot_x0, py0), (plot_x1, py1), (90, 90, 90), 1)
-    _put_text(canvas, "plan d(t) [lane] / t [s]", (plot_x0 + 6, py0 + 16),
+    _put_text(canvas, "des traj d(t) [lane] / t [s]", (plot_x0 + 6, py0 + 16),
               scale=0.4, color=(220, 220, 220))
     plan: SampledTraj | None = snap.get("plan")
     mid = (py0 + py1) // 2
     scale = max(12.0, (py1 - py0) / 5.0)   # 纵向 ~±2.5 道铺满
+    _T_AXIS_S = 2.5                        # 定轴上界=T_GRID 最大时长
+    for k in range(1, int(_T_AXIS_S / 0.5) + 1):
+        t_mark = 0.5 * k
+        gx = int(plot_x0 + (plot_x1 - plot_x0) * t_mark / _T_AXIS_S)
+        cv2.line(canvas, (gx, py0 + 24), (gx, py1 - 12), (70, 70, 70), 1)
+        _put_text(canvas, f"{t_mark:.1f}", (gx - 8, py1 - 10), scale=0.32,
+                  color=(150, 150, 150))
     if plan is not None and plan.coeffs:
         cv2.line(canvas, (plot_x0, mid), (plot_x1, mid), (110, 110, 110), 1)
-        T = max(plan.T, 1e-3)
         pts = []
         for k in range(41):
-            t = T * k / 40.0
-            d = float(eval_traj(plan.coeffs, t))
+            t = _T_AXIS_S * k / 40.0
+            d = float(eval_traj(plan.coeffs, t)) if t <= plan.T else plan.d1
             pts.append((int(plot_x0 + (plot_x1 - plot_x0) * k / 40.0),
                         int(mid - d * scale)))
         for p, q in zip(pts, pts[1:]):
             cv2.line(canvas, p, q, (0, 255, 0), 2)
-        cv2.circle(canvas, pts[-1], 4, (0, 255, 0), -1)
+        cv2.circle(canvas, pts[0], 4, (255, 255, 0), -1)   # 锚：当前横向位
+        cv2.circle(canvas, pts[-1], 4, (0, 255, 0), -1)    # 终点：计划稳态
         _put_text(canvas, f"d1={plan.d1:.2f} T={plan.T:.2f}s",
-                  (plot_x1 - 150, py1 - 8), scale=0.42)
+                  (plot_x1 - 150, py1 - 24), scale=0.42)
     else:
         diag = snap.get("diag") or {}
         _put_text(canvas, f"plan: none ({diag.get('why', '')})",
