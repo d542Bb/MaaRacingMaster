@@ -92,13 +92,13 @@ def main() -> None:
                 x_lo = x_hi = None
             # 路肩（GRID_SHOULDER）逐行区间：墙线之外的已知格——墙线位置=
             # 绿区外缘（"把别的东西当墙"的判据面：墙线在真路缘内=提前触发）
-            sh = state[iz] == dg.GRID_SHOULDER
-            ss = np.where(sh)[0]
-            if len(ss):
-                sh_lo = -GRID_X_MAX + (ss.min() + 0.5) * 0.25
-                sh_hi = -GRID_X_MAX + (ss.max() + 0.5) * 0.25
-            else:
-                sh_lo = sh_hi = None
+            # 护栏位置（±5.5/±6.75m）的逐格点数——"肉眼看得见的墙 BEV 看不见"
+            # 判据面：点数 < GRID_MIN_PTS=3 的格=unknown=墙不可见
+            def _cnt_at(x_m):
+                ix = int((x_m + GRID_X_MAX) / 0.25)
+                return int(counts[iz, ix])
+            wall_cnt = {"l55": _cnt_at(-5.5), "r55": _cnt_at(5.5),
+                        "l675": _cnt_at(-6.75), "r675": _cnt_at(6.75)}
             # 该深度带的帧亮度（像素 Z 落在本行的原始帧区均值；带掩码在
             # 原生点图系，放大到帧尺寸取亮度）
             Z = evid["pts"][:, :, 2]
@@ -113,8 +113,7 @@ def main() -> None:
                 "x_lo_m": None if x_lo is None else round(x_lo, 2),
                 "x_hi_m": None if x_hi is None else round(x_hi, 2),
                 "width_m": None if x_lo is None else round(x_hi - x_lo, 2),
-                "sh_lo_m": None if sh_lo is None else round(sh_lo, 2),
-                "sh_hi_m": None if sh_hi is None else round(sh_hi, 2),
+                "wall_cnt": wall_cnt,
                 "fov_lim_m": round(z * hfov_half_tan, 2),
                 "pts_n": int(counts[iz].sum()),
                 "brightness": None if bright is None else round(bright, 1),
