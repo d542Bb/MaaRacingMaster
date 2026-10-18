@@ -834,6 +834,9 @@ class DecisionEngine:
             bonus_value=c.bonus_car_value if c.bonus_value else 0.0,
             hug_visual=c.hug_visual,
             bonus_tol_m=c.bonus_tol_m,
+            clearance_ref_m=c.clearance_ref_lane * lane_w,
+            clearance_penalty=c.clearance_penalty,
+            squeeze_min_gap_m=c.squeeze_min_gap_lane * lane_w,
             **hug_kw)
 
     def _reach_evaluate(self, obs: WorldObservation,

@@ -3,10 +3,10 @@
 
 **它是什么**：每拍对走廊近场可行驶域按 0.5m 步进采样候选横向位置，逐候选做
 **综合收益评估**（沿线可收的全部金币组整组值×时间语义 + 可错身车 pass_value
-− 通往碰撞的大负罚 − 横向位移代价 + 远币远权），输出逐候选得分、胜出位置与
-路径序列（近端=自车当前横向位，逐带插值到胜出位）。可达性即门槛：不可达的
-收益不计入该候选——不再有「等进带 + 来得及检查」两道串行关卡，提前量天然
-编码在 need(|Δx|)+tau+margin < t_miss 里。
+− 通往碰撞的大负罚 − 横向位移代价 + 远币远权 − 软净空罚 − 窄缝硬约束），输出
+逐候选得分、胜出位置与路径序列（近端=自车当前横向位，逐带插值到胜出位）。
+可达性即门槛：不可达的收益不计入该候选——不再有「等进带 + 来得及检查」两道
+串行关卡，提前量天然编码在 need(|Δx|)+tau+margin < t_miss 里。
 
 **它不是什么**：不做行为切换（闸与 FSM 在 decision.py，本模块只回答「哪条
 路径当期收益最高」）；不消费车道单位（车道→米制换算在**进决策边界一次**，
@@ -148,6 +148,21 @@ class ReachParams:
     bonus_tol_m: float = 0.75            # 奖励车归属半容差（米）：宽了平价 120 摊成
                                          #   平台被平手阈拉回路心（fid1493 实测）；
                                          #   0.75 平台 2~3 候选，胜出位落源 ±0.5m 内
+    # ---- 净空项（2026-10-18 用户定案：路心偏好=净空最大化，侧向躲避=净空
+    #      不对称时的优先级比较；场即空间优先级，不再另设目标锁定机制）----
+    clearance_ref_m: float = 0.0         # 软净空作用半径（米，0=闸关）。调用方由
+                                         #   clearance_ref_lane×lane_w 换算；0.65 道
+                                         #   迁移自实机验收的车体包络阈（回避横距门
+                                         #   实测值，2026-10-18 退役后仓内单份）
+    clearance_penalty: float = 0.0       # 软净空罚（分，0=闸关=逐位回今天；默认关，
+                                         #   实机 A/B 后再开——两个未验收变更不叠加）
+    squeeze_min_gap_m: float = 0.0       # 窄缝硬约束下限（米，0=关）：候选两侧最近
+                                         #   障碍（车或走廊缘，至少一侧是车）间距
+                                         #   低于此值=空隙窄于车体，候选判 blocked
+                                         #   （与碰撞同级）。调用方由
+                                         #   squeeze_min_gap_lane×lane_w 换算；
+                                         #   默认 0.75 道=接触距 0.54+余量 0.2
+                                         #   [需实测]（仓库无自车实测车宽标定）
 
 
 @dataclass(frozen=True)
@@ -170,6 +185,7 @@ class CandidateScore:
     far_value: float = 0.0      # R2 前瞻外方向权累加（审计面，w 折前；近场车不双计）
     bonus_value: float = 0.0    # R5 奖励车项累加（审计面；闸关恒 0）
     bonus_cars: int = 0         # 计入奖励车项的车数（审计面）
+    clearance_cost: float = 0.0  # 软净空罚累加（审计面；闸关恒 0）
 
 
 @dataclass(frozen=True)
@@ -242,6 +258,19 @@ def evaluate(bands: Sequence[CorridorBandSpan],
     far_on = (params.hunt_horizon_s is not None and params.far_car_weight > 0
               and hug_on)   # R2 复用贴身窗沿曲线，无 R3 参数时无 E 可言
 
+    # ---- 净空预备（2026-10-18 用户定案）----
+    # 时间门与现有车项同门（前瞻窗外远车不产生净空，不与 R2 远车方向权双重
+    # 惩罚）；pacing 车（t=None）是静态障碍照常参与。窄缝的障碍面=车位 +
+    # 走廊缘；纯走廊缘对（无车）不判——路面窄于车体是读数损坏不是物理，
+    # 走走廊质量门。
+    clearance_on = params.clearance_penalty > 0.0
+    squeeze_on = params.squeeze_min_gap_m > 0.0
+    clear_cars = ([c.x_m for c in cars
+                   if c.t_meet_s is None or c.t_meet_s <= params.horizon_s]
+                  if (clearance_on or squeeze_on) else [])
+    car_set = set(clear_cars)
+    obs_pos = sorted(car_set | {left, right}) if squeeze_on else []
+
     # ---- 车三分预备（事件语义：每车记一次） ----
     # 本道（归属半宽内）的车：碰撞/遮挡判据面；先于币到达的车把币挡住。
     # 威胁读数：桥接车（metric_bridge 闸开才可能有）t_meet_s 不确定度走
@@ -260,6 +289,26 @@ def evaluate(bands: Sequence[CorridorBandSpan],
     out: list[CandidateScore] = []
     for x in xs:
         need = need_of(x)
+        # 窄缝硬约束（先于碰撞判据——空隙物理上容不下车体，时间语义无从谈起）：
+        # 候选两侧最近障碍（车或走廊缘，至少一侧是车）间距 < squeeze_min →
+        # blocked。横向投影与纵深无关——纵深差很远的两辆车会算成同拍窄缝，
+        # 误判代价=少钻一条缝（保守侧，瞬态缝代价一秒内衰减）
+        if squeeze_on:
+            lo = hi = None
+            for o in obs_pos:
+                if o <= x:
+                    lo = o
+                else:
+                    hi = o
+                    break
+            if lo is not None and hi is not None \
+                    and (lo in car_set or hi in car_set) \
+                    and (hi - lo) < params.squeeze_min_gap_m:
+                out.append(CandidateScore(x, -params.crash_penalty, True,
+                                          0.0, 0.0,
+                                          params.shift_cost_per_m * abs(x - executed_x),
+                                          0, 0))
+                continue
         # 碰撞：到得了之后才到、到站短于 crash_t 的车（与退役前 lane_score
         # 同判；pacing 车 t=None 是占用不是碰撞）
         tms = car_in_path(x)
@@ -384,12 +433,21 @@ def evaluate(bands: Sequence[CorridorBandSpan],
                 far_value = min(sum(far_es),
                                 params.hug_value_limit + params.pass_value)
             far_value *= params.far_car_weight
+        # 软净空罚（context steering max 规则：取最近障碍不取求和——左车不把
+        # 自车推向右半路；路心偏好=两侧全开时 danger=0，侧向躲避=净空不对称
+        # 时的优先级比较）
+        clear_cost = 0.0
+        if clearance_on and clear_cars:
+            d_near = min(abs(x - cx) for cx in clear_cars)
+            clear_cost = params.clearance_penalty * max(
+                0.0, 1.0 - d_near / params.clearance_ref_m)
         out.append(CandidateScore(
             x, coin_value + pass_sum + hug_sum + far_value + bonus_sum
-            - params.shift_cost_per_m * abs(x - executed_x),
+            - params.shift_cost_per_m * abs(x - executed_x) - clear_cost,
             False, coin_value, pass_sum,
             params.shift_cost_per_m * abs(x - executed_x), n_reach, n_far,
-            tuple(coin_ts), hug_sum, n_hug, far_value, bonus_sum, n_bonus))
+            tuple(coin_ts), hug_sum, n_hug, far_value, bonus_sum, n_bonus,
+            clear_cost))
 
     # ---- 胜出：argmax；平手（差 < tie_margin）选离走廊中心近者（六点 1） ----
     best = max(out, key=lambda c: (c.score, -abs(c.x_m - center)))

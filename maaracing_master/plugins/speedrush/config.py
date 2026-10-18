@@ -267,6 +267,17 @@ class CorridorReach:
                                          #   起值≈0.22 道 [需实测]：宽了平价 120 摊成
                                          #   平台被平手阈拉回路心，窄了平台只剩 2~3
                                          #   候选、胜出位落源 ±0.5m 内且 30>20 真胜出）
+    # ---- 净空项（2026-10-18 用户定案：场即空间优先级，路心偏好=净空最大化）----
+    clearance_ref_lane: float = 0.65     # 软净空作用半径（道，0=闸关）：迁移自实机
+                                         #   验收的车体包络阈（回避横距门实测值，
+                                         #   2026-10-18 退役后仓内单份真源）
+    clearance_penalty: float = 0.0       # 软净空罚（分，0=闸关=逐位回今天；默认关，
+                                         #   实机 A/B 后再开——两个未验收变更不叠加）
+    squeeze_min_gap_lane: float = 0.75   # 窄缝硬约束下限（道，安全项默认开）：候选
+                                         #   两侧最近障碍（车或走廊缘，至少一侧是
+                                         #   车）间距低于此值=空隙窄于车体不钻；
+                                         #   起值=接触距 0.54+余量 0.2 [需实测]
+                                         #   （仓库无自车实测车宽标定）
 
 
 @dataclass(frozen=True)
@@ -603,7 +614,16 @@ def _read_decision(path: Path) -> DecisionConfig:
             hug_visual=_bool(d, "corridor_reach", "hug_visual",
                              default=False),
             bonus_tol_m=_num_def(d, "corridor_reach", "bonus_tol_m",
-                                 0.75, lo=0)),
+                                 0.75, lo=0),
+            clearance_ref_lane=_num_def(d, "corridor_reach",
+                                        "clearance_ref_lane", 0.65, lo=0,
+                                        lo_open=False),
+            clearance_penalty=_num_def(d, "corridor_reach",
+                                       "clearance_penalty", 0.0, lo=0,
+                                       lo_open=False),
+            squeeze_min_gap_lane=_num_def(d, "corridor_reach",
+                                          "squeeze_min_gap_lane", 0.75, lo=0,
+                                          lo_open=False)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
             fusion=_bool(d, "metric_cars", "fusion", default=False),
@@ -691,6 +711,24 @@ def _read_decision(path: Path) -> DecisionConfig:
             f"[corridor_reach] 贴身窗半宽 {cr.hug_half_width_lane} ≥ 平台中心 "
             f"d_hold_lane={cfg.overtake.d_hold_lane}"
             f"（窗下沿=d_hold−half 必须 >0，0 < lo < center ≤ hi，设计稿 §2.2）")
+    if cr.clearance_penalty > 0.0 and cr.clearance_ref_lane <= 0.0:
+        raise ValueError(
+            f"[corridor_reach] clearance_penalty={cr.clearance_penalty} 开闸但 "
+            f"clearance_ref_lane={cr.clearance_ref_lane}（软净空罚无作用半径="
+            f"除零，判据矛盾）")
+    if cr.squeeze_min_gap_lane > 0.0 \
+            and cr.squeeze_min_gap_lane < v.lat_veto_gap_lane:
+        raise ValueError(
+            f"[corridor_reach] squeeze_min_gap_lane={cr.squeeze_min_gap_lane} "
+            f"< 采样器接触界 lat_veto_gap_lane={v.lat_veto_gap_lane}"
+            f"（硬约束比采样 veto 更松=窄缝带全靠采样兜底，阈值阶梯倒置）")
+    if cr.clearance_ref_lane > 0.0 and cr.squeeze_min_gap_lane > 0.0 \
+            and cr.clearance_ref_lane > cr.squeeze_min_gap_lane:
+        raise ValueError(
+            f"[corridor_reach] clearance_ref_lane={cr.clearance_ref_lane} > "
+            f"squeeze_min_gap_lane={cr.squeeze_min_gap_lane}"
+            f"（软罚作用半径大于硬约束下限=软罚先于硬约束把候选清零，"
+            f"阈值阶梯倒置）")
     return cfg
 
 
