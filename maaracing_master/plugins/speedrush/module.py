@@ -983,6 +983,14 @@ class SpeedRushModule(ActivityModule):
             else round(wc.width_lane, 3),
             "wc_clip": None if wc is None else wc.clipped,
             "wc_rows": None if wc is None else (wc.rows_l, wc.rows_r),
+            # 米制-only 回避影子列（闸 metric_cars.dodge 关闸时的对照账）：
+            # 像素盲区（检测死区/雨天）里仅米制链看得到的近车回避候选——
+            # 最近到站/横位/候选数；开闸后这些进回避行为，对照列验收面
+            "md_ttc": None if not chain["engine"].metric_dodge_shadow
+            else round(min(chain["engine"].metric_dodge_shadow)[0], 3),
+            "md_x": None if not chain["engine"].metric_dodge_shadow
+            else round(min(chain["engine"].metric_dodge_shadow)[1], 3),
+            "md_n": len(chain["engine"].metric_dodge_shadow),
             # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
             # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
             # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）

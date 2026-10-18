@@ -1122,6 +1122,44 @@ def test_dodge_metric_pacing_does_not_suppress_pixel():
     assert out.reason == "select:dodge"
 
 
+def test_dodge_metric_only_sees_pixel_dead_zone():
+    """米制-only 车扩展（闸 metric_cars.dodge）：像素车轨为空（检测死区/
+    雨天，trace 151206_p2 实测 45% 拍无车轨）但米制链有近车（x_m=0.05m、
+    t=0.4s<0.55）→ 开闸触发回避，目标=远离侧贴邻位。"""
+    e = DecisionEngine(replace(
+        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
+        metric_cars=replace(CFG.metric_cars, fusion=True, dodge=True)))
+    mc = _mc(9, x_m=0.5)                       # x_m=0.5m≈0.15 道（偏右），t=0.4s
+    out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
+                   executed_lane=0.0, traffic=_traffic([]))
+    assert out.state is DecisionState.CHANGE and out.reason == "select:dodge"
+    assert out.target_id == 9 and out.x_target < 0     # 目标=远离车体的左贴邻位
+
+
+def test_dodge_metric_only_off_shadow_only():
+    """关闸=行为逐拍不变（同一场景不触发）+ 影子账有记录（对照列数据源）。"""
+    e = DecisionEngine(replace(
+        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
+        metric_cars=replace(CFG.metric_cars, fusion=True, dodge=False)))
+    mc = _mc(9)
+    out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
+                   executed_lane=0.0, traffic=_traffic([]))
+    assert out.state is DecisionState.CRUISE and "dodge" not in out.reason
+    assert len(e.metric_dodge_shadow) == 1            # 影子账：米制-only 候选在账
+
+
+def test_dodge_metric_only_x_gate():
+    """米制-only 车在邻道（横位距自车 ≥ 接触界）→ 不作回避对象，影子账空。"""
+    e = DecisionEngine(replace(
+        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
+        metric_cars=replace(CFG.metric_cars, fusion=True, dodge=True)))
+    mc = _mc(9, x_m=2.0)                       # 2.0m≈0.59 道 ≥ 接触界 0.45
+    out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
+                   executed_lane=0.0, traffic=_traffic([]))
+    assert out.state is DecisionState.CRUISE
+    assert e.metric_dodge_shadow == ()
+
+
 def test_veto_window_fusion_truncates_only_later():
     """LateralSafety 危险窗截断融合（V2）：两仪器都有正到站取较晚（截断只许
     更晚不许更早）；pacing=永不到站=全窗；估计窗未开/闸关=纯像素。"""

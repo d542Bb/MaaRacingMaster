@@ -78,6 +78,17 @@ _REEVAL_STREAK = 2
 # 本模块经 import 继续消费，旧引用面不变。
 
 
+@dataclass(frozen=True)
+class MetricDodgeTarget:
+    """米制-only 回避目标的像素轨替身（闸 metric_cars.dodge）。
+
+    近车掉出像素车轨（检测死区/雨天）时，米制链仍有横位+到站——替身带
+    米制轨 id 与车道横位，dodge 调用方（_tick_cruise）只读 id/x_lane。"""
+
+    id: int
+    x_lane: float
+
+
 def _hug_sigma_of(ref: float, x_lane: float) -> float:
     """贴邻侧别：目标放在「ref 所在一侧、距目标 d_hold」处。ref 与目标同位
     （直接正后）退回旧内贴语义（σ=sign(x)）——两侧等价，取确定值即可。"""
@@ -477,6 +488,10 @@ class DecisionEngine:
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
         self._metric_by_id: dict = {}    # 逐车米制索引（fusion 消费面）
+        # 米制-only 回避影子账（闸 metric_cars.dodge 关闸时的对照列数据源）
+        self.metric_dodge_shadow: tuple = ()
+        # 米制-only 回避的锁定目标（σ 选中拍锁定；后续拍按米制横位跟车）
+        self._metric_dodge_goal: float | None = None
         # 走廊收益场参数面（corridor_reach 闸，2026-10-14 设计稿 §3.2-§3.4）：
         # enabled/control 任一开才构造（车道换算件在边界注入，本类内无车道
         # 单位）；shadow 落 trace，control 同拍消费 select/轨迹目标
@@ -1276,6 +1291,8 @@ class DecisionEngine:
             self._cur_score = self.cfg.hysteresis.min_score   # 名义分：让位给更优改判
             self._hug_sigma = _hug_sigma_of(executed, v.x_lane)
             self._demand_lane = goal
+            # 米制-only 目标：像素轨查不到，后续拍按米制横位跟车（σ 锁定）
+            self._metric_dodge_goal = goal if isinstance(v, MetricDodgeTarget) else None
             self._late_streak = 0
             self._last_disp = None
             self._change_t = 0.0
@@ -1726,9 +1743,16 @@ class DecisionEngine:
         归 allow_overtake 闸管：V0/V1 兼容红线（关闸时行为逐拍不变）。
         ttc 米制融合（V2，闸 metric_cars.fusion）：像素逼近门放宽为「任一
         仪器报逼近」——地平线退化带 rel 读数失真恰是米制仪器的治愈对象；
-        到站取两仪器较小者（先到者先防）。"""
-        if not self.cfg.mode.allow_overtake or executed is None or not self._views:
+        到站取两仪器较小者（先到者先防）。
+        米制-only 车扩展（2026-10-18 用户定案，闸 metric_cars.dodge）：
+        检测死区/雨天让近车掉出像素车轨（trace 151206_p2 实测 45% 拍无车轨、
+        正前 1.6m 车仅米制位、到站 0.03s 回避零触发），盲区恰在最近处。开闸=
+        米制-only 车（无像素轨、有米制横位+到站）进候选，横向位=米制 x 换算
+        车道、到站=米制 t_meet、目标=veto 通过的远离侧贴邻位；关闸=只落
+        ``metric_dodge_shadow`` 对照账（行为逐拍不变）。"""
+        if not self.cfg.mode.allow_overtake or executed is None:
             return None
+        metric_dodge = self.cfg.metric_cars.dodge
         fusion = self.cfg.metric_cars.fusion
         cands: list[tuple[float, CarView, float]] = []
         for v in self._views:
@@ -1747,10 +1771,36 @@ class DecisionEngine:
             if self.lateral.veto_reason(executed, goal, self._views) is not None:
                 continue                      # 回避侧被占：换下一辆/下一侧
             cands.append((ttc, v, goal))
-        if not cands:
-            return None
-        cands.sort(key=lambda c: c[0])
-        return cands[0][1], cands[0][2]
+        # 米制-only 车（无像素轨）：像素仪器盲区恰在最近处，米制链补位。
+        # 关闸=影子对照账（metric_dodge_shadow），行为逐拍不变。
+        md_only: list[tuple[float, float, float]] = []
+        if self._metric_by_id:
+            view_ids = {v.id for v in self._views}
+            for m in self._metric_by_id.values():
+                if m.target_id in view_ids:
+                    continue                  # 有像素轨的走上面
+                if (m.x_m is None or m.t_meet_s is None
+                        or m.v_close_mps is None or m.v_close_mps <= 0):
+                    continue                  # 横位/到站缺位：不臆造
+                ttc = m.t_meet_s
+                if not (0.0 <= ttc < self.cfg.overtake.ttc_dodge_s):
+                    continue
+                x_lane = m.x_m / self.cal.lane_w_m
+                if abs(x_lane - executed) >= self.cfg.validate.lat_veto_gap_lane:
+                    continue
+                goal = x_lane + _hug_sigma_of(executed, x_lane) * self.cfg.overtake.d_hold_lane
+                if self.lateral.veto_reason(executed, goal, self._views) is not None:
+                    continue
+                md_only.append((ttc, x_lane, goal, m.target_id))
+        self.metric_dodge_shadow = tuple(md_only)
+        if metric_dodge and md_only:
+            ttc, x_lane, goal, mid = min(md_only, key=lambda c: c[0])
+            if not cands or ttc < cands[0][0]:
+                return MetricDodgeTarget(id=mid, x_lane=x_lane), goal
+        if cands:
+            cands.sort(key=lambda c: c[0])
+            return cands[0][1], cands[0][2]
+        return None
 
     def _side_has_space(self, x_lane: float) -> bool:
         """候选侧的路缘空间检查（第 6 步走廊带来源规则）。
@@ -1864,7 +1914,14 @@ class DecisionEngine:
                             if self._target_kind == KIND_CAND_OVERTAKE
                             else v.x_lane)
                 if self._state is DecisionState.CHANGE:
-                    return self._x_smooth                    # 落定拍前不外插假读数
+                    m = self._metric_by_id.get(self._target_gid)
+                    if m is not None and m.x_m is not None:
+                        # 米制-only 目标跟车（σ 锁定侧，横位随米制读数走）
+                        return (m.x_m / self.cal.lane_w_m
+                                + self._hug_sigma * self.cfg.overtake.d_hold_lane)
+                    if self._metric_dodge_goal is not None:
+                        return self._metric_dodge_goal   # 车已过/横位缺位：持锁定目标
+                    return self._x_smooth                # 落定拍前不外插假读数
                 return self._hold_center_goal()
             g = self._group_of(obs)
             if g is not None and not math.isnan(g.x_center):

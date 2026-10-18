@@ -176,6 +176,7 @@
   "metric_cars": {
     "enabled": true,
     "fusion": true,
+    "dodge": false,
     "_note": "车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。**运行态：fusion=true＝A/B 收案后常驻（2026-10-12 用户裁决，验收见计划稿 §5D）——dodge ttc 与横向 veto 危险窗截断吃米制融合：dodge 取两仪器较小到站（先到者先防），逼近门放宽为任一仪器报逼近（像素 rel 门在退化带失真恰是米制治愈对象）；veto 截断取较晚到站（只许更晚不许更早）。米制速度陈旧上界 ~1 个锚区间（≤220ms），融合方向各自保守。回滚=fusion 归 false（纯像素逐位恢复）；enabled=false 连影子列/ledger 米制列一起关。"
   },
   "commitment": {

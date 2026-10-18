@@ -281,6 +281,12 @@ class MetricCars:
 
     enabled: bool = True
     fusion: bool = False
+    # 米制-only 回避闸（2026-10-18 用户定案）：像素检测死区/雨天让近车掉出
+    # 像素车轨（trace 151206_p2 实测 45% 拍无车轨、正前 1.6m 车仅米制位、
+    # 到站 0.03s 回避零触发），回避盲区恰在最近处。开闸=米制-only 车（无
+    # 像素轨、有米制横位+到站）进回避候选；关闸=只落 trace 对照列，行为
+    # 逐拍不变。
+    dodge: bool = False
 
 
 @dataclass(frozen=True)
@@ -600,7 +606,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                                  0.75, lo=0)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
-            fusion=_bool(d, "metric_cars", "fusion", default=False)),
+            fusion=_bool(d, "metric_cars", "fusion", default=False),
+            dodge=_bool(d, "metric_cars", "dodge", default=False)),
         metric_bridge=MetricBridge(
             enabled=_bool(d, "metric_bridge", "enabled", default=False),
             stay=_int_def(d, "metric_bridge", "stay", 2, lo=1),
