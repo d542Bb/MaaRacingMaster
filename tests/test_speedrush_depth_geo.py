@@ -198,40 +198,6 @@ def test_object_knife_keeps_road_under_object_rect():
     assert g.state[iz5, ix_road] == dg.GRID_DRIVABLE, "矩形内路面格应参与判定"
 
 
-def test_grid_wall_line_and_shoulder():
-    """墙线与路肩（walls-only 第 4 步）：路面 span 外的已知格判路肩（不是路）；
-    双墙行给路宽先验时空气墙（双墙中点±width/2）收进来，墙永远赢；不给路宽
-    时墙内平地照常可走（现行为，人行道泄漏的产线接线随走廊）。"""
-    pts = _scene_points(x_left=WALL, x_right=WALL)
-    iz = int((10.0 - dg.GRID_Z_LO) / dg.GRID_CELL)   # z≈10：墙与 x≈4.5 都在画内
-    ix_road = int((2.0 + dg.GRID_X_MAX) / dg.GRID_CELL)    # x≈2：路面
-    ix_edge = int((4.5 + dg.GRID_X_MAX) / dg.GRID_CELL)    # x≈4.5：墙前路肩带
-    ix_beyond = int((5.75 + dg.GRID_X_MAX) / dg.GRID_CELL)  # x≈5.75：墙后无数据
-    # 不给路宽：墙线即路面 span，墙内平地照常可走
-    g0 = dg.drivable_grid_from_points(pts, FX, FY)
-    assert g0.state[iz, ix_road] == dg.GRID_DRIVABLE
-    assert g0.state[iz, ix_edge] == dg.GRID_DRIVABLE
-    # 给中线 0 + 路宽 8m（空气墙 ±4）：4~5.5 之间判路肩，路面照常，墙外无数据仍未知
-    g = dg.drivable_grid_from_points(pts, FX, FY, obj=None,
-                                     center_m=0.0, width_m=8.0)
-    assert g.state[iz, ix_road] == dg.GRID_DRIVABLE
-    assert g.state[iz, ix_edge] == dg.GRID_SHOULDER
-    assert g.state[iz, ix_beyond] == dg.GRID_UNKNOWN
-
-
-def test_grid_wall_line_ignores_car_on_road():
-    """路面上的车不算墙：车后混有路面格 → 该侧不产墙线，路面照常判读。"""
-    pts = _scene_points(x_left=WALL, x_right=WALL,
-                        boxes=((1.0, 1.5, 4.0, 6.0, 1.0),))   # 路上车
-    g = dg.drivable_grid_from_points(pts, FX, FY)
-    iz5 = int((5.0 - dg.GRID_Z_LO) / dg.GRID_CELL)
-    # 车右侧的路面格（x≈2.5）仍在路面 span 内：不被车"墙线"划成路肩
-    ix_beyond_car = int((2.5 + dg.GRID_X_MAX) / dg.GRID_CELL)
-    st = g.state[iz5, ix_beyond_car]
-    assert st in (dg.GRID_DRIVABLE, dg.GRID_BLOCKED, dg.GRID_UNKNOWN), \
-        f"路面格被车墙线划走：{st}"
-
-
 def test_plane_fit_fail_abstains():
     """近带无路面（走廊域点不足）：诚实弃权不硬读。"""
     pts = np.full((720, 1280, 3), np.nan, np.float32)
@@ -1604,15 +1570,14 @@ def _band_rows(z0: float, z1: float) -> np.ndarray:
 
 
 def test_drivable_grid_double_wall_road_green_walls_red():
-    """双墙：路中可走、墙格路肩（墙是边界不是路上的障碍）、墙外无点未知
-    ——四态各就位（2026-10-09 墙线判定：墙格在路面 span 外改判路肩）。"""
+    """双墙：路中可走、墙格高（≥刀位）判 blocked、墙外无点未知。"""
     pts = _scene_points(x_left=WALL, x_right=WALL)
     g = dg.drivable_grid_from_points(pts, FX, FY)
     assert g.coef is not None
     assert _cell_state(g, 0.0, 6.0) == dg.GRID_DRIVABLE
     # 墙在 |x|=WALL=5.5；z=12 时在视锥内（半宽 12·640/857≈9.0 > 5.5）
-    assert _cell_state(g, WALL, 12.0) == dg.GRID_SHOULDER
-    assert _cell_state(g, -WALL, 12.0) == dg.GRID_SHOULDER
+    assert _cell_state(g, WALL, 12.0) == dg.GRID_BLOCKED
+    assert _cell_state(g, -WALL, 12.0) == dg.GRID_BLOCKED
     # 墙外（|x|>WALL）无点 → 未知（不得外推成可走）
     assert _cell_state(g, WALL + 2.0, 12.0) == dg.GRID_UNKNOWN
 
@@ -1625,7 +1590,7 @@ def test_drivable_grid_single_wall_other_side_unknown():
     g = dg.drivable_grid_from_points(pts, FX, FY)
     assert g.coef is not None
     assert _cell_state(g, 0.0, 6.0) == dg.GRID_DRIVABLE
-    assert _cell_state(g, WALL, 12.0) == dg.GRID_SHOULDER     # 右墙仍在场（路肩）
+    assert _cell_state(g, WALL, 12.0) == dg.GRID_BLOCKED      # 右墙仍在场（高格）
     assert _cell_state(g, -8.0, 8.0) == dg.GRID_UNKNOWN       # 左缘外无证据
 
 

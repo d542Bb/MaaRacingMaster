@@ -279,10 +279,6 @@ GRID_MIN_PTS = 3        # 单格判「已知」的最少有效点数
 GRID_NX = int(round(2.0 * GRID_X_MAX / GRID_CELL))          # 112
 GRID_NZ = int(round((GRID_Z_HI - GRID_Z_LO) / GRID_CELL))   # 108
 GRID_UNKNOWN, GRID_DRIVABLE, GRID_BLOCKED = 0, 1, 2
-GRID_SHOULDER = 3       # 路肩：路面 span 之外、墙线之外的已知格（不是路也不是
-                        # 碰撞界；空气墙~墙之间与墙外同归此类，消费端按"非路"读）
-WALL_HGT = 0.3          # 墙线检测阈（格中位 |hgt|）：牙子（0.1~0.15m）不检测，
-                        # 物理墙/缘体本体（≥0.3m）才算；车由"墙后混路面不算墙"排除
 
 
 @dataclass(frozen=True)
@@ -977,8 +973,6 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
 def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                               obj: np.ndarray | None = None,
                               coef: tuple[float, float, float] | None = None,
-                              center_m: float | None = None,
-                              width_m: float | None = None,
                               ds: float = 1.0,
                               ) -> DrivableGrid:
     """点图 → 可行驶栅格（纯函数；与 ``reading_from_points`` 并行、互不影响）。
@@ -1074,49 +1068,6 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     known = (counts >= GRID_MIN_PTS) & (~dug_mask)
     state[known & (np.abs(med) <= GRID_TOL)] = GRID_DRIVABLE
     state[known & (np.abs(med) > GRID_TOL)] = GRID_BLOCKED
-    # 墙线与路肩（walls-only 第 4 步，2026-10-09）：逐行从格中位找物理墙——
-    # 最后一格路面（|hgt|<WALL_HGT）之后向外全部数据格都是本体才算墙（车后
-    # 混路面不算，牙子 0.1~0.15m 低于阈不检测）。路面 span=墙线；调用方给
-    # 中线先验（center_m）与路宽（width_m）时空气墙=中线±width/2 收进来，
-    # 墙永远赢；span 外的已知格判路肩（不是路）。产线 center/width 接线随
-    # 第 6 步走廊（中线来自扫描 edge_pts 的墙假设——栅格墙线检测看不见
-    # ±GRID_X_MAX 外的墙）。
-    med2 = med.reshape(GRID_NZ, GRID_NX)
-    st2 = state.reshape(GRID_NZ, GRID_NX)
-    wall_l = np.full(GRID_NZ, np.nan)
-    wall_r = np.full(GRID_NZ, np.nan)
-    xs_c = -GRID_X_MAX + (np.arange(GRID_NX) + 0.5) * GRID_CELL
-    for iz in range(GRID_NZ):
-        row = med2[iz]
-        for side, out in ((-1, wall_l), (1, wall_r)):
-            ixs = (np.arange(GRID_NX) if side > 0
-                   else np.arange(GRID_NX - 1, -1, -1))
-            vv = row[ixs]
-            fin = np.isfinite(vv)
-            low = fin & (np.abs(vv) < WALL_HGT)
-            if not low.any():
-                continue
-            last_low = np.nonzero(low)[0].max()
-            bp = np.arange(last_low + 1, GRID_NX)
-            bf = fin[bp]
-            if not bf.any() or not (np.abs(vv[bp][bf]) >= WALL_HGT).all():
-                continue
-            out[iz] = -GRID_X_MAX + ((ixs[last_low] + ixs[bp[bf][0]])
-                                     / 2.0 + 0.5) * GRID_CELL
-        road_l, road_r = -np.inf, np.inf
-        if np.isfinite(wall_l[iz]):
-            road_l = wall_l[iz]
-        if np.isfinite(wall_r[iz]):
-            road_r = wall_r[iz]
-        # 空气墙（中线±width/2）：中线来自调用方（产线=走廊的墙假设中线，第 6 步
-        # 接线；栅格自己的墙线检测看不见 ±GRID_X_MAX 外的墙——左墙在窗外的场景
-        # 双墙凑不齐）。墙永远赢：栅格墙线仍然收窄路面 span。
-        if center_m is not None and width_m is not None and width_m > 0:
-            road_l = max(road_l, center_m - width_m / 2.0)
-            road_r = min(road_r, center_m + width_m / 2.0)
-        out_span = (xs_c < road_l) | (xs_c > road_r)
-        bump = out_span & (st2[iz] != GRID_UNKNOWN)
-        st2[iz, bump] = GRID_SHOULDER
     return _ret(state.reshape(GRID_NZ, GRID_NX), (a, b, c),
                 counts.reshape(GRID_NZ, GRID_NX), int(dug_mask.sum()),
                 dug_mask.reshape(GRID_NZ, GRID_NX))

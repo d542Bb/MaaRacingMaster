@@ -42,7 +42,7 @@ import numpy as np
 from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
     ANCHOR_Z_HI, CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE,
-    GRID_NX, GRID_NZ, GRID_SHOULDER, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI,
+    GRID_NX, GRID_NZ, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI,
     GRID_Z_LO, NEAR_Z, ROAD_Z_HI, X_MAX_M)
 from maaracing_master.plugins.speedrush.latsample import (
     GRID_CAR_HALF_LANE_M, SampledTraj, eval_traj)
@@ -56,8 +56,7 @@ _QUEUE_MAX = 4                    # IO 有界队列：满则丢新快照（观�
 # 三态着色（BGR）：unknown 灰 / drivable 暗绿 / blocked 红；挖洞格橄榄描重
 _STATE_BGR = {GRID_UNKNOWN: (64, 64, 64),
               GRID_DRIVABLE: (70, 140, 70),
-              GRID_BLOCKED: (50, 50, 220),
-              GRID_SHOULDER: (60, 110, 160)}
+              GRID_BLOCKED: (50, 50, 220)}
 _DIG_BGR = (30, 100, 110)
 _CLS_BGR = {"coins": (0, 255, 255), "cars": (0, 0, 255),
             "bonuses": (255, 0, 255)}
@@ -296,8 +295,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     lx = plot_x0 + 8                     # 图例游标（勿用 sx——那是 BEV 横向比例尺）
     for label, col in (("U", _STATE_BGR[GRID_UNKNOWN]),
                        ("D", _STATE_BGR[GRID_DRIVABLE]),
-                       ("B", _STATE_BGR[GRID_BLOCKED]),
-                       ("S", _STATE_BGR[GRID_SHOULDER])):
+                       ("B", _STATE_BGR[GRID_BLOCKED])):
         cv2.rectangle(canvas, (lx, ly - 9), (lx + 12, ly + 3), col, -1)
         _put_text(canvas, label, (lx + 15, ly - 5), scale=0.36,
                   color=(200, 200, 200))
