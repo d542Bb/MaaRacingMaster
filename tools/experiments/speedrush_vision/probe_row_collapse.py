@@ -45,20 +45,11 @@ OUT = Path(__file__).resolve().parent / "row_collapse_out"
 # ── 选帧（seq→fid 由 raw mtime 对齐 trace 读得，见会话分析）──
 FRAMES = [
     # (run, raw 文件, 期望状态, trace 对宽, trace W)
-    ("20261017_221748_p1", "0059_raw.jpg", "REJ", 3.2544, 4.4379),
-    ("20261017_221748_p1", "0065_raw.jpg", "REJ", 5.3254, 4.4379),
-    ("20261017_221748_p1", "0079_raw.jpg", "REJ", 3.4763, 4.4379),
-    ("20261017_221748_p1", "0091_raw.jpg", "REJ", 2.8846, 4.4379),
-    ("20261017_221748_p1", "0094_raw.jpg", "REJ", 3.3284, 4.4379),
-    ("20261017_221748_p1", "0058_raw.jpg", "ok", 4.5858, 4.4379),
-    ("20261017_221748_p1", "0089_raw.jpg", "ok", 4.8817, 4.4379),
-    ("20261017_221748_p1", "0100_raw.jpg", "ok", 4.4379, 4.4379),
-    ("20261017_221833_p2", "0035_raw.jpg", "REJ", 4.8077, 3.9941),
-    ("20261017_221833_p2", "0037_raw.jpg", "REJ", 4.8077, 3.9941),
-    ("20261017_221833_p2", "0039_raw.jpg", "REJ", 4.8817, 3.9941),
-    ("20261017_221833_p2", "0033_raw.jpg", "ok", 4.5858, 3.9941),
-    ("20261017_221833_p2", "0057_raw.jpg", "ok", 4.8817, 4.142),
-    ("20261017_221833_p2", "0073_raw.jpg", "ok", 4.8077, 4.142),
+    ("20261018_114454_p2", "0030_raw.jpg", "REJ", None, None),
+    ("20261018_114454_p2", "0031_raw.jpg", "REJ", None, None),
+    ("20261018_114454_p2", "0032_raw.jpg", "REJ", None, None),
+    ("20261018_114454_p2", "0003_raw.jpg", "ok", None, None),
+    ("20261018_114454_p2", "0004_raw.jpg", "ok", None, None),
 ]
 
 NEAR_LIM_Z = 10.7   # 视场裁剪带（z 小于此的行看不到远侧路缘，第一性算得）
@@ -99,6 +90,15 @@ def main() -> None:
                 x_hi = -GRID_X_MAX + (xs.max() + 0.5) * 0.25
             else:
                 x_lo = x_hi = None
+            # 路肩（GRID_SHOULDER）逐行区间：墙线之外的已知格——墙线位置=
+            # 绿区外缘（"把别的东西当墙"的判据面：墙线在真路缘内=提前触发）
+            sh = state[iz] == dg.GRID_SHOULDER
+            ss = np.where(sh)[0]
+            if len(ss):
+                sh_lo = -GRID_X_MAX + (ss.min() + 0.5) * 0.25
+                sh_hi = -GRID_X_MAX + (ss.max() + 0.5) * 0.25
+            else:
+                sh_lo = sh_hi = None
             # 该深度带的帧亮度（像素 Z 落在本行的原始帧区均值；带掩码在
             # 原生点图系，放大到帧尺寸取亮度）
             Z = evid["pts"][:, :, 2]
@@ -113,6 +113,8 @@ def main() -> None:
                 "x_lo_m": None if x_lo is None else round(x_lo, 2),
                 "x_hi_m": None if x_hi is None else round(x_hi, 2),
                 "width_m": None if x_lo is None else round(x_hi - x_lo, 2),
+                "sh_lo_m": None if sh_lo is None else round(sh_lo, 2),
+                "sh_hi_m": None if sh_hi is None else round(sh_hi, 2),
                 "fov_lim_m": round(z * hfov_half_tan, 2),
                 "pts_n": int(counts[iz].sum()),
                 "brightness": None if bright is None else round(bright, 1),
