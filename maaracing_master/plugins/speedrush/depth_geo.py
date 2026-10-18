@@ -1192,6 +1192,58 @@ class RegionReading:
     n_rows: int = 0
 
 
+@dataclass(frozen=True)
+class BlockedReading:
+    """红块内缘读数（"整块"边界候选，方向 3 任务 2 前置数据面）。
+
+    护栏/墙块（不可走格）逐行内缘的**加权中位**（车道单位，左负右正）——
+    绿区逐帧边界在护栏根部逐帧摆动（对宽门拒绝的根因：阴影让真缘塌陷），
+    红块是大结构跨帧稳。行域上限=NEAR_Z、横向域=REGION_X_MAX（与
+    _row_intervals 同族裁剪）；左右内缘=该行 x<0 侧红块的最内列 /
+    x>0 侧的最内列（=块的朝路面一侧），行权重=行内绿区到块内缘的跨距。
+    trace-only 数据面（生产判定路径不消费）；``rows``=双侧都有红块的行数
+    （覆盖面，覆盖低=读数可信度低）。"""
+
+    left_lane: float | None
+    right_lane: float | None
+    rows: int = 0
+
+
+def blocked_inner_reading(grid: DrivableGrid, lane_w_m: float) -> BlockedReading:
+    """不可走格（护栏/墙块）逐行内缘 → 加权中位（BlockedReading）。
+
+    与 region_reading 同族口径（NEAR_Z/REGION_X_MAX 裁剪、行宽加权中位），
+    作用对象换成红块：左侧内缘=x<0 侧红块的最内列（朝路面）、右侧内缘=
+    x>0 侧红块的最内列。无双侧红块行 → 两侧弃权（诚实 None，不臆造单侧）。
+    调用方注意：红块含路面上的车（未挖除时），生产行为消费前必须配挖除缝。"""
+    if not (lane_w_m > 0):
+        return BlockedReading(None, None, 0)
+    blocked = (grid.state == GRID_BLOCKED)
+    zc = GRID_Z_LO + (np.arange(grid.state.shape[0]) + 0.5) * GRID_CELL
+    blocked[zc >= NEAR_Z] = False
+    xs_c = -GRID_X_MAX + (np.arange(grid.state.shape[1]) + 0.5) * GRID_CELL
+    blocked[:, np.abs(xs_c) > REGION_X_MAX] = False
+    neg = blocked & (xs_c < 0)[None, :]
+    pos = blocked & (xs_c > 0)[None, :]
+    both = neg.any(axis=1) & pos.any(axis=1)
+    if not both.any():
+        return BlockedReading(None, None, 0)
+    cols = np.arange(grid.state.shape[1])
+    lo_m = (-GRID_X_MAX
+            + (np.where(neg, cols, -1).max(axis=1)[both] + 0.5) * GRID_CELL)
+    hi_m = (-GRID_X_MAX
+            + (np.where(pos, cols, grid.state.shape[1]).min(axis=1)[both]
+               + 0.5) * GRID_CELL)
+    lo_lane = lo_m / lane_w_m
+    hi_lane = hi_m / lane_w_m
+    weights = hi_lane - lo_lane      # 行内绿区到块内缘的跨距（同绿区行宽加权族）
+    if not (weights > 0).any():
+        return BlockedReading(None, None, int(both.sum()))
+    left = _weighted_median(lo_lane, weights)
+    right = _weighted_median(hi_lane, weights)
+    return BlockedReading(left, right, int(both.sum()))
+
+
 def region_reading(grid: DrivableGrid, lane_w_m: float,
                    clip_frac: float = 0.34) -> RegionReading:
     """绿区 → 路的左右缘（RegionReading）。与 `grid_center_lane` 同源

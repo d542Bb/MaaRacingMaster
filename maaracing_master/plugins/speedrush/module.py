@@ -48,7 +48,7 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    load_session, region_reading)
+    blocked_inner_reading, load_session, region_reading)
 from maaracing_master.plugins.speedrush.wall_track import (
     CONF_FLOOR, MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
@@ -932,6 +932,12 @@ class SpeedRushModule(ActivityModule):
             s = chain["engine"].scorer.score(g, obs)
             if s is not None and (best is None or s.score > best[0]):
                 best = (s.score, g.x_center)
+        # 红块内缘读数（"整块"边界候选，方向 3 任务 2 前置数据面）：绿区逐帧
+        # 边界在护栏根部逐帧摆动（对宽门拒绝的根因），红块是大结构跨帧稳；
+        # 栅格已含挖除（YOLO 框挖除在栅格构建前）。trace-only 数据面，
+        # 生产判定路径不消费。
+        blk = (blocked_inner_reading(dgrid, chain["lane_w_m"])
+               if dgrid is not None else None)
         h_score, h_rate = _ego_hud_readout(chain.get("hud_ref"))
         chain["trace"].append({
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
@@ -948,6 +954,14 @@ class SpeedRushModule(ActivityModule):
             "executed_lane": round(planner.state.executed_lane, 4),
             "v_lat_est": round(planner.state.v_lat_est, 4),
             "n_groups": len(obs.coin_groups),
+            # 红块内缘读数三列（"整块"边界候选）：护栏块逐行内缘的加权中位
+            # （车道单位，左负右正）+ 双侧红块行数（覆盖面，低=可信度低）——
+            # 与绿区读数（ro_*）同拍对照，红块跨帧稳即边界来源候选成立
+            "blk_l": None if blk is None or blk.left_lane is None
+            else round(blk.left_lane, 3),
+            "blk_r": None if blk is None or blk.right_lane is None
+            else round(blk.right_lane, 3),
+            "blk_rows": None if blk is None else blk.rows,
             # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
             # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
             # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）

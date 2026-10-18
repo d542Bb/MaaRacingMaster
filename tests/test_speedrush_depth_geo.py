@@ -1852,6 +1852,48 @@ def test_grid_center_lane_honest_abstain():
     assert dg.grid_center_lane(g, 0.0) is None
 
 
+# ---------- blocked_inner_reading：红块内缘读数（"整块"边界候选数据面） ----------
+
+def _blk_grid(rows_cols, coef=(0.0, 0.0, 0.72)):
+    """构造 DrivableGrid：rows_cols = [(行号, 列lo, 列hi), ...] 红块（不可走格），
+    其余全 unknown。列→X 用真 GRID_NX。"""
+    st = np.full((max(r for r, _c0, _c1 in rows_cols) + 1, dg.GRID_NX),
+                 dg.GRID_UNKNOWN, np.int8)
+    for r, c0, c1 in rows_cols:
+        st[r, c0:c1 + 1] = dg.GRID_BLOCKED
+    return dg.DrivableGrid(state=st, coef=coef,
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=1.0)
+
+
+def test_blocked_inner_reads_inner_edges():
+    """左右红块 → 内缘=块的朝路面一侧（左块最内列 / 右块最内列），
+    加权中位（行权重=绿区到块内缘跨距）。列在 REGION_X_MAX=10.5m 内：
+    列 25/85 的格心 X=−7.625/7.375（m）。"""
+    g = _blk_grid([(0, 20, 25), (0, 85, 90), (1, 20, 26), (1, 84, 90)])
+    rd = dg.blocked_inner_reading(g, 3.38)
+    assert rd.left_lane is not None and rd.right_lane is not None
+    assert rd.left_lane == pytest.approx(-7.625 / 3.38, abs=0.05)
+    assert rd.right_lane == pytest.approx(7.375 / 3.38, abs=0.05)
+    assert rd.rows == 2                      # 双侧都有红块的行数
+
+
+def test_blocked_inner_honest_none_single_side():
+    """只有单侧红块 → 两侧弃权（诚实 None，不臆造单侧走廊）。"""
+    g = _blk_grid([(0, 0, 5), (1, 0, 5)])
+    rd = dg.blocked_inner_reading(g, 3.38)
+    assert rd.left_lane is None and rd.right_lane is None and rd.rows == 0
+
+
+def test_blocked_inner_far_rows_clipped():
+    """远行（z≥NEAR_Z=16）红块不进（与绿区行域同族裁剪）：GRID_NZ=108 行
+    覆盖 z 3~30，行 100 → z≈28.1m 被裁，只有近行计入。"""
+    g = _blk_grid([(0, 20, 25), (0, 85, 90),
+                   (100, 20, 25), (100, 85, 90)])
+    rd = dg.blocked_inner_reading(g, 3.38)
+    assert rd.rows == 1
+
+
 # ---------- region_reading：绿区边界=路的物理边界（供数主人口径） ----------
 
 def test_region_reading_sides2_and_polarity():
