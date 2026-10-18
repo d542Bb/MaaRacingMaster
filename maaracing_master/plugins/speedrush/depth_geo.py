@@ -288,6 +288,9 @@ WALL_Z_LO = 6.0        # 墙走廊可见带下限（米）：z<6 视锥装不下
 WALL_MIN_ROWS = 8      # 单侧墙最少覆盖行数（2m 纵深；看得够远才作数）
 WALL_FULL_LANES = 4.0  # 四车道全宽（道）：走廊过宽裁剪的目标宽
 WALL_CLIP_MARGIN = 0.5  # 过宽判据余量（道）：宽 > FULL+MARGIN 才裁
+WALL_EGO_MIN = 0.5     # 墙内缘距自车下限（道）：真墙不可能在自车身体
+#                         包络里——贴身"墙"是并行车（朝路肩侧无绿区，四向
+#                         判据剔不掉，trace 145047_p2 实测贴身读数 100% 邻车）
 
 
 @dataclass(frozen=True)
@@ -1299,6 +1302,11 @@ def wall_corridor_reading(grid: DrivableGrid, lane_w_m: float) -> WallCorridor:
                 + (np.where(pos, cols, grid.state.shape[1]).min(axis=1)[in_r]
                    + 0.5) * GRID_CELL)
         right = float(np.median(hi_m)) / lane_w_m
+    # 贴身"墙"=并行车（真墙不可能在自车身体包络里）→ 该侧弃权，宁缺勿假
+    if left is not None and abs(left) < WALL_EGO_MIN:
+        left = None
+    if right is not None and abs(right) < WALL_EGO_MIN:
+        right = None
     if left is None or right is None:
         return WallCorridor(None, None, left, right, False, rows_l, rows_r)
     width = right - left

@@ -93,3 +93,16 @@ def test_wall_corridor_needs_both_sides_far_enough():
     assert wc.rows_l == 6
     assert wc.left_lane is None and wc.right_lane is None
     assert wc.center_lane is None and wc.width_lane is None
+
+
+def test_wall_corridor_tight_wall_abstains():
+    """贴身"墙"（内缘 <0.5 道，= 并行车）→ 该侧弃权，走廊 None。
+    真墙不可能在自车身体包络里（trace 145047_p2：贴身读数 100% 邻车）。"""
+    st = np.full((GRID_NZ, GRID_NX), GRID_UNKNOWN, np.int8)
+    _road(st)
+    st[_iz(6):_iz(16), _ix(-1.25):_ix(-1.0)] = GRID_BLOCKED    # 贴身假墙 @−1.1m
+    st[_iz(6):_iz(16), _ix(8.0):_ix(8.25)] = GRID_BLOCKED      # 右真墙 @+8m
+    wc = wall_corridor_reading(_grid(st), LANE_W)
+    assert wc.left_lane is None                     # 贴身侧弃权
+    assert wc.right_lane == pytest.approx(8.125 / LANE_W, abs=0.05)
+    assert wc.center_lane is None and wc.width_lane is None
