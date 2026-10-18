@@ -36,7 +36,6 @@
   "mode": {
     "allow_all_moves": true,
     "allow_car_graze": false,
-    "allow_overtake": true,
     "trajectory_sampling": true,
     "_note": "**运行态勘误（2026-10-11）**：旧自述「本文件当前是标定态（C7…跑完归位 V0）」已过时——C7 姿态随 2026-09-22 V2 首局跑完并同日复盘，义务了结（真身见 tools/experiments/speedrush_drive/README.md「V2 首局标定姿态」节）。现四闸各自验收期：trajectory_sampling=true（S2-B 三检验全绿后接线验收）、grid_veto.enabled=true（2026-10-05 批准，翻面归 false 条款见其 note）、grid_xcheck.mode=master（2026-10-06 批准验收）、plan_layer.enabled=false（待三检验+实机验收）。allow_car_graze 保持 false（语义不同门不搅，处置见阶段 C 设计稿 §七）；allow_all_moves=V0/V1 闸；allow_overtake=V2 超车总闸"
   },
@@ -132,11 +131,6 @@
     "k_unknown": 0.05,
     "_note": "S2-B 栅格裁决闸。**运行态：enabled=true＝实机验收期（维护者批准开闸 2026-10-05；依据=三检验全绿（A 供数覆盖/B 真侵入 0/10/C 层翻转不存在）+ 黑视 10 帧离线回放过线（方向与金标逐帧一致、ABORT 1/10、金标安全终点 3/3），证据与口径见实验 README S2-B 节）**。语义：按「近场带 z3~9m × 轨迹横向包络±(车半宽+margin)」查同拍可行驶栅格——压 blocked 一票否决、unknown 每格 k_unknown 小代价、drivable 零；挖洞邻域片不计墙（dig_mask 清洗）。验收面=trace traj_diag 列（n_grid 否决频次/why 全灭原因/ABORT 增量）与转向质量；margin_lane=0.5 为边界抖动内收下限（检验 C 实测 0.3~0.5 道）。归位义务：实机验收出结论后，数值定档只改本文件；若判据 翻面（误否决/ABORT 升）enabled 归 false 并回实验区归因。"
   },
-  "plan_layer": {
-    "enabled": false,
-    "switch_streak": 2,
-    "_note": "三类字典序计划层闸：bonus＞极限超车＞coin 选计划、CHANGE 改判走 0.5s 慢拍+连续 switch_streak 次持续性门；min_score/life_tau/switch_margin 退出选择链（闸关时原路径逐位不变）。实现住户 plan.py（选择域），机制说明见域内 CODE_WIKI 计划层节。**运行态：enabled=false＝默认关，待离线回放三检验（候选资格判例/帧抖动注入/字典序构造用例）+ 实机 V1 验收面（计划切换频率/bonus 兑现/无收益摆动）过线后由维护者批准开闸**。switch_streak 是整数持续性计数（反抖），不是标定权重。"
-  },
   "grid_xcheck": {
     "mode": "master",
     "tol_lane": 0.45,
@@ -151,7 +145,6 @@
   },
   "corridor_reach": {
     "enabled": true,
-    "control": true,
     "trigger_dead_zone_lane": 0.15,
     "step_m": 0.5,
     "horizon_s": 2.0,
@@ -180,21 +173,6 @@
   "metric_cars": {
     "enabled": true,
     "fusion": true,
-    "dodge": true,
     "_note": "车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。**运行态：fusion=true＝A/B 收案后常驻（2026-10-12 用户裁决，验收见计划稿 §5D）——dodge ttc 与横向 veto 危险窗截断吃米制融合：dodge 取两仪器较小到站（先到者先防），逼近门放宽为任一仪器报逼近（像素 rel 门在退化带失真恰是米制治愈对象）；veto 截断取较晚到站（只许更晚不许更早）。米制速度陈旧上界 ~1 个锚区间（≤220ms），融合方向各自保守。回滚=fusion 归 false（纯像素逐位恢复）；enabled=false 连影子列/ledger 米制列一起关。**运行态：dodge=true＝实机验收期（2026-10-18 用户定案开闸）——米制-only 车进回避候选（检测死区/雨天像素盲区，trace 151206_p2 正前 1.6m 车仅米制位、零回避）+ 横距门换车体包络阈 0.65（中心距门 0.45 在自车漂到车道边缘时把正前方部分重叠的车跳过，trace 155351_p2 fid2940 车体已重叠 −0.06 道被跳）；归位义务=实机验收出结论只改本文件，判据翻面（误回避/ABORT 升）dodge 归 false 并回实验区归因。**"
-  },
-  "commitment": {
-    "pause_enabled": true,
-    "pause_budget_s": 1.0,
-    "demand_enabled": true,
-    "memory_enabled": true,
-    "memory_budget_s": 0.5,
-    "basis_grace_s": 0.5,
-    "reanchor_eps_lane": 0.2,
-    "reanchor_break_lane": 0.5,
-    "k_stay": 2,
-    "k_out": 2,
-    "k_up": 2,
-    "_note": "决策承诺制（设计稿 v2 §3 Track 1 + §8 需求面承诺制，只作用于 corridor_reach 集）。【pause（Track 1，已 A/B 收案常驻观察）】traj 采样连续破判达 _REEVAL_STREAK 后预算内暂停——保留原改道任务、x_target 冻结在 executed（绕开平滑器），reason=pause:blocked；超预算（=单次连续阻塞时长）作废（cancel:traj_blocked）。【demand（§8，本轮 A/B）】select:reach_win 锁定追逐意图（d0=select 拍场选点，目的地=带 ±0.75 道而非某一组币），完成判据对齐 d0（不再吃滚动选点——A/B 逐集证据：坍缩集想挪 P50 0.76-0.79 道全被「场选点塌回自车被判到达」假完成，fid2348 原始需求 1.93 道位移 0.59 道即宣收敛）；显式放弃=收益依据死亡（带内连续 basis_grace_s 无可见币组 且 场选点连续 k_out 拍带外，两条件同时成立，reason=cancel:basis_dead；gap 期间持位等下一组 reason=hold:reach_gap）与坐标系断裂（center_lane 跳变超 reanchor_break，reason=cancel:frame_break；eps~break 间重锚 d0'=d0−Δc 保持物理指向）；升级=带外新目的地连续 k_up 拍、同拍同场评分超在场带候选 ≥ corridor_reach.tie_margin（reason=switch:reach_upgrade；同带内漂移不算）。次判据=场选点连续 k_stay 拍贴自车且自车近旁（±0.75 道）有可见币组才准 done:converged:proxy，带内依据仍活且场选点已离带时拦下（fid2348 形态）。【memory（§8.4.4，Track 2 并入）】收益报告缺席不再单拍 cancel:reach_lost：预算内保留意图、x_target 冻结 executed（reason=hold:reach_absent），超 memory_budget_s 或 executed 缺席走既有取消；生效前提=意图在场。【安全不承诺（红线）】fatal/lat_veto/validate/x_bound 逐拍先行，任何意图/记忆状态不豁免。【运行态】demand/memory=true＝实机 A/B 期；验收=§8.6 分层：L1 机制离线（坍缩桶清零、cancel:reach_lost 仅剩预算耗尽形态、转移各有证据列）→ L2 行为（大需求存活率 P50 分母=完成集、骑线率分母=有币拍、collect_coin 基线 18/人工 55——全部待检验不是修复承诺）→ L3 安全（lat_veto 基线 6/回合不升 + conserving/crash 代理）。【归位义务】A/B 出结论只改本文件；机制不达标修实现，判据翻面 demand/memory 各归 false 回实验区归因（与 pause_enabled 互不捆绑）。全部数值 [需实测] 起值，依据见各字段与设计稿 §8。"
   }
 }

@@ -263,14 +263,13 @@ def test_observation_is_json_serializable():
 def test_decision_output_contract_shape():
     """DecisionOutput 生产者属 step 4，但契约形状与枚举值现在锁死。"""
     d = DecisionOutput(schema_version=SCHEMA_VERSION, state=DecisionState.CONSERVE,
-                       target_id=None, x_target=0.0, move_allowed=False,
+                       x_target=0.0, move_allowed=False,
                        reason="validate_fail:frame_stale",
                        emitted_fid=42, valid_until_fid=44)
     j = to_jsonable(d)
     assert j["state"] == "CONSERVE"          # Enum → value，回放侧读的是码串
-    assert set(DecisionState) == {DecisionState.CRUISE, DecisionState.CHANGE,
-                                  DecisionState.ABORT, DecisionState.CONSERVE,
-                                  DecisionState.FAULT}
+    assert set(DecisionState) == {DecisionState.CRUISE, DecisionState.ABORT,
+                                  DecisionState.CONSERVE, DecisionState.FAULT}
 
 
 def test_boundary_is_none_until_layer_lands():

@@ -26,9 +26,6 @@ SCHEMA_VERSION = 1
 class Mode:
     allow_all_moves: bool
     allow_car_graze: bool
-    # 超车模式总闸（阶段 C 设计稿 §七：V2 开关，默认关；与 allow_car_graze 语义分离——
-    # 后者管"贴车是否算风险否决"，本闸管"超车是否进候选集"）
-    allow_overtake: bool = False
     # 横向轨迹采样评分闸（阶段二设计稿 §2.3，默认关=现役栈逐拍不变）：开闸后
     # 决策输出从 x_target 位置常量换为采样轨迹的前瞻点（滚动重评，破判 ABORT）
     trajectory_sampling: bool = False
@@ -48,18 +45,6 @@ class GridVeto:
     car_half_lane_m: float = 0.9  # 车半宽（米）
     k_unknown: float = 0.05       # 每格 unknown 代价（回放校准起值）
 
-
-@dataclass(frozen=True)
-class PlanLayer:
-    """三类字典序计划层行为闸（设计稿计划层落地 f9d4944
-    v2；整段可选，老 json 不带段=全默认=关，与 grid_veto 同一条兼容纪律）。
-
-    语义：开闸后 decision._select 分流到 plan.PlanSelector——bonus＞极限超车＞
-    coin 字典序选计划、CHANGE 改判走慢拍+持续性门槛；min_score/life_tau/
-    switch_margin 退出选择链。数值（K）是整数持续性计数，不是标定权重。"""
-
-    enabled: bool = False
-    switch_streak: int = 2        # 换计划持续性门槛 K（连续 K 次慢拍重评居其位）
 
 
 @dataclass(frozen=True)
@@ -105,6 +90,7 @@ class Overtake:
     ttc_dodge_s: float       # 本车道前车紧急回避的到站时间界（第七轮 2029 局：
                               # 冷却/无候选盲持期间同车道逼近的车是纯碰撞等待，
                               # near_dx 实测 0.00~0.04 道；绕过评分与冷却强制变道）
+
 
 
 @dataclass(frozen=True)
@@ -226,13 +212,11 @@ class CorridorReach:
     plan_layer 同一条兼容纪律）。
 
     语义：`enabled` 开闸后引擎逐拍算 ReachReport（corridor_reach.evaluate）
-    落 trace cr_* 对照列；`control` 是行为闸——CRUISE 选择来源换血为走廊
-    收益场（select:reach_win），回滚=false 即回 legacy band/feas 链（逐位）。
-    车道换算件（timing 变道耗时 need_of_dx_m、lane_w_m）在 decision.py 进
-    决策边界注入，本表不带车道单位。"""
+    落 trace cr_* 对照列并作为唯一选择器（2026-10-18 换血：场即选择器，
+    control 闸随 legacy 链退役）。车道换算件（timing 变道耗时 need_of_dx_m、
+    lane_w_m）在 decision.py 进决策边界注入，本表不带车道单位。"""
 
     enabled: bool = False
-    control: bool = False
     trigger_dead_zone_lane: float = 0.35  # reach_win 触发死区（道）——独立于
     step_m: float = 0.5                  # 候选步进（米，与栅格格宽同量级）
     horizon_s: float = 2.0               # 收益前瞻（s）
@@ -289,20 +273,13 @@ class CorridorReach:
 class MetricCars:
     """车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。
 
-    语义：`enabled` 开闸后 `WorldObservation.metric_cars` 喂道评分与 ledger
-    米制列；`fusion` 是 V2 行为闸（计划稿 §6）——dodge ttc 与横向 veto 危险
-    窗吃米制融合（dodge 取两仪器较小到站、veto 截断取较晚到站，各自保守向），
-    回滚=false 即纯像素旧行为。闸关=影子列回像素仪器，与旧 trace 逐位同构。
-    米制量本身由锚点链路自况有效性（无锚=UNKNOWN 弃权），本闸只管供不供。"""
+    语义：`enabled` 开闸后 `WorldObservation.metric_cars` 喂场车源链
+    （米制优先、像素回退）；`fusion` 是轨迹采样器危险窗截断的米制闸
+    （截断取较晚到站，保守向），回滚=false 即纯像素。米制量本身由锚点链路
+    自况有效性（无锚=UNKNOWN 弃权），本闸只管供不供。"""
 
     enabled: bool = True
     fusion: bool = False
-    # 米制-only 回避闸（2026-10-18 用户定案）：像素检测死区/雨天让近车掉出
-    # 像素车轨（trace 151206_p2 实测 45% 拍无车轨、正前 1.6m 车仅米制位、
-    # 到站 0.03s 回避零触发），回避盲区恰在最近处。开闸=米制-only 车（无
-    # 像素轨、有米制横位+到站）进回避候选；关闸=只落 trace 对照列，行为
-    # 逐拍不变。
-    dodge: bool = False
 
 
 @dataclass(frozen=True)
@@ -339,46 +316,6 @@ class DebugDump:
 
 
 @dataclass(frozen=True)
-class Commitment:
-    """决策承诺制闸（2026-10-15 设计稿 v2 §3 + §8 需求面承诺制）。
-    整段可选，老 json 不带段=全默认=关（与 grid_veto 同一条兼容纪律）。
-
-    pause 语义（Track 1，v2 §3）：traj 采样连续破判达 _REEVAL_STREAK 后，
-    预算内**暂停**——保留原改道任务、x_target 冻结在 executed（绕开平滑器，
-    防朝旧 goal 漂移）；预算=单次连续阻塞时长（dt_s 累计，traj 恢复一拍清零、
-    新集清零），超预算才作废（旧行为）。安全不承诺（硬边界不变量 §3.2）：
-    lat_veto/致命校验/目标过期判定先行，不受预算延迟；executed 缺席拍不进
-    暂停。
-
-    demand/memory 语义（§8 需求面承诺制，只作用于 corridor_reach 集）：
-    demand_enabled 锁定追逐意图（select 拍场选点 d0），完成/放弃判据改吃
-    意图而非滚动选点——显式放弃门=收益依据死亡（带内空窗 basis_grace_s 且
-    场选点带外 k_out 拍）与坐标系断裂（reanchor_break）；升级门=带外更优目
-    的地连续 k_up 拍超在场带候选 tie_margin。memory_enabled=报告缺席记忆
-    （v2 §4 Track 2 并入）：缺席预算内保留意图、x_target 冻结 executed，
-    **生效前提=意图在场**（无意图无可保留，缺席照旧单拍取消）。全部安全
-    判定（fatal/veto/validate）不承诺、逐拍先行，与 pause 同一条红线。"""
-
-    pause_enabled: bool = False
-    pause_budget_s: float = 1.0     # [需实测] 起值≈一个币窗；先例（Nav2 恢复
-                                    # 阶梯）只支撑「等临时遮挡」方向，不支撑
-                                    # 数值——A/B 后归位只改本 json
-    demand_enabled: bool = False    # 需求面承诺制总闸（§8.2 意图生命周期）
-    memory_enabled: bool = False    # 缺席记忆（§8.4.4；前提=意图在场）
-    memory_budget_s: float = 0.5    # [需实测] 记忆许可上限不是风险证明：
-                                    # ~150km/h 下 0.5s ≈ 20.8m 纵向（v2 §4）
-    basis_grace_s: float = 0.5      # [需实测] 收益依据空窗容忍（N_basis）；
-                                    # 依据=币组流 ~1 组/s 的组间空窗观测
-    reanchor_eps_lane: float = 0.2  # [需实测] 同坐标系噪声阈（低于不换版）
-    reanchor_break_lane: float = 0.5  # [需实测] 坐标系断裂界（超=放弃不追）
-    k_stay: int = 2                 # [需实测] 次判据贴车拍数（_REEVAL_STREAK
-                                    # 同源防抖纪律）
-    k_out: int = 2                  # [需实测] 场选点带外拍数（与空窗合判死）
-    k_up: int = 2                   # [需实测] 升级连续拍数（防滚动抖动搬进
-                                    # 升级判据）
-
-
-@dataclass(frozen=True)
 class DecisionConfig:
     mode: Mode
     control: Control
@@ -390,14 +327,12 @@ class DecisionConfig:
     overtake: Overtake
     traffic: Traffic
     grid_veto: GridVeto = GridVeto()
-    plan_layer: PlanLayer = PlanLayer()
     grid_xcheck: GridXcheck = GridXcheck()
     # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
     metric_cars: MetricCars = MetricCars()
     metric_bridge: MetricBridge = MetricBridge()
     debug_dump: DebugDump = DebugDump()
-    commitment: Commitment = Commitment()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -478,8 +413,6 @@ def _read_decision(path: Path) -> DecisionConfig:
         mode=Mode(
             allow_all_moves=_bool(d, "mode", "allow_all_moves"),
             allow_car_graze=_bool(d, "mode", "allow_car_graze"),
-            # allow_overtake 缺省 False：老 json 不带键也安全（超车候选默认不进集）
-            allow_overtake=_bool(d, "mode", "allow_overtake", default=False),
             # trajectory_sampling 缺省 False：老 json 不带键也安全（现役栈逐拍不变）
             trajectory_sampling=_bool(d, "mode", "trajectory_sampling",
                                       default=False)),
@@ -576,9 +509,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             car_half_lane_m=_num_def(d, "grid_veto", "car_half_lane_m", 0.9,
                                      lo=0),
             k_unknown=_num_def(d, "grid_veto", "k_unknown", 0.05, lo=0)),
-        plan_layer=PlanLayer(
-            enabled=_bool(d, "plan_layer", "enabled", default=False),
-            switch_streak=_int_def(d, "plan_layer", "switch_streak", 2, lo=1)),
         grid_xcheck=GridXcheck(
             mode=_str_def(d, "grid_xcheck", "mode", "off",
                           ("off", "master", "veto")),
@@ -586,7 +516,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             bypass_streak=_int_def(d, "grid_xcheck", "bypass_streak", 8, lo=1)),
         corridor_reach=CorridorReach(
             enabled=_bool(d, "corridor_reach", "enabled", default=False),
-            control=_bool(d, "corridor_reach", "control", default=False),
             trigger_dead_zone_lane=_num_def(d, "corridor_reach",
                                             "trigger_dead_zone_lane", 0.35,
                                             lo=0),
@@ -634,8 +563,7 @@ def _read_decision(path: Path) -> DecisionConfig:
                                       lo_open=False)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
-            fusion=_bool(d, "metric_cars", "fusion", default=False),
-            dodge=_bool(d, "metric_cars", "dodge", default=False)),
+            fusion=_bool(d, "metric_cars", "fusion", default=False)),
         metric_bridge=MetricBridge(
             enabled=_bool(d, "metric_bridge", "enabled", default=False),
             stay=_int_def(d, "metric_bridge", "stay", 2, lo=1),
@@ -646,24 +574,7 @@ def _read_decision(path: Path) -> DecisionConfig:
         debug_dump=DebugDump(
             mode=_dump_mode,
             ring=_int_def(d, "debug_dump", "ring", 10, lo=0),
-            event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)),
-        commitment=Commitment(
-            pause_enabled=_bool(d, "commitment", "pause_enabled", default=False),
-            pause_budget_s=_num_def(d, "commitment", "pause_budget_s", 1.0,
-                                    lo=0, lo_open=False),
-            demand_enabled=_bool(d, "commitment", "demand_enabled", default=False),
-            memory_enabled=_bool(d, "commitment", "memory_enabled", default=False),
-            memory_budget_s=_num_def(d, "commitment", "memory_budget_s", 0.5,
-                                     lo=0, lo_open=False),
-            basis_grace_s=_num_def(d, "commitment", "basis_grace_s", 0.5,
-                                   lo=0, lo_open=False),
-            reanchor_eps_lane=_num_def(d, "commitment", "reanchor_eps_lane",
-                                       0.2, lo=0, lo_open=False),
-            reanchor_break_lane=_num_def(d, "commitment", "reanchor_break_lane",
-                                         0.5, lo=0, lo_open=False),
-            k_stay=_int_def(d, "commitment", "k_stay", 2, lo=1),
-            k_out=_int_def(d, "commitment", "k_out", 2, lo=1),
-            k_up=_int_def(d, "commitment", "k_up", 2, lo=1)))
+            event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v, h = cfg.validate, cfg.hysteresis
@@ -706,12 +617,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             f"[validate] lat_veto_gap_lane={cfg.validate.lat_veto_gap_lane} "
             f"≥ 贴窗中心 d_hold_lane={ov.d_hold_lane}"
             f"（veto 接触界不小于贴窗距离=一切超车都被拦，判据矛盾）")
-    cmt = cfg.commitment
-    if cmt.reanchor_break_lane <= cmt.reanchor_eps_lane:
-        raise ValueError(
-            f"[commitment] reanchor_break_lane={cmt.reanchor_break_lane} "
-            f"必须 > reanchor_eps_lane={cmt.reanchor_eps_lane}"
-            f"（eps~break 之间重锚、超 break 断裂——倒置则断裂门永不触发，判据矛盾）")
     cr = cfg.corridor_reach
     if cr.overtake_hunting and cr.hug_value \
             and not 0 < cfg.overtake.d_hold_lane - cr.hug_half_width_lane:

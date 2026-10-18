@@ -15,7 +15,7 @@ from dataclasses import replace
 import pytest
 
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH
-from maaracing_master.plugins.speedrush.config import Commitment, _read_decision
+from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
@@ -25,20 +25,16 @@ _BASE = _read_decision(CFG_PATH)
 # 闸状态显式钉死（不继承部署态——部署 json 在 rollout 中会翻转 shadow→control，
 # 测试基线必须自持，不随部署漂）。commitment 同钉关：§8 需求面在专门文件测，
 # 本文件锁的是 reach 场本身的 FSM 契约。
-_OFF_CMT = Commitment()
 CFG_OFF = replace(_BASE, corridor_reach=replace(_BASE.corridor_reach,
-                                                enabled=False, control=False),
-                  commitment=_OFF_CMT)
+                                                enabled=False))
 # 影子期：enabled=true、control=false（闸态全部钉死不继承部署态）
 CFG_SHADOW = replace(_BASE,
                      corridor_reach=replace(_BASE.corridor_reach,
-                                            enabled=True, control=False),
-                     commitment=_OFF_CMT)
+                                            enabled=True))
 # control 期：行为闸开（lane_scoring 已退役删除，互斥检查随迁）
 CFG_CTRL = replace(_BASE,
                    corridor_reach=replace(_BASE.corridor_reach,
-                                          enabled=True, control=True),
-                   commitment=_OFF_CMT)
+                                          enabled=True))
 
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, fid_hz=None):
@@ -91,15 +87,14 @@ def _BASE_cal_lane_w() -> float:
 
 def _out_fields(out):
     """DecisionOutput 行为面（逐位对照的字段集）。"""
-    return (out.state, out.reason, out.x_target, out.target_id,
-            out.move_allowed, out.reanchor_lane)
+    return (out.state, out.reason, out.x_target, out.move_allowed)
 
 
 # ---------- shadow 逐位（enabled 只加影子列，行为零变化） ----------
 
-def test_shadow_on_off_bit_identical():
-    """enabled on/off 同输入逐拍输出逐位相同；on 侧 reach_report 可读、
-    off 侧 None（影子列语义）。"""
+def test_enabled_on_follows_field_off_holds():
+    """enabled on=场即选择器（follow:reach，报告可读）；off=场评估关，
+    场跟随诚实持守（hold:reach_absent，reach_report None）。"""
     g, ms = _group()
     cor = _corridor()
     e_on = DecisionEngine(CFG_SHADOW)
@@ -108,9 +103,10 @@ def test_shadow_on_off_bit_identical():
                        corridor=cor)
     o_off = e_off.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
                          corridor=cor)
-    assert _out_fields(o_on) == _out_fields(o_off)
-    assert e_on.reach_report is not None       # 影子评定可读
+    assert o_on.reason == "follow:reach"
+    assert e_on.reach_report is not None       # 场评定可读
     assert e_on.reach_report.candidates        # 候选非空
+    assert o_off.reason == "hold:reach_absent"
     assert e_off.reach_report is None
 
 
@@ -158,12 +154,11 @@ def test_control_absent_freezes_then_pauses():
     assert e._absence_t == 0.0
 
 
-def test_control_off_keeps_legacy_select():
-    """回滚红线：control=false 时 legacy band/feas 选择链原样——同一良候选
-    场景走 select:score_win（金币实体目标），不是 reach_win。"""
+def test_enabled_off_field_off_hold():
+    """闸关：场评估关（reach_report None），场跟随诚实持守不臆造可达性。"""
     g, ms = _group()
     e = DecisionEngine(CFG_OFF)
     out = e.update(_obs(groups=(g,), targets=ms), DT, executed_lane=0.0,
                    corridor=_corridor())
-    assert out.reason == "select:score_win"
-    assert e.reach_report is None              # 闸关连影子列一起关
+    assert out.reason == "hold:reach_absent"
+    assert e.reach_report is None

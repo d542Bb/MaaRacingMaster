@@ -33,7 +33,7 @@ _CFG = _read_decision(DECISION_FILE)
 # 走廊收益场闸开（仅 enabled——shadow 面即可喂 _reach_bonus_far_sources），
 # 其余段沿真源：本文件锁远场粗源构建，不继承部署态其他翻转。
 CFG = replace(_CFG, corridor_reach=replace(
-    _CFG.corridor_reach, enabled=True, control=False, bonus_value=True))
+    _CFG.corridor_reach, enabled=True, bonus_value=True))
 
 LANE_W = 3.38
 

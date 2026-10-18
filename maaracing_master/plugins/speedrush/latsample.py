@@ -12,7 +12,7 @@ a62c656，口径以本文件与验收基线为准）。
 （调用侧负责 A1→路心 +ro 换算——本模块纯函数，不读观测）。纵向恒速假设
 （油门恒踩，survey §B 依据），不做纵向采样。
 
-**碰撞过滤=静态 veto**（第六/七轮定案，与 LateralSafety 同式）：街车按当前
+**碰撞过滤=静态 veto**（第六/七轮定案，与评分同口径）：街车按当前
 车位参与判距、危险窗按逐车到站时间截断（rel≤0 全视野）、**机动使距离恶化
 才拦**（min_gap < 接触界且 < 当前距——保持/远离不自否，切入/贴掠才拦）。
 跟踪层无 σ 源，设计稿的 σ 门如实退化为静态+截断（CV 外推已证伪：读数噪声
@@ -187,7 +187,7 @@ class LatTrajectorySampler:
         self.grid_margin_lane = grid_margin_lane
         self.grid_car_half_m = grid_car_half_m
         self.k_grid_unknown = k_grid_unknown
-        # 到站时间函数（引擎注入 Scorer.car_t_meet_s，与 LateralSafety 同一
+        # 到站时间函数（引擎注入 Scorer.car_t_meet_s，与评分同一
         # 纪律：不复制公式）；缺省=本类内旧行率式。V2 前本类用 hz（控制拍率）
         # 消费 px/fid 读数——TTC 恒定高估 ~1.9x 的旧单位病，同 §17 三件套①。
         self._t_meet = t_meet_fn
@@ -286,7 +286,7 @@ class LatTrajectorySampler:
         return False, int((sub == GRID_UNKNOWN).sum())
 
     def _t_pass_s(self, car, hz: float) -> float:
-        """该车到自车行的秒数：注入到站函数（与 LateralSafety/评分同一
+        """该车到自车行的秒数：注入到站函数（与评分同一
         callable，px/fid→秒换算吃聚合帧率）优先；缺省=本类内旧行率式
         （直构测试兼容退路）。注入侧 fid_hz 未预热时 scorer 自退旧口径，
         与本式逐位同形。"""
@@ -297,7 +297,7 @@ class LatTrajectorySampler:
             else math.inf
 
     def _t_pass_fused(self, car, hz: float) -> float:
-        """危险窗截断用的到站估计（V2 融合口径，与 LateralSafety._t_pass_s
+        """危险窗截断用的到站估计（V2 融合口径，与评分同口径
         同构）：米制缺锚/估计窗未开=像素；pacing（v_close≤0）=永不到站；
         两仪器都有正到站取较晚——截断只许更晚不许更早。"""
         t = self._t_pass_s(car, hz)
@@ -313,12 +313,12 @@ class LatTrajectorySampler:
 
     def _vetoed(self, c: tuple[float, ...], T: float, d1: float, d0: float,
                 cars, ro: float, hz: float) -> bool:
-        """拦截语义=**机动使距离恶化才拦**（第七轮裁定，与 LateralSafety
+        """拦截语义=**机动使距离恶化才拦**（第七轮裁定，与评分同口径
         同式）：候选轨迹逐 COLL_DT_S 采样（T 后驻停 d1）对每辆车在危险窗内
         取最小距；min_gap < gap_lane 且 **min_gap < 当前距** 才拦——保持/远离
         不自否，切入/贴掠才拦。rel≤0（不接近）按全视野算（与生产同）。
         危险窗截断融合米制到站（V2，引擎喂 metric_map 通道）：两仪器取较晚
-        （截断只许更晚不许更早，与 LateralSafety 同口径）；pacing=全窗。"""
+        （截断只许更晚不许更早，与评分同口径）；pacing=全窗。"""
         for car in cars:
             if car.x_lane is None or car.x_lane != car.x_lane:
                 continue                       # nan（存续组）同跳过

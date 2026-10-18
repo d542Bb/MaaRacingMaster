@@ -762,8 +762,7 @@ class SpeedRushModule(ActivityModule):
                 "lane_w_m": cal.lane_w_m,
                 "wall_track": wt,
                 "ego_road": _EgoRoadObserver(cfg.grid_xcheck, cal.lane_w_m, wt,
-                                             mem_fallback=cfg.corridor_reach.enabled
-                                             or cfg.corridor_reach.control),
+                                             mem_fallback=cfg.corridor_reach.enabled),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -955,9 +954,7 @@ class SpeedRushModule(ActivityModule):
             "pace_sleep": None if pace_ms is None else round(pace_ms[1], 1),
             "pace_wake": None if pace_ms is None else round(pace_ms[2], 1),
             "state": out.state.value, "reason": out.reason,
-            "x_target": out.x_target, "target_id": out.target_id,
-            "target_kind": chain["engine"].target_kind,
-            "reanchor_lane": out.reanchor_lane,
+            "x_target": out.x_target,
             "steer_norm": round(planner.state.steer_norm, 4), "steer_x": cmd.steer_x,
             "executed_lane": round(planner.state.executed_lane, 4),
             "v_lat_est": round(planner.state.v_lat_est, 4),
@@ -983,14 +980,6 @@ class SpeedRushModule(ActivityModule):
             else round(wc.width_lane, 3),
             "wc_clip": None if wc is None else wc.clipped,
             "wc_rows": None if wc is None else (wc.rows_l, wc.rows_r),
-            # 米制-only 回避影子列（闸 metric_cars.dodge 关闸时的对照账）：
-            # 像素盲区（检测死区/雨天）里仅米制链看得到的近车回避候选——
-            # 最近到站/横位/候选数；开闸后这些进回避行为，对照列验收面
-            "md_ttc": None if not chain["engine"].metric_dodge_shadow
-            else round(min(chain["engine"].metric_dodge_shadow)[0], 3),
-            "md_x": None if not chain["engine"].metric_dodge_shadow
-            else round(min(chain["engine"].metric_dodge_shadow)[1], 3),
-            "md_n": len(chain["engine"].metric_dodge_shadow),
             # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
             # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
             # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）
@@ -1127,12 +1116,6 @@ class SpeedRushModule(ActivityModule):
             # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
             # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
             "car_views": len(tviews),
-            # V0 逐候选门账本（V0 决策门账本 5071c02）：逐车/
-            # 组/奖励车的门判定与拒绝原因、框宽米换算（带噪估计）、错身原料——
-            # no_candidate 归因的数据源。行结构见 decision.gate_ledger docstring；
-            # None=本拍未跑选择（CONSERVE/ABORT/致命/冷却拍）。2D 帧龄拍级已有
-            # oage 列（同拍目标共享同一帧，帧龄即目标龄），账本不重复落。
-            "ledger": chain["engine"].gate_ledger,
             # 走廊收益场（corridor_reach 闸开才有值）：胜出位、逐候选分与
             # 路径序列——shadow 对照列（与 legacy band/feas 链离线对照）+
             # control 期决策可审计面；None=闸关/弃权拍
@@ -1169,13 +1152,6 @@ class SpeedRushModule(ActivityModule):
             "cr_bonus_cars": None if chain["engine"].reach_report is None
             else max(chain["engine"].reach_report.candidates,
                      key=lambda c: c.score).bonus_cars,
-            # 需求面承诺制意图观测面（§8.2，demand 闸开才有值）：d0/带内依据
-            # id/缺席时长与放弃·升级·次判据的机检计数——逐集核对与 §8.6 L1
-            # 验收的复算面；None=demand 关/集外无意图
-            "intent": chain["engine"].intent_state,
-            # veto 判定面快照（20261016 补观测缺口）：本拍 lat_veto 的参与车
-            # （id/横位/到站/两判距）——离线复核 veto 真伪；None=本拍无否决
-            "veto_cars": chain["engine"].veto_cars,
             # HUD 本机读数（hud_ref 挂载；rate 只在蓝卡识别=有 rate 的槽位即
             # 本机）：局结局程序化取数面（得分/得分速度），缺失拍诚实 None
             # （对手卡读数是背景假读，按槽位猜会静默读错）；血量格未读另案

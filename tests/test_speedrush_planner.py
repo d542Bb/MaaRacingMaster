@@ -26,9 +26,9 @@ P = CFG.planner
 def _out(state=DecisionState.CRUISE, x_target=0.0, fid=1, valid=3,
          reanchor=None, move=True) -> DecisionOutput:
     return DecisionOutput(
-        schema_version=2, state=state, target_id=None, x_target=x_target,
+        schema_version=3, state=state, x_target=x_target,
         move_allowed=move, reason="test", emitted_fid=fid,
-        valid_until_fid=valid, reanchor_lane=reanchor)
+        valid_until_fid=valid)
 
 
 def _planner(**over) -> LateralPlanner:
@@ -140,16 +140,6 @@ def test_fault_forces_zero():
 
 
 # ---------- 重锚（裁定 1 + 契约细节 1） ----------
-
-def test_reanchor_signed_and_same_tick_effect():
-    pl = LateralPlanner(P)
-    pl.state.executed_lane = 0.3
-    pl.state.v_lat_est = 2.0
-    cmd = pl.update(_out(reanchor=-0.5, fid=1, valid=1), DT, 1)
-    # 锚点先于控制：executed 被有符号覆写、v_lat 清零；随后积分一拍才变化
-    assert pl.state.executed_lane == pytest.approx(-0.5, abs=0.05)
-    assert cmd.steer_x > 0                        # 目标 0、自车 −0.5 → 向右回
-
 
 def test_reanchor_none_means_noop():
     pl = LateralPlanner(P)
@@ -449,24 +439,6 @@ def test_blackout_voids_frame():
     assert pl._road_anchor == 0.0                  # 重形成：道0=路中心
 
 
-def test_reanchor_event_resets_road_frame():
-    """事件重锚（金币完成）后路观测参考重形成：executed 向路心收敛（中轴
-    巡航语义）——事件拍的 executed 是决策系快照，路观测把它拉回道0=路中心
-    的参考系，此为期望行为而非"旧帧拽新值"。"""
-    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.3)
-    assert pl._road_anchor == 0.0                  # 形成即道0=路中心
-    pl.update(_out(x_target=0.0, fid=2, valid=2, reanchor=1.0), DT, 2,
-              road_offset=0.3)                    # 重锚拍：executed:=1.0，路锚重置
-    assert pl.state.executed_lane == pytest.approx(1.0, abs=1e-9)  # 重锚拍不被拽
-    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3, road_offset=0.3)
-    assert pl._road_anchor == 0.0                  # 重形成
-    assert pl.state.executed_lane == pytest.approx(1.0 + P.obs_alpha * (0.3 - 1.0))
-    assert pl.state.executed_lane < 1.0            # 向路心收敛
-
-
 def test_center_axis_cruise_converges_to_road_center():
     """中轴巡航（2026-10-02 维护者裁定）：x_target=0 且车不在路心时，路观测
     把 executed 收敛到 road_offset（自车相对路心）——道0=路中心，PD 持续
@@ -482,7 +454,8 @@ def test_center_axis_cruise_converges_to_road_center():
 # ---------- 维护性转向权限（16:44 局：定中心全权 PD=满舵绕桩） ----------
 
 def test_hold_authority_deadband_and_cap():
-    """保持态（CRUISE 定中心）：死区内不发力、死区外杆幅封顶；CHANGE 全权。"""
+    """保持态（CRUISE 定中心）：死区内不发力、死区外杆幅封顶（2026-10-18 换血：
+    场跟随无 CHANGE 全权分支，gentle 语义无条件生效）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
@@ -492,10 +465,6 @@ def test_hold_authority_deadband_and_cap():
     pl.state.executed_lane = 1.5                       # 误差 1.5：k_p0.7→u=1.05
     c = pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert -int(P.hold_stick_max * _STICK_FULL) - 100 < c.steer_x < 0  # 封顶 0.45
-    pl.state.executed_lane = 0.0                       # 同误差 CHANGE 机动：全权
-    c = pl.update(_out(state=DecisionState.CHANGE, x_target=1.5,
-                       fid=3, valid=3), DT, 3)
-    assert c.steer_x > int(P.hold_stick_max * _STICK_FULL) + 100
 
 
 # ---------- ⑥b 速度修正时间基（2026-10-08 判据冻结，台账 §4A） ----------
@@ -536,23 +505,6 @@ def test_beta_accumulator_survives_reuse_ticks():
     pl.state.v_lat_est = 0.0
     pl.update(_out(x_target=0.0, fid=4, valid=4), DT, 4, road_offset=0.4)
     assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / (2 * DT))
-
-
-def test_beta_accumulator_resets_on_reanchor():
-    """重锚（v:=0）清零累计器：重锚同拍来新证据按单拍归账（T_e=dt，
-    判据冻结的边界语义）；黑视期累计器继续走（模型在无修正地跑）。"""
-    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
-                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
-    pl.update(_out(x_target=0.0, fid=2, valid=2, reanchor=0.0), DT, 2,
-              road_offset=0.4)
-    assert pl.state.v_lat_est == 0.0                       # 重锚拍 v 清零
-    # 黑视 2 拍（ro=None）→ 新证据：T_e = 3·DT
-    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3)
-    pl.update(_out(x_target=0.0, fid=4, valid=4), DT, 4)
-    pl.update(_out(x_target=0.0, fid=5, valid=5), DT, 5, road_offset=0.4)
-    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / (3 * DT))
 
 
 def test_obs_velocity_injection_respects_cap():

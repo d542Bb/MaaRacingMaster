@@ -20,8 +20,7 @@ A1 归一下自车恒 0、**目标读数**推不出自车位移，但**路缘两
 V2 复盘"开环虚胖提前松杆"的闭环解）在双侧缘距稳定拍经 alpha-beta 滤波器
 钉住 ``executed_lane``；**参考系=道0 路中心**（2026-10-02 维护者裁定中轴
 巡航：x_target=0 即守路轴，牙子级边界信号不可依赖、守轴是唯一可守的安全
-面），大初差经新息门+陈旧重基消化；无观测拍退回模型开环积分，CHANGE 完成
-拍仍经 ``DecisionOutput.reanchor_lane`` 事件重锚（并重置路观测参考帧）。
+面），大初差经新息门+陈旧重基消化；无观测拍退回模型开环积分。
 旋转污染 ε≈−δ·a_x（5.7° 航向仅 0.06 车道，二阶量）暂不修正，vp_x 去偏留后续。
 
 **纯函数纪律**（C3）：update 只吃 (decision, dt_s, current_fid) + 内部状态，
@@ -98,24 +97,14 @@ class LateralPlanner:
         if not (isinstance(dt_s, (int, float)) and math.isfinite(dt_s)) or dt_s <= 0:
             raise ValueError(f"dt_s 非法（需有限正数）：{dt_s!r}")
         if not math.isfinite(decision.x_target if decision.x_target is not None else 0.0) \
-                or (decision.reanchor_lane is not None
-                    and not math.isfinite(decision.reanchor_lane)) \
                 or (road_offset is not None and not math.isfinite(road_offset)):
             raise ValueError(f"decision 携带非有限值：x_target={decision.x_target!r} "
-                             f"reanchor={decision.reanchor_lane!r} road={road_offset!r}")
+                             f"road={road_offset!r}")
         # 速度修正时间基累计：本拍模型又跑过 dt_s（帧钟）。修正在 ⑥b（⑥ 之后）
-        # 消费，重锚/形成/重基各自清零——见 ⑥b 注
+        # 消费，形成/重基各自清零——见 ⑥b 注
         self._t_vcorr += dt_s
 
-        # ① 重锚先于控制（设计稿 §二：锚点与指令同拍生效，不留旧状态发指令的窗口）
-        #    事件重锚同时重置路观测参考（帧变了：executed 被覆写，路中心锚须重新懒定）
-        if decision.reanchor_lane is not None:
-            self.state.executed_lane = decision.reanchor_lane
-            self.state.v_lat_est = 0.0
-            self._road_anchor = None
-            self._t_vcorr = 0.0               # v 已清零，速度基线重新起算
-
-        # ② 过期判定（valid_until_fid 含边界；第 4 个连续过期拍起按 CONSERVE）
+        # ① 过期判定（valid_until_fid 含边界；第 4 个连续过期拍起按 CONSERVE）
         fresh = current_fid <= decision.valid_until_fid
         self._expired_ticks = 0 if fresh else self._expired_ticks + 1
         stale_hold = (not fresh) and self._expired_ticks <= self.p.hold_max_ticks
@@ -154,9 +143,8 @@ class LateralPlanner:
             steer_raw = self._pd(self._abort_hold_lane, gentle=True)
         elif decision.x_target is not None:
             self._abort_hold_lane = None
-            # CHANGE=机动全权；CRUISE 的目标跟踪是维护性定中心——gentle（16:44 局）
-            steer_raw = self._pd(decision.x_target,
-                                 gentle=st is not DecisionState.CHANGE)
+            # 场跟随：目标跟踪是维护性定中心——gentle（16:44 局）
+            steer_raw = self._pd(decision.x_target, gentle=True)
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
 
