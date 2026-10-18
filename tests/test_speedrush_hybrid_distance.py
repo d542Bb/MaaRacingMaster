@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""混合测距刀一回归锁（docs/plan/speedrush-hybrid-ranging-design.md §2/§4/§6/§8）。
+"""混合测距刀一回归锁（混合测距刀一 b385d4b，§2/§4/§6/§8 口径）。
 
 锁定：三态状态机（生命周期语义、RESCALED 单行道）、h 重标公式方向、N=2 门控
 防抖、两层有效性弃权链（CLUSTER_SWITCH / TRACK_LOST / EXPIRED / ASSOC_FAIL /
@@ -40,8 +40,7 @@ def _sheet(fid: int, z_m=50.0, h_px=40, det_idx=0) -> DepthAnchorSheet:
     return DepthAnchorSheet(
         fid=fid, ts_ns=fid * NS,
         entries=(AnchorEntry(det_idx=det_idx, x0=700, y0=480, x1=790,
-                             y1=480 + h_px, z_m=z_m, h_px=h_px,
-                             cy_px=480 + h_px / 2),))
+                             y1=480 + h_px, z_m=z_m),))
 
 
 def _dist(obs, tid=1):
@@ -298,7 +297,7 @@ def test_anchor_sheet_densest_cluster_median():
     assert len(sheet.entries) == 1
     e = sheet.entries[0]
     assert e.z_m == pytest.approx(42.0)       # 最密簇中位，不被远景簇带跑
-    assert e.h_px == 720
+    assert e.y1 - e.y0 == 720
 
 
 def test_anchor_sheet_drops_out_of_domain_and_degenerate_boxes():

@@ -23,10 +23,7 @@ R2|maaracing_master/plugins/speedrush/RULES.md|speedrush_scoring
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|egg-claim-coin-read
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|frame-page-token
 R2|maaracing_master/plugins/treasure/CODE_WIKI.md|ocr-gate-2026-09-15
-R4|maaracing_master/plugins/speedrush/hud.py
-R4|maaracing_master/plugins/speedrush/module.py
 R4|maaracing_master/plugins/treasure/eggs.py
 R4|maaracing_master/plugins/treasure/module.py
 R4|tests/test_core_ocr.py
-R4|tests/test_speedrush_truth.py
 R4|tests/test_treasure_egg_claim.py

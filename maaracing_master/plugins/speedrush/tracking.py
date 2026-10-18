@@ -173,7 +173,7 @@ class CoinGroup:
 @dataclass(frozen=True)
 class ObjectDistance:
     """物体距离状态（混合测距，trace-only 不进决策）。
-    契约见 docs/plan/speedrush-hybrid-ranging-design.md §2/§4：三态互斥完备；
+    契约见混合测距刀一 b385d4b：三态互斥完备；
     UNKNOWN 的 ``metric_distance_m`` 恒为 None（类型层防"有序无米"被当数用）；
     不设连续置信分——没有实验支持的分位数都是编的，弃权是硬边界。
 
@@ -316,7 +316,7 @@ class TrackerParams:
     fresh_max_ms: float = 100.0  # frame_fresh 判据（v2 §六 P95≤100ms 同源）
     ema_alpha: float = 0.5       # rel_approach 平滑系数
     # ---- 混合测距（trace-only；全部**实验候选参数**，trace 定版前不是系统真理
-    # ---- ——依据与口径见 docs/plan/speedrush-hybrid-ranging-design.md §3/§8.1）
+    # ---- ——依据与口径见混合测距刀一 b385d4b §3/§8.1）
     gate_v_mps: float = 16.0     # 门控阈值：估计接近速度 m/s（trace_213150 标定
                                  # Youden T≈16，物理口径吻合：16m/s×250ms≈4m 持锚误差；
                                  # 2026-10-13 v̂ 换锚间区间差分后为**再标定候选**）

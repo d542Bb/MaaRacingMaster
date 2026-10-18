@@ -639,7 +639,7 @@ def _corridor(left_m=None, right_m=None):
         else BandBoundary(None, UNKNOWN),
         right=BandBoundary(right_m, "measured") if right_m is not None
         else BandBoundary(None, UNKNOWN))
-    return Corridor((band,), None, None, "pair", "ok", None)
+    return Corridor((band,), None, None, "pair", "ok")
 
 
 def test_mirror_symmetry_engine_and_planner():
@@ -924,7 +924,7 @@ def test_safety_veto_aborts_mid_change():
     assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:lat_veto"
 
 
-# ---------- V0 门账本（docs/plan/speedrush-score-routing §4；只记账不改判） ----------
+# ---------- V0 门账本（V0 决策门账本 5071c02；只记账不改判） ----------
 
 def _car_tgt(tid, x, cy, rel, w=40, conf=0.9, fid=1):
     return TrackedTarget(id=tid, kind="car", x_lane=x, x_sigma=0.1, cy=cy,
@@ -1152,7 +1152,7 @@ def test_hold_returns_to_grid_green_center():
     g = DrivableGrid(state=st, coef=(0.0, 0.0, 2.0),
                      counts=np.full(st.shape, 9, np.int32),
                      dig_cells=0, latency_ms=1.0)
-    c = Corridor((), 0.0, None, "pair_slot", "ok", None)   # 车锚走廊：报居中
+    c = Corridor((), 0.0, None, "pair_slot", "ok")   # 车锚走廊：报居中
     e = DecisionEngine(CFG)
     out = e.update(_obs(fid=1, presence=True), DT, corridor=c, grid=g)
     assert out.state is DecisionState.CRUISE

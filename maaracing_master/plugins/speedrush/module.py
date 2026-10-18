@@ -16,9 +16,8 @@
 故由本文件显式驱动每一步，复用同一批原子动作节点。
 
 **单步驱动为何成立**：``NavGraph.run(entry, reached)`` 阻塞到图跑完、再用 reached
-事后校验，所以动作节点必须是零路由叶子（见
-``tools/experiments/speedrush_templates/build_truth.py`` 的注释），否则框架会顺边
-跑下去而失控。
+事后校验，所以动作节点必须是零路由叶子（见真源生成器复算的提交 0603d8c 注释），
+否则框架会顺边跑下去而失控。
 
 驾驶阶段是留给控制方案的接口，契约见 ``_drive`` 的 docstring。
 """
@@ -119,8 +118,7 @@ DRIVE_ANCHOR_CHECK_S = 0.5
 
 # 进入驾驶的就绪判据：连续命中驾驶页锚点多少次才认为"已在对局中"。
 # **待收紧**：起步动画的真实特征尚未实测，本判据只保证"驾驶页已稳定出现"，
-# 可能早于"车辆可操控"。取得动画样本后须按其特征加判据（见 docs/plan
-# speedrush-drive-plan.md 第十节门控）。
+# 可能早于"车辆可操控"。取得动画样本后须按其特征加判据。
 DRIVE_READY_HITS = 2
 # 等待驾驶就绪的上限：动画再长也不该无限等。
 DRIVE_READY_TIMEOUT_S = 30.0
@@ -262,10 +260,10 @@ class SpeedRushModule(ActivityModule):
         self._control_mode = self.DEFAULT_CONTROL_MODE
         # 直行基线档：接管手柄后只踩油门（感知/深度不加载，见类常量注释）
         self._straight_mode = self.DEFAULT_STRAIGHT_MODE
-        # road_offset 证据源=黄线簇间隙（v3 唯一语义，2026-09-28 维护者裁定
-        # 删除 hsv 档）；深度退役为标定职责（照跑记账，不进实时回路）。
-        # 深度几何的 ORT 会话：实例跨阶段复用（模型加载秒级，一局只付一次）；
-        # 加载失败置 _depth_failed 后不再重试（降级为纯模型积分，不碰主循环）。
+        # road_offset 证据源=深度几何区读数（v4 几何主人，供数门优先级链见
+        # _EgoRoadObserver）；深度几何的 ORT 会话：实例跨阶段复用（模型加载
+        # 秒级，一局只付一次）；加载失败置 _depth_failed 后不再重试（降级为
+        # 纯模型积分，不碰主循环）。
         self._depth_sess = None
         self._depth_failed = False
         # 控制回路耗时记账（验收判据 §二.3 的 P50/P95 数据源），按阶段清零
@@ -1027,7 +1025,10 @@ class SpeedRushModule(ActivityModule):
             # 主候选供数门分账列（2026-10-17 归因：走廊缺席拍 9 成以上=主候选
             # 被供数门拒绝，垃圾对/对宽门/路心超限三道门未分账）：本拍原始对
             # + 对宽（二元定一对）+ W 真值 + 拒绝原因——与 ro_source 拒绝拍
-            # 同拍 join 即复算三者的缺席拍占比，门标定（OFF_MAX/对宽容忍）有数
+            # 同拍 join 即复算三者的缺席拍占比，门标定（OFF_MAX/对宽容忍）有数。
+            # 复算口径：对宽门判据是 ro_w（W=近 200 过门对的中值）配 ro_pair_w
+            # （本拍对宽），cor_w 是走廊表示面的当拍滤波宽——拿 cor_w 比对宽门
+            # 会得出假结论；被拒本拍对宽仍进走廊表示面（门只拦供数路）
             "ro_off_raw": None if chain["ego_road"].last.get("off_raw") is None
             else round(chain["ego_road"].last["off_raw"], 4),
             "ro_w": None if chain["ego_road"].last.get("width") is None
@@ -1079,7 +1080,9 @@ class SpeedRushModule(ActivityModule):
             "dgeo_cam_h": None if dgeo is None or dgeo.coef is None
             else round(abs(dgeo.coef[2]), 3),
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账
-            # 与影子重放的验收面（带来源明细在 debugview/offline 重放）
+            # 与影子重放的验收面（带来源明细在 debugview/offline 重放）。
+            # cor_w=当拍滤波对宽（走廊表示面），与对宽门判据 ro_w（W 中值）
+            # 不是同一量——两套量并存见 ro_w 分账列注释
             "cor_w": None if corridor is None
             else round(corridor.width_lane, 3),
             "cor_ph": None if corridor is None else corridor.plane_health,
@@ -1093,7 +1096,7 @@ class SpeedRushModule(ActivityModule):
             # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
             # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
             "car_views": len(tviews),
-            # V0 逐候选门账本（docs/plan/speedrush-score-routing §4）：逐车/
+            # V0 逐候选门账本（V0 决策门账本 5071c02）：逐车/
             # 组/奖励车的门判定与拒绝原因、框宽米换算（带噪估计）、错身原料——
             # no_candidate 归因的数据源。行结构见 decision.gate_ledger docstring；
             # None=本拍未跑选择（CONSERVE/ABORT/致命/冷却拍）。2D 帧龄拍级已有
@@ -1815,7 +1818,7 @@ class _EgoRoadObserver:
 
     def _feed_width(self, el: float, er: float) -> None:
         """中值滤波后的双侧对宽进 W 统计（垃圾对/单侧/保鲜拍不进——与供数门
-        同一入口纪律）。成形前收全部对宽；成形后 ±40% 门。"""
+        同一入口纪律）。成形前收全部对宽；成形后对宽门（容差 W_GUARD_FRAC）。"""
         w = er - el
         formed = self.width
         if formed is not None and abs(w - formed) > self.W_GUARD_FRAC * formed:

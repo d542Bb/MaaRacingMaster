@@ -74,7 +74,6 @@ class Corridor:
     width_lane: float | None   # 走廊宽（道，边界到边界）
     src: str                   # pair / wall / wall_occl / pair_slot / region / none
     plane_health: str          # ok / degraded / none
-    far_trend: float | None    # 远场墙走向（米/米，只预判不硬否决，trace 消费）
 
 
 def _band_bounds(i: int) -> tuple[float, float]:
@@ -152,25 +151,6 @@ def _air_boundary(side: int, center_lane: float | None,
     return BandBoundary(edge * lane_w_m, INFERRED, 0.0, None)
 
 
-def _far_trend(wall_track) -> float | None:
-    """远场墙走向：同侧 ≥2 个不同 z 的 measured 墙箱的线性斜率（米/米）。
-    只预判不硬否决（trace 消费）；occluded 箱不进拟合（历史位置不参与走向）。"""
-    if wall_track is None:
-        return None
-    best = None
-    for side in (-1, 1):
-        pts = [(zc, pos) for zc, pos, _c, s, _f in wall_track.bins(side)
-               if s == MEASURED]
-        if len(pts) < 2 or len({z for z, _ in pts}) < 2:
-            continue
-        zs = np.array([z for z, _ in pts])
-        xs = np.array([x for _, x in pts])
-        slope = float(np.polyfit(zs, xs, 1)[0])
-        if best is None or len(pts) > best[1]:
-            best = (slope, len(pts))
-    return None if best is None else best[0]
-
-
 def _plane_health(reading) -> str:
     """平面健康面：reading 缺席=none；拟合失败或质量门拒绝=degraded。"""
     if reading is None:
@@ -186,7 +166,7 @@ def build_corridor(reading, grid, wall_track, fid: int | None, *,
                    center_lane: float | None, width_lane: float | None,
                    src: str, lane_w_m: float | None) -> Corridor:
     """分带走廊拼装：center/width/src 由供数门（_EgoRoadObserver 优先级链）
-    算好传入，本函数只管分带表示、来源标注与 far_trend/plane_health。"""
+    算好传入，本函数只管分带表示、来源标注与 plane_health。"""
     bands = []
     for i in range(N_BANDS):
         z0, z1 = _band_bounds(i)
@@ -206,4 +186,4 @@ def build_corridor(reading, grid, wall_track, fid: int | None, *,
         bands.append(CorridorBand(z0 - CAM_Z_DATUM_M, z1 - CAM_Z_DATUM_M,
                                   sides[-1], sides[1], n_pts))
     return Corridor(tuple(bands), center_lane, width_lane, src,
-                    _plane_health(reading), _far_trend(wall_track))
+                    _plane_health(reading))

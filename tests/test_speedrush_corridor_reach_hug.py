@@ -349,8 +349,7 @@ def test_gate_off_ignores_overtake_instrument():
 _MIN_CONFIG = {
     "schema_version": 1,
     "mode": {"allow_all_moves": True, "allow_car_graze": False},
-    "control": {"frame_rate_hz": 20.0, "target_grace_s": 0.4,
-                "group_grace_s": 0.4, "t_change_max_s": 2.0,
+    "control": {"frame_rate_hz": 20.0, "t_change_max_s": 2.0,
                 "abort_settle_v_lane_s": 0.3},
     "timing": {"tau_resp_s": 0.13, "lane_change_base_s": 0.3,
                "lane_change_k_s_per_lane": 0.4, "margin_s": 0.15},
@@ -362,7 +361,7 @@ _MIN_CONFIG = {
                    "dead_zone_lane": 0.15},
     "validate": {"t_empty_s": 2.0, "t_recover_s": 1.0,
                  "t_conserve_max_s": 10.0, "x_lane_abs_max": 2.6,
-                 "cy_jump_max_px": 90.0, "straight_residual_max": 0.6,
+                 "cy_jump_max_px": 90.0,
                  "lat_veto_gap_lane": 0.45, "lat_veto_horizon_s": 1.5},
     "planner": {"lookahead_tau_s": 0.25, "k_p": 0.7, "k_d": 0.2,
                 "tau_steer_s": 0.1, "rate_limit_raw": 22000.0,

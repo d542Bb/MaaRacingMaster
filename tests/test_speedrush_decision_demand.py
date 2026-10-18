@@ -83,7 +83,7 @@ def _corridor(center=0.0):
                      BandBoundary(4.2, MEASURED, 1.0))
         for i in range(9))
     return Corridor(bands, center, 8.4 / _BASE_cal_lane_w(), "pair",
-                    "ok", None)
+                    "ok")
 
 
 def _BASE_cal_lane_w() -> float:
@@ -389,7 +389,7 @@ def _corridor_blind(center=0.0):
                      BandBoundary(None, MEASURED, 1.0))
         for i in range(9))
     return Corridor(bands, center, 8.4 / _BASE_cal_lane_w(), "pair",
-                    "ok", None)
+                    "ok")
 
 
 def test_demand_timeout_exits_gap_hold():

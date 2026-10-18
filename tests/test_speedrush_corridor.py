@@ -3,7 +3,7 @@
 
 合成用例锁语义：带内来源优先级（墙箱>绿区>空气墙>unknown）、墙实体路径
 （单侧/遮挡从全盲变半盲供数）、区兜底只在新鲜拍、拒绝不兜底（宁弃不喂）、
-plane_health/far_trend 标注。数据面锁 _side_has_space 的带来源规则
+plane_health 标注。数据面锁 _side_has_space 的带来源规则
 （tests/test_speedrush_decision.py）。"""
 from __future__ import annotations
 

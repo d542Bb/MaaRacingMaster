@@ -5,7 +5,6 @@
     "tau_resp_s": "实测 τ=0.130s n=51（输入→响应延迟，非变道时长；证据 commit 3847fae）",
     "lane_change_base_s|lane_change_k_s_per_lane": "[需实测·前置 §7.1 变道时长剖面] 设计起值：Δx=1 车道≈0.7s，含起步开销",
     "frame_rate_hz": "控制名义频率 20Hz（v2 §六口径：实测 ≈21Hz 留裕量；30Hz 是独立议题）",
-    "target_grace_s|group_grace_s": "[实测 b1e6cb9] 有效恢复窗右缘≈0.4s（秒口径，行数=秒×帧率换算在代码里做）",
     "coin_value_per_unit": "游戏事实镜像（RULES §4.2 金币每枚 30 分）；RULES 变更时人工同步",
     "switch_margin": "30 分档的一半（§三：加性门槛替代乘式门，对零分/负分成立）",
     "x_lane_abs_max": "路面半宽 ≈2.5 车道 + 余量（CODE_WIKI 回放右路缘 +2.5 标定）",
@@ -43,8 +42,6 @@
   },
   "control": {
     "frame_rate_hz": 20.0,
-    "target_grace_s": 0.4,
-    "group_grace_s": 0.4,
     "t_change_max_s": 2.0,
     "abort_settle_v_lane_s": 0.3
   },
@@ -77,7 +74,6 @@
     "t_conserve_max_s": 10.0,
     "x_lane_abs_max": 2.6,
     "cy_jump_max_px": 90.0,
-    "straight_residual_max": 0.6,
     "lat_veto_gap_lane": 0.45,
     "lat_veto_horizon_s": 1.5
   },

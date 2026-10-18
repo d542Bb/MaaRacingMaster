@@ -51,7 +51,7 @@ class GridVeto:
 
 @dataclass(frozen=True)
 class PlanLayer:
-    """三类字典序计划层行为闸（设计稿 docs/plan/speedrush-plan-layer-design.md
+    """三类字典序计划层行为闸（设计稿计划层落地 f9d4944
     v2；整段可选，老 json 不带段=全默认=关，与 grid_veto 同一条兼容纪律）。
 
     语义：开闸后 decision._select 分流到 plan.PlanSelector——bonus＞极限超车＞
@@ -110,8 +110,6 @@ class Overtake:
 @dataclass(frozen=True)
 class Control:
     frame_rate_hz: float
-    target_grace_s: float
-    group_grace_s: float
     t_change_max_s: float
     # ABORT 速率落稳界（车道/s）：executed 拍间变化率低于此判回稳——v1 注释里
     # "有反馈等横向速率归零信号"的补装（19:44 复盘：此前从未实现，丢目标白冻 2s）
@@ -216,7 +214,6 @@ class Validate:
     t_conserve_max_s: float
     x_lane_abs_max: float
     cy_jump_max_px: float
-    straight_residual_max: float
     # —— 横向几何安全 veto（阶段一 2026-10-02，RSS 形状外挂判据）——
     lat_veto_gap_lane: float        # 接触界：预测最小车距低于此即 veto（车身中心距）
     lat_veto_horizon_s: float       # 自车扫掠包络的判距视野（街车静态，无外推视野）
@@ -466,8 +463,6 @@ def _read_decision(path: Path) -> DecisionConfig:
                                       default=False)),
         control=Control(
             frame_rate_hz=_num(d, "control", "frame_rate_hz", lo=0),
-            target_grace_s=_num(d, "control", "target_grace_s", lo=0),
-            group_grace_s=_num(d, "control", "group_grace_s", lo=0),
             t_change_max_s=_num(d, "control", "t_change_max_s", lo=0),
             abort_settle_v_lane_s=_num(d, "control", "abort_settle_v_lane_s",
                                        lo=0, lo_open=False)),
@@ -499,8 +494,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             t_conserve_max_s=_num(d, "validate", "t_conserve_max_s", lo=0),
             x_lane_abs_max=_num(d, "validate", "x_lane_abs_max", lo=0),
             cy_jump_max_px=_num(d, "validate", "cy_jump_max_px", lo=0),
-            straight_residual_max=_num(d, "validate", "straight_residual_max",
-                                       lo=0, lo_open=False),
             lat_veto_gap_lane=_num(d, "validate", "lat_veto_gap_lane", lo=0),
             lat_veto_horizon_s=_num(d, "validate", "lat_veto_horizon_s", lo=0)),
         planner=Planner(

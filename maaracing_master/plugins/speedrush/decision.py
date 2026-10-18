@@ -50,14 +50,12 @@ from dataclasses import dataclass
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import UNKNOWN, Corridor
 from maaracing_master.plugins.speedrush.corridor_reach import (
-    CarSource, CoinSource, CorridorBandSpan, ReachParams, ReachReport, evaluate)
+    LANE_HALF, BonusSource, CarSource, CoinSource, CorridorBandSpan,
+    ReachParams, ReachReport, evaluate)
 from maaracing_master.plugins.speedrush.depth_geo import (
     DrivableGrid, grid_center_lane)
 from maaracing_master.plugins.speedrush.latsample import (
     LatTrajectorySampler, SampledTraj, eval_traj)
-from maaracing_master.plugins.speedrush.corridor_reach import (
-    LANE_HALF, BonusSource, CarSource, CoinSource, CorridorBandSpan,
-    ReachParams, ReachReport, evaluate)
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_PASS, OUTCOME_PRESUMED_PASS, CarView, PassEvent)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -713,7 +711,7 @@ class DecisionEngine:
 
     @property
     def gate_ledger(self) -> dict | None:
-        """本拍逐候选门账本（V0 账本，docs/plan/speedrush-score-routing §4；
+        """本拍逐候选门账本（V0 账本，V0 决策门账本 5071c02；
         trace 消费）：
         {"v": 2, "fid_hz": 采集帧率估计|None, "cars": [...], "coins": [...],
         "bonus": [...]}——
@@ -1544,7 +1542,7 @@ class DecisionEngine:
         start = executed if executed is not None else 0.0
         t = self.cfg.timing
         min_score = self.cfg.hysteresis.min_score
-        # V0 门账本（docs/plan/speedrush-score-routing §4）：与下方选择共用
+        # V0 门账本（V0 决策门账本 5071c02）：与下方选择共用
         # 同一批判定，账本行是判定的读数面而非第二套门——公式单一真源=
         # 本函数+Scorer/LateralSafety。只记账不改判。
         tgt = {x.id: x for x in obs.targets}
@@ -1882,9 +1880,10 @@ class DecisionEngine:
         """hold 回中锚（2026-10-15 币渠道/贴墙诊断）：无候选时不守走廊中心——
         pair_slot 车锚走廊「骑黄线报正中」（域内 gate note 实录），守中心=守
         原地，贴墙不回、币线在旁边也永远不横穿。改用栅格绿区路心（
-        grid_center_lane，非车锚：绿区物理边界的宽度加权中位，离线基线
-        f9a9a80 验证）做回中目标；返回值是走廊系 goal（=绿区路心 ego 道 −
-        走廊中心 ego 道）。栅格弃权/走廊缺席回退 0（旧行为逐位）。"""
+        grid_center_lane，非车锚：绿区范围中点的宽度加权中位，与供数主人
+        region_reading 同源栅格不同算法——只作回中目标与互证，不混作供数；
+        离线基线 f9a9a80 验证）做回中目标；返回值是走廊系 goal（=绿区路心
+        ego 道 − 走廊中心 ego 道）。栅格弃权/走廊缺席回退 0（旧行为逐位）。"""
         if self._grid_hold is None or self._corridor is None \
                 or self._corridor.center_lane is None:
             return 0.0

@@ -2,8 +2,8 @@
 """speedrush 真源「可由生成器复算」的回归锁。
 
 真源（``plugins/speedrush/resources/pipeline/speedrush.json``）是**生成**出来的：
-模板与 ROI 规格在 ``tools/experiments/speedrush_templates/templates_roi.json``，
-节点装配在 ``build_truth.py``。这条链一旦断掉——有人手工改真源，或生成器漏掉某个
+模板与 ROI 规格在真源首版 d0b46dc 引入的 ``templates_roi.json``（``build_truth.py``
+装配）。这条链一旦断掉——有人手工改真源，或生成器漏掉某个
 字段——下一次生成就会把改动静默抹掉。
 
 **实测过一次**（2026-09-16）：驾驶页锚点的阈值与节拍（0.5 / rate_limit 0 /

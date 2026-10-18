@@ -51,7 +51,7 @@ def _corridor(left=-6.0, right=6.0) -> Corridor:
         left=BandBoundary(x_m=left, src="measured", conf=1.0),
         right=BandBoundary(x_m=right, src="measured", conf=1.0))
     return Corridor(bands=(band,), center_lane=0.0, width_lane=3.5,
-                    src="wall", plane_health="ok", far_trend=None)
+                    src="wall", plane_health="ok")
 
 
 def _obs(*, fid=100, fars=()):
@@ -123,7 +123,7 @@ def test_corridor_clamp_bounds_coarse_read():
     # 走廊全 unknown（无 edges）：不夹，仅要求有限
     eng2 = _engine()
     eng2._corridor = Corridor(bands=(), center_lane=0.0, width_lane=None,
-                              src="none", plane_health="none", far_trend=None)
+                              src="none", plane_health="none")
     out2 = eng2._reach_bonus_far_sources(_obs(fars=(_far(cx=1000),)), 0.0)
     assert len(out2) == 1
     assert math.isfinite(out2[0].x_m)

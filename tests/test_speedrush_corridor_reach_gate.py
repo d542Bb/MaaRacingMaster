@@ -81,7 +81,7 @@ def _corridor(left=-4.2, right=4.2):
                      BandBoundary(right, MEASURED, 1.0))
         for i in range(9))
     return Corridor(bands, 0.0, (right - left) / _BASE_cal_lane_w(), "pair",
-                    "ok", None)
+                    "ok")
 
 
 def _BASE_cal_lane_w() -> float:

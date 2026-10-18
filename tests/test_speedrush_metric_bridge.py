@@ -37,7 +37,7 @@ def _sheet(fid: int, z_m=50.0) -> DepthAnchorSheet:
     return DepthAnchorSheet(
         fid=fid, ts_ns=fid * NS,
         entries=(AnchorEntry(det_idx=0, x0=700, y0=480, x1=790,
-                             y1=520, z_m=z_m, h_px=40, cy_px=500),))
+                             y1=520, z_m=z_m),))
 
 
 def _m(obs):
