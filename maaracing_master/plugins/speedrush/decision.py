@@ -70,6 +70,11 @@ _SCHEMA = 2  # v2：DecisionOutput.reanchor_lane（planner 设计稿 §二，202
 # 阶段 C step 2 **不再升 schema**：超车能力扩的是决策层内部（Scored/选择/完成判据分派）
 # 与入参通道（traffic= 关键字，默认 None 旧调用零扰动），DecisionOutput 出口契约不变。
 _EPS = 1e-9
+# 回避横距门的车体包络阈（道，闸 metric_cars.dodge 开时替换 0.45 中心距门）：
+# 车半宽+自车半宽 ≈0.54（接触距）+ 余量——中心距门在自车漂到车道边缘时把
+# 正前方部分重叠的车跳过（trace 155351_p2 fid2940：车体已重叠 −0.06 道、
+# z=0.6m、到站 12ms，中心距 0.48≥0.45 被跳）。邻道车（1.0 道）仍排除。
+DODGE_ENVELOPE_LANES = 0.65
 # 逐拍重评的防抖连拍数（读数噪声量级的单拍破判不撕计划；与死区代理的
 # _deadzone_ticks>=2 同款自卫）
 _REEVAL_STREAK = 2
@@ -1754,6 +1759,9 @@ class DecisionEngine:
             return None
         metric_dodge = self.cfg.metric_cars.dodge
         fusion = self.cfg.metric_cars.fusion
+        # 横距门：闸开=车体包络阈（正前方部分重叠的车不跳），闸关=原中心距门
+        x_gate = (DODGE_ENVELOPE_LANES if metric_dodge
+                  else self.cfg.validate.lat_veto_gap_lane)
         cands: list[tuple[float, CarView, float]] = []
         for v in self._views:
             m = self._metric_by_id.get(v.id) if fusion else None
@@ -1765,7 +1773,7 @@ class DecisionEngine:
             ttc = min(m_t, pixel) if m_t is not None else pixel
             if not (0.0 <= ttc < self.cfg.overtake.ttc_dodge_s):
                 continue                      # 不到站/还在远处：正常机制管
-            if abs(v.x_lane - executed) >= self.cfg.validate.lat_veto_gap_lane:
+            if abs(v.x_lane - executed) >= x_gate:
                 continue                      # 车体不搭我道：不作回避对象
             goal = v.x_lane + _hug_sigma_of(executed, v.x_lane) * self.cfg.overtake.d_hold_lane
             if self.lateral.veto_reason(executed, goal, self._views) is not None:
@@ -1786,7 +1794,7 @@ class DecisionEngine:
                 if not (0.0 <= ttc < self.cfg.overtake.ttc_dodge_s):
                     continue
                 x_lane = m.x_m / self.cal.lane_w_m
-                if abs(x_lane - executed) >= self.cfg.validate.lat_veto_gap_lane:
+                if abs(x_lane - executed) >= x_gate:
                     continue
                 goal = x_lane + _hug_sigma_of(executed, x_lane) * self.cfg.overtake.d_hold_lane
                 if self.lateral.veto_reason(executed, goal, self._views) is not None:

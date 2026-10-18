@@ -1153,11 +1153,39 @@ def test_dodge_metric_only_x_gate():
     e = DecisionEngine(replace(
         CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
         metric_cars=replace(CFG.metric_cars, fusion=True, dodge=True)))
-    mc = _mc(9, x_m=2.0)                       # 2.0m≈0.59 道 ≥ 接触界 0.45
+    mc = _mc(9, x_m=4.0)                       # 4.0m≈1.18 道 ≥ 包络阈 0.65（邻道）
     out = e.update(replace(_obs(fid=1, presence=True), metric_cars=(mc,)), DT,
                    executed_lane=0.0, traffic=_traffic([]))
     assert out.state is DecisionState.CRUISE
     assert e.metric_dodge_shadow == ()
+
+
+def test_dodge_envelope_gate_on_overlapping_car():
+    """横距门包络化（闸 dodge 开）：车中心距 0.55 道（≥原 0.45 门会跳）但
+    车体与自车包络重叠（trace 155351_p2 fid2940 实锤：车体 −0.06 道、z=0.6m
+    被跳）→ 开闸照回避；邻道车（1.0 道）仍排除。"""
+    e = DecisionEngine(replace(
+        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
+        metric_cars=replace(CFG.metric_cars, dodge=True)))
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.55, cy=620)]))   # ttc=0.48s
+    assert out.state is DecisionState.CHANGE and out.reason == "select:dodge"
+    e2 = DecisionEngine(replace(
+        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
+        metric_cars=replace(CFG.metric_cars, dodge=True)))
+    out = e2.update(_obs(fid=2, presence=True), DT, executed_lane=0.0,
+                    traffic=_traffic([_cv(tid=9, x=1.0, cy=620)]))   # 邻道 1.0≥0.65
+    assert out.state is DecisionState.CRUISE
+
+
+def test_dodge_envelope_gate_off_keeps_center_gate():
+    """关闸=行为逐位不变：同一部分重叠场景（0.55≥0.45）不触发。"""
+    e = DecisionEngine(replace(
+        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
+        metric_cars=replace(CFG.metric_cars, dodge=False)))
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   traffic=_traffic([_cv(tid=9, x=0.55, cy=620)]))
+    assert out.state is DecisionState.CRUISE and "dodge" not in out.reason
 
 
 def test_veto_window_fusion_truncates_only_later():
