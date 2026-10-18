@@ -368,7 +368,7 @@ def test_change_target_lost_aborts_then_cruise():
     e = _eng()
     e.update(_good_obs(fid=1), DT)                # CHANGE，组 validity=9
     out = e.update(_obs(fid=10, presence=True), DT)   # 组消失（过宽限）
-    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:target_lost"
+    assert out.state is DecisionState.ABORT and out.reason == "cancel:target_lost"
     out = e.update(_obs(fid=11, presence=True), DT)   # 无反馈 1 tick 落稳
     assert out.state is DecisionState.CRUISE and out.reason == "abort:settled"
 
@@ -377,7 +377,7 @@ def test_change_fatal_goes_abort_to_conserve():
     e = _eng()
     e.update(_good_obs(fid=1), DT)                # CHANGE
     out = e.update(_obs(fid=2, fresh=False), DT)  # 帧过旧（1 tick 即致命）
-    assert out.state is DecisionState.ABORT_CHANGE
+    assert out.state is DecisionState.ABORT
     assert out.reason == "validate_fail:frame_stale"
     out = e.update(_obs(fid=3, presence=True), DT)
     assert out.state is DecisionState.CONSERVE    # 回稳落定后进保守
@@ -559,7 +559,7 @@ def test_overtake_lost_or_ghost_aborts():
         e = _eng(overtake=True)
         e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
         out = e.update(_obs(fid=3, presence=True), DT, traffic=_traffic([], [ev]))
-        assert out.state is DecisionState.ABORT_CHANGE             and out.reason == "cancel:overtake_lost"
+        assert out.state is DecisionState.ABORT             and out.reason == "cancel:overtake_lost"
 
 
 def test_overtake_presumed_pass_same_settlement_distinct_reason():
@@ -578,7 +578,7 @@ def test_overtake_vanish_without_event_aborts():
     e = _eng(overtake=True)
     e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
     out = e.update(_obs(fid=2, presence=True), DT, traffic=_traffic())
-    assert out.state is DecisionState.ABORT_CHANGE
+    assert out.state is DecisionState.ABORT
 
 
 def test_passed_car_not_reselected_fresh_car_can():
@@ -723,9 +723,9 @@ def test_abort_settles_on_velocity_zero():
     e2 = _eng()
     e2.update(_good_obs(fid=1), DT, executed_lane=0.1)
     out = e2.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)  # 进 ABORT
-    assert out.state is DecisionState.ABORT_CHANGE
+    assert out.state is DecisionState.ABORT
     out = e2.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)  # 首拍立参考
-    assert out.state is DecisionState.ABORT_CHANGE
+    assert out.state is DecisionState.ABORT
     out = e2.update(_obs(fid=12, presence=True), DT, executed_lane=0.2)  # v=0 → 落稳
     assert out.state is DecisionState.CRUISE and "abort:settled" in out.reason
     # 仍在横移：不落稳
@@ -734,7 +734,7 @@ def test_abort_settles_on_velocity_zero():
     e3.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)
     e3.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)          # 立参考
     out = e3.update(_obs(fid=12, presence=True), DT, executed_lane=0.35)   # v=3>0.3
-    assert out.state is DecisionState.ABORT_CHANGE
+    assert out.state is DecisionState.ABORT
 
 
 # ---------- 阶段一（2026-10-02）：门吃执行回执 + 逐拍重评 + 横向安全 veto ----------
@@ -777,7 +777,7 @@ def test_change_aborts_when_window_missed():
     assert out.state is DecisionState.CHANGE               # 单拍破判不动（防抖）
     near2, ms2 = _group(1, 3, 3, x=0.5, cy=585, rel=11.0)
     out = e.update(_obs(fid=3, groups=(near2,), targets=ms2), DT, executed_lane=0.0)
-    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:infeasible"
+    assert out.state is DecisionState.ABORT and out.reason == "cancel:infeasible"
 
 
 def test_change_single_breach_does_not_abort():
@@ -808,7 +808,7 @@ def test_overtake_aborts_when_target_escapes():
     assert out.state is DecisionState.CHANGE
     out = e.update(_obs(fid=4, presence=True), DT, executed_lane=0.0,
                    traffic=_traffic([_cv(x=1.55, cy=640)]))     # disp 停在 0.925，不收缩 → 破判2
-    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:infeasible"
+    assert out.state is DecisionState.ABORT and out.reason == "cancel:infeasible"
 
 
 def test_overtake_survives_drift_and_completes_pass():
@@ -921,7 +921,7 @@ def test_safety_veto_aborts_mid_change():
     e.update(_good_obs(fid=1), DT, executed_lane=0.0)
     out = e.update(_good_obs(fid=2), DT, executed_lane=0.0,
                    traffic=_traffic([_cv(tid=9, x=0.75, cy=500)]))
-    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:lat_veto"
+    assert out.state is DecisionState.ABORT and out.reason == "cancel:lat_veto"
 
 
 # ---------- V0 门账本（V0 决策门账本 5071c02；只记账不改判） ----------

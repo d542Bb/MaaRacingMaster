@@ -25,8 +25,8 @@ ttc<`ttc_dodge_s` 且横距<接触界 → 绕过冷却与评分强制变道到�
 自车位置锁定（`_hug_sigma_of`）：回避/追击中目标只跟车不翻边，不横穿车体。
 
 **FSM**（§二矩阵；转移优先级在 `_priority_order` 注释处落实）：
-CRUISE 选道 / CHANGE 移动 / ABORT_CHANGE 有界回稳 / CONSERVE 保持+禁变道 / FAULT 纯直行。
-- 进保守态前必先经 ABORT_CHANGE 收尾（fatal 打断 CHANGE 时），CONSERVE **不强制回中**
+CRUISE 选道 / CHANGE 移动 / ABORT（原 ABORT_CHANGE，2026-10-18 改名）有界回稳 / CONSERVE 保持+禁变道 / FAULT 纯直行。
+- 进保守态前必先经 ABORT 收尾（fatal 打断 CHANGE 时），CONSERVE **不强制回中**
   （回中只在边界余量对称时由规划层做——本层 v1 连 boundary 都不消费其数值）；
 - CONSERVE 出口清空目标、迟滞、低通、冷却（§二重置面）；
 - 停止/阶段结束归 module 层（engine.reset() 供接线）。
@@ -556,6 +556,10 @@ class DecisionEngine:
         # 是单拍冻结声明（缺席/gap 持位），update() 输出段读后即清
         self._intent: _Intent | None = None
         self._intent_hold = False
+        # 场跟随（2026-10-18 换血）：报告缺席计时与单拍输出冻结声明
+        # （超预算冻结自车当前位），update() 输出段读后即清
+        self._absence_t = 0.0
+        self._hold_output = False
 
     # ---------- 主入口 ----------
 
@@ -616,7 +620,7 @@ class DecisionEngine:
 
         if report.fatal is not None:
             # D2：致命信号一票否决——有移动计划先有界回稳，无计划直进保守态
-            if self._state in (DecisionState.CHANGE, DecisionState.ABORT_CHANGE):
+            if self._state in (DecisionState.CHANGE, DecisionState.ABORT):
                 self._enter_abort(f"validate_fail:{report.fatal}")
                 self._abort_next = DecisionState.CONSERVE
             else:
@@ -626,7 +630,7 @@ class DecisionEngine:
             reason = self._tick_fault(obs, dt_s)
         elif self._state is DecisionState.CONSERVE:
             reason = self._tick_conserve(dt_s, obs)
-        elif self._state is DecisionState.ABORT_CHANGE:
+        elif self._state is DecisionState.ABORT:
             reason = self._tick_abort(dt_s, executed_lane)
         elif self._state is DecisionState.CHANGE:
             reason = self._tick_change(obs, dt_s, executed_lane)
@@ -645,19 +649,18 @@ class DecisionEngine:
         # 输出目标：轨迹模式=每拍重采样、输出选中轨迹的前瞻点（§2.3 滚动重评，
         # 破判连拍达 _REEVAL_STREAK 即 ABORT——防抖与 _miss_breach 同源纪律）；
         # 闸关/回执缺位/ro 缺席/非巡航变道态 → legacy x_smooth 位置常量路径。
-        # 需求面承诺制（§8.4.4/§8.4.2）：意图持位拍（缺席记忆/gap 等下一组）
-        # 不采样轨迹（滚动目标是塌回点，采样即执行过期方向），x_target 冻结
-        # executed——与 Track 1 暂停同一条输出通道（绕开平滑器防漂移）。
-        intent_hold = self._intent_hold
-        self._intent_hold = False           # 单拍声明，读后即清
+        # 输出冻结拍（场缺席超预算/意图持位）：不采样轨迹（滚动目标是塌回点，
+        # 采样即执行过期方向），x_target 冻结 executed——绕开平滑器防漂移。
+        hold_output = self._hold_output
+        self._hold_output = False           # 单拍声明，读后即清
         xt = None
         pause_hold = None
-        if intent_hold and executed_lane is not None:
+        if hold_output and executed_lane is not None:
             pause_hold = executed_lane
         self._traj_diag = None
         if self.traj is not None and executed_lane is not None \
                 and self._ro is not None \
-                and not intent_hold \
+                and not hold_output \
                 and self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
             d_t = self._traj_d_target(obs, executed_lane)
             if d_t is not None:
@@ -682,18 +685,15 @@ class DecisionEngine:
                     xt = eval_traj(rep.best.coeffs,
                                    min(self.cfg.planner.lookahead_tau_s,
                                        rep.best.T))
+                # 采样被拒：诊断列照记，无状态动作（2026-10-18 换血：场跟随下
+                # blocked=原地持守是自然语义——场目标即最优位，执行被拒时走
+                # goal 路径持守；ABORT 有界回稳只在 fatal 时进入，破判不进，
+                # 破判进 ABORT 会制造 abort 震荡——贴身墙场景实测）
                 if not rep.ok and self._state is DecisionState.CHANGE:
                     self._late_streak += 1
                     if self._late_streak >= _REEVAL_STREAK:
-                        # 承诺制 Track 1（设计稿 v2 §3）：预算内暂停不弃追，
-                        # 恢复优先（rep.ok 拍走上面分支自然续跑并清零重计）；
-                        # 闸关/超预算=旧行为立即作废。
-                        pause_hold = self._commitment_pause(dt_s, executed_lane)
-                        if pause_hold is None:
-                            self._enter_abort("traj_blocked")
-                            reason = "cancel:traj_blocked"
-                        else:
-                            reason = "pause:blocked"
+                        self._enter_abort("traj_blocked")
+                        reason = "cancel:traj_blocked"
                 elif rep.ok and self._state is DecisionState.CHANGE:
                     self._late_streak = 0
                     self._blocked_s = 0.0
@@ -1290,6 +1290,38 @@ class DecisionEngine:
     # ---------- 状态处理 ----------
 
     def _tick_cruise(self, obs: WorldObservation, executed: float | None) -> str:
+        if not self.cfg.corridor_reach.control:
+            # legacy 选择链（corridor_reach.control 闸关=逐位回今天）：闸仅存于
+            # 中间提交，随 legacy 链退役（2026-10-18 换血 ②b）——生产 control=true
+            # 不走此路
+            return self._tick_cruise_legacy(obs, executed)
+        return self._tick_cruise_reach_follow(obs, executed)
+
+    def _tick_cruise_reach_follow(self, obs: WorldObservation,
+                                  executed: float | None) -> str:
+        """CRUISE 场跟随（2026-10-18 换血：场即选择器，算场→跟场——承诺制
+        （意图/完成判据/缺席记忆）与目标锁定（σ/紧急回避/否则决）退役，
+        稳定化=场逐拍滚动 + 轨迹采样器，横向安全由场净空项+采样器 veto
+        接管）。报告在场 → 目标=胜出位每拍滚动；报告缺席 → 冻结上一拍场
+        选点（不塌回 0，防段状缺席期目标振荡），超预算 → 冻结自车当前位
+        直到报告恢复（依据：缺席段短——证据闪图谱实测 8~14% 拍；冻结目标
+        受采样器 veto+栅格 veto+致命信号三重兜底）。"""
+        rep = self._reach_report
+        if rep is not None:
+            self._absence_t = 0.0
+            self._reach_goal = rep.best_x_m
+            return "follow:reach"
+        if executed is None:
+            self._reach_goal = None
+            return "hold:reach_hold"
+        self._absence_t += self._dt_last
+        if self._absence_t > self.cfg.corridor_reach.absence_budget_s:
+            self._hold_output = True       # 超预算：冻结自车当前位（不跟陈旧场）
+            return "pause:reach_absent"
+        return "hold:reach_absent"         # 预算内：冻结上一拍选点（goal 不清）
+
+    def _tick_cruise_legacy(self, obs: WorldObservation,
+                            executed: float | None) -> str:
         # 紧急回避先于常规选择（第七轮）：冷却/无候选不是盲持等撞的理由。
         dodge = self._dodge_candidate(executed)
         if dodge is not None:
@@ -1307,18 +1339,13 @@ class DecisionEngine:
             self._deadzone_ticks = 0
             self._state = DecisionState.CHANGE
             return "select:dodge"
-        if self.cfg.corridor_reach.control:
-            # 走廊收益场选择（corridor_reach.control 闸）：换血 legacy band/feas
-            # 选择链——收益场即选择器，金币/错身/碰撞以收益形式进入候选计分
-            return self._tick_cruise_reach(obs, executed)
         cand = self._select(obs, current=None, executed=executed)
         if cand is None:
             self._target_gid = None
             self._target_kind = None
             self._hug_sigma = None
             return "hold:no_candidate" if not self._cool_t else "hold:cooling"
-        if cand.kind == KIND_CAND_COIN \
-                and cand.group.validity_until_fid <= obs.frame_id:
+        if cand.kind == KIND_CAND_COIN                 and cand.group.validity_until_fid <= obs.frame_id:
             return "hold:no_candidate"
         self._target_gid = cand.cand_id
         self._target_kind = cand.kind
@@ -1853,7 +1880,7 @@ class DecisionEngine:
         return executed
 
     def _enter_abort(self, why: str) -> None:
-        self._state = DecisionState.ABORT_CHANGE
+        self._state = DecisionState.ABORT
         self._change_t = 0.0
         self._abort_ref = None      # 速率参考从 ABORT 首拍重新起算
         self._blocked_s = 0.0       # 集已终止，阻塞计时随集走

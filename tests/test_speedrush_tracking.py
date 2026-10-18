@@ -269,7 +269,7 @@ def test_decision_output_contract_shape():
     j = to_jsonable(d)
     assert j["state"] == "CONSERVE"          # Enum → value，回放侧读的是码串
     assert set(DecisionState) == {DecisionState.CRUISE, DecisionState.CHANGE,
-                                  DecisionState.ABORT_CHANGE, DecisionState.CONSERVE,
+                                  DecisionState.ABORT, DecisionState.CONSERVE,
                                   DecisionState.FAULT}
 
 

@@ -196,11 +196,11 @@ def test_target_lost_aborts_then_reselects():
     assert e.target_kind == "bonus"
     # 目标消失（组仍在场）：lost → ABORT
     out = e.update(_obs(fid=2, groups=(g,), targets=ms), DT, executed_lane=0.5)
-    assert out.state is DecisionState.ABORT_CHANGE
+    assert out.state is DecisionState.ABORT
     assert "overtake_lost" in out.reason
     # 有界回稳落定 → CRUISE 重选在场金币组（解约免费：无冷却罚加）
     out = e.update(_obs(fid=3, groups=(g,), targets=ms), DT, executed_lane=0.5)
-    assert out.state in (DecisionState.ABORT_CHANGE, DecisionState.CRUISE)
+    assert out.state in (DecisionState.ABORT, DecisionState.CRUISE)
     for fid in range(4, 40):
         out = e.update(_obs(fid=fid, groups=(g,), targets=ms), DT,
                        executed_lane=0.5)

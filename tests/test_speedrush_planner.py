@@ -166,12 +166,12 @@ def test_abort_freezes_executed_not_decision_x():
     assert pl.state.executed_lane > 0.05 and pl._last_raw > 0
     frozen = pl.state.executed_lane
     # 决策层 ABORT 路径 x_target 回落 0——规划层不得跟它回中（反打舵）
-    cmd = pl.update(_out(state=DecisionState.ABORT_CHANGE, x_target=0.0,
+    cmd = pl.update(_out(state=DecisionState.ABORT, x_target=0.0,
                          fid=300, valid=300), DT, 300)
     assert cmd.steer_x >= 0                       # 不向左打回 0
     # 持续 ABORT：跟踪冻结位（死区内收力），不随 x_target=0 漂移
     for i in range(1, 10):
-        pl.update(_out(state=DecisionState.ABORT_CHANGE, x_target=0.0,
+        pl.update(_out(state=DecisionState.ABORT, x_target=0.0,
                        fid=300 + i, valid=300 + i), DT, 300 + i)
     assert frozen <= pl.state.executed_lane <= frozen + P.hold_deadband_lane
     # 离开 ABORT 后恢复正常跟踪

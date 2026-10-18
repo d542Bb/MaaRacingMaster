@@ -278,6 +278,11 @@ class CorridorReach:
                                          #   车）间距低于此值=空隙窄于车体不钻；
                                          #   起值=接触距 0.54+余量 0.2 [需实测]
                                          #   （仓库无自车实测车宽标定）
+    absence_budget_s: float = 0.5        # 场报告缺席预算（s，2026-10-18 换血）：
+                                         #   预算内冻结上一拍场选点（不塌回 0），
+                                         #   超预算冻结自车当前位直到报告恢复；
+                                         #   起值沿旧 memory_budget_s 语义
+                                         #   [需实测]
 
 
 @dataclass(frozen=True)
@@ -623,7 +628,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                                        lo_open=False),
             squeeze_min_gap_lane=_num_def(d, "corridor_reach",
                                           "squeeze_min_gap_lane", 0.75, lo=0,
-                                          lo_open=False)),
+                                          lo_open=False),
+            absence_budget_s=_num_def(d, "corridor_reach",
+                                      "absence_budget_s", 0.5, lo=0,
+                                      lo_open=False)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True),
             fusion=_bool(d, "metric_cars", "fusion", default=False),

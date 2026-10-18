@@ -48,7 +48,7 @@ class DecisionState(str, Enum):
 
     CRUISE = "CRUISE"
     CHANGE = "CHANGE"
-    ABORT_CHANGE = "ABORT_CHANGE"
+    ABORT = "ABORT"
     CONSERVE = "CONSERVE"
     FAULT = "FAULT"
 

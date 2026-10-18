@@ -145,7 +145,7 @@ class LateralPlanner:
             self._abort_hold_lane = None
         elif stale_hold:
             steer_raw = self.state.steer_norm    # 过期保持：杆值不动（不归零，C4）
-        elif st is DecisionState.ABORT_CHANGE:
+        elif st is DecisionState.ABORT:
             # 冻结值归本层：首次观察到 ABORT 的拍写入当前有符号 executed_lane，
             # 之后跟踪它直到离开 ABORT——不消费决策层 x_target（其 ABORT 路径回落 0，
             # 与"回中不总是安全"不一致，维护者裁定 2026-09-22）
