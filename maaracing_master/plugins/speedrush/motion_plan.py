@@ -429,8 +429,12 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         if coin_hits > 0:
             coin_error /= coin_hits
         value = reward_value + pass_value + coin_value - collision_cost
-        center_dev = sum(abs(xx - center0) for xx in xs_m) / len(xs_m)
-        effort = abs(u) * horizon
+        # 中心目标带死区：带内不修正（旧选择层同口径），只在带外惩罚超出量。
+        band_m = motion.center_band_lane * lane_w
+        center_dev = sum(max(0.0, abs(xx - center0) - band_m)
+                         for xx in xs_m) / len(xs_m)
+        # 动作成本按“相对当前杆”的改动量计：带内无修正时优先保持正在进行的动作。
+        effort = abs(u - ego.steer_norm) * horizon
         if reward_hits:
             layer = 1
         elif pass_count:
@@ -439,7 +443,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             layer = 3
         else:
             layer = 4
-        key = (not feasible, -value, center_dev, effort, idx)
+        # 无机会时限制维护性杆幅：避免计划用满舵去追一个偏掉的路心。
+        overcap = 1e6 if layer == 4 and abs(u) > motion.center_stick_max else 0.0
+        key = (not feasible, -value, overcap, center_dev, effort, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(
             idx, u, xs_m, xs_m[i], vs_lane[i], feasible,

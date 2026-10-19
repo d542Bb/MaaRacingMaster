@@ -230,6 +230,10 @@ class Motion:
     value_reward: float = 240.0       # 动作 120 + 一次退场约 180，按偶发折扣
     cost_collision: float = 60.0      # 每次普通车碰撞的时间/节奏损失
     cost_collision_depth_m: float = 120.0  # 重叠每深 1m 追加成本
+    # 中心目标死区与维护性杆幅：带内不修正、只在带外追近侧带边，
+    # 防无机会时的画龙（旧选择层同口径 0.3 道 / 0.45 杆幅）。
+    center_band_lane: float = 0.3
+    center_stick_max: float = 0.45
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
@@ -536,6 +540,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "cost_collision", 60.0, lo=0),
             cost_collision_depth_m=_num_def(
                 d, "motion", "cost_collision_depth_m", 120.0, lo=0),
+            center_band_lane=_num_def(
+                d, "motion", "center_band_lane", 0.3, lo=0),
+            center_stick_max=_num_def(
+                d, "motion", "center_stick_max", 0.45, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
             corridor_age_max_s=_num_def(
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),

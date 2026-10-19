@@ -163,6 +163,30 @@ def test_eight_candidates_and_determinism():
         (b.chosen, b.score_key, b.x_preview_m)
 
 
+def test_center_deadband_holds_inside_band():
+    """带内不修正：小偏移时选直行，不追路心。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=0.5),
+              ego=EgoState(0.5 / LW, 0.0, 0.0))
+    assert p.valid and p.layer == 4
+    assert p.u_feedforward == pytest.approx(0.0)
+
+
+def test_center_holds_current_steer_inside_band():
+    """带内无机会时保持正在进行的动作，不无故回正。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0),
+              ego=EgoState(0.0, 0.0, 0.01))
+    assert p.valid and p.layer == 4
+    assert p.u_feedforward == pytest.approx(0.01)
+
+
+def test_center_only_caps_stick():
+    """无机会时维护性杆幅受限，不得用满舵追偏掉的路心。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=3.0),
+              ego=EgoState(3.0 / LW, 0.0, 0.0))
+    assert p.valid and p.layer == 4
+    assert abs(p.u_feedforward) <= CFG.motion.center_stick_max
+
+
 def test_reward_beats_coin_and_center():
     s = _scene(road=_wide_road(),
                rewards=[BonusSource(2.0, 1.0, 0.9, age_ms=0.0)],
@@ -282,7 +306,7 @@ def test_sigma_ego_shortens_horizon():
 
 
 def _c(idx, value, feasible=True):
-    key = (not feasible, -value, 0.0, 0.0, idx)
+    key = (not feasible, -value, 0.0, 0.0, 0.0, idx)
     return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, feasible, 9.0,
                  0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value)
 
