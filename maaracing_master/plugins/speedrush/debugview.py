@@ -300,11 +300,8 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                   (plot_x0 + 8, plot_y0 + 62), scale=0.36,
                   color=(255, 0, 255))
 
-    # 走廊中心带（L4 容差带）：中心线 + ±band 虚线——带内不修正的「带」在
-    # 图上可见；band 取自选择层快照，避免和配置各写一份。
+    # 走廊中心线：只画中心，不再画旧选择层的 L4 容差带。
     if corridor is not None and cal is not None:
-        band_m = float((snap.get("sel_debug") or {}).get("band", 0.5)) \
-            * cal.lane_w_m
         cpts = []
         for b in corridor.bands:
             if b.left.x_m is None or b.right.x_m is None:
@@ -312,17 +309,10 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
             c = 0.5 * (b.left.x_m + b.right.x_m)
             z0c, z1c = b.z0 + CAM_Z_DATUM_M, b.z1 + CAM_Z_DATUM_M
             cpts.append((bm.px(c), bm.py(0.5 * (z0c + z1c))))
-            y_top, y_bot = bm.py(z1c), bm.py(z0c)
-            for off in (-band_m, band_m):
-                xp = bm.px(c + off)
-                if plot_x0 <= xp <= plot_x1:
-                    for y in range(y_top, y_bot, 6):
-                        cv2.line(canvas, (xp, y), (xp, min(y + 3, y_bot)),
-                                 (255, 255, 0), 1)
         if len(cpts) >= 2:
             cv2.polylines(canvas, [np.array(cpts, np.int32)], False,
                           (0, 255, 255), 1)
-            _put_text(canvas, "center band",
+            _put_text(canvas, "corridor center",
                       (plot_x0 + 8, plot_y0 + 48), scale=0.36,
                       color=(0, 255, 255))
     # 供数摘要 + 图例（目检延伸区左上：栅格采集窗上方的深灰带）——
@@ -414,10 +404,8 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
 
 def _draw_selection_strip(canvas: np.ndarray, snap: dict,
                           x0: int, x1: int, y0: int, y1: int) -> None:
-    """选择层子带：横轴 t[0,3]s、纵轴 x±2.5 道；机会/路点/目标/自车同图。"""
+    """轨迹计划子带：横轴 t[0,3]s、纵轴 x±2.5 道；只画新计划。"""
     cv2.rectangle(canvas, (x0, y0), (x1, y1), (90, 90, 90), 1)
-    sel = snap.get("selection")
-    dbg = snap.get("sel_debug") or {}
     tmax, xlo, xhi = 3.0, -2.5, 2.5
 
     def tx(t: float) -> int:
@@ -437,46 +425,6 @@ def _draw_selection_strip(canvas: np.ndarray, snap: dict,
         cv2.line(canvas, (x0, gy), (x1, gy), (62, 62, 62), 1)
         _put_text(canvas, f"{x:+d}", (x0 + 2, gy - 2), scale=0.3,
                   color=(140, 140, 140))
-
-    if sel is None or not dbg:
-        _put_text(canvas, "selection: none", (x0 + 60, y0 + 30),
-                  scale=0.42, color=(0, 200, 255))
-        return
-    ego = dbg.get("ego")
-    target = dbg.get("target")
-    if isinstance(ego, (int, float)):
-        cv2.line(canvas, (x0, yx(ego)), (x1, yx(ego)), (230, 230, 230), 1)
-    if isinstance(target, (int, float)):
-        cv2.line(canvas, (x0, yx(target)), (x1, yx(target)), (255, 255, 0), 1)
-    marks = (("rw", (255, 0, 255), 5), ("car", (0, 0, 255), 4),
-             ("coin", (0, 255, 255), 3))
-    for key, col, rad in marks:
-        for item in dbg.get(key) or ():
-            if len(item) < 2 or item[1] is None:
-                continue
-            xv, tv = item[0], item[1]
-            if not (0.0 <= tv <= tmax):
-                continue
-            cv2.circle(canvas, (tx(tv), yx(xv)), rad, col,
-                       -1 if key == "coin" else 1)
-    pts = [(0.0, ego if isinstance(ego, (int, float)) else 0.0)]
-    for w in dbg.get("wp") or ():
-        if len(w) >= 2 and isinstance(w[0], (int, float)):
-            pts.append((w[0], w[1]))
-    if len(pts) >= 2:
-        poly = np.array([(tx(t), yx(x)) for t, x in pts], np.int32)
-        cv2.polylines(canvas, [poly], False, (0, 200, 0), 1)
-    src_col = {"reward": (255, 0, 255), "pass": (0, 0, 255),
-               "coin": (0, 255, 255), "center": (0, 255, 0)}
-    for w in dbg.get("wp") or ():
-        if len(w) >= 3:
-            cv2.circle(canvas, (tx(w[0]), yx(w[1])), 3,
-                       src_col.get(w[2], (0, 200, 0)), -1)
-    _put_text(canvas,
-              f"L{sel.layer} {sel.why}  nwp={len(sel.waypoints)}"
-              f"  tgt={_fmt(round(target, 2) if isinstance(target, (int, float)) else None)}"
-              f" ego={_fmt(round(ego, 2) if isinstance(ego, (int, float)) else None)}",
-              (x0 + 46, y0 + 14), scale=0.38, color=(220, 220, 220))
     _draw_plan_overlay(canvas, snap, x0, x1, y0, y1, tx, yx)
 
 
@@ -499,7 +447,9 @@ def _draw_plan_overlay(canvas: np.ndarray, snap: dict,
                           2 if i == plan.chosen else 1)
     px = tx(plan.dt_s * max(1, round(0.2 / max(plan.dt_s, 1e-9))))
     cv2.circle(canvas, (px, yx(plan.x_preview_m / lw)), 3, (0, 255, 0), -1)
-    _put_text(canvas, f"plan:{plan.reason} {plan.layer}",
+    _put_text(canvas,
+              f"plan:{plan.reason} L{plan.layer}"
+              f" v={plan.value_total:.0f} u={plan.u_feedforward:+.2f}",
               (x0 + 2, y0 + 26), scale=0.32,
               color=(0, 220, 0) if plan.valid else (0, 160, 255))
 
@@ -581,8 +531,7 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     lines = [
         f"#{snap.get('fid', 0)} p{snap.get('phase', 0)}"
         f" {dec.get('state', '')} {dec.get('reason', '')}",
-        f"steer={dec.get('steer', 0)} el={_fmt(dec.get('executed_lane'))}"
-        f" xt={_fmt(dec.get('x_target'))}",
+        f"steer={dec.get('steer', 0)} el={_fmt(dec.get('executed_lane'))}",
         f"ro={_fmt(dec.get('road_offset'))} dgeo age={dec.get('dgeo_age', '-')}"
         f"ms new={dec.get('dgeo_new', '-')}",
         f"S_a={_fmt(fields.get('score_a'))} R_a={_fmt(fields.get('rate_a'))}"
@@ -596,13 +545,6 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     if c is not None:
         lines.append(f"cor={c.src} w={_fmt(None if c.width_lane is None else round(c.width_lane, 2))}"
                      f" ph={c.plane_health} bands={len(c.bands)}")
-    sel = snap.get("selection")
-    sd = snap.get("sel_debug") or {}
-    if sel is not None:
-        lines.append(f"sel=L{sel.layer} {sel.why} nwp={len(sel.waypoints)}"
-                     f" tgt={_fmt(sd.get('target'))} ego={_fmt(sd.get('ego'))}"
-                     f" c0={_fmt(sd.get('c0'))} cL={_fmt(sd.get('c8'))}"
-                     f" band={_fmt(sd.get('band'))}")
     wlc = snap.get("wall_line")
     if wlc is not None:
         lines.append(f"wlc={wlc.health} c={_fmt(None if wlc.center_lane is None else round(wlc.center_lane, 2))}"
@@ -616,7 +558,7 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     canvas = np.zeros((H, W + _PANEL_W, 3), np.uint8)
     canvas[:, :W] = img_bgr
     canvas[:, W:] = (28, 28, 28)
-    _put_text(canvas, "speedrush hud  ·  BEV radar (grid + corridor + selection)",
+    _put_text(canvas, "speedrush hud  ·  BEV radar (grid + corridor + plan)",
               (W + 8, 17), scale=0.48)
     _draw_bev(canvas[:, W:], snap, cal)
     return canvas
