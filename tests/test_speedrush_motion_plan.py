@@ -361,3 +361,32 @@ def test_planner_tracks_valid_plan_only():
     pl2 = LateralPlanner(CFG.planner)
     pl2.update(out, 0.05, 1, plan=replace(p, valid=False))
     assert pl2.last_steer_raw != pytest.approx(exp)
+
+    # 无效计划必须逐位退回旧 x_target 路径
+    out2 = replace(out, x_target=0.5)
+    pl3 = LateralPlanner(CFG.planner)
+    pl4 = LateralPlanner(CFG.planner)
+    pl3.update(out2, 0.05, 1)
+    pl4.update(out2, 0.05, 1, plan=replace(p, valid=False))
+    assert pl4.last_steer_raw == pytest.approx(pl3.last_steer_raw)
+
+
+def test_plan_never_overrides_fsm_states():
+    """CONSERVE/FAULT/ABORT 的旧安全分支优先于计划。"""
+    from maaracing_master.plugins.speedrush.planner import LateralPlanner
+    from maaracing_master.plugins.speedrush.tracking import (
+        DecisionOutput, DecisionState)
+    p = _plan(_scene(road=_wide_road(),
+                     coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
+    huge = replace(p, u_feedforward=1.0, x_preview_lane=5.0,
+                   v_preview_lane_s=5.0)
+    for state, xt in ((DecisionState.CONSERVE, None),
+                      (DecisionState.FAULT, 1.0),
+                      (DecisionState.ABORT, 0.0)):
+        out = DecisionOutput(schema_version=5, state=state, x_target=xt,
+                             reason="x", emitted_fid=1, valid_until_fid=10)
+        a = LateralPlanner(CFG.planner)
+        b = LateralPlanner(CFG.planner)
+        a.update(out, 0.05, 1, plan=huge)
+        b.update(out, 0.05, 1)
+        assert a.last_steer_raw == pytest.approx(b.last_steer_raw)
