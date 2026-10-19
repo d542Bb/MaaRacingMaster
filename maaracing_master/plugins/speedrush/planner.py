@@ -39,6 +39,38 @@ from maaracing_master.plugins.speedrush.tracking import (
 _STICK_FULL = 32767  # XUSB 摇杆半幅（core.capabilities.Gamepad 契约）
 
 
+def law(e: float, v_lat: float, p: Planner, gentle: bool = False,
+        deadband: float | None = None, cap: float | None = None,
+        v_ref: float = 0.0) -> float:
+    """跟踪律单一真源（规划器与离线轨迹仿公共用）。
+
+    ``v_ref`` 是前馈速度参考：默认 0 = 旧行为（只阻尼实测横速）。"""
+    db = (p.hold_deadband_lane if gentle else 0.0) \
+        if deadband is None else deadband
+    if abs(e) < db:
+        e = 0.0
+    u = p.k_p * e - p.k_d * (v_lat - v_ref)
+    lim = p.hold_stick_max if gentle else None
+    if cap is not None:
+        lim = cap
+    if lim is not None:
+        u = max(-lim, min(lim, u))
+    return max(-1.0, min(1.0, u))
+
+
+def step(x: float, v: float, steer: float, u: float, dt: float,
+         p: Planner) -> tuple[float, float, float]:
+    """横向运动学单一真源：杆值低通 + 双积分 + 定圆饱和。
+
+    返回 ``(x, v, steer)``；顺序与生产控制拍逐位一致（⑤ 低通 → ⑥ 积分）。"""
+    alpha = 1.0 - math.exp(-dt / p.tau_steer_s)
+    steer += alpha * (u - steer)
+    v += (p.a_lat_gain * steer - v / p.tau_align_s) * dt
+    v = max(-p.v_lat_max, min(p.v_lat_max, v))
+    x += v * dt
+    return x, v, steer
+
+
 @dataclass(frozen=True)
 class GamepadCommand:
     """本层唯一出口：左摇杆 x（转向）+ 右扳机（恒油门，RULES §4.1 权威）。"""
@@ -73,6 +105,8 @@ class LateralPlanner:
         self._t_vcorr = 0.0
         # 上次被接受的修正方向（阶段 2 符号一致性门；None=尚无）
         self._last_corr_sign: bool | None = None
+        # 上一拍低通前杆值（负一~一；trace 标定用，行为不消费）
+        self.last_steer_raw = 0.0
 
     # ---------- 主入口 ----------
 
@@ -153,19 +187,11 @@ class LateralPlanner:
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
 
-        # ⑤ 杆值低通（时间基 α，行为稿 §五纪律：不定值 α）
-        alpha = 1.0 - math.exp(-dt_s / self.p.tau_steer_s)
-        self.state.steer_norm += alpha * (steer_raw - self.state.steer_norm)
-
-        # ⑥ 横向运动学（v2 双积分，2026-09-22 真机证据链证伪单积分 K_v）：
-        #    杆→横向加速度（车头转角带来的向心效应），起步段 x∝t²；松杆后经
-        #    tau_align_s 指数自回正（航向回零→横速归零），持续打舵有 v_lat_max 定圆饱和。
-        #    k_d 阻尼项本就是为双积分对象写的（单积分无需阻尼），v1 实现与裁定矛盾，此处对齐。
-        v_cmd = self.state.v_lat_est + (
-            self.p.a_lat_gain * self.state.steer_norm
-            - self.state.v_lat_est / self.p.tau_align_s) * dt_s
-        self.state.v_lat_est = max(-self.p.v_lat_max, min(self.p.v_lat_max, v_cmd))
-        self.state.executed_lane += self.state.v_lat_est * dt_s
+        self.last_steer_raw = steer_raw
+        # ⑤⑥ 杆值低通 + 横向运动学（单一真源：模块级 step）
+        self.state.executed_lane, self.state.v_lat_est, self.state.steer_norm = \
+            step(self.state.executed_lane, self.state.v_lat_est,
+                 self.state.steer_norm, steer_raw, dt_s, self.p)
 
         # ⑥b 路中心连续重锚（step 2.5，V2 复盘主修）：双侧缘距拍给 executed 真反馈。
         #    标准 alpha-beta 滤波器——⑥ 的模型积分是 predict 步，本段是 correct 步：
@@ -286,14 +312,4 @@ class LateralPlanner:
 
     def _law(self, e: float, gentle: bool, deadband: float | None = None,
              cap: float | None = None) -> float:
-        db = (self.p.hold_deadband_lane if gentle else 0.0) \
-            if deadband is None else deadband
-        if abs(e) < db:
-            e = 0.0
-        u = self.p.k_p * e - self.p.k_d * self.state.v_lat_est
-        lim = self.p.hold_stick_max if gentle else None
-        if cap is not None:
-            lim = cap
-        if lim is not None:
-            u = max(-lim, min(lim, u))
-        return max(-1.0, min(1.0, u))
+        return law(e, self.state.v_lat_est, self.p, gentle, deadband, cap)

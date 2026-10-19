@@ -314,7 +314,7 @@ def test_control_trace_records_and_flushes(tmp_path, monkeypatch):
     assert len(chain["trace"]) == 5
     row = chain["trace"][-1]
     # C1/§七.1 标定要的关键列都在
-    for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_x",
+    for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_raw", "steer_x",
               "executed_lane", "v_lat_est", "road_offset",
               "dgeo_sides", "dgeo_left", "dgeo_right"):
         assert k in row, k

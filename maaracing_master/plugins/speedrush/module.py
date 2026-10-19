@@ -974,7 +974,9 @@ class SpeedRushModule(ActivityModule):
                 for side, segs in ((-1, wlc.left_segs), (1, wlc.right_segs))
                 for s in segs],
             "maneuver": out.maneuver,
-            "steer_norm": round(planner.state.steer_norm, 4), "steer_x": cmd.steer_x,
+            "steer_norm": round(planner.state.steer_norm, 4),
+            "steer_raw": round(planner.last_steer_raw, 4),
+            "steer_x": cmd.steer_x,
             "executed_lane": round(planner.state.executed_lane, 4),
             "v_lat_est": round(planner.state.v_lat_est, 4),
             "n_groups": len(obs.coin_groups),

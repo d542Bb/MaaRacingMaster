@@ -13,7 +13,8 @@ import math
 import pytest
 
 from maaracing_master.plugins.speedrush.config import Planner, _read_decision
-from maaracing_master.plugins.speedrush.planner import _STICK_FULL, LateralPlanner
+from maaracing_master.plugins.speedrush.planner import (
+    _STICK_FULL, LateralPlanner, law, step)
 from maaracing_master.plugins.speedrush.tracking import (
     DecisionOutput, DecisionState)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH
@@ -35,6 +36,26 @@ def _planner(**over) -> LateralPlanner:
     base = {k: getattr(P, k) for k in P.__dataclass_fields__}
     base.update(over)
     return LateralPlanner(Planner(**base))
+
+
+def test_law_matches_reference_and_v_ref():
+    e, v = 0.4, 0.3
+    assert law(e, v, P) == pytest.approx(P.k_p * e - P.k_d * v)
+    # 前馈参考：实测横速等于参考时不产生阻尼项
+    assert law(0.0, v, P, v_ref=v) == pytest.approx(0.0)
+    assert law(0.2, v, P, gentle=True, deadband=0.0) == pytest.approx(
+        min(P.hold_stick_max, P.k_p * 0.2 - P.k_d * v))
+
+
+def test_step_matches_reference_equations():
+    x, v, steer = 0.3, -0.4, 0.2
+    u, dt = 0.7, 0.05
+    alpha = 1 - math.exp(-dt / P.tau_steer_s)
+    s = steer + alpha * (u - steer)
+    vv = v + (P.a_lat_gain * s - v / P.tau_align_s) * dt
+    vv = max(-P.v_lat_max, min(P.v_lat_max, vv))
+    assert step(x, v, steer, u, dt, P) == pytest.approx(
+        (x + vv * dt, vv, s), abs=0.0)
 
 
 def _run_moving(pl: LateralPlanner, target: float, ticks: int = 3, fid0: int = 1):
