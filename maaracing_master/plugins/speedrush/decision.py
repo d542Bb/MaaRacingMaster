@@ -241,6 +241,9 @@ class DecisionEngine:
         self._sel_dbg: dict | None = None
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
+        # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
+        self._car_xf: dict[int, float] = {}
+        self._car_zf: dict[int, float] = {}
         self._fid = 0
         self._fps: float | None = None
         self._scene = None
@@ -261,6 +264,8 @@ class DecisionEngine:
         self._sel_objs = {"reward": [], "car": [], "coin": []}
         self._sel_dbg = None
         self.selector.reset()
+        self._car_xf.clear()
+        self._car_zf.clear()
         self._conserve_t = 0.0
         self._ok_t = 0.0
         self._abort_next = DecisionState.CRUISE
@@ -404,7 +409,7 @@ class DecisionEngine:
                 x_m=(g.x_center + executed_lane) * lane_w,
                 observed_count=g.observed_count, conf=g.conf_min,
                 t_miss_s=s.t_miss_s,
-                age_ms=self._age_ms(g.last_seen_fid)))
+                age_ms=self._age_ms(g.lead_fid or g.last_seen_fid)))
         return coins
 
     def _bonus_sources(self, obs: WorldObservation,
@@ -485,15 +490,31 @@ class DecisionEngine:
         seen: set[int] = set()
         out: list[CarSource] = []
 
+        ax = self.cfg.traffic.metric_x_ema_alpha
+        az = self.cfg.traffic.metric_z_ema_alpha
+
         def enter(x: float | None, tm: float | None,
                   t_ov: float | None = None,
                   bridged: bool = False,
                   z_m: float | None = None,
-                  age_ms: float = 0.0, src: str = "pixel") -> None:
-            if x is not None and x == x:
-                out.append(CarSource(x_m=x + off, t_meet_s=tm,
-                                     t_overtake_s=t_ov, bridged=bridged,
-                                     z_m=z_m, age_ms=age_ms, src=src))
+                  age_ms: float = 0.0, src: str = "pixel",
+                  tid: int | None = None) -> None:
+            if x is None or x != x:
+                return
+            # 平滑在道路帧（x+off）：自车横移由 off 抵消，目标自身的慢横移
+            # 保留；米制 x/z 的逐拍抖动（±1~4m）在这里收敛到擦车带量级以下。
+            xr = x + off
+            if tid is not None:
+                prev = self._car_xf.get(tid)
+                xr = xr if prev is None else prev + ax * (xr - prev)
+                self._car_xf[tid] = xr
+                if z_m is not None and z_m == z_m:
+                    pz = self._car_zf.get(tid)
+                    z_m = z_m if pz is None else pz + az * (z_m - pz)
+                    self._car_zf[tid] = z_m
+            out.append(CarSource(x_m=xr, t_meet_s=tm,
+                                 t_overtake_s=t_ov, bridged=bridged,
+                                 z_m=z_m, age_ms=age_ms, src=src))
 
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
@@ -528,14 +549,27 @@ class DecisionEngine:
                 continue                        # 无视图的远轨必有锚
             seen.add(m.target_id)
             enter(x, tm, t_ov, bridged=bridged, z_m=m.z_m,
-                  age_ms=(m.anchor_age_ms or 0.0), src="metric")
+                  age_ms=(m.anchor_age_ms or 0.0), src="metric",
+                  tid=m.target_id)
         for vid, v in by_id.items():
             if vid in seen or v.cy >= self.cal.v_ego:
                 continue                        # 米制路径已入账，不双计
             x, tm = self.scorer.pixel_instruments(v)
+            seen.add(vid)
+            # 新鲜度=距最后一次真实读数的帧数；旧构造没有 last_seen_fid 时
+            # 才退回轨道生命期（age_ticks 不能当新鲜度，否则持续被检出的车
+            # 会在 0.25s 后从场景蒸发）。
+            if self._fps:
+                fresh = (self._fid - v.last_seen_fid
+                         if v.last_seen_fid else v.age_ticks)
+                age_ms = max(0.0, fresh / self._fps * 1000.0)
+            else:
+                age_ms = 0.0
             enter(None if x is None else x * lane_w, tm,
-                  age_ms=(v.age_ticks / self._fps * 1000.0
-                          if self._fps else 0.0))
+                  age_ms=age_ms, tid=vid)
+        for k in [k for k in self._car_xf if k not in seen]:
+            self._car_xf.pop(k, None)
+            self._car_zf.pop(k, None)
         return out
 
     @property

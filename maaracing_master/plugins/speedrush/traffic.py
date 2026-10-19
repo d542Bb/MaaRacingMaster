@@ -69,6 +69,10 @@ class CarView:
     x_memb: float | None = None
     w_m: float | None = None
     w_m_age: int | None = None
+    # 最后一次真实读数帧号（0=旧构造未带）。决策层用它算"观测新鲜度"；
+    # age_ticks 是轨道生命期（first_fid 起算），不是新鲜度——拿它当龄会
+    # 让一辆持续被检出的车在 0.25s 后从场景里蒸发。
+    last_seen_fid: int = 0
 
 
 @dataclass(frozen=True)
@@ -178,7 +182,8 @@ class TrafficObserver:
             views.append(CarView(id=t.id, x_lane=t.x_lane, cy=t.cy,
                                  rel_approach=t.rel_approach, d_min=rec.d_min,
                                  age_ticks=fid - rec.first_fid, v_lat=rec.v_lat,
-                                 x_memb=memb, w_m=w_m, w_m_age=w_m_age))
+                                 x_memb=memb, w_m=w_m, w_m_age=w_m_age,
+                                 last_seen_fid=t.last_seen_fid))
 
         events: list[PassEvent] = []
         for tid in sorted(set(self._live) - seen):

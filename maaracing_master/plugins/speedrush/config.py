@@ -189,6 +189,10 @@ class Traffic:
     # —— 宽度有效性（2026-10-11 前置三件套③；起值 [需实测]）——
     width_ttl_ticks: int = 6   # 宽度遮挡沿用有效期（tick）：过期显式转 unknown
                                # 不冒充有效；0.3s@20Hz 起值，遮挡崩坏 TTL 界
+    # —— 决策边界的时间平滑（2026-10-19 晚：车米制 x/z 逐拍跳 ±1~4m，
+    # —— 与 0.5m 擦车带同量级；在决策层平滑不碰跟踪层语义）——
+    metric_x_ema_alpha: float = 0.35
+    metric_z_ema_alpha: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -515,7 +519,11 @@ def _read_decision(path: Path) -> DecisionConfig:
                                           1.5, lo=0),
             lane_vote_sigma_max=_num_def(d, "traffic", "lane_vote_sigma_max",
                                          0.6, lo=0, lo_open=False),
-            width_ttl_ticks=_int_def(d, "traffic", "width_ttl_ticks", 6, lo=0)),
+            width_ttl_ticks=_int_def(d, "traffic", "width_ttl_ticks", 6, lo=0),
+            metric_x_ema_alpha=_num_def(d, "traffic", "metric_x_ema_alpha",
+                                        0.35, lo=0, hi=1, lo_open=True),
+            metric_z_ema_alpha=_num_def(d, "traffic", "metric_z_ema_alpha",
+                                        0.5, lo=0, hi=1, lo_open=True)),
         motion=Motion(
             mode=_str_def(d, "motion", "mode", "off",
                           ("off", "shadow", "live")),

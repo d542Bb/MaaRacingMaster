@@ -168,6 +168,9 @@ class CoinGroup:
     first_seen_fid: int
     last_seen_fid: int
     validity_until_fid: int
+    # lead=最近一枚（cy 最大）最后一次被看到的帧号；x_center/cy_max 锚在它上面。
+    # 0=旧构造未带（消费端回退 last_seen_fid）。
+    lead_fid: int = 0
 
 
 @dataclass(frozen=True)

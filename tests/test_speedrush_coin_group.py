@@ -92,6 +92,41 @@ def test_member_swap_below_jaccard_makes_new_group():
     assert o2.coin_groups            # 且总有组输出，不炸空
 
 
+# ---------- 单枚续组与 lead 保持（输入稳定性） ----------
+
+def test_single_coin_new_track_id_keeps_group():
+    """单枚币每帧换跟踪 id（Jaccard=0）——空间近邻续组，不重开组。"""
+    agg = CoinGroupAggregator()
+    o1 = agg.update(_obs(1, [_coin(1, -3.0, 400)]))
+    gid = o1.coin_groups[0].group_id
+    o2 = agg.update(_obs(2, [_coin(2, -3.05, 405)]))
+    assert o2.coin_groups[0].group_id == gid
+    assert o2.coin_groups[0].first_seen_fid == 1
+
+
+def test_group_survivor_keeps_lead_position_and_confidence():
+    """宽限存续组不再发 NaN/0：保留 lead 横位/置信/lead_fid，供消费端按龄衰减。"""
+    agg = CoinGroupAggregator(params=AggParams(group_grace=8))
+    agg.update(_obs(1, [_coin(1, -3.0, 400)]))
+    o2 = agg.update(_obs(2))
+    g = o2.coin_groups[0]
+    assert g.x_center == pytest.approx(-3.0)
+    assert g.conf_min == pytest.approx(0.9)
+    assert g.cy_max == 400
+    assert g.lead_fid == 1
+
+
+def test_lead_not_replaced_by_farther_coin():
+    """近枚丢检、只看到后面那枚时，lead 的横位/行号保持不变。"""
+    agg = CoinGroupAggregator()
+    agg.update(_obs(1, [_coin(1, -3.0, 400), _coin(2, -3.1, 380)]))
+    o2 = agg.update(_obs(2, [_coin(3, -3.05, 385)]))
+    g = o2.coin_groups[0]
+    assert g.cy_max == 400                      # 仍锚在近枚
+    assert g.x_center == pytest.approx(-3.05, abs=1e-6)
+    assert g.lead_fid == 1
+
+
 # ---------- 失联宽限与退役 ----------
 
 def test_group_grace_then_retire():

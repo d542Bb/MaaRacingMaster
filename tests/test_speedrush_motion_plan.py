@@ -15,8 +15,10 @@ from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, Scene, _Cand, build_scene, plan_motion)
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, RoadBand, RoadFrame)
+from maaracing_master.plugins.speedrush.traffic import CarView
 from maaracing_master.plugins.speedrush.tracking import (
-    CoinGroup, PerceptionHealth, TrackedTarget, WorldObservation)
+    CoinGroup, DistanceSource, MetricCarState, PerceptionHealth,
+    TrackedTarget, WorldObservation)
 
 LW = 3.38
 CFG = _read_decision(DECISION_FILE)
@@ -79,6 +81,66 @@ def test_empty_scene():
     assert s.as_trace()["n"] == 0
 
 
+def test_stale_targets_survive_with_decayed_arrival():
+    """保鲜窗内：目标保留、到站时间按龄前移；已到站的不再当未来目标。"""
+    s = _scene(coins=[CoinSource(5.0, 3, 0.9, 1.5, age_ms=300.0)],
+               rewards=[BonusSource(2.0, 1.0, 0.9, age_ms=300.0)],
+               max_obj_age_s=0.6)
+    coin = next(o for o in s.objs if o.kind == "coin")
+    reward = next(o for o in s.objs if o.kind == "reward")
+    assert coin.t_arrive_s == pytest.approx(1.2)
+    assert reward.t_arrive_s == pytest.approx(0.7)
+    assert coin.sigma_m == pytest.approx(0.15 + 0.6 * 0.3)
+    s2 = _scene(coins=[CoinSource(5.0, 3, 0.9, 0.2, age_ms=300.0)],
+                max_obj_age_s=0.6)
+    assert s2.objs == ()
+
+
+def test_pixel_car_age_is_freshness_not_track_lifetime():
+    """持续被检出的老轨：场景年龄按最后真实读数算，不按轨道生命期蒸发。"""
+    eng = DecisionEngine(CFG)
+    v = CarView(id=9, x_lane=1.0, cy=500, rel_approach=5.0, d_min=1.0,
+                age_ticks=200, last_seen_fid=10)
+    eng.update(_obs(10), 0.05, executed_lane=0.0,
+               corridor=_corridor(fid=10, last_fid=10),
+               traffic=((v,), ()))
+    car = next(o for o in eng.scene.objs if o.kind == "car")
+    assert car.age_ms == pytest.approx(0.0)
+    # 10 帧没再看到（20Hz → 500ms）：仍在 0.6s 保鲜窗内，带龄保留
+    eng.update(_obs(20), 0.05, executed_lane=0.0,
+               corridor=_corridor(fid=20, last_fid=20),
+               traffic=((v,), ()))
+    car = next(o for o in eng.scene.objs if o.kind == "car")
+    assert car.age_ms == pytest.approx(500.0)
+    # 20 帧没再看到（1000ms）：超保鲜窗
+    eng.update(_obs(30), 0.05, executed_lane=0.0,
+               corridor=_corridor(fid=30, last_fid=30),
+               traffic=((v,), ()))
+    assert not any(o.kind == "car" for o in eng.scene.objs)
+
+
+def test_metric_car_x_is_time_smoothed_across_ticks():
+    """同一跟踪 id 的米制横位跳 4m：场景里按 α 收敛，不直接喂给规划器。"""
+    eng = DecisionEngine(CFG)
+    a = CFG.traffic.metric_x_ema_alpha
+    xs = []
+
+    def mc(x):
+        return MetricCarState(
+            target_id=7, source=DistanceSource.ANCHOR, z_m=20.0, x_m=x,
+            v_close_mps=10.0, t_meet_s=2.0, anchor_age_ms=10.0)
+
+    for fid, x in ((1, 5.0), (2, 1.0), (3, 1.0)):
+        eng.update(_obs(fid, metric_cars=(mc(x),)), 0.05,
+                   executed_lane=0.0,
+                   corridor=_corridor(fid=fid, last_fid=fid))
+        car = next(o for o in eng.scene.objs if o.kind == "car")
+        xs.append(car.x_m)
+    assert xs[0] == pytest.approx(5.0)
+    assert xs[1] == pytest.approx(5.0 + a * (1.0 - 5.0))
+    assert xs[2] == pytest.approx(xs[1] + a * (1.0 - xs[1]))
+
+
 def _corridor(*, fid=1, last_fid=1):
     bands = tuple(CorridorBand(
         -2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
@@ -87,13 +149,13 @@ def _corridor(*, fid=1, last_fid=1):
     return Corridor(bands, 0.0, 8.0 / LW, "pair", "ok")
 
 
-def _obs(fid, groups=(), targets=()):
+def _obs(fid, groups=(), targets=(), metric_cars=()):
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
         frame_age_ms=10.0, stage=1,
         health=PerceptionHealth(True, True, True, bool(groups or targets), False),
         boundary=None, targets=targets, far_targets=(), coin_groups=groups,
-        fid_rate_hz=20.0)
+        metric_cars=tuple(metric_cars), fid_rate_hz=20.0)
 
 
 def _group(fid, n=3, x=0.4):

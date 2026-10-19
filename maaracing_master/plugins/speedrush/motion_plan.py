@@ -129,12 +129,21 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
 
     ``frame_shift_m`` 把走廊带帧平移到规划器路心帧：带中心与路心观测是
     两套估计，不平移会让 ``frame_delta`` 常年超阈值、走廊加宽到失效。"""
+    def _aged_t(t: float | None, age_ms: float) -> float | None:
+        """丢检目标的时间按龄前移：源里的到站时间是最后观测拍的，不是本拍。"""
+        if t is None:
+            return None
+        return t - age_ms / 1000.0
+
     objs: list[SceneObj] = []
     for b in rewards:
         age = getattr(b, "age_ms", 0.0) or 0.0
         if age > max_obj_age_s * 1000.0:
             continue
-        objs.append(SceneObj("reward", b.x_m - origin, b.t_miss_s, 1.0,
+        t = _aged_t(b.t_miss_s, age)
+        if t is not None and t <= 0.0:
+            continue                       # 已到站/已过：不再当未来目标
+        objs.append(SceneObj("reward", b.x_m - origin, t, 1.0,
                              _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
                              age, getattr(b, "src", "pixel")))
     for c in cars:
@@ -153,7 +162,10 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
         age = getattr(c, "age_ms", 0.0) or 0.0
         if age > max_obj_age_s * 1000.0:
             continue
-        objs.append(SceneObj("coin", c.x_m - origin, c.t_miss_s,
+        t = _aged_t(c.t_miss_s, age)
+        if t is not None and t <= 0.0:
+            continue
+        objs.append(SceneObj("coin", c.x_m - origin, t,
                              float(c.observed_count),
                              _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
                              age, getattr(c, "src", "group")))

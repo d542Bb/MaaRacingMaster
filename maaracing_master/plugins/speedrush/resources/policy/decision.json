@@ -24,7 +24,8 @@
     "control.abort_settle_v_lane_s": "[需实测] 19:44 复盘补装：v1 注释的'有反馈等横向速率归零'信号（此前未实现，丢目标白冻 2s）",
     "traffic.v_lat_ema_alpha": "街车横向速率 EMA α=0.3（帧间差分，车道/tick 口径；遮挡延续拍不投毒）。注意：读数噪声主导（P90≈3.8 道/s 物理不可能），仅供 trace 观测，禁止当真实运动外推",
     "traffic.lane_vote_decay|lane_memb_min_weight|lane_vote_sigma_max": "车道成员资格投票（2026-10-11 前置三件套②，起值 [需实测]）：单拍 x 按整道栅格投票进生命期票仓、逐真实读数拍衰减 0.7——真横移连续新票数拍内翻位（及时响应边界）、偶发噪声票停留少数派；最大票质量 ≥1.5 成员位才成立（约 2-3 拍连续一致读数），未成立 CarView.x_memb=None 消费方退回单拍读数；σ>0.6 道的失真读数（远场/弯道）不进票仓=近场保守。验收判据=接近段 band 误拒率下降（账本复跑对比）",
-    "traffic.width_ttl_ticks": "宽度遮挡沿用有效期 6 tick（2026-10-11 前置三件套③，起值 [需实测]）：有效宽度只在真实读数拍按有效性门（年龄≥min_obs_ticks、conf≥置信地板、分母在适用域）重算，遮挡延续拍保持最后有效值并带龄，过期显式转 unknown 不冒充有效——w_m 遮挡崩坏（3.6→0.3m 案，外推 cy 配陈旧框宽）不入统计。验收判据=ĝ 异常跳变显著下降 + 正常宽度误过滤率报告"
+    "traffic.width_ttl_ticks": "宽度遮挡沿用有效期 6 tick（2026-10-11 前置三件套③，起值 [需实测]）：有效宽度只在真实读数拍按有效性门（年龄≥min_obs_ticks、conf≥置信地板、分母在适用域）重算，遮挡延续拍保持最后有效值并带龄，过期显式转 unknown 不冒充有效——w_m 遮挡崩坏（3.6→0.3m 案，外推 cy 配陈旧框宽）不入统计。验收判据=ĝ 异常跳变显著下降 + 正常宽度误过滤率报告",
+    "motion.max_obj_age_s|traffic.metric_*_ema_alpha": "决策输入稳定性（2026-10-19 局 184758_p2 归因）：保鲜窗 0.25→0.6s——σ 已随年龄膨胀，硬切会让 0.25~0.6s 的丢检目标直接从场景消失（币组 85% 单枚观测、车米制 x 逐拍跳 ±1~1.5m）；币/奖励到站时间按龄前移，≤0 剔除。像素回退车年龄改吃 last_seen 新鲜度（age_ticks 是轨道生命期，不是新鲜度）。车米制 x/z 在决策边界 EMA 平滑（道路帧 x），跟踪层 v_close/锚点不动。"
   },
   "mode": {
     "allow_car_graze": false,
@@ -112,7 +113,7 @@
     "preposition_horizon_s": 4.0,
     "preposition_discount": 0.5,
     "preposition_radius_lane": 2.5,
-    "max_obj_age_s": 0.25,
+    "max_obj_age_s": 0.6,
     "corridor_age_max_s": 0.4,
     "frame_delta_max_m": 0.2,
     "uncertain_widen_max_m": 0.6,
@@ -140,7 +141,10 @@
     "lane_vote_decay": 0.7,
     "lane_memb_min_weight": 1.5,
     "lane_vote_sigma_max": 0.6,
-    "width_ttl_ticks": 6
+    "width_ttl_ticks": 6,
+    "metric_x_ema_alpha": 0.35,
+    "metric_z_ema_alpha": 0.5,
+    "_note_metric_ema": "决策边界对车米制 x/z 做时间平滑（道路帧 x，自车横移由 executed 抵消）。20261019_184758_p2 实测同车逐拍 x 跳 ±1~1.5m、z 跳 ±4m，与 0.5m 擦车带同量级——规划器在追测量噪声，满舵左-右回摆并侧碰。α 越大越跟手、越小越稳；跟踪层语义不变（v_close/锚点仍吃原始 z）。"
   },
   "grid_xcheck": {
     "mode": "master",
