@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 
 from maaracing_master.plugins.speedrush.planner import step
 from maaracing_master.plugins.speedrush.selection import (
-    BonusSource, CarSource, CoinSource, RoadBand, RoadFrame)
+    BonusSource, CarSource, CoinSource, RoadFrame)
 
 SCENE_SCHEMA = 3
 PLAN_SCHEMA = 1
@@ -426,6 +426,17 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     coins = [o for o in scene.objs if o.kind == "coin"]
     ts = [k * dt for k in range(n + 1)]
     us = list(motion.steer_levels) + [ego.steer_norm]
+    # 有距无速域是否在场：在场时解除 L4 维护性杆幅上限（这是避让，不是追路心）
+    range_hazard_active = False
+    if motion.range_hazard_m > 0.0:
+        for c in cars:
+            if c.timed or not c.depth or not c.in_corridor \
+                    or _large(c) or c.z_m is None:
+                continue
+            if motion.near_z_m < c.z_m <= motion.range_hazard_m \
+                    and abs(c.x_m - scene.ego_x_m) <= lane_w * 0.65:
+                range_hazard_active = True
+                break
     cands: list[_Cand] = []
     for idx, u in enumerate(us):
         x, v, steer = scene.ego_lane, ego.v_lane_s, ego.steer_norm
@@ -483,6 +494,29 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 reward_hits += 1
                 reward_hit_ids.add(id(r))
         reward_value = motion.value_reward * reward_hits
+        # 有距无速域（第二项）：本车道前方、纵深在圈内但无到站时间的车，
+        # 按保守速度折算一个到站时刻，凡在该时刻仍与车体重叠的候选直接扣分。
+        # 这是“别等到时间出现才动”的硬提示，不参与奖励。
+        range_cost = 0.0
+        range_h = motion.range_hazard_m
+        if range_h > 0.0 and motion.range_hazard_speed_mps > 0.0:
+            for c in cars:
+                if c.timed or not c.depth or not c.in_corridor \
+                        or _large(c) or c.z_m is None:
+                    continue
+                if not (motion.near_z_m < c.z_m <= range_h):
+                    continue
+                if abs(c.x_m - scene.ego_x_m) > lane_w * 0.65:
+                    continue
+                t_h = min(horizon, c.z_m / motion.range_hazard_speed_mps)
+                overlap = (ego_half + _half(c) + c.sigma_m
+                           + motion.collision_margin_m)
+                d_h = abs(_x_at(xs_m, t_h, dt) - c.x_m)
+                if d_h < overlap:
+                    urgency = 1.0 - c.z_m / range_h
+                    range_cost += (motion.cost_collision * urgency
+                                   * (1.0 - d_h / overlap)
+                                   * motion.range_hazard_gain)
         pass_count = 0
         for c in cars:
             # 无到站时间的车只当静态障碍，不算“擦车通过”：
@@ -557,8 +591,38 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 prox = max(0.0, 1.0 - abs(x_ref - target) / radius)
                 prep_value += motion.value_graze \
                     * motion.preposition_discount * prox
+            # 有距无速（2026-10-19 局 204308_p1）：本车道前方有纵深但速度
+            # 窗口未开的车，按距离持续给“往空侧并”的小分——不等到站时间。
+            # 不参与擦车/命中奖励，只做提前横移；越近越强，出圈即停。
+            range_h = motion.range_hazard_m
+            if range_h > 0.0:
+                left = scene.road.left_m if scene.road.left_m is not None \
+                    else -lane_w
+                right = scene.road.right_m if scene.road.right_m is not None \
+                    else lane_w
+                for c in cars:
+                    if c.timed or not c.depth or not c.in_corridor \
+                            or _large(c) or c.z_m is None:
+                        continue
+                    if not (motion.near_z_m < c.z_m <= range_h):
+                        continue
+                    if abs(c.x_m - scene.ego_x_m) > lane_w * 0.65:
+                        continue
+                    urgency = 1.0 - c.z_m / range_h
+                    side = 1.0 if (right - c.x_m) >= (c.x_m - left) else -1.0
+                    target = c.x_m + side * graze
+                    target = max(left + graze * 0.5,
+                                 min(right - graze * 0.5, target))
+                    # 按到达该车的时刻取横位，不拿 2s 末端瞄——否则会为了
+                    # “2 秒后离目标更近”而选轻打舵，正是晚并线的来源。
+                    t_h = min(horizon, c.z_m
+                              / max(motion.range_hazard_speed_mps, 1e-6))
+                    x_ref = _x_at(xs_m, t_h, dt)
+                    prox = max(0.0, 1.0 - abs(x_ref - target) / radius)
+                    prep_value += motion.value_graze * urgency * prox \
+                        * motion.preposition_discount * motion.range_hazard_gain
         value = (reward_value + pass_value + coin_value - collision_cost
-                 + prep_value)
+                 + prep_value - range_cost)
         # 中心目标带死区：带内不修正（旧选择层同口径），只在带外惩罚超出量。
         band_m = motion.center_band_lane * lane_w
         center_dev = sum(max(0.0, abs(xx - center0) - band_m)
@@ -574,7 +638,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         else:
             layer = 4
         # 无机会时限制维护性杆幅：避免计划用满舵去追一个偏掉的路心。
-        overcap = 1e6 if layer == 4 and abs(u) > motion.center_stick_max else 0.0
+        # 有距无速域在场时例外——那是避让，不是追路心。
+        overcap = 1e6 if (layer == 4 and not range_hazard_active
+                          and abs(u) > motion.center_stick_max) else 0.0
         key = (not feasible, -value, overcap, center_dev, effort, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(

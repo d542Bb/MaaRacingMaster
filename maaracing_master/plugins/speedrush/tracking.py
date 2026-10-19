@@ -210,6 +210,7 @@ class DistanceSource(str, Enum):
 
     ANCHOR = "ANCHOR"
     RESCALED_ANCHOR = "RESCALED_ANCHOR"
+    HELD = "HELD"          # 本拍丢框但仍在短路保持窗内：沿用最近一次距离
     UNKNOWN = "UNKNOWN"
 
 
@@ -312,6 +313,8 @@ class TrackerParams:
     grace_ticks: int = 15        # 消失宽限：名义 0.5s×30Hz；实测 21Hz 下 ≈0.7s，同量级
     max_cy_step: float = 80.0    # 对 cy 预测的失配门限（px/tick）——检闪烁用
     max_xlane_step: float = 0.5  # 横向跳变门限（车道）：21Hz 下真实目标 <0.05，留足容差
+    assoc_iou_min: float = 0.3   # 2D 身份主干：框重叠优先关联（框增长/跨线不换身份）
+    track_lost_hold_ms: float = 150.0  # 单拍丢框时距离保持窗（约 3 拍@20Hz）
     neutral_px: float = 40.0     # lane_side 中列半宽
     pos_err_px: float = 15.0     # x_sigma 模型的分子（§6 场内 vpx 误差 MAD 12–19）
     fresh_max_ms: float = 100.0  # frame_fresh 判据（v2 §六 P95≤100ms 同源）
@@ -342,6 +345,8 @@ class TrackerParams:
 
     def __post_init__(self) -> None:
         if (self.grace_ticks < 1 or self.max_cy_step <= 0 or self.max_xlane_step <= 0
+                or not 0.0 < self.assoc_iou_min <= 1.0
+                or self.track_lost_hold_ms < 0
                 or self.neutral_px <= 0 or self.pos_err_px <= 0
                 or self.fresh_max_ms <= 0 or not 0.0 <= self.ema_alpha < 1.0
                 or self.gate_v_mps <= 0 or self.gate_eval_min_ms <= 0
@@ -366,6 +371,7 @@ class _Obs:
     x_sigma: float
     lane_side: int
     det_key: tuple[str, int] = ("", -1)   # (kind, kind 内序号)——深度锚点帧映射表的 key
+    box: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)  # 2D 框 xyxy
 
 
 @dataclass
@@ -384,6 +390,7 @@ class _Track:
     rel_approach: float
     first_seen: int
     last_seen: int
+    box: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)  # 最近 2D 框 xyxy
     matched: bool = False
     # ---- 混合测距锚点状态（语义见设计稿 §2/§4；C 线 2026-10-13 起为决策供数）----
     anchor_z: float | None = None        # 米制锚点（None=无有效锚；近簇修正+跳变门后的值）
@@ -485,6 +492,7 @@ class Tracker:
                 t.gate_streak = 0
             t.kind, t.w, t.h, t.conf = o.kind, o.w, o.h, o.conf
             t.cy, t.cx = o.cy, o.cx
+            t.box = o.box
             t.x_lane, t.x_sigma, t.lane_side = o.x_lane, o.x_sigma, o.lane_side
             if o.x_lane is not None:
                 t.x_known = o.x_lane
@@ -504,7 +512,7 @@ class Tracker:
                 id=self._next_id, kind=o.kind, cy=o.cy, cx=o.cx, w=o.w, h=o.h,
                 conf=o.conf, x_lane=o.x_lane, x_known=o.x_lane,
                 x_sigma=o.x_sigma, lane_side=o.lane_side, rel_approach=0.0,
-                first_seen=fid, last_seen=fid, matched=True))
+                first_seen=fid, last_seen=fid, box=o.box, matched=True))
             frame_map[o.det_key] = self._next_id
             self._next_id += 1
         if frame_map:
@@ -613,7 +621,9 @@ class Tracker:
                 out.append(_Obs(
                     kind=kind, cy=d.cy, cx=float(d.cx), w=d.w, h=d.h, conf=d.conf,
                     x_lane=x, x_sigma=self.p.pos_err_px * self.cal.a_x / denom,
-                    lane_side=int(side), det_key=(kind, ki)))
+                    lane_side=int(side), det_key=(kind, ki),
+                    box=(d.cx - d.w / 2.0, d.cy - d.h / 2.0,
+                         d.cx + d.w / 2.0, d.cy + d.h / 2.0)))
         return out
 
     # ---------- 混合测距（刀一 trace-only；语义与参数出处见设计稿） ----------
@@ -682,12 +692,29 @@ class Tracker:
                     DistanceReason.ASSOC_FAIL if self._sheet_orphan
                     else DistanceReason.NO_ANCHOR_YET))
         if not t.matched:
-            # 本拍丢框：h 不再更新，持锚/重标都失去当前证据——弃权但锚点保留
-            #（复匹配后未超龄即恢复；超龄由下一分支收口）
+            # 本拍丢框：短窗内沿用最近距离（HELD）——单拍闪烁不得让对象和
+            # 到站时间一起消失（2026-10-19 局 204308_p1：一拍空窗撤掉超车）。
+            # 超过短路窗才回到 UNKNOWN；锚点本身仍按 anchor_max_age 退休。
+            held_ms = (ts_ns - t.anchor_ts_ns) / 1e6
+            if t.anchor_z is not None and held_ms <= self.p.track_lost_hold_ms:
+                if t.approach_confirmed_at is not None:
+                    metric = t.anchor_z - (t.v_close_mps or 0.0) * held_ms / 1000.0
+                    return ObjectDistance(
+                        target_id=t.id, source=DistanceSource.HELD,
+                        metric_distance_m=float(metric),
+                        method=DistanceMethod.RANGE_PROP, anchor_age_ms=held_ms,
+                        obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps,
+                        reason=DistanceReason.TRACK_LOST)
+                return ObjectDistance(
+                    target_id=t.id, source=DistanceSource.HELD,
+                    metric_distance_m=float(t.anchor_z),
+                    method=DistanceMethod.HOLD, anchor_age_ms=held_ms,
+                    obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps,
+                    reason=DistanceReason.TRACK_LOST)
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None,
-                anchor_age_ms=(ts_ns - t.anchor_ts_ns) / 1e6,
+                anchor_age_ms=held_ms,
                 obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps,
                 reason=DistanceReason.TRACK_LOST)
         age_ms = (ts_ns - t.anchor_ts_ns) / 1e6
@@ -767,22 +794,46 @@ class Tracker:
             bridged=bridged, bridge_reason=bridge_reason)
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
-        """逐对算代价值 → 全局按代价升序贪心 1:1 配对。
-        代价 = 纵向失配归一 + 横向失配归一（双方都有横向读数时）。"""
-        pairs: list[tuple[float, int, int]] = []
+        """2D 身份主干 + 几何回退，两遍贪心 1:1 配对。
+
+        第一遍只认框：按外推后的 IoU 从高到低配对——车框变大、跨过车道线、
+        近簇翻跳都不改变身份（这是逼近阶段丢身份的主因）。
+        第二遍对剩余对走旧的 cy/横位门（护远场小框与尺寸突变）。
+
+        身份只由 2D 序列决定；3D 量是挂在轨道上的属性，不能反过来定义身份。"""
+        used_t: set[int] = set()
+        used_o: set[int] = set()
+        matches: dict[int, int] = {}
+
+        iou_pairs: list[tuple[float, int, int]] = []
         for ti, t in enumerate(self._tracks):
             if t.matched or fid - t.last_seen > self.p.grace_ticks:
                 continue
             for oi, o in enumerate(obs):
                 if o.kind != t.kind:
                     continue
+                cost = self._box_cost(t, o, fid)
+                if cost is not None:
+                    iou_pairs.append((cost, ti, oi))
+        iou_pairs.sort()
+        for _i, ti, oi in iou_pairs:
+            if ti in used_t or oi in used_o:
+                continue
+            used_t.add(ti)
+            used_o.add(oi)
+            matches[ti] = oi
+
+        pairs: list[tuple[float, int, int]] = []
+        for ti, t in enumerate(self._tracks):
+            if ti in used_t or fid - t.last_seen > self.p.grace_ticks:
+                continue
+            for oi, o in enumerate(obs):
+                if oi in used_o or o.kind != t.kind:
+                    continue
                 cost = self._gate_cost(t, o, fid)
                 if cost is not None:
                     pairs.append((cost, ti, oi))
         pairs.sort()
-        used_t: set[int] = set()
-        used_o: set[int] = set()
-        matches: dict[int, int] = {}
         for _c, ti, oi in pairs:
             if ti in used_t or oi in used_o:
                 continue
@@ -790,6 +841,34 @@ class Tracker:
             used_o.add(oi)
             matches[ti] = oi
         return matches
+
+    def _pred_box(self, t: _Track,
+                  fid: int) -> tuple[float, float, float, float]:
+        """外推框：只平移纵向（rel_approach px/fid），尺寸保持。"""
+        age = max(fid - t.last_seen, 1)
+        dy = t.rel_approach * age
+        x0, y0, x1, y1 = t.box
+        return (x0, y0 + dy, x1, y1 + dy)
+
+    def _box_cost(self, t: _Track, o: _Obs, fid: int) -> float | None:
+        """2D 框连续性代价（小=更像同一目标）：IoU 优先，扩框/快动回退
+        到按框尺寸归一的中心位移 + 尺寸比。只用 YOLO 框，不碰 3D/车道读数。"""
+        pb = self._pred_box(t, fid)
+        iou = _box_iou(pb, o.box)
+        if iou >= self.p.assoc_iou_min:
+            return 0.5 * (1.0 - iou)
+        h = max(float(t.h), float(o.h), 1.0)
+        w = max(float(t.w), float(o.w), 1.0)
+        d_cy = abs(o.cy - (t.cy + t.rel_approach
+                           * max(fid - t.last_seen, 1))) / h
+        d_cx = abs(o.cx - t.cx) / w
+        ratio = max(float(o.h) / max(float(t.h), 1.0),
+                    float(t.h) / max(float(o.h), 1.0),
+                    float(o.w) / max(float(t.w), 1.0),
+                    float(t.w) / max(float(o.w), 1.0))
+        if d_cy > 1.0 or d_cx > 0.6 or ratio > 2.2:
+            return None
+        return d_cy + d_cx + 0.2 * (ratio - 1.0)
 
     def _gate_cost(self, t: _Track, o: _Obs, fid: int) -> float | None:
         age = max(fid - t.last_seen, 1)
@@ -819,6 +898,19 @@ class Tracker:
         （>0=worker 滞后）、orphan=整张无法归轨。None=本拍无新清单（深度
         证据拍才有）。"""
         return self._ingest_stats
+
+
+def _box_iou(a: tuple[float, float, float, float],
+             b: tuple[float, float, float, float]) -> float:
+    """2D 框 IoU（xyxy，像素系）。任一框退化 → 0。"""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    if inter <= 0.0:
+        return 0.0
+    ua = ((a[2] - a[0]) * (a[3] - a[1])
+          + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+    return inter / ua if ua > 0.0 else 0.0
 
 
 def to_jsonable(x: Any) -> Any:

@@ -215,6 +215,14 @@ class Motion:
     steer_levels: tuple[float, ...] = (
         -0.85, -0.55, -0.35, -0.2, -0.1, 0.0, 0.1, 0.2, 0.35, 0.55, 0.85)
     near_z_m: float = 6.0
+    # 有距无速域：本车道前方有纵深、但速度窗口未开的车，在此距离内按
+    # 距离给提前横移的小分（不参与命中/擦车奖励，只避让）。
+    range_hazard_m: float = 70.0
+    # 无速度目标折算到站时刻用的保守闭速（m/s）：宁可早动，不可晚动。
+    range_hazard_speed_mps: float = 45.0
+    # 有距无速域的权重：必须高过 PlanGate 的切换余量，才能在大约 0.8s
+    # 之外的首次判断就换道（小于余量会被“保持上一动作”吃掉）。
+    range_hazard_gain: float = 2.0
     # 走廊约束只验前 1.0s：恒定杆 2s 必然驶出近场包络，硬验全程会把必要的
     # 避让判成不可行（影子实测 p2 8% 全灭假象）
     corridor_check_s: float = 1.0
@@ -547,6 +555,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                 (-0.85, -0.55, -0.35, -0.2, -0.1, 0.0,
                  0.1, 0.2, 0.35, 0.55, 0.85)),
             near_z_m=_num_def(d, "motion", "near_z_m", 6.0, lo=0),
+            range_hazard_m=_num_def(
+                d, "motion", "range_hazard_m", 70.0, lo=0),
+            range_hazard_speed_mps=_num_def(
+                d, "motion", "range_hazard_speed_mps", 45.0, lo=0),
+            range_hazard_gain=_num_def(
+                d, "motion", "range_hazard_gain", 2.0, lo=0),
             corridor_check_s=_num_def(
                 d, "motion", "corridor_check_s", 1.0, lo=0),
             collision_margin_m=_num_def(

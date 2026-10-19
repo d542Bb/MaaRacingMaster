@@ -220,17 +220,31 @@ def test_cluster_switch_voids_anchor():
     assert d.metric_distance_m is None
 
 
-def test_track_lost_keeps_anchor_for_rematch():
+def test_track_lost_holds_range_for_short_flicker():
+    """单拍丢框不得让对象和到站时间一起消失：短窗内 HELD 保留最近距离。"""
     trk = Tracker()
     trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
     trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
                anchors=_sheet(1, z_m=50.0))
     obs = trk.update(_per(3), frame_age_ms=10.0, stage=1)   # 本拍丢框
     d = _dist(obs)
-    assert d.reason is DistanceReason.TRACK_LOST and d.metric_distance_m is None
+    assert d.reason is DistanceReason.TRACK_LOST
+    assert d.source is DistanceSource.HELD
+    assert d.metric_distance_m == pytest.approx(50.0)
     obs = trk.update(_per(4, cars=[_car()]), frame_age_ms=10.0, stage=1)   # 复匹配
     d = _dist(obs)
     assert d.source is DistanceSource.ANCHOR   # 未超龄，锚点恢复
+
+
+def test_track_lost_hold_expires_and_returns_unknown():
+    trk = Tracker(params=TrackerParams(track_lost_hold_ms=0.0))
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=50.0))
+    obs = trk.update(_per(3), frame_age_ms=10.0, stage=1)
+    d = _dist(obs)
+    assert d.reason is DistanceReason.TRACK_LOST
+    assert d.source is DistanceSource.UNKNOWN and d.metric_distance_m is None
 
 
 def test_expired_anchor_abstains():

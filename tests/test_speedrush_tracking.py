@@ -170,6 +170,49 @@ def test_lateral_jump_beyond_gate_is_new_track():
     assert new.x_lane == pytest.approx(x_lane_of(1100, 500, CAL))
 
 
+def test_large_box_growth_keeps_id_when_cy_jump_exceeds_old_gate():
+    """逼近的大车：纵向跳变会超旧 cy 门（80px），但框本身连续——身份必须
+    跟框走，不能因为变大/变快就新建轨道（2026-10-19 局 204308_p1 根因）。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(800, 450, 100, 120, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[Detection(800, 550, 120, 150, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 1
+    assert b.targets[0].id == a.targets[0].id
+    assert b.targets[0].first_seen_fid == 1
+
+
+def test_box_growth_across_lateral_shift_keeps_id():
+    """横向位移叠加扩框：2D 框仍连续，不得换身份。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(800, 500, 200, 100, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[Detection(700, 560, 220, 120, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 1
+    assert b.targets[0].id == a.targets[0].id
+
+
+def test_adjacent_cars_do_not_swap_identities():
+    """2D 匹配按框位置 1:1，左右两车不得因为 cy 相近而互换身份。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(500, 500, 100, 80, 0.9),
+                                 Detection(800, 500, 100, 80, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    by_cx_a = {round(t.x_lane, 3): t.id for t in a.targets}
+    b = trk.update(_per(2, cars=[Detection(510, 505, 100, 80, 0.9),
+                                 Detection(790, 505, 100, 80, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 2
+    by_cx_b = {round(t.x_lane, 3): t.id for t in b.targets}
+    assert set(by_cx_b.values()) == set(by_cx_a.values())
+    # 左车 id 与左车 id 对、右车对右车（不交叉）
+    left_a = next(t.id for t in a.targets if t.x_lane < 0)
+    left_b = next(t.id for t in b.targets if t.x_lane < 0)
+    assert left_a == left_b
+
+
 # ---------- 7 弯道 / 几何无效输入 ----------
 
 def test_geometry_invalid_passthrough_not_gated():

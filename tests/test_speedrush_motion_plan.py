@@ -325,6 +325,26 @@ def test_preposition_biases_toward_future_coin():
     assert p.u_feedforward > 0
 
 
+def test_untimed_depth_car_ahead_biases_sideways():
+    """有距无速：本车道前方有纵深、没到站时间的车也要提前往空侧并，
+    不能等到它进入 2s 视界（2026-10-19 局 204308_p1 的直撞根因）。"""
+    car = CarSource(0.0, None, z_m=35.0, age_ms=0.0, src="metric")
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0, cars=[car]),
+              ego=EgoState(0.0, 0.0, 0.0))
+    assert p.valid and p.layer == 4
+    assert abs(p.u_feedforward) >= 0.1
+    base = _plan(_scene(road=_wide_road(), ego_m=0.0),
+                 ego=EgoState(0.0, 0.0, 0.0))
+    assert abs(base.u_feedforward) < 0.1
+
+
+def test_untimed_depth_car_out_of_lane_does_not_bias():
+    car = CarSource(3.5, None, z_m=35.0, age_ms=0.0, src="metric")
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0, cars=[car]),
+              ego=EgoState(0.0, 0.0, 0.0))
+    assert p.valid and abs(p.u_feedforward) < 0.1
+
+
 def test_collision_is_soft_cost_not_infeasible():
     """普通车碰撞只扣价值，不再把全部候选判成不可行。"""
     cars = [CarSource(-2.0, 0.5, age_ms=0.0),
