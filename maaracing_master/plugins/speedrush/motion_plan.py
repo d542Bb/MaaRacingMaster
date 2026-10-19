@@ -183,6 +183,8 @@ class MotionPlan:
     frame_delta_m: float
     corridor_uncertain: bool
     dt_s: float = 0.05
+    value_total: float = 0.0
+    collision_cost: float = 0.0
 
     def as_trace(self) -> dict:
         return {
@@ -194,6 +196,8 @@ class MotionPlan:
             "chosen": self.chosen, "dt": self.dt_s,
             "key": [round(v, 4) if isinstance(v, float) else v
                     for v in self.score_key],
+            "val": round(self.value_total, 2),
+            "cc": round(self.collision_cost, 2),
             "fd": round(self.frame_delta_m, 3),
             "unc": self.corridor_uncertain,
             "cand": [[round(v, 3) for v in c] for c in self.cand_x],
@@ -219,6 +223,8 @@ class _Cand:
     effort: float
     layer: int
     key: tuple
+    value: float = 0.0
+    collision_cost: float = 0.0
 
 
 def _envelope(scene: Scene, near_z_m: float, wall_margin_m: float,
@@ -252,7 +258,7 @@ def _x_at(xs: tuple[float, ...], t: float, dt: float) -> float:
 
 
 class PlanGate:
-    """候选时稳（替代旧目标迟滞）：分层立即切，同层 margin+dwell。"""
+    """候选时稳：价值差超 margin 且保持 dwell 才换，防逐拍翻面。"""
 
     def __init__(self, switch_margin: float, dwell_s: float,
                  epsilon: float):
@@ -284,18 +290,15 @@ class PlanGate:
         self._idx, self._streak, self._key = idx, float(streak), None
 
     def choose(self, cands: list[_Cand], dt: float) -> _Cand:
+        """价值差超过 margin 并保持 dwell 才换现任；现任不可行立即让位。"""
         best = cands[0]
         inc = next((c for c in cands if c.idx == self._idx and c.feasible),
                    None)
         if inc is None:
             self._idx, self._key, self._streak = best.idx, self._q(best.key), 0.0
             return best
-        if best.layer < inc.layer:
-            self._idx, self._key, self._streak = best.idx, self._q(best.key), 0.0
-            return best
         kb, ki = self._q(best.key), self._q(inc.key)
-        if best.layer == inc.layer and kb < ki and \
-                self._gap(kb, ki) > self.margin:
+        if kb < ki and self._gap(kb, ki) > self.margin:
             self._streak += dt
             if self._streak >= self.dwell:
                 self._idx, self._key, self._streak = best.idx, kb, 0.0
@@ -359,32 +362,34 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             vs_lane.append(v)
         xs_m = tuple(v * lane_w for v in xs_lane)
 
-        def clear_at(c, t: float) -> float:
-            # 硬约束只认物理包络 + 对象定位 σ。自车开环 σ 在 2s 处可达
-            # 2m+，若计入会把擦车带整体判死；闭环节拍级重规划已吸收
-            # 这部分误差，σ 只用于缩短时域。
+        def clearance(c, t: float) -> float:
+            # 0=物理包络相切；负=重叠深度。只用物理包络 + 对象 σ。
             return (abs(_x_at(xs_m, t, dt) - c.x_m)
-                    - (ego_half + car_half + c.sigma_m
-                       + motion.collision_margin_m))
+                    - (ego_half + car_half + c.sigma_m))
 
-        # 时变车只在到达时刻插值判一次（按采样 ±1.5dt 邻域判会把
-        # 擦车带两侧样本都算进来，2 米级目标带直接消失）。
-        dyn = [clear_at(c, c.t_arrive_s) for c in cars
-               if c.t_arrive_s is not None
-               and motion.collision_min_lead_s <= c.t_arrive_s <= horizon]
-        stat = [clear_at(c, t) for c in cars
-                if c.t_arrive_s is None
-                and not ((c.z_m is not None and c.z_m > motion.near_z_m)
-                         or abs(c.x_m - scene.ego_x_m) > graze)
-                for t in ts]
+        # 时变车只在到达时刻插值判一次；静态近车取全时域最小间距。
+        clears: list[float] = []
+        for c in cars:
+            if c.t_arrive_s is None:
+                if (c.z_m is not None and c.z_m > motion.near_z_m) \
+                        or abs(c.x_m - scene.ego_x_m) > graze:
+                    continue
+                clears.append(min((clearance(c, t) for t in ts),
+                                  default=float("inf")))
+            elif motion.collision_min_lead_s <= c.t_arrive_s <= horizon:
+                clears.append(clearance(c, c.t_arrive_s))
+        collision_cost = sum(
+            motion.cost_collision + (-d) * motion.cost_collision_depth_m
+            for d in clears if d < 0.0)
+        min_clear = min(clears, default=float("inf"))
         corridor_ok = env is None or all(
             env[0] <= xx <= env[1]
             for xx, tt in zip(xs_m, ts)
             if tt <= motion.corridor_check_s + 1e-9)
-        min_clear = min(dyn + stat, default=float("inf"))
-        feasible = corridor_ok and min_clear >= 0.0
+        # 普通车碰撞只扣价值，不再判不可行（RULES §4.3：碰撞只损失时间）。
+        feasible = corridor_ok
 
-        reward_hits, reward_value = 0, 0.0
+        reward_hits = 0
         for r in rewards:
             if r.t_arrive_s is None or r.t_arrive_s > horizon:
                 continue
@@ -394,10 +399,10 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             tol = reward_half + r.sigma_m
             if abs(xr - r.x_m) <= tol:
                 reward_hits += 1
-                reward_value += max(0.0, tol - abs(xr - r.x_m))
-        pass_count, pass_value = 0, 0.0
+        reward_value = motion.value_reward * reward_hits
+        pass_count = 0
         for c in cars:
-            # 无到站时间的车只当静态障碍（碰撞硬约束），不算“擦车通过”：
+            # 无到站时间的车只当静态障碍，不算“擦车通过”：
             # t=None 的并列车会让 t=0 的初始距离冒充一次超车。
             if c.t_arrive_s is None:
                 continue
@@ -405,12 +410,11 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             if tc > horizon:
                 continue
             d = abs(_x_at(xs_m, tc, dt) - c.x_m)
-            # 擦车下界与碰撞硬约束同式（物理包络 + 余量），上限=目标距离。
             if ego_half + car_half + c.sigma_m \
                     + motion.collision_margin_m <= d <= graze:
                 pass_count += 1
-                pass_value += graze - d
-        coin_count, coin_error = 0.0, 0.0
+        pass_value = motion.value_graze * pass_count
+        coin_hits, coin_value, coin_error = 0.0, 0.0, 0.0
         for c in coins:
             if c.t_arrive_s is None or c.t_arrive_s > horizon:
                 continue
@@ -418,28 +422,30 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             err = abs(xr - c.x_m)
             tol = coin_half + c.sigma_m
             if err <= tol:
-                coin_count += c.count
+                coin_hits += 1
+                coin_value += (motion.value_coin_air if c.count >= 4
+                               else motion.value_coin_group)
                 coin_error += err
-        if coin_count > 0:
-            coin_error /= max(coin_count, 1e-9)
+        if coin_hits > 0:
+            coin_error /= coin_hits
+        value = reward_value + pass_value + coin_value - collision_cost
         center_dev = sum(abs(xx - center0) for xx in xs_m) / len(xs_m)
         effort = abs(u) * horizon
         if reward_hits:
             layer = 1
         elif pass_count:
             layer = 2
-        elif coin_count:
+        elif coin_hits:
             layer = 3
         else:
             layer = 4
-        key = (not feasible, -reward_hits, -reward_value,
-               -pass_count, -pass_value, -coin_count, coin_error,
-               center_dev, effort, idx)
+        key = (not feasible, -value, center_dev, effort, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(
             idx, u, xs_m, xs_m[i], vs_lane[i], feasible,
             min_clear, reward_hits, reward_value, pass_count, pass_value,
-            coin_count, coin_error, center_dev, effort, layer, key))
+            coin_hits, coin_error, center_dev, effort, layer, key,
+            value, collision_cost))
 
     feasible = [c for c in cands if c.feasible]
     reason = "plan:ok"
@@ -454,20 +460,12 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             reason = "plan:ok_shortened"
     else:
         valid = False
-        corridor_all_bad = env is not None and not any(
-            all(env[0] <= xx <= env[1]
-                for xx, tt in zip(c.xs_m, ts)
-                if tt <= motion.corridor_check_s + 1e-9)
-            for c in cands)
-        if corridor_all_bad:
-            chosen = min(cands, key=lambda c: abs(c.x_preview_m - scene.ego_x_m))
-            reason = "plan:infeasible_corridor"
-        else:
-            chosen = max(cands, key=lambda c: c.min_clear_m)
-            reason = "plan:infeasible_collision"
+        chosen = min(cands, key=lambda c: abs(c.x_preview_m - scene.ego_x_m))
+        reason = "plan:infeasible_corridor"
     return MotionPlan(
         PLAN_SCHEMA, valid, reason, chosen.x_preview_m,
         chosen.v_preview_lane * lane_w, chosen.u, chosen.layer, chosen.key,
         len(feasible), chosen.idx, tuple(c.xs_m for c in cands),
         (chosen.x_preview_m - frame_delta) / lane_w,
-        chosen.v_preview_lane, frame_delta, uncertain, dt)
+        chosen.v_preview_lane, frame_delta, uncertain, dt,
+        chosen.value, chosen.collision_cost)

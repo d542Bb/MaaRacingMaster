@@ -222,6 +222,14 @@ class Motion:
     # 低于采样分辨率（整层 0 触发）；0.75 道留约 0.36m 带。
     graze_gap_lane: float = 0.75
     coin_collect_half_lane: float = 0.35
+    # 价值模型（RULES §4.2/§4.11）：擦车走量、金币按组、奖励车偶发高值、
+    # 普通碰撞只损失时间——用价值相加替代四层字典序。
+    value_graze: float = 120.0        # 极限超车 120 分/辆
+    value_coin_group: float = 90.0    # 平地金币组 90 分/组
+    value_coin_air: float = 120.0     # 空中金币组（观测 ≥4 枚）
+    value_reward: float = 240.0       # 动作 120 + 一次退场约 180，按偶发折扣
+    cost_collision: float = 60.0      # 每次普通车碰撞的时间/节奏损失
+    cost_collision_depth_m: float = 120.0  # 重叠每深 1m 追加成本
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
@@ -232,7 +240,7 @@ class Motion:
     sigma_ego0_m: float = 0.0        # fit_plant 标定
     sigma_ego_rate_mps: float = 0.0  # fit_plant 标定
     sigma_ego_max_m: float = 1.2     # 超此缩短时域
-    switch_margin: float = 0.3
+    switch_margin: float = 30.0      # 价值差门槛（分）
     switch_dwell_s: float = 0.2
     score_epsilon: float = 1e-3
     infeasible_conserve_ticks: int = 3
@@ -518,6 +526,16 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "graze_gap_lane", 0.75, lo=0),
             coin_collect_half_lane=_num_def(
                 d, "motion", "coin_collect_half_lane", 0.35, lo=0),
+            value_graze=_num_def(d, "motion", "value_graze", 120.0, lo=0),
+            value_coin_group=_num_def(
+                d, "motion", "value_coin_group", 90.0, lo=0),
+            value_coin_air=_num_def(
+                d, "motion", "value_coin_air", 120.0, lo=0),
+            value_reward=_num_def(d, "motion", "value_reward", 240.0, lo=0),
+            cost_collision=_num_def(
+                d, "motion", "cost_collision", 60.0, lo=0),
+            cost_collision_depth_m=_num_def(
+                d, "motion", "cost_collision_depth_m", 120.0, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
             corridor_age_max_s=_num_def(
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),
@@ -535,7 +553,7 @@ def _read_decision(path: Path) -> DecisionConfig:
                 lo_open=False),
             sigma_ego_max_m=_num_def(
                 d, "motion", "sigma_ego_max_m", 1.2, lo=0),
-            switch_margin=_num_def(d, "motion", "switch_margin", 0.3, lo=0),
+            switch_margin=_num_def(d, "motion", "switch_margin", 30.0, lo=0),
             switch_dwell_s=_num_def(
                 d, "motion", "switch_dwell_s", 0.2, lo=0),
             score_epsilon=_num_def(

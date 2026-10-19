@@ -178,17 +178,18 @@ def test_coin_layer_when_no_car_or_reward():
     p = _plan(_scene(road=_wide_road(),
                      coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
     assert p.valid and p.layer == 3
-    assert p.score_key[5] <= -5.0          # -coin_count
+    assert p.score_key[1] <= -90.0         # -value（空中组 120）
 
 
-def test_collision_all_infeasible_keeps_max_clearance():
+def test_collision_is_soft_cost_not_infeasible():
+    """普通车碰撞只扣价值，不再把全部候选判成不可行。"""
     cars = [CarSource(-2.0, 0.5, age_ms=0.0),
             CarSource(0.0, 0.5, age_ms=0.0),
             CarSource(2.0, 0.5, age_ms=0.0)]
     p = _plan(_scene(road=_wide_road(), cars=cars))
-    assert not p.valid
-    assert p.reason == "plan:infeasible_collision"
-    assert p.n_feasible == 0
+    assert p.valid
+    assert p.reason in ("plan:ok", "plan:ok_uncertain", "plan:ok_shortened")
+    assert p.n_feasible > 0
 
 
 def test_corridor_all_infeasible_holds_position():
@@ -250,7 +251,7 @@ def test_graze_layer_reachable_with_physical_envelope():
     p = _plan(_scene(road=_wide_road(), ego_m=0.0,
                      cars=[CarSource(-0.107, 0.8, age_ms=0.0)]))
     assert p.valid and p.layer == 2
-    assert p.score_key[3] < 0             # -pass_count
+    assert p.score_key[1] <= -120.0       # -value（擦车 120）
 
 
 def test_static_car_not_counted_as_pass():
@@ -280,21 +281,21 @@ def test_sigma_ego_shortens_horizon():
     assert len(p.cand_x[0]) < int(round(CFG.motion.horizon_s / CFG.motion.dt_s)) + 1
 
 
-def _c(idx, layer, coin, feasible=True):
-    key = (not feasible, 0, 0.0, 0, 0.0, -coin, 0.0, 0.0, 0.0, idx)
+def _c(idx, value, feasible=True):
+    key = (not feasible, -value, 0.0, 0.0, idx)
     return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, feasible, 9.0,
-                 0, 0.0, 0, 0.0, coin, 0.0, 0.0, 0.0, layer, key)
+                 0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value)
 
 
-def test_gate_same_layer_requires_margin_and_dwell():
-    g = PlanGate(switch_margin=0.3, dwell_s=0.1, epsilon=1e-3)
-    inc, better = _c(3, 3, 1.0), _c(4, 3, 2.0)
+def test_gate_requires_value_margin_and_dwell():
+    g = PlanGate(switch_margin=30.0, dwell_s=0.1, epsilon=1e-3)
+    inc, better = _c(3, 100.0), _c(4, 200.0)
     assert g.choose([inc], 0.05).idx == 3
     assert g.choose([better, inc], 0.05).idx == 3      # 第一次只计 streak
     assert g.choose([better, inc], 0.05).idx == 4      # 0.1s 后接管
-    # 层级升高立即切
-    reward = _c(5, 1, 0.0)
-    assert g.choose([reward, better], 0.05).idx == 5
+    # 价值差小于 margin：维持现任
+    tiny = _c(5, 120.0)
+    assert g.choose([tiny, better], 0.05).idx == 4
 
 
 def test_planner_tracks_valid_plan_only():
