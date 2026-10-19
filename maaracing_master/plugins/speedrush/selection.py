@@ -126,6 +126,9 @@ class CarSource:
     z_m: float | None = None
     age_ms: float = 0.0
     src: str = "pixel"
+    # 纵向近（t=None 时可当静态障碍的唯一许可）与真实半宽（米，None=标称）
+    near: bool = False
+    half_w_m: float | None = None
 
 
 @dataclass(frozen=True)

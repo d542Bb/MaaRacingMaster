@@ -10,7 +10,8 @@ from maaracing_master.plugins.speedrush import DECISION_FILE
 from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand)
-from maaracing_master.plugins.speedrush.decision import DecisionEngine
+from maaracing_master.plugins.speedrush.decision import (
+    DecisionEngine, _monotonic_coin_t)
 from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, Scene, _Cand, build_scene, plan_motion)
 from maaracing_master.plugins.speedrush.selection import (
@@ -139,6 +140,46 @@ def test_metric_car_x_is_time_smoothed_across_ticks():
     assert xs[0] == pytest.approx(5.0)
     assert xs[1] == pytest.approx(5.0 + a * (1.0 - 5.0))
     assert xs[2] == pytest.approx(xs[1] + a * (1.0 - xs[1]))
+
+
+def _plan(scene):
+    return plan_motion(scene, EgoState(scene.ego_lane, 0.0, 0.0),
+                       CFG.motion, CFG.selection, CFG.planner, None)
+
+
+def test_coin_time_only_moves_closer():
+    assert _monotonic_coin_t(None, 3.0, 0.0, 0.25) == pytest.approx(3.0)
+    # 同组从 1.5s 跳到 3.0s：判为组里更远的一枚，沿用旧时间按经过时间前移
+    assert _monotonic_coin_t((1.5, 10), 3.0, 0.1, 0.25) \
+        == pytest.approx(1.4)
+    # 正常接近：接受新值
+    assert _monotonic_coin_t((1.5, 10), 1.3, 0.1, 0.25) \
+        == pytest.approx(1.3)
+
+
+def test_untimed_far_car_is_not_a_static_wall():
+    """t=None 且纵向不近：不再当静态障碍（否则远处 60m 的车会挡住整条车道）。"""
+    car = dict(t_meet_s=None, z_m=None, age_ms=0.0, src="pixel")
+    far = _plan(_scene(cars=[CarSource(1.0, near=False, **car)]))
+    near = _plan(_scene(cars=[CarSource(1.0, near=True, **car)]))
+    assert far.collision_cost == 0.0
+    assert near.collision_cost > 0.0
+
+
+def test_out_of_corridor_coin_not_counted():
+    out = _plan(_scene(coins=[CoinSource(20.0, 3, 0.9, 1.0)]))
+    inside = _plan(_scene(coins=[CoinSource(1.0, 3, 0.9, 0.5)]))
+    assert out.layer == 4 and out.value_total == 0.0
+    assert inside.layer == 3 and inside.value_total >= 90.0
+
+
+def test_large_vehicle_not_a_graze_target():
+    """宽度 > 阈值的车不参与擦边，但仍在场景里当障碍。"""
+    normal = _plan(_scene(cars=[CarSource(3.3, 1.0, age_ms=0.0)]))
+    large = _plan(_scene(cars=[CarSource(3.3, 1.0, age_ms=0.0,
+                                        half_w_m=1.25)]))
+    assert normal.layer == 2
+    assert large.layer == 4
 
 
 def _corridor(*, fid=1, last_fid=1):

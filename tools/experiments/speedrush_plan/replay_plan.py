@@ -47,9 +47,15 @@ def scene_of(d: dict) -> Scene | None:
     bands = tuple(RoadBand(z0, z1, l, r, src=src, age_ms=age, conf=conf)
                   for z0, z1, l, r, src, age, conf in rd.get("bands") or ())
     road = RoadFrame(bands, rd.get("w"), rd.get("l"), rd.get("r"), True)
-    objs = tuple(SceneObj(kind=x[0], x_m=x[1], t_arrive_s=x[2],
-                          count=x[3], sigma_m=x[4], age_ms=x[5],
-                          src=x[6], z_m=x[7])
+    objs = tuple(SceneObj(
+        kind=x[0], x_m=x[1], t_arrive_s=x[2], count=x[3],
+        sigma_m=x[4], age_ms=x[5], src=x[6], z_m=x[7],
+        timed=bool(x[8]) if len(x) > 8 else x[2] is not None,
+        depth=bool(x[9]) if len(x) > 9 else x[7] is not None,
+        in_corridor=bool(x[10]) if len(x) > 10 else True,
+        near=bool(x[11]) if len(x) > 11 else False,
+        half_w_m=x[12] if len(x) > 12 else None,
+        coarse=bool(x[13]) if len(x) > 13 else False)
                  for x in d.get("objs") or ())
     return Scene(d.get("schema", 1), d["fid"], d["ego_m"], road, objs,
                  d["lane_w"], d["frame_age_ms"], d.get("corridor_age_ms"),

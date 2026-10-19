@@ -226,6 +226,15 @@ class Motion:
     # 低于采样分辨率（整层 0 触发）；0.75 道留约 0.36m 带。
     graze_gap_lane: float = 0.75
     coin_collect_half_lane: float = 0.35
+    # 大车（宽 > 此值的车）不作擦边目标：真实半宽会吃进"擦边"带，
+    # 且卡车的极限超车判定与轿车不同口径。仍按真实半宽计入碰撞。
+    graze_max_width_m: float = 2.2
+    # 无纵深车"纵向近"的像素判据：cy 距自车接地点行不足此值才可当障碍。
+    # 远处（cy≈330）的 t=None 车不再被当成贴身静态墙。
+    near_cy_margin_px: float = 120.0
+    # 同组金币到站时间只允许按时间递减：突然变大超过此值=看到了组里更远的一枚，
+    # 沿用旧时间并前移（否则计划在 1.5s/3.0s 之间反复进出视界）。
+    coin_time_jump_tol_s: float = 0.25
     # 价值模型（RULES §4.2/§4.11）：擦车走量、金币按组、奖励车偶发高值、
     # 普通碰撞只损失时间——用价值相加替代四层字典序。
     value_graze: float = 120.0        # 极限超车 120 分/辆
@@ -545,6 +554,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "graze_gap_lane", 0.75, lo=0),
             coin_collect_half_lane=_num_def(
                 d, "motion", "coin_collect_half_lane", 0.35, lo=0),
+            graze_max_width_m=_num_def(
+                d, "motion", "graze_max_width_m", 2.2, lo=0),
+            near_cy_margin_px=_num_def(
+                d, "motion", "near_cy_margin_px", 120.0, lo=0),
+            coin_time_jump_tol_s=_num_def(
+                d, "motion", "coin_time_jump_tol_s", 0.25, lo=0),
             value_graze=_num_def(d, "motion", "value_graze", 120.0, lo=0),
             value_coin_group=_num_def(
                 d, "motion", "value_coin_group", 90.0, lo=0),

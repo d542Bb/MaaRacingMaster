@@ -88,7 +88,8 @@ def test_throttle_constant_all_states():
     pl = LateralPlanner(P)
     for st in DecisionState:
         cmd = pl.update(_out(state=st, x_target=0.5), DT, 1)
-        assert cmd.throttle == P.throttle_raw == 255
+        assert cmd.throttle == P.throttle_raw
+        assert 0 < P.throttle_raw < 255   # 2026-10-19 起降油门给感知/决策留时间
 
 
 # ---------- 状态消费表 ----------

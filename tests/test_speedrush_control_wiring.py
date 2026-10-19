@@ -85,7 +85,7 @@ def test_no_corridor_holds_straight():
     for fid in range(1, 12):
         m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
         assert pad.joy[0] == 0                 # 无路=保持横位
-        assert pad.trig == 255                 # 油门恒满
+        assert pad.trig == load_decision().planner.throttle_raw   # 油门恒值
     assert pad.updates == 11
     assert chain["disabled"] is False
     assert m._control_last["state"] == "CRUISE"
@@ -147,7 +147,7 @@ def test_v1_lateral_channel_live(_stub_depth):
     saw_negative = False
     for fid in range(1, 16):
         m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
-        assert pad.trig == 255
+        assert pad.trig == load_decision().planner.throttle_raw
         if pad.joy[0] < 0:
             saw_negative = True
     assert saw_negative                          # 横向控制确实活了
@@ -367,11 +367,13 @@ def test_straight_tick_zero_steer_full_throttle():
     m = _module()
     pad = StubPad()
     rows: list[dict] = []
+    throttle = load_decision().planner.throttle_raw
+    assert 0 < throttle < 255
     for fid in range(1, 6):
         m._straight_tick(pad, fid, fid * 50_000_000, rows,
-                         throttle_raw=load_decision().planner.throttle_raw)
+                         throttle_raw=throttle)
         assert pad.joy == (0, 0)                 # 横向恒零
-        assert pad.trig == 255                   # 油门恒满（decision.json throttle_raw）
+        assert pad.trig == throttle              # 油门恒值（decision.json 单一真源）
     assert pad.updates == 5
     assert [r["fid"] for r in rows] == [1, 2, 3, 4, 5]
     for r in rows:

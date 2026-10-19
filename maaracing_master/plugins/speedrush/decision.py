@@ -209,6 +209,17 @@ class Scorer:
         return max(0.0, (a - b) / k)
 
 
+def _monotonic_coin_t(prev: tuple[float, int] | None, raw_t: float,
+                      elapsed_s: float, tol_s: float) -> float:
+    """同组金币到站时间只允许按时间递减；突增=换成了组里更远的一枚。"""
+    if prev is None or not math.isfinite(prev[0]):
+        return raw_t
+    expected = prev[0] - elapsed_s
+    if raw_t > expected + tol_s:
+        return max(expected, 0.0)
+    return raw_t
+
+
 class DecisionEngine:
     """FSM + 迟滞（§二/§三/§五）。单线程 owner 使用（与 _log_grp 同一线程纪律）。"""
 
@@ -244,6 +255,8 @@ class DecisionEngine:
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
+        # 金币组到站时间记忆（gid → (t, fid)）：同组只允许时间递减
+        self._coin_t_mem: dict[int, tuple[float, int]] = {}
         self._fid = 0
         self._fps: float | None = None
         self._scene = None
@@ -266,6 +279,7 @@ class DecisionEngine:
         self.selector.reset()
         self._car_xf.clear()
         self._car_zf.clear()
+        self._coin_t_mem.clear()
         self._conserve_t = 0.0
         self._ok_t = 0.0
         self._abort_next = DecisionState.CRUISE
@@ -405,11 +419,25 @@ class DecisionEngine:
             s = self.scorer.score(g, obs)
             if s is None:
                 continue                        # 置信地板（质量门语义一致）
+            t_raw = s.t_miss_s
+            if not math.isfinite(t_raw):
+                continue
+            # 同组时间单调：组里换了更远的一枚时 t 会突增，计划会在
+            # 1.5s/3.0s 之间反复进出视界。沿用旧时间并按经过时间前移。
+            mem = self._coin_t_mem.get(g.group_id)
+            t_raw = _monotonic_coin_t(
+                mem, t_raw, self._age_ms(mem[1]) / 1000.0 if mem else 0.0,
+                self.cfg.motion.coin_time_jump_tol_s)
+            self._coin_t_mem[g.group_id] = (t_raw, obs.frame_id)
             coins.append(CoinSource(
                 x_m=(g.x_center + executed_lane) * lane_w,
                 observed_count=g.observed_count, conf=g.conf_min,
-                t_miss_s=s.t_miss_s,
+                t_miss_s=t_raw,
                 age_ms=self._age_ms(g.lead_fid or g.last_seen_fid)))
+        # 记忆只保留最近 1.5s 出现过的组
+        for gid in [k for k, (_, f) in self._coin_t_mem.items()
+                    if self._age_ms(f) > 1500.0]:
+            self._coin_t_mem.pop(gid, None)
         return coins
 
     def _bonus_sources(self, obs: WorldObservation,
@@ -492,13 +520,26 @@ class DecisionEngine:
 
         ax = self.cfg.traffic.metric_x_ema_alpha
         az = self.cfg.traffic.metric_z_ema_alpha
+        near_cy = self.cal.v_ego - self.cfg.motion.near_cy_margin_px
+
+        def _near(v, z: float | None) -> bool:
+            """纵向近：有纵深看 z，无纵深看原始行号（远车 cy≈330 不再算近）。"""
+            if z is not None:
+                return z <= self.cfg.motion.near_z_m
+            return v is not None and v.cy >= near_cy
+
+        def _half_w(v) -> float | None:
+            w = getattr(v, "w_m", None) if v is not None else None
+            return None if not w or w <= 0 else w / 2.0
 
         def enter(x: float | None, tm: float | None,
                   t_ov: float | None = None,
                   bridged: bool = False,
                   z_m: float | None = None,
                   age_ms: float = 0.0, src: str = "pixel",
-                  tid: int | None = None) -> None:
+                  tid: int | None = None,
+                  near: bool = False,
+                  half_w_m: float | None = None) -> None:
             if x is None or x != x:
                 return
             # 平滑在道路帧（x+off）：自车横移由 off 抵消，目标自身的慢横移
@@ -550,7 +591,8 @@ class DecisionEngine:
             seen.add(m.target_id)
             enter(x, tm, t_ov, bridged=bridged, z_m=m.z_m,
                   age_ms=(m.anchor_age_ms or 0.0), src="metric",
-                  tid=m.target_id)
+                  tid=m.target_id, near=_near(v, m.z_m),
+                  half_w_m=_half_w(v))
         for vid, v in by_id.items():
             if vid in seen or v.cy >= self.cal.v_ego:
                 continue                        # 米制路径已入账，不双计
@@ -566,7 +608,8 @@ class DecisionEngine:
             else:
                 age_ms = 0.0
             enter(None if x is None else x * lane_w, tm,
-                  age_ms=age_ms, tid=vid)
+                  age_ms=age_ms, tid=vid, near=_near(v, None),
+                  half_w_m=_half_w(v))
         for k in [k for k in self._car_xf if k not in seen]:
             self._car_xf.pop(k, None)
             self._car_zf.pop(k, None)

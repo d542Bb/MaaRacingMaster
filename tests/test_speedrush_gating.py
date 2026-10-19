@@ -479,7 +479,9 @@ def test_straight_mode_full_run(env, monkeypatch, tmp_path) -> None:
     assert mod._hud is None  # 退出后释放引用（_state.hud_recording 不许悬挂为真）
     assert len(created) == 1
     assert created[0] == tmp_path / "hud"  # hud 落 run_dir 子目录（布局收口）
-    assert pad.updates >= 3 and all(t == 255 for t in pad.trig)
+    expected = sr.load_decision().planner.throttle_raw
+    assert 0 < expected < 255
+    assert pad.updates >= 3 and all(t == expected for t in pad.trig)
     assert all(j == (0, 0) for j in pad.joy)
     # trace：STRAIGHT 行落盘（run_dir=tmp_path，文件名协议不变）
     files = list(tmp_path.glob("trace_20261003_190000_p1.jsonl"))

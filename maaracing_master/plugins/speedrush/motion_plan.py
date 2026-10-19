@@ -13,7 +13,7 @@ from maaracing_master.plugins.speedrush.planner import step
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, RoadBand, RoadFrame)
 
-SCENE_SCHEMA = 2
+SCENE_SCHEMA = 3
 PLAN_SCHEMA = 1
 
 
@@ -27,6 +27,13 @@ class SceneObj:
     age_ms: float = 0.0           # 最后观测年龄（只用于有效性与 sigma）
     src: str = ""                 # metric / pixel / far / group
     z_m: float | None = None
+    # 有效域：缺失值不能和精确值同权消费。
+    timed: bool = True            # 有到站时间（车：t 非 None）
+    depth: bool = False           # 有纵深（只有车可能为 true）
+    in_corridor: bool = True      # 横位在走廊内（越界值不可用于命中）
+    near: bool = False            # 纵向近（t=None 车当障碍的唯一许可）
+    half_w_m: float | None = None  # 车半宽（米，来自跟踪宽度；None=回退标称）
+    coarse: bool = False          # 粗源（奖励车远场夹边值等）
 
 
 @dataclass(frozen=True)
@@ -83,7 +90,10 @@ class Scene:
                       None if o.t_arrive_s is None else round(o.t_arrive_s, 3),
                       round(o.count, 1), round(o.sigma_m, 3),
                       round(o.age_ms, 1), o.src,
-                      None if o.z_m is None else round(o.z_m, 2)]
+                      None if o.z_m is None else round(o.z_m, 2),
+                      o.timed, o.depth, o.in_corridor, o.near,
+                      None if o.half_w_m is None else round(o.half_w_m, 3),
+                      o.coarse]
                      for o in self.objs],
         }
 
@@ -117,6 +127,20 @@ def shift_scene(scene: Scene, shift_m: float) -> Scene:
         objs=tuple(replace(o, x_m=o.x_m + shift_m) for o in scene.objs))
 
 
+def _in_corridor(road: RoadFrame, x: float, z_m: float | None) -> bool:
+    """横位是否落在走廊内；无纵深时用当前站路缘。"""
+    left, right = road.left_m, road.right_m
+    if z_m is not None:
+        for b in road.bands:
+            if b.z0 <= z_m <= b.z1 and b.left is not None \
+                    and b.right is not None:
+                left, right = b.left, b.right
+                break
+    if left is None or right is None:
+        return True
+    return left <= x <= right
+
+
 def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
                 rewards: list[BonusSource], cars: list[CarSource],
                 coins: list[CoinSource], executed_lane: float, origin: float,
@@ -143,9 +167,14 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
         t = _aged_t(b.t_miss_s, age)
         if t is not None and t <= 0.0:
             continue                       # 已到站/已过：不再当未来目标
-        objs.append(SceneObj("reward", b.x_m - origin, t, 1.0,
-                             _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
-                             age, getattr(b, "src", "pixel")))
+        x = b.x_m - origin
+        src = getattr(b, "src", "pixel")
+        objs.append(SceneObj(
+            "reward", x, t, 1.0,
+            _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
+            age, src, None, timed=t is not None, depth=False,
+            in_corridor=_in_corridor(road, x, None),
+            coarse=(src == "far")))
     for c in cars:
         age = getattr(c, "age_ms", 0.0) or 0.0
         if age > max_obj_age_s * 1000.0:
@@ -155,9 +184,16 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             center = road.center_at(c.z_m - cam_z_datum_m)
             if center is not None:
                 x -= center
-        objs.append(SceneObj("car", x, c.t_meet_s, 1.0,
-                             _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
-                             age, getattr(c, "src", "pixel"), c.z_m))
+        z_scene = None if c.z_m is None else c.z_m - cam_z_datum_m
+        objs.append(SceneObj(
+            "car", x, c.t_meet_s, 1.0,
+            _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
+            age, getattr(c, "src", "pixel"), c.z_m,
+            timed=c.t_meet_s is not None,
+            depth=c.z_m is not None,
+            in_corridor=_in_corridor(road, x, z_scene),
+            near=bool(getattr(c, "near", False)),
+            half_w_m=getattr(c, "half_w_m", None)))
     for c in coins:
         age = getattr(c, "age_ms", 0.0) or 0.0
         if age > max_obj_age_s * 1000.0:
@@ -165,10 +201,13 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
         t = _aged_t(c.t_miss_s, age)
         if t is not None and t <= 0.0:
             continue
-        objs.append(SceneObj("coin", c.x_m - origin, t,
-                             float(c.observed_count),
-                             _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
-                             age, getattr(c, "src", "group")))
+        x = c.x_m - origin
+        objs.append(SceneObj(
+            "coin", x, t, float(c.observed_count),
+            _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
+            age, getattr(c, "src", "group"), None,
+            timed=t is not None, depth=False,
+            in_corridor=_in_corridor(road, x, None)))
     stale = corridor_age_ms is not None \
         and corridor_age_ms > corridor_age_max_s * 1000.0
     return shift_scene(
@@ -360,6 +399,14 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     ego_half = selection.ego_half_lane * lane_w
     car_half = selection.car_half_lane * lane_w
     graze = motion.graze_gap_lane * lane_w
+    # 大车不作擦边目标（按真实宽度判）；碰撞仍吃它自己的半宽
+    graze_max_w = motion.graze_max_width_m
+
+    def _half(c: SceneObj) -> float:
+        return c.half_w_m if c.half_w_m is not None else car_half
+
+    def _large(c: SceneObj) -> bool:
+        return c.half_w_m is not None and c.half_w_m * 2.0 > graze_max_w
     coin_half = motion.coin_collect_half_lane * lane_w
     reward_half = ego_half + car_half
     center0 = scene.road.center_at(0.0) or 0.0
@@ -393,14 +440,16 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         def clearance(c, t: float) -> float:
             # 0=物理包络相切；负=重叠深度。只用物理包络 + 对象 σ。
             return (abs(_x_at(xs_m, t, dt) - c.x_m)
-                    - (ego_half + car_half + c.sigma_m))
+                    - (ego_half + _half(c) + c.sigma_m))
 
         # 时变车只在到达时刻插值判一次；静态近车取全时域最小间距。
+        # t=None 的车只有在“纵向确实近”时才当障碍（far/无纵深的不再是墙）。
         clears: list[float] = []
         for c in cars:
+            if not c.in_corridor:
+                continue
             if c.t_arrive_s is None:
-                if (c.z_m is not None and c.z_m > motion.near_z_m) \
-                        or abs(c.x_m - scene.ego_x_m) > graze:
+                if not c.near or abs(c.x_m - scene.ego_x_m) > graze:
                     continue
                 clears.append(min((clearance(c, t) for t in ts),
                                   default=float("inf")))
@@ -420,6 +469,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         reward_hits = 0
         reward_hit_ids: set[int] = set()
         for r in rewards:
+            # 越界/无时间/粗源（远场夹边）不作为命中目标
+            if not r.timed or not r.in_corridor or r.coarse:
+                continue
             if r.t_arrive_s is None or r.t_arrive_s > horizon:
                 continue
             xr = _x_at(xs_m, r.t_arrive_s, dt)
@@ -434,19 +486,22 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         for c in cars:
             # 无到站时间的车只当静态障碍，不算“擦车通过”：
             # t=None 的并列车会让 t=0 的初始距离冒充一次超车。
-            if c.t_arrive_s is None:
+            # 越界读数与大车同理：不作擦边目标。
+            if not c.timed or not c.in_corridor or _large(c):
                 continue
             tc = c.t_arrive_s
-            if tc > horizon:
+            if tc is None or tc > horizon:
                 continue
             d = abs(_x_at(xs_m, tc, dt) - c.x_m)
-            if ego_half + car_half + c.sigma_m \
+            if ego_half + _half(c) + c.sigma_m \
                     + motion.collision_margin_m <= d <= graze:
                 pass_count += 1
         pass_value = motion.value_graze * pass_count
         coin_hits, coin_value, coin_error = 0.0, 0.0, 0.0
         coin_hit_ids: set[int] = set()
         for c in coins:
+            if not c.in_corridor:
+                continue
             if c.t_arrive_s is None or c.t_arrive_s > horizon:
                 continue
             xr = _x_at(xs_m, c.t_arrive_s, dt)
@@ -468,15 +523,18 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         if prep_h > 0.0:
             radius = max(motion.preposition_radius_lane * lane_w, 1e-6)
             for r in rewards:
-                if id(r) in reward_hit_ids or r.t_arrive_s is None \
+                if not r.in_corridor or id(r) in reward_hit_ids \
+                        or r.t_arrive_s is None \
                         or not (0.0 < r.t_arrive_s <= prep_h):
                     continue
                 x_ref = _x_at(xs_m, min(r.t_arrive_s, horizon), dt)
                 prox = max(0.0, 1.0 - abs(x_ref - r.x_m) / radius)
                 prep_value += motion.value_reward \
-                    * motion.preposition_discount * prox
+                    * motion.preposition_discount * prox \
+                    * (0.5 if r.coarse else 1.0)   # 粗源位置只配半个权重
             for c in coins:
-                if id(c) in coin_hit_ids or c.t_arrive_s is None \
+                if not c.in_corridor or id(c) in coin_hit_ids \
+                        or c.t_arrive_s is None \
                         or not (0.0 < c.t_arrive_s <= prep_h):
                     continue
                 x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
@@ -487,7 +545,8 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             # 普通车也预置：目标不是车心，而是候选所在侧的擦车距离，
             # 让车提前贴近超车线，而不是等车到眼前才反应。
             for c in cars:
-                if c.t_arrive_s is None \
+                if not c.timed or not c.in_corridor or _large(c) \
+                        or c.t_arrive_s is None \
                         or not (0.0 < c.t_arrive_s <= prep_h):
                     continue
                 x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
