@@ -189,11 +189,11 @@ def test_corridor_all_infeasible_holds_position():
 
 def test_corridor_checked_only_near_term():
     """恒定杆 2s 必然驶出包络；走廊只验前 1s，不能把必要避让判成不可行。"""
-    road = RoadFrame((RoadBand(0.0, 6.0, -3.2, 3.2, src="measured",
-                               age_ms=0.0, conf=1.0),), 6.4, -3.2, 3.2, True)
-    p = _plan(_scene(road=road))
+    road = RoadFrame((RoadBand(0.0, 6.0, -6.0, 6.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 12.0, -6.0, 6.0, True)
+    p = _plan(_scene(road=road, ego_m=0.0))
     assert p.valid
-    assert max(p.cand_x[0]) > 3.2          # 满杆 2s 确实出镜
+    assert max(p.cand_x[5]) > 6.0          # +0.55 杆 2s 确实出镜
 
 
 def test_stale_scene_invalid():
