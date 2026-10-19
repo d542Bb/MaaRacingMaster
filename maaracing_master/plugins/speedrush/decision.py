@@ -570,31 +570,38 @@ class DecisionEngine:
             # 保留；米制 x/z 的逐拍抖动（±1~4m）在这里收敛到擦车带量级以下。
             xr = x + off
             if tid is not None:
+                # 纵深大跳变 = 新锚点/真实通过：x 也必须从新基线重来。
+                # 否则 x 的硬跳变门会把旧的坏横位锁死——一条远锚的 x=-18m
+                # 在近锚 x=-2.7m 到达后仍被“hold”三拍，车被当成 15m 外
+                # （2026-10-19 局 215826_p2 4065 拍）。
+                pz = self._car_zf.get(tid)
+                z_reset = (z_m is not None and z_m == z_m
+                           and (pz is None or abs(z_m - pz) >
+                                self.cfg.traffic.metric_z_jump_max_m))
                 prev = self._car_xf.get(tid)
-                xr = xr if prev is None else prev + ax * (xr - prev)
-                # 硬跳变门：真实横移单拍不可能 >1.5m（20Hz 下 30m/s 横速）；
-                # 先拒，连续 hold_ticks 拍仍在新位置才接受。防止一次锚点
-                # 翻跳把超车净距挪到车身上（2026-10-19 局 212252_p2 绿车）。
-                jmax = self.cfg.traffic.metric_x_jump_max_m
-                hold = self._car_x_hold.get(tid)
-                if hold is not None and jmax > 0.0 \
-                        and abs(xr - hold[0]) > jmax:
-                    n_jump = hold[1] + 1
-                    if n_jump < self.cfg.traffic.metric_x_jump_hold_ticks:
-                        xr = hold[0]
-                        self._car_x_hold[tid] = (hold[0], n_jump)
+                if z_reset:
+                    self._car_xf[tid] = xr
+                    self._car_x_hold[tid] = (xr, 0)
+                else:
+                    xr = xr if prev is None else prev + ax * (xr - prev)
+                    # 硬跳变门：真实横移单拍不可能 >1.5m（20Hz 下 30m/s 横速）；
+                    # 先拒，连续 hold_ticks 拍仍在新位置才接受。
+                    jmax = self.cfg.traffic.metric_x_jump_max_m
+                    hold = self._car_x_hold.get(tid)
+                    if hold is not None and jmax > 0.0 \
+                            and abs(xr - hold[0]) > jmax:
+                        n_jump = hold[1] + 1
+                        if n_jump < self.cfg.traffic.metric_x_jump_hold_ticks:
+                            xr = hold[0]
+                            self._car_x_hold[tid] = (hold[0], n_jump)
+                        else:
+                            self._car_x_hold[tid] = (xr, 0)
                     else:
                         self._car_x_hold[tid] = (xr, 0)
-                else:
-                    self._car_x_hold[tid] = (xr, 0)
-                self._car_xf[tid] = xr
+                    self._car_xf[tid] = xr
                 if z_m is not None and z_m == z_m:
-                    pz = self._car_zf.get(tid)
                     # 大跳变=真实通过/换锚，直接重置；只有小抖动才走 EMA。
-                    # 固定 EMA 会把并列车（真实 z 5m）拖成 13m 前方，超车
-                    # 几何按错误纵深算（2026-10-19 局 214717_p1 出租车侧碰）。
-                    if pz is None or abs(z_m - pz) > \
-                            self.cfg.traffic.metric_z_jump_max_m:
+                    if z_reset:
                         self._car_zf[tid] = z_m
                     else:
                         z_m = pz + az * (z_m - pz)

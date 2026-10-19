@@ -590,3 +590,24 @@ def test_metric_z_large_jump_resets_instead_of_lagging():
                    traffic=((v,), ()))
     car = next(o for o in eng.scene.objs if o.kind == "car")
     assert car.z_m == pytest.approx(5.4, abs=0.2)
+
+
+def test_metric_z_reset_also_unlocks_bad_x_hold():
+    """新近锚点到达时 x 必须从新基线重来，不能被旧远锚的 x 硬跳变门锁死。"""
+    eng = DecisionEngine(CFG)
+    view = CarView(id=9, x_lane=0.3, cy=500, rel_approach=5.0, d_min=0.3,
+                   age_ticks=1, last_seen_fid=1)
+    far = MetricCarState(target_id=9, source=DistanceSource.ANCHOR,
+                         z_m=20.0, x_m=-18.0, v_close_mps=None,
+                         t_meet_s=None, anchor_age_ms=0.0)
+    eng.update(_obs(1, metric_cars=(far,)), 0.05, executed_lane=0.0,
+               corridor=_corridor(fid=1, last_fid=1),
+               traffic=((view,), ()))
+    near = replace(far, z_m=3.3, x_m=-2.6)
+    for fid in (2, 3):
+        v = replace(view, last_seen_fid=fid)
+        eng.update(_obs(fid, metric_cars=(near,)), 0.05, executed_lane=0.0,
+                   corridor=_corridor(fid=fid, last_fid=fid),
+                   traffic=((v,), ()))
+    car = next(o for o in eng.scene.objs if o.kind == "car")
+    assert -5.0 < car.x_m < 0.0
