@@ -397,7 +397,11 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 reward_value += max(0.0, tol - abs(xr - r.x_m))
         pass_count, pass_value = 0, 0.0
         for c in cars:
-            tc = 0.0 if c.t_arrive_s is None else c.t_arrive_s
+            # 无到站时间的车只当静态障碍（碰撞硬约束），不算“擦车通过”：
+            # t=None 的并列车会让 t=0 的初始距离冒充一次超车。
+            if c.t_arrive_s is None:
+                continue
+            tc = c.t_arrive_s
             if tc > horizon:
                 continue
             d = abs(_x_at(xs_m, tc, dt) - c.x_m)

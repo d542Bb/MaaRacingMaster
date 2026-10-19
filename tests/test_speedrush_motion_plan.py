@@ -253,6 +253,13 @@ def test_graze_layer_reachable_with_physical_envelope():
     assert p.score_key[3] < 0             # -pass_count
 
 
+def test_static_car_not_counted_as_pass():
+    """t=None 车只当静态障碍，不得用 t=0 初始距离冒充擦车通过。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
+                     cars=[CarSource(2.2, None, z_m=2.0, age_ms=0.0)]))
+    assert p.valid and p.layer == 4
+
+
 def test_imminent_car_skipped_by_reaction_time():
     """反应时内到站的车横向已来不及，不得把全部候选判成碰撞不可行。"""
     p = _plan(_scene(road=_wide_road(),

@@ -117,6 +117,7 @@ def main() -> None:
         rec = r.get("plan")
         if rec is not None:
             same = (p.valid == rec["valid"]
+                    and p.layer == rec.get("layer", p.layer)
                     and abs(p.x_preview_m - rec["x"]) <= 1e-3
                     and abs(p.u_feedforward - rec["u"]) <= 1e-3)
             n_ok_cmp += int(same)
