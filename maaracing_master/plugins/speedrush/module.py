@@ -788,8 +788,8 @@ class SpeedRushModule(ActivityModule):
                     "gate": PlanGate(cfg.motion.switch_margin,
                                      cfg.motion.switch_dwell_s,
                                      cfg.motion.score_epsilon,
-                                     cfg.motion.switch_geom_margin),
-                    "plan_bad": 0,
+                                     cfg.motion.switch_geom_margin,
+                                     cfg.motion.switch_immediate_margin),
                     "last_plan": None,
                     "last_plan_ego": None,
                 # raw/hud 调试图落盘器（3fps；debug 开关闸，测试 ctx=None → None →
@@ -904,15 +904,7 @@ class SpeedRushModule(ActivityModule):
                     chain["engine"].scene, plan_ego,
                     cfg.motion, cfg.selection, cfg.planner, chain["gate"])
                 chain["last_plan_ego"] = plan_ego
-                if cfg.motion.mode == "live" and not plan.valid:
-                    chain["plan_bad"] += 1
-                    if chain["plan_bad"] >= cfg.motion.infeasible_conserve_ticks:
-                        chain["engine"].request_conserve("plan_infeasible")
-                        chain["plan_bad"] = 0
-                else:
-                    chain["plan_bad"] = 0
             else:
-                chain["plan_bad"] = 0
                 chain["last_plan_ego"] = None
             chain["last_plan"] = plan
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带

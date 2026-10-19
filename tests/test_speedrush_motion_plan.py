@@ -338,6 +338,12 @@ def test_gate_requires_value_margin_and_dwell():
     assert g2.choose([cur], 0.05).idx == 6
     assert g2.choose([near, cur], 0.05).idx == 6
     assert g2.choose([near, cur], 0.05).idx == 7
+    # 大价值差（避撞/高值窗口）首拍立即切
+    g3 = PlanGate(switch_margin=15.0, dwell_s=0.1, epsilon=1e-3,
+                  geom_margin=0.03, immediate_margin=100.0)
+    bad, good = _c(8, -200.0), _c(9, 0.0)
+    assert g3.choose([bad], 0.05).idx == 8
+    assert g3.choose([good, bad], 0.05).idx == 9
 
 
 def test_planner_tracks_valid_plan_only():

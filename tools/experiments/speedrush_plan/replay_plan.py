@@ -63,7 +63,8 @@ def main() -> None:
     args = ap.parse_args()
     cfg = load_decision()
     gate = PlanGate(cfg.motion.switch_margin, cfg.motion.switch_dwell_s,
-                    cfg.motion.score_epsilon, cfg.motion.switch_geom_margin)
+                    cfg.motion.score_epsilon, cfg.motion.switch_geom_margin,
+                    cfg.motion.switch_immediate_margin)
     rows = load_rows(args.trace)
     layers = Counter()
     reasons = Counter()

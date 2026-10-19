@@ -250,10 +250,10 @@ class Motion:
     sigma_ego_rate_mps: float = 0.0  # fit_plant 标定
     sigma_ego_max_m: float = 1.2     # 超此缩短时域
     switch_margin: float = 15.0      # 价值差门槛（分）
+    switch_immediate_margin: float = 100.0  # 大价值差（避撞/高值）立即切
     switch_geom_margin: float = 0.03  # 同价值时中心/动作改善门槛（道）
     switch_dwell_s: float = 0.2
     score_epsilon: float = 1e-3
-    infeasible_conserve_ticks: int = 3
     calibrated: bool = False         # 标定通过才允许 live
 
 
@@ -575,14 +575,14 @@ def _read_decision(path: Path) -> DecisionConfig:
             sigma_ego_max_m=_num_def(
                 d, "motion", "sigma_ego_max_m", 1.2, lo=0),
             switch_margin=_num_def(d, "motion", "switch_margin", 15.0, lo=0),
+            switch_immediate_margin=_num_def(
+                d, "motion", "switch_immediate_margin", 100.0, lo=0),
             switch_geom_margin=_num_def(
                 d, "motion", "switch_geom_margin", 0.03, lo=0),
             switch_dwell_s=_num_def(
                 d, "motion", "switch_dwell_s", 0.2, lo=0),
             score_epsilon=_num_def(
                 d, "motion", "score_epsilon", 1e-3, lo=0),
-            infeasible_conserve_ticks=_int_def(
-                d, "motion", "infeasible_conserve_ticks", 3, lo=1),
             calibrated=_bool(d, "motion", "calibrated", default=False)),
         grid_xcheck=GridXcheck(
             mode=_str_def(d, "grid_xcheck", "mode", "off",

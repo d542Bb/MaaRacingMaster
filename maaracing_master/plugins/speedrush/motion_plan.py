@@ -261,8 +261,10 @@ class PlanGate:
     """候选时稳：价值差超 margin 且保持 dwell 才换，防逐拍翻面。"""
 
     def __init__(self, switch_margin: float, dwell_s: float,
-                 epsilon: float, geom_margin: float = 0.03):
+                 epsilon: float, geom_margin: float = 0.03,
+                 immediate_margin: float = 100.0):
         self.margin = switch_margin
+        self.immediate = immediate_margin
         self.geom_margin = geom_margin
         self.dwell = dwell_s
         self.eps = max(epsilon, 1e-9)
@@ -299,6 +301,11 @@ class PlanGate:
             self._idx, self._key, self._streak = best.idx, self._q(best.key), 0.0
             return best
         kb, ki = self._q(best.key), self._q(inc.key)
+        # 大价值差（避开一次碰撞/抓住高值窗口）不等 dwell——检测常有一拍
+        # 闪烁，等 0.2s 会错过避撞窗口。
+        if kb[1] < ki[1] - self.immediate:
+            self._idx, self._key, self._streak = best.idx, kb, 0.0
+            return best
         better = False
         if kb[1] < ki[1] - self.margin:
             better = True                       # 价值显著更高

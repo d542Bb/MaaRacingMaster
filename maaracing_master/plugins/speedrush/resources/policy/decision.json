@@ -122,10 +122,10 @@
     "sigma_ego_rate_mps": 0.742,
     "sigma_ego_max_m": 2.5,
     "switch_margin": 15.0,
+    "switch_immediate_margin": 100.0,
     "switch_geom_margin": 0.03,
     "switch_dwell_s": 0.2,
     "score_epsilon": 0.001,
-    "infeasible_conserve_ticks": 3,
     "calibrated": true,
     "_note": "mode=off 只组装场景快照；shadow=计划照算不接管；live 需 calibrated=true。sigma_ego 来自 fit_plant（4 段 trace，σ0=0.67m、rate=0.74m/s，多步残差同批起点）；sigma_ego_max=2.5m 是离线对照结果——收到 1.2m 会把时域截到 0.7s、金币/奖励层几乎清零。σ 只用于缩短时域；碰撞硬约束与命中/擦车判据只用物理包络 + 对象 σ。评估器已从四层字典序改为价值相加（RULES §4.2/§4.11）：擦车 120/辆走量、金币按组 90（空中组观测≥4 枚按 120）、奖励车 240/次（偶发，不再无条件优先）、普通车碰撞按 60 + 重叠深度 120/m 扣分——碰撞可接受但不鼓励频繁/无意义碰撞；只有走廊/墙仍是硬约束。collision_min_lead_s 内的车不计碰撞成本（横向已来不及）。参考系分歧时走廊加宽上限 uncertain_widen_max_m。"
   },
