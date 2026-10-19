@@ -19,6 +19,7 @@ import json
 import sys
 import time
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -69,18 +70,37 @@ def main() -> None:
     prev_x = None
     churn = 0
     times = []
+    prev = None
+    last_gate = None
     for r in rows:
         if r.get("state") != "CRUISE" or r.get("scene") is None:
+            prev = r
             continue
         scene = scene_of(r["scene"])
         if not scene:
+            prev = r
             continue
+        # stale 用当前配置重算（录制时的阈值可能已改）
+        ca = scene.corridor_age_ms
+        scene = replace(scene, stale=ca is not None
+                        and ca > cfg.motion.corridor_age_max_s * 1000.0)
         n_scene += 1
-        ego = EgoState(float(r["executed_lane"]), float(r["v_lat_est"]),
-                       float(r["steer_norm"]))
+        if last_gate is not None:
+            gate.restore(*last_gate)
+        if r.get("plan_ego") is not None:
+            ego = EgoState(*r["plan_ego"])
+        else:
+            src = prev if prev is not None else r
+            ego = EgoState(float(src["executed_lane"]),
+                           float(src["v_lat_est"]),
+                           float(src["steer_norm"]))
         t0 = time.perf_counter()
         p = plan_motion(scene, ego, cfg.motion, cfg.selection, cfg.planner, gate)
         times.append((time.perf_counter() - t0) * 1000.0)
+        if r.get("plan_gate") is not None:
+            last_gate = tuple(r["plan_gate"])
+        else:
+            last_gate = gate.snapshot()
         n_valid += int(p.valid)
         layers[p.layer] += 1
         reasons[p.reason] += 1
@@ -94,6 +114,7 @@ def main() -> None:
         if prev_x is not None and abs(p.x_preview_m - prev_x) > 0.2:
             churn += 1
         prev_x = p.x_preview_m
+        prev = r
     dur = (rows[-1]["ts_ns"] - rows[0]["ts_ns"]) / 1e9 if rows else 0.0
     times.sort()
     summary = {

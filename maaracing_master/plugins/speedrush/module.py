@@ -790,6 +790,7 @@ class SpeedRushModule(ActivityModule):
                                      cfg.motion.score_epsilon),
                     "plan_bad": 0,
                     "last_plan": None,
+                    "last_plan_ego": None,
                 # raw/hud 调试图落盘器（3fps；debug 开关闸，测试 ctx=None → None →
                 # tick 空转）。生命周期=chain，finally 收口。
                 "debug": DebugPairWriter(run_dir, cal=cal) if dbg_on else None,
@@ -895,12 +896,13 @@ class SpeedRushModule(ActivityModule):
             plan = None
             if cfg.motion.mode != "off" and chain["engine"].scene is not None \
                     and out.state is DecisionState.CRUISE:
+                plan_ego = EgoState(planner.state.executed_lane,
+                                    planner.state.v_lat_est,
+                                    planner.state.steer_norm)
                 plan = plan_motion(
-                    chain["engine"].scene,
-                    EgoState(planner.state.executed_lane,
-                             planner.state.v_lat_est,
-                             planner.state.steer_norm),
+                    chain["engine"].scene, plan_ego,
                     cfg.motion, cfg.selection, cfg.planner, chain["gate"])
+                chain["last_plan_ego"] = plan_ego
                 if cfg.motion.mode == "live" and not plan.valid:
                     chain["plan_bad"] += 1
                     if chain["plan_bad"] >= cfg.motion.infeasible_conserve_ticks:
@@ -910,6 +912,7 @@ class SpeedRushModule(ActivityModule):
                     chain["plan_bad"] = 0
             else:
                 chain["plan_bad"] = 0
+                chain["last_plan_ego"] = None
             chain["last_plan"] = plan
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
@@ -1000,6 +1003,13 @@ class SpeedRushModule(ActivityModule):
             "scene": None if eng.scene is None else eng.scene.as_trace(),
             # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选
             "plan": None if plan is None else plan.as_trace(),
+            # 计划输入状态（本拍 planner.update 前）与 gate 状态（离线逐位重放）
+            "plan_ego": None if plan is None else [
+                round(chain["last_plan_ego"].x_lane, 6),
+                round(chain["last_plan_ego"].v_lane_s, 6),
+                round(chain["last_plan_ego"].steer_norm, 6)],
+            "plan_gate": None if plan is None else list(
+                chain["gate"].snapshot()),
             # 墙线拟合段：side,z0,z1,a(道),b；录制局用来核对方程是否锁对墙
             "wlc_seg": None if wlc is None else [
                 [side, round(s.z0, 2), round(s.z1, 2),

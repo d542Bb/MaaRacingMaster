@@ -244,6 +244,12 @@ class PlanGate:
             return 1.0
         return 0.0
 
+    def snapshot(self) -> tuple[int | None, float]:
+        return self._idx, self._streak
+
+    def restore(self, idx: int | None, streak: float) -> None:
+        self._idx, self._streak, self._key = idx, float(streak), None
+
     def choose(self, cands: list[_Cand], dt: float) -> _Cand:
         best = cands[0]
         inc = next((c for c in cands if c.idx == self._idx and c.feasible),
@@ -335,7 +341,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             return d
 
         corridor_ok = env is None or all(
-            env[0] <= xx <= env[1] for xx in xs_m)
+            env[0] <= xx <= env[1]
+            for xx, tt in zip(xs_m, ts)
+            if tt <= motion.corridor_check_s + 1e-9)
         min_clear = min((solve_clear(t) for t in ts), default=float("inf"))
         feasible = corridor_ok and min_clear >= 0.0
 
@@ -402,7 +410,10 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     else:
         valid = False
         corridor_all_bad = env is not None and not any(
-            all(env[0] <= xx <= env[1] for xx in c.xs_m) for c in cands)
+            all(env[0] <= xx <= env[1]
+                for xx, tt in zip(c.xs_m, ts)
+                if tt <= motion.corridor_check_s + 1e-9)
+            for c in cands)
         if corridor_all_bad:
             chosen = min(cands, key=lambda c: abs(c.x_preview_m - scene.ego_x_m))
             reason = "plan:infeasible_corridor"

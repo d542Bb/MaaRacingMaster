@@ -211,11 +211,14 @@ class Motion:
     steer_levels: tuple[float, ...] = (-0.85, -0.55, -0.3, 0.0,
                                        0.3, 0.55, 0.85)
     near_z_m: float = 6.0
+    # 走廊约束只验前 1.0s：恒定杆 2s 必然驶出近场包络，硬验全程会把必要的
+    # 避让判成不可行（影子实测 p2 8% 全灭假象）
+    corridor_check_s: float = 1.0
     collision_margin_m: float = 0.2
     graze_gap_lane: float = 0.65
     coin_collect_half_lane: float = 0.35
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
-    corridor_age_max_s: float = 0.25  # 走廊超龄标 stale
+    corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
     sigma_obj0_m: float = 0.15       # 对象横向不确定度基值
     sigma_obj_rate_mps: float = 0.6  # 随年龄增长
@@ -498,6 +501,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "steer_levels",
                 (-0.85, -0.55, -0.3, 0.0, 0.3, 0.55, 0.85)),
             near_z_m=_num_def(d, "motion", "near_z_m", 6.0, lo=0),
+            corridor_check_s=_num_def(
+                d, "motion", "corridor_check_s", 1.0, lo=0),
             collision_margin_m=_num_def(
                 d, "motion", "collision_margin_m", 0.2, lo=0),
             graze_gap_lane=_num_def(
@@ -645,6 +650,10 @@ def _read_decision(path: Path) -> DecisionConfig:
     if m.preview_s >= m.horizon_s:
         raise ValueError(
             f"[motion] preview_s={m.preview_s} 必须 < horizon_s={m.horizon_s}")
+    if m.corridor_check_s > m.horizon_s:
+        raise ValueError(
+            f"[motion] corridor_check_s={m.corridor_check_s} 不得 > "
+            f"horizon_s={m.horizon_s}")
     if m.dt_s <= 0.0:
         raise ValueError(f"[motion] dt_s={m.dt_s} 需 >0")
     if m.mode == "live" and not m.calibrated:

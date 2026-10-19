@@ -161,40 +161,49 @@ def rmse(pairs, p, use_raw, cfg):
     return float(np.sqrt(np.mean(xr * xr)))
 
 
-def sigma_ego(rows, p, use_raw):
-    """多步开环残差（起点=新鲜路心观测），按 horizon 给 σ(t)。"""
+def sigma_ego(series, p, use_raw):
+    """多步开环残差：所有 horizon 用同一批起点（起点与每个终点都必须新鲜）。"""
+    H = max(HORIZONS)
     xs, ys = [], []
     for h in HORIZONS:
         rr, ts = [], []
-        for i in range(0, len(rows) - h, 3):
-            r0 = rows[i]
-            if not _fresh(r0) or not _finite(r0.get("road_offset")):
-                continue
-            x, v = float(r0["road_offset"]), float(r0["v_lat_est"])
-            ok = True
-            t = 0.0
-            for k in range(1, h + 1):
-                r = rows[i + k]
-                u = r.get("steer_raw") if use_raw else r["steer_norm"]
-                if u is None:
-                    ok = False
-                    break
-                t += float(r["dt"])
-                x, v = _next_state(x, v, float(rows[i + k - 1]["steer_norm"]),
-                                   float(u), float(r["dt"]), p, use_raw)
-            if not ok or not _fresh(rows[i + h]) or not _finite(
-                    rows[i + h].get("road_offset")):
-                continue
-            rr.append(x - float(rows[i + h]["road_offset"]))
-            ts.append(t)
-        if rr:
+        for rows in series:
+            for i in range(0, len(rows) - H, 3):
+                r0 = rows[i]
+                if not _fresh(r0) or not _finite(r0.get("road_offset")):
+                    continue
+                if not all(_fresh(rows[i + k])
+                           and _finite(rows[i + k].get("road_offset"))
+                           for k in HORIZONS):
+                    continue
+                x, v = float(r0["road_offset"]), float(r0["v_lat_est"])
+                t, ok = 0.0, True
+                for k in range(1, h + 1):
+                    r = rows[i + k]
+                    u = r.get("steer_raw") if use_raw else r["steer_norm"]
+                    if u is None:
+                        ok = False
+                        break
+                    t += float(r["dt"])
+                    x, v = _next_state(
+                        x, v, float(rows[i + k - 1]["steer_norm"]),
+                        float(u), float(r["dt"]), p, use_raw)
+                if not ok:
+                    continue
+                rr.append(x - float(rows[i + h]["road_offset"]))
+                ts.append(t)
+        if len(rr) >= 10:
             xs.append(float(np.mean(ts)))
             ys.append(float(np.sqrt(np.mean(np.square(rr)))))
     if len(xs) < 2:
-        return {"sigma_ego0_m": None, "sigma_ego_rate_mps": None}
+        return {"sigma_ego0_m": None, "sigma_ego_rate_mps": None,
+                "sigma_ego_samples": 0}
     rate, base = np.polyfit(xs, ys, 1)
+    if rate < 0.0:
+        rate, base = 0.0, max(ys)
     return {"sigma_ego0_m": float(max(base, 0.0)),
-            "sigma_ego_rate_mps": float(max(rate, 0.0)),
+            "sigma_ego_rate_mps": float(rate),
+            "sigma_ego_samples": len(xs),
             "residual_rms_by_horizon": [
                 {"t_s": round(t, 3), "sigma_lane": round(s, 4)}
                 for t, s in zip(xs, ys)]}
@@ -264,7 +273,7 @@ def main() -> None:
         "params": p, "ci95": ci, "at_bound": at_bound,
         "train_rmse_lane": train, "test_rmse_lane": test,
     })
-    sg = sigma_ego(series[0], p, use_raw)
+    sg = sigma_ego(series, p, use_raw)
     sg["sigma_ego0_m"] = None if sg["sigma_ego0_m"] is None \
         else sg["sigma_ego0_m"] * cal.lane_w_m
     sg["sigma_ego_rate_mps"] = None if sg["sigma_ego_rate_mps"] is None \

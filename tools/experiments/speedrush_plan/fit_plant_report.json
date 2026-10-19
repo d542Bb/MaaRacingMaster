@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "sessions": 4,
+  "pairs": 2978,
+  "events": 39,
+  "input": "steer_raw",
+  "initial": {
+    "a_lat_gain": 6.0,
+    "tau_align_s": 0.5,
+    "v_lat_max": 2.5,
+    "tau_steer_s": 0.1
+  },
+  "calibrated": true,
+  "reasons": [],
+  "params": {
+    "a_lat_gain": 5.989519017228977,
+    "tau_align_s": 0.4977101264485274,
+    "v_lat_max": 2.5,
+    "tau_steer_s": 0.1007364886659617
+  },
+  "ci95": {
+    "a_lat_gain": [
+      5.5945492558051715,
+      6.384488778652782
+    ],
+    "tau_align_s": [
+      0.45357909635255145,
+      0.5418411565445034
+    ],
+    "v_lat_max": [
+      2.5,
+      2.5
+    ],
+    "tau_steer_s": [
+      0.08113319235167185,
+      0.12033978498025155
+    ]
+  },
+  "at_bound": {
+    "a_lat_gain": false,
+    "tau_align_s": false,
+    "v_lat_max": false,
+    "tau_steer_s": false
+  },
+  "train_rmse_lane": 0.06786121780323644,
+  "test_rmse_lane": 0.06790381342045218,
+  "sigma_ego": {
+    "sigma_ego0_m": 0.6691918146930845,
+    "sigma_ego_rate_mps": 0.7424193509062156,
+    "sigma_ego_samples": 4,
+    "residual_rms_by_horizon": [
+      {
+        "t_s": 0.267,
+        "sigma_lane": 0.2781
+      },
+      {
+        "t_s": 0.532,
+        "sigma_lane": 0.3067
+      },
+      {
+        "t_s": 1.065,
+        "sigma_lane": 0.4063
+      },
+      {
+        "t_s": 2.12,
+        "sigma_lane": 0.676
+      }
+    ]
+  }
+}

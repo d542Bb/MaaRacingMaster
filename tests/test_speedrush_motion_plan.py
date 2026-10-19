@@ -187,6 +187,15 @@ def test_corridor_all_infeasible_holds_position():
     assert not p.valid and p.reason == "plan:infeasible_corridor"
 
 
+def test_corridor_checked_only_near_term():
+    """恒定杆 2s 必然驶出包络；走廊只验前 1s，不能把必要避让判成不可行。"""
+    road = RoadFrame((RoadBand(0.0, 6.0, -3.2, 3.2, src="measured",
+                               age_ms=0.0, conf=1.0),), 6.4, -3.2, 3.2, True)
+    p = _plan(_scene(road=road))
+    assert p.valid
+    assert max(p.cand_x[0]) > 3.2          # 满杆 2s 确实出镜
+
+
 def test_stale_scene_invalid():
     p = _plan(_scene(road=_wide_road(), corridor_age_ms=999.0))
     assert not p.valid and p.reason == "plan:stale"
