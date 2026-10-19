@@ -197,6 +197,9 @@ class Traffic:
     # 连续 hold_ticks 拍同向才接受——防止一次深度跳变把超车净距挪到车身上。
     metric_x_jump_max_m: float = 1.5
     metric_x_jump_hold_ticks: int = 3
+    # 米制纵深跳变门：超过此值视为真实通过/换锚，直接重置；小抖动才走 EMA。
+    # 70m/s 通过时 0.05s 真实变化可达 3.5m，旧 EMA 会把并列车拖成 13m 前方。
+    metric_z_jump_max_m: float = 6.0
 
 
 @dataclass(frozen=True)
@@ -551,7 +554,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             metric_x_jump_max_m=_num_def(
                 d, "traffic", "metric_x_jump_max_m", 1.5, lo=0),
             metric_x_jump_hold_ticks=_int_def(
-                d, "traffic", "metric_x_jump_hold_ticks", 3, lo=1)),
+                d, "traffic", "metric_x_jump_hold_ticks", 3, lo=1),
+            metric_z_jump_max_m=_num_def(
+                d, "traffic", "metric_z_jump_max_m", 6.0, lo=0)),
         motion=Motion(
             mode=_str_def(d, "motion", "mode", "off",
                           ("off", "shadow", "live")),

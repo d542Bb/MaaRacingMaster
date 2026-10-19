@@ -590,8 +590,15 @@ class DecisionEngine:
                 self._car_xf[tid] = xr
                 if z_m is not None and z_m == z_m:
                     pz = self._car_zf.get(tid)
-                    z_m = z_m if pz is None else pz + az * (z_m - pz)
-                    self._car_zf[tid] = z_m
+                    # 大跳变=真实通过/换锚，直接重置；只有小抖动才走 EMA。
+                    # 固定 EMA 会把并列车（真实 z 5m）拖成 13m 前方，超车
+                    # 几何按错误纵深算（2026-10-19 局 214717_p1 出租车侧碰）。
+                    if pz is None or abs(z_m - pz) > \
+                            self.cfg.traffic.metric_z_jump_max_m:
+                        self._car_zf[tid] = z_m
+                    else:
+                        z_m = pz + az * (z_m - pz)
+                        self._car_zf[tid] = z_m
             out.append(CarSource(x_m=xr, t_meet_s=tm,
                                  t_overtake_s=t_ov, bridged=bridged,
                                  z_m=z_m, age_ms=age_ms, src=src))

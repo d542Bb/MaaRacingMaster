@@ -154,6 +154,7 @@
     "metric_z_ema_alpha": 0.5,
     "metric_x_jump_max_m": 1.5,
     "metric_x_jump_hold_ticks": 3,
+    "metric_z_jump_max_m": 6.0,
     "_note_metric_ema": "决策边界对车米制 x/z 做时间平滑（道路帧 x，自车横移由 executed 抵消）。20261019_184758_p2 实测同车逐拍 x 跳 ±1~1.5m、z 跳 ±4m，与 0.5m 擦车带同量级——规划器在追测量噪声，满舵左-右回摆并侧碰。α 越大越跟手、越小越稳；跟踪层语义不变（v_close/锚点仍吃原始 z）。"
   },
   "grid_xcheck": {

@@ -569,3 +569,24 @@ def test_plan_never_overrides_fsm_states():
         a.update(out, 0.05, 1, plan=huge)
         b.update(out, 0.05, 1)
         assert a.last_steer_raw == pytest.approx(b.last_steer_raw)
+
+
+def test_metric_z_large_jump_resets_instead_of_lagging():
+    """并列车真实纵深 21m→5m 是快速通过，不是抖动；固定 EMA 会拖成 13m。"""
+    eng = DecisionEngine(CFG)
+    view = CarView(id=8, x_lane=0.3, cy=500, rel_approach=5.0, d_min=0.3,
+                   age_ticks=1, last_seen_fid=1)
+    m = MetricCarState(target_id=8, source=DistanceSource.ANCHOR,
+                       z_m=21.3, x_m=2.0, v_close_mps=None, t_meet_s=None,
+                       anchor_age_ms=0.0)
+    eng.update(_obs(1, metric_cars=(m,)), 0.05, executed_lane=0.0,
+               corridor=_corridor(fid=1, last_fid=1),
+               traffic=((view,), ()))
+    for fid in (2, 3):
+        v = replace(view, last_seen_fid=fid)
+        eng.update(_obs(fid, metric_cars=(replace(m, z_m=5.4),)), 0.05,
+                   executed_lane=0.0,
+                   corridor=_corridor(fid=fid, last_fid=fid),
+                   traffic=((v,), ()))
+    car = next(o for o in eng.scene.objs if o.kind == "car")
+    assert car.z_m == pytest.approx(5.4, abs=0.2)
