@@ -33,13 +33,16 @@ CFG = _read_decision(
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
-         geometry=True, transition=False, boundary=None, fid_hz=None):
+         geometry=True, transition=False, boundary=None, fid_hz=None, raw=None):
     if presence is None:
         presence = bool(groups or targets)
+    if raw is None:
+        raw = presence
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000, frame_age_ms=10.0,
         stage=1,
-        health=PerceptionHealth(alive, fresh, geometry, presence, transition),
+        health=PerceptionHealth(alive, fresh, geometry, presence, transition,
+                                raw_target_presence=raw),
         boundary=boundary, targets=targets, far_targets=(), coin_groups=groups,
         fid_rate_hz=fid_hz)
 
@@ -154,17 +157,17 @@ def test_watch_empty_needs_conjunction():
         assert w.check(_obs(presence=False, geometry=False), DT).fatal is None
     # 合取恢复后从头计时（旧账不追溯）
     for i in range(int(CFG.validate.t_empty_s / DT) - 1):
-        assert w.check(_obs(presence=False), DT).fatal is None
-    assert w.check(_obs(presence=False), DT).fatal == "target_empty"
+        assert w.check(_obs(presence=False, raw=True), DT).fatal is None
+    assert w.check(_obs(presence=False, raw=True), DT).fatal == "target_empty"
 
 
 def test_watch_target_presence_resets_timer():
     w = ValidationWatch(CFG)
     for _ in range(10):
-        w.check(_obs(presence=False), DT)
+        w.check(_obs(presence=False, raw=True), DT)
     assert w.check(_good_obs(), DT).fatal is None      # 有目标：清零
     for _ in range(int(CFG.validate.t_empty_s / DT) - 1):
-        assert w.check(_obs(presence=False), DT).fatal is None
+        assert w.check(_obs(presence=False, raw=True), DT).fatal is None
 
 
 def test_watch_cy_jump_reversal():
@@ -410,3 +413,44 @@ def test_car_t_meet_ground_flow_and_fallback():
         pytest.approx(d * (D - d) / (D * rel) / f)
 
 
+
+
+# ---------- 目标流枯竭：空街不是故障 ----------
+
+def test_empty_road_does_not_trip_target_empty():
+    w = ValidationWatch(CFG)
+    for fid in range(1, 12):
+        rep = w.check(_obs(fid=fid, presence=False, raw=False), 0.5)
+        assert rep.fatal is None
+
+
+def test_raw_detections_without_tracks_trip_target_empty():
+    w = ValidationWatch(CFG)
+    fatal = None
+    for fid in range(1, 12):
+        fatal = w.check(_obs(fid=fid, presence=False, raw=True), 0.5).fatal
+    assert fatal == "target_empty"
+
+
+def _car_t(tid, fid, cy, box):
+    return TrackedTarget(
+        id=tid, kind="car", x_lane=0.0, x_sigma=0.1, cy=cy, w=100, h=100,
+        conf=0.9, rel_approach=0.0, first_seen_fid=1, last_seen_fid=fid,
+        validity_until_fid=fid + 8, box=box)
+
+
+def test_fast_approach_cy_jump_with_continuous_box_is_not_fatal():
+    """大车逼近 1 拍跨 150px 是物理的；2D 框仍重叠就不是身份互换。"""
+    w = ValidationWatch(CFG)
+    a = _car_t(1, 1, 500, (100, 400, 220, 560))
+    b = _car_t(1, 2, 650, (100, 460, 220, 700))
+    assert w.check(_obs(fid=1, targets=(a,)), 0.05).fatal is None
+    assert w.check(_obs(fid=2, targets=(b,)), 0.05).fatal is None
+
+
+def test_cy_jump_without_box_overlap_is_fatal():
+    w = ValidationWatch(CFG)
+    a = _car_t(1, 1, 500, (100, 400, 200, 500))
+    b = _car_t(1, 2, 650, (700, 600, 800, 700))
+    assert w.check(_obs(fid=1, targets=(a,)), 0.05).fatal is None
+    assert w.check(_obs(fid=2, targets=(b,)), 0.05).fatal == "cy_jump"

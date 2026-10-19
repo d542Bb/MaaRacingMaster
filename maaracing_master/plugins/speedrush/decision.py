@@ -62,13 +62,27 @@ class ValidationReport:
     reasons: tuple[str, ...] = ()
 
 
+def _iou2(a: tuple, b: tuple) -> float:
+    if not a or not b:
+        return 0.0
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    if inter <= 0.0:
+        return 0.0
+    ua = ((a[2] - a[0]) * (a[3] - a[1])
+          + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+    return inter / ua if ua > 0 else 0.0
+
+
 class ValidationWatch:
     """§四 致命信号器：只做信号与合取，不做状态转移。"""
 
     def __init__(self, cfg: DecisionConfig):
         self.v = cfg.validate
         self._empty_t = 0.0
-        self._last_cy: dict[int, tuple[int, int]] = {}   # id → (fid, cy) 真实观测
+        # id → (fid, cy, box)；真实观测。box 用于区分“快车逼近”与“身份互换”。
+        self._last_cy: dict[int, tuple[int, int, tuple]] = {}
 
     def reset(self) -> None:
         self._empty_t = 0.0
@@ -82,25 +96,32 @@ class ValidationWatch:
         # 信号·目标流枯竭：五信号**合取**才计时（空旷路面/过渡/半死不活都不算）
         conj = (h.perception_alive and h.frame_fresh and h.geometry_valid
                 and not h.stage_transition)
-        if conj and not h.target_presence:
+        # 只有“画面有检出、跟踪却没输出”才算目标流枯竭；画面本来没车
+        # （raw=False）是空旷路面，不是故障（2026-10-19 局 213750_p1 空街
+        # 误停 5.4s）。
+        if conj and not h.target_presence and h.raw_target_presence:
             self._empty_t += dt_s
             if self._empty_t >= self.v.t_empty_s:
                 return ValidationReport("target_empty")
         else:
             self._empty_t = 0.0
-        # 信号·距离序倒挂：同 id 真实观测间 cy 跳变超物理上限（按失联 tick 数放大）
+        # 信号·距离序倒挂：同 id 真实观测间 cy 跳变超物理上限（按失联 tick 数
+        # 放大）。逼近的大车会在 1~2 拍内跨过 90px；只要 2D 框仍连续
+        # （IoU≥0.3），就是同一台车在动，不是身份互换。
         for t in obs.targets:
             if t.last_seen_fid != obs.frame_id:
                 continue  # 保持输出不比（外推值天然"跳"）
             prev = self._last_cy.get(t.id)
             if prev is not None:
                 span = max(obs.frame_id - prev[0], 1)
-                if abs(t.cy - prev[1]) > self.v.cy_jump_max_px * span:
+                if abs(t.cy - prev[1]) > self.v.cy_jump_max_px * span \
+                        and _iou2(getattr(t, "box", ()), prev[2]) < 0.3:
                     return ValidationReport("cy_jump")
-            self._last_cy[t.id] = (obs.frame_id, t.cy)
+            self._last_cy[t.id] = (obs.frame_id, t.cy,
+                                   getattr(t, "box", ()))
         for g in obs.far_targets:
             if g.last_seen_fid == obs.frame_id:
-                self._last_cy[g.id] = (obs.frame_id, g.cy)
+                self._last_cy[g.id] = (obs.frame_id, g.cy, ())
         reasons: list[str] = []
         if obs.boundary is None:
             reasons.append("straight_check_inactive")  # v1 边界未接线：如实注记

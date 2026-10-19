@@ -71,6 +71,9 @@ class PerceptionHealth:
     geometry_valid: bool     # v1 = 调用方传入（边界层落地后由 BoundarySummary 推导）
     target_presence: bool    # 本帧观测含近场或远场目标
     stage_transition: bool   # 阶段切换/起步/过场窗口（调用方传入，锚点序列可判）
+    # 本帧原始检出是否有目标（YOLO 层）。False + target_presence False =
+    # 画面本来就没车（空旷路面），不是目标流枯竭。
+    raw_target_presence: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,8 @@ class TrackedTarget:
     first_seen_fid: int
     last_seen_fid: int
     validity_until_fid: int      # 宽限截止帧号（last_seen + grace）
+    # 最近一帧 2D 框 xyxy（trace 与校验层用；空=旧构造未带）
+    box: tuple[float, float, float, float] = ()
 
 
 @dataclass(frozen=True)
@@ -546,7 +551,8 @@ class Tracker:
                     id=t.id, kind=t.kind, x_lane=t.x_lane, x_sigma=t.x_sigma,
                     cy=cy_out, w=t.w, h=t.h, conf=t.conf,
                     rel_approach=t.rel_approach, first_seen_fid=t.first_seen,
-                    last_seen_fid=t.last_seen, validity_until_fid=valid_until))
+                    last_seen_fid=t.last_seen, validity_until_fid=valid_until,
+                    box=t.box))
             else:
                 fars.append(FarTarget(
                     id=t.id, kind=t.kind, lane_side=t.lane_side, cy=cy_out,
@@ -562,7 +568,8 @@ class Tracker:
             frame_fresh=frame_age_ms <= self.p.fresh_max_ms,
             geometry_valid=geometry_valid,
             target_presence=bool(targets or fars),
-            stage_transition=stage_transition)
+            stage_transition=stage_transition,
+            raw_target_presence=bool(per.cars or per.coins or per.bonuses))
         distances = tuple(self._distance_of(t, per.ts_ns, frame_age_ms)
                           for t in self._tracks if t.kind == KIND_CAR)
         # 逐车米制状态（C 线）：与 distances 同序同 id，z/x/v/t 全从锚点链路
