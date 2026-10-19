@@ -25,6 +25,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from maaracing_master.plugins.speedrush.coarse import (
+    CoarseParams, CoarseReport, choose_lane)
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import Corridor
 from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
@@ -271,6 +273,20 @@ class DecisionEngine:
         self._sel_maneuver = False
         self._sel_objs: dict = {"reward": [], "car": [], "coin": []}
         self._sel_dbg: dict | None = None
+        # 粗层选道（2026-10-19 影子期）：绿区净空 + 2D 占用，只落 trace。
+        c = cfg.coarse
+        self._coarse_params = CoarseParams(
+            lookahead_m=c.lookahead_m,
+            max_offset_lane=c.max_offset_lane,
+            collision_margin_m=c.collision_margin_m,
+            range_speed_mps=c.range_speed_mps,
+            switch_margin_m=c.switch_margin_m,
+            align_tol_lane=c.align_tol_lane,
+            wall_margin_lane=s.wall_margin_lane,
+            ego_half_lane=s.ego_half_lane,
+            car_half_lane=s.car_half_lane,
+            cam_z_datum_m=CAM_Z_DATUM_M)
+        self._coarse: CoarseReport | None = None
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
@@ -299,6 +315,7 @@ class DecisionEngine:
         self._sel_maneuver = False
         self._sel_objs = {"reward": [], "car": [], "coin": []}
         self._sel_dbg = None
+        self._coarse = None
         self.selector.reset()
         self._car_xf.clear()
         self._car_zf.clear()
@@ -759,6 +776,7 @@ class DecisionEngine:
             self._sel_maneuver = False
             self._sel_objs = {"reward": [], "car": [], "coin": []}
             self._sel_dbg = None
+            self._coarse = None
             return "sel:hold:no_road"
         rf = self._road_frame(executed, obs.frame_id)
         if rf is None:
@@ -769,6 +787,7 @@ class DecisionEngine:
             self._sel_maneuver = False
             self._sel_objs = {"reward": [], "car": [], "coin": []}
             self._sel_dbg = None
+            self._coarse = None
             return "sel:hold:no_road"
         road, ego_m, origin = rf
         reward_src = self._bonus_sources(obs, executed)
@@ -804,6 +823,12 @@ class DecisionEngine:
             sigma_obj0_m=self.cfg.motion.sigma_obj0_m,
             sigma_obj_rate_mps=self.cfg.motion.sigma_obj_rate_mps,
             cam_z_datum_m=CAM_Z_DATUM_M, frame_shift_m=frame_shift)
+        # 粗层影子（2026-10-19）：绿区净空 + 2D 占用选方向；只落 trace，
+        # 本拍选择/计划/执行不消费。迟滞的现任道取上一拍粗层结果。
+        self._coarse = choose_lane(
+            self._scene.road, self._scene.objs, executed,
+            self._scene.lane_w_m, self._coarse_params,
+            current_lane=None if self._coarse is None else self._coarse.lane)
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last)
         self._sel_report = rep
@@ -859,6 +884,11 @@ class DecisionEngine:
     def selection_report(self) -> SelectionReport | None:
         """上一拍四层选择结果（trace 观测面）。"""
         return self._sel_report
+
+    @property
+    def coarse_report(self) -> CoarseReport | None:
+        """上一拍粗层选道结果（影子观测面；控制链不消费）。"""
+        return self._coarse
 
     @property
     def selection_objects(self) -> dict:

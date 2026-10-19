@@ -992,6 +992,9 @@ class SpeedRushModule(ActivityModule):
             # 选择帧快照（录制对照/参数校准）：ego/中心/左右缘/路点/机会
             # 全部在同一个选择层坐标（道），离线可直接和人工 executed 对齐
             "sel_dbg": eng.selection_debug,
+            # 粗层影子（2026-10-19）：绿区净空 + 2D 占用选方向；控制链不消费
+            "coarse": None if eng.coarse_report is None
+            else eng.coarse_report.as_trace(),
             # 场景快照（motion_plan 输入面）：自车/走廊年龄/对象年龄与 σ
             "scene": None if eng.scene is None else eng.scene.as_trace(),
             # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选

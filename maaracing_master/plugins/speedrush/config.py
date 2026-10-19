@@ -342,6 +342,23 @@ class Geometry:
 
 
 @dataclass(frozen=True)
+class Coarse:
+    """粗层选道（2026-10-19）：绿区净空 + 2D 占用选方向。
+
+    lookahead_m 是粗层观察窗（绿区实测域内）；max_offset_lane 是候选车道
+    左右范围；collision_margin_m 是车宽包络外的安全余量；range_speed_mps
+    只用于把「无纵深但有到站时间」的车折算成粗纵深；switch_margin_m 是
+    换道迟滞（现任净空不差于最优这么多时保持）。"""
+
+    lookahead_m: float = 24.0
+    max_offset_lane: float = 2.0
+    collision_margin_m: float = 0.5
+    range_speed_mps: float = 45.0
+    switch_margin_m: float = 4.0
+    align_tol_lane: float = 0.4
+
+
+@dataclass(frozen=True)
 class DebugDump:
     """调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验）。
 
@@ -370,6 +387,7 @@ class DecisionConfig:
     # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
     selection: Selection = Selection()
+    coarse: Coarse = Coarse()
     geometry: Geometry = Geometry()
     metric_cars: MetricCars = MetricCars()
     metric_bridge: MetricBridge = MetricBridge()
@@ -690,6 +708,18 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "reward_tol_lane", 1.5, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),
             ego_half_lane=_num_def(d, "selection", "ego_half_lane", 0.27, lo=0)),
+        coarse=Coarse(
+            lookahead_m=_num_def(d, "coarse", "lookahead_m", 24.0, lo=0),
+            max_offset_lane=_num_def(
+                d, "coarse", "max_offset_lane", 2.0, lo=0),
+            collision_margin_m=_num_def(
+                d, "coarse", "collision_margin_m", 0.5, lo=0),
+            range_speed_mps=_num_def(
+                d, "coarse", "range_speed_mps", 45.0, lo=0),
+            switch_margin_m=_num_def(
+                d, "coarse", "switch_margin_m", 4.0, lo=0),
+            align_tol_lane=_num_def(
+                d, "coarse", "align_tol_lane", 0.4, lo=0)),
         geometry=Geometry(
             wall_line_master=_bool(d, "geometry", "wall_line_master",
                                    default=False),
