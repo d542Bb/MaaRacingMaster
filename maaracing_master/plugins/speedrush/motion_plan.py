@@ -474,9 +474,6 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             env[0] <= xx <= env[1]
             for xx, tt in zip(xs_m, ts)
             if tt <= motion.corridor_check_s + 1e-9)
-        # 普通车碰撞只扣价值，不再判不可行（RULES §4.3：碰撞只损失时间）。
-        feasible = corridor_ok
-
         reward_hits = 0
         reward_hit_ids: set[int] = set()
         for r in rewards:
@@ -494,6 +491,28 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 reward_hits += 1
                 reward_hit_ids.add(id(r))
         reward_value = motion.value_reward * reward_hits
+        # 近时目标不得“迎上去”：到站时间已短于碰撞提前量的车，横移躲不开，
+        # 但仍可以**不主动往它所在的横向方向并**——换道进它的车道不是反应
+        # 不及，是选择错误（2026-10-19 局 212207_p1 皮卡与 212252_p2 绿车）。
+        late_block = False
+        for c in cars:
+            if not c.timed or not c.in_corridor or c.t_arrive_s is None:
+                continue
+            if not (0.0 < c.t_arrive_s < motion.collision_min_lead_s):
+                continue
+            if abs(c.x_m - scene.ego_x_m) <= (
+                    ego_half + _half(c) + motion.collision_margin_m):
+                continue                    # 已重叠：不是换道选择问题
+            toward = 1.0 if c.x_m > scene.ego_x_m else -1.0
+            # 杆指令朝它，或当前惯性朝它而杆不反打——都算“迎上去”。
+            # 这不是软代价：0.35s 内到站的车横移躲不开，唯一正确的动作
+            # 是不往它那侧并；允许它被擦车/金币价值盖过就是重复撞车。
+            if u * toward > 0.0 or (ego.v_lane_s * toward > 0.0
+                                    and u * toward >= 0.0):
+                late_block = True
+        # 普通车碰撞只扣价值，不再判不可行（RULES §4.3：碰撞只损失时间）。
+        # 例外：0.35s 内的车不允许“主动迎上去”——那是换道选择，不是反应不及。
+        feasible = corridor_ok and not late_block
         # 有距无速域（第二项）：本车道前方、纵深在圈内但无到站时间的车，
         # 按保守速度折算一个到站时刻，凡在该时刻仍与车体重叠的候选直接扣分。
         # 这是“别等到时间出现才动”的硬提示，不参与奖励。

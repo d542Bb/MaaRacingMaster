@@ -193,6 +193,10 @@ class Traffic:
     # —— 与 0.5m 擦车带同量级；在决策层平滑不碰跟踪层语义）——
     metric_x_ema_alpha: float = 0.35
     metric_z_ema_alpha: float = 0.5
+    # 米制横位硬跳变门：单拍横跳超过此值先拒（真实横移不可能这么快），
+    # 连续 hold_ticks 拍同向才接受——防止一次深度跳变把超车净距挪到车身上。
+    metric_x_jump_max_m: float = 1.5
+    metric_x_jump_hold_ticks: int = 3
 
 
 @dataclass(frozen=True)
@@ -543,7 +547,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             metric_x_ema_alpha=_num_def(d, "traffic", "metric_x_ema_alpha",
                                         0.35, lo=0, hi=1, lo_open=True),
             metric_z_ema_alpha=_num_def(d, "traffic", "metric_z_ema_alpha",
-                                        0.5, lo=0, hi=1, lo_open=True)),
+                                        0.5, lo=0, hi=1, lo_open=True),
+            metric_x_jump_max_m=_num_def(
+                d, "traffic", "metric_x_jump_max_m", 1.5, lo=0),
+            metric_x_jump_hold_ticks=_int_def(
+                d, "traffic", "metric_x_jump_hold_ticks", 3, lo=1)),
         motion=Motion(
             mode=_str_def(d, "motion", "mode", "off",
                           ("off", "shadow", "live")),

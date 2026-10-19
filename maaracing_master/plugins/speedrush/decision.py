@@ -255,6 +255,8 @@ class DecisionEngine:
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
+        # 米制横位硬跳变保持：id → (last_accepted_x, consecutive_jump_ticks)
+        self._car_x_hold: dict[int, tuple[float, int]] = {}
         # 金币组到站时间记忆（gid → (t, fid)）：同组只允许时间递减
         self._coin_t_mem: dict[int, tuple[float, int]] = {}
         self._fid = 0
@@ -279,6 +281,7 @@ class DecisionEngine:
         self.selector.reset()
         self._car_xf.clear()
         self._car_zf.clear()
+        self._car_x_hold.clear()
         self._coin_t_mem.clear()
         self._conserve_t = 0.0
         self._ok_t = 0.0
@@ -548,6 +551,21 @@ class DecisionEngine:
             if tid is not None:
                 prev = self._car_xf.get(tid)
                 xr = xr if prev is None else prev + ax * (xr - prev)
+                # 硬跳变门：真实横移单拍不可能 >1.5m（20Hz 下 30m/s 横速）；
+                # 先拒，连续 hold_ticks 拍仍在新位置才接受。防止一次锚点
+                # 翻跳把超车净距挪到车身上（2026-10-19 局 212252_p2 绿车）。
+                jmax = self.cfg.traffic.metric_x_jump_max_m
+                hold = self._car_x_hold.get(tid)
+                if hold is not None and jmax > 0.0 \
+                        and abs(xr - hold[0]) > jmax:
+                    n_jump = hold[1] + 1
+                    if n_jump < self.cfg.traffic.metric_x_jump_hold_ticks:
+                        xr = hold[0]
+                        self._car_x_hold[tid] = (hold[0], n_jump)
+                    else:
+                        self._car_x_hold[tid] = (xr, 0)
+                else:
+                    self._car_x_hold[tid] = (xr, 0)
                 self._car_xf[tid] = xr
                 if z_m is not None and z_m == z_m:
                     pz = self._car_zf.get(tid)
@@ -613,6 +631,7 @@ class DecisionEngine:
         for k in [k for k in self._car_xf if k not in seen]:
             self._car_xf.pop(k, None)
             self._car_zf.pop(k, None)
+            self._car_x_hold.pop(k, None)
         return out
 
     @property

@@ -345,6 +345,48 @@ def test_untimed_depth_car_out_of_lane_does_not_bias():
     assert p.valid and abs(p.u_feedforward) < 0.1
 
 
+def test_late_timed_car_blocks_lane_change_toward_it():
+    """到站时间短于碰撞提前量的车，横移躲不开，但不得主动往它那侧并。"""
+    coins = [CoinSource(3.0, 3, 0.9, 1.0, age_ms=0.0)]
+    base = _plan(_scene(road=_wide_road(), ego_m=0.0, coins=coins),
+                 ego=EgoState(0.0, 0.0, 0.0))
+    assert base.u_feedforward > 0.1
+    late = CarSource(3.0, 0.2, z_m=20.0, age_ms=0.0, src="metric")
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0, coins=coins,
+                     cars=[late]), ego=EgoState(0.0, 0.0, 0.0))
+    assert p.u_feedforward < base.u_feedforward
+    assert p.u_feedforward <= 0.1
+
+
+def test_metric_x_hard_jump_is_held_until_confirmed():
+    """单拍米制横位跳 5m 先拒（真实横移不可能这么快），连续 3 拍才接受。"""
+    eng = DecisionEngine(CFG)
+    view = CarView(id=7, x_lane=0.3, cy=500, rel_approach=5.0, d_min=0.3,
+                   age_ticks=1, last_seen_fid=1)
+    m = MetricCarState(target_id=7, source=DistanceSource.ANCHOR,
+                       z_m=4.0, x_m=1.0, v_close_mps=None, t_meet_s=None,
+                       anchor_age_ms=0.0)
+    eng.update(_obs(1, metric_cars=(m,)), 0.05,
+               executed_lane=0.0, corridor=_corridor(fid=1, last_fid=1),
+               traffic=((view,), ()))
+    car = next(o for o in eng.scene.objs if o.kind == "car")
+    assert car.x_m == pytest.approx(1.0, abs=0.05)
+    for fid in (2, 3):
+        v = replace(view, last_seen_fid=fid)
+        eng.update(_obs(fid, metric_cars=(replace(m, x_m=6.0),)), 0.05,
+                   executed_lane=0.0,
+                   corridor=_corridor(fid=fid, last_fid=fid),
+                   traffic=((v,), ()))
+        car = next(o for o in eng.scene.objs if o.kind == "car")
+        assert car.x_m == pytest.approx(1.0, abs=0.05)   # 跳变被拒
+    v = replace(view, last_seen_fid=4)
+    eng.update(_obs(4, metric_cars=(replace(m, x_m=6.0),)), 0.05,
+               executed_lane=0.0, corridor=_corridor(fid=4, last_fid=4),
+               traffic=((v,), ()))
+    car = next(o for o in eng.scene.objs if o.kind == "car")
+    assert car.x_m > 2.0                                # 连续 3 拍：接受
+
+
 def test_collision_is_soft_cost_not_infeasible():
     """普通车碰撞只扣价值，不再把全部候选判成不可行。"""
     cars = [CarSource(-2.0, 0.5, age_ms=0.0),
