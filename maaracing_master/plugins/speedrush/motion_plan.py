@@ -399,6 +399,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         feasible = corridor_ok
 
         reward_hits = 0
+        reward_hit_ids: set[int] = set()
         for r in rewards:
             if r.t_arrive_s is None or r.t_arrive_s > horizon:
                 continue
@@ -408,6 +409,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             tol = reward_half + r.sigma_m
             if abs(xr - r.x_m) <= tol:
                 reward_hits += 1
+                reward_hit_ids.add(id(r))
         reward_value = motion.value_reward * reward_hits
         pass_count = 0
         for c in cars:
@@ -424,6 +426,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 pass_count += 1
         pass_value = motion.value_graze * pass_count
         coin_hits, coin_value, coin_error = 0.0, 0.0, 0.0
+        coin_hit_ids: set[int] = set()
         for c in coins:
             if c.t_arrive_s is None or c.t_arrive_s > horizon:
                 continue
@@ -432,30 +435,48 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             tol = coin_half + c.sigma_m
             if err <= tol:
                 coin_hits += 1
+                coin_hit_ids.add(id(c))
                 coin_value += (motion.value_coin_air if c.count >= 4
                                else motion.value_coin_group)
                 coin_error += err
         if coin_hits > 0:
             coin_error /= coin_hits
-        # 视界外预置：2s 末端的横位更靠近未来金币/奖励车，按折扣计分。
-        # 不加车辆项——近场擦车由 2s 内的正常评分负责。
+        # 预置梯度：4s 内的金币/奖励车，按“末端离它多近”给连续小分——
+        # 不等目标进入可达范围才动作（旧选择层 preposition 的价值版）。
+        # 已被本候选命中的对象不重复计；不加普通车（近场擦车另算）。
         prep_value = 0.0
         prep_h = motion.preposition_horizon_s
-        if prep_h > horizon:
-            x_end = xs_m[-1]
+        if prep_h > 0.0:
+            radius = max(motion.preposition_radius_lane * lane_w, 1e-6)
             for r in rewards:
-                if r.t_arrive_s is None or not (horizon < r.t_arrive_s <= prep_h):
+                if id(r) in reward_hit_ids or r.t_arrive_s is None \
+                        or not (0.0 < r.t_arrive_s <= prep_h):
                     continue
-                if abs(x_end - r.x_m) <= reward_half + r.sigma_m:
-                    prep_value += motion.value_reward \
-                        * motion.preposition_discount
+                x_ref = _x_at(xs_m, min(r.t_arrive_s, horizon), dt)
+                prox = max(0.0, 1.0 - abs(x_ref - r.x_m) / radius)
+                prep_value += motion.value_reward \
+                    * motion.preposition_discount * prox
             for c in coins:
-                if c.t_arrive_s is None or not (horizon < c.t_arrive_s <= prep_h):
+                if id(c) in coin_hit_ids or c.t_arrive_s is None \
+                        or not (0.0 < c.t_arrive_s <= prep_h):
                     continue
-                if abs(x_end - c.x_m) <= coin_half + c.sigma_m:
-                    prep_value += (motion.value_coin_air if c.count >= 4
-                                   else motion.value_coin_group) \
-                        * motion.preposition_discount
+                x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
+                prox = max(0.0, 1.0 - abs(x_ref - c.x_m) / radius)
+                prep_value += (motion.value_coin_air if c.count >= 4
+                               else motion.value_coin_group) \
+                    * motion.preposition_discount * prox
+            # 普通车也预置：目标不是车心，而是候选所在侧的擦车距离，
+            # 让车提前贴近超车线，而不是等车到眼前才反应。
+            for c in cars:
+                if c.t_arrive_s is None \
+                        or not (0.0 < c.t_arrive_s <= prep_h):
+                    continue
+                x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
+                side = 1.0 if x_ref >= c.x_m else -1.0
+                target = c.x_m + side * graze
+                prox = max(0.0, 1.0 - abs(x_ref - target) / radius)
+                prep_value += motion.value_graze \
+                    * motion.preposition_discount * prox
         value = (reward_value + pass_value + coin_value - collision_cost
                  + prep_value)
         # 中心目标带死区：带内不修正（旧选择层同口径），只在带外惩罚超出量。

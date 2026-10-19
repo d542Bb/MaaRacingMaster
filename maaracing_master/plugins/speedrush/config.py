@@ -237,7 +237,8 @@ class Motion:
     # 视界外预置：2s 外的金币/奖励车按折扣价计入“2s 末端更靠近”，
     # 避免只在目标进入视界后才动作（旧选择层 preposition 的价值版）。
     preposition_horizon_s: float = 4.0
-    preposition_discount: float = 0.3
+    preposition_discount: float = 0.5
+    preposition_radius_lane: float = 2.5
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
@@ -248,7 +249,7 @@ class Motion:
     sigma_ego0_m: float = 0.0        # fit_plant 标定
     sigma_ego_rate_mps: float = 0.0  # fit_plant 标定
     sigma_ego_max_m: float = 1.2     # 超此缩短时域
-    switch_margin: float = 30.0      # 价值差门槛（分）
+    switch_margin: float = 15.0      # 价值差门槛（分）
     switch_geom_margin: float = 0.03  # 同价值时中心/动作改善门槛（道）
     switch_dwell_s: float = 0.2
     score_epsilon: float = 1e-3
@@ -553,7 +554,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             preposition_horizon_s=_num_def(
                 d, "motion", "preposition_horizon_s", 4.0, lo=0),
             preposition_discount=_num_def(
-                d, "motion", "preposition_discount", 0.3, lo=0),
+                d, "motion", "preposition_discount", 0.5, lo=0),
+            preposition_radius_lane=_num_def(
+                d, "motion", "preposition_radius_lane", 1.5, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
             corridor_age_max_s=_num_def(
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),
@@ -571,7 +574,7 @@ def _read_decision(path: Path) -> DecisionConfig:
                 lo_open=False),
             sigma_ego_max_m=_num_def(
                 d, "motion", "sigma_ego_max_m", 1.2, lo=0),
-            switch_margin=_num_def(d, "motion", "switch_margin", 30.0, lo=0),
+            switch_margin=_num_def(d, "motion", "switch_margin", 15.0, lo=0),
             switch_geom_margin=_num_def(
                 d, "motion", "switch_geom_margin", 0.03, lo=0),
             switch_dwell_s=_num_def(
