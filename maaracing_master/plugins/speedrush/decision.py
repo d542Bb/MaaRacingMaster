@@ -818,6 +818,12 @@ class DecisionEngine:
         self._sel_dbg = {
             "ego": round(ego_m / lw, 3),
             "target": round(rep.target_x_m / lw, 3),
+            # 帧合成审计项：origin=走廊中心@0，shift=自车横位平移，
+            # fshift=带中心帧→规划器路心帧的平移。车米制 x 与场景 x 的
+            # 多米分歧只能靠这三项定位（2026-10-19 局 214717_p1）。
+            "origin": round(origin, 3),
+            "shift": round(executed * lw, 3),
+            "fshift": round(frame_shift, 3),
             "c0": None if c0 is None else round(c0 / lw, 3),
             "c8": None if c8 is None else round(c8 / lw, 3),
             "left": None if road.left_m is None else round(road.left_m / lw, 3),
