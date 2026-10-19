@@ -206,6 +206,14 @@ def test_empty_corridor_intersection_not_unconstrained():
     assert not p.valid and p.reason == "plan:infeasible_corridor"
 
 
+def test_offcenter_band_still_constrains():
+    """整条近带都在路心左侧时也要参与交集，不能按“右缘≤0”跳过。"""
+    road = RoadFrame((RoadBand(0.0, 6.0, -6.0, -2.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 4.0, -6.0, -2.0, True)
+    p = _plan(_scene(road=road, ego_m=0.0))
+    assert not p.valid and p.reason == "plan:infeasible_corridor"
+
+
 def test_corridor_checked_only_near_term():
     """恒定杆 2s 必然驶出包络；走廊只验前 1s，不能把必要避让判成不可行。"""
     road = RoadFrame((RoadBand(0.0, 6.0, -6.0, 6.0, src="measured",

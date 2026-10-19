@@ -69,7 +69,10 @@ def main() -> None:
     reasons = Counter()
     n_scene = n_valid = n_ok_cmp = n_bad_cmp = 0
     prev_x = None
+    prev_ts = None
     churn = 0
+    prev_intent = None
+    intent_churn = 0
     times = []
     prev = None
     last_gate = None
@@ -118,9 +121,16 @@ def main() -> None:
                     and abs(p.u_feedforward - rec["u"]) <= 1e-3)
             n_ok_cmp += int(same)
             n_bad_cmp += int(not same)
-        if prev_x is not None and abs(p.x_preview_m - prev_x) > 0.2:
+        gap_s = (r["ts_ns"] - prev_ts) / 1e9 if prev_ts is not None else None
+        adjacent = gap_s is not None and gap_s <= 0.1
+        if adjacent and abs(p.x_preview_m - prev_x) > 0.2:
             churn += 1
         prev_x = p.x_preview_m
+        intent = p.x_preview_lane - ego.x_lane
+        if adjacent and abs(intent - prev_intent) > 0.2:
+            intent_churn += 1
+        prev_intent = intent
+        prev_ts = r["ts_ns"]
         prev = r
     dur = (rows[-1]["ts_ns"] - rows[0]["ts_ns"]) / 1e9 if rows else 0.0
     times.sort()
@@ -132,6 +142,7 @@ def main() -> None:
         "replay_match": (n_ok_cmp / (n_ok_cmp + n_bad_cmp))
         if (n_ok_cmp + n_bad_cmp) else None,
         "churn_0p2_per_s": (churn / dur) if dur > 0 else None,
+        "intent_churn_0p2_per_s": (intent_churn / dur) if dur > 0 else None,
         "p99_ms": times[int(0.99 * (len(times) - 1))] if times else None,
         "duration_s": round(dur, 1),
     }

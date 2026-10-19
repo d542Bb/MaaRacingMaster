@@ -226,7 +226,7 @@ def _envelope(scene: Scene, near_z_m: float, wall_margin_m: float,
     lo, hi = -float("inf"), float("inf")
     any_band = False
     for b in scene.road.bands:
-        if b.right <= 0.0 or b.z0 > near_z_m or b.z1 < 0.0:
+        if b.z0 > near_z_m or b.z1 < 0.0:
             continue
         if b.left is None or b.right is None:
             continue
