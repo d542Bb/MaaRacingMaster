@@ -173,6 +173,14 @@ def test_out_of_corridor_coin_not_counted():
     assert inside.layer == 3 and inside.value_total >= 90.0
 
 
+def test_no_hit_scoring_inside_min_lead():
+    """到站时间 < hit_min_lead：横向已定，不再为擦边满舵。"""
+    late = _plan(_scene(cars=[CarSource(3.3, 0.3, age_ms=0.0)]))
+    ok = _plan(_scene(cars=[CarSource(3.3, 0.6, age_ms=0.0)]))
+    assert late.layer == 4
+    assert ok.layer == 2
+
+
 def test_large_vehicle_not_a_graze_target():
     """宽度 > 阈值的车不参与擦边，但仍在场景里当障碍。"""
     normal = _plan(_scene(cars=[CarSource(3.3, 1.0, age_ms=0.0)]))

@@ -472,7 +472,8 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             # 越界/无时间/粗源（远场夹边）不作为命中目标
             if not r.timed or not r.in_corridor or r.coarse:
                 continue
-            if r.t_arrive_s is None or r.t_arrive_s > horizon:
+            if r.t_arrive_s is None or r.t_arrive_s > horizon \
+                    or r.t_arrive_s < motion.hit_min_lead_s:
                 continue
             xr = _x_at(xs_m, r.t_arrive_s, dt)
             # 命中判据只加对象定位 σ：自车 σ 加进命中半径会把“够不到”
@@ -490,7 +491,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             if not c.timed or not c.in_corridor or _large(c):
                 continue
             tc = c.t_arrive_s
-            if tc is None or tc > horizon:
+            if tc is None or tc > horizon or tc < motion.hit_min_lead_s:
                 continue
             d = abs(_x_at(xs_m, tc, dt) - c.x_m)
             if ego_half + _half(c) + c.sigma_m \
@@ -502,7 +503,8 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         for c in coins:
             if not c.in_corridor:
                 continue
-            if c.t_arrive_s is None or c.t_arrive_s > horizon:
+            if c.t_arrive_s is None or c.t_arrive_s > horizon \
+                    or c.t_arrive_s < motion.hit_min_lead_s:
                 continue
             xr = _x_at(xs_m, c.t_arrive_s, dt)
             err = abs(xr - c.x_m)
@@ -525,7 +527,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             for r in rewards:
                 if not r.in_corridor or id(r) in reward_hit_ids \
                         or r.t_arrive_s is None \
-                        or not (0.0 < r.t_arrive_s <= prep_h):
+                        or not (horizon < r.t_arrive_s <= prep_h):
                     continue
                 x_ref = _x_at(xs_m, min(r.t_arrive_s, horizon), dt)
                 prox = max(0.0, 1.0 - abs(x_ref - r.x_m) / radius)
@@ -535,7 +537,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             for c in coins:
                 if not c.in_corridor or id(c) in coin_hit_ids \
                         or c.t_arrive_s is None \
-                        or not (0.0 < c.t_arrive_s <= prep_h):
+                        or not (horizon < c.t_arrive_s <= prep_h):
                     continue
                 x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
                 prox = max(0.0, 1.0 - abs(x_ref - c.x_m) / radius)
@@ -547,7 +549,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             for c in cars:
                 if not c.timed or not c.in_corridor or _large(c) \
                         or c.t_arrive_s is None \
-                        or not (0.0 < c.t_arrive_s <= prep_h):
+                        or not (horizon < c.t_arrive_s <= prep_h):
                     continue
                 x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
                 side = 1.0 if x_ref >= c.x_m else -1.0

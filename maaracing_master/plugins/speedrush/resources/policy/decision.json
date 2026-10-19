@@ -101,6 +101,7 @@
     "corridor_check_s": 1.0,
     "collision_margin_m": 0.2,
     "collision_min_lead_s": 0.35,
+    "hit_min_lead_s": 0.5,
     "graze_gap_lane": 0.75,
     "coin_collect_half_lane": 0.35,
     "graze_max_width_m": 2.2,

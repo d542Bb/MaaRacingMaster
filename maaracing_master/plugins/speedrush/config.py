@@ -222,6 +222,9 @@ class Motion:
     # 反应时内到站的车：横向动作已无法改变结果，不计入硬约束（防贴身会车
     # 全灭后误触 CONSERVE）
     collision_min_lead_s: float = 0.35
+    # 到站时间短于此值：横向结果已定，不再为命中/擦边打分（否则会为最后一刻
+    # 的擦边带满舵），只允许中心/维护动作。
+    hit_min_lead_s: float = 0.5
     # 擦车目标距车心：物理包络+σ+余量约 2.18m，0.65 道只剩 2.5cm 带、
     # 低于采样分辨率（整层 0 触发）；0.75 道留约 0.36m 带。
     graze_gap_lane: float = 0.75
@@ -550,6 +553,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "collision_margin_m", 0.2, lo=0),
             collision_min_lead_s=_num_def(
                 d, "motion", "collision_min_lead_s", 0.35, lo=0),
+            hit_min_lead_s=_num_def(
+                d, "motion", "hit_min_lead_s", 0.5, lo=0),
             graze_gap_lane=_num_def(
                 d, "motion", "graze_gap_lane", 0.75, lo=0),
             coin_collect_half_lane=_num_def(
