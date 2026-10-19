@@ -27,7 +27,8 @@ sys.path.insert(0, str(_ROOT))
 
 from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
 from maaracing_master.plugins.speedrush.motion_plan import (
-    EgoState, PlanGate, Scene, SceneObj, plan_motion)  # noqa: E402
+    EgoState, PlanGate, Scene, SceneObj, plan_motion,
+    shift_scene)  # noqa: E402
 from maaracing_master.plugins.speedrush.selection import (  # noqa: E402
     RoadBand, RoadFrame)  # noqa: E402
 
@@ -80,6 +81,12 @@ def main() -> None:
         if not scene:
             prev = r
             continue
+        # schema 1 的旧 trace 场景还在走廊带帧：按录制 road_offset 平移到
+        # 规划器路心帧，口径与新代码一致（schema 2 已在线平移）。
+        if scene.schema < 2 and r.get("road_offset") is not None:
+            scene = shift_scene(
+                scene, float(r["road_offset"]) * scene.lane_w_m
+                - scene.ego_x_m)
         # stale 用当前配置重算（录制时的阈值可能已改）
         ca = scene.corridor_age_ms
         scene = replace(scene, stale=ca is not None

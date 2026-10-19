@@ -98,11 +98,13 @@
     "near_z_m": 6.0,
     "corridor_check_s": 1.0,
     "collision_margin_m": 0.2,
-    "graze_gap_lane": 0.65,
+    "collision_min_lead_s": 0.35,
+    "graze_gap_lane": 0.75,
     "coin_collect_half_lane": 0.35,
     "max_obj_age_s": 0.25,
     "corridor_age_max_s": 0.4,
     "frame_delta_max_m": 0.2,
+    "uncertain_widen_max_m": 0.6,
     "sigma_obj0_m": 0.15,
     "sigma_obj_rate_mps": 0.6,
     "sigma_ego0_m": 0.669,
@@ -113,7 +115,7 @@
     "score_epsilon": 0.001,
     "infeasible_conserve_ticks": 3,
     "calibrated": true,
-    "_note": "mode=off 只组装场景快照；shadow=计划照算不接管；live 需 calibrated=true。sigma_ego 来自 fit_plant（4 段 trace，σ0=0.67m、rate=0.74m/s，多步残差同批起点）；sigma_ego_max=2.5m 是离线对照结果——收到 1.2m 会把时域截到 0.7s、金币/奖励层几乎清零。"
+    "_note": "mode=off 只组装场景快照；shadow=计划照算不接管；live 需 calibrated=true。sigma_ego 来自 fit_plant（4 段 trace，σ0=0.67m、rate=0.74m/s，多步残差同批起点）；sigma_ego_max=2.5m 是离线对照结果——收到 1.2m 会把时域截到 0.7s、金币/奖励层几乎清零。碰撞硬约束与命中/擦车判据只用物理包络 + 对象 σ：自车 σ 在 2s 处可达 2m+，计入会把擦车带整体判死；σ 只用于缩短时域。collision_min_lead_s 内的车不计硬约束（横向已来不及）；参考系分歧时走廊加宽上限 uncertain_widen_max_m。"
   },
   "traffic": {
     "exit_margin_px": 80.0,

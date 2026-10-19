@@ -215,11 +215,18 @@ class Motion:
     # 避让判成不可行（影子实测 p2 8% 全灭假象）
     corridor_check_s: float = 1.0
     collision_margin_m: float = 0.2
-    graze_gap_lane: float = 0.65
+    # 反应时内到站的车：横向动作已无法改变结果，不计入硬约束（防贴身会车
+    # 全灭后误触 CONSERVE）
+    collision_min_lead_s: float = 0.35
+    # 擦车目标距车心：物理包络+σ+余量约 2.18m，0.65 道只剩 2.5cm 带、
+    # 低于采样分辨率（整层 0 触发）；0.75 道留约 0.36m 带。
+    graze_gap_lane: float = 0.75
     coin_collect_half_lane: float = 0.35
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
+    # 参考系分歧时走廊最多加宽到此值（实测分歧可达 ±4.5m，全额加宽=走廊失效）
+    uncertain_widen_max_m: float = 0.6
     sigma_obj0_m: float = 0.15       # 对象横向不确定度基值
     sigma_obj_rate_mps: float = 0.6  # 随年龄增长
     sigma_ego0_m: float = 0.0        # fit_plant 标定
@@ -505,8 +512,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "corridor_check_s", 1.0, lo=0),
             collision_margin_m=_num_def(
                 d, "motion", "collision_margin_m", 0.2, lo=0),
+            collision_min_lead_s=_num_def(
+                d, "motion", "collision_min_lead_s", 0.35, lo=0),
             graze_gap_lane=_num_def(
-                d, "motion", "graze_gap_lane", 0.65, lo=0),
+                d, "motion", "graze_gap_lane", 0.75, lo=0),
             coin_collect_half_lane=_num_def(
                 d, "motion", "coin_collect_half_lane", 0.35, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
@@ -514,6 +523,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),
             frame_delta_max_m=_num_def(
                 d, "motion", "frame_delta_max_m", 0.2, lo=0),
+            uncertain_widen_max_m=_num_def(
+                d, "motion", "uncertain_widen_max_m", 0.6, lo=0),
             sigma_obj0_m=_num_def(d, "motion", "sigma_obj0_m", 0.15, lo=0),
             sigma_obj_rate_mps=_num_def(
                 d, "motion", "sigma_obj_rate_mps", 0.6, lo=0),

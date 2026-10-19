@@ -656,6 +656,12 @@ class DecisionEngine:
                      count=c.observed_count, conf=c.conf)
                  for c in coin_src]
         corr_ages = [b.age_ms for b in road.bands if b.age_ms is not None]
+        lw = self.cal.lane_w_m
+        # 带中心帧 → 规划器路心帧：两套估计常年差 0.2~4.5m，不统一会让
+        # frame_delta 恒超阈值、走廊按差额加宽到失效。选择器仍吃旧帧。
+        center_lane = self._corridor.center_lane
+        frame_shift = 0.0 if center_lane is None else \
+            (-center_lane * lw) - ego_m
         self._scene = build_scene(
             fid=obs.frame_id, ego_m=ego_m, road=road,
             rewards=reward_src, cars=car_src, coins=coin_src,
@@ -666,12 +672,12 @@ class DecisionEngine:
             corridor_age_max_s=self.cfg.motion.corridor_age_max_s,
             sigma_obj0_m=self.cfg.motion.sigma_obj0_m,
             sigma_obj_rate_mps=self.cfg.motion.sigma_obj_rate_mps,
-            cam_z_datum_m=CAM_Z_DATUM_M)
+            cam_z_datum_m=CAM_Z_DATUM_M, frame_shift_m=frame_shift)
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last)
         self._sel_report = rep
         self._sel_maneuver = rep.maneuver
-        lw = self.cal.lane_w_m
+
         self._sel_objs = {
             "reward": [(round(o.x / lw, 3),
                         None if o.t is None else round(o.t, 3))

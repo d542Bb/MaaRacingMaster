@@ -7,13 +7,13 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from maaracing_master.plugins.speedrush.planner import step
 from maaracing_master.plugins.speedrush.selection import (
-    BonusSource, CarSource, CoinSource, RoadFrame)
+    BonusSource, CarSource, CoinSource, RoadBand, RoadFrame)
 
-SCENE_SCHEMA = 1
+SCENE_SCHEMA = 2
 PLAN_SCHEMA = 1
 
 
@@ -55,6 +55,7 @@ class Scene:
     def as_trace(self) -> dict:
         """紧凑 trace 面：对象逐条 8 元组。"""
         return {
+            "schema": self.schema,
             "fid": self.fid,
             "ego_m": round(self.ego_x_m, 3),
             "lane_w": round(self.lane_w_m, 3),
@@ -91,6 +92,31 @@ def _sigma(age_ms: float, sigma0_m: float, rate_mps: float) -> float:
     return sigma0_m + rate_mps * max(age_ms, 0.0) / 1000.0
 
 
+def _shift_road(road: RoadFrame, shift_m: float) -> RoadFrame:
+    if shift_m == 0.0:
+        return road
+    return replace(
+        road,
+        bands=tuple(replace(
+            b,
+            left=None if b.left is None else b.left + shift_m,
+            right=None if b.right is None else b.right + shift_m)
+            for b in road.bands),
+        left_m=None if road.left_m is None else road.left_m + shift_m,
+        right_m=None if road.right_m is None else road.right_m + shift_m)
+
+
+def shift_scene(scene: Scene, shift_m: float) -> Scene:
+    """整帧平移（走廊带/对象/自车一起动，相对几何不变）。"""
+    if shift_m == 0.0:
+        return scene
+    return replace(
+        scene,
+        ego_x_m=scene.ego_x_m + shift_m,
+        road=_shift_road(scene.road, shift_m),
+        objs=tuple(replace(o, x_m=o.x_m + shift_m) for o in scene.objs))
+
+
 def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
                 rewards: list[BonusSource], cars: list[CarSource],
                 coins: list[CoinSource], executed_lane: float, origin: float,
@@ -98,8 +124,11 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
                 corridor_age_ms: float | None,
                 max_obj_age_s: float, corridor_age_max_s: float,
                 sigma_obj0_m: float, sigma_obj_rate_mps: float,
-                cam_z_datum_m: float) -> Scene:
-    """把同拍源表换算成场景帧并做年龄/σ 处理。"""
+                cam_z_datum_m: float, frame_shift_m: float = 0.0) -> Scene:
+    """把同拍源表换算成场景帧并做年龄/σ 处理。
+
+    ``frame_shift_m`` 把走廊带帧平移到规划器路心帧：带中心与路心观测是
+    两套估计，不平移会让 ``frame_delta`` 常年超阈值、走廊加宽到失效。"""
     objs: list[SceneObj] = []
     for b in rewards:
         age = getattr(b, "age_ms", 0.0) or 0.0
@@ -130,8 +159,10 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
                              age, getattr(c, "src", "group")))
     stale = corridor_age_ms is not None \
         and corridor_age_ms > corridor_age_max_s * 1000.0
-    return Scene(SCENE_SCHEMA, fid, ego_m, road, tuple(objs), lane_w_m,
-                 frame_age_ms, corridor_age_ms, stale)
+    return shift_scene(
+        Scene(SCENE_SCHEMA, fid, ego_m, road, tuple(objs), lane_w_m,
+              frame_age_ms, corridor_age_ms, stale),
+        frame_shift_m)
 
 
 @dataclass(frozen=True)
@@ -202,8 +233,10 @@ def _envelope(scene: Scene, near_z_m: float, wall_margin_m: float,
         any_band = True
         lo = max(lo, b.left + wall_margin_m - widen_m)
         hi = min(hi, b.right - wall_margin_m + widen_m)
-    if not any_band or hi < lo:
+    if not any_band:
         return None
+    # 交集为空如实返回（lo>hi）：调用方会把所有候选判走廊不可行，
+    # 不再当作“无约束”静默放行。
     return lo, hi
 
 
@@ -286,9 +319,11 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     horizon = n * dt
     frame_delta = scene.ego_x_m - ego.x_lane * lane_w
     uncertain = abs(frame_delta) > motion.frame_delta_max_m
+    widen = 0.0
+    if uncertain:
+        widen = min(abs(frame_delta), motion.uncertain_widen_max_m)
     env = _envelope(scene, motion.near_z_m,
-                    selection.wall_margin_lane * lane_w,
-                    abs(frame_delta) if uncertain else 0.0)
+                    selection.wall_margin_lane * lane_w, widen)
     if env is None:
         uncertain = True
     ego_half = selection.ego_half_lane * lane_w
@@ -317,34 +352,36 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     for idx, u in enumerate(us):
         x, v, steer = scene.ego_lane, ego.v_lane_s, ego.steer_norm
         xs_lane = [x]
+        vs_lane = [v]
         for _ in range(n):
             x, v, steer = step(x, v, steer, u, dt, plant)
             xs_lane.append(x)
+            vs_lane.append(v)
         xs_m = tuple(v * lane_w for v in xs_lane)
 
-        def solve_clear(t: float) -> float:
-            xx = _x_at(xs_m, t, dt)
-            d = float("inf")
-            for c in cars:
-                if c.t_arrive_s is not None and c.t_arrive_s > horizon:
-                    continue
-                tc = 0.0 if c.t_arrive_s is None else c.t_arrive_s
-                if c.t_arrive_s is None and (
-                        (c.z_m is not None and c.z_m > motion.near_z_m)
-                        or abs(c.x_m - scene.ego_x_m) > graze):
-                    continue                    # 远车/无 z：不进碰撞约束
-                if c.t_arrive_s is not None and abs(tc - t) > dt * 1.5:
-                    continue
-                d = min(d, abs(xx - c.x_m)
-                        - (ego_half + car_half + c.sigma_m + sig(t)
-                           + motion.collision_margin_m))
-            return d
+        def clear_at(c, t: float) -> float:
+            # 硬约束只认物理包络 + 对象定位 σ。自车开环 σ 在 2s 处可达
+            # 2m+，若计入会把擦车带整体判死；闭环节拍级重规划已吸收
+            # 这部分误差，σ 只用于缩短时域。
+            return (abs(_x_at(xs_m, t, dt) - c.x_m)
+                    - (ego_half + car_half + c.sigma_m
+                       + motion.collision_margin_m))
 
+        # 时变车只在到达时刻插值判一次（按采样 ±1.5dt 邻域判会把
+        # 擦车带两侧样本都算进来，2 米级目标带直接消失）。
+        dyn = [clear_at(c, c.t_arrive_s) for c in cars
+               if c.t_arrive_s is not None
+               and motion.collision_min_lead_s <= c.t_arrive_s <= horizon]
+        stat = [clear_at(c, t) for c in cars
+                if c.t_arrive_s is None
+                and not ((c.z_m is not None and c.z_m > motion.near_z_m)
+                         or abs(c.x_m - scene.ego_x_m) > graze)
+                for t in ts]
         corridor_ok = env is None or all(
             env[0] <= xx <= env[1]
             for xx, tt in zip(xs_m, ts)
             if tt <= motion.corridor_check_s + 1e-9)
-        min_clear = min((solve_clear(t) for t in ts), default=float("inf"))
+        min_clear = min(dyn + stat, default=float("inf"))
         feasible = corridor_ok and min_clear >= 0.0
 
         reward_hits, reward_value = 0, 0.0
@@ -352,7 +389,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             if r.t_arrive_s is None or r.t_arrive_s > horizon:
                 continue
             xr = _x_at(xs_m, r.t_arrive_s, dt)
-            tol = reward_half + r.sigma_m + sig(r.t_arrive_s)
+            # 命中判据只加对象定位 σ：自车 σ 加进命中半径会把“够不到”
+            # 也算成命中（影子实测 9~14% 奖励车命中行物理上够不到）。
+            tol = reward_half + r.sigma_m
             if abs(xr - r.x_m) <= tol:
                 reward_hits += 1
                 reward_value += max(0.0, tol - abs(xr - r.x_m))
@@ -362,7 +401,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             if tc > horizon:
                 continue
             d = abs(_x_at(xs_m, tc, dt) - c.x_m)
-            if ego_half + car_half + c.sigma_m + sig(tc) <= d <= graze:
+            # 擦车下界与碰撞硬约束同式（物理包络 + 余量），上限=目标距离。
+            if ego_half + car_half + c.sigma_m \
+                    + motion.collision_margin_m <= d <= graze:
                 pass_count += 1
                 pass_value += graze - d
         coin_count, coin_error = 0.0, 0.0
@@ -371,7 +412,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 continue
             xr = _x_at(xs_m, c.t_arrive_s, dt)
             err = abs(xr - c.x_m)
-            tol = coin_half + c.sigma_m + sig(c.t_arrive_s)
+            tol = coin_half + c.sigma_m
             if err <= tol:
                 coin_count += c.count
                 coin_error += err
@@ -392,7 +433,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                center_dev, effort, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(
-            idx, u, xs_m, xs_m[i], xs_lane[i], feasible,
+            idx, u, xs_m, xs_m[i], vs_lane[i], feasible,
             min_clear, reward_hits, reward_value, pass_count, pass_value,
             coin_count, coin_error, center_dev, effort, layer, key))
 

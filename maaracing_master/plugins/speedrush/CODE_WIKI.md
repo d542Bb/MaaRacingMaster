@@ -959,8 +959,14 @@ CRUISE 选择来源是严格字典序（奖励车 > 普通车擦边 > 金币 > �
 擦车 > 金币 > 中心带按字典序取最优；`PlanGate` 分层立即切、同层
 `switch_margin + switch_dwell_s` 防翻面。预览 `(x, v, u_ff)` 在
 `preview_s`，规划器按 `u_ff + k_p·(x_ref−x_pred) + k_d·(v_ref−v)` 跟踪。
-自车开环不确定度 `sigma_ego(t)` 进入碰撞/命中容差；超
-`sigma_ego_max_m` 缩短时域。trace 增 `scene` 与 `plan` 列。
+
+碰撞硬约束、擦车带与奖励/金币命中判据只用**物理包络 + 对象定位 σ**：
+自车开环 σ 在 2s 处可达 2m+，计入会把擦车带整体判死（0 触发），且会把
+物理上够不到的奖励车算成命中；σ 只用于 `sigma_ego_max_m` 缩短时域。
+反应时 `collision_min_lead_s` 内到站的车不计硬约束（横向已来不及，避免
+贴身会车全灭误触 CONSERVE）。场景帧与规划器路心帧统一（带帧按带中心与
+路心观测的差额平移），参考系分歧时走廊加宽上限
+`uncertain_widen_max_m`。trace 增 `scene` 与 `plan` 列。
 
 **录制对照基建（2026-10-18）**：trace 增 `sel_dbg`（选择帧 ego/中心 c0/cL/
 左右缘/路点/选择器看到的机会）、`scene`（场景快照：ego/走廊年龄/对象

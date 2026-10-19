@@ -54,6 +54,17 @@ def test_frame_symbols_and_units():
     assert s.ego_lane == pytest.approx(1.0 / LW)
 
 
+def test_frame_shift_moves_scene_to_planner_center():
+    s = _scene(origin=5.0, ego_m=1.0, frame_shift_m=2.0,
+               rewards=[BonusSource(10.0, 1.0, 0.9, age_ms=0.0)])
+    assert s.ego_x_m == pytest.approx(3.0)
+    assert s.objs[0].x_m == pytest.approx(7.0)
+    assert s.road.left_m == pytest.approx(-2.0)
+    assert s.road.right_m == pytest.approx(6.0)
+    assert s.road.bands[0].left == pytest.approx(-2.0)
+    assert _scene().ego_x_m == pytest.approx(1.0)   # 默认不平移
+
+
 def test_old_objects_dropped_and_corridor_stale():
     s = _scene(rewards=[BonusSource(0.0, 1.0, 1.0, age_ms=300.0)],
                corridor_age_ms=300.0)
@@ -181,6 +192,14 @@ def test_collision_all_infeasible_keeps_max_clearance():
 
 
 def test_corridor_all_infeasible_holds_position():
+    road = RoadFrame((RoadBand(0.0, 6.0, 6.0, 9.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 3.0, 6.0, 9.0, True)
+    p = _plan(_scene(road=road, ego_m=0.0))
+    assert not p.valid and p.reason == "plan:infeasible_corridor"
+
+
+def test_empty_corridor_intersection_not_unconstrained():
+    """交集为空时不得当成“无走廊约束”放行。"""
     road = RoadFrame((RoadBand(0.0, 6.0, 4.0, 5.0, src="measured",
                                age_ms=0.0, conf=1.0),), 1.0, 4.0, 5.0, True)
     p = _plan(_scene(road=road))
@@ -194,6 +213,43 @@ def test_corridor_checked_only_near_term():
     p = _plan(_scene(road=road, ego_m=0.0))
     assert p.valid
     assert max(p.cand_x[5]) > 6.0          # +0.55 杆 2s 确实出镜
+
+
+def test_preview_velocity_is_rollout_velocity():
+    from maaracing_master.plugins.speedrush.planner import step
+    p = _plan(_scene(road=_wide_road(),
+                     coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
+    x = v = steer = 0.0
+    for _ in range(int(round(CFG.motion.preview_s / CFG.motion.dt_s))):
+        x, v, steer = step(x, v, steer, p.u_feedforward,
+                           CFG.motion.dt_s, CFG.planner)
+    assert p.v_preview_lane_s == pytest.approx(v)
+    assert p.x_preview_lane == pytest.approx(x)
+
+
+def test_hit_tolerance_not_inflated_by_ego_sigma():
+    """自车 σ 不得把物理上够不到的奖励车算成命中。"""
+    m = replace(CFG.motion, sigma_ego0_m=2.0, sigma_ego_rate_mps=2.0,
+                sigma_ego_max_m=10.0)
+    p = _plan(_scene(road=_wide_road(),
+                     rewards=[BonusSource(4.0, 0.5, 0.9, age_ms=0.0)]),
+              motion=m)
+    assert p.valid and p.layer == 4
+
+
+def test_graze_layer_reachable_with_physical_envelope():
+    """擦车带下界=物理包络+余量；自车 σ 不得把整层判死。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
+                     cars=[CarSource(-0.107, 0.8, age_ms=0.0)]))
+    assert p.valid and p.layer == 2
+    assert p.score_key[3] < 0             # -pass_count
+
+
+def test_imminent_car_skipped_by_reaction_time():
+    """反应时内到站的车横向已来不及，不得把全部候选判成碰撞不可行。"""
+    p = _plan(_scene(road=_wide_road(),
+                     cars=[CarSource(0.0, 0.1, age_ms=0.0)]))
+    assert p.valid
 
 
 def test_stale_scene_invalid():
@@ -230,7 +286,7 @@ def test_planner_tracks_valid_plan_only():
     from maaracing_master.plugins.speedrush.planner import LateralPlanner
     from maaracing_master.plugins.speedrush.tracking import (
         DecisionOutput, DecisionState)
-    s = _scene(road=_wide_road(),
+    s = _scene(road=_wide_road(), ego_m=0.0,
                coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)])
     p = _plan(s)
     out = DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
