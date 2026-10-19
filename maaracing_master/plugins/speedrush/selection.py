@@ -25,12 +25,17 @@ from typing import Sequence
 
 @dataclass(frozen=True)
 class RoadBand:
-    """一条走廊带的左右缘（选择层坐标，米）。None=该侧无证据。"""
+    """一条走廊带的左右缘（选择层坐标，米）。None=该侧无证据。
+
+    ``src/age_ms/conf`` 是场景快照的置信面（默认值保持旧构造可用）。"""
 
     z0: float
     z1: float
     left: float | None
     right: float | None
+    src: str = "unknown"
+    age_ms: float | None = None
+    conf: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -91,6 +96,8 @@ class CoinSource:
     observed_count: float
     conf: float
     t_miss_s: float | None
+    age_ms: float = 0.0
+    src: str = "group"
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,8 @@ class BonusSource:
     t_miss_s: float
     conf: float
     tol_m: float | None = None
+    age_ms: float = 0.0
+    src: str = "pixel"
 
 
 @dataclass(frozen=True)
@@ -115,6 +124,8 @@ class CarSource:
     t_overtake_s: float | None = None
     bridged: bool = False
     z_m: float | None = None
+    age_ms: float = 0.0
+    src: str = "pixel"
 
 
 @dataclass(frozen=True)

@@ -89,6 +89,15 @@
     "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验。obs_beta 0.2→0.5（2026-10-08）：⑥b 时间基修正（分母改新证据累计间隔，台账 §4A 判据冻结）后按抖动-响应网格重标（66 trace 5.3 万拍离线回放 probe_beta_timebase）——旧 0.2 是错配时间基的产物，新基下 0.5 全面不劣（跳变 P95 −41%、跟随 lag 最快、bias −33%）",
     "obs_beta_note": "时间基=自上次速度修正的累计帧钟（新证据间隔），非控制拍 dt；标定证据 tools/experiments/speedrush_vision/probe_beta_timebase.py"
   },
+  "motion": {
+    "mode": "off",
+    "max_obj_age_s": 0.25,
+    "corridor_age_max_s": 0.25,
+    "sigma_obj0_m": 0.15,
+    "sigma_obj_rate_mps": 0.6,
+    "calibrated": false,
+    "_note": "mode=off 时只组装场景快照与 trace，不改驾驶；shadow=计划照算不接管；live 需 calibrated=true（fit_plant 通过）。对象 σ=sigma_obj0+rate·年龄。"
+  },
   "traffic": {
     "exit_margin_px": 80.0,
     "presumed_cy_px": 430.0,

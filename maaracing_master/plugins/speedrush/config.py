@@ -201,6 +201,21 @@ class Validate:
 
 
 @dataclass(frozen=True)
+class Motion:
+    """场景快照与轨迹评估参数（motion_plan 设计稿；键随阶段扩展）。
+
+    A1 只消费年龄/不确定度三件：对象超龄丢弃、走廊超龄标 stale、对象σ随龄
+    膨胀。轨迹候选/时域/门控键在评估器接线时加入，不提前占位。"""
+
+    mode: str = "off"                 # off / shadow / live
+    max_obj_age_s: float = 0.25      # 对象超龄丢弃
+    corridor_age_max_s: float = 0.25  # 走廊超龄标 stale
+    sigma_obj0_m: float = 0.15       # 对象横向不确定度基值
+    sigma_obj_rate_mps: float = 0.6  # 随年龄增长
+    calibrated: bool = False         # 标定通过才允许 live
+
+
+@dataclass(frozen=True)
 class CorridorReach:
     """走廊记忆回退与奖励车源闸。
 
@@ -277,6 +292,7 @@ class DecisionConfig:
     validate: Validate
     planner: Planner
     traffic: Traffic
+    motion: Motion = Motion()
     grid_xcheck: GridXcheck = GridXcheck()
     # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
@@ -430,8 +446,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             obs_position_only=_bool(d, "planner", "obs_position_only",
                                     default=True)),
         traffic=Traffic(
-            exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
-            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
+            exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
             ghost_max_age_ticks=_int(d, "traffic", "ghost_max_age_ticks", lo=2),
@@ -444,6 +459,16 @@ def _read_decision(path: Path) -> DecisionConfig:
             lane_vote_sigma_max=_num_def(d, "traffic", "lane_vote_sigma_max",
                                          0.6, lo=0, lo_open=False),
             width_ttl_ticks=_int_def(d, "traffic", "width_ttl_ticks", 6, lo=0)),
+        motion=Motion(
+            mode=_str_def(d, "motion", "mode", "off",
+                          ("off", "shadow", "live")),
+            max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
+            corridor_age_max_s=_num_def(
+                d, "motion", "corridor_age_max_s", 0.25, lo=0),
+            sigma_obj0_m=_num_def(d, "motion", "sigma_obj0_m", 0.15, lo=0),
+            sigma_obj_rate_mps=_num_def(
+                d, "motion", "sigma_obj_rate_mps", 0.6, lo=0),
+            calibrated=_bool(d, "motion", "calibrated", default=False)),
         grid_xcheck=GridXcheck(
             mode=_str_def(d, "grid_xcheck", "mode", "off",
                           ("off", "master", "veto")),

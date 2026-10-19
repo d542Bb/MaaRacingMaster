@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import Corridor
 from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
+from maaracing_master.plugins.speedrush.motion_plan import build_scene
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, LayeredSelector, Obj, RoadBand,
     RoadFrame, SelectionParams, SelectionReport)
@@ -240,6 +241,9 @@ class DecisionEngine:
         self._sel_dbg: dict | None = None
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
+        self._fid = 0
+        self._fps: float | None = None
+        self._scene = None
         self.reset()
 
     def reset(self) -> None:
@@ -267,6 +271,7 @@ class DecisionEngine:
         self._corridor: Corridor | None = None
         self._reach_goal: float | None = None
         self._bonus_src = 0                 # 上一拍奖励车源数（cr_bonus_src 观测面）
+        self._scene = None
 
     # ---------- 主入口 ----------
 
@@ -285,6 +290,8 @@ class DecisionEngine:
         corridor 带给出）。``corridor``：同拍分带走廊，选择层唯一的空间证据；
         None=无路，持守当前横位。"""
         self._dt_last = dt_s
+        self._fid = obs.frame_id
+        self._fps = obs.fid_rate_hz
         self._views, self._events = traffic if traffic is not None else ((), ())
         # 车米制状态实例通道（C 线 2026-10-12，闸 metric_cars.enabled）：车源
         # 链消费（米制优先、像素回退）；闸关=空（回退路径）。
@@ -321,6 +328,7 @@ class DecisionEngine:
         if self._state is not DecisionState.CRUISE:
             # 非巡航态：选择层目标不生效，观测列如实清空（不把陈旧值当本拍）
             self._exec_branch = "hold"
+            self._scene = None
 
         # 输出目标：选择层已给出本拍唯一目标；目标缺席时对齐自车当前位。
         # 输出再过 slew 限速，单拍层切换不直接变成打舵指令。
@@ -371,6 +379,12 @@ class DecisionEngine:
 
 
 
+    def _age_ms(self, last_fid: int | None) -> float:
+        """帧号差 → 毫秒（帧率未预热时=0，不臆造年龄）。"""
+        if last_fid is None or not self._fps or self._fps <= 0:
+            return 0.0
+        return max(0, self._fid - last_fid) / self._fps * 1000.0
+
     def _coin_sources(self, obs: WorldObservation,
                       executed_lane: float) -> list[CoinSource]:
         """币组 → 选择/收益场源（路心系米）。确认窗与置信地板同源。"""
@@ -389,7 +403,8 @@ class DecisionEngine:
             coins.append(CoinSource(
                 x_m=(g.x_center + executed_lane) * lane_w,
                 observed_count=g.observed_count, conf=g.conf_min,
-                t_miss_s=s.t_miss_s))
+                t_miss_s=s.t_miss_s,
+                age_ms=self._age_ms(g.last_seen_fid)))
         return coins
 
     def _bonus_sources(self, obs: WorldObservation,
@@ -412,7 +427,8 @@ class DecisionEngine:
                     continue                    # 到站仪器无解：不追
                 bonuses.append(BonusSource(
                     x_m=(b.x_lane + executed_lane) * lane_w,
-                    t_miss_s=t_miss, conf=b.conf))
+                    t_miss_s=t_miss, conf=b.conf,
+                    age_ms=self._age_ms(b.last_seen_fid)))
             bonuses.extend(self._reach_bonus_far_sources(obs, executed_lane))
         self._bonus_src = len(bonuses)
         return bonuses
@@ -456,7 +472,7 @@ class DecisionEngine:
                 continue                        # 到站仪器无解：不追
             out.append(BonusSource(
                 x_m=(x_coarse + executed_lane) * lane_w,
-                t_miss_s=t_miss, conf=b.conf))  # tol_m 缺省=bonus_tol_m（近远场同源）
+                t_miss_s=t_miss, conf=b.conf, src="far"))  # tol_m 缺省=bonus_tol_m（近远场同源）
         return out
 
     def _reach_car_sources(self, executed_lane: float) -> list[CarSource]:
@@ -472,11 +488,12 @@ class DecisionEngine:
         def enter(x: float | None, tm: float | None,
                   t_ov: float | None = None,
                   bridged: bool = False,
-                  z_m: float | None = None) -> None:
+                  z_m: float | None = None,
+                  age_ms: float = 0.0, src: str = "pixel") -> None:
             if x is not None and x == x:
                 out.append(CarSource(x_m=x + off, t_meet_s=tm,
                                      t_overtake_s=t_ov, bridged=bridged,
-                                     z_m=z_m))
+                                     z_m=z_m, age_ms=age_ms, src=src))
 
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
@@ -510,12 +527,15 @@ class DecisionEngine:
             else:
                 continue                        # 无视图的远轨必有锚
             seen.add(m.target_id)
-            enter(x, tm, t_ov, bridged=bridged, z_m=m.z_m)
+            enter(x, tm, t_ov, bridged=bridged, z_m=m.z_m,
+                  age_ms=(m.anchor_age_ms or 0.0), src="metric")
         for vid, v in by_id.items():
             if vid in seen or v.cy >= self.cal.v_ego:
                 continue                        # 米制路径已入账，不双计
             x, tm = self.scorer.pixel_instruments(v)
-            enter(None if x is None else x * lane_w, tm)
+            enter(None if x is None else x * lane_w, tm,
+                  age_ms=(v.age_ticks / self._fps * 1000.0
+                          if self._fps else 0.0))
         return out
 
     @property
@@ -550,7 +570,7 @@ class DecisionEngine:
 
     # ---------- 四层选择（2026-10-18 走廊重建） ----------
 
-    def _road_frame(self, executed: float):
+    def _road_frame(self, executed: float, fid: int):
         """走廊分带 → 选择层帧（中心在自车站为 0，米）+ 自车横位。
 
         origin 一次平移：把「自车系 + executed 平移」的走廊带、目标和自车
@@ -561,11 +581,12 @@ class DecisionEngine:
             return None
         lane_w = self.cal.lane_w_m
         shift = executed * lane_w
-        raw: list[tuple[float, float, float, float]] = []
+        raw: list[tuple] = []
         for b in self._corridor.bands:
             if b.left.x_m is None or b.right.x_m is None:
                 continue
-            raw.append((b.z0, b.z1, b.left.x_m + shift, b.right.x_m + shift))
+            raw.append((b.z0, b.z1, b.left.x_m + shift, b.right.x_m + shift,
+                        b.left, b.right))
         if not raw:
             return None
 
@@ -578,8 +599,16 @@ class DecisionEngine:
             return pick(best, 0.0 if z < best[0] else 1.0)
 
         origin = _at(0.0, lambda b, k: 0.5 * (b[2] + b[3]))
-        bands = tuple(RoadBand(z0, z1, l - origin, r - origin)
-                      for z0, z1, l, r in raw)
+        bands = []
+        for z0, z1, l, r, lb, rb in raw:
+            ages = [a for a in (self._age_ms(lb.last_fid),
+                                self._age_ms(rb.last_fid)) if a is not None]
+            bands.append(RoadBand(
+                z0, z1, l - origin, r - origin,
+                src=(lb.src if lb.src == rb.src else "mixed"),
+                age_ms=(max(ages) if ages else None),
+                conf=min(lb.conf, rb.conf)))
+        bands = tuple(bands)
         left0 = _at(0.0, lambda b, k: b[2]) - origin
         right0 = _at(0.0, lambda b, k: b[3]) - origin
         width = (right0 - left0) if right0 > left0 else (
@@ -594,33 +623,50 @@ class DecisionEngine:
         if executed is None or self._corridor is None:
             self._reach_goal = None
             self._exec_branch = "hold"
+            self._scene = None
             self._sel_report = None
             self._sel_maneuver = False
             self._sel_objs = {"reward": [], "car": [], "coin": []}
             self._sel_dbg = None
             return "sel:hold:no_road"
-        rf = self._road_frame(executed)
+        rf = self._road_frame(executed, obs.frame_id)
         if rf is None:
             self._reach_goal = None
             self._exec_branch = "hold"
+            self._scene = None
             self._sel_report = None
             self._sel_maneuver = False
             self._sel_objs = {"reward": [], "car": [], "coin": []}
             self._sel_dbg = None
             return "sel:hold:no_road"
         road, ego_m, origin = rf
+        reward_src = self._bonus_sources(obs, executed)
+        car_src = self._reach_car_sources(executed)
+        coin_src = self._coin_sources(obs, executed)
         rewards = [Obj("reward", b.x_m - origin, b.t_miss_s,
                        conf=b.conf)
-                   for b in self._bonus_sources(obs, executed)]
+                   for b in reward_src]
         cars = [Obj("car",
                     c.x_m - origin - (road.center_at(
                         c.z_m - CAM_Z_DATUM_M)
                         if c.z_m is not None else 0.0),
                     c.t_meet_s)
-                for c in self._reach_car_sources(executed)]
+                for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
                      count=c.observed_count, conf=c.conf)
-                 for c in self._coin_sources(obs, executed)]
+                 for c in coin_src]
+        corr_ages = [b.age_ms for b in road.bands if b.age_ms is not None]
+        self._scene = build_scene(
+            fid=obs.frame_id, ego_m=ego_m, road=road,
+            rewards=reward_src, cars=car_src, coins=coin_src,
+            executed_lane=executed, origin=origin, lane_w_m=self.cal.lane_w_m,
+            frame_age_ms=obs.frame_age_ms,
+            corridor_age_ms=(max(corr_ages) if corr_ages else None),
+            max_obj_age_s=self.cfg.motion.max_obj_age_s,
+            corridor_age_max_s=self.cfg.motion.corridor_age_max_s,
+            sigma_obj0_m=self.cfg.motion.sigma_obj0_m,
+            sigma_obj_rate_mps=self.cfg.motion.sigma_obj_rate_mps,
+            cam_z_datum_m=CAM_Z_DATUM_M)
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last)
         self._sel_report = rep
@@ -660,6 +706,11 @@ class DecisionEngine:
             return "sel:hold:no_road"
         self._exec_branch = "follow"
         return f"sel:{rep.why}"
+
+    @property
+    def scene(self):
+        """上一拍场景快照（CRUISE+有路才有；None=无路/非巡航）。"""
+        return self._scene
 
     @property
     def selection_report(self) -> SelectionReport | None:

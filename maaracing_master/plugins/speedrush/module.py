@@ -967,6 +967,8 @@ class SpeedRushModule(ActivityModule):
             # 选择帧快照（录制对照/参数校准）：ego/中心/左右缘/路点/机会
             # 全部在同一个选择层坐标（道），离线可直接和人工 executed 对齐
             "sel_dbg": eng.selection_debug,
+            # 场景快照（motion_plan 输入面）：自车/走廊年龄/对象年龄与 σ
+            "scene": None if eng.scene is None else eng.scene.as_trace(),
             # 墙线拟合段：side,z0,z1,a(道),b；录制局用来核对方程是否锁对墙
             "wlc_seg": None if wlc is None else [
                 [side, round(s.z0, 2), round(s.z1, 2),
