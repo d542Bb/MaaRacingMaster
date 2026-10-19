@@ -954,13 +954,18 @@ CRUISE 选择来源是严格字典序（奖励车 > 普通车擦边 > 金币 > �
 三档——`off`（只组装场景快照，驾驶逐位同旧链）、`shadow`（计划照算、
 记录 trace，控制器仍走旧目标）、`live`（计划有效时接管杆值，需
 `motion.calibrated=true`，否则加载 fail-loud）。每拍把场景快照喂纯函数
-`plan_motion`：7 条常杆 + 保持当前杆共 8 条候选，用 `planner.step` 同一
+`plan_motion`：配置的常杆档位 + 保持当前杆作为候选集，用 `planner.step` 同一
 动力学在 `horizon_s` 内前推；近场走廊交集是硬约束，普通车碰撞只扣价值。
 
 评估器**按期望价值相加**（RULES §4.2/§4.11）：擦车 120/辆走量、金币按组
 90（空中组观测 ≥4 枚按 120）、奖励车 240/次（偶发高值，不再无条件优先）、
-普通车碰撞按 60 + 重叠深度 120/m 扣分；`PlanGate` 按价值差
-`switch_margin` + `switch_dwell_s` 防翻面。预览 `(x, v, u_ff)` 在
+普通车碰撞按 60 + 重叠深度 120/m 扣分；2s 外的金币/奖励车按
+`preposition_discount` 折扣计入“2s 末端更靠近”，提前把车带向下一组机会。
+`PlanGate` 价值差用 `switch_margin`、同价值时中心/动作改善用
+`switch_geom_margin`，都需保持 `switch_dwell_s`。中心目标带
+`center_band_lane` 内不修正、带外只罚超出量，无机会时杆幅不超过
+`center_stick_max`；动作成本按相对当前杆的改动量计。常杆档位含
+±0.1/±0.2/±0.35 细档，避免中心修正只能“不动或过冲”。预览 `(x, v, u_ff)` 在
 `preview_s`，规划器按 `u_ff + k_p·(x_ref−x_pred) + k_d·(v_ref−v)` 跟踪。
 
 碰撞、擦车带与奖励/金币命中判据只用**物理包络 + 对象定位 σ**：自车开环

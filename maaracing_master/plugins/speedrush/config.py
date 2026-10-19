@@ -208,8 +208,8 @@ class Motion:
     horizon_s: float = 2.0
     preview_s: float = 0.2
     dt_s: float = 0.05
-    steer_levels: tuple[float, ...] = (-0.85, -0.55, -0.3, 0.0,
-                                       0.3, 0.55, 0.85)
+    steer_levels: tuple[float, ...] = (
+        -0.85, -0.55, -0.35, -0.2, -0.1, 0.0, 0.1, 0.2, 0.35, 0.55, 0.85)
     near_z_m: float = 6.0
     # 走廊约束只验前 1.0s：恒定杆 2s 必然驶出近场包络，硬验全程会把必要的
     # 避让判成不可行（影子实测 p2 8% 全灭假象）
@@ -234,6 +234,10 @@ class Motion:
     # 防无机会时的画龙（旧选择层同口径 0.3 道 / 0.45 杆幅）。
     center_band_lane: float = 0.3
     center_stick_max: float = 0.45
+    # 视界外预置：2s 外的金币/奖励车按折扣价计入“2s 末端更靠近”，
+    # 避免只在目标进入视界后才动作（旧选择层 preposition 的价值版）。
+    preposition_horizon_s: float = 4.0
+    preposition_discount: float = 0.3
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
@@ -245,6 +249,7 @@ class Motion:
     sigma_ego_rate_mps: float = 0.0  # fit_plant 标定
     sigma_ego_max_m: float = 1.2     # 超此缩短时域
     switch_margin: float = 30.0      # 价值差门槛（分）
+    switch_geom_margin: float = 0.03  # 同价值时中心/动作改善门槛（道）
     switch_dwell_s: float = 0.2
     score_epsilon: float = 1e-3
     infeasible_conserve_ticks: int = 3
@@ -518,7 +523,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             dt_s=_num_def(d, "motion", "dt_s", 0.05, lo=0),
             steer_levels=_floats_def(
                 d, "motion", "steer_levels",
-                (-0.85, -0.55, -0.3, 0.0, 0.3, 0.55, 0.85)),
+                (-0.85, -0.55, -0.35, -0.2, -0.1, 0.0,
+                 0.1, 0.2, 0.35, 0.55, 0.85)),
             near_z_m=_num_def(d, "motion", "near_z_m", 6.0, lo=0),
             corridor_check_s=_num_def(
                 d, "motion", "corridor_check_s", 1.0, lo=0),
@@ -544,6 +550,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "center_band_lane", 0.3, lo=0),
             center_stick_max=_num_def(
                 d, "motion", "center_stick_max", 0.45, lo=0),
+            preposition_horizon_s=_num_def(
+                d, "motion", "preposition_horizon_s", 4.0, lo=0),
+            preposition_discount=_num_def(
+                d, "motion", "preposition_discount", 0.3, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
             corridor_age_max_s=_num_def(
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),
@@ -562,6 +572,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             sigma_ego_max_m=_num_def(
                 d, "motion", "sigma_ego_max_m", 1.2, lo=0),
             switch_margin=_num_def(d, "motion", "switch_margin", 30.0, lo=0),
+            switch_geom_margin=_num_def(
+                d, "motion", "switch_geom_margin", 0.03, lo=0),
             switch_dwell_s=_num_def(
                 d, "motion", "switch_dwell_s", 0.2, lo=0),
             score_epsilon=_num_def(

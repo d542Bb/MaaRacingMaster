@@ -261,8 +261,9 @@ class PlanGate:
     """候选时稳：价值差超 margin 且保持 dwell 才换，防逐拍翻面。"""
 
     def __init__(self, switch_margin: float, dwell_s: float,
-                 epsilon: float):
+                 epsilon: float, geom_margin: float = 0.03):
         self.margin = switch_margin
+        self.geom_margin = geom_margin
         self.dwell = dwell_s
         self.eps = max(epsilon, 1e-9)
         self._idx: int | None = None
@@ -298,7 +299,15 @@ class PlanGate:
             self._idx, self._key, self._streak = best.idx, self._q(best.key), 0.0
             return best
         kb, ki = self._q(best.key), self._q(inc.key)
-        if kb < ki and self._gap(kb, ki) > self.margin:
+        better = False
+        if kb[1] < ki[1] - self.margin:
+            better = True                       # 价值显著更高
+        elif abs(kb[1] - ki[1]) <= self.eps:
+            # 同价值时比较几何/动作键；中心修正量级远小于价值分，
+            # 用独立的小门槛，否则车会永远卡在最初的直行候选上。
+            better = kb[2:] < ki[2:] \
+                and self._gap(kb[2:], ki[2:]) > self.geom_margin
+        if better:
             self._streak += dt
             if self._streak >= self.dwell:
                 self._idx, self._key, self._streak = best.idx, kb, 0.0
@@ -428,7 +437,27 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 coin_error += err
         if coin_hits > 0:
             coin_error /= coin_hits
-        value = reward_value + pass_value + coin_value - collision_cost
+        # 视界外预置：2s 末端的横位更靠近未来金币/奖励车，按折扣计分。
+        # 不加车辆项——近场擦车由 2s 内的正常评分负责。
+        prep_value = 0.0
+        prep_h = motion.preposition_horizon_s
+        if prep_h > horizon:
+            x_end = xs_m[-1]
+            for r in rewards:
+                if r.t_arrive_s is None or not (horizon < r.t_arrive_s <= prep_h):
+                    continue
+                if abs(x_end - r.x_m) <= reward_half + r.sigma_m:
+                    prep_value += motion.value_reward \
+                        * motion.preposition_discount
+            for c in coins:
+                if c.t_arrive_s is None or not (horizon < c.t_arrive_s <= prep_h):
+                    continue
+                if abs(x_end - c.x_m) <= coin_half + c.sigma_m:
+                    prep_value += (motion.value_coin_air if c.count >= 4
+                                   else motion.value_coin_group) \
+                        * motion.preposition_discount
+        value = (reward_value + pass_value + coin_value - collision_cost
+                 + prep_value)
         # 中心目标带死区：带内不修正（旧选择层同口径），只在带外惩罚超出量。
         band_m = motion.center_band_lane * lane_w
         center_dev = sum(max(0.0, abs(xx - center0) - band_m)

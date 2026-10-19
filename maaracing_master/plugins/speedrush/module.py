@@ -787,7 +787,8 @@ class SpeedRushModule(ActivityModule):
                     # 轨迹计划（motion.mode=off 时恒不调用）：候选时稳门随阶段重建
                     "gate": PlanGate(cfg.motion.switch_margin,
                                      cfg.motion.switch_dwell_s,
-                                     cfg.motion.score_epsilon),
+                                     cfg.motion.score_epsilon,
+                                     cfg.motion.switch_geom_margin),
                     "plan_bad": 0,
                     "last_plan": None,
                     "last_plan_ego": None,

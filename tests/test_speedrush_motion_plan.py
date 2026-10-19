@@ -158,7 +158,7 @@ def _wide_road():
 def test_eight_candidates_and_determinism():
     s = _scene(road=_wide_road())
     a, b = _plan(s), _plan(s)
-    assert len(a.cand_x) == 8
+    assert len(a.cand_x) == len(CFG.motion.steer_levels) + 1
     assert (a.chosen, a.score_key, a.x_preview_m) == \
         (b.chosen, b.score_key, b.x_preview_m)
 
@@ -205,6 +205,15 @@ def test_coin_layer_when_no_car_or_reward():
     assert p.score_key[1] <= -90.0         # -value（空中组 120）
 
 
+def test_preposition_biases_toward_future_coin():
+    """2s 外的金币也要提前把车带向币线，而不是等到进视界才动。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
+                     coins=[CoinSource(2.0, 3, 0.9, 3.0, age_ms=0.0)]),
+              ego=EgoState(0.0, 0.0, 0.0))
+    assert p.valid and p.layer == 4
+    assert p.u_feedforward > 0
+
+
 def test_collision_is_soft_cost_not_infeasible():
     """普通车碰撞只扣价值，不再把全部候选判成不可行。"""
     cars = [CarSource(-2.0, 0.5, age_ms=0.0),
@@ -245,7 +254,7 @@ def test_corridor_checked_only_near_term():
                                age_ms=0.0, conf=1.0),), 12.0, -6.0, 6.0, True)
     p = _plan(_scene(road=road, ego_m=0.0))
     assert p.valid
-    assert max(p.cand_x[5]) > 6.0          # +0.55 杆 2s 确实出镜
+    assert max(max(c) for c in p.cand_x) > 6.0
 
 
 def test_preview_velocity_is_rollout_velocity():
@@ -305,14 +314,15 @@ def test_sigma_ego_shortens_horizon():
     assert len(p.cand_x[0]) < int(round(CFG.motion.horizon_s / CFG.motion.dt_s)) + 1
 
 
-def _c(idx, value, feasible=True):
-    key = (not feasible, -value, 0.0, 0.0, 0.0, idx)
+def _c(idx, value, feasible=True, center=0.0):
+    key = (not feasible, -value, 0.0, center, 0.0, idx)
     return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, feasible, 9.0,
                  0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value)
 
 
 def test_gate_requires_value_margin_and_dwell():
-    g = PlanGate(switch_margin=30.0, dwell_s=0.1, epsilon=1e-3)
+    g = PlanGate(switch_margin=30.0, dwell_s=0.1, epsilon=1e-3,
+                 geom_margin=0.03)
     inc, better = _c(3, 100.0), _c(4, 200.0)
     assert g.choose([inc], 0.05).idx == 3
     assert g.choose([better, inc], 0.05).idx == 3      # 第一次只计 streak
@@ -320,6 +330,14 @@ def test_gate_requires_value_margin_and_dwell():
     # 价值差小于 margin：维持现任
     tiny = _c(5, 120.0)
     assert g.choose([tiny, better], 0.05).idx == 4
+    # 同价值时，中心改善超过几何门槛也应换（否则卡死在直行候选）
+    cur = _c(6, 0.0, center=1.0)
+    near = _c(7, 0.0, center=0.5)
+    g2 = PlanGate(switch_margin=30.0, dwell_s=0.1, epsilon=1e-3,
+                  geom_margin=0.03)
+    assert g2.choose([cur], 0.05).idx == 6
+    assert g2.choose([near, cur], 0.05).idx == 6
+    assert g2.choose([near, cur], 0.05).idx == 7
 
 
 def test_planner_tracks_valid_plan_only():
