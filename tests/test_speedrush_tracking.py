@@ -263,7 +263,7 @@ def test_observation_is_json_serializable():
 def test_decision_output_contract_shape():
     """DecisionOutput 生产者属 step 4，但契约形状与枚举值现在锁死。"""
     d = DecisionOutput(schema_version=SCHEMA_VERSION, state=DecisionState.CONSERVE,
-                       x_target=0.0, move_allowed=False,
+                       x_target=0.0,
                        reason="validate_fail:frame_stale",
                        emitted_fid=42, valid_until_fid=44)
     j = to_jsonable(d)

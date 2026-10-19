@@ -56,10 +56,9 @@ def replay(rows: list[dict], over: dict | None = None, pair_only: bool = False):
     out = []
     for r in rows:
         d = DecisionOutput(
-            schema_version=2, state=DecisionState(r["state"]), target_id=None,
-            x_target=r["x_target"], move_allowed=True, reason=r.get("reason", ""),
-            emitted_fid=r["fid"], valid_until_fid=r["fid"] + valid_ticks,
-            reanchor_lane=r.get("reanchor_lane"))
+            schema_version=5, state=DecisionState(r["state"]),
+            x_target=r["x_target"], reason=r.get("reason", ""),
+            emitted_fid=r["fid"], valid_until_fid=r["fid"] + valid_ticks)
         ro = r.get("road_offset")
         if pair_only and r.get("ro_source") != "pair":
             ro = None

@@ -149,8 +149,8 @@
   能力（录制期不创建虚拟设备，机器没装 ViGEmBus 也能录）。机制见主文档关于
   `ActivityModule` 启动约束的说明。
 - **录制模式同时跑决策链影子观察**：人驾期间感知→决策→规划照跑但不接入手柄（不下发，
-  车只听人），trace 与控制局同列同语义——`steer` 列=本应下发的反事实杆值、`cr_best`=
-  走廊收益场本拍选点、`executed_lane`=深度路心观测重锚的人工实际横位。trace 落
+  车只听人），trace 与控制局同列同语义——`steer` 列=本应下发的反事实杆值、`sel_layer/sel_why`=
+  四层选择本拍层与原因、`executed_lane`=深度路心观测重锚的人工实际横位。trace 落
   `debug/speedrush/<会话>/trace/`（受 debug 总闸），与录制帧、HUD 读数同会话对齐。
 - 门控判定日志带 `frame=`，与 `frames.jsonl` 的 `frame_id` 对齐（日志墙钟只到秒，帧号才是
   可靠的共同坐标）。导出判定时刻的画面用
@@ -453,20 +453,21 @@ v_ego>y_h）任一不过即拒载并写明原因；`allow_car_graze=true` 在 v1
 DecisionEngine（FSM 四态）。时钟用 tick 累计（回放与实机同一确定性，不读墙钟）；
 输出 `DecisionOutput`（reason/valid_until 齐备可回放）。
 
-**决策层换血（2026-10-18，用户定案：场即选择器，算场→跟场）**：走廊收益场
-（corridor_reach，见 §16.1）沿走廊 0.5m 步进采样候选横位逐位打分——金币整组值/
-错身 pass/擦边 E 项/奖励车收益 − 碰撞与窄缝大负罚 − 软净空罚 − 位移代价；胜出位
-每拍滚动为目标，轨迹采样器执行。承诺制（意图/完成判据/缺席记忆）、目标锁定
-（σ/紧急回避/否则决）、legacy 目标链（选目标打分/超车目标/冷却）同日退役
-（修产生与生命周期的判层结论一脉相承：补丁堆的根源是规划器消费对象不消费
-空间；历史结论由 commit 指针回溯）。稳定化=场逐拍滚动 + 轨迹采样器 + 输出
-低通；报告缺席拍冻结上一拍场选点（预算 corridor_reach.absence_budget_s 内），
-超预算冻结自车当前位。横向安全三层：场净空项（软罚=净空不对称时的优先级
-比较，context steering max 规则；硬约束=候选两侧最近障碍间距窄于车体判
-blocked，与碰撞同级）+ 轨迹采样器 veto（静态车距接触界 0.45 道，危险窗按
-到站截断）+ 致命信号 ABORT 有界回稳。FSM：CRUISE 场跟随 / ABORT（fatal
-触发）/ CONSERVE 保持+禁变道 / FAULT 纯直行；采样被拒不进状态动作
-（blocked=原地持守是场跟随的自然语义，破判进 ABORT 会制造 abort 震荡）。
+**决策层（2026-10-18 走廊重建：四层字典序）**：`selection.py` 是唯一选择器，
+按严格优先级取第一个可行项：
+
+1. 奖励车（`bonus`）：可行就撞；
+2. 普通车擦边：同路径前车两侧选空间大的一侧，目标距车心 `graze_gap_lane`；
+3. 金币：取价值最高的可达组，目标落币线；
+4. 走廊中心带：带内目标=当前横位（不修正），带外只去近侧带边（不追正中）。
+
+层间不求和、没有平手阈；主目标之前最多插 3 个 3 秒路点（必须错开的车优先、
+顺路金币次之），路点逐个过 `t_move=0.3+2.0·|Δx|` 可行性检查，不可行就丢，
+不影响主目标。输出过 2.0 道/s slew；同层目标变化超过半道且持续 0.2s 才切，
+层变化立即切。已有删除：走廊收益场加性打分、轨迹候选集与采样器否决、栅格
+绝对否决、目标迟滞三件套、车道号成员投票。横向安全由选择层的目标夹取
+（走廊缘 ±wall_margin）与擦边/碰撞窗承担，不再有第二套否决器。FSM 不变：
+CRUISE 选择 / ABORT（fatal 触发）/ CONSERVE 保持+禁变道 / FAULT 纯直行。
 
 **第八轮取证换装（trace 211134/211402/211445 三局，调试图逐帧肉眼复核）**：
 用户裁定停止对 trace 数字过拟合、把 debug 图像通道拉起来后实锤——**找边假设
@@ -509,7 +510,7 @@ zc10 实测 −5.6/+30.6，被中位数兜底混进读数）。**金标语义复
 −10.4m 高 1.0m、R +9.8m、000906 R +9.1m）。锁区间按墙基/kerb 台阶语义重推
 导（±0.5m 口径不变）：000100 双侧新增锚、000906 R 1.4~2.4→2.66~2.96、
 000340 L −3.2~−2.2→−3.14~−2.85。（第九轮验收随决策层 2026-10-18 换血翻面：回避/否则决/veto 链退役，
-替代验收面=场净空列 cr_* 与转向表现。）
+替代验收面=选择层 `sel_layer/sel_why/sel_nwp` 与转向表现。）
 
 **评分偏序锁**（验收 3）：枚数/距离/横移/conf 四向单调各一测；conf 线性斜坡
 +地板（低于 conf_floor 直接 None）；远离目标 life 折扣归零；存续组 conf=0 自动
@@ -519,19 +520,20 @@ zc10 实测 −5.6/+30.6，被中位数兜底混进读数）。**金标语义复
 低估）——单 coin track 断链/换 id 只伤自己的累积账，不伤横截面这本账；
 超车候选也用同一积分形状（2026-10-11 换基：per-car k=rel/(cy−y_h)²，rel 本
 就是相对接近率，他车非静止天然在内；换算秒吃采集帧率 fid_rate_hz——Tracker
-逐拍在线估计随 obs 下发，px/fid≠px/tick 的旧消费口径恒定高估 TTC ~1.9x，
-ttc_dodge_s 已随 1.0→0.55 重标保触发点，回避链退役后此到站仪器由场车源
-链与采样器危险窗继续消费）；rel>0 门兼方向自卫语义不变。
-FSM 全矩阵单测含 V0 直行门（`allow_all_moves=false`）与 CONSERVE 出口重置面断言。
+逐拍在线估计随 obs 下发，px/fid≠px/tick 的旧消费口径恒定高估 TTC ~1.9x；
+回避状态机退役后，此到站仪器由选择层车源（擦边/碰撞窗）继续消费）；
+rel>0 门兼方向自卫语义不变。
+FSM 全矩阵单测含 CONSERVE 出口重置面断言。
 
 **状态**：决策层**已接实机**（控制链 `_control_tick` 全链：感知→跟踪→聚合→深度
-几何→决策→规划→手柄；阶段二轨迹采样与 S2-B 栅格裁决已产线，验收面=trace
-`traj_diag` 列）——本行 2026-10-05 修正，原文「未接实机」已过时；接入前证据=
-§八 step 5 离线全链路（到场轮 8 场 7188 帧，证据 commit `92656bb`）。
+几何→四层选择→规划→手柄；2026-10-18 起验收面=trace `sel_layer/sel_why/sel_nwp`
+与 `goal`，轨迹采样器的 `traj_diag` 列已随旧链删除）——本行
+2026-10-05 修正，原文「未接实机」已过时；接入前证据=§八 step 5 离线全链路
+（到场轮 8 场 7188 帧，证据 commit `92656bb`）。
 两处实测修正已入：conf 折扣改分段爬坡
 （coin conf 中位 0.87，旧线性式系统性压低）；t_empty_s 1.5→2.0（真人局空街 P75=1.1s）。
-**行为基线**：v1 coin-only 真人局几乎不变道（7188 帧 1 次，门因分解见实验 README）——
-是否调低 min_score=20 属行为倾向，归维护者。timing 的 lane_change_base/k 经 §七.1
+**行为基线**：v1 coin-only 真人局几乎不变道（7188 帧 1 次，门因分解见实验 README）。
+timing 的 lane_change_base/k 经 §七.1
 两代方法仍信号不足（练习局连续打舵不可归因），维持设计起值，复测需孤立变道素材；
 boundary 残差实测 P50=0.68/P90=2.09——straight_residual_max 起值 0.6 定错档，
 接线校验时按 P90+ 重定。
@@ -717,14 +719,14 @@ commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为
   **规划曲线不臆造 t→z 映射**，以子带呈现。
 - **与 depth_geo 证据包的关系**：取证写手（`_evid.npz` 点云证据）独立照旧，
   不受 debug 开关门管——两者互补（一个供管线离线复算，一个供驾驶面目检）。
-- **消费链**：`engine.traj_plan`（中选轨迹本体，coeffs 不进 trace）为调试图
-  专用只读面。
+- **消费链**：调试图子带显示 `sel_layer/sel_why/sel_nwp/x_target`（选择层
+  观测面）；轨迹候选集已删除，不再渲染 d(t) 曲线。
 
 ## 14. 计划层（2026-10-18 退役）（本域）
 
-plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖励车/擦边候选
-几何与收益语义全部在场（corridor_reach）内承担（撞奖励车=收益入口、擦边=
-贴身 E 项），历史结论由 commit 指针回溯。
+plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖励车/擦边/金币
+机会统一由四层选择器（`selection.py`）承担（撞奖励车=第一层、擦边=第二层），
+历史结论由 commit 指针回溯。
 
 ## 15. 路心供数稳态化（新鲜度纪律 + 栅格互证，2026-10-06）（本域）
 
@@ -750,7 +752,8 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
   不是独立传感器**——一致不加分，只在分歧时否决；深度共同错误兜不住。
 - **审计面先于供数闸**：闸关时 `ro_grid`（trace 列）/`cg`（BEV 线）照常
   落盘——先看实机分歧率再定开闸。blocked 语义在 `DrivableGrid` docstring
-  曾写"软代价"与 latsample 实装（一票否决）相悖，已按实装更正。
+  曾写"软代价"，与旧轨迹采样器的一票否决相悖；采样器已于 2026-10-18 删除，
+  现由选择层的走廊夹取/碰撞窗承担安全面。
 - **遗留（带触发条件）**：id63 lat_veto 时 v_lat≈0 仍被否——CarView x_lane
   取证单独做；overtake_lost 语义（超越完成 vs 跟丢）待维护者裁定；
   跟踪近车 cy≈345 一局出现 5 次的重关联观察项。
@@ -792,7 +795,7 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
 拼装）+ `module.py::_EgoRoadObserver`（供数门→优先级链）+ `wall_track.py::WallTrack`
 （墙实体，第 5 步）。update 吐 **Corridor**（不再吐单值 off）；planner 吃
 road_offset=−corridor.center_lane（极性与旧式同，跨层极性契约门禁不豁免），
-engine 吃走廊带来源规则（`decision._side_has_space`）。
+选择层直接用走廊带边界做目标夹取与中心带。
 
 **供数合并成一条优先级链**（mode 只决定候选排序，旧两路降级审计面）：
 - off/veto：pair → wall → pair_slot → region → None；
@@ -808,17 +811,28 @@ conf≥OCCL_MIN_CONF 的历史证据）把 sides=1/0 型从全盲变半盲供数
 永远 inferred 不冒充实测）> unknown（无证据）。far_trend（远场墙走向斜率，
 只预判不硬否决）与 plane_health（ok/degraded/none）随走廊走。
 
-**消费端**：`_side_has_space` 改吃走廊近带（bands[0]）来源规则——
-measured/occluded/inferred 有边界位置都按「边界距<需求→否决」（墙永远赢），
-unknown 保持对称默认不否决（旧 obs.boundary 通道 v4 恒 None，已退役）。
-β 速度修正只认新鲜实测（pair/wall/region 新拍；pair_slot/wall_occl 复用/
-历史证据只收 α 位置）。
+**消费端**：选择层直接吃带边界（目标夹取、中心带、擦边侧）；不再有
+`_side_has_space` 的第二套边界规则。β 速度修正只认新鲜实测（pair/wall/region
+新拍；pair_slot/wall_occl 复用/历史证据只收 α 位置）；2026-10-18 起路心观测
+默认只修位置（`planner.obs_position_only=true`），β 旧路径保留为回滚开关。
 
 **验收**（83 包影子重放逐帧对账，证据指向当次提交）：master 口径（部署
 配置）值分歧 0 帧——区主人语义逐帧一致，合并未改变任何既供数帧的值；新供数
 12 帧（墙实体路径把区弃权黑视段救活，含 2 帧遮挡标记穿越 sides=0 全盲）；
 新弃权 1 帧（区读宽 4.88 道超 W±20% 门、旧 ±40% 放行——计划内收紧，诚实
 弃权）。trace 新增 cor_w/cor_ph 两列（走廊宽+平面健康）。
+
+### 16.1 墙线走廊（2026-10-18 走廊重建）
+
+`depth_geo.wall_line_reading` 把栅格 blocked 的逐行内缘（左墙取最右格、右墙
+取最左格，车头系 0~25m）拟合成若干段直线 `x=a+b·z`：4m 种子窗 Theil-Sen →
+残差内延伸 → 共线段合并；每侧最多 3 段。输出 `WallLineCorridor`：每侧段、
+z=0 中心/宽/斜率、健康度（ok/single/degraded）。单侧用 4 道先验补空气墙；
+双侧宽 >4.5 道裁到 4 道、窄了不调整；双侧宽 <1 道判 degraded（疑似两车侧面）。
+`geometry.wall_line_master=true` 时 `_EgoRoadObserver` 先用它建分带走廊
+（`src=wall_line`），并与同帧绿区中心互证（偏差 >1 道判 degraded 回退）；
+false 时只落 `wlc_*` trace。斜率就是道路相对自车的方向，旋转场景不再依赖
+固定消失点。trace 列：`wlc_c/wlc_w/wlc_slope/wlc_health/wlc_nseg/wlc_rows`。
 
 ## 17. 决策输入契约三件套（V0 归因落地，2026-10-11）（本域）
 
@@ -832,8 +846,7 @@ unknown 保持对称默认不否决（旧 obs.boundary 通道 v4 恒 None，已�
   静止天然在内），换算秒吃**采集帧率** `fid_rate_hz`（Tracker 逐拍在线估计、
   EMA 预热 8 样本后随 obs 下发；px/fid≠px/tick 的旧消费口径恒定高估 TTC
   ~1.9x）。消费面：超车评分/带门、`LateralSafety` 危险窗截断（注入同一
-  callable 不复制公式）、dodge ttc（`ttc_dodge_s` 1.0→0.55 重标保触发点）、
-  plan 层 bonus 可行性。**金币路未动**：`_flow_k` 仍是 rel×hz 旧时基（同款
+  callable 不复制公式）、场车源链、plan 层 bonus 可行性。**金币路未动**：`_flow_k` 仍是 rel×hz 旧时基（同款
   单位偏差在 coins 侧未修，阈值围绕它标定，动须独立回放验收）。fid 率缺供
   （预热期/旧 obs）全链退回旧线性行率式——行为不静默换式。
 - **②车道成员资格**：TrafficObserver 生命期票仓（逐 track id 生灭，track
@@ -912,31 +925,44 @@ overtake 61 拍、lane_b 非零 46%、撞车惩罚连续段最长 7 拍（对照
 
 **③ V2 行为切换（2026-10-11 维护者批准，实机 A/B 验收期）**：影子证据链闭合
 后两把行为闸开闸（各自可独立回滚，闸关=旧行为逐位恢复）：
-- **道收益接选道**（`lane_scoring.control`）：**已退役删除**（20261015）——
-  被走廊收益场（`corridor_reach`，见下节）取代：道格量化+lane_w 单点标定锚
-  对全决策链的放大、band 拒 278~536 次/局的宽路匹配问题，由米制连续坐标
-  收益场解耦。lane_score.py/LaneScoring 配置段/lane_b·lane_pick·lane_hold
-  trace 列一并删除，历史结论（影子期标定、翻面率治理）由 commit 指针回溯；
+- **道收益接选道**（`lane_scoring.control`）：**已退役删除**（20261015），
+  后续由米制连续坐标的走廊收益场，再于 2026-10-18 被四层选择器
+  （`selection.py`，见下节）取代：道格量化+lane_w 单点标定锚对全决策链的
+  放大、band 拒 278~536 次/局的宽路匹配问题，由连续横位与严格分层解耦。
+  lane_score.py/LaneScoring 配置段/lane_b·lane_pick·lane_hold trace 列一并
+  删除，历史结论（影子期标定、翻面率治理）由 commit 指针回溯；
   上述 `Decision._lane_pick_target` 机制描述为退役前行为存档。
-- **米制融合**（`metric_cars.fusion`）：轨迹采样器危险窗截断取较晚到站
-  （物理口径「过自车行才吹不到」，截断只许更晚不许更早）。pacing
-  （v_close≤0）不造到站；米制速度陈旧上界 ~1 锚区间（≤220ms），融合保守。
-  采样器接入：到站函数改引擎注入（`t_meet_fn`，与评分同一 callable——修掉
-  本类用控制拍率消费 px/fid 读数、TTC 恒定高估 ~1.9x
-  的 §17 同类旧单位病）+ 危险窗截断同口径融合（`metric_map` 通道）。
+- **米制车状态**（`metric_cars`）：选择层车源仍优先米制（`x_m/z_m/t_meet`），
+  无米制锚回退像素连续 x + 地面流 t_meet；pacing（v_close≤0）不造到站。
+  2026-10-18 起不再有轨迹采样器危险窗截断（采样器已删除），车源直接进
+  选择层的擦边/碰撞窗。
 - **观测面**：`lane_hold` 列随 lane_scoring 退役删除（20261015）；现役观测面
-  =走廊收益场的 `cr_*` 对照列（见下节）。验收=计划稿 §8 实机 A/B（样本口径
-  与收案条款见 §5C 追记的 A/B 样本裁决；老臂=两闸归 false）。
+  =选择层 `sel_layer/sel_why/sel_nwp` 与 `goal`（见下节）。验收=
+  实机 A/B（老臂=`geometry.wall_line_master=false` + 旧链一个提交回滚）。
 
-**④ 走廊收益场接选道（2026-10-15 验收收案，`corridor_reach.control` 现役）**：
-CRUISE 选择来源换血为米制连续坐标收益场（`corridor_reach.evaluate`，取代
-lane_scoring 的 4 道格）——决策坐标=米制 x_m（走廊缘/目标/自车同一系，
-lane_w_m 换算在进决策边界一次），候选=近场 span 0.5m 步进，逐候选综合计分
-（可收币组整组值+错身 pass_value−碰撞大负罚−位移代价+远币远权），可达性即
-门槛（need+τ+margin < t_miss 才计入，不可达不追也不降权）；胜出=argmax，
-平手（tie_margin 内）选离走廊中心近者。胜出位离自车超死区 → `select:reach_win`
-进 CHANGE（目标类 reach=走廊路径位非实体），x_goal 每拍滚动重评，收敛=反馈
-路完成判据，横向 veto 原样。弯道帧走廊不可读按朝向记忆延伸（EMA+TTL 2s，
-`cor_src=memory` 列）。观测面=trace `cr_best`/`cr_scores`/`cr_path`/`cr_coins`
-（胜出候选可收币 t_miss=提前量仪器）。验收三局（p2 4765/5033 vs 基线 3663、
-提前量 P50 1.36~1.60s、贴身过车同量级）。rollback=control 归 false。
+**④ 四层选择器（2026-10-18 走廊重建后现役，`selection.py`）**：
+CRUISE 选择来源是严格字典序（奖励车 > 普通车擦边 > 金币 > 走廊中心带），
+坐标=走廊中心在自车站为 0 的米制横位；金币组/车/奖励车在决策边界一次换算，
+层内金币按 `max(枚数,3)·conf` 取最高、车取最早到站。主目标之前最多 3 个
+路点（车优先、顺路币次之），逐点检查 `t_move=base+per_lane·|Δx|` 与
+`reaction+margin`（已对齐目标只留 `reaction`），来不及就丢点。L4 中心带
+0.3 道内不修正、带外只去近侧带边；输出 2.0 道/s slew。观测面=trace
+`sel_layer/sel_why/sel_nwp` 与 `goal`。轨迹采样器、加性收益场、
+`cr_*` 列已随旧链删除。
+
+**录制对照基建（2026-10-18）**：trace 增 `sel_dbg`（选择帧 ego/中心 c0/cL/
+左右缘/路点/选择器看到的机会）与 `wlc_seg`（墙线拟合段）；调试图 BEV 叠
+中心带与墙线，下区两条子带：选择层（机会/路点/目标/自车，横轴 3s）与
+转向力度-时间（最近 6s 杆量，上=R 下=L）；`probe_selection_calib.py` 读一局
+录制 trace，输出层翻转、中心带内是否仍修正、机会目标与人工横位差、人工
+0.5/1 道变道用时（`selection.t_move` 的真实参照）。游戏日志
+`E:\DFJS\g112\Saved\Logs\g112.log` 的 `Round stat flush` 提供
+`overtake/collect_coin/destroy_car/mileage_cm` 对账（人类录制局 45~52 币，
+控制局同源口径仅 3 币）。
+
+**录制校准（2026-10-18）**：人工 0.5 道变道 1.3~1.6s、1 道 2.5~3.2s →
+`t_move=0.3+2.0·|dx|`（原 0.4/道 快 5 倍）；中心带 `center_band_lane=0.3`、
+`center_lookahead_m=0`（当前站中心）；无即时目标时按 `preposition_*` 向
+6 秒内、车侧 2.5 道内的机会侧预置（锚点最多偏 1 道）；金币主目标只吃
+当前线 ±1.2 道；已对齐（≤0.1 道）目标只留反应时间，奖励车 ≤0.2 道视为
+已对准；选中币后 `coin_hold_s=0.6` 沿最后币线保持，奖励/擦边出现立即覆盖。

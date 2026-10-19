@@ -68,23 +68,23 @@ def test_events_mode_triggers_ring_flush_and_window() -> None:
     assert len(dumped) == 5 and len(obs._dump_ring) == 1   # 窗口耗尽回 ring
 
 
-def test_events_mode_dodge_reason_triggers() -> None:
+def test_events_mode_conserve_triggers() -> None:
     obs, dumped = _events_observer(ring=2, window=1)
     obs._write_debug_events(None, None, None, None,
-                            {"state": "CRUISE", "reason": "hold:x", "fid": 1})
+                            {"state": "CRUISE", "reason": "sel:coin", "fid": 1})
     obs._write_debug_events(None, None, None, None,
-                            {"state": "CRUISE", "reason": "select:dodge", "fid": 2})
+                            {"state": "CONSERVE", "reason": "validate_fail:x", "fid": 2})
     assert len(dumped) == 2                            # ring 前情 1 + 触发帧 1
     assert obs._event_left == 0
 
 
-def test_write_debug_dodge_trigger_bypasses_throttle() -> None:
-    """单拍事件即时判定（20261015_093323 实证 9 dodge 0 落盘）：_write_debug
-    入口的 dodge 触发不吃 0.5s 节流；未触发与后果窗口内照旧节流。"""
+def test_write_debug_conserve_trigger_bypasses_throttle() -> None:
+    """单拍事件即时判定：_write_debug 入口的 CONSERVE 触发不吃 0.5s 节流；
+    未触发与后果窗口内照旧节流。"""
     import time
 
     obs, dumped = _events_observer(ring=1, window=2)
-    cruise = {"state": "CRUISE", "reason": "hold:x", "fid": 0}
+    cruise = {"state": "CRUISE", "reason": "sel:coin", "fid": 0}
     obs._debug_last = float("-inf")
     obs._write_debug(None, None, None, None, cruise)
     assert not dumped and len(obs._dump_ring) == 1     # 未触发：按节流进 ring
@@ -92,7 +92,7 @@ def test_write_debug_dodge_trigger_bypasses_throttle() -> None:
     obs._write_debug(None, None, None, None, cruise)
     assert not dumped                                  # 无触发：节流挡住
     obs._write_debug(None, None, None, None,
-                     {"state": "CRUISE", "reason": "select:dodge", "fid": 1})
+                     {"state": "CONSERVE", "reason": "validate_fail:x", "fid": 1})
     assert len(dumped) == 2 and obs._event_left == 1   # 触发不吃节流：前情+本帧
     obs._debug_last = time.monotonic()
     obs._write_debug(None, None, None, None, cruise)
@@ -142,9 +142,9 @@ def test_game_summary_row_appended(tmp_path: Path, monkeypatch) -> None:
     rows = [
         {"ts_ns": 0, "state": "CRUISE", "reason": "hold:x",
          "hud_score": None, "hud_rate": None},
-        {"ts_ns": 1_000_000_000, "state": "CRUISE", "reason": "select:dodge",
+        {"ts_ns": 1_000_000_000, "state": "CRUISE", "reason": "sel:coin",
          "hud_score": 100, "hud_rate": 41},
-        {"ts_ns": 2_000_000_000, "state": "CRUISE", "reason": "select:dodge",
+        {"ts_ns": 2_000_000_000, "state": "CRUISE", "reason": "sel:coin",
          "hud_score": 130, "hud_rate": 41},
         {"ts_ns": 3_000_000_000, "state": "CRUISE", "reason": "hold:x",
          "hud_score": 130, "hud_rate": 41},
@@ -157,6 +157,5 @@ def test_game_summary_row_appended(tmp_path: Path, monkeypatch) -> None:
     out = json.loads(
         (tmp_path / "game_summary.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert out["score"] == 130 and out["rate"] == 41    # 末值（累积量）
-    assert out["dodge_episodes"] == 1                    # 连续触发拍归并
     assert out["conserve_segments"] == 0
     assert out["ticks"] == 4 and out["phase"] == 1

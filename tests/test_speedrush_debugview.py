@@ -17,7 +17,6 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     GRID_BLOCKED, GRID_DRIVABLE, GRID_NX, GRID_NZ, GRID_UNKNOWN,
     DepthRoadReading, DrivableGrid)
 from maaracing_master.plugins.speedrush.hud import HudObserver
-from maaracing_master.plugins.speedrush.latsample import SampledTraj
 from maaracing_master.plugins.speedrush.perception import (
     Detection, PerceptionResult)
 from maaracing_master.plugins.speedrush.world_model import Calib
@@ -45,11 +44,6 @@ def _reading() -> DepthRoadReading:
         coef=(0.0, 0.0, 0.72), fx=1000.0, fy=1000.0)
 
 
-def _plan() -> SampledTraj:
-    return SampledTraj(d1=1.2, T=2.0, cost=3.5,
-                       coeffs=(0.0, 0.6, 0.0, 0.0, 0.0, 0.0))
-
-
 def _snap(**over):
     snap = {"fid": 42, "phase": 1,
             "result": PerceptionResult(
@@ -61,10 +55,10 @@ def _snap(**over):
             "road_offset": 0.3,
             "decision": {"state": "CHANGE", "reason": "coin", "steer": 1234,
                          "executed_lane": 0.4, "x_target": 1.1,
+                         "sel_layer": 3, "sel_why": "coin", "sel_nwp": 2,
                          "road_offset": 0.3, "dgeo_age": 12, "dgeo_new": True},
             "hud": {"fields": {"score_a": 12345, "rate_a": 310,
                                "score_b": 9900, "rate_b": 275}},
-            "plan": _plan(), "diag": {"ok": True, "why": "", "n_grid": 2},
             "n_groups": 3}
     snap.update(over)
     return snap
@@ -73,7 +67,7 @@ def _snap(**over):
 # ---------- 渲染 ----------
 
 def test_render_hud_none_safe(frame):
-    """全空快照不炸：无 reading/grid/plan/result 都走诚实降级路径。"""
+    """全空快照不炸：无 reading/grid/decision/result 都走诚实降级路径。"""
     out = render_hud(frame, {"fid": 1, "phase": 0}, None)
     assert out.shape[:2] == (H, W + dv._PANEL_W)
 
@@ -136,10 +130,40 @@ def test_render_hud_grid_none_shows_placeholder(frame):
     assert int(out[200, W + 320, 0]) == 28
 
 
-def test_render_hud_plan_none_shows_reason(frame):
-    """plan 缺席 + diag.why → 子带显式写原因（诚实弃权可见）。"""
-    out = render_hud(frame, _snap(plan=None, frame_shape=(H, W, 3)), None)
+def test_render_hud_selection_none_shows_placeholder(frame):
+    """选择层缺席 → 子带显式写 none（诚实弃权可见）。"""
+    out = render_hud(
+        frame,
+        _snap(decision={"state": "CRUISE", "sel_layer": None},
+              frame_shape=(H, W, 3)), None)
     assert out.shape[:2] == (H, W + dv._PANEL_W)
+
+
+def test_render_hud_selection_overlay(frame):
+    """选择层/机会/路点/中心带叠层可渲染（新调试图数据面）。"""
+    from maaracing_master.plugins.speedrush.selection import (
+        SelectionReport, Waypoint)
+    snap = _snap(
+        frame_shape=(H, W, 3),
+        selection=SelectionReport(
+            3, (Waypoint(2.0, 1.0, "coin"),), 1.0, "coin", True, True),
+        sel_objects={"reward": [], "car": [], "coin": [(1.0, 2.0)]},
+        sel_debug={"ego": 0.2, "target": 1.0, "c0": 0.0, "c8": 0.0,
+                   "left": -2.0, "right": 2.0, "band": 0.5, "look": 8.0,
+                   "wp": [[2.0, 1.0, "coin"]], "rw": [], "car": [],
+                   "coin": [[1.0, 2.0]]})
+    out = render_hud(frame, snap, None)
+    assert out.shape[:2] == (H, W + dv._PANEL_W)
+
+
+def test_render_hud_steer_history_strip(frame):
+    """转向时间带：左右交替的历史 → 子带内出现右打绿段与左打橙段。"""
+    hist = [(i, 24000 if i % 2 else -24000) for i in range(120)]
+    out = render_hud(frame, _snap(frame_shape=(H, W, 3),
+                                  steer_hist=hist), None)
+    band = out[H - 100:H - 24, W:]
+    assert (band[:, :, 1] > 150).any()
+    assert (band[:, :, 2] > 150).any()
 
 
 # ---------- 反投影口径 ----------
@@ -212,6 +236,18 @@ def test_writer_none_frame_noop(tmp_path):
     w.tick(None, _snap())
     w.stop()
     assert w.saved == 0
+
+
+def test_writer_keeps_steer_history_every_tick(tmp_path, frame):
+    """节流只影响出图；转向历史按控制拍逐拍记录。"""
+    w = _writer(tmp_path, interval_s=10.0)
+    try:
+        for i in range(5):
+            w.tick(None if i % 2 else frame,
+                   {"fid": i, "decision": {"steer": i * 100}})
+    finally:
+        w.stop()
+    assert [v for _, v in w._steer_hist] == [0, 100, 200, 300, 400]
 
 
 def test_writer_render_error_counted_not_raised(tmp_path, frame, monkeypatch):

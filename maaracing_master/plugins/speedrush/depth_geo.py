@@ -292,15 +292,33 @@ WALL_EGO_MIN = 0.5     # 墙内缘距自车下限（道）：真墙不可能在�
 #                         包络里——贴身"墙"是并行车（朝路肩侧无绿区，四向
 #                         判据剔不掉，trace 145047_p2 实测贴身读数 100% 邻车）
 
+# ── 墙线拟合（2026-10-18 走廊重建，影子期）────────────────────────────
+# 逐行内缘 → 分段直线 x=a+b·z。中位只回答"墙大概在哪"，不回答"路朝哪"；
+# 车一旋转，固定 vpx 的整幅读数一起偏，只有线段的斜率能把方向还回来。
+# 车头系 z（相机 z − CAM_Z_DATUM_M）；4m 窗、2m 步长的种子段向前延伸到
+# 残差破门为止，相邻共线段合并——直墙成一条长线，弯道成 2~3 段。
+WALL_FIT_Z_LO, WALL_FIT_Z_HI = 0.0, 25.0
+WALL_FIT_SEG_M = 4.0          # 种子窗长（米）
+WALL_FIT_MIN_ROWS = 6         # 段内最少行数（1.5m）
+WALL_FIT_MAX_SLOPE = 0.6      # |dx/dz| 上限（约 31°）
+WALL_FIT_RESID_M = 0.15       # 段内残差中位上限（米）
+WALL_FIT_EXTEND_RESID_M = 0.20  # 逐行延伸容差（米）
+WALL_FIT_GAP_M = 1.5          # 段内允许的最大行缺口（米）
+WALL_FIT_MERGE_GAP_M = 1.5    # 相邻段合并的最大缺口（米）
+WALL_FIT_MERGE_SLOPE = 0.10   # 合并允许的斜率差
+WALL_FIT_MERGE_X_M = 0.30     # 合并时边界处的 x 差上限（米）
+WALL_FIT_MIN_LEN_M = 1.5      # 段最短纵深（米）
+WALL_FIT_EXTRAP_M = 2.0       # 段外推上限（米）
+WALL_LINE_MIN_WIDTH_LANES = 1.0  # 双侧走廊窄于此=疑似两车侧面，标 degraded
+
 
 @dataclass(frozen=True)
 class DrivableGrid:
     """一帧的可行驶栅格（BEV 三态）。**消费契约**（2026-10-04 定）：
 
     - ``state == GRID_BLOCKED`` (2) = **硬否决**：高于路面的静态结构（墙/路缘/
-      桥）。近场带轨迹裁决（``latsample._grid_penalty``）压到即一票否决——
-      消费语义以 latsample 实代码与 decision.json grid_veto._note 为准，本文
-      曾写"软代价不否决"是 S2-B 定案前的旧稿，已按实装更正（2026-10-06）。
+      桥）。选择层的走廊夹取已不读栅格；栅格作为墙线/红块内缘与 trace 的
+      几何证据面保留。
     - ``state == GRID_UNKNOWN`` (0) = **无证据**：无有效点，或被挖洞（ego/物体框）
       覆盖。既不得当可走用，也不得当障碍用。
     - ``state == GRID_DRIVABLE`` (1) = **唯一正向证据**：格内有地面点且高度对路面
@@ -1010,7 +1028,7 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     ``ds``：点图像素 → 全幅像素的倍率，口径同 ``reading_from_points``（pts/obj
     是点图像素系，fx/fy 仍全幅；栅格输出是米制格，与像素口径无关）。抽取或
     原生直吃后格内点数同比降，远场稀疏格会更早跌破 ``GRID_MIN_PTS`` 落
-    UNKNOWN——`grid_veto` 只吃 z3~9m 近场带，该带同判率实测 99.4%
+    UNKNOWN——近场 z3~9m 带同判率实测 99.4%
     （见 DEPTH_CHAIN_LATENCY_20261017.md）。
     """
     if obj is not None and obj.shape != pts.shape[:2]:
@@ -1315,6 +1333,220 @@ def wall_corridor_reading(grid: DrivableGrid, lane_w_m: float) -> WallCorridor:
     if clipped:
         width = WALL_FULL_LANES
     return WallCorridor(center, width, left, right, clipped, rows_l, rows_r)
+
+
+@dataclass(frozen=True)
+class WallLineSeg:
+    """一侧墙内缘的一段直线 x=a+b·z（车头系，米）。
+
+    ``n``=参与拟合的行数，``resid``=残差中位（米）。线段只由本帧栅格行
+    拟合，不拼跨帧墙箱——旧箱位会把弯道拉直。
+    """
+
+    z0: float
+    z1: float
+    a: float
+    b: float
+    n: int
+    resid: float
+
+    def x_at(self, z: float) -> float:
+        return self.a + self.b * z
+
+
+@dataclass(frozen=True)
+class WallLineCorridor:
+    """墙线走廊（2026-10-18 走廊重建）：每侧若干段直线 + 中心的连续读数。
+
+    ``center_lane/width_lane/slope/health/clipped`` 是 z=0（车头）处的值，
+    供 trace 与控制目标使用；``center_at(z)`` 给分带走廊按纵深取值。
+    单侧只给先验宽（空气墙），不冒充实测；双侧宽过 4 道+余量才裁。
+    """
+
+    left_segs: tuple[WallLineSeg, ...]
+    right_segs: tuple[WallLineSeg, ...]
+    center_lane: float | None
+    width_lane: float | None
+    slope: float | None
+    health: str                  # ok / single / degraded / none
+    rows_l: int
+    rows_r: int
+    clipped: bool
+
+    def _side_x(self, segs: tuple[WallLineSeg, ...], z: float) -> float | None:
+        """该侧在 z 处的内缘；段外最多外推 WALL_FIT_EXTRAP_M。"""
+        if not segs:
+            return None
+        best: tuple[float, WallLineSeg] | None = None
+        for s in segs:
+            if s.z0 <= z <= s.z1:
+                return s.x_at(z)
+            d = abs(z - s.z0) if z < s.z0 else abs(z - s.z1)
+            if d <= WALL_FIT_EXTRAP_M and (best is None or d < best[0]):
+                best = (d, s)
+        return None if best is None else best[1].x_at(z)
+
+    def x_left(self, z: float) -> float | None:
+        return self._side_x(self.left_segs, z)
+
+    def x_right(self, z: float) -> float | None:
+        return self._side_x(self.right_segs, z)
+
+    def frame_at(self, z: float, lane_w_m: float, *,
+                 width_prior_lane: float,
+                 full_lanes: float = WALL_FULL_LANES,
+                 clip_margin_lane: float = WALL_CLIP_MARGIN,
+                 ) -> tuple[float | None, float | None, bool, str]:
+        """z 处的 (中心米, 宽米, 是否裁剪, 健康度)。
+
+        双侧都有线→实测宽（窄于 WALL_LINE_MIN_WIDTH_LANES 标 degraded）；
+        只有一侧→先验宽空气墙；两侧都没有→(None,None,False,"none")。
+        """
+        prior_m = width_prior_lane * lane_w_m
+        xl, xr = self.x_left(z), self.x_right(z)
+        if xl is not None and xr is not None:
+            width = xr - xl
+            if width < WALL_LINE_MIN_WIDTH_LANES * lane_w_m:
+                return (0.5 * (xl + xr), width, False, "degraded")
+            clipped = width > (full_lanes + clip_margin_lane) * lane_w_m
+            if clipped:
+                width = full_lanes * lane_w_m
+            return (0.5 * (xl + xr), width, clipped, "ok")
+        if xl is not None:
+            return (xl + prior_m / 2.0, prior_m, False, "single")
+        if xr is not None:
+            return (xr - prior_m / 2.0, prior_m, False, "single")
+        return (None, None, False, "none")
+
+
+def _theil_sen(z: np.ndarray, x: np.ndarray) -> tuple[float, float, float] | None:
+    """两两斜率中位 + 截距中位 + 残差中位（抗单行离群）。"""
+    if len(z) < 2:
+        return None
+    dz = z[:, None] - z[None, :]
+    dx = x[:, None] - x[None, :]
+    m = np.abs(dz) > 1e-6
+    if not m.any():
+        return None
+    b = float(np.median(dx[m] / dz[m]))
+    a = float(np.median(x - b * z))
+    resid = float(np.median(np.abs(x - (a + b * z))))
+    return a, b, resid
+
+
+def _fit_side_rows(z: np.ndarray, x: np.ndarray) -> tuple[WallLineSeg, ...]:
+    """一侧逐行内缘 → 若干段直线。
+
+    种子段（4m）→ 残差内逐行延伸 → 合并共线段。只收"看得够长"的段：
+    短于 WALL_FIT_MIN_LEN_M 或行数不足一律丢，宁缺勿假。
+    """
+    n = len(z)
+    if n < WALL_FIT_MIN_ROWS:
+        return ()
+    items: list[tuple[int, int, tuple[float, float, float]]] = []
+    i = 0
+    while i <= n - WALL_FIT_MIN_ROWS:
+        j = int(np.searchsorted(z, z[i] + WALL_FIT_SEG_M, side="right"))
+        if j - i < WALL_FIT_MIN_ROWS:
+            i += 1
+            continue
+        f = _theil_sen(z[i:j], x[i:j])
+        if f is None or abs(f[1]) > WALL_FIT_MAX_SLOPE \
+                or f[2] > WALL_FIT_RESID_M:
+            i += 1
+            continue
+        a, b, _ = f
+        k = j
+        while k < n and z[k] - z[k - 1] <= WALL_FIT_GAP_M:
+            if abs(x[k] - (a + b * z[k])) > WALL_FIT_EXTEND_RESID_M:
+                break
+            k += 1
+        f2 = _theil_sen(z[i:k], x[i:k])
+        if f2 is None or abs(f2[1]) > WALL_FIT_MAX_SLOPE \
+                or f2[2] > WALL_FIT_RESID_M \
+                or (z[k - 1] - z[i]) < WALL_FIT_MIN_LEN_M:
+            i += 1
+            continue
+        items.append((i, k, f2))
+        i = k
+
+    merged: list[tuple[int, int, tuple[float, float, float]]] = []
+    for it in items:
+        if merged:
+            pi, pk, pf = merged[-1]
+            gap = z[it[0]] - z[pk - 1]
+            same_slope = abs(it[2][1] - pf[1]) <= WALL_FIT_MERGE_SLOPE
+            pred_prev = pf[0] + pf[1] * z[it[0]]
+            pred_cur = it[2][0] + it[2][1] * z[it[0]]
+            if gap <= WALL_FIT_MERGE_GAP_M and same_slope \
+                    and abs(pred_prev - pred_cur) <= WALL_FIT_MERGE_X_M:
+                ni, nk = pi, it[1]
+                f = _theil_sen(z[ni:nk], x[ni:nk])
+                if f is not None and abs(f[1]) <= WALL_FIT_MAX_SLOPE \
+                        and f[2] <= WALL_FIT_RESID_M:
+                    merged[-1] = (ni, nk, f)
+                    continue
+        merged.append(it)
+
+    return tuple(
+        WallLineSeg(float(z[i]), float(z[k - 1]), f[0], f[1], k - i, f[2])
+        for i, k, f in merged)
+
+
+def _wall_side_rows(cleaned: np.ndarray, side: int, lane_w_m: float,
+                    ) -> tuple[np.ndarray, np.ndarray]:
+    """一侧逐行内缘（车头系 z, x 米）。贴身并行车/自车包络行剔除。"""
+    zc = GRID_Z_LO + (np.arange(cleaned.shape[0]) + 0.5) * GRID_CELL
+    zh = zc - CAM_Z_DATUM_M
+    band = (zh >= WALL_FIT_Z_LO) & (zh <= WALL_FIT_Z_HI)
+    blocked = (cleaned == GRID_BLOCKED) & band[:, None]
+    xs_c = -GRID_X_MAX + (np.arange(cleaned.shape[1]) + 0.5) * GRID_CELL
+    cols = np.arange(cleaned.shape[1])
+    if side < 0:
+        inner = np.where(blocked & (xs_c < 0)[None, :], cols, -1).max(axis=1)
+        has = inner >= 0
+    else:
+        inner = np.where(blocked & (xs_c > 0)[None, :], cols,
+                         cleaned.shape[1]).min(axis=1)
+        has = inner < cleaned.shape[1]
+    z = zh[has]
+    x = (-GRID_X_MAX + (inner[has] + 0.5) * GRID_CELL)
+    keep = np.abs(x) >= WALL_EGO_MIN * lane_w_m
+    return z[keep], x[keep]
+
+
+def wall_line_reading(grid: DrivableGrid, lane_w_m: float,
+                      width_prior_lane: float = WALL_FULL_LANES,
+                      ) -> WallLineCorridor | None:
+    """墙线走廊读数（2026-10-18 走廊重建，影子期）。
+
+    逐行内缘 → 分段 Theil-Sen → z=0 中心/宽/斜率 + 分带可用的线段。
+    绿包红先剔除（与墙走廊同源，不复制判据）；双侧都没有段时返回 None。
+    调用方按栅格身份缓存（驻留复用拍不重算）。
+    """
+    if not (lane_w_m > 0):
+        return None
+    cleaned = _strip_enclosed_red(grid.state)
+    zl, xl = _wall_side_rows(cleaned, -1, lane_w_m)
+    zr, xr = _wall_side_rows(cleaned, 1, lane_w_m)
+    left = _fit_side_rows(zl, xl)
+    right = _fit_side_rows(zr, xr)
+    if not left and not right:
+        return None
+    probe = WallLineCorridor(left, right, None, None, None, "none",
+                             len(zl), len(zr), False)
+    center, width, clipped, health = probe.frame_at(
+        0.0, lane_w_m, width_prior_lane=width_prior_lane)
+    if center is None or width is None:
+        return None
+    slope = None
+    if left or right:
+        bs = [s.b for s in left] + [s.b for s in right]
+        slope = float(np.median(bs))
+    return WallLineCorridor(
+        left, right, center / lane_w_m, width / lane_w_m, slope, health,
+        len(zl), len(zr), clipped)
+
 
 
 def region_reading(grid: DrivableGrid, lane_w_m: float,
@@ -2050,16 +2282,15 @@ class AsyncDepthRoadObserver:
         帧会涨到 ~5MB/包 × ring 长。取证包口径（336×598 原生点图 fp16 + valid +
         原生焦距，可按模块 docstring「离线复算」逐位重放）不变。"""
         now = time.monotonic()
-        # 单拍事件即时判定（20261015_093323 实证：9 dodge 0 落盘）：dodge 只
-        # 持续 1 拍（50ms），判定排 0.5s 节流后边界落在窗内概率 ~10%——单拍
-        # 事件几乎必然错过。判定=字符串检查 per publish 成本可忽略；触发即时
-        # 落盘（ring 前情+窗口后果照旧），未触发/后果窗口内照旧走节流。
+        # 单拍事件即时判定：CONSERVE 只持续 1~2 拍时，判定排 0.5s 节流后
+        # 边界落在窗内概率低——单拍事件几乎必然错过。判定=字符串检查 per
+        # publish 成本可忽略；触发即时落盘（ring 前情+窗口后果照旧），
+        # 未触发/后果窗口内照旧走节流。
         if self._dump is not None \
                 and getattr(self._dump, "mode", "full") == "events" \
                 and self._event_left <= 0:
             note_d = note or {}
-            if note_d.get("state") == "CONSERVE" \
-                    or "dodge" in str(note_d.get("reason") or ""):
+            if note_d.get("state") == "CONSERVE":
                 self._write_debug_events(frame, evid, reading, object_mask, note)
                 return
         if now - self._debug_last < self.DEBUG_INTERVAL_S:
@@ -2134,11 +2365,9 @@ class AsyncDepthRoadObserver:
                             note=None) -> None:
         """events 模式：内存 ring 留最近 ring 次捕获，事件触发落盘 ring+窗口。
 
-        事件判据=push 快照（滞后 1 拍）：state=CONSERVE 或 reason 含 dodge——
-        真正消费的是 dodge/conserving 时刻±窗口（2026-10-12 设计裁决）。判定
-        在 _write_debug 入口先于节流（20261015 实证节流挡掉单拍 dodge：9 dodge
-        0 落盘），触发时 ring 先落（前情）+本帧，再 event_window−1 帧直写
-        （后果）。full 路径不经过这里（imwrite 直写逐位不动）。"""
+        事件判据=push 快照（滞后 1 拍）state=CONSERVE。判定在 _write_debug
+        入口先于节流，触发时 ring 先落（前情）+本帧，再 event_window−1 帧
+        直写（后果）。full 路径不经过这里（imwrite 直写逐位不动）。"""
         payload = self._encode_debug_payload(frame, evid, reading, object_mask,
                                              note)
         if payload is None:
@@ -2148,8 +2377,7 @@ class AsyncDepthRoadObserver:
             self._dump_stem(payload)
             return
         note_d = note or {}
-        reason = str(note_d.get("reason") or "")
-        if note_d.get("state") == "CONSERVE" or "dodge" in reason:
+        if note_d.get("state") == "CONSERVE":
             ring = self._dump_ring
             while ring:
                 self._dump_stem(ring.popleft())

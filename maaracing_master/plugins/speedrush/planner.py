@@ -61,10 +61,6 @@ class LateralPlanner:
 
     def __init__(self, p: Planner):
         self.p = p
-        self.reset()
-
-    def reset(self) -> None:
-        """阶段切换/重入：全清（与 DecisionEngine.reset 同一时机调用）。"""
         self.state = EgoLateralState()
         self._last_raw = 0            # 上一拍下发杆值（限幅起点）
         self._expired_ticks = 0
@@ -75,6 +71,8 @@ class LateralPlanner:
         # 自上次速度修正（或滤波重置）以来模型积分跑过的帧钟累计——⑥b 速度
         # 修正的时间基（2026-10-08 判据冻结，台账 §4A）
         self._t_vcorr = 0.0
+        # 上次被接受的修正方向（阶段 2 符号一致性门；None=尚无）
+        self._last_corr_sign: bool | None = None
 
     # ---------- 主入口 ----------
 
@@ -143,8 +141,15 @@ class LateralPlanner:
             steer_raw = self._pd(self._abort_hold_lane, gentle=True)
         elif decision.x_target is not None:
             self._abort_hold_lane = None
-            # 场跟随：目标跟踪是维护性定中心——gentle（16:44 局）
-            steer_raw = self._pd(decision.x_target, gentle=True)
+            # 场跟随：保持态=维护性定中心（gentle，16:44 局）；机动态
+            # （目标距自车超过切换死区）=全权——机动态死区/杆幅另配
+            if decision.maneuver:
+                steer_raw = self._pd(
+                    decision.x_target, gentle=False,
+                    deadband=self.p.maneuver_deadband_lane,
+                    cap=self.p.maneuver_stick_max)
+            else:
+                steer_raw = self._pd(decision.x_target, gentle=True)
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
 
@@ -185,6 +190,7 @@ class LateralPlanner:
                     self._road_anchor = 0.0          # 道0=路中心（中轴巡航）
                     self._stale_t = 0.0
                     self._t_vcorr = 0.0              # 滤波（重）初始化：速度基线起算
+                    self._last_corr_sign = None
                 else:
                     # 形成门饿死也要重基（13:29 局开局：车在左缘 ro=−2.9，形成门
                     # 拒定锚 7s、hold:0=杆恒 0 蹭墙）——超 stale 预算说明"中带观测"
@@ -196,6 +202,7 @@ class LateralPlanner:
                         self._road_anchor = 0.0
                         self._stale_t = 0.0
                         self._t_vcorr = 0.0
+                        self._last_corr_sign = None
             else:
                 obs = road_offset - self._road_anchor
                 r = obs - self.state.executed_lane
@@ -214,9 +221,24 @@ class LateralPlanner:
                     # v_lat_max 饱和内（16:44 局红线）。
                     if road_offset_new:
                         t_e = max(self._t_vcorr, dt_s)
-                        self.state.v_lat_est = max(
-                            -self.p.v_lat_max, min(self.p.v_lat_max,
-                            self.state.v_lat_est + self.p.obs_beta * r / t_e))
+                        # 位置-only（2026-10-18 走廊重建）：路心观测只修位置，
+                        # 速度交给双积分模型——β 的三个抑制补丁（死区/反号/
+                        # 加速度上限）都是为了压住噪声放大，收成一套规则。
+                        # 回滚=obs_position_only=false（旧 α-β 逐位恢复）。
+                        if not self.p.obs_position_only:
+                            if abs(r) >= self.p.obs_beta_deadband_lane:
+                                agree = (self._last_corr_sign is None
+                                         or (r > 0) == self._last_corr_sign)
+                                if agree or not self.p.obs_beta_sign_agree:
+                                    dv = self.p.obs_beta * r / t_e
+                                    lim = self.p.obs_beta_dv_rate_lane_s2 * t_e
+                                    if lim > 0.0:
+                                        dv = max(-lim, min(lim, dv))
+                                    self.state.v_lat_est = max(
+                                        -self.p.v_lat_max,
+                                        min(self.p.v_lat_max,
+                                            self.state.v_lat_est + dv))
+                                self._last_corr_sign = r > 0
                         self._t_vcorr = 0.0
                     self._stale_t = 0.0
                 else:
@@ -231,12 +253,14 @@ class LateralPlanner:
                         self._road_anchor = 0.0
                         self._stale_t = 0.0
                         self._t_vcorr = 0.0
+                        self._last_corr_sign = None
         elif self._road_anchor is not None:
             # 断供计时：黑视本身=漂移温床，超预算则帧作废（下个中带观测重形成）
             self._stale_t += dt_s
             if self._stale_t >= self.p.anchor_stale_s:
                 self._road_anchor = None
                 self._stale_t = 0.0
+                self._last_corr_sign = None
 
         # ⑦ 下发链：归一 → 限幅（每 tick 变化上限）→ 死区（<256 归 0，256 保留）
         raw = int(round(self.state.steer_norm * _STICK_FULL))
@@ -247,21 +271,29 @@ class LateralPlanner:
         self._last_raw = raw
         return GamepadCommand(steer_x=raw, throttle=self.p.throttle_raw)
 
-    def _pd(self, target: float, gentle: bool = False) -> float:
+    def _pd(self, target: float, gentle: bool = False,
+            deadband: float | None = None,
+            cap: float | None = None) -> float:
         """延迟补偿前瞻 PD（设计稿 §三）：状态外推到 t+τ 再入环，阻尼项反向。
 
-        gentle=维护性转向（定中心/保持车道，非变道机动）：误差过死区才发力、
-        杆幅限 hold_stick_max——16:44 局：回中心误差动辄 ±1.5 车道，全权 PD
-        满左满右交替 2-3s，33% 拍饱和、速度起不来（大杆=横向漂移，游戏掉速）。
-        变道（CHANGE）保留全权：机动要快是设计本意。"""
+        gentle=维护性转向（定中心/保持车道）：误差过死区才发力、杆幅限
+        hold_stick_max（16:44 局：全权维护 PD 满左满右交替、速度起不来）。
+        机动态（maneuver）传显式 deadband/cap：默认全权（0/None），阶段 2
+        起用 maneuver_deadband_lane 与 maneuver_stick_max。"""
         x_pred = (self.state.executed_lane
                   + self.state.v_lat_est * self.p.lookahead_tau_s)
-        return self._law(target - x_pred, gentle)
+        return self._law(target - x_pred, gentle, deadband, cap)
 
-    def _law(self, e: float, gentle: bool) -> float:
-        if gentle and abs(e) < self.p.hold_deadband_lane:
+    def _law(self, e: float, gentle: bool, deadband: float | None = None,
+             cap: float | None = None) -> float:
+        db = (self.p.hold_deadband_lane if gentle else 0.0) \
+            if deadband is None else deadband
+        if abs(e) < db:
             e = 0.0
         u = self.p.k_p * e - self.p.k_d * self.state.v_lat_est
-        if gentle:
-            u = max(-self.p.hold_stick_max, min(self.p.hold_stick_max, u))
+        lim = self.p.hold_stick_max if gentle else None
+        if cap is not None:
+            lim = cap
+        if lim is not None:
+            u = max(-lim, min(lim, u))
         return max(-1.0, min(1.0, u))

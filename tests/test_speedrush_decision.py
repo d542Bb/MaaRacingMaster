@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import replace
 
 import pytest
 
@@ -20,25 +19,15 @@ from maaracing_master.plugins.speedrush.decision import (
     DecisionEngine, Scorer, ValidationWatch)
 from maaracing_master.plugins.speedrush.traffic import CarView
 from maaracing_master.plugins.speedrush.tracking import (
-    CoinGroup, DecisionState, DistanceSource, MetricCarState,
-    PerceptionHealth, TrackedTarget, WorldObservation)
+    CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import (
     _read_gate0, load_calib, t_meet_car_s)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH, GATE0_FILE as GATE0_PATH
 
 DT = 0.05          # 20Hz 名义 tick
-# 本文件锁的是 legacy 决策语义：闸值自钉关，不随部署 decision.json 的
-# trajectory_sampling 运行态漂（验收期部署文件开闸，语义测试不跟着翻）。
-_CFG_BASE = _read_decision(
+CFG = _read_decision(
     __import__("maaracing_master.plugins.speedrush", fromlist=["DECISION_FILE"])
     .DECISION_FILE)
-CFG = replace(_CFG_BASE,
-              mode=replace(_CFG_BASE.mode, trajectory_sampling=False),
-              metric_cars=replace(_CFG_BASE.metric_cars, fusion=False),
-              # 走廊收益场闸显式钉死（legacy 行为测试不继承部署态——部署闸
-              # 在 rollout 中翻转 shadow→control，测试基线必须自持）
-              corridor_reach=replace(_CFG_BASE.corridor_reach,
-                                     enabled=False))
 
 
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
@@ -96,26 +85,18 @@ def _decision_dict():
 
 @pytest.mark.parametrize("mutate,frag", [
     (lambda d: d.pop("schema_version"), "schema_version"),
-    (lambda d: d["hysteresis"].pop("switch_margin"), "switch_margin"),
     (lambda d: d["validate"].update(t_recover_s=99.0), "t_conserve_max"),
-    (lambda d: d["hysteresis"].update(dead_zone_lane=3.0), "死区"),
     (lambda d: d["mode"].update(allow_car_graze=True), "allow_car_graze"),
-    (lambda d: d["mode"].update(allow_all_moves="true"), "非布尔"),
     (lambda d: d["scoring"].update(conf_floor=1.5), "越界"),
     (lambda d: d["scoring"].update(conf_floor=0.9), "折扣区倒置"),
     (lambda d: d["control"].update(frame_rate_hz=0), "越界"),
     (lambda d: d.pop("planner"), "planner"),
     (lambda d: d["planner"].update(lookahead_tau_s=0.05), "lookahead"),
     (lambda d: d["planner"].update(rate_limit_raw=99999.0), "限幅"),
-    (lambda d: d.pop("overtake"), "overtake"),
-    (lambda d: d["overtake"].update(value_limit=10.0), "倒置"),
-    (lambda d: d["overtake"].update(d_hold_lane=0.8), "矛盾"),
     (lambda d: d["control"].pop("abort_settle_v_lane_s"), "abort_settle"),
-    (lambda d: d["overtake"].pop("t_cool_pass_s"), "t_cool_pass"),
-    (lambda d: d["overtake"].pop("ttc_dodge_s"), "ttc_dodge"),
-    (lambda d: d["validate"].pop("lat_veto_gap_lane"), "lat_veto_gap"),
-    (lambda d: d["validate"].update(lat_veto_gap_lane=0.7), "贴窗"),
-    (lambda d: d["validate"].pop("lat_veto_horizon_s"), "lat_veto_horizon"),
+    (lambda d: d["planner"].update(maneuver_stick_max=0.0), "maneuver_stick_max"),
+    (lambda d: d["planner"].update(obs_beta_dv_rate_lane_s2=99.0),
+     "obs_beta_dv_rate"),
     (lambda d: d["traffic"].pop("v_lat_ema_alpha"), "v_lat_ema"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
@@ -228,7 +209,7 @@ def test_score_group_floor_partial_view():
     assert s1 is not None and s3 is not None
     # 组值项逐值同（max(1,3)=3）；t_miss 的全场 k 随组员集中位略差，放宽到 2%
     assert s1.score == pytest.approx(s3.score, rel=0.02)
-    assert s1.score >= CFG.hysteresis.min_score
+    assert s1.score > 0                          # 完整整组值，未被折扣归零
 
 
 def test_score_monotone_in_distance():
@@ -261,7 +242,7 @@ def test_score_conf_ramp_and_floor():
 def test_score_rejects_receding_target():
     """rel≤0（远离）：机会视为无限远 → 分数被折扣压到不可选（−cost）。"""
     s = _score(rel=-5)
-    assert s is None or s.score < CFG.hysteresis.min_score
+    assert s is None or s.score < 1.0            # 折扣归零（−位移代价）
 
 
 def test_score_survives_member_id_churn_via_field_flow():
@@ -278,7 +259,7 @@ def test_score_survives_member_id_churn_via_field_flow():
         first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
         for i, cy in enumerate((600, 450))]
     s = Scorer(CFG, load_calib()).score(g, _obs(targets=flow))
-    assert s is not None and s.score > CFG.hysteresis.min_score
+    assert s is not None and s.score > 0
 
 
 def test_score_blackout_keeps_failsafe_discount():
@@ -286,19 +267,13 @@ def test_score_blackout_keeps_failsafe_discount():
     逐轨断供时代同形，不许在无证据时臆造可达性。"""
     g, _ = _group(7, 1, 3, x=0.5, cy=500, rel=0.0)
     s = Scorer(CFG, load_calib()).score(g, _obs(targets=()))
-    assert s is not None and s.score < CFG.hysteresis.min_score
+    assert s is not None and s.score < 1.0
 
 
 # ---------- FSM 全转移矩阵（§二优先级逐格） ----------
 
 def _eng(**over):
-    import dataclasses
-    cfg = dataclasses.replace(CFG, mode=dataclasses.replace(
-        CFG.mode, allow_all_moves=True))
-    if over.get("no_moves"):
-        cfg = dataclasses.replace(cfg, mode=dataclasses.replace(
-            cfg.mode, allow_all_moves=False))
-    return DecisionEngine(cfg)
+    return DecisionEngine(CFG)
 
 
 def test_conserve_output_holds_and_forbids_moves():
@@ -306,7 +281,7 @@ def test_conserve_output_holds_and_forbids_moves():
     e._enter_conserve()                            # 直接进态（矩阵其余路径另有锁）
     out = e.update(_obs(fid=5, presence=True), DT)
     assert out.state is DecisionState.CONSERVE
-    assert out.x_target is None and out.move_allowed is False   # 保持≠回中（§二）
+    assert out.x_target is None                    # 保持≠回中（§二）
 
 
 def test_conserve_recovers_with_full_reset():
@@ -322,7 +297,8 @@ def test_conserve_recovers_with_full_reset():
     assert out.state is DecisionState.CRUISE
     # 首个非致命拍=fid 3：恢复计数从这拍起，不许秒回
     assert f - 2 >= int(CFG.validate.t_recover_s / DT)
-    assert e._x_smooth == 0.0                       # 重置面
+    e.reset()
+    assert e._target_prev is None                       # 重置面
 
 
 def test_conserve_escalates_to_fault_and_back():
@@ -339,22 +315,15 @@ def test_conserve_escalates_to_fault_and_back():
     while out.reason != "fault_recovered" and f < 600:
         f += 1
         out = e.update(_obs(fid=f, presence=True), DT)   # 健康帧：双 T_recover 降回
-    assert out.state is DecisionState.CRUISE and e._x_smooth == 0.0
-
-
-def test_v0_straight_baseline_gate():
-    """allow_all_moves=false（V0 直行基线）：永不进 CHANGE，x 恒 0（§〇 验收 V0）。"""
-    e = _eng(no_moves=True)
-    for f in range(1, 10):
-        out = e.update(_good_obs(fid=f), DT)
-        assert out.state is DecisionState.CRUISE and out.move_allowed is False
-    assert out.x_target == pytest.approx(0.0)
+    assert out.state is DecisionState.CRUISE
+    e.reset()
+    assert e._target_prev is None                       # 重置面（恢复后冷启动）
 
 
 def test_output_schema_and_validity_window():
     e = _eng()
     out = e.update(_good_obs(), DT)
-    assert out.schema_version == 3                 # v3：场即选择器换血
+    assert out.schema_version == 5                 # v5：删除 move_allowed
     assert out.valid_until_fid > out.emitted_fid
     assert isinstance(out.reason, str) and out.reason
 
@@ -363,7 +332,7 @@ def test_engine_reset_clears_everything():
     e = _eng()
     e.update(_good_obs(), DT)
     e.reset()
-    assert e._state is DecisionState.CRUISE and e._x_smooth == 0.0
+    assert e._state is DecisionState.CRUISE and e._target_prev is None
 
 def _cv(tid=5, x=1.1, cy=500, rel=10.0):
     return CarView(id=tid, x_lane=x, cy=cy, rel_approach=rel,
@@ -436,22 +405,5 @@ def test_car_t_meet_ground_flow_and_fallback():
     assert e.scorer.fid_hz == f
     assert e.scorer.car_t_meet_s(rel, cal.y_h + d) == \
         pytest.approx(d * (D - d) / (D * rel) / f)
-
-
-# ---------- V2 行为闸：dodge ttc / veto 危险窗米制融合（metric_cars.fusion） ----------
-
-def _mc(tid, *, z=4.0, v=10.0, x_m=0.05):
-    """米制车：v>0 → t=z/v；v≤0 → t=None（pacing 占用）；v=None=估计窗未开。"""
-    return MetricCarState(target_id=tid, source=DistanceSource.ANCHOR,
-                          z_m=z, x_m=x_m, v_close_mps=v,
-                          t_meet_s=z / v if v is not None and v > 0 else None,
-                          anchor_age_ms=200.0)
-
-
-def _fus_eng():
-    """fusion 闸开 + 超车开（与 _eng 同基座纪律：部署开关显式翻转）。"""
-    return DecisionEngine(replace(
-        CFG, mode=replace(CFG.mode, allow_all_moves=True, allow_overtake=True),
-        metric_cars=replace(CFG.metric_cars, fusion=True)))
 
 

@@ -42,13 +42,15 @@ from maaracing_master.plugins.speedrush import (
     PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
-from maaracing_master.plugins.speedrush.corridor import Corridor, build_corridor
+from maaracing_master.plugins.speedrush.corridor import (
+    BandBoundary, Corridor, CorridorBand, N_BANDS, _band_bounds,
+    build_corridor)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
     blocked_inner_reading, load_session, region_reading,
-    wall_corridor_reading)
+    wall_line_reading, CAM_Z_DATUM_M)
 from maaracing_master.plugins.speedrush.wall_track import (
     CONF_FLOOR, MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
@@ -198,13 +200,12 @@ class SpeedRushModule(ActivityModule):
     # 感知开关的初值（True = 驾驶阶段逐帧跑 YOLO 检测并记账；不操纵车辆，
     # 与录制可并存。控制环未接线前，它是"感知在场"的验证形态）
     DEFAULT_PERCEPTION_MODE = False
-    # 控制开关的初值（True = 驾驶阶段跑全链并接管手柄）。V0/V1 两级不在此开关——
-    # 由 decision.json 的 mode.allow_all_moves 决定（false=V0 只发油门走直线，
-    # true=V1 开横向）。默认 False：接线首启不接管车辆，显式开才动（实机安全边界）。
+    # 控制开关的初值（True = 驾驶阶段跑全链并接管手柄）。默认 False：
+    # 接线首启不接管车辆，显式开才动（实机安全边界）。
     DEFAULT_CONTROL_MODE = False
     # 直行基线档的初值（False = 正常深度几何驾驶）。True = 驾驶阶段接管手柄后
-    # 方向归零、油门恒踩，感知与深度都不加载（V0 语义：决策禁动恒 x_target=0）
-    # ——「全程直行」基线金币率的测量仪器（control-route 验收②的分母）。
+    # 方向归零、油门恒踩，感知与深度都不加载（全程直行基线的测量仪器，
+    # control-route 验收②的分母）。
     DEFAULT_STRAIGHT_MODE = False
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     DEFAULT_MODULE_CONFIG: dict = {
@@ -552,8 +553,7 @@ class SpeedRushModule(ActivityModule):
                   "INFO")
         elif control:
             _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：控制环接管"
-                  f"（V0/V1 由 decision.json 的 allow_all_moves 决定）", "INFO")
+                  f"[极速狂飙] 驾驶阶段 {phase}：控制环接管", "INFO")
         else:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：等待阶段结束（未接管车辆）", "INFO")
@@ -761,8 +761,12 @@ class SpeedRushModule(ActivityModule):
                 # lane_w_m 供栅格区域读数的米→道换算（world_model 同源锚）
                 "lane_w_m": cal.lane_w_m,
                 "wall_track": wt,
-                "ego_road": _EgoRoadObserver(cfg.grid_xcheck, cal.lane_w_m, wt,
-                                             mem_fallback=cfg.corridor_reach.enabled),
+                "ego_road": _EgoRoadObserver(
+                    cfg.grid_xcheck, cal.lane_w_m, wt,
+                    mem_fallback=cfg.corridor_reach.enabled,
+                    wall_line_master=cfg.geometry.wall_line_master,
+                    wall_line_cross_check_lane=(
+                        cfg.geometry.wall_line_cross_check_lane)),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -838,8 +842,6 @@ class SpeedRushModule(ActivityModule):
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
                           "xt": last.get("x_target"),
-                          "cr_best": last.get("reach_best"),
-                          "cr_path": last.get("reach_path"),
                           "ro": last.get("road_offset"), "src": snap.get("source"),
                           "ro_raw": snap.get("off_raw"),
                           "age": last.get("dgeo_age"), "new": last.get("dgeo_new")})
@@ -853,30 +855,34 @@ class SpeedRushModule(ActivityModule):
             obs = chain["agg"].update(obs)
             planner: LateralPlanner = chain["planner"]
             tviews, tevents = chain["traffic_obs"].update(obs)
-            # road_offset 供数源=分带走廊（第 6 步统一供数路）：供数主人选择
-            # （off/veto→找边对、master→区读数）合并进 _EgoRoadObserver 内部的
-            # 一条优先级链（mode 只决定候选排序），此处不再两条供数路互相顶替；
-            # 找边对心保留为审计列（ro_edge）。走廊 None=诚实弃权拍，退纯模型
-            # 积分——一个 job 一个主人。
-            # 提前于 engine.update：轨迹模式（阶段二）决策层同吃路心锚与 W
-            # 兜底宽度；legacy 模式消费序不变（engine 不吃这两路）。
-            # dgrid（S2-B）：同拍栅格，仅 grid_veto 闸开时进轨迹评分（闸关
-            # 时 engine 忽略）。
+            # road_offset 供数源=分带走廊：供数主人选择合并进 _EgoRoadObserver
+            # 内部的一条优先级链，此处不再两条供数路互相顶替；找边对心保留为
+            # 审计列（ro_edge）。走廊 None=诚实弃权拍，退纯模型积分。
+            # 供数先于 engine.update：选择层消费同拍 corridor 带。
+            # dgrid：同拍栅格，墙线拟合/红块内缘/trace 用；栅格绝对否决已删除。
             edge_off = None
             if dgeo is not None and dgeo.sides == 2 \
                     and dgeo.left_edge_lane is not None \
                     and dgeo.right_edge_lane is not None:
                 edge_off = -((dgeo.left_edge_lane + dgeo.right_edge_lane)
                              / 2.0)   # 找边对心（审计面）
+            # 墙线拟合影子读数（2026-10-18 走廊重建）：逐行内缘分段直线→斜率/
+            # 中心/宽。master 开时供数链消费；关时只落 trace 对照列。
+            wlc = None
+            if dgrid is not None:
+                if getattr(self, "_wlc_cache", (None, None))[0] != id(dgrid):
+                    self._wlc_cache = (id(dgrid), wall_line_reading(
+                        dgrid, chain["lane_w_m"]))
+                wlc = self._wlc_cache[1]
             corridor = chain["ego_road"].update(dgeo, new=dgeo_new,
-                                                grid=dgrid, fid=fid)
+                                                grid=dgrid, fid=fid,
+                                                wall_line=wlc)
             road_offset = None if corridor is None else -corridor.center_lane
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents),
                 road_offset=road_offset,
-                road_width=None if corridor is None else corridor.width_lane,
-                grid=dgrid, corridor=corridor)
+                corridor=corridor)
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -904,22 +910,24 @@ class SpeedRushModule(ActivityModule):
         if not obs.health.stage_transition and self._debug_enabled():
             _maybe_save_bad_frame(chain, frame, dgeo, fid, phase,
                                   time.monotonic(), ts_ns)
+        eng = chain["engine"]
         self._control_last = {
             "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
             "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3),
             "x_target": out.x_target,
             "road_offset": None if road_offset is None else round(road_offset, 3),
-            "dgeo_age": round(chain["depth_geo"].last_age_ms), "dgeo_new": dgeo_new}
-        # 走廊收益场路径预估（corridor_reach 闸开才有值；调试图渲染面）：
-        # 路径换算自车系米（x_self=x_road−executed×lane_w，近端=0），z=车头系。
-        # lane_w 走 chain 单源锚（_build_control_chain 暴露）——本函数无 cal
-        rep = chain["engine"].reach_report
-        if rep is not None:
-            lwm = chain["lane_w_m"]
-            off = planner.state.executed_lane * lwm
-            self._control_last["reach_best"] = round(rep.best_x_m - off, 3)
-            self._control_last["reach_path"] = [
-                [round(z, 3), round(x - off, 3)] for z, x in rep.path]
+            "dgeo_age": round(chain["depth_geo"].last_age_ms), "dgeo_new": dgeo_new,
+            # 场跟随可观测面（阶段 0）：原始胜出/执行分支
+            "goal": eng.goal,
+            "exec_branch": eng.exec_branch,
+            # 四层选择观测面（layered；legacy 全 None）：层号/原因/路点数
+            "sel_layer": None if eng.selection_report is None
+            else eng.selection_report.layer,
+            "sel_why": None if eng.selection_report is None
+            else eng.selection_report.why,
+            "sel_nwp": None if eng.selection_report is None
+            else len(eng.selection_report.waypoints),
+            "maneuver": out.maneuver}
         # 逐拍控制 trace（内存攒、阶段出口一次性 flush）：C1 定档 K_v 与 §七.1 复测的
         # 数据源。boundary 黄线列已随 2D 链路退役（v4 换装），路缘观测量看
         # dgeo_left/dgeo_right 两列。
@@ -936,15 +944,6 @@ class SpeedRushModule(ActivityModule):
         # 生产判定路径不消费。
         blk = (blocked_inner_reading(dgrid, chain["lane_w_m"])
                if dgrid is not None else None)
-        # 墙走廊影子读数（2026-10-18 用户定案：墙锚定走廊）：绿包红剔除 +
-        # 两侧墙内缘中位 + 过宽裁墙间中点±2 道。trace-only 对照列，生产
-        # 判定不消费；连通行按栅格身份缓存（驻留复用拍不重算）
-        wc = None
-        if dgrid is not None:
-            if getattr(self, "_wc_cache", (None, None))[0] != id(dgrid):
-                self._wc_cache = (id(dgrid), wall_corridor_reading(
-                    dgrid, chain["lane_w_m"]))
-            wc = self._wc_cache[1]
         h_score, h_rate = _ego_hud_readout(chain.get("hud_ref"))
         chain["trace"].append({
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
@@ -955,6 +954,26 @@ class SpeedRushModule(ActivityModule):
             "pace_wake": None if pace_ms is None else round(pace_ms[2], 1),
             "state": out.state.value, "reason": out.reason,
             "x_target": out.x_target,
+            # 场跟随可观测面（阶段 0）：输出目标/执行分支
+            "goal": eng.goal,
+            "exec_branch": eng.exec_branch,
+            # 四层选择观测面（layered；legacy 全 None）：层号/原因/路点数
+            "sel_layer": None if eng.selection_report is None
+            else eng.selection_report.layer,
+            "sel_why": None if eng.selection_report is None
+            else eng.selection_report.why,
+            "sel_nwp": None if eng.selection_report is None
+            else len(eng.selection_report.waypoints),
+            # 选择帧快照（录制对照/参数校准）：ego/中心/左右缘/路点/机会
+            # 全部在同一个选择层坐标（道），离线可直接和人工 executed 对齐
+            "sel_dbg": eng.selection_debug,
+            # 墙线拟合段：side,z0,z1,a(道),b；录制局用来核对方程是否锁对墙
+            "wlc_seg": None if wlc is None else [
+                [side, round(s.z0, 2), round(s.z1, 2),
+                 round(s.a / chain["lane_w_m"], 3), round(s.b, 3)]
+                for side, segs in ((-1, wlc.left_segs), (1, wlc.right_segs))
+                for s in segs],
+            "maneuver": out.maneuver,
             "steer_norm": round(planner.state.steer_norm, 4), "steer_x": cmd.steer_x,
             "executed_lane": round(planner.state.executed_lane, 4),
             "v_lat_est": round(planner.state.v_lat_est, 4),
@@ -967,19 +986,19 @@ class SpeedRushModule(ActivityModule):
             "blk_r": None if blk is None or blk.right_lane is None
             else round(blk.right_lane, 3),
             "blk_rows": None if blk is None else blk.rows,
-            # 墙走廊影子列（墙锚定走廊）：两侧墙内缘 + 墙间中心/宽（过宽
-            # 已裁±2 道）+ 裁剪标记 + 两侧覆盖行数——与绿区读数（ro_*）同拍
-            # 对照，墙走廊跨帧稳即主供数候选成立；绿包红已先剔除
-            "wc_l": None if wc is None or wc.left_lane is None
-            else round(wc.left_lane, 3),
-            "wc_r": None if wc is None or wc.right_lane is None
-            else round(wc.right_lane, 3),
-            "wc_c": None if wc is None or wc.center_lane is None
-            else round(wc.center_lane, 3),
-            "wc_w": None if wc is None or wc.width_lane is None
-            else round(wc.width_lane, 3),
-            "wc_clip": None if wc is None else wc.clipped,
-            "wc_rows": None if wc is None else (wc.rows_l, wc.rows_r),
+            # 墙线拟合列：z=0 中心/宽/斜率/健康度 + 两侧段数。斜率是
+            # 道路相对自车的方向（0=正对，正=路向右偏），用于验证旋转场景；
+            # 段数暴露弯道分段/误锁结构（0=该侧无有效线）。
+            "wlc_c": None if wlc is None or wlc.center_lane is None
+            else round(wlc.center_lane, 3),
+            "wlc_w": None if wlc is None or wlc.width_lane is None
+            else round(wlc.width_lane, 3),
+            "wlc_slope": None if wlc is None or wlc.slope is None
+            else round(wlc.slope, 3),
+            "wlc_health": None if wlc is None else wlc.health,
+            "wlc_nseg": None if wlc is None
+            else (len(wlc.left_segs), len(wlc.right_segs)),
+            "wlc_rows": None if wlc is None else (wlc.rows_l, wlc.rows_r),
             # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
             # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
             # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）
@@ -1106,52 +1125,19 @@ class SpeedRushModule(ActivityModule):
             "cor_w": None if corridor is None
             else round(corridor.width_lane, 3),
             "cor_ph": None if corridor is None else corridor.plane_health,
-            # 走廊供数来源（corridor_reach 验收面）：pair/region/pair_slot/
+            # 走廊供数来源（wall_line/region/pair_slot/memory 等）：
             # memory/none——朝向记忆使用频次（memory 出现率）与黑视拍从这里读
             "cor_src": None if corridor is None else corridor.src,
-            # S2-B 采样诊断（dict|None）：ok/why/否决分项/中选 [d1,T]——
-            # grid_veto 开闸后的否决频次与 ABORT 增量的验收列
-            "traj_diag": chain["engine"].traj_diag,
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
             # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
             # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
             "car_views": len(tviews),
-            # 走廊收益场（corridor_reach 闸开才有值）：胜出位、逐候选分与
-            # 路径序列——shadow 对照列（与 legacy band/feas 链离线对照）+
-            # control 期决策可审计面；None=闸关/弃权拍
-            "cr_best": None if chain["engine"].reach_report is None
-            else round(chain["engine"].reach_report.best_x_m, 3),
-            "cr_scores": None if chain["engine"].reach_report is None
-            else [round(c.score, 1)
-                  for c in chain["engine"].reach_report.candidates],
-            "cr_path": None if chain["engine"].reach_report is None
-            else [[round(z, 3), round(x, 3)]
-                  for z, x in chain["engine"].reach_report.path],
-            # 胜出候选的可收币 t_miss（提前量仪器，20261015 instrumentation 补齐：
-            # control 期 CHANGE 目标=走廊路径位无实体 t_miss，reach_win 拍取
-            # min(cr_coins) 的 P50 即提前量）
-            "cr_coins": None if chain["engine"].reach_report is None
-            else [round(t, 3) for t in chain["engine"].reach_report.best_coin_t],
-            # R3 归因面（20261016 实机 3 局初筛后补观测缺口）：逐车米制状态
-            # 快照（横向位/纵向距/到站/接近速/锚龄，与 dist 同 id 同拍 join）
-            # + 胜出候选贴身审计（hug_value/hug_cars）——机会漏点（侧移可达门
-            # vs 碰撞判据）的离线复算输入；None=metric_cars 关/无车/闸关弃权拍
+            # 奖励车源计数（漏斗观测）：0=源为空（近场+远场粗源都没进来）——
+            # 区分"奖励车看不见"与"看见但没被选中"
+            "cr_bonus_src": eng.bonus_src_count,
+            # 车米制状态快照（横向位/纵向距/到站/接近速/锚龄，与 dist 同 id
+            # 同拍 join）：机会漏点（可达门 vs 碰撞判据）的离线复算输入
             "mcars": chain["engine"].metric_cars_snap or None,
-            "cr_hug": None if chain["engine"].reach_report is None
-            else round(max(chain["engine"].reach_report.candidates,
-                           key=lambda c: c.score).hug_value, 1),
-            "cr_hug_cars": None if chain["engine"].reach_report is None
-            else max(chain["engine"].reach_report.candidates,
-                     key=lambda c: c.score).hug_cars,
-            # R5 奖励车审计面（20261017 设计稿 §9.1）：胜出候选奖励车项累加
-            # 与计入车数——离线回放对账「排最前面的优先」与撞奖励车行为的
-            # 复算输入；闸关恒 0，None=reach 弃权拍
-            "cr_bonus": None if chain["engine"].reach_report is None
-            else max(chain["engine"].reach_report.candidates,
-                     key=lambda c: c.score).bonus_value,
-            "cr_bonus_cars": None if chain["engine"].reach_report is None
-            else max(chain["engine"].reach_report.candidates,
-                     key=lambda c: c.score).bonus_cars,
             # HUD 本机读数（hud_ref 挂载；rate 只在蓝卡识别=有 rate 的槽位即
             # 本机）：局结局程序化取数面（得分/得分速度），缺失拍诚实 None
             # （对手卡读数是背景假读，按槽位猜会静默读错）；血量格未读另案
@@ -1186,11 +1172,13 @@ class SpeedRushModule(ActivityModule):
                 "road_offset": road_offset,
                 "grid_off": chain["ego_road"].last.get("grid_off"),
                 "corridor": corridor,   # 分带走廊（debugview 逐带来源叠层）
+                "wall_line": wlc,       # 墙线拟合（左/右段 + 健康度）
+                "selection": eng.selection_report,   # 本拍四层选择
+                "sel_objects": eng.selection_objects,  # 选择器眼里的机会
+                "sel_debug": eng.selection_debug,      # 选择帧快照
                 "decision": self._control_last,   # 本拍决策/供数快照（新建不改旧）
                 "hud": (chain["hud_ref"].latest()
                         if chain.get("hud_ref") is not None else None),
-                "plan": chain["engine"].traj_plan,
-                "diag": chain["engine"].traj_diag,
                 "n_groups": len(obs.coin_groups)})
 
     def _straight_tick(self, gpad, fid: int, ts_ns: int, rows: list[dict],
@@ -1255,15 +1243,8 @@ class SpeedRushModule(ActivityModule):
         在此列（另案）。失败只记 WARNING——汇总缺失不该中止收尾。"""
         try:
             score = rate = None
-            dodges = conserve = cons_segments = 0
-            prev_dodge = False
+            conserve = cons_segments = 0
             for r in rows:
-                if r.get("reason") == "select:dodge":
-                    if not prev_dodge:
-                        dodges += 1
-                    prev_dodge = True
-                else:
-                    prev_dodge = False
                 if r["state"] == "CONSERVE":
                     if conserve == 0:
                         cons_segments += 1
@@ -1282,7 +1263,6 @@ class SpeedRushModule(ActivityModule):
                 "phase": phase, "ticks": len(rows), "score": score,
                 "rate": rate,
                 "dur_s": round((rows[-1]["ts_ns"] - rows[0]["ts_ns"]) / 1e9, 1),
-                "dodge_episodes": dodges,
                 "conserve_segments": cons_segments,
             }
             with open(root / "game_summary.jsonl", "a", encoding="utf-8") as f:
@@ -1577,7 +1557,7 @@ class _EgoRoadObserver:
     W_MIN_SAMPLES = 30               # 成形所需最少对宽数
     W_KEEP_SAMPLES = 200             # 滑动样本窗上限（路型缓变，旧样本滚出）
     W_GUARD_FRAC = 0.2               # 对宽超出 W±此比例 → 污染（收紧自 ±40%）
-    # 朝向记忆（corridor_reach 闸，2026-10-14 设计稿 §3.3 六点 4）：弯道帧
+    # 朝向记忆（走廊兜底，2026-10-14）：弯道帧
     # 走廊消失（候选链全灭）时按 EMA 记忆延伸路径，TTL 内照常输出，感知恢复
     # 自动回实测。[需实测] 起值：TTL=2s（保鲜槽 0.4s 的弯道帧加长档）；
     # α=0.2（~0.4s 时间常数 @10fps，记忆漂移由 EMA 平滑+超时退化兜底）。
@@ -1585,11 +1565,15 @@ class _EgoRoadObserver:
     MEM_ALPHA = 0.2
 
     def __init__(self, xcheck=None, lane_w_m: float | None = None,
-                 wall_track=None, mem_fallback: bool = False) -> None:
+                 wall_track=None, mem_fallback: bool = False,
+                 wall_line_master: bool = False,
+                 wall_line_cross_check_lane: float = 1.0) -> None:
         self._xc = xcheck            # GridXcheck | None（None/闸关=互证不参与供数）
         self._lane_w_m = lane_w_m
         self._wt = wall_track        # WallTrack | None（None=无墙实体路径）
-        self._mem_fallback = mem_fallback  # 朝向记忆兜底（corridor_reach 闸开才生效）
+        self._mem_fallback = mem_fallback  # 朝向记忆兜底（闸开才生效）
+        self._wall_line_master = wall_line_master
+        self._wall_line_cross = wall_line_cross_check_lane
         self._xc_streak = 0          # 连续互证 veto 计数（达 bypass 预算放行）
         self._slot: dict[str, tuple] = {}     # 最近有效对缓存 (el, er, 时刻)
         self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口）
@@ -1600,7 +1584,8 @@ class _EgoRoadObserver:
     def update(self, bnd, now: float | None = None, *,
                new: bool = True,
                grid: DrivableGrid | None = None,
-               fid: int | None = None) -> Corridor | None:
+               fid: int | None = None,
+               wall_line=None) -> Corridor | None:
         """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
 
         ``new``：本拍读数是否新证据（异步驻留协议 take() 的 is_new）。中值窗、
@@ -1610,15 +1595,24 @@ class _EgoRoadObserver:
         的帧号（新证据帧喂观测，复用/弃权拍只走衰减——置信是时间的函数）。
 
         返回分带走廊（None=诚实弃权，交 planner 既有 machinery 消化，不造
-        观测）；planner 吃 road_offset=−corridor.center_lane，engine 吃走廊
-        带来源规则（decision._side_has_space）。"""
+        观测）；planner 吃 road_offset=−corridor.center_lane，选择层直接用
+        带边界做目标夹取。"""
         if now is None:
             now = time.monotonic()
         grid_off = self._grid_off(grid)     # 互证审计面：闸关也常算
+        # 墙实体证据先记账（master 分支提前返回也不能断墙箱寿命）
         if self._wt is not None and fid is not None:
             pts = (list(getattr(bnd, "edge_pts", ()) or ())
                    if (new and bnd is not None) else [])
             self._wt.update(_EdgePtsView(pts), fid)
+        # 墙线主人（2026-10-18 走廊重建）：逐行内缘分段直线→中心/宽/斜率。
+        # 影子期只落 trace；master 开时才接棒，region 降为兜底。
+        if self._wall_line_master and wall_line is not None:
+            wl = self._wall_line_corridor(wall_line, grid)
+            if wl is not None:
+                self.last = self._snapshot(now, wl.src, -wl.center_lane,
+                                           None, grid_off)
+                return wl
         master = self._xc is not None and self._xc.mode == "master"
 
         # master：区读数当主人（独立于 bnd，区弃权拍不回退找边）
@@ -1704,7 +1698,7 @@ class _EgoRoadObserver:
                   grid_off: float | None = None) -> Corridor | None:
         """候选链（候选缺席/复用拍）：墙实体与保鲜槽谁先、区兜底只在新鲜拍
         ——复用拍的栅格是旧证据，不得冒充新鲜（黑视纪律：宁可 None）。链尾
-        朝向记忆（corridor_reach 闸开才生效）：TTL 内按 EMA 记忆延伸，超时
+        朝向记忆兜底（闸开才生效）：TTL 内按 EMA 记忆延伸，超时
         诚实 None。"""
         def slot_c():
             fresh = self._fresh(now)
@@ -1788,6 +1782,42 @@ class _EgoRoadObserver:
                 continue                 # 远墙假设（人行道墙）当不了走廊中心
             return center, formed, ("wall" if state == MEASURED else "wall_occl")
         return None
+
+    def _wall_line_corridor(self, wlc, grid) -> Corridor | None:
+        """墙线读数 → 分带走廊（master 路径）。
+
+        逐带取 ``frame_at`` 的中心/宽；单侧健康带标 inferred（另一侧是
+        4 道空气墙）。与同帧绿区中心互证，超差判 degraded 回退——防锁到
+        停车带/邻车侧面。"""
+        if wlc is None or self._lane_w_m is None or self._lane_w_m <= 0:
+            return None
+        if wlc.health == "degraded":
+            return None
+        if grid is not None:
+            reg = region_reading(grid, self._lane_w_m)
+            if reg.sides == 2 and reg.left_edge_lane is not None \
+                    and reg.right_edge_lane is not None:
+                reg_c = 0.5 * (reg.left_edge_lane + reg.right_edge_lane)
+                if abs(wlc.center_lane - reg_c) > self._wall_line_cross:
+                    return None
+        bands = []
+        for i in range(N_BANDS):
+            z0, z1 = _band_bounds(i)
+            mid = 0.5 * (z0 + z1) - CAM_Z_DATUM_M
+            c, w, _clip, health = wlc.frame_at(
+                mid, self._lane_w_m, width_prior_lane=4.0)
+            if c is None or w is None or health in ("none", "degraded"):
+                unknown = BandBoundary(None, "unknown")
+                bands.append(CorridorBand(z0 - CAM_Z_DATUM_M,
+                                          z1 - CAM_Z_DATUM_M,
+                                          unknown, unknown))
+                continue
+            src = "measured" if health == "ok" else "inferred"
+            bands.append(CorridorBand(
+                z0 - CAM_Z_DATUM_M, z1 - CAM_Z_DATUM_M,
+                BandBoundary(c - w / 2.0, src), BandBoundary(c + w / 2.0, src)))
+        return Corridor(tuple(bands), wlc.center_lane, wlc.width_lane,
+                        "wall_line", "ok")
 
     def _region_center(self, grid) -> tuple[float, float] | None:
         """绿区中心（区读数语义收进走廊兜底）：sides==2 才给（clip 假缘诚实

@@ -24,11 +24,11 @@ P = CFG.planner
 
 
 def _out(state=DecisionState.CRUISE, x_target=0.0, fid=1, valid=3,
-         reanchor=None, move=True) -> DecisionOutput:
+         maneuver=False) -> DecisionOutput:
     return DecisionOutput(
-        schema_version=3, state=state, x_target=x_target,
-        move_allowed=move, reason="test", emitted_fid=fid,
-        valid_until_fid=valid)
+        schema_version=5, state=state, x_target=x_target,
+        reason="test", emitted_fid=fid,
+        valid_until_fid=valid, maneuver=maneuver)
 
 
 def _planner(**over) -> LateralPlanner:
@@ -366,7 +366,8 @@ def test_road_reanchor_tracks_real_motion():
     """车真在右移（路观测递增）：executed 跟上，v_lat 学出正速度。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)  # 模型不动，全靠观测
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
+                  obs_position_only=False)  # 本用例锁 α-β（新默认位置-only 另测）
     for i in range(1, 12):
         pl.update(_out(x_target=1.0, fid=i, valid=i), DT, i,
                   road_offset=0.05 * i)          # 每拍右移 0.05 车道
@@ -467,6 +468,28 @@ def test_hold_authority_deadband_and_cap():
     assert -int(P.hold_stick_max * _STICK_FULL) - 100 < c.steer_x < 0  # 封顶 0.45
 
 
+# ---------- 机动态全权（阶段 2，2026-10-18） ----------
+
+def test_maneuver_full_authority_moves_one_lane():
+    """maneuver=True：越过 0.45 维护杆幅上限，20 拍（1s）内位移 >0.3 道。"""
+    pl = _planner()
+    max_stick = 0
+    for i in range(1, 21):
+        cmd = pl.update(_out(x_target=1.0, fid=i, valid=i, maneuver=True),
+                        DT, i)
+        max_stick = max(max_stick, abs(cmd.steer_x))
+    assert max_stick > int(0.45 * _STICK_FULL)
+    assert pl.state.executed_lane > 0.3
+
+
+def test_maneuver_deadband_and_cap_used():
+    """机动态用 maneuver_deadband_lane/maneuver_stick_max：误差 0.1 道
+    （低于保持死区 0.5、高于机动态死区 0.05）仍发力。"""
+    pl = _planner(maneuver_deadband_lane=0.05, maneuver_stick_max=0.85)
+    cmd = pl.update(_out(x_target=0.1, fid=1, valid=1, maneuver=True), DT, 1)
+    assert cmd.steer_x > 0
+
+
 # ---------- ⑥b 速度修正时间基（2026-10-08 判据冻结，台账 §4A） ----------
 
 def test_beta_denominator_is_evidence_interval():
@@ -476,7 +499,9 @@ def test_beta_denominator_is_evidence_interval():
     机制根因）。复用拍只收位置、不重置累计器。"""
     pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
                   lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  obs_position_only=False,
+                  obs_beta_dv_rate_lane_s2=0.0)   # 隔离时间基（限速另测）
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     for i in range(2, 6):          # 4 个复用拍：位置修正照跑、速度不修正
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
@@ -493,7 +518,9 @@ def test_beta_accumulator_survives_reuse_ticks():
     新证据间隔归账；逐拍新证据的锚点值不变（T_e=dt，旧数学逐位保留）。"""
     pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
                   lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  obs_position_only=False,
+                  obs_beta_dv_rate_lane_s2=0.0)   # 隔离时间基（限速另测）
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.4)
     assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / DT)  # T_e=DT
@@ -512,11 +539,77 @@ def test_obs_velocity_injection_respects_cap():
     阻尼项 −k_d·v 随即满反打喂给极限环）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  a_lat_gain=0.0, tau_align_s=1e9)
+                  a_lat_gain=0.0, tau_align_s=1e9,
+                  obs_position_only=False,
+                  obs_beta_dv_rate_lane_s2=0.0)      # 隔离 v_lat_max 饱和面
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)   # 锚=0
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.7)   # r=0.7
     # 裸 β 注入 = 0.2·0.7/0.05 = 2.8 > v_lat_max=2.5 → 必须被夹住
     assert pl.state.v_lat_est <= P.v_lat_max + 1e-9
+
+
+# ---------- β 速度注入抑制（阶段 2，2026-10-18） ----------
+
+def _beta_planner(**over):
+    base = dict(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
+                lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                obs_position_only=False,
+                obs_beta_deadband_lane=0.05, obs_beta_sign_agree=True,
+                obs_beta_dv_rate_lane_s2=3.0)
+    base.update(over)
+    return _planner(**base)
+
+
+def test_beta_correction_capped_by_dv_rate():
+    pl = _beta_planner()
+    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.4)
+    assert pl.state.v_lat_est == pytest.approx(3.0 * DT, rel=1e-6)
+
+
+def test_beta_deadband_ignores_small_residual():
+    pl = _beta_planner()
+    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.02)
+    assert pl.state.v_lat_est == pytest.approx(0.0)
+
+
+def test_beta_requires_sign_agreement():
+    pl = _beta_planner()
+    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)     # 锚
+    pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.4)     # 正向修正
+    v1 = pl.state.v_lat_est
+    assert v1 > 0
+    pl.update(_out(fid=3, valid=3), DT, 3, road_offset=-0.4)    # 反号：只做位置
+    assert pl.state.v_lat_est == pytest.approx(v1)
+    pl.update(_out(fid=4, valid=4), DT, 4, road_offset=-0.4)    # 连续同号：恢复注入
+    assert pl.state.v_lat_est < v1
+
+
+def test_v_lat_never_saturates_under_alternating_offsets():
+    pl = _beta_planner(v_lat_max=2.5)
+    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
+    vmax = 0.0
+    for i in range(2, 60):
+        ro = 0.5 if i % 2 else -0.5
+        pl.update(_out(fid=i, valid=i), DT, i, road_offset=ro)
+        vmax = max(vmax, abs(pl.state.v_lat_est))
+    assert vmax < 2.5 - 1e-6
+
+
+def test_position_only_never_injects_velocity():
+    """新默认：路心观测只修位置（α），不把噪声注入 v_lat——交替 ±0.5 道
+    跑 60 拍，v_lat 始终保持 0（a_lat_gain=0、无模型驱动）。"""
+    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
+                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    assert pl.p.obs_position_only is True
+    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
+    for i in range(2, 60):
+        pl.update(_out(fid=i, valid=i), DT, i,
+                  road_offset=0.5 if i % 2 else -0.5)
+        assert abs(pl.state.v_lat_est) < 1e-9
 
 
 def test_no_road_offset_is_old_behavior():
@@ -541,10 +634,15 @@ def test_velocity_correction_only_on_fresh_reading():
     会在小跳变下把放大现象压没；随后 3 拍同值复用：fresh_only 序列 |v_lat|
     只准不增（无重复注入）；对照旧行为（复用拍 road_offset_new=True 直喂）
     同一新息被重复注入、|v_lat| 反超新鲜拍峰值=放大现象（id17 机理）。"""
-    def run(new_on_reuse):
+    def run(new_on_reuse, legacy=False):
+        over = {}
+        if legacy:   # 对照=阶段 2 之前的裸 β（无死区/无符号门/无限速）
+            over = dict(obs_beta_deadband_lane=0.0, obs_beta_sign_agree=False)
         pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
                       lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                      rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+                      rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                      obs_position_only=False,
+                      obs_beta_dv_rate_lane_s2=0.0, **over)
         pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)   # 锚=0（道0=路心）
         pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.2,
                   road_offset_new=True)                            # 新鲜跳变
@@ -559,7 +657,7 @@ def test_velocity_correction_only_on_fresh_reading():
     assert abs(fresh_only[0]) > 1.5            # 新鲜拍一次踢足（β·r/dt=2.0）
     assert all(abs(fresh_only[k + 1]) <= abs(fresh_only[k]) + 1e-9
                for k in range(3))              # 复用拍：只衰减，无重复注入
-    old = run(True)
+    old = run(True, legacy=True)
     assert max(abs(v) for v in old[1:]) > abs(fresh_only[0]) + 0.3
 
 

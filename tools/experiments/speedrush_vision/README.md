@@ -3125,25 +3125,10 @@ cmp_*.png 对比图）。证据包格式新增 `_ego.npy`（ego 静态掩码导�
 最判读）与 `.workbuddy-ai/refline_prod/`（产线回放+`*_mask.jpg` 掩码叠图），
 均会话级不入库；候选模块 `refline.py`（前瞻线）证伪后退役。
 
-## 双决策器离线回放（`replay_dual_decision.py`，2026-10-04）
+## 双决策器离线回放（已退役）
 
-阶段二 §三.1 首轮：manual 两段语料全帧离线供数（感知+聚合+深度路心链），
-同观测流喂现役栈与轨迹模式（trajectory_sampling=true），自车执行位=road_offset
-观测（**开环口径：人开的车，只比决策不比结局分数——闭环只能实机 V2**；
-深度逐帧同步供数，产线异步带龄，此处上界质量）。曾因 infer_points
-with_evidence=False 返回 3 元组按 4 解包、异常被 try 吞掉导致 ro 全场 None
-（第一轮回放作废）——**教训：回放工具的吞异常路径必须先验证 ro_present>0**。
-
-结果（p1 894 拍 ro 95.2% / p2 1037 拍 ro 91.6%，W 成形 4.39/4.32 道）：
-- **目标选择一致率 100%**（p1 114 / p2 244 个双 CHANGE 拍）——选择逻辑
-  未动，符合预期，锁「轨迹模式不改变选谁」；
-- **traj_blocked_ticks = 0**（两段）——采样器在真实车流下无一次全灭破判；
-- ABORT 拍 traj 少于 legacy（p1 9 vs 12、p2 14 vs 32）：feedback 路完成
-  更多、proxy/超时更少——输出形态换血的预期收益方向；
-- 看图（`*_dual.jpg`）：LEG 守轴常量 0、TRAJ 前瞻点带动量回轴；CHANGE 拍
-  两引擎 A1/路心系数值经 ro 换算追同一目标，落位与币/车一致。
-
-产物 `.workbuddy-ai/replay_dual/`（逐拍 jsonl + summary + 渲染），会话级不入库。
+`replay_dual_decision.py` 随轨迹采样模式（`trajectory_sampling`）删除
+（2026-10-19）。当时的对比口径与结果见 git 历史（文件删除提交的前一版）。
 
 ## 深度管线性能归因（`probe_depth_pipeline_attribution.py` / `probe_moge_stage_decompose.py`，2026-10-04）
 
@@ -3313,25 +3298,14 @@ with_evidence=False 返回 3 元组按 4 解包、异常被 try 吞掉导致 ro 
   证据域）；② 洞边清洗口径经回放两轮实证定为 **dig_mask 挖洞邻域片级整片除名**
   （counts==0 近似把贴视锥边缘的真墙片也清掉——全灭 0 否决；逐格排除留片中心
   仍误灭；挖洞=黑视主场景，伪影否决=兜底失效）。回放（`probe_s2b_replay.py`，
-  复用产线 `_grid_penalty` 同一实现）：黑视 10 帧裁决方向与金标逐帧一致，
+  已随 `latsample` 删除，2026-10-19；历史结果见 git 历史）：黑视 10 帧裁决方向与金标逐帧一致，
   ABORT 1/10（挖洞帧贴身，保守弃权），金标安全终点存活 3/3；全量回归 1270
   过、闸关逐位等价。
 
-## 计划层 V0 验收回放（2026-10-05，commit f9d4944 的验收面）
+## 计划层 V0 验收回放（已退役）
 
-`probe_plan_replay.py`：构造 30s 候选流（金币兜底 → bonus 出现→持续性升级→
-接触兑现 → 超车候选闪现抖动→连续在场→pass 兑现 → 目标消失→解约）逐拍喂
-产线 DecisionEngine（plan_layer 闸开、轨迹采样关=决策语义隔离），零复刻。
-输出 `plan_review/plan_replay_{events.csv,timeline.png}`（离散决策的目检面）。
-
-回放结果（时间线已目检）：bonus 计划连续承诺 5.9s（t=2.6~8.5）到站兑现
-`bonus_contact`；闪现期两次 CRUISE 抢入均因候选消失走 `overtake_lost` 有界
-回稳（解约免费语义，代价≈1s），CHANGE 期间慢拍持续性门无一次误换（全程
-switch:score_win=0 与单测 `test_persistence_gate_delays_upgrade` 互补）；连续
-在场后超车 2.1s 兑现 `overtake_pass`；金币目标消失 `cancel:target_lost` →
-重选；末段无候选 2s 触发 `target_empty`→CONSERVE（legacy 校验闸语义，非
-计划层行为）。场景构造两处踩到资格门的正确拒绝：车太近太快（t_meet<变道
-耗时）与无候选空窗（target_empty），均为产线语义非缺陷。
+`probe_plan_replay.py` 随计划层（`plan.py`/`plan_layer`）删除（2026-10-19）。
+当时的场景流与回放结果见 git 历史（文件删除提交的前一版）。
 
 ## 深度源端抖动与实体时序量化（2026-10-07，全面转 3D 前置测量，commit a013e61）
 

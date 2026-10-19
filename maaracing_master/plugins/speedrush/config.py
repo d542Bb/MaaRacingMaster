@@ -24,27 +24,39 @@ SCHEMA_VERSION = 1
 
 @dataclass(frozen=True)
 class Mode:
-    allow_all_moves: bool
     allow_car_graze: bool
-    # 横向轨迹采样评分闸（阶段二设计稿 §2.3，默认关=现役栈逐拍不变）：开闸后
-    # 决策输出从 x_target 位置常量换为采样轨迹的前瞻点（滚动重评，破判 ABORT）
-    trajectory_sampling: bool = False
 
 
 @dataclass(frozen=True)
-class GridVeto:
-    """S2-B 栅格裁决行为闸（三检验 2026-10-05 全绿后接线；整段可选，老 json
-    不带段=全默认=关，与 trajectory_sampling 同一条兼容纪律）。
+class Selection:
+    """四层选择层参数（2026-10-18 走廊重建；数值真源 decision.json selection）。
 
-    语义：开闸后轨迹采样器对每条候选按「近场带 z 3~9m × 轨迹横向包络」查
-    可行驶栅格——压 blocked 一票否决、unknown 每格小代价、drivable 零。
-    margin_lane 是检验 C 量出的边界抖动内收下限；数值回放校准只改 json。"""
+    横向量全为米制；带 `_lane` 的键在进选择层时 ×lane_w。``horizon_s`` 是
+    短视界（含中间机会），``center_band_lane`` 是 L4 的不修正容差带。"""
 
-    enabled: bool = False
-    margin_lane: float = 0.5      # 内收下限（道）＝检验 C 边界抖动量化
-    car_half_lane_m: float = 0.9  # 车半宽（米）
-    k_unknown: float = 0.05       # 每格 unknown 代价（回放校准起值）
-
+    horizon_s: float = 3.0
+    max_waypoints: int = 4
+    graze_gap_lane: float = 0.65
+    center_band_lane: float = 0.3
+    opportunity_tol_lane: float = 0.75
+    coin_pick_tol_lane: float = 1.2
+    coin_hold_s: float = 0.6
+    t_move_base_s: float = 0.3
+    t_move_per_lane_s: float = 2.0
+    reaction_s: float = 0.13
+    margin_s: float = 0.15
+    aligned_lane: float = 0.1
+    reward_aligned_lane: float = 0.2
+    wall_margin_lane: float = 0.35
+    center_lookahead_m: float = 0.0
+    preposition_enabled: bool = True
+    preposition_horizon_s: float = 6.0
+    preposition_max_lane: float = 2.5
+    preposition_bias_lane: float = 1.0
+    switch_dwell_s: float = 0.2
+    reward_tol_lane: float = 1.5
+    car_half_lane: float = 0.27
+    ego_half_lane: float = 0.27
 
 
 @dataclass(frozen=True)
@@ -69,28 +81,6 @@ class GridXcheck:
     mode: str = "off"           # off | master | veto
     tol_lane: float = 0.45      # veto/审计容差（道）：|找边路心−栅格路心|
     bypass_streak: int = 8      # veto 模式连续分歧放行预算（≈2s，防黑视）
-
-
-@dataclass(frozen=True)
-class Overtake:
-    """超车候选评分参数（阶段 C 设计稿 §二/§四；[需实测] 项回放定档只改 json）。"""
-
-    value_base: float        # 单次超车分（RULES §4.11 游戏事实镜像 30）
-    value_limit: float       # 极限超车动作分（同上镜像 120）
-    p_center_lane: float     # P_limit logistic 中心（~0.73，两点锚 0.65/0.81 的中点）[C4]
-    p_scale_lane: float      # logistic 尺度（0.06：0.65→≈0.79，0.81→≈0.21 起步）[C4]
-    d_hold_lane: float       # 贴邻保持窗中心（[0.55,0.70] 起值中点）——窗下沿是硬地板
-    lane_band_lo: float      # 候选车横向带下沿（<此值=本车道车/正在掠过，不作候选）
-    lane_band_hi: float      # 上沿（对向斜穿/杂框自卫）
-    t_pass_max_s: float      # 超车计划兜底超时（pass 事件迟迟不落定 → 强制 done）[C5]
-    space_margin_lane: float  # 空间闸门余量：该侧缘距 < d_hold+此值 才判"没空间"禁用该向
-                              # （决策默认左右对称，禁用必须有显式证据——维护者裁定）
-    t_cool_pass_s: float     # pass 落定后的短冷却（19:44 复盘：pass 高频，一律 1s 会
-                              # 烧掉 ~30% 对局时间且诱发左右横跳；金币完成仍用 1s）
-    ttc_dodge_s: float       # 本车道前车紧急回避的到站时间界（第七轮 2029 局：
-                              # 冷却/无候选盲持期间同车道逼近的车是纯碰撞等待，
-                              # near_dx 实测 0.00~0.04 道；绕过评分与冷却强制变道）
-
 
 
 @dataclass(frozen=True)
@@ -128,11 +118,9 @@ class Scoring:
 
 @dataclass(frozen=True)
 class Hysteresis:
-    switch_margin: float
-    min_score: float
-    t_cool_s: float
-    tau_filter_s: float
-    dead_zone_lane: float
+    # 输出目标 slew（道/s，0=关）：决策输出每拍变化上限——选择目标单拍跳变
+    # 不直接变成打舵指令（阶段 1a，2026-10-18）
+    target_slew_lane_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -164,7 +152,17 @@ class Planner:
     # —— 维护性转向权限（2026-09-26 16:44 局复盘：定中心全权 PD=满舵绕桩，
     #    257/267 饱和拍在保持态、速度起不来）——
     hold_deadband_lane: float  # 死区：|前瞻误差| 小于此不发维护力（车道单位）[需实测]
-    hold_stick_max: float      # 维护性转向（定中心/保持/回稳）杆幅上限，CHANGE 全权 [需实测]
+    hold_stick_max: float      # 维护性转向（定中心/保持/回稳）杆幅上限 [需实测]
+    # ---- 机动态全权（阶段 2，2026-10-18：decision.maneuver 置位时）----
+    maneuver_deadband_lane: float = 0.0   # 机动态死区（道，0=无死区）
+    maneuver_stick_max: float = 0.45      # 机动态杆幅上限（0.45=与保持态相同）
+    # ---- 路心观测速度注入抑制（阶段 2，2026-10-18）----
+    obs_beta_deadband_lane: float = 0.0   # |r| 低于此只做位置修正（0=关）
+    obs_beta_sign_agree: bool = False     # r 与上次被接受修正反号时不做速度修正
+    obs_beta_dv_rate_lane_s2: float = 0.0  # β 注入的速度变化率上限（0=关）
+    # 路心观测位置-only（2026-10-18 走廊重建）：true=只做 α 位置修正，不再
+    # 注入 β 速度（速度交给双积分模型）；false=旧 α-β 逐位恢复（回滚）
+    obs_position_only: bool = True
 
 
 @dataclass(frozen=True)
@@ -200,73 +198,20 @@ class Validate:
     t_conserve_max_s: float
     x_lane_abs_max: float
     cy_jump_max_px: float
-    # —— 横向几何安全 veto（阶段一 2026-10-02，RSS 形状外挂判据）——
-    lat_veto_gap_lane: float        # 接触界：预测最小车距低于此即 veto（车身中心距）
-    lat_veto_horizon_s: float       # 自车扫掠包络的判距视野（街车静态，无外推视野）
 
 
 @dataclass(frozen=True)
 class CorridorReach:
-    """走廊收益场选路径参数（2026-10-14 设计稿 §3.2-§3.4：米制连续坐标综合
-    收益评估，解耦车道定义；整段可选，老 json 不带段=全默认=关，与
-    plan_layer 同一条兼容纪律）。
+    """走廊记忆回退与奖励车源闸。
 
-    语义：`enabled` 开闸后引擎逐拍算 ReachReport（corridor_reach.evaluate）
-    落 trace cr_* 对照列并作为唯一选择器（2026-10-18 换血：场即选择器，
-    control 闸随 legacy 链退役）。车道换算件（timing 变道耗时 need_of_dx_m、
-    lane_w_m）在 decision.py 进决策边界注入，本表不带车道单位。"""
+    运行态（2026-10-18 走廊重建后）：加性场与轨迹采样器已删除；只剩
+    `enabled`（_EgoRoadObserver 走廊记忆回退）、`coin_confirm_ticks`（币组
+    确认窗）与 `bonus_value`（奖励车源总闸）被消费。"""
 
     enabled: bool = False
-    trigger_dead_zone_lane: float = 0.35  # reach_win 触发死区（道）——独立于
-    step_m: float = 0.5                  # 候选步进（米，与栅格格宽同量级）
-    horizon_s: float = 2.0               # 收益前瞻（s）
-    crash_t_s: float = 0.8               # 到站短于此判碰撞（s）
-    crash_penalty: float = 100.0         # 碰撞候选负额（分）
-    pass_value: float = 30.0             # 错身保底（分）
-    far_coin_weight: float = 0.3         # 前瞻窗外币的远权
-    tie_margin: float = 20.0             # 平手阈（分）：差 < 此值偏向走廊中心
-    # ---- R3 贴身猎车（2026-10-16 设计稿 §2.2/§3；默认关=逐位回今天）----
-    overtake_hunting: bool = False       # 贴身猎车总闸（false=逐位回今天）
-    hug_value: bool = False              # R3 贴身收益分开关（shadow→实机 A/B 分刀验收）
-    hug_half_width_lane: float = 0.075   # 贴身平台窗半宽（道）：d_hold_lo/hi =
-                                         #   d_hold_lane ∓ 半宽（派生值，非独立真源）；
-                                         #   窗整体落在归属半宽（0.75 道）内 = in-path 区，
-                                         #   占用/遮挡/碰撞判据对窗内前车照旧，只有价值面翻转
-    # ---- R2 前瞻外方向权（2026-10-16 设计稿 §2.4；默认关；R3 的 hug 参数是
-    #      其 E 曲线前提，两分开关独立验收）----
-    far_direction: bool = False          # R2 远车方向权分开关
-    far_car_weight: float = 0.0          # 远车方向权（标定对象随胜出聚合语义定，
-                                         #   不预先单选）
-    hunt_horizon_s: float = 6.0          # 前瞻外作用域上界（s，[需实测]；近场
-                                         #   horizon_s 内是 R3 的地盘不双计）
-    far_aggregation: str = "max"         # 多车聚合三语义：max | sum | capped
-                                         #   （capped 上限=value_limit+pass_value）；
-                                         #   影子对比后定档
-    # ---- R5 四层优先级（2026-10-17 设计稿 §9；默认关=逐位回今天）----
-    bonus_value: bool = False            # 层 1 奖励车项分开关（false=逐位回今天）
-    bonus_car_value: float = 120.0       # 奖励车收益分（起值=一次极限动作分 [需实测]）
-    hug_visual: bool = False             # 层 2 擦边倾向：hug 分支扩到像素仪器车
-                                         #   （t_overtake 缺位回退 t_meet_s 过同一门）
-    bonus_tol_m: float = 0.75            # 奖励车归属半容差（米，近远场同源，R5 §10；
-                                         #   起值≈0.22 道 [需实测]：宽了平价 120 摊成
-                                         #   平台被平手阈拉回路心，窄了平台只剩 2~3
-                                         #   候选、胜出位落源 ±0.5m 内且 30>20 真胜出）
-    # ---- 净空项（2026-10-18 用户定案：场即空间优先级，路心偏好=净空最大化）----
-    clearance_ref_lane: float = 0.65     # 软净空作用半径（道，0=闸关）：迁移自实机
-                                         #   验收的车体包络阈（回避横距门实测值，
-                                         #   2026-10-18 退役后仓内单份真源）
-    clearance_penalty: float = 0.0       # 软净空罚（分，0=闸关=逐位回今天；默认关，
-                                         #   实机 A/B 后再开——两个未验收变更不叠加）
-    squeeze_min_gap_lane: float = 0.75   # 窄缝硬约束下限（道，安全项默认开）：候选
-                                         #   两侧最近障碍（车或走廊缘，至少一侧是
-                                         #   车）间距低于此值=空隙窄于车体不钻；
-                                         #   起值=接触距 0.54+余量 0.2 [需实测]
-                                         #   （仓库无自车实测车宽标定）
-    absence_budget_s: float = 0.5        # 场报告缺席预算（s，2026-10-18 换血）：
-                                         #   预算内冻结上一拍场选点（不塌回 0），
-                                         #   超预算冻结自车当前位直到报告恢复；
-                                         #   起值沿旧 memory_budget_s 语义
-                                         #   [需实测]
+    coin_confirm_ticks: int = 1          # 币组进场的观测确认拍数（1=旧行为）：
+                                         #   首次出现当拍不参与选择，防单帧闪烁拉偏
+    bonus_value: bool = False            # 奖励车源总闸（false=逐位回今天）
 
 
 @dataclass(frozen=True)
@@ -274,12 +219,10 @@ class MetricCars:
     """车米制状态供数闸（2026-10-12 C 线：车世界模型搬米制系，计划稿 §5C）。
 
     语义：`enabled` 开闸后 `WorldObservation.metric_cars` 喂场车源链
-    （米制优先、像素回退）；`fusion` 是轨迹采样器危险窗截断的米制闸
-    （截断取较晚到站，保守向），回滚=false 即纯像素。米制量本身由锚点链路
-    自况有效性（无锚=UNKNOWN 弃权），本闸只管供不供。"""
+    （米制优先、像素回退）；米制量本身由锚点链路自况有效性（无锚=UNKNOWN
+    弃权），本闸只管供不供。"""
 
     enabled: bool = True
-    fusion: bool = False
 
 
 @dataclass(frozen=True)
@@ -301,14 +244,23 @@ class MetricBridge:
 
 
 @dataclass(frozen=True)
+class Geometry:
+    """几何供数（2026-10-18 走廊重建）：wall_line_master=true 时墙线拟合当
+    走廊主人（region 降为兜底）；false=影子只落 trace。cross_check 是与同帧
+    绿区中心的互证容差（道），超差判 degraded 回退。"""
+
+    wall_line_master: bool = False
+    wall_line_cross_check_lane: float = 1.0
+
+
+@dataclass(frozen=True)
 class DebugDump:
     """调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验）。
 
     off：深度观测器不建 debug_dir，证据包零落盘。events：worker 内存 ring
-    留最近 ``ring`` 次捕获，push 快照（滞后 1 拍）报事件——state=CONSERVE
-    或 reason 含 dodge——时落盘 ring+后续 ``event_window`` 帧；真正消费的
-    是 dodge/conserving 时刻±窗口，恒开全量是探针期残留。full：现状全量
-    0.5s 节流（感知排错期用）。"""
+    留最近 ``ring`` 次捕获，push 快照（滞后 1 拍）报 state=CONSERVE 事件时
+    落盘 ring+后续 ``event_window`` 帧；恒开全量是探针期残留。full：现状
+    全量 0.5s 节流（感知排错期用）。"""
 
     mode: str = "events"
     ring: int = 10
@@ -324,12 +276,12 @@ class DecisionConfig:
     hysteresis: Hysteresis
     validate: Validate
     planner: Planner
-    overtake: Overtake
     traffic: Traffic
-    grid_veto: GridVeto = GridVeto()
     grid_xcheck: GridXcheck = GridXcheck()
     # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
+    selection: Selection = Selection()
+    geometry: Geometry = Geometry()
     metric_cars: MetricCars = MetricCars()
     metric_bridge: MetricBridge = MetricBridge()
     debug_dump: DebugDump = DebugDump()
@@ -411,11 +363,7 @@ def _read_decision(path: Path) -> DecisionConfig:
 
     cfg = DecisionConfig(
         mode=Mode(
-            allow_all_moves=_bool(d, "mode", "allow_all_moves"),
-            allow_car_graze=_bool(d, "mode", "allow_car_graze"),
-            # trajectory_sampling 缺省 False：老 json 不带键也安全（现役栈逐拍不变）
-            trajectory_sampling=_bool(d, "mode", "trajectory_sampling",
-                                      default=False)),
+            allow_car_graze=_bool(d, "mode", "allow_car_graze")),
         control=Control(
             frame_rate_hz=_num(d, "control", "frame_rate_hz", lo=0),
             t_change_max_s=_num(d, "control", "t_change_max_s", lo=0),
@@ -437,20 +385,14 @@ def _read_decision(path: Path) -> DecisionConfig:
                                      lo=0, lo_open=False),
             life_tau_s=_num(d, "scoring", "life_tau_s", lo=0)),
         hysteresis=Hysteresis(
-            switch_margin=_num(d, "hysteresis", "switch_margin",
-                               lo=0, lo_open=False),
-            min_score=_num(d, "hysteresis", "min_score", lo=0),
-            t_cool_s=_num(d, "hysteresis", "t_cool_s", lo=0, lo_open=False),
-            tau_filter_s=_num(d, "hysteresis", "tau_filter_s", lo=0),
-            dead_zone_lane=_num(d, "hysteresis", "dead_zone_lane", lo=0)),
+            target_slew_lane_s=_num_def(d, "hysteresis", "target_slew_lane_s",
+                                        0.0, lo=0)),
         validate=Validate(
             t_empty_s=_num(d, "validate", "t_empty_s", lo=0),
             t_recover_s=_num(d, "validate", "t_recover_s", lo=0),
             t_conserve_max_s=_num(d, "validate", "t_conserve_max_s", lo=0),
             x_lane_abs_max=_num(d, "validate", "x_lane_abs_max", lo=0),
-            cy_jump_max_px=_num(d, "validate", "cy_jump_max_px", lo=0),
-            lat_veto_gap_lane=_num(d, "validate", "lat_veto_gap_lane", lo=0),
-            lat_veto_horizon_s=_num(d, "validate", "lat_veto_horizon_s", lo=0)),
+            cy_jump_max_px=_num(d, "validate", "cy_jump_max_px", lo=0)),
         planner=Planner(
             lookahead_tau_s=_num(d, "planner", "lookahead_tau_s", lo=0),
             k_p=_num(d, "planner", "k_p", lo=0),
@@ -474,19 +416,19 @@ def _read_decision(path: Path) -> DecisionConfig:
                                 lo_open=False),
             hold_deadband_lane=_num(d, "planner", "hold_deadband_lane", lo=0,
                                     lo_open=False),
-            hold_stick_max=_num(d, "planner", "hold_stick_max", lo=0, hi=1)),
-        overtake=Overtake(
-            value_base=_num(d, "overtake", "value_base", lo=0),
-            value_limit=_num(d, "overtake", "value_limit", lo=0),
-            p_center_lane=_num(d, "overtake", "p_center_lane", lo=0),
-            p_scale_lane=_num(d, "overtake", "p_scale_lane", lo=0, lo_open=False),
-            d_hold_lane=_num(d, "overtake", "d_hold_lane", lo=0, lo_open=False),
-            lane_band_lo=_num(d, "overtake", "lane_band_lo", lo=0),
-            lane_band_hi=_num(d, "overtake", "lane_band_hi", lo=0),
-            t_pass_max_s=_num(d, "overtake", "t_pass_max_s", lo=0, lo_open=False),
-            space_margin_lane=_num(d, "overtake", "space_margin_lane", lo=0),
-            t_cool_pass_s=_num(d, "overtake", "t_cool_pass_s", lo=0),
-            ttc_dodge_s=_num(d, "overtake", "ttc_dodge_s", lo=0)),
+            hold_stick_max=_num(d, "planner", "hold_stick_max", lo=0, hi=1),
+            maneuver_deadband_lane=_num_def(
+                d, "planner", "maneuver_deadband_lane", 0.0, lo=0),
+            maneuver_stick_max=_num_def(
+                d, "planner", "maneuver_stick_max", 0.45, lo=0, hi=1),
+            obs_beta_deadband_lane=_num_def(
+                d, "planner", "obs_beta_deadband_lane", 0.0, lo=0),
+            obs_beta_sign_agree=_bool(d, "planner", "obs_beta_sign_agree",
+                                      default=False),
+            obs_beta_dv_rate_lane_s2=_num_def(
+                d, "planner", "obs_beta_dv_rate_lane_s2", 0.0, lo=0),
+            obs_position_only=_bool(d, "planner", "obs_position_only",
+                                    default=True)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),
             presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
@@ -502,13 +444,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             lane_vote_sigma_max=_num_def(d, "traffic", "lane_vote_sigma_max",
                                          0.6, lo=0, lo_open=False),
             width_ttl_ticks=_int_def(d, "traffic", "width_ttl_ticks", 6, lo=0)),
-        grid_veto=GridVeto(
-            enabled=_bool(d, "grid_veto", "enabled", default=False),
-            margin_lane=_num_def(d, "grid_veto", "margin_lane", 0.5,
-                                 lo=0, lo_open=False),
-            car_half_lane_m=_num_def(d, "grid_veto", "car_half_lane_m", 0.9,
-                                     lo=0),
-            k_unknown=_num_def(d, "grid_veto", "k_unknown", 0.05, lo=0)),
         grid_xcheck=GridXcheck(
             mode=_str_def(d, "grid_xcheck", "mode", "off",
                           ("off", "master", "veto")),
@@ -516,54 +451,58 @@ def _read_decision(path: Path) -> DecisionConfig:
             bypass_streak=_int_def(d, "grid_xcheck", "bypass_streak", 8, lo=1)),
         corridor_reach=CorridorReach(
             enabled=_bool(d, "corridor_reach", "enabled", default=False),
-            trigger_dead_zone_lane=_num_def(d, "corridor_reach",
-                                            "trigger_dead_zone_lane", 0.35,
-                                            lo=0),
-            step_m=_num_def(d, "corridor_reach", "step_m", 0.5, lo=0),
-            horizon_s=_num_def(d, "corridor_reach", "horizon_s", 2.0, lo=0),
-            crash_t_s=_num_def(d, "corridor_reach", "crash_t_s", 0.8, lo=0),
-            crash_penalty=_num_def(d, "corridor_reach", "crash_penalty",
-                                   100.0, lo=0),
-            pass_value=_num_def(d, "corridor_reach", "pass_value", 30.0, lo=0),
-            far_coin_weight=_num_def(d, "corridor_reach", "far_coin_weight",
-                                     0.3, lo=0, hi=1, lo_open=False),
-            tie_margin=_num_def(d, "corridor_reach", "tie_margin", 20.0, lo=0),
-            overtake_hunting=_bool(d, "corridor_reach", "overtake_hunting",
-                                   default=False),
-            hug_value=_bool(d, "corridor_reach", "hug_value", default=False),
-            hug_half_width_lane=_num_def(d, "corridor_reach",
-                                         "hug_half_width_lane", 0.075, lo=0),
-            far_direction=_bool(d, "corridor_reach", "far_direction",
-                                default=False),
-            far_car_weight=_num_def(d, "corridor_reach", "far_car_weight",
-                                    0.0, lo=0, lo_open=False),
-            hunt_horizon_s=_num_def(d, "corridor_reach", "hunt_horizon_s",
-                                    6.0, lo=0),
-            far_aggregation=_str_def(d, "corridor_reach", "far_aggregation",
-                                     "max", ("max", "sum", "capped")),
+            coin_confirm_ticks=_int_def(d, "corridor_reach",
+                                        "coin_confirm_ticks", 1, lo=1),
             bonus_value=_bool(d, "corridor_reach", "bonus_value",
-                              default=False),
-            bonus_car_value=_num_def(d, "corridor_reach", "bonus_car_value",
-                                     120.0, lo=0),
-            hug_visual=_bool(d, "corridor_reach", "hug_visual",
-                             default=False),
-            bonus_tol_m=_num_def(d, "corridor_reach", "bonus_tol_m",
-                                 0.75, lo=0),
-            clearance_ref_lane=_num_def(d, "corridor_reach",
-                                        "clearance_ref_lane", 0.65, lo=0,
-                                        lo_open=False),
-            clearance_penalty=_num_def(d, "corridor_reach",
-                                       "clearance_penalty", 0.0, lo=0,
-                                       lo_open=False),
-            squeeze_min_gap_lane=_num_def(d, "corridor_reach",
-                                          "squeeze_min_gap_lane", 0.75, lo=0,
-                                          lo_open=False),
-            absence_budget_s=_num_def(d, "corridor_reach",
-                                      "absence_budget_s", 0.5, lo=0,
-                                      lo_open=False)),
+                              default=False)),
+        selection=Selection(
+            horizon_s=_num_def(d, "selection", "horizon_s", 3.0, lo=0),
+            max_waypoints=_int_def(d, "selection", "max_waypoints", 4,
+                                   lo=1, hi=4),
+            graze_gap_lane=_num_def(d, "selection", "graze_gap_lane", 0.65,
+                                    lo=0),
+            center_band_lane=_num_def(d, "selection", "center_band_lane", 0.3,
+                                      lo=0),
+            opportunity_tol_lane=_num_def(
+                d, "selection", "opportunity_tol_lane", 0.75, lo=0),
+            coin_pick_tol_lane=_num_def(
+                d, "selection", "coin_pick_tol_lane", 1.2, lo=0),
+            coin_hold_s=_num_def(d, "selection", "coin_hold_s", 0.6, lo=0),
+            t_move_base_s=_num_def(d, "selection", "t_move_base_s", 0.3, lo=0),
+            t_move_per_lane_s=_num_def(
+                d, "selection", "t_move_per_lane_s", 2.0, lo=0),
+            reaction_s=_num_def(d, "selection", "reaction_s", 0.13, lo=0),
+            margin_s=_num_def(d, "selection", "margin_s", 0.15, lo=0),
+            aligned_lane=_num_def(d, "selection", "aligned_lane", 0.1, lo=0),
+            reward_aligned_lane=_num_def(
+                d, "selection", "reward_aligned_lane", 0.2, lo=0),
+            wall_margin_lane=_num_def(
+                d, "selection", "wall_margin_lane", 0.35, lo=0),
+            center_lookahead_m=_num_def(
+                d, "selection", "center_lookahead_m", 0.0, lo=0,
+                lo_open=False),
+            preposition_enabled=_bool(
+                d, "selection", "preposition_enabled", default=True),
+            preposition_horizon_s=_num_def(
+                d, "selection", "preposition_horizon_s", 6.0, lo=0),
+            preposition_max_lane=_num_def(
+                d, "selection", "preposition_max_lane", 2.5, lo=0),
+            preposition_bias_lane=_num_def(
+                d, "selection", "preposition_bias_lane", 1.0, lo=0),
+            switch_dwell_s=_num_def(
+                d, "selection", "switch_dwell_s", 0.2, lo=0),
+            reward_tol_lane=_num_def(
+                d, "selection", "reward_tol_lane", 1.5, lo=0),
+            car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),
+            ego_half_lane=_num_def(d, "selection", "ego_half_lane", 0.27, lo=0)),
+        geometry=Geometry(
+            wall_line_master=_bool(d, "geometry", "wall_line_master",
+                                   default=False),
+            wall_line_cross_check_lane=_num_def(
+                d, "geometry", "wall_line_cross_check_lane", 1.0, lo=0,
+                lo_open=False)),
         metric_cars=MetricCars(
-            enabled=_bool(d, "metric_cars", "enabled", default=True),
-            fusion=_bool(d, "metric_cars", "fusion", default=False)),
+            enabled=_bool(d, "metric_cars", "enabled", default=True)),
         metric_bridge=MetricBridge(
             enabled=_bool(d, "metric_bridge", "enabled", default=False),
             stay=_int_def(d, "metric_bridge", "stay", 2, lo=1),
@@ -577,14 +516,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
-    v, h = cfg.validate, cfg.hysteresis
+    v = cfg.validate
     if v.t_recover_s >= v.t_conserve_max_s:
         raise ValueError(
             f"[validate] t_recover_s={v.t_recover_s} 必须 < t_conserve_max_s="
             f"{v.t_conserve_max_s}（否则保守态永远先升级 FAULT，恢复通道死锁）")
-    if h.dead_zone_lane >= v.x_lane_abs_max:
-        raise ValueError(
-            f"死区 {h.dead_zone_lane} ≥ 越界门 {v.x_lane_abs_max}（收敛与越界同时成立，判据矛盾）")
     if not cfg.scoring.conf_floor < cfg.scoring.conf_hi:
         raise ValueError(
             f"[scoring] conf_floor={cfg.scoring.conf_floor} 必须 < conf_hi="
@@ -593,55 +529,35 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             "mode.allow_car_graze=true 在 v1 拒绝启用（coin-only 保守基线；"
             "复议条件=近场 0.05 车道级精度实测，设计稿 §三）")
+    s = cfg.selection
+    if s.preposition_enabled:
+        if s.preposition_horizon_s <= s.horizon_s:
+            raise ValueError(
+                f"[selection] preposition_horizon_s={s.preposition_horizon_s} "
+                f"必须 > horizon_s={s.horizon_s}（预置位只接视界外机会）")
+        if not 0.0 < s.preposition_bias_lane <= s.preposition_max_lane:
+            raise ValueError(
+                f"[selection] preposition_bias_lane="
+                f"{s.preposition_bias_lane} 需 ∈(0, "
+                f"preposition_max_lane={s.preposition_max_lane}]")
     p, t = cfg.planner, cfg.timing
     if p.lookahead_tau_s < t.tau_resp_s:
         raise ValueError(
             f"[planner] lookahead_tau_s={p.lookahead_tau_s} 低于实测响应延迟 "
             f"tau_resp_s={t.tau_resp_s}（提前量无视延迟，planner 设计稿 §三）")
+    if not 0.0 < p.maneuver_stick_max <= 1.0:
+        raise ValueError(
+            f"[planner] maneuver_stick_max={p.maneuver_stick_max} 需 ∈(0,1]")
+    if p.obs_beta_dv_rate_lane_s2 > p.a_lat_gain:
+        raise ValueError(
+            f"[planner] obs_beta_dv_rate_lane_s2="
+            f"{p.obs_beta_dv_rate_lane_s2} > a_lat_gain={p.a_lat_gain}"
+            "（速度注入比车辆可产生的加速度还快=观测噪声直接变成打舵）")
     full_stroke_ticks = 2 * 32767 / p.rate_limit_raw if p.rate_limit_raw > 0 else 0
     if full_stroke_ticks < 2:
         raise ValueError(
             f"[planner] rate_limit_raw={p.rate_limit_raw} 满行程仅 "
             f"{full_stroke_ticks:.1f} tick（<2 tick 限幅形同虚设，是失效档位）")
-    ov = cfg.overtake
-    if not ov.value_base < ov.value_limit:
-        raise ValueError(
-            f"[overtake] value_base={ov.value_base} 应 < value_limit={ov.value_limit}"
-            "（极限超车是超车的进阶类型，RULES §4.2——镜像倒置即改错）")
-    if ov.d_hold_lane > ov.lane_band_lo or ov.d_hold_lane >= ov.lane_band_hi:
-        raise ValueError(
-            f"[overtake] 贴窗中心 {ov.d_hold_lane} 不得超出候选带下沿 "
-            f"{ov.lane_band_lo}（带缘车的内贴目标会越过自车道中心，判据矛盾）")
-    if cfg.validate.lat_veto_gap_lane >= ov.d_hold_lane:
-        raise ValueError(
-            f"[validate] lat_veto_gap_lane={cfg.validate.lat_veto_gap_lane} "
-            f"≥ 贴窗中心 d_hold_lane={ov.d_hold_lane}"
-            f"（veto 接触界不小于贴窗距离=一切超车都被拦，判据矛盾）")
-    cr = cfg.corridor_reach
-    if cr.overtake_hunting and cr.hug_value \
-            and not 0 < cfg.overtake.d_hold_lane - cr.hug_half_width_lane:
-        raise ValueError(
-            f"[corridor_reach] 贴身窗半宽 {cr.hug_half_width_lane} ≥ 平台中心 "
-            f"d_hold_lane={cfg.overtake.d_hold_lane}"
-            f"（窗下沿=d_hold−half 必须 >0，0 < lo < center ≤ hi，设计稿 §2.2）")
-    if cr.clearance_penalty > 0.0 and cr.clearance_ref_lane <= 0.0:
-        raise ValueError(
-            f"[corridor_reach] clearance_penalty={cr.clearance_penalty} 开闸但 "
-            f"clearance_ref_lane={cr.clearance_ref_lane}（软净空罚无作用半径="
-            f"除零，判据矛盾）")
-    if cr.squeeze_min_gap_lane > 0.0 \
-            and cr.squeeze_min_gap_lane < v.lat_veto_gap_lane:
-        raise ValueError(
-            f"[corridor_reach] squeeze_min_gap_lane={cr.squeeze_min_gap_lane} "
-            f"< 采样器接触界 lat_veto_gap_lane={v.lat_veto_gap_lane}"
-            f"（硬约束比采样 veto 更松=窄缝带全靠采样兜底，阈值阶梯倒置）")
-    if cr.clearance_ref_lane > 0.0 and cr.squeeze_min_gap_lane > 0.0 \
-            and cr.clearance_ref_lane > cr.squeeze_min_gap_lane:
-        raise ValueError(
-            f"[corridor_reach] clearance_ref_lane={cr.clearance_ref_lane} > "
-            f"squeeze_min_gap_lane={cr.squeeze_min_gap_lane}"
-            f"（软罚作用半径大于硬约束下限=软罚先于硬约束把候选清零，"
-            f"阈值阶梯倒置）")
     return cfg
 
 

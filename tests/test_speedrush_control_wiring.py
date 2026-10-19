@@ -67,51 +67,82 @@ def _stub_depth(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _pin_gate_off(monkeypatch):
-    """决策闸自钉关：本文件锁的是 legacy 接线管道语义，不随部署
-    decision.json 的运行态漂（验收期部署文件开闸）。grid_veto 同钉——
-    否则部署开闸后本文件跑在「轨迹关+栅格闸开」的杂交态；grid_xcheck
-    钉 off（供数主人语义回归 legacy 找边对，master 语义有专属测试）。"""
+    """决策闸自钉关：本文件锁的是接线管道语义，不随部署 decision.json 的
+    运行态漂。grid_xcheck 钉 off（供数主人语义回归 legacy 找边对，master
+    语义有专属测试）。"""
     d = load_decision()
     monkeypatch.setattr(
         smod, "load_decision",
-        lambda: replace(d, mode=replace(d.mode, trajectory_sampling=False),
-                        grid_veto=replace(d.grid_veto, enabled=False),
-                        grid_xcheck=replace(d.grid_xcheck, mode="off")))
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="off")))
 
 
-# ---------- V0：allow_all_moves=false → 杆值恒 0、油门恒 255 ----------
+# ---------- 无走廊：保持横位、油门恒满 ----------
 
-def test_v0_straight_line():
-    v0 = _decision_v0()
+def test_no_corridor_holds_straight():
     m = _module()
     chain = m._build_control_chain()
     pad = StubPad()
     for fid in range(1, 12):
         m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
-        assert pad.joy[0] == 0                 # 横向恒零
+        assert pad.joy[0] == 0                 # 无路=保持横位
         assert pad.trig == 255                 # 油门恒满
     assert pad.updates == 11
     assert chain["disabled"] is False
     assert m._control_last["state"] == "CRUISE"
 
 
-def _decision_v0():
-    d = load_decision()
-    return replace(d, mode=replace(d.mode, allow_all_moves=False))
+# ---------- 阶段 2 端到端：场目标一道，1 秒内动起来（DecisionEngine+Planner）----------
 
+def test_field_goal_half_lane_moves_with_realistic_time():
+    """居中目标差 0.5 道：带外全权，2 秒内真的往带边动（不再假设 1 秒一道）。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+    from maaracing_master.plugins.speedrush.decision import DecisionEngine
+    from maaracing_master.plugins.speedrush.planner import LateralPlanner
+    from maaracing_master.plugins.speedrush.tracking import (
+        PerceptionHealth, WorldObservation)
 
-def _decision_v1():
-    d = load_decision()
-    return replace(d, mode=replace(d.mode, allow_all_moves=True))
+    cfg = load_decision()
+    lw = 3.38
+    eng = DecisionEngine(cfg)
+    pl = LateralPlanner(cfg.planner)
+    def corridor(ex):
+        c = -ex * lw                         # 路心在自车系的位置
+        bands = tuple(CorridorBand(
+            z0=3.0 + i * 3.0, z1=6.0 + i * 3.0,
+            left=BandBoundary(c - 4.2, "measured"),
+            right=BandBoundary(c + 4.2, "measured")) for i in range(2))
+        return Corridor(bands, 0.0, 8.4 / lw, "pair", "ok")
+
+    def obs(fid):
+        return WorldObservation(
+            schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
+            frame_age_ms=10.0, stage=1,
+            health=PerceptionHealth(True, True, True, True, False),
+            boundary=None, targets=(), far_targets=(), coin_groups=())
+
+    pl.state.executed_lane = 1.6
+    max_stick = 0
+    for fid in range(3, 43):                   # 2 秒
+        out = eng.update(obs(fid), 0.05,
+                         executed_lane=pl.state.executed_lane,
+                         corridor=corridor(pl.state.executed_lane))
+        assert out.maneuver is True
+        cmd = pl.update(out, 0.05, current_fid=fid)
+        max_stick = max(max_stick, abs(cmd.steer_x))
+    assert pl.state.executed_lane < 1.2       # 朝带边 0.5 真的动了
+    assert max_stick > int(0.45 * 32767)      # 越过维护杆幅上限
 
 
 # ---------- V1：横向通道在位（自车偏置 → 反向收力回中）----------
 
-def test_v1_lateral_channel_live():
-    v1 = _decision_v1()
+def test_v1_lateral_channel_live(_stub_depth):
+    v1 = load_decision()
     m = _module()
     chain = m._build_control_chain()
-    chain["planner"].state.executed_lane = 1.0   # 自车在 +1 车道，无目标 → 应向左回中
+    chain["planner"].state.executed_lane = 1.0   # 自上拍遗留横位
+    # 本拍观测：路心在自车左侧 1 道（road 系=0）→ 场目标 0，应向左修正
+    _stub_depth["r"] = _dgeo_lanes(-1.5, -0.5)
     pad = StubPad()
     saw_negative = False
     for fid in range(1, 16):
@@ -311,7 +342,9 @@ def test_control_last_shape():
     m._control_tick(chain, StubPad(), None, _perc(3), 3, 3 * 50_000_000, 10.0, 1)
     assert set(m._control_last) == {"state", "reason", "steer", "frame_id",
                                     "executed_lane", "x_target", "road_offset",
-                                    "dgeo_age", "dgeo_new"}
+                                    "dgeo_age", "dgeo_new", "goal",
+                                    "exec_branch", "sel_layer", "sel_why",
+                                    "sel_nwp", "maneuver"}
     assert m._control_last["frame_id"] == 3
     assert isinstance(m._control_last["executed_lane"], float)
 
@@ -494,43 +527,6 @@ def test_yolo_object_mask_edge_clamped():
 
 def test_yolo_object_mask_none_when_no_detections():
     assert smod._yolo_object_mask(_perc(1)) is None
-
-# ---------- S2-B 开闸态全链（部署 grid_veto.enabled=true 的验收数据面） ----------
-
-def test_grid_veto_on_full_chain_feeds_trace(monkeypatch):
-    """部署开闸态（grid_veto.enabled=true + trajectory_sampling=true）全链：
-    栅格随 take 进 engine 轨迹评分，trace 行携带 traj_diag——防「开闸后验收
-    黑箱」回归。压墙候选被否决在本列显形（n_grid>0）。"""
-    import numpy as np
-    from maaracing_master.plugins.speedrush import depth_geo as dg
-    d = load_decision()
-    assert d.grid_veto.enabled and d.mode.trajectory_sampling,         "本测试锁部署开闸态；归位（enabled=false）后应随归位改写"
-    monkeypatch.setattr(
-        smod, "load_decision",
-        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="off")))
-    state = np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int8)
-    state[:24, 56] = dg.GRID_BLOCKED            # 自车近场正前方立墙（列随 GRID_X_MAX 平移）
-    wall = dg.DrivableGrid(state=state, coef=(0.0, 0.0, -2.0),
-                           counts=np.ones((dg.GRID_NZ, dg.GRID_NX), np.int32),
-                           dig_cells=0, latency_ms=0.0)
-    reading = _dgeo_lanes(-1.5, 1.5)
-
-    def _take(self):
-        return reading, wall, True
-
-    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
-    m = _module()
-    chain = m._build_control_chain()
-    pad = StubPad()
-    for fid in range(1, 6):
-        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000,
-                        10.0, 1)
-    assert chain["disabled"] is False
-    diag = chain["trace"][-1]["traj_diag"]
-    assert diag is not None, "开闸+ro 在场拍应有采样诊断"
-    assert diag["n_grid"] >= 1, "近场正前方的墙应否决部分候选"
-    # ix=56（列随 GRID_X_MAX 平移）距自车 ~0.19 道（贴身）：包络必含 → 全灭是正确语义
-    assert diag["ok"] is False and diag["why"], "贴身墙应全灭且 why 可读"
 
 
 # ---------- 路心互证（grid_xcheck 闸）：栅格 wmid 路心 × 找边新鲜对一致性 ----------

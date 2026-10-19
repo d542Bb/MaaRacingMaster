@@ -36,10 +36,10 @@ def report(label, games):
         n = len(rows)
 
         state = collections.Counter(r.get("state") for r in rows)
-        # CHANGE 系 episode（CHANGE/ABORT_CHANGE 连续段）
+        # CHANGE 系 episode（CHANGE/ABORT 连续段）
         eps, cur = [], 0
         for r in rows:
-            if r.get("state") in ("CHANGE", "ABORT_CHANGE"):
+            if r.get("state") in ("CHANGE", "ABORT"):
                 cur += 1
             elif cur:
                 eps.append(cur)

@@ -139,7 +139,7 @@ def trace_metrics(sess):
     for r in rows:
         s = r.get("state")
         st[s] = st.get(s, 0) + 1
-    chg = st.get("CHANGE", 0) + st.get("ABORT_CHANGE", 0)
+    chg = st.get("CHANGE", 0) + st.get("ABORT", 0)
     band = sum(1 for r in rows if r.get("cr_scores")
                and any(BAND_LO <= s <= BAND_HI for s in r["cr_scores"]))
     score = 0
@@ -147,7 +147,7 @@ def trace_metrics(sess):
         for line in f:
             score = json.loads(line).get("score") or 0
     return dict(n=n, span=span, passes=len(ids), hug_pass=hug_pass,
-                chg=chg, chg_share=chg / n, abort=st.get("ABORT_CHANGE", 0),
+                chg=chg, chg_share=chg / n, abort=st.get("ABORT", 0),
                 cruise=st.get("CRUISE", 0) / n, band=band, band_share=band / n,
                 score=score)
 

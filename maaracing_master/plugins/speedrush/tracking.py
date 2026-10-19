@@ -287,18 +287,19 @@ class WorldObservation:
 
 @dataclass(frozen=True)
 class DecisionOutput:
-    """决策层→规划层唯一出口（契约形状；v3 换血：reanchor_lane/target_id
-    随承诺制退役删除）。
+    """决策层→规划层唯一出口（契约形状；v4：机动态权限位）。
     `reason` 是机器可读码串（如 "follow:reach" / "validate_fail:frame_stale"），
     用 str 不用 Enum——码集会随实现扩充，state 才是锁死的枚举。"""
 
-    schema_version: int          # v3：场即选择器换血（2026-10-18）
+    schema_version: int          # v5：删除 move_allowed（无消费者）
     state: DecisionState
     x_target: float | None
-    move_allowed: bool
     reason: str
     emitted_fid: int
     valid_until_fid: int         # 含边界：current_fid ≤ 此值为有效（planner 设计稿 §一）
+    # 机动态权限位（阶段 2）：目标离自车超过切换死区时置位，planner 据此放弃
+    # 维护性死区/杆幅上限（不是承诺、不是完成判据——只作权限档位）
+    maneuver: bool = False
 
 
 @dataclass(frozen=True)

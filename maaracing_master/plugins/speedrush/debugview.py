@@ -13,10 +13,16 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
     右联 = BEV 雷达：可行驶栅格三态 + 挖洞格 + 当帧墙检出折线（edge_pts 两侧，
            供数窗内「两边墙」可见）+ 路心/左右缘叠层（C=滤波 ro、c0=当帧原始
            (L+R)/2，两者分离=时间链效应；cg=同拍栅格 wmid 路心，与 c0 分离=
-           互证分歧面）+ 分带走廊边界（来源着色）+ 检测反投影标记（40m 外钉顶缘
-           +距离标注）+ 距离标尺（z 等值线近场每 3m/远场每 5m，全图统一
-           车头系口径）+ 三层窗口标注（供数 11m/平面拟合
-           25m/锚点 85m，车头系）+ d(t) 规划曲线子带
+           互证分歧面）+ 分带走廊边界（来源着色）+ **走廊中心带（±band 虚线）**
+           + **墙线拟合段（WL，逐行内缘分段直线）** + 检测反投影标记（40m 外钉
+           顶缘+距离标注）+ 距离标尺 + 三层窗口标注 + **选择层子带**（横轴秒、
+           纵轴道：机会点/路点/目标/自车）+ **转向力度-时间子带**（最近 6s
+           杆量，上=R/下=L，0.45 与满量程参考线）
+
+**选择层子带**（2026-10-18 走廊重建）：不再画已删除的轨迹候选集。横轴
+[0, 3s]、纵轴道；黄点=金币组、红点=普通车、品红方块=奖励车（选择层坐标，
+右正）；绿线=选择路点；青线=本拍目标；白线=自车（人工录制局=人工横位）。
+选择器看到的和它选的东西在同一张图上，帧间可直接对账。
 
 **BEV 口径**（与 _grid_penalty 同源，不另立坐标）：栅格 x 原点=相机光轴=自车，
 格 (ix, iz) → X=ix·CELL−X_MAX、Z=Z_LO+iz·CELL；**渲染近下远上**（z=Z_LO 在
@@ -24,16 +30,9 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
 路心系 d（道）→ 相机轴米 X=(d−ro)·lane_w_m。检测标记：框底中心像素经同帧焦距
 + 路面平面反投影（Z=c/(v−a·u−b)，X=u·Z），域外点丢弃。
 
-**规划曲线为何不进 BEV**：轨迹是时间参数化的 d(t)，本域没有自车前向速度估计
-（HUD「得分速度」是 OCR 的分速率，不是车速），臆造 t→z 映射就是把假数据画进
-证据面——以 d(t) 子带呈现（横轴秒、纵轴道）。
-
-**子带是定轴期望轨迹**（智驾惯例 d(t)，2026-10-18 用户定案）：横轴固定
-[0, 2.5s]=采样器 T_GRID 上界、每 0.5s 刻度，不随中选 T 伸缩——旧画法横轴
-归一化到 T，T 逐拍变导致曲线形状即使计划没动也在变形，帧间不可比（用户体感
-「两头都能动」）。d(0)=当前横向位（起点跟自车是锚的本义）；T 后持守 d1
-（终端零速零加速度的自然外推=执行层超时后的稳态），不外推五次多项式
-（高次项发散）。
+**为什么选择层用时间轴**：路点/机会带的是到站时间 t，不是纵深 z（金币没有
+可靠的米制 z）；臆造 t→z 映射就是把假数据画进证据面。以 (t, 道) 子带呈现，
+横轴固定 [0, 3s]、纵轴 ±2.5 道，帧间可比。
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,10 +52,11 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     ANCHOR_Z_HI, CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE,
     GRID_NX, GRID_NZ, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI,
     GRID_Z_LO, NEAR_Z, ROAD_Z_HI, X_MAX_M)
-from maaracing_master.plugins.speedrush.latsample import (
-    GRID_CAR_HALF_LANE_M, SampledTraj, eval_traj)
 from maaracing_master.plugins.speedrush.world_model import (
     Calib, load_calib)
+
+# 渲染用车半宽（米）：只影响图上的车身圆点大小，不参与行为判定
+_CAR_HALF_M = 0.9
 
 DEBUG_FPS = 3
 DEBUG_INTERVAL_S = 1.0 / DEBUG_FPS
@@ -68,6 +69,8 @@ _STATE_BGR = {GRID_UNKNOWN: (64, 64, 64),
 _DIG_BGR = (30, 100, 110)
 _CLS_BGR = {"coins": (0, 255, 255), "cars": (0, 0, 255),
             "bonuses": (255, 0, 255)}
+_STEER_FULL = 32767.0             # 手柄杆量满量程（steer_x 原始值）
+_STEER_HIST_MAX = 121             # 转向时间带：6s @ 20Hz + 当前拍
 
 _PANEL_W = 560                    # 右联宽
 _TITLE_H = 26                     # 右联标题条
@@ -240,7 +243,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     # 自车标记（X=0、车头着地点 z=CAM_Z_DATUM_M——车头系 0m 处，与距离标尺
     # 同基准）：三角大小=米制车半宽（俯视正交下恒定像素，
     # 与车标记同尺——BEV 里的米数对得上真实车宽）
-    ego_r = max(8, int(GRID_CAR_HALF_LANE_M / GRID_CELL * sx))
+    ego_r = max(8, int(_CAR_HALF_M / GRID_CELL * sx))
     cv2.drawMarker(canvas, (bm.px(0.0), bm.py(CAM_Z_DATUM_M)), (0, 255, 0),
                    cv2.MARKER_TRIANGLE_UP, ego_r, 2)
 
@@ -281,6 +284,47 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                     for y in range(y_top, y_bot, 8):
                         cv2.line(canvas, (xp, y), (xp, min(y + 4, y_bot)),
                                  col, 1)
+
+    # 墙线拟合段（WL）：逐行内缘分段直线，品红；单侧/退化也照画——与走廊
+    # 边界并排，能直接看出「拟合线是否贴在墙内缘」。
+    wlc = snap.get("wall_line")
+    if wlc is not None:
+        for segs in (wlc.left_segs, wlc.right_segs):
+            for s in segs:
+                z0c, z1c = s.z0 + CAM_Z_DATUM_M, s.z1 + CAM_Z_DATUM_M
+                p1 = (bm.px(s.x_at(s.z0)), bm.py(z0c))
+                p2 = (bm.px(s.x_at(s.z1)), bm.py(z1c))
+                if plot_x0 <= p1[0] <= plot_x1 or plot_x0 <= p2[0] <= plot_x1:
+                    cv2.line(canvas, p1, p2, (255, 0, 255), 2)
+        _put_text(canvas, f"WL {wlc.health}",
+                  (plot_x0 + 8, plot_y0 + 62), scale=0.36,
+                  color=(255, 0, 255))
+
+    # 走廊中心带（L4 容差带）：中心线 + ±band 虚线——带内不修正的「带」在
+    # 图上可见；band 取自选择层快照，避免和配置各写一份。
+    if corridor is not None and cal is not None:
+        band_m = float((snap.get("sel_debug") or {}).get("band", 0.5)) \
+            * cal.lane_w_m
+        cpts = []
+        for b in corridor.bands:
+            if b.left.x_m is None or b.right.x_m is None:
+                continue
+            c = 0.5 * (b.left.x_m + b.right.x_m)
+            z0c, z1c = b.z0 + CAM_Z_DATUM_M, b.z1 + CAM_Z_DATUM_M
+            cpts.append((bm.px(c), bm.py(0.5 * (z0c + z1c))))
+            y_top, y_bot = bm.py(z1c), bm.py(z0c)
+            for off in (-band_m, band_m):
+                xp = bm.px(c + off)
+                if plot_x0 <= xp <= plot_x1:
+                    for y in range(y_top, y_bot, 6):
+                        cv2.line(canvas, (xp, y), (xp, min(y + 3, y_bot)),
+                                 (255, 255, 0), 1)
+        if len(cpts) >= 2:
+            cv2.polylines(canvas, [np.array(cpts, np.int32)], False,
+                          (0, 255, 255), 1)
+            _put_text(canvas, "center band",
+                      (plot_x0 + 8, plot_y0 + 48), scale=0.36,
+                      color=(0, 255, 255))
     # 供数摘要 + 图例（目检延伸区左上：栅格采集窗上方的深灰带）——
     # corridor=None（黑视拍）也画：图例不缺席，"全灰=U 无证据"在黑视帧可读
     _put_text(canvas,
@@ -331,7 +375,7 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
             # 车标记=米制半径（车半宽，latsample.GRID_CAR_HALF_LANE_M 真源：
             # BEV 俯视正交下恒定像素、不随 z 缩放——远近的车一样大才对得上
             # 真实米数），空心不遮栅格；币/奖励=点目标固定像素（无尺寸信源）
-            car_r = max(3, int(GRID_CAR_HALF_LANE_M / GRID_CELL * sx))
+            car_r = max(3, int(_CAR_HALF_M / GRID_CELL * sx))
             marks = (("coins", 3, True), ("cars", car_r, False),
                      ("bonuses", 5, True))
             for cls, rad, filled in marks:
@@ -359,41 +403,130 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                         cv2.circle(canvas, (bm.px(x_m), bm.py(z_m)),
                                    rad, color, -1 if filled else 1)
 
-    # 期望轨迹子带（定轴 d(t)，诚实呈现；不臆造 t→z）：横轴固定不随 T 伸缩，
-    # T 后持守 d1——帧间可比（曲线动=计划真动了），形状语义见模块 docstring
+    # 选择层子带 + 转向力度-时间子带（下半区一分为二）：选择带回答「跟谁」，
+    # 转向带回答「这一秒实际怎么打方向」——操作与决策能按时间对上。
     py0 = plot_y1 + 30
     py1 = H - 24
-    cv2.rectangle(canvas, (plot_x0, py0), (plot_x1, py1), (90, 90, 90), 1)
-    _put_text(canvas, "des traj d(t) [lane] / t [s]", (plot_x0 + 6, py0 + 16),
-              scale=0.4, color=(220, 220, 220))
-    plan: SampledTraj | None = snap.get("plan")
-    mid = (py0 + py1) // 2
-    scale = max(12.0, (py1 - py0) / 5.0)   # 纵向 ~±2.5 道铺满
-    _T_AXIS_S = 2.5                        # 定轴上界=T_GRID 最大时长
-    for k in range(1, int(_T_AXIS_S / 0.5) + 1):
-        t_mark = 0.5 * k
-        gx = int(plot_x0 + (plot_x1 - plot_x0) * t_mark / _T_AXIS_S)
-        cv2.line(canvas, (gx, py0 + 24), (gx, py1 - 12), (70, 70, 70), 1)
-        _put_text(canvas, f"{t_mark:.1f}", (gx - 8, py1 - 10), scale=0.32,
-                  color=(150, 150, 150))
-    if plan is not None and plan.coeffs:
-        cv2.line(canvas, (plot_x0, mid), (plot_x1, mid), (110, 110, 110), 1)
-        pts = []
-        for k in range(41):
-            t = _T_AXIS_S * k / 40.0
-            d = float(eval_traj(plan.coeffs, t)) if t <= plan.T else plan.d1
-            pts.append((int(plot_x0 + (plot_x1 - plot_x0) * k / 40.0),
-                        int(mid - d * scale)))
-        for p, q in zip(pts, pts[1:]):
-            cv2.line(canvas, p, q, (0, 255, 0), 2)
-        cv2.circle(canvas, pts[0], 4, (255, 255, 0), -1)   # 锚：当前横向位
-        cv2.circle(canvas, pts[-1], 4, (0, 255, 0), -1)    # 终点：计划稳态
-        _put_text(canvas, f"d1={plan.d1:.2f} T={plan.T:.2f}s",
-                  (plot_x1 - 150, py1 - 24), scale=0.42)
-    else:
-        diag = snap.get("diag") or {}
-        _put_text(canvas, f"plan: none ({diag.get('why', '')})",
-                  (plot_x0 + 6, mid + 4), scale=0.42, color=(0, 200, 255))
+    split = py0 + int((py1 - py0) * 0.56)
+    _draw_selection_strip(canvas, snap, plot_x0, plot_x1, py0, split - 3)
+    _draw_steer_strip(canvas, snap, plot_x0, plot_x1, split + 2, py1)
+
+
+def _draw_selection_strip(canvas: np.ndarray, snap: dict,
+                          x0: int, x1: int, y0: int, y1: int) -> None:
+    """选择层子带：横轴 t[0,3]s、纵轴 x±2.5 道；机会/路点/目标/自车同图。"""
+    cv2.rectangle(canvas, (x0, y0), (x1, y1), (90, 90, 90), 1)
+    sel = snap.get("selection")
+    dbg = snap.get("sel_debug") or {}
+    tmax, xlo, xhi = 3.0, -2.5, 2.5
+
+    def tx(t: float) -> int:
+        return int(x0 + (x1 - x0) * min(max(t / tmax, 0.0), 1.0))
+
+    def yx(v: float) -> int:
+        return int(y1 - (y1 - y0) * (min(max(v, xlo), xhi) - xlo)
+                   / (xhi - xlo))
+
+    for t in (0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0):
+        gx = tx(t)
+        cv2.line(canvas, (gx, y0 + 18), (gx, y1 - 4), (62, 62, 62), 1)
+        _put_text(canvas, f"{t:g}", (gx - 6, y1 - 2), scale=0.3,
+                  color=(140, 140, 140))
+    for x in (-2, -1, 0, 1, 2):
+        gy = yx(float(x))
+        cv2.line(canvas, (x0, gy), (x1, gy), (62, 62, 62), 1)
+        _put_text(canvas, f"{x:+d}", (x0 + 2, gy - 2), scale=0.3,
+                  color=(140, 140, 140))
+
+    if sel is None or not dbg:
+        _put_text(canvas, "selection: none", (x0 + 60, y0 + 30),
+                  scale=0.42, color=(0, 200, 255))
+        return
+    ego = dbg.get("ego")
+    target = dbg.get("target")
+    if isinstance(ego, (int, float)):
+        cv2.line(canvas, (x0, yx(ego)), (x1, yx(ego)), (230, 230, 230), 1)
+    if isinstance(target, (int, float)):
+        cv2.line(canvas, (x0, yx(target)), (x1, yx(target)), (255, 255, 0), 1)
+    marks = (("rw", (255, 0, 255), 5), ("car", (0, 0, 255), 4),
+             ("coin", (0, 255, 255), 3))
+    for key, col, rad in marks:
+        for item in dbg.get(key) or ():
+            if len(item) < 2 or item[1] is None:
+                continue
+            xv, tv = item[0], item[1]
+            if not (0.0 <= tv <= tmax):
+                continue
+            cv2.circle(canvas, (tx(tv), yx(xv)), rad, col,
+                       -1 if key == "coin" else 1)
+    pts = [(0.0, ego if isinstance(ego, (int, float)) else 0.0)]
+    for w in dbg.get("wp") or ():
+        if len(w) >= 2 and isinstance(w[0], (int, float)):
+            pts.append((w[0], w[1]))
+    if len(pts) >= 2:
+        poly = np.array([(tx(t), yx(x)) for t, x in pts], np.int32)
+        cv2.polylines(canvas, [poly], False, (0, 200, 0), 1)
+    src_col = {"reward": (255, 0, 255), "pass": (0, 0, 255),
+               "coin": (0, 255, 255), "center": (0, 255, 0)}
+    for w in dbg.get("wp") or ():
+        if len(w) >= 3:
+            cv2.circle(canvas, (tx(w[0]), yx(w[1])), 3,
+                       src_col.get(w[2], (0, 200, 0)), -1)
+    _put_text(canvas,
+              f"L{sel.layer} {sel.why}  nwp={len(sel.waypoints)}"
+              f"  tgt={_fmt(round(target, 2) if isinstance(target, (int, float)) else None)}"
+              f" ego={_fmt(round(ego, 2) if isinstance(ego, (int, float)) else None)}",
+              (x0 + 46, y0 + 14), scale=0.38, color=(220, 220, 220))
+
+
+def _draw_steer_strip(canvas: np.ndarray, snap: dict,
+                      x0: int, x1: int, y0: int, y1: int) -> None:
+    """转向力度/方向-时间子带：纵轴=杆量（上=R，下=L），横轴=最近 6s。"""
+    cv2.rectangle(canvas, (x0, y0), (x1, y1), (90, 90, 90), 1)
+    _put_text(canvas, "steer force  R up / L down  last 6s",
+              (x0 + 6, y0 + 13), scale=0.34, color=(200, 200, 200))
+    mid = (y0 + y1) // 2 + 3
+    half = max(8, (y1 - y0) // 2 - 13)
+    cv2.line(canvas, (x0 + 4, mid), (x1 - 4, mid), (110, 110, 110), 1)
+    for frac, col in ((0.45, (72, 72, 72)), (1.0, (96, 96, 96))):
+        for s in (-1, 1):
+            yy = int(mid - s * frac * half)
+            for xx in range(x0 + 4, x1 - 4, 10):
+                cv2.line(canvas, (xx, yy), (min(xx + 5, x1 - 4), yy), col, 1)
+    _put_text(canvas, "R", (x1 - 16, y0 + 13), scale=0.34,
+              color=(140, 220, 140))
+    _put_text(canvas, "L", (x1 - 16, y1 - 4), scale=0.34,
+              color=(140, 140, 220))
+
+    hist = [(f, v) for f, v in (snap.get("steer_hist") or ())
+            if isinstance(v, (int, float))]
+    if not hist:
+        _put_text(canvas, "steer: wait", (x0 + 6, mid + 4), scale=0.38,
+                  color=(0, 200, 255))
+        return
+    n = len(hist)
+    span = x1 - x0 - 12
+    # 时间刻度按控制拍 20Hz 折算（历史条长度=拍数/20 秒）
+    for k in range(1, 6):
+        frac = k / 6.0
+        gx = int(x1 - 6 - span * frac)
+        cv2.line(canvas, (gx, mid - 3), (gx, mid + 3), (120, 120, 120), 1)
+        _put_text(canvas, f"-{int(round(k * n / 120.0))}s",
+                  (gx - 6, y1 - 4), scale=0.26, color=(130, 130, 130))
+    pts = []
+    for i, (_, v) in enumerate(hist):
+        x = int(x0 + 6 + span * i / max(n - 1, 1))
+        y = int(mid - max(-1.0, min(1.0, v / _STEER_FULL)) * half)
+        pts.append((x, y))
+    for (xa, ya), (xb, yb), (_, v) in zip(pts, pts[1:], hist[1:]):
+        col = (0, 200, 0) if v >= 0 else (0, 90, 255)
+        cv2.line(canvas, (xa, ya), (xb, yb), col, 2)
+    cv2.circle(canvas, pts[-1], 3, (255, 255, 255), -1)
+    cur = hist[-1][1] / _STEER_FULL
+    _put_text(canvas,
+              f"now {cur * 100:+.0f}% ({'R' if cur >= 0 else 'L'})",
+              (x0 + 6, mid + 14), scale=0.36,
+              color=(0, 220, 0) if cur >= 0 else (0, 120, 255))
 
 
 def _fmt(v) -> str:
@@ -438,6 +571,19 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     if c is not None:
         lines.append(f"cor={c.src} w={_fmt(None if c.width_lane is None else round(c.width_lane, 2))}"
                      f" ph={c.plane_health} bands={len(c.bands)}")
+    sel = snap.get("selection")
+    sd = snap.get("sel_debug") or {}
+    if sel is not None:
+        lines.append(f"sel=L{sel.layer} {sel.why} nwp={len(sel.waypoints)}"
+                     f" tgt={_fmt(sd.get('target'))} ego={_fmt(sd.get('ego'))}"
+                     f" c0={_fmt(sd.get('c0'))} cL={_fmt(sd.get('c8'))}"
+                     f" band={_fmt(sd.get('band'))}")
+    wlc = snap.get("wall_line")
+    if wlc is not None:
+        lines.append(f"wlc={wlc.health} c={_fmt(None if wlc.center_lane is None else round(wlc.center_lane, 2))}"
+                     f" w={_fmt(None if wlc.width_lane is None else round(wlc.width_lane, 2))}"
+                     f" slope={_fmt(None if wlc.slope is None else round(wlc.slope, 3))}"
+                     f" segs={len(wlc.left_segs)}/{len(wlc.right_segs)}")
     for i, text in enumerate(lines):
         _put_text(img_bgr, text, (8, 18 + i * 18), scale=0.45)
 
@@ -445,7 +591,7 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     canvas = np.zeros((H, W + _PANEL_W, 3), np.uint8)
     canvas[:, :W] = img_bgr
     canvas[:, W:] = (28, 28, 28)
-    _put_text(canvas, "speedrush hud  ·  BEV radar (grid + walls + plan)",
+    _put_text(canvas, "speedrush hud  ·  BEV radar (grid + corridor + selection)",
               (W + 8, 17), scale=0.48)
     _draw_bev(canvas[:, W:], snap, cal)
     return canvas
@@ -469,19 +615,26 @@ class DebugPairWriter:
         self.dropped = 0
         self.errors = 0
         self._q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
+        self._steer_hist: deque = deque(maxlen=_STEER_HIST_MAX)
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="speedrush-debug-io")
         self._thread.start()
 
     def tick(self, frame_rgb: np.ndarray | None, snap: dict) -> None:
-        """控制拍调用：3fps 节流后入队（引用传递，不复制）。绝不抛。"""
+        """控制拍调用：每拍先记转向历史，再 3fps 节流入队。绝不抛。"""
+        dec = snap.get("decision") or {}
+        sv = dec.get("steer")
+        if isinstance(sv, (int, float)) and not isinstance(sv, bool):
+            self._steer_hist.append((snap.get("fid"), int(sv)))
         if frame_rgb is None:
             return
         now = time.monotonic()
         if now - self._last_push < self._interval:
             return
         self._last_push = now
+        snap = dict(snap)
+        snap["steer_hist"] = list(self._steer_hist)
         try:
             self._q.put_nowait((frame_rgb, snap))
         except queue.Full:
