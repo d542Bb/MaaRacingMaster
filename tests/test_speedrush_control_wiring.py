@@ -164,6 +164,85 @@ def _dgeo_lanes(el, er):
                             latency_ms=1.0, rejects=())
 
 
+def test_shadow_plan_records_but_steer_identical_to_off(_stub_depth,
+                                                        monkeypatch):
+    """motion.mode=shadow：计划照算/照记，杆值流与 off 逐拍一致。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+    base = load_decision()
+    def cor(fid):
+        return Corridor(tuple(
+            CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
+                         BandBoundary(-4.2, "measured", 1.0, fid),
+                         BandBoundary(4.2, "measured", 1.0, fid))
+            for i in range(3)), 0.0, 8.4 / 3.38, "pair", "ok")
+
+    def run(mode):
+        monkeypatch.setattr(
+            smod, "load_decision",
+            lambda: replace(base, motion=replace(base.motion, mode=mode)))
+        m = _module()
+        chain = m._build_control_chain()
+        monkeypatch.setattr(chain["ego_road"], "update",
+                            lambda *a, **k: cor(k.get("fid", 1)))
+        pad = StubPad()
+        for fid in range(1, 16):
+            m._control_tick(chain, pad, None, _perc(fid), fid,
+                            fid * 50_000_000, 10.0, 1)
+        return chain, pad.joy
+
+    off_chain, off_joy = run("off")
+    shadow_chain, shadow_joy = run("shadow")
+    assert off_chain["trace"][-1]["plan"] is None
+    assert shadow_chain["trace"][-1]["plan"] is not None
+    assert shadow_joy == off_joy
+
+
+def test_live_plan_takes_over_steering(_stub_depth, monkeypatch):
+    """motion.mode=live：有效计划传入 planner；shadow/off 不传。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+    base = load_decision()
+
+    def cor(fid):
+        return Corridor(tuple(
+            CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
+                         BandBoundary(-4.2, "measured", 1.0, fid),
+                         BandBoundary(4.2, "measured", 1.0, fid))
+            for i in range(3)), 0.0, 8.4 / 3.38, "pair", "ok")
+
+    def run(mode):
+        monkeypatch.setattr(
+            smod, "load_decision",
+            lambda: replace(base, motion=replace(
+                base.motion, mode=mode, calibrated=(mode == "live"))))
+        m = _module()
+        chain = m._build_control_chain()
+        monkeypatch.setattr(chain["ego_road"], "update",
+                            lambda *a, **k: cor(k.get("fid", 1)))
+        seen = []
+        orig = chain["planner"].update
+
+        def wrap(*a, **kw):
+            seen.append(kw.get("plan"))
+            return orig(*a, **kw)
+
+        monkeypatch.setattr(chain["planner"], "update", wrap)
+        pad = StubPad()
+        for fid in range(1, 16):
+            m._control_tick(chain, pad, None, _perc(fid), fid,
+                            fid * 50_000_000, 10.0, 1)
+        return chain, seen
+
+    _, off_seen = run("off")
+    _, shadow_seen = run("shadow")
+    chain, live_seen = run("live")
+    assert chain["trace"][-1]["plan"] is not None
+    assert all(p is None for p in off_seen)
+    assert all(p is None for p in shadow_seen)
+    assert any(p is not None and p.valid for p in live_seen)
+
+
 def test_road_offset_all_sources_feed_loop(_stub_depth):
     """单侧合成也进闭环（13:29 局证伪 pair-only：挡单侧=制造供数黑视，
     死亡螺旋段 87/118 拍被挡、陈旧重基与跳变门同时失效——黑视比噪声致命）。

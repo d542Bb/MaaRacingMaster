@@ -31,10 +31,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from maaracing_master.plugins.speedrush.config import Planner
 from maaracing_master.plugins.speedrush.tracking import (
     DecisionOutput, DecisionState)
+
+if TYPE_CHECKING:
+    from maaracing_master.plugins.speedrush.motion_plan import MotionPlan
 
 _STICK_FULL = 32767  # XUSB 摇杆半幅（core.capabilities.Gamepad 契约）
 
@@ -113,7 +117,8 @@ class LateralPlanner:
     def update(self, decision: DecisionOutput, dt_s: float,
                current_fid: int,
                road_offset: float | None = None,
-               road_offset_new: bool = True) -> GamepadCommand:
+               road_offset_new: bool = True,
+               plan: "MotionPlan | None" = None) -> GamepadCommand:
         """一个控制 tick。dt_s 非法即 fail-loud（帧号倒退同一纪律：
         静默吞掉病态输入比中断危险——时间基低通会被 0/NaN 污染成永久状态）。
 
@@ -186,6 +191,16 @@ class LateralPlanner:
                 steer_raw = self._pd(decision.x_target, gentle=True)
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
+
+        # 轨迹预览接管（motion.mode=live 且计划有效）：前馈 + 预览位/速度误差。
+        # 计划帧→planner 道帧的换算已在 MotionPlan 内完成。
+        if plan is not None and plan.valid and st is DecisionState.CRUISE:
+            x_pred = (self.state.executed_lane
+                      + self.state.v_lat_est * self.p.lookahead_tau_s)
+            u = (plan.u_feedforward
+                 + self.p.k_p * (plan.x_preview_lane - x_pred)
+                 + self.p.k_d * (plan.v_preview_lane_s - self.state.v_lat_est))
+            steer_raw = max(-1.0, min(1.0, u))
 
         self.last_steer_raw = steer_raw
         # ⑤⑥ 杆值低通 + 横向运动学（单一真源：模块级 step）

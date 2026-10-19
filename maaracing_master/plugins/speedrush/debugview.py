@@ -477,6 +477,31 @@ def _draw_selection_strip(canvas: np.ndarray, snap: dict,
               f"  tgt={_fmt(round(target, 2) if isinstance(target, (int, float)) else None)}"
               f" ego={_fmt(round(ego, 2) if isinstance(ego, (int, float)) else None)}",
               (x0 + 46, y0 + 14), scale=0.38, color=(220, 220, 220))
+    _draw_plan_overlay(canvas, snap, x0, x1, y0, y1, tx, yx)
+
+
+def _draw_plan_overlay(canvas: np.ndarray, snap: dict,
+                       x0: int, x1: int, y0: int, y1: int,
+                       tx, yx) -> None:
+    """轨迹计划叠层：8 条候选（细线）+ 选中（粗绿）+ 预览点。"""
+    plan = snap.get("plan")
+    scene = snap.get("scene")
+    if plan is None or scene is None or not plan.cand_x:
+        return
+    lw = scene.lane_w_m
+    dt = plan.dt_s
+    for i, xs in enumerate(plan.cand_x):
+        col = (0, 220, 0) if i == plan.chosen else (110, 110, 110)
+        pts = [(tx(k * dt), yx(x / lw)) for k, x in enumerate(xs)
+               if k * dt <= 3.0]
+        if len(pts) >= 2:
+            cv2.polylines(canvas, [np.array(pts, np.int32)], False, col,
+                          2 if i == plan.chosen else 1)
+    px = tx(plan.dt_s * max(1, round(0.2 / max(plan.dt_s, 1e-9))))
+    cv2.circle(canvas, (px, yx(plan.x_preview_m / lw)), 3, (0, 255, 0), -1)
+    _put_text(canvas, f"plan:{plan.reason} {plan.layer}",
+              (x0 + 2, y0 + 26), scale=0.32,
+              color=(0, 220, 0) if plan.valid else (0, 160, 255))
 
 
 def _draw_steer_strip(canvas: np.ndarray, snap: dict,

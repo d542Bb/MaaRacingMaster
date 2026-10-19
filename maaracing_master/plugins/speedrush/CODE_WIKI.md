@@ -950,6 +950,18 @@ CRUISE 选择来源是严格字典序（奖励车 > 普通车擦边 > 金币 > �
 `sel_layer/sel_why/sel_nwp` 与 `goal`。轨迹采样器、加性收益场、
 `cr_*` 列已随旧链删除。
 
+**⑤ 时空横向轨迹计划（`motion_plan.py`，2026-10-19）**：`motion.mode`
+三档——`off`（只组装场景快照，驾驶逐位同旧链）、`shadow`（计划照算、
+记录 trace，控制器仍走旧目标）、`live`（计划有效时接管杆值，需
+`motion.calibrated=true`，否则加载 fail-loud）。每拍把场景快照喂纯函数
+`plan_motion`：7 条常杆 + 保持当前杆共 8 条候选，用 `planner.step` 同一
+动力学在 `horizon_s` 内前推；近场走廊交集与普通车碰撞是硬约束；奖励车 >
+擦车 > 金币 > 中心带按字典序取最优；`PlanGate` 分层立即切、同层
+`switch_margin + switch_dwell_s` 防翻面。预览 `(x, v, u_ff)` 在
+`preview_s`，规划器按 `u_ff + k_p·(x_ref−x_pred) + k_d·(v_ref−v)` 跟踪。
+自车开环不确定度 `sigma_ego(t)` 进入碰撞/命中容差；超
+`sigma_ego_max_m` 缩短时域。trace 增 `scene` 与 `plan` 列。
+
 **录制对照基建（2026-10-18）**：trace 增 `sel_dbg`（选择帧 ego/中心 c0/cL/
 左右缘/路点/选择器看到的机会）、`scene`（场景快照：ego/走廊年龄/对象
 kind-x-t-枚数-σ-年龄-来源-纵深）与 `wlc_seg`（墙线拟合段）；调试图 BEV 叠

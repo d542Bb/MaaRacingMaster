@@ -12,7 +12,7 @@ from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.motion_plan import (
-    Scene, build_scene)
+    EgoState, PlanGate, Scene, _Cand, build_scene, plan_motion)
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, RoadBand, RoadFrame)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -130,3 +130,111 @@ def test_corridor_stale_uses_band_age():
                      corridor=_corridor(fid=11, last_fid=1))
     assert out.reason == "sel:center"
     assert eng.scene is not None and eng.scene.stale is True
+
+
+# ---------- A2 评估器 ----------
+
+def _plan(scene, *, ego=None, motion=None, gate=None):
+    return plan_motion(scene, ego or EgoState(0.0, 0.0, 0.0),
+                       motion or CFG.motion, CFG.selection, CFG.planner, gate)
+
+
+def _wide_road():
+    return RoadFrame((RoadBand(0.0, 6.0, -5.0, 5.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 10.0, -5.0, 5.0, True)
+
+
+def test_eight_candidates_and_determinism():
+    s = _scene(road=_wide_road())
+    a, b = _plan(s), _plan(s)
+    assert len(a.cand_x) == 8
+    assert (a.chosen, a.score_key, a.x_preview_m) == \
+        (b.chosen, b.score_key, b.x_preview_m)
+
+
+def test_reward_beats_coin_and_center():
+    s = _scene(road=_wide_road(),
+               rewards=[BonusSource(2.0, 1.0, 0.9, age_ms=0.0)],
+               coins=[CoinSource(-2.0, 3, 0.8, 1.0, age_ms=0.0)])
+    p = _plan(s)
+    assert p.valid and p.layer == 1
+    assert s.road.bands  # 环境自洽
+    center_only = _plan(_scene(road=_wide_road()))
+    assert center_only.layer == 4
+
+
+def test_coin_layer_when_no_car_or_reward():
+    p = _plan(_scene(road=_wide_road(),
+                     coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
+    assert p.valid and p.layer == 3
+    assert p.score_key[5] <= -5.0          # -coin_count
+
+
+def test_collision_all_infeasible_keeps_max_clearance():
+    cars = [CarSource(-2.0, 0.5, age_ms=0.0),
+            CarSource(0.0, 0.5, age_ms=0.0),
+            CarSource(2.0, 0.5, age_ms=0.0)]
+    p = _plan(_scene(road=_wide_road(), cars=cars))
+    assert not p.valid
+    assert p.reason == "plan:infeasible_collision"
+    assert p.n_feasible == 0
+
+
+def test_corridor_all_infeasible_holds_position():
+    road = RoadFrame((RoadBand(0.0, 6.0, 4.0, 5.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 1.0, 4.0, 5.0, True)
+    p = _plan(_scene(road=road))
+    assert not p.valid and p.reason == "plan:infeasible_corridor"
+
+
+def test_stale_scene_invalid():
+    p = _plan(_scene(road=_wide_road(), corridor_age_ms=999.0))
+    assert not p.valid and p.reason == "plan:stale"
+
+
+def test_sigma_ego_shortens_horizon():
+    m = replace(CFG.motion, sigma_ego0_m=0.1,
+                sigma_ego_rate_mps=2.0, sigma_ego_max_m=0.5)
+    p = _plan(_scene(road=_wide_road()), motion=m)
+    assert p.reason == "plan:ok_shortened"
+    assert len(p.cand_x[0]) < int(round(CFG.motion.horizon_s / CFG.motion.dt_s)) + 1
+
+
+def _c(idx, layer, coin, feasible=True):
+    key = (not feasible, 0, 0.0, 0, 0.0, -coin, 0.0, 0.0, 0.0, idx)
+    return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, feasible, 9.0,
+                 0, 0.0, 0, 0.0, coin, 0.0, 0.0, 0.0, layer, key)
+
+
+def test_gate_same_layer_requires_margin_and_dwell():
+    g = PlanGate(switch_margin=0.3, dwell_s=0.1, epsilon=1e-3)
+    inc, better = _c(3, 3, 1.0), _c(4, 3, 2.0)
+    assert g.choose([inc], 0.05).idx == 3
+    assert g.choose([better, inc], 0.05).idx == 3      # 第一次只计 streak
+    assert g.choose([better, inc], 0.05).idx == 4      # 0.1s 后接管
+    # 层级升高立即切
+    reward = _c(5, 1, 0.0)
+    assert g.choose([reward, better], 0.05).idx == 5
+
+
+def test_planner_tracks_valid_plan_only():
+    from maaracing_master.plugins.speedrush.planner import LateralPlanner
+    from maaracing_master.plugins.speedrush.tracking import (
+        DecisionOutput, DecisionState)
+    s = _scene(road=_wide_road(),
+               coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)])
+    p = _plan(s)
+    out = DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
+                         x_target=0.0, reason="x", emitted_fid=1,
+                         valid_until_fid=10)
+    pl = LateralPlanner(CFG.planner)
+    x_pred = pl.state.executed_lane + pl.state.v_lat_est * CFG.planner.lookahead_tau_s
+    exp = (p.u_feedforward
+           + CFG.planner.k_p * (p.x_preview_lane - x_pred)
+           + CFG.planner.k_d * (p.v_preview_lane_s - pl.state.v_lat_est))
+    pl.update(out, 0.05, 1, plan=p)
+    assert pl.last_steer_raw == pytest.approx(max(-1.0, min(1.0, exp)))
+
+    pl2 = LateralPlanner(CFG.planner)
+    pl2.update(out, 0.05, 1, plan=replace(p, valid=False))
+    assert pl2.last_steer_raw != pytest.approx(exp)

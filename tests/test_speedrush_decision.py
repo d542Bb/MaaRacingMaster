@@ -98,6 +98,8 @@ def _decision_dict():
     (lambda d: d["planner"].update(obs_beta_dv_rate_lane_s2=99.0),
      "obs_beta_dv_rate"),
     (lambda d: d["traffic"].pop("v_lat_ema_alpha"), "v_lat_ema"),
+    (lambda d: d["motion"].update(preview_s=3.0), "preview_s"),
+    (lambda d: d["motion"].update(mode="live"), "calibrated"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
     d = _decision_dict()

@@ -202,16 +202,30 @@ class Validate:
 
 @dataclass(frozen=True)
 class Motion:
-    """场景快照与轨迹评估参数（motion_plan 设计稿；键随阶段扩展）。
-
-    A1 只消费年龄/不确定度三件：对象超龄丢弃、走廊超龄标 stale、对象σ随龄
-    膨胀。轨迹候选/时域/门控键在评估器接线时加入，不提前占位。"""
+    """场景快照与轨迹评估参数（motion_plan 设计稿）。"""
 
     mode: str = "off"                 # off / shadow / live
+    horizon_s: float = 2.0
+    preview_s: float = 0.2
+    dt_s: float = 0.05
+    steer_levels: tuple[float, ...] = (-0.85, -0.55, -0.3, 0.0,
+                                       0.3, 0.55, 0.85)
+    near_z_m: float = 6.0
+    collision_margin_m: float = 0.2
+    graze_gap_lane: float = 0.65
+    coin_collect_half_lane: float = 0.35
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.25  # 走廊超龄标 stale
+    frame_delta_max_m: float = 0.2
     sigma_obj0_m: float = 0.15       # 对象横向不确定度基值
     sigma_obj_rate_mps: float = 0.6  # 随年龄增长
+    sigma_ego0_m: float = 0.0        # fit_plant 标定
+    sigma_ego_rate_mps: float = 0.0  # fit_plant 标定
+    sigma_ego_max_m: float = 1.2     # 超此缩短时域
+    switch_margin: float = 0.3
+    switch_dwell_s: float = 0.2
+    score_epsilon: float = 1e-3
+    infeasible_conserve_ticks: int = 3
     calibrated: bool = False         # 标定通过才允许 live
 
 
@@ -323,6 +337,21 @@ def _bool(d: dict, sec: str, key: str, default: bool | None = None) -> bool:
     if not isinstance(v, bool):
         raise ValueError(f"decision.json [{sec}].{key} 非布尔：{v!r}")
     return v
+
+
+def _floats_def(d: dict, sec: str, key: str,
+                default: tuple[float, ...]) -> tuple[float, ...]:
+    """可选数值数组：缺键回默认；元素非数值/越出 [-1,1] 即拒载。"""
+    v = d.get(sec, {}).get(key, list(default))
+    if not isinstance(v, list) or not v:
+        raise ValueError(f"decision.json [{sec}].{key} 需非空数组：{v!r}")
+    out = []
+    for x in v:
+        if not isinstance(x, (int, float)) or isinstance(x, bool) \
+                or not -1.0 <= float(x) <= 1.0:
+            raise ValueError(f"decision.json [{sec}].{key} 元素非法：{x!r}")
+        out.append(float(x))
+    return tuple(out)
 
 
 def _int(d: dict, sec: str, key: str, *, lo: int, hi: int | None = None) -> int:
@@ -462,12 +491,41 @@ def _read_decision(path: Path) -> DecisionConfig:
         motion=Motion(
             mode=_str_def(d, "motion", "mode", "off",
                           ("off", "shadow", "live")),
+            horizon_s=_num_def(d, "motion", "horizon_s", 2.0, lo=0),
+            preview_s=_num_def(d, "motion", "preview_s", 0.2, lo=0),
+            dt_s=_num_def(d, "motion", "dt_s", 0.05, lo=0),
+            steer_levels=_floats_def(
+                d, "motion", "steer_levels",
+                (-0.85, -0.55, -0.3, 0.0, 0.3, 0.55, 0.85)),
+            near_z_m=_num_def(d, "motion", "near_z_m", 6.0, lo=0),
+            collision_margin_m=_num_def(
+                d, "motion", "collision_margin_m", 0.2, lo=0),
+            graze_gap_lane=_num_def(
+                d, "motion", "graze_gap_lane", 0.65, lo=0),
+            coin_collect_half_lane=_num_def(
+                d, "motion", "coin_collect_half_lane", 0.35, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
             corridor_age_max_s=_num_def(
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),
+            frame_delta_max_m=_num_def(
+                d, "motion", "frame_delta_max_m", 0.2, lo=0),
             sigma_obj0_m=_num_def(d, "motion", "sigma_obj0_m", 0.15, lo=0),
             sigma_obj_rate_mps=_num_def(
                 d, "motion", "sigma_obj_rate_mps", 0.6, lo=0),
+            sigma_ego0_m=_num_def(
+                d, "motion", "sigma_ego0_m", 0.0, lo=0, lo_open=False),
+            sigma_ego_rate_mps=_num_def(
+                d, "motion", "sigma_ego_rate_mps", 0.0, lo=0,
+                lo_open=False),
+            sigma_ego_max_m=_num_def(
+                d, "motion", "sigma_ego_max_m", 1.2, lo=0),
+            switch_margin=_num_def(d, "motion", "switch_margin", 0.3, lo=0),
+            switch_dwell_s=_num_def(
+                d, "motion", "switch_dwell_s", 0.2, lo=0),
+            score_epsilon=_num_def(
+                d, "motion", "score_epsilon", 1e-3, lo=0),
+            infeasible_conserve_ticks=_int_def(
+                d, "motion", "infeasible_conserve_ticks", 3, lo=1),
             calibrated=_bool(d, "motion", "calibrated", default=False)),
         grid_xcheck=GridXcheck(
             mode=_str_def(d, "grid_xcheck", "mode", "off",
@@ -583,6 +641,16 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             f"[planner] rate_limit_raw={p.rate_limit_raw} 满行程仅 "
             f"{full_stroke_ticks:.1f} tick（<2 tick 限幅形同虚设，是失效档位）")
+    m = cfg.motion
+    if m.preview_s >= m.horizon_s:
+        raise ValueError(
+            f"[motion] preview_s={m.preview_s} 必须 < horizon_s={m.horizon_s}")
+    if m.dt_s <= 0.0:
+        raise ValueError(f"[motion] dt_s={m.dt_s} 需 >0")
+    if m.mode == "live" and not m.calibrated:
+        raise ValueError(
+            "[motion] mode=live 但 calibrated=false（先用 fit_plant 标定"
+            "并通过报告闸再写入本键）")
     return cfg
 
 

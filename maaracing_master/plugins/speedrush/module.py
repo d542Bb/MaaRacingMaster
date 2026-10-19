@@ -56,6 +56,8 @@ from maaracing_master.plugins.speedrush.wall_track import (
 from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
+from maaracing_master.plugins.speedrush.motion_plan import (
+    EgoState, PlanGate, plan_motion)
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
 from maaracing_master.plugins.speedrush.tracking import DecisionState, Tracker
@@ -782,6 +784,12 @@ class SpeedRushModule(ActivityModule):
                                else run_dir / "depth_debug"),
                     dump=None if cfg.debug_dump.mode == "off" else cfg.debug_dump),
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
+                    # 轨迹计划（motion.mode=off 时恒不调用）：候选时稳门随阶段重建
+                    "gate": PlanGate(cfg.motion.switch_margin,
+                                     cfg.motion.switch_dwell_s,
+                                     cfg.motion.score_epsilon),
+                    "plan_bad": 0,
+                    "last_plan": None,
                 # raw/hud 调试图落盘器（3fps；debug 开关闸，测试 ctx=None → None →
                 # tick 空转）。生命周期=chain，finally 收口。
                 "debug": DebugPairWriter(run_dir, cal=cal) if dbg_on else None,
@@ -883,6 +891,26 @@ class SpeedRushModule(ActivityModule):
                 traffic=(tviews, tevents),
                 road_offset=road_offset,
                 corridor=corridor)
+            cfg = chain["cfg"]
+            plan = None
+            if cfg.motion.mode != "off" and chain["engine"].scene is not None \
+                    and out.state is DecisionState.CRUISE:
+                plan = plan_motion(
+                    chain["engine"].scene,
+                    EgoState(planner.state.executed_lane,
+                             planner.state.v_lat_est,
+                             planner.state.steer_norm),
+                    cfg.motion, cfg.selection, cfg.planner, chain["gate"])
+                if cfg.motion.mode == "live" and not plan.valid:
+                    chain["plan_bad"] += 1
+                    if chain["plan_bad"] >= cfg.motion.infeasible_conserve_ticks:
+                        chain["engine"].request_conserve("plan_infeasible")
+                        chain["plan_bad"] = 0
+                else:
+                    chain["plan_bad"] = 0
+            else:
+                chain["plan_bad"] = 0
+            chain["last_plan"] = plan
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -892,7 +920,8 @@ class SpeedRushModule(ActivityModule):
             # 同前（重复记账曾把单次找边翻跳放大成饱和侧滑，2026-10-06 局）。
             cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset,
                                  road_offset_new=dgeo_new and corridor is not None
-                                 and corridor.src not in ("pair_slot", "wall_occl"))
+                                 and corridor.src not in ("pair_slot", "wall_occl"),
+                                 plan=(plan if cfg.motion.mode == "live" else None))
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -969,6 +998,8 @@ class SpeedRushModule(ActivityModule):
             "sel_dbg": eng.selection_debug,
             # 场景快照（motion_plan 输入面）：自车/走廊年龄/对象年龄与 σ
             "scene": None if eng.scene is None else eng.scene.as_trace(),
+            # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选
+            "plan": None if plan is None else plan.as_trace(),
             # 墙线拟合段：side,z0,z1,a(道),b；录制局用来核对方程是否锁对墙
             "wlc_seg": None if wlc is None else [
                 [side, round(s.z0, 2), round(s.z1, 2),
@@ -1180,6 +1211,8 @@ class SpeedRushModule(ActivityModule):
                 "selection": eng.selection_report,   # 本拍四层选择
                 "sel_objects": eng.selection_objects,  # 选择器眼里的机会
                 "sel_debug": eng.selection_debug,      # 选择帧快照
+                "scene": eng.scene,                    # 场景快照（motion 输入）
+                "plan": chain.get("last_plan"),        # 本拍轨迹计划
                 "decision": self._control_last,   # 本拍决策/供数快照（新建不改旧）
                 "hud": (chain["hud_ref"].latest()
                         if chain.get("hud_ref") is not None else None),
