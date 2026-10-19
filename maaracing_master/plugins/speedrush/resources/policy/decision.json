@@ -105,15 +105,15 @@
     "frame_delta_max_m": 0.2,
     "sigma_obj0_m": 0.15,
     "sigma_obj_rate_mps": 0.6,
-    "sigma_ego0_m": 0.0,
-    "sigma_ego_rate_mps": 0.0,
-    "sigma_ego_max_m": 1.2,
+    "sigma_ego0_m": 0.669,
+    "sigma_ego_rate_mps": 0.742,
+    "sigma_ego_max_m": 2.5,
     "switch_margin": 0.3,
     "switch_dwell_s": 0.2,
     "score_epsilon": 0.001,
     "infeasible_conserve_ticks": 3,
-    "calibrated": false,
-    "_note": "mode=off 只组装场景快照；shadow=计划照算不接管；live 需 calibrated=true（fit_plant 通过）。sigma_ego 由 fit_plant 残差标定；超 sigma_ego_max 缩短时域。"
+    "calibrated": true,
+    "_note": "mode=off 只组装场景快照；shadow=计划照算不接管；live 需 calibrated=true。sigma_ego 来自 fit_plant（4 段 trace，σ0=0.67m、rate=0.74m/s，多步残差同批起点）；sigma_ego_max=2.5m 是离线对照结果——收到 1.2m 会把时域截到 0.7s、金币/奖励层几乎清零。"
   },
   "traffic": {
     "exit_margin_px": 80.0,
