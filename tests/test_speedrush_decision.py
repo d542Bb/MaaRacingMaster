@@ -33,7 +33,8 @@ CFG = _read_decision(
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
-         geometry=True, transition=False, boundary=None, fid_hz=None, raw=None):
+         geometry=True, transition=False, boundary=None, fid_hz=None, raw=None,
+         raw_coins=0):
     if presence is None:
         presence = bool(groups or targets)
     if raw is None:
@@ -42,7 +43,8 @@ def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000, frame_age_ms=10.0,
         stage=1,
         health=PerceptionHealth(alive, fresh, geometry, presence, transition,
-                                raw_target_presence=raw),
+                                raw_cars=int(bool(raw)),
+                                raw_coins=raw_coins),
         boundary=boundary, targets=targets, far_targets=(), coin_groups=groups,
         fid_rate_hz=fid_hz)
 
@@ -430,6 +432,15 @@ def test_raw_detections_without_tracks_trip_target_empty():
     for fid in range(1, 12):
         fatal = w.check(_obs(fid=fid, presence=False, raw=True), 0.5).fatal
     assert fatal == "target_empty"
+
+
+def test_raw_coins_without_tracks_do_not_trip_target_empty():
+    """画面只有币/奖励、跟踪为空：机会面闪断不是感知故障，不冻结决策。"""
+    w = ValidationWatch(CFG)
+    for fid in range(1, 12):
+        rep = w.check(_obs(fid=fid, presence=False, raw=False, raw_coins=3),
+                      0.5)
+        assert rep.fatal is None
 
 
 def _car_t(tid, fid, cy, box):

@@ -71,9 +71,17 @@ class PerceptionHealth:
     geometry_valid: bool     # v1 = 调用方传入（边界层落地后由 BoundarySummary 推导）
     target_presence: bool    # 本帧观测含近场或远场目标
     stage_transition: bool   # 阶段切换/起步/过场窗口（调用方传入，锚点序列可判）
-    # 本帧原始检出是否有目标（YOLO 层）。False + target_presence False =
-    # 画面本来就没车（空旷路面），不是目标流枯竭。
-    raw_target_presence: bool = False
+    # 本帧原始检出分类计数（YOLO 层）。安全检查只认车：币/奖励是机会面，
+    # 闪断不构成"目标流枯竭"（2026-10-20 阶段 1：画面有币、跟踪空，旧判据
+    # 冻结 1.8s 错过整组币）。
+    raw_cars: int = 0
+    raw_coins: int = 0
+    raw_bonuses: int = 0
+
+    @property
+    def raw_vehicle_presence(self) -> bool:
+        """原始检出里有车——目标流枯竭判据只认这一项。"""
+        return self.raw_cars > 0
 
 
 @dataclass(frozen=True)
@@ -569,7 +577,8 @@ class Tracker:
             geometry_valid=geometry_valid,
             target_presence=bool(targets or fars),
             stage_transition=stage_transition,
-            raw_target_presence=bool(per.cars or per.coins or per.bonuses))
+            raw_cars=len(per.cars), raw_coins=len(per.coins),
+            raw_bonuses=len(per.bonuses))
         distances = tuple(self._distance_of(t, per.ts_ns, frame_age_ms)
                           for t in self._tracks if t.kind == KIND_CAR)
         # 逐车米制状态（C 线）：与 distances 同序同 id，z/x/v/t 全从锚点链路

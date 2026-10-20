@@ -1196,6 +1196,11 @@ class SpeedRushModule(ActivityModule):
                        for e in tevents if e.outcome == OUTCOME_PASS],
             "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
             "presence": obs.health.target_presence,
+            # 原始检出分类计数：目标流枯竭判据只认车；这两列用来区分
+            # “空街”与“有币但没跟踪”（2026-10-20 阶段 1 误冻结归因）。
+            "raw_cars": obs.health.raw_cars,
+            "raw_coins": obs.health.raw_coins,
+            "raw_bonuses": obs.health.raw_bonuses,
             # oage：本拍 2D 帧龄（frame_with_age 抓取时现算，拍级新鲜）——
             # 决策时刻米制真实年龄 ≈ dist[].age（锚龄，零点=深度帧采集）+
             # oage（零点=2D 帧采集）；两零点同钟族（perf_counter_ns），相加

@@ -99,10 +99,11 @@ class ValidationWatch:
         # 信号·目标流枯竭：五信号**合取**才计时（空旷路面/过渡/半死不活都不算）
         conj = (h.perception_alive and h.frame_fresh and h.geometry_valid
                 and not h.stage_transition)
-        # 只有“画面有检出、跟踪却没输出”才算目标流枯竭；画面本来没车
+        # 只有“画面有车、跟踪却没输出”才算目标流枯竭；画面本来没车
         # （raw=False）是空旷路面，不是故障（2026-10-19 局 213750_p1 空街
-        # 误停 5.4s）。
-        if conj and not h.target_presence and h.raw_target_presence:
+        # 误停 5.4s）。币/奖励是机会面、天然闪断，不参与本判据（2026-10-20
+        # 阶段 1：画面有币、跟踪空，旧判据冻结 1.8s 错过整组币）。
+        if conj and not h.target_presence and h.raw_vehicle_presence:
             self._empty_t += dt_s
             if self._empty_t >= self.v.t_empty_s:
                 return ValidationReport("target_empty")
