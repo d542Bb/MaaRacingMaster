@@ -118,3 +118,21 @@ def test_layered_no_corridor_holds():
     out = eng.update(_obs(1), 0.05, executed_lane=0.4, corridor=None)
     assert out.reason == "sel:hold:no_road"
     assert out.x_target == pytest.approx(0.4, abs=0.02)
+
+
+def test_road_frame_origin_is_master_not_band_mid():
+    """车道原点=供数门 master 路心，不是分带不对称中点：带中心相对原点
+    保留（只供宽度/包络），自车横位输出为「相对 master 的执行位」——
+    旧口径用带中点当原点，会让选择目标与 planner 路心系差一个带偏。"""
+    eng = DecisionEngine(CFG)
+    master = -0.5                       # master 在自车左侧 0.5 道
+    bands = tuple(
+        CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
+                     BandBoundary(0.0, "measured"),
+                     BandBoundary(4.0, "measured"))
+        for i in range(9))              # 带中心在自车右侧 2.0m（不对称）
+    eng._corridor = Corridor(bands, master, 4.0 / LW, "pair", "ok")
+    road, ego_m, origin = eng._road_frame(0.7, 1)
+    assert ego_m == pytest.approx(-master * LW)          # 相对 master 的观察位
+    assert origin == pytest.approx((master + 0.7) * LW)   # master 在带平移帧里
+    assert road.center_at(0.0) == pytest.approx(2.0 - master * LW)

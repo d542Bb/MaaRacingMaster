@@ -112,7 +112,7 @@ def test_field_goal_half_lane_moves_with_realistic_time():
             z0=3.0 + i * 3.0, z1=6.0 + i * 3.0,
             left=BandBoundary(c - 4.2, "measured"),
             right=BandBoundary(c + 4.2, "measured")) for i in range(2))
-        return Corridor(bands, 0.0, 8.4 / lw, "pair", "ok")
+        return Corridor(bands, -ex, 8.4 / lw, "pair", "ok")
 
     def obs(fid):
         return WorldObservation(

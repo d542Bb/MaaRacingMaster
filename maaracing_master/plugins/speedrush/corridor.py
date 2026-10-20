@@ -11,12 +11,15 @@ unknown 四态）、**证据有多新**（last_fid + 置信）、**当前允许�
 （评审追加：measured ≠ 激进许可——实测墙也可能因拟合误差/浅结构抖动不适
 合立即作为激进控制依据）；走廊也不替代栅格与找边的内部逻辑，只组织它们
 的产出。空气墙永远 inferred（宪法：路面边界=中线±路宽/2，来自先验不来自
-检测，不许冒充实测）；墙永远赢（撞界≤规划域，冲突时墙收窄走廊——带内
-wall bins 优先于绿区范围，消费端同一规则）。
+检测，不许冒充实测）。
 
-来源优先级（带内逐侧）：墙箱（WallTrack 攒的实体，measured/occluded）>
-绿区范围（栅格实测路面，measured 低置信）> 空气墙（先验，inferred）>
-unknown（无证据，诚实降级）。"""
+来源规则（带内逐侧）：**绿区范围（栅格实测路面，measured）为底，墙箱
+（WallTrack 攒的实体，measured/occluded）只有收窄权**——墙落在绿区内侧
+（更靠路心）时采用它，落在绿区外（路缘外的停车带/人行道结构，或绿区
+本已到头处的假墙）不参与加宽；绿区在该带缺席时才由墙接棒；两者都缺席
+落空气墙（先验，inferred），再无证据才 unknown（诚实降级）。2026-10-20
+实机审计：旧口径「墙箱优先」让绿区外 0.5~1m 的墙把右带撑宽，带中心比
+绿区主人偏右约 0.86 道，选择/粗层因此朝空处相反方向走。"""
 from __future__ import annotations
 
 import numpy as np
@@ -89,20 +92,27 @@ def _band_rows_mask(grid, z0: float, z1: float) -> np.ndarray:
     return (zc >= z0) & (zc < z1)
 
 
-def _wall_boundary(wall_track, side: int, z0: float, z1: float) -> BandBoundary | None:
-    """带内该侧的墙箱边界（墙实体赢：有攒出置信的墙箱就用它）。同带多箱取
-    置信最高者；measured 与 occluded 同优先（状态就是来源，消费端区分）。"""
+def _wall_boundary(wall_track, side: int, z0: float, z1: float,
+                   datum_m: float = 0.0) -> BandBoundary | None:
+    """带内该侧的墙箱边界（墙只有收窄权：同带多箱取最靠路心者）。
+
+    同带多个 z 箱时，靠内的墙就是更窄的可用面——取置信最高者会让外侧
+    高置信箱盖掉内侧真墙。落在路心另一侧（跨过中心）的箱是错侧读数，
+    不当边界。``datum_m``：路心在自车系的横向位置（缺省=自车）。"""
     if wall_track is None:
         return None
     best = None
-    for zc, pos, conf, state, _last_fid in wall_track.bins(side):
+    for zc, pos, conf, state, last_fid in wall_track.bins(side):
         if not state or not (z0 <= zc < z1):
             continue
-        if best is None or conf > best[1]:
-            best = (pos, conf, state, _last_fid)
+        d = (pos - datum_m) * side          # 沿该侧向外的距离，>0 才在路内一侧
+        if d <= 0.0:
+            continue
+        if best is None or d < best[0] or (d == best[0] and conf > best[2]):
+            best = (d, pos, conf, state, last_fid)
     if best is None:
         return None
-    pos, conf, state, last_fid = best
+    _d, pos, conf, state, last_fid = best
     return BandBoundary(float(pos), state, float(conf), int(last_fid))
 
 
@@ -151,6 +161,19 @@ def _air_boundary(side: int, center_lane: float | None,
     return BandBoundary(edge * lane_w_m, INFERRED, 0.0, None)
 
 
+def _narrow_boundary(green: BandBoundary | None, wall: BandBoundary | None,
+                     side: int, datum_m: float) -> BandBoundary | None:
+    """绿区为底、墙只收窄：墙更靠路心（|d| 更小）才采用，否则保持绿区。
+    绿区缺席时墙接棒（该带绿区没测到，墙是该带唯一实测）。"""
+    if green is None:
+        return wall
+    if wall is None:
+        return green
+    d_wall = (wall.x_m - datum_m) * side
+    d_green = (green.x_m - datum_m) * side
+    return wall if d_wall <= d_green else green
+
+
 def _plane_health(reading) -> str:
     """平面健康面：reading 缺席=none；拟合失败或质量门拒绝=degraded。"""
     if reading is None:
@@ -167,13 +190,16 @@ def build_corridor(reading, grid, wall_track, fid: int | None, *,
                    src: str, lane_w_m: float | None) -> Corridor:
     """分带走廊拼装：center/width/src 由供数门（_EgoRoadObserver 优先级链）
     算好传入，本函数只管分带表示、来源标注与 plane_health。"""
+    datum = (center_lane * lane_w_m
+             if center_lane is not None and lane_w_m else 0.0)
     bands = []
     for i in range(N_BANDS):
         z0, z1 = _band_bounds(i)
         sides = {}
         for side in (-1, 1):
-            b = (_wall_boundary(wall_track, side, z0, z1)
-                 or _green_boundary(grid, side, z0, z1)
+            green = _green_boundary(grid, side, z0, z1)
+            wall = _wall_boundary(wall_track, side, z0, z1, datum)
+            b = (_narrow_boundary(green, wall, side, datum)
                  or _air_boundary(side, center_lane, width_lane, lane_w_m)
                  or BandBoundary(None, UNKNOWN))
             sides[side] = b

@@ -746,7 +746,14 @@ class DecisionEngine:
                 return pick(best, 0.0) + (pick(best, 1.0) - pick(best, 0.0)) * w
             return pick(best, 0.0 if z < best[0] else 1.0)
 
-        origin = _at(0.0, lambda b, k: 0.5 * (b[2] + b[3]))
+        # 车道原点是供数门 master 路心（绿区主人），不是分带不对称中点：
+        # 带中点会被墙箱/单侧绿区拽偏（2026-10-20 实机 0.86 道分歧），
+        # 选择目标因此整体偏移。带边界仍按原样供宽度/包络。
+        # A 系（带已加 executed 平移）里 master 位于 center+executed 道——
+        # 两者互相抵消（executed≈−center）时原点≈0，目标道号与 planner 同帧。
+        master = self._corridor.center_lane
+        origin = (_at(0.0, lambda b, k: 0.5 * (b[2] + b[3]))
+                  if master is None else (master + executed) * lane_w)
         bands = []
         for z0, z1, l, r, lb, rb in raw:
             ages = [a for a in (self._age_ms(lb.last_fid),
@@ -807,8 +814,9 @@ class DecisionEngine:
                  for c in coin_src]
         corr_ages = [b.age_ms for b in road.bands if b.age_ms is not None]
         lw = self.cal.lane_w_m
-        # 带中心帧 → 规划器路心帧：两套估计常年差 0.2~4.5m，不统一会让
-        # frame_delta 恒超阈值、走廊按差额加宽到失效。选择器仍吃旧帧。
+        # 选择帧 → 规划器路心帧：选择帧原点已是 master，frame_shift 只需
+        # 补齐「master 在带平移系里的位置」（两者对齐时≈0）；不平移会让
+        # frame_delta 常年超阈值、走廊按差额加宽到失效。
         center_lane = self._corridor.center_lane
         frame_shift = 0.0 if center_lane is None else \
             (-center_lane * lw) - ego_m
@@ -825,8 +833,14 @@ class DecisionEngine:
             cam_z_datum_m=CAM_Z_DATUM_M, frame_shift_m=frame_shift)
         # 粗层影子（2026-10-19）：绿区净空 + 2D 占用选方向；只落 trace，
         # 本拍选择/计划/执行不消费。迟滞的现任道取上一拍粗层结果。
+        # 自车横位与候选道必须同帧：候选道按每带中心线取相对量，自车也
+        # 按 scene 的 z=0 中心线算——直接喂 executed（planner 路心系）会
+        # 把「带中心线 vs 路心」的残差带进方向判定。
+        c0 = self._scene.road.center_at(0.0)
+        coarse_ego = (executed if c0 is None else
+                      (self._scene.ego_x_m - c0) / self._scene.lane_w_m)
         self._coarse = choose_lane(
-            self._scene.road, self._scene.objs, executed,
+            self._scene.road, self._scene.objs, coarse_ego,
             self._scene.lane_w_m, self._coarse_params,
             current_lane=None if self._coarse is None else self._coarse.lane)
         rep = self.selector.update(road, rewards, cars, coins, ego_m,

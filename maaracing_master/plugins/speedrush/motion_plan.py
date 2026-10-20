@@ -151,8 +151,9 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
                 cam_z_datum_m: float, frame_shift_m: float = 0.0) -> Scene:
     """把同拍源表换算成场景帧并做年龄/σ 处理。
 
-    ``frame_shift_m`` 把走廊带帧平移到规划器路心帧：带中心与路心观测是
-    两套估计，不平移会让 ``frame_delta`` 常年超阈值、走廊加宽到失效。"""
+    ``frame_shift_m`` 把选择帧平移到规划器路心帧：选择帧原点=供数门 master
+    路心，残量（master 在带平移系里的位置）由此补齐；不平移会让
+    ``frame_delta`` 常年超阈值、走廊加宽到失效。"""
     def _aged_t(t: float | None, age_ms: float) -> float | None:
         """丢检目标的时间按龄前移：源里的到站时间是最后观测拍的，不是本拍。"""
         if t is None:
