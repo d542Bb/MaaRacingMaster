@@ -136,3 +136,31 @@ def test_road_frame_origin_is_master_not_band_mid():
     assert ego_m == pytest.approx(-master * LW)          # 相对 master 的观察位
     assert origin == pytest.approx((master + 0.7) * LW)   # master 在带平移帧里
     assert road.center_at(0.0) == pytest.approx(2.0 - master * LW)
+
+
+def test_coarse_control_takes_center_layer(monkeypatch):
+    """粗层接控制：只接管 L4，目标=粗层选定车道（-1 道）。"""
+    from maaracing_master.plugins.speedrush import decision as dmod
+    from maaracing_master.plugins.speedrush.coarse import CoarseReport
+    monkeypatch.setattr(
+        dmod, "choose_lane",
+        lambda *a, **k: CoarseReport(0.0, -1.0, -1, 24.0, "space", ()))
+    eng = DecisionEngine(CFG)
+    out = eng.update(_obs(1), 0.05, executed_lane=0.0, corridor=_corridor())
+    assert out.reason == "sel:center:coarse"
+    assert out.x_target == pytest.approx(-0.7, abs=0.02)
+    assert out.maneuver is True
+
+
+def test_coarse_control_gate_off_keeps_pure_center(monkeypatch):
+    """control=false 退回影子期：粗层不参与选择。"""
+    from maaracing_master.plugins.speedrush import decision as dmod
+    from maaracing_master.plugins.speedrush.coarse import CoarseReport
+    monkeypatch.setattr(
+        dmod, "choose_lane",
+        lambda *a, **k: CoarseReport(0.0, -1.0, -1, 24.0, "space", ()))
+    cfg = replace(CFG, coarse=replace(CFG.coarse, control=False))
+    out = DecisionEngine(cfg).update(_obs(1), 0.05, executed_lane=0.0,
+                                     corridor=_corridor())
+    assert out.reason == "sel:center"
+    assert out.x_target == pytest.approx(0.0, abs=0.02)

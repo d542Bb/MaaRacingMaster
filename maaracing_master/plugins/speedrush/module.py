@@ -902,7 +902,8 @@ class SpeedRushModule(ActivityModule):
                                     planner.state.steer_norm)
                 plan = plan_motion(
                     chain["engine"].scene, plan_ego,
-                    cfg.motion, cfg.selection, cfg.planner, chain["gate"])
+                    cfg.motion, cfg.selection, cfg.planner, chain["gate"],
+                    coarse_lane=chain["engine"].coarse_lane)
                 chain["last_plan_ego"] = plan_ego
             else:
                 chain["last_plan_ego"] = None

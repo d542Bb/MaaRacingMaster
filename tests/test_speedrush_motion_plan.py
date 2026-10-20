@@ -256,9 +256,10 @@ def test_corridor_stale_uses_band_age():
 
 # ---------- A2 评估器 ----------
 
-def _plan(scene, *, ego=None, motion=None, gate=None):
+def _plan(scene, *, ego=None, motion=None, gate=None, coarse_lane=None):
     return plan_motion(scene, ego or EgoState(0.0, 0.0, 0.0),
-                       motion or CFG.motion, CFG.selection, CFG.planner, gate)
+                       motion or CFG.motion, CFG.selection, CFG.planner, gate,
+                       coarse_lane=coarse_lane)
 
 
 def _wide_road():
@@ -272,6 +273,17 @@ def test_eight_candidates_and_determinism():
     assert len(a.cand_x) == len(CFG.motion.steer_levels) + 1
     assert (a.chosen, a.score_key, a.x_preview_m) == \
         (b.chosen, b.score_key, b.x_preview_m)
+
+
+def test_coarse_lane_shifts_center_attractor():
+    """无机会时粗层目标道平移中心吸引项：lane=-1 的计划末端明显偏左，
+    奖励/金币价值仍由场景对象决定。"""
+    s = _scene(road=_wide_road(), ego_m=0.0)
+    base = _plan(s)
+    run = _plan(s, coarse_lane=-1.0)
+    assert run.layer == 4
+    assert run.u_feedforward < base.u_feedforward
+    assert run.cand_x[run.chosen][-1] < base.cand_x[base.chosen][-1] - 0.5 * LW
 
 
 def test_center_deadband_holds_inside_band():

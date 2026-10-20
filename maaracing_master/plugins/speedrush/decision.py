@@ -4,7 +4,8 @@
 **它是什么**：每 tick 吃 `WorldObservation`（+ tick 时长 + 执行回执 + 车流 +
 走廊），把目标换算进选择层坐标，交给 `selection.select` 做严格分层：
 
-    奖励车（撞） > 普通车（擦边） > 金币（落线） > 走廊中心带（带内不修正）
+    奖励车（撞） > 普通车（擦边） > 金币（落线） > 走廊中心带（带内不修正；
+    无机会时由粗层选连续净空最长的车道）
 
 层与层之间不求和；主目标之后最多插 3 个 3 秒路点，把顺路的金币和必须错开
 的车带上。输出过 slew 限速后交给 planner。
@@ -774,7 +775,7 @@ class DecisionEngine:
 
     def _tick_cruise_layered(self, obs: WorldObservation,
                              executed: float | None) -> str:
-        """四层选择器接管 CRUISE：奖励车 > 擦边 > 金币 > 中心带。"""
+        """四层选择器接管 CRUISE：奖励车 > 擦边 > 金币 > 中心带（粗层选道）。"""
         if executed is None or self._corridor is None:
             self._reach_goal = None
             self._exec_branch = "hold"
@@ -831,8 +832,7 @@ class DecisionEngine:
             sigma_obj0_m=self.cfg.motion.sigma_obj0_m,
             sigma_obj_rate_mps=self.cfg.motion.sigma_obj_rate_mps,
             cam_z_datum_m=CAM_Z_DATUM_M, frame_shift_m=frame_shift)
-        # 粗层影子（2026-10-19）：绿区净空 + 2D 占用选方向；只落 trace，
-        # 本拍选择/计划/执行不消费。迟滞的现任道取上一拍粗层结果。
+        # 粗层：绿区净空 + 2D 占用选方向。迟滞的现任道取上一拍粗层结果。
         # 自车横位与候选道必须同帧：候选道按每带中心线取相对量，自车也
         # 按 scene 的 z=0 中心线算——直接喂 executed（planner 路心系）会
         # 把「带中心线 vs 路心」的残差带进方向判定。
@@ -843,8 +843,12 @@ class DecisionEngine:
             self._scene.road, self._scene.objs, coarse_ego,
             self._scene.lane_w_m, self._coarse_params,
             current_lane=None if self._coarse is None else self._coarse.lane)
+        # 粗层（2026-10-20 接控制）：只接管 L4 回中兜底——细层没有奖励车/
+        # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
+        # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
-                                   self._dt_last)
+                                   self._dt_last,
+                                   coarse_lane=self.coarse_lane)
         self._sel_report = rep
         self._sel_maneuver = rep.maneuver
 
@@ -901,8 +905,18 @@ class DecisionEngine:
 
     @property
     def coarse_report(self) -> CoarseReport | None:
-        """上一拍粗层选道结果（影子观测面；控制链不消费）。"""
+        """上一拍粗层选道结果（trace 观测面）。"""
         return self._coarse
+
+    @property
+    def coarse_lane(self) -> float | None:
+        """本拍接控制用的粗层目标道；None=纯中心带（闸关/无路/走廊陈旧）。"""
+        c = self._coarse
+        if not self.cfg.coarse.control or c is None or c.reason == "no_road":
+            return None
+        if self._scene is None or self._scene.stale:
+            return None
+        return c.lane
 
     @property
     def selection_objects(self) -> dict:

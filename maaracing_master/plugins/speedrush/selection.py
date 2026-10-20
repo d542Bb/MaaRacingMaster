@@ -4,7 +4,7 @@
 **它是什么**：把「这一拍该跟谁」写成四条硬规则，按顺序取第一个可行的：
 
     1 奖励车（撞上去） > 2 普通车（擦边通过） > 3 金币（落币线） >
-    4 走廊中心带（带内不修正）
+    4 走廊中心带（带内不修正；无机会时由粗层给出目标道）
 
 层与层之间不求和、不比较分数、没有平手阈；层内才比较（金币取价值最高、
 车取最早到站）。主目标之后最多插 3 个 3 秒内的中间路点，把顺路的金币和
@@ -143,7 +143,7 @@ class SelectionReport:
     layer: int                    # 1~4；0=无路（hold）
     waypoints: tuple[Waypoint, ...]
     target_x_m: float
-    why: str                      # reward/pass/coin/center/hold
+    why: str                      # reward/pass/coin/center/center:coarse/hold
     road_ok: bool
     maneuver: bool
 
@@ -305,18 +305,25 @@ def _preposition_target(rewards: Sequence[Obj], cars: Sequence[Obj],
 
 
 def _center_target(road: RoadFrame, ego: float,
-                   p: SelectionParams) -> tuple[float, str]:
+                   p: SelectionParams,
+                   coarse_lane: float | None = None) -> tuple[float, str, bool]:
     if not road.ok:
-        return ego, "hold:no_road"
+        return ego, "hold:no_road", False
     c = road.center_at(p.center_lookahead_m)
     if c is None:
         c = 0.0
+    why = "center"
+    if coarse_lane is not None and coarse_lane != 0.0:
+        # 粗层方向：细层没有得分机会时去净空最长的车道，不贴回中心线。
+        c += coarse_lane * p.lane_w_m
+        why = "center:coarse"
     band = p.center_band_lane * p.lane_w_m
-    if abs(ego - c) <= band:
+    maneuver = abs(ego - c) > band
+    if not maneuver:
         x = ego                       # 带内不修正（治画龙的核心规则）
     else:
         x = c + math.copysign(band, ego - c)   # 带外只去近侧带边
-    return road.clamp(x, p.wall_margin_lane * p.lane_w_m), "center"
+    return road.clamp(x, p.wall_margin_lane * p.lane_w_m), why, maneuver
 
 
 def _waypoints(layer: int, x_p: float, t_p: float,
@@ -382,8 +389,12 @@ def _waypoints(layer: int, x_p: float, t_p: float,
 
 def select(road: RoadFrame, rewards: Sequence[Obj],
            cars: Sequence[Obj], coins: Sequence[Obj],
-           ego: float, p: SelectionParams) -> SelectionReport:
-    """纯选择：四层字典序 + 路点（无状态；驻留由 LayeredSelector 做）。"""
+           ego: float, p: SelectionParams,
+           *, coarse_lane: float | None = None) -> SelectionReport:
+    """纯选择：四层字典序 + 路点（无状态；驻留由 LayeredSelector 做）。
+
+    ``coarse_lane``：粗层选定的车道（相对 z=0 中心线，道，右正）；只影响
+    L4 回中兜底，机会层（奖励车/擦边/金币）仍由细层决定。None=纯回中。"""
     if not road.ok:
         return SelectionReport(0, (), ego, "hold:no_road", False, False)
     got = _pick_reward(rewards, cars, road, ego, p)
@@ -401,15 +412,12 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
         x, t, why = got
         return SelectionReport(3, _waypoints(3, x, t, cars, coins, road,
                                              ego, p), x, why, True, True)
-    x, why = _center_target(road, ego, p)
+    x, why, maneuver = _center_target(road, ego, p, coarse_lane)
     pre = _preposition_target(rewards, cars, coins, road, ego, p)
     if pre is not None:
         cap = p.preposition_bias_lane * p.lane_w_m
         x = x + max(-cap, min(cap, pre - x))
         x = road.clamp(x, p.wall_margin_lane * p.lane_w_m)
-    band = p.center_band_lane * p.lane_w_m
-    c = road.center_at(p.center_lookahead_m)
-    maneuver = (c is not None) and abs(ego - c) > band
     return SelectionReport(4, (Waypoint(p.horizon_s, x, "center"),),
                            x, why, True, maneuver)
 
@@ -456,8 +464,10 @@ class LayeredSelector:
 
     def update(self, road: RoadFrame, rewards: Sequence[Obj],
                cars: Sequence[Obj], coins: Sequence[Obj],
-               ego: float, dt_s: float) -> SelectionReport:
-        raw = select(road, rewards, cars, coins, ego, self.p)
+               ego: float, dt_s: float,
+               *, coarse_lane: float | None = None) -> SelectionReport:
+        raw = select(road, rewards, cars, coins, ego, self.p,
+                     coarse_lane=coarse_lane)
         self.last = raw
         # 金币短承诺：币组从视野里消失后，沿最后一条币线再走 coin_hold_s，
         # 不立刻回中心（录制对照：金币段中位只有 2 拍，车刚起步就放弃）。

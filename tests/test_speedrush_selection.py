@@ -110,6 +110,26 @@ def test_center_anchor_uses_current_station():
     assert rep.target_x_m == pytest.approx(0.0, abs=0.05)
 
 
+def test_coarse_lane_takes_center_layer_only():
+    """粗层方向只接管 L4：无机会时目标=选定车道的近侧带边（道号相对
+    当前中心线），不再原地贴回中心线。机会层不受影响。"""
+    rep = select(_road(), [], [], [], 0.0, _p(), coarse_lane=-1.0)
+    assert rep.layer == 4 and rep.why == "center:coarse"
+    assert rep.target_x_m == pytest.approx(-LW + 0.3 * LW, abs=0.05)
+    assert rep.maneuver is True
+    rep = select(_road(), [Obj("reward", 2.0, 2.0)], [], [], 0.0, _p(),
+                 coarse_lane=-1.0)
+    assert rep.layer == 1 and rep.why == "reward"
+
+
+def test_coarse_lane_zero_keeps_center_band():
+    """粗层选中心道（lane=0）不改回中语义：带内不修正。"""
+    rep = select(_road(), [], [], [], 0.25 * LW, _p(), coarse_lane=0.0)
+    assert rep.why == "center"
+    assert rep.target_x_m == pytest.approx(0.25 * LW)
+    assert rep.maneuver is False
+
+
 def test_preposition_biases_toward_future_coin():
     """视界外 1.2 道的币：无即时目标时锚点朝币侧预置，最多 1 道。"""
     rep = select(_road(), [], [], [Obj("coin", 1.2 * LW, 5.0)], 0.0, _p())

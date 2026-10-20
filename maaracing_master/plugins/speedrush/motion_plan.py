@@ -378,8 +378,12 @@ class PlanGate:
 
 
 def plan_motion(scene: Scene, ego: EgoState, motion, selection,
-                plant, gate: PlanGate | None = None) -> MotionPlan:
-    """场景 → 候选轨迹 → 四层字典序 → PlanGate。纯函数（gate 除外）。"""
+                plant, gate: PlanGate | None = None, *,
+                coarse_lane: float | None = None) -> MotionPlan:
+    """场景 → 候选轨迹 → 四层字典序 → PlanGate。纯函数（gate 除外）。
+
+    ``coarse_lane``：粗层目标道（相对 z=0 中心线，道）；只平移无机会时的
+    中心吸引项——奖励车/擦边/金币的价值仍按场景对象计。"""
     lane_w = scene.lane_w_m
     if scene.stale:
         return MotionPlan(
@@ -411,6 +415,8 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     coin_half = motion.coin_collect_half_lane * lane_w
     reward_half = ego_half + car_half
     center0 = scene.road.center_at(0.0) or 0.0
+    if coarse_lane is not None:
+        center0 += coarse_lane * lane_w
 
     def sig(t: float) -> float:
         return motion.sigma_ego0_m + motion.sigma_ego_rate_mps * t

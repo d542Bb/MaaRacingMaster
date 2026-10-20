@@ -348,8 +348,10 @@ class Coarse:
     lookahead_m 是粗层观察窗（绿区实测域内）；max_offset_lane 是候选车道
     左右范围；collision_margin_m 是车宽包络外的安全余量；range_speed_mps
     只用于把「无纵深但有到站时间」的车折算成粗纵深；switch_margin_m 是
-    换道迟滞（现任净空不差于最优这么多时保持）。"""
+    换道迟滞（现任净空不差于最优这么多时保持）。control=粗层是否接管
+    L4 回中兜底（false=只落 trace 的影子期）。"""
 
+    control: bool = True
     lookahead_m: float = 24.0
     max_offset_lane: float = 2.0
     collision_margin_m: float = 0.5
@@ -709,6 +711,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),
             ego_half_lane=_num_def(d, "selection", "ego_half_lane", 0.27, lo=0)),
         coarse=Coarse(
+            control=_bool(d, "coarse", "control", True),
             lookahead_m=_num_def(d, "coarse", "lookahead_m", 24.0, lo=0),
             max_offset_lane=_num_def(
                 d, "coarse", "max_offset_lane", 2.0, lo=0),
