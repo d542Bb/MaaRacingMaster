@@ -47,6 +47,9 @@ class RoadFrame:
     left_m: float | None
     right_m: float | None
     ok: bool
+    coarse_bands: tuple[RoadBand, ...] = ()   # 中远场粗带 15m/带（16~80m，
+    # src=inferred；**不进 bands**——车道级消费面只读 bands，粗带是方向级
+    # 约束（哪边更开），显式消费（coarse.far_direction 开关））
 
     def _pairs(self) -> list[tuple[float, float]]:
         return [(0.5 * (b.z0 + b.z1), 0.5 * (b.left + b.right))

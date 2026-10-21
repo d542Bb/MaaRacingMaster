@@ -287,7 +287,8 @@ class DecisionEngine:
             wall_margin_lane=s.wall_margin_lane,
             ego_half_lane=s.ego_half_lane,
             car_half_lane=s.car_half_lane,
-            cam_z_datum_m=CAM_Z_DATUM_M)
+            cam_z_datum_m=CAM_Z_DATUM_M,
+            far_direction=c.far_direction)
         self._coarse: CoarseReport | None = None
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
@@ -766,12 +767,22 @@ class DecisionEngine:
                 age_ms=(max(ages) if ages else None),
                 conf=min(lb.conf, rb.conf)))
         bands = tuple(bands)
+        # 中远场粗带换算进选择坐标（x − origin，src 统一 inferred）：方向级
+        # 消费（coarse.far_direction 开关）读不对称性，不进 bands。
+        coarse_bands = tuple(
+            RoadBand(bd.z0, bd.z1,
+                     None if bd.left is None or bd.left.x_m is None
+                     else bd.left.x_m - origin,
+                     None if bd.right is None or bd.right.x_m is None
+                     else bd.right.x_m - origin,
+                     src="inferred")
+            for bd in self._corridor.coarse_bands)
         left0 = _at(0.0, lambda b, k: b[2]) - origin
         right0 = _at(0.0, lambda b, k: b[3]) - origin
         width = (right0 - left0) if right0 > left0 else (
             self._corridor.width_lane * lane_w
             if self._corridor.width_lane else None)
-        road = RoadFrame(bands, width, left0, right0, True)
+        road = RoadFrame(bands, width, left0, right0, True, coarse_bands)
         return road, shift - origin, origin
 
     def _tick_cruise_layered(self, obs: WorldObservation,

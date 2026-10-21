@@ -46,6 +46,13 @@ class CoarseParams:
     ego_half_lane: float = 0.27
     car_half_lane: float = 0.27
     cam_z_datum_m: float = 1.79
+    far_direction: bool = False   # 方向级消费（2026-10-21 方案步骤 4）：远粗带
+    # 不对称预置机会侧。false=不预置（逐位回今天——字典序回中项不变）
+
+
+# 机会侧预置的最小远带偏移（道）：低于此值的远带不对称不预置（影子局实测
+# 首带路心抖动 ±0.2 道量级，阈值滤掉小抖动防逐拍翻面）
+FAR_HINT_MIN_LANE = 0.5
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,25 @@ def _car_distance(c: _Car, p: CoarseParams) -> tuple[float, bool] | None:
     return p.lookahead_m, True
 
 
+def _far_open_hint(road, far_bands, lane_w_m: float) -> float:
+    """远粗带不对称 → 机会侧预置提示（道，右正，中心线相对）。
+
+    取最近一条两侧有证据的远粗带，其中点相对该纵深中心线的偏移=「哪边
+    更开」的方向信号（地面可见范围不对称性，2026-10-21 影子局对账定案）。
+    无带/该带缺侧/无中心线=0（不预置）。"""
+    if not far_bands or not (lane_w_m and lane_w_m > 0):
+        return 0.0
+    for b in far_bands:
+        if b.left is None or b.right is None:
+            continue
+        zc = 0.5 * (b.z0 + b.z1)
+        cen = _rel_center(road, zc)
+        if cen is None:
+            continue
+        return (0.5 * (b.left + b.right) - cen) / lane_w_m
+    return 0.0
+
+
 def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
                 lane_w_m: float, p: CoarseParams,
                 current_lane: float | None = None) -> CoarseReport:
@@ -125,6 +151,15 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
         return CoarseReport(ego_lane, ego_lane, 0, 0.0, "no_road", ())
     if current_lane is None:
         current_lane = round(ego_lane)
+
+    # 机会侧预置（方向级消费，开关默认关）：净空与占用打平时，字典序回中项
+    # 换成「离远带更开的一侧最近」——近场无方向信号时顺着水流方向预置。
+    # 预置是有意的方向信号：远带偏移有意义（≥FAR_HINT_MIN_LANE）且最优道朝
+    # 更开一侧时，迟滞不适用（与「更靠中心」例外同型——否则现任永远保持，
+    # 预置死在肚里）。hint 无效时逐位回回中（字典序第三项与迟滞都不变）。
+    hint = _far_open_hint(road, getattr(road, "coarse_bands", ())
+                          if p.far_direction else (), lane_w_m)
+    preposition = p.far_direction and abs(hint) >= FAR_HINT_MIN_LANE
 
     nmax = int(round(p.max_offset_lane))
     candidates = sorted({float(k) for k in range(-nmax, nmax + 1)})
@@ -186,23 +221,28 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
         return CoarseReport(ego_lane, ego_lane, 0, 0.0, "no_road", ())
 
     def key(c: CoarseLane) -> tuple:
-        # 净空优先；净空相同优先没有「缺纵深车」的道；再回中；再少横移；
-        # 最后比两侧余量。unknown 车只做同净空排序，不冒充精确距离。
-        return (c.free_m, not c.unknown_car, -abs(c.lane),
+        # 净空优先；净空相同优先没有「缺纵深车」的道；再回中（预置生效时
+        # 回中项=离远带更开一侧最近）；再少横移；最后比两侧余量。
+        # unknown 车只做同净空排序，不冒充精确距离。
+        return (c.free_m, not c.unknown_car,
+                -abs(c.lane - (hint if preposition else 0.0)),
                 c.width_margin_m if c.width_margin_m is not None else -1e9,
                 -abs(c.lane - ego_lane))
 
     best = max(lanes, key=key)
     # 迟滞：现任车道有效且与最优只差一个换道余量时保持，防逐拍翻面。
-    # 例外：最优道更靠近中心时不保持——否则在左缘选过一次就永远回不来。
+    # 例外：最优道更靠近中心时不保持——否则在左缘选过一次就永远回不来；
+    # 预置生效且最优道朝远带更开的一侧也不保持（同型例外，否则预置死在肚里）。
     cur = next((c for c in lanes if abs(c.lane - current_lane) < 1e-6), None)
     closer_to_center = cur is not None and abs(best.lane) < abs(cur.lane) - 1e-9
     better_known = cur is not None and cur.unknown_car and not best.unknown_car
+    toward_open = (preposition and cur is not None
+                   and (best.lane - cur.lane) * hint > 0)
     # 现任道一旦有车/收窄（blocker 非空），迟滞不适用：空道再好也要并。
     cur_clear = cur is not None and cur.blocker is None
     if cur is not None and cur.free_m > 0.0 and cur is not best \
             and cur_clear \
-            and not closer_to_center and not better_known \
+            and not closer_to_center and not better_known and not toward_open \
             and best.free_m - cur.free_m <= p.switch_margin_m:
         chosen = cur
         reason = "keep"

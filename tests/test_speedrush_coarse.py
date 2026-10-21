@@ -149,3 +149,46 @@ def test_occupied_incumbent_switches_even_inside_margin():
                       current_lane=0.0)
     assert rep.lane == -1.0
     assert rep.reason == "space"
+
+
+# ---------- 机会侧预置（方向级消费，2026-10-21 方案步骤 4） ----------
+
+def _far_road(cleft, cright):
+    """直道 + 末尾一条远粗带（两侧给 cleft/cright，选择坐标）。"""
+    bands = tuple(RoadBand(i * 3.0, (i + 1) * 3.0, -6.0, 6.0,
+                           src="measured", age_ms=0.0, conf=1.0)
+                  for i in range(8))
+    coarse = (RoadBand(30.0, 45.0, cleft, cright, src="inferred"),)
+    return RoadFrame(bands, 12.0, -6.0, 6.0, True, coarse)
+
+
+def test_far_direction_prepositions_toward_open_side():
+    """机会侧预置：净空与占用全打平时，字典序回中项换成「离远带更开的一侧
+    最近」——远带范围中点偏右（右侧更开）时选右道（开关开）。"""
+    # 远带 [-6, +10]：中点 +2m ≈ +0.6 道，右侧更开
+    road = _far_road(-6.0, 10.0)
+    p_on = CoarseParams(wall_margin_lane=0.35, ego_half_lane=0.27,
+                        car_half_lane=0.27, switch_margin_m=4.0,
+                        lookahead_m=24.0, cam_z_datum_m=DATUM,
+                        far_direction=True)
+    rep = choose_lane(road, [], ego_lane=0.0, lane_w_m=LW, p=p_on)
+    assert rep.lane == 1.0, f"应预置右侧，得 {rep.lane}"
+    # 开关关：同一走廊逐位回回中
+    rep_off = choose_lane(road, [], ego_lane=0.0, lane_w_m=LW, p=P)
+    assert rep_off.lane == 0.0
+
+
+def test_far_direction_off_is_bit_identical():
+    """开关关（或粗带缺侧/无带）→ 无预置：选道与无粗带走廊逐位一致。"""
+    plain = _straight()
+    with_coarse = RoadFrame(plain.bands, plain.width_m, plain.left_m,
+                            plain.right_m, True,
+                            (RoadBand(30.0, 45.0, None, None,
+                                      src="inferred"),))
+    for p in (P, CoarseParams(wall_margin_lane=0.35, ego_half_lane=0.27,
+                              car_half_lane=0.27, switch_margin_m=4.0,
+                              lookahead_m=24.0, cam_z_datum_m=DATUM,
+                              far_direction=True)):
+        a = choose_lane(plain, [], ego_lane=0.0, lane_w_m=LW, p=p)
+        b = choose_lane(with_coarse, [], ego_lane=0.0, lane_w_m=LW, p=p)
+        assert (a.lane, a.direction, a.reason) == (b.lane, b.direction, b.reason)

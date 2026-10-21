@@ -14,7 +14,7 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
            供数窗内「两边墙」可见）+ 路心/左右缘叠层（C=滤波 ro、c0=当帧原始
            (L+R)/2，两者分离=时间链效应；cg=同拍栅格 wmid 路心，与 c0 分离=
            互证分歧面）+ 分带走廊边界（来源着色）+ **走廊中心带（±band 虚线）**
-           + **墙线拟合段（WL，逐行内缘分段直线）** + 检测反投影标记（40m 外钉
+           + 检测反投影标记（40m 外钉
            顶缘+距离标注）+ 距离标尺 + 三层窗口标注 + **选择层子带**（横轴秒、
            纵轴道：机会点/路点/目标/自车）+ **转向力度-时间子带**（最近 6s
            杆量，上=R/下=L，0.45 与满量程参考线）
@@ -130,7 +130,7 @@ def _project_detection(px: int, py: int, coef, fx: float, fy: float,
 
 
 def _edge_side_pts(eps, side: int) -> list[tuple[float, float]]:
-    """当帧原始墙检出分侧按 z 排序（(z_m, x_m) 相机轴米）——墙线折线的数据面。"""
+    """当帧原始墙检出分侧按 z 排序（(z_m, x_m) 相机轴米）——检出折线的数据面。"""
     return sorted(((z, x) for s, z, x in eps if s == side), key=lambda p: p[0])
 
 
@@ -284,21 +284,6 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                     for y in range(y_top, y_bot, 8):
                         cv2.line(canvas, (xp, y), (xp, min(y + 4, y_bot)),
                                  col, 1)
-
-    # 墙线拟合段（WL）：逐行内缘分段直线，品红；单侧/退化也照画——与走廊
-    # 边界并排，能直接看出「拟合线是否贴在墙内缘」。
-    wlc = snap.get("wall_line")
-    if wlc is not None:
-        for segs in (wlc.left_segs, wlc.right_segs):
-            for s in segs:
-                z0c, z1c = s.z0 + CAM_Z_DATUM_M, s.z1 + CAM_Z_DATUM_M
-                p1 = (bm.px(s.x_at(s.z0)), bm.py(z0c))
-                p2 = (bm.px(s.x_at(s.z1)), bm.py(z1c))
-                if plot_x0 <= p1[0] <= plot_x1 or plot_x0 <= p2[0] <= plot_x1:
-                    cv2.line(canvas, p1, p2, (255, 0, 255), 2)
-        _put_text(canvas, f"WL {wlc.health}",
-                  (plot_x0 + 8, plot_y0 + 62), scale=0.36,
-                  color=(255, 0, 255))
 
     # 走廊中心线：只画中心，不再画旧选择层的 L4 容差带。
     if corridor is not None and cal is not None:
@@ -545,12 +530,6 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     if c is not None:
         lines.append(f"cor={c.src} w={_fmt(None if c.width_lane is None else round(c.width_lane, 2))}"
                      f" ph={c.plane_health} bands={len(c.bands)}")
-    wlc = snap.get("wall_line")
-    if wlc is not None:
-        lines.append(f"wlc={wlc.health} c={_fmt(None if wlc.center_lane is None else round(wlc.center_lane, 2))}"
-                     f" w={_fmt(None if wlc.width_lane is None else round(wlc.width_lane, 2))}"
-                     f" slope={_fmt(None if wlc.slope is None else round(wlc.slope, 3))}"
-                     f" segs={len(wlc.left_segs)}/{len(wlc.right_segs)}")
     for i, text in enumerate(lines):
         _put_text(img_bgr, text, (8, 18 + i * 18), scale=0.45)
 

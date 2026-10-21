@@ -333,14 +333,10 @@ class MetricBridge:
 
 @dataclass(frozen=True)
 class Geometry:
-    """几何供数（2026-10-18 走廊重建）：wall_line_master=true 时墙线拟合当
-    走廊主人（region 降为兜底）；false=影子只落 trace。cross_check 是与同帧
-    绿区中心的互证容差（道），超差判 degraded 回退。far_ground_supply=中远场
-    粗带地面横向范围进走廊 coarse_bands（2026-10-21 方案定案；false=逐位
-    回空白粗带——车道级消费面不读 coarse_bands，开关只管影子数据面）。"""
+    """几何供数：far_ground_supply=中远场粗带地面横向范围进走廊 coarse_bands
+    （2026-10-21 方案定案；false=逐位回空白粗带——车道级消费面不读
+    coarse_bands，开关只管影子数据面）。"""
 
-    wall_line_master: bool = False
-    wall_line_cross_check_lane: float = 1.0
     far_ground_supply: bool = True
 
 
@@ -352,7 +348,9 @@ class Coarse:
     左右范围；collision_margin_m 是车宽包络外的安全余量；range_speed_mps
     只用于把「无纵深但有到站时间」的车折算成粗纵深；switch_margin_m 是
     换道迟滞（现任净空不差于最优这么多时保持）。control=粗层是否接管
-    L4 回中兜底（false=只落 trace 的影子期）。"""
+    L4 回中兜底（false=只落 trace 的影子期）。far_direction=方向级消费
+    （2026-10-21 方案步骤 4）：远粗带不对称预置机会侧——净空与占用打平时
+    字典序回中项换成「离远带更开的一侧最近」（false=逐位回回中）。"""
 
     control: bool = True
     lookahead_m: float = 24.0
@@ -361,6 +359,7 @@ class Coarse:
     range_speed_mps: float = 45.0
     switch_margin_m: float = 4.0
     align_tol_lane: float = 0.4
+    far_direction: bool = False
 
 
 @dataclass(frozen=True)
@@ -725,13 +724,10 @@ def _read_decision(path: Path) -> DecisionConfig:
             switch_margin_m=_num_def(
                 d, "coarse", "switch_margin_m", 4.0, lo=0),
             align_tol_lane=_num_def(
-                d, "coarse", "align_tol_lane", 0.4, lo=0)),
+                d, "coarse", "align_tol_lane", 0.4, lo=0),
+            far_direction=_bool(d, "coarse", "far_direction",
+                                default=False)),
         geometry=Geometry(
-            wall_line_master=_bool(d, "geometry", "wall_line_master",
-                                   default=False),
-            wall_line_cross_check_lane=_num_def(
-                d, "geometry", "wall_line_cross_check_lane", 1.0, lo=0,
-                lo_open=False),
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),
         metric_cars=MetricCars(

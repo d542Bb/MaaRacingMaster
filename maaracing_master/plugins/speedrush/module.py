@@ -49,8 +49,7 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    blocked_inner_reading, load_session, region_reading,
-    wall_line_reading, CAM_Z_DATUM_M)
+    blocked_inner_reading, load_session, region_reading, CAM_Z_DATUM_M)
 from maaracing_master.plugins.speedrush.wall_track import (
     CONF_FLOOR, MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
@@ -766,9 +765,6 @@ class SpeedRushModule(ActivityModule):
                 "ego_road": _EgoRoadObserver(
                     cfg.grid_xcheck, cal.lane_w_m, wt,
                     mem_fallback=cfg.corridor_reach.enabled,
-                    wall_line_master=cfg.geometry.wall_line_master,
-                    wall_line_cross_check_lane=(
-                        cfg.geometry.wall_line_cross_check_lane),
                     far_ground_supply=cfg.geometry.far_ground_supply),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
@@ -870,24 +866,15 @@ class SpeedRushModule(ActivityModule):
             # 内部的一条优先级链，此处不再两条供数路互相顶替；找边对心保留为
             # 审计列（ro_edge）。走廊 None=诚实弃权拍，退纯模型积分。
             # 供数先于 engine.update：选择层消费同拍 corridor 带。
-            # dgrid：同拍栅格，墙线拟合/红块内缘/trace 用；栅格绝对否决已删除。
+            # dgrid：同拍栅格，红块内缘/trace 用；栅格绝对否决已删除。
             edge_off = None
             if dgeo is not None and dgeo.sides == 2 \
                     and dgeo.left_edge_lane is not None \
                     and dgeo.right_edge_lane is not None:
                 edge_off = -((dgeo.left_edge_lane + dgeo.right_edge_lane)
                              / 2.0)   # 找边对心（审计面）
-            # 墙线拟合影子读数（2026-10-18 走廊重建）：逐行内缘分段直线→斜率/
-            # 中心/宽。master 开时供数链消费；关时只落 trace 对照列。
-            wlc = None
-            if dgrid is not None:
-                if getattr(self, "_wlc_cache", (None, None))[0] != id(dgrid):
-                    self._wlc_cache = (id(dgrid), wall_line_reading(
-                        dgrid, chain["lane_w_m"]))
-                wlc = self._wlc_cache[1]
             corridor = chain["ego_road"].update(dgeo, new=dgeo_new,
                                                 grid=dgrid, fid=fid,
-                                                wall_line=wlc,
                                                 far_extents=(dgeo.far_extents
                                                              if dgeo is not None
                                                              else ()))
@@ -1011,12 +998,6 @@ class SpeedRushModule(ActivityModule):
                 round(chain["last_plan_ego"].steer_norm, 6)],
             "plan_gate": None if plan is None else list(
                 chain["gate"].snapshot()),
-            # 墙线拟合段：side,z0,z1,a(道),b；录制局用来核对方程是否锁对墙
-            "wlc_seg": None if wlc is None else [
-                [side, round(s.z0, 2), round(s.z1, 2),
-                 round(s.a / chain["lane_w_m"], 3), round(s.b, 3)]
-                for side, segs in ((-1, wlc.left_segs), (1, wlc.right_segs))
-                for s in segs],
             "maneuver": out.maneuver,
             "steer_norm": round(planner.state.steer_norm, 4),
             "steer_raw": round(planner.last_steer_raw, 4),
@@ -1032,19 +1013,6 @@ class SpeedRushModule(ActivityModule):
             "blk_r": None if blk is None or blk.right_lane is None
             else round(blk.right_lane, 3),
             "blk_rows": None if blk is None else blk.rows,
-            # 墙线拟合列：z=0 中心/宽/斜率/健康度 + 两侧段数。斜率是
-            # 道路相对自车的方向（0=正对，正=路向右偏），用于验证旋转场景；
-            # 段数暴露弯道分段/误锁结构（0=该侧无有效线）。
-            "wlc_c": None if wlc is None or wlc.center_lane is None
-            else round(wlc.center_lane, 3),
-            "wlc_w": None if wlc is None or wlc.width_lane is None
-            else round(wlc.width_lane, 3),
-            "wlc_slope": None if wlc is None or wlc.slope is None
-            else round(wlc.slope, 3),
-            "wlc_health": None if wlc is None else wlc.health,
-            "wlc_nseg": None if wlc is None
-            else (len(wlc.left_segs), len(wlc.right_segs)),
-            "wlc_rows": None if wlc is None else (wlc.rows_l, wlc.rows_r),
             # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
             # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
             # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）
@@ -1171,7 +1139,7 @@ class SpeedRushModule(ActivityModule):
             "cor_w": None if corridor is None
             else round(corridor.width_lane, 3),
             "cor_ph": None if corridor is None else corridor.plane_health,
-            # 走廊供数来源（wall_line/region/pair_slot/memory 等）：
+            # 走廊供数来源（region/pair_slot/wall/memory 等）：
             # memory/none——朝向记忆使用频次（memory 出现率）与黑视拍从这里读
             "cor_src": None if corridor is None else corridor.src,
             # 中远场粗带（地面密度水管影子期，2026-10-21）：逐带 [车头系 z0,z1,
@@ -1233,7 +1201,6 @@ class SpeedRushModule(ActivityModule):
                 "road_offset": road_offset,
                 "grid_off": chain["ego_road"].last.get("grid_off"),
                 "corridor": corridor,   # 分带走廊（debugview 逐带来源叠层）
-                "wall_line": wlc,       # 墙线拟合（左/右段 + 健康度）
                 "selection": eng.selection_report,   # 本拍四层选择
                 "sel_objects": eng.selection_objects,  # 选择器眼里的机会
                 "sel_debug": eng.selection_debug,      # 选择帧快照
@@ -1629,15 +1596,11 @@ class _EgoRoadObserver:
 
     def __init__(self, xcheck=None, lane_w_m: float | None = None,
                  wall_track=None, mem_fallback: bool = False,
-                 wall_line_master: bool = False,
-                 wall_line_cross_check_lane: float = 1.0,
                  far_ground_supply: bool = True) -> None:
         self._xc = xcheck            # GridXcheck | None（None/闸关=互证不参与供数）
         self._lane_w_m = lane_w_m
         self._wt = wall_track        # WallTrack | None（None=无墙实体路径）
         self._mem_fallback = mem_fallback  # 朝向记忆兜底（闸开才生效）
-        self._wall_line_master = wall_line_master
-        self._wall_line_cross = wall_line_cross_check_lane
         self._far_ground_supply = far_ground_supply  # 中远场粗带（coarse_bands）闸
         self._far_extents: tuple = ()    # 本拍同帧地面横向范围（update 传入）
         self._xc_streak = 0          # 连续互证 veto 计数（达 bypass 预算放行）
@@ -1651,7 +1614,6 @@ class _EgoRoadObserver:
                new: bool = True,
                grid: DrivableGrid | None = None,
                fid: int | None = None,
-               wall_line=None,
                far_extents: tuple = ()) -> Corridor | None:
         """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
 
@@ -1676,14 +1638,6 @@ class _EgoRoadObserver:
             pts = (list(getattr(bnd, "edge_pts", ()) or ())
                    if (new and bnd is not None) else [])
             self._wt.update(_EdgePtsView(pts), fid)
-        # 墙线主人（2026-10-18 走廊重建）：逐行内缘分段直线→中心/宽/斜率。
-        # 影子期只落 trace；master 开时才接棒，region 降为兜底。
-        if self._wall_line_master and wall_line is not None:
-            wl = self._wall_line_corridor(wall_line, grid)
-            if wl is not None:
-                self.last = self._snapshot(now, wl.src, -wl.center_lane,
-                                           None, grid_off)
-                return wl
         master = self._xc is not None and self._xc.mode == "master"
 
         # master：区读数当主人（独立于 bnd，区弃权拍不回退找边）
@@ -1853,42 +1807,6 @@ class _EgoRoadObserver:
                 continue                 # 远墙假设（人行道墙）当不了走廊中心
             return center, formed, ("wall" if state == MEASURED else "wall_occl")
         return None
-
-    def _wall_line_corridor(self, wlc, grid) -> Corridor | None:
-        """墙线读数 → 分带走廊（master 路径）。
-
-        逐带取 ``frame_at`` 的中心/宽；单侧健康带标 inferred（另一侧是
-        4 道空气墙）。与同帧绿区中心互证，超差判 degraded 回退——防锁到
-        停车带/邻车侧面。"""
-        if wlc is None or self._lane_w_m is None or self._lane_w_m <= 0:
-            return None
-        if wlc.health == "degraded":
-            return None
-        if grid is not None:
-            reg = region_reading(grid, self._lane_w_m)
-            if reg.sides == 2 and reg.left_edge_lane is not None \
-                    and reg.right_edge_lane is not None:
-                reg_c = 0.5 * (reg.left_edge_lane + reg.right_edge_lane)
-                if abs(wlc.center_lane - reg_c) > self._wall_line_cross:
-                    return None
-        bands = []
-        for i in range(N_BANDS):
-            z0, z1 = _band_bounds(i)
-            mid = 0.5 * (z0 + z1) - CAM_Z_DATUM_M
-            c, w, _clip, health = wlc.frame_at(
-                mid, self._lane_w_m, width_prior_lane=4.0)
-            if c is None or w is None or health in ("none", "degraded"):
-                unknown = BandBoundary(None, "unknown")
-                bands.append(CorridorBand(z0 - CAM_Z_DATUM_M,
-                                          z1 - CAM_Z_DATUM_M,
-                                          unknown, unknown))
-                continue
-            src = "measured" if health == "ok" else "inferred"
-            bands.append(CorridorBand(
-                z0 - CAM_Z_DATUM_M, z1 - CAM_Z_DATUM_M,
-                BandBoundary(c - w / 2.0, src), BandBoundary(c + w / 2.0, src)))
-        return Corridor(tuple(bands), wlc.center_lane, wlc.width_lane,
-                        "wall_line", "ok")
 
     def _region_center(self, grid) -> tuple[float, float] | None:
         """绿区中心（区读数语义收进走廊兜底）：sides==2 才给（clip 假缘诚实
