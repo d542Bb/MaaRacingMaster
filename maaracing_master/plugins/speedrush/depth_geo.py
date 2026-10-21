@@ -292,6 +292,13 @@ FAR_COARSE_BANDS = tuple(
 FAR_MIN_GROUND_PTS = 30
 # 横向范围分位（2/98：孤点杂波不冒充边界；方向级供数不求准）
 FAR_EXTENT_PCT = (2.0, 98.0)
+# 带内地面参照分位（低分位=路面高度：地面点总是带内最低的群体）
+FAR_GROUND_REF_PCT = 5.0
+# 抬升独占格门：格包络高出带内地面参照超此值（米）的格=只含高结构（墙顶/
+# 楼体），其点不进地面点——影子局实证（2026-10-21 114836_p2 0050/0051 帧）：
+# 隔音墙顶（高出路 3~5m）的独占格被自己的包络「自我抬升」，右缘假展宽到
+# 墙外 12m 且逐帧横跳（画面一致、读数翻面）。护栏基座/路肩（≤0.7m）不受影响
+FAR_GROUND_CELL_LIFT = 1.0
 GRID_UNKNOWN, GRID_DRIVABLE, GRID_BLOCKED = 0, 1, 2
 
 # ── 墙走廊（2026-10-18 用户定案：墙锚定走廊，影子期）──────────────────
@@ -1139,6 +1146,11 @@ def ground_far_extents(pts: np.ndarray,
     车身点会假展宽范围，候选区像素整体不进地面点选择。前车在同向车道上
     不构成污染（它就在路上，掩码挖除后路面邻像素仍标范围）。
 
+    **抬升独占格门**（影子局实证）：只含高结构的格（墙顶/楼体，包络高出
+    带内地面参照 FAR_GROUND_CELL_LIFT 以上）不进地面点——逐格包络在这种
+    格里把自己的最低点当地面，假展宽到墙外且逐帧横跳；带内地面参照
+    （FAR_GROUND_REF_PCT 低分位）不依赖平面外推（地面点总是带内最低群体）。
+
     平面 coef 只用于定「上」的方向（Y 轴极性随深度约定翻转，与栅格 sgn 同式）；
     包络本身是逐格数据参照。coef 缺失=无法定极性，全带诚实弃权。
 
@@ -1163,11 +1175,20 @@ def ground_far_extents(pts: np.ndarray,
             out.append((z0, z1, None, None, 0))
             continue
         xb, zb, hb = X[m], Z[m], H[m]
+        # 带内地面参照按侧分开（低分位=该侧路面高度）：跨断面地形有高差时
+        # 单一带参照会把高一侧的路面格误判抬升独占（离线 d00009 左缘塌缩实证）
+        ref_l = np.percentile(hb[xb < 0], FAR_GROUND_REF_PCT) if (xb < 0).any() else None
+        ref_r = np.percentile(hb[xb >= 0], FAR_GROUND_REF_PCT) if (xb >= 0).any() else None
+        ref = np.where(xb < 0,
+                       ref_l if ref_l is not None else ref_r,
+                       ref_r if ref_r is not None else ref_l)
         iz = (zb - z0).astype(np.int64)          # 1m 纵格（带内）
         ix = np.minimum((xb + GRID_X_MAX).astype(np.int64), nxc - 1)
         env = np.full((nxc, int(np.ceil(z1 - z0))), np.inf)
         np.minimum.at(env, (ix, iz), hb)         # 逐格地面包络（格内极低点）
-        gnd = hb <= env[ix, iz] + tol
+        # 抬升独占格门：包络高出本侧地面参照的格=只含高结构，不进地面点
+        gnd = (hb <= env[ix, iz] + tol) \
+            & (env[ix, iz] <= ref + FAR_GROUND_CELL_LIFT)
         n = int(gnd.sum())
         if n < FAR_MIN_GROUND_PTS:
             out.append((z0, z1, None, None, 0))

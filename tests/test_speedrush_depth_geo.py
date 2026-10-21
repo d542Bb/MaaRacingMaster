@@ -149,6 +149,22 @@ def test_ground_far_extents_road_range_and_object_excluded():
         assert n >= dg.FAR_MIN_GROUND_PTS
 
 
+def test_ground_far_extents_elevated_only_cells_gated():
+    """抬升独占格门（影子局 114836_p2 实证）：只含高结构的格（隔音墙顶，
+    高出路面 3~5m，不在 YOLO 掩码里）不进地面点——逐格包络在这种格把自己
+    的最低点当地面，右缘假展宽到墙外且逐帧横跳（画面一致读数翻面）。"""
+    rng = np.random.default_rng(23)
+    pts = _ground_points(rng, 5000, (-7.0, 7.0), (16.0, 80.0))
+    # 隔音墙顶（x 8~13，高出路 4m，无掩码——墙不在 YOLO 候选区里）
+    pts = np.concatenate([pts, _ground_points(rng, 1200, (8.0, 13.0), (16.0, 80.0),
+                                              lift=4.0)])
+    coef = (0.0, PITCH_B, H_CAM)
+    ext = dg.ground_far_extents(pts, coef=coef)
+    for z0, z1, lo, hi, n in ext:
+        assert lo is not None, f"{z0}-{z1} 应可读"
+        assert hi == pytest.approx(7.0, abs=0.8), f"{z0}-{z1} hi={hi}（墙顶假展宽）"
+
+
 def test_ground_far_extents_starved_band_abstains():
     """带内地面点不足下限 → 诚实弃权（None，宁缺勿假）；coef 缺失=无法定
     高度极性，全带弃权。"""
