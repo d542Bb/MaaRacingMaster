@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""分带走廊（corridor.py + _EgoRoadObserver 第 6 步）的回归锁。
+"""分带走廊（corridor.py + _EgoRoadObserver）的回归锁。
 
-合成用例锁语义：带内来源规则（绿区为底、墙只收窄、绿区缺席墙接棒、
-空气墙兜底、unknown 诚实降级）、墙实体路径（单侧/遮挡从全盲变半盲供数）、
-区兜底只在新鲜拍、拒绝不兜底（宁弃不喂）、plane_health 标注。数据面锁
-_side_has_space 的带来源规则（tests/test_speedrush_decision.py）。"""
+合成用例锁语义（2026-10-21 走廊收敛定案）：近场带绿区为底、远场带找边读数
+为底（带内实测/借界推断/空气墙兜底/unknown 诚实降级）、远箱不进近场带、
+墙实体路径（单侧/遮挡从全盲变半盲供数）、区兜底只在新鲜拍、拒绝不兜底
+（宁弃不喂）、plane_health 标注。数据面锁 _side_has_space 的带来源规则
+（tests/test_speedrush_decision.py）。"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -53,71 +54,23 @@ def _off(c):
     return None if c is None else -c.center_lane
 
 
-# ---------- 带内来源规则：绿区为底、墙只收窄、空气墙兜底 ----------
+# ---------- 近场带：绿区为底、空气墙兜底 ----------
 
-def test_band_priority_green_base_wall_when_no_green_air_when_neither():
-    """绿区缺席的带由墙箱接棒（带 0 无绿行）；绿区在场的带用绿区边界
-    （带 1）；两者都缺席的侧落空气墙（inferred，center±W/2）。"""
-    wt = WallTrack(CAL)
-    wt.update(SimpleNamespace(edge_pts=[(-1, 4.0, -5.5)]), fid=10)
+def test_near_band_green_base_air_when_no_green():
+    """近场带：绿区在场的带用绿区实测边界（带 6-9m 左外邻 blocked）；
+    绿区缺席的带落空气墙（inferred，center±W/2）——墙箱不再接棒带边界
+    （2026-10-21 收敛定案：墙融合退役，墙实体仅存后备链单侧墙中心）。"""
     grid = _grid(range(12, 24), blk_lo=1)    # 绿区 z 6~9m（带 6-9），左外邻 blocked
-    c = build_corridor(_bnd(), grid, wt, fid=11,
+    c = build_corridor(_bnd(), grid, fid=11,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
-    assert c.bands[0].left.src == "measured"          # 墙箱接棒（该带无绿区）
-    assert c.bands[0].left.x_m == pytest.approx(-5.5)
-    assert c.bands[0].left.conf == 1.0
-    assert c.bands[0].left.last_fid == 10
-    assert c.bands[0].right.src == INFERRED           # 无右墙无绿区→空气墙
-    assert c.bands[0].right.x_m == pytest.approx(+2.0 * LW)
     assert c.bands[1].left.src == "measured"          # 绿区接棒（带 6-9）
     assert c.bands[1].left.conf == 1.0
+    assert c.bands[1].left.last_fid is None           # 绿区边界无墙箱年龄
+    assert c.bands[0].left.src == INFERRED            # 带 0 无绿区→空气墙
+    assert c.bands[0].left.x_m == pytest.approx(-2.0 * LW)
+    assert c.bands[0].right.src == INFERRED
+    assert c.bands[0].right.x_m == pytest.approx(+2.0 * LW)
     assert c.plane_health == "ok"
-
-
-def test_wall_outside_green_does_not_widen():
-    """墙箱落在绿区之外（路缘外的停车带/人行道结构）：不参与加宽，边界
-    仍是绿区实测缘（2026-10-20 实机：绿区外约 0.5~1m 的墙把右带撑宽，
-    带中心偏离绿区主人约 0.86 道）。"""
-    wt = WallTrack(CAL)
-    wt.update(SimpleNamespace(edge_pts=[(-1, 7.0, -12.0), (1, 7.0, 12.0)]),
-              fid=10)
-    grid = _grid(range(12, 24), col_lo=25, col_hi=74, blk_lo=1, blk_hi=1)
-    c = build_corridor(_bnd(), grid, wt, fid=11,
-                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
-    b = c.bands[1]                                    # z 6~9m
-    assert b.left.src == "measured" and b.left.last_fid is None
-    assert b.right.src == "measured" and b.right.last_fid is None
-    assert b.left.x_m == pytest.approx(-GRID_X_MAX + 25.5 * 0.25)
-    assert b.right.x_m == pytest.approx(-GRID_X_MAX + 74.5 * 0.25)
-
-
-def test_wall_inside_green_narrows():
-    """墙箱落在绿区之内：更保守的实测边界，采用（墙只收窄不收宽）。"""
-    wt = WallTrack(CAL)
-    wt.update(SimpleNamespace(edge_pts=[(-1, 7.0, -3.0), (1, 7.0, 3.0)]),
-              fid=10)
-    grid = _grid(range(12, 24), col_lo=25, col_hi=74, blk_lo=1, blk_hi=1)
-    c = build_corridor(_bnd(), grid, wt, fid=11,
-                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
-    b = c.bands[1]
-    assert b.left.x_m == pytest.approx(-3.0)
-    assert b.right.x_m == pytest.approx(+3.0)
-    assert b.left.last_fid == 10 and b.right.last_fid == 10
-
-
-def test_wall_on_wrong_side_of_center_ignored():
-    """墙箱横位跨过路心（落在另一侧）：错侧读数，不当边界——绿区在则用
-    绿区，绿区缺席则落空气墙，不拿它撑宽。"""
-    wt = WallTrack(CAL)
-    wt.update(SimpleNamespace(edge_pts=[(-1, 4.0, 2.0), (1, 4.0, -2.0)]),
-              fid=10)
-    c = build_corridor(_bnd(), None, wt, fid=11,
-                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
-    b = c.bands[0]                                    # 带 0（z 3~6）
-    assert b.left.src == INFERRED
-    assert b.right.src == INFERRED
-    assert b.left.x_m == pytest.approx(-2.0 * LW)
-    assert b.right.x_m == pytest.approx(+2.0 * LW)
 
 
 def test_green_boundary_data_edge_falls_to_air():
@@ -125,7 +78,7 @@ def test_green_boundary_data_edge_falls_to_air():
     measured 绿区边界，带落空气墙（宁缺勿假——d00036 近带绿左逐行贴视锥
     边界 0.1~0.3m，2026-10-10 定案：数据截断不冒充实测）。"""
     grid = _grid(range(12, 24))              # 外侧邻格全 unknown
-    c = build_corridor(_bnd(), grid, None, fid=11,
+    c = build_corridor(_bnd(), grid, fid=11,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     assert c.bands[1].left.src == INFERRED
     assert c.bands[1].left.x_m == pytest.approx(-2.0 * LW)
@@ -136,7 +89,7 @@ def test_green_boundary_window_edge_falls_to_air():
     """绿区顶到栅格窗缘（列 0，外邻格出窗）= 数据边界，同 unknown 判 →
     落空气墙（窗缘也是数据到头，不是墙）。"""
     grid = _grid(range(12, 24), col_lo=0)
-    c = build_corridor(_bnd(), grid, None, fid=11,
+    c = build_corridor(_bnd(), grid, fid=11,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     assert c.bands[1].left.src == INFERRED
 
@@ -160,14 +113,14 @@ def test_green_boundary_below_min_observed_falls_to_air():
     落空气墙。"""
     grid = _grid(range(12, 24), blk_lo=1)
     grid.state[13:24, 49] = GRID_UNKNOWN          # 只剩 1 行 observed
-    c = build_corridor(_bnd(), grid, None, fid=11,
+    c = build_corridor(_bnd(), grid, fid=11,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     assert c.bands[1].left.src == INFERRED
 
 
 def test_band_unknown_when_no_center():
-    """无中心先验（W 未成形）且无墙无绿区 → unknown（不臆造边界）。"""
-    c = build_corridor(_bnd(), None, None, fid=1,
+    """无中心先验（W 未成形）且无找边无绿区 → unknown（不臆造边界）。"""
+    c = build_corridor(_bnd(), None, fid=1,
                        center_lane=None, width_lane=None, src="none",
                        lane_w_m=LW)
     for b in c.bands:
@@ -180,12 +133,60 @@ def test_plane_health_degraded():
                              left_x=None, right_x=None, sides=0,
                              latency_ms=1.0, rejects=("平面质量门拒绝",),
                              coef=None)
-    c = build_corridor(r_bad, None, None, fid=1, center_lane=None,
+    c = build_corridor(r_bad, None, fid=1, center_lane=None,
                        width_lane=None, src="none", lane_w_m=LW)
     assert c.plane_health == "degraded"
-    c2 = build_corridor(None, None, None, fid=1, center_lane=None,
+    c2 = build_corridor(None, None, fid=1, center_lane=None,
                         width_lane=None, src="none", lane_w_m=LW)
     assert c2.plane_health == "none"
+
+
+# ---------- 远场带：找边读数为底（2026-10-21 收敛定案） ----------
+
+def test_far_band_edge_pts_measured():
+    """远场带：带内有找边检出 → measured（取最靠路心者），来源标测量帧。"""
+    bnd = _bnd(edge_pts=[(1, 18.0, 4.5), (1, 18.0, 8.0)])
+    c = build_corridor(bnd, None, fid=21,
+                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
+    b5 = c.bands[5]                            # 相机系 18~21m（含 zc=18 箱）
+    assert b5.z0 == pytest.approx(18.0 - 5.0)  # 车头系带标
+    assert b5.right.src == "measured"
+    assert b5.right.x_m == pytest.approx(4.5)  # 最靠路心者，外侧检出不当边界
+    assert b5.right.conf == pytest.approx(0.5)
+    assert b5.right.last_fid == 21
+
+
+def test_far_band_carry_forward_inferred():
+    """远场带带内无检出：向已测远箱借最近者 → inferred（方向级，FAR_CARRY_M
+    内）；超窗落空气墙/unknown——借界不冒充实测（维护者口径「远模糊」）。"""
+    bnd = _bnd(edge_pts=[(1, 18.0, 4.5)])
+    c = build_corridor(bnd, None, fid=21,
+                       center_lane=None, width_lane=None, src="pair",
+                       lane_w_m=LW)
+    assert c.bands[4].right.src == INFERRED    # 带 15~18m：借 zc=18（距离 1.5m）
+    assert c.bands[4].right.x_m == pytest.approx(4.5)
+    assert c.bands[4].right.conf == 0.0
+    assert c.bands[6].right.src == INFERRED    # 带 21~24m：借 zc=18（距离 4.5m）
+    assert c.bands[7].right.src == UNKNOWN     # 带 24~27m：距离 7.5m > 6m 超窗
+
+
+def test_near_band_ignores_far_edge_pts():
+    """找边远箱只进远场带供方向，不进近场带（金标契约：远箱不进车道约束）。
+    近场带只有远箱读数时落空气墙，不拿远箱当近场边界。"""
+    bnd = _bnd(edge_pts=[(1, 18.0, 4.5)])
+    c = build_corridor(bnd, None, fid=21,
+                       center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
+    assert c.bands[0].right.src == INFERRED    # 空气墙，不是远箱
+    assert c.bands[0].right.x_m == pytest.approx(+2.0 * LW)
+    assert c.bands[1].right.src == INFERRED
+
+
+def test_far_band_without_evidence_no_center_unknown():
+    """远场带无找边读数、无中心先验 → unknown（不臆造边界）。"""
+    c = build_corridor(_bnd(), None, fid=1,
+                       center_lane=None, width_lane=None, src="none",
+                       lane_w_m=LW)
+    assert c.bands[7].right.src == UNKNOWN
 
 
 # ---------- 墙实体路径：单侧/遮挡从全盲变半盲供数 ----------
@@ -220,8 +221,9 @@ def test_wall_occluded_path_supplies_with_honest_source():
     assert c is not None and c.src == "wall_occl"
     # 双墙同 z 箱：取更小 (zc, side) → 左墙 → 中心 = 墙(−5.5/LW) + W/2
     assert _off(c) == pytest.approx(5.5 / LW - 2.0)
-    assert c.bands[0].left.src == OCCLUDED
-    assert c.bands[0].left.last_fid == 32       # 证据年龄可读
+    # 走廊带已无墙融合（2026-10-21 收敛定案）：近场带无绿区落空气墙
+    assert c.bands[0].left.src == INFERRED
+    assert c.bands[0].left.last_fid is None
 
 
 def test_wall_path_dead_after_decay():
@@ -304,9 +306,9 @@ def test_master_mode_region_first():
 def test_band_z_labels_head_frame():
     """带标挪正：CorridorBand.z0/z1 = 相机系减 CAM_Z_DATUM_M（车头前，负=
     车头后）；带内匹配仍走相机系——band 0 覆盖相机 [GRID_Z_LO, +3m)，带内
-    wall bins/栅格行匹配与带标一致（同一条带的两侧标对了才叫挪正）。"""
+    找边箱/栅格行匹配与带标一致（同一条带的两侧标对了才叫挪正）。"""
     from maaracing_master.plugins.speedrush import depth_geo as dg
-    c = build_corridor(_bnd(), _grid(range(12, 24)), None, fid=1,
+    c = build_corridor(_bnd(), _grid(range(12, 24)), fid=1,
                        center_lane=0.0, width_lane=None, src="pair",
                        lane_w_m=LW)
     assert len(c.bands) == 9

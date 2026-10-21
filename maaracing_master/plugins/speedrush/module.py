@@ -1884,7 +1884,7 @@ class _EgoRoadObserver:
 
     def _build(self, bnd, grid, fid: int | None, center: float,
                width: float, src: str) -> Corridor:
-        return build_corridor(bnd, grid, self._wt, fid,
+        return build_corridor(bnd, grid, fid,
                               center_lane=center, width_lane=width, src=src,
                               lane_w_m=self._lane_w_m)
 

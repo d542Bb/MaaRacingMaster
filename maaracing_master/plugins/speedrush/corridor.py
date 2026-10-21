@@ -1,25 +1,29 @@
 # -*- coding: utf-8 -*-
-"""分带走廊（walls-only 第 6 步，2026-10-09）——感知层→控制层的统一供数表示。
+"""分带走廊（2026-10-21 走廊收敛定案：绿区底 + 找边远箱，墙融合退役）——
+感知层→控制层的统一供数表示。
 
-**它是什么**：把墙实体（WallTrack 逐箱假设）、绿区范围（可行驶栅格的实测
-路面）与空气墙先验（中线±W/2）组织成 3m 一带的走廊。每一带、每一侧都能
-回答评审验收面的三个问题：**边界来自哪里**（measured/occluded/inferred/
-unknown 四态）、**证据有多新**（last_fid + 置信）、**当前允许做什么**（由
+**它是什么**：把绿区范围（可行驶栅格的实测路面）与找边远箱读数（逐箱找边
+扫描的 16~30m 检出）与空气墙先验（中线±W/2）组织成 3m 一带的走廊。每一带、
+每一侧都能回答评审验收面的三个问题：**边界来自哪里**（measured/inferred/
+unknown 三态）、**证据有多新**（last_fid + 置信）、**当前允许做什么**（由
 消费端按来源规则判；2026-10-18 起选择层直接使用带边界做目标夹取）。
 
 **它不是什么**：不做分类决策。来源只是可信度的一部分，不是最终安全结论
-（评审追加：measured ≠ 激进许可——实测墙也可能因拟合误差/浅结构抖动不适
-合立即作为激进控制依据）；走廊也不替代栅格与找边的内部逻辑，只组织它们
-的产出。空气墙永远 inferred（宪法：路面边界=中线±路宽/2，来自先验不来自
-检测，不许冒充实测）。
+（measured ≠ 激进许可——实测边界也可能因拟合误差抖动不适合立即作为激进
+控制依据）；走廊也不替代栅格与找边的内部逻辑，只组织它们的产出。空气墙
+永远 inferred（宪法：路面边界=中线±路宽/2，来自先验不来自检测，不许冒充
+实测）。
 
-来源规则（带内逐侧）：**绿区范围（栅格实测路面，measured）为底，墙箱
-（WallTrack 攒的实体，measured/occluded）只有收窄权**——墙落在绿区内侧
-（更靠路心）时采用它，落在绿区外（路缘外的停车带/人行道结构，或绿区
-本已到头处的假墙）不参与加宽；绿区在该带缺席时才由墙接棒；两者都缺席
-落空气墙（先验，inferred），再无证据才 unknown（诚实降级）。2026-10-20
-实机审计：旧口径「墙箱优先」让绿区外 0.5~1m 的墙把右带撑宽，带中心比
-绿区主人偏右约 0.86 道，选择/粗层因此朝空处相反方向走。"""
+来源规则（带内逐侧，2026-10-21 影子对比定案，证据指针见当次提交）：
+- **近场带**（相机系 z < FAR_Z_CAM）：绿区范围（栅格实测路面）为底；绿区
+  缺席落空气墙（先验，inferred），再无证据才 unknown。
+- **远场带**（相机系 z ≥ FAR_Z_CAM）：找边远箱读数为底（带内检出=measured、
+  取最靠路心者；带内无检出向已测远箱借最近者=inferred、FAR_CARRY_M 内）；
+  无借界落空气墙。远箱与车道读数分离的金标契约不变（找边读数只进远场带
+  供方向，不进近场车道约束）。
+- **墙融合退役**：影子对比（143 帧）实证「绿区底 + 找边远箱」在翻面率、
+  抖动、远区覆盖上同时不劣于墙融合——WallTrack 从走廊供数面退役（墙实体
+  仅存于后备链单侧墙中心，见 module._wall_center）。"""
 from __future__ import annotations
 
 import numpy as np
@@ -28,9 +32,10 @@ from dataclasses import dataclass
 from maaracing_master.plugins.speedrush.depth_geo import (
     CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_UNKNOWN,
     GRID_X_MAX, GRID_Z_HI, GRID_Z_LO)
-from maaracing_master.plugins.speedrush.wall_track import MEASURED, OCCLUDED
+from maaracing_master.plugins.speedrush.wall_track import MEASURED
 
-# 边界来源四态（wall_track 的 measured/occluded 同名复用，不建第二真源）
+# 边界来源（MEASURED 与后备链墙实体同名复用，不建第二真源；墙态 occluded
+# 随墙融合退出走廊供数面）
 INFERRED, UNKNOWN = "inferred", "unknown"
 
 BAND_LEN_M = 3.0
@@ -40,6 +45,12 @@ N_BANDS = int(-(-(GRID_Z_HI - GRID_Z_LO) // BAND_LEN_M))    # ceil → 9
 # （d00036 逐行实测：真边界带外邻 blocked 10~12 行、假墙带（视锥截断）0 行，
 # 2026-10-10 定案）。
 GREEN_OBS_ROWS_MIN = 3
+# 远场带下界（相机系）：逐箱找边的 16~30m 远箱从这里起进走廊供方向（金标
+# 契约：远箱不进近场车道约束）。NEAR_Z=16 的带 15-18 从此界起算。
+FAR_Z_CAM = 15.0
+# 远场带内无检出时，向已测远箱借界的最大纵深（米；借界=inferred 方向级，
+# 影子对比定案的覆盖来源）
+FAR_CARRY_M = 6.0
 
 
 @dataclass(frozen=True)
@@ -48,9 +59,9 @@ class BandBoundary:
     对 unknown 保持对称默认（不否决也不许走），不臆造边界。"""
 
     x_m: float | None        # 边界位置（米，自车系，左负右正）
-    src: str                 # measured / occluded / inferred / unknown
-    conf: float = 0.0        # 证据置信（wall_track 攒的；绿区=1.0；inferred=0）
-    last_fid: int | None = None   # 证据多新（wall_track 槽位最近在场 fid）
+    src: str                 # measured / inferred / unknown
+    conf: float = 0.0        # 证据置信（绿区=1.0；找边远箱=0.5；inferred=0）
+    last_fid: int | None = None   # 证据多新（测量帧的 fid；先验空气墙为 None）
 
 
 @dataclass(frozen=True)
@@ -92,28 +103,30 @@ def _band_rows_mask(grid, z0: float, z1: float) -> np.ndarray:
     return (zc >= z0) & (zc < z1)
 
 
-def _wall_boundary(wall_track, side: int, z0: float, z1: float,
-                   datum_m: float = 0.0) -> BandBoundary | None:
-    """带内该侧的墙箱边界（墙只有收窄权：同带多箱取最靠路心者）。
+def _edge_far_boundary(edge_pts, side: int, z0: float, z1: float,
+                       fid: int | None) -> BandBoundary | None:
+    """远场带该侧的找边读数边界（2026-10-21 收敛定案：墙融合的替代供数）。
 
-    同带多个 z 箱时，靠内的墙就是更窄的可用面——取置信最高者会让外侧
-    高置信箱盖掉内侧真墙。落在路心另一侧（跨过中心）的箱是错侧读数，
-    不当边界。``datum_m``：路心在自车系的横向位置（缺省=自车）。"""
-    if wall_track is None:
-        return None
-    best = None
-    for zc, pos, conf, state, last_fid in wall_track.bins(side):
-        if not state or not (z0 <= zc < z1):
-            continue
-        d = (pos - datum_m) * side          # 沿该侧向外的距离，>0 才在路内一侧
-        if d <= 0.0:
-            continue
-        if best is None or d < best[0] or (d == best[0] and conf > best[2]):
-            best = (d, pos, conf, state, last_fid)
-    if best is None:
-        return None
-    _d, pos, conf, state, last_fid = best
-    return BandBoundary(float(pos), state, float(conf), int(last_fid))
+    找边扫描（depth_geo._scan_side）按 ZBIN 逐箱独立读数、已扫到 30m，且过
+    尾部持续 + 缘体证据门——产线每帧都在算，近场车道读数只吃 ≤NEAR_Z 的箱
+    （金标契约：远箱不进车道约束），本函数消费它的远箱产出。
+    带内有检出取最靠路心者（同墙语义：内侧更窄的可用面；外侧检出会把带撑
+    宽，2026-10-20 实机审计同判）；带内无检出向已测远箱借最近者（推断级
+    FAR_CARRY_M 内——方向级供数不冒充实测，维护者口径「远模糊」）；再无
+    弃权。``edge_pts``：reading 的各箱原始检出 ((side, zc_m, x_m), ...)，
+    zc 相机系、x 自车系横向。"""
+    inb = [x for (s, zc, x) in (edge_pts or ()) if s == side and z0 <= zc < z1]
+    if inb:
+        return BandBoundary(min(inb, key=abs), MEASURED, 0.5,
+                            None if fid is None else int(fid))
+    zc_band = 0.5 * (z0 + z1)
+    cand = [(abs(zc - zc_band), x) for (s, zc, x) in (edge_pts or ())
+            if s == side and zc >= FAR_Z_CAM - BAND_LEN_M
+            and abs(zc - zc_band) <= FAR_CARRY_M]
+    if cand:
+        return BandBoundary(min(cand)[1], INFERRED, 0.0,
+                            None if fid is None else int(fid))
+    return None
 
 
 def _green_boundary(grid, side: int, z0: float, z1: float) -> BandBoundary | None:
@@ -161,19 +174,6 @@ def _air_boundary(side: int, center_lane: float | None,
     return BandBoundary(edge * lane_w_m, INFERRED, 0.0, None)
 
 
-def _narrow_boundary(green: BandBoundary | None, wall: BandBoundary | None,
-                     side: int, datum_m: float) -> BandBoundary | None:
-    """绿区为底、墙只收窄：墙更靠路心（|d| 更小）才采用，否则保持绿区。
-    绿区缺席时墙接棒（该带绿区没测到，墙是该带唯一实测）。"""
-    if green is None:
-        return wall
-    if wall is None:
-        return green
-    d_wall = (wall.x_m - datum_m) * side
-    d_green = (green.x_m - datum_m) * side
-    return wall if d_wall <= d_green else green
-
-
 def _plane_health(reading) -> str:
     """平面健康面：reading 缺席=none；拟合失败或质量门拒绝=degraded。"""
     if reading is None:
@@ -185,30 +185,36 @@ def _plane_health(reading) -> str:
     return "ok"
 
 
-def build_corridor(reading, grid, wall_track, fid: int | None, *,
+def build_corridor(reading, grid, fid: int | None, *,
                    center_lane: float | None, width_lane: float | None,
                    src: str, lane_w_m: float | None) -> Corridor:
     """分带走廊拼装：center/width/src 由供数门（_EgoRoadObserver 优先级链）
-    算好传入，本函数只管分带表示、来源标注与 plane_health。"""
-    datum = (center_lane * lane_w_m
-             if center_lane is not None and lane_w_m else 0.0)
+    算好传入，本函数只管分带表示、来源标注与 plane_health。
+
+    带内来源（2026-10-21 收敛定案）：近场带绿区为底，远场带找边读数为底；
+    墙融合退役（影子对比实证，见模块头）。"""
     bands = []
+    edge_pts = (getattr(reading, "edge_pts", ()) or ()) if reading is not None else ()
     for i in range(N_BANDS):
         z0, z1 = _band_bounds(i)
+        far = z0 >= FAR_Z_CAM
         sides = {}
         for side in (-1, 1):
-            green = _green_boundary(grid, side, z0, z1)
-            wall = _wall_boundary(wall_track, side, z0, z1, datum)
-            b = (_narrow_boundary(green, wall, side, datum)
-                 or _air_boundary(side, center_lane, width_lane, lane_w_m)
-                 or BandBoundary(None, UNKNOWN))
+            if far:
+                b = (_edge_far_boundary(edge_pts, side, z0, z1, fid)
+                     or _air_boundary(side, center_lane, width_lane, lane_w_m)
+                     or BandBoundary(None, UNKNOWN))
+            else:
+                b = (_green_boundary(grid, side, z0, z1)
+                     or _air_boundary(side, center_lane, width_lane, lane_w_m)
+                     or BandBoundary(None, UNKNOWN))
             sides[side] = b
         n_pts = 0
         if grid is not None:
             rows = _band_rows_mask(grid, z0, z1)
             n_pts = int(grid.counts[rows].sum())
         # 带标挪正（2026-10-10）：对外字段车头系（z 减 CAM_Z_DATUM_M），带内
-        # 匹配（wall bins/栅格行）仍走相机系——测量帧不变，表示面诚实
+        # 匹配（找边箱/栅格行）仍走相机系——测量帧不变，表示面诚实
         bands.append(CorridorBand(z0 - CAM_Z_DATUM_M, z1 - CAM_Z_DATUM_M,
                                   sides[-1], sides[1], n_pts))
     return Corridor(tuple(bands), center_lane, width_lane, src,

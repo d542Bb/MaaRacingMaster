@@ -791,13 +791,14 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
   滞后一帧的目检补偿——滞后本身待运动补偿治）。
 
 
-## 16. 分带走廊统一供数（第 6 步，2026-10-09）（本域）
+## 16. 分带走廊统一供数（第 6 步，2026-10-09；2026-10-21 收敛定案）（本域）
 
 **住户**：`corridor.py`（Corridor/CorridorBand/BandBoundary + build_corridor
 拼装）+ `module.py::_EgoRoadObserver`（供数门→优先级链）+ `wall_track.py::WallTrack`
-（墙实体，第 5 步）。update 吐 **Corridor**（不再吐单值 off）；planner 吃
-road_offset=−corridor.center_lane（极性与旧式同，跨层极性契约门禁不豁免），
-选择层直接用走廊带边界做目标夹取与中心带。
+（墙实体，2026-10-21 起仅存后备链单侧墙中心，走廊供数面退役）。update 吐
+**Corridor**（不再吐单值 off）；planner 吃 road_offset=−corridor.center_lane
+（极性与旧式同，跨层极性契约门禁不豁免），选择层直接用走廊带边界做目标
+夹取与中心带。
 
 **供数合并成一条优先级链**（mode 只决定候选排序，旧两路降级审计面）：
 - off/veto：pair → wall → pair_slot → region → None；
@@ -807,15 +808,15 @@ road_offset=−corridor.center_lane（极性与旧式同，跨层极性契约门
 候选链——墙实体路径 src=wall（live 箱，conf≥FLOOR）/wall_occl（遮挡箱，
 conf≥OCCL_MIN_CONF 的历史证据）把 sides=1/0 型从全盲变半盲供数。
 
-**带内来源规则**（每一带每侧，评审验收面：每带说明边界来自哪里、证据多新、
-当前允许做什么）：**绿区范围（measured，栅格实测路面）为底，墙箱
-（measured/occluded，WallTrack 攒的置信+last_fid）只有收窄权**——墙更靠
-路心才采用，落在绿区外不参与加宽（2026-10-20 实机：绿区外 0.5~1m 的墙把
-右带撑宽，带中心与绿区主人相差 0.86 道）；绿区在该带缺席（视锥截断/点
-饥饿）时才由墙接棒；两者都缺席落空气墙（inferred，center±W/2，永远
-inferred 不冒充实测）；再无证据才 unknown。同带多墙箱取最靠路心者。
-far_trend（远场墙走向斜率，只预判不硬否决）与 plane_health
-（ok/degraded/none）随走廊走。
+**带内来源规则**（2026-10-21 收敛定案：近场绿区为底、远场找边远箱为底，
+墙融合退役——143 帧影子对比实证「绿区底+找边远箱」在翻面率/抖动/远区覆盖
+上同时不劣于墙融合，证据指向当次提交）：近场带（相机系 z<FAR_Z_CAM）绿区
+范围（measured，栅格实测路面）为底，缺席落空气墙（inferred，center±W/2）；
+远场带找边远箱读数为底（`_edge_far_boundary`：带内检出=measured 取最靠路心
+者，带内无检出向已测远箱借最近者=inferred、FAR_CARRY_M 内），无借界落空气
+墙；再无证据才 unknown。**远箱与车道读数分离的金标契约不变**：找边远箱只
+进远场带供方向，不进近场车道约束。far_trend（远场墙走向斜率，只预判不硬
+否决）与 plane_health（ok/degraded/none）随走廊走。
 
 **消费端**：选择层直接吃带边界（目标夹取、中心带、擦边侧）；不再有
 `_side_has_space` 的第二套边界规则。β 速度修正只认新鲜实测（pair/wall/region
