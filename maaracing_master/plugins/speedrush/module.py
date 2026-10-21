@@ -768,7 +768,8 @@ class SpeedRushModule(ActivityModule):
                     mem_fallback=cfg.corridor_reach.enabled,
                     wall_line_master=cfg.geometry.wall_line_master,
                     wall_line_cross_check_lane=(
-                        cfg.geometry.wall_line_cross_check_lane)),
+                        cfg.geometry.wall_line_cross_check_lane),
+                    far_ground_supply=cfg.geometry.far_ground_supply),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -886,7 +887,10 @@ class SpeedRushModule(ActivityModule):
                 wlc = self._wlc_cache[1]
             corridor = chain["ego_road"].update(dgeo, new=dgeo_new,
                                                 grid=dgrid, fid=fid,
-                                                wall_line=wlc)
+                                                wall_line=wlc,
+                                                far_extents=(dgeo.far_extents
+                                                             if dgeo is not None
+                                                             else ()))
             road_offset = None if corridor is None else -corridor.center_lane
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
@@ -1170,6 +1174,16 @@ class SpeedRushModule(ActivityModule):
             # 走廊供数来源（wall_line/region/pair_slot/memory 等）：
             # memory/none——朝向记忆使用频次（memory 出现率）与黑视拍从这里读
             "cor_src": None if corridor is None else corridor.src,
+            # 中远场粗带（地面密度水管影子期，2026-10-21）：逐带 [车头系 z0,z1,
+            #   左缘, 右缘, 地面点数]——车道级消费面不读 coarse_bands，本列是
+            #   影子对账数据面（找边远箱 vs 地面密度同帧对账；交接门触发率）
+            "cor_far": None if corridor is None or not corridor.coarse_bands
+            else [[round(b.z0, 1), round(b.z1, 1),
+                   None if b.left is None or b.left.x_m is None
+                   else round(b.left.x_m, 2),
+                   None if b.right is None or b.right.x_m is None
+                   else round(b.right.x_m, 2),
+                   b.n_pts] for b in corridor.coarse_bands],
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
             # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
             # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
@@ -1616,13 +1630,16 @@ class _EgoRoadObserver:
     def __init__(self, xcheck=None, lane_w_m: float | None = None,
                  wall_track=None, mem_fallback: bool = False,
                  wall_line_master: bool = False,
-                 wall_line_cross_check_lane: float = 1.0) -> None:
+                 wall_line_cross_check_lane: float = 1.0,
+                 far_ground_supply: bool = True) -> None:
         self._xc = xcheck            # GridXcheck | None（None/闸关=互证不参与供数）
         self._lane_w_m = lane_w_m
         self._wt = wall_track        # WallTrack | None（None=无墙实体路径）
         self._mem_fallback = mem_fallback  # 朝向记忆兜底（闸开才生效）
         self._wall_line_master = wall_line_master
         self._wall_line_cross = wall_line_cross_check_lane
+        self._far_ground_supply = far_ground_supply  # 中远场粗带（coarse_bands）闸
+        self._far_extents: tuple = ()    # 本拍同帧地面横向范围（update 传入）
         self._xc_streak = 0          # 连续互证 veto 计数（达 bypass 预算放行）
         self._slot: dict[str, tuple] = {}     # 最近有效对缓存 (el, er, 时刻)
         self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口）
@@ -1634,7 +1651,8 @@ class _EgoRoadObserver:
                new: bool = True,
                grid: DrivableGrid | None = None,
                fid: int | None = None,
-               wall_line=None) -> Corridor | None:
+               wall_line=None,
+               far_extents: tuple = ()) -> Corridor | None:
         """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
 
         ``new``：本拍读数是否新证据（异步驻留协议 take() 的 is_new）。中值窗、
@@ -1643,11 +1661,15 @@ class _EgoRoadObserver:
         ``grid``：同拍可行驶栅格（区兜底/互证审计面）。``fid``：墙实体进账
         的帧号（新证据帧喂观测，复用/弃权拍只走衰减——置信是时间的函数）。
 
+        ``far_extents``：同帧中远场粗带地面横向范围（depth_geo.ground_far_extents
+        产出，随读数驻留复用——与 grid 同一条慢变量纪律）。
+
         返回分带走廊（None=诚实弃权，交 planner 既有 machinery 消化，不造
         观测）；planner 吃 road_offset=−corridor.center_lane，选择层直接用
         带边界做目标夹取。"""
         if now is None:
             now = time.monotonic()
+        self._far_extents = far_extents   # _build 消费（各拼装路径同帧同源）
         grid_off = self._grid_off(grid)     # 互证审计面：闸关也常算
         # 墙实体证据先记账（master 分支提前返回也不能断墙箱寿命）
         if self._wt is not None and fid is not None:
@@ -1886,7 +1908,9 @@ class _EgoRoadObserver:
                width: float, src: str) -> Corridor:
         return build_corridor(bnd, grid, fid,
                               center_lane=center, width_lane=width, src=src,
-                              lane_w_m=self._lane_w_m)
+                              lane_w_m=self._lane_w_m,
+                              far_extents=self._far_extents,
+                              far_ground_supply=self._far_ground_supply)
 
     def _fresh(self, now: float) -> tuple[float, float] | None:
         s = self._slot.get("pair")

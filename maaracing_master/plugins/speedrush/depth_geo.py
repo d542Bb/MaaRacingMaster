@@ -277,6 +277,21 @@ GRID_TOL = PLANE_TOL    # 可走容差（米，= 平面内点阈）
 GRID_MIN_PTS = 3        # 单格判「已知」的最少有效点数
 GRID_NX = int(round(2.0 * GRID_X_MAX / GRID_CELL))          # 112
 GRID_NZ = int(round((GRID_Z_HI - GRID_Z_LO) / GRID_CELL))   # 108
+
+# —— 中远场粗带地面横向范围（字面密度读法，2026-10-21 方案定案）——
+# 地面点判据：高出所在 1m 格包络（格内「最低」点）0.8m 内（含护栏基座/路肩/
+# 栏外缓坡——「地面可见范围」不是车道边界，维护者口径「水管」）
+FAR_GROUND_TOL = 0.8
+# 粗带 15m/带、相机系 16~80m：与 3m 带（3~30m）并存，不替换
+FAR_COARSE_LEN_M = 15.0
+FAR_COARSE_Z0, FAR_COARSE_Z1 = 16.0, 80.0
+FAR_COARSE_BANDS = tuple(
+    (float(z), min(FAR_COARSE_Z1, float(z) + FAR_COARSE_LEN_M))
+    for z in range(int(FAR_COARSE_Z0), int(FAR_COARSE_Z1), int(FAR_COARSE_LEN_M)))
+# 带内地面点下限（少于=弃权，宁缺勿假；60-80m 实测每帧地面点量 300~6000）
+FAR_MIN_GROUND_PTS = 30
+# 横向范围分位（2/98：孤点杂波不冒充边界；方向级供数不求准）
+FAR_EXTENT_PCT = (2.0, 98.0)
 GRID_UNKNOWN, GRID_DRIVABLE, GRID_BLOCKED = 0, 1, 2
 
 # ── 墙走廊（2026-10-18 用户定案：墙锚定走廊，影子期）──────────────────
@@ -361,6 +376,8 @@ class DepthRoadReading:
     # 可见再谈防护；c=coef[2] 即 cam_h，同属观测面）
     solver: dict | None = None   # 焦距求解器诊断（shift/resid/n/step0/evals，见
     # moge_post._solve_shift；焦距漂移治理 2026-10-10 观测面，只写不读）
+    far_extents: tuple = ()  # 中远场粗带地面横向范围（(z0,z1,x_lo,x_hi,n) 序列，
+    # ground_far_extents 产出，同帧同拍；走廊层 _ground_far_boundary 消费）
     degraded: bool = False   # 主质量门拒、降级补考放行（常量区注释有定案背
     # 景）；消费语义第一版不变（下游不读，审计面经 rejects「质量门降级放行」
     # →corridor._plane_health="degraded" 透出）
@@ -1103,6 +1120,63 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
                 dug_mask.reshape(GRID_NZ, GRID_NX))
 
 
+def ground_far_extents(pts: np.ndarray,
+                       bands: tuple = FAR_COARSE_BANDS,
+                       tol: float = FAR_GROUND_TOL,
+                       coef: tuple | None = None,
+                       mask: np.ndarray | None = None) -> tuple:
+    """点图 → 中远场粗带地面横向范围（字面密度读法，纯函数）。
+
+    维护者遮挡论证（2026-10-21 定案）：深度点永远在物体表面，游戏视角只能
+    看到场景在路这一侧的表面——凡与路面同高的点=「路」（同高度其他东西被
+    路遮挡）。参照**不依赖平面外推**（远区平面外推放大坡度误差的已知根）：
+    每带逐格（1m×1m）自己的极值点做地面包络，包络 tol 内的点算地面点，
+    地面点横向分位范围=「地面可见范围」（含路肩/栏外缓坡，比车道边界宽、
+    常贴窗缘——推断级方向供数，不冒充实测，维护者口径「水管」）。
+
+    ``mask``：同帧 YOLO 候选区（与 reading/栅格同一条挖除纪律，物体从点云
+    源头消失）——抬升体独占的格会被自己的包络「自我抬升」，路肩停车的
+    车身点会假展宽范围，候选区像素整体不进地面点选择。前车在同向车道上
+    不构成污染（它就在路上，掩码挖除后路面邻像素仍标范围）。
+
+    平面 coef 只用于定「上」的方向（Y 轴极性随深度约定翻转，与栅格 sgn 同式）；
+    包络本身是逐格数据参照。coef 缺失=无法定极性，全带诚实弃权。
+
+    返回 ((z0, z1, x_lo, x_hi, n_ground), ...)（z 相机系、x 自车系米；
+    无证据带 x 为 None）。耗时向量化 ~ms 级，调用点在栅格工作线程内。"""
+    out = []
+    if coef is None:
+        return tuple((z0, z1, None, None, 0) for z0, z1 in bands)
+    sgn = -1.0 if float(coef[1]) * 5.0 + float(coef[2]) > 0 else 1.0
+    X, Y, Z = pts[..., 0], pts[..., 1], pts[..., 2]
+    z_lo, z_hi = bands[0][0], bands[-1][1]
+    ok = (np.isfinite(X) & np.isfinite(Y) & np.isfinite(Z)
+          & (Z >= z_lo) & (Z < z_hi) & (np.abs(X) <= GRID_X_MAX))
+    if mask is not None:
+        ok &= ~mask
+    X, Y, Z = X[ok], Y[ok], Z[ok]
+    H = sgn * Y                       # 极性统一后的「高度」
+    nxc = int(round(2.0 * GRID_X_MAX))
+    for z0, z1 in bands:
+        m = (Z >= z0) & (Z < z1)
+        if int(m.sum()) < FAR_MIN_GROUND_PTS:
+            out.append((z0, z1, None, None, 0))
+            continue
+        xb, zb, hb = X[m], Z[m], H[m]
+        iz = (zb - z0).astype(np.int64)          # 1m 纵格（带内）
+        ix = np.minimum((xb + GRID_X_MAX).astype(np.int64), nxc - 1)
+        env = np.full((nxc, int(np.ceil(z1 - z0))), np.inf)
+        np.minimum.at(env, (ix, iz), hb)         # 逐格地面包络（格内极低点）
+        gnd = hb <= env[ix, iz] + tol
+        n = int(gnd.sum())
+        if n < FAR_MIN_GROUND_PTS:
+            out.append((z0, z1, None, None, 0))
+            continue
+        lo, hi = np.percentile(xb[gnd], FAR_EXTENT_PCT)
+        out.append((z0, z1, float(lo), float(hi), n))
+    return tuple(out)
+
+
 def _row_intervals(grid: DrivableGrid) -> tuple[np.ndarray, np.ndarray] | None:
     """绿区逐行横向区间（米，格界）：行序无关直接按 Z 分箱。无绿行 → None。
     行域上限=NEAR_Z：远行（扩窗 16~30m，弯道处远端绿区偏移）不进近场约束
@@ -1784,11 +1858,16 @@ class DepthRoadObserver:
         # 两路只读共享点云/掩码/coef，输出各自独立。
         th_err: list[BaseException] = []
         grid_box: list = []
+        far_box: list = []
 
         def _grid_worker():
             try:
                 grid_box.append(drivable_grid_from_points(
                     pts_g, fx, fy, mask_g, coef=coef, ds=ds))
+                # 中远场粗带地面横向范围（向量化 ~ms，与栅格同线程顺带——
+                # 同一份点云/掩码与平面极性，无第二次推理）
+                far_box.append(ground_far_extents(pts_g, coef=coef,
+                                                  mask=mask_g))
             except BaseException as e:   # noqa: BLE001 —— join 处重抛，见 th_err
                 th_err.append(e)
 
@@ -1802,11 +1881,13 @@ class DepthRoadObserver:
         if th_err:
             raise th_err[0]
         grid = grid_box[0] if grid_box else None
+        far = tuple(far_box[0]) if far_box else ()
         stage["grid"] = LAST_STAGE_MS["grid"] = \
             (time.perf_counter() - t_g) * 1000.0
         for k, v in stage.items():
             self._stage_win[k].append(v)
         evid["grid"] = grid
+        evid["far_bands"] = far
         if detections and fid is not None and frame_ts_ns is not None:
             sheet = anchor_sheet_from_detections(pts, detections, fid,
                                                  frame_ts_ns, fx=fx)
@@ -1815,7 +1896,8 @@ class DepthRoadObserver:
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0,
                        metric_scale=evid["ms"],
-                       solver=evid.get("solver")), evid
+                       solver=evid.get("solver"),
+                       far_extents=far), evid
 
     @property
     def session_ready(self) -> bool:

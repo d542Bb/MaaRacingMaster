@@ -113,6 +113,55 @@ def test_single_side_abstains_honestly():
     assert any("L:无穿越" in r for r in rd.rejects)
 
 
+# ── 中远场粗带地面横向范围（字面密度读法，2026-10-21 方案定案）─────────────
+
+def _ground_points(rng, shape_pts, x_range, z_range, lift=0.0):
+    """均匀撒点的地面/抬高面（Y 向下为正：地面 Y=H_CAM+B·Z，lift>0=物理
+    高出路面）。"""
+    n = shape_pts
+    x = rng.uniform(*x_range, n)
+    z = rng.uniform(*z_range, n)
+    y = H_CAM + PITCH_B * z - lift + rng.normal(0, 0.02, n)
+    return np.stack([x, y, z], -1)
+
+
+def test_ground_far_extents_road_range_and_object_excluded():
+    """字面密度读法：地面横向范围≈撒点路宽；路肩抬升体（候选区掩码，生产
+    同一条挖除纪律）不进地面点选择，不撑宽范围——物体独占的格被自己的包络
+    「自我抬升」，掩码不挖就会假展宽到 12m（遮挡论证：与路同高的点=「路」，
+    高出包络 0.8m 的不算）。"""
+    rng = np.random.default_rng(11)
+    pts = _ground_points(rng, 6000, (-7.0, 7.0), (16.0, 80.0))
+    obj = _ground_points(rng, 800, (8.0, 12.0), (45.0, 60.0), lift=1.5)
+    pts = np.concatenate([pts, obj])
+    mask = np.zeros(pts.shape[0], bool)           # 候选区=抬升体像素
+    mask[6000:] = True
+    coef = (0.0, PITCH_B, H_CAM)
+    ext = dict(((z0, z1), (lo, hi, n))
+               for z0, z1, lo, hi, n in dg.ground_far_extents(pts, coef=coef,
+                                                              mask=mask))
+    for (z0, z1) in ((16.0, 31.0), (31.0, 46.0), (46.0, 61.0),
+                     (61.0, 76.0), (76.0, 80.0)):
+        lo, hi, n = ext[(z0, z1)]
+        assert lo is not None, f"{z0}-{z1} 应可读"
+        assert lo == pytest.approx(-7.0, abs=0.8), f"{z0}-{z1} lo={lo}"
+        assert hi == pytest.approx(7.0, abs=0.8), f"{z0}-{z1} hi={hi}"
+        assert n >= dg.FAR_MIN_GROUND_PTS
+
+
+def test_ground_far_extents_starved_band_abstains():
+    """带内地面点不足下限 → 诚实弃权（None，宁缺勿假）；coef 缺失=无法定
+    高度极性，全带弃权。"""
+    rng = np.random.default_rng(3)
+    pts = _ground_points(rng, 4000, (-7.0, 7.0), (16.0, 76.0))
+    pts = np.concatenate([pts, _ground_points(rng, 10, (-7.0, 7.0), (76.0, 80.0))])
+    coef = (0.0, PITCH_B, H_CAM)
+    ext = dg.ground_far_extents(pts, coef=coef)
+    assert ext[-1][2] is None and ext[-1][4] == 0    # 76-80m 饥饿弃权
+    assert all(e[2] is not None for e in ext[:-1])   # 其余带可读
+    assert all(e[2] is None for e in dg.ground_far_extents(pts, coef=None))
+
+
 NEAR_BARRIER_X = 4.0    # 近场护栏内脸（米）：比远墙更近的绑定约束
 FAR_ONLY_LANES = WALL / CAL.lane_w_m
 

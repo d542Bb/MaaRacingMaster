@@ -301,6 +301,83 @@ def test_master_mode_region_first():
     assert _off(c) == pytest.approx(-1.5 / LW, abs=0.01)
 
 
+# ---------- 中远场粗带：地面密度水管（2026-10-21 方案定案） ----------
+
+def _ext(lo, hi, n=500, z0=16.0, z1=31.0):
+    return (z0, z1, lo, hi, n)
+
+
+def test_far_coarse_ground_supply_inferred():
+    """中远场粗带：同帧地面横向范围 → coarse_bands（src=inferred，「地面可见
+    范围」不是车道边界）；带标车头系、n_pts=地面点数、带 z 车头系（相机系减
+    基准）。粗带只进 coarse_bands，不进 bands（车道级消费面不吃远带）。"""
+    ext = (_ext(-6.8, 6.73), _ext(-6.68, 6.72, z0=31.0, z1=46.0))
+    c = build_corridor(None, None, fid=42, center_lane=0.0, width_lane=2.0,
+                       src="pair", lane_w_m=LW, far_extents=ext)
+    assert len(c.bands) == 9                        # 3m 带不动
+    assert len(c.coarse_bands) == 2
+    b0 = c.coarse_bands[0]
+    assert b0.z0 == pytest.approx(16.0 - 5.0)       # 车头系带标
+    assert b0.z1 == pytest.approx(31.0 - 5.0)
+    assert b0.left.src == INFERRED and b0.right.src == INFERRED
+    assert b0.left.x_m == pytest.approx(-6.8)
+    assert b0.right.x_m == pytest.approx(6.73)
+    assert b0.left.last_fid == 42
+    assert b0.n_pts == 500
+    assert c.coarse_bands[1].z0 == pytest.approx(31.0 - 5.0)
+
+
+def test_far_coarse_switch_off_empty():
+    """开关关（或无同帧范围）→ coarse_bands 为空（车道级行为逐位回空白）。"""
+    ext = (_ext(-6.8, 6.73),)
+    c = build_corridor(None, None, fid=42, center_lane=0.0, width_lane=2.0,
+                       src="pair", lane_w_m=LW, far_extents=ext,
+                       far_ground_supply=False)
+    assert c.coarse_bands == ()
+    c2 = build_corridor(None, None, fid=42, center_lane=0.0, width_lane=2.0,
+                        src="pair", lane_w_m=LW, far_extents=(),
+                        far_ground_supply=True)
+    assert c2.coarse_bands == ()
+
+
+def test_far_coarse_handover_gate_continues_near_band():
+    """交接一致性门：首个粗带范围路心与近带（3m 带空气墙 ±2 道）路心跳变
+    超 1.5 道 → 整带延续近带边界（标 inferred）——路不在 16m 处瞬移，远区
+    看到别处（混前车/建筑）的污染带诚实降级；正常居中的范围不触发门。"""
+    # 污染带：范围 [6,12] 路心 9m，离近带路心 0 差 9m > 1.5 道
+    bad = build_corridor(None, None, fid=7, center_lane=0.0, width_lane=2.0,
+                         src="pair", lane_w_m=LW, far_extents=(_ext(6.0, 12.0),))
+    b0 = bad.coarse_bands[0]
+    assert b0.left.src == INFERRED and b0.right.src == INFERRED
+    assert b0.left.x_m == pytest.approx(-1.0 * LW)   # 延续近带空气墙（center±半宽）
+    assert b0.right.x_m == pytest.approx(+1.0 * LW)
+    # 正常带：范围居中（路心 ≈ 0）→ 不触发门，端点即边界
+    ok = build_corridor(None, None, fid=7, center_lane=0.0, width_lane=2.0,
+                        src="pair", lane_w_m=LW, far_extents=(_ext(-6.8, 6.73),))
+    assert ok.coarse_bands[0].left.x_m == pytest.approx(-6.8)
+    assert ok.coarse_bands[0].right.x_m == pytest.approx(6.73)
+
+
+def test_far_coarse_no_evidence_unknown():
+    """粗带无地面范围证据（x 为 None）→ 该侧 unknown（不臆造边界）；无中心
+    先验时同判。"""
+    ext = (_ext(None, None, n=0),)
+    c = build_corridor(_bnd(), None, fid=1, center_lane=None, width_lane=None,
+                       src="none", lane_w_m=LW, far_extents=ext)
+    b0 = c.coarse_bands[0]
+    assert b0.left.src == UNKNOWN and b0.right.src == UNKNOWN
+    assert b0.left.x_m is None
+    assert b0.n_pts == 0
+
+
+def test_far_coarse_no_center_falls_unknown():
+    """无中心先验（W 未成形）且范围缺席 → 粗带 unknown（同 3m 带兜底序）。"""
+    c = build_corridor(_bnd(), None, fid=1, center_lane=None, width_lane=None,
+                       src="none", lane_w_m=LW,
+                       far_extents=(_ext(None, None, n=0),))
+    assert c.coarse_bands[0].left.src == UNKNOWN
+
+
 # ---------- 带标车头系（2026-10-10 挪正） ----------
 
 def test_band_z_labels_head_frame():

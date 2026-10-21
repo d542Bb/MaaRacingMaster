@@ -23,7 +23,13 @@ unknown 三态）、**证据有多新**（last_fid + 置信）、**当前允许�
   供方向，不进近场车道约束）。
 - **墙融合退役**：影子对比（143 帧）实证「绿区底 + 找边远箱」在翻面率、
   抖动、远区覆盖上同时不劣于墙融合——WallTrack 从走廊供数面退役（墙实体
-  仅存于后备链单侧墙中心，见 module._wall_center）。"""
+  仅存于后备链单侧墙中心，见 module._wall_center）。
+
+中远场粗带（coarse_bands，2026-10-21 方案定案）：相机系 16~80m、15m/带，由
+地面密度读法供「地面可见范围」（depth_geo.ground_far_extents，推断级）——
+**只进 coarse_bands 不进 bands**：车道级消费面（粗层净空/选择夹取）只读
+bands，远带是方向级约束（哪边更开、范围在哪收窄），不自动灌进车道约束，
+消费端分层接入（见 module._EgoRoadObserver 与方案文档）。"""
 from __future__ import annotations
 
 import numpy as np
@@ -51,6 +57,10 @@ FAR_Z_CAM = 15.0
 # 远场带内无检出时，向已测远箱借界的最大纵深（米；借界=inferred 方向级，
 # 影子对比定案的覆盖来源）
 FAR_CARRY_M = 6.0
+# 交接一致性门容差（道）：远粗带与近带的路心跳变超此比例 → 延续近带边界
+# （路不在 16m 处瞬移；门拦「远区看到别处」的污染带，不拦正常的宽水管——
+# 地面可见范围比车道边界宽是设计内，2026-10-21 方案定案）
+FAR_HANDOVER_TOL_LANE = 1.5
 
 
 @dataclass(frozen=True)
@@ -83,11 +93,14 @@ class Corridor:
 
     center_lane（道，右正，原点=车）由供数门的优先级链算好传入，极性契约
     与旧 off 同式：off = −center_lane（planner 消费 −值，右正）。"""
-    bands: tuple[CorridorBand, ...]   # 近→远
+    bands: tuple[CorridorBand, ...]   # 近→远（3m 带，车道级消费面）
     center_lane: float | None
     width_lane: float | None   # 走廊宽（道，边界到边界）
     src: str                   # pair / wall / wall_occl / pair_slot / region / none
     plane_health: str          # ok / degraded / none
+    coarse_bands: tuple[CorridorBand, ...] = ()   # 中远场粗带 15m/带（16~80m，
+    # 地面密度水管，src=inferred；**不进 bands**——车道级消费面（粗层净空/
+    # 选择夹取）只读 bands，远带不自动灌进车道约束，方向级消费显式接入）
 
 
 def _band_bounds(i: int) -> tuple[float, float]:
@@ -127,6 +140,62 @@ def _edge_far_boundary(edge_pts, side: int, z0: float, z1: float,
         return BandBoundary(min(cand)[1], INFERRED, 0.0,
                             None if fid is None else int(fid))
     return None
+
+
+def _ground_far_boundary(ext, side: int, fid: int | None) -> BandBoundary | None:
+    """远粗带该侧的地面横向范围边界（字面密度读法，推断级）。
+
+    ``ext``=(z0, z1, x_lo, x_hi, n_ground)（depth_geo.ground_far_extents 产出，
+    每带地面包络参照）：该侧边界=地面可见范围端点。「地面可见范围」含路肩/
+    栏外缓坡，比车道边界宽、常贴窗缘——推断级方向供数（维护者口径「水管」），
+    不冒充实测；60-80m 结构环读法欠采样失败（2026-10-21 四连测），地面横向
+    范围是该距离唯一成立的信号。"""
+    x = ext[2] if side < 0 else ext[3]
+    if x is None:
+        return None
+    return BandBoundary(x, INFERRED, 0.0, None if fid is None else int(fid))
+
+
+def _coarse_bands(far_extents, fid: int | None, *, center_lane, width_lane,
+                  lane_w_m: float | None, bands: tuple) -> tuple:
+    """中远场粗带拼装（地面密度水管，src=inferred）+ 交接一致性门。
+
+    门：首个粗带（16~30m）与覆盖其起点的 3m 带比**路心**（范围中点 vs 近带
+    边界中点），跳变超 FAR_HANDOVER_TOL_LANE 道 → 整带延续近带边界（标
+    inferred）——路不在 16m 处瞬移，远区看到别处（混前车/建筑）的污染带
+    诚实降级。门只挂在有 3m 参照的首带；更深粗带跳变是方向级供数的真实
+    信息（跨带一致率基线记录在案），不拦。"""
+    out = []
+    ref = None
+    if far_extents:
+        ref_z = far_extents[0][0]
+        ref = next((bd for bd in bands
+                    if bd.z0 + CAM_Z_DATUM_M <= ref_z < bd.z1 + CAM_Z_DATUM_M),
+                   None)
+    for z0, z1, x_lo, x_hi, n in far_extents:
+        gate = False
+        if ref is not None and x_lo is not None \
+                and ref.left is not None and ref.right is not None \
+                and ref.left.x_m is not None and ref.right.x_m is not None \
+                and lane_w_m:
+            cen = 0.5 * (x_lo + x_hi)
+            rcen = 0.5 * (ref.left.x_m + ref.right.x_m)
+            gate = abs(cen - rcen) > FAR_HANDOVER_TOL_LANE * lane_w_m
+        sides = {}
+        for side in (-1, 1):
+            if gate:
+                rb = ref.left if side < 0 else ref.right
+                b = (BandBoundary(rb.x_m, INFERRED, 0.0, rb.last_fid)
+                     if rb.x_m is not None else BandBoundary(None, UNKNOWN))
+            else:
+                b = (_ground_far_boundary((z0, z1, x_lo, x_hi, n), side, fid)
+                     or _air_boundary(side, center_lane, width_lane, lane_w_m)
+                     or BandBoundary(None, UNKNOWN))
+            sides[side] = b
+        # 带标挪正同 3m 带：对外车头系（z 减 CAM_Z_DATUM_M）
+        out.append(CorridorBand(z0 - CAM_Z_DATUM_M, z1 - CAM_Z_DATUM_M,
+                                sides[-1], sides[1], n))
+    return tuple(out)
 
 
 def _green_boundary(grid, side: int, z0: float, z1: float) -> BandBoundary | None:
@@ -187,12 +256,18 @@ def _plane_health(reading) -> str:
 
 def build_corridor(reading, grid, fid: int | None, *,
                    center_lane: float | None, width_lane: float | None,
-                   src: str, lane_w_m: float | None) -> Corridor:
+                   src: str, lane_w_m: float | None,
+                   far_extents: tuple = (),
+                   far_ground_supply: bool = True) -> Corridor:
     """分带走廊拼装：center/width/src 由供数门（_EgoRoadObserver 优先级链）
     算好传入，本函数只管分带表示、来源标注与 plane_health。
 
     带内来源（2026-10-21 收敛定案）：近场带绿区为底，远场带找边读数为底；
-    墙融合退役（影子对比实证，见模块头）。"""
+    墙融合退役（影子对比实证，见模块头）。``far_extents``：同帧中远场粗带
+    地面横向范围（depth_geo.ground_far_extents 产出）——开关 far_ground_supply
+    开时拼成 coarse_bands（地面密度水管，16~80m，src=inferred，**不进
+    bands**：车道级消费面只读 bands，远带方向级接入是显式消费）；
+    关（或无同帧范围）时 coarse_bands 为空。"""
     bands = []
     edge_pts = (getattr(reading, "edge_pts", ()) or ()) if reading is not None else ()
     for i in range(N_BANDS):
@@ -217,5 +292,9 @@ def build_corridor(reading, grid, fid: int | None, *,
         # 匹配（找边箱/栅格行）仍走相机系——测量帧不变，表示面诚实
         bands.append(CorridorBand(z0 - CAM_Z_DATUM_M, z1 - CAM_Z_DATUM_M,
                                   sides[-1], sides[1], n_pts))
+    coarse = (_coarse_bands(far_extents, fid, center_lane=center_lane,
+                            width_lane=width_lane, lane_w_m=lane_w_m,
+                            bands=tuple(bands))
+              if far_ground_supply and far_extents else ())
     return Corridor(tuple(bands), center_lane, width_lane, src,
-                    _plane_health(reading))
+                    _plane_health(reading), coarse)

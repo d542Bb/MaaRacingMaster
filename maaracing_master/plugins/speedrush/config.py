@@ -335,10 +335,13 @@ class MetricBridge:
 class Geometry:
     """几何供数（2026-10-18 走廊重建）：wall_line_master=true 时墙线拟合当
     走廊主人（region 降为兜底）；false=影子只落 trace。cross_check 是与同帧
-    绿区中心的互证容差（道），超差判 degraded 回退。"""
+    绿区中心的互证容差（道），超差判 degraded 回退。far_ground_supply=中远场
+    粗带地面横向范围进走廊 coarse_bands（2026-10-21 方案定案；false=逐位
+    回空白粗带——车道级消费面不读 coarse_bands，开关只管影子数据面）。"""
 
     wall_line_master: bool = False
     wall_line_cross_check_lane: float = 1.0
+    far_ground_supply: bool = True
 
 
 @dataclass(frozen=True)
@@ -728,7 +731,9 @@ def _read_decision(path: Path) -> DecisionConfig:
                                    default=False),
             wall_line_cross_check_lane=_num_def(
                 d, "geometry", "wall_line_cross_check_lane", 1.0, lo=0,
-                lo_open=False)),
+                lo_open=False),
+            far_ground_supply=_bool(d, "geometry", "far_ground_supply",
+                                    default=True)),
         metric_cars=MetricCars(
             enabled=_bool(d, "metric_cars", "enabled", default=True)),
         metric_bridge=MetricBridge(
