@@ -92,6 +92,12 @@ class Anchor:
     idx: int
     fid: int
     age_ms: float | None = None
+    idx_meas: int = -1
+
+    @property
+    def t_meas(self) -> float:
+        """测量时刻：trace 里的 t 是发布拍，锚点值实际来自 age 之前。"""
+        return self.t - (self.age_ms or 0.0) / 1000.0
 
 
 @dataclass
@@ -136,6 +142,19 @@ def build_tracks(rows):
     return tracks, (rows[-1]["ts_ns"] - t0) / 1e9
 
 
+def meas_frame(ticks, i0, t_meas):
+    """锚点测量帧的框高：同 fid 的 car_h 里找离 t_meas 最近的一拍（0.15s 内）。"""
+    h, idx, best = None, -1, 0.15
+    for j in range(i0, -1, -1):
+        tk = ticks[j]
+        if tk.t < t_meas - 0.15:
+            break
+        d = abs(tk.t - t_meas)
+        if tk.h is not None and d <= best:
+            h, idx, best = tk.h, j, d
+    return h, idx
+
+
 def find_anchors(ticks):
     out = []
     for i, tk in enumerate(ticks):
@@ -143,7 +162,10 @@ def find_anchors(ticks):
             continue
         if out and abs(tk.z - out[-1].z) <= 1e-9:
             continue
-        out.append(Anchor(tk.t, tk.z, tk.v, tk.h, i, tk.fid, tk.age))
+        t_meas = tk.t - (tk.age or 0.0) / 1000.0
+        h_meas, idx_meas = meas_frame(ticks, i, t_meas)
+        out.append(Anchor(tk.t, tk.z, tk.v, h_meas, i, tk.fid, tk.age,
+                          idx_meas))
     return out
 
 
@@ -195,15 +217,21 @@ def box_alive_until(ticks, i0, i1, h0):
     return (ok / n if n else 0.0), None
 
 
-def eval_point(ticks, i0, i1, t_eval):
-    """在 t_eval 评估四种 z 方法（只用 t_eval 之前的信息）。"""
+def eval_point(ticks, i0, i1, i0m, i1m, t_eval, t_meas0, h0):
+    """在 t_eval 评估四种 z 方法（只用 t_eval 之前的信息）。
+
+    锚点值对应测量时刻 t_meas0（发布拍之前 age 秒）；CV 外推与框高比都从
+    测量时刻起算，避免把发布延迟当成运动。真值由调用方按同一时间轴给。
+    """
     a_tick = ticks[i0]
     z0 = a_tick.z
     v0 = a_tick.v or 0.0
-    dt = t_eval - a_tick.t
-    h0 = a_tick.h
+    dt = t_eval - t_meas0
     h1 = fresh_h_at(ticks, i1 - 1, t_eval)
-    _, break_t = box_alive_until(ticks, i0, i1, h0)
+    if h0 is not None and i0m >= 0 and i1m > i0m:
+        _, break_t = box_alive_until(ticks, i0m, i1m, h0)
+    else:
+        break_t = None
     box_ok = (h0 is not None and h1 is not None
               and (break_t is None or t_eval <= break_t + 1e-6))
     z_cv = z0 - v0 * dt
@@ -241,31 +269,42 @@ def analyse_z(tracks):
         if len(anchors) < 2:
             continue
         for a0, a1 in zip(anchors, anchors[1:]):
-            dt = a1.t - a0.t
+            t0, t1 = a0.t_meas, a1.t_meas
+            dt = t1 - t0
             if not (0.0 < dt <= MAX_INTERVAL_S):
                 continue
             n_intervals += 1
-            f, _ = box_alive_until(ticks, a0.idx, a1.idx, a0.h)
+            if a0.h is not None and a0.idx_meas >= 0 \
+                    and a1.idx_meas > a0.idx_meas:
+                f, _ = box_alive_until(ticks, a0.idx_meas, a1.idx_meas, a0.h)
+                h_step = max_h_step(ticks, a0.idx_meas, a1.idx_meas)
+            else:
+                f, h_step = 0.0, 1.0
             alive_fracs.append(f)
             dz = abs(a1.z - a0.z)
             noise.append((dt, dz))
             plausible = dz <= Z_GATE_MPS * dt + Z_GATE_SLACK_M
-            h_step = max_h_step(ticks, a0.idx, a1.idx)
-            # 评估点只用区间内部：中点（真值=两锚线性插值）与 20/10 m 跨点。
-            # 不在 a1 时刻评估——那里框高可能就来自锚点同一帧，等于泄漏真值。
+
+            def truth_at(t):
+                return a0.z + (a1.z - a0.z) * (t - t0) / dt
+
+            # 评估点：测量时间轴的中点与 20/10 m 跨点（真值=锚点测量间线性
+            # 插值）；评估时刻不早于 a0 发布拍，避免用到当时还没发布的信息。
             points = []
             if dt >= 0.12:
-                points.append(("mid", a0.t + 0.5 * dt,
-                               0.5 * (a0.z + a1.z)))
+                t = max(t0 + 0.5 * dt, a0.t)
+                points.append(("mid", t, truth_at(t)))
             lo, hi = (a0.z, a1.z) if a0.z >= a1.z else (a1.z, a0.z)
             for cross in (20.0, 10.0):
                 if lo <= cross < hi:
                     frac = (a0.z - cross) / (a0.z - a1.z)
-                    points.append((f"z{cross:.0f}", a0.t + frac * dt, cross))
+                    t = max(t0 + frac * dt, a0.t)
+                    points.append((f"z{cross:.0f}", t, truth_at(t)))
             for kind, t_eval, truth in points:
-                est = eval_point(ticks, a0.idx, a1.idx, t_eval)
+                est = eval_point(ticks, a0.idx, a1.idx, a0.idx_meas,
+                                 a1.idx_meas, t_eval, t0, a0.h)
                 rows.append({"kind": kind, "truth": truth, "dt": dt,
-                             "lead": t_eval - a0.t, "plausible": plausible,
+                             "lead": t_eval - t0, "plausible": plausible,
                              "h_step": h_step, **est})
     return rows, alive_fracs, noise, n_intervals
 

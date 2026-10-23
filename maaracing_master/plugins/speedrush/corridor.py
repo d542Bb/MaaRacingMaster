@@ -21,9 +21,10 @@ unknown 三态）、**证据有多新**（last_fid + 置信）、**当前允许�
   取最靠路心者；带内无检出向已测远箱借最近者=inferred、FAR_CARRY_M 内）；
   无借界落空气墙。远箱与车道读数分离的金标契约不变（找边读数只进远场带
   供方向，不进近场车道约束）。
-- **墙融合退役**：影子对比（143 帧）实证「绿区底 + 找边远箱」在翻面率、
-  抖动、远区覆盖上同时不劣于墙融合——WallTrack 从走廊供数面退役（墙实体
-  仅存于后备链单侧墙中心，见 module._wall_center）。
+- **墙融合退役（带内）**：影子对比（143 帧）实证「绿区底 + 找边远箱」在翻面率、
+  抖动、远区覆盖上同时不劣于墙融合——WallTrack 从**带内**供数面退役；它仍
+  是走廊路心绝对链的物理锚点（双侧同箱中点 / 单侧墙±W/2，见
+  module._wall_center）。
 
 中远场粗带（coarse_bands，2026-10-21 方案定案）：相机系 16~80m、15m/带，由
 地面密度读法供「地面可见范围」（depth_geo.ground_far_extents，推断级）——
@@ -61,6 +62,12 @@ FAR_CARRY_M = 6.0
 # （路不在 16m 处瞬移；门拦「远区看到别处」的污染带，不拦正常的宽水管——
 # 地面可见范围比车道边界宽是设计内，2026-10-21 方案定案）
 FAR_HANDOVER_TOL_LANE = 1.5
+# 近带中心守卫（2026-10-23）：保险杠近场视锥/挖洞会把绿区裁成偏心小块
+# （实拍 185126_p1：带中心偏离绝对路心 4.9m、左缘跑到路心右侧 2.7m），
+# 而选择帧中心与包络都吃分带边界——偏心带=规划器朝墙打舵的根因。
+# 近带（z<9m）双侧中点偏离绝对路心超此值 → 该带退回空气墙（绝对路心±W/2）。
+NEAR_BAND_CENTER_TOL_M = 1.0
+NEAR_BAND_GUARD_Z = 9.0
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,13 @@ class Corridor:
     coarse_bands: tuple[CorridorBand, ...] = ()   # 中远场粗带 15m/带（16~80m，
     # 地面密度水管，src=inferred；**不进 bands**——车道级消费面（粗层净空/
     # 选择夹取）只读 bands，远带不自动灌进车道约束，方向级消费显式接入）
+    far_hint_lane: float | None = None   # 中远场方向（滤波后，道，右正）：
+    # 最近一条两侧有证据的粗带中点相对该纵深中心线；只在**新远带证据**拍
+    # 更新、其余拍共享同一结果（方向级消费的唯一真源，消费端不再各自滤波）
+    far_hint_age_ms: float | None = None  # 共享方向结果的龄（ms）
+    anchor_epoch: int | None = None    # 路心锚点纪元（供数门在**确认采信的超容差
+    # 跳变**上递增，坏帧不计数）：车道身份=相对路心的编号，换纪即跨帧道号失去
+    # 几何含义，承诺层据此作废路线；None=该拍没有可用锚点（诚实缺位，不臆造）
 
 
 def _band_bounds(i: int) -> tuple[float, float]:
@@ -198,6 +212,39 @@ def _coarse_bands(far_extents, fid: int | None, *, center_lane, width_lane,
     return tuple(out)
 
 
+def _band_center_at(bands, z: float) -> float | None:
+    """分带走廊在 z 处的中心线（带中点线性插值，原始车头系）。"""
+    pts = [(0.5 * (b.z0 + b.z1), 0.5 * (b.left.x_m + b.right.x_m))
+           for b in bands
+           if b.left.x_m is not None and b.right.x_m is not None]
+    if not pts:
+        return None
+    if z <= pts[0][0]:
+        return pts[0][1]
+    for (z0, c0), (z1, c1) in zip(pts, pts[1:]):
+        if z <= z1:
+            w = 0.0 if z1 <= z0 else (z - z0) / (z1 - z0)
+            return c0 + (c1 - c0) * w
+    return pts[-1][1]
+
+
+def far_hint_lane(bands, coarse_bands, lane_w_m: float | None) -> float | None:
+    """中远场地面可见范围的横向不对称（道，右正，原始车头系）。
+
+    最近一条两侧有证据的粗带中点相对该纵深中心线的偏移。**原始坐标直接
+    相减**，不经过选择帧平移——executed/走廊原点不得漏进方向信号。"""
+    if not coarse_bands or not lane_w_m or lane_w_m <= 0:
+        return None
+    for b in coarse_bands:
+        if b.left.x_m is None or b.right.x_m is None:
+            continue
+        cen = _band_center_at(bands, 0.5 * (b.z0 + b.z1))
+        if cen is None:
+            return None
+        return (0.5 * (b.left.x_m + b.right.x_m) - cen) / lane_w_m
+    return None
+
+
 def _green_boundary(grid, side: int, z0: float, z1: float) -> BandBoundary | None:
     """带内该侧的绿区范围边界（栅格实测路面）。
 
@@ -267,7 +314,12 @@ def build_corridor(reading, grid, fid: int | None, *,
     地面横向范围（depth_geo.ground_far_extents 产出）——开关 far_ground_supply
     开时拼成 coarse_bands（地面密度水管，16~80m，src=inferred，**不进
     bands**：车道级消费面只读 bands，远带方向级接入是显式消费）；
-    关（或无同帧范围）时 coarse_bands 为空。"""
+    关（或无同帧范围）时 coarse_bands 为空。
+
+    近带中心守卫：近带（z<NEAR_BAND_GUARD_Z）双侧中点偏离绝对路心超
+    NEAR_BAND_CENTER_TOL_M → 该带退回空气墙。保险杠近场视锥/挖洞会把绿区
+    裁成偏心小块，分带中心与包络（选择帧中心、规划器 center0）不得脱离
+    墙/空气墙绝对链。"""
     bands = []
     edge_pts = (getattr(reading, "edge_pts", ()) or ()) if reading is not None else ()
     for i in range(N_BANDS):
@@ -284,6 +336,18 @@ def build_corridor(reading, grid, fid: int | None, *,
                      or _air_boundary(side, center_lane, width_lane, lane_w_m)
                      or BandBoundary(None, UNKNOWN))
             sides[side] = b
+        if (z0 < NEAR_BAND_GUARD_Z and center_lane is not None
+                and width_lane is not None and lane_w_m):
+            lx, rx = sides[-1].x_m, sides[1].x_m
+            if lx is not None and rx is not None and \
+                    abs(0.5 * (lx + rx)
+                        - center_lane * lane_w_m) > NEAR_BAND_CENTER_TOL_M:
+                # 近带偏心（近场视锥/挖洞裁出的破碎绿区）→ 退回绝对路心
+                # 的空气墙：分带中心与包络不得脱离墙/空气墙绝对链。
+                for side in (-1, 1):
+                    sides[side] = (
+                        _air_boundary(side, center_lane, width_lane, lane_w_m)
+                        or BandBoundary(None, UNKNOWN))
         n_pts = 0
         if grid is not None:
             rows = _band_rows_mask(grid, z0, z1)

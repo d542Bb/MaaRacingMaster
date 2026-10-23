@@ -41,6 +41,9 @@ if TYPE_CHECKING:
     from maaracing_master.plugins.speedrush.motion_plan import MotionPlan
 
 _STICK_FULL = 32767  # XUSB 摇杆半幅（core.capabilities.Gamepad 契约）
+# 持续大新息的"同向同量级"容差（道）：相邻两拍观测差在此内才算同一偏移，
+# 防真位移过程中的大新息被误判成持续偏移。
+_JUMP_SAME_TOL_LANE = 0.5
 
 
 def law(e: float, v_lat: float, p: Planner, gentle: bool = False,
@@ -109,8 +112,21 @@ class LateralPlanner:
         self._t_vcorr = 0.0
         # 上次被接受的修正方向（阶段 2 符号一致性门；None=尚无）
         self._last_corr_sign: bool | None = None
+        # 持续大新息判定（2026-10-23）：同向且量级相近的连续拒绝拍数——
+        # 连续 N 拍=真位移，放行 α 位置修正（单帧坏检测仍被拒）。
+        self._jump_streak = 0
+        self._jump_sign: bool | None = None
+        self._jump_last_r: float | None = None
+        self._jump_confirmed = False
         # 上一拍低通前杆值（负一~一；trace 标定用，行为不消费）
         self.last_steer_raw = 0.0
+
+    def _reset_jump(self) -> None:
+        """重置持续大新息判定（正常接受/重基/断供时调用——连续性被打断）。"""
+        self._jump_streak = 0
+        self._jump_sign = None
+        self._jump_last_r = None
+        self._jump_confirmed = False
 
     # ---------- 主入口 ----------
 
@@ -232,6 +248,7 @@ class LateralPlanner:
                     self._stale_t = 0.0
                     self._t_vcorr = 0.0              # 滤波（重）初始化：速度基线起算
                     self._last_corr_sign = None
+                    self._reset_jump()
                 else:
                     # 形成门饿死也要重基（13:29 局开局：车在左缘 ro=−2.9，形成门
                     # 拒定锚 7s、hold:0=杆恒 0 蹭墙）——超 stale 预算说明"中带观测"
@@ -244,6 +261,7 @@ class LateralPlanner:
                         self._stale_t = 0.0
                         self._t_vcorr = 0.0
                         self._last_corr_sign = None
+                        self._reset_jump()
             else:
                 obs = road_offset - self._road_anchor
                 r = obs - self.state.executed_lane
@@ -282,22 +300,45 @@ class LateralPlanner:
                                 self._last_corr_sign = r > 0
                         self._t_vcorr = 0.0
                     self._stale_t = 0.0
+                    self._reset_jump()
                 else:
-                    self._stale_t += dt_s
-                    if self._stale_t >= self.p.anchor_stale_s:
-                        # 时间判据重基（13:29 局教训：拍数门 40 次**喂入**拒绝≈2s+，
-                        # 供数黑视期还根本不计数——车以 0 杆直开 5.5s 怼进右墙，
-                        # ro=+1.7~+2.1 全程在喊）。陈旧即重基到路上：exec:=ro、
-                        # anchor:=0——"道0"恢复路中心语义，闭环一拍复活。
-                        self.state.executed_lane = road_offset
-                        self.state.v_lat_est = 0.0
-                        self._road_anchor = 0.0
+                    # 持续偏移放行（2026-10-23）：同向、量级相近的大新息连续
+                    # N 拍 = 真位移（车贴边或模型漂移后观测回归），不是单帧坏
+                    # 检测——按普通观测收 α 位置修正。旧行为要等 anchor_stale_s
+                    # 重基，期间规划器按错位帧打杆（实拍 180900_p2：ro=−1.74
+                    # 持续 1.4s，exec 从 −0.71 漂到 −0.29 才重基，车一直贴左墙）。
+                    same = (self._jump_sign is not None
+                            and (r > 0) == self._jump_sign
+                            and abs(r - self._jump_last_r) <= _JUMP_SAME_TOL_LANE)
+                    self._jump_streak = self._jump_streak + 1 if same else 1
+                    if not same:
+                        self._jump_confirmed = False   # 方向/量级变了要重新确认
+                    self._jump_sign = r > 0
+                    self._jump_last_r = r
+                    if self._jump_confirmed or \
+                            self._jump_streak >= self.p.obs_jump_confirm_ticks:
+                        self._jump_confirmed = True
+                        self.state.executed_lane += self.p.obs_alpha * r
                         self._stale_t = 0.0
-                        self._t_vcorr = 0.0
-                        self._last_corr_sign = None
+                    else:
+                        self._stale_t += dt_s
+                        if self._stale_t >= self.p.anchor_stale_s:
+                            # 时间判据重基（13:29 局教训：拍数门 40 次**喂入**
+                            # 拒绝≈2s+，供数黑视期还根本不计数——车以 0 杆直开
+                            # 5.5s 怼进右墙，ro=+1.7~+2.1 全程在喊）。陈旧即
+                            # 重基到路上：exec:=ro、anchor:=0——"道0"恢复路中心
+                            # 语义，闭环一拍复活。
+                            self.state.executed_lane = road_offset
+                            self.state.v_lat_est = 0.0
+                            self._road_anchor = 0.0
+                            self._stale_t = 0.0
+                            self._t_vcorr = 0.0
+                            self._last_corr_sign = None
+                            self._reset_jump()
         elif self._road_anchor is not None:
             # 断供计时：黑视本身=漂移温床，超预算则帧作废（下个中带观测重形成）
             self._stale_t += dt_s
+            self._reset_jump()
             if self._stale_t >= self.p.anchor_stale_s:
                 self._road_anchor = None
                 self._stale_t = 0.0

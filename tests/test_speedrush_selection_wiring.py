@@ -139,13 +139,18 @@ def test_road_frame_origin_is_master_not_band_mid():
 
 
 def test_coarse_control_takes_center_layer(monkeypatch):
-    """粗层接控制：只接管 L4，目标=粗层选定车道（-1 道）。"""
+    """粗层接控制：只接管 L4，目标=粗层选定车道（-1 道）。
+
+    这里锁的是**路线闸关**时的接管链（本层自选道直接进控制）；闸开时接控制
+    的是路线承诺道，锁在路线层测试文件里。被喂的报告候选集为空，承诺层会按
+    「无车道级证据」如实弃权，所以本测必须显式关闸，否则测的是另一条链。"""
     from maaracing_master.plugins.speedrush import decision as dmod
     from maaracing_master.plugins.speedrush.coarse import CoarseReport
     monkeypatch.setattr(
         dmod, "choose_lane",
         lambda *a, **k: CoarseReport(0.0, -1.0, -1, 24.0, "space", ()))
-    eng = DecisionEngine(CFG)
+    cfg = replace(CFG, route=replace(CFG.route, control=False))
+    eng = DecisionEngine(cfg)
     out = eng.update(_obs(1), 0.05, executed_lane=0.0, corridor=_corridor())
     assert out.reason == "sel:center:coarse"
     assert out.x_target == pytest.approx(-0.7, abs=0.02)

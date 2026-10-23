@@ -521,6 +521,28 @@ def test_ego_road_reuse_tick_consumes_no_new_evidence():
     assert len(o._win) == 3
 
 
+def _far_ext(mid_m, half_m=2.0):
+    return ((16.0, 31.0, mid_m - half_m, mid_m + half_m, 1000),)
+
+
+def test_far_hint_shared_filter_updates_only_on_new_evidence():
+    """中远场方向只过滤一次：新远带证据拍更新 EMA，其余拍共享同一结果
+    （消费端不再各自去抖）。深度 ~10Hz，α=0.5 延迟约一个证据间隔。"""
+    o = smod._EgoRoadObserver(lane_w_m=3.0)
+    bnd = _bnd_clusters(-2.9, -0.9)          # 路心 -1.9 道 = -5.7m
+    c1 = o.update(bnd, now=1000.0, far_extents=_far_ext(-3.9))
+    assert c1.far_hint_lane == pytest.approx(0.6)
+    assert c1.far_hint_age_ms == pytest.approx(0.0)
+    # 复用拍给另一组远带：不是新证据，共享结果必须保持
+    c2 = o.update(bnd, now=1000.05, new=False, far_extents=_far_ext(-5.7))
+    assert c2.far_hint_lane == pytest.approx(0.6)
+    assert c2.far_hint_age_ms == pytest.approx(50.0)
+    # 新证据：EMA α=0.5 → 0.6 + 0.5*(0 − 0.6) = 0.3
+    c3 = o.update(bnd, now=1000.10, far_extents=_far_ext(-5.7))
+    assert c3.far_hint_lane == pytest.approx(0.3)
+    assert c3.far_hint_age_ms == pytest.approx(0.0)
+
+
 def test_control_chain_ego_road_gap_semantics():
     """chain 的 ego_road 即 pair 语义（无分档、无目标锁定机器）。"""
     m = _module()
@@ -732,9 +754,8 @@ def test_master_mode_region_feeds_and_edge_audited(monkeypatch):
 
 
 def test_master_mode_region_abstain_honest_none(monkeypatch):
-    """master 模式区弃权（无绿行）→ 供数 None（slot 兜底照旧），**不回退找边**
-    ——双主人切换=0.8 道级 ro 台阶，宁黑视不换尺（13:29 黑视由 slot/None 链路
-    与陈旧重基消化）。"""
+    """master 模式区弃权（无绿行、无墙证据）→ 供数 None，**不回退找边**；
+    记忆只在桥接窗口内接棒，过期诚实 None（13:29 黑视纪律）。"""
     import numpy as np
     from maaracing_master.plugins.speedrush import depth_geo as dg
     d = load_decision()

@@ -32,8 +32,7 @@ def _observe(cars=(), coins=(), bonuses=()):
 
 
 def _hand_x(cx: int, cy: int, cal: Calib = CAL) -> float:
-    return ((cx - cal.vpx) / (cy - cal.y_h)
-            - (cal.ego_cx - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
+    return (cx - cal.vpx) / (cy - cal.y_h) * cal.a_x
 
 
 class TestNormalize:
@@ -44,7 +43,7 @@ class TestNormalize:
 
     def test_ego_lane_reads_zero(self):
         # 正前方（自车列）的目标横向读 ~0
-        d = Detection(cx=int(CAL.ego_cx), cy=520, w=50, h=60, conf=0.8)
+        d = Detection(cx=640, cy=520, w=50, h=60, conf=0.8)  # 相机列=自车中心
         obs = _observe(cars=[d])
         assert abs(obs.targets[0].x_lane) < 0.01
 

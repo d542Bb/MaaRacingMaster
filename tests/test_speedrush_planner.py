@@ -409,6 +409,32 @@ def test_road_jump_rejected():
     assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
 
 
+def test_road_persistent_offset_accepted_after_confirm():
+    """持续大新息=真位移：同向同量级连续 obs_jump_confirm_ticks 拍后按普通
+    观测收 α 位置修正，不再等 1s 陈旧重基（期间按错位帧打杆）；单帧坏检测
+    与断续的大新息仍被拒。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
+                  obs_jump_max_lane=0.8)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    before = pl.state.executed_lane
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=-1.7)
+    assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3, road_offset=0.0)
+    assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
+    n = P.obs_jump_confirm_ticks
+    for i in range(4, 4 + n - 1):                    # 连续 n-1 拍仍拒
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=-1.7)
+    assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
+    pl.update(_out(x_target=0.0, fid=4 + n - 1, valid=4 + n - 1), DT,
+              4 + n - 1, road_offset=-1.7)           # 第 n 拍：确认放行
+    assert pl.state.executed_lane < before - 0.2
+    pl.update(_out(x_target=0.0, fid=5 + n - 1, valid=5 + n - 1), DT,
+              5 + n - 1, road_offset=-1.7)           # 确认后持续收 α
+    assert pl.state.executed_lane < before - 0.3
+
+
 def test_starved_frame_rebases_to_road():
     """形成门饿死超时也重基（13:29 局开局：车在左缘 ro=−2.9，形成门拒定锚
     7s、hold:0=杆恒 0 蹭墙）。预算内不定锚不打杆；超时重基 exec:=ro、道0=路中心，
@@ -433,16 +459,17 @@ def test_starved_frame_rebases_to_road():
 def test_stale_rejected_corrections_rebase():
     """时间判据陈旧重基（13:29 死亡螺旋：ro=+1.9 全程、exec 冻结 −0.13、0 杆
     5.5s 怼右墙——旧"连续 40 次喂入拒绝"判据只攒到 31 次，永不触发）。
-    重基后道0=路中心，闭环一拍复活。"""
+    持续偏移的常规出口是确认放行（收 α 修正，exec 逼近 ro）；超时重基仍保留
+    作兜底。重基/收敛后道0=路中心，闭环一拍复活。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.5)  # 锚=0（道0=路心）
     n = int(P.anchor_stale_s / DT)
-    for i in range(2, n + 2):                      # ro=+1.9 喂 1s：r≈1.4+ 全拒
+    for i in range(2, n + 2):                      # ro=+1.9 喂 1s：r≈1.4+
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=1.9)
     assert pl._road_anchor == 0.0
-    assert pl.state.executed_lane == pytest.approx(1.9)
+    assert pl.state.executed_lane == pytest.approx(1.9, abs=0.05)
     c = pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99, road_offset=1.9)
     assert c.steer_x < 0                           # 道0=中心，车在 +1.9 → 向左回
 

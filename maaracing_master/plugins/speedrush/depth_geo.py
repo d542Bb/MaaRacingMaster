@@ -27,10 +27,9 @@
   正，与退役像素尺同号约定）。
 - **空中结构剔除**：SKY_HGT=1.2m——桥/天空域点 hgt 实测 ≥7.5m，护栏 ≤1m，
   间隙巨大；不剔会把远端 Z 箱中位整体抬高、穿越在桥带内缘误触发。
-- **挖除一条缝**（2026-10-10 合并定案）：自车 3D 框（|X|<EGO_ABS_X &
-  Z<EGO_ABS_Z）∪ 物体候选区，逐点 × 剃本体刀（hgt>OBJ_KNIFE_HGT）——找边/
-  栅格/质量门共用同一口径；旧 ego 2D 紧矩形（ego_mask.json，41 帧统计包络比
-  车顶高 ~20px：盖掉 22-35m 可见路面格、跳坡误盖、换车须重算）随合并退役。
+- **挖除一条缝**：YOLO 物体候选区 × 剃本体刀（hgt>OBJ_KNIFE_HGT）——找边/
+  栅格/质量门共用同一口径。保险杠机位（2026-10-23）自车在相机之后、不进点云，
+  旧追车机位的自车 3D 框退役（它会把车头前方 3~10m 有效路面当车体挖掉）。
 
 **标定常量出处**：平面拟合阈值=55 帧口径沿用（2026-09-26 定案）；找边阈值
 （EDGE_HT/ZBIN 等）=金标帧 MoGe 点云校准（2026-10-01，探针定案后随产线实现
@@ -108,15 +107,10 @@ def _band_rows(h: int) -> tuple[int, int]:
     带必须同比缩放才落在同一物理行域（h=720 时逐位等于 (Y0, DIAG_Y1)）。"""
     return (Y0 * h // 720, DIAG_Y1 * h // 720)
 
-# ── 相机系→车头系基准（2026-10-10 挪正：只挪显示/表示面，不进测量与判据）──
-# 全部 z 距离的测量帧是相机系（点云、ZBIN、栅格、拟合域原样不动）；用户可见
-# 的距离标签（BEV 刻度、走廊带标、检测标注）以车为原点才诚实——车头在相机
-# 前 ~5m，相机系"3m"其实在车底下。基准=着地点（自车点云密集段底行，车与路
-# 面相接处）z p50=5.00m（n=67 包，p5~p95 4.17~5.58；旧会话同口径 5.69，跨局
-# 散布 ±0.35m，场景俯仰所致）——车头（前保险杠）点云拖尾不可直测（自车点云
-# z p90 混远景 p50=21m），车尾（自车点云最近点）p50=4.52 为下界佐证。用旧值
-# 5.7 的差异在 25m 量程上 ~3%，不构成换基准的理由。
-CAM_Z_DATUM_M = 5.0
+# ── 相机系→车头系基准（2026-10-23 保险杠机位归零）──
+# 保险杠相机装在车头，相机系与车头系同原点（旧追车机位在车后 5m 的挪正不再
+# 适用）。全部 z 距离的测量帧仍是相机系，只是对外标签不再减 5m。
+CAM_Z_DATUM_M = 0.0
 
 # ── 平面拟合（路面走廊域，Y = aX + bZ + c）──────────────────────────────
 # 拟合域只收「路面点」是定案口径（2026-09-30 点云指正、2026-10-01 金标双平面
@@ -127,8 +121,6 @@ PLANE_ITERS = 3       # 走廊迭代轮数
 PLANE_TOL = 0.15      # 走廊残差容差（固定；路面本身是平的，不随 Z 放宽）
 ROAD_X_MAX = 4.0      # 路面点横向域（米）
 ROAD_Z_LO, ROAD_Z_HI = 4.0, 30.0
-EGO_ABS_X, EGO_ABS_Z = 1.3, 10.0   # 自车 3D 框（拟合域排除 + 挖除缝）：车与相机
-                                   # 刚性连接，跳坡/换车时车体 Z 域不变仍落框内
 MIN_PLANE_PTS = 500
 
 # ── 拟合质量门（2026-10-09 定案：坏拟合的判据是路区残差/内点率，不是角度）──
@@ -150,8 +142,8 @@ PLANE_PITCH_MAX_DEG = 15.0  # 同上（对称界：点云 Y 轴 y_up/y_down 两�
 # 实测空档（4.6~9.6cm）的保守侧，0.5=半数路面。
 PLANE_INLIER_FLOOR = 0.5
 PLANE_RESID_P50_MAX = 0.06
-OBJ_KNIFE_HGT = PLANE_TOL  # 剃本体刀位（挖除区内高出路面 0.15m 以上=本体点，
-                           # 自车 3D 框与物体候选区同刀）；路面像素与贴地币
+OBJ_KNIFE_HGT = PLANE_TOL  # 剃本体刀位（候选区内高出路面 0.15m 以上=本体点）；
+                           # 路面像素与贴地币
                            # （hgt≈0）留在候选区，不是障碍
 DIG_CELL_FRAC = 0.5        # 格级挖除占比：刀是逐点的，格是 0.25m 的——挖除点
                            # 占比达此值才算挖除格（本体占据），零星噪声尾点
@@ -216,10 +208,20 @@ X_MAX_M = 12.0        # 剖面横向域（米）。2026-10-10 扩 14 试装回�
 # 直接算式与旧 while 的逐次累加**逐位同值**：0.125=2⁻³ 的整数倍，且 |x|<16 时
 # ulp≤2⁻²⁰ 整除 2⁻³，故累加/直算都无舍入（这是「格边界判定不变」的前提）。
 N_XBIN = int(2 * X_MAX_M / XBIN_DX)
-# 近场车道级约束域（米）：_side() 车道读数箱上限 + _row_intervals 路心/区读数
-# 行上限。远箱/远行（扩窗 16~30m）看到的是不同结构（弯道/退让建筑），进近场
-# 约束会拽歪读数（金标三帧 + 68 包 A/B 实证）——远箱走墙跟踪/BEV。
+# 近场车道级约束域（米）：_side() 车道读数箱上限（找边仪器）。远箱/远行
+# （扩窗 16~30m）看到的是不同结构（弯道/退让建筑），进近场约束会拽歪读数
+# （金标三帧 + 68 包 A/B 实证）——远箱走墙跟踪/BEV。
 NEAR_Z = 16.0
+# 区读数/路心行域上限（米，保险杠机位四局回放）：路心只取 3~6m 近行。
+# 同一批帧对比 3-16m：抖动 p50 0.25→0.17 / d90 0.79→0.50、>1m 尾部 19%→1%、
+# 弯道斜率 0.75→0.05——远行只贡献边界归属噪声（中位值与近行一致）。
+# 与 NEAR_Z 分开：找边仪器的近箱上限仍是 16m，两者不是同一个尺子。
+REGION_Z_HI = 6.0
+# 区读数/路宽行域上限（米）：**宽度必须吃远行**。保险杠相机在 3~6m 只看得到
+# 视锥内的两条车道（2026-10-23 抽样 54 帧：3-6m 行宽中位 2.37 道、3-16m
+# 4.44 道，逐行宽度到 12~16m 仍在涨），近行宽度会把走廊判成 ~8m 宽，±1 道
+# 候选全部出界、变道能力整段消失。路心仍只吃 REGION_Z_HI 近行（见上）。
+REGION_WIDTH_Z_HI = NEAR_Z
 REGION_X_MAX = 10.5    # 区读数/路心横向域（米，2026-10-05 校准域）：扩窗宽列
 #                       （±10.5~14）只进墙跟踪/BEV/走廊远带——窗外平地格（路肩/
 #                       泄流）把绿区 [min,max] 撑宽拽路心（A/B 实测 30 帧
@@ -393,6 +395,7 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     DML 互斥（core.dml_lock）：感知会话与深度会话并发 run 会段错误杀进程
     （2026-09-25 实机 + 双线程复现），故 run 本体抢锁、抢不到抛 Busy 让调用方
     跳帧——本层不等待，控制拍的感知优先。"""
+    global LAST_SLOW_FORWARD
     # 分段计时（单 worker 线程调用，无竞争）：observe_debug 取走后进观测面。
     # 离线分解见 probe_moge_stage_decompose；在线口径盯 forward 漂移（显存
     # 吃紧时普通路径会翻倍，IO binding 定案的实机哨）。
@@ -404,7 +407,14 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     try:
         t_fwd = time.perf_counter()
         points, mask, metric_scale = moge_post.forward(sess, blob, 1032)
-        LAST_STAGE_MS["forward"] = (time.perf_counter() - t_fwd) * 1000.0
+        fwd_ms = (time.perf_counter() - t_fwd) * 1000.0
+        LAST_STAGE_MS["forward"] = fwd_ms
+        if fwd_ms >= SLOW_FORWARD_MS:
+            LAST_SLOW_FORWARD = {
+                "ts_ns": int(time.perf_counter() * 1e9),
+                "forward_ms": round(fwd_ms, 1),
+                "pre_ms": round(LAST_STAGE_MS.get("pre", 0.0), 1),
+            }
     finally:
         dml_lock.LOCK.release()
     t_rec = time.perf_counter()
@@ -453,6 +463,18 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
 # scan（找边扣除平面拟合）= edges−plane，离线导出。observe_debug 取走后进
 # _stage_win 滑窗；worker 发布时随帧快照，进 trace dgeo_seg.stages。
 LAST_STAGE_MS: dict[str, float] = {}
+
+# 慢 forward 锁存（2026-10-22 DML 锁卡顿归因）：worker 是 latest-only，
+# 卡住那一帧的 segments 会被后续正常帧覆盖；这里把每次 forward ≥ 阈值的
+# 尝试单独留下一条（同钟 perf_counter_ns），控制拍 trace 直接读取。
+# 不影响推理/锁协议，只做观测。
+SLOW_FORWARD_MS = 200.0
+LAST_SLOW_FORWARD: dict | None = None
+
+
+def last_slow_forward() -> dict | None:
+    """最近一次慢 forward 锁存；无则 None（trace 诊断用）。"""
+    return LAST_SLOW_FORWARD
 
 
 def _timing_segments(frame_ts_ns: int | None, t_push: float, t_start: float,
@@ -607,9 +629,9 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     """路面平面拟合 Y=aX+bZ+c → coef；域内点不足判失败（None，诚实弃权）。
 
     拟合域只收「路面点」（定案口径，见模块头「平面拟合」注释）：域窗=走廊
-    常量，自车区由 3D 框排除——物体候选区不进拟合域排除（物体点混进拟合
-    不拽歪平面，走廊收敛自动拒离面点，83 包实测系数逐位一致），挖除语义
-    统一进 ``_dig_3d_mask`` 一条缝（2026-10-10 合并定案）。**特征种子**——列
+    常量；物体候选区不进拟合域排除（物体点混进拟合不拽歪平面，走廊收敛自动
+    拒离面点，83 包实测系数逐位一致），挖除语义统一进 ``_dig_3d_mask`` 一条缝。
+    **特征种子**——列
     剖面特征识别的路面点先拟合出起步平面，三候选竞争选优（全域/左半/右半，
     判据与病理见 ``_pick_seed_candidate``：墙面点躲得过深度增量判据，全域
     单种子被「左路 + 右墙」折衷拽歪 5~6°）；**走廊收敛**——从种子平面起按
@@ -619,8 +641,7 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     旧位置圈地路径（回退开关）；特征种子失败同样回退。走廊域逐点静态，一次
     抽取域点集后域内迭代（布尔掩码保序，与逐轮全幅重选逐位等价）。"""
     ok = np.isfinite(X) & np.isfinite(Y) & np.isfinite(Z) & (Z > 0)
-    road = (ok & (np.abs(X) < ROAD_X_MAX) & (Z > ROAD_Z_LO) & (Z < ROAD_Z_HI)
-            & ~((np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)))
+    road = (ok & (np.abs(X) < ROAD_X_MAX) & (Z > ROAD_Z_LO) & (Z < ROAD_Z_HI))
     n = int(road.sum())
     if n < MIN_PLANE_PTS:
         return None
@@ -628,8 +649,7 @@ def _fit_road_plane(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     ones = np.ones(n, np.float32)
     m = None
     if fy is not None:
-        bad = (~np.isfinite(Z) | (Z <= WALK_Z_MIN)
-               | ((np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)))
+        bad = (~np.isfinite(Z) | (Z <= WALK_Z_MIN))
         seed = _pick_seed_candidate(
             _road_by_column_profile(Z, fy, bad), X, Y, Z, road)
         if seed is not None:
@@ -842,18 +862,15 @@ def _scan_side(xb: np.ndarray, hb: np.ndarray, side: int, zc: float,
 
 def _dig_3d_mask(X: np.ndarray, Z: np.ndarray, hgt: np.ndarray,
                  obj_band: np.ndarray | None) -> np.ndarray:
-    """统一挖除缝（2026-10-10 合并定案）：自车 3D 框 ∪ 物体候选区，逐点 × 刀。
+    """统一挖除缝：物体候选区 × 剃本体刀（保险杠机位，2026-10-23 去掉自车框）。
 
-    「挖什么」只留一条缝，找边/栅格/质量门消费同一口径——旧态是拟合/找边/
-    栅格三处三套答案（ego 2D 紧矩形整挖 + obj 矩形×刀），2D 矩形与车顶的
-    相对位置随车型/机位漂移（统计包络比车顶高 ~20px：盖掉 22-35m 可见路面
-    格、跳坡误盖、换车须重算），ego_mask.json 整体退役。3D 框 + 刀自动适应：
-    车与相机刚性连接，跳坡/换车时车体 Z 域不变仍落框内。hgt 缺失（nan）的
-    点不挖——它们本就被下游 isfinite 检查排除。"""
-    dig = (np.abs(X) < EGO_ABS_X) & (Z < EGO_ABS_Z)
-    if obj_band is not None:
-        dig = dig | obj_band
-    return dig & (hgt > OBJ_KNIFE_HGT)
+    保险杠相机装在车头，自车车体在相机之后、不进入点云，旧追车机位的自车
+    3D 框（|X|<1.3 & Z<10）随之退役——它会把车头前方 3~10m 的有效路面点
+    当车体挖掉。现在只挖 YOLO 物体候选区里高出路面（hgt>OBJ_KNIFE_HGT）的
+    本体点；hgt 缺失（nan）的点不挖——它们本就被下游 isfinite 检查排除。"""
+    if obj_band is None:
+        return np.zeros(X.shape, bool)
+    return obj_band & (hgt > OBJ_KNIFE_HGT)
 
 
 def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
@@ -868,7 +885,7 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     守卫与诊断回投共用）。``fy`` 同帧纵向焦距（列剖面特征行走的增量理论值用）；
     None 时回退 fx——MoGe 归一化内参约定下横纵焦距差实测 ~0.1%，远小于行走
     容差窗（离线点云缓存只存了 fx，故回退合法；产线 observe 传真值）。
-    ``object_mask``（YOLO 框）为候选区，按统一挖除缝（自车 3D 框 ∪ 候选区）×
+    ``object_mask``（YOLO 框）为候选区，按统一挖除缝（候选区）×
     剃本体刀挖除（断车身→路面粘连）。``coef`` 传入已有平面即跳过拟合（产线
     observe_debug 一帧一拟共享，2026-10-10 合并定案；离线复算/单独调用缺省
     自拟合）——质量门仍在本函数内判（门判据=挖除缝内残差，随平面走）。
@@ -1002,7 +1019,7 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     ``pts``/``fx``/``fy``/``obj`` 口径与 ``reading_from_points`` 一致（全幅
     点图、同帧全幅焦距、物体框候选区）。复用 ``_fit_road_plane`` 与
     ``_binned_median``（只调用不复制）。挖除语义=统一缝 ``_dig_3d_mask``
-    （自车 3D 框 ∪ 候选区 × 剃本体刀，2026-10-10 合并定案，与找边同口径）。
+    （候选区 × 剃本体刀，与找边同口径）。
     ``coef`` 传入已有平面即跳过拟合——**产线调用点自 2026-10-10 起吃
     observe_debug 一帧一拟的共享 coef**（一份真值，省一次列剖面重算 ~34ms/
     帧；两路只读共享点云/掩码/coef、不共享可变状态，挖除缝与门各自用同一
@@ -1065,8 +1082,8 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     ix = np.floor((Xb[ok] + GRID_X_MAX) / GRID_CELL).astype(np.int64)
     iz = np.floor((Zb[ok] - GRID_Z_LO) / GRID_CELL).astype(np.int64)
     flat = (iz * GRID_NX + ix)
-    # 统一挖除缝（2026-10-10 合并定案，同 reading 找边口径）：自车 3D 框 ∪
-    # 物体候选区，逐点 × 剃本体刀（hgt>OBJ_KNIFE_HGT）——矩形内路面像素留在
+    # 统一挖除缝（同 reading 找边口径）：物体候选区逐点 × 剃本体刀
+    # （hgt>OBJ_KNIFE_HGT）——矩形内路面像素留在
     # 栅格（矩形挖整块让格子饿死，d00080/81 左半不可走 0~1% 的帮凶之一）。
     dug = _dig_3d_mask(Xb, Zb, hgt, obj_band)[ok]
     hv = np.ascontiguousarray(hgt[ok], np.float32)
@@ -1166,15 +1183,18 @@ def ground_far_extents(pts: np.ndarray,
     return tuple(out)
 
 
-def _row_intervals(grid: DrivableGrid) -> tuple[np.ndarray, np.ndarray] | None:
+def _row_intervals(grid: DrivableGrid, z_hi: float = REGION_Z_HI
+                   ) -> tuple[np.ndarray, np.ndarray] | None:
     """绿区逐行横向区间（米，格界）：行序无关直接按 Z 分箱。无绿行 → None。
-    行域上限=NEAR_Z：远行（扩窗 16~30m，弯道处远端绿区偏移）不进近场约束
-    ——路心/区读数是车道级近场供数，2026-10-10 A/B 实测 51/68 帧被远行拽
-    中位 0.625m（p90 2.25m）。横向域=REGION_X_MAX：扩窗宽列的平地格（路肩/
-    泄流）撑宽绿区拽路心（A/B 实测 30 帧 0.25m 中位/2.375m max）。"""
+
+    ``z_hi`` 是行域上限：路心用 REGION_Z_HI（3~6m，远行边界随弯道/路肩平移，
+    进路心会把「可见哪段路」的变化当成车在动——四局回放 3-16m 的 >1m 尾部
+    19%、弯道斜率 0.75，3-6m 降到 1%、0.05）；路宽用 REGION_WIDTH_Z_HI
+    （3~16m，近行受视锥裁切、宽度系统性偏窄）。横向域=REGION_X_MAX：扩窗
+    宽列的平地格（路肩/泄流）撑宽绿区拽路心。"""
     drivable = (grid.state == GRID_DRIVABLE)
     zc = GRID_Z_LO + (np.arange(grid.state.shape[0]) + 0.5) * GRID_CELL
-    drivable[zc >= NEAR_Z] = False
+    drivable[zc >= z_hi] = False
     xs_c = -GRID_X_MAX + (np.arange(grid.state.shape[1]) + 0.5) * GRID_CELL
     drivable[:, np.abs(xs_c) > REGION_X_MAX] = False
     has = drivable.any(axis=1)
@@ -1223,10 +1243,11 @@ def grid_center_lane(grid: DrivableGrid, lane_w_m: float) -> float | None:
 class RegionReading:
     """可行驶区域边界读数（路的定义=绿区物理边界，非车道线）。
 
-    左右缘=逐行绿区 [min,max] 边界按行宽加权的**加权中位**（车道单位，左负
-    右正，与 DepthRoadReading 同鸭子面：sides + 两侧 edge_lane）——
-    `grid_region` 供数主人的产数口。sides 诚实降级：绿行不足/单侧触窗
-    （±GRID_X_MAX 被截断的边界是假缘）不给 2；``*_clip_frac`` 留审计。"""
+    中心=近行绿区 [min,max] 的加权中位中点，宽度=远行绿区宽度的加权中位
+    （两套行域见 `region_reading`；车道单位，左负右正，与 DepthRoadReading
+    同鸭子面：sides + 两侧 edge_lane）——`grid_region` 供数主人的产数口。
+    sides 诚实降级：绿行不足/单侧触窗（±GRID_X_MAX 被截断的边界是假缘）
+    不给 2；``*_clip_frac`` 留审计。"""
 
     sides: int
     left_edge_lane: float | None
@@ -1292,20 +1313,31 @@ def blocked_inner_reading(grid: DrivableGrid, lane_w_m: float) -> BlockedReading
 def region_reading(grid: DrivableGrid, lane_w_m: float,
                    clip_frac: float = 0.34) -> RegionReading:
     """绿区 → 路的左右缘（RegionReading）。与 `grid_center_lane` 同源
-    （_row_intervals/_weighted_median 只调用不复制）：区中心=−(L+R)/2、
-    区宽=R−L 与离线基线 wmid 同族。挖洞楔在绿区**中部**挖走证据、车盒把
-    绿区劈洞——都不动 [min,max] 边界，天然免疫。"""
+    （_row_intervals/_weighted_median 只调用不复制）。
+
+    **中心与宽度都吃远行（3~16m，`REGION_WIDTH_Z_HI`）**：保险杠相机在
+    3~6m 只看得到视锥内约两条车道，近行 [min,max] 被视锥裁成以自车为中心
+    的对称窗——车贴左/右线时近行会报"正中"（实拍 172934/173018：墙/画面
+    都在 −1.5~−1.8 道，近行报 0）。远行能看到整幅路面（16m 处半宽 ~14m
+    > 路半宽 6.75m），中心无系统偏差；代价是弯道 0.75 的斜率噪声，由墙
+    绝对链当主人、区只在墙缺席时接棒。`grid_center_lane` 仍保留近行读数
+    作为 trace `ro_grid` 审计列（近行偏置的可见面）。
+
+    挖洞楔在绿区**中部**挖走证据、车盒把绿区劈洞——都不动 [min,max] 边界，
+    天然免疫。"""
     if not (lane_w_m > 0):
         return RegionReading(0, None, None)
-    iv = _row_intervals(grid)
-    if iv is None:
+    wide = _row_intervals(grid, REGION_WIDTH_Z_HI)
+    if wide is None:
         return RegionReading(0, None, None)
-    lo_m, hi_m = iv
-    lo_lane = lo_m / lane_w_m
-    hi_lane = hi_m / lane_w_m
-    weights = hi_lane - lo_lane
-    left = _weighted_median(lo_lane, weights)
-    right = _weighted_median(hi_lane, weights)
+    lo_w, hi_w = wide
+    lo_wl = lo_w / lane_w_m
+    hi_wl = hi_w / lane_w_m
+    w_w = hi_wl - lo_wl
+    left = _weighted_median(lo_wl, w_w)
+    right = _weighted_median(hi_wl, w_w)
+    if right - left <= 0.0:
+        return RegionReading(0, None, None)
     # 触窗=假缘：该侧在超过 clip_frac 比例的绿行里贴住 ±GRID_X_MAX
     drivable = grid.state == GRID_DRIVABLE
     has = drivable.any(axis=1)
@@ -1457,7 +1489,7 @@ class DepthRoadObserver:
         """一帧 → 读数（两侧可各自弃权）；推理失败 → None（不抛，控制链不因感知停摆）。
 
         ``object_mask``：YOLO 检测框（车/金币/奖励，外扩后）布尔掩码候选区，
-        按统一挖除缝（自车 3D 框 ∪ 候选区）× 剃本体刀挖除——物体从点云源头
+        按统一挖除缝（候选区）× 剃本体刀挖除——物体从点云源头
         消失，"穿车读墙"假缘不再产生。"""
         reading, _ = self.observe_debug(frame_rgb, object_mask)
         return reading

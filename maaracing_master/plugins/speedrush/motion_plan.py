@@ -237,6 +237,7 @@ class MotionPlan:
     dt_s: float = 0.05
     value_total: float = 0.0
     collision_cost: float = 0.0
+    corridor_viol_m: float = 0.0   # 被选候选的走廊侵入深度（米，0=可行）
 
     def as_trace(self) -> dict:
         return {
@@ -252,6 +253,7 @@ class MotionPlan:
             "cc": round(self.collision_cost, 2),
             "fd": round(self.frame_delta_m, 3),
             "unc": self.corridor_uncertain,
+            "cv": round(self.corridor_viol_m, 3),
             "cand": [[round(v, 3) for v in c] for c in self.cand_x],
         }
 
@@ -277,6 +279,7 @@ class _Cand:
     key: tuple
     value: float = 0.0
     collision_cost: float = 0.0
+    corridor_viol_m: float = 0.0
 
 
 def _envelope(scene: Scene, near_z_m: float, wall_margin_m: float,
@@ -477,10 +480,16 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             motion.cost_collision + (-d) * motion.cost_collision_depth_m
             for d in clears if d < 0.0)
         min_clear = min(clears, default=float("inf"))
-        corridor_ok = env is None or all(
-            env[0] <= xx <= env[1]
-            for xx, tt in zip(xs_m, ts)
-            if tt <= motion.corridor_check_s + 1e-9)
+        # 走廊侵入深度（米，检查时域均值）：0=全程在包络内。可行集为空时
+        # 它是唯一的逃生判据——布尔「在/不在」一旦全灭就退化成任意候选。
+        corridor_viol = 0.0
+        if env is not None:
+            chk = [xx for xx, tt in zip(xs_m, ts)
+                   if tt <= motion.corridor_check_s + 1e-9]
+            corridor_viol = sum(max(0.0, env[0] - xx, xx - env[1])
+                                for xx in chk) / max(1, len(chk))
+        corridor_ok = corridor_viol <= 0.0
+
         reward_hits = 0
         reward_hit_ids: set[int] = set()
         for r in rewards:
@@ -673,7 +682,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             idx, u, xs_m, xs_m[i], vs_lane[i], feasible,
             min_clear, reward_hits, reward_value, pass_count, pass_value,
             coin_hits, coin_error, center_dev, effort, layer, key,
-            value, collision_cost))
+            value, collision_cost, corridor_viol))
 
     feasible = [c for c in cands if c.feasible]
     reason = "plan:ok"
@@ -687,8 +696,13 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         if shortened:
             reason = "plan:ok_shortened"
     else:
+        # 可行集为空 = 自车已压在走廊边距内（贴墙行驶的日常状态，不是异常）。
+        # 此时目标是「最快脱离侵入」，不是「位移最小」：后者会挑反向满舵去
+        # 抵消逃离速度，把车钉在墙上（2026-10-23 局 192643_p2 fid 3653~3670，
+        # 车在左缘而计划满舵左，连续 0.85 s 撞护栏）。
         valid = False
-        chosen = min(cands, key=lambda c: abs(c.x_preview_m - scene.ego_x_m))
+        chosen = min(cands, key=lambda c: (c.corridor_viol_m, -c.value,
+                                           c.effort, c.idx))
         reason = "plan:infeasible_corridor"
     return MotionPlan(
         PLAN_SCHEMA, valid, reason, chosen.x_preview_m,
@@ -696,4 +710,4 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         len(feasible), chosen.idx, tuple(c.xs_m for c in cands),
         (chosen.x_preview_m - frame_delta) / lane_w,
         chosen.v_preview_lane, frame_delta, uncertain, dt,
-        chosen.value, chosen.collision_cost)
+        chosen.value, chosen.collision_cost, chosen.corridor_viol_m)

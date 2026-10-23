@@ -214,26 +214,40 @@ class ObjectDistance:
                                       # 与投影地平线待带 v 的实机 trace 检验（设计稿
                                       # §4 刀二判据），消费面（分带/投影）刀二带闸。
                                       # source 有效 + None = 新鲜锚尚未开评（非异常）
+    box_bridge_m: float | None = None  # 框高比桥接值（锚间插值；与
+                                      # metric_distance_m 同拍并存供 trace）。闸开且
+                                      # trace_only=false 时 metric 直接取此值、method=
+                                      # BOX_RATIO；trace_only=true 时只观测不消费。
 
 
 class DistanceSource(str, Enum):
     """出处标签（设计稿 §2）：ANCHOR=锚点生命周期内从未确认接近，直接持锚；
     RESCALED_ANCHOR=曾确认接近，持续 h 重标（进 RESCALED 是单行道，退出唯一
-    路径是新锚点重置基线）；UNKNOWN=无有效锚点。"""
+    路径是新锚点重置基线）；BOX_SIZE=无有效锚点但本拍有框，用框高经验式给
+    **粗距离**（保险杠机位四局标定，仅供近/远与选道，不进 TTC/精确间距）；
+    UNKNOWN=无有效锚点且无可用框（丢框且超出保持窗）。"""
 
     ANCHOR = "ANCHOR"
     RESCALED_ANCHOR = "RESCALED_ANCHOR"
     HELD = "HELD"          # 本拍丢框但仍在短路保持窗内：沿用最近一次距离
+    BOX_SIZE = "BOX_SIZE"  # 框高经验距离（粗回退；与已退役的锚间 HEIGHT_RATIO 不同）
     UNKNOWN = "UNKNOWN"
 
 
 class DistanceMethod(str, Enum):
     """距离合成方式：HOLD（持锚）/ RANGE_PROP（锚+区间速度外推；2026-10-13
-    替代 HEIGHT_RATIO 框高重标——框高抖动直接打进距离，实机生命表证伪）。
+    替代 HEIGHT_RATIO 框高重标——框高抖动直接打进距离，实机生命表证伪）/
+    BOX_SIZE（无锚时的框高经验距离，2026-10-23 保险杠机位四局标定：相对误差
+    中位 14.5%、p90 39%，仅作粗回退，不用于 TTC——与已证伪的锚间重标是两件事）/
+    BOX_RATIO（锚点之间用同轨框高比外推：z=z锚·h锚/h当前。框高比是无量纲
+    比值，车型/尺度在锚点处约掉；2026-10-23 四局离线验证：框有效子集误差
+    中位 3.3→2.1~2.8m、p90 13→9m，长锚间隔误差减半）。
     cy 传播与融合仍是未来带实验的候选，没有实验支持的 fallback 不进契约。"""
 
     HOLD = "HOLD"
     RANGE_PROP = "RANGE_PROP"
+    BOX_SIZE = "BOX_SIZE"
+    BOX_RATIO = "BOX_RATIO"
 
 
 class DistanceReason(str, Enum):
@@ -255,9 +269,11 @@ class MetricCarState:
     同帧焦距反投影——地平线退化带不再特殊。None=该量弃权（原因见 source/
     reason），消费端回退像素仪器，不臆造。
 
-    - z_m：当前米制距离（RESCALED=锚点按区间速度外推，ANCHOR=持锚原值）。
+    - z_m：当前米制距离（RESCALED=锚点按区间速度外推，ANCHOR=持锚原值，
+      BOX_SIZE=无锚时的框高粗距离——相对误差中位 ~15%/p90 ~40%，只够近/远）。
     - x_m = (cx−vpx)·z/fx：cx=当前框心、fx=锚点帧焦距、z=当前米制距离——
       三个量各差半拍（锚点帧 vs 当前帧），横向慢变量，误差二阶，如实记。
+      BOX_SIZE 无锚帧焦距，x_m 恒 None（横向回退像素尺子）。
     - v_close_mps：锚点门控估计（锚龄 ≥ gate_eval_min_ms 才出，None=估计窗
       未开——消费端此时回退像素 t_meet，不算 pacing）。
     - t_meet_s = z/v_close（v_close ≤ 0 = 掠过/远离 → None，**与「估计窗未开」
@@ -278,6 +294,9 @@ class MetricCarState:
     # （UNKNOWN 五因值或 est_window=有锚估计窗未开）。契约加法扩展。
     bridged: bool = False
     bridge_reason: str | None = None
+    # 框高比桥接距离（z_m 之外的第二列；trace 消费）。与 bridged 无关：
+    # bridged 是速度像素桥（t_meet），本字段是距离桥（z）。
+    box_bridge_z_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +364,13 @@ class TrackerParams:
                                       # 334ms，350ms 闸下锚出生即半老、只剩 1~3 拍
                                       # 可用=覆盖率主犯；区间速度+传播后长锚是
                                       # 诚实的，z 误差由 v 精度界）
+    # ---- 框高粗距离（2026-10-23 保险杠机位四局标定；仅无锚时启用）----
+    # z = K/h：K 由同帧「YOLO 框高 × 深度锚」经验拟合（不引用任何车型尺寸，
+    # 换机位/视角须重标）。四局 782 框实测相对误差中位 14.5%、p90 39%，
+    # 各距离档中位 11~16%——只够近/远与选道，不进 TTC（见 DistanceMethod）。
+    box_dist_k_px_m: float = 1285.0
+    box_dist_z_lo_m: float = 3.0
+    box_dist_z_hi_m: float = 90.0
     cluster_switch_m: float = 20.0    # 层一有效性：锚点簇跳变弃权门（trace 标定候选）
     z_jump_base_m: float = 2.0   # 亚门限翻跳丢弃门（2026-10-13）：相邻锚 |Δz| 超
                                  # `base + mps×dt` 丢弃该锚保旧锚——门限必须随锚间
@@ -352,6 +378,19 @@ class TrackerParams:
                                  # 15m 的正常锚会被定限误杀，轨道饿到超龄——
                                  # 2026-10-13 第三局 trace 实测覆盖率掉 40%→28%）
     z_jump_mps: float = 45.0     # 丢门的闭速界（m/s）：ego 极速量级；超界=量错不是真动
+    # ---- 框高比桥接 / 锚点框高一致门（2026-10-23 四局离线，证据 commit
+    # ---- 0e3a429：锚间误差中位 3.3→2.2m、p90 13→9m）----
+    box_bridge_weight: float = 0.7    # 框高比 vs 区间速度外推的权重（框为主：
+                                      # 速度外推在第二个会话反而差于持锚）
+    box_bridge_min_z_m: float = 8.0  # 保险杠机位口径；镜头比追尾视角前移约 4 m，
+                                     # 旧 12 m 门相当于现在的 8 m 物理间距。近场更近仍走锚点
+    box_bridge_h_jump: float = 0.35   # 单拍框高相对翻跳上限（框头/框全车翻转）
+    anchor_gate_resid: float = 0.30   # 框高比残差超过此值才怀疑新锚（锚间实测
+                                      # 一致组残差 8~11%，分歧组正是十米级跳变）
+    anchor_gate_rebase: int = 2       # 连续 N 个彼此一致的候选锚才重基（旧锚判错）
+    anchor_gate_fast_cap_mps: float = 80.0  # 无框高证人时的速度硬界：实测 P95
+                                      # 64~73 m/s，45 会误杀真实高速接近
+    anchor_gate_hard_mps: float = 120.0     # 有框高证人也拦的物理硬界（≈432 km/h）
     assoc_window: int = 18       # detection→track 帧映射窗（拍数）：须盖过最大清单
                                  # 滞后（P90 334ms≈13fid@38fps + 余量）——12 曾让
                                  # P90 滞后的整张清单归不了轨（ASSOC_FAIL）
@@ -366,7 +405,14 @@ class TrackerParams:
                 or self.gate_confirm < 1
                 or self.anchor_max_age_ms <= 0 or self.cluster_switch_m <= 0
                 or self.z_jump_base_m <= 0 or self.z_jump_mps <= 0
-                or self.assoc_window < 1):
+                or self.assoc_window < 1
+                or not 0.0 < self.box_bridge_weight <= 1.0
+                or self.box_bridge_min_z_m < 0
+                or not 0.0 < self.box_bridge_h_jump < 1.0
+                or not 0.0 < self.anchor_gate_resid < 1.0
+                or self.anchor_gate_rebase < 1
+                or self.anchor_gate_fast_cap_mps <= self.z_jump_mps
+                or self.anchor_gate_hard_mps <= self.anchor_gate_fast_cap_mps):
             raise ValueError(f"跟踪参数非法：{self}")
 
 
@@ -426,6 +472,12 @@ class _Track:
     src_mode: str = "metric"
     src_dwell: int = 2
     bridge_reason: str | None = None
+    # ---- 框高比桥接 / 锚点框高一致门（2026-10-23）----
+    anchor_h: float | None = None     # 锚点帧框高（与锚同生命周期）
+    box_ok: bool = True               # 本锚期内框高连续（>35% 单拍翻跳即 False）
+    prev_box_h: float | None = None   # 上一新鲜框高（翻跳判据的参照）
+    pending_z: float | None = None    # 被框高比判据拒绝的候选锚（连续一致才重基）
+    pending_n: int = 0
 
 
 class Tracker:
@@ -434,7 +486,10 @@ class Tracker:
     def __init__(self, cal: Calib | None = None,
                  params: TrackerParams = TrackerParams(),
                  bridge_enabled: bool = False,
-                 bridge_stay: int = 2):
+                 bridge_stay: int = 2,
+                 box_bridge_enabled: bool = False,
+                 box_bridge_trace_only: bool = True,
+                 anchor_box_gate_enabled: bool = False):
         # cal 缺省读几何真源（gate0.json）；三源分立，代码不写标定字面量
         self.cal = cal if cal is not None else load_calib()
         self.p = params
@@ -442,12 +497,18 @@ class Tracker:
         # decision.json 传入（tracking 层不读配置，配置流向单点在链构建）
         self._bridge_on = bridge_enabled
         self._bridge_stay = bridge_stay
+        # 框高比桥接（闸 box_bridge.enabled）：trace_only=true 只落 trace 列、
+        # 不改 metric_distance_m（首局验证口径）；锚点框高一致门独立于 trace_only
+        self._box_bridge_on = box_bridge_enabled
+        self._box_bridge_trace_only = box_bridge_trace_only
+        self._anchor_gate_on = anchor_box_gate_enabled
         self._tracks: list[_Track] = []
         self._next_id = 1
         self._last_fid: int | None = None
         self._stage: int | None = None
         self._last_obs: WorldObservation | None = None
         self._frame_tracks: dict[int, dict[tuple[str, int], int]] = {}  # fid → det_key→track_id
+        self._frame_h: dict[int, dict[int, float]] = {}  # fid → track_id→框高（锚点帧框高）
         self._sheet_orphan = False   # 本拍清单有条目但整张无法归轨（worker 滞后超窗）
         self._ingest_stats: dict | None = None   # 最近一次清单对账面（trace 消费）
         # 采集帧率估计（fid 时基，2026-10-11 车流 t_meet 换基）：fid 率是采集流
@@ -464,6 +525,7 @@ class Tracker:
         id 计数器不回卷——回放里 id 全局单调才好对账。"""
         self._tracks.clear()
         self._frame_tracks.clear()
+        self._frame_h.clear()
         self._sheet_orphan = False
         self._ingest_stats = None
 
@@ -509,6 +571,14 @@ class Tracker:
             t.x_lane, t.x_sigma, t.lane_side = o.x_lane, o.x_sigma, o.lane_side
             if o.x_lane is not None:
                 t.x_known = o.x_lane
+            # 框高连续性（框高比桥接与锚点一致门共用）：单拍 >35% 相对翻跳
+            # =框头/框全车切换，本锚期内不再信任框高比；新锚点重基时复位
+            if (self._box_bridge_on or self._anchor_gate_on) and o.h > 0:
+                if (t.prev_box_h is not None and t.prev_box_h > 0
+                        and abs(o.h - t.prev_box_h) / t.prev_box_h
+                        > self.p.box_bridge_h_jump):
+                    t.box_ok = False
+                t.prev_box_h = float(o.h)
             t.last_seen = fid
             t.matched = True
 
@@ -516,8 +586,11 @@ class Tracker:
         # 深度域只给 (fid, det_idx)，归轨道是本层自己的事（设计稿 §5 不变量：
         # 深度域不认识 track_id，永不该认识）
         frame_map: dict[tuple[str, int], int] = {}
+        frame_h: dict[int, float] = {}
         for ti, oi in matches.items():
-            frame_map[obs[oi].det_key] = self._tracks[ti].id
+            tid = self._tracks[ti].id
+            frame_map[obs[oi].det_key] = tid
+            frame_h[tid] = float(self._tracks[ti].h)
         for oi, o in enumerate(obs):
             if any(v == oi for v in matches.values()):
                 continue
@@ -525,13 +598,18 @@ class Tracker:
                 id=self._next_id, kind=o.kind, cy=o.cy, cx=o.cx, w=o.w, h=o.h,
                 conf=o.conf, x_lane=o.x_lane, x_known=o.x_lane,
                 x_sigma=o.x_sigma, lane_side=o.lane_side, rel_approach=0.0,
-                first_seen=fid, last_seen=fid, box=o.box, matched=True))
+                first_seen=fid, last_seen=fid, box=o.box, matched=True,
+                prev_box_h=float(o.h)))
             frame_map[o.det_key] = self._next_id
+            frame_h[self._next_id] = float(o.h)
             self._next_id += 1
         if frame_map:
             self._frame_tracks[fid] = frame_map
+            self._frame_h[fid] = frame_h
             while len(self._frame_tracks) > self.p.assoc_window:
-                self._frame_tracks.pop(next(iter(self._frame_tracks)))
+                old_fid = next(iter(self._frame_tracks))
+                self._frame_tracks.pop(old_fid)
+                self._frame_h.pop(old_fid, None)
 
         self._tracks = [t for t in self._tracks
                         if fid - t.last_seen <= self.p.grace_ticks]
@@ -644,47 +722,111 @@ class Tracker:
 
     # ---------- 混合测距（刀一 trace-only；语义与参数出处见设计稿） ----------
 
+    def _anchor_decision(self, t: _Track, z_new: float,
+                         h_new: float | None, dt_s: float) -> str:
+        """新锚可信度：accept=接受 / reject=保旧锚 / clear=清锚等重拍。
+
+        闸开时用**框高比残差**当第二证人：旧锚框高与锚点帧框高都新鲜、
+        本锚期框高未翻跳时，`z旧·h旧/h新` 就是新锚应落的位置；残差 ≤30%
+        即接受（高速真实接近也放行），超 30% 只算怀疑，连续两个彼此一致的
+        候选锚才判定旧锚错了、重基。没有框高证人时退回速度界 80 m/s；
+        120 m/s 是任何证人都不能越过的物理硬界。
+        """
+        if t.anchor_z is None:
+            return "accept"
+        if not self._anchor_gate_on:
+            # 闸关=逐位保留 2026-10-13 口径
+            if abs(z_new - t.anchor_z) > self.p.cluster_switch_m:
+                return "clear"
+            if abs(z_new - t.anchor_z) > (self.p.z_jump_base_m
+                                          + self.p.z_jump_mps * dt_s):
+                return "reject"
+            return "accept"
+        dz = abs(z_new - t.anchor_z)
+        if dz > self.p.z_jump_base_m + self.p.anchor_gate_hard_mps * dt_s:
+            return "reject"
+        if t.anchor_h and h_new and t.anchor_h > 0 and h_new > 0 and t.box_ok:
+            pred = t.anchor_z * t.anchor_h / h_new
+            resid = abs(z_new - pred) / max(z_new, 1.0)
+            return "accept" if resid <= self.p.anchor_gate_resid else "reject"
+        if dz <= self.p.z_jump_base_m + self.p.anchor_gate_fast_cap_mps * dt_s:
+            return "accept"
+        return "reject"
+
     def _ingest_anchors(self, sheet: DepthAnchorSheet) -> None:
         """detection-keyed 锚点清单 → 轨道锚点。归轨道走本层的帧映射表
         （深度域不认识 track_id）；本帧 fid 不在映射窗内的清单条目只能丢弃——
         那意味着 worker 滞后超过窗长，锚点年龄本来也要超闸。"""
         fmap = self._frame_tracks.get(sheet.fid)
+        hmap = self._frame_h.get(sheet.fid) or {}
         by_id = {t.id: t for t in self._tracks}
         mapped = 0
+        rejected = 0
+        rebased = 0
         for e in sheet.entries:
             tid = None if fmap is None else fmap.get((KIND_CAR, e.det_idx))
             t = by_id.get(tid) if tid is not None else None
             if t is None:
                 continue
             mapped += 1
-            if t.anchor_z is not None and abs(e.z_m - t.anchor_z) > self.p.cluster_switch_m:
+            h_new = hmap.get(t.id)
+            dt_s = (0.0 if t.anchor_z is None
+                    else (sheet.ts_ns - t.anchor_ts_ns) / 1e9)
+            decision = self._anchor_decision(t, e.z_m, h_new, dt_s)
+            if decision == "clear":
                 # 层一测量有效性：主簇跳变（实验实录帧间数十米假跳）——量错对象
                 # 的锚点救不了，弃权等重拍；阈值是 trace 标定候选
                 t.anchor_z = None
                 t.anchor_fx = None              # 焦距锚与 z 锚同生命周期
+                t.anchor_h = None
+                t.box_ok = True
+                t.pending_z = None
+                t.pending_n = 0
                 t.v_close_mps = None            # 速度与锚点同生命周期
                 t.v_inst = None
                 t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
                 continue
-            if t.anchor_z is not None:
-                dt_s = (sheet.ts_ns - t.anchor_ts_ns) / 1e9
-                if abs(e.z_m - t.anchor_z) > (self.p.z_jump_base_m
-                                              + self.p.z_jump_mps * dt_s):
-                    # 亚门限翻跳（近簇修正的残余）：丢弃该锚保旧锚——量错不是
-                    # 真动；门限随 dt 缩放（MoGe 卡顿拉长 dt 时真闭速锚不得
-                    # 误杀），超龄（EXPIRED 清锚）后自然重基线
+            rebase = False
+            if decision == "reject":
+                if not self._anchor_gate_on:
+                    # 闸关=旧口径：丢弃该锚保旧锚（不重基，等超龄自然清）
                     t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
+                    rejected += 1
                     continue
-                if dt_s > 0 and dt_s * 1000.0 >= self.p.gate_eval_min_ms:
-                    # 锚间区间差分 v̂（2026-10-13 换装，替代 log-h 框高式——
-                    # 实机生命表证伪：框高在"框头/框全车"间翻，v̂ 荒值 40~70m/s）。
-                    # 到锚即发布：速度证据在区间完成瞬间就成立，再等锚龄是旧
-                    # 逐帧锚时代的惯性（白丢 150ms，快会车整场等不到 v）
-                    t.v_inst = (t.anchor_z - e.z_m) / dt_s
-                    t.v_close_mps = t.v_inst
+                # 单锚分歧保旧锚；连续两个彼此一致的候选锚 = 旧锚才是错的
+                if (t.pending_z is not None
+                        and abs(e.z_m - t.pending_z)
+                        <= 0.25 * max(abs(t.pending_z), 1.0)):
+                    t.pending_n += 1
+                else:
+                    t.pending_z = e.z_m
+                    t.pending_n = 1
+                if t.pending_n < self.p.anchor_gate_rebase:
+                    t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
+                    rejected += 1
+                    continue
+                rebase = True
+                rebased += 1
+            if (not rebase and t.anchor_z is not None and dt_s > 0
+                    and dt_s * 1000.0 >= self.p.gate_eval_min_ms):
+                # 锚间区间差分 v̂（2026-10-13 换装，替代 log-h 框高式——
+                # 实机生命表证伪：框高在"框头/框全车"间翻，v̂ 荒值 40~70m/s）。
+                # 到锚即发布：速度证据在区间完成瞬间就成立，再等锚龄是旧
+                # 逐帧锚时代的惯性（白丢 150ms，快会车整场等不到 v）
+                t.v_inst = (t.anchor_z - e.z_m) / dt_s
+                t.v_close_mps = t.v_inst
+            elif rebase:
+                # 重基=换了基线：旧区间的速度证据对新锚无效
+                t.v_inst = None
+                t.v_close_mps = None
             t.anchor_z = e.z_m
             t.anchor_fx = sheet.fx              # 同帧焦距（x_m 反投影换算锚）
             t.anchor_ts_ns = sheet.ts_ns
+            t.anchor_h = float(h_new) if (h_new and h_new > 0) else None
+            t.prev_box_h = t.anchor_h
+            t.box_ok = True
+            t.pending_z = None
+            t.pending_n = 0
             # v_close 不随新锚清零（区间估计跨锚有效：上一个区间是当前最佳
             # 速度证据，新锚到龄后由新 v_inst 顶替）——清零曾造成每锚 150ms
             # 的 t_meet 断供，far 轨威胁信号以 MoGe 节拍闪现（2026-10-12 局）
@@ -693,13 +835,49 @@ class Tracker:
         # 清单对账面（20261016 归因：零锚轨损失在检测→清单→轨道之间——条目数
         # vs 映射成功数 vs fid 滞后，trace asheet 列消费；orphan 由 update 补）
         self._ingest_stats = {"entries": len(sheet.entries), "mapped": mapped,
+                              "rej": rejected, "rebase": rebased,
                               "fid_lag": None if self._last_fid is None
                               else self._last_fid - sheet.fid}
+
+    def _bridge_z(self, t: _Track, ts_ns: int) -> float | None:
+        """锚间框高比插值（闸 box_bridge.enabled）。只用本拍新鲜框：丢框、
+        框高翻跳、近场、无锚都给 None，消费端退回今日路径。"""
+        if not self._box_bridge_on or t.anchor_z is None:
+            return None
+        if not t.matched or t.h <= 0 or not t.box_ok:
+            return None
+        if not t.anchor_h or t.anchor_h <= 0:
+            return None
+        if t.anchor_z < self.p.box_bridge_min_z_m:
+            return None
+        z_box = t.anchor_z * t.anchor_h / float(t.h)
+        if not (0.4 * t.anchor_z <= z_box <= 2.0 * t.anchor_z):
+            return None
+        if t.v_close_mps is None:
+            return float(z_box)
+        age_s = max((ts_ns - t.anchor_ts_ns) / 1e9, 0.0)
+        z_cv = max(t.anchor_z - t.v_close_mps * age_s, 0.0)
+        w = self.p.box_bridge_weight
+        return float(w * z_box + (1.0 - w) * z_cv)
 
     def _distance_of(self, t: _Track, ts_ns: int, obs_age_ms: float) -> ObjectDistance:
         """三态合成（设计稿 §2 状态机）。RESCALED 是锚点生命周期状态：确认过
         接近的锚点，原始值永不重新暴露；退出唯一路径是新锚点重置基线。"""
         if t.anchor_z is None:
+            # 无有效锚点但本拍有框：框高粗距离（2026-10-23 保险杠机位）。只在
+            # 本拍确实看到框时给（丢框拍保持 UNKNOWN/HELD 语义）；该值不进
+            # TTC、不参与 x_m 反投影——决策层只拿它做近/远与选道。
+            if t.matched and t.h > 0:
+                z_box = self.p.box_dist_k_px_m / float(t.h)
+                if self.p.box_dist_z_lo_m <= z_box <= self.p.box_dist_z_hi_m:
+                    return ObjectDistance(
+                        target_id=t.id, source=DistanceSource.BOX_SIZE,
+                        metric_distance_m=float(z_box),
+                        method=DistanceMethod.BOX_SIZE, anchor_age_ms=None,
+                        obs_age_ms=obs_age_ms, v_close_mps=None,
+                        reason=t.last_dist_reason or (
+                            DistanceReason.ASSOC_FAIL if self._sheet_orphan
+                            else DistanceReason.NO_ANCHOR_YET))
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None, anchor_age_ms=None,
@@ -749,16 +927,27 @@ class Tracker:
             # 10~15m；v_close 为 None 时保守持锚不外推）
             age_s = age_ms / 1000.0
             metric = t.anchor_z - (t.v_close_mps or 0.0) * age_s
+            method = DistanceMethod.RANGE_PROP
+            bz = self._bridge_z(t, ts_ns)
+            if bz is not None and not self._box_bridge_trace_only:
+                metric, method = bz, DistanceMethod.BOX_RATIO
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.RESCALED_ANCHOR,
                 metric_distance_m=float(metric),
-                method=DistanceMethod.RANGE_PROP, anchor_age_ms=age_ms,
-                obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps, reason=None)
+                method=method, anchor_age_ms=age_ms,
+                obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps, reason=None,
+                box_bridge_m=bz)
+        bz = self._bridge_z(t, ts_ns)
+        metric = float(t.anchor_z)
+        method = DistanceMethod.HOLD
+        if bz is not None and not self._box_bridge_trace_only:
+            metric, method = bz, DistanceMethod.BOX_RATIO
         return ObjectDistance(
             target_id=t.id, source=DistanceSource.ANCHOR,
-            metric_distance_m=float(t.anchor_z), method=DistanceMethod.HOLD,
+            metric_distance_m=metric, method=method,
             anchor_age_ms=age_ms, obs_age_ms=obs_age_ms,
-            v_close_mps=t.v_close_mps, reason=None)
+            v_close_mps=t.v_close_mps, reason=None,
+            box_bridge_m=bz)
 
     def _metric_of(self, d: ObjectDistance, t: _Track) -> MetricCarState:
         """ObjectDistance → 米制状态（C 线；z 复用 _distance_of 的当前米制值——
@@ -778,7 +967,9 @@ class Tracker:
         下拍再试。"""
         z = d.metric_distance_m
         x_m = None
-        if z is not None and t.anchor_fx and t.anchor_fx > 0:
+        if (d.source in (DistanceSource.ANCHOR, DistanceSource.RESCALED_ANCHOR,
+                         DistanceSource.HELD)
+                and z is not None and t.anchor_fx and t.anchor_fx > 0):
             x_m = (t.cx - self.cal.vpx) * z / t.anchor_fx
         v = d.v_close_mps
         t_meet = z / v if (z is not None and v is not None and v > 0.0) else None
@@ -807,7 +998,8 @@ class Tracker:
         return MetricCarState(
             target_id=t.id, source=d.source, z_m=z, x_m=x_m,
             v_close_mps=v, t_meet_s=t_meet, anchor_age_ms=d.anchor_age_ms,
-            bridged=bridged, bridge_reason=bridge_reason)
+            bridged=bridged, bridge_reason=bridge_reason,
+            box_bridge_z_m=d.box_bridge_m)
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
         """2D 身份主干 + 几何回退，两遍贪心 1:1 配对。

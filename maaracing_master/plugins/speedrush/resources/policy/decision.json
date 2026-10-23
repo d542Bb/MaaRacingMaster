@@ -18,15 +18,15 @@
     "planner.obs_alpha|obs_beta|obs_jump_max_lane": "路中心连续重锚 alpha-beta 增益（step 2.5，2026-09-22 V2 复盘：开环虚胖=贴不近主因）。2026-09-26 13:02 局回放网格定档（证据 commit e269943）：新息门 1.5→0.8、k_p 1.2→0.7、obs_alpha 0.6→0.3——hsv 路观测噪声下旧增益组极限环（回放饱和率 23.3%/翻转 1.39 次每秒 → 4.1%/0.51）。pair 供数门（80e9a1c）已撤：13:29 局证明黑视比噪声更致命（死亡螺旋段 87/118 拍被挡），开环回放看不见锁死——该定档是回放盲点的产物",
     "planner.anchor_max_off|anchor_stale_s": "[需实测] 路锚卫生（12:39 局：ro=−2.77 骑缘拍定锚→道0=左护栏位钉死 818 拍；13:29 局：拍数门漂移复位太慢——黑视不计数、0.8 门收紧后喂入更少，ro=+1.9 全程喊、0 杆直开 5.5s 怼右墙时计数还差 9 次）：形成门=|road_offset|≤1.0 车道才定参考系；陈旧重基=距上次被接受修正超 1.0s（含断供计时）→exec:=ro、anchor:=0（道0=路中心）。anchor_drift_ticks 拍数判据已废",
     "planner.hold_deadband_lane|hold_stick_max": "[需实测] 维护性转向权限（16:44 局：路中心定心全权 PD——保持态误差动辄 ±1.5 车道（k_p0.7 下 >1.43 即满舵），257/267 饱和拍在 CRUISE-hold/CONSERVE、满左满右交替 2-3s 绕桩、速度起不来；⑥b β 注入还绕过 v_lat_max（|v|→11.4 物理上限 2.5），阻尼项满反打喂给极限环）：死区 0.5 车道内不发力、维护杆幅 ≤0.45；CHANGE 机动保留全权。v_lat 饱和已收进 ⑥b",
-    "traffic.exit_margin_px": "[需实测 C5] 下带消失判据的余量（起值 80px）：last cy ≥ v_ego−此值 判\"从车尾侧出画\"；回放定档（阶段 C 设计稿 §三）",
+    "traffic.exit_margin_px": "[需实测 C5] 下带消失判据的余量（起值 80px）：last cy ≥ 画面下缘−此值 判\"从车尾侧出画\"；回放定档（阶段 C 设计稿 §三）",
     "traffic.min_obs_ticks|ghost_max_age_ticks|ghost_rel_eps": "[需实测 C5] 闪现噪声自卫（3 次）；鬼影=超龄(200 拍≈10s，雨测 191 帧案)+低速(<1px/tick)的底边消失",
-    "traffic.presumed_cy_px|presumed_lane_max": "[2026-10-08 取证预演定档] 推定超越判据：真检 cy≥430（绝对画面纵坐标，真检数据缺口 404~431 之间取中）且 |x_lane|≤2.5 且 rel>0（消失方向指向下缘）→ presumed_pass。动机=检测下界≈575 高于 636 判据线（下带是检测死区），51/51 pass 均为遮挡外推跨线、慢速超越系统性记 lost；预演 26 lost 晋升 16、远车 10 零泄漏、pass 组 51/51 自洽（probe_lost_vanish，设计稿 §4A）",
+    "traffic.presumed_cy_px|presumed_lane_max": "[2026-10-08 取证预演定档] 推定超越判据：真检 cy≥430（绝对画面纵坐标，真检数据缺口 404~431 之间取中）且 |x_lane|≤2.5 且 rel>0（消失方向指向下缘）→ presumed_pass。动机=检测下界≈575 高于画面下缘−margin≈640 判据线（下带是检测死区），51/51 pass 均为遮挡外推跨线、慢速超越系统性记 lost；预演 26 lost 晋升 16、远车 10 零泄漏、pass 组 51/51 自洽（probe_lost_vanish，设计稿 §4A）",
     "control.abort_settle_v_lane_s": "[需实测] 19:44 复盘补装：v1 注释的'有反馈等横向速率归零'信号（此前未实现，丢目标白冻 2s）",
     "traffic.v_lat_ema_alpha": "街车横向速率 EMA α=0.3（帧间差分，车道/tick 口径；遮挡延续拍不投毒）。注意：读数噪声主导（P90≈3.8 道/s 物理不可能），仅供 trace 观测，禁止当真实运动外推",
     "traffic.lane_vote_decay|lane_memb_min_weight|lane_vote_sigma_max": "车道成员资格投票（2026-10-11 前置三件套②，起值 [需实测]）：单拍 x 按整道栅格投票进生命期票仓、逐真实读数拍衰减 0.7——真横移连续新票数拍内翻位（及时响应边界）、偶发噪声票停留少数派；最大票质量 ≥1.5 成员位才成立（约 2-3 拍连续一致读数），未成立 CarView.x_memb=None 消费方退回单拍读数；σ>0.6 道的失真读数（远场/弯道）不进票仓=近场保守。验收判据=接近段 band 误拒率下降（账本复跑对比）",
     "traffic.width_ttl_ticks": "宽度遮挡沿用有效期 6 tick（2026-10-11 前置三件套③，起值 [需实测]）：有效宽度只在真实读数拍按有效性门（年龄≥min_obs_ticks、conf≥置信地板、分母在适用域）重算，遮挡延续拍保持最后有效值并带龄，过期显式转 unknown 不冒充有效——w_m 遮挡崩坏（3.6→0.3m 案，外推 cy 配陈旧框宽）不入统计。验收判据=ĝ 异常跳变显著下降 + 正常宽度误过滤率报告",
     "motion.max_obj_age_s|traffic.metric_*_ema_alpha": "决策输入稳定性（2026-10-19 局 184758_p2 归因）：保鲜窗 0.25→0.6s——σ 已随年龄膨胀，硬切会让 0.25~0.6s 的丢检目标直接从场景消失（币组 85% 单枚观测、车米制 x 逐拍跳 ±1~1.5m）；币/奖励到站时间按龄前移，≤0 剔除。像素回退车年龄改吃 last_seen 新鲜度（age_ticks 是轨道生命期，不是新鲜度）。车米制 x/z 在决策边界 EMA 平滑（道路帧 x），跟踪层 v_close/锚点不动。",
-    "motion.graze_max_width_m|near_cy_margin_px|coin_time_jump_tol_s|planner.throttle_raw": "有效域分层（2026-10-19 局 200826_p2 审计）：车 41% 无到站时间、35% 无纵深；金币 59% 横位越界、82% 单枚；奖励车近场像素 73% 越界。越界/无时间目标不再参与命中；t=None 车只有纵向近（z≤near_z 或 cy 距自车行≤margin）才当静态障碍；宽度>2.2m 的车不作擦边目标、按真实半宽计碰撞；同组金币到站时间只允许递减（突增>0.25s=组里更远的一枚，沿用旧时间前移）。油门 255→220（86%）先给感知/决策多留反应时间，按 A/B 再调。"
+    "motion.graze_max_width_m|near_cy_margin_px|coin_time_jump_tol_s|planner.throttle_raw": "有效域分层（2026-10-19 局 200826_p2 审计）：车 41% 无到站时间、35% 无纵深；金币 59% 横位越界、82% 单枚；奖励车近场像素 73% 越界。越界/无时间目标不再参与命中；t=None 车只有纵向近（z≤near_z 或 cy 距画面下缘≤margin）才当静态障碍；宽度>2.2m 的车不作擦边目标、按真实半宽计碰撞；同组金币到站时间只允许递减（突增>0.25s=组里更远的一枚，沿用旧时间前移）。油门 255→220（86%）先给感知/决策多留反应时间，按 A/B 再调。"
   },
   "mode": {
     "allow_car_graze": false,
@@ -78,6 +78,7 @@
     "obs_alpha": 0.3,
     "obs_beta": 0.5,
     "obs_jump_max_lane": 0.8,
+    "obs_jump_confirm_ticks": 3,
     "anchor_max_off": 1.0,
     "anchor_stale_s": 1.0,
     "hold_deadband_lane": 0.5,
@@ -88,7 +89,7 @@
     "obs_beta_sign_agree": true,
     "obs_beta_dv_rate_lane_s2": 3.0,
     "obs_position_only": true,
-    "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验。obs_beta 0.2→0.5（2026-10-08）：⑥b 时间基修正（分母改新证据累计间隔，台账 §4A 判据冻结）后按抖动-响应网格重标（66 trace 5.3 万拍离线回放 probe_beta_timebase）——旧 0.2 是错配时间基的产物，新基下 0.5 全面不劣（跳变 P95 −41%、跟随 lag 最快、bias −33%）",
+    "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验。obs_beta 0.2→0.5（2026-10-08）：⑥b 时间基修正（分母改新证据累计间隔，台账 §4A 判据冻结）后按抖动-响应网格重标（66 trace 5.3 万拍离线回放 probe_beta_timebase）——旧 0.2 是错配时间基的产物，新基下 0.5 全面不劣（跳变 P95 −41%、跟随 lag 最快、bias −33%）；obs_jump_confirm_ticks=3（2026-10-23）：同向、量级相近的大新息连续 3 拍判真位移并按普通观测收 α 修正，单帧坏检测与断续大新息仍拒，避免等 anchor_stale_s 重基的 1s 错位盲区",
     "obs_beta_note": "时间基=自上次速度修正的累计帧钟（新证据间隔），非控制拍 dt；标定证据 tools/experiments/speedrush_vision/probe_beta_timebase.py"
   },
   "motion": {
@@ -161,7 +162,7 @@
     "mode": "master",
     "tol_lane": 0.45,
     "bypass_streak": 8,
-    "_note": "路心供数主人闸（2026-10-06 两局定案：找边锁「以车为中心的走廊」——骑黄线段 L=−1.32/R=+0.53 报正中、对宽 2.68 道像真路所以宽门/中值窗全失明；与栅格路心分歧系统性单边 Δ p50=+0.45 道、57% 超容差、符号几乎不翻，物理目检三帧（帧 0039/0042/0054 骑黄线）+离线基线 f9a9a80（栅格 mean 0.31 道/大错 8% vs 找边 0.52/22%）同证）。mode 语义：off=找边对当主人（旧行为逐位不变）；master=绿区边界当主人（depth_geo.region_reading，路=可行驶区域物理边界，区弃权走保鲜槽/None 不回退找边）；veto=旧分歧否决语义（对系统性偏差会否决 57% 新鲜对→黑视循环，只留回放对比）。**运行态：mode=master＝实机验收期（维护者批准 2026-10-06「先只修1」）；验收面=trace ro_off/ro_grid/ro_edge 三列（骑线段消失、executed 贴物理位）+ BEV cg 线与 C 线重合；若区读数覆盖/质量翻车，mode 归 off 并回实验区归因**。已知边界：栅格与找边同源（MoGe 点云/平面/挖洞），深度共同错误与 ~250ms 链路滞后（运动补偿，维护者研究中）本闸不治。"
+    "_note": "路心供数主人闸。master=绝对路心链（生产）：墙/空气墙（双侧同箱新鲜中点+墙到墙宽；单侧墙±W/2，W=物理碰撞边界宽）→ 绿区物理边界 → 绝对记忆 0.8s → None；找边对/保鲜槽不接棒（一切读数都在自车系，复用上一拍的相对对=自车横移后拿旧车位当路心，实拍 trace 365~376 的 ±6m 横摆根因）；坏平面拍（cam_h 出 1.2~1.8m）整帧不进供数；来源跳变 >0.4 道需连续 2 拍一致。off=找边对当主人（旧链序，回放对比）；veto=旧分歧否决（只留回放对比）。验收面=trace ro_source/ro_off/ro_plane/ro_reject 与 BEV cg 线。已知边界：栅格与找边同源（MoGe 点云/平面/挖洞），深度共同错误与 ~250ms 链路滞后本闸不治。"
   },
   "debug_dump": {
     "mode": "events",
@@ -183,8 +184,6 @@
     "opportunity_tol_lane": 0.75,
     "coin_pick_tol_lane": 1.2,
     "coin_hold_s": 0.6,
-    "t_move_base_s": 0.3,
-    "t_move_per_lane_s": 2.0,
     "reaction_s": 0.13,
     "margin_s": 0.15,
     "aligned_lane": 0.1,
@@ -199,7 +198,7 @@
     "reward_tol_lane": 1.5,
     "car_half_lane": 0.27,
     "ego_half_lane": 0.27,
-    "_note": "四层字典序选择（2026-10-18 走廊重建）：奖励车 > 擦边普通车 > 金币 > 中心带。层间不求和；层内金币取价值最高、车取最早到站。horizon_s 是短视界；center_band_lane=0.3 是 L4 不修正容差带（带内目标=当前横位，带外只去近侧带边，不追正中）；center_lookahead_m=0 用当前站中心（2m 前瞻中心在弯道/分段带上有偏置）；preposition_*=无即时目标时向短视界外机会侧预置：6s 内、车侧 2.5 道内的奖励车/车/金币，锚点最多偏 1 道。graze_gap_lane 是擦边目标距车心；t_move=base+per_lane·|dx|（道）是路点可行性模型——2026-10-18 录制对照按人工变道实测从 0.3+0.4 校准到 0.3+2.0（人工 0.5 道约 1.3~1.6s、1 道 2.5~3.2s）；coin_pick_tol_lane=金币主目标只吃当前线 ±1.2 道内的组；coin_hold_s=币组消失后沿最后币线再走 0.6s（更高层立即覆盖）；aligned_lane/reward_aligned_lane=已对齐目标的横距阈值（阈值内只留反应时间，不要求横移准备）。wall_margin_lane 是目标离走廊缘的夹取余量。"
+    "_note": "四层字典序选择（2026-10-18 走廊重建）：奖励车 > 擦边普通车 > 金币 > 中心带。层间不求和；层内金币取价值最高、车取最早到站。horizon_s 是短视界；center_band_lane=0.3 是 L4 不修正容差带（带内目标=当前横位，带外只去近侧带边，不追正中）；center_lookahead_m=0 用当前站中心（2m 前瞻中心在弯道/分段带上有偏置）；preposition_*=无即时目标时向短视界外机会侧预置：6s 内、车侧 2.5 道内的奖励车/车/金币，锚点最多偏 1 道。graze_gap_lane 是擦边目标距车心；横移可达性直接复用 planner 的横向加速度/速度上限推导（与执行层同一套运动学，选择层不再持有换道时间参数）；coin_pick_tol_lane=金币主目标只吃当前线 ±1.2 道内的组；coin_hold_s=币组消失后沿最后币线再走 0.6s（更高层立即覆盖）；aligned_lane/reward_aligned_lane=已对齐目标的横距阈值（阈值内只留反应时间，不要求横移准备）。wall_margin_lane 是目标离走廊缘的夹取余量。"
   },
   "coarse": {
     "control": true,
@@ -209,7 +208,18 @@
     "range_speed_mps": 45.0,
     "switch_margin_m": 4.0,
     "align_tol_lane": 0.4,
-    "_note": "粗层选道（2026-10-19）：绿区窄/被车占时决定往哪边，不让「没有单个目标过门」退化成原地回中。绿区给每条候选道的连续净空（墙余量取 selection.wall_margin_lane），2D/米制车按横位占用（包络=双方半宽+collision_margin_m）截断；无纵深但有到站时间的车按 range_speed_mps 折算粗纵深，无纵深无时间的仅把净空截到窗末并标 unknown。switch_margin_m 是换道迟滞（现任净空不差于最优这么多就保持）；align_tol_lane 内视为方向已对齐。control=true 时只接管 L4 回中兜底（奖励车/擦边/金币层仍由细层决定），走廊陈旧时退回纯回中。只输出方向/目标道，不替代细层落点与得分。"
+    "_note": "粗层选道（2026-10-19）：绿区窄/被车占时决定往哪边，不让「没有单个目标过门」退化成原地回中。绿区给每条候选道的连续净空（墙余量取 selection.wall_margin_lane），2D/米制车按横位占用（包络=双方半宽+collision_margin_m）截断；无纵深但有到站时间的车按 range_speed_mps 折算粗纵深，无纵深无时间的仅把净空截到窗末并标 unknown。switch_margin_m 是换道迟滞（现任净空不差于最优这么多就保持）；align_tol_lane 内视为方向已对齐。control=true 时只接管 L4 回中兜底（奖励车/擦边/金币层仍由细层决定），走廊陈旧时退回纯回中。只输出方向/目标道，不替代细层落点与得分。route.control=true 时本层退为**候选评估器**：逐道净空/占用读数喂路线定案，接控制的道号改由路线参考道给出（本层自选道继续逐帧计算，只作影子对照，不再进控制链）。"
+  },
+  "route": {
+    "control": true,
+    "commit_s": 1.5,
+    "t_meas_per_lane_s": 3.0,
+    "t_urgent_s": 0.35,
+    "cancel_unsafe_ticks": 5,
+    "cancel_cooldown_s": 2.0,
+    "finish_v_tol_lane_s": 0.4,
+    "merge_max_s": 4.0,
+    "_note": "路线承诺层（2026-10-23 V1，全部初值待实机对账）：横向意图跨帧持有，接控制的道号从路线参考道读，不再每帧重选。commit_s=承诺期（定案后多久允许普通换道重评；到期只解锁重评，不构成换道理由）；t_meas_per_lane_s=放行用保守完成时间（人工观测支持的**暂定初值**：人工每道耗时中位 2.2~2.5 s、观测尾部 p90 4.5~5.9 s，本值取 3 s，未覆盖尾部；用途是提前排除安全窗口不足的起意，不是命令车辆花 3 秒并线——不得仅凭分数下降降门槛，降到 2 s 已被否）；t_urgent_s=现任道可用时间低于此判紧急（米→秒用 coarse.range_speed_mps 代理，本系统无自车纵向速度观测）；cancel_unsafe_ticks/cancel_cooldown_s=取消判定连续帧计数与取消后冷却（期内只许紧急逃生）；finish_v_tol_lane_s=并线完成的横速容差（位置容差复用 selection.center_band_lane，速率上限复用 planner.v_lat_max，收益门槛复用 coarse.switch_margin_m，都不在这里复制数值）；merge_max_s=并线超时到点按实测所在道落回 KEEP。control=false 时逐位回今天（粗层自选道 + 它的两条例外原样保留）。当前=true（2026-10-23 V1 实机验证局，只看翻面数/横向行程/路缘占比与被拒原因可复算性，得分率放最后）。"
   },
   "geometry": {
     "wall_line_master": false,
@@ -219,5 +229,22 @@
   "metric_cars": {
     "enabled": true,
     "_note": "车米制状态供数闸：enabled 开闸后 metric_cars 喂车源链（米制优先、像素回退）；米制量本身由锚点链路自况有效性（无锚=UNKNOWN 弃权）。"
+  },
+  "box_bridge": {
+    "enabled": true,
+    "trace_only": false,
+    "anchor_gate": true,
+    "_note": "锚间框高比桥接与锚点框高一致门（2026-10-23 离线探针按测量时刻真值验证，证据 commit 0e3a429）：每拍用 z锚·h锚/h当前 在锚点之间插值，与区间速度外推按 0.7:0.3 融合（框为主），仅 8 m 外替换发布距离（保险杠机位口径：镜头比追尾视角前移约 4 m，旧 12 m 门相当于现在的 8 m 物理间距）；框高单拍翻跳 >35% 或丢框即退出本锚期。anchor_gate=true 时新锚是否可信由框高比残差裁决（≤30% 直接接受，连续两个一致候选锚才重基），替代固定 45 m/s 跳变门——后者会误杀 60~70 m/s 的真实高速接近。无框高证人时退回 80 m/s，120 m/s 为任何证人都不能越过的硬界。trace_only=false 发布 BOX_RATIO；置 true 只写 trace 的 bz 列、发布距离保持锚点口径（离线对照用）。"
+  },
+  "view_guard": {
+    "enabled": true,
+    "cam_h_lo_m": 1.25,
+    "cam_h_hi_m": 1.70,
+    "sample_s": 0.7,
+    "settle_s": 0.25,
+    "max_views": 3,
+    "min_samples": 3,
+    "deadline_s": 2.9,
+    "_note": "开局视角守卫：只在本进程尚未确认过视角时，用起步倒计时前 0.7s 的道路平面相机高度中位判断是否保险杠机位（六局实测中位 1.39~1.44m；旧追车视角约 1.8~2.2m）。不在带内或整个窗口无有效平面 → 按一次 RB 切视角、等 0.25s 重采，最多 3 个视角；倒计时内仍未确认则中止本阶段，不盲开。确认成功记在实例上，p2 与后续回合不再检查。"
   }
 }

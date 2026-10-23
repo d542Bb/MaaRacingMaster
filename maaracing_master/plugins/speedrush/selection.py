@@ -50,6 +50,8 @@ class RoadFrame:
     coarse_bands: tuple[RoadBand, ...] = ()   # 中远场粗带 15m/带（16~80m，
     # src=inferred；**不进 bands**——车道级消费面只读 bands，粗带是方向级
     # 约束（哪边更开），显式消费（coarse.far_direction 开关））
+    far_hint_lane: float | None = None   # 远场方向（走廊层共享滤波结果，
+    # 道，右正）：消费端只读，不再各自重算/去抖
 
     def _pairs(self) -> list[tuple[float, float]]:
         return [(0.5 * (b.z0 + b.z1), 0.5 * (b.left + b.right))
@@ -165,8 +167,10 @@ class SelectionParams:
     # 选中后组消失仍保持 coin_hold_s，更高层出现立即覆盖。
     coin_pick_tol_lane: float = 1.2
     coin_hold_s: float = 0.6
-    t_move_base_s: float = 0.3
-    t_move_per_lane_s: float = 2.0
+    # 横移可达性由执行层同一套运动学推导（道/s²、道/s），不再用换道时间
+    # 经验值；reaction/margin 只补感知与执行延迟。
+    a_lat_lane_s2: float = 6.0
+    v_lat_max_lane_s: float = 2.5
     reaction_s: float = 0.13
     margin_s: float = 0.15
     # 已基本对齐的目标不需要横移准备：只留反应时间，不套 t_move 基础项。
@@ -188,7 +192,22 @@ class SelectionParams:
 
 
 def _t_move(dx_m: float, p: SelectionParams) -> float:
-    return p.t_move_base_s + p.t_move_per_lane_s * abs(dx_m) / p.lane_w_m
+    """横移所需时间：先恒加速到横向速度上限，再匀速（道/s²、道/s）。
+
+    与执行层是同一套运动学：0.7 道约 0.5 秒，而不是按人工变道节奏估的
+    2 秒量级。自车当前横向速度未知，按静止起步算，偏保守。"""
+    d = abs(dx_m) / p.lane_w_m
+    a = p.a_lat_lane_s2
+    vmax = p.v_lat_max_lane_s
+    if d <= 0.0:
+        return 0.0
+    if a <= 0.0 or vmax <= 0.0:
+        return math.inf
+    t_acc = vmax / a
+    d_acc = 0.5 * a * t_acc * t_acc
+    if d <= d_acc:
+        return math.sqrt(2.0 * d / a)
+    return t_acc + (d - d_acc) / vmax
 
 
 def _reachable(x: float, x0: float, t: float | None,

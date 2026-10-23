@@ -2,8 +2,8 @@
 """车流观测层（阶段 C 设计稿 §三 pass 判据表）的回归锁。
 
 锁面：三事件（pass/lost/ghost）各按判据落定、d_min 全寿命 min 口径、闪现不发事件、
-同帧重发幂等、frame_id 倒退 fail-loud、非 car 目标不入账。cy 轨迹以 gate0 真源
-v_ego 为基准构造（不写像素字面量——同三源分立纪律）。
+同帧重发幂等、frame_id 倒退 fail-loud、非 car 目标不入账。cy 轨迹以画面下缘
+IMAGE_H 为基准构造（不写像素字面量——同三源分立纪律）。
 """
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from maaracing_master.plugins.speedrush.traffic import (
     TrafficObserver)
 from maaracing_master.plugins.speedrush.tracking import (
     PerceptionHealth, TrackedTarget, WorldObservation)
-from maaracing_master.plugins.speedrush.world_model import KIND_CAR, KIND_COIN, load_calib
+from maaracing_master.plugins.speedrush.world_model import (
+    IMAGE_H, KIND_CAR, KIND_COIN, load_calib)
 
 CAL = load_calib()
 P = load_decision().traffic
@@ -58,7 +59,7 @@ def _drive(o: TrafficObserver, cars_by_fid: dict[int, list[tuple]]) -> tuple:
 
 def test_pass_when_car_exits_below_ego_row():
     o = TrafficObserver(P, CAL)
-    near = CAL.v_ego - 10          # 自车行附近（下带内）
+    near = IMAGE_H - 10          # 自车行附近（下带内）
     far = CAL.y_h + 60
     cars = {1: [(7, far, 1.2, 60)], 2: [(7, far + 80, 1.0, 60)],
             3: [(7, near - 40, 0.7, 60)], 4: [(7, near, 0.65, 60)]}
@@ -81,7 +82,7 @@ def test_lost_when_disappears_uproad_not_bottom():
 def test_ghost_when_aged_slow_then_bottom_exit():
     o = TrafficObserver(P, CAL)
     age = P.ghost_max_age_ticks + 3
-    cars = {fid: [(9, CAL.v_ego - 5, 0.7, 0.2) for _ in range(1)] for fid in range(1, age + 1)}
+    cars = {fid: [(9, IMAGE_H - 5, 0.7, 0.2) for _ in range(1)] for fid in range(1, age + 1)}
     _, evs = _drive(o, cars)
     assert [e.outcome for e in evs] == [OUTCOME_GHOST]
 
@@ -91,7 +92,7 @@ def test_bottom_exit_but_fast_still_pass_not_ghost():
     over = dataclasses.replace(P, ghost_rel_eps=0.1)
     o = TrafficObserver(over, CAL)
     age = over.ghost_max_age_ticks + 2
-    cars = {fid: [(9, CAL.v_ego - 5, 0.7, 8.0)] for fid in range(1, age + 1)}
+    cars = {fid: [(9, IMAGE_H - 5, 0.7, 8.0)] for fid in range(1, age + 1)}
     _, evs = _drive(o, cars)
     assert [e.outcome for e in evs] == [OUTCOME_PASS]
 
@@ -150,7 +151,7 @@ def test_lost_when_dies_beyond_adjacent_band():
 def test_flicker_no_event():
     """观测次数 < min_obs_ticks 即消失：不发任何事件（检测噪声不记账）。"""
     o = TrafficObserver(P, CAL)
-    cars = {1: [(5, CAL.v_ego - 5, 0.8, 50)]}   # 只出现一帧
+    cars = {1: [(5, IMAGE_H - 5, 0.8, 50)]}   # 只出现一帧
     _, evs = _drive(o, cars)
     assert evs == []
 
@@ -159,7 +160,7 @@ def test_coins_not_tracked():
     """非 car 目标不入账（金币组聚合有专层，边界不糊）。"""
     o = TrafficObserver(P, CAL)
     coin = TrackedTarget(id=1, kind=KIND_COIN, x_lane=0.0, x_sigma=0.1,
-                         cy=int(CAL.v_ego), w=10, h=10, conf=0.9, rel_approach=50,
+                         cy=int(IMAGE_H), w=10, h=10, conf=0.9, rel_approach=50,
                          first_seen_fid=1, last_seen_fid=1, validity_until_fid=3)
     v, e = o.update(_obs(1, (coin,)))
     assert v == () and e == ()
@@ -168,7 +169,7 @@ def test_coins_not_tracked():
 def test_same_frame_idempotent():
     """同帧重发幂等（WGC 中心缓存纪律，与 Tracker 同款）：结果对象完全一致。"""
     o = TrafficObserver(P, CAL)
-    obs = _obs(2, (_car(7, 2, CAL.v_ego - 10, 0.7, 60),))
+    obs = _obs(2, (_car(7, 2, IMAGE_H - 10, 0.7, 60),))
     assert o.update(obs) == o.update(obs)
 
 

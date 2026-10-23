@@ -5,6 +5,12 @@
 这条线还能走多远；再用场景里的车把被占的车道截断；选连续净空最长的一条。
 **它不是什么**：不算精确轨迹、不替代细层的落点与得分优化，也不改路心。
 
+**与路线承诺层的关系（2026-10-23 V1）**：`route.control=true` 时本层的自选道
+**不再进控制链**——接控制的是路线的参考道，本层退为**候选评估器**（逐道净空
+与占用三态读数喂定案）。`choose_lane` 与它的换道迟滞（含两条例外）原样保留并
+逐帧继续计算：闸关时它是现网行为真源，闸开时它是影子对照面。两条例外不是被
+删掉，而是被上层的承诺门覆盖——不要在这里删。
+
 坐标：全部换到**中心线相对帧**再用——车道的 k 值就是「相对当前中心线第 k
 道」。绿区带边界是场景绝对 x，先减去该带中心线；自车横位同样按 z=0 中心线
 取，和候选道同一帧（2026-10-20：不直接吃 planner 的 executed）。有纵深的车
@@ -113,25 +119,6 @@ def _car_distance(c: _Car, p: CoarseParams) -> tuple[float, bool] | None:
     return p.lookahead_m, True
 
 
-def _far_open_hint(road, far_bands, lane_w_m: float) -> float:
-    """远粗带不对称 → 机会侧预置提示（道，右正，中心线相对）。
-
-    取最近一条两侧有证据的远粗带，其中点相对该纵深中心线的偏移=「哪边
-    更开」的方向信号（地面可见范围不对称性，2026-10-21 影子局对账定案）。
-    无带/该带缺侧/无中心线=0（不预置）。"""
-    if not far_bands or not (lane_w_m and lane_w_m > 0):
-        return 0.0
-    for b in far_bands:
-        if b.left is None or b.right is None:
-            continue
-        zc = 0.5 * (b.z0 + b.z1)
-        cen = _rel_center(road, zc)
-        if cen is None:
-            continue
-        return (0.5 * (b.left + b.right) - cen) / lane_w_m
-    return 0.0
-
-
 def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
                 lane_w_m: float, p: CoarseParams,
                 current_lane: float | None = None) -> CoarseReport:
@@ -154,11 +141,12 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
 
     # 机会侧预置（方向级消费，开关默认关）：净空与占用打平时，字典序回中项
     # 换成「离远带更开的一侧最近」——近场无方向信号时顺着水流方向预置。
-    # 预置是有意的方向信号：远带偏移有意义（≥FAR_HINT_MIN_LANE）且最优道朝
-    # 更开一侧时，迟滞不适用（与「更靠中心」例外同型——否则现任永远保持，
-    # 预置死在肚里）。hint 无效时逐位回回中（字典序第三项与迟滞都不变）。
-    hint = _far_open_hint(road, getattr(road, "coarse_bands", ())
-                          if p.far_direction else (), lane_w_m)
+    # hint 是走廊层共享滤波结果（新远带证据拍更新一次，其余拍共享同一值），
+    # 消费端只读、不再重算或去抖。预置是有意的方向信号：偏移有意义
+    # （≥FAR_HINT_MIN_LANE）且最优道朝更开一侧时，迟滞不适用（与「更靠中心」
+    # 例外同型——否则现任永远保持，预置死在肚里）。hint 无效时逐位回回中。
+    hint = (getattr(road, "far_hint_lane", None) or 0.0) \
+        if p.far_direction else 0.0
     preposition = p.far_direction and abs(hint) >= FAR_HINT_MIN_LANE
 
     nmax = int(round(p.max_offset_lane))

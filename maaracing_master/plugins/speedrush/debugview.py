@@ -51,16 +51,20 @@ from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
     ANCHOR_Z_HI, CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE,
     GRID_NX, GRID_NZ, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI,
-    GRID_Z_LO, NEAR_Z, ROAD_Z_HI, X_MAX_M)
+    GRID_Z_LO, NEAR_Z, REGION_WIDTH_Z_HI, REGION_Z_HI, ROAD_Z_HI,
+    X_MAX_M)
 from maaracing_master.plugins.speedrush.world_model import (
     Calib, load_calib)
 
 # 渲染用车半宽（米）：只影响图上的车身圆点大小，不参与行为判定
 _CAR_HALF_M = 0.9
 
-DEBUG_FPS = 3
-DEBUG_INTERVAL_S = 1.0 / DEBUG_FPS
-_QUEUE_MAX = 4                    # IO 有界队列：满则丢新快照（观测降密度）
+# 20Hz 取证（2026-10-22）：控制拍 ≈20Hz，调试对逐拍落盘，便于和 trace 同拍对齐。
+# 磁盘代价 ≈ 20 对/秒 × (raw ~0.2MB + hud ~0.3MB) ≈ 10MB/s；IO 线程跟不上时
+# 由有界队列丢旧保新，主循环只做 put_nowait，绝不阻塞。
+DEBUG_FPS = 20
+DEBUG_INTERVAL_S = 0.0            # 0=逐拍（控制环自身节流）；保留参数供降档
+_QUEUE_MAX = 20                   # 约 1 秒 @20Hz；满则丢旧快照，保最新
 
 # 三态着色（BGR）：unknown 灰 / drivable 暗绿 / blocked 红；挖洞格橄榄描重
 _STATE_BGR = {GRID_UNKNOWN: (64, 64, 64),
@@ -333,7 +337,8 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
     _put_text(canvas,
               f"win: grid<={int(GRID_Z_HI - CAM_Z_DATUM_M)} "
               f"scan<={int(X_MAX_M)}x "
-              f"lane{int(NEAR_Z - CAM_Z_DATUM_M)} "
+              f"lane{int(REGION_Z_HI - CAM_Z_DATUM_M)}"
+              f"/w{int(REGION_WIDTH_Z_HI - CAM_Z_DATUM_M)} "
               f"plane<={int(ROAD_Z_HI - CAM_Z_DATUM_M)} "
               f"anchor<={int(ANCHOR_Z_HI - CAM_Z_DATUM_M)}",
               (plot_x0 + 8, ly + 8), scale=0.36, color=(160, 160, 160))
@@ -544,10 +549,13 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
 
 
 class DebugPairWriter:
-    """raw+hud 落盘器：tick() 入队快照，IO 线程 3fps 节流渲染写盘。
+    """raw+hud 落盘器：tick() 入队本拍快照，IO 线程逐拍渲染写盘（20Hz）。
 
     生命周期 = 控制链：链建即起 daemon，链收 stop()（排空队列后退出）。
-    队列有界（满丢新）；渲染/写盘异常静默计数——观测件不碰主路。"""
+    队列有界（满丢旧保新）；渲染/写盘异常静默计数——观测件不碰主路。
+    tick() 里的 frame 是 WGC 当前缓存数组（帧号变才重绑新数组，旧数组不被
+    原地改写）；snap 内的 result/corridor/scene/decision 均为本拍新建对象，
+    入队后主循环不再改它们，因此 IO 线程延迟渲染拿到的仍是本拍结果。"""
 
     def __init__(self, session_dir: Path, cal: Calib | None = None,
                  interval_s: float | None = None):
@@ -560,6 +568,7 @@ class DebugPairWriter:
         self.saved = 0
         self.dropped = 0
         self.errors = 0
+        self.last_ms = 0.0
         self._q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
         self._steer_hist: deque = deque(maxlen=_STEER_HIST_MAX)
         self._stop = threading.Event()
@@ -567,8 +576,14 @@ class DebugPairWriter:
             target=self._loop, daemon=True, name="speedrush-debug-io")
         self._thread.start()
 
+    def stats(self) -> dict:
+        """IO 侧观测：写盘数/丢旧数/异常数/队列深度/单对耗时（ms）。"""
+        return {"saved": self.saved, "dropped": self.dropped,
+                "errors": self.errors, "q": self._q.qsize(),
+                "ms": round(self.last_ms, 1)}
+
     def tick(self, frame_rgb: np.ndarray | None, snap: dict) -> None:
-        """控制拍调用：每拍先记转向历史，再 3fps 节流入队。绝不抛。"""
+        """控制拍调用：每拍先记转向历史，再按节流入队（默认逐拍）。绝不抛。"""
         dec = snap.get("decision") or {}
         sv = dec.get("steer")
         if isinstance(sv, (int, float)) and not isinstance(sv, bool):
@@ -581,10 +596,20 @@ class DebugPairWriter:
         self._last_push = now
         snap = dict(snap)
         snap["steer_hist"] = list(self._steer_hist)
+        pair = (frame_rgb, snap)
         try:
-            self._q.put_nowait((frame_rgb, snap))
+            self._q.put_nowait(pair)
         except queue.Full:
-            self.dropped += 1
+            # 丢旧保新：取证更看重最新一拍（旧快照的 fid 已在 trace 里）
+            try:
+                self._q.get_nowait()
+                self.dropped += 1
+            except queue.Empty:
+                pass
+            try:
+                self._q.put_nowait(pair)
+            except queue.Full:
+                self.dropped += 1
 
     def stop(self, reason: str = "chain_end") -> None:
         self._stop.set()
@@ -602,6 +627,7 @@ class DebugPairWriter:
                 self.errors += 1
 
     def _process(self, frame_rgb: np.ndarray, snap: dict) -> None:
+        t0 = time.perf_counter()
         self._seq += 1
         self._dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
@@ -614,4 +640,5 @@ class DebugPairWriter:
         hud = render_hud(frame_rgb, snap, self._cal)
         cv2.imwrite(str(self._dir / f"{self._seq:04d}_hud.jpg"), hud,
                     [cv2.IMWRITE_JPEG_QUALITY, 85])
+        self.last_ms = (time.perf_counter() - t0) * 1000.0
         self.saved += 1

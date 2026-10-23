@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from maaracing_master.plugins.speedrush import DECISION_FILE
+from maaracing_master.plugins.speedrush.view_guard import ViewGuardConfig
 
 SCHEMA_VERSION = 1
 
@@ -41,8 +42,6 @@ class Selection:
     opportunity_tol_lane: float = 0.75
     coin_pick_tol_lane: float = 1.2
     coin_hold_s: float = 0.6
-    t_move_base_s: float = 0.3
-    t_move_per_lane_s: float = 2.0
     reaction_s: float = 0.13
     margin_s: float = 0.15
     aligned_lane: float = 0.1
@@ -61,24 +60,22 @@ class Selection:
 
 @dataclass(frozen=True)
 class GridXcheck:
-    """路心供数主人闸（2026-10-06 两局定案：找边锁「以车为中心的走廊」——
-    骑黄线段 L=−1.32/R=+0.53 报"正中"，对宽 2.68 道像真路所以宽门/中值窗
-    全失明；与栅格路心的分歧是系统性单边（Δ p50=+0.45、57% 超容差、符号
-    几乎不翻），**否决闸治不了系统性偏差**（会否决 57% 新鲜对→黑视循环，
-    veto 模式只为回放对比保留）。整段可选，老 json 不带段=全默认=off。
+    """路心供数主人闸：选哪条路心链（2026-10-06 定案，2026-10-23 扩为绝对链）。
+
+    背景：找边单帧对会把「以车为中心的走廊」当路（骑黄线段 L=−1.32/R=+0.53
+    报"正中"，对宽 2.68 道像真路，宽门/中值窗全失明）；一切读数都在自车系，
+    上一拍的对在自车横移后就不再成立——复用相对读数当路心是 ±6m 横摆的根因。
 
     mode 语义：
-    - ``off``＝找边对当主人（旧行为逐位不变；栅格路心只进审计面）。
-    - ``master``＝**绿区边界当主人**（depth_geo.region_reading：路=可行驶
-      区域的物理边界，左缘/右缘/区宽一个语义出三个量；找边降为交叉验证
-      审计 ro_edge 列）。绿区人行道因高出路平面被判 blocked，想跟着车跑
-      都做不到——这正是找边走廊锁错的对症语义。区弃权拍走保鲜槽/诚实
-      None（13:29 黑视纪律同前），**不回退找边**（双主人切换=0.8 道级
-      ro 台阶）。
-    - ``veto``＝旧否决语义（分歧超 tol_lane 拒供、bypass_streak 放行），
-      保留作回放对比，生产不开。"""
+    - ``master``＝**绝对路心链**（生产）：墙/空气墙（双侧同箱中点、单侧
+      墙±W/2，W=物理碰撞边界宽）→ 绿区物理边界 → 绝对记忆（0.8s）→ None。
+      找边对/保鲜槽不接棒；坏平面拍（cam_h 出物理带）整帧不进供数；来源
+      跳变 >0.4 道需连续 2 拍一致才采信。
+    - ``off``＝找边对当主人（旧链序，回放对比用）。
+    - ``veto``＝旧分歧否决语义（对系统性偏差会否决 57% 新鲜对→黑视循环，
+      只留回放对比，生产不开）。"""
 
-    mode: str = "off"           # off | master | veto
+    mode: str = "off"           # master | off | veto
     tol_lane: float = 0.45      # veto/审计容差（道）：|找边路心−栅格路心|
     bypass_streak: int = 8      # veto 模式连续分歧放行预算（≈2s，防黑视）
 
@@ -163,13 +160,18 @@ class Planner:
     # 路心观测位置-only（2026-10-18 走廊重建）：true=只做 α 位置修正，不再
     # 注入 β 速度（速度交给双积分模型）；false=旧 α-β 逐位恢复（回滚）
     obs_position_only: bool = True
+    # 持续偏移放行（2026-10-23）：同向、量级相近的大新息连续 N 拍 = 真位移
+    # （车贴边或模型漂移后观测回归），不是单帧坏检测——按普通观测收 α 位置
+    # 修正。旧行为要等 anchor_stale_s（1s）重基，1s 内规划器按错位帧打杆
+    # （实拍 180900_p2：ro=−1.74 持续 1.4s，exec 从 −0.71 漂到 −0.29 才重基）。
+    obs_jump_confirm_ticks: int = 3
 
 
 @dataclass(frozen=True)
 class Traffic:
     """车流观测层参数（阶段 C 设计稿 §三；起值 [需实测 C5]，回放定档只改 json）。"""
 
-    exit_margin_px: float      # 下带判据：last cy ≥ v_ego − 此值 → 从车尾侧消失
+    exit_margin_px: float      # 下带判据：last cy ≥ 画面下缘 − 此值 → 从车尾侧消失
     presumed_cy_px: float      # 推定超越：真检贴身阈值（绝对画面纵坐标；检测下界
                                # ≈575 高于 636 判据线，慢速超越在死区内记 lost 的
                                # 修复判据，2026-10-08 取证预演定档，设计稿 §4A）
@@ -247,7 +249,7 @@ class Motion:
     # 大车（宽 > 此值的车）不作擦边目标：真实半宽会吃进"擦边"带，
     # 且卡车的极限超车判定与轿车不同口径。仍按真实半宽计入碰撞。
     graze_max_width_m: float = 2.2
-    # 无纵深车"纵向近"的像素判据：cy 距自车接地点行不足此值才可当障碍。
+    # 无纵深车"纵向近"的像素判据：cy 距画面下缘（保险杠机位）不足此值才可当障碍。
     # 远处（cy≈330）的 t=None 车不再被当成贴身静态墙。
     near_cy_margin_px: float = 120.0
     # 同组金币到站时间只允许按时间递减：突然变大超过此值=看到了组里更远的一枚，
@@ -363,6 +365,28 @@ class Coarse:
 
 
 @dataclass(frozen=True)
+class Route:
+    """路线承诺层（2026-10-23 V1）：横向意图跨帧持有，逐帧自选不再接控制。
+
+    control=闸：false 时 `coarse_lane` 逐语句回今天（粗层自选道，含它的两道
+    迟滞例外）；true 时接控制的道号取自路线的参考道。其余键只喂定案判据——
+    收益门槛复用 `[coarse].switch_margin_m`、速率上限复用 `[planner].v_lat_max`、
+    米→秒代理复用 `[coarse].range_speed_mps`、完成位置容差复用
+    `[selection].center_band_lane`，都不在本节复制数值。
+    `t_meas_per_lane_s` 是**人工观测支持的暂定初值**（未覆盖观测尾部），用途是
+    提前排除安全窗口不足的起意，不是命令车辆花这么久并线。"""
+
+    control: bool = False
+    commit_s: float = 1.5
+    t_meas_per_lane_s: float = 3.0
+    t_urgent_s: float = 0.35
+    cancel_unsafe_ticks: int = 5
+    cancel_cooldown_s: float = 2.0
+    finish_v_tol_lane_s: float = 0.4
+    merge_max_s: float = 4.0
+
+
+@dataclass(frozen=True)
 class DebugDump:
     """调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验）。
 
@@ -374,6 +398,21 @@ class DebugDump:
     mode: str = "events"
     ring: int = 10
     event_window: int = 20
+
+
+@dataclass(frozen=True)
+class BoxBridge:
+    """锚间框高比桥接与锚点框高一致门（2026-10-23 四局离线验证）。
+
+    语义：`enabled` 开闸后 Tracker 每拍用 `z锚·h锚/h当前` 在锚点之间插值；
+    `trace_only=true` 只把桥接值写进 trace（bz 列），`metric_distance_m`
+    保持今日口径——首局验证用。`anchor_gate=true` 时新锚是否可信改由框高比
+    残差裁决（残差 ≤30% 直接接受，连续两个一致候选锚才重基），替代固定的
+    45 m/s 跳变门——后者会误杀 60~70 m/s 的真实高速接近。"""
+
+    enabled: bool = False
+    trace_only: bool = True
+    anchor_gate: bool = False
 
 
 @dataclass(frozen=True)
@@ -392,9 +431,12 @@ class DecisionConfig:
     corridor_reach: CorridorReach = CorridorReach()
     selection: Selection = Selection()
     coarse: Coarse = Coarse()
+    route: Route = Route()
     geometry: Geometry = Geometry()
     metric_cars: MetricCars = MetricCars()
     metric_bridge: MetricBridge = MetricBridge()
+    box_bridge: BoxBridge = BoxBridge()
+    view_guard: ViewGuardConfig = ViewGuardConfig()
     debug_dump: DebugDump = DebugDump()
 
 
@@ -554,7 +596,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             obs_beta_dv_rate_lane_s2=_num_def(
                 d, "planner", "obs_beta_dv_rate_lane_s2", 0.0, lo=0),
             obs_position_only=_bool(d, "planner", "obs_position_only",
-                                    default=True)),
+                                    default=True),
+            obs_jump_confirm_ticks=_int_def(
+                d, "planner", "obs_jump_confirm_ticks", 3, lo=1)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
@@ -685,9 +729,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             coin_pick_tol_lane=_num_def(
                 d, "selection", "coin_pick_tol_lane", 1.2, lo=0),
             coin_hold_s=_num_def(d, "selection", "coin_hold_s", 0.6, lo=0),
-            t_move_base_s=_num_def(d, "selection", "t_move_base_s", 0.3, lo=0),
-            t_move_per_lane_s=_num_def(
-                d, "selection", "t_move_per_lane_s", 2.0, lo=0),
             reaction_s=_num_def(d, "selection", "reaction_s", 0.13, lo=0),
             margin_s=_num_def(d, "selection", "margin_s", 0.15, lo=0),
             aligned_lane=_num_def(d, "selection", "aligned_lane", 0.1, lo=0),
@@ -727,6 +768,20 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "coarse", "align_tol_lane", 0.4, lo=0),
             far_direction=_bool(d, "coarse", "far_direction",
                                 default=False)),
+        route=Route(
+            control=_bool(d, "route", "control", default=False),
+            commit_s=_num_def(d, "route", "commit_s", 1.5, lo=0),
+            t_meas_per_lane_s=_num_def(d, "route", "t_meas_per_lane_s", 3.0,
+                                       lo=0),
+            t_urgent_s=_num_def(d, "route", "t_urgent_s", 0.35, lo=0,
+                                lo_open=False),
+            cancel_unsafe_ticks=_int_def(d, "route", "cancel_unsafe_ticks",
+                                         5, lo=1),
+            cancel_cooldown_s=_num_def(d, "route", "cancel_cooldown_s", 2.0,
+                                       lo=0, lo_open=False),
+            finish_v_tol_lane_s=_num_def(d, "route", "finish_v_tol_lane_s",
+                                         0.4, lo=0),
+            merge_max_s=_num_def(d, "route", "merge_max_s", 4.0, lo=0)),
         geometry=Geometry(
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),
@@ -739,6 +794,24 @@ def _read_decision(path: Path) -> DecisionConfig:
                             lo=0, lo_open=False),
             margin_add_s=_num_def(d, "metric_bridge", "margin_add_s", 0.15,
                                   lo=0, lo_open=False)),
+        box_bridge=BoxBridge(
+            enabled=_bool(d, "box_bridge", "enabled", default=False),
+            trace_only=_bool(d, "box_bridge", "trace_only", default=True),
+            anchor_gate=_bool(d, "box_bridge", "anchor_gate", default=False)),
+        view_guard=ViewGuardConfig(
+            enabled=_bool(d, "view_guard", "enabled", default=False),
+            cam_h_lo_m=_num_def(d, "view_guard", "cam_h_lo_m", 1.25,
+                                lo=0, lo_open=False),
+            cam_h_hi_m=_num_def(d, "view_guard", "cam_h_hi_m", 1.70,
+                                lo=0, lo_open=False),
+            sample_s=_num_def(d, "view_guard", "sample_s", 0.7,
+                              lo=0, lo_open=False),
+            settle_s=_num_def(d, "view_guard", "settle_s", 0.25,
+                              lo=0, lo_open=False),
+            max_views=_int_def(d, "view_guard", "max_views", 3, lo=1),
+            min_samples=_int_def(d, "view_guard", "min_samples", 3, lo=1),
+            deadline_s=_num_def(d, "view_guard", "deadline_s", 2.9,
+                                lo=0, lo_open=False)),
         debug_dump=DebugDump(
             mode=_dump_mode,
             ring=_int_def(d, "debug_dump", "ring", 10, lo=0),
@@ -758,6 +831,15 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             "mode.allow_car_graze=true 在 v1 拒绝启用（coin-only 保守基线；"
             "复议条件=近场 0.05 车道级精度实测，设计稿 §三）")
+    if cfg.route.control and not cfg.coarse.control:
+        raise ValueError(
+            "[route] control=true 要求 [coarse].control=true：路线的候选来自粗层"
+            "逐道净空读数，闸关时定案没有输入（承诺层空转，控制链却已换源）")
+    if cfg.route.cancel_cooldown_s <= cfg.route.commit_s:
+        raise ValueError(
+            f"[route] cancel_cooldown_s={cfg.route.cancel_cooldown_s} 必须 > "
+            f"commit_s={cfg.route.commit_s}：冷却短于承诺期时总被承诺门先遮住，"
+            "取消冷却成为不可观测的死规则")
     s = cfg.selection
     if s.preposition_enabled:
         if s.preposition_horizon_s <= s.horizon_s:

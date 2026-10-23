@@ -1659,20 +1659,23 @@ def test_drivable_grid_single_wall_other_side_unknown():
     assert _cell_state(g, -8.0, 8.0) == dg.GRID_UNKNOWN       # 左缘外无证据
 
 
-def test_drivable_grid_dig_seam_car_body_dug_road_kept():
-    """统一挖除缝（2026-10-10 合并定案）：自车 3D 框 ∪ 物体候选区 × 剃本体刀
-    ——车身（高出路面 ≥ 刀位）格全未知；框外路面照常。旧 ego 2D 紧矩形
-    （整挖 + 盖掉远场路面）随合并退役。"""
+def test_drivable_grid_dig_seam_object_body_dug_road_kept():
+    """统一挖除缝：物体候选区 × 剃本体刀——车身（高出路面 ≥ 刀位）格全未知；
+    框外路面照常。保险杠机位（2026-10-23）自车在相机后，自车 3D 框退役：
+    没有候选区掩码时同一块车身点不得被「自车框」偷偷挖掉。"""
     pts = _scene_points(x_left=WALL, x_right=WALL)
-    # 自车车身：|X|<1.2、Z 5~9 的整车块（合成场景 Y 向下为正，高出路面 0.8m
-    # =Y 减 0.8 ≥ 刀位，落在 3D 框内）
+    # 车身块：|X|<1.2、Z 5~9（合成场景 Y 向下为正，高出路面 0.8m = Y 减 0.8）
     X, Z = pts[..., 0], pts[..., 2]
     car = np.isfinite(X) & (np.abs(X) < 1.2) & (Z > 5.0) & (Z < 9.0)
     pts = pts.copy()
     pts[car, 1] -= 0.8
-    g = dg.drivable_grid_from_points(pts, FX, FY)
+    # 无候选区：车身是高结构 → 判不可走，而不是被自车框挖成未知
+    g_no_obj = dg.drivable_grid_from_points(pts, FX, FY)
+    assert g_no_obj.dig_cells == 0
+    assert _cell_state(g_no_obj, 0.0, 7.0) == dg.GRID_BLOCKED
+    # 有候选区：同一块车身被挖成未知；框外路面照常可走
+    g = dg.drivable_grid_from_points(pts, FX, FY, obj=car)
     assert g.coef is not None and g.dig_cells > 0
-    # 车身格（略内缩避边界格）全未知；框外路面照常可走
     for x in np.arange(-1.0, 1.1, 0.25):
         for z in np.arange(5.3, 8.7, 0.25):
             assert _cell_state(g, x, z) == dg.GRID_UNKNOWN, (x, z)
@@ -1945,6 +1948,24 @@ def test_region_reading_interior_hole_immune():
     assert rr.sides == 2
     assert rr.left_edge_lane == pytest.approx(-0.5 / 2.75)
     assert rr.right_edge_lane == pytest.approx(2.5 / 2.75)
+
+
+def test_region_reading_wide_rows_center_unclipped():
+    """中心与宽度都吃远行（3~16m）：近行被视锥裁成自车两侧窗（这里
+    X∈[−0.5,2.0]，中心 +0.75），远行能看到整幅路面（X∈[−7,7]，中心 0）。
+    区读数必须给远行中心（无系统偏差）；近行中心只留 ro_grid 审计列。"""
+    st = np.full((60, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    st[0:4, 54:64] = dg.GRID_DRIVABLE       # z 3.1~4.1：[-0.5,2.0]m（视锥裁切窗）
+    st[20:40, 28:84] = dg.GRID_DRIVABLE     # z 8.1~12.9：[-7,7]m（整幅路面）
+    g = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                        counts=np.full(st.shape, 9, np.int32),
+                        dig_cells=0, latency_ms=1.0)
+    rr = dg.region_reading(g, 2.75)
+    assert rr.sides == 2
+    assert rr.left_edge_lane == pytest.approx(-7.0 / 2.75)
+    assert rr.right_edge_lane == pytest.approx(7.0 / 2.75)
+    # 近行中心（审计列）仍是被视锥裁成的 +0.75：它不能当路心
+    assert dg.grid_center_lane(g, 2.75) == pytest.approx(0.75 / 2.75)
 
 
 def test_region_reading_clip_side_honest():

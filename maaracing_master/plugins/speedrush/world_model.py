@@ -6,12 +6,13 @@
 框**按 x 排横向**（A1 透视归一尺子，CODE_WIKI §6 定档口径）。
 收益/风险/迟滞属决策层，金币组聚合属 §7#3 `[需实测]` 结掉之后——本层不做、不预置。
 
-**归一口径**（与 trick ②c 预注册判据同族，证据 commit `3847fae`）：
+**归一口径**（保险杠机位；标定样本见 gate0 `_source`/`_notes`）：
 
-    x_lane = ( (cx − vpx)/(cy − y_h) − (ego_cx − vpx)/(v_ego − y_h) ) × a_x
+    x_lane = (cx − vpx)/(cy − y_h) × a_x
 
-即"目标与本车的横向差，以消失点为原点、按行归一、换算成车道单位"。
-未经本式归一的像素横向差**禁止**当距离用（§6 锁的纪律，trick 首轮撤回的直接教训）。
+即"目标相对道路消失点方向、按行归一、换算成车道单位"。相机装在车头且钉在
+自车中心，自车横向原点就是消失点列，式内不需要自车行项。未经本式归一的
+像素横向差**禁止**当距离用（§6 锁的纪律，trick 首轮撤回的直接教训）。
 
 **几何真源**：常数全部住 `resources/calibration/gate0.json`（三源分立：游戏事实
 RULES / 几何标定 gate0 / 行为参数 decision），经 `load_calib()` fail-loud 读取，
@@ -45,9 +46,7 @@ class Calib:
 
     vpx: float        # 消失点 x
     y_h: float        # 地平线行
-    a_x: float        # 横向尺子：归一量 → 车道单位（A1 globalL 冻结）
-    v_ego: float      # 自车接地点行（②c 主档）
-    ego_cx: float     # 追车相机自车列（trick 硬事实：自车钉画面中央）
+    a_x: float        # 横向尺子：归一量 → 车道单位（保险杠机位重标）
     min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → x_lane=None
     lane_w_m: float   # 一条车道的米制宽（3D 找边的车道量换算锚；出处见 _notes）
 
@@ -67,14 +66,11 @@ def _read_gate0(path) -> Calib:
         raise ValueError(f"gate0.json schema_version 非 1：{d.get('schema_version')!r}")
     cal = Calib(
         vpx=_require(d, "vpx"), y_h=_require(d, "y_h"), a_x=_require(d, "a_x"),
-        v_ego=_require(d, "v_ego"), ego_cx=_require(d, "ego_cx"),
         min_denom=_require(d, "min_denom"), lane_w_m=_require(d, "lane_w_m"))
-    # 依赖矛盾检查：尺子分母与自车项都不能退化
-    if not (cal.a_x > 0 and cal.min_denom > 0 and cal.vpx > 0 and cal.ego_cx > 0
+    # 依赖矛盾检查：尺子分母与换算锚都不能退化
+    if not (cal.a_x > 0 and cal.min_denom > 0 and cal.vpx > 0
             and cal.lane_w_m > 0):
         raise ValueError(f"gate0.json 数值非法：{cal}")
-    if cal.v_ego - cal.y_h <= 0:
-        raise ValueError(f"自车行 v_ego={cal.v_ego} 必须低于地平线 y_h={cal.y_h}（ego 项分母退化）")
     return cal
 
 
@@ -89,19 +85,25 @@ KIND_COIN = "coin"
 KIND_CAR = "car"
 KIND_BONUS = "bonus"
 
+# 捕获几何（WGC 固定 1280×720）。行率到站仪器的终点改用**画面下缘**而不是
+# 追车机位的自车接地点行：保险杠相机在车头，自车不在画面里，自车行不是可
+# 观测几何；下缘是相机无关的边界（该行地面约在相机前 3m，像素粗仪器的固有
+# 偏置，只作无深度锚目标的粗回退）。
+IMAGE_H = 720
+
 
 def x_lane_of(cx: int, cy: int, cal: Calib) -> float:
-    """A1 归一尺子（本模块 docstring 的公式）。公开供 tracking 层复用——
-    同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
-    return ((cx - cal.vpx) / (cy - cal.y_h)
-            - (cal.ego_cx - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
+    """A1 归一尺子（保险杠机位，无自车项；公式见本模块 docstring）。公开供
+    tracking 层复用——同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
+    return (cx - cal.vpx) / (cy - cal.y_h) * cal.a_x
 
 
 def t_meet_car_s(rel_px_per_fid: float, cy: float, cal: Calib,
                  fid_rate_hz: float) -> float:
-    """车流到自车行的秒数（地面流积分式，2026-10-11 V0 归因后 cars 换基）。
+    """车流到画面下缘的秒数（地面流积分式，2026-10-11 V0 归因后 cars 换基；
+    2026-10-23 保险杠机位终点从自车行改为画面下缘——自车不在画面里）。
 
-    线性行率式 (v_ego−cy)/(rel·hz) 有两处契约错误：① rel 单位是 px/fid
+    线性行率式 (D−cy)/(rel·hz) 有两处契约错误：① rel 单位是 px/fid
     不是 px/tick（fid 率 ≠ 控制拍率，消费偏差恒定高估 TTC）；② 行速率随
     行号二次增长（针孔投影下恒定相对纵向速度的必然形状 r ∝ (cy−y_h)²），
     线性式把剩余行程当匀速，远车到站时间虚高一个量级。本式对 1/r 沿行
@@ -110,16 +112,16 @@ def t_meet_car_s(rel_px_per_fid: float, cy: float, cal: Calib,
 
         t = ∫ dy/(k(y−y_h)²) = (1/d − 1/D)/k = d(D−d)/(D·rel·f_fid)
 
-    其中 d=cy−y_h、D=v_ego−y_h、f_fid=采集帧率（px/fid→秒的换算锚，
-    由 Tracker 逐拍在线估计随 obs 下发）。不接近（rel≤0）或已在行上
-    （cy≥v_ego 积分为负）→ 0/inf 语义与旧式一致；fid_rate_hz 必须>0
+    其中 d=cy−y_h、D=IMAGE_H−y_h、f_fid=采集帧率（px/fid→秒的换算锚，
+    由 Tracker 逐拍在线估计随 obs 下发）。不接近（rel≤0）或已到下缘
+    （cy≥IMAGE_H 积分为负）→ 0/inf 语义与旧式一致；fid_rate_hz 必须>0
     （供数缺位时调用方自决退路，本函数不代作主张）。"""
     if fid_rate_hz <= 0:
         raise ValueError(f"fid_rate_hz={fid_rate_hz} 非正（px/fid→秒无换算锚）")
     d = cy - cal.y_h
     if rel_px_per_fid <= 0 or d <= 0:
         return math.inf if rel_px_per_fid <= 0 else 0.0
-    D = cal.v_ego - cal.y_h
+    D = IMAGE_H - cal.y_h
     t_fid = d * (D - d) / (D * rel_px_per_fid)
     return max(0.0, t_fid) / fid_rate_hz
 

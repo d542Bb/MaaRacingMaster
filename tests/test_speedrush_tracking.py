@@ -285,7 +285,7 @@ def test_x_sigma_matches_error_note_order():
     obs = trk.update(_per(1, cars=[_near_car(cy=cy)]), frame_age_ms=10.0, stage=1)
     t = obs.targets[0]
     assert t.x_lane is not None                 # 分母 30 ≥ MIN_DENOM：域内
-    assert 0.2 <= t.x_sigma <= 0.6              # 15×0.587/30 ≈ 0.29
+    assert 0.1 <= t.x_sigma <= 0.3              # 15×0.305/30 ≈ 0.15（保险杠尺子）
     assert t.kind == KIND_CAR
 
 

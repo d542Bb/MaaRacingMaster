@@ -49,12 +49,26 @@ def _dist(obs, tid=1):
 
 # ---------- 契约基础 ----------
 
-def test_no_anchors_yet_unknown_metric_none():
+def test_no_anchor_matched_box_size_coarse_distance():
+    """无锚但本拍有框：框高给粗距离（2026-10-23 保险杠机位），不进 TTC。"""
     trk = Tracker()
-    obs = trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(1, cars=[_car(h=40)]), frame_age_ms=10.0, stage=1)
+    d = _dist(obs)
+    assert d.source is DistanceSource.BOX_SIZE
+    assert d.method is DistanceMethod.BOX_SIZE
+    assert d.metric_distance_m == pytest.approx(TrackerParams().box_dist_k_px_m / 40.0)
+    assert d.reason is DistanceReason.NO_ANCHOR_YET   # 粗距离仍带无锚原因，供 trace
+    assert d.v_close_mps is None
+
+
+def test_lost_without_anchor_stays_unknown():
+    """丢框且无锚：不臆造距离（粗距离只在本拍有框时给）。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(2), frame_age_ms=10.0, stage=1)
     d = _dist(obs)
     assert d.source is DistanceSource.UNKNOWN
-    assert d.metric_distance_m is None          # 类型层防"有序无米"被当数用
+    assert d.metric_distance_m is None
     assert d.reason is DistanceReason.NO_ANCHOR_YET
 
 
@@ -72,7 +86,8 @@ def test_anchor_hold_reports_anchor_z():
 
 def test_unknown_reason_is_enum_and_jsonable():
     trk = Tracker()
-    obs = trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(2), frame_age_ms=10.0, stage=1)
     j = to_jsonable(_dist(obs))
     assert j["source"] == "UNKNOWN" and j["reason"] == "NO_ANCHOR_YET"
 
@@ -215,9 +230,9 @@ def test_cluster_switch_voids_anchor():
     obs = trk.update(_per(3, cars=[_car()]), frame_age_ms=10.0, stage=1,
                      anchors=_sheet(2, z_m=73.0))   # 主簇跳变（车体↔背景）
     d = _dist(obs)
-    assert d.source is DistanceSource.UNKNOWN
-    assert d.reason is DistanceReason.CLUSTER_SWITCH
-    assert d.metric_distance_m is None
+    assert d.source is DistanceSource.BOX_SIZE     # 锚被清：退回框高粗距离
+    assert d.metric_distance_m == pytest.approx(TrackerParams().box_dist_k_px_m / 40.0)
+    assert d.source is not DistanceSource.ANCHOR
 
 
 def test_track_lost_holds_range_for_short_flicker():
@@ -337,8 +352,9 @@ def test_metric_state_unknown_without_anchor():
     trk = Tracker()
     obs = trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
     m = _mstate(obs)
-    assert m.source is DistanceSource.UNKNOWN
-    assert m.z_m is None and m.x_m is None
+    assert m.source is DistanceSource.BOX_SIZE
+    assert m.z_m == pytest.approx(TrackerParams().box_dist_k_px_m / 40.0)
+    assert m.x_m is None                     # 无锚帧焦距：横向回退像素尺子
     assert m.v_close_mps is None and m.t_meet_s is None
 
 
@@ -400,7 +416,7 @@ def test_far_track_still_gets_metric_state():
     """地平线退化带住户（denom<min_denom 降级 far 轨）：米制态照产出——
     这正是本次搬家要治的盲区本体，far 不再等于决策不可见。"""
     trk = Tracker()
-    far = _car(cx=660, cy=335)                # denom=335−324.2≈11 < 20：far
+    far = _car(cx=660, cy=365)                # denom=365−354.2≈11 < 20：far
     trk.update(_per(1, cars=[far]), frame_age_ms=10.0, stage=1)
     assert trk.update(_per(2, cars=[far]), frame_age_ms=10.0, stage=1,
                       anchors=replace(_sheet(1, z_m=40.0), fx=700.0)) \
@@ -422,8 +438,9 @@ def test_cluster_switch_clears_fx_with_anchor():
                anchors=replace(_sheet(3, z_m=89.0), fx=700.0))   # 跳变 >20m：清锚
     m = _mstate(trk.update(_per(4, cars=[_car(cx=800)]),
                            frame_age_ms=10.0, stage=1))
-    assert m.z_m is None and m.x_m is None
-    assert m.source is DistanceSource.UNKNOWN
+    assert m.x_m is None                     # 焦距锚随 z 锚同清
+    assert m.source is DistanceSource.BOX_SIZE
+    assert m.z_m == pytest.approx(TrackerParams().box_dist_k_px_m / 40.0)
 
 
 def test_sheet_carries_frame_focal():

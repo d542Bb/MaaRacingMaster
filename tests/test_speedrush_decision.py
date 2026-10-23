@@ -21,7 +21,7 @@ from maaracing_master.plugins.speedrush.traffic import CarView
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import (
-    _read_gate0, load_calib, t_meet_car_s)
+    IMAGE_H, _read_gate0, load_calib, t_meet_car_s)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH, GATE0_FILE as GATE0_PATH
 
 DT = 0.05          # 20Hz 名义 tick
@@ -120,7 +120,6 @@ def test_decision_fail_loud(tmp_path, mutate, frag):
 @pytest.mark.parametrize("mutate,frag", [
     (lambda d: d.pop("a_x"), "a_x"),
     (lambda d: d.update(schema_version=2), "schema_version"),
-    (lambda d: d.update(v_ego=300.0), "分母退化"),        # v_ego < y_h
     (lambda d: d.update(y_h="地平线"), "非数值"),
 ])
 def test_gate0_fail_loud(tmp_path, mutate, frag):
@@ -136,7 +135,7 @@ def test_gate0_fail_loud(tmp_path, mutate, frag):
 def test_real_sources_load():
     assert CFG.validate.t_recover_s < CFG.validate.t_conserve_max_s
     cal = load_calib()
-    assert cal.v_ego - cal.y_h > 0 and cal.min_denom > 0
+    assert cal.a_x > 0 and cal.min_denom > 0 and cal.lane_w_m > 0
 
 
 # ---------- 校验合取（§四：五信号合取，任何单项不作数） ----------
@@ -395,11 +394,11 @@ def test_car_t_meet_ground_flow_and_fallback():
     """fid 率有供=地面流积分式（对 1/r 沿行积分的闭式对账）；缺供=退回旧
     行率式（已知 TTC 高估方向的旧消费口径，行为不静默换式）。"""
     cal = load_calib()
-    d, D, rel, f = 200.0, cal.v_ego - cal.y_h, 4.0, 30.0
+    d, D, rel, f = 200.0, IMAGE_H - cal.y_h, 4.0, 30.0
     assert t_meet_car_s(rel, cal.y_h + d, cal, f) == \
         pytest.approx(d * (D - d) / (D * rel) / f)
     assert math.isinf(t_meet_car_s(-1.0, 500.0, cal, f))   # 不接近→永不到站
-    assert t_meet_car_s(4.0, cal.v_ego + 5, cal, f) == 0.0  # 已在行上
+    assert t_meet_car_s(4.0, IMAGE_H + 5, cal, f) == 0.0  # 已到下缘
     with pytest.raises(ValueError):
         t_meet_car_s(4.0, 500.0, cal, 0.0)
     e = _eng()
@@ -407,7 +406,7 @@ def test_car_t_meet_ground_flow_and_fallback():
     e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([v]))
     # 缺供退路=旧线性式（rel 按 px/tick 消费），与三件套①前的行为逐位同
     assert e.scorer.car_t_meet_s(rel, cal.y_h + d) == \
-        pytest.approx((cal.v_ego - cal.y_h - d) / (rel * 20.0))
+        pytest.approx((IMAGE_H - cal.y_h - d) / (rel * 20.0))
     # 引擎逐拍喂 fid 率后换积分式
     e.update(_obs(fid=2, presence=True, fid_hz=f), DT, traffic=_traffic([v]))
     assert e.scorer.fid_hz == f
@@ -465,3 +464,88 @@ def test_cy_jump_without_box_overlap_is_fatal():
     b = _car_t(1, 2, 650, (700, 600, 800, 700))
     assert w.check(_obs(fid=1, targets=(a,)), 0.05).fatal is None
     assert w.check(_obs(fid=2, targets=(b,)), 0.05).fatal == "cy_jump"
+
+
+# ---------- 远场粗带的坐标口径（方向级消费，2026-10-21） ----------
+
+def test_far_hint_is_shared_and_not_recomputed_in_selection_frame():
+    """方向结果由走廊层共享：选择帧换算（executed/原点）不得重算或平移它。
+    实拍证据：p2 2796→2799 远带与中心线未动，executed 翻 1.47 道；共享结果
+    在原始坐标算好，消费端只读。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand, far_hint_lane)
+
+    e = _eng()
+    lw = e.cal.lane_w_m
+    bands = tuple(
+        CorridorBand(float(z), float(z + 3.0),
+                     BandBoundary(-8.0, "measured", 1.0),
+                     BandBoundary(8.0, "measured", 1.0))
+        for z in range(-3, 30, 3))
+    coarse = (CorridorBand(
+        11.0, 26.0,
+        BandBoundary(-9.0, "inferred"),
+        BandBoundary(5.0, "inferred")),)
+    e._corridor = Corridor(bands, 0.0, 16.0, "pair", "ok", coarse,
+                           far_hint_lane=0.42)
+    assert far_hint_lane(bands, coarse, lw) == pytest.approx(-2.0 / lw)
+    for executed in (-1.0, 0.0, 1.0):
+        road, _, _ = e._road_frame(executed, 1)
+        assert road.far_hint_lane == pytest.approx(0.42)
+
+
+def test_selection_reachability_uses_plant_kinematics():
+    """横移可达性 = 执行层同一套运动学：0.7 道约 0.5 秒可到。
+
+    旧口径 0.3+2.0/道 会把 1 秒内 0.7 道的目标判成来不及；换成
+    横向加速度/速度上限后必须放行，3 道以上仍不可达。"""
+    from maaracing_master.plugins.speedrush.selection import (
+        SelectionParams, _reachable, _t_move)
+
+    p = SelectionParams(lane_w_m=3.4)
+    assert _t_move(0.7 * 3.4, p) == pytest.approx(0.488, abs=0.01)
+    assert _reachable(0.7 * 3.4, 0.0, 1.0, p)
+    assert not _reachable(3.0 * 3.4, 0.0, 1.0, p)
+    # 已对齐只留反应时间
+    assert _reachable(0.05 * 3.4, 0.0, 0.2, p)
+    assert not _reachable(0.05 * 3.4, 0.0, 0.1, p)
+
+
+def test_selection_kinematics_share_planner_source():
+    """选择层的横移能力直接读 planner 参数，不另存一份换道时间。"""
+    e = _eng()
+    assert e.selector.p.a_lat_lane_s2 == pytest.approx(e.cfg.planner.a_lat_gain)
+    assert e.selector.p.v_lat_max_lane_s == pytest.approx(
+        e.cfg.planner.v_lat_max)
+
+
+def test_box_size_metric_car_uses_pixel_lateral_and_no_ttc():
+    """无锚框高粗距离（2026-10-23）：横向走像素尺子、到站时间弃权、
+    z 不喂精确米制口径；近/远判断吃粗距离。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-1.2, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    src = e._reach_car_sources(0.0)
+    assert len(src) == 1
+    s = src[0]
+    assert s.src == "metric_coarse"
+    assert s.x_m == pytest.approx(-1.2 * e.cal.lane_w_m)   # 横向=像素尺子
+    assert s.t_meet_s is None and s.z_m is None             # 粗距离不进精确口径
+    assert s.near is True                                   # 4.5m ≤ near_z_m=6m
+
+
+def test_box_size_metric_car_without_lateral_abstains():
+    """粗距离但没有横向读数（远轨）→ 不入账，不拿 None 乘尺子。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (CarView(id=1, x_lane=None, cy=620, rel_approach=8.0,
+                        d_min=0.0, age_ticks=10),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    assert e._reach_car_sources(0.0) == []

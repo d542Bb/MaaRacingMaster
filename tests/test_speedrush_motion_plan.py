@@ -417,6 +417,19 @@ def test_corridor_all_infeasible_holds_position():
     assert not p.valid and p.reason == "plan:infeasible_corridor"
 
 
+def test_infeasible_corridor_escapes_toward_open_side():
+    """自车压在左包络内（贴墙行驶的日常态）且正向右逃离：可行集为空时
+    必须选「最快脱离侵入」。旧兜底选「位移最小」，等于满舵左抵消逃离速度，
+    把车钉在护栏上（192643_p2 fid 3653~3670 连续 0.85s 左满舵撞栏）。"""
+    road = RoadFrame((RoadBand(0.0, 6.0, -6.9, 8.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 14.9, -6.9, 8.0, True)
+    s = _scene(road=road, ego_m=-6.54)
+    p = _plan(s, ego=EgoState(s.ego_lane, 0.36, 0.28))    # 正向右逃离
+    assert not p.valid and p.reason == "plan:infeasible_corridor"
+    assert p.corridor_viol_m > 0.0
+    assert p.u_feedforward > 0.0                          # 继续向右脱离
+
+
 def test_empty_corridor_intersection_not_unconstrained():
     """交集为空时不得当成“无走廊约束”放行。"""
     road = RoadFrame((RoadBand(0.0, 6.0, 4.0, 5.0, src="measured",

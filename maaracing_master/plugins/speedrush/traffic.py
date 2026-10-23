@@ -8,7 +8,8 @@ planner 不读本层。
 
 **pass 判据**（设计稿 §三；起值 [需实测 C5] 全部落 decision.json traffic 段，
 本文件不写字面量）：
-- **超车完成**：track 于自车行下带消失（last cy ≥ v_ego − exit_margin_px）。
+- **超车完成**：track 于画面下带消失（last cy ≥ IMAGE_H − exit_margin_px；
+  保险杠机位不再用追车相机的自车行）。
   游戏语义：街车从屏幕下沿出画 = 我们越过了它。
 - **推定超越（presumed_pass）**：track 死亡时最后一次**真实**读数已贴身
   （cy ≥ presumed_cy_px）且在邻道内（|x_lane| ≤ presumed_lane_max）且仍在
@@ -36,7 +37,7 @@ from maaracing_master.plugins.speedrush.config import Traffic
 from maaracing_master.plugins.speedrush.tracking import (
     WorldObservation)
 from maaracing_master.plugins.speedrush.world_model import (
-    KIND_CAR, Calib, load_calib)
+    IMAGE_H, KIND_CAR, Calib, load_calib)
 
 OUTCOME_PASS = "pass"
 OUTCOME_PRESUMED_PASS = "presumed_pass"
@@ -242,7 +243,7 @@ class TrafficObserver:
         """消失落定分类（设计稿 §三判据表的实现位）。"""
         if rec.n_obs < self.p.min_obs_ticks:
             return None                       # 闪现噪声：不记账
-        bottom_exit = rec.last_cy >= self.cal.v_ego - self.p.exit_margin_px
+        bottom_exit = rec.last_cy >= IMAGE_H - self.p.exit_margin_px
         if not bottom_exit:
             if (rec.last_cy_real >= self.p.presumed_cy_px
                     and rec.last_x is not None

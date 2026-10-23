@@ -58,6 +58,22 @@ def test_green_narrowing_pushes_away_from_wall():
     assert right.free_m == 3.0 and right.blocker == "space"
 
 
+def test_region_width_controls_adjacent_lane_escape():
+    """走廊宽度必须够一道车宽（2026-10-23 保险杠机位回归）：区读数只吃
+    3~6m 近行时宽度掉到 2.4 道，±1 道候选被 space 整段截断、前车当前道
+    只能跟着；宽度恢复 4.4 道（3~16m 远行）后同一场景能并到空侧。"""
+    car = Car(x_m=0.0, z_m=5.0 + DATUM)
+    narrow = _straight(l=-1.2 * LW, r=1.2 * LW)
+    wide = _straight(l=-2.2 * LW, r=2.2 * LW)
+    rep_n = choose_lane(narrow, [car], ego_lane=0.0, lane_w_m=LW, p=P)
+    assert rep_n.lane == 0.0
+    for c in rep_n.lanes:
+        if c.lane != 0.0:
+            assert c.blocker == "space"
+    rep_w = choose_lane(wide, [car], ego_lane=0.0, lane_w_m=LW, p=P)
+    assert abs(rep_w.lane) == 1.0
+
+
 def test_car_in_lane_shifts_to_empty_side():
     road = _straight()
     car = Car(x_m=0.0, z_m=5.0 + DATUM)
@@ -153,20 +169,21 @@ def test_occupied_incumbent_switches_even_inside_margin():
 
 # ---------- 机会侧预置（方向级消费，2026-10-21 方案步骤 4） ----------
 
-def _far_road(cleft, cright):
-    """直道 + 末尾一条远粗带（两侧给 cleft/cright，选择坐标）。"""
+def _far_road(hint=None):
+    """直道 + 走廊层共享的远场方向结果（消费端只读，不再重算）。"""
     bands = tuple(RoadBand(i * 3.0, (i + 1) * 3.0, -6.0, 6.0,
                            src="measured", age_ms=0.0, conf=1.0)
                   for i in range(8))
-    coarse = (RoadBand(30.0, 45.0, cleft, cright, src="inferred"),)
-    return RoadFrame(bands, 12.0, -6.0, 6.0, True, coarse)
+    coarse = (RoadBand(30.0, 45.0, -6.0, 10.0, src="inferred"),)
+    return RoadFrame(bands, 12.0, -6.0, 6.0, True, coarse,
+                     far_hint_lane=hint)
 
 
 def test_far_direction_prepositions_toward_open_side():
     """机会侧预置：净空与占用全打平时，字典序回中项换成「离远带更开的一侧
-    最近」——远带范围中点偏右（右侧更开）时选右道（开关开）。"""
-    # 远带 [-6, +10]：中点 +2m ≈ +0.6 道，右侧更开
-    road = _far_road(-6.0, 10.0)
+    最近」——共享方向结果偏右（右侧更开）时选右道（开关开）。"""
+    # 共享方向 +0.6 道（右侧更开）
+    road = _far_road(hint=0.6)
     p_on = CoarseParams(wall_margin_lane=0.35, ego_half_lane=0.27,
                         car_half_lane=0.27, switch_margin_m=4.0,
                         lookahead_m=24.0, cam_z_datum_m=DATUM,
@@ -176,6 +193,17 @@ def test_far_direction_prepositions_toward_open_side():
     # 开关关：同一走廊逐位回回中
     rep_off = choose_lane(road, [], ego_lane=0.0, lane_w_m=LW, p=P)
     assert rep_off.lane == 0.0
+
+
+def test_far_direction_without_shared_hint_does_not_preposition():
+    """共享方向结果缺席（无远带/滤波未建立）→ 开关开也不预置，逐位回回中。"""
+    p_on = CoarseParams(wall_margin_lane=0.35, ego_half_lane=0.27,
+                        car_half_lane=0.27, switch_margin_m=4.0,
+                        lookahead_m=24.0, cam_z_datum_m=DATUM,
+                        far_direction=True)
+    rep = choose_lane(_far_road(hint=None), [], ego_lane=0.0,
+                      lane_w_m=LW, p=p_on)
+    assert rep.lane == 0.0
 
 
 def test_far_direction_off_is_bit_identical():

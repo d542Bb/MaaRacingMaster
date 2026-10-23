@@ -30,7 +30,7 @@ def _bnd(el=None, er=None, edge_pts=()):
                             left_x=None, right_x=None,
                             sides=int(el is not None) + int(er is not None),
                             latency_ms=1.0, rejects=(), edge_pts=tuple(edge_pts),
-                            coef=(0.0, 0.0, 0.5))
+                            coef=(0.0, 0.0, 1.45))   # bumper 机位 cam_h 物理值
 
 
 def _grid(rows, col_lo=50, col_hi=73, blk_lo=0, blk_hi=0):
@@ -57,10 +57,11 @@ def _off(c):
 # ---------- 近场带：绿区为底、空气墙兜底 ----------
 
 def test_near_band_green_base_air_when_no_green():
-    """近场带：绿区在场的带用绿区实测边界（带 6-9m 左外邻 blocked）；
-    绿区缺席的带落空气墙（inferred，center±W/2）——墙箱不再接棒带边界
-    （2026-10-21 收敛定案：墙融合退役，墙实体仅存后备链单侧墙中心）。"""
-    grid = _grid(range(12, 24), blk_lo=1)    # 绿区 z 6~9m（带 6-9），左外邻 blocked
+    """近场带：绿区在场的带用绿区实测边界（整幅路面，带 6-9m 左外邻 blocked）；
+    绿区缺席的带落空气墙（inferred，center±W/2）。近带中心必须锚在绝对
+    路心——偏心绿区（保险杠近场视锥裁出的窄条）会被守卫打回空气墙。"""
+    grid = _grid(range(12, 24), col_lo=29, col_hi=82,
+                 blk_lo=1)     # 整幅路面 X≈±6.75m；左外邻 blocked
     c = build_corridor(_bnd(), grid, fid=11,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     assert c.bands[1].left.src == "measured"          # 绿区接棒（带 6-9）
@@ -71,6 +72,20 @@ def test_near_band_green_base_air_when_no_green():
     assert c.bands[0].right.src == INFERRED
     assert c.bands[0].right.x_m == pytest.approx(+2.0 * LW)
     assert c.plane_health == "ok"
+
+
+def test_near_band_offcenter_green_falls_back_to_air_wall():
+    """近带绿区被视锥/挖洞裁成偏心小块（双侧中点偏离绝对路心 >1m）→
+    整带退回绝对路心±W/2。否则选择帧中心与包络会跟着偏（实拍
+    185126_p1：带中心偏离 4.9m、左缘跑到路心右侧，规划器朝墙打舵）。"""
+    grid = _grid(range(12, 24), blk_lo=1)    # 偏心窄条 X∈[−1.5,+4.5]
+    c = build_corridor(_bnd(), grid, fid=11,
+                       center_lane=0.0, width_lane=4.0, src="wall",
+                       lane_w_m=LW)
+    assert c.bands[1].left.src == INFERRED
+    assert c.bands[1].right.src == INFERRED
+    assert c.bands[1].left.x_m == pytest.approx(-2.0 * LW)
+    assert c.bands[1].right.x_m == pytest.approx(+2.0 * LW)
 
 
 def test_green_boundary_data_edge_falls_to_air():
@@ -149,7 +164,7 @@ def test_far_band_edge_pts_measured():
     c = build_corridor(bnd, None, fid=21,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     b5 = c.bands[5]                            # 相机系 18~21m（含 zc=18 箱）
-    assert b5.z0 == pytest.approx(18.0 - 5.0)  # 车头系带标
+    assert b5.z0 == pytest.approx(18.0 - smod.CAM_Z_DATUM_M)  # 保险杠：相机系=车头系
     assert b5.right.src == "measured"
     assert b5.right.x_m == pytest.approx(4.5)  # 最靠路心者，外侧检出不当边界
     assert b5.right.conf == pytest.approx(0.5)
@@ -283,7 +298,7 @@ def test_region_fallback_on_fresh_tick_only():
     """候选缺席的新鲜拍：墙/槽全空 → 区读数接棒（src=region）；复用拍
     （new=False）区不接棒（旧栅格不冒充新鲜）。"""
     o = smod._EgoRoadObserver(lane_w_m=LW)
-    g = _grid(range(12, 24))                    # 绿区路心 +1.5m
+    g = _grid(range(2, 10))                     # 绿区路心 +1.5m（读数行域 3~6m）
     c = o.update(None, now=1000.0, grid=g, fid=1)
     assert c is not None and c.src == "region"
     assert _off(c) == pytest.approx(-1.5 / LW, abs=0.01)
@@ -292,13 +307,164 @@ def test_region_fallback_on_fresh_tick_only():
 
 
 def test_master_mode_region_first():
-    """master 模式：区读数当主人（区在场优先），pair 降为审计候选。"""
+    """master 模式：无墙证据时绿区物理边界接棒（双侧宏观读数），
+    pair 降为审计候选。"""
     xc = SimpleNamespace(mode="master", tol_lane=0.45, bypass_streak=8)
     o = smod._EgoRoadObserver(xc, LW)
-    g = _grid(range(12, 24))                    # 区路心 +1.5m → off≈−0.545
+    g = _grid(range(2, 10))                     # 区路心 +1.5m → off≈−0.545（读数行域 3~6m）
     c = o.update(_bnd(-2.0, 2.0), now=1000.0, grid=g, fid=1)
     assert c is not None and c.src == "region"
     assert _off(c) == pytest.approx(-1.5 / LW, abs=0.01)
+
+
+# ---------- master 绝对路心链（2026-10-23：墙/空气墙，pair/slot 不接棒） ----------
+
+_MASTER = SimpleNamespace(mode="master", tol_lane=0.45, bypass_streak=8)
+
+
+def _walls(left_lane, right_lane, zc=4.0):
+    return [(-1, zc, left_lane * LW), (1, zc, right_lane * LW)]
+
+
+def _master_wall_observer(n=32, left_lane=-2.0, right_lane=2.0):
+    """master 观察器：双侧墙箱攒满置信 + W 成形（墙到墙宽=右−左）。"""
+    o = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL),
+                              mem_fallback=True)
+    for fid in range(1, n + 1):
+        o.update(_bnd(left_lane, right_lane,
+                      edge_pts=_walls(left_lane, right_lane)),
+                 now=1000.0 + 0.05 * fid, fid=fid)
+    return o
+
+
+def test_master_wall_both_sides_midpoint_and_width():
+    """双侧同箱新鲜墙 → 路心中点 + 墙到墙宽（宏观物理边界，车辆已被挖除）。
+    非对称对：左 −2.5 道 / 右 +1.5 道 → 中点 −0.5 道、宽 4.0 道。"""
+    o = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL),
+                              mem_fallback=True)
+    c = o.update(_bnd(-2.5, 1.5, edge_pts=_walls(-2.5, 1.5)),
+                 now=1000.0, fid=1)
+    assert c is not None and c.src == "wall"
+    assert _off(c) == pytest.approx(+0.5, abs=0.01)      # −center
+    assert c.width_lane == pytest.approx(4.0, abs=0.01)
+
+
+def test_master_wall_one_side_air_wall():
+    """单侧新鲜墙 + W 先验 → 墙 ∓ W/2（另一侧是空气墙）。左墙转遮挡、
+    右墙移到 +2.3 道：中心=右墙−W/2=+0.3 道，不是双侧中点 +0.15。"""
+    o = _master_wall_observer()
+    c = o.update(_bnd(None, 2.3, edge_pts=_walls(2.3, 2.3)[1:]),
+                 now=1001.8, fid=33)
+    assert c is not None and c.src == "wall"
+    assert _off(c) == pytest.approx(-0.3, abs=0.01)      # center=+0.3
+    assert c.width_lane == pytest.approx(4.0, abs=0.01)  # 单侧不更新宽度
+
+
+def test_master_never_uses_pair_or_slot_as_center():
+    """master 下找边对/保鲜槽不得当路心：无墙、无绿区 → 诚实 None
+    （旧链在槽 TTL 内会拿上一拍的车位当路心——实拍 ±6m 横摆的根因）。"""
+    o = smod._EgoRoadObserver(_MASTER, LW, mem_fallback=True)
+    assert o.update(_bnd(-2.9, -0.9), now=1000.0, fid=1) is None
+    assert o.update(None, now=1000.05, fid=2, new=False) is None
+
+
+def test_master_absolute_memory_short_ttl():
+    """记忆只桥接短暂遮挡：0.6s 内沿用绝对来源路心，超 0.8s 诚实 None
+    （旧 TTL=2s 会把自车横移前的车位当路心）。"""
+    o = smod._EgoRoadObserver(_MASTER, LW, mem_fallback=True)
+    c = o.update(_bnd(-2.0, 2.0), now=1000.0, grid=_grid(range(2, 10)), fid=1)
+    assert c is not None and c.src == "region"
+    c2 = o.update(None, now=1000.6, fid=2)
+    assert c2 is not None and c2.src == "memory"
+    assert _off(c2) == pytest.approx(-1.5 / LW, abs=0.01)
+    assert o.update(None, now=1001.0, fid=3) is None
+
+
+def test_master_ego_at_left_edge_uses_wall_not_pair():
+    """实拍 trace 365~376 回归：车贴左墙、单帧找边对报"正中"（0）、绿区弃权
+    ——master 只认左墙 + W/2，路心必须在车右侧约 1.4 道；找边对不得接棒。"""
+    o = _master_wall_observer()                 # W=4.0 道
+    at_edge = _bnd(-1.3, 1.3, edge_pts=[(-1, 8.0, -0.6 * LW)])
+    c1 = o.update(at_edge, now=1001.80, fid=33)
+    assert c1 is not None and c1.src == "memory"   # 跳变门：先沿用记忆
+    assert _off(c1) == pytest.approx(0.0, abs=0.15)  # 不是找边对的 0 道
+    c2 = o.update(at_edge, now=1001.85, fid=34)
+    assert c2 is not None and c2.src == "wall"
+    assert _off(c2) == pytest.approx(-1.4, abs=0.05)  # −(左墙 −0.6 + W/2)
+
+
+def test_master_wall_contradictory_pair_abstains_to_memory():
+    """真左墙 + 假右缘同时在场（宽 2.1 道）→ 双侧宽门拒、两侧单侧反推也
+    矛盾 → 墙诚实弃权，记忆保持最后绝对路心；不猜哪一侧（实拍 173018_p2
+    的 ±1 道来回摆根因）。"""
+    o = _master_wall_observer()                  # 路心 0、W=4.0
+    bad = _bnd(-0.6, 1.5, edge_pts=_walls(-0.6, 1.5))
+    c = o.update(bad, now=1001.80, fid=33)
+    assert c is not None and c.src == "memory"
+    assert _off(c) == pytest.approx(0.0, abs=0.01)
+    c2 = o.update(bad, now=1001.85, fid=34)
+    assert c2 is not None and c2.src == "memory"
+    # 矛盾持续超记忆 TTL → 诚实 None（不用窄对/假侧硬撑）
+    assert o.update(bad, now=1002.80, fid=53) is None
+
+
+def test_master_memory_holds_last_accepted_value():
+    """记忆=最后采信的绝对路心（不做 EMA）：小步采信 −0.3 道后断供，记忆
+    必须还是 −0.3，不是滤波滞后的 −0.06（后者会与墙值交替，形成来回摆）。"""
+    o = _master_wall_observer()                  # 路心 0
+    c = o.update(_bnd(-1.7, 2.3, edge_pts=_walls(-1.7, 2.3)),
+                 now=1001.80, fid=33)
+    assert c is not None and c.src == "wall"
+    assert _off(c) == pytest.approx(-0.3, abs=0.01)
+    o._wt = None                                 # 墙证据消失
+    c2 = o.update(None, now=1001.85, fid=34)
+    assert c2 is not None and c2.src == "memory"
+    assert _off(c2) == pytest.approx(-0.3, abs=0.01)
+
+
+def test_width_floor_rejects_narrow_pairs():
+    """窄于 3.0 道的对不进 W 统计：近场视锥裁切/假缘会给出 2.5~2.7 道的
+    "窄走廊"，不能让它定义整局路宽先验（否则真 4.0 道对被判成污染）。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES + 5):
+        o.update(_bnd(-1.3, 1.3), now=1000.0 + 0.05 * k)
+    assert o.width is None
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES + 5):
+        o.update(_bnd(-2.0, 2.0), now=1100.0 + 0.05 * k)
+    assert o.width == pytest.approx(4.0)
+
+
+def test_master_plane_gate_ignores_bad_plane_frame():
+    """坏平面拍（cam_h=0.91m，正常 1.4~1.5）的缘点/绿区整帧不进供数：
+    沿用近龄墙箱（src=wall_occl），坏帧分带边界落空气墙、plane_health
+    降级——当拍 ±1 道的假墙不得改写路心。"""
+    o = _master_wall_observer()
+    bad = DepthRoadReading(
+        left_edge_lane=None, right_edge_lane=None, left_x=None, right_x=None,
+        sides=0, latency_ms=1.0, rejects=(),
+        edge_pts=tuple(_walls(-3.0, 1.0)), coef=(0.0, 0.0, 0.91))
+    c = o.update(bad, now=1001.8, fid=33)
+    assert c is not None and c.src == "wall_occl"
+    assert _off(c) == pytest.approx(0.0, abs=0.01)
+    assert o.last["plane_ok"] is False
+    assert c.plane_health == "degraded"
+    assert c.bands[0].left.src == INFERRED      # 近带不拿坏帧绿区/缘点
+    # 同一坏读数在复用拍被再消费：同样整帧隔离（不能只在 new 拍判）
+    c2 = o.update(bad, now=1001.85, fid=34, new=False)
+    assert c2 is not None and c2.plane_health == "degraded"
+
+
+def test_master_jump_gate_waits_for_second_frame():
+    """来源跳变 >0.4 道：第一拍沿用记忆，第二拍同向一致才采信
+    （一帧野墙/换源不把目标拽飞）。"""
+    o = _master_wall_observer()
+    wl, wr = -2.0 + 1.2, 2.0 + 1.2        # 双墙同移 +1.2 道（同宽、纯平移）
+    c1 = o.update(_bnd(wl, wr, edge_pts=_walls(wl, wr)), now=1001.8, fid=33)
+    assert c1 is not None and c1.src == "memory"
+    assert _off(c1) == pytest.approx(0.0, abs=0.15)   # EMA 记忆仍在旧路心
+    c2 = o.update(_bnd(wl, wr, edge_pts=_walls(wl, wr)), now=1001.85, fid=34)
+    assert c2 is not None and c2.src == "wall"
+    assert _off(c2) == pytest.approx(-1.2, abs=0.01)
 
 
 # ---------- 中远场粗带：地面密度水管（2026-10-21 方案定案） ----------
@@ -317,14 +483,14 @@ def test_far_coarse_ground_supply_inferred():
     assert len(c.bands) == 9                        # 3m 带不动
     assert len(c.coarse_bands) == 2
     b0 = c.coarse_bands[0]
-    assert b0.z0 == pytest.approx(16.0 - 5.0)       # 车头系带标
-    assert b0.z1 == pytest.approx(31.0 - 5.0)
+    assert b0.z0 == pytest.approx(16.0 - smod.CAM_Z_DATUM_M)  # 保险杠：相机系=车头系
+    assert b0.z1 == pytest.approx(31.0 - smod.CAM_Z_DATUM_M)
     assert b0.left.src == INFERRED and b0.right.src == INFERRED
     assert b0.left.x_m == pytest.approx(-6.8)
     assert b0.right.x_m == pytest.approx(6.73)
     assert b0.left.last_fid == 42
     assert b0.n_pts == 500
-    assert c.coarse_bands[1].z0 == pytest.approx(31.0 - 5.0)
+    assert c.coarse_bands[1].z0 == pytest.approx(31.0 - smod.CAM_Z_DATUM_M)
 
 
 def test_far_coarse_switch_off_empty():
