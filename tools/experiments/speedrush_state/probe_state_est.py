@@ -80,6 +80,7 @@ class Tick:
     age: float | None
     h: float | None
     seen: int | None
+    bz: float | None = None   # 生产框高比桥接值（trace mcars.bz；旧局无此列）
 
 
 @dataclass
@@ -109,6 +110,14 @@ def load_rows(path):
     return rows
 
 
+def _row_count(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return sum(1 for line in fh if line.strip())
+    except OSError:
+        return 0
+
+
 def build_tracks(rows):
     t0 = rows[0]["ts_ns"]
     tracks = {}
@@ -122,7 +131,8 @@ def build_tracks(rows):
             tr.ticks.append(Tick(
                 t=t, fid=r.get("fid"), src=m.get("src"),
                 x=m.get("x"), z=m.get("z"), v=m.get("v"),
-                age=m.get("age"), h=e.get("h"), seen=e.get("seen")))
+                age=m.get("age"), h=e.get("h"), seen=e.get("seen"),
+                bz=m.get("bz")))
     return tracks, (rows[-1]["ts_ns"] - t0) / 1e9
 
 
@@ -148,6 +158,19 @@ def fresh_h_at(ticks, i0, t_eval):
             break
         if tk.h is not None and tk.seen == 0:
             return tk.h
+    return None
+
+
+def prod_bz_at(ticks, i0, t_eval):
+    """t_eval 之前最近一拍的**生产**桥接值（trace mcars.bz）；旧局无此列。"""
+    for j in range(i0, -1, -1):
+        tk = ticks[j]
+        if tk.t >= t_eval - 1e-6:
+            continue
+        if t_eval - tk.t > FRESH_LOOKBACK_S:
+            break
+        if tk.bz is not None:
+            return tk.bz
     return None
 
 
@@ -189,6 +212,7 @@ def eval_point(ticks, i0, i1, t_eval):
         z_box = None
     z_fuse = 0.5 * (z_cv + z_box) if z_box is not None else z_cv
     return {"hold": z0, "cv": z_cv, "box": z_box, "fuse": z_fuse,
+            "prod": prod_bz_at(ticks, i1 - 1, t_eval),
             "box_ok": z_box is not None}
 
 
@@ -258,7 +282,7 @@ def by_band(rows, key):
 
 
 def summarise_z(rows, alive_fracs):
-    methods = ("hold", "cv", "box", "fuse")
+    methods = ("hold", "cv", "box", "fuse", "prod")
     out = {"n_eval": len(rows), "box_valid_frac": (
         sum(1 for r in rows if r["box_ok"]) / len(rows) if rows else None),
         "alive_frac_median": med(alive_fracs)}
@@ -662,9 +686,9 @@ def pool(sessions):
     return {
         "sessions": len(sessions),
         "z_mae_med": {m: agg(("z", "methods", m, "mae_med"))
-                      for m in ("hold", "cv", "box", "fuse")},
+                      for m in ("hold", "cv", "box", "fuse", "prod")},
         "z_mae_p90": {m: agg(("z", "methods", m, "mae_p90"))
-                      for m in ("hold", "cv", "box", "fuse")},
+                      for m in ("hold", "cv", "box", "fuse", "prod")},
         "box_valid_frac": agg(("z", "box_valid_frac")),
         "heading_coverage": agg(("heading", "coverage")),
         "heading_jitter_deg_p95": agg(("heading", "jitter_p95_deg")),
@@ -699,7 +723,7 @@ def print_report(sessions, pooled):
               f"锚间dz p50={rnd(s['anchor_noise']['dz_med_m'], 2)}m "
               f"p90={rnd(s['anchor_noise']['dz_p90_m'], 2)}m")
         print("  z 方法     n    mae_p50  mae_p90  bias_p50  框有效")
-        for m in ("hold", "cv", "box", "fuse"):
+        for m in ("hold", "cv", "box", "fuse", "prod"):
             v = z["methods"][m]
             print(f"  {m:<8} {v['n']:>4}  "
                   f"{rnd(v['mae_med'], 2)!s:>7}  {rnd(v['mae_p90'], 2)!s:>7}  "
@@ -718,7 +742,7 @@ def print_report(sessions, pooled):
         for name, v in z["by_plausible"].items():
             print(f"  {name}(n={v['n']}, 框高单拍步进p50={rnd(v['h_step_med'], 2)}): "
                   + "  ".join(f"{m}={rnd(v[m], 2)}"
-                              for m in ("hold", "cv", "box", "fuse")))
+                              for m in ("hold", "cv", "box", "fuse", "prod")))
         h = s["heading"]
         st = s["staleness"]
         print(f"  锚龄: p50={rnd(st['age_p50_ms'], 0)}ms "
@@ -765,8 +789,11 @@ def main():
     args = ap.parse_args()
     paths = args.trace
     if not paths:
-        paths = sorted(glob.glob(os.path.join(DATA_ROOT, "*", "trace_*.jsonl")),
-                       key=os.path.getmtime)[-args.latest:]
+        found = sorted(
+            glob.glob(os.path.join(DATA_ROOT, "*", "trace_*.jsonl")),
+            key=os.path.getmtime)
+        # 测试会往真实数据根写 20000101 假时钟 trace（几十行）；自动选样时跳过
+        paths = [p for p in found if _row_count(p) >= 50][-args.latest:]
     sessions = [s for s in (run_session(p) for p in paths) if s]
     pooled = pool(sessions)
     print_report(sessions, pooled)
