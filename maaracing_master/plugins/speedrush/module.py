@@ -1859,9 +1859,6 @@ class _EgoRoadObserver:
         self._w_samples: deque = deque(maxlen=self.W_KEEP_SAMPLES)
         self._mem: tuple | None = None        # 朝向记忆 (center, width, 时刻)
         self._last_center: float | None = None   # 最近一次采信的路心（跳变门基线）
-        self._anchor_epoch = 0              # 路心锚点纪元：只在**确认采信的大幅
-        # 跳变**上 +1（事件计数，坏帧不膨胀）。跨帧同一道号的几何含义只在同一
-        # 纪元内成立——路线承诺层用它判「参考系换没换」，不自建判据
         self._jump_pending: tuple | None = None  # 待确认的跳变 (center, 连续拍数)
         self._frame_gate_used = False         # 本拍跳变门只判一次（候选链共享）
         self._plane_ok = True                 # 本拍平面尺度门（master）
@@ -2048,9 +2045,6 @@ class _EgoRoadObserver:
                                            reject="jump")
                 return None
         corridor = self._build(bnd, grid, fid, center, width, src, now)
-        if corridor is not None:
-            # 纪元随走廊下发：路线层据此判参考系是否换纪，不自己数坏帧
-            corridor = replace(corridor, anchor_epoch=self._anchor_epoch)
         self._last_center = center
         if mem_update:
             self._mem = self._mem_update(center, width, now)
@@ -2073,10 +2067,6 @@ class _EgoRoadObserver:
             n = self._jump_pending[1] + 1
             if n >= self.JUMP_CONFIRM:
                 self._jump_pending = None
-                # 换纪：一次超容差跳变被连续确认并采信 = 路心锚点重基。
-                # 只在**事件**上递增——按坏帧计数的话纪元逐帧膨胀，跨帧持有
-                # 参考道的上层（路线承诺）会被永久作废，承诺名存实亡
-                self._anchor_epoch += 1
                 return True
             self._jump_pending = (center, n)
             return False

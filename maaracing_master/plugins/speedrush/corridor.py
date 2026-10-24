@@ -112,9 +112,6 @@ class Corridor:
     # 最近一条两侧有证据的粗带中点相对该纵深中心线；只在**新远带证据**拍
     # 更新、其余拍共享同一结果（方向级消费的唯一真源，消费端不再各自滤波）
     far_hint_age_ms: float | None = None  # 共享方向结果的龄（ms）
-    anchor_epoch: int | None = None    # 路心锚点纪元（供数门在**确认采信的超容差
-    # 跳变**上递增，坏帧不计数）：车道身份=相对路心的编号，换纪即跨帧道号失去
-    # 几何含义，承诺层据此作废路线；None=该拍没有可用锚点（诚实缺位，不臆造）
 
 
 def _band_bounds(i: int) -> tuple[float, float]:

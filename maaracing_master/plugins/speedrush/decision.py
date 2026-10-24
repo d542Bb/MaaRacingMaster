@@ -310,13 +310,10 @@ class DecisionEngine:
         # 承诺值喂回候选评估会让迟滞语义在两层之间漂移。
         r = cfg.route
         self._route_params = RouteParams(
-            commit_s=r.commit_s,
-            # 门槛/上限类数值全部复用既有真源，不在 [route] 复制一份
+            # 门槛/速度类数值全部复用既有真源，不在 [route] 复制一份
             switch_gain_m=c.switch_margin_m,
-            t_meas_per_lane_s=r.t_meas_per_lane_s,
-            v_lat_max_lane_s=cfg.planner.v_lat_max,
             proxy_speed_mps=c.range_speed_mps,
-            t_urgent_s=r.t_urgent_s,
+            urgent_confirm_ticks=r.urgent_confirm_ticks,
             cancel_unsafe_ticks=r.cancel_unsafe_ticks,
             cancel_cooldown_s=r.cancel_cooldown_s,
             finish_tol_lane=s.center_band_lane,
@@ -324,6 +321,8 @@ class DecisionEngine:
             merge_max_s=r.merge_max_s)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
+        self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）
+        self._ruler_prev: float | None = None   # 上一拍尺子（米，场景帧 z=0）
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
@@ -355,6 +354,8 @@ class DecisionEngine:
         self._coarse = None
         self._route = None
         self._route_verdict = None
+        self._route_epoch = 0
+        self._ruler_prev = None
         self.occ.reset()
         self._occ_snap = None
         self._sel_ego_m = None
@@ -971,7 +972,7 @@ class DecisionEngine:
         # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
         # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。
-        self._tick_route()
+        self._tick_route(c0)
         # 粗层（2026-10-20 接控制）：只接管 L4 回中兜底——细层没有奖励车/
         # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
         # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
@@ -1044,21 +1045,29 @@ class DecisionEngine:
         """上一拍路线定案结果（trace route 列数据源；离线复算为什么放行/被拒）。"""
         return self._route_verdict
 
-    def _anchor_epoch(self) -> int | None:
-        """当拍路心锚点纪元（供数门只在**确认采信的大幅跳变**上递增，坏帧不计数）。
-        None=这一拍没有可用锚点：路线进「待重新初始化」，不拿旧道号硬撑；
-        走廊对象缺该字段同样按 None——诚实缺位比臆造纪元安全。"""
-        corr = self._corridor
-        if corr is None or corr.center_lane is None:
-            return None
-        return getattr(corr, "anchor_epoch", None)
+    RULER_TOL_LANE = 0.5    # 尺子单拍跳变超过半道 = 参考系重基
 
-    def _tick_route(self) -> None:
-        """推进路线一拍。输入只有原始粗层报告与纪元（边界 B：承诺值不喂回
-        候选评估），输出经 `coarse_lane` 单一接缝接控制。"""
+    def _ruler_epoch(self, c0: float | None) -> int:
+        """参考系纪元。尺子 = **场景 z=0 分带中心线**——粗层道号就是相对它取的。
+
+        它单拍跳变超过半道 → 跨帧同一道号换义，纪元 +1。**不跟绝对路心走**：
+        20261024_p2 实测绝对路心在「记忆 ↔ 遮挡墙」之间每 ~0.85 s 摆 0.4~1.7 道
+        （换源造成），而同一局的尺子 p90 只动 0.09 道。按绝对路心换纪会把路线
+        每秒作废一次（38/50 次并线被打断），承诺名存实亡。"""
+        lw = self.cal.lane_w_m
+        if c0 is not None and lw > 0:
+            tol = self.RULER_TOL_LANE * lw
+            if self._ruler_prev is not None and abs(c0 - self._ruler_prev) > tol:
+                self._route_epoch += 1
+            self._ruler_prev = c0
+        return self._route_epoch
+
+    def _tick_route(self, c0: float | None = None) -> None:
+        """推进路线一拍。输入只有原始粗层报告与参考系纪元（边界 B：承诺值
+        不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。"""
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
-            dt_s=self._dt_last, epoch=self._anchor_epoch())
+            dt_s=self._dt_last, epoch=self._ruler_epoch(c0))
 
     def _lane_for(self, committed: bool) -> float | None:
         """本拍接控制用的道。`committed=False` 逐语句是今天的路径（粗层自选道，

@@ -212,14 +212,12 @@
   },
   "route": {
     "control": true,
-    "commit_s": 1.5,
-    "t_meas_per_lane_s": 3.0,
-    "t_urgent_s": 0.35,
+    "urgent_confirm_ticks": 3,
     "cancel_unsafe_ticks": 5,
     "cancel_cooldown_s": 2.0,
     "finish_v_tol_lane_s": 0.4,
     "merge_max_s": 4.0,
-    "_note": "路线承诺层（2026-10-23 V1，全部初值待实机对账）：横向意图跨帧持有，接控制的道号从路线参考道读，不再每帧重选。commit_s=承诺期（定案后多久允许普通换道重评；到期只解锁重评，不构成换道理由）；t_meas_per_lane_s=放行用保守完成时间（人工观测支持的**暂定初值**：人工每道耗时中位 2.2~2.5 s、观测尾部 p90 4.5~5.9 s，本值取 3 s，未覆盖尾部；用途是提前排除安全窗口不足的起意，不是命令车辆花 3 秒并线——不得仅凭分数下降降门槛，降到 2 s 已被否）；t_urgent_s=现任道可用时间低于此判紧急（米→秒用 coarse.range_speed_mps 代理，本系统无自车纵向速度观测）；cancel_unsafe_ticks/cancel_cooldown_s=取消判定连续帧计数与取消后冷却（期内只许紧急逃生）；finish_v_tol_lane_s=并线完成的横速容差（位置容差复用 selection.center_band_lane，速率上限复用 planner.v_lat_max，收益门槛复用 coarse.switch_margin_m，都不在这里复制数值）；merge_max_s=并线超时到点按实测所在道落回 KEEP。control=false 时逐位回今天（粗层自选道 + 它的两条例外原样保留）。当前=true（2026-10-23 V1 实机验证局，只看翻面数/横向行程/路缘占比与被拒原因可复算性，得分率放最后）。"
+    "_note": "路线承诺层（2026-10-23 V1；2026-10-24 实机两局后收敛）：横向意图跨帧持有，接控制的道号从路线参考道读，不再每帧重选。规则只剩一条主动路径+撤销——现任道连续 urgent_confirm_ticks 拍确认被截才换，换到「确实更宽」的一条（确认空闲直接合格；有车的道至少要 switch_gain_m 的净空差，复用 coarse.switch_margin_m）；并线中只认完成（位置进中心带且横速落稳）与撤销（目标道连续 cancel_unsafe_ticks 拍确认被截），撤销后 cancel_cooldown_s 内不回那条道。原「普通换道/承诺期」一路在 24 m 观察窗下结构上不可达（够格的主动换道必然同时是逃生换道），已删除：实机一局 327 拍卡在承诺期而无一真正决定。control=false 时逐位回今天（粗层自选道 + 它的两条例外原样保留）。当前=true。"
   },
   "geometry": {
     "wall_line_master": false,

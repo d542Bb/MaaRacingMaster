@@ -366,20 +366,18 @@ class Coarse:
 
 @dataclass(frozen=True)
 class Route:
-    """路线承诺层（2026-10-23 V1）：横向意图跨帧持有，逐帧自选不再接控制。
+    """路线承诺层（2026-10-23 落地；2026-10-24 实机两局后收敛）。
 
     control=闸：false 时 `coarse_lane` 逐语句回今天（粗层自选道，含它的两道
     迟滞例外）；true 时接控制的道号取自路线的参考道。其余键只喂定案判据——
-    收益门槛复用 `[coarse].switch_margin_m`、速率上限复用 `[planner].v_lat_max`、
-    米→秒代理复用 `[coarse].range_speed_mps`、完成位置容差复用
-    `[selection].center_band_lane`，都不在本节复制数值。
-    `t_meas_per_lane_s` 是**人工观测支持的暂定初值**（未覆盖观测尾部），用途是
-    提前排除安全窗口不足的起意，不是命令车辆花这么久并线。"""
+    净空门槛复用 `[coarse].switch_margin_m`、米→秒代理复用
+    `[coarse].range_speed_mps`、完成位置容差复用 `[selection].center_band_lane`，
+    都不在本节复制数值。定案规则只剩"逃生换道 + 并线承诺 + 撤销冷却"：原
+    「收益门槛 + 承诺期 + 整段并线时间窗」在 24 m 观察窗下结构上不可达，已删除
+    （证据见 CODE_WIKI §22）。"""
 
     control: bool = False
-    commit_s: float = 1.5
-    t_meas_per_lane_s: float = 3.0
-    t_urgent_s: float = 0.35
+    urgent_confirm_ticks: int = 3
     cancel_unsafe_ticks: int = 5
     cancel_cooldown_s: float = 2.0
     finish_v_tol_lane_s: float = 0.4
@@ -770,11 +768,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                                 default=False)),
         route=Route(
             control=_bool(d, "route", "control", default=False),
-            commit_s=_num_def(d, "route", "commit_s", 1.5, lo=0),
-            t_meas_per_lane_s=_num_def(d, "route", "t_meas_per_lane_s", 3.0,
-                                       lo=0),
-            t_urgent_s=_num_def(d, "route", "t_urgent_s", 0.35, lo=0,
-                                lo_open=False),
+            urgent_confirm_ticks=_int_def(d, "route", "urgent_confirm_ticks",
+                                          3, lo=1),
             cancel_unsafe_ticks=_int_def(d, "route", "cancel_unsafe_ticks",
                                          5, lo=1),
             cancel_cooldown_s=_num_def(d, "route", "cancel_cooldown_s", 2.0,
@@ -835,11 +830,6 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             "[route] control=true 要求 [coarse].control=true：路线的候选来自粗层"
             "逐道净空读数，闸关时定案没有输入（承诺层空转，控制链却已换源）")
-    if cfg.route.cancel_cooldown_s <= cfg.route.commit_s:
-        raise ValueError(
-            f"[route] cancel_cooldown_s={cfg.route.cancel_cooldown_s} 必须 > "
-            f"commit_s={cfg.route.commit_s}：冷却短于承诺期时总被承诺门先遮住，"
-            "取消冷却成为不可观测的死规则")
     s = cfg.selection
     if s.preposition_enabled:
         if s.preposition_horizon_s <= s.horizon_s:
