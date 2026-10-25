@@ -911,6 +911,7 @@ class SpeedRushModule(ActivityModule):
                                      cfg.motion.switch_infeasible_grace_s),
                     "last_plan": None,
                     "last_plan_ego": None,
+                    "last_committed": False,
                     # S1 参考系影子（闸 lateral_frame.enabled）：只落 trace，
                     # 不参与规划/手柄；启用时与 lane_obs 并行记录。
                     "lateral_frame": (LateralFrameShadow(cfg.lateral_frame,
@@ -1078,6 +1079,12 @@ class SpeedRushModule(ActivityModule):
                 road_offset=road_offset,
                 corridor=corridor)
             cfg = chain["cfg"]
+            # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
+            # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。
+            committed = bool(cfg.route.control and out.phase == "merging")
+            if committed and not chain.get("last_committed"):
+                chain["gate"].reset()
+            chain["last_committed"] = committed
             plan = None
             if cfg.motion.mode != "off" and chain["engine"].scene is not None \
                     and out.state is DecisionState.CRUISE:
@@ -1088,7 +1095,7 @@ class SpeedRushModule(ActivityModule):
                     chain["engine"].scene, plan_ego,
                     cfg.motion, cfg.selection, cfg.planner, chain["gate"],
                     coarse_lane=chain["engine"].coarse_lane,
-                    committed=(cfg.route.control and out.phase == "merging"))
+                    committed=committed)
                 chain["last_plan_ego"] = plan_ego
             else:
                 chain["last_plan_ego"] = None

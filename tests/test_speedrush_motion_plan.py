@@ -565,6 +565,16 @@ def test_gate_holds_incumbent_through_brief_infeasible_flicker():
     assert g.choose([other], 0.05).idx == 4      # 0.1s 宽限到期：让位
 
 
+def test_gate_reset_drops_precommit_hold():
+    """相位切换清门：并线第一拍不得把上一拍的机会层候选带进承诺期。"""
+    g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                 geom_margin=0.03, infeasible_grace_s=0.1)
+    inc, other = _c(3, 100.0), _c(4, 110.0)
+    assert g.choose([inc], 0.05).idx == 3
+    g.reset()
+    assert g.choose([other], 0.05).idx == 4
+
+
 def test_gate_immediate_margin_overrides_infeasible_grace():
     """避撞级价值差不等宽限。"""
     g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,

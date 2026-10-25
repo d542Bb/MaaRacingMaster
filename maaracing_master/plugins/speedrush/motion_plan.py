@@ -350,6 +350,11 @@ class PlanGate:
     def snapshot(self) -> tuple[int | None, float]:
         return self._idx, self._streak
 
+    def reset(self) -> None:
+        """清掉候选时稳记忆（相位切换时用）：门不得把上一相位的候选带进来。"""
+        self._idx, self._key, self._streak = None, None, 0.0
+        self._last, self._miss_s = None, 0.0
+
     def restore(self, idx: int | None, streak: float) -> None:
         self._idx, self._streak, self._key = idx, float(streak), None
         self._last, self._miss_s = None, 0.0
