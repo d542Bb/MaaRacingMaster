@@ -2,9 +2,15 @@
 """横向控制行为契约——基线复算脚本（工作台，不入库）。
 
 用法：
-  .venv\\Scripts\\python.exe docs/plan/merge_baseline.py
-  .venv\\Scripts\\python.exe docs/plan/merge_baseline.py --data <debug/speedrush 目录>
-  .venv\\Scripts\\python.exe docs/plan/merge_baseline.py --runs a,b,c
+  .venv\\Scripts\\python.exe tools/experiments/merge_contract/probe_merge_baseline.py
+  .venv\\Scripts\\python.exe tools/experiments/merge_contract/probe_merge_baseline.py --data <debug/speedrush 目录>
+  .venv\\Scripts\\python.exe tools/experiments/merge_contract/probe_merge_baseline.py --runs a,b,c
+  .venv\\Scripts\\python.exe tools/experiments/merge_contract/probe_merge_baseline.py --session <会话 token>
+
+两种数据形态：
+- 旧局（`debug/speedrush/<局>/trace_<局>.jsonl`）：一文件一局，走 `--runs`。
+- 会话流（`logs/<会话>/trace/speedrush.jsonl`）：一文件含多局，按
+  `stage_begin/stage_end` 切段，走 `--session`（可逗号分隔多个）。
 
 口径：
 - 换道段 = route.phase 连续为 merging 的拍；结束拍取离开 merging 的那一拍。
@@ -28,6 +34,10 @@ DEFAULT_DATA = os.environ.get(
     "SPEEDRUSH_DEBUG",
     r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/speedrush",
 )
+DEFAULT_LOGS = os.environ.get(
+    "SPEEDRUSH_LOGS",
+    os.path.join(os.path.dirname(os.path.dirname(DEFAULT_DATA)), "logs"),
+)
 DEFAULT_RUNS = [
     "20261025_162933_p1",
     "20261025_163017_p2",
@@ -39,6 +49,36 @@ DEFAULT_RUNS = [
 def load(run, data_dir):
     path = os.path.join(data_dir, run, f"trace_{run}.jsonl")
     return [json.loads(line) for line in open(path, encoding="utf-8")]
+
+
+def load_session(token, logs_dir):
+    """会话流按 stage_begin/stage_end 切局；无会话流时如实报错。"""
+    path = os.path.join(logs_dir, token, "trace", "speedrush.jsonl")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    games, buf = [], None
+    for line in open(path, encoding="utf-8"):
+        d = json.loads(line)
+        kind = d.get("type")
+        if kind == "stage_begin":
+            buf = []
+        elif kind == "stage_end":
+            if buf is not None:
+                games.append((f"{token}:s{d.get('stage_id')}"
+                              f"#{len(games) + 1}", buf))
+            buf = None
+        elif kind is None and buf is not None:
+            buf.append(d)
+    return games
+
+
+def load_games(args):
+    games = []
+    for run in [s.strip() for s in args.runs.split(",") if s.strip()]:
+        games.append((run, load(run, args.data)))
+    for tok in [s.strip() for s in args.session.split(",") if s.strip()]:
+        games.extend(load_session(tok, args.logs))
+    return games
 
 
 def pd_maneuver(x_target, executed, v):
@@ -79,17 +119,25 @@ def merge_episodes(rows):
         ro = r.get("route") or {}
         if ro.get("ph") == "merging":
             if cur is None:
-                cur = {"ticks": 0, "target": ro.get("tgt")}
+                cur = {"ticks": 0, "target": ro.get("tgt"),
+                       "ex0": r.get("executed_lane")}
             cur["ticks"] += 1
         elif cur is not None:
             cur["vd"], cur["why"] = ro.get("vd"), ro.get("why")
             cur["blocker"], cur["free"] = blocker_at(r, cur["target"])
+            ex1 = r.get("executed_lane")
+            ex0 = cur.get("ex0")
+            cur["moved"] = (abs(ex1 - ex0) if ex1 is not None
+                            and ex0 is not None else None)
             eps.append(cur)
             cur = None
     if cur is not None:
-        cur.update(vd=None, why=None, blocker=None, free=None)
+        cur.update(vd=None, why=None, blocker=None, free=None, moved=None)
         eps.append(cur)
     return eps
+
+
+MOVE_TOL_LANE = 0.3      # 与 selection.center_band_lane 同量级：低于此不算换到一条道
 
 
 def _blank():
@@ -197,9 +245,10 @@ def route_vs_coarse(rows):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=DEFAULT_DATA)
+    ap.add_argument("--logs", default=DEFAULT_LOGS)
     ap.add_argument("--runs", default=",".join(DEFAULT_RUNS))
+    ap.add_argument("--session", default="")
     args = ap.parse_args()
-    runs = [r.strip() for r in args.runs.split(",") if r.strip()]
     if not os.path.isdir(args.data):
         print(f"数据目录不存在：{args.data}\n用 --data 指向 debug/speedrush 目录。")
         return 2
@@ -208,46 +257,64 @@ def main():
     except Exception:
         pass
 
+    try:
+        games = load_games(args)
+    except FileNotFoundError as exc:
+        print(f"trace 不存在：{exc.filename}\n旧局用 --data/--runs，"
+              f"会话流用 --logs/--session。")
+        return 2
+
     all_eps, blocked = [], Counter()
     agg = defaultdict(list)
     print("# 横向控制基线（trace 口径）\n")
-    print("| 局 | ticks | 换道段 | arrived | timeout | cancel | rebuild | "
-          "未结束 | 到达时长(拍) | 全部时长(拍) |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
-    for run in runs:
-        rows = load(run, args.data)
+    print("| 局/会话段 | ticks | 换道段 | arrived | 其中实动 | timeout | cancel | "
+          "rebuild | 未结束 | 实动到达时长(拍) | 全部时长(拍) |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    for label, rows in games:
         eps = merge_episodes(rows)
         all_eps.extend(eps)
         c = Counter(outcome(e["vd"], e["why"]) for e in eps)
-        ad = [e["ticks"] for e in eps if outcome(e["vd"], e["why"]) == "arrived"]
+        real = [e for e in eps if outcome(e["vd"], e["why"]) == "arrived"
+                and (e.get("moved") or 0.0) >= MOVE_TOL_LANE]
+        ad = [e["ticks"] for e in real]
         al = [e["ticks"] for e in eps]
         for e in eps:
             if e["vd"] in ("cancel", "rebuild"):
                 blocked[(e["vd"], e["why"], e["blocker"])] += 1
-        print(f"| {run} | {len(rows)} | {len(eps)} | {c['arrived']} | "
-              f"{c['timeout']} | {c['cancel']} | {c['rebuild']} | "
+        print(f"| {label} | {len(rows)} | {len(eps)} | {c['arrived']} | "
+              f"{len(real)} | {c['timeout']} | {c['cancel']} | {c['rebuild']} | "
               f"{c['unfinished']} | "
               f"{'p50 %.0f / max %d' % (statistics.median(ad), max(ad)) if ad else '-'} | "
-              f"p50 {statistics.median(al):.0f} / max {max(al)} |")
+              f"{'p50 %.0f / max %d' % (statistics.median(al), max(al)) if al else '-'} |")
         a = authority_stats(rows)
         agg["authority"].append(a)
         agg["fusion"].append(fusion_stats(rows))
         agg["route"].append(route_vs_coarse(rows))
+        fd = a['all']['fd_p90']
+        fd_txt = "None" if fd is None else f"{fd:.2f}"
         print(f"  - 计划有效 {a['all']['plan_valid']} 拍，"
               f"机动+计划 {a['all']['both']} 拍，"
               f"layer4 占计划 {a['all']['layer4_share']:.0%}，"
               f"计划不确定 {a['all']['unc_share']:.0%}，"
-              f"帧差 p90 {a['all']['fd_p90']:.2f} 道")
-        print(f"  - 并线拍 {a['merging']['ticks']}：plan/PD 杆值比 p50 "
-              f"{a['merging']['plan_pd_ratio_p50']:.2f}，"
-              f"方向一致 {a['merging']['sign_agree']:.0%}"
-              f"（n={a['merging']['sign_n']}）")
+              f"帧差 p90 {fd_txt} 道")
+        if a['merging']['ticks']:
+            r = a['merging']['plan_pd_ratio_p50']
+            s = a['merging']['sign_agree']
+            r_txt = "无样本" if r is None else f"{r:.2f}"
+            s_txt = ("无样本" if s is None
+                     else f"{s:.0%}（n={a['merging']['sign_n']}）")
+            print(f"  - 并线拍 {a['merging']['ticks']}：plan/PD 杆值比 p50 "
+                  f"{r_txt}，方向一致 {s_txt}")
 
     c = Counter(outcome(e["vd"], e["why"]) for e in all_eps)
     n = len(all_eps)
+    real = [e for e in all_eps if outcome(e["vd"], e["why"]) == "arrived"
+            and (e.get("moved") or 0.0) >= MOVE_TOL_LANE]
     print("\n## 汇总\n")
-    print(f"- 换道段 {n}：arrived {c['arrived']} ({c['arrived']/n:.1%})，"
-          f"timeout {c['timeout']}，cancel {c['cancel']}，"
+    rate = f"{c['arrived']/n:.1%}" if n else "-"
+    rrate = f"{len(real)/n:.1%}" if n else "-"
+    print(f"- 换道段 {n}：arrived {c['arrived']} ({rate})，其中实动 "
+          f"{len(real)} ({rrate})，timeout {c['timeout']}，cancel {c['cancel']}，"
           f"rebuild {c['rebuild']}，未结束 {c['unfinished']}")
     print(f"- 结束原因：{dict(Counter((e['vd'], e['why']) for e in all_eps))}")
     print(f"- 撤销/作废的目标道 blocker：{dict(blocked)}")
@@ -259,11 +326,12 @@ def main():
           f"{sum(v for (_vd, _why, b), v in blocked.items() if b == 'missing')}")
     for key in ("trusted", "off"):
         vals = [a[key] for a in agg["fusion"]]
+        p50 = [v['err_p50'] for v in vals if v['err_p50'] is not None]
+        p90 = [v['err_p90'] for v in vals if v['err_p90'] is not None]
         print(f"- 线融合 {key}：n={sum(v['n'] for v in vals)}，"
               f"保持段末误差 p50 "
-              f"{statistics.median([v['err_p50'] for v in vals if v['err_p50'] is not None]):.2f} 道，"
-              f"p90 "
-              f"{statistics.median([v['err_p90'] for v in vals if v['err_p90'] is not None]):.2f} 道")
+              f"{statistics.median(p50):.2f} 道，p90 {statistics.median(p90):.2f} 道"
+              if p50 and p90 else f"- 线融合 {key}：无保持段")
     print(f"- 路线参考道 vs 粗层选道："
           f"same {sum(a['same'] for a in agg['route'])} / "
           f"diff {sum(a['diff'] for a in agg['route'])}")

@@ -14,19 +14,24 @@ status: active
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_merge_baseline.py
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_merge_baseline.py --data <debug/speedrush 目录>
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_merge_baseline.py --runs a,b,c
+.venv/Scripts/python.exe tools/experiments/merge_contract/probe_merge_baseline.py --session <会话 token>
 ```
 
-数据默认取 `%APPDATA%/MaaRacingMaster/debug/speedrush`，也可用
-`SPEEDRUSH_DEBUG` 环境变量或 `--data` 指定。脚本只读，不写 trace、不碰模型。
+数据默认取 `%APPDATA%/MaaRacingMaster/debug/speedrush`（旧局，一文件一局），也可用
+`SPEEDRUSH_DEBUG` 环境变量或 `--data` 指定。会话流（`logs/<会话>/trace/speedrush.jsonl`，
+一文件多局，按 stage 标记切段）走 `--logs`/`--session`，可逗号分隔多个会话。
+脚本只读，不写 trace、不碰模型。
 
 ## 口径
 
 - 换道段 = `route.phase` 连续为 `merging` 的拍；结束拍取离开 merging 的那一拍。
 - 成功只认 `verdict=finish` 且 `why=arrived`；`merge_timeout` 是独立 `timeout`
   结局，不算成功。
+- **实动到达** = 到达段内 `executed_lane` 位移 ≥0.3 道。低于此的“到达”是参考道与
+  实测道不同步时的空动作（车本来就在目标道带内），不是换道，单列不混入。
 - `cancel/rebuild` 目标道的 blocker 优先读 `route.blk`（阶段 0 新列）；旧 trace
   回退到 `coarse.cand`。
-- 时长分到达段与全部段两套，不混用。
+- 时长分到达段与全部段两套，不混用；到达时长只统计实动到达。
 - 计划/PD 一致性只在计划有效且机动的拍上算；PD 按 `x_target/executed/v_lat_est`
   复算（0.7/0.2，前瞻 0.25 s，上限 0.85）。
 
@@ -36,10 +41,14 @@ status: active
   `route.control` 保持 true。
 - 两组各 4 局（初赛/决赛沿用 p1/p2 后缀）；基线的 4 局已在
   `probe_merge_baseline.py` 的 `RUNS` 里列明，阶段 1 的新局同法加进去或走
-  `--runs`。
-- 读法：到达率（目标 ≥55%）；`cancel` 应为 0（目标道普通车不再撤销）；
-  同时看新出现的 `timeout` 与擦撞时间损失——不撤销若换成“卡在并线到超时”，
-  要在进入阶段 2/3 前先判定可接受性。`space` 作废不属本阶段验收。
+  `--runs`/`--session`。
+- 读法：`cancel` 应为 0（目标道普通车不再撤销）；到达率要同时看**实动到达**，
+  空动作增长不代表换道成功；同时看新出现的 `timeout` 与擦撞时间损失。
+  `space` 作废不属本阶段验收。
+- 2026-10-25 结果（基线 4 局 vs soft_car=true 4 局）：原始到达 16/36 → 25/41，
+  但实动到达 10/36（27.8%）→ 11/41（26.8%）；多出的 8 次到达全部落在空动作
+  口径（车已在目标道带内，含原会被“车因撤销”取消的那类）。`space` 作废
+  12/36 → 13/41。结论：车因撤销不是真实换道的约束，开关默认保持关闭。
 
 ## 数据与退出
 
