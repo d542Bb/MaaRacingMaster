@@ -203,7 +203,8 @@ def test_shadow_plan_records_but_steer_identical_to_off(_stub_depth,
     assert t["authority"] in ("GENTLE", "COMMIT", "HOLD")
     assert "intent_lane" in t and "intent_deadline_s" in t
     assert t["intent_owner"] in ("route", "decision")
-    assert t["steer_owner"] == "plan" and t["plan_role"] == "executor"
+    # 计划只算不执行：真实执行者必须是 planner，计划角色标 shadow
+    assert t["steer_owner"] == "planner" and t["plan_role"] == "shadow"
     assert t["veto_reason"] is None
 
 

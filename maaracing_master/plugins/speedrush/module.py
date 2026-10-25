@@ -1259,9 +1259,11 @@ class SpeedRushModule(ActivityModule):
             "intent_deadline_s": None if out.deadline_s is None
             else round(out.deadline_s, 2),
             "intent_owner": "route" if out.intent_lane is not None else "decision",
-            "steer_owner": "plan" if plan is not None and plan.valid else "planner",
-            "plan_role": ("none" if plan is None
-                          else "executor" if plan.valid else "veto"),
+            "steer_owner": ("plan" if cfg.motion.mode == "live"
+                            and plan is not None and plan.valid else "planner"),
+            "plan_role": ("none" if plan is None else
+                          "shadow" if cfg.motion.mode != "live" else
+                          "executor" if plan.valid else "veto"),
             "veto_reason": (None if plan is None or plan.valid else plan.reason),
             # 场跟随可观测面（阶段 0）：输出目标/执行分支
             "goal": eng.goal,
