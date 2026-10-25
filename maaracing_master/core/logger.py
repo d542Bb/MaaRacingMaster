@@ -16,6 +16,12 @@ sidecar 启动时的 profile 回读启用。每次开启新建一个**会话目�
   发生顺序写入。不按级别分档——诊断是顺序的（「失败之前发生了什么」），按级别切分
   会把时序切断且不可逆：切出的两份文件各自都读不通（DEBUG 档没有业务锚点，INFO 档
   没有诊断细节）。分级过滤留给读侧（GUI）与导出侧，写侧只保证时序完整。
+- 会话生命周期协议：开关切换经独立生命周期锁串行（OPEN → CLOSING → CLOSED）。
+  会话目录名 = `YYYYMMDD_HHMMSS_<短单调后缀>`（同一秒内反复开关不重名；纯时间戳
+  为旧形态，保留清理与识别兼容）。伴随写手（玩法流水汇 `core/trace_sink.py`、
+  性能采样器）以监听器身份跟随会话：开启即绑定，关闭先有界排空写手、后关主日志
+  （写手收尾结果仍能落进本会话文件）；回调在记录锁外执行，回调内可安全 log()。
+  最近数次收尾状态在内存保留（`last_session_close_status`）。
 - 按大小轮转 + 启动时按会话组保留清理，占用有上限。
 - 写盘持句柄 + Lock 跨线程安全。
 
@@ -148,8 +154,12 @@ class Logger:
 
     # `(?:\.debug)?` 兼容旧版分档产物，让保留清理顺带回收历史 .debug.log。
     _SESSION_RE = re.compile(r"MaaRM_(\d{8}_\d{6})(?:\.debug)?\.log(?:\.\d+)?$")
-    # 会话目录形态：logs/<YYYYMMDD_HHMMSS>/（现行落盘形态，内含 MaaRM_<ts>.log 与伴随产物）
-    _SESSION_DIR_RE = re.compile(r"(\d{8}_\d{6})$")
+    # 会话目录形态：logs/<YYYYMMDD_HHMMSS[_<短后缀>]>/（现行落盘形态，内含
+    # MaaRM_<ts>.log 与伴随产物）；纯时间戳为旧形态（识别与保留清理兼容两者），
+    # 短后缀 = 进程内单调计数的十六进制，同一秒内反复开关不重名。
+    _SESSION_DIR_RE = re.compile(r"^(\d{8}_\d{6})(?:_[0-9a-z]{1,8})?$")
+    # 会话关闭时给伴随写手的有界排空期限（秒）；期限内未收尾即终态化。
+    SESSION_DRAIN_TIMEOUT_S = 2.0
 
     def __init__(self, log_dir: Path):
         self._log_dir = Path(log_dir)
@@ -164,6 +174,13 @@ class Logger:
         self._tier: _TierFile | None = None   # 单流写盘句柄（未启用写盘时为 None）
         self._channel_levels: dict[str, str] = {}  # 通道 → 级别（运行时调级）；查不到回落 _min_level
         self._min_level: str | None = None        # 全局最低记录级别；None = 全记录（兼容旧行为）
+        # ---- 会话生命周期（独立于 _lock 的串行层，见模块 docstring） ----
+        self._lifecycle_lock = Lock()
+        self._lifecycle_state = "closed"          # closed / open / closing
+        self._listeners: list = []                # 会话生命周期回调（流水汇/采样器）
+        self._session_token: str | None = None    # 磁盘会话 token（目录名，含短后缀）
+        self._session_seq = 0                     # token 短后缀源（进程内单调）
+        self._close_status = deque(maxlen=8)      # 最近数次会话收尾状态（诊断）
         # ---- 分组状态（全部在 _lock 下读写） ----
         # session_id：进程内日志流的身份；WebView 重连/新旧侧对账用。
         self._session_id = (datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -193,6 +210,32 @@ class Logger:
         return self._session_id
 
     @property
+    def session_token(self) -> str | None:
+        """当前磁盘会话 token（logs/ 下目录名，含短后缀）；未启用写盘时为 None。"""
+        return self._session_token
+
+    @property
+    def lifecycle_state(self) -> str:
+        """会话生命周期状态：closed / open / closing。"""
+        return self._lifecycle_state
+
+    @property
+    def last_session_close_status(self) -> list:
+        """最近数次会话收尾状态（{token, ts, results, failed}；诊断与测试用）。"""
+        with self._lifecycle_lock:
+            return list(self._close_status)
+
+    def add_session_listener(self, cb) -> None:
+        """注册会话生命周期回调（协议而非分权：logger 仍是会话唯一属主）。
+
+        回调须实现 on_session_open(session_dir, token) 与
+        on_session_closing(deadline_monotonic)——后者须在期限前返回带 ok
+        属性的收尾结果。执行时机：生命周期锁内、记录锁外，回调内可安全 log()。
+        """
+        with self._lifecycle_lock:
+            self._listeners.append(cb)
+
+    @property
     def internal_counters(self) -> dict:
         """误用/降级计数快照（测试与自检用；运行时误用只进这里）。"""
         with self._lock:
@@ -204,36 +247,99 @@ class Logger:
 
     # ---------- 落盘开关与会话清理 ----------
     def set_file_logging(self, enabled: bool) -> None:
-        """开关磁盘写入。
+        """开关磁盘写入（会话生命周期入口，转换经独立生命周期锁串行）。
 
-        开启：惰性创建会话目录 `logs/<ts>/` 并为本次开启新建一个日志文件（单流全量，
-        各级别按发生顺序写入）；关闭：立即停止写盘（已写文件保留，内存缓冲继续累积，
-        GUI 显示不受影响），会话目录引用一并清空。
+        开启：新建会话目录 `logs/<YYYYMMDD_HHMMSS_<短后缀>>/` 与日志文件（单流
+        全量），通知伴随写手绑定；已在开启态再次开启 = 先按关闭流程收旧会话再开新。
+        关闭：进入 CLOSING → 通知伴随写手有界排空（SESSION_DRAIN_TIMEOUT_S）→
+        关主日志与句柄 → CLOSED；已写文件保留，内存缓冲继续累积，GUI 显示不受
+        影响，会话目录引用一并清空。
         """
-        self._file_enabled = bool(enabled)
-        if self._file_enabled:
+        if enabled:
+            self._open_session()
+        else:
+            self._close_session(self.SESSION_DRAIN_TIMEOUT_S)
+            self.log_file = None   # 关开关才清路径引用（close() 保留供收尾读取，同旧契约）
+
+    def _open_session(self) -> None:
+        with self._lifecycle_lock:
+            if self._file_enabled or self._session_dir is not None:
+                # 已开启再开启 = 换会话：先按关闭流程收旧（含伴随写手排空）
+                self._close_session_locked(self.SESSION_DRAIN_TIMEOUT_S)
             try:
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                session_dir = self._log_dir / ts
+                self._session_seq += 1
+                token = f"{ts}_{self._session_seq:x}"
+                session_dir = self._log_dir / token
                 session_dir.mkdir(parents=True, exist_ok=True)
                 self._session_ts = ts          # 与 _SESSION_RE 的 group(1) 同形（带下划线）
                 self._session_dir = session_dir
-                self.log_file = session_dir / f"MaaRM_{ts}.log"
+                self._session_token = token
+                self.log_file = session_dir / f"MaaRM_{token}.log"
                 # 注意：传字符串路径用内置 open（buffering=1 行缓冲；本环境 open 的
                 # line_buffering 关键字被拦截，故用等价的标准 buffering=1）。
                 self._tier = _TierFile(self.log_file, self.MAX_BYTES, self.BACKUP_COUNT)
+                self._file_enabled = True
             except OSError:
-                self._file_enabled = False   # 目录建不出来（无权限等）：回到关闭态，不干扰主流程
+                # 目录建不出来（无权限等）：回到关闭态，不干扰主流程
+                self._file_enabled = False
                 self.log_file = None
                 self._tier = None
                 self._session_ts = None
                 self._session_dir = None
-        else:
-            with self._lock:
-                self._close_tier()
-            self.log_file = None
-            self._session_ts = None
-            self._session_dir = None
+                self._session_token = None
+                self._lifecycle_state = "closed"
+                return
+            self._lifecycle_state = "open"
+            # 通知伴随写手绑定（生命周期锁内、记录锁外；单个写手失败只计数）
+            for cb in list(self._listeners):
+                try:
+                    cb.on_session_open(session_dir, token)
+                except Exception:  # noqa: BLE001 —— 写手失败不拖垮会话开启
+                    with self._lock:
+                        self._bump("session_listener_open_error")
+
+    def _close_session(self, timeout_s: float) -> None:
+        with self._lifecycle_lock:
+            self._close_session_locked(timeout_s)
+
+    def _close_session_locked(self, timeout_s: float) -> None:
+        """会话关闭时序（假设持有 _lifecycle_lock、不持 _lock）：
+
+        CLOSING → 伴随写手有界排空 → 收尾状态记账（诊断先落本会话文件）→
+        关主日志与句柄 → 清会话引用 → CLOSED。清理不等任何补写。
+        """
+        if not self._file_enabled and self._session_dir is None:
+            self._lifecycle_state = "closed"
+            return
+        self._lifecycle_state = "closing"
+        token = self._session_token
+        deadline = time.monotonic() + timeout_s
+        results: dict = {}
+        for cb in list(self._listeners):
+            name = getattr(cb, "name", type(cb).__name__)
+            try:
+                results[name] = cb.on_session_closing(deadline)
+            except Exception as exc:  # noqa: BLE001 —— 收尾异常如实记账后继续
+                results[name] = repr(exc)
+        failed = [n for n, r in results.items()
+                  if isinstance(r, str) or not getattr(r, "ok", True)]
+        self._close_status.append({
+            "token": token,
+            "ts": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "results": {n: getattr(r, "details", r) for n, r in results.items()},
+            "failed": failed,
+        })
+        if failed:
+            # 主日志尚未关：收尾诊断落进本会话文件（失败才记，成功不刷屏）
+            self.log(f"会话 {token} 伴随写手收尾未完全成功: {failed}", "WARNING")
+        with self._lock:
+            self._close_tier()
+        self._session_ts = None
+        self._session_dir = None
+        self._session_token = None
+        self._file_enabled = False
+        self._lifecycle_state = "closed"
 
     def _close_tier(self) -> None:
         """关闭写盘句柄（幂等）。假设持有 `_lock` 或无并发写盘。"""
@@ -245,8 +351,11 @@ class Logger:
         """关闭写盘句柄并 flush 尾部（进程退出路径调用；sidecar 停止为全仓唯一入口）。
 
         退出收尾（契约 §2）：为所有未收尾组补 `group_end(outcome="incomplete")`，
-        `_finalized` 保证只执行一次；重复调用仅重走幂等的句柄关闭。
+        `_finalized` 保证只执行一次；重复调用仅重走幂等的句柄关闭。会话仍在
+        开启态时先走有界排空的会话关闭（含伴随写手），再补组收尾。
         """
+        if self._file_enabled or self._session_dir is not None:
+            self._close_session(self.SESSION_DRAIN_TIMEOUT_S)
         with self._lock:
             if not self._finalized:
                 self._finalized = True

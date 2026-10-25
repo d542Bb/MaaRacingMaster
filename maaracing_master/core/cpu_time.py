@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """进程 CPU 时间原语（Win32 GetProcessTimes，零依赖）。
 
-为什么自己写而不引 psutil：psutil 不在本项目依赖里，且「进程累计 CPU 时间」在
-Windows 上就是 GetProcessTimes 一次调用；core/ 下的 wgcap.py 同类 Win32 调用
+为什么用 Win32 而不是 psutil：psutil 已是本项目正式依赖（requirements.txt，
+OCR 绑核引入），但「进程累计 CPU 时间」在 Windows 上就是 GetProcessTimes 一次
+调用，无需为此经 psutil 绕一层；core/ 下的 wgcap.py 同类 Win32 调用
 也一律走 ctypes，口径一致。
 
 分层：本模块只给**无状态原语**（累计秒数），不做占用率差分——占用率需要「两次

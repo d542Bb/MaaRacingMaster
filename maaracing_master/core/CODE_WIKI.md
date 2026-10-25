@@ -139,7 +139,7 @@
 
 - GUI 增量读取用**单调序列号游标**（`get_lines_since(seq, ...)`），环形回绕后不重不漏、落后过多时返回 `truncated`
 
-- 落盘**单流全量**：一次开启新建一个**会话目录** `logs/<MaaRM时间戳>/`，日志落其中的 `MaaRM_<ts>.log`，各级别按发生顺序写入；伴随产物（鉴宝决策流水 `trace.jsonl`）**共用同一个开关、同放该目录**（模块侧取 `logger.session_dir`，取到 `None` 即表示本次不落盘）。按大小轮转（`MAX_BYTES`/`BACKUP_COUNT`）+ 启动时按会话保留清理（`KEEP_SESSIONS`，会话目录整目录回收，旧版平铺的 `MaaRM_<8位日期>_<6位时间>` 文件同样归组回收）。**不按级别分档**——诊断是顺序的（「失败之前发生了什么」），按级别切分会切断时序且不可逆：切出的两份文件各自都读不通（DEBUG 档无业务锚点、INFO 档无诊断细节）。级别过滤只发生在读侧（GUI）与导出侧
+- 落盘**单流全量**：一次开启新建一个**会话目录** `logs/<时间戳_短单调后缀>/`，日志落其中的 `MaaRM_<token>.log`，各级别按发生顺序写入；伴随产物（玩法流水 `trace/<模块>.jsonl`、性能流 `perf.jsonl`、鉴宝 `trace.jsonl`）**共用同一个开关、同放该目录**（玩法/性能写手以会话生命周期监听器跟随开合，模块侧取 `logger.session_dir`，取到 `None` 即表示本次不落盘）。按大小轮转（`MAX_BYTES`/`BACKUP_COUNT`）+ 启动时按会话保留清理（`KEEP_SESSIONS`，会话目录整目录回收，旧版平铺的 `MaaRM_<8位日期>_<6位时间>` 文件同样归组回收）。**不按级别分档**——诊断是顺序的（「失败之前发生了什么」），按级别切分会切断时序且不可逆：切出的两份文件各自都读不通（DEBUG 档无业务锚点、INFO 档无诊断细节）。级别过滤只发生在读侧（GUI）与导出侧
 
 - 5个日志级别：TRACE < DEBUG < INFO < WARNING < ERROR
 
@@ -148,6 +148,8 @@
 - **通道机制**：`log(channel=...)` 支持按子系统调级（`set_channel_level`/`clear_channel_level`）；`channel=None` 回落 `DEFAULT_CHANNEL`（app）。通道名是不透明字符串，core 不枚举/校验（红线 I7）
 
 - 线程安全：写盘持单句柄 + `Lock`；`close()` 关句柄 flush 尾部
+
+- **会话生命周期协议**（ADR-0010）：开关切换经独立生命周期锁串行（`OPEN→CLOSING→CLOSED`）；关闭先让伴随写手有界排空（`SESSION_DRAIN_TIMEOUT_S`，超时终态化）再关主日志；最近数次收尾状态内存可查（`last_session_close_status`）；`add_session_listener` 注册跟随会话的写手（回调在记录锁外执行，回调内可安全 log）
 
 **全局单例**：`logger = Logger(logs_dir)`
 
@@ -329,6 +331,24 @@
 [`tests/test_sidecar_external_rpc.py`](../../tests/test_sidecar_external_rpc.py)（端到端：构造出的恶意数据
 最终有没有被交给浏览器）、[`tests/test_frontend_remote_render.py`](../../tests/test_frontend_remote_render.py)
 （前端渲染路径静态锁）。
+
+### 1.13 [trace_sink.py](./trace_sink.py) — 玩法流水汇（ADR-0010）
+
+**职责**：模块声明的异步 JSONL 写手，落点随日志会话目录（`trace/<模块>.jsonl`）。
+
+- 模块面：`get_trace_sink("<模块>")` 注册一次；`set_run_id` / `begin_stage` / `append(row)` / `end_stage` / `flush`。append 不做文件 I/O（序列化 + 尺寸判定 + 有界入队）；接线形态见 speedrush `_build_control_chain`
+- 序号在会话生命周期内单调（`run_id` 变更不重置、换会话归零）；丢弃以带内 `gap` 行表达（非连续拆多区间、按逻辑序定位）；阶段边界为受保护控制行（满员合并「结束→开始」或显式拒收）；`flush`/`close` 是纯同步屏障不占序号
+- 关闭由会话生命周期屏障驱动（不走队列、不可被拒收）；超时/IO 失败终态化，文件尾三态 `end`/`close_incomplete`/无标记；硬杀损失=最后写入位置+未落队列
+- `validate_trace_file(path)`：离线校验器（序号连续性/gap 语义/头尾规则），验收与探针共用
+
+### 1.14 [perf_sampler.py](./perf_sampler.py) — 性能采样器（ADR-0010）
+
+**职责**：系统/进程资源快照的常驻采集与落盘（`logs/<会话>/perf.jsonl`，日志开关管辖）。
+
+- 三方供数：core 采样器→资源面（系统/受管进程 CPU/内存——自身 + 模拟器家族进程嗅探；GPU 走 nvidia-smi 子进程带超时，ok/timeout/unavailable/解析错误显式区分，读数带龄期）；模块→领域项（`read_perf_snapshot` 鸭子类型）；sidecar→聚合（`build_perf_payload`，`schema_version=2`，不可用显式 `available=False`）
+- 落盘三档：低频背景（每 N 样本）/ 事件倾倒（模块 `record_event` 报事件，前后窗样本补落，每样本只写一次——sample_id 唯一、重叠窗口去重；窗口被会话关闭中断记 incomplete）/ 收尾全量（可配关）
+- `ensure_perf_sampler_started()`：幂等启动 + 绑定会话生命周期（sidecar 主入口与事件消费方共用）；环随会话切换重置，关闸期样本不进新会话文件
+- psutil `cpu_percent` 启动即基线初始化（首个非阻塞读数无意义）；单拍指标构建异常降级为带 error 的样本，不拖垮采样线程
 
 ***
 

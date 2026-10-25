@@ -141,7 +141,7 @@ def test_session_dir_holds_log_and_companions(tmp_path: Path):
     log.set_file_logging(True)
     sink = log.session_dir
     assert sink is not None and sink.parent == tmp_path
-    assert re.fullmatch(r"\d{8}_\d{6}", sink.name)
+    assert re.fullmatch(r"\d{8}_\d{6}(?:_[0-9a-z]+)?", sink.name)
     (sink / "trace.jsonl").write_text("{}\n", encoding="utf-8")   # 伴随产物与日志同目录
     log.log("hello", "INFO")
     assert log.log_file == sink / f"MaaRM_{sink.name}.log"

@@ -47,6 +47,8 @@ from maaracing_master.core.registry import (
     module_expired,
 )
 from maaracing_master.core.paths import config_dir, user_data_dir
+from maaracing_master.core.perf_sampler import (
+    build_perf_payload, ensure_perf_sampler_started)
 from maaracing_master.core.remote_meta import (
     EXTERNAL_TARGETS,
     GITHUB_REPO,
@@ -602,16 +604,18 @@ class SidecarService:
         with self._lock:
             worker = self._worker
             selected = self._selected_module
-        # 性能快照按鸭子类型取：谁实现了 read_perf_snapshot 就带谁的数据，
-        # core 不点名任何活动模块（方向红线：通用层不指向模块）。模块没实现 /
-        # 未运行 → perf=None，前端据此渲染"无数据"，不猜默认值。
-        perf = None
+        # 性能快照按鸭子类型取：谁实现了 read_perf_snapshot 就带谁的领域项
+        # （response/health），core 不点名任何活动模块（方向红线：通用层不指向
+        # 模块）。资源面（cpu/sys/gpu）由 core 采样器供数、在此聚合；模块没实现
+        # → 只有资源面；采样器不可用 → cpu 显式不可用，不猜默认值。
+        module_perf = None
         reader = getattr(self._controller.active_module, "read_perf_snapshot", None)
         if callable(reader):
             try:
-                perf = reader()
+                module_perf = reader()
             except Exception as exc:  # noqa: BLE001 —— 仪表读数失败绝不影响状态轮询
                 logger.log(f"[sidecar] 性能快照读取失败: {exc}", "DEBUG")
+        perf = build_perf_payload(module_perf)
         return (True, {
             "is_running": self._controller.module_active,
             "current_stage": self._controller.current_stage,
@@ -1357,6 +1361,8 @@ def main() -> None:
     # 构造前应用，让启动初期的日志也遵守开关状态
     _dbg = _load_profile().get("debug")
     logger.set_file_logging(bool(isinstance(_dbg, dict) and _dbg.get("file_logging", False)))
+    # 性能采样器常驻（随主进程起停；会话落盘随日志开关联动）
+    ensure_perf_sampler_started()
     # 启动时执行一次旧会话保留清理（不依赖本次是否启用写盘）
     logger.prune_sessions()
     protocol_stdout = sys.stdout
