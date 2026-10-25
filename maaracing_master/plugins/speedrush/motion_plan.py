@@ -402,11 +402,15 @@ class PlanGate:
 
 def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 plant, gate: PlanGate | None = None, *,
-                coarse_lane: float | None = None) -> MotionPlan:
+                coarse_lane: float | None = None,
+                committed: bool = False) -> MotionPlan:
     """场景 → 候选轨迹 → 四层字典序 → PlanGate。纯函数（gate 除外）。
 
     ``coarse_lane``：粗层目标道（相对 z=0 中心线，道）；只平移无机会时的
-    中心吸引项——奖励车/擦边/金币的价值仍按场景对象计。"""
+    中心吸引项——奖励车/擦边/金币的价值仍按场景对象计。
+
+    ``committed``：并线承诺期（路线已定目标道）。机会层（奖励车/擦边/金币）
+    与预置偏移关闭，只按承诺道做中心吸引——目标道不能被计划静默替换。"""
     lane_w = scene.lane_w_m
     if scene.stale:
         return MotionPlan(
@@ -452,8 +456,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         shortened = True
 
     cars = [o for o in scene.objs if o.kind == "car"]
-    rewards = [o for o in scene.objs if o.kind == "reward"]
-    coins = [o for o in scene.objs if o.kind == "coin"]
+    rewards = [] if committed else [o for o in scene.objs
+                                    if o.kind == "reward"]
+    coins = [] if committed else [o for o in scene.objs if o.kind == "coin"]
     ts = [k * dt for k in range(n + 1)]
     us = list(motion.steer_levels) + [ego.steer_norm]
     # 有距无速域是否在场：在场时解除 L4 维护性杆幅上限（这是避让，不是追路心）
@@ -573,7 +578,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                                    * (1.0 - d_h / overlap)
                                    * motion.range_hazard_gain)
         pass_count = 0
-        for c in cars:
+        for c in (() if committed else cars):
             # 无到站时间的车只当静态障碍，不算“擦车通过”：
             # t=None 的并列车会让 t=0 的初始距离冒充一次超车。
             # 越界读数与大车同理：不作擦边目标。
@@ -610,7 +615,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         # 不等目标进入可达范围才动作（旧选择层 preposition 的价值版）。
         # 已被本候选命中的对象不重复计；不加普通车（近场擦车另算）。
         prep_value = 0.0
-        prep_h = motion.preposition_horizon_s
+        prep_h = 0.0 if committed else motion.preposition_horizon_s
         if prep_h > 0.0:
             radius = max(motion.preposition_radius_lane * lane_w, 1e-6)
             for r in rewards:

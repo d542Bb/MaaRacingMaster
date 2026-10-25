@@ -412,29 +412,37 @@ def _waypoints(layer: int, x_p: float, t_p: float,
 def select(road: RoadFrame, rewards: Sequence[Obj],
            cars: Sequence[Obj], coins: Sequence[Obj],
            ego: float, p: SelectionParams,
-           *, coarse_lane: float | None = None) -> SelectionReport:
+           *, coarse_lane: float | None = None,
+           committed: bool = False) -> SelectionReport:
     """纯选择：四层字典序 + 路点（无状态；驻留由 LayeredSelector 做）。
 
     ``coarse_lane``：粗层选定的车道（相对 z=0 中心线，道，右正）；只影响
-    L4 回中兜底，机会层（奖励车/擦边/金币）仍由细层决定。None=纯回中。"""
+    L4 回中兜底，机会层（奖励车/擦边/金币）仍由细层决定。None=纯回中。
+
+    ``committed``：并线承诺期（路线已定目标道）。机会层与预置偏移全部关闭，
+    只按承诺道回中——承诺期的目标不能再被奖励车/擦边/金币改道（契约 §4/§5）。"""
     if not road.ok:
         return SelectionReport(0, (), ego, "hold:no_road", False, False)
-    got = _pick_reward(rewards, cars, road, ego, p)
-    if got is not None:
-        x, t, why = got
-        return SelectionReport(1, _waypoints(1, x, t, cars, coins, road,
-                                             ego, p), x, why, True, True)
-    got = _pick_pass(cars, road, ego, p)
-    if got is not None:
-        x, t, why = got
-        return SelectionReport(2, _waypoints(2, x, t, cars, coins, road,
-                                             ego, p), x, why, True, True)
-    got = _pick_coin(coins, cars, road, ego, p)
-    if got is not None:
-        x, t, why = got
-        return SelectionReport(3, _waypoints(3, x, t, cars, coins, road,
-                                             ego, p), x, why, True, True)
+    if not committed:
+        got = _pick_reward(rewards, cars, road, ego, p)
+        if got is not None:
+            x, t, why = got
+            return SelectionReport(1, _waypoints(1, x, t, cars, coins, road,
+                                                 ego, p), x, why, True, True)
+        got = _pick_pass(cars, road, ego, p)
+        if got is not None:
+            x, t, why = got
+            return SelectionReport(2, _waypoints(2, x, t, cars, coins, road,
+                                                 ego, p), x, why, True, True)
+        got = _pick_coin(coins, cars, road, ego, p)
+        if got is not None:
+            x, t, why = got
+            return SelectionReport(3, _waypoints(3, x, t, cars, coins, road,
+                                                 ego, p), x, why, True, True)
     x, why, maneuver = _center_target(road, ego, p, coarse_lane)
+    if committed:
+        return SelectionReport(4, (Waypoint(p.horizon_s, x, "commit"),),
+                               x, "commit", True, maneuver)
     pre = _preposition_target(rewards, cars, coins, road, ego, p)
     if pre is not None:
         cap = p.preposition_bias_lane * p.lane_w_m
@@ -487,10 +495,15 @@ class LayeredSelector:
     def update(self, road: RoadFrame, rewards: Sequence[Obj],
                cars: Sequence[Obj], coins: Sequence[Obj],
                ego: float, dt_s: float,
-               *, coarse_lane: float | None = None) -> SelectionReport:
+               *, coarse_lane: float | None = None,
+               committed: bool = False) -> SelectionReport:
         raw = select(road, rewards, cars, coins, ego, self.p,
-                     coarse_lane=coarse_lane)
+                     coarse_lane=coarse_lane, committed=committed)
         self.last = raw
+        # 承诺期：目标是路线定的道，驻留/金币短承诺都不参与——拖住或沿用
+        # 旧目标都等于在并线中改道。
+        if committed:
+            return self._adopt(raw)
         # 金币短承诺：币组从视野里消失后，沿最后一条币线再走 coin_hold_s，
         # 不立刻回中心（录制对照：金币段中位只有 2 拍，车刚起步就放弃）。
         # 奖励车/普通车擦边出现仍立即覆盖；目标被车占住也立即放弃。

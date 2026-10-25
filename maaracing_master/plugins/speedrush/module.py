@@ -1087,7 +1087,8 @@ class SpeedRushModule(ActivityModule):
                 plan = plan_motion(
                     chain["engine"].scene, plan_ego,
                     cfg.motion, cfg.selection, cfg.planner, chain["gate"],
-                    coarse_lane=chain["engine"].coarse_lane)
+                    coarse_lane=chain["engine"].coarse_lane,
+                    committed=(cfg.route.control and out.phase == "merging"))
                 chain["last_plan_ego"] = plan_ego
             else:
                 chain["last_plan_ego"] = None

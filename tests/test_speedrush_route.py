@@ -366,6 +366,27 @@ def test_soft_car_config_reaches_the_route(monkeypatch):
     assert eng.route_verdict.phase == PHASE_MERGING
 
 
+def test_merge_target_commits_without_slew(monkeypatch):
+    """并线拍目标直接是承诺道带边：承诺期不走 slew，机会层也不参与。"""
+    from maaracing_master.plugins.speedrush import decision as dmod
+    spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
+    monkeypatch.setattr(dmod, "choose_lane",
+                        lambda *a, **k: _rep(0.0, 1.0, spec))
+    cfg = replace(CFG, route=replace(CFG.route, control=True))
+    eng = DecisionEngine(cfg)
+    out = None
+    for fid in range(1, 10):
+        out = eng.update(_obs(fid), DT, executed_lane=0.0,
+                         corridor=_corridor())
+    assert eng.route_verdict.phase == PHASE_MERGING
+    assert eng.selection_report.why == "commit"
+    assert eng.coarse_lane == 1.0
+    assert eng.selection_report.target_x_m == pytest.approx(
+        TARGET_1_LANE, abs=0.02)
+    assert out.x_target == pytest.approx(TARGET_1_LANE / LW, abs=0.01)
+    assert out.phase == "merging"
+
+
 def test_ruler_jump_rebases_but_small_drift_does_not(monkeypatch):
     """参考系纪元只跟**尺子**（选择帧 z=0 中心线）走：小幅漂移不作废，
     跳超过半道才换纪。绝对路心在记忆↔遮挡墙之间的摆动不再是作废理由。"""

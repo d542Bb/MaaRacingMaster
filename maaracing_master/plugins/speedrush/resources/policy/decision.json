@@ -12,7 +12,7 @@
     "planner.lookahead_tau_s": "τ_resp 0.130 实测 + 加速爬升时间 [需实测]；起值 0.25，加载器锁下界 ≥tau_resp_s",
     "planner.a_lat_gain|tau_align_s|v_lat_max": "[需实测 C1/C2/C3] 双积分运动学三参数（2026-09-22 真机证据链：单积分 K_v 口径证伪，杆是航向指令，满杆 x∝t²；证据见实验 README 同日节）——起值按 Δx=1 车道≈0.7s 满杆口径反推：满杆 0.6s 跨一道 → a≈6 车道/s²；tau_align 起值 0.5s（与旧 probe_tau_steer 的 rise 读数同量级但语义不同，须真机复核）；v_lat_max 起值 2.5 车道/s（定圆饱和）。trace 的 bnd_vp_x 列是航向观测量，回放标定 C1/C2 用",
     "planner.rate_limit_raw|stick_deadzone_raw": "旧赛车栈已验证值（control-route §三移植清单）",
-    "hysteresis.target_slew_lane_s": "输出 slew 2.0 道/s 防单拍跳变直接变打舵（场跟随修复 2026-10-18）",
+    "hysteresis.target_slew_lane_s": "输出 slew 2.0 道/s 防单拍跳变直接变打舵（场跟随修复 2026-10-18）；并线承诺期绕过——承诺目标不得滞后于路线已定的道",
     "planner.maneuver_deadband_lane|maneuver_stick_max": "机动权限位（目标距自车 >0.30 道）下的执行权限：死区 0.05 道、杆幅上限 0.85；保持态仍 0.5/0.45",
     "planner.obs_beta_deadband_lane|obs_beta_sign_agree|obs_beta_dv_rate_lane_s2": "路心观测速度注入抑制（4 局 trace：50% 拍 v_lat 变化超物理上限、1~3% 打满 ±2.5）：|残差|<0.05 道只做位置；与上次被接受修正反号只做位置；注入按 3.0 道/s² 限速（≤a_lat_gain），最后夹 v_lat_max。三键归 0/false=旧行为",
     "planner.obs_alpha|obs_beta|obs_jump_max_lane": "路中心连续重锚 alpha-beta 增益（step 2.5，2026-09-22 V2 复盘：开环虚胖=贴不近主因）。2026-09-26 13:02 局回放网格定档（证据 commit e269943）：新息门 1.5→0.8、k_p 1.2→0.7、obs_alpha 0.6→0.3——hsv 路观测噪声下旧增益组极限环（回放饱和率 23.3%/翻转 1.39 次每秒 → 4.1%/0.51）。pair 供数门（80e9a1c）已撤：13:29 局证明黑视比噪声更致命（死亡螺旋段 87/118 拍被挡），开环回放看不见锁死——该定档是回放盲点的产物",
@@ -200,7 +200,7 @@
     "reward_tol_lane": 1.5,
     "car_half_lane": 0.27,
     "ego_half_lane": 0.27,
-    "_note": "四层字典序选择（2026-10-18 走廊重建）：奖励车 > 擦边普通车 > 金币 > 中心带。层间不求和；层内金币取价值最高、车取最早到站。horizon_s 是短视界；center_band_lane=0.3 是 L4 不修正容差带（带内目标=当前横位，带外只去近侧带边，不追正中）；center_lookahead_m=0 用当前站中心（2m 前瞻中心在弯道/分段带上有偏置）；preposition_*=无即时目标时向短视界外机会侧预置：6s 内、车侧 2.5 道内的奖励车/车/金币，锚点最多偏 1 道。graze_gap_lane 是擦边目标距车心；横移可达性直接复用 planner 的横向加速度/速度上限推导（与执行层同一套运动学，选择层不再持有换道时间参数）；coin_pick_tol_lane=金币主目标只吃当前线 ±1.2 道内的组；coin_hold_s=币组消失后沿最后币线再走 0.6s（更高层立即覆盖）；aligned_lane/reward_aligned_lane=已对齐目标的横距阈值（阈值内只留反应时间，不要求横移准备）。wall_margin_lane 是目标离走廊缘的夹取余量。"
+    "_note": "四层字典序选择（2026-10-18 走廊重建）：奖励车 > 擦边普通车 > 金币 > 中心带。层间不求和；层内金币取价值最高、车取最早到站。horizon_s 是短视界；center_band_lane=0.3 是 L4 不修正容差带（带内目标=当前横位，带外只去近侧带边，不追正中）；center_lookahead_m=0 用当前站中心（2m 前瞻中心在弯道/分段带上有偏置）；preposition_*=无即时目标时向短视界外机会侧预置：6s 内、车侧 2.5 道内的奖励车/车/金币，锚点最多偏 1 道。并线承诺期（route.control 且路线 merging）1~3 层与预置全部关闭，只在承诺道做第 4 层回中（sel_why=commit）。graze_gap_lane 是擦边目标距车心；横移可达性直接复用 planner 的横向加速度/速度上限推导（与执行层同一套运动学，选择层不再持有换道时间参数）；coin_pick_tol_lane=金币主目标只吃当前线 ±1.2 道内的组；coin_hold_s=币组消失后沿最后币线再走 0.6s（更高层立即覆盖）；aligned_lane/reward_aligned_lane=已对齐目标的横距阈值（阈值内只留反应时间，不要求横移准备）。wall_margin_lane 是目标离走廊缘的夹取余量。"
   },
   "coarse": {
     "control": true,

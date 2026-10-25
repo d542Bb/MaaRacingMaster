@@ -256,10 +256,11 @@ def test_corridor_stale_uses_band_age():
 
 # ---------- A2 评估器 ----------
 
-def _plan(scene, *, ego=None, motion=None, gate=None, coarse_lane=None):
+def _plan(scene, *, ego=None, motion=None, gate=None, coarse_lane=None,
+          committed=False):
     return plan_motion(scene, ego or EgoState(0.0, 0.0, 0.0),
                        motion or CFG.motion, CFG.selection, CFG.planner, gate,
-                       coarse_lane=coarse_lane)
+                       coarse_lane=coarse_lane, committed=committed)
 
 
 def _wide_road():
@@ -319,6 +320,16 @@ def test_reward_beats_coin_and_center():
     assert s.road.bands  # 环境自洽
     center_only = _plan(_scene(road=_wide_road()))
     assert center_only.layer == 4
+
+
+def test_committed_suppresses_opportunity_layers():
+    """并线承诺期：奖励车/金币不再把计划改到机会层，只按承诺道回中。"""
+    s = _scene(road=_wide_road(),
+               rewards=[BonusSource(2.0, 1.0, 0.9, age_ms=0.0)],
+               coins=[CoinSource(-2.0, 3, 0.8, 1.0, age_ms=0.0)])
+    p = _plan(s, committed=True)
+    assert p.valid and p.layer == 4
+    assert p.score_key[1] == 0.0          # -value：机会项全关
 
 
 def test_coin_layer_when_no_car_or_reward():

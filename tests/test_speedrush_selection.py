@@ -217,6 +217,28 @@ def test_coin_hold_then_release_and_override():
     assert rep.layer == 1 and rep.target_x_m == pytest.approx(0.8)
 
 
+def test_committed_ignores_opportunities_and_preposition():
+    """并线承诺期：奖励车/擦边/金币/预置都不许改道，只按承诺道回中。"""
+    rep = select(_road(), [Obj("reward", 2.0, 2.0)],
+                 [Obj("car", 0.0, 2.0)],
+                 [Obj("coin", 1.2 * LW, 2.0)], 0.0, _p(),
+                 coarse_lane=1.0, committed=True)
+    assert rep.layer == 4 and rep.why == "commit"
+    assert rep.target_x_m == pytest.approx(0.7 * LW, abs=0.05)
+    assert [w.src for w in rep.waypoints] == ["commit"]
+
+
+def test_committed_selector_bypasses_dwell():
+    """承诺期换目标立即生效：同层驻留不能拖住并线目标。"""
+    sel = LayeredSelector(_p())
+    sel.update(_road(), [], [], [], 0.0, 0.05,
+               coarse_lane=-1.0, committed=True)
+    rep = sel.update(_road(), [], [], [], 0.0, 0.05,
+                     coarse_lane=1.0, committed=True)
+    assert rep.why == "commit"
+    assert rep.target_x_m == pytest.approx(0.7 * LW, abs=0.05)
+
+
 def test_no_road_holds():
     road = RoadFrame((), None, None, None, False)
     rep = select(road, [], [], [], 0.5, _p())

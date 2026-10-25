@@ -451,7 +451,13 @@ class DecisionEngine:
             t_raw = goal if goal is not None else executed_lane
         if t_raw is None:
             t_raw = 0.0
-        slew = self.cfg.hysteresis.target_slew_lane_s * dt_s
+        # 并线承诺期不走 slew：目标是路线已定的道，限速只会让实际目标滞后
+        # 承诺道（旧 trace 897 个并线拍里 155 拍目标差 >0.5 道就是这么来的）。
+        route = self._route
+        committed = (self.cfg.route.control and route is not None
+                     and route.phase == PHASE_MERGING)
+        slew = 0.0 if committed else \
+            self.cfg.hysteresis.target_slew_lane_s * dt_s
         if self._target_prev is None or slew <= 0.0:
             t_out = t_raw
         else:
@@ -464,7 +470,6 @@ class DecisionEngine:
                               and self._sel_maneuver)
         # 行为契约观测面（阶段 0）：只推导并记录，不改变控制。权限按相位
         # 给：非巡航/HOLD；并线或机动/COMMIT；其余/GENTLE。
-        route = self._route
         merging = route is not None and route.phase == PHASE_MERGING
         if self._state is not DecisionState.CRUISE:
             authority = "HOLD"
@@ -995,12 +1000,18 @@ class DecisionEngine:
         # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。
         self._tick_route(c0)
+        # 并线承诺期：路线已定目标道，选择层只能在这个道上做维护性修正。
+        # 机会层（奖励车/擦边/金币）与预置偏移在此关闭——承诺期的目标被
+        # 机会改道就是静默换道（契约 §4/§5）。
+        committed = (self.cfg.route.control and self._route is not None
+                     and self._route.phase == PHASE_MERGING)
         # 粗层（2026-10-20 接控制）：只接管 L4 回中兜底——细层没有奖励车/
         # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
         # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last,
-                                   coarse_lane=self.coarse_lane)
+                                   coarse_lane=self.coarse_lane,
+                                   committed=committed)
         self._sel_report = rep
         self._sel_ego_m = ego_m
         self._sel_maneuver = rep.maneuver
