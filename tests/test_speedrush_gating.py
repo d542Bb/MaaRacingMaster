@@ -477,6 +477,11 @@ def test_straight_mode_full_run(env, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sr, "_run_dir", lambda *a, **k: tmp_path)
     created: list = []
     monkeypatch.setattr(sr, "HudObserver", _hud_stub(created))
+    # trace 走流水汇（会话目录形态，日志闸管辖）：绑定本地 sink 验证落点
+    from maaracing_master.core.trace_sink import TraceSink, validate_trace_file
+    sink = TraceSink("speedrush")
+    sink.bind_session(tmp_path, "t_1")
+    mod._trace = sink
 
     assert mod._drive_loop(1, None) is True
     assert mod._hud is None  # 退出后释放引用（_state.hud_recording 不许悬挂为真）
@@ -486,12 +491,16 @@ def test_straight_mode_full_run(env, monkeypatch, tmp_path) -> None:
     assert 0 < expected < 255
     assert pad.updates >= 3 and all(t == expected for t in pad.trig)
     assert all(j == (0, 0) for j in pad.joy)
-    # trace：STRAIGHT 行落盘（run_dir=tmp_path，文件名协议不变）
-    files = list(tmp_path.glob("trace_20261003_190000_p1.jsonl"))
-    assert len(files) == 1
+    # trace：STRAIGHT 行进流水汇 + 阶段边界随行
+    sink.flush(2.0)
+    p = tmp_path / "trace" / "speedrush.jsonl"
     rows = [json.loads(line) for line in
-            files[0].read_text(encoding="utf-8").splitlines()]
-    assert rows and all(r["state"] == "STRAIGHT" for r in rows)
+            p.read_text(encoding="utf-8").splitlines() if line.strip()]
+    data = [r for r in rows if "type" not in r]
+    assert data and all(r["state"] == "STRAIGHT" for r in data)
+    assert any(r["type"] == "stage_begin" for r in rows)
+    assert sink.close_session(2.0).ok
+    assert validate_trace_file(p) == []
 
 
 def test_straight_mode_skips_perception(env, monkeypatch, tmp_path) -> None:

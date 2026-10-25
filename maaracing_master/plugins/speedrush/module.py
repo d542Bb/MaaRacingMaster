@@ -40,6 +40,8 @@ from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.paths import data_dir, debug_dir
+from maaracing_master.core.perf_sampler import ensure_perf_sampler_started
+from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_FILE, DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_FILE,
     PERCEPTION_MODEL_REL, PIPELINE_DIR)
@@ -215,6 +217,13 @@ class SpeedRushModule(ActivityModule):
     # 方向归零、油门恒踩，感知与深度都不加载（全程直行基线的测量仪器，
     # control-route 验收②的分母）。
     DEFAULT_STRAIGHT_MODE = False
+
+    # 性能卡领域项阈值：拍率降级档位 + 拍间隔事件触发线（超线报 core 采样器
+    # 倾倒性能证据窗）与事件节流间隔（持续停摆不逐拍刷事件）
+    PERF_TICK_WARN_HZ = 15.0
+    PERF_TICK_ERROR_HZ = 10.0
+    PERF_TICK_EVENT_GAP_MS = 150.0
+    PERF_EVENT_MIN_INTERVAL_S = 10.0
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     DEFAULT_MODULE_CONFIG: dict = {
         "record_mode": DEFAULT_RECORD_MODE,
@@ -294,6 +303,12 @@ class SpeedRushModule(ActivityModule):
         self._last_perception: PerceptionResult | None = None
         # 控制实况（GUI 展示：最近一拍的决策状态与下发杆值；控制关闭时为 None）
         self._control_last: dict | None = None
+        # 玩法流水汇（进程级注册，随日志会话自动开合）：落点
+        # logs/<会话>/trace/speedrush.jsonl，落盘受「日志记录」开关管辖
+        self._trace = get_trace_sink("speedrush")
+        # 性能卡领域项（资源面由 core 采样器供数）：驾驶环拍间隔滑窗 + 事件节流
+        self._tick_gaps: deque[float] = deque(maxlen=240)
+        self._last_perf_evt = 0.0
 
     @property
     def current_stage(self) -> str | None:
@@ -388,6 +403,8 @@ class SpeedRushModule(ActivityModule):
             logger.log(f"[极速狂飙] 未知断点「{start_from}」，从流程起点开始", "WARNING")
 
         self._running = True
+        # 本次运行的身份（流水行头 run_id；一局内各阶段共享，跨 run 不重置序号）
+        self._trace.set_run_id(time.strftime("%Y%m%d_%H%M%S"))
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
                         f"·感知{'开' if self._perception_mode else '关'}"
                         f"·直行{'开' if self._straight_mode else '关'}）", "session")
@@ -431,6 +448,44 @@ class SpeedRushModule(ActivityModule):
 
     def _tlog(self, msg: str, level: str = "INFO", fields: dict | None = None):
         _tlog(self, msg, level, fields)
+
+    # ---------- 性能卡领域项（资源面由 core 采样器经 sidecar 聚合，此处只给域内读数） ----------
+
+    @staticmethod
+    def _pct_of(vals, q: float) -> float:
+        if not vals:
+            return 0.0
+        s = sorted(vals)
+        return s[min(len(s) - 1, int(len(s) * q))]
+
+    def read_perf_snapshot(self) -> dict:
+        """机器可读的性能快照（纯读）：response=驾驶拍率，health=决策实况。"""
+        gaps = list(self._tick_gaps)
+        p50 = self._pct_of(gaps, 0.50)
+        p95 = self._pct_of(gaps, 0.95)
+        fps = round(1000.0 / p50, 2) if p50 > 0 else 0.0
+        if fps <= 0:
+            level = "idle"
+        elif fps < self.PERF_TICK_ERROR_HZ:
+            level = "error"
+        elif fps < self.PERF_TICK_WARN_HZ:
+            level = "warn"
+        else:
+            level = "ok"
+        cl = self._control_last
+        if cl is None:
+            health = {"level": "idle", "text": "等待驾驶"}
+        else:
+            health = {"level": "ok",
+                      "text": f"{cl['state']} · {cl['reason']}"}
+        return {
+            "response": {
+                "fps": fps,
+                "level": level,
+                "tick_gap_ms": {"p50": round(p50, 1), "p95": round(p95, 1)},
+            },
+            "health": health,
+        }
 
     def _open_grp(self, title: str, kind: str) -> None:
         _open_grp(self, title, kind)
@@ -600,9 +655,10 @@ class SpeedRushModule(ActivityModule):
         self._control_last = None
         chain = self._build_control_chain(phase) \
             if ((control and not straight) or shadow) else None
-        # 直行档 trace（stub chain 复用 _flush_control_trace 的落盘协议）；
+        # 直行档 trace（stub chain 与控制链同协议：行进流水汇 + 阶段收尾汇总）；
         # 油门取 decision.json 的 throttle_raw 单一真源，不另抄数值。
-        straight_chain = ({"trace": [], "t_start": time.time(), "bad_frames": {}}
+        straight_chain = ({"trace": [], "trace_sink": self._trace,
+                           "t_start": time.time(), "bad_frames": {}}
                           if straight else None)
         straight_throttle = load_decision().planner.throttle_raw if straight else 0
         # 控制两档（智能/直行）同点起 HUD 读数：分数流是验收②「智能 vs 直行基线」
@@ -617,6 +673,8 @@ class SpeedRushModule(ActivityModule):
             drive_hud = self._begin_hud(hud_dir, phase, round_no)
             if chain is not None:
                 chain["hud_ref"] = drive_hud   # 调试图读数带吃 HUD 最新行
+        # 阶段边界入流水（受保护通道）：无论接管与否，每阶段起止各一条
+        self._trace.begin_stage(phase)
 
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
@@ -626,7 +684,7 @@ class SpeedRushModule(ActivityModule):
         fid, ts_ns, age_ms = 0, 0, 0.0
         # 手柄租约覆盖整个控制阶段：进入取设备、退出归零归还（摇杆归中+松扳机）。
         # 循环内多处 return/raise 都经 with 收口，不留"退出后车还踩着油门"的尾巴。
-        # 控制 trace 在 finally 一次性 flush（正常结束/停止/异常都落盘，守热路径不逐帧写）。
+        # 数据行随拍进流水汇（异步落盘）；finally 只收阶段边界与局汇总。
         try:
             with contextlib.ExitStack() as stack:
                 gpad = stack.enter_context(self.ctx.gamepad.acquire()) if control else None
@@ -654,6 +712,20 @@ class SpeedRushModule(ActivityModule):
                         self._pace_body.append(pace_ms[0])
                         self._pace_sleep.append(pace_ms[1])
                         self._pace_wake.append(pace_ms[2])
+                        # 拍间隔滑窗（性能卡 response 项）+ 超阈值性能事件
+                        # （core 采样器据此倾倒前后窗样本；节流防持续停摆刷屏）
+                        gap_ms = pace_ms[0] + pace_ms[1] + pace_ms[2]
+                        self._tick_gaps.append(gap_ms)
+                        if (gap_ms > self.PERF_TICK_EVENT_GAP_MS
+                                and t0 - self._last_perf_evt
+                                >= self.PERF_EVENT_MIN_INTERVAL_S):
+                            self._last_perf_evt = t0
+                            try:
+                                ensure_perf_sampler_started().record_event(
+                                    "speedrush", "tick_gap",
+                                    {"gap_ms": round(gap_ms, 1), "phase": phase})
+                            except Exception:  # noqa: BLE001 —— 观测事件不碰控制环
+                                pass
                     prev_t0 = t0
                     # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
                     # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
@@ -680,7 +752,7 @@ class SpeedRushModule(ActivityModule):
                     if gpad is not None:
                         if straight:
                             self._straight_tick(gpad, fid, ts_ns,
-                                                straight_chain["trace"],
+                                                straight_chain,
                                                 straight_throttle)
                         elif result is not None:
                             # cap 段内段原料：拍内时间戳链（拾取/录制/检测），
@@ -736,6 +808,9 @@ class SpeedRushModule(ActivityModule):
                         # 偏移，混用会把睡眠读成负值、空隙虚高同量级（首局实证）
                         prev_sleep = time.perf_counter() - t_sl
         finally:
+            # 阶段收边界（先于其余收口：此后不再有数据行）
+            self._trace.end_stage(phase)
+            self._trace.flush(1.0)
             if control and chain:
                 dbg = chain.get("debug")
                 if dbg is not None:
@@ -853,7 +928,8 @@ class SpeedRushModule(ActivityModule):
                                and self._control_mode and not self._straight_mode
                                else None),
                 "abort_phase": False,
-                "prev_ts": None, "disabled": False, "trace": [],
+                "prev_ts": None, "disabled": False,
+                "trace": [], "trace_sink": self._trace,
                 # 跨会话残留的慢 forward 锁存不写进新会话（同钟起点过滤）
                 "slow_seen_ns": int(time.perf_counter() * 1e9),
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
@@ -1104,8 +1180,9 @@ class SpeedRushModule(ActivityModule):
             "sel_nwp": None if eng.selection_report is None
             else len(eng.selection_report.waypoints),
             "maneuver": out.maneuver}
-        # 逐拍控制 trace（内存攒、阶段出口一次性 flush）：C1 定档 K_v 与 §七.1 复测的
-        # 数据源。boundary 黄线列已随 2D 链路退役（v4 换装），路缘观测量看
+        # 逐拍控制 trace（C1 定档 K_v 与 §七.1 复测的数据源）。数据行一式两份：
+        # 内存全量行供局汇总聚合（_write_game_summary），流水汇行异步落会话目录。
+        # boundary 黄线列已随 2D 链路退役（v4 换装），路缘观测量看
         # dgeo_left/dgeo_right 两列。
         # 候选诊断三列：金币组数 + 最高分 + 该组横向偏移——直接回答"有没有币/差多少分/
         # 在几车道外"。评分器是纯函数、每拍已算，这里只多读一次结果，不改决策。
@@ -1143,7 +1220,7 @@ class SpeedRushModule(ActivityModule):
             chain["slow_seen_ns"] = _slow["ts_ns"]
         else:
             _slow = None
-        chain["trace"].append({
+        _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
             # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
             # 三模态 33/50/66 的逐拍归因面；首拍无上区间为 None
@@ -1417,11 +1494,11 @@ class SpeedRushModule(ActivityModule):
             # 决策时刻米制真实年龄 ≈ dist[].age（锚龄，零点=深度帧采集）+
             # oage（零点=2D 帧采集）；两零点同钟族（perf_counter_ns），相加
             # 无重复计账。WGC 重复帧拍 obs 整体冻结，本列不受影响（拍级）。
-            "oage": round(age_ms, 1)})
-        # 增量落盘（2026-10-12）：每 100 拍追加一次——硬杀进程 finally 不执行，
-        # 阶段出口一次性 flush 会丢尾部（185122_p2 实证丢最后 ~5s 案发段）
-        if len(chain["trace"]) - chain.get("trace_flushed", 0) >= 100:
-            self._flush_control_trace(chain, phase, final=False)
+            "oage": round(age_ms, 1)}
+        chain["trace"].append(_row)
+        _ts = chain.get("trace_sink")
+        if _ts is not None:
+            _ts.append(_row)
         # 调试图快照（debugview 10fps 节流；writer=None=闸关/测试，零开销）
         dbg = chain.get("debug")
         if dbg is not None:
@@ -1453,7 +1530,7 @@ class SpeedRushModule(ActivityModule):
                         if chain.get("hud_ref") is not None else None),
                 "n_groups": len(obs.coin_groups)})
 
-    def _straight_tick(self, gpad, fid: int, ts_ns: int, rows: list[dict],
+    def _straight_tick(self, gpad, fid: int, ts_ns: int, chain: dict,
                        throttle_raw: int) -> None:
         """直行基线一拍：方向归零、油门恒踩（V0 语义：决策禁动恒 x_target=0）。
 
@@ -1464,50 +1541,40 @@ class SpeedRushModule(ActivityModule):
         gpad.left_joystick(x_value=0, y_value=0)
         gpad.right_trigger(value=throttle_raw)
         gpad.update()
-        rows.append({"fid": fid, "ts_ns": ts_ns, "state": "STRAIGHT",
-                     "x_target": 0.0, "steer_x": 0, "throttle": throttle_raw})
+        row = {"fid": fid, "ts_ns": ts_ns, "state": "STRAIGHT",
+               "x_target": 0.0, "steer_x": 0, "throttle": throttle_raw}
+        chain["trace"].append(row)
+        ts = chain.get("trace_sink")
+        if ts is not None:
+            ts.append(row)
 
-    def _flush_control_trace(self, chain: dict, phase: int,
-                             final: bool = True) -> None:
-        """落控制 trace（C1/§七.1 标定数据源）。
+    def _flush_control_trace(self, chain: dict, phase: int) -> None:
+        """阶段收尾：数据行已随拍进流水汇，这里只落局汇总一行（日志闸管辖）。
 
-        增量落盘（2026-10-12）：final=False 由控制环每 100 拍追加一次——
-        硬杀进程时 finally 不执行，一次性 flush 会丢尾部（185122_p2 实证
-        丢最后 ~5s，恰好盖住案发段）；final=True 收尾写余量。写运行数据
-        目录（与 demos 同构，不污染仓库工作树）；空 trace 不落盘。落盘
-        失败只记 WARNING——标定数据缺失不该中止对局收尾（与录制器同一姿态）。
+        局汇总与流水同家（logs/<会话>/trace/speedrush_summary.jsonl）：日志
+        记录开关未开或空 trace 时跳过；失败只记 WARNING——汇总缺失不该中止
+        对局收尾（与录制器同一姿态）。
         """
         rows = chain.get("trace") or []
-        flushed = chain.get("trace_flushed", 0)
-        if len(rows) <= flushed or not self._debug_enabled():
-            # debug 开关关=debug/ 下零产物：trace 只在内存记账不落盘（追加点
-            # 不闸，内存成本 ~1KB/拍可忽略）；局汇总随之不写
+        if not rows:
             return
         try:
-            root = _run_dir(chain["t_start"], phase)
-            root.mkdir(parents=True, exist_ok=True)
-            name = f"trace_{time.strftime('%Y%m%d_%H%M%S', time.localtime(chain['t_start']))}_p{phase}.jsonl"
-            mode = "a" if flushed else "w"
-            with open(root / name, mode, encoding="utf-8") as f:
-                for r in rows[flushed:]:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-            chain["trace_flushed"] = len(rows)
-            if final:
-                self._write_game_summary(chain, phase, rows)
+            self._write_game_summary(chain, phase, rows)
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍"
+                  f"（流水汇{'会话内' if self._trace.stats()['token'] else '未开写盘'}）",
+                  "INFO")
+            bf = chain.get("bad_frames") or {}
+            if bf.get("saved"):
                 _tlog(self,
-                      f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍 → {name}",
-                      "INFO")
-                bf = chain.get("bad_frames") or {}
-                if bf.get("saved"):
-                    _tlog(self,
-                          f"[极速狂飙] 驾驶阶段 {phase}：坏帧（双侧路缘皆不稳）采样 "
-                          f"{bf['saved']} 张 → {bf['dir']}", "INFO")
+                      f"[极速狂飙] 驾驶阶段 {phase}：坏帧（双侧路缘皆不稳）采样 "
+                      f"{bf['saved']} 张 → {bf['dir']}", "INFO")
         except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
 
     def _write_game_summary(self, chain: dict, phase: int,
                             rows: list[dict]) -> None:
-        """局汇总一行/阶段，追加写 ``game_summary.jsonl``（与 trace 同目录）。
+        """局汇总一行/阶段，追加写会话目录 ``trace/speedrush_summary.jsonl``。
 
         消费者=局级验收/A/B：得分/得分速度/时长/事件计数程序化取数——
         2026-10-12 4v4 分析实证主指标要翻 20+ 帧人工 OCR，收口后由 hud_score/
@@ -1527,7 +1594,10 @@ class SpeedRushModule(ActivityModule):
                     score = r["hud_score"]
                 if r.get("hud_rate") is not None:
                     rate = r["hud_rate"]
-            root = _run_dir(chain["t_start"], phase)
+            root = logger.session_dir
+            if root is None:
+                return      # 日志记录开关未开：无会话目录，汇总不落（与流水同闸）
+            root = root / "trace"
             root.mkdir(parents=True, exist_ok=True)
             rec = {
                 "ts": time.strftime("%Y%m%d_%H%M%S",
@@ -1537,7 +1607,7 @@ class SpeedRushModule(ActivityModule):
                 "dur_s": round((rows[-1]["ts_ns"] - rows[0]["ts_ns"]) / 1e9, 1),
                 "conserve_segments": cons_segments,
             }
-            with open(root / "game_summary.jsonl", "a", encoding="utf-8") as f:
+            with open(root / "speedrush_summary.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except Exception as exc:  # noqa: BLE001 —— 汇总缺失不阻断收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：局汇总落盘失败: {exc!r}", "WARNING")

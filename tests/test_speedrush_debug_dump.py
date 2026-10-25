@@ -151,11 +151,13 @@ def test_game_summary_row_appended(tmp_path: Path, monkeypatch) -> None:
     ]
     plugin = SpeedRushModule.__new__(SpeedRushModule)   # 方法只用 _tlog（失败路径）
     monkeypatch.setattr(
-        "maaracing_master.plugins.speedrush.module._run_dir",
-        lambda *a, **k: tmp_path)
+        "maaracing_master.plugins.speedrush.module.logger",
+        type("L", (), {"session_dir": tmp_path,
+                       "log": staticmethod(lambda *a, **k: None)})())
     plugin._write_game_summary({"t_start": 0.0}, 1, rows)
     out = json.loads(
-        (tmp_path / "game_summary.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        (tmp_path / "trace" / "speedrush_summary.jsonl")
+        .read_text(encoding="utf-8").splitlines()[-1])
     assert out["score"] == 130 and out["rate"] == 41    # 末值（累积量）
     assert out["conserve_segments"] == 0
     assert out["ticks"] == 4 and out["phase"] == 1

@@ -368,29 +368,57 @@ def test_straight_tick_zero_steer_full_throttle():
     trace 只记时间轴（fid/ts_ns）+ 常量列，供事后对齐 HUD 分数事件。"""
     m = _module()
     pad = StubPad()
-    rows: list[dict] = []
+    chain = {"trace": [], "trace_sink": None}
     throttle = load_decision().planner.throttle_raw
     assert 0 < throttle < 255
     for fid in range(1, 6):
-        m._straight_tick(pad, fid, fid * 50_000_000, rows,
+        m._straight_tick(pad, fid, fid * 50_000_000, chain,
                          throttle_raw=throttle)
         assert pad.joy == (0, 0)                 # 横向恒零
         assert pad.trig == throttle              # 油门恒值（decision.json 单一真源）
     assert pad.updates == 5
-    assert [r["fid"] for r in rows] == [1, 2, 3, 4, 5]
-    for r in rows:
+    assert [r["fid"] for r in chain["trace"]] == [1, 2, 3, 4, 5]
+    for r in chain["trace"]:
         assert r["state"] == "STRAIGHT"
         assert r["x_target"] == 0.0 and r["steer_x"] == 0
         assert "ts_ns" in r
 
 
-# ---------- 控制 trace：逐拍记录 + 阶段出口 flush ----------
+# ---------- 性能卡领域项 ----------
 
-def test_control_trace_records_and_flushes(tmp_path, monkeypatch):
+def test_read_perf_snapshot_domain_items():
+    """性能卡 domain 项：拍率降级档位 + 决策实况（资源面由 core 采样器另供）。"""
+    m = _module()
+    snap = m.read_perf_snapshot()
+    assert snap["response"]["level"] == "idle" and snap["response"]["fps"] == 0
+    assert snap["health"]["text"] == "等待驾驶"
+    m._tick_gaps.extend([50.0] * 100)
+    snap = m.read_perf_snapshot()
+    assert snap["response"]["fps"] == 20.0 and snap["response"]["level"] == "ok"
+    assert snap["response"]["tick_gap_ms"]["p95"] == 50.0
+    m._tick_gaps.clear()
+    m._tick_gaps.extend([70.0] * 100)          # ~14.3Hz → warn
+    assert m.read_perf_snapshot()["response"]["level"] == "warn"
+    m._tick_gaps.clear()
+    m._tick_gaps.extend([120.0] * 100)         # ~8.3Hz → error
+    assert m.read_perf_snapshot()["response"]["level"] == "error"
+    m._control_last = {"state": "CRUISE", "reason": "sel:coin"}
+    h = m.read_perf_snapshot()["health"]
+    assert h["level"] == "ok" and "CRUISE" in h["text"] and "sel:coin" in h["text"]
+
+
+# ---------- 控制 trace：行进流水汇 + 阶段收尾局汇总 ----------
+
+def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
+    """逐拍行进流水汇：旧列名语义不动，行头新增协议字段（v/seq/ts_*/run_id）。"""
+    from maaracing_master.core.trace_sink import TraceSink, validate_trace_file
     monkeypatch.setattr(smod, "_run_dir", lambda *a, **k: tmp_path)
     m = _module()
-    m._debug_enabled = lambda: True   # 落盘闸：本用例开 debug（关=debug/ 零产物）
+    sink = TraceSink("speedrush")
+    sink.bind_session(tmp_path, "t_1")
+    m._trace = sink
     chain = m._build_control_chain()
+    assert chain["trace_sink"] is sink
     pad = StubPad()
     for fid in range(1, 6):
         m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
@@ -401,20 +429,47 @@ def test_control_trace_records_and_flushes(tmp_path, monkeypatch):
               "executed_lane", "v_lat_est", "road_offset", "scene",
               "dgeo_sides", "dgeo_left", "dgeo_right"):
         assert k in row, k
-    m._flush_control_trace(chain, 1)
-    files = list(tmp_path.glob("trace_*_p1.jsonl"))
-    assert len(files) == 1
-    lines = files[0].read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 5
-    assert json.loads(lines[0])["fid"] == 1
+    sink.flush(2.0)
+    p = tmp_path / "trace" / "speedrush.jsonl"
+    lines = [json.loads(x) for x in
+             p.read_text(encoding="utf-8").splitlines() if x.strip()]
+    data = [r for r in lines if "type" not in r]
+    assert [r["fid"] for r in data] == [1, 2, 3, 4, 5]
+    assert all("yolo_run_ms" in r and "pace_body" in r for r in data)  # 旧列原样
+    assert all(r["mod"] == "speedrush" and r["seq"] > 0 for r in data)  # 行头新增
+    assert sink.close_session(2.0).ok
+    assert validate_trace_file(p) == []
 
 
-def test_control_trace_empty_not_flushed(tmp_path, monkeypatch):
-    monkeypatch.setattr(smod, "_run_dir", lambda *a, **k: tmp_path)
+def _stub_logger(session_dir):
+    return SimpleNamespace(session_dir=session_dir,
+                           log=lambda *a, **k: None)
+
+
+def test_game_summary_lands_in_session_trace(tmp_path, monkeypatch):
+    """局汇总随日志会话落 trace/speedrush_summary.jsonl（与流水同家同闸）。"""
+    monkeypatch.setattr(smod, "logger", _stub_logger(tmp_path))
     m = _module()
-    m._debug_enabled = lambda: True
+    m._flush_control_trace(
+        {"trace": [{"ts_ns": 0, "state": "GO"},
+                   {"ts_ns": 5_000_000_000, "state": "GO"}],
+         "t_start": 0.0}, 1)
+    p = tmp_path / "trace" / "speedrush_summary.jsonl"
+    assert p.is_file()
+    rec = json.loads(p.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["phase"] == 1 and rec["ticks"] == 2 and rec["dur_s"] == 5.0
+
+
+def test_control_trace_empty_writes_nothing(tmp_path, monkeypatch):
+    """空 trace 或无会话目录：不落任何文件（开关关=受控三流零新增落盘）。"""
+    monkeypatch.setattr(smod, "logger", _stub_logger(tmp_path))
+    m = _module()
     m._flush_control_trace({"trace": [], "t_start": 0.0}, 1)
-    assert list(tmp_path.glob("trace_*.jsonl")) == []   # 空 trace 不落盘
+    assert not (tmp_path / "trace").exists()      # 空 trace 不建目录
+    monkeypatch.setattr(smod, "logger", _stub_logger(None))
+    m._flush_control_trace(
+        {"trace": [{"ts_ns": 0, "state": "GO"}], "t_start": 0.0}, 1)
+    assert not (tmp_path / "trace").exists()      # 无会话（日志闸关）不落
 
 
 # ---------- 控制实况字段形状（GUI 消费契约）----------

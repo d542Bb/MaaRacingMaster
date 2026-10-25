@@ -159,8 +159,12 @@
   `ActivityModule` 启动约束的说明。
 - **录制模式同时跑决策链影子观察**：人驾期间感知→决策→规划照跑但不接入手柄（不下发，
   车只听人），trace 与控制局同列同语义——`steer` 列=本应下发的反事实杆值、`sel_layer/sel_why`=
-  四层选择本拍层与原因、`executed_lane`=深度路心观测重锚的人工实际横位。trace 落
-  `debug/speedrush/<会话>/trace/`（受 debug 总闸），与录制帧、HUD 读数同会话对齐。
+  四层选择本拍层与原因、`executed_lane`=深度路心观测重锚的人工实际横位。控制/影子/直行
+  三档的逐拍流水都进**玩法流水汇**（`logs/<会话>/trace/speedrush.jsonl`，受「日志记录」
+  开关管辖，随拍异步落盘；旧列名逐字保留，行头新增 v/seq/run_id/stage_id/双时钟等协议
+  字段，阶段由行内 stage 控制 行表达——ADR-0010）。局汇总一行/阶段落同目录
+  `trace/speedrush_summary.jsonl`。历史布局（`debug/speedrush/<会话>_p<N>/trace_*.jsonl`）
+  的读取经实验区统一读取器；HUD/raw/坏帧等帧证据仍在 `debug/speedrush/`（调试总开关）。
 - 门控判定日志带 `frame=`，与 `frames.jsonl` 的 `frame_id` 对齐（日志墙钟只到秒，帧号才是
   可靠的共同坐标）。导出判定时刻的画面用
   `tools/experiments/speedrush_gating/export_gating_marks.py`。
@@ -613,7 +617,7 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 深度几何/全程直行）：False=正常全链驾驶；True=**全程直行基线**——接管手柄后方向归零、
 油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
 不起深度 worker，perception_mode 开着也不跑），trace 只记时间轴与常量列（state=STRAIGHT，
-复用 `_flush_control_trace` 落盘协议）。控制两档（智能/直行）都在 `_drive_loop` 内同点起
+与控制链同走流水汇）。控制两档（智能/直行）都在 `_drive_loop` 内同点起
 HUD 读数观察线程（目录与 trace 同时刻命名 `hud_<时刻>_p<阶段>/hud.jsonl`，按 fid/ts_ns
 与 trace 对齐）——分数流是验收②「智能 vs 直行基线」对比的数据面。
 弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人）的语义不变。
