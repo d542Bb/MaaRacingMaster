@@ -245,8 +245,8 @@
     "cancel_cooldown_s": 2.0,
     "finish_v_tol_lane_s": 0.4,
     "merge_max_s": 4.0,
-    "soft_car": false,
-    "_note": "路线承诺层（2026-10-23 V1；2026-10-24 实机两局后收敛）：横向意图跨帧持有，接控制的道号从路线参考道读，不再每帧重选。规则只剩一条主动路径+撤销——现任道连续 urgent_confirm_ticks 拍确认被截才换，换到「确实更宽」的一条（确认空闲直接合格；有车的道至少要 switch_gain_m 的净空差，复用 coarse.switch_margin_m）；并线中只认完成（位置进中心带且横速落稳）与撤销（目标道连续 cancel_unsafe_ticks 拍确认被截），撤销后 cancel_cooldown_s 内不回那条道。原「普通换道/承诺期」一路在 24 m 观察窗下结构上不可达（够格的主动换道必然同时是逃生换道），已删除：实机一局 327 拍卡在承诺期而无一真正决定。soft_car=false 时目标道的普通车也构成撤销；true 时车只作时间成本、不撤销，目标道 space 仍按参考道失去几何重建（0.35 s 迎车门由计划层否决）。control=false 时逐位回今天（粗层自选道 + 它的两条例外原样保留）。当前 control=true、soft_car=false。"
+    "soft_car": true,
+    "_note": "路线承诺层（2026-10-23 V1；2026-10-24 实机两局后收敛）：横向意图跨帧持有，接控制的道号从路线参考道读，不再每帧重选。规则只剩一条主动路径+撤销——现任道连续 urgent_confirm_ticks 拍确认被截才换，换到「确实更宽」的一条（确认空闲直接合格；有车的道至少要 switch_gain_m 的净空差，复用 coarse.switch_margin_m）；并线中只认完成（位置进中心带且横速落稳）与撤销（目标道连续 cancel_unsafe_ticks 拍确认被截），撤销后 cancel_cooldown_s 内不回那条道。原「普通换道/承诺期」一路在 24 m 观察窗下结构上不可达（够格的主动换道必然同时是逃生换道），已删除：实机一局 327 拍卡在承诺期而无一真正决定。soft_car=false 时目标道的普通车也构成撤销；true 时车只作时间成本、不撤销，目标道 space 仍按参考道失去几何重建（0.35 s 迎车门由计划层否决）。control=false 时逐位回今天（粗层自选道 + 它的两条例外原样保留）。当前 control=true、soft_car=true。"
   },
   "geometry": {
     "wall_line_master": false,
