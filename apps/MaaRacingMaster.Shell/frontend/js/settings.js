@@ -865,7 +865,7 @@
         </div>`;
   }
 
-  function defaultDataCards(mid, perfCardHtml) {
+  function defaultDataCards(mid, perfCardHtml, rightTopHtml) {
     return `
       <div class="col-left">
         <!-- 性能监控 -->
@@ -873,7 +873,8 @@
       </div>
 
       <div class="col-right">
-        ${mid === 'treasure' ? todayBoardCard(mid) : detectCard(mid)}
+        ${rightTopHtml !== undefined ? rightTopHtml
+          : (mid === 'treasure' ? todayBoardCard(mid) : detectCard(mid))}
 
         <!-- 实时预览 -->
         <div class="card card-flex preview-card" id="${mid}-preview-card">
@@ -921,7 +922,7 @@
               <button class="mra-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">DEBUG 每帧截图</div>
-                <p class="option-desc">开启后每帧截图保存到 %APPDATA%/MaaRacingMaster/debug/navigate/ 目录，用于分析导航和识别问题</p>
+                <p class="option-desc">逐帧保存画面用于排查识别问题，约 50–100MB/分钟，仅排查时短时开启</p>
               </div>
               <span class="option-note">约占用 50-100MB/分钟磁盘空间</span>
             </div>
@@ -937,7 +938,7 @@
               <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
-                <p class="option-desc">开启后才把运行日志与决策流水（trace.jsonl）写入 %APPDATA%/MaaRacingMaster/logs/&lt;会话&gt;/，两者同放一个会话目录，排查时整个目录发出来即可。每次开启新建一个会话目录，日志按大小轮转、并按会话保留最近若干份；关闭时日志仅保留在界面内存，决策流水不落盘</p>
+                <p class="option-desc">开启后运行日志、玩法流水与性能记录写入会话目录，排查时整个目录发出来即可。关闭时仅保留在界面</p>
               </div>
               <span class="option-note">默认关闭，排查问题时开启</span>
             </div>
@@ -1066,12 +1067,51 @@
     return defaultDataCards(mid, treasurePerfCard(mid));
   }
 
-  // 极速狂飙的数据页：驾驶数据落在会话目录里，界面这边只给入口与说明。
-  // **不套用默认数据页**——那两张卡（性能监控、金币/障碍车检测）是别的模块的概念，
-  // 摆在这里只会让人以为"检测没跑起来"。
-  function speedrushDataCards(mid) {
+  // 极速狂飙的数据页：版式与通用页同构（性能监控左栏、模块数据+预览右栏）。
+  // 性能卡三件套由后端供数（拍率/机器负载/决策实况），卡片文案与结构可随样式调整。
+  function speedrushPerfCard(mid) {
     return `
-      <div class="col-left">
+        <div class="card card-flex">
+          <div class="card-head"><h3>性能监控</h3></div>
+          <div class="card-body card-body--fill">
+            <div class="perf-item">
+              <div class="perf-head">
+                <span class="perf-label">驾驶拍率</span>
+                <div class="perf-right">
+                  <span class="perf-value" id="${mid}-perf-fps">-- 次/秒</span>
+                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-fps-badge"><span class="perf-badge-dot"></span>空闲</span>
+                </div>
+              </div>
+              <svg class="perf-spark" id="${mid}-perf-fps-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <p class="perf-note" id="${mid}-perf-fps-note">驾驶控制每秒的决策拍数</p>
+            </div>
+            <div class="perf-item">
+              <div class="perf-head">
+                <span class="perf-label">机器负载</span>
+                <div class="perf-right">
+                  <span class="perf-value" id="${mid}-perf-cpu">--</span>
+                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-cpu-badge"><span class="perf-badge-dot"></span>空闲</span>
+                </div>
+              </div>
+              <svg class="perf-spark" id="${mid}-perf-cpu-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <p class="perf-note" id="${mid}-perf-cpu-note">程序占整机的负载比例</p>
+            </div>
+            <div class="perf-item">
+              <div class="perf-head">
+                <span class="perf-label">决策实况</span>
+                <div class="perf-right">
+                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-health-badge"><span class="perf-badge-dot"></span>空闲</span>
+                </div>
+              </div>
+              <p class="perf-note" id="${mid}-perf-health-note">等待驾驶</p>
+            </div>
+          </div>
+        </div>`;
+  }
+
+  // 驾驶演示数据入口：录制产物（逐帧图+手柄序列）落会话目录，门控日志带帧号可回查。
+  function speedrushDemosCard(mid) {
+    return `
         <div class="card">
           <div class="card-head"><h3>驾驶演示数据</h3></div>
           <div class="card-body">
@@ -1082,17 +1122,11 @@
               <span class="mra-tool-btn-label">打开数据目录</span>
             </button>
           </div>
-        </div>
-      </div>
-      <div class="col-right">
-        <div class="card">
-          <div class="card-head"><h3>在线指标</h3></div>
-          <div class="card-body">
-            <p class="module-desc">驾驶控制接入后，这里显示模型输出与几何兜底的接管次数——
-              接管频次上升是分布漂移最灵敏的信号。</p>
-          </div>
-        </div>
-      </div>`;
+        </div>`;
+  }
+
+  function speedrushDataCards(mid) {
+    return defaultDataCards(mid, speedrushPerfCard(mid), speedrushDemosCard(mid));
   }
 
   // 未登记模板的模块用默认模板（此前是"回退到 treasure"，那会让合法但未定制的模块
