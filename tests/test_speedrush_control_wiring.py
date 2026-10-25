@@ -128,6 +128,9 @@ def test_field_goal_half_lane_moves_with_realistic_time():
                          executed_lane=pl.state.executed_lane,
                          corridor=corridor(pl.state.executed_lane))
         assert out.maneuver is True
+        assert out.phase == "keep"
+        assert out.authority == "COMMIT"
+        assert out.intent_lane is not None
         cmd = pl.update(out, 0.05, current_fid=fid)
         max_stick = max(max_stick, abs(cmd.steer_x))
     assert pl.state.executed_lane < 1.2       # 朝带边 0.5 真的动了
@@ -196,6 +199,12 @@ def test_shadow_plan_records_but_steer_identical_to_off(_stub_depth,
     assert off_chain["trace"][-1]["plan"] is None
     assert shadow_chain["trace"][-1]["plan"] is not None
     assert shadow_joy == off_joy
+    t = shadow_chain["trace"][-1]
+    assert t["authority"] in ("GENTLE", "COMMIT", "HOLD")
+    assert "intent_lane" in t and "intent_deadline_s" in t
+    assert t["intent_owner"] in ("route", "decision")
+    assert t["steer_owner"] == "plan" and t["plan_role"] == "executor"
+    assert t["veto_reason"] is None
 
 
 def test_live_plan_takes_over_steering(_stub_depth, monkeypatch):

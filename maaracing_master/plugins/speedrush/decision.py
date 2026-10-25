@@ -38,7 +38,7 @@ from maaracing_master.plugins.speedrush.selection import (
 from maaracing_master.plugins.speedrush.presence_occupancy import (
     OccObs, PresenceOccupancy)
 from maaracing_master.plugins.speedrush.route import (
-    RouteParams, RouteState, RouteVerdict, tick_route)
+    PHASE_MERGING, RouteParams, RouteState, RouteVerdict, tick_route)
 from maaracing_master.plugins.speedrush.traffic import (
     CarView, PassEvent, OUTCOME_PASS, OUTCOME_PRESUMED_PASS)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -461,12 +461,33 @@ class DecisionEngine:
         x_out = t_out
         self._maneuver = bool(self._state is DecisionState.CRUISE
                               and self._sel_maneuver)
+        # 行为契约观测面（阶段 0）：只推导并记录，不改变控制。权限按相位
+        # 给：非巡航/HOLD；并线或机动/COMMIT；其余/GENTLE。
+        route = self._route
+        merging = route is not None and route.phase == PHASE_MERGING
+        if self._state is not DecisionState.CRUISE:
+            authority = "HOLD"
+        elif merging or self._maneuver:
+            authority = "COMMIT"
+        else:
+            authority = "GENTLE"
+        intent_lane = None
+        if route is not None:
+            intent_lane = route.lane_target if merging else route.lane_ref
+        deadline_s = None
+        if merging:
+            deadline_s = max(
+                0.0, route.merge_started_t + self._route_params.merge_max_s
+                - route.elapsed_s)
         return DecisionOutput(
             schema_version=_SCHEMA, state=self._state,
             x_target=x_out if self._state is not DecisionState.CONSERVE else None,
             reason=reason, emitted_fid=obs.frame_id,
             valid_until_fid=obs.frame_id + self._validity_ticks(),
-            maneuver=self._maneuver)
+            maneuver=self._maneuver, intent_lane=intent_lane,
+            phase="merging" if merging else "keep", authority=authority,
+            deadline_s=deadline_s,
+            intent_epoch=0 if route is None else route.epoch)
 
     @property
     def maneuver(self) -> bool:

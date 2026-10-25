@@ -1242,6 +1242,19 @@ class SpeedRushModule(ActivityModule):
             "dbg_q": _dst.get("q"), "dbg_ms": _dst.get("ms"),
             "state": out.state.value, "reason": out.reason,
             "x_target": out.x_target,
+            # 行为契约观测面（阶段 0，只记录不控制）：意图所有者/权限/目标/
+            # 计划角色/物理否决——离线判断“谁在决定、权限是否接到执行”。
+            "authority": out.authority,
+            "intent_lane": None if out.intent_lane is None
+            else round(out.intent_lane, 3),
+            "intent_phase": out.phase,
+            "intent_deadline_s": None if out.deadline_s is None
+            else round(out.deadline_s, 2),
+            "intent_owner": "route" if out.intent_lane is not None else "decision",
+            "steer_owner": "plan" if plan is not None and plan.valid else "planner",
+            "plan_role": ("none" if plan is None
+                          else "executor" if plan.valid else "veto"),
+            "veto_reason": (None if plan is None or plan.valid else plan.reason),
             # 场跟随可观测面（阶段 0）：输出目标/执行分支
             "goal": eng.goal,
             "exec_branch": eng.exec_branch,

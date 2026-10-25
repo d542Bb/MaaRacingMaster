@@ -101,8 +101,8 @@ class RouteVerdict:
     phase: str
     lane_ref: float | None
     lane_target: float | None
-    verdict: str                     # init/keep/merge_start/finish/cancel/
-    # urgent_no_alt/epoch_reset/rebuild/needs_init
+    verdict: str                     # init/keep/merge_start/finish/timeout/
+    # cancel/urgent_no_alt/epoch_reset/rebuild/needs_init
     why: str                         # 保持或被拒的第一原因码
     since_s: float                   # 距上次定案的时间（"多久动一次"的观测面）
     gain_m: float | None             # 当前道与被选替代道的净空差（米）
@@ -110,6 +110,9 @@ class RouteVerdict:
     evidence_m: float | None         # 危险证据距离（米；逃生分支必带）
     cooldown_left_s: float
     epoch: int
+    # 目标/参考道在结束拍的粗层 blocker：car/space/unknown_car/None。
+    # 阶段 0 观测面：区分“车因撤销”与“空间作废”，不参与控制。
+    blocker: str | None = None
 
     def as_trace(self) -> dict:
         def _r(x, nd):
@@ -119,7 +122,7 @@ class RouteVerdict:
                 "why": self.why, "age": _r(self.since_s, 2),
                 "gain": _r(self.gain_m, 2), "tc": _r(self.t_cur_s, 3),
                 "ev": _r(self.evidence_m, 2), "cd": _r(self.cooldown_left_s, 2),
-                "ep": self.epoch}
+                "ep": self.epoch, "blk": self.blocker}
 
 
 def init_state(epoch: int) -> RouteState:
@@ -207,7 +210,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
         # 朝墙打舵，且逃生判据也失去输入——立刻重建到可行道
         return _rebuild(s, by, report.ego_lane, clock, epoch, p, "rebuild",
                         "lane_dropped" if cur is not None
-                        else "lane_out_of_range")
+                        else "lane_out_of_range",
+                        blocker=None if cur is None else cur.blocker)
     # 现任道被截的连续拍数：逃生要"持续占用"，单帧闪检不起意（与撤销判据
     # 同一族的帧计数滞回；观察窗只有 0.5 s，帧计数是最便宜的去噪面）
     s = replace(s, blocked_ticks=(s.blocked_ticks + 1
@@ -219,7 +223,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
 
 def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
              epoch: int, p: RouteParams, verdict: str,
-             why: str) -> tuple[RouteState, RouteVerdict]:
+             why: str, blocker: str | None = None) -> tuple[RouteState, RouteVerdict]:
     """降级为 KEEP(实测可达道)：并线作废、冷却清零、定案时钟不清。"""
     k = _drivable_lane(ego_lane, by)
     st = replace(s, lane_ref=k, lane_from=k, lane_target=None,
@@ -227,7 +231,8 @@ def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
                  ban_lane=None, epoch=epoch, merge_started_t=clock)
     return st, RouteVerdict(PHASE_KEEP, k, None, verdict, why,
                             max(0.0, clock - st.decided_t), None,
-                            _avail_s(by[k], p), None, 0.0, epoch)
+                            _avail_s(by[k], p), None, 0.0, epoch,
+                            blocker=blocker)
 
 
 def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
@@ -247,23 +252,28 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
         return st, RouteVerdict(PHASE_KEEP, back, None, "cancel",
                                 "target_blocked", since, None, t_tgt,
                                 None if tgt is None else tgt.free_m,
-                                p.cancel_cooldown_s, epoch)
+                                p.cancel_cooldown_s, epoch,
+                                blocker=None if tgt is None else tgt.blocker)
     arrived = (abs(s.v_ref - s.lane_target) <= p.finish_tol_lane
                and abs(s.v_est_lane_s) <= p.finish_v_tol_lane_s)
-    if arrived or clock - s.merge_started_t >= p.merge_max_s:
+    timeout = clock - s.merge_started_t >= p.merge_max_s
+    if arrived or timeout:
         # 超时落回**实测所在道**：车可能停在半道，硬判"完成"会把命令位钉在
-        # 车根本没到的道上
+        # 车根本没到的道上。超时是独立结局，不冒充 finish。
         k = float(s.lane_target) if arrived else _drivable_lane(s.v_ref, by)
         st = replace(s, lane_ref=k, lane_from=k, lane_target=None,
                      phase=PHASE_KEEP, decided_t=clock, unsafe_ticks=unsafe,
                      merge_started_t=clock)
-        return st, RouteVerdict(PHASE_KEEP, k, None, "finish",
-                                "arrived" if arrived else "merge_timeout",
-                                since, None, t_tgt, None,
-                                s.cooldown_left_s, epoch)
+        return st, RouteVerdict(
+            PHASE_KEEP, k, None,
+            "finish" if arrived else "timeout",
+            "arrived" if arrived else "merge_timeout",
+            since, None, t_tgt, None, s.cooldown_left_s, epoch,
+            blocker=None if tgt is None else tgt.blocker)
     return replace(s, unsafe_ticks=unsafe), RouteVerdict(
         PHASE_MERGING, s.lane_ref, s.lane_target, "keep", "merging", since,
-        None, t_tgt, None, s.cooldown_left_s, epoch)
+        None, t_tgt, None, s.cooldown_left_s, epoch,
+        blocker=None if tgt is None else tgt.blocker)
 
 
 def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
@@ -286,7 +296,8 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         if not feas:
             return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target,
                                    "urgent_no_alt", "no_alt", since, None,
-                                   t_cur, cur.free_m, s.cooldown_left_s, epoch)
+                                   t_cur, cur.free_m, s.cooldown_left_s, epoch,
+                                   blocker=cur.blocker)
         # 确认空闲优先 → 净空最大（可用时间最多）→ 离自车最近 → 道号（确定性；
         # 左右读数完全对称是常态，同分必须有个固定次序）
         alt = min(feas, key=lambda c: (0 if _clear(c) else 1, -c.free_m,
@@ -294,11 +305,12 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         return _start_merge(s, alt, clock), RouteVerdict(
             PHASE_MERGING, alt.lane, alt.lane, "merge_start", "urgent", since,
             alt.free_m - cur.free_m, t_cur, cur.free_m, s.cooldown_left_s,
-            epoch)
+            epoch, blocker=alt.blocker)
 
     why = "clear" if _clear(cur) else "blocked_unconfirmed"
     return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target, "keep", why,
-                           since, None, t_cur, None, s.cooldown_left_s, epoch)
+                           since, None, t_cur, None, s.cooldown_left_s, epoch,
+                           blocker=cur.blocker)
 
 
 def _start_merge(s: RouteState, alt: CoarseLane,

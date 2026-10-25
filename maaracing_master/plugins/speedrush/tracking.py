@@ -336,6 +336,13 @@ class DecisionOutput:
     # 机动态权限位（阶段 2）：目标离自车超过切换死区时置位，planner 据此放弃
     # 维护性死区/杆幅上限（不是承诺、不是完成判据——只作权限档位）
     maneuver: bool = False
+    # 行为契约观测面（阶段 0；只记录，不进控制）：意图道/相位/权限/截止/
+    # 纪元。planner 本阶段不消费；供 trace 与后续权限接线使用。
+    intent_lane: float | None = None
+    phase: str = "keep"
+    authority: str = "GENTLE"
+    deadline_s: float | None = None
+    intent_epoch: int = 0
 
 
 @dataclass(frozen=True)

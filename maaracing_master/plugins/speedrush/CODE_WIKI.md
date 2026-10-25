@@ -1313,6 +1313,15 @@ m/modes/since_ms、本拍选择结果和 veto（选择目标仍在被占车道�
   确认被截）。并线期间不评估别的候选。
 - **撤销后冷却**：回落到实测可达道，并在 `cancel_cooldown_s` 内**禁入**刚放弃
   的那条道（A↔B 来回摆的根）；`merge_max_s` 超时按实测所在道落回 keep。
+- **结局口径**：到达=`finish/arrived`；超时=`timeout/merge_timeout`（独立结局，
+  不冒充完成）；撤销=`cancel/target_blocked`；参考道/目标道失去几何=
+  `rebuild/lane_dropped|lane_out_of_range`。`RouteVerdict.blocker` 记录结束拍
+  目标道的粗层 blocker（car/space/unknown_car），trace 列 `route.blk`。
+- **权限/意图观测列**（trace-only，planner 不消费）：`authority`
+  （GENTLE/COMMIT/HOLD，按相位推导）、`intent_lane`、`intent_phase`、
+  `intent_deadline_s`、`intent_owner`、`steer_owner`、`plan_role`
+  （executor/veto/none）、`veto_reason`。用于离线判断"谁在决定、权限是否接到
+  执行"；当前控制仍按原路径执行，不代表权限已经接线。
 
 **为什么没有"收益门槛 + 承诺期 + 整段并线时间窗"**：这些判据 2026-10-23 方案
 里各自成立，组合到 24 m 观察窗（≈0.53 s @ `coarse.range_speed_mps`）上时结构

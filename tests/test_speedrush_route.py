@@ -164,6 +164,7 @@ def test_merge_cancel_bans_the_abandoned_lane_during_cooldown():
     for _ in range(P.cancel_unsafe_ticks - 1):
         s, v = _tick(s, _rep(0.5, 1.0, bad))
     assert v.verdict == "cancel" and v.lane_ref == 0.0
+    assert v.blocker == "car" and v.as_trace()["blk"] == "car"
     assert s.ban_lane == 1.0 and v.cooldown_left_s > 0.0
     # 冷却期内：0 道被截、+1 道是唯一更宽的空闲道，但它是刚放弃的那条 → 不动
     spec = {0.0: (12.0, "car", False), 1.0: CLEAR,
@@ -185,8 +186,9 @@ def test_merge_timeout_lands_on_measured_lane():
     s, v = _in_merge()
     for _ in range(200):
         s, v = _tick(s, _rep(0.1, 1.0))            # 卡在 0.1 道，横速 0
-        if v.verdict == "finish":
+        if v.verdict == "timeout":
             break
+    assert v.verdict != "finish"                   # 超时不得冒充完成
     assert v.why == "merge_timeout" and v.lane_ref == 0.0
     assert s.phase == PHASE_KEEP
 
@@ -210,6 +212,7 @@ def test_reference_lane_on_space_rebuilds_to_drivable():
     s = replace(s, lane_ref=-1.0, lane_from=-1.0)
     s, v = _tick(s, _rep(-0.6, 0.0, {-1.0: (0.0, "space", False)}))
     assert v.verdict == "rebuild" and v.why == "lane_dropped"
+    assert v.blocker == "space" and v.as_trace()["blk"] == "space"
     assert v.lane_ref == 0.0
 
 
