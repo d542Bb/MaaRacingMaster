@@ -94,7 +94,7 @@
     "obs_beta_note": "时间基=自上次速度修正的累计帧钟（新证据间隔），非控制拍 dt；标定证据 tools/experiments/speedrush_vision/probe_beta_timebase.py"
   },
   "motion": {
-    "mode": "shadow",
+    "mode": "live",
     "horizon_s": 2.0,
     "preview_s": 0.2,
     "dt_s": 0.05,
