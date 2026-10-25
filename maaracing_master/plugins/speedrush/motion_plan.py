@@ -317,15 +317,21 @@ class PlanGate:
 
     def __init__(self, switch_margin: float, dwell_s: float,
                  epsilon: float, geom_margin: float = 0.03,
-                 immediate_margin: float = 100.0):
+                 immediate_margin: float = 100.0,
+                 infeasible_grace_s: float = 0.1):
         self.margin = switch_margin
         self.immediate = immediate_margin
         self.geom_margin = geom_margin
         self.dwell = dwell_s
         self.eps = max(epsilon, 1e-9)
+        # 现任短暂不可行不立刻让位：供数来源逐拍切换时可行集闪一下，
+        # 立即换会把计划输出打成每拍一个状态。宽限期内保持上一候选。
+        self.infeasible_grace = infeasible_grace_s
         self._idx: int | None = None
         self._key: tuple | None = None
         self._streak = 0.0
+        self._last: _Cand | None = None
+        self._miss_s = 0.0
 
     def _q(self, key: tuple) -> tuple:
         return tuple(round(v / self.eps) * self.eps
@@ -346,6 +352,7 @@ class PlanGate:
 
     def restore(self, idx: int | None, streak: float) -> None:
         self._idx, self._streak, self._key = idx, float(streak), None
+        self._last, self._miss_s = None, 0.0
 
     def choose(self, cands: list[_Cand], dt: float) -> _Cand:
         """价值差超过 margin 并保持 dwell 才换现任；现任不可行立即让位。"""
@@ -353,13 +360,24 @@ class PlanGate:
         inc = next((c for c in cands if c.idx == self._idx and c.feasible),
                    None)
         if inc is None:
+            # 现任缺位/不可行：先看是不是单拍闪断。宽限期内保持上一候选，
+            # 只有连续超过 infeasible_grace 或价值差达到立即门槛才让位。
+            if self._last is not None:
+                self._miss_s += dt
+                immediate = (self._key is not None
+                             and best.key[1] < self._key[1] - self.immediate)
+                if not immediate and self._miss_s < self.infeasible_grace:
+                    return self._last
             self._idx, self._key, self._streak = best.idx, self._q(best.key), 0.0
+            self._last, self._miss_s = best, 0.0
             return best
+        self._miss_s = 0.0
         kb, ki = self._q(best.key), self._q(inc.key)
         # 大价值差（避开一次碰撞/抓住高值窗口）不等 dwell——检测常有一拍
         # 闪烁，等 0.2s 会错过避撞窗口。
         if kb[1] < ki[1] - self.immediate:
             self._idx, self._key, self._streak = best.idx, kb, 0.0
+            self._last = best
             return best
         better = False
         if kb[1] < ki[1] - self.margin:
@@ -373,10 +391,12 @@ class PlanGate:
             self._streak += dt
             if self._streak >= self.dwell:
                 self._idx, self._key, self._streak = best.idx, kb, 0.0
+                self._last = best
                 return best
         else:
             self._streak = 0.0
         self._key = ki
+        self._last = inc
         return inc
 
 

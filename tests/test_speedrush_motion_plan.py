@@ -544,6 +544,25 @@ def test_gate_requires_value_margin_and_dwell():
     assert g3.choose([good, bad], 0.05).idx == 9
 
 
+def test_gate_holds_incumbent_through_brief_infeasible_flicker():
+    """现任短暂不可行不立刻让位；连续超过宽限才换。"""
+    g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                 geom_margin=0.03, infeasible_grace_s=0.1)
+    inc, other = _c(3, 100.0), _c(4, 110.0)
+    assert g.choose([inc], 0.05).idx == 3
+    assert g.choose([other], 0.05).idx == 3      # 第一拍闪断：保持
+    assert g.choose([other], 0.05).idx == 4      # 0.1s 宽限到期：让位
+
+
+def test_gate_immediate_margin_overrides_infeasible_grace():
+    """避撞级价值差不等宽限。"""
+    g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                 geom_margin=0.03, immediate_margin=10.0,
+                 infeasible_grace_s=0.2)
+    assert g.choose([_c(3, 100.0)], 0.05).idx == 3
+    assert g.choose([_c(4, 200.0)], 0.05).idx == 4
+
+
 def test_planner_tracks_valid_plan_only():
     from maaracing_master.plugins.speedrush.planner import LateralPlanner
     from maaracing_master.plugins.speedrush.tracking import (
@@ -573,6 +592,25 @@ def test_planner_tracks_valid_plan_only():
     pl3.update(out2, 0.05, 1)
     pl4.update(out2, 0.05, 1, plan=replace(p, valid=False))
     assert pl4.last_steer_raw == pytest.approx(pl3.last_steer_raw)
+
+
+def test_plan_feedforward_slew_limits_candidate_step():
+    """计划换候选前馈阶跃：单拍杆值变化不许超过配置上限。"""
+    from maaracing_master.plugins.speedrush.planner import LateralPlanner
+    from maaracing_master.plugins.speedrush.tracking import (
+        DecisionOutput, DecisionState)
+    s = _scene(road=_wide_road(), ego_m=0.0)
+    p = _plan(s)
+    out = DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
+                         x_target=0.0, reason="x", emitted_fid=1,
+                         valid_until_fid=10)
+    pl = LateralPlanner(CFG.planner)
+    pl.update(out, 0.05, 1, plan=p)
+    u1 = pl.last_steer_raw
+    jumped = replace(p, u_feedforward=p.u_feedforward + 0.8)
+    pl.update(out, 0.05, 2, plan=jumped)
+    cap = CFG.planner.plan_u_slew_s * 0.05
+    assert abs(pl.last_steer_raw - u1) <= cap + 1e-6
 
 
 def test_plan_never_overrides_fsm_states():

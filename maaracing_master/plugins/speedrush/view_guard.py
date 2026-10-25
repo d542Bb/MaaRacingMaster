@@ -19,7 +19,8 @@ class ViewGuardConfig:
     settle_s: float = 0.25
     max_views: int = 3
     min_samples: int = 3
-    deadline_s: float = 2.9
+    deadline_s: float = 10.0     # 从首个有效样本起算：覆盖 3 个视角的切换+采样
+    arm_timeout_s: float = 8.0   # 首个有效样本的最长等待（加载/冷启动不计入视角预算）
 
     def __post_init__(self) -> None:
         if not 0.0 < self.cam_h_lo_m < self.cam_h_hi_m:
@@ -34,6 +35,8 @@ class ViewGuardConfig:
         if self.deadline_s <= self.sample_s:
             raise ValueError(f"view_guard 截止 {self.deadline_s}s 必须大于"
                              f"采样窗 {self.sample_s}s")
+        if self.arm_timeout_s <= 0:
+            raise ValueError(f"view_guard 首个样本等待非法：{self.arm_timeout_s}")
 
 
 class ViewGuard:
@@ -56,13 +59,19 @@ class ViewGuard:
         self.samples: list[float] = []
         self.views = 1                 # 当前是第几个视角（1 起）
         self.median: float | None = None
+        self.first_sample_at: float | None = None
 
     def update(self, now: float, cam_h: float | None,
                new: bool) -> str:
         """喂一拍；``new``=本拍是否有新的深度结果（复用拍不重复计样本）。"""
         if self.state in (self.OK, self.FAIL):
             return self.state
-        if now - self.t0 > self.cfg.deadline_s:
+        # 截止从首个有效样本起算：游戏加载/深度冷启动不占视角预算
+        if self.first_sample_at is None:
+            if now - self.t0 > self.cfg.arm_timeout_s:
+                self.state = self.FAIL
+                return self.FAIL
+        elif now - self.first_sample_at > self.cfg.deadline_s:
             self.state = self.FAIL
             return self.FAIL
         if self.state == "settle":
@@ -77,6 +86,8 @@ class ViewGuard:
             if self.armed_at is None:
                 self.armed_at = now
             if cam_h is not None and cam_h > 0.0:
+                if self.first_sample_at is None:
+                    self.first_sample_at = now
                 if self.window_start is None:
                     self.window_start = now
                 self.samples.append(float(cam_h))

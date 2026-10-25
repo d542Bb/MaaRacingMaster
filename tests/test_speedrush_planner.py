@@ -409,10 +409,10 @@ def test_road_jump_rejected():
     assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
 
 
-def test_road_persistent_offset_accepted_after_confirm():
-    """持续大新息=真位移：同向同量级连续 obs_jump_confirm_ticks 拍后按普通
-    观测收 α 位置修正，不再等 1s 陈旧重基（期间按错位帧打杆）；单帧坏检测
-    与断续的大新息仍被拒。"""
+def test_road_persistent_offset_rebases_after_confirm():
+    """持续大新息=参考系跳变：同向同量级连续 obs_jump_confirm_ticks 拍后
+    **一步重基**到观测，不再按 α 逐拍追（旧实现在确认后 0.3s 内目标用新帧、
+    位置用旧帧，杆继续往错误方向打）。单帧坏检测与断续大新息仍被拒。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
@@ -428,11 +428,196 @@ def test_road_persistent_offset_accepted_after_confirm():
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=-1.7)
     assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
     pl.update(_out(x_target=0.0, fid=4 + n - 1, valid=4 + n - 1), DT,
-              4 + n - 1, road_offset=-1.7)           # 第 n 拍：确认放行
-    assert pl.state.executed_lane < before - 0.2
-    pl.update(_out(x_target=0.0, fid=5 + n - 1, valid=5 + n - 1), DT,
-              5 + n - 1, road_offset=-1.7)           # 确认后持续收 α
-    assert pl.state.executed_lane < before - 0.3
+              4 + n - 1, road_offset=-1.7)           # 第 n 拍：确认并重基
+    assert pl.state.executed_lane == pytest.approx(-1.7, abs=1e-6)
+
+
+def test_hold_offset_is_not_a_position_observation():
+    """历史保持值（memory/wall_occl/pair_slot）不是本拍测量：不形成参考系、
+    不收 α。保持期模型自走；脏计时照常推进但锚点保留（下一次新鲜大读数
+    直接走陈旧重基，不必再等形成门 1s）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.5, road_offset_hold=True)
+    assert pl._road_anchor is None                   # 保持值不定义参考系
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.0)
+    assert pl._road_anchor == 0.0
+    pl.state.executed_lane = 0.4
+    pl.state.v_lat_est = 0.0
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
+              road_offset=1.6, road_offset_hold=True)
+    assert pl.state.executed_lane == pytest.approx(0.4, abs=1e-9)   # 无 α 拉回
+    n_budget = int(P.anchor_stale_s / DT)
+    for i in range(4, 4 + n_budget):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
+                  road_offset=1.6, road_offset_hold=True)
+    assert pl._road_anchor == 0.0                    # 几何仍在，锚不丢
+    # 保持超预算后的第一拍新鲜大读数：陈旧判据立即重基，不等确认/形成门
+    pl.update(_out(x_target=0.0, fid=4 + n_budget, valid=4 + n_budget), DT,
+              4 + n_budget, road_offset=1.6)
+    assert pl.state.executed_lane == pytest.approx(1.6, abs=1e-6)
+
+
+def test_hold_offset_does_not_reset_stale_clock():
+    """保持拍不得把陈旧计时清零：否则 memory 长保持会让锚永不超时，
+    模型漂走后仍按旧帧打杆。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl._stale_t = P.anchor_stale_s - DT
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=0.0, road_offset_hold=True)
+    assert pl._stale_t >= P.anchor_stale_s
+
+
+# ---------- 保持期车道线融合（2026-10-25） ----------
+
+def test_lane_fusion_tracks_motion_during_hold():
+    """深度保持期用车道线连续横位补运动：车贴墙不动时模型会按打杆量虚走，
+    线不会（p2 496~537：线 −1.9 不动，模型从 −1.0 漂到 −0.24）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=0.0, lane_ok=True)
+    for i in range(10):
+        pl.update(_out(x_target=0.0, fid=2 + i, valid=2 + i), DT, 2 + i,
+                  road_offset=0.0, road_offset_hold=True,
+                  lane_x=-0.1 * (i + 1), lane_ok=True)
+    assert pl.state.executed_lane < -0.4
+    assert pl.state.executed_lane > -1.1       # 平滑+收敛滞后，不外推
+
+
+def test_lane_fusion_rejects_depth_outlier():
+    """深度单侧反推错 0.7 道、线保持原位：深度拍照收 α（供数门已放行），
+    帧偏置不更新；随后保持期按线把位置拉回，不带错值。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=0.0, lane_ok=True)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=0.7, lane_x=0.0, lane_ok=True)     # 错值进 α
+    assert pl.state.executed_lane == pytest.approx(P.obs_alpha * 0.7, abs=1e-6)
+    for i in range(15):
+        pl.update(_out(x_target=0.0, fid=3 + i, valid=3 + i), DT, 3 + i,
+                  road_offset=0.7, road_offset_hold=True,
+                  lane_x=0.0, lane_ok=True)
+    assert abs(pl.state.executed_lane) < 0.05
+
+
+def test_lane_jump_disables_fusion_until_depth_agrees():
+    """线自身跳 1 道 = 换线/重锁：重置并停用融合（不许把旧帧位置拽到新线），
+    等新鲜深度与线一致（重基拍）后再启用。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=0.0, lane_ok=True)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=0.0, road_offset_hold=True,
+              lane_x=1.2, lane_ok=True)                 # 线跳 1.2 道
+    assert pl._lane_trusted is False
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
+              road_offset=0.0, road_offset_hold=True,
+              lane_x=1.2, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-9)
+    for i in range(P.obs_jump_confirm_ticks):           # 深度同样报 1.2：重基
+        pl.update(_out(x_target=0.0, fid=4 + i, valid=4 + i), DT, 4 + i,
+                  road_offset=1.2, lane_x=1.2, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(1.2, abs=1e-6)
+    assert pl._lane_trusted is True
+    pl.update(_out(x_target=0.0, fid=20, valid=20), DT, 20,
+              road_offset=1.2, road_offset_hold=True,
+              lane_x=1.3, lane_ok=True)
+    assert pl.state.executed_lane > 1.201
+
+
+def test_lane_fusion_rebias_on_rejected_fresh_depth():
+    """深度被跳变门拒绝时也要校准线帧（p1 206 的坑）：深度 +1.87 被拒、
+    线 +1.32 差 0.55 道——偏置应更新，随后保持期融合把状态拉回真值。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=0.0, lane_ok=True)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=0.0, road_offset_hold=True,
+              lane_x=1.3, lane_ok=True)              # 线跳 1.3：重置+停用
+    assert pl._lane_trusted is False
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
+              road_offset=1.87, lane_x=1.3, lane_ok=True)   # 深度被跳变门拒
+    assert pl.state.executed_lane < 1.0             # 本拍不重基
+    assert pl._lane_trusted is True                 # 但帧偏置已校准
+    for i in range(12):
+        pl.update(_out(x_target=0.0, fid=4 + i, valid=4 + i), DT, 4 + i,
+                  road_offset=1.87, road_offset_hold=True,
+                  lane_x=1.3, lane_ok=True)
+    assert pl.state.executed_lane > 1.5
+
+
+def test_lane_relock_resets_smoothing():
+    """重锁后的第一条锁线可能换了线/换了帧：平滑值直接重置为线值并停用
+    融合（0.6 道的换线在 0.8 跳变门内，不能靠跳变阈值发现）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=0.0, lane_ok=True)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=0.0, road_offset_hold=True,
+              lane_x=1.3, lane_ok=False, lane_relock=True)
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
+              road_offset=0.0, road_offset_hold=True,
+              lane_x=0.6, lane_ok=True)
+    assert pl._lane_sm == pytest.approx(0.6, abs=1e-9)
+    assert pl._lane_trusted is False
+    for i in range(5):                              # 未对账：不融合
+        pl.update(_out(x_target=0.0, fid=4 + i, valid=4 + i), DT, 4 + i,
+                  road_offset=0.0, road_offset_hold=True,
+                  lane_x=0.6, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-9)
+
+
+def test_corroborated_edge_frame_forms_anchor():
+    """|ro|>形成门 但深度与锁线一致：允许建锚并对齐位置（断供丢锚后的
+    贴边段原本会一直等形成门/饥饿重基，状态自由漂 2s+）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=1.87, lane_x=1.3, lane_ok=True)
+    assert pl._road_anchor == 0.0
+    assert pl.state.executed_lane == pytest.approx(1.87, abs=1e-6)
+    assert pl._lane_trusted is True
+
+
+def test_edge_frame_needs_lane_agreement():
+    """贴边拍没有锁线佐证时仍守形成门（防垃圾墙定义参考系）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=1.87, lane_x=0.3, lane_ok=True)   # 线差 1.57 道
+    assert pl._road_anchor is None
+    assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-9)
+
+
+def test_lane_fusion_off_without_lock():
+    """无锁线（COAST）不融合：退回模型，保持值不得把位置拽到线读数。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=0.0, lane_ok=True)
+    for i in range(10):
+        pl.update(_out(x_target=0.0, fid=2 + i, valid=2 + i), DT, 2 + i,
+                  road_offset=0.0, road_offset_hold=True,
+                  lane_x=1.0, lane_ok=False)
+    assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-9)
 
 
 def test_starved_frame_rebases_to_road():

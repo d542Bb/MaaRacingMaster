@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
-"""speedrush 实机调试图（treasure 规范接入）：raw + hud 双图，3fps 节流。
+"""speedrush 实机调试图（treasure 规范接入）：raw + hud 双图，10fps 节流。
 
 **职责与边界**：控制拍每 tick 喂一次快照（只入队引用，不复制不渲染）；IO 线程
-按 3fps 节流渲染+落盘。渲染/写盘失败静默计数——调试图绝不干扰控制链（与
+按 10fps 节流渲染+落盘。渲染/写盘失败静默计数——调试图绝不干扰控制链（与
 depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本图互补、互不替代）。
 
 **目录契约**（沿 treasure：`debug/<模块>/<会话>/` + `raw/` 子目录）：
   `<seq:04d>_raw.jpg`   原始帧全幅（q95，人工金标标注/离线重渲染的底图）
   `<seq:04d>_hud.jpg`   双联渲染图（q85）：
-    左联 = 画面叠加：YOLO 框（coin 黄 / car 红 / bonus 品红）+ 决策/供数读数带
+    左联 = 画面叠加：YOLO 框（coin 黄 / car 红 / bonus 品红）+ 车道线观测叠加
+           （黄/白线按拟合参数回投到画面，标注颜色/侧别/道号）+ 决策/供数读数带
            + HUD 比分读数（HudObserver 最新行，score/rate × a/b 槽位）
+           + **底部输入带**：当帧实际手柄左摇杆杆量（人工局读物理手柄；自动局
+           显示程序下发值）+ 程序反事实杆量标记 + 右扳机油门值 + 线观测状态摘要。
+           人工对照局用它直接核对「车是被人打歪的还是被程序带歪的」。
     右联 = BEV 雷达：可行驶栅格三态 + 挖洞格 + 当帧墙检出折线（edge_pts 两侧，
            供数窗内「两边墙」可见）+ 路心/左右缘叠层（C=滤波 ro、c0=当帧原始
            (L+R)/2，两者分离=时间链效应；cg=同拍栅格 wmid 路心，与 c0 分离=
@@ -37,6 +41,7 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
 
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -53,18 +58,21 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     GRID_NX, GRID_NZ, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI,
     GRID_Z_LO, NEAR_Z, REGION_WIDTH_Z_HI, REGION_Z_HI, ROAD_Z_HI,
     X_MAX_M)
+from maaracing_master.plugins.speedrush.lane_obs import (
+    DEFAULT_CAM_H, FOCAL, LANE_W, VPX, Y_H)
 from maaracing_master.plugins.speedrush.world_model import (
     Calib, load_calib)
 
 # 渲染用车半宽（米）：只影响图上的车身圆点大小，不参与行为判定
 _CAR_HALF_M = 0.9
 
-# 20Hz 取证（2026-10-22）：控制拍 ≈20Hz，调试对逐拍落盘，便于和 trace 同拍对齐。
-# 磁盘代价 ≈ 20 对/秒 × (raw ~0.2MB + hud ~0.3MB) ≈ 10MB/s；IO 线程跟不上时
+# 10Hz 取证（2026-10-24 从逐拍下调）：控制拍 ≈20Hz，调试图按 0.1s 节流，
+# 与 trace 的 20Hz 同钟但不同密度——人工对照局看得清又不淹没磁盘。
+# 磁盘代价 ≈ 10 对/秒 × (raw ~0.2MB + hud ~0.3MB) ≈ 5MB/s；IO 线程跟不上时
 # 由有界队列丢旧保新，主循环只做 put_nowait，绝不阻塞。
-DEBUG_FPS = 20
-DEBUG_INTERVAL_S = 0.0            # 0=逐拍（控制环自身节流）；保留参数供降档
-_QUEUE_MAX = 20                   # 约 1 秒 @20Hz；满则丢旧快照，保最新
+DEBUG_FPS = 10
+DEBUG_INTERVAL_S = 1.0 / DEBUG_FPS
+_QUEUE_MAX = 20                   # 约 2 秒 @10Hz；满则丢旧快照，保最新
 
 # 三态着色（BGR）：unknown 灰 / drivable 暗绿 / blocked 红；挖洞格橄榄描重
 _STATE_BGR = {GRID_UNKNOWN: (64, 64, 64),
@@ -136,6 +144,190 @@ def _project_detection(px: int, py: int, coef, fx: float, fy: float,
 def _edge_side_pts(eps, side: int) -> list[tuple[float, float]]:
     """当帧原始墙检出分侧按 z 排序（(z_m, x_m) 相机轴米）——检出折线的数据面。"""
     return sorted(((z, x) for s, z, x in eps if s == side), key=lambda p: p[0])
+
+
+# 车道线叠加配色：黄边界亮黄、白线亮白、无法判色品红（与线观测语义同源）
+_LANE_BGR = {"y": (0, 220, 255), "w": (235, 235, 235), "?": (255, 0, 255)}
+_BAND_BGR = (18, 18, 18)
+
+
+def _lane_line_x(line: dict, cam_h: float, y: float) -> float:
+    """按线观测的拟合参数回投全幅像素横坐标。
+
+    线方程（lane_obs 同源）：``x_px = a + s*y``，其中 ``s=L*LANE_W/cam_h``，
+    截距由 theta 反解 ``a = VPX - s*Y_H - tan(theta)*FOCAL``。参数齐备，
+    不需要重新推理——图上画的就是观测器实际拟合的那根线。
+    """
+    L = float(line.get("L") or 0.0)
+    th = float(line.get("theta") or 0.0)
+    s = L * LANE_W / cam_h
+    a = VPX - s * Y_H - math.tan(th) * FOCAL
+    return a + s * y
+
+
+def _draw_lane_overlay(img: np.ndarray, snap: dict) -> None:
+    """左联：把线观测的拟合线回投到游戏画面（黄/白/未知按颜色着色）。
+
+    只画观测器实际锁到的线（``lines`` 来自最近一次检测，含证据龄），
+    预测帧沿用同一组线并保留标注。坐标按 1280×720 设计域缩放，帧尺寸
+    变化不跑位；线与 YOLO 框同图，空间对应关系可直接目检。
+    """
+    lane = snap.get("lane")
+    if not lane:
+        return
+    lines = lane.get("lines") or []
+    if not lines:
+        return
+    H, W = img.shape[:2]
+    sx, sy = W / 1280.0, H / 720.0
+    cam_h = lane.get("cam_h")
+    if not (isinstance(cam_h, (int, float)) and 0.5 <= float(cam_h) <= 3.0):
+        cam_h = DEFAULT_CAM_H
+    cam_h = float(cam_h)
+    # 检测帧与当前控制帧的差：按线的跨帧速度把 L 外推到当前帧再画，
+    # 消掉「图上线比车慢一拍」的肉眼延迟（身份/k 仍用检测帧的值）。
+    det_fid = lane.get("det_fid")
+    cur_fid = snap.get("fid")
+    gap = 0
+    if isinstance(det_fid, int) and isinstance(cur_fid, int):
+        gap = max(0, min(6, cur_fid - det_fid))
+    for ln in lines:
+        if ln.get("L") is None:
+            continue
+        try:
+            y0 = float(ln.get("y0"))
+            y1 = float(ln.get("y1"))
+        except (TypeError, ValueError):
+            continue
+        if y1 <= y0:
+            continue
+        y0 = max(0.0, min(720.0, y0))
+        y1 = max(0.0, min(720.0, y1))
+        if y1 <= y0:
+            continue
+        use = dict(ln)
+        if gap:
+            use["L"] = float(ln["L"]) + float(ln.get("v") or 0.0) * gap
+        xa = _lane_line_x(use, cam_h, y0) * sx
+        xb = _lane_line_x(use, cam_h, y1) * sx
+        acc = bool(ln.get("accepted", True))
+        col = _LANE_BGR.get(ln.get("color"), _LANE_BGR["?"])
+        if not acc:
+            col = (120, 120, 120)      # 被残差/等间距门淘汰：灰线保留可审计
+        # 黄边界是绝对路心锚，画粗一档；白线只作补充
+        thick = 2 if (acc and ln.get("color") == "y") else 1
+        cv2.line(img, (int(xa), int(y0 * sy)), (int(xb), int(y1 * sy)),
+                 col, thick)
+        cv2.circle(img, (int(xb), int(y1 * sy)), 2, col, -1)
+        k = ln.get("k")
+        resid = ln.get("resid")
+        label = f"k{k:+d}" if k is not None else "k-"
+        if isinstance(resid, (int, float)):
+            label += f" r{resid:+.2f}"
+        if not acc and ln.get("reject"):
+            label += f" {ln['reject']}"
+        lx = int(min(max(xb + 3, 2), W - 2))
+        ly = int(min(max(y1 * sy + 12, 12), H - 68))   # 避开底部输入带
+        _put_text(img, label, (lx, ly), scale=0.36, color=col)
+
+
+def _draw_input_band(img: np.ndarray, snap: dict) -> None:
+    """左联底部输入带：实际杆量 + 程序反事实 + 油门窗值 + 线观测摘要。
+
+    人工对照局读物理手柄（gpad=None 时快照带 ``pad``），自动局则显示程序
+    下发值；两者同时在场时程序值只画细标记，避免和「人实际打了多少」混淆。
+    """
+    H, W = img.shape[:2]
+    band_h = 64
+    y0 = H - band_h
+    overlay = img.copy()
+    cv2.rectangle(overlay, (0, y0), (W, H), _BAND_BGR, -1)
+    cv2.addWeighted(overlay, 0.62, img, 0.38, 0, img)
+    cv2.line(img, (0, y0), (W, y0), (80, 80, 80), 1)
+
+    dec = snap.get("decision") or {}
+    pad = snap.get("pad") or {}
+    cmd = dec.get("steer")
+    pad_x = pad.get("lx")
+    rt = pad.get("rt")
+    has_pad = isinstance(pad_x, (int, float)) and not isinstance(pad_x, bool)
+    primary = pad_x if has_pad else cmd
+    label = "pad" if has_pad else "cmd"
+
+    xa, xb = 66, max(240, W - 340)
+    cx = (xa + xb) // 2
+    half = max(40, (xb - xa) // 2)
+    ybar = y0 + 20
+    cv2.rectangle(img, (xa - 2, ybar - 7), (xb + 2, ybar + 7),
+                  (48, 48, 48), -1)
+    cv2.line(img, (cx, ybar - 10), (cx, ybar + 10), (190, 190, 190), 1)
+    for s in (-1, 1):
+        for frac in (0.45, 1.0):
+            x = int(cx + s * frac * half)
+            for xx in range(min(x, cx), max(x, cx), 8):
+                cv2.line(img, (xx, ybar - 3), (min(xx + 4, x), ybar - 3),
+                         (105, 105, 105), 1)
+    _put_text(img, label, (6, ybar + 4), scale=0.4, color=(220, 220, 220))
+    if isinstance(primary, (int, float)) and not isinstance(primary, bool):
+        frac = max(-1.0, min(1.0, float(primary) / 32767.0))
+        xv = int(cx + frac * half)
+        col = (0, 200, 0) if frac >= 0 else (0, 120, 255)
+        cv2.rectangle(img, (min(cx, xv), ybar - 6), (max(cx, xv), ybar + 6),
+                      col, -1)
+        txt = f"{frac * 100:+.0f}% {'R' if frac >= 0 else 'L'}"
+        _put_text(img, txt, (xb + 10, ybar + 4), scale=0.38, color=col)
+    else:
+        _put_text(img, "n/a", (xb + 10, ybar + 4), scale=0.38,
+                  color=(160, 160, 160))
+    extra_x = xb + 116
+    if has_pad and isinstance(cmd, (int, float)) and not isinstance(cmd, bool):
+        cfrac = max(-1.0, min(1.0, float(cmd) / 32767.0))
+        xv = int(cx + cfrac * half)
+        cv2.drawMarker(img, (xv, ybar), (255, 255, 255),
+                       cv2.MARKER_TRIANGLE_DOWN, 8, 1)
+        _put_text(img, f"prog {cfrac * 100:+.0f}%",
+                  (extra_x, ybar + 4), scale=0.36, color=(200, 200, 200))
+        extra_x += 126
+    if isinstance(rt, (int, float)) and not isinstance(rt, bool):
+        _put_text(img, f"RT {int(rt)}", (extra_x, ybar + 4),
+                  scale=0.36, color=(180, 180, 180))
+
+    lane = snap.get("lane")
+    ly = y0 + 50
+    if not lane:
+        _put_text(img, "lane: none", (6, ly), scale=0.38,
+                  color=(0, 200, 255))
+        return
+    state = lane.get("state", "-")
+    age = lane.get("det_age_ms")
+    lines = lane.get("lines") or []
+    parts = [f"lane {state}"]
+    anchor_src = lane.get("anchor_src")
+    if anchor_src:
+        parts.append(f"anchor={anchor_src}")
+    x = lane.get("x")
+    th = lane.get("theta")
+    if isinstance(x, (int, float)):
+        parts.append(f"x={x:+.2f}")
+    if isinstance(th, (int, float)):
+        parts.append(f"th={th:+.2f}")
+    if isinstance(age, (int, float)):
+        parts.append(f"det={age:.0f}ms")
+    kept = lane.get("n_locked")
+    parts.append(f"lines={len(lines)} kept={0 if kept is None else kept}")
+    resids = [ln.get("resid") for ln in lines
+              if ln.get("accepted") and isinstance(ln.get("resid"),
+                                                   (int, float))]
+    if resids:
+        parts.append(f"r={float(np.median(resids)):+.2f}")
+    if lane.get("pred"):
+        parts.append("pred")
+    stale = (state != "TRACK"
+             or (isinstance(age, (int, float)) and age > 250))
+    if stale:
+        parts.append("STALE")
+    _put_text(img, " ".join(parts), (6, ly), scale=0.38,
+              color=(0, 170, 255) if stale else (220, 220, 220))
 
 
 def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
@@ -514,6 +706,9 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
                 _put_text(img_bgr, f"{d.conf:.2f}", (x1, max(12, y1 - 4)),
                           scale=0.4, color=color)
 
+    # ---- 左联：车道线观测叠加（最近一次检测的拟合线；预测帧沿用并标 STALE）----
+    _draw_lane_overlay(img_bgr, snap)
+
     # ---- 左联：读数带（决策/供数/HUD 比分）----
     dec = snap.get("decision") or {}
     hud = snap.get("hud") or {}
@@ -537,6 +732,9 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
                      f" ph={c.plane_health} bands={len(c.bands)}")
     for i, text in enumerate(lines):
         _put_text(img_bgr, text, (8, 18 + i * 18), scale=0.45)
+
+    # ---- 左联底部：实际杆量/程序反事实/线观测摘要（覆盖在画面最下方）----
+    _draw_input_band(img_bgr, snap)
 
     # ---- 合成：左联底图 + 右联 BEV ----
     canvas = np.zeros((H, W + _PANEL_W, 3), np.uint8)

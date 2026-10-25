@@ -55,6 +55,11 @@ GREEN_OBS_ROWS_MIN = 3
 # 远场带下界（相机系）：逐箱找边的 16~30m 远箱从这里起进走廊供方向（金标
 # 契约：远箱不进近场车道约束）。NEAR_Z=16 的带 15-18 从此界起算。
 FAR_Z_CAM = 15.0
+# 宏观锚取带范围与最小地面点数：16–46m 是地面密度读数最稳的段；更远带
+# 受弯道/建筑污染，近于 15m 的带受自车/前车遮挡。逐带取中点后做中值。
+FAR_MACRO_Z_LO = 15.0
+FAR_MACRO_Z_HI = 46.0
+FAR_MACRO_MIN_PTS = 3
 # 远场带内无检出时，向已测远箱借界的最大纵深（米；借界=inferred 方向级，
 # 影子对比定案的覆盖来源）
 FAR_CARRY_M = 6.0
@@ -223,6 +228,30 @@ def _band_center_at(bands, z: float) -> float | None:
             w = 0.0 if z1 <= z0 else (z - z0) / (z1 - z0)
             return c0 + (c1 - c0) * w
     return pts[-1][1]
+
+
+def far_center_lane(coarse_bands, lane_w_m: float | None) -> float | None:
+    """中远场地面横向范围的中点 → 自车相对路心的横位（道，右正）。
+
+    与 ``road_offset`` 同系；取 15–46m 内双侧都有读数、点数够的粗带，
+    逐带算中点后取中值。远场读数有系统偏差且受弯道影响，消费端必须做
+    慢锚/偏差校准，不能当逐拍绝对测量。"""
+    if not coarse_bands or not lane_w_m or lane_w_m <= 0:
+        return None
+    vals = []
+    for b in coarse_bands:
+        if not (FAR_MACRO_Z_LO <= b.z0 <= FAR_MACRO_Z_HI):
+            continue
+        if b.left is None or b.right is None:
+            continue
+        if b.left.x_m is None or b.right.x_m is None:
+            continue
+        if b.n_pts < FAR_MACRO_MIN_PTS:
+            continue
+        vals.append(-0.5 * (b.left.x_m + b.right.x_m) / lane_w_m)
+    if not vals:
+        return None
+    return float(np.median(vals))
 
 
 def far_hint_lane(bands, coarse_bands, lane_w_m: float | None) -> float | None:

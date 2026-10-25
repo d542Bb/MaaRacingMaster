@@ -60,9 +60,17 @@ def test_three_bad_views_fail():
     assert g.update(t + 0.75, 1.90, True) == ViewGuard.FAIL
 
 
-def test_deadline_fails_without_samples():
+def test_arm_timeout_fails_without_samples():
     g = ViewGuard(CFG, t0=0.0)
-    assert g.update(2.95, None, False) == ViewGuard.FAIL
+    assert g.update(7.90, None, False) == ViewGuard.WAIT
+    assert g.update(8.10, None, False) == ViewGuard.FAIL
+
+
+def test_deadline_runs_from_first_sample():
+    g = ViewGuard(CFG, t0=0.0)
+    assert g.update(3.00, 1.90, True) == ViewGuard.WAIT
+    assert g.update(5.85, 1.90, True) == ViewGuard.SWITCH
+    assert g.update(6.10, None, False) == ViewGuard.FAIL
 
 
 def test_three_samples_required_by_production_config():
@@ -74,7 +82,7 @@ def test_three_samples_required_by_production_config():
     assert g.update(0.10, 1.33, True) == ViewGuard.WAIT
     assert g.update(0.50, 1.35, True) == ViewGuard.WAIT
     assert g.update(0.80, None, False) == ViewGuard.WAIT   # 2 个样本：宽限
-    assert g.update(0.90, 1.34, True) == ViewGuard.OK      # 第 3 个样本到位
+    assert g.update(1.05, 1.34, True) == ViewGuard.OK      # 第 3 个样本到位
 
 
 def test_press_view_button_always_releases(monkeypatch):

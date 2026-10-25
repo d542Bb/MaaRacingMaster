@@ -79,6 +79,7 @@
     "obs_beta": 0.5,
     "obs_jump_max_lane": 0.8,
     "obs_jump_confirm_ticks": 3,
+    "plan_u_slew_s": 4.0,
     "anchor_max_off": 1.0,
     "anchor_stale_s": 1.0,
     "hold_deadband_lane": 0.5,
@@ -89,7 +90,7 @@
     "obs_beta_sign_agree": true,
     "obs_beta_dv_rate_lane_s2": 3.0,
     "obs_position_only": true,
-    "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验。obs_beta 0.2→0.5（2026-10-08）：⑥b 时间基修正（分母改新证据累计间隔，台账 §4A 判据冻结）后按抖动-响应网格重标（66 trace 5.3 万拍离线回放 probe_beta_timebase）——旧 0.2 是错配时间基的产物，新基下 0.5 全面不劣（跳变 P95 −41%、跟随 lag 最快、bias −33%）；obs_jump_confirm_ticks=3（2026-10-23）：同向、量级相近的大新息连续 3 拍判真位移并按普通观测收 α 修正，单帧坏检测与断续大新息仍拒，避免等 anchor_stale_s 重基的 1s 错位盲区",
+    "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验。obs_beta 0.2→0.5（2026-10-08）：⑥b 时间基修正（分母改新证据累计间隔，台账 §4A 判据冻结）后按抖动-响应网格重标（66 trace 5.3 万拍离线回放 probe_beta_timebase）——旧 0.2 是错配时间基的产物，新基下 0.5 全面不劣（跳变 P95 −41%、跟随 lag 最快、bias −33%）；obs_jump_confirm_ticks=3（2026-10-23）：同向、量级相近的大新息连续 3 拍判参考系跳变并一步重基（exec:=obs，速度保留），单帧坏检测与断续大新息仍拒，避免等 anchor_stale_s 重基的 1s 错位盲区；road_offset_hold（memory/wall_occl/pair_slot）不是本拍测量，退回纯模型积分，不让过期的自车系读数每拍把模型拽回旧位置。plan_u_slew_s=4（2026-10-24）：计划前馈换候选时单拍杆值变化限速，防止候选切换直接变成方向盘阶跃；首帧/计划重入不限。",
     "obs_beta_note": "时间基=自上次速度修正的累计帧钟（新证据间隔），非控制拍 dt；标定证据 tools/experiments/speedrush_vision/probe_beta_timebase.py"
   },
   "motion": {
@@ -135,9 +136,10 @@
     "switch_immediate_margin": 100.0,
     "switch_geom_margin": 0.03,
     "switch_dwell_s": 0.2,
+    "switch_infeasible_grace_s": 0.1,
     "score_epsilon": 0.001,
     "calibrated": true,
-    "_note": "mode=off 只组装场景快照；shadow=计划照算不接管；live 需 calibrated=true。sigma_ego 来自 fit_plant（4 段 trace，σ0=0.67m、rate=0.74m/s，多步残差同批起点）；sigma_ego_max=2.5m 是离线对照结果——收到 1.2m 会把时域截到 0.7s、金币/奖励层几乎清零。σ 只用于缩短时域；碰撞硬约束与命中/擦车判据只用物理包络 + 对象 σ。评估器已从四层字典序改为价值相加（RULES §4.2/§4.11）：擦车 120/辆走量、金币按组 90（空中组观测≥4 枚按 120）、奖励车 240/次（偶发，不再无条件优先）、普通车碰撞按 60 + 重叠深度 120/m 扣分——碰撞可接受但不鼓励频繁/无意义碰撞；只有走廊/墙仍是硬约束。collision_min_lead_s 内的车不计碰撞成本（横向已来不及）。参考系分歧时走廊加宽上限 uncertain_widen_max_m。"
+    "_note": "mode=off 只组装场景快照；shadow=计划照算不接管；live 需 calibrated=true。sigma_ego 来自 fit_plant（4 段 trace，σ0=0.67m、rate=0.74m/s，多步残差同批起点）；sigma_ego_max=2.5m 是离线对照结果——收到 1.2m 会把时域截到 0.7s、金币/奖励层几乎清零。σ 只用于缩短时域；碰撞硬约束与命中/擦车判据只用物理包络 + 对象 σ。评估器已从四层字典序改为价值相加（RULES §4.2/§4.11）：擦车 120/辆走量、金币按组 90（空中组观测≥4 枚按 120）、奖励车 240/次（偶发，不再无条件优先）、普通车碰撞按 60 + 重叠深度 120/m 扣分——碰撞可接受但不鼓励频繁/无意义碰撞；只有走廊/墙仍是硬约束。collision_min_lead_s 内的车不计碰撞成本（横向已来不及）。参考系分歧时走廊加宽上限 uncertain_widen_max_m。switch_infeasible_grace_s=0.1（2026-10-24）：现任候选短暂不可行先保持上一候选，连续超过 0.1s 或价值差达立即门槛才让位，防供数来源逐拍切换时计划输出每拍一个状态。"
   },
   "traffic": {
     "exit_margin_px": 80.0,
@@ -210,6 +212,32 @@
     "align_tol_lane": 0.4,
     "_note": "粗层选道（2026-10-19）：绿区窄/被车占时决定往哪边，不让「没有单个目标过门」退化成原地回中。绿区给每条候选道的连续净空（墙余量取 selection.wall_margin_lane），2D/米制车按横位占用（包络=双方半宽+collision_margin_m）截断；无纵深但有到站时间的车按 range_speed_mps 折算粗纵深，无纵深无时间的仅把净空截到窗末并标 unknown。switch_margin_m 是换道迟滞（现任净空不差于最优这么多就保持）；align_tol_lane 内视为方向已对齐。control=true 时只接管 L4 回中兜底（奖励车/擦边/金币层仍由细层决定），走廊陈旧时退回纯回中。只输出方向/目标道，不替代细层落点与得分。route.control=true 时本层退为**候选评估器**：逐道净空/占用读数喂路线定案，接控制的道号改由路线参考道给出（本层自选道继续逐帧计算，只作影子对照，不再进控制链）。"
   },
+  "lane_obs": {
+    "enabled": true,
+    "weights": "speedrush/models/plus_small_384x640.onnx",
+    "provider": "cpu",
+    "hz": 0.0,
+    "threads": 4,
+    "detect_every": 1,
+    "_note": "S1 影子：TwinLiteNet+ Small 线观测，只写 trace lane_obs 列，不接控制。weights 用相对 data/ 的路径（如 speedrush/models/plus_small_384x640.onnx），权重不入库。provider=cpu 走独立线程、不抢 dml_lock（2026-10-24 实机：dml 与深度同锁会相位锁，深度连续丢 95% 帧）；threads=4 实测约 23ms/帧，仍在 50ms 控制拍内。若改 dml，必须确认不与深度抢锁。hz=0 表示每拍推、队列深度 1 丢旧帧；detect_every=1 逐拍检测。道号由同帧新鲜深度路心锚定（k=round(anchor+L)），颜色不参与身份。"
+  },
+  "lateral_frame": {
+    "enabled": true,
+    "jump_tol_lane": 0.5,
+    "confirm_n": 2,
+    "fresh_alpha": 0.3,
+    "hold_alpha": 0.08,
+    "max_corr_lane_s": 2.0,
+    "macro_enabled": true,
+    "theta_enabled": true,
+    "theta_alpha": 0.15,
+    "theta_max_rate_rad_s": 0.8,
+    "theta_ttl_s": 1.0,
+    "theta_curve_tau_s": 2.0,
+    "theta_gain": 0.03,
+    "speed_proxy_mps": 45.0,
+    "_note": "S1 参考系影子：模型预测 + 新鲜观测一次性限速校正，只写 trace lateral_frame 列，不接控制。memory/wall_occl/pair_slot 只作慢锚（按 hold_alpha 限速靠拢，绝不阶跃），不冒充新测量；只有新鲜 wall/region/pair 证据可做一次性校正。单拍超 jump_tol_lane 按参考系跳变处理，连续 confirm_n 次同向一致才建立重锚目标，并按 max_corr_lane_s 靠拢。theta_* 是航向慢状态：车道线角按 theta_alpha 限速更新，减掉 theta_curve_tau_s 慢基线（去掉弯道拟合的常值偏角），按 speed_proxy_mps 换算横向速度（米制代理，非新真源），以 theta_gain 缓慢修正模型横速；theta_ttl_s 内没有新线角就停止修正。hold_alpha/max_corr_lane_s/theta_* 是影子初值，等实车 gold 对账再定档。"
+  },
   "route": {
     "control": true,
     "urgent_confirm_ticks": 3,
@@ -237,12 +265,13 @@
   "view_guard": {
     "enabled": true,
     "cam_h_lo_m": 1.25,
-    "cam_h_hi_m": 1.70,
-    "sample_s": 0.7,
-    "settle_s": 0.25,
+    "cam_h_hi_m": 1.7,
+    "sample_s": 0.9,
+    "settle_s": 0.8,
     "max_views": 3,
     "min_samples": 3,
-    "deadline_s": 2.9,
-    "_note": "开局视角守卫：只在本进程尚未确认过视角时，用起步倒计时前 0.7s 的道路平面相机高度中位判断是否保险杠机位（六局实测中位 1.39~1.44m；旧追车视角约 1.8~2.2m）。不在带内或整个窗口无有效平面 → 按一次 RB 切视角、等 0.25s 重采，最多 3 个视角；倒计时内仍未确认则中止本阶段，不盲开。确认成功记在实例上，p2 与后续回合不再检查。"
+    "deadline_s": 10.0,
+    "arm_timeout_s": 8.0,
+    "_note": "开局视角守卫：只在本进程尚未确认过视角时，用道路平面相机高度中位判断是否保险杠机位（六局实测中位 1.39~1.44m；旧追车视角约 1.8~2.2m）。计时从首个有效平面样本起算（加载/冷启动最多等 arm_timeout_s，不占视角预算）：不在带内或整个窗口无有效平面 → 按一次 RB 切视角、等 settle_s 重采，最多 3 个视角；deadline_s 内仍未确认则中止本阶段，不盲开。确认成功记在实例上，p2 与后续回合不再检查。"
   }
 }

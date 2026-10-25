@@ -160,11 +160,15 @@ class Planner:
     # 路心观测位置-only（2026-10-18 走廊重建）：true=只做 α 位置修正，不再
     # 注入 β 速度（速度交给双积分模型）；false=旧 α-β 逐位恢复（回滚）
     obs_position_only: bool = True
-    # 持续偏移放行（2026-10-23）：同向、量级相近的大新息连续 N 拍 = 真位移
-    # （车贴边或模型漂移后观测回归），不是单帧坏检测——按普通观测收 α 位置
-    # 修正。旧行为要等 anchor_stale_s（1s）重基，1s 内规划器按错位帧打杆
-    # （实拍 180900_p2：ro=−1.74 持续 1.4s，exec 从 −0.71 漂到 −0.29 才重基）。
+    # 持续偏移放行（2026-10-23）：同向、量级相近的大新息连续 N 拍 = 参考系
+    # 跳变（0.15s 内 2 道级新息不可能是本车位移），不是单帧坏检测——确认后
+    # 一步重基（exec:=obs），不按 α 逐拍追。旧行为要等 anchor_stale_s（1s）
+    # 重基，1s 内规划器按错位帧打杆（实拍 180900_p2：ro=−1.74 持续 1.4s，
+    # exec 从 −0.71 漂到 −0.29 才重基）。
     obs_jump_confirm_ticks: int = 3
+    # 计划前馈的杆值变化率上限（归一杆值/秒）：计划换候选时前馈会阶跃，
+    # 不限制会把候选切换直接变成方向盘每拍打半圈。首帧/计划重入不限制。
+    plan_u_slew_s: float = 4.0
 
 
 @dataclass(frozen=True)
@@ -286,6 +290,9 @@ class Motion:
     switch_immediate_margin: float = 100.0  # 大价值差（避撞/高值）立即切
     switch_geom_margin: float = 0.03  # 同价值时中心/动作改善门槛（道）
     switch_dwell_s: float = 0.2
+    # 现任候选短暂不可行的宽限（秒）：供数来源逐拍切换时可行集闪一下，
+    # 立即让位会把计划输出打成每拍一个状态；宽限期内保持上一候选。
+    switch_infeasible_grace_s: float = 0.1
     score_epsilon: float = 1e-3
     calibrated: bool = False         # 标定通过才允许 live
 
@@ -385,6 +392,52 @@ class Route:
 
 
 @dataclass(frozen=True)
+class LaneObs:
+    """S1 影子：轻量车道线观测（TwinLiteNet+ Small）。
+
+    enabled=闸：false 时不建线程、零开销；true 时在独立 CPU 线程跑，
+    **只写 trace 的 lane_obs 列，不接控制**。weights 指向外部 ONNX
+    （不入库：权重训练自 BDD100K，分发条款需单独核对）；hz 是推送节流上限
+    （0=每拍推；队列深度 1 丢旧帧，真正的处理节拍由 worker 吞吐决定），
+    detect_every 决定处理帧里做完整检测的比例。二者相乘才是检测频率。"""
+
+    enabled: bool = False
+    weights: str = ""
+    hz: float = 0.0
+    provider: str = "cpu"
+    threads: int = 4
+    detect_every: int = 1
+
+
+@dataclass(frozen=True)
+class LateralFrame:
+    """S1 参考系影子（2026-10-24）：模型预测 + 新鲜观测限速校正。
+
+    enabled=闸：false 时零开销；true 时只写 trace 的 lateral_frame 列，
+    **不接控制**。jump_tol_lane=单拍越过此值按参考系跳变处理；confirm_n=
+    连续几次同向一致才建立重锚目标；fresh_alpha=正常新息的单次校正比例；
+    hold_alpha=记忆/遮挡值的慢锚比例（只防模型漂移，不是测量）；
+    max_corr_lane_s=校正/重锚/慢锚靠拢的速率上限（道/秒）；
+    macro_enabled=远场地面宏观锚（只写 trace，不进控制）。"""
+
+    enabled: bool = False
+    jump_tol_lane: float = 0.5
+    confirm_n: int = 2
+    fresh_alpha: float = 0.3
+    hold_alpha: float = 0.08
+    max_corr_lane_s: float = 2.0
+    macro_enabled: bool = True
+    # 航向慢状态：线角→相对航向，按速度代理换算横向速度，缓慢修正模型横速。
+    theta_enabled: bool = True
+    theta_alpha: float = 0.15
+    theta_max_rate_rad_s: float = 0.8
+    theta_ttl_s: float = 1.0
+    theta_curve_tau_s: float = 2.0
+    theta_gain: float = 0.03
+    speed_proxy_mps: float = 45.0
+
+
+@dataclass(frozen=True)
 class DebugDump:
     """调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验）。
 
@@ -436,6 +489,8 @@ class DecisionConfig:
     box_bridge: BoxBridge = BoxBridge()
     view_guard: ViewGuardConfig = ViewGuardConfig()
     debug_dump: DebugDump = DebugDump()
+    lane_obs: LaneObs = LaneObs()
+    lateral_frame: LateralFrame = LateralFrame()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -596,7 +651,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             obs_position_only=_bool(d, "planner", "obs_position_only",
                                     default=True),
             obs_jump_confirm_ticks=_int_def(
-                d, "planner", "obs_jump_confirm_ticks", 3, lo=1)),
+                d, "planner", "obs_jump_confirm_ticks", 3, lo=1),
+            plan_u_slew_s=_num_def(
+                d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
@@ -700,6 +757,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "switch_geom_margin", 0.03, lo=0),
             switch_dwell_s=_num_def(
                 d, "motion", "switch_dwell_s", 0.2, lo=0),
+            switch_infeasible_grace_s=_num_def(
+                d, "motion", "switch_infeasible_grace_s", 0.1, lo=0),
             score_epsilon=_num_def(
                 d, "motion", "score_epsilon", 1e-3, lo=0),
             calibrated=_bool(d, "motion", "calibrated", default=False)),
@@ -801,16 +860,55 @@ def _read_decision(path: Path) -> DecisionConfig:
                                 lo=0, lo_open=False),
             sample_s=_num_def(d, "view_guard", "sample_s", 0.7,
                               lo=0, lo_open=False),
-            settle_s=_num_def(d, "view_guard", "settle_s", 0.25,
+            settle_s=_num_def(d, "view_guard", "settle_s", 0.8,
                               lo=0, lo_open=False),
             max_views=_int_def(d, "view_guard", "max_views", 3, lo=1),
             min_samples=_int_def(d, "view_guard", "min_samples", 3, lo=1),
-            deadline_s=_num_def(d, "view_guard", "deadline_s", 2.9,
-                                lo=0, lo_open=False)),
+            deadline_s=_num_def(d, "view_guard", "deadline_s", 10.0,
+                                lo=0, lo_open=False),
+            arm_timeout_s=_num_def(d, "view_guard", "arm_timeout_s", 8.0,
+                                   lo=0, lo_open=False)),
         debug_dump=DebugDump(
             mode=_dump_mode,
             ring=_int_def(d, "debug_dump", "ring", 10, lo=0),
-            event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)))
+            event_window=_int_def(d, "debug_dump", "event_window", 20, lo=0)),
+        lane_obs=LaneObs(
+            enabled=_bool(d, "lane_obs", "enabled", default=False),
+            weights=str(d.get("lane_obs", {}).get("weights", "") or ""),
+            hz=_num_def(d, "lane_obs", "hz", 0.0, lo=0, lo_open=False),
+            provider=str(d.get("lane_obs", {}).get("provider", "cpu") or "cpu"),
+            threads=_int_def(d, "lane_obs", "threads", 4, lo=1),
+            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1)),
+        lateral_frame=LateralFrame(
+            enabled=_bool(d, "lateral_frame", "enabled", default=False),
+            jump_tol_lane=_num_def(d, "lateral_frame", "jump_tol_lane", 0.5,
+                                   lo=0, hi=2.0, lo_open=False),
+            confirm_n=_int_def(d, "lateral_frame", "confirm_n", 2, lo=1),
+            fresh_alpha=_num_def(d, "lateral_frame", "fresh_alpha", 0.3,
+                                 lo=0, hi=1.0, lo_open=False),
+            hold_alpha=_num_def(d, "lateral_frame", "hold_alpha", 0.08,
+                                lo=0, hi=1.0),
+            max_corr_lane_s=_num_def(d, "lateral_frame", "max_corr_lane_s",
+                                     2.0, lo=0, hi=5.0, lo_open=False),
+            macro_enabled=_bool(d, "lateral_frame", "macro_enabled",
+                                default=True),
+            theta_enabled=_bool(d, "lateral_frame", "theta_enabled",
+                                default=True),
+            theta_alpha=_num_def(d, "lateral_frame", "theta_alpha", 0.15,
+                                 lo=0, hi=1.0, lo_open=False),
+            theta_max_rate_rad_s=_num_def(
+                d, "lateral_frame", "theta_max_rate_rad_s", 0.8,
+                lo=0, hi=5.0, lo_open=False),
+            theta_ttl_s=_num_def(d, "lateral_frame", "theta_ttl_s", 1.0,
+                                 lo=0, hi=5.0, lo_open=False),
+            theta_curve_tau_s=_num_def(
+                d, "lateral_frame", "theta_curve_tau_s", 2.0,
+                lo=0.1, hi=10.0, lo_open=False),
+            theta_gain=_num_def(d, "lateral_frame", "theta_gain", 0.03,
+                                lo=0, hi=0.5, lo_open=False),
+            speed_proxy_mps=_num_def(
+                d, "lateral_frame", "speed_proxy_mps", 45.0,
+                lo=1.0, hi=120.0, lo_open=False)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v = cfg.validate
@@ -830,6 +928,13 @@ def _read_decision(path: Path) -> DecisionConfig:
         raise ValueError(
             "[route] control=true 要求 [coarse].control=true：路线的候选来自粗层"
             "逐道净空读数，闸关时定案没有输入（承诺层空转，控制链却已换源）")
+    if cfg.lane_obs.enabled and not cfg.lane_obs.weights:
+        raise ValueError(
+            "[lane_obs] enabled=true 需要 weights 指向 ONNX 权重"
+            "（权重不入库，放在本机数据目录并由配置给出路径）")
+    if cfg.lane_obs.provider not in ("dml", "cpu"):
+        raise ValueError(
+            f"[lane_obs] provider={cfg.lane_obs.provider!r} 需为 dml 或 cpu")
     s = cfg.selection
     if s.preposition_enabled:
         if s.preposition_horizon_s <= s.horizon_s:

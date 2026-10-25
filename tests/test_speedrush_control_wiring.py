@@ -264,10 +264,12 @@ def test_road_offset_all_sources_feed_loop(_stub_depth):
     t1 = tick()
     assert t1["ro_source"] == "pair"
     assert t1["road_offset"] == pytest.approx(0.0)           # 车在路心
+    assert t1["ro_hold"] is False                            # 新鲜对=可采信
     cur["r"] = _dgeo_lanes(-2.0, None)                       # 单侧:有效对兜底
     t2 = tick()
     assert t2["ro_source"] == "pair_slot"
     assert t2["road_offset"] == pytest.approx(0.0)           # 槽照喂(不黑视)
+    assert t2["ro_hold"] is True                             # 槽=历史保持，不进滤波
 
 
 def test_trace_row_carries_dgeo_seg(_stub_depth):
@@ -781,3 +783,45 @@ def test_master_mode_region_abstain_honest_none(monkeypatch):
     assert row["road_offset"] is None, "区弃权拍不供数，找边读数不得顶替"
     assert row["ro_edge"] == pytest.approx(+0.4, abs=0.01), \
         "找边对仍在审计列（降级可见），但不进供数"
+
+
+# ---------- S1 参考系影子：只记录，不改杆 ----------
+
+
+def test_lateral_frame_shadow_traces_without_changing_steering(
+        _stub_depth, monkeypatch):
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+
+    base = load_decision()
+
+    def cor(fid):
+        return Corridor(tuple(
+            CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
+                         BandBoundary(-4.2, "measured", 1.0, fid),
+                         BandBoundary(4.2, "measured", 1.0, fid))
+            for i in range(3)), 0.0, 8.4 / 3.38, "wall", "ok")
+
+    def run(enabled):
+        monkeypatch.setattr(
+            smod, "load_decision",
+            lambda: replace(base, lateral_frame=replace(
+                base.lateral_frame, enabled=enabled)))
+        m = _module()
+        chain = m._build_control_chain()
+        monkeypatch.setattr(chain["ego_road"], "update",
+                            lambda *a, **k: cor(k.get("fid", 1)))
+        _stub_depth["r"] = _dgeo_lanes(-1.5, -0.5)
+        pad = StubPad()
+        for fid in range(1, 16):
+            m._control_tick(chain, pad, None, _perc(fid), fid,
+                            fid * 50_000_000, 10.0, 1)
+        return chain, pad.joy
+
+    off_chain, off_joy = run(False)
+    on_chain, on_joy = run(True)
+    assert off_chain["trace"][-1]["lateral_frame"] is None
+    lf = on_chain["trace"][-1]["lateral_frame"]
+    assert lf is not None and lf["x"] is not None
+    assert lf["fresh"] >= 1
+    assert on_joy == off_joy                 # 影子不吃控制路径

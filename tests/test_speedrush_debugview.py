@@ -166,6 +166,74 @@ def test_render_hud_steer_history_strip(frame):
     assert (band[:, :, 2] > 150).any()
 
 
+# ---------- 10fps / 人工对照输入带 / 车道线叠加 ----------
+
+def test_debug_interval_is_10fps():
+    """调试图节流定为 10fps：控制拍 20Hz，落盘密度减半。"""
+    assert dv.DEBUG_FPS == 10
+    assert dv.DEBUG_INTERVAL_S == pytest.approx(0.1)
+
+
+def test_lane_line_x_reconstructs_fit():
+    """回投公式自洽：由已知斜率/截距反解 L/theta，再逐点还原像素横坐标。"""
+    import math
+    cam_h, s, a = 1.469, 0.8, 100.0
+    line = {"L": s * cam_h / dv.LANE_W,
+            "theta": math.atan((dv.VPX - a - s * dv.Y_H) / dv.FOCAL)}
+    for y in (500.0, 600.0, 700.0):
+        assert dv._lane_line_x(line, cam_h, y) == pytest.approx(a + s * y)
+
+
+def test_render_hud_lane_overlay_draws_line(frame):
+    """线观测叠加：拟合线按参数回投到画面，近端像素着黄边界色。"""
+    cam_h = 1.469
+    line = {"L": 0.5, "theta": 0.0, "color": "y", "side": -1, "k": -2,
+            "y0": 550, "y1": 645, "n": 10, "rms": 0.5}
+    snap = {"fid": 1, "phase": 1, "lane": {"cam_h": cam_h, "state": "TRACK",
+                                           "det_age_ms": 20.0, "lines": [line]}}
+    out = render_hud(frame, snap, None)
+    y = 640
+    x = int(round(dv._lane_line_x(line, cam_h, y)))
+    patch = out[y - 2:y + 3, max(0, x - 2):x + 3].astype(int)
+    # 黄边界色 (B,G,R)=(0,220,255)：允许线宽/取整误差，按通道判
+    hit = ((patch[..., 0] < 40) & (patch[..., 1] > 180)
+           & (patch[..., 2] > 220)).any()
+    assert hit, f"lane overlay should paint yellow near x={x}, y={y}"
+
+
+def test_render_hud_input_band_pad_and_counterfactual(frame):
+    """人工对照局：底部输入带同时画物理手柄杆量（主）与程序反事实（标记）。"""
+    frame[:] = 255
+    snap = _snap(frame_shape=(H, W, 3),
+                 pad={"lx": 20000, "ly": 0, "rt": 255},
+                 decision={"state": "CRUISE", "steer": -20000})
+    out = render_hud(frame, snap, None)
+    ybar = H - 64 + 20
+    xa, xb = 66, W - 340
+    cx, half = (xa + xb) // 2, (xb - xa) // 2
+    xv = int(cx + (20000 / 32767.0) * half)
+    b, g, r = (int(v) for v in out[ybar, xv])
+    assert g > 150 and b < 80            # 右打：主条绿色
+    # 程序反事实标记在左打侧，白色三角与主条分离
+    xc = int(cx - (20000 / 32767.0) * half)
+    assert out[ybar - 6:ybar + 5, xc - 2:xc + 3].max() > 180
+    assert out[H - 8, 4].max() < 200     # 底带压暗，未盖到画面外
+
+
+def test_render_hud_input_band_cmd_only_and_lane_none(frame):
+    """自动局（无物理手柄快照）显示程序下发值；线观测缺席显式写 none。"""
+    out = render_hud(frame, _snap(frame_shape=(H, W, 3),
+                                  decision={"state": "CRUISE",
+                                            "steer": -30000}), None)
+    ybar = H - 64 + 20
+    xa, xb = 66, W - 340
+    cx, half = (xa + xb) // 2, (xb - xa) // 2
+    xv = int(cx - (30000 / 32767.0) * half)
+    b, g, r = (int(v) for v in out[ybar, xv])
+    assert r > 150 and g > 60 and b < 60  # 左打：主条橙色
+    assert out.shape[:2] == (H, W + dv._PANEL_W)
+
+
 # ---------- 反投影口径 ----------
 
 def test_project_detection_roundtrip():

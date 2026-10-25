@@ -35,6 +35,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from maaracing_master.core import xinput
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
@@ -46,7 +47,7 @@ from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand, N_BANDS, _band_bounds,
-    build_corridor, far_hint_lane)
+    build_corridor, far_center_lane, far_hint_lane)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
 from maaracing_master.plugins.speedrush.depth_geo import (
@@ -56,6 +57,8 @@ from maaracing_master.plugins.speedrush.depth_geo import (
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
+from maaracing_master.plugins.speedrush.lane_obs import LaneObsWorker
+from maaracing_master.plugins.speedrush.lateral_frame import LateralFrameShadow
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.motion_plan import (
@@ -282,7 +285,8 @@ class SpeedRushModule(ActivityModule):
         self._preload_thread: threading.Thread | None = None
         self._preload_done = threading.Event()
         self._preload_stop = threading.Event()
-        # 视角守卫：本进程确认过一次保险杠机位后不再检查（p2/后续回合沿用）
+        # 视角守卫：同场两阶段沿用一次确认；每场开始重新确认（游戏重置
+        # 进度会把机位打回追尾视角，见 _run_flow 的场边界）
         self._view_ok = False
         # 控制回路耗时记账（验收判据 §二.3 的 P50/P95 数据源），按阶段清零
         self._infer_times: list[float] = []
@@ -445,6 +449,9 @@ class SpeedRushModule(ActivityModule):
         round_no = 0
         while self._running:
             round_no += 1  # 场景分层用：录制 meta 要记"这一帧属于第几轮"
+            # 机位确认按"场"失效：声望归零会重置整轮进度，游戏把视角打回
+            # 追尾；上一场的确认不能带进新一场。
+            self._view_ok = False
             # 组边界即场次边界（迁移裁定 2）：一"轮" = 一局完整对局（两个驾驶阶段+结算）
             _open_grp(self, f"[极速狂飙] 第 {round_no} 场开始", "session")
             while index < len(FLOW):
@@ -778,7 +785,14 @@ class SpeedRushModule(ActivityModule):
         t_start = time.time()
         run_dir = _run_dir(t_start, phase)
         dbg_on = self._debug_enabled()
+        lane_obs = LaneObsWorker(cfg.lane_obs)
+        lane_obs.start()
+        if lane_obs.error:
+            _tlog(self, f"[极速狂飙] 线观测影子未启动：{lane_obs.error}", "WARNING")
+        elif lane_obs.note:
+            _tlog(self, f"[极速狂飙] 线观测影子：{lane_obs.note}", "WARNING")
         return {"cfg": cfg,
+                "lane_obs": lane_obs,
                 # 速度像素桥（闸 metric_bridge.enabled，默认关=逐位回今天）：
                 # 闸与迟滞驻留由链构建传入，tracking 层不读配置
                 "tracker": Tracker(bridge_enabled=cfg.metric_bridge.enabled,
@@ -818,10 +832,16 @@ class SpeedRushModule(ActivityModule):
                                      cfg.motion.switch_dwell_s,
                                      cfg.motion.score_epsilon,
                                      cfg.motion.switch_geom_margin,
-                                     cfg.motion.switch_immediate_margin),
+                                     cfg.motion.switch_immediate_margin,
+                                     cfg.motion.switch_infeasible_grace_s),
                     "last_plan": None,
                     "last_plan_ego": None,
-                # raw/hud 调试图落盘器（3fps；debug 开关闸，测试 ctx=None → None →
+                    # S1 参考系影子（闸 lateral_frame.enabled）：只落 trace，
+                    # 不参与规划/手柄；启用时与 lane_obs 并行记录。
+                    "lateral_frame": (LateralFrameShadow(cfg.lateral_frame,
+                                                         cfg.planner)
+                                      if cfg.lateral_frame.enabled else None),
+                # raw/hud 调试图落盘器（10fps；debug 开关闸，测试 ctx=None → None →
                 # tick 空转）。生命周期=chain，finally 收口。
                 "debug": DebugPairWriter(run_dir, cal=cal) if dbg_on else None,
                 "hud_ref": None,
@@ -910,6 +930,9 @@ class SpeedRushModule(ActivityModule):
             prev = chain["prev_ts"]
             dt = DRIVE_TICK_S if prev is None or ts_ns <= prev else (ts_ns - prev) / 1e9
             chain["prev_ts"] = ts_ns
+            last_fid = chain.get("last_fid")
+            fid_jump = last_fid is not None and fid - last_fid > 2
+            chain["last_fid"] = fid
             # 深度几何（几何主人，v4 2026-10-01：MoGe 逐帧焦距点云 3D 找边当
             # road_offset 供数源；黄线 2D 链路整体退役）。异步解耦协议同前：
             # 本帧交 worker 后台推理，take() 只消费过了 age 闸的最新结果——
@@ -1000,11 +1023,52 @@ class SpeedRushModule(ActivityModule):
             # road_offset_new：复用拍喂的是旧证据、遮挡墙/记忆是历史证据，
             # β 速度修正只认新鲜实测（pair/wall/region 新拍）；planner 侧语义
             # 同前（重复记账曾把单次找边翻跳放大成饱和侧滑，2026-10-06 局）。
+            road_offset_hold = (corridor is not None
+                                and corridor.src in (
+                                    "pair_slot", "wall_occl", "memory"))
+            road_offset_new = (dgeo_new and corridor is not None
+                               and not road_offset_hold)
+            # 线观测先取：保持期要把它的连续横位当运动观测喂给 planner（深度
+            # 保持值冻结时，线是唯一真实的位移来源；模型自走会按打杆量虚走）。
+            lw = chain.get("lane_obs")
+            lane = lw.latest() if lw is not None else None
+            lane_ok = (lane is not None and lane.get("state") == "TRACK"
+                       and int(lane.get("n_locked") or 0) >= 1
+                       and lane.get("x") is not None)
+            lane_relock = (lane is not None
+                           and lane.get("state") == "RELOCK")
+            lf = chain.get("lateral_frame")
+            # 参考系影子的模型步要复现 planner 本拍的低通起点，故先留旧值。
+            steer_norm_before = planner.state.steer_norm
             cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset,
-                                 road_offset_new=dgeo_new and corridor is not None
-                                 and corridor.src not in (
-                                     "pair_slot", "wall_occl", "memory"),
+                                 road_offset_new=road_offset_new,
+                                 road_offset_hold=road_offset_hold,
+                                 lane_x=None if lane is None else lane.get("x"),
+                                 lane_ok=lane_ok,
+                                 lane_relock=lane_relock,
                                  plan=(plan if cfg.motion.mode == "live" else None))
+            far_lane = (None if corridor is None
+                        else far_center_lane(corridor.coarse_bands,
+                                             chain["lane_w_m"]))
+            if lf is not None:
+                lf.update(dt, planner.last_steer_raw, steer_norm_before,
+                          road_offset,
+                          None if corridor is None else corridor.src,
+                          road_offset_new,
+                          None if lane is None else lane.get("x"),
+                          None if lane is None else lane.get("state"),
+                          0 if lane is None
+                          else int(lane.get("n_locked") or 0),
+                          None if lane is None else lane.get("det_age_ms"),
+                          far_lane, bool(dgeo_new),
+                          None if lane is None else lane.get("theta"))
+            if lw is not None:
+                cam_h = (None if dgeo is None or dgeo.coef is None
+                         else abs(float(dgeo.coef[2])))
+                # 线观测的绝对锚点=同帧新鲜深度路心（复用/历史拍不给，
+                # 让线退回上一拍横位做子道细化，不让旧深度冒充新锚）。
+                lw.push(frame, fid, cam_h, planner.state.v_lat_est, dt,
+                        fid_jump, road_offset if road_offset_new else None)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -1158,8 +1222,11 @@ class SpeedRushModule(ActivityModule):
             "best_score": None if best is None else round(best[0], 1),
             "best_x": None if best is None else round(best[1], 2),
             # step 2.5 闭环列：实际喂入 planner 的路中心观测（None=本拍弃权/垃圾对）
-            # + 修正后 executed/v
+            # + 修正后 executed/v。ro_hold=该值来自历史保持（memory/wall_occl/
+            # pair_slot），planner 不把它当本拍测量——离线看"供数在跳"与
+            # "执行状态在跳"必须分账。
             "road_offset": None if road_offset is None else round(road_offset, 4),
+            "ro_hold": road_offset_hold,
             # YOLO×深度融合（2026-09-25）：本拍检测框数（物体掩码随帧入深度路径）
             "yolo_cars": len(result.cars),
             # 混合测距刀一（trace-only，不进决策）：距离读数+出处——验收六项
@@ -1203,6 +1270,15 @@ class SpeedRushModule(ActivityModule):
                  "cy": g.cy, "rel": None}
                 for g in obs.far_targets if g.kind == KIND_CAR] or None,
             # road_offset 供数面（路心合成调试）：来源 / 归属读数
+            # 与影子参考系同拍消费的是同一个快照（不是事后再取 latest——
+            # 那会让 trace 的线/锚点和影子实际用的差一拍，离线无法对账）。
+            "lane_obs": None if chain.get("lane_obs") is None else lane,
+            # 保持期线融合可见面：trusted=深度-线帧偏置已对账、bias=帧偏置、
+            # sm=线横位平滑值——判断"状态没跟上"是融合没工作还是线本身错。
+            "lane_fuse": planner.lane_debug(),
+            # S1 参考系影子：模型预测 + 门控后横位；与 road_offset 同拍对照
+            "lateral_frame": None if chain.get("lateral_frame") is None
+            else chain["lateral_frame"].snapshot(),
             "ro_source": chain["ego_road"].last.get("source"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
@@ -1346,12 +1422,24 @@ class SpeedRushModule(ActivityModule):
         # 阶段出口一次性 flush 会丢尾部（185122_p2 实证丢最后 ~5s 案发段）
         if len(chain["trace"]) - chain.get("trace_flushed", 0) >= 100:
             self._flush_control_trace(chain, phase, final=False)
-        # 调试图快照（debugview 3fps 节流；writer=None=闸关/测试，零开销）
+        # 调试图快照（debugview 10fps 节流；writer=None=闸关/测试，零开销）
         dbg = chain.get("debug")
         if dbg is not None:
+            # 人工对照局（影子拍 gpad=None）读物理手柄实际杆量：调试图底部
+            # 输入带用它和程序反事实杆值同屏，直接判「车是人打歪还是程序带歪」。
+            # 自动局不读——那时游戏输入是虚拟手柄下发值，物理手柄不参与。
+            pad = None
+            if gpad is None:
+                pad_st = xinput.read_first_connected()
+                if pad_st is not None:
+                    pad = {"lx": int(pad_st.left_stick[0]),
+                           "ly": int(pad_st.left_stick[1]),
+                           "rt": int(pad_st.right_trigger)}
             dbg.tick(frame, {
                 "fid": fid, "phase": phase,
                 "result": result, "reading": dgeo, "grid": dgrid,
+                "lane": lane,               # 线观测（叠加回画面 + 底部摘要）
+                "pad": pad,                 # 物理手柄实际杆量（人工局）
                 "road_offset": road_offset,
                 "grid_off": chain["ego_road"].last.get("grid_off"),
                 "corridor": corridor,   # 分带走廊（debugview 逐带来源叠层）
@@ -1461,6 +1549,9 @@ class SpeedRushModule(ActivityModule):
         age p95 超预算 75% → WARNING；push 了却整场零结果（worker 没产出，
         实机 0/330 那类症状）→ WARNING；其余 INFO 汇总一行。
         """
+        lw = chain.get("lane_obs")
+        if lw is not None:
+            lw.stop()
         dg = chain.get("depth_geo")
         if dg is None:
             return

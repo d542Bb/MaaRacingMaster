@@ -44,6 +44,16 @@ _STICK_FULL = 32767  # XUSB 摇杆半幅（core.capabilities.Gamepad 契约）
 # 持续大新息的"同向同量级"容差（道）：相邻两拍观测差在此内才算同一偏移，
 # 防真位移过程中的大新息被误判成持续偏移。
 _JUMP_SAME_TOL_LANE = 0.5
+# 车道线连续横位（S1 线观测）作保持期的运动观测：深度路心在 memory/
+# wall_occl 期冻结，模型自走会把"打杆量"当位移——贴墙时车实际不动、模型
+# 仍按 v 漂走（20261025 局 p2 496~537：线报 −1.9 不动，模型从 −1.0 漂到
+# −0.24，2.3s 后新鲜值回 −1.79）。线在同一深度锚点内逐帧跟随车辆横移，
+# 是保持期唯一连续的运动信号；四局离线：新鲜拍新息 p90 0.78→0.62、
+# p99 2.4→1.6，保持期与线的偏离均值 <0.1 道。
+_LANE_SMOOTH_ALPHA = 0.2   # 线横位 EMA：压单帧噪声（±0.3~0.5 道）
+_LANE_FUSE_GAIN = 0.3      # 保持期向"线+帧偏置"收敛的每拍增益（~0.3s 时间常数）
+_LANE_BIAS_AGREE = 0.6     # 深度/线一致门：差异在此内才用深度帧校准线帧
+_LANE_JUMP_RESET = 0.8     # 线自身单拍跳超此值 = 换线/重锁：重置并停用融合
 
 
 def law(e: float, v_lat: float, p: Planner, gentle: bool = False,
@@ -118,8 +128,15 @@ class LateralPlanner:
         self._jump_sign: bool | None = None
         self._jump_last_r: float | None = None
         self._jump_confirmed = False
+        # 线横位融合（保持期运动观测）：平滑值/深度-线帧偏置/是否可信
+        self._lane_sm: float | None = None
+        self._lane_bias = 0.0
+        self._lane_trusted = False
+        self._lane_relock_seen = False   # 已见 RELOCK，等下一条锁线重置
         # 上一拍低通前杆值（负一~一；trace 标定用，行为不消费）
         self.last_steer_raw = 0.0
+        # 上一拍计划前馈命令：换候选时限速用；计划中断后置空，重入首拍不限。
+        self._last_plan_u: float | None = None
 
     def _reset_jump(self) -> None:
         """重置持续大新息判定（正常接受/重基/断供时调用——连续性被打断）。"""
@@ -128,12 +145,38 @@ class LateralPlanner:
         self._jump_last_r = None
         self._jump_confirmed = False
 
+    def _lane_rebias(self, obs: float, lane_ok: bool) -> None:
+        """新鲜深度拍校准线帧偏置：两者一致才把偏置钉到深度帧。
+
+        不一致时保留旧偏置（单侧墙 + W/2 反推、错箱都会给出 0.5~1 道偏差，
+        见 20261025 局 p2 490：墙读 −1.14，线与截图都在 −1.9），等下一次
+        一致再校正；重基拍由调用方先置 trusted=False，一致性恢复前不融合。
+        线未锁定（COAST/RELOCK）时线值不可比，不校准。"""
+        if not lane_ok or self._lane_sm is None:
+            return
+        d = obs - self._lane_sm
+        if abs(d) <= _LANE_BIAS_AGREE:
+            self._lane_bias = d
+            self._lane_trusted = True
+
+    def lane_debug(self) -> dict:
+        """保持期线融合的可见面（trace）：trusted=偏置是否已对账、bias=深度-
+        线帧偏置、sm=线横位平滑值。三者合起来才能离线判断融合是否在工作。"""
+        return {"trusted": self._lane_trusted,
+                "bias": round(self._lane_bias, 3),
+                "sm": None if self._lane_sm is None
+                else round(self._lane_sm, 3)}
+
     # ---------- 主入口 ----------
 
     def update(self, decision: DecisionOutput, dt_s: float,
                current_fid: int,
                road_offset: float | None = None,
                road_offset_new: bool = True,
+               road_offset_hold: bool = False,
+               lane_x: float | None = None,
+               lane_ok: bool = False,
+               lane_relock: bool = False,
                plan: "MotionPlan | None" = None) -> GamepadCommand:
         """一个控制 tick。dt_s 非法即 fail-loud（帧号倒退同一纪律：
         静默吞掉病态输入比中断危险——时间基低通会被 0/NaN 污染成永久状态）。
@@ -146,7 +189,21 @@ class LateralPlanner:
         ``road_offset_new``：本拍 road_offset 是否**新证据**（异步驻留协议下，
         保鲜槽复用拍喂的是同一套旧读数）。速度修正（β·r/dt）只在新证据拍生效，
         复用拍只收位置（α·r）——同一新息反复注入曾把单次找边翻跳放大成饱和
-        侧滑（2026-10-06 局 id17 取证）。默认 True=旧调用方行为不变。"""
+        侧滑（2026-10-06 局 id17 取证）。默认 True=旧调用方行为不变。
+
+        ``road_offset_hold``：本拍值来自**历史保持**（memory/wall_occl/
+        pair_slot），不是本拍测量。这类值在自车系里已经过期：车按 2~4 道/s
+        横移时，0.8s 的保持值落后 1~2 道。把它当观测收 α 等于每拍把模型拽回
+        旧位置（20261025 局实测：保持期车已横移 2 道，exec 只走了 0.2 道）。
+        故保持拍不进 ⑥b：模型自走、陈旧计时照常推进，等新鲜实测回来再锚。
+
+        ``lane_x`` / ``lane_ok``：车道线观测的连续横位（与 road_offset 同帧）
+        及是否锁定。深度保持期它是唯一连续的运动测量——车贴墙不动时模型会
+        按打杆量虚走，线不会。融合只改保持/断供拍的位置（向"线+深度-线帧
+        偏置"收敛，增益 `_LANE_FUSE_GAIN`）；新鲜深度拍会校准帧偏置，两者
+        差超 `_LANE_BIAS_AGREE` 时保留旧偏置（不把单侧墙反推的错值带进线帧）。
+        ``lane_relock``：本拍线观测处于重锁（换线可能换帧）；下一条 TRACK
+        线重置平滑值并停用融合，等新鲜深度与线一致后再启用。"""
         if not (isinstance(dt_s, (int, float)) and math.isfinite(dt_s)) or dt_s <= 0:
             raise ValueError(f"dt_s 非法（需有限正数）：{dt_s!r}")
         if not math.isfinite(decision.x_target if decision.x_target is not None else 0.0) \
@@ -156,6 +213,24 @@ class LateralPlanner:
         # 速度修正时间基累计：本拍模型又跑过 dt_s（帧钟）。修正在 ⑥b（⑥ 之后）
         # 消费，形成/重基各自清零——见 ⑥b 注
         self._t_vcorr += dt_s
+
+        # 线横位平滑（保持期运动观测）：只在锁线拍更新；COAST/无值保持上一值。
+        # 重锁后的第一条锁线可能换了线/换了帧：重置平滑并停用融合；线自身
+        # 单拍跳超阈值同理。等新鲜深度与线一致时由 _lane_rebias 恢复。
+        if lane_relock:
+            self._lane_relock_seen = True
+        if lane_ok and lane_x is not None and math.isfinite(lane_x):
+            if self._lane_relock_seen:
+                self._lane_sm = lane_x
+                self._lane_trusted = False
+                self._lane_relock_seen = False
+            elif self._lane_sm is None:
+                self._lane_sm = lane_x
+            elif abs(lane_x - self._lane_sm) > _LANE_JUMP_RESET:
+                self._lane_sm = lane_x
+                self._lane_trusted = False
+            else:
+                self._lane_sm += _LANE_SMOOTH_ALPHA * (lane_x - self._lane_sm)
 
         # ① 过期判定（valid_until_fid 含边界；第 4 个连续过期拍起按 CONSERVE）
         fresh = current_fid <= decision.valid_until_fid
@@ -217,6 +292,15 @@ class LateralPlanner:
                  + self.p.k_p * (plan.x_preview_lane - x_pred)
                  + self.p.k_d * (plan.v_preview_lane_s - self.state.v_lat_est))
             steer_raw = max(-1.0, min(1.0, u))
+            # 换候选时前馈会阶跃；相对上一拍计划命令限速，避免方向盘一步打半圈。
+            # 首帧/计划重入（None）不限制——那是交接，不是候选抖动。
+            if self._last_plan_u is not None:
+                cap = self.p.plan_u_slew_s * dt_s
+                steer_raw = max(self._last_plan_u - cap,
+                                min(self._last_plan_u + cap, steer_raw))
+            self._last_plan_u = steer_raw
+        else:
+            self._last_plan_u = None
 
         self.last_steer_raw = steer_raw
         # ⑤⑥ 杆值低通 + 横向运动学（单一真源：模块级 step）
@@ -228,7 +312,8 @@ class LateralPlanner:
         #    标准 alpha-beta 滤波器——⑥ 的模型积分是 predict 步，本段是 correct 步：
         #    新息 r=观测−预测，位置收 α·r、速度收 β·r/dt。恒位置误差下 r 随 x/v
         #    同步收敛（不是纯 β 直注的发散），模型虚胖被钉回、误差常驻→杆常驻，
-        #    "自说自话收敛→提前松杆"从此不可能。无观测拍退回纯模型（旧行为不变）。
+        #    "自说自话收敛→提前松杆"从此不可能。无观测拍与历史保持拍退回纯模型
+        #    （保持拍的自车系读数已过期，见 road_offset_hold）。
         #    参考帧（2026-10-02 维护者裁定「中轴巡航」）：executed 与 x_target 同为
         #    "绝对车道位"系，**道0=路中心**——首个过形成门的观测拍令 anchor=0，
         #    executed 从此收敛到 road_offset（自车相对路心），x_target=0 即守中轴，
@@ -241,14 +326,25 @@ class LateralPlanner:
         #    供数黑视期不计数、跳变门收紧后喂入更少，车以 0 杆直开 5.5s 怼进右墙时
         #    阈值还差 9 次。判据从"次数"换成"时间"：距上次被接受修正超 anchor_stale_s
         #    即重基（exec:=ro、anchor:=0），断供同样计时。
-        if road_offset is not None:
+        if road_offset is not None and not road_offset_hold:
             if self._road_anchor is None:
-                if abs(road_offset) <= self.p.anchor_max_off:
+                # 形成门外的贴边拍：深度与锁线独立一致（≤`_LANE_BIAS_AGREE`）
+                # 即视为可信，直接建锚并对齐位置。否则断供丢锚后，车在 |ro|>1
+                # 的贴边段永远过不了形成门，线融合也因无参考系停摆——实拍 p1
+                # 202~246：锚在断供期被丢，深度连续报 +1.87 却等不到 1s 新鲜
+                # 时间（保持拍不计数），状态从 −0.34 漂到 −1.27。
+                corroborated = (lane_ok and self._lane_sm is not None
+                                and abs(road_offset - self._lane_sm)
+                                <= _LANE_BIAS_AGREE)
+                if abs(road_offset) <= self.p.anchor_max_off or corroborated:
                     self._road_anchor = 0.0          # 道0=路中心（中轴巡航）
                     self._stale_t = 0.0
                     self._t_vcorr = 0.0              # 滤波（重）初始化：速度基线起算
                     self._last_corr_sign = None
                     self._reset_jump()
+                    self._lane_rebias(road_offset, lane_ok)
+                    if corroborated and abs(road_offset) > self.p.anchor_max_off:
+                        self.state.executed_lane = road_offset
                 else:
                     # 形成门饿死也要重基（13:29 局开局：车在左缘 ro=−2.9，形成门
                     # 拒定锚 7s、hold:0=杆恒 0 蹭墙）——超 stale 预算说明"中带观测"
@@ -262,11 +358,14 @@ class LateralPlanner:
                         self._t_vcorr = 0.0
                         self._last_corr_sign = None
                         self._reset_jump()
+                        self._lane_trusted = False
+                        self._lane_rebias(road_offset, lane_ok)
             else:
                 obs = road_offset - self._road_anchor
                 r = obs - self.state.executed_lane
                 if abs(r) <= self.p.obs_jump_max_lane:
                     self.state.executed_lane += self.p.obs_alpha * r
+                    self._lane_rebias(obs, lane_ok)
                     # β 速度修正只认新证据拍：异步驻留协议下一套读数被多拍复用，
                     # 复用拍对同一新息重复注入曾把 0.36 道的找边翻跳 3 拍内放大
                     # 成 v_lat 饱和 ±2.5（2026-10-06 局 id17：实拍数据+产线增益
@@ -302,11 +401,19 @@ class LateralPlanner:
                     self._stale_t = 0.0
                     self._reset_jump()
                 else:
+                    # 被跳变门拒绝 ≠ 深度与线不一致：单帧坏检测/参考系跳变
+                    # 同样可以校准线帧。20261025 局 p1 206 的坑：深度报 +1.87
+                    # 被跳变门拒，线报 +1.32（同帧、差 0.55 道），偏置没更新、
+                    # 信任一直为假，随后 40 拍保持期融合全关、状态漂到 −1.3。
+                    self._lane_rebias(obs, lane_ok)
                     # 持续偏移放行（2026-10-23）：同向、量级相近的大新息连续
-                    # N 拍 = 真位移（车贴边或模型漂移后观测回归），不是单帧坏
-                    # 检测——按普通观测收 α 位置修正。旧行为要等 anchor_stale_s
-                    # 重基，期间规划器按错位帧打杆（实拍 180900_p2：ro=−1.74
-                    # 持续 1.4s，exec 从 −0.71 漂到 −0.29 才重基，车一直贴左墙）。
+                    # N 拍 = 参考系已换（车贴边或模型漂移后观测回归），不是
+                    # 单帧坏检测。确认后**直接重基**（exec:=obs）：0.15s 内
+                    # 2 道级的新息不可能是本车位移，而是参考系跳变；旧实现
+                    # 按 α 逐拍收，期间目标用新帧、位置用旧帧，杆继续往错误
+                    # 方向打满（20261025 局 p1 457~461：观测已到 −1.4，exec
+                    # 还在 +0.56，杆 −0.17 继续向左，车随后贴左墙）。速度保留
+                    # ——它描述的是运动，换帧不换运动。
                     same = (self._jump_sign is not None
                             and (r > 0) == self._jump_sign
                             and abs(r - self._jump_last_r) <= _JUMP_SAME_TOL_LANE)
@@ -318,8 +425,11 @@ class LateralPlanner:
                     if self._jump_confirmed or \
                             self._jump_streak >= self.p.obs_jump_confirm_ticks:
                         self._jump_confirmed = True
-                        self.state.executed_lane += self.p.obs_alpha * r
+                        self.state.executed_lane = obs
                         self._stale_t = 0.0
+                        self._reset_jump()
+                        self._lane_trusted = False
+                        self._lane_rebias(obs, lane_ok)
                     else:
                         self._stale_t += dt_s
                         if self._stale_t >= self.p.anchor_stale_s:
@@ -335,11 +445,22 @@ class LateralPlanner:
                             self._t_vcorr = 0.0
                             self._last_corr_sign = None
                             self._reset_jump()
+                            self._lane_trusted = False
+                            self._lane_rebias(road_offset, lane_ok)
         elif self._road_anchor is not None:
-            # 断供计时：黑视本身=漂移温床，超预算则帧作废（下个中带观测重形成）
+            # 断供/保持计时：黑视本身=漂移温床，超预算则帧作废（下个中带观测
+            # 重形成）。历史保持值仍算"有几何"，锚点保留——否则新鲜大读数回来
+            # 要先过形成门（|ro|≤anchor_max_off）再等 1s，白白多一段盲开。
             self._stale_t += dt_s
             self._reset_jump()
-            if self._stale_t >= self.p.anchor_stale_s:
+            # 保持期的运动观测：车道线连续横位。模型自走在没有位移证据时会
+            # 按打杆量虚走（贴墙/被挡），线是唯一真实的位移来源；帧偏置由
+            # 新鲜深度拍校准。线未锁定/重锁后未对账时不融合，退回模型。
+            if lane_ok and self._lane_sm is not None and self._lane_trusted:
+                self.state.executed_lane += _LANE_FUSE_GAIN * (
+                    (self._lane_sm + self._lane_bias)
+                    - self.state.executed_lane)
+            if road_offset is None and self._stale_t >= self.p.anchor_stale_s:
                 self._road_anchor = None
                 self._stale_t = 0.0
                 self._last_corr_sign = None

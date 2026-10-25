@@ -559,3 +559,26 @@ def test_band_z_labels_head_frame():
     assert b0.z0 == pytest.approx(dg.GRID_Z_LO - dg.CAM_Z_DATUM_M)
     assert b0.z1 == pytest.approx(dg.GRID_Z_LO + 3.0 - dg.CAM_Z_DATUM_M)
     assert c.bands[-1].z1 == pytest.approx(dg.GRID_Z_HI - dg.CAM_Z_DATUM_M)
+
+
+# ---------- 远场宏观锚：粗带中心 ----------
+
+
+def test_far_center_lane_median_sign_and_filters():
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, CorridorBand, far_center_lane)
+
+    def band(z0, lm, rm, n=10):
+        return CorridorBand(z0, z0 + 15.0,
+                            BandBoundary(lm, "measured"),
+                            BandBoundary(rm, "measured"), n)
+
+    bands = (band(16.0, -4.0, 4.0), band(31.0, -3.0, 5.0),
+             band(46.0, -5.0, 3.0))
+    # 逐带中心 0 / +1 / −1 m → −0 / −0.296 / +0.296 道，中值 0
+    assert far_center_lane(bands, 3.38) == pytest.approx(0.0)
+    assert far_center_lane((band(16.0, 0.0, 6.76),), 3.38) \
+        == pytest.approx(-1.0)          # 中心 +3.38m → 自车相对路心 −1 道
+    assert far_center_lane((band(60.0, -4.0, 4.0),), 3.38) is None
+    assert far_center_lane((band(16.0, None, 4.0),), 3.38) is None
+    assert far_center_lane((band(16.0, -4.0, 4.0, n=2),), 3.38) is None

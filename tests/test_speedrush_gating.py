@@ -111,6 +111,9 @@ def env(monkeypatch, tmp_path):
     clock = _Clock()
     monkeypatch.setattr(sr, "time", clock)
     monkeypatch.setattr(sr, "data_dir", lambda: tmp_path / "data")
+    # debug 产物与 data 同源重定向：否则走完整驾驶循环的用例会把假钟固定名
+    # （20000101_000000_p1）写进真实 %APPDATA% 调试目录
+    monkeypatch.setattr(sr, "debug_dir", lambda: tmp_path / "debug")
     ctx = _FakeCtx(clock)
     mod = sr.SpeedRushModule(ctx)  # type: ignore[arg-type]
     mod._running = True  # 默认为"已启动"；需停机的用例自行覆盖
@@ -535,3 +538,31 @@ def test_control_mode_also_records_hud(env, monkeypatch, tmp_path) -> None:
     assert len(created) == 1
     assert created[0] == tmp_path / "hud"  # hud 落 run_dir 子目录（布局收口）
     assert mod._hud is None  # 退出释放引用
+
+
+# ---------- 场边界 ----------
+
+
+def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
+    """声望归零重置进度会把机位打回追尾：新一场必须重新确认视角。
+
+    同场第二阶段沿用第一阶段的确认（局内相机不重置），不必重复按 RB。
+    """
+    mod, _, _ = env
+    mod._view_ok = True           # 上一场已确认，不能被带进新一场
+    monkeypatch.setattr(mod, "_start_preload", lambda: None)
+    seen: list[tuple[int, bool]] = []
+
+    def drive(phase, round_no=1):
+        seen.append((round_no, mod._view_ok))
+        mod._view_ok = True
+        if round_no >= 2:
+            mod._running = False   # 第二场第一段后收工，避免无限循环
+        return True
+
+    monkeypatch.setattr(mod, "_drive", drive)
+    _set_graph(mod, [True])
+    mod._run_flow(sr.LOOP_START_INDEX)
+    assert seen[0] == (1, False)
+    assert seen[1] == (1, True)
+    assert seen[2] == (2, False)
