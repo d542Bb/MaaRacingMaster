@@ -318,7 +318,8 @@ class DecisionEngine:
             cancel_cooldown_s=r.cancel_cooldown_s,
             finish_tol_lane=s.center_band_lane,
             finish_v_tol_lane_s=r.finish_v_tol_lane_s,
-            merge_max_s=r.merge_max_s)
+            merge_max_s=r.merge_max_s,
+            soft_car=r.soft_car)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
         self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）

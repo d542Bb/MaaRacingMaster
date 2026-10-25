@@ -72,6 +72,8 @@ class RouteParams:
     finish_v_tol_lane_s: float = 0.4  # 完成的横速容差：带着横速"完成"正是过冲
     merge_max_s: float = 4.0         # 并线超时（人工 p90 量级）：到点按实测
     # 所在道落回 keep——卡在并线态会让路线永不重启
+    soft_car: bool = False           # 普通车（car）不构成撤销理由：车是时间成本，
+    # 不是物理约束；目标道 space 仍按参考道失去几何重建。False=旧行为
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,15 @@ def _avail_s(c: CoarseLane | None, p: RouteParams) -> float | None:
 
 
 def _known_blocked(c: CoarseLane | None) -> bool:
+    return c is not None and c.blocker in KNOWN_BLOCKERS
+
+
+def _cancel_blocked(c: CoarseLane | None, p: RouteParams) -> bool:
+    """并线撤销的占用面。soft_car 时普通车（car）不算：车是时间成本，可由计划层
+    按 0.35 s 迎车门当场否决，不需要路线整段撤销。`space` 不进这里——目标道走
+    不下时参考道失去几何，已在 `tick_route` 的 rebuild 分支处理。"""
+    if p.soft_car:
+        return False
     return c is not None and c.blocker in KNOWN_BLOCKERS
 
 
@@ -238,11 +249,14 @@ def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
 def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
                   epoch: int) -> tuple[RouteState, RouteVerdict]:
     """并线中：只认两件事——到了没有（位置 + 速率）、该不该撤（目标道连续
-    确认被截）。并线期间不评估别的候选：中途改主意就是逐拍翻面。"""
+    确认被截）。并线期间不评估别的候选：中途改主意就是逐拍翻面。
+
+    `soft_car` 开时「确认被截」不再认普通车：目标道有车仍继续并线，由计划层
+    的 0.35 s 迎车门做物理否决；普通车擦撞只是时间成本（RULES §4.3）。"""
     tgt = by.get(s.lane_target)
     t_tgt = _avail_s(tgt, p)
     since = max(0.0, clock - s.decided_t)
-    unsafe = s.unsafe_ticks + 1 if _known_blocked(tgt) else 0
+    unsafe = s.unsafe_ticks + 1 if _cancel_blocked(tgt, p) else 0
     if unsafe >= p.cancel_unsafe_ticks:
         back = _drivable_lane(s.v_ref, by)
         st = replace(s, lane_ref=back, lane_target=None, phase=PHASE_KEEP,

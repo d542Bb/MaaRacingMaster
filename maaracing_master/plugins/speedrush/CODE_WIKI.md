@@ -1311,6 +1311,10 @@ m/modes/since_ms、本拍选择结果和 veto（选择目标仍在被占车道�
 - **并线中只认两件事**：完成（位置进 `selection.center_band_lane` 带内 **且**
   横速 < `finish_v_tol_lane_s`）与撤销（目标道连续 `cancel_unsafe_ticks` 拍
   确认被截）。并线期间不评估别的候选。
+- **普通车撤销开关**（`route.soft_car`，默认 false）：false=目标道的普通车也
+  构成撤销；true=车只作时间成本、不撤销；目标道 `space` 仍由参考道失去几何的
+  重建路径放弃（0.35 s 内主动迎车的硬门在计划层候选否决里，不在路线层复制）。
+  保道态逃生判据不随此开关变化。
 - **撤销后冷却**：回落到实测可达道，并在 `cancel_cooldown_s` 内**禁入**刚放弃
   的那条道（A↔B 来回摆的根）；`merge_max_s` 超时按实测所在道落回 keep。
 - **结局口径**：到达=`finish/arrived`；超时=`timeout/merge_timeout`（独立结局，

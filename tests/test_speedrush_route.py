@@ -181,6 +181,41 @@ def test_merge_cancel_bans_the_abandoned_lane_during_cooldown():
     assert v.verdict == "merge_start" and v.lane_ref == 1.0
 
 
+def test_soft_car_keeps_merging_through_a_car():
+    """soft_car：目标道确认有车也不再撤销——车是时间成本，不是几何不可行。"""
+    s, v = _in_merge()
+    p = replace(P, soft_car=True)
+    bad = {1.0: (10.0, "car", False)}
+    seen = []
+    for _ in range(120):
+        s, v = tick_route(s, _rep(0.1, 1.0, bad), p, dt_s=DT, epoch=0)
+        seen.append(v.verdict)
+        if v.verdict == "timeout":
+            break
+    assert "cancel" not in seen
+    assert v.verdict == "timeout" and v.why == "merge_timeout"
+
+
+def test_soft_car_space_still_abandons_the_merge():
+    """目标道走不下（space）与开关无关：参考道失去几何 → 重建到可行道。"""
+    for soft in (False, True):
+        s, _ = _in_merge()
+        s, v = tick_route(s, _rep(0.5, 1.0, {1.0: (0.0, "space", False)}),
+                          replace(P, soft_car=soft), dt_s=DT, epoch=0)
+        assert v.verdict == "rebuild" and v.why == "lane_dropped"
+        assert v.blocker == "space" and v.lane_ref == 0.0
+
+
+def test_soft_car_leaves_escape_rule_unchanged():
+    """soft_car 只改并线撤销；保道态的逃生起意规则逐位不动（车仍是起意理由）。"""
+    p = replace(P, soft_car=True)
+    spec = {0.0: (12.0, "car", False)}
+    s, _ = tick_route(None, _rep(0.0, 0.0, spec), p, dt_s=DT, epoch=0)
+    for _ in range(p.urgent_confirm_ticks):
+        s, v = tick_route(s, _rep(0.0, 0.0, spec), p, dt_s=DT, epoch=0)
+    assert v.verdict == "merge_start" and v.why == "urgent"
+
+
 def test_merge_timeout_lands_on_measured_lane():
     """并线超时：车可能停在半道，落回**实测所在道**而不是硬判目标道完成。"""
     s, v = _in_merge()
@@ -309,6 +344,26 @@ def test_gate_on_confirmed_block_moves_target(monkeypatch):
     assert eng.coarse_lane == 1.0
     assert eng.selection_report.target_x_m == pytest.approx(TARGET_1_LANE,
                                                             abs=0.02)
+
+
+def test_soft_car_config_reaches_the_route(monkeypatch):
+    """接线：`route.soft_car=true` 传到路线参数——目标道有车，并线不撤销。"""
+    from maaracing_master.plugins.speedrush import decision as dmod
+    holder = [{0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}]
+    monkeypatch.setattr(dmod, "choose_lane",
+                        lambda *a, **k: _rep(0.0, 1.0, holder[0]))
+    cfg = replace(CFG, route=replace(CFG.route, control=True, soft_car=True))
+    eng = DecisionEngine(cfg)
+    for fid in range(1, 10):                     # 现任道确认被截 → 并线 +1
+        eng.update(_obs(fid), DT, executed_lane=0.0, corridor=_corridor())
+    assert eng.route_verdict.phase == PHASE_MERGING
+    assert eng.route_verdict.lane_ref == 1.0
+    holder[0] = {0.0: (12.0, "car", False), 1.0: (10.0, "car", False),
+                 -1.0: (0.0, "space", False)}
+    for fid in range(10, 30):                    # 目标道有车：不撤
+        eng.update(_obs(fid), DT, executed_lane=0.5, corridor=_corridor())
+        assert eng.route_verdict.verdict != "cancel"
+    assert eng.route_verdict.phase == PHASE_MERGING
 
 
 def test_ruler_jump_rebases_but_small_drift_does_not(monkeypatch):

@@ -381,7 +381,8 @@ class Route:
     `[coarse].range_speed_mps`、完成位置容差复用 `[selection].center_band_lane`，
     都不在本节复制数值。定案规则只剩"逃生换道 + 并线承诺 + 撤销冷却"：原
     「收益门槛 + 承诺期 + 整段并线时间窗」在 24 m 观察窗下结构上不可达，已删除
-    （证据见 CODE_WIKI §22）。"""
+    （证据见 CODE_WIKI §22）。soft_car=普通车不构成撤销理由（车是时间成本；
+    0.35 s 迎车门在计划层；目标道 `space` 仍按参考道失去几何重建），false=旧行为。"""
 
     control: bool = False
     urgent_confirm_ticks: int = 3
@@ -389,6 +390,7 @@ class Route:
     cancel_cooldown_s: float = 2.0
     finish_v_tol_lane_s: float = 0.4
     merge_max_s: float = 4.0
+    soft_car: bool = False
 
 
 @dataclass(frozen=True)
@@ -835,7 +837,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                                        lo=0, lo_open=False),
             finish_v_tol_lane_s=_num_def(d, "route", "finish_v_tol_lane_s",
                                          0.4, lo=0),
-            merge_max_s=_num_def(d, "route", "merge_max_s", 4.0, lo=0)),
+            merge_max_s=_num_def(d, "route", "merge_max_s", 4.0, lo=0),
+            soft_car=_bool(d, "route", "soft_car", default=False)),
         geometry=Geometry(
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),
