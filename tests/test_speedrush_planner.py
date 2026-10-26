@@ -1107,18 +1107,36 @@ def test_v_lat_never_saturates_under_alternating_offsets():
     assert vmax < 2.5 - 1e-6
 
 
-def test_position_only_never_injects_velocity():
-    """新默认：路心观测只修位置（α），不把噪声注入 v_lat——交替 ±0.5 道
-    跑 60 拍，v_lat 始终保持 0（a_lat_gain=0、无模型驱动）。"""
+def test_beta_guards_reject_alternating_noise():
+    """恢复 α-β（v3 车模下速度必须可观测）后，护栏仍要压住噪声：
+    交替 ±0.5 道的路心读数（典型坏检测/参考系抖动）不得把 v_lat 泵起来——
+    同号门拒绝反号注入，变化率上限压住首拍。"""
     pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
                   lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
-    assert pl.p.obs_position_only is True
+    assert pl.p.obs_position_only is False
     pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
     for i in range(2, 60):
         pl.update(_out(fid=i, valid=i), DT, i,
                   road_offset=0.5 if i % 2 else -0.5)
-        assert abs(pl.state.v_lat_est) < 1e-9
+        assert abs(pl.state.v_lat_est) < 0.2
+
+
+def test_beta_velocity_tracks_persistent_offset():
+    """持续同号新息（贴墙：深度恒 −1.9、模型却以为 +1.0 在回中）必须
+    把 v_lat 拉回观测侧——222557 局 s1 38.1~39.7s 骑缘躺平的修正通路。"""
+    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
+                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = -1.6
+    pl.state.v_lat_est = 1.0
+    vs = []
+    for i in range(2, 22):
+        pl.update(_out(fid=i, valid=i), DT, i, road_offset=-1.9)
+        vs.append(pl.state.v_lat_est)
+    assert abs(vs[-1]) < 0.3    # 假的 +1.0 被拉回观测侧（车实际近乎不动）
+    assert max(vs[:3]) <= 1.0   # 变化率上限：不许一步打满
 
 
 def test_no_road_offset_is_old_behavior():
