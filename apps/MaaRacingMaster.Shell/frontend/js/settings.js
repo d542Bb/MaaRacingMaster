@@ -478,6 +478,90 @@
       + items.map(depItemHtml).join('');
   }
 
+  // 调试文件夹（设置页入口）：先给用户数据目录的占用总览，再由面板按钮跳资源管理器。
+  // 统计在 sidecar 侧同步完成（本机 3.6 万文件约 0.08s），故不做加载态。
+  const USAGE_KEY_RE = /^[a-z][a-z0-9-]*$/; // 目录键要拼进 class 名，只收安全字符
+
+  function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  // 与资源管理器同口径：1024 进制、沿用 KB/MB/GB 字样；小数字数按量级收敛
+  function fmtBytes(n) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let v = Number(n) || 0;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+    const dec = i === 0 ? 0 : (v >= 100 ? 0 : (i >= 3 ? 2 : 1));
+    return v.toFixed(dec) + ' ' + units[i];
+  }
+
+  async function openDataUsage() {
+    let d;
+    try {
+      d = await mra.call('get_data_usage');
+    } catch (e) {
+      showError('读取目录占用失败: ' + e.message);
+      return;
+    }
+    const dirs = Array.isArray(d && d.dirs) ? d.dirs : [];
+    const total = Number(d && d.total) || 0;
+    // 扇区按累计字节切分：每段接上一段的终点，零字节目录自然没有扇区
+    let acc = 0;
+    const stops = [];
+    dirs.forEach((x) => {
+      const bytes = Number(x.bytes) || 0;
+      if (bytes <= 0 || total <= 0) return;
+      const from = (acc / total) * 360;
+      acc += bytes;
+      stops.push('var(--mra-usage-' + x.key + ', var(--mra-foreground-dim)) '
+        + from.toFixed(2) + 'deg ' + (acc / total * 360).toFixed(2) + 'deg');
+    });
+    const donut = stops.length
+      ? 'background: conic-gradient(from -90deg, ' + stops.join(', ') + ');'
+      : 'background: var(--mra-border);';
+    const rows = dirs.map((x) => {
+      const key = USAGE_KEY_RE.test(String(x.key)) ? x.key : 'unknown';
+      return '<li class="space-row">'
+        + '<span class="space-dot space-dot--' + key + '"></span>'
+        + '<div class="space-main">'
+        + '<div class="space-name">' + escHtml(x.key) + '</div>'
+        + '<div class="space-desc">' + escHtml(x.label) + '</div>'
+        + '</div>'
+        + '<span class="space-size">' + fmtBytes(x.bytes) + '</span>'
+        + '</li>';
+    }).join('');
+    openModal({
+      title: '调试数据占用',
+      maxWidth: 580,
+      bodyHtml: '<p class="space-root">' + escHtml((d && d.root) || '') + '</p>'
+        + '<div class="space-body">'
+        + '<div class="space-chart">'
+        + '<div class="space-donut" style="' + donut + '"></div>'
+        + '<div class="space-donut-center"><b>' + fmtBytes(total) + '</b><span>合计占用</span></div>'
+        + '</div>'
+        + '<ul class="space-list">' + rows + '</ul>'
+        + '</div>',
+      buttons: [
+        {
+          text: '打开文件夹',
+          primary: true,
+          onClick: async (modal) => {
+            try {
+              await mra.call('open_user_data_folder', {});
+              modal.close();
+            } catch (e) {
+              showError('打开文件夹失败: ' + e.message);
+            }
+          },
+        },
+        { text: '关闭', onClick: (modal) => modal.close() },
+      ],
+    });
+  }
+
   // 环境中心（设置页入口）：tab「权限优化」（注册表优化，三档汇总 + 一键全部）
   // + tab「可选依赖」（ViGEmBus 驱动 / 界面字体，检测 + 引导）
   async function openOptimizerCenter() {
@@ -1038,39 +1122,20 @@
       </div>
 
       <div class="col-right">
-        <!-- 快捷工具 -->
+        <!-- 快捷工具：目录占用面板与环境中心两个入口 -->
         <div class="card">
           <div class="card-head"><h3>快捷工具</h3></div>
           <div class="card-body">
             <div class="tool-grid">
-              <button class="mra-tool-btn" data-tool="screenshot">
-                ${MRAIcons.svg('camera', {class: 'mra-tool-btn-icon'})}
-                <span class="mra-tool-btn-label">截图测试</span>
-              </button>
               <button class="mra-tool-btn" data-tool="folder">
                 ${MRAIcons.svg('folder-open', {class: 'mra-tool-btn-icon'})}
                 <span class="mra-tool-btn-label">调试文件夹</span>
               </button>
-              <button class="mra-tool-btn" data-tool="template">
-                ${MRAIcons.svg('crosshair', {class: 'mra-tool-btn-icon'})}
-                <span class="mra-tool-btn-label">模板匹配</span>
-              </button>
-              <button class="mra-tool-btn" data-tool="cache">
-                ${MRAIcons.svg('trash', {class: 'mra-tool-btn-icon'})}
-                <span class="mra-tool-btn-label">清空缓存</span>
+              <button class="mra-tool-btn" data-tool="env">
+                ${MRAIcons.svg('settings', {class: 'mra-tool-btn-icon'})}
+                <span class="mra-tool-btn-label">运行环境</span>
               </button>
             </div>
-          </div>
-        </div>
-
-        <!-- 运行环境 -->
-        <div class="card">
-          <div class="card-head"><h3>运行环境</h3></div>
-          <div class="card-body">
-            <p class="capture-note" style="margin:0 0 12px;">体检并修复 Windows 层面对自动化运行的干扰（ms-gamebar 弹窗、打字时弹手柄虚拟键盘等，均可单独优化或恢复系统默认，附值路径与后果说明）；可选依赖（手柄驱动、界面字体）的就绪状态与安装引导。均为可选项，缺失不影响核心功能</p>
-            <button class="mra-tool-btn mra-tool-btn--block" id="btn-optimizer">
-              <span class="mra-tool-btn-label">打开环境中心</span>
-            </button>
           </div>
         </div>
       </div>`;
@@ -1211,9 +1276,6 @@
   // 绑定当前模块卡片上的控件事件（渲染后调用；旧节点随 innerHTML 替换一并销毁，无重复绑定）
   function bindModulePages(moduleId) {
     wireSwitchAria($('page-settings')); // 模板重渲染后新开关补接线（幂等）
-    // 环境中心入口（设置页重渲染后按钮重建，须在此重绑；置于卫语句前防提前 return 漏绑）
-    const btnOptimizer = document.getElementById('btn-optimizer');
-    if (btnOptimizer) btnOptimizer.addEventListener('click', () => { openOptimizerCenter(); });
 
     const p = (suffix) => $(moduleId + '-' + suffix);
 
@@ -1412,20 +1474,11 @@
       });
     });
 
-    // 快捷工具：folder → sidecar open_user_data_folder；其余暂未接入
-    document.querySelectorAll('.mra-tool-btn').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const tool = btn.dataset.tool;
-        if (!tool) return; // 借用 .mra-tool-btn 样式但非快捷工具的按钮（如「打开环境中心」）交各自专属 handler，不在此报错
-        if (tool === 'folder') {
-          try {
-            await mra.call('open_user_data_folder', {});
-          } catch (e) {
-            showError('打开文件夹失败: ' + e.message);
-          }
-        } else {
-          showError('该工具尚未接入 sidecar');
-        }
+    // 快捷工具：folder → 目录占用面板（面板内再跳资源管理器）；env → 环境中心
+    document.querySelectorAll('.mra-tool-btn[data-tool]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.tool === 'folder') openDataUsage();
+        else if (btn.dataset.tool === 'env') openOptimizerCenter();
       });
     });
   }

@@ -878,6 +878,60 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .mra-tool-btn-label { font-size: 11px; color: var(--mra-foreground-secondary); }
 .mra-tool-btn--block { width: 100%; }
 
+/* ============ 调试数据占用面板（设置页「调试文件夹」） ============ */
+/* 五类目录配色：定义在共同祖先上，饼图扇区与图例圆点同源；JS 只拼 var 名不写死颜色 */
+.space-body {
+  display: flex; align-items: center; gap: 22px;
+  --mra-usage-debug: var(--mra-primary);
+  --mra-usage-data: var(--mra-info);
+  --mra-usage-framework: var(--mra-warning);
+  --mra-usage-logs: var(--mra-success);
+  --mra-usage-config: var(--mra-foreground-dim);
+}
+.space-root {
+  font-family: var(--mra-font-mono); font-size: 11px;
+  color: var(--mra-foreground-muted); margin-bottom: 10px;
+}
+.space-chart {
+  position: relative; width: 148px; height: 148px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+/* 扇区由 JS 按真实字节数拼 conic-gradient 写在行内；此处只管环形形状与内孔 */
+.space-donut { position: absolute; inset: 0; border-radius: 50%; }
+.space-donut::after {
+  content: ''; position: absolute; inset: 26px; border-radius: 50%;
+  background: var(--mra-surface);
+}
+.space-donut-center { position: relative; text-align: center; }
+.space-donut-center b {
+  display: block; font-family: var(--mra-font-mono); font-size: 15px;
+  color: var(--mra-foreground); font-variant-numeric: tabular-nums; line-height: 1.2;
+}
+.space-donut-center span { font-size: 10px; color: var(--mra-foreground-muted); }
+.space-list { list-style: none; margin: 0; padding: 0; flex: 1; min-width: 0; }
+.space-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--mra-border-light);
+}
+.space-row:last-child { border-bottom: none; }
+.space-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
+.space-dot--debug { background: var(--mra-usage-debug); }
+.space-dot--data { background: var(--mra-usage-data); }
+.space-dot--framework { background: var(--mra-usage-framework); }
+.space-dot--logs { background: var(--mra-usage-logs); }
+.space-dot--config { background: var(--mra-usage-config); }
+.space-dot--unknown { background: var(--mra-border-strong); }
+.space-main { flex: 1; min-width: 0; }
+.space-name {
+  font-family: var(--mra-font-mono); font-size: 12px;
+  color: var(--mra-foreground); line-height: 1.4;
+}
+.space-desc { font-size: 11px; color: var(--mra-foreground-muted); line-height: 1.5; }
+.space-size {
+  font-family: var(--mra-font-mono); font-size: 12px; color: var(--mra-foreground);
+  font-variant-numeric: tabular-nums; flex-shrink: 0; line-height: 1.4;
+}
+
 /* ============ 关于页 ============ */
 .about-container { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 .about-hero {
