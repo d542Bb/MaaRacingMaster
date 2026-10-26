@@ -552,24 +552,32 @@ class LateralPlanner:
                     # 同样可以校准线帧。20261025 局 p1 206 的坑：深度报 +1.87
                     # 被跳变门拒，线报 +1.32（同帧、差 0.55 道），偏置没更新、
                     # 信任一直为假，随后 40 拍保持期融合全关、状态漂到 −1.3。
+                    line_trusted_before = self._lane_trusted
                     self._lane_rebias(obs, lane_ok)
-                    # 持续偏移放行（2026-10-23）：同向、量级相近的大新息连续
-                    # N 拍 = 参考系已换（车贴边或模型漂移后观测回归），不是
-                    # 单帧坏检测。确认后**直接重基**（exec:=obs）：0.15s 内
-                    # 2 道级的新息不可能是本车位移，而是参考系跳变；旧实现
-                    # 按 α 逐拍收，期间目标用新帧、位置用旧帧，杆继续往错误
-                    # 方向打满（20261025 局 p1 457~461：观测已到 −1.4，exec
-                    # 还在 +0.56，杆 −0.17 继续向左，车随后贴左墙）。速度保留
-                    # ——它描述的是运动，换帧不换运动。
+                    # 持续偏移放行：只认新证据巡次。复用拍是同一读数，不重复
+                    # 计数，也不清零——缺证据不是反证；hold/断供拍同理（墙边
+                    # 150/227 拍是 hold，旧逻辑每遇一次就把 streak 清零，1 道级
+                    # 偏移永远等不到 3 拍确认，控制器以为已在目标带）。
                     same = (self._jump_sign is not None
                             and (r > 0) == self._jump_sign
                             and abs(r - self._jump_last_r) <= _JUMP_SAME_TOL_LANE)
-                    self._jump_streak = self._jump_streak + 1 if same else 1
-                    if not same:
-                        self._jump_confirmed = False   # 方向/量级变了要重新确认
-                    self._jump_sign = r > 0
-                    self._jump_last_r = r
-                    if self._jump_confirmed or \
+                    if road_offset_new:
+                        self._jump_streak = self._jump_streak + 1 if same else 1
+                        if not same:
+                            self._jump_confirmed = False
+                        self._jump_sign = r > 0
+                        self._jump_last_r = r
+                    # 锁线与深度独立一致的大新息：两源互证，立即重基。墙边
+                    # fresh 拍 75~87% 深度与线在 0.6 道内一致；只等 3 拍确认
+                    # 会把贴墙偏移拖到 1s+，期间目标误差被位置假象吃掉。
+                    line_x = (float(lane_x)
+                              if lane_ok and lane_x is not None else None)
+                    # 只认本拍开始前就已对账的线：线刚跳变、本拍才被
+                    # `_lane_rebias` 重新信任时不能当互证（先融合几拍再说）。
+                    corroborated = (line_x is not None and line_trusted_before
+                                    and abs(obs - (line_x + self._lane_bias))
+                                    <= _LANE_BIAS_AGREE)
+                    if self._jump_confirmed or corroborated or \
                             self._jump_streak >= self.p.obs_jump_confirm_ticks:
                         self._jump_confirmed = True
                         self.state.executed_lane = obs
@@ -599,7 +607,8 @@ class LateralPlanner:
             # 重形成）。历史保持值仍算"有几何"，锚点保留——否则新鲜大读数回来
             # 要先过形成门（|ro|≤anchor_max_off）再等 1s，白白多一段盲开。
             self._stale_t += dt_s
-            self._reset_jump()
+            # 不重置大新息确认：hold/断供是缺证据，不是反证。墙边大部分拍
+            # 是 hold，旧逻辑在这里清零 streak，持续偏移永远等不到确认。
             # 保持期的运动观测：车道线连续横位。模型自走在没有位移证据时会
             # 按打杆量虚走（贴墙/被挡），线是唯一真实的位移来源；帧偏置由
             # 新鲜深度拍校准。线未锁定/重锁后未对账时不融合，退回模型。

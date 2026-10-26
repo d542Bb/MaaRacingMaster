@@ -968,3 +968,79 @@ def test_heading_fuse_opposes_motion_in_control_law():
         cmd[gain] = c.steer_x
     assert cmd[0.0] == 0
     assert cmd[0.5] < 0
+
+
+# ---------- 大新息确认：新证据计数，hold/复用不清零、不重复计 ----------
+
+def _jump_planner(**over):
+    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
+                obs_jump_max_lane=0.8, obs_jump_confirm_ticks=3,
+                anchor_stale_s=10.0)
+    base.update(over)
+    return _planner(**base)
+
+
+def _anchor(pl, fid=1):
+    pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=0.0)
+    return fid
+
+
+def test_hold_ticks_do_not_reset_jump_streak():
+    """墙边 150/227 拍是 hold：缺证据不是反证，不能把大新息确认清零。"""
+    pl = _jump_planner()
+    fid = _anchor(pl)
+    seq = [(1.5, False, True), (1.5, True, False),   # 新 / hold
+           (1.5, False, True), (1.5, True, False),   # 新 / hold
+           (1.5, False, True)]                       # 第 3 次新证据
+    for i, (ro, hold, new) in enumerate(seq):
+        fid += 1
+        pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=ro,
+                  road_offset_hold=hold, road_offset_new=new)
+    assert pl.state.executed_lane == pytest.approx(1.5, abs=1e-6)
+
+
+def test_reuse_ticks_do_not_advance_jump_streak():
+    """同一读数的复用拍不是新证据：不得凭 3 拍复用把单帧大新息坐实。"""
+    pl = _jump_planner()
+    fid = _anchor(pl)
+    for i in range(2):                                # 新 + 两次复用
+        fid += 1
+        pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=1.5,
+                  road_offset_new=(i == 0))
+    assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-6)
+    for _ in range(2):                                # 再两次新证据 → 第 3 次确认
+        fid += 1
+        pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=1.5,
+                  road_offset_new=True)
+    assert pl.state.executed_lane == pytest.approx(1.5, abs=1e-6)
+
+
+def test_corroborated_large_offset_rebases_immediately():
+    """锁线与深度同拍一致的大新息：两源互证，不等 3 拍。"""
+    pl = _jump_planner()
+    fid = _anchor(pl)
+    # 线已在 1.5 道稳定跟踪且帧偏置已对账（墙边常见：线逐步走到墙，深度跳变）
+    pl._lane_sm = 1.5
+    pl._lane_bias = 0.0
+    pl._lane_trusted = True
+    fid += 1
+    pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=1.5,
+              lane_x=1.5, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(1.5, abs=1e-6)
+
+
+def test_uncorroborated_large_offset_still_needs_three_new():
+    """线与深度不一致的大新息不走近道：仍按 3 次新证据确认，防单帧坏深度。"""
+    pl = _jump_planner()
+    fid = _anchor(pl)
+    for _ in range(2):
+        fid += 1
+        pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=1.5,
+                  lane_x=-1.5, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-6)
+    fid += 1
+    pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=1.5,
+              lane_x=-1.5, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(1.5, abs=1e-6)
