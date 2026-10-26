@@ -55,6 +55,10 @@ _JUMP_SAME_TOL_LANE = 0.5
 _LANE_SMOOTH_ALPHA = 0.2   # 线横位 EMA：压单帧噪声（±0.3~0.5 道）
 _LANE_FUSE_GAIN = 0.3      # 保持期向"线+帧偏置"收敛的每拍增益（~0.3s 时间常数）
 _LANE_BIAS_AGREE = 0.6     # 深度/线一致门：差异在此内才用深度帧校准线帧
+_LANE_BIAS_MAX = 0.25      # 帧偏置物理上限：墙边实测 p50 0.0~0.12，>0.3 多为
+                           # 单侧/绿区坏深度把线帧往错误方向拽（会抵消贴墙信号）
+_LANE_BIAS_EMA = 0.25      # 偏置慢滤波：单帧 0.5 道差异不能一步坐实
+_LANE_VETO_LANE = 0.5      # 已对账锁线与新鲜深度差超此值：深度本拍不拉位置
 _LANE_JUMP_RESET = 0.8     # 线自身单拍跳超此值 = 换线/重锁：重置并停用融合
 
 # 航向+线速观测（2026-10-26 离线 12 局）：模型横速与线速相关 0.4~0.6、幅值
@@ -269,18 +273,25 @@ class LateralPlanner:
         self._jump_last_r = None
         self._jump_confirmed = False
 
-    def _lane_rebias(self, obs: float, lane_ok: bool) -> None:
+    def _lane_rebias(self, obs: float, lane_ok: bool,
+                     allow_bias: bool = True) -> None:
         """新鲜深度拍校准线帧偏置：两者一致才把偏置钉到深度帧。
 
         不一致时保留旧偏置（单侧墙 + W/2 反推、错箱都会给出 0.5~1 道偏差，
         见 20261025 局 p2 490：墙读 −1.14，线与截图都在 −1.9），等下一次
         一致再校正；重基拍由调用方先置 trusted=False，一致性恢复前不融合。
-        线未锁定（COAST/RELOCK）时线值不可比，不校准。"""
-        if not lane_ok or self._lane_sm is None:
+        线未锁定（COAST/RELOCK）时线值不可比，不校准。
+        偏置限幅 ±0.25 并做慢滤波：墙边偏置会涨到 0.5~0.6，把线帧往错误的
+        单侧/绿区深度拽，正好抵消贴墙信号；单帧差异也不能一步坐实。"""
+        if not lane_ok or self._lane_sm is None or not allow_bias:
             return
         d = obs - self._lane_sm
         if abs(d) <= _LANE_BIAS_AGREE:
-            self._lane_bias = d
+            d = max(-_LANE_BIAS_MAX, min(_LANE_BIAS_MAX, d))
+            self._lane_bias = max(
+                -_LANE_BIAS_MAX,
+                min(_LANE_BIAS_MAX,
+                    self._lane_bias + _LANE_BIAS_EMA * (d - self._lane_bias)))
             self._lane_trusted = True
 
     def lane_debug(self) -> dict:
@@ -510,7 +521,17 @@ class LateralPlanner:
             else:
                 obs = road_offset - self._road_anchor
                 r = obs - self.state.executed_lane
-                if abs(r) <= self.p.obs_jump_max_lane:
+                # 已对账锁线可以否决不一致的新鲜深度：贴墙时单侧/绿区深度
+                # 会报错 1 道以上，若照收 α 会把状态从墙边拽回路中，杆值
+                # 跟着贴 0。线刚跳变/未对账时不否决；深度持续不一致仍由
+                # 3 次新证据重基兜底（下面 large-innovation 路径）。
+                line_obs = (float(lane_x) + self._lane_bias
+                            if lane_ok and lane_x is not None else None)
+                line_gap = (abs(obs - line_obs)
+                            if line_obs is not None and self._lane_trusted
+                            else None)
+                veto = line_gap is not None and line_gap > _LANE_VETO_LANE
+                if abs(r) <= self.p.obs_jump_max_lane and not veto:
                     self.state.executed_lane += self.p.obs_alpha * r
                     self._lane_rebias(obs, lane_ok)
                     # β 速度修正只认新证据拍：异步驻留协议下一套读数被多拍复用，
@@ -553,7 +574,7 @@ class LateralPlanner:
                     # 被跳变门拒，线报 +1.32（同帧、差 0.55 道），偏置没更新、
                     # 信任一直为假，随后 40 拍保持期融合全关、状态漂到 −1.3。
                     line_trusted_before = self._lane_trusted
-                    self._lane_rebias(obs, lane_ok)
+                    self._lane_rebias(obs, lane_ok, allow_bias=not veto)
                     # 持续偏移放行：只认新证据巡次。复用拍是同一读数，不重复
                     # 计数，也不清零——缺证据不是反证；hold/断供拍同理（墙边
                     # 150/227 拍是 hold，旧逻辑每遇一次就把 streak 清零，1 道级
@@ -570,13 +591,11 @@ class LateralPlanner:
                     # 锁线与深度独立一致的大新息：两源互证，立即重基。墙边
                     # fresh 拍 75~87% 深度与线在 0.6 道内一致；只等 3 拍确认
                     # 会把贴墙偏移拖到 1s+，期间目标误差被位置假象吃掉。
-                    line_x = (float(lane_x)
-                              if lane_ok and lane_x is not None else None)
                     # 只认本拍开始前就已对账的线：线刚跳变、本拍才被
                     # `_lane_rebias` 重新信任时不能当互证（先融合几拍再说）。
-                    corroborated = (line_x is not None and line_trusted_before
-                                    and abs(obs - (line_x + self._lane_bias))
-                                    <= _LANE_BIAS_AGREE)
+                    corroborated = (line_obs is not None and line_trusted_before
+                                    and abs(obs - line_obs)
+                                    <= _LANE_VETO_LANE)
                     if self._jump_confirmed or corroborated or \
                             self._jump_streak >= self.p.obs_jump_confirm_ticks:
                         self._jump_confirmed = True

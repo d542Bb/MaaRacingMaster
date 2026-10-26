@@ -492,21 +492,67 @@ def test_lane_fusion_tracks_motion_during_hold():
 
 
 def test_lane_fusion_rejects_depth_outlier():
-    """深度单侧反推错 0.7 道、线保持原位：深度拍照收 α（供数门已放行），
-    帧偏置不更新；随后保持期按线把位置拉回，不带错值。"""
+    """已对账锁线可以否决不一致的新鲜深度（差 0.7 > 0.5）：单帧不拉位置，
+    防单侧/绿区坏深度把车从墙边拽回；持续 3 次新证据才重基。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
-              road_offset=0.7, lane_x=0.0, lane_ok=True)     # 错值进 α
-    assert pl.state.executed_lane == pytest.approx(P.obs_alpha * 0.7, abs=1e-6)
+              road_offset=0.7, lane_x=0.0, lane_ok=True)     # 线否决单帧
+    assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-6)
     for i in range(15):
         pl.update(_out(x_target=0.0, fid=3 + i, valid=3 + i), DT, 3 + i,
                   road_offset=0.7, road_offset_hold=True,
                   lane_x=0.0, lane_ok=True)
     assert abs(pl.state.executed_lane) < 0.05
+    for i in range(3):                        # 持续 3 次新证据 → 重基到深度
+        pl.update(_out(x_target=0.0, fid=20 + i, valid=20 + i), DT, 20 + i,
+                  road_offset=0.7, lane_x=0.0, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(0.7, abs=1e-6)
+
+
+def test_trusted_line_vetoes_wall_depth_override():
+    """墙边反例：线报 −1.7、深度报 −0.33，若照收 α 会把状态拽回路中。
+    已对账锁线否决它；深度持续 3 次新证据才重基（线错时仍能纠正）。"""
+    pl = _jump_planner()
+    fid = _anchor(pl)
+    pl.state.executed_lane = -0.4
+    pl._lane_sm = -1.7
+    pl._lane_bias = 0.0
+    pl._lane_trusted = True
+    fid += 1
+    pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=-0.33,
+              lane_x=-1.7, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(-0.4, abs=1e-6)
+    for _ in range(3):                        # 深度持续 3 次新证据 → 重基
+        fid += 1
+        pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=-0.33,
+                  lane_x=-1.7, lane_ok=True)
+    assert pl.state.executed_lane == pytest.approx(-0.33, abs=1e-6)
+
+
+def test_lane_bias_clamped_and_smoothed():
+    """帧偏置限幅 ±0.25 + 慢滤波：单帧 0.5 道差异不能一步坐实，也不能
+    把线帧拽出物理带（墙边 +0.5 偏置会正好抵消贴墙信号）。"""
+    pl = _jump_planner()
+    fid = _anchor(pl)
+    fid += 1
+    pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=0.5,
+              lane_x=0.0, lane_ok=True)
+    assert 0.0 < pl._lane_bias <= 0.25
+    assert pl._lane_bias < 0.1                 # 单帧只走 EMA 一小步
+    for _ in range(6):
+        fid += 1
+        pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=0.5,
+                  lane_x=0.0, lane_ok=True)
+    assert pl._lane_bias <= 0.25 + 1e-9
+    for _ in range(6):
+        fid += 1
+        pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=-0.5,
+                  lane_x=0.0, lane_ok=True)
+    assert pl._lane_bias >= -0.25 - 1e-9
 
 
 def test_lane_jump_disables_fusion_until_depth_agrees():
@@ -538,7 +584,8 @@ def test_lane_jump_disables_fusion_until_depth_agrees():
 
 def test_lane_fusion_rebias_on_rejected_fresh_depth():
     """深度被跳变门拒绝时也要校准线帧（p1 206 的坑）：深度 +1.87 被拒、
-    线 +1.32 差 0.55 道——偏置应更新，随后保持期融合把状态拉回真值。"""
+    线 +1.32——偏置应按限幅/慢滤波更新（不再一步坐实 0.55），随后保持期
+    融合把状态拉向线帧；墙边坏深度的 0.5 道偏移不再被当帧偏置吃进去。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
@@ -552,11 +599,12 @@ def test_lane_fusion_rebias_on_rejected_fresh_depth():
               road_offset=1.87, lane_x=1.3, lane_ok=True)   # 深度被跳变门拒
     assert pl.state.executed_lane < 1.0             # 本拍不重基
     assert pl._lane_trusted is True                 # 但帧偏置已校准
+    assert abs(pl._lane_bias) <= 0.25               # 限幅内
     for i in range(12):
         pl.update(_out(x_target=0.0, fid=4 + i, valid=4 + i), DT, 4 + i,
                   road_offset=1.87, road_offset_hold=True,
                   lane_x=1.3, lane_ok=True)
-    assert pl.state.executed_lane > 1.5
+    assert pl.state.executed_lane > 1.2
 
 
 def test_lane_relock_resets_smoothing():
