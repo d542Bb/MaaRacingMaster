@@ -64,6 +64,12 @@ _LANE_JUMP_RESET = 0.8     # 线自身单拍跳超此值 = 换线/重锁：重�
 # 不可能是本车所在车道线，是远端边线/邻道错锁。贴墙段实测这类读数（3.1~3.5）
 # 连续 0.8s 把平滑值拖到 3.2，随后又当成"锁线"与深度打架（20261026 局 s1#3）。
 _LANE_X_MAX = 2.6
+# 短断链内（COAST）的线读数仍作"反证"：平滑值还是最近实测，深度若与它
+# 差超过一致门就不重基。超过此龄视为无对照，深度单独说了算。
+_LANE_BLOCK_AGE_MS = 300.0
+# 贴边逃生门（道）：外车道中心 ±1 再让 0.4；超过即按全权回带（gentle 的
+# 0.45 杆幅在 1.4 道级误差下需要 1s+ 才能回带，期间车停在墙侧）。
+_WALL_ESCAPE_LANE = 1.4
 
 # 航向+线速观测（2026-10-26 离线 12 局）：模型横速与线速相关 0.4~0.6、幅值
 # 中位只有线速的 1/4 左右，且相位超前约 0.45s；航向横速滞后 0.2~0.3s。两者
@@ -261,6 +267,8 @@ class LateralPlanner:
         self._lane_bias = 0.0
         self._lane_trusted = False
         self._lane_relock_seen = False   # 已见 RELOCK，等下一条锁线重置
+        self._lane_age_ms: float | None = None
+        self._lane_gated = False         # 本拍线读数越出物理范围（按无线处理）
         # 上一拍低通前杆值（负一~一；trace 标定用，行为不消费）
         self.last_steer_raw = 0.0
         # 上一拍计划前馈命令：换候选时限速用；计划中断后置空，重入首拍不限。
@@ -299,12 +307,19 @@ class LateralPlanner:
             self._lane_trusted = True
 
     def _line_disagrees(self, obs: float, lane_ok: bool) -> bool:
-        """单侧墙反推的深度会错 1 道以上；线仍在锁且差超一致门时，
-        不拿这份深度做陈旧重基（等两源收敛，旧行为）。线越界/断锁时
-        深度是唯一来源，不挡。"""
-        return (lane_ok and self._lane_sm is not None
-                and abs(obs - (self._lane_sm + self._lane_bias))
-                > _LANE_BIAS_AGREE)
+        """单侧墙反推的深度会错 1 道以上；线仍可用且差超一致门时，
+        不拿这份深度做陈旧重基（等两源收敛，旧行为）。
+
+        可用 = 本拍锁定，或短断链内（COAST ≤`_LANE_BLOCK_AGE_MS`，平滑值
+        仍是最近实测）。线越界被挡或已断供超龄时，深度是唯一来源，不挡。
+        """
+        if self._lane_gated or self._lane_sm is None:
+            return False
+        recent = (lane_ok or (self._lane_age_ms is not None
+                              and self._lane_age_ms <= _LANE_BLOCK_AGE_MS))
+        if not recent:
+            return False
+        return abs(obs - (self._lane_sm + self._lane_bias)) > _LANE_BIAS_AGREE
 
     def _stale_rebase(self, road_offset: float, lane_ok: bool,
                       allow_bias: bool = True) -> None:
@@ -395,8 +410,11 @@ class LateralPlanner:
             self.head.reset()
         # 线横位越出物理范围即按"本拍无线"处理：不参与平滑/融合/互证，
         # 也不污染航向观测。深度仍可经 ⑥b 自行重基。
-        if lane_ok and (lane_x is None or not math.isfinite(lane_x)
-                        or abs(lane_x) > _LANE_X_MAX):
+        self._lane_age_ms = lane_age_ms
+        self._lane_gated = bool(
+            lane_ok and (lane_x is None or not math.isfinite(lane_x)
+                         or abs(lane_x) > _LANE_X_MAX))
+        if self._lane_gated:
             lane_ok = False
             lane_theta_ok = False
         if lane_ok and lane_x is not None and math.isfinite(lane_x):
@@ -461,8 +479,13 @@ class LateralPlanner:
         elif decision.x_target is not None:
             self._abort_hold_lane = None
             # 场跟随：保持态=维护性定中心（gentle，16:44 局）；机动态
-            # （目标距自车超过切换死区）=全权——机动态死区/杆幅另配
-            if decision.maneuver:
+            # （目标距自车超过切换死区）=全权——机动态死区/杆幅另配。
+            # 贴边逃生：|executed|超 _WALL_ESCAPE_LANE（保持车道 ±1 + 0.4）时
+            # 也走全权——墙是硬约束，gentle 的 0.45 杆幅把 1.4 道级回带拖成
+            # 1s+（20261026 局：贴边拍 53/99 是计划走廊不可行被否决、PD 以
+            # gentle 回带，整段停在墙侧）。回带方向仍由目标给出，不改目标。
+            if (decision.maneuver
+                    or abs(self.state.executed_lane) > _WALL_ESCAPE_LANE):
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
                     deadband=self.p.maneuver_deadband_lane,

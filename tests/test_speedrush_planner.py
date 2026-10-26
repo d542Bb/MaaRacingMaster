@@ -491,6 +491,26 @@ def test_hold_rebase_blocked_by_disagreeing_line():
     assert pl._stale_t >= P.anchor_stale_s        # 预算保留，等两源收敛
 
 
+def test_hold_rebase_blocked_by_recent_coast_line():
+    """短断链（COAST）的线读数仍算反证：线刚测过 1.2、深度保持值 −0.2，
+    差 1.4 道 → 不重基；线龄超对照窗后才让深度单独重基。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=1.2, lane_x=1.2, lane_ok=True)
+    pl._stale_t = P.anchor_stale_s - DT
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=-0.2, road_offset_hold=True,
+              lane_x=1.2, lane_ok=False, lane_age_ms=100.0)
+    assert pl.state.executed_lane == pytest.approx(1.2, abs=0.05)
+    assert pl._stale_t >= P.anchor_stale_s
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
+              road_offset=-0.2, road_offset_hold=True,
+              lane_x=1.2, lane_ok=False, lane_age_ms=500.0)
+    assert pl.state.executed_lane == pytest.approx(-0.2, abs=1e-6)
+
+
 def test_blackout_keeps_stale_budget_for_next_edge_reading():
     """断供丢锚不清零陈旧计时：下一条新鲜贴边读数直接重基，不再白等 1s。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
@@ -797,7 +817,7 @@ def test_hold_authority_deadband_and_cap():
     pl.state.executed_lane = 0.3                       # 误差 0.3 < 死区 0.5
     c = pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1)
     assert c.steer_x == 0                              # 不发力（旧语义会持续拽）
-    pl.state.executed_lane = 1.5                       # 误差 1.5：k_p0.7→u=1.05
+    pl.state.executed_lane = 1.2                       # 带内（≤1.4）：k_p0.7→u=0.84
     c = pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert -int(P.hold_stick_max * _STICK_FULL) - 100 < c.steer_x < 0  # 封顶 0.45
 
@@ -814,6 +834,25 @@ def test_maneuver_full_authority_moves_one_lane():
         max_stick = max(max_stick, abs(cmd.steer_x))
     assert max_stick > int(0.45 * _STICK_FULL)
     assert pl.state.executed_lane > 0.3
+
+
+def test_wall_escape_uses_full_authority():
+    """贴边逃生：|executed|>1.4 道时不再走 gentle 0.45 杆幅，直接全权回带；
+    带内仍保持 gentle（防画龙）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 1.6
+    pl.state.v_lat_est = 0.0
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
+    assert pl.last_steer_raw < -0.7
+    pl2 = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl2.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl2.state.executed_lane = 1.2
+    pl2.state.v_lat_est = 0.0
+    pl2.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
+    assert pl2.last_steer_raw >= -P.hold_stick_max - 0.01
 
 
 def test_maneuver_deadband_and_cap_used():
