@@ -677,7 +677,8 @@ class TestModuleWiring:
     def env(self, monkeypatch, tmp_path):
         clock = _Clock()
         monkeypatch.setattr(sr, "time", clock)
-        monkeypatch.setattr(sr, "data_dir", lambda: tmp_path / "data")
+        # 录制语料与调试产物同家（debug/speedrush/）：整局重定向到 tmp，别写真实 %APPDATA%
+        monkeypatch.setattr(sr, "debug_dir", lambda: tmp_path / "debug")
         ctx = _FakeCtx(clock)
         mod = sr.SpeedRushModule(ctx)  # type: ignore[arg-type]
         mod._running = True
@@ -694,7 +695,7 @@ class TestModuleWiring:
         obs = _spy.instances[0]
         assert obs.started and obs.stopped_reason == "phase_end"
         # 与录制器同一会话目录（对齐目标就是同会话的 frames.jsonl）
-        assert obs.out_dir.parent == sr.data_dir() / "speedrush" / "demos"
+        assert obs.out_dir.parent == sr.debug_dir() / "speedrush"
         assert (obs.out_dir / "frames.jsonl").is_file()
         # 取帧走 frame_with_age（帧号/采集时刻的唯一来源），不是 screenshot
         assert obs.kw["frame_source"].__self__ is ctx.capture
@@ -709,7 +710,7 @@ class TestModuleWiring:
         assert mod._drive(1) is True
         assert _spy.instances == []
         assert mod._hud is None
-        assert not (sr.data_dir() / "speedrush" / "demos").exists()
+        assert not (sr.debug_dir() / "speedrush").exists()
 
     def test_state_exposes_hud_recording(self, env) -> None:
         """``_state`` 按录制器的既有做法暴露是否在记录。"""

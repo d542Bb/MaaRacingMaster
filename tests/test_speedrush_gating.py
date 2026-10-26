@@ -107,12 +107,11 @@ class _FakeGraph:
 
 @pytest.fixture
 def env(monkeypatch, tmp_path):
-    """装好受控时钟与数据目录的模块实例工厂。"""
+    """装好受控时钟与产物目录的模块实例工厂。"""
     clock = _Clock()
     monkeypatch.setattr(sr, "time", clock)
-    monkeypatch.setattr(sr, "data_dir", lambda: tmp_path / "data")
-    # debug 产物与 data 同源重定向：否则走完整驾驶循环的用例会把假钟固定名
-    # （20000101_000000_p1）写进真实 %APPDATA% 调试目录
+    # debug 产物与录制语料同源重定向（录制语料落在 debug/speedrush/）：否则走完整
+    # 驾驶循环的用例会把假钟固定名（20000101_000000_p1）写进真实 %APPDATA% 目录
     monkeypatch.setattr(sr, "debug_dir", lambda: tmp_path / "debug")
     ctx = _FakeCtx(clock)
     mod = sr.SpeedRushModule(ctx)  # type: ignore[arg-type]
@@ -257,7 +256,7 @@ def test_frame_is_read_even_without_recorder(env) -> None:
 
     assert mod._drive(1) is True
     assert ctx.capture.calls > 0
-    assert not (sr.data_dir() / "speedrush" / "demos").exists()
+    assert not (sr.debug_dir() / "speedrush").exists()
 
 
 # ---------- 感知接线（perception_mode） ----------
@@ -302,14 +301,39 @@ def test_drive_starts_and_stops_recorder_in_record_mode(env) -> None:
     # 退出后必须释放引用（否则 HUD 的 _state.recording 会永远为真）
     assert mod._recorder is None
 
-    sessions = sorted((sr.data_dir() / "speedrush" / "demos").iterdir())
+    sessions = sorted((sr.debug_dir() / "speedrush").iterdir())
     assert len(sessions) == 1
+    assert sessions[0].name.startswith("manual_")
     assert sessions[0].name.endswith("_p1")
     assert (sessions[0] / "meta.json").is_file()
     assert (sessions[0] / "frames.jsonl").is_file()
     # 场景分层字段由模块注入：阶段号来自调用点、回合号来自 _run_flow 的轮次计数
     meta = json.loads((sessions[0] / "meta.json").read_text(encoding="utf-8"))
     assert meta["phase"] == 1 and meta["round_no"] == 1
+
+
+def test_record_mode_writes_single_session_dir(env) -> None:
+    """人工驾驶阶段只产一个目录：语料与调试图不再各落一份（2026-10-26 收口）。
+
+    回归锁：录制期同一段画面曾被写两处——``data/speedrush/demos/manual_*``（语料）
+    与 ``debug/speedrush/<时刻>_p<N>``（20Hz raw/hud 调试图），单阶段约 300MB。
+    现在只在录制会话目录内落语料，且不建调试图。
+    """
+    mod, _, _ = env
+    mod._record_mode = True
+    mod._running = True
+    _set_graph(mod, [True, True, True, False, False])
+
+    assert mod._drive(1) is True
+    root = sr.debug_dir() / "speedrush"
+    sessions = sorted(p.name for p in root.iterdir() if p.is_dir())
+    assert len(sessions) == 1 and sessions[0].startswith("manual_")
+    session = root / sessions[0]
+    # 调试图是同一批画面的第二份拷贝：录制期不建（raw/ 与 <seq>_hud.jpg 均无）
+    assert not (session / "raw").exists()
+    assert not list(session.glob("*_hud.jpg"))
+    # data/ 只留结构化业务数据：录制不再往那里写
+    assert not (sr.debug_dir().parent / "data" / "speedrush").exists()
 
 
 def test_drive_without_record_mode_creates_no_session(env) -> None:
@@ -319,7 +343,7 @@ def test_drive_without_record_mode_creates_no_session(env) -> None:
     _set_graph(mod, [True, True, False, False])
     assert mod._drive(1) is True
     assert mod._recorder is None
-    assert not (sr.data_dir() / "speedrush" / "demos").exists()
+    assert not (sr.debug_dir() / "speedrush").exists()
 
 
 def test_drive_returns_false_when_never_ready(env) -> None:
@@ -341,8 +365,8 @@ def test_config_roundtrip_and_state_shape(env) -> None:
     state = mod.get_module_config()["_state"]
     assert state["recording"] is False
     assert state["frames"] == 0
-    assert state["demos_dir"].endswith("speedrush\\demos") or state["demos_dir"].endswith(
-        "speedrush/demos")
+    # 录制语料根=调试目录下的 speedrush（人工语料与调试图同家，只此一处）
+    assert state["record_dir"] == str(sr.debug_dir() / "speedrush")
 
 
 def test_config_ignores_unknown_and_coerces_bool(env) -> None:

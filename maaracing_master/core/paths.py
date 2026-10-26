@@ -9,7 +9,7 @@
     data/       结构化业务数据（data/treasure/treasure.db）
     logs/       会话记录（logs/<会话>/MaaRM_*.log + trace.jsonl，共用「日志记录」开关）
     framework/  MAA 框架自产物（maafw.log、cache）
-    debug/      调试截图会话（debug/<module>/<会话>/，调试台契约）
+    debug/      调试产物与录制语料（debug/<module>/<会话>/，调试台契约）
 """
 
 from __future__ import annotations

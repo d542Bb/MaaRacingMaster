@@ -189,7 +189,7 @@
     if (st && st.recording) {
       setOptionsStatus(
         `录制中：已写 ${st.frames} 帧 · 丢帧 ${st.frames_dropped} · 手柄样本 ${st.pad_samples}；`
-        + `目录 ${st.demos_dir}`, 'ok'
+        + `目录 ${st.record_dir}`, 'ok'
       );
       return;
     }
@@ -1130,9 +1130,9 @@
         <div class="card">
           <div class="card-head"><h3>驾驶演示数据</h3></div>
           <div class="card-body">
-            <p class="module-desc">录制开关在「主控」页极速狂飙任务卡的展开面板里。每段驾驶各写一个会话目录，
-              含逐帧图与手柄序列；门控判定的日志带帧号（<code>frame=</code>），按它可回查
-              判定时刻的画面。</p>
+            <p class="module-desc">录制开关在「主控」页极速狂飙任务卡的展开面板里。每段驾驶各写一个会话目录
+              （<code>debug/speedrush/manual_时间_p阶段/</code>），含逐帧图与手柄序列；门控判定的日志带帧号
+              （<code>frame=</code>），按它可回查判定时刻的画面。</p>
             <button class="mra-tool-btn mra-tool-btn--block" id="${mid}-open-demos" style="margin-top:12px;">
               <span class="mra-tool-btn-label">打开数据目录</span>
             </button>
