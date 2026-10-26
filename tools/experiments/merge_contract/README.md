@@ -111,6 +111,15 @@ status: active
 - **本组修正**：保持拍陈旧重基的反证扩展到 COAST ≤300ms（线龄超窗才让
   深度单独重基）；贴边 |executed|>1.4 时 PD 走全权回带（0.45→0.85）。
 
+- **贴边全权回带后 live 第三组（2026-10-26 15:51，4 局）**：线墙 23.7%→17.6%、
+  压墙 10.8%→7.2%、带内 32%→37%、过目标 p50 0.64→0.56、穿越 20.4→22.4；
+  与 shadow 组持平或更好（17.6/7.9/37）。几何口径 <1.0m 3.0%→1.9%
+  （shadow 1.7%）、<1.5m 10.2%→9.0%（8.0%），s1#1 的 <1.5m 10.0%→3.6%。
+- **实动到达 8→2/36 是口径问题**：12 段到达是 1~2 拍的空动作——并线段起点
+  `executed` 已在目标带内（ex0 0.69~1.02 对 tgt ±1），换道在段开始前就完成，
+  路线提交晚于车辆到位。总到达 14/36 与上组 18/37 同量级，换道次数没有减少。
+  段内位移口径对"提前到位"不友好，跨组比较时与到达数一起看。
+
 ```bash
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_lateral_state.py --session <会话>
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_lateral_ab.py \
