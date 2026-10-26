@@ -856,6 +856,46 @@ def test_wall_escape_uses_full_authority():
     assert pl2.last_steer_raw >= -P.hold_stick_max - 0.01
 
 
+def test_brake_budget_escalates_full_authority():
+    """刹停预算：横速的预测停止点越过目标带远侧缘 → 全权反打。
+
+    横速松杆不衰减（v3 2026-10-26 重辨识），gentle 0.45 刹不住 1 道/s 级
+    横速——人工局的 bang-bang 手法（满杆进、提前满杆反）。"""
+    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl = _planner(**base)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 1.2
+    pl.state.v_lat_est = 0.3        # 停止点 1.2+0.3²/(2·0.8)=1.256 > 带缘 0.5
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
+    assert pl.last_steer_raw <= -0.7        # 全权 0.85（gentle 会封 0.45）
+
+
+def test_brake_budget_not_triggered_braking_toward_target():
+    """正在朝目标刹（停止点未越带）时保持 gentle 权限，不画龙。"""
+    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl = _planner(**base)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 1.2
+    pl.state.v_lat_est = -0.3       # 停止点 1.144：还差得远，反打是过量修正
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
+    assert pl.last_steer_raw >= -P.hold_stick_max - 0.01
+
+
+def test_brake_budget_disabled_without_decel():
+    """brake_decel_lane_s2=0 关闭预算：旧行为逐位恢复（gentle 封顶）。"""
+    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                brake_decel_lane_s2=0.0)
+    pl = _planner(**base)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 1.2
+    pl.state.v_lat_est = 0.3
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
+    assert pl.last_steer_raw >= -P.hold_stick_max - 0.01
+
+
 def test_corridor_infeasible_plan_commands_escape():
     """计划判定压在走廊边距内（无效）时执行它的逃逸候选杆值：
     不能退回保持死区——目标差 0.26 道 < 0.5，PD 会完全不修，车停在离栏

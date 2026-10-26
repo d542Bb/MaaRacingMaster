@@ -339,6 +339,21 @@ def test_coin_layer_when_no_car_or_reward():
     assert p.score_key[1] <= -90.0         # -value（空中组 120）
 
 
+def test_coin_beyond_selection_reach_not_chased():
+    """币门与选择层同源：够不着的肩币不作计划层机会。
+
+    20261026 局 s1#3 8.1~8.5s：币组在 −2.2 道（选择层 1.2 道门拒了），
+    计划层 L3 满杆左打 0.5s，车压上左肩。车模修正（横速不衰减）治不了它
+    ——轨迹 2s 扫过的横距反而更宽，仍能"蹭"到远币；契约上门必须同源。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
+                     coins=[CoinSource(-7.43, 5, 0.9, 1.0, age_ms=0.0)]))
+    assert p.valid and p.layer == 4
+    assert p.value_total == 0.0
+    near = _plan(_scene(road=_wide_road(), ego_m=0.0,
+                        coins=[CoinSource(-3.0, 5, 0.9, 1.0, age_ms=0.0)]))
+    assert near.layer == 3                 # 1.2 道内的币照追
+
+
 def test_preposition_biases_toward_future_coin():
     """2s 外的金币也要提前把车带向币线，而不是等到进视界才动。"""
     p = _plan(_scene(road=_wide_road(), ego_m=0.0,
@@ -489,9 +504,13 @@ def test_hit_tolerance_not_inflated_by_ego_sigma():
 
 
 def test_graze_layer_reachable_with_physical_envelope():
-    """擦车带下界=物理包络+余量；自车 σ 不得把整层判死。"""
+    """擦车带下界=物理包络+余量；自车 σ 不得把整层判死。
+
+    到站时间取 1.15s：tau_align=12（2026-10-26 重辨识，横速不衰减）下
+    杆级 0.55 在此正好落进擦车带 [包络+σ+余量, graze_gap]；0.8s 是旧
+    0.5s 衰减车模的落点，新车模下落在带外。"""
     p = _plan(_scene(road=_wide_road(), ego_m=0.0,
-                     cars=[CarSource(-0.107, 0.8, age_ms=0.0)]))
+                     cars=[CarSource(-0.107, 1.15, age_ms=0.0)]))
     assert p.valid and p.layer == 2
     assert p.score_key[1] <= -120.0       # -value（擦车 120）
 

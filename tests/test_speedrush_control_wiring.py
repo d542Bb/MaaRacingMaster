@@ -123,13 +123,19 @@ def test_field_goal_half_lane_moves_with_realistic_time():
 
     pl.state.executed_lane = 1.6
     max_stick = 0
+    first = True
     for fid in range(3, 43):                   # 2 秒
         out = eng.update(obs(fid), 0.05,
                          executed_lane=pl.state.executed_lane,
                          corridor=corridor(pl.state.executed_lane))
-        assert out.maneuver is True
+        # 带外即全权。tau_align=12（2026-10-26 重辨识）后车模响应变快，
+        # 途中进带 maneuver 落回是预期，不再逐拍断言。
+        if first:
+            assert out.maneuver is True
+            first = False
         assert out.phase == "keep"
-        assert out.authority == "COMMIT"
+        if out.maneuver:
+            assert out.authority == "COMMIT"
         assert out.intent_lane is not None
         cmd = pl.update(out, 0.05, current_fid=fid)
         max_stick = max(max_stick, abs(cmd.steer_x))

@@ -463,7 +463,13 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     cars = [o for o in scene.objs if o.kind == "car"]
     rewards = [] if committed else [o for o in scene.objs
                                     if o.kind == "reward"]
-    coins = [] if committed else [o for o in scene.objs if o.kind == "coin"]
+    # 币门与选择层同源（coin_pick_tol_lane）：计划不得重新选择选择层够不着的
+    # 机会——肩上的币组选择层拒了，计划层却会为它打满杆（20261026 局 s1#3
+    # 8.1~8.5s：币在 −2.2 道，计划 L3 满杆左打，车压上左肩）。
+    coin_reach_m = selection.coin_pick_tol_lane * lane_w
+    coins = [] if committed else [
+        o for o in scene.objs
+        if o.kind == "coin" and abs(o.x_m - scene.ego_x_m) <= coin_reach_m]
     ts = [k * dt for k in range(n + 1)]
     us = list(motion.steer_levels) + [ego.steer_norm]
     # 有距无速域是否在场：在场时解除 L4 维护性杆幅上限（这是避让，不是追路心）

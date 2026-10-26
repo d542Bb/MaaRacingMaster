@@ -11,10 +11,15 @@ decision.ValidationWatch（不变量 C1：本层不重复造判据，只消费 F
 （黑箱物理下没有曲率可代）。控制律形式不随运动学改——`k_d` 速度阻尼本就是为
 双积分对象配的，v1 的误处在把 **plant（运动学）** 写成了单积分"杆→稳态速度"。
 
-**自车横向运动学**（不变量 C2，设计稿 §二；v2 2026-09-22 真机证据链修正）：
+**自车横向运动学**（不变量 C2，设计稿 §二；v2 2026-09-22 真机证据链修正，
+v3 2026-10-26 人工局手柄流重辨识）：
 赛车机制下杆是**车头航向指令**不是平移速度指令——起步段 x∝t²（向心加速度），
-故 ``v_lat`` 经 ``a_lat_gain`` 积分而来、经 ``tau_align_s`` 自回正、被 ``v_lat_max``
-定圆饱和；**不存在**"杆值→稳态横向速度"的静态 K_v（原 v_lat_gain 前提证伪）。
+故 ``v_lat`` 经 ``a_lat_gain`` 积分而来、被 ``v_lat_max`` 定圆饱和；**不存在**
+"杆值→稳态横向速度"的静态 K_v（原 v_lat_gain 前提证伪）。**松杆后横速几乎
+不衰减**（人工局真实摇杆 11 段拟合 tau≥12s 撞上界；旧 0.5s 是程序闭环+贴墙
+段污染的拟合产物）——停住横移靠反打杆主动刹，刹停减速用
+``brake_decel_lane_s2``（人工反打有效减速 p50 1.3，取保守 0.8）做停止点预算；
+``tau_align_s`` 只留作数值稳定的长尾项。
 A1 归一下自车恒 0、**目标读数**推不出自车位移，但**路缘两侧读数**可以：
 路中心相对自车 = 自车横向位置的反号——``road_offset`` 入参（step 2.5，
 V2 复盘"开环虚胖提前松杆"的闭环解）在双侧缘距稳定拍经 alpha-beta 滤波器
@@ -353,6 +358,21 @@ class LateralPlanner:
 
     # ---------- 主入口 ----------
 
+    def _brake_overshoot(self, target: float) -> bool:
+        """刹停预算：按当前控制横速预测的停止点越过目标带远侧缘。
+
+        横速松杆不衰减（v3 重辨识），gentle 杆幅 0.45 刹不住 1 道/s 级横速
+        （0.8 道/s² 下还要滑 0.6+ 道）——必须立即全权反打，人工局的 bang-bang
+        手法。横速归零后停止点收敛到当前位置，条件自动退出，不锁死全权。"""
+        v = self._v_ctrl
+        if abs(v) < 1e-3 or self.p.brake_decel_lane_s2 <= 0.0:
+            return False
+        sgn = math.copysign(1.0, v)
+        stop = (self.state.executed_lane
+                + sgn * v * v / (2.0 * self.p.brake_decel_lane_s2))
+        edge = target + math.copysign(self.p.hold_deadband_lane, v)
+        return (stop - edge) * sgn > 0.0
+
     def update(self, decision: DecisionOutput, dt_s: float,
                current_fid: int,
                road_offset: float | None = None,
@@ -484,8 +504,11 @@ class LateralPlanner:
             # 也走全权——墙是硬约束，gentle 的 0.45 杆幅把 1.4 道级回带拖成
             # 1s+（20261026 局：贴边拍 53/99 是计划走廊不可行被否决、PD 以
             # gentle 回带，整段停在墙侧）。回带方向仍由目标给出，不改目标。
+            # 刹停预算：横速的预测停止点已越过目标带远侧缘时同样升级——
+            # 松杆不衰减横速，等 gentle 逐拍加力就是把刹停距离翻倍。
             if (decision.maneuver
-                    or abs(self.state.executed_lane) > _WALL_ESCAPE_LANE):
+                    or abs(self.state.executed_lane) > _WALL_ESCAPE_LANE
+                    or self._brake_overshoot(decision.x_target)):
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
                     deadband=self.p.maneuver_deadband_lane,
