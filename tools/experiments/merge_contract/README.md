@@ -54,6 +54,28 @@ status: active
   拍里，248 拍目标与承诺道差 >0.5 道——其中 155 拍是 slew 滞后、93 拍是目标
   来源偏离；不先修，A/B 会同时改变目标与执行器。
 
+## 横向状态观测（2026-10-26）
+
+- 离线结论（3 会话 12 局，`probe_lateral_state.py` / `probe_plant_cv.py`）：
+  控制用的模型横速与线速相关 0.4~0.6、幅值中位约为线速 1/4，相位超前约
+  0.45s；航向横速滞后 0.2~0.3s。模型与航向各半融合后，0.25s 横位预测误差
+  中位降 10~20%，相位回到 0 附近。线角/线速的比值能在线自标定前向速度
+  （5s 中位稳定，单拍跨 20~180 m/s）；它的绝对量级受 theta_rel 尺度影响，
+  只作融合的自洽标定，不作为米制真值——固定 45 m/s 仍是量级代理。
+- 实现：`planner.HeadingObserver`，开关 `decision.json [planner].heading_fuse_gain`
+  （0=旧行为）。只改控制阻尼/前瞻，模型状态 `v_lat_est` 不变；trace 的
+  `lat_ctrl` 暴露 v_ctrl/v_model/v_head/speed。
+- A/B 口径：`motion.mode=shadow`、gain=0.5 跑 4 局，对
+  `20261025_221703_1`（shadow、gain=0）用 `probe_lateral_ab.py` 对账。
+  墙边占比（|x|>1.4）、压墙（>1.8）、过目标偏差、带内停留、穿越/分、
+  实动到达一起看；只看到达率会被空动作骗。
+
+```bash
+.venv/Scripts/python.exe tools/experiments/merge_contract/probe_lateral_state.py --session <会话>
+.venv/Scripts/python.exe tools/experiments/merge_contract/probe_lateral_ab.py \
+    --baseline 20261025_221703_1 --trial <新会话>
+```
+
 ## 数据与退出
 
 - 只依赖 debug trace；不引入业务模块 import，不依赖游戏在跑。
