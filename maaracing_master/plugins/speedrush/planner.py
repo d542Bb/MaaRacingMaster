@@ -184,6 +184,14 @@ class HeadingObserver:
         lim = _HEAD_V_MAX_FACTOR * self.p.v_lat_max
         return max(-lim, min(lim, v))
 
+    def line_v(self) -> float | None:
+        """新鲜线速（道/s）：锁线且证据龄合规的拍才有值，断供超时回 None。
+
+        供 v3 车模的速度观测消费：模型横速不再自衰减，误差要靠它修。"""
+        if self.v_line is None or self._t - self._last_seen > _HEAD_STALE_S:
+            return None
+        return self.v_line
+
     def debug(self) -> dict:
         return {
             "v_line": None if self.v_line is None
@@ -359,12 +367,14 @@ class LateralPlanner:
     # ---------- 主入口 ----------
 
     def _brake_overshoot(self, target: float) -> bool:
-        """刹停预算：按当前控制横速预测的停止点越过目标带远侧缘。
+        """刹停预算：按模型横速预测的停止点越过目标带远侧缘。
 
-        横速松杆不衰减（v3 重辨识），gentle 杆幅 0.45 刹不住 1 道/s 级横速
-        （0.8 道/s² 下还要滑 0.6+ 道）——必须立即全权反打，人工局的 bang-bang
-        手法。横速归零后停止点收敛到当前位置，条件自动退出，不锁死全权。"""
-        v = self._v_ctrl
+        速度源用 ``v_lat_est``（线速校正后）：航向横速在贴墙段噪声大
+        （线角抖动），预算要的是最可信的速度。松杆不衰减（v3 重辨识），
+        gentle 杆幅 0.45 刹不住 1 道/s 级横速（0.8 道/s² 下还要滑 0.6+ 道）
+        ——必须立即满杆反打。横速归零后停止点收敛到当前位置，条件自动
+        退出，不锁死反打。"""
+        v = self.state.v_lat_est
         if abs(v) < 1e-3 or self.p.brake_decel_lane_s2 <= 0.0:
             return False
         sgn = math.copysign(1.0, v)
@@ -455,6 +465,19 @@ class LateralPlanner:
         # v_lat_est 不动（计划生成与线滑行预测仍用模型）。gain=0 时逐位不变。
         self.head.update(dt_s, lane_x, lane_ok, lane_theta, lane_theta_ok,
                          lane_fid, lane_age_ms)
+        # 线速校正模型横速（v3 车模配套观测，2026-10-26）：tau_align 拆掉
+        # 人工衰减后，模型横速误差不再自灭——215313 局 s2#4：模型 +1.9、
+        # 线速 −0.6 反号持续 2.5s，控制器以为在回中、杆值躺平骑黄线。线是
+        # 唯一连续运动信号；门控复用航向观测（锁线+龄 ≤250ms+跳变重置），
+        # 0.5s 时间常数——慢于控制拍噪声、快于假速度积累。深度侧 ⑥b 只修
+        # 位置不修速度（obs_position_only），这条是速度观测的唯一通路。
+        lv = self.head.line_v()
+        if lv is not None and self.p.v_line_tau_s > 0.0:
+            a_v = 1.0 - math.exp(-dt_s / self.p.v_line_tau_s)
+            self.state.v_lat_est += a_v * (lv - self.state.v_lat_est)
+            self.state.v_lat_est = max(-self.p.v_lat_max,
+                                       min(self.p.v_lat_max,
+                                           self.state.v_lat_est))
         self._v_ctrl_model = self.state.v_lat_est
         self._v_ctrl = self.head.fused(self.state.v_lat_est,
                                        self.p.heading_fuse_gain)
@@ -498,17 +521,22 @@ class LateralPlanner:
             steer_raw = self._pd(self._abort_hold_lane, gentle=True)
         elif decision.x_target is not None:
             self._abort_hold_lane = None
+            # 刹停预算（最高优先）：横速的预测停止点已越过目标带远侧缘 →
+            # 直接满杆反打。人工局的手法就是 bang-bang：满杆进、提前满杆反；
+            # 走 PD 会被 k_p 的前瞻项稀释（假横速把预测位置送到目标跟前时
+            # k_p 项归零、只剩 k_d 慢慢磨——215313 局 s2#4 骑线躺平 2.5s 的
+            # 机制）。横速归零后停止点收敛到当前位置，条件自退出。
+            if self._brake_overshoot(decision.x_target):
+                steer_raw = -math.copysign(
+                    self.p.maneuver_stick_max, self.state.v_lat_est)
             # 场跟随：保持态=维护性定中心（gentle，16:44 局）；机动态
             # （目标距自车超过切换死区）=全权——机动态死区/杆幅另配。
             # 贴边逃生：|executed|超 _WALL_ESCAPE_LANE（保持车道 ±1 + 0.4）时
             # 也走全权——墙是硬约束，gentle 的 0.45 杆幅把 1.4 道级回带拖成
             # 1s+（20261026 局：贴边拍 53/99 是计划走廊不可行被否决、PD 以
             # gentle 回带，整段停在墙侧）。回带方向仍由目标给出，不改目标。
-            # 刹停预算：横速的预测停止点已越过目标带远侧缘时同样升级——
-            # 松杆不衰减横速，等 gentle 逐拍加力就是把刹停距离翻倍。
-            if (decision.maneuver
-                    or abs(self.state.executed_lane) > _WALL_ESCAPE_LANE
-                    or self._brake_overshoot(decision.x_target)):
+            elif (decision.maneuver
+                    or abs(self.state.executed_lane) > _WALL_ESCAPE_LANE):
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
                     deadband=self.p.maneuver_deadband_lane,
@@ -527,13 +555,28 @@ class LateralPlanner:
                  + self.p.k_p * (plan.x_preview_lane - x_pred)
                  + self.p.k_d * (plan.v_preview_lane_s - self._v_ctrl))
             steer_raw = max(-1.0, min(1.0, u))
-            # 换候选时前馈会阶跃；相对上一拍计划命令限速，避免方向盘一步打半圈。
-            # 首帧/计划重入（None）不限制——那是交接，不是候选抖动。
-            if self._last_plan_u is not None:
-                cap = self.p.plan_u_slew_s * dt_s
-                steer_raw = max(self._last_plan_u - cap,
-                                min(self._last_plan_u + cap, steer_raw))
-            self._last_plan_u = steer_raw
+            # 刹停预算同样压住计划路径：计划用同一套（对称、乐观的）车模
+            # 仿真，横速饱和的并线它以为收得住（215313 局 s1 12.3s：承诺期
+            # v=−2.5 冲过目标道压路肩）。计划杆已在满反打方向且不低于预算
+            # 杆幅时让计划继续——预算只补"没在刹"的缺口。触发即清 slew 链：
+            # 人工的 bang-bang 不等限速。
+            if self._brake_overshoot(decision.x_target):
+                u_brake = -math.copysign(
+                    self.p.maneuver_stick_max, self.state.v_lat_est)
+                if not (plan.u_feedforward * u_brake > 0
+                        and abs(plan.u_feedforward) >= abs(u_brake)):
+                    steer_raw = u_brake
+                    self._last_plan_u = None
+                else:
+                    self._last_plan_u = steer_raw
+            else:
+                # 换候选时前馈会阶跃；相对上一拍计划命令限速，避免方向盘一步打半圈。
+                # 首帧/计划重入（None）不限制——那是交接，不是候选抖动。
+                if self._last_plan_u is not None:
+                    cap = self.p.plan_u_slew_s * dt_s
+                    steer_raw = max(self._last_plan_u - cap,
+                                    min(self._last_plan_u + cap, steer_raw))
+                self._last_plan_u = steer_raw
         elif (plan is not None and st is DecisionState.CRUISE
               and plan.reason == "plan:infeasible_corridor"):
             # 计划已判定「自车压在走廊边距内」，但它无效、不接管，PD 的保持

@@ -896,6 +896,75 @@ def test_brake_budget_disabled_without_decel():
     assert pl.last_steer_raw >= -P.hold_stick_max - 0.01
 
 
+def test_brake_budget_overrides_coasting_plan():
+    """预算压住计划路径：计划杆在"coast"（已以为在回中）时，预算满杆反打
+    并清 slew 链——215313 局 s2#4 躺平骑线的机制（计划用同一套乐观车模）。"""
+    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl = _planner(**base)
+    pl.update(_out(x_target=-0.3, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = -1.5
+    pl.state.v_lat_est = 1.9        # 停止点 −1.5+1.9²/1.6=+0.76 > 带缘 +0.2
+    plan = types.SimpleNamespace(
+        valid=True, u_feedforward=0.0, x_preview_lane=-1.0,
+        v_preview_lane_s=1.9)
+    pl.update(_out(x_target=-0.3, fid=2, valid=2), DT, 2, plan=plan)
+    assert pl.last_steer_raw == pytest.approx(-P.maneuver_stick_max)
+    assert pl._last_plan_u is None          # slew 链清掉
+
+
+def test_brake_budget_keeps_full_braking_plan():
+    """计划已在满反打方向且不低于预算杆幅：让计划继续（不重复覆盖）。"""
+    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl = _planner(**base)
+    pl.update(_out(x_target=-0.3, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = -1.5
+    pl.state.v_lat_est = 1.9
+    plan = types.SimpleNamespace(
+        valid=True, u_feedforward=-0.85, x_preview_lane=-1.5,
+        v_preview_lane_s=1.9)
+    pl.update(_out(x_target=-0.3, fid=2, valid=2), DT, 2, plan=plan)
+    assert pl.last_steer_raw == pytest.approx(-0.85)
+    assert pl._last_plan_u is not None      # 计划链保持
+
+
+def test_line_velocity_corrects_model_speed():
+    """线速校正模型横速：模型 +1.9、车不动（线速≈0），1s 内收敛到 ±0.4。
+
+    v3 车模松杆不衰减，误差必须靠观测修——215313 局 s2#4 假横速反号 2.5s
+    躺平骑线的机制根因。预算关闭以隔离校正通路。"""
+    pl = _planner(v_line_tau_s=0.5, lookahead_tau_s=0.0,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  k_p=0.0, k_d=0.0, brake_decel_lane_s2=0.0)
+    pl.state.executed_lane = -0.3
+    pl.state.v_lat_est = 1.9
+    for i in range(1, 25):                  # 1.2s：车不动，线横位恒定
+        pl.update(_out(x_target=-0.3, fid=i, valid=i), DT, i,
+                  lane_x=-0.3, lane_ok=True, lane_theta=0.0,
+                  lane_theta_ok=True, lane_age_ms=10.0)
+    assert abs(pl.state.v_lat_est) < 0.4
+
+
+def test_line_velocity_correction_gated_when_line_lost():
+    """断供超 _HEAD_STALE_S 停止校正：线没了不能拿旧线速继续拽模型。"""
+    pl = _planner(v_line_tau_s=0.5, lookahead_tau_s=0.0,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  k_p=0.0, k_d=0.0, brake_decel_lane_s2=0.0,
+                  a_lat_gain=0.0)
+    for i in range(1, 11):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
+                  lane_x=0.0, lane_ok=True, lane_theta=0.0,
+                  lane_theta_ok=True, lane_age_ms=10.0)
+    for i in range(11, 26):                 # 0.75s 断供 > _HEAD_STALE_S
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
+    assert pl.head.line_v() is None
+    pl.state.v_lat_est = 1.0               # 断供后模型自走，不被旧线速修
+    for i in range(26, 31):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
+    assert pl.state.v_lat_est == pytest.approx(1.0, abs=0.05)
+
+
 def test_corridor_infeasible_plan_commands_escape():
     """计划判定压在走廊边距内（无效）时执行它的逃逸候选杆值：
     不能退回保持死区——目标差 0.26 道 < 0.5，PD 会完全不修，车停在离栏
