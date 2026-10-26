@@ -17,17 +17,17 @@
       if (!state.peepEnabled || !page || page.classList.contains('hidden')) return false;
       // 当前模块得有预览卡才拉帧：没有卡（如 speedrush）时拉了也没处显示，
       // 白白让后端每帧编码一次 base64
-      return !!(MRA.currentModuleId && $(MRA.currentModuleId + '-preview-img'));
+      return !!(MRA.panelModuleId && $(MRA.panelModuleId + '-preview-img'));
     },
-    img: () => $(MRA.currentModuleId + '-preview-img'),
-    empty: () => $(MRA.currentModuleId + '-preview-empty')
+    img: () => $(MRA.panelModuleId + '-preview-img'),
+    empty: () => $(MRA.panelModuleId + '-preview-empty')
   });
 
   /** 悬浮窗开关（C# 广播）：卡片与占位符互换，并把帧消费权交出去 / 收回来。 */
   function setPreviewFloating(floating) {
     if (floating === (previewMode === 'floating')) return;
     previewMode = floating ? 'floating' : 'normal';
-    const card = $(MRA.currentModuleId + '-preview-card');
+    const card = $(MRA.panelModuleId + '-preview-card');
     if (card) card.classList.toggle('preview-card--floating', floating);
     // 收回消费权：PEEP 开关可能已在悬浮窗里改过，回填一次
     // （refreshDebugState 在 js/settings.js 定义、晚于本文件加载，故经 MRA 延迟取用）
@@ -38,7 +38,7 @@
   // on=true 显示「暂停」图标（表示正在预览）；off 显示「播放」图标（预览已停）。
   // title 即悬停提示（暂停预览 / 开始预览），与悬浮窗上的同名按钮语义一致。
   function setPreviewPlayState(on) {
-    const btn = $(MRA.currentModuleId + '-btn-preview-toggle');
+    const btn = $(MRA.panelModuleId + '-btn-preview-toggle');
     if (!btn) return;
     const play = btn.querySelector('.icon-play');
     const pause = btn.querySelector('.icon-pause');
@@ -79,7 +79,7 @@
 
   // 全屏/还原共用一个图标按钮：morph-icon 在 scan ↔ shrink 间弹簧变形，title 同步切换
   function setPreviewMaxState(fs) {
-    const btn = $(MRA.currentModuleId + '-btn-preview-max');
+    const btn = $(MRA.panelModuleId + '-btn-preview-max');
     if (!btn) return;
     const morphEl = btn.querySelector('morph-icon');
     if (morphEl) morphEl.icon = MRAIcons.node(fs ? 'shrink' : 'scan');

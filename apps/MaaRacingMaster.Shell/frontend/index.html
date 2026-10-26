@@ -38,98 +38,43 @@
   <main>
     <!-- ===== 主控 ===== -->
     <section class="page" id="page-control">
-      <div class="col-left">
-        <div class="card">
-          <div class="card-head"><h3>活动模块</h3></div>
-          <div class="card-body">
-            <!-- 值真源 = 隐藏原生 select（app.js 填充/run.js 取值/settings.js 禁用），
-                 自绘 combobox 投影层见 js/select.js -->
-            <div class="msel" id="msel">
-              <select id="module-select" class="msel-native" aria-hidden="true"></select>
-              <button type="button" class="msel-trigger" id="msel-trigger"
-                      role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="msel-list">
-                <span class="msel-label" id="msel-label"></span>
-                <svg class="msel-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      <!-- 两列包一层内容高度容器：日志卡 sticky 的包含块必须与左列内容等高
+           （直接挂在 .page 下时包含块只有视口高，滚动时日志卡没有行程可钉住） -->
+      <div class="control-cols">
+        <div class="col-left">
+          <div class="card card-flex task-card">
+            <div class="card-head">
+              <h3>运行任务</h3>
+              <button class="icon-btn" id="btn-manage" title="管理模块（加入 / 移出）">
+                <i data-icon="settings"></i>
               </button>
-              <div class="msel-list" id="msel-list" role="listbox" tabindex="-1"></div>
             </div>
-            <p class="module-desc" id="module-desc"></p>
-            <!-- 模块专属选项：按当前模块显示对应块，其余模块整块隐藏（见 app.js refreshModuleOptions）。
-                 两行结构避免拥挤：
-                 • treasure（鉴宝）第1行（整行）：刷到第几场；第2行（整行）：目标场次（互斥单选）
-                 • speedrush（极速狂飙）第1行：演示数据录制开关（驾驶阶段只采集、由用户手动驾驶）；
-                   第2行：驾驶模式切换（深度几何=正常自动驾驶 | 全程直行=直行基线，不加载感知与深度） -->
-            <div class="module-options" id="module-options" style="display:none;">
-              <div id="opt-treasure-block" style="display:none;">
-                <div class="module-options-row module-options-row--stack">
-                  <div class="mra-field">
-                    <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
-                    <div class="mra-field-control">
-                      <input id="opt-max-loops" type="number" min="0" max="50" step="1" value="50">
-                      <span class="field-suffix">场</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="module-options-row">
-                  <div class="mra-field">
-                    <label class="mra-field-label">目标场次<span class="field-hint">（每次回大厅先点对应场次标签，再点「开始匹配」）</span></label>
-                    <div class="mra-segmented" id="opt-target-session" role="group" aria-label="目标场次">
-                      <button type="button" class="seg-btn" data-value="intern"><span class="seg-dot seg-dot--intern"></span>实习场</button>
-                      <button type="button" class="seg-btn" data-value="expert"><span class="seg-dot seg-dot--expert"></span>专家场</button>
-                      <button type="button" class="seg-btn seg-btn--selected" data-value="master"><span class="seg-dot seg-dot--master"></span>大师场</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div id="opt-speedrush-block" style="display:none;">
-                <div class="option-row">
-                  <button class="mra-toggle" id="opt-record-mode" role="switch" aria-checked="false"></button>
-                  <div class="option-main">
-                    <div class="option-title">录制演示数据</div>
-                    <p class="option-desc">开启后驾驶阶段只采集、不操纵车辆（请自行手动驾驶），产出用于训练的数据集。数据落在数据目录的 speedrush/demos/manual_日期_时间_p阶段/ 下（manual 前缀=人工驾驶语料）。改动在下次「开始」时生效。建议把设置页的点击方式保持为「前台鼠标」——「后台手柄」会创建虚拟手柄，可能与你的手柄冲突。</p>
-                  </div>
-                </div>
-                <div class="module-options-row">
-                  <div class="mra-field">
-                    <label class="mra-field-label">驾驶模式</label>
-                    <div class="mra-segmented" id="opt-drive-mode" role="group" aria-label="驾驶模式">
-                      <button type="button" class="seg-btn seg-btn--selected" data-value="depth">深度几何</button>
-                      <button type="button" class="seg-btn" data-value="straight">全程直行</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <p class="module-options-status" id="module-options-status"></p>
-            </div>
+            <!-- 任务列表：每模块一张行卡（拖拽手柄 / 启用勾选 / 摘要 / 展开），由 js/run.js 渲染；
+                 列表里有哪些模块由设置按钮的选卡弹窗管理，顺序即执行顺序 -->
+            <ul id="task-list"></ul>
           </div>
         </div>
-        <div class="card card-flex">
-          <div class="card-head">
-            <h3>当前阶段</h3>
-          </div>
-          <div class="breakpoint-list" id="stage-list"></div>
-        </div>
-      </div>
-      <div class="col-right">
-        <div class="card card-flex log-card">
-          <div class="card-head">
-            <h3>运行日志</h3>
-            <div class="log-head-actions">
-              <button class="icon-btn" id="btn-log-clear" title="清空">
-                <i data-icon="trash"></i>
-              </button>
-              <button class="icon-btn" id="btn-log-copy" title="复制">
-                <morph-icon reduced-motion="user"></morph-icon>
-              </button>
+        <div class="col-right">
+          <div class="card card-flex log-card">
+            <div class="card-head">
+              <h3>运行日志</h3>
+              <div class="log-head-actions">
+                <button class="icon-btn" id="btn-log-clear" title="清空">
+                  <i data-icon="trash"></i>
+                </button>
+                <button class="icon-btn" id="btn-log-copy" title="复制">
+                  <morph-icon reduced-motion="user"></morph-icon>
+                </button>
+              </div>
             </div>
+            <div class="log-area" id="log-area"></div>
+            <!-- 回顶按钮：随滚动位置换向——贴底时去最旧（顶部），翻上去时回最新（底部）；
+                 内容不溢出时隐藏。图标两枚，CSS 按 --down 类切换。 -->
+            <button class="log-top-btn" id="btn-log-top" hidden aria-label="回到顶部（最旧日志）">
+              <svg class="log-top-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+              <svg class="log-top-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+            </button>
           </div>
-          <div class="log-area" id="log-area"></div>
-          <!-- 回顶按钮：随滚动位置换向——贴底时去最旧（顶部），翻上去时回最新（底部）；
-               内容不溢出时隐藏。图标两枚，CSS 按 --down 类切换。 -->
-          <button class="log-top-btn" id="btn-log-top" hidden aria-label="回到顶部（最旧日志）">
-            <svg class="log-top-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
-            <svg class="log-top-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-          </button>
         </div>
       </div>
     </section>
@@ -232,6 +177,52 @@
     </button>
   </footer>
 
+  <!-- ===== 模块专属选项暂存区（默认隐藏） =====
+       选项控件是单实例 DOM：任务卡展开时由 js/settings.js 把对应块与状态行搬进该卡
+       的面板（appendChild 移动，监听绑定不重建），收起/重建列表时搬回这里。 -->
+  <div id="module-options" hidden>
+    <div id="opt-treasure-block" style="display:none;">
+      <div class="module-options-row module-options-row--stack">
+        <div class="mra-field">
+          <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
+          <div class="mra-field-control">
+            <input id="opt-max-loops" type="number" min="0" max="50" step="1" value="50">
+            <span class="field-suffix">场</span>
+          </div>
+        </div>
+      </div>
+      <div class="module-options-row">
+        <div class="mra-field">
+          <label class="mra-field-label">目标场次<span class="field-hint">（每次回大厅先点对应场次标签，再点「开始匹配」）</span></label>
+          <div class="mra-segmented" id="opt-target-session" role="group" aria-label="目标场次">
+            <button type="button" class="seg-btn" data-value="intern"><span class="seg-dot seg-dot--intern"></span>实习场</button>
+            <button type="button" class="seg-btn" data-value="expert"><span class="seg-dot seg-dot--expert"></span>专家场</button>
+            <button type="button" class="seg-btn seg-btn--selected" data-value="master"><span class="seg-dot seg-dot--master"></span>大师场</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="opt-speedrush-block" style="display:none;">
+      <div class="option-row">
+        <button class="mra-toggle" id="opt-record-mode" role="switch" aria-checked="false"></button>
+        <div class="option-main">
+          <div class="option-title">录制演示数据</div>
+          <p class="option-desc">开启后驾驶阶段只采集、不操纵车辆（请自行手动驾驶），产出用于训练的数据集。数据落在数据目录的 speedrush/demos/manual_日期_时间_p阶段/ 下（manual 前缀=人工驾驶语料）。改动在下次「开始」时生效。建议把设置页的点击方式保持为「前台鼠标」——「后台手柄」会创建虚拟手柄，可能与你的手柄冲突。</p>
+        </div>
+      </div>
+      <div class="module-options-row">
+        <div class="mra-field">
+          <label class="mra-field-label">驾驶模式</label>
+          <div class="mra-segmented" id="opt-drive-mode" role="group" aria-label="驾驶模式">
+            <button type="button" class="seg-btn seg-btn--selected" data-value="depth">深度几何</button>
+            <button type="button" class="seg-btn" data-value="straight">全程直行</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="module-options-status" id="module-options-status"></p>
+  </div>
+
   <div id="error-toast"></div>
   <script src="icons.js"></script>
   <script src="vendor.morphicons.js"></script>
@@ -239,7 +230,6 @@
   <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MRA 共享命名空间（必须最先），
        app.js 是启动装配入口（必须最后）；中间模块只经 window.MRA 互相取用。 -->
   <script src="js/rpc.js"></script>
-  <script src="js/select.js"></script>
   <script src="js/modal.js"></script>
   <script src="js/log.js"></script>
   <script src="js/preview.js"></script>

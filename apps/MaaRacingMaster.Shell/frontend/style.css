@@ -260,76 +260,198 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 #page-data .col-left { flex: 1 1 auto; }
 #page-data .col-right { flex: 0 0 420px; }
 
-/* 主控页套用数据页的列变换逻辑（左栏弹性、右栏固定宽度承载运行日志） */
-#page-control .col-left { flex: 1 1 auto; }
-#page-control .col-right { flex: 0 0 420px; align-self: stretch; }
-/* 运行日志卡撑满窗口最大高度（四周留白由页面 padding + 列 gap 承担） */
+/* 主控页两列装进 .control-cols（内容高度容器，高度跟随左列内容、窗口够高时撑满）：
+   日志卡要 sticky 钉在视口上，其包含块必须与左列内容等高——直接挂在 .page 下时
+   包含块只有视口高，滚动时没有行程可钉。 */
+#page-control .control-cols {
+  display: flex; gap: 12px; align-items: stretch; width: 100%; min-height: 100%;
+}
+#page-control .col-left { flex: 1 1 auto; min-height: 0; }
+/* 日志列钉住跟随滚动：高度 = 视口 − 顶栏 52 − 底栏 44 − 页面上下 padding 24。
+   top 写 0 而非 12：Chromium 的 sticky 判定基线是滚动容器内容盒顶缘（已含页面
+   12px padding），再写 12 会让卡片在未滚动时就下坠一截。钉住前后四周留白一致。
+   min-height:0 覆盖基础规则的 min-height:100%（那会把钉住的列重新撑到与左列
+   内容等高，sticky 行程归零） */
+#page-control .col-right {
+  flex: 0 0 420px; align-self: flex-start;
+  position: sticky; top: 0;
+  height: calc(100vh - 120px); min-height: 0;
+}
+/* 运行日志卡撑满钉住的日志列 */
 #page-control .col-right .card { flex: 1 1 0; min-height: 0; }
 
-/* 模块下拉（自绘 combobox 投影层，js/select.js；值真源 = 隐藏原生 select） */
-.msel { position: relative; }
-.msel-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.msel-trigger {
-  width: 100%; height: 40px; padding: 0 40px 0 14px;
-  display: flex; align-items: center; gap: 8px;
+/* ---------- 主控页任务列表（每模块一行卡：拖拽排序 / 启用勾选 / 展开面板） ---------- */
+.task-card .card-head h3 { margin-right: auto; }
+#task-list {
+  list-style: none; margin: 0; padding: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  overflow-y: auto; min-height: 0; flex: 1;
+}
+#task-list.dragging-mode { user-select: none; }
+.task-item {
   border: 1px solid var(--mra-border); border-radius: var(--mra-radius-md);
-  background: var(--mra-surface); color: var(--mra-foreground);
-  font-size: 13px; font-family: var(--mra-font-sans); text-align: left;
-  cursor: pointer;
-  transition: border-color var(--mra-duration-fast) ease;
+  background: var(--mra-surface); box-shadow: var(--mra-shadow-sm);
+  transition: opacity var(--mra-duration-fast) ease, box-shadow var(--mra-duration-fast) ease;
 }
-.msel-trigger:hover:not([aria-disabled="true"]) { border-color: var(--mra-foreground-dim); }
-.msel-trigger[aria-expanded="true"] { border-color: var(--mra-primary); }
-.msel-trigger[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; }
-.msel-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.msel-label--empty { color: var(--mra-foreground-muted); }
-.msel-chev {
-  position: absolute; right: 12px; top: 50%;
-  width: 16px; height: 16px; color: var(--mra-foreground-muted);
-  transform: translateY(-50%) rotate(0deg); pointer-events: none;
-  transition: transform var(--mra-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
+.task-item--disabled { opacity: 0.55; }
+.task-item--dragging { opacity: 0.4; box-shadow: var(--mra-shadow-md); }
+.task-item--running { border-color: var(--mra-primary); }
+.task-item--failed { border-color: var(--mra-danger); }
+/* 行头：拖拽手柄 | 启用勾选 | 图标 | 标题 | 摘要/实况 | 结果标记 | 展开箭头 */
+.task-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px 10px 4px; min-height: 44px; cursor: pointer; }
+.task-grip {
+  flex-shrink: 0; width: 24px; align-self: stretch; display: flex; align-items: center; justify-content: center;
+  color: var(--mra-foreground-muted); cursor: grab; touch-action: none; border-radius: 6px;
 }
-.msel-trigger[aria-expanded="true"] .msel-chev { transform: translateY(-50%) rotate(180deg); }
-.msel-list {
-  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
-  max-height: 280px; overflow-y: auto;
-  background: var(--mra-surface); border: 1px solid var(--mra-border);
-  border-radius: 10px; padding: 4px;
-  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12), 0 2px 6px rgba(31, 35, 40, 0.08);
-  display: none;
+.task-grip:hover { background: var(--mra-surface-hover); color: var(--mra-foreground-secondary); }
+.task-item--running .task-grip, .task-item--disabled .task-grip { cursor: default; opacity: 0.4; pointer-events: none; }
+.task-grip svg { width: 14px; height: 14px; fill: currentColor; }
+/* 启用勾选（方形，对齐任务语义；与设置页开关区分） */
+.task-check { flex-shrink: 0; width: 16px; height: 16px; margin: 0; accent-color: var(--mra-primary); cursor: pointer; }
+.task-item--running .task-check { pointer-events: none; }
+.task-icon { flex-shrink: 0; font-size: 16px; line-height: 1; }
+.task-title { flex-shrink: 0; font-size: 13px; font-weight: 600; color: var(--mra-foreground); }
+.task-item--running .task-title { color: var(--mra-primary); }
+/* 摘要 chips：空闲 = 已存配置投影；运行中 = 实况阶段 */
+.task-chips { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; flex: 1; }
+.task-chip {
+  flex-shrink: 0; font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 9px;
+  background: var(--mra-sidebar); border: 1px solid var(--mra-border-light); color: var(--mra-foreground-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;
 }
-.msel--open .msel-list { display: block; animation: msel-in var(--mra-duration-base) ease-out; }
-@keyframes msel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .msel--open .msel-list { animation: none; } }
-.msel-opt {
-  position: relative; display: flex; align-items: center;
-  height: 34px; padding: 0 10px 0 32px;
-  border-radius: var(--mra-radius-sm); cursor: pointer; color: var(--mra-foreground);
+.task-chip--live { background: color-mix(in srgb, var(--mra-primary) 10%, transparent); border-color: transparent; color: var(--mra-primary); font-weight: 600; }
+.task-chip--queue { background: var(--mra-border-light); border-color: transparent; }
+.task-chip--warn { color: var(--mra-warning-strong); }
+.task-chip--bad { color: var(--mra-danger); }
+/* 结果标记（一轮结束后的短暂状态：完成/失败/已停止/已中止） */
+.task-result { flex-shrink: 0; font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 5px; font-weight: 600; }
+.task-result--ok { background: var(--mra-success-bg); color: var(--mra-success-strong); }
+.task-result--fail { background: var(--mra-danger-bg); color: var(--mra-danger); }
+.task-result--skip { background: var(--mra-border-light); color: var(--mra-foreground-muted); }
+.task-chev {
+  flex-shrink: 0; width: 26px; height: 26px; border: none; border-radius: 6px; background: transparent; padding: 0;
+  display: flex; align-items: center; justify-content: center; color: var(--mra-foreground-muted); cursor: pointer;
+  transition: transform var(--mra-duration-base) ease, background var(--mra-duration-fast) ease;
 }
-.msel-opt--active { background: var(--mra-surface-hover); }
-.msel-opt--selected { font-weight: 600; }
-.msel-opt--selected::before {
-  content: ''; position: absolute; left: 9px; top: 50%;
-  width: 12px; height: 7px; margin-top: -8px;
-  border-left: 2px solid var(--mra-primary); border-bottom: 2px solid var(--mra-primary);
-  transform: rotate(-45deg);
-}
-.msel-opt--expired { color: var(--mra-foreground-secondary); }
-.msel-suffix { margin-left: auto; font-size: 11px; color: var(--mra-foreground-muted); padding-left: 8px; }
-.msel-badge {
-  margin-left: auto; flex: none; font-size: 10px; font-weight: 500;
-  color: var(--mra-foreground-muted); padding: 2px 6px;
-  border-radius: 4px; background: var(--mra-surface-active); white-space: nowrap;
-}
-.msel-badge--soon { color: var(--mra-warning-strong); background: #fef3c7; }
-.module-desc { font-size: 12px; color: var(--mra-foreground-secondary); margin-top: 8px; line-height: 1.6; }
+.task-chev:hover { background: var(--mra-surface-hover); color: var(--mra-foreground); }
+.task-chev svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.task-item--open .task-chev { transform: rotate(180deg); }
+.task-item--running .task-chev, .task-item--disabled .task-chev { pointer-events: none; opacity: 0.5; }
+/* 空列表占位 */
+.task-empty { padding: 32px 16px; text-align: center; font-size: 12px; color: var(--mra-foreground-muted); }
 
-/* 模块选项（2 列平行：循环次数 / 出价策略） */
-.module-options {
-  margin-top: 18px;
-  border-top: 1px dashed var(--mra-border-light);
-  padding-top: 16px;
+/* 展开面板：模块选项（单实例 DOM 搬入）+ 细分阶段 */
+.task-panel { display: none; border-top: 1px solid var(--mra-border-light); padding: 12px; cursor: default; }
+.task-item--open .task-panel { display: block; animation: task-panel-in var(--mra-duration-base) ease-out; }
+@keyframes task-panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.task-panel-label { font-size: 11px; font-weight: 600; color: var(--mra-foreground-muted); margin: 12px 0 6px; }
+.task-panel-label:first-child { margin-top: 0; }
+.task-options { display: flex; flex-direction: column; }
+.task-panel .module-options-row + .module-options-row { margin-top: 14px; }
+.task-panel .option-row { padding: 0; }
+.bp-hint-breakpoint { font-size: 11px; color: var(--mra-foreground-muted); margin-bottom: 6px; }
+/* 面板里的阶段列表：不带外层 .breakpoint-list 的撑满/滚动语义（列表本身跟随内容） */
+.task-stage-list { list-style: none; margin: 0; padding: 0; overflow: visible; }
+.task-panel .mra-breakpoint-item { border-radius: 6px; cursor: pointer; }
+.task-panel .mra-breakpoint-item:hover { background: var(--mra-surface-hover); }
+.task-item--running .task-panel .mra-breakpoint-item { cursor: default; }
+.task-item--running .task-panel .mra-breakpoint-item:hover { background: transparent; }
+.task-item--running .task-panel .mra-breakpoint-item:not(.mra-breakpoint-item--current) { opacity: 0.5; }
+.bp-badge--from { background: var(--mra-primary-soft); color: var(--mra-primary); }
+
+/* ---------- 模块管理弹窗：游戏选卡网格（3 列、露 2.5 行、底部淡出） ---------- */
+/* 视口：固定行高 → 「2.5 行」可算准（2 行 + 半行），上方留白一指宽；
+   底部遮罩淡出，暗示下面还有内容 */
+.task-gallery-wrap {
+  --gal-row-h: 152px;
+  --gal-gap: 12px;
+  --gal-top: 14px;
+  /* 2 整行 + 2 个间隙 + 半行 + 顶部留白 */
+  max-height: calc(var(--gal-row-h) * 2.5 + var(--gal-gap) * 2 + var(--gal-top));
+  overflow-y: auto;
+  padding: var(--gal-top) 2px 4px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 74px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 74px), transparent 100%);
 }
+.task-gallery-wrap::-webkit-scrollbar { display: none; }
+.task-gallery {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: var(--gal-row-h);
+  gap: var(--gal-gap);
+}
+/* 尖峰式曲线：起始速度极快（陡峭 Attack），长尾缓收——选中反馈要「弹」不要「滑」 */
+.task-gallery-cell { --gal-spike: cubic-bezier(0.1, 0.94, 0.16, 1); }
+.task-gallery-cell {
+  position: relative; padding: 0; overflow: hidden;
+  border: 0; border-radius: 10px; background: var(--mra-sidebar);
+  cursor: pointer; text-align: left; font-family: var(--mra-font-sans);
+}
+/* 头图（占位=渐变+emoji，真源见 js/run.js MODULE_META）：选中时推近，尖峰式曲线 */
+.task-gallery-art {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 42px; line-height: 1;
+  transition: transform .42s var(--gal-spike);
+}
+/* 底部压暗：保证横幅文字在亮色头图上可读 */
+.task-gallery-cell::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent 40%);
+}
+/* 选中提示 = 底部涌起的品牌红色光（不用描边——描边会在视觉上让卡片大一圈）。
+   未选中时收起在底部之外，形成「涌起」过渡 */
+.task-gallery-cell::before {
+  content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background: linear-gradient(to top,
+    color-mix(in srgb, var(--mra-primary) 88%, transparent) 0%,
+    color-mix(in srgb, var(--mra-primary) 46%, transparent) 18%,
+    color-mix(in srgb, var(--mra-primary) 12%, transparent) 34%,
+    transparent 46%);
+  opacity: 0; transform: translateY(46%);
+  transition: opacity .3s var(--gal-spike), transform .38s var(--gal-spike);
+}
+.task-gallery-cell--selected::before { opacity: 1; transform: translateY(0); }
+.task-gallery-cell--selected .task-gallery-art { transform: scale(1.18); }
+/* 弱扫描带：选中瞬间一道很淡的亮带自下而上扫过（单次，随选中类触发/复位） */
+.task-gallery-scan {
+  position: absolute; left: 0; right: 0; top: 0; height: 42%;
+  z-index: 2; pointer-events: none; opacity: 0; transform: translateY(135%);
+  background: linear-gradient(to bottom,
+    transparent 0%,
+    color-mix(in srgb, #fff 62%, var(--mra-primary)) 50%,
+    transparent 100%);
+}
+.task-gallery-cell--selected .task-gallery-scan { animation: task-scan-up .78s var(--gal-spike) .04s 1 both; }
+@keyframes task-scan-up {
+  0%   { opacity: 0;    transform: translateY(135%); }
+  16%  { opacity: 0.32; }
+  100% { opacity: 0;    transform: translateY(-165%); }
+}
+/* 模块名：左下角大一号粗体（黑体族）直接压在图上——无底色、无过渡动效；
+   可读性由底部压暗层 + 极淡文字投影兜底 */
+.task-gallery-banner {
+  position: absolute; left: 12px; bottom: 8px; z-index: 3;
+  max-width: calc(100% - 20px);
+  color: #fff; font-size: 15px; font-weight: 700; line-height: 1.35;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 头图右上角的过期角标 */
+.task-gallery-flag {
+  position: absolute; top: 8px; right: 8px; z-index: 3;
+  font-size: 10px; font-weight: 600; line-height: 16px; padding: 0 7px; border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55); color: var(--mra-warning-strong);
+}
+/* 空槽位：幽灵虚线（不填色），让留白透气；只为让网格连续、底部淡出有依托 */
+.task-gallery-cell--empty {
+  background: transparent; border: 1px dashed var(--mra-border); cursor: default;
+  pointer-events: none; display: flex; align-items: center; justify-content: center;
+  opacity: 0.5;
+}
+.task-gallery-cell--empty::after, .task-gallery-cell--empty::before { display: none; }
+.task-gallery-empty-plus { font-size: 16px; color: var(--mra-foreground-muted); }
+
+/* 模块选项（原主控卡内、现任务卡展开面板；行距/字段样式共用） */
 .module-options-row--stack { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: end; }
 .module-options-row + .module-options-row { margin-top: 14px; }
 .mra-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

@@ -65,11 +65,22 @@ window.MRA = (function () {
   // ---------- 工具 ----------
   const $ = (id) => document.getElementById(id);
   const state = {
-    stages: [],
-    selected_index: -1,
     is_running: false,
-    // get_initial_state 返回的模块列表（含 expired / valid_until：下拉栏置灰与过期警告文案的数据源）
+    // get_initial_state 返回的模块列表（含 expired / valid_until：任务卡徽章与
+    // 模块管理弹窗的数据源；stages 供展开面板的细分阶段列表使用）
     modules: [],
+    // 运行任务列表：order = 列表内模块（数组序即执行序），enabled = 启用勾选
+    queue: { order: [], enabled: {} },
+    // 断点起点（模块 id → 阶段名；仅内存，start 时后端消费即清）
+    breakpoints: {},
+    // 模块 → 插件资源齐备状态（get_status 持续下发，任务卡「资源缺失」徽章）
+    moduleAssets: {},
+    // 上一轮各模块结局（ok|fail|stopped|skip；null = 尚未跑完整轮）
+    roundResult: null,
+    // 模块 → 最近一次读到的配置（卡片摘要 chips 的数据源；含运行实况 _state）
+    cfg: {},
+    // 任务卡展开态（会话内记忆，不持久化）
+    expanded: {},
     _lastRunState: false,
     // 录制实况的刷新节流（毫秒时间戳）：运行中每秒刷一次，别跟着 250ms 状态轮询跑
     _lastRecRefresh: 0,
@@ -147,15 +158,15 @@ window.MRA = (function () {
     } catch (e) { /* 非 WebView2 环境（浏览器直开）忽略 */ }
   }
 
-  // 当前活动模块 id（可变共享状态）：一律经 MRA.currentModuleId 读写（下方访问器），
-  // 保证唯一真源在本文件。初始为空（未选择）——真实值由初始化时按后端注册表给出的
-  // selected_module 写入；不硬编码任何模块 id，那会把某个活动固化成特权模块。
-  let currentModuleId = '';
+  // 面板跟随模块 id（可变共享状态）：任务卡展开时指向该模块，「数据/设置」页与
+  // 性能卡据此渲染（最后展开的卡片即当前面板）。一律经 MRA.panelModuleId 读写，
+  // 保证唯一真源在本文件。初始为空（无面板）——真实值由展开/初始化按任务列表写入。
+  let panelModuleId = '';
 
   const MRA = { mra, $, state, showError, reportError, setInlineStatus, mkEl, appendIcon, postWindowAction };
-  Object.defineProperty(MRA, 'currentModuleId', {
-    get: () => currentModuleId,
-    set: (v) => { currentModuleId = v; },
+  Object.defineProperty(MRA, 'panelModuleId', {
+    get: () => panelModuleId,
+    set: (v) => { panelModuleId = v; },
   });
   return MRA;
 })();

@@ -14,7 +14,8 @@ MaaRM Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
     response    → stdout 带写锁
 
 方法（JSONL RPC，供 MaaRacingMaster.Shell.exe 前端调用）：
-    get_initial_state / select_module / get_status / start / stop / fetch_logs / close / shutdown
+    get_initial_state / set_run_queue / set_start_from / get_status / start / stop
+    / fetch_logs / close / shutdown
     get_debug_state / set_debug_mode / set_peep / set_click_mode（调试页）
     get_registry_optimizations / set_registry_optimization（启动体检：注册表权限优化中心）
     set_optimization_prompt_ignored（按项忽略/恢复启动提醒，profile 持久化）
@@ -323,17 +324,6 @@ def _module_config_defaults(module_id: str) -> dict:
     return dict(defaults) if isinstance(defaults, dict) else {}
 
 
-def _merge_module_config(cache_cfg: dict | None, param_cfg: dict | None) -> dict:
-    """start 时的配置合并：缓存槽 ← 本次带参（带参优先）。
-
-    单独成函数是为了让"配置来源的优先级"只有一个落点、可被直接验证，
-    不然它散在 start 的启动流程里，只能靠跑整条 start 才间接覆盖。
-    """
-    merged: dict = dict(cache_cfg or {})
-    merged.update(param_cfg or {})
-    return merged
-
-
 class _StdoutGuard:
     """把一切误写 stdout 的输出（第三方库 print 等）转移到 stderr，保证协议通道纯净。"""
 
@@ -355,8 +345,8 @@ class _StdoutGuard:
 # （apps/MaaRacingMaster.Shell/RpcBridge.cs AllowedMethods）。
 HANDLERS = frozenset({
     # 生命周期与模块
-    "get_initial_state", "select_module", "get_status", "start", "stop",
-    "close", "shutdown",
+    "get_initial_state", "set_run_queue", "set_start_from", "get_status",
+    "start", "stop", "close", "shutdown",
     # 模块配置
     "get_module_config", "set_module_config",
     # 外部资源与下载引导
@@ -392,13 +382,18 @@ class SidecarService:
         self._controller = MaaRacingMasterController()
         self._lock = threading.RLock()
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
-        # 默认选中注册顺序里第一个仍在有效期内的模块；全部不可用时不预选，由 GUI
-        # 「（空）」承担该状态。不硬编码任何具体模块 id（见文件头默认模块说明）。
-        self._selected_module = first_available_module_id()
-        try:
-            self._stages = get_module_info(self._selected_module)["stages"] if self._selected_module else []
-        except KeyError:
-            self._stages = []
+        # 运行任务列表（数组序 = 执行序）与启用勾选。默认 = 注册表全量按注册序排列、
+        # 勾选第一个仍可用模块（对齐旧单选语义的迁移起点，profile 有存档则以存档为准）。
+        # 不硬编码任何模块 id（见文件头说明）；set_run_queue 校验后整体覆写。
+        self._queue_order: list[str] = list(MODULE_REGISTRY)
+        first = first_available_module_id()
+        self._queue_enabled: dict[str, bool] = {first: True} if first else {}
+        # 断点起点（模块 id → 阶段名）：**仅内存**，start 时消费即清——断点不跨会话记忆。
+        self._start_from: dict[str, str] = {}
+        # 运行实况 {index, total, current_module}（worker 持有期间非 None）与
+        # 上一轮各模块结局 {mid: ok|fail|stopped|skip}（None = 本次启动后还没跑完整轮）。
+        self._queue_run: dict | None = None
+        self._round_result: dict[str, str] | None = None
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
         # 远程数据里**已校验通过**的可打开地址（公告详情 / 下载页）：前端只按逻辑目标名
@@ -525,6 +520,26 @@ class SidecarService:
             if kept:
                 slots[mid] = kept
         self._module_config_cache = slots
+        # 3) 运行任务列表：order 取已知模块 id 的去重序列（未知 id 丢弃），enabled
+        #    只收已知 id 的布尔值。文件里没有该段 → 保留 __init__ 的默认编排。
+        rq = data.get("run_queue")
+        if isinstance(rq, dict):
+            order = rq.get("order")
+            if isinstance(order, list):
+                seen: set[str] = set()
+                cleaned: list[str] = []
+                for mid in order:
+                    if isinstance(mid, str) and mid in MODULE_REGISTRY and mid not in seen:
+                        seen.add(mid)
+                        cleaned.append(mid)
+                if cleaned:
+                    self._queue_order = cleaned
+            en = rq.get("enabled")
+            if isinstance(en, dict):
+                self._queue_enabled = {
+                    k: bool(v) for k, v in en.items()
+                    if isinstance(k, str) and k in MODULE_REGISTRY
+                }
 
     def get_initial_state(self, params):
         return (True, {
@@ -532,14 +547,16 @@ class SidecarService:
             # 版本比较另用 _version_tuple()（内部仍取干净基线，不受此后缀影响）
             "version": __display_version__,
             "modules": self._module_list(),
-            "selected_module": self._selected_module,
-            "stages": list(self._stages),
-            "model_ok": self._selected_module_assets_ok(),
+            "queue": self._queue_snapshot(),
+            # 断点起点（仅内存，不落盘）：GUI 展示「从此处开始」用
+            "breakpoints": dict(self._start_from),
+            "module_assets": self._module_assets_map(),
+            "model_ok": self._enabled_assets_ok(),
             "is_running": self._controller.module_active,
         }, None)
 
     def _module_list(self) -> list:
-        """GUI 下拉栏数据源：含声明有效期与过期标记（过期项前端置灰、不自动选中）。"""
+        """GUI 任务卡与模块管理弹窗的数据源：含声明有效期与过期标记。"""
         return [
             {
                 "id": mid,
@@ -554,56 +571,111 @@ class SidecarService:
             )
         ]
 
-    def _selected_module_assets_ok(self) -> bool:
-        """当前选中模块的插件自带资源（REQUIRED_ASSETS）是否齐全。
+    def _queue_snapshot(self) -> dict:
+        with self._lock:
+            return {"order": list(self._queue_order), "enabled": dict(self._queue_enabled)}
 
-        未选中模块时不告警（True）；模块被剥离/未注册时同样不告警，由启动校验兜底。
-        """
-        if not self._selected_module:
-            return True
-        try:
-            return not check_required_assets(self._selected_module)
-        except KeyError:
-            return True
+    def _enabled_ids(self) -> list[str]:
+        """启用勾选的模块 id，按列表顺序（= 执行顺序）。"""
+        with self._lock:
+            return [mid for mid in self._queue_order if self._queue_enabled.get(mid)]
 
-    def select_module(self, params):
-        """切换活动模块。
+    def _module_assets_map(self) -> dict:
+        """任务列表内各模块的插件资源齐备状态（REQUIRED_ASSETS 缺失检测，几个 stat 调用）。"""
+        out = {}
+        for mid in self._queue_order:
+            try:
+                out[mid] = not check_required_assets(mid)
+            except KeyError:
+                out[mid] = True  # 模块已剥离/未注册：不告警，由启动校验兜底
+        return out
 
-        - **运行中一律拒绝**：所选模块与正在跑的模块必须始终一致。运行中切换会让
-          GUI 的阶段列表、当前阶段高亮、配置面板全部指向另一个模块，而跑着的仍是旧模块
-          ——界面与实况对不上，用户会照着错的阶段名读日志。判据用 worker 槽（从 start
-          受理到 worker 结束）而非模块自身的 running 标志，把"启动中/停止中"也一并拦住。
-        - module_id 为空 = GUI「（空）」选项：清空选择并正常返回（无模块可用时的合法状态）；
-        - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝；
-        - 未知 id 仍返回「模块不存在」。
+    def _enabled_assets_ok(self) -> bool:
+        """启用模块的插件资源是否全部齐备（状态栏「插件资源缺失」提示的数据源）。"""
+        return all(self._module_assets_map().get(mid, True) for mid in self._enabled_ids())
+
+    def set_run_queue(self, params):
+        """覆写运行任务列表（数组序 = 执行序）与启用勾选，落盘持久化。
+
+        - **运行中一律拒绝**：队列是本次运行的编排依据，运行中改会让「排队中」
+          卡片与实况对不上；
+        - order 必须是已知模块 id 的列表（未知 id 拒绝而非静默丢弃——前端传错要让它
+          看得见）；enabled 只收已知 id 的布尔值；
+        - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝。
         """
         with self._lock:
             busy = self._worker is not None
         if busy:
-            return (False, None, "运行中不允许切换活动模块，请先停止")
-        module_id = params.get("module_id")
-        if not module_id:
-            with self._lock:
-                self._selected_module = None
-                self._stages = []
-            logger.log("活动模块已清空选择")
-            return (True, {"stages": [], "module_id": None}, None)
-        try:
-            info = get_module_info(module_id)
-        except KeyError:
-            return (False, None, f"模块不存在: {module_id}")
-        if info["expired"] and not params.get("force"):
-            return (False, None, f"模块已过期，需确认后才能选择: {module_id}")
+            return (False, None, "运行中不允许修改任务列表，请先停止")
+        order = params.get("order")
+        enabled = params.get("enabled")
+        if not isinstance(order, list) or not all(isinstance(m, str) for m in order):
+            return (False, None, "order 必须为模块 id 字符串列表")
+        unknown = [m for m in order if m not in MODULE_REGISTRY]
+        if unknown:
+            return (False, None, f"模块不存在: {', '.join(unknown)}")
+        if len(set(order)) != len(order):
+            return (False, None, "order 中存在重复模块")
+        if not isinstance(enabled, dict) or not all(isinstance(k, str) for k in enabled):
+            return (False, None, "enabled 必须为「模块 id → 是否启用」映射")
+        unknown_en = [k for k in enabled if k not in MODULE_REGISTRY]
+        if unknown_en:
+            return (False, None, f"模块不存在: {', '.join(unknown_en)}")
+        # 启用且在列表里的过期模块须确认（force）；仅存在于列表但未勾选的不拦——
+        # 不跑的模块没有「使用」发生
+        force = bool(params.get("force"))
+        expired_on = [
+            m for m in order
+            if enabled.get(m) and module_expired(m)
+        ]
+        if expired_on and not force:
+            return (False, None, f"模块已过期，需确认后才能加入: {', '.join(expired_on)}")
         with self._lock:
-            self._selected_module = module_id
-            self._stages = info["stages"]
-        logger.log(f"活动模块已切换: {module_id}")
-        return (True, {"stages": info["stages"], "module_id": module_id}, None)
+            self._queue_order = list(order)
+            # 启用位收敛为「只挂在列表内的模块」：移出列表的模块连带清掉启用位，
+            # profile 里不残留悬空键（再入列时由前端显式给值）
+            self._queue_enabled = {k: bool(v) for k, v in enabled.items() if k in self._queue_order}
+            snapshot = self._queue_snapshot()
+        _save_profile({"run_queue": snapshot})
+        logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}")
+        return (True, snapshot, None)
+
+    def set_start_from(self, params):
+        """设置某模块的断点起点（仅内存，start 消费即清，不跨会话记忆）。
+
+        stage 传 None/缺省 = 清除断点（回到从头跑）。运行中拒绝：断点属「下一次
+        启动」的编排，运行中的轮次已经成型。
+        """
+        with self._lock:
+            busy = self._worker is not None
+        if busy:
+            return (False, None, "运行中不允许设置断点，请先停止")
+        module_id = params.get("module_id")
+        if module_id not in MODULE_REGISTRY:
+            return (False, None, f"模块不存在: {module_id}")
+        stage = params.get("stage")
+        if stage is not None:
+            try:
+                stages = get_module_info(module_id)["stages"]
+            except KeyError:
+                return (False, None, f"模块不存在: {module_id}")
+            if stage not in stages:
+                return (False, None, f"断点 {stage} 不属于模块 {module_id} 的阶段")
+        with self._lock:
+            if stage is None:
+                self._start_from.pop(module_id, None)
+            else:
+                self._start_from[module_id] = stage
+            breakpoints = dict(self._start_from)
+        if stage:
+            logger.log(f"断点模式: {module_id} 将从「{stage}」开始运行")
+        return (True, {"breakpoints": breakpoints}, None)
 
     def get_status(self, params):
         with self._lock:
             worker = self._worker
-            selected = self._selected_module
+            queue_run = dict(self._queue_run) if self._queue_run else None
+            round_result = dict(self._round_result) if self._round_result is not None else None
         # 性能快照按鸭子类型取：谁实现了 read_perf_snapshot 就带谁的领域项
         # （response/health），core 不点名任何活动模块（方向红线：通用层不指向
         # 模块）。资源面（cpu/sys/gpu）由 core 采样器供数、在此聚合；模块没实现
@@ -619,11 +691,16 @@ class SidecarService:
         return (True, {
             "is_running": self._controller.module_active,
             "current_stage": self._controller.current_stage,
+            "current_module": self._controller.current_module_id,
             "worker_active": worker is not None and worker.is_alive(),
-            "selected_module": selected,
-            # 资源齐备状态随轮询持续下发（前端闲置态据此维持「插件资源缺失」提示）；
-            # 实现只是几个 stat 调用，4Hz 轮询无压力
-            "model_ok": self._selected_module_assets_ok(),
+            # 运行实况：第几个/共几个、正在跑哪个模块（前端据此点亮对应任务卡）
+            "queue_run": queue_run,
+            # 上一轮各模块结局（ok|fail|stopped|skip；None = 启动后尚未跑完整轮）
+            "round_result": round_result,
+            # 资源齐备状态随轮询持续下发（前端闲置态据此维持「插件资源缺失」提示，
+            # 并在任务卡上标出具体缺资源的模块）；实现只是几个 stat 调用，4Hz 轮询无压力
+            "module_assets": self._module_assets_map(),
+            "model_ok": self._enabled_assets_ok(),
             "perf": perf,
         }, None)
 
@@ -645,9 +722,10 @@ class SidecarService:
         return view
 
     def get_module_config(self, params):
-        module_id = params.get("module_id") or self._selected_module
+        module_id = params.get("module_id")
         if not module_id:
-            return (True, {}, None)
+            # 任务列表化之后没有「当前选中模块」可兜底：读谁的配置必须点名
+            return (False, None, "缺少 module_id")
         live = self._controller.active_module
         if live is not None and getattr(live, "ID", None) == module_id:
             # 运行中：实例权威——同 id 的运行实例是唯一知道实况（_state）的地方
@@ -671,9 +749,9 @@ class SidecarService:
 
     def set_module_config(self, params):
         config = params.get("config") or {}
-        module_id = params.get("module_id") or self._selected_module
+        module_id = params.get("module_id")
         if not module_id:
-            return (False, None, "未选择活动模块，配置无处可存")
+            return (False, None, "缺少 module_id，配置无处可存")
         if module_id not in MODULE_REGISTRY:
             return (False, None, f"模块不存在: {module_id}")
         # 只收该模块声明过的键（白名单 = DEFAULT_MODULE_CONFIG 的键集），未知键丢弃
@@ -694,76 +772,118 @@ class SidecarService:
         return (True, result, None)
 
     def start(self, params):
-        """快速响应 + worker 线程跑 controller；stop/get_status 在运行期间必须仍可处理。"""
-        start_from = params.get("start_from")
-        with self._lock:
-            module_id = self._selected_module
-            stages = list(self._stages)
-            # 组装：start_params.module_config（本次 start 带参）∪ 该模块自己的缓存槽
-            # （GUI 先改后 start 的值）。槽按模块 id 取，不存在"老模块缓存污染新模块"。
-            param_cfg = params.get("module_config") if isinstance(params.get("module_config"), dict) else {}
-            cache_cfg = dict(self._module_config_cache.get(module_id) or {}) if module_id else {}
-            merged_cfg = _merge_module_config(cache_cfg, param_cfg)
-            start_module_config = merged_cfg or None
-            # 本次带参并入该模块的槽（下一次 get_module_config 回读一致）
-            if start_module_config and module_id:
-                self._module_config_cache[module_id] = dict(merged_cfg)
-        if module_id is None:
-            return (False, None, "未选择活动模块")
-        if start_from is not None and start_from not in stages:
-            return (False, None, f"断点 {start_from} 不属于模块 {module_id} 的阶段")
-        if module_id not in MODULE_REGISTRY:
-            return (False, None, f"模块不存在: {module_id}")
-        module_cls = MODULE_REGISTRY[module_id]
-        # 启动约束按**本次配置**求值：模块可因模式不同放宽。比如 speedrush 的演示录制模式
-        # 不操纵车辆（不创建虚拟设备），而维护者正要用物理手柄驾驶——不能要求他断开手柄。
-        if module_cls.requires_exclusive_gamepad(start_module_config) and has_physical_controller():
-            return (False, None, "请断开所有物理手柄后再运行")
+        """快速响应 + worker 线程按队列顺序逐个跑启用的模块。
 
-        # 插件自带资源校验（REQUIRED_ASSETS，如 racing 的 YOLO 模型）：
-        # 模型已随插件自包含（plugins/<id>/resources/），缺失时拦截并给出插件内具体路径。
-        missing_assets = check_required_assets(module_id)
-        if missing_assets:
-            return (False, None, "插件资源缺失: " + ", ".join(missing_assets))
-
-        # 启动阶段检测：依赖虚拟手柄的模块在 ViGEmBus 驱动缺失时提前拦下，
-        # 返回结构化错误码 VIGEM_BUS_MISSING，供前端弹「下载并安装 ViGEmBus 驱动」引导。
-        # 同样按本次配置求值（录制模式不需要手柄能力，无驱动也该能跑）。
-        if ("gamepad" in module_cls.required_capabilities(start_module_config)
-                and not self._controller.gamepad_available()):
-            return (False, None, (
-                "VIGEM_BUS_MISSING: 检测到缺少 ViGEmBus 驱动，无法创建虚拟手柄。"
-                "请先点击「下载并安装 ViGEmBus 驱动」完成安装后重试。"
-            ))
-
+        启动校验对**每个启用模块**按其本次配置逐个过一遍，任何一个不满足都整批
+        拒绝（fail-fast，报错点名模块）——「中止整轮」的失败策略从受理前就开始：
+        跑一半才发现手柄没断，前面模块的成果就被浪费了。断点起点在组装计划时
+        消费即清（不跨轮记忆，更不跨会话）。
+        """
+        del params  # 计划完全由任务列表 + 配置槽 + 断点表组成，start 不带参
         with self._lock:
             if self._closed:
                 return (False, None, "正在关闭")
             if self._worker is not None:  # slot 已占用，不以 is_alive() 判断
                 return (False, None, "已在运行")
+            enabled = self._enabled_ids()
+            if not enabled:
+                return (False, None, "任务列表没有启用的模块")
+            plan: list[tuple[str, str | None, dict | None]] = []
+            for module_id in enabled:
+                # 组装：该模块自己的缓存槽（GUI 先改后 start 的值）。槽按模块 id 取，
+                # 不存在"老模块缓存污染新模块"。
+                merged_cfg = dict(self._module_config_cache.get(module_id) or {})
+                if merged_cfg:
+                    self._module_config_cache[module_id] = dict(merged_cfg)
+                cfg = merged_cfg or None
+                # 断点消费即清：本计划用掉后即回到从头跑（断点不跨轮记忆）
+                start_from = self._start_from.pop(module_id, None)
+                try:
+                    stages = get_module_info(module_id)["stages"]
+                except KeyError:
+                    return (False, None, f"模块不存在: {module_id}")
+                if start_from is not None and start_from not in stages:
+                    return (False, None, f"断点 {start_from} 不属于模块 {module_id} 的阶段")
+                module_cls = MODULE_REGISTRY[module_id]
+                # 启动约束按**本次配置**求值：模块可因模式不同放宽。比如 speedrush 的演示录制
+                # 模式不操纵车辆（不创建虚拟设备），而维护者正要用物理手柄驾驶——不能要求
+                # 他断开手柄。
+                if module_cls.requires_exclusive_gamepad(cfg) and has_physical_controller():
+                    return (False, None, f"{module_id}: 请断开所有物理手柄后再运行")
+                # 插件自带资源校验（REQUIRED_ASSETS）：缺失时拦截并给出插件内具体路径。
+                missing_assets = check_required_assets(module_id)
+                if missing_assets:
+                    return (False, None, f"{module_id}: 插件资源缺失: " + ", ".join(missing_assets))
+                # 依赖虚拟手柄的模块在 ViGEmBus 驱动缺失时提前拦下，返回结构化错误码
+                # VIGEM_BUS_MISSING，供前端弹「下载并安装 ViGEmBus 驱动」引导。
+                if ("gamepad" in module_cls.required_capabilities(cfg)
+                        and not self._controller.gamepad_available()):
+                    return (False, None, (
+                        f"{module_id}: VIGEM_BUS_MISSING: 检测到缺少 ViGEmBus 驱动，"
+                        "无法创建虚拟手柄。请先点击「下载并安装 ViGEmBus 驱动」完成安装后重试。"
+                    ))
+                plan.append((module_id, start_from, cfg))
+            self._round_result = None
+            self._queue_run = {"index": 0, "total": len(plan), "current_module": plan[0][0]}
             worker = threading.Thread(
                 target=self._worker_main,
-                args=(module_id, start_from, start_module_config),
+                args=(plan,),
                 daemon=True,
                 name="module-worker",
             )
             self._worker = worker
             worker.start()
-
-        if start_from is not None and start_from != (stages[0] if stages else None):
-            logger.log(f"断点模式: 从「{start_from}」开始运行")
+        breakpoints_used = [sf for _, sf, _ in plan if sf]
+        if breakpoints_used:
+            logger.log(f"断点模式: 从 {breakpoints_used} 开始运行")
         return (True, None, None)
 
-    def _worker_main(self, module_id: str, start_from, module_config: dict | None) -> None:
+    def _worker_main(self, plan: list[tuple[str, str | None, dict | None]]) -> None:
+        """按计划顺序逐个跑模块；失败/手动停止即中止整轮（剩余模块标记 skip）。
+
+        判定表（每轮模块结束后）：
+          - start_module 抛异常 / natural=False → 该模块 fail，中止（报错退出）；
+          - manual_stop=True → 该模块 stopped，中止（用户停止）；
+          - 其余（自然跑完，含模块到限自动停止）→ ok，继续下一个。
+        注意不能在启动下一个模块**之后**才查停止信号——start_module 会清 stop_event
+        （★ 唯一 clear 位置），事后查永远看不到上一轮的停止；必须在循环里、
+        调 start_module 之前依据上一轮的结局判据决定去留。
+        """
+        results: dict[str, str] = {}
+        all_natural = True
+        total = len(plan)
         try:
-            # 模块配置注入：在 start_module 内部 create_module 之后、module.start() 之前调用 set_module_config
-            self._controller.start_module(module_id, start_from, module_config=module_config)
-        except Exception as exc:
-            logger.log(f"运行异常: {exc}", "ERROR")
+            for i, (module_id, start_from, module_config) in enumerate(plan):
+                with self._lock:
+                    self._queue_run = {"index": i, "total": total, "current_module": module_id}
+                try:
+                    # 模块配置注入：在 start_module 内部 create_module 之后、module.start() 之前调用 set_module_config
+                    self._controller.start_module(module_id, start_from, module_config=module_config)
+                except Exception as exc:
+                    logger.log(f"运行异常: {exc}", "ERROR")
+                    results[module_id] = "fail"
+                    all_natural = False
+                    break
+                if not self._controller.last_run_natural:
+                    # start_module 内部吞掉的模块执行异常（已记 ERROR 日志）：自然完成不成立
+                    results[module_id] = "fail"
+                    all_natural = False
+                    break
+                if self._controller.manual_stop_requested:
+                    results[module_id] = "stopped"
+                    all_natural = False
+                    break
+                results[module_id] = "ok"
         finally:
-            # 运行结束自动退出程序：与「关闭游戏」同源判定（last_run_natural），
-            # 仅"正常完成"生效，报错/手动停止不触发。发 auto_exit 事件 → shell 关闭窗口优雅退出。
-            if self._controller.last_run_natural and self._controller.auto_exit_mra:
+            # 中止时剩余未跑的模块标记 skip（前端显示「已中止」）
+            for module_id, _, _ in plan:
+                results.setdefault(module_id, "skip")
+            with self._lock:
+                self._queue_run = None
+                self._round_result = results
+            # 整轮全部自然完成才触发「结束后退出」：与「关闭游戏」同源判定，
+            # 报错退出 / 手动停止不触发。发 auto_exit 事件 → shell 关闭窗口优雅退出。
+            if all_natural and self._controller.auto_exit_mra:
                 self.send({"type": "event", "event": "auto_exit"})
             with self._lock:
                 if self._worker is threading.current_thread():

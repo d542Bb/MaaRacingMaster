@@ -123,6 +123,20 @@ class MaaRacingMasterController:
         return self.active_module.current_stage if self.active_module else ""
 
     @property
+    def current_module_id(self) -> str:
+        """正在运行的模块 id（无活动模块时为空串）"""
+        return getattr(self.active_module, "ID", "") if self.active_module else ""
+
+    @property
+    def manual_stop_requested(self) -> bool:
+        """本次运行是否被用户手动停止（stop() 置位，start_module 复位）。
+
+        运行队列据此区分「用户停止 → 中止整轮」与「模块自然结束 → 跑下一个」；
+        不以 stop_event 判定——模块到限自动停止也会置位它（见 stop() 注释）。
+        """
+        return self._manual_stop
+
+    @property
     def is_running(self) -> bool:
         """是否仍在运行（由 stop_event 控制）"""
         return not self.stop_event.is_set()

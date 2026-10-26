@@ -11,8 +11,9 @@
   } = window.MRA;
 
   // -------- 模块专属选项（treasure：循环上限 / 目标场次；speedrush：演示录制开关 + 驾驶模式）--------
-  // 规则：按 MODULE_OPTION_BLOCKS 显示对应块；控件改动立即写 sidecar 的配置槽，
-  // 下次「开始」注入新实例——不做运行中热更新，运行期间控件锁定（见 updateModuleOptionsDisabled）。
+  // 规则：选项块登记于 MODULE_OPTION_BLOCKS，展开对应任务卡时搬入该卡面板（单实例 DOM）；
+  // 控件改动立即写 sidecar 的配置槽，下次「开始」注入新实例——不做运行中热更新，
+  // 运行期间控件锁定（见 updateModuleOptionsDisabled）。
   let _optListenersBound = false;
   const VALID_SESSIONS = new Set(['intern', 'expert', 'master']);
   const SESSION_LABELS = { intern: '实习场', expert: '专家场', master: '大师场' };
@@ -100,22 +101,14 @@
     speedrush: { block: 'opt-speedrush-block', refresh: refreshSpeedrushOptions },
   };
 
-  // 按当前模块分派：先切换块的显隐，再刷该模块的选项与实况
+  // 按模块挂载选项面板：把该模块的选项块与状态行**搬进**对应任务卡的展开面板
+  // （单实例 DOM 的 appendChild 移动，监听绑定不重建），再刷该模块的选项与实况。
+  // 未登记专属选项的模块：面板留空（只显示细分阶段列表）。
   async function refreshModuleOptions(moduleId) {
-    const host = $('module-options');
-    if (!host) return;
     const def = MODULE_OPTION_BLOCKS[moduleId];
-    // 未登记专属选项的模块：整块隐藏
-    if (!def) {
-      host.style.display = 'none';
-      setOptionsStatus('', '');
-      return;
-    }
-    host.style.display = 'block';
-    Object.keys(MODULE_OPTION_BLOCKS).forEach((mid) => {
-      const el = $(MODULE_OPTION_BLOCKS[mid].block);
-      if (el) el.style.display = mid === moduleId ? 'block' : 'none';
-    });
+    const panel = document.querySelector('#task-list [data-id="' + moduleId + '"] [data-options]');
+    if (!def || !panel) return;
+    mountOptionBlock(moduleId, panel);
     setOptionsStatus('读取配置中...', '');
     try {
       await def.refresh();
@@ -123,6 +116,32 @@
       console.error(e);
       reportError('inline', '读取配置失败: ' + (e.message || e));
     }
+  }
+
+  // 选项块/状态行的挂载与回收：块从 index.html 暂存区（#module-options）搬到面板，
+  // 或在列表重建前搬回暂存区——单实例 DOM，两处都不复制
+  function mountOptionBlock(moduleId, panel) {
+    const block = $(MODULE_OPTION_BLOCKS[moduleId].block);
+    const status = $('module-options-status');
+    if (block) {
+      panel.appendChild(block); // 已在目标面板时等价于原位，无副作用
+      block.style.display = 'block';
+    }
+    if (status) panel.appendChild(status); // 状态行跟着当前面板走
+  }
+
+  function stashOptionBlocks() {
+    const stash = $('module-options');
+    if (!stash) return;
+    Object.keys(MODULE_OPTION_BLOCKS).forEach((mid) => {
+      const el = $(MODULE_OPTION_BLOCKS[mid].block);
+      if (el && el.parentElement !== stash) {
+        el.style.display = 'none';
+        stash.appendChild(el);
+      }
+    });
+    const status = $('module-options-status');
+    if (status && status.parentElement !== stash) stash.appendChild(status);
   }
 
   // 鉴宝专属选项（循环上限 / 目标场次）
@@ -210,6 +229,7 @@
       });
       const saved = !!(resp && resp.record_mode);
       setToggle(btn, saved); // 回显后端最终值
+      if (MRA.noteConfigSaved) MRA.noteConfigSaved('speedrush', resp); // 卡片摘要 chips 跟进
       setOptionsStatus(
         saved ? '已开启录制：下次「开始」后，驾驶阶段请自行手动驾驶'
               : '已关闭录制（下次「开始」时生效）',
@@ -241,6 +261,7 @@
       });
       const saved = resp && resp.straight_mode ? 'straight' : 'depth';
       setDriveModeOnUI(saved); // 回显后端最终值
+      if (MRA.noteConfigSaved) MRA.noteConfigSaved('speedrush', resp); // 卡片摘要 chips 跟进
       setOptionsStatus(
         saved === 'straight' ? '本次全程直行：只踩油门，不加载感知与深度（下次「开始」时生效）'
                              : '本次深度几何自动驾驶（下次「开始」时生效）',
@@ -291,6 +312,7 @@
       const savedSession = (resp && resp.target_session && VALID_SESSIONS.has(resp.target_session))
         ? resp.target_session : sessionVal;
       setTargetSessionOnUI(savedSession);
+      if (MRA.noteConfigSaved) MRA.noteConfigSaved('treasure', resp); // 卡片摘要 chips 跟进
       const sessionLabel = SESSION_LABELS[savedSession] || '大师场';
       const loopsTip = savedLoops === 0
         ? '不指定场数，按游戏默认 50 场'
@@ -316,13 +338,6 @@
     const recToggle = $('opt-record-mode');
     if (recToggle) recToggle.disabled = running;
     setDriveModeDisabled(running);
-    // 模块下拉：运行中禁止切换（后端同时拒绝，这里把入口也关掉，让"能不能切"一眼可见）
-    const sel = $('module-select');
-    if (sel) {
-      sel.disabled = running;
-      sel.title = running ? '运行中不允许切换活动模块，请先停止' : '';
-      if (MRA.syncModuleSelect) MRA.syncModuleSelect(); // 自绘下拉投影跟进（js/select.js）
-    }
   }
 
   // ---------- 注册表权限优化（启动体检 + 环境中心「权限优化」tab） ----------
@@ -702,7 +717,7 @@
   }
   function renderTodayBoard(d) {
     if (!d) return;
-    const p = (s) => $('' + MRA.currentModuleId + '-board-' + s);
+    const p = (s) => $('' + MRA.panelModuleId + '-board-' + s);
     const date = p('date');
     if (date) date.textContent = (d.bucket || '') + ' 05:00 起';
     const s = d.summary || {};
@@ -767,8 +782,8 @@
     try {
       const page = $('page-data');
       if (page && page.classList.contains('hidden')) return; // 数据页不可见不刷新
-      if (MRA.currentModuleId !== 'treasure') return;             // 仅鉴宝有今日看板
-      const d = await mra.call('get_today_stats', { module_id: MRA.currentModuleId });
+      if (MRA.panelModuleId !== 'treasure') return;             // 仅鉴宝有今日看板
+      const d = await mra.call('get_today_stats', { module_id: MRA.panelModuleId });
       renderTodayBoard(d);
     } catch (e) { /* 看板轮询失败静默（如库未创建/尚未跑过） */ }
   }
@@ -1115,7 +1130,7 @@
         <div class="card">
           <div class="card-head"><h3>驾驶演示数据</h3></div>
           <div class="card-body">
-            <p class="module-desc">录制开关在「主控」页的模块选项里。每段驾驶各写一个会话目录，
+            <p class="module-desc">录制开关在「主控」页极速狂飙任务卡的展开面板里。每段驾驶各写一个会话目录，
               含逐帧图与手柄序列；门控判定的日志带帧号（<code>frame=</code>），按它可回查
               判定时刻的画面。</p>
             <button class="mra-tool-btn mra-tool-btn--block" id="${mid}-open-demos" style="margin-top:12px;">
@@ -1138,17 +1153,17 @@
     speedrush: { data: speedrushDataCards, settings: defaultSettingsCards },
   };
 
-  // 未选择模块（下拉栏「（空）」或注册表为空）时，「数据/设置」页的占位内容
+  // 任务列表为空时，「数据/设置」页的占位内容
   const EMPTY_MODULE_HTML =
-    '<div class="card"><div class="card-head"><h3>未选择活动模块</h3></div>' +
-    '<div class="card-body"><p class="module-desc">请在左上「活动模块」下拉栏中选择一个模块。</p></div></div>';
+    '<div class="card"><div class="card-head"><h3>没有面板模块</h3></div>' +
+    '<div class="card-body"><p class="module-desc">请在主控页「运行任务」卡片上展开任意模块，或点右上角 ⚙ 添加模块。</p></div></div>';
 
-  // 按模块渲染「数据/设置」页并绑定当前模块的控件事件
+  // 按模块渲染「数据/设置」页并绑定当前模块的控件事件（面板跟随最后展开的任务卡）
   function renderModulePages(moduleId) {
-    // 未选择模块：两页只放占位内容、不挂模块控件；currentModuleId 置空后，
+    // 无面板模块：两页只放占位内容、不挂模块控件；panelModuleId 置空后，
     // 轮询里所有带模块前缀的取值都会落空并由各自的判空守卫跳过。
     if (!moduleId) {
-      MRA.currentModuleId = '';
+      MRA.panelModuleId = '';
       const dataHost = $('page-data');
       const settingsHost = $('page-settings');
       if (dataHost) dataHost.innerHTML = EMPTY_MODULE_HTML;
@@ -1164,7 +1179,7 @@
       if (!first) return;
       moduleId = first.id;
     }
-    MRA.currentModuleId = moduleId;
+    MRA.panelModuleId = moduleId;
     const def = MODULE_PAGE_DEFS[moduleId] || DEFAULT_PAGE_DEFS;
     const dataPage = $('page-data');
     const settingsPage = $('page-settings');
@@ -1417,10 +1432,10 @@
 
   // 从后端回填当前模块的调试开关状态（切换模块后丢弃过期回填）
   async function refreshDebugState() {
-    const mid = MRA.currentModuleId;
+    const mid = MRA.panelModuleId;
     try {
       const d = await mra.call('get_debug_state');
-      if (!d || MRA.currentModuleId !== mid) return; // 已切模块：丢弃
+      if (!d || MRA.panelModuleId !== mid) return; // 已切模块：丢弃
       // 判空防护：设置页 DOM 尚未渲染（或模板差异）时跳过对应回填，避免 null.classList 崩溃
       const safeToggle = (suffix, on) => { const el = $(mid + '-' + suffix); if (el) setToggle(el, on); };
       safeToggle('toggle-debug', !!d.debug_mode);
@@ -1463,5 +1478,6 @@
     checkRegistryOptimizations,
     pollTodayBoard,
     refreshDebugState,
+    stashOptionBlocks,
   });
 })();

@@ -25,7 +25,7 @@ internal static class RpcBridge
     /// </summary>
     private static readonly HashSet<string> AllowedMethods = new(StringComparer.Ordinal)
     {
-        "get_initial_state", "select_module", "get_status", "start", "stop",
+        "get_initial_state", "set_run_queue", "set_start_from", "get_status", "start", "stop",
         "get_module_config", "set_module_config",
         "open_vigembus_download", "open_external_url", "open_user_data_folder",
         "get_registry_optimizations", "set_optimization_prompt_ignored",

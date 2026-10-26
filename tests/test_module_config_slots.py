@@ -231,10 +231,13 @@ def test_read_and_write_never_construct_module(monkeypatch, fake_registry):
     assert svc.get_module_config({"module_id": "fake_b"})[0]
 
 
-def test_set_without_selected_module_is_rejected(monkeypatch, fake_registry):
+def test_set_without_module_id_is_rejected(monkeypatch, fake_registry):
+    """任务列表化后没有「当前选中模块」可兜底：读/写谁的配置必须点名。"""
     svc = _svc(monkeypatch, selected=None)
     ok, _, err = svc.set_module_config({"config": {"alpha": 1}})
-    assert not ok and "未选择活动模块" in err
+    assert not ok and "缺少 module_id" in err
+    ok2, _, err2 = svc.get_module_config({})
+    assert not ok2 and "缺少 module_id" in err2
 
 
 def test_set_unknown_module_is_rejected(monkeypatch, fake_registry):
@@ -277,18 +280,6 @@ def test_other_module_running_does_not_hijack_read(monkeypatch, fake_registry):
     svc = _svc(monkeypatch, selected="fake_b", cache={"fake_b": {"gamma": True}}, live=live)
     _, cfg, _ = svc.get_module_config({"module_id": "fake_b"})
     assert cfg["gamma"] is True and "alpha" not in cfg
-
-
-def test_merge_prefers_start_params_over_cached_slot():
-    """start 合并优先级：本次带参覆盖缓存槽，缓存槽里其它键保留。"""
-    merged = sc._merge_module_config({"alpha": 1, "beta": "old"}, {"beta": "new"})
-    assert merged == {"alpha": 1, "beta": "new"}
-
-
-def test_merge_handles_missing_sides():
-    assert sc._merge_module_config(None, {"alpha": 1}) == {"alpha": 1}
-    assert sc._merge_module_config({"alpha": 1}, None) == {"alpha": 1}
-    assert sc._merge_module_config(None, None) == {}
 
 
 # ---------- 真实模块的回归锁（缺插件注册时跳过）----------
