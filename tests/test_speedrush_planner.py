@@ -9,6 +9,7 @@ CONSERVE/FAULT 优先级、时间基低通、每 tick 限幅语义、死区边�
 from __future__ import annotations
 
 import math
+import types
 
 import pytest
 
@@ -853,6 +854,32 @@ def test_wall_escape_uses_full_authority():
     pl2.state.v_lat_est = 0.0
     pl2.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert pl2.last_steer_raw >= -P.hold_stick_max - 0.01
+
+
+def test_corridor_infeasible_plan_commands_escape():
+    """计划判定压在走廊边距内（无效）时执行它的逃逸候选杆值：
+    不能退回保持死区——目标差 0.26 道 < 0.5，PD 会完全不修，车停在离栏
+    0.25m（20261026 局 s2#4 21.6s：目标 0.93、车位 1.19、杆 −0.18）。"""
+    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl = _planner(**base)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 1.19
+    pl.state.v_lat_est = 0.0
+    plan = types.SimpleNamespace(
+        valid=False, reason="plan:infeasible_corridor", u_feedforward=-0.6,
+        x_preview_lane=0.8, v_preview_lane_s=0.0)
+    pl.update(_out(x_target=0.93, fid=2, valid=2), DT, 2, plan=plan)
+    assert pl.last_steer_raw == pytest.approx(-0.6, abs=1e-6)
+    pl2 = _planner(**base)
+    pl2.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl2.state.executed_lane = 1.19
+    pl2.state.v_lat_est = 0.0
+    stale = types.SimpleNamespace(
+        valid=False, reason="plan:stale", u_feedforward=-0.6,
+        x_preview_lane=0.8, v_preview_lane_s=0.0)
+    pl2.update(_out(x_target=0.93, fid=2, valid=2), DT, 2, plan=stale)
+    assert abs(pl2.last_steer_raw) < 0.05        # 其它无效原因仍走死区
 
 
 def test_maneuver_deadband_and_cap_used():

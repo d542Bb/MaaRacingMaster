@@ -511,6 +511,15 @@ class LateralPlanner:
                 steer_raw = max(self._last_plan_u - cap,
                                 min(self._last_plan_u + cap, steer_raw))
             self._last_plan_u = steer_raw
+        elif (plan is not None and st is DecisionState.CRUISE
+              and plan.reason == "plan:infeasible_corridor"):
+            # 计划已判定「自车压在走廊边距内」，但它无效、不接管，PD 的保持
+            # 死区随即把 0.26 道的误差当"带内不修正"——车停在离栏 0.25m
+            # （20261026 局 s2#4 21.6s：目标 0.93、车位 1.19、杆 −0.18）。
+            # 无效计划选的是"最快脱离侵入"候选（空可行集第一项），直接执行
+            # 它的杆值，不用保持死区/维护杆幅。
+            steer_raw = plan.u_feedforward
+            self._last_plan_u = None
         else:
             self._last_plan_u = None
 
