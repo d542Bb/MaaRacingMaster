@@ -600,4 +600,8 @@ class MaaRacingMasterController:
             logger.log(f"虚拟手柄销毁异常（可能驱动未装或已移除）: {e}", "DEBUG")
         self._gpad = None
         import gc
+        # 回收窗口的边界日志：这一带的崩溃只能靠日志断点定位（收尾无其它输出），
+        # 有头有尾才能判断崩溃落在回收内还是回收之后。
+        logger.log("虚拟手柄对象回收开始", "DEBUG")
         gc.collect()  # 兜底：回收模块/点击器链上的手柄对象（free 仍由 __del__ 恰好执行一次）
+        logger.log("虚拟手柄对象回收完成", "DEBUG")

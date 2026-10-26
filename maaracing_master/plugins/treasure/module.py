@@ -1489,6 +1489,15 @@ class TreasureModule(ActivityModule):
     def cleanup(self) -> None:
         assert self.ctx is not None  # 仅运行态调用
         # renderer 由 Context.close 释放，无需在此手动归还
+        # 跑图器的 C 句柄必须在这里显式销毁：binding 的 __del__ 不等框架 worker
+        # 收摊，留给模块结束后的垃圾回收会与仍在收摊的回调竞态（0xC0000005）。
+        runner = getattr(self, "_v4_runner", None)
+        if runner is not None:
+            try:
+                runner.shutdown()
+            except Exception as e:  # noqa: BLE001 —— 释放异常不阻断其余收尾
+                logger.log(f"[鉴宝][v4] 跑图器释放异常: {e}", "WARNING")
+            self._v4_runner = None
 
     # ---------- 组归属机制的类级薄包装（实现见模块级函数；store 等外部经此取用） ----------
     def _tlog(self, msg: str, level: str = "INFO", fields: dict | None = None):

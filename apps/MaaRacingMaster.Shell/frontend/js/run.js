@@ -458,9 +458,26 @@
   $('btn-manage').addEventListener('click', openManageModal);
 
   // ---------- 状态轮询 ----------
+  // 后台进程可能在我们不知情时消失（收尾崩溃 / 被杀）。此时 RPC 全部失败，
+  // 但界面若只是静默重试，状态栏会永远停在最后一次拿到的「停止中...」，
+  // 按钮照旧可点却毫无反应——观感就是「停不下来」。连续失败到阈值即明说断连。
+  const POLL_FAIL_LIMIT = 4;   // 4 次 × 250ms ≈ 1 秒问不到就认定断开
+  let _pollFails = 0;
+  let _offline = false;
+
+  function markOffline() {
+    if (_offline) return;
+    _offline = true;
+    setStatus('后台已断开（进程已退出），请重启程序', 'error');
+    $('btn-start').disabled = true;
+    $('btn-stop').disabled = true;
+  }
+
   async function pollStatus() {
     try {
       const d = await mra.call('get_status');
+      _pollFails = 0;
+      _offline = false;
       renderStatus(d);
       const runState = !!(d.is_running || d.worker_active);
       if (runState !== state._lastRunState) {
@@ -495,6 +512,7 @@
       }
     } catch (e) {
       console.error(e);
+      if (++_pollFails >= POLL_FAIL_LIMIT) markOffline();
     } finally {
       setTimeout(pollStatus, 250);
     }
@@ -680,6 +698,7 @@
       await mra.call('stop');
     } catch (e) {
       console.error(e);
+      showError('后台已断开，停止指令没能送达');
     }
   };
 

@@ -293,6 +293,10 @@ class _LateStatus:
     def done(self) -> bool:
         return time.monotonic() >= self._until
 
+    def finish_now(self) -> None:
+        """立即置为已完成（模拟停止请求让框架马上结束任务）。"""
+        self._until = 0.0
+
 
 class _LateJob:
     """完成时间可控的任务桩（`succeeded` 恒真，只用来测等待节拍）。"""
@@ -300,6 +304,11 @@ class _LateJob:
     def __init__(self, delay: float):
         self.succeeded = True
         self.status = _LateStatus(delay)
+
+    @property
+    def done(self) -> bool:
+        """对齐真实 Job 的便捷属性（收尾路径用它判断任务是否已结束）。"""
+        return self.status.done
 
     def wait(self):
         return self
@@ -348,7 +357,11 @@ def test_run_still_completes_grader_that_takes_several_polls(pure_maa, tmp_path)
 
 def test_run_still_interrupts_on_lifecycle_stop(pure_maa, tmp_path):
     """中断语义不得被节拍改动破坏：未完成 + 已停止 → 发 post_stop 并返回假。"""
-    v4 = _nav_with_job(pure_maa, tmp_path, _LateJob(5.0))
+    job = _LateJob(5.0)
+    v4 = _nav_with_job(pure_maa, tmp_path, job)
+    # 停止请求会让框架立即结束任务（真机实测毫秒级），桩要模拟这一点：否则测的是
+    # 「中断后仍等图自然跑完」，与实际语义不符——中断路径等的是收摊，不是等图跑完。
+    v4._graph._tasker.post_stop.side_effect = lambda: job.status.finish_now()
     v4.ctx.lifecycle.running = False
     t0 = time.monotonic()
     assert v4._graph.run("t") is False

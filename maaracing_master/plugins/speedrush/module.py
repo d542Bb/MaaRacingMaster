@@ -39,7 +39,7 @@ from maaracing_master.core import xinput
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
-from maaracing_master.core.paths import data_dir, debug_dir
+from maaracing_master.core.paths import debug_dir
 from maaracing_master.core.perf_sampler import ensure_perf_sampler_started
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
@@ -336,7 +336,7 @@ class SpeedRushModule(ActivityModule):
                 # HUD 读数（与录制器同一时机启停；行数即"这个阶段的读数有没有产出"）
                 "hud_recording": bool(hud is not None and hud.running),
                 "hud_rows": int(hud_stats["rows_written"]) if hud_stats else 0,
-                "demos_dir": str(_demos_root()),
+                "record_dir": str(_record_root()),
                 # 感知实况：是否在跑 + 最近一帧的检出与耗时（GUI 展示用）
                 "perception_on": bool(lp is not None and self._perception is not None),
                 "perception_last": None if lp is None else {
@@ -418,10 +418,14 @@ class SpeedRushModule(ActivityModule):
             self._stage_name = None
 
     def stop(self) -> None:
-        """幂等停止：置停止标志并中断在跑的图。"""
+        """幂等停止：置停止标志并投递中断请求（不阻塞调用方线程）。
+
+        这里由 GUI 的请求线程调用，等收摊会把这个线程占住；真正的等待在跑图
+        线程的中断路径上做（它紧接着就要销毁框架句柄）。
+        """
         self._running = False
         if self._graph is not None:
-            self._graph.stop()
+            self._graph.request_stop()
 
     def cleanup(self) -> None:
         """幂等释放模块资源。"""
@@ -653,7 +657,10 @@ class SpeedRushModule(ActivityModule):
         self._pace_wake = []
         self._control_times = []
         self._control_last = None
-        chain = self._build_control_chain(phase) \
+        # 人工驾驶阶段的产物目录=录制会话目录：语料与证据同家，不再另建
+        # ``debug/speedrush/<时刻>_p<阶段>/``（同一段画面落两份，2026-10-26 收口）
+        run_dir = recorder.out_dir if recorder is not None else None
+        chain = self._build_control_chain(phase, run_dir=run_dir) \
             if ((control and not straight) or shadow) else None
         # 直行档 trace（stub chain 与控制链同协议：行进流水汇 + 阶段收尾汇总）；
         # 油门取 decision.json 的 throttle_raw 单一真源，不另抄数值。
@@ -848,17 +855,22 @@ class SpeedRushModule(ActivityModule):
         产物；data/（业务数据 DB）与 logs/（阶段状态）不受此门。"""
         return bool(getattr(getattr(self.ctx, "debug", None), "enabled", False))
 
-    def _build_control_chain(self, phase: int = 0) -> dict:
+    def _build_control_chain(self, phase: int = 0, *,
+                             run_dir: Path | None = None) -> dict:
         """按阶段新建一份干净世界：跟踪/聚合/决策/规划各一，配置开局读一次。
 
         阶段间不共享状态（行为稿 §九：阶段信息只进过渡窗判据，两阶段同一决策器），
         新建即天然清空——与 DecisionEngine.reset 的"冷启动"语义一致。
+
+        ``run_dir``：产物目录（trace 证据/坏帧/深度证据包）。人工驾驶阶段由调用方
+        传入录制会话目录，与语料同家；缺省按时刻新建 ``debug/speedrush/<时刻>_p<N>/``。
         """
         cfg = load_decision()
         cal = load_calib()   # 标定真源一次读入（深度观测器同源）
         wt = WallTrack(cal)  # 墙实体（第 5 步）：逐箱跨帧假设，ego_road 持有
         t_start = time.time()
-        run_dir = _run_dir(t_start, phase)
+        manual = run_dir is not None   # 人工驾驶阶段（语料目录已由录制器建好）
+        run_dir = run_dir or _run_dir(t_start, phase)
         dbg_on = self._debug_enabled()
         lane_obs = LaneObsWorker(cfg.lane_obs)
         lane_obs.start()
@@ -918,8 +930,11 @@ class SpeedRushModule(ActivityModule):
                                                          cfg.planner)
                                       if cfg.lateral_frame.enabled else None),
                 # raw/hud 调试图落盘器（10fps；debug 开关闸，测试 ctx=None → None →
-                # tick 空转）。生命周期=chain，finally 收口。
-                "debug": DebugPairWriter(run_dir, cal=cal) if dbg_on else None,
+                # tick 空转）。生命周期=chain，finally 收口。人工驾驶阶段不建：
+                # 同一段画面已在录制语料里（30fps 原帧），调试图是第二份拷贝
+                # （2026-10-26 收口——录制期只留 manual_ 会话一个目录）。
+                "debug": (DebugPairWriter(run_dir, cal=cal)
+                          if dbg_on and not manual else None),
                 "hud_ref": None,
                 # 开局视角守卫（闸 view_guard.enabled）：本进程确认过保险杠
                 # 机位后不再建；成功/失败即终态。abort_phase 由守卫置位，
@@ -934,6 +949,9 @@ class SpeedRushModule(ActivityModule):
                 # 跨会话残留的慢 forward 锁存不写进新会话（同钟起点过滤）
                 "slow_seen_ns": int(time.perf_counter() * 1e9),
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
+                # 产物目录的唯一真源：坏帧/证据包都按它落，不各自再算一遍时刻目录
+                # （否则人工驾驶阶段会另建一个非 manual_ 目录，等于又落一份）
+                "run_dir": run_dir,
                 "t_start": t_start}
 
     # ---------- 开局视角守卫（2026-10-23） ----------
@@ -1175,7 +1193,7 @@ class SpeedRushModule(ActivityModule):
         # debug/ 产物面总闸：开关关=取证也停
         chain["bad_frames"]["last_steer"] = cmd.steer_x
         if not obs.health.stage_transition and self._debug_enabled():
-            _maybe_save_bad_frame(chain, frame, dgeo, fid, phase,
+            _maybe_save_bad_frame(chain, frame, dgeo, fid,
                                   time.monotonic(), ts_ns)
         eng = chain["engine"]
         self._control_last = {
@@ -1835,7 +1853,7 @@ class SpeedRushModule(ActivityModule):
         try:
             # manual=人工驾驶语料（录制模式必然人驾）：目录名一眼可分历史会话，
             # 阶段二参考线语料按 manual_ 前缀取（2026-10-03 维护者裁定）
-            session = make_session_dir(_demos_root(), tag="manual")
+            session = make_session_dir(_record_root(), tag="manual")
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
             rec = DriveRecorder(session, phase=phase, round_no=round_no)
@@ -1870,13 +1888,15 @@ class SpeedRushModule(ActivityModule):
         return obs
 
 
-def _demos_root() -> Path:
-    """演示数据根目录。
+def _record_root() -> Path:
+    """录制语料根目录：``debug/speedrush/``（与调试产物同家）。
 
-    落用户数据目录（与 treasure 的 ``data/treasure/`` 同构）：与安装目录解耦，
-    更新不丢数据，也不污染仓库工作树。
+    与安装目录解耦、更新不丢数据，也不污染仓库工作树。人工驾驶阶段只产一个
+    目录（``manual_<时刻>_p<阶段>``）：语料与调试图分家会让同一段画面落两份
+    （2026-10-26 维护者裁定收口到一处），故不再写 ``data/speedrush/demos/``
+    ——``data/`` 只留结构化业务数据。
     """
-    return data_dir() / "speedrush" / "demos"
+    return debug_dir() / "speedrush"
 
 
 # 坏帧采样器（三局复盘 2026-09-22 悬案取证：sides==0 占 58% 是场景褪色还是检测参数，
@@ -1918,7 +1938,7 @@ def _yolo_car_boxes(result: PerceptionResult) -> tuple | None:
     return boxes or None
 
 
-def _maybe_save_bad_frame(chain: dict, frame, dgeo, fid: int, phase: int,
+def _maybe_save_bad_frame(chain: dict, frame, dgeo, fid: int,
                           now: float, ts_ns: int) -> None:
     """深度几何双侧皆弃权（sides==0）的帧按节流存 JPEG + index.jsonl 行。
 
@@ -1933,7 +1953,7 @@ def _maybe_save_bad_frame(chain: dict, frame, dgeo, fid: int, phase: int,
     s["next_at"] = now + BAD_FRAME_MIN_INTERVAL_S
     try:
         if s["dir"] is None:
-            s["dir"] = _run_dir(chain["t_start"], phase) / "badframes"
+            s["dir"] = chain["run_dir"] / "badframes"
             s["dir"].mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(s["dir"] / f"fid_{fid}.jpg"),
                     cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))

@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import threading
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -71,6 +72,33 @@ CORE_RES_DIR = Path(__file__).resolve().parent / "resources"
 # 退避上限 20ms 兜住 CPU：多秒级的长图按 50 次/秒轮询状态，代价可忽略。
 RUN_POLL_MIN_S = 0.001
 RUN_POLL_MAX_S = 0.02
+
+# 停止后等框架收摊的上限：binding 的 Job.wait() 无超时参数，框架一旦卡住就是
+# 「停止中」永远不结束。宁可超时后照常收尾（并留 WARNING 供定位），也不无限等。
+STOP_SETTLE_TIMEOUT_S = 10.0
+
+
+def _wait_job_settled(job, timeout_s: float | None = None) -> bool:
+    """等任务句柄结束（带上限）。返回是否在期限内结束。
+
+    上限在调用时取模块常量（不写成默认参数）：默认参数在定义时绑定，改常量
+    对它无效——调试/测试里想缩短期限时会静默失效。
+    """
+    if job is None:
+        return True
+    if timeout_s is None:
+        timeout_s = STOP_SETTLE_TIMEOUT_S
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            if job.done:
+                return True
+        except Exception:  # noqa: BLE001 —— 句柄失效按已结束处理，收尾不得被它卡死
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(RUN_POLL_MAX_S)
+
 
 RECOGNIZER_NAME = "MaaRM_Template"
 ACTION_NAME = "MaaRM_Click"
@@ -401,6 +429,9 @@ class NavGraph:
         self._resource.register_custom_action(ACTION_NAME, ClickAction(self))
         self._resource.register_custom_action(INPUT_ACTION_NAME, InputAction(self))
         self._clicker: Clicker | None = None
+        self._job = None          # 当前在跑的图任务句柄（stop/shutdown 要等它收摊）
+        self._stop_lock = threading.Lock()
+        self._stop_requested = False  # 本轮是否已投递停止请求（两处并发触发时去重）
         self._loaded = False
         self._last_frame = None   # 最近一次识别帧（只为动作桥换算框中心提供尺寸）
 
@@ -545,12 +576,17 @@ class NavGraph:
                     self.ctx.capture, gpad, confirm_button=BUTTON_A)
             logger.log(f"[跳转图] 起跑「{entry}」")
             job = self._tasker.post_task(entry)
+            self._job = job  # stop()/shutdown() 要能等到它收摊，不能只留局部变量
+            self._stop_requested = False  # 新一轮：允许投递一次停止请求
             # 完成轮询用**自适应短间隔**（见 RUN_POLL_MIN_S 的注释）：毫秒级完成的图
             # 立刻返回，长图靠退避上限兜住 CPU。中断检查每轮都做，语义不变。
             delay = RUN_POLL_MIN_S
             while not job.status.done:
                 if not self.ctx.lifecycle.running:
-                    self._tasker.post_stop().wait()
+                    # 停止请求完成 ≠ 任务句柄结束：两者都确认后再返回。调用方
+                    # 紧接着就进模块收尾，若此时框架 worker 仍在收摊，随后销毁
+                    # C 句柄会撞上仍在活动的回调（0xC0000005，MaaFramework.dll）。
+                    self._stop_framework("run-abort")
                     logger.log("[跳转图] 收到停止信号，已中断跑图")
                     return False
                 time.sleep(delay)
@@ -564,18 +600,81 @@ class NavGraph:
             logger.log(f"[跳转图] 「{entry}」{'完成' if ok else '失败'}")
             return ok
 
-    def stop(self) -> None:
-        """中断在跑的图（模块 stop 里调用）。"""
+    def request_stop(self) -> None:
+        """只投递停止请求，不等待收摊。
+
+        给「模块停止」这类**不能阻塞调用方**的入口用：那里通常是 GUI 的请求
+        线程，等在这里会让一次停止请求独占该线程，界面看着像没反应。真正的
+        等待由跑图线程在中断路径上完成。
+        """
+        self._send_stop_request()
+
+    def _send_stop_request(self):
+        """投递停止请求（每轮最多一次）。返回本次投递的句柄，已发过则 None。"""
+        if self._tasker is None:  # 已 shutdown：停止路径幂等
+            return None
+        job = self._job
+        if job is None or job.done:
+            # 任务已结束（或从未起跑）：没有可停的东西，投出去的请求没人消费
+            return None
+        with self._stop_lock:
+            if self._stop_requested:
+                return None
+            self._stop_requested = True
         try:
-            self._tasker.post_stop()
+            return self._tasker.post_stop()
         except Exception:  # noqa: BLE001 —— 未起跑时停止是正常路径
-            pass
+            return None
+
+    def _stop_framework(self, reason: str = "stop") -> None:
+        """发停止请求并等两个句柄收摊（有界）。销毁 C 句柄前必须走到这里。
+
+        停止请求完成 ≠ 任务结束。后续 cleanup 会销毁句柄，销毁时必须确保框架
+        worker 已收摊，否则撞上仍在活动的回调（0xC0000005，MaaFramework.dll）。
+        等待带期限：无限等会把「停止中」变成永不结束。
+
+        两条免发条件——停止请求只对**正在跑的任务**有意义：
+          - 任务已结束（或从未起跑）：没有可停的东西，请求发出去也没人消费；
+          - 本轮已发过：停止会从模块停止路径与跑图线程两处并发触发，重复投递
+            的句柄不会推进，只会白等满一个超时（真机日志实测 10s）。
+        """
+        stop_job = self._send_stop_request()
+        job = self._job
+        # 请求可能是别的线程投递的（模块停止路径），这里同样要等任务收摊：
+        # 销毁 C 句柄的前提是框架 worker 已经退出，与谁发的请求无关。
+        if job is not None and not job.done and not _wait_job_settled(job):
+            logger.log(f"[跳转图] 任务句柄超时未结束（来源 {reason}），仍继续收尾", "WARNING")
+        if stop_job is not None and not _wait_job_settled(stop_job):
+            logger.log(f"[跳转图] 停止请求超时未完成（来源 {reason}），仍继续收尾", "WARNING")
+
+    def stop(self) -> None:
+        """中断在跑的图并等框架收摊（模块 stop 里调用）。幂等。"""
+        self._stop_framework("module-stop")
 
     def shutdown(self) -> None:
-        """释放点击器（停后台导航线程），模块 cleanup 里调用。"""
+        """释放点击器并显式销毁框架句柄（模块 cleanup 里调用）。
+
+        销毁时机必须由这里定，不能留给垃圾回收：这些是 C 句柄对象，析构时
+        调 MaaFramework 的 destroy，而 destroy 不等框架内部 worker 收摊。
+        留给收尾阶段的全堆回收时，回收顺序与时刻都由回收器决定——任务执行器、
+        资源、控制器谁先被收、当时 worker 还在不在，全不可控 → 0xC0000005
+        （MaaFramework.dll）。顺序固定为「任务执行器 → 资源」，置空即析构。
+        """
+        # 先停框架任务：停完不会再有动作回调进点击器，随后关导航线程才无并发；
+        # 顺序颠倒的话，销毁句柄时可能正撞上仍在活动的框架 worker。
+        self.stop()
         if self._clicker is not None:
             self._clicker.shutdown()
             self._clicker = None
+        self._destroy_framework()
+
+    def _destroy_framework(self) -> None:
+        """按序销毁框架句柄（先销毁依赖者）。幂等。"""
+        self._job = None      # 句柄先放：任务句柄引用已销毁的执行器没有意义
+        tasker, self._tasker = self._tasker, None
+        del tasker
+        resource, self._resource = self._resource, None
+        del resource
 
 
 # ==================================================================
@@ -721,18 +820,33 @@ class NavKitV4:
         return self._job is not None and not self._job.status.done
 
     def stop(self) -> None:
+        """中断常驻图并等到框架真正收摊。幂等。"""
+        if self._tasker is None:  # 已 shutdown：停止路径幂等
+            return
         try:
-            self._tasker.post_stop()
+            stop_job = self._tasker.post_stop()
         except Exception:  # noqa: BLE001 —— 未起跑时停止是正常路径
-            pass
-        if self._job is not None:
-            # 等 Tasker 线程真正收摊再返回：对象随模块结束被 GC 时若线程仍在
-            # 跑图，C 层回调悬空 → 0xC0000005（binding 句柄生命周期已知坑）。
-            try:
-                self._job.wait()
-            except Exception:  # noqa: BLE001
-                pass
+            stop_job = None
+        # 停止请求完成 ≠ 任务结束：两个句柄都确认，否则后续销毁 C 句柄会撞上
+        # 仍在活动的框架 worker（0xC0000005，MaaFramework.dll）。等待带上限。
+        if not _wait_job_settled(stop_job):
+            logger.log("[v4] 停止请求超时未完成，仍继续收尾", "WARNING")
+        if not _wait_job_settled(self._job):
+            logger.log("[v4] 任务句柄超时未结束，仍继续收尾", "WARNING")
 
     def shutdown(self) -> None:
+        """停止常驻图并显式销毁全部框架句柄（模块 cleanup 里调用）。
+
+        与跳转图同一纪律：销毁时刻与顺序由这里定，不交给垃圾回收——C 句柄
+        的 destroy 不等框架 worker 收摊，回收器决定的时刻与顺序会撞上活动
+        回调（0xC0000005）。顺序固定：任务执行器 → 帧注入控制器 → 资源。
+        """
         self.stop()
         self._graph.shutdown()
+        self._job = None
+        tasker, self._tasker = self._tasker, None
+        del tasker
+        controller, self._controller = self._controller, None
+        del controller
+        resource, self._resource = self._resource, None
+        del resource
