@@ -69,6 +69,10 @@ status: active
   `20261025_221703_1`（shadow、gain=0）用 `probe_lateral_ab.py` 对账。
   墙边占比（|x|>1.4）、压墙（>1.8）、过目标偏差、带内停留、穿越/分、
   实动到达一起看；只看到达率会被空动作骗。
+- 2026-10-26 结果（gain=0.5 4 局 vs gain=0 4 局）：穿越/分 24.1→15.9、
+  过目标偏差 p50 0.63→0.54、带内 33%→37%、实动到达 5/35→8/30；墙边
+  21.7%→24.0%、压墙 10.8%→11.4%。横摆频率降了、墙边没降；墙边拍里
+  控制器常以为已在目标带（位置估计问题），已转到 ⑥b 大新息判据修正。
 
 ```bash
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_lateral_state.py --session <会话>
