@@ -138,6 +138,42 @@ status: active
 - 判读：5 点级的墙改进需要 8~12 局一组，或改用机制计数（规则激活次数、
   单次贴边事件时长）作为主判据。
 
+## 片段定位与相似片段（probe_segment.py）
+
+- 输入：会话 + 局号 + 已过秒数（`--at 19.2`）或游戏计时（`--hud 4:40`）。
+- 输出：该段前后逐拍表（目标 / 位置 / 线+bias / 线态与龄 / 路心与来源 /
+  计划 role、u、预览 / 杆值 / 离缘 / 标记）、固定判据标签（计划贴边等、
+  位置跟丢、线越界错锁、深度干旱、否决后回带、朝墙打杆、换道等车、横摆、
+  贴缘）、本段最近的原始帧图路径；`--similar` 再列其他会话里行为最像的
+  2s 窗（左右镜像归一，便于找"另一个贴左墙的同类段"）。
+- 图片映射：按 stage_begin 墙钟时间匹配 debug 目录，再按逐拍 `dbg_saved`
+  计数取最近的 `raw/000k_raw.jpg`；旧局目录轮转后会提示缺失。
+- 片段诊断不看单指标：线态/龄、路心来源、计划预览与决策目标的关系一起
+  读——例如"线在锁 −1.9、目标 +0.7、计划预览 −1.6、杆 −0.1"就是计划在
+  贴边原地等，而不是位置估计坏了。
+
+```bash
+.venv/Scripts/python.exe tools/experiments/merge_contract/probe_segment.py \
+    --session 20261026_152046_1 --game 2 --hud 4:40
+.venv/Scripts/python.exe tools/experiments/merge_contract/probe_segment.py \
+    --session 20261026_152046_1 --game 2 --hud 4:40 --similar \
+    --sessions 20261026_130014_1,20261026_143454_1,20261026_155119_1 --k 8
+```
+
+## 观测层健康（2026-10-26 15:51 局审计）
+
+- 控制拍：3178 拍/4 局；dt p50 50ms、p90 67ms、p99 90ms、max 511ms；
+  fid 间隔 p50 2、p90 3、max 18；队列 dropped=0；检测 p50 12.6ms、
+  控制 2.9ms。
+- 覆盖：scene 95.5%；线 TRACK 76%、COAST 14%、RELOCK 9%；路心来源
+  wall_occl 42%、memory 28%、wall 19%、region 6%、none 4.5%——**新鲜
+  路心读数只占约四分之一**。
+- 路宽估计：局内 p10~p90 约 11.0~15.6m（局间中位 11.6~14.8m），"离缘
+  米数"自带 ±1m 级不确定度。
+- HUD：得分可信 79%，得分速率可信仅 38%——得分率不适合当碰撞判据。
+- 结论：管道稳定（无丢帧队列、延迟低），但测量是间歇的；逐段诊断必须
+  同时看来源与龄，不能只看线或只看深度。
+
 ```bash
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_lateral_state.py --session <会话>
 .venv/Scripts/python.exe tools/experiments/merge_contract/probe_lateral_ab.py \
