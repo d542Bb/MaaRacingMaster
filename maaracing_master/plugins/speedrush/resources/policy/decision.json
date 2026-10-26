@@ -80,6 +80,7 @@
     "obs_jump_max_lane": 0.8,
     "obs_jump_confirm_ticks": 3,
     "plan_u_slew_s": 4.0,
+    "heading_fuse_gain": 0.5,
     "anchor_max_off": 1.0,
     "anchor_stale_s": 1.0,
     "hold_deadband_lane": 0.5,
@@ -90,7 +91,7 @@
     "obs_beta_sign_agree": true,
     "obs_beta_dv_rate_lane_s2": 3.0,
     "obs_position_only": true,
-    "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验。obs_beta 0.2→0.5（2026-10-08）：⑥b 时间基修正（分母改新证据累计间隔，台账 §4A 判据冻结）后按抖动-响应网格重标（66 trace 5.3 万拍离线回放 probe_beta_timebase）——旧 0.2 是错配时间基的产物，新基下 0.5 全面不劣（跳变 P95 −41%、跟随 lag 最快、bias −33%）；obs_jump_confirm_ticks=3（2026-10-23）：同向、量级相近的大新息连续 3 拍判参考系跳变并一步重基（exec:=obs，速度保留），单帧坏检测与断续大新息仍拒，避免等 anchor_stale_s 重基的 1s 错位盲区；road_offset_hold（memory/wall_occl/pair_slot）不是本拍测量，退回纯模型积分，不让过期的自车系读数每拍把模型拽回旧位置。plan_u_slew_s=4（2026-10-24）：计划前馈换候选时单拍杆值变化限速，防止候选切换直接变成方向盘阶跃；首帧/计划重入不限。",
+    "_note": "延迟补偿前瞻 PD + 双积分运动学（planner 设计稿 §三/§十 v2 修订）；双积分下 ωn≈√(k_p·a_lat_gain)≈2.05rad/s、ζ≈k_d·a_lat_gain/(2ωn)≈0.29（2026-09-26 回放网格后值）——a_lat_gain/tau_align/v_lat_max 与 pair 供数门待真机复验。obs_beta 0.2→0.5（2026-10-08）：⑥b 时间基修正（分母改新证据累计间隔，台账 §4A 判据冻结）后按抖动-响应网格重标（66 trace 5.3 万拍离线回放 probe_beta_timebase）——旧 0.2 是错配时间基的产物，新基下 0.5 全面不劣（跳变 P95 −41%、跟随 lag 最快、bias −33%）；obs_jump_confirm_ticks=3（2026-10-23）：同向、量级相近的大新息连续 3 拍判参考系跳变并一步重基（exec:=obs，速度保留），单帧坏检测与断续大新息仍拒，避免等 anchor_stale_s 重基的 1s 错位盲区；road_offset_hold（memory/wall_occl/pair_slot）不是本拍测量，退回纯模型积分，不让过期的自车系读数每拍把模型拽回旧位置。plan_u_slew_s=4（2026-10-24）：计划前馈换候选时单拍杆值变化限速，防止候选切换直接变成方向盘阶跃；首帧/计划重入不限。heading_fuse_gain=0.5（2026-10-26）：控制阻尼/前瞻的横速=模型与航向各半融合（0=旧行为）；离线 12 局模型横速幅值中位约为线速 1/4、相位超前约 0.45s，航向横速滞后 0.2~0.3s，各半融合后 0.25s 横位预测误差中位降 10~20%、相位回零；航向横速的前向速度由线斜率/线角在线自标定，模型状态 v_lat_est 不变。",
     "obs_beta_note": "时间基=自上次速度修正的累计帧钟（新证据间隔），非控制拍 dt；标定证据 tools/experiments/speedrush_vision/probe_beta_timebase.py"
   },
   "motion": {

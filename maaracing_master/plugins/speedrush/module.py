@@ -1130,6 +1130,13 @@ class SpeedRushModule(ActivityModule):
                                  lane_x=None if lane is None else lane.get("x"),
                                  lane_ok=lane_ok,
                                  lane_relock=lane_relock,
+                                 lane_theta=None if lane is None
+                                 else lane.get("theta"),
+                                 lane_theta_ok=lane_ok,
+                                 lane_fid=None if lane is None
+                                 else lane.get("det_fid"),
+                                 lane_age_ms=None if lane is None
+                                 else lane.get("det_age_ms"),
                                  plan=(plan if cfg.motion.mode == "live" else None))
             far_lane = (None if corridor is None
                         else far_center_lane(corridor.coarse_bands,
@@ -1376,6 +1383,9 @@ class SpeedRushModule(ActivityModule):
             # 保持期线融合可见面：trusted=深度-线帧偏置已对账、bias=帧偏置、
             # sm=线横位平滑值——判断"状态没跟上"是融合没工作还是线本身错。
             "lane_fuse": planner.lane_debug(),
+            # 控制横速可见面：v_ctrl=控制律实际使用者，v_model=模型状态，
+            # v_head/speed=航向与在线前向速度估计——A/B 时判断融合有没有生效。
+            "lat_ctrl": planner.ctrl_debug(),
             # S1 参考系影子：模型预测 + 门控后横位；与 road_offset 同拍对照
             "lateral_frame": None if chain.get("lateral_frame") is None
             else chain["lateral_frame"].snapshot(),

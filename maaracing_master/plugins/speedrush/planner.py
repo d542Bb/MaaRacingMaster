@@ -30,10 +30,12 @@ V2 复盘"开环虚胖提前松杆"的闭环解）在双侧缘距稳定拍经 al
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from maaracing_master.plugins.speedrush.config import Planner
+from maaracing_master.plugins.speedrush.lane_obs import LANE_W
 from maaracing_master.plugins.speedrush.tracking import (
     DecisionOutput, DecisionState)
 
@@ -54,6 +56,124 @@ _LANE_SMOOTH_ALPHA = 0.2   # 线横位 EMA：压单帧噪声（±0.3~0.5 道）
 _LANE_FUSE_GAIN = 0.3      # 保持期向"线+帧偏置"收敛的每拍增益（~0.3s 时间常数）
 _LANE_BIAS_AGREE = 0.6     # 深度/线一致门：差异在此内才用深度帧校准线帧
 _LANE_JUMP_RESET = 0.8     # 线自身单拍跳超此值 = 换线/重锁：重置并停用融合
+
+# 航向+线速观测（2026-10-26 离线 12 局）：模型横速与线速相关 0.4~0.6、幅值
+# 中位只有线速的 1/4 左右，且相位超前约 0.45s；航向横速滞后 0.2~0.3s。两者
+# 各半融合后 0.25s 横位预测误差中位降 10~20%、相位回到 0 附近。前向速度由
+# v_line*LANE_W/tan(theta_rel) 的 5s 中位在线自标定；theta_rel 的慢基线吸收
+# 弯道里线拟合的常值弦角，且速度与航向同源同尺度，整体增益不敏感。
+_HEAD_SLOPE_WINDOW_S = 0.6
+_HEAD_SPEED_WINDOW_S = 5.0
+_HEAD_SPEED_MIN_N = 8
+_HEAD_MIN_V_LANE_S = 0.15
+_HEAD_MIN_TAN = 0.01
+_HEAD_THETA_TAU_S = 2.0
+_HEAD_REL_MAX = 0.6
+_HEAD_AGE_MAX_MS = 250.0
+_HEAD_STALE_S = 0.5
+_HEAD_V_MAX_FACTOR = 2.0   # 观测横速上限 = v_lat_max 的倍数（阻尼允许越过模型饱和）
+_HEAD_SPEED_DEFAULT_MPS = 45.0   # 与 [coarse].range_speed_mps 同量级，仅起步兜底
+
+
+class HeadingObserver:
+    """航向+线速的横向速度观测（只喂控制律，不改模型状态 v_lat_est）。
+
+    线横位斜率给出横向速度；线角相对 2s 慢基线给出航向。前向速度用两者
+    的比值中位在线估计（尺度自洽，不需要新的米制真源），换算成航向横速后
+    与模型横速融合。线未锁定、证据龄超限或断供 >0.5s 时一律退回模型。
+    """
+
+    def __init__(self, p: Planner) -> None:
+        self.p = p
+        self.reset()
+
+    def reset(self) -> None:
+        self._t = 0.0
+        self._samples: list[dict] = []
+        self._base: float | None = None
+        self._last_fid: int | None = None
+        self._last_seen = -1e9
+        self.v_line: float | None = None
+        self.speed_mps: float | None = None
+        self.v_head: float | None = None
+
+    def update(self, dt: float, lane_x: float | None, lane_ok: bool,
+               theta: float | None, theta_ok: bool, fid: int | None,
+               age_ms: float | None) -> None:
+        if not (isinstance(dt, (int, float)) and math.isfinite(dt) and dt > 0):
+            return
+        self._t += dt
+        if self.v_head is not None and self._t - self._last_seen > _HEAD_STALE_S:
+            self.v_head = None
+        if (not lane_ok or lane_x is None
+                or not math.isfinite(float(lane_x))):
+            return
+        if (theta is None or not theta_ok or not math.isfinite(float(theta))
+                or age_ms is None or float(age_ms) > _HEAD_AGE_MAX_MS):
+            return
+        if fid is not None and fid == self._last_fid:
+            return                       # 同一检测帧被 20Hz 控制拍重复读取
+        self._last_fid = fid
+        th = float(theta)
+        if self._base is None:
+            self._base = th
+        else:
+            gap = (self._t - self._samples[-1]["t"]
+                   if self._samples else dt)
+            a = 1.0 - math.exp(-min(max(gap, 1e-3), 0.5) / _HEAD_THETA_TAU_S)
+            self._base += a * (th - self._base)
+        rel = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th - self._base))
+        self._last_seen = self._t
+        s = {"t": self._t, "x": float(lane_x), "rel": rel, "v": None}
+        self._samples.append(s)
+        cut = self._t - _HEAD_SPEED_WINDOW_S - _HEAD_SLOPE_WINDOW_S
+        while self._samples and self._samples[0]["t"] < cut:
+            self._samples.pop(0)
+        # 因果线斜率：只用本拍及过去 0.6s（离线同一口径）
+        win = [q for q in self._samples
+               if self._t - q["t"] <= _HEAD_SLOPE_WINDOW_S]
+        if len(win) >= 4 and win[-1]["t"] - win[0]["t"] >= 0.3:
+            mt = sum(q["t"] for q in win) / len(win)
+            mx = sum(q["x"] for q in win) / len(win)
+            vt = sum((q["t"] - mt) ** 2 for q in win)
+            if vt > 1e-9:
+                s["v"] = sum((q["t"] - mt) * (q["x"] - mx)
+                             for q in win) / vt
+                self.v_line = s["v"]
+        vals = []
+        for q in self._samples:
+            if q["v"] is None or self._t - q["t"] > _HEAD_SPEED_WINDOW_S:
+                continue
+            tan = math.tan(q["rel"])
+            if abs(q["v"]) < _HEAD_MIN_V_LANE_S or abs(tan) < _HEAD_MIN_TAN:
+                continue
+            if (q["v"] > 0) != (tan > 0):
+                continue
+            vals.append(q["v"] * LANE_W / tan)
+        if len(vals) >= _HEAD_SPEED_MIN_N:
+            self.speed_mps = statistics.median(vals)
+        elif self.speed_mps is None:
+            self.speed_mps = _HEAD_SPEED_DEFAULT_MPS
+        lim = _HEAD_V_MAX_FACTOR * self.p.v_lat_max
+        v = self.speed_mps * math.tan(rel) / LANE_W
+        self.v_head = max(-lim, min(lim, v))
+
+    def fused(self, v_model: float, gain: float) -> float:
+        if gain <= 0.0 or self.v_head is None:
+            return v_model
+        v = (1.0 - gain) * v_model + gain * self.v_head
+        lim = _HEAD_V_MAX_FACTOR * self.p.v_lat_max
+        return max(-lim, min(lim, v))
+
+    def debug(self) -> dict:
+        return {
+            "v_line": None if self.v_line is None
+            else round(self.v_line, 3),
+            "speed": None if self.speed_mps is None
+            else round(self.speed_mps, 1),
+            "v_head": None if self.v_head is None
+            else round(self.v_head, 3),
+        }
 
 
 def law(e: float, v_lat: float, p: Planner, gentle: bool = False,
@@ -137,6 +257,10 @@ class LateralPlanner:
         self.last_steer_raw = 0.0
         # 上一拍计划前馈命令：换候选时限速用；计划中断后置空，重入首拍不限。
         self._last_plan_u: float | None = None
+        # 航向+线速观测（只喂控制律；模型状态 v_lat_est 仍是积分真源）
+        self.head = HeadingObserver(p)
+        self._v_ctrl = 0.0
+        self._v_ctrl_model = 0.0
 
     def _reset_jump(self) -> None:
         """重置持续大新息判定（正常接受/重基/断供时调用——连续性被打断）。"""
@@ -167,6 +291,15 @@ class LateralPlanner:
                 "sm": None if self._lane_sm is None
                 else round(self._lane_sm, 3)}
 
+    def ctrl_debug(self) -> dict:
+        """控制横速的可见面（trace）：v_ctrl=控制律实际使用的横速、
+        v_model=模型状态、v_head=航向横速、speed=在线前向速度估计。"""
+        d = {"gain": self.p.heading_fuse_gain,
+             "v_ctrl": round(self._v_ctrl, 3),
+             "v_model": round(self._v_ctrl_model, 3)}
+        d.update(self.head.debug())
+        return d
+
     # ---------- 主入口 ----------
 
     def update(self, decision: DecisionOutput, dt_s: float,
@@ -177,7 +310,11 @@ class LateralPlanner:
                lane_x: float | None = None,
                lane_ok: bool = False,
                lane_relock: bool = False,
-               plan: "MotionPlan | None" = None) -> GamepadCommand:
+               plan: "MotionPlan | None" = None,
+               lane_theta: float | None = None,
+               lane_theta_ok: bool = False,
+               lane_fid: int | None = None,
+               lane_age_ms: float | None = None) -> GamepadCommand:
         """一个控制 tick。dt_s 非法即 fail-loud（帧号倒退同一纪律：
         静默吞掉病态输入比中断危险——时间基低通会被 0/NaN 污染成永久状态）。
 
@@ -219,6 +356,7 @@ class LateralPlanner:
         # 单拍跳超阈值同理。等新鲜深度与线一致时由 _lane_rebias 恢复。
         if lane_relock:
             self._lane_relock_seen = True
+            self.head.reset()
         if lane_ok and lane_x is not None and math.isfinite(lane_x):
             if self._lane_relock_seen:
                 self._lane_sm = lane_x
@@ -229,8 +367,17 @@ class LateralPlanner:
             elif abs(lane_x - self._lane_sm) > _LANE_JUMP_RESET:
                 self._lane_sm = lane_x
                 self._lane_trusted = False
+                self.head.reset()
             else:
                 self._lane_sm += _LANE_SMOOTH_ALPHA * (lane_x - self._lane_sm)
+
+        # 航向+线速观测：控制阻尼/前瞻用的横速 = 模型与航向融合；模型状态
+        # v_lat_est 不动（计划生成与线滑行预测仍用模型）。gain=0 时逐位不变。
+        self.head.update(dt_s, lane_x, lane_ok, lane_theta, lane_theta_ok,
+                         lane_fid, lane_age_ms)
+        self._v_ctrl_model = self.state.v_lat_est
+        self._v_ctrl = self.head.fused(self.state.v_lat_est,
+                                       self.p.heading_fuse_gain)
 
         # ① 过期判定（valid_until_fid 含边界；第 4 个连续过期拍起按 CONSERVE）
         fresh = current_fid <= decision.valid_until_fid
@@ -251,7 +398,7 @@ class LateralPlanner:
             # 时平衡点仍是归零，旧行为兼容）。
             self._abort_hold_lane = None
             if road_offset is not None:
-                ro_pred = road_offset + self.state.v_lat_est * self.p.lookahead_tau_s
+                ro_pred = road_offset + self._v_ctrl * self.p.lookahead_tau_s
                 steer_raw = self._law(0.0 - ro_pred, gentle=True)
             else:
                 if self._conserve_hold is None:
@@ -287,10 +434,10 @@ class LateralPlanner:
         # 计划帧→planner 道帧的换算已在 MotionPlan 内完成。
         if plan is not None and plan.valid and st is DecisionState.CRUISE:
             x_pred = (self.state.executed_lane
-                      + self.state.v_lat_est * self.p.lookahead_tau_s)
+                      + self._v_ctrl * self.p.lookahead_tau_s)
             u = (plan.u_feedforward
                  + self.p.k_p * (plan.x_preview_lane - x_pred)
-                 + self.p.k_d * (plan.v_preview_lane_s - self.state.v_lat_est))
+                 + self.p.k_d * (plan.v_preview_lane_s - self._v_ctrl))
             steer_raw = max(-1.0, min(1.0, u))
             # 换候选时前馈会阶跃；相对上一拍计划命令限速，避免方向盘一步打半圈。
             # 首帧/计划重入（None）不限制——那是交接，不是候选抖动。
@@ -484,9 +631,9 @@ class LateralPlanner:
         机动态（maneuver）传显式 deadband/cap：默认全权（0/None），阶段 2
         起用 maneuver_deadband_lane 与 maneuver_stick_max。"""
         x_pred = (self.state.executed_lane
-                  + self.state.v_lat_est * self.p.lookahead_tau_s)
+                  + self._v_ctrl * self.p.lookahead_tau_s)
         return self._law(target - x_pred, gentle, deadband, cap)
 
     def _law(self, e: float, gentle: bool, deadband: float | None = None,
              cap: float | None = None) -> float:
-        return law(e, self.state.v_lat_est, self.p, gentle, deadband, cap)
+        return law(e, self._v_ctrl, self.p, gentle, deadband, cap)

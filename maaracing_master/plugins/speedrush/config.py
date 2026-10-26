@@ -169,6 +169,12 @@ class Planner:
     # 计划前馈的杆值变化率上限（归一杆值/秒）：计划换候选时前馈会阶跃，
     # 不限制会把候选切换直接变成方向盘每拍打半圈。首帧/计划重入不限制。
     plan_u_slew_s: float = 4.0
+    # 航向融合（2026-10-26）：控制阻尼/前瞻用的横速 = (1-g)*模型横速 +
+    # g*航向横速。0=关（旧行为逐位不变）。离线 12 局：模型横速幅值中位只有
+    # 线速的 1/4 左右、相位超前约 0.45s；航向横速滞后 0.2~0.3s，各半融合后
+    # 0.25s 横位预测误差中位降 10~20%、相位回到 0 附近。航向横速的前向速度
+    # 由线斜率/线角在线自标定，不引入新的米制真源；模型状态 v_lat_est 不变。
+    heading_fuse_gain: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -655,7 +661,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             obs_jump_confirm_ticks=_int_def(
                 d, "planner", "obs_jump_confirm_ticks", 3, lo=1),
             plan_u_slew_s=_num_def(
-                d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False)),
+                d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
+            heading_fuse_gain=_num_def(
+                d, "planner", "heading_fuse_gain", 0.0, lo=0, hi=1)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),

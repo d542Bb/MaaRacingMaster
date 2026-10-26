@@ -14,7 +14,7 @@ import pytest
 
 from maaracing_master.plugins.speedrush.config import Planner, _read_decision
 from maaracing_master.plugins.speedrush.planner import (
-    _STICK_FULL, LateralPlanner, law, step)
+    _STICK_FULL, HeadingObserver, LateralPlanner, law, step)
 from maaracing_master.plugins.speedrush.tracking import (
     DecisionOutput, DecisionState)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH
@@ -905,3 +905,66 @@ def test_reuse_ticks_still_converge_position():
         pl.update(_out(fid=3 + i, valid=3 + i), DT, 3 + i,
                   road_offset=0.4, road_offset_new=False)
     assert abs(pl.state.executed_lane - 0.4) < 0.2
+
+
+# ---------- 航向横速观测（模型状态之外的融合输入） ----------
+
+def _feed_weave(obs, seconds=2.0, v_lane=1.0, theta=0.05):
+    """合成来回横移：x 斜率与线角同号，避免慢基线把常值航向吸收掉。"""
+    x, t, fid = 0.0, 0.0, 1
+    while t < seconds:
+        sign = 1.0 if int(t / 0.5) % 2 == 0 else -1.0
+        x += sign * v_lane * 0.1
+        t += 0.1
+        obs.update(0.1, x, True, sign * theta, True, fid, 60.0)
+        fid += 1
+
+
+def test_heading_observer_estimates_speed_and_velocity():
+    obs = HeadingObserver(P)
+    _feed_weave(obs)
+    assert abs(obs.v_line) == pytest.approx(1.0, abs=0.25)
+    # 前向速度由线速/线角自标定：量级在赛车档（30~120 m/s），不做精确钉值
+    # （合成方波起步时慢基线尚未居中，绝对值随相位摆动）。
+    assert 30.0 < obs.speed_mps < 120.0
+    assert obs.v_head is not None
+    assert (obs.v_head > 0) == (obs.v_line > 0)
+    assert 0.4 < abs(obs.v_head) < 1.6
+
+
+def test_heading_fuse_gain_zero_returns_model_and_half_blends():
+    obs = HeadingObserver(P)
+    obs.v_head = 1.0
+    obs._last_seen = obs._t
+    assert obs.fused(0.4, 0.0) == 0.4
+    assert obs.fused(0.4, 0.5) == pytest.approx(0.7)
+
+
+def test_heading_observer_falls_back_when_stale_or_bad():
+    obs = HeadingObserver(P)
+    _feed_weave(obs)
+    assert obs.v_head is not None
+    for _ in range(8):                 # 0.8s 无线：超过 0.5s TTL
+        obs.update(0.1, None, False, None, False, None, None)
+    assert obs.v_head is None
+    assert obs.fused(0.4, 0.5) == 0.4
+    # 线在锁但航向龄超限：不更新观测
+    obs2 = HeadingObserver(P)
+    _feed_weave(obs2)
+    before = obs2.v_head
+    obs2.update(0.1, 99.0, True, 0.05, True, 999, 400.0)
+    assert obs2.v_head == before
+
+
+def test_heading_fuse_opposes_motion_in_control_law():
+    """融合横速进入控制律：同样位置误差下，正航向横速产生负（反向）杆值。"""
+    cmd = {}
+    for gain in (0.0, 0.5):
+        pl = _planner(heading_fuse_gain=gain)
+        pl.head.v_head = 1.0
+        pl.head._last_seen = pl.head._t
+        c = pl.update(_out(x_target=0.0, maneuver=True, fid=1, valid=1),
+                      DT, 1)
+        cmd[gain] = c.steer_x
+    assert cmd[0.0] == 0
+    assert cmd[0.5] < 0
