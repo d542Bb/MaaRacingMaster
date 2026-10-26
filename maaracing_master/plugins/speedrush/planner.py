@@ -60,6 +60,10 @@ _LANE_BIAS_MAX = 0.25      # 帧偏置物理上限：墙边实测 p50 0.0~0.12�
 _LANE_BIAS_EMA = 0.25      # 偏置慢滤波：单帧 0.5 道差异不能一步坐实
 _LANE_VETO_LANE = 0.5      # 已对账锁线与新鲜深度差超此值：深度本拍不拉位置
 _LANE_JUMP_RESET = 0.8     # 线自身单拍跳超此值 = 换线/重锁：重置并停用融合
+# 线横位的物理上限（道）：路面总宽 12.8~16.0 m，半宽 1.9~2.4 道；超过此值
+# 不可能是本车所在车道线，是远端边线/邻道错锁。贴墙段实测这类读数（3.1~3.5）
+# 连续 0.8s 把平滑值拖到 3.2，随后又当成"锁线"与深度打架（20261026 局 s1#3）。
+_LANE_X_MAX = 2.6
 
 # 航向+线速观测（2026-10-26 离线 12 局）：模型横速与线速相关 0.4~0.6、幅值
 # 中位只有线速的 1/4 左右，且相位超前约 0.45s；航向横速滞后 0.2~0.3s。两者
@@ -294,6 +298,27 @@ class LateralPlanner:
                     self._lane_bias + _LANE_BIAS_EMA * (d - self._lane_bias)))
             self._lane_trusted = True
 
+    def _line_disagrees(self, obs: float, lane_ok: bool) -> bool:
+        """单侧墙反推的深度会错 1 道以上；线仍在锁且差超一致门时，
+        不拿这份深度做陈旧重基（等两源收敛，旧行为）。线越界/断锁时
+        深度是唯一来源，不挡。"""
+        return (lane_ok and self._lane_sm is not None
+                and abs(obs - (self._lane_sm + self._lane_bias))
+                > _LANE_BIAS_AGREE)
+
+    def _stale_rebase(self, road_offset: float, lane_ok: bool,
+                      allow_bias: bool = True) -> None:
+        """陈旧重基：exec:=ro、锚回道0、速度归零，等新证据重新收敛。"""
+        self.state.executed_lane = road_offset
+        self.state.v_lat_est = 0.0
+        self._road_anchor = 0.0
+        self._stale_t = 0.0
+        self._t_vcorr = 0.0
+        self._last_corr_sign = None
+        self._reset_jump()
+        self._lane_trusted = False
+        self._lane_rebias(road_offset, lane_ok, allow_bias=allow_bias)
+
     def lane_debug(self) -> dict:
         """保持期线融合的可见面（trace）：trusted=偏置是否已对账、bias=深度-
         线帧偏置、sm=线横位平滑值。三者合起来才能离线判断融合是否在工作。"""
@@ -368,6 +393,12 @@ class LateralPlanner:
         if lane_relock:
             self._lane_relock_seen = True
             self.head.reset()
+        # 线横位越出物理范围即按"本拍无线"处理：不参与平滑/融合/互证，
+        # 也不污染航向观测。深度仍可经 ⑥b 自行重基。
+        if lane_ok and (lane_x is None or not math.isfinite(lane_x)
+                        or abs(lane_x) > _LANE_X_MAX):
+            lane_ok = False
+            lane_theta_ok = False
         if lane_ok and lane_x is not None and math.isfinite(lane_x):
             if self._lane_relock_seen:
                 self._lane_sm = lane_x
@@ -508,16 +539,9 @@ class LateralPlanner:
                     # 拒定锚 7s、hold:0=杆恒 0 蹭墙）——超 stale 预算说明"中带观测"
                     # 等不来，直接重基到路上（exec:=ro、anchor:=0，道0=路中心）。
                     self._stale_t += dt_s
-                    if self._stale_t >= self.p.anchor_stale_s:
-                        self.state.executed_lane = road_offset
-                        self.state.v_lat_est = 0.0
-                        self._road_anchor = 0.0
-                        self._stale_t = 0.0
-                        self._t_vcorr = 0.0
-                        self._last_corr_sign = None
-                        self._reset_jump()
-                        self._lane_trusted = False
-                        self._lane_rebias(road_offset, lane_ok)
+                    if self._stale_t >= self.p.anchor_stale_s and \
+                            not self._line_disagrees(road_offset, lane_ok):
+                        self._stale_rebase(road_offset, lane_ok)
             else:
                 obs = road_offset - self._road_anchor
                 r = obs - self.state.executed_lane
@@ -606,25 +630,18 @@ class LateralPlanner:
                         self._lane_rebias(obs, lane_ok)
                     else:
                         self._stale_t += dt_s
-                        if self._stale_t >= self.p.anchor_stale_s:
-                            # 时间判据重基（13:29 局教训：拍数门 40 次**喂入**
-                            # 拒绝≈2s+，供数黑视期还根本不计数——车以 0 杆直开
-                            # 5.5s 怼进右墙，ro=+1.7~+2.1 全程在喊）。陈旧即
-                            # 重基到路上：exec:=ro、anchor:=0——"道0"恢复路中心
-                            # 语义，闭环一拍复活。
-                            self.state.executed_lane = road_offset
-                            self.state.v_lat_est = 0.0
-                            self._road_anchor = 0.0
-                            self._stale_t = 0.0
-                            self._t_vcorr = 0.0
-                            self._last_corr_sign = None
-                            self._reset_jump()
-                            self._lane_trusted = False
-                            self._lane_rebias(road_offset, lane_ok)
+                        # 时间判据重基（13:29 局教训：拍数门 40 次**喂入**
+                        # 拒绝≈2s+，供数黑视期还根本不计数——车以 0 杆直开
+                        # 5.5s 怼进右墙，ro=+1.7~+2.1 全程在喊）。陈旧即
+                        # 重基到路上：exec:=ro、anchor:=0——"道0"恢复路中心
+                        # 语义，闭环一拍复活。
+                        if self._stale_t >= self.p.anchor_stale_s and \
+                                not self._line_disagrees(road_offset, lane_ok):
+                            self._stale_rebase(road_offset, lane_ok)
         elif self._road_anchor is not None:
-            # 断供/保持计时：黑视本身=漂移温床，超预算则帧作废（下个中带观测
-            # 重形成）。历史保持值仍算"有几何"，锚点保留——否则新鲜大读数回来
-            # 要先过形成门（|ro|≤anchor_max_off）再等 1s，白白多一段盲开。
+            # 断供/保持计时：黑视本身=漂移温床。历史保持值仍算"有几何"，锚点
+            # 保留——否则新鲜大读数回来要先过形成门（|ro|≤anchor_max_off）再
+            # 等 1s，白白多一段盲开；超预算则按下面规则重基或丢锚。
             self._stale_t += dt_s
             # 不重置大新息确认：hold/断供是缺证据，不是反证。墙边大部分拍
             # 是 hold，旧逻辑在这里清零 streak，持续偏移永远等不到确认。
@@ -635,10 +652,22 @@ class LateralPlanner:
                 self.state.executed_lane += _LANE_FUSE_GAIN * (
                     (self._lane_sm + self._lane_bias)
                     - self.state.executed_lane)
-            if road_offset is None and self._stale_t >= self.p.anchor_stale_s:
-                self._road_anchor = None
-                self._stale_t = 0.0
-                self._last_corr_sign = None
+            # 陈旧重基在保持拍同样生效（"断供同样计时"）：墙边新鲜深度只占
+            # ~1/4 拍，跳变门后的 3 次确认常常等不到；只计时不重基，状态会
+            # 带着 1.3 道的假位置继续按目标向外打杆 1s+（20261026 局 s1#3：
+            # 深度一直报 +1.5~+2.0，状态停在 +0.7，杆值把车按在墙上）。
+            # 保持值本身是过期证据，但它是手边唯一的路心读数，重基后由后续
+            # 新鲜拍与线融合继续修正。
+            if self._stale_t >= self.p.anchor_stale_s:
+                if road_offset is not None and \
+                        not self._line_disagrees(road_offset, lane_ok):
+                    self._stale_rebase(road_offset, lane_ok,
+                                       allow_bias=False)
+                elif road_offset is None:
+                    self._road_anchor = None
+                    self._last_corr_sign = None
+                    # 计时不清零：断供已计入陈旧预算，下一条新鲜缘读数
+                    # 应直接重基，而不是再等一个完整 anchor_stale_s。
 
         # ⑦ 下发链：归一 → 限幅（每 tick 变化上限）→ 死区（<256 归 0，256 保留）
         raw = int(round(self.state.steer_norm * _STICK_FULL))

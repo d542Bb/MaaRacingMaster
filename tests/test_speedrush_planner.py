@@ -460,17 +460,51 @@ def test_hold_offset_is_not_a_position_observation():
     assert pl.state.executed_lane == pytest.approx(1.6, abs=1e-6)
 
 
-def test_hold_offset_does_not_reset_stale_clock():
-    """保持拍不得把陈旧计时清零：否则 memory 长保持会让锚永不超时，
-    模型漂走后仍按旧帧打杆。"""
+def test_hold_offset_rebases_when_stale_budget_expires():
+    """保持拍把陈旧计时攒满即按手边路心读数重基——墙边新鲜深度只占约 1/4
+    拍，若只在新鲜拒绝拍检查预算，状态会带着假位置继续按目标向外打杆。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 0.7                 # 盲期内模型漂出 0.7 道
     pl._stale_t = P.anchor_stale_s - DT
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
-              road_offset=0.0, road_offset_hold=True)
-    assert pl._stale_t >= P.anchor_stale_s
+              road_offset=1.9, road_offset_hold=True)
+    assert pl.state.executed_lane == pytest.approx(1.9, abs=1e-6)
+    assert pl._stale_t == pytest.approx(0.0)
+
+
+def test_hold_rebase_blocked_by_disagreeing_line():
+    """线仍在锁（合理范围）且与保持深度差超一致门：不拿这份深度重基——
+    单侧墙 + W/2 反推会错 1 道以上（20261026 局 s1#1 506：深度 1.8、线 0.5）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=0.0, lane_ok=True)
+    pl._stale_t = P.anchor_stale_s - DT
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=1.8, road_offset_hold=True,
+              lane_x=0.4, lane_ok=True)
+    assert abs(pl.state.executed_lane) < 0.1
+    assert pl._stale_t >= P.anchor_stale_s        # 预算保留，等两源收敛
+
+
+def test_blackout_keeps_stale_budget_for_next_edge_reading():
+    """断供丢锚不清零陈旧计时：下一条新鲜贴边读数直接重基，不再白等 1s。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 0.7
+    pl._stale_t = P.anchor_stale_s - DT
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)     # 断供拍
+    assert pl._road_anchor is None
+    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
+              road_offset=1.9)                   # 新鲜贴边读数 → 立即重基
+    assert pl.state.executed_lane == pytest.approx(1.9, abs=1e-6)
+    assert pl._road_anchor == 0.0
 
 
 # ---------- 保持期车道线融合（2026-10-25） ----------
@@ -652,6 +686,24 @@ def test_edge_frame_needs_lane_agreement():
               road_offset=1.87, lane_x=0.3, lane_ok=True)   # 线差 1.57 道
     assert pl._road_anchor is None
     assert pl.state.executed_lane == pytest.approx(0.0, abs=1e-9)
+
+
+def test_line_beyond_physical_range_is_ignored():
+    """贴墙错锁远端边线（|x|>2.6 道）不参与平滑/融合：路面半宽只有 1.9~2.4
+    道，3.1~3.5 的读数是邻道/远端边线（20261026 局 s1#3 连续 0.8s）。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.6, lane_x=0.6, lane_ok=True)
+    pl.state.executed_lane = 0.6
+    for i in range(6):
+        pl.update(_out(x_target=0.0, fid=2 + i, valid=2 + i), DT, 2 + i,
+                  road_offset=0.6, road_offset_hold=True,
+                  lane_x=3.2, lane_ok=True)
+    assert pl._lane_sm == pytest.approx(0.6, abs=1e-6)
+    assert pl.state.executed_lane == pytest.approx(0.6, abs=1e-6)
+    assert pl._lane_trusted                          # 越界读数不能撤销信任
 
 
 def test_lane_fusion_off_without_lock():
