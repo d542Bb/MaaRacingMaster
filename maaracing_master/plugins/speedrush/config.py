@@ -180,10 +180,6 @@ class Planner:
     # （满杆有效 ~1.3 道/s²，散布 0.4~3.1；0.8=留余量）——比 a_lat_gain 小一个
     # 量级是真实的：反打要先转过车头，转向链延迟吃掉大半减速。
     brake_decel_lane_s2: float = 0.8
-    # 线速校正模型横速的时间常数（v3 车模配套观测，2026-10-26）：松杆不
-    # 衰减后模型横速误差不再自灭（215313 局 s2#4 模型 +1.9/线速 −0.6 反号
-    # 2.5s，控制器躺平骑线），线速是唯一连续运动观测。0=关（旧行为）。
-    v_line_tau_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -673,8 +669,6 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
             brake_decel_lane_s2=_num_def(
                 d, "planner", "brake_decel_lane_s2", 0.8, lo=0, lo_open=False),
-            v_line_tau_s=_num_def(
-                d, "planner", "v_line_tau_s", 0.0, lo=0, lo_open=False),
             heading_fuse_gain=_num_def(
                 d, "planner", "heading_fuse_gain", 0.0, lo=0, hi=1)),
         traffic=Traffic(

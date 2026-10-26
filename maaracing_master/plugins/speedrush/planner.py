@@ -184,14 +184,6 @@ class HeadingObserver:
         lim = _HEAD_V_MAX_FACTOR * self.p.v_lat_max
         return max(-lim, min(lim, v))
 
-    def line_v(self) -> float | None:
-        """新鲜线速（道/s）：锁线且证据龄合规的拍才有值，断供超时回 None。
-
-        供 v3 车模的速度观测消费：模型横速不再自衰减，误差要靠它修。"""
-        if self.v_line is None or self._t - self._last_seen > _HEAD_STALE_S:
-            return None
-        return self.v_line
-
     def debug(self) -> dict:
         return {
             "v_line": None if self.v_line is None
@@ -463,21 +455,12 @@ class LateralPlanner:
 
         # 航向+线速观测：控制阻尼/前瞻用的横速 = 模型与航向融合；模型状态
         # v_lat_est 不动（计划生成与线滑行预测仍用模型）。gain=0 时逐位不变。
+        # 注意 v_lat_est 的速度观测唯一通路是 ⑥b 的深度 β 修正——不要用
+        # 线斜率速度直改状态：0.6s 因果斜率窗在 bang-bang 反打处结构性反号
+        # （223955 局 s2 4.0~5.5s：线速 −1.8 顶真实 +3，把满杆建立的模型
+        # 加速度吃掉七成，刹停预算失明直至撞栏）。
         self.head.update(dt_s, lane_x, lane_ok, lane_theta, lane_theta_ok,
                          lane_fid, lane_age_ms)
-        # 线速校正模型横速（v3 车模配套观测，2026-10-26）：tau_align 拆掉
-        # 人工衰减后，模型横速误差不再自灭——215313 局 s2#4：模型 +1.9、
-        # 线速 −0.6 反号持续 2.5s，控制器以为在回中、杆值躺平骑黄线。线是
-        # 唯一连续运动信号；门控复用航向观测（锁线+龄 ≤250ms+跳变重置），
-        # 0.5s 时间常数——慢于控制拍噪声、快于假速度积累。深度侧 ⑥b 只修
-        # 位置不修速度（obs_position_only），这条是速度观测的唯一通路。
-        lv = self.head.line_v()
-        if lv is not None and self.p.v_line_tau_s > 0.0:
-            a_v = 1.0 - math.exp(-dt_s / self.p.v_line_tau_s)
-            self.state.v_lat_est += a_v * (lv - self.state.v_lat_est)
-            self.state.v_lat_est = max(-self.p.v_lat_max,
-                                       min(self.p.v_lat_max,
-                                           self.state.v_lat_est))
         self._v_ctrl_model = self.state.v_lat_est
         self._v_ctrl = self.head.fused(self.state.v_lat_est,
                                        self.p.heading_fuse_gain)

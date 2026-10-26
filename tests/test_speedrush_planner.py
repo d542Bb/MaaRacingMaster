@@ -929,40 +929,20 @@ def test_brake_budget_keeps_full_braking_plan():
     assert pl._last_plan_u is not None      # 计划链保持
 
 
-def test_line_velocity_corrects_model_speed():
-    """线速校正模型横速：模型 +1.9、车不动（线速≈0），1s 内收敛到 ±0.4。
+def test_model_velocity_builds_under_sustained_steer():
+    """满杆机动态下模型横速必须建立——任何观测通道不得压制模型加速度。
 
-    v3 车模松杆不衰减，误差必须靠观测修——215313 局 s2#4 假横速反号 2.5s
-    躺平骑线的机制根因。预算关闭以隔离校正通路。"""
-    pl = _planner(v_line_tau_s=0.5, lookahead_tau_s=0.0,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  k_p=0.0, k_d=0.0, brake_decel_lane_s2=0.0)
-    pl.state.executed_lane = -0.3
-    pl.state.v_lat_est = 1.9
-    for i in range(1, 25):                  # 1.2s：车不动，线横位恒定
-        pl.update(_out(x_target=-0.3, fid=i, valid=i), DT, i,
-                  lane_x=-0.3, lane_ok=True, lane_theta=0.0,
-                  lane_theta_ok=True, lane_age_ms=10.0)
-    assert abs(pl.state.v_lat_est) < 0.4
-
-
-def test_line_velocity_correction_gated_when_line_lost():
-    """断供超 _HEAD_STALE_S 停止校正：线没了不能拿旧线速继续拽模型。"""
-    pl = _planner(v_line_tau_s=0.5, lookahead_tau_s=0.0,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  k_p=0.0, k_d=0.0, brake_decel_lane_s2=0.0,
-                  a_lat_gain=0.0)
-    for i in range(1, 11):
-        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
-                  lane_x=0.0, lane_ok=True, lane_theta=0.0,
-                  lane_theta_ok=True, lane_age_ms=10.0)
-    for i in range(11, 26):                 # 0.75s 断供 > _HEAD_STALE_S
-        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
-    assert pl.head.line_v() is None
-    pl.state.v_lat_est = 1.0               # 断供后模型自走，不被旧线速修
-    for i in range(26, 31):
-        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
-    assert pl.state.v_lat_est == pytest.approx(1.0, abs=0.05)
+    223955 局 s2 4.0~5.5s 的机制根因（已拆除的线速校正）：线斜率 0.6s
+    因果窗在 bang-bang 反打处结构性反号，指数校正把满杆建立的加速度吃掉
+    七成，刹停预算失明直至贴栏。回归锁判据：u=满杆 0.55s 后横速 ≥1.5
+    （a_lat_gain=6、tau_steer=0.1 的纯模型下界 ~2.2，留 β/数值余量）。"""
+    pl = _planner(lookahead_tau_s=0.0, rate_limit_raw=999999.0,
+                  stick_deadzone_raw=0.0,
+                  brake_decel_lane_s2=0.0, maneuver_stick_max=1.0)
+    pl.state.executed_lane = -1.0
+    for i in range(1, 15):                  # 0.7s 满杆
+        pl.update(_out(x_target=0.7, fid=i, valid=i, maneuver=True), DT, i)
+    assert pl.state.v_lat_est >= 1.5
 
 
 def test_corridor_infeasible_plan_commands_escape():
