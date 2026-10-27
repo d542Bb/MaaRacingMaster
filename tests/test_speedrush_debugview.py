@@ -6,6 +6,8 @@ _grid_penalty 同源（x 原点=相机光轴）。渲染是纯函数、写盘走
 测试不落用户 debug 目录。
 """
 
+import json
+
 import numpy as np
 import pytest
 from pathlib import Path
@@ -344,3 +346,78 @@ def test_hud_latest_returns_copy():
 def test_hud_latest_none_before_first_sample():
     h = HudObserver(Path("."), frame_source=None, regions={})
     assert h.latest() is None
+
+
+# ---------- 帧索引（2026-10-27：图↔拍可追溯） ----------
+
+def test_writer_writes_frame_index(tmp_path, frame):
+    """索引行把 seq 钉到采集帧号与帧时戳——离线像素结论接控制状态靠的就是它。"""
+    w = _writer(tmp_path)
+    try:
+        w.tick(frame, _snap(ts_ns=123456789))
+        w.stop()
+    except Exception:
+        w.stop()
+        raise
+    lines = (tmp_path / "sess" / "frames.jsonl").read_text(
+        encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["seq"] == 1 and row["frame_id"] == 42
+    assert row["ts_ns"] == 123456789
+    assert row["file"] == "raw/0001_raw.jpg"
+    assert (tmp_path / "sess" / row["file"]).exists()
+
+
+def test_writer_index_nulls_missing_ts_not_fabricated(tmp_path, frame):
+    """缺时戳就写 null——拿写盘时刻冒充采集时刻会让整条索引失去意义。"""
+    w = _writer(tmp_path)
+    try:
+        w.tick(frame, _snap())          # _snap 无 ts_ns
+        w.stop()
+    except Exception:
+        w.stop()
+        raise
+    row = json.loads((tmp_path / "sess" / "frames.jsonl").read_text(
+        encoding="utf-8").splitlines()[0])
+    assert row["ts_ns"] is None and row["frame_id"] == 42
+
+
+def test_writer_index_skips_throttled_and_keeps_seq_aligned(tmp_path, frame):
+    """节流丢掉的拍不占号：索引里的 seq 必须与落盘文件名逐一对应。"""
+    w = _writer(tmp_path, interval_s=10.0)
+    try:
+        for i in range(5):
+            w.tick(frame, _snap(fid=100 + i, ts_ns=1000 + i))
+        w.stop()
+    except Exception:
+        w.stop()
+        raise
+    rows = [json.loads(l) for l in (tmp_path / "sess" / "frames.jsonl")
+            .read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == w.saved == 1
+    assert rows[0]["seq"] == 1 and rows[0]["file"] == "raw/0001_raw.jpg"
+
+
+def test_writer_index_rows_carry_their_own_frame(tmp_path, frame):
+    """关联契约：每行索引带的 ts 必须与**同一行的 frame_id** 配对——不是写盘
+    时刻看到的最新值。队列未排空导致尾部少写是既有行为（stop 不排空），
+    因此这里锁"已写出的行彼此自洽 + 与落盘文件一一对应"，不锁总数。"""
+    w = _writer(tmp_path, interval_s=0.0)
+    try:
+        for i in range(4):
+            w.tick(frame, _snap(fid=200 + i, ts_ns=9000 + i))
+        w.stop()
+    except Exception:
+        w.stop()
+        raise
+    rows = [json.loads(l) for l in (tmp_path / "sess" / "frames.jsonl")
+            .read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == w.saved >= 1
+    assert [r["seq"] for r in rows] == list(range(1, len(rows) + 1))
+    for r in rows:
+        assert r["file"] == f"raw/{r['seq']:04d}_raw.jpg"
+        assert (tmp_path / "sess" / r["file"]).exists()
+        assert r["ts_ns"] == 9000 + (r["frame_id"] - 200)   # 行内自洽
+    fids = [r["frame_id"] for r in rows]
+    assert fids == sorted(fids) and len(set(fids)) == len(fids)

@@ -41,6 +41,7 @@ depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本�
 
 from __future__ import annotations
 
+import json
 import math
 import queue
 import threading
@@ -767,6 +768,13 @@ class DebugPairWriter:
         self.dropped = 0
         self.errors = 0
         self.last_ms = 0.0
+        # 帧索引（2026-10-27）：raw/hud 的 seq 与采集帧号、帧时戳一一对应。
+        # 此前实跑会话只有图没有索引，队列满丢旧保新会让「第 i 张图 ↔ 第 i 拍」
+        # 不成立——离线把像素结论接到控制状态上时只能作废（当日 P1 核查踩过）。
+        # 字段名复用 DriveRecorder 的 frames.jsonl（seq/frame_id/ts_ns/file），
+        # 不另起第二套编号；人工段不建本 writer，两文件不会同目录撞车。
+        self._idx_path = self._dir / "frames.jsonl"
+        self._idx_f = None
         self._q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
         self._steer_hist: deque = deque(maxlen=_STEER_HIST_MAX)
         self._stop = threading.Event()
@@ -812,6 +820,12 @@ class DebugPairWriter:
     def stop(self, reason: str = "chain_end") -> None:
         self._stop.set()
         self._thread.join(timeout=2.0)
+        if self._idx_f is not None:
+            try:
+                self._idx_f.close()
+            except OSError:
+                pass
+            self._idx_f = None
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -838,5 +852,24 @@ class DebugPairWriter:
         hud = render_hud(frame_rgb, snap, self._cal)
         cv2.imwrite(str(self._dir / f"{self._seq:04d}_hud.jpg"), hud,
                     [cv2.IMWRITE_JPEG_QUALITY, 85])
+        self._write_index(snap)
         self.last_ms = (time.perf_counter() - t0) * 1000.0
         self.saved += 1
+
+    def _write_index(self, snap: dict) -> None:
+        """帧索引一行：seq ↔ 采集帧号 ↔ 帧时戳 ↔ 文件名。
+
+        缺 fid 或时戳就写 null，不拿 seq 反推、不用当前时刻冒充采集时刻——
+        这条索引的全部价值就是"图与拍能一一对上"，伪造一个就等于没有。
+        写失败只计数（观测件不碰主路），与渲染异常同一纪律。"""
+        row = {"seq": self._seq, "frame_id": snap.get("fid"),
+               "ts_ns": snap.get("ts_ns"),
+               "file": f"raw/{self._seq:04d}_raw.jpg",
+               "hud": f"{self._seq:04d}_hud.jpg"}
+        try:
+            if self._idx_f is None:
+                self._idx_f = open(self._idx_path, "a", encoding="utf-8")
+            self._idx_f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            self._idx_f.flush()
+        except OSError:
+            self.errors += 1

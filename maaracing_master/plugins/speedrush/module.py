@@ -1473,6 +1473,13 @@ class SpeedRushModule(ActivityModule):
             "ro_pair_w": None if chain["ego_road"].last.get("pair_w") is None
             else round(chain["ego_road"].last["pair_w"], 4),
             "ro_reject": chain["ego_road"].last.get("reject"),
+            # 同定义对照审计面（2026-10-27，只记录不参与任何判定/供数）：
+            # ro_region = 本拍绿区读数的触窗比例与绿行数（region_reading 原值，
+            # 非新证据拍/坏平面拍=None）；ro_wallbin = 墙双侧同箱且都当拍在场。
+            # 用途：把"墙到墙中点"与"绿区左右缘中点"两个**不同物理定义**的读数
+            # 限制在二者应当重合的条件下比较（双侧不触窗 + 同箱双侧 + 直路）。
+            # 它不保证两路误差相同——只是排除已知定义差异。
+            "ro_region": chain["ego_road"].last.get("audit") or None,
             # 参考系跳变标注（2026-10-27，仅记录）：ro_hop 0=运动/1=换档/
             # 2=黑视，ro_v_obs=相邻新鲜读数隐含横速（道/s，右正，黑视期
             # None），ro_gap_s=两读数间隔，ro_src_chg=来源变化（换源不等于跳变）。
@@ -1613,7 +1620,7 @@ class SpeedRushModule(ActivityModule):
                            "ly": int(pad_st.left_stick[1]),
                            "rt": int(pad_st.right_trigger)}
             dbg.tick(frame, {
-                "fid": fid, "phase": phase,
+                "fid": fid, "ts_ns": ts_ns, "phase": phase,
                 "result": result, "reading": dgeo, "grid": dgrid,
                 "lane": lane,               # 线观测（叠加回画面 + 底部摘要）
                 "pad": pad,                 # 物理手柄实际杆量（人工局）
@@ -2125,6 +2132,10 @@ class _EgoRoadObserver:
         self._jump_pending: tuple | None = None  # 待确认的跳变 (center, 连续拍数)
         self._frame_gate_used = False         # 本拍跳变门只判一次（候选链共享）
         self._plane_ok = True                 # 本拍平面尺度门（master）
+        # 同定义对照审计面（2026-10-27，只记录不参与判定）：绿区触窗与绿行数
+        # （`region_reading` 的产数口）+ 墙双侧同箱是否在场（`_wall_center` 的
+        # common）。缺证据即 None——不拿 0 冒充"没触窗"。
+        self._audit: dict = {}
         self.last: dict = {}                  # 实机 debug 数据面（ro_* 列）
 
     def update(self, bnd, now: float | None = None, *,
@@ -2150,6 +2161,7 @@ class _EgoRoadObserver:
             now = time.monotonic()
         self._far_extents = far_extents   # _build 消费（各拼装路径同帧同源）
         self._frame_gate_used = False
+        self._audit = {}                  # 本拍审计面重置（None=本拍无该证据）
         if new:
             # 共享方向滤波只在新远带证据更新一次；本拍若未建成走廊，
             # 证据留到下一次建成时消费（不因弃权拍丢掉一次更新）。
@@ -2177,7 +2189,11 @@ class _EgoRoadObserver:
             pair = None
             if new and self._plane_ok and grid is not None:
                 reg = region_reading(grid, self._lane_w_m)
-                if reg is not None and reg.sides == 2 \
+                self._audit = {"l_clip": round(float(reg.left_clip_frac), 3),
+                               "r_clip": round(float(reg.right_clip_frac), 3),
+                               "n_rows": int(reg.n_rows),
+                               "sides": int(reg.sides)}
+                if reg.sides == 2 \
                         and reg.left_edge_lane is not None \
                         and reg.right_edge_lane is not None:
                     pair = (reg.left_edge_lane, reg.right_edge_lane)
@@ -2450,6 +2466,7 @@ class _EgoRoadObserver:
         live_l = {zc: v for zc, v in left.items() if v[2]}
         live_r = {zc: v for zc, v in right.items() if v[2]}
         common = sorted(set(live_l) & set(live_r), key=abs)
+        self._audit["wall_same_bin"] = bool(common)   # 双侧同箱且都当拍在场
         for zc in common:
             lane_l, _cl, _ = live_l[zc]
             lane_r, _cr, _ = live_r[zc]
@@ -2580,7 +2597,8 @@ class _EgoRoadObserver:
         原因（off_max/width_guard/veto/center_max）——拒绝拍分账审计面。"""
         return {"source": src, "off": off, "off_raw": off_raw,
                 "width": self.width, "grid_off": grid_off, "xcheck": xcheck,
-                "pair_w": pair_w, "reject": reject, "plane_ok": self._plane_ok}
+                "pair_w": pair_w, "reject": reject, "plane_ok": self._plane_ok,
+                "audit": dict(self._audit)}
 
 
 def _started_async_depth(obs: DepthRoadObserver,

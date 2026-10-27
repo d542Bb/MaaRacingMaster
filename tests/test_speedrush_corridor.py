@@ -582,3 +582,65 @@ def test_far_center_lane_median_sign_and_filters():
     assert far_center_lane((band(60.0, -4.0, 4.0),), 3.38) is None
     assert far_center_lane((band(16.0, None, 4.0),), 3.38) is None
     assert far_center_lane((band(16.0, -4.0, 4.0, n=2),), 3.38) is None
+
+
+# ---------- 同定义对照审计面（2026-10-27：只记录，不参与判定） ----------
+
+def _master_observer(**kw):
+    from maaracing_master.plugins.speedrush.config import GridXcheck
+    return smod._EgoRoadObserver(xcheck=GridXcheck(mode="master"), **kw)
+
+
+def test_audit_records_region_clips_from_same_reading():
+    """审计值必须来自本拍那条绿区读数本身（触窗比例/绿行数/侧数），
+    不是事后重算——同定义对照的全部意义在于"条件与读数同拍"。"""
+    o = _master_observer(lane_w_m=LW)
+    o.update(_bnd(-2.0, 2.0), now=1000.0, fid=1, grid=_grid(range(12, 24)))
+    a = o.last["audit"]
+    assert a["n_rows"] == 12 and a["sides"] == 2
+    assert a["l_clip"] == 0.0 and a["r_clip"] == 0.0
+
+
+def test_audit_marks_clipped_side_honestly():
+    """左边界贴住视窗最左列 = 假缘：触窗比例>0 即被记下来（该拍绿区双侧
+    不成立，不该进"定义重合"子集）。"""
+    o = _master_observer(lane_w_m=LW)
+    o.update(_bnd(-2.0, 2.0), now=1000.0, fid=1,
+             grid=_grid(range(12, 24), col_lo=0))
+    assert o.last["audit"]["l_clip"] > 0.0
+
+
+def test_audit_absent_on_reuse_tick():
+    """复用拍没有新的绿区证据——审计面留空，不拿上一拍的值冒充本拍。"""
+    o = _master_observer(lane_w_m=LW)
+    o.update(_bnd(-2.0, 2.0), now=1000.0, fid=1, grid=_grid(range(12, 24)))
+    assert o.last["audit"]["n_rows"] == 12
+    o.update(_bnd(-2.0, 2.0), now=1000.05, fid=2, grid=_grid(range(12, 24)),
+             new=False)
+    assert "n_rows" not in o.last["audit"]
+
+
+def test_audit_wall_same_bin_flag_tracks_both_sides_live():
+    """墙双侧同箱在场 = 同一定义对照的另一个条件：只有两侧都当拍在场才真。"""
+    o = _master_observer(lane_w_m=LW, wall_track=WallTrack(CAL))
+    o.update(_bnd(-2.0, 2.0, edge_pts=[(-1, 4.0, -5.5), (1, 4.0, 5.5)]),
+             now=1000.0, fid=1)
+    assert o.last["audit"]["wall_same_bin"] is True
+    o2 = _master_observer(lane_w_m=LW, wall_track=WallTrack(CAL))
+    o2.update(_bnd(-2.0, 2.0, edge_pts=[(1, 4.0, 5.5)]), now=1000.0, fid=1)
+    assert o2.last["audit"]["wall_same_bin"] is False
+
+
+def test_audit_is_write_only():
+    """审计面必须是只写的：类体内除"写 self._audit"与 _snapshot 里的读出打包，
+    不得有任何分支读它——一旦有判定读审计面，"加字段不改供数"就不再成立
+    （本轮全部结论的前提条件）。"""
+    import inspect
+    import re
+
+    write = re.compile(r"self\._audit\s*[:\[]")   # 声明 / 整体赋值 / 逐项赋值
+    reads = [ln.strip() for ln in inspect.getsource(
+        smod._EgoRoadObserver).splitlines()
+        if "self._audit" in ln and not write.search(ln)
+        and "self._audit =" not in ln]
+    assert reads == ['"audit": dict(self._audit)}'], reads
