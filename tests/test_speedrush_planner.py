@@ -866,7 +866,7 @@ def test_brake_budget_escalates_full_authority():
     pl = _planner(**base)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 1.2
-    pl.state.v_lat_est = 0.3        # 停止点 1.2+0.3²/(2·0.8)=1.256 > 带缘 0.5
+    pl.state.v_lat_est = 0.3        # 停止点 1.2+0.3²/(2·1.3)=1.235 > 带缘 0.5
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert pl.last_steer_raw <= -0.7        # 全权 0.85（gentle 会封 0.45）
 
@@ -878,7 +878,7 @@ def test_brake_budget_not_triggered_braking_toward_target():
     pl = _planner(**base)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 1.2
-    pl.state.v_lat_est = -0.3       # 停止点 1.144：还差得远，反打是过量修正
+    pl.state.v_lat_est = -0.3       # 停止点 1.165：还差得远，反打是过量修正
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert pl.last_steer_raw >= -P.hold_stick_max - 0.01
 
@@ -904,10 +904,10 @@ def test_brake_budget_overrides_coasting_plan():
     pl = _planner(**base)
     pl.update(_out(x_target=-0.3, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = -1.5
-    pl.state.v_lat_est = 1.9        # 停止点 −1.5+1.9²/1.6=+0.76 > 带缘 +0.2
+    pl.state.v_lat_est = 2.5        # 停止点 −1.5+2.5²/2.6=+0.90 > 带缘 +0.2
     plan = types.SimpleNamespace(
         valid=True, u_feedforward=0.0, x_preview_lane=-1.0,
-        v_preview_lane_s=1.9)
+        v_preview_lane_s=2.5)
     pl.update(_out(x_target=-0.3, fid=2, valid=2), DT, 2, plan=plan)
     assert pl.last_steer_raw == pytest.approx(-P.maneuver_stick_max)
     assert pl._last_plan_u is None          # slew 链清掉
@@ -920,10 +920,10 @@ def test_brake_budget_keeps_full_braking_plan():
     pl = _planner(**base)
     pl.update(_out(x_target=-0.3, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = -1.5
-    pl.state.v_lat_est = 1.9
+    pl.state.v_lat_est = 2.5        # 停止点越过带缘（1.3 下 v=1.9 已不触发）
     plan = types.SimpleNamespace(
         valid=True, u_feedforward=-0.85, x_preview_lane=-1.5,
-        v_preview_lane_s=1.9)
+        v_preview_lane_s=2.5)
     pl.update(_out(x_target=-0.3, fid=2, valid=2), DT, 2, plan=plan)
     assert pl.last_steer_raw == pytest.approx(-0.85)
     assert pl._last_plan_u is not None      # 计划链保持

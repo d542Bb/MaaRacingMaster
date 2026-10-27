@@ -175,11 +175,12 @@ class Planner:
     # 0.25s 横位预测误差中位降 10~20%、相位回到 0 附近。航向横速的前向速度
     # 由线斜率/线角在线自标定，不引入新的米制真源；模型状态 v_lat_est 不变。
     heading_fuse_gain: float = 0.0
-    # 刹停预算（2026-10-26 人工局手柄流辨识）：按当前横速预测的停止点越过
-    # 目标带远侧缘时升级全权反打。a_brake 用人工实测反打有效减速的保守低端
-    # （满杆有效 ~1.3 道/s²，散布 0.4~3.1；0.8=留余量）——比 a_lat_gain 小一个
-    # 量级是真实的：反打要先转过车头，转向链延迟吃掉大半减速。
-    brake_decel_lane_s2: float = 0.8
+    # 刹停预算（2026-10-26 人工局手柄流辨识，2026-10-27 八局回放定档）：按当前
+    # 横速预测的停止点越过目标带远侧缘时升级全权反打。a_brake 取人工实测反打
+    # 有效减速的中位（满杆 ~1.3 道/s²，散布 0.4~3.1）；0.8 的保守低端在回放里
+    # 表现为提前反打（杆值反向 −16%、Σ|Δu| −15%）。比 a_lat_gain 小一个量级
+    # 是真实的：反打要先转过车头，转向链延迟吃掉大半减速。
+    brake_decel_lane_s2: float = 1.3
 
 
 @dataclass(frozen=True)
@@ -668,7 +669,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             plan_u_slew_s=_num_def(
                 d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
             brake_decel_lane_s2=_num_def(
-                d, "planner", "brake_decel_lane_s2", 0.8, lo=0, lo_open=False),
+                d, "planner", "brake_decel_lane_s2", 1.3, lo=0, lo_open=False),
             heading_fuse_gain=_num_def(
                 d, "planner", "heading_fuse_gain", 0.0, lo=0, hi=1)),
         traffic=Traffic(
