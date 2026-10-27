@@ -125,6 +125,35 @@ DRIVE_MISS_TOLERANCE = 2
 DRIVE_TICK_HZ = 20.0
 DRIVE_TICK_S = 1.0 / DRIVE_TICK_HZ
 
+# —— 路心读数"参考系跳变"标注（2026-10-27，仅记录，不参与控制）——
+# 一次快横移与一次参考系换档在单帧上长得一样（都是路心读数一步跳大），
+# 但离线辨识车模、算观测真值时必须区分：横移期的换档会把相邻读数的差
+# 污染成 6 道/s 级的假速度（223955 局 s3 25.4s：0.17s 跳 1.07 道）。
+# 判据：|Δ路心| > 物理可动位移 + 单次读数噪声地板。3.2 道/s 是录制里
+# 真实横移的上沿（人工满杆约 2.4~3.0）；0.25 道是找边/对宽抖动的地板。
+HOP_V_MAX_LANE_S = 3.2
+HOP_NOISE_LANE = 0.25
+HOP_BLACKOUT_S = 1.0
+
+
+def classify_ro_hop(t0: float, ro0: float, src0: str | None,
+                    t1: float, ro1: float, src1: str | None) -> dict:
+    """标注相邻两次新鲜路心读数之间的变化性质（0=运动 / 1=换档 / 2=黑视）。
+
+    返回 ``{gap, d, v, hop, src_chg}``：d=读数差（道，右正=车右移）、v=隐含
+    横速（道/s，右正；黑视期 None）、src_chg=来源是否变化（换源但位移在
+    包络内仍算运动——来源切换本身不是跳变证据，只是上下文）。"""
+    gap = max(t1 - t0, 1e-3)
+    d = ro1 - ro0
+    if gap > HOP_BLACKOUT_S:
+        return {"gap": gap, "d": d, "v": None, "hop": 2,
+                "src_chg": int(src0 != src1)}
+    v = d / gap
+    hop = 1 if abs(d) > HOP_V_MAX_LANE_S * gap + HOP_NOISE_LANE else 0
+    return {"gap": gap, "d": d, "v": v, "hop": hop,
+            "src_chg": int(src0 != src1)}
+
+
 # 驾驶页锚点复查间隔。锚点识别走框架（post_task + 等待，单轮毫秒级），不必每帧跑；
 # 采集/控制节拍与它解耦——帧各自带真实时间戳，离线按时间戳对齐，不受此频率污染。
 DRIVE_ANCHOR_CHECK_S = 0.5
@@ -1130,6 +1159,18 @@ class SpeedRushModule(ActivityModule):
                                     "pair_slot", "wall_occl", "memory"))
             road_offset_new = (dgeo_new and corridor is not None
                                and not road_offset_hold)
+            # 参考系跳变标注（仅记录，不参与控制）：每次新鲜路心读数与上一次
+            # 新鲜读数比，按物理可动包络判"运动 / 换档 / 黑视"——离线辨识
+            # 车模、算观测真值先按此列过滤，避免把换档当成 6 道/s 的横移。
+            ro_hop = None
+            if road_offset_new and road_offset is not None:
+                _prev = chain.get("ro_hop_prev")
+                _src = chain["ego_road"].last.get("source")
+                _t_s = ts_ns / 1e9
+                if _prev is not None:
+                    ro_hop = classify_ro_hop(_prev[0], _prev[1], _prev[2],
+                                             _t_s, road_offset, _src)
+                chain["ro_hop_prev"] = (_t_s, road_offset, _src)
             # 线观测先取：保持期要把它的连续横位当运动观测喂给 planner（深度
             # 保持值冻结时，线是唯一真实的位移来源；模型自走会按打杆量虚走）。
             lw = chain.get("lane_obs")
@@ -1432,6 +1473,14 @@ class SpeedRushModule(ActivityModule):
             "ro_pair_w": None if chain["ego_road"].last.get("pair_w") is None
             else round(chain["ego_road"].last["pair_w"], 4),
             "ro_reject": chain["ego_road"].last.get("reject"),
+            # 参考系跳变标注（2026-10-27，仅记录）：ro_hop 0=运动/1=换档/
+            # 2=黑视，ro_v_obs=相邻新鲜读数隐含横速（道/s，右正，黑视期
+            # None），ro_gap_s=两读数间隔，ro_src_chg=来源变化（换源不等于跳变）。
+            "ro_hop": None if ro_hop is None else ro_hop["hop"],
+            "ro_v_obs": None if ro_hop is None or ro_hop["v"] is None
+            else round(ro_hop["v"], 2),
+            "ro_gap_s": None if ro_hop is None else round(ro_hop["gap"], 3),
+            "ro_src_chg": None if ro_hop is None else ro_hop["src_chg"],
             # 平面尺度门（master）：0=本拍 cam_h 出物理带，缘点/绿区已被丢弃
             "ro_plane": 1 if chain["ego_road"].last.get("plane_ok", True) else 0,
             # 深度几何列（几何主人 v4）：在场侧数 + 两侧读数 + 时延 + 弃权原因

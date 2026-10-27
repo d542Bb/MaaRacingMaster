@@ -599,3 +599,44 @@ def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
     assert seen[0] == (1, False)
     assert seen[1] == (1, True)
     assert seen[2] == (2, False)
+
+
+# ---------- 路心读数参考系跳变标注（classify_ro_hop，仅记录） ----------
+
+def test_ro_hop_flags_impossible_motion_as_frame_change():
+    """0.17s 跳 1.07 道（≈6.3 道/s）远超物理包络 → 换档，不是运动。
+
+    223955 局 s3 25.4s 实拍：换档被离线当成横移真值，车模辨识因此矛盾。"""
+    out = sr.classify_ro_hop(10.0, -1.57, "wall", 10.17, -0.50, "wall")
+    assert out["hop"] == 1
+    assert out["v"] == pytest.approx(6.29, abs=0.01)
+    assert out["src_chg"] == 0           # 同源也可以是换档（换箱/换对）
+
+
+def test_ro_hop_accepts_fast_real_transit_as_motion():
+    """0.7s 移动 1.25 道（≈1.8 道/s）在物理包络内 → 运动。"""
+    out = sr.classify_ro_hop(26.0, -0.41, "memory", 26.7, 0.84, "wall")
+    assert out["hop"] == 0
+    assert out["src_chg"] == 1           # 来源变化单独记录，不影响判据
+
+
+def test_ro_hop_noise_floor_tolerates_single_tick_jitter():
+    """一拍 0.05s 跳 0.35 道：隐含 7 道/s，但只超噪声地板内 → 运动。
+
+    短间隔的差分被读数抖动主导（0.25 道地板），不能当换档。"""
+    out = sr.classify_ro_hop(26.22, 0.98, "wall", 26.28, 1.33, "wall")
+    assert out["hop"] == 0
+
+
+def test_ro_hop_blackout_when_gap_too_long():
+    """间隔 >1s：期间车可能任意移动，真值不可用（hop=2，v=None）。"""
+    out = sr.classify_ro_hop(10.0, 0.0, "wall", 11.5, 1.8, "wall")
+    assert out["hop"] == 2
+    assert out["v"] is None
+
+
+def test_ro_hop_signed_direction_preserved():
+    """隐含速度带方向：向左的大跳也判换档（不能只查绝对值门槛）。"""
+    out = sr.classify_ro_hop(10.0, 2.03, "wall", 10.05, 0.15, "wall")
+    assert out["hop"] == 1
+    assert out["v"] < 0
