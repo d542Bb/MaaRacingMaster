@@ -12,6 +12,10 @@ concurrency:
   group: cnb-sync
   cancel-in-progress: false
 
+# 只读检出 + 推到 CNB 外部远端（凭据走 secrets），不需要任何 GitHub 令牌写权限。
+permissions:
+  contents: read
+
 jobs:
   mirror:
     runs-on: ubuntu-latest

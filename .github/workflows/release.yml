@@ -267,6 +267,9 @@ jobs:
     name: 同步 Release 资产到 CNB
     runs-on: ubuntu-latest
     needs: win-build  # 等 zip 补传到 GitHub Release 完成后再同步
+    # 纯脚本任务：下载走公开 URL、上传走 CNB OpenAPI（CNB_TOKEN secret），
+    # 全程不使用 GITHUB_TOKEN，权限收到零。
+    permissions: {}
     steps:
       - name: 上传 zip 与 sha256 到 CNB Release
         # CNB 仓库路径与 mirror-to-cnb.yml 同源读 secrets，避免同一事实两处硬编码
