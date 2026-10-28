@@ -3935,11 +3935,22 @@ executed_lane"是模型自证，测不出车真实动没动。现有两条独立
 
 ## 附录：正文无落点的探针索引（2026-10-28 补）
 
-本目录 161 个脚本里有 18 个在正文中没有任何落点（另有 5 个是工具类，见下）——它们各自
-只在自己的 docstring 里说明问什么。此索引按**诊断对象**分组，只记「问什么」，**不代替
-结论**：哪一条的问题已被正文某节回答、哪一条还悬着，需要逐个核销（核销完才谈退役）。
+本目录 161 个脚本里有 14 个在正文中没有任何落点（另有 6 个工具类、3 个被 import 的库类，
+见下）——它们各自只在自己的 docstring 里说明问什么。此索引按**诊断对象**分组，只记
+「问什么」，**不代替结论**：哪一条的问题已被正文某节回答、哪一条还悬着，需要逐个核销
+（核销完才谈退役）。
 
-**已核销（本批退役）**：
+> **核销踩到的两种失败模式**（都不是"零引用"能解决的）：
+> ① **相关段落 ≠ 回答**——正文里有讲湿面、半幅、弯道、远墙的段落，但没一句直接回答该探针
+> 提的那个问题。这种要么补一句结论入正文，要么承认它还没结案。
+> ② **结论从未写下来**——BEV 逆透视、栅格 z 轴朝向这类，探针跑过、当时有结论、但没落进任何
+> 文档。它们是那段判断的**唯一记录**，按"零引用"删掉就是真丢。
+> ③ **"零引用"本身会漏**——按 `probe_x.py` 搜只能找到写全后缀的引用；import 语句写的是裸名
+> （`from … import probe_x`），于是「被别的探针 import 的」会被误判成零引用。核销时必须
+> **按裸名再搜一遍**：`probe_boundary3d`、`probe_curve_plane`、`probe_warp_forensics` 三个
+> 都是这么从"零引用"里捞回来的——它们分别是别的探针的模块与函数来源，删了直接断链。
+
+**已核销（已退役，13 条）**：
 
 - `probe_ground_ab`（09-25，追逐相机侧倾造成的行内视差）、`probe_ground_line`（09-26，
   逐行分位 → 地面直线）、`probe_plane_ground`（09-26，全局平面拟合 v2）——都是「逐行 q20
@@ -3955,6 +3966,9 @@ executed_lane"是模型自证，测不出车真实动没动。现有两条独立
 - `probe_degraded_recheck`（10-11，212349 全 82 包同链复算、补考上线前后对账）——结论在
   CODE_WIKI「平面质量门 + 降级补考（2026-10-09 / 10-11 定案）」：主门拒后不立即弃权，
   走角度 sanity → 剔墙/车点 → 点数 → 四象限覆盖 → 致密度 → cam_h 尺度这一串补考。
+- `probe_point_classify`（点云贴标签替代源头挖除）、`probe_ego_component`（种子+BFS 组件
+  生长替代固定矩形挖除）——**问题本身消失了**：保险杠机位（2026-10-23）后自车在相机之后、
+  不进点云，旧追车机位的自车 3D 框已退役（`depth_geo` 文件头与 CODE_WIKI 拟合域节）。
 
 **平面拟合与地面基线**：`probe_plane_warp`（10-10，「路面全程水平等宽平面」前提被违反时
 质量门怎么判）· `probe_row_collapse`（10-17，对宽门拒绝帧的逐行根因）· `probe_crop_plane`
@@ -3962,30 +3976,33 @@ executed_lane"是模型自证，测不出车真实动没动。现有两条独立
 
 **焦距与尺度**：`probe_edge_stage_trace`（找边离散化逐阶段敏感性）
 
-- `probe_point_classify`（点云贴标签替代源头挖除）、`probe_ego_component`（种子+BFS 组件
-  生长替代固定矩形挖除）——**问题本身消失了**：保险杠机位（2026-10-23）后自车在相机之后、
-  不进点云，旧追车机位的自车 3D 框已退役（`depth_geo` 文件头与 CODE_WIKI 拟合域节）。
+**找边 / 质量门 / 弯道与湿面**：`probe_curve_census`（10-11，贴栏弯道普查，左右半幅内点率
+分开统计）· `probe_wet_table`（10-11，湿地局全量逐帧判据表）· `probe_wetdry_batch`（10-11，
+湿/干 vs 弯/直 判别变量）· `probe_left_right_fit`（10-14，左右半幅独立拟合 + 远场劫持对照）·
+`probe_wall_far_census`（护栏在点云里延伸到多远、各距离带墙点密度）
+
+**BEV / 路心**：`probe_bev_unwarp`（09-26，纯相机几何展成俯视度量图，看路沿是否变平行
+直线）· `probe_bev_orientation`（10-05，定案栅格 z 轴朝向与路心读数）· `probe_center_baseline`
+（10-05，路心三方基线：找边 / 栅格 / 人工目检）
+
+**其他**：`probe_paint_line`（10-02，HSV 黄实线 → 3D 投影边界读数，与深度几何对质）·
+`probe_bonus_funnel`（R5 奖励车漏斗重放，检出落点分布）
+
+**库类（被别的探针 import，不能删）**：
+
+- `probe_boundary3d`（点云上找 kerb 台阶与 wall 竖直簇、与金标边线对质）——`probe_ego_pose.py`
+  直接 `import probe_boundary3d as pb`。（它的**结论**其实已落 home：3D 找边上产线、road_offset
+  几何主人从黄线簇切到 3D 找边、`boundary.py` 2D 链路整体退役；但模块本身还被消费，不能删。）
+- `probe_curve_plane`（10-10，弯道段质量门为什么一直拒）——`probe_plane_warp` 与
+  `probe_wet_table` 都 `from …probe_curve_plane import rebuild / gate_parts`。
+- `probe_warp_forensics`（warp 反直觉结果的帧级法证）——`probe_shape_readout` 与
+  `probe_warp_shape_test` 都 `from probe_warp_forensics import row_r`。
 
 **工具类（非实验，无结论可核销）**：`probe_raw_cloud`（原始帧跑完整推理出点云 HTML）·
 `export_debug_cloud`（evid 证据包 → 点云 HTML）· `replay_debug_evid`（evid npz → 新渲染图，
 锚点画回真实像素）· `compare_depth_sources`（同帧多源点云并排展示）· `probe_moge_provider`
-（会话 provider 实况 + forward 时延）。这五个是**查看器 / 量测器**，留下与否取决于还要不要
-目检点云与时延复核，不按"结论是否落地"判。
-
-**找边 / 质量门 / 弯道与湿面**：`probe_curve_census`（10-11，贴栏弯道普查，左右半幅内点率
-分开统计）· `probe_curve_plane`（10-10，弯道段质量门为什么一直拒）· `probe_wet_table`
-（10-11，湿地局全量逐帧判据表）· `probe_wetdry_batch`（10-11，湿/干 vs 弯/直 判别变量）·
-`probe_left_right_fit`（10-14，左右半幅独立拟合 + 远场劫持对照）· `probe_wall_far_census`
-（护栏在点云里延伸到多远、各距离带墙点密度）
-
-**BEV / 路心 / 边界对照**：`probe_bev_unwarp`（09-26，纯相机几何展成俯视度量图，看路沿是否
-变平行直线）· `probe_bev_orientation`（10-05，定案栅格 z 轴朝向与路心读数）· `probe_center_baseline`
-（10-05，路心三方基线：找边 / 栅格 / 人工目检）· `probe_boundary3d`（点云上找 kerb 台阶与
-wall 竖直簇，与金标边线对质）· `probe_correctness_sheet`（找边读数反投回游戏帧画圈标米数的
-人工抽检图）
-
-**其他**：`probe_paint_line`（10-02，HSV 黄实线 → 3D 投影边界读数，与深度几何对质）·
-`probe_bonus_funnel`（R5 奖励车漏斗重放，检出落点分布）· `probe_warp_forensics`（warp 反直觉
-结果的帧级法证：多分辨率视差 + L 边界剖面）
+（会话 provider 实况 + forward 时延）· `probe_correctness_sheet`（找边读数反投回帧画圈标米数
+的抽检图）。这六个是**查看器 / 量测器**，留下与否取决于还要不要目检点云与时延复核，不按
+"结论是否落地"判。
 
 

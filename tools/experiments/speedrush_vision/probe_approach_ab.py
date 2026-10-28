@@ -147,7 +147,7 @@ def ego_region_hgt(pts, valid, coef, ego_nat) -> float | None:
 
 
 def entity_z(pts, box) -> float | None:
-    """框内 Z 直方图 24 bin 最密簇中位（与 probe_point_classify.stat 同口径）。
+    """框内 Z 直方图 24 bin 最密簇中位（纯中位会被框缘外天空/背景远点拖飞）。
     box 为全分辨率 1280×720 坐标，内部映射到点云原生 336×598 格。"""
     gh, gw = pts.shape[:2]
     x0 = int(box[0] * gw / 1280); y0 = int(box[1] * gh / 720)

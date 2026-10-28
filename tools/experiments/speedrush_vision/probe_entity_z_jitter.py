@@ -7,7 +7,7 @@ MoGe+YOLO，按 IoU 关联同一实体跨帧，量 Z_med/X_med 的二阶差（�
 一阶差（真实接近信号），回答「深度差分能否给出可用的接近速率」——判据 =
 |中位 dZ|/帧 对 二阶差 P90 的信噪比。
 
-实体化口径与 probe_point_classify 同款：框内有限点 → Z 直方图 24 bin 最密簇
+实体化口径：框内有限点 → Z 直方图 24 bin 最密簇
 → 簇内中位（纯中位被框缘外天空/背景远点拖飞）。跨帧关联=同类贪心 IoU≥0.3。
 
 用法（仓库根，.venv）：
@@ -37,7 +37,7 @@ from tools.experiments.speedrush_vision.probe_depth_jitter import (  # noqa: E40
 
 
 def entity_z(pts: np.ndarray, box) -> tuple | None:
-    """检测框 → (点数, Z_med, X_med, cy)。口径=probe_point_classify.stat。"""
+    """检测框 → (点数, Z_med, X_med, cy)。Z_med = 框内 Z 直方图最密簇中位。"""
     h, w = pts.shape[:2]
     x0, y0, x1, y1 = max(0, box[0]), max(0, box[1]), min(w, box[2]), min(h, box[3])
     if x1 - x0 < 4 or y1 - y0 < 4:
