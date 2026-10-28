@@ -187,6 +187,14 @@ def _clear(c: CoarseLane | None) -> bool:
     return c is not None and c.blocker is None
 
 
+def _path_clear(s: RouteState, alt: CoarseLane, by: dict) -> bool:
+    """并入 alt 要横穿的中间道必须**确认空闲**。跨一条被占的道并线＝
+    从占用车上碾过去：20261027_160949_1 s2 24.3s 现任道与右道都被 0 m 车
+    占着，urgent 并到 −1，中间道上正贴着一辆 z 丢失的车——d_min 0.004。"""
+    lo, hi = sorted((round(s.lane_ref), int(alt.lane)))
+    return all(_clear(by.get(float(k))) for k in range(lo + 1, hi))
+
+
 def _drivable_lane(ego_lane: float, by: dict) -> float:
     """重建落点：离实测横位最近的**可行驶**候选道。
 
@@ -359,7 +367,8 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
 
     if t_cur is not None and s.blocked_ticks >= p.urgent_confirm_ticks:
         feas = [c for c in alts
-                if c.blocker is None or c.free_m >= cur.free_m + p.switch_gain_m]
+                if (c.blocker is None or c.free_m >= cur.free_m + p.switch_gain_m)
+                and _path_clear(s, c, by)]
         if not feas:
             return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target,
                                    "urgent_no_alt", "no_alt", since, None,

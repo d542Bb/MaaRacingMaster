@@ -118,6 +118,32 @@ def test_escape_requires_a_wider_lane():
     assert v.verdict == "merge_start" and v.lane_ref == 1.0
 
 
+def test_merge_cannot_cross_an_occupied_lane():
+    """跨道并线要横穿的中间道必须确认空闲：跨被占道并线＝从车上碾过去。
+
+    20261027_160949_1 s2 24.3s：现任道与右道都被 0 m 车占着，urgent 并到
+    −1——中间道正贴着一辆深度丢失的车，d_min 0.004。"""
+    spec = {1.0: (0.0, "car", False), 0.0: (0.0, "car", False),
+            -1.0: CLEAR, 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    s, v = _in_merge()                     # 先把参考道立到 +1
+    assert v.lane_ref == 1.0
+    for _ in range(P.cancel_unsafe_ticks + P.urgent_confirm_ticks + 2):
+        s, v = _tick(s, _rep(1.0, 1.0, spec))
+        assert v.lane_ref != -1.0          # 全程不得跨占用车并到 −1
+    assert v.verdict == "urgent_no_alt"
+    # 中间道确认空闲时不算障碍，但择近仍选邻道——跨道直达本就被净空排序挡住
+    spec2 = {1.0: (0.0, "car", False), 0.0: CLEAR, -1.0: CLEAR,
+             2.0: (0.0, "space", False), -2.0: (0.0, "space", False)}
+    s, v = _in_merge()
+    seen = []
+    for _ in range(P.cancel_unsafe_ticks + P.urgent_confirm_ticks + 2):
+        s, v = _tick(s, _rep(1.0, 1.0, spec2))
+        seen.append((v.verdict, v.lane_ref))
+    assert ("merge_start", 0.0) in seen and \
+        all(ref != -1.0 for _, ref in seen)
+
+
 def test_unknown_lane_is_never_a_destination():
     """目标道「无法确认」不能当逃生方向——宁可去一条确认有车但更宽的道。"""
     spec = {0.0: (16.0, "car", False),
