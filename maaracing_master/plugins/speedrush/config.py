@@ -436,6 +436,7 @@ class Route:
 
     control: bool = False
     urgent_confirm_ticks: int = 3
+    opportunity_confirm_ticks: int = 6
     cancel_unsafe_ticks: int = 5
     cancel_cooldown_s: float = 2.0
     finish_v_tol_lane_s: float = 0.4
@@ -903,6 +904,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             control=_bool(d, "route", "control", default=False),
             urgent_confirm_ticks=_int_def(d, "route", "urgent_confirm_ticks",
                                           3, lo=1),
+            opportunity_confirm_ticks=_int_def(
+                d, "route", "opportunity_confirm_ticks", 6, lo=1),
             cancel_unsafe_ticks=_int_def(d, "route", "cancel_unsafe_ticks",
                                          5, lo=1),
             cancel_cooldown_s=_num_def(d, "route", "cancel_cooldown_s", 2.0,

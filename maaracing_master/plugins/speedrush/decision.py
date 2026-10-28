@@ -315,6 +315,7 @@ class DecisionEngine:
             switch_gain_m=c.switch_margin_m,
             proxy_speed_mps=c.range_speed_mps,
             urgent_confirm_ticks=r.urgent_confirm_ticks,
+            opportunity_confirm_ticks=r.opportunity_confirm_ticks,
             cancel_unsafe_ticks=r.cancel_unsafe_ticks,
             cancel_cooldown_s=r.cancel_cooldown_s,
             finish_tol_lane=s.center_band_lane,
@@ -323,6 +324,8 @@ class DecisionEngine:
             soft_car=r.soft_car)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
+        # 上拍选择层越线请求（道，相对粗层原点）；逐拍刷新，喂 route 裁决
+        self._route_req: float | None = None
         self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）
         self._ruler_prev: float | None = None   # 上一拍尺子（米，场景帧 z=0）
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
@@ -356,6 +359,7 @@ class DecisionEngine:
         self._coarse = None
         self._route = None
         self._route_verdict = None
+        self._route_req = None
         self._route_epoch = 0
         self._ruler_prev = None
         self.occ.reset()
@@ -937,7 +941,9 @@ class DecisionEngine:
             self._sel_objs = {"reward": [], "car": [], "coin": []}
             self._sel_dbg = None
             self._coarse = None
-            self._tick_route()      # 无车道级证据拍：路线不推进，时钟继续走
+            self._route_req = None
+            # 无车道级证据拍：路线不推进，时钟继续走
+            self._tick_route()
             return "sel:hold:no_road"
         rf = self._road_frame(executed, obs.frame_id)
         if rf is None:
@@ -949,7 +955,9 @@ class DecisionEngine:
             self._sel_objs = {"reward": [], "car": [], "coin": []}
             self._sel_dbg = None
             self._coarse = None
-            self._tick_route()      # 无车道级证据拍：路线不推进，时钟继续走
+            self._route_req = None
+            # 无车道级证据拍：路线不推进，时钟继续走
+            self._tick_route()
             return "sel:hold:no_road"
         road, ego_m, origin = rf
         reward_src = self._bonus_sources(obs, executed)
@@ -1000,19 +1008,26 @@ class DecisionEngine:
         # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
         # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。
-        self._tick_route(c0)
+        self._tick_route(c0, request=self._route_req)
         # 并线承诺期：路线已定目标道，选择层只能在这个道上做维护性修正。
         # 机会层（奖励车/擦边/金币）与预置偏移在此关闭——承诺期的目标被
         # 机会改道就是静默换道（契约 §4/§5）。
         committed = (self.cfg.route.control and self._route is not None
                      and self._route.phase == PHASE_MERGING)
+        # 跨线唯一入口（2026-10-27）：闸开且保持态时把承诺道中心喂给选择层——
+        # 出本道安全区间的机会目标回夹区间边界，越线意图改发路线请求；
+        # 闸关逐位回旧行为（机会连续拽）。并线期目标本来就是承诺道，不喂。
+        commit_x = None
+        if self.cfg.route.control and self._route is not None and not committed:
+            commit_x = self._route.lane_ref * self.cal.lane_w_m + c0
         # 粗层（2026-10-20 接控制）：只接管 L4 回中兜底——细层没有奖励车/
         # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
         # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last,
                                    coarse_lane=self.coarse_lane,
-                                   committed=committed)
+                                   committed=committed, commit_x_m=commit_x)
+        self._route_req = rep.lane_request if self.cfg.route.control else None
         self._sel_report = rep
         self._sel_ego_m = ego_m
         self._sel_maneuver = rep.maneuver
@@ -1033,6 +1048,9 @@ class DecisionEngine:
         self._sel_dbg = {
             "ego": round(ego_m / lw, 3),
             "target": round(rep.target_x_m / lw, 3),
+            # 越线请求（道，相对承诺道）：trace 观测面，离线复算
+            # 「为什么并线/为什么没并」从这一列起
+            "req": rep.lane_request,
             # 帧合成审计项：origin=走廊中心@0，shift=自车横位平移，
             # fshift=带中心帧→规划器路心帧的平移。车米制 x 与场景 x 的
             # 多米分歧只能靠这三项定位（2026-10-19 局 214717_p1）。
@@ -1096,12 +1114,14 @@ class DecisionEngine:
             self._ruler_prev = c0
         return self._route_epoch
 
-    def _tick_route(self, c0: float | None = None) -> None:
-        """推进路线一拍。输入只有原始粗层报告与参考系纪元（边界 B：承诺值
-        不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。"""
+    def _tick_route(self, c0: float | None = None,
+                    request: float | None = None) -> None:
+        """推进路线一拍。输入只有原始粗层报告、参考系纪元与上拍越线请求
+        （边界 B：承诺值不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。"""
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
-            dt_s=self._dt_last, epoch=self._ruler_epoch(c0))
+            dt_s=self._dt_last, epoch=self._ruler_epoch(c0),
+            request=request)
 
     def _lane_for(self, committed: bool) -> float | None:
         """本拍接控制用的道。`committed=False` 逐语句是今天的路径（粗层自选道，

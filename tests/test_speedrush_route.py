@@ -34,6 +34,7 @@ P = RouteParams(
     switch_gain_m=CFG.coarse.switch_margin_m,
     proxy_speed_mps=CFG.coarse.range_speed_mps,
     urgent_confirm_ticks=CFG.route.urgent_confirm_ticks,
+    opportunity_confirm_ticks=CFG.route.opportunity_confirm_ticks,
     cancel_unsafe_ticks=CFG.route.cancel_unsafe_ticks,
     cancel_cooldown_s=CFG.route.cancel_cooldown_s,
     finish_tol_lane=CFG.selection.center_band_lane,
@@ -404,3 +405,217 @@ def test_ruler_jump_rebases_but_small_drift_does_not(monkeypatch):
     eng.update(_obs(4), DT, executed_lane=0.0, corridor=_corridor(0.9 + LW))
     assert eng.route_verdict.verdict == "epoch_reset"
     assert eng.route_verdict.epoch == 1
+# ---------- 机会换道请求（跨线唯一入口，2026-10-27） ----------
+
+def _tick_req(state, report, request, epoch=0):
+    return tick_route(state, report, P, dt_s=DT, epoch=epoch, request=request)
+
+
+def _req_run(state, report, request, n, epoch=0):
+    """连续 n 拍同侧请求（起意计分门槛用），返回末拍状态与定案。"""
+    for _ in range(n):
+        state, v = _tick_req(state, report, request, epoch)
+    return state, v
+
+
+def _req_until_merge(state, report, request, limit=30):
+    """一拍一拍喂请求直到起意，返回 (状态, 定案, 用时拍数)。"""
+    for i in range(1, limit + 1):
+        state, v = _tick_req(state, report, request)
+        if v.verdict == "merge_start":
+            return state, v, i
+    raise AssertionError("never merged")
+
+
+def test_opportunity_request_starts_a_merge():
+    """现任道确认空闲 + 请求=相邻合格道且连续到门槛 → 起意并线（why=opportunity）。"""
+    s, v = _tick_req(None, _rep(0.0, 0.0), 0.0)     # 首拍立状态（无请求）
+    s, v = _req_run(s, _rep(0.0, 0.0), 1.0, P.opportunity_confirm_ticks - 1)
+    assert v.verdict == "keep" and v.credit == P.opportunity_confirm_ticks - 1
+    s, v = _tick_req(s, _rep(0.0, 0.0), 1.0)        # 补满门槛那一拍起意
+    assert v.verdict == "merge_start" and v.why == "opportunity"
+    assert v.lane_ref == 1.0 and s.phase == PHASE_MERGING
+    s, v = _tick_req(s, _rep(0.9, 1.0), 1.0)        # 到位一拍：横速未落稳
+    assert v.verdict == "keep" and v.why == "merging"
+    s, v = _tick_req(s, _rep(0.9, 1.0), 1.0)        # 速率归零、位差进带宽
+    assert v.verdict == "finish" and v.why == "arrived"
+
+
+def test_flicker_requests_never_fire():
+    """断一拍扣一分：闪检（请求 ↔ 无请求交替）永远攒不到门槛。
+
+    165841 局原始请求 61 段里 40 段只有 1~2 拍（币组检测闪断）——不设这道门
+    一局要并线 60 次，正是「毫无章法」的另一种穿法。"""
+    s, v = _first(_rep(0.0, 0.0))
+    for i in range(40):
+        s, v = _tick_req(s, _rep(0.0, 0.0), 1.0 if i % 2 == 0 else None)
+        assert v.verdict == "keep"
+    assert v.credit <= 1.0
+
+
+def test_side_switch_restarts_the_credit():
+    """请求换到另一侧重新起计：左右两边各闪一下不该凑成一次并线。"""
+    s, v = _first(_rep(0.0, 0.0))
+    s, v = _req_run(s, _rep(0.0, 0.0), 1.0, P.opportunity_confirm_ticks - 1)
+    assert v.verdict == "keep"
+    s, v = _tick_req(s, _rep(0.0, 0.0), -1.0)       # 换侧：计分重置为 1
+    assert v.verdict == "keep" and v.credit == 1.0
+    s, v = _req_run(s, _rep(0.0, 0.0), -1.0, P.opportunity_confirm_ticks - 2)
+    assert v.verdict == "keep" and v.credit == P.opportunity_confirm_ticks - 1
+    s, v = _tick_req(s, _rep(0.0, 0.0), -1.0)
+    assert v.verdict == "merge_start" and v.lane_ref == -1.0
+
+
+def test_request_rejects_far_blocked_and_current_targets():
+    """两号外、无法确认/走不下、请求=现任道——统统维持 keep，不起意。
+
+    目标由选择层回夹本道安全区间，这里锁路线侧「不换道」这一半。"""
+    s, v = _first(_rep(0.0, 0.0))
+    n = P.opportunity_confirm_ticks + 2
+    for req, spec in (
+            (2.0, None),
+            (-2.0, None),
+            (1.0, {1.0: (0.0, "unknown_car", True)}),
+            (1.0, {1.0: (0.0, "space", False)}),
+            (0.0, None)):
+        s2, v2 = _req_run(s, _rep(0.0, 0.0, spec), req, n)
+        assert v2.verdict == "keep", req
+
+
+def test_epoch_rebuild_clears_pending_credit():
+    """换纪重建拍不起意并线，并把累计分清零：参考系翻面后旧计分没有意义。"""
+    s, v = _tick_req(None, _rep(0.0, 0.0), 0.0)
+    s, v = _req_run(s, _rep(0.0, 0.0), 1.0, P.opportunity_confirm_ticks - 1)
+    assert v.verdict == "keep" and v.credit == P.opportunity_confirm_ticks - 1
+    s, v = _tick_req(s, _rep(0.0, 0.0), 1.0, epoch=1)   # 换纪当拍
+    assert v.verdict == "epoch_reset" and v.phase == PHASE_KEEP
+    assert v.lane_ref == 0.0 and s.req_credit == 0.0
+
+
+def test_request_cancelled_by_cooldown_then_reissued():
+    """锁 1：请求被撤销（目标道确认被截）→ 回落现任道且冷却期内不回头；
+    冷却结束后同一请求重新起意——被拒/撤销期间目标由选择层回夹本道区间。"""
+    s, v = _tick_req(None, _rep(0.0, 0.0), 0.0)     # 首拍立状态（无请求）
+    s, v = _req_run(s, _rep(0.0, 0.0), 1.0, P.opportunity_confirm_ticks)
+    assert v.verdict == "merge_start"
+    bad = {1.0: (10.0, "car", False)}
+    for _ in range(P.cancel_unsafe_ticks):
+        s, v = _tick_req(s, _rep(0.5, 1.0, bad), 1.0)
+    assert v.verdict == "cancel" and v.lane_ref == 0.0
+    assert v.cooldown_left_s == pytest.approx(P.cancel_cooldown_s)
+    banned = int(P.cancel_cooldown_s / DT) - 3       # 冷却尚未走完的区间
+    seen_ban = False
+    for i in range(banned):
+        s, v = _tick_req(s, _rep(0.0, 0.0), 1.0)     # 机会还在，请求逐拍刷新
+        assert v.verdict != "merge_start", i
+        if v.credit >= P.opportunity_confirm_ticks:
+            seen_ban = True                          # 门槛已到，被冷却挡住
+    assert seen_ban
+    s, v, _n = _req_until_merge(s, _rep(0.0, 0.0), 1.0, limit=6)
+    assert v.why == "opportunity"
+
+
+def test_request_needs_current_lane_confirmed_clear():
+    """锁 3：现任道没有「确认空闲」证据时，计分攒满也不起意——机会不能插队
+    安全判据（被占/无法确认的道要先走逃生路径的节奏）。"""
+    spec = {0.0: (2.0, "unknown_car", True), 1.0: CLEAR}
+    s, v = _first(_rep(0.0, 0.0, spec))
+    assert v.verdict == "keep"
+    s, v = _req_run(s, _rep(0.0, 0.0, spec), 1.0,
+                    P.opportunity_confirm_ticks + 4)
+    assert v.verdict == "keep"
+    assert v.credit > P.opportunity_confirm_ticks      # 分攒够了，门没开
+
+
+def test_request_does_not_short_circuit_escape_confirmation():
+    """现任道持续被截：确认满门槛那一拍走 urgent，不是 opportunity（同一次
+    并线只有一条起意理由，逃生优先）。确认未满的拍请求仍在攒分。"""
+    spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
+    s, _ = _tick(None, _rep(0.0, 0.0, spec), 0)
+    s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)
+    assert v.verdict == "keep" and v.credit == 1.0
+    s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)     # blocked_ticks=2
+    assert v.verdict == "keep" and v.credit == 2.0
+    s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)     # 满 3 拍：urgent 先行
+    assert v.verdict == "merge_start" and v.why == "urgent"
+
+
+# ---------- 请求契约：相对偏移 → 绝对目标道（2026-10-27 冻结） ----------
+
+def test_request_resolves_relative_offset_on_nonzero_lane_ref():
+    """锁①②：承诺道非 0 时请求 ±1 必须解析成**绝对**相邻道。
+
+    实跑 20261027_183143 的机会换道 0 触发就死在这里——`ref=+1` 且 `req=+1`
+    （本意"再往右一道"）被按绝对道号查成"换到当前道"，`_try_request` 首条
+    同道判据静默拒绝；反号则差两道同样被拒。旧测试全在 `lane_ref=0` 上喂
+    请求，两种口径恰好重合，锁不住契约。"""
+    s = replace(init_state(0), lane_ref=1.0, lane_from=1.0)
+    s, v, _n = _req_until_merge(s, _rep(1.0, 1.0), 1.0, limit=10)
+    assert v.verdict == "merge_start" and v.why == "opportunity"
+    assert v.lane_ref == 2.0 and s.req_lane is None      # 起意即清，目标=绝对 +2
+    s2 = replace(init_state(0), lane_ref=1.0, lane_from=1.0)
+    s2, v2 = _req_run(s2, _rep(1.0, 1.0), -1.0, P.opportunity_confirm_ticks - 1)
+    assert v2.credit == P.opportunity_confirm_ticks - 1 and s2.req_lane == 0.0
+    s2, v2 = _tick_req(s2, _rep(1.0, 1.0), -1.0)
+    assert v2.verdict == "merge_start" and v2.lane_ref == 0.0
+
+
+def test_pending_request_dies_with_its_reference_lane():
+    """锁③：待消费请求期间承诺道改变 → 请求与计分同时作废，不得按新参照系换算。
+
+    换算基准取消费拍的 `lane_ref`，正确性全靠这条不变量兜底；逃生分支是它的
+    实时检验场——请求还活着（计分未到门槛）时承诺道被逃生改掉。"""
+    spec = {0.0: (2.0, "car", False), 1.0: CLEAR, 2.0: CLEAR}
+    s = replace(init_state(0), lane_ref=0.0, lane_from=0.0)
+    s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)
+    assert s.req_lane == 1.0 and s.req_credit == 1.0
+    for i in range(P.urgent_confirm_ticks - 1):
+        s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)
+    assert v.verdict == "merge_start" and v.why == "urgent"
+    assert s.lane_ref != 0.0                             # 承诺道确实变了
+    assert s.req_lane is None and s.req_credit == 0.0    # 旧请求不跟到新参照系
+
+
+def test_request_beyond_the_road_is_not_substituted():
+    """锁⑤：解析出的绝对目标道不存在 → 明确不起意，且**不悄悄换成别的道**。"""
+    s = replace(init_state(0), lane_ref=2.0, lane_from=2.0)
+    s, v = _req_run(s, _rep(2.0, 2.0), 1.0, P.opportunity_confirm_ticks + 3)
+    assert v.verdict != "merge_start"
+    assert s.lane_ref == 2.0 and v.lane_ref == 2.0        # 原地不动，不找替补
+
+
+def test_credit_does_not_leak_across_a_merge():
+    """锁⑥：信用生命周期——并线中不累计，完成后第二跳重新攒满门槛。
+
+    两跳全部真实推进（不摆 `lane_ref`）：0→1 起意、到位完成，再在承诺道 1 上
+    请求相对 +1。并线期照攒分时第二跳 4 拍就起意（继承上一跳攒下的 2 分）——
+    等于让已经结束的判断替这一拍做决定；换算也只在非零承诺道上才验得出来，
+    第二跳的落点必须是**绝对 +2**。"""
+    s, v = _tick_req(None, _rep(0.0, 0.0), 0.0)      # 冷启动
+    s, v = _req_run(s, _rep(0.0, 0.0), 1.0, P.opportunity_confirm_ticks)
+    assert v.verdict == "merge_start" and v.lane_ref == 1.0
+    s, v = _tick_req(s, _rep(1.0, 1.0), 1.0)         # 到位拍：横速未落稳
+    assert s.phase == PHASE_MERGING and s.req_credit == 0.0
+    s, v = _tick_req(s, _rep(1.0, 1.0), 1.0)         # 完成拍
+    assert v.verdict == "finish" and s.req_lane is None and s.req_credit == 0.0
+    s, v, n = _req_until_merge(s, _rep(1.0, 1.0), 1.0, limit=10)
+    assert n == P.opportunity_confirm_ticks           # 重新攒满，不继承
+    assert v.lane_ref == 2.0                          # 相对 +1 = 绝对 +2
+
+
+def test_missing_evidence_clears_credit():
+    """锁⑦：缺车道级证据的拍把机会计分清零。
+
+    冻结＝断供多久都保进度、恢复首拍即撞门槛；按拍扣分＝断供前后两段不连续的
+    证据仍能凑成一次「机会连续被看见」。机会换道是主动改路线，证据不连续时
+    重攒的代价远低于错并线的代价。"""
+    s, v = _tick_req(None, _rep(0.0, 0.0), 0.0)
+    s, v = _req_run(s, _rep(0.0, 0.0), 1.0, P.opportunity_confirm_ticks - 1)
+    assert v.credit == P.opportunity_confirm_ticks - 1
+    no_lanes = CoarseReport(0.0, 0.0, 0, 24.0, "keep", ())
+    for dead in (None, CoarseReport(0.0, 0.0, 0, 24.0, "no_road", ()), no_lanes):
+        s2, v2 = _tick_req(s, dead, 1.0)
+        assert v2.verdict == "needs_init"
+        assert s2.req_credit == 0.0 and s2.req_lane is None
+    s2, v2, n = _req_until_merge(s2, _rep(0.0, 0.0), 1.0, limit=10)
+    assert n == P.opportunity_confirm_ticks

@@ -10,10 +10,18 @@
 1. **逃生换道**：现任道被**确认**占用/收窄（连续确认，单帧闪检不起意）→
    换到**确实更宽**的一条：完全空闲的道直接合格；有车的道要多出一个换道门槛
    （`switch_gain_m`）的净空。没有合格去处就原地不动（`no_alt`，证据留 trace）。
-2. **并线中只认两件事**：到了没有（位置进目标道中心带 **且** 横速落稳）、
+2. **机会换道（请求制，2026-10-27）**：选择层出本道区间的得分目标不再自己
+   拽车跨线，改发 `request`（**相对承诺道的偏移 ±1**，本层负责换算成绝对
+   目标道）。本层是**穿越车道线的唯一入口**：现任道确认空闲、请求是相邻
+   一道、目标道合格，**并且同侧请求连续计分到
+   `opportunity_confirm_ticks`**（断一拍扣一分、换侧重起计）才起意并线；
+   否则维持 keep——目标早已被选择层贴回本道安全区间，永远不会停在两条道
+   中间。计分门槛裁决的是「机会真的在那条道上」，不是「这一拍看见了什么」：
+   实机一局原始请求 61 段里 40 段只有 1~2 拍（币组检测闪断）。
+3. **并线中只认两件事**：到了没有（位置进目标道中心带 **且** 横速落稳）、
    该不该撤（目标道连续确认被截）。并线期间不评估别的候选——中途改主意就是
    逐拍翻面。
-3. **撤销后冷却**：刚放弃的那条道在冷却期内不再作为去处（A↔B 来回摆的根）。
+4. **撤销后冷却**：刚放弃的那条道在冷却期内不再作为去处（A↔B 来回摆的根）。
 
 **为什么不再拆"普通换道"这一路**（20261024 两局实测定案）：粗层观察窗只有
 24 m（按 `range_speed_mps` 折算约 0.53 s），而"净空差超门槛"的前提是现任道
@@ -66,6 +74,10 @@ class RouteParams:
     # 换道迟滞同源一个数：差值不到一个门槛就不值得为它动方向）
     proxy_speed_mps: float = 45.0    # 米→秒折算代理（复用 [coarse] 真源，仅 trace）
     urgent_confirm_ticks: int = 3    # 现任道占用要连续这么多拍才起意（防闪检）
+    opportunity_confirm_ticks: int = 6  # 机会换道请求的起意计分门槛（同侧连续
+    # +1、断一拍 −1，泄漏式）：165841 局实测原始请求 61 段里 26 段只有 1 拍、
+    # 14 段只有 2 拍（币组检测闪断）；不设这道门一局要并线 60 次（人工 7~9 次）。
+    # 确认的是**证据持续性**，不是把方向盘锁住——计分期间目标始终在本道区间内。
     cancel_unsafe_ticks: int = 5     # 撤销判定的连续帧计数（防单帧野值弃窗）
     cancel_cooldown_s: float = 2.0   # 撤销后冷却：期内不回刚放弃的那条道
     finish_tol_lane: float = 0.3     # 完成的位置容差（同 L4 中心带宽）
@@ -94,6 +106,9 @@ class RouteState:
     v_ref: float                     # 上一拍实测横位（道，粗层帧）
     merge_started_t: float           # 本次并线起意时刻（超时判据用）
     v_est_lane_s: float              # 实测横位差分（道/s）：完成判据的速率面
+    req_lane: float | None = None    # 当拍机会换道请求目标道（选择层出界
+    # 目标转来的请求；逐拍刷新、不跨帧持有——机会没了请求自然消失）
+    req_credit: float = 0.0          # 同侧请求的累计分（起意门槛见 params）
 
 
 @dataclass(frozen=True)
@@ -115,6 +130,8 @@ class RouteVerdict:
     # 目标/参考道在结束拍的粗层 blocker：car/space/unknown_car/None。
     # 阶段 0 观测面：区分“车因撤销”与“空间作废”，不参与控制。
     blocker: str | None = None
+    credit: float | None = None      # 机会请求的当前计分（保道态观测面：
+    # 「为什么还没并线」= 计分未到门槛）
 
     def as_trace(self) -> dict:
         def _r(x, nd):
@@ -124,7 +141,8 @@ class RouteVerdict:
                 "why": self.why, "age": _r(self.since_s, 2),
                 "gain": _r(self.gain_m, 2), "tc": _r(self.t_cur_s, 3),
                 "ev": _r(self.evidence_m, 2), "cd": _r(self.cooldown_left_s, 2),
-                "ep": self.epoch, "blk": self.blocker}
+                "ep": self.epoch, "blk": self.blocker,
+                "crc": _r(self.credit, 1)}
 
 
 def init_state(epoch: int) -> RouteState:
@@ -183,20 +201,30 @@ def _drivable_lane(ego_lane: float, by: dict) -> float:
 
 def tick_route(state: RouteState | None, report: CoarseReport | None,
                p: RouteParams, *, dt_s: float,
-               epoch: int) -> tuple[RouteState | None, RouteVerdict]:
+               epoch: int,
+               request: float | None = None) -> tuple[RouteState | None, RouteVerdict]:
     """推进一拍。
 
     `report`：当拍**原始**粗层报告（逐道净空/占用三态），不是接控制的道号。
     `epoch`：参考系纪元（尺子跳变时递增）。返回 (新状态, 定案报告)；缺证据时
     给 `needs_init`，**不回退旧坐标**（旧道号在新参考系里没有原意）。
+    `request`：当拍机会换道请求——**选择层出的是相对承诺道的偏移（±1）**，本层
+    是相对→绝对的换算边界，状态里 `req_lane` 存**绝对**目标道（2026-10-27 契约
+    冻结）。逐拍刷新，不持久。
+    **请求计分的生命周期**（与换算同批冻结）：① 只有保持态累计与消费——并线中
+    机会层不出目标，留着旧进度等于让上一道的判断跨状态生效；② 任何改 `lane_ref`
+    的路径（`_start_merge`/`_rebuild`）随承诺道一起清空请求与计分，换算基准
+    （消费拍的 `lane_ref`）因此始终等于生成拍的；③ 缺车道级证据的拍清零，不冻结
+    也不漏分——连续性已断，断供前后两段凑不成一次证据。
     """
     if report is None or not report.lanes or report.reason == "no_road":
         # 没有车道级证据：时钟继续走，但路线不推进、不判逃生——证据缺席
         # 不等于危险解除，也不等于可以随便动
         if state is None:
             return None, _needs_init(state, epoch, 0.0)
-        return replace(state, elapsed_s=state.elapsed_s + max(dt_s, 0.0)), \
-            _needs_init(state, epoch, 0.0)
+        st = replace(state, elapsed_s=state.elapsed_s + max(dt_s, 0.0),
+                     req_lane=None, req_credit=0.0)
+        return st, _needs_init(st, epoch, 0.0)
     if state is None:
         s = init_state(epoch)
         return s, RouteVerdict(PHASE_KEEP, s.lane_ref, None, "init", "cold",
@@ -205,8 +233,32 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     v_est = ((report.ego_lane - state.v_ref) / dt_s
              if dt_s > 0.0 else state.v_est_lane_s)
     clock = state.elapsed_s + max(dt_s, 0.0)
+    # 请求计分：同侧连续 +1、断拍 −1（泄漏到 0 才忘掉那条道），换侧重置起计。
+    # 泄漏而不是清零：实机里真实币线的请求拍中位隔 6~7 拍才被重新看见一次
+    # （检测占空比约一半），断拍即清零等于门槛永不达标；反之 1~2 拍的闪检
+    # 攒不到分。门槛裁决「机会真的在那条道上」，不锁方向盘——计分期间目标
+    # 始终在本道区间内。
+    # 生命周期门（①）：并线中一律不累计——承诺期的机会请求没有来源（选择层
+    # 关闭机会层），攒到的分属于上一道。只拒绝本拍不够：旧进度会在完成拍带着
+    # 跨状态的分数提前起意（实测 6 拍门被穿到 4 拍），所以失效状态清零。
+    if state.phase != PHASE_KEEP:
+        req_lane, credit = None, 0.0
+    elif request is None:
+        credit = max(0.0, state.req_credit - 1.0)
+        req_lane = state.req_lane if credit > 0 else None
+    else:
+        # 相对偏移 → 绝对目标道（契约见函数 docstring）。计分比较一律在绝对
+        # 道号上做，否则承诺道非 0 时"相对 +1"会被当成"绝对 +1"= 当前道，
+        # 机会换道结构上永不成立（实跑 20261027_183143 观测到的 0 触发）。
+        req_abs = state.lane_ref + float(request)
+        if req_abs == state.req_lane:
+            req_lane, credit = req_abs, state.req_credit + 1.0
+        else:
+            # 新请求（含旧请求已清零后重新出现）：从 1 分起计——计分衡量的是
+            # 「这条机会连续被看见了几拍」，首拍看见就该算一分。
+            req_lane, credit = req_abs, 1.0
     s = replace(state, elapsed_s=clock, v_ref=report.ego_lane,
-                v_est_lane_s=v_est,
+                v_est_lane_s=v_est, req_lane=req_lane, req_credit=credit,
                 cooldown_left_s=max(0.0, state.cooldown_left_s - dt_s))
     by = {c.lane: c for c in report.lanes}
     if epoch != s.epoch:
@@ -239,7 +291,8 @@ def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
     k = _drivable_lane(ego_lane, by)
     st = replace(s, lane_ref=k, lane_from=k, lane_target=None,
                  phase=PHASE_KEEP, unsafe_ticks=0, cooldown_left_s=0.0,
-                 ban_lane=None, epoch=epoch, merge_started_t=clock)
+                 ban_lane=None, epoch=epoch, merge_started_t=clock,
+                 req_lane=None, req_credit=0.0)
     return st, RouteVerdict(PHASE_KEEP, k, None, verdict, why,
                             max(0.0, clock - st.decided_t), None,
                             _avail_s(by[k], p), None, 0.0, epoch,
@@ -311,7 +364,7 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
             return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target,
                                    "urgent_no_alt", "no_alt", since, None,
                                    t_cur, cur.free_m, s.cooldown_left_s, epoch,
-                                   blocker=cur.blocker)
+                                   blocker=cur.blocker, credit=s.req_credit)
         # 确认空闲优先 → 净空最大（可用时间最多）→ 离自车最近 → 道号（确定性；
         # 左右读数完全对称是常态，同分必须有个固定次序）
         alt = min(feas, key=lambda c: (0 if _clear(c) else 1, -c.free_m,
@@ -321,10 +374,42 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
             alt.free_m - cur.free_m, t_cur, cur.free_m, s.cooldown_left_s,
             epoch, blocker=alt.blocker)
 
+    if s.req_lane is not None and s.req_credit >= p.opportunity_confirm_ticks \
+            and _clear(cur):
+        # 机会换道请求（选择层出界目标转来）：现任道确认空闲才让机会主导，
+        # 现任被占/无法确认时不归请求管——逃生分支按自己的确认节奏裁决。
+        # 计分未到门槛的拍维持 keep（还在攒证据，不是被拒）。
+        alt = _request_target(s, by)
+        if alt is not None:
+            return _start_merge(s, alt, clock), RouteVerdict(
+                PHASE_MERGING, alt.lane, alt.lane, "merge_start",
+                "opportunity", since, None, _avail_s(alt, p), None,
+                s.cooldown_left_s, epoch, blocker=alt.blocker,
+                credit=s.req_credit)
     why = "clear" if _clear(cur) else "blocked_unconfirmed"
     return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target, "keep", why,
                            since, None, t_cur, None, s.cooldown_left_s, epoch,
-                           blocker=cur.blocker)
+                           blocker=cur.blocker, credit=s.req_credit)
+
+
+def _request_target(s: RouteState, by: dict) -> CoarseLane | None:
+    """请求解析出的可起意目标道；None=维持 keep。
+
+    只出**相邻**一道（两号外不是换道动作）；目标道必须存在——不悄悄换成
+    别的道当替补——且合格（`space`/`unknown_car` 不是"更保守"，是"没有
+    判据"），也不在撤销冷却的禁入名单里（刚放弃的道不回头）。"""
+    tgt = s.req_lane
+    if tgt is None:
+        return None
+    alt = by.get(tgt)
+    if alt is None or tgt == s.lane_ref or abs(alt.lane - s.lane_ref) > 1.5:
+        return None
+    if not _qualified(alt):
+        return None
+    if s.cooldown_left_s > 0.0 and s.ban_lane is not None \
+            and alt.lane == s.ban_lane:
+        return None
+    return alt
 
 
 def _start_merge(s: RouteState, alt: CoarseLane,
@@ -332,7 +417,8 @@ def _start_merge(s: RouteState, alt: CoarseLane,
     return replace(s, lane_ref=alt.lane, lane_from=s.lane_ref,
                    lane_target=alt.lane, phase=PHASE_MERGING,
                    decided_t=clock, unsafe_ticks=0,
-                   merge_started_t=clock, cooldown_left_s=s.cooldown_left_s)
+                   merge_started_t=clock, cooldown_left_s=s.cooldown_left_s,
+                   req_lane=None, req_credit=0.0)
 
 
 def _needs_init(state: RouteState | None, epoch: int,
@@ -341,5 +427,6 @@ def _needs_init(state: RouteState | None, epoch: int,
     ref = None if state is None else state.lane_ref
     tgt = None if state is None else state.lane_target
     ph = PHASE_KEEP if state is None else state.phase
+    cr = None if state is None else state.req_credit
     return RouteVerdict(ph, ref, tgt, "needs_init", "no_evidence", since,
-                        None, None, None, 0.0, epoch)
+                        None, None, None, 0.0, epoch, credit=cr)

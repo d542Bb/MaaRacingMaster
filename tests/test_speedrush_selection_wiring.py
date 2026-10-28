@@ -11,6 +11,7 @@ from dataclasses import replace
 import pytest
 
 from maaracing_master.plugins.speedrush import DECISION_FILE
+from maaracing_master.plugins.speedrush.coarse import CoarseLane, CoarseReport
 from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand)
@@ -73,7 +74,8 @@ def test_layered_coin_targets_coin_line():
     assert out.maneuver is True
     assert eng.selection_report is not None
     assert eng.selection_report.layer == 3
-    # 币组心 0.4 道 → 选择目标约 0.4 道（币线，不是路心 0）；输出另有 slew
+    # 币组心 0.4 道（仍在本道跨度内）→ 选择目标约 0.4 道（币线，不是路心 0）；
+    # 出跨度的目标才转路线请求，同道偏一侧吃币不受闸门影响
     assert eng.selection_report.target_x_m / LW == pytest.approx(0.4, abs=0.1)
 
 
@@ -173,3 +175,101 @@ def test_coarse_control_gate_off_keeps_pure_center(monkeypatch):
                                      corridor=_corridor())
     assert out.reason == "sel:center"
     assert out.x_target == pytest.approx(0.0, abs=0.02)
+
+
+def test_adjacent_coin_line_requests_then_merges():
+    """接线锁：邻道币组持续出现 → 目标先待在本道跨度内（贴请求侧边界准备），
+    同侧请求计满分满后由**路线**起意并线（选择层自己不跨线）。"""
+    eng = DecisionEngine(CFG)
+    g, ms = _group(1, x=1.0)                    # 币线心在右邻道（1.0 道）
+    seen = []
+    for fid in range(1, 40):
+        out = eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
+                         executed_lane=0.0, corridor=_corridor())
+        g = replace(g, first_seen_fid=1, last_seen_fid=fid)
+        ms = tuple(replace(m, first_seen_fid=1, last_seen_fid=fid,
+                           validity_until_fid=fid + 8) for m in ms)
+        rt = eng.route_verdict
+        seen.append((out.reason, rt.verdict, rt.why, rt.credit,
+                     eng.selection_report.lane_request,
+                     eng.selection_report.target_x_m / LW))
+    req_ticks = [s for s in seen if s[4] == 1.0]
+    assert req_ticks, [s[0] for s in seen[:8]]
+    fired_i = next(i for i, s in enumerate(seen) if s[1] == "merge_start")
+    # 起意之前目标从未越过本道外缘（0.5 道）——不会停在两道中间
+    assert max(abs(s[5]) for s in seen[:fired_i]) <= 0.5
+    fired = seen[fired_i]
+    assert fired[2] == "opportunity"
+    assert fired[3] >= CFG.route.opportunity_confirm_ticks
+    # 起意之后目标才是那条道（承诺道区间边界：1.0 − 0.17）
+    assert seen[-1][0] == "sel:commit" and seen[-1][5] == pytest.approx(
+        1.0 - (0.5 - CFG.selection.ego_half_lane
+               - CFG.selection.lane_clearance_lane), abs=0.02)
+
+
+# ---------- 机会换道：两跳真实承诺链（契约换算 + 信用生命周期） ----------
+
+def _flat_coarse(ego: float) -> CoarseReport:
+    """五条道全「确认空闲」的原始粗层报告——只用来把「车到位」固定住。"""
+    return CoarseReport(ego, ego, 0, 24.0, "keep",
+                        tuple(CoarseLane(k, 24.0, 1.0, None, False)
+                              for k in (-2.0, -1.0, 0.0, 1.0, 2.0)))
+
+
+def test_second_hop_resolves_relative_request_on_a_real_commit(monkeypatch):
+    """接线锁：第一跳完成后，相对 +1 的请求必须落在**绝对 +2**。
+
+    单元测试摆 `lane_ref=1.0` 只锁得住换算本身，锁不住生产接线里的四件事：
+    完成拍的状态是否干净、请求延迟一拍消费时参照系是否还是生成拍的承诺道、
+    并线期会不会替下一跳攒进度、断供拍是否把计分清零。选择层与路线层全程
+    真实，只有粗层横位用假报告与 `executed` 同值渐进（一步跳满一道会触发
+    尺子换纪，那不是本锁要验的东西）。"""
+    from maaracing_master.plugins.speedrush import decision as dmod
+    n_confirm = CFG.route.opportunity_confirm_ticks
+    ego = [0.0]
+    monkeypatch.setattr(dmod, "choose_lane",
+                        lambda *a, **k: _flat_coarse(ego[0]))
+    eng = DecisionEngine(CFG)
+    g, ms = _group(1, x=1.0)                 # 币线心在右邻道
+    fid = 0
+
+    def feed(n, executed, *, road_ok=True):
+        nonlocal fid
+        out = []
+        for _ in range(n):
+            fid += 1
+            ego[0] = executed
+            gg = replace(g, first_seen_fid=1, last_seen_fid=fid,
+                         validity_until_fid=fid + 8)
+            mms = tuple(replace(m, first_seen_fid=1, last_seen_fid=fid,
+                                validity_until_fid=fid + 8) for m in ms)
+            eng.update(_obs(fid, groups=(gg,), targets=mms), 0.05,
+                       executed_lane=executed,
+                       corridor=_corridor(executed=executed) if road_ok else None)
+            rt = eng.route_verdict
+            out.append((rt.verdict, rt.why, rt.lane_ref, rt.credit,
+                        None if eng.selection_report is None
+                        else eng.selection_report.lane_request))
+        return out
+
+    hop1 = feed(15, 0.0)
+    i = [h[0] for h in hop1].index("merge_start")
+    assert hop1[i][1] == "opportunity" and hop1[i][2] == pytest.approx(1.0)
+    arrived = None
+    for ex in (0.3, 0.6, 0.9, 1.0):          # 渐进横移：车真的挪了一道
+        hop = feed(2, ex)
+        if "finish" in [h[0] for h in hop]:
+            arrived = hop[[h[0] for h in hop].index("finish")]
+            break
+    assert arrived is not None and arrived[2] == pytest.approx(1.0)
+    pre = feed(2, 1.0)                       # 承诺道已是 1，机会仍在隔壁一道
+    assert [h[0] for h in pre] == ["keep", "keep"]
+    assert [h[4] for h in pre] == [1, 1]     # 选择层出的始终是相对偏移
+    dead = feed(1, 1.0, road_ok=False)[0]
+    assert dead[0] == "needs_init" and dead[3] == 0.0
+    hop2 = feed(n_confirm + 3, 1.0)
+    j = [h[0] for h in hop2].index("merge_start")
+    # 断供后第 7 拍才起意 = 攒满 6 分 + 请求延迟一拍消费（恢复首拍消费的是断供
+    # 拍存下的"无请求"）。不清零的话 pre 那 2 分会一路带过来，第 5 拍就起意。
+    assert j + 1 == n_confirm + 1
+    assert hop2[j][2] == pytest.approx(2.0)  # 绝对 +2，不是 1 更不是 0
