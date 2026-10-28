@@ -279,6 +279,12 @@ class LateralPlanner:
         self._lane_gated = False         # 本拍线读数越出物理范围（按无线处理）
         # 上一拍低通前杆值（负一~一；trace 标定用，行为不消费）
         self.last_steer_raw = 0.0
+        # 本拍**实际执行**的重基分支（trace-only，行为不消费）：⑥b 的几条
+        # 重基路径同拍互斥，只记真正跑的那一条，None=本拍没有重基。
+        # form_align=形成拍贴边互证直接对齐；form_starve=形成门饿死重基；
+        # jump_confirm=大新息确认重基；stale_reject=有锚持续被拒的陈旧重基；
+        # hold_stale=保持拍陈旧重基。
+        self.last_rebase: str | None = None
         # 上一拍计划前馈命令：换候选时限速用；计划中断后置空，重入首拍不限。
         self._last_plan_u: float | None = None
         # 航向+线速观测（只喂控制律；模型状态 v_lat_est 仍是积分真源）
@@ -352,10 +358,12 @@ class LateralPlanner:
 
     def ctrl_debug(self) -> dict:
         """控制横速的可见面（trace）：v_ctrl=控制律实际使用的横速、
-        v_model=模型状态、v_head=航向横速、speed=在线前向速度估计。"""
+        v_model=模型状态、v_head=航向横速、speed=在线前向速度估计。
+        rebase=本拍实际执行的重基分支（trace-only，None=没有重基）。"""
         d = {"gain": self.p.heading_fuse_gain,
              "v_ctrl": round(self._v_ctrl, 3),
-             "v_model": round(self._v_ctrl_model, 3)}
+             "v_model": round(self._v_ctrl_model, 3),
+             "rebase": self.last_rebase}
         d.update(self.head.debug())
         return d
 
@@ -427,6 +435,7 @@ class LateralPlanner:
         # 速度修正时间基累计：本拍模型又跑过 dt_s（帧钟）。修正在 ⑥b（⑥ 之后）
         # 消费，形成/重基各自清零——见 ⑥b 注
         self._t_vcorr += dt_s
+        self.last_rebase = None          # 每拍清：只记本拍实际执行的重基分支
 
         # 线横位平滑（保持期运动观测）：只在锁线拍更新；COAST/无值保持上一值。
         # 重锁后的第一条锁线可能换了线/换了帧：重置平滑并停用融合；线自身
@@ -634,6 +643,7 @@ class LateralPlanner:
                     self._reset_jump()
                     self._lane_rebias(road_offset, lane_ok)
                     if corroborated and abs(road_offset) > self.p.anchor_max_off:
+                        self.last_rebase = "form_align"
                         self.state.executed_lane = road_offset
                 else:
                     # 形成门饿死也要重基（13:29 局开局：车在左缘 ro=−2.9，形成门
@@ -642,6 +652,7 @@ class LateralPlanner:
                     self._stale_t += dt_s
                     if self._stale_t >= self.p.anchor_stale_s and \
                             not self._line_disagrees(road_offset, lane_ok):
+                        self.last_rebase = "form_starve"
                         self._stale_rebase(road_offset, lane_ok)
             else:
                 obs = road_offset - self._road_anchor
@@ -724,6 +735,7 @@ class LateralPlanner:
                     if self._jump_confirmed or corroborated or \
                             self._jump_streak >= self.p.obs_jump_confirm_ticks:
                         self._jump_confirmed = True
+                        self.last_rebase = "jump_confirm"
                         self.state.executed_lane = obs
                         self._stale_t = 0.0
                         self._reset_jump()
@@ -738,6 +750,7 @@ class LateralPlanner:
                         # 语义，闭环一拍复活。
                         if self._stale_t >= self.p.anchor_stale_s and \
                                 not self._line_disagrees(road_offset, lane_ok):
+                            self.last_rebase = "stale_reject"
                             self._stale_rebase(road_offset, lane_ok)
         elif self._road_anchor is not None:
             # 断供/保持计时：黑视本身=漂移温床。历史保持值仍算"有几何"，锚点
@@ -762,6 +775,7 @@ class LateralPlanner:
             if self._stale_t >= self.p.anchor_stale_s:
                 if road_offset is not None and \
                         not self._line_disagrees(road_offset, lane_ok):
+                    self.last_rebase = "hold_stale"
                     self._stale_rebase(road_offset, lane_ok,
                                        allow_bias=False)
                 elif road_offset is None:

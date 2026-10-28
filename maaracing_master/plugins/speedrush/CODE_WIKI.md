@@ -871,6 +871,13 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
   大新息**立即重基**——两源独立一致不必等 3 拍；线刚跳变、本拍才被
   `_lane_rebias` 重新信任时不算互证。单帧坏检测、线深分歧与
   `anchor_stale_s` 超时兜底不变。
+- **重基来源诊断列（planner ⑥b，2026-10-28）**：trace `lat_ctrl.rebase` 记录
+  本拍**实际执行**的重基分支——`form_align`（形成拍贴边互证直接对齐）/
+  `form_starve`（形成门饿死）/ `jump_confirm`（大新息确认）/
+  `stale_reject`（有锚持续被拒的陈旧重基）/ `hold_stale`（保持拍陈旧重基），
+  `None`=未重基。同拍可能有多个候选条件成立，但只有一条分支真正执行，所以记
+  执行分支、不记条件布尔；只写 trace，不参与控制。用途是离线归因「横位为什么
+  一步换道」，旧 trace 无此列时只能靠供数证据（见 `tools/experiments/merge_contract`）。
 - **栅格全带 wmid 路心**（`depth_geo.grid_center_lane`）：逐行绿区 [min,max]
   范围中点（非质心，对居中挖洞楔免疫）× 按绿区宽度加权中位——离线基线
   commit f9a9a80 胜出口径（mean 0.31 道/大错 8%/覆盖 100%，同尺对照找边

@@ -449,6 +449,9 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
     assert row["lat_ctrl"]["gain"] == load_decision().planner.heading_fuse_gain
     assert row["lat_ctrl"]["v_head"] is None
     assert row["lat_ctrl"]["v_ctrl"] == row["lat_ctrl"]["v_model"]
+    # 重基来源诊断列（trace-only）：未重基的拍如实报 None
+    assert "rebase" in row["lat_ctrl"]
+    assert row["lat_ctrl"]["rebase"] is None
     sink.flush(2.0)
     p = tmp_path / "trace" / "speedrush.jsonl"
     lines = [json.loads(x) for x in

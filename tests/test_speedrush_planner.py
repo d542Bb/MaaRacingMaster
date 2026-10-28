@@ -431,10 +431,13 @@ def test_road_persistent_offset_rebases_after_confirm():
     n = P.obs_jump_confirm_ticks
     for i in range(4, 4 + n - 1):                    # 连续 n-1 拍仍拒
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=-1.7)
+        assert pl.last_rebase is None                # 被拒不等于重基
     assert pl.state.executed_lane == pytest.approx(before, abs=1e-9)
     pl.update(_out(x_target=0.0, fid=4 + n - 1, valid=4 + n - 1), DT,
               4 + n - 1, road_offset=-1.7)           # 第 n 拍：确认并重基
     assert pl.state.executed_lane == pytest.approx(-1.7, abs=1e-6)
+    # 诊断面：记的是实际执行的分支，不是候选条件
+    assert pl.last_rebase == "jump_confirm"
 
 
 def test_hold_offset_is_not_a_position_observation():
@@ -454,15 +457,19 @@ def test_hold_offset_is_not_a_position_observation():
     pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
               road_offset=1.6, road_offset_hold=True)
     assert pl.state.executed_lane == pytest.approx(0.4, abs=1e-9)   # 无 α 拉回
+    assert pl.last_rebase is None                    # 保持拍未超预算：不重基
     n_budget = int(P.anchor_stale_s / DT)
-    for i in range(4, 4 + n_budget):
+    # 只攒到预算差两拍：让「超预算」正好落在下面那一拍新鲜大读数上，
+    # 而不是在保持循环里就触发（保持拍自身也会重基，那是另一条路径）。
+    for i in range(4, 4 + n_budget - 2):
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
                   road_offset=1.6, road_offset_hold=True)
-    assert pl._road_anchor == 0.0                    # 几何仍在，锚不丢
+    assert pl.last_rebase is None and pl._road_anchor == 0.0   # 几何仍在，锚不丢
     # 保持超预算后的第一拍新鲜大读数：陈旧判据立即重基，不等确认/形成门
     pl.update(_out(x_target=0.0, fid=4 + n_budget, valid=4 + n_budget), DT,
               4 + n_budget, road_offset=1.6)
     assert pl.state.executed_lane == pytest.approx(1.6, abs=1e-6)
+    assert pl.last_rebase == "stale_reject"          # 有锚、持续被拒的陈旧重基
 
 
 def test_hold_offset_rebases_when_stale_budget_expires():
@@ -478,6 +485,7 @@ def test_hold_offset_rebases_when_stale_budget_expires():
               road_offset=1.9, road_offset_hold=True)
     assert pl.state.executed_lane == pytest.approx(1.9, abs=1e-6)
     assert pl._stale_t == pytest.approx(0.0)
+    assert pl.last_rebase == "hold_stale"            # 保持拍按手边读数重基
 
 
 def test_hold_rebase_blocked_by_disagreeing_line():
@@ -530,6 +538,26 @@ def test_blackout_keeps_stale_budget_for_next_edge_reading():
               road_offset=1.9)                   # 新鲜贴边读数 → 立即重基
     assert pl.state.executed_lane == pytest.approx(1.9, abs=1e-6)
     assert pl._road_anchor == 0.0
+    assert pl.last_rebase == "form_starve"           # 丢锚后按形成门饿死路径重基
+
+
+def test_rebase_source_field_distinguishes_paths():
+    """诊断面能分辨三条重基来源，且正常小新息不产生事件（None）。
+
+    form_align：形成门外的贴边拍与锁线互证 → 直接对齐；
+    正常修正：已在帧内的小新息只走 α，不落重基事件。
+    字段只记录**实际执行**的分支，供离线归因（trace `lat_ctrl.rebase`）。
+    """
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=1.6, lane_x=1.6, lane_ok=True)
+    assert pl.last_rebase == "form_align"
+    assert pl.state.executed_lane == pytest.approx(1.6, abs=1e-6)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+              road_offset=1.6, lane_x=1.6, lane_ok=True)
+    assert pl.last_rebase is None                    # 无新息：不是重基拍
 
 
 # ---------- 保持期车道线融合（2026-10-25） ----------
