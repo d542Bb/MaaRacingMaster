@@ -3935,9 +3935,9 @@ executed_lane"是模型自证，测不出车真实动没动。现有两条独立
 
 ## 附录：正文无落点的探针索引（2026-10-28 补）
 
-本目录 164 个脚本里有 26 个在正文中没有任何落点——它们各自只在自己的 docstring 里
-说明问什么。此索引按**诊断对象**分组，只记「问什么」，**不代替结论**：哪一条的问题
-已被正文某节回答、哪一条还悬着，需要逐个核销（核销完才谈退役）。
+本目录 162 个脚本里有 19 个在正文中没有任何落点（另有 5 个是工具类，见下）——它们各自
+只在自己的 docstring 里说明问什么。此索引按**诊断对象**分组，只记「问什么」，**不代替
+结论**：哪一条的问题已被正文某节回答、哪一条还悬着，需要逐个核销（核销完才谈退役）。
 
 **已核销（本批退役）**：
 
@@ -3959,19 +3959,22 @@ executed_lane"是模型自证，测不出车真实动没动。现有两条独立
 
 **焦距与尺度**：`probe_edge_stage_trace`（找边离散化逐阶段敏感性）
 
+- `probe_point_classify`（点云贴标签替代源头挖除）、`probe_ego_component`（种子+BFS 组件
+  生长替代固定矩形挖除）——**问题本身消失了**：保险杠机位（2026-10-23）后自车在相机之后、
+  不进点云，旧追车机位的自车 3D 框已退役（`depth_geo` 文件头与 CODE_WIKI 拟合域节）。
+
+**工具类（非实验，无结论可核销）**：`probe_raw_cloud`（原始帧跑完整推理出点云 HTML）·
+`export_debug_cloud`（evid 证据包 → 点云 HTML）· `replay_debug_evid`（evid npz → 新渲染图，
+锚点画回真实像素）· `compare_depth_sources`（同帧多源点云并排展示）· `probe_moge_provider`
+（会话 provider 实况 + forward 时延）。这五个是**查看器 / 量测器**，留下与否取决于还要不要
+目检点云与时延复核，不按"结论是否落地"判。
+
 **找边 / 质量门 / 弯道与湿面**：`probe_curve_census`（10-11，贴栏弯道普查，左右半幅内点率
 分开统计）· `probe_curve_plane`（10-10，弯道段质量门为什么一直拒）· `probe_degraded_recheck`
 （10-11，212349 全 82 包同链复算，补考上线前后对账）· `probe_wet_table`（10-11，湿地局全量
 逐帧判据表）· `probe_wetdry_batch`（10-11，湿/干 vs 弯/直 判别变量）· `probe_left_right_fit`
 （10-14，左右半幅独立拟合 + 远场劫持对照）· `probe_wall_far_census`（护栏在点云里延伸到多远、
 各距离带墙点密度）
-
-**点云与自车**：`probe_point_classify`（后处理贴标签替代源头挖除）· `probe_ego_component`
-（种子 + 特征门 BFS 生长替代固定矩形挖除）· `probe_raw_cloud`（10-10，原始帧跑完整推理出
-点云 HTML）· `export_debug_cloud`（调试帧 → 点云 HTML，找边取证）· `replay_debug_evid`
-（10-02，evid npz → 新渲染图，锚点画回真实像素）· `compare_depth_sources`（同帧多源点云
-对比：UniDepth 离线 / q4f16@336 / fp32@518 / fp16@392 / MoGe-2）· `probe_moge_provider`
-（会话 provider 实况 + forward 时延 DML vs CPU）
 
 **BEV / 路心 / 边界对照**：`probe_bev_unwarp`（09-26，纯相机几何展成俯视度量图，看路沿是否
 变平行直线）· `probe_bev_orientation`（10-05，定案栅格 z 轴朝向与路心读数）· `probe_center_baseline`
