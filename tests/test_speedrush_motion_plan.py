@@ -344,6 +344,15 @@ def test_committed_suppresses_opportunity_layers():
     assert p.score_key[1] == 0.0          # -value：机会项全关
 
 
+def test_committed_plan_keeps_maintenance_stick_cap():
+    """承诺期并线也受维护杆幅上限：并线靠持续 0.45 杆完成，
+    不为满杆把方向盘当开关（20261027_150850_1 s2 承诺期满杆 18→75 的回归）。"""
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0),
+              committed=True, coarse_lane=1.0)
+    assert p.valid and p.layer == 4
+    assert abs(p.u_feedforward) <= CFG.motion.center_stick_max
+
+
 def test_coin_layer_when_no_car_or_reward():
     p = _plan(_scene(road=_wide_road(),
                      coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
@@ -586,6 +595,28 @@ def test_gate_requires_value_margin_and_dwell():
     assert g3.choose([good, bad], 0.05).idx == 9
 
 
+def test_gate_demotes_stale_full_stick_without_dwell():
+    """现任自己失效时不等 dwell：擦边出窗后满杆候选掉到 0 价值且带超限罚，
+    必须本拍让位；否则空路会继续按上一拍的满杆 0.2~0.3s。"""
+    def _capped(idx, value, overcap, center=0.0):
+        key = (False, -value, overcap, center, 0.0, idx)
+        return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, True, 9.0,
+                     0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value)
+
+    g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                 geom_margin=0.03, immediate_margin=100.0)
+    stale = _capped(0, 0.0, 1e6, center=5.0)
+    capped = _capped(5, 0.0, 0.0, center=0.5)
+    assert g.choose([stale], 0.05).idx == 0
+    # 首拍就切：现任从限幅外变成超限候选，驻留不适用
+    assert g.choose([capped, stale], 0.05).idx == 5
+    # 反向：现任价值被最佳反超同样立即让位（不是只有「最佳变好」才切）
+    g2 = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                  geom_margin=0.03, immediate_margin=100.0)
+    assert g2.choose([_capped(1, -50.0, 0.0)], 0.05).idx == 1
+    assert g2.choose([_capped(2, 100.0, 0.0)], 0.05).idx == 2
+
+
 def test_gate_holds_incumbent_through_brief_infeasible_flicker():
     """现任短暂不可行不立刻让位；连续超过宽限才换。"""
     g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
@@ -644,6 +675,27 @@ def test_planner_tracks_valid_plan_only():
     pl3.update(out2, 0.05, 1)
     pl4.update(out2, 0.05, 1, plan=replace(p, valid=False))
     assert pl4.last_steer_raw == pytest.approx(pl3.last_steer_raw)
+
+
+def test_plan_tracking_caps_maintenance_not_collision():
+    """layer4 无碰撞代价：预览跟踪不得把维护/并线放大成满杆；
+    value<0（碰撞/距离代价）保留全权避让。"""
+    from maaracing_master.plugins.speedrush.planner import LateralPlanner
+    from maaracing_master.plugins.speedrush.tracking import (
+        DecisionOutput, DecisionState)
+    out = DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
+                         x_target=0.0, reason="x", emitted_fid=1,
+                         valid_until_fid=10)
+    plan = SimpleNamespace(valid=True, u_feedforward=0.0, x_preview_lane=2.0,
+                           v_preview_lane_s=0.0, layer=4, value_total=0.0)
+    pl = LateralPlanner(CFG.planner)
+    pl.update(out, 0.05, 1, plan=plan)
+    assert pl.last_steer_raw == pytest.approx(CFG.planner.hold_stick_max)
+    pl2 = LateralPlanner(CFG.planner)
+    pl2.update(out, 0.05, 1, plan=SimpleNamespace(
+        valid=True, u_feedforward=0.0, x_preview_lane=2.0,
+        v_preview_lane_s=0.0, layer=4, value_total=-60.0))
+    assert pl2.last_steer_raw > CFG.planner.hold_stick_max
 
 
 def test_plan_feedforward_slew_limits_candidate_step():

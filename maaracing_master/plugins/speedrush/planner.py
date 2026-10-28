@@ -547,7 +547,17 @@ class LateralPlanner:
             u = (plan.u_feedforward
                  + self.p.k_p * (plan.x_preview_lane - x_pred)
                  + self.p.k_d * (plan.v_preview_lane_s - self._v_ctrl))
-            steer_raw = max(-1.0, min(1.0, u))
+            # 维护/并线（layer 4 且无碰撞/区间代价）的预览跟踪不得放大成
+            # 满杆：候选前馈已限 0.45，跟踪项却能把 0.2 道的修正推到 0.85
+            # （20261027_150850_1 s2 计划满杆 122→227 的现场：ff=0，
+            # track=0.85）。value_total<0 表示碰撞/距离代价存在，保留全权
+            # 避让；刹停预算仍在下面优先全权。
+            if getattr(plan, "layer", None) == 4 \
+                    and getattr(plan, "value_total", 0.0) >= 0.0:
+                steer_raw = max(-self.p.hold_stick_max,
+                                min(self.p.hold_stick_max, u))
+            else:
+                steer_raw = max(-1.0, min(1.0, u))
             # 刹停预算同样压住计划路径：计划用同一套（对称、乐观的）车模
             # 仿真，横速饱和的并线它以为收得住（215313 局 s1 12.3s：承诺期
             # v=−2.5 冲过目标道压路肩）。计划杆已在满反打方向且不低于预算

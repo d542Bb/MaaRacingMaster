@@ -384,6 +384,21 @@ class PlanGate:
             self._idx, self._key, self._streak = best.idx, kb, 0.0
             self._last = best
             return best
+        # 反向同一条：驻留只防「两个都该做」之间的抖动，不防现任自己失效。
+        # 擦边车出窗后，现任满杆候选的价值掉到 0，但 key 里的超限罚仍挂着；
+        # 旧逻辑只等「最佳更好」，于是继续按满杆 0.2~0.3s（20261027 局
+        # 9.1~9.4s 空路左打、12.7~12.9s 目标在右却满左）。现任价值差超过
+        # 立即门槛，或从限幅外变成超限候选，本拍就让位。
+        demoted = ki[1] > kb[1] + self.immediate
+        if len(ki) > 2 and len(kb) > 2 \
+                and isinstance(ki[2], (int, float)) \
+                and isinstance(kb[2], (int, float)) \
+                and ki[2] > kb[2] + 1e-6:
+            demoted = True
+        if demoted:
+            self._idx, self._key, self._streak = best.idx, kb, 0.0
+            self._last, self._miss_s = best, 0.0
+            return best
         better = False
         if kb[1] < ki[1] - self.margin:
             better = True                       # 价值显著更高
