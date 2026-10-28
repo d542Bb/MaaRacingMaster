@@ -5,7 +5,8 @@
   - 失败态：缺 README / 缺 status / 正式文档引用实验路径 / 死引用 / plan 缺头部三行，
     各被对应规则抓到。
 
-本文件自身是 R4 的扫描对象——测试夹具里的实验路径一律用 `_EP` 拼接构造，不留字面量。
+本文件在 R4 的扫描对象之外（`CODE_EXCLUDE`）：`_mk` 要在 tmp_path 里搭出真实形状的
+假树，路径必然是分段拼的。夹具仍沿用 `_EP` 拼接，免得哪天排除失效时满屏自指。
 """
 from __future__ import annotations
 
@@ -77,6 +78,40 @@ def test_formal_doc_topic_reference_flagged(tmp_path):
         f"证据见 `{_EP}demo-topic/README.md`。\n", encoding="utf-8")
     viol, _ = chk.Checker(tmp_path).scan()
     assert "R2|AGENTS.md|demo-topic" in viol
+
+
+def test_topic_reference_without_trailing_slash_flagged(tmp_path):
+    """主题名不带尾斜杠也算引用——只认带斜杠的写法会漏掉一整类引用。"""
+    _mk(tmp_path)
+    (tmp_path / "AGENTS.md").write_text(
+        f"实测见 `{_EP}demo-topic` 一节。\n", encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R2|AGENTS.md|demo-topic" in viol
+
+
+def test_area_own_file_reference_not_flagged(tmp_path):
+    """指向区内文件（本区 README、索引、读取器）是类别指针，不是主题路径。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / "README.md").write_text(
+        "# 本区\n", encoding="utf-8")
+    (tmp_path / "tools" / "experiments" / "trace_reader.py").write_text(
+        '"""区内读取器。"""\n', encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        f"规则见 `{_EP}README.md`，读取器 `{_EP}trace_reader.py`。\n", encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R2|AGENTS.md")]
+
+
+def test_code_segmented_path_flagged(tmp_path):
+    """生产/测试代码分段拼出的实验路径也是运行依赖——字面量匹配看不见它。"""
+    _mk(tmp_path)
+    d = tmp_path / "scripts"
+    d.mkdir()
+    (d / "runner.py").write_text(
+        'REPO = ROOT\nP = REPO / "tools" / "experiments" / "demo-topic" / "probe.py"\n',
+        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R4|scripts/runner.py" in viol
 
 
 def test_dead_reference_flagged(tmp_path):

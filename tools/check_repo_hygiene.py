@@ -11,11 +11,12 @@
      （status 是给 agent 与检查器看的入口护栏，不是生命周期数据库——在树里即 active，
       退役即删除；不存在 "closed 但留在树里" 的状态。）
   R2 知识引用污染：正式知识文档（L0~L3：AGENTS / CONTRIBUTING / docs 顶层与 adr /
-     各插件与 apps 的 md）不得出现 `tools/experiments/<具体主题>/` 路径。
-     类别指针（`tools/experiments/`、`<主题>` 占位、本区 README 自身）不算违规。
+     各插件与 apps 的 md）不得出现 `tools/experiments/<具体主题>` 路径（尾斜杠可有可无）。
+     类别指针（`tools/experiments/`、`<主题>` 占位、本区 README 与索引等区内文件）不算违规。
   R3 工作台反向引用：同范围文档不得引用 `docs/plan/` 下的具体文件（裸目录提及不算）。
   R4 运行依赖污染：生产代码 / 测试 / 脚本（*.py、apps 下 *.cs）不得把实验目录当
-     import 路径、子进程命令或数据入口引用。
+     import 路径、子进程命令或数据入口引用；`REPO / "tools" / "experiments" / …`
+     这类分段拼出的路径同样算（去引号与空白后比对）。
   R5 死引用：任何文件引用 `tools/experiments/<主题>/` 而该主题目录已不存在 → 违规
      （退役后引用链必须已拔净，这是"删目录"一步的验收）。
   R6 工作台入口护栏：`docs/plan/*.md` 头部必须有三行——`> **状态**：` 取闭集
@@ -43,8 +44,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]   # 本脚本在 tools/ 直下
 
-# 具体主题路径：tools/experiments/<name>/；占位符（含 < >）与裸目录引用不匹配
-TOPIC_PATH = re.compile(r"tools/experiments/([\w.\-]+)/")
+# 具体主题路径：tools/experiments/<name>；占位符（含 < >）与裸目录引用不匹配。
+# 尾斜杠可有可无——`tools/experiments/foo` 与 `…/foo/` 指同一件事，只认前者的写法
+# 会漏检（历史实例：插件 CODE_WIKI 引用主题名时没写尾斜杠，长期未被算违规）。
+TOPIC_PATH = re.compile(r"tools/experiments/([\w.\-]+)")
 PLAN_PATH = re.compile(r"docs/plan/[\w\-][\w\-./]*")
 STATUS_LINE = re.compile(r"^\s*status:\s*active\b", re.I | re.M)
 
@@ -65,6 +68,9 @@ FORMAL_GLOBS = ["AGENTS.md", "CONTRIBUTING.md", "docs/*.md", "docs/adr/*.md",
 FORMAL_EXCLUDE = {"docs/README.md"}
 CODE_GLOBS = ["maaracing_master/**/*.py", "scripts/**/*.py", "tests/**/*.py",
               "apps/**/*.py", "apps/**/*.cs"]
+# 检查器自己的测试在 tmp_path 里搭假树（`tmp_path / "tools" / "experiments" / …`），
+# 那不是运行依赖，是测试素材；排除以免自指。
+CODE_EXCLUDE = {"tests/test_repo_hygiene.py"}
 
 
 class Checker:
@@ -79,9 +85,33 @@ class Checker:
     def topics(self) -> set[str]:
         return {d.name for d in self.exper.iterdir() if d.is_dir()} if self.exper.is_dir() else set()
 
+    def hits(self, text: str) -> list[str]:
+        """文本里出现的实验主题名。
+
+        指向**区内文件**的引用（本区 README、trace 读取器、索引 md）不是主题路径，
+        按文件存在性排除——否则「类别指针不算违规」这条口径会被名字撞上。
+        """
+        out = []
+        for m in TOPIC_PATH.findall(text):
+            if "<" in m or ">" in m:
+                continue
+            if (self.exper / m).is_file():
+                continue
+            out.append(m)
+        return out
+
     @staticmethod
-    def hits(text: str) -> list[str]:
-        return [m for m in TOPIC_PATH.findall(text) if "<" not in m and ">" not in m]
+    def code_refs_experiments(text: str) -> bool:
+        """代码里是否把实验目录当 import 路径 / 子进程命令 / 数据入口。
+
+        字面量可能被拆开写：`REPO / "tools" / "experiments" / "x"`——去掉引号与空白后
+        路径片段重新连起来，字面匹配才看得见（历史实例：测试用分段拼路径加载实验区
+        里的生成器，R4 一直是绿的）。`os.path.join("tools", "experiments")` 这类
+        逗号拼接仍不在覆盖内，新增此类写法要顺手扩这里。
+        """
+        if "tools/experiments/" in text:
+            return True
+        return "tools/experiments" in re.sub(r"[\"'\s]", "", text)
 
     def formal_docs(self) -> list[Path]:
         out = []
@@ -153,7 +183,9 @@ class Checker:
 
         for g in CODE_GLOBS:                                        # R4
             for p in self.root.glob(g):
-                if "tools/experiments/" in p.read_text(encoding="utf-8", errors="replace"):
+                if self.rel(p) in CODE_EXCLUDE:
+                    continue
+                if self.code_refs_experiments(p.read_text(encoding="utf-8", errors="replace")):
                     viol.add(f"R4|{self.rel(p)}")
 
         if self.exper.is_dir():                                     # R5
