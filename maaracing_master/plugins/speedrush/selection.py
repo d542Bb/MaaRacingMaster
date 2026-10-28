@@ -13,6 +13,11 @@
 **它不是什么**：不碰感知、不做轨迹候选集、不做栅格否决、不做车道号。
 所有横位都是连续米制；车道宽只做尺子。
 
+**跨线唯一入口**（2026-10-27）：给了 ``commit_x_m``
+（本拍承诺道中心）时，机会层目标超出承诺道安全区间就不再拽车跨车道线——
+本拍目标贴到区间边界内，越线意图以 ``lane_request`` 发出。道内
+微调永远逐拍实时，不锁方向。
+
 **坐标**：选择层坐标 = 走廊中心在自车站为 0、右正。调用方负责把走廊带、
 目标、自车位置换算进该坐标（origin 一次平移）。
 """
@@ -151,6 +156,9 @@ class SelectionReport:
     why: str                      # reward/pass/coin/center/center:coarse/hold
     road_ok: bool
     maneuver: bool
+    # 越界机会目标 → 换道请求（道，相对承诺道；None=无请求）。
+    # 给了 commit_x_m 时跨车道线的目标不再直接拽，改发请求。
+    lane_request: float | None = None
 
 
 @dataclass(frozen=True)
@@ -245,6 +253,17 @@ def _lane_interval(ref_x: float, p: SelectionParams,
     return _clamp_span(ref_x - max(0.0, half), ref_x + max(0.0, half), p, road)
 
 
+def _lane_span(ref_x: float, p: SelectionParams,
+               road: RoadFrame) -> tuple[float, float]:
+    """承诺道的**跨度**（车心不出这一道的范围：中心 ±半道）。
+
+    与 `_lane_interval` 的分工：区间是「不压线的可活动带」（回中与待发请求
+    的预备位用它），跨度是「算不算另一条道」的判据（机会目标在跨度内照旧
+    直追——吃同道偏一侧的币线/奖励车是得分动作，不是变道）。"""
+    return _clamp_span(ref_x - 0.5 * p.lane_w_m, ref_x + 0.5 * p.lane_w_m,
+                       p, road)
+
+
 def _clamp_span(lo: float, hi: float, p: SelectionParams,
                 road: RoadFrame) -> tuple[float, float]:
     if road.left_m is not None:
@@ -256,22 +275,54 @@ def _clamp_span(lo: float, hi: float, p: SelectionParams,
     return lo, hi
 
 
+def _in_interval(x: float, iv: tuple[float, float] | None) -> bool:
+    return iv is None or (iv[0] - 1e-9 <= x <= iv[1] + 1e-9)
+
+
+def _edge_of(x: float, iv: tuple[float, float]) -> float:
+    return min(max(x, iv[0]), iv[1])
+
+
+def _req_lane(x: float, commit_x: float | None,
+              p: SelectionParams) -> float | None:
+    """出界目标所在道（相对承诺道）：只允许相邻 ±1 道，再远不请求。"""
+    if commit_x is None:
+        return None
+    k = round((x - commit_x) / p.lane_w_m)
+    return k if abs(k) == 1 else None
+
+
 def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
                  road: RoadFrame, ego: float,
-                 p: SelectionParams) -> tuple[float, float, str] | None:
+                 p: SelectionParams,
+                 commit_x: float | None = None,
+                 ) -> tuple[tuple[float, float, str] | None, float | None]:
+    """返回 (本拍可执行目标, 换道请求)——**两者可以都为 None**。
+
+    出跨度的奖励车只产请求、不占目标位：占着目标位就等于把后面的擦边/让位
+    层整拍屏蔽（一辆本拍根本撞不到的邻道奖励车取消掉让位动作＝撞车）。"""
+    sp = _lane_span(commit_x, p, road) if commit_x is not None else None
+    pending: float | None = None
     for r in sorted(rewards, key=lambda o: (o.t if o.t is not None else math.inf)):
         if r.t is None or not (0.0 <= r.t <= p.horizon_s):
             continue
         x = road.clamp(r.x, p.wall_margin_lane * p.lane_w_m)
         if abs(r.x - x) > p.reward_tol_lane * p.lane_w_m:
             continue
+        if sp is not None and not _in_interval(r.x, sp):
+            # 奖励车在隔壁道：本拍不拽过去（撞它得先站对道），发换道请求
+            req_x = _req_lane(r.x, commit_x, p)
+            if pending is None and req_x is not None and \
+                    not _blocked(cars, r.x, r.t, p) and _reachable(r.x, ego, r.t, p):
+                pending = req_x
+            continue
         if abs(x - ego) > p.reward_aligned_lane * p.lane_w_m \
                 and not _reachable(x, ego, r.t, p):
             continue
         if _blocked(cars, x, r.t, p):
             continue
-        return x, r.t, "reward"
-    return None
+        return (x, r.t, "reward"), None
+    return None, pending
 
 
 def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float:
@@ -286,6 +337,12 @@ def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float:
 
 def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
                p: SelectionParams) -> tuple[float, float, str] | None:
+    """擦边/让位：逐拍实时的安全动作，**不受跨线闸门约束，也不许被请求屏蔽**。
+
+    挤过去所需的横向量（graze_gap 0.65 道）本身就压过车道线——这是「微
+    调」不是「变道」：车一过就回中，不会停在两道中间。若把它也夹进安全
+    区间（0.17 道），0 道上的车只让开 0.17（车半宽 0.27）＝迎面撞上去。
+    """
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     cands = [c for c in cars
              if c.t is not None and 0.0 <= c.t <= p.horizon_s
@@ -305,10 +362,15 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
 
 def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
                road: RoadFrame, ego: float,
-               p: SelectionParams) -> tuple[float, float, str] | None:
+               p: SelectionParams,
+               commit_x: float | None = None,
+               ) -> tuple[tuple[float, float, str] | None, float | None]:
+    """返回 (本拍可执行目标, 换道请求)，口径同 `_pick_reward`。"""
     cands = [c for c in coins
              if c.t is not None and 0.0 <= c.t <= p.horizon_s]
     cands.sort(key=lambda o: (-max(o.count, 3.0) * o.conf, o.t))
+    sp = _lane_span(commit_x, p, road) if commit_x is not None else None
+    pending: float | None = None
     for c in cands:
         # 只吃当前线附近一道左右的组；更远的散币不追（追了会把车拉离
         # 币线，且 3 秒内也横移不过去）。
@@ -321,18 +383,29 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
             continue
         if _blocked(cars, x, c.t, p):
             continue
-        return x, c.t, "coin"
-    return None
+        if sp is not None and not _in_interval(c.x, sp):
+            # 币心已在隔壁道：本拍不拽（拽一半停在两道中间是这条门的来由），
+            # 按到站时间发出换道请求
+            req_x = _req_lane(c.x, commit_x, p)
+            if pending is None and req_x is not None and \
+                    _reachable(c.x, ego, c.t, p):
+                pending = req_x
+            continue
+        return (x, c.t, "coin"), None
+    return None, pending
 
 
 def _preposition_target(rewards: Sequence[Obj], cars: Sequence[Obj],
                         coins: Sequence[Obj], road: RoadFrame, ego: float,
-                        p: SelectionParams) -> float | None:
+                        p: SelectionParams,
+                        commit_x: float | None = None,
+                        ) -> tuple[float, float | None] | None:
     """短视界外的机会侧（预置位用）：取层级最高、同层最早到站的一个。"""
     if not p.preposition_enabled:
         return None
     lo, hi = p.horizon_s, p.preposition_horizon_s
     max_off = p.preposition_max_lane * p.lane_w_m
+    sp = _lane_span(commit_x, p, road) if commit_x is not None else None
     best: tuple[int, float, float] | None = None
     for layer, objs in ((1, rewards), (2, cars), (3, coins)):
         for o in objs:
@@ -346,12 +419,28 @@ def _preposition_target(rewards: Sequence[Obj], cars: Sequence[Obj],
             if best is None or layer < best[0] \
                     or (layer == best[0] and o.t < best[1]):
                 best = (layer, o.t, x)
-    return None if best is None else best[2]
+    if best is None:
+        return None
+    x = best[2]
+    # 请求只由得分机会发起（奖励车/金币）。未来普通车不发请求：擦边的收益
+    # 在本道位置上，为它并到隔壁道＝跟到一辆车后面排队。
+    req = None
+    if sp is not None and best[0] != 2 and not _in_interval(x, sp):
+        req = _req_lane(x, commit_x, p)
+    return x, req
 
 
 def _center_target(road: RoadFrame, ego: float,
                    p: SelectionParams,
                    coarse_lane: float | None = None) -> tuple[float, str, bool]:
+    """L4 回中：目标不是车道中心一个点，而是「车心安全区间」。
+
+    区间=车道中心 ±(0.5−车半宽−余量)，再用硬路缘（wall_margin_lane 中心
+    余量）夹一层。区间内不修正；压在边界才回带到最近边界，不是追正中。
+    旧实现固定 0.3 道带，比车道内可偏的物理量（约 0.23 道）还宽——带内
+    不修正会把车放到压线位置，带外又追 0.3 道边，和计划层 0.5 道死区
+    两把尺子打架（20261027 局 134222_1 s1 空路满杆的现场目标 0.30、
+    车位 0.47，两把尺子都判「不用修」）。"""
     if not road.ok:
         return ego, "hold:no_road", False
     c = road.center_at(p.center_lookahead_m)
@@ -433,43 +522,66 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
            cars: Sequence[Obj], coins: Sequence[Obj],
            ego: float, p: SelectionParams,
            *, coarse_lane: float | None = None,
-           committed: bool = False) -> SelectionReport:
+           committed: bool = False,
+           commit_x_m: float | None = None) -> SelectionReport:
     """纯选择：四层字典序 + 路点（无状态；驻留由 LayeredSelector 做）。
 
     ``coarse_lane``：粗层选定的车道（相对 z=0 中心线，道，右正）；只影响
     L4 回中兜底，机会层（奖励车/擦边/金币）仍由细层决定。None=纯回中。
 
     ``committed``：并线承诺期（路线已定目标道）。机会层与预置偏移全部关闭，
-    只按承诺道回中——承诺期的目标不能再被奖励车/擦边/金币改道（契约 §4/§5）。"""
+    只按承诺道回中——承诺期的目标不能再被奖励车/擦边/金币改道（契约 §4/§5）。
+
+    ``commit_x_m``：本拍承诺道中心（选择帧米）。给了它，**得分机会层**（奖励
+    车/金币/预置）出本道跨度（±半道）的目标不再直接拽车跨车道线——邻道目标
+    改发 ``lane_request``（道，相对承诺道），本拍目标只贴到安全区间边界（同向准备、
+    不起程）。同道内的偏移照旧直追（吃偏一侧的币线是得分动作，不是变道）。
+    擦边/让位与回中不受它约束：那是安全微调，永远逐拍实时。
+    None=旧行为：机会目标连续拽。
+    """
     if not road.ok:
         return SelectionReport(0, (), ego, "hold:no_road", False, False)
+    iv = _lane_interval(commit_x_m, p, road) if commit_x_m is not None else None
+    req: float | None = None
     if not committed:
-        got = _pick_reward(rewards, cars, road, ego, p)
-        if got is not None:
-            x, t, why = got
-            return SelectionReport(1, _waypoints(1, x, t, cars, coins, road,
-                                                 ego, p), x, why, True, True)
-        got = _pick_pass(cars, road, ego, p)
-        if got is not None:
-            x, t, why = got
-            return SelectionReport(2, _waypoints(2, x, t, cars, coins, road,
-                                                 ego, p), x, why, True, True)
-        got = _pick_coin(coins, cars, road, ego, p)
-        if got is not None:
-            x, t, why = got
-            return SelectionReport(3, _waypoints(3, x, t, cars, coins, road,
-                                                 ego, p), x, why, True, True)
+        # 字典序裁决的是「本拍跟谁」：出跨度的机会只留下请求、不占目标位。
+        # 若让它占位，后面的擦边/让位整拍不被调用（一辆本拍撞不到的邻道奖励
+        # 车取消掉让位动作＝撞车）。
+        hit, pend = _pick_reward(rewards, cars, road, ego, p, commit_x_m)
+        if pend is not None:
+            req = pend
+        if hit is None:
+            hit = _pick_pass(cars, road, ego, p)
+        if hit is None:
+            hit, pend = _pick_coin(coins, cars, road, ego, p, commit_x_m)
+            if req is None and pend is not None:
+                req = pend
+        if hit is not None:
+            x, t, why = hit
+            layer = 1 if why == "reward" else 2 if why == "pass" else 3
+            return SelectionReport(
+                layer, _waypoints(layer, x, t, cars, coins, road, ego, p),
+                x, why, True, True)
     x, why, maneuver = _center_target(road, ego, p, coarse_lane)
+    pre = None if committed else _preposition_target(
+        rewards, cars, coins, road, ego, p, commit_x_m)
+    if pre is not None:
+        pre_x, pre_req = pre
+        if req is None:
+            req = pre_req
+        cap = p.preposition_bias_lane * p.lane_w_m
+        x = x + max(-cap, min(cap, pre_x - x))
+        x = road.clamp(x, p.wall_margin_lane * p.lane_w_m)
+    if iv is not None and req is not None:
+        # 越线请求挂着：本拍目标贴向请求侧的区间边界——同向准备、不起程。
+        x = iv[1] if req > 0 else iv[0]
+    if iv is not None:
+        x = _edge_of(x, iv)
     if committed:
         return SelectionReport(4, (Waypoint(p.horizon_s, x, "commit"),),
                                x, "commit", True, maneuver)
-    pre = _preposition_target(rewards, cars, coins, road, ego, p)
-    if pre is not None:
-        cap = p.preposition_bias_lane * p.lane_w_m
-        x = x + max(-cap, min(cap, pre - x))
-        x = road.clamp(x, p.wall_margin_lane * p.lane_w_m)
     return SelectionReport(4, (Waypoint(p.horizon_s, x, "center"),),
-                           x, why, True, maneuver)
+                           x, why, True, maneuver, req)
 
 
 class LayeredSelector:
@@ -516,9 +628,11 @@ class LayeredSelector:
                cars: Sequence[Obj], coins: Sequence[Obj],
                ego: float, dt_s: float,
                *, coarse_lane: float | None = None,
-               committed: bool = False) -> SelectionReport:
+               committed: bool = False,
+               commit_x_m: float | None = None) -> SelectionReport:
         raw = select(road, rewards, cars, coins, ego, self.p,
-                     coarse_lane=coarse_lane, committed=committed)
+                     coarse_lane=coarse_lane, committed=committed,
+                     commit_x_m=commit_x_m)
         self.last = raw
         # 承诺期：目标是路线定的道，驻留/金币短承诺都不参与——拖住或沿用
         # 旧目标都等于在并线中改道。
@@ -538,7 +652,7 @@ class LayeredSelector:
                     self._target = x
                     held = SelectionReport(
                         3, (Waypoint(0.0, x, "coin_hold"),), x,
-                        "coin_hold", True, True)
+                        "coin_hold", True, True, raw.lane_request)
                     self.last = held
                     return held
         if self._layer is None or raw.layer != self._layer:
@@ -560,5 +674,6 @@ class LayeredSelector:
             return self._adopt(raw)
         # 未到驻留：保持现任目标，路点/层仍用本拍结果（trace 可见）
         held = SelectionReport(raw.layer, raw.waypoints, self._target,
-                               raw.why, raw.road_ok, raw.maneuver)
+                               raw.why, raw.road_ok, raw.maneuver,
+                               raw.lane_request)
         return held

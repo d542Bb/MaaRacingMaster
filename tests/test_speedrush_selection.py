@@ -249,3 +249,97 @@ def test_no_road_holds():
     rep = select(road, [], [], [], 0.5, _p())
     assert rep.layer == 0 and rep.why == "hold:no_road"
     assert rep.target_x_m == pytest.approx(0.5)
+
+
+# ---------- 跨线唯一入口（2026-10-27 请求生成契约） ----------
+
+HALF = (0.5 - 0.27 - 0.06) * LW    # 承诺道内可活动半径（车心安全区间）
+
+
+def test_out_of_lane_coin_becomes_request_not_drag():
+    """邻道币组：目标回夹本道区间边界，越线意图变请求——车不停在两条道中间。"""
+    rep = select(_road(), [], [], [Obj("coin", 1.0 * LW, 2.5)], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.layer == 4 and rep.why == "center"
+    assert rep.target_x_m == pytest.approx(HALF, abs=0.02)
+    assert rep.lane_request == 1.0
+
+
+def test_in_lane_coin_still_direct():
+    """区间内的币照旧直接追——道内微调永远实时，不锁不请求。"""
+    rep = select(_road(), [], [], [Obj("coin", 0.1 * LW, 2.5)], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.layer == 3 and rep.lane_request is None
+    assert rep.target_x_m == pytest.approx(0.1 * LW)
+
+
+def test_far_coin_no_request():
+    """两号外不是换道动作（请求只允许相邻一道）：不发请求也不拽。"""
+    rep = select(_road(), [], [], [Obj("coin", 2.0 * LW, 3.0)], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.layer == 4 and rep.lane_request is None
+    assert rep.target_x_m == pytest.approx(0.0, abs=0.02)
+
+
+def test_out_of_lane_reward_becomes_request():
+    rep = select(_road(), [Obj("reward", 1.0 * LW, 2.0)], [], [], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.lane_request == 1.0
+    assert rep.target_x_m == pytest.approx(0.0, abs=HALF + 0.02)
+
+
+def test_same_lane_offset_coin_still_direct():
+    """本道跨度内的偏一侧币线（0.4 道）照旧直追：吃币是得分动作，不是变道。"""
+    rep = select(_road(), [], [], [Obj("coin", 0.4 * LW, 2.5)], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.layer == 3 and rep.lane_request is None
+    assert rep.target_x_m == pytest.approx(0.4 * LW)
+
+
+def test_pass_keeps_full_graze_authority():
+    """擦边/让位**不进门**：正前方 0 道上的车要让到 0.65 道才出得了车半宽
+    （0.27）——夹进安全区间（0.17）等于迎面撞上去（用户红线：抵消微调＝撞车）。"""
+    rep = select(_road(), [], [Obj("car", 0.0, 2.0)], [], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.layer == 2 and rep.why == "pass"
+    assert abs(rep.target_x_m) == pytest.approx(0.65 * LW, abs=0.05)
+    assert rep.lane_request is None
+
+
+def test_pending_request_does_not_preempt_yielding():
+    """出跨度的机会**不占目标位**：邻道奖励车/邻道币组与一辆正压自车的车同拍
+    出现时，本拍仍让位（±0.65 道），请求延后一拍再说。
+
+    复核打出的真 bug 形态：字典序里让「本拍追不到的机会」占住目标位，等于
+    用一条邻道奖励车取消掉让位动作——最长持续整个起意计分窗（6 拍 0.3 s）。"""
+    rw = [Obj("reward", 1.0 * LW, 2.0)]
+    coins = [Obj("coin", 1.0 * LW, 2.5)]
+    cars = [Obj("car", 0.0, 2.0)]
+    for opp_kw in ({"rewards": rw, "coins": []}, {"rewards": [], "coins": coins}):
+        rep = select(_road(), opp_kw.get("rewards", []), cars,
+                     opp_kw.get("coins", []), 0.0, _p(), commit_x_m=0.0)
+        assert rep.layer == 2 and rep.why == "pass", opp_kw
+        assert abs(rep.target_x_m) == pytest.approx(0.65 * LW, abs=0.05)
+        assert rep.lane_request is None
+
+
+def test_request_resumes_after_yielding():
+    """让位拍过去后机会仍在 → 请求照常发出（计分只是漏一拍，不清零）。"""
+    rw = [Obj("reward", 1.0 * LW, 2.0)]
+    rep = select(_road(), rw, [], [], 0.0, _p(), commit_x_m=0.0)
+    assert rep.layer == 4 and rep.lane_request == 1.0
+
+
+def test_preposition_bias_stays_in_interval():
+    """预置偏移同样不越线：未来机会在邻道 → 请求 + 偏移回夹区间。"""
+    rep = select(_road(), [], [], [Obj("coin", 1.2 * LW, 5.0)], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.lane_request == 1.0
+    assert rep.target_x_m == pytest.approx(HALF, abs=0.02)
+
+
+def test_committed_emits_no_request():
+    """并线期不发新请求：横向意图由承诺态持有。"""
+    rep = select(_road(), [Obj("reward", 2.0 * LW, 2.0)], [], [], 0.0, _p(),
+                 committed=True, commit_x_m=0.0)
+    assert rep.why == "commit" and rep.lane_request is None
