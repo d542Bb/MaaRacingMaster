@@ -11,6 +11,8 @@ status: active
 ## 范围与产物
 
 - 只读离线回放帧（用法见探针 docstring）。
+- `probe_lane_first_look.py`：唯一脚本——加载权重、跑单帧、把网络输出叠回游戏帧并拼成
+  `first_look_grid.jpg`。它不是精度评测器：不调参、不算 IoU、不接生产链。
 - `weights/lanenet_multihead.onnx`：待试的预训练权重（来源见探针脚本注释）。
 - `first_look_grid.jpg`：首眼叠图，人工判读的证据面。
 

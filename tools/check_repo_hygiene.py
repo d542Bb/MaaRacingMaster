@@ -109,9 +109,11 @@ class Checker:
         里的生成器，R4 一直是绿的）。`os.path.join("tools", "experiments")` 这类
         逗号拼接仍不在覆盖内，新增此类写法要顺手扩这里。
         """
-        if "tools/experiments/" in text:
-            return True
-        return "tools/experiments" in re.sub(r"[\"'\s]", "", text)
+        norm = re.sub(r"[\"'\s]", "", text)
+        # 只认「目录 + 具体名字」：类别指针（裸 `tools/experiments/`、本区 README）
+        # 不是依赖——R2 早就是这个口径，R4 与之对齐（历史误报：测试 docstring 里
+        # 一句"识别率由 tools/experiments/ 的探针另行判定"被当成依赖）。
+        return re.search(r"tools/experiments/[A-Za-z0-9_.\-]+", norm) is not None
 
     def formal_docs(self) -> list[Path]:
         out = []

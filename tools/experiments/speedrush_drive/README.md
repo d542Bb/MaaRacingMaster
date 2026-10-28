@@ -1,3 +1,5 @@
+status: active
+
 # speedrush 驾驶感知实测（2026-09-16）
 
 回答的问题：**旧 racing 的感知件能否直接搬到 speedrush 驾驶上？** 属 C 类问题（外部系统
@@ -632,3 +634,16 @@ d_min 是否首次进 0.625 窗。
 
 **仪器**：`probe_edge_separability.py`（保留，可复跑，含帧级 VP/饱和度/覆盖率三特征）；
 overlay/jsonl 为临时产物，用完即清。
+
+## 探针索引（2026-10-28 补，只补此前没有任何索引的三件）
+
+本目录 15 个脚本里，12 个已在正文各节或根级 `speedrush_trace_consumers.md`（#20-22）
+点名；下面三个此前只在 docstring 里说明问什么。
+
+- `build_eval_strata.py`：评测集分层器 v2——**按回合判天气**、天气从 p1 开头读（维护者口径），
+  输出分层表供各节读数按天气/路型分组；只读，不改素材。
+- `probe_lane_change_profile.py`：测 `lane_change_duration(Δx)` 的**形状**，给 decision.json
+  的 timing 段定档用；方法沿革写在文件头（为什么不用旧口径）。
+- `probe_agreement.py`：**验收分级**的一致性读数——不是判 V1 及格，阈值要基线出来后由
+  维护者定；被 `probe_replay_chain.py` 当模块调用，属**库类**（删了会断那条链）。
+

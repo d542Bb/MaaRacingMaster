@@ -114,6 +114,20 @@ def test_code_segmented_path_flagged(tmp_path):
     assert "R4|scripts/runner.py" in viol
 
 
+def test_code_category_pointer_not_flagged(tmp_path):
+    """类别指针不算依赖：docstring 里写「由 tools/experiments/ 的探针另行判定」是说明
+    分工，没有具体主题名。R4 只认「目录 + 名字」，与 R2 同口径（历史误报：
+    tests/test_core_ocr.py 的这句被当成运行依赖挂进基线）。"""
+    _mk(tmp_path)
+    d = tmp_path / "tests"
+    d.mkdir()
+    (d / "test_x.py").write_text(
+        f'"""识别率优劣由 `{_EP}` 的探针另行判定，别在此处顺手纠正。"""\n',
+        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R4|tests/test_x.py" not in viol
+
+
 def test_dead_reference_flagged(tmp_path):
     _mk(tmp_path)
     rd = tmp_path / "tools" / "experiments" / "demo-topic" / "README.md"

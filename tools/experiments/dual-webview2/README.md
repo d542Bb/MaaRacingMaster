@@ -1,4 +1,11 @@
+status: active
+
 # 同进程双 WebView2 探测（dual-webview2）
+
+> **状态说明**：问题已闭（2026-09-15 全部通过），方案已实装为 `PeepWindow`（见
+> `apps/MaaRacingMaster.Shell/README.md` 的职责边界与 `RpcBridge` sender 定位）。
+> 本目录留在树里当**升版后的复跑探针**——换 Windows App SDK / WebView2 运行时，
+> 「同进程第二实例 + 回发不串台」这条前提要重新验一次，`probe.html`/`probe.js` 可直接跑。
 
 ## 问题（C 类：外部系统行为，禁止靠猜）
 
