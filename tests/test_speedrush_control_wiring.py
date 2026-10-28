@@ -288,7 +288,39 @@ def test_road_offset_all_sources_feed_loop(_stub_depth):
     assert t2["ro_hold"] is True                             # 槽=历史保持，不进滤波
 
 
+def test_attribution_wiring_reads_hop_scalar(_stub_depth, monkeypatch):
+    """归因接线锁：lineage 吃的是 ro_hop 的 hop 标量（0/1/2），不是整包字典。
+
+    喂错时新鲜拍全落 bad_hop、保持拍落 last_hop_missing——影子到达门一次
+    也不会触发，而控制侧毫无异样（2026-10-28 首局影子跑就是这样：两列都在，
+    影子与生产逐拍一致，实际什么都没验证到）。"""
+    cur = _stub_depth
+    monkeypatch.setattr(smod, "classify_ro_hop", lambda *a, **k: {
+        "gap": 0.05, "d": 1.9, "v": 38.0, "hop": 1, "src_chg": 0})
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)                        # 首份新鲜读数
+    t1 = tick()
+    assert t1["attribution"]["k"] == "UNKNOWN"
+    assert t1["attribution"]["why"] == "first_fresh"
+    t2 = tick()                                              # 第二份新鲜=换档标
+    assert t2["ro_hop"] == 1
+    assert t2["attribution"]["k"] == "SHIFT_HELD", t2["attribution"]
+    assert t2["attribution"]["hop"] == 1
+
+
 def test_trace_row_carries_dgeo_seg(_stub_depth):
+    """dgeo_seg 列直通观察器分段计时：新证据拍把 last_segments 引用写进行，
     弃权拍列 None。分段包本体由真实 worker/take 打点（depth_geo 侧自锁），
     本测试只锁行拼装管道——防「分段落了地 trace 却看不见」回归。"""
     cur = _stub_depth
