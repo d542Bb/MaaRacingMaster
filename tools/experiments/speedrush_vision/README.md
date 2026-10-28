@@ -3935,26 +3935,29 @@ executed_lane"是模型自证，测不出车真实动没动。现有两条独立
 
 ## 附录：正文无落点的探针索引（2026-10-28 补）
 
-本目录 171 个脚本里有 32 个在正文中没有任何落点——它们各自只在自己的 docstring 里
+本目录 164 个脚本里有 26 个在正文中没有任何落点——它们各自只在自己的 docstring 里
 说明问什么。此索引按**诊断对象**分组，只记「问什么」，**不代替结论**：哪一条的问题
 已被正文某节回答、哪一条还悬着，需要逐个核销（核销完才谈退役）。
 
-**已核销（本批退役）**：`probe_ground_ab`（09-25，追逐相机侧倾造成的行内视差）、
-`probe_ground_line`（09-26，逐行分位 → 地面直线）、`probe_plane_ground`（09-26，全局平面
-拟合 v2）——三条都是「逐行 q20 基线」那一代的仪器，结论在
-`plugins/speedrush/CODE_WIKI.md`「旧 q20 消费算法已被金标重考证伪，不得回退——过程与证据
-在 git 历史」与「平面拟合+度量标定」流水节，代码即真源（`depth_geo`）。
+**已核销（本批退役）**：
 
-**平面拟合与地面基线**：`probe_column_profile`（10-02，列剖面路面特征 v2，新旧拟合逐帧对比）·
-`probe_plane_warp`（10-10，「路面全程水平等宽平面」前提被违反时质量门怎么判）·
-`probe_plane_gate_3034`（10-14，fid 3034 证据包逐项打点、三候选分离）· `probe_row_collapse`
-（10-17，对宽门拒绝帧的逐行根因）· `probe_crop_plane`（09-26，裁切假设：残差按行分布 +
-不同裁切窗的金标卷）
+- `probe_ground_ab`（09-25，追逐相机侧倾造成的行内视差）、`probe_ground_line`（09-26，
+  逐行分位 → 地面直线）、`probe_plane_ground`（09-26，全局平面拟合 v2）——都是「逐行 q20
+  基线」那一代的仪器，结论在 `plugins/speedrush/CODE_WIKI.md`「旧 q20 消费算法已被金标
+  重考证伪，不得回退——过程与证据在 git 历史」与「平面拟合+度量标定」流水节。
+- `probe_column_profile`（10-02，列剖面特征种子）、`probe_plane_gate_3034`（10-14，fid 3034
+  门拒逐项打点）——结论在 CODE_WIKI「平面拟合起步种子=三候选竞争（2026-10-14 定案，
+  ADR-0008）」：列剖面全域单候选在贴右护栏帧被墙面簇拽歪 5~6°，3034/3178 即其实证。
+- `probe_focal_drift` / `probe_focal_terrain` / `probe_fov_speed_calib` / `probe_pin_focal` /
+  `probe_moge_fov_ramp`——结论在 CODE_WIKI「焦距链路收案（2026-10-10 活体审计）」：fx 帧间
+  漂移主模态是单盆地随内容滑动，自估焦距在追踪随速度变化的真实 FOV（`RULES` §3.8），
+  fx 曲线本身不是控制风险。
 
-**焦距与尺度**：`probe_focal_drift`（扫 3 局证据包的 fx/fy 归一化与掩码覆盖）·
-`probe_focal_terrain`（对焦距求解目标函数做全网格扫描，看残差地形）· `probe_fov_speed_calib`
-（10-08 预登记，静止→运动的 fov↔speed）· `probe_pin_focal`（10-11，病根在「每帧猜焦距」
-还是「网络深度」）· `probe_edge_stage_trace`（找边离散化逐阶段敏感性）
+**平面拟合与地面基线**：`probe_plane_warp`（10-10，「路面全程水平等宽平面」前提被违反时
+质量门怎么判）· `probe_row_collapse`（10-17，对宽门拒绝帧的逐行根因）· `probe_crop_plane`
+（09-26，裁切假设：残差按行分布 + 不同裁切窗的金标卷）
+
+**焦距与尺度**：`probe_edge_stage_trace`（找边离散化逐阶段敏感性）
 
 **找边 / 质量门 / 弯道与湿面**：`probe_curve_census`（10-11，贴栏弯道普查，左右半幅内点率
 分开统计）· `probe_curve_plane`（10-10，弯道段质量门为什么一直拒）· `probe_degraded_recheck`
