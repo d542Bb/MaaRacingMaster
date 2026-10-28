@@ -12,9 +12,12 @@ debug 帧同规格）
   2) 数字行 / 名称行相对卡框的位置比例是否稳定（det=True 拿行级真值）？
   3) 按推导出的数字带做 rec-only OCR，能不能读对全部 5 个 ×N？
 
-用法：
-    .venv/Scripts/python.exe tools/treasure_card_geom/card_geom_probe.py
+用法（任意 CWD 均可，仓库根按本文件位置算）：
+    .venv/Scripts/python.exe maaracing_master/plugins/treasure/tools/card_geom_probe.py
 产物写到系统临时目录（`treasure_card_geom/`），不落仓库。
+
+**位置**：放插件自己的 `tools/`，与它校准的对象（`eggs.py` 的卡框常量）同属一个可整体
+搬走的单元；全局 `tools/` 是跨插件共用的工具位。
 """
 import os
 import re
@@ -26,7 +29,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 sys.path.insert(0, REPO)
 
 # E402：REPO 必须先入 sys.path 才能导入本仓库包（脚本，非包内模块）

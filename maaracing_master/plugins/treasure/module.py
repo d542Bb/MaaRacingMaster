@@ -4358,7 +4358,7 @@ class TreasureModule(ActivityModule):
         """medal 类锚点：命中图标框 → 「奖励卡通用几何」推导数字带 → OCR 读 ×N。
 
         与数蛋同一机制（eggs.derive_count_rect：红框外扩找卡描边→框内比例取带，
-        真值校准 tools/treasure_card_geom）。medal 模板互斥实测
+        真值校准 plugins/treasure/tools）。medal 模板互斥实测
         margin≥0.68，不叠色相断言（角标区脆）。无命中/无卡框/无数字 → 0。
         """
         tpl, rect, th, cs = specs[name]
