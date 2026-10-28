@@ -3933,3 +3933,47 @@ executed_lane"是模型自证，测不出车真实动没动。现有两条独立
 
 本节只记读数与口径，不替它们下结论；两版实现的差异见各自提交。
 
+## 附录：正文无落点的探针索引（2026-10-28 补）
+
+本目录 174 个脚本里有 35 个在正文中没有任何落点——它们各自只在自己的 docstring 里
+说明问什么。此索引按**诊断对象**分组，只记「问什么」，**不代替结论**：哪一条的问题
+已被正文某节回答、哪一条还悬着，需要逐个核销（核销完才谈退役）。
+
+**平面拟合与地面基线**：`probe_plane_ground`（09-26，全局平面拟合替换逐行 q20 的表征级
+修正）· `probe_column_profile`（10-02，列剖面路面特征 v2，新旧拟合逐帧对比）·
+`probe_plane_warp`（10-10，「路面全程水平等宽平面」前提被违反时质量门怎么判）·
+`probe_plane_gate_3034`（10-14，fid 3034 证据包逐项打点、三候选分离）·
+`probe_ground_line`（09-26，逐行独立分位 → 几何正确的地面直线）· `probe_ground_ab`
+（09-25，追逐相机随转向侧倾造成的行内视差取证）· `probe_row_collapse`（10-17，对宽门
+拒绝帧的逐行根因）· `probe_crop_plane`（09-26，裁切假设：残差按行分布 + 不同裁切窗的金标卷）
+
+**焦距与尺度**：`probe_focal_drift`（扫 3 局证据包的 fx/fy 归一化与掩码覆盖）·
+`probe_focal_terrain`（对焦距求解目标函数做全网格扫描，看残差地形）· `probe_fov_speed_calib`
+（10-08 预登记，静止→运动的 fov↔speed）· `probe_pin_focal`（10-11，病根在「每帧猜焦距」
+还是「网络深度」）· `probe_edge_stage_trace`（找边离散化逐阶段敏感性）
+
+**找边 / 质量门 / 弯道与湿面**：`probe_curve_census`（10-11，贴栏弯道普查，左右半幅内点率
+分开统计）· `probe_curve_plane`（10-10，弯道段质量门为什么一直拒）· `probe_degraded_recheck`
+（10-11，212349 全 82 包同链复算，补考上线前后对账）· `probe_wet_table`（10-11，湿地局全量
+逐帧判据表）· `probe_wetdry_batch`（10-11，湿/干 vs 弯/直 判别变量）· `probe_left_right_fit`
+（10-14，左右半幅独立拟合 + 远场劫持对照）· `probe_wall_far_census`（护栏在点云里延伸到多远、
+各距离带墙点密度）
+
+**点云与自车**：`probe_point_classify`（后处理贴标签替代源头挖除）· `probe_ego_component`
+（种子 + 特征门 BFS 生长替代固定矩形挖除）· `probe_raw_cloud`（10-10，原始帧跑完整推理出
+点云 HTML）· `export_debug_cloud`（调试帧 → 点云 HTML，找边取证）· `replay_debug_evid`
+（10-02，evid npz → 新渲染图，锚点画回真实像素）· `compare_depth_sources`（同帧多源点云
+对比：UniDepth 离线 / q4f16@336 / fp32@518 / fp16@392 / MoGe-2）· `probe_moge_provider`
+（会话 provider 实况 + forward 时延 DML vs CPU）
+
+**BEV / 路心 / 边界对照**：`probe_bev_unwarp`（09-26，纯相机几何展成俯视度量图，看路沿是否
+变平行直线）· `probe_bev_orientation`（10-05，定案栅格 z 轴朝向与路心读数）· `probe_center_baseline`
+（10-05，路心三方基线：找边 / 栅格 / 人工目检）· `probe_boundary3d`（点云上找 kerb 台阶与
+wall 竖直簇，与金标边线对质）· `probe_correctness_sheet`（找边读数反投回游戏帧画圈标米数的
+人工抽检图）
+
+**其他**：`probe_paint_line`（10-02，HSV 黄实线 → 3D 投影边界读数，与深度几何对质）·
+`probe_bonus_funnel`（R5 奖励车漏斗重放，检出落点分布）· `probe_warp_forensics`（warp 反直觉
+结果的帧级法证：多分辨率视差 + L 边界剖面）
+
+
