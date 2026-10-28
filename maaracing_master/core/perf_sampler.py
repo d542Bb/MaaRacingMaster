@@ -120,7 +120,9 @@ class PerfSampler:
         self._persist_failures = 0
         self._persist_consecutive = 0
         # 线程段：只收活过一个采样周期的线程，最多 10 条（按占用排序）
-        self._threads = ThreadProbe(max_rows=10, min_age_s=interval_s)
+        # 观察者不出现在被观察名单里：采样线程自身不列
+        self._threads = ThreadProbe(max_rows=10, min_age_s=interval_s,
+                                    exclude_names=("perf-sampler",))
 
     # ---------- 生命周期 ----------
 
@@ -421,7 +423,10 @@ class PerfSampler:
         with self._lk:
             self._sample_seq += 1
             sid = self._sample_seq
-        t_tick = time.monotonic()
+        # 计时用 perf_counter：Windows 上 monotonic 步长 ~15.6ms，用它测
+        # 亚毫秒级的各面耗时只会得到 0 或台阶值——设计目标「这一拍慢在哪一面」
+        # 就失效了（首局实测 cost 全 0，正是这个原因）
+        t_tick = time.perf_counter()
         sample = {
             "v": SCHEMA_VERSION, "type": "sample", "sample_id": sid,
             "ts_wall_ns": time.time_ns(), "ts_mono_ns": time.monotonic_ns(),
@@ -429,23 +434,23 @@ class PerfSampler:
         }
         cost: dict[str, float] = {}
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         sample.update(self._sample_system())
-        cost["sys"] = (time.monotonic() - t0) * 1000.0
+        cost["sys"] = (time.perf_counter() - t0) * 1000.0
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         sample["procs"] = self._sample_procs()
-        cost["procs"] = (time.monotonic() - t0) * 1000.0
+        cost["procs"] = (time.perf_counter() - t0) * 1000.0
 
         # 线程段：口径与 procs 里的 self 一致（进程 CPU%），差额即「未归因」——
         # 那部分来自生命周期短于采样周期的线程与原生线程池，不是采样误差
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         self_cpu = next((p.get("cpu_pct") for p in sample["procs"]
                          if p.get("name") == "self"), None)
         sample["threads"] = self._threads.sample(self_cpu)
-        cost["threads"] = (time.monotonic() - t0) * 1000.0
+        cost["threads"] = (time.perf_counter() - t0) * 1000.0
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         if sid % self._gpu_every == 0:
             self._refresh_gpu()
         gpu = dict(self._gpu)
@@ -453,16 +458,16 @@ class PerfSampler:
         gpu["age_s"] = None if ts is None else round(time.monotonic() - ts, 1)
         gpu.pop("ts_mono", None)
         sample["gpu"] = gpu
-        cost["gpu"] = (time.monotonic() - t0) * 1000.0
+        cost["gpu"] = (time.perf_counter() - t0) * 1000.0
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         rows, domain_err = self._sample_domain()
         sample["domain"] = rows
         if domain_err:
             sample["domain_error"] = domain_err
-        cost["domain"] = (time.monotonic() - t0) * 1000.0
+        cost["domain"] = (time.perf_counter() - t0) * 1000.0
 
-        cost["total"] = (time.monotonic() - t_tick) * 1000.0
+        cost["total"] = (time.perf_counter() - t_tick) * 1000.0
         sample["cost_ms"] = {k: round(v, 3) for k, v in cost.items()}
         self._warn_slow_domain(cost["domain"])
         return sample

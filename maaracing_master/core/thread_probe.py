@@ -30,8 +30,9 @@ __all__ = ["IS_WINDOWS", "ThreadProbe", "beat", "beat_count",
 
 IS_WINDOWS = sys.platform == "win32"
 
-# 解释器自动起的名字（Thread-12 之类）不是模块起的，进清单只是噪声
-DEFAULT_NAME_RE = re.compile(r"^Thread-\d+$")
+# 解释器自动起的名字（`Thread-12`、`Thread-2 (_dispatch)` 这类）不是模块起的，
+# 进清单只是噪声——用前缀匹配，带后缀的同样算默认名
+DEFAULT_NAME_RE = re.compile(r"^Thread-\d+")
 
 _FILETIME_UNIT_S = 100e-9
 
@@ -134,9 +135,12 @@ class ThreadProbe:
     存活只有几毫秒，1 秒采样根本见不到第二次，天然被挡掉。
     """
 
-    def __init__(self, *, max_rows: int = 10, min_age_s: float = 1.0):
+    def __init__(self, *, max_rows: int = 10, min_age_s: float = 1.0,
+                 exclude_names: tuple[str, ...] = ()):
         self._max_rows = max_rows
         self._min_age_s = min_age_s
+        # 观察者不出现在被观察名单里（采样线程自己）
+        self._exclude = tuple(exclude_names)
         self._labels: dict[str, str] = {}
         self._labels_hit: set[str] = set()
         self._first_seen: dict[int, float] = {}
@@ -182,8 +186,8 @@ class ThreadProbe:
                 continue
             alive_tids.add(tid)
             name = t.name
-            if DEFAULT_NAME_RE.match(name):
-                continue                      # 解释器默认名：噪声，不收
+            if DEFAULT_NAME_RE.match(name) or name in self._exclude:
+                continue                      # 解释器默认名 / 观察者自己：不收
             first = self._first_seen.get(tid)
             if first is None:
                 # 第一次看到：不进清单（还不知它活多久），但**先读一次基线**，

@@ -261,3 +261,19 @@ def test_sidecar_reader_follows_active_module():
 
     Ctl.active_module = Boom()
     assert read()[0]["reason"] == "read_error"   # 违约就地转行，不抛给采样线程
+
+
+def test_cost_ms_resolution_is_sub_millisecond(tmp_path):
+    """回归锁：各面耗时必须用高精度时钟。
+
+    Windows 上 `time.monotonic()` 步长约 15.6ms，用它测亚毫秒级的各面耗时只会
+    得到 0 或台阶值（首局实测 cost 全 0），「这一拍慢在哪一面」就失效了。
+    """
+    s = make_sampler()
+    s.on_session_open(tmp_path, "t_1")
+    costs = [s.tick_once()["cost_ms"] for _ in range(5)]
+    fine = [v for c in costs for k, v in c.items()
+            if k != "total" and 0 < v < 15.0]
+    assert fine, f"没有任何一面落在亚毫秒区间，计时精度可疑: {costs}"
+    s.on_session_closing(time.monotonic() + 1)
+    s.stop()

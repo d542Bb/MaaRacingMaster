@@ -289,7 +289,6 @@ def test_road_offset_all_sources_feed_loop(_stub_depth):
 
 
 def test_trace_row_carries_dgeo_seg(_stub_depth):
-    """dgeo_seg 列直通观察器分段计时：新证据拍把 last_segments 引用写进行，
     弃权拍列 None。分段包本体由真实 worker/take 打点（depth_geo 侧自锁），
     本测试只锁行拼装管道——防「分段落了地 trace 却看不见」回归。"""
     cur = _stub_depth

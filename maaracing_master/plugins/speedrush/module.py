@@ -1191,7 +1191,8 @@ class SpeedRushModule(ActivityModule):
             _lineage = chain.get("pos_lineage")
             position_evidence = None if _lineage is None else _lineage.step(
                 fresh=(road_offset_new if road_offset is not None else False),
-                hop=ro_hop, ro=road_offset, fid=fid)
+                hop=None if ro_hop is None else ro_hop["hop"],
+                ro=road_offset, fid=fid)
             out = chain["engine"].update(
                 obs, dt, executed_lane=planner.state.executed_lane,
                 traffic=(tviews, tevents),
