@@ -119,8 +119,9 @@ def test_cost_ms_breaks_down_each_face(tmp_path):
     s.set_domain_reader(lambda: ROWS)
     s.on_session_open(tmp_path, "t_1")
     cost = s.tick_once()["cost_ms"]
-    assert set(cost) == {"sys", "procs", "gpu", "domain", "total"}
-    assert cost["total"] >= max(cost[k] for k in ("sys", "procs", "gpu", "domain"))
+    assert set(cost) == {"sys", "procs", "gpu", "domain", "threads", "total"}
+    assert cost["total"] >= max(cost[k] for k in
+                                ("sys", "procs", "gpu", "domain", "threads"))
     assert all(v >= 0 for v in cost.values())
     s.on_session_closing(time.monotonic() + 1)
     s.stop()

@@ -651,6 +651,61 @@
     el.appendChild(document.createTextNode(text));
   }
 
+  // 线程明细：默认折叠，折叠只影响显示（采集与落盘始终全量）。
+  // 没贴中文别名的线程显示原始线程名——core 不认识业务，不会替它翻译。
+  function renderPerfThreads(mid, threads) {
+    const rows = (threads && threads.rows) || [];
+    const meta = $(mid + '-perf-threads-meta');
+    const box = $(mid + '-perf-thread-rows');
+    const toggle = $(mid + '-perf-threads');
+    if (meta) meta.textContent = rows.length ? rows.length + ' 个' : '';
+    if (toggle && toggle.dataset.bound !== '1') {
+      toggle.dataset.bound = '1';
+      toggle.addEventListener('click', () => {
+        const body = $(mid + '-perf-threads-body');
+        if (!body) return;
+        const open = toggle.getAttribute('aria-expanded') === 'true';
+        toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+        body.hidden = open;
+      });
+    }
+    if (!box) return;
+    box.textContent = '';
+    rows.forEach((row) => {
+      const el = document.createElement('div');
+      el.className = 'perf-trow';
+      const name = document.createElement('span');
+      name.className = 'perf-tname';
+      name.textContent = row.label || row.name;
+      if (row.label) name.title = row.name;      // 原始名放悬停，不占版面
+      const bar = document.createElement('span');
+      bar.className = 'perf-tbar';
+      const fill = document.createElement('i');
+      const pct = Number.isFinite(row.cpu_pct)
+        ? Math.min(100, Math.max(0, row.cpu_pct)) : null;
+      fill.style.width = (pct === null ? 0 : pct) + '%';
+      if (pct !== null && pct >= 15) fill.className = 'hot';
+      bar.appendChild(fill);
+      const cpu = document.createElement('span');
+      cpu.className = 'perf-tnum';
+      cpu.textContent = pct === null ? '—' : pct.toFixed(0) + '%';
+      const hz = document.createElement('span');
+      hz.className = 'perf-tnum';
+      hz.textContent = Number.isFinite(row.hz) ? row.hz.toFixed(0) + '/秒' : '—';
+      el.appendChild(name);
+      el.appendChild(bar);
+      el.appendChild(cpu);
+      el.appendChild(hz);
+      box.appendChild(el);
+    });
+    if (threads && threads.hidden > 0) {
+      const more = document.createElement('div');
+      more.className = 'perf-tmore';
+      more.textContent = '其余 ' + threads.hidden + ' 个未列出';
+      box.appendChild(more);
+    }
+  }
+
   function renderPerfCard(perf) {
     const mid = MRA.panelModuleId;
     const c = (perf && perf.cpu) || {};
@@ -682,6 +737,7 @@
 
     renderPerfRows(mid, rows);
     renderPerfHealth(mid, rows);
+    renderPerfThreads(mid, perf && perf.threads);
   }
 
   // ---------- 运行控制 ----------

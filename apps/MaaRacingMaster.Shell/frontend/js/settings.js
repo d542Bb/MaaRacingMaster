@@ -898,6 +898,18 @@
               </div>
             </div>
             <div class="perf-rows" id="${mid}-perf-rows"></div>
+            <button class="perf-threads" id="${mid}-perf-threads" type="button"
+                    aria-expanded="false">
+              <svg class="perf-caret" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M3.5 1.5 L7 5 L3.5 8.5" fill="none" stroke="currentColor"
+                      stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>线程明细</span>
+              <span class="perf-threads-meta" id="${mid}-perf-threads-meta"></span>
+            </button>
+            <div class="perf-threads-body" id="${mid}-perf-threads-body" hidden>
+              <div id="${mid}-perf-thread-rows"></div>
+            </div>
           </div>
         </div>`;
   }

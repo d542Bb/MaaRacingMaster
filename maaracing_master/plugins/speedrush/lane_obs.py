@@ -24,6 +24,8 @@ from __future__ import annotations
 import math
 import queue
 import threading
+
+from maaracing_master.core.perf_sampler import beat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -689,6 +691,7 @@ class LaneObsWorker:
                     self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
+            beat()          # 心跳：性能面板的「每秒几拍」由 core 差分得出
             t0 = time.perf_counter()
             try:
                 self._n += 1

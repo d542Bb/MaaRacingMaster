@@ -39,8 +39,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
+from maaracing_master.core.thread_probe import ThreadProbe, beat
+
 __all__ = ["PerfSampler", "perf_sampler", "ensure_perf_sampler_started",
-           "build_perf_payload"]
+           "build_perf_payload", "beat"]
 
 SCHEMA_VERSION = 1
 
@@ -117,6 +119,8 @@ class PerfSampler:
         self._persist_gap: tuple[int, int] | None = None
         self._persist_failures = 0
         self._persist_consecutive = 0
+        # 线程段：只收活过一个采样周期的线程，最多 10 条（按占用排序）
+        self._threads = ThreadProbe(max_rows=10, min_age_s=interval_s)
 
     # ---------- 生命周期 ----------
 
@@ -223,6 +227,12 @@ class PerfSampler:
                 self._session_token = None
                 self._session_path = None
                 self._close_requested = False
+        missing = self._threads.missing_labels()
+        if missing:
+            from maaracing_master.core.logger import logger
+            logger.log("[perf] 线程标签声明未兑现（整场没匹配到线程）："
+                       + "、".join(missing), "WARNING")
+        self._threads.reset()
         if self._persist_gap is not None:
             ok = False                      # 缺口没补完，不宣称数据已完整落盘
         return type("CloseSummary", (), {"ok": ok, "details": {
@@ -240,6 +250,14 @@ class PerfSampler:
         传 None 表示当前没有活动模块：样本只带资源面。
         """
         self._domain_reader = reader
+
+    def set_thread_labels(self, labels: dict[str, str] | None) -> None:
+        """设置「线程名 → 中文别名」（sidecar 在模块启动时给，停止时清空）。
+
+        线程本身由本模块嗅探，模块只能贴标签——贴到不存在的名字不会报错，
+        只是整场匹配不到，收尾时记一条「声明未兑现」。
+        """
+        self._threads.set_labels(labels)
 
     def _sample_domain(self) -> tuple[list[dict], str | None]:
         """取一拍领域行。每拍读一次引用：中途换模块不会拿到半新半旧的数据。"""
@@ -418,6 +436,14 @@ class PerfSampler:
         t0 = time.monotonic()
         sample["procs"] = self._sample_procs()
         cost["procs"] = (time.monotonic() - t0) * 1000.0
+
+        # 线程段：口径与 procs 里的 self 一致（进程 CPU%），差额即「未归因」——
+        # 那部分来自生命周期短于采样周期的线程与原生线程池，不是采样误差
+        t0 = time.monotonic()
+        self_cpu = next((p.get("cpu_pct") for p in sample["procs"]
+                         if p.get("name") == "self"), None)
+        sample["threads"] = self._threads.sample(self_cpu)
+        cost["threads"] = (time.monotonic() - t0) * 1000.0
 
         t0 = time.monotonic()
         if sid % self._gpu_every == 0:
@@ -698,4 +724,7 @@ def build_perf_payload(perf_rows: list[dict] | None,
                       "mem_total_gb": snap.get("mem_total_gb")}
     payload["gpu"] = snap.get("gpu")
     payload["procs"] = snap.get("procs")
+    # 线程段：清单 + 合计 + 未归因（差额来自生命周期短于采样周期的线程与
+    # 原生线程池，面板不解释，排查时用来区分「监控漏了」和「这些线程没吃」）
+    payload["threads"] = snap.get("threads")
     return payload

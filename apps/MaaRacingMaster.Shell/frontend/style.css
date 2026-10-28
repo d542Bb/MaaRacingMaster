@@ -816,6 +816,34 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font-variant-numeric: tabular-nums; white-space: nowrap; }
 .perf-row-val--warn { color: var(--mra-warning); }
 .perf-row-val--error { color: var(--mra-danger); }
+
+/* 线程明细：默认折叠。折叠只影响显示，采集与落盘始终全量。 */
+.perf-threads { display: flex; align-items: center; gap: 6px; width: 100%;
+  margin-top: 10px; padding: 9px 0 5px; border: 0;
+  border-top: 1px solid var(--mra-border-light); background: transparent;
+  color: var(--mra-foreground-muted); font: inherit; font-size: 11px;
+  cursor: pointer; }
+.perf-threads:hover { color: var(--mra-foreground-secondary); }
+.perf-caret { width: 10px; height: 10px; flex: none;
+  transition: transform var(--mra-duration-fast, .15s) ease; }
+.perf-threads[aria-expanded="true"] .perf-caret { transform: rotate(90deg); }
+.perf-threads-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+.perf-threads-body { max-height: 186px; overflow-y: auto;
+  scrollbar-width: none; -ms-overflow-style: none; }
+.perf-threads-body::-webkit-scrollbar { display: none; }
+.perf-trow { display: grid; grid-template-columns: 1fr 54px 38px 50px;
+  align-items: center; gap: 10px; padding: 5px 0; }
+.perf-tname { font-size: 11.5px; color: var(--mra-foreground-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.perf-tbar { height: 3px; border-radius: 2px; background: var(--mra-border-light);
+  overflow: hidden; }
+.perf-tbar i { display: block; height: 100%; border-radius: 2px;
+  background: var(--mra-foreground-dim); }
+.perf-tbar i.hot { background: var(--mra-warning); }
+.perf-tnum { font-size: 11px; text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--mra-foreground-secondary); }
+.perf-tmore { font-size: 10.5px; color: var(--mra-foreground-dim);
+  padding: 5px 0 2px; }
 .mra-perf-bar-fill--success { background-color: var(--mra-success); }
 .mra-perf-bar-fill--warning { background-color: var(--mra-warning); }
 .mra-perf-bar-fill--danger { background-color: var(--mra-danger); }

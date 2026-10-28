@@ -896,6 +896,10 @@ class SidecarService:
         """
         def read() -> list[dict]:
             module = self._controller.active_module
+            # 线程标签随模块走：每拍整体替换（9 条 dict 复制，1Hz 可忽略），
+            # 换模块自动跟上；线程本身由采样器嗅探，模块只贴标签
+            perf_sampler.set_thread_labels(
+                getattr(module, "THREAD_LABELS", None) if module else None)
             declared = rows_for(module)
             if not declared:
                 return []
@@ -965,6 +969,7 @@ class SidecarService:
             if all_natural and self._controller.auto_exit_mra:
                 self.send({"type": "event", "event": "auto_exit"})
             perf_sampler.set_domain_reader(None)
+            perf_sampler.set_thread_labels(None)
             with self._lock:
                 if self._worker is threading.current_thread():
                     self._worker = None

@@ -52,6 +52,8 @@ from __future__ import annotations
 
 import threading
 import time
+
+from maaracing_master.core.perf_sampler import beat
 import io
 import queue
 from collections import deque
@@ -2246,6 +2248,9 @@ class AsyncDepthRoadObserver:
             # 开工即起算节流窗：Busy/异常路径也吃窗（自然退避——感知持锁期间
             # 不再每拍白付一次 preprocess 重试；代价是锁释放瞬间不再立刻补拍）
             t_start = self._last_infer = time.perf_counter()
+            # 心跳：性能面板的「每秒几拍」由 core 差分这个计数得出（无锁、无分配）。
+            # 记在开工处而不是产出处——Busy 弃帧同样吃了 CPU 去抢锁，也是这一拍的代价
+            beat()
             # 开工即超龄的记账面：口径与 take() 同一把钟（帧采集时刻，2026-10-17）
             stale_at_start = (t_start - (item[5] / 1e9 if item[5] else item[2])
                               ) * 1000.0 > self._max_age_ms
