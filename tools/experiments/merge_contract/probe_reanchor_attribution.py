@@ -68,6 +68,10 @@ V_PRE_MIN_LANE_S = 0.2
 
 # 后果观察窗口：跳变之后最多看这么多拍，或到下一次并线段结束为止。
 WINDOW_TICKS = 200
+# 「读数已到位」的描述性容差（道）：重基时往前数，连续多少个**新鲜**读数
+# 已经落在终值 ±此值内。它不是判定门，只用来区分「当拍读数翻转」与
+# 「读数早就到了、状态迟到才追上」。
+SETTLED_TOL_LANE = 0.3
 
 # 标签优先序（仅便于看分布；不得当成已证实原因）。
 LABEL_FRESH = "新鲜读数跳变"
@@ -250,6 +254,21 @@ def labels_for(rows, i: int):
         lab.add(LABEL_UNKNOWN)
     info["multi"] = lab
     info["single"] = next(x for x in LABEL_ORDER if x in lab)
+    # 读数到位提前量：重基前连续多少个新鲜读数已在终值 ±SETTLED_TOL_LANE 内。
+    # 0=当拍读数才到（可能是翻转）；>=1=读数早就在那儿、状态迟到。
+    settled = 0
+    ro_i = _num(rows[i].get("road_offset"))
+    if ro_i is not None:
+        for k in range(i - 1, max(-1, i - 200), -1):
+            x = rows[k]
+            if x.get("road_offset") is None:
+                continue
+            if x.get("dgeo_new") is True and x.get("ro_hold") is False:
+                if abs(x["road_offset"] - ro_i) <= SETTLED_TOL_LANE:
+                    settled += 1
+                else:
+                    break
+    info["settled"] = settled
     # 生产重锚标签（planner 的 lat_ctrl.rebase，记录**实际执行**的分支）：
     # 有就是权威来源；旧 trace 没有这一列，归因回退到证据单标签。
     info["prod"] = (rows[i].get("lat_ctrl") or {}).get("rebase")
@@ -483,7 +502,7 @@ def analyse_game(label, rows, path):
             "d": j["d"], "ex0": j["ex0"], "ex1": j["ex1"],
             "v0": j["v0"], "v1": j["v1"],
             "multi": info["multi"], "single": info["single"],
-            "prod": info["prod"],
+            "prod": info["prod"], "settled": info["settled"],
             "hop": info["hop"], "gap": info["gap"], "hold": info["hold"],
             "shadow": info["shadow"], "fd": info["fd"],
             "ro": ro_i, "fresh": fresh_i,
@@ -594,6 +613,17 @@ def render(results, meta, missing_sessions) -> str:
                      f"{n_prod}/{tot_j} 次有标签；" +
                      "，".join(f"{k}={v}" for k, v in sorted(prod_dist.items())) +
                      "。有标签时「归因」列直接用它，证据标签保留作对照。")
+            settled = {}
+            for g in ok:
+                for e in g["events"]:
+                    if e["prod"]:
+                        k = e["settled"]
+                        settled[k] = settled.get(k, 0) + 1
+            L.append("- 读数到位提前量（重基前连续新鲜读数已在终值 "
+                     f"±{SETTLED_TOL_LANE} 道内）：" +
+                     "，".join(f"{k}拍={v}" for k, v in sorted(settled.items())) +
+                     "。提前量 ≥1 表示重基是**迟到的纠正**（读数早就到了、状态"
+                     "才追上），不是当拍读数翻转。")
         else:
             L.append("- 生产重锚标签（`lat_ctrl.rebase`）：本批 trace 无此列"
                      "（旧版本产出），「归因」列回退为证据单标签；"
@@ -676,10 +706,10 @@ def render(results, meta, missing_sessions) -> str:
     L.append("")
     head = ("| 局 | # | 跳变fid | Δexec | 前→后 exec | v 前→后 | 标签集合 | "
             "单标签 | 生产 | 归因 | hop | gap(s) | hold | 影子(行:src) | \\|fd\\| | "
-            "exec−ro | ph/ref/tgt | 请求/计分 | 并线 | 换纪fid(ep) | 承诺 | "
-            "所在段 | 窗口 |")
+            "exec−ro | 读数提前(新拍) | ph/ref/tgt | 请求/计分 | 并线 | "
+            "换纪fid(ep) | 承诺 | 所在段 | 窗口 |")
     L.append(head)
-    L.append("|" + "---|" * 24)
+    L.append("|" + "---|" * 25)
     for g in results:
         if g["blocked"]:
             continue
@@ -715,7 +745,7 @@ def render(results, meta, missing_sessions) -> str:
                 f"{e['single']} | {e['prod'] or '-'} | "
                 f"{e['prod'] or e['single']} | "
                 f"{hop} | {_fmt(e['gap'])} | {hold} | "
-                f"{shadow} | {fd} | {_fmt(e['align'])} | "
+                f"{shadow} | {fd} | {_fmt(e['align'])} | {e['settled']} | "
                 f"{e['ph']}/{_fmt(e['ref'], 1)}/{_fmt(e['tgt'], 1)} | "
                 f"{'-' if e['req'] is None else _fmt(_num(e['req']), 1)}/"
                 f"{_fmt(e['crc'], 0)} | {'是' if e['merge'] else '否'} | "
