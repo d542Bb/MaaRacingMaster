@@ -1206,8 +1206,11 @@ trace 的 `plan.cv` 是被选候选的侵入深度。
 `collision_min_lead_s` 内到站的车不计碰撞成本（横向已来不及）。场景帧与
 规划器路心帧统一（选择帧原点取供数门 master 路心，带中心只供宽度/包络；
 残量由 `frame_shift` 补齐），参考系分歧时走廊
-加宽上限 `uncertain_widen_max_m`。trace 增 `scene` 与 `plan` 列（含
-`val/cc` 价值与碰撞成本）。
+加宽上限 `uncertain_widen_max_m`；分歧超过 `frame_delta_hold_m`（1.0 m）时
+计划退回无效（`plan:frame_shift`），由 PD 用同一参考系的目标保持——按错帧
+的走廊判「贴墙」会把车按到幻影墙上（20261027_134222_1 s1 34.2s：fd=5.9m，
+场景把车放到右缘 0.5m 内，实际 exec=0.35 道）。trace 增 `scene` 与 `plan`
+列（含 `val/cc` 价值与碰撞成本）。
 
 **录制对照基建（2026-10-18）**：trace 增 `sel_dbg`（选择帧 ego/中心 c0/cL/
 左右缘/路点/选择器看到的机会）、`scene`（场景快照：ego/走廊年龄/对象

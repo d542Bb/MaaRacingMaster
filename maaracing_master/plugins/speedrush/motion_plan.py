@@ -426,6 +426,12 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     horizon = n * dt
     frame_delta = scene.ego_x_m - ego.x_lane * lane_w
     uncertain = abs(frame_delta) > motion.frame_delta_max_m
+    if abs(frame_delta) > motion.frame_delta_hold_m:
+        # 场景/自车已不在同一横向参考系：按场景走廊判「贴墙」会把车按到
+        # 幻影墙上。计划退回无效，交给 PD 用同一参考系的目标保持。
+        return MotionPlan(
+            PLAN_SCHEMA, False, "plan:frame_shift", scene.ego_x_m, 0.0, 0.0,
+            4, (True,), 0, -1, (), ego.x_lane, 0.0, frame_delta, True)
     widen = 0.0
     if uncertain:
         widen = min(abs(frame_delta), motion.uncertain_widen_max_m)

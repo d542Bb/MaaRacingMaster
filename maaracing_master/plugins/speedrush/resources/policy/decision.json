@@ -131,6 +131,7 @@
     "max_obj_age_s": 0.6,
     "corridor_age_max_s": 0.4,
     "frame_delta_max_m": 0.2,
+    "frame_delta_hold_m": 1.0,
     "uncertain_widen_max_m": 0.6,
     "sigma_obj0_m": 0.15,
     "sigma_obj_rate_mps": 0.6,

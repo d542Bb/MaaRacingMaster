@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -66,6 +67,17 @@ def test_frame_shift_moves_scene_to_planner_center():
     assert s.road.right_m == pytest.approx(6.0)
     assert s.road.bands[0].left == pytest.approx(-2.0)
     assert _scene().ego_x_m == pytest.approx(1.0)   # 默认不平移
+
+
+def test_large_frame_shift_holds_plan_for_pd():
+    """场景/自车参考系差超过硬门：计划不得按错帧的走廊接管。"""
+    s = _scene(road=_wide_road(), ego_m=3.0)
+    p = _plan(s, ego=EgoState(0.0, 0.0, 0.0))
+    assert not p.valid and p.reason == "plan:frame_shift"
+    # 亚米级分歧仍按不确定处理，不退回
+    s2 = _scene(road=_wide_road(), ego_m=0.5)
+    p2 = _plan(s2, ego=EgoState(0.0, 0.0, 0.0))
+    assert p2.valid
 
 
 def test_old_objects_dropped_and_corridor_stale():

@@ -306,6 +306,12 @@ class Motion:
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
+    # 参考系分歧超过此值（米）时计划不再接管：场景走廊和自车状态已经不在
+    # 同一个横向参考系里，按场景判「贴墙」会把车按到幻影墙上（20261027 局
+    # 134222_1 s1 34.2s：fd=5.9m，场景把车放到右缘 0.5m 内，实际 exec=0.35
+    # 道、目标 0.28 道；计划满左逃离）。计划退回无效 → PD 用同一参考系的
+    # 目标保持，比按错帧打满杆安全。
+    frame_delta_hold_m: float = 1.0
     # 参考系分歧时走廊最多加宽到此值（实测分歧可达 ±4.5m，全额加宽=走廊失效）
     uncertain_widen_max_m: float = 0.6
     sigma_obj0_m: float = 0.15       # 对象横向不确定度基值
@@ -777,6 +783,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),
             frame_delta_max_m=_num_def(
                 d, "motion", "frame_delta_max_m", 0.2, lo=0),
+            frame_delta_hold_m=_num_def(
+                d, "motion", "frame_delta_hold_m", 1.0, lo=0),
             uncertain_widen_max_m=_num_def(
                 d, "motion", "uncertain_widen_max_m", 0.6, lo=0),
             sigma_obj0_m=_num_def(d, "motion", "sigma_obj0_m", 0.15, lo=0),
