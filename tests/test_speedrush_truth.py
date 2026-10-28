@@ -25,13 +25,13 @@ import importlib.util
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-TPL_DIR = REPO / "tools" / "speedrush_truth"
+TPL_DIR = REPO / "maaracing_master" / "plugins" / "speedrush" / "tools"
 TRUTH = (REPO / "maaracing_master" / "plugins" / "speedrush"
          / "resources" / "pipeline" / "speedrush.json")
 
 
 def _builder():
-    """按路径加载生成器脚本（它不在包内，只能这样取）。"""
+    """按路径加载生成器脚本（插件内工具位，不是模块；按路径取可避免 import 副作用）。"""
     spec = importlib.util.spec_from_file_location(
         "speedrush_build_truth", TPL_DIR / "build_truth.py")
     assert spec is not None and spec.loader is not None

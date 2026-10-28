@@ -14,8 +14,8 @@ x=1 / y=38（x=0 是左边框，0~37 行是标题栏）。模板必须先在内�
 输入：模板 PNG（Downloads 目录） + 真机截帧（image-cache 目录）
 输出：控制台报告 + templates_roi.json，并把模板复制进插件资源目录
 
-用法：
-    .venv/Scripts/python.exe tools/speedrush_truth/locate_templates.py
+用法（任意 CWD 均可，输出表按本文件位置算）：
+    .venv/Scripts/python.exe maaracing_master/plugins/speedrush/tools/locate_templates.py
 
 注意：本脚本是**标定期一次性素材生成器**（输入是本机下载目录与截图缓存，见下方
 常量），不是可复跑的仪器；它产出的 templates_roi.json 才是真源输入表。
@@ -32,7 +32,7 @@ import cv2
 SRC_DIR = "C:/Users/yomen/Downloads"
 DST_DIR = "maaracing_master/plugins/speedrush/resources/image"
 FRAME_GLOB = "C:/Users/yomen/.zcode/cli/image-cache/sess_b4ad42bf-3e3c-49e5-a3a7-f1f753355af3/*.png"
-OUT_JSON = "tools/speedrush_truth/templates_roi.json"
+OUT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates_roi.json")
 
 # 内容区偏移与尺寸（实测：窗口截图 → 720p 客户区）
 OFFSET_X, OFFSET_Y = 1, 38

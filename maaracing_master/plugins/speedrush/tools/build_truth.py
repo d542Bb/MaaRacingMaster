@@ -18,8 +18,13 @@
 装配，不存在"生成后再手工编辑"的字段。手工编辑会在下一次生成时被静默抹掉，而且
 抹掉的是别的提交辛苦测出来的判据（见 `NODE_OVERRIDES` 的说明）。
 
-用法：
-    .venv/Scripts/python.exe tools/speedrush_truth/build_truth.py
+用法（任意 CWD 均可，路径按本文件位置算）：
+    .venv/Scripts/python.exe maaracing_master/plugins/speedrush/tools/build_truth.py
+
+**位置**：本工具放在插件自己的 `tools/` 下，不进全局 `tools/`——它只服务本插件的
+真源，且与真源、输入表同属一个可整体搬走的单元（`tools/` 是跨插件共用的工具位）。
+此前它住在 `tools/experiments/`，而那是「在树即 active、退役即删除」的区域，却被
+回归锁按路径加载——等于给下一次清理埋一个断测试的坑。
 """
 
 from __future__ import annotations
@@ -27,8 +32,9 @@ from __future__ import annotations
 import json
 import os
 
-ROI_JSON = "tools/speedrush_truth/templates_roi.json"
-OUT = "maaracing_master/plugins/speedrush/resources/pipeline/speedrush.json"
+ROI_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates_roi.json")
+OUT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "resources", "pipeline", "speedrush.json"))
 
 MODULE = "speedrush"
 THRESHOLD = 0.8
