@@ -55,6 +55,8 @@ from maaracing_master.core.paths import (
     logs_dir,
     user_data_dir,
 )
+from maaracing_master.core.perf_contract import (
+    all_missing, normalize, rows_for)
 from maaracing_master.core.perf_sampler import (
     build_perf_payload, ensure_perf_sampler_started)
 from maaracing_master.core.remote_meta import (
@@ -446,6 +448,8 @@ class SidecarService:
         self._queue_run: dict | None = None
         self._round_result: dict[str, str] | None = None
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
+        # 已告警过的「未声明键」（每会话首次，避免 4Hz 轮询刷屏）
+        self._perf_unknown_warned: set[str] = set()
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
         # 远程数据里**已校验通过**的可打开地址（公告详情 / 下载页）：前端只按逻辑目标名
         # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
@@ -727,18 +731,29 @@ class SidecarService:
             worker = self._worker
             queue_run = dict(self._queue_run) if self._queue_run else None
             round_result = dict(self._round_result) if self._round_result is not None else None
-        # 性能快照按鸭子类型取：谁实现了 read_perf_snapshot 就带谁的领域项
-        # （response/health），core 不点名任何活动模块（方向红线：通用层不指向
-        # 模块）。资源面（cpu/sys/gpu）由 core 采样器供数、在此聚合；模块没实现
-        # → 只有资源面；采样器不可用 → cpu 显式不可用，不猜默认值。
-        module_perf = None
-        reader = getattr(self._controller.active_module, "read_perf_snapshot", None)
-        if callable(reader):
-            try:
-                module_perf = reader()
-            except Exception as exc:  # noqa: BLE001 —— 仪表读数失败绝不影响状态轮询
-                logger.log(f"[sidecar] 性能快照读取失败: {exc}", "DEBUG")
-        perf = build_perf_payload(module_perf)
+        # 性能领域行：模块在类上声明「会报哪几行」（PERF_ROWS），core 按声明
+        # 校验并判级。core 不点名任何活动模块（方向红线：通用层不指向模块），
+        # 只认声明里的格子。没声明 → 只有资源面；取值口抛异常 → 整批标
+        # read_error，资源面照常（监控故障不拖垮状态轮询）。
+        module = self._controller.active_module
+        declared = rows_for(module)
+        perf_rows: list[dict] = []
+        if declared:
+            reader = getattr(module, "read_perf_snapshot", None)
+            if not callable(reader):
+                perf_rows = all_missing(declared, "not_reported")
+            else:
+                try:
+                    perf_rows, unknown = normalize(declared, reader())
+                    for k in unknown:
+                        if k not in self._perf_unknown_warned:
+                            self._perf_unknown_warned.add(k)
+                            logger.log(f"[perf] 模块返回了未声明的键 {k!r}，已丢弃",
+                                       "WARNING")
+                except Exception as exc:  # noqa: BLE001 —— 读数失败绝不影响状态轮询
+                    perf_rows = all_missing(declared, "read_error")
+                    logger.log(f"[sidecar] 性能快照读取失败: {exc}", "DEBUG")
+        perf = build_perf_payload(perf_rows)
         return (True, {
             "is_running": self._controller.module_active,
             "current_stage": self._controller.current_stage,

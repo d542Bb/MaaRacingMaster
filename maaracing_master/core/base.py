@@ -218,6 +218,16 @@ class ActivityModule(ABC):
     # 只放"用户可设置"的项；运行实况（进度、计数等）走 get_module_config 的 _state。
     DEFAULT_MODULE_CONFIG: dict = {}
 
+    # 性能面板契约（细则见 core/perf_contract.py）：模块声明「自己会报哪几行」，
+    # core 只认格子（kind / 阈值 / 分类），不认识业务。三个都是可选的——
+    # 不声明就只显示资源面（整机 / 本程序），不报错。
+    #   PERF_CONTRACT：声明契约版本，与 core 的 PERF_CONTRACT_VERSION 不等 → 领域面不显示
+    #   PERF_ROWS    ：声明行（key / label / kind / stat / category / 阈值 …）
+    #   THREAD_LABELS：线程名 → 中文别名；线程本身由 core 嗅探，模块只贴标签
+    PERF_CONTRACT: int | None = None
+    PERF_ROWS: tuple[dict, ...] = ()
+    THREAD_LABELS: dict[str, str] = {}
+
     def __init__(self, ctx: ActivityContext | None):
         # ctx=None 为离线形态（registry.create_module 的公开契约：只读默认配置，
         # 不启动运行时）。运行期编排层总是注入实 ctx；模块内访问 ctx 的属性前

@@ -540,49 +540,29 @@
     if (d.round_result !== undefined) state.roundResult = d.round_result;
     $('btn-start').disabled = d.is_running || d.worker_active;
     $('btn-stop').disabled = !(d.is_running || d.worker_active);
-    // 数据页：当前阶段（id 带面板跟随模块前缀）
-    const perfStage = $('' + MRA.panelModuleId + '-perf-stage');
     if (d.current_stage) {
       setStatus('运行中 · 当前: ' + d.current_stage, 'running');
-      if (perfStage) perfStage.textContent = d.current_stage;
     } else if (d.is_running || d.worker_active) {
       setStatus('停止中...', 'stopping');
-      if (perfStage) perfStage.textContent = '停止中';
     } else if (d.model_ok === false) {
       // 资源缺失由轮询字段持续点亮（get_status.model_ok），资源恢复后自然回到就绪
       setStatus('插件资源缺失', 'error');
-      if (perfStage) perfStage.textContent = '空闲中';
     } else {
       setStatus('系统就绪', 'ready');
-      if (perfStage) perfStage.textContent = '空闲中';
     }
     renderPerfCard(d.perf);
   }
 
   // ---------- 性能卡渲染 ----------
-  // 三态的样式与"给用户看的词"放前端（纯呈现）；语义诊断文案来自后端 health.text。
-  const PERF_LEVEL_CLASS = {
-    ok: 'perf-badge--ok', warn: 'perf-badge--warn',
-    error: 'perf-badge--error', idle: 'perf-badge--idle'
-  };
-  const PERF_RESP_LABEL = { ok: '流畅', warn: '偏慢', error: '卡顿', idle: '空闲' };
-  const PERF_LOAD_LABEL = { ok: '正常', warn: '偏高', error: '过载', idle: '空闲' };
-  const PERF_HEALTH_LABEL = { ok: '正常', warn: '偏慢', error: '读不到', idle: '空闲' };
+  // 前端只呈现：资源面磁贴由 core 采样器供数，模块行按后端下发的声明行渲染。
+  // 不认识任何模块——新增模块只声明行，这里零改动。
+  const PERF_LEVEL_RANK = { ok: 0, idle: 1, warn: 2, error: 3 };
+  const PERF_HEALTH_TEXT = { ok: '运行正常', warn: '偏高', error: '异常', idle: '待运行' };
+  let _perfSampleId = null;
 
   function setPerfText(id, text) {
     const el = $(id);
     if (el) el.textContent = text;   // textContent：后端文案不进 HTML 通道
-  }
-
-  function setPerfBadge(id, level, label) {
-    const el = $(id);
-    if (!el) return;
-    el.className = 'perf-badge ' + (PERF_LEVEL_CLASS[level] || PERF_LEVEL_CLASS.idle);
-    el.textContent = '';
-    const dot = document.createElement('span');
-    dot.className = 'perf-badge-dot';
-    el.appendChild(dot);
-    el.appendChild(document.createTextNode(label || ''));
   }
 
   function pushPerfHist(key, value) {
@@ -592,15 +572,15 @@
     if (h.length > state.PERF_HIST_MAX) h.shift();
   }
 
-  function drawSpark(id, hist, ceiling) {
+  function drawSpark(id, hist, floor) {
     const svg = $(id);
     if (!svg) return;
     if (hist.length < 2) { svg.textContent = ''; return; }
-    const top = Math.max(ceiling, hist.reduce((a, b) => (b > a ? b : a), 0));
+    const top = Math.max(floor || 1, hist.reduce((a, b) => (b > a ? b : a), 0));
     let pts = '';
     for (let i = 0; i < hist.length; i++) {
       const x = (i / (hist.length - 1)) * 100;
-      const y = 21 - Math.min(1, hist[i] / top) * 20;
+      const y = 24 - Math.min(1, hist[i] / top) * 22;
       pts += x.toFixed(2) + ',' + y.toFixed(2) + ' ';
     }
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
@@ -609,38 +589,99 @@
     svg.appendChild(line);
   }
 
+  // 模块行：结构由声明决定（一次会话内不变），只在 key 序列变化时重建 DOM。
+  // 显示串由后端格式化（含单位与百分比），前端不再算——避免两处各算一套。
+  function renderPerfRows(mid, rows) {
+    const box = $(mid + '-perf-rows');
+    if (!box) return;
+    const sig = rows.map((r) => r.key).join(',');
+    if (box.dataset.sig !== sig) {
+      box.textContent = '';
+      rows.forEach((row) => {
+        const el = document.createElement('div');
+        el.className = 'perf-row';
+        el.dataset.key = row.key;
+        const label = document.createElement('span');
+        label.className = 'perf-row-label';
+        label.textContent = row.label;
+        const val = document.createElement('span');
+        val.className = 'perf-row-val';
+        el.appendChild(label);
+        el.appendChild(val);
+        box.appendChild(el);
+      });
+      box.dataset.sig = sig;
+    }
+    rows.forEach((row) => {
+      const el = box.querySelector('.perf-row[data-key="' + row.key + '"]');
+      if (!el) return;
+      const val = el.querySelector('.perf-row-val');
+      val.textContent = row.display;
+      val.className = 'perf-row-val'
+        + (row.level === 'warn' ? ' perf-row-val--warn' : '')
+        + (row.level === 'error' ? ' perf-row-val--error' : '');
+      // 建议只在真出问题时给，正常态不塞文案
+      if (row.hint && (row.level === 'warn' || row.level === 'error')) {
+        el.title = row.hint;
+      } else {
+        el.removeAttribute('title');
+      }
+    });
+  }
+
+  // 右上角健康度：取所有行里最差的一档，坏行多于一个时补计数。
+  function renderPerfHealth(mid, rows) {
+    const el = $(mid + '-perf-health');
+    if (!el) return;
+    let worst = 'ok';
+    let bad = 0;
+    rows.forEach((row) => {
+      const lv = row.reason ? 'error' : (row.level || 'ok');
+      if (PERF_LEVEL_RANK[lv] > PERF_LEVEL_RANK[worst]) worst = lv;
+      if (lv === 'warn' || lv === 'error') bad += 1;
+    });
+    const level = rows.length ? worst : 'idle';
+    let text = PERF_HEALTH_TEXT[level] || '待运行';
+    if (bad > 1) text += ' ' + bad + ' 项';
+    el.className = 'perf-health perf-health--' + level;
+    el.textContent = '';
+    const dot = document.createElement('span');
+    dot.className = 'perf-health-dot';
+    el.appendChild(dot);
+    el.appendChild(document.createTextNode(text));
+  }
+
   function renderPerfCard(perf) {
     const mid = MRA.panelModuleId;
-    const r = (perf && perf.response) || {};
     const c = (perf && perf.cpu) || {};
-    const h = (perf && perf.health) || {};
+    const sys = (perf && perf.sys) || {};
+    const rows = (perf && perf.rows) || [];
 
-    const fps = Number(r.fps) || 0;
-    const respLevel = perf ? (r.level || 'idle') : 'idle';
-    setPerfText(mid + '-perf-fps', fps > 0 ? fps.toFixed(1) + ' 次/秒' : '-- 次/秒');
-    setPerfBadge(mid + '-perf-fps-badge', respLevel, PERF_RESP_LABEL[respLevel] || '空闲');
-    setPerfText(mid + '-perf-fps-note', respLevel === 'warn' || respLevel === 'error'
-      ? '反应变慢：关掉调试落盘，或降低游戏画质后再看'
-      : '程序每秒查看游戏画面的次数，越高越跟手');
-    pushPerfHist('fps', fps);
-    drawSpark(mid + '-perf-fps-spark', state.perfHist.fps, 10);
-
-    const loadLevel = perf && c.available ? (c.level || 'idle') : 'idle';
-    if (perf && c.available) {
-      setPerfText(mid + '-perf-cpu', Math.round((c.load_p50 || 0) * 100) + '%');
-      setPerfText(mid + '-perf-cpu-note',
-        '本机 ' + (c.cores || '?') + ' 核 · 偏高时关闭其它程序，或在设置里关掉调试落盘');
-    } else {
-      setPerfText(mid + '-perf-cpu', '--');
-      setPerfText(mid + '-perf-cpu-note', '偏高时关闭其它程序，或在设置里关掉调试落盘');
+    // 资源面磁贴（整机 / 本程序）
+    const hostRaw = sys.cpu_pct;
+    const hostPct = (typeof hostRaw === 'number' && Number.isFinite(hostRaw))
+      ? hostRaw : NaN;
+    setPerfText(mid + '-perf-host',
+      Number.isFinite(hostPct) ? String(Math.round(hostPct)) : '--');
+    const selfPct = perf && c.available ? (c.load_p50 || 0) * 100 : NaN;
+    setPerfText(mid + '-perf-self',
+      Number.isFinite(selfPct) ? String(Math.round(selfPct)) : '--');
+    if (Number.isFinite(c.cores)) {
+      setPerfText(mid + '-perf-host-label', '整机占用 · ' + c.cores + ' 核');
     }
-    setPerfBadge(mid + '-perf-cpu-badge', loadLevel, PERF_LOAD_LABEL[loadLevel] || '空闲');
-    pushPerfHist('load', perf && c.available ? (c.load_p50 || 0) : NaN);
-    drawSpark(mid + '-perf-cpu-spark', state.perfHist.load, 1);
 
-    const healthLevel = h.level || 'idle';
-    setPerfBadge(mid + '-perf-health-badge', healthLevel, PERF_HEALTH_LABEL[healthLevel] || '空闲');
-    setPerfText(mid + '-perf-health-note', h.text || '等待识别');
+    // 走势只在采样号变化时推进：4Hz 轮询 / 1Hz 采样，否则同一个值被塞四次，曲线被拉平
+    const sid = perf ? perf.sample_id : null;
+    if (sid !== null && sid !== undefined && sid !== _perfSampleId) {
+      _perfSampleId = sid;
+      pushPerfHist('host', hostPct);
+      pushPerfHist('self', selfPct);
+    }
+    drawSpark(mid + '-perf-host-spark', state.perfHist.host, 20);
+    drawSpark(mid + '-perf-self-spark', state.perfHist.self, 10);
+
+    renderPerfRows(mid, rows);
+    renderPerfHealth(mid, rows);
   }
 
   // ---------- 运行控制 ----------

@@ -781,6 +781,41 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .perf-spark polyline { fill: none; stroke: var(--mra-foreground-muted); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
 .mra-perf-bar { height: 4px; border-radius: 2px; background-color: var(--mra-border-light); overflow: hidden; }
 .mra-perf-bar-fill { height: 100%; border-radius: 2px; transition: width var(--mra-duration-slow) ease; }
+
+/* ---------- 性能卡（通用：资源面磁贴 + 模块行） ----------
+   磁贴两列并排：整机与本程序对比着看才有意义（谁在吃）。
+   模块行单行紧凑，值右对齐成一条线；只有偏高/异常上色，正常保持深色。 */
+.perf-health { display: flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.perf-health--ok { color: var(--mra-foreground-muted); }
+.perf-health--warn { color: var(--mra-warning); }
+.perf-health--error { color: var(--mra-danger); }
+.perf-health--idle { color: var(--mra-foreground-dim); }
+.perf-health-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.perf-kpis { display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px;
+  margin-bottom: 14px; }
+.perf-kpi { min-width: 0; }
+.perf-kpi-label { font-size: 11px; color: var(--mra-foreground-muted); line-height: 1;
+  margin-bottom: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.perf-kpi-num { display: flex; align-items: baseline; gap: 2px; }
+.perf-kpi-num b { font-size: 24px; font-weight: 600; line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.perf-kpi-num span { font-size: 11px; font-weight: 500; color: var(--mra-foreground-muted); }
+.perf-kpi-spark { display: block; width: 100%; height: 26px; margin-top: 6px; }
+.perf-kpi-spark polyline { fill: none; stroke: var(--mra-foreground-dim);
+  stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+
+.perf-rows { border-top: 1px solid var(--mra-border-light); padding-top: 5px; }
+.perf-rows:empty { display: none; }
+.perf-row { display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 7px 0; }
+.perf-row-label { font-size: 12.5px; color: var(--mra-foreground-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.perf-row-val { font-size: 12.5px; font-weight: 600; color: var(--mra-foreground);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.perf-row-val--warn { color: var(--mra-warning); }
+.perf-row-val--error { color: var(--mra-danger); }
 .mra-perf-bar-fill--success { background-color: var(--mra-success); }
 .mra-perf-bar-fill--warning { background-color: var(--mra-warning); }
 .mra-perf-bar-fill--danger { background-color: var(--mra-danger); }

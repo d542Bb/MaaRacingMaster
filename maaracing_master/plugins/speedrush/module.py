@@ -253,6 +253,33 @@ class SpeedRushModule(ActivityModule):
     PERF_TICK_ERROR_HZ = 10.0
     PERF_TICK_EVENT_GAP_MS = 150.0
     PERF_EVENT_MIN_INTERVAL_S = 10.0
+
+    # 性能面板声明（契约见 core/perf_contract.py）：模块只声明「报哪几行」与
+    # 判级阈值，等级由 core 按阈值算——模块不再自定 ok/warn/error。
+    # 拍率口径：1000 / 最近 240 拍间隔中位数（约 12–20 秒窗，随拍率变化），
+    # 是「典型拍间隔的倒数」，不是平均拍率；窗口由本模块自定，core 不感知。
+    PERF_CONTRACT = 1
+    PERF_ROWS = (
+        dict(key="tick_rate", label="驾驶拍率", kind="rate",
+             stat="p50_gap_inverse", category="player", precision=1,
+             warn_at=PERF_TICK_WARN_HZ, error_at=PERF_TICK_ERROR_HZ,
+             worse_when="below",
+             hint="反应变慢：关掉调试落盘，或降低游戏画质"),
+        dict(key="decision", label="决策实况", kind="state", category="player"),
+    )
+    # 线程中文别名（线程本身由 core 嗅探，模块只贴标签）。
+    # 深度链的找边/栅格是每帧新建即退的临时线程，存活几毫秒，不进清单。
+    THREAD_LABELS = {
+        "speedrush-depth-worker": "深度链",
+        "speedrush-depth-dbg": "深度调试",
+        "speedrush-hud-sample": "HUD 采样",
+        "speedrush-hud-write": "HUD 落盘",
+        "speedrush-debug-io": "调试落盘",
+        "lane-obs": "车道观测",
+        "speedrush-model-preload": "模型预载",
+        "speedrush-rec-frames": "录制帧",
+        "speedrush-rec-pad": "录制手柄",
+    }
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     DEFAULT_MODULE_CONFIG: dict = {
         "record_mode": DEFAULT_RECORD_MODE,
@@ -491,34 +518,45 @@ class SpeedRushModule(ActivityModule):
         s = sorted(vals)
         return s[min(len(s) - 1, int(len(s) * q))]
 
+    # 决策状态与原因码 → 玩家可读文本（契约要求状态文本面向玩家，不是机器码）。
+    # 未知码回退原码——不猜、不静默，漏了映射也还看得见原始值。
+    _STATE_TEXT = {"CRUISE": "巡航", "ABORT": "回稳",
+                   "CONSERVE": "保守", "FAULT": "故障"}
+    _REASON_TEXT = {
+        "plan:ok": "规划正常",
+        "plan:ok_uncertain": "规划正常·不确定",
+        "plan:ok_shortened": "规划正常·缩短",
+        "plan:infeasible_corridor": "走廊不可行",
+        "no_scene": "无场景",
+        "unsure": "不确定",
+    }
+    _REASON_PREFIX = {"follow": "跟车", "validate_fail": "校验未过",
+                      "infeasible": "不可行", "plan": "规划"}
+
+    def _decision_text(self, cl: dict) -> str:
+        """把「状态枚举 + 原因码」翻成一句话；未知原因码保留原码。"""
+        state = self._STATE_TEXT.get(cl.get("state"), str(cl.get("state")))
+        raw = str(cl.get("reason") or "")
+        reason = self._REASON_TEXT.get(raw)
+        if reason is None and raw:
+            reason = self._REASON_PREFIX.get(raw.split(":", 1)[0], raw)
+        return f"{state} · {reason}" if reason else state
+
     def read_perf_snapshot(self) -> dict:
-        """机器可读的性能快照（纯读）：response=驾驶拍率，health=决策实况。"""
-        gaps = list(self._tick_gaps)
-        p50 = self._pct_of(gaps, 0.50)
-        p95 = self._pct_of(gaps, 0.95)
-        fps = round(1000.0 / p50, 2) if p50 > 0 else 0.0
-        if fps <= 0:
-            level = "idle"
-        elif fps < self.PERF_TICK_ERROR_HZ:
-            level = "error"
-        elif fps < self.PERF_TICK_WARN_HZ:
-            level = "warn"
-        else:
-            level = "ok"
+        """领域行取值（纯读、无锁、常数时间）。
+
+        只给值：等级由 core 按 PERF_ROWS 的阈值算（契约要求判级权单一）。
+        没有数据就不给键——core 按「缺失即缺失」显示「—」，不拿 0 冒充。
+        """
+        p50 = self._pct_of(list(self._tick_gaps), 0.50)
         cl = self._control_last
-        if cl is None:
-            health = {"level": "idle", "text": "等待驾驶"}
-        else:
-            health = {"level": "ok",
-                      "text": f"{cl['state']} · {cl['reason']}"}
-        return {
-            "response": {
-                "fps": fps,
-                "level": level,
-                "tick_gap_ms": {"p50": round(p50, 1), "p95": round(p95, 1)},
-            },
-            "health": health,
+        snap: dict = {
+            "decision": ({"level": "idle", "text": "等待驾驶"} if cl is None
+                         else {"level": "ok", "text": self._decision_text(cl)}),
         }
+        if p50 > 0:
+            snap["tick_rate"] = round(1000.0 / p50, 2)
+        return snap
 
     def _open_grp(self, title: str, kind: str) -> None:
         _open_grp(self, title, kind)

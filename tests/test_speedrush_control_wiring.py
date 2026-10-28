@@ -402,25 +402,45 @@ def test_straight_tick_zero_steer_full_throttle():
 
 # ---------- 性能卡领域项 ----------
 
-def test_read_perf_snapshot_domain_items():
-    """性能卡 domain 项：拍率降级档位 + 决策实况（资源面由 core 采样器另供）。"""
+def test_read_perf_snapshot_reports_values_only():
+    """性能卡领域项：模块只给值，等级由 core 按声明阈值算（判级权单一）。
+
+    覆盖契约 §3.1/§3.2：缺失即缺失（不给键，不拿 0 冒充）、模块不自判等级、
+    状态文本面向玩家（状态码与原因码翻中文，未知码回退原码）。
+    """
+    from maaracing_master.core.perf_contract import normalize, validate_rows
+
     m = _module()
+    rows, rejected = validate_rows(type(m).PERF_ROWS)
+    assert not rejected and [r["key"] for r in rows] == ["tick_rate", "decision"]
+
     snap = m.read_perf_snapshot()
-    assert snap["response"]["level"] == "idle" and snap["response"]["fps"] == 0
-    assert snap["health"]["text"] == "等待驾驶"
-    m._tick_gaps.extend([50.0] * 100)
+    assert "tick_rate" not in snap                    # 无数据 → 不给键
+    assert snap["decision"] == {"level": "idle", "text": "等待驾驶"}
+    assert normalize(rows, snap)[0][0]["reason"] == "not_reported"
+
+    m._tick_gaps.extend([50.0] * 100)                 # 20Hz
     snap = m.read_perf_snapshot()
-    assert snap["response"]["fps"] == 20.0 and snap["response"]["level"] == "ok"
-    assert snap["response"]["tick_gap_ms"]["p95"] == 50.0
+    assert snap["tick_rate"] == 20.0
+    assert "level" not in snap                        # 模块不再自判
+    out, _ = normalize(rows, snap)
+    assert out[0]["level"] == "ok" and out[0]["display"] == "20.0 次/秒"
+
     m._tick_gaps.clear()
-    m._tick_gaps.extend([70.0] * 100)          # ~14.3Hz → warn
-    assert m.read_perf_snapshot()["response"]["level"] == "warn"
+    m._tick_gaps.extend([70.0] * 100)                 # ~14.3Hz → warn
+    assert normalize(rows, m.read_perf_snapshot())[0][0]["level"] == "warn"
+
     m._tick_gaps.clear()
-    m._tick_gaps.extend([120.0] * 100)         # ~8.3Hz → error
-    assert m.read_perf_snapshot()["response"]["level"] == "error"
+    m._tick_gaps.extend([120.0] * 100)                # ~8.3Hz → error
+    assert normalize(rows, m.read_perf_snapshot())[0][0]["level"] == "error"
+
     m._control_last = {"state": "CRUISE", "reason": "sel:coin"}
-    h = m.read_perf_snapshot()["health"]
-    assert h["level"] == "ok" and "CRUISE" in h["text"] and "sel:coin" in h["text"]
+    d = m.read_perf_snapshot()["decision"]
+    assert d["level"] == "ok"
+    assert d["text"] == "巡航 · sel:coin"             # 状态码翻中文，未知原因码回退
+
+    m._control_last = {"state": "ABORT", "reason": "plan:infeasible_corridor"}
+    assert m.read_perf_snapshot()["decision"]["text"] == "回稳 · 走廊不可行"
 
 
 # ---------- 控制 trace：行进流水汇 + 阶段收尾局汇总 ----------

@@ -5,7 +5,8 @@
 三方供数契约（sidecar 为聚合方）：
 - 本模块（core）→ 资源快照：系统 CPU/内存、受管进程（自身 + 嗅探到的模拟器
   类进程）CPU/内存、GPU 系统级读数；
-- 活动模块 → 领域项（response/health，鸭子类型接口不变）；
+- 活动模块 → 领域项（按 core/perf_contract.py 的声明行上报，core 负责校验
+  与判级；模块不再自定等级）；
 - sidecar → 聚合：带 schema_version 的 perf 载荷；采样器不可用时显式
   available=False，不伪装成零值或正常。
 
@@ -521,18 +522,24 @@ def ensure_perf_sampler_started() -> PerfSampler:
     return perf_sampler
 
 
-def build_perf_payload(module_perf: dict | None,
+def build_perf_payload(perf_rows: list[dict] | None,
                        snapshot: dict | None = None) -> dict:
-    """sidecar 聚合纯函数：模块领域项（response/health/…）∪ core 资源面。
+    """sidecar 聚合纯函数：模块领域行 ∪ core 资源面。
 
-    - 资源面 cpu 覆盖模块自报的同名段（口径=本进程瞬时 CPU% ÷ 全核）；
-    - 采样器不可用时 cpu 显式 available=False（不伪装零值），模块领域项照放；
-    - schema_version=2：cpu 来自 core 采样器（v1=模块自报，历史口径）。
+    领域行由 perf_contract.normalize 产出（已校验、已判级、已格式化），
+    本函数只做拼装，不再二次解释数值——**判级与格式只有一个产生点**。
+
+    - 资源面 cpu 是本进程瞬时占用（口径=进程 CPU% ÷ 全核），磁贴直接用；
+    - 采样器不可用时 cpu 显式 available=False（不伪装零值），领域行照放；
+    - schema_version=3：领域面由 v2 的「模块自定义字典」改为「声明行数组」。
     """
     snap = snapshot if snapshot is not None else perf_sampler.snapshot()
-    payload = dict(module_perf) if isinstance(module_perf, dict) else {}
-    payload["schema_version"] = 2
-    payload["sampler_available"] = bool(snap.get("available"))
+    payload: dict = {"schema_version": 3,
+                     "rows": list(perf_rows or []),
+                     # 采样号：面板只在它变化时推进走势图（4Hz 轮询 / 1Hz 采样，
+                     # 否则同一个值被塞四次，曲线被拉平）
+                     "sample_id": snap.get("sample_id"),
+                     "sampler_available": bool(snap.get("available"))}
     if not snap.get("available"):
         payload["cpu"] = {"available": False}
         return payload

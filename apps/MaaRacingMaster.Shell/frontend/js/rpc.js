@@ -87,7 +87,7 @@ window.MRA = (function () {
     peepEnabled: false,
     // 性能卡走势图环形缓冲：250ms 轮询 × 120 点 ≈ 近 30 秒。快照里的数值本身
     // 已是滑窗 p50，曲线看的是"什么时候开始变差"，不是逐帧抖动。
-    perfHist: { fps: [], load: [] },
+    perfHist: { host: [], self: [] },
     PERF_HIST_MAX: 120
   };
 

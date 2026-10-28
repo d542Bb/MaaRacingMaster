@@ -345,10 +345,35 @@
 
 **职责**：系统/进程资源快照的常驻采集与落盘（`logs/<会话>/perf.jsonl`，日志开关管辖）。
 
-- 三方供数：core 采样器→资源面（系统/受管进程 CPU/内存——自身 + 模拟器家族进程嗅探；GPU 走 nvidia-smi 子进程带超时，ok/timeout/unavailable/解析错误显式区分，读数带龄期）；模块→领域项（`read_perf_snapshot` 鸭子类型）；sidecar→聚合（`build_perf_payload`，`schema_version=2`，不可用显式 `available=False`）
+- 三方供数：core 采样器→资源面（系统/受管进程 CPU/内存——自身 + 模拟器家族进程嗅探；GPU 走 nvidia-smi 子进程带超时，ok/timeout/unavailable/解析错误显式区分，读数带龄期）；模块→领域行（按 `PERF_ROWS` 声明上报，取值口 `read_perf_snapshot` 只给值、不自判等级，校验与判级见 §1.15）；sidecar→聚合（`build_perf_payload`，`schema_version=3`：领域面是**行数组**而非模块自定义字典；载荷带 `sample_id`，面板据此只在采样号变化时推进走势图，避免 4Hz 轮询把 1Hz 采样塞成平线；不可用显式 `available=False`）
 - 落盘三档：低频背景（每 N 样本）/ 事件倾倒（模块 `record_event` 报事件，前后窗样本补落，每样本只写一次——sample_id 唯一、重叠窗口去重；窗口被会话关闭中断记 incomplete）/ 收尾全量（可配关）
 - `ensure_perf_sampler_started()`：幂等启动 + 绑定会话生命周期（sidecar 主入口与事件消费方共用）；环随会话切换重置，关闸期样本不进新会话文件
 - psutil `cpu_percent` 启动即基线初始化（首个非阻塞读数无意义）；单拍指标构建异常降级为带 error 的样本，不拖垮采样线程
+
+### 1.15 [perf_contract.py](./perf_contract.py) — 性能面板契约（声明校验与取值规范化）
+
+**职责**：把「模块报什么」与「core 怎么认」分开——模块在类上声明行，core 按声明校验、判级、格式化。纯函数、无状态、**不认识任何模块**（分层红线：通用层不指向业务）。
+
+**声明面**（模块类属性，空默认定义在 `base.ActivityModule`）：
+
+| 属性 | 作用 |
+|---|---|
+| `PERF_CONTRACT` | 声明契约版本；与 core 的版本不等 → 领域面整体不显示（资源面照常），不猜旧格式 |
+| `PERF_ROWS` | 行声明：`key` / `label` / `kind` / `stat` / `category` / `precision` / 阈值 / `hint` |
+| `THREAD_LABELS` | 线程名 → 中文别名；**线程本身由 core 嗅探**，模块只能贴标签 |
+
+闭集：`kind` 五值（rate / ratio / duration / count / state）锁死单位与合法域，模块不能自带单位串；`stat` 两值（`instant` / `p50_gap_inverse`）只对 rate，非 rate 声明即整行拒绝；`category` 两档（player 常显 / diagnostic 默认收起，**两者都常驻采集与落盘**）。
+
+**两层校验**：
+
+- 声明期 `validate_rows`：不合规**整行拒绝**并给出原因——key 严格 snake_case 正则（拒 `tick__rate`/`tick_rate_`）、label 四步（类型 → 含中文 → 截断 8 字 → **截断后复核仍含中文**）、阈值成对且方向与 kind 一致、`stat` 必填/禁用、core 保留名、行数上限（player 3 / diagnostic 8）。`precision` 越界与 `hint` 超长**只降级不拒绝**（只影响显示）。
+- 运行期 `normalize`：五道闸——类型（拒布尔与非 `Real`，用 `numbers.Real` 而非 `(int, float)` 以接纳 numpy 标量）→ 有限（拒 NaN/±inf；**NaN 的真实危害是判级**：`nan < 阈值` 恒 False，会一路判成 ok）→ 合法域（越界**拒绝不夹紧**，夹紧会把「单位错了」伪装成「满载」）→ 判级 → 显示。逐行异常隔离：单行任何意外只让该行 `invalid`，不牵连同批。
+
+**判级权二分**：数值类归 core（阈值来自声明；**两个阈值都不给 = 不判级**，恒 ok、不染色、不进卡片右上角健康度——逼没有好坏之分的量编阈值，假阈值会触发假告警）；状态类归模块（业务语义阈值表达不了），但 `state` **不参与跨模块健康聚合**（core 验证不了自报等级）。
+
+`state.text` 五步不可换序：类型 → 换行/控制字符折空格 → 截断 24 字 → **对规范化后的结果**查非空非纯空白 → 保留。第 4 步放在后面是关键：`"\x00\x01"` 原始不算空白、折完却成空白，校验对象必须与显示对象是同一个。文本无效整条失效（等级坏了文本还在能读，文本没了只剩空徽章比「—」更误导）。
+
+**开发期强制力**：模块测试直接 import `validate_rows` 断言自己的声明，不合规在提交前就红——这是唯一不依赖「core 认识某个模块」的强制手段。行为契约与三轮审查记录见 `docs/plan/perf_panel_contract.md`（工作台，不入库）。
 
 ***
 
@@ -362,6 +387,7 @@ core/sidecar.py（JSONL RPC handler）
   ├── core.logger.logger
   ├── core.window_utils.has_physical_controller
   ├── core.remote_meta（远程元数据校验与外链目标表，§1.12）
+  ├── core.perf_contract（性能面板声明校验与取值规范化，§1.15）
   └── core.registry（插件自动扫描注册）
 
 MaaRacingMaster.Shell（C#，不导入 Python）

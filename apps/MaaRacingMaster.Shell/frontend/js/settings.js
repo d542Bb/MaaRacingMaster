@@ -872,103 +872,41 @@
     } catch (e) { /* 看板轮询失败静默（如库未创建/尚未跑过） */ }
   }
 
-  // 默认（竞速形状）性能卡：YOLO 推理 / 截图耗时 / 当前阶段。
-  // 鉴宝不用这套——它没有 YOLO，模板见 treasurePerfCard。
-  function perfCardLegacy(mid) {
+  // 性能卡（通用）：所有模块共用一套模板。
+  // 资源面（整机 / 本程序）由 core 采样器供数；模块行由后端按声明下发
+  // （perf.rows），前端不认识任何模块——新增模块只声明行，这里零改动。
+  function perfCard(mid) {
     return `
-        <div class="card card-flex">
-          <div class="card-head"><h3>性能监控</h3></div>
-          <div class="card-body card-body--fill">
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">帧率</span>
-                <div class="perf-right">
-                  <span class="perf-value">-- FPS</span>
-                  <span class="perf-badge perf-badge--idle"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
+        <div class="card card-flex perf-card">
+          <div class="card-head">
+            <h3>性能监控</h3>
+            <span class="perf-health" id="${mid}-perf-health"></span>
+          </div>
+          <div class="card-body">
+            <div class="perf-kpis">
+              <div class="perf-kpi">
+                <div class="perf-kpi-label" id="${mid}-perf-host-label">整机占用</div>
+                <div class="perf-kpi-num"><b id="${mid}-perf-host">--</b><span>%</span></div>
+                <svg class="perf-kpi-spark" id="${mid}-perf-host-spark"
+                     viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true"></svg>
               </div>
-              <div class="mra-perf-bar"><div class="mra-perf-bar-fill mra-perf-bar-fill--success" style="width:0%;"></div></div>
-              <p class="perf-note">3 帧跳一帧推理</p>
-            </div>
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">YOLO 推理</span>
-                <div class="perf-right">
-                  <span class="perf-value">-- ms/帧</span>
-                  <span class="perf-badge perf-badge--idle"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
-              </div>
-              <div class="mra-perf-bar"><div class="mra-perf-bar-fill mra-perf-bar-fill--success" style="width:0%;"></div></div>
-            </div>
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">截图耗时</span>
-                <div class="perf-right">
-                  <span class="perf-value">-- ms/帧</span>
-                </div>
-              </div>
-              <div class="mra-perf-bar"><div class="mra-perf-bar-fill mra-perf-bar-fill--success" style="width:0%;"></div></div>
-            </div>
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">当前阶段</span>
-                <div class="perf-right">
-                  <span class="perf-value" id="${mid}-perf-stage">空闲中</span>
-                  <span class="perf-badge perf-badge--idle"><span class="perf-badge-dot"></span></span>
-                </div>
+              <div class="perf-kpi">
+                <div class="perf-kpi-label">本程序</div>
+                <div class="perf-kpi-num"><b id="${mid}-perf-self">--</b><span>%</span></div>
+                <svg class="perf-kpi-spark" id="${mid}-perf-self-spark"
+                     viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true"></svg>
               </div>
             </div>
+            <div class="perf-rows" id="${mid}-perf-rows"></div>
           </div>
         </div>`;
   }
 
-  // 鉴宝性能卡：只放「看得懂 + 看完能行动」的三项，诊断细节一律留在日志。
-  // 走势图取近 30 秒（250ms 轮询 × 120 点）；数值本身已是滑窗 p50，曲线看的是趋势。
-  function treasurePerfCard(mid) {
-    return `
-        <div class="card card-flex">
-          <div class="card-head"><h3>性能监控</h3></div>
-          <div class="card-body card-body--fill">
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">画面响应</span>
-                <div class="perf-right">
-                  <span class="perf-value" id="${mid}-perf-fps">-- 次/秒</span>
-                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-fps-badge"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
-              </div>
-              <svg class="perf-spark" id="${mid}-perf-fps-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
-              <p class="perf-note" id="${mid}-perf-fps-note">启动后显示程序每秒查看画面的次数</p>
-            </div>
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">机器负载</span>
-                <div class="perf-right">
-                  <span class="perf-value" id="${mid}-perf-cpu">--</span>
-                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-cpu-badge"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
-              </div>
-              <svg class="perf-spark" id="${mid}-perf-cpu-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
-              <p class="perf-note" id="${mid}-perf-cpu-note">偏高时关闭其它程序，或在设置里关掉调试落盘</p>
-            </div>
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">识别健康</span>
-                <div class="perf-right">
-                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-health-badge"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
-              </div>
-              <p class="perf-note" id="${mid}-perf-health-note">等待识别</p>
-            </div>
-          </div>
-        </div>`;
-  }
-
-  function defaultDataCards(mid, perfCardHtml, rightTopHtml) {
+  function defaultDataCards(mid, rightTopHtml) {
     return `
       <div class="col-left">
         <!-- 性能监控 -->
-        ${perfCardHtml || perfCardLegacy(mid)}
+        ${perfCard(mid)}
       </div>
 
       <div class="col-right">
@@ -1144,49 +1082,7 @@
   // 模块 → 页面模板注册表。未登记的模块走 DEFAULT_PAGE_DEFS（默认模板）。
   // 鉴宝的数据页只换性能卡（其余两栏同构），故把卡片 HTML 作参数传入。
   function treasureDataCards(mid) {
-    return defaultDataCards(mid, treasurePerfCard(mid));
-  }
-
-  // 极速狂飙的数据页：版式与通用页同构（性能监控左栏、模块数据+预览右栏）。
-  // 性能卡三件套由后端供数（拍率/机器负载/决策实况），卡片文案与结构可随样式调整。
-  function speedrushPerfCard(mid) {
-    return `
-        <div class="card card-flex">
-          <div class="card-head"><h3>性能监控</h3></div>
-          <div class="card-body card-body--fill">
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">驾驶拍率</span>
-                <div class="perf-right">
-                  <span class="perf-value" id="${mid}-perf-fps">-- 次/秒</span>
-                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-fps-badge"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
-              </div>
-              <svg class="perf-spark" id="${mid}-perf-fps-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
-              <p class="perf-note" id="${mid}-perf-fps-note">驾驶控制每秒的决策拍数</p>
-            </div>
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">机器负载</span>
-                <div class="perf-right">
-                  <span class="perf-value" id="${mid}-perf-cpu">--</span>
-                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-cpu-badge"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
-              </div>
-              <svg class="perf-spark" id="${mid}-perf-cpu-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"></svg>
-              <p class="perf-note" id="${mid}-perf-cpu-note">程序占整机的负载比例</p>
-            </div>
-            <div class="perf-item">
-              <div class="perf-head">
-                <span class="perf-label">决策实况</span>
-                <div class="perf-right">
-                  <span class="perf-badge perf-badge--idle" id="${mid}-perf-health-badge"><span class="perf-badge-dot"></span>空闲</span>
-                </div>
-              </div>
-              <p class="perf-note" id="${mid}-perf-health-note">等待驾驶</p>
-            </div>
-          </div>
-        </div>`;
+    return defaultDataCards(mid);
   }
 
   // 驾驶演示数据入口：录制产物（逐帧图+手柄序列）落会话目录，门控日志带帧号可回查。
@@ -1206,7 +1102,7 @@
   }
 
   function speedrushDataCards(mid) {
-    return defaultDataCards(mid, speedrushPerfCard(mid), speedrushDemosCard(mid));
+    return defaultDataCards(mid, speedrushDemosCard(mid));
   }
 
   // 未登记模板的模块用默认模板（此前是"回退到 treasure"，那会让合法但未定制的模块

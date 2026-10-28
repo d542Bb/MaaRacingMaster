@@ -179,22 +179,25 @@ def test_snapshot_unavailable_when_never_ticked():
     assert snap["available"] is False and "error" in snap
 
 
-def test_build_perf_payload_merges_and_flags():
-    mod = {"response": {"fps": 20.0, "level": "ok"},
-           "health": {"level": "ok", "text": "CRUISE · sel:coin"},
-           "module_own": {"x": 1}}
-    ok_snap = {"available": True, "cpu_pct": 12.0,
+def test_build_perf_payload_carries_rows_and_flags():
+    """聚合只做拼装：领域行由 perf_contract 产出后原样透传，不二次解释。"""
+    rows = [{"key": "tick_rate", "label": "驾驶拍率", "kind": "rate",
+             "category": "player", "value": 12.4, "display": "12.4 次/秒",
+             "level": "ok", "reason": None, "hint": None}]
+    ok_snap = {"available": True, "cpu_pct": 12.0, "sample_id": 7,
                "procs": [{"pid": 1, "name": "self", "cpu_pct": 300.0,
                           "mem_mb": 100.0}],
                "gpu": {"status": "ok", "util_pct": 50}, "mem_pct": 50.0,
                "mem_used_gb": 8.0, "mem_total_gb": 16.0}
-    p = build_perf_payload(mod, ok_snap)
-    assert p["schema_version"] == 2 and p["module_own"] == {"x": 1}
-    assert p["response"]["fps"] == 20.0                     # 模块领域项透传
+    p = build_perf_payload(rows, ok_snap)
+    assert p["schema_version"] == 3
+    assert p["rows"] == rows                                # 领域行原样透传
+    assert p["sample_id"] == 7                              # 走势图据此去重推进
     assert p["cpu"]["available"] and p["cpu"]["cores"] > 0  # 资源面来自采样器
     assert 0 < p["cpu"]["load_p50"] < 1
     assert p["gpu"]["util_pct"] == 50
-    p2 = build_perf_payload(mod, {"available": False})
+    p2 = build_perf_payload(rows, {"available": False})
     assert p2["cpu"] == {"available": False}                # 不可用显式化
-    assert p2["response"]["fps"] == 20.0                    # 领域项不伪装
+    assert p2["rows"] == rows                               # 监控坏了不影响模块数据
     assert build_perf_payload(None, {"available": False})["sampler_available"] is False
+    assert build_perf_payload(None, {"available": False})["rows"] == []
