@@ -141,7 +141,7 @@ def test_egg_anchor_repointed_to_claim_popup():
     """数蛋锚点已搬到聚合奖励弹窗（§9「搬家」）：rect 覆盖弹窗蛋卡行而非旧结算弹窗区。
 
     计数区几何不再进真源——由代码常量按「奖励卡通用几何」从命中框推导
-    （plugins/treasure/eggs.py::CARD_COUNT_BAND，校准 tools/experiments/egg-claim-coin-read）。
+    （plugins/treasure/eggs.py::CARD_COUNT_BAND，校准 tools/treasure_card_geom）。
     """
     doc = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     spec = doc["perception"]["spec"]

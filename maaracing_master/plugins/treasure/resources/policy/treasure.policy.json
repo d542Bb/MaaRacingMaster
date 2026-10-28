@@ -1548,7 +1548,7 @@
         ]
       },
       "egg": {
-        "_comment": "通用蛋模板多尺度匹配 + NMS(IoU=0.5) + 中心 40% 区域 HSV 判色。rect 必须罩住弹窗整条图标带 y≈0.35-0.52（真帧实测红/黄/蓝蛋 0.837-0.920 命中；币章卡灰度也能命中蛋轮廓 ~0.94，但中心 S≈7 恒被判色拒掉）。「×N」计数区不在本真源：由代码常量按「奖励卡通用几何」从命中框推导（plugins/treasure/eggs.py，校准 tools/experiments/egg-claim-coin-read）。",
+        "_comment": "通用蛋模板多尺度匹配 + NMS(IoU=0.5) + 中心 40% 区域 HSV 判色。rect 必须罩住弹窗整条图标带 y≈0.35-0.52（真帧实测红/黄/蓝蛋 0.837-0.920 命中；币章卡灰度也能命中蛋轮廓 ~0.94，但中心 S≈7 恒被判色拒掉）。「×N」计数区不在本真源：由代码常量按「奖励卡通用几何」从命中框推导（plugins/treasure/eggs.py，校准 tools/treasure_card_geom）。",
         "kind": "template",
         "label": "彩蛋",
         "order": 2,
@@ -1617,7 +1617,7 @@
         "threshold": 0.78
       },
       "claim_coin_medal": {
-        "_comment": "奖励弹窗「鉴宝银币」单币锤徽 medal（收尾链读×N 落盘为银币收入）。与 claim_score_medal 同为真匹配器实测可分：本模板命中银卡1.0/积分卡0.314，阈值0.72下天然不串（tools/experiments/egg-claim-coin-read）。搜索区=弹窗整卡行；「×N」读数区按「奖励卡通用几何」从命中框推导，真源不携带偏移参数。",
+        "_comment": "奖励弹窗「鉴宝银币」单币锤徽 medal（收尾链读×N 落盘为银币收入）。与 claim_score_medal 同为真匹配器实测可分：本模板命中银卡1.0/积分卡0.314，阈值0.72下天然不串（tools/treasure_card_geom）。搜索区=弹窗整卡行；「×N」读数区按「奖励卡通用几何」从命中框推导，真源不携带偏移参数。",
         "kind": "template",
         "label": "领取鉴宝银币medal",
         "order": 960,

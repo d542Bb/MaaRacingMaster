@@ -1,33 +1,46 @@
 # -*- coding: utf-8 -*-
-"""C 类实验：奖励卡通用几何 —— 命中框(红) → 外扩找卡描边(蓝) → 框内数字/名称区(绿)。
+"""奖励卡通用几何校准 —— 命中框(红) → 外扩找卡描边(蓝) → 框内数字/名称区(绿)。
 
-真值帧：claim_popup_0609.png（1281×720 聚合「奖励」弹窗，与运行期 debug 帧同规格）
+真值帧：`tests/fixtures/claim_popup_0609.png`（1281×720 聚合「奖励」弹窗，与运行期
+debug 帧同规格）
   卡行 5 张（从左到右）：红色彩蛋×2 / 鉴宝积分×30000 / 蓝色彩蛋×2 / 黄色彩蛋×1 / 鉴宝银币×250000
 
-要回答的三个问题：
+**这是校准仪器，不是一次性探针**：卡布局或「×N」读数区几何变更时重跑它，用下面的
+四步重新量出卡框与数字带比例，再改 `plugins/treasure/eggs.py` 的常量。
+
   1) 「命中图标框 → 外扩找矩形描边」能不能一套轮廓法通吃（蛋卡+银币卡+积分卡）？
   2) 数字行 / 名称行相对卡框的位置比例是否稳定（det=True 拿行级真值）？
   3) 按推导出的数字带做 rec-only OCR，能不能读对全部 5 个 ×N？
+
+用法：
+    .venv/Scripts/python.exe tools/treasure_card_geom/card_geom_probe.py
+产物写到系统临时目录（`treasure_card_geom/`），不落仓库。
 """
 import os
 import re
 import sys
+import tempfile
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, REPO)
 
-from maaracing_master.core.template_match import load_template, match_template_cs
-from maaracing_master.plugins.treasure.eggs import EggRewardRecognizer, _nms, NMS_IOU_THRESHOLD, MAX_EGGS
-from maaracing_master.plugins.treasure.ocr import TreasureOcr
+# E402：REPO 必须先入 sys.path 才能导入本仓库包（脚本，非包内模块）
+from maaracing_master.core.template_match import load_template, match_template_cs  # noqa: E402
+from maaracing_master.plugins.treasure.eggs import (  # noqa: E402
+    MAX_EGGS, NMS_IOU_THRESHOLD, EggRewardRecognizer, _nms)
+from maaracing_master.plugins.treasure.ocr import TreasureOcr  # noqa: E402
 
-FRAME = cv2.cvtColor(cv2.imread(os.path.join(HERE, "claim_popup_0609.png")), cv2.COLOR_BGR2RGB)
+FRAME = cv2.cvtColor(
+    cv2.imread(os.path.join(REPO, "tests", "fixtures", "claim_popup_0609.png")),
+    cv2.COLOR_BGR2RGB)
 H, W = FRAME.shape[:2]
-OUT = os.path.join(HERE, "out")
+OUT = os.path.join(tempfile.gettempdir(), "treasure_card_geom")
+
 os.makedirs(OUT, exist_ok=True)
 
 EXPECT = {"红色彩蛋": 2, "鉴宝积分": 30000, "蓝色彩蛋": 2, "黄色彩蛋": 1, "鉴宝银币": 250000}
@@ -39,7 +52,7 @@ EXPECT = {"红色彩蛋": 2, "鉴宝积分": 30000, "蓝色彩蛋": 2, "黄色�
 def collect_hits():
     hits = []  # (label, (x1,y1,x2,y2) 像素)
     rec = EggRewardRecognizer(REPO)
-    nav = __import__("maaracing_master.plugins.treasure", fromlist=["nav_source"]).nav_source()
+    __import__("maaracing_master.plugins.treasure", fromlist=["nav_source"]).nav_source()
     gray = cv2.cvtColor(FRAME, cv2.COLOR_RGB2GRAY)
     tpl, rect, th = rec._entry
     cands = _nms(rec._match_candidates(gray, tpl, rect, W, H, th), NMS_IOU_THRESHOLD, MAX_EGGS)
@@ -84,7 +97,8 @@ def card_rect_candidates(hit_px, min_ratio=1.6, max_ratio=20.0):
     out = []
     for c in contours:
         rx, ry, rw, rh = cv2.boundingRect(c)
-        rx += wx1; ry += wy1
+        rx += wx1
+        ry += wy1
         area = rw * rh
         ratio = area / hit_area
         if not (min_ratio <= ratio <= max_ratio):
@@ -128,14 +142,15 @@ for label, hit, r in cards:
 # ---------------------------------------------------------------------------
 # 3) det=True 拿行级真值：数字行/名称行相对卡框的位置比例
 # ---------------------------------------------------------------------------
-from rapidocr import RapidOCR
+from rapidocr import RapidOCR  # noqa: E402
 
 det_engine = RapidOCR(params={"Global.use_det": True, "Global.use_cls": False})
 out = det_engine(cv2.cvtColor(FRAME, cv2.COLOR_RGB2BGR))
 lines = []
 if out.txts is not None:
     for txt, box in zip(out.txts, out.boxes):
-        xs = [p[0] for p in box]; ys = [p[1] for p in box]
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
         lines.append((str(txt), min(xs), min(ys), max(xs), max(ys)))
 
 print("\nOCR(det) 全帧行：")
@@ -161,7 +176,6 @@ NAME_BAND = (0.02, 0.805, 0.98, 0.985)
 
 def pick_card_rect(hit_px):
     cands = card_rect_candidates(hit_px)
-    hw, hh = hit_px[2] - hit_px[0], hit_px[3] - hit_px[1]
     geo = [r for r in cands if 1.2 <= r[3] / r[2] <= 2.2]
     geo.sort(key=lambda r: r[2] * r[3])
     return geo[0] if geo else None

@@ -11,13 +11,9 @@ R2|docs/MAAFW_GUIDE.md|maafw-docs-constraints
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|speedrush_gating
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|speedrush_scoring
 R2|maaracing_master/plugins/speedrush/RULES.md|speedrush_scoring
-R2|maaracing_master/plugins/treasure/CODE_WIKI.md|egg-claim-coin-read
-R4|maaracing_master/plugins/treasure/eggs.py
-R4|maaracing_master/plugins/treasure/module.py
 R4|tests/test_core_ocr.py
-R4|tests/test_treasure_egg_claim.py
 # 2026-10-28：修检测盲区（主题名不带尾斜杠、分段拼路径）后新暴露的存量，非新增债务。
-# 前两条分别对应：插件 CODE_WIKI 引用在用主题时未写尾斜杠；两个测试以实验区文件作
-# 守卫对象与图片夹具。清它们要等对应主题退役（守卫要一起改），故先入账。
+# 两条分别对应：插件 CODE_WIKI 引用在用主题时未写尾斜杠；一个测试以实验区文件作守卫
+# 对象（守卫与主题要一起改）。清它们要等对应主题退役，故先入账。
 R2|maaracing_master/plugins/speedrush/CODE_WIKI.md|merge_contract
 R4|tests/test_speedrush_hud.py
