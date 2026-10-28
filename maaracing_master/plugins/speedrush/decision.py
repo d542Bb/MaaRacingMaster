@@ -328,6 +328,7 @@ class DecisionEngine:
         self._route_req: float | None = None
         self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）
         self._ruler_prev: float | None = None   # 上一拍尺子（米，场景帧 z=0）
+        self._ruler_exec_prev: float | None = None  # 上一拍 executed（道，右正）
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
@@ -362,6 +363,7 @@ class DecisionEngine:
         self._route_req = None
         self._route_epoch = 0
         self._ruler_prev = None
+        self._ruler_exec_prev = None
         self.occ.reset()
         self._occ_snap = None
         self._sel_ego_m = None
@@ -943,7 +945,7 @@ class DecisionEngine:
             self._coarse = None
             self._route_req = None
             # 无车道级证据拍：路线不推进，时钟继续走
-            self._tick_route()
+            self._tick_route(executed=executed)
             return "sel:hold:no_road"
         rf = self._road_frame(executed, obs.frame_id)
         if rf is None:
@@ -957,7 +959,7 @@ class DecisionEngine:
             self._coarse = None
             self._route_req = None
             # 无车道级证据拍：路线不推进，时钟继续走
-            self._tick_route()
+            self._tick_route(executed=executed)
             return "sel:hold:no_road"
         road, ego_m, origin = rf
         reward_src = self._bonus_sources(obs, executed)
@@ -1008,7 +1010,7 @@ class DecisionEngine:
         # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
         # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。
-        self._tick_route(c0, request=self._route_req)
+        self._tick_route(c0, executed, request=self._route_req)
         # 并线承诺期：路线已定目标道，选择层只能在这个道上做维护性修正。
         # 机会层（奖励车/擦边/金币）与预置偏移在此关闭——承诺期的目标被
         # 机会改道就是静默换道（契约 §4/§5）。
@@ -1099,28 +1101,41 @@ class DecisionEngine:
 
     RULER_TOL_LANE = 0.5    # 尺子单拍跳变超过半道 = 参考系重基
 
-    def _ruler_epoch(self, c0: float | None) -> int:
-        """参考系纪元。尺子 = **场景 z=0 分带中心线**——粗层道号就是相对它取的。
+    def _ruler_epoch(self, c0: float | None,
+                     executed: float | None = None) -> int:
+        """参考系纪元。两个跳变源，任一崩过半道即 +1：
 
-        它单拍跳变超过半道 → 跨帧同一道号换义，纪元 +1。**不跟绝对路心走**：
-        20261024_p2 实测绝对路心在「记忆 ↔ 遮挡墙」之间每 ~0.85 s 摆 0.4~1.7 道
-        （换源造成），而同一局的尺子 p90 只动 0.09 道。按绝对路心换纪会把路线
-        每秒作废一次（38/50 次并线被打断），承诺名存实亡。"""
+        ① 尺子 = **场景 z=0 分带中心线**——粗层道号相对它取，它单拍跳变超过
+        半道即换义。**不跟绝对路心走**：20261024_p2 实测绝对路心在「记忆 ↔
+        遮挡墙」之间每 ~0.85 s 摆 0.4~1.7 道（换源造成），而同一局的尺子
+        p90 只动 0.09 道；按绝对路心换纪会把路线每秒作废一次（38/50 次并线
+        被打断），承诺名存实亡。
+        ② **执行层重锚**（executed 单拍跳变过半道）：深度路心翻面被 ⑥b 确认
+        重基后，`executed` 一步换掉一道以上——道号语义跟着换，旧承诺指的道
+        已不是车所在的道。20261027_154626_1 s1 13.3s：executed −1.38→+0.58
+        后路线仍守 −1，空路上满舵左打 1.4 道。`executed` 经过 ⑥b 的跳变门/
+        确认门，只在真重锚时跳（实测 5~9 次/局），不重现 0.85 s 摆动。"""
         lw = self.cal.lane_w_m
         if c0 is not None and lw > 0:
             tol = self.RULER_TOL_LANE * lw
             if self._ruler_prev is not None and abs(c0 - self._ruler_prev) > tol:
                 self._route_epoch += 1
             self._ruler_prev = c0
+        if executed is not None:
+            if self._ruler_exec_prev is not None and \
+                    abs(executed - self._ruler_exec_prev) > self.RULER_TOL_LANE:
+                self._route_epoch += 1
+            self._ruler_exec_prev = executed
         return self._route_epoch
 
     def _tick_route(self, c0: float | None = None,
+                    executed: float | None = None,
                     request: float | None = None) -> None:
         """推进路线一拍。输入只有原始粗层报告、参考系纪元与上拍越线请求
         （边界 B：承诺值不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。"""
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
-            dt_s=self._dt_last, epoch=self._ruler_epoch(c0),
+            dt_s=self._dt_last, epoch=self._ruler_epoch(c0, executed),
             request=request)
 
     def _lane_for(self, committed: bool) -> float | None:

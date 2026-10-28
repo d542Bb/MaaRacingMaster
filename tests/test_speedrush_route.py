@@ -436,6 +436,23 @@ def test_ruler_jump_rebases_but_small_drift_does_not(monkeypatch):
     assert eng.route_verdict.epoch == 1
 
 
+def test_executed_reanchor_resets_route(monkeypatch):
+    """执行层重锚（executed 单拍跳 >半道）也换纪：⑥b 确认参考系翻面后，
+    道号语义跟着换，旧承诺指的道已不是车所在的道。20261027_154626_1 s1
+    13.3s：executed −1.38→+0.58 后路线仍守 −1，空路上满舵左打 1.4 道。"""
+    from maaracing_master.plugins.speedrush import decision as dmod
+    monkeypatch.setattr(dmod, "choose_lane", lambda *a, **k: _rep(0.0, 0.0))
+    cfg = replace(CFG, route=replace(CFG.route, control=True))
+    eng = DecisionEngine(cfg)
+    for fid, ex in ((1, 0.0), (2, 0.2), (3, 0.4)):   # 正常横移：不作废
+        eng.update(_obs(fid), DT, executed_lane=ex, corridor=_corridor())
+        assert eng.route_verdict.verdict != "epoch_reset"
+        assert eng.route_verdict.epoch == 0
+    eng.update(_obs(4), DT, executed_lane=1.3, corridor=_corridor())
+    assert eng.route_verdict.verdict == "epoch_reset"
+    assert eng.route_verdict.epoch == 1
+
+
 # ---------- 机会换道请求（跨线唯一入口，2026-10-27） ----------
 
 def _tick_req(state, report, request, epoch=0):
