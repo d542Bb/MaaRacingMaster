@@ -116,6 +116,7 @@ class PerfSampler:
         self._domain_slow_warn_at = -1e9
         # 落盘失败：待补缺口区间（起止 sample_id）+ 累计/连续计数。
         # 状态机见 _write_lines：标记与当前样本都成功才算这一拍落盘完成。
+        self._last_tick_mono: float | None = None
         self._persist_gap: tuple[int, int] | None = None
         self._persist_failures = 0
         self._persist_consecutive = 0
@@ -295,16 +296,26 @@ class PerfSampler:
     # ---------- 读侧（sidecar） ----------
 
     def snapshot(self) -> dict:
-        """最新样本的公开快照（原子替换；不可用显式 available=False）。"""
+        """最新样本的公开快照（原子替换；不可用显式 available=False）。
+
+        额外给 `age_s`（距最新样本的秒数）与 `stalled`（采样是否停摆）。
+        **停摆只能由外部观察者发现**：卡住的采样线程喊不出「我卡住了」，
+        所以这两个字段是给轮询方（sidecar）判的，不是给自己判的。
+        """
         with self._lk:
             snap = self._latest
             err = self._status_error
+            running = self.running
         if snap is None:
             return {"schema_version": SCHEMA_VERSION, "available": False,
                     "error": err}
         out = {k: v for k, v in snap.items() if not k.startswith("_")}
         out["schema_version"] = SCHEMA_VERSION
         out["available"] = True
+        age = max(0.0, (time.monotonic_ns() - snap["ts_mono_ns"]) / 1e9)
+        out["age_s"] = round(age, 2)
+        # 只在「本该在采」时判停摆：会话关闭后不再更新是正常的
+        out["stalled"] = bool(running and age > self.STALL_TICKS * self._interval_s)
         return out
 
     def stats(self) -> dict:
@@ -340,7 +351,6 @@ class PerfSampler:
         sample = self._build_sample()
         with self._lk:
             self._tick_count += 1
-            tick_no = self._tick_count
             self._ring.append(sample)
             self._latest = sample
             pending = list(self._pending)
@@ -414,6 +424,10 @@ class PerfSampler:
     #: 模块在采样线程里干了别的事，先让人看见，别静默变慢。
     DOMAIN_SLOW_MS = 5.0
 
+    #: 断档判定：连续这么多拍没更新即判采样停摆。取 3 拍——单拍偶发超时
+    #: （GPU 子进程阻塞）不该报，真停摆必须在几秒内可见。
+    STALL_TICKS = 3
+
     def _build_sample(self) -> dict:
         """一拍样本：样本号与时间戳取 tick 开始那一刻，三个面各自计时。
 
@@ -427,6 +441,8 @@ class PerfSampler:
         # 亚毫秒级的各面耗时只会得到 0 或台阶值——设计目标「这一拍慢在哪一面」
         # 就失效了（首局实测 cost 全 0，正是这个原因）
         t_tick = time.perf_counter()
+        prev_tick = self._last_tick_mono
+        self._last_tick_mono = t_tick
         sample = {
             "v": SCHEMA_VERSION, "type": "sample", "sample_id": sid,
             "ts_wall_ns": time.time_ns(), "ts_mono_ns": time.monotonic_ns(),
@@ -469,6 +485,13 @@ class PerfSampler:
 
         cost["total"] = (time.perf_counter() - t_tick) * 1000.0
         sample["cost_ms"] = {k: round(v, 3) for k, v in cost.items()}
+        # 采样缺口：这一拍比正常间隔晚了超过两拍，就在样本上标出来。
+        # 时间轴有洞的时候必须自己说——否则事后按样本号等距推算会得出
+        # 「那段时间很平稳」的错误结论（其实是根本没采）。
+        if prev_tick is not None:
+            gap = t_tick - prev_tick
+            if gap > 2 * self._interval_s:
+                sample["gap_ms"] = round(gap * 1000.0, 1)
         self._warn_slow_domain(cost["domain"])
         return sample
 
@@ -703,6 +726,9 @@ def build_perf_payload(perf_rows: list[dict] | None,
     snap = snapshot if snapshot is not None else perf_sampler.snapshot()
     payload: dict = {"schema_version": 3,
                      "rows": list(perf_rows or []),
+                     # 采样停摆：数字是陈旧的，读者应据 age_s 判断可信度
+                     "sampler_stalled": bool(snap.get("stalled")),
+                     "sample_age_s": snap.get("age_s"),
                      # 采样号：面板只在它变化时推进走势图（4Hz 轮询 / 1Hz 采样，
                      # 否则同一个值被塞四次，曲线被拉平）
                      "sample_id": snap.get("sample_id"),

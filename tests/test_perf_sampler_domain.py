@@ -277,3 +277,86 @@ def test_cost_ms_resolution_is_sub_millisecond(tmp_path):
     assert fine, f"没有任何一面落在亚毫秒区间，计时精度可疑: {costs}"
     s.on_session_closing(time.monotonic() + 1)
     s.stop()
+
+
+# ---------------------------------------------------------------- 断档可见
+
+
+def test_snapshot_reports_stall_only_while_running():
+    """验收 13：采样停摆必须由外部观察者可见。
+
+    卡住的线程喊不出「我卡住了」，所以判据是快照的龄期；而且只在「本该在采」
+    时判——会话关闭后不再更新是正常的，不能报停摆。
+    """
+    import threading
+
+    s = make_sampler()
+    s._interval_s = 0.5                              # 断档线 = 3 拍 = 1.5s
+    s.tick_once()
+    assert s.snapshot()["stalled"] is False          # 刚采过
+
+    s._latest["ts_mono_ns"] -= int(5e9)              # 假装 5 秒没更新
+    assert s.snapshot()["stalled"] is False          # 没在跑 → 不判停摆
+
+    s._thread = threading.current_thread()           # 假装采样线程还在跑
+    snap = s.snapshot()
+    assert snap["stalled"] is True
+    assert snap["age_s"] >= 5.0
+
+    # 恢复后的第一条样本必须自带缺口标记：时间轴有洞就得自己说，
+    # 否则事后按样本号等距推算会得出「那段时间很平稳」的错误结论
+    s._last_tick_mono -= 4.0
+    recovered = s.tick_once()
+    assert recovered["gap_ms"] >= 4000.0
+    assert "gap_ms" not in s.tick_once()             # 正常节奏不标
+
+
+def test_payload_carries_stall_flag():
+    """停摆标志进载荷：读者据它判断数字可信度，而不是把陈旧值当实时值。"""
+    snap = {"available": True, "sample_id": 3, "domain": ROWS,
+            "stalled": True, "age_s": 7.5,
+            "procs": [{"pid": 1, "name": "self", "cpu_pct": 20.0}]}
+    p = build_perf_payload(ROWS, snap)
+    assert p["sampler_stalled"] is True and p["sample_age_s"] == 7.5
+
+
+def test_sidecar_reports_stall_once_per_episode(monkeypatch):
+    """外部观察者每段断档只报一次（250ms 轮询不能刷屏），恢复时补一条。"""
+    from maaracing_master.core import sidecar as sc
+
+    svc = sc.SidecarService.__new__(sc.SidecarService)
+    svc._perf_stalled = False
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(sc.logger, "log",
+                        lambda msg, level="INFO": logs.append((level, msg)))
+
+    svc._check_sampler_stall({"stalled": True, "age_s": 6.2})
+    svc._check_sampler_stall({"stalled": True, "age_s": 7.2})
+    assert len([x for x in logs if x[0] == "WARNING"]) == 1
+    assert "6.2s" in logs[0][1]
+
+    svc._check_sampler_stall({"stalled": False})
+    assert logs[-1][0] == "INFO" and "恢复" in logs[-1][1]
+
+    svc._check_sampler_stall({"stalled": True, "age_s": 4.0})
+    assert len([x for x in logs if x[0] == "WARNING"]) == 2
+
+
+def test_payload_aggregation_is_cheap():
+    """验收 8：250ms 一次聚合是纯字典运算，单次必须远低于 1ms。
+
+    超了说明有人在聚合里做 IO 或重新计算——那会拖住 4Hz 的状态轮询。
+    """
+    import statistics
+
+    snap = {"available": True, "sample_id": 9, "cpu_pct": 20.0,
+            "stalled": False, "age_s": 0.1, "domain": ROWS,
+            "procs": [{"pid": 1, "name": "self", "cpu_pct": 300.0}],
+            "gpu": {"status": "ok", "util_pct": 30}, "mem_pct": 50.0,
+            "mem_used_gb": 8.0, "mem_total_gb": 16.0}
+    costs = []
+    for _ in range(300):
+        t0 = time.perf_counter()
+        build_perf_payload(ROWS, snap)
+        costs.append((time.perf_counter() - t0) * 1000.0)
+    assert statistics.median(costs) < 1.0, f"聚合中位耗时 {statistics.median(costs):.3f}ms"

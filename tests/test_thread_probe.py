@@ -171,3 +171,24 @@ def test_real_threads_smoke():
     out = p.sample(None)
     names = [r["name"] for r in out["rows"]]
     assert threading.current_thread().name in names
+
+
+def test_unattributed_never_negative(monkeypatch):
+    """验收 25：未归因 = 进程占用 − 清单合计，恒 ≥0。
+
+    清单合计超过进程占用时（tid 复用后旧基线没作废、或同一线程被重复计数），
+    差值会被钳到 0 而不是给出负数——负数读起来像「清单吃超了」，是纯噪声。
+    """
+    names = [(1, "a"), (2, "b"), (3, "c")]
+    times = {1: [(10, 0.0), (10, 5.0)], 2: [(11, 0.0), (11, 5.0)],
+             3: [(12, 0.0), (12, 5.0)]}
+    _patch(monkeypatch, names, times)
+    p = ThreadProbe(min_age_s=0)
+    p.sample(None)                                  # 基线
+    monkeypatch.setattr(p, "_prev_mono", p._prev_mono - 1.0)
+    out = p.sample(10.0)                            # 清单合计 15 > 进程 10
+
+    listed = sum(r["cpu_pct"] or 0.0 for r in out["rows"])
+    assert out["total_pct"] == pytest.approx(listed, abs=0.01)
+    assert out["unattributed_pct"] == 0.0
+    assert out["unattributed_pct"] >= 0

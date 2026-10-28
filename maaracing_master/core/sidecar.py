@@ -450,6 +450,8 @@ class SidecarService:
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
         # 已告警过的「未声明键」（每会话首次，避免 4Hz 轮询刷屏）
         self._perf_unknown_warned: set[str] = set()
+        # 采样停摆：只在进入/退出时各报一次，不按轮询刷屏
+        self._perf_stalled = False
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
         # 远程数据里**已校验通过**的可打开地址（公告详情 / 下载页）：前端只按逻辑目标名
         # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
@@ -735,6 +737,7 @@ class SidecarService:
         # 记下的是同一份数据（采样器是唯一采集时钟与唯一写手）。代价是数字最多
         # 滞后一个采样周期（1s），换的是「看到的＝记下的」。
         snap = perf_sampler.snapshot()
+        self._check_sampler_stall(snap)
         perf = build_perf_payload(snap.get("domain"), snap)
         return (True, {
             "is_running": self._controller.module_active,
@@ -885,6 +888,20 @@ class SidecarService:
         if breakpoints_used:
             logger.log(f"断点模式: 从 {breakpoints_used} 开始运行")
         return (True, None, None)
+
+    def _check_sampler_stall(self, snap: dict) -> None:
+        """断档可见：采样线程卡死时，面板会一直显示陈旧数字且毫无异样。
+
+        只能由**外部观察者**（本服务 250ms 轮询线程）发现——卡住的线程喊不出
+        「我卡住了」，自己写的告警也发不出去。进入/退出各报一次，不刷屏。
+        """
+        stalled = bool(snap.get("stalled"))
+        if stalled and not self._perf_stalled:
+            logger.log(f"[perf] 采样器已 {snap.get('age_s')}s 未更新（采样线程"
+                       f"可能卡死），面板数字为陈旧值", "WARNING")
+        elif not stalled and self._perf_stalled:
+            logger.log("[perf] 采样器恢复更新", "INFO")
+        self._perf_stalled = stalled
 
     # ---------- 性能领域行取值口（注册给采样器） ----------
 

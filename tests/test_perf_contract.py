@@ -256,3 +256,34 @@ def test_display_formatting():
 def test_format_display_none():
     rows, _ = validate_rows([_row()])
     assert format_display(rows[0], None) == "—"
+
+
+# ---------------------------------------------------------------- 版本与开销
+
+
+def test_contract_version_mismatch_hides_domain(monkeypatch):
+    """验收 1（超版本）：契约版本不认识 → 领域面整体不显示 + 一条 WARNING。
+
+    不猜旧格式：版本不符说明两侧对「行长什么样」的理解可能已经分叉，猜着
+    解析等于把格式错误渲染成看似正常的数字。
+    """
+    import maaracing_master.core.perf_contract as pc
+    from maaracing_master.core import logger as lg
+
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(lg.logger, "log",
+                        lambda msg, level="INFO": logs.append((level, msg)))
+
+    class Old:
+        module_id = "oldmod"
+        PERF_CONTRACT = 99
+        PERF_ROWS = (_row(),)
+
+    assert pc.rows_for(Old()) == []
+    assert any(lv == "WARNING" and "99" in m for lv, m in logs)
+
+    class Undeclared:
+        module_id = "quiet"
+
+    assert pc.rows_for(Undeclared()) == []
+    assert len(logs) == 1, "未声明的模块不该告警（只显示资源面）"
