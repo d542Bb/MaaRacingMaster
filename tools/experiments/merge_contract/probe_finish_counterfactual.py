@@ -122,7 +122,7 @@ class Replay:
         self.p = params
         self.variant = variant
         self.ticks = []          # [(row_index, verdict)]
-        self.lineage = []        # 每拍结束时的 (ego, hop) 新鲜读数谱系
+        self.lineage = []        # 每拍结束时的 (road_offset, hop, fid) 谱系
         self.ctx = {"allow_finish": True}
 
     def _gate(self, cur_row, prev_routed_row, cur_ego):
@@ -144,20 +144,25 @@ class Replay:
                         and fresh(prev_routed_row) and fresh(cur_row))
         pos_ok = True
         if self.variant in ("C", "D"):
-            if fresh(cur_row):
+            pc = pos_class(cur_row)
+            if pc in ("unknown", "missing"):
+                pos_ok = True          # 证据不足不归因，放行
+            elif pc == "fresh":
                 pos_ok = cur_row.get("ro_hop") != 1
             else:
-                # 保持值若就是上一次 hop=1 新鲜读数，位置项仍由它确定
+                # 契约口径：保持值等于上一次新鲜路心读数（同一序列），
+                # 且那份读数 incoming hop=1，位置项才由它确定。
+                ro = cur_row.get("road_offset")
                 lf = self.last_fresh
-                if lf is not None and cur_ego is not None \
-                        and abs(cur_ego - lf[0]) < 1e-6 and lf[1] == 1:
+                if ro is not None and lf is not None \
+                        and abs(ro - lf[0]) <= 1e-3 and lf[1] == 1:
                     pos_ok = False
         return speed_ok and pos_ok
 
     def run(self):
         orig = R._tick_merging
         state, req, run = None, None, None
-        self.last_fresh = None       # (ego, hop) of the last fresh reading
+        self.last_fresh = None       # (road_offset, hop, fid) 上一份新鲜读数
         prev_routed = None
         holder = self
 
@@ -177,6 +182,11 @@ class Replay:
                     run = row.get("run_id")
                     state, req, prev_routed = None, None, None
                     self.last_fresh = None
+                ro = row.get("road_offset")
+                if fresh(row) and ro is not None:
+                    # 谱系随读数更新（含非巡航拍），与生产标注同一序列
+                    self.last_fresh = (ro, row.get("ro_hop"),
+                                       row.get("fid"))
                 if row.get("route") is None:
                     state, req, prev_routed = None, None, None
                     continue
@@ -194,8 +204,6 @@ class Replay:
                 self.ticks.append((idx, v))
                 req = None if rep is None else (
                     row.get("sel_dbg") or {}).get("req")
-                if fresh(row) and cur_ego is not None:
-                    self.last_fresh = (cur_ego, row.get("ro_hop"))
                 self.lineage.append((idx, self.last_fresh))
                 prev_routed = row
         finally:
@@ -304,8 +312,13 @@ def analyse(rows, params):
         v_class = ("measured" if prev_row is not None and fresh(prev_row)
                    and fresh(end_row) else "hold_diff")
         lin = rp["A"].lineage[ei][1] if ei < len(rp["A"].lineage) else None
-        pos_hop = end_row.get("ro_hop") if fresh(end_row) else \
-            (None if lin is None else lin[1])
+        if fresh(end_row):
+            pos_hop = end_row.get("ro_hop")
+        elif lin is not None and end_row.get("road_offset") is not None \
+                and abs(end_row["road_offset"] - lin[0]) <= 1e-3:
+            pos_hop = lin[1]
+        else:
+            pos_hop = None
         item = {
             "start_fid": rows[rp["A"].ticks[si][0]].get("fid"),
             "end_fid": end_row.get("fid"),
