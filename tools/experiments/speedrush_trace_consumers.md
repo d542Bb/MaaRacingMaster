@@ -157,4 +157,4 @@ mcars/car_views/passes/cgroups/n_groups/best_*/occ/coarse/sel_dbg`；旧局回�
   新布局行内 run_id/stage_id ↔ 旧布局目录名对齐。新探针一律经读取器取数；
   旧探针下次动用时换读取器入口。
 - **回放验证**：读取器对真实旧布局文件与新布局产物各做一次等价性冒烟
-  （同局同行同列），见 `observability_streams.md` 验收记录。
+  （同局同行同列）；证据 commit `276d8ce`→`ce1541a`→`7cbc3e8`（2026-10-25 记录流落地）。
