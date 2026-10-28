@@ -70,13 +70,13 @@ def _scene_points(x_left=None, x_right=None, boxes=(), wall_h=30.0,
     for (x1, x2, z1, z2, top) in boxes:
         with np.errstate(divide="ignore", invalid="ignore"):
             ta = np.minimum(x1 * FX / (us - CX), x2 * FX / (us - CX))
-        zc = np.maximum(ta, z1)
-        xh = dx * zc
-        # x 范围带浮点容差：恰从近脸进入的射线 xh==x2±eps，无容差时约半数
-        # 边界像素的遮挡被击穿，漏出地面薄带（幽灵命中修复 2026-10-09）
-        hit = (np.isfinite(zc) & (zc <= z2) & (zc >= z1) & (zc < best)
-               & (dy * zc >= H_CAM + PITCH_B * zc - top)
-               & (xh >= x1 - 1e-6) & (xh <= x2 + 1e-6))
+            zc = np.maximum(ta, z1)
+            xh = dx * zc
+            # x 范围带浮点容差：恰从近脸进入的射线 xh==x2±eps，无容差时约半数
+            # 边界像素的遮挡被击穿，漏出地面薄带（幽灵命中修复 2026-10-09）
+            hit = (np.isfinite(zc) & (zc <= z2) & (zc >= z1) & (zc < best)
+                   & (dy * zc >= H_CAM + PITCH_B * zc - top)
+                   & (xh >= x1 - 1e-6) & (xh <= x2 + 1e-6))
         best = np.where(hit, zc, best)
     ok = np.isfinite(best) & (best < np.inf)
     safe = np.where(ok, best, 1.0)
