@@ -25,7 +25,7 @@ import importlib.util
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-TPL_DIR = REPO / "tools" / "experiments" / "speedrush_templates"
+TPL_DIR = REPO / "tools" / "speedrush_truth"
 TRUTH = (REPO / "maaracing_master" / "plugins" / "speedrush"
          / "resources" / "pipeline" / "speedrush.json")
 

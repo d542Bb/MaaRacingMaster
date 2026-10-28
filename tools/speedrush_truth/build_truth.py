@@ -19,7 +19,7 @@
 抹掉的是别的提交辛苦测出来的判据（见 `NODE_OVERRIDES` 的说明）。
 
 用法：
-    .venv/Scripts/python.exe tools/experiments/speedrush_templates/build_truth.py
+    .venv/Scripts/python.exe tools/speedrush_truth/build_truth.py
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import os
 
-ROI_JSON = "tools/experiments/speedrush_templates/templates_roi.json"
+ROI_JSON = "tools/speedrush_truth/templates_roi.json"
 OUT = "maaracing_master/plugins/speedrush/resources/pipeline/speedrush.json"
 
 MODULE = "speedrush"
