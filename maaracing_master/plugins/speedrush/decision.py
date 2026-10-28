@@ -284,7 +284,8 @@ class DecisionEngine:
             switch_dwell_s=s.switch_dwell_s,
             reward_tol_lane=s.reward_tol_lane,
             car_half_lane=s.car_half_lane,
-            ego_half_lane=s.ego_half_lane))
+            ego_half_lane=s.ego_half_lane,
+            lane_clearance_lane=s.lane_clearance_lane))
         self._sel_report: SelectionReport | None = None
         self._sel_maneuver = False
         self._sel_objs: dict = {"reward": [], "car": [], "coin": []}

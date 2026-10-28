@@ -189,6 +189,11 @@ class SelectionParams:
     reward_tol_lane: float = 1.5
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
+    # 车道内安全区间的车身余量（道）：车心可在车道中心 ±(0.5−半宽−余量)
+    # 内活动而不压线。0.06 道≈0.20m，配 0.27 道半宽得 ±0.17 道——实测
+    # 车道内可偏 0.23 道，留 0.06 道给检测/执行抖动（20261027 局 134222_1
+    # s1 9.1s 车心偏 0.16 道，仍在区间内）。
+    lane_clearance_lane: float = 0.06
 
 
 def _t_move(dx_m: float, p: SelectionParams) -> float:
@@ -231,6 +236,24 @@ def _blocked(cars: Sequence[Obj], x: float, t: float,
         if abs(c.x - x) < half:
             return True
     return False
+
+
+def _lane_interval(ref_x: float, p: SelectionParams,
+                   road: RoadFrame) -> tuple[float, float]:
+    """承诺道内的可活动区间（车心安全区间，与 L4 回中同一把尺）。"""
+    half = (0.5 - p.ego_half_lane - p.lane_clearance_lane) * p.lane_w_m
+    return _clamp_span(ref_x - max(0.0, half), ref_x + max(0.0, half), p, road)
+
+
+def _clamp_span(lo: float, hi: float, p: SelectionParams,
+                road: RoadFrame) -> tuple[float, float]:
+    if road.left_m is not None:
+        lo = max(lo, road.left_m + p.wall_margin_lane * p.lane_w_m)
+    if road.right_m is not None:
+        hi = min(hi, road.right_m - p.wall_margin_lane * p.lane_w_m)
+    if hi < lo:
+        lo = hi = 0.5 * (lo + hi)
+    return lo, hi
 
 
 def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
@@ -339,12 +362,9 @@ def _center_target(road: RoadFrame, ego: float,
         # 粗层方向：细层没有得分机会时去净空最长的车道，不贴回中心线。
         c += coarse_lane * p.lane_w_m
         why = "center:coarse"
-    band = p.center_band_lane * p.lane_w_m
-    maneuver = abs(ego - c) > band
-    if not maneuver:
-        x = ego                       # 带内不修正（治画龙的核心规则）
-    else:
-        x = c + math.copysign(band, ego - c)   # 带外只去近侧带边
+    lo, hi = _lane_interval(c, p, road)
+    maneuver = not (lo <= ego <= hi)
+    x = ego if not maneuver else min(max(ego, lo), hi)
     return road.clamp(x, p.wall_margin_lane * p.lane_w_m), why, maneuver
 
 

@@ -741,8 +741,12 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         value = (reward_value + pass_value + coin_value - collision_cost
                  + prep_value - range_cost)
         soft_cost = soft_viol * motion.corridor_soft_cost_per_m
-        # 中心目标带死区：带内不修正（旧选择层同口径），只在带外惩罚超出量。
-        band_m = motion.center_band_lane * lane_w
+        # 中心目标带死区：带内不修正，只在带外惩罚超出量。带宽与选择层
+        # 同一把尺子——车道内可偏 0.5−半宽−余量；motion.center_band_lane
+        # 只作上限，不能再比物理余量宽（旧 0.3 道比可偏 0.23 道还宽）。
+        band_m = min(motion.center_band_lane * lane_w,
+                     max(0.0, (0.5 - selection.ego_half_lane
+                               - selection.lane_clearance_lane) * lane_w))
         center_dev = sum(max(0.0, abs(xx - center0) - band_m)
                          for xx in xs_m) / len(xs_m)
         # 动作成本按“相对当前杆”的改动量计：带内无修正时优先保持正在进行的动作。

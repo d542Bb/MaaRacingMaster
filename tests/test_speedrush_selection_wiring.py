@@ -96,20 +96,22 @@ def test_layered_reward_wins_over_coin():
 
 def test_layered_center_band_holds_current_lane():
     eng = DecisionEngine(CFG)
-    out = eng.update(_obs(1), 0.05, executed_lane=0.3,
-                     corridor=_corridor(executed=0.3))
+    out = eng.update(_obs(1), 0.05, executed_lane=0.1,
+                     corridor=_corridor(executed=0.1))
     assert out.reason == "sel:center"
     assert eng.selection_report.layer == 4
-    assert out.x_target == pytest.approx(0.3, abs=0.02)   # 带内不修正
+    assert out.x_target == pytest.approx(0.1, abs=0.02)   # 区间内不修正
     assert out.maneuver is False
 
 
 def test_layered_center_outside_band_targets_edge_not_center():
+    half = (0.5 - CFG.selection.ego_half_lane
+            - CFG.selection.lane_clearance_lane)
     eng = DecisionEngine(CFG)
     out = eng.update(_obs(1), 0.05, executed_lane=1.5,
                      corridor=_corridor(executed=1.5))
     assert out.reason == "sel:center"
-    assert out.x_target == pytest.approx(0.3, abs=0.02)   # 近侧带边
+    assert out.x_target == pytest.approx(half, abs=0.02)   # 最近边界
     assert out.maneuver is True
 
 
@@ -152,8 +154,10 @@ def test_coarse_control_takes_center_layer(monkeypatch):
     cfg = replace(CFG, route=replace(CFG.route, control=False))
     eng = DecisionEngine(cfg)
     out = eng.update(_obs(1), 0.05, executed_lane=0.0, corridor=_corridor())
+    half = (0.5 - CFG.selection.ego_half_lane
+            - CFG.selection.lane_clearance_lane)
     assert out.reason == "sel:center:coarse"
-    assert out.x_target == pytest.approx(-0.7, abs=0.02)
+    assert out.x_target == pytest.approx(-1.0 + half, abs=0.02)
     assert out.maneuver is True
 
 

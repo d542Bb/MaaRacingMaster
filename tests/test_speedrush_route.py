@@ -290,7 +290,9 @@ def _obs(fid):
         fid_rate_hz=20.0)
 
 
-TARGET_1_LANE = 0.7 * LW      # L4 带外只去近侧带边：中心 +1 道 → 2.366 m
+_HALF_LANE = (0.5 - CFG.selection.ego_half_lane
+              - CFG.selection.lane_clearance_lane)
+TARGET_1_LANE = (1.0 - _HALF_LANE) * LW   # L4 区间外只去最近边界
 
 
 def test_gate_off_follows_raw_coarse_flip(monkeypatch):

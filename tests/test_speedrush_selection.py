@@ -92,13 +92,14 @@ def test_aligned_reward_needs_no_move_time():
 
 def test_center_band_no_correction_inside():
     p = _p()
-    inside = 0.25 * LW
+    half = (0.5 - p.ego_half_lane - p.lane_clearance_lane) * LW
+    inside = 0.8 * half
     rep = select(_road(), [], [], [], inside, p)
-    assert rep.target_x_m == pytest.approx(inside)   # 带内不修正
+    assert rep.target_x_m == pytest.approx(inside)   # 区间内不修正
     assert rep.maneuver is False
     outside = 1.2 * LW
     rep = select(_road(), [], [], [], outside, p)
-    assert rep.target_x_m == pytest.approx(0.3 * LW, abs=0.05)  # 只去带边
+    assert rep.target_x_m == pytest.approx(half, abs=0.05)  # 只去最近边界
     assert rep.target_x_m != pytest.approx(0.0, abs=0.05)
     assert rep.maneuver is True
 
@@ -113,9 +114,10 @@ def test_center_anchor_uses_current_station():
 def test_coarse_lane_takes_center_layer_only():
     """粗层方向只接管 L4：无机会时目标=选定车道的近侧带边（道号相对
     当前中心线），不再原地贴回中心线。机会层不受影响。"""
+    half = (0.5 - _p().ego_half_lane - _p().lane_clearance_lane) * LW
     rep = select(_road(), [], [], [], 0.0, _p(), coarse_lane=-1.0)
     assert rep.layer == 4 and rep.why == "center:coarse"
-    assert rep.target_x_m == pytest.approx(-LW + 0.3 * LW, abs=0.05)
+    assert rep.target_x_m == pytest.approx(-LW + half, abs=0.05)
     assert rep.maneuver is True
     rep = select(_road(), [Obj("reward", 2.0, 2.0)], [], [], 0.0, _p(),
                  coarse_lane=-1.0)
@@ -123,10 +125,11 @@ def test_coarse_lane_takes_center_layer_only():
 
 
 def test_coarse_lane_zero_keeps_center_band():
-    """粗层选中心道（lane=0）不改回中语义：带内不修正。"""
-    rep = select(_road(), [], [], [], 0.25 * LW, _p(), coarse_lane=0.0)
+    """粗层选中心道（lane=0）不改回中语义：区间内不修正。"""
+    x = 0.15 * LW
+    rep = select(_road(), [], [], [], x, _p(), coarse_lane=0.0)
     assert rep.why == "center"
-    assert rep.target_x_m == pytest.approx(0.25 * LW)
+    assert rep.target_x_m == pytest.approx(x)
     assert rep.maneuver is False
 
 
@@ -223,8 +226,9 @@ def test_committed_ignores_opportunities_and_preposition():
                  [Obj("car", 0.0, 2.0)],
                  [Obj("coin", 1.2 * LW, 2.0)], 0.0, _p(),
                  coarse_lane=1.0, committed=True)
+    half = (0.5 - _p().ego_half_lane - _p().lane_clearance_lane) * LW
     assert rep.layer == 4 and rep.why == "commit"
-    assert rep.target_x_m == pytest.approx(0.7 * LW, abs=0.05)
+    assert rep.target_x_m == pytest.approx(LW - half, abs=0.05)
     assert [w.src for w in rep.waypoints] == ["commit"]
 
 
@@ -235,8 +239,9 @@ def test_committed_selector_bypasses_dwell():
                coarse_lane=-1.0, committed=True)
     rep = sel.update(_road(), [], [], [], 0.0, 0.05,
                      coarse_lane=1.0, committed=True)
+    half = (0.5 - _p().ego_half_lane - _p().lane_clearance_lane) * LW
     assert rep.why == "commit"
-    assert rep.target_x_m == pytest.approx(0.7 * LW, abs=0.05)
+    assert rep.target_x_m == pytest.approx(LW - half, abs=0.05)
 
 
 def test_no_road_holds():

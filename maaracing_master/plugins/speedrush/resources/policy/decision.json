@@ -210,7 +210,8 @@
     "reward_tol_lane": 1.5,
     "car_half_lane": 0.27,
     "ego_half_lane": 0.27,
-    "_note": "四层字典序选择（2026-10-18 走廊重建）：奖励车 > 擦边普通车 > 金币 > 中心带。层间不求和；层内金币取价值最高、车取最早到站。horizon_s 是短视界；center_band_lane=0.3 是 L4 不修正容差带（带内目标=当前横位，带外只去近侧带边，不追正中）；center_lookahead_m=0 用当前站中心（2m 前瞻中心在弯道/分段带上有偏置）；preposition_*=无即时目标时向短视界外机会侧预置：6s 内、车侧 2.5 道内的奖励车/车/金币，锚点最多偏 1 道。并线承诺期（route.control 且路线 merging）1~3 层与预置全部关闭，只在承诺道做第 4 层回中（sel_why=commit）。graze_gap_lane 是擦边目标距车心；横移可达性直接复用 planner 的横向加速度/速度上限推导（与执行层同一套运动学，选择层不再持有换道时间参数）；coin_pick_tol_lane=金币主目标只吃当前线 ±1.2 道内的组；coin_hold_s=币组消失后沿最后币线再走 0.6s（更高层立即覆盖）；aligned_lane/reward_aligned_lane=已对齐目标的横距阈值（阈值内只留反应时间，不要求横移准备）。wall_margin_lane 是目标离走廊缘的夹取余量。"
+    "lane_clearance_lane": 0.06,
+    "_note": "四层字典序选择（2026-10-18 走廊重建）：奖励车 > 擦边普通车 > 金币 > 中心带。层间不求和；层内金币取价值最高、车取最早到站。horizon_s 是短视界；L4 回中是车心安全区间：以选定车道中心为心、±(0.5−ego_half_lane−lane_clearance_lane)≈0.17 道，区间内不修正、压边界才回带到最近边界（center_band_lane 只作上限，旧 0.3 道比车道内可偏的 0.23 道还宽）；center_lookahead_m=0 用当前站中心（2m 前瞻中心在弯道/分段带上有偏置）；preposition_*=无即时目标时向短视界外机会侧预置：6s 内、车侧 2.5 道内的奖励车/车/金币，锚点最多偏 1 道。并线承诺期（route.control 且路线 merging）1~3 层与预置全部关闭，只在承诺道做第 4 层回中（sel_why=commit）。graze_gap_lane 是擦边目标距车心；横移可达性直接复用 planner 的横向加速度/速度上限推导（与执行层同一套运动学，选择层不再持有换道时间参数）；coin_pick_tol_lane=金币主目标只吃当前线 ±1.2 道内的组；coin_hold_s=币组消失后沿最后币线再走 0.6s（更高层立即覆盖）；aligned_lane/reward_aligned_lane=已对齐目标的横距阈值（阈值内只留反应时间，不要求横移准备）。wall_margin_lane 是目标离走廊缘的夹取余量。"
   },
   "coarse": {
     "control": true,

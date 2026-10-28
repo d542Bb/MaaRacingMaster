@@ -33,7 +33,8 @@ class Selection:
     """四层选择层参数（2026-10-18 走廊重建；数值真源 decision.json selection）。
 
     横向量全为米制；带 `_lane` 的键在进选择层时 ×lane_w。``horizon_s`` 是
-    短视界（含中间机会），``center_band_lane`` 是 L4 的不修正容差带。"""
+    短视界（含中间机会）；L4 不修正区间由 ``lane_clearance_lane`` 推导
+    （车道内物理余量），``center_band_lane`` 只作带宽上限。"""
 
     horizon_s: float = 3.0
     max_waypoints: int = 4
@@ -56,6 +57,7 @@ class Selection:
     reward_tol_lane: float = 1.5
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
+    lane_clearance_lane: float = 0.06
 
 
 @dataclass(frozen=True)
@@ -879,7 +881,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             reward_tol_lane=_num_def(
                 d, "selection", "reward_tol_lane", 1.5, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),
-            ego_half_lane=_num_def(d, "selection", "ego_half_lane", 0.27, lo=0)),
+            ego_half_lane=_num_def(d, "selection", "ego_half_lane", 0.27, lo=0),
+            lane_clearance_lane=_num_def(
+                d, "selection", "lane_clearance_lane", 0.06, lo=0)),
         coarse=Coarse(
             control=_bool(d, "coarse", "control", True),
             lookahead_m=_num_def(d, "coarse", "lookahead_m", 24.0, lo=0),
