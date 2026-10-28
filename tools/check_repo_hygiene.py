@@ -18,6 +18,11 @@
      import 路径、子进程命令或数据入口引用。
   R5 死引用：任何文件引用 `tools/experiments/<主题>/` 而该主题目录已不存在 → 违规
      （退役后引用链必须已拔净，这是"删目录"一步的验收）。
+  R6 工作台入口护栏：`docs/plan/*.md` 头部必须有三行——`> **状态**：` 取闭集
+     {active, retiring}、`> **归属去向**：`、`> **退役条件**：`（均非空）。
+     与 R1 同构：状态是入口护栏不是生命周期数据库——不存在 done / 已完成 / archived，
+     plan 的"完成"就是删除；写了"已实施"却留在树里即本区唯一的病。
+     另打印台账（未动天数，不影响退出码），让"没人删"持续可见而不是静默豁免。
 
 棘手机制：`tools/repo_hygiene_baseline.txt` 记录立规之日的存量违规（legacy，按触碰面
 逐个分诊，见 tools/experiments/README.md）。基线**只减不增**——新违规直接红；
@@ -30,8 +35,10 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import re
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]   # 本脚本在 tools/ 直下
@@ -40,6 +47,17 @@ ROOT = Path(__file__).resolve().parents[1]   # 本脚本在 tools/ 直下
 TOPIC_PATH = re.compile(r"tools/experiments/([\w.\-]+)/")
 PLAN_PATH = re.compile(r"docs/plan/[\w\-][\w\-./]*")
 STATUS_LINE = re.compile(r"^\s*status:\s*active\b", re.I | re.M)
+
+# R6：plan 头部三行（只在文件头部窗口内匹配，避免正文误命中）
+PLAN_STATUS = re.compile(r"^>\s*\*\*状态\*\*\s*[:：]\s*(.+?)\s*$", re.M)
+PLAN_HOME = re.compile(r"^>\s*\*\*归属去向\*\*\s*[:：]\s*(\S.*?)\s*$", re.M)
+PLAN_RETIRE = re.compile(r"^>\s*\*\*退役条件\*\*\s*[:：]\s*(\S.*?)\s*$", re.M)
+PLAN_STATUS_VALUES = {"active", "retiring"}
+PLAN_HEAD_LINES = 60                          # 头部窗口：状态行必须写在开头
+# 可选：实质推进日（台账算未动天数用；缺省回退文件 mtime，会因补头部等格式化动作失真）
+PLAN_UPDATE = re.compile(r"^>\s*\*\*更新\*\*\s*[:：]\s*(\d{4})-(\d{1,2})-(\d{1,2})", re.M)
+# 模板占位符：`<...>` 原样留着等于没填
+PLAN_PLACEHOLDER = re.compile(r"^<.*>$")
 
 FORMAL_GLOBS = ["AGENTS.md", "CONTRIBUTING.md", "docs/*.md", "docs/adr/*.md",
                 "maaracing_master/**/*.md", "apps/**/*.md"]
@@ -74,6 +92,47 @@ class Checker:
                     out.append(p)
         return sorted(set(out))
 
+    def plan_docs(self) -> list[Path]:
+        """工作台文件（gitignore 不入库，CI 上为空；本地跑才有意义）。"""
+        d = self.root / "docs" / "plan"
+        return sorted(p for p in d.glob("*.md") if p.is_file()) if d.is_dir() else []
+
+    @staticmethod
+    def head_text(p: Path) -> str:
+        return "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                         .splitlines()[:PLAN_HEAD_LINES])
+
+    @staticmethod
+    def status_value(raw: str) -> str:
+        """`active（2026-10-28）` / `active | ...` 都取首段，便于手写。"""
+        tok = re.split(r"[｜|（(\s，。；、,.;:：]", raw.strip(), maxsplit=1)[0]
+        return tok.strip("*`_ ").lower()
+
+    def plan_ledger(self) -> list[tuple[int, str, str]]:
+        """台账：(未动天数, 状态, 路径)，按未动天数降序。只呈现，不判红。
+
+        天数优先读头部 `**更新**`；缺失或非法则回退文件 mtime，并在状态后缀 `~` 标记，
+        提醒这个数字会因补头部、改格式这类非推进动作而偏小。
+        """
+        rows = []
+        for p in self.plan_docs():
+            head = self.head_text(p)
+            m = PLAN_STATUS.search(head)
+            st = self.status_value(m.group(1)) if m else "未标"
+            u = PLAN_UPDATE.search(head)
+            days = None
+            if u:
+                try:
+                    d = datetime.date(int(u.group(1)), int(u.group(2)), int(u.group(3)))
+                    days = (datetime.date.today() - d).days
+                except ValueError:
+                    days = None
+            if days is None:
+                days = int((time.time() - p.stat().st_mtime) / 86400)
+                st += "~"
+            rows.append((days, st, self.rel(p)))
+        return sorted(rows, key=lambda r: (-r[0], r[2]))
+
     def scan(self) -> tuple[set[str], set[str]]:
         viol: set[str] = set()
         topics = self.topics()
@@ -104,6 +163,22 @@ class Checker:
                 for t in self.hits(p.read_text(encoding="utf-8", errors="replace")):
                     if t not in topics:
                         viol.add(f"R5|{self.rel(p)}|{t}")
+
+        for p in self.plan_docs():                                  # R6
+            r, head = self.rel(p), self.head_text(p)
+            m = PLAN_STATUS.search(head)
+            if not m:
+                viol.add(f"R6|{r}|缺状态行（> **状态**：active）")
+            else:
+                v = self.status_value(m.group(1))
+                if v not in PLAN_STATUS_VALUES:
+                    viol.add(f"R6|{r}|状态值不在闭集 active|retiring：{v[:24]}")
+            for label, rx in (("归属去向", PLAN_HOME), ("退役条件", PLAN_RETIRE)):
+                mm = rx.search(head)
+                if not mm:
+                    viol.add(f"R6|{r}|缺{label}行")
+                elif PLAN_PLACEHOLDER.match(mm.group(1).strip()):
+                    viol.add(f"R6|{r}|{label}仍是模板占位符，未填")
 
         baseline: set[str] = set()
         if self.baseline_path.exists():
@@ -137,6 +212,17 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         print(f"基线可收缩 {len(stale)} 条（已不再命中，随下次触碰删除）：")
         for v in sorted(stale):
             print(f"  [可删] {v}")
+
+    ledger = ck.plan_ledger()
+    if ledger:
+        print(f"\nplan 工作台：{len(ledger)} 个文件（未动天数 / 状态 / 路径，按天数降序）")
+        for days, st, r in ledger:
+            print(f"  [{days:>4}d] {st:<9} {r}")
+        print("  判读：active = 还有未闭环的事；retiring = 产出已提炼、正在退役。"
+              "没有 done/archived——plan 的完成就是删除；"
+              "超过两周没动且状态仍是 active，先答一句「还差什么」再决定留或退役。"
+              "带 ~ 的是无更新日期、按文件修改时间估算的。")
+
     if fresh:
         print("\n判读：新规则不允许新违规。实验退役四步（结论迁 home → 仪器提升 → 拔引用 → 删目录）"
               "见 tools/experiments/README.md；历史证据指针用 commit，不用实验路径。")
