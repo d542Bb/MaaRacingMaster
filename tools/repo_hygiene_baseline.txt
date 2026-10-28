@@ -5,10 +5,8 @@ R1|bid-pass-dialog|缺 README.md
 R1|bid-strategy-20260917|README 缺 status: active 行
 R1|dual-webview2|README 缺 status: active 行
 R1|frame-page-token|缺 README.md
-R1|gamepad-chain-starvation|缺 README.md
 R1|hall-dwell-flicker|缺 README.md
 R1|hall-popup|缺 README.md
-R1|observe-stage-cost|缺 README.md
 R1|ocr-gate-2026-09-15|缺 README.md
 R1|speedrush_drive|README 缺 status: active 行
 R1|speedrush_gating|缺 README.md
