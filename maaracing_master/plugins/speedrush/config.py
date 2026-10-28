@@ -442,6 +442,7 @@ class Route:
     finish_v_tol_lane_s: float = 0.4
     merge_max_s: float = 4.0
     soft_car: bool = False
+    reject_shift_arrival: bool = False
 
 
 @dataclass(frozen=True)
@@ -913,7 +914,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             finish_v_tol_lane_s=_num_def(d, "route", "finish_v_tol_lane_s",
                                          0.4, lo=0),
             merge_max_s=_num_def(d, "route", "merge_max_s", 4.0, lo=0),
-            soft_car=_bool(d, "route", "soft_car", default=False)),
+            soft_car=_bool(d, "route", "soft_car", default=False),
+            reject_shift_arrival=_bool(
+                d, "route", "reject_shift_arrival", default=False)),
         geometry=Geometry(
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),

@@ -63,6 +63,7 @@ from maaracing_master.plugins.speedrush.lane_obs import LaneObsWorker
 from maaracing_master.plugins.speedrush.lateral_frame import LateralFrameShadow
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
+from maaracing_master.plugins.speedrush.route import PositionLineage
 from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, plan_motion)
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
@@ -981,6 +982,8 @@ class SpeedRushModule(ActivityModule):
                                else run_dir / "depth_debug"),
                     dump=None if cfg.debug_dump.mode == "off" else cfg.debug_dump),
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
+                    # 到达位置谱系（路心读数序列；影子/未来到达门消费）
+                    "pos_lineage": PositionLineage(),
                     # 轨迹计划（motion.mode=off 时恒不调用）：候选时稳门随阶段重建
                     "gate": PlanGate(cfg.motion.switch_margin,
                                      cfg.motion.switch_dwell_s,
@@ -1158,33 +1161,6 @@ class SpeedRushModule(ActivityModule):
                                                              if dgeo is not None
                                                              else ()))
             road_offset = None if corridor is None else -corridor.center_lane
-            out = chain["engine"].update(
-                obs, dt, executed_lane=planner.state.executed_lane,
-                traffic=(tviews, tevents),
-                road_offset=road_offset,
-                corridor=corridor)
-            cfg = chain["cfg"]
-            # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
-            # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。
-            committed = bool(cfg.route.control and out.phase == "merging")
-            if committed and not chain.get("last_committed"):
-                chain["gate"].reset()
-            chain["last_committed"] = committed
-            plan = None
-            if cfg.motion.mode != "off" and chain["engine"].scene is not None \
-                    and out.state is DecisionState.CRUISE:
-                plan_ego = EgoState(planner.state.executed_lane,
-                                    planner.state.v_lat_est,
-                                    planner.state.steer_norm)
-                plan = plan_motion(
-                    chain["engine"].scene, plan_ego,
-                    cfg.motion, cfg.selection, cfg.planner, chain["gate"],
-                    coarse_lane=chain["engine"].coarse_lane,
-                    committed=committed)
-                chain["last_plan_ego"] = plan_ego
-            else:
-                chain["last_plan_ego"] = None
-            chain["last_plan"] = plan
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -1209,6 +1185,41 @@ class SpeedRushModule(ActivityModule):
                     ro_hop = classify_ro_hop(_prev[0], _prev[1], _prev[2],
                                              _t_s, road_offset, _src)
                 chain["ro_hop_prev"] = (_t_s, road_offset, _src)
+            # 到达位置归因（2026-10-28）：与 ro_hop 同源，但在引擎推进**之前**
+            # 算出——路线影子/未来到达门要在同一拍消费。只描述位置来自哪份
+            # 读数，不评价读数本身；缺读数记 no_reading，不静默当 NORMAL。
+            _lineage = chain.get("pos_lineage")
+            position_evidence = None if _lineage is None else _lineage.step(
+                fresh=(road_offset_new if road_offset is not None else False),
+                hop=ro_hop, ro=road_offset, fid=fid)
+            out = chain["engine"].update(
+                obs, dt, executed_lane=planner.state.executed_lane,
+                traffic=(tviews, tevents),
+                road_offset=road_offset,
+                corridor=corridor,
+                position=position_evidence)
+            cfg = chain["cfg"]
+            # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
+            # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。
+            committed = bool(cfg.route.control and out.phase == "merging")
+            if committed and not chain.get("last_committed"):
+                chain["gate"].reset()
+            chain["last_committed"] = committed
+            plan = None
+            if cfg.motion.mode != "off" and chain["engine"].scene is not None \
+                    and out.state is DecisionState.CRUISE:
+                plan_ego = EgoState(planner.state.executed_lane,
+                                    planner.state.v_lat_est,
+                                    planner.state.steer_norm)
+                plan = plan_motion(
+                    chain["engine"].scene, plan_ego,
+                    cfg.motion, cfg.selection, cfg.planner, chain["gate"],
+                    coarse_lane=chain["engine"].coarse_lane,
+                    committed=committed)
+                chain["last_plan_ego"] = plan_ego
+            else:
+                chain["last_plan_ego"] = None
+            chain["last_plan"] = plan
             # 线观测先取：保持期要把它的连续横位当运动观测喂给 planner（深度
             # 保持值冻结时，线是唯一真实的位移来源；模型自走会按打杆量虚走）。
             lw = chain.get("lane_obs")
@@ -1389,6 +1400,12 @@ class SpeedRushModule(ActivityModule):
             # 闸关时这一列是**影子对照面**——离线能量化"承诺拦掉了哪些翻面"
             "route": None if eng.route_verdict is None
             else eng.route_verdict.as_trace(),
+            # 到达位置归因 + 到达门影子（2026-10-28）：同一拍同一输入再跑一份
+            # 带门的路线，只落 trace，不接控制；门关时生产 route 列不变。
+            "attribution": None if eng.position_evidence is None
+            else eng.position_evidence.as_trace(),
+            "route_shadow": None if eng.route_shadow_verdict is None
+            else eng.route_shadow_verdict.as_trace(),
             # 场景快照（motion_plan 输入面）：自车/走廊年龄/对象年龄与 σ
             "scene": None if eng.scene is None else eng.scene.as_trace(),
             # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选

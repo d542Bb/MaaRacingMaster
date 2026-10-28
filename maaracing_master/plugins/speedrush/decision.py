@@ -38,7 +38,8 @@ from maaracing_master.plugins.speedrush.selection import (
 from maaracing_master.plugins.speedrush.presence_occupancy import (
     OccObs, PresenceOccupancy)
 from maaracing_master.plugins.speedrush.route import (
-    PHASE_MERGING, RouteParams, RouteState, RouteVerdict, tick_route)
+    ArrivalAttribution, PHASE_MERGING, RouteParams, RouteState, RouteVerdict,
+    tick_route)
 from maaracing_master.plugins.speedrush.traffic import (
     CarView, PassEvent, OUTCOME_PASS, OUTCOME_PRESUMED_PASS)
 from maaracing_master.plugins.speedrush.tracking import (
@@ -324,6 +325,11 @@ class DecisionEngine:
             soft_car=r.soft_car)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
+        # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，
+        # 不接控制。生产路线用配置门（默认关），影子恒开；两份状态各自推进。
+        self._route_shadow: RouteState | None = None
+        self._shadow_verdict: RouteVerdict | None = None
+        self._position: ArrivalAttribution | None = None
         # 上拍选择层越线请求（道，相对粗层原点）；逐拍刷新，喂 route 裁决
         self._route_req: float | None = None
         self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）
@@ -360,6 +366,9 @@ class DecisionEngine:
         self._coarse = None
         self._route = None
         self._route_verdict = None
+        self._route_shadow = None
+        self._shadow_verdict = None
+        self._position = None
         self._route_req = None
         self._route_epoch = 0
         self._ruler_prev = None
@@ -391,7 +400,8 @@ class DecisionEngine:
                traffic: tuple[tuple[CarView, ...],
                               tuple[PassEvent, ...]] | None = None,
                road_offset: float | None = None,
-               corridor: Corridor | None = None) -> DecisionOutput:
+               corridor: Corridor | None = None,
+               position: ArrivalAttribution | None = None) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
@@ -399,7 +409,9 @@ class DecisionEngine:
 
         ``road_offset``：保留在签名里兼容既有调用（本层不消费，路心由
         corridor 带给出）。``corridor``：同拍分带走廊，选择层唯一的空间证据；
-        None=无路，持守当前横位。"""
+        None=无路，持守当前横位。``position``：当拍到达位置归因（观测面 +
+        影子到达门；生产默认门关，不影响控制）。"""
+        self._position = position
         self._dt_last = dt_s
         self._fid = obs.frame_id
         self._fps = obs.fid_rate_hz
@@ -1099,6 +1111,16 @@ class DecisionEngine:
         """上一拍路线定案结果（trace route 列数据源；离线复算为什么放行/被拒）。"""
         return self._route_verdict
 
+    @property
+    def route_shadow_verdict(self) -> RouteVerdict | None:
+        """上一拍到达门影子定案（trace route_shadow 列；不接控制）。"""
+        return self._shadow_verdict
+
+    @property
+    def position_evidence(self) -> ArrivalAttribution | None:
+        """上一拍到达位置归因（trace attribution 列；只读观测）。"""
+        return self._position
+
     RULER_TOL_LANE = 0.5    # 尺子单拍跳变超过半道 = 参考系重基
 
     def _ruler_epoch(self, c0: float | None,
@@ -1132,11 +1154,21 @@ class DecisionEngine:
                     executed: float | None = None,
                     request: float | None = None) -> None:
         """推进路线一拍。输入只有原始粗层报告、参考系纪元与上拍越线请求
-        （边界 B：承诺值不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。"""
+        （边界 B：承诺值不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。
+
+        同拍再推一份**到达门影子**（C）：同报告/纪元/请求，门恒开；影子状态
+        独立推进，只落 trace，不接控制。生产路线的门读配置（默认关）。"""
+        epoch = self._ruler_epoch(c0, executed)
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
-            dt_s=self._dt_last, epoch=self._ruler_epoch(c0, executed),
-            request=request)
+            dt_s=self._dt_last, epoch=epoch,
+            request=request, arrival=self._position,
+            reject_shift_arrival=self.cfg.route.reject_shift_arrival)
+        self._route_shadow, self._shadow_verdict = tick_route(
+            self._route_shadow, self._coarse, self._route_params,
+            dt_s=self._dt_last, epoch=epoch,
+            request=request, arrival=self._position,
+            reject_shift_arrival=True)
 
     def _lane_for(self, committed: bool) -> float | None:
         """本拍接控制用的道。`committed=False` 逐语句是今天的路径（粗层自选道，

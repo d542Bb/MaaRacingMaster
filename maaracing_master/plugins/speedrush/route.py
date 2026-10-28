@@ -64,6 +64,97 @@ KNOWN_BLOCKERS = ("space", "car")
 # 不是"更保守"，是"没有判据"。
 UNQUALIFIED = ("space", "unknown_car")
 
+# 到达位置归因（2026-10-28 C 门契约）：只描述「完成位置来自哪一份读数」，
+# 不评价读数本身是否可用。换档标签属于相邻两次新鲜读数之间的变化，挂在
+# **较新那份读数**上；保持值继承它重复的那份读数的标签，下一份新鲜读数到达
+# 即清掉旧标签。
+ATTR_NORMAL = "NORMAL"          # 新鲜读数 / hop=0|2 读数的保持值
+ATTR_SHIFT_HELD = "SHIFT_HELD"  # hop=1 的新鲜读数，或它的保持值
+ATTR_OTHER = "OTHER"            # 已知不属于上两类（保持值已经变了）
+ATTR_UNKNOWN = "UNKNOWN"        # 证据不足（首帧/缺读数/hop 缺失）
+
+
+@dataclass(frozen=True)
+class ArrivalAttribution:
+    """一拍的位置归因（观测面；只有 SHIFT_HELD 会被到达门拦）。"""
+
+    kind: str
+    reason: str | None = None
+    last_fresh_ro: float | None = None
+    last_fresh_hop: int | None = None
+    last_fresh_fid: int | None = None
+    d_ro: float | None = None
+
+    def as_trace(self) -> dict:
+        return {"k": self.kind, "why": self.reason,
+                "fid": self.last_fresh_fid, "hop": self.last_fresh_hop,
+                "d": None if self.d_ro is None else round(self.d_ro, 4)}
+
+
+class PositionLineage:
+    """路心读数序列上的归因器；状态只有「上一份新鲜读数」。
+
+    实现口径（与 `C_GATE_DESIGN.md` §8 一致）：`fresh` 由调用方给（新鲜几何
+    证据且非保持），`hop` 是该新鲜读数**到达时**的换档标签；保持拍传
+    `fresh=False`，`hop` 忽略。容差只用于判断「保持值是否等于上一份新鲜
+    读数」；超出即 OTHER，不做近似匹配。
+    """
+
+    def __init__(self, tol: float = 1e-3):
+        self.tol = tol
+        self.last: tuple[float, int | None, int | None] | None = None
+
+    def step(self, *, fresh: bool | None, hop: int | None,
+             ro: float | None, fid: int | None) -> ArrivalAttribution:
+        if fresh is None:
+            return ArrivalAttribution(ATTR_UNKNOWN, "freshness_unknown",
+                                      *(self._last_fields()))
+        if ro is None:
+            return ArrivalAttribution(ATTR_UNKNOWN, "no_reading",
+                                      *(self._last_fields()))
+        if fresh:
+            prev = self.last
+            if prev is None:
+                kind, why = ATTR_UNKNOWN, "first_fresh"
+                d = None
+            elif hop is None:
+                kind, why = ATTR_UNKNOWN, "no_hop"
+                d = ro - prev[0]
+            elif hop == 1:
+                kind, why = ATTR_SHIFT_HELD, None
+                d = ro - prev[0]
+            elif hop in (0, 2):
+                kind, why = ATTR_NORMAL, None
+                d = ro - prev[0]
+            else:
+                kind, why = ATTR_UNKNOWN, "bad_hop"
+                d = ro - prev[0]
+            self.last = (float(ro), hop, fid)
+            return ArrivalAttribution(kind, why, float(ro), hop, fid, d)
+        # 保持拍：位置项只有等于上一份新鲜读数时才归因给它
+        prev = self.last
+        if prev is None:
+            return ArrivalAttribution(ATTR_UNKNOWN, "no_fresh")
+        lro, lhop, lfid = prev
+        d = float(ro) - lro
+        if abs(d) > self.tol:
+            return ArrivalAttribution(ATTR_OTHER, "held_changed",
+                                      lro, lhop, lfid, d)
+        if lhop == 1:
+            return ArrivalAttribution(ATTR_SHIFT_HELD, None,
+                                      lro, lhop, lfid, d)
+        if lhop in (0, 2):
+            return ArrivalAttribution(ATTR_NORMAL, None,
+                                      lro, lhop, lfid, d)
+        return ArrivalAttribution(ATTR_UNKNOWN, "last_hop_missing",
+                                  lro, lhop, lfid, d)
+
+    def _last_fields(self):
+        if self.last is None:
+            return (None, None, None, None)
+        return (self.last[0], self.last[1], self.last[2], None)
+
+
 
 @dataclass(frozen=True)
 class RouteParams:
@@ -134,6 +225,8 @@ class RouteVerdict:
     blocker: str | None = None
     credit: float | None = None      # 机会请求的当前计分（保道态观测面：
     # 「为什么还没并线」= 计分未到门槛）
+    blocked_finish: bool = False     # 到达门（C）当拍是否拦下了一个本会成立的
+    # finish；只作观测/影子，门关时恒 False，不参与其他分支
 
     def as_trace(self) -> dict:
         def _r(x, nd):
@@ -144,7 +237,7 @@ class RouteVerdict:
                 "gain": _r(self.gain_m, 2), "tc": _r(self.t_cur_s, 3),
                 "ev": _r(self.evidence_m, 2), "cd": _r(self.cooldown_left_s, 2),
                 "ep": self.epoch, "blk": self.blocker,
-                "crc": _r(self.credit, 1)}
+                "crc": _r(self.credit, 1), "blkfin": self.blocked_finish}
 
 
 def init_state(epoch: int) -> RouteState:
@@ -212,7 +305,10 @@ def _drivable_lane(ego_lane: float, by: dict) -> float:
 def tick_route(state: RouteState | None, report: CoarseReport | None,
                p: RouteParams, *, dt_s: float,
                epoch: int,
-               request: float | None = None) -> tuple[RouteState | None, RouteVerdict]:
+               request: float | None = None,
+               arrival: ArrivalAttribution | None = None,
+               reject_shift_arrival: bool = False,
+               ) -> tuple[RouteState | None, RouteVerdict]:
     """推进一拍。
 
     `report`：当拍**原始**粗层报告（逐道净空/占用三态），不是接控制的道号。
@@ -226,6 +322,9 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     的路径（`_start_merge`/`_rebuild`）随承诺道一起清空请求与计分，换算基准
     （消费拍的 `lane_ref`）因此始终等于生成拍的；③ 缺车道级证据的拍清零，不冻结
     也不漏分——连续性已断，断供前后两段凑不成一次证据。
+    `arrival` / `reject_shift_arrival`：到达位置门（C，2026-10-28）。门开且
+    归因为 `SHIFT_HELD` 时，本会成立的 finish 不成立；撤销优先、超时语义不变。
+    生产默认门关（`reject_shift_arrival=False`）；影子/未来开关才传 True。
     """
     if report is None or not report.lanes or report.reason == "no_road":
         # 没有车道级证据：时钟继续走，但路线不推进、不判逃生——证据缺席
@@ -290,7 +389,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     s = replace(s, blocked_ticks=(s.blocked_ticks + 1
                                   if _known_blocked(cur) else 0))
     if s.phase == PHASE_MERGING:
-        return _tick_merging(s, by, p, clock, epoch)
+        return _tick_merging(s, by, p, clock, epoch, arrival,
+                             reject_shift_arrival)
     return _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch)
 
 
@@ -310,12 +410,17 @@ def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
 
 
 def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
-                  epoch: int) -> tuple[RouteState, RouteVerdict]:
+                  epoch: int,
+                  arrival: ArrivalAttribution | None = None,
+                  reject_shift_arrival: bool = False,
+                  ) -> tuple[RouteState, RouteVerdict]:
     """并线中：只认两件事——到了没有（位置 + 速率）、该不该撤（目标道连续
     确认被截）。并线期间不评估别的候选：中途改主意就是逐拍翻面。
 
     `soft_car` 开时「确认被截」不再认普通车：目标道有车仍继续并线，由计划层
-    的 0.35 s 迎车门做物理否决；普通车擦撞只是时间成本（RULES §4.3）。"""
+    的 0.35 s 迎车门做物理否决；普通车擦撞只是时间成本（RULES §4.3）。
+    到达门（C）只否决 `finish`：归因为 SHIFT_HELD 时本会成立的完成不成立，
+    继续并线；撤销分支在它之前、超时分支照常。"""
     tgt = by.get(s.lane_target)
     t_tgt = _avail_s(tgt, p)
     since = max(0.0, clock - s.decided_t)
@@ -331,7 +436,10 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
                                 None if tgt is None else tgt.free_m,
                                 p.cancel_cooldown_s, epoch,
                                 blocker=None if tgt is None else tgt.blocker)
-    arrived = (abs(s.v_ref - s.lane_target) <= p.finish_tol_lane
+    blocked = bool(reject_shift_arrival and arrival is not None
+                   and arrival.kind == ATTR_SHIFT_HELD)
+    arrived = (not blocked
+               and abs(s.v_ref - s.lane_target) <= p.finish_tol_lane
                and abs(s.v_est_lane_s) <= p.finish_v_tol_lane_s)
     timeout = clock - s.merge_started_t >= p.merge_max_s
     if arrived or timeout:
@@ -346,11 +454,13 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
             "finish" if arrived else "timeout",
             "arrived" if arrived else "merge_timeout",
             since, None, t_tgt, None, s.cooldown_left_s, epoch,
-            blocker=None if tgt is None else tgt.blocker)
+            blocker=None if tgt is None else tgt.blocker,
+            blocked_finish=blocked)
     return replace(s, unsafe_ticks=unsafe), RouteVerdict(
         PHASE_MERGING, s.lane_ref, s.lane_target, "keep", "merging", since,
         None, t_tgt, None, s.cooldown_left_s, epoch,
-        blocker=None if tgt is None else tgt.blocker)
+        blocker=None if tgt is None else tgt.blocker,
+        blocked_finish=blocked)
 
 
 def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,

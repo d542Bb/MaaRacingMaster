@@ -463,7 +463,8 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
     # C1/§七.1 标定要的关键列都在
     for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_raw", "steer_x",
               "executed_lane", "v_lat_est", "road_offset", "scene",
-              "dgeo_sides", "dgeo_left", "dgeo_right", "lat_ctrl"):
+              "dgeo_sides", "dgeo_left", "dgeo_right", "lat_ctrl",
+              "attribution", "route_shadow"):
         assert k in row, k
     # 航向融合可见面：线观测线程未启动时诚实退回模型（v_head=None）
     assert row["lat_ctrl"]["gain"] == load_decision().planner.heading_fuse_gain

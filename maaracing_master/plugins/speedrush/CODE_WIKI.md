@@ -878,6 +878,13 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
   `None`=未重基。同拍可能有多个候选条件成立，但只有一条分支真正执行，所以记
   执行分支、不记条件布尔；只写 trace，不参与控制。用途是离线归因「横位为什么
   一步换道」，旧 trace 无此列时只能靠供数证据（见 `tools/experiments/merge_contract`）。
+- **到达位置归因与到达门影子（2026-10-28）**：trace `attribution` 记录本拍完成
+  位置来自哪份路心读数（`NORMAL`/`SHIFT_HELD`/`OTHER`/`UNKNOWN` + 原因、新鲜
+  读数 fid/hop、与它的差），`route_shadow` 是同拍同输入再跑一份带到达门的路线
+  定案（`blkfin=true` 表示本会成立的完成被拦）；两者只落 trace，不接控制。
+  换档标签属于相邻两次新鲜读数之间的变化、挂在较新那份上，保持值继承、下一份
+  新鲜读数清除；只有 `SHIFT_HELD` 会被门拦。生产门 `route.reject_shift_arrival`
+  默认关；影子目前只覆盖路线层，请求仍来自生产选择层，不是完整闭环 C。
 - **栅格全带 wmid 路心**（`depth_geo.grid_center_lane`）：逐行绿区 [min,max]
   范围中点（非质心，对居中挖洞楔免疫）× 按绿区宽度加权中位——离线基线
   commit f9a9a80 胜出口径（mean 0.31 道/大错 8%/覆盖 100%，同尺对照找边

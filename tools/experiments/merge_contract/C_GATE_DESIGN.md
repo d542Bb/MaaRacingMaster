@@ -239,7 +239,7 @@ hop 标签属于**相邻两次新鲜读数之间的变化**，挂在**较新那�
 | 归因契约 | 具名枚举、端点、未知原因、边界行为 | 本文件 + 18 例自测通过 |
 | 兼容性 | 开关关闭时 9514 拍 A 回放逐拍复现 | 已复现（0 处不符） |
 | 定向回归 | 4 段复现、60 段不变 | 反事实已复现；待实现后复跑 |
-| 影子验证 | 承诺期、机会层、计划层、执行层差异 | 未做（下一步） |
+| 影子验证 | 承诺期、机会层、计划层、执行层差异 | 路线层影子已落地（§9）；下游未做 |
 | 数值语义 | 容差用真实生产读数验证，不掩盖漂移 | `1e-3` 初值；4 例 d_ro=0，`OTHER` 已单列 |
 
 ### 8.8 第五场 `20261028_200034_1` 与容差边界
@@ -286,3 +286,30 @@ hop 标签属于**相邻两次新鲜读数之间的变化**，挂在**较新那�
   流不可复现。**跑完先归档，再清理**，否则 C 的定向回归样本会越跑越少。
 - 当前磁盘合计（4 场 61 个完成）：`SHIFT_HELD` 2、`NORMAL` 34、`OTHER` 25、
   `UNKNOWN` 0；C：59 原样 + 2 换纪/重建，0 延后完成。
+
+## 9. 影子落地（2026-10-28，路线层；生产门未启用）
+
+已落库、生产控制未改：
+
+- `route.py`：具名归因枚举 + `PositionLineage`（路心读数序列、1e-3 容差）；
+  `tick_route` 新增 `arrival`/`reject_shift_arrival`；`RouteVerdict.blocked_finish`
+  与 trace 的 `blkfin`（只作观测，门关恒 False）。
+- `decision.py`：同拍同报告/纪元/请求再跑一份**影子路线**，状态独立推进；生产
+  路线读配置门（`route.reject_shift_arrival` 默认 false），影子恒开。属性
+  `route_shadow_verdict` / `position_evidence` 只供 trace。
+- `module.py`：路心标注块前移到 `engine.update` **之前**；chain 持一个
+  `PositionLineage`；trace 落 `attribution` 与 `route_shadow` 两列。
+- 配置：`route.reject_shift_arrival=false`（生产门未开，可作回滚开关）。
+- 测试：`test_speedrush_route.py` 增加归因 14 例 + 容差边界 + 门开/关/拦后续
+  完成；`test_speedrush_control_wiring.py` 增加两列存在性；全量 speedrush
+  840 passed（5 skipped）。
+
+**影子现在的边界**：
+
+- 只覆盖路线层；请求仍来自生产选择层（A）——不是完整闭环 C。下游选择/计划
+  差异需要影子克隆（选择器/计划门/规划器均有状态）或 live A/B，尚未做。
+- A/C 一旦分叉，后续同拍差异是反事实轨迹，不是 C 的单拍因果；日志要按各自
+  轨迹读，并标出首次分歧拍。
+- 尚未在实机新局上落过列：下一局先检查 `attribution`/`route_shadow` 是否存在、
+  A 列是否与今天逐拍一致、影子在已知 3 个案例上的行为是否与离线重放一致。
+- 完成判定的速度项问题仍在；影子不改变三值统计口径。

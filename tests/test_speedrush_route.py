@@ -22,7 +22,9 @@ from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.route import (
-    PHASE_KEEP, PHASE_MERGING, RouteParams, init_state, tick_route)
+    ATTR_NORMAL, ATTR_OTHER, ATTR_SHIFT_HELD, ATTR_UNKNOWN,
+    ArrivalAttribution, PHASE_KEEP, PHASE_MERGING, PositionLineage,
+    RouteParams, init_state, tick_route)
 from maaracing_master.plugins.speedrush.tracking import (
     PerceptionHealth, WorldObservation)
 
@@ -182,6 +184,94 @@ def test_merge_finishes_on_position_and_velocity():
     s3, v3 = _tick(s2, _rep(0.9, 1.0))             # 速率归零、位差 0.1 < 带宽
     assert v3.verdict == "finish" and v3.why == "arrived"
     assert v3.lane_ref == 1.0 and v3.phase == PHASE_KEEP
+
+
+# ---------- 到达位置门（C，2026-10-28） ----------
+
+def _arrival_tick(gate: bool, kind: str):
+    """走到"本会完成"的那一拍，再按门开/关与归因重跑一次。"""
+    s, _ = _in_merge()
+    s2, _ = _tick(s, _rep(0.9, 1.0))
+    return tick_route(s2, _rep(0.9, 1.0), P, dt_s=DT, epoch=0,
+                      arrival=ArrivalAttribution(kind),
+                      reject_shift_arrival=gate)
+
+
+def test_arrival_gate_blocks_only_shift_held():
+    """门开时只有 SHIFT_HELD 被拦：位置/速度都成立也不完成，且留 blkfin。"""
+    _, v = _arrival_tick(True, ATTR_SHIFT_HELD)
+    assert v.verdict == "keep" and v.phase == PHASE_MERGING
+    assert v.blocked_finish is True
+    for kind in (ATTR_NORMAL, ATTR_OTHER, ATTR_UNKNOWN):
+        _, ok = _arrival_tick(True, kind)
+        assert ok.verdict == "finish" and ok.blocked_finish is False, kind
+
+
+def test_arrival_gate_off_is_the_production_path():
+    """门关时与今天逐位一致：SHIFT_HELD 也照常完成，blkfin 恒 False。"""
+    _, v = _arrival_tick(False, ATTR_SHIFT_HELD)
+    assert v.verdict == "finish" and v.why == "arrived"
+    assert v.blocked_finish is False
+
+
+def test_blocked_finish_continues_and_finishes_on_a_trusted_reading():
+    """被拦后继续并线；归因恢复 NORMAL 的下一拍照常完成（不是永久卡死）。"""
+    s, _ = _in_merge()
+    s2, _ = _tick(s, _rep(0.9, 1.0))
+    s3, v3 = tick_route(s2, _rep(0.9, 1.0), P, dt_s=DT, epoch=0,
+                        arrival=ArrivalAttribution(ATTR_SHIFT_HELD),
+                        reject_shift_arrival=True)
+    assert v3.verdict == "keep" and v3.blocked_finish is True
+    s4, v4 = tick_route(s3, _rep(0.9, 1.0), P, dt_s=DT, epoch=0,
+                        arrival=ArrivalAttribution(ATTR_NORMAL),
+                        reject_shift_arrival=True)
+    assert v4.verdict == "finish" and s4.phase == PHASE_KEEP
+
+
+def _step(ln: PositionLineage, seq):
+    got = None
+    for ro, fresh, hop in seq:
+        got = ln.step(fresh=fresh, hop=hop, ro=ro, fid=1)
+    return got
+
+
+@pytest.mark.parametrize("name,seq,kind,why", [
+    ("首帧新鲜", [(0.0, True, None)], ATTR_UNKNOWN, "first_fresh"),
+    ("新鲜 hop=0", [(0.2, True, 0), (0.5, True, 0)], ATTR_NORMAL, None),
+    ("新鲜 hop=1", [(0.2, True, 0), (1.3, True, 1)], ATTR_SHIFT_HELD, None),
+    ("新鲜 hop=2 黑视", [(0.2, True, 0), (0.4, True, 2)], ATTR_NORMAL, None),
+    ("hop=1 的保持值", [(0.2, True, 0), (1.3, True, 1), (1.3, False, None)],
+     ATTR_SHIFT_HELD, None),
+    ("hop=0 的保持值", [(0.2, True, 0), (0.5, True, 0), (0.5, False, None)],
+     ATTR_NORMAL, None),
+    ("hop=2 的保持值", [(0.2, True, 0), (0.4, True, 2), (0.4, False, None)],
+     ATTR_NORMAL, None),
+    ("保持值变了", [(0.2, True, 0), (0.5, True, 0), (0.9, False, None)],
+     ATTR_OTHER, "held_changed"),
+    ("还没有新鲜读数", [(0.5, False, None)], ATTR_UNKNOWN, "no_fresh"),
+    ("缺读数", [(None, False, None)], ATTR_UNKNOWN, "no_reading"),
+    ("新鲜度未知", [(0.2, None, None)], ATTR_UNKNOWN, "freshness_unknown"),
+    ("新新鲜读数清旧标签",
+     [(0.2, True, 0), (1.3, True, 1), (0.4, True, 0), (0.4, False, None)],
+     ATTR_NORMAL, None),
+    ("旧值晚到不归因",
+     [(0.2, True, 0), (1.3, True, 1), (0.4, True, 0), (1.3, False, None)],
+     ATTR_OTHER, "held_changed"),
+    ("新鲜但 hop 缺失", [(0.2, True, 0), (0.4, True, None)],
+     ATTR_UNKNOWN, "no_hop"),
+])
+def test_position_lineage_contract(name, seq, kind, why):
+    """归因契约的边界：端点、黑视、保持值变、首帧、缺失与容差。"""
+    got = _step(PositionLineage(), seq)
+    assert (got.kind, got.reason) == (kind, why), name
+
+
+def test_position_lineage_tolerance_boundary():
+    """保持值相等用 1e-3 道：边界内归因，边界外是 OTHER（不做近似匹配）。"""
+    ln = PositionLineage(tol=1e-3)
+    ln.step(fresh=True, hop=1, ro=1.3, fid=1)
+    assert ln.step(fresh=False, hop=None, ro=1.301, fid=2).kind == ATTR_SHIFT_HELD
+    assert ln.step(fresh=False, hop=None, ro=1.302, fid=3).kind == ATTR_OTHER
 
 
 def test_merge_cancel_bans_the_abandoned_lane_during_cooldown():
