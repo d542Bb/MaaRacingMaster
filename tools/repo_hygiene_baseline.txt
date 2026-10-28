@@ -4,7 +4,6 @@
 R1|dual-webview2|README 缺 status: active 行
 R1|speedrush_drive|README 缺 status: active 行
 R1|speedrush_gating|缺 README.md
-R1|speedrush_planning|README 缺 status: active 行
 R1|speedrush_scoring|README 缺 status: active 行
 R2|docs/MAAFW_GUIDE.md|ecosystem-audit
 R2|docs/MAAFW_GUIDE.md|maafw-docs-constraints
