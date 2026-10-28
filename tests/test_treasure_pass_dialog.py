@@ -20,7 +20,7 @@ import pytest
 _REPO = Path(__file__).resolve().parents[1]
 POLICY_PATH = _REPO / "maaracing_master" / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
 IMAGE_DIR = _REPO / "maaracing_master" / "plugins" / "treasure" / "resources" / "image"
-FIXTURE = _REPO / "tools" / "experiments" / "bid-pass-dialog" / "dialog_crop.jpg"
+FIXTURE = _REPO / "tests" / "fixtures" / "dialog_crop.jpg"
 
 try:
     import cv2
