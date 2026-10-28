@@ -10,13 +10,12 @@
 1. **逃生换道**：现任道被**确认**占用/收窄（连续确认，单帧闪检不起意）→
    换到**确实更宽**的一条：完全空闲的道直接合格；有车的道要多出一个换道门槛
    （`switch_gain_m`）的净空。没有合格去处就原地不动（`no_alt`，证据留 trace）。
-2. **机会换道（请求制，2026-10-27）**：选择层出本道区间的得分目标不再自己
-   拽车跨线，改发 `request`（**相对承诺道的偏移 ±1**，本层负责换算成绝对
-   目标道）。本层是**穿越车道线的唯一入口**：现任道确认空闲、请求是相邻
-   一道、目标道合格，**并且同侧请求连续计分到
-   `opportunity_confirm_ticks`**（断一拍扣一分、换侧重起计）才起意并线；
-   否则维持 keep——目标早已被选择层贴回本道安全区间，永远不会停在两条道
-   中间。计分门槛裁决的是「机会真的在那条道上」，不是「这一拍看见了什么」：
+2. **机会换道（请求制，2026-10-27）**：选择层出本道区间的目标不再自己拽车
+   跨线，改发 `request`（目标道）。本层是**穿越车道线的唯一入口**：现任道
+   确认空闲、请求=相邻一道、目标道合格且横穿路径空闲，**并且同侧请求连续
+   计分到 `opportunity_confirm_ticks`**（断一拍扣一分、换侧重起计）才起意
+   并线；拒了就维持 keep——目标早已被选择层贴回本道可活动带，永远不会停在两条
+   道中间。计分门槛裁决的是「机会真的在那条道上」，不是「这一拍看见了东西」：
    实机一局原始请求 61 段里 40 段只有 1~2 拍（币组检测闪断）。
 3. **并线中只认两件事**：到了没有（位置进目标道中心带 **且** 横速落稳）、
    该不该撤（目标道连续确认被截）。并线期间不评估别的候选——中途改主意就是
@@ -120,7 +119,10 @@ class RouteVerdict:
     lane_target: float | None
     verdict: str                     # init/keep/merge_start/finish/timeout/
     # cancel/urgent_no_alt/epoch_reset/rebuild/needs_init
-    why: str                         # 保持或被拒的第一原因码
+    why: str                         # 保持或被拒的第一原因码（keep 态口径见
+    # `_request_reject_reason`：无请求 no_request/blocked_unconfirmed，未到门槛
+    # scoring，被拒 current_unconfirmed/same_lane/not_adjacent/target_missing/
+    # target_unqualified/cooldown_ban/path_blocked）
     since_s: float                   # 距上次定案的时间（"多久动一次"的观测面）
     gain_m: float | None             # 当前道与被选替代道的净空差（米）
     t_cur_s: float | None            # 现任道最早占用时刻（代理速度，秒）
@@ -383,42 +385,53 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
             alt.free_m - cur.free_m, t_cur, cur.free_m, s.cooldown_left_s,
             epoch, blocker=alt.blocker)
 
-    if s.req_lane is not None and s.req_credit >= p.opportunity_confirm_ticks \
-            and _clear(cur):
+    if s.req_lane is not None:
         # 机会换道请求（选择层出界目标转来）：现任道确认空闲才让机会主导，
         # 现任被占/无法确认时不归请求管——逃生分支按自己的确认节奏裁决。
-        # 计分未到门槛的拍维持 keep（还在攒证据，不是被拒）。
-        alt = _request_target(s, by)
-        if alt is not None:
-            return _start_merge(s, alt, clock), RouteVerdict(
-                PHASE_MERGING, alt.lane, alt.lane, "merge_start",
-                "opportunity", since, None, _avail_s(alt, p), None,
-                s.cooldown_left_s, epoch, blocker=alt.blocker,
-                credit=s.req_credit)
-    why = "clear" if _clear(cur) else "blocked_unconfirmed"
+        if s.req_credit < p.opportunity_confirm_ticks:
+            why = "scoring"          # 还在攒证据，不是被拒
+        elif not _clear(cur):
+            why = "current_unconfirmed"
+        else:
+            why = _request_reject_reason(s, s.req_lane, by)
+            if why is None:
+                alt = by[float(s.req_lane)]
+                return _start_merge(s, alt, clock), RouteVerdict(
+                    PHASE_MERGING, alt.lane, alt.lane, "merge_start",
+                    "opportunity", since, None, _avail_s(alt, p), None,
+                    s.cooldown_left_s, epoch, blocker=alt.blocker,
+                    credit=s.req_credit)
+    else:
+        why = "no_request" if _clear(cur) else "blocked_unconfirmed"
     return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target, "keep", why,
                            since, None, t_cur, None, s.cooldown_left_s, epoch,
                            blocker=cur.blocker, credit=s.req_credit)
 
 
-def _request_target(s: RouteState, by: dict) -> CoarseLane | None:
-    """请求解析出的可起意目标道；None=维持 keep。
+def _request_reject_reason(s: RouteState, tgt: float,
+                           by: dict) -> str | None:
+    """机会请求的拒绝原因码；None=可起意。只报**第一原因**，顺序即优先级。
 
-    只出**相邻**一道（两号外不是换道动作）；目标道必须存在——不悄悄换成
-    别的道当替补——且合格（`space`/`unknown_car` 不是"更保守"，是"没有
-    判据"），也不在撤销冷却的禁入名单里（刚放弃的道不回头）。"""
-    tgt = s.req_lane
-    if tgt is None:
-        return None
+    拒了就维持 keep——目标早已被选择层贴回本道可活动带，被拒/撤销的车**不会
+    停在两条道中间**（请求逐拍刷新，机会还在下拍还会再来）。冷却期内刚
+    放弃的道不回头；`space`/`unknown_car` 不是"更保守"，是"没有判据"。
+    `path_blocked` 今天的生产路径恒真（请求只出相邻 ±1 道，中间道集合为空），
+    留着是契约的守卫：请求口径一旦放宽，它就是唯一挡在占用车前面的门。"""
     alt = by.get(tgt)
-    if alt is None or tgt == s.lane_ref or abs(alt.lane - s.lane_ref) > 1.5:
-        return None
+    if tgt == s.lane_ref:
+        return "same_lane"
+    if alt is None:
+        return "target_missing"      # 不能悄悄换成别的道当替补
+    if abs(alt.lane - s.lane_ref) > 1.5:
+        return "not_adjacent"
     if not _qualified(alt):
-        return None
+        return "target_unqualified"
     if s.cooldown_left_s > 0.0 and s.ban_lane is not None \
             and alt.lane == s.ban_lane:
-        return None
-    return alt
+        return "cooldown_ban"
+    if not _path_clear(s, alt, by):
+        return "path_blocked"
+    return None
 
 
 def _start_merge(s: RouteState, alt: CoarseLane,

@@ -163,9 +163,12 @@ def test_unknown_current_lane_is_not_an_escape_reason():
 
 
 def test_clear_lane_holds_without_a_reason_to_move():
-    """现任道确认空闲：没有理由动（净空全被窗长封顶，主动换道无动机）。"""
+    """现任道确认空闲且无请求：没有理由动（净空全被窗长封顶）。
+
+    why 记 `no_request` 而不是含糊的 `clear`：离线要能把「本拍没有请求」与
+    「有请求但被拒」分开分账（后者带具体原因码）。"""
     s, v = _first(_rep(0.0, 1.0))
-    assert v.verdict == "keep" and v.why == "clear" and v.lane_ref == 0.0
+    assert v.verdict == "keep" and v.why == "no_request" and v.lane_ref == 0.0
 
 
 # ---------- 并线生命周期 ----------
@@ -355,7 +358,7 @@ def test_gate_on_raw_flip_does_not_move_target(monkeypatch):
     assert eng.coarse_report.lane == 1.0             # 原始读数确实翻了
     assert eng.coarse_lane == 0.0                    # 接控制的没翻
     assert eng.selection_report.target_x_m == pytest.approx(before)
-    assert eng.route_verdict.why == "clear"
+    assert eng.route_verdict.why == "no_request"
 
 
 def test_gate_on_confirmed_block_moves_target(monkeypatch):
@@ -431,6 +434,8 @@ def test_ruler_jump_rebases_but_small_drift_does_not(monkeypatch):
     eng.update(_obs(4), DT, executed_lane=0.0, corridor=_corridor(0.9 + LW))
     assert eng.route_verdict.verdict == "epoch_reset"
     assert eng.route_verdict.epoch == 1
+
+
 # ---------- 机会换道请求（跨线唯一入口，2026-10-27） ----------
 
 def _tick_req(state, report, request, epoch=0):
@@ -458,6 +463,7 @@ def test_opportunity_request_starts_a_merge():
     s, v = _tick_req(None, _rep(0.0, 0.0), 0.0)     # 首拍立状态（无请求）
     s, v = _req_run(s, _rep(0.0, 0.0), 1.0, P.opportunity_confirm_ticks - 1)
     assert v.verdict == "keep" and v.credit == P.opportunity_confirm_ticks - 1
+    assert v.why == "scoring"                       # 有请求、未到门槛——不是拒绝
     s, v = _tick_req(s, _rep(0.0, 0.0), 1.0)        # 补满门槛那一拍起意
     assert v.verdict == "merge_start" and v.why == "opportunity"
     assert v.lane_ref == 1.0 and s.phase == PHASE_MERGING
@@ -495,17 +501,18 @@ def test_side_switch_restarts_the_credit():
 def test_request_rejects_far_blocked_and_current_targets():
     """两号外、无法确认/走不下、请求=现任道——统统维持 keep，不起意。
 
-    目标由选择层回夹本道安全区间，这里锁路线侧「不换道」这一半。"""
+    每条都带**第一原因码**：离线按段统计「请求为什么没变成并线」直接读
+    `route.why`，不需要重放判据。"""
     s, v = _first(_rep(0.0, 0.0))
     n = P.opportunity_confirm_ticks + 2
-    for req, spec in (
-            (2.0, None),
-            (-2.0, None),
-            (1.0, {1.0: (0.0, "unknown_car", True)}),
-            (1.0, {1.0: (0.0, "space", False)}),
-            (0.0, None)):
+    for req, spec, why in (
+            (2.0, None, "not_adjacent"),
+            (-2.0, None, "not_adjacent"),
+            (1.0, {1.0: (0.0, "unknown_car", True)}, "target_unqualified"),
+            (1.0, {1.0: (0.0, "space", False)}, "target_unqualified"),
+            (0.0, None, "same_lane")):
         s2, v2 = _req_run(s, _rep(0.0, 0.0, spec), req, n)
-        assert v2.verdict == "keep", req
+        assert v2.verdict == "keep" and v2.why == why, req
 
 
 def test_epoch_rebuild_clears_pending_credit():
@@ -535,7 +542,8 @@ def test_request_cancelled_by_cooldown_then_reissued():
         s, v = _tick_req(s, _rep(0.0, 0.0), 1.0)     # 机会还在，请求逐拍刷新
         assert v.verdict != "merge_start", i
         if v.credit >= P.opportunity_confirm_ticks:
-            seen_ban = True                          # 门槛已到，被冷却挡住
+            assert v.why == "cooldown_ban", i        # 门槛已到，被冷却挡住
+            seen_ban = True
     assert seen_ban
     s, v, _n = _req_until_merge(s, _rep(0.0, 0.0), 1.0, limit=6)
     assert v.why == "opportunity"
@@ -546,22 +554,23 @@ def test_request_needs_current_lane_confirmed_clear():
     安全判据（被占/无法确认的道要先走逃生路径的节奏）。"""
     spec = {0.0: (2.0, "unknown_car", True), 1.0: CLEAR}
     s, v = _first(_rep(0.0, 0.0, spec))
-    assert v.verdict == "keep"
+    assert v.verdict == "keep" and v.why == "blocked_unconfirmed"
     s, v = _req_run(s, _rep(0.0, 0.0, spec), 1.0,
                     P.opportunity_confirm_ticks + 4)
-    assert v.verdict == "keep"
+    assert v.verdict == "keep" and v.why == "current_unconfirmed"
     assert v.credit > P.opportunity_confirm_ticks      # 分攒够了，门没开
 
 
 def test_request_does_not_short_circuit_escape_confirmation():
     """现任道持续被截：确认满门槛那一拍走 urgent，不是 opportunity（同一次
-    并线只有一条起意理由，逃生优先）。确认未满的拍请求仍在攒分。"""
+    并线只有一条起意理由，逃生优先）。确认未满的拍请求仍在攒分（why=scoring），
+    不冒充拒绝原因。"""
     spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
     s, _ = _tick(None, _rep(0.0, 0.0, spec), 0)
     s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)
-    assert v.verdict == "keep" and v.credit == 1.0
+    assert v.verdict == "keep" and v.why == "scoring"
     s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)     # blocked_ticks=2
-    assert v.verdict == "keep" and v.credit == 2.0
+    assert v.verdict == "keep" and v.why == "scoring"
     s, v = _tick_req(s, _rep(0.0, 0.0, spec), 1.0)     # 满 3 拍：urgent 先行
     assert v.verdict == "merge_start" and v.why == "urgent"
 
@@ -607,6 +616,7 @@ def test_request_beyond_the_road_is_not_substituted():
     s = replace(init_state(0), lane_ref=2.0, lane_from=2.0)
     s, v = _req_run(s, _rep(2.0, 2.0), 1.0, P.opportunity_confirm_ticks + 3)
     assert v.verdict != "merge_start"
+    assert v.why == "target_missing"                      # 目标道不存在，不是拒绝得含糊
     assert s.lane_ref == 2.0 and v.lane_ref == 2.0        # 原地不动，不找替补
 
 
