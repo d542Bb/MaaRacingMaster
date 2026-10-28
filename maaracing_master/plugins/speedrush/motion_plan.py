@@ -465,6 +465,10 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         uncertain = True
     car_half = selection.car_half_lane * lane_w
     graze = motion.graze_gap_lane * lane_w
+    # 擦边只对横向够得着的车成立：选择层擦边层已经按双方半宽收车，计划层
+    # 若只看「候选到站时刻的横距」，2 道外的车也会被算成擦边目标——满杆
+    # 横穿两道去够一个 50m 外的车（20261027 局 134222_1 s1 9.1~9.4s）。
+    pass_max_off_m = motion.pass_max_offset_lane * lane_w
     # 大车不作擦边目标（按真实宽度判）；碰撞仍吃它自己的半宽
     graze_max_w = motion.graze_max_width_m
 
@@ -628,8 +632,11 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         for c in (() if committed else cars):
             # 无到站时间的车只当静态障碍，不算“擦车通过”：
             # t=None 的并列车会让 t=0 的初始距离冒充一次超车。
-            # 越界读数与大车同理：不作擦边目标。
+            # 越界读数与大车同理：不作擦边目标。横向超过可达门也不作：
+            # 擦边分只换邻道极限超车，不换跨道横穿。
             if not c.timed or not c.in_corridor or _large(c):
+                continue
+            if abs(c.x_m - scene.ego_x_m) > pass_max_off_m:
                 continue
             tc = c.t_arrive_s
             if tc is None or tc > horizon or tc < motion.hit_min_lead_s:
@@ -691,6 +698,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 if not c.timed or not c.in_corridor or _large(c) \
                         or c.t_arrive_s is None \
                         or not (horizon < c.t_arrive_s <= prep_h):
+                    continue
+                # 预置与擦边同门：不为跨道的未来车提前横移。
+                if abs(c.x_m - scene.ego_x_m) > pass_max_off_m:
                     continue
                 x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
                 side = 1.0 if x_ref >= c.x_m else -1.0

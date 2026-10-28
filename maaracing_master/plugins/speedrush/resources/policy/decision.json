@@ -116,6 +116,7 @@
     "collision_min_lead_s": 0.35,
     "hit_min_lead_s": 0.5,
     "graze_gap_lane": 0.75,
+    "pass_max_offset_lane": 1.25,
     "coin_collect_half_lane": 0.35,
     "graze_max_width_m": 2.2,
     "near_cy_margin_px": 120.0,

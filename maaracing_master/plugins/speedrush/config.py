@@ -285,6 +285,12 @@ class Motion:
     # 擦车目标距车心：物理包络+σ+余量约 2.18m，0.65 道只剩 2.5cm 带、
     # 低于采样分辨率（整层 0 触发）；0.75 道留约 0.36m 带。
     graze_gap_lane: float = 0.75
+    # 擦边/普通车预置的横向可达门：车心距自车超过此值（道）不参与打分。
+    # 选择层的擦边层只收 |Δx| ≤ 双方半宽（约 0.54 道）的车；计划层若不设门，
+    # 50m 外、2 道外的车也会被算成“擦边目标”并给 120 分——空路满杆左打去
+    # 够左侧 2 道的车（20261027 局 134222_1 s1 9.1~9.4s）。1.25 道保留邻道
+    # 极限超车（约 1 道），拒绝跨两道取分。
+    pass_max_offset_lane: float = 1.25
     coin_collect_half_lane: float = 0.35
     # 大车（宽 > 此值的车）不作擦边目标：真实半宽会吃进"擦边"带，
     # 且卡车的极限超车判定与轿车不同口径。仍按真实半宽计入碰撞。
@@ -765,6 +771,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "hit_min_lead_s", 0.5, lo=0),
             graze_gap_lane=_num_def(
                 d, "motion", "graze_gap_lane", 0.75, lo=0),
+            pass_max_offset_lane=_num_def(
+                d, "motion", "pass_max_offset_lane", 1.25, lo=0),
             coin_collect_half_lane=_num_def(
                 d, "motion", "coin_collect_half_lane", 0.35, lo=0),
             graze_max_width_m=_num_def(

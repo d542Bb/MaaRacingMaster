@@ -202,6 +202,26 @@ def test_large_vehicle_not_a_graze_target():
     assert large.layer == 4
 
 
+def test_pass_reach_is_lateral_not_just_arrival_distance():
+    """擦边分只换邻道极限超车：2 道外的车即使候选到站时刻能凑进擦车带，
+    也不该让车横穿两道去够它（20261027 局 s1 9.1~9.4s 空路满杆）。"""
+    road = RoadFrame((RoadBand(0.0, 6.0, -10.0, 10.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 20.0, -10.0, 10.0, True)
+    near = _plan(_scene(road=road, ego_m=0.0,
+                        cars=[CarSource(LW, 1.0, age_ms=0.0)]))
+    far = _plan(_scene(road=road, ego_m=0.0,
+                       cars=[CarSource(2.0 * LW, 1.0, age_ms=0.0)]))
+    assert near.layer == 2 and near.value_total >= CFG.motion.value_graze
+    assert far.layer == 4 and far.value_total == 0.0
+    # 预置同门：视界外的 2 道车也不拉预置分
+    near_prep = _plan(_scene(road=road, ego_m=0.0,
+                             cars=[CarSource(LW, 3.0, age_ms=0.0)]))
+    far_prep = _plan(_scene(road=road, ego_m=0.0,
+                            cars=[CarSource(2.0 * LW, 3.0, age_ms=0.0)]))
+    assert near_prep.value_total > 0.0
+    assert far_prep.value_total == 0.0
+
+
 def _corridor(*, fid=1, last_fid=1):
     bands = tuple(CorridorBand(
         -2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
