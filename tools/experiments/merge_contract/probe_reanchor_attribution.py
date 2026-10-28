@@ -250,6 +250,9 @@ def labels_for(rows, i: int):
         lab.add(LABEL_UNKNOWN)
     info["multi"] = lab
     info["single"] = next(x for x in LABEL_ORDER if x in lab)
+    # 生产重锚标签（planner 的 lat_ctrl.rebase，记录**实际执行**的分支）：
+    # 有就是权威来源；旧 trace 没有这一列，归因回退到证据单标签。
+    info["prod"] = (rows[i].get("lat_ctrl") or {}).get("rebase")
     # 帧差：诊断列，不单独定性。
     fd = []
     for k in (i, i + 1):
@@ -480,6 +483,7 @@ def analyse_game(label, rows, path):
             "d": j["d"], "ex0": j["ex0"], "ex1": j["ex1"],
             "v0": j["v0"], "v1": j["v1"],
             "multi": info["multi"], "single": info["single"],
+            "prod": info["prod"],
             "hop": info["hop"], "gap": info["gap"], "hold": info["hold"],
             "shadow": info["shadow"], "fd": info["fd"],
             "ro": ro_i, "fresh": fresh_i,
@@ -579,6 +583,21 @@ def render(results, meta, missing_sessions) -> str:
             L.append("- 单标签分布（仅为便于看分布，不是已证实原因）：" +
                      "，".join(f"{k}={single[k]}" for k in LABEL_ORDER
                                if single[k]))
+        n_prod = sum(1 for g in ok for e in g["events"] if e["prod"])
+        if n_prod:
+            prod_dist = {}
+            for g in ok:
+                for e in g["events"]:
+                    if e["prod"]:
+                        prod_dist[e["prod"]] = prod_dist.get(e["prod"], 0) + 1
+            L.append("- **生产重锚标签**（`lat_ctrl.rebase`，实际执行的分支）："
+                     f"{n_prod}/{tot_j} 次有标签；" +
+                     "，".join(f"{k}={v}" for k, v in sorted(prod_dist.items())) +
+                     "。有标签时「归因」列直接用它，证据标签保留作对照。")
+        else:
+            L.append("- 生产重锚标签（`lat_ctrl.rebase`）：本批 trace 无此列"
+                     "（旧版本产出），「归因」列回退为证据单标签；"
+                     "证据标签与分母不受影响。")
         L.append(f"- 没有命中指定证据标记的「不明」跳变 {unexp} 次"
                  f"（构成见 §3：多数仍是 executed 一步对齐到当拍新鲜读数，"
                  f"只是该读数位移被 `ro_hop` 判成运动而非换档）。")
@@ -656,11 +675,11 @@ def render(results, meta, missing_sessions) -> str:
              "下一段结束或 200 拍内的动作。")
     L.append("")
     head = ("| 局 | # | 跳变fid | Δexec | 前→后 exec | v 前→后 | 标签集合 | "
-            "单标签 | hop | gap(s) | hold | 影子(行:src) | \\|fd\\| | "
+            "单标签 | 生产 | 归因 | hop | gap(s) | hold | 影子(行:src) | \\|fd\\| | "
             "exec−ro | ph/ref/tgt | 请求/计分 | 并线 | 换纪fid(ep) | 承诺 | "
             "所在段 | 窗口 |")
     L.append(head)
-    L.append("|" + "---|" * 22)
+    L.append("|" + "---|" * 24)
     for g in results:
         if g["blocked"]:
             continue
@@ -693,7 +712,9 @@ def render(results, meta, missing_sessions) -> str:
                 f"{_fmt(e['ex0'])}→{_fmt(e['ex1'])} | "
                 f"{_fmt(e['v0'])}→{_fmt(e['v1'])} | "
                 f"{'+'.join(x for x in LABEL_ORDER if x in e['multi'])} | "
-                f"{e['single']} | {hop} | {_fmt(e['gap'])} | {hold} | "
+                f"{e['single']} | {e['prod'] or '-'} | "
+                f"{e['prod'] or e['single']} | "
+                f"{hop} | {_fmt(e['gap'])} | {hold} | "
                 f"{shadow} | {fd} | {_fmt(e['align'])} | "
                 f"{e['ph']}/{_fmt(e['ref'], 1)}/{_fmt(e['tgt'], 1)} | "
                 f"{'-' if e['req'] is None else _fmt(_num(e['req']), 1)}/"
