@@ -108,6 +108,15 @@ class PerfSampler:
                            "ts_mono": None}
         self._gpu_dead = False
         self._status_error: str | None = None
+        # 领域行取值口（sidecar 在模块启动/停止时登记，采样器只持一个可调用对象，
+        # 不认识任何模块——分层红线：通用层不指向业务）
+        self._domain_reader: Callable[[], list[dict]] | None = None
+        self._domain_slow_warn_at = -1e9
+        # 落盘失败：待补缺口区间（起止 sample_id）+ 累计/连续计数。
+        # 状态机见 _write_lines：标记与当前样本都成功才算这一拍落盘完成。
+        self._persist_gap: tuple[int, int] | None = None
+        self._persist_failures = 0
+        self._persist_consecutive = 0
 
     # ---------- 生命周期 ----------
 
@@ -157,6 +166,10 @@ class PerfSampler:
         with self._file_lk:
             self._close_file_locked()
             self._file = fh
+            # 新会话新文件：缺口与计数都从头记（旧文件的缺口已随旧句柄关闭）
+            self._persist_gap = None
+            self._persist_failures = 0
+            self._persist_consecutive = 0
 
     def on_session_closing(self, deadline_monotonic: float):
         """会话关闭：未落样本收尾全量（可配关）、未完事件记 incomplete、关句柄。"""
@@ -189,11 +202,18 @@ class PerfSampler:
                     ensure_ascii=False, separators=(",", ":")))
             with self._file_lk:
                 fh = self._file
-                if fh is not None and lines:
-                    try:
-                        for ln in lines:
-                            fh.write(ln + "\n")
-                    except OSError:
+                if fh is not None:
+                    # 先补历史缺口，再写收尾行；收尾行失败同样计入缺口
+                    self._write_gap_locked(fh)
+                    if lines:
+                        try:
+                            for ln in lines:
+                                fh.write(ln + "\n")
+                        except OSError:
+                            ok = False
+                            self._persist_failures += 1
+                    # 收尾再试一次：仍失败就留在摘要里，不静默
+                    if self._persist_gap is not None and not self._write_gap_locked(fh):
                         ok = False
                 self._close_file_locked()
         except Exception:  # noqa: BLE001 —— 收尾异常如实记账，不拖垮 logger 关闭
@@ -203,7 +223,34 @@ class PerfSampler:
                 self._session_token = None
                 self._session_path = None
                 self._close_requested = False
-        return type("CloseSummary", (), {"ok": ok, "details": {}})()
+        if self._persist_gap is not None:
+            ok = False                      # 缺口没补完，不宣称数据已完整落盘
+        return type("CloseSummary", (), {"ok": ok, "details": {
+            "persist_failures": self._persist_failures,
+            "persist_gap": self._persist_gap,
+        }})()
+
+    # ---------- 领域面取值口 ----------
+
+    def set_domain_reader(self, reader: Callable[[], list[dict]] | None) -> None:
+        """登记/注销领域行取值口（sidecar 在模块启动、停止时调用）。
+
+        reader 契约：返回已规范化的行数组（`perf_contract.normalize` 的产物），
+        **不抛异常**——异常处理在登记侧完成，采样器只负责调用与计时。
+        传 None 表示当前没有活动模块：样本只带资源面。
+        """
+        self._domain_reader = reader
+
+    def _sample_domain(self) -> tuple[list[dict], str | None]:
+        """取一拍领域行。每拍读一次引用：中途换模块不会拿到半新半旧的数据。"""
+        reader = self._domain_reader
+        if reader is None:
+            return [], None
+        try:
+            rows = reader()
+        except Exception as exc:  # noqa: BLE001 —— 取值口违约不能拖垮采样线程
+            return [], repr(exc)
+        return list(rows or []), None
 
     # ---------- 模块事件接口 ----------
 
@@ -247,7 +294,10 @@ class PerfSampler:
                     "events": self._evt_seq,
                     "ring": len(self._ring),
                     "session": self._session_token,
-                    "error": self._status_error}
+                    "error": self._status_error,
+                    "persist_failures": self._persist_failures,
+                    "persist_consecutive": self._persist_consecutive,
+                    "persist_gap": self._persist_gap}
 
     # ---------- 内部：采样循环 ----------
 
@@ -318,7 +368,7 @@ class PerfSampler:
                 lines.append(self._event_line(evt, incomplete=False,
                                               reason=None, to_id=to_id))
         if lines:
-            self._write_lines(lines)
+            self._write_lines(lines, sample_id=sample["sample_id"])
         return sample
 
     # ---------- 内部：指标 ----------
@@ -340,17 +390,36 @@ class PerfSampler:
         except Exception:  # noqa: BLE001 —— 基线失败不阻断启动，首拍按 0 记
             pass
 
+    #: 领域行取值耗时告警线（毫秒）。契约要求取值口纯读、常数时间；超线说明
+    #: 模块在采样线程里干了别的事，先让人看见，别静默变慢。
+    DOMAIN_SLOW_MS = 5.0
+
     def _build_sample(self) -> dict:
+        """一拍样本：样本号与时间戳取 tick 开始那一刻，三个面各自计时。
+
+        三个面不是同一瞬间的快照（sys 先采、domain 后采），`cost_ms` 记各自
+        耗时偏移——事后能判断「这一拍慢在哪一面」，而不是把时间差当采样误差。
+        """
         with self._lk:
             self._sample_seq += 1
             sid = self._sample_seq
+        t_tick = time.monotonic()
         sample = {
             "v": SCHEMA_VERSION, "type": "sample", "sample_id": sid,
             "ts_wall_ns": time.time_ns(), "ts_mono_ns": time.monotonic_ns(),
             "_p": False,
         }
+        cost: dict[str, float] = {}
+
+        t0 = time.monotonic()
         sample.update(self._sample_system())
+        cost["sys"] = (time.monotonic() - t0) * 1000.0
+
+        t0 = time.monotonic()
         sample["procs"] = self._sample_procs()
+        cost["procs"] = (time.monotonic() - t0) * 1000.0
+
+        t0 = time.monotonic()
         if sid % self._gpu_every == 0:
             self._refresh_gpu()
         gpu = dict(self._gpu)
@@ -358,7 +427,32 @@ class PerfSampler:
         gpu["age_s"] = None if ts is None else round(time.monotonic() - ts, 1)
         gpu.pop("ts_mono", None)
         sample["gpu"] = gpu
+        cost["gpu"] = (time.monotonic() - t0) * 1000.0
+
+        t0 = time.monotonic()
+        rows, domain_err = self._sample_domain()
+        sample["domain"] = rows
+        if domain_err:
+            sample["domain_error"] = domain_err
+        cost["domain"] = (time.monotonic() - t0) * 1000.0
+
+        cost["total"] = (time.monotonic() - t_tick) * 1000.0
+        sample["cost_ms"] = {k: round(v, 3) for k, v in cost.items()}
+        self._warn_slow_domain(cost["domain"])
         return sample
+
+    def _warn_slow_domain(self, ms: float) -> None:
+        """取值口超阈值告警（60 秒最多一条，避免刷屏）。"""
+        if ms < self.DOMAIN_SLOW_MS:
+            return
+        now = time.monotonic()
+        if now - self._domain_slow_warn_at < 60.0:
+            return
+        self._domain_slow_warn_at = now
+        from maaracing_master.core.logger import logger
+        logger.log(f"[perf] 领域行取值耗时 {ms:.1f}ms（阈值 "
+                   f"{self.DOMAIN_SLOW_MS}ms）：模块取值口应纯读、常数时间",
+                   "WARNING")
 
     def _sample_system(self) -> dict:
         try:
@@ -482,16 +576,58 @@ class PerfSampler:
              "ts_mono_ns": time.monotonic_ns()},
             ensure_ascii=False, separators=(",", ":"), default=str)
 
-    def _write_lines(self, lines: list[str]) -> None:
+    def _write_lines(self, lines: list[str], *,
+                     sample_id: int | None = None) -> None:
+        """落盘（含缺口状态机）：标记与当前样本都成功才算这一拍落盘完成。
+
+        失败时记缺口区间，下一拍**优先**补写 persist_gap；标记写成功后继续写
+        当前样本——只写标记就收工会留下「状态已恢复、样本凭空消失」的假象，
+        而缺口记账比不记账更糟，因为它宣称自己记得。
+        """
         with self._file_lk:
             fh = self._file
             if fh is None:
                 return
+            if self._persist_gap is not None and not self._write_gap_locked(fh):
+                if sample_id is not None:
+                    self._extend_gap_locked(sample_id)
+                return                          # 标记没补上，整拍推迟，不丢记账
             try:
                 for ln in lines:
                     fh.write(ln + "\n")
             except OSError:
-                pass                            # 落盘失败不拖垮采样线程
+                self._persist_failures += 1
+                self._persist_consecutive += 1
+                if sample_id is not None:
+                    self._extend_gap_locked(sample_id)
+                return                          # 失败不拖垮采样线程
+            self._persist_consecutive = 0
+
+    def _write_gap_locked(self, fh) -> bool:
+        """写缺口标记（调用方持 _file_lk）。成功清区间，失败保留待下次重试。"""
+        gap = self._persist_gap
+        if gap is None:
+            return True
+        line = json.dumps(
+            {"v": SCHEMA_VERSION, "type": "persist_gap",
+             "from": gap[0], "to": gap[1],
+             "failures": self._persist_failures,
+             "ts_wall_ns": time.time_ns(),
+             "ts_mono_ns": time.monotonic_ns()},
+            ensure_ascii=False, separators=(",", ":"))
+        try:
+            fh.write(line + "\n")
+        except OSError:
+            self._persist_failures += 1
+            self._persist_consecutive += 1
+            return False
+        self._persist_gap = None
+        return True
+
+    def _extend_gap_locked(self, sample_id: int) -> None:
+        """把一次失败并入待补区间（相邻区间合并，不覆盖）。"""
+        a, b = self._persist_gap or (sample_id, sample_id)
+        self._persist_gap = (min(a, sample_id), max(b, sample_id))
 
     def _close_file_locked(self) -> None:
         fh, self._file = self._file, None

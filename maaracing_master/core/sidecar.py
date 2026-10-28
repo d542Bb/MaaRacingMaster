@@ -58,7 +58,7 @@ from maaracing_master.core.paths import (
 from maaracing_master.core.perf_contract import (
     all_missing, normalize, rows_for)
 from maaracing_master.core.perf_sampler import (
-    build_perf_payload, ensure_perf_sampler_started)
+    build_perf_payload, ensure_perf_sampler_started, perf_sampler)
 from maaracing_master.core.remote_meta import (
     EXTERNAL_TARGETS,
     GITHUB_REPO,
@@ -731,29 +731,11 @@ class SidecarService:
             worker = self._worker
             queue_run = dict(self._queue_run) if self._queue_run else None
             round_result = dict(self._round_result) if self._round_result is not None else None
-        # 性能领域行：模块在类上声明「会报哪几行」（PERF_ROWS），core 按声明
-        # 校验并判级。core 不点名任何活动模块（方向红线：通用层不指向模块），
-        # 只认声明里的格子。没声明 → 只有资源面；取值口抛异常 → 整批标
-        # read_error，资源面照常（监控故障不拖垮状态轮询）。
-        module = self._controller.active_module
-        declared = rows_for(module)
-        perf_rows: list[dict] = []
-        if declared:
-            reader = getattr(module, "read_perf_snapshot", None)
-            if not callable(reader):
-                perf_rows = all_missing(declared, "not_reported")
-            else:
-                try:
-                    perf_rows, unknown = normalize(declared, reader())
-                    for k in unknown:
-                        if k not in self._perf_unknown_warned:
-                            self._perf_unknown_warned.add(k)
-                            logger.log(f"[perf] 模块返回了未声明的键 {k!r}，已丢弃",
-                                       "WARNING")
-                except Exception as exc:  # noqa: BLE001 —— 读数失败绝不影响状态轮询
-                    perf_rows = all_missing(declared, "read_error")
-                    logger.log(f"[sidecar] 性能快照读取失败: {exc}", "DEBUG")
-        perf = build_perf_payload(perf_rows)
+        # 性能载荷**只读采样器快照**，不再直接问模块：面板看到的和 perf.jsonl
+        # 记下的是同一份数据（采样器是唯一采集时钟与唯一写手）。代价是数字最多
+        # 滞后一个采样周期（1s），换的是「看到的＝记下的」。
+        snap = perf_sampler.snapshot()
+        perf = build_perf_payload(snap.get("domain"), snap)
         return (True, {
             "is_running": self._controller.module_active,
             "current_stage": self._controller.current_stage,
@@ -904,6 +886,35 @@ class SidecarService:
             logger.log(f"断点模式: 从 {breakpoints_used} 开始运行")
         return (True, None, None)
 
+    # ---------- 性能领域行取值口（注册给采样器） ----------
+
+    def _make_perf_reader(self):
+        """构造领域行取值口：闭包内每次取当前活动模块，换模块自动跟随。
+
+        契约要求取值**纯读、常数时间、不抛异常**——异常在这里就地转成
+        `read_error` 行，采样线程不会被模块拖住。
+        """
+        def read() -> list[dict]:
+            module = self._controller.active_module
+            declared = rows_for(module)
+            if not declared:
+                return []
+            reader = getattr(module, "read_perf_snapshot", None)
+            if not callable(reader):
+                return all_missing(declared, "not_reported")
+            try:
+                rows, unknown = normalize(declared, reader())
+            except Exception as exc:  # noqa: BLE001 —— 读数失败不拖垮采样线程
+                logger.log(f"[sidecar] 性能取值失败: {exc}", "DEBUG")
+                return all_missing(declared, "read_error")
+            for k in unknown:
+                if k not in self._perf_unknown_warned:
+                    self._perf_unknown_warned.add(k)
+                    logger.log(f"[perf] 模块返回了未声明的键 {k!r}，已丢弃",
+                               "WARNING")
+            return rows
+        return read
+
     def _worker_main(self, plan: list[tuple[str, str | None, dict | None]]) -> None:
         """按计划顺序逐个跑模块；失败/手动停止即中止整轮（剩余模块标记 skip）。
 
@@ -918,6 +929,8 @@ class SidecarService:
         results: dict[str, str] = {}
         all_natural = True
         total = len(plan)
+        # 领域行取值口在整轮期间有效（内部按当前活动模块取值），结束后注销
+        perf_sampler.set_domain_reader(self._make_perf_reader())
         try:
             for i, (module_id, start_from, module_config) in enumerate(plan):
                 with self._lock:
@@ -951,6 +964,7 @@ class SidecarService:
             # 报错退出 / 手动停止不触发。发 auto_exit 事件 → shell 关闭窗口优雅退出。
             if all_natural and self._controller.auto_exit_mra:
                 self.send({"type": "event", "event": "auto_exit"})
+            perf_sampler.set_domain_reader(None)
             with self._lock:
                 if self._worker is threading.current_thread():
                     self._worker = None
