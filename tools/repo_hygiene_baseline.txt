@@ -1,10 +1,7 @@
 # 仓库卫生基线（棘轮：只减不增）。立规 2026-09-18 的存量违规在此豁免，
 # 按触碰面分诊后删除对应行；新增违规不在本文件 = CI 红。
 # 键格式：规则|文件/主题|标识。语义见 tools/check_repo_hygiene.py 与 tools/experiments/README.md。
-R1|bid-strategy-20260917|README 缺 status: active 行
 R1|dual-webview2|README 缺 status: active 行
-R1|hall-dwell-flicker|缺 README.md
-R1|hall-popup|缺 README.md
 R1|speedrush_drive|README 缺 status: active 行
 R1|speedrush_gating|缺 README.md
 R1|speedrush_planning|README 缺 status: active 行
