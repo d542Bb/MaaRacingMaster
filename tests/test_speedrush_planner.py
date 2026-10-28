@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -174,7 +175,10 @@ def test_reanchor_none_means_noop():
 # ---------- ABORT 冻结值归属（契约细节 3） ----------
 
 def test_abort_freezes_executed_not_decision_x():
-    pl = LateralPlanner(P)
+    # 本用例只锁「不跟决策 x_target 回中」；死区用旧值避免把新死区
+    # （0.15 道）的收敛速度混进判据。
+    db = 0.5
+    pl = LateralPlanner(replace(P, hold_deadband_lane=db))
     _run_moving(pl, 0.8, ticks=6)                 # 变道中：executed>0 且仍在向右打
     assert pl.state.executed_lane > 0.05 and pl._last_raw > 0
     frozen = pl.state.executed_lane
@@ -186,7 +190,7 @@ def test_abort_freezes_executed_not_decision_x():
     for i in range(1, 10):
         pl.update(_out(state=DecisionState.ABORT, x_target=0.0,
                        fid=300 + i, valid=300 + i), DT, 300 + i)
-    assert frozen <= pl.state.executed_lane <= frozen + P.hold_deadband_lane
+    assert frozen <= pl.state.executed_lane <= frozen + db
     # 离开 ABORT 后恢复正常跟踪
     pl.update(_out(state=DecisionState.CRUISE, x_target=0.0,
                    fid=400, valid=400), DT, 400)
@@ -815,7 +819,7 @@ def test_hold_authority_deadband_and_cap():
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                   v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
-    pl.state.executed_lane = 0.3                       # 误差 0.3 < 死区 0.5
+    pl.state.executed_lane = 0.1                       # 误差 0.1 < 死区 0.15
     c = pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1)
     assert c.steer_x == 0                              # 不发力（旧语义会持续拽）
     pl.state.executed_lane = 1.2                       # 带内（≤1.4）：k_p0.7→u=0.84
@@ -835,6 +839,21 @@ def test_maneuver_full_authority_moves_one_lane():
         max_stick = max(max_stick, abs(cmd.steer_x))
     assert max_stick > int(0.45 * _STICK_FULL)
     assert pl.state.executed_lane > 0.3
+
+
+def test_small_maneuver_error_stays_gentle():
+    """maneuver 按安全区间（约 0.17 道）置位，但 0.2 道的日常修正不得用全权：
+    执行层全权门槛仍是 0.3 道。计划因参考系分歧退回 PD 时尤其要守住。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+    pl.state.executed_lane = 0.2
+    c = pl.update(_out(x_target=0.0, fid=2, valid=2, maneuver=True), DT, 2)
+    assert c.steer_x == 0 or abs(c.steer_x) <= int(P.hold_stick_max * _STICK_FULL)
+    # 同一拍误差放大到 0.8 道：才允许越过维护杆幅
+    pl.state.executed_lane = 0.8
+    c = pl.update(_out(x_target=0.0, fid=3, valid=3, maneuver=True), DT, 3)
+    assert abs(c.steer_x) > int(P.hold_stick_max * _STICK_FULL)
 
 
 def test_wall_escape_uses_full_authority():
@@ -981,14 +1000,16 @@ def test_corridor_infeasible_plan_commands_escape():
         valid=False, reason="plan:stale", u_feedforward=-0.6,
         x_preview_lane=0.8, v_preview_lane_s=0.0)
     pl2.update(_out(x_target=0.93, fid=2, valid=2), DT, 2, plan=stale)
-    assert abs(pl2.last_steer_raw) < 0.05        # 其它无效原因仍走死区
+    # 不用无效计划的杆值；新死区 0.15 下 0.26 道误差会经 gentle PD 轻修正，
+    # 但幅度远小于计划候选的 −0.6。
+    assert abs(pl2.last_steer_raw) < 0.3
 
 
 def test_maneuver_deadband_and_cap_used():
-    """机动态用 maneuver_deadband_lane/maneuver_stick_max：误差 0.1 道
-    （低于保持死区 0.5、高于机动态死区 0.05）仍发力。"""
+    """机动态用 maneuver_deadband_lane/maneuver_stick_max：误差超全权门槛
+    0.3 道后发力，机动态死区 0.05 小于保持死区 0.15。"""
     pl = _planner(maneuver_deadband_lane=0.05, maneuver_stick_max=0.85)
-    cmd = pl.update(_out(x_target=0.1, fid=1, valid=1, maneuver=True), DT, 1)
+    cmd = pl.update(_out(x_target=0.5, fid=1, valid=1, maneuver=True), DT, 1)
     assert cmd.steer_x > 0
 
 

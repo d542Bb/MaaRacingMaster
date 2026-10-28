@@ -148,11 +148,16 @@ class Planner:
     anchor_stale_s: float      # 距上次被接受修正超此秒数（含断供）→ 陈旧重基到路上 [需实测]
     # —— 维护性转向权限（2026-09-26 16:44 局复盘：定中心全权 PD=满舵绕桩，
     #    257/267 饱和拍在保持态、速度起不来）——
-    hold_deadband_lane: float  # 死区：|前瞻误差| 小于此不发维护力（车道单位）[需实测]
+    hold_deadband_lane: float  # 死区：|前瞻误差| 小于此不发维护力（道；0.15=车道内物理余量，2026-10-27 从 0.5 收紧）
     hold_stick_max: float      # 维护性转向（定中心/保持/回稳）杆幅上限 [需实测]
     # ---- 机动态全权（阶段 2，2026-10-18：decision.maneuver 置位时）----
     maneuver_deadband_lane: float = 0.0   # 机动态死区（道，0=无死区）
     maneuver_stick_max: float = 0.45      # 机动态杆幅上限（0.45=与保持态相同）
+    # 执行层全权的误差门槛（道）：选择层 maneuver 现在按安全区间（约 0.17 道）
+    # 置位，但 0.2 道的日常修正不该用满舵——全权仍要求 |目标−车位| 超此值。
+    # 20261027_150850_1 s2：计划因参考系分歧退回 PD 的拍占 37%，PD 把 0.2 道
+    # 误差当机动，实际满杆 122→227；加此门后回到旧全权触发量级。
+    maneuver_full_error_lane: float = 0.3
     # ---- 路心观测速度注入抑制（阶段 2，2026-10-18）----
     obs_beta_deadband_lane: float = 0.0   # |r| 低于此只做位置修正（0=关）
     obs_beta_sign_agree: bool = False     # r 与上次被接受修正反号时不做速度修正
@@ -666,6 +671,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "planner", "maneuver_deadband_lane", 0.0, lo=0),
             maneuver_stick_max=_num_def(
                 d, "planner", "maneuver_stick_max", 0.45, lo=0, hi=1),
+            maneuver_full_error_lane=_num_def(
+                d, "planner", "maneuver_full_error_lane", 0.3, lo=0),
             obs_beta_deadband_lane=_num_def(
                 d, "planner", "obs_beta_deadband_lane", 0.0, lo=0),
             obs_beta_sign_agree=_bool(d, "planner", "obs_beta_sign_agree",

@@ -517,12 +517,18 @@ class LateralPlanner:
                 steer_raw = -math.copysign(
                     self.p.maneuver_stick_max, self.state.v_lat_est)
             # 场跟随：保持态=维护性定中心（gentle，16:44 局）；机动态
-            # （目标距自车超过切换死区）=全权——机动态死区/杆幅另配。
+            # （目标距自车足够远）=全权——机动态死区/杆幅另配。选择层
+            # maneuver 现在按安全区间（约 0.17 道）置位，但执行层全权仍要求
+            # 误差超 maneuver_full_error_lane（0.3 道）：否则计划因参考系分歧
+            # 退回 PD 时，0.2 道的日常修正会被当成机动打满舵
+            # （20261027_150850_1 s2 实测满杆 122→227 的回归）。
             # 贴边逃生：|executed|超 _WALL_ESCAPE_LANE（保持车道 ±1 + 0.4）时
             # 也走全权——墙是硬约束，gentle 的 0.45 杆幅把 1.4 道级回带拖成
             # 1s+（20261026 局：贴边拍 53/99 是计划走廊不可行被否决、PD 以
             # gentle 回带，整段停在墙侧）。回带方向仍由目标给出，不改目标。
-            elif (decision.maneuver
+            elif ((decision.maneuver and abs(
+                    decision.x_target - self.state.executed_lane)
+                   > self.p.maneuver_full_error_lane)
                     or abs(self.state.executed_lane) > _WALL_ESCAPE_LANE):
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
