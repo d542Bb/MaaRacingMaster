@@ -180,7 +180,17 @@ class Planner:
     # 有效减速的中位（满杆 ~1.3 道/s²，散布 0.4~3.1）；0.8 的保守低端在回放里
     # 表现为提前反打（杆值反向 −16%、Σ|Δu| −15%）。比 a_lat_gain 小一个量级
     # 是真实的：反打要先转过车头，转向链延迟吃掉大半减速。
-    brake_decel_lane_s2: float = 1.3
+    brake_decel_lane_s2: float = 2.5
+    # 刹停预算的越带容差（道）：预测停止点越过「目标 ± 此值」才升级满杆反打。
+    # 与 hold_deadband_lane（PD 维护死区，0.15 道=车道内物理余量）分开：
+    # 前者是允许的刹车过冲，后者是「不追噪声」的容差；0.5 是 2026-10-26
+    # 人工局 bang-bang 定档值，不随维护死区收紧。
+    brake_edge_lane: float = 0.5
+    # 刹停预算的最小横速（道/s）：低于此值没有可刹的动量，位置偏差交给
+    # 计划/PD 平滑回带。旧实现只排除 |v|<1e-3，车几乎静止但偏了 0.5 道时
+    # 也会满舵回带（20261027_153408_1：满杆拍里 28~35% 是 |v|<0.3 的
+    # 静态位置修正）。
+    brake_min_v_lane_s: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -669,7 +679,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             plan_u_slew_s=_num_def(
                 d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
             brake_decel_lane_s2=_num_def(
-                d, "planner", "brake_decel_lane_s2", 1.3, lo=0, lo_open=False),
+                d, "planner", "brake_decel_lane_s2", 2.5, lo=0, lo_open=False),
+            brake_edge_lane=_num_def(
+                d, "planner", "brake_edge_lane", 0.5, lo=0),
+            brake_min_v_lane_s=_num_def(
+                d, "planner", "brake_min_v_lane_s", 0.3, lo=0),
             heading_fuse_gain=_num_def(
                 d, "planner", "heading_fuse_gain", 0.0, lo=0, hi=1)),
         traffic=Traffic(

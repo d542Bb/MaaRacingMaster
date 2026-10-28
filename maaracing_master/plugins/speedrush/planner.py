@@ -18,8 +18,10 @@ v3 2026-10-26 人工局手柄流重辨识）：
 "杆值→稳态横向速度"的静态 K_v（原 v_lat_gain 前提证伪）。**松杆后横速几乎
 不衰减**（人工局真实摇杆 11 段拟合 tau≥12s 撞上界；旧 0.5s 是程序闭环+贴墙
 段污染的拟合产物）——停住横移靠反打杆主动刹，刹停减速用
-``brake_decel_lane_s2``（人工反打有效减速 p50 1.3；八局回放定档 1.3，
-0.8 的保守低端会提前反打）做停止点预算；
+``brake_decel_lane_s2``（2.5＝本控制器满杆反打的**实测**有效减速：杆值限速
++低通把模型加速度吃掉大半，160949 局实录 2.1~2.6；初版 1.3 取的是人工变道
+的 p50，按它预测会把「其实刹得住」的到位段判成越界，满舵反打打早一倍）做
+停止点预算；
 ``tau_align_s`` 只留作数值稳定的长尾项。
 A1 归一下自车恒 0、**目标读数**推不出自车位移，但**路缘两侧读数**可以：
 路中心相对自车 = 自车横向位置的反号——``road_offset`` 入参（step 2.5，
@@ -368,12 +370,13 @@ class LateralPlanner:
         ——必须立即满杆反打。横速归零后停止点收敛到当前位置，条件自动
         退出，不锁死反打。"""
         v = self.state.v_lat_est
-        if abs(v) < 1e-3 or self.p.brake_decel_lane_s2 <= 0.0:
+        if abs(v) < self.p.brake_min_v_lane_s \
+                or self.p.brake_decel_lane_s2 <= 0.0:
             return False
         sgn = math.copysign(1.0, v)
         stop = (self.state.executed_lane
                 + sgn * v * v / (2.0 * self.p.brake_decel_lane_s2))
-        edge = target + math.copysign(self.p.hold_deadband_lane, v)
+        edge = target + math.copysign(self.p.brake_edge_lane, v)
         return (stop - edge) * sgn > 0.0
 
     def update(self, decision: DecisionOutput, dt_s: float,
