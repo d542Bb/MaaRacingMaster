@@ -227,62 +227,6 @@ def test_rotation_triggers_and_backup_count(tmp_path: Path):
     assert nums and max(nums) <= Logger.BACKUP_COUNT
 
 
-def test_prune_keeps_recent_and_ignores_others(tmp_path: Path):
-    """保留只清旧会话；不碰 sidecar_stderr.log / 无关文件；旧版 .debug.log 一并回收。"""
-    log = Logger(tmp_path)
-    # 造 5 个会话（互不相同的时间戳），其中夹带旧版分档遗留的 .debug.log
-    for i in range(5):
-        ts = f"2026090{i + 1}_000000"
-        (tmp_path / f"MaaRM_{ts}.log").write_text("old\n", encoding="utf-8")
-        (tmp_path / f"MaaRM_{ts}.debug.log").write_text("old\n", encoding="utf-8")
-    (tmp_path / "sidecar_stderr.log").write_text("keep\n", encoding="utf-8")
-    (tmp_path / "NOT_a_log.txt").write_text("keep\n", encoding="utf-8")
-    log.prune_sessions(keep=1)   # 只保留最近 1 组
-    # 非目标文件保留
-    assert (tmp_path / "sidecar_stderr.log").exists()
-    assert (tmp_path / "NOT_a_log.txt").exists()
-    # 只剩最近 1 组：其 .log 与旧版 .debug.log 同属一组，整组同清
-    remaining = sorted(p.name for p in tmp_path.glob("MaaRM_*"))
-    assert remaining == ["MaaRM_20260905_000000.debug.log", "MaaRM_20260905_000000.log"]
-
-def test_prune_never_deletes_active_session(tmp_path: Path):
-    """活动会话永不删；写盘关闭后回落普通保留语义（会话目录整目录回收）。"""
-    log = Logger(tmp_path)
-    log.set_file_logging(True)
-    log.log("active", "INFO")          # 写入当前会话文件（session_ts 此时非 None）
-    cur_file = log.log_file            # 当前会话文件
-    session_dir = log.session_dir
-    assert session_dir is not None
-    (session_dir / "trace.jsonl").write_text("{}\n", encoding="utf-8")   # 伴随产物
-    assert cur_file.exists()
-    log.prune_sessions(keep=0)         # keep=0：理论上全清，但活动会话必须保留
-    assert cur_file.exists()           # 活动会话未被删
-    assert (session_dir / "trace.jsonl").exists()
-    log.set_file_logging(False)        # 关闭写盘（session_ts 清空 → 不再保护）
-    log.prune_sessions(keep=0)
-    assert not cur_file.exists()
-    assert not session_dir.exists()    # 会话目录连同伴随产物整目录回收
-
-
-def test_prune_recycles_session_dirs_with_companions(tmp_path: Path):
-    """现行形态按会话目录整目录回收（日志 + trace.jsonl 同清），不碰无关目录。"""
-    log = Logger(tmp_path)
-    for i in range(3):
-        d = tmp_path / f"2026090{i + 1}_000000"
-        d.mkdir()
-        (d / f"MaaRM_{d.name}.log").write_text("old\n", encoding="utf-8")
-        (d / "trace.jsonl").write_text("{}\n", encoding="utf-8")
-    misc = tmp_path / "misc"
-    misc.mkdir()
-    (misc / "notes.txt").write_text("keep\n", encoding="utf-8")
-    log.prune_sessions(keep=1)
-    assert sorted(p.name for p in tmp_path.iterdir() if p.is_dir()) == ["20260903_000000", "misc"]
-    # 旧会话目录里的 trace.jsonl 随目录一起清掉，不残留孤儿文件
-    assert not (tmp_path / "20260901_000000").exists()
-    assert (tmp_path / "20260903_000000" / "trace.jsonl").is_file()
-    assert (misc / "notes.txt").is_file()
-
-
 # ---------- T1 通道机制（P3） ----------
 
 def test_channel_default_to_app(log):

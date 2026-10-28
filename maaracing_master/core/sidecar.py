@@ -1599,8 +1599,6 @@ def main() -> None:
     logger.set_file_logging(bool(isinstance(_dbg, dict) and _dbg.get("file_logging", False)))
     # 性能采样器常驻（随主进程起停；会话落盘随日志开关联动）
     ensure_perf_sampler_started()
-    # 启动时执行一次旧会话保留清理（不依赖本次是否启用写盘）
-    logger.prune_sessions()
     protocol_stdout = sys.stdout
     sys.stdout = _StdoutGuard(protocol_stdout)  # 后续一切 print 都走 stderr，协议通道纯净
     try:

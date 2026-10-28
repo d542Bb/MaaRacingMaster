@@ -2,20 +2,18 @@
 # -*- coding: utf-8 -*-
 """NavKit 决策流水记录器（S2，纯标准库）。
 
-每帧一行 JSONL，默认常开；会话保留由 `keep_sessions` 控制，默认 10。
+每帧一行 JSONL，默认常开；会话目录只增不删，占用由用户自行清理。
 写入目录由调用方传入（运行时应传 C 盘既有 debug 目录），本模块不自行决定路径。
 
 设计约束：
 - 只接收普通 Python 值，不能把 numpy / cv2 对象写进 trace；
 - 单行追加，崩溃前已有帧仍可读；
-- 完成会话后按文件名时间排序清理旧会话；
 - 不记录绝对路径、密钥或个人隐私。
 """
 from __future__ import annotations
 
 import json
 import re
-import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -105,21 +103,19 @@ class FrameTrace:
 
 
 class TraceWriter:
-    """按会话写入 `trace.jsonl`，并清理超过 keep_sessions 的旧会话。
+    """按会话写入 `trace.jsonl`。
 
     两种落点模式：
     - 传入 `session_dir`（既有会话目录，如 debug 帧的 `<ts>/`）：trace.jsonl 直接
-      写进该目录，与 raw 帧同会话对齐；prune 不触碰外部会话目录。
+      写进该目录，与 raw 帧同会话对齐。
     - 未传 `session_dir`：在 `root` 下自建 `YYYYMMDD_HHMMSS/` 子目录（无 debug
-      会话时的独立 trace 会话，与截图会话同名形态、以无 `raw/` 区分），prune 按
-      keep_sessions 清理。
+      会话时的独立 trace 会话，与截图会话同名形态、以无 `raw/` 区分）。
     """
 
-    def __init__(self, root: str | Path, *, keep_sessions: int = 10,
+    def __init__(self, root: str | Path, *,
                  session_name: str | None = None,
                  session_dir: str | Path | None = None):
         self.root = Path(root)
-        self.keep_sessions = max(1, int(keep_sessions))
         self.root.mkdir(parents=True, exist_ok=True)
         if session_dir is not None:
             self.session_dir = Path(session_dir)
@@ -151,35 +147,6 @@ class TraceWriter:
         self._file.flush()
         self._file.close()
         self._closed = True
-        self.prune()
-
-    def prune(self) -> list[Path]:
-        """保留最近 keep_sessions 个独立 trace 会话（含当前会话），返回删除项。
-
-        候选须同时满足：名称符合会话形态（含遗留 `session_` 前缀）、目录内有
-        `trace.jsonl`、目录内**没有** `raw/`——有 raw/ 的是 debug 截图会话，
-        trace 清理永不触碰；当前写入会话即使落入超额区间也永不删除。
-        """
-        candidates = []
-        for p in self.root.iterdir():
-            if not p.is_dir() or not _SESSION_RE.match(p.name):
-                continue
-            if (p / "raw").exists() or not (p / "trace.jsonl").is_file():
-                continue
-            candidates.append(p)
-        candidates.sort(key=lambda p: p.name.removeprefix("session_"), reverse=True)
-        current = self.session_dir.resolve()
-        removed: list[Path] = []
-        for old in candidates[self.keep_sessions:]:
-            if old.resolve() == current:
-                continue
-            try:
-                shutil.rmtree(old)
-                removed.append(old)
-            except OSError:
-                # 清理失败不影响当前 trace；下次 close 再尝试。
-                continue
-        return removed
 
     def __enter__(self) -> "TraceWriter":
         return self

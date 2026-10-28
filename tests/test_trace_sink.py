@@ -484,17 +484,3 @@ def test_open_during_closing_waits(tmp_path):
     lg.set_file_logging(False)
 
 
-def test_prune_groups_suffixed_dirs(tmp_path):
-    lg = Logger(tmp_path)
-    for name in ("20200101_000000", "20260101_000001_a",
-                 "20260101_000002_b", "20260102_000003_c", "20260102_000003_d"):
-        d = tmp_path / name
-        d.mkdir(parents=True)
-        (d / "MaaRM_x.log").write_text("", encoding="utf-8")
-    lg.prune_sessions(keep=2)
-    assert not (tmp_path / "20200101_000000").exists()
-    assert not (tmp_path / "20260101_000001_a").exists()
-    assert (tmp_path / "20260101_000002_b").exists()
-    # 同秒两个后缀目录属同一会话组，一起保留/清理
-    assert (tmp_path / "20260102_000003_c").exists()
-    assert (tmp_path / "20260102_000003_d").exists()

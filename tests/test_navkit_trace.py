@@ -12,13 +12,6 @@ import pytest
 from maaracing_master.core.navkit import FrameTrace, TraceWriter, json_safe
 
 
-def _touch_trace(path: Path) -> Path:
-    """构造一个含 trace.jsonl 的独立 trace 会话目录。"""
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "trace.jsonl").write_text("{}\n", encoding="utf-8")
-    return path
-
-
 def test_frame_trace_has_reconstruction_fields():
     trace = FrameTrace(
         frame=7,
@@ -40,7 +33,7 @@ def test_frame_trace_has_reconstruction_fields():
 
 
 def test_trace_writer_appends_compact_jsonl(tmp_path: Path):
-    with TraceWriter(tmp_path, keep_sessions=10, session_name="session_20260906_080000") as writer:
+    with TraceWriter(tmp_path, session_name="session_20260906_080000") as writer:
         writer.write(FrameTrace(frame=1, stage="大厅", round_no=None, timestamp_ms=1))
         writer.write({"frame": 2, "stage": "出价", "scores": {"x": 0.5}})
     path = tmp_path / "session_20260906_080000" / "trace.jsonl"
@@ -55,51 +48,12 @@ def test_trace_writer_rejects_invalid_session_name(tmp_path: Path):
         TraceWriter(tmp_path, session_name="not-a-session")
 
 
-def test_trace_prunes_old_sessions(tmp_path: Path):
-    for name in ("session_20260901_000000", "session_20260902_000000", "session_20260903_000000"):
-        _touch_trace(tmp_path / name)
-    writer = TraceWriter(tmp_path, keep_sessions=2, session_name="session_20260904_000000")
-    removed = writer.prune()
-    writer.close()
-    assert (tmp_path / "session_20260904_000000").exists()   # keep=2：当前会话 + 次新会话保留
-    assert (tmp_path / "session_20260903_000000").exists()
-    assert not (tmp_path / "session_20260902_000000").exists()
-    assert not (tmp_path / "session_20260901_000000").exists()
-    assert len(removed) == 2
-
-
 def test_trace_writer_default_session_name_matches_debug_form(tmp_path: Path):
     """独立 trace 会话与 debug 截图会话同名形态：纯 YYYYMMDD_HHMMSS。"""
     with TraceWriter(tmp_path) as writer:
         writer.write(FrameTrace(frame=1, stage="大厅", round_no=None, timestamp_ms=1))
     assert re.fullmatch(r"\d{8}_\d{6}", writer.session_dir.name)
     assert (writer.session_dir / "trace.jsonl").is_file()
-
-
-def test_trace_prune_never_touches_frame_or_empty_dirs(tmp_path: Path):
-    """含 raw/ 的截图会话与无 trace.jsonl 的空目录，prune 一律不碰。"""
-    frames = tmp_path / "20260101_000000"
-    (frames / "raw").mkdir(parents=True)
-    (frames / "trace.jsonl").write_text("{}\n", encoding="utf-8")
-    (tmp_path / "20260102_000000").mkdir()          # 空目录：非 trace 产物
-    stale = _touch_trace(tmp_path / "20260905_000000")
-    writer = TraceWriter(tmp_path, keep_sessions=1, session_name="20260906_000000")
-    removed = writer.prune()
-    writer.close()
-    assert frames.exists()
-    assert (tmp_path / "20260102_000000").exists()
-    assert removed == [stale]
-
-
-def test_trace_prune_sorts_legacy_and_new_names_by_timestamp(tmp_path: Path):
-    """遗留 session_ 前缀与纯时间戳混合时，按去掉前缀后的时间戳排序。"""
-    oldest = _touch_trace(tmp_path / "session_20260901_000000")
-    newer = _touch_trace(tmp_path / "20260905_000000")
-    writer = TraceWriter(tmp_path, keep_sessions=2, session_name="20260906_000000")
-    removed = writer.prune()
-    writer.close()
-    assert removed == [oldest]
-    assert newer.exists()
 
 
 def test_json_safe_does_not_leak_paths_or_objects():

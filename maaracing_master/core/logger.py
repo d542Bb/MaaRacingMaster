@@ -17,12 +17,11 @@ sidecar 启动时的 profile 回读启用。每次开启新建一个**会话目�
   会把时序切断且不可逆：切出的两份文件各自都读不通（DEBUG 档没有业务锚点，INFO 档
   没有诊断细节）。分级过滤留给读侧（GUI）与导出侧，写侧只保证时序完整。
 - 会话生命周期协议：开关切换经独立生命周期锁串行（OPEN → CLOSING → CLOSED）。
-  会话目录名 = `YYYYMMDD_HHMMSS_<短单调后缀>`（同一秒内反复开关不重名；纯时间戳
-  为旧形态，保留清理与识别兼容）。伴随写手（玩法流水汇 `core/trace_sink.py`、
-  性能采样器）以监听器身份跟随会话：开启即绑定，关闭先有界排空写手、后关主日志
-  （写手收尾结果仍能落进本会话文件）；回调在记录锁外执行，回调内可安全 log()。
-  最近数次收尾状态在内存保留（`last_session_close_status`）。
-- 按大小轮转 + 启动时按会话组保留清理，占用有上限。
+  会话目录名 = `YYYYMMDD_HHMMSS_<短单调后缀>`（同一秒内反复开关不重名）。伴随写手
+  （玩法流水汇 `core/trace_sink.py`、性能采样器）以监听器身份跟随会话：开启即绑定，
+  关闭先有界排空写手、后关主日志（写手收尾结果仍能落进本会话文件）；回调在记录锁外
+  执行，回调内可安全 log()。最近数次收尾状态在内存保留（`last_session_close_status`）。
+- 单文件按大小轮转；会话目录只增不删，占用由用户看「调试文件夹」面板自行清理。
 - 写盘持句柄 + Lock 跨线程安全。
 
 结构化记录（契约 v2 冻结于 commit 81c2eb2，实验目录退役后本 docstring 即契约正文的 home）：
@@ -55,7 +54,6 @@ sidecar 启动时的 profile 回读启用。每次开启新建一个**会话目�
 import math
 import re
 import secrets
-import shutil
 import time
 from collections import deque
 from datetime import datetime
@@ -133,10 +131,9 @@ class Logger:
     # 进程内行缓冲上限。实测峰值约 4 行/秒，按最坏情况放大 25 倍取 100 行/秒，
     # 5000 行对应 50 秒最坏积压，安全裕度充足。
     BUFFER_CAPACITY = 5000
-    # 落盘参数：单文件轮转上限 / 备份份数 / 启动保留的会话组数。
+    # 落盘参数：单文件轮转上限 / 备份份数。
     MAX_BYTES = 10 * 1024 * 1024
     BACKUP_COUNT = 2
-    KEEP_SESSIONS = 5
 
     # ---- 结构化契约常量（DESIGN_log_api v2） ----
     SCHEMA_VERSION = 1
@@ -152,12 +149,6 @@ class Logger:
     # 已收尾组的 outcome 墓碑上限（重复 end 要能幂等回读）。
     _CLOSED_TOMBSTONES = 256
 
-    # `(?:\.debug)?` 兼容旧版分档产物，让保留清理顺带回收历史 .debug.log。
-    _SESSION_RE = re.compile(r"MaaRM_(\d{8}_\d{6})(?:\.debug)?\.log(?:\.\d+)?$")
-    # 会话目录形态：logs/<YYYYMMDD_HHMMSS[_<短后缀>]>/（现行落盘形态，内含
-    # MaaRM_<ts>.log 与伴随产物）；纯时间戳为旧形态（识别与保留清理兼容两者），
-    # 短后缀 = 进程内单调计数的十六进制，同一秒内反复开关不重名。
-    _SESSION_DIR_RE = re.compile(r"^(\d{8}_\d{6})(?:_[0-9a-z]{1,8})?$")
     # 会话关闭时给伴随写手的有界排空期限（秒）；期限内未收尾即终态化。
     SESSION_DRAIN_TIMEOUT_S = 2.0
 
@@ -169,7 +160,6 @@ class Logger:
         self._lines = deque(maxlen=self.BUFFER_CAPACITY)
         self._seq = 0                 # 每写一行 +1，只增不减；GUI 增量读取的单调游标
         self._lock = Lock()
-        self._session_ts = None       # 当前会话时间戳（YYYYMMDD_HHMMSS），用于跳过一次当前会话清理
         self._session_dir = None      # 当前会话目录 logs/<ts>/；未启用写盘时为 None
         self._tier: _TierFile | None = None   # 单流写盘句柄（未启用写盘时为 None）
         self._channel_levels: dict[str, str] = {}  # 通道 → 级别（运行时调级）；查不到回落 _min_level
@@ -272,7 +262,6 @@ class Logger:
                 token = f"{ts}_{self._session_seq:x}"
                 session_dir = self._log_dir / token
                 session_dir.mkdir(parents=True, exist_ok=True)
-                self._session_ts = ts          # 与 _SESSION_RE 的 group(1) 同形（带下划线）
                 self._session_dir = session_dir
                 self._session_token = token
                 self.log_file = session_dir / f"MaaRM_{token}.log"
@@ -285,7 +274,6 @@ class Logger:
                 self._file_enabled = False
                 self.log_file = None
                 self._tier = None
-                self._session_ts = None
                 self._session_dir = None
                 self._session_token = None
                 self._lifecycle_state = "closed"
@@ -335,7 +323,6 @@ class Logger:
             self.log(f"会话 {token} 伴随写手收尾未完全成功: {failed}", "WARNING")
         with self._lock:
             self._close_tier()
-        self._session_ts = None
         self._session_dir = None
         self._session_token = None
         self._file_enabled = False
@@ -362,45 +349,6 @@ class Logger:
                 for gid in list(self._groups.keys()):
                     self._end_group_locked(gid, "incomplete")
             self._close_tier()
-
-    def prune_sessions(self, keep: int = KEEP_SESSIONS) -> None:
-        """按会话清理 logs/ 下旧记录，保留最近 `keep` 组。
-
-        一个会话 = `logs/<ts>/` 目录（现行形态：内含 MaaRM_<ts>.log 与伴随产物
-        trace.jsonl，整目录同删）或旧版平铺的 `MaaRM_<14位数字>(.debug)?.log(.N)?`
-        文件；两类都按时间戳归组。当前正在写入的会话永不删除；不碰
-        sidecar_stderr.log 等其它文件与目录。删除失败不中断业务。
-        """
-        if not self._log_dir.exists():
-            return
-        # 按会话时间戳归组（目录与旧版平铺文件同组同清）
-        groups: dict[str, list] = {}
-        for p in self._log_dir.iterdir():
-            if p.is_dir():
-                m = self._SESSION_DIR_RE.match(p.name)
-                if m:
-                    groups.setdefault(m.group(1), []).append(p)
-                continue
-            if not p.name.startswith("MaaRM_"):
-                continue
-            m = self._SESSION_RE.match(p.name)
-            if not m:
-                continue
-            groups.setdefault(m.group(1), []).append(p)
-        if not groups:
-            return
-        ordered = sorted(groups.keys(), reverse=True)  # 新的在前
-        for ts in ordered[keep:]:
-            if ts == self._session_ts:
-                continue  # 当前会话永不删
-            for p in groups[ts]:
-                try:
-                    if p.is_dir():
-                        shutil.rmtree(p)
-                    else:
-                        p.unlink()
-                except OSError:
-                    pass  # 删除失败不中断业务
 
     # ---------- 记录构造 / 投影 / 发射 ----------
     @staticmethod

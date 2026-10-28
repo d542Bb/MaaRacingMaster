@@ -10,7 +10,7 @@ navkit —— 导航判断逻辑的运行时底座（v4 数据面）。
 ------
 - `v4_source` : policy.json → NavSource（DetectionPlan + spec + Policies 装配）
 - `policy`    : P1 决策引擎（rules → PolicyPlan，输入由 v4_source 供）
-- `trace`     : 决策落盘记录器（JSONL 单行追加，会话目录 + keep_sessions 保留策略）
+- `trace`     : 决策落盘记录器（JSONL 单行追加，按会话目录落盘）
 
 约束（不可违反）
 ----------------
