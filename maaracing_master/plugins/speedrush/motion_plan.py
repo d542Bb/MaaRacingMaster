@@ -237,7 +237,8 @@ class MotionPlan:
     dt_s: float = 0.05
     value_total: float = 0.0
     collision_cost: float = 0.0
-    corridor_viol_m: float = 0.0   # 被选候选的走廊侵入深度（米，0=可行）
+    corridor_viol_m: float = 0.0   # 被选候选的硬边界侵入（米，0=可行）
+    corridor_soft_viol_m: float = 0.0  # 软边界侵入（米；可行候选也常 >0）
 
     def as_trace(self) -> dict:
         return {
@@ -254,6 +255,7 @@ class MotionPlan:
             "fd": round(self.frame_delta_m, 3),
             "unc": self.corridor_uncertain,
             "cv": round(self.corridor_viol_m, 3),
+            "cvs": round(self.corridor_soft_viol_m, 3),
             "cand": [[round(v, 3) for v in c] for c in self.cand_x],
         }
 
@@ -280,6 +282,7 @@ class _Cand:
     value: float = 0.0
     collision_cost: float = 0.0
     corridor_viol_m: float = 0.0
+    corridor_soft_viol_m: float = 0.0
 
 
 def _envelope(scene: Scene, near_z_m: float, wall_margin_m: float,
@@ -450,11 +453,16 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     widen = 0.0
     if uncertain:
         widen = min(abs(frame_delta), motion.uncertain_widen_max_m)
+    ego_half = selection.ego_half_lane * lane_w
+    # 软边界=想守的余量（wall_margin_lane）；硬边界=车身物理边缘+小间隙。
+    # 只有硬边界越界才判不可行；软边界越界按米计代价，让"贴线但不撞"的
+    # 候选还能被价值层使用，而不是整层全灭后选满杆。
     env = _envelope(scene, motion.near_z_m,
                     selection.wall_margin_lane * lane_w, widen)
+    env_hard = _envelope(scene, motion.near_z_m,
+                         ego_half + motion.corridor_hard_clearance_m, widen)
     if env is None:
         uncertain = True
-    ego_half = selection.ego_half_lane * lane_w
     car_half = selection.car_half_lane * lane_w
     graze = motion.graze_gap_lane * lane_w
     # 大车不作擦边目标（按真实宽度判）；碰撞仍吃它自己的半宽
@@ -537,15 +545,22 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             motion.cost_collision + (-d) * motion.cost_collision_depth_m
             for d in clears if d < 0.0)
         min_clear = min(clears, default=float("inf"))
-        # 走廊侵入深度（米，检查时域均值）：0=全程在包络内。可行集为空时
-        # 它是唯一的逃生判据——布尔「在/不在」一旦全灭就退化成任意候选。
-        corridor_viol = 0.0
-        if env is not None:
-            chk = [xx for xx, tt in zip(xs_m, ts)
-                   if tt <= motion.corridor_check_s + 1e-9]
-            corridor_viol = sum(max(0.0, env[0] - xx, xx - env[1])
-                                for xx in chk) / max(1, len(chk))
-        corridor_ok = corridor_viol <= 0.0
+        # 走廊侵入深度（米，检查时域均值）：软=想守的余量，硬=物理边界。
+        # 硬侵入 0=可行。可行集为空时硬侵入是逃生判据——布尔「在/不在」
+        # 一旦全灭就退化成任意候选；软侵入只进价值，不再一票否决。
+        soft_viol = 0.0
+        hard_viol = 0.0
+        chk = [xx for xx, tt in zip(xs_m, ts)
+               if tt <= motion.corridor_check_s + 1e-9]
+        if chk:
+            n_chk = max(1, len(chk))
+            if env is not None:
+                soft_viol = sum(max(0.0, env[0] - xx, xx - env[1])
+                                for xx in chk) / n_chk
+            if env_hard is not None:
+                hard_viol = sum(max(0.0, env_hard[0] - xx, xx - env_hard[1])
+                                for xx in chk) / n_chk
+        corridor_ok = hard_viol <= 0.0
 
         reward_hits = 0
         reward_hit_ids: set[int] = set()
@@ -715,6 +730,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                         * motion.preposition_discount * motion.range_hazard_gain
         value = (reward_value + pass_value + coin_value - collision_cost
                  + prep_value - range_cost)
+        soft_cost = soft_viol * motion.corridor_soft_cost_per_m
         # 中心目标带死区：带内不修正（旧选择层同口径），只在带外惩罚超出量。
         band_m = motion.center_band_lane * lane_w
         center_dev = sum(max(0.0, abs(xx - center0) - band_m)
@@ -733,13 +749,19 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         # 有距无速域在场时例外——那是避让，不是追路心。
         overcap = 1e6 if (layer == 4 and not range_hazard_active
                           and abs(u) > motion.center_stick_max) else 0.0
-        key = (not feasible, -value, overcap, center_dev, effort, idx)
+        # key 顺序：可行 > 核心价值（碰撞/机会）> 维护杆幅 > 中心偏差 >
+        # 动作 > 软余量代价。核心价值在杆幅前——为避撞/得分动用满杆是允许的；
+        # 软余量代价在杆幅后——否则贴线 3 分的小差就能让满杆盖过受限候选
+        # （旧布局把 overcap 放在 -value 之后，正是这个漏）。软余量放在末位
+        # 只做同价值/同动作的细判，不把它变成候选翻转的驱动。
+        key = (not feasible, -value, overcap, center_dev, effort,
+               soft_cost, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(
             idx, u, xs_m, xs_m[i], vs_lane[i], feasible,
             min_clear, reward_hits, reward_value, pass_count, pass_value,
             coin_hits, coin_error, center_dev, effort, layer, key,
-            value, collision_cost, corridor_viol))
+            value, collision_cost, hard_viol, soft_viol))
 
     feasible = [c for c in cands if c.feasible]
     reason = "plan:ok"
@@ -753,13 +775,21 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         if shortened:
             reason = "plan:ok_shortened"
     else:
-        # 可行集为空 = 自车已压在走廊边距内（贴墙行驶的日常状态，不是异常）。
+        # 可行集为空 = 自车已压在**硬**边界内（贴墙行驶的日常状态，不是异常）。
         # 此时目标是「最快脱离侵入」，不是「位移最小」：后者会挑反向满舵去
         # 抵消逃离速度，把车钉在墙上（2026-10-23 局 192643_p2 fid 3653~3670，
         # 车在左缘而计划满舵左，连续 0.85 s 撞护栏）。
+        # 但「最快」不等于「最大杆」：侵入差 1cm 的两个候选不该一个满杆一个
+        # 轻打。把侵入按 corridor_escape_tol_m 分桶，同桶内按价值、再按动作
+        # 选——平滑回带由这里保证。
         valid = False
-        chosen = min(cands, key=lambda c: (c.corridor_viol_m, -c.value,
-                                           c.effort, c.idx))
+        best_viol = min(c.corridor_viol_m for c in cands)
+        tol = max(motion.corridor_escape_tol_m, 1e-6)
+        near = [c for c in cands
+                if c.corridor_viol_m <= best_viol + tol]
+        chosen = min(near, key=lambda c: (
+            int((c.corridor_viol_m - best_viol) / tol + 1e-9),
+            -c.value, c.effort, c.idx))
         reason = "plan:infeasible_corridor"
     return MotionPlan(
         PLAN_SCHEMA, valid, reason, chosen.x_preview_m,
@@ -767,4 +797,5 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         len(feasible), chosen.idx, tuple(c.xs_m for c in cands),
         (chosen.x_preview_m - frame_delta) / lane_w,
         chosen.v_preview_lane, frame_delta, uncertain, dt,
-        chosen.value, chosen.collision_cost, chosen.corridor_viol_m)
+        chosen.value, chosen.collision_cost, chosen.corridor_viol_m,
+        chosen.corridor_soft_viol_m)

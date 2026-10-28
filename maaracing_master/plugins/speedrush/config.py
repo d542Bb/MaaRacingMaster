@@ -267,6 +267,15 @@ class Motion:
     # 避让判成不可行（影子实测 p2 8% 全灭假象）
     corridor_check_s: float = 1.0
     collision_margin_m: float = 0.2
+    # 走廊两层（2026-10-27）：软边界用 selection.wall_margin_lane（车心离墙
+    # 0.35 道，车身留 0.08 道），只收代价；硬边界=车半宽+此间隙，只有越过
+    # 它才判不可行。旧实现把软边界当硬约束：车贴边行驶时 1~10cm 的余量侵入
+    # 就让可行集全灭，兜底选「侵入最小」= 满杆逃离（20261027 局 134222_1
+    # 有 21 个满杆拍，平均侵入只有 1~10cm）。
+    corridor_hard_clearance_m: float = 0.15
+    corridor_soft_cost_per_m: float = 120.0
+    # 硬不可行回退的侵入分桶：同一桶内按价值/动作选，不为厘米级差异满杆。
+    corridor_escape_tol_m: float = 0.05
     # 反应时内到站的车：横向动作已无法改变结果，不计入硬约束（防贴身会车
     # 全灭后误触 CONSERVE）
     collision_min_lead_s: float = 0.35
@@ -744,6 +753,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "corridor_check_s", 1.0, lo=0),
             collision_margin_m=_num_def(
                 d, "motion", "collision_margin_m", 0.2, lo=0),
+            corridor_hard_clearance_m=_num_def(
+                d, "motion", "corridor_hard_clearance_m", 0.15, lo=0),
+            corridor_soft_cost_per_m=_num_def(
+                d, "motion", "corridor_soft_cost_per_m", 120.0, lo=0),
+            corridor_escape_tol_m=_num_def(
+                d, "motion", "corridor_escape_tol_m", 0.05, lo=0),
             collision_min_lead_s=_num_def(
                 d, "motion", "collision_min_lead_s", 0.35, lo=0),
             hit_min_lead_s=_num_def(

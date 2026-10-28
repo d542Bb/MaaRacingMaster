@@ -457,6 +457,21 @@ def test_collision_is_soft_cost_not_infeasible():
     assert p.n_feasible > 0
 
 
+def test_soft_margin_is_cost_not_infeasible():
+    """软余量侵入 3cm、物理边界仍安全：候选必须留在可行集里付代价，
+    不能整层判死再去选满杆「最快逃离」。"""
+    road = RoadFrame((RoadBand(0.0, 6.0, -5.0, 5.0, src="measured",
+                               age_ms=0.0, conf=1.0),), 10.0, -5.0, 5.0, True)
+    ego_m = 3.85
+    s = _scene(road=road, ego_m=ego_m)
+    p = _plan(s, ego=EgoState(ego_m / LW, 0.0, 0.0),
+              coarse_lane=ego_m / LW)
+    assert p.valid and p.layer == 4
+    assert p.corridor_viol_m == pytest.approx(0.0, abs=1e-9)
+    assert p.corridor_soft_viol_m > 0.0
+    assert abs(p.u_feedforward) <= CFG.motion.center_stick_max
+
+
 def test_corridor_all_infeasible_holds_position():
     road = RoadFrame((RoadBand(0.0, 6.0, 6.0, 9.0, src="measured",
                                age_ms=0.0, conf=1.0),), 3.0, 6.0, 9.0, True)
