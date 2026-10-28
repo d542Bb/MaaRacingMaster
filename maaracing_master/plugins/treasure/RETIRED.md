@@ -13,7 +13,11 @@
 
 - **运行期**：GUI 列出但置灰、不自动选中；显式选择需带 `force`。
 - **分发**：打包时刻已失效，不随包分发（`scripts/release/list_ship_excluded_modules.py` → `assemble.ps1`）。
-- **仓库树**：代码、资源、测试全部保留，CI 门禁（`check_truth` / `pytest`）照常覆盖。
+- **仓库树**：代码、资源、测试全部保留；真源机检（`check_truth`）照常覆盖。
+- **测试**：回归锁保留但带 `retired` 标记，`pytest` 默认跳过（`pyproject.toml` 的
+  `addopts = -m 'not retired'`），需要时 `pytest -m retired` 显式跑。理由见该标记的
+  说明：避免死模块的回归锁反向约束 core 演进。**这不是「照常覆盖」**——复活时若不
+  摘标记，回归锁会静默不跑。
 
 > **为什么不用目录位置表达退役**：状态只由 manifest 有效期表达。若把本目录移出 `plugins/` 的直接子目录层级，发布剔除工具会扫不到它（它按 `plugins/*/manifest.py` 发现插件），剔除清单变空，而打包阶段的整包复制已把退役代码与资源带进发布包——「位置」会变成与有效期并存的第二套判据。
 
@@ -49,6 +53,7 @@
 
 1. 改 [manifest.py](./manifest.py) 的 `VALID_UNTIL` 到新的活动窗口（或删除该行 = 永久有效）。
 2. 确认 GUI 默认模块不再硬编码本插件（见 `core/sidecar.py` 的默认模块常量）。
-3. 跑 `pytest` 与分层机检。
+3. 摘掉测试的 `retired` 标记（`pytest -m retired` 能跑不等于会被跑），再跑 `pytest`
+   与分层机检——否则回归锁静默跳过，复活后第一轮就没有防线。
 
 无需移动目录、无需改 registry、无需改发布脚本。
