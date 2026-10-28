@@ -288,6 +288,138 @@ def test_road_offset_all_sources_feed_loop(_stub_depth):
     assert t2["ro_hold"] is True                             # 槽=历史保持，不进滤波
 
 
+def test_selection_shadow_mirrors_production(_stub_depth):
+    """选择层影子：路线未分叉时与生产逐位一致（预分歧可信度门）。"""
+    from maaracing_master.plugins.speedrush.decision import _sel_report_key
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    eng = chain["engine"]
+    pad = StubPad()
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)
+    seen = 0
+    for fid in range(1, 31):
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        row = chain["trace"][-1]
+        assert row["sel_shadow"] is None
+        if eng.selection_report is not None \
+                and eng.selection_shadow_report is not None:
+            assert _sel_report_key(eng.selection_shadow_report) == \
+                _sel_report_key(eng.selection_report)
+            seen += 1
+    assert seen > 0
+    assert eng.selection_shadow_first_mismatch is None
+    assert "c_evidence" not in chain      # 正常局不触发证据冻结
+
+
+def test_selection_shadow_diverges_when_shadow_route_stays_merging(
+        _stub_depth, monkeypatch):
+    """影子路线被 C 留在并线：选择层必须按承诺态分叉并留现场。"""
+    from dataclasses import replace as _replace
+    from maaracing_master.plugins.speedrush.decision import DecisionEngine
+    from maaracing_master.plugins.speedrush.route import PHASE_MERGING
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    orig = DecisionEngine._tick_route
+
+    def _forced(self, c0=None, executed=None, request=None):
+        orig(self, c0, executed, request)
+        if self._route is not None and self._route_verdict is not None:
+            self._route_shadow = _replace(
+                self._route, phase=PHASE_MERGING,
+                lane_target=self._route.lane_ref)
+            self._shadow_verdict = _replace(
+                self._route_verdict, phase=PHASE_MERGING,
+                lane_target=self._route.lane_ref, verdict="keep",
+                why="merging")
+
+    monkeypatch.setattr(DecisionEngine, "_tick_route", _forced)
+    pad = StubPad()
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)
+    rows = []
+    for fid in range(1, 26):
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        rows.append(chain["trace"][-1])
+    div = [r for r in rows if r["sel_shadow"] and r["sel_shadow"].get("div")]
+    assert div, "影子承诺态不同应产生选择分歧行"
+    first = div[0]["sel_shadow"]["first"]
+    assert first["in"]["prod"]["commit"] is False
+    assert first["in"]["shadow"]["commit"] is True
+    assert first["route"]["shadow"]["ph"] == "merging"
+    assert first["prod"]["why"] != first["shadow"]["why"]
+    kinds = chain["c_evidence"]["kinds"]
+    assert kinds.get("route_div", 0) >= 1 and kinds.get("sel_div", 0) >= 1
+
+
+def test_note_c_event_keeps_first_and_counts():
+    chain = {}
+    smod._note_c_event(chain, "route_div", 3, 100, prod="keep")
+    smod._note_c_event(chain, "route_div", 4, 200, prod="finish")
+    smod._note_c_event(chain, "c_finish", 4, 200, target=-1.0)
+    ev = chain["c_evidence"]
+    assert ev["first"] == {"kind": "route_div", "fid": 3, "ts_ns": 100,
+                           "prod": "keep"}
+    assert ev["kinds"] == {"route_div": 2, "c_finish": 1}
+
+
+def test_c_events_detects_divergence_and_bug():
+    def _eng(route=None, shadow=None, sel=None):
+        return SimpleNamespace(route_verdict=route,
+                               route_shadow_verdict=shadow,
+                               selection_shadow_trace=sel)
+
+    def _v(**kw):
+        base = {"phase": "keep", "verdict": "keep", "lane_ref": 0.0}
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    assert smod._c_events(_eng(_v(), _v()), None) == []
+    ev = smod._c_events(_eng(_v(), _v(phase="merging")), None)
+    assert [k for k, _ in ev] == ["route_div"]
+    ev = smod._c_events(_eng(sel={"bug": 1, "l": 4, "req": None}), None)
+    assert [k for k, _ in ev] == ["sel_bug"]
+    ev = smod._c_events(
+        _eng(_v(verdict="finish", lane_ref=-1.0), _v(),
+             sel={"div": 1, "l": 4, "req": 1.0}),
+        SimpleNamespace(kind="SHIFT_HELD"))
+    assert [k for k, _ in ev] == ["route_div", "sel_div", "c_finish"]
+
+
+def test_module_archives_c_evidence(tmp_path, monkeypatch):
+    m = _module()
+    chain = m._build_control_chain()
+    chain["c_evidence"] = {"first": {"kind": "route_div", "fid": 1},
+                           "kinds": {"route_div": 1}}
+    sess = tmp_path / "logs" / "sess_1"
+    (sess / "trace").mkdir(parents=True)
+    (sess / "trace" / "speedrush.jsonl").write_text('{"fid":1}\n',
+                                                    encoding="utf-8")
+    logs = []
+    monkeypatch.setattr(smod, "logger", SimpleNamespace(
+        session_dir=sess, log=lambda msg, *a, **k: logs.append(msg)))
+    m._archive_c_evidence(chain, 1)
+    assert (tmp_path / "evidence" / "c_gate"
+            / "sess_1_p1.trace.jsonl").is_file()
+    assert any("已冻结" in s for s in logs)
+
+
+def test_module_archive_failure_warns(tmp_path, monkeypatch):
+    m = _module()
+    chain = m._build_control_chain()
+    chain["c_evidence"] = {"first": {"kind": "sel_bug"},
+                           "kinds": {"sel_bug": 1}}
+    sess = tmp_path / "logs" / "sess_2"
+    sess.mkdir(parents=True)          # 没有 trace 文件
+    logs = []
+    monkeypatch.setattr(smod, "logger", SimpleNamespace(
+        session_dir=sess, log=lambda msg, *a, **k: logs.append(msg)))
+    m._archive_c_evidence(chain, 2)
+    assert any("冻结失败" in s for s in logs)
+
+
 def test_attribution_wiring_reads_hop_scalar(_stub_depth, monkeypatch):
     """归因接线锁：lineage 吃的是 ro_hop 的 hop 标量（0/1/2），不是整包字典。
 
@@ -495,8 +627,10 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
     for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_raw", "steer_x",
               "executed_lane", "v_lat_est", "road_offset", "scene",
               "dgeo_sides", "dgeo_left", "dgeo_right", "lat_ctrl",
-              "attribution", "route_shadow"):
+              "attribution", "route_shadow", "sel_shadow"):
         assert k in row, k
+    # 选择层影子（trace-only）：两路承诺输入一致时没有差异行
+    assert row["sel_shadow"] is None
     # 航向融合可见面：线观测线程未启动时诚实退回模型（v_head=None）
     assert row["lat_ctrl"]["gain"] == load_decision().planner.heading_fuse_gain
     assert row["lat_ctrl"]["v_head"] is None

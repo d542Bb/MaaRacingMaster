@@ -253,6 +253,112 @@ def _monotonic_coin_t(prev: tuple[float, int] | None, raw_t: float,
     return raw_t
 
 
+def _sel_report_key(rep: SelectionReport) -> tuple:
+    """选择层报告比对键：只含接控制/接路线请求的语义字段。"""
+    return (rep.layer, rep.why, round(rep.target_x_m, 6),
+            rep.lane_request, bool(rep.maneuver),
+            tuple((round(w.t, 6), round(w.x, 6), w.src)
+                  for w in rep.waypoints))
+
+
+def _sel_report_trace(rep: SelectionReport) -> dict:
+    return {"l": rep.layer, "why": rep.why, "x": round(rep.target_x_m, 3),
+            "req": rep.lane_request, "man": bool(rep.maneuver),
+            "nwp": len(rep.waypoints)}
+
+
+def _sel_in_trace(inp: tuple) -> dict:
+    coarse, committed, commit_x = inp
+    return {"coarse": None if coarse is None else round(coarse, 6),
+            "commit": bool(committed),
+            "cx": None if commit_x is None else round(commit_x, 6)}
+
+
+def _route_trace(v: RouteVerdict | None) -> dict | None:
+    if v is None:
+        return None
+    return {"ph": v.phase, "ref": v.lane_ref, "tgt": v.lane_target,
+            "vd": v.verdict, "why": v.why, "ep": v.epoch,
+            "blkfin": bool(v.blocked_finish)}
+
+
+def _sel_objects_trace(rewards, cars, coins, ego_m: float,
+                       lw: float) -> dict:
+    """取证面：选择层当拍对象的完整输入（含金币排序用的枚数/置信度）。"""
+    def rows(objs):
+        return [[round(o.x / lw, 3),
+                 None if o.t is None else round(o.t, 3),
+                 round(float(o.count), 2), round(float(o.conf), 3)]
+                for o in objs]
+    return {"ego": round(ego_m / lw, 3), "rw": rows(rewards),
+            "car": rows(cars), "coin": rows(coins)}
+
+
+class SelectionShadowWatch:
+    """选择层影子的比对与取证（只记录，不参与控制）。
+
+    预分歧：两份路线给选择层的承诺输入相同，选择结果必须逐位一致；不一致
+    记 `bug` 并保留首次不一致的两边报告、输入与路线状态（不归因于 C）。
+    首次输入分歧：影子路线开始走不同的承诺态，此后结果不同是预期；记 `div`
+    并保留首次分歧的完整现场。此后只在结果仍不同时记紧凑行。
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.diverged = False
+        self.first_div: dict | None = None
+        self.first_mismatch: dict | None = None
+        self.mismatch_ticks = 0
+
+    def step(self, *, fid: int, prod: SelectionReport,
+             shadow: SelectionReport, prod_in: tuple, shadow_in: tuple,
+             prod_route: RouteVerdict | None,
+             shadow_route: RouteVerdict | None, snapshot) -> dict | None:
+        same_in = _sel_in_trace(prod_in) == _sel_in_trace(shadow_in)
+        same_out = _sel_report_key(prod) == _sel_report_key(shadow)
+        if same_in and same_out:
+            return None
+        if same_in:
+            # 输入完全一致却选择不同：影子接线/初始化问题，或选择器非确定性。
+            self.mismatch_ticks += 1
+            rec: dict = {"bug": 1, "n": self.mismatch_ticks}
+            if self.first_mismatch is None:
+                self.first_mismatch = {
+                    "fid": fid,
+                    "prod": _sel_report_trace(prod),
+                    "shadow": _sel_report_trace(shadow),
+                    "in": _sel_in_trace(prod_in),
+                    "route": {"prod": _route_trace(prod_route),
+                              "shadow": _route_trace(shadow_route)},
+                    "objects": snapshot(),
+                }
+                rec["first"] = self.first_mismatch
+        else:
+            if same_out and self.diverged:
+                return None       # 已分叉但本拍选择回到一致：窗口闭合，安静
+            if not self.diverged:
+                self.diverged = True
+                self.first_div = {
+                    "fid": fid,
+                    "prod": _sel_report_trace(prod),
+                    "shadow": _sel_report_trace(shadow),
+                    "in": {"prod": _sel_in_trace(prod_in),
+                           "shadow": _sel_in_trace(shadow_in)},
+                    "route": {"prod": _route_trace(prod_route),
+                              "shadow": _route_trace(shadow_route)},
+                    "objects": snapshot(),
+                }
+                rec = {"div": 1, "first": self.first_div}
+            else:
+                # 分歧窗口内每拍都带对象快照：机会层本会看到什么、按什么排序
+                # （金币枚数/置信度）——窗口很短，取证成本可忽略。
+                rec = {"div": 1, "objects": snapshot()}
+        rec.update(_sel_report_trace(shadow))
+        return rec
+
+
 class DecisionEngine:
     """FSM + 迟滞（§二/§三/§五）。单线程 owner 使用（与 _log_grp 同一线程纪律）。"""
 
@@ -287,6 +393,13 @@ class DecisionEngine:
             car_half_lane=s.car_half_lane,
             ego_half_lane=s.ego_half_lane,
             lane_clearance_lane=s.lane_clearance_lane))
+        # 选择层影子（2026-10-28）：与生产同一拍同一批输入，承诺态跟影子路线
+        # 走；只落 trace、不接控制。预分歧段两份输入相同，结果必须逐位一致
+        # ——这是"影子接线可信"的运行时校验，也是 C 下游差异的可信度门。
+        self._selector_shadow = LayeredSelector(self.selector.p)
+        self._sel_watch = SelectionShadowWatch()
+        self._sel_shadow: SelectionReport | None = None
+        self._sel_shadow_trace: dict | None = None
         self._sel_report: SelectionReport | None = None
         self._sel_maneuver = False
         self._sel_objs: dict = {"reward": [], "car": [], "coin": []}
@@ -377,6 +490,10 @@ class DecisionEngine:
         self._occ_snap = None
         self._sel_ego_m = None
         self.selector.reset()
+        self._selector_shadow.reset()
+        self._sel_watch.reset()
+        self._sel_shadow = None
+        self._sel_shadow_trace = None
         self._car_xf.clear()
         self._car_zf.clear()
         self._car_x_hold.clear()
@@ -415,6 +532,8 @@ class DecisionEngine:
         self._dt_last = dt_s
         self._fid = obs.frame_id
         self._fps = obs.fid_rate_hz
+        # 差异行只对本拍有效：没有推进选择层（无路/非巡航）的拍不能回放上一拍。
+        self._sel_shadow_trace = None
         self._views, self._events = traffic if traffic is not None else ((), ())
         # 车米制状态实例通道（C 线 2026-10-12，闸 metric_cars.enabled）：车源
         # 链消费（米制优先、像素回退）；闸关=空（回退路径）。
@@ -1037,10 +1156,35 @@ class DecisionEngine:
         # 粗层（2026-10-20 接控制）：只接管 L4 回中兜底——细层没有奖励车/
         # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
         # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
+        coarse_lane = self.coarse_lane
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last,
-                                   coarse_lane=self.coarse_lane,
+                                   coarse_lane=coarse_lane,
                                    committed=committed, commit_x_m=commit_x)
+        # 影子选择器：同一批对象/公路/自车输入，承诺态取影子路线。生产门关或
+        # 两路未分叉时两份输入相同，结果必须逐位一致；不一致记 `bug` 取证。
+        sh_committed = bool(self.cfg.route.control
+                            and self._route_shadow is not None
+                            and self._route_shadow.phase == PHASE_MERGING)
+        sh_coarse = self._lane_for_route(
+            self._route_shadow, self._shadow_verdict, self.cfg.route.control)
+        sh_commit_x = None
+        if self.cfg.route.control and self._route_shadow is not None \
+                and not sh_committed:
+            sh_commit_x = self._route_shadow.lane_ref * lw + c0
+        rep_shadow = self._selector_shadow.update(
+            road, rewards, cars, coins, ego_m, self._dt_last,
+            coarse_lane=sh_coarse, committed=sh_committed,
+            commit_x_m=sh_commit_x)
+        self._sel_shadow = rep_shadow
+        self._sel_shadow_trace = self._sel_watch.step(
+            fid=obs.frame_id, prod=rep, shadow=rep_shadow,
+            prod_in=(coarse_lane, committed, commit_x),
+            shadow_in=(sh_coarse, sh_committed, sh_commit_x),
+            prod_route=self._route_verdict,
+            shadow_route=self._shadow_verdict,
+            snapshot=lambda: _sel_objects_trace(
+                rewards, cars, coins, ego_m, lw))
         self._route_req = rep.lane_request if self.cfg.route.control else None
         self._sel_report = rep
         self._sel_ego_m = ego_m
@@ -1121,6 +1265,21 @@ class DecisionEngine:
         """上一拍到达位置归因（trace attribution 列；只读观测）。"""
         return self._position
 
+    @property
+    def selection_shadow_report(self) -> SelectionReport | None:
+        """上一拍影子选择结果（只读观测；不接控制、不进路线请求）。"""
+        return self._sel_shadow
+
+    @property
+    def selection_shadow_trace(self) -> dict | None:
+        """上一拍选择影子差异行（None=与生产一致；bug=同输入不一致）。"""
+        return self._sel_shadow_trace
+
+    @property
+    def selection_shadow_first_mismatch(self) -> dict | None:
+        """本段首次"同输入不同结果"的现场（None=没发生过）。"""
+        return self._sel_watch.first_mismatch
+
     RULER_TOL_LANE = 0.5    # 尺子单拍跳变超过半道 = 参考系重基
 
     def _ruler_epoch(self, c0: float | None,
@@ -1170,10 +1329,10 @@ class DecisionEngine:
             request=request, arrival=self._position,
             reject_shift_arrival=True)
 
-    def _lane_for(self, committed: bool) -> float | None:
-        """本拍接控制用的道。`committed=False` 逐语句是今天的路径（粗层自选道，
-        含它的两条例外）；True 时改读路线参考道——两条路径共用同一批前置门，
-        所以开关只换「取哪个值」，不改「什么时候不给值」。"""
+    def _lane_for_route(self, route: RouteState | None,
+                        verdict: RouteVerdict | None,
+                        committed: bool) -> float | None:
+        """按给定路线状态取本拍接控制道（生产与影子共用同一套前置门）。"""
         c = self._coarse
         if not self.cfg.coarse.control or c is None or c.reason == "no_road":
             return None
@@ -1181,10 +1340,14 @@ class DecisionEngine:
             return None
         if not committed:
             return c.lane
-        if self._route is None or self._route_verdict is None \
-                or self._route_verdict.verdict == "needs_init":
+        if route is None or verdict is None \
+                or verdict.verdict == "needs_init":
             return None
-        return self._route.lane_ref
+        return route.lane_ref
+
+    def _lane_for(self, committed: bool) -> float | None:
+        """生产路线版 `_lane_for_route`（影子用同一函数换一套状态）。"""
+        return self._lane_for_route(self._route, self._route_verdict, committed)
 
     @property
     def coarse_lane(self) -> float | None:
