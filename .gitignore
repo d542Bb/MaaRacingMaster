@@ -119,3 +119,7 @@ cursor_refactor/__pycache__/
 tools/navkit/dev/
 tools/navkit/out/
 tools/navkit/frontend/
+
+# 实验区的待试权重：来源与许可未声明、体积大，一律不入库（实验 README 注明取法）。
+# 插件正式分发的权重不在此列——它们在 plugins/*/resources/onnx/ 随包入库。
+tools/experiments/**/weights/
