@@ -179,12 +179,17 @@ def test_make_session_dir_uses_timestamp(tmp_path) -> None:
     assert len(d.name) == len("20260916_120000")
 
 
-def test_make_session_dir_tag_prefixes_name(tmp_path) -> None:
-    """用途标签进目录名（维护者裁定 2026-10-03）：人工驾驶语料局必须是
-    manual_<时间戳>，与历史纯时间戳会话一眼可分——阶段二参考线语料按此前缀取。"""
+def test_make_session_dir_tag_appends_to_name(tmp_path) -> None:
+    """用途标签追加在时间戳之后：`<运行编号>_<标签>`，时间戳恒在最前。"""
     d = make_session_dir(tmp_path, tag="manual")
     assert d.parent == tmp_path
-    assert d.name.startswith("manual_")
-    assert len(d.name) == len("manual_20260916_120000")
-    # 无标签 = 旧行为（纯时间戳），历史消费方不受影响
+    assert d.name.endswith("_manual")
+    assert len(d.name) == len("20260916_120000_manual")
+    # 无标签 = 纯时间戳
     assert make_session_dir(tmp_path).name.startswith("2")
+
+
+def test_make_session_dir_honours_given_stamp(tmp_path) -> None:
+    """调用方可传运行编号（日志会话 token），让语料目录与日志目录同名。"""
+    d = make_session_dir(tmp_path, tag="manual", stamp="20261028_220635")
+    assert d.name == "20261028_220635_manual"

@@ -496,8 +496,9 @@ class SpeedRushModule(ActivityModule):
             logger.log(f"[极速狂飙] 未知断点「{start_from}」，从流程起点开始", "WARNING")
 
         self._running = True
-        # 本次运行的身份（流水行头 run_id；一局内各阶段共享，跨 run 不重置序号）
-        self._trace.set_run_id(time.strftime("%Y%m%d_%H%M%S"))
+        # 本次运行的身份（流水行头 run_id；一局内各阶段共享，跨 run 不重置序号）。
+        # 取日志会话 token = 产物目录编号，流水与目录因此同名可互查。
+        self._trace.set_run_id(logger.session_token or time.strftime("%Y%m%d_%H%M%S"))
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
                         f"·感知{'开' if self._perception_mode else '关'}"
                         f"·直行{'开' if self._straight_mode else '关'}）", "session")
@@ -2045,9 +2046,10 @@ class SpeedRushModule(ActivityModule):
     def _begin_recording(self, phase: int, round_no: int) -> DriveRecorder | None:
         """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。"""
         try:
-            # manual=人工驾驶语料（录制模式必然人驾）：目录名一眼可分历史会话，
-            # 阶段二参考线语料按 manual_ 前缀取（2026-10-03 维护者裁定）
-            session = make_session_dir(_record_root(), tag="manual")
+            # manual 标签标出人工驾驶语料（录制模式必然人驾）；目录名与自动阶段同规则：
+            # <运行编号>_manual_p<阶段>，运行编号取日志会话 token
+            stamp = logger.session_token or time.strftime("%Y%m%d_%H%M%S")
+            session = make_session_dir(_record_root(), tag="manual", stamp=stamp)
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
             rec = DriveRecorder(session, phase=phase, round_no=round_no)
@@ -2782,15 +2784,26 @@ def _ego_hud_readout(hud) -> tuple[float | None, float | None]:
         return None, None
 
 
+# 一局内固定运行编号：同一 t_start 只取一次，中途开关日志也不让同局产物分家
+_run_stamps: dict[float, str] = {}
+
+
 def _run_dir(t_start: float, phase: int) -> Path:
     """一局一产物目录（2026-10-12 布局收口，paths.py 五类契约）：debug/<module>/<会话>/。
 
     speedrush 运行产物（trace/局汇总/证据包/hud/badframes）全在
-    ``debug/speedrush/<时刻>_p<阶段>/``——一局一目录，清当批=删一个目录；
+    ``debug/speedrush/<运行编号>_p<阶段>/``——一局一目录，清当批=删一个目录；
     ``data/`` 只留结构化业务数据（DB）。整个目录受 debug 开关管辖（关=零
-    产物）；帧证据包密度另受 debug_dump 三态闸（off/events/full）。"""
-    return debug_dir() / "speedrush" / (
-        time.strftime("%Y%m%d_%H%M%S", time.localtime(t_start)) + f"_p{phase}")
+    产物）；帧证据包密度另受 debug_dump 三态闸（off/events/full）。
+
+    运行编号取日志会话 token：与 ``logs/`` 下目录同名，一场运行的日志和截图
+    一眼能对上；日志没开时退回本局开始时刻。"""
+    stamp = _run_stamps.get(t_start)
+    if stamp is None:
+        stamp = logger.session_token or time.strftime(
+            "%Y%m%d_%H%M%S", time.localtime(t_start))
+        _run_stamps[t_start] = stamp
+    return debug_dir() / "speedrush" / f"{stamp}_p{phase}"
 
 
 def resolve_start_index(start_from: str | None) -> int:

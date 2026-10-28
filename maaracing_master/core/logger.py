@@ -168,8 +168,7 @@ class Logger:
         self._lifecycle_lock = Lock()
         self._lifecycle_state = "closed"          # closed / open / closing
         self._listeners: list = []                # 会话生命周期回调（流水汇/采样器）
-        self._session_token: str | None = None    # 磁盘会话 token（目录名，含短后缀）
-        self._session_seq = 0                     # token 短后缀源（进程内单调）
+        self._session_token: str | None = None    # 磁盘会话 token（= 目录名，也是本场运行编号）
         self._close_status = deque(maxlen=8)      # 最近数次会话收尾状态（诊断）
         # ---- 分组状态（全部在 _lock 下读写） ----
         # session_id：进程内日志流的身份；WebView 重连/新旧侧对账用。
@@ -201,7 +200,7 @@ class Logger:
 
     @property
     def session_token(self) -> str | None:
-        """当前磁盘会话 token（logs/ 下目录名，含短后缀）；未启用写盘时为 None。"""
+        """当前磁盘会话 token（logs/ 下目录名，同时是本场运行编号）；未启用写盘时为 None。"""
         return self._session_token
 
     @property
@@ -239,7 +238,7 @@ class Logger:
     def set_file_logging(self, enabled: bool) -> None:
         """开关磁盘写入（会话生命周期入口，转换经独立生命周期锁串行）。
 
-        开启：新建会话目录 `logs/<YYYYMMDD_HHMMSS_<短后缀>>/` 与日志文件（单流
+        开启：新建会话目录 `logs/<YYYYMMDD_HHMMSS>/`（同秒重名才加序号）与日志文件（单流
         全量），通知伴随写手绑定；已在开启态再次开启 = 先按关闭流程收旧会话再开新。
         关闭：进入 CLOSING → 通知伴随写手有界排空（SESSION_DRAIN_TIMEOUT_S）→
         关主日志与句柄 → CLOSED；已写文件保留，内存缓冲继续累积，GUI 显示不受
@@ -257,9 +256,15 @@ class Logger:
                 # 已开启再开启 = 换会话：先按关闭流程收旧（含伴随写手排空）
                 self._close_session_locked(self.SESSION_DRAIN_TIMEOUT_S)
             try:
+                # 会话目录名 = 纯时间戳；只有同一秒内反复开关、目录已存在时才加序号。
+                # 这个 token 同时是「一场运行的编号」：调试侧（截图/录制/流水）的目录名
+                # 以它开头，日志与调试产物因此一眼能对上。
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self._session_seq += 1
-                token = f"{ts}_{self._session_seq:x}"
+                token = ts
+                seq = 1
+                while (self._log_dir / token).exists():
+                    seq += 1
+                    token = f"{ts}_{seq}"
                 session_dir = self._log_dir / token
                 session_dir.mkdir(parents=True, exist_ok=True)
                 self._session_dir = session_dir

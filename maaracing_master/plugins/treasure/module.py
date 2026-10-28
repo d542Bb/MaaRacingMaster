@@ -4106,7 +4106,10 @@ class TreasureModule(ActivityModule):
                 self.ctx.debug.update_peep(peep_img)
 
     def _prepare_debug_dirs(self):
-        """创建 debug/treasure/<ts>/ 目录结构（含 raw/）。
+        """创建 debug/treasure/<运行编号>/ 目录结构（含 raw/）。
+
+        目录名取日志会话 token（= 本场运行编号），日志没开时退回当前时间戳；
+        这样一次运行的日志与截图目录同名，排查时不用靠时间戳猜。
 
         仅当 debug 存图开启（ctx.debug.enabled）时建立；未开启则 _session_dir/_raw_dir 置 None，
         对应 tick 不存盘、会话总结不显示「保存帧数/调试目录」。
@@ -4116,8 +4119,8 @@ class TreasureModule(ActivityModule):
         self._session_dir = None
         self._raw_dir = None
         if self.ctx.debug.enabled:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._session_dir = self._debug_root / ts
+            stamp = logger.session_token or datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._session_dir = self._debug_root / stamp
             self._raw_dir = self._session_dir / "raw"
             self._session_dir.mkdir(parents=True, exist_ok=True)
             self._raw_dir.mkdir(parents=True, exist_ok=True)

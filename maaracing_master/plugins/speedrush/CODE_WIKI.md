@@ -151,11 +151,12 @@
 
 ## 3. 演示数据录制（本域）
 
-- 一个会话一个目录：`debug/speedrush/manual_<时间戳>_p<阶段号>/`，含 `meta.json`、
+- 一个会话一个目录：`debug/speedrush/<运行编号>_manual_p<阶段号>/`（运行编号取日志会话
+  token，与 `logs/<运行编号>/` 同名），含 `meta.json`、
   `frames.jsonl`、`pads.jsonl`、`frames/`；一局两个驾驶阶段各成一会话，便于按阶段筛。
   录制模式下还会多出 **`hud.jsonl` + `hud_meta.json`**（驾驶页 HUD 读数，见 §5）。
   **一段驾驶只写这一个目录**（2026-10-26 收口）：语料与 trace 证据（坏帧/深度证据包）
-  同家，不再另建 `debug/speedrush/<时刻>_p<N>/`、也不建 raw/hud 调试图——那是同一段
+  同家，不再另建 `debug/speedrush/<运行编号>_p<N>/`、也不建 raw/hud 调试图——那是同一段
   画面的第二份拷贝（单阶段曾因此多占约 180MB）。历史会话在 `data/speedrush/demos/`，
   只读不写。
 - **录制模式放宽两条启动约束**：不要求断开物理手柄（录制正要用物理手柄驾驶）、不需要手柄
@@ -630,7 +631,7 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
 不起深度 worker，perception_mode 开着也不跑），trace 只记时间轴与常量列（state=STRAIGHT，
 与控制链同走流水汇）。控制两档（智能/直行）都在 `_drive_loop` 内同点起
-HUD 读数观察线程（目录与 trace 同时刻命名 `hud_<时刻>_p<阶段>/hud.jsonl`，按 fid/ts_ns
+HUD 读数观察线程（目录跟随 run_dir 命名 `<运行编号>_p<阶段>/hud/hud.jsonl`，按 fid/ts_ns
 与 trace 对齐）——分数流是验收②「智能 vs 直行基线」对比的数据面。
 弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人）的语义不变。
 
@@ -734,7 +735,8 @@ commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为
 按 `ctx.debug.enabled` 门创建；控制拍 `tick()` 只入队引用，IO daemon 3fps 节流
 渲染+落盘）。
 
-- **目录契约**：`debug/speedrush/<ts>_p<阶段>/` + `raw/` 子目录——
+- **目录契约**：`debug/speedrush/<运行编号>_p<阶段>/` + `raw/` 子目录（运行编号取日志
+  会话 token，日志目录与之同名）——
   `<seq:04d>_raw.jpg`（q95 底图）/ `<seq:04d>_hud.jpg`（q85 双联渲染图）/
   `frames.jsonl`（帧索引：`seq` ↔ 采集 `frame_id` ↔ 帧时戳 `ts_ns` ↔ 文件名，
   字段名与录制语料 `frames.jsonl` 同一套，不另起编号）。索引在**落盘那一刻**

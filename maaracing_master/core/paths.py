@@ -10,6 +10,11 @@
     logs/       会话记录（logs/<会话>/MaaRM_*.log + trace.jsonl，共用「日志记录」开关）
     framework/  MAA 框架自产物（maafw.log、cache）
     debug/      调试产物与录制语料（debug/<module>/<会话>/，调试台契约）
+
+会话目录命名（logs/ 与 debug/ 同一规则）：`<YYYYMMDD_HHMMSS>[_<标签>]`——时间戳
+恒在最前，标签按「用途 → 阶段」追加（`20261028_220635`、`20261028_220635_manual_p2`）。
+同一场运行的日志目录与调试目录同名：调试侧取 `logger.session_token` 作前缀，
+所以排查时两边一眼能对上。
 """
 
 from __future__ import annotations

@@ -151,13 +151,17 @@ class NavigationDebugger:
             self._latest_frame = peep_img.copy()
 
     def start_session(self, label: str):
-        """开始一次导航调试会话（仅 enabled 时创建目录）"""
+        """开始一次导航调试会话（仅 enabled 时创建目录）。
+
+        目录名 = `<时间戳>_<标签>`，与 debug/ 下其它会话、logs/ 会话同一规则：
+        时间戳恒在最前，标签按「用途」追加在后。
+        """
         self.frame_count = 0
         self.session_dir = None
         if not self.enabled:
             return
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_dir = self.debug_root / "navigate" / f"{label}_{ts}"
+        self.session_dir = self.debug_root / "navigate" / f"{ts}_{label}"
         self.session_dir.mkdir(parents=True, exist_ok=True)
 
     # ---------- 检测框颜色（core 不认识类别语义，类别配色由模块渲染器自定） ----------

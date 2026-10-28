@@ -303,8 +303,8 @@ def test_drive_starts_and_stops_recorder_in_record_mode(env) -> None:
 
     sessions = sorted((sr.debug_dir() / "speedrush").iterdir())
     assert len(sessions) == 1
-    assert sessions[0].name.startswith("manual_")
-    assert sessions[0].name.endswith("_p1")
+    # 命名规则：<运行编号>_manual_p<阶段>（时间戳恒在最前，标签按用途追加）
+    assert sessions[0].name.endswith("_manual_p1")
     assert (sessions[0] / "meta.json").is_file()
     assert (sessions[0] / "frames.jsonl").is_file()
     # 场景分层字段由模块注入：阶段号来自调用点、回合号来自 _run_flow 的轮次计数
@@ -327,7 +327,7 @@ def test_record_mode_writes_single_session_dir(env) -> None:
     assert mod._drive(1) is True
     root = sr.debug_dir() / "speedrush"
     sessions = sorted(p.name for p in root.iterdir() if p.is_dir())
-    assert len(sessions) == 1 and sessions[0].startswith("manual_")
+    assert len(sessions) == 1 and sessions[0].endswith("_manual_p1")
     session = root / sessions[0]
     # 调试图是同一批画面的第二份拷贝：录制期不建（raw/ 与 <seq>_hud.jpg 均无）
     assert not (session / "raw").exists()

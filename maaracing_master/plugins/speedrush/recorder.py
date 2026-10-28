@@ -272,11 +272,15 @@ class DriveRecorder:
             logger.log(f"[极速狂飙] 录制 meta 写入失败: {exc!r}", "WARNING")
 
 
-def make_session_dir(root: Path, tag: str | None = None) -> Path:
-    """按时间戳建会话目录（与 debug 会话同构），供调用方传入 DriveRecorder。
+def make_session_dir(root: Path, tag: str | None = None,
+                     stamp: str | None = None) -> Path:
+    """按运行编号建会话目录（与 debug 会话同构），供调用方传入 DriveRecorder。
 
-    ``tag`` 进目录名前缀（如 ``manual_20260916_120000``）：人工驾驶语料局与
-    历史纯时间戳会话一眼可分——阶段二参考线语料按 ``manual_`` 前缀取。"""
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = f"{tag}_{stamp}" if tag else stamp
+    目录名 = ``<运行编号>[_<标签>]``：时间戳恒在最前，标签按用途追加在后，
+    与 ``logs/`` 会话目录、``debug/`` 其它会话同一规则。``stamp`` 由调用方
+    传入（通常是日志会话 token，让日志与语料目录同名）；缺省取当前时刻。
+    ``tag`` 进目录名后缀（如 ``20260916_120000_manual``）：人工驾驶语料局与
+    纯时间戳会话一眼可分。"""
+    stamp = stamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = f"{stamp}_{tag}" if tag else stamp
     return Path(root) / name
