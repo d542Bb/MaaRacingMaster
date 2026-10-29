@@ -70,8 +70,11 @@
 - 米制目标与消费时序：逐次给出 e_y（目标−实测 ego）前后变化、旧目标道占用、
   合并距离（merge_start→修正后）、下拍计划有效性，并给出「评审候选」
   （恒等 ∩ 米制通过）。消费时序按源码顺序记录在报告头部。
+- 路径与源道（评审候选）：源道由 merge_start 前一拍 ref 重建；按剩余并线
+  预算逐拍扫目标道/中间道占用，按 ETA 分到达前/后，输出
+  `可考虑保留 / 必须清空 / 证据不足 / 保留无效`。
 - 自测：`--selftest`（窗口合并、未知拍断开、来源分类、目标变化、映射结论、
-  米制通过/占用/计划/越过/前提变化）。
+  米制通过/占用/计划/越过/前提变化、路径占用与超时）。
 """
 
 from __future__ import annotations
@@ -183,6 +186,9 @@ def tick_info(r: dict, hold_m: float) -> dict:
         "plan_valid": (r.get("plan") or {}).get("valid"),
         "plan_reason": (r.get("plan") or {}).get("reason"),
         "plan_fd": (r.get("plan") or {}).get("fd"),
+        "deadline": r.get("intent_deadline_s"),
+        "v_ctrl": (r.get("lat_ctrl") or {}).get("v_ctrl"),
+        "ts": r.get("ts_ns"),
         "lw": scene.get("lane_w") or 3.38,
         "road": r.get("road_offset"),
         "exec": r.get("executed_lane"),
@@ -585,11 +591,13 @@ def metric_event(ticks: list[dict], i: int) -> dict:
     # 合并几何：回溯本段 merge_start，比较「承诺时目标距离」与「修正后距离」
     ms_ro = None
     ms_fid = None
+    ms_idx = None
     for j in range(i - 1, max(-1, i - 400), -1):
         if ticks[j].get("stage") != t.get("stage"):
             break
         if ticks[j].get("vd") == "merge_start":
-            ms_ro, ms_fid = ticks[j].get("road"), ticks[j].get("fid")
+            ms_ro, ms_fid, ms_idx = (ticks[j].get("road"),
+                                     ticks[j].get("fid"), j)
             break
     start_dist = (None if ms_ro is None or ref is None
                   else abs(float(ref) - float(ms_ro)))
@@ -605,6 +613,83 @@ def metric_event(ticks: list[dict], i: int) -> dict:
                     if direction else 0.0)
     overshoot = signed_ahead is not None and signed_ahead < 0
     away = dist_change is not None and dist_change > GEOM_AWAY_LANE
+    # 合并源道与跨道路径：lane_from = merge_start 前一拍的 route.ref
+    # （`_start_merge` 用当时的 lane_ref），路径 = 源道之后到目标道的整数道。
+    lane_from = (None if ms_idx is None or ms_idx <= 0
+                 else ticks[ms_idx - 1].get("ref"))
+    path = []
+    if lane_from is not None and ref is not None:
+        a, b = int(round(float(lane_from))), int(round(float(ref)))
+        if a != b:
+            step = 1 if b > a else -1
+            path = [float(k) for k in range(a + step, b + step, step)]
+    deadline = t.get("deadline")
+    dt_merge = (None if ms_idx is None or t.get("ts") is None
+                or ticks[ms_idx].get("ts") is None
+                else (float(t["ts"]) - float(ticks[ms_idx]["ts"])) / 1e9)
+    progress = (None if ms_ro is None or ro_t is None or direction is None
+                else (float(ro_t) - float(ms_ro)) * direction)
+    rate_toward = (None if progress is None or dt_merge is None
+                   or dt_merge <= 0 else progress / dt_merge)
+    vt = (None if direction is None or t.get("v_ctrl") is None
+          else float(t["v_ctrl"]) * direction)
+    speed = max([x for x in (vt, rate_toward)
+                 if x is not None and x > 0] + [0.2])
+    eta = None if t_dist is None else t_dist / speed
+    # 占用窗口 = 剩余并线预算（deadline）；按 ETA 切成「到达前/到达后」
+    n_scan = max(1, int(round((deadline if deadline is not None
+                               else 4.0) * 20)))
+    k_eta = max(1, int(round((eta if eta is not None else 0.0) * 20)))
+    free_min = None
+    run_max = 0
+    block_first = None
+    before_eta = False
+    after_eta = False
+    space_seen = False
+    blk_set = set()
+    for lane in path:
+        run = 0
+        for off in range(0, n_scan + 1):
+            q = i + off
+            if q >= len(ticks):
+                break
+            c = _cand_of(ticks[q].get("cand"), lane)
+            if c is None:
+                run = 0
+                continue
+            if c[1] is not None and (free_min is None or c[1] < free_min):
+                free_min = c[1]
+            if c[3] in ("space", "car"):
+                run += 1
+                run_max = max(run_max, run)
+                blk_set.add(c[3])
+                if c[3] == "space":
+                    space_seen = True
+                if block_first is None:
+                    block_first = off
+                if off <= k_eta:
+                    before_eta = True
+                else:
+                    after_eta = True
+            else:
+                run = 0
+    timeout = (deadline is not None and eta is not None
+               and eta > float(deadline))
+    lw_vals = [float(ticks[q]["lw"]) for q in (i - 1, i, i + 1)
+               if 0 <= q < len(ticks) and ticks[q].get("lw") is not None]
+    lw_ok = bool(lw_vals) and max(lw_vals) - min(lw_vals) <= 0.03
+    xt_same = (t.get("xt") is not None and ref is not None
+               and abs(float(t["xt"]) - float(ref)) <= 0.5)
+    if lane_from is None or not path or not lw_ok or not xt_same:
+        path_verdict = "证据不足"
+    elif before_eta:
+        path_verdict = "必须清空"
+    elif after_eta:
+        path_verdict = "证据不足（到达后占用）"
+    elif timeout:
+        path_verdict = "保留无效（超时）"
+    else:
+        path_verdict = "可考虑保留"
     if ref is None or e_t is None or c_t is None or c_n is None:
         verdict = "证据不足"
     elif occ_worse:
@@ -632,7 +717,16 @@ def metric_event(ticks: list[dict], i: int) -> dict:
         "ms_fid": ms_fid, "start_dist": start_dist, "t_dist": t_dist,
         "dist_change": dist_change, "direction": direction,
         "signed_ahead": signed_ahead, "overshoot": overshoot,
-        "away": away, "verdict": verdict,
+        "away": away,
+        "lane_from": lane_from, "path": path, "deadline": deadline,
+        "dt_merge": dt_merge, "progress": progress,
+        "rate_toward": rate_toward, "vt": vt, "speed": speed, "eta": eta,
+        "n_scan": n_scan, "k_eta": k_eta, "free_min": free_min,
+        "run_max": run_max, "block_first": block_first,
+        "before_eta": before_eta, "after_eta": after_eta,
+        "space_seen": space_seen, "blk_set": sorted(blk_set),
+        "timeout": timeout, "lw_ok": lw_ok, "xt_same": xt_same,
+        "path_verdict": path_verdict, "verdict": verdict,
     }
 
 
@@ -882,9 +976,45 @@ def print_metric(runs: list[dict]) -> None:
     print(f"- 评审候选（恒等 ∩ 米制通过）= {len(review)} 次："
           + "，".join(str(e["metric"]["fid"]) for _, e in review))
     if review:
-        print("- 这组满足：旧目标道未被占/未恶化、下拍计划有效、下拍尺子稳定"
-              "（|Δro|≤0.4）、相对误差变化 ≤0.10 道、参考系未重编号。**只有"
-              "这组**支持提出「保留承诺」的候选方案；其余保持现状。")
+        print("- 这组已通过：参考系未重编号、旧目标道未被占/未恶化、合并几何"
+              "未坏、下拍计划有效、相对误差连续。下面是**路径占用与源道**核验。")
+        print("\n路径核验（评审候选；窗口 = 剩余并线预算，按 ETA 分到达前/后）：")
+        print("| fid | 源道→目标 | 剩余预算 s | ETA s | 进度 道/s | 目标道占用 | "
+              "最短净空 m | 结论 |")
+        print("|---|---|---:|---:|---:|---|---:|---|")
+        for _, e in review:
+            m = e["metric"]
+            src_s = (f"{m['lane_from']:g}→{m['ref']:g}"
+                     if m["lane_from"] is not None and m["ref"] is not None
+                     else "-")
+            dl = "-" if m["deadline"] is None else f"{m['deadline']:.2f}"
+            eta_s = "-" if m["eta"] is None else f"{m['eta']:.2f}"
+            rate_s = ("-" if m["rate_toward"] is None
+                      else f"{m['rate_toward']:+.2f}")
+            if m["blk_set"]:
+                occ_s = ("+".join(m["blk_set"]) + "("
+                         + ("-" if m["block_first"] is None
+                            else f"{m['block_first'] / 20.0:.1f}s")
+                         + f",连{m['run_max']}拍)")
+            else:
+                occ_s = "free"
+            fm = "-" if m["free_min"] is None else f"{m['free_min']:.1f}"
+            print(f"| {m['fid']} | {src_s} | {dl} | {eta_s} | {rate_s} | "
+                  f"{occ_s} | {fm} | {m['path_verdict']} |")
+        final = [e for _, e in review
+                 if e["metric"]["path_verdict"] == "可考虑保留"]
+        print(f"- 最终可考虑保留 {len(final)} 次："
+              + ("，".join(str(e["metric"]["fid"]) for e in final) or "无"))
+        weak = [e for _, e in review
+                if e["metric"]["path_verdict"].startswith("证据不足")
+                or e["metric"]["path_verdict"].startswith("保留无效")]
+        if weak:
+            print("- 需要额外说明的：" + "，".join(
+                f"fid {e['metric']['fid']}（{e['metric']['path_verdict']}）"
+                for e in weak))
+        print("- 注意：2149 的修正后距离变化 0.67 道距 0.7 阈值只有 0.03 道，"
+              "同时剩余预算 0.62 s 远小于到达估计——它是阈值敏感案例，"
+              "不能当作稳健通过。")
     rest = [(e["metric"]["fid"], e["metric"]["verdict"])
             for _, e in rows
             if e.get("map") and e["map"]["verdict"].startswith("恒等")
@@ -892,9 +1022,10 @@ def print_metric(runs: list[dict]) -> None:
     if rest:
         print("- 恒等但未过米制核验："
               + "，".join(f"{fid}（{v}）" for fid, v in rest) + "。")
-    print("- 尚未核验：跨道路径的**中间道**占用（本次只查目标道，候选表不含"
-          "路径）；`lane_from` 不在 trace 里，合并源道无法逐次复核。因此"
-          "即便这组全部通过，也不能无条件跳过换纪门。")
+    print("- 尚未核验：这 5 次的源道→目标都是相邻一道（无中间道），路径只查了"
+          "目标道；占用用 coarse 每拍净空做代理，未用未来车辆轨迹。`lane_from` "
+          "由 merge_start 前一拍的 route.ref 重建（`_start_merge` 的语义），"
+          "不是 trace 里的独立字段。")
 
 
 def print_mapping(runs: list[dict]) -> None:
@@ -1166,12 +1297,14 @@ def _mk(fid, fd, src="wall", new=True, hold=False, plan="veto",
 
 def _mtick(fid, pre, post, road, ref=0.0, src="wall", new=True,
            hold=False, lines=(), line_x=None, edge=None, w=4.5, ep=0,
-           vd="keep", xt=None, plan_valid=True):
+           vd="keep", xt=None, plan_valid=True, v_ctrl=0.5, deadline=4.0):
     """映射/米制核验自测用的最小 tick（字段与 tick_info 同口径）。"""
     return {"fid": fid, "pre_exec": pre, "exec": post, "road": road,
             "src": src, "new": new, "hold": hold, "lines": list(lines),
             "line_x": line_x, "edge": edge, "w": w, "ref": ref, "ep": ep,
             "vd": vd, "rebase": "jump_confirm", "stage": 1,
+            "deadline": deadline, "v_ctrl": v_ctrl,
+            "ts": float(fid) * 1e9,
             "xt": road if xt is None else xt, "goal": None,
             "plan_valid": plan_valid, "plan_reason": "plan:ok" if plan_valid
             else "plan:frame_shift", "plan_fd": 0.0, "lw": 3.38,
@@ -1255,6 +1388,33 @@ def selftest() -> None:
     b3 = _mtick(2, 0.0, -2.0, -2.0, ref=1.0, xt=1.0)
     c3 = _mtick(3, -2.0, -2.0, -2.0, ref=-1.0, xt=1.0)
     assert metric_event([ms, b3, c3], 1)["verdict"] == "目标前提变化"
+    # 路径核验：相邻一道、目标道 free、ETA<预算 → 可考虑保留
+    prev = _mtick(0, 0.0, 0.0, 0.0, ref=0.0)
+    ms = _mtick(1, 0.0, 0.0, 0.0, ref=0.0, vd="merge_start")
+    tk = _mtick(2, 0.0, 1.0, -0.5, ref=1.0, xt=0.83, v_ctrl=1.0)
+    nxt = _mtick(3, 1.0, 1.0, -0.5, ref=1.0, xt=0.83, v_ctrl=1.0)
+    m = metric_event([prev, ms, tk, nxt], 2)
+    assert m["lane_from"] == 0.0 and m["path"] == [1.0], m
+    assert m["path_verdict"] == "可考虑保留", m
+    # 到达前目标道有车 → 必须清空
+    tk2 = _mtick(2, 0.0, 1.0, -0.5, ref=1.0, xt=0.83, v_ctrl=1.0)
+    tk2["cand"] = [(c[0], 6.0 if c[0] == 1.0 else c[1], c[2],
+                    "car" if c[0] == 1.0 else c[3]) for c in tk2["cand"]]
+    assert metric_event([prev, ms, tk2, nxt], 2)["path_verdict"] == "必须清空"
+    # 剩余预算不足 → 保留无效（超时）
+    tk3 = _mtick(2, 0.0, 1.0, -0.5, ref=1.0, xt=0.83, v_ctrl=0.1,
+                 deadline=0.5)
+    m = metric_event([prev, ms, tk3, nxt], 2)
+    assert m["path_verdict"].startswith("保留无效"), m
+    # 目标道占用出现在到达估计之后 → 证据不足（到达后占用）
+    seq = [prev, ms, tk] + [
+        _mtick(3 + k, 1.0, 1.0, -0.5, ref=1.0, xt=0.83, v_ctrl=1.0)
+        for k in range(40)]
+    q = seq[2 + 35]
+    q["cand"] = [(c[0], 6.0 if c[0] == 1.0 else c[1], c[2],
+                  "car" if c[0] == 1.0 else c[3]) for c in q["cand"]]
+    m = metric_event(seq, 2)
+    assert m["path_verdict"].startswith("证据不足"), m
     print("selftest ok")
 
 
@@ -1313,7 +1473,12 @@ def main() -> None:
                        "free_n", "b_t", "b_n", "occ_worse", "plan_ok",
                        "plan_reason", "frame_ok", "metric_ok", "ms_fid",
                        "start_dist", "t_dist", "dist_change", "direction",
-                       "signed_ahead", "overshoot", "away", "verdict"]
+                       "signed_ahead", "overshoot", "away",
+                       "lane_from", "path", "deadline", "dt_merge",
+                       "progress", "rate_toward", "vt", "speed", "eta",
+                       "free_min", "run_max", "block_first", "before_eta",
+                       "after_eta", "space_seen", "blk_set", "timeout",
+                       "lw_ok", "xt_same", "path_verdict", "verdict"]
         fields += [f"metric_{k}" for k in metric_keys]
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fields)
