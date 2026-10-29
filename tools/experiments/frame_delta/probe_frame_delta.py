@@ -134,6 +134,7 @@ def tick_info(r: dict, hold_m: float) -> dict:
         "intent": r.get("intent_lane"),
         "hop": _hop(r),
         "rebase": (r.get("lat_ctrl") or {}).get("rebase"),
+        "pre_exec": (r.get("plan_ego") or [None])[0],
         "ep": rt.get("ep"),
         "raw": r,
     }
@@ -280,6 +281,27 @@ def _preceded(ticks: list[dict], start_idx: int, window_start_fid) -> dict:
             out["epoch"] = True
     return out
 
+def grade_rebase(ev: dict) -> tuple[str, str]:
+    """按证据等级给一次重基定性（只回答「输入是否陈旧」，不判重基对错）。
+
+    A 已确认陈旧：输入按保持消费、同一路心值已冻结 ≥3 拍、执行位离它 >0.3 道，
+      且重基把执行位采用到该值（adopt 差 <0.2 道）——数值层面「陈旧中心被采信」。
+    B 疑似陈旧：保持/冻结/偏离只满足一部分，或映射未完全采用旧值。
+    C 无法判定：新鲜源（可能是真实参考系跳变）、非保持、或缺字段。
+    """
+    if ev["pre_exec"] is None or ev["road"] is None:
+        return "C 无法判定", "缺字段"
+    if not ev["hold"] and ev["new"]:
+        return "C 无法判定", "新鲜源，可能是真实跳变"
+    if not ev["hold"]:
+        return "C 无法判定", "非保持状态"
+    if ev["frozen_age"] >= 3 and ev["exec_ro_gap"] > 0.3             and ev["adopt_gap"] < 0.2:
+        return "A 已确认陈旧", "冻结+执行位偏离+重基采用旧值"
+    if ev["frozen_age"] >= 2 or ev["exec_ro_gap"] > 0.5:
+        return "B 疑似陈旧", "保持/冻结支持，但映射或独立证据不足"
+    return "C 无法判定", "保持但冻结/偏离不足"
+
+
 def summarize_run(run: str, rows: list[dict], hold_m: float) -> dict:
     ticks = [tick_info(r, hold_m) for r in rows]
     windows = build_windows(ticks)
@@ -311,20 +333,72 @@ def summarize_run(run: str, rows: list[dict], hold_m: float) -> dict:
     for i, t in enumerate(ticks):
         if not t["rebase"]:
             continue
-        prev_exec = ticks[i - 1]["exec"] if i > 0 else None
-        delta = (None if prev_exec is None or t["exec"] is None
-                 else float(t["exec"]) - float(prev_exec))
+        road = t["road"]
+        pre = t["pre_exec"]
+        post = t["exec"]
+        delta = (None if pre is None or post is None
+                 else float(post) - float(pre))
+        hold_age = 0
+        j = i
+        while j >= 0 and ticks[j]["hold"]:
+            hold_age += 1
+            j -= 1
+        frozen_age = 0
+        j = i
+        base = road
+        while (j >= 0 and base is not None
+               and ticks[j]["road"] is not None
+               and abs(float(ticks[j]["road"]) - float(base)) <= 1e-3):
+            frozen_age += 1
+            j -= 1
+        exec_ro_gap = (None if pre is None or road is None
+                       else abs(float(pre) - float(road)))
+        adopt_gap = (None if post is None or road is None
+                     else abs(float(post) - float(road)))
+        nxt = ticks[i + 1] if i + 1 < len(ticks) else None
+        ep_up = bool(nxt is not None and nxt["ep"] is not None
+                     and t["ep"] is not None and nxt["ep"] > t["ep"])
+        vd_next = nxt["vd"] if nxt is not None else None
+        end10 = [ticks[j]["vd"] for j in
+                 range(i + 1, min(len(ticks), i + 11))
+                 if ticks[j]["vd"] in ENDINGS + ("merge_start",)]
+        ref_after = [ticks[j]["ref"] for j in
+                     range(i + 1, min(len(ticks), i + 11))
+                     if ticks[j]["ref"] is not None]
+        ref_changed = bool(ref_after and t["ref"] is not None
+                           and max(abs(float(x) - float(t["ref"]))
+                                   for x in ref_after) > 0.1)
         win = next((w for w in windows if w["start_i"] <= i <= w["end_i"]),
                    None)
-        end = None
-        for j in range(i, min(len(ticks), i + 11)):
-            if ticks[j]["vd"] in ENDINGS:
-                end = {"outcome": ticks[j]["vd"], "dt": j - i}
-                break
-        rebases.append({"kind": t["rebase"], "fid": t["fid"],
-                        "fd": None if t["fd"] is None else round(t["fd"], 2),
-                        "delta": None if delta is None else round(delta, 2),
-                        "win": win is not None, "end": end})
+        ev = {
+            "run": run, "fid": t["fid"], "kind": t["rebase"],
+            "fd": None if t["fd"] is None else round(t["fd"], 2),
+            "road": None if road is None else round(float(road), 3),
+            "pre_exec": None if pre is None else round(float(pre), 3),
+            "post_exec": None if post is None else round(float(post), 3),
+            "delta": None if delta is None else round(delta, 2),
+            "src": t["src"], "new": t["new"], "hold": t["hold"],
+            "hold_age": hold_age, "frozen_age": frozen_age,
+            "exec_ro_gap": (None if exec_ro_gap is None
+                            else round(exec_ro_gap, 2)),
+            "adopt_gap": (None if adopt_gap is None
+                          else round(adopt_gap, 2)),
+            "ph": t["ph"], "ref": t["ref"], "ep": t["ep"],
+            "merging_pre": t["ph"] == "merging",
+            "ep_up": ep_up, "vd_next": vd_next, "end10": end10,
+            "end": end10[0] if end10 else None,
+            "ref_changed": ref_changed,
+            "merging_after": any(ticks[j]["ph"] == "merging"
+                                 for j in range(i + 1, min(len(ticks),
+                                                           i + 11))),
+            "win": win is not None,
+        }
+        ev["grade"], ev["reason"] = grade_rebase(ev)
+        ev["cause"] = ("rebase" if (delta is not None
+                                    and abs(delta) > 0.5 and ep_up
+                                    and vd_next == "epoch_reset")
+                       else "other" if ep_up else "none")
+        rebases.append(ev)
     pairs = list(zip(ticks, ticks[1:]))
     base_src = sum(1 for a, b in pairs if a["src"] != b["src"])
     base_state = sum(
@@ -505,7 +579,7 @@ def print_report(runs: list[dict], hold_m: float, groups: dict[str, str]) -> Non
                 b["d"].append(abs(e["delta"]))
             b["big"] += int(e["win"])
             if e["end"]:
-                b["end"][e["end"]["outcome"]] += 1
+                b["end"][e["end"]] += 1
     print("| 类型 | 次数 | |exec跳变| p50/max | >0.5道 | 大差窗口内 | "
           "后10拍结局 |")
     print("|---|---:|---|---:|---:|---|")
@@ -521,6 +595,52 @@ def print_report(runs: list[dict], hold_m: float, groups: dict[str, str]) -> Non
             sub = [r for r in runs if groups.get(r["run"]) == g]
             c = Counter(e["kind"] for r in sub for e in r["rebases"])
             print(f"- {g} 重基：" + str(dict(c)))
+    print()
+    print("### 逐次分层（证据等级）")
+    grade = defaultdict(lambda: {"n": 0, "kinds": Counter(), "src": Counter(),
+                                 "hold": [], "exec": [], "adopt": [],
+                                 "epoch": 0, "cause": Counter(),
+                                 "merging": 0, "ref": 0})
+    for run in runs:
+        for e in run["rebases"]:
+            g = grade[e["grade"]]
+            g["n"] += 1
+            g["kinds"][e["kind"]] += 1
+            g["src"][e["src"]] += 1
+            g["hold"].append(e["hold_age"])
+            if e["exec_ro_gap"] is not None:
+                g["exec"].append(e["exec_ro_gap"])
+            if e["adopt_gap"] is not None:
+                g["adopt"].append(e["adopt_gap"])
+            g["epoch"] += int(e["ep_up"])
+            g["cause"][e["cause"]] += 1
+            g["merging"] += int(e["merging_pre"])
+            g["ref"] += int(e["ref_changed"])
+    print("| 等级 | 次数 | 类型 | 来源 | 保持年龄 p50/max | exec-ro p50 | "
+          "adopt p50 | 下一拍换纪 | 并线前/ref变 |")
+    print("|---|---:|---|---|---|---:|---:|---:|---|")
+    for name, g in sorted(grade.items()):
+        hold = sorted(g["hold"])
+        h50 = statistics.median(hold) if hold else "-"
+        hmax = hold[-1] if hold else "-"
+        e50 = round(statistics.median(g["exec"]), 2) if g["exec"] else "-"
+        a50 = round(statistics.median(g["adopt"]), 2) if g["adopt"] else "-"
+        print(f"| {name} | {g['n']} | {dict(g['kinds'])} | "
+              f"{dict(g['src'])} | {h50} / {hmax} | {e50} | {a50} | "
+              f"{g['epoch']} | {g['merging']}/{g['ref']} |")
+    evs = [e for run in runs for e in run["rebases"]]
+    n = len(evs)
+    reb_cause = sum(1 for e in evs if e["cause"] == "rebase")
+    other_cause = sum(1 for e in evs if e["cause"] == "other")
+    no_epoch = sum(1 for e in evs if e["cause"] == "none")
+    print(f"- 因果：{n} 次重基中，|Δexec|>0.5 且下一拍换纪 {reb_cause}、"
+          f"换纪但非重基引起 {other_cause}、无换纪 {no_epoch}。")
+    merge_pre = sum(1 for e in evs if e["merging_pre"])
+    ref_chg = sum(1 for e in evs
+                  if e["merging_pre"] and e["ref_changed"])
+    new_merge = sum(1 for e in evs if "merge_start" in e["end10"])
+    print(f"- 承诺：重基前在并线 {merge_pre} 次，其中 10 拍内 ref 变化 "
+          f"{ref_chg} 次；10 拍内重新起意并线 {new_merge} 次。")
     srcs = source_table(runs)
     print("\n## 三问\n")
     top = sorted(srcs, key=lambda r: -r["starts"])[:3]
@@ -624,6 +744,7 @@ def main() -> None:
     ap.add_argument("--manual", action="append", default=[],
                     help="标记为人工局的会话（可重复）")
     ap.add_argument("--hold-m", type=float, default=None)
+    ap.add_argument("--csv", default=None, help="重基逐次事件 CSV 输出路径")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -647,6 +768,22 @@ def main() -> None:
     if not runs:
         raise SystemExit("没有可分析的会话")
     print_report(runs, hold_m, groups)
+    if args.csv:
+        import csv
+        keys = ["run", "fid", "kind", "grade", "reason", "cause", "src",
+                "new", "hold", "hold_age", "frozen_age", "road",
+                "pre_exec", "post_exec", "delta", "fd", "exec_ro_gap",
+                "adopt_gap", "ph", "ref", "ep", "ep_up", "vd_next",
+                "end10", "ref_changed", "merging_pre", "merging_after",
+                "win"]
+        with open(args.csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=keys)
+            w.writeheader()
+            for run in runs:
+                for e in run["rebases"]:
+                    w.writerow({k: e.get(k) for k in keys})
+        print()
+        print(f"CSV: {args.csv}")
 
 
 if __name__ == "__main__":
