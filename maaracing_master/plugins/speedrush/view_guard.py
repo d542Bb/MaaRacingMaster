@@ -2,7 +2,8 @@
 """开局视角守卫：用道路平面的相机高度判断当前是否是保险杠机位。
 
 只做状态机，不碰手柄与帧：模块层负责喂样本、按 RB；本模块可离线单测。
-判据来自实测——保险杠视角相机高度中位 1.39–1.44 m，旧追车视角约 1.8–2.2 m。
+判据来自实测——2026-10-29 尺度修正后，保险杠视角相机高度中位约
+1.24–1.29 m，活动追尾视角约 1.6–2.0 m。
 """
 from __future__ import annotations
 
@@ -13,8 +14,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ViewGuardConfig:
     enabled: bool = False
-    cam_h_lo_m: float = 1.25
-    cam_h_hi_m: float = 1.70
+    cam_h_lo_m: float = 1.12
+    cam_h_hi_m: float = 1.55
     sample_s: float = 0.7
     settle_s: float = 0.25
     max_views: int = 3

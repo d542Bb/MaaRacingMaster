@@ -19,12 +19,12 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, PerceptionHealth, TrackedTarget, WorldObservation)
 
-LW = 3.38
+LW = 3.5
 _CFG_BASE = _read_decision(DECISION_FILE)
 CFG = _CFG_BASE
 
 
-def _corridor(left=-6.76, right=6.76, *, executed=0.0):
+def _corridor(left=-7.0, right=7.0, *, executed=0.0):
     """走廊带在自车系；路心随 executed 平移（与 road_offset 契约一致）。"""
     c = -executed * LW
     bands = tuple(

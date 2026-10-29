@@ -163,11 +163,13 @@ DEGRADED_QUAD_MIN = 200        # 四象限（X<0/≥0 × Z 近/远段）各需�
 DEGRADED_INLIER_MIN = 0.85     # 剪后内点率地板（比主门 0.70 严：主门已拒，
                                # 只有贴得非常平才有救）
 DEGRADED_RESID_P50_MAX = 0.06  # 剪后残差中位上限（与主门旁路同值）
-DEGRADED_CAM_H_LO, DEGRADED_CAM_H_HI = 1.40, 2.20   # 尺度 sanity：cam_h 与待
+DEGRADED_CAM_H_LO, DEGRADED_CAM_H_HI = 1.15, 2.20   # 尺度 sanity：cam_h 与待
                                # 验平面同源（平面放歪读数跟着错），不是平面
                                # 正确性的独立证据，只挡 UI/结算帧这类 grossly
-                               # 异常尺度。边界依据实测分布（干净 1.73~2.09/
-                               # 真拒 1.49~1.81/UI 异常 2.45~5.6）；主门在前
+                               # 异常尺度。2026-10-29 深度尺度 ×0.893 后下界
+                               # 按物理带重标（1.40→1.15），上界沿用 2.20
+                               # （UI/结算异常旧分布 2.45~5.6，仍拒）；实测
+                               # 保杠 1.26~1.29，逐车约 1.23~1.36。主门在前
                                # 已挡角度/内点病态，此处只兜极端
 
 # ── 列剖面路面特征（2026-10-02 定案：拟合起步种子由「位置圈地」换成「特征
@@ -380,7 +382,8 @@ def load_session(weights: Path) -> ort.InferenceSession:
 
 
 def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
-                 with_evidence: bool = False, native: bool = False):
+                 with_evidence: bool = False, native: bool = False,
+                 scale: float = 1.0):
     """一帧 → (点图, fx, fy[, 证据包])。无效像素 nan。
 
     ``native=False``（缺省）点图 (720,1280,3) 全幅；``native=True`` 直接给模型
@@ -389,6 +392,9 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     0.000 lane，见 NATIVE_GEO 注释）。
     fx/fy **两种模式都返回全幅像素焦距**（口径不变：消费端按点图宽度自算倍率
     ds = 全幅宽 / pts.shape[1]，见 reading_from_points）。
+
+    ``scale``：MoGe 米制全局缩放（gate0 depth_scale）；证据包 ``ms`` 是应用后
+    的尺度，``ms_raw`` 是模型原始输出，``scale`` 是乘数。
 
     ``with_evidence`` 时返回原生证据 dict（pts=336×598 点图 fp32、valid、
     fx/fy=归一化焦距，复算 ×(W,H)）——离线复算与实机渲染用，比全幅小 6 倍且
@@ -420,7 +426,10 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     finally:
         dml_lock.LOCK.release()
     t_rec = time.perf_counter()
-    res = moge_post.reconstruct(points, mask, metric_scale)
+    # 2026-10-29 重新标定：MoGe 米制偏大约 1.12（画线金标），在唯一入口
+    # 缩一次，cam_h/点云/宽度/目标距离随之一致回到真米。
+    ms_applied = metric_scale * float(scale)
+    res = moge_post.reconstruct(points, mask, ms_applied)
     LAST_STAGE_MS["reconstruct"] = (time.perf_counter() - t_rec) * 1000.0
     pts = res["pts"]
     ow, oh = points.shape[1], points.shape[0]
@@ -432,14 +441,16 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
         if with_evidence:
             evidence = {"pts": pts, "valid": res["valid"],
                         "fx": res["fx"], "fy": res["fy"],
-                        "ms": float(metric_scale), "solver": res["solver"]}
+                        "ms": float(ms_applied), "ms_raw": float(metric_scale),
+                        "scale": float(scale), "solver": res["solver"]}
         pts = np.array(pts, copy=True)
         valid = res["valid"]
     elif (oh, ow) != (MOGE_IN_H, MOGE_IN_W):
         if with_evidence:
             evidence = {"pts": pts, "valid": res["valid"],
                         "fx": res["fx"], "fy": res["fy"],
-                        "ms": float(metric_scale), "solver": res["solver"]}
+                        "ms": float(ms_applied), "ms_raw": float(metric_scale),
+                        "scale": float(scale), "solver": res["solver"]}
         pts = np.stack([cv2.resize(pts[..., k], (MOGE_IN_W, MOGE_IN_H),
                                    interpolation=cv2.INTER_LINEAR)
                         for k in range(3)], -1)
@@ -1513,7 +1524,8 @@ class DepthRoadObserver:
         try:
             pts, fx, fy, evid = infer_points(self._sess, frame_rgb,
                                              with_evidence=True,
-                                             native=NATIVE_GEO)
+                                             native=NATIVE_GEO,
+                                             scale=self._cal.depth_scale)
         except dml_lock.Busy:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:

@@ -207,10 +207,10 @@ def test_far_band_without_evidence_no_center_unknown():
 # ---------- 墙实体路径：单侧/遮挡从全盲变半盲供数 ----------
 
 def _fed_wall_observer(n_pairs=32):
-    """W 成形 + 双侧墙箱攒足置信的观察器（pair: ±2.0 道，墙箱 ±5.5m）。"""
+    """W 成形 + 双侧墙箱攒足置信的观察器（pair: ±2.0 道，墙箱 ±5.7m）。"""
     o = smod._EgoRoadObserver(lane_w_m=LW, wall_track=WallTrack(CAL))
     for fid in range(1, n_pairs + 1):
-        o.update(_bnd(-2.0, 2.0, edge_pts=[(-1, 4.0, -5.5), (1, 4.0, 5.5)]),
+        o.update(_bnd(-2.0, 2.0, edge_pts=[(-1, 4.0, -5.7), (1, 4.0, 5.7)]),
                  now=1000.0 + 0.05 * fid, fid=fid)
     return o
 
@@ -219,12 +219,12 @@ def test_wall_path_single_side_supplies():
     """单侧拍：右墙箱在场（conf 满级）→ 墙实体路径 src=wall，中心=墙∓W/2
     （469 拍 sides=1 型从全盲变半盲供数）。"""
     o = _fed_wall_observer()
-    c = o.update(_bnd(None, 2.0, edge_pts=[(1, 4.0, 5.5)]),
+    c = o.update(_bnd(None, 2.0, edge_pts=[(1, 4.0, 5.7)]),
                  now=1100.0, fid=33)
     assert c is not None and c.src == "wall"
     # 单侧拍只喂右缘：右墙箱是 measured（左箱转 occluded），MEASURED 优先
-    # 选右墙 → 中心 = 墙(+5.5/LW 道) − W/2（W=4.0 道）
-    assert _off(c) == pytest.approx(2.0 - 5.5 / LW)
+    # 选右墙 → 中心 = 墙(+5.7/LW 道) − W/2（W=4.0 道）
+    assert _off(c) == pytest.approx(2.0 - 5.7 / LW)
     assert c.width_lane == pytest.approx(4.0)
 
 
@@ -234,8 +234,8 @@ def test_wall_occluded_path_supplies_with_honest_source():
     o = _fed_wall_observer()
     c = o.update(_bnd(), now=1100.05, fid=34)   # 双墙都被车挡
     assert c is not None and c.src == "wall_occl"
-    # 双墙同 z 箱：取更小 (zc, side) → 左墙 → 中心 = 墙(−5.5/LW) + W/2
-    assert _off(c) == pytest.approx(5.5 / LW - 2.0)
+    # 双墙同 z 箱：取更小 (zc, side) → 左墙 → 中心 = 墙(−5.7/LW) + W/2
+    assert _off(c) == pytest.approx(5.7 / LW - 2.0)
     # 走廊带已无墙融合（2026-10-21 收敛定案）：近场带无绿区落空气墙
     assert c.bands[0].left.src == INFERRED
     assert c.bands[0].left.last_fid is None
@@ -435,7 +435,7 @@ def test_width_floor_rejects_narrow_pairs():
 
 
 def test_master_plane_gate_ignores_bad_plane_frame():
-    """坏平面拍（cam_h=0.91m，正常 1.4~1.5）的缘点/绿区整帧不进供数：
+    """坏平面拍（cam_h=0.91m，正常 1.26~1.29）的缘点/绿区整帧不进供数：
     沿用近龄墙箱（src=wall_occl），坏帧分带边界落空气墙、plane_health
     降级——当拍 ±1 道的假墙不得改写路心。"""
     o = _master_wall_observer()

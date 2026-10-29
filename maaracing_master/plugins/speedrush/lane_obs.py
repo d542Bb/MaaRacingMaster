@@ -34,14 +34,15 @@ import numpy as np
 
 from maaracing_master.core import dml_lock
 
-LANE_W = 3.38
+LANE_W = 3.5
 VPX = 640.7
 Y_H = 354.2
 FOCAL = 807.7
-DEFAULT_CAM_H = 1.469
-# 保险杠机位物理高度带；深度平面坏时 coef[2] 会飙到 3.6~5.0，线几何不能用它。
-CAM_H_LO = 1.25
-CAM_H_HI = 1.70
+DEFAULT_CAM_H = 1.28
+# 保险杠机位物理高度带（2026-10-29 深度尺度 ×0.893 后重标）；坏平面帧的
+# coef[2] 仍会飙到 3.2~4.5，线几何不能用它。
+CAM_H_LO = 1.12
+CAM_H_HI = 1.55
 YELLOW_MIN = 0.6
 WHITE_MIN = 0.6
 NEAR_Y = (560.0, 720.0)
@@ -166,7 +167,7 @@ def _side_from_x(x: float | None) -> int | None:
 def _lane_cam_h(cam_h: float | None) -> tuple[float, bool]:
     """线几何用的相机高度：越出保险杠物理高度带就回退标定值。
 
-    深度平面坏帧的 coef[2] 实测可达 3.6~5.0（正常 1.4~1.5）；线的 L 与
+    深度平面坏帧的 coef[2] 实测可达 3.2~4.5（正常 1.26~1.29）；线的 L 与
     cam_h 成正比，直接采用会把同一根线放大三倍多，算出错 1~2 道的横位。
     """
     if cam_h is None or not (CAM_H_LO <= cam_h <= CAM_H_HI):

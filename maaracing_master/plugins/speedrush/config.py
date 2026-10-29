@@ -935,9 +935,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             anchor_gate=_bool(d, "box_bridge", "anchor_gate", default=False)),
         view_guard=ViewGuardConfig(
             enabled=_bool(d, "view_guard", "enabled", default=False),
-            cam_h_lo_m=_num_def(d, "view_guard", "cam_h_lo_m", 1.25,
+            cam_h_lo_m=_num_def(d, "view_guard", "cam_h_lo_m", 1.12,
                                 lo=0, lo_open=False),
-            cam_h_hi_m=_num_def(d, "view_guard", "cam_h_hi_m", 1.70,
+            cam_h_hi_m=_num_def(d, "view_guard", "cam_h_hi_m", 1.55,
                                 lo=0, lo_open=False),
             sample_s=_num_def(d, "view_guard", "sample_s", 0.7,
                               lo=0, lo_open=False),

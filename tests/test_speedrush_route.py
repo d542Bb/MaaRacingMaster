@@ -28,7 +28,7 @@ from maaracing_master.plugins.speedrush.route import (
 from maaracing_master.plugins.speedrush.tracking import (
     PerceptionHealth, WorldObservation)
 
-LW = 3.38
+LW = 3.5
 DT = 0.05
 CFG = _read_decision(DECISION_FILE)
 # 与 DecisionEngine 同一套装配：尺度/速度类数值只有既有真源
@@ -393,12 +393,12 @@ def _corridor(shift_m=0.0):
     """对称走廊；`shift_m` 平移整个分带（改变路线层用的尺子 z=0 中心线）。"""
     bands = tuple(
         CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
-                     BandBoundary(-6.76 + shift_m, "measured"),
-                     BandBoundary(6.76 + shift_m, "measured"))
+                     BandBoundary(-7.0 + shift_m, "measured"),
+                     BandBoundary(7.0 + shift_m, "measured"))
         for i in range(9))
     # 供数门 master 固定在 0：带整体平移才能改变"尺子"（场景 z=0 中心线）；
     # master 跟着带一起动的话，原点会把平移抵消掉，尺子纹丝不动
-    return Corridor(bands, 0.0, 13.52 / LW, "pair", "ok")
+    return Corridor(bands, 0.0, 14.0 / LW, "pair", "ok")
 
 
 def _obs(fid):
