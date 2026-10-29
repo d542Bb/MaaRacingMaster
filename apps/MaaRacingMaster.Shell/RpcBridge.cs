@@ -36,7 +36,7 @@ internal static class RpcBridge
         "fetch_logs", "get_today_stats", "get_debug_state",
         "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
         "set_emergency_stop", "set_click_mode", "set_intent_mode",
-        "set_auto_close_game", "set_auto_exit_mra", "set_mute_game",
+        "set_mute_game", "pick_game_exe",
         "set_boost_priority",
     };
 

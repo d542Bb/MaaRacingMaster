@@ -26,7 +26,6 @@ from maaracing_master.core.window_utils import (
     find_game_hwnd,
     is_window_on_screen,
     resize_game_window_720p,
-    terminate_process_by_hwnd,
 )
 from maaracing_master.core.logger import logger
 from maaracing_master.core.base import ActivityContext, ModuleDependencyError
@@ -91,10 +90,9 @@ class MaaRacingMasterController:
         # 紧急停止快捷键开关：开启后同时按下任意 ≥2 个按键 → 立即停止逻辑
         self._emergency_stop_enabled = False
         self._emergency_thread: threading.Thread | None = None
-        # 运行结束后自动关闭（GUI「运行结束后」卡片）：仅在流程"正常完成"时生效，
-        # 报错退出 / 手动停止（stop_event 置位）不触发。
-        self._auto_close_game = False  # 结束后关闭游戏进程
-        self._auto_exit_mra = False    # 结束后退出 MaaRM 程序
+        # 运行结束后行为不再是开关：关闭游戏 / 退出本程序都是任务列表里的步骤，
+        # 由步骤按队列位置执行（见 core/builtin_steps.py）。这里只留一个本轮退出标志。
+        self._exit_requested = False   # 步骤请求「本轮结束后退出本程序」
         self._last_run_natural = False  # 上次 start_module 是否正常跑完（非报错、非手动停止）
         self._mute_game_enabled = False  # 「运行选项」运行时静音游戏（结束恢复 100%）
         self._wgc_capture = None  # WGC 中心采集器（单生产者，全模块读缓存；运行期存在）
@@ -116,6 +114,11 @@ class MaaRacingMasterController:
         if self._ctx is None:
             self._ctx = ActivityContext(self)
         return self._ctx
+
+    @property
+    def hwnd(self) -> int:
+        """已连接（或由启动步骤采纳）的游戏窗口句柄，未连接为 0。"""
+        return self._hwnd
 
     @property
     def current_stage(self) -> str:
@@ -207,6 +210,7 @@ class MaaRacingMasterController:
                 self.active_module = module
             self._running = True
             self._last_run_natural = False
+            self._exit_requested = False  # 退出请求按轮计，不跨轮残留
             # 「运行选项」运行时静音游戏：每次启动都静音（结束由 finally 统一恢复 100%）。
             # 必须放在这里而非 connect()：connect 幂等（第二次启动直接短路返回），
             # 放 connect 会导致"停止后再开始不再静音"（2026-09-01 实测 bug）。
@@ -269,23 +273,46 @@ class MaaRacingMasterController:
                 # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
                 if self._mute_game_enabled:
                     self._apply_game_volume(1.0, "运行结束：恢复游戏音量为 100%", grp=cg)
-                # 运行结束后行为（GUI「运行结束后」卡片）：仅"正常跑完"生效 ——
-                # 手动停止（_manual_stop）或报错退出（natural=False）不触发；
-                # 模块自己跑完（含每日循环到限自动停止）算正常完成，开关照常生效。
-                # 注意：不能以 stop_event 判定手动停止——模块到限自动停止也会置位它，
-                # 改用显式 _manual_stop 标志（stop() 置位，start_module 复位）。
-                if self._last_run_natural and not self._manual_stop:
-                    cg.log("运行结束：任务正常完成，按「运行结束后」选项执行", "INFO")
-                    self._maybe_auto_shutdown(grp=cg)
-                elif self._manual_stop:
-                    cg.log("运行结束：手动停止，「运行结束后」开关不生效", "INFO")
+                # 运行结束后行为已改为任务列表里的步骤（关闭游戏 / 关闭后退出本程序）：
+                # 这里不再按开关自动关游戏或退出——步骤按队列位置执行，语义在界面上，
+                # 不在这里的特判里。
+                if self._manual_stop:
+                    cg.log("运行结束：手动停止", "INFO")
             except BaseException:
                 cg.end("failure")
                 raise
             cg.end()
 
+    def run_builtin_step(self, step_id: str, step_config: dict | None = None) -> bool:
+        """运行一个内置步骤（启动游戏 / 关闭游戏），阻塞，运行于 worker 线程。
+
+        与 start_module 的区别：不连接窗口、不开 WGC、不装配模块能力，也不参与阶段与
+        断点——步骤只跑一次，日志归入以步骤名命名的组。
+
+        停止信号：与 start_module 同理，进入时复位并清 stop_event——上一轮模块"到限
+        自动停止"也会置位它，不清的话步骤会一进门就判成被停止。
+        """
+        from maaracing_master.core.builtin_steps import BUILTIN_STEPS
+
+        cls = BUILTIN_STEPS.get(step_id)
+        if cls is None:
+            raise KeyError(f"未知的内置步骤: {step_id}")
+
+        g = _run_group(cls.NAME, kind="step")
+        self._manual_stop = False
+        self.stop_event.clear()
+        self._last_run_natural = False
+        try:
+            ok = bool(cls(self).run(dict(step_config or {}), self.stop_event, g.log))
+        except Exception:
+            g.end("failure")
+            raise
+        self._last_run_natural = ok
+        g.end()
+        return ok
+
     def stop(self):
-        """停止当前活动模块（幂等）。手动停止：自动关闭游戏/退出 MaaRM 开关不生效"""
+        """停止当前活动模块（幂等）。手动停止：队列里剩余步骤不再执行"""
         self._manual_stop = True
         self.stop_event.set()
         if self.active_module:
@@ -294,29 +321,35 @@ class MaaRacingMasterController:
             except Exception as e:
                 logger.log(f"停止模块异常: {e}", "ERROR")
 
-    # ---------- 运行结束后自动关闭（GUI「运行结束后」卡片；仅正常完成生效）----------
-
-    @property
-    def auto_close_game(self) -> bool:
-        """是否在流程正常结束后自动关闭游戏进程（设置开关）"""
-        return self._auto_close_game
-
-    @property
-    def auto_exit_mra(self) -> bool:
-        """是否在流程正常结束后自动退出 MaaRM 程序（设置开关）"""
-        return self._auto_exit_mra
+    # ---------- 窗口接管与退出请求（内置步骤的宿主侧接口）----------
 
     @property
     def last_run_natural(self) -> bool:
-        """上次 start_module 是否"正常跑完"（非报错、非手动停止）。供 sidecar 决定是否发退出事件"""
+        """上次 start_module 是否"正常跑完"（非报错、非手动停止）"""
         return self._last_run_natural and not self._manual_stop
 
-    def set_auto_shutdown(self, close_game: bool | None = None, exit_mra: bool | None = None) -> None:
-        """设置「运行选项」自动关闭/退出的开关（GUI 设置卡片）。"""
-        if close_game is not None:
-            self._auto_close_game = bool(close_game)
-        if exit_mra is not None:
-            self._auto_exit_mra = bool(exit_mra)
+    def adopt_window(self, hwnd: int) -> None:
+        """采纳一个已定位的游戏窗口：后续 connect() 直接用它，不再按标题搜索。
+
+        启动步骤已经按进程名认准了窗口（启动器窗口与游戏窗口同名，按标题会认错），
+        这里把它交给连接层，避免连接时又搜一次并搜到错的那个。
+        """
+        if hwnd:
+            self._hwnd = int(hwnd)
+
+    def forget_window(self) -> None:
+        """忘掉当前窗口：游戏被关掉后句柄即失效，下次运行必须重新定位。"""
+        self._hwnd = 0
+        self.controller = None
+
+    def request_exit(self) -> None:
+        """请求本轮结束后退出本程序（由「关闭游戏」步骤的选项发起）。"""
+        self._exit_requested = True
+
+    @property
+    def exit_requested(self) -> bool:
+        """本轮结束后是否退出本程序（sidecar 据此发 auto_exit 事件）。"""
+        return self._exit_requested
 
     # ---------- 运行时静音游戏（GUI「运行选项」卡片）----------
 
@@ -357,22 +390,6 @@ class MaaRacingMasterController:
             _clog(grp, f"{label}（游戏音量 {level:.0%}，会话×{n}）", "INFO")
         except Exception as e:  # noqa: BLE001
             _clog(grp, f"{label}：音量设置异常: {e}", "WARNING")
-
-    def _maybe_auto_shutdown(self, grp=None) -> None:
-        """流程正常结束后执行：按开关关闭游戏进程（退出 MaaRM 由 sidecar 依 last_run_natural 发起，以保证时序）"""
-        if not self._auto_close_game:
-            return
-        hwnd = self._hwnd or find_game_hwnd(
-            group_id=grp.id if grp is not None else None)
-        if not hwnd:
-            _clog(grp, "运行结束自动关闭：未能定位游戏窗口，跳过关闭游戏进程", "WARNING")
-            return
-        try:
-            _clog(grp, f"运行结束自动关闭：正在关闭游戏进程 (hwnd={hwnd})…", "INFO")
-            terminate_process_by_hwnd(hwnd)
-            _clog(grp, "运行结束自动关闭：游戏进程已关闭", "INFO")
-        except Exception as e:  # noqa: BLE001
-            _clog(grp, f"运行结束自动关闭：关闭游戏进程失败: {e}", "WARNING")
 
     # ---------- 紧急停止快捷键（GUI 调试选项卡开关控制）----------
 
@@ -483,7 +500,9 @@ class MaaRacingMasterController:
         if self.controller is not None:
             return True
 
-        hwnd = find_game_hwnd(group_id=grp.id if grp is not None else None)
+        # 启动步骤已按进程名认准窗口时直接用它的句柄：启动器窗口与游戏窗口同名，
+        # 再按标题搜一次有认错窗口的风险。
+        hwnd = self._hwnd or find_game_hwnd(group_id=grp.id if grp is not None else None)
         if hwnd == 0:
             _clog(grp, "未找到游戏窗口", "ERROR")
             return False

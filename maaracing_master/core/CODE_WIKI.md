@@ -15,6 +15,8 @@
 | 日志级别、通道与落盘形态 | [`core/logger.py`](./logger.py) |
 | 能力窄接口与契约 | [`core/capabilities.py`](./capabilities.py) |
 | 用户数据目录结构 | [`core/paths.py`](./paths.py) |
+| 游戏进程启停（定位安装、直启、等窗口、关闭） | [`core/game_process.py`](./game_process.py)（§1.17） |
+| 内置步骤（启动游戏 / 关闭游戏） | [`core/builtin_steps.py`](./builtin_steps.py)（§1.17） |
 | 游戏分辨率 720p | [`core/window_utils.py`](./window_utils.py) `resize_game_window_720p`（连接时统一窗口，各插件 ROI / 按钮据此归一化） |
 | 文字识别引擎（跨插件共享） | [`core/ocr.py`](./ocr.py)（§1.11：调参、抠图边界与预处理口径的唯一真源） |
 | 远程元数据信任边界（公告/版本标记校验、外链目标白名单） | [`core/remote_meta.py`](./remote_meta.py)（§1.12） |
@@ -36,7 +38,7 @@
 
 - 点击方式（`real` 前台鼠标 / `background` 后台手柄导航+A / `intent` 仅意图）与独立真实点击开关
 
-- 运行时静音游戏（audio_volume）、运行结束自动关游戏/退出程序、急停循环
+- 运行时静音游戏（audio_volume）、急停循环；启动/关闭游戏与「关闭后退出程序」是任务列表里的内置步骤（见 §1.17），不在这里按开关收尾
 
 - 虚拟手柄租约管理（`_get_gpad` 懒创建 / `_reset_gpad` / `_destroy_gpad` ctypes 从总线拔除）
 
@@ -415,6 +417,31 @@
 
 ***
 
+### 1.17 [game_process.py](./game_process.py) + [builtin_steps.py](./builtin_steps.py) — 游戏进程与内置步骤（ADR-0013）
+
+**game_process.py（进程原语）**：
+
+- **定位安装**：读官方启动器的 `%LOCALAPPDATA%\RacingMaster\CN\config\config.ini` 的 `game_dir`，拼出主程序 `g112/Binaries/Win64/g112-Win64-Shipping.exe`；只读别人的配置、不猜多个候选路径——猜出来的路径填进界面比留空更糟。
+- **直启**：参数与官方启动器实测命令行逐字一致（`-nosound -nohmd --MuMuLauncher -noexceptionhandler -Hdd -force_load_content`）；默认 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`，游戏不挂在本程序进程树下。
+- **找窗口按进程名，不按标题**：启动器窗口标题同样是「巅峰极速」，标题匹配会认错窗口；同名进程多窗口时取面积最大的。
+- **关闭**：窗口句柄优先（`terminate_process_by_hwnd`），找不到窗口按进程名兜底（`TerminateProcess`），失败只记 WARNING、不抛。
+
+**builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / run(config, stop_event, log)`，只需「跑一次、可被停止」。两个步骤：
+
+| 步骤 | 配置面 | 行为要点 |
+|---|---|---|
+| `launch_game` | `path`（空=自动探测）、`args`、`timeout_s`、`skip_if_running`、`detached`、`fallback_launcher` | 已在运行则跳过并接管现有窗口；等窗口超时且开了回退时改走官方启动器再等一轮；失败时把「进程在不在、窗口有没有」写进日志 |
+| `close_game` | `exit_app` | 关进程后清掉窗口句柄（下次运行重新定位）；`exit_app` 请求本轮结束后退出本程序 |
+
+**为什么不是插件、也不是活动模块**：见 [ADR-0013](../../docs/adr/0013-内置步骤与游戏进程归属.md)。一句话——活动模块的契约（阶段/断点/有效期/性能行/自带资源）这两件事一样都没有；而进程启停不属于任何玩法。
+
+**坑**：
+
+- 步骤与模块共用任务列表，所以队列 id 校验、配置槽、断点拒绝、资源徽标都要按「两种种类」分支；断点对步骤直接拒绝（没有阶段可断）。
+- 步骤启动会清 `stop_event`（与 `start_module` 同理）：上一轮模块"到限自动停止"也会置位它，不清的话步骤一进门就判成被停止。
+- 实测：直启 13s 出窗口、39s 登录完成进大厅；启动器窗口本身约 6.6s 出现。默认 120s 超时约 3 倍余量。
+- 参数里带 `-nosound`，游戏本身不出声——「运行时静音游戏」对这个游戏基本没有作用对象（找不到音频会话）。
+
 ## 2. 模块依赖与持有关系
 
 ### 2.1 导入关系图
@@ -494,10 +521,11 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）                                    |
 | `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
 | `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                               |
-| `set_auto_shutdown(close_game, exit_mra)`      | 运行结束后自动关游戏 / 退出程序（仅自然完成时）                                              |
+| `run_builtin_step(step_id, config)`            | 跑一个内置步骤（启动游戏 / 关闭游戏），不连接窗口、不装配模块能力                                     |
+| `adopt_window(hwnd)` / `forget_window()`       | 采纳已定位的游戏窗口（连接时不再按标题搜）/ 关闭后清掉失效句柄                                       |
+| `request_exit()` / `exit_requested`            | 步骤请求「本轮结束后退出本程序」，sidecar 据此发退出事件                                       |
 | `set_mute_game(enabled)`                       | 运行时静音游戏（音频音量控制）                                                        |
 | `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路）                                                           |
-| `set_auto_close_game` / `set_auto_exit`        | 自动收尾开关                                                                 |
 | `gamepad_available()`                          | vgamepad / ViGEmBus 驱动可用性探测（缓存）                                        |
 | `_get_gpad()`                                  | 懒创建并返回虚拟手柄（复用，不销毁重建）                                                   |
 | `_reset_gpad()`                                | 摇杆归零+按钮释放（不销毁）                                                         |

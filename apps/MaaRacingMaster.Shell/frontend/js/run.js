@@ -32,6 +32,15 @@
       ],
     },
   };
+  // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标与头图
+  MODULE_META.launch_game = {
+    icon: '🚀',
+    art: 'radial-gradient(120% 90% at 20% 10%, rgba(45,212,191,.42), transparent 55%), linear-gradient(135deg, #06281f 0%, #0f766e 60%, #22d3ee 100%)',
+  };
+  MODULE_META.close_game = {
+    icon: '🛑',
+    art: 'radial-gradient(120% 90% at 80% 15%, rgba(248,113,113,.4), transparent 55%), linear-gradient(135deg, #2b1111 0%, #7f1d1d 60%, #ef4444 100%)',
+  };
   const FALLBACK_ART = 'linear-gradient(135deg, #232837 0%, #3a4152 60%, #4b5568 100%)';
   const SESSION_LABELS = { intern: '实习场', expert: '专家场', master: '大师场' };
   const modOf = (mid) => state.modules.find((m) => m.id === mid) || null;
@@ -39,6 +48,153 @@
   // 名字/阶段/配置值出自插件注册表（本仓库可信数据），与 settings.js 模板同一纪律：
   // 拼进 HTML 前统一转义
   const esc = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+
+  // ---------- 内置步骤（启动游戏 / 关闭游戏） ----------
+  // 步骤没有插件那套「单实例 DOM 选项块」，字段少且固定，面板由这张表生成。
+  // 默认值一律来自后端（get_initial_state 的 config_defaults），前端不另存一份。
+  const BUILTIN_FIELDS = {
+    launch_game: [
+      { key: 'path', kind: 'path', label: '程序路径', hint: '（游戏主程序；留空则从启动器配置自动探测）' },
+      { key: 'args', kind: 'args', label: '启动参数', hint: '（与启动器实测命令行一致）' },
+      { key: 'timeout_s', kind: 'number', label: '等待游戏窗口', hint: '（超时则中止本轮）', suffix: '秒', min: 10, max: 600, step: 10 },
+      { key: 'skip_if_running', kind: 'switch', title: '已在运行则跳过', desc: '检测到游戏窗口已经在时不再启动，避免拉起第二个进程', note: '推荐开启' },
+      { key: 'detached', kind: 'switch', title: '独立进程', desc: '游戏不挂在本程序进程树下：本程序退出或被结束时，游戏照常运行' },
+      { key: 'fallback_launcher', kind: 'switch', title: '启动失败时回退到启动器', desc: '等窗口超时仍未出现时，改走官方启动器（会先做版本校验与更新）。平时不会弹出启动器窗口', note: '推荐开启' },
+    ],
+    close_game: [
+      { key: 'exit_app', kind: 'switch', title: '关闭后退出本程序', desc: '这一步完成后关闭 MaaRM；排在队尾时就是「跑完自动退出」。后面的步骤不再执行', note: '默认关闭' },
+    ],
+  };
+
+  function isBuiltin(mid) {
+    const m = modOf(mid);
+    return !!m && m.kind === 'builtin';
+  }
+
+  function defaultsOf(mid) {
+    const m = modOf(mid);
+    return (m && m.config_defaults) || {};
+  }
+
+  // 取值：已存配置优先，缺项回落后端默认值
+  function cfgValue(mid, key) {
+    const cfg = state.cfg[mid] || {};
+    if (Object.prototype.hasOwnProperty.call(cfg, key)) return cfg[key];
+    return defaultsOf(mid)[key];
+  }
+
+  function builtinChips(mid) {
+    if (mid === 'launch_game') {
+      const out = [chipHtml('等待窗口 ' + (cfgValue(mid, 'timeout_s') || 120) + 's')];
+      if (cfgValue(mid, 'skip_if_running')) out.push(chipHtml('已运行则跳过'));
+      return out.join('');
+    }
+    if (mid === 'close_game' && cfgValue(mid, 'exit_app')) return chipHtml('关闭后退出');
+    return '';
+  }
+
+  // 内置步骤的选项面板：字段行与开关行放进同一个纵向节奏容器（.builtin-fields 统一 gap），
+  // 开关的「推荐开启」这类旁注并进标题行右端，避免与标题错行
+  function builtinPanelHtml(mid) {
+    const fields = BUILTIN_FIELDS[mid] || [];
+    const rows = fields.map((f) => {
+      if (f.kind === 'switch') {
+        const on = !!cfgValue(mid, f.key);
+        return '<div class="option-row">'
+          + '<button class="mra-toggle' + (on ? ' mra-toggle--active' : '') + '" role="switch"'
+          + ' aria-checked="' + on + '" data-key="' + f.key + '" data-kind="switch"></button>'
+          + '<div class="option-main"><div class="option-title">' + esc(f.title)
+          + (f.note ? '<span class="option-note">' + esc(f.note) + '</span>' : '')
+          + '</div>'
+          + '<p class="option-desc">' + esc(f.desc) + '</p></div>'
+          + '</div>';
+      }
+      const val = cfgValue(mid, f.key);
+      // 启动参数是多个开关项拼成的长串，单行输入必然截断：改多行等宽，一眼能核对完整
+      const input = f.kind === 'number'
+        ? '<input type="number" data-key="' + f.key + '" data-kind="number" value="' + esc(val == null ? '' : val) + '"'
+          + ' min="' + (f.min || 0) + '" max="' + (f.max || 9999) + '" step="' + (f.step || 1) + '">'
+          + (f.suffix ? '<span class="field-suffix">' + esc(f.suffix) + '</span>' : '')
+        : (f.kind === 'args'
+          ? '<textarea rows="2" spellcheck="false" data-key="' + f.key + '" data-kind="args">' + esc(val == null ? '' : val) + '</textarea>'
+          : '<input type="text" data-key="' + f.key + '" data-kind="' + f.kind + '" value="' + esc(val == null ? '' : val) + '">');
+      const extra = f.kind === 'path'
+        ? '<button class="mra-btn" type="button" data-act="browse">浏览…</button>'
+        : (f.kind === 'args' ? '<button class="mra-btn" type="button" data-act="reset" hidden>重置</button>' : '');
+      return '<div class="module-options-row module-options-row--stack">'
+        + '<div class="mra-field' + (f.kind === 'number' ? ' mra-field--narrow' : '') + '">'
+        + '<label class="mra-field-label">' + esc(f.label)
+        + (f.hint ? '<span class="field-hint">' + esc(f.hint) + '</span>' : '') + '</label>'
+        + '<div class="mra-field-control-row' + (f.kind === 'args' ? ' mra-field-control-row--multi' : '') + '">'
+        + '<div class="mra-field-control">' + input + '</div>' + extra + '</div>'
+        + '</div></div>';
+    });
+    return '<div class="builtin-fields">' + rows.join('') + '</div>';
+  }
+
+  async function saveBuiltinCfg(mid, patch) {
+    const cfg = Object.assign({}, state.cfg[mid] || {}, patch);
+    try {
+      state.cfg[mid] = await mra.call('set_module_config', { module_id: mid, config: cfg });
+      refreshCard(mid);
+    } catch (e) {
+      showError(e.message);
+    }
+  }
+
+  // 面板挂载 + 绑定（列表重建后面板随之重建，绑定一并重挂）
+  function renderBuiltinPanel(mid) {
+    const panel = document.querySelector('#task-list [data-id="' + mid + '"] [data-options]');
+    if (!panel) return;
+    panel.innerHTML = builtinPanelHtml(mid);
+    const syncReset = () => {
+      const argsEl = panel.querySelector('[data-key="args"]');
+      const resetBtn = panel.querySelector('[data-act="reset"]');
+      if (argsEl && resetBtn) resetBtn.hidden = argsEl.value === String(defaultsOf(mid).args || '');
+    };
+    panel.querySelectorAll('[data-kind="switch"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const on = !btn.classList.contains('mra-toggle--active');
+        btn.classList.toggle('mra-toggle--active', on);
+        btn.setAttribute('aria-checked', String(on));
+        saveBuiltinCfg(mid, { [btn.dataset.key]: on });
+      });
+    });
+    panel.querySelectorAll('input[data-key], textarea[data-key]').forEach((el) => {
+      el.addEventListener('change', () => {
+        const raw = el.dataset.kind === 'number' ? Number(el.value) : el.value;
+        if (el.dataset.kind === 'number' && !Number.isFinite(raw)) return;
+        saveBuiltinCfg(mid, { [el.dataset.key]: raw });
+        syncReset();
+      });
+      if (el.dataset.kind === 'args') el.addEventListener('input', syncReset);
+    });
+    const browse = panel.querySelector('[data-act="browse"]');
+    if (browse) {
+      browse.addEventListener('click', async () => {
+        try {
+          const r = await mra.call('pick_game_exe', {});
+          if (!r || !r.path) return;
+          const el = panel.querySelector('[data-key="path"]');
+          if (el) el.value = r.path;
+          saveBuiltinCfg(mid, { path: r.path });
+        } catch (e) {
+          showError(e.message);
+        }
+      });
+    }
+    const reset = panel.querySelector('[data-act="reset"]');
+    if (reset) {
+      reset.addEventListener('click', () => {
+        const def = String(defaultsOf(mid).args || '');
+        const el = panel.querySelector('[data-key="args"]');
+        if (el) el.value = def;
+        saveBuiltinCfg(mid, { args: def });
+        syncReset();
+      });
+    }
+    syncReset();
+  }
 
   // ---------- 任务卡渲染 ----------
   const RESULT_LABEL = {
@@ -70,8 +226,9 @@
   }
 
   function summaryChips(mid) {
+    if (isBuiltin(mid)) return builtinChips(mid);
     const meta = metaOf(mid);
-    if (!meta) return '';
+    if (!meta || !meta.summary) return '';
     return meta.summary(state.cfg[mid]).map((s) => chipHtml(s)).join('');
   }
 
@@ -93,6 +250,12 @@
   // 细分阶段列表：运行中高亮当前阶段；未运行时点选 = 断点起点（不记忆，重开回第一步）
   function stageListHtml(mid) {
     const m = modOf(mid);
+    if (isBuiltin(mid)) {
+      const tail = mid === 'close_game'
+        ? '排在队尾时，只有整轮正常跑完才会走到它；手动停止或报错会跳过。'
+        : '任务按列表顺序执行，失败或手动停止会中止整轮，后面的步骤全部跳过。';
+      return '<div class="task-note">这一步没有细分阶段。' + tail + '</div>';
+    }
     if (!m || !Array.isArray(m.stages)) return '';
     const runningThis = state.is_running && state.queueRun && state.queueRun.current_module === mid;
     const from = state.breakpoints[mid] || m.stages[0];
@@ -156,6 +319,11 @@
       ul.innerHTML = '<li class="task-empty">列表为空——点右上角 ⚙ 添加要运行的模块</li>';
     }
     $('btn-manage').disabled = state.is_running;
+    // 步骤：已展开的挂面板，未取过配置的拉一次（摘要 chips 要用）
+    state.queue.order.filter(isBuiltin).forEach((mid) => {
+      if (state.expanded[mid]) renderBuiltinPanel(mid);
+      if (!state.cfg[mid]) ensureConfig(mid).then(() => refreshCard(mid));
+    });
   }
 
   // 轻刷单卡动态区（chips / 结果 / 阶段列表 / 状态类），不重建面板——运行中每 250ms
@@ -341,15 +509,24 @@
     item.classList.toggle('task-item--open', state.expanded[mid]);
     item.querySelector('.task-chev').setAttribute('aria-expanded', String(state.expanded[mid]));
     if (state.expanded[mid]) {
+      if (isBuiltin(mid)) {
+        // 步骤：面板由前端生成，且不接管数据/设置页（那两页是活动模块的）
+        ensureConfig(mid).then(() => { renderBuiltinPanel(mid); refreshCard(mid); });
+        return;
+      }
       refreshModuleOptions(mid);                    // 模块选项块搬入面板 + 读配置
       ensureConfig(mid).then(() => refreshCard(mid)); // 摘要 chips 跟进最新配置
       renderModulePages(mid);                        // 数据/设置页跟随最后展开的卡片
     }
   }
 
-  // ---------- 拖拽排序（FLIP 让位预览） ----------
+  // ---------- 拖拽排序（指针驱动 + FLIP 让位预览） ----------
+  // 不用 HTML5 原生拖拽：WebView2 里拖拽的 dragover 是否触发取决于载荷与宿主设置，
+  // 一旦不触发就表现为「拖了没反应」（顺序从头到尾没变）。指针事件是同一套交互的
+  // 确定性实现：按下手柄 → 移动时按指针所在卡片算落点 → 松开提交。
   let dragId = null;
   let liveOrder = null;
+  let dragCommitted = false;
   const listEl = $('task-list');
 
   function captureRects() {
@@ -386,44 +563,22 @@
     flip(oldRects);
   }
 
-  listEl.addEventListener('pointerdown', (e) => {
-    const item = e.target.closest('.task-item');
-    if (item && e.target.closest('.task-grip') && !state.is_running) item.draggable = true;
-  });
-  listEl.addEventListener('dragstart', (e) => {
-    const item = e.target.closest('.task-item');
-    if (!item || state.is_running) { e.preventDefault(); return; }
-    dragId = item.dataset.id;
-    liveOrder = state.queue.order.slice();
-    listEl.classList.add('dragging-mode');
-    item.classList.add('task-item--dragging');
-  });
-  listEl.addEventListener('dragover', (e) => {
-    if (!dragId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const over = e.target.closest('.task-item');
-    if (over && over.dataset.id === dragId) return; // 悬在自己的占位上：位置不变
-    const without = liveOrder.filter((x) => x !== dragId);
-    let idx;
-    if (!over) {
-      idx = without.length; // 列表空白处 = 拖到末尾
-    } else {
-      const r = over.getBoundingClientRect();
-      const after = e.clientY > r.top + r.height / 2;
-      idx = without.indexOf(over.dataset.id) + (after ? 1 : 0);
-    }
-    moveLive(dragId, idx);
-  });
-  listEl.addEventListener('drop', (e) => e.preventDefault());
-  listEl.addEventListener('dragend', async () => {
+  function endDragVisual() {
+    listEl.classList.remove('dragging-mode');
+    listEl.querySelectorAll('.task-item--dragging').forEach((n) => n.classList.remove('task-item--dragging'));
+  }
+
+  // 一次拖拽只提交一次；顺序没变就不提交（点一下手柄不该产生一次保存）
+  async function commitDragOrder() {
+    if (dragCommitted) return;
+    dragCommitted = true;
     const finalOrder = liveOrder;
     const wasDragging = !!dragId;
     dragId = null;
     liveOrder = null;
-    listEl.classList.remove('dragging-mode');
-    listEl.querySelectorAll('.task-item--dragging').forEach((n) => n.classList.remove('task-item--dragging'));
+    endDragVisual();
     if (!wasDragging || !finalOrder) return;
+    if (finalOrder.join() === state.queue.order.join()) return;
     try {
       state.queue = await mra.call('set_run_queue', { order: finalOrder, enabled: state.queue.enabled });
       renderTaskList();
@@ -431,7 +586,37 @@
       showError('保存排序失败: ' + e.message);
       renderTaskList(); // 后端拒绝：按服务器状态回滚
     }
+  }
+
+  listEl.addEventListener('pointerdown', (e) => {
+    if (state.is_running || e.button !== 0) return;
+    const item = e.target.closest('.task-item');
+    if (!item || !e.target.closest('.task-grip')) return;
+    e.preventDefault();               // 别让按下变成选中文字/触发点击展开
+    dragId = item.dataset.id;
+    dragCommitted = false;
+    liveOrder = state.queue.order.slice();
+    listEl.classList.add('dragging-mode');
+    item.classList.add('task-item--dragging');
+    const grip = item.querySelector('.task-grip');
+    if (grip && grip.setPointerCapture) {
+      try { grip.setPointerCapture(e.pointerId); } catch (_) { /* 指针已失效：忽略 */ }
+    }
   });
+
+  document.addEventListener('pointermove', (e) => {
+    if (!dragId) return;
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    const target = hit && hit.closest ? hit.closest('.task-item') : null;
+    if (!target || target.dataset.id === dragId) return;
+    const without = liveOrder.filter((x) => x !== dragId);
+    const r = target.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    moveLive(dragId, without.indexOf(target.dataset.id) + (after ? 1 : 0));
+  });
+
+  document.addEventListener('pointerup', () => { if (dragId) commitDragOrder(); });
+  document.addEventListener('pointercancel', () => { if (dragId) commitDragOrder(); });
 
   // ---------- 任务卡事件（展开 / 勾选 / 断点） ----------
   // 头栏任意空白处点击 = 展开/折叠（勾选框与拖拽手柄除外；箭头不再单独处理，

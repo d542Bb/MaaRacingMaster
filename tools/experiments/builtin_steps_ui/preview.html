@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MaaRM · 启动/关闭游戏步骤预览</title>
+<!-- 直接复用真实前端样式表：预览与实机同一套 token / 组件类，不另起一套视觉 -->
+<link rel="stylesheet" href="../../../apps/MaaRacingMaster.Shell/frontend/style.css">
+<style>
+  /* ===== 仅预览页需要：窗口外框、页面说明条、文本框 ===== */
+  html, body { height: 100%; }
+  body {
+    background: #e9ebf1; overflow: auto; padding: 18px 12px 24px;
+    display: block;
+  }
+  .pv-note {
+    width: 1080px; margin: 0 auto 12px; font-size: 12px; line-height: 1.7;
+    color: #4a5160; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .pv-note b { color: #1f2328; }
+  .pv-frame {
+    width: 1080px; height: 790px; margin: 0 auto; display: flex; flex-direction: column;
+    background: var(--mra-background); border: 1px solid #d1d5db; border-radius: 10px;
+    overflow: hidden; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.14);
+  }
+  /* 真实样式里这两处按视口高度算，预览窗口固定高，改按外框高 */
+  #page-control .col-right { height: 720px; }
+  #page-control .col-left .card { height: 720px; }
+  .pv-brand-mark {
+    width: 20px; height: 20px; border-radius: 5px; background: var(--mra-primary);
+    color: #fff; font-size: 12px; font-weight: 700; line-height: 20px; text-align: center;
+    flex-shrink: 0; margin-right: 2px;
+  }
+
+  /* 无细分阶段时的占位说明（替代阶段列表，不新增交互） */
+  .pv-empty-stages {
+    font-size: 11px; line-height: 1.7; color: var(--mra-foreground-muted);
+    background: var(--mra-sidebar); border: 1px solid var(--mra-border-light);
+    border-radius: var(--mra-radius-sm); padding: 8px 10px;
+  }
+  .pv-log-line { display: flex; gap: 8px; font-size: 12px; line-height: 1.9; color: var(--mra-foreground-secondary); }
+  .pv-log-line .t { color: var(--mra-foreground-dim); font-family: var(--mra-font-mono); font-size: 11px; }
+  .pv-log-line--dim { color: var(--mra-foreground-muted); }
+  .pv-log-line--ok { color: var(--mra-success-strong); }
+  .pv-card-note {
+    font-size: 11px; line-height: 1.7; color: var(--mra-foreground-muted);
+    background: var(--mra-sidebar); border: 1px solid var(--mra-border-light);
+    border-radius: var(--mra-radius-sm); padding: 8px 10px;
+  }
+</style>
+</head>
+<body>
+
+<div class="pv-note">
+  <b>预览说明</b>　启动游戏 / 关闭游戏在前端就是普通模块卡：同一个任务列表、同一个选卡弹窗、同一套展开面板。后端这两个步骤走 core，不走插件。
+  可点「运行任务」右上角的设置按钮看管理模块弹窗，点顶部 <b>设置</b> 看运行选项的变化。
+</div>
+
+<div class="pv-frame">
+  <header id="titlebar">
+    <div class="brand">
+      <span class="pv-brand-mark">M</span>
+      <span class="brand-title">MaaRM</span>
+      <span class="brand-version">v0.24.0-dev.1（预览）</span>
+    </div>
+    <nav class="tabs" id="pv-tabs">
+      <span class="tab-slider" id="tab-slider" style="left:0;width:48px;"></span>
+      <button class="mra-tab mra-tab--active" data-tab="control">主控</button>
+      <button class="mra-tab" data-tab="settings">设置</button>
+    </nav>
+    <div class="win-controls">
+      <button class="win-btn" type="button"><svg viewBox="0 0 10 10"><path d="M1 5H9"/></svg></button>
+      <button class="win-btn" type="button"><svg viewBox="0 0 10 10"><rect x="2" y="2" width="6" height="6"/></svg></button>
+      <button class="win-btn win-btn--close" type="button"><svg viewBox="0 0 10 10"><path d="M2 2L8 8M8 2L2 8"/></svg></button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ 主控 ============ -->
+    <section class="page" id="page-control">
+      <div class="control-cols">
+        <div class="col-left">
+          <div class="card card-flex task-card">
+            <div class="card-head">
+              <h3>运行任务</h3>
+              <button class="icon-btn" id="btn-manage" title="管理模块（加入 / 移出）">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+              </button>
+            </div>
+            <ul id="task-list">
+
+              <!-- 启动游戏（内置步骤，展开态） -->
+              <li class="task-item task-item--open" data-id="launch_game">
+                <div class="task-row">
+                  <span class="task-grip" title="拖拽排序"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.4"/><circle cx="12" cy="3" r="1.4"/><circle cx="4" cy="8" r="1.4"/><circle cx="12" cy="8" r="1.4"/><circle cx="4" cy="13" r="1.4"/><circle cx="12" cy="13" r="1.4"/></svg></span>
+                  <input type="checkbox" class="task-check" checked title="启用 / 停用">
+                  <span class="task-icon">🚀</span>
+                  <span class="task-title">启动游戏</span>
+                  <span class="task-chips">
+                    <span class="task-chip">等待窗口 120s</span>
+                    <span class="task-chip">已运行则跳过</span>
+                  </span>
+                  <span class="task-result-slot"></span>
+                  <button type="button" class="task-chev" aria-expanded="true"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+                </div>
+                <div class="task-panel">
+                  <div class="task-panel-label">任务设置</div>
+                  <div class="task-options">
+                    <div class="builtin-fields">
+                      <div class="module-options-row module-options-row--stack">
+                        <div class="mra-field">
+                          <label class="mra-field-label">程序路径<span class="field-hint">（游戏主程序；留空则从启动器配置自动探测）</span></label>
+                          <div class="mra-field-control-row">
+                            <div class="mra-field-control">
+                              <input type="text" value="E:\DFJS\g112\Binaries\Win64\g112-Win64-Shipping.exe">
+                            </div>
+                            <button class="mra-btn" type="button">浏览…</button>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="module-options-row module-options-row--stack">
+                        <div class="mra-field">
+                          <label class="mra-field-label">启动参数<span class="field-hint">（与启动器实测命令行一致）</span></label>
+                          <div class="mra-field-control-row mra-field-control-row--multi">
+                            <div class="mra-field-control">
+                              <textarea rows="2" spellcheck="false" id="opt-launch-args">-nosound -nohmd --MuMuLauncher -noexceptionhandler -Hdd -force_load_content</textarea>
+                            </div>
+                            <button class="mra-btn" type="button" id="btn-reset-args" hidden title="恢复默认参数">重置</button>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="module-options-row module-options-row--stack">
+                        <div class="mra-field mra-field--narrow">
+                          <label class="mra-field-label">等待游戏窗口<span class="field-hint">（超时则中止本轮）</span></label>
+                          <div class="mra-field-control-row">
+                            <div class="mra-field-control">
+                              <input type="number" value="120" min="10" max="600" step="10">
+                              <span class="field-suffix">秒</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="option-row">
+                        <button class="mra-toggle mra-toggle--active" role="switch" aria-checked="true"></button>
+                        <div class="option-main">
+                          <div class="option-title">已在运行则跳过<span class="option-note">推荐开启</span></div>
+                          <p class="option-desc">检测到游戏窗口已经在时不再启动，避免拉起第二个进程</p>
+                        </div>
+                      </div>
+                      <div class="option-row">
+                        <button class="mra-toggle mra-toggle--active" role="switch" aria-checked="true"></button>
+                        <div class="option-main">
+                          <div class="option-title">独立进程</div>
+                          <p class="option-desc">游戏不挂在本程序进程树下：本程序退出或被结束时，游戏照常运行</p>
+                        </div>
+                      </div>
+                      <div class="option-row">
+                        <button class="mra-toggle mra-toggle--active" role="switch" aria-checked="true"></button>
+                        <div class="option-main">
+                          <div class="option-title">启动失败时回退到启动器<span class="option-note">推荐开启</span></div>
+                          <p class="option-desc">等窗口超时仍未出现时，改走官方启动器（会先做版本校验与更新）。平时不会弹出启动器窗口</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="task-panel-label">细分阶段</div>
+                  <div class="pv-empty-stages">这一步没有细分阶段。任务按列表顺序执行，失败或手动停止会中止整轮，后面的步骤全部跳过。</div>
+                </div>
+              </li>
+
+              <!-- 活动模块（普通卡，收起态） -->
+              <li class="task-item" data-id="speedrush">
+                <div class="task-row">
+                  <span class="task-grip" title="拖拽排序"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.4"/><circle cx="12" cy="3" r="1.4"/><circle cx="4" cy="8" r="1.4"/><circle cx="12" cy="8" r="1.4"/><circle cx="4" cy="13" r="1.4"/><circle cx="12" cy="13" r="1.4"/></svg></span>
+                  <input type="checkbox" class="task-check" checked title="启用 / 停用">
+                  <span class="task-icon">🏎️</span>
+                  <span class="task-title">极速狂飙</span>
+                  <span class="task-chips">
+                    <span class="task-chip">录制: 关</span>
+                    <span class="task-chip">驾驶模式: 深度几何</span>
+                  </span>
+                  <span class="task-result-slot"></span>
+                  <button type="button" class="task-chev" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+                </div>
+                <div class="task-panel">
+                  <div class="task-panel-label">任务设置</div>
+                  <div class="task-options"><p class="pv-empty-stages">（活动模块的选项面板，与现在一致）</p></div>
+                  <div class="task-panel-label">细分阶段</div>
+                  <div class="pv-empty-stages">（阶段断点列表，与现在一致）</div>
+                </div>
+              </li>
+
+              <!-- 关闭游戏（内置步骤，收起态） -->
+              <li class="task-item" data-id="close_game">
+                <div class="task-row">
+                  <span class="task-grip" title="拖拽排序"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.4"/><circle cx="12" cy="3" r="1.4"/><circle cx="4" cy="8" r="1.4"/><circle cx="12" cy="8" r="1.4"/><circle cx="4" cy="13" r="1.4"/><circle cx="12" cy="13" r="1.4"/></svg></span>
+                  <input type="checkbox" class="task-check" checked title="启用 / 停用">
+                  <span class="task-icon">🛑</span>
+                  <span class="task-title">关闭游戏</span>
+                  <span class="task-chips"></span>
+                  <span class="task-result-slot"></span>
+                  <button type="button" class="task-chev" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+                </div>
+                <div class="task-panel">
+                  <div class="task-panel-label">任务设置</div>
+                  <div class="task-options">
+                    <div class="builtin-fields">
+                      <div class="option-row">
+                        <button class="mra-toggle" role="switch" aria-checked="false"></button>
+                        <div class="option-main">
+                          <div class="option-title">关闭后退出本程序<span class="option-note">默认关闭</span></div>
+                          <p class="option-desc">这一步完成后关闭 MaaRM；排在队尾时就是「跑完自动退出」。后面的步骤不再执行</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="task-panel-label">细分阶段</div>
+                  <div class="pv-empty-stages">这一步没有细分阶段。排在队尾时，只有整轮正常跑完才会走到它；手动停止或报错会跳过。</div>
+                </div>
+              </li>
+
+            </ul>
+          </div>
+        </div>
+
+        <div class="col-right">
+          <div class="card card-flex log-card">
+            <div class="card-head"><h3>运行日志</h3></div>
+            <div class="log-area" style="padding:12px;">
+              <div class="pv-log-line"><span class="t">15:42:07</span><span>运行启动：任务列表共 3 项（启动游戏 → 极速狂飙 → 关闭游戏）</span></div>
+              <div class="pv-log-line"><span class="t">15:42:07</span><span>启动游戏：正在启动游戏主程序（不经启动器）</span></div>
+              <div class="pv-log-line pv-log-line--dim"><span class="t">15:42:09</span><span>启动游戏：等待游戏窗口出现（最长 120s）…</span></div>
+              <div class="pv-log-line pv-log-line--ok"><span class="t">15:42:38</span><span>启动游戏：已找到游戏窗口 (hWnd=132486)，用时 13s</span></div>
+              <div class="pv-log-line"><span class="t">15:42:39</span><span>极速狂飙：运行中 · 大厅 → 进入活动</span></div>
+              <div class="pv-log-line pv-log-line--dim"><span class="t">16:05:12</span><span>极速狂飙：任务正常完成</span></div>
+              <div class="pv-log-line"><span class="t">16:05:13</span><span>关闭游戏：正在关闭游戏进程 (hWnd=132486)…</span></div>
+              <div class="pv-log-line pv-log-line--ok"><span class="t">16:05:15</span><span>关闭游戏：游戏进程已关闭</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 设置（只做运行选项一块，用于对比变化） ============ -->
+    <section class="page hidden" id="page-settings" style="display:none;flex-direction:column;">
+      <div class="card" style="width:100%;">
+        <div class="card-head"><h3>运行选项</h3></div>
+        <div class="card-body card-body--col">
+          <div class="option-row">
+            <button class="mra-toggle mra-toggle--active" role="switch" aria-checked="true"></button>
+            <div class="option-main">
+              <div class="option-title">运行时静音游戏</div>
+              <p class="option-desc">运行期间把游戏音量静音（方便听别的），停止/结束后自动恢复游戏音量为 100%</p>
+            </div>
+            <span class="option-note">结束自动恢复 100%</span>
+          </div>
+          <div class="option-row">
+            <button class="mra-toggle" role="switch" aria-checked="false"></button>
+            <div class="option-main">
+              <div class="option-title">性能优先</div>
+              <p class="option-desc">提高本程序进程的 CPU 优先级，感知与控制在系统繁忙时少排队；立即生效，重启后保持</p>
+            </div>
+            <span class="option-note">GPU/IO 提级系统未开放</span>
+          </div>
+          <div class="pv-card-note">
+            「关闭游戏进程」开关已移除：它现在是任务列表里的<b>关闭游戏</b>步骤。要关就把这一步留在列表里，不想关就移出列表或取消勾选——位置也能自己拖（例如想在关游戏前先退出游戏账号，就把它拖到活动模块之间）。
+            升级时如果原来勾着这个开关，会自动在列表末尾补上这一步；原来的「退出 MaaRM 程序」也并进了这张卡的选项。
+          </div>
+        </div>
+      </div>
+      <div class="card" style="width:100%;opacity:.55;">
+        <div class="card-head"><h3>点击方式 / 紧急停止 / 环境中心 …</h3></div>
+        <div class="card-body">
+          <p class="mra-modal-text--sub" style="margin:0">设置页其余卡片本次不变，此处省略。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="status">
+      <div class="mra-status-dot mra-status-dot--ready" id="status-dot"></div>
+      <span class="status-text" id="status-text">系统就绪</span>
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <button class="mra-btn" id="btn-stop" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      停止
+    </button>
+    <button class="mra-btn mra-btn--start" id="btn-start">
+      <span class="mra-start-layer mra-start-layer--idle">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px"><path d="M8 5l11 7-11 7z"/></svg>
+        开始运行
+      </span>
+    </button>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- 顶部 tab 切换（预览只做「主控 / 设置」两页） ----------
+  var tabs = document.querySelectorAll('#pv-tabs .mra-tab');
+  var slider = document.getElementById('tab-slider');
+  function showTab(name) {
+    tabs.forEach(function (t) {
+      var on = t.dataset.tab === name;
+      t.classList.toggle('mra-tab--active', on);
+      if (on) {
+        slider.style.left = t.offsetLeft + 'px';
+        slider.style.width = t.offsetWidth + 'px';
+      }
+    });
+    var ctl = document.getElementById('page-control');
+    var set = document.getElementById('page-settings');
+    ctl.classList.toggle('hidden', name !== 'control');
+    set.classList.toggle('hidden', name !== 'settings');
+    ctl.style.display = name === 'control' ? 'flex' : 'none';
+    set.style.display = name === 'settings' ? 'flex' : 'none';
+  }
+  tabs.forEach(function (t) { t.addEventListener('click', function () { showTab(t.dataset.tab); }); });
+
+  // ---------- 开关：点一下切换（预览里只有视觉态） ----------
+  document.addEventListener('click', function (e) {
+    var sw = e.target.closest('.mra-toggle');
+    if (!sw) return;
+    var on = sw.classList.toggle('mra-toggle--active');
+    sw.setAttribute('aria-checked', String(on));
+  });
+
+  // ---------- 启动参数：改过才给重置按钮，点了填回默认 ----------
+  (function () {
+    var input = document.getElementById('opt-launch-args');
+    var btn = document.getElementById('btn-reset-args');
+    if (!input || !btn) return;
+    var DEFAULT_ARGS = input.value;
+    var sync = function () { btn.hidden = input.value === DEFAULT_ARGS; };
+    input.addEventListener('input', sync);
+    btn.addEventListener('click', function () {
+      input.value = DEFAULT_ARGS;
+      sync();
+    });
+    sync();
+  })();
+
+  // ---------- 任务卡展开 / 收起 ----------
+  document.getElementById('task-list').addEventListener('click', function (e) {
+    if (e.target.closest('.task-check') || e.target.closest('.task-grip')) return;
+    if (e.target.closest('.task-panel')) return; // 面板内操作不触发折叠
+    var item = e.target.closest('.task-item');
+    if (!item) return;
+    var open = item.classList.toggle('task-item--open');
+    item.querySelector('.task-chev').setAttribute('aria-expanded', String(open));
+  });
+
+  // ---------- 管理模块弹窗：启动/关闭游戏与活动模块同一网格 ----------
+  var GALLERY = [
+    { name: '启动游戏', icon: '🚀', selected: true,
+      art: 'radial-gradient(120% 90% at 20% 10%, rgba(45,212,191,.42), transparent 55%), linear-gradient(135deg, #06281f 0%, #0f766e 60%, #22d3ee 100%)' },
+    { name: '关闭游戏', icon: '🛑', selected: true,
+      art: 'radial-gradient(120% 90% at 80% 15%, rgba(248,113,113,.4), transparent 55%), linear-gradient(135deg, #2b1111 0%, #7f1d1d 60%, #ef4444 100%)' },
+    { name: '极速狂飙', icon: '🏎️', selected: true,
+      art: 'radial-gradient(120% 90% at 20% 10%, rgba(96,165,250,.35), transparent 55%), linear-gradient(135deg, #0f172a 0%, #312e81 60%, #6d28d9 100%)' },
+    { name: '巅峰鉴宝', icon: '🏺', selected: false, expired: true,
+      art: 'radial-gradient(120% 90% at 80% 15%, rgba(251,191,36,.4), transparent 55%), linear-gradient(135deg, #1c1917 0%, #78350f 60%, #b45309 100%)' }
+  ];
+
+  function galleryHtml() {
+    var html = GALLERY.map(function (m) {
+      return '<button type="button" class="task-gallery-cell' + (m.selected ? ' task-gallery-cell--selected' : '') + '">'
+        + '<span class="task-gallery-art" style="background:' + m.art + '">' + m.icon + '</span>'
+        + '<i class="task-gallery-scan"></i>'
+        + (m.expired ? '<span class="task-gallery-flag">已过期</span>' : '')
+        + '<span class="task-gallery-banner">' + m.name + '</span>'
+        + '</button>';
+    }).join('');
+    for (var i = GALLERY.length; i < 9; i++) {
+      html += '<span class="task-gallery-cell task-gallery-cell--empty" aria-hidden="true">'
+        + '<span class="task-gallery-empty-plus">＋</span></span>';
+    }
+    return html;
+  }
+
+  function openManage() {
+    var overlay = document.createElement('div');
+    overlay.className = 'mra-modal-overlay';
+    overlay.innerHTML = '<div class="mra-modal-card mra-modal-card--enter" style="--mra-modal-max-width:880px">'
+      + '<h3 class="mra-modal-title">管理模块</h3>'
+      + '<div class="mra-modal-body"><div class="task-gallery-wrap"><div class="task-gallery">' + galleryHtml() + '</div></div>'
+      + '<p class="mra-modal-text--sub" style="margin:12px 0 0">点选卡片加入下方运行任务列表（排到末尾）；移除不影响该模块已保存的配置。所有卡片同一套操作。</p></div>'
+      + '<div class="mra-modal-actions"><button class="mra-modal-btn mra-modal-btn--primary" type="button">完成</button></div>'
+      + '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay || e.target.closest('.mra-modal-btn')) overlay.remove();
+    });
+  }
+
+  document.getElementById('btn-manage').addEventListener('click', openManage);
+
+  // 直接跳到某个状态看：?view=settings / ?view=gallery
+  var view = new URLSearchParams(location.search).get('view');
+  showTab(view === 'settings' ? 'settings' : 'control');
+  if (view === 'gallery') requestAnimationFrame(openManage);
+  var expand = new URLSearchParams(location.search).get('expand');
+  if (expand) {
+    document.querySelectorAll('.task-item--open').forEach(function (n) {
+      n.classList.remove('task-item--open');
+      var c = n.querySelector('.task-chev');
+      if (c) c.setAttribute('aria-expanded', 'false');
+    });
+    var el = document.querySelector('.task-item[data-id="' + expand + '"]');
+    if (el) {
+      el.classList.add('task-item--open');
+      var chev = el.querySelector('.task-chev');
+      if (chev) chev.setAttribute('aria-expanded', 'true');
+    }
+  }
+})();
+</script>
+</body>
+</html>

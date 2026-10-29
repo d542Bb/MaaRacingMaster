@@ -329,8 +329,6 @@ def _controller_env(tmp_path, monkeypatch, start):
     c._running = False
     c._manual_stop = False
     c._mute_game_enabled = False
-    c._auto_close_game = False
-    c._auto_exit_mra = False
     c._last_run_natural = False
     c._hwnd = 12345
     c._ctx = None

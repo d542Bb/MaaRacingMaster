@@ -1015,22 +1015,6 @@
               <span class="option-note">结束自动恢复 100%</span>
             </div>
             <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-closegame" role="switch" aria-checked="false"></button>
-              <div class="option-main">
-                <div class="option-title">关闭游戏进程</div>
-                <p class="option-desc">流程正常结束（跑完全部目标）后，自动关闭《巅峰极速》进程；报错退出、手动停止不生效</p>
-              </div>
-              <span class="option-note">仅正常完成时触发</span>
-            </div>
-            <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-exitmra" role="switch" aria-checked="false"></button>
-              <div class="option-main">
-                <div class="option-title">退出 MaaRM 程序</div>
-                <p class="option-desc">关闭游戏后自动退出本程序；报错退出、手动停止不生效</p>
-              </div>
-              <span class="option-note">建议先勾选关闭游戏</span>
-            </div>
-            <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-boostprio" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">性能优先</div>
@@ -1259,7 +1243,7 @@
       });
     }
 
-    // 运行选项：运行时静音游戏 / 关闭游戏进程 / 退出 MaaRM 程序
+    // 运行选项：运行时静音游戏
     const tMuteGame = p('toggle-mutegame');
     if (tMuteGame) {
       tMuteGame.addEventListener('click', async () => {
@@ -1271,36 +1255,6 @@
           console.error(e);
           showError(e.message);
           setToggle(tMuteGame, !on); // 回滚
-        }
-      });
-    }
-
-    const tCloseGame = p('toggle-closegame');
-    if (tCloseGame) {
-      tCloseGame.addEventListener('click', async () => {
-        const on = !toggleState(tCloseGame);
-        setToggle(tCloseGame, on); // 先翻转视觉状态
-        try {
-          await mra.call('set_auto_close_game', { enabled: on });
-        } catch (e) {
-          console.error(e);
-          showError(e.message);
-          setToggle(tCloseGame, !on); // 回滚
-        }
-      });
-    }
-
-    const tExitMra = p('toggle-exitmra');
-    if (tExitMra) {
-      tExitMra.addEventListener('click', async () => {
-        const on = !toggleState(tExitMra);
-        setToggle(tExitMra, on); // 先翻转视觉状态
-        try {
-          await mra.call('set_auto_exit_mra', { enabled: on });
-        } catch (e) {
-          console.error(e);
-          showError(e.message);
-          setToggle(tExitMra, !on); // 回滚
         }
       });
     }
@@ -1404,8 +1358,6 @@
       setPreviewPlayState(!!d.peep_enabled);
       safeToggle('toggle-estop', !!d.emergency_stop_enabled);
       safeToggle('toggle-filelog', !!d.file_logging);
-      safeToggle('toggle-closegame', !!d.auto_close_game);
-      safeToggle('toggle-exitmra', !!d.auto_exit_mra);
       safeToggle('toggle-mutegame', !!d.mute_game);
       safeToggle('toggle-boostprio', !!d.boost_priority);
       safeToggle('toggle-intent', !!d.intent_mode);

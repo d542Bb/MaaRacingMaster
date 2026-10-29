@@ -2,8 +2,8 @@
 """sidecar profile 恢复与 peep 开关的持久化边界。
 
 **要守住的两条**：
-1. debug 段的会话开关照常跨启动恢复（debug_mode / auto_shutdown / click_mode /
-   intent_mode / mute_game）——peep 之外的原有行为不得被波及；
+1. debug 段的会话开关照常跨启动恢复（debug_mode / click_mode / intent_mode /
+   mute_game）——peep 之外的原有行为不得被波及；
 2. peep 是会话内实时预览开关，**不持久化不恢复**：`set_peep` 不写 profile，
    启动回填忽略 profile 里残留的 peep_enabled（旧版本写入的历史键）——
    每次启动 GUI 默认关闭。
@@ -46,16 +46,12 @@ class _StubController:
     def __init__(self):
         self.debug = _StubPeep()
         self.debug_mode = False
-        self.auto_shutdown = None
         self.click_mode = None
         self.intent_mode = None
         self.mute_game = None
 
     def set_debug_mode(self, v):
         self.debug_mode = v
-
-    def set_auto_shutdown(self, close_game=None, exit_mra=None):
-        self.auto_shutdown = (close_game, exit_mra)
 
     def set_click_mode(self, v):
         self.click_mode = v
@@ -68,9 +64,16 @@ class _StubController:
 
 
 def _svc(monkeypatch, profile: dict):
+    import threading
+
     svc = SidecarService.__new__(SidecarService)
     svc._controller = _StubController()
     svc._module_config_cache = {}
+    svc._lock = threading.RLock()
+    svc._queue_order = ["speedrush"]
+    svc._queue_enabled = {"speedrush": True}
+    svc._start_from = {}
+    svc._boost_priority_enabled = False
     svc.saved_profiles = []
     monkeypatch.setattr(sc, "_load_profile", lambda: profile)
     monkeypatch.setattr(sc, "_save_profile", lambda partial: svc.saved_profiles.append(partial))
@@ -93,7 +96,13 @@ def test_restore_ignores_peep_and_restores_rest(monkeypatch):
     assert svc._controller.debug.enabled is False  # peep 启动保持默认关
     assert svc._controller.debug.calls == []       # 连 toggle 都不该发生
     assert svc._controller.debug_mode is True
-    assert svc._controller.auto_shutdown == (True, False)
+    # 旧「关闭游戏进程」开关 → 队列末尾补关闭游戏步骤（且已落盘）
+    assert svc._queue_order[-1] == "close_game"
+    assert svc._queue_enabled.get("close_game") is True
+    # 旧「退出程序」是关的 → 步骤的退出选项不打开
+    assert svc._module_config_cache.get("close_game", {}).get("exit_app") is not True
+    # 旧键迁移后从落盘内容里清掉，不再反复迁移
+    assert "auto_close_game" not in svc.saved_profiles[-1]["debug"]
     assert svc._controller.click_mode == "joystick"
     assert svc._controller.intent_mode is True
     assert svc._controller.mute_game is True

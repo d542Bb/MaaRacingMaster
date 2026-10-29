@@ -92,7 +92,6 @@ def env(monkeypatch):
     c._running = False
     c._manual_stop = False
     c._mute_game_enabled = False
-    c._auto_close_game = False
     c._last_run_natural = False
     c._hwnd = 12345          # 跳过真实 connect 路径
     c._ctx = None
@@ -127,9 +126,9 @@ def test_happy_path_two_groups_in_order(env):
                    ("group_end", "g-1", "success"),
                    ("group_start", "g-2", "session", "运行收尾"),
                    ("group_end", "g-2", "success")]
-    # 正常完成行归收尾组；启动段没有任何裸行
-    assert ("log", "g-2", "INFO",
-            "运行结束：任务正常完成，按「运行结束后」选项执行") in rec.events
+    # 正常完成不再有"结束后开关"行：关游戏/退出都是任务步骤，收尾组只放清理
+    assert [e for e in rec.events
+            if e[0] == "log" and e[1] == "g-2"] == []
     assert [e for e in rec.events if e[0] == "log" and e[1] is None] == []
     assert mod.calls[0][0] == "config" and ("start", None) in mod.calls
 
@@ -166,6 +165,5 @@ def test_manual_stop_line_grouped(env):
     c, rec, mod = env
     mod.on_start = lambda: setattr(c, "_manual_stop", True)
     c.start_module("fake")
-    assert ("log", "g-2", "INFO",
-            "运行结束：手动停止，「运行结束后」开关不生效") in rec.events
+    assert ("log", "g-2", "INFO", "运行结束：手动停止") in rec.events
     assert ("group_end", "g-2", "success") in rec.events

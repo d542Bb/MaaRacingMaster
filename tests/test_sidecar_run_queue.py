@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""运行队列执行语义的回归锁：顺序执行、失败/手动停止中止整轮、断点消费即清、自动退出条件。
+"""运行队列执行语义的回归锁：顺序执行、失败/手动停止中止整轮、断点消费即清、退出条件。
 
-判定表（每轮模块结束后）：
-  - start_module 抛异常 / natural=False → 该模块 fail，中止整轮；
-  - manual_stop=True → 该模块 stopped，中止整轮（用户停止）；
+判定表（每一项结束后）：
+  - 抛异常 / natural=False → 该项 fail，中止整轮；
+  - manual_stop=True → 该项 stopped，中止整轮（用户停止）；
+  - 内置步骤请求退出本程序 → 该项 ok，剩余项 skip；
   - 自然跑完（含模块到限自动停止）→ ok，继续下一个。
-  中止时剩余模块标 skip。auto_exit 事件只在整轮全部自然完成时发出。
+  中止时剩余项标 skip。auto_exit 事件只在整轮全部自然完成且步骤请求退出时发出。
 
 注意不能在启动下一个模块之后才查停止信号——start_module 会清 stop_event（★ 唯一
 clear 位置），事后查永远看不到上一轮的停止；实现必须在循环里、调用之前依据上一轮
@@ -37,7 +38,8 @@ class _FakeController:
     def __init__(self, outcomes):
         self.outcomes = outcomes
         self.calls: list[tuple[str, object]] = []
-        self.auto_exit_mra = False
+        self.builtin_calls: list[tuple[str, object]] = []
+        self.exit_requested = False
         self.last_run_natural = False
         self._manual_stop = False
 
@@ -54,6 +56,24 @@ class _FakeController:
         if outcome == "stopped":
             self._manual_stop = True  # 模块运行期间用户按下了停止（stop() 置位）
         self.last_run_natural = True
+
+    def run_builtin_step(self, step_id, step_config=None):
+        """内置步骤：按脚本回放 ok / raise / swallowed / exit 四种结局。"""
+        self.builtin_calls.append((step_id, step_config))
+        self._manual_stop = False
+        self.last_run_natural = False
+        outcome = self.outcomes.get(step_id, "ok")
+        if outcome == "raise":
+            raise RuntimeError("boom")
+        if outcome == "swallowed":
+            return False
+        if outcome == "stopped":
+            self._manual_stop = True   # 步骤执行期间用户按下了停止
+            return False
+        self.last_run_natural = True
+        if outcome == "exit":
+            self.exit_requested = True  # 「关闭游戏」步骤里勾了「关闭后退出本程序」
+        return True
 
     @property
     def manual_stop_requested(self):
@@ -91,15 +111,19 @@ def _wait(thread):
 
 def test_round_runs_enabled_order_and_finishes_naturally():
     """全部自然完成：按序执行、断点与配置按模块传入、结局全 ok、auto_exit 发出。"""
-    controller = _FakeController({})
-    controller.auto_exit_mra = True
+    controller = _FakeController({"close_game": "exit"})
     svc, sent = _svc(controller)
-    t = _spawn(svc, [("a", None, None), ("b", "b-stage", {"k": 1})])
+    t = _spawn(svc, [
+        {"kind": "module", "id": "a", "start_from": None, "config": None},
+        {"kind": "module", "id": "b", "start_from": "b-stage", "config": {"k": 1}},
+        {"kind": "builtin", "id": "close_game", "start_from": None, "config": {"exit_app": True}},
+    ])
     _wait(t)
     assert [c[0] for c in controller.calls] == ["a", "b"]          # 按计划顺序
     assert controller.calls[1][1] == "b-stage"                     # 断点传入
     assert controller.calls[1][2] == {"k": 1}                      # 配置按模块注入
-    assert svc._round_result == {"a": "ok", "b": "ok"}
+    assert controller.builtin_calls == [("close_game", {"exit_app": True})]
+    assert svc._round_result == {"a": "ok", "b": "ok", "close_game": "ok"}
     assert svc._queue_run is None
     assert any(m.get("event") == "auto_exit" for m in sent)
 
@@ -108,7 +132,10 @@ def test_exception_aborts_round_and_marks_rest_skip():
     """模块抛异常 → 该模块 fail、剩余 skip、不发 auto_exit。"""
     controller = _FakeController({"a": "raise"})
     svc, sent = _svc(controller)
-    t = _spawn(svc, [("a", None, None), ("b", None, None)])
+    t = _spawn(svc, [
+        {"kind": "module", "id": "a", "start_from": None, "config": None},
+        {"kind": "module", "id": "b", "start_from": None, "config": None},
+    ])
     _wait(t)
     assert [c[0] for c in controller.calls] == ["a"]               # b 不再启动
     assert svc._round_result == {"a": "fail", "b": "skip"}
@@ -119,7 +146,10 @@ def test_swallowed_failure_aborts_round():
     """start_module 吞掉的模块异常（natural=False）同样 fail + 中止。"""
     controller = _FakeController({"a": "swallowed"})
     svc, sent = _svc(controller)
-    t = _spawn(svc, [("a", None, None), ("b", None, None)])
+    t = _spawn(svc, [
+        {"kind": "module", "id": "a", "start_from": None, "config": None},
+        {"kind": "module", "id": "b", "start_from": None, "config": None},
+    ])
     _wait(t)
     assert svc._round_result == {"a": "fail", "b": "skip"}
     assert not sent
@@ -128,11 +158,26 @@ def test_swallowed_failure_aborts_round():
 def test_manual_stop_aborts_round_and_skips_auto_exit():
     """用户停止 → 当前模块 stopped、剩余 skip、不触发 auto_exit。"""
     controller = _FakeController({"a": "stopped"})
-    controller.auto_exit_mra = True
     svc, sent = _svc(controller)
-    t = _spawn(svc, [("a", None, None), ("b", None, None)])
+    t = _spawn(svc, [
+        {"kind": "module", "id": "a", "start_from": None, "config": None},
+        {"kind": "module", "id": "b", "start_from": None, "config": None},
+    ])
     _wait(t)
     assert svc._round_result == {"a": "stopped", "b": "skip"}
+    assert not sent
+
+
+def test_step_manual_stop_reports_stopped_not_fail():
+    """步骤被手动停止时记「已停止」而不是「失败」：停止先于自然完成判定。"""
+    controller = _FakeController({"launch_game": "stopped"})
+    svc, sent = _svc(controller)
+    t = _spawn(svc, [
+        {"kind": "builtin", "id": "launch_game", "start_from": None, "config": None},
+        {"kind": "module", "id": "a", "start_from": None, "config": None},
+    ])
+    _wait(t)
+    assert svc._round_result == {"launch_game": "stopped", "a": "skip"}
     assert not sent
 
 

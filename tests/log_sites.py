@@ -279,6 +279,9 @@ SITES: list[LogSite] = [
     # ---- core/clicker.py ----
     _s('core/clicker.py', 'Clicker.auto_shoo', '[鉴宝点击] 避让空转：已连续 {} 次导航到 ({},{}) 光标仍压住 [{}]（当前位 ({},{})）——游戏可能不接受该落点，需人工核查', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
+    # ---- core/game_process.py ----
+    _s('core/game_process.py', 'close_game', '[game] 按窗口关闭失败，改按进程名兜底: {}', 'WARNING', 'state', 'cross', '关闭降级路径：按窗口失败改按进程名，WARNING 不静默；工具函数无组上下文。'),
+
     # ---- core/controller.py ----
     _s('core/controller.py', '_NullGroup.log', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
     _s('core/controller.py', '_run_group', '<dynamic>', 'INFO', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
@@ -323,10 +326,9 @@ SITES: list[LogSite] = [
     _s('core/sidecar.py', 'SidecarService.set_peep', 'PEEP 实时预览: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_click_mode', '点击方式: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_intent_mode', '仅显示意图: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
-    _s('core/sidecar.py', 'SidecarService.set_auto_close_game', '运行结束后自动关闭游戏: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
-    _s('core/sidecar.py', 'SidecarService.set_auto_exit_mra', '运行结束后自动退出程序: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_mute_game', '运行时静音游戏: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_boost_priority', '性能优先({}): {}', '<dynamic>', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
+    _s('core/sidecar.py', 'SidecarService._migrate_legacy_shutdown', '<dynamic>', 'INFO', 'cross', 'cross', '启动期一次性迁移回显：旧「运行结束后」开关折成任务步骤，发生在构造阶段、无业务组。'),
     _s('core/sidecar.py', '_save_profile', '[sidecar] 偏好落盘失败: {}', 'WARNING', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_start_from', '断点模式: {} 将从「{}」开始运行', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.start', '断点模式: 从 {} 开始运行', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
