@@ -60,11 +60,6 @@ docs/plan/
 # 本机 harness 配置说明（含本机路径，仅本地参考）
 docs/trae-dsh-config-share.md
 
-# 前端设计稿：只保留 pages/ 与 token 文件，忽略预检/报告等过程产物
-docs/design/.preflight/
-docs/design/runtime-orchestration-summary.json
-docs/design/validation-report.json
-
 # 归档（被 sidecar + WinUI3 取代的旧 GUI、历史 spike）
 archive/
 
