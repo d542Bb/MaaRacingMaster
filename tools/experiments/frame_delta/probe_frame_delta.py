@@ -67,7 +67,11 @@
 - 并线期重基映射核验：逐次给出 Δexec/Δro/Δc0、物理证人、新值复核、证据
   等级与映射结论（恒等 / 平移-确认 / 平移-未确认 / 陈旧可疑 / 无换纪），
   以及换纪门实际触发与旧目标道是否仍在候选表。
-- 自测：`--selftest`（窗口合并、未知拍断开、来源分类、目标变化、映射结论）。
+- 米制目标与消费时序：逐次给出 e_y（目标−实测 ego）前后变化、旧目标道占用、
+  合并距离（merge_start→修正后）、下拍计划有效性，并给出「评审候选」
+  （恒等 ∩ 米制通过）。消费时序按源码顺序记录在报告头部。
+- 自测：`--selftest`（窗口合并、未知拍断开、来源分类、目标变化、映射结论、
+  米制通过/占用/计划/越过/前提变化）。
 """
 
 from __future__ import annotations
@@ -153,7 +157,7 @@ def tick_info(r: dict, hold_m: float) -> dict:
     hold = bool(r.get("ro_hold"))
     co = r.get("coarse") or {}
     cand = None if not co.get("cand") else [
-        (float(c[0]), c[3]) for c in co["cand"]
+        (float(c[0]), c[1], c[2], c[3]) for c in co["cand"]
         if isinstance(c, (list, tuple)) and len(c) >= 4]
     return {
         "fid": r.get("fid"),
@@ -174,6 +178,12 @@ def tick_info(r: dict, hold_m: float) -> dict:
         "w": r.get("ro_w"),
         "edge": r.get("ro_edge"),
         "cand": cand,
+        "xt": r.get("x_target"),
+        "goal": r.get("goal"),
+        "plan_valid": (r.get("plan") or {}).get("valid"),
+        "plan_reason": (r.get("plan") or {}).get("reason"),
+        "plan_fd": (r.get("plan") or {}).get("fd"),
+        "lw": scene.get("lane_w") or 3.38,
         "road": r.get("road_offset"),
         "exec": r.get("executed_lane"),
         "ph": rt.get("ph"),
@@ -489,12 +499,12 @@ def mapping_event(ticks: list[dict], i: int) -> dict:
             break
     ref_in_cand = None
     if ref is not None and nxt is not None and nxt.get("cand"):
-        ref_in_cand = any(abs(float(k) - float(ref)) < 0.25
-                          for k, _ in nxt["cand"])
+        ref_in_cand = any(abs(float(c[0]) - float(ref)) < 0.25
+                          for c in nxt["cand"])
     mapped_in_cand = None
     if mapped is not None and nxt is not None and nxt.get("cand"):
-        mapped_in_cand = any(abs(float(k) - float(mapped)) < 0.25
-                             for k, _ in nxt["cand"])
+        mapped_in_cand = any(abs(float(c[0]) - float(mapped)) < 0.25
+                             for c in nxt["cand"])
     # 证据量：物理证人 + 同拍线/缘复核；「双证」≠ 真值已证（线值与深度中心同源）
     evidence = ("双证" if move is not None and reviewed
                 else "单证" if move is not None or reviewed else "无证")
@@ -516,6 +526,113 @@ def mapping_event(ticks: list[dict], i: int) -> dict:
         "nxt_ref": (nxt.get("ref") if nxt else None),
         "ref_in_cand": ref_in_cand, "mapped_in_cand": mapped_in_cand,
         "remerge": remerge,
+    }
+
+
+# ---------- 米制目标与消费时序核验 ----------
+
+METRIC_E_LANE = 0.10        # 相对横向误差允许的单拍变化（道）
+FREE_DROP_M = 5.0           # 同一占用类型下净空下降的恶化阈值（米）
+GEOM_AWAY_LANE = 0.7        # 修正后目标变远的允许量（道）；变近不算
+_BLK_SEV = {None: 0, "unknown_car": 1, "car": 1, "space": 2}
+
+
+def _cand_of(cand, lane):
+    """候选道表里取某道：返回 (lane, free_m, width_margin, blocker)。"""
+    if cand is None or lane is None:
+        return None
+    for c in cand:
+        if abs(float(c[0]) - float(lane)) < 0.25:
+            return c
+    return None
+
+
+def metric_event(ticks: list[dict], i: int) -> dict:
+    """重基拍与下一拍的米制目标/相对误差/占用/计划可用性核验。
+
+    e_y = (x_target − road_offset)·lane_w：决策消费的目标与实测 ego 在同一
+    选择帧；x_target 是决策输出（选择器目标），road_offset 是实测自车横位。
+    旧目标道 = 重基拍 route.ref（并线目的地）；占用取同拍 coarse 候选表。
+    """
+    t = ticks[i]
+    nxt = ticks[i + 1] if i + 1 < len(ticks) else None
+    if nxt is None:
+        return None
+    ref = t.get("ref")
+    lw = t.get("lw") or 3.38
+    ro_t, ro_n = t.get("road"), nxt.get("road")
+    xt_t, xt_n = t.get("xt"), nxt.get("xt")
+    e_t = (None if xt_t is None or ro_t is None
+           else (float(xt_t) - float(ro_t)) * lw)
+    e_n = (None if xt_n is None or ro_n is None
+           else (float(xt_n) - float(ro_n)) * lw)
+    de = None if e_t is None or e_n is None else e_n - e_t
+    d_ro_next = (None if ro_t is None or ro_n is None
+                 else float(ro_n) - float(ro_t))
+    c_t = _cand_of(t.get("cand"), ref)
+    c_n = _cand_of(nxt.get("cand"), ref)
+    free_t = None if c_t is None else c_t[1]
+    free_n = None if c_n is None else c_n[1]
+    b_t = None if c_t is None else c_t[3]
+    b_n = None if c_n is None else c_n[3]
+    occ_worse = (_BLK_SEV.get(b_n, 1) > _BLK_SEV.get(b_t, 0)) or (
+        b_t is not None and b_n == b_t and free_t is not None
+        and free_n is not None and free_n < free_t - FREE_DROP_M)
+    plan_ok = bool(nxt.get("plan_valid"))
+    metric_ok = de is not None and abs(de) <= METRIC_E_LANE * lw
+    frame_ok = (d_ro_next is not None
+                and abs(d_ro_next) <= RULER_STABLE_LANE)
+    # 合并几何：回溯本段 merge_start，比较「承诺时目标距离」与「修正后距离」
+    ms_ro = None
+    ms_fid = None
+    for j in range(i - 1, max(-1, i - 400), -1):
+        if ticks[j].get("stage") != t.get("stage"):
+            break
+        if ticks[j].get("vd") == "merge_start":
+            ms_ro, ms_fid = ticks[j].get("road"), ticks[j].get("fid")
+            break
+    start_dist = (None if ms_ro is None or ref is None
+                  else abs(float(ref) - float(ms_ro)))
+    t_dist = (None if ro_t is None or ref is None
+              else abs(float(ref) - float(ro_t)))
+    dist_change = (None if start_dist is None or t_dist is None
+                   else t_dist - start_dist)
+    direction = (None if ms_ro is None or ref is None
+                 else (1 if float(ref) > float(ms_ro) else
+                       -1 if float(ref) < float(ms_ro) else 0))
+    signed_ahead = (None if ro_t is None or ref is None
+                    else (float(ref) - float(ro_t)) * direction
+                    if direction else 0.0)
+    overshoot = signed_ahead is not None and signed_ahead < 0
+    away = dist_change is not None and dist_change > GEOM_AWAY_LANE
+    if ref is None or e_t is None or c_t is None or c_n is None:
+        verdict = "证据不足"
+    elif occ_worse:
+        verdict = "目标占用恶化"
+    elif overshoot:
+        verdict = "已越过目标"
+    elif away:
+        verdict = "目标前提变化"
+    elif not frame_ok:
+        verdict = "下一拍尺子跳变"
+    elif not plan_ok:
+        verdict = "计划仍无效"
+    elif not metric_ok:
+        verdict = "目标误差跳变"
+    else:
+        verdict = "米制通过"
+    return {
+        "fid": t["fid"], "kind": t["rebase"], "ref": ref,
+        "ro_t": ro_t, "ro_n": ro_n, "d_ro_next": d_ro_next,
+        "xt_t": xt_t, "xt_n": xt_n, "e_t": e_t, "e_n": e_n, "de": de,
+        "free_t": free_t, "free_n": free_n, "b_t": b_t, "b_n": b_n,
+        "occ_worse": occ_worse, "plan_ok": plan_ok,
+        "plan_reason": nxt.get("plan_reason"), "frame_ok": frame_ok,
+        "metric_ok": metric_ok,
+        "ms_fid": ms_fid, "start_dist": start_dist, "t_dist": t_dist,
+        "dist_change": dist_change, "direction": direction,
+        "signed_ahead": signed_ahead, "overshoot": overshoot,
+        "away": away, "verdict": verdict,
     }
 
 
@@ -616,6 +733,7 @@ def summarize_run(run: str, rows: list[dict], hold_m: float) -> dict:
                                     and vd_next == "epoch_reset")
                        else "other" if ep_up else "none")
         ev["map"] = mapping_event(ticks, i) if t["ph"] == "merging" else None
+        ev["metric"] = metric_event(ticks, i) if t["ph"] == "merging" else None
         rebases.append(ev)
     pairs = list(zip(ticks, ticks[1:]))
     base_src = sum(1 for a, b in pairs if a["src"] != b["src"])
@@ -726,6 +844,57 @@ def _pct(x: float | None) -> str:
 
 def _num(x, nd: int = 2) -> str:
     return "-" if x is None else f"{float(x):+.{nd}f}"
+
+
+def print_metric(runs: list[dict]) -> None:
+    """并线期重基的米制目标/相对误差/占用/计划核验表。"""
+    rows = [(run["run"], e) for run in runs
+            for e in run["rebases"] if e.get("metric")]
+    print("\n### 米制目标与消费时序（并线期重基）\n")
+    print("- 消费时序（源码顺序）：`engine.update` 吃 pre-executed 与 road_offset"
+          "（决策/选择/路线）；`plan_motion` 吃同一 pre-executed；"
+          "`planner.update` 先按旧状态控杆、再重基 executed；下一拍换纪门比较"
+          "新 executed。trace 对应：`plan_ego[0]`=pre、`executed_lane`=post、"
+          "`x_target`/`goal`=决策目标、`road_offset`=实测 ego。")
+    print("- `e_y = (x_target − road_offset)·lane_w`：目标与实测 ego 的相对"
+          "横向误差（米）。旧道占用取同拍 coarse 候选表（free=净空，括号内米）。")
+    print("\n| 局 | fid | 旧ref | Δro下拍 | e_y(t) | e_y(t+1) | Δe | "
+          "旧道占用 t→t+1 | merge距离 start→t | 下拍计划 | 结论 |")
+    print("|---|---:|---:|---:|---:|---:|---:|---|---|---|---|")
+    for rn, e in rows:
+        m = e["metric"]
+        def _occ(b, f):
+            return f"{b or 'free'}({'-' if f is None else f'{f:.1f}'})"
+        ref_s = "-" if m["ref"] is None else f"{m['ref']:g}"
+        sd = "-" if m["start_dist"] is None else f"{m['start_dist']:.2f}"
+        td = "-" if m["t_dist"] is None else f"{m['t_dist']:.2f}"
+        print(f"| {rn} | {m['fid']} | {ref_s} | "
+              f"{_num(m['d_ro_next'])} | {_num(m['e_t'])} | {_num(m['e_n'])} | "
+              f"{_num(m['de'])} | {_occ(m['b_t'], m['free_t'])}→"
+              f"{_occ(m['b_n'], m['free_n'])} | {sd}→{td} | "
+              f"{m['plan_reason'] or '-'} | {m['verdict']} |")
+    vc = Counter(e["metric"]["verdict"] for _, e in rows)
+    print("\n- 结论分布：" + "，".join(f"{k} {v}" for k, v in
+                                     sorted(vc.items(), key=lambda kv: -kv[1])))
+    review = [(rn, e) for rn, e in rows
+              if e.get("map") and e["map"]["verdict"].startswith("恒等")
+              and e["metric"]["verdict"] == "米制通过"]
+    print(f"- 评审候选（恒等 ∩ 米制通过）= {len(review)} 次："
+          + "，".join(str(e["metric"]["fid"]) for _, e in review))
+    if review:
+        print("- 这组满足：旧目标道未被占/未恶化、下拍计划有效、下拍尺子稳定"
+              "（|Δro|≤0.4）、相对误差变化 ≤0.10 道、参考系未重编号。**只有"
+              "这组**支持提出「保留承诺」的候选方案；其余保持现状。")
+    rest = [(e["metric"]["fid"], e["metric"]["verdict"])
+            for _, e in rows
+            if e.get("map") and e["map"]["verdict"].startswith("恒等")
+            and e["metric"]["verdict"] != "米制通过"]
+    if rest:
+        print("- 恒等但未过米制核验："
+              + "，".join(f"{fid}（{v}）" for fid, v in rest) + "。")
+    print("- 尚未核验：跨道路径的**中间道**占用（本次只查目标道，候选表不含"
+          "路径）；`lane_from` 不在 trace 里，合并源道无法逐次复核。因此"
+          "即便这组全部通过，也不能无条件跳过换纪门。")
 
 
 def print_mapping(runs: list[dict]) -> None:
@@ -936,6 +1105,7 @@ def print_report(runs: list[dict], hold_m: float, groups: dict[str, str]) -> Non
     print(f"- 承诺：重基前在并线 {merge_pre} 次，其中 10 拍内 ref 变化 "
           f"{ref_chg} 次；10 拍内重新起意并线 {new_merge} 次。")
     print_mapping(runs)
+    print_metric(runs)
     srcs = source_table(runs)
     print("\n## 三问\n")
     top = sorted(srcs, key=lambda r: -r["starts"])[:3]
@@ -996,13 +1166,16 @@ def _mk(fid, fd, src="wall", new=True, hold=False, plan="veto",
 
 def _mtick(fid, pre, post, road, ref=0.0, src="wall", new=True,
            hold=False, lines=(), line_x=None, edge=None, w=4.5, ep=0,
-           vd="keep"):
-    """映射核验自测用的最小 tick（字段与 tick_info 同口径）。"""
+           vd="keep", xt=None, plan_valid=True):
+    """映射/米制核验自测用的最小 tick（字段与 tick_info 同口径）。"""
     return {"fid": fid, "pre_exec": pre, "exec": post, "road": road,
             "src": src, "new": new, "hold": hold, "lines": list(lines),
             "line_x": line_x, "edge": edge, "w": w, "ref": ref, "ep": ep,
-            "vd": vd, "rebase": "jump_confirm",
-            "cand": [(float(k), None) for k in range(-2, 3)]}
+            "vd": vd, "rebase": "jump_confirm", "stage": 1,
+            "xt": road if xt is None else xt, "goal": None,
+            "plan_valid": plan_valid, "plan_reason": "plan:ok" if plan_valid
+            else "plan:frame_shift", "plan_fd": 0.0, "lw": 3.38,
+            "cand": [(float(k), 24.0, 3.0, None) for k in range(-2, 3)]}
 
 
 def selftest() -> None:
@@ -1058,6 +1231,30 @@ def selftest() -> None:
     # 线配对拒绝 >0.6 道跳变
     assert _match_line({"lines": [("y", 1, 1.0, 5)]},
                        {"lines": [("y", 1, 2.0, 5)]}) is None
+    # 米制核验：旧目标未被占 + 计划有效 + 尺子稳 + 误差连续 → 米制通过
+    a = _mtick(1, 0.0, 0.0, 0.0, ref=1.0)
+    b = _mtick(2, 0.0, 1.0, 0.0, ref=1.0, xt=0.8)
+    c = _mtick(3, 1.0, 1.0, 0.0, ref=0.0, xt=0.8, plan_valid=True)
+    m = metric_event([a, b, c], 1)
+    assert m["verdict"] == "米制通过", m
+    # 旧目标道在下一拍出现车 → 占用恶化
+    c2 = _mtick(3, 1.0, 1.0, 0.0, ref=0.0, xt=0.8)
+    c2["cand"] = [(float(k), 6.0, 3.0, "car" if k == 1 else None)
+                  for k in range(-2, 3)]
+    assert metric_event([a, b, c2], 1)["verdict"] == "目标占用恶化"
+    # 下一拍计划仍被否 → 计划仍无效
+    c3 = _mtick(3, 1.0, 1.0, 0.0, ref=0.0, xt=0.8, plan_valid=False)
+    assert metric_event([a, b, c3], 1)["verdict"] == "计划仍无效"
+    # 修正后已越过目标 → 已越过目标
+    ms = _mtick(1, 0.0, 0.0, -1.0, ref=0.0, vd="merge_start")
+    b2 = _mtick(2, 0.0, 1.2, 1.2, ref=0.0, xt=0.0)
+    c2 = _mtick(3, 1.2, 1.2, 1.2, ref=1.0, xt=0.0)
+    assert metric_event([ms, b2, c2], 1)["verdict"] == "已越过目标"
+    # 修正后离目标更远（>0.7 道）→ 目标前提变化
+    ms = _mtick(1, 0.0, 0.0, -1.0, ref=1.0, vd="merge_start")
+    b3 = _mtick(2, 0.0, -2.0, -2.0, ref=1.0, xt=1.0)
+    c3 = _mtick(3, -2.0, -2.0, -2.0, ref=-1.0, xt=1.0)
+    assert metric_event([ms, b3, c3], 1)["verdict"] == "目标前提变化"
     print("selftest ok")
 
 
@@ -1111,6 +1308,13 @@ def main() -> None:
                     "mapped", "resid", "ep_up", "nxt_vd", "nxt_ref",
                     "ref_in_cand", "mapped_in_cand", "remerge"]
         fields = keys + [f"map_{k}" for k in map_keys]
+        metric_keys = ["fid", "kind", "ref", "ro_t", "ro_n", "d_ro_next",
+                       "xt_t", "xt_n", "e_t", "e_n", "de", "free_t",
+                       "free_n", "b_t", "b_n", "occ_worse", "plan_ok",
+                       "plan_reason", "frame_ok", "metric_ok", "ms_fid",
+                       "start_dist", "t_dist", "dist_change", "direction",
+                       "signed_ahead", "overshoot", "away", "verdict"]
+        fields += [f"metric_{k}" for k in metric_keys]
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
@@ -1120,6 +1324,10 @@ def main() -> None:
                     m = e.get("map")
                     if m:
                         row.update({f"map_{k}": m.get(k) for k in map_keys})
+                    me = e.get("metric")
+                    if me:
+                        row.update({f"metric_{k}": me.get(k)
+                                    for k in metric_keys})
                     w.writerow(row)
         print()
         print(f"CSV: {args.csv}")
