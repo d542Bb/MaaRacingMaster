@@ -355,11 +355,14 @@ class HudObserver:
         engine: Any | None = None,
         regions: dict[str, list[float]] | None = None,
         regions_path: Path | str | None = None,
+        group_id: str | None = None,
     ) -> None:
         self.out_dir = Path(out_dir)
         self.phase = phase
         self.round_no = round_no
         self.interval_s = max(0.05, float(interval_s))
+        # 派发时刻捕获的业务组号（驾驶阶段卡）；worker 不读线程局部当前组。
+        self._group_id = group_id
         self._frame_source = frame_source
         # 引擎与区域都可注入（测试注入假引擎，不加载真模型）；注入 None 时按真源懒加载
         self._engine = engine
@@ -391,6 +394,10 @@ class HudObserver:
     @property
     def running(self) -> bool:
         return self._running
+
+    def _log(self, msg: str, level: str = "INFO") -> None:
+        """阶段正文日志：派发时捕获的组号在 worker 线程里显式透传。"""
+        logger.log(msg, level, group_id=self._group_id)
 
     @property
     def regions(self) -> dict[str, list[float]]:
@@ -433,7 +440,7 @@ class HudObserver:
         self._write_thread.start()
         self._sample_thread.start()
         self._running = True
-        logger.log(
+        self._log(
             f"[极速狂飙] HUD 读数开始（{len(self._regions)} 区域 / 每 {self.interval_s:.2f}s）"
             f" → {self.out_dir / 'hud.jsonl'}", "INFO")
 
@@ -450,7 +457,7 @@ class HudObserver:
         self._sample_thread = None
         self._write_thread = None
         self._write_meta(reason)
-        logger.log(
+        self._log(
             f"[极速狂飙] HUD 读数结束：{self._rows_written} 行"
             f"（丢 {self._rows_dropped}、"
             f"缺帧 {self._samples_no_frame}、OCR 无结果 {self._ocr_no_result}）",
@@ -483,7 +490,7 @@ class HudObserver:
         try:
             frame, frame_id, ts_ns, age_ms = self._frame_source()
         except Exception as exc:  # noqa: BLE001 —— 取帧异常按缺帧处理，不终止观察
-            logger.log(f"[极速狂飙] HUD 取帧异常: {exc!r}", "DEBUG")
+            self._log(f"[极速狂飙] HUD 取帧异常: {exc!r}", "DEBUG")
             self._samples_no_frame += 1
             return None
         if frame is None:
@@ -611,7 +618,7 @@ class HudObserver:
         except Exception as exc:  # noqa: BLE001 —— 单格异常按"该格读不出"处理
             self._read_errors += 1
             level = "WARNING" if self._read_errors == 1 else "DEBUG"
-            logger.log(
+            self._log(
                 f"[极速狂飙] HUD 单格读数异常（{name}，累计 {self._read_errors}）: {exc!r}", level)
             entry: dict = {"text": None, "value": None, "trusted": False,
                            "note": ["read_error"]}
@@ -630,7 +637,7 @@ class HudObserver:
         except Exception as exc:  # noqa: BLE001 —— 单格识别异常不该终止整条观察
             self._ocr_errors += 1
             level = "WARNING" if self._ocr_errors == 1 else "DEBUG"
-            logger.log(f"[极速狂飙] HUD 识别异常({self._ocr_errors}): {exc!r}", level)
+            self._log(f"[极速狂飙] HUD 识别异常({self._ocr_errors}): {exc!r}", level)
             return None
 
     def _get_engine(self) -> Any | None:
@@ -649,7 +656,7 @@ class HudObserver:
             self._engine = RapidOcrEngine()
         except Exception as exc:  # noqa: BLE001 —— 引擎不可用即降级，不抛给调用方
             self._engine_failed = True
-            logger.log(f"[极速狂飙] HUD 读数引擎不可用({exc!r})，本阶段不产出读数", "WARNING")
+            self._log(f"[极速狂飙] HUD 读数引擎不可用({exc!r})，本阶段不产出读数", "WARNING")
             return None
         return self._engine
 

@@ -54,6 +54,7 @@ sidecar 启动时的 profile 回读启用。每次开启新建一个**会话目�
 import math
 import re
 import secrets
+import sys
 import time
 from collections import deque
 from datetime import datetime
@@ -148,6 +149,12 @@ class Logger:
         r"(?i)password|passwd|token|secret|api_?key|cookie|authorization")
     # 已收尾组的 outcome 墓碑上限（重复 end 要能幂等回读）。
     _CLOSED_TOMBSTONES = 256
+    # 降级分项计数（N8④）的帧捕获跳过清单：这些函数只是「有组走组、无组回落」的
+    # 同义包装，迟到站点应归到首个业务调用点。与 tests/log_sites.py 的静态扫描
+    # 共享同一份口径——改这里必须同步改登记处的包装器断言。
+    WRAPPER_FUNCS = frozenset({
+        "_tlog", "_mlog", "_clog", "_lg", "_log", "_run_group", "_open_grp", "log",
+    })
 
     # 会话关闭时给伴随写手的有界排空期限（秒）；期限内未收尾即终态化。
     SESSION_DRAIN_TIMEOUT_S = 2.0
@@ -178,6 +185,10 @@ class Logger:
         self._closed_outcomes: dict[str, str] = {}  # group_id → 终态（幂等回读墓碑）
         self._finalized = False
         self._counters: dict[str, int] = {}      # 误用计数：只增不回灌日志
+        # 降级分项：调用点 → 次数（N8④）。聚合计数形状不变，分项只服务于
+        # 「除在册迟到站点外零增长」的验收；记录本身不带调用点，故只在低频
+        # 错误路径上做帧捕获。
+        self._degraded_sites: dict[str, int] = {}
 
     # ---------- 对外只读属性 ----------
     @property
@@ -233,6 +244,48 @@ class Logger:
     def _bump(self, name: str) -> None:
         """误用计数。假设持有 _lock。"""
         self._counters[name] = self._counters.get(name, 0) + 1
+
+    @property
+    def degraded_sites(self) -> dict:
+        """降级分项计数快照：`"log@<文件>:<限定函数>"` / `"end@…"` → 次数。
+
+        键的最后一段是派发时刻的业务调用点；包装器帧按 `WRAPPER_FUNCS` 跳过，
+        跳不出时回落「包装器 + 消息前缀」复合键（N8④）。
+        """
+        with self._lock:
+            return dict(self._degraded_sites)
+
+    def _bump_site(self, kind: str, msg: str) -> None:
+        """降级分项计数。假设持有 _lock。"""
+        key = f"{kind}@{self._capture_site(msg)}"
+        self._degraded_sites[key] = self._degraded_sites.get(key, 0) + 1
+
+    @classmethod
+    def _capture_site(cls, msg: str) -> str:
+        """降级调用点（帧捕获；只在未知组/重复收尾的低频路径调用）。
+
+        跳过 logger 自身帧与 `WRAPPER_FUNCS` 包装器帧，落到首个业务调用点；
+        全是包装器时（动态派发）回落「包装器 + 消息前缀」复合键。
+        """
+        frame = sys._getframe(1)
+        fallback = None
+        while frame is not None:
+            fname = frame.f_code.co_filename.replace("\\", "/")
+            name = frame.f_code.co_name
+            if fname.endswith("core/logger.py") or name in cls.WRAPPER_FUNCS:
+                if fallback is None and not fname.endswith("core/logger.py"):
+                    fallback = (fname, name)
+                frame = frame.f_back
+                continue
+            marker = "/maaracing_master/"
+            rel = fname.split(marker, 1)[1] if marker in fname else fname.rsplit("/", 1)[-1]
+            return f"{rel}:{name}"
+        if fallback is not None:
+            marker = "/maaracing_master/"
+            src = fallback[0]
+            rel = src.split(marker, 1)[1] if marker in src else src.rsplit("/", 1)[-1]
+            return f"{rel}:{fallback[1]}+{msg[:24]}"
+        return "<unknown>"
 
     # ---------- 落盘开关与会话清理 ----------
     def set_file_logging(self, enabled: bool) -> None:
@@ -474,6 +527,7 @@ class Logger:
             grp = self._groups.get(group_id) if group_id else None
             if group_id and grp is None:
                 self._bump("unknown_group_id")
+                self._bump_site("log", self._as_text(msg))
                 group_id = None
             if channel is None:
                 channel = grp["channel"] if grp else self.DEFAULT_CHANNEL
@@ -534,6 +588,7 @@ class Logger:
                 self._bump("double_end")
                 return tomb
             self._bump("unknown_group_end")
+            self._bump_site("end", "")
             return None
         auto = ("failure" if grp["has_error"]
                 else "warning" if grp["has_warning"] else "success")

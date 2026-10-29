@@ -77,6 +77,7 @@ class WgcCapture:
         self._client_size: tuple[int, int] | None = None    # 客户区尺寸 (w, h)
         self._dwm_size: tuple[int, int] | None = None       # DWM 可见边界尺寸（判定渲染链用）
         self._crop_warned = False                            # 裁剪越界只告警一次
+        self._frame_errors = 0                               # 帧回调异常：首次 ERROR，其后 DEBUG
 
         # 60fps 节流
         self._last_accept_ts_ns: int | None = None
@@ -341,4 +342,8 @@ class WgcCapture:
             self._last_callback_ts_ns = now_ns
 
         except Exception as e:
-            logger.log(f"WGC 帧处理异常: {e}", "ERROR")
+            # 逐帧回调：首次异常是状态跃迁（ERROR），其后同类重复只留文件（DEBUG），
+            # 否则一帧坏就按 60fps 刷满面板。
+            self._frame_errors += 1
+            level = "ERROR" if self._frame_errors == 1 else "DEBUG"
+            logger.log(f"WGC 帧处理异常（累计 {self._frame_errors}）: {e}", level)

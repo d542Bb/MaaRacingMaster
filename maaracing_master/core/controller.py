@@ -264,7 +264,7 @@ class MaaRacingMasterController:
                 # 用户要求：GUI 点停止后系统内虚拟手柄应立即消失，不残留干扰手动游戏；
                 # 正常完成/异常退出同样销毁，保持"运行期才存在手柄"的生命周期约定。
                 # 此时模块主循环已退出（含停止信号中止的手柄导航），无并发使用，销毁安全。
-                self._destroy_gpad()
+                self._destroy_gpad(grp=cg)
                 self._stop_wgc_capture()  # 运行结束停止 WGC 中心采集（资源不常驻，下次运行再启动）
                 # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
                 if self._mute_game_enabled:
@@ -522,21 +522,21 @@ class MaaRacingMasterController:
         # 前台校验也只在 real 模式生效（见 treasure 模块 _execute_click）。
         if self._click_mode == "real":
             if not activate_window(hwnd):
-                logger.log("切换到游戏窗口前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台", "WARNING")
+                _clog(grp, "切换到游戏窗口前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台", "WARNING")
 
         # 注：运行时静音不再放这里——connect 幂等，第二次启动会短路返回导致不再静音；
         # 静音统一在 start_module 每次启动时执行（见 start_module）。
 
         # 统一把所有模块的游戏窗口客户区调整为 720p（截图/模板/ROI 均按 720p 归一化）。
         # 调整失败不阻断：退化到原尺寸并交由后续 16:9 / 屏幕内校验兜底告警。
-        resize_game_window_720p(hwnd)
+        resize_game_window_720p(hwnd, group_id=grp.id if grp is not None else None)
 
         # 窗口屏幕内校验：窗口完全不可见（被最小化且无法自动还原 / 被拖出屏幕）→ 无法点击 → 报错并终止模块
         if not is_window_on_screen(hwnd):
-            logger.log(
-                "游戏窗口不在任何屏幕的可视范围内（被最小化且无法自动还原，或被拖出屏幕），无法点击。"
-                "模块已终止，请将窗口还原并移回屏幕后重新开始", "ERROR",
-            )
+            _clog(grp,
+                  "游戏窗口不在任何屏幕的可视范围内（被最小化且无法自动还原，或被拖出屏幕），无法点击。"
+                  "模块已终止，请将窗口还原并移回屏幕后重新开始", "ERROR",
+                  )
             self.controller = None
             self._hwnd = 0
             return False
@@ -573,9 +573,10 @@ class MaaRacingMasterController:
             except Exception:
                 pass
 
-    def _destroy_gpad(self):
+    def _destroy_gpad(self, grp=None):
         """销毁虚拟手柄：从 ViGEmBus 确定性移除设备（游戏内光标/手柄立即断开）。
 
+        grp 非空时过程日志归入该组（运行收尾生命周期组）。
         vgamepad 没有公开的销毁 API，设备移除只发生在对象析构 __del__
         （vigem_target_remove + free）——但析构时机不可控：模块
         Clicker→GamepadClicker 循环引用、以及 start_module 栈帧对 module 局部
@@ -595,13 +596,13 @@ class MaaRacingMasterController:
             # vgamepad 无公开销毁 API，只能摸 VGamepad 的内部句柄（_busp/_devicep）
             from vgamepad.win import vigem_client as _vcli
             _vcli.vigem_target_remove(self._gpad._busp, self._gpad._devicep)
-            logger.log("虚拟手柄已销毁（已从 ViGEmBus 移除）", "DEBUG")
+            _clog(grp, "虚拟手柄已销毁（已从 ViGEmBus 移除）", "DEBUG")
         except Exception as e:  # noqa: BLE001 —— 驱动缺失/已移除等场景不阻塞收尾
-            logger.log(f"虚拟手柄销毁异常（可能驱动未装或已移除）: {e}", "DEBUG")
+            _clog(grp, f"虚拟手柄销毁异常（可能驱动未装或已移除）: {e}", "DEBUG")
         self._gpad = None
         import gc
         # 回收窗口的边界日志：这一带的崩溃只能靠日志断点定位（收尾无其它输出），
         # 有头有尾才能判断崩溃落在回收内还是回收之后。
-        logger.log("虚拟手柄对象回收开始", "DEBUG")
+        _clog(grp, "虚拟手柄对象回收开始", "DEBUG")
         gc.collect()  # 兜底：回收模块/点击器链上的手柄对象（free 仍由 __del__ 恰好执行一次）
-        logger.log("虚拟手柄对象回收完成", "DEBUG")
+        _clog(grp, "虚拟手柄对象回收完成", "DEBUG")

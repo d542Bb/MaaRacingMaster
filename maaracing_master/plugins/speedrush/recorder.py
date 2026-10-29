@@ -64,10 +64,13 @@ class DriveRecorder:
         pad_slot: int | None = None,
         phase: int | None = None,
         round_no: int | None = None,
+        group_id: str | None = None,
     ) -> None:
         self.out_dir = Path(out_dir)
         self.jpeg_quality = int(jpeg_quality)
         self.pad_poll_hz = float(pad_poll_hz)
+        # 派发时刻捕获的业务组号（驾驶阶段卡）；worker 不读线程局部当前组。
+        self._group_id = group_id
         # None = 每次采样自动找第一个已连接手柄（适配用户插哪个槽都行）
         self.pad_slot = pad_slot
         # 场景分层用：本次会话属于哪个驾驶阶段、第几轮
@@ -82,6 +85,7 @@ class DriveRecorder:
 
         self._frames_written = 0
         self._frames_dropped = 0
+        self._write_errors = 0
         self._pad_samples = 0
         self._pad_none_streak = 0
         self._seq_counter = 0
@@ -97,12 +101,17 @@ class DriveRecorder:
     def running(self) -> bool:
         return self._running
 
+    def _log(self, msg: str, level: str = "INFO") -> None:
+        """阶段正文日志：派发时捕获的组号在 worker 线程里显式透传。"""
+        logger.log(msg, level, group_id=self._group_id)
+
     @property
     def stats(self) -> dict[str, int]:
         """实时计数（供 GUI 状态展示；不阻塞）。"""
         return {
             "frames_written": self._frames_written,
             "frames_dropped": self._frames_dropped,
+            "write_errors": self._write_errors,
             "pad_samples": self._pad_samples,
         }
 
@@ -120,7 +129,7 @@ class DriveRecorder:
         self._frame_thread.start()
         self._pad_thread.start()
         self._running = True
-        logger.log(f"[极速狂飙] 录制开始 → {self.out_dir}", "INFO")
+        self._log(f"[极速狂飙] 录制开始 → {self.out_dir}", "INFO")
 
     def stop(self, reason: str = "normal") -> None:
         """停止并 flush。幂等；重复调用只写一次 meta。"""
@@ -135,7 +144,7 @@ class DriveRecorder:
         self._frame_thread = None
         self._pad_thread = None
         self._write_meta(reason)
-        logger.log(
+        self._log(
             f"[极速狂飙] 录制结束：帧 {self._frames_written} 张"
             f"（丢 {self._frames_dropped}）、手柄样本 {self._pad_samples} 条",
             "INFO" if self._frames_dropped == 0 else "WARNING",
@@ -189,10 +198,16 @@ class DriveRecorder:
                     ok = write_rgb(frames_dir / name, frame,
                                    jpeg_quality=self.jpeg_quality)
                 except Exception as exc:  # noqa: BLE001 —— 单帧写失败不该终止录制
-                    logger.log(f"[极速狂飙] 录制写帧失败 seq={seq}: {exc!r}", "WARNING")
+                    self._write_errors += 1
+                    logger.log(f"[极速狂飙] 录制写帧失败（累计 {self._write_errors}）"
+                               f" seq={seq}: {exc!r}",
+                               "WARNING" if self._write_errors == 1 else "DEBUG")
                     continue
                 if not ok:
-                    logger.log(f"[极速狂飙] 录制写帧返回失败 seq={seq}", "WARNING")
+                    self._write_errors += 1
+                    logger.log(f"[极速狂飙] 录制写帧返回失败（累计 {self._write_errors}）"
+                               f" seq={seq}",
+                               "WARNING" if self._write_errors == 1 else "DEBUG")
                     continue
                 # frame_id 是 WGC 帧号，跨源对齐用它；ts_ns 是采集时刻（非写入时刻）
                 fj.write(json.dumps(
@@ -221,7 +236,7 @@ class DriveRecorder:
                 if st is None:
                     self._pad_none_streak += 1
                     if self._pad_none_streak == 1 or self._pad_none_streak % 1000 == 0:
-                        logger.log(
+                        self._log(
                             "[极速狂飙] 录制中未读到物理手柄——"
                             "请确认手柄已连接且未被虚拟手柄占用", "WARNING")
                     if self._pad_none_streak >= 5:
@@ -262,6 +277,7 @@ class DriveRecorder:
             "round_no": self.round_no,
             "frames_written": self._frames_written,
             "frames_dropped": self._frames_dropped,
+            "write_errors": self._write_errors,
             "pad_samples": self._pad_samples,
             "stop_reason": reason,
         }

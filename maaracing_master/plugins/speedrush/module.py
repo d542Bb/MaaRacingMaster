@@ -248,6 +248,7 @@ def _open_grp(self, title: str, kind: str) -> None:
         return
     _end_grp(self)
     self._log_grp = logger.group(title, kind=kind)
+    _sync_log_group(self)
 
 
 def _end_grp(self, outcome: str | None = None) -> None:
@@ -257,6 +258,16 @@ def _end_grp(self, outcome: str | None = None) -> None:
         return
     self._log_grp = None
     g.end(outcome)
+    _sync_log_group(self)
+
+
+def _sync_log_group(self) -> None:
+    """把当前组号同步给 nav 图动作桥（派发时刻快照；worker 不读线程局部当前组）。"""
+    gid = getattr(getattr(self, "_log_grp", None), "id", None)
+    graph = getattr(self, "_graph", None)
+    sync = getattr(graph, "set_log_group", None)
+    if sync is not None:
+        sync(gid)
 
 
 class SpeedRushModule(ActivityModule):
@@ -484,30 +495,35 @@ class SpeedRushModule(ActivityModule):
                 "可能与你的物理手柄冲突（驾驶时手柄可能不响应）。建议在设置页改为「前台鼠标」再录。",
                 "WARNING")
 
-        graph = NavGraph(self.ctx)
-        graph.add_plugin(PIPELINE_DIR, IMAGE_DIR)
-        if not graph.load():
-            logger.log("[极速狂飙] 导航图加载失败，模块终止", "ERROR")
-            return
-        self._graph = graph
-
-        index = resolve_start_index(start_from)
-        if start_from and index == 0:
-            logger.log(f"[极速狂飙] 未知断点「{start_from}」，从流程起点开始", "WARNING")
-
         self._running = True
         # 本次运行的身份（流水行头 run_id；一局内各阶段共享，跨 run 不重置序号）。
         # 取日志会话 token = 产物目录编号，流水与目录因此同名可互查。
         self._trace.set_run_id(logger.session_token or time.strftime("%Y%m%d_%H%M%S"))
+        # 启动组开在图加载之前：图加载与断点修正也是这次运行的启动正文，不能散成裸行。
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
                         f"·感知{'开' if self._perception_mode else '关'}"
                         f"·直行{'开' if self._straight_mode else '关'}）", "session")
+        flow_ok = False
         try:
+            graph = NavGraph(self.ctx)
+            graph.add_plugin(PIPELINE_DIR, IMAGE_DIR)
+            self._graph = graph
+            _sync_log_group(self)   # 图对象晚于开组创建：补一次组号同步
+            if not graph.load():
+                _tlog(self, "[极速狂飙] 导航图加载失败，模块终止", "ERROR")
+                self._graph = None   # 未加载成功不留给 cleanup 当已装配图处理
+                return
+
+            index = resolve_start_index(start_from)
+            if start_from and index == 0:
+                _tlog(self, f"[极速狂飙] 未知断点「{start_from}」，从流程起点开始", "WARNING")
+
+            flow_ok = True
             self._run_flow(index)
         finally:
-            # 契约 §2：speedrush 的 start 无"自然完成"出口（循环至停止），
-            # 走到这里只有被停/阶段故障中止/异常三种，一律落 incomplete。
-            _end_grp(self, "incomplete")
+            # 契约 §2：进入主流程后无"自然完成"出口（循环至停止），一律落 incomplete；
+            # 启动段失败（图加载/断点解析）落 failure——卡片的终态要如实反映失败阶段。
+            _end_grp(self, "incomplete" if flow_ok else "failure")
             self._running = False
             self._stage_name = None
 
@@ -2052,7 +2068,8 @@ class SpeedRushModule(ActivityModule):
             session = make_session_dir(_record_root(), tag="manual", stamp=stamp)
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
-            rec = DriveRecorder(session, phase=phase, round_no=round_no)
+            rec = DriveRecorder(session, phase=phase, round_no=round_no,
+                                group_id=getattr(self._log_grp, "id", None))
             rec.start()
         except Exception as exc:  # noqa: BLE001 —— 采集失败不阻断流程
             _tlog(self, f"[极速狂飙] 录制器启动失败: {exc!r}", "WARNING")
@@ -2075,6 +2092,7 @@ class SpeedRushModule(ActivityModule):
                 frame_source=self.ctx.capture.frame_with_age,
                 phase=phase,
                 round_no=round_no,
+                group_id=getattr(self._log_grp, "id", None),
             )
             obs.start()
         except Exception as exc:  # noqa: BLE001 —— 读数启动失败不阻断流程

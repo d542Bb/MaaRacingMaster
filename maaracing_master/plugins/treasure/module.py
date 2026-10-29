@@ -462,6 +462,7 @@ def _open_grp(self, title: str, kind: str) -> None:
         return
     _end_grp(self)
     self._log_grp = logger.group(title, kind=kind)
+    _sync_log_group(self)
 
 
 def _end_grp(self, outcome: str | None = None) -> None:
@@ -471,6 +472,20 @@ def _end_grp(self, outcome: str | None = None) -> None:
         return
     self._log_grp = None
     g.end(outcome)
+    _sync_log_group(self)
+
+
+def _sync_log_group(self) -> None:
+    """把当前组号同步给持有长生命周期 worker 的宿主（nav 图动作桥）。
+
+    只在开组/收组时调用（派发时刻快照）；worker 不读线程局部当前组。
+    """
+    gid = getattr(getattr(self, "_log_grp", None), "id", None)
+    for attr in ("_graph", "_v4_runner"):
+        host = getattr(self, attr, None)
+        sync = getattr(host, "set_log_group", None)
+        if sync is not None:
+            sync(gid)
 
 
 class TreasureModule(ActivityModule):
@@ -1294,6 +1309,9 @@ class TreasureModule(ActivityModule):
                 image_dirs=[plugin_root / "resources" / "image"],
                 bridges=[(POLICY_ACTION_NAME, PolicyBridge(self))],
             )
+        _sync_runner = getattr(runner, "set_log_group", None)
+        if _sync_runner is not None:
+            _sync_runner(getattr(self._log_grp, "id", None))
         if not runner.start(self._V4_ENTRY):
             raise RuntimeError("[鉴宝][v4] 常驻图加载失败，模块终止")
         logger.log("[鉴宝][v4] 帧工作已移交 MaaFW Tasker 线程（policy 闭环桥）", "DEBUG")
@@ -3199,9 +3217,9 @@ class TreasureModule(ActivityModule):
                                        rebuild_cb=self._rebuild_gamepad_device)
             logger.log("[鉴宝点击] 后台手柄方式：已绑定手柄导航能力（首次点击按需创建虚拟手柄）", "DEBUG")
         except Exception as e:  # noqa: BLE001 —— 无 gamepad 能力/手柄不可用时降级
-            logger.log(
-                f"[鉴宝点击] 手柄绑定失败，后台手柄方式不可用（前台鼠标方式不受影响）: {e}",
-                "WARNING")
+            _tlog(self,
+                  f"[鉴宝点击] 手柄绑定失败，后台手柄方式不可用（前台鼠标方式不受影响）: {e}",
+                  "WARNING")
 
     def _rebuild_gamepad_device(self) -> bool:
         """光标长时间丢失的自愈（Clicker 连续丢失达阈值时回调）：销毁并重建虚拟手柄。
@@ -3934,7 +3952,7 @@ class TreasureModule(ActivityModule):
         self._drain_io_queue()
         self._io_thread.join(timeout=3.0)
         if self._io_thread.is_alive():
-            logger.log("[鉴宝] IO worker 3s 内未退出", "WARNING")
+            _tlog(self, "[鉴宝] IO worker 3s 内未退出", "WARNING")
         self._io_thread = None
         self._io_queue = None
 
@@ -3958,7 +3976,7 @@ class TreasureModule(ActivityModule):
         self._observe_stop.set()
         self._observe_thread.join(timeout=3.0)
         if self._observe_thread.is_alive():
-            logger.log("[鉴宝] 观察线程 3s 内未退出", "WARNING")
+            _tlog(self, "[鉴宝] 观察线程 3s 内未退出", "WARNING")
         self._observe_thread = None
 
     def _observe_interval_s(self) -> float | None:
@@ -4444,7 +4462,9 @@ class TreasureModule(ActivityModule):
         budget_deadline：全链墙钟 deadline，逐步 clamp 各步等待（见 _egg_chain_wait）。
         每次点击都带 key，结果统一经 _record_click 落事件与日志（链内点击可观测）。
         """
-        log = logger.log
+        def log(msg: str, level: str = "INFO") -> None:
+            """链内进度行经组包装落卡（与主链同一归属口径）。"""
+            _tlog(self, msg, level)
 
         def _give_up(reason: str, sp: dict[str, tuple] | None) -> None:
             """统一放弃出口：日志 + trace + 离场。
@@ -5062,7 +5082,7 @@ class TreasureModule(ActivityModule):
         self._ocr_wakeup.set()  # 唤醒阻塞在 wait 的 worker 立即退出
         self._ocr_thread.join(timeout=2.0)
         if self._ocr_thread.is_alive():
-            logger.log("[鉴宝] OCR worker 2s 内未退出", "WARNING")
+            _tlog(self, "[鉴宝] OCR worker 2s 内未退出", "WARNING")
         self._ocr_thread = None
 
     def _ocr_worker_loop(self) -> None:

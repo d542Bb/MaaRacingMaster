@@ -161,7 +161,7 @@ class TemplateRecognizer(CustomRecognition):
         guard = p.get("guard") or {}
         if not names:
             if not guard.get("templates"):
-                logger.log(f"[v4] 节点「{argv.node_name}」无 templates 且无 guard，判为识别失败", "ERROR")
+                self._graph._log(f"[v4] 节点「{argv.node_name}」无 templates 且无 guard，判为识别失败", "ERROR")
                 return self.AnalyzeResult(box=None, detail={"error": "无识别依据"})
             names = [strip_ext(n) for n in guard["templates"]]  # point：识别 = guard 模板
         g_rect = guard.get("rect")
@@ -182,8 +182,8 @@ class TemplateRecognizer(CustomRecognition):
                 # 边沿触发：只在进入「未命中」时记一次（常驻图里未被命中的节点
                 # 每帧都会到这里，逐帧打属稳态重复）。命中后清位，便于下次再记。
                 self._miss_nodes.add(name)
-                logger.log(f"[v4] 「{name}」识别未命中（ROI 内最高分 "
-                           f"{score:.3f}，模板 {names}）", "DEBUG")
+                self._graph._log(f"[v4] 「{name}」识别未命中（ROI 内最高分 "
+                                 f"{score:.3f}，模板 {names}）", "DEBUG")
             return self.AnalyzeResult(box=None, detail={"score": round(score, 3)})
         self._miss_nodes.discard(argv.node_name)
 
@@ -197,13 +197,13 @@ class TemplateRecognizer(CustomRecognition):
                 colorspace=p.get("colorspace", "rgb"),
                 threshold=float(guard.get("threshold", 0.75)), roi=g_roi)
             if g_box is None:
-                logger.log(f"[v4] 「{argv.node_name}」主命中但守卫未同帧出现（保险丝）", "DEBUG")
+                self._graph._log(f"[v4] 「{argv.node_name}」主命中但守卫未同帧出现（保险丝）", "DEBUG")
                 return self.AnalyzeResult(box=None, detail={"blocked_by": "guard"})
 
         if p.get("color_assert"):
             ca = p["color_assert"]
             if not color_assert_ok(rgb, box, ca["rect"], ca["hue"]):
-                logger.log(f"[v4] 「{argv.node_name}」命中但色相断言未过", "DEBUG")
+                self._graph._log(f"[v4] 「{argv.node_name}」命中但色相断言未过", "DEBUG")
                 return self.AnalyzeResult(box=None, detail={"blocked_by": "color_assert"})
 
         if p.get("mask_cursor") and self._cursor_pos_provider is not None:
@@ -212,7 +212,7 @@ class TemplateRecognizer(CustomRecognition):
                 cbox = cursor_box_norm(pos[0], pos[1], frame_w=W, frame_h=H)
                 ratio = occlusion_ratio(box, cbox)
                 if ratio > float(p.get("max_occlusion", 0.4)):
-                    logger.log(f"[v4] 「{argv.node_name}」命中框被光标遮挡 {ratio:.0%}，拒绝", "DEBUG")
+                    self._graph._log(f"[v4] 「{argv.node_name}」命中框被光标遮挡 {ratio:.0%}，拒绝", "DEBUG")
                     return self.AnalyzeResult(box=None, detail={"blocked_by": "cursor",
                                                                 "occlusion": round(ratio, 2)})
 
@@ -242,8 +242,8 @@ class ClickAction(CustomAction):
             # 零面积框不是合法识别结果（匹配引擎保证 w/h ≥4），只可能是识别链
             # 断裂（如回调异常时框架仍走动作、rect 保持初值）。此时点击会盲落
             # 屏幕左上角——拒绝执行，节点走 on_error，故障留在日志里。
-            logger.log(f"[v4] 「{argv.node_name}」识别框为空 (rect=({rx},{ry},{rw},{rh}))，"
-                       "拒绝点击——请排查识别链路", "ERROR")
+            self._graph._log(f"[v4] 「{argv.node_name}」识别框为空 (rect=({rx},{ry},{rw},{rh}))，"
+                             "拒绝点击——请排查识别链路", "ERROR")
             return False
         W, H = self._graph.frame_size()
         if W <= 0 or H <= 0:
@@ -252,18 +252,18 @@ class ClickAction(CustomAction):
             self._graph.frame()
             W, H = self._graph.frame_size()
         if W <= 0 or H <= 0:
-            logger.log(f"[跳转图] 节点「{argv.node_name}」拿不到帧尺寸，点击放弃", "WARNING")
+            self._graph._log(f"[跳转图] 节点「{argv.node_name}」拿不到帧尺寸，点击放弃", "WARNING")
             return False
         cx, cy = (rx + rw / 2) / W, (ry + rh / 2) / H
         box_norm = (rw / W, rh / H)
-        logger.log(f"[v4] 「{argv.node_name}」点击 rect=({rx},{ry},{rw},{rh}) "
-                   f"帧 {W}x{H} 归一化=({cx:.3f},{cy:.3f})", "DEBUG")
+        self._graph._log(f"[v4] 「{argv.node_name}」点击 rect=({rx},{ry},{rw},{rh}) "
+                         f"帧 {W}x{H} 归一化=({cx:.3f},{cy:.3f})", "DEBUG")
 
         ok = self._graph.click(cx, cy, box_norm,
                                timeout_s=float(p.get("timeout_s", 20.0)))
         self._graph.ctx.lifecycle.sleep(float(p.get("wait_after_ms", 800)) / 1000.0)
         if not ok:
-            logger.log(f"[跳转图] 节点「{argv.node_name}」点击未到位", "WARNING")
+            self._graph._log(f"[跳转图] 节点「{argv.node_name}」点击未到位", "WARNING")
         return ok
 
 
@@ -305,8 +305,8 @@ class InputAction(CustomAction):
         p = _parse(argv.custom_action_param)
         point, button = p.get("point"), p.get("button")
         if (point is None) == (button is None):
-            logger.log(f"[v4] 「{argv.node_name}」MaaRM_Input 参数非法：point 与 "
-                       f"button 必须且只能给一个（收到 {p!r}）", "ERROR")
+            self._graph._log(f"[v4] 「{argv.node_name}」MaaRM_Input 参数非法：point 与 "
+                             f"button 必须且只能给一个（收到 {p!r}）", "ERROR")
             return False
         ok = (self._run_point(argv, point, p) if point is not None
               else self._run_button(argv, button, p))
@@ -317,14 +317,14 @@ class InputAction(CustomAction):
         try:
             cx, cy = float(point[0]), float(point[1])
         except (TypeError, ValueError, IndexError):
-            logger.log(f"[v4] 「{argv.node_name}」point 须为 [x, y] 两个归一化数，"
-                       f"收到 {point!r}", "ERROR")
+            self._graph._log(f"[v4] 「{argv.node_name}」point 须为 [x, y] 两个归一化数，"
+                             f"收到 {point!r}", "ERROR")
             return False
         if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0):
-            logger.log(f"[v4] 「{argv.node_name}」point 越界 {point!r}（口径 0..1）",
-                       "ERROR")
+            self._graph._log(f"[v4] 「{argv.node_name}」point 越界 {point!r}（口径 0..1）",
+                             "ERROR")
             return False
-        logger.log(f"[v4] 「{argv.node_name}」固定坐标点击 ({cx:.3f},{cy:.3f})", "DEBUG")
+        self._graph._log(f"[v4] 「{argv.node_name}」固定坐标点击 ({cx:.3f},{cy:.3f})", "DEBUG")
         return self._graph.click(cx, cy, None,
                                  timeout_s=float(p.get("timeout_s", 20.0)))
 
@@ -332,35 +332,43 @@ class InputAction(CustomAction):
         key = button.upper() if isinstance(button, str) else ""
         attr = GAMEPAD_BUTTONS.get(key)
         if attr is None:
-            logger.log(f"[v4] 「{argv.node_name}」button={button!r} 不在按钮表里"
-                       f"（可选 {'/'.join(GAMEPAD_BUTTONS)}；LT/RT 是模拟扳机，不按键）",
-                       "ERROR")
+            self._graph._log(f"[v4] 「{argv.node_name}」button={button!r} 不在按钮表里"
+                             f"（可选 {'/'.join(GAMEPAD_BUTTONS)}；LT/RT 是模拟扳机，不按键）",
+                             "ERROR")
             return False
         from maaracing_master.core.vgamepad_lazy import vg
         try:
             btn = getattr(vg.XUSB_BUTTON, attr)   # 懒代理：无驱动机器在这里抛
         except Exception as exc:  # noqa: BLE001 —— 驱动缺失必须是可诊断的失败
-            logger.log(f"[v4] 「{argv.node_name}」按 {key} 放弃：虚拟手柄不可用"
-                       f"（{exc}）→ 需安装 ViGEmBus 驱动", "ERROR")
+            self._graph._log(f"[v4] 「{argv.node_name}」按 {key} 放弃：虚拟手柄不可用"
+                             f"（{exc}）→ 需安装 ViGEmBus 驱动", "ERROR")
             return False
         ok = self._graph.press_gamepad_button(btn, duration=float(p.get("duration", 0.15)))
         if not ok:
-            logger.log(f"[v4] 「{argv.node_name}」按 {key} 未执行（手柄未绑定或仅 "
-                       "gamepad 模式可用）", "WARNING")
+            self._graph._log(f"[v4] 「{argv.node_name}」按 {key} 未执行（手柄未绑定或仅 "
+                             "gamepad 模式可用）", "WARNING")
         return ok
 
 
-def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str) -> bool:
+def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str,
+                          group_id: str | None = None) -> bool:
     """支持互指文件集的 post_pipeline：多条目（目录或单文件）合并临时目录后一次 post。
 
     MaaFW 在 post 时即校验 next/on_error 引用闭合（C++ PipelineChecker）——
     互指条目（global 骨架 ↔ 模块图）分次 post 时先加载者必失败。框架在
     post 时同步解析为内部节点，加载完成即清理临时目录，源文件/目录（MPE
     编辑入口）不受影响。仅一个目录条目时直接 post，无合并开销。
+    group_id 非空时过程日志归入该组（调用方显式捕获的组号）。
     """
+    def _lg(msg: str, level: str = "ERROR") -> None:
+        if group_id is not None:
+            logger.log(msg, level, group_id=group_id)
+        else:
+            logger.log(msg, level)
+
     for d in dirs:
         if not d.exists():
-            logger.log(f"[{tag}] 真源路径不存在: {d}", "ERROR")
+            _lg(f"[{tag}] 真源路径不存在: {d}")
             return False
     if len(dirs) == 1 and dirs[0].is_dir():
         target = dirs[0]
@@ -375,8 +383,8 @@ def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str) -> b
                 for f in files:
                     rel = f.relative_to(base).as_posix()
                     if rel in seen:
-                        logger.log(
-                            f"[{tag}] 真源文件冲突: {rel}（{seen[rel]} 与 {base}）", "ERROR")
+                        _lg(
+                            f"[{tag}] 真源文件冲突: {rel}（{seen[rel]} 与 {base}）")
                         shutil.rmtree(merged_tmp, ignore_errors=True)
                         return False
                     seen[rel] = base
@@ -394,7 +402,7 @@ def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str) -> b
         if merged_dir is not None:
             shutil.rmtree(merged_dir, ignore_errors=True)
     if job.failed:
-        logger.log(f"[{tag}] pipeline 加载失败: {[str(d) for d in dirs]}", "ERROR")
+        _lg(f"[{tag}] pipeline 加载失败: {[str(d) for d in dirs]}")
         return False
     return True
 
@@ -434,6 +442,19 @@ class NavGraph:
         self._stop_requested = False  # 本轮是否已投递停止请求（两处并发触发时去重）
         self._loaded = False
         self._last_frame = None   # 最近一次识别帧（只为动作桥换算框中心提供尺寸）
+        # 本图当前挂靠的业务组号：由插件在开组/收组时同步（派发时刻快照），
+        # core 不自己开组（ADR-0007 决策 2）；None = 无组可挂，日志按跨切面散行。
+        self._log_gid: str | None = None
+
+    def set_log_group(self, group_id: str | None) -> None:
+        """同步本图日志挂靠的业务组号（插件在组开/关时调用，不跨线程读隐式当前组）。"""
+        self._log_gid = group_id
+
+    def _log(self, msg: str, level: str = "INFO") -> None:
+        if self._log_gid is not None:
+            logger.log(msg, level, group_id=self._log_gid)
+        else:
+            logger.log(msg, level)
 
     # ---------- 装配 ----------
 
@@ -455,13 +476,14 @@ class NavGraph:
         """
         if self._loaded:
             return True
-        if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "跳转图"):
+        if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "跳转图",
+                                     group_id=self._log_gid):
             return False
         self._tasker.add_context_sink(PipelineLogger())
         self.ctx.bind_tasker(self._tasker, self._resource)
         self._loaded = True
-        logger.log(f"[跳转图] 已加载 {len(self._pipeline_dirs)} 个图目录、"
-                   f"{len(self.image_dirs)} 个模板目录")
+        self._log(f"[跳转图] 已加载 {len(self._pipeline_dirs)} 个图目录、"
+                  f"{len(self.image_dirs)} 个模板目录")
         return True
 
     # ---------- 桥要用的宿主能力（截图/点击都收口到这里）----------
@@ -511,7 +533,7 @@ class NavGraph:
         if clicker.mode == "gamepad" and not clicker.gamepad_bound:
             # v4 手柄租约只在模块启动时按当时模式绑定；运行中热切到 gamepad
             # 不重绑——不拦会静默 submit False，这里给可诊断的告警。
-            logger.log("[v4] 点击方式已热切为 gamepad 但手柄未绑定：请重启模块生效", "WARNING")
+            self._log("[v4] 点击方式已热切为 gamepad 但手柄未绑定：请重启模块生效", "WARNING")
             return False
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
             # 前台(鼠标)模式不抢前台护栏：游戏不在
@@ -520,8 +542,8 @@ class NavGraph:
             now = time.monotonic()
             if now - self._last_fg_warn >= self.FOREGROUND_WARN_S:
                 self._last_fg_warn = now
-                logger.log("[v4] 游戏窗口非前台，取消本次点击（安全策略：不抢前台；"
-                           "可切后台(手柄)方式或把游戏带到前台）", "WARNING")
+                self._log("[v4] 游戏窗口非前台，取消本次点击（安全策略：不抢前台；"
+                          "可切后台(手柄)方式或把游戏带到前台）", "WARNING")
             return False
         if not clicker.submit_click(cx, cy, box=box_norm):
             return False
@@ -574,7 +596,7 @@ class NavGraph:
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
                 self._ensure_clicker().bind_gamepad(
                     self.ctx.capture, gpad, confirm_button=BUTTON_A)
-            logger.log(f"[跳转图] 起跑「{entry}」")
+            self._log(f"[跳转图] 起跑「{entry}」")
             job = self._tasker.post_task(entry)
             self._job = job  # stop()/shutdown() 要能等到它收摊，不能只留局部变量
             self._stop_requested = False  # 新一轮：允许投递一次停止请求
@@ -587,7 +609,7 @@ class NavGraph:
                     # 紧接着就进模块收尾，若此时框架 worker 仍在收摊，随后销毁
                     # C 句柄会撞上仍在活动的回调（0xC0000005，MaaFramework.dll）。
                     self._stop_framework("run-abort")
-                    logger.log("[跳转图] 收到停止信号，已中断跑图")
+                    self._log("[跳转图] 收到停止信号，已中断跑图")
                     return False
                 time.sleep(delay)
                 delay = min(delay * 2, RUN_POLL_MAX_S)
@@ -596,8 +618,8 @@ class NavGraph:
                 node = self._tasker.get_latest_node(reached)
                 ok = bool(node and node.completed)
                 if not ok:
-                    logger.log(f"[跳转图] 终点确认节点「{reached}」未命中，判为未到位", "WARNING")
-            logger.log(f"[跳转图] 「{entry}」{'完成' if ok else '失败'}")
+                    self._log(f"[跳转图] 终点确认节点「{reached}」未命中，判为未到位", "WARNING")
+            self._log(f"[跳转图] 「{entry}」{'完成' if ok else '失败'}")
             return ok
 
     def request_stop(self) -> None:
@@ -643,9 +665,9 @@ class NavGraph:
         # 请求可能是别的线程投递的（模块停止路径），这里同样要等任务收摊：
         # 销毁 C 句柄的前提是框架 worker 已经退出，与谁发的请求无关。
         if job is not None and not job.done and not _wait_job_settled(job):
-            logger.log(f"[跳转图] 任务句柄超时未结束（来源 {reason}），仍继续收尾", "WARNING")
+            self._log(f"[跳转图] 任务句柄超时未结束（来源 {reason}），仍继续收尾", "WARNING")
         if stop_job is not None and not _wait_job_settled(stop_job):
-            logger.log(f"[跳转图] 停止请求超时未完成（来源 {reason}），仍继续收尾", "WARNING")
+            self._log(f"[跳转图] 停止请求超时未完成（来源 {reason}），仍继续收尾", "WARNING")
 
     def stop(self) -> None:
         """中断在跑的图并等框架收摊（模块 stop 里调用）。幂等。"""
@@ -790,6 +812,10 @@ class NavKitV4:
         self._loaded = False
         self._job = None
 
+    def set_log_group(self, group_id: str | None) -> None:
+        """转发到内部 NavGraph（动作桥日志挂靠同一业务组）。"""
+        self._graph.set_log_group(group_id)
+
     def load(self) -> bool:
         """加载 v4 真源目录并把 Tasker 绑到帧注入控制器。重复调用无副作用。
 
@@ -797,12 +823,13 @@ class NavKitV4:
         """
         if self._loaded:
             return True
-        if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "v4"):
+        if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "v4",
+                                     group_id=self._graph._log_gid):
             return False
         self._tasker.add_context_sink(PipelineLogger())
         self._tasker.bind(self._resource, self._controller)
         self._loaded = True
-        logger.log(f"[v4] 已加载 {len(self._pipeline_dirs)} 个真源目录（帧注入控制器）")
+        self._graph._log(f"[v4] 已加载 {len(self._pipeline_dirs)} 个真源目录（帧注入控制器）")
         return True
 
     def start(self, entry: str) -> bool:
@@ -811,7 +838,7 @@ class NavKitV4:
             return False
         if self._job is not None and not self._job.status.done:
             return True
-        logger.log(f"[v4] 起跑「{entry}」")
+        self._graph._log(f"[v4] 起跑「{entry}」")
         self._job = self._tasker.post_task(entry)
         return True
 
@@ -830,9 +857,9 @@ class NavKitV4:
         # 停止请求完成 ≠ 任务结束：两个句柄都确认，否则后续销毁 C 句柄会撞上
         # 仍在活动的框架 worker（0xC0000005，MaaFramework.dll）。等待带上限。
         if not _wait_job_settled(stop_job):
-            logger.log("[v4] 停止请求超时未完成，仍继续收尾", "WARNING")
+            self._graph._log("[v4] 停止请求超时未完成，仍继续收尾", "WARNING")
         if not _wait_job_settled(self._job):
-            logger.log("[v4] 任务句柄超时未结束，仍继续收尾", "WARNING")
+            self._graph._log("[v4] 任务句柄超时未结束，仍继续收尾", "WARNING")
 
     def shutdown(self) -> None:
         """停止常驻图并显式销毁全部框架句柄（模块 cleanup 里调用）。

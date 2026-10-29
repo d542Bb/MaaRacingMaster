@@ -233,8 +233,8 @@ class PerfSampler:
         missing = self._threads.missing_labels()
         if missing:
             from maaracing_master.core.logger import logger
-            logger.log("[perf] 线程标签声明未兑现（整场没匹配到线程）："
-                       + "、".join(missing), "WARNING")
+            logger.log(f"[perf] 线程标签声明未兑现（整场没匹配到线程）："
+                       f"{'、'.join(missing)}", "WARNING")
         self._threads.reset()
         if self._persist_gap is not None:
             ok = False                      # 缺口没补完，不宣称数据已完整落盘

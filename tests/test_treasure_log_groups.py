@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""treasure 组归属验收锁（契约 §8 第 7 步，A 案 + 裁定边界规则）。
+"""treasure 组归属行为验收（契约 §8 第 7 步，A 案 + 裁定边界规则）。
 
-锁五件事：
+锁三件事：
 1. _tlog 开组期间归当前组，组终态按组内 ERROR/WARNING 自动推导；
 2. logger 无 group()（测试 recorder 桩）时 _open_grp 回退 legacy 锚点行——现网
    行为在桩环境零破坏；
-3. 停止路径显式 incomplete 与 has_error 并存（中断归中断、错误照留痕）；
-4. 结构性锁：module.py / store.py 中 INFO+ 的裸 logger.log 只允许出现在
-   跨切面无组白名单（初始化/绑定/worker 生命周期/落盘失败）——
-   新日志想上 GUI 卡片必须走 _tlog/_open_grp，防止绕过归属机制回潮。
+3. 停止路径显式 incomplete 与 has_error 并存（中断归中断、错误照留痕）。
+
+结构性归属锁（INFO+ 裸日志必须带组或登记）已统一到
+`tests/test_log_attribution.py` + `tests/log_sites.py`，本文件不再保留逐文件白名单。
 """
 from types import SimpleNamespace
 
@@ -16,7 +16,6 @@ import pytest
 
 try:
     import maaracing_master.plugins.treasure.module as tmod
-    import maaracing_master.plugins.treasure.store as tstore
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时整文件跳过
     _OK, _ERR = False, str(exc)
@@ -75,76 +74,3 @@ def test_stop_path_incomplete_keeps_error_flag(tmp_path, monkeypatch):
     tmod._end_grp(m, "incomplete")   # finally 停止路径
     end = [r for r in _recs(lg) if r["event_type"] == "group_end"][-1]
     assert end["outcome"] == "incomplete" and end["has_error"] is True
-
-
-# ---------- 结构性锁：无组白名单 ----------
-# 跨切面日志有意保持无组（裁定规则 4）；除此以外的 INFO+ 行必须走 _tlog/_open_grp。
-_MODULE_UNGROUPED_PREFIXES = (
-    "[鉴宝] policy 感知锚点", "[鉴宝] 窗口连接失败", "游戏窗口不是 16:9",
-    "[鉴宝] 未加载", "[鉴宝] 未加载到动作按钮", "[鉴宝] 未加载任何鉴宝师",
-    "[鉴宝] policies 编译失败", "[鉴宝点击] 手柄绑定失败",
-    "[鉴宝] IO worker", "[鉴宝] 观察线程", "[鉴宝] OCR worker",
-)
-_STORE_UNGROUPED_PREFIXES = (
-    "[鉴宝落盘] SQLite 初始化失败", "[鉴宝落盘] 关闭连接失败", "[鉴宝落盘] 写入失败",
-    "[鉴宝落盘] 领取数含负值", "[鉴宝落盘] 领取蛋数写入失败", "[鉴宝落盘] games 表迁移失败",
-    "[鉴宝落盘] daily_summary 迁移失败", "读取今日看板数据失败",
-)
-
-
-# 机制函数自身合法地直调 logger.log 做无组回退（回退路径就是它们的职责）。
-_MECH_FUNCS = {"_tlog", "_open_grp", "_end_grp", "_mlog", "log_session_summary"}
-
-
-def _info_plus_bare_logger_calls(mod):
-    import ast
-    import pathlib
-    src = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    parents = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[id(child)] = node
-
-    def enclosing_func(node):
-        cur = node
-        while cur is not None:
-            if isinstance(cur, ast.FunctionDef):
-                return cur.name
-            cur = parents.get(id(cur))
-        return None
-
-    out = []
-    for node in ast.walk(tree):
-        if enclosing_func(node) in _MECH_FUNCS:
-            continue
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-           and node.func.attr == "log" and isinstance(node.func.value, ast.Name) \
-           and node.func.value.id == "logger":
-            lvl = "INFO"
-            msg = ""
-            if node.args and isinstance(node.args[0], (ast.JoinedStr, ast.Constant)):
-                a0 = node.args[0]
-                if isinstance(a0, ast.Constant):
-                    msg = str(a0.value)
-                else:
-                    msg = "".join(v.value if isinstance(v, ast.Constant) else "{" for v in a0.values)
-            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-                lvl = node.args[1].value
-            if Logger.LEVELS.get(lvl, 2) >= Logger.LEVELS["INFO"]:
-                out.append((node.lineno, msg))
-    return out
-
-
-@pytest.mark.parametrize("mod,allowed", [
-    pytest.param(tmod, _MODULE_UNGROUPED_PREFIXES, id="module"),
-    pytest.param(tstore, _STORE_UNGROUPED_PREFIXES, id="store"),
-])
-def test_no_bare_info_plus_outside_whitelist(mod, allowed):
-    offenders = []
-    for lineno, msg in _info_plus_bare_logger_calls(mod):
-        if not msg.startswith(allowed):
-            offenders.append((lineno, msg[:40]))
-    assert not offenders, (
-        "INFO+ 裸 logger.log 逃逸出无组白名单（应走 _tlog/_open_grp 归组，"
-        f"或显式加入白名单并说明为何无组）：{offenders}")

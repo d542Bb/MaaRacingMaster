@@ -429,6 +429,11 @@ _MAX_INFLIGHT = 16
 class SidecarService:
     """业务 dispatch 层：线程安全（复用 bridge.py 的 _lock/_worker 语义）。"""
 
+    # 关闭时等模块 worker 收摊的上限（与 logger 的伴随写手排空同阶）。无上限 join
+    # 会把「关不掉的 worker」放大成「关不掉的进程」——超时照常收尾，由 incomplete
+    # 组与降级分项计数留痕。
+    WORKER_JOIN_TIMEOUT_S = 2.0
+
     def __init__(self, protocol_stdout):
         self._out = protocol_stdout
         self._out_lock = threading.Lock()
@@ -1221,7 +1226,7 @@ class SidecarService:
                     else:
                         _delete_protocol_shell_tree(opt["hive"], path)
             except OSError as exc:
-                logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+                logger.log(f"[sidecar] 协议优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
                 return (False, None, f"写入注册表失败: {exc}")
             if value == 0:
                 confirmed = all(_protocol_command_exists(opt["hive"], p) for p in opt["paths"])
@@ -1245,7 +1250,7 @@ class SidecarService:
                             except FileNotFoundError:
                                 pass  # 已不存在 = 目标状态，幂等
             except OSError as exc:
-                logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+                logger.log(f"[sidecar] 标记优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
                 return (False, None, f"写入注册表失败: {exc}")
             if value == 0:
                 confirmed = all(
@@ -1258,7 +1263,7 @@ class SidecarService:
             if not confirmed:
                 return (False, None, f"写入后回读异常（{opt['value_name']} 未达目标状态）")
             state = "已优化" if value == opt["optimized"] else "已恢复系统默认"
-            logger.log(f"注册表优化项 {opt_id} {state}（{opt['value_name']}={value}）", "INFO")
+            logger.log(f"注册表优化项 {opt_id} {state}（标记 {opt['value_name']}={value}）", "INFO")
             return (True, {"id": opt_id, "value": value, "optimized": value == opt["optimized"]}, None)
         # dword 型：CreateKey 补建 + 写值 + 回读确认
         try:
@@ -1266,7 +1271,7 @@ class SidecarService:
                 winreg.SetValueEx(key, opt["value_name"], 0, winreg.REG_DWORD, value)
                 confirm, _vtype = winreg.QueryValueEx(key, opt["value_name"])
         except OSError as exc:
-            logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+            logger.log(f"[sidecar] 数值优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
             if opt["needs_admin"] and getattr(exc, "winerror", None) == 5:
                 return (False, None, "该项位于 HKLM，需要管理员权限（请以管理员身份运行程序后重试）")
             return (False, None, f"写入注册表失败: {exc}")
@@ -1575,12 +1580,25 @@ class SidecarService:
         return (True, {"boost_priority": enabled}, None)
 
     def close(self, params):
-        """shell 关闭前的业务清理：置 _closed + 停止 worker + 关写盘句柄。"""
+        """shell 关闭前的业务清理：置 _closed + 停止 worker + 有界排空 + 关写盘句柄。
+
+        关闭顺序（契约 N8）：拒绝新任务（`_closed=True`，start 入口据此拒绝）→
+        停止信号 → 有界 join 模块 worker（其 finally 会停掉模块自己的常驻 worker
+        并收尾业务组）→ 最后关 logger。超时不阻塞退出，但必须在关日志器前
+        留下「worker 未退出」的明确告警——否则只剩 incomplete 组，分不清是
+        正常中断还是关闭卡死。
+        """
         with self._lock:
             self._closed = True
             worker = self._worker
         if worker is not None and worker.is_alive():
             self._controller.stop()
+            if worker is not threading.current_thread():
+                worker.join(timeout=self.WORKER_JOIN_TIMEOUT_S)
+                if worker.is_alive():
+                    logger.log(
+                        f"[sidecar] 关闭时模块 worker 在 {self.WORKER_JOIN_TIMEOUT_S:.1f}s "
+                        "内未退出，按有界排空继续收尾（未收尾组记 incomplete）", "WARNING")
         logger.log("sidecar 业务已停止", "DEBUG")
         logger.close()  # 关写盘句柄，flush 尾部（进程退出路径）
         return (True, None, None)

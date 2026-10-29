@@ -98,7 +98,7 @@ def env(monkeypatch):
     c._ctx = None
     c._wgc_capture = None
     c.controller = None
-    c._destroy_gpad = lambda: None
+    c._destroy_gpad = lambda grp=None: None
     c._stop_wgc_capture = lambda: None
     c._start_wgc_capture = lambda grp=None: rec.log(
         "WGC 中心采集器已就绪（全模块截图统一走缓存）", "INFO",

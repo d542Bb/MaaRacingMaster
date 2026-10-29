@@ -471,7 +471,8 @@ class _StraightPadLease:
 
 def _hud_stub(created: list):
     class _Hud:
-        def __init__(self, out_dir, frame_source=None, phase=0, round_no=0):
+        def __init__(self, out_dir, frame_source=None, phase=0, round_no=0,
+                     group_id=None):
             created.append(Path(out_dir))
             self.running = False
 

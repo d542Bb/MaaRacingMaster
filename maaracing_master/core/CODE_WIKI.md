@@ -179,7 +179,9 @@
 - **双投影**：文件=全事件流，组以 GH 风格 `::group:: 标题` / `::endgroup:: outcome` 标记（`%`→`%25`、`:`→`%3A`、换行→`%0A`）；GUI 文本行=仅 `log` 事件（`fetch_logs` 过渡期同返 `lines` 与 `events`，含 `next_seq/truncated/gap/schema_version/session_id`）。
 - **fields 先净化后入库**：JSON 标量、≤16 键 / 键 32 字符 / 串 200 字符、NaN/Inf→None、敏感键（password/token/secret/api_?key/cookie/authorization）剔除；违规只进 `internal_counters` 不记日志（防递归）、不向业务线程抛异常。
 - **channel 是写闸不是组归属**：组事件豁免级别门（结构完整性 > 体量控制，防无头组）；被门掉的行不参与终态推导。
-- **插件用法**：模块级 `_tlog/_open_grp/_end_grp` 三函数 + 类上薄包装 + `_log_grp` 句柄槽（照抄 treasure 形态）；跨切面日志有意保持无组。结构锁：`tests/test_treasure_log_groups.py`、`tests/test_speedrush_log_groups.py`（裸 INFO 注入必红）。
+- **插件用法**：模块级 `_tlog/_open_grp/_end_grp` 三函数 + 类上薄包装 + `_log_grp` 句柄槽（照抄 treasure 形态）；`_open_grp/_end_grp` 同时把当前组号同步给 nav 图动作桥与常驻图（派发时刻快照），worker 不读线程局部当前组。跨切面日志（启动前提 / worker 生命周期 / 落盘失败）保持无组，但**必须登记**。
+- **归属强制（ADR-0012）**：全仓 INFO+ 的直接日志调用要么显式带 `group_id`，要么命中 [`tests/log_sites.py`](../../tests/log_sites.py) 的站点登记表；登记单元是「文件 + 限定函数 + 消息模板 + 级别」，逐条带理由与内容类别（`phase` / `state` / `cross`），`group_id=None` 显式传参判红。`(级别, 模板)` 在登记表内唯一，作为运行时「级别 + 消息模板」身份的对应前提。机检：`tests/test_log_attribution.py`（含别名 / 循环体 / 新增目录的注入矩阵）。
+- **降级分项**：未知或已收尾组号的 `log()` / `end_group()` 仍降级为无组事件并进聚合计数；同时按调用点分项进 `degraded_sites`（跳过 `WRAPPER_FUNCS` 包装器帧，落到首个业务调用点；跳不出时回落「包装器 + 消息前缀」）。只在低频错误路径做帧捕获，热路径零增量。`sidecar.close()` 关闭序：拒绝新任务 → 停止信号 → 有界 join 模块 worker（超时复查仍存活即写 WARNING）→ 关 logger。
 
 ***
 

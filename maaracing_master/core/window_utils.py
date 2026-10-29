@@ -382,12 +382,20 @@ def ensure_window_restored(hwnd: int) -> bool:
         return False
 
 
-def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720) -> bool:
+def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720,
+                            *, group_id: str | None = None) -> bool:
     """把游戏窗口客户区调整为 1280×720（720p），保持左上角位置不变。等幂：已是目标尺寸则跳过。
 
     各模块启动（connect）前统一调用，保证截图帧 / 模板 / ROI 均落在 720p 客户区，
     避免多尺寸适配前的识别错位。返回是否成功；窗口无效或已是最佳尺寸同样视为成功返回 True。
+    group_id 非空时过程日志归入该组（调用方显式捕获的组号）。
     """
+    def _lg(msg: str, level: str = "INFO") -> None:
+        if group_id is not None:
+            logger.log(msg, level, group_id=group_id)
+        else:
+            logger.log(msg, level)
+
     size = window_client_size(hwnd)
     if size is not None and size[0] == client_w and size[1] == client_h:
         return True
@@ -409,10 +417,10 @@ def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | _SWP_FRAMECHANGED,
         ))
         if ok:
-            logger.log(f"[坐标] 已将游戏窗口客户区调整为 {client_w}x{client_h}（720p）")
+            _lg(f"[坐标] 已将游戏窗口客户区调整为 {client_w}x{client_h}（720p）")
         return ok
     except Exception:
-        logger.log("[坐标] 调整窗口尺寸失败", "WARNING")
+        _lg("[坐标] 调整窗口尺寸失败", "WARNING")
         return False
 
 
