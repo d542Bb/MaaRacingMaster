@@ -72,13 +72,21 @@ def stage_metrics(token: str, phase: int, rows: list[dict],
         if prev is not None:
             jit.append(abs(cur - prev))
         prev = cur
-    score = None if not summary else summary.get("score")
+    reads = [r["hud_score"] for r in rows if r.get("hud_score") is not None]
+    # 末次读数会被结算/弹窗污染：用最后 20 个有效读数的中位做稳健值，
+    # 同时保留末值用于对账（差值大时打标记）。
+    score = (st.median(reads[-20:]) if reads
+             else (None if not summary else summary.get("score")))
+    score_last = reads[-1] if reads else score
     dur = None if not summary else summary.get("dur_s")
     spm = (score / (dur / 60.0)
            if score is not None and dur and dur > 0 else None)
+    jump_pct = (None if not score or score_last is None
+                else 100.0 * (score_last - score) / score)
     return {
         "token": token, "phase": phase, "ticks": len(rows),
-        "score": score, "dur_s": dur, "score_per_min": spm,
+        "score": score, "score_last": score_last, "jump_pct": jump_pct,
+        "dur_s": dur, "score_per_min": spm,
         "dt_p50": quantile(dt, 0.5), "dt_p95": quantile(dt, 0.95),
         "plan_n": len(plans),
         "plan_invalid_pct": 100.0 * len(inv) / len(plans) if plans else None,
@@ -180,13 +188,15 @@ def main() -> int:
                       f"汇总 {sm.get('ticks')} 拍")
             out.append(stage_metrics(token, phase, srows, sm))
     print("\n逐阶段：")
-    print("  token/stage  score   dur_s  score/min  dt_p95  plan_inv%  "
-          "cons_seg  steer_jit")
+    print("  token/stage  score  dur_s  score/min  dt_p95  plan_inv%  "
+          "cons_seg  steer_jit  末次读数差")
     for m in out:
         print(f"  {m['token']}/{m['phase']:<2} {str(m['score']):>6} "
               f"{_fmt(m['dur_s'], 1):>6} {_fmt(m['score_per_min'], 1):>9} "
               f"{_fmt(m['dt_p95'], 3):>7} {_fmt(m['plan_invalid_pct'], 1):>9} "
-              f"{m['conserve_segments']:>8} {_fmt(m['steer_jit_p95'], 4):>9}")
+              f"{m['conserve_segments']:>8} {_fmt(m['steer_jit_p95'], 4):>9}"
+              f"  {_fmt(m['jump_pct'], 1):>6}%"
+              + (" !" if (m["jump_pct"] or 0) > 5 else ""))
     p2 = [m for m in out if m["phase"] == 2]
     p1 = [m for m in out if m["phase"] == 1]
     for name, group in (("阶段 2（主判据）", p2), ("阶段 1（只报不判）", p1)):
