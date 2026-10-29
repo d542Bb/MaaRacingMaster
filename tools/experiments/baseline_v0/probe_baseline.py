@@ -87,7 +87,7 @@ def stage_metrics(token: str, phase: int, rows: list[dict],
     }
 
 
-def _load(root: Path, token: str) -> tuple[list[dict], dict[int, dict]]:
+def _load(root: Path, token: str) -> tuple[list[dict], list[dict]]:
     base = root / token / "trace"
     rows = []
     tp = base / "speedrush.jsonl"
@@ -99,7 +99,7 @@ def _load(root: Path, token: str) -> tuple[list[dict], dict[int, dict]]:
                 continue
             if r.get("type") is None:
                 rows.append(r)
-    sums: dict[int, dict] = {}
+    sums: list[dict] = []
     sp = base / "speedrush_summary.jsonl"
     if sp.is_file():
         for line in sp.read_text(encoding="utf-8").splitlines():
@@ -107,14 +107,26 @@ def _load(root: Path, token: str) -> tuple[list[dict], dict[int, dict]]:
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            sums[int(r.get("phase") or 0)] = r     # 同阶段多次：取最后一次
+            sums.append(r)
     return rows, sums
 
 
-def _by_stage(rows: list[dict]) -> dict[int, list[dict]]:
-    out: dict[int, list[dict]] = {}
+def _segments(rows: list[dict]) -> list[list[dict]]:
+    """按「阶段号变化或 >2s 断档」切分；同一会话可能有多轮，阶段号会复用。"""
+    out: list[list[dict]] = []
+    cur: list[dict] = []
+    prev = None
     for r in rows:
-        out.setdefault(int(r.get("stage_id") or 0), []).append(r)
+        gap = (None if prev is None
+               else (r.get("ts_ns", 0) - prev.get("ts_ns", 0)) / 1e9)
+        if cur and (r.get("stage_id") != prev.get("stage_id")
+                    or (gap is not None and gap > 2.0)):
+            out.append(cur)
+            cur = []
+        cur.append(r)
+        prev = r
+    if cur:
+        out.append(cur)
     return out
 
 
@@ -155,10 +167,18 @@ def main() -> int:
     out = []
     for token in tokens:
         rows, sums = _load(root, token)
-        stages = _by_stage(rows)
-        for stage, srows in sorted(stages.items()):
-            m = stage_metrics(token, stage, srows, sums.get(stage))
-            out.append(m)
+        blocks = _segments(rows)
+        if len(blocks) != len(sums):
+            print(f"  [warn] {token}: 切出 {len(blocks)} 段、局汇总 {len(sums)} 条，"
+                  f"按顺序配对")
+        for i, srows in enumerate(blocks):
+            sm = sums[i] if i < len(sums) else None
+            phase = (int(sm.get("phase") or 0) if sm else
+                     int(srows[0].get("stage_id") or 0))
+            if sm and int(sm.get("ticks") or 0) != len(srows):
+                print(f"  [warn] {token} 第 {i + 1} 段：trace {len(srows)} 拍、"
+                      f"汇总 {sm.get('ticks')} 拍")
+            out.append(stage_metrics(token, phase, srows, sm))
     print("\n逐阶段：")
     print("  token/stage  score   dur_s  score/min  dt_p95  plan_inv%  "
           "cons_seg  steer_jit")
