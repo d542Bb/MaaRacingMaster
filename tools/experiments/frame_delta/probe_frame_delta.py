@@ -19,6 +19,44 @@
 6. **线观测只作辅助**：`lane_fuse.trusted` 且 `sm` 非空时比较
    `|road-sm|` 与 `|exec-sm|`；线也参与 executed 的融合，不是独立裁判。
 
+## 映射核验口径（重基前后参考系，frame_delta/1 第二批）
+
+重基把 `executed` 一步改到 `road_offset`。要判断「这次跳变是参考系重表达
+还是物理横移」，必须把两样东西分开看：
+
+1. **尺子有没有动**：`Δro = ro(i) − ro(i−1)`。尺子（路心观测）自己没动
+   （|Δro| ≤ 0.4 道，即供数链自己的跳变门容限）而 executed 跳超半道，说明
+   是**状态追平**，参考系没换，道号不变。换纪触发 ① 的场景分带中心按下一拍
+   比较，表里 `Δc0 = c0(i+1) − c0(i)`。
+2. **物理动没动**：用**自车系原始观测**做证人——`lane_obs.lines[].L`（线的
+   横向偏移，不挂在深度锚点上）与 `dgeo_left/right`（深度缘，原点=车）。
+   线观测约 10Hz，两拍间可含 ~0.2s 真实横移，所以绝对上限放到 0.35 道；
+   更关键的是比例：证人位移不到尺子位移的 60% 即记「不是车动的」。跨拍按
+   同色同侧 + `L` 差最小配对，配不上记无证人。
+3. **新中心是否被证人复核**：同拍 `lane_obs.x`（锚定横位，量化 ±0.5 道）
+   或深度缘中心（双侧齐）与 `post` 的差。锚定值不是独立真值，只作弱复核。
+
+据此给每次重基一个映射结论（只定性、不判控制对错）：
+
+- `恒等（参考系未动）`：尺子没动而 executed 跳超半道 → 状态追平，旧道号
+  仍指同一条物理车道，无需映射。物理证人 + 同拍复核两项齐全记「双证」，
+  缺一项记「单证」，两项都缺记「无证」——只说明证据量；线值与深度中心同源，
+  双证也不等于「新中心是绝对正确的」。
+- `无换纪`：`|Δexec| ≤ 0.5`，换纪门本就不会动。
+- `平移-确认`：尺子动了（|Δro| ≥ 0.5）+ 物理证人无位移 + Δro 落在整数道
+  ±0.25 + 新值被复核 → 同一物理车道在新参考系下为 `ref + round(Δro)`；
+  同时报平移残差（Δro 与整数道的差）。
+- `平移-未确认`：尺子动了，但位移非整数道、证人缺失或与 Δro 矛盾 → 不能
+  认定旧目标等价于新编号下的哪一条道。
+- `感知跳变-无法判定`：证人位移与尺子位移同量级——一拍内不可能有这种
+  物理横移，两路一起跳，分不清车动还是感知跳。
+- `陈旧可疑`：尺子动且新源是保持/记忆，证人位移与 Δro 明显不符 → 新中心
+  本身可疑。
+
+「原换纪门是否清空了仍有效的承诺」只回答**机制问题**：尺子没动的子集里，
+下一拍是否 `ep_up + vd=epoch_reset`，旧 `ref` 是否仍在下一拍候选道表里，
+以及旧目标相对车是否翻到另一侧（两端都离道 >0.3 道才算翻侧）。
+
 ## 输出
 
 - 覆盖表：每局 tick / 有帧差 / 大差 / 窗口 / 未生成计划 / 未知帧差。
@@ -26,7 +64,10 @@
   首拍数、窗口主导数、窗口长度。
 - 代价表：按窗口首拍来源分账——计划否决、并线中、10 拍内并线结局、目标变化、
   换道请求、线仲裁、窗口前是否紧跟来源切换/换档/重基/换纪。
-- 自测：`--selftest`（窗口合并、未知拍断开、来源分类、目标变化）。
+- 并线期重基映射核验：逐次给出 Δexec/Δro/Δc0、物理证人、新值复核、证据
+  等级与映射结论（恒等 / 平移-确认 / 平移-未确认 / 陈旧可疑 / 无换纪），
+  以及换纪门实际触发与旧目标道是否仍在候选表。
+- 自测：`--selftest`（窗口合并、未知拍断开、来源分类、目标变化、映射结论）。
 """
 
 from __future__ import annotations
@@ -106,9 +147,14 @@ def tick_info(r: dict, hold_m: float) -> dict:
     rt = r.get("route") or {}
     lf = r.get("lane_fuse") or {}
     dbg = r.get("sel_dbg") or {}
+    lo = r.get("lane_obs") or {}
     src = r.get("ro_source") or "none"
     new = bool(r.get("dgeo_new"))
     hold = bool(r.get("ro_hold"))
+    co = r.get("coarse") or {}
+    cand = None if not co.get("cand") else [
+        (float(c[0]), c[3]) for c in co["cand"]
+        if isinstance(c, (list, tuple)) and len(c) >= 4]
     return {
         "fid": r.get("fid"),
         "stage": r.get("stage_id"),
@@ -121,12 +167,20 @@ def tick_info(r: dict, hold_m: float) -> dict:
         "new": new,
         "hold": hold,
         "line": (lf.get("sm") if lf.get("trusted") else None),
+        "line_x": lo.get("x"),
+        "line_state": lo.get("state"),
+        "lines": [(c.get("color"), c.get("side"), c.get("L"), c.get("n"))
+                  for c in (lo.get("lines") or [])],
+        "w": r.get("ro_w"),
+        "edge": r.get("ro_edge"),
+        "cand": cand,
         "road": r.get("road_offset"),
         "exec": r.get("executed_lane"),
         "ph": rt.get("ph"),
         "vd": rt.get("vd"),
         "why": rt.get("why"),
         "target": dbg.get("target"),
+        "c0": dbg.get("c0"),
         "req": dbg.get("req"),
         "layer": r.get("sel_layer"),
         "ref": rt.get("ref"),
@@ -302,6 +356,169 @@ def grade_rebase(ev: dict) -> tuple[str, str]:
     return "C 无法判定", "保持但冻结/偏离不足"
 
 
+# ---------- 重基坐标映射核验 ----------
+
+RULER_STABLE_LANE = 0.4     # 供数链 JUMP_TOL_LANE：尺子自己的跳变门
+PHYS_MOVE_MAX_LANE = 0.35   # 线观测 ~10Hz：两拍间可含 ~0.2s 真实横移
+PHYS_EXPLAIN_FRAC = 0.6     # 证人位移达到尺子位移的此比例 = 由运动解释
+LINE_REVIEW_LANE = 0.5      # 锚定线值量化容限
+SHIFT_INT_TOL = 0.25        # 平移量离整数道的容限
+WITNESS_MATCH_LANE = 0.6    # 同一条线跨拍配对的最大位移
+
+
+def _match_line(a: dict, b: dict):
+    """跨拍配同一条线：同色同侧、L 差 ≤ 0.6；多条取最老（n 最大）。
+
+    返回 (color, side, dL, n_pre, n_now)；配不上 None。L 是自车系物理量，
+    不随深度锚点重新编号。"""
+    best = None
+    for c0, s0, l0, _n0 in a.get("lines") or []:
+        if l0 is None:
+            continue
+        for c1, s1, l1, n1 in b.get("lines") or []:
+            if l1 is None or c0 != c1 or s0 != s1:
+                continue
+            d = float(l1) - float(l0)
+            if abs(d) > WITNESS_MATCH_LANE:
+                continue
+            cand = (int(n1 or 0), c0, s0, d, _n0, n1)
+            if best is None or cand[0] > best[0]:
+                best = cand
+    return None if best is None else best[1:]
+
+
+def _edge_move(a: dict, b: dict) -> list[tuple[str, float]]:
+    """深度缘跨拍位移（同侧字段配对）。"""
+    out = []
+    for k in ("left", "right"):
+        x, y = a.get(k), b.get(k)
+        if x is not None and y is not None:
+            out.append((k, float(y) - float(x)))
+    return out
+
+
+def _phys_move(a: dict, b: dict) -> tuple[float | None, list[str]]:
+    """物理横移证人：正=自车向右。线/缘都在自车系，右移 → 相对读数减小。"""
+    vals, srcs = [], []
+    m = _match_line(a, b)
+    if m is not None:
+        vals.append(-m[2])
+        srcs.append("line")
+    edges = _edge_move(a, b)
+    if edges:
+        vals.append(-sum(d for _, d in edges) / len(edges))
+        srcs.append("edge" + str(len(edges)))
+    return (sum(vals) / len(vals) if vals else None), srcs
+
+
+def mapping_event(ticks: list[dict], i: int) -> dict:
+    """一次重基的参考系映射核验（只读，结论分级见模块 docstring）。"""
+    t = ticks[i]
+    a = ticks[i - 1] if i > 0 else {}
+    nxt = ticks[i + 1] if i + 1 < len(ticks) else None
+    pre, post = t["pre_exec"], t["exec"]
+    dx = None if pre is None or post is None else float(post) - float(pre)
+    ro_pre, ro_post = a.get("road"), t["road"]
+    d_ro = (None if ro_pre is None or ro_post is None
+            else float(ro_post) - float(ro_pre))
+    move, msrc = _phys_move(a, t)
+    line_x = t.get("line_x")
+    line_gap = (None if line_x is None or post is None
+                else abs(float(post) - float(line_x)))
+    edge = t.get("edge")
+    edge_gap = (None if edge is None or post is None
+                else abs(float(post) - float(edge)))
+    w_pre, w_post = a.get("w"), t.get("w")
+    d_w = (None if w_pre is None or w_post is None
+           else float(w_post) - float(w_pre))
+    c0_now = t.get("c0")
+    c0_next = nxt.get("c0") if nxt is not None else None
+    # 换纪在下一拍比较 c0：触发 ① 的输入是 c0(i+1) − c0(i)
+    d_c0 = (None if c0_now is None or c0_next is None
+            else float(c0_next) - float(c0_now))
+    ref = t.get("ref")
+    dist_pre = (None if ref is None or ro_pre is None
+                else float(ref) - float(ro_pre))
+    dist_post = (None if ref is None or ro_post is None
+                 else float(ref) - float(ro_post))
+    # 旧目标相对车的位置是否翻到另一侧（两端都离道 >0.3 才算；中间算已到达）
+    side_flip = (dist_pre is not None and dist_post is not None
+                 and abs(dist_pre) >= 0.3 and abs(dist_post) >= 0.3
+                 and (dist_pre > 0) != (dist_post > 0))
+    if d_ro is None:
+        ruler = "unknown"
+    elif abs(d_ro) <= RULER_STABLE_LANE:
+        ruler = "stable"
+    else:
+        ruler = "moved"
+    big = dx is not None and abs(dx) > 0.5
+    explained = (move is not None and d_ro is not None
+                 and abs(move) >= PHYS_EXPLAIN_FRAC * abs(d_ro))
+    phys_quiet = (move is not None and abs(move) <= PHYS_MOVE_MAX_LANE
+                  and not explained)
+    reviewed = ((line_gap is not None and line_gap <= LINE_REVIEW_LANE)
+                or (edge_gap is not None and edge_gap <= 0.35))
+    mapped = None
+    resid = None
+    if ruler == "stable":
+        if big:
+            verdict = "恒等（参考系未动）"
+        else:
+            verdict = "无换纪"
+        mapped = ref
+    elif ruler == "moved":
+        resid = float(d_ro) - round(float(d_ro))
+        integer = abs(resid) <= SHIFT_INT_TOL
+        if t["hold"] or t["src"] in ("memory", "wall_occl"):
+            verdict = "陈旧可疑"
+        elif phys_quiet and reviewed and integer:
+            verdict = "平移-确认"
+            mapped = None if ref is None else float(ref) + round(float(d_ro))
+        elif explained:
+            verdict = "感知跳变-无法判定"
+        else:
+            verdict = "平移-未确认"
+    else:
+        verdict = "无法判定"
+    ep_up = bool(nxt is not None and nxt.get("ep") is not None
+                 and t.get("ep") is not None and nxt["ep"] > t["ep"])
+    remerge = None
+    for j in range(i + 1, min(len(ticks), i + 11)):
+        if ticks[j].get("vd") == "merge_start":
+            remerge = ticks[j].get("ref")
+            break
+    ref_in_cand = None
+    if ref is not None and nxt is not None and nxt.get("cand"):
+        ref_in_cand = any(abs(float(k) - float(ref)) < 0.25
+                          for k, _ in nxt["cand"])
+    mapped_in_cand = None
+    if mapped is not None and nxt is not None and nxt.get("cand"):
+        mapped_in_cand = any(abs(float(k) - float(mapped)) < 0.25
+                             for k, _ in nxt["cand"])
+    # 证据量：物理证人 + 同拍线/缘复核；「双证」≠ 真值已证（线值与深度中心同源）
+    evidence = ("双证" if move is not None and reviewed
+                else "单证" if move is not None or reviewed else "无证")
+    return {
+        "fid": t["fid"], "kind": t["rebase"], "ref": ref,
+        "pre": pre, "post": post, "dx": dx,
+        "ro_pre": ro_pre, "ro_post": ro_post, "d_ro": d_ro,
+        "d_c0": d_c0,
+        "dist_pre": dist_pre, "dist_post": dist_post,
+        "side_flip": side_flip,
+        "src_pre": a.get("src"), "src": t["src"],
+        "new": t["new"], "hold": t["hold"],
+        "move": move, "move_src": "+".join(msrc) or None,
+        "line_x": line_x, "line_gap": line_gap,
+        "edge": edge, "edge_gap": edge_gap,
+        "d_w": d_w, "ruler": ruler, "evidence": evidence,
+        "verdict": verdict, "mapped": mapped, "resid": resid,
+        "ep_up": ep_up, "nxt_vd": (nxt.get("vd") if nxt else None),
+        "nxt_ref": (nxt.get("ref") if nxt else None),
+        "ref_in_cand": ref_in_cand, "mapped_in_cand": mapped_in_cand,
+        "remerge": remerge,
+    }
+
+
 def summarize_run(run: str, rows: list[dict], hold_m: float) -> dict:
     ticks = [tick_info(r, hold_m) for r in rows]
     windows = build_windows(ticks)
@@ -398,6 +615,7 @@ def summarize_run(run: str, rows: list[dict], hold_m: float) -> dict:
                                     and abs(delta) > 0.5 and ep_up
                                     and vd_next == "epoch_reset")
                        else "other" if ep_up else "none")
+        ev["map"] = mapping_event(ticks, i) if t["ph"] == "merging" else None
         rebases.append(ev)
     pairs = list(zip(ticks, ticks[1:]))
     base_src = sum(1 for a, b in pairs if a["src"] != b["src"])
@@ -504,6 +722,82 @@ def cost_table(runs: list[dict]) -> tuple[list[dict], dict]:
 
 def _pct(x: float | None) -> str:
     return "-" if x is None else f"{100 * x:.0f}%"
+
+
+def _num(x, nd: int = 2) -> str:
+    return "-" if x is None else f"{float(x):+.{nd}f}"
+
+
+def print_mapping(runs: list[dict]) -> None:
+    """并线期重基的参考系映射核验表与聚合。"""
+    mrows = [(run["run"], e["map"]) for run in runs
+             for e in run["rebases"] if e.get("map")]
+    print("\n### 并线期重基：坐标映射核验\n")
+    print(f"- 并线期重基 {len(mrows)} 次（重基拍 route.ph=merging）。"
+          "「尺子」= road_offset 单拍变化：stable=|Δro|≤0.4（供数链跳变门容限）、"
+          "moved=尺子自己动了。")
+    print("\n| 局 | fid | 类型 | ref | Δexec | Δro | Δc0 | 尺子 | 物理证人 | "
+          "复核gap | 目标距离 pre→post | 证据 | 结论 | 映射道 | 下拍换纪/ref | "
+          "旧道在候选 | 10拍内并线 |")
+    print("|---|---:|---|---:|---:|---:|---:|---|---|---:|---|---|---|---:|---|---|---|")
+    for rn, m in mrows:
+        ref_s = "-" if m["ref"] is None else f"{m['ref']:g}"
+        src = m["move_src"] or "-"
+        gap = m["line_gap"] if m["line_gap"] is not None else m["edge_gap"]
+        gap_s = "-" if gap is None else f"{gap:.2f}"
+        dp = "-" if m["dist_pre"] is None else f"{m['dist_pre']:+.2f}"
+        dpo = "-" if m["dist_post"] is None else f"{m['dist_post']:+.2f}"
+        map_s = "-" if m["mapped"] is None else f"{m['mapped']:g}"
+        nref = "-" if m["nxt_ref"] is None else f"{m['nxt_ref']:g}"
+        nxt_s = f"{'Y' if m['ep_up'] else '-'}/{nref}"
+        inc = ("-" if m["ref_in_cand"] is None
+               else "Y" if m["ref_in_cand"] else "N")
+        print(f"| {rn} | {m['fid']} | {m['kind']} | {ref_s} | "
+              f"{_num(m['dx'])} | {_num(m['d_ro'])} | {_num(m['d_c0'])} | "
+              f"{m['ruler']} | {_num(m['move'])} ({src}) | {gap_s} | "
+              f"{dp}→{dpo} | {m['evidence']} | {m['verdict']} | {map_s} | "
+              f"{nxt_s} | {inc} | "
+              f"{m['remerge'] if m['remerge'] is not None else '-'} |")
+    rc = Counter(m["ruler"] for _, m in mrows)
+    vc = Counter(m["verdict"] for _, m in mrows)
+    fired = [m for _, m in mrows
+             if m["ep_up"] and m["nxt_vd"] == "epoch_reset"]
+    c0_fired = [m for m in fired
+                if m["d_c0"] is not None and abs(m["d_c0"]) > 0.5]
+    still = [m for m in fired
+             if m["verdict"].startswith("恒等") and m["ref_in_cand"]]
+    shift_ok = [m for _, m in mrows if m["verdict"] == "平移-确认"]
+    print(f"\n- 尺子：stable {rc.get('stable', 0)}、moved {rc.get('moved', 0)}、"
+          f"unknown {rc.get('unknown', 0)}。")
+    print("- 映射结论：" + "，".join(f"{k} {v}" for k, v in
+                                     sorted(vc.items(), key=lambda kv: -kv[1])))
+    print(f"- 换纪门实际触发 {len(fired)} 次；其中 c0（场景尺子，①）自己跳超"
+          f"半道 {len(c0_fired)} 次——其余全是 executed 单跳（②）触发的。")
+    print(f"- 触发里结论为恒等（参考系未动、①也没跳）且旧 ref 仍在下一拍候选"
+          f"道表 {len(still)} 次——这些清空的是**参考系没变、旧目标道仍存在**"
+          f"的承诺。")
+    flips = [m for m in still if m["side_flip"]]
+    print(f"- 这 {len(still)} 次里，旧目标相对车的位置翻到另一侧 {len(flips)} 次"
+          f"（两端都离道 >0.3 道才计）。")
+    if shift_ok:
+        print("- 平移-确认子集（旧道号在新参考系 = ref + round(Δro)）：")
+        for m in shift_ok:
+            lgap = ("-" if m["line_gap"] is None else f"{m['line_gap']:.2f}")
+            print(f"  - fid {m['fid']}：ref {m['ref']:g} → "
+                  f"{m['mapped']:g}（平移残差 {_num(m['resid'])} 道），"
+                  f"物理证人 {_num(m['move'])} 道，线复核 gap {lgap}，"
+                  f"映射道在下拍候选表 "
+                  f"{'是' if m['mapped_in_cand'] else '否'}，"
+                  f"下拍 ref {m['nxt_ref']}，10 拍内并线 {m['remerge']}。")
+    else:
+        print("- 平移-确认子集：0 次（尺子动了的事件里没有一次同时满足"
+              "「物理证人无位移 + 平移量为整数道 + 新值被复核」）。")
+    re_merge = [(rn, m) for rn, m in mrows if m["remerge"] is not None]
+    same = sum(1 for _, m in re_merge
+               if m["remerge"] is not None and m["ref"] is not None
+               and abs(float(m["remerge"]) - float(m["ref"])) < 0.25)
+    print(f"- 10 拍内重新并线 {len(re_merge)} 次，其中去向仍是旧 ref {same} 次。")
+
 
 
 def print_report(runs: list[dict], hold_m: float, groups: dict[str, str]) -> None:
@@ -641,6 +935,7 @@ def print_report(runs: list[dict], hold_m: float, groups: dict[str, str]) -> Non
     new_merge = sum(1 for e in evs if "merge_start" in e["end10"])
     print(f"- 承诺：重基前在并线 {merge_pre} 次，其中 10 拍内 ref 变化 "
           f"{ref_chg} 次；10 拍内重新起意并线 {new_merge} 次。")
+    print_mapping(runs)
     srcs = source_table(runs)
     print("\n## 三问\n")
     top = sorted(srcs, key=lambda r: -r["starts"])[:3]
@@ -699,6 +994,17 @@ def _mk(fid, fd, src="wall", new=True, hold=False, plan="veto",
             "raw": {}}
 
 
+def _mtick(fid, pre, post, road, ref=0.0, src="wall", new=True,
+           hold=False, lines=(), line_x=None, edge=None, w=4.5, ep=0,
+           vd="keep"):
+    """映射核验自测用的最小 tick（字段与 tick_info 同口径）。"""
+    return {"fid": fid, "pre_exec": pre, "exec": post, "road": road,
+            "src": src, "new": new, "hold": hold, "lines": list(lines),
+            "line_x": line_x, "edge": edge, "w": w, "ref": ref, "ep": ep,
+            "vd": vd, "rebase": "jump_confirm",
+            "cand": [(float(k), None) for k in range(-2, 3)]}
+
+
 def selftest() -> None:
     ticks = [_mk(1, 0.0), _mk(2, 1.2), _mk(3, 1.3), _mk(4, 0.9),
              _mk(5, 1.5), _mk(6, 0.0), _mk(7, 0.0), _mk(8, 1.6),
@@ -730,6 +1036,28 @@ def selftest() -> None:
     t = tick_info(row, 1.0)
     assert t["big"] and t["plan"] == "veto" and t["src"] == "wall_occl"
     assert t["new"] and t["hold"] and t["line"] == 0.4
+    # 映射核验：尺子没动 + 状态追平 + 线复核 → 恒等-确认
+    a = _mtick(1, 0.2, 0.2, 0.1, lines=[("y", -1, -1.3, 18)], line_x=0.1)
+    b = _mtick(2, 0.2, 1.0, 0.12, lines=[("y", -1, -1.28, 18)], line_x=0.9)
+    n = _mtick(3, 1.0, 1.0, 0.12, ep=1, vd="epoch_reset")
+    m = mapping_event([a, b, n], 1)
+    assert m["ruler"] == "stable" and m["verdict"].startswith("恒等"), m
+    assert m["evidence"] == "双证" and abs(m["move"]) < 0.05, m
+    assert m["mapped"] == 0.0 and m["ep_up"], m
+    # 尺子动了 + 保持/记忆源 → 陈旧可疑
+    a = _mtick(1, 0.0, 0.0, 0.0, src="memory", hold=True)
+    b = _mtick(2, 0.0, 0.9, 0.9, src="memory", hold=True)
+    m = mapping_event([a, b], 1)
+    assert m["ruler"] == "moved" and m["verdict"] == "陈旧可疑", m
+    # 尺子动 + 证人无位移 + 整数平移 → 平移-确认
+    a = _mtick(1, 0.0, 0.0, 0.4, ref=1.0, lines=[("y", 1, 1.5, 15)])
+    b = _mtick(2, 0.0, -1.0, -0.6, ref=1.0, lines=[("y", 1, 1.48, 16)],
+               line_x=-0.98)
+    m = mapping_event([a, b], 1)
+    assert m["verdict"] == "平移-确认" and m["mapped"] == 0.0, m
+    # 线配对拒绝 >0.6 道跳变
+    assert _match_line({"lines": [("y", 1, 1.0, 5)]},
+                       {"lines": [("y", 1, 2.0, 5)]}) is None
     print("selftest ok")
 
 
@@ -776,12 +1104,23 @@ def main() -> None:
                 "adopt_gap", "ph", "ref", "ep", "ep_up", "vd_next",
                 "end10", "ref_changed", "merging_pre", "merging_after",
                 "win"]
+        map_keys = ["fid", "kind", "ref", "pre", "post", "dx", "d_ro",
+                    "d_c0", "dist_pre", "dist_post", "side_flip",
+                    "src", "new", "hold", "move", "move_src", "line_gap",
+                    "edge_gap", "d_w", "ruler", "evidence", "verdict",
+                    "mapped", "resid", "ep_up", "nxt_vd", "nxt_ref",
+                    "ref_in_cand", "mapped_in_cand", "remerge"]
+        fields = keys + [f"map_{k}" for k in map_keys]
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=keys)
+            w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             for run in runs:
                 for e in run["rebases"]:
-                    w.writerow({k: e.get(k) for k in keys})
+                    row = {k: e.get(k) for k in keys}
+                    m = e.get("map")
+                    if m:
+                        row.update({f"map_{k}": m.get(k) for k in map_keys})
+                    w.writerow(row)
         print()
         print(f"CSV: {args.csv}")
 
