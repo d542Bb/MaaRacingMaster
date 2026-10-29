@@ -39,6 +39,9 @@ CALIB = ROOT / "maaracing_master/plugins/speedrush/resources/calibration/gate0.j
 LW_OLD = 3.38
 LW_NEW = 3.5
 K_MAIN = 1.12
+# a_x 车横位尺已是画线真尺度（录制帧最近画线像素距离与 3.5 m 道吻合），
+# 换尺度时不缩放；道路/自车/左右缘来自深度旧网格，才乘 f。
+CAR_SCALE = 1.0
 
 
 def load_params(lw: float, kin_scale: float = 1.0):
@@ -81,8 +84,14 @@ def _road(dbg: dict, lw: float, f: float) -> RoadFrame:
                      ok=True)
 
 
-def _inputs(row: dict, lw: float, f: float, coarse_control: bool,
-            route_control: bool) -> dict | None:
+def _inputs(row: dict, lw: float, f_road: float, f_obj: float,
+            coarse_control: bool, route_control: bool) -> dict | None:
+    """f_road：道路/自车（旧深度网格 → 真米）；f_obj：车/币/奖励车。
+
+    相机帧核对：``a_x`` 车横位尺已落在画线真尺度（最近画线像素距离
+    与 3.5 m 道吻合，旧网格解释系统性偏大），故车/币默认 f_obj=1.0；
+    道路中心/自车/左右缘来自深度，f_road=3.38/(k·3.5)。
+    """
     dbg = row.get("sel_dbg")
     if not dbg:
         return None
@@ -101,19 +110,17 @@ def _inputs(row: dict, lw: float, f: float, coarse_control: bool,
     c0 = dbg.get("c0")
     commit_x = None
     if not committed and route.get("ref") is not None and c0 is not None:
-        # ref 是车道序号（不缩放）；c0 是位置量（缩放）。
-        commit_x = route["ref"] * lw + c0 * f * lw
+        # ref 是车道序号（不缩放）；c0 是道路中心位置量（旧网格 → 真米）。
+        commit_x = route["ref"] * lw + c0 * f_road * lw
     return {
-        "ego": dbg["ego"] * f * lw,
-        "rw": _objs(dbg.get("rw"), "reward", lw, f),
-        "car": _objs(dbg.get("car"), "car", lw, f),
-        "coin": _objs(dbg.get("coin"), "coin", lw, f),
-        "road": _road(dbg, lw, f),
+        "ego": dbg["ego"] * f_road * lw,
+        "rw": _objs(dbg.get("rw"), "reward", lw, f_obj),
+        "car": _objs(dbg.get("car"), "car", lw, f_obj),
+        "coin": _objs(dbg.get("coin"), "coin", lw, f_obj),
+        "road": _road(dbg, lw, f_road),
         "coarse": coarse_lane,
         "committed": committed,
         "commit_x": commit_x,
-        "target": dbg.get("target"),
-        "req": dbg.get("req"),
     }
 
 
@@ -149,11 +156,8 @@ class S:
         self.val_bad = 0
         self.layer_chg = 0
         self.why_chg = 0
-        self.tgt_chg = 0
-        self.tgt_lane_chg = 0
         self.req_chg = 0
         self.req_pairs: Counter = Counter()
-        self.tgt_d: list[float] = []
         self.layer_from_to: Counter = Counter()
         self.why_chg_pairs: Counter = Counter()
         self.fd_n = 0
@@ -174,8 +178,8 @@ class S:
 def _tick(s: S, row: dict, p0: SelectionParams, p1: SelectionParams,
           p2: SelectionParams, f: float, coarse_control: bool,
           route_control: bool) -> None:
-    x0 = _inputs(row, LW_OLD, 1.0, coarse_control, route_control)
-    x1 = _inputs(row, LW_NEW, f, coarse_control, route_control)
+    x0 = _inputs(row, LW_OLD, 1.0, 1.0, coarse_control, route_control)
+    x1 = _inputs(row, LW_NEW, f, CAR_SCALE, coarse_control, route_control)
     if not x0 or not x1:
         return
     r0, r1, r2 = _run(p0, x0), _run(p1, x1), _run(p2, x1)
@@ -193,15 +197,6 @@ def _tick(s: S, row: dict, p0: SelectionParams, p1: SelectionParams,
     else:
         s.val_bad += 1
     tgt1 = _lane(r1.target_x_m, LW_NEW)
-    tgt_rec = x0["target"]
-    if tgt_rec is not None:
-        tgt_rec_new = tgt_rec * f
-        d = tgt1 - tgt_rec_new
-        s.tgt_d.append(d)
-        if abs(d) > 0.05:
-            s.tgt_chg += 1
-        if round(tgt_rec) != round(tgt_rec_new):
-            s.tgt_lane_chg += 1
     if r1.layer != r0.layer:
         s.layer_chg += 1
         s.layer_from_to[(r0.layer, r1.layer)] += 1
@@ -253,19 +248,14 @@ def _report(name: str, s: S) -> None:
           f"{100 * s.val_why / n:.1f}%）")
     print(f"  尺度校正 V1：层变 {s.layer_chg}（{100 * s.layer_chg / n:.1f}%）"
           f" why 变 {s.why_chg}（{100 * s.why_chg / n:.1f}%）"
-          f" 目标变 {s.tgt_chg}（{100 * s.tgt_chg / n:.1f}%）"
           f" 请求变 {s.req_chg}")
-    if s.tgt_d:
-        print(f"    目标位移 Δ道 中位 {_f(st.median(s.tgt_d), 3)}  "
-              f"p10 {_f(_q(s.tgt_d, .1), 3)}  p90 {_f(_q(s.tgt_d, .9), 3)}"
-              f"  目标道号翻转 {s.tgt_lane_chg}")
     if s.req_pairs:
         print(f"    请求变化分布 {s.req_pairs.most_common(8)}")
     print(f"  V2（运动学折回）：层变 {s.v2_layer_chg} 目标变 {s.v2_tgt_chg}")
     if s.fd_n:
-        print(f"  计划失效 |fd|>1.0m：旧 {100 * s.fd_bad_old / s.fd_n:.2f}%"
-              f" → 校正 {100 * s.fd_bad_new / s.fd_n:.2f}%"
-              f"（n={s.fd_n}）")
+        print(f"  计划失效（近似 fd/k）|fd|>1.0m：旧 "
+              f"{100 * s.fd_bad_old / s.fd_n:.2f}% → 校正 "
+              f"{100 * s.fd_bad_new / s.fd_n:.2f}%（n={s.fd_n}）")
     if s.fs_n:
         print(f"    frame_shift 拍：旧 {100 * s.fs_bad_old / s.fs_n:.2f}%"
               f" → 校正 {100 * s.fs_bad_new / s.fs_n:.2f}%（n={s.fs_n}）")
