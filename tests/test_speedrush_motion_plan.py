@@ -890,3 +890,22 @@ def test_aim_candidate_hits_pass_band_for_adjacent_car():
     hi = CFG.motion.graze_gap_lane * lw
     assert p.valid and p.layer == 2
     assert lo <= d <= hi
+
+
+def test_unreachable_pass_still_prepositions():
+    """视界内但够不到计分带的车也要给预置分，而不是整段值 0 回中。
+
+    2026-10-30 现场：最近车 49% 的拍在 2s 内，计分带只有 8% 的拍落得进去；
+    旧口径下这些车「既不算命中、也不进预置」，车只能等它到眼前再从头横移，
+    而那需要约 1.4s——来不及。现在它们按「2s 末端离擦车位多近」给分，
+    车提前贴向空侧。"""
+    s = _scene(road=_wide_road())
+    car = SceneObj("car", s.ego_x_m, 1.0, 1.0, 0.27, 0.0,
+                   "metric", 15.0, True, True, True, False, 0.85, False)
+    s2 = replace(s, objs=(car,))
+    p = _plan(s2, ego=EgoState(s2.ego_lane, 0.0, 45.0, 0.0))
+    assert p.valid and p.layer == 4
+    assert p.value_total > 0.0                  # 不再整段为 0
+    # 走空侧（路面 -5~5、自车在 1.0 → 左侧更宽），由路宽定，不由候选自证
+    assert p.x_preview_m < s2.ego_x_m
+    assert p.psi_feedforward < -1e-3

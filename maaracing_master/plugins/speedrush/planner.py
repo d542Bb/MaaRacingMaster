@@ -353,6 +353,40 @@ def step(x: float, psi: float, psi_cmd: float, v: float, dt: float,
     return x, psi
 
 
+# 可达性换算的参考车速（m/s）：闭环律 ``v_lat = k_lat·e`` 在朝向不被限幅时
+# 与车速无关（误差换期望横速、再由车速反解朝向，v 在两端抵消）。限幅只在
+# 大误差低速时生效（45 m/s 下约 1.6 道以上），1.2 道以内任何车速同一答案。
+_MOVE_TIME_V_REF_MPS = 45.0
+
+
+def lane_move_time(dx_lane: float, *, k_lat_lane_s: float, tau_heading_s: float,
+                   heading_max_rad: float, settle_lane: float = 0.1,
+                   v_mps: float = _MOVE_TIME_V_REF_MPS,
+                   dt: float = 0.02) -> float:
+    """闭环律下横移 ``|dx|`` 道、残差收到 ``settle_lane`` 所需秒数。
+
+    与 ``step`` 同一条律（ψ 一阶接近 ``atan(k_lat·e·LANE_W/v)``、横位由
+    tanψ 积分、朝向限幅）：决策层的可达性判断必须和执行层同一套车——两套
+    模型会让决策去够一个执行到不了的点（"决策说能、计划说不能"）。
+    """
+    e = abs(dx_lane)
+    if e <= settle_lane:
+        return 0.0
+    if v_mps <= 1.0 or k_lat_lane_s <= 0.0 or tau_heading_s <= 0.0:
+        return math.inf
+    a = 1.0 - math.exp(-dt / tau_heading_s)
+    psi, t = 0.0, 0.0
+    for _ in range(int(10.0 / dt)):
+        psi_des = math.atan(k_lat_lane_s * e * LANE_W / v_mps)
+        psi_des = max(-heading_max_rad, min(heading_max_rad, psi_des))
+        psi += a * (psi_des - psi)
+        e -= (v_mps / LANE_W) * math.tan(psi) * dt
+        t += dt
+        if e <= settle_lane:
+            return t
+    return math.inf
+
+
 @dataclass(frozen=True)
 class GamepadCommand:
     """本层唯一出口：左摇杆 x（转向）+ 右扳机（恒油门，RULES §4.1 权威）。"""

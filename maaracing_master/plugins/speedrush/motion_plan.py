@@ -707,6 +707,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                                    * (1.0 - d_h / overlap)
                                    * motion.range_hazard_gain)
         pass_count = 0
+        pass_hit_ids: set[int] = set()
         for c in (() if committed else cars):
             # 无到站时间的车只当静态障碍，不算“擦车通过”：
             # t=None 的并列车会让 t=0 的初始距离冒充一次超车。
@@ -723,6 +724,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             if ego_half + _half(c) + c.sigma_m \
                     + motion.collision_margin_m <= d <= graze:
                 pass_count += 1
+                pass_hit_ids.add(id(c))
         pass_value = motion.value_graze * pass_count
         coin_hits, coin_value, coin_error = 0.0, 0.0, 0.0
         coin_hit_ids: set[int] = set()
@@ -772,16 +774,28 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                     * motion.preposition_discount * prox
             # 普通车也预置：目标不是车心，而是候选所在侧的擦车距离，
             # 让车提前贴近超车线，而不是等车到眼前才反应。
+            # **视界内够不到计分带的车也算**（2026-10-30 现场：最近车 49%
+            # 的拍在 2s 内，但计分带只有 8% 的拍能落进去——剩下的车在旧口径
+            # 下「既不算命中、也不进预置」，整段值 0，车只能回中，等它到眼前
+            # 再从头横移已经来不及）。已命中（pass_hit_ids）的不重复计。
             for c in cars:
                 if not c.timed or not c.in_corridor or _large(c) \
-                        or c.t_arrive_s is None \
-                        or not (horizon < c.t_arrive_s <= prep_h):
+                        or c.t_arrive_s is None or id(c) in pass_hit_ids \
+                        or not (motion.hit_min_lead_s
+                                < c.t_arrive_s <= prep_h):
                     continue
                 # 预置与擦边同门：不为跨道的未来车提前横移。
                 if abs(c.x_m - scene.ego_x_m) > pass_max_off_m:
                     continue
                 x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
-                side = 1.0 if x_ref >= c.x_m else -1.0
+                # 走哪侧由路宽决定（与选择层 `_pass_x` 同一条规则），不由
+                # 候选自己已经偏的那侧决定——否则预置梯度自证：往哪偏就
+                # 奖励往哪偏，空侧反而没有牵引。
+                room_l = (c.x_m - scene.road.left_m) \
+                    if scene.road.left_m is not None else lane_w
+                room_r = (scene.road.right_m - c.x_m) \
+                    if scene.road.right_m is not None else lane_w
+                side = 1.0 if room_r >= room_l else -1.0
                 target = c.x_m + side * graze
                 prox = max(0.0, 1.0 - abs(x_ref - target) / radius)
                 prep_value += motion.value_graze \

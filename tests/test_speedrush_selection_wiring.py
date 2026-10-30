@@ -181,7 +181,10 @@ def test_adjacent_coin_line_requests_then_merges():
     """接线锁：邻道币组持续出现 → 目标先待在本道跨度内（贴请求侧边界准备），
     同侧请求计满分满后由**路线**起意并线（选择层自己不跨线）。"""
     eng = DecisionEngine(CFG)
-    g, ms = _group(1, x=1.0)                    # 币线心在右邻道（1.0 道）
+    # 币线心在右邻道（1.0 道）；闭接近速度 1.5 → 到站约 2.6s。旧夹具用
+    # 2.5（到站 1.55s）：按执行层真实横移能力，1.0 道此刻已来不及（需
+    # 1.58s+反应），请求不该发——夹具本身要改成「够得着」的到达时间。
+    g, ms = _group(1, x=1.0, rel=1.5)
     seen = []
     for fid in range(1, 40):
         out = eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
@@ -230,7 +233,7 @@ def test_second_hop_resolves_relative_request_on_a_real_commit(monkeypatch):
     monkeypatch.setattr(dmod, "choose_lane",
                         lambda *a, **k: _flat_coarse(ego[0]))
     eng = DecisionEngine(CFG)
-    g, ms = _group(1, x=1.0)                 # 币线心在右邻道
+    g, ms = _group(1, x=1.0, rel=1.5)        # 右邻道币线，到站约 2.6s（够得着）
     fid = 0
 
     def feed(n, executed, *, road_ok=True):

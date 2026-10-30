@@ -494,28 +494,35 @@ def test_far_hint_is_shared_and_not_recomputed_in_selection_frame():
 
 
 def test_selection_reachability_uses_plant_kinematics():
-    """横移可达性 = 执行层同一套运动学：0.7 道约 0.5 秒可到。
+    """横移可达性 = 执行层同一条闭环律：0.7 道约 1.4 秒（台架实测同量级）。
 
-    旧口径 0.3+2.0/道 会把 1 秒内 0.7 道的目标判成来不及；换成
-    横向加速度/速度上限后必须放行，3 道以上仍不可达。"""
+    旧口径「恒加速到横速上限」把 0.7 道估成 0.5 秒，比实车快一倍多——
+    决策敢在车到眼前才起意，执行层按真实车判到不了。"""
     from maaracing_master.plugins.speedrush.selection import (
         SelectionParams, _reachable, _t_move)
 
     p = SelectionParams(lane_w_m=3.4)
-    assert _t_move(0.7 * 3.4, p) == pytest.approx(0.488, abs=0.01)
-    assert _reachable(0.7 * 3.4, 0.0, 1.0, p)
-    assert not _reachable(3.0 * 3.4, 0.0, 1.0, p)
+    assert _t_move(0.7 * 3.4, p) == pytest.approx(1.42, abs=0.06)
+    assert _t_move(1.0 * 3.4, p) == pytest.approx(1.58, abs=0.06)
+    assert _t_move(0.2 * 3.4, p) < _t_move(0.7 * 3.4, p)
+    # 反应时 + 余量之外还要整段横移时间：1.0 秒不够 0.7 道
+    assert not _reachable(0.7 * 3.4, 0.0, 1.0, p)
+    assert _reachable(0.7 * 3.4, 0.0, 1.8, p)
+    assert not _reachable(3.0 * 3.4, 0.0, 1.8, p)
     # 已对齐只留反应时间
     assert _reachable(0.05 * 3.4, 0.0, 0.2, p)
     assert not _reachable(0.05 * 3.4, 0.0, 0.1, p)
 
 
 def test_selection_kinematics_share_planner_source():
-    """选择层的横移能力直接读 planner 参数，不另存一份换道时间。"""
+    """选择层的横移能力直接读 planner 的闭环律参数，不另存一份换道时间。"""
     e = _eng()
-    assert e.selector.p.a_lat_lane_s2 == pytest.approx(e.cfg.planner.a_lat_gain)
-    assert e.selector.p.v_lat_max_lane_s == pytest.approx(
-        e.cfg.planner.v_lat_max)
+    assert e.selector.p.k_lat_lane_s == pytest.approx(
+        e.cfg.planner.k_lat_lane_s)
+    assert e.selector.p.tau_heading_s == pytest.approx(
+        e.cfg.planner.tau_heading_s)
+    assert e.selector.p.heading_max_rad == pytest.approx(
+        e.cfg.planner.heading_max_rad)
 
 
 def test_box_size_metric_car_uses_pixel_lateral_and_no_ttc():

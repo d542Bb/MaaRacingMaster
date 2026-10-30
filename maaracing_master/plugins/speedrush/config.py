@@ -142,10 +142,6 @@ class Planner:
     rate_limit_raw: float      # 每 tick 杆值变化上限（±32767 系）
     stick_deadzone_raw: float  # |杆值| 低于此值归 0（游戏手柄死区）
     throttle_raw: int          # 右扳机恒值（RULES §4.1 权威：全程油门）
-    # 决策层的可达性假设（**不是执行模型**）：选择层判断「赶不赶得上」用，
-    # 与 planner 的航向律无关。
-    a_lat_gain: float
-    v_lat_max: float
     hold_max_ticks: int        # 决策过期后最多保持拍数，第 +1 拍起按 CONSERVE
     # —— 路中心连续重锚（step 2.5，2026-09-22：开环虚胖的闭环解）——
     obs_alpha: float           # 位置修正增益（alpha-beta 滤波），有路缘观测拍生效 [需实测]
@@ -661,8 +657,6 @@ def _read_decision(path: Path) -> DecisionConfig:
             stick_deadzone_raw=_num(d, "planner", "stick_deadzone_raw",
                                     lo=0, lo_open=False),
             throttle_raw=_int(d, "planner", "throttle_raw", lo=0, hi=255),
-            a_lat_gain=_num(d, "planner", "a_lat_gain", lo=0),
-            v_lat_max=_num(d, "planner", "v_lat_max", lo=0, lo_open=False),
             hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1),
             obs_alpha=_num(d, "planner", "obs_alpha", lo=0, hi=1),
             obs_jump_max_lane=_num(d, "planner", "obs_jump_max_lane", lo=0,

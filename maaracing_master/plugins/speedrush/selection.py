@@ -27,6 +27,8 @@ import math
 from dataclasses import dataclass
 from typing import Sequence
 
+from maaracing_master.plugins.speedrush.planner import lane_move_time
+
 
 @dataclass(frozen=True)
 class RoadBand:
@@ -175,10 +177,12 @@ class SelectionParams:
     # 选中后组消失仍保持 coin_hold_s，更高层出现立即覆盖。
     coin_pick_tol_lane: float = 1.2
     coin_hold_s: float = 0.6
-    # 横移可达性由执行层同一套运动学推导（道/s²、道/s），不再用换道时间
-    # 经验值；reaction/margin 只补感知与执行延迟。
-    a_lat_lane_s2: float = 6.0
-    v_lat_max_lane_s: float = 2.5
+    # 横移可达性用执行层同一条闭环律（k_lat / tau_heading / heading_max，
+    # 见 ``planner.lane_move_time``）；这里的四个数由配置从执行层抄一份，
+    # 不另立模型。reaction/margin 只补感知与执行延迟。
+    k_lat_lane_s: float = 1.2
+    tau_heading_s: float = 0.25
+    heading_max_rad: float = 0.15
     reaction_s: float = 0.13
     margin_s: float = 0.15
     # 已基本对齐的目标不需要横移准备：只留反应时间，不套 t_move 基础项。
@@ -205,22 +209,17 @@ class SelectionParams:
 
 
 def _t_move(dx_m: float, p: SelectionParams) -> float:
-    """横移所需时间：先恒加速到横向速度上限，再匀速（道/s²、道/s）。
+    """横移直到「已对齐」所需时间——执行层那条闭环律的同一份答案。
 
-    与执行层是同一套运动学：0.7 道约 0.5 秒，而不是按人工变道节奏估的
-    2 秒量级。自车当前横向速度未知，按静止起步算，偏保守。"""
-    d = abs(dx_m) / p.lane_w_m
-    a = p.a_lat_lane_s2
-    vmax = p.v_lat_max_lane_s
-    if d <= 0.0:
-        return 0.0
-    if a <= 0.0 or vmax <= 0.0:
-        return math.inf
-    t_acc = vmax / a
-    d_acc = 0.5 * a * t_acc * t_acc
-    if d <= d_acc:
-        return math.sqrt(2.0 * d / a)
-    return t_acc + (d - d_acc) / vmax
+    到位判据用 ``aligned_lane``（残差进带即不再要求准备时间）。旧实现按
+    「先恒加速到横速上限再匀速」估 0.7 道约 0.5 秒，比实车快一倍多：实车
+    0.7 道要约 1.1 秒、一道约 1.5 秒（台架与实机同口径）。乐观的估计会把
+    决策放到车到眼前才起意，执行层又按真实车判到不了，于是两边各说各话。"""
+    return lane_move_time(abs(dx_m) / p.lane_w_m,
+                          k_lat_lane_s=p.k_lat_lane_s,
+                          tau_heading_s=p.tau_heading_s,
+                          heading_max_rad=p.heading_max_rad,
+                          settle_lane=p.aligned_lane)
 
 
 def _reachable(x: float, x0: float, t: float | None,

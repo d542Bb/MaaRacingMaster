@@ -401,10 +401,11 @@ class DecisionEngine:
             graze_gap_lane=s.graze_gap_lane,
             center_band_lane=s.center_band_lane,
             opportunity_tol_lane=s.opportunity_tol_lane,
-            # 可达性复用执行层的横向运动学：一份数值真源，避免选择层
-            # 再拍一个换道时间与底层打架。
-            a_lat_lane_s2=cfg.planner.a_lat_gain,
-            v_lat_max_lane_s=cfg.planner.v_lat_max,
+            # 可达性复用执行层的闭环律（同一组增益/滞后/限幅）：一份数值
+            # 真源，避免选择层再拍一个换道时间与底层打架。
+            k_lat_lane_s=cfg.planner.k_lat_lane_s,
+            tau_heading_s=cfg.planner.tau_heading_s,
+            heading_max_rad=cfg.planner.heading_max_rad,
             reaction_s=s.reaction_s, margin_s=s.margin_s,
             wall_margin_lane=s.wall_margin_lane,
             center_lookahead_m=s.center_lookahead_m,
