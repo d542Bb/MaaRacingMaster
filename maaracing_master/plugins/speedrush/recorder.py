@@ -56,6 +56,31 @@ _FRAME_QUEUE_MAX = 64
 # 超时只说明这一帧没有可配对的决策快照（感知缺席），按"无叠加图"落盘。
 _HUD_SNAP_WAIT_S = 0.25
 
+# 连续读不到手柄的容忍次数：5 次 @200Hz ≈ 25ms，够跨过一次驱动抖动，
+# 又不至于在真的没插手柄时空转。**必须是连续**——按累计计数的话，整局里零星的
+# 读取失败会攒够阈值后把采样线程永久停掉（实现曾与注释不符，2026-10-30 复盘发现）。
+_PAD_NONE_LIMIT = 5
+# 未读到手柄的告警节流：失败时每秒会过 200 次采样，压到每 5 秒最多一条
+_PAD_WARN_INTERVAL_S = 5.0
+# 槽位探测：摇杆/扳机超过此幅度才算"有明显输入"。虚拟手柄在程序不驱动时恒为
+# 静止全零，用它把物理手柄从多槽位里挑出来。
+_PAD_ACTIVE_THRESHOLD = 2000
+# 多槽位且始终无输入时的兜底等待：超时后锁首个并告警，不无限期不采样本
+_PAD_SLOT_PROBE_TIMEOUT_S = 5.0
+
+
+def _pad_active(st: xinput.PadState) -> bool:
+    """该槽位是否出现"明显输入"——多槽位时用它把物理手柄从静止的虚拟手柄里挑出来。
+
+    阈值远低于 XInput 摇杆死区（约 7800），轻微碰杆即算；扳机按 >10 计（0~255），
+    按键非零也算。静止的虚拟设备恒为全零，故不会误判为活跃。
+    """
+    lx, ly = st.left_stick
+    rx, ry = st.right_stick
+    return (abs(lx) > _PAD_ACTIVE_THRESHOLD or abs(ly) > _PAD_ACTIVE_THRESHOLD
+            or abs(rx) > _PAD_ACTIVE_THRESHOLD or abs(ry) > _PAD_ACTIVE_THRESHOLD
+            or st.left_trigger > 10 or st.right_trigger > 10 or st.buttons != 0)
+
 
 class DriveRecorder:
     """驾驶演示录制器（线程安全；start/stop 幂等）。
@@ -114,6 +139,7 @@ class DriveRecorder:
         self._hud_written = 0
         self._pad_samples = 0
         self._pad_none_streak = 0
+        self._pad_warn_last = 0.0
         self._seq_counter = 0
         self._hud_last = float("-inf")   # 首帧即取样
         self._started_ns = 0
@@ -343,26 +369,13 @@ class DriveRecorder:
         采样线程是 pads.jsonl 的唯一写者，故无需加锁。
         """
         interval = 1.0 / max(self.pad_poll_hz, 1.0)
-        slots = [self.pad_slot] if self.pad_slot is not None else [0, 1, 2, 3]
+        probe_deadline = time.monotonic() + _PAD_SLOT_PROBE_TIMEOUT_S
         with (self.out_dir / "pads.jsonl").open("w", encoding="utf-8") as f:
             while not self._stop.is_set():
                 t0 = time.perf_counter()
-                st = None
-                for i in slots:
-                    st = xinput.read_state(i)
-                    if st is not None:
-                        if self.pad_slot is None:
-                            self.pad_slot = i  # 锁定首次命中的槽位，后续不再轮询
-                        break
-                if st is None:
-                    self._pad_none_streak += 1
-                    if self._pad_none_streak == 1 or self._pad_none_streak % 1000 == 0:
-                        self._log(
-                            "[极速狂飙] 录制中未读到物理手柄——"
-                            "请确认手柄已连接且未被虚拟手柄占用", "WARNING")
-                    if self._pad_none_streak >= 5:
-                        break  # 连续读不到即停止采样，不空转刷日志
-                else:
+                st, countable = self._poll_pad(probe_deadline)
+                if st is not None:
+                    self._pad_none_streak = 0
                     f.write(json.dumps({
                         "ts_ns": time.perf_counter_ns(),
                         "lx": st.left_stick[0], "ly": st.left_stick[1],
@@ -371,8 +384,68 @@ class DriveRecorder:
                         "btn": st.buttons,
                     }, ensure_ascii=False) + "\n")
                     self._pad_samples += 1
+                elif countable:
+                    self._pad_none_streak += 1
+                    now = time.monotonic()
+                    if (self._pad_none_streak == 1
+                            and now - self._pad_warn_last >= _PAD_WARN_INTERVAL_S):
+                        self._pad_warn_last = now
+                        self._log(
+                            "[极速狂飙] 录制中未读到物理手柄——"
+                            "请确认手柄已连接且未被虚拟手柄占用", "WARNING")
+                    if self._pad_none_streak >= _PAD_NONE_LIMIT:
+                        # 退出必须留痕：此前只靠 meta 里偏小的样本数反推，
+                        # 事后分不清"人没推"和"采样已停"。
+                        self._log(
+                            f"[极速狂飙] 手柄连续 {_PAD_NONE_LIMIT} 次读不到，停止采样"
+                            f"（本局已录 {self._pad_samples} 条，之后无手柄数据）",
+                            "WARNING")
+                        break  # 连续读不到即停止采样，不空转刷日志
                 # 扣掉本次采样耗时，避免采样率随调用开销漂移
                 time.sleep(max(0.0, interval - (time.perf_counter() - t0)))
+
+    def _poll_pad(self, probe_deadline: float) -> tuple[xinput.PadState | None, bool]:
+        """读当前该采样的手柄；返回 ``(状态, 是否计入"读不到")``。
+
+        已锁定槽位时只读那一个。未锁定时轮询全部槽位并按证据锁定：
+
+        - 只有一个已连接槽位 → 直接锁定，不必等输入（无歧义）；
+        - 多个槽位 → 锁定**第一个出现明显输入**的。虚拟手柄在程序不驱动时恒为
+          静止全零，永远不满足条件，故不会被误锁——这正是旧实现"锁定第一个能
+          读到的槽位"会踩的坑：上一局控制模式残留的虚拟设备占着 0 号槽时，
+          整局录到的都是全零；
+        - 多槽位且超时仍无任何输入 → 锁首个并告警（XInput 层面无法再区分物理
+          与虚拟，只能留一条可查的痕迹）。
+
+        探测期返回 ``(None, False)``：不写样本（避免同文件里混槽位），也不计入
+        连续失败（否则 5 次探测就把采样线程判死）。
+        """
+        if self.pad_slot is not None:
+            return xinput.read_state(self.pad_slot), True
+        states = [st for st in (xinput.read_state(i) for i in range(4))
+                  if st is not None]
+        if not states:
+            return None, True
+        if len(states) == 1:
+            self.pad_slot = states[0].index
+            self._log(f"[极速狂飙] 手柄槽位锁定 {self.pad_slot}（唯一已连接）", "INFO")
+            return states[0], True
+        active = [st for st in states if _pad_active(st)]
+        if active:
+            self.pad_slot = active[0].index
+            self._log(
+                f"[极速狂飙] 手柄槽位锁定 {self.pad_slot}"
+                f"（{len(states)} 个候选槽位，此槽有输入活动）", "INFO")
+            return active[0], True
+        if time.monotonic() >= probe_deadline:
+            self.pad_slot = states[0].index
+            self._log(
+                f"[极速狂飙] {len(states)} 个手柄槽位在"
+                f" {_PAD_SLOT_PROBE_TIMEOUT_S:.0f}s 内均无输入活动，锁定首个"
+                f" {self.pad_slot}——若本局杆值恒为零，检查是否锁到了虚拟手柄",
+                "WARNING")
+            return states[0], True
+        return None, False
 
     # ---------- 元信息 ----------
 

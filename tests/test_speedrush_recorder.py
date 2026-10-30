@@ -270,3 +270,89 @@ def test_make_session_dir_honours_given_stamp(tmp_path) -> None:
     """调用方可传运行编号（日志会话 token），让语料目录与日志目录同名。"""
     d = make_session_dir(tmp_path, tag="manual", stamp="20261028_220635")
     assert d.name == "20261028_220635_manual"
+
+
+def _pad(index: int, *, lx: int = 0, ly: int = 0, rx: int = 0, ry: int = 0,
+         lt: int = 0, rt: int = 0, btn: int = 0):
+    return xinput.PadState(index=index, packet=1, buttons=btn,
+                           left_trigger=lt, right_trigger=rt,
+                           left_stick=(lx, ly), right_stick=(rx, ry))
+
+
+def test_pad_sampling_survives_intermittent_read_failures(tmp_path, monkeypatch) -> None:
+    """零星读取失败不得把采样线程判死。
+
+    停采阈值是**连续**失败次数。此前实现只在成功时写样本、从不把计数清零，
+    等于按"累计"算——整局里任何 5 次分散的抖动（设备省电、驱动重枚举）都会让
+    采样永久停止，而日志里只有一条"未读到手柄"，meta 里只剩一个偏小的样本数，
+    事后分不清"人没推杆"和"采样早就停了"。这里用成功/失败交替锁住语义。
+    """
+    calls = {"n": 0}
+
+    def _alternating(index: int):
+        if index != 0:
+            return None
+        calls["n"] += 1
+        return None if calls["n"] % 2 == 0 else _pad(0, lx=-12000, lt=210)
+
+    monkeypatch.setattr(xinput, "read_state", _alternating)
+    rec = DriveRecorder(tmp_path / "p1", pad_poll_hz=200.0)
+    rec.start()
+    _wait_until(lambda: rec.stats["pad_samples"] >= 20, timeout_s=3.0)
+    rec.stop()
+
+    assert rec.stats["pad_samples"] >= 20, "交替失败被当成连续失败，采样线程提前退出"
+    assert len(_read_jsonl(tmp_path / "p1" / "pads.jsonl")) >= 20
+
+
+def test_pad_slot_prefers_slot_with_input(tmp_path, monkeypatch) -> None:
+    """多槽位时锁"有输入活动"的那个，不锁第一个能读到的。
+
+    虚拟手柄在程序不驱动时恒为静止全零。上一局控制模式残留的虚拟设备若占着
+    0 号槽，旧实现会锁它，整局录到全零——文件看着完好，比没有数据更坏。
+    """
+    def _read(index: int):
+        if index == 0:
+            return _pad(0)                      # 静止：疑似虚拟手柄
+        if index == 1:
+            return _pad(1, lx=-9000, lt=180)    # 有人在推
+        return None
+
+    monkeypatch.setattr(xinput, "read_state", _read)
+    rec = DriveRecorder(tmp_path / "p2", pad_poll_hz=200.0)
+    rec.start()
+    _wait_until(lambda: rec.stats["pad_samples"] >= 5, timeout_s=3.0)
+    rec.stop()
+
+    assert rec.pad_slot == 1, "锁到了静止槽位（虚拟手柄）"
+    rows = _read_jsonl(tmp_path / "p2" / "pads.jsonl")
+    assert rows and all(r["lx"] == -9000 and r["lt"] == 180 for r in rows)
+
+
+def test_pad_slot_locks_single_idle_slot_without_waiting(tmp_path, monkeypatch) -> None:
+    """唯一槽位不必等输入：无歧义时立即锁定并开始采样。"""
+    monkeypatch.setattr(xinput, "read_state",
+                        lambda index: _pad(0) if index == 0 else None)
+    rec = DriveRecorder(tmp_path / "p3", pad_poll_hz=200.0)
+    rec.start()
+    _wait_until(lambda: rec.stats["pad_samples"] >= 5, timeout_s=3.0)
+    rec.stop()
+
+    assert rec.pad_slot == 0
+    assert rec.stats["pad_samples"] >= 5
+
+
+def test_pad_slot_probe_falls_back_after_timeout(tmp_path, monkeypatch) -> None:
+    """多槽位且始终无输入：超时后锁首个并告警，不能无限期不采样。"""
+    from maaracing_master.plugins.speedrush import recorder as recorder_mod
+
+    monkeypatch.setattr(recorder_mod, "_PAD_SLOT_PROBE_TIMEOUT_S", 0.15)
+    monkeypatch.setattr(xinput, "read_state",
+                        lambda index: _pad(index) if index < 2 else None)
+    rec = DriveRecorder(tmp_path / "p4", pad_poll_hz=100.0)
+    rec.start()
+    _wait_until(lambda: rec.stats["pad_samples"] >= 5, timeout_s=3.0)
+    rec.stop()
+
+    assert rec.pad_slot == 0
+    assert rec.stats["pad_samples"] >= 5
