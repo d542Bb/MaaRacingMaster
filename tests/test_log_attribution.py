@@ -419,3 +419,68 @@ def test_wgcap_frame_error_is_edge_triggered(monkeypatch):
     cap._on_frame(_BadFrame())
     assert [lv for lv, _m in rec.lines] == ["ERROR", "DEBUG"], \
         "帧回调异常必须首次 ERROR、其后 DEBUG（否则 60fps 刷满面板）"
+
+
+# ---------------------------------------------------------------------------
+#  S2：跳转图过程行降级（只写文件、不上面板；里程碑与警告行必须仍可见）
+# ---------------------------------------------------------------------------
+
+def test_navgraph_process_lines_are_file_only():
+    """跳转图逐节点过程行（起跑/完成）只写文件、不上面板（面板降噪）；
+    里程碑行与警告行必须保持面板可见——防改回刷屏或砍掉失败信号。"""
+    path = L.REPO / "maaracing_master" / "core" / "nav_graph.py"
+    assert path.is_file(), f"跳转图真源不存在: {path}"
+
+    def _tpl(call):
+        node = call.args[0] if call.args else None
+        if isinstance(node, ast.Constant):
+            return str(node.value)
+        if isinstance(node, ast.JoinedStr):
+            return "".join(str(part.value) if isinstance(part, ast.Constant) else "{}"
+                           for part in node.values)
+        return "<dynamic>"
+
+    def _level(call):
+        if len(call.args) >= 2 and isinstance(call.args[1], ast.Constant):
+            return call.args[1].value
+        return "INFO"
+
+    sites = {}
+    for path in sorted((L.PACKAGE / "core").rglob("nav_graph.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "_log":
+                sites[_tpl(node)] = _level(node)
+
+    assert sites, "跳转图 _log 站点必须被扫到（扫描规则失效？）"
+    # 逐节点过程行 = 跳转图的起跑/完成对；[v4] 起跑是常驻图的会话级里程碑（幂等、
+    # 每次会话一条），不属过程行，保持可见。
+    process = [t for t in sites if t.startswith("[跳转图] 起跑") or t == "[跳转图] 「{}」{}"]
+    assert len(process) == 2, f"过程行站点应恰为起跑/完成两处: {process}"
+    for tpl in process:
+        assert sites[tpl] == "DEBUG", f"过程行必须降为 DEBUG（只写文件）: {tpl} [{sites[tpl]}]"
+    for tpl in ("[跳转图] 已加载 {} 个图目录、{} 个模板目录",
+                "[跳转图] 收到停止信号，已中断跑图"):
+        assert sites.get(tpl) == "INFO", f"里程碑行必须保持面板可见: {tpl} [{sites.get(tpl)}]"
+    for tpl in ("[跳转图] 节点「{}」点击未到位",
+                "[跳转图] 终点确认节点「{}」未命中，判为未到位"):
+        assert sites.get(tpl) == "WARNING", f"警告行必须保持面板可见: {tpl} [{sites.get(tpl)}]"
+
+
+def test_panel_noise_lines_are_file_only():
+    """设置回显与模型加载判定只写文件、不上面板（面板降噪第二批）：
+    运行任务列表的回显与 GUI 自带勾选态重复；模型加载细节无面板价值。"""
+    calls = {c.template: c for c in L.scan_package()
+             if c.file in ("maaracing_master/core/sidecar.py",
+                           "maaracing_master/core/yolo_detector.py")}
+    for tpl in ("运行任务列表已更新: 启用 {}",
+                "ONNX 缓存: {}",
+                "YOLO 使用 GPU (DirectML)",
+                "YOLO 使用 GPU (CUDA)",
+                "YOLO 使用 CPU (GPU 不可用)"):
+        site = calls.get(tpl)
+        assert site is not None, f"降噪站点必须存在: {tpl}"
+        assert site.level == "DEBUG", f"必须降为 DEBUG（只写文件）: {tpl} [{site.level}]"

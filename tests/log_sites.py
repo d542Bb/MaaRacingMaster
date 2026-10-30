@@ -319,7 +319,7 @@ SITES: list[LogSite] = [
     _s('core/registry.py', '_discover_plugins', '[registry] 插件 {} 加载失败，跳过: {}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- core/sidecar.py ----
-    _s('core/sidecar.py', 'SidecarService.set_run_queue', '运行任务列表已更新: 启用 {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
+    # set_run_queue 的任务列表回显已降为 DEBUG（面板降噪，见 test_panel_noise_lines_are_file_only）。
     _s('core/sidecar.py', 'SidecarService.set_registry_optimization', '注册表优化项 {} {}（{}={}）', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_debug_mode', '调试截图模式: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_file_logging', '日志记录(写盘): {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
@@ -363,11 +363,8 @@ SITES: list[LogSite] = [
     _s('core/nav_graph.py', 'NavGraph._log', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：图未被插件接组时（测试/独立使用）回落散行。'),
 
     # ---- core/yolo_detector.py ----
-    _s('core/yolo_detector.py', 'YOLODetector.__init__', 'ONNX 缓存: {}', 'INFO', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('core/yolo_detector.py', 'YOLODetector.__init__', 'YOLO 使用 GPU (DirectML)', 'INFO', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
+    # __init__ 的设备/缓存加载判定已降为 DEBUG（面板降噪，见 test_panel_noise_lines_are_file_only）。
     _s('core/yolo_detector.py', 'YOLODetector.__call__', '模型输出类别维 {} ≠ 声明类别数 {}，请核对 classes 参数', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
-    _s('core/yolo_detector.py', 'YOLODetector.__init__', 'YOLO 使用 GPU (CUDA)', 'INFO', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('core/yolo_detector.py', 'YOLODetector.__init__', 'YOLO 使用 CPU (GPU 不可用)', 'INFO', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
 
     # ---- plugins/speedrush/hud.py ----
     _s('plugins/speedrush/hud.py', 'HudObserver._write_meta', '[极速狂飙] HUD meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),

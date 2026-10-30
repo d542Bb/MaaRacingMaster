@@ -97,7 +97,8 @@ class YOLODetector:
                 sess_options=sess_opts,
                 providers=["DmlExecutionProvider", "CPUExecutionProvider"]
             )
-            logger.log("YOLO 使用 GPU (DirectML)")
+            # 加载判定只写文件、不上面板（面板降噪）：设备与缓存路径属加载细节。
+            logger.log("YOLO 使用 GPU (DirectML)", "DEBUG")
         except Exception:
             try:
                 self.session = ort.InferenceSession(
@@ -105,16 +106,16 @@ class YOLODetector:
                     sess_options=sess_opts,
                     providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
                 )
-                logger.log("YOLO 使用 GPU (CUDA)")
+                logger.log("YOLO 使用 GPU (CUDA)", "DEBUG")
             except Exception:
                 self.session = ort.InferenceSession(
                     model_path,
                     sess_options=sess_opts,
                     providers=["CPUExecutionProvider"]
                 )
-                logger.log("YOLO 使用 CPU (GPU 不可用)")
+                logger.log("YOLO 使用 CPU (GPU 不可用)", "DEBUG")
 
-        logger.log(f"ONNX 缓存: {cache_dir}")
+        logger.log(f"ONNX 缓存: {cache_dir}", "DEBUG")
         self.input_name = self.session.get_inputs()[0].name
         self.conf = conf
         self.iou = iou

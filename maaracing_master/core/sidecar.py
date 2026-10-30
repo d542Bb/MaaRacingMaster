@@ -848,7 +848,8 @@ class SidecarService:
             self._queue_enabled = {k: bool(v) for k, v in enabled.items() if k in self._queue_order}
             snapshot = self._queue_snapshot()
         _save_profile({"run_queue": snapshot})
-        logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}")
+        # 回显只写文件、不上面板（面板降噪）：GUI 勾选态本身就是操作提示，回显冗余。
+        logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}", "DEBUG")
         return (True, snapshot, None)
 
     def set_start_from(self, params):

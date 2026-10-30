@@ -596,7 +596,9 @@ class NavGraph:
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
                 self._ensure_clicker().bind_gamepad(
                     self.ctx.capture, gpad, confirm_button=BUTTON_A)
-            self._log(f"[跳转图] 起跑「{entry}」")
+            # 逐节点过程行只写文件、不上面板（面板降噪）：失败会转化成下方的
+            # 终点确认 WARNING 或调用方的「步骤未到位」WARNING，面板不缺信号。
+            self._log(f"[跳转图] 起跑「{entry}」", "DEBUG")
             job = self._tasker.post_task(entry)
             self._job = job  # stop()/shutdown() 要能等到它收摊，不能只留局部变量
             self._stop_requested = False  # 新一轮：允许投递一次停止请求
@@ -619,7 +621,7 @@ class NavGraph:
                 ok = bool(node and node.completed)
                 if not ok:
                     self._log(f"[跳转图] 终点确认节点「{reached}」未命中，判为未到位", "WARNING")
-            self._log(f"[跳转图] 「{entry}」{'完成' if ok else '失败'}")
+            self._log(f"[跳转图] 「{entry}」{'完成' if ok else '失败'}", "DEBUG")
             return ok
 
     def request_stop(self) -> None:
