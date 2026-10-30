@@ -909,3 +909,32 @@ def test_unreachable_pass_still_prepositions():
     # 走空侧（路面 -5~5、自车在 1.0 → 左侧更宽），由路宽定，不由候选自证
     assert p.x_preview_m < s2.ego_x_m
     assert p.psi_feedforward < -1e-3
+
+
+def test_coarse_reward_hittable_inside_near_window():
+    """粗源奖励车（远场像素定位）在近场窗口内必须能当命中目标。
+
+    2026-10-30 两局：奖励车观测 194/203 走 far 源，旧口径「粗源不作命中」
+    等于整条奖励车通道关掉——车会绕着磁暴车/跳台车走。"""
+    s = _scene(road=_wide_road(),
+               rewards=[BonusSource(1.0, 1.0, 0.9, age_ms=0.0, src="far")])
+    p = _plan(s, ego=EgoState(s.ego_lane, 0.0, 45.0, 0.0))
+    assert p.valid and p.layer == 1
+    assert p.value_total > 0.0
+
+
+def test_coarse_reward_prepositions_before_hit_window():
+    """命中窗（≤1.5s）与视界（2s）之间的粗源奖励车走预置，不是无人区。"""
+    s = _scene(road=_wide_road(),
+               rewards=[BonusSource(1.0, 1.8, 0.9, age_ms=0.0, src="far")])
+    p = _plan(s, ego=EgoState(s.ego_lane, 0.0, 45.0, 0.0))
+    assert p.valid and p.layer == 4
+    assert p.value_total > 0.0
+
+
+def test_fine_reward_still_hits_beyond_coarse_window():
+    """近场源的奖励车不受粗源窗口限制（原有行为不变）。"""
+    s = _scene(road=_wide_road(),
+               rewards=[BonusSource(1.0, 1.8, 0.9, age_ms=0.0, src="pixel")])
+    p = _plan(s, ego=EgoState(s.ego_lane, 0.0, 45.0, 0.0))
+    assert p.valid and p.layer == 1

@@ -647,11 +647,16 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         reward_hits = 0
         reward_hit_ids: set[int] = set()
         for r in rewards:
-            # 越界/无时间/粗源（远场夹边）不作为命中目标
-            if not r.timed or not r.in_corridor or r.coarse:
+            # 越界/无时间不作为命中目标。粗源（远场像素定位、横位夹边）
+            # 只在近场窗口内当目标：更远的夹边值会把车引向路缘，近处像素
+            # 位置可信。一刀切排除等于关掉奖励车通道——本域观测 96% 走
+            # 粗源，车会绕着磁暴车/跳台车走（2026-10-30 两局）。
+            if not r.timed or not r.in_corridor:
                 continue
             if r.t_arrive_s is None or r.t_arrive_s > horizon \
                     or r.t_arrive_s < motion.hit_min_lead_s:
+                continue
+            if r.coarse and r.t_arrive_s > motion.reward_coarse_hit_s:
                 continue
             xr = _x_at(xs_m, r.t_arrive_s, dt)
             # 命中判据只加对象定位 σ：自车 σ 加进命中半径会把“够不到”
@@ -754,8 +759,13 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             radius = max(motion.preposition_radius_lane * lane_w, 1e-6)
             for r in rewards:
                 if not r.in_corridor or id(r) in reward_hit_ids \
-                        or r.t_arrive_s is None \
-                        or not (horizon < r.t_arrive_s <= prep_h):
+                        or r.t_arrive_s is None:
+                    continue
+                # 粗源奖励车的命中窗更短，预置的起点随之提前——否则
+                # (命中上限, horizon] 这一段落两边都不管。
+                r_lo = (motion.reward_coarse_hit_s
+                        if r.coarse else horizon)
+                if not (r_lo < r.t_arrive_s <= prep_h):
                     continue
                 x_ref = _x_at(xs_m, min(r.t_arrive_s, horizon), dt)
                 prox = max(0.0, 1.0 - abs(x_ref - r.x_m) / radius)

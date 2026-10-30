@@ -288,6 +288,11 @@ class Motion:
     # 到站时间短于此值：横向结果已定，不再为命中/擦边打分（否则会为最后一刻
     # 的擦边带满舵），只允许中心/维护动作。
     hit_min_lead_s: float = 0.5
+    # 粗源奖励车（远场像素定位、横位夹进路缘）作命中目标的到站时间上限：
+    # 近场窗口内像素位置可信，远处夹边值会把车引向路缘。2026-10-30 两局
+    # 96% 的奖励车观测都是粗源，一刀切排除等于关掉整条奖励车通道——车会
+    # 绕着磁暴车/跳台车走（决策层喊了 reward，计划层按 0 价值回中）。
+    reward_coarse_hit_s: float = 1.5
     # 擦车目标距车心：物理包络+σ+余量约 2.18m，0.65 道只剩 2.5cm 带、
     # 低于采样分辨率（整层 0 触发）；0.75 道留约 0.36m 带。
     graze_gap_lane: float = 0.75
@@ -744,6 +749,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "collision_min_lead_s", 0.35, lo=0),
             hit_min_lead_s=_num_def(
                 d, "motion", "hit_min_lead_s", 0.5, lo=0),
+            reward_coarse_hit_s=_num_def(
+                d, "motion", "reward_coarse_hit_s", 1.5, lo=0),
             graze_gap_lane=_num_def(
                 d, "motion", "graze_gap_lane", 0.75, lo=0),
             pass_max_offset_lane=_num_def(
