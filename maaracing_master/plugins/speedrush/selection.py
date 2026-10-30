@@ -168,7 +168,7 @@ class SelectionParams:
     lane_w_m: float
     horizon_s: float = 3.0
     max_waypoints: int = 4
-    graze_gap_lane: float = 0.65
+    graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
     opportunity_tol_lane: float = 0.75
     # 金币主目标只吃「当前线附近」的组（录制对照：人类不追 0.8 道外的散币）；
@@ -339,7 +339,7 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
                p: SelectionParams) -> tuple[float, float, str] | None:
     """擦边/让位：逐拍实时的安全动作，**不受跨线闸门约束，也不许被请求屏蔽**。
 
-    挤过去所需的横向量（graze_gap 0.65 道）本身就压过车道线——这是「微
+    挤过去所需的横向量（graze_gap 0.68 道）本身就压过车道线——这是「微
     调」不是「变道」：车一过就回中，不会停在两道中间。若把它也夹进安全
     区间（0.17 道），0 道上的车只让开 0.17（车半宽 0.27）＝迎面撞上去。
     """

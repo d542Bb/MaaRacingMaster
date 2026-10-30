@@ -187,6 +187,9 @@ class RouteParams:
     # ≤ 此值的近距离盲区仍可逃生
     merge_safe_ttc_s: float = 0.8    # 逃生目标道上有车时，到站时间必须 ≥ 此值
     # （够并过去）；更近的车不选它当逃生方向
+    pass_hold: bool = True           # 超车动作进行中（选择层正在出擦边目标）
+    # 不抢方向：临近车会让紧急逃生在 1s 内起意，把刚要成的擦边超车改成并线
+    # （2026-10-30 实测：31 段≥5 拍的擦边里有 6 段被 3 拍内的并线打断）
 
 
 @dataclass(frozen=True)
@@ -359,6 +362,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
                arrival: ArrivalAttribution | None = None,
                reject_shift_arrival: bool = False,
                lane_ttc: dict[int, float] | None = None,
+               passing: bool = False,
                ) -> tuple[RouteState | None, RouteVerdict]:
     """推进一拍。
 
@@ -378,6 +382,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     生产默认门关（`reject_shift_arrival=False`）；影子/未来开关才传 True。
     `lane_ttc`：整数道→最早到站时间（秒，相对速度口径）。紧急逃生与目标道
     选择的时间面（2026-10-30）；None=离线/单测未供，逐位保持旧行为。
+    `passing`：选择层本拍（上一拍）正在出擦边目标。`pass_hold` 开时路线不抢
+    方向，把这 1s 的逃生窗口留给超车动作完成。
     """
     if report is None or not report.lanes or report.reason == "no_road":
         # 没有车道级证据：时钟继续走，但路线不推进、不判逃生——证据缺席
@@ -444,7 +450,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     if s.phase == PHASE_MERGING:
         return _tick_merging(s, by, p, clock, epoch, arrival,
                              reject_shift_arrival)
-    return _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch, lane_ttc)
+    return _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch,
+                      lane_ttc, passing)
 
 
 def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
@@ -520,6 +527,7 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                p: RouteParams, clock: float,
                epoch: int,
                lane_ttc: dict[int, float] | None = None,
+               passing: bool = False,
                ) -> tuple[RouteState, RouteVerdict]:
     """保持态：只有"现任道确认被截"才动，方向是"确实更宽"。
 
@@ -533,8 +541,11 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         alts = [c for c in alts if c.lane != s.ban_lane]
 
     not_urgent = False
+    pass_hold = bool(p.pass_hold and passing)
     if t_cur is not None and s.blocked_ticks >= p.urgent_confirm_ticks:
-        if not _urgent_time_ok(s, cur, p, lane_ttc):
+        if pass_hold:
+            not_urgent = True        # 超车动作进行中：方向留给擦边目标
+        elif not _urgent_time_ok(s, cur, p, lane_ttc):
             not_urgent = True        # 确认被截，但车还不到线上：留在本道过
         else:
             feas = [c for c in alts
@@ -563,7 +574,8 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         if s.req_credit < p.opportunity_confirm_ticks:
             why = "scoring"          # 还在攒证据，不是被拒
         elif not _clear(cur):
-            why = "not_urgent" if not_urgent else "current_unconfirmed"
+            why = ("pass_hold" if pass_hold
+                   else "not_urgent" if not_urgent else "current_unconfirmed")
         else:
             why = _request_reject_reason(s, s.req_lane, by)
             if why is None:
@@ -575,6 +587,7 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                     credit=s.req_credit)
     else:
         why = ("no_request" if _clear(cur)
+               else "pass_hold" if pass_hold
                else "not_urgent" if not_urgent else "blocked_unconfirmed")
     return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target, "keep", why,
                            since, None, t_cur, None, s.cooldown_left_s, epoch,

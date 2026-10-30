@@ -47,7 +47,7 @@ def test_reward_infeasible_falls_to_coin():
 def test_pass_picks_roomier_side():
     rep = select(_road(), [], [Obj("car", 0.0, 2.0)], [], 0.0, _p())
     assert rep.layer == 2 and rep.why == "pass"
-    assert abs(rep.target_x_m) == pytest.approx(0.65 * LW, abs=0.05)
+    assert abs(rep.target_x_m) == pytest.approx(0.68 * LW, abs=0.05)
 
 
 def test_both_sides_blocked_holds_center():
@@ -320,7 +320,7 @@ def test_pass_keeps_full_graze_authority():
     rep = select(_road(), [], [Obj("car", 0.0, 2.0)], [], 0.0, _p(),
                  commit_x_m=0.0)
     assert rep.layer == 2 and rep.why == "pass"
-    assert abs(rep.target_x_m) == pytest.approx(0.65 * LW, abs=0.05)
+    assert abs(rep.target_x_m) == pytest.approx(0.68 * LW, abs=0.05)
     assert rep.lane_request is None
 
 
@@ -337,7 +337,7 @@ def test_pending_request_does_not_preempt_yielding():
         rep = select(_road(), opp_kw.get("rewards", []), cars,
                      opp_kw.get("coins", []), 0.0, _p(), commit_x_m=0.0)
         assert rep.layer == 2 and rep.why == "pass", opp_kw
-        assert abs(rep.target_x_m) == pytest.approx(0.65 * LW, abs=0.05)
+        assert abs(rep.target_x_m) == pytest.approx(0.68 * LW, abs=0.05)
         assert rep.lane_request is None
 
 

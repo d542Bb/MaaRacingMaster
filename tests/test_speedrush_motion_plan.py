@@ -847,3 +847,26 @@ def test_metric_z_reset_also_unlocks_bad_x_hold():
                    traffic=((v,), ()))
     car = next(o for o in eng.scene.objs if o.kind == "car")
     assert -5.0 < car.x_m < 0.0
+
+
+def test_pass_band_covers_the_selection_aim():
+    """擦车计分带必须覆盖选择层的瞄准点（0.65 道）。
+
+    下界=自车半宽+目标半宽+对象σ+collision_margin_m，上界=graze_gap_lane×道宽。
+    2026-10-30 前余量 0.2m 把下界推到 2.34m，瞄准点 2.275m 落在带外——计划
+    只能选「贴着包络过」的候选（L4），一局擦边拍只有 21%。"""
+    lw = LW                       # 道宽只按比例缩放，不变量与具体值无关
+    aim = CFG.selection.graze_gap_lane * lw
+    upper = CFG.motion.graze_gap_lane * lw
+    for half in (0.83, CFG.selection.car_half_lane * lw):
+        for sigma in (0.27, 0.34):        # 实测 σ p50/p90
+            lower = (CFG.selection.ego_half_lane * lw + half + sigma
+                     + CFG.motion.collision_margin_m)
+            assert lower < aim < upper
+
+
+def test_steer_levels_resolve_the_pass_band():
+    """档位粒度要能落进计分带：1.3~2s 到站时 0.1 档约 0.8 道、0 档原地，
+    中间必须有 0.05 级落点，否则候选总在「贴包络」和「过远」之间跳。"""
+    levels = CFG.motion.steer_levels
+    assert 0.05 in levels and -0.05 in levels

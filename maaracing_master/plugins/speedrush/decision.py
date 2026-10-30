@@ -458,7 +458,8 @@ class DecisionEngine:
             soft_car=r.soft_car,
             urgent_ttc_s=r.urgent_ttc_s,
             urgent_blind_m=r.urgent_blind_m,
-            merge_safe_ttc_s=r.merge_safe_ttc_s)
+            merge_safe_ttc_s=r.merge_safe_ttc_s,
+            pass_hold=r.pass_hold)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
         # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，
@@ -1344,17 +1345,21 @@ class DecisionEngine:
         lane_ttc = (None if self._scene is None or c0 is None
                     else _lane_ttc_map(self._scene, c0,
                                        self.cfg.motion.horizon_s))
+        # 上一拍选择层的超车动作：路线本拍不抢方向（路线的方向指令会关闭
+        # 机会层，正在进行的擦边会被改成并线；一拍延迟可接受）
+        passing = (self._sel_report is not None
+                   and getattr(self._sel_report, "why", None) == "pass")
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
             request=request, arrival=self._position,
             reject_shift_arrival=self.cfg.route.reject_shift_arrival,
-            lane_ttc=lane_ttc)
+            lane_ttc=lane_ttc, passing=passing)
         self._route_shadow, self._shadow_verdict = tick_route(
             self._route_shadow, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
             request=request, arrival=self._position,
-            reject_shift_arrival=True, lane_ttc=lane_ttc)
+            reject_shift_arrival=True, lane_ttc=lane_ttc, passing=passing)
 
     def _lane_for_route(self, route: RouteState | None,
                         verdict: RouteVerdict | None,

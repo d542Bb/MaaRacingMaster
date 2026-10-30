@@ -833,3 +833,28 @@ def test_missing_evidence_clears_credit():
         assert s2.req_credit == 0.0 and s2.req_lane is None
     s2, v2, n = _req_until_merge(s2, _rep(0.0, 0.0), 1.0, limit=10)
     assert n == P.opportunity_confirm_ticks
+
+
+def test_pass_hold_keeps_lane_while_passing():
+    """超车动作进行中路线不抢方向：临近车 0.3s 到站本会起 urgent，但选择层
+    正在出擦边目标时保持本道（并线会关闭机会层，把刚要成的擦边改成并线）。
+    选择层退出 pass 的下一拍立即恢复逃生判据。"""
+    spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
+    s = _first(_rep(0.0, 0.0, spec))[0]
+    for _ in range(P.urgent_confirm_ticks):
+        s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
+                          lane_ttc={0: 0.3}, passing=True)
+    assert v.verdict == "keep" and v.why == "pass_hold"
+    assert v.lane_ref == 0.0
+    s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
+                      lane_ttc={0: 0.3}, passing=False)
+    assert v.verdict == "merge_start" and v.why == "urgent"
+    # 开关关掉：pass 中也照旧逃生
+    s = _first(_rep(0.0, 0.0, spec))[0]
+    p = replace(P, pass_hold=False)
+    seen = []
+    for _ in range(P.urgent_confirm_ticks):
+        s, v = tick_route(s, _rep(0.0, 0.0, spec), p, dt_s=DT, epoch=0,
+                          lane_ttc={0: 0.3}, passing=True)
+        seen.append((v.verdict, v.why))
+    assert ("merge_start", "urgent") in seen

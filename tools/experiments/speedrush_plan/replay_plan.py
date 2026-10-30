@@ -34,8 +34,14 @@ from maaracing_master.plugins.speedrush.selection import (  # noqa: E402
 
 
 def load_rows(path: Path) -> list[dict]:
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()]
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if "type" in rec or "fid" not in rec:      # 协议行（session/stage/end…）
+            continue
+        rows.append(rec)
     rows.sort(key=lambda r: r["fid"])
     return rows
 

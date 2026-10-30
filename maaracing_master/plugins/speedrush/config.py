@@ -38,7 +38,7 @@ class Selection:
 
     horizon_s: float = 3.0
     max_waypoints: int = 4
-    graze_gap_lane: float = 0.65
+    graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
     opportunity_tol_lane: float = 0.75
     coin_pick_tol_lane: float = 1.2
@@ -262,7 +262,8 @@ class Motion:
     preview_s: float = 0.2
     dt_s: float = 0.05
     steer_levels: tuple[float, ...] = (
-        -0.85, -0.55, -0.35, -0.2, -0.1, 0.0, 0.1, 0.2, 0.35, 0.55, 0.85)
+        -0.85, -0.55, -0.35, -0.2, -0.15, -0.1, -0.05,
+        0.0, 0.05, 0.1, 0.15, 0.2, 0.35, 0.55, 0.85)
     near_z_m: float = 6.0
     # 有距无速域：本车道前方有纵深、但速度窗口未开的车，在此距离内按
     # 距离给提前横移的小分（不参与命中/擦车奖励，只避让）。
@@ -275,7 +276,12 @@ class Motion:
     # 走廊约束只验前 1.0s：恒定杆 2s 必然驶出近场包络，硬验全程会把必要的
     # 避让判成不可行（影子实测 p2 8% 全灭假象）
     corridor_check_s: float = 1.0
-    collision_margin_m: float = 0.2
+    collision_margin_m: float = 0.05
+    # 擦车计分带下界 = 物理包络（含对象 σ）+ 此余量。对象 σ（实测 0.24~0.34m）
+    # 已经是定位不确定度的安全垫，再叠 0.2m 会把带下界推到选择层瞄准点之外——
+    # 候选要么「贴包络」要么「过远」，正好跳过计分带（2026-10-30 实测：擦边
+    # 拍只有 21%，选择层 45% 的 pass 拍在计划层落到回中）。0.05 只留贴包络的
+    # 分辨余量。
     # 走廊两层（2026-10-27）：软边界用 selection.wall_margin_lane（车心离墙
     # 0.35 道，车身留 0.08 道），只收代价；硬边界=车半宽+此间隙，只有越过
     # 它才判不可行。旧实现把软边界当硬约束：车贴边行驶时 1~10cm 的余量侵入
@@ -453,6 +459,7 @@ class Route:
     urgent_ttc_s: float = 1.0        # 紧急逃生时间门：当前道最近到站时间≤此值
     urgent_blind_m: float = 6.0      # 无到站时间时的近距离盲区（米）
     merge_safe_ttc_s: float = 0.8    # 逃生目标道上车的最早到站时间下限（秒）
+    pass_hold: bool = True           # 超车动作进行中不抢方向（见 RouteParams）
 
 
 @dataclass(frozen=True)
@@ -760,8 +767,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             dt_s=_num_def(d, "motion", "dt_s", 0.05, lo=0),
             steer_levels=_floats_def(
                 d, "motion", "steer_levels",
-                (-0.85, -0.55, -0.35, -0.2, -0.1, 0.0,
-                 0.1, 0.2, 0.35, 0.55, 0.85)),
+                (-0.85, -0.55, -0.35, -0.2, -0.15, -0.1, -0.05,
+                 0.0, 0.05, 0.1, 0.15, 0.2, 0.35, 0.55, 0.85)),
             near_z_m=_num_def(d, "motion", "near_z_m", 6.0, lo=0),
             range_hazard_m=_num_def(
                 d, "motion", "range_hazard_m", 70.0, lo=0),
@@ -772,7 +779,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             corridor_check_s=_num_def(
                 d, "motion", "corridor_check_s", 1.0, lo=0),
             collision_margin_m=_num_def(
-                d, "motion", "collision_margin_m", 0.2, lo=0),
+                d, "motion", "collision_margin_m", 0.05, lo=0),
             corridor_hard_clearance_m=_num_def(
                 d, "motion", "corridor_hard_clearance_m", 0.15, lo=0),
             corridor_soft_cost_per_m=_num_def(
@@ -861,7 +868,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             horizon_s=_num_def(d, "selection", "horizon_s", 3.0, lo=0),
             max_waypoints=_int_def(d, "selection", "max_waypoints", 4,
                                    lo=1, hi=4),
-            graze_gap_lane=_num_def(d, "selection", "graze_gap_lane", 0.65,
+            graze_gap_lane=_num_def(d, "selection", "graze_gap_lane", 0.68,
                                     lo=0),
             center_band_lane=_num_def(d, "selection", "center_band_lane", 0.3,
                                       lo=0),
