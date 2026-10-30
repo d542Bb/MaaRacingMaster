@@ -313,11 +313,12 @@ def test_drive_starts_and_stops_recorder_in_record_mode(env) -> None:
 
 
 def test_record_mode_writes_single_session_dir(env) -> None:
-    """人工驾驶阶段只产一个目录：语料与调试图不再各落一份（2026-10-26 收口）。
+    """人工驾驶阶段只产一个目录，且与程序控制局同一套布局。
 
     回归锁：录制期同一段画面曾被写两处——``data/speedrush/demos/manual_*``（语料）
     与 ``debug/speedrush/<时刻>_p<N>``（20Hz raw/hud 调试图），单阶段约 300MB。
-    现在只在录制会话目录内落语料，且不建调试图。
+    现在一个会话目录里就是同一套布局：``raw/`` 原帧 + 叠加图 + 统一索引，
+    不再另建控制会话目录、也不往 ``data/`` 写。
     """
     mod, _, _ = env
     mod._record_mode = True
@@ -329,9 +330,14 @@ def test_record_mode_writes_single_session_dir(env) -> None:
     sessions = sorted(p.name for p in root.iterdir() if p.is_dir())
     assert len(sessions) == 1 and sessions[0].endswith("_manual_p1")
     session = root / sessions[0]
-    # 调试图是同一批画面的第二份拷贝：录制期不建（raw/ 与 <seq>_hud.jpg 均无）
-    assert not (session / "raw").exists()
-    assert not list(session.glob("*_hud.jpg"))
+    # 原帧落 raw/，索引 file 指向会话根下的相对路径（与控制局同一口径）
+    assert (session / "raw").is_dir()
+    rows = [json.loads(line) for line in
+            (session / "frames.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows and all((session / r["file"]).is_file() for r in rows)
+    assert all(r["file"].startswith("raw/") for r in rows)
+    # HUD 读数与控制局同一落点
+    assert (session / "hud" / "hud.jsonl").is_file()
     # data/ 只留结构化业务数据：录制不再往那里写
     assert not (sr.debug_dir().parent / "data" / "speedrush").exists()
 

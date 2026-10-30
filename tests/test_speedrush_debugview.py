@@ -291,6 +291,12 @@ def test_writer_saves_raw_hud_pair(tmp_path, frame):
     assert w.saved == 1 and w.errors == 0
     assert (tmp_path / "sess" / "raw" / "0001_raw.jpg").exists()
     assert (tmp_path / "sess" / "0001_hud.jpg").exists()
+    # 控制局也写会话元信息：与人工局同构，手柄项显式 null
+    meta = json.loads((tmp_path / "sess" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source"] == "control"
+    assert meta["frames_written"] == 1 and meta["hud_written"] == 1
+    assert meta["pad_samples"] is None and meta["pad_slot"] is None
+    assert meta["hud_jpeg_quality"] == 85
 
 
 def test_writer_throttles_to_interval(tmp_path, frame):
@@ -321,15 +327,18 @@ def test_writer_keeps_steer_history_every_tick(tmp_path, frame):
 
 
 def test_writer_render_error_counted_not_raised(tmp_path, frame, monkeypatch):
-    """渲染炸 → worker 计数不外泄（观测件不碰主路的守卫在 _loop 层）。"""
+    """渲染炸 → 计数不外泄；原帧照常落盘并进索引，叠加图写 null（不碰主路）。"""
     def _boom(*a, **k):
         raise RuntimeError("boom")
     monkeypatch.setattr(dv, "render_hud", _boom)
     w = _writer(tmp_path)
     w.tick(frame, _snap())
     w.stop()
-    assert w.errors == 1 and w.saved == 0
-    assert (tmp_path / "sess" / "raw" / "0001_raw.jpg").exists()  # raw 先行落盘
+    assert w.errors == 1 and w.saved == 1 and w.hud_written == 0
+    assert (tmp_path / "sess" / "raw" / "0001_raw.jpg").exists()
+    row = json.loads((tmp_path / "sess" / "frames.jsonl").read_text(
+        encoding="utf-8").splitlines()[0])
+    assert row["hud"] is None
 
 
 # ---------- hud 最新行槽 ----------
@@ -366,6 +375,9 @@ def test_writer_writes_frame_index(tmp_path, frame):
     assert row["seq"] == 1 and row["frame_id"] == 42
     assert row["ts_ns"] == 123456789
     assert row["file"] == "raw/0001_raw.jpg"
+    assert row["hud"] == "0001_hud.jpg"
+    # 字段与人工录制局同一套：age_ms 缺席时显式 null
+    assert "age_ms" in row and row["age_ms"] is None
     assert (tmp_path / "sess" / row["file"]).exists()
 
 

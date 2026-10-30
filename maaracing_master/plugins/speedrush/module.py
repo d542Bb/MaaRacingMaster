@@ -51,7 +51,8 @@ from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand, N_BANDS, _band_bounds,
     build_corridor, far_center_lane, far_hint_lane)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
-from maaracing_master.plugins.speedrush.debugview import DebugPairWriter
+from maaracing_master.plugins.speedrush.debugview import (
+    DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
     blocked_inner_reading, load_session, region_reading, CAM_Z_DATUM_M,
@@ -677,8 +678,10 @@ class SpeedRushModule(ActivityModule):
                 return False
 
             recorder = self._begin_recording(phase, round_no) if self._record_mode else None
-            # HUD 读数挂在录制会话上：对齐目标就是同会话的 frames.jsonl（见 _begin_hud）
-            observer = self._begin_hud(recorder.out_dir, phase, round_no) if recorder is not None else None
+            # HUD 读数挂在本阶段会话上（人工局=录制会话、控制局=控制会话），
+            # 两模式同一落点：<会话>/hud/（对齐目标=同会话 frames.jsonl）
+            observer = (self._begin_hud(recorder.out_dir / "hud", phase, round_no)
+                        if recorder is not None else None)
             try:
                 return self._drive_loop(phase, recorder, round_no)
             finally:
@@ -781,8 +784,17 @@ class SpeedRushModule(ActivityModule):
         # 人工驾驶阶段的产物目录=录制会话目录：语料与证据同家，不再另建
         # ``debug/speedrush/<时刻>_p<阶段>/``（同一段画面落两份，2026-10-26 收口）
         run_dir = recorder.out_dir if recorder is not None else None
-        chain = self._build_control_chain(phase, run_dir=run_dir) \
+        chain = self._build_control_chain(phase, run_dir=run_dir,
+                                          round_no=round_no) \
             if ((control and not straight) or shadow) else None
+        # 人工局的程序叠加图由录制器自己落（同一份原帧 + 同一拍快照），链路只
+        # 负责把快照交回；控制局仍走 DebugPairWriter（chain["debug"]）。
+        if chain is not None and recorder is not None \
+                and recorder.hud_pairs_enabled:
+            chain["hud_rec"] = recorder
+        # 人工局的 HUD 读数也进叠加图读数带（与自动局同一展示面）
+        if chain is not None and self._hud is not None:
+            chain["hud_ref"] = self._hud
         # 直行档 trace（stub chain 与控制链同协议：行进流水汇 + 阶段收尾汇总）；
         # 油门取 decision.json 的 throttle_raw 单一真源，不另抄数值。
         straight_chain = ({"trace": [], "trace_sink": self._trace,
@@ -899,6 +911,13 @@ class SpeedRushModule(ActivityModule):
                             phase, pace_ms=pace_ms,
                             cap_ts={"t0": t0, "pick": t_pick,
                                     "rec": t_rec, "det": t_det})
+                    if recorder is not None:
+                        # 快照按帧号交回录制器（同拍同帧）：没跑控制拍的帧交 None，
+                        # 叠加图索引写 null 而不是挂一个空指针
+                        snap_dbg = None
+                        if chain is not None and chain.get("last_snap_fid") == fid:
+                            snap_dbg = chain.get("last_snap")
+                        recorder.attach_hud_snap(fid, snap_dbg)
                     frames += 1
                     if chain is not None and chain.get("abort_phase"):
                         _tlog(self,
@@ -975,13 +994,16 @@ class SpeedRushModule(ActivityModule):
         """debug/ 产物面总闸（ctx.debug.enabled；ctx 无该面=关）。
 
         管整个 debug/speedrush/<会话>/：trace/局汇总（落盘闸，追加点在内存
-        不闸）、raw/hud 双图、hud 读数、badframes 取证、depth_debug 证据包
-        （密度另受 debug_dump 三态闸 off/events/full）。开关关=debug/ 下零
-        产物；data/（业务数据 DB）与 logs/（阶段状态）不受此门。"""
+        不闸）、raw/hud 叠加图（两种局同一套布局）、hud 读数、badframes 取证、
+        depth_debug 证据包（密度另受 debug_dump 三态闸 off/events/full）。开关
+        关=调试图与深度证据零产物；**录制语料不受此门**（人工局的原帧与手柄是
+        录制模式的产出，见 _begin_recording）。data/（业务数据 DB）与 logs/（阶段
+        状态）也不受此门。"""
         return bool(getattr(getattr(self.ctx, "debug", None), "enabled", False))
 
     def _build_control_chain(self, phase: int = 0, *,
-                             run_dir: Path | None = None) -> dict:
+                             run_dir: Path | None = None,
+                             round_no: int | None = None) -> dict:
         """按阶段新建一份干净世界：跟踪/聚合/决策/规划各一，配置开局读一次。
 
         阶段间不共享状态（行为稿 §九：阶段信息只进过渡窗判据，两阶段同一决策器），
@@ -1058,10 +1080,13 @@ class SpeedRushModule(ActivityModule):
                                       if cfg.lateral_frame.enabled else None),
                 # raw/hud 调试图落盘器（10fps；debug 开关闸，测试 ctx=None → None →
                 # tick 空转）。生命周期=chain，finally 收口。人工驾驶阶段不建：
-                # 同一段画面已在录制语料里（30fps 原帧），调试图是第二份拷贝
-                # （2026-10-26 收口——录制期只留 manual_ 会话一个目录）。
-                "debug": (DebugPairWriter(run_dir, cal=cal)
+                # 录制器既写原帧又写同一套叠加图与索引，再建 writer 就是同一段
+                # 画面落两份（2026-10-30 布局收口，两模式共用 session_layout）。
+                "debug": (DebugPairWriter(run_dir, cal=cal, phase=phase,
+                                          round_no=round_no)
                           if dbg_on and not manual else None),
+                # 人工局的叠加快照收件人（_drive_loop 建链后注入；控制局为 None）
+                "hud_rec": None,
                 "hud_ref": None,
                 # 开局视角守卫（闸 view_guard.enabled）：本进程确认过保险杠
                 # 机位后不再建；成功/失败即终态。abort_phase 由守卫置位，
@@ -1727,36 +1752,45 @@ class SpeedRushModule(ActivityModule):
         _ts = chain.get("trace_sink")
         if _ts is not None:
             _ts.append(_row)
-        # 调试图快照（debugview 10fps 节流；writer=None=闸关/测试，零开销）
+        # 调试图快照（控制局=debugview 节流写盘；人工局=交录制器渲染叠加图）
         dbg = chain.get("debug")
+        hud_rec = chain.get("hud_rec")
+        if dbg is None and hud_rec is None:
+            return
+        # 人工对照局（影子拍 gpad=None）读物理手柄实际杆量：调试图底部
+        # 输入带用它和程序反事实杆值同屏，直接判「车是人打歪还是程序带歪」。
+        # 自动局不读——那时游戏输入是虚拟手柄下发值，物理手柄不参与。
+        pad = None
+        if gpad is None:
+            pad_st = xinput.read_first_connected()
+            if pad_st is not None:
+                pad = {"lx": int(pad_st.left_stick[0]),
+                       "ly": int(pad_st.left_stick[1]),
+                       "rt": int(pad_st.right_trigger)}
+        snap_dbg = {
+            "fid": fid, "ts_ns": ts_ns, "age_ms": round(age_ms, 1),
+            "phase": phase,
+            "result": result, "reading": dgeo, "grid": dgrid,
+            "lane": lane,               # 线观测（叠加回画面 + 底部摘要）
+            "pad": pad,                 # 物理手柄实际杆量（人工局）
+            "road_offset": road_offset,
+            "grid_off": chain["ego_road"].last.get("grid_off"),
+            "corridor": corridor,   # 分带走廊（debugview 逐带来源叠层）
+            "selection": eng.selection_report,   # 本拍四层选择
+            "sel_objects": eng.selection_objects,  # 选择器眼里的机会
+            "sel_debug": eng.selection_debug,      # 选择帧快照
+            "scene": eng.scene,                    # 场景快照（motion 输入）
+            "plan": chain.get("last_plan"),        # 本拍轨迹计划
+            "decision": self._control_last,   # 本拍决策/供数快照（新建不改旧）
+            "hud": (chain["hud_ref"].latest()
+                    if chain.get("hud_ref") is not None else None),
+            "n_groups": len(obs.coin_groups)}
         if dbg is not None:
-            # 人工对照局（影子拍 gpad=None）读物理手柄实际杆量：调试图底部
-            # 输入带用它和程序反事实杆值同屏，直接判「车是人打歪还是程序带歪」。
-            # 自动局不读——那时游戏输入是虚拟手柄下发值，物理手柄不参与。
-            pad = None
-            if gpad is None:
-                pad_st = xinput.read_first_connected()
-                if pad_st is not None:
-                    pad = {"lx": int(pad_st.left_stick[0]),
-                           "ly": int(pad_st.left_stick[1]),
-                           "rt": int(pad_st.right_trigger)}
-            dbg.tick(frame, {
-                "fid": fid, "ts_ns": ts_ns, "phase": phase,
-                "result": result, "reading": dgeo, "grid": dgrid,
-                "lane": lane,               # 线观测（叠加回画面 + 底部摘要）
-                "pad": pad,                 # 物理手柄实际杆量（人工局）
-                "road_offset": road_offset,
-                "grid_off": chain["ego_road"].last.get("grid_off"),
-                "corridor": corridor,   # 分带走廊（debugview 逐带来源叠层）
-                "selection": eng.selection_report,   # 本拍四层选择
-                "sel_objects": eng.selection_objects,  # 选择器眼里的机会
-                "sel_debug": eng.selection_debug,      # 选择帧快照
-                "scene": eng.scene,                    # 场景快照（motion 输入）
-                "plan": chain.get("last_plan"),        # 本拍轨迹计划
-                "decision": self._control_last,   # 本拍决策/供数快照（新建不改旧）
-                "hud": (chain["hud_ref"].latest()
-                        if chain.get("hud_ref") is not None else None),
-                "n_groups": len(obs.coin_groups)})
+            dbg.tick(frame, snap_dbg)
+        if hud_rec is not None:
+            # 快照只交给录制器按帧号取；主循环不再改这个 dict
+            chain["last_snap"] = snap_dbg
+            chain["last_snap_fid"] = fid
 
     def _straight_tick(self, gpad, fid: int, ts_ns: int, chain: dict,
                        throttle_raw: int) -> None:
@@ -2060,7 +2094,10 @@ class SpeedRushModule(ActivityModule):
             f"（实际 {rate:.1f}Hz，目标 {DRIVE_TICK_HZ:.0f}Hz）", "INFO")
 
     def _begin_recording(self, phase: int, round_no: int) -> DriveRecorder | None:
-        """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。"""
+        """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。
+
+        程序叠加图（BEV/决策叠层）与调试图同一闸：debug 开关开时注入渲染器，
+        复用的是控制链同一个渲染函数；关时只录原帧与手柄。"""
         try:
             # manual 标签标出人工驾驶语料（录制模式必然人驾）；目录名与自动阶段同规则：
             # <运行编号>_manual_p<阶段>，运行编号取日志会话 token
@@ -2068,8 +2105,16 @@ class SpeedRushModule(ActivityModule):
             session = make_session_dir(_record_root(), tag="manual", stamp=stamp)
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
+            hud_render = None
+            if self._debug_enabled():
+                cal = load_calib()
+
+                def hud_render(frame, snap):
+                    return render_hud(frame, snap, cal)
             rec = DriveRecorder(session, phase=phase, round_no=round_no,
-                                group_id=getattr(self._log_grp, "id", None))
+                                group_id=getattr(self._log_grp, "id", None),
+                                hud_render=hud_render,
+                                hud_interval_s=DEBUG_INTERVAL_S)
             rec.start()
         except Exception as exc:  # noqa: BLE001 —— 采集失败不阻断流程
             _tlog(self, f"[极速狂飙] 录制器启动失败: {exc!r}", "WARNING")
@@ -2080,10 +2125,9 @@ class SpeedRushModule(ActivityModule):
     def _begin_hud(self, out_dir: Path, phase: int, round_no: int) -> HudObserver | None:
         """在指定目录起 HUD 读数观察线程；失败返回 None（读数失败不该中止对局）。
 
-        两个调用形态，取帧源同一（``frame_with_age``，fid/ts_ns 对齐链路不变）：
-        录制模式传录制会话目录（对齐目标=同会话 ``frames.jsonl``）；直行基线档传
-        control trace 根下的 ``hud_<时刻>_p<阶段>`` 目录（对齐目标=同时刻命名的
-        ``trace_*.jsonl``——直行档没有录制帧，时间轴锚点就是 trace 的时间轴）。
+        两个调用形态，取帧源同一（``frame_with_age``，fid/ts_ns 对齐链路不变），
+        落点也同一：会话目录下的 ``hud/``（对齐目标=同会话 ``frames.jsonl``）——
+        人工局挂录制会话、控制两档挂控制会话（``_run_dir`` 命名）。
         """
         assert self.ctx is not None
         try:
@@ -2106,9 +2150,9 @@ def _record_root() -> Path:
     """录制语料根目录：``debug/speedrush/``（与调试产物同家）。
 
     与安装目录解耦、更新不丢数据，也不污染仓库工作树。人工驾驶阶段只产一个
-    目录（``manual_<时刻>_p<阶段>``）：语料与调试图分家会让同一段画面落两份
-    （2026-10-26 维护者裁定收口到一处），故不再写 ``data/speedrush/demos/``
-    ——``data/`` 只留结构化业务数据。
+    会话目录（``manual_<时刻>_p<阶段>``）：原帧、叠加图、索引、HUD 读数与深度
+    证据同家（2026-10-30 起与控制局共用 ``session_layout`` 一套布局），不再写
+    ``data/speedrush/demos/``——``data/`` 只留结构化业务数据。
     """
     return debug_dir() / "speedrush"
 

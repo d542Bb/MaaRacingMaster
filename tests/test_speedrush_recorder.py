@@ -2,7 +2,7 @@
 """speedrush 驾驶录制器的回归锁。
 
 覆盖：帧落盘与索引、手柄样本落盘（注入假手柄，不依赖真实硬件）、meta 计数、
-队列满时的丢帧计数（反压纪律）、stop 幂等。
+队列满时的丢帧计数（反压纪律）、stop 幂等、程序叠加图与索引的配对。
 """
 
 from __future__ import annotations
@@ -14,10 +14,10 @@ import pytest
 
 from maaracing_master.core import xinput
 from maaracing_master.plugins.speedrush.recorder import (
-    SCHEMA_VERSION,
     DriveRecorder,
     make_session_dir,
 )
+from maaracing_master.plugins.speedrush.session_layout import SCHEMA_VERSION
 
 
 def _frame(w: int = 64, h: int = 48) -> np.ndarray:
@@ -58,7 +58,11 @@ def test_records_frames_and_writes_index(tmp_path) -> None:
         # frame_id 与 ts_ns 必须原样落盘：跨源对齐就靠它们，丢了就退化成"按序号猜"
         assert row["frame_id"] == 100 + i
         assert row["ts_ns"] == 1_000_000 + i * 33_000_000
-        assert (tmp_path / "s1" / "frames" / row["file"]).is_file()
+        # 索引 file 是相对会话根的路径（与程序控制局同一口径），不再隐含 frames/
+        assert row["file"] == f"raw/{i + 1:04d}_raw.jpg"
+        assert (tmp_path / "s1" / row["file"]).is_file()
+        # 没注入渲染器 = 不产叠加图：hud 显式 null，不是键缺席
+        assert row["hud"] is None
 
 
 def test_records_pad_samples(tmp_path, monkeypatch) -> None:
@@ -94,7 +98,12 @@ def test_meta_counts_and_schema(tmp_path) -> None:
     assert meta["disk_pixel_order"] == "rgb"
     assert meta["frames_written"] == 1
     assert meta["frames_dropped"] == 0
+    assert meta["source"] == "manual"
     assert meta["jpeg_quality"] == 80
+    # 没注入渲染器：叠加图项显式空，"没采集到"不等于"字段恰好没有"
+    assert meta["hud_written"] == 0
+    assert meta["hud_jpeg_quality"] is None
+    assert meta["pad_samples"] == 0
     assert meta["frame_w"] == 32 and meta["frame_h"] == 16
     assert meta["stop_reason"] == "drive_phase_end"
     assert meta["monotonic_start_ns"] > 0
@@ -123,7 +132,7 @@ def test_queue_full_counts_drop_without_blocking(tmp_path) -> None:
     rec = DriveRecorder(tmp_path / "s4")
     rec._running = True  # 只测入队路径，不起后台线程
     for _ in range(rec._frame_q.maxsize):
-        rec._frame_q.put_nowait((0, 0, 0, 0.0, _frame(2, 2)))
+        rec._frame_q.put_nowait((0, 0, 0, 0.0, _frame(2, 2), False))
     rec.record_frame(_frame(2, 2), frame_id=1, ts_ns=1)  # 队满 → 应计数而非等待
     assert rec._frames_dropped == 1
     assert rec._frames_written == 0
@@ -167,10 +176,78 @@ def test_recorded_frame_is_standard_pixel_order(tmp_path) -> None:
     rec.stop()
 
     row = _read_jsonl(tmp_path / "s7" / "frames.jsonl")[0]
-    got = cv2.imread(str(tmp_path / "s7" / "frames" / row["file"]), cv2.IMREAD_COLOR)
+    got = cv2.imread(str(tmp_path / "s7" / row["file"]), cv2.IMREAD_COLOR)
     assert got is not None
     r_ch, b_ch = got[:, :, 2].mean(), got[:, :, 0].mean()  # imread 返回 BGR
     assert r_ch > b_ch + 100, f"R/B 互换（R={r_ch:.0f} B={b_ch:.0f}）—— 写盘前未转通道"
+
+
+def _wait_until(pred, timeout_s: float = 2.0) -> None:
+    import time
+    deadline = time.monotonic() + timeout_s
+    while not pred() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_hud_pair_written_for_sampled_frame(tmp_path) -> None:
+    """注入渲染器 + 同拍快照 → 录制器自己写叠加图，索引 hud 指向实际文件。
+
+    人工局的叠加图必须与索引同源：索引里出现的文件名就一定存在，
+    渲染缺席写 null，不挂悬空指针。
+    """
+    snaps: list[dict] = []
+
+    def _render(frame, snap):
+        snaps.append(snap)
+        return np.zeros((8, 12, 3), dtype=np.uint8)
+
+    rec = DriveRecorder(tmp_path / "h1", pad_poll_hz=50.0, hud_render=_render)
+    rec.start()
+    rec.record_frame(_frame(), frame_id=7, ts_ns=70)
+    rec.attach_hud_snap(7, {"fid": 7, "decision": {"steer": 0}})
+    _wait_until(lambda: rec.stats["frames_written"] >= 1)
+    rec.stop()
+
+    row = _read_jsonl(tmp_path / "h1" / "frames.jsonl")[0]
+    assert row["hud"] == "0001_hud.jpg"
+    assert (tmp_path / "h1" / row["hud"]).is_file()
+    # 渲染器拿到的是同一帧的形状（投影标记依赖它）
+    assert snaps[0]["frame_shape"] == (48, 64, 3)
+    meta = json.loads((tmp_path / "h1" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["hud_written"] == 1 and meta["hud_jpeg_quality"] == 85
+
+
+def test_hud_pair_absent_without_snap(tmp_path) -> None:
+    """被节流选中但本拍没有决策快照：索引写 null，叠加图不落盘、也不算写错。"""
+    rec = DriveRecorder(tmp_path / "h2", pad_poll_hz=50.0,
+                        hud_render=lambda frame, snap: np.zeros((8, 8, 3), np.uint8))
+    rec.start()
+    rec.record_frame(_frame(), frame_id=9, ts_ns=90)
+    rec.attach_hud_snap(9, None)
+    _wait_until(lambda: rec.stats["frames_written"] >= 1)
+    rec.stop()
+
+    row = _read_jsonl(tmp_path / "h2" / "frames.jsonl")[0]
+    assert row["hud"] is None
+    assert rec.stats["hud_written"] == 0
+    assert not list((tmp_path / "h2").glob("*_hud.jpg"))
+
+
+def test_hud_pair_throttled_to_interval(tmp_path) -> None:
+    """叠加图按节流窗采样：窗口内的后续帧只录原帧，不重复渲染。"""
+    rec = DriveRecorder(tmp_path / "h3", pad_poll_hz=50.0,
+                        hud_render=lambda frame, snap: np.zeros((8, 8, 3), np.uint8),
+                        hud_interval_s=10.0)
+    rec.start()
+    for i in range(3):
+        rec.record_frame(_frame(), frame_id=20 + i, ts_ns=200 + i)
+        rec.attach_hud_snap(20 + i, {"fid": 20 + i})
+    _wait_until(lambda: rec.stats["frames_written"] >= 3)
+    rec.stop()
+
+    rows = _read_jsonl(tmp_path / "h3" / "frames.jsonl")
+    assert len(rows) == 3
+    assert [r["hud"] is not None for r in rows] == [True, False, False]
 
 
 def test_make_session_dir_uses_timestamp(tmp_path) -> None:

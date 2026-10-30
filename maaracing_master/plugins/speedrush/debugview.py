@@ -5,9 +5,9 @@
 按 10fps 节流渲染+落盘。渲染/写盘失败静默计数——调试图绝不干扰控制链（与
 depth_geo 取证写手同姿态；后者是深度管线的证据包面，与本图互补、互不替代）。
 
-**目录契约**（沿 treasure：`debug/<模块>/<会话>/` + `raw/` 子目录）：
-  `<seq:04d>_raw.jpg`   原始帧全幅（q95，人工金标标注/离线重渲染的底图）
-  `<seq:04d>_hud.jpg`   双联渲染图（q85）：
+**目录契约**（与录制语料同一套，见 ``session_layout``）：
+  `raw/<seq:04d>_raw.jpg`   原始帧全幅（q95，人工金标标注/离线重渲染的底图）
+  `<seq:04d>_hud.jpg`       双联渲染图（q85）：
     左联 = 画面叠加：YOLO 框（coin 黄 / car 红 / bonus 品红）+ 车道线观测叠加
            （黄/白线按拟合参数回投到画面，标注颜色/侧别/道号）+ 决策/供数读数带
            + HUD 比分读数（HudObserver 最新行，score/rate × a/b 槽位）
@@ -48,6 +48,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -61,6 +62,12 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     X_MAX_M)
 from maaracing_master.plugins.speedrush.lane_obs import (
     DEFAULT_CAM_H, FOCAL, LANE_W, VPX, Y_H)
+from maaracing_master.plugins.speedrush.session_layout import (
+    SOURCE_CONTROL,
+    build_meta,
+    hud_relpath,
+    raw_relpath,
+)
 from maaracing_master.plugins.speedrush.world_model import (
     Calib, load_calib)
 
@@ -74,6 +81,8 @@ _CAR_HALF_M = 0.9
 DEBUG_FPS = 10
 DEBUG_INTERVAL_S = 1.0 / DEBUG_FPS
 _QUEUE_MAX = 20                   # 约 2 秒 @10Hz；满则丢旧快照，保最新
+_RAW_JPEG_QUALITY = 95
+_HUD_JPEG_QUALITY = 85
 
 # 三态着色（BGR）：unknown 灰 / drivable 暗绿 / blocked 红；挖洞格橄榄描重
 _STATE_BGR = {GRID_UNKNOWN: (64, 64, 64),
@@ -748,16 +757,22 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
 
 
 class DebugPairWriter:
-    """raw+hud 落盘器：tick() 入队本拍快照，IO 线程逐拍渲染写盘（20Hz）。
+    """raw+hud 落盘器：tick() 入队本拍快照，IO 线程逐拍渲染写盘（10Hz）。
 
     生命周期 = 控制链：链建即起 daemon，链收 stop()（排空队列后退出）。
     队列有界（满丢旧保新）；渲染/写盘异常静默计数——观测件不碰主路。
     tick() 里的 frame 是 WGC 当前缓存数组（帧号变才重绑新数组，旧数组不被
     原地改写）；snap 内的 result/corridor/scene/decision 均为本拍新建对象，
-    入队后主循环不再改它们，因此 IO 线程延迟渲染拿到的仍是本拍结果。"""
+    入队后主循环不再改它们，因此 IO 线程延迟渲染拿到的仍是本拍结果。
+
+    产物布局与人工录制会话同一套（``session_layout``）：``raw/`` + 叠加图 +
+    ``frames.jsonl`` + ``meta.json``。人工局由录制器自己写这套（叠加图引用
+    同一份原帧），本 writer 只在控制链里建，两种局不会同时写一个目录。"""
 
     def __init__(self, session_dir: Path, cal: Calib | None = None,
-                 interval_s: float | None = None):
+                 interval_s: float | None = None,
+                 *, phase: int | None = None,
+                 round_no: int | None = None):
         self._dir = Path(session_dir)
         self._raw_dir = self._dir / "raw"
         self._cal = cal if cal is not None else load_calib()
@@ -767,12 +782,17 @@ class DebugPairWriter:
         self.saved = 0
         self.dropped = 0
         self.errors = 0
+        self.hud_written = 0
         self.last_ms = 0.0
-        # 帧索引（2026-10-27）：raw/hud 的 seq 与采集帧号、帧时戳一一对应。
-        # 此前实跑会话只有图没有索引，队列满丢旧保新会让「第 i 张图 ↔ 第 i 拍」
-        # 不成立——离线把像素结论接到控制状态上时只能作废（当日 P1 核查踩过）。
-        # 字段名复用 DriveRecorder 的 frames.jsonl（seq/frame_id/ts_ns/file），
-        # 不另起第二套编号；人工段不建本 writer，两文件不会同目录撞车。
+        self._phase = phase
+        self._round_no = round_no
+        self._frame_size: tuple[int, int] | None = None
+        self._started_ns = time.perf_counter_ns()
+        self._started_iso = datetime.now().isoformat(timespec="seconds")
+        # 帧索引：raw/hud 的 seq 与采集帧号、帧时戳一一对应。此前实跑会话只有
+        # 图没有索引，队列满丢旧保新会让「第 i 张图 ↔ 第 i 拍」不成立——离线
+        # 把像素结论接到控制状态上时只能作废（2026-10-27 当日 P1 核查踩过）。
+        # 字段与人工录制器同一套（``session_layout``），不另起编号。
         self._idx_path = self._dir / "frames.jsonl"
         self._idx_f = None
         self._q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
@@ -826,6 +846,7 @@ class DebugPairWriter:
             except OSError:
                 pass
             self._idx_f = None
+        self._write_meta(reason)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -843,33 +864,80 @@ class DebugPairWriter:
         self._seq += 1
         self._dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
-        # raw 落 raw/ 子目录（treasure 契约）；hud 渲染图落会话根
-        cv2.imwrite(str(self._raw_dir / f"{self._seq:04d}_raw.jpg"),
-                    cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR),
-                    [cv2.IMWRITE_JPEG_QUALITY, 95])
+        h, w = frame_rgb.shape[:2]
+        if self._frame_size is None:
+            self._frame_size = (int(w), int(h))
+        raw_name = raw_relpath(self._seq)
+        ok_raw = cv2.imwrite(
+            str(self._dir / raw_name),
+            cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR),
+            [cv2.IMWRITE_JPEG_QUALITY, _RAW_JPEG_QUALITY])
+        if not ok_raw:
+            self.errors += 1       # 索引不指向不存在的文件
+            return
         snap = dict(snap)
         snap["frame_shape"] = frame_rgb.shape
-        hud = render_hud(frame_rgb, snap, self._cal)
-        cv2.imwrite(str(self._dir / f"{self._seq:04d}_hud.jpg"), hud,
-                    [cv2.IMWRITE_JPEG_QUALITY, 85])
-        self._write_index(snap)
+        # 渲染失败只让"叠加图缺席"，原帧照常进索引（hud=null）——与人工局同一条
+        # 纪律：索引里的文件一定存在，缺席用 null 表达，而不是整行不留。
+        hud_name = None
+        try:
+            hud = render_hud(frame_rgb, snap, self._cal)
+            name = hud_relpath(self._seq)
+            if cv2.imwrite(str(self._dir / name), hud,
+                           [cv2.IMWRITE_JPEG_QUALITY, _HUD_JPEG_QUALITY]):
+                self.hud_written += 1
+                hud_name = name
+            else:
+                self.errors += 1
+        except Exception:  # noqa: BLE001 —— 可视化失败不碰主路
+            self.errors += 1
+        self._write_index(snap, hud_name)
         self.last_ms = (time.perf_counter() - t0) * 1000.0
         self.saved += 1
 
-    def _write_index(self, snap: dict) -> None:
-        """帧索引一行：seq ↔ 采集帧号 ↔ 帧时戳 ↔ 文件名。
+    def _write_index(self, snap: dict, hud_name: str | None) -> None:
+        """帧索引一行：seq ↔ 采集帧号 ↔ 帧时戳 ↔ 文件（与人工局同一套字段）。
 
         缺 fid 或时戳就写 null，不拿 seq 反推、不用当前时刻冒充采集时刻——
         这条索引的全部价值就是"图与拍能一一对上"，伪造一个就等于没有。
         写失败只计数（观测件不碰主路），与渲染异常同一纪律。"""
         row = {"seq": self._seq, "frame_id": snap.get("fid"),
-               "ts_ns": snap.get("ts_ns"),
-               "file": f"raw/{self._seq:04d}_raw.jpg",
-               "hud": f"{self._seq:04d}_hud.jpg"}
+               "ts_ns": snap.get("ts_ns"), "age_ms": snap.get("age_ms"),
+               "file": raw_relpath(self._seq), "hud": hud_name}
         try:
             if self._idx_f is None:
                 self._idx_f = open(self._idx_path, "a", encoding="utf-8")
             self._idx_f.write(json.dumps(row, ensure_ascii=False) + "\n")
             self._idx_f.flush()
+        except OSError:
+            self.errors += 1
+
+    def _write_meta(self, reason: str) -> None:
+        """会话元信息（与人工局同构）：控制局没有手柄项，显式 None。"""
+        w, h = self._frame_size or (0, 0)
+        meta = build_meta(
+            source=SOURCE_CONTROL,
+            started_at=self._started_iso,
+            ended_at=datetime.now().isoformat(timespec="seconds"),
+            monotonic_start_ns=self._started_ns,
+            phase=self._phase,
+            round_no=self._round_no,
+            frame_w=w,
+            frame_h=h,
+            jpeg_quality=_RAW_JPEG_QUALITY,
+            hud_jpeg_quality=_HUD_JPEG_QUALITY,
+            frames_written=self.saved,
+            frames_dropped=self.dropped,
+            hud_written=self.hud_written,
+            write_errors=self.errors,
+            pad_slot=None,
+            pad_poll_hz=None,
+            pad_samples=None,
+            stop_reason=reason,
+        )
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            (self._dir / "meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
             self.errors += 1

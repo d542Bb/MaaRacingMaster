@@ -694,9 +694,10 @@ class TestModuleWiring:
         assert len(_spy.instances) == 1
         obs = _spy.instances[0]
         assert obs.started and obs.stopped_reason == "phase_end"
-        # 与录制器同一会话目录（对齐目标就是同会话的 frames.jsonl）
-        assert obs.out_dir.parent == sr.debug_dir() / "speedrush"
-        assert (obs.out_dir / "frames.jsonl").is_file()
+        # 与控制局同一落点：<会话>/hud/（对齐目标=同会话 frames.jsonl）
+        assert obs.out_dir.name == "hud"
+        assert obs.out_dir.parent.parent == sr.debug_dir() / "speedrush"
+        assert (obs.out_dir.parent / "frames.jsonl").is_file()
         # 取帧走 frame_with_age（帧号/采集时刻的唯一来源），不是 screenshot
         assert obs.kw["frame_source"].__self__ is ctx.capture
         assert obs.kw["phase"] == 1 and obs.kw["round_no"] == 1
