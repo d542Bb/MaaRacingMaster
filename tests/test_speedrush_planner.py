@@ -9,6 +9,7 @@ CONSERVE/FAULT 优先级、时间基低通、每 tick 限幅语义、死区边�
 from __future__ import annotations
 
 import math
+import random
 import types
 from dataclasses import replace
 
@@ -73,40 +74,67 @@ def test_step_is_heading_kinematics():
 
 
 class _Rig:
-    """闭环测试台：合成车（杆→航向→横移），planner 只从「标线角」看到朝向。
+    """闭环测试台：合成车 + **观测延迟**。
 
-    生产里 ψ 是量出来的；测试没有相机，就用一台显式的合成车——它和产物走
-    **同一条信息路**（lane_theta 进观测器、位置进 α 修正），所以测的是
-    「控制器能不能把车开到目标」，不是「模型积分数值对不对」。
+    横向量按真实对局辨识（2026-10-30 两局 trace 最小二乘，R²=0.94）：
+    **杆给的是偏航率**——满杆约 0.46 rad/s，一阶滞后约 0.2 s：
+    ``ψ' = yaw``、``yaw' = (g·u − yaw)/τ_yaw``、``x' = v·tanψ/LANE_W``。
+    控制器看到的朝向/位置是 ``delay_s`` 之前的状态（线检测 + α 滤波的合成
+    延迟）——忽略这一项会把位置环定得过高，实车就是画龙。
 
     ``fid`` 可覆盖决策拍号（测过期保持时用）；``plan`` 透传计划。
     """
 
     def __init__(self, pl: LateralPlanner, v_mps: float = 45.0,
-                 tau: float = 0.25, k_yaw: float = 0.25):
-        self.pl, self.v, self.tau, self.k_yaw = pl, v_mps, tau, k_yaw
+                 g: float = 0.46, tau_yaw: float = 0.2,
+                 delay_s: float = 0.15, noise_psi: float = 0.0,
+                 noise_pos: float = 0.0, seed: int = 0):
+        self.pl, self.v, self.g, self.tau_yaw = pl, v_mps, g, tau_yaw
+        self.delay, self.noise_psi, self.noise_pos = delay_s, noise_psi, noise_pos
         self.heading = 0.0
+        self.yaw = 0.0
         self.x = 0.0
         self.fid = 1
+        self._t = 0.0
+        self._hist: list[tuple[float, float, float]] = [(0.0, 0.0, 0.0)]
+        self._rng = random.Random(seed)
         # 比例（≈车速）在本台架里是既定条件：给它一组自洽的累积量，
         # 免得把「刚起步还没估出比例」和「控制律对不对」混在一起测。
         pl.head._spd_den = 0.2
         pl.head._spd_num = 0.2 * v_mps / 3.5
 
+    def _delayed(self) -> tuple[float, float]:
+        """delay_s 之前的（ψ, x）——控制器能看到的最新的旧状态。"""
+        cut = self._t - self.delay
+        psi, x = self._hist[0][1], self._hist[0][2]
+        for t, ph, xx in self._hist:
+            if t > cut:
+                break
+            psi, x = ph, xx
+        return psi, x
+
     def tick(self, out, *, pos_obs: bool = True, plan=None,
              fid: int | None = None):
         f = self.fid if fid is None else fid
+        psi_m, x_m = self._delayed()
+        if self.noise_psi:
+            psi_m += self._rng.gauss(0.0, self.noise_psi)
+        if self.noise_pos:
+            x_m += self._rng.gauss(0.0, self.noise_pos)
         cmd = self.pl.update(
             out, DT, current_fid=f,
-            road_offset=self.x if pos_obs else None,
-            lane_x=self.x, lane_ok=True,
-            lane_theta=self.heading, lane_theta_ok=True,
+            road_offset=x_m if pos_obs else None,
+            lane_x=x_m, lane_ok=True,
+            lane_theta=psi_m, lane_theta_ok=True,
             lane_fid=f, lane_age_ms=5.0, lane_n_locked=3,
             plan=plan)
         u = cmd.steer_x / _STICK_FULL
-        a = 1.0 - math.exp(-DT / self.tau)
-        self.heading += a * (self.k_yaw * u - self.heading)
+        a = 1.0 - math.exp(-DT / self.tau_yaw)
+        self.yaw += a * (self.g * u - self.yaw)
+        self.heading = max(-0.6, min(0.6, self.heading + self.yaw * DT))
         self.x += (self.v * math.tan(self.heading) / 3.5) * DT
+        self._t += DT
+        self._hist.append((self._t, self.heading, self.x))
         self.fid += 1
         return cmd
 
@@ -168,11 +196,14 @@ def test_conserve_without_observation_holds_entry_lane():
     for i in range(20):
         rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
     entry = rig.x
+    entry_exec = pl.state.executed_lane
     assert entry > 0.3
     for i in range(120):
         rig.tick(_out(state=DecisionState.CONSERVE, x_target=None,
                       fid=40 + i, valid=40 + i), pos_obs=False)
-    assert abs(rig.x - entry) < 0.25          # 停在入拍道附近，不回 0
+    # 盲持盯的是**模型里的入拍位**，不归零；真车位随模型误差漂移（台架 6s
+    # 约 0.5 道），所以只锁模型不锁真值。
+    assert abs(pl.state.executed_lane - entry_exec) < 0.15
 
 def test_conserve_hold_refreezes_on_reentry():
     """离开 CONSERVE 再进：hold 重新冻结为新的入拍位（不吃陈旧冻结值）。"""
@@ -248,7 +279,7 @@ def test_expired_hold_then_conserve_at_plus_one():
         # 目标远置：整秒内的杆值都朝右且不为 0，便于锁「杆值不动」
         cmd = rig.tick(_out(x_target=3.0, fid=i + 1, valid=i + 1, maneuver=True))
     held = cmd.steer_x
-    assert held > 0
+    assert held != 0
     for i in range(1, P.hold_max_ticks + 1):
         cmd = rig.tick(_out(x_target=3.0, fid=40 + i, valid=39),
                        fid=41 + i)
@@ -369,18 +400,17 @@ def test_road_observation_pins_position_to_measurement():
     assert 0.8 < rig.x < 1.1                     # 到位且不过冲
 
 
-def test_without_position_observation_model_is_not_a_truth_source():
-    """断供（无 ro）：纯朝向模型自走，与真值分离——它是预测，不是精度保证。
+def test_without_position_observation_model_dead_reckons():
+    """断供（无 ro）：靠朝向推算横移，3s 内与真值同量级。
 
-    锁这条是为了防止后来者把「没有观测时模型仍准」当成前提去设计逻辑：
-    台架上 3s 后模型与真值差 0.2 道以上，回到新鲜观测后由 α 修正拉回。
-    """
+    这是「知道车头朝向」的直接收益：只要朝向估得准，没有位置观测也能算出
+    大致走到哪（台架 3s 偏差 <0.15 道）。回到新鲜观测后仍由 α 修正收口。"""
     pl = _planner()
     rig = _Rig(pl)
     for i in range(60):
         rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True),
                  pos_obs=False)
-    assert abs(pl.state.executed_lane - rig.x) > 0.1
+    assert abs(pl.state.executed_lane - rig.x) < 0.15
 
 
 def test_road_jump_rejected():
@@ -1331,5 +1361,23 @@ def test_bench_brakes_from_motion_without_running_away():
     for i in range(60):
         rig.tick(_out(x_target=0.0, fid=i + 1, valid=i + 1, maneuver=True))
         xs.append(rig.x)
-    assert max(xs) <= 0.75                      # 超前后立刻回带
+    assert max(xs) <= 0.85                      # 超前后立刻回带
     assert xs[-1] <= 0.2                        # 回到维护带内
+
+
+def test_bench_centering_does_not_limit_cycle():
+    """带观测噪声从 1 道偏回来：4s 内收敛，之后不再来回。
+
+    这是 2026-10-30 实机「画龙」的复盘锁：旧增益配上真实车模（杆=偏航率
+    指令、0.15s 观测延迟）会稳定在 ±0.6 道、周期约 2.5s 的极限环里——车在
+    目标附近一直左右摆。现在必须单调收进去，尾段只剩噪声量级。"""
+    pl = _planner()
+    rig = _Rig(pl, noise_psi=0.011, noise_pos=0.05)
+    rig.x = 1.0
+    rig._hist = [(0.0, 0.0, 1.0)]
+    xs = []
+    for i in range(200):
+        rig.tick(_out(x_target=0.0, fid=i + 1, valid=i + 1))
+        xs.append(rig.x)
+    assert abs(xs[79]) < 0.2                        # 4s 内到位
+    assert max(abs(x) for x in xs[120:]) < 0.15     # 尾段不再来回

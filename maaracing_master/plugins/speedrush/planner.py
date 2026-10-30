@@ -508,7 +508,13 @@ class LateralPlanner:
 
         横移速度只有一条算式：``v_lat = v·tanψ/LANE_W``。比例还没估出来时
         退回标线横移斜率（同一物理量的另一种测量）；两者都没有就是 0——
-        不猜、也不兜底常数。"""
+        不猜、也不兜底常数。
+
+        ψ 超过 ``heading_max_rad``（控制律自己的物理上限）时，这一拍推出的
+        横速不可信：19° 在 45 m/s 上等于 5 道/s，实车做不到。不截断的话，
+        一次朝向过冲就能把自车位置在无观测的拍上推出 2~3 道（实测帧 2360~
+        2400：exec 从 −0.5 冲到 −3.1，随后 plan 判参考系分歧、整段停控）。
+        截断只作用于**导出速度**（模型积分的输入），状态里的 ψ 原样保留。"""
         h = self.head
         self._heading_stale = h.psi is None
         if h.psi is not None:
@@ -516,7 +522,9 @@ class LateralPlanner:
             self.state.yaw_rate = 0.0 if h.r is None else h.r
         self.state.v_mps = h.v_scale
         if h.psi is not None and h.v_scale is not None:
-            self.state.v_lat = h.v_scale * math.tan(h.psi) / LANE_W
+            psi_env = max(-self.p.heading_max_rad,
+                          min(self.p.heading_max_rad, h.psi))
+            self.state.v_lat = h.v_scale * math.tan(psi_env) / LANE_W
         elif h.v_line is not None:
             self.state.v_lat = h.v_line
         else:
