@@ -190,6 +190,11 @@ class RouteParams:
     pass_hold: bool = True           # 超车动作进行中（选择层正在出擦边目标）
     # 不抢方向：临近车会让紧急逃生在 1s 内起意，把刚要成的擦边超车改成并线
     # （2026-10-30 实测：31 段≥5 拍的擦边里有 6 段被 3 拍内的并线打断）
+    overtake: bool = True            # 提前超车并线：车 1~2.5s 到站、邻道确认
+    # 空闲、横穿路径空闲 → 现在就并过去。等 1s 紧急门才动，等于把超车拖成
+    # 临门闪避（真机常见：跟到 0.9s 才起并线）
+    overtake_ttc_s: float = 2.5      # 提前超车的到站时间上界（秒）；下界是
+    # urgent_ttc_s（更近的归紧急逃生）
 
 
 @dataclass(frozen=True)
@@ -317,20 +322,28 @@ def _lane_ttc_at(lane_ttc: dict[int, float] | None,
     return lane_ttc.get(int(round(lane)))
 
 
+def _cur_ttc(s: RouteState, lane_ttc: dict[int, float] | None) -> float | None:
+    """当前道最早到站时间：承诺道与实测所在道取更近者（车横跨两道时，
+    只看承诺道会漏掉正压在身上的那条）。"""
+    if lane_ttc is None:
+        return None
+    ttcs = [t for t in (_lane_ttc_at(lane_ttc, s.lane_ref),
+                        _lane_ttc_at(lane_ttc, s.v_ref)) if t is not None]
+    return min(ttcs) if ttcs else None
+
+
 def _urgent_time_ok(s: RouteState, cur: CoarseLane, p: RouteParams,
                     lane_ttc: dict[int, float] | None) -> bool:
     """紧急逃生的时间门。
 
-    ``lane_ttc``=整数道→最早到站时间（秒）。取承诺道与实测所在道里更近的
-    那个：车横跨两道时，只看承诺道会漏掉正压在身上的那条。无时间证据的无
-    车/不接近道保持旧行为（由净空盲区兜底）；整张表缺席（离线/单测未供）
-    也保持旧行为，生产装配必供。"""
+    ``lane_ttc``=整数道→最早到站时间（秒）。无时间证据的无车/不接近道保持
+    旧行为（由净空盲区兜底）；整张表缺席（离线/单测未供）也保持旧行为，
+    生产装配必供。"""
     if lane_ttc is None:
         return True
-    ttcs = [t for t in (_lane_ttc_at(lane_ttc, s.lane_ref),
-                        _lane_ttc_at(lane_ttc, s.v_ref)) if t is not None]
-    if ttcs:
-        return min(ttcs) <= p.urgent_ttc_s
+    t = _cur_ttc(s, lane_ttc)
+    if t is not None:
+        return t <= p.urgent_ttc_s
     return cur.free_m <= p.urgent_blind_m
 
 
@@ -567,6 +580,25 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                 PHASE_MERGING, alt.lane, alt.lane, "merge_start", "urgent",
                 since, alt.free_m - cur.free_m, t_cur, cur.free_m,
                 s.cooldown_left_s, epoch, blocker=alt.blocker)
+
+    # 提前超车（2026-10-30）：本道被截、车 1~2.5s 才到站，邻道**确认空闲**
+    # 且横穿路径空闲 → 现在就并过去。等紧急门（≤1s）才动等于把超车拖成
+    # 临门闪避（真机常见：跟到 0.9s 才起并线）。只认完全空闲的邻道：有车的
+    # 道仍归紧急逃生（那边的净空差门槛更严，避免为超车并进另一辆车后面）。
+    if (p.overtake and not pass_hold and t_cur is not None
+            and s.blocked_ticks >= p.urgent_confirm_ticks):
+        cur_ttc = _cur_ttc(s, lane_ttc)
+        if cur_ttc is not None \
+                and p.urgent_ttc_s < cur_ttc <= p.overtake_ttc_s:
+            feas = [c for c in alts if _clear(c) and _path_clear(s, c, by)]
+            if feas:
+                alt = min(feas, key=lambda c: (abs(c.lane - s.v_ref),
+                                               -c.free_m, c.lane))
+                return _start_merge(s, alt, clock), RouteVerdict(
+                    PHASE_MERGING, alt.lane, alt.lane, "merge_start",
+                    "overtake", since, alt.free_m - cur.free_m, t_cur,
+                    cur.free_m, s.cooldown_left_s, epoch,
+                    blocker=alt.blocker)
 
     if s.req_lane is not None:
         # 机会换道请求（选择层出界目标转来）：现任道确认空闲才让机会主导，

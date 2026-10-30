@@ -21,12 +21,15 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from maaracing_master.plugins.speedrush.coarse import (  # noqa: E402
     CoarseLane, CoarseReport)
 from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins.speedrush.decision import _lane_ttc_map  # noqa: E402
 from maaracing_master.plugins.speedrush.route import (  # noqa: E402
     RouteParams, tick_route)
+from replay_plan import scene_of  # noqa: E402
 
 
 def route_params(cfg) -> RouteParams:
@@ -67,20 +70,17 @@ def report_of(d: dict | None) -> CoarseReport | None:
                         reason=d.get("why", "keep"), lanes=lanes)
 
 
-def lane_ttc_of(scene: dict | None, c0: float | None,
-                horizon_s: float) -> dict[int, float]:
-    out: dict[int, float] = {}
-    if not scene or c0 is None:
-        return out
-    lw = scene.get("lane_w") or 3.5
-    for o in scene.get("objs") or ():
-        if o[0] != "car" or o[2] is None or not (0.0 < o[2] <= horizon_s):
-            continue
-        k = int(round((o[1] - c0) / lw))
-        t = out.get(k)
-        if t is None or o[2] < t:
-            out[k] = o[2]
-    return out
+def lane_ttc_of(scene: dict | None, horizon_s: float) -> dict[int, float]:
+    """与生产同源：decision._lane_ttc_map + scene.road.center_at(0)。"""
+    if not scene:
+        return {}
+    sc = scene_of(scene)
+    if sc is None:
+        return {}
+    c0 = sc.road.center_at(0.0)
+    if c0 is None:
+        return {}
+    return _lane_ttc_map(sc, c0, horizon_s)
 
 
 def run(rows: list[dict], p, horizon_s: float, use_ttc: bool):
@@ -89,19 +89,13 @@ def run(rows: list[dict], p, horizon_s: float, use_ttc: bool):
     merges = []
     for r in rows:
         rep = report_of(r.get("coarse"))
-        scene = r.get("scene")
-        c0 = None
-        if scene is not None:
-            bands = (scene.get("road") or {}).get("bands") or ()
-            for b in bands:
-                if b[0] <= 0.0 <= b[1] and b[2] is not None and b[3] is not None:
-                    c0 = 0.5 * (b[2] + b[3])
-                    break
-        ttc = lane_ttc_of(scene, c0, horizon_s) if use_ttc else None
+        ttc = lane_ttc_of(r.get("scene"), horizon_s) if use_ttc else None
         req = (r.get("sel_dbg") or {}).get("req")
         epoch = (r.get("route") or {}).get("ep", 0)
+        passing = bool(use_ttc and r.get("sel_why") == "pass")
         state, v = tick_route(state, rep, p, dt_s=float(r.get("dt") or 0.05),
-                              epoch=epoch, request=req, lane_ttc=ttc)
+                              epoch=epoch, request=req, lane_ttc=ttc,
+                              passing=passing)
         verdicts.append(v.verdict)
         if v.verdict == "merge_start":
             merges.append({"fid": r["fid"], "why": v.why, "ref": v.lane_ref,

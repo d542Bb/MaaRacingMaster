@@ -459,7 +459,9 @@ class DecisionEngine:
             urgent_ttc_s=r.urgent_ttc_s,
             urgent_blind_m=r.urgent_blind_m,
             merge_safe_ttc_s=r.merge_safe_ttc_s,
-            pass_hold=r.pass_hold)
+            pass_hold=r.pass_hold,
+            overtake=r.overtake,
+            overtake_ttc_s=r.overtake_ttc_s)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
         # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，

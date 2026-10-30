@@ -468,6 +468,8 @@ class Route:
     urgent_blind_m: float = 6.0      # 无到站时间时的近距离盲区（米）
     merge_safe_ttc_s: float = 0.8    # 逃生目标道上车的最早到站时间下限（秒）
     pass_hold: bool = True           # 超车动作进行中不抢方向（见 RouteParams）
+    overtake: bool = True            # 提前超车并线（见 RouteParams）
+    overtake_ttc_s: float = 2.5      # 提前超车的到站时间上界（秒）
 
 
 @dataclass(frozen=True)
@@ -944,7 +946,15 @@ def _read_decision(path: Path) -> DecisionConfig:
             merge_max_s=_num_def(d, "route", "merge_max_s", 4.0, lo=0),
             soft_car=_bool(d, "route", "soft_car", default=False),
             reject_shift_arrival=_bool(
-                d, "route", "reject_shift_arrival", default=False)),
+                d, "route", "reject_shift_arrival", default=False),
+            urgent_ttc_s=_num_def(d, "route", "urgent_ttc_s", 1.0, lo=0),
+            urgent_blind_m=_num_def(d, "route", "urgent_blind_m", 6.0, lo=0),
+            merge_safe_ttc_s=_num_def(
+                d, "route", "merge_safe_ttc_s", 0.8, lo=0),
+            pass_hold=_bool(d, "route", "pass_hold", default=True),
+            overtake=_bool(d, "route", "overtake", default=True),
+            overtake_ttc_s=_num_def(
+                d, "route", "overtake_ttc_s", 2.5, lo=0)),
         geometry=Geometry(
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),

@@ -858,3 +858,30 @@ def test_pass_hold_keeps_lane_while_passing():
                           lane_ttc={0: 0.3}, passing=True)
         seen.append((v.verdict, v.why))
     assert ("merge_start", "urgent") in seen
+
+
+def test_overtake_merges_early_into_a_clear_lane():
+    """提前超车：车 2.0s 才到站（未到紧急门），邻道确认空闲、路径空闲 →
+    现在就并过去。只认完全空闲的邻道；有车的道不因「超车」而并。"""
+    spec = {0.0: (12.0, "car", False), -1.0: CLEAR,
+            1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    s = _first(_rep(0.0, 0.0, spec))[0]
+    seen = []
+    for _ in range(P.urgent_confirm_ticks + 1):
+        s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
+                          lane_ttc={0: 2.0})
+        seen.append((v.verdict, v.why))
+    assert ("merge_start", "overtake") in seen
+    # 邻道有车（即使更宽）不是提前超车目标
+    occ = {0.0: (12.0, "car", False), -1.0: (20.0, "car", False),
+           1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+           -2.0: (0.0, "space", False)}
+    s2, v2 = _confirm_with_ttc(_rep(0.0, 0.0, occ), {0: 2.0, -1: 5.0})
+    assert not (v2.verdict == "merge_start" and v2.why == "overtake")
+    # 超车动作进行中：路线不抢方向
+    s3 = _first(_rep(0.0, 0.0, spec))[0]
+    for _ in range(P.urgent_confirm_ticks + 1):
+        s3, v3 = tick_route(s3, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
+                            lane_ttc={0: 2.0}, passing=True)
+    assert v3.verdict == "keep" and v3.why == "pass_hold"
