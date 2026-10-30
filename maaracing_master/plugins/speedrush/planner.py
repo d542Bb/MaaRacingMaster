@@ -256,6 +256,7 @@ class LateralPlanner:
         self._last_raw = 0            # 上一拍下发杆值（限幅起点）
         self._expired_ticks = 0
         self._abort_hold_lane: float | None = None
+        self._frame_shift_ticks = 0   # 计划判参考系分歧的连续拍数
         self._conserve_hold: float | None = None  # CONSERVE 入拍冻结的车道位（③）
         self._road_anchor: float | None = None   # 路观测参考帧懒定（⑥b）
         self._stale_t = 0.0                      # 距上次被接受修正的累计秒（⑥b 陈旧重基）
@@ -485,6 +486,12 @@ class LateralPlanner:
 
         # ③ 控制律（状态消费表，设计稿 §四；优先级：CONSERVE/FAULT 接管 > 过期保持）
         st = decision.state
+        # 参考系分歧计数（计划判 frame_shift）：场景帧目标与 planner 帧实测位
+        # 不在同一坐标里，跨帧比较正是"目标被拽进错帧"的入口。
+        frame_shift = (plan is not None and st is DecisionState.CRUISE
+                       and getattr(plan, "reason", None) == "plan:frame_shift")
+        self._frame_shift_ticks = (self._frame_shift_ticks + 1
+                                   if frame_shift else 0)
         if st is not DecisionState.CONSERVE:
             self._conserve_hold = None
         if st is DecisionState.CONSERVE:
@@ -515,6 +522,15 @@ class LateralPlanner:
             if self._abort_hold_lane is None:
                 self._abort_hold_lane = self.state.executed_lane
             steer_raw = self._pd(self._abort_hold_lane, gentle=True)
+        elif frame_shift and self._frame_shift_ticks <= self.p.frame_hold_max_ticks:
+            # 参考系分歧：计划无效、决策目标在场景帧、实测位在 planner 帧，
+            # 直接拿它们做 PD 是把车往错帧里拽（20261030_122416 s1 87s：假路心
+            # 把目标拉到左缘，车贴左黄线）。只用 planner 自己的状态保持当前道，
+            # 等参考系重新对齐（|fd|≤frame_delta_hold_m）再交还计划/目标；
+            # 超过 frame_hold_max_ticks 仍未对齐才退回旧回退（长弯道里无限
+            # 直开同样危险）。
+            self._abort_hold_lane = None
+            steer_raw = self._pd(self.state.executed_lane, gentle=True)
         elif decision.x_target is not None:
             self._abort_hold_lane = None
             # 刹停预算（最高优先）：横速的预测停止点已越过目标带远侧缘 →

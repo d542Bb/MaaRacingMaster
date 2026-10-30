@@ -176,6 +176,17 @@ class RouteParams:
     # 所在道落回 keep——卡在并线态会让路线永不重启
     soft_car: bool = False           # 普通车（car）不构成撤销理由：车是时间成本，
     # 不是物理约束；目标道 space 仍按参考道失去几何重建。False=旧行为
+    # —— 紧急逃生的时间面（2026-10-30）——
+    # 粗层净空是「24 m 窗内有无车」，不是「多久会撞上」。按代理速度折算，
+    # 窗内任何车都 ≤0.53s＝永远紧急，路线于是见车就并（90s 局并线 21 次，
+    # 人工同局 26 次但每次都在真冲突上）。这两个参数用**实测到站时间**
+    # （相对速度口径）替代代理时间：车真的要到线上了才允许动方向。
+    urgent_ttc_s: float = 1.0        # 当前道（承诺道与实际所在道）最近到站时间
+    # ≤ 此值才起紧急逃生；None=该道无车/无时间证据
+    urgent_blind_m: float = 6.0      # 无到站时间（不接近或无法测速）但粗层净空
+    # ≤ 此值的近距离盲区仍可逃生
+    merge_safe_ttc_s: float = 0.8    # 逃生目标道上有车时，到站时间必须 ≥ 此值
+    # （够并过去）；更近的车不选它当逃生方向
 
 
 @dataclass(frozen=True)
@@ -211,7 +222,8 @@ class RouteVerdict:
     verdict: str                     # init/keep/merge_start/finish/timeout/
     # cancel/urgent_no_alt/epoch_reset/rebuild/needs_init
     why: str                         # 保持或被拒的第一原因码（keep 态口径见
-    # `_request_reject_reason`：无请求 no_request/blocked_unconfirmed，未到门槛
+    # `_request_reject_reason`：无请求 no_request/blocked_unconfirmed/not_urgent，
+    # 未到门槛
     # scoring，被拒 current_unconfirmed/same_lane/not_adjacent/target_missing/
     # target_unqualified/cooldown_ban/path_blocked）
     since_s: float                   # 距上次定案的时间（"多久动一次"的观测面）
@@ -285,9 +297,47 @@ def _clear(c: CoarseLane | None) -> bool:
 def _path_clear(s: RouteState, alt: CoarseLane, by: dict) -> bool:
     """并入 alt 要横穿的中间道必须**确认空闲**。跨一条被占的道并线＝
     从占用车上碾过去：20261027_160949_1 s2 24.3s 现任道与右道都被 0 m 车
-    占着，urgent 并到 −1，中间道上正贴着一辆 z 丢失的车——d_min 0.004。"""
-    lo, hi = sorted((round(s.lane_ref), int(alt.lane)))
+    占着，urgent 并到 −1，中间道上正贴着一辆 z 丢失的车——d_min 0.004。
+
+    起点用**实测横位**不是承诺道：车被钉在 0.67 道（属于 +1 道）而承诺道
+    写 0 时，按承诺道算出的穿越集合会少掉真正跨过的那一条——20261030_122416
+    seq 1422 正是从 0.67 道并向 −1，按 ref=0 算中间道为空，实际碾过 0 道上
+    7.4m 车的车道。"""
+    lo, hi = sorted((int(round(s.v_ref)), int(alt.lane)))
     return all(_clear(by.get(float(k))) for k in range(lo + 1, hi))
+
+
+def _lane_ttc_at(lane_ttc: dict[int, float] | None,
+                 lane: float) -> float | None:
+    if lane_ttc is None:
+        return None
+    return lane_ttc.get(int(round(lane)))
+
+
+def _urgent_time_ok(s: RouteState, cur: CoarseLane, p: RouteParams,
+                    lane_ttc: dict[int, float] | None) -> bool:
+    """紧急逃生的时间门。
+
+    ``lane_ttc``=整数道→最早到站时间（秒）。取承诺道与实测所在道里更近的
+    那个：车横跨两道时，只看承诺道会漏掉正压在身上的那条。无时间证据的无
+    车/不接近道保持旧行为（由净空盲区兜底）；整张表缺席（离线/单测未供）
+    也保持旧行为，生产装配必供。"""
+    if lane_ttc is None:
+        return True
+    ttcs = [t for t in (_lane_ttc_at(lane_ttc, s.lane_ref),
+                        _lane_ttc_at(lane_ttc, s.v_ref)) if t is not None]
+    if ttcs:
+        return min(ttcs) <= p.urgent_ttc_s
+    return cur.free_m <= p.urgent_blind_m
+
+
+def _target_time_ok(alt: CoarseLane, p: RouteParams,
+                    lane_ttc: dict[int, float] | None) -> bool:
+    """逃生目标道的时间门：那里有车但要 ≥ merge_safe_ttc_s 才够并过去。"""
+    if lane_ttc is None:
+        return True
+    t = _lane_ttc_at(lane_ttc, alt.lane)
+    return t is None or t >= p.merge_safe_ttc_s
 
 
 def _drivable_lane(ego_lane: float, by: dict) -> float:
@@ -308,6 +358,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
                request: float | None = None,
                arrival: ArrivalAttribution | None = None,
                reject_shift_arrival: bool = False,
+               lane_ttc: dict[int, float] | None = None,
                ) -> tuple[RouteState | None, RouteVerdict]:
     """推进一拍。
 
@@ -325,6 +376,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     `arrival` / `reject_shift_arrival`：到达位置门（C，2026-10-28）。门开且
     归因为 `SHIFT_HELD` 时，本会成立的 finish 不成立；撤销优先、超时语义不变。
     生产默认门关（`reject_shift_arrival=False`）；影子/未来开关才传 True。
+    `lane_ttc`：整数道→最早到站时间（秒，相对速度口径）。紧急逃生与目标道
+    选择的时间面（2026-10-30）；None=离线/单测未供，逐位保持旧行为。
     """
     if report is None or not report.lanes or report.reason == "no_road":
         # 没有车道级证据：时钟继续走，但路线不推进、不判逃生——证据缺席
@@ -391,7 +444,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     if s.phase == PHASE_MERGING:
         return _tick_merging(s, by, p, clock, epoch, arrival,
                              reject_shift_arrival)
-    return _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch)
+    return _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch, lane_ttc)
 
 
 def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
@@ -465,7 +518,9 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
 
 def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                p: RouteParams, clock: float,
-               epoch: int) -> tuple[RouteState, RouteVerdict]:
+               epoch: int,
+               lane_ttc: dict[int, float] | None = None,
+               ) -> tuple[RouteState, RouteVerdict]:
     """保持态：只有"现任道确认被截"才动，方向是"确实更宽"。
 
     不设时间窗门槛：窗长 24 m ≈0.53 s，横移一道最快 0.4 s，再加连续确认——
@@ -477,23 +532,30 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
     if s.cooldown_left_s > 0.0 and s.ban_lane is not None:
         alts = [c for c in alts if c.lane != s.ban_lane]
 
+    not_urgent = False
     if t_cur is not None and s.blocked_ticks >= p.urgent_confirm_ticks:
-        feas = [c for c in alts
-                if (c.blocker is None or c.free_m >= cur.free_m + p.switch_gain_m)
-                and _path_clear(s, c, by)]
-        if not feas:
-            return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target,
-                                   "urgent_no_alt", "no_alt", since, None,
-                                   t_cur, cur.free_m, s.cooldown_left_s, epoch,
-                                   blocker=cur.blocker, credit=s.req_credit)
-        # 确认空闲优先 → 净空最大（可用时间最多）→ 离自车最近 → 道号（确定性；
-        # 左右读数完全对称是常态，同分必须有个固定次序）
-        alt = min(feas, key=lambda c: (0 if _clear(c) else 1, -c.free_m,
-                                       abs(c.lane - s.v_ref), c.lane))
-        return _start_merge(s, alt, clock), RouteVerdict(
-            PHASE_MERGING, alt.lane, alt.lane, "merge_start", "urgent", since,
-            alt.free_m - cur.free_m, t_cur, cur.free_m, s.cooldown_left_s,
-            epoch, blocker=alt.blocker)
+        if not _urgent_time_ok(s, cur, p, lane_ttc):
+            not_urgent = True        # 确认被截，但车还不到线上：留在本道过
+        else:
+            feas = [c for c in alts
+                    if (c.blocker is None
+                        or c.free_m >= cur.free_m + p.switch_gain_m)
+                    and _path_clear(s, c, by)
+                    and _target_time_ok(c, p, lane_ttc)]
+            if not feas:
+                return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target,
+                                       "urgent_no_alt", "no_alt", since, None,
+                                       t_cur, cur.free_m, s.cooldown_left_s,
+                                       epoch, blocker=cur.blocker,
+                                       credit=s.req_credit)
+            # 确认空闲优先 → 净空最大（可用时间最多）→ 离自车最近 → 道号（确定性；
+            # 左右读数完全对称是常态，同分必须有个固定次序）
+            alt = min(feas, key=lambda c: (0 if _clear(c) else 1, -c.free_m,
+                                           abs(c.lane - s.v_ref), c.lane))
+            return _start_merge(s, alt, clock), RouteVerdict(
+                PHASE_MERGING, alt.lane, alt.lane, "merge_start", "urgent",
+                since, alt.free_m - cur.free_m, t_cur, cur.free_m,
+                s.cooldown_left_s, epoch, blocker=alt.blocker)
 
     if s.req_lane is not None:
         # 机会换道请求（选择层出界目标转来）：现任道确认空闲才让机会主导，
@@ -501,7 +563,7 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         if s.req_credit < p.opportunity_confirm_ticks:
             why = "scoring"          # 还在攒证据，不是被拒
         elif not _clear(cur):
-            why = "current_unconfirmed"
+            why = "not_urgent" if not_urgent else "current_unconfirmed"
         else:
             why = _request_reject_reason(s, s.req_lane, by)
             if why is None:
@@ -512,7 +574,8 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                     s.cooldown_left_s, epoch, blocker=alt.blocker,
                     credit=s.req_credit)
     else:
-        why = "no_request" if _clear(cur) else "blocked_unconfirmed"
+        why = ("no_request" if _clear(cur)
+               else "not_urgent" if not_urgent else "blocked_unconfirmed")
     return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target, "keep", why,
                            since, None, t_cur, None, s.cooldown_left_s, epoch,
                            blocker=cur.blocker, credit=s.req_credit)

@@ -30,9 +30,10 @@ def _health() -> PerceptionHealth:
                             stage_transition=False)
 
 
-def _car(tid: int, fid: int, cy: float, x_lane: float, rel: float) -> TrackedTarget:
+def _car(tid: int, fid: int, cy: float, x_lane: float, rel: float,
+         w: int = 80, h: int = 40) -> TrackedTarget:
     return TrackedTarget(id=tid, kind=KIND_CAR, x_lane=x_lane, x_sigma=0.05,
-                         cy=int(cy), w=80, h=40, conf=0.9, rel_approach=rel,
+                         cy=int(cy), w=w, h=h, conf=0.9, rel_approach=rel,
                          first_seen_fid=max(1, fid - 1), last_seen_fid=fid,
                          validity_until_fid=fid + P.min_obs_ticks)
 
@@ -266,28 +267,41 @@ def test_membership_holds_through_occlusion():
 # ---------- 宽度有效性面（2026-10-11 前置三件套③） ----------
 
 def test_width_validity_hold_and_ttl_expiry():
-    """有效读数出 w_m（年龄/置信/分母三门）；遮挡延续拍保持最后有效值并带
-    龄；超 TTL 显式转 None 不冒充有效。"""
+    """有效读数出 w_m（年龄/置信/分母/车宽域四门）；遮挡延续拍保持最后有效
+    值并带龄；超 TTL 显式转 None 不冒充有效。"""
+    # 约 10m 处的正常轿车（框底行 467、框高 134、框宽 161）
+    cy, h, w = 400.0, 134, 161
     o = TrafficObserver(P, CAL, conf_floor=0.5)
     for fid in range(1, 6):                         # 5 拍真实读数：f3 起年龄达标
-        o.update(_obs(fid, (_car(7, fid, 500.0, 1.2, 5.0),)))
-    v, _ = o.update(_obs(5, (_car(7, 5, 500.0, 1.2, 5.0),)))
+        o.update(_obs(fid, (_car(7, fid, cy, 1.2, 5.0, w=w, h=h),)))
+    v, _ = o.update(_obs(5, (_car(7, 5, cy, 1.2, 5.0, w=w, h=h),)))
     assert v[0].w_m is not None and v[0].w_m_age == 0
-    exp_w = 80 * CAL.a_x * CAL.lane_w_m / (500.0 - CAL.y_h)
+    exp_w = w * CAL.a_x * CAL.lane_w_m / (cy + h / 2.0 - CAL.y_h)
     assert v[0].w_m == pytest.approx(exp_w, rel=1e-6)
+    assert P.min_width_m <= exp_w <= P.max_width_m
     for age in range(1, P.width_ttl_ticks + 1):     # 遮挡延续：保持+带龄
         stale = TrackedTarget(id=7, kind=KIND_CAR, x_lane=1.2, x_sigma=0.05,
-                              cy=int(500.0 + 20 * age), w=80, h=40, conf=0.9,
+                              cy=int(cy + 20 * age), w=w, h=h, conf=0.9,
                               rel_approach=5, first_seen_fid=1, last_seen_fid=5,
                               validity_until_fid=20)
         v, _ = o.update(_obs(5 + age, (stale,)))
         assert v[0].w_m == pytest.approx(exp_w, rel=1e-6)   # 外推 cy 不重算
         assert v[0].w_m_age == age
     stale = TrackedTarget(id=7, kind=KIND_CAR, x_lane=1.2, x_sigma=0.05,
-                          cy=700, w=80, h=40, conf=0.9, rel_approach=5,
+                          cy=700, w=w, h=h, conf=0.9, rel_approach=5,
                           first_seen_fid=1, last_seen_fid=5, validity_until_fid=30)
     v, _ = o.update(_obs(5 + P.width_ttl_ticks + 1, (stale,)))
     assert v[0].w_m is None and v[0].w_m_age is None   # 过期=显式 unknown
+
+
+def test_width_outside_physical_domain_falls_back():
+    """框宽换算结果越出车宽物理域（半个车身等坏框）不出 w_m——消费方回落
+    标称半宽，不让坏读数把擦边带撑开或把正常车判成大车。"""
+    o = TrafficObserver(P, CAL, conf_floor=0.5)
+    for fid in range(1, 6):
+        o.update(_obs(fid, (_car(7, fid, 400.0, 1.2, 5.0, w=40, h=134),)))
+    v, _ = o.update(_obs(5, (_car(7, 5, 400.0, 1.2, 5.0, w=40, h=134),)))
+    assert v[0].w_m is None and v[0].w_m_age is None
 
 
 def test_width_gates_low_conf_and_missing_floor():

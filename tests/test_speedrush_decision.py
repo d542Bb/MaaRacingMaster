@@ -549,3 +549,20 @@ def test_box_size_metric_car_without_lateral_abstains():
         target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
         v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
     assert e._reach_car_sources(0.0) == []
+
+
+def test_lane_ttc_map_keeps_earliest_per_lane():
+    """车道到站时间表：同一道多车取最早；无到站时间/视界外的车不进表；
+    道号按 ±0.5 道就近归属（路线层的时间面真源）。"""
+    from types import SimpleNamespace as NS
+    from maaracing_master.plugins.speedrush.decision import _lane_ttc_map
+    lw = 3.5
+    scene = NS(lane_w_m=lw, objs=(
+        NS(kind="car", timed=True, t_arrive_s=2.0, x_m=0.2),      # 道 0
+        NS(kind="car", timed=True, t_arrive_s=0.8, x_m=-0.3),     # 道 0 更近
+        NS(kind="car", timed=True, t_arrive_s=1.5, x_m=3.4),      # 道 1
+        NS(kind="car", timed=True, t_arrive_s=9.0, x_m=-6.9),     # 视界外
+        NS(kind="car", timed=False, t_arrive_s=None, x_m=7.0),    # 无时间
+        NS(kind="coin", timed=True, t_arrive_s=0.2, x_m=0.0),     # 非车
+    ))
+    assert _lane_ttc_map(scene, 0.0, 3.0) == {0: 0.8, 1: 1.5}

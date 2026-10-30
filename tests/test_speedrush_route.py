@@ -79,6 +79,15 @@ def _confirm(report, epoch=0):
     return s, v
 
 
+def _confirm_with_ttc(report, lane_ttc, epoch=0):
+    """同上，但带车道到站时间表（紧急逃生时间门）。"""
+    s, _ = tick_route(None, report, P, dt_s=DT, epoch=epoch, lane_ttc=lane_ttc)
+    for _ in range(P.urgent_confirm_ticks):
+        s, v = tick_route(s, report, P, dt_s=DT, epoch=epoch,
+                          lane_ttc=lane_ttc)
+    return s, v
+
+
 def _in_merge(epoch=0):
     """推进成"正在并线"：现任道持续被截，换到 +1（确认空闲；−1 显式判成走不下，
     因为左右同分时按道号取靠左的一侧——与粗层同一套字典序）。"""
@@ -118,6 +127,65 @@ def test_escape_requires_a_wider_lane():
              -2.0: (0.0, "space", False)}
     s, v = _confirm(_rep(0.0, 0.0, spec2))
     assert v.verdict == "merge_start" and v.lane_ref == 1.0
+
+
+def test_urgent_requires_time_evidence():
+    """紧急逃生要有时间证据：粗层「24m 窗内有车」按代理速度折算永远紧急，
+    车还在 3s 外就换道是画龙的主发动机（2026-10-30 90s 局 21 次并线里
+    11 次如此）。到站时间 >urgent_ttc_s 时保持本道。"""
+    spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
+    s = _first(_rep(0.0, 0.0, spec))[0]
+    for _ in range(P.urgent_confirm_ticks):
+        s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
+                          lane_ttc={0: 3.0})
+    assert v.verdict == "keep" and v.why == "not_urgent"
+    assert v.lane_ref == 0.0
+    # 车真的要到线上（≤urgent_ttc_s）才起意
+    s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
+                      lane_ttc={0: 0.5})
+    assert v.verdict == "merge_start" and v.why == "urgent"
+
+
+def test_urgent_blind_zone_without_time_evidence():
+    """无到站时间（同速/无法测速）时只认近距离盲区：净空 4m 仍逃生，
+    12m 不动——不接近的车不该逼出换道。"""
+    spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
+    s = _first(_rep(0.0, 0.0, spec))[0]
+    for _ in range(P.urgent_confirm_ticks):
+        s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
+                          lane_ttc={})
+    assert v.verdict == "keep" and v.why == "not_urgent"
+    near = {0.0: (4.0, "car", False), -1.0: (0.0, "space", False)}
+    s, v = _confirm_with_ttc(_rep(0.0, 0.0, near), {})
+    assert v.verdict == "merge_start" and v.why == "urgent"
+
+
+def test_escape_target_with_imminent_car_is_rejected():
+    """逃生目标道上有车且到站时间太短 → 不选它：并过去正好撞上。
+    目标道无车/车远时仍可选。"""
+    spec = {0.0: (12.0, "car", False), -1.0: CLEAR,
+            1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    _, v = _confirm_with_ttc(_rep(0.0, 0.0, spec), {0: 0.3, -1: 0.4})
+    assert v.verdict == "urgent_no_alt" and v.why == "no_alt"
+    _, v = _confirm_with_ttc(_rep(0.0, 0.0, spec), {0: 0.3, -1: 2.0})
+    assert v.verdict == "merge_start" and v.lane_ref == -1.0
+
+
+def test_path_clear_starts_from_measured_lane():
+    """穿越中间道的起点用**实测横位**：承诺道写 0、车实际在 0.7 道（属于
+    +1）时并向 −1 要跨过 0 道，不能因为 ref=0 把 0 道算在起点外。
+    20261030_122416 seq1422：从 0.67 道并向 −1，按 ref=0 算中间道为空，
+    实际碾过 0 道上 7.4m 的车。"""
+    spec = {0.0: (12.0, "car", False), -1.0: CLEAR,
+            1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    s = _first(_rep(0.7, 0.0, spec))[0]
+    for _ in range(P.urgent_confirm_ticks + 2):
+        s, v = tick_route(s, _rep(0.7, 0.0, spec), P, dt_s=DT, epoch=0,
+                          lane_ttc={0: 0.3})
+        assert not (v.verdict == "merge_start" and v.lane_ref == -1.0)
+    assert v.verdict == "urgent_no_alt"
 
 
 def test_merge_cannot_cross_an_occupied_lane():
@@ -457,6 +525,7 @@ def test_gate_on_confirmed_block_moves_target(monkeypatch):
     spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
     monkeypatch.setattr(dmod, "choose_lane",
                         lambda *a, **k: _rep(0.0, 1.0, spec))
+    monkeypatch.setattr(dmod, "_lane_ttc_map", lambda *a, **k: {0: 0.3})
     cfg = replace(CFG, route=replace(CFG.route, control=True))
     eng = DecisionEngine(cfg)
     for fid in range(1, 10):
@@ -474,6 +543,7 @@ def test_soft_car_config_reaches_the_route(monkeypatch):
     holder = [{0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}]
     monkeypatch.setattr(dmod, "choose_lane",
                         lambda *a, **k: _rep(0.0, 1.0, holder[0]))
+    monkeypatch.setattr(dmod, "_lane_ttc_map", lambda *a, **k: {0: 0.3})
     cfg = replace(CFG, route=replace(CFG.route, control=True, soft_car=True))
     eng = DecisionEngine(cfg)
     for fid in range(1, 10):                     # 现任道确认被截 → 并线 +1
@@ -494,6 +564,7 @@ def test_merge_target_commits_without_slew(monkeypatch):
     spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
     monkeypatch.setattr(dmod, "choose_lane",
                         lambda *a, **k: _rep(0.0, 1.0, spec))
+    monkeypatch.setattr(dmod, "_lane_ttc_map", lambda *a, **k: {0: 0.3})
     cfg = replace(CFG, route=replace(CFG.route, control=True))
     eng = DecisionEngine(cfg)
     out = None

@@ -1379,3 +1379,21 @@ def test_uncorroborated_large_offset_still_needs_three_new():
     pl.update(_out(fid=fid, valid=fid), DT, fid, road_offset=1.5,
               lane_x=-1.5, lane_ok=True)
     assert pl.state.executed_lane == pytest.approx(1.5, abs=1e-6)
+
+
+def test_frame_shift_holds_planner_frame_not_scene_target():
+    """计划判参考系分歧时只认 planner 帧：场景帧目标与 executed 不在同一
+    坐标里，跨帧 PD 会把车拽进错帧（20261030_122416 s1 87s：假路心把目标
+    拉到左缘，车贴左黄线）。保持当前道直到参考系对齐；超时后退回旧回退。"""
+    fs = types.SimpleNamespace(valid=False, reason="plan:frame_shift",
+                               layer=4, value_total=0.0, u_feedforward=0.0,
+                               x_preview_lane=0.0, v_preview_lane_s=0.0)
+    pl = _planner()
+    for _ in range(P.frame_hold_max_ticks):
+        cmd = pl.update(_out(x_target=-1.2), DT, current_fid=2, plan=fs)
+        assert cmd.steer_x == 0          # 目标在错帧：不追
+    assert abs(pl.state.executed_lane) < 1e-6
+    # 超时仍未对齐：退回旧回退，开始朝场景帧目标修正
+    for _ in range(10):
+        pl.update(_out(x_target=-1.2), DT, current_fid=2, plan=fs)
+    assert pl.state.executed_lane < -0.05

@@ -51,6 +51,26 @@ _SCHEMA = 5  # v5：删除 move_allowed（无消费者）；v4=maneuver 权限�
 _EPS = 1e-9
 
 
+def _lane_ttc_map(scene, c0: float, horizon_s: float) -> dict[int, float]:
+    """整数道 → 最早到站时间（秒）：车道冲突的时间面（路线层消费）。
+
+    场景对象 x 已是路心系米；c0 是同一帧 z=0 处路心。按整道（±0.5 道）
+    归属，只收有到站时间且在视界内的车——到站时间已含相对速度，这是路线
+    层唯一能区分「24m 内有个同速车」和「1s 后真撞上」的量。"""
+    out: dict[int, float] = {}
+    lw = scene.lane_w_m
+    for o in scene.objs:
+        if o.kind != "car" or not o.timed or o.t_arrive_s is None:
+            continue
+        if not (0.0 < o.t_arrive_s <= horizon_s):
+            continue
+        k = int(round((o.x_m - c0) / lw))
+        t = out.get(k)
+        if t is None or o.t_arrive_s < t:
+            out[k] = o.t_arrive_s
+    return out
+
+
 @dataclass(frozen=True)
 class Scored:
     """一次金币候选评定（原 plan.py 住户，选择域退役随迁本模块；场只消费
@@ -435,7 +455,10 @@ class DecisionEngine:
             finish_tol_lane=s.center_band_lane,
             finish_v_tol_lane_s=r.finish_v_tol_lane_s,
             merge_max_s=r.merge_max_s,
-            soft_car=r.soft_car)
+            soft_car=r.soft_car,
+            urgent_ttc_s=r.urgent_ttc_s,
+            urgent_blind_m=r.urgent_blind_m,
+            merge_safe_ttc_s=r.merge_safe_ttc_s)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
         # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，
@@ -1318,16 +1341,20 @@ class DecisionEngine:
         同拍再推一份**到达门影子**（C）：同报告/纪元/请求，门恒开；影子状态
         独立推进，只落 trace，不接控制。生产路线的门读配置（默认关）。"""
         epoch = self._ruler_epoch(c0, executed)
+        lane_ttc = (None if self._scene is None or c0 is None
+                    else _lane_ttc_map(self._scene, c0,
+                                       self.cfg.motion.horizon_s))
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
             request=request, arrival=self._position,
-            reject_shift_arrival=self.cfg.route.reject_shift_arrival)
+            reject_shift_arrival=self.cfg.route.reject_shift_arrival,
+            lane_ttc=lane_ttc)
         self._route_shadow, self._shadow_verdict = tick_route(
             self._route_shadow, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
             request=request, arrival=self._position,
-            reject_shift_arrival=True)
+            reject_shift_arrival=True, lane_ttc=lane_ttc)
 
     def _lane_for_route(self, route: RouteState | None,
                         verdict: RouteVerdict | None,

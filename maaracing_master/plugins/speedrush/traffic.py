@@ -225,18 +225,24 @@ class TrafficObserver:
         """宽度有效读数刷新（2026-10-11，只在真实读数拍）。
 
         有效性门（计划 §2③/§4）：track 年龄 ≥ min_obs_ticks、conf ≥ 置信
-        地板、归一分母在适用域——三条全过才重算 w_m（框宽×地面尺/分母，
-        与账本 w_m 同式单一真源）。遮挡延续拍不重算：外推 cy 配陈旧框宽
-        正是遮挡崩坏（3.6→0.3m）的机制。TTL 过期在 CarView 装配处显式转
-        unknown。"""
+        地板、归一分母在适用域、结果落在物理车宽域——四条全过才重算 w_m。
+        分母取**框底行**（`cy + h/2`）：框宽对应的是车体触地深度处的像素尺，
+        用中心行会少算半个框高，透视下把车宽放大近 2 倍（2026-10-30 三局
+        trace 实测中位半宽 1.72m，真车约 0.8~0.9m）。遮挡延续拍不重算：
+        外推 cy 配陈旧框宽正是遮挡崩坏（3.6→0.3m）的机制。TTL 过期在
+        CarView 装配处显式转 unknown；越出车宽域不冒充有效，消费方回落
+        标称半宽。"""
         if self._conf_floor is None or t.conf < self._conf_floor:
             return
         if fid - rec.first_fid < self.p.min_obs_ticks:
             return
-        denom = t.cy - self.cal.y_h
+        denom = t.cy + t.h / 2.0 - self.cal.y_h
         if denom < self.cal.min_denom:
             return
-        rec.w_m = t.w * self.cal.a_x * self.cal.lane_w_m / denom
+        w_m = t.w * self.cal.a_x * self.cal.lane_w_m / denom
+        if not (self.p.min_width_m <= w_m <= self.p.max_width_m):
+            return
+        rec.w_m = w_m
         rec.w_m_fid = fid
 
     def _classify(self, rec: _Live, fid: int) -> str | None:

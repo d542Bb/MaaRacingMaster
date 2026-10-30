@@ -198,6 +198,9 @@ class Planner:
     # 也会满舵回带（20261027_153408_1：满杆拍里 28~35% 是 |v|<0.3 的
     # 静态位置修正）。
     brake_min_v_lane_s: float = 0.3
+    # 计划判参考系分歧（plan:frame_shift）时，只用 planner 帧状态保持当前道的
+    # 最长拍数；超过后退回旧的跨帧回退（长弯道里无限直开同样危险）
+    frame_hold_max_ticks: int = 25
 
 
 @dataclass(frozen=True)
@@ -224,6 +227,10 @@ class Traffic:
     # —— 宽度有效性（2026-10-11 前置三件套③；起值 [需实测]）——
     width_ttl_ticks: int = 6   # 宽度遮挡沿用有效期（tick）：过期显式转 unknown
                                # 不冒充有效；0.3s@20Hz 起值，遮挡崩坏 TTL 界
+    # 车宽物理域（米，全宽）：框宽地面尺换算结果越出此域视为坏读数，
+    # 不出 w_m、消费方回落标称半宽（2026-10-30；域为乘用车+厢式的实测范围）
+    min_width_m: float = 1.2
+    max_width_m: float = 2.6
     # —— 决策边界的时间平滑（2026-10-19 晚：车米制 x/z 逐拍跳 ±1~4m，
     # —— 与 0.5m 擦车带同量级；在决策层平滑不碰跟踪层语义）——
     metric_x_ema_alpha: float = 0.35
@@ -443,6 +450,9 @@ class Route:
     merge_max_s: float = 4.0
     soft_car: bool = False
     reject_shift_arrival: bool = False
+    urgent_ttc_s: float = 1.0        # 紧急逃生时间门：当前道最近到站时间≤此值
+    urgent_blind_m: float = 6.0      # 无到站时间时的近距离盲区（米）
+    merge_safe_ttc_s: float = 0.8    # 逃生目标道上车的最早到站时间下限（秒）
 
 
 @dataclass(frozen=True)
