@@ -8,7 +8,7 @@
 - 相邻线间距：同一 fid 的近场拟合线（``y0>=550``，全幅行），按 ``L`` 排序取
   相邻差，0.7~1.6 道内的对计入；``L = slope*cam_h/LANE_W``，所以
   ``ΔL·LANE_W/cam_h = Δslope``（像素斜率差，与相机高度假设无关）。
-- 金标车道 3.5 m（``baked_track_data.lua`` laneWidth=350）下，
+- 金标车道 3.5 m（画线实宽）下，
   真实相机高度 ``h = 3.5/Δslope = 3.5·cam_h/(ΔL·LANE_W)``。
 - 宽度：``scene.road.w``（米）、``ro_w``（道）、``dgeo_left/right``（道）——
   三者定义不同，只作交叉参照，不直接当墙距。
@@ -28,7 +28,7 @@ import statistics as st
 from pathlib import Path
 
 LANE_W = 3.38          # gate0.json lane_w_m（当前生产值）
-GOLD_LANE_M = 3.5      # 逆向金标 laneWidth=350cm
+GOLD_LANE_M = 3.5      # 金标画线实宽（m）
 SPEED_DEFAULT = 45.0   # planner._HEAD_SPEED_DEFAULT_MPS
 
 
@@ -159,7 +159,7 @@ def main() -> int:
         print(f"深度平面 cam_h / 线几何 h_imp = "
               f"{_f(st.median(cams) / st.median(hs), 3)}")
     print("注意：ΔL 只用像素斜率差与同拍 cam_h，宽度的物理含义（画线/墙/可行驶面）"
-          "需与逆向真值对齐后再解释。")
+          "需与画线实宽对齐后再解释。")
     return 0
 
 

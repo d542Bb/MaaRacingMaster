@@ -57,7 +57,7 @@ def gold_x_at(r: dict, side: str, y_half: float) -> float | None:
 
 def lane_to_px(lane: float, coef, fx: float, fy: float, yh: int,
                lane_w_m: float) -> tuple[float, float]:
-    """车道量 → 半幅像素（逆向折算的正向逆映射，同一平面）。y 取查询带行。"""
+    """车道量 → 半幅像素（正向逆映射，同一平面）。y 取查询带行。"""
     a, b, c = coef
     x_m = lane * lane_w_m
     v = (yh * 2 - FULL_H / 2.0) / fy
