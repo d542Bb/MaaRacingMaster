@@ -300,12 +300,25 @@ def _wide_road():
                                age_ms=0.0, conf=1.0),), 10.0, -5.0, 5.0, True)
 
 
-def test_eight_candidates_and_determinism():
+def test_candidates_and_determinism():
     s = _scene(road=_wide_road())
     a, b = _plan(s), _plan(s)
-    assert len(a.cand_x) == len(CFG.motion.steer_levels) + 1
+    n_base = len(CFG.motion.steer_levels) + 1          # 恒杆 + 当前杆值
+    n_rev = sum(1 for u in CFG.motion.steer_levels if abs(u) >= 0.2) + 1
+    assert len(a.cand_x) == n_base + n_rev              # 再加半程反打候选
     assert (a.chosen, a.score_key, a.x_preview_m) == \
         (b.chosen, b.score_key, b.x_preview_m)
+
+
+def test_reverse_candidate_brakes_toward_center():
+    """半程反打候选存在时，带横向速度冲过路心的车不再只按恒杆候选选：
+    计划必须给出朝路心（负）的杆值，且预测路径在 2s 内回到路心附近。"""
+    s = _scene(road=_wide_road(), ego_m=1.0)
+    p = _plan(s, ego=EgoState(1.0 / LW, 0.6, 0.4))
+    assert p.valid and p.layer == 4
+    assert p.u_feedforward < 0.4                      # 不是继续右打
+    end = p.cand_x[p.chosen][-1]
+    assert abs(end) < 1.0                             # 末端回到路心 1m 内
 
 
 def test_coarse_lane_shifts_center_attractor():
@@ -598,10 +611,11 @@ def test_sigma_ego_shortens_horizon():
     assert len(p.cand_x[0]) < int(round(CFG.motion.horizon_s / CFG.motion.dt_s)) + 1
 
 
-def _c(idx, value, feasible=True, center=0.0):
+def _c(idx, value, feasible=True, center=0.0, layer=4, collision=0.0):
     key = (not feasible, -value, 0.0, center, 0.0, idx)
     return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, feasible, 9.0,
-                 0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value)
+                 0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, layer, key, value,
+                 collision_cost=collision)
 
 
 def test_gate_requires_value_margin_and_dwell():
@@ -622,21 +636,41 @@ def test_gate_requires_value_margin_and_dwell():
     assert g2.choose([cur], 0.05).idx == 6
     assert g2.choose([near, cur], 0.05).idx == 6
     assert g2.choose([near, cur], 0.05).idx == 7
-    # 大价值差（避撞/高值窗口）首拍立即切
+    # 避撞型大价值差（碰撞代价更低）首拍立即切
     g3 = PlanGate(switch_margin=15.0, dwell_s=0.1, epsilon=1e-3,
                   geom_margin=0.03, immediate_margin=100.0)
-    bad, good = _c(8, -200.0), _c(9, 0.0)
+    bad, good = _c(8, -200.0, collision=180.0), _c(9, 0.0)
     assert g3.choose([bad], 0.05).idx == 8
     assert g3.choose([good, bad], 0.05).idx == 9
+
+
+def test_gate_score_jump_needs_dwell():
+    """得分机会新出现不得单帧拽杆：擦边/金币/奖励的价值（90~240）都高于
+    immediate=100，旧逻辑首拍就切；2026-10-30 人工局里计划层擦边段 36 段
+    有 25 段只活 1 拍，杆值跟着一拍一换。得分类升级必须走 dwell。"""
+    g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                 geom_margin=0.03, immediate_margin=100.0)
+    base, coin = _c(0, 0.0), _c(1, 120.0, layer=3)
+    assert g.choose([base], 0.05).idx == 0
+    for _ in range(3):                                  # 单帧闪断三拍不动
+        assert g.choose([coin, base], 0.05).idx == 0
+    assert g.choose([coin, base], 0.05).idx == 1        # 持续 0.2s 后接管
+    # 奖励车（240）同理，不因价值大跌就跳过确认
+    g2 = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                  geom_margin=0.03, immediate_margin=100.0)
+    base2, reward = _c(0, 0.0), _c(1, 240.0, layer=1)
+    assert g2.choose([base2], 0.05).idx == 0
+    assert g2.choose([reward, base2], 0.05).idx == 0
 
 
 def test_gate_demotes_stale_full_stick_without_dwell():
     """现任自己失效时不等 dwell：擦边出窗后满杆候选掉到 0 价值且带超限罚，
     必须本拍让位；否则空路会继续按上一拍的满杆 0.2~0.3s。"""
-    def _capped(idx, value, overcap, center=0.0):
+    def _capped(idx, value, overcap, center=0.0, collision=0.0):
         key = (False, -value, overcap, center, 0.0, idx)
         return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, True, 9.0,
-                     0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value)
+                     0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value,
+                     collision_cost=collision)
 
     g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
                  geom_margin=0.03, immediate_margin=100.0)
@@ -645,11 +679,11 @@ def test_gate_demotes_stale_full_stick_without_dwell():
     assert g.choose([stale], 0.05).idx == 0
     # 首拍就切：现任从限幅外变成超限候选，驻留不适用
     assert g.choose([capped, stale], 0.05).idx == 5
-    # 反向：现任价值被最佳反超同样立即让位（不是只有「最佳变好」才切）
+    # 反向：现任碰撞风险更高同样立即让位（不是只有「最佳变好」才切）
     g2 = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
                   geom_margin=0.03, immediate_margin=100.0)
-    assert g2.choose([_capped(1, -50.0, 0.0)], 0.05).idx == 1
-    assert g2.choose([_capped(2, 100.0, 0.0)], 0.05).idx == 2
+    assert g2.choose([_capped(1, -50.0, 0.0, collision=100.0)], 0.05).idx == 1
+    assert g2.choose([_capped(2, 100.0, 0.0, collision=0.0)], 0.05).idx == 2
 
 
 def test_gate_holds_incumbent_through_brief_infeasible_flicker():

@@ -360,6 +360,20 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     return None
 
 
+def _coin_aim(coin_x: float, ego: float, p: SelectionParams) -> float:
+    """币不必正中：车有半宽，币心落在车身带内就保持原线，带外只走到带边。
+
+    收集判据（计划层 `coin_collect_half_lane`=0.35 道）比车身半宽（0.27
+    道）宽出币半径；这里取车身半宽作保守带，币心在带内不改目标——
+    为偏 0.2 道的币去拽方向盘，正是人工局里金币层反复进出、意图抖动的
+    来源之一。"""
+    band = p.ego_half_lane * p.lane_w_m
+    d = coin_x - ego
+    if abs(d) <= band:
+        return ego
+    return coin_x - math.copysign(band, d)
+
+
 def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
                road: RoadFrame, ego: float,
                p: SelectionParams,
@@ -376,19 +390,20 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
         # 币线，且 3 秒内也横移不过去）。
         if abs(c.x - ego) > p.coin_pick_tol_lane * p.lane_w_m:
             continue
-        x = road.clamp(c.x, p.wall_margin_lane * p.lane_w_m)
+        x = road.clamp(_coin_aim(c.x, ego, p),
+                       p.wall_margin_lane * p.lane_w_m)
         if abs(c.x - x) > p.opportunity_tol_lane * p.lane_w_m:
             continue
         if not _reachable(x, ego, c.t, p):
             continue
         if _blocked(cars, x, c.t, p):
             continue
-        if sp is not None and not _in_interval(c.x, sp):
-            # 币心已在隔壁道：本拍不拽（拽一半停在两道中间是这条门的来由），
-            # 按到站时间发出换道请求
-            req_x = _req_lane(c.x, commit_x, p)
+        if sp is not None and not _in_interval(x, sp):
+            # 目标点（已按车身带收过）仍在承诺道外：本拍不拽（拽一半停在
+            # 两道中间是这条门的来由），按到站时间发出换道请求
+            req_x = _req_lane(x, commit_x, p)
             if pending is None and req_x is not None and \
-                    _reachable(c.x, ego, c.t, p):
+                    _reachable(x, ego, c.t, p):
                 pending = req_x
             continue
         return (x, c.t, "coin"), None

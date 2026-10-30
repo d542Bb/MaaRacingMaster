@@ -362,6 +362,14 @@ class PlanGate:
         self._idx, self._streak, self._key = idx, float(streak), None
         self._last, self._miss_s = None, 0.0
 
+    @staticmethod
+    def _urgent(best: _Cand, inc: _Cand) -> bool:
+        """立即切换的安全类判据：最优候选碰撞风险更低，或现任得分目标
+        已失去（最优回中/换层接手）。新冒出的得分机会不算紧急。"""
+        if best.collision_cost < inc.collision_cost - 1e-9:
+            return True
+        return inc.layer != 4 and best.layer == 4
+
     def choose(self, cands: list[_Cand], dt: float) -> _Cand:
         """价值差超过 margin 并保持 dwell 才换现任；现任不可行立即让位。"""
         best = cands[0]
@@ -381,18 +389,22 @@ class PlanGate:
             return best
         self._miss_s = 0.0
         kb, ki = self._q(best.key), self._q(inc.key)
-        # 大价值差（避开一次碰撞/抓住高值窗口）不等 dwell——检测常有一拍
-        # 闪烁，等 0.2s 会错过避撞窗口。
-        if kb[1] < ki[1] - self.immediate:
+        # 立即切换只给「安全类」：更少碰撞风险，或现任得分目标消失（回到
+        # 回中/别的层）。新冒出来的得分机会（奖励/擦边/金币，价值 90~240
+        # 都高于 immediate=100）不得单帧拽杆——2026-10-30 人工局里计划层
+        # 擦边段 36 段有 25 段只活 1 拍、金币段中位 2 拍，杆值跟着一拍一
+        # 换；检测闪断不是目标出现。得分类升级改走 dwell（0.2s）确认。
+        urgent = self._urgent(best, inc)
+        if kb[1] < ki[1] - self.immediate and urgent:
             self._idx, self._key, self._streak = best.idx, kb, 0.0
             self._last = best
             return best
         # 反向同一条：驻留只防「两个都该做」之间的抖动，不防现任自己失效。
         # 擦边车出窗后，现任满杆候选的价值掉到 0，但 key 里的超限罚仍挂着；
         # 旧逻辑只等「最佳更好」，于是继续按满杆 0.2~0.3s（20261027 局
-        # 9.1~9.4s 空路左打、12.7~12.9s 目标在右却满左）。现任价值差超过
-        # 立即门槛，或从限幅外变成超限候选，本拍就让位。
-        demoted = ki[1] > kb[1] + self.immediate
+        # 9.1~9.4s 空路左打、12.7~12.9s 目标在右却满左）。现任是得分目标
+        # 而最优已回中（目标消失）/ 现任越限，本拍就让位。
+        demoted = urgent and ki[1] > kb[1] + self.immediate
         if len(ki) > 2 and len(kb) > 2 \
                 and isinstance(ki[2], (int, float)) \
                 and isinstance(kb[2], (int, float)) \
@@ -516,13 +528,26 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                     and abs(c.x_m - scene.ego_x_m) <= lane_w * 0.65:
                 range_hazard_active = True
                 break
+    # 候选 = 恒杆 2s + 半程反打（“到目标回正”的预测模型）。恒杆开环在接近
+    # 目标时预测里没有“停下”这一项，只能靠下一拍换杆追——选出的大杆值天然
+    # 过冲、晚反打（2026-10-25 横向契约阶段 1.5）。反打只给有量级的杆值：
+    # 轻打舵 2s 扫不过一道，反打没有意义，只浪费算力。当前杆值总有反打候选
+    # （即使很小），候选数不随拍变化，闸门存续项的下标与 cand_x 对齐。
+    n_half = max(1, n // 2)
+    seqs: list[tuple[float, tuple[float, ...]]] = [
+        (u, (u,) * n) for u in us]
+    seqs += [(u, (u,) * n_half + (-u,) * (n - n_half))
+             for u in motion.steer_levels if abs(u) >= 0.2]
+    seqs.append((ego.steer_norm,
+                 (ego.steer_norm,) * n_half
+                 + (-ego.steer_norm,) * (n - n_half)))
     cands: list[_Cand] = []
-    for idx, u in enumerate(us):
+    for idx, (u, seq) in enumerate(seqs):
         x, v, steer = scene.ego_lane, ego.v_lane_s, ego.steer_norm
         xs_lane = [x]
         vs_lane = [v]
-        for _ in range(n):
-            x, v, steer = step(x, v, steer, u, dt, plant)
+        for uu in seq:
+            x, v, steer = step(x, v, steer, uu, dt, plant)
             xs_lane.append(x)
             vs_lane.append(v)
         xs_m = tuple(v * lane_w for v in xs_lane)

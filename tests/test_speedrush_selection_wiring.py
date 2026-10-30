@@ -74,9 +74,9 @@ def test_layered_coin_targets_coin_line():
     assert out.maneuver is True
     assert eng.selection_report is not None
     assert eng.selection_report.layer == 3
-    # 币组心 0.4 道（仍在本道跨度内）→ 选择目标约 0.4 道（币线，不是路心 0）；
+    # 币组心 0.4 道：目标按车身带收到 0.4−0.27=0.13 道（不对币心）；
     # 出跨度的目标才转路线请求，同道偏一侧吃币不受闸门影响
-    assert eng.selection_report.target_x_m / LW == pytest.approx(0.4, abs=0.1)
+    assert eng.selection_report.target_x_m / LW == pytest.approx(0.13, abs=0.1)
 
 
 def test_layered_reward_wins_over_coin():

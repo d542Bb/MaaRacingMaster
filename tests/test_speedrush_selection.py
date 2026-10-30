@@ -41,7 +41,7 @@ def test_reward_infeasible_falls_to_coin():
     rep = select(_road(), [Obj("reward", 6.0, 0.1)],
                  [], [Obj("coin", 0.3, 2.0)], 0.0, _p())
     assert rep.layer == 3 and rep.why == "coin"
-    assert rep.target_x_m == pytest.approx(0.3)
+    assert rep.target_x_m == pytest.approx(0.0)    # 币心在车身带内：不动线
 
 
 def test_pass_picks_roomier_side():
@@ -60,7 +60,20 @@ def test_both_sides_blocked_holds_center():
 
 def test_coin_layer_and_center_fallback():
     rep = select(_road(), [], [], [Obj("coin", 0.35, 2.5)], 0.0, _p())
-    assert rep.layer == 3 and rep.target_x_m == pytest.approx(0.35)
+    assert rep.layer == 3 and rep.target_x_m == pytest.approx(0.0)
+
+
+def test_coin_not_centered_car_has_width():
+    """币不必正中：车身带内的币保持原线，带外的只走到带边。"""
+    p = _p()
+    band = p.ego_half_lane * LW
+    # 带内 0.2 道：目标 = 自车横位
+    rep = select(_road(), [], [], [Obj("coin", 0.2 * LW, 2.0)], 0.0, p)
+    assert rep.layer == 3 and rep.target_x_m == pytest.approx(0.0)
+    # 带外 0.8 道：目标 = 币心 − 车身半宽（不是币心）
+    rep = select(_road(), [], [], [Obj("coin", 0.8 * LW, 2.0)], 0.0, p)
+    assert rep.layer == 3
+    assert rep.target_x_m == pytest.approx(0.8 * LW - band)
     rep = select(_road(), [], [], [], 0.0, _p())
     assert rep.layer == 4 and rep.why == "center"
 
@@ -72,10 +85,11 @@ def test_coin_off_line_not_selected():
 
 
 def test_coin_adjacent_lane_selected():
-    """相邻道（0.9 道）的币可以成为主目标。"""
-    rep = select(_road(), [], [], [Obj("coin", 0.9 * LW, 2.5)], 0.0, _p())
+    """相邻道（0.9 道）的币可以成为主目标；目标按车身带收，不对币心。"""
+    p = _p()
+    rep = select(_road(), [], [], [Obj("coin", 0.9 * LW, 2.5)], 0.0, p)
     assert rep.layer == 3 and rep.why == "coin"
-    assert rep.target_x_m == pytest.approx(0.9 * LW)
+    assert rep.target_x_m == pytest.approx(0.9 * LW - p.ego_half_lane * LW)
 
 
 def test_aligned_coin_needs_no_move_time():
@@ -190,13 +204,15 @@ def test_waypoint_cap_and_monotone_coins():
 
 def test_layer_change_immediate_same_layer_dwell():
     sel = LayeredSelector(_p())
-    sel.update(_road(), [], [], [Obj("coin", -1.0, 2.0)], 0.0, 0.05)
-    # 同层目标跳 0.6 道（两侧都在 0.5 线内）：驻留未到，目标保持
-    rep = sel.update(_road(), [], [], [Obj("coin", 1.0, 2.0)], 0.0, 0.05)
-    assert rep.target_x_m == pytest.approx(-1.0, abs=0.05)
+    sel.update(_road(), [], [], [Obj("coin", -2.0, 2.0)], 0.0, 0.05)
+    # 同层目标跳 >0.5 道：驻留未到，目标保持（币按车身带收，目标=币心∓带）
+    rep = sel.update(_road(), [], [], [Obj("coin", 2.0, 2.0)], 0.0, 0.05)
+    assert rep.target_x_m == pytest.approx(-(2.0 - _p().ego_half_lane * LW),
+                                           abs=0.05)
     for _ in range(5):
-        rep = sel.update(_road(), [], [], [Obj("coin", 1.0, 2.0)], 0.0, 0.05)
-    assert rep.target_x_m == pytest.approx(1.0, abs=0.05)
+        rep = sel.update(_road(), [], [], [Obj("coin", 2.0, 2.0)], 0.0, 0.05)
+    assert rep.target_x_m == pytest.approx(2.0 - _p().ego_half_lane * LW,
+                                           abs=0.05)
     # 层变化：奖励车出现立即切
     rep = sel.update(_road(), [Obj("reward", 1.0, 2.0)], [],
                      [Obj("coin", 1.0, 2.0)], 0.0, 0.05)
@@ -209,7 +225,8 @@ def test_coin_hold_then_release_and_override():
     sel.update(_road(), [], [], [Obj("coin", 0.3, 2.0)], 0.0, 0.05)
     rep = sel.update(_road(), [], [], [], 0.0, 0.1)
     assert rep.layer == 3 and rep.why == "coin_hold"
-    assert rep.target_x_m == pytest.approx(0.3, abs=0.05)
+    assert rep.target_x_m == pytest.approx(0.0, abs=0.05)   # 币在车身带内
+
     for _ in range(7):
         rep = sel.update(_road(), [], [], [], 0.0, 0.1)
     assert rep.layer == 4 and rep.why == "center"
@@ -265,12 +282,12 @@ def test_out_of_lane_coin_becomes_request_not_drag():
     assert rep.lane_request == 1.0
 
 
-def test_in_lane_coin_still_direct():
-    """区间内的币照旧直接追——道内微调永远实时，不锁不请求。"""
+def test_in_lane_coin_keeps_line():
+    """车身带内的币保持原线：不为一枚偏 0.1 道的币拽方向盘。"""
     rep = select(_road(), [], [], [Obj("coin", 0.1 * LW, 2.5)], 0.0, _p(),
                  commit_x_m=0.0)
     assert rep.layer == 3 and rep.lane_request is None
-    assert rep.target_x_m == pytest.approx(0.1 * LW)
+    assert rep.target_x_m == pytest.approx(0.0)
 
 
 def test_far_coin_no_request():
@@ -288,12 +305,13 @@ def test_out_of_lane_reward_becomes_request():
     assert rep.target_x_m == pytest.approx(0.0, abs=HALF + 0.02)
 
 
-def test_same_lane_offset_coin_still_direct():
-    """本道跨度内的偏一侧币线（0.4 道）照旧直追：吃币是得分动作，不是变道。"""
+def test_same_lane_coin_aims_band_edge():
+    """本道内偏一侧的币（0.4 道）：只走到车身带边，不对币心；
+    收集判据（0.35 道）比车身带（0.27 道）宽，压在带边仍能吃到。"""
     rep = select(_road(), [], [], [Obj("coin", 0.4 * LW, 2.5)], 0.0, _p(),
                  commit_x_m=0.0)
     assert rep.layer == 3 and rep.lane_request is None
-    assert rep.target_x_m == pytest.approx(0.4 * LW)
+    assert rep.target_x_m == pytest.approx((0.4 - _p().ego_half_lane) * LW)
 
 
 def test_pass_keeps_full_graze_authority():
