@@ -14,7 +14,7 @@ from maaracing_master.plugins.speedrush.corridor import (
 from maaracing_master.plugins.speedrush.decision import (
     DecisionEngine, _monotonic_coin_t)
 from maaracing_master.plugins.speedrush.motion_plan import (
-    EgoState, PlanGate, Scene, _Cand, build_scene, plan_motion)
+    EgoState, PlanGate, Scene, SceneObj, _Cand, build_scene, plan_motion)
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, RoadBand, RoadFrame)
 from maaracing_master.plugins.speedrush.traffic import CarView
@@ -870,3 +870,21 @@ def test_steer_levels_resolve_the_pass_band():
     中间必须有 0.05 级落点，否则候选总在「贴包络」和「过远」之间跳。"""
     levels = CFG.motion.steer_levels
     assert 0.05 in levels and -0.05 in levels
+
+
+def test_aim_candidate_hits_pass_band_for_adjacent_car():
+    """邻道车在 0.9 道时，开环档位从 3.0m 直接跳到 1.9m（碰撞），计分带被
+    整段跳过。目标位候选按选择层瞄点闭环过去，必须落在带内（擦边层）。"""
+    s = _scene(road=_wide_road())
+    lw = s.lane_w_m
+    car = SceneObj("car", s.ego_x_m + 0.9 * lw, 1.5, 1.0, 0.27, 0.0,
+                   "metric", 15.0, True, True, True, False, 0.85, False)
+    s2 = replace(s, objs=(car,))
+    p = _plan(s2)
+    i = int(round(1.5 / CFG.motion.dt_s))
+    d = abs(p.cand_x[p.chosen][i] - car.x_m)
+    lo = (CFG.selection.ego_half_lane * lw + 0.85 + 0.27
+          + CFG.motion.collision_margin_m)
+    hi = CFG.motion.graze_gap_lane * lw
+    assert p.valid and p.layer == 2
+    assert lo <= d <= hi

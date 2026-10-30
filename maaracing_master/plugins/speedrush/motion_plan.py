@@ -534,22 +534,52 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     # 轻打舵 2s 扫不过一道，反打没有意义，只浪费算力。当前杆值总有反打候选
     # （即使很小），候选数不随拍变化，闸门存续项的下标与 cand_x 对齐。
     n_half = max(1, n // 2)
-    seqs: list[tuple[float, tuple[float, ...]]] = [
-        (u, (u,) * n) for u in us]
-    seqs += [(u, (u,) * n_half + (-u,) * (n - n_half))
+    seqs: list[tuple[float, tuple[float, ...] | None, float | None]] = [
+        (u, (u,) * n, None) for u in us]
+    seqs += [(u, (u,) * n_half + (-u,) * (n - n_half), None)
              for u in motion.steer_levels if abs(u) >= 0.2]
     seqs.append((ego.steer_norm,
                  (ego.steer_norm,) * n_half
-                 + (-ego.steer_norm,) * (n - n_half)))
+                 + (-ego.steer_norm,) * (n - n_half), None))
+    # 目标位候选（2026-10-30）：开环档位在 1.3~2s 到站时相邻档的横距差约
+    # 1m，计分带（约 0.6m）经常被整段跳过——邻道车只有 18% 能被擦边层接住，
+    # 剩下的从「贴包络」直接跳到「过远」。按选择层同一个擦边偏移，对最近
+    # 两辆车各给两侧一条闭环瞄准轨迹（规划器自己的跟踪律），保证带内有
+    # 落点。候选追加在开环之后，不改变开环候选的下标。
+    if motion.aim_candidates:
+        aim_gap = selection.graze_gap_lane * lane_w
+        aim_cars = sorted(
+            (c for c in cars
+             if c.timed and c.in_corridor and not _large(c)
+             and c.t_arrive_s is not None
+             and motion.hit_min_lead_s <= c.t_arrive_s <= horizon
+             and abs(c.x_m - scene.ego_x_m) <= pass_max_off_m),
+            key=lambda c: c.t_arrive_s)[:2]
+        for c in aim_cars:
+            for side in (-1.0, 1.0):
+                # 轨迹生成与 step() 同用车道单位：目标由米换回道
+                seqs.append((0.0, None,
+                             (c.x_m + side * aim_gap) / lane_w))
     cands: list[_Cand] = []
-    for idx, (u, seq) in enumerate(seqs):
+    for idx, (u, seq, target) in enumerate(seqs):
         x, v, steer = scene.ego_lane, ego.v_lane_s, ego.steer_norm
         xs_lane = [x]
         vs_lane = [v]
-        for uu in seq:
-            x, v, steer = step(x, v, steer, uu, dt, plant)
-            xs_lane.append(x)
-            vs_lane.append(v)
+        if target is None:
+            for uu in seq:
+                x, v, steer = step(x, v, steer, uu, dt, plant)
+                xs_lane.append(x)
+                vs_lane.append(v)
+        else:
+            for k in range(n):
+                x_pred = x + v * plant.lookahead_tau_s
+                uu = max(-1.0, min(1.0, motion.aim_kp * (target - x_pred)
+                                   - motion.aim_kd * v))
+                if k == 0:
+                    u = uu
+                x, v, steer = step(x, v, steer, uu, dt, plant)
+                xs_lane.append(x)
+                vs_lane.append(v)
         xs_m = tuple(v * lane_w for v in xs_lane)
 
         def clearance(c, t: float) -> float:

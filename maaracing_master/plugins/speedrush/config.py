@@ -289,6 +289,14 @@ class Motion:
     # 有 21 个满杆拍，平均侵入只有 1~10cm）。
     corridor_hard_clearance_m: float = 0.15
     corridor_soft_cost_per_m: float = 120.0
+    # 目标位候选：对最近两辆可擦边车各给两侧一条闭环瞄准轨迹。开环档位在
+    # 1.3~2s 到站时相邻档横距差约 1m，计分带（约 0.6m）会被整段跳过；
+    # 目标位候选按选择层同一个擦边偏移落到带内（2026-10-30）。
+    aim_candidates: bool = True
+    # 目标位候选的生成律（只用来造轨迹，不是控制律）：比生产跟踪律更快收敛、
+    # 无过冲——0.68 道上界只有 0.75 道，生成律过冲 0.08 道就出带。
+    aim_kp: float = 4.0
+    aim_kd: float = 0.6
     # 硬不可行回退的侵入分桶：同一桶内按价值/动作选，不为厘米级差异满杆。
     corridor_escape_tol_m: float = 0.05
     # 反应时内到站的车：横向动作已无法改变结果，不计入硬约束（防贴身会车
@@ -784,6 +792,9 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "corridor_hard_clearance_m", 0.15, lo=0),
             corridor_soft_cost_per_m=_num_def(
                 d, "motion", "corridor_soft_cost_per_m", 120.0, lo=0),
+            aim_candidates=_bool(d, "motion", "aim_candidates", True),
+            aim_kp=_num_def(d, "motion", "aim_kp", 4.0, lo=0),
+            aim_kd=_num_def(d, "motion", "aim_kd", 0.6, lo=0),
             corridor_escape_tol_m=_num_def(
                 d, "motion", "corridor_escape_tol_m", 0.05, lo=0),
             collision_min_lead_s=_num_def(
