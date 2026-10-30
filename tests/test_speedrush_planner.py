@@ -1214,6 +1214,55 @@ def test_frame_shift_holds_planner_frame_not_scene_target():
         rig.tick(_out(x_target=-1.2), plan=fs)
     assert abs(rig.x) < 0.05          # 没有朝错帧目标 -1.2 冲过去
 
+
+def test_brief_plan_dropout_keeps_last_plan_command():
+    """计划闪断 1~2 拍时不切 PD：继续打最后一条航向指令（限速），
+    超过 plan_hold_max_ticks 才交还。
+
+    2026-10-30 两局：有效计划段的中断 145 段里 81 段只有 1~2 拍，
+    逐段切 PD 让控制来源 24~31 次/10s 来回切，方向盘"走—停"抖动。"""
+    ok = types.SimpleNamespace(valid=True, reason="plan:ok", layer=2,
+                               value_total=120.0, psi_feedforward=0.08,
+                               x_preview_lane=0.0, v_preview_lane_s=0.0)
+    fs = types.SimpleNamespace(valid=False, reason="plan:frame_shift",
+                               layer=4, value_total=0.0, psi_feedforward=0.0,
+                               x_preview_lane=0.0, v_preview_lane_s=0.0)
+    pl = _planner()
+    rig = _Rig(pl)
+    rig.tick(_out(fid=1, valid=1), plan=ok)
+    c2 = rig.tick(_out(fid=2, valid=2), plan=ok)
+    assert abs(c2.steer_x) > 5000               # 计划在打舵
+    # 断供第 1 拍：仍是计划那条航向，不是 PD 的回零
+    c3 = rig.tick(_out(fid=3, valid=3), plan=fs)
+    assert abs(c3.steer_x - c2.steer_x) <= (P.plan_u_slew_s * DT * _STICK_FULL
+                                            + 1)
+    assert abs(c3.steer_x) > 5000
+    # 超过保持窗：交还 PD（参考系分歧 → 保持当前道，车已被带偏，回带）
+    for i in range(P.plan_hold_max_ticks + 2):
+        c4 = rig.tick(_out(fid=10 + i, valid=10 + i), plan=fs)
+    assert abs(c4.steer_x - c2.steer_x) > 0.3 * _STICK_FULL
+
+
+def test_plan_hold_does_not_apply_after_merge_commit():
+    """承诺并线的计划不能被"断供保持"续着打——并线该由 PD 跟目标道。"""
+    commit = types.SimpleNamespace(valid=True, reason="plan:ok", layer=4,
+                                   value_total=0.0, psi_feedforward=0.12,
+                                   x_preview_lane=0.0, v_preview_lane_s=0.0)
+    fs = types.SimpleNamespace(valid=False, reason="plan:frame_shift",
+                               layer=4, value_total=0.0, psi_feedforward=0.0,
+                               x_preview_lane=0.0, v_preview_lane_s=0.0)
+    pl = _planner()
+    rig = _Rig(pl)
+    rig.tick(DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
+                            x_target=0.9, reason="test", emitted_fid=1,
+                            valid_until_fid=1, maneuver=True,
+                            phase="merging"), plan=commit)
+    # 承诺期的计划走 PD 跟目标道，不记成"断供保持"的航向
+    assert pl._plan_hold_commit
+    assert pl._plan_hold_left == 0
+    c = rig.tick(_out(fid=2, valid=2), plan=fs)
+    assert abs(c.steer_x) < 5000        # 断供拍没有续打 0.12 的并线航向
+
 def _feed_ramp(obs, seconds=6.0, rate=0.06, dt=0.1, n_locked=2):
     """线角匀速上升：ψ 积分到 rate×t，r 稳态等于 rate。"""
     t, fid, th = 0.0, 1, 0.0
@@ -1278,6 +1327,24 @@ def test_scale_is_causal_bounded_and_has_no_fallback():
     obs2._spd_den = 0.01 * 10
     obs2.update(0.05, None, False, None, False, None, None)
     assert obs2.v_scale is None
+
+
+def test_scale_survives_straight_cruise_within_hold_window():
+    """直线巡航十秒不该让比例作废：比例只能靠横移观测，直线期证据自然衰减，
+    但车速在 20s 内不会变一倍。保留的是**测过**的速度（置信度照实归零），
+    过期才作废——2026-10-30 两局 plan:no_speed 占 22~25%，都是成段的十秒窗口。"""
+    obs = HeadingObserver(P)
+    obs._spd_num = 0.031 * 40.0 / 3.5
+    obs._spd_den = 0.031
+    obs.update(0.05, None, False, None, False, None, None)
+    assert obs.v_scale == pytest.approx(40.0, abs=2.0)
+    for _ in range(200):                     # 10s 无新证据（直线）
+        obs.update(0.05, None, False, None, False, None, None)
+    assert obs.v_scale == pytest.approx(40.0, abs=2.0)
+    assert obs.v_scale_conf == 0.0           # 证据已过期，置信度不装样子
+    for _ in range(300):                     # 再过 15s：越过保留窗
+        obs.update(0.05, None, False, None, False, None, None)
+    assert obs.v_scale is None
 
 
 def test_scale_accum_ignores_small_heading_and_slow_motion():

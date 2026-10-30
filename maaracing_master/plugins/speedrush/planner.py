@@ -95,6 +95,12 @@ _PSI_CORR_TAU_S = 0.5
 _HEAD_RATE_MAX = 2.0
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
+# 证据衰减到下限后，上一次的读数再保留这么久（秒）。比例只能靠**横移**观测：
+# 车一直走直线时证据自然衰减，但车速在 20s 内不会变一倍——直线巡航十秒不该
+# 让计划整个关掉（2026-10-30 两局：plan:no_speed 占 22~25%，且都是成段的
+# 十秒窗口，那段里车只剩回中兜底）。保留的是**测过**的速度，不是兜底常数；
+# 置信度照实归零，调用方看得到证据已过期。
+_SPD_HOLD_S = 20.0
 _SPD_DEN_FULL = 0.10        # 置信度到 1 的 Σtan²ψ（≈σ 2 m/s）
 _SPD_MIN_TAN = 0.02         # 参与估计的最小 |tanψ|（1.1°）：更小的朝向上
                             # v_line 噪声压过信号，条件数不足
@@ -138,7 +144,8 @@ class HeadingObserver:
             self.v_scale_conf = 0.0      # 0~1：Σtan²ψ 相对发布下限的量级
             self._spd_num = 0.0
             self._spd_den = 0.0
-            self._spd_t = -1e9
+            self._spd_t = -1e9          # 最近一次收到比例证据的时刻
+            self._spd_pub_t = -1e9      # 最近一次发布有效比例的时刻（保留窗口起点）
         self._samples: list[dict] = []
         self._last_fid: int | None = None
         self._last_line = -1e9       # 标线横移上次更新时刻（v_line TTL）
@@ -161,13 +168,19 @@ class HeadingObserver:
         self._spd_num *= decay
         self._spd_den *= decay
         if self._spd_den < _SPD_DEN_MIN:
-            self.v_scale = None              # 证据不足就不发布（不兜底常数）
+            # 证据衰减到下限：直线巡航没有横移、比例无法更新。上一次测到的
+            # 读数仍是车速的测量（慢变），保留 _SPD_HOLD_S；过期才作废。
+            # 置信度照实归零——调用方要能看出这条读数已经没有新证据。
+            if self._t - self._spd_pub_t > _SPD_HOLD_S:
+                self.v_scale = None
             self.v_scale_conf = 0.0
         else:
             self.v_scale_conf = min(1.0, self._spd_den / _SPD_DEN_FULL)
             sp = LANE_W * self._spd_num / self._spd_den
             self.v_scale = sp if _SPD_MIN_MPS <= sp <= _SPD_MAX_MPS \
                 else None
+            if self.v_scale is not None:
+                self._spd_pub_t = self._t
         if (not lane_ok or lane_x is None
                 or not math.isfinite(float(lane_x))):
             return
@@ -452,6 +465,12 @@ class LateralPlanner:
         self.last_rebase: str | None = None
         # 上一拍计划前馈命令：换候选时限速用；计划中断后置空，重入首拍不限。
         self._last_plan_u: float | None = None
+        # 计划短断供保持（_PLAN_HOLD 段）：最后一条有效航向指令 + 剩余拍数。
+        # 计划的无效段 81% 只有 1~2 拍，逐段切回 PD 会让方向盘"走—停"来回。
+        self._plan_hold_left = 0
+        self._plan_hold_psi: float | None = None
+        self._plan_hold_cap: float | None = None
+        self._plan_hold_commit = False
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
         self._heading_stale = False
@@ -667,6 +686,7 @@ class LateralPlanner:
                                    if frame_shift else 0)
         if st is not DecisionState.CONSERVE:
             self._conserve_hold = None
+        plan_held = False           # 本拍是否走"计划短断供保持"
         if st is DecisionState.CONSERVE:
             # CONSERVE=**回到并停在路中心**（13:02 局：归零直开弯道怼护栏，badframe
             # fid_2325 侧滑胎烟；13:29 局二次修正：入拍冻结 executed 的"保持车道"
@@ -696,6 +716,25 @@ class LateralPlanner:
             if self._abort_hold_lane is None:
                 self._abort_hold_lane = self.state.executed_lane
             steer_raw = self._pd(self._abort_hold_lane, gentle=True)
+        elif (st is DecisionState.CRUISE and plan is not None
+              and not plan.valid and self._plan_hold_left > 0
+              and self._plan_hold_psi is not None
+              and not self._plan_hold_commit
+              and getattr(plan, "reason", None) != "plan:infeasible_corridor"):
+            # 计划短断供：参考系/速度估计闪断时，上一拍的计划命令还是本拍
+            # 最可信的意图——继续打它（同一套律＋限速），不切回 PD。PD 的
+            # 目标是另一套口径（决策 x_target / 保持车道），每拍来回切会让
+            # 方向盘在"走"和"停"之间跳（2026-10-30 实测切换 24~31 次/10s）。
+            plan_held = True
+            self._plan_hold_left -= 1
+            self._abort_hold_lane = None
+            steer_raw = self._law_psi(self._plan_hold_psi,
+                                      cap=self._plan_hold_cap)
+            if self._last_plan_u is not None:
+                lim = self.p.plan_u_slew_s * dt_s
+                steer_raw = max(self._last_plan_u - lim,
+                                min(self._last_plan_u + lim, steer_raw))
+            self._last_plan_u = steer_raw
         elif frame_shift and self._frame_shift_ticks <= self.p.frame_hold_max_ticks:
             # 参考系分歧：计划无效、决策目标在场景帧、实测位在 planner 帧，
             # 直接拿它们做 PD 是把车往错帧里拽（20261030_122416 s1 87s：假路心
@@ -742,6 +781,10 @@ class LateralPlanner:
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
                     cap=self.p.maneuver_stick_max)
+                # 承诺并线的目标是决策层的道，不能拿来当"短断供保持"的
+                # 航向——断供后并线该由 PD 继续跟目标道。
+                self._plan_hold_left = 0
+                self._plan_hold_commit = True
             else:
                 # 维护层（无碰撞/机会代价）不得用满杆追偏掉的路心
                 cap = (self.p.hold_stick_max
@@ -749,6 +792,10 @@ class LateralPlanner:
                        and getattr(plan, "value_total", 0.0) >= 0.0
                        else None)
                 steer_raw = self._law_psi(plan.psi_feedforward, cap=cap)
+                self._plan_hold_psi = plan.psi_feedforward
+                self._plan_hold_cap = cap
+                self._plan_hold_commit = False
+                self._plan_hold_left = self.p.plan_hold_max_ticks
             # 换目标时航向指令会阶跃；相对上一拍计划命令限速，避免方向盘一步
             # 打半圈。首帧/计划重入（None）不限制——那是交接，不是候选抖动。
             if self._last_plan_u is not None:
@@ -763,7 +810,7 @@ class LateralPlanner:
             # （20261026 局 s2#4 21.6s：目标 0.93、车位 1.19、杆 −0.18）。
             steer_raw = self._law_psi(plan.psi_feedforward)
             self._last_plan_u = None
-        else:
+        elif not plan_held:
             self._last_plan_u = None
 
         self.last_steer_raw = steer_raw

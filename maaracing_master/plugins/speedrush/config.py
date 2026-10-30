@@ -174,6 +174,12 @@ class Planner:
     # 计划判参考系分歧（plan:frame_shift）时，只用 planner 帧状态保持当前道的
     # 最长拍数；超过后退回旧的跨帧回退（长弯道里无限直开同样危险）
     frame_hold_max_ticks: int = 25
+    # 计划**短断供**保持：上一拍计划还正常、本拍因参考系/速度估计闪断而无效时，
+    # 继续打最后一条航向指令的最长拍数。计划有效段的中断 81% 只有 1~2 拍
+    # （2026-10-30 两局：145 段里 81 段），每段都切一次 PD 会让方向盘在"走"
+    # 和"停"之间来回——实测控制来源切换 24~31 次/10s，切换拍杆值跳变约为
+    # 普通拍的 2 倍。超过此拍数才交还 PD。
+    plan_hold_max_ticks: int = 6
 
 
 @dataclass(frozen=True)
@@ -677,7 +683,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             obs_jump_confirm_ticks=_int_def(
                 d, "planner", "obs_jump_confirm_ticks", 3, lo=1),
             plan_u_slew_s=_num_def(
-                d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False)),
+                d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
+            plan_hold_max_ticks=_int_def(
+                d, "planner", "plan_hold_max_ticks", 6, lo=0)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
