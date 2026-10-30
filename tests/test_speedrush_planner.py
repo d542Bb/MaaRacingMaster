@@ -1242,7 +1242,7 @@ def test_reuse_ticks_still_converge_position():
     assert abs(pl.state.executed_lane - 0.4) < 0.2
 
 
-# ---------- 航向横速观测（模型状态之外的融合输入） ----------
+# ---------- 横速观测（模型状态之外的融合输入） ----------
 
 def _feed_weave(obs, seconds=2.0, v_lane=1.0, theta=0.05):
     """合成来回横移：x 斜率与线角同号，避免慢基线把常值航向吸收掉。"""
@@ -1267,23 +1267,55 @@ def test_heading_observer_estimates_speed_and_velocity():
     assert 0.4 < abs(obs.v_head) < 1.6
 
 
-def test_heading_fuse_gain_zero_returns_model_and_half_blends():
+def test_fuse_order_model_line_head():
+    """融合顺序：模型 → 标线横移 → 航向横速；两路都关=逐位退回模型。"""
     obs = HeadingObserver(P)
+    obs.v_line = 1.0
+    obs._last_line = obs._t
     obs.v_head = 1.0
     obs._last_seen = obs._t
-    assert obs.fused(0.4, 0.0) == 0.4
-    assert obs.fused(0.4, 0.5) == pytest.approx(0.7)
+    assert obs.fused(0.4, 0.0, 0.0) == 0.4
+    assert obs.fused(0.4, 0.5, 0.0) == pytest.approx(0.7)
+    assert obs.fused(0.4, 0.5, 0.25) == pytest.approx(0.775)
+
+
+def test_no_speed_estimate_does_not_fabricate_heading_velocity():
+    """线角≈0 时前向速度不可估：v_head 保持 None，不能拿默认车速兜底。
+
+    旧实现用 45 m/s 兜底，59% 的拍拿到 ±1~3.6 道/s 的假横速，把并线指令
+    抵消成反向（2026-10-30 实机）。"""
+    obs = HeadingObserver(P)
+    x = 0.0
+    for fid in range(1, 12):
+        x += 0.03                   # 0.3 道/s 的真实横移
+        obs.update(0.1, x, True, 0.0, True, fid, 40.0)
+    assert obs.v_line == pytest.approx(0.3, abs=0.1)
+    assert obs.speed_mps is None
+    assert obs.v_head is None
+    assert obs.fused(0.4, 0.5, 0.25) == pytest.approx(
+        0.4 + 0.5 * (obs.v_line - 0.4))
+
+
+def test_line_jump_is_not_lateral_velocity():
+    """线横位整道跳（k 重锚/换线）不是位移：不得积成横速。"""
+    obs = HeadingObserver(P)
+    for fid in range(1, 6):
+        obs.update(0.1, 0.2, True, 0.0, True, fid, 40.0)
+    assert obs.v_line is not None
+    obs.update(0.1, 1.2, True, 0.0, True, 6, 40.0)   # 跳 1 道
+    assert obs.v_line is None
 
 
 def test_heading_observer_falls_back_when_stale_or_bad():
     obs = HeadingObserver(P)
     _feed_weave(obs)
-    assert obs.v_head is not None
+    assert obs.v_head is not None and obs.v_line is not None
     for _ in range(8):                 # 0.8s 无线：超过 0.5s TTL
         obs.update(0.1, None, False, None, False, None, None)
     assert obs.v_head is None
-    assert obs.fused(0.4, 0.5) == 0.4
-    # 线在锁但航向龄超限：不更新观测
+    assert obs.v_line is None
+    assert obs.fused(0.4, 0.5, 0.25) == 0.4
+    # 线在锁但航向龄超限：不更新航向观测
     obs2 = HeadingObserver(P)
     _feed_weave(obs2)
     before = obs2.v_head
@@ -1291,18 +1323,39 @@ def test_heading_observer_falls_back_when_stale_or_bad():
     assert obs2.v_head == before
 
 
-def test_heading_fuse_opposes_motion_in_control_law():
-    """融合横速进入控制律：同样位置误差下，正航向横速产生负（反向）杆值。"""
+def test_line_fuse_opposes_motion_in_control_law():
+    """标线横移进入控制律：同样位置误差下，正横速产生负（反向）杆值。"""
     cmd = {}
     for gain in (0.0, 0.5):
-        pl = _planner(heading_fuse_gain=gain)
-        pl.head.v_head = 1.0
-        pl.head._last_seen = pl.head._t
+        pl = _planner(line_fuse_gain=gain)
+        pl.head.v_line = 1.0
+        pl.head._last_line = pl.head._t
         c = pl.update(_out(x_target=0.0, maneuver=True, fid=1, valid=1),
                       DT, 1)
         cmd[gain] = c.steer_x
     assert cmd[0.0] == 0
     assert cmd[0.5] < 0
+
+
+def test_merge_commit_tracks_decision_goal_not_preview():
+    """承诺并线按决策目标出力，而不是 0.2s 预览。
+
+    实测一段 2.4s 的并线只走了 0.16 道：计划前馈 p≈计划预览≈当前位置时
+    跟踪项恒接近 0。承诺期（phase=merging 且 plan.layer=4）改用决策目标。"""
+    plan = types.SimpleNamespace(
+        valid=True, reason="plan:ok", u_feedforward=0.0, layer=4,
+        x_preview_lane=0.5, v_preview_lane_s=0.0, value_total=0.0)
+    cmd = {}
+    for phase in ("keep", "merging"):
+        pl = _planner(a_lat_gain=0.0, v_lat_max=1e9)
+        pl.state.executed_lane = 0.5
+        pl.state.v_lat_est = 0.0
+        pl.state.steer_norm = 0.0
+        out = replace(_out(x_target=0.83, maneuver=True, fid=1, valid=10),
+                      phase=phase)
+        cmd[phase] = pl.update(out, DT, 1, plan=plan).steer_x
+    assert abs(cmd["keep"]) < 200          # 预览=当前位置：几乎不出力
+    assert cmd["merging"] > 2500           # 目标差 0.33 道：朝目标出力
 
 
 # ---------- 大新息确认：新证据计数，hold/复用不清零、不重复计 ----------
@@ -1397,3 +1450,139 @@ def test_frame_shift_holds_planner_frame_not_scene_target():
     for _ in range(10):
         pl.update(_out(x_target=-1.2), DT, current_fid=2, plan=fs)
     assert pl.state.executed_lane < -0.05
+
+
+# ---------- 朝向影子：ψ / r / 在线比例 / 两路 1 秒预测（只读，不进控制） ----------
+
+def _feed_ramp(obs, seconds=6.0, rate=0.06, dt=0.1, n_locked=2):
+    """线角匀速上升：稳态下 ψ≈2·rate（2s 慢基线滞后），r≈rate。"""
+    t, fid, th = 0.0, 1, 0.0
+    while t < seconds:
+        obs.update(dt, 0.0, True, th, True, fid, 60.0, n_locked)
+        th += rate * dt
+        t += dt
+        fid += 1
+
+
+def test_heading_psi_and_rate_follow_line_angle():
+    """ψ 在稳态等于 2·rate（2s 基线滞后）；r 只在建立期为正。
+
+    注：相对朝向对「缓慢的常值转速」与「路面曲率」不可分辨——那是 2s 慢基线
+    的定义带来的，r 捕捉的是 ψ 的变化而不是绝对转速。"""
+    obs = HeadingObserver(P)
+    rate, dt, th, fid, t = 0.06, 0.1, 0.0, 1, 0.0
+    r_build = None
+    while t < 8.0:
+        obs.update(dt, 0.0, True, th, True, fid, 60.0, 2)
+        th += rate * dt
+        t += dt
+        fid += 1
+        if r_build is None and t > 1.5:
+            r_build = obs.r
+    assert r_build is not None and r_build > 0.02       # 建立期：ψ 在涨
+    assert obs.psi == pytest.approx(2.0 * rate, abs=0.02)
+    assert abs(obs.r) < 0.01                            # 稳态：ψ 不再变化
+    assert obs.debug()["psi_age"] < 200.0
+
+
+def test_single_line_angle_is_not_a_heading():
+    """单条线会给出 20°+ 假角度：n_locked<2 的拍不得更新 ψ，也不得推进基线。"""
+    obs = HeadingObserver(P)
+    obs.update(0.1, 0.0, True, 0.0, True, 1, 60.0, 2)
+    assert obs.psi == 0.0
+    base = obs._psi_base
+    obs.update(0.1, 0.0, True, 0.39, True, 2, 60.0, 1)   # 实测假值量级
+    assert obs.psi == 0.0                                # 不吸收假角度
+    assert obs._psi_base == base                         # 也不推进基线
+    obs.update(0.1, 0.0, True, 0.05, True, 3, 60.0, 2)
+    assert obs.psi is not None and obs.psi > 0.0
+
+
+def test_scale_is_causal_bounded_and_has_no_fallback():
+    obs = HeadingObserver(P)
+    # 真值 v=40：num/den 与之一致时直接发布，置信度到顶
+    tan = 0.1
+    obs._spd_num = tan * (40.0 / 3.5) * tan * 20.0
+    obs._spd_den = tan * tan * 20.0
+    obs.update(0.05, None, False, None, False, None, None)
+    assert obs.v_scale == pytest.approx(40.0, abs=0.5)
+    assert obs.v_scale_conf == 1.0
+    # 证据衰减到下限以下：不发布（不兜底任何常数）
+    for _ in range(600):                     # 60s 无新证据：20s 记忆衰减到 ~5%
+        obs.update(0.1, None, False, None, False, None, None)
+    assert obs.v_scale is None
+    assert obs.v_scale_conf == 0.0
+    # 物理域外：宁缺勿错
+    obs2 = HeadingObserver(P)
+    obs2._spd_num = 200.0 / 3.5 * 0.01 * 10
+    obs2._spd_den = 0.01 * 10
+    obs2.update(0.05, None, False, None, False, None, None)
+    assert obs2.v_scale is None
+
+
+def test_scale_accum_ignores_small_heading_and_slow_motion():
+    obs = HeadingObserver(P)
+    obs.v_line = 0.5
+    obs._scale_accum(0.005)                  # |tanψ| 太小：条件数不足
+    assert obs._spd_den == 0.0
+    obs._scale_accum(0.1)                    # 正常样本
+    assert obs._spd_den == pytest.approx(math.tan(0.1) ** 2)
+    obs.v_line = 0.01                        # 车几乎没动：不可用
+    obs._scale_accum(0.1)
+    assert obs._spd_den == pytest.approx(math.tan(0.1) ** 2)
+
+
+def test_shadow_predictions_model_and_heading():
+    pl = _planner()
+    pl.state.executed_lane = 0.2
+    pl.state.v_lat_est = 0.4
+    pl.state.steer_norm = 0.2
+    pl._shadow_predict(DT)
+    x, v, s = 0.2, 0.4, 0.2
+    for _ in range(20):                      # 保持当前杆值 1 秒
+        x, v, s = step(x, v, s, 0.2, DT, pl.p)
+    assert pl._p1m == pytest.approx(x - 0.2, abs=1e-9)
+    assert pl._p1h is None                   # 朝向证据缺失：不补值
+    pl.head.psi = 0.05
+    pl.head.v_scale = 40.0
+    pl._shadow_predict(DT)
+    assert pl._p1h == pytest.approx(40.0 * math.tan(0.05) / 3.5, abs=1e-9)
+
+
+def test_shadow_columns_reach_trace_and_do_not_change_commands():
+    pl = _planner()
+    pl.head.psi = 0.04
+    pl.head.v_scale = 35.0
+    dbg = pl.ctrl_debug()
+    for k in ("psi", "r", "psi_age", "vsp", "scf", "spa", "p1m", "p1h"):
+        assert k in dbg
+    # 影子不接控制：同样的输入，杆值逐位不变
+    a = _planner()
+    b = _planner()
+    b.head.psi = 0.5
+    b.head.v_scale = 90.0
+    ca = a.update(_out(x_target=0.6, fid=1), DT, 1)
+    cb = b.update(_out(x_target=0.6, fid=1), DT, 1)
+    assert ca.steer_x == cb.steer_x
+
+
+def test_line_frame_reset_keeps_heading_shadow():
+    """线横位整道跳只清线帧：ψ/r 与在线比例必须活下来。
+
+    20261030_181838 实测：两处线帧重置共用一个 reset 时，比例累积被反复清零，
+    置信度 0→1→0.3 来回跳，`p1h` 只有 9% 的拍有值。"""
+    obs = HeadingObserver(P)
+    obs.update(0.1, 0.0, True, 0.05, True, 1, 60.0, 2)
+    obs.psi = 0.05
+    obs._psi_t = obs._t
+    obs.v_scale = 33.0
+    obs._spd_den = 0.2
+    obs._spd_num = 0.2 * 33.0 / 3.5
+    obs.v_line = 0.7
+    obs.reset(keep_heading=True)
+    assert obs.psi == pytest.approx(0.05)        # 朝向状态保留
+    assert obs.v_scale == pytest.approx(33.0)    # 跨秒的比例累积保留
+    assert obs._spd_den == pytest.approx(0.2)
+    assert obs.v_line is None                    # 线帧的东西照旧清掉
+    obs.reset()
+    assert obs.psi is None and obs.v_scale is None and obs._spd_den == 0.0

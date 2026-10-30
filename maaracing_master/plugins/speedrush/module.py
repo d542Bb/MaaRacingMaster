@@ -1328,6 +1328,10 @@ class SpeedRushModule(ActivityModule):
                                  else lane.get("det_fid"),
                                  lane_age_ms=None if lane is None
                                  else lane.get("det_age_ms"),
+                                 # 线角只认 ≥2 条线融合的角度（单条线会给出
+                                 # 20°+ 假值）；只影响朝向影子列，不改控制。
+                                 lane_n_locked=None if lane is None
+                                 else int(lane.get("n_locked") or 0),
                                  plan=(plan if cfg.motion.mode == "live" else None))
             far_lane = (None if corridor is None
                         else far_center_lane(corridor.coarse_bands,
@@ -1585,7 +1589,8 @@ class SpeedRushModule(ActivityModule):
             # sm=线横位平滑值——判断"状态没跟上"是融合没工作还是线本身错。
             "lane_fuse": planner.lane_debug(),
             # 控制横速可见面：v_ctrl=控制律实际使用者，v_model=模型状态，
-            # v_head/speed=航向与在线前向速度估计——A/B 时判断融合有没有生效。
+            # v_line=标线横移（直接测量）、v_head/speed=航向与在线前向速度估计
+            # （speed=None 表示没估出来：v_head 不兜底，也不进控制律）。
             "lat_ctrl": planner.ctrl_debug(),
             # S1 参考系影子：模型预测 + 门控后横位；与 road_offset 同拍对照
             "lateral_frame": None if chain.get("lateral_frame") is None

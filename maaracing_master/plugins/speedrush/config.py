@@ -176,12 +176,16 @@ class Planner:
     # 计划前馈的杆值变化率上限（归一杆值/秒）：计划换候选时前馈会阶跃，
     # 不限制会把候选切换直接变成方向盘每拍打半圈。首帧/计划重入不限制。
     plan_u_slew_s: float = 4.0
-    # 航向融合（2026-10-26）：控制阻尼/前瞻用的横速 = (1-g)*模型横速 +
-    # g*航向横速。0=关（旧行为逐位不变）。离线 12 局：模型横速幅值中位只有
-    # 线速的 1/4 左右、相位超前约 0.45s；航向横速滞后 0.2~0.3s，各半融合后
-    # 0.25s 横位预测误差中位降 10~20%、相位回到 0 附近。航向横速的前向速度
-    # 由线斜率/线角在线自标定，不引入新的米制真源；模型状态 v_lat_est 不变。
-    heading_fuse_gain: float = 0.0
+    # 横速观测融合（2026-10-26 引入；2026-10-30 实机并线复盘重排）：控制阻尼/
+    # 前瞻用的横速先向**标线横移**收敛（`line_fuse_gain`），再向航向横速收敛
+    # （`heading_fuse_gain`）。标线是路面相对自车的直接测量——NPC 车与元素都
+    # 排在同一套标线网格上，不需要车速/航向假设。航向横速的前向速度只能由线速/
+    # 线角反解，线角≈0 时退化；旧实现用默认 45 m/s 兜底，59% 的拍因此拿到
+    # ±1~3.6 道/s 的假横速（符号 63% 对），并线指令被阻尼整段抵消。现在没有
+    # 速度证据就不给 v_head（不兜底）。0=关（逐位退回旧行为）；模型状态
+    # v_lat_est 不变。
+    line_fuse_gain: float = 0.5
+    heading_fuse_gain: float = 0.25
     # 刹停预算（2026-10-26 人工局手柄流辨识，2026-10-27 八局回放定档）：按当前
     # 横速预测的停止点越过目标带远侧缘时升级全权反打。a_brake 取人工实测反打
     # 有效减速的中位（满杆 ~1.3 道/s²，散布 0.4~3.1）；0.8 的保守低端在回放里
@@ -743,8 +747,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "planner", "brake_edge_lane", 0.5, lo=0),
             brake_min_v_lane_s=_num_def(
                 d, "planner", "brake_min_v_lane_s", 0.3, lo=0),
+            line_fuse_gain=_num_def(
+                d, "planner", "line_fuse_gain", 0.5, lo=0, hi=1),
             heading_fuse_gain=_num_def(
-                d, "planner", "heading_fuse_gain", 0.0, lo=0, hi=1)),
+                d, "planner", "heading_fuse_gain", 0.25, lo=0, hi=1)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),

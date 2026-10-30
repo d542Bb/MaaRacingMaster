@@ -631,13 +631,22 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
         assert k in row, k
     # 选择层影子（trace-only）：两路承诺输入一致时没有差异行
     assert row["sel_shadow"] is None
-    # 航向融合可见面：线观测线程未启动时诚实退回模型（v_head=None）
-    assert row["lat_ctrl"]["gain"] == load_decision().planner.heading_fuse_gain
+    # 横速融合可见面：线观测线程未启动时诚实退回模型（v_line/v_head=None）
+    assert row["lat_ctrl"]["gain"] == load_decision().planner.line_fuse_gain
+    assert row["lat_ctrl"]["v_line"] is None
     assert row["lat_ctrl"]["v_head"] is None
     assert row["lat_ctrl"]["v_ctrl"] == row["lat_ctrl"]["v_model"]
     # 重基来源诊断列（trace-only）：未重基的拍如实报 None
     assert "rebase" in row["lat_ctrl"]
     assert row["lat_ctrl"]["rebase"] is None
+    # 朝向影子（2026-10-30，只读）：列必须齐；无线观测时全部诚实为 None
+    for k in ("psi", "r", "psi_age", "vsp", "scf", "spa", "p1m", "p1h"):
+        assert k in row["lat_ctrl"], k
+    assert row["lat_ctrl"]["psi"] is None
+    assert row["lat_ctrl"]["vsp"] is None
+    assert row["lat_ctrl"]["p1h"] is None
+    # 模型侧影子每拍都有（不依赖线观测）
+    assert isinstance(row["lat_ctrl"]["p1m"], (int, float))
     sink.flush(2.0)
     p = tmp_path / "trace" / "speedrush.jsonl"
     lines = [json.loads(x) for x in

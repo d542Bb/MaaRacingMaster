@@ -29,7 +29,7 @@ from pathlib import Path
 
 LANE_W = 3.38          # gate0.json lane_w_m（当前生产值）
 GOLD_LANE_M = 3.5      # 金标画线实宽（m）
-SPEED_DEFAULT = 45.0   # planner._HEAD_SPEED_DEFAULT_MPS
+SPEED_DEFAULT = 45.0   # 旧 planner 的默认车速兜底值（已撤；仅用于识别旧 trace）
 
 
 def _q(xs, p):

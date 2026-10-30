@@ -79,11 +79,17 @@ _LANE_BLOCK_AGE_MS = 300.0
 # 0.45 杆幅在 1.4 道级误差下需要 1s+ 才能回带，期间车停在墙侧）。
 _WALL_ESCAPE_LANE = 1.4
 
-# 航向+线速观测（2026-10-26 离线 12 局）：模型横速与线速相关 0.4~0.6、幅值
-# 中位只有线速的 1/4 左右，且相位超前约 0.45s；航向横速滞后 0.2~0.3s。两者
-# 各半融合后 0.25s 横位预测误差中位降 10~20%、相位回到 0 附近。前向速度由
-# v_line*LANE_W/tan(theta_rel) 的 5s 中位在线自标定；theta_rel 的慢基线吸收
-# 弯道里线拟合的常值弦角，且速度与航向同源同尺度，整体增益不敏感。
+# 横速观测（2026-10-26 离线 12 局；2026-10-30 实机并线复盘重排）：
+# - **标线横移**（线横位斜率，0.6s 因果窗）直接量自车相对路面的横移。NPC 车与
+#   元素都排在同一套标线网格上，标线的运动就是路面的运动——不需要车速/航向
+#   假设，也没有「硬编」的中间量。实测以深度路心为独立真值：线速单独用的
+#   中位误差 0.34 道/s，模型 0.45，本文件的顺序融合 0.33，「车没动却报大横速」
+#   的窗口从 300 降到 142（9 局 trace 6313 个 0.6s 窗）。
+# - **航向横速** v_head = speed·tan(theta_rel)/LANE_W 只在前向速度**真实
+#   估计出来**时才给：speed 由线速/线角反解，线角≈0 时退化。旧实现用默认
+#   45 m/s 兜底，59% 的拍走的是这个兜底值，v_head 持续报 ±1~3.6 道/s（车实际
+#   横移≈0），符号只有 63% 对——并线指令被阻尼项整段抵消甚至反向（2026-10-30
+#   一局 76 拍的右并线只走了 0.12 道，杆值多次朝目标反向）。
 _HEAD_SLOPE_WINDOW_S = 0.6
 _HEAD_SPEED_WINDOW_S = 5.0
 _HEAD_SPEED_MIN_N = 8
@@ -93,60 +99,135 @@ _HEAD_THETA_TAU_S = 2.0
 _HEAD_REL_MAX = 0.6
 _HEAD_AGE_MAX_MS = 250.0
 _HEAD_STALE_S = 0.5
+_LINE_STALE_S = 0.3        # 标线横移 TTL（线锁定拍才会更新）
+_LINE_JUMP_RESET = 0.8     # 线横位单拍跳超此值 = k 重锚/换线，不是横移
 _HEAD_V_MAX_FACTOR = 2.0   # 观测横速上限 = v_lat_max 的倍数（阻尼允许越过模型饱和）
-_HEAD_SPEED_DEFAULT_MPS = 45.0   # 与 [coarse].range_speed_mps 同量级，仅起步兜底
+_HEAD_SPEED_MIN_MPS = 8.0  # 前向速度估计的物理域（无估算时不兜底，v_head=None）
+_HEAD_SPEED_MAX_MPS = 100.0
+
+# ── 朝向影子（2026-10-30，只读：不进控制，只进 trace）──────────────────────
+# 模型把横移当「杆值→横向加速度」的积分，实测这条路既无法离线识别（闭环数据
+# 里杆值被控制器自己的反打主导），也解释不了「同样的车头角、不同时刻位移差很
+# 多」。朝向是车已经表现出来的状态：x' = v·tan(ψ)/LANE_W。ψ 由线角减慢基线
+# 量，唯一的未知量是比例 v（≈车速），而它只随车、随速慢变——所以只能在线、
+# 严格因果地估，不许写死常数。
+# 离线（19 局 trace、车真在横移的 464 个 1 秒窗）：当前朝向 × 在线比例的 1 秒
+# 位移误差中位 0.71 m、与实际位移相关 0.50；线上计划模型的同窗误差 1.04 m、
+# 相关 0.03。相关性才是「知不知道自己会产生什么后果」的判据。
+_PSI_MIN_LINES = 2          # 车头角只认 ≥2 条线融合的角度：单条线（含短黄线）
+                            # 实测会给出 20°+ 的假角度（n_locked=1，theta 0.39 rad）
+_PSI_STALE_S = 0.6          # 无新线角证据时 ψ 的保持上限（超过即无朝向）
+_R_TAU_S = 0.15             # 角速度低通：ψ 只在检测拍更新，差分会放大单拍噪声
+_R_STALE_S = 0.3            # 角速度 TTL：速率只在短时内有意义
+_SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
+_SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
+_SPD_DEN_FULL = 0.10        # 置信度到 1 的 Σtan²ψ（≈σ 2 m/s）
+_SPD_MIN_TAN = 0.02         # 参与估计的最小 |tanψ|（1.1°）：更小的朝向上
+                            # v_line 噪声压过信号，条件数不足
+_SPD_MIN_V_LANE_S = 0.05    # 参与估计的最小 |v_lat|（道/s）
+_SPD_MIN_MPS = 5.0          # 比例的物理域：越界不发布（宁缺勿错，不兜底）
+_SPD_MAX_MPS = 120.0
 
 
 class HeadingObserver:
-    """航向+线速的横向速度观测（只喂控制律，不改模型状态 v_lat_est）。
+    """横速观测（只喂控制律，不改模型状态 v_lat_est）。
 
-    线横位斜率给出横向速度；线角相对 2s 慢基线给出航向。前向速度用两者
-    的比值中位在线估计（尺度自洽，不需要新的米制真源），换算成航向横速后
-    与模型横速融合。线未锁定、证据龄超限或断供 >0.5s 时一律退回模型。
+    **控制律的实测横速取标线横移**：线横位斜率（0.6s 因果窗）量的是自车相对
+    路面的真实横移——NPC 车与元素都排在标线网格上，标线怎么动就是路面怎么动，
+    不需要车速/航向假设。航向横速 ``v_head`` 仍算，但要求前向速度真实估计出来
+    （见模块常量注释），且只作较小权重的补充；线未锁定/断供时两路都退回模型。
     """
 
     def __init__(self, p: Planner) -> None:
         self.p = p
         self.reset()
 
-    def reset(self) -> None:
-        self._t = 0.0
+    def reset(self, keep_heading: bool = False) -> None:
+        """清线横位观测链；``keep_heading=True`` 时保留朝向影子。
+
+        线横位整道跳（换线/重锚）要清的是**线帧**的东西——样本窗、v_line、
+        v_head 与偏置基线；ψ/r 来自线**角**，与线帧横位无关，比例的累积更是
+        跨秒统计（20261030_181838 实测：共用一个 reset 时比例被线跳反复清零，
+        置信度 0→1→0.3 来回跳，`p1h` 只有 9% 的拍有值）。所以两处线帧重置
+        传 ``keep_heading=True``。"""
+        if not keep_heading:
+            self._t = 0.0
+            # 朝向影子（只进 trace）：ψ=线角−2s 慢基线，r=其低通微分，
+            # v_scale=由「横移速度 ÷ tanψ」在线估的比例（≈车速，m/s）。
+            self.psi: float | None = None
+            self._psi_t = -1e9
+            self._psi_base: float | None = None   # 影子专用慢基线（≥2 条线才推进）
+            self._psi_seen_t = -1e9
+            self._psi_prev_t = -1e9
+            self.r: float | None = None
+            self._r_t = -1e9
+            self.v_scale: float | None = None
+            self.v_scale_conf = 0.0      # 0~1：Σtan²ψ 相对发布下限的量级
+            self._spd_num = 0.0
+            self._spd_den = 0.0
+            self._spd_t = -1e9
         self._samples: list[dict] = []
         self._base: float | None = None
         self._last_fid: int | None = None
-        self._last_seen = -1e9
+        self._last_seen = -1e9       # 航向观测上次更新时刻（v_head TTL）
+        self._last_line = -1e9       # 标线横移上次更新时刻（v_line TTL）
         self.v_line: float | None = None
         self.speed_mps: float | None = None
         self.v_head: float | None = None
 
     def update(self, dt: float, lane_x: float | None, lane_ok: bool,
                theta: float | None, theta_ok: bool, fid: int | None,
-               age_ms: float | None) -> None:
+               age_ms: float | None, n_locked: int | None = None) -> None:
         if not (isinstance(dt, (int, float)) and math.isfinite(dt) and dt > 0):
             return
         self._t += dt
         if self.v_head is not None and self._t - self._last_seen > _HEAD_STALE_S:
             self.v_head = None
+        if self.v_line is not None and self._t - self._last_line > _LINE_STALE_S:
+            self.v_line = None
+        # 朝向影子的 TTL 与比例的泄漏遗忘：每拍都走（无线拍也要遗忘）
+        if self.psi is not None and self._t - self._psi_t > _PSI_STALE_S:
+            self.psi = None
+        if self.r is not None and self._t - self._r_t > _R_STALE_S:
+            self.r = None
+        decay = math.exp(-dt / _SPD_TAU_S)
+        self._spd_num *= decay
+        self._spd_den *= decay
+        if self._spd_den < _SPD_DEN_MIN:
+            self.v_scale = None              # 证据不足就不发布（不兜底常数）
+            self.v_scale_conf = 0.0
+        else:
+            self.v_scale_conf = min(1.0, self._spd_den / _SPD_DEN_FULL)
+            sp = LANE_W * self._spd_num / self._spd_den
+            self.v_scale = sp if _SPD_MIN_MPS <= sp <= _SPD_MAX_MPS \
+                else None
         if (not lane_ok or lane_x is None
                 or not math.isfinite(float(lane_x))):
-            return
-        if (theta is None or not theta_ok or not math.isfinite(float(theta))
-                or age_ms is None or float(age_ms) > _HEAD_AGE_MAX_MS):
             return
         if fid is not None and fid == self._last_fid:
             return                       # 同一检测帧被 20Hz 控制拍重复读取
         self._last_fid = fid
-        th = float(theta)
-        if self._base is None:
-            self._base = th
-        else:
-            gap = (self._t - self._samples[-1]["t"]
-                   if self._samples else dt)
-            a = 1.0 - math.exp(-min(max(gap, 1e-3), 0.5) / _HEAD_THETA_TAU_S)
-            self._base += a * (th - self._base)
-        rel = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th - self._base))
-        self._last_seen = self._t
-        s = {"t": self._t, "x": float(lane_x), "rel": rel, "v": None}
+        x = float(lane_x)
+        if self._samples and abs(x - self._samples[-1]["x"]) > _LINE_JUMP_RESET:
+            # 线横位整道跳 = k 重锚/换线，不是位移：清窗，别把它积成横速。
+            self._samples.clear()
+            self.v_line = None
+        th: float | None = None
+        if (theta is not None and theta_ok and math.isfinite(float(theta))
+                and age_ms is not None
+                and float(age_ms) <= _HEAD_AGE_MAX_MS):
+            th = float(theta)
+            if self._base is None:
+                self._base = th
+            else:
+                gap = (self._t - self._samples[-1]["t"]
+                       if self._samples else dt)
+                a = 1.0 - math.exp(
+                    -min(max(gap, 1e-3), 0.5) / _HEAD_THETA_TAU_S)
+                self._base += a * (th - self._base)
+        rel = (None if th is None or self._base is None
+               else max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th - self._base)))
+        s = {"t": self._t, "x": x, "rel": rel, "v": None}
         self._samples.append(s)
         cut = self._t - _HEAD_SPEED_WINDOW_S - _HEAD_SLOPE_WINDOW_S
         while self._samples and self._samples[0]["t"] < cut:
@@ -162,9 +243,19 @@ class HeadingObserver:
                 s["v"] = sum((q["t"] - mt) * (q["x"] - mx)
                              for q in win) / vt
                 self.v_line = s["v"]
+                self._last_line = self._t
+        # 朝向影子：ψ/r 与本拍新测到的横速一起，更新在线比例。
+        if th is not None:
+            srel = self._head_state(th, n_locked)
+            if srel is not None:
+                self._scale_accum(srel)
+        if th is None:
+            return                       # 航向缺证据：线速已更新，航向不更新
+        self._last_seen = self._t
         vals = []
         for q in self._samples:
-            if q["v"] is None or self._t - q["t"] > _HEAD_SPEED_WINDOW_S:
+            if q["v"] is None or q["rel"] is None \
+                    or self._t - q["t"] > _HEAD_SPEED_WINDOW_S:
                 continue
             tan = math.tan(q["rel"])
             if abs(q["v"]) < _HEAD_MIN_V_LANE_S or abs(tan) < _HEAD_MIN_TAN:
@@ -173,17 +264,82 @@ class HeadingObserver:
                 continue
             vals.append(q["v"] * LANE_W / tan)
         if len(vals) >= _HEAD_SPEED_MIN_N:
-            self.speed_mps = statistics.median(vals)
-        elif self.speed_mps is None:
-            self.speed_mps = _HEAD_SPEED_DEFAULT_MPS
+            sp = statistics.median(vals)
+            if _HEAD_SPEED_MIN_MPS <= sp <= _HEAD_SPEED_MAX_MPS:
+                self.speed_mps = sp
+        if self.speed_mps is None:
+            self.v_head = None           # 没有速度证据就不算航向横速（不兜底）
+            return
         lim = _HEAD_V_MAX_FACTOR * self.p.v_lat_max
         v = self.speed_mps * math.tan(rel) / LANE_W
         self.v_head = max(-lim, min(lim, v))
 
-    def fused(self, v_model: float, gain: float) -> float:
-        if gain <= 0.0 or self.v_head is None:
-            return v_model
-        v = (1.0 - gain) * v_model + gain * self.v_head
+    def _head_state(self, th: float, n_locked: int | None) -> float | None:
+        """ψ 与 r（影子）：独立的慢基线 + 低通微分，返回本拍 ψ。
+
+        单条线的角度不可用：20261030_171216 fid 1561 只锁到一条短黄线时给出
+        0.39 rad（22°），2s 慢基线会把它带进随后若干拍。所以这里**另立一条
+        基线**：只有 ≥2 条线的拍才推进它——控制路径用的 ``rel``（喂 v_head）
+        保持原样，影子的门不改变任何控制行为。``n_locked`` 缺省（离线/单测
+        未供）时不加这条门。"""
+        if n_locked is not None and n_locked < _PSI_MIN_LINES:
+            return None
+        if self._psi_base is None:
+            self._psi_base = th
+        else:
+            gap = min(max(self._t - self._psi_seen_t, 1e-3), 0.5)
+            a = 1.0 - math.exp(-gap / _HEAD_THETA_TAU_S)
+            self._psi_base += a * (th - self._psi_base)
+        self._psi_seen_t = self._t
+        rel = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th - self._psi_base))
+        prev = self.psi
+        self.psi = rel
+        self._psi_t = self._t
+        if prev is None:
+            self.r = None                # 首拍没有差分
+            return rel
+        gap = self._t - self._psi_prev_t
+        self._psi_prev_t = self._t
+        if gap <= 1e-3:
+            return rel
+        rate = (rel - prev) / gap
+        if self.r is None or gap > _R_STALE_S:
+            self.r = rate                # 断档后的第一拍：差分会跨过缺测，不滤波
+        else:
+            a = 1.0 - math.exp(-gap / _R_TAU_S)
+            self.r += a * (rate - self.r)
+        self._r_t = self._t
+        return rel
+
+    def _scale_accum(self, rel: float) -> None:
+        """在线比例 v（m/s）：由「本拍线速 ÷ tanψ」给的最小二乘增量。
+
+        ``v_lat = (v/LANE_W)·tanψ`` 是物理关系本身，不是拟合的经验式；小角度
+        时 v_lat 噪声压过信号，所以只收 |tanψ|≥``_SPD_MIN_TAN`` 的拍，且整个
+        窗口按 ``_SPD_TAU_S`` 泄漏遗忘——车速慢变，短记忆跟不上加速、长记忆
+        跟不上减速。线速是 0.6s 因果斜率（滞后约 0.3s），在「建立朝向」与
+        「回正」两段上的偏差方向相反，整局互相抵消，残差留在置信度里。"""
+        tan = math.tan(rel)
+        v = self.v_line
+        if v is None or abs(tan) < _SPD_MIN_TAN \
+                or abs(v) < _SPD_MIN_V_LANE_S:
+            return
+        self._spd_num += tan * v
+        self._spd_den += tan * tan
+        self._spd_t = self._t
+
+    def fused(self, v_model: float, line_gain: float,
+              head_gain: float) -> float:
+        """控制律横速：模型 → 标线横移 → 航向横速，逐级向实测收敛。
+
+        线速是路面相对自车的直接测量（NPC/元素就在这套网格上）；航向横速
+        只在前向速度有真实证据时存在（否则 v_head=None）。两路都缺席时
+        逐位退回模型。"""
+        v = v_model
+        if line_gain > 0.0 and self.v_line is not None:
+            v += line_gain * (self.v_line - v)
+        if head_gain > 0.0 and self.v_head is not None:
+            v += head_gain * (self.v_head - v)
         lim = _HEAD_V_MAX_FACTOR * self.p.v_lat_max
         return max(-lim, min(lim, v))
 
@@ -195,6 +351,18 @@ class HeadingObserver:
             else round(self.speed_mps, 1),
             "v_head": None if self.v_head is None
             else round(self.v_head, 3),
+            # 朝向影子：psi=相对车道车头角（rad）、r=角速度（rad/s）、
+            # vsp=在线比例（m/s）、scf=置信度、pa=ψ 的龄（ms）。
+            # 全部只进 trace，不参与控制。
+            "psi": None if self.psi is None else round(self.psi, 4),
+            "r": None if self.r is None else round(self.r, 3),
+            "psi_age": (None if self.psi is None
+                        else round((self._t - self._psi_t) * 1000.0, 0)),
+            "vsp": None if self.v_scale is None
+            else round(self.v_scale, 1),
+            "scf": round(self.v_scale_conf, 2),
+            "spa": (None if self._spd_t < 0
+                    else round((self._t - self._spd_t) * 1000.0, 0)),
         }
 
 
@@ -292,6 +460,10 @@ class LateralPlanner:
         self.head = HeadingObserver(p)
         self._v_ctrl = 0.0
         self._v_ctrl_model = 0.0
+        # 两路 1 秒位移影子（trace-only，不参与任何判定）：
+        # p1m=模型保持当前杆值的积分预测；p1h=保持当前朝向 × 在线比例的预测。
+        self._p1m: float | None = None
+        self._p1h: float | None = None
 
     def _reset_jump(self) -> None:
         """重置持续大新息判定（正常接受/重基/断供时调用——连续性被打断）。"""
@@ -357,14 +529,47 @@ class LateralPlanner:
                 "sm": None if self._lane_sm is None
                 else round(self._lane_sm, 3)}
 
+    def _shadow_predict(self, dt: float) -> None:
+        """两路 1 秒位移影子（不参与判定）。
+
+        ``p1m``：模型按「保持当前杆值」积分 1 秒的位移——这是计划层此刻相信
+        的后果。
+        ``p1h``：保持当前朝向 1 秒的位移 = v_scale·tan(ψ)/LANE_W（道）。
+        两者都不做低通/限幅以外的加工，离线拿实际 1 秒位移与它们对齐即可判断
+        「谁更知道车会去哪」。缺证据的一路给 None，不补值。
+        """
+        h = self.head
+        self._p1h = (None if h.psi is None or h.v_scale is None
+                     else h.v_scale * math.tan(h.psi) / LANE_W * 1.0)
+        if not (isinstance(dt, (int, float)) and math.isfinite(dt) and dt > 0):
+            self._p1m = None
+            return
+        x0, v, st = (self.state.executed_lane, self.state.v_lat_est,
+                     self.state.steer_norm)
+        u = st
+        n = max(1, int(round(1.0 / dt)))
+        x = x0
+        for _ in range(n):
+            x, v, st = step(x, v, st, u, dt, self.p)
+        self._p1m = x - x0
+
     def ctrl_debug(self) -> dict:
         """控制横速的可见面（trace）：v_ctrl=控制律实际使用的横速、
-        v_model=模型状态、v_head=航向横速、speed=在线前向速度估计。
-        rebase=本拍实际执行的重基分支（trace-only，None=没有重基）。"""
-        d = {"gain": self.p.heading_fuse_gain,
+        v_model=模型状态、v_line=标线横移、v_head=航向横速（无速度证据时
+        None）、speed=在线前向速度估计（None=没估出来，不兜底）。
+        rebase=本拍实际执行的重基分支（trace-only，None=没有重基）。
+        朝向影子：psi/r=车头角与角速度、vsp/scf=在线比例与置信度、
+        p1m/p1h=两路 1 秒位移预测（道）——全部只读，不参与控制。"""
+        d = {"gain": self.p.line_fuse_gain,
+             "h_gain": self.p.heading_fuse_gain,
              "v_ctrl": round(self._v_ctrl, 3),
              "v_model": round(self._v_ctrl_model, 3),
-             "rebase": self.last_rebase}
+             "rebase": self.last_rebase,
+             # 朝向影子（2026-10-30）：只读对照面，不进控制。
+             # p1m=模型保持当前杆值 1s 的位移、p1h=保持当前朝向 1s 的位移（道）；
+             # psi/r/vsp/scf/psi_age 见 HeadingObserver.debug。
+             "p1m": None if self._p1m is None else round(self._p1m, 3),
+             "p1h": None if self._p1h is None else round(self._p1h, 3)}
         d.update(self.head.debug())
         return d
 
@@ -400,7 +605,8 @@ class LateralPlanner:
                lane_theta: float | None = None,
                lane_theta_ok: bool = False,
                lane_fid: int | None = None,
-               lane_age_ms: float | None = None) -> GamepadCommand:
+               lane_age_ms: float | None = None,
+               lane_n_locked: int | None = None) -> GamepadCommand:
         """一个控制 tick。dt_s 非法即 fail-loud（帧号倒退同一纪律：
         静默吞掉病态输入比中断危险——时间基低通会被 0/NaN 污染成永久状态）。
 
@@ -443,7 +649,7 @@ class LateralPlanner:
         # 单拍跳超阈值同理。等新鲜深度与线一致时由 _lane_rebias 恢复。
         if lane_relock:
             self._lane_relock_seen = True
-            self.head.reset()
+            self.head.reset(keep_heading=True)
         # 线横位越出物理范围即按"本拍无线"处理：不参与平滑/融合/互证，
         # 也不污染航向观测。深度仍可经 ⑥b 自行重基。
         self._lane_age_ms = lane_age_ms
@@ -463,7 +669,7 @@ class LateralPlanner:
             elif abs(lane_x - self._lane_sm) > _LANE_JUMP_RESET:
                 self._lane_sm = lane_x
                 self._lane_trusted = False
-                self.head.reset()
+                self.head.reset(keep_heading=True)
             else:
                 self._lane_sm += _LANE_SMOOTH_ALPHA * (lane_x - self._lane_sm)
 
@@ -474,10 +680,12 @@ class LateralPlanner:
         # （223955 局 s2 4.0~5.5s：线速 −1.8 顶真实 +3，把满杆建立的模型
         # 加速度吃掉七成，刹停预算失明直至撞栏）。
         self.head.update(dt_s, lane_x, lane_ok, lane_theta, lane_theta_ok,
-                         lane_fid, lane_age_ms)
+                         lane_fid, lane_age_ms, lane_n_locked)
         self._v_ctrl_model = self.state.v_lat_est
         self._v_ctrl = self.head.fused(self.state.v_lat_est,
+                                       self.p.line_fuse_gain,
                                        self.p.heading_fuse_gain)
+        self._shadow_predict(dt_s)
 
         # ① 过期判定（valid_until_fid 含边界；第 4 个连续过期拍起按 CONSERVE）
         fresh = current_fid <= decision.valid_until_fid
@@ -569,18 +777,33 @@ class LateralPlanner:
         if plan is not None and plan.valid and st is DecisionState.CRUISE:
             x_pred = (self.state.executed_lane
                       + self._v_ctrl * self.p.lookahead_tau_s)
-            u = (plan.u_feedforward
-                 + self.p.k_p * (plan.x_preview_lane - x_pred)
-                 + self.p.k_d * (plan.v_preview_lane_s - self._v_ctrl))
+            # 承诺并线（路线已定目标道）跟踪的是**决策目标**，不是 0.2s 预览：
+            # 一道级位移在 0.2s 预览里几乎看不出误差，计划前馈只有 0.05 时整段
+            # 并线没力（2026-10-30 实测一段 2.4s 只走了 0.16 道）。前馈保留，
+            # 目标误差补上——进了承诺道安全区间后决策目标收敛到自车位置，
+            # 误差归零、只剩阻尼把横速刹住。
+            merge_commit = (getattr(decision, "phase", "keep") == "merging"
+                            and decision.x_target is not None
+                            and getattr(plan, "layer", None) == 4)
+            if merge_commit:
+                u = (plan.u_feedforward
+                     + self.p.k_p * (decision.x_target - x_pred)
+                     - self.p.k_d * self._v_ctrl)
+            else:
+                u = (plan.u_feedforward
+                     + self.p.k_p * (plan.x_preview_lane - x_pred)
+                     + self.p.k_d * (plan.v_preview_lane_s - self._v_ctrl))
             # 维护/并线（layer 4 且无碰撞/区间代价）的预览跟踪不得放大成
             # 满杆：候选前馈已限 0.45，跟踪项却能把 0.2 道的修正推到 0.85
             # （20261027_150850_1 s2 计划满杆 122→227 的现场：ff=0，
             # track=0.85）。value_total<0 表示碰撞/距离代价存在，保留全权
-            # 避让；刹停预算仍在下面优先全权。
+            # 避让；刹停预算仍在下面优先全权。承诺并线是机动动作，不套维护
+            # 杆幅，但仍在 maneuver_stick_max 内。
             if getattr(plan, "layer", None) == 4 \
                     and getattr(plan, "value_total", 0.0) >= 0.0:
-                steer_raw = max(-self.p.hold_stick_max,
-                                min(self.p.hold_stick_max, u))
+                cap = (self.p.maneuver_stick_max if merge_commit
+                       else self.p.hold_stick_max)
+                steer_raw = max(-cap, min(cap, u))
             else:
                 steer_raw = max(-1.0, min(1.0, u))
             # 刹停预算同样压住计划路径：计划用同一套（对称、乐观的）车模
