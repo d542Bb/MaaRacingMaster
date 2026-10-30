@@ -641,7 +641,7 @@ def _draw_plan_overlay(canvas: np.ndarray, snap: dict,
     cv2.circle(canvas, (px, yx(plan.x_preview_m / lw)), 3, (0, 255, 0), -1)
     _put_text(canvas,
               f"plan:{plan.reason} L{plan.layer}"
-              f" v={plan.value_total:.0f} u={plan.u_feedforward:+.2f}",
+              f" v={plan.value_total:.0f} ψ={plan.psi_feedforward:+.3f}",
               (x0 + 2, y0 + 26), scale=0.32,
               color=(0, 220, 0) if plan.valid else (0, 160, 255))
 

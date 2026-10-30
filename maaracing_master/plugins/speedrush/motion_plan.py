@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 from maaracing_master.plugins.speedrush.planner import step
@@ -38,8 +39,11 @@ class SceneObj:
 
 @dataclass(frozen=True)
 class EgoState:
+    """计划输入的自车状态：**朝向是状态，速度是它的推论**。"""
+
     x_lane: float                 # planner 道单位（右正）
-    v_lane_s: float
+    heading: float                # 相对车道的车头角（rad，右正）
+    v_mps: float | None           # 在线比例（≈车速）；None=还没估出来
     steer_norm: float
 
 
@@ -224,7 +228,7 @@ class MotionPlan:
     reason: str                    # plan:ok / no_scene / infeasible_* / unsure
     x_preview_m: float             # 场景帧（走廊中心=0）
     v_preview_mps: float
-    u_feedforward: float
+    psi_feedforward: float        # 选中的车头角指令（rad）
     layer: int                     # 1~4
     score_key: tuple
     n_feasible: int
@@ -245,7 +249,7 @@ class MotionPlan:
             "valid": self.valid, "reason": self.reason,
             "x": round(self.x_preview_m, 3),
             "v": round(self.v_preview_mps, 3),
-            "u": round(self.u_feedforward, 3),
+            "pc": round(self.psi_feedforward, 4),
             "layer": self.layer, "n_ok": self.n_feasible,
             "chosen": self.chosen, "dt": self.dt_s,
             "key": [round(v, 4) if isinstance(v, float) else v
@@ -263,7 +267,7 @@ class MotionPlan:
 @dataclass(frozen=True)
 class _Cand:
     idx: int
-    u: float
+    psi_cmd: float        # 候选的车头角指令（rad）
     xs_m: tuple[float, ...]
     x_preview_m: float
     v_preview_lane: float
@@ -516,7 +520,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         o for o in scene.objs
         if o.kind == "coin" and abs(o.x_m - scene.ego_x_m) <= coin_reach_m]
     ts = [k * dt for k in range(n + 1)]
-    us = list(motion.steer_levels) + [ego.steer_norm]
+    # 候选命令 = 车头角偏移（rad，相对当前朝向），保持到视界末。杆值怎么打到
+    # 这个朝向由控制律负责——计划不需要知道「杆→朝向」的增益。
+    dpsis = list(motion.heading_levels)
     # 有距无速域是否在场：在场时解除 L4 维护性杆幅上限（这是避让，不是追路心）
     range_hazard_active = False
     if motion.range_hazard_m > 0.0:
@@ -533,14 +539,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     # 过冲、晚反打（2026-10-25 横向契约阶段 1.5）。反打只给有量级的杆值：
     # 轻打舵 2s 扫不过一道，反打没有意义，只浪费算力。当前杆值总有反打候选
     # （即使很小），候选数不随拍变化，闸门存续项的下标与 cand_x 对齐。
-    n_half = max(1, n // 2)
-    seqs: list[tuple[float, tuple[float, ...] | None, float | None]] = [
-        (u, (u,) * n, None) for u in us]
-    seqs += [(u, (u,) * n_half + (-u,) * (n - n_half), None)
-             for u in motion.steer_levels if abs(u) >= 0.2]
-    seqs.append((ego.steer_norm,
-                 (ego.steer_norm,) * n_half
-                 + (-ego.steer_norm,) * (n - n_half), None))
+    seqs: list[tuple[float, float | None]] = [(d, None) for d in dpsis]
     # 目标位候选（2026-10-30）：开环档位在 1.3~2s 到站时相邻档的横距差约
     # 1m，计分带（约 0.6m）经常被整段跳过——邻道车只有 18% 能被擦边层接住，
     # 剩下的从「贴包络」直接跳到「过远」。按选择层同一个擦边偏移，对最近
@@ -558,28 +557,26 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         for c in aim_cars:
             for side in (-1.0, 1.0):
                 # 轨迹生成与 step() 同用车道单位：目标由米换回道
-                seqs.append((0.0, None,
-                             (c.x_m + side * aim_gap) / lane_w))
+                seqs.append((0.0, (c.x_m + side * aim_gap) / lane_w))
     cands: list[_Cand] = []
-    for idx, (u, seq, target) in enumerate(seqs):
-        x, v, steer = scene.ego_lane, ego.v_lane_s, ego.steer_norm
+    v_ego = ego.v_mps or 0.0
+    v_lat_ego = (v_ego * math.tan(ego.heading) / lane_w) if v_ego > 0 else 0.0
+    for idx, (dpsi, target) in enumerate(seqs):
+        x, psi = scene.ego_lane, ego.heading
+        cmd = max(-plant.heading_max_rad,
+                  min(plant.heading_max_rad, psi + dpsi))
         xs_lane = [x]
-        vs_lane = [v]
-        if target is None:
-            for uu in seq:
-                x, v, steer = step(x, v, steer, uu, dt, plant)
-                xs_lane.append(x)
-                vs_lane.append(v)
-        else:
-            for k in range(n):
-                x_pred = x + v * plant.lookahead_tau_s
-                uu = max(-1.0, min(1.0, motion.aim_kp * (target - x_pred)
-                                   - motion.aim_kd * v))
-                if k == 0:
-                    u = uu
-                x, v, steer = step(x, v, steer, uu, dt, plant)
-                xs_lane.append(x)
-                vs_lane.append(v)
+        vs_lane = [(v_ego * math.tan(psi) / lane_w) if v_ego > 0 else 0.0]
+        for _k in range(n):
+            if target is not None:
+                # 目标位候选：按跟踪律把位置误差换成目标车头角
+                cmd = max(-plant.heading_max_rad,
+                          min(plant.heading_max_rad,
+                              plant.k_head_lane * (target - x)))
+            x, psi = step(x, psi, cmd, v_ego, dt, plant)
+            xs_lane.append(x)
+            vs_lane.append((v_ego * math.tan(psi) / lane_w)
+                           if v_ego > 0 else 0.0)
         xs_m = tuple(v * lane_w for v in xs_lane)
 
         def clearance(c, t: float) -> float:
@@ -654,8 +651,8 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             # 杆指令朝它，或当前惯性朝它而杆不反打——都算“迎上去”。
             # 这不是软代价：0.35s 内到站的车横移躲不开，唯一正确的动作
             # 是不往它那侧并；允许它被擦车/金币价值盖过就是重复撞车。
-            if u * toward > 0.0 or (ego.v_lane_s * toward > 0.0
-                                    and u * toward >= 0.0):
+            if cmd * toward > 0.0 or (v_lat_ego * toward > 0.0
+                                      and cmd * toward >= 0.0):
                 late_block = True
         # 普通车碰撞只扣价值，不再判不可行（RULES §4.3：碰撞只损失时间）。
         # 例外：0.35s 内的车不允许“主动迎上去”——那是换道选择，不是反应不及。
@@ -804,8 +801,8 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                                - selection.lane_clearance_lane) * lane_w))
         center_dev = sum(max(0.0, abs(xx - center0) - band_m)
                          for xx in xs_m) / len(xs_m)
-        # 动作成本按“相对当前杆”的改动量计：带内无修正时优先保持正在进行的动作。
-        effort = abs(u - ego.steer_norm) * horizon
+        # 动作成本 = 车头角偏移量：带内无修正时优先保持当前朝向。
+        effort = abs(dpsi) * horizon
         if reward_hits:
             layer = 1
         elif pass_count:
@@ -817,7 +814,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         # 无机会时限制维护性杆幅：避免计划用满舵去追一个偏掉的路心。
         # 有距无速域在场时例外——那是避让，不是追路心。
         overcap = 1e6 if (layer == 4 and not range_hazard_active
-                          and abs(u) > motion.center_stick_max) else 0.0
+                          and abs(dpsi) > motion.center_heading_rad) else 0.0
         # key 顺序：可行 > 核心价值（碰撞/机会）> 维护杆幅 > 中心偏差 >
         # 动作 > 软余量代价。核心价值在杆幅前——为避撞/得分动用满杆是允许的；
         # 软余量代价在杆幅后——否则贴线 3 分的小差就能让满杆盖过受限候选
@@ -827,7 +824,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                soft_cost, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(
-            idx, u, xs_m, xs_m[i], vs_lane[i], feasible,
+            idx, cmd, xs_m, xs_m[i], vs_lane[i], feasible,
             min_clear, reward_hits, reward_value, pass_count, pass_value,
             coin_hits, coin_error, center_dev, effort, layer, key,
             value, collision_cost, hard_viol, soft_viol))
@@ -862,7 +859,8 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         reason = "plan:infeasible_corridor"
     return MotionPlan(
         PLAN_SCHEMA, valid, reason, chosen.x_preview_m,
-        chosen.v_preview_lane * lane_w, chosen.u, chosen.layer, chosen.key,
+        chosen.v_preview_lane * lane_w, chosen.psi_cmd, chosen.layer,
+        chosen.key,
         len(feasible), chosen.idx, tuple(c.xs_m for c in cands),
         (chosen.x_preview_m - frame_delta) / lane_w,
         chosen.v_preview_lane, frame_delta, uncertain, dt,

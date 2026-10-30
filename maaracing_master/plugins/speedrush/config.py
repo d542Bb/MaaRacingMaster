@@ -127,22 +127,27 @@ class Planner:
     """运动规划/控制层参数（planner 设计稿 §六）。命名按"延迟补偿前瞻 PD"口径——
     黑箱物理下无车辆模型，不叫 Pure Pursuit 以免读者找曲率公式（设计稿 §三）。"""
 
-    lookahead_tau_s: float     # 外推提前量 = τ_resp + 惯性时间常数（下界由矛盾检查锁）
-    k_p: float                 # 车道误差 → 归一杆值 比例增益
-    k_d: float                 # 横向速度阻尼增益（≥0）
-    tau_steer_s: float         # 杆值低通时间基常数（α=1−exp(−dt/τ)，行为稿 §五纪律）
+    lookahead_tau_s: float     # 外推提前量（位置误差的前瞻时间）
+    # —— 航向跟踪律（2026-10-30 架构：杆是航向指令，不是横向加速度）——
+    # 位置误差 → 目标车头角 → 杆值，横移由 x' = v·tanψ 给出。旧的横速双积分
+    # （a_lat_gain/tau_align 的积分、v_lat_max 饱和、两路横速融合）已删除。
+    k_head_lane: float         # 车道误差 → 目标车头角（rad/道）
+    k_psi: float               # 车头角误差 → 杆值（杆/rad）
+    k_r: float                 # 角速度阻尼（杆/(rad/s)）
+    tau_heading_s: float       # 车头角响应时间常数（执行链并入模型）
+    heading_max_rad: float     # 机动态车头角硬上限（「大变向」写成约束）
+    heading_hold_rad: float    # 维护态车头角上限（定中心只需小角度）
+    tau_steer_s: float         # 杆值低通时间基常数（α=1−exp(−dt/τ)）
     rate_limit_raw: float      # 每 tick 杆值变化上限（±32767 系）
-    stick_deadzone_raw: float  # |杆值| 低于此归 0（游戏手柄死区）
+    stick_deadzone_raw: float  # |杆值| 低于此值归 0（游戏手柄死区）
     throttle_raw: int          # 右扳机恒值（RULES §4.1 权威：全程油门）
-    # —— 双积分横向运动学（v2，2026-09-22 真机证据链：杆是航向指令不是平移速度指令，
-    #    满杆按住 x∝t²；单积分 K_v 口径的 v_lat_gain/inertia_tau_s 已证伪删除）——
-    a_lat_gain: float          # 杆→横向加速度（车道/s²），起步段恒加速 [需实测 C1]
-    tau_align_s: float         # 松杆后横向速度自回正衰减时间常数（航向回正）[需实测 C2]
-    v_lat_max: float           # 横向漂移速度上限（车道/s）：最大车头角的定圆饱和 [需实测 C3]
+    # 决策层的可达性假设（**不是执行模型**）：选择层判断「赶不赶得上」用，
+    # 与 planner 的航向律无关。
+    a_lat_gain: float
+    v_lat_max: float
     hold_max_ticks: int        # 决策过期后最多保持拍数，第 +1 拍起按 CONSERVE
     # —— 路中心连续重锚（step 2.5，2026-09-22：开环虚胖的闭环解）——
     obs_alpha: float           # 位置修正增益（alpha-beta 滤波），有路缘观测拍生效 [需实测]
-    obs_beta: float            # 速度修正增益：r/dt 注入 v_lat，治"模型自说自话收敛" [需实测]
     obs_jump_max_lane: float   # 新息门：|观测−预测| 超此值判坏检测，本拍弃观测
     # —— 路锚卫生（2026-09-26 12:39/13:29 两局复盘：骑缘拍毒化参考系；陈旧帧+
     #    拍数门复位太慢=0 杆直开怼墙）——
@@ -160,13 +165,6 @@ class Planner:
     # 20261027_150850_1 s2：计划因参考系分歧退回 PD 的拍占 37%，PD 把 0.2 道
     # 误差当机动，实际满杆 122→227；加此门后回到旧全权触发量级。
     maneuver_full_error_lane: float = 0.3
-    # ---- 路心观测速度注入抑制（阶段 2，2026-10-18）----
-    obs_beta_deadband_lane: float = 0.0   # |r| 低于此只做位置修正（0=关）
-    obs_beta_sign_agree: bool = False     # r 与上次被接受修正反号时不做速度修正
-    obs_beta_dv_rate_lane_s2: float = 0.0  # β 注入的速度变化率上限（0=关）
-    # 路心观测位置-only（2026-10-18 走廊重建）：true=只做 α 位置修正，不再
-    # 注入 β 速度（速度交给双积分模型）；false=旧 α-β 逐位恢复（回滚）
-    obs_position_only: bool = True
     # 持续偏移放行（2026-10-23）：同向、量级相近的大新息连续 N 拍 = 参考系
     # 跳变（0.15s 内 2 道级新息不可能是本车位移），不是单帧坏检测——确认后
     # 一步重基（exec:=obs），不按 α 逐拍追。旧行为要等 anchor_stale_s（1s）
@@ -176,32 +174,6 @@ class Planner:
     # 计划前馈的杆值变化率上限（归一杆值/秒）：计划换候选时前馈会阶跃，
     # 不限制会把候选切换直接变成方向盘每拍打半圈。首帧/计划重入不限制。
     plan_u_slew_s: float = 4.0
-    # 横速观测融合（2026-10-26 引入；2026-10-30 实机并线复盘重排）：控制阻尼/
-    # 前瞻用的横速先向**标线横移**收敛（`line_fuse_gain`），再向航向横速收敛
-    # （`heading_fuse_gain`）。标线是路面相对自车的直接测量——NPC 车与元素都
-    # 排在同一套标线网格上，不需要车速/航向假设。航向横速的前向速度只能由线速/
-    # 线角反解，线角≈0 时退化；旧实现用默认 45 m/s 兜底，59% 的拍因此拿到
-    # ±1~3.6 道/s 的假横速（符号 63% 对），并线指令被阻尼整段抵消。现在没有
-    # 速度证据就不给 v_head（不兜底）。0=关（逐位退回旧行为）；模型状态
-    # v_lat_est 不变。
-    line_fuse_gain: float = 0.5
-    heading_fuse_gain: float = 0.25
-    # 刹停预算（2026-10-26 人工局手柄流辨识，2026-10-27 八局回放定档）：按当前
-    # 横速预测的停止点越过目标带远侧缘时升级全权反打。a_brake 取人工实测反打
-    # 有效减速的中位（满杆 ~1.3 道/s²，散布 0.4~3.1）；0.8 的保守低端在回放里
-    # 表现为提前反打（杆值反向 −16%、Σ|Δu| −15%）。比 a_lat_gain 小一个量级
-    # 是真实的：反打要先转过车头，转向链延迟吃掉大半减速。
-    brake_decel_lane_s2: float = 2.5
-    # 刹停预算的越带容差（道）：预测停止点越过「目标 ± 此值」才升级满杆反打。
-    # 与 hold_deadband_lane（PD 维护死区，0.15 道=车道内物理余量）分开：
-    # 前者是允许的刹车过冲，后者是「不追噪声」的容差；0.5 是 2026-10-26
-    # 人工局 bang-bang 定档值，不随维护死区收紧。
-    brake_edge_lane: float = 0.5
-    # 刹停预算的最小横速（道/s）：低于此值没有可刹的动量，位置偏差交给
-    # 计划/PD 平滑回带。旧实现只排除 |v|<1e-3，车几乎静止但偏了 0.5 道时
-    # 也会满舵回带（20261027_153408_1：满杆拍里 28~35% 是 |v|<0.3 的
-    # 静态位置修正）。
-    brake_min_v_lane_s: float = 0.3
     # 计划判参考系分歧（plan:frame_shift）时，只用 planner 帧状态保持当前道的
     # 最长拍数；超过后退回旧的跨帧回退（长弯道里无限直开同样危险）
     frame_hold_max_ticks: int = 25
@@ -265,9 +237,11 @@ class Motion:
     horizon_s: float = 2.0
     preview_s: float = 0.2
     dt_s: float = 0.05
-    steer_levels: tuple[float, ...] = (
-        -0.85, -0.55, -0.35, -0.2, -0.15, -0.1, -0.05,
-        0.0, 0.05, 0.1, 0.15, 0.2, 0.35, 0.55, 0.85)
+    # 候选的车头角偏移（rad）：执行层按航向跟踪律把杆打到这个朝向上。
+    # 0.14 ≈ 8°，与人工变道实测峰值（6~9°）同量级；细档在 5° 以内。
+    heading_levels: tuple[float, ...] = (
+        -0.14, -0.09, -0.05, -0.03, -0.015, -0.005,
+        0.0, 0.005, 0.015, 0.03, 0.05, 0.09, 0.14)
     near_z_m: float = 6.0
     # 有距无速域：本车道前方有纵深、但速度窗口未开的车，在此距离内按
     # 距离给提前横移的小分（不参与命中/擦车奖励，只避让）。
@@ -339,7 +313,7 @@ class Motion:
     # 中心目标死区与维护性杆幅：带内不修正、只在带外追近侧带边，
     # 防无机会时的画龙（旧选择层同口径 0.3 道 / 0.45 杆幅）。
     center_band_lane: float = 0.3
-    center_stick_max: float = 0.45
+    center_heading_rad: float = 0.03   # 维护态候选的车头角偏移上限（≈1.7°）
     # 视界外预置：2s 外的金币/奖励车按折扣价计入“2s 末端更靠近”，
     # 避免只在目标进入视界后才动作（旧选择层 preposition 的价值版）。
     preposition_horizon_s: float = 4.0
@@ -701,19 +675,21 @@ def _read_decision(path: Path) -> DecisionConfig:
             cy_jump_max_px=_num(d, "validate", "cy_jump_max_px", lo=0)),
         planner=Planner(
             lookahead_tau_s=_num(d, "planner", "lookahead_tau_s", lo=0),
-            k_p=_num(d, "planner", "k_p", lo=0),
-            k_d=_num(d, "planner", "k_d", lo=0, lo_open=False),
+            k_head_lane=_num(d, "planner", "k_head_lane", lo=0),
+            k_psi=_num(d, "planner", "k_psi", lo=0),
+            k_r=_num(d, "planner", "k_r", lo=0, lo_open=False),
+            tau_heading_s=_num(d, "planner", "tau_heading_s", lo=0),
+            heading_max_rad=_num(d, "planner", "heading_max_rad", lo=0),
+            heading_hold_rad=_num(d, "planner", "heading_hold_rad", lo=0),
             tau_steer_s=_num(d, "planner", "tau_steer_s", lo=0),
             rate_limit_raw=_num(d, "planner", "rate_limit_raw", lo=0),
             stick_deadzone_raw=_num(d, "planner", "stick_deadzone_raw",
                                     lo=0, lo_open=False),
             throttle_raw=_int(d, "planner", "throttle_raw", lo=0, hi=255),
             a_lat_gain=_num(d, "planner", "a_lat_gain", lo=0),
-            tau_align_s=_num(d, "planner", "tau_align_s", lo=0, lo_open=False),
             v_lat_max=_num(d, "planner", "v_lat_max", lo=0, lo_open=False),
             hold_max_ticks=_int(d, "planner", "hold_max_ticks", lo=1),
             obs_alpha=_num(d, "planner", "obs_alpha", lo=0, hi=1),
-            obs_beta=_num(d, "planner", "obs_beta", lo=0, hi=1),
             obs_jump_max_lane=_num(d, "planner", "obs_jump_max_lane", lo=0,
                                    lo_open=False),
             anchor_max_off=_num(d, "planner", "anchor_max_off", lo=0,
@@ -729,28 +705,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "planner", "maneuver_stick_max", 0.45, lo=0, hi=1),
             maneuver_full_error_lane=_num_def(
                 d, "planner", "maneuver_full_error_lane", 0.3, lo=0),
-            obs_beta_deadband_lane=_num_def(
-                d, "planner", "obs_beta_deadband_lane", 0.0, lo=0),
-            obs_beta_sign_agree=_bool(d, "planner", "obs_beta_sign_agree",
-                                      default=False),
-            obs_beta_dv_rate_lane_s2=_num_def(
-                d, "planner", "obs_beta_dv_rate_lane_s2", 0.0, lo=0),
-            obs_position_only=_bool(d, "planner", "obs_position_only",
-                                    default=True),
             obs_jump_confirm_ticks=_int_def(
                 d, "planner", "obs_jump_confirm_ticks", 3, lo=1),
             plan_u_slew_s=_num_def(
-                d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
-            brake_decel_lane_s2=_num_def(
-                d, "planner", "brake_decel_lane_s2", 2.5, lo=0, lo_open=False),
-            brake_edge_lane=_num_def(
-                d, "planner", "brake_edge_lane", 0.5, lo=0),
-            brake_min_v_lane_s=_num_def(
-                d, "planner", "brake_min_v_lane_s", 0.3, lo=0),
-            line_fuse_gain=_num_def(
-                d, "planner", "line_fuse_gain", 0.5, lo=0, hi=1),
-            heading_fuse_gain=_num_def(
-                d, "planner", "heading_fuse_gain", 0.25, lo=0, hi=1)),
+                d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
@@ -781,10 +739,10 @@ def _read_decision(path: Path) -> DecisionConfig:
             horizon_s=_num_def(d, "motion", "horizon_s", 2.0, lo=0),
             preview_s=_num_def(d, "motion", "preview_s", 0.2, lo=0),
             dt_s=_num_def(d, "motion", "dt_s", 0.05, lo=0),
-            steer_levels=_floats_def(
-                d, "motion", "steer_levels",
-                (-0.85, -0.55, -0.35, -0.2, -0.15, -0.1, -0.05,
-                 0.0, 0.05, 0.1, 0.15, 0.2, 0.35, 0.55, 0.85)),
+            heading_levels=_floats_def(
+                d, "motion", "heading_levels",
+                (-0.14, -0.09, -0.05, -0.03, -0.015, -0.005,
+                 0.0, 0.005, 0.015, 0.03, 0.05, 0.09, 0.14)),
             near_z_m=_num_def(d, "motion", "near_z_m", 6.0, lo=0),
             range_hazard_m=_num_def(
                 d, "motion", "range_hazard_m", 70.0, lo=0),
@@ -833,8 +791,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "cost_collision_depth_m", 120.0, lo=0),
             center_band_lane=_num_def(
                 d, "motion", "center_band_lane", 0.3, lo=0),
-            center_stick_max=_num_def(
-                d, "motion", "center_stick_max", 0.45, lo=0),
+            center_heading_rad=_num_def(
+                d, "motion", "center_heading_rad", 0.03, lo=0),
             preposition_horizon_s=_num_def(
                 d, "motion", "preposition_horizon_s", 4.0, lo=0),
             preposition_discount=_num_def(
@@ -1079,11 +1037,6 @@ def _read_decision(path: Path) -> DecisionConfig:
     if not 0.0 < p.maneuver_stick_max <= 1.0:
         raise ValueError(
             f"[planner] maneuver_stick_max={p.maneuver_stick_max} 需 ∈(0,1]")
-    if p.obs_beta_dv_rate_lane_s2 > p.a_lat_gain:
-        raise ValueError(
-            f"[planner] obs_beta_dv_rate_lane_s2="
-            f"{p.obs_beta_dv_rate_lane_s2} > a_lat_gain={p.a_lat_gain}"
-            "（速度注入比车辆可产生的加速度还快=观测噪声直接变成打舵）")
     full_stroke_ticks = 2 * 32767 / p.rate_limit_raw if p.rate_limit_raw > 0 else 0
     if full_stroke_ticks < 2:
         raise ValueError(

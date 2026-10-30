@@ -40,32 +40,77 @@ def _planner(**over) -> LateralPlanner:
     return LateralPlanner(Planner(**base))
 
 
-def test_law_matches_reference_and_v_ref():
-    e, v = 0.4, 0.3
-    assert law(e, v, P) == pytest.approx(P.k_p * e - P.k_d * v)
-    # 前馈参考：实测横速等于参考时不产生阻尼项
-    assert law(0.0, v, P, v_ref=v) == pytest.approx(0.0)
-    assert law(0.2, v, P, gentle=True, deadband=0.0) == pytest.approx(
-        min(P.hold_stick_max, P.k_p * 0.2 - P.k_d * v))
+def test_law_targets_heading_then_stick():
+    """控制律：位置误差 → 目标车头角 → 杆值（ψ 误差与角速度阻尼）。"""
+    e, psi, r = 0.4, 0.02, 0.05
+    psi_des = min(P.heading_max_rad, P.k_head_lane * e)
+    assert law(e, psi, r, P) == pytest.approx(
+        P.k_psi * (psi_des - psi) - P.k_r * r)
+    # 朝向已到位且无角速度 → 不出杆
+    assert law(e, P.k_head_lane * e, 0.0, P) == pytest.approx(0.0)
+    # 维护态：目标朝向被压到 heading_hold_rad、杆幅受 hold_stick_max
+    u = law(3.0, 0.0, 0.0, P, gentle=True, deadband=0.0)
+    assert u == pytest.approx(min(P.hold_stick_max,
+                                  P.k_psi * P.heading_hold_rad))
+    # 死区：误差小于死区时不转向目标
+    assert law(P.hold_deadband_lane * 0.5, 0.0, 0.0, P,
+               gentle=True) == pytest.approx(0.0)
 
 
-def test_step_matches_reference_equations():
-    x, v, steer = 0.3, -0.4, 0.2
-    u, dt = 0.7, 0.05
-    alpha = 1 - math.exp(-dt / P.tau_steer_s)
-    s = steer + alpha * (u - steer)
-    vv = v + (P.a_lat_gain * s - v / P.tau_align_s) * dt
-    vv = max(-P.v_lat_max, min(P.v_lat_max, vv))
-    assert step(x, v, steer, u, dt, P) == pytest.approx(
-        (x + vv * dt, vv, s), abs=0.0)
+def test_step_is_heading_kinematics():
+    """横移由朝向积分：x' = v·tanψ；朝向一阶接近指令。"""
+    x, psi, v, dt = 0.3, 0.0, 45.0, 0.05
+    x1, p1 = step(x, psi, 0.05, v, dt, P)
+    a = 1 - math.exp(-dt / P.tau_heading_s)
+    assert p1 == pytest.approx(a * 0.05, abs=1e-12)
+    assert x1 == pytest.approx(x, abs=1e-12)      # 首拍 ψ 还很小
+    # 朝向到位后的稳态横速 = v·tanψ/LANE_W
+    for _ in range(80):
+        x1, p1 = step(x1, p1, 0.05, v, dt, P)
+    assert p1 == pytest.approx(0.05, abs=1e-3)
+    # 无前向速度：不产生横移（物理事实，不是兜底）
+    assert step(0.0, 0.1, 0.1, 0.0, dt, P) == (0.0, pytest.approx(0.1))
+
+class _Rig:
+    """闭环测试台：合成车（杆→航向→横移），planner 只从「标线角」看到朝向。
+
+    生产里 ψ 是量出来的；测试没有相机，就用一台显式的合成车——它和产物走
+    **同一条信息路**（lane_theta 进观测器、位置进 α 修正），所以测的是
+    「控制器能不能把车开到目标」，不是「模型积分数值对不对」。
+    """
+
+    def __init__(self, pl: LateralPlanner, v_mps: float = 45.0,
+                 tau: float = 0.25, k_yaw: float = 0.25):
+        self.pl, self.v, self.tau, self.k_yaw = pl, v_mps, tau, k_yaw
+        self.heading = 0.0
+        self.x = 0.0
+        self.fid = 1
+        # 比例（≈车速）在本台架里是既定条件：给它一组自洽的累积量，
+        # 免得把「刚起步还没估出比例」和「控制律对不对」混在一起测。
+        pl.head._spd_den = 0.2
+        pl.head._spd_num = 0.2 * v_mps / 3.5
+
+    def tick(self, out, *, pos_obs: bool = True):
+        cmd = self.pl.update(
+            out, DT, current_fid=self.fid,
+            road_offset=self.x if pos_obs else None,
+            lane_x=self.x, lane_ok=True,
+            lane_theta=self.heading, lane_theta_ok=True,
+            lane_fid=self.fid, lane_age_ms=5.0, lane_n_locked=3)
+        u = cmd.steer_x / _STICK_FULL
+        a = 1.0 - math.exp(-DT / self.tau)
+        self.heading += a * (self.k_yaw * u - self.heading)
+        self.x += (self.v * math.tan(self.heading) / 3.5) * DT
+        self.fid += 1
+        return cmd
 
 
 def _run_moving(pl: LateralPlanner, target: float, ticks: int = 3, fid0: int = 1):
-    """瞬态：移动中打舵（稳态会收敛归零，测保持/归零必须取移动中的拍）。"""
+    """瞬态：闭环跑几拍（合成车载着车动起来），返回最后一拍命令。"""
+    rig = _Rig(pl)
     cmd = None
     for i in range(ticks):
-        cmd = pl.update(_out(x_target=target, fid=fid0 + i, valid=fid0 + i),
-                        DT, fid0 + i)
+        cmd = rig.tick(_out(x_target=target, fid=fid0 + i, valid=fid0 + i))
     return cmd
 
 
@@ -97,29 +142,17 @@ def test_throttle_constant_all_states():
 # ---------- 状态消费表 ----------
 
 def test_conserve_holds_entry_lane():
-    """CONSERVE=保持入拍车道（13:02 局锁面变更：旧语义"归零直开"在弯道上=怼护栏）。
-    变道中被保守打断：先反打止漂，收敛后停在入拍车道位——不回道 0，末态仍归零
-    （直道无观测的旧行为兼容面：平衡点=保持位=杆 0）。"""
-    pl = LateralPlanner(P)
-    _run_moving(pl, 1.0, ticks=5)                 # 变道中：向右漂移且已打舵
-    entry = pl.state.executed_lane
-    assert entry > 0.05
-    prev = pl._last_raw
-    cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None, fid=99,
-                         valid=99), DT, 99)
-    assert cmd.steer_x < prev                     # 入拍即接管（旧语义同向缓归零）
-    for i in range(10):
-        cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
-                             fid=100 + i, valid=100 + i), DT, 100 + i)
-    assert cmd.steer_x < 0                        # 数拍内反打（止漂+拉回，非归零直开）
-    for i in range(100):
-        cmd = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
-                             fid=200 + i, valid=200 + i), DT, 200 + i)
-    assert cmd.steer_x == 0                       # 平衡点=保持位死区内，杆终归零
-    # 死区语义（16:44 局后）：|误差|<hold_deadband 不发力——停在保持位死区内即可，
-    # 不得回 0（方向判据：entry>0 时若回 0 误差会超死区发力，这里必须同侧）
-    assert 0 < pl.state.executed_lane < entry + P.hold_deadband_lane
-
+    """CONSERVE=保持入拍车道：变道中被保守打断 → 反打止漂，停在入拍车道附近。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(20):
+        rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+    entry = rig.x
+    assert entry > 0.3
+    for i in range(120):
+        rig.tick(_out(state=DecisionState.CONSERVE, x_target=None,
+                      fid=40 + i, valid=40 + i))
+    assert abs(rig.x - entry) < 0.25          # 停在入拍道附近，不回 0
 
 def test_conserve_hold_refreezes_on_reentry():
     """离开 CONSERVE 再进：hold 重新冻结为新的入拍位（不吃陈旧冻结值）。"""
@@ -143,7 +176,7 @@ def test_conserve_with_road_obs_centers_to_road():
     无 ro 拍退回入拍 hold（c1512bf 语义，直道无观测平衡点仍是归零）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.state.executed_lane = -0.13
     c = pl.update(_out(state=DecisionState.CONSERVE, x_target=None,
                        fid=1, valid=1), DT, 1, road_offset=1.5)
@@ -175,43 +208,32 @@ def test_reanchor_none_means_noop():
 # ---------- ABORT 冻结值归属（契约细节 3） ----------
 
 def test_abort_freezes_executed_not_decision_x():
-    # 本用例只锁「不跟决策 x_target 回中」；死区用旧值避免把新死区
-    # （0.15 道）的收敛速度混进判据。
-    db = 0.5
-    pl = LateralPlanner(replace(P, hold_deadband_lane=db))
-    _run_moving(pl, 0.8, ticks=6)                 # 变道中：executed>0 且仍在向右打
-    assert pl.state.executed_lane > 0.05 and pl._last_raw > 0
-    frozen = pl.state.executed_lane
-    # 决策层 ABORT 路径 x_target 回落 0——规划层不得跟它回中（反打舵）
-    cmd = pl.update(_out(state=DecisionState.ABORT, x_target=0.0,
-                         fid=300, valid=300), DT, 300)
-    assert cmd.steer_x >= 0                       # 不向左打回 0
-    # 持续 ABORT：跟踪冻结位（死区内收力），不随 x_target=0 漂移
-    for i in range(1, 10):
-        pl.update(_out(state=DecisionState.ABORT, x_target=0.0,
-                       fid=300 + i, valid=300 + i), DT, 300 + i)
-    assert frozen <= pl.state.executed_lane <= frozen + db
-    # 离开 ABORT 后恢复正常跟踪
-    pl.update(_out(state=DecisionState.CRUISE, x_target=0.0,
-                   fid=400, valid=400), DT, 400)
-    assert pl._abort_hold_lane is None
-
-
-# ---------- 过期保持与优先级（裁定 3 + 契约细节 2） ----------
+    """ABORT 冻结的是入拍实测位置，不消费决策层 x_target（其 ABORT 路径回落 0）。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(20):
+        rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+    entry = rig.x
+    assert entry > 0.3
+    for i in range(120):
+        rig.tick(_out(state=DecisionState.ABORT, x_target=0.0,
+                      fid=40 + i, valid=40 + i))
+    assert abs(rig.x - entry) < 0.25          # 停在冻结位，不被拉回 0
 
 def test_expired_hold_then_conserve_at_plus_one():
-    pl = LateralPlanner(P)
-    _run_moving(pl, 1.0, ticks=5)
-    held = pl._last_raw
-    assert held > 0.4 * P.k_p * 32767             # 大杆移动中（阈值随 k_p 定标）
-    # 过期第 1..hold_max_ticks 拍：杆值保持（steer_raw=当前 steer_norm，输出不反打）
+    """过期保持：杆值不动；第 hold_max_ticks+1 拍起按 CONSERVE 接管。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    held = None
+    for i in range(20):
+        cmd = rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+    held = cmd.steer_x
+    assert held > 0
     for i in range(1, P.hold_max_ticks + 1):
-        cmd = pl.update(_out(x_target=1.0, fid=10 + i, valid=9), DT, 10 + i)
-        assert cmd.steer_x > 0.4 * P.k_p * 32767  # 保持方向与幅度（允许限幅缓变）
-    # 第 hold_max_ticks+1 拍起按 CONSERVE：明确向 0 走
-    cmd = pl.update(_out(x_target=1.0, fid=99, valid=9), DT, 99)
-    assert cmd.steer_x < held
-
+        cmd = rig.tick(_out(x_target=1.0, fid=40 + i, valid=39))
+        assert cmd.steer_x == held            # 过期保持：杆值不动
+    cmd = rig.tick(_out(x_target=1.0, fid=99, valid=39))
+    assert cmd.steer_x != held                # CONSERVE 接管
 
 def test_conserve_priority_over_expired_hold():
     """CONSERVE/FAULT 的接管优先级高于过期保持（维护者裁定 3；CONSERVE 的接管
@@ -239,20 +261,16 @@ def test_valid_until_inclusive_boundary():
 
 def test_lowpass_is_time_based_not_fixed_alpha():
     """定值 α 会让 dt=0.1 单拍与 dt=0.05 单拍同效——时间基必须不同。"""
-    pl1 = LateralPlanner(P)
-    pl1.update(_out(x_target=1.0, fid=1, valid=1), 0.05, 1)
-    pl2 = LateralPlanner(P)
-    pl2.update(_out(x_target=1.0, fid=1, valid=1), 0.10, 1)
-    assert pl2.state.steer_norm > pl1.state.steer_norm
+    def one(dt):
+        pl = LateralPlanner(P)
+        pl.update(_out(x_target=1.0, fid=1, valid=1), dt, 1)
+        return pl.state.steer_norm
     a1 = 1 - math.exp(-0.05 / P.tau_steer_s)
     a2 = 1 - math.exp(-0.10 / P.tau_steer_s)
-    # CRUISE=维护态：u 经 hold_stick_max 封顶（16:44 局后），e=1.0→min(k_p, cap)
-    u0 = min(1.0, P.k_p, P.hold_stick_max)
-    assert pl1.state.steer_norm == pytest.approx(a1 * u0, rel=1e-6)
-    assert pl2.state.steer_norm == pytest.approx(a2 * u0, rel=1e-6)
-
-
-# ---------- 限幅与死区（旧栈验证值的接口语义） ----------
+    # 无朝向证据时的比例段：u = min(k_psi·k_head·e, hold_stick_max)
+    u0 = min(P.k_psi * P.k_head_lane, P.hold_stick_max)
+    assert one(0.05) == pytest.approx(a1 * u0, rel=1e-6)
+    assert one(0.10) == pytest.approx(a2 * u0, rel=1e-6)
 
 def test_rate_limit_per_tick_semantics():
     pl = LateralPlanner(P)
@@ -265,14 +283,14 @@ def test_rate_limit_per_tick_semantics():
 
 
 @pytest.mark.parametrize("x_target,expect_zero", [
-    (255 / 32767 / P.k_p, True),                  # raw=255 → 死区归 0
-    (256 / 32767 / P.k_p, False),                 # raw=256 → 保留
+    (255 / 32767 / (P.k_psi * P.k_head_lane), True),                  # raw=255 → 死区归 0
+    (256 / 32767 / (P.k_psi * P.k_head_lane), False),                 # raw=256 → 保留
 ])
 def test_deadzone_boundary_255_256(x_target, expect_zero):
     # 隔离输出链边界：无 lookahead/阻尼/低通/限幅，且横向加速度增益置零
     # （executed 不漂移，PD 稳态恒等于 k_p·x_target）；维护权限全放开，
     # 死区/封顶归上一节测，这里只测杆值输出链的 255/256 边界
-    pl = _planner(k_d=0.0, lookahead_tau_s=0.0, tau_steer_s=1e-9,
+    pl = _planner(k_r=0.0, lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, a_lat_gain=0.0,
                   hold_deadband_lane=0.0, hold_stick_max=1.0)
     cmd = None
@@ -286,57 +304,15 @@ def test_deadzone_boundary_255_256(x_target, expect_zero):
 def _iso_planner(**over) -> LateralPlanner:
     """隔离运动学的参数组合：杆一拍到位、无限幅死区、PD 不饱和（目标远置）、
     无维护权限封顶（测的是 plant 签名，不是 16:44 后的 gentle 通道）。"""
-    base = dict(lookahead_tau_s=0.0, k_d=0.0, tau_steer_s=1e-9,
+    base = dict(lookahead_tau_s=0.0, k_r=0.0, tau_steer_s=1e-9,
                 rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
                 hold_deadband_lane=0.0, hold_stick_max=1.0)
     base.update(over)
     return _planner(**base)
 
 
-def test_sustained_stick_is_convex_double_integrator():
-    """满杆按住：位移增量逐拍**递增**（x∝t² 的差分签名）。
-    被证伪的单积分模型（杆→稳态速度）在惯性爬升后增量走平——方向相反。"""
-    pl = _iso_planner(a_lat_gain=6.0, tau_align_s=1e9, v_lat_max=1e9)
-    xs = []
-    for i in range(10):
-        pl.update(_out(x_target=100.0, fid=i + 1, valid=i + 1), DT, i + 1)
-        xs.append(pl.state.executed_lane)
-    d1 = [xs[k + 1] - xs[k] for k in range(len(xs) - 1)]
-    assert all(d1[k + 1] > d1[k] for k in range(len(d1) - 1))   # 凸（加速中）
-    assert d1[0] > 0 and all(d > 0 for d in d1)
-    # 双积分的干净签名：恒杆下**二阶差分恒定 = a·dt²**（单积分会走平=0）
-    d2 = [d1[k + 1] - d1[k] for k in range(len(d1) - 1)]
-    for s in d2:
-        assert s == pytest.approx(6.0 * DT * DT, rel=1e-6)
 
 
-def test_release_decays_and_settles():
-    """回正语义：杆归零后 v_lat 经 tau_align 指数衰减、位移收敛（定值 =v0·τ），
-    不是无限漂移也不是瞬时停住。"""
-    pl = _iso_planner(a_lat_gain=0.0, tau_align_s=0.5, v_lat_max=1e9)
-    pl.state.v_lat_est = 2.0
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1)   # a=0：杆不注入
-    assert pl.state.v_lat_est == pytest.approx(2.0 * (1 - DT / 0.5), rel=1e-9)
-    for i in range(2, 400):
-        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)
-    assert pl.state.v_lat_est == pytest.approx(0.0, abs=1e-9)
-    # Euler 几何收敛的闭式：Σ v0·(1−dt/τ)^k·dt = v0·τ·(1−dt/τ) = 2.0·0.5·0.9
-    assert pl.state.executed_lane == pytest.approx(2.0 * 0.5 * (1 - DT / 0.5),
-                                                   abs=1e-6)
-
-
-def test_v_lat_saturates_no_runaway():
-    """持续满杆：v_lat 被 v_lat_max 定圆饱和钉住，位移退化为线性（双积分防发散）。"""
-    pl = _iso_planner(a_lat_gain=6.0, tau_align_s=1e9, v_lat_max=1.0)
-    for i in range(50):
-        pl.update(_out(x_target=100.0, fid=i + 1, valid=i + 1), DT, i + 1)
-    assert pl.state.v_lat_est == pytest.approx(1.0)
-    x_prev = pl.state.executed_lane
-    pl.update(_out(x_target=100.0, fid=52, valid=52), DT, 52)
-    assert pl.state.executed_lane - x_prev == pytest.approx(1.0 * DT, rel=1e-6)
-
-
-# ---------- 回放一致性（C3） ----------
 
 def test_replay_reproduces_stick_stream():
     def run():
@@ -353,7 +329,7 @@ def test_lookahead_damps_overshoot():
     """大提前量外推：高速接近目标时反向收力（x_pred 越过 target → steer 变号）。"""
     pl = LateralPlanner(P)
     pl.state.executed_lane = 0.4
-    pl.state.v_lat_est = 3.0                      # 向右快速接近 0.5
+    pl.state.v_lat = 3.0                      # 向右快速接近 0.5
     cmd = pl.update(_out(x_target=0.5, fid=1, valid=1), DT, 1)
     # x_pred = 0.4 + 3.0×0.25 = 1.15 > 0.5 → 误差为负 → 收力（不继续右打）
     assert cmd.steer_x <= 0
@@ -366,10 +342,10 @@ def test_road_reanchor_pins_inflated_model():
     误差常驻→杆不提前松。对照组：无观测（road_offset=None）executed 一路冲高。"""
     pl_open = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                        rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                       v_lat_max=1e9, tau_align_s=1e9)   # 纯积分，无回正
+                       v_lat_max=1e9, )   # 纯积分，无回正
     pl_obs = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                       rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                      v_lat_max=1e9, tau_align_s=1e9)
+                      v_lat_max=1e9, )
     open_x, obs_x = [], []
     for i in range(1, 12):
         d = _out(x_target=1.0, fid=i, valid=i)
@@ -393,20 +369,20 @@ def test_road_reanchor_tracks_real_motion():
     """车真在右移（路观测递增）：executed 跟上，v_lat 学出正速度。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
-                  obs_position_only=False)  # 本用例锁 α-β（新默认位置-only 另测）
+                  v_lat_max=1e9, a_lat_gain=0.0,
+                  )  # 本用例锁 α-β（新默认位置-only 另测）
     for i in range(1, 12):
         pl.update(_out(x_target=1.0, fid=i, valid=i), DT, i,
                   road_offset=0.05 * i)          # 每拍右移 0.05 车道
     assert pl.state.executed_lane == pytest.approx(0.05 * 11, abs=0.08)
-    assert pl.state.v_lat_est > 0                # 学到正速度
+    assert pl.state.v_lat > 0                # 学到正速度
 
 
 def test_road_jump_rejected():
     """新息超 obs_jump_max_lane：坏检测，本拍弃观测，executed 不被拽飞。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
+                  v_lat_max=1e9, a_lat_gain=0.0,
                   obs_jump_max_lane=1.5)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)  # 锚定
     before = pl.state.executed_lane
@@ -420,7 +396,7 @@ def test_road_persistent_offset_rebases_after_confirm():
     位置用旧帧，杆继续往错误方向打）。单帧坏检测与断续大新息仍被拒。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
+                  v_lat_max=1e9, a_lat_gain=0.0,
                   obs_jump_max_lane=0.8)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     before = pl.state.executed_lane
@@ -446,14 +422,14 @@ def test_hold_offset_is_not_a_position_observation():
     直接走陈旧重基，不必再等形成门 1s）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.5, road_offset_hold=True)
     assert pl._road_anchor is None                   # 保持值不定义参考系
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.0)
     assert pl._road_anchor == 0.0
     pl.state.executed_lane = 0.4
-    pl.state.v_lat_est = 0.0
+    pl.state.v_lat = 0.0
     pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
               road_offset=1.6, road_offset_hold=True)
     assert pl.state.executed_lane == pytest.approx(0.4, abs=1e-9)   # 无 α 拉回
@@ -477,7 +453,7 @@ def test_hold_offset_rebases_when_stale_budget_expires():
     拍，若只在新鲜拒绝拍检查预算，状态会带着假位置继续按目标向外打杆。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 0.7                 # 盲期内模型漂出 0.7 道
     pl._stale_t = P.anchor_stale_s - DT
@@ -493,7 +469,7 @@ def test_hold_rebase_blocked_by_disagreeing_line():
     单侧墙 + W/2 反推会错 1 道以上（20261026 局 s1#1 506：深度 1.8、线 0.5）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     pl._stale_t = P.anchor_stale_s - DT
@@ -509,7 +485,7 @@ def test_hold_rebase_blocked_by_recent_coast_line():
     差 1.4 道 → 不重基；线龄超对照窗后才让深度单独重基。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=1.2, lane_x=1.2, lane_ok=True)
     pl._stale_t = P.anchor_stale_s - DT
@@ -528,7 +504,7 @@ def test_blackout_keeps_stale_budget_for_next_edge_reading():
     """断供丢锚不清零陈旧计时：下一条新鲜贴边读数直接重基，不再白等 1s。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 0.7
     pl._stale_t = P.anchor_stale_s - DT
@@ -550,7 +526,7 @@ def test_rebase_source_field_distinguishes_paths():
     """
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=1.6, lane_x=1.6, lane_ok=True)
     assert pl.last_rebase == "form_align"
@@ -567,7 +543,7 @@ def test_lane_fusion_tracks_motion_during_hold():
     线不会（p2 496~537：线 −1.9 不动，模型从 −1.0 漂到 −0.24）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     for i in range(10):
@@ -583,7 +559,7 @@ def test_lane_fusion_rejects_depth_outlier():
     防单侧/绿区坏深度把车从墙边拽回；持续 3 次新证据才重基。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
@@ -647,7 +623,7 @@ def test_lane_jump_disables_fusion_until_depth_agrees():
     等新鲜深度与线一致（重基拍）后再启用。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
@@ -675,7 +651,7 @@ def test_lane_fusion_rebias_on_rejected_fresh_depth():
     融合把状态拉向线帧；墙边坏深度的 0.5 道偏移不再被当帧偏置吃进去。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
@@ -699,7 +675,7 @@ def test_lane_relock_resets_smoothing():
     融合（0.6 道的换线在 0.8 跳变门内，不能靠跳变阈值发现）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
@@ -722,7 +698,7 @@ def test_corroborated_edge_frame_forms_anchor():
     贴边段原本会一直等形成门/饥饿重基，状态自由漂 2s+）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=1.87, lane_x=1.3, lane_ok=True)
     assert pl._road_anchor == 0.0
@@ -734,7 +710,7 @@ def test_edge_frame_needs_lane_agreement():
     """贴边拍没有锁线佐证时仍守形成门（防垃圾墙定义参考系）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=1.87, lane_x=0.3, lane_ok=True)   # 线差 1.57 道
     assert pl._road_anchor is None
@@ -746,7 +722,7 @@ def test_line_beyond_physical_range_is_ignored():
     道，3.1~3.5 的读数是邻道/远端边线（20261026 局 s1#3 连续 0.8s）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.6, lane_x=0.6, lane_ok=True)
     pl.state.executed_lane = 0.6
@@ -763,7 +739,7 @@ def test_lane_fusion_off_without_lock():
     """无锁线（COAST）不融合：退回模型，保持值不得把位置拽到线读数。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=0.0, lane_ok=True)
     for i in range(10):
@@ -779,7 +755,7 @@ def test_starved_frame_rebases_to_road():
     PD 把车拉回带内。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     n_budget = int(P.anchor_stale_s / DT) - 1
     for i in range(1, n_budget + 1):
         c = pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=-2.9)
@@ -801,7 +777,7 @@ def test_stale_rejected_corrections_rebase():
     作兜底。重基/收敛后道0=路中心，闭环一拍复活。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.5)  # 锚=0（道0=路心）
     n = int(P.anchor_stale_s / DT)
     for i in range(2, n + 2):                      # ro=+1.9 喂 1s：r≈1.4+
@@ -817,7 +793,7 @@ def test_blackout_voids_frame():
     作废后按中带观测重形成——道0=路中心（中轴巡航语义，anchor=0）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     n = int(P.anchor_stale_s / DT)
     for i in range(2, n + 2):                      # 全程 ro=None
@@ -833,7 +809,7 @@ def test_center_axis_cruise_converges_to_road_center():
     回轴。对照旧语义（锚=ro−exec）：executed 钉在形成时刻车位、车位即路径。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     for i in range(1, 20):
         pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i, road_offset=0.6)
     assert pl.state.executed_lane == pytest.approx(0.6, abs=0.05)  # 道上=路心
@@ -846,7 +822,7 @@ def test_hold_authority_deadband_and_cap():
     场跟随无 CHANGE 全权分支，gentle 语义无条件生效）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0)
+                  v_lat_max=1e9, a_lat_gain=0.0)
     pl.state.executed_lane = 0.1                       # 误差 0.1 < 死区 0.15
     c = pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1)
     assert c.steer_x == 0                              # 不发力（旧语义会持续拽）
@@ -858,16 +834,15 @@ def test_hold_authority_deadband_and_cap():
 # ---------- 机动态全权（阶段 2，2026-10-18） ----------
 
 def test_maneuver_full_authority_moves_one_lane():
-    """maneuver=True：越过 0.45 维护杆幅上限，20 拍（1s）内位移 >0.3 道。"""
+    """maneuver=True：闭环 1s 内位移 >0.3 道（越过维护杆幅上限）。"""
     pl = _planner()
+    rig = _Rig(pl)
     max_stick = 0
     for i in range(1, 21):
-        cmd = pl.update(_out(x_target=1.0, fid=i, valid=i, maneuver=True),
-                        DT, i)
+        cmd = rig.tick(_out(x_target=1.0, fid=i, valid=i, maneuver=True))
         max_stick = max(max_stick, abs(cmd.steer_x))
-    assert max_stick > int(0.45 * _STICK_FULL)
-    assert pl.state.executed_lane > 0.3
-
+    assert max_stick > int(P.hold_stick_max * _STICK_FULL)
+    assert rig.x > 0.3
 
 def test_small_maneuver_error_stays_gentle():
     """maneuver 按安全区间（约 0.17 道）置位，但 0.2 道的日常修正不得用全权：
@@ -891,31 +866,17 @@ def test_wall_escape_uses_full_authority():
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 1.6
-    pl.state.v_lat_est = 0.0
+    pl.state.v_lat = 0.0
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert pl.last_steer_raw < -0.7
     pl2 = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                    rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
     pl2.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl2.state.executed_lane = 1.2
-    pl2.state.v_lat_est = 0.0
+    pl2.state.v_lat = 0.0
     pl2.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert pl2.last_steer_raw >= -P.hold_stick_max - 0.01
 
-
-def test_brake_budget_escalates_full_authority():
-    """刹停预算：横速的预测停止点越过目标带远侧缘 → 全权反打。
-
-    横速松杆不衰减（v3 2026-10-26 重辨识），gentle 0.45 刹不住 1 道/s 级
-    横速——人工局的 bang-bang 手法（满杆进、提前满杆反）。"""
-    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
-    pl = _planner(**base)
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
-    pl.state.executed_lane = 1.2
-    pl.state.v_lat_est = 0.3        # 停止点 1.2+0.3²/(2·2.5)=1.218 > 带缘 0.5
-    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
-    assert pl.last_steer_raw <= -0.7        # 全权 0.85（gentle 会封 0.45）
 
 
 def test_brake_budget_requires_lateral_speed():
@@ -926,7 +887,7 @@ def test_brake_budget_requires_lateral_speed():
     pl = _planner(**base)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 1.2
-    pl.state.v_lat_est = 0.1
+    pl.state.v_lat = 0.1
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert abs(pl.last_steer_raw) <= P.hold_stick_max + 0.01
 
@@ -938,7 +899,7 @@ def test_brake_budget_not_triggered_braking_toward_target():
     pl = _planner(**base)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 1.2
-    pl.state.v_lat_est = -0.3       # 停止点 1.165：还差得远，反打是过量修正
+    pl.state.v_lat = -0.3       # 停止点 1.165：还差得远，反打是过量修正
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert pl.last_steer_raw >= -P.hold_stick_max - 0.01
 
@@ -947,62 +908,15 @@ def test_brake_budget_disabled_without_decel():
     """brake_decel_lane_s2=0 关闭预算：旧行为逐位恢复（gentle 封顶）。"""
     base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                 rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                brake_decel_lane_s2=0.0)
+                )
     pl = _planner(**base)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 1.2
-    pl.state.v_lat_est = 0.3
+    pl.state.v_lat = 0.3
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2)
     assert pl.last_steer_raw >= -P.hold_stick_max - 0.01
 
 
-def test_brake_budget_overrides_coasting_plan():
-    """预算压住计划路径：计划杆在"coast"（已以为在回中）时，预算满杆反打
-    并清 slew 链——215313 局 s2#4 躺平骑线的机制（计划用同一套乐观车模）。"""
-    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
-    pl = _planner(**base)
-    pl.update(_out(x_target=-0.3, fid=1, valid=1), DT, 1, road_offset=0.0)
-    pl.state.executed_lane = -1.5
-    pl.state.v_lat_est = 3.0        # 停止点 −1.5+3²/(2·2.5)=+0.30 > 带缘 +0.2
-    plan = types.SimpleNamespace(
-        valid=True, u_feedforward=0.0, x_preview_lane=-1.0,
-        v_preview_lane_s=3.0)
-    pl.update(_out(x_target=-0.3, fid=2, valid=2), DT, 2, plan=plan)
-    assert pl.last_steer_raw == pytest.approx(-P.maneuver_stick_max)
-    assert pl._last_plan_u is None          # slew 链清掉
-
-
-def test_brake_budget_keeps_full_braking_plan():
-    """计划已在满反打方向且不低于预算杆幅：让计划继续（不重复覆盖）。"""
-    base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
-    pl = _planner(**base)
-    pl.update(_out(x_target=-0.3, fid=1, valid=1), DT, 1, road_offset=0.0)
-    pl.state.executed_lane = -1.5
-    pl.state.v_lat_est = 3.0        # 停止点越过带缘（2.5 下 v≈2.8 才触发）
-    plan = types.SimpleNamespace(
-        valid=True, u_feedforward=-0.85, x_preview_lane=-1.5,
-        v_preview_lane_s=3.0)
-    pl.update(_out(x_target=-0.3, fid=2, valid=2), DT, 2, plan=plan)
-    assert pl.last_steer_raw == pytest.approx(-0.85)
-    assert pl._last_plan_u is not None      # 计划链保持
-
-
-def test_model_velocity_builds_under_sustained_steer():
-    """满杆机动态下模型横速必须建立——任何观测通道不得压制模型加速度。
-
-    223955 局 s2 4.0~5.5s 的机制根因（已拆除的线速校正）：线斜率 0.6s
-    因果窗在 bang-bang 反打处结构性反号，指数校正把满杆建立的加速度吃掉
-    七成，刹停预算失明直至贴栏。回归锁判据：u=满杆 0.55s 后横速 ≥1.5
-    （a_lat_gain=6、tau_steer=0.1 的纯模型下界 ~2.2，留 β/数值余量）。"""
-    pl = _planner(lookahead_tau_s=0.0, rate_limit_raw=999999.0,
-                  stick_deadzone_raw=0.0,
-                  brake_decel_lane_s2=0.0, maneuver_stick_max=1.0)
-    pl.state.executed_lane = -1.0
-    for i in range(1, 15):                  # 0.7s 满杆
-        pl.update(_out(x_target=0.7, fid=i, valid=i, maneuver=True), DT, i)
-    assert pl.state.v_lat_est >= 1.5
 
 
 def test_corridor_infeasible_plan_commands_escape():
@@ -1014,18 +928,18 @@ def test_corridor_infeasible_plan_commands_escape():
     pl = _planner(**base)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = 1.19
-    pl.state.v_lat_est = 0.0
+    pl.state.v_lat = 0.0
     plan = types.SimpleNamespace(
-        valid=False, reason="plan:infeasible_corridor", u_feedforward=-0.6,
+        valid=False, reason="plan:infeasible_corridor", psi_feedforward=-0.6,
         x_preview_lane=0.8, v_preview_lane_s=0.0)
     pl.update(_out(x_target=0.93, fid=2, valid=2), DT, 2, plan=plan)
     assert pl.last_steer_raw == pytest.approx(-0.6, abs=1e-6)
     pl2 = _planner(**base)
     pl2.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl2.state.executed_lane = 1.19
-    pl2.state.v_lat_est = 0.0
+    pl2.state.v_lat = 0.0
     stale = types.SimpleNamespace(
-        valid=False, reason="plan:stale", u_feedforward=-0.6,
+        valid=False, reason="plan:stale", psi_feedforward=-0.6,
         x_preview_lane=0.8, v_preview_lane_s=0.0)
     pl2.update(_out(x_target=0.93, fid=2, valid=2), DT, 2, plan=stale)
     # 不用无效计划的杆值；新死区 0.15 下 0.26 道误差会经 gentle PD 轻修正，
@@ -1043,46 +957,6 @@ def test_maneuver_deadband_and_cap_used():
 
 # ---------- ⑥b 速度修正时间基（2026-10-08 判据冻结，台账 §4A） ----------
 
-def test_beta_denominator_is_evidence_interval():
-    """稀疏新证据（驻留协议产线节奏 ~200ms 一套）：β 注入分母=自上次速度
-    修正以来模型跑过的累计帧钟（Δt_e），不是控制拍 dt——r 的速度承载项是
-    (u−v)·Δt_e，按拍间隔归账曾放大 4~6×（v_lat_est ±1 道/s 拍级振荡的
-    机制根因）。复用拍只收位置、不重置累计器。"""
-    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
-                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  obs_position_only=False,
-                  obs_beta_dv_rate_lane_s2=0.0)   # 隔离时间基（限速另测）
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
-    for i in range(2, 6):          # 4 个复用拍：位置修正照跑、速度不修正
-        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
-                  road_offset=0.0, road_offset_new=False)
-    assert pl.state.v_lat_est == 0.0
-    pl.update(_out(x_target=0.0, fid=6, valid=6), DT, 6, road_offset=0.5)
-    # T_e = 5·DT（锚形成后 5 拍无速度修正）：β·0.5/0.25 = 0.4
-    # （旧口径 β·0.5/0.05 = 2.0——本断言在旧代码下红）
-    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.5 / (5 * DT))
-
-
-def test_beta_accumulator_survives_reuse_ticks():
-    """复用拍位置修正（α·r 照跑）不重置速度修正累计器——速度承载项按完整
-    新证据间隔归账；逐拍新证据的锚点值不变（T_e=dt，旧数学逐位保留）。"""
-    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
-                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  obs_position_only=False,
-                  obs_beta_dv_rate_lane_s2=0.0)   # 隔离时间基（限速另测）
-    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
-    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.4)
-    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / DT)  # T_e=DT
-    pl.update(_out(x_target=0.0, fid=3, valid=3), DT, 3,
-              road_offset=0.4, road_offset_new=False)                  # 复用拍
-    # 注入干净基线（本文件既有手法）隔离单变量：复用拍之后新证据的 T_e
-    # 须含复用拍——否则说明复用错误地清了累计器
-    pl.state.executed_lane = 0.0
-    pl.state.v_lat_est = 0.0
-    pl.update(_out(x_target=0.0, fid=4, valid=4), DT, 4, road_offset=0.4)
-    assert pl.state.v_lat_est == pytest.approx(P.obs_beta * 0.4 / (2 * DT))
 
 
 def test_obs_velocity_injection_respects_cap():
@@ -1090,52 +964,31 @@ def test_obs_velocity_injection_respects_cap():
     阻尼项 −k_d·v 随即满反打喂给极限环）。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  a_lat_gain=0.0, tau_align_s=1e9,
-                  obs_position_only=False,
-                  obs_beta_dv_rate_lane_s2=0.0)      # 隔离 v_lat_max 饱和面
+                  a_lat_gain=0.0, )      # 隔离 v_lat_max 饱和面
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)   # 锚=0
     pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, road_offset=0.7)   # r=0.7
     # 裸 β 注入 = 0.2·0.7/0.05 = 2.8 > v_lat_max=2.5 → 必须被夹住
-    assert pl.state.v_lat_est <= P.v_lat_max + 1e-9
+    assert abs(pl.state.heading) <= P.heading_max_rad + 1e-9
 
 
 # ---------- β 速度注入抑制（阶段 2，2026-10-18） ----------
 
 def _beta_planner(**over):
-    base = dict(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=1e9,
+    base = dict(a_lat_gain=0.0, v_lat_max=1e9,
                 lookahead_tau_s=0.0, tau_steer_s=1e-9,
                 rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                obs_position_only=False,
-                obs_beta_deadband_lane=0.05, obs_beta_sign_agree=True,
-                obs_beta_dv_rate_lane_s2=3.0)
+                )
     base.update(over)
     return _planner(**base)
 
-
-def test_beta_correction_capped_by_dv_rate():
-    pl = _beta_planner()
-    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
-    pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.4)
-    assert pl.state.v_lat_est == pytest.approx(3.0 * DT, rel=1e-6)
 
 
 def test_beta_deadband_ignores_small_residual():
     pl = _beta_planner()
     pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.02)
-    assert pl.state.v_lat_est == pytest.approx(0.0)
+    assert pl.state.v_lat == pytest.approx(0.0)
 
-
-def test_beta_requires_sign_agreement():
-    pl = _beta_planner()
-    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)     # 锚
-    pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.4)     # 正向修正
-    v1 = pl.state.v_lat_est
-    assert v1 > 0
-    pl.update(_out(fid=3, valid=3), DT, 3, road_offset=-0.4)    # 反号：只做位置
-    assert pl.state.v_lat_est == pytest.approx(v1)
-    pl.update(_out(fid=4, valid=4), DT, 4, road_offset=-0.4)    # 连续同号：恢复注入
-    assert pl.state.v_lat_est < v1
 
 
 def test_v_lat_never_saturates_under_alternating_offsets():
@@ -1145,38 +998,24 @@ def test_v_lat_never_saturates_under_alternating_offsets():
     for i in range(2, 60):
         ro = 0.5 if i % 2 else -0.5
         pl.update(_out(fid=i, valid=i), DT, i, road_offset=ro)
-        vmax = max(vmax, abs(pl.state.v_lat_est))
+        vmax = max(vmax, abs(pl.state.v_lat))
     assert vmax < 2.5 - 1e-6
 
-
-def test_beta_guards_reject_alternating_noise():
-    """恢复 α-β（v3 车模下速度必须可观测）后，护栏仍要压住噪声：
-    交替 ±0.5 道的路心读数（典型坏检测/参考系抖动）不得把 v_lat 泵起来——
-    同号门拒绝反号注入，变化率上限压住首拍。"""
-    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
-                  lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
-    assert pl.p.obs_position_only is False
-    pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
-    for i in range(2, 60):
-        pl.update(_out(fid=i, valid=i), DT, i,
-                  road_offset=0.5 if i % 2 else -0.5)
-        assert abs(pl.state.v_lat_est) < 0.2
 
 
 def test_beta_velocity_tracks_persistent_offset():
     """持续同号新息（贴墙：深度恒 −1.9、模型却以为 +1.0 在回中）必须
     把 v_lat 拉回观测侧——222557 局 s1 38.1~39.7s 骑缘躺平的修正通路。"""
-    pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
+    pl = _planner(a_lat_gain=0.0, v_lat_max=2.5,
                   lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
     pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)
     pl.state.executed_lane = -1.6
-    pl.state.v_lat_est = 1.0
+    pl.state.v_lat = 1.0
     vs = []
     for i in range(2, 22):
         pl.update(_out(fid=i, valid=i), DT, i, road_offset=-1.9)
-        vs.append(pl.state.v_lat_est)
+        vs.append(pl.state.v_lat)
     assert abs(vs[-1]) < 0.3    # 假的 +1.0 被拉回观测侧（车实际近乎不动）
     assert max(vs[:3]) <= 1.0   # 变化率上限：不许一步打满
 
@@ -1192,42 +1031,6 @@ def test_no_road_offset_is_old_behavior():
         assert ca.steer_x == cb.steer_x
     assert pl_a.state.executed_lane == pytest.approx(pl_b.state.executed_lane)
 
-
-def test_velocity_correction_only_on_fresh_reading():
-    """β 速度修正只认新证据拍，复用拍只收位置（α）——异步驻留协议下同一套
-    旧读数不得反复当速度新证据（重复记账曾把 2026-10-06 局 id17 的 0.36 道
-    找边翻跳 3 拍内放大成 v_lat 饱和 ±2.5，lat_veto 被假侧滑触发）。
-
-    锚定后喂一次 +0.2 道新鲜跳变（一次踢足 β·r/dt≈2.0，v_lat_max=2.5 真轨
-    之内）。控制律摘除（a_lat_gain=0、无自回正）只留 ⑥b 动力学——否则 PD
-    会在小跳变下把放大现象压没；随后 3 拍同值复用：fresh_only 序列 |v_lat|
-    只准不增（无重复注入）；对照旧行为（复用拍 road_offset_new=True 直喂）
-    同一新息被重复注入、|v_lat| 反超新鲜拍峰值=放大现象（id17 机理）。"""
-    def run(new_on_reuse, legacy=False):
-        over = {}
-        if legacy:   # 对照=阶段 2 之前的裸 β（无死区/无符号门/无限速）
-            over = dict(obs_beta_deadband_lane=0.0, obs_beta_sign_agree=False)
-        pl = _planner(a_lat_gain=0.0, tau_align_s=1e9, v_lat_max=2.5,
-                      lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                      rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                      obs_position_only=False,
-                      obs_beta_dv_rate_lane_s2=0.0, **over)
-        pl.update(_out(fid=1, valid=1), DT, 1, road_offset=0.0)   # 锚=0（道0=路心）
-        pl.update(_out(fid=2, valid=2), DT, 2, road_offset=0.2,
-                  road_offset_new=True)                            # 新鲜跳变
-        vs = [pl.state.v_lat_est]
-        for i in range(3):                                         # 驻留复用 3 拍
-            pl.update(_out(fid=3 + i, valid=3 + i), DT, 3 + i,
-                      road_offset=0.2, road_offset_new=new_on_reuse)
-            vs.append(pl.state.v_lat_est)
-        return vs
-
-    fresh_only = run(False)
-    assert abs(fresh_only[0]) > 1.5            # 新鲜拍一次踢足（β·r/dt=2.0）
-    assert all(abs(fresh_only[k + 1]) <= abs(fresh_only[k]) + 1e-9
-               for k in range(3))              # 复用拍：只衰减，无重复注入
-    old = run(True, legacy=True)
-    assert max(abs(v) for v in old[1:]) > abs(fresh_only[0]) + 0.3
 
 
 def test_reuse_ticks_still_converge_position():
@@ -1255,45 +1058,7 @@ def _feed_weave(obs, seconds=2.0, v_lane=1.0, theta=0.05):
         fid += 1
 
 
-def test_heading_observer_estimates_speed_and_velocity():
-    obs = HeadingObserver(P)
-    _feed_weave(obs)
-    assert abs(obs.v_line) == pytest.approx(1.0, abs=0.25)
-    # 前向速度由线速/线角自标定：量级在赛车档（30~120 m/s），不做精确钉值
-    # （合成方波起步时慢基线尚未居中，绝对值随相位摆动）。
-    assert 30.0 < obs.speed_mps < 120.0
-    assert obs.v_head is not None
-    assert (obs.v_head > 0) == (obs.v_line > 0)
-    assert 0.4 < abs(obs.v_head) < 1.6
 
-
-def test_fuse_order_model_line_head():
-    """融合顺序：模型 → 标线横移 → 航向横速；两路都关=逐位退回模型。"""
-    obs = HeadingObserver(P)
-    obs.v_line = 1.0
-    obs._last_line = obs._t
-    obs.v_head = 1.0
-    obs._last_seen = obs._t
-    assert obs.fused(0.4, 0.0, 0.0) == 0.4
-    assert obs.fused(0.4, 0.5, 0.0) == pytest.approx(0.7)
-    assert obs.fused(0.4, 0.5, 0.25) == pytest.approx(0.775)
-
-
-def test_no_speed_estimate_does_not_fabricate_heading_velocity():
-    """线角≈0 时前向速度不可估：v_head 保持 None，不能拿默认车速兜底。
-
-    旧实现用 45 m/s 兜底，59% 的拍拿到 ±1~3.6 道/s 的假横速，把并线指令
-    抵消成反向（2026-10-30 实机）。"""
-    obs = HeadingObserver(P)
-    x = 0.0
-    for fid in range(1, 12):
-        x += 0.03                   # 0.3 道/s 的真实横移
-        obs.update(0.1, x, True, 0.0, True, fid, 40.0)
-    assert obs.v_line == pytest.approx(0.3, abs=0.1)
-    assert obs.speed_mps is None
-    assert obs.v_head is None
-    assert obs.fused(0.4, 0.5, 0.25) == pytest.approx(
-        0.4 + 0.5 * (obs.v_line - 0.4))
 
 
 def test_line_jump_is_not_lateral_velocity():
@@ -1306,35 +1071,6 @@ def test_line_jump_is_not_lateral_velocity():
     assert obs.v_line is None
 
 
-def test_heading_observer_falls_back_when_stale_or_bad():
-    obs = HeadingObserver(P)
-    _feed_weave(obs)
-    assert obs.v_head is not None and obs.v_line is not None
-    for _ in range(8):                 # 0.8s 无线：超过 0.5s TTL
-        obs.update(0.1, None, False, None, False, None, None)
-    assert obs.v_head is None
-    assert obs.v_line is None
-    assert obs.fused(0.4, 0.5, 0.25) == 0.4
-    # 线在锁但航向龄超限：不更新航向观测
-    obs2 = HeadingObserver(P)
-    _feed_weave(obs2)
-    before = obs2.v_head
-    obs2.update(0.1, 99.0, True, 0.05, True, 999, 400.0)
-    assert obs2.v_head == before
-
-
-def test_line_fuse_opposes_motion_in_control_law():
-    """标线横移进入控制律：同样位置误差下，正横速产生负（反向）杆值。"""
-    cmd = {}
-    for gain in (0.0, 0.5):
-        pl = _planner(line_fuse_gain=gain)
-        pl.head.v_line = 1.0
-        pl.head._last_line = pl.head._t
-        c = pl.update(_out(x_target=0.0, maneuver=True, fid=1, valid=1),
-                      DT, 1)
-        cmd[gain] = c.steer_x
-    assert cmd[0.0] == 0
-    assert cmd[0.5] < 0
 
 
 def test_merge_commit_tracks_decision_goal_not_preview():
@@ -1343,13 +1079,13 @@ def test_merge_commit_tracks_decision_goal_not_preview():
     实测一段 2.4s 的并线只走了 0.16 道：计划前馈 p≈计划预览≈当前位置时
     跟踪项恒接近 0。承诺期（phase=merging 且 plan.layer=4）改用决策目标。"""
     plan = types.SimpleNamespace(
-        valid=True, reason="plan:ok", u_feedforward=0.0, layer=4,
+        valid=True, reason="plan:ok", psi_feedforward=0.0, layer=4,
         x_preview_lane=0.5, v_preview_lane_s=0.0, value_total=0.0)
     cmd = {}
     for phase in ("keep", "merging"):
         pl = _planner(a_lat_gain=0.0, v_lat_max=1e9)
         pl.state.executed_lane = 0.5
-        pl.state.v_lat_est = 0.0
+        pl.state.v_lat = 0.0
         pl.state.steer_norm = 0.0
         out = replace(_out(x_target=0.83, maneuver=True, fid=1, valid=10),
                       phase=phase)
@@ -1363,7 +1099,7 @@ def test_merge_commit_tracks_decision_goal_not_preview():
 def _jump_planner(**over):
     base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                 rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                v_lat_max=1e9, tau_align_s=1e9, a_lat_gain=0.0,
+                v_lat_max=1e9, a_lat_gain=0.0,
                 obs_jump_max_lane=0.8, obs_jump_confirm_ticks=3,
                 anchor_stale_s=10.0)
     base.update(over)
@@ -1435,24 +1171,15 @@ def test_uncorroborated_large_offset_still_needs_three_new():
 
 
 def test_frame_shift_holds_planner_frame_not_scene_target():
-    """计划判参考系分歧时只认 planner 帧：场景帧目标与 executed 不在同一
-    坐标里，跨帧 PD 会把车拽进错帧（20261030_122416 s1 87s：假路心把目标
-    拉到左缘，车贴左黄线）。保持当前道直到参考系对齐；超时后退回旧回退。"""
+    """计划判参考系分歧时只认 planner 帧：目标在错帧里，不追它。"""
     fs = types.SimpleNamespace(valid=False, reason="plan:frame_shift",
-                               layer=4, value_total=0.0, u_feedforward=0.0,
+                               layer=4, value_total=0.0, psi_feedforward=0.0,
                                x_preview_lane=0.0, v_preview_lane_s=0.0)
     pl = _planner()
+    rig = _Rig(pl)
     for _ in range(P.frame_hold_max_ticks):
-        cmd = pl.update(_out(x_target=-1.2), DT, current_fid=2, plan=fs)
-        assert cmd.steer_x == 0          # 目标在错帧：不追
-    assert abs(pl.state.executed_lane) < 1e-6
-    # 超时仍未对齐：退回旧回退，开始朝场景帧目标修正
-    for _ in range(10):
-        pl.update(_out(x_target=-1.2), DT, current_fid=2, plan=fs)
-    assert pl.state.executed_lane < -0.05
-
-
-# ---------- 朝向影子：ψ / r / 在线比例 / 两路 1 秒预测（只读，不进控制） ----------
+        rig.tick(_out(x_target=-1.2, plan=fs))
+    assert abs(rig.x) < 0.05          # 没有朝错帧目标 -1.2 冲过去
 
 def _feed_ramp(obs, seconds=6.0, rate=0.06, dt=0.1, n_locked=2):
     """线角匀速上升：稳态下 ψ≈2·rate（2s 慢基线滞后），r≈rate。"""
@@ -1532,38 +1259,6 @@ def test_scale_accum_ignores_small_heading_and_slow_motion():
     assert obs._spd_den == pytest.approx(math.tan(0.1) ** 2)
 
 
-def test_shadow_predictions_model_and_heading():
-    pl = _planner()
-    pl.state.executed_lane = 0.2
-    pl.state.v_lat_est = 0.4
-    pl.state.steer_norm = 0.2
-    pl._shadow_predict(DT)
-    x, v, s = 0.2, 0.4, 0.2
-    for _ in range(20):                      # 保持当前杆值 1 秒
-        x, v, s = step(x, v, s, 0.2, DT, pl.p)
-    assert pl._p1m == pytest.approx(x - 0.2, abs=1e-9)
-    assert pl._p1h is None                   # 朝向证据缺失：不补值
-    pl.head.psi = 0.05
-    pl.head.v_scale = 40.0
-    pl._shadow_predict(DT)
-    assert pl._p1h == pytest.approx(40.0 * math.tan(0.05) / 3.5, abs=1e-9)
-
-
-def test_shadow_columns_reach_trace_and_do_not_change_commands():
-    pl = _planner()
-    pl.head.psi = 0.04
-    pl.head.v_scale = 35.0
-    dbg = pl.ctrl_debug()
-    for k in ("psi", "r", "psi_age", "vsp", "scf", "spa", "p1m", "p1h"):
-        assert k in dbg
-    # 影子不接控制：同样的输入，杆值逐位不变
-    a = _planner()
-    b = _planner()
-    b.head.psi = 0.5
-    b.head.v_scale = 90.0
-    ca = a.update(_out(x_target=0.6, fid=1), DT, 1)
-    cb = b.update(_out(x_target=0.6, fid=1), DT, 1)
-    assert ca.steer_x == cb.steer_x
 
 
 def test_line_frame_reset_keeps_heading_shadow():

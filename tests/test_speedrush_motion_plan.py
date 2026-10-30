@@ -72,11 +72,11 @@ def test_frame_shift_moves_scene_to_planner_center():
 def test_large_frame_shift_holds_plan_for_pd():
     """场景/自车参考系差超过硬门：计划不得按错帧的走廊接管。"""
     s = _scene(road=_wide_road(), ego_m=3.0)
-    p = _plan(s, ego=EgoState(0.0, 0.0, 0.0))
+    p = _plan(s, ego=EgoState(0.0, 0.0, 45.0, 0.0))
     assert not p.valid and p.reason == "plan:frame_shift"
     # 亚米级分歧仍按不确定处理，不退回
     s2 = _scene(road=_wide_road(), ego_m=0.5)
-    p2 = _plan(s2, ego=EgoState(0.0, 0.0, 0.0))
+    p2 = _plan(s2, ego=EgoState(0.0, 0.0, 45.0, 0.0))
     assert p2.valid
 
 
@@ -155,7 +155,7 @@ def test_metric_car_x_is_time_smoothed_across_ticks():
 
 
 def _plan(scene):
-    return plan_motion(scene, EgoState(scene.ego_lane, 0.0, 0.0),
+    return plan_motion(scene, EgoState(scene.ego_lane, 0.0, 45.0, 0.0),
                        CFG.motion, CFG.selection, CFG.planner, None)
 
 
@@ -290,7 +290,7 @@ def test_corridor_stale_uses_band_age():
 
 def _plan(scene, *, ego=None, motion=None, gate=None, coarse_lane=None,
           committed=False):
-    return plan_motion(scene, ego or EgoState(0.0, 0.0, 0.0),
+    return plan_motion(scene, ego or EgoState(0.0, 0.0, 45.0, 0.0),
                        motion or CFG.motion, CFG.selection, CFG.planner, gate,
                        coarse_lane=coarse_lane, committed=committed)
 
@@ -303,8 +303,8 @@ def _wide_road():
 def test_candidates_and_determinism():
     s = _scene(road=_wide_road())
     a, b = _plan(s), _plan(s)
-    n_base = len(CFG.motion.steer_levels) + 1          # 恒杆 + 当前杆值
-    n_rev = sum(1 for u in CFG.motion.steer_levels if abs(u) >= 0.2) + 1
+    n_base = len(CFG.motion.heading_levels) + 1          # 恒杆 + 当前杆值
+    n_rev = sum(1 for u in CFG.motion.heading_levels if abs(u) >= 0.2) + 1
     assert len(a.cand_x) == n_base + n_rev              # 再加半程反打候选
     assert (a.chosen, a.score_key, a.x_preview_m) == \
         (b.chosen, b.score_key, b.x_preview_m)
@@ -314,9 +314,9 @@ def test_reverse_candidate_brakes_toward_center():
     """半程反打候选存在时，带横向速度冲过路心的车不再只按恒杆候选选：
     计划必须给出朝路心（负）的杆值，且预测路径在 2s 内回到路心附近。"""
     s = _scene(road=_wide_road(), ego_m=1.0)
-    p = _plan(s, ego=EgoState(1.0 / LW, 0.6, 0.4))
+    p = _plan(s, ego=EgoState(1.0 / LW, 0.047, 45.0, 0.4))
     assert p.valid and p.layer == 4
-    assert p.u_feedforward < 0.4                      # 不是继续右打
+    assert p.psi_feedforward < 0.4                      # 不是继续右打
     end = p.cand_x[p.chosen][-1]
     assert abs(end) < 1.0                             # 末端回到路心 1m 内
 
@@ -328,32 +328,32 @@ def test_coarse_lane_shifts_center_attractor():
     base = _plan(s)
     run = _plan(s, coarse_lane=-1.0)
     assert run.layer == 4
-    assert run.u_feedforward < base.u_feedforward
+    assert run.psi_feedforward < base.psi_feedforward
     assert run.cand_x[run.chosen][-1] < base.cand_x[base.chosen][-1] - 0.5 * LW
 
 
 def test_center_deadband_holds_inside_band():
     """带内不修正：小偏移时选直行，不追路心。"""
     p = _plan(_scene(road=_wide_road(), ego_m=0.5),
-              ego=EgoState(0.5 / LW, 0.0, 0.0))
+              ego=EgoState(0.5 / LW, 0.0, 45.0, 0.0))
     assert p.valid and p.layer == 4
-    assert p.u_feedforward == pytest.approx(0.0)
+    assert p.psi_feedforward == pytest.approx(0.0)
 
 
 def test_center_holds_current_steer_inside_band():
     """带内无机会时保持正在进行的动作，不无故回正。"""
     p = _plan(_scene(road=_wide_road(), ego_m=0.0),
-              ego=EgoState(0.0, 0.0, 0.01))
+              ego=EgoState(0.0, 0.0, 45.0, 0.01))
     assert p.valid and p.layer == 4
-    assert p.u_feedforward == pytest.approx(0.01)
+    assert p.psi_feedforward == pytest.approx(0.01)
 
 
 def test_center_only_caps_stick():
     """无机会时维护性杆幅受限，不得用满舵追偏掉的路心。"""
     p = _plan(_scene(road=_wide_road(), ego_m=3.0),
-              ego=EgoState(3.0 / LW, 0.0, 0.0))
+              ego=EgoState(3.0 / LW, 0.0, 45.0, 0.0))
     assert p.valid and p.layer == 4
-    assert abs(p.u_feedforward) <= CFG.motion.center_stick_max
+    assert abs(p.psi_feedforward) <= CFG.motion.center_heading_rad
 
 
 def test_reward_beats_coin_and_center():
@@ -383,7 +383,7 @@ def test_committed_plan_keeps_maintenance_stick_cap():
     p = _plan(_scene(road=_wide_road(), ego_m=0.0),
               committed=True, coarse_lane=1.0)
     assert p.valid and p.layer == 4
-    assert abs(p.u_feedforward) <= CFG.motion.center_stick_max
+    assert abs(p.psi_feedforward) <= CFG.motion.center_heading_rad
 
 
 def test_coin_layer_when_no_car_or_reward():
@@ -412,9 +412,9 @@ def test_preposition_biases_toward_future_coin():
     """2s 外的金币也要提前把车带向币线，而不是等到进视界才动。"""
     p = _plan(_scene(road=_wide_road(), ego_m=0.0,
                      coins=[CoinSource(2.0, 3, 0.9, 3.0, age_ms=0.0)]),
-              ego=EgoState(0.0, 0.0, 0.0))
+              ego=EgoState(0.0, 0.0, 45.0, 0.0))
     assert p.valid and p.layer == 4
-    assert p.u_feedforward > 0
+    assert p.psi_feedforward > 0
 
 
 def test_untimed_depth_car_ahead_biases_sideways():
@@ -422,32 +422,32 @@ def test_untimed_depth_car_ahead_biases_sideways():
     不能等到它进入 2s 视界（2026-10-19 局 204308_p1 的直撞根因）。"""
     car = CarSource(0.0, None, z_m=35.0, age_ms=0.0, src="metric")
     p = _plan(_scene(road=_wide_road(), ego_m=0.0, cars=[car]),
-              ego=EgoState(0.0, 0.0, 0.0))
+              ego=EgoState(0.0, 0.0, 45.0, 0.0))
     assert p.valid and p.layer == 4
-    assert abs(p.u_feedforward) >= 0.1
+    assert abs(p.psi_feedforward) >= 0.1
     base = _plan(_scene(road=_wide_road(), ego_m=0.0),
-                 ego=EgoState(0.0, 0.0, 0.0))
-    assert abs(base.u_feedforward) < 0.1
+                 ego=EgoState(0.0, 0.0, 45.0, 0.0))
+    assert abs(base.psi_feedforward) < 0.1
 
 
 def test_untimed_depth_car_out_of_lane_does_not_bias():
     car = CarSource(3.5, None, z_m=35.0, age_ms=0.0, src="metric")
     p = _plan(_scene(road=_wide_road(), ego_m=0.0, cars=[car]),
-              ego=EgoState(0.0, 0.0, 0.0))
-    assert p.valid and abs(p.u_feedforward) < 0.1
+              ego=EgoState(0.0, 0.0, 45.0, 0.0))
+    assert p.valid and abs(p.psi_feedforward) < 0.1
 
 
 def test_late_timed_car_blocks_lane_change_toward_it():
     """到站时间短于碰撞提前量的车，横移躲不开，但不得主动往它那侧并。"""
     coins = [CoinSource(3.0, 3, 0.9, 1.0, age_ms=0.0)]
     base = _plan(_scene(road=_wide_road(), ego_m=0.0, coins=coins),
-                 ego=EgoState(0.0, 0.0, 0.0))
-    assert base.u_feedforward > 0.1
+                 ego=EgoState(0.0, 0.0, 45.0, 0.0))
+    assert base.psi_feedforward > 0.1
     late = CarSource(3.0, 0.2, z_m=20.0, age_ms=0.0, src="metric")
     p = _plan(_scene(road=_wide_road(), ego_m=0.0, coins=coins,
-                     cars=[late]), ego=EgoState(0.0, 0.0, 0.0))
-    assert p.u_feedforward < base.u_feedforward
-    assert p.u_feedforward <= 0.1
+                     cars=[late]), ego=EgoState(0.0, 0.0, 45.0, 0.0))
+    assert p.psi_feedforward < base.psi_feedforward
+    assert p.psi_feedforward <= 0.1
 
 
 def test_metric_x_hard_jump_is_held_until_confirmed():
@@ -497,12 +497,12 @@ def test_soft_margin_is_cost_not_infeasible():
                                age_ms=0.0, conf=1.0),), 10.0, -5.0, 5.0, True)
     ego_m = 3.85
     s = _scene(road=road, ego_m=ego_m)
-    p = _plan(s, ego=EgoState(ego_m / LW, 0.0, 0.0),
+    p = _plan(s, ego=EgoState(ego_m / LW, 0.0, 45.0, 0.0),
               coarse_lane=ego_m / LW)
     assert p.valid and p.layer == 4
     assert p.corridor_viol_m == pytest.approx(0.0, abs=1e-9)
     assert p.corridor_soft_viol_m > 0.0
-    assert abs(p.u_feedforward) <= CFG.motion.center_stick_max
+    assert abs(p.psi_feedforward) <= CFG.motion.center_heading_rad
 
 
 def test_corridor_all_infeasible_holds_position():
@@ -519,10 +519,10 @@ def test_infeasible_corridor_escapes_toward_open_side():
     road = RoadFrame((RoadBand(0.0, 6.0, -6.9, 8.0, src="measured",
                                age_ms=0.0, conf=1.0),), 14.9, -6.9, 8.0, True)
     s = _scene(road=road, ego_m=-6.54)
-    p = _plan(s, ego=EgoState(s.ego_lane, 0.36, 0.28))    # 正向右逃离
+    p = _plan(s, ego=EgoState(s.ego_lane, 0.028, 45.0, 0.28))    # 正向右逃离
     assert not p.valid and p.reason == "plan:infeasible_corridor"
     assert p.corridor_viol_m > 0.0
-    assert p.u_feedforward > 0.0                          # 继续向右脱离
+    assert p.psi_feedforward > 0.0                          # 继续向右脱离
 
 
 def test_empty_corridor_intersection_not_unconstrained():
@@ -556,7 +556,7 @@ def test_preview_velocity_is_rollout_velocity():
                      coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
     x = v = steer = 0.0
     for _ in range(int(round(CFG.motion.preview_s / CFG.motion.dt_s))):
-        x, v, steer = step(x, v, steer, p.u_feedforward,
+        x, v, steer = step(x, v, steer, p.psi_feedforward,
                            CFG.motion.dt_s, CFG.planner)
     assert p.v_preview_lane_s == pytest.approx(v)
     assert p.x_preview_lane == pytest.approx(x)
@@ -727,7 +727,7 @@ def test_planner_tracks_valid_plan_only():
                          valid_until_fid=10)
     pl = LateralPlanner(CFG.planner)
     x_pred = pl.state.executed_lane + pl.state.v_lat_est * CFG.planner.lookahead_tau_s
-    exp = (p.u_feedforward
+    exp = (p.psi_feedforward
            + CFG.planner.k_p * (p.x_preview_lane - x_pred)
            + CFG.planner.k_d * (p.v_preview_lane_s - pl.state.v_lat_est))
     pl.update(out, 0.05, 1, plan=p)
@@ -755,14 +755,14 @@ def test_plan_tracking_caps_maintenance_not_collision():
     out = DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
                          x_target=0.0, reason="x", emitted_fid=1,
                          valid_until_fid=10)
-    plan = SimpleNamespace(valid=True, u_feedforward=0.0, x_preview_lane=2.0,
+    plan = SimpleNamespace(valid=True, psi_feedforward=0.0, x_preview_lane=2.0,
                            v_preview_lane_s=0.0, layer=4, value_total=0.0)
     pl = LateralPlanner(CFG.planner)
     pl.update(out, 0.05, 1, plan=plan)
     assert pl.last_steer_raw == pytest.approx(CFG.planner.hold_stick_max)
     pl2 = LateralPlanner(CFG.planner)
     pl2.update(out, 0.05, 1, plan=SimpleNamespace(
-        valid=True, u_feedforward=0.0, x_preview_lane=2.0,
+        valid=True, psi_feedforward=0.0, x_preview_lane=2.0,
         v_preview_lane_s=0.0, layer=4, value_total=-60.0))
     assert pl2.last_steer_raw > CFG.planner.hold_stick_max
 
@@ -780,7 +780,7 @@ def test_plan_feedforward_slew_limits_candidate_step():
     pl = LateralPlanner(CFG.planner)
     pl.update(out, 0.05, 1, plan=p)
     u1 = pl.last_steer_raw
-    jumped = replace(p, u_feedforward=p.u_feedforward + 0.8)
+    jumped = replace(p, psi_feedforward=p.psi_feedforward + 0.8)
     pl.update(out, 0.05, 2, plan=jumped)
     cap = CFG.planner.plan_u_slew_s * 0.05
     assert abs(pl.last_steer_raw - u1) <= cap + 1e-6
@@ -793,7 +793,7 @@ def test_plan_never_overrides_fsm_states():
         DecisionOutput, DecisionState)
     p = _plan(_scene(road=_wide_road(),
                      coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
-    huge = replace(p, u_feedforward=1.0, x_preview_lane=5.0,
+    huge = replace(p, psi_feedforward=1.0, x_preview_lane=5.0,
                    v_preview_lane_s=5.0)
     for state, xt in ((DecisionState.CONSERVE, None),
                       (DecisionState.FAULT, 1.0),
@@ -865,10 +865,10 @@ def test_pass_band_covers_the_selection_aim():
             assert lower < aim < upper
 
 
-def test_steer_levels_resolve_the_pass_band():
+def test_heading_levels_resolve_the_pass_band():
     """档位粒度要能落进计分带：1.3~2s 到站时 0.1 档约 0.8 道、0 档原地，
     中间必须有 0.05 级落点，否则候选总在「贴包络」和「过远」之间跳。"""
-    levels = CFG.motion.steer_levels
+    levels = CFG.motion.heading_levels
     assert 0.05 in levels and -0.05 in levels
 
 

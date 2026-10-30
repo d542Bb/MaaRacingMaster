@@ -1292,7 +1292,8 @@ class SpeedRushModule(ActivityModule):
             if cfg.motion.mode != "off" and chain["engine"].scene is not None \
                     and out.state is DecisionState.CRUISE:
                 plan_ego = EgoState(planner.state.executed_lane,
-                                    planner.state.v_lat_est,
+                                    planner.state.heading,
+                                    planner.state.v_mps,
                                     planner.state.steer_norm)
                 plan = plan_motion(
                     chain["engine"].scene, plan_ego,
@@ -1353,7 +1354,7 @@ class SpeedRushModule(ActivityModule):
                          else abs(float(dgeo.coef[2])))
                 # 线观测的绝对锚点=同帧新鲜深度路心（复用/历史拍不给，
                 # 让线退回上一拍横位做子道细化，不让旧深度冒充新锚）。
-                lw.push(frame, fid, cam_h, planner.state.v_lat_est, dt,
+                lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
                         fid_jump, road_offset if road_offset_new else None)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
@@ -1513,7 +1514,8 @@ class SpeedRushModule(ActivityModule):
             "steer_raw": round(planner.last_steer_raw, 4),
             "steer_x": cmd.steer_x,
             "executed_lane": round(planner.state.executed_lane, 4),
-            "v_lat_est": round(planner.state.v_lat_est, 4),
+            "v_lat": round(planner.state.v_lat, 4),
+            "heading": round(planner.state.heading, 4),
             "n_groups": len(obs.coin_groups),
             # 红块内缘读数三列（"整块"边界候选）：护栏块逐行内缘的加权中位
             # （车道单位，左负右正）+ 双侧红块行数（覆盖面，低=可信度低）——
