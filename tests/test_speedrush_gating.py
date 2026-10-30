@@ -592,9 +592,11 @@ def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
     mod._view_ok = True           # 上一场已确认，不能被带进新一场
     monkeypatch.setattr(mod, "_start_preload", lambda: None)
     seen: list[tuple[int, bool]] = []
+    stamps: list[str] = []
 
-    def drive(phase, round_no=1):
+    def drive(phase, round_no=1, stamp=None):
         seen.append((round_no, mod._view_ok))
+        stamps.append(stamp)
         mod._view_ok = True
         if round_no >= 2:
             mod._running = False   # 第二场第一段后收工，避免无限循环
@@ -606,6 +608,10 @@ def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
     assert seen[0] == (1, False)
     assert seen[1] == (1, True)
     assert seen[2] == (2, False)
+    # 产物前缀按局划分：同局两阶段共用（p1/p2 能配对），两局之间必须不同，
+    # 否则后一局会写进前一局的目录、把图整批覆盖
+    assert stamps[0] == stamps[1]
+    assert stamps[2] != stamps[0]
 
 
 # ---------- 路心读数参考系跳变标注（classify_ro_hop，仅记录） ----------

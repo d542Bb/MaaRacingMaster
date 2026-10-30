@@ -151,8 +151,11 @@
 
 ## 3. 演示数据录制（本域）
 
-- 一个会话一个目录：`debug/speedrush/<运行编号>_manual_p<阶段号>/`（运行编号取日志会话
-  token，与 `logs/<运行编号>/` 同名）。**人工局与控制局共用同一套布局**（`session_layout.py`
+- 一个会话一个目录：`debug/speedrush/<局前缀>_p<阶段号>/`（人工局多一个 `manual` 标签）。
+  **局前缀按局生成**：同一局的两个驾驶阶段共用它（p1/p2 能配对），不同局必然不同；
+  同秒连开两局时追加序号。**不能取日志会话编号**——它标识的是"一次启动"，同一次启动
+  连跑多局时会重复，后一局直接写进前一局的目录（新局覆盖旧图、索引被追加成两局混合）。
+  目录已存在且非空时一律换名加序号，不复用。**人工局与控制局共用同一套布局**（`session_layout.py`
   是路径与 meta 的唯一真源）：`meta.json`、`frames.jsonl`、`raw/<seq>_raw.jpg` 原帧、
   `<seq>_hud.jpg` 程序叠加图（10Hz 节流）、`hud/hud.jsonl` + `hud/hud_meta.json` 读数、
   人工局另加 `pads.jsonl`；一局两个驾驶阶段各成一会话，便于按阶段筛。
@@ -165,7 +168,7 @@
   - 叠加图**由录制器自己写**（复用控制链同一个渲染函数）：人工局的画面只落一次，
     叠加图引用同一份原帧与同一拍快照；控制局仍由 `DebugPairWriter` 写同一套文件。
   - **一段驾驶只写这一个目录**（2026-10-26 收口，2026-10-30 布局统一）：不再另建
-    `debug/speedrush/<运行编号>_p<N>/`，也不往 `data/speedrush/demos/` 写——`data/`
+    `debug/speedrush/<局前缀>_p<N>/`，也不往 `data/speedrush/demos/` 写——`data/`
     只留结构化业务数据；历史语料留在 `data/speedrush/demos/`，只读不写。
   - 历史会话（2026-10-30 前）仍是旧布局：`frames/` + 裸文件名、HUD 在会话根。
 - **录制模式放宽两条启动约束**：不要求断开物理手柄（录制正要用物理手柄驾驶）、不需要手柄
@@ -645,7 +648,7 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
 不起深度 worker，perception_mode 开着也不跑），trace 只记时间轴与常量列（state=STRAIGHT，
 与控制链同走流水汇）。控制两档（智能/直行）都在 `_drive_loop` 内同点起
-HUD 读数观察线程（目录跟随 run_dir 命名 `<运行编号>_p<阶段>/hud/hud.jsonl`，按 fid/ts_ns
+HUD 读数观察线程（目录跟随 run_dir 命名 `<局前缀>_p<阶段>/hud/hud.jsonl`，按 fid/ts_ns
 与 trace 对齐）——分数流是验收②「智能 vs 直行基线」对比的数据面。
 弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人）的语义不变。
 
@@ -751,8 +754,8 @@ commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为
 `DEBUG_INTERVAL_S` 节流渲染+落盘）。
 
 - **目录契约**：与控制局会话目录同一套（`session_layout.py` 是唯一真源）——
-  `debug/speedrush/<运行编号>_p<阶段>/` + `raw/` 子目录（运行编号取日志会话 token，
-  日志目录与之同名）：`<seq:04d>_raw.jpg`（q95 底图）/ `<seq:04d>_hud.jpg`（q85
+  `debug/speedrush/<局前缀>_p<阶段>/` + `raw/` 子目录（局前缀按局生成、同局两阶段共用，
+  见 §3）：`<seq:04d>_raw.jpg`（q95 底图）/ `<seq:04d>_hud.jpg`（q85
   双联渲染图）/ `frames.jsonl`（`seq / frame_id / ts_ns / age_ms / file / hud`）/
   `meta.json`（来源=control、计数、阶段/回合）。索引在**落盘那一刻**由 IO 线程写，
   节流丢掉的拍不占号——`raw/` 的文件序号与控制拍序号不是一回事（队列满丢旧保新），

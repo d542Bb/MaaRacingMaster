@@ -627,8 +627,22 @@ class SpeedRushModule(ActivityModule):
         # 驾驶页出现时不再付冷启动时间（失败由驾驶阶段懒加载重试）。
         self._start_preload()
         round_no = 0
+        last_stamp = ""
+        stamp_dup = 0
         while self._running:
             round_no += 1  # 场景分层用：录制 meta 要记"这一帧属于第几轮"
+            # 每局一个产物前缀：同一局的两个驾驶阶段共用它（p1/p2 才能配对），
+            # 不同局必然不同。日志会话编号只标识"一次启动"，同一次启动连跑多局时
+            # 它会重复，后一局因此覆盖前一局的图（2026-10-30 实机踩到）。
+            # 目录名格式不变，仍是 <前缀>_p<阶段>，历史会话照旧可读。
+            round_stamp = time.strftime("%Y%m%d_%H%M%S")
+            if round_stamp == last_stamp:
+                # 同秒内连开两局（快速重开、系统时间回拨）：加序号，不让两局共前缀
+                stamp_dup += 1
+                round_stamp = f"{round_stamp}_{stamp_dup}"
+            else:
+                last_stamp = round_stamp
+                stamp_dup = 0
             # 机位确认按"场"失效：声望归零会重置整轮进度，游戏把视角打回
             # 追尾；上一场的确认不能带进新一场。
             self._view_ok = False
@@ -640,7 +654,7 @@ class SpeedRushModule(ActivityModule):
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
                 if node is None:
-                    if not self._drive(phase, round_no):
+                    if not self._drive(phase, round_no, round_stamp):
                         _tlog(self, f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return
                 elif not self._graph.run(node, node):
@@ -649,7 +663,8 @@ class SpeedRushModule(ActivityModule):
                 index += 1
             index = LOOP_START_INDEX
 
-    def _drive(self, phase: int, round_no: int = 1) -> bool:
+    def _drive(self, phase: int, round_no: int = 1,
+               stamp: str | None = None) -> bool:
         """驾驶阶段（phase = 1/2）——驾驶控制方案的接口点。
 
         当前实现是**采集模式**：不操纵车辆，只等本阶段结束并按需录制演示数据
@@ -676,13 +691,14 @@ class SpeedRushModule(ActivityModule):
             if not self._wait_drive_ready(phase):
                 return False
 
-            recorder = self._begin_recording(phase, round_no) if self._record_mode else None
+            recorder = (self._begin_recording(phase, round_no, stamp)
+                        if self._record_mode else None)
             # HUD 读数挂在本阶段会话上（人工局=录制会话、控制局=控制会话），
             # 两模式同一落点：<会话>/hud/（对齐目标=同会话 frames.jsonl）
             observer = (self._begin_hud(recorder.out_dir / "hud", phase, round_no)
                         if recorder is not None else None)
             try:
-                return self._drive_loop(phase, recorder, round_no)
+                return self._drive_loop(phase, recorder, round_no, stamp)
             finally:
                 if observer is not None:
                     observer.stop("phase_end" if self._running else "stopped")
@@ -733,7 +749,7 @@ class SpeedRushModule(ActivityModule):
         return False
 
     def _drive_loop(self, phase: int, recorder: DriveRecorder | None,
-                    round_no: int = 1) -> bool:
+                    round_no: int = 1, stamp: str | None = None) -> bool:
         """采集/控制主循环：按目标节拍取帧，锚点降频复查阶段是否已结束。
 
         节拍与锚点复查**故意解耦**——锚点识别走框架（单轮耗时不定），若每帧都塞一次
@@ -747,6 +763,9 @@ class SpeedRushModule(ActivityModule):
         """
         assert self.ctx is not None
         assert self._graph is not None
+        # 本局产物前缀：调用方（_drive）按局传入，同一局两阶段共用；
+        # 直接调本方法时退回当前时刻（一阶段一个目录，不与其他局混）。
+        stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
         # 控制接管的前提：非录制模式（录制期人驾，程序不碰车）+ control_mode 开关
         # 或直行基线档（该档本身就是接管形态）。控制依赖感知产出观测，故正常控制
         # 隐含逐帧检测（不必另开 perception_mode）；直行档例外——感知/深度都不加载。
@@ -784,7 +803,7 @@ class SpeedRushModule(ActivityModule):
         # ``debug/speedrush/<时刻>_p<阶段>/``（同一段画面落两份，2026-10-26 收口）
         run_dir = recorder.out_dir if recorder is not None else None
         chain = self._build_control_chain(phase, run_dir=run_dir,
-                                          round_no=round_no) \
+                                          round_no=round_no, stamp=stamp) \
             if ((control and not straight) or shadow) else None
         # 人工局的程序叠加图由录制器自己落（同一份原帧 + 同一拍快照），链路只
         # 负责把快照交回；控制局仍走 DebugPairWriter（chain["debug"]）。
@@ -807,8 +826,7 @@ class SpeedRushModule(ActivityModule):
         if control and self._debug_enabled():
             # HUD 读数落 run_dir/hud（debug/ 产物面，受 debug 开关；局结局
             # 取数面随之受闸——用户裁决 2026-10-12，trace/hud 同开关）
-            src = chain if chain is not None else straight_chain
-            hud_dir = _run_dir(src["t_start"], phase) / "hud"
+            hud_dir = _run_dir(stamp, phase) / "hud"
             drive_hud = self._begin_hud(hud_dir, phase, round_no)
             if chain is not None:
                 chain["hud_ref"] = drive_hud   # 调试图读数带吃 HUD 最新行
@@ -1002,7 +1020,8 @@ class SpeedRushModule(ActivityModule):
 
     def _build_control_chain(self, phase: int = 0, *,
                              run_dir: Path | None = None,
-                             round_no: int | None = None) -> dict:
+                             round_no: int | None = None,
+                             stamp: str | None = None) -> dict:
         """按阶段新建一份干净世界：跟踪/聚合/决策/规划各一，配置开局读一次。
 
         阶段间不共享状态（行为稿 §九：阶段信息只进过渡窗判据，两阶段同一决策器），
@@ -1016,7 +1035,7 @@ class SpeedRushModule(ActivityModule):
         wt = WallTrack(cal)  # 墙实体（第 5 步）：逐箱跨帧假设，ego_road 持有
         t_start = time.time()
         manual = run_dir is not None   # 人工驾驶阶段（语料目录已由录制器建好）
-        run_dir = run_dir or _run_dir(t_start, phase)
+        run_dir = run_dir or _run_dir(stamp or time.strftime("%Y%m%d_%H%M%S"), phase)
         dbg_on = self._debug_enabled()
         lane_obs = LaneObsWorker(cfg.lane_obs)
         lane_obs.start()
@@ -2073,18 +2092,20 @@ class SpeedRushModule(ActivityModule):
             f"[极速狂飙] 驾驶阶段 {phase}：循环结束，{frames} 轮 / {elapsed:.1f}s"
             f"（实际 {rate:.1f}Hz，目标 {DRIVE_TICK_HZ:.0f}Hz）", "INFO")
 
-    def _begin_recording(self, phase: int, round_no: int) -> DriveRecorder | None:
+    def _begin_recording(self, phase: int, round_no: int,
+                         stamp: str | None = None) -> DriveRecorder | None:
         """建会话目录并启动录制器；失败返回 None（录制失败不该中止对局）。
 
         程序叠加图（BEV/决策叠层）与调试图同一闸：debug 开关开时注入渲染器，
         复用的是控制链同一个渲染函数；关时只录原帧与手柄。"""
         try:
             # manual 标签标出人工驾驶语料（录制模式必然人驾）；目录名与自动阶段同规则：
-            # <运行编号>_manual_p<阶段>，运行编号取日志会话 token
-            stamp = logger.session_token or time.strftime("%Y%m%d_%H%M%S")
+            # <局前缀>_manual_p<阶段>。局前缀按局生成，同一局两阶段共用、不同局不同。
+            stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
             session = make_session_dir(_record_root(), tag="manual", stamp=stamp)
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
+            session = _fresh_session_dir(session)
             hud_render = None
             if self._debug_enabled():
                 cal = load_calib()
@@ -2130,7 +2151,7 @@ def _record_root() -> Path:
     """录制语料根目录：``debug/speedrush/``（与调试产物同家）。
 
     与安装目录解耦、更新不丢数据，也不污染仓库工作树。人工驾驶阶段只产一个
-    会话目录（``manual_<时刻>_p<阶段>``）：原帧、叠加图、索引、HUD 读数与深度
+    会话目录（``<局前缀>_manual_p<阶段>``）：原帧、叠加图、索引、HUD 读数与深度
     证据同家（2026-10-30 起与控制局共用 ``session_layout`` 一套布局），不再写
     ``data/speedrush/demos/``——``data/`` 只留结构化业务数据。
     """
@@ -2827,26 +2848,47 @@ def _ego_hud_readout(hud) -> tuple[float | None, float | None]:
         return None, None
 
 
-# 一局内固定运行编号：同一 t_start 只取一次，中途开关日志也不让同局产物分家
-_run_stamps: dict[float, str] = {}
+# 一局内固定产物目录：同一 (局前缀, 阶段) 只解析一次。缓存是必须的——
+# 同阶段的目录会被 chain 与 hud 两处先后取用，第二次若重新判重会看到刚建好的
+# 目录、误判"撞名"而多加一个序号后缀，同阶段的产物就分家了。
+_run_dirs: dict[tuple[str, int], Path] = {}
 
 
-def _run_dir(t_start: float, phase: int) -> Path:
+def _fresh_session_dir(path: Path) -> Path:
+    """已存在且非空的目录换一个带序号的名字，绝不给既有会话续写。
+
+    目录名按局前缀生成，正常不会重名；同秒重启、或人工改过系统时间时仍可能撞。
+    撞上时**换名**而不是复用：复用会让新一局覆盖旧图、索引被追加成两局混合
+    （2026-10-30 实机踩到，第一局的图被第二局整批覆盖）。"""
+    if not path.exists() or not any(path.iterdir()):
+        return path
+    for i in range(2, 100):
+        cand = path.with_name(f"{path.name}_{i}")
+        if not cand.exists() or not any(cand.iterdir()):
+            logger.log(f"[极速狂飙] 会话目录 {path.name} 已存在且非空，"
+                       f"改写到 {cand.name}", "WARNING")
+            return cand
+    raise RuntimeError(f"会话目录 {path.name} 的重名后缀已用尽")
+
+
+def _run_dir(stamp: str, phase: int) -> Path:
     """一局一产物目录（2026-10-12 布局收口，paths.py 五类契约）：debug/<module>/<会话>/。
 
     speedrush 运行产物（trace/局汇总/证据包/hud/badframes）全在
-    ``debug/speedrush/<运行编号>_p<阶段>/``——一局一目录，清当批=删一个目录；
+    ``debug/speedrush/<局前缀>_p<阶段>/``——一局一目录，清当批=删一个目录；
     ``data/`` 只留结构化业务数据（DB）。整个目录受 debug 开关管辖（关=零
     产物）；帧证据包密度另受 debug_dump 三态闸（off/events/full）。
 
-    运行编号取日志会话 token：与 ``logs/`` 下目录同名，一场运行的日志和截图
-    一眼能对上；日志没开时退回本局开始时刻。"""
-    stamp = _run_stamps.get(t_start)
-    if stamp is None:
-        stamp = logger.session_token or time.strftime(
-            "%Y%m%d_%H%M%S", time.localtime(t_start))
-        _run_stamps[t_start] = stamp
-    return debug_dir() / "speedrush" / f"{stamp}_p{phase}"
+    局前缀由调用方按**局**生成（``_run_flow`` 每轮一个），同一局的两个驾驶阶段
+    共用它、不同局必然不同。不能用日志会话编号：它标识的是"一次启动"，同一次
+    启动连跑多局时重复，后一局会覆盖前一局的图。"""
+    key = (stamp, phase)
+    hit = _run_dirs.get(key)
+    if hit is not None:
+        return hit
+    path = _fresh_session_dir(debug_dir() / "speedrush" / f"{stamp}_p{phase}")
+    _run_dirs[key] = path
+    return path
 
 
 def resolve_start_index(start_from: str | None) -> int:
