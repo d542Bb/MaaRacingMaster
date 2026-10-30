@@ -63,7 +63,7 @@ def test_step_is_heading_kinematics():
     x1, p1 = step(x, psi, 0.05, v, dt, P)
     a = 1 - math.exp(-dt / P.tau_heading_s)
     assert p1 == pytest.approx(a * 0.05, abs=1e-12)
-    assert x1 == pytest.approx(x, abs=1e-12)      # 首拍 ψ 还很小
+    assert x1 == pytest.approx(x + v * math.tan(p1) / 3.5 * dt, abs=1e-12)
     # 朝向到位后的稳态横速 = v·tanψ/LANE_W
     for _ in range(80):
         x1, p1 = step(x1, p1, 0.05, v, dt, P)
@@ -71,12 +71,15 @@ def test_step_is_heading_kinematics():
     # 无前向速度：不产生横移（物理事实，不是兜底）
     assert step(0.0, 0.1, 0.1, 0.0, dt, P) == (0.0, pytest.approx(0.1))
 
+
 class _Rig:
     """闭环测试台：合成车（杆→航向→横移），planner 只从「标线角」看到朝向。
 
     生产里 ψ 是量出来的；测试没有相机，就用一台显式的合成车——它和产物走
     **同一条信息路**（lane_theta 进观测器、位置进 α 修正），所以测的是
     「控制器能不能把车开到目标」，不是「模型积分数值对不对」。
+
+    ``fid`` 可覆盖决策拍号（测过期保持时用）；``plan`` 透传计划。
     """
 
     def __init__(self, pl: LateralPlanner, v_mps: float = 45.0,
@@ -90,13 +93,16 @@ class _Rig:
         pl.head._spd_den = 0.2
         pl.head._spd_num = 0.2 * v_mps / 3.5
 
-    def tick(self, out, *, pos_obs: bool = True):
+    def tick(self, out, *, pos_obs: bool = True, plan=None,
+             fid: int | None = None):
+        f = self.fid if fid is None else fid
         cmd = self.pl.update(
-            out, DT, current_fid=self.fid,
+            out, DT, current_fid=f,
             road_offset=self.x if pos_obs else None,
             lane_x=self.x, lane_ok=True,
             lane_theta=self.heading, lane_theta_ok=True,
-            lane_fid=self.fid, lane_age_ms=5.0, lane_n_locked=3)
+            lane_fid=f, lane_age_ms=5.0, lane_n_locked=3,
+            plan=plan)
         u = cmd.steer_x / _STICK_FULL
         a = 1.0 - math.exp(-DT / self.tau)
         self.heading += a * (self.k_yaw * u - self.heading)
@@ -141,8 +147,22 @@ def test_throttle_constant_all_states():
 
 # ---------- 状态消费表 ----------
 
-def test_conserve_holds_entry_lane():
-    """CONSERVE=保持入拍车道：变道中被保守打断 → 反打止漂，停在入拍车道附近。"""
+def test_conserve_returns_to_road_center_when_observed():
+    """CONSERVE+有 ro：直连路中心——ro 是路相对的**直接观测**，不经参考系。
+    13:29 局：参考系陈旧时 hold(−0.13) 与 ro(+1.9) 打架、杆恒 0 蹭右墙 5.5s。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(20):
+        rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+    assert rig.x > 0.3
+    for i in range(120):
+        rig.tick(_out(state=DecisionState.CONSERVE, x_target=None,
+                      fid=40 + i, valid=40 + i))
+    assert abs(rig.x) < 0.15                  # 回到并停在路中心
+
+
+def test_conserve_without_observation_holds_entry_lane():
+    """CONSERVE 无 ro（感知半死）：冻结入拍车道，不归零直开（13:02 局怼护栏）。"""
     pl = _planner()
     rig = _Rig(pl)
     for i in range(20):
@@ -151,7 +171,7 @@ def test_conserve_holds_entry_lane():
     assert entry > 0.3
     for i in range(120):
         rig.tick(_out(state=DecisionState.CONSERVE, x_target=None,
-                      fid=40 + i, valid=40 + i))
+                      fid=40 + i, valid=40 + i), pos_obs=False)
     assert abs(rig.x - entry) < 0.25          # 停在入拍道附近，不回 0
 
 def test_conserve_hold_refreezes_on_reentry():
@@ -224,15 +244,16 @@ def test_expired_hold_then_conserve_at_plus_one():
     """过期保持：杆值不动；第 hold_max_ticks+1 拍起按 CONSERVE 接管。"""
     pl = _planner()
     rig = _Rig(pl)
-    held = None
     for i in range(20):
-        cmd = rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+        # 目标远置：整秒内的杆值都朝右且不为 0，便于锁「杆值不动」
+        cmd = rig.tick(_out(x_target=3.0, fid=i + 1, valid=i + 1, maneuver=True))
     held = cmd.steer_x
     assert held > 0
     for i in range(1, P.hold_max_ticks + 1):
-        cmd = rig.tick(_out(x_target=1.0, fid=40 + i, valid=39))
+        cmd = rig.tick(_out(x_target=3.0, fid=40 + i, valid=39),
+                       fid=41 + i)
         assert cmd.steer_x == held            # 过期保持：杆值不动
-    cmd = rig.tick(_out(x_target=1.0, fid=99, valid=39))
+    cmd = rig.tick(_out(x_target=3.0, fid=99, valid=39), fid=99)
     assert cmd.steer_x != held                # CONSERVE 接管
 
 def test_conserve_priority_over_expired_hold():
@@ -267,8 +288,9 @@ def test_lowpass_is_time_based_not_fixed_alpha():
         return pl.state.steer_norm
     a1 = 1 - math.exp(-0.05 / P.tau_steer_s)
     a2 = 1 - math.exp(-0.10 / P.tau_steer_s)
-    # 无朝向证据时的比例段：u = min(k_psi·k_head·e, hold_stick_max)
-    u0 = min(P.k_psi * P.k_head_lane, P.hold_stick_max)
+    # 无朝向证据时的比例段：ψ_des = k_head·e 被维护态上限 heading_hold_rad 压住
+    u0 = min(P.k_psi * min(P.k_head_lane, P.heading_hold_rad),
+             P.hold_stick_max)
     assert one(0.05) == pytest.approx(a1 * u0, rel=1e-6)
     assert one(0.10) == pytest.approx(a2 * u0, rel=1e-6)
 
@@ -337,45 +359,28 @@ def test_lookahead_damps_overshoot():
 
 # ---------- 路中心连续重锚（step 2.5：开环虚胖的闭环解） ----------
 
-def test_road_reanchor_pins_inflated_model():
-    """模型虚胖（a_lat_gain 偏大）跑过头：有路观测时 executed 被钉回观测值，
-    误差常驻→杆不提前松。对照组：无观测（road_offset=None）executed 一路冲高。"""
-    pl_open = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                       rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                       v_lat_max=1e9, )   # 纯积分，无回正
-    pl_obs = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                      rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                      v_lat_max=1e9, )
-    open_x, obs_x = [], []
-    for i in range(1, 12):
-        d = _out(x_target=1.0, fid=i, valid=i)
-        open_x.append(pl_open.update(d, DT, i).steer_x)
-        # 车其实纹丝不动：路观测恒 0（锚懒定为首帧 0→obs 恒 0）
-        c = pl_obs.update(d, DT, i, road_offset=0.0)
-        obs_x.append(c.steer_x)
-    # 无观测：模型冲到接近目标→杆回落到 0（提前松杆，V2 病灶；阈值含维护杆幅
-    # 封顶后的爬升减速）
-    assert pl_open.state.executed_lane > 0.35
-    assert abs(open_x[-1]) < abs(open_x[3])
-    # 有观测：executed 被钉在 0 附近，杆持续（误差在，杆就在；幅度受维护
-    # 杆幅上限约束——16:44 局后 CRUISE 不再满舵）
-    assert abs(pl_obs.state.executed_lane) < 0.15
-    assert abs(obs_x[-1]) > 10000
-    assert abs(obs_x[-1]) <= int(P.hold_stick_max * _STICK_FULL) + 100
-    assert abs(obs_x[-1]) >= abs(open_x[-1])
+def test_road_observation_pins_position_to_measurement():
+    """有路观测：executed 跟实测位置（不是模型自说自话），1 道误差 2s 内到位。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(60):
+        rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+    assert abs(pl.state.executed_lane - rig.x) < 0.12
+    assert 0.8 < rig.x < 1.1                     # 到位且不过冲
 
 
-def test_road_reanchor_tracks_real_motion():
-    """车真在右移（路观测递增）：executed 跟上，v_lat 学出正速度。"""
-    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
-                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
-                  v_lat_max=1e9, a_lat_gain=0.0,
-                  )  # 本用例锁 α-β（新默认位置-only 另测）
-    for i in range(1, 12):
-        pl.update(_out(x_target=1.0, fid=i, valid=i), DT, i,
-                  road_offset=0.05 * i)          # 每拍右移 0.05 车道
-    assert pl.state.executed_lane == pytest.approx(0.05 * 11, abs=0.08)
-    assert pl.state.v_lat > 0                # 学到正速度
+def test_without_position_observation_model_is_not_a_truth_source():
+    """断供（无 ro）：纯朝向模型自走，与真值分离——它是预测，不是精度保证。
+
+    锁这条是为了防止后来者把「没有观测时模型仍准」当成前提去设计逻辑：
+    台架上 3s 后模型与真值差 0.2 道以上，回到新鲜观测后由 α 修正拉回。
+    """
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(60):
+        rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True),
+                 pos_obs=False)
+    assert abs(pl.state.executed_lane - rig.x) > 0.1
 
 
 def test_road_jump_rejected():
@@ -834,15 +839,15 @@ def test_hold_authority_deadband_and_cap():
 # ---------- 机动态全权（阶段 2，2026-10-18） ----------
 
 def test_maneuver_full_authority_moves_one_lane():
-    """maneuver=True：闭环 1s 内位移 >0.3 道（越过维护杆幅上限）。"""
+    """maneuver=True 且误差超全权门：越过维护杆幅，1s 内 0.7 道以上。"""
     pl = _planner()
     rig = _Rig(pl)
-    max_stick = 0
+    max_stick = 0.0
     for i in range(1, 21):
-        cmd = rig.tick(_out(x_target=1.0, fid=i, valid=i, maneuver=True))
-        max_stick = max(max_stick, abs(cmd.steer_x))
-    assert max_stick > int(P.hold_stick_max * _STICK_FULL)
-    assert rig.x > 0.3
+        rig.tick(_out(x_target=2.0, fid=i, valid=i, maneuver=True))
+        max_stick = max(max_stick, abs(pl.last_steer_raw))
+    assert max_stick > P.hold_stick_max          # 越过维护杆幅
+    assert rig.x > 0.7                           # 1s 内确实挪了 0.7 道以上
 
 def test_small_maneuver_error_stays_gentle():
     """maneuver 按安全区间（约 0.17 道）置位，但 0.2 道的日常修正不得用全权：
@@ -920,9 +925,9 @@ def test_brake_budget_disabled_without_decel():
 
 
 def test_corridor_infeasible_plan_commands_escape():
-    """计划判定压在走廊边距内（无效）时执行它的逃逸候选杆值：
-    不能退回保持死区——目标差 0.26 道 < 0.5，PD 会完全不修，车停在离栏
-    0.25m（20261026 局 s2#4 21.6s：目标 0.93、车位 1.19、杆 −0.18）。"""
+    """计划判定压在走廊边距内（无效）时执行它的逃逸车头角，不套保持死区——
+    目标差 0.26 道 < 0.5，PD 会几乎不修，车停在离栏 0.25m（20261026 局 s2#4
+    21.6s：目标 0.93、车位 1.19、杆 −0.18）。"""
     base = dict(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                 rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
     pl = _planner(**base)
@@ -930,21 +935,20 @@ def test_corridor_infeasible_plan_commands_escape():
     pl.state.executed_lane = 1.19
     pl.state.v_lat = 0.0
     plan = types.SimpleNamespace(
-        valid=False, reason="plan:infeasible_corridor", psi_feedforward=-0.6,
+        valid=False, reason="plan:infeasible_corridor", psi_feedforward=-0.14,
         x_preview_lane=0.8, v_preview_lane_s=0.0)
     pl.update(_out(x_target=0.93, fid=2, valid=2), DT, 2, plan=plan)
-    assert pl.last_steer_raw == pytest.approx(-0.6, abs=1e-6)
+    assert pl.last_steer_raw < -0.7          # 全权向左脱离，不是 gentle 轻修
     pl2 = _planner(**base)
     pl2.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
     pl2.state.executed_lane = 1.19
     pl2.state.v_lat = 0.0
     stale = types.SimpleNamespace(
-        valid=False, reason="plan:stale", psi_feedforward=-0.6,
+        valid=False, reason="plan:stale", psi_feedforward=-0.14,
         x_preview_lane=0.8, v_preview_lane_s=0.0)
     pl2.update(_out(x_target=0.93, fid=2, valid=2), DT, 2, plan=stale)
-    # 不用无效计划的杆值；新死区 0.15 下 0.26 道误差会经 gentle PD 轻修正，
-    # 但幅度远小于计划候选的 −0.6。
-    assert abs(pl2.last_steer_raw) < 0.3
+    # 不用无效计划的逃逸指令；0.26 道误差经 gentle 轻修正，幅度不超过维护杆幅。
+    assert -P.hold_stick_max < pl2.last_steer_raw < 0.0
 
 
 def test_maneuver_deadband_and_cap_used():
@@ -1178,11 +1182,11 @@ def test_frame_shift_holds_planner_frame_not_scene_target():
     pl = _planner()
     rig = _Rig(pl)
     for _ in range(P.frame_hold_max_ticks):
-        rig.tick(_out(x_target=-1.2, plan=fs))
+        rig.tick(_out(x_target=-1.2), plan=fs)
     assert abs(rig.x) < 0.05          # 没有朝错帧目标 -1.2 冲过去
 
 def _feed_ramp(obs, seconds=6.0, rate=0.06, dt=0.1, n_locked=2):
-    """线角匀速上升：稳态下 ψ≈2·rate（2s 慢基线滞后），r≈rate。"""
+    """线角匀速上升：ψ 积分到 rate×t，r 稳态等于 rate。"""
     t, fid, th = 0.0, 1, 0.0
     while t < seconds:
         obs.update(dt, 0.0, True, th, True, fid, 60.0, n_locked)
@@ -1192,10 +1196,10 @@ def _feed_ramp(obs, seconds=6.0, rate=0.06, dt=0.1, n_locked=2):
 
 
 def test_heading_psi_and_rate_follow_line_angle():
-    """ψ 在稳态等于 2·rate（2s 基线滞后）；r 只在建立期为正。
+    """ψ 是线角变化的积分（不衰减）；r 稳态等于线角速率。
 
-    注：相对朝向对「缓慢的常值转速」与「路面曲率」不可分辨——那是 2s 慢基线
-    的定义带来的，r 捕捉的是 ψ 的变化而不是绝对转速。"""
+    这是「程序知道车头朝向」的测量基础：线角里的常值成分（装偏、稳态曲率）
+    被微分掉，车头角的变化则原样进 ψ。"""
     obs = HeadingObserver(P)
     rate, dt, th, fid, t = 0.06, 0.1, 0.0, 1, 0.0
     r_build = None
@@ -1207,20 +1211,20 @@ def test_heading_psi_and_rate_follow_line_angle():
         if r_build is None and t > 1.5:
             r_build = obs.r
     assert r_build is not None and r_build > 0.02       # 建立期：ψ 在涨
-    assert obs.psi == pytest.approx(2.0 * rate, abs=0.02)
-    assert abs(obs.r) < 0.01                            # 稳态：ψ 不再变化
+    assert obs.psi == pytest.approx(min(rate * 8.0, 0.6), abs=0.03)
+    assert obs.r == pytest.approx(rate, abs=0.01)       # 稳态：角速度≈线角速率
     assert obs.debug()["psi_age"] < 200.0
 
 
 def test_single_line_angle_is_not_a_heading():
-    """单条线会给出 20°+ 假角度：n_locked<2 的拍不得更新 ψ，也不得推进基线。"""
+    """单条线会给出 20°+ 假角度：n_locked<2 的拍不得更新 ψ，也不得推进差分。"""
     obs = HeadingObserver(P)
     obs.update(0.1, 0.0, True, 0.0, True, 1, 60.0, 2)
     assert obs.psi == 0.0
-    base = obs._psi_base
+    prev = obs._psi_prev_th
     obs.update(0.1, 0.0, True, 0.39, True, 2, 60.0, 1)   # 实测假值量级
     assert obs.psi == 0.0                                # 不吸收假角度
-    assert obs._psi_base == base                         # 也不推进基线
+    assert obs._psi_prev_th == prev                      # 也不推进差分基准
     obs.update(0.1, 0.0, True, 0.05, True, 3, 60.0, 2)
     assert obs.psi is not None and obs.psi > 0.0
 
@@ -1281,3 +1285,51 @@ def test_line_frame_reset_keeps_heading_shadow():
     assert obs.v_line is None                    # 线帧的东西照旧清掉
     obs.reset()
     assert obs.psi is None and obs.v_scale is None and obs._spd_den == 0.0
+
+
+# ---------- 闭环台架验收（2026-10-30 横向架构：三条硬判据） ----------
+
+def _bench(v_mps: float = 45.0, **over) -> tuple[LateralPlanner, "_Rig"]:
+    pl = _planner(**over)
+    return pl, _Rig(pl, v_mps=v_mps)
+
+
+def test_bench_one_lane_error_closes_within_a_second():
+    """一道误差 1s 内走完六成（人工实测 0.6~0.9 道/s），不过冲、车头角在人工量级。
+
+    「到位」= 进维护带（0.15 道死区，见 hold_deadband_lane）——位误差收完即
+    不再横移，不是靠反打刹车。"""
+    pl, rig = _bench()
+    xs, heads = [], []
+    for i in range(60):
+        rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+        xs.append(rig.x)
+        heads.append(abs(rig.heading))
+    assert xs[19] >= 0.6                        # 1s：至少 0.6 道
+    assert max(xs) <= 1.1                       # 不过冲 10% 以上
+    assert abs(xs[-1] - 1.0) <= 0.2             # 收尾在维护带内
+    assert max(heads) <= 0.16                   # 车头角峰值 ≤ 9°（人工 6~9°）
+
+
+def test_bench_convergence_is_speed_invariant():
+    """同一套参数在不同车速下收敛时间一致：增益按在线车速换算，不按车速插值。"""
+    got = []
+    for v in (25.0, 45.0, 90.0):
+        pl, rig = _bench(v_mps=v)
+        for i in range(20):
+            rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
+        got.append(rig.x)
+    assert max(got) - min(got) <= 0.15
+    assert min(got) >= 0.45
+
+
+def test_bench_brakes_from_motion_without_running_away():
+    """带着横速冲过目标：允许物理超前一拍的量（≈0.25 道），不得继续画龙。"""
+    pl, rig = _bench()
+    rig.x, rig.heading = 0.5, 0.05
+    xs = []
+    for i in range(60):
+        rig.tick(_out(x_target=0.0, fid=i + 1, valid=i + 1, maneuver=True))
+        xs.append(rig.x)
+    assert max(xs) <= 0.75                      # 超前后立刻回带
+    assert xs[-1] <= 0.2                        # 回到维护带内

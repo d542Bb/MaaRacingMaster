@@ -131,7 +131,8 @@ class Planner:
     # —— 航向跟踪律（2026-10-30 架构：杆是航向指令，不是横向加速度）——
     # 位置误差 → 目标车头角 → 杆值，横移由 x' = v·tanψ 给出。旧的横速双积分
     # （a_lat_gain/tau_align 的积分、v_lat_max 饱和、两路横速融合）已删除。
-    k_head_lane: float         # 车道误差 → 目标车头角（rad/道）
+    k_head_lane: float         # 车速未知时的退化比例（rad/道）
+    k_lat_lane_s: float        # 闭环带宽：期望横速 = 此值 × 车道误差（道/s）
     k_psi: float               # 车头角误差 → 杆值（杆/rad）
     k_r: float                 # 角速度阻尼（杆/(rad/s)）
     tau_heading_s: float       # 车头角响应时间常数（执行链并入模型）
@@ -237,8 +238,10 @@ class Motion:
     horizon_s: float = 2.0
     preview_s: float = 0.2
     dt_s: float = 0.05
-    # 候选的车头角偏移（rad）：执行层按航向跟踪律把杆打到这个朝向上。
-    # 0.14 ≈ 8°，与人工变道实测峰值（6~9°）同量级；细档在 5° 以内。
+    # 候选的**绝对**车头角指令（rad）：执行层按同一条朝向律把杆打到这个
+    # 朝向上。0.14 ≈ 8°，与人工变道实测峰值（6~9°）同量级；细档在 5° 以内。
+    # 绝对档位（不随当前朝向平移）+ 单独的「当前朝向」候选：把车从 +0.05
+    # 带回 0 需要「反打到 −0.03」，偏移量档给不出这一档。
     heading_levels: tuple[float, ...] = (
         -0.14, -0.09, -0.05, -0.03, -0.015, -0.005,
         0.0, 0.005, 0.015, 0.03, 0.05, 0.09, 0.14)
@@ -271,10 +274,10 @@ class Motion:
     # 1.3~2s 到站时相邻档横距差约 1m，计分带（约 0.6m）会被整段跳过；
     # 目标位候选按选择层同一个擦边偏移落到带内（2026-10-30）。
     aim_candidates: bool = True
-    # 目标位候选的生成律（只用来造轨迹，不是控制律）：比生产跟踪律更快收敛、
-    # 无过冲——0.68 道上界只有 0.75 道，生成律过冲 0.08 道就出带。
-    aim_kp: float = 4.0
-    aim_kd: float = 0.6
+    # 目标位候选的生成律用生产跟踪律（k_head_lane）：计划怎么预测，控制
+    # 就怎么执行——第二套生成律会让「计划说能到、车到不了」。
+    # 半程回正候选的最小档位：低于此值的档位 2s 扫不过一道，回正没意义。
+    reverse_min_rad: float = 0.03
     # 硬不可行回退的侵入分桶：同一桶内按价值/动作选，不为厘米级差异满杆。
     corridor_escape_tol_m: float = 0.05
     # 反应时内到站的车：横向动作已无法改变结果，不计入硬约束（防贴身会车
@@ -313,7 +316,7 @@ class Motion:
     # 中心目标死区与维护性杆幅：带内不修正、只在带外追近侧带边，
     # 防无机会时的画龙（旧选择层同口径 0.3 道 / 0.45 杆幅）。
     center_band_lane: float = 0.3
-    center_heading_rad: float = 0.03   # 维护态候选的车头角偏移上限（≈1.7°）
+    center_heading_rad: float = 0.03   # 维护态车头角上限（≈1.7°）：决定横速
     # 视界外预置：2s 外的金币/奖励车按折扣价计入“2s 末端更靠近”，
     # 避免只在目标进入视界后才动作（旧选择层 preposition 的价值版）。
     preposition_horizon_s: float = 4.0
@@ -469,34 +472,6 @@ class LaneObs:
 
 
 @dataclass(frozen=True)
-class LateralFrame:
-    """S1 参考系影子（2026-10-24）：模型预测 + 新鲜观测限速校正。
-
-    enabled=闸：false 时零开销；true 时只写 trace 的 lateral_frame 列，
-    **不接控制**。jump_tol_lane=单拍越过此值按参考系跳变处理；confirm_n=
-    连续几次同向一致才建立重锚目标；fresh_alpha=正常新息的单次校正比例；
-    hold_alpha=记忆/遮挡值的慢锚比例（只防模型漂移，不是测量）；
-    max_corr_lane_s=校正/重锚/慢锚靠拢的速率上限（道/秒）；
-    macro_enabled=远场地面宏观锚（只写 trace，不进控制）。"""
-
-    enabled: bool = False
-    jump_tol_lane: float = 0.5
-    confirm_n: int = 2
-    fresh_alpha: float = 0.3
-    hold_alpha: float = 0.08
-    max_corr_lane_s: float = 2.0
-    macro_enabled: bool = True
-    # 航向慢状态：线角→相对航向，按速度代理换算横向速度，缓慢修正模型横速。
-    theta_enabled: bool = True
-    theta_alpha: float = 0.15
-    theta_max_rate_rad_s: float = 0.8
-    theta_ttl_s: float = 1.0
-    theta_curve_tau_s: float = 2.0
-    theta_gain: float = 0.03
-    speed_proxy_mps: float = 45.0
-
-
-@dataclass(frozen=True)
 class DebugDump:
     """调试图证据包三态闸（2026-10-12 设计裁决：消费者=时刻配图核验）。
 
@@ -549,7 +524,6 @@ class DecisionConfig:
     view_guard: ViewGuardConfig = ViewGuardConfig()
     debug_dump: DebugDump = DebugDump()
     lane_obs: LaneObs = LaneObs()
-    lateral_frame: LateralFrame = LateralFrame()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -676,6 +650,7 @@ def _read_decision(path: Path) -> DecisionConfig:
         planner=Planner(
             lookahead_tau_s=_num(d, "planner", "lookahead_tau_s", lo=0),
             k_head_lane=_num(d, "planner", "k_head_lane", lo=0),
+            k_lat_lane_s=_num(d, "planner", "k_lat_lane_s", lo=0),
             k_psi=_num(d, "planner", "k_psi", lo=0),
             k_r=_num(d, "planner", "k_r", lo=0, lo_open=False),
             tau_heading_s=_num(d, "planner", "tau_heading_s", lo=0),
@@ -759,8 +734,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             corridor_soft_cost_per_m=_num_def(
                 d, "motion", "corridor_soft_cost_per_m", 120.0, lo=0),
             aim_candidates=_bool(d, "motion", "aim_candidates", True),
-            aim_kp=_num_def(d, "motion", "aim_kp", 4.0, lo=0),
-            aim_kd=_num_def(d, "motion", "aim_kd", 0.6, lo=0),
+            reverse_min_rad=_num_def(
+                d, "motion", "reverse_min_rad", 0.03, lo=0),
             corridor_escape_tol_m=_num_def(
                 d, "motion", "corridor_escape_tol_m", 0.05, lo=0),
             collision_min_lead_s=_num_def(
@@ -961,37 +936,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             hz=_num_def(d, "lane_obs", "hz", 0.0, lo=0, lo_open=False),
             provider=str(d.get("lane_obs", {}).get("provider", "cpu") or "cpu"),
             threads=_int_def(d, "lane_obs", "threads", 4, lo=1),
-            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1)),
-        lateral_frame=LateralFrame(
-            enabled=_bool(d, "lateral_frame", "enabled", default=False),
-            jump_tol_lane=_num_def(d, "lateral_frame", "jump_tol_lane", 0.5,
-                                   lo=0, hi=2.0, lo_open=False),
-            confirm_n=_int_def(d, "lateral_frame", "confirm_n", 2, lo=1),
-            fresh_alpha=_num_def(d, "lateral_frame", "fresh_alpha", 0.3,
-                                 lo=0, hi=1.0, lo_open=False),
-            hold_alpha=_num_def(d, "lateral_frame", "hold_alpha", 0.08,
-                                lo=0, hi=1.0),
-            max_corr_lane_s=_num_def(d, "lateral_frame", "max_corr_lane_s",
-                                     2.0, lo=0, hi=5.0, lo_open=False),
-            macro_enabled=_bool(d, "lateral_frame", "macro_enabled",
-                                default=True),
-            theta_enabled=_bool(d, "lateral_frame", "theta_enabled",
-                                default=True),
-            theta_alpha=_num_def(d, "lateral_frame", "theta_alpha", 0.15,
-                                 lo=0, hi=1.0, lo_open=False),
-            theta_max_rate_rad_s=_num_def(
-                d, "lateral_frame", "theta_max_rate_rad_s", 0.8,
-                lo=0, hi=5.0, lo_open=False),
-            theta_ttl_s=_num_def(d, "lateral_frame", "theta_ttl_s", 1.0,
-                                 lo=0, hi=5.0, lo_open=False),
-            theta_curve_tau_s=_num_def(
-                d, "lateral_frame", "theta_curve_tau_s", 2.0,
-                lo=0.1, hi=10.0, lo_open=False),
-            theta_gain=_num_def(d, "lateral_frame", "theta_gain", 0.03,
-                                lo=0, hi=0.5, lo_open=False),
-            speed_proxy_mps=_num_def(
-                d, "lateral_frame", "speed_proxy_mps", 45.0,
-                lo=1.0, hi=120.0, lo_open=False)))
+            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1)))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v = cfg.validate

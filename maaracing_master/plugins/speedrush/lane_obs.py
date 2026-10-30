@@ -332,7 +332,7 @@ class LineTracker:
         return True
 
     def update(self, lines: list[dict], fid: int, dt: float,
-               v_lat_est: float = 0.0, fid_jump: bool = False,
+               v_lat: float = 0.0, fid_jump: bool = False,
                anchor: float | None = None) -> dict:
         # ① 关联：颜色只作软提示，横位 L 才是身份
         cur = []
@@ -484,7 +484,7 @@ class LineTracker:
             pred = False
         else:
             self.lost += 1
-            vp = 0.5 * self.x_vel + 0.5 * float(v_lat_est)
+            vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
             self.x_last = (self.x_last + float(np.clip(vp, -1.5, 1.5))
                            * dt)
             self.state = ("RELOCK" if (fid_jump
@@ -534,10 +534,10 @@ class LineTracker:
                 "side_reject": self.side_reject,
                 "anchor_src": anchor_src, "lines": lines, "pred": pred}
 
-    def predict(self, dt: float, v_lat_est: float = 0.0) -> dict:
+    def predict(self, dt: float, v_lat: float = 0.0) -> dict:
         """非检测帧：只推进横位；上一帧线保留但标 pred，不再参与绝对位。"""
         if self.x_last is not None:
-            vp = 0.5 * self.x_vel + 0.5 * float(v_lat_est)
+            vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
             self.x_last += float(np.clip(vp, -1.5, 1.5)) * dt
             self.state = "COAST"
             return {"state": self.state, "x": round(self.x_last, 3),
@@ -627,7 +627,7 @@ class LaneObsWorker:
             self._thread = None
 
     def push(self, rgb: np.ndarray, fid: int, cam_h: float | None,
-             v_lat_est: float, dt: float, fid_jump: bool,
+             v_lat: float, dt: float, fid_jump: bool,
              anchor: float | None = None) -> None:
         """入队一帧；``anchor`` 是同帧新鲜深度路心（None=复用/缺供）。
 
@@ -650,7 +650,7 @@ class LaneObsWorker:
             pass
         try:
             self._q.put_nowait((rgb, int(fid), used_h,
-                                float(v_lat_est), float(dt), bool(fid_jump),
+                                float(v_lat), float(dt), bool(fid_jump),
                                 None if anchor is None else float(anchor)))
         except queue.Full:
             pass

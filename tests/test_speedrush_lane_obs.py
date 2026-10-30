@@ -344,7 +344,7 @@ def test_predict_advances_x_without_new_identity():
     tr = LineTracker()
     tr.update([_line(-0.2)], 1, 0.05, anchor=0.0)
     x0 = tr.x_last
-    r = tr.predict(0.1, v_lat_est=0.0)
+    r = tr.predict(0.1, v_lat=0.0)
     assert r["state"] == "COAST"
     assert r["x"] == pytest.approx(x0, abs=1e-9)
     assert r["n_locked"] == 0

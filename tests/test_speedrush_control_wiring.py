@@ -6,6 +6,7 @@ V0/V1 开关在不在位、异常降级停不亦），不重测各层内部（�
 桩手柄记录调用；深度几何经 take() 桩同步供数（不碰 GPU/线程）。
 """
 import json
+import math
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -93,6 +94,18 @@ def test_no_corridor_holds_straight():
 
 # ---------- 阶段 2 端到端：场目标一道，1 秒内动起来（DecisionEngine+Planner）----------
 
+def _plant_step(x: float, psi: float, u: float, v: float = 45.0,
+                dt: float = 0.05, tau: float = 0.25,
+                k_yaw: float = 0.25) -> tuple[float, float]:
+    """接线测试用的合成车：杆 → 车头角（一阶）→ 横移 v·tanψ。
+
+    接线层只喂深度路心，不喂线角；没有朝向证据时控制律按位置比例段工作，
+    这里只负责让「车真的会动」，位置闭环才有东西可锁。"""
+    psi += (1.0 - math.exp(-dt / tau)) * (k_yaw * u - psi)
+    x += v * math.tan(psi) / 3.38 * dt
+    return x, psi
+
+
 def test_field_goal_half_lane_moves_with_realistic_time():
     """居中目标差 0.5 道：带外全权，2 秒内真的往带边动（不再假设 1 秒一道）。"""
     from maaracing_master.plugins.speedrush.corridor import (
@@ -121,15 +134,14 @@ def test_field_goal_half_lane_moves_with_realistic_time():
             health=PerceptionHealth(True, True, True, True, False),
             boundary=None, targets=(), far_targets=(), coin_groups=())
 
-    pl.state.executed_lane = 1.6
+    x, psi = 1.6, 0.0
+    pl.state.executed_lane = x
     max_stick = 0
     first = True
     for fid in range(3, 43):                   # 2 秒
         out = eng.update(obs(fid), 0.05,
                          executed_lane=pl.state.executed_lane,
                          corridor=corridor(pl.state.executed_lane))
-        # 带外即全权。tau_align=12（2026-10-26 重辨识）后车模响应变快，
-        # 途中进带 maneuver 落回是预期，不再逐拍断言。
         if first:
             assert out.maneuver is True
             first = False
@@ -137,8 +149,11 @@ def test_field_goal_half_lane_moves_with_realistic_time():
         if out.maneuver:
             assert out.authority == "COMMIT"
         assert out.intent_lane is not None
-        cmd = pl.update(out, 0.05, current_fid=fid)
+        cmd = pl.update(out, 0.05, current_fid=fid,
+                        road_offset=pl.state.executed_lane)
         max_stick = max(max_stick, abs(cmd.steer_x))
+        x, psi = _plant_step(x, psi, cmd.steer_x / 32767.0)
+        pl.state.executed_lane = x
     assert pl.state.executed_lane < 1.2       # 朝带边 0.5 真的动了
     assert max_stick > int(0.45 * 32767)      # 越过维护杆幅上限
 
@@ -149,19 +164,22 @@ def test_v1_lateral_channel_live(_stub_depth):
     v1 = load_decision()
     m = _module()
     chain = m._build_control_chain()
-    chain["planner"].state.executed_lane = 1.0   # 自上拍遗留横位
-    # 本拍观测：路心在自车左侧 1 道（road 系=0）→ 场目标 0，应向左修正
+    x, psi = 1.0, 0.0                            # 自上拍遗留横位
+    chain["planner"].state.executed_lane = x
+    # 路心在自车左侧 1 道 → 场目标 0，应向左修正；深度供数随车移动
     _stub_depth["r"] = _dgeo_lanes(-1.5, -0.5)
     pad = StubPad()
     saw_negative = False
-    for fid in range(1, 16):
+    for fid in range(1, 46):
+        center = -x                               # 路心在自车系的位置（道）
+        _stub_depth["r"] = _dgeo_lanes(center - 0.5, center + 0.5)
         m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
-        assert pad.trig == load_decision().planner.throttle_raw
+        assert pad.trig == v1.planner.throttle_raw
         if pad.joy[0] < 0:
             saw_negative = True
+        x, psi = _plant_step(x, psi, pad.joy[0] / 32767.0)
     assert saw_negative                          # 横向控制确实活了
-    # 回中：executed_lane 从 1.0 向 0 收敛
-    assert chain["planner"].state.executed_lane < 1.0
+    assert abs(x) < 0.5                          # 回中：向 0 收敛
 
 
 # ---------- 闭环供数：pair 与单侧合成都喂（80e9a1c 供数门撤销锁） ----------
@@ -171,6 +189,16 @@ def _dgeo_lanes(el, er):
                             left_x=None, right_x=None,
                             sides=int(el is not None) + int(er is not None),
                             latency_ms=1.0, rejects=())
+
+
+def _seed_scale(chain, v_mps: float = 45.0) -> None:
+    """给定在线比例（≈车速）。
+
+    接线测试不跑线观测线程，没有朝向证据；比例缺失时计划如实判 ``no_speed``
+    （不拿常数兜底）。这些用例锁的是**接线**，比例作为既定条件给定。"""
+    h = chain["planner"].head
+    h._spd_den = 0.2
+    h._spd_num = 0.2 * v_mps / 3.5
 
 
 def test_shadow_plan_records_but_steer_identical_to_off(_stub_depth,
@@ -192,6 +220,7 @@ def test_shadow_plan_records_but_steer_identical_to_off(_stub_depth,
             lambda: replace(base, motion=replace(base.motion, mode=mode)))
         m = _module()
         chain = m._build_control_chain()
+        _seed_scale(chain)
         monkeypatch.setattr(chain["ego_road"], "update",
                             lambda *a, **k: cor(k.get("fid", 1)))
         pad = StubPad()
@@ -234,6 +263,7 @@ def test_live_plan_takes_over_steering(_stub_depth, monkeypatch):
                 base.motion, mode=mode, calibrated=(mode == "live"))))
         m = _module()
         chain = m._build_control_chain()
+        _seed_scale(chain)
         monkeypatch.setattr(chain["ego_road"], "update",
                             lambda *a, **k: cor(k.get("fid", 1)))
         seen = []
@@ -625,28 +655,23 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
     row = chain["trace"][-1]
     # C1/§七.1 标定要的关键列都在
     for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_raw", "steer_x",
-              "executed_lane", "v_lat_est", "road_offset", "scene",
+              "executed_lane", "v_lat", "heading", "road_offset", "scene",
               "dgeo_sides", "dgeo_left", "dgeo_right", "lat_ctrl",
               "attribution", "route_shadow", "sel_shadow"):
         assert k in row, k
     # 选择层影子（trace-only）：两路承诺输入一致时没有差异行
     assert row["sel_shadow"] is None
-    # 横速融合可见面：线观测线程未启动时诚实退回模型（v_line/v_head=None）
-    assert row["lat_ctrl"]["gain"] == load_decision().planner.line_fuse_gain
+    # 横向状态可见面：线观测线程未启动时诚实报 None（不兜底常数）
     assert row["lat_ctrl"]["v_line"] is None
-    assert row["lat_ctrl"]["v_head"] is None
-    assert row["lat_ctrl"]["v_ctrl"] == row["lat_ctrl"]["v_model"]
-    # 重基来源诊断列（trace-only）：未重基的拍如实报 None
-    assert "rebase" in row["lat_ctrl"]
+    assert row["lat_ctrl"]["psi"] is None
+    assert row["lat_ctrl"]["vmp"] is None
+    assert row["lat_ctrl"]["vl"] == 0.0
     assert row["lat_ctrl"]["rebase"] is None
-    # 朝向影子（2026-10-30，只读）：列必须齐；无线观测时全部诚实为 None
-    for k in ("psi", "r", "psi_age", "vsp", "scf", "spa", "p1m", "p1h"):
+    # 朝向截面（只读）：列必须齐；无线观测时全部诚实为 None
+    for k in ("psi", "r", "psi_age", "vsp", "scf", "spa"):
         assert k in row["lat_ctrl"], k
     assert row["lat_ctrl"]["psi"] is None
     assert row["lat_ctrl"]["vsp"] is None
-    assert row["lat_ctrl"]["p1h"] is None
-    # 模型侧影子每拍都有（不依赖线观测）
-    assert isinstance(row["lat_ctrl"]["p1m"], (int, float))
     sink.flush(2.0)
     p = tmp_path / "trace" / "speedrush.jsonl"
     lines = [json.loads(x) for x in
@@ -1056,45 +1081,3 @@ def test_master_mode_region_abstain_honest_none(monkeypatch):
     assert row["road_offset"] is None, "区弃权拍不供数，找边读数不得顶替"
     assert row["ro_edge"] == pytest.approx(+0.4, abs=0.01), \
         "找边对仍在审计列（降级可见），但不进供数"
-
-
-# ---------- S1 参考系影子：只记录，不改杆 ----------
-
-
-def test_lateral_frame_shadow_traces_without_changing_steering(
-        _stub_depth, monkeypatch):
-    from maaracing_master.plugins.speedrush.corridor import (
-        BandBoundary, Corridor, CorridorBand)
-
-    base = load_decision()
-
-    def cor(fid):
-        return Corridor(tuple(
-            CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
-                         BandBoundary(-4.2, "measured", 1.0, fid),
-                         BandBoundary(4.2, "measured", 1.0, fid))
-            for i in range(3)), 0.0, 8.4 / 3.38, "wall", "ok")
-
-    def run(enabled):
-        monkeypatch.setattr(
-            smod, "load_decision",
-            lambda: replace(base, lateral_frame=replace(
-                base.lateral_frame, enabled=enabled)))
-        m = _module()
-        chain = m._build_control_chain()
-        monkeypatch.setattr(chain["ego_road"], "update",
-                            lambda *a, **k: cor(k.get("fid", 1)))
-        _stub_depth["r"] = _dgeo_lanes(-1.5, -0.5)
-        pad = StubPad()
-        for fid in range(1, 16):
-            m._control_tick(chain, pad, None, _perc(fid), fid,
-                            fid * 50_000_000, 10.0, 1)
-        return chain, pad.joy
-
-    off_chain, off_joy = run(False)
-    on_chain, on_joy = run(True)
-    assert off_chain["trace"][-1]["lateral_frame"] is None
-    lf = on_chain["trace"][-1]["lateral_frame"]
-    assert lf is not None and lf["x"] is not None
-    assert lf["fresh"] >= 1
-    assert on_joy == off_joy                 # 影子不吃控制路径

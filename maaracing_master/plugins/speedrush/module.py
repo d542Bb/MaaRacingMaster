@@ -49,7 +49,7 @@ from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand, N_BANDS, _band_bounds,
-    build_corridor, far_center_lane, far_hint_lane)
+    build_corridor, far_hint_lane)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import (
     DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
@@ -61,7 +61,6 @@ from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
 from maaracing_master.plugins.speedrush.lane_obs import LaneObsWorker
-from maaracing_master.plugins.speedrush.lateral_frame import LateralFrameShadow
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.route import (
@@ -1073,11 +1072,6 @@ class SpeedRushModule(ActivityModule):
                     "last_plan": None,
                     "last_plan_ego": None,
                     "last_committed": False,
-                    # S1 参考系影子（闸 lateral_frame.enabled）：只落 trace，
-                    # 不参与规划/手柄；启用时与 lane_obs 并行记录。
-                    "lateral_frame": (LateralFrameShadow(cfg.lateral_frame,
-                                                         cfg.planner)
-                                      if cfg.lateral_frame.enabled else None),
                 # raw/hud 调试图落盘器（10fps；debug 开关闸，测试 ctx=None → None →
                 # tick 空转）。生命周期=chain，finally 收口。人工驾驶阶段不建：
                 # 录制器既写原帧又写同一套叠加图与索引，再建 writer 就是同一段
@@ -1313,9 +1307,6 @@ class SpeedRushModule(ActivityModule):
                        and lane.get("x") is not None)
             lane_relock = (lane is not None
                            and lane.get("state") == "RELOCK")
-            lf = chain.get("lateral_frame")
-            # 参考系影子的模型步要复现 planner 本拍的低通起点，故先留旧值。
-            steer_norm_before = planner.state.steer_norm
             cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset,
                                  road_offset_new=road_offset_new,
                                  road_offset_hold=road_offset_hold,
@@ -1334,21 +1325,6 @@ class SpeedRushModule(ActivityModule):
                                  lane_n_locked=None if lane is None
                                  else int(lane.get("n_locked") or 0),
                                  plan=(plan if cfg.motion.mode == "live" else None))
-            far_lane = (None if corridor is None
-                        else far_center_lane(corridor.coarse_bands,
-                                             chain["lane_w_m"]))
-            if lf is not None:
-                lf.update(dt, planner.last_steer_raw, steer_norm_before,
-                          road_offset,
-                          None if corridor is None else corridor.src,
-                          road_offset_new,
-                          None if lane is None else lane.get("x"),
-                          None if lane is None else lane.get("state"),
-                          0 if lane is None
-                          else int(lane.get("n_locked") or 0),
-                          None if lane is None else lane.get("det_age_ms"),
-                          far_lane, bool(dgeo_new),
-                          None if lane is None else lane.get("theta"))
             if lw is not None:
                 cam_h = (None if dgeo is None or dgeo.coef is None
                          else abs(float(dgeo.coef[2])))
@@ -1505,7 +1481,7 @@ class SpeedRushModule(ActivityModule):
             # 计划输入状态（本拍 planner.update 前）与 gate 状态（离线逐位重放）
             "plan_ego": None if plan is None else [
                 round(chain["last_plan_ego"].x_lane, 6),
-                round(chain["last_plan_ego"].v_lane_s, 6),
+                round(chain["last_plan_ego"].heading, 6),
                 round(chain["last_plan_ego"].steer_norm, 6)],
             "plan_gate": None if plan is None else list(
                 chain["gate"].snapshot()),
@@ -1594,9 +1570,6 @@ class SpeedRushModule(ActivityModule):
             # v_line=标线横移（直接测量）、v_head/speed=航向与在线前向速度估计
             # （speed=None 表示没估出来：v_head 不兜底，也不进控制律）。
             "lat_ctrl": planner.ctrl_debug(),
-            # S1 参考系影子：模型预测 + 门控后横位；与 road_offset 同拍对照
-            "lateral_frame": None if chain.get("lateral_frame") is None
-            else chain["lateral_frame"].snapshot(),
             "ro_source": chain["ego_road"].last.get("source"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
