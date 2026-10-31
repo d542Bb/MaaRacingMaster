@@ -326,14 +326,19 @@ def stick_of(psi_des: float, psi: float, r: float, p: Planner,
     不是刹车预算——横速按 ``x' = v·tanψ`` 由朝向给出，ψ 归零即不再横移。
 
     ``gentle`` 给维护性转向：目标朝向压到 ``heading_hold_rad``、杆幅
-    ``hold_stick_max``。"""
+    ``hold_stick_max``。**限幅只吃「追目标朝向」这一项**（``k_ψ·ψ_des``）；
+    ``−k_ψ·ψ − k_r·r`` 是拿车自己的朝向/角速度做的刹车，不是追路心，任何
+    权限下都不截。两者混在一起截的代价实测过：车带着 0.15 rad 车头角进
+    维护带，0.45 杆幅要 0.9s 才回正，这 0.9s 里横移 1 道以上（20261031_
+    172015 fid 1789~1801：ψ=0.15~0.22、横速 1.7 道/s，杆恒 −0.45，车从
+    带心冲到邻道撞车）。"""
     psi_lim = p.heading_hold_rad if gentle else p.heading_max_rad
     psi_des = max(-psi_lim, min(psi_lim, psi_des))
-    u = p.k_psi * (psi_des - psi) - p.k_r * r
     lim = p.hold_stick_max if gentle else 1.0
     if cap is not None:
         lim = cap
-    u = max(-lim, min(lim, u))
+    u = max(-lim, min(lim, p.k_psi * psi_des))
+    u += -p.k_psi * psi - p.k_r * r
     return max(-1.0, min(1.0, u))
 
 
@@ -489,6 +494,9 @@ class LateralPlanner:
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
         self._heading_stale = False
+        # 朝向证据「陈旧」（超过横向测速同一条龄门）：ψ 还有值、仍可做阻尼，
+        # 但它不是本拍测量——这类拍只给维护级杆幅，不打全权机动。
+        self._heading_aged = False
         # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
         # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层把杆归零
         # （只按朝向回正，不积分旧转杆）、计划不接管（见 update 与
@@ -595,6 +603,12 @@ class LateralPlanner:
         截断只作用于**导出速度**（模型积分的输入），状态里的 ψ 原样保留。"""
         h = self.head
         self._heading_stale = h.psi is None
+        # 陈旧与「没有」不同：ψ 仍是手边最好的估计（阻尼照用），但不能拿
+        # 0.3~0.4s 前的朝向去打全权机动——20261031_172015 fid 1755~1776，
+        # 线重锁空窗里 ψ 停在 −0.035 四拍，控制律据此持续右打（+0.76），
+        # 车头角真实已转到 +0.08，等新角度回来过冲已经到 0.15 了。
+        self._heading_aged = (h.psi is not None
+                              and h.psi_age_s() > self.p.heading_vel_max_age_s)
         if h.psi is not None:
             self.state.heading = h.psi
             self.state.yaw_rate = 0.0 if h.r is None else h.r
@@ -891,6 +905,17 @@ class LateralPlanner:
             self._last_plan_u = None
         elif not plan_held:
             self._last_plan_u = None
+
+        # 朝向证据陈旧：本拍的车头角只能算「上次的估计」，任何机动都缺
+        # 反馈。贴边逃生（|executed| 超 _WALL_ESCAPE_LANE）除外——那是
+        # 硬约束优先；其余只给维护级杆幅，盲打满舵会把车头角叠到设计上限
+        # 之外（fid 1755~1776 的 0.4s 空窗用它把杆顶到 +0.76）。
+        if (st is DecisionState.CRUISE and self._heading_aged
+                and abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE):
+            lim = self.p.hold_stick_max
+            steer_raw = max(-lim, min(lim, steer_raw))
+            if self._last_plan_u is not None:
+                self._last_plan_u = max(-lim, min(lim, self._last_plan_u))
 
         self.last_steer_raw = steer_raw
         # ⑤ 杆值低通（限速链与滑行预测的起点）；⑥ 横位由**朝向**积分：

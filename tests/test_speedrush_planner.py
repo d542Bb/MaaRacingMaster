@@ -1479,6 +1479,47 @@ def test_stale_heading_stops_producing_lateral_velocity():
     assert pl.state.heading == pytest.approx(0.1)   # 朝向状态本身仍保留
 
 
+def test_maintenance_cap_only_limits_lane_chase_not_arrest():
+    """维护杆幅限的是「追目标朝向」这一项，不是「拿车自己的朝向刹车」。
+
+    车带着 0.15 rad 车头角进维护带、计划前馈为 0：刹那一拍必须能越过
+    hold_stick_max（旧实现把两项一起截在 0.45，ψ 归零要 0.9s，这 0.9s
+    横移 1 道以上——20261031_172015 fid 1789~1801 从带心冲到邻道）。"""
+    from maaracing_master.plugins.speedrush.motion_plan import MotionPlan
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.head.psi = 0.15
+    pl.head.r = 0.3
+    pl.head._psi_t = pl.head._t
+    pl.head._r_t = pl.head._t
+    pl.state.executed_lane = 0.0
+    # layer4 + 无碰撞代价 = 维护态（杆幅本应 ≤hold_stick_max）
+    plan = MotionPlan(7, True, "plan:ok", 0.0, 30.0, 0.0, 4,
+                      (True,), 1, 0, (), 0.0, 0.0, 0.0, False)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, plan=plan)
+    assert pl.last_steer_raw < -P.hold_stick_max
+
+
+def test_aged_heading_caps_authority_until_evidence_returns():
+    """朝向「陈旧」（超过测速同一条龄门）≠「没有」：ψ 仍做阻尼，但只给
+    维护级杆幅。20261031_172015 fid 1755~1776：线重锁空窗 0.4s，ψ 停在
+    −0.035，控制律据此把杆顶到 +0.76，车头角真实已转到 +0.08 才发现。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.head.psi = -0.035
+    pl.head.v_scale = 41.5
+    pl.head._psi_t = pl.head._t
+    pl.state.executed_lane = -0.8
+    out = _out(x_target=-0.1, fid=2, valid=2, maneuver=True)
+    pl.update(out, DT, 2)
+    assert not pl._heading_aged
+    assert abs(pl.last_steer_raw) > P.hold_stick_max   # 新鲜朝向：机动全权
+    pl.head._psi_t = pl.head._t - (P.heading_vel_max_age_s + 0.05)
+    pl.update(_out(x_target=-0.1, fid=3, valid=3, maneuver=True), DT, 3)
+    assert pl._heading_aged
+    assert abs(pl.last_steer_raw) <= P.hold_stick_max + 1e-9
+
+
 def test_blind_window_freezes_position_and_reacquires_on_fresh_depth():
     """线+深度都没有新证据 = 位置只剩外推：超 state_blind_s 后冻结并标不可信
     （决策/计划/执行都不许拿假位置下定论），新鲜深度回来的第一拍重基。"""
