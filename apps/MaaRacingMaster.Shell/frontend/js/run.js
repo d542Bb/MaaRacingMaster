@@ -424,6 +424,7 @@
     const icon = meta ? meta.icon : esc(m.name.slice(0, 1));
     const cover = m.cover || state.coverDefault || '';
     return '<button type="button" class="task-gallery-cell' + (inList ? ' task-gallery-cell--selected' : '')
+      + (cover ? '' : ' task-gallery-cell--noart')   // 连默认封面都拿不到：直接落到渐变底
       + '" data-manage="' + esc(m.id) + '" title="' + (inList ? '点击移出列表' : '点击加入列表') + '">'
       + (cover ? '<img class="task-gallery-art" alt="" draggable="false" src="' + esc(cover) + '">' : '')
       + '<i class="task-gallery-scan"></i>'
