@@ -96,14 +96,9 @@ _R_STALE_S = 0.3            # 角速度 TTL：速率只在短时内有意义
 # 朝向向「横速反解」收敛的时间常数：积分管 0.5s 级的快变，这条管稳态
 # （相机装偏、稳态曲率不会被当成常值朝向攒下来）。
 _PSI_CORR_TAU_S = 0.5
-# 朝向向**线角绝对值**收敛的时间常数：与 kin 并联的最后一道锚。线角是
-# 绝对测量，任何积分/跳变/初始化带来的常值偏置都在这里被收掉；没有它，
-# 一旦在线车速失效（ψ 偏置会让比例回归斜率为负），ψ 就再无任何绝对参照。
-_PSI_ABS_TAU_S = 0.3
-# 线角变化的物理上限（rad/s）：辨识的车模满杆偏航率 ≈0.46 rad/s，线角不可能
-# 比车头转得更快；越过它的只能是换线/拟合跳变（同帧两条线差 p90 0.06 rad，
-# 线组一换融合角就阶跃；实测隐含速率最高 4.3 rad/s）。旧值 2.0 等于没门。
-_HEAD_RATE_MAX = 0.5
+# 单拍角度速率的物理上限（rad/s ≈115°/s）：真车偏航率在 0.5 rad/s 量级，
+# 越过它的只能是单帧坏角度（换线/误锁），不能让它一步把朝向拽走。
+_HEAD_RATE_MAX = 2.0
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
 # 证据衰减到下限后，上一次的读数再保留这么久（秒）。比例只能靠**横移**观测：
@@ -149,7 +144,6 @@ class HeadingObserver:
             self._psi_t = -1e9
             self._psi_prev_th: float | None = None
             self._psi_prev_t = -1e9
-            self._jumps = 0              # 线角跳变被物理门截断的累计次数（trace）
             self.r: float | None = None
             self._r_t = -1e9
             self.v_scale: float | None = None
@@ -239,27 +233,22 @@ class HeadingObserver:
                 self._scale_accum(psi)
 
     def _head_state(self, th: float, n_locked: int | None) -> float | None:
-        """ψ 与 r：角速率积分管快变，两条绝对锚管稳态。
+        """ψ 与 r：互补滤波——角速率积分管快变、横速反解管稳态。
 
-        快变：**本拍角度变化直接入 ψ**（无滤波、无偏），单拍速率按满杆偏航率
-        截断（换线跳变不是车的转动）。稳态：① 线角绝对值（``_PSI_ABS_TAU_S``，
-        尺度已标定、恒可用）；②「横速 ÷ 在线比例」反解（``_PSI_CORR_TAU_S``，
-        来自 ``v_lat = v·tanψ``，管相机装偏与稳态曲率，代价是 0.6s 斜率窗的
-        滞后）。只保留 ② 时，ψ 一旦有常值偏置就会把比例回归的斜率推成负值、
-        vsp 失效——锚点和估计互锁，偏置永久留下；① 是断开这个互锁的那条。
-        初始化取第一拍线角，不是 0。``r`` 仍是低通角速度，只做阻尼。
+        两路各自的病：线角里的常值成分（相机装偏、稳态曲率）被 2s 高通吃掉
+        时，持续 1s 的车头角只剩六成、回正段还会先变号（控制器按它判停，
+        实车仍偏，台架冲过目标 0.22 道）；纯积分 θ̇ 没有这个衰减，但稳态
+        曲率会被当成常值朝向攒下来。所以：**本拍角度变化直接入 ψ**（无滤波、
+        无偏），再以 ``_PSI_CORR_TAU_S`` 向「横速 ÷ 在线比例」反解的朝向收敛
+        ——后者来自``v_lat = v·tanψ`` 这条物理关系本身，没有高通、稳态诚实，
+        代价只是 0.6s 斜率窗的滞后。``r`` 仍是低通角速度，只做阻尼。
 
         单条线的角度不可用：20261030_171216 fid 1561 只锁到一条短黄线时给出
         0.39 rad（22°）。``n_locked`` 缺省（离线/单测未供）时不加这条门。"""
         if n_locked is not None and n_locked < _PSI_MIN_LINES:
             return None
         if self.psi is None:
-            # 初始化取本拍线角，不是 0：ψ=0 等于假设「这一刻与车道平行」，
-            # 而阶段切换/重锁后的第一拍车常常是斜的（20261031_181046 阶段 2
-            # 第一拍 3 条线一致给出 0.13~0.15 rad、车确实在向右并；ψ 起 0
-            # 后整段 ψ=θ−0.137，控制器把「已向右转」读成「在向左转」，一路
-            # 右打把车钉在右黄线上）。线角的常值偏置仍由下面的 kin 项收敛。
-            self.psi = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th))
+            self.psi = 0.0
             self._psi_t = self._t
             self._psi_prev_th = th
             self._psi_prev_t = self._t
@@ -270,12 +259,6 @@ class HeadingObserver:
             self._psi_prev_th = th
             return self.psi
         rate = (th - self._psi_prev_th) / gap
-        # 物理门：车头角不可能比满杆偏航率变得更快（辨识值 ≈0.46 rad/s）。
-        # 超出的跳变来自线组/拟合换线（同帧两条线差 p90 0.06 rad，线组一换
-        # 融合角就阶跃；实测隐含速率最高 4.3 rad/s，7% 的更新拍 >0.6）。
-        # 按上限积分、基线仍跟到新值：真转动的剩余部分不丢，跳变不攒成朝向。
-        if abs(rate) > _HEAD_RATE_MAX:
-            self._jumps += 1
         rate = max(-_HEAD_RATE_MAX, min(_HEAD_RATE_MAX, rate))
         self._psi_prev_th = th
         self._psi_prev_t = self._t
@@ -286,13 +269,6 @@ class HeadingObserver:
             self.r += a * (rate - self.r)
         self._r_t = self._t
         psi = self.psi + rate * gap
-        # 绝对锚（慢）：线角是车头相对车道的绝对测量（尺度已标定），积分只
-        # 负责 0.5s 级快变。这一项把「换线跳变、初始化偏置、相机常值偏置」
-        # 从 ψ 里收掉。旧口径只锚 kin（横速÷在线比例），而 kin 需要在线
-        # 车速——ψ 一偏，比例回归的斜率变负、vsp 直接失效，锚点与估计互锁：
-        # 20261031_181046 整段 ψ=θ−0.137、vsp=None，车被钉在右黄线。
-        beta = 1.0 - math.exp(-gap / _PSI_ABS_TAU_S)
-        psi += beta * (max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th)) - psi)
         kin = None
         if (self.v_line is not None and self.v_scale is not None
                 and self.v_scale > 1.0
@@ -333,7 +309,6 @@ class HeadingObserver:
             "r": None if self.r is None else round(self.r, 3),
             "psi_age": (None if self.psi is None
                         else round((self._t - self._psi_t) * 1000.0, 0)),
-            "jmp": self._jumps,        # 线角跳变被物理门截断的累计次数
             "vsp": None if self.v_scale is None
             else round(self.v_scale, 1),
             "scf": round(self.v_scale_conf, 2),
@@ -351,19 +326,14 @@ def stick_of(psi_des: float, psi: float, r: float, p: Planner,
     不是刹车预算——横速按 ``x' = v·tanψ`` 由朝向给出，ψ 归零即不再横移。
 
     ``gentle`` 给维护性转向：目标朝向压到 ``heading_hold_rad``、杆幅
-    ``hold_stick_max``。**限幅只吃「追目标朝向」这一项**（``k_ψ·ψ_des``）；
-    ``−k_ψ·ψ − k_r·r`` 是拿车自己的朝向/角速度做的刹车，不是追路心，任何
-    权限下都不截。两者混在一起截的代价实测过：车带着 0.15 rad 车头角进
-    维护带，0.45 杆幅要 0.9s 才回正，这 0.9s 里横移 1 道以上（20261031_
-    172015 fid 1789~1801：ψ=0.15~0.22、横速 1.7 道/s，杆恒 −0.45，车从
-    带心冲到邻道撞车）。"""
+    ``hold_stick_max``。"""
     psi_lim = p.heading_hold_rad if gentle else p.heading_max_rad
     psi_des = max(-psi_lim, min(psi_lim, psi_des))
+    u = p.k_psi * (psi_des - psi) - p.k_r * r
     lim = p.hold_stick_max if gentle else 1.0
     if cap is not None:
         lim = cap
-    u = max(-lim, min(lim, p.k_psi * psi_des))
-    u += -p.k_psi * psi - p.k_r * r
+    u = max(-lim, min(lim, u))
     return max(-1.0, min(1.0, u))
 
 
@@ -519,9 +489,6 @@ class LateralPlanner:
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
         self._heading_stale = False
-        # 朝向证据「陈旧」（超过横向测速同一条龄门）：ψ 还有值、仍可做阻尼，
-        # 但它不是本拍测量——这类拍只给维护级杆幅，不打全权机动。
-        self._heading_aged = False
         # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
         # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层把杆归零
         # （只按朝向回正，不积分旧转杆）、计划不接管（见 update 与
@@ -628,12 +595,6 @@ class LateralPlanner:
         截断只作用于**导出速度**（模型积分的输入），状态里的 ψ 原样保留。"""
         h = self.head
         self._heading_stale = h.psi is None
-        # 陈旧与「没有」不同：ψ 仍是手边最好的估计（阻尼照用），但不能拿
-        # 0.3~0.4s 前的朝向去打全权机动——20261031_172015 fid 1755~1776，
-        # 线重锁空窗里 ψ 停在 −0.035 四拍，控制律据此持续右打（+0.76），
-        # 车头角真实已转到 +0.08，等新角度回来过冲已经到 0.15 了。
-        self._heading_aged = (h.psi is not None
-                              and h.psi_age_s() > self.p.heading_vel_max_age_s)
         if h.psi is not None:
             self.state.heading = h.psi
             self.state.yaw_rate = 0.0 if h.r is None else h.r
@@ -1152,17 +1113,7 @@ class LateralPlanner:
 
         退化不是第二套模型：它仍是同一式子对同一目标的解，只是把未知的
         车头角按 0 处理——线断供的拍里至少还按位置误差修，且不会假装知道
-        车头朝哪。
-
-        朝向证据**陈旧**（超过 ``heading_vel_max_age_s``）时不追位置误差：
-        位置误差换出的目标朝向，其符号依赖的正是那个不知道变了多少的车头
-        角。这段只把已知朝向往 0 收，阻尼不受杆幅限制——不能改成整拍限幅：
-        那会把刹车一起截掉（20261031_174717 s2 的 2875~2886，ψ 龄 0.25s+
-        时按 0.375 的旧朝向把杆限在 0.45，车 1.26→1.94）。贴边逃生
-        （|executed| 超 ``_WALL_ESCAPE_LANE``）除外——硬约束优先。"""
-        if self._heading_aged and \
-                abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE:
-            e = 0.0
+        车头朝哪。"""
         return law(e, self.state.heading if not self._heading_stale else 0.0,
                    self.state.yaw_rate if not self._heading_stale else 0.0,
                    self.p, gentle, deadband, cap, self.state.v_mps)
@@ -1170,11 +1121,7 @@ class LateralPlanner:
     def _law_psi(self, psi_des: float, cap: float | None = None) -> float:
         """目标朝向直接入环（计划/决策给出的是车头角时）。
 
-        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子；朝向陈旧时不追
-        外部给的目标朝向，只把已知朝向往 0 收（口径同 ``_law``）。"""
-        if self._heading_aged and \
-                abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE:
-            psi_des = 0.0
+        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子。"""
         if self._heading_stale:
             return stick_of(psi_des, 0.0, 0.0, self.p, False, cap)
         return stick_of(psi_des, self.state.heading, self.state.yaw_rate,

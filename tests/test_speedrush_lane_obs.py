@@ -459,29 +459,11 @@ def test_relock_allows_anchor_to_assign_k_again():
     assert r2["x"] == pytest.approx(0.2, abs=1e-6)
 
 
-def test_theta_fused_by_fit_quality():
-    """线角按 1/rms² 加权，拟合不达标的线不进融合。
-
-    旧口径按点数加权：一条 5px 残差的短线与 0.4px 的好线等权，线组一换
-    （短线进/出、换线）融合角就阶跃——实测隐含角速率到 4.3 rad/s（真车
-    满杆偏航率 ≈0.46）。同质量线仍是简单平均。"""
+def test_theta_weighted_by_lines():
     tr = LineTracker()
-    r = tr.update([_line(-1.0, theta=0.1), _line(1.0, theta=0.3)],
-                  1, 0.05, anchor=0.0)
-    assert r["theta"] == pytest.approx(0.2, abs=1e-6)
-    good = _line(-1.0, theta=0.1)
-    good["rms"] = 0.5
-    mid = _line(1.0, theta=0.3)
-    mid["rms"] = 2.0
-    tr = LineTracker()
-    r = tr.update([good, mid], 1, 0.05, anchor=0.0)
-    assert r["theta"] == pytest.approx(
-        (0.1 * 4.0 + 0.3 * 0.25) / 4.25, abs=1e-6)
-    bad = _line(1.0, theta=0.3)
-    bad["rms"] = 5.0
-    tr = LineTracker()
-    r = tr.update([_line(-1.0, theta=0.1), bad], 1, 0.05, anchor=0.0)
-    assert r["theta"] == pytest.approx(0.1, abs=1e-6)
+    r = tr.update([_line(-1.0, theta=0.1, n=10),
+                   _line(1.0, theta=0.3, n=30)], 1, 0.05, anchor=0.0)
+    assert r["theta"] == pytest.approx(0.25, abs=1e-6)
 
 
 def test_near_side_uses_pixel_side_not_fit_sign():
