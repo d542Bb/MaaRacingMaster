@@ -136,10 +136,8 @@ def main() -> int:
         if scene is None or ego is None:
             continue
         o = EgoState(float(ego[0]), float(ego[1]), float(ego[2]))
-        committed = (d.get("sel_why") == "commit"
-                     or (d.get("route") or {}).get("ph") == "merging")
         p = plan_motion(scene, o, cfg.motion, cfg.selection, cfg.planner,
-                        gate, coarse_lane=_coarse(d), committed=committed)
+                        gate, intent_lane=float(d.get("x_target") or 0.0))
         uo = float(oldp.get("u") or 0.0)
         un = float(p.u_feedforward)
         full_old += abs(uo) >= 0.8

@@ -15,7 +15,7 @@ from maaracing_master.plugins.speedrush.corridor import (
 from maaracing_master.plugins.speedrush.decision import (
     DecisionEngine, _monotonic_coin_t)
 from maaracing_master.plugins.speedrush.motion_plan import (
-    EgoState, PlanGate, Scene, SceneObj, _Cand, build_scene, plan_motion)
+    EgoState, PlanGate, Scene, _Cand, build_scene, plan_motion)
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, RoadBand, RoadFrame)
 from maaracing_master.plugins.speedrush.traffic import CarView
@@ -155,11 +155,6 @@ def test_metric_car_x_is_time_smoothed_across_ticks():
     assert xs[2] == pytest.approx(xs[1] + a * (1.0 - xs[1]))
 
 
-def _plan(scene):
-    return plan_motion(scene, EgoState(scene.ego_lane, 0.0, 45.0, 0.0),
-                       CFG.motion, CFG.selection, CFG.planner, None)
-
-
 def test_coin_time_only_moves_closer():
     assert _monotonic_coin_t(None, 3.0, 0.0, 0.25) == pytest.approx(3.0)
     # 同组从 1.5s 跳到 3.0s：判为组里更远的一枚，沿用旧时间按经过时间前移
@@ -177,52 +172,6 @@ def test_untimed_far_car_is_not_a_static_wall():
     near = _plan(_scene(cars=[CarSource(1.0, near=True, **car)]))
     assert far.collision_cost == 0.0
     assert near.collision_cost > 0.0
-
-
-def test_out_of_corridor_coin_not_counted():
-    out = _plan(_scene(coins=[CoinSource(20.0, 3, 0.9, 1.0)]))
-    inside = _plan(_scene(coins=[CoinSource(1.0, 3, 0.9, 0.5)]))
-    assert out.layer == 4 and out.value_total == 0.0
-    assert inside.layer == 3 and inside.value_total >= 90.0
-
-
-def test_no_hit_scoring_inside_min_lead():
-    """到站时间 < hit_min_lead：横向已定，不再为擦边满舵。"""
-    late = _plan(_scene(cars=[CarSource(3.3, 0.3, age_ms=0.0)]))
-    ok = _plan(_scene(cars=[CarSource(3.3, 0.6, age_ms=0.0)]))
-    assert late.layer == 4
-    assert ok.layer == 2
-
-
-def test_large_vehicle_not_a_graze_target():
-    """宽度 > 阈值的车不参与擦边，但仍在场景里当障碍。"""
-    normal = _plan(_scene(cars=[CarSource(3.3, 1.0, age_ms=0.0)]))
-    large = _plan(_scene(cars=[CarSource(3.3, 1.0, age_ms=0.0,
-                                        half_w_m=1.25)]))
-    assert normal.layer == 2
-    assert large.layer == 4
-
-
-def test_pass_reach_is_lateral_not_just_arrival_distance():
-    """擦边分只换邻道极限超车：2 道外的车即使候选到站时刻能凑进擦车带，
-    也不该让车横穿两道去够它（20261027 局 s1 9.1~9.4s 空路满杆）。"""
-    road = RoadFrame((RoadBand(0.0, 6.0, -10.0, 10.0, src="measured",
-                               age_ms=0.0, conf=1.0),), 20.0, -10.0, 10.0, True)
-    near = _plan(_scene(road=road, ego_m=0.0,
-                        cars=[CarSource(LW, 1.0, age_ms=0.0)]))
-    far = _plan(_scene(road=road, ego_m=0.0,
-                       cars=[CarSource(2.0 * LW, 1.0, age_ms=0.0)]))
-    assert near.layer == 2 and near.value_total >= CFG.motion.value_graze
-    assert far.layer == 4 and far.value_total == 0.0
-    # 预置同门：视界外的 2 道车也不拉预置分
-    near_prep = _plan(_scene(road=road, ego_m=0.0,
-                             cars=[CarSource(LW, 3.0, age_ms=0.0)]))
-    far_prep = _plan(_scene(road=road, ego_m=0.0,
-                            cars=[CarSource(2.0 * LW, 3.0, age_ms=0.0)]))
-    assert near_prep.value_total > 0.0
-    assert far_prep.value_total == 0.0
-
-
 def _corridor(*, fid=1, last_fid=1):
     bands = tuple(CorridorBand(
         -2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
@@ -289,11 +238,10 @@ def test_corridor_stale_uses_band_age():
 
 # ---------- A2 评估器 ----------
 
-def _plan(scene, *, ego=None, motion=None, gate=None, coarse_lane=None,
-          committed=False):
+def _plan(scene, *, ego=None, motion=None, gate=None, intent_lane=0.0):
     return plan_motion(scene, ego or EgoState(0.0, 0.0, 45.0, 0.0),
                        motion or CFG.motion, CFG.selection, CFG.planner, gate,
-                       coarse_lane=coarse_lane, committed=committed)
+                       intent_lane=intent_lane)
 
 
 def _wide_road():
@@ -307,7 +255,7 @@ def test_candidates_and_determinism():
     n_base = len(CFG.motion.heading_levels) + 1          # 绝对档位 + 当前朝向
     n_rev = sum(1 for u in CFG.motion.heading_levels
                 if abs(u) >= CFG.motion.reverse_min_rad) + 1  # 半程回正（含当前）
-    assert len(a.cand_x) == n_base + n_rev
+    assert len(a.cand_x) == n_base + n_rev + 1   # + 意图跟踪候选
     assert (a.chosen, a.score_key, a.x_preview_m) == \
         (b.chosen, b.score_key, b.x_preview_m)
 
@@ -316,20 +264,37 @@ def test_reverse_candidate_brakes_toward_center():
     """半程回正候选存在时，带横向速度冲过路心的车不再只按恒朝向候选选：
     计划必须给出朝路心（负）的车头角，且预测路径在 2s 内回到路心附近。"""
     s = _scene(road=_wide_road(), ego_m=1.0)
-    p = _plan(s, ego=EgoState(1.0 / LW, 0.047, 45.0, 0.4))
-    assert p.valid and p.layer == 4
+    p = _plan(s, ego=EgoState(1.0 / LW, 0.047, 45.0, 0.4), intent_lane=0.0)
+    assert p.valid and p.layer == 2                     # 意图在带外 = 动作
     assert p.psi_feedforward < 0.4                      # 不是继续右打
     end = p.cand_x[p.chosen][-1]
     assert abs(end) < 1.0                             # 末端回到路心 1m 内
 
 
-def test_coarse_lane_shifts_center_attractor():
-    """无机会时粗层目标道平移中心吸引项：lane=-1 的计划末端明显偏左，
-    奖励/金币价值仍由场景对象决定。"""
+def test_scene_opportunities_do_not_steer_the_plan():
+    """单一意图：场景里的金币/奖励车不再改变计划落点。得分目标只能由决策的
+    intent 给出——两套价值会各自算出一个目标、按谁本拍有效轮流打方向。"""
+    base = _plan(_scene(road=_wide_road(), ego_m=0.0))
+    with_coin = _plan(_scene(
+        road=_wide_road(), ego_m=0.0,
+        coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
+    with_reward = _plan(_scene(
+        road=_wide_road(), ego_m=0.0,
+        rewards=[BonusSource(1.5, 1.0, 0.9, age_ms=0.0)]))
+    for p in (with_coin, with_reward):
+        assert p.chosen == base.chosen
+        assert p.x_preview_m == pytest.approx(base.x_preview_m)
+    # 同样的机会只经由 intent 起作用
+    aimed = _plan(_scene(road=_wide_road(), ego_m=0.0), intent_lane=0.9)
+    assert aimed.cand_x[aimed.chosen][-1] > base.cand_x[base.chosen][-1] + 0.5 * LW
+
+
+def test_intent_shifts_the_tracking_candidate():
+    """唯一意图：决策给的道就是计划要去的道（-1 道 → 末端明显偏左）。"""
     s = _scene(road=_wide_road(), ego_m=0.0)
     base = _plan(s)
-    run = _plan(s, coarse_lane=-1.0)
-    assert run.layer == 4
+    run = _plan(s, intent_lane=-1.0)
+    assert run.layer == 2                               # 跨道 = 动作
     assert run.psi_feedforward < base.psi_feedforward
     assert run.cand_x[run.chosen][-1] < base.cand_x[base.chosen][-1] - 0.5 * LW
 
@@ -350,75 +315,18 @@ def test_center_holds_current_heading_inside_band():
     assert p.psi_feedforward == pytest.approx(0.005)
 
 
-def test_center_only_caps_stick():
-    """无机会时维护性杆幅受限，不得用满舵追偏掉的路心。"""
-    p = _plan(_scene(road=_wide_road(), ego_m=3.0),
-              ego=EgoState(3.0 / LW, 0.0, 45.0, 0.0))
-    assert p.valid and p.layer == 4
-    assert abs(p.psi_feedforward) <= CFG.motion.center_heading_rad
-
-
-def test_reward_beats_coin_and_center():
-    s = _scene(road=_wide_road(),
-               rewards=[BonusSource(2.0, 1.0, 0.9, age_ms=0.0)],
-               coins=[CoinSource(-2.0, 3, 0.8, 1.0, age_ms=0.0)])
-    p = _plan(s)
-    assert p.valid and p.layer == 1
-    assert s.road.bands  # 环境自洽
-    center_only = _plan(_scene(road=_wide_road()))
-    assert center_only.layer == 4
-
-
-def test_committed_suppresses_opportunity_layers():
-    """并线承诺期：奖励车/金币不再把计划改到机会层，只按承诺道回中。"""
-    s = _scene(road=_wide_road(),
-               rewards=[BonusSource(2.0, 1.0, 0.9, age_ms=0.0)],
-               coins=[CoinSource(-2.0, 3, 0.8, 1.0, age_ms=0.0)])
-    p = _plan(s, committed=True)
-    assert p.valid and p.layer == 4
-    assert p.score_key[1] == 0.0          # -value：机会项全关
-
-
-def test_committed_plan_keeps_maintenance_stick_cap():
-    """承诺期并线也受维护杆幅上限：并线靠持续 0.45 杆完成，
-    不为满杆把方向盘当开关（20261027_150850_1 s2 承诺期满杆 18→75 的回归）。"""
-    p = _plan(_scene(road=_wide_road(), ego_m=0.0),
-              committed=True, coarse_lane=1.0)
-    assert p.valid and p.layer == 4
-    assert abs(p.psi_feedforward) <= CFG.motion.center_heading_rad
-
-
-def test_coin_layer_when_no_car_or_reward():
-    p = _plan(_scene(road=_wide_road(),
-                     coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)]))
-    assert p.valid and p.layer == 3
-    assert p.score_key[1] <= -90.0         # -value（空中组 120）
-
-
-def test_coin_beyond_selection_reach_not_chased():
-    """币门与选择层同源：够不着的肩币不作计划层机会。
-
-    20261026 局 s1#3 8.1~8.5s：币组在 −2.2 道（选择层 1.2 道门拒了），
-    计划层 L3 满杆左打 0.5s，车压上左肩。车模修正（横速不衰减）治不了它
-    ——轨迹 2s 扫过的横距反而更宽，仍能"蹭"到远币；契约上门必须同源。"""
-    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
-                     coins=[CoinSource(-7.43, 5, 0.9, 1.0, age_ms=0.0)]))
-    assert p.valid and p.layer == 4
-    assert p.value_total == 0.0
-    near = _plan(_scene(road=_wide_road(), ego_m=0.0,
-                        coins=[CoinSource(-3.0, 5, 0.9, 1.0, age_ms=0.0)]))
-    assert near.layer == 3                 # 1.2 道内的币照追
-
-
-def test_preposition_biases_toward_future_coin():
-    """2s 外的金币也要提前把车带向币线，而不是等到进视界才动。"""
-    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
-                     coins=[CoinSource(2.0, 3, 0.9, 3.0, age_ms=0.0)]),
-              ego=EgoState(0.0, 0.0, 45.0, 0.0))
-    assert p.valid and p.layer == 4
-    assert p.psi_feedforward > 0.0
-
-
+def test_maintenance_caps_stick_action_does_not():
+    """意图就在中心带内=维护：杆幅受限，不得用车头角去追厘米级偏差；
+    意图要跨道=动作：放开全权（否则并线永远打不出去）。"""
+    ego = EgoState(3.0 / LW, 0.0, 45.0, 0.0)
+    hold = _plan(_scene(road=_wide_road(), ego_m=3.0), ego=ego,
+                 intent_lane=3.0 / LW)
+    assert hold.valid and hold.layer == 4
+    assert abs(hold.psi_feedforward) <= CFG.motion.center_heading_rad
+    run = _plan(_scene(road=_wide_road(), ego_m=3.0), ego=ego,
+                intent_lane=0.0)
+    assert run.valid and run.layer == 2
+    assert abs(run.psi_feedforward) > CFG.motion.center_heading_rad
 def test_untimed_depth_car_ahead_biases_sideways():
     """有距无速：本车道前方有纵深、没到站时间的车也要提前往空侧并，
     不能等到它进入 2s 视界（2026-10-19 局 204308_p1 的直撞根因）。"""
@@ -441,13 +349,12 @@ def test_untimed_depth_car_out_of_lane_does_not_bias():
 
 def test_late_timed_car_blocks_lane_change_toward_it():
     """到站时间短于碰撞提前量的车，横移躲不开，但不得主动往它那侧并。"""
-    coins = [CoinSource(3.0, 3, 0.9, 1.0, age_ms=0.0)]
-    base = _plan(_scene(road=_wide_road(), ego_m=0.0, coins=coins),
-                 ego=EgoState(0.0, 0.0, 45.0, 0.0))
+    base = _plan(_scene(road=_wide_road(), ego_m=0.0),
+                 ego=EgoState(0.0, 0.0, 45.0, 0.0), intent_lane=0.85)
     assert base.psi_feedforward >= 0.05
     late = CarSource(3.0, 0.2, z_m=20.0, age_ms=0.0, src="metric")
-    p = _plan(_scene(road=_wide_road(), ego_m=0.0, coins=coins,
-                     cars=[late]), ego=EgoState(0.0, 0.0, 45.0, 0.0))
+    p = _plan(_scene(road=_wide_road(), ego_m=0.0, cars=[late]),
+              ego=EgoState(0.0, 0.0, 45.0, 0.0), intent_lane=0.85)
     assert p.psi_feedforward < base.psi_feedforward
     assert p.psi_feedforward <= 0.05
 
@@ -500,7 +407,7 @@ def test_soft_margin_is_cost_not_infeasible():
     ego_m = 3.85
     s = _scene(road=road, ego_m=ego_m)
     p = _plan(s, ego=EgoState(ego_m / LW, 0.0, 45.0, 0.0),
-              coarse_lane=ego_m / LW)
+              intent_lane=ego_m / LW)
     assert p.valid and p.layer == 4
     assert p.corridor_viol_m == pytest.approx(0.0, abs=1e-9)
     assert p.corridor_soft_viol_m > 0.0
@@ -564,37 +471,6 @@ def test_preview_velocity_is_rollout_velocity():
     assert p.v_preview_lane_s == pytest.approx(45.0 * math.tan(psi) / LW)
     assert p.x_preview_lane == pytest.approx(
         (x * LW - p.frame_delta_m) / LW)
-
-
-def test_hit_tolerance_not_inflated_by_ego_sigma():
-    """自车 σ 不得把物理上够不到的奖励车算成命中。"""
-    m = replace(CFG.motion, sigma_ego0_m=2.0, sigma_ego_rate_mps=2.0,
-                sigma_ego_max_m=10.0)
-    p = _plan(_scene(road=_wide_road(),
-                     rewards=[BonusSource(8.0, 0.5, 0.9, age_ms=0.0)]),
-              motion=m)
-    assert p.valid and p.layer == 4
-
-
-def test_graze_layer_reachable_with_physical_envelope():
-    """擦车带下界=物理包络+余量；自车 σ 不得把整层判死。
-
-    到站时间取 1.15s：tau_align=12（2026-10-26 重辨识，横速不衰减）下
-    杆级 0.55 在此正好落进擦车带 [包络+σ+余量, graze_gap]；0.8s 是旧
-    0.5s 衰减车模的落点，新车模下落在带外。"""
-    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
-                     cars=[CarSource(-0.107, 1.15, age_ms=0.0)]))
-    assert p.valid and p.layer == 2
-    assert p.score_key[1] <= -120.0       # -value（擦车 120）
-
-
-def test_static_car_not_counted_as_pass():
-    """t=None 车只当静态障碍，不得用 t=0 初始距离冒充擦车通过。"""
-    p = _plan(_scene(road=_wide_road(), ego_m=0.0,
-                     cars=[CarSource(2.2, None, z_m=2.0, age_ms=0.0)]))
-    assert p.valid and p.layer == 4
-
-
 def test_imminent_car_skipped_by_reaction_time():
     """反应时内到站的车横向已来不及，不得把全部候选判成碰撞不可行。"""
     p = _plan(_scene(road=_wide_road(),
@@ -618,7 +494,7 @@ def test_sigma_ego_shortens_horizon():
 def _c(idx, value, feasible=True, center=0.0, layer=4, collision=0.0):
     key = (not feasible, -value, 0.0, center, 0.0, idx)
     return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, feasible, 9.0,
-                 0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, layer, key, value,
+                 center, 0.0, layer, key, value,
                  collision_cost=collision)
 
 
@@ -673,7 +549,7 @@ def test_gate_demotes_stale_full_stick_without_dwell():
     def _capped(idx, value, overcap, center=0.0, collision=0.0):
         key = (False, -value, overcap, center, 0.0, idx)
         return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, True, 9.0,
-                     0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 4, key, value,
+                     center, 0.0, 4, key, value,
                      collision_cost=collision)
 
     g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
@@ -723,9 +599,8 @@ def test_planner_tracks_valid_plan_only():
     from maaracing_master.plugins.speedrush.planner import LateralPlanner
     from maaracing_master.plugins.speedrush.tracking import (
         DecisionOutput, DecisionState)
-    s = _scene(road=_wide_road(), ego_m=0.0,
-               coins=[CoinSource(1.5, 5, 0.9, 1.0, age_ms=0.0)])
-    p = _plan(s)
+    s = _scene(road=_wide_road(), ego_m=0.0)
+    p = _plan(s, intent_lane=0.5)
     out = DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
                          x_target=0.0, reason="x", emitted_fid=1,
                          valid_until_fid=10)
@@ -849,92 +724,8 @@ def test_metric_z_reset_also_unlocks_bad_x_hold():
                    traffic=((v,), ()))
     car = next(o for o in eng.scene.objs if o.kind == "car")
     assert -5.0 < car.x_m < 0.0
-
-
-def test_pass_band_covers_the_selection_aim():
-    """擦车计分带必须覆盖选择层的瞄准点（0.65 道）。
-
-    下界=自车半宽+目标半宽+对象σ+collision_margin_m，上界=graze_gap_lane×道宽。
-    2026-10-30 前余量 0.2m 把下界推到 2.34m，瞄准点 2.275m 落在带外——计划
-    只能选「贴着包络过」的候选（L4），一局擦边拍只有 21%。"""
-    lw = LW                       # 道宽只按比例缩放，不变量与具体值无关
-    aim = CFG.selection.graze_gap_lane * lw
-    upper = CFG.motion.graze_gap_lane * lw
-    for half in (0.83, CFG.selection.car_half_lane * lw):
-        for sigma in (0.27, 0.34):        # 实测 σ p50/p90
-            lower = (CFG.selection.ego_half_lane * lw + half + sigma
-                     + CFG.motion.collision_margin_m)
-            assert lower < aim < upper
-
-
 def test_heading_levels_resolve_the_pass_band():
     """档位粒度要能落进计分带：1.3~2s 到站时 0.1 档约 0.8 道、0 档原地，
     中间必须有 0.05 级落点，否则候选总在「贴包络」和「过远」之间跳。"""
     levels = CFG.motion.heading_levels
     assert 0.05 in levels and -0.05 in levels
-
-
-def test_aim_candidate_hits_pass_band_for_adjacent_car():
-    """邻道车在 0.9 道时，开环档位从 3.0m 直接跳到 1.9m（碰撞），计分带被
-    整段跳过。目标位候选按选择层瞄点闭环过去，必须落在带内（擦边层）。"""
-    s = _scene(road=_wide_road())
-    lw = s.lane_w_m
-    car = SceneObj("car", s.ego_x_m + 0.9 * lw, 1.5, 1.0, 0.27, 0.0,
-                   "metric", 15.0, True, True, True, False, 0.85, False)
-    s2 = replace(s, objs=(car,))
-    p = _plan(s2)
-    i = int(round(1.5 / CFG.motion.dt_s))
-    d = abs(p.cand_x[p.chosen][i] - car.x_m)
-    lo = (CFG.selection.ego_half_lane * lw + 0.85 + 0.27
-          + CFG.motion.collision_margin_m)
-    hi = CFG.motion.graze_gap_lane * lw
-    assert p.valid and p.layer == 2
-    assert lo <= d <= hi
-
-
-def test_unreachable_pass_still_prepositions():
-    """视界内但够不到计分带的车也要给预置分，而不是整段值 0 回中。
-
-    2026-10-30 现场：最近车 49% 的拍在 2s 内，计分带只有 8% 的拍落得进去；
-    旧口径下这些车「既不算命中、也不进预置」，车只能等它到眼前再从头横移，
-    而那需要约 1.4s——来不及。现在它们按「2s 末端离擦车位多近」给分，
-    车提前贴向空侧。"""
-    s = _scene(road=_wide_road())
-    car = SceneObj("car", s.ego_x_m, 1.0, 1.0, 0.27, 0.0,
-                   "metric", 15.0, True, True, True, False, 0.85, False)
-    s2 = replace(s, objs=(car,))
-    p = _plan(s2, ego=EgoState(s2.ego_lane, 0.0, 45.0, 0.0))
-    assert p.valid and p.layer == 4
-    assert p.value_total > 0.0                  # 不再整段为 0
-    # 走空侧（路面 -5~5、自车在 1.0 → 左侧更宽），由路宽定，不由候选自证
-    assert p.x_preview_m < s2.ego_x_m
-    assert p.psi_feedforward < -1e-3
-
-
-def test_coarse_reward_hittable_inside_near_window():
-    """粗源奖励车（远场像素定位）在近场窗口内必须能当命中目标。
-
-    2026-10-30 两局：奖励车观测 194/203 走 far 源，旧口径「粗源不作命中」
-    等于整条奖励车通道关掉——车会绕着磁暴车/跳台车走。"""
-    s = _scene(road=_wide_road(),
-               rewards=[BonusSource(1.0, 1.0, 0.9, age_ms=0.0, src="far")])
-    p = _plan(s, ego=EgoState(s.ego_lane, 0.0, 45.0, 0.0))
-    assert p.valid and p.layer == 1
-    assert p.value_total > 0.0
-
-
-def test_coarse_reward_prepositions_before_hit_window():
-    """命中窗（≤1.5s）与视界（2s）之间的粗源奖励车走预置，不是无人区。"""
-    s = _scene(road=_wide_road(),
-               rewards=[BonusSource(1.0, 1.8, 0.9, age_ms=0.0, src="far")])
-    p = _plan(s, ego=EgoState(s.ego_lane, 0.0, 45.0, 0.0))
-    assert p.valid and p.layer == 4
-    assert p.value_total > 0.0
-
-
-def test_fine_reward_still_hits_beyond_coarse_window():
-    """近场源的奖励车不受粗源窗口限制（原有行为不变）。"""
-    s = _scene(road=_wide_road(),
-               rewards=[BonusSource(1.0, 1.8, 0.9, age_ms=0.0, src="pixel")])
-    p = _plan(s, ego=EgoState(s.ego_lane, 0.0, 45.0, 0.0))
-    assert p.valid and p.layer == 1

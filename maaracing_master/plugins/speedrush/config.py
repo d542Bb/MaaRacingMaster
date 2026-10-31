@@ -280,10 +280,6 @@ class Motion:
     # 有 21 个满杆拍，平均侵入只有 1~10cm）。
     corridor_hard_clearance_m: float = 0.15
     corridor_soft_cost_per_m: float = 120.0
-    # 目标位候选：对最近两辆可擦边车各给两侧一条闭环瞄准轨迹。开环档位在
-    # 1.3~2s 到站时相邻档横距差约 1m，计分带（约 0.6m）会被整段跳过；
-    # 目标位候选按选择层同一个擦边偏移落到带内（2026-10-30）。
-    aim_candidates: bool = True
     # 目标位候选的生成律用生产跟踪律（k_head_lane）：计划怎么预测，控制
     # 就怎么执行——第二套生成律会让「计划说能到、车到不了」。
     # 半程回正候选的最小档位：低于此值的档位 2s 扫不过一道，回正没意义。
@@ -293,26 +289,10 @@ class Motion:
     # 反应时内到站的车：横向动作已无法改变结果，不计入硬约束（防贴身会车
     # 全灭后误触 CONSERVE）
     collision_min_lead_s: float = 0.35
-    # 到站时间短于此值：横向结果已定，不再为命中/擦边打分（否则会为最后一刻
-    # 的擦边带满舵），只允许中心/维护动作。
-    hit_min_lead_s: float = 0.5
-    # 粗源奖励车（远场像素定位、横位夹进路缘）作命中目标的到站时间上限：
-    # 近场窗口内像素位置可信，远处夹边值会把车引向路缘。2026-10-30 两局
-    # 96% 的奖励车观测都是粗源，一刀切排除等于关掉整条奖励车通道——车会
-    # 绕着磁暴车/跳台车走（决策层喊了 reward，计划层按 0 价值回中）。
-    reward_coarse_hit_s: float = 1.5
-    # 擦车目标距车心：物理包络+σ+余量约 2.18m，0.65 道只剩 2.5cm 带、
-    # 低于采样分辨率（整层 0 触发）；0.75 道留约 0.36m 带。
-    graze_gap_lane: float = 0.75
-    # 擦边/普通车预置的横向可达门：车心距自车超过此值（道）不参与打分。
-    # 选择层的擦边层只收 |Δx| ≤ 双方半宽（约 0.54 道）的车；计划层若不设门，
-    # 50m 外、2 道外的车也会被算成“擦边目标”并给 120 分——空路满杆左打去
-    # 够左侧 2 道的车（20261027 局 134222_1 s1 9.1~9.4s）。1.25 道保留邻道
-    # 极限超车（约 1 道），拒绝跨两道取分。
-    pass_max_offset_lane: float = 1.25
-    coin_collect_half_lane: float = 0.35
-    # 大车（宽 > 此值的车）不作擦边目标：真实半宽会吃进"擦边"带，
-    # 且卡车的极限超车判定与轿车不同口径。仍按真实半宽计入碰撞。
+    # 无到站时间的车只有在横向确实近（一车宽量级）时才当障碍；更远的同帧车
+    # 不当贴身静态墙。
+    near_untimed_lane: float = 0.75
+    # 大车（宽 > 此值）在「有距无速」域按真实宽度判，不作提前横移的诱因。
     graze_max_width_m: float = 2.2
     # 无纵深车"纵向近"的像素判据：cy 距画面下缘（保险杠机位）不足此值才可当障碍。
     # 远处（cy≈330）的 t=None 车不再被当成贴身静态墙。
@@ -320,23 +300,14 @@ class Motion:
     # 同组金币到站时间只允许按时间递减：突然变大超过此值=看到了组里更远的一枚，
     # 沿用旧时间并前移（否则计划在 1.5s/3.0s 之间反复进出视界）。
     coin_time_jump_tol_s: float = 0.25
-    # 价值模型（RULES §4.2/§4.11）：擦车走量、金币按组、奖励车偶发高值、
-    # 普通碰撞只损失时间——用价值相加替代四层字典序。
-    value_graze: float = 120.0        # 极限超车 120 分/辆
-    value_coin_group: float = 90.0    # 平地金币组 90 分/组
-    value_coin_air: float = 120.0     # 空中金币组（观测 ≥4 枚）
-    value_reward: float = 240.0       # 动作 120 + 一次退场约 180，按偶发折扣
+    # 安全成本（决策给去哪，计划只付安全代价）：普通碰撞只损失时间，价值
+    # 模型不在这里加权得分机会——那是选择层的事。
     cost_collision: float = 60.0      # 每次普通车碰撞的时间/节奏损失
     cost_collision_depth_m: float = 120.0  # 重叠每深 1m 追加成本
     # 中心目标死区与维护性杆幅：带内不修正、只在带外追近侧带边，
     # 防无机会时的画龙（旧选择层同口径 0.3 道 / 0.45 杆幅）。
     center_band_lane: float = 0.3
     center_heading_rad: float = 0.03   # 维护态车头角上限（≈1.7°）：决定横速
-    # 视界外预置：2s 外的金币/奖励车按折扣价计入“2s 末端更靠近”，
-    # 避免只在目标进入视界后才动作（旧选择层 preposition 的价值版）。
-    preposition_horizon_s: float = 4.0
-    preposition_discount: float = 0.5
-    preposition_radius_lane: float = 2.5
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
@@ -752,35 +723,20 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "corridor_hard_clearance_m", 0.15, lo=0),
             corridor_soft_cost_per_m=_num_def(
                 d, "motion", "corridor_soft_cost_per_m", 120.0, lo=0),
-            aim_candidates=_bool(d, "motion", "aim_candidates", True),
             reverse_min_rad=_num_def(
                 d, "motion", "reverse_min_rad", 0.03, lo=0),
             corridor_escape_tol_m=_num_def(
                 d, "motion", "corridor_escape_tol_m", 0.05, lo=0),
             collision_min_lead_s=_num_def(
                 d, "motion", "collision_min_lead_s", 0.35, lo=0),
-            hit_min_lead_s=_num_def(
-                d, "motion", "hit_min_lead_s", 0.5, lo=0),
-            reward_coarse_hit_s=_num_def(
-                d, "motion", "reward_coarse_hit_s", 1.5, lo=0),
-            graze_gap_lane=_num_def(
-                d, "motion", "graze_gap_lane", 0.75, lo=0),
-            pass_max_offset_lane=_num_def(
-                d, "motion", "pass_max_offset_lane", 1.25, lo=0),
-            coin_collect_half_lane=_num_def(
-                d, "motion", "coin_collect_half_lane", 0.35, lo=0),
+            near_untimed_lane=_num_def(
+                d, "motion", "near_untimed_lane", 0.75, lo=0),
             graze_max_width_m=_num_def(
                 d, "motion", "graze_max_width_m", 2.2, lo=0),
             near_cy_margin_px=_num_def(
                 d, "motion", "near_cy_margin_px", 120.0, lo=0),
             coin_time_jump_tol_s=_num_def(
                 d, "motion", "coin_time_jump_tol_s", 0.25, lo=0),
-            value_graze=_num_def(d, "motion", "value_graze", 120.0, lo=0),
-            value_coin_group=_num_def(
-                d, "motion", "value_coin_group", 90.0, lo=0),
-            value_coin_air=_num_def(
-                d, "motion", "value_coin_air", 120.0, lo=0),
-            value_reward=_num_def(d, "motion", "value_reward", 240.0, lo=0),
             cost_collision=_num_def(
                 d, "motion", "cost_collision", 60.0, lo=0),
             cost_collision_depth_m=_num_def(
@@ -789,12 +745,6 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "center_band_lane", 0.3, lo=0),
             center_heading_rad=_num_def(
                 d, "motion", "center_heading_rad", 0.03, lo=0),
-            preposition_horizon_s=_num_def(
-                d, "motion", "preposition_horizon_s", 4.0, lo=0),
-            preposition_discount=_num_def(
-                d, "motion", "preposition_discount", 0.5, lo=0),
-            preposition_radius_lane=_num_def(
-                d, "motion", "preposition_radius_lane", 1.5, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
             corridor_age_max_s=_num_def(
                 d, "motion", "corridor_age_max_s", 0.25, lo=0),

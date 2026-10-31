@@ -88,7 +88,8 @@ def main() -> None:
         if args.restore_gate and last_gate is not None:
             gate.restore(*last_gate)
         t0 = time.perf_counter()
-        p = plan_motion(scene, ego, cfg.motion, cfg.selection, cfg.planner, gate)
+        p = plan_motion(scene, ego, cfg.motion, cfg.selection, cfg.planner, gate,
+                        intent_lane=float(r.get("x_target") or 0.0))
         last_gate = (r.get("plan_gate") if r.get("plan_gate") is not None
                      else gate.snapshot())
         times.append((time.perf_counter() - t0) * 1000.0)

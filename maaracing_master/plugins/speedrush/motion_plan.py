@@ -273,12 +273,6 @@ class _Cand:
     v_preview_lane: float
     feasible: bool
     min_clear_m: float
-    reward_hits: int
-    reward_value: float
-    pass_count: int
-    pass_value: float
-    coin_count: float
-    coin_error_m: float
     center_dev_m: float
     effort: float
     layer: int
@@ -441,15 +435,15 @@ class PlanGate:
 
 def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 plant, gate: PlanGate | None = None, *,
-                coarse_lane: float | None = None,
-                committed: bool = False) -> MotionPlan:
-    """场景 → 候选轨迹 → 四层字典序 → PlanGate。纯函数（gate 除外）。
+                intent_lane: float) -> MotionPlan:
+    """场景 + 决策意图 → 候选轨迹 → 可行性 → 选最贴意图且最省动作的一条。
 
-    ``coarse_lane``：粗层目标道（相对 z=0 中心线，道）；只平移无机会时的
-    中心吸引项——奖励车/擦边/金币的价值仍按场景对象计。
-
-    ``committed``：并线承诺期（路线已定目标道）。机会层（奖励车/擦边/金币）
-    与预置偏移关闭，只按承诺道做中心吸引——目标道不能被计划静默替换。"""
+    **去哪由决策层定**（``intent_lane``，planner 车道系，右正）。计划只回答
+    「怎么去」：在车头角候选空间里滚同一套 ``step``，按可行性（硬边界/反应时
+    内到站车）→ 安全成本（碰撞/有距无速）→ 离意图的偏差 → 动作量 选一条。
+    计划不再有自己的机会价值（金币/奖励车/擦边/预置）——那是选择层的判断，
+    两套价值会各自算出一个目标，再按「谁本拍有效」轮流打方向。并线承诺期
+    也一样：决策的意图就是承诺道，计划只负责走过去。"""
     lane_w = scene.lane_w_m
     if scene.stale:
         return MotionPlan(
@@ -487,12 +481,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     if env is None:
         uncertain = True
     car_half = selection.car_half_lane * lane_w
-    graze = motion.graze_gap_lane * lane_w
-    # 擦边只对横向够得着的车成立：选择层擦边层已经按双方半宽收车，计划层
-    # 若只看「候选到站时刻的横距」，2 道外的车也会被算成擦边目标——满杆
-    # 横穿两道去够一个 50m 外的车（20261027 局 134222_1 s1 9.1~9.4s）。
-    pass_max_off_m = motion.pass_max_offset_lane * lane_w
-    # 大车不作擦边目标（按真实宽度判）；碰撞仍吃它自己的半宽
+    # 大车按真实宽度判（有距无速域与碰撞都用它自己的半宽）
     graze_max_w = motion.graze_max_width_m
 
     def _half(c: SceneObj) -> float:
@@ -500,11 +489,12 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
 
     def _large(c: SceneObj) -> bool:
         return c.half_w_m is not None and c.half_w_m * 2.0 > graze_max_w
-    coin_half = motion.coin_collect_half_lane * lane_w
-    reward_half = ego_half + car_half
-    center0 = scene.road.center_at(0.0) or 0.0
-    if coarse_lane is not None:
-        center0 += coarse_lane * lane_w
+    # 无到站时间的车只有在横向确实近（一车宽量级）时才当障碍——远处同帧的
+    # 车不该被当成贴身静态墙（曾经的 0.75 道口径）。
+    near_off_m = motion.near_untimed_lane * lane_w
+    # 意图在场景帧的位置：决策给的是 planner 车道系，frame_delta 正是两帧的
+    # 平移量（scene = planner*lane_w + frame_delta）。
+    center0 = intent_lane * lane_w + frame_delta
 
     def sig(t: float) -> float:
         return motion.sigma_ego0_m + motion.sigma_ego_rate_mps * t
@@ -517,15 +507,6 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         shortened = True
 
     cars = [o for o in scene.objs if o.kind == "car"]
-    rewards = [] if committed else [o for o in scene.objs
-                                    if o.kind == "reward"]
-    # 币门与选择层同源（coin_pick_tol_lane）：计划不得重新选择选择层够不着的
-    # 机会——肩上的币组选择层拒了，计划层却会为它打满杆（20261026 局 s1#3
-    # 8.1~8.5s：币在 −2.2 道，计划 L3 满杆左打，车压上左肩）。
-    coin_reach_m = selection.coin_pick_tol_lane * lane_w
-    coins = [] if committed else [
-        o for o in scene.objs
-        if o.kind == "coin" and abs(o.x_m - scene.ego_x_m) <= coin_reach_m]
     ts = [k * dt for k in range(n + 1)]
     # 候选命令 = **绝对**车头角指令（rad）。档位不随当前朝向平移：偏移量档
     # 在车已经带着 0.05 rad 时给不出「反打到 −0.03」这一档，而回带刹车恰恰
@@ -561,24 +542,10 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         seqs.append((c, (c,) * n_half + (0.0,) * (n - n_half), None))
     c = _h(psi0)
     seqs.append((c, (c,) * n_half + (0.0,) * (n - n_half), None))
-    # 目标位候选（2026-10-30）：开环档位在 1.3~2s 到站时相邻档的横距差约
-    # 1m，计分带（约 0.6m）经常被整段跳过——邻道车只有 18% 能被擦边层接住，
-    # 剩下的从「贴包络」直接跳到「过远」。按选择层同一个擦边偏移，对最近
-    # 两辆车各给两侧一条闭环瞄准轨迹（同一套跟踪律），保证带内有落点。
-    # 候选追加在开环之后，不改变开环候选的下标。
-    if motion.aim_candidates:
-        aim_gap = selection.graze_gap_lane * lane_w
-        aim_cars = sorted(
-            (c for c in cars
-             if c.timed and c.in_corridor and not _large(c)
-             and c.t_arrive_s is not None
-             and motion.hit_min_lead_s <= c.t_arrive_s <= horizon
-             and abs(c.x_m - scene.ego_x_m) <= pass_max_off_m),
-            key=lambda c: c.t_arrive_s)[:2]
-        for c in aim_cars:
-            for side in (-1.0, 1.0):
-                # 轨迹生成与 step() 同用车道单位：目标由米换回道
-                seqs.append((None, None, (c.x_m + side * aim_gap) / lane_w))
+    # 意图跟踪候选（2026-10-31 单一意图）：与执行层同一条律逐步重算车头角，
+    # 目标是决策意图本身。开环档位在 1.3~2s 到站时相邻档横距差约 1m，计分带
+    # 会被整段跳过，所以必须有一条闭环落点候选。候选下标追加在开环之后。
+    seqs.append((None, None, center0 / lane_w))
     cands: list[_Cand] = []
     v_ego = ego.v_mps or 0.0
     v_lat_ego = (v_ego * math.tan(ego.heading) / lane_w) if v_ego > 0 else 0.0
@@ -617,7 +584,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             if not c.in_corridor:
                 continue
             if c.t_arrive_s is None:
-                if not c.near or abs(c.x_m - scene.ego_x_m) > graze:
+                if not c.near or abs(c.x_m - scene.ego_x_m) > near_off_m:
                     continue
                 clears.append(min((clearance(c, t) for t in ts),
                                   default=float("inf")))
@@ -644,28 +611,6 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                                 for xx in chk) / n_chk
         corridor_ok = hard_viol <= 0.0
 
-        reward_hits = 0
-        reward_hit_ids: set[int] = set()
-        for r in rewards:
-            # 越界/无时间不作为命中目标。粗源（远场像素定位、横位夹边）
-            # 只在近场窗口内当目标：更远的夹边值会把车引向路缘，近处像素
-            # 位置可信。一刀切排除等于关掉奖励车通道——本域观测 96% 走
-            # 粗源，车会绕着磁暴车/跳台车走（2026-10-30 两局）。
-            if not r.timed or not r.in_corridor:
-                continue
-            if r.t_arrive_s is None or r.t_arrive_s > horizon \
-                    or r.t_arrive_s < motion.hit_min_lead_s:
-                continue
-            if r.coarse and r.t_arrive_s > motion.reward_coarse_hit_s:
-                continue
-            xr = _x_at(xs_m, r.t_arrive_s, dt)
-            # 命中判据只加对象定位 σ：自车 σ 加进命中半径会把“够不到”
-            # 也算成命中（影子实测 9~14% 奖励车命中行物理上够不到）。
-            tol = reward_half + r.sigma_m
-            if abs(xr - r.x_m) <= tol:
-                reward_hits += 1
-                reward_hit_ids.add(id(r))
-        reward_value = motion.value_reward * reward_hits
         # 近时目标不得“迎上去”：到站时间已短于碰撞提前量的车，横移躲不开，
         # 但仍可以**不主动往它所在的横向方向并**——换道进它的车道不是反应
         # 不及，是选择错误（2026-10-19 局 212207_p1 皮卡与 212252_p2 绿车）。
@@ -711,137 +656,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                     range_cost += (motion.cost_collision * urgency
                                    * (1.0 - d_h / overlap)
                                    * motion.range_hazard_gain)
-        pass_count = 0
-        pass_hit_ids: set[int] = set()
-        for c in (() if committed else cars):
-            # 无到站时间的车只当静态障碍，不算“擦车通过”：
-            # t=None 的并列车会让 t=0 的初始距离冒充一次超车。
-            # 越界读数与大车同理：不作擦边目标。横向超过可达门也不作：
-            # 擦边分只换邻道极限超车，不换跨道横穿。
-            if not c.timed or not c.in_corridor or _large(c):
-                continue
-            if abs(c.x_m - scene.ego_x_m) > pass_max_off_m:
-                continue
-            tc = c.t_arrive_s
-            if tc is None or tc > horizon or tc < motion.hit_min_lead_s:
-                continue
-            d = abs(_x_at(xs_m, tc, dt) - c.x_m)
-            if ego_half + _half(c) + c.sigma_m \
-                    + motion.collision_margin_m <= d <= graze:
-                pass_count += 1
-                pass_hit_ids.add(id(c))
-        pass_value = motion.value_graze * pass_count
-        coin_hits, coin_value, coin_error = 0.0, 0.0, 0.0
-        coin_hit_ids: set[int] = set()
-        for c in coins:
-            if not c.in_corridor:
-                continue
-            if c.t_arrive_s is None or c.t_arrive_s > horizon \
-                    or c.t_arrive_s < motion.hit_min_lead_s:
-                continue
-            xr = _x_at(xs_m, c.t_arrive_s, dt)
-            err = abs(xr - c.x_m)
-            tol = coin_half + c.sigma_m
-            if err <= tol:
-                coin_hits += 1
-                coin_hit_ids.add(id(c))
-                coin_value += (motion.value_coin_air if c.count >= 4
-                               else motion.value_coin_group)
-                coin_error += err
-        if coin_hits > 0:
-            coin_error /= coin_hits
-        # 预置梯度：4s 内的金币/奖励车，按“末端离它多近”给连续小分——
-        # 不等目标进入可达范围才动作（旧选择层 preposition 的价值版）。
-        # 已被本候选命中的对象不重复计；不加普通车（近场擦车另算）。
-        prep_value = 0.0
-        prep_h = 0.0 if committed else motion.preposition_horizon_s
-        if prep_h > 0.0:
-            radius = max(motion.preposition_radius_lane * lane_w, 1e-6)
-            for r in rewards:
-                if not r.in_corridor or id(r) in reward_hit_ids \
-                        or r.t_arrive_s is None:
-                    continue
-                # 粗源奖励车的命中窗更短，预置的起点随之提前——否则
-                # (命中上限, horizon] 这一段落两边都不管。
-                r_lo = (motion.reward_coarse_hit_s
-                        if r.coarse else horizon)
-                if not (r_lo < r.t_arrive_s <= prep_h):
-                    continue
-                x_ref = _x_at(xs_m, min(r.t_arrive_s, horizon), dt)
-                prox = max(0.0, 1.0 - abs(x_ref - r.x_m) / radius)
-                prep_value += motion.value_reward \
-                    * motion.preposition_discount * prox \
-                    * (0.5 if r.coarse else 1.0)   # 粗源位置只配半个权重
-            for c in coins:
-                if not c.in_corridor or id(c) in coin_hit_ids \
-                        or c.t_arrive_s is None \
-                        or not (horizon < c.t_arrive_s <= prep_h):
-                    continue
-                x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
-                prox = max(0.0, 1.0 - abs(x_ref - c.x_m) / radius)
-                prep_value += (motion.value_coin_air if c.count >= 4
-                               else motion.value_coin_group) \
-                    * motion.preposition_discount * prox
-            # 普通车也预置：目标不是车心，而是候选所在侧的擦车距离，
-            # 让车提前贴近超车线，而不是等车到眼前才反应。
-            # **视界内够不到计分带的车也算**（2026-10-30 现场：最近车 49%
-            # 的拍在 2s 内，但计分带只有 8% 的拍能落进去——剩下的车在旧口径
-            # 下「既不算命中、也不进预置」，整段值 0，车只能回中，等它到眼前
-            # 再从头横移已经来不及）。已命中（pass_hit_ids）的不重复计。
-            for c in cars:
-                if not c.timed or not c.in_corridor or _large(c) \
-                        or c.t_arrive_s is None or id(c) in pass_hit_ids \
-                        or not (motion.hit_min_lead_s
-                                < c.t_arrive_s <= prep_h):
-                    continue
-                # 预置与擦边同门：不为跨道的未来车提前横移。
-                if abs(c.x_m - scene.ego_x_m) > pass_max_off_m:
-                    continue
-                x_ref = _x_at(xs_m, min(c.t_arrive_s, horizon), dt)
-                # 走哪侧由路宽决定（与选择层 `_pass_x` 同一条规则），不由
-                # 候选自己已经偏的那侧决定——否则预置梯度自证：往哪偏就
-                # 奖励往哪偏，空侧反而没有牵引。
-                room_l = (c.x_m - scene.road.left_m) \
-                    if scene.road.left_m is not None else lane_w
-                room_r = (scene.road.right_m - c.x_m) \
-                    if scene.road.right_m is not None else lane_w
-                side = 1.0 if room_r >= room_l else -1.0
-                target = c.x_m + side * graze
-                prox = max(0.0, 1.0 - abs(x_ref - target) / radius)
-                prep_value += motion.value_graze \
-                    * motion.preposition_discount * prox
-            # 有距无速（2026-10-19 局 204308_p1）：本车道前方有纵深但速度
-            # 窗口未开的车，按距离持续给“往空侧并”的小分——不等到站时间。
-            # 不参与擦车/命中奖励，只做提前横移；越近越强，出圈即停。
-            range_h = motion.range_hazard_m
-            if range_h > 0.0:
-                left = scene.road.left_m if scene.road.left_m is not None \
-                    else -lane_w
-                right = scene.road.right_m if scene.road.right_m is not None \
-                    else lane_w
-                for c in cars:
-                    if c.timed or not c.depth or not c.in_corridor \
-                            or _large(c) or c.z_m is None:
-                        continue
-                    if not (motion.near_z_m < c.z_m <= range_h):
-                        continue
-                    if abs(c.x_m - scene.ego_x_m) > lane_w * 0.65:
-                        continue
-                    urgency = 1.0 - c.z_m / range_h
-                    side = 1.0 if (right - c.x_m) >= (c.x_m - left) else -1.0
-                    target = c.x_m + side * graze
-                    target = max(left + graze * 0.5,
-                                 min(right - graze * 0.5, target))
-                    # 按到达该车的时刻取横位，不拿 2s 末端瞄——否则会为了
-                    # “2 秒后离目标更近”而选轻打舵，正是晚并线的来源。
-                    t_h = min(horizon, c.z_m
-                              / max(motion.range_hazard_speed_mps, 1e-6))
-                    x_ref = _x_at(xs_m, t_h, dt)
-                    prox = max(0.0, 1.0 - abs(x_ref - target) / radius)
-                    prep_value += motion.value_graze * urgency * prox \
-                        * motion.preposition_discount * motion.range_hazard_gain
-        value = (reward_value + pass_value + coin_value - collision_cost
-                 + prep_value - range_cost)
+        value = -(collision_cost + range_cost)
         soft_cost = soft_viol * motion.corridor_soft_cost_per_m
         # 中心目标带死区：带内不修正，只在带外惩罚超出量。带宽与选择层
         # 同一把尺子——车道内可偏 0.5−半宽−余量；motion.center_band_lane
@@ -853,32 +668,26 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                          for xx in xs_m) / len(xs_m)
         # 动作成本 = 车头角指令相对当前朝向的改动量：带内无修正时优先保持朝向。
         effort = abs(cmd0 - psi0) * horizon
-        if reward_hits:
-            layer = 1
-        elif pass_count:
-            layer = 2
-        elif coin_hits:
-            layer = 3
-        else:
-            layer = 4
-        # 无机会时限制维护性动作：维护/预置不得用大车头角去追偏掉的路心。
+        # 层只描述意图的性质：意图在中心带内=维护（4），要跨道=动作（2）。
+        # 执行层用它决定维护性杆幅上限与并线承诺的控制权，不再代表"机会种类"。
+        maintenance = abs(center0 - scene.ego_x_m) <= band_m
+        layer = 4 if maintenance else 2
+        # 维护时限制动作：不得用大车头角去追偏掉的路心。
         # 判的是**车头角本身**（它决定横速），不是相对当前朝向的改动量：
         # 车正在大角度回带时，唯一可取的动作恰恰是反打刹车——按改动量判会
         # 把它排除，只许继续朝外打。有距无速域在场时例外（那是避让）。
-        overcap = 1e6 if (layer == 4 and not range_hazard_active
+        overcap = 1e6 if (maintenance and not range_hazard_active
                           and abs(cmd0) > motion.center_heading_rad) else 0.0
-        # key 顺序：可行 > 核心价值（碰撞/机会）> 维护杆幅 > 中心偏差 >
-        # 动作 > 软余量代价。核心价值在杆幅前——为避撞/得分动用满杆是允许的；
-        # 软余量代价在杆幅后——否则贴线 3 分的小差就能让满杆盖过受限候选
-        # （旧布局把 overcap 放在 -value 之后，正是这个漏）。软余量放在末位
-        # 只做同价值/同动作的细判，不把它变成候选翻转的驱动。
+        # key 顺序：可行 > 安全成本（碰撞/有距无速）> 维护杆幅 > 离意图偏差 >
+        # 动作 > 软余量代价。安全成本在杆幅前——为避撞动用满杆是允许的；
+        # 软余量代价在杆幅后——否则贴线 3 分的小差就能让满杆盖过受限候选。
+        # 意图偏差在安全之后：安全优先，其次才是走到决策要的道。
         key = (not feasible, -value, overcap, center_dev, effort,
                soft_cost, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(
             idx, cmd0, xs_m, xs_m[i], vs_lane[i], feasible,
-            min_clear, reward_hits, reward_value, pass_count, pass_value,
-            coin_hits, coin_error, center_dev, effort, layer, key,
+            min_clear, center_dev, effort, layer, key,
             value, collision_cost, hard_viol, soft_viol))
 
     feasible = [c for c in cands if c.feasible]

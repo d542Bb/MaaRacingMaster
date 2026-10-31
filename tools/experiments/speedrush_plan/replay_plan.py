@@ -111,14 +111,19 @@ def main() -> None:
         if last_gate is not None:
             gate.restore(*last_gate)
         if r.get("plan_ego") is not None:
-            ego = EgoState(*r["plan_ego"])
+            # plan_ego=[executed, psi, r]；在线比例在 lat_ctrl.vmp
+            # （旧 trace 没有 steer_norm 列，执行层不需要它做预测）
+            _lc = r.get("lat_ctrl") or {}
+            ego = EgoState(float(r["plan_ego"][0]), float(r["plan_ego"][1]),
+                           _lc.get("vmp"), 0.0)
         else:
             src = prev if prev is not None else r
             ego = EgoState(float(src["executed_lane"]),
                            float(src["v_lat_est"]),
                            float(src["steer_norm"]))
         t0 = time.perf_counter()
-        p = plan_motion(scene, ego, cfg.motion, cfg.selection, cfg.planner, gate)
+        p = plan_motion(scene, ego, cfg.motion, cfg.selection, cfg.planner, gate,
+                        intent_lane=float(r.get("x_target") or 0.0))
         times.append((time.perf_counter() - t0) * 1000.0)
         if r.get("plan_gate") is not None:
             last_gate = tuple(r["plan_gate"])
@@ -132,7 +137,7 @@ def main() -> None:
             same = (p.valid == rec["valid"]
                     and p.layer == rec.get("layer", p.layer)
                     and abs(p.x_preview_m - rec["x"]) <= 1e-3
-                    and abs(p.u_feedforward - rec["u"]) <= 1e-3)
+                    and abs(p.psi_feedforward - rec["pc"]) <= 1e-3)
             n_ok_cmp += int(same)
             n_bad_cmp += int(not same)
         gap_s = (r["ts_ns"] - prev_ts) / 1e9 if prev_ts is not None else None

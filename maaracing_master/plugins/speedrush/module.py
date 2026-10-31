@@ -1307,7 +1307,8 @@ class SpeedRushModule(ActivityModule):
             chain["last_committed"] = committed
             plan = None
             if cfg.motion.mode != "off" and chain["engine"].scene is not None \
-                    and out.state is DecisionState.CRUISE:
+                    and out.state is DecisionState.CRUISE \
+                    and out.x_target is not None:
                 plan_ego = EgoState(planner.state.executed_lane,
                                     planner.state.heading,
                                     planner.state.v_mps,
@@ -1315,8 +1316,9 @@ class SpeedRushModule(ActivityModule):
                 plan = plan_motion(
                     chain["engine"].scene, plan_ego,
                     cfg.motion, cfg.selection, cfg.planner, chain["gate"],
-                    coarse_lane=chain["engine"].coarse_lane,
-                    committed=committed)
+                    # 唯一意图：决策本拍的目标（planner 车道系）。计划不再自己
+                    # 挑机会——它只回答"怎么安全地去"，避免两套目标轮流打方向。
+                    intent_lane=out.x_target)
                 chain["last_plan_ego"] = plan_ego
             else:
                 chain["last_plan_ego"] = None

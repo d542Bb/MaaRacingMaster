@@ -828,8 +828,7 @@ class LateralPlanner:
         if (plan is not None and plan.valid and st is DecisionState.CRUISE
                 and not self.state_unverified):
             merge_commit = (getattr(decision, "phase", "keep") == "merging"
-                            and decision.x_target is not None
-                            and getattr(plan, "layer", None) == 4)
+                            and decision.x_target is not None)
             if merge_commit:
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
@@ -839,7 +838,8 @@ class LateralPlanner:
                 self._plan_hold_left = 0
                 self._plan_hold_commit = True
             else:
-                # 维护层（无碰撞/机会代价）不得用满杆追偏掉的路心
+                # 维护层（意图在中心带内）不得用满杆追偏掉的路心；有安全
+                # 代价（碰撞/有距无速）时放开全权——那是避让，不是追路心。
                 cap = (self.p.hold_stick_max
                        if getattr(plan, "layer", None) == 4
                        and getattr(plan, "value_total", 0.0) >= 0.0

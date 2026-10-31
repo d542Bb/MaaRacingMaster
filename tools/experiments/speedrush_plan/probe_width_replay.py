@@ -127,7 +127,7 @@ def replay(rows, policy: str, cfg):
                            float(src["v_lat_est"]),
                            float(src["steer_norm"]))
         p = plan_motion(scene, ego, cfg.motion, cfg.selection, cfg.planner,
-                        gate)
+                        gate, intent_lane=float(r.get("x_target") or 0.0))
         last_gate = (tuple(r["plan_gate"]) if r.get("plan_gate") is not None
                      else gate.snapshot())
         # 通过带是否非空：ego_half + half + sigma + margin <= graze
