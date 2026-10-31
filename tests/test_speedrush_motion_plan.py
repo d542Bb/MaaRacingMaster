@@ -633,14 +633,17 @@ def test_plan_tracking_caps_maintenance_not_collision():
                          x_target=0.0, reason="x", emitted_fid=1,
                          valid_until_fid=10)
     plan = SimpleNamespace(valid=True, psi_feedforward=0.14, x_preview_lane=2.0,
-                           v_preview_lane_s=0.0, layer=4, value_total=0.0)
+                           v_preview_lane_s=0.0, layer=4, value_total=0.0,
+                           collision_cost=0.0)
     pl = LateralPlanner(CFG.planner)
     pl.update(out, 0.05, 1, plan=plan)
     assert pl.last_steer_raw == pytest.approx(CFG.planner.hold_stick_max)
     pl2 = LateralPlanner(CFG.planner)
+    # 只有真的预测到碰撞才解除维护杆幅；"有距无速"的小代价不算
     pl2.update(out, 0.05, 1, plan=SimpleNamespace(
         valid=True, psi_feedforward=0.14, x_preview_lane=2.0,
-        v_preview_lane_s=0.0, layer=4, value_total=-60.0))
+        v_preview_lane_s=0.0, layer=4, value_total=-60.0,
+        collision_cost=60.0))
     assert pl2.last_steer_raw > CFG.planner.hold_stick_max
 
 

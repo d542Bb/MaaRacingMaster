@@ -838,11 +838,14 @@ class LateralPlanner:
                 self._plan_hold_left = 0
                 self._plan_hold_commit = True
             else:
-                # 维护层（意图在中心带内）不得用满杆追偏掉的路心；有安全
-                # 代价（碰撞/有距无速）时放开全权——那是避让，不是追路心。
+                # 维护层（意图在中心带内）不得用满杆追偏掉的路心；只有真的
+                # 预测到碰撞（collision_cost>0）才放开全权——那是避让。"有距
+                # 无速"的小代价不算：计划的 value 现在只有代价、恒 ≤0，用
+                # value_total>=0 判维护会让维护态几乎永远全权（20261031 两局
+                # 的摆头来源之一）。
                 cap = (self.p.hold_stick_max
                        if getattr(plan, "layer", None) == 4
-                       and getattr(plan, "value_total", 0.0) >= 0.0
+                       and getattr(plan, "collision_cost", 0.0) <= 0.0
                        else None)
                 steer_raw = self._law_psi(plan.psi_feedforward, cap=cap)
                 self._plan_hold_psi = plan.psi_feedforward

@@ -681,8 +681,13 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         # key 顺序：可行 > 安全成本（碰撞/有距无速）> 维护杆幅 > 离意图偏差 >
         # 动作 > 软余量代价。安全成本在杆幅前——为避撞动用满杆是允许的；
         # 软余量代价在杆幅后——否则贴线 3 分的小差就能让满杆盖过受限候选。
-        # 意图偏差在安全之后：安全优先，其次才是走到决策要的道。
-        key = (not feasible, -value, overcap, center_dev, effort,
+        # 安全成本按 switch_margin 分桶再比：成本模型只有代价、没有得分，
+        # 逐分排序会让任何一点"有距无速"小代价盖过离意图的偏差——计划于是
+        # 选另一条道，车跟着目标来回摆（20261031 两局：计划不选意图跟踪
+        # 候选的拍占 39~51%，落点能差一整道）。桶内成本视为同价，交给偏差
+        # 决定；真实碰撞（60+）仍在更高桶里优先。
+        cost_bucket = int(round((-value) / max(motion.switch_margin, 1e-6)))
+        key = (not feasible, cost_bucket, overcap, center_dev, effort,
                soft_cost, idx)
         i = max(1, min(n, int(round(motion.preview_s / dt))))
         cands.append(_Cand(
