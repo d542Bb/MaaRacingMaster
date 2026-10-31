@@ -222,6 +222,23 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   上 `disconnect()`——否则每开一次弹窗漏一个。
 - **空槽位仍是普通圆角**：它只有一圈虚线边框、没有照片，`clip-path` 会把边框圆角一起裁掉。
 
+## 圆角形状（试点，仅主控页卡片）
+
+`border-radius` 只能画圆弧：它与直边相切，但曲率在切点从 0 直接跳到 1/r，观感是
+「到这里突然开始转」。`corner-shape` 让圆角按超椭圆走，切点曲率为 0，而且 border、
+背景、outline、box-shadow 都跟着这条曲线——不需要裁切整个元素（裁切会把阴影一起吃掉）。
+
+- **位置**：`style.css` 末尾的 `@supports (corner-shape: superellipse(3))` 块，
+  只作用于 `.task-item` 与 `#page-control .card`。设置页/关于页的卡片不在试点内。
+- **降级**：不支持的引擎整块不解析，卡片继续用 `border-radius` 圆弧，不需要另写覆盖规则。
+- **取值**：`--mra-corner-shape`（`:root`）。峰值曲率对比（r=8）：圆弧恒为 1/r；
+  `superellipse(3)` 为 1.78/r；`squircle`（= superellipse(4)）为 2.52/r，最方。
+- **半径要跟着调**：超椭圆的拐角被限制在半径框内，所以同样 8px 下它的峰值曲率是圆弧的
+  1.78 倍；而选卡弹窗那条曲率连续曲线峰值只有 1/r、跨度 1.49r。两边观感要一致，
+  corner-shape 的半径大约要放大到 1.8 倍——这是试点要定的第一件事。
+- **边界**：静态锁 `tests/test_frontend_corner_shape.py`——必须在 `@supports` 内、
+  不得出现全站选择器、选卡弹窗的描边动画不得被它替代（那是独立几何实现）。
+
 ## 环境中心（设置页）
 
 设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.mra-tool-btn--block` 不另设视觉）
