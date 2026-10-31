@@ -1610,9 +1610,10 @@ class SpeedRushModule(ActivityModule):
             # 被供数门拒绝，垃圾对/对宽门/路心超限三道门未分账）：本拍原始对
             # + 对宽（二元定一对）+ W 真值 + 拒绝原因——与 ro_source 拒绝拍
             # 同拍 join 即复算三者的缺席拍占比，门标定（OFF_MAX/对宽容忍）有数。
-            # 复算口径：对宽门判据是 ro_w（W=近 200 过门对的中值）配 ro_pair_w
-            # （本拍对宽），cor_w 是走廊表示面的当拍滤波宽——拿 cor_w 比对宽门
-            # 会得出假结论；被拒本拍对宽仍进走廊表示面（门只拦供数路）
+            # 复算口径：master 的对宽门锚在规则路宽 4.0 道；回放链的判据是
+            # ro_w（W=近 200 过门对的中值）配 ro_pair_w（本拍对宽）。cor_w 是
+            # 走廊表示面的当拍滤波宽——拿 cor_w 比对宽门会得出假结论；被拒
+            # 本拍对宽仍进走廊表示面（门只拦供数路）
             "ro_off_raw": None if chain["ego_road"].last.get("off_raw") is None
             else round(chain["ego_road"].last["off_raw"], 4),
             "ro_w": None if chain["ego_road"].last.get("width") is None
@@ -1685,8 +1686,8 @@ class SpeedRushModule(ActivityModule):
             else round(abs(dgeo.coef[2]), 3),
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账
             # 与影子重放的验收面（带来源明细在 debugview/offline 重放）。
-            # cor_w=当拍滤波对宽（走廊表示面），与对宽门判据 ro_w（W 中值）
-            # 不是同一量——两套量并存见 ro_w 分账列注释
+            # cor_w=当拍滤波对宽（走廊表示面），与对宽门判据（master=规则
+            # 4.0 道；回放链=ro_w 中值）不是同一量——两套量并存见 ro_w 注释
             "cor_w": None if corridor is None
             else round(corridor.width_lane, 3),
             "cor_ph": None if corridor is None else corridor.plane_health,
@@ -2269,18 +2270,19 @@ class _EgoRoadObserver:
     trace 365~376：车贴左黄线时 pair_slot/memory 报路心 0，墙实体 −1.75 道，
     目标横摆 ±6m）。绝对路心只认物理边界与宏观先验：
 
-    - wall：双侧同箱新鲜在场且宽与 W 相容 → 中点 + 墙到墙宽；单侧 → 墙 ±
-      W/2（空气墙反推，W 成形才有值）；双侧宽矛盾或两侧单侧反推矛盾 → 诚实
-      弃权（不猜哪一侧锁错结构），交绿区/记忆；两帧内遮挡墙同单侧规则
-      （src=wall_occl，仅位置）。
+    - wall：双侧同箱新鲜在场且宽与规则路宽相容 → 中点 + 墙到墙宽；单侧 →
+      墙 ± W/2（空气墙反推，W 不足时用规则先验 4.0 道）；双侧宽矛盾或两侧
+      单侧反推矛盾 → 诚实弃权（不猜哪一侧锁错结构），交绿区/记忆；两帧内
+      遮挡墙同单侧规则（src=wall_occl，仅位置）。
     - region：绿区物理边界（区弃权/墙未成形时的双侧宏观读数）。
     - memory：只存绝对来源（wall/region）成功拍，原值保持；TTL 0.8s 内桥接
       短暂遮挡，过期诚实 None。pair/pair_slot 永不进 master 路心。
     - 门禁：平面尺度门（坏平面整帧不进供数）、来源跳变门（>0.4 道需连续
-      2 拍同向一致）、|center|>OFF_MAX、双侧宽超 W±20%。
+      2 拍同向一致）、|center|>OFF_MAX、双侧宽偏离规则路宽超 0.7 道。
 
     off/veto 为回放对比保留旧链（pair → wall → pair_slot → region → memory），
-    逐位不复用 master 的门禁；两者共享的只有 W 统计与 debug 数据面。
+    逐位不复用 master 的门禁；W 统计口径也按链分流（master 锚规则先验，
+    回放链保持旧相对门），共享的只有样本窗与 debug 数据面。
 
     **拒绝与缺席分两条路**：候选对被门禁拒绝（垃圾/污染/互证否决）=当帧证据
     坏，诚实弃权不兜底（宁弃不喂假路心）；候选缺席（单侧/无效/复用拍过期）
@@ -2292,12 +2294,25 @@ class _EgoRoadObserver:
     # 路宽 W 统计（阶段二 §一.3 兜底界）：双侧物理读数宽 (R−L) 的中位数，
     # 车道单位。master 只认双侧墙箱宽与绿区区宽（同一物理语义，不混尺）；
     # 回放链仍吃找边对宽。W 是单侧墙定位走廊中心的先验（wall 路径的 W/2）。
-    W_MIN_SAMPLES = 30               # 成形所需最少对宽数
+    #
+    # 先验是规则事实（RULES：全赛道固定 4 条等宽车道，路肩不额外占宽），
+    # 不是从读数里估出来的：墙到墙在车道单位下恒为 4.0 道，与米制标定的
+    # 绝对误差无关（分子分母同一把尺）。宽门必须锚在它上面——早期版本用
+    # 「学习中位数 ±20%」当门，先验一旦被近场窄读数拖到 3.3，真 4.0 读数
+    # 反而全被判污染，2.6 道的假缘继续喂数，形成自锁死循环。
+    W_PRIOR_LANE = 4.0
+    # 门宽按实测定：三局 wall 双侧宽中位 3.79~4.06 道、p10~p90 约 3.3~4.45
+    # （逐局系统偏置最高 0.25 道）。±0.35 会拒 14~28% 合法读数；±0.7 实测
+    # 拒绝率 3.3%/3.3%/14.9%——第三局的低尾 3.0~3.3 道是右缘锁白虚线/尺度
+    # 压缩段（同帧深度双侧宽同步缩水，中心也随之偏移），本就该拒。
+    W_GUARD_LANE = 0.7
+    W_CENTER_STEP_LANE = 0.15        # 相邻新证据拍中点位移上限（实测正常 <0.05 道）
+    W_MIN_SAMPLES = 30               # 成形所需最少对宽数（master 不足时用先验）
     W_KEEP_SAMPLES = 200             # 滑动样本窗上限（路型缓变，旧样本滚出）
-    W_GUARD_FRAC = 0.2               # 对宽超出 W±此比例 → 污染（收紧自 ±40%）
-    # W 成形地板（道）：本赛道 4 车道 ≈ 4 道宽（RULES），保险杠近场视锥
-    # 裁切/假缘会给出 2.5~2.7 道的"窄走廊"——不能让它定义整局路宽先验
-    # （实拍 173018_p2：近场 L/R 对宽 2.6 道像真路，会把真 4.0 道对判成污染）。
+    # 回放链（off/veto）仍用旧的相对门，逐位保持旧行为；master 不用。
+    W_GUARD_FRAC = 0.2               # 对宽超出 W±此比例 → 污染
+    # W 成形地板（道，仅回放链）：保险杠近场视锥裁切/假缘会给出 2.5~2.7 道的
+    # "窄走廊"——不能让它定义整局路宽先验。
     W_MIN_LANE = 3.0
     # 绝对路心记忆（2026-10-23）：读数在自车系，记忆只能桥接短暂遮挡——
     # TTL 内自车横移 ≈ 0.2 道（0.8s @ 1m/s 横速），2s 会把旧帧的车位当路心。
@@ -2334,9 +2349,12 @@ class _EgoRoadObserver:
         self._far_hint: float | None = None   # 共享方向结果（EMA，道，右正）
         self._far_hint_t: float | None = None
         self._xc_streak = 0          # 连续互证 veto 计数（达 bypass 预算放行）
+        self._master = xcheck is not None and xcheck.mode == "master"
+        # 本拍是否 master 链（W 口径按链分流；update 每拍按模式重写）
         self._slot: dict[str, tuple] = {}     # 最近有效对缓存 (el, er, 时刻)
         self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口）
         self._w_samples: deque = deque(maxlen=self.W_KEEP_SAMPLES)
+        self._w_center: float | None = None   # 最近一次喂宽读数拍的中点（跳变确认）
         self._mem: tuple | None = None        # 朝向记忆 (center, width, 时刻)
         self._last_center: float | None = None   # 最近一次采信的路心（跳变门基线）
         self._jump_pending: tuple | None = None  # 待确认的跳变 (center, 连续拍数)
@@ -2378,6 +2396,7 @@ class _EgoRoadObserver:
             self._far_hint_pending = True
         grid_off = self._grid_off(grid)     # 互证审计面：闸关也常算
         master = self._xc is not None and self._xc.mode == "master"
+        self._master = master
         # 平面尺度门只挂 master（回放链逐位保持旧行为）：坏平面的缘点/绿区
         # 是整帧几何垃圾，墙箱只走衰减、当拍不供新中心。复用拍同样判——
         # 同一坏读数会在后续控制拍被反复消费，不能只在 new 拍隔离。
@@ -2475,8 +2494,8 @@ class _EgoRoadObserver:
             el = sorted(w[0] for w in self._win)[1]
             er = sorted(w[1] for w in self._win)[1]
         self._slot["pair"] = (el, er, now)
-        self._feed_width(er - el)
         center = (el + er) / 2.0        # 路心（自车系）
+        self._feed_width(er - el, center)
         if abs(center) > self.OFF_MAX:
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="center_max")
@@ -2496,9 +2515,9 @@ class _EgoRoadObserver:
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="off_max")
             return None
-        formed = self.width
-        if formed is not None and \
-                abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
+        # master 的宽门锚在规则先验（4 条等宽车道），不随学习中位数漂移：
+        # 先验被读数拖偏时，相对门会把真路宽判成污染，形成自锁死循环。
+        if abs((er - el) - self.W_PRIOR_LANE) > self.W_GUARD_LANE:
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="width_guard")
             return None
@@ -2506,8 +2525,8 @@ class _EgoRoadObserver:
         if len(self._win) >= 3:
             el = sorted(w[0] for w in self._win)[1]
             er = sorted(w[1] for w in self._win)[1]
-        self._feed_width(er - el)
         center = (el + er) / 2.0
+        self._feed_width(er - el, center)
         if abs(center) > self.OFF_MAX:
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="center_max")
@@ -2660,14 +2679,14 @@ class _EgoRoadObserver:
                      new: bool = True) -> tuple[float, float, str] | None:
         """墙/空气墙绝对路心。
 
-        - 双侧同箱、两侧都当拍在场、墙到墙宽与 W 相容 → 中点 + 墙到墙宽
-          （宏观结构，车已被 YOLO 挖除；弯道上错箱中点会被弯曲拽偏，故
-          要求同 z 箱）。
-        - 双侧同箱但宽 < W_MIN_LANE 或与 W 差超 ±20% → **诚实弃权**：至少
-          一侧锁错结构（实拍 173018_p2：真左墙 + 假右缘宽 2.6 道），不猜
-          是哪一侧；交绿区（远行中心）/记忆接棒。
-        - 无同箱双侧 → 单侧墙 ± W/2（W 先验成形才有值）。两侧各自的单侧
-          反推差 > JUMP_TOL 道=互相矛盾，同样弃权（左右墙交替选会造成
+        - 双侧同箱、两侧都当拍在场、墙到墙宽与规则路宽（4.0 道）相容 → 中点
+          + 墙到墙宽（宏观结构，车已被 YOLO 挖除；弯道上错箱中点会被弯曲拽偏，
+          故要求同 z 箱）。
+        - 双侧同箱但与规则路宽差超 0.7 道（回放链：学习中位数的 ±20%）
+          → **诚实弃权**：至少一侧锁错结构（实拍：真左墙 + 假右缘宽 2.6 道），
+          不猜是哪一侧；交绿区（远行中心）/记忆接棒。
+        - 无同箱双侧 → 单侧墙 ± W/2（master 的 W 不足时直接用规则先验 4.0 道）。
+          两侧各自的单侧反推差超宽门=互相矛盾，同样弃权（左右墙交替选会造成
           1 道级来回摆）；一致时取 live/高置信的一侧。
         |center|>OFF_MAX 的远墙假设弃权（单侧墙不冒充完整走廊）。"""
         left = self._wall_candidates(-1, fid)
@@ -2684,12 +2703,10 @@ class _EgoRoadObserver:
             center = 0.5 * (lane_l + lane_r)
             if abs(center) > self.OFF_MAX:
                 continue
-            if w < self.W_MIN_LANE:
-                continue             # 近场裁切/假缘对
-            if formed is not None and abs(w - formed) > self.W_GUARD_FRAC * formed:
-                continue             # 与先验矛盾：不猜哪一侧
+            if not self._width_ok(w, formed):
+                continue             # 与路宽先验矛盾：不猜哪一侧
             if new:
-                self._feed_width(w)
+                self._feed_width(w, center)
             return center, w, "wall"
         if common:
             return None              # 同箱双侧对全部矛盾：诚实弃权
@@ -2710,8 +2727,8 @@ class _EgoRoadObserver:
         if len(best) == 2:
             (ca, la), (cb, lb) = best[False][1], best[True][1]
             # 只有两侧都当拍在场才做互证：遮挡侧的位置是历史值，不得否决 live。
-            # 容差 = 路宽先验的 ±20%（与双侧宽门同尺）；更大的分歧=一侧锁错结构。
-            if la and lb and abs(ca - cb) > self.W_GUARD_FRAC * formed:
+            # 容差与宽门同尺（道）；更大的分歧=一侧锁错结构。
+            if la and lb and abs(ca - cb) > self._width_tol(formed):
                 return None
         key, (center, live) = min(best.values(), key=lambda kv: kv[0])
         return center, formed, ("wall" if live else "wall_occl")
@@ -2777,22 +2794,48 @@ class _EgoRoadObserver:
         c = grid_center_lane(grid, self._lane_w_m)
         return None if c is None else -c
 
-    def _feed_width(self, width: float) -> None:
-        """中值滤波后的双侧物理宽进 W 统计（垃圾对/单侧/复用拍不进——与供数
-        门同一入口纪律）。窄于 W_MIN_LANE 的宽=近场视锥裁切/假缘，不进统计
-        （否则会把整局路宽先验定义成窄走廊）；成形后超 W±W_GUARD_FRAC 的不进。"""
+    def _width_ok(self, width: float, formed: float | None) -> bool:
+        """宽门：master 锚在规则先验（绝对道数）；回放链沿用成形地板 + 相对门。"""
+        if self._master:
+            return abs(width - self.W_PRIOR_LANE) <= self.W_GUARD_LANE
         if width < self.W_MIN_LANE:
+            return False
+        return formed is None or abs(width - formed) <= self.W_GUARD_FRAC * formed
+
+    def _width_tol(self, formed: float | None) -> float:
+        """与宽门同尺的容差（道）。"""
+        return (self.W_GUARD_LANE if self._master
+                else self.W_GUARD_FRAC * (formed or 0.0))
+
+    def _feed_width(self, width: float, center: float | None = None) -> None:
+        """中值滤波后的双侧物理宽进 W 统计（垃圾对/单侧/复用拍不进——与供数
+        门同一入口纪律）。master：只吃与规则先验相容的读数，且要求相邻新证据
+        拍中点位移 ≤W_CENTER_STEP_LANE——单拍锁错结构（一对边里混进邻车/假缘）
+        往往伴随中点跳变，先等一拍确认再进统计。回放链保持旧口径。"""
+        if not self._master:
+            if not self._width_ok(width, self.width):
+                return
+            self._w_samples.append(width)
             return
-        formed = self.width
-        if formed is not None and abs(width - formed) > self.W_GUARD_FRAC * formed:
+        if not self._width_ok(width, None):
             return
+        if center is not None:
+            if self._w_center is not None \
+                    and abs(center - self._w_center) > self.W_CENTER_STEP_LANE:
+                self._w_center = center
+                return
+            self._w_center = center
         self._w_samples.append(width)
 
     @property
     def width(self) -> float | None:
-        """成形路宽 W（道，碰撞边界到碰撞边界）；样本不足 None。"""
+        """路宽 W（道，碰撞边界到碰撞边界）。
+
+        master 在样本不足时直接返回规则先验（4 条等宽车道）：先验是事实，
+        不是估值，单侧墙/空气墙从第一拍就有正确半宽可用。回放链保持 None。
+        """
         if len(self._w_samples) < self.W_MIN_SAMPLES:
-            return None
+            return self.W_PRIOR_LANE if self._master else None
         return float(np.median(self._w_samples))
 
     def _snapshot(self, now: float, src: str, off: float | None,

@@ -311,7 +311,8 @@ def test_master_mode_region_first():
     pair 降为审计候选。"""
     xc = SimpleNamespace(mode="master", tol_lane=0.45, bypass_streak=8)
     o = smod._EgoRoadObserver(xc, LW)
-    g = _grid(range(2, 10))                     # 区路心 +1.5m → off≈−0.545（读数行域 3~6m）
+    # 整幅路宽 14m、路心 +1.5m → off≈−0.429（读数行域 3~6m；区宽 4.0 道过规则门）
+    g = _grid(range(2, 10), col_lo=34, col_hi=89)
     c = o.update(_bnd(-2.0, 2.0), now=1000.0, grid=g, fid=1)
     assert c is not None and c.src == "region"
     assert _off(c) == pytest.approx(-1.5 / LW, abs=0.01)
@@ -360,6 +361,57 @@ def test_master_wall_one_side_air_wall():
     assert c.width_lane == pytest.approx(4.0, abs=0.01)  # 单侧不更新宽度
 
 
+# ---------- 路宽先验=规则事实（4 条等宽车道），宽门锚在它上面 ----------
+
+def test_master_width_prior_is_four_lanes_before_formation():
+    """W 是规则事实不是估计：master 冷启动即 4.0 道，单侧墙第一拍就能反推
+    （回放链保持旧口径：样本不足仍 None）。"""
+    o = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL))
+    assert o.width == pytest.approx(4.0)
+    c = o.update(_bnd(None, 2.0, edge_pts=_walls(2.0, 2.0)[1:]),
+                 now=1000.0, fid=1)
+    assert c is not None and c.src == "wall"
+    assert _off(c) == pytest.approx(0.0, abs=0.01)   # 右墙 +2.0 − W/2
+    assert c.width_lane == pytest.approx(4.0)
+
+
+def test_master_width_gate_anchored_at_rule_prior():
+    """回归锁（自锁定死循环）：学习中位数被拖到 3.3 道后，真 4.0 道对仍必须
+    过门。旧实现拿学习中位数当门（±20%→0.66 道），4.0 差 0.7 直接判污染，
+    真读数被拒、假读数继续喂，路宽再也回不来。"""
+    o = _master_wall_observer(n=30)              # W=4.0、基线/记忆就位
+    o._w_samples.clear()
+    o._w_samples.extend([3.3] * 40)
+    assert o.width == pytest.approx(3.3)
+    c = o.update(_bnd(-2.0, 2.0, edge_pts=_walls(-2.0, 2.0)),
+                 now=1002.2, fid=31)
+    assert c is not None and c.src == "wall"
+    assert c.width_lane == pytest.approx(4.0)
+
+
+def test_master_width_gate_rejects_car_corridor():
+    """双侧宽 1.7 道（车流走廊当"边"）过不了规则宽门：墙诚实弃权，
+    交记忆/绿区，不拿窄对定位路心。"""
+    o = _master_wall_observer()                  # 路心 0、W=4.0、记忆=0
+    c = o.update(_bnd(-0.85, 0.85, edge_pts=_walls(-0.85, 0.85)),
+                 now=1001.8, fid=33)
+    assert c is not None and c.src == "memory"
+    assert _off(c) == pytest.approx(0.0, abs=0.01)
+
+
+def test_master_width_learning_requires_two_tick_midpoint_agreement():
+    """喂宽读数要中点两拍一致：单拍中点跳 0.5 道的对不进统计（锁错结构的
+    典型形态），下一拍仍在新位置才进。供数本身不受影响。"""
+    o = _master_wall_observer(n=30)
+    o._w_samples.clear()                         # 只看新样本
+    o.update(_bnd(-2.5, 1.5, edge_pts=_walls(-2.5, 1.5)),
+             now=1002.0, fid=31)
+    assert len(o._w_samples) == 0                # 首拍只更新中点锚点
+    o.update(_bnd(-2.5, 1.5, edge_pts=_walls(-2.5, 1.5)),
+             now=1002.05, fid=32)
+    assert len(o._w_samples) == 1
+
+
 def test_master_never_uses_pair_or_slot_as_center():
     """master 下找边对/保鲜槽不得当路心：无墙、无绿区 → 诚实 None
     （旧链在槽 TTL 内会拿上一拍的车位当路心——实拍 ±6m 横摆的根因）。"""
@@ -372,7 +424,8 @@ def test_master_absolute_memory_short_ttl():
     """记忆只桥接短暂遮挡：0.6s 内沿用绝对来源路心，超 0.8s 诚实 None
     （旧 TTL=2s 会把自车横移前的车位当路心）。"""
     o = smod._EgoRoadObserver(_MASTER, LW, mem_fallback=True)
-    c = o.update(_bnd(-2.0, 2.0), now=1000.0, grid=_grid(range(2, 10)), fid=1)
+    g = _grid(range(2, 10), col_lo=34, col_hi=89)   # 整幅路宽 14m，区宽 4.0 道
+    c = o.update(_bnd(-2.0, 2.0), now=1000.0, grid=g, fid=1)
     assert c is not None and c.src == "region"
     c2 = o.update(None, now=1000.6, fid=2)
     assert c2 is not None and c2.src == "memory"

@@ -1025,7 +1025,9 @@ def test_master_mode_region_feeds_and_edge_audited(monkeypatch):
         smod, "load_decision",
         lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
     st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
-    st[:, 50:74] = dg.GRID_DRIVABLE        # 绿区 X∈[−1.5,+4.5]m → 路心 +1.5m（列随 GRID_X_MAX 平移）
+    # 绿区整幅路宽 14m（X∈[−5.5,+8.5]m）→ 路心 +1.5m；区宽必须过规则宽门
+    # （4.0 道 ±0.7），近场裁切成 1.7 道的窄条会被诚实拒绝。
+    st[:, 34:90] = dg.GRID_DRIVABLE
     grid = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
                            counts=np.full(st.shape, 9, np.int32),
                            dig_cells=0, latency_ms=0.0)
