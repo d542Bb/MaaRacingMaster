@@ -55,8 +55,10 @@ COAST_MAX_TICKS = 10
 # 深度也不再能否决线——整道级深度跳变时两根线会"整齐地"支持错误网格，正是
 # 路心整道跳、场景参考系反复否决的来源。
 LINE_LOCK_TICKS = 5
-LINE_THETA_MAX = 0.30      # 线角（rad）；变道中车头相对道路可达 ~0.2
-LINE_RMS_MAX = 2.5         # 单线拟合残差（px，短段/边缘线不参与位置原点）
+LINE_THETA_MAX = 0.35      # 线角（rad）；变道中车头相对道路可达 ~0.2，急变道 0.3+
+LINE_RMS_MAX = 3.0         # 单线拟合残差（px，短段/坏拟合不参与位置原点）
+# 强锁：曾用「双侧都在」的严格条件建立过线锁。此后单侧/一条线也继续作
+# 绝对位置（k 已稳定，深度只会更差）；只要 RELOCK 或横位跳变才作废。
 LINE_JUMP_RESET = 0.5      # 线横位单拍跳超此值（道）= 连续性中断，重新锁定
 # 黄边界侧别硬约束：用最靠车头的几个点判画面左右侧，压中线留死区。
 SIDE_NEAR_PTS = 5
@@ -248,6 +250,7 @@ class LineTracker:
         self.x_vel = 0.0
         self.lost = 0
         self.locked = 0            # 连续 TRACK 稳定性拍数（线为主的门）
+        self.lock_strong = False   # 曾以双侧严格条件建锁（此后单侧也作原点）
         self.grid_reject = 0
         self.side_reject = 0
         self.last_theta: float | None = None
@@ -402,6 +405,7 @@ class LineTracker:
         if x_anchor is None and self.x_last is None:
             self.lost += 1
             self.locked = 0
+            self.lock_strong = False
             self.state = "RELOCK"
             self._commit_tracks(cur, fid)
             return self._out(None, 0, cur, self.anchor_src,
@@ -485,6 +489,8 @@ class LineTracker:
             # 跳变=连续性中断，从 1 重新数（线锁的要件）。
             step = (abs(x_out - self.x_last)
                     if self.x_last is not None else 0.0)
+            if step > LINE_JUMP_RESET:
+                self.lock_strong = False      # 横位跳变=换线/换帧，强锁作废
             self.locked = (self.locked + 1
                            if step <= LINE_JUMP_RESET else 1)
             if self.x_prev is not None and dt > 1e-3:
@@ -508,16 +514,22 @@ class LineTracker:
                 self.x_vel = 0.6 * self.x_vel + 0.4 * dvx
             self.x_prev, self.x_last = self.x_last, x_anchor
             self.lost += 1
-            self.locked = 0          # 绝对位换了来源：线锁作废，重新数
+            # 短暂 COAST 保留线锁：轨迹的 k 还在（TRACK_GAP 内），一两拍线
+            # 不合格就清零会让原点在「线/深度」之间来回切，正是残留整道跳
+            # 的来源。k 若在空窗里被深度改判，回来的横位跳变会作废强锁。
             self.state = ("RELOCK" if (fid_jump
                                        or self.lost > COAST_MAX_TICKS)
                           else "COAST")
+            if self.state == "RELOCK":
+                self.locked = 0
+                self.lock_strong = False
             x_out = x_anchor
             relock_src = None
             pred = False
         else:
             self.lost += 1
             self.locked = 0
+            self.lock_strong = False
             # 盲窗封顶（2026-10-31）：线不可用又没有深度锚时，横位只剩「上次
             # 横速」外推。短断链（≤COAST_MAX_TICKS）这么走是对的；再长就没有
             # 可积的运动证据了——旧行为会以恒速一路外推到整道外（实测两秒
@@ -575,8 +587,12 @@ class LineTracker:
                      or float(c["rms"]) <= LINE_RMS_MAX)
                 and abs(float(c.get("theta") or 0.0)) <= LINE_THETA_MAX]
         sides = {c.get("side") for c in good}
+        both = len(good) >= 2 and sides == {-1, 1}
+        if self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS and both:
+            # 双侧严格条件建立了强锁：此后单侧/一条线也继续作绝对位置
+            self.lock_strong = True
         usable = (self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS
-                  and len(good) >= 2 and sides == {-1, 1})
+                  and bool(good) and (both or self.lock_strong))
         return {"state": self.state, "x": x, "theta": self.last_theta,
                 "n_locked": int(n_locked), "relock_src": relock_src,
                 "n_lines": len(lines), "grid_reject": self.grid_reject,

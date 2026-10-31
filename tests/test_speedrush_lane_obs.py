@@ -70,6 +70,32 @@ def test_line_lock_ignores_depth_anchor_disagreement():
     assert [ln["k"] for ln in r2["lines"] if ln.get("accepted")] == [-1, 1]
 
 
+def test_strong_lock_allows_single_line_origin():
+    """强锁（曾以双侧严格条件建锁）之后，只剩一条线也继续作绝对位置：
+    线已锁定几十拍时把原点让给深度，深度会差 1~2 道（实测残留整道跳）。"""
+    tr = LineTracker()
+    both = [_line(-1.1, "w"), _line(0.9, "w")]
+    for fid in range(1, 8):
+        tr.update(both, fid, 0.05, anchor=0.0)
+    r = tr.update([_line(0.9, "w")], 8, 0.05, anchor=0.0)
+    assert r["state"] == "TRACK"
+    assert r["x"] == pytest.approx(0.1, abs=1e-6)
+    assert r["usable"] is True
+
+
+def test_coast_keeps_line_lock():
+    """短暂 COAST 不清线锁：轨迹 k 还在，一两拍线不合格不该把原点交给
+    深度；强锁在横位跳变/RELOCK 时才作废。"""
+    tr = LineTracker()
+    both = [_line(-1.1, "w"), _line(0.9, "w")]
+    for fid in range(1, 8):
+        tr.update(both, fid, 0.05, anchor=0.0)
+    r = tr.update([], 8, 0.05, anchor=0.1)          # 无可用线但有深度锚
+    assert r["state"] == "COAST"
+    r2 = tr.update(both, 9, 0.05)                   # 线回来（深度空窗）
+    assert r2["state"] == "TRACK" and r2["usable"] is True
+
+
 def test_usable_requires_both_sides():
     """位置原点要求左右两侧都有高质量线；同侧两条只能给相对横位，
     usable=False（不能当绝对位置）。"""
