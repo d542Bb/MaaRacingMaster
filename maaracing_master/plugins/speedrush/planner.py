@@ -490,8 +490,9 @@ class LateralPlanner:
         self.head = HeadingObserver(p)
         self._heading_stale = False
         # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
-        # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层保持上一拍
-        # 命令、计划不接管（见 update 与 config.state_blind_s）。
+        # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层把杆归零
+        # （只按朝向回正，不积分旧转杆）、计划不接管（见 update 与
+        # config.state_blind_s）。
         self._blind_t = 0.0
         self.state_unverified = False
 
@@ -780,13 +781,15 @@ class LateralPlanner:
                 self._abort_hold_lane = self.state.executed_lane
             steer_raw = self._pd(self._abort_hold_lane, gentle=True)
         elif st is DecisionState.CRUISE and self.state_unverified:
-            # 位置不可信（线+深度都没有新证据，见 update 顶部）：本拍既不知道
-            # 车在哪，也不知道目标相对哪里。保持上一拍已经下发的命令——那
-            # 是最后一条基于测量算出来的指令；换目标/换参考系都是拿假位置
-            # 下判断（20261031_104321_p2 137.5~138.1：状态冻在 +1.39、画面
-            # 已贴左墙，任何按状态算的回带都会往错误方向打杆）。
+            # 位置不可信（线+深度都没有新证据，见 update 顶部）：本拍不知道
+            # 车在哪，任何按位置算的回带都是拿假位置下判断（20261031_104321_p2：
+            # 状态冻在 +1.39、画面已贴左墙）。
+            # 但不能原样保持上一笔转杆：转角指令在开环下会一直积分成整道横移
+            # （164953/170923：断供期保持 +0.26~+0.45 的杆几秒，车被带到对侧
+            # 墙）。这里只把**朝向**拉回 0——它只用最近测得的车头角，不依赖
+            # 位置；朝向也失效时杆自然归零（_law 内按 ψ=0 解）。
             self._abort_hold_lane = None
-            steer_raw = self.state.steer_norm
+            steer_raw = self._law(0.0, gentle=True)
         elif (st is DecisionState.CRUISE and plan is not None
               and not plan.valid and self._plan_hold_left > 0
               and self._plan_hold_psi is not None

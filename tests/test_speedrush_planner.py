@@ -1500,8 +1500,9 @@ def test_blind_window_freezes_position_and_reacquires_on_fresh_depth():
 
 
 def test_plan_cannot_take_over_while_position_is_unverified():
-    """计划也是按自车位置推的：位置不可信时它的候选没有意义，执行层只能
-    保持上一拍命令（否则就是在错误参考系里按计划打方向）。"""
+    """计划也是按自车位置推的：位置不可信时它的候选没有意义，执行层不得按
+    计划打方向；同时也不能原样保持上一笔转杆（开环转角会积分成整道横移），
+    正确动作是把杆归零、等新证据。"""
     from maaracing_master.plugins.speedrush.motion_plan import MotionPlan
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
@@ -1519,13 +1520,13 @@ def test_plan_cannot_take_over_while_position_is_unverified():
     n = int(P.state_blind_s / DT) + 2
     seen = []
     for i in range(3, 3 + n):                        # 盲窗：位置不可信
-        seen.append(pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i))
+        seen.append(pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i,
+                              plan=plan_toward(-0.12)))
     assert pl.state_unverified
-    # 判定不可信之后命令就冻住（最后两拍相同）
-    assert seen[-1].steer_x == seen[-2].steer_x
+    assert seen[-1].steer_x == 0                     # 盲窗里杆归零，不保持转杆
     right = pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99,
                       plan=plan_toward(0.12))
-    assert right.steer_x == seen[-1].steer_x         # 反向计划不得接管
+    assert right.steer_x == 0                        # 反向计划也不得接管
 
 
 def test_lane_move_time_is_speed_invariant_below_heading_cap():

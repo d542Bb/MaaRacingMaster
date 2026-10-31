@@ -315,18 +315,20 @@ class LineTracker:
         """给一条线定/重锚持久道号；False=本拍不能参选横位。
 
         网格已冻结时（``grid_frozen``：线已连续锁定且未 RELOCK）：道号只跟
-        持久轨迹，**新线不给号**——锁定网格的绝对身份不能被相对票扩展。实测
-        （164953 局 p2）：车跨线后线组整体换新，新线靠邻居票拿到偏移一道的
-        道号，横位随之整道漂移而单拍连续（锁定不重置），控制器按错误方向追币
-        撞上右侧护栏。新线要参与绝对横位，必须等网格重锁（跳变/RELOCK）后由
-        深度锚重新定号；期间它仍被跟踪，只是不参选。
+        持久轨迹，新线按**网格自身横位**接号（``k=round(x_last+L)``，残差门
+        拒半道）——不靠邻居相对票，也不能整道改判。实测（164953 局 p2）：新线
+        靠邻居票拿号会随线组换新整道偏移；但 170923 局把新线一律拒收后可用率
+        从 45% 掉到 18%、盲窗拉长到 8s，执行层在盲窗里按旧转杆把车带过整条路。
+        接号只接现有网格，不重定网格，覆盖与身份两不误。
 
         网格未冻结（冷启/重锁）：深度新鲜拍是重锚来源——新线直接初始化 k；
         老线与锚点冲突时，多条线同拍支持新网格（``strong_anchor``）就立即改
         k，否则连续 ``ANCHOR_CONFIRM`` 拍同向一致才改，未确认前本拍横位用深度
-        兜底。深度空窗时保留持久 k（线随画面移动继续给绝对横位），新线由所有
-        在期线的整数间距票一致后补位；票分歧不硬定号。没通过门的新线不留 k，
-        被拒线也不更新已有关联轨迹的身份，避免野线把错道号传给下一帧。
+        兜底。深度空窗时保留持久 k（线随画面移动继续给绝对横位），新线先由
+        所有在期线的整数间距票定号；票分歧或没有在期线时，再退回网格横位接号
+        （重锁后深度仍断供也能靠上一横位重新上线，不再永久卡 RELOCK）。没通过
+        门的新线不留 k，被拒线也不更新已有关联轨迹的身份，避免野线把错道号传给
+        下一帧。
         """
         L = float(c["L"])
         tk = c.get("_track")
@@ -334,7 +336,7 @@ class LineTracker:
             if tk is not None and tk.k is not None:
                 c["k"] = tk.k
                 return True
-            return False
+            return self._assign_k_from_grid(c, L)
         if x_anchor is not None:
             k_a = int(round(x_anchor + L))
             resid = x_anchor + L - k_a
@@ -369,9 +371,24 @@ class LineTracker:
             c["k"] = tk.k
             return True
         k = self._neighbor_k(c, fid)
-        if k is None:
+        if k is not None:
+            c["k"] = k
+            return True
+        return self._assign_k_from_grid(c, L)
+
+    def _assign_k_from_grid(self, c: dict, L: float) -> bool:
+        """用网格自身的横位给新线接号（``k=round(x_last+L)``，残差门拒半道）。
+
+        x_last 是锁定的线横位或短盲窗外推值，不是深度读数：这里只把新线接到
+        现有网格上，不重定网格。没有在期线可投票时（长盲窗后轨迹已过期）也走
+        这条，避免 RELOCK 在深度断供时永久卡死——170923 局 p2 曾整段 8s 无线
+        可用。车在盲窗里真的移动了，残差门会让新线继续无号，等深度重锚。"""
+        if self.x_last is None:
             return False
-        c["k"] = k
+        k_a = int(round(self.x_last + L))
+        if abs(self.x_last + L - k_a) > self.RESID_MAX:
+            return False
+        c["k"] = k_a
         return True
 
     def update(self, lines: list[dict], fid: int, dt: float,

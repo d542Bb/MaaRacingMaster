@@ -375,11 +375,11 @@ def _warm_lock(tr: LineTracker, lines: list[dict], n: int = 6) -> dict:
     return r
 
 
-def test_locked_grid_does_not_assign_k_to_new_line():
-    """锁定网格的绝对身份不能被相对票扩展（164953 局 p2 撞右墙的判据）。
+def test_locked_grid_anchors_new_line_to_its_x():
+    """锁定期新线按网格自身横位接号，不靠邻居相对票（164953 局 p2 判据）。
 
-    车跨线后线组换新：新线若靠邻居票拿号，横位会整道漂移而单拍连续
-    （锁定不重置），控制器按错误方向追币。锁定期间新线只跟踪、不参选。
+    网格 x=+0.1，新线在右 2.0 道 → k=round(0.1+2.0)=2，横位保持 +0.1。
+    若按邻居票/整道改判，新线会把网格拽走；这里只接号、不重定网格。
     """
     tr = LineTracker()
     both = [_line(-1.1, "w"), _line(0.9, "w")]
@@ -387,13 +387,25 @@ def test_locked_grid_does_not_assign_k_to_new_line():
     x0 = r["x"]
     r2 = tr.update([*both, _line(2.0, "w")], 7, 0.05, anchor=None)
     new = [ln for ln in r2["lines"] if ln["L"] == 2.0][0]
-    assert new["k"] is None
-    assert new["accepted"] is False
-    assert r2["x"] == pytest.approx(x0, abs=1e-9)
+    assert new["k"] == 2 and new["accepted"] is True
+    assert r2["x"] == pytest.approx(x0, abs=1e-6)
 
 
-def test_locked_grid_frozen_across_short_coast():
-    """锁定后短断一拍（COAST）不解除冻结：线回来时新线仍不得补号。"""
+def test_locked_grid_rejects_half_lane_new_line():
+    """半道位置的新线不接号：x_last+L 落在整数半道，残差门拒，不硬取整。
+
+    这是网格只能在整道身份内接新线、不能被半道拖走的边界。"""
+    tr = LineTracker()
+    r = _warm_lock(tr, [_line(-1.1, "w"), _line(0.9, "w")])
+    r2 = tr.update([_line(-1.1, "w"), _line(0.9, "w"), _line(2.36, "w")],
+                   7, 0.05, anchor=None)
+    new = [ln for ln in r2["lines"] if ln["L"] == 2.36][0]
+    assert new["k"] is None and new["accepted"] is False
+    assert r2["x"] == pytest.approx(r["x"], abs=1e-6)
+
+
+def test_locked_grid_survives_short_coast():
+    """锁定后短断一拍（COAST）不解除冻结：线回来时仍按网格横位接号。"""
     tr = LineTracker()
     both = [_line(-1.1, "w"), _line(0.9, "w")]
     r = _warm_lock(tr, both)
@@ -402,12 +414,36 @@ def test_locked_grid_frozen_across_short_coast():
     assert coast["state"] == "COAST" and tr.locked >= la.LINE_LOCK_TICKS
     r2 = tr.update([*both, _line(2.0, "w")], 8, 0.05, anchor=None)
     new = [ln for ln in r2["lines"] if ln["L"] == 2.0][0]
-    assert new["k"] is None and new["accepted"] is False
-    assert r2["x"] == pytest.approx(x0, abs=0.2)   # 滑行期允许小量外推
-    # 新鲜深度锚也不能在冻结期改判身份
+    assert new["k"] == 2 and new["accepted"] is True
+    assert r2["x"] == pytest.approx(x0, abs=0.05)   # 滑行期允许小量外推
+    # 冻结期新鲜深度锚不改判身份：新线仍接网格号，横位不跳
     r3 = tr.update([*both, _line(2.0, "w")], 9, 0.05, anchor=0.3)
     new = [ln for ln in r3["lines"] if ln["L"] == 2.0][0]
-    assert new["k"] is None and new["accepted"] is False
+    assert new["k"] == 2 and new["accepted"] is True
+    assert r3["x"] == pytest.approx(x0, abs=0.05)
+
+
+def test_relock_without_depth_reanchors_from_last_x():
+    """深度断供的长盲窗后，线靠上一横位重新接号，不再永久卡 RELOCK。"""
+    tr = LineTracker()
+    _warm_lock(tr, [_line(-1.1, "w"), _line(0.9, "w")])
+    for fid in range(7, 7 + COAST_MAX_TICKS + 2):
+        r = tr.update([], fid, 0.05, anchor=None)
+    assert r["state"] == "RELOCK" and tr.locked == 0
+    # 与冻结横位一致的线组 → 直接上线（k 由 x_last 取整）
+    r2 = tr.update([_line(-0.2, "w"), _line(0.8, "w")], 20, 0.05,
+                   anchor=None)
+    assert r2["state"] == "TRACK"
+    assert [ln["k"] for ln in r2["lines"] if ln["accepted"]] == [0, 1]
+    assert r2["x"] == pytest.approx(0.2, abs=1e-6)
+    # 半道对不上的线仍不接号（不凭空造绝对位）
+    tr2 = LineTracker()
+    _warm_lock(tr2, [_line(-1.1, "w"), _line(0.9, "w")])
+    for fid in range(7, 7 + COAST_MAX_TICKS + 2):
+        r = tr2.update([], fid, 0.05, anchor=None)
+    r3 = tr2.update([_line(-0.64, "w")], 20, 0.05, anchor=None)
+    assert r3["lines"][0]["k"] is None
+    assert r3["n_locked"] == 0
 
 
 def test_relock_allows_anchor_to_assign_k_again():
