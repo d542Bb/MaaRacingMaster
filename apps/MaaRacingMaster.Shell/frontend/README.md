@@ -193,6 +193,35 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   `{type:'call',callId,method}`、异步派发 `{type:'response',callId,ok,data}`）+ 脚本化
   `fetch_logs` 批次，即可用真 `rpc.js`/`log.js` 渲染审计（探针手法同 `冒烟验证` 节）。
 
+## 模块管理弹窗（选卡网格）
+
+主控页「管理模块」弹窗是游戏选卡风格：3 列、露 2.5 行、底部淡出，点卡片加入/移出任务列表。
+渲染在 `js/run.js`（`galleryCellHtml` / `renderGallery` / `openManageModal`），形状在
+`js/gallery-shape.js`，样式在 `style.css` 的 `task-gallery-*` 块。几条别改坏的：
+
+- **封面由核心下发，前端不认识插件目录**：卡片底图取 `modules[].cover`（核心
+  `core/covers.py` 把插件声明解析成 URL），缺省回落初始状态的 `cover_default`。
+  前端**不得**拼 `plugins/<id>/resources/...` 这类路径（静态锁 `tests/test_module_covers.py`）。
+  换资源加载方式（file:// → 资源服务器）只改核心那一处。
+- **三级回退**：专属封面 → 通用默认封面 → 纯渐变底（`--gal-fallback-art`）。封面是 `<img>`
+  而不是 `background-image`，因为要能感知加载失败：`error` 事件不冒泡，监听挂在网格的
+  捕获阶段。
+- **拐角是曲率连续的（G2），不是圆弧**：`border-radius` 只能画圆弧，曲率在切点从 0 突变到
+  1/r，观感是「到这里突然开始转」。所以形状由 `js/gallery-shape.js` 按 `--gal-radius`
+  采样成路径：同一套点既当 `clip-path`（裁照片/红光/描边），也当描边中心线（沿法线内移，
+  保证处处与边缘等距）。代价是拐角沿边延伸约 1.5R——这是形状本身的性质，压回 R 会把曲率
+  峰值抬高（超椭圆 n=3 时 1.78 倍），反而更像折了一下。`border-radius` 保留作降级。
+- **描边是画出来的，不是 border**：可见 2.5px、实际画 3.5px，多出的 1px 压在卡片外由轮廓
+  裁掉——描边若正好落在边界，那圈像素是半覆盖的（底图会透上来，看着像没贴紧）。
+  生长动画是 `stroke-dashoffset` 1→0（`pathLength="1"` 归一，不用量周长），从底边中点
+  向两侧长、在顶边中点会合，缓入缓出无回弹。
+- **只有图片动**：选中时底图推近（放大带一次过冲、缩小平顺）、红光从底部涌起、扫描带扫过；
+  卡片本身不缩放、文字不做任何动画（整块跟着弹会像果冻，缩放最终态还会让文字长期处于
+  非整数倍拉伸而发虚）。
+- **尺寸观察器随弹窗关闭断开**：`ResizeObserver` 用来在窗口缩放时重算路径，挂在 `onClose`
+  上 `disconnect()`——否则每开一次弹窗漏一个。
+- **空槽位仍是普通圆角**：它只有一圈虚线边框、没有照片，`clip-path` 会把边框圆角一起裁掉。
+
 ## 环境中心（设置页）
 
 设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.mra-tool-btn--block` 不另设视觉）

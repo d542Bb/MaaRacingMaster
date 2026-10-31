@@ -283,6 +283,8 @@ class SpeedRushModule(ActivityModule):
     REQUIRES: frozenset[str] = frozenset({"capture", "gamepad"})
     # 插件自带必需资源：两模型权重（sidecar 启动前检查，缺失拦截并给出具体路径）
     REQUIRED_ASSETS: tuple[str, ...] = (PERCEPTION_MODEL_REL, DEPTH_MODEL_REL)
+    # 模块封面（相对本插件 resources/）：只声明，定位与 URL 解析在 core/covers.py
+    COVER = "cover.jpg"
     # 录制开关的初值（False = 不录制，驾驶阶段只等本阶段结束）
     DEFAULT_RECORD_MODE = False
     # 感知开关的初值（True = 驾驶阶段逐帧跑 YOLO 检测并记账；不操纵车辆，

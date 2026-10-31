@@ -30,6 +30,10 @@ class BuiltinStep:
     # 配置面（键 → 默认值）。与活动模块的 DEFAULT_MODULE_CONFIG 同语义：
     # 既是 GUI 回填初值的来源，也是持久化白名单。
     DEFAULT_CONFIG: dict = {}
+    # 封面的文件名（相对 core/resources/，如 "cover_launch_game.jpg"）。
+    # 与 ActivityModule.COVER 同语义：只声明，不声明磁盘位置（解析在 core/covers.py）。
+    # 步骤属于核心，所以图放核心资源目录，而不是某个插件的 resources/。
+    COVER: str = ""
 
     def __init__(self, app):
         self.app = app  # MaaRacingMasterController（宿主）
@@ -49,6 +53,7 @@ class LaunchGameStep(BuiltinStep):
 
     ID = "launch_game"
     NAME = "启动游戏"
+    COVER = "cover_launch_game.jpg"
     DEFAULT_CONFIG = {
         "path": "",                                   # 空 = 从启动器配置自动探测
         "args": " ".join(game_process.DEFAULT_ARGS),  # 与官方启动器实测命令行一致
@@ -124,6 +129,7 @@ class CloseGameStep(BuiltinStep):
 
     ID = "close_game"
     NAME = "关闭游戏"
+    COVER = "cover_close_game.jpg"
     DEFAULT_CONFIG = {
         "exit_app": False,  # 这一步完成后退出本程序（后面的步骤不再执行）
     }

@@ -387,26 +387,49 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   grid-auto-rows: var(--gal-row-h);
   gap: var(--gal-gap);
 }
-/* 尖峰式曲线：起始速度极快（陡峭 Attack），长尾缓收——选中反馈要「弹」不要「滑」 */
-.task-gallery-cell { --gal-spike: cubic-bezier(0.1, 0.94, 0.16, 1); }
+/* 选中动效的两条曲线：
+   --gal-spike  尖峰式（起始极快、长尾缓收）——扫描带、红光涌起这类「一下就位」的动效用它；
+   --gal-spring 单次过冲：冲到 1.18 后单调收回 1，**不再下探**（过冲后若再压到目标以下，
+                观感就是「弹了两下」）。缓动必须以 1 收尾，否则过渡结束会弹回起始值。 */
 .task-gallery-cell {
+  --gal-spike: cubic-bezier(0.1, 0.94, 0.16, 1);
+  --gal-spring: linear(0, 0.03 5%, 0.13 10%, 0.33 16%, 0.56 22%, 0.78 28%, 0.96 34%,
+    1.09 39%, 1.16 44%, 1.18 50%, 1.14 58%, 1.07 66%, 1.025 75%, 1.005 85%, 1 100%);
+  /* 描边：亮芯 + 红色辉光。品牌红和选中态红光同色，压在上面也糊成一条，
+     所以芯色取到接近白的热红，靠辉光把颜色带回来（参照游戏选卡的高亮描边）。 */
+  --gal-stroke: #FFA3A6;
+  /* 拐角强度：R 是「最紧处的曲率半径」（峰值曲率 = 1/R），不是拐角跨度。
+     曲率连续的拐角会沿边延伸约 1.5R——这是形状本身的性质，不是参数没调好。
+     形状由 js/gallery-shape.js 按这个半径采样成路径（clip-path + 描边共用一套几何）；
+     border-radius 只作降级：不支持 clip-path:path() 时退回普通圆角。 */
+  --gal-radius: 10px;
+  /* 封面完全取不到时的兜底底纹（专属封面 → 默认封面 → 这里，三级回退的末级） */
+  --gal-fallback-art: linear-gradient(135deg, #232837 0%, #3a4152 60%, #4b5568 100%);
   position: relative; padding: 0; overflow: hidden;
-  border: 0; border-radius: 10px; background: var(--mra-sidebar);
+  border: 0; border-radius: var(--gal-radius); background: var(--mra-sidebar);
   cursor: pointer; text-align: left; font-family: var(--mra-font-sans);
 }
-/* 头图（占位=渐变+emoji，真源见 js/run.js MODULE_META）：选中时推近，尖峰式曲线 */
+/* 封面：核心下发的 URL（模块声明 → core/covers.py 解析），cover 裁切、居中。
+   选中时推近，过冲一次再收回。回弹只做在图片上，卡片本身不缩放——卡片跟着弹会像
+   整块果冻，喧宾夺主。两条过渡方向分开：基础规则管「缩小」（平顺收，不弹），
+   选中规则管「放大」（带过冲）——CSS 取变化后那个状态上的 transition。 */
 .task-gallery-art {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 42px; line-height: 1;
-  transition: transform .42s var(--gal-spike);
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; object-position: center;
+  display: block; pointer-events: none; user-select: none;
+  transition: transform .2s cubic-bezier(0.16, 1, 0.3, 1);
 }
-/* 底部压暗：保证横幅文字在亮色头图上可读 */
+/* 三级回退的末级：连默认封面都加载失败时，卡片退回纯渐变底（不留空白块） */
+.task-gallery-cell--noart { background: var(--gal-fallback-art); }
+/* 底部压暗：照片比原来的纯色渐变亮得多（关游戏那张几乎是白底），
+   压暗层相应加强——底部 0.68、向上 46% 收干净（原 0.55 / 40%）。 */
 .task-gallery-cell::after {
   content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent 40%);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.68), transparent 46%);
 }
-/* 选中提示 = 底部涌起的品牌红色光（不用描边——描边会在视觉上让卡片大一圈）。
-   未选中时收起在底部之外，形成「涌起」过渡 */
+/* 选中提示 = 底部涌起的品牌红光。未选中时收起在底部之外，形成「涌起」过渡。
+   只做涌起不做回弹：这一层铺满卡片，位移过冲会在底边露出一条没染上红的缝，
+   冲击力交给底图推近。 */
 .task-gallery-cell::before {
   content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
   background: linear-gradient(to top,
@@ -415,10 +438,14 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
     color-mix(in srgb, var(--mra-primary) 12%, transparent) 34%,
     transparent 46%);
   opacity: 0; transform: translateY(46%);
-  transition: opacity .3s var(--gal-spike), transform .38s var(--gal-spike);
+  transition: opacity .14s ease-out, transform .3s var(--gal-spike);
 }
 .task-gallery-cell--selected::before { opacity: 1; transform: translateY(0); }
-.task-gallery-cell--selected .task-gallery-art { transform: scale(1.18); }
+/* 放大走带过冲的曲线（0.3s），缩小由基础规则接管（0.2s，平顺无回弹） */
+.task-gallery-cell--selected .task-gallery-art {
+  transform: scale(1.2);
+  transition: transform .3s var(--gal-spring);
+}
 /* 弱扫描带：选中瞬间一道很淡的亮带自下而上扫过（单次，随选中类触发/复位） */
 .task-gallery-scan {
   position: absolute; left: 0; right: 0; top: 0; height: 42%;
@@ -428,28 +455,63 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
     color-mix(in srgb, #fff 62%, var(--mra-primary)) 50%,
     transparent 100%);
 }
-.task-gallery-cell--selected .task-gallery-scan { animation: task-scan-up .78s var(--gal-spike) .04s 1 both; }
+.task-gallery-cell--selected .task-gallery-scan { animation: task-scan-up .5s var(--gal-spike) .04s 1 both; }
 @keyframes task-scan-up {
   0%   { opacity: 0;    transform: translateY(135%); }
   16%  { opacity: 0.32; }
   100% { opacity: 0;    transform: translateY(-165%); }
 }
-/* 模块名：左下角大一号粗体（黑体族）直接压在图上——无底色、无过渡动效；
-   可读性由底部压暗层 + 极淡文字投影兜底 */
+/* 选中态内描边：可见 2.5px 亮红，从底边中点向两侧生长、在顶边中点会合。
+   路径由 js/gallery-shape.js 按卡片实际像素生成（曲线见该文件），这里只管表现：
+   缓入缓出、无回弹；取消选中按同一曲线收回。dasharray/offset 用 pathLength=1 归一，
+   所以不需要量路径长度——offset 1 = 整条藏起，0 = 全画出来。
+   层级压在最上面：红光（::before）是品牌红，同色描边叠上去会糊成一片，必须压过它。 */
+.task-gallery-stroke {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  overflow: visible;   /* 允许描边越过卡片边界，由卡片的轮廓裁切切硬边 */
+  /* 辉光分两层：近处一圈紧贴线条收边，远处一圈铺开做氛围；都取红，避免变成粉色光斑 */
+  filter: drop-shadow(0 0 2px rgba(255, 70, 76, 0.9)) drop-shadow(0 0 6px rgba(255, 40, 48, 0.5));
+}
+.task-gallery-stroke path {
+  fill: none;
+  stroke: var(--gal-stroke);
+  /* 线宽由几何模块下发（--gal-stroke-width）：可见 2.5 + 出血 1 = 3.5，
+     多出的 1px 压在卡片外被轮廓裁掉，边界上被切的是实色，不会透出底图 */
+  stroke-width: var(--gal-stroke-width, 3.5);
+  stroke-linejoin: round;   /* 轮廓是采样折线，圆角接头避免出现尖刺 */
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset .34s cubic-bezier(0.45, 0, 0.55, 1);
+}
+.task-gallery-cell--selected .task-gallery-stroke path { stroke-dashoffset: 0; }
+/* 底部标题栏：白色剪影 logo（emoji 去色后当图标）+ 模块名。文字与 logo 同为纯白，
+   可读性靠底部压暗层与文字投影兜底。文字不做任何动效——选中只动图片。 */
 .task-gallery-banner {
-  position: absolute; left: 12px; bottom: 8px; z-index: 3;
+  position: absolute; left: 12px; bottom: 8px; z-index: 4;
   max-width: calc(100% - 20px);
+  display: flex; align-items: center; gap: 6px;
   color: #fff; font-size: 15px; font-weight: 700; line-height: 1.35;
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* emoji 转纯白剪影：先压成黑（保留 alpha 形状），再反相成白。
+   投影关掉——滤镜会把它一起反相成白色光晕。 */
+.task-gallery-logo {
+  flex-shrink: 0; font-size: 16px; line-height: 1;
+  filter: brightness(0) invert(1);
+  text-shadow: none;
+}
+.task-gallery-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* 头图右上角的过期角标 */
 .task-gallery-flag {
-  position: absolute; top: 8px; right: 8px; z-index: 3;
+  position: absolute; top: 8px; right: 8px; z-index: 4;
   font-size: 10px; font-weight: 600; line-height: 16px; padding: 0 7px; border-radius: 5px;
   background: rgba(0, 0, 0, 0.55); color: var(--mra-warning-strong);
 }
-/* 空槽位：幽灵虚线（不填色），让留白透气；只为让网格连续、底部淡出有依托 */
+/* 空槽位：幽灵虚线（不填色），让留白透气；只为让网格连续、底部淡出有依托。
+   仍是普通圆角：它只有一圈虚线边框、没有照片，clip-path 会把边框的圆角一起裁掉。 */
 .task-gallery-cell--empty {
   background: transparent; border: 1px dashed var(--mra-border); cursor: default;
   pointer-events: none; display: flex; align-items: center; justify-content: center;
@@ -457,6 +519,14 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .task-gallery-cell--empty::after, .task-gallery-cell--empty::before { display: none; }
 .task-gallery-empty-plus { font-size: 16px; color: var(--mra-foreground-muted); }
+
+/* 减弱动效偏好：过冲直接退化成瞬时切换，扫描带不播（同生产对其它动效的处理） */
+@media (prefers-reduced-motion: reduce) {
+  .task-gallery-art,
+  .task-gallery-cell::before,
+  .task-gallery-stroke path { transition-duration: .01s; }
+  .task-gallery-cell--selected .task-gallery-scan { animation: none; }
+}
 
 /* 模块选项（原主控卡内、现任务卡展开面板；行距/字段样式共用） */
 .module-options-row--stack { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: end; }

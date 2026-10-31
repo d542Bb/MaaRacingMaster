@@ -75,6 +75,9 @@ window.MRA = (function () {
     breakpoints: {},
     // 模块 → 插件资源齐备状态（get_status 持续下发，任务卡「资源缺失」徽章）
     moduleAssets: {},
+    // 通用默认封面 URL（get_initial_state 的 cover_default）：模块无专属封面或封面
+    // 加载失败时的回落目标。由核心解析，前端不拼路径。
+    coverDefault: '',
     // 上一轮各模块结局（ok|fail|stopped|skip；null = 尚未跑完整轮）
     roundResult: null,
     // 模块 → 最近一次读到的配置（卡片摘要 chips 的数据源；含运行实况 _state）

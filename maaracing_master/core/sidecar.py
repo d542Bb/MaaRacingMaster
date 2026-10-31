@@ -53,6 +53,7 @@ from maaracing_master.core.builtin_steps import (
     CloseGameStep,
     LaunchGameStep,
 )
+from maaracing_master.core.covers import cover_url_for, default_cover_url
 from maaracing_master.core.paths import (
     config_dir,
     data_dir,
@@ -741,6 +742,9 @@ class SidecarService:
             # 版本比较另用 _version_tuple()（内部仍取干净基线，不受此后缀影响）
             "version": __display_version__,
             "modules": self._module_list(),
+            # 通用默认封面：前端在「模块无专属封面 / 封面加载失败」时回落到它，
+            # 由核心解析成 URL 下发（前端不认识插件目录结构）
+            "cover_default": default_cover_url(),
             "queue": self._queue_snapshot(),
             # 断点起点（仅内存，不落盘）：GUI 展示「从此处开始」用
             "breakpoints": dict(self._start_from),
@@ -763,6 +767,8 @@ class SidecarService:
                 "requires_gamepad_exclusive": False,
                 "expired": False,
                 "valid_until": None,
+                # 封面 URL 由核心解析（None = 未声明/文件缺失，前端回落 cover_default）
+                "cover": cover_url_for(sid),
                 # 默认配置随列表下发：前端「重置」要填回的就是这一份，不在前端另存
                 "config_defaults": dict(cls.DEFAULT_CONFIG),
             }
@@ -778,6 +784,8 @@ class SidecarService:
                 "requires_gamepad_exclusive": info["requires_gamepad_exclusive"],
                 "expired": info["expired"],
                 "valid_until": info["valid_until"],
+                # 封面 URL 由核心解析（None = 未声明/文件缺失，前端回落 cover_default）
+                "cover": cover_url_for(mid),
             })
         return items
 

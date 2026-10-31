@@ -11,13 +11,13 @@
     renderModulePages, stashOptionBlocks, openModal,
   } = window.MRA;
 
-  // ---------- 模块展示元数据（图标 / 头图 / 配置摘要） ----------
-  // 头图为品牌渐变 + emoji 占位，登记处只此一处；模块自带美术图后在这里替换。
-  // 未登记模块回落通用渐变 + 名称首字——新增模块不需要改前端即可入列。
+  // ---------- 模块展示元数据（图标 / 配置摘要） ----------
+  // 卡片头图不在这里登记：封面由模块自己声明、核心解析成 URL 随模块列表下发
+  // （见 core/covers.py），前端只消费。未声明或加载失败的模块回落通用默认封面。
+  // 图标仍是纯展示信息（插件不声明 emoji），未登记模块回落名称首字——新增模块不必改前端。
   const MODULE_META = {
     speedrush: {
       icon: '🏎️',
-      art: 'radial-gradient(120% 90% at 20% 10%, rgba(96,165,250,.35), transparent 55%), linear-gradient(135deg, #0f172a 0%, #312e81 60%, #6d28d9 100%)',
       summary: (cfg) => [
         '录制: ' + (cfg && cfg.record_mode ? '开' : '关'),
         '驾驶模式: ' + (cfg && cfg.straight_mode ? '全程直行' : '深度几何'),
@@ -25,23 +25,15 @@
     },
     treasure: {
       icon: '🏺',
-      art: 'radial-gradient(120% 90% at 80% 15%, rgba(251,191,36,.4), transparent 55%), linear-gradient(135deg, #1c1917 0%, #78350f 60%, #b45309 100%)',
       summary: (cfg) => [
         '刷到第 ' + ((cfg && Number.isFinite(cfg.max_daily_loops)) ? cfg.max_daily_loops : 50) + ' 场',
         '目标场次: ' + ({ intern: '实习场', expert: '专家场', master: '大师场' }[(cfg && cfg.target_session) || 'master']),
       ],
     },
   };
-  // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标与头图
-  MODULE_META.launch_game = {
-    icon: '🚀',
-    art: 'radial-gradient(120% 90% at 20% 10%, rgba(45,212,191,.42), transparent 55%), linear-gradient(135deg, #06281f 0%, #0f766e 60%, #22d3ee 100%)',
-  };
-  MODULE_META.close_game = {
-    icon: '🛑',
-    art: 'radial-gradient(120% 90% at 80% 15%, rgba(248,113,113,.4), transparent 55%), linear-gradient(135deg, #2b1111 0%, #7f1d1d 60%, #ef4444 100%)',
-  };
-  const FALLBACK_ART = 'linear-gradient(135deg, #232837 0%, #3a4152 60%, #4b5568 100%)';
+  // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标
+  MODULE_META.launch_game = { icon: '🚀' };
+  MODULE_META.close_game = { icon: '🛑' };
   const SESSION_LABELS = { intern: '实习场', expert: '专家场', master: '大师场' };
   const modOf = (mid) => state.modules.find((m) => m.id === mid) || null;
   const metaOf = (mid) => MODULE_META[mid] || null;
@@ -423,30 +415,44 @@
   }
 
   // 模块管理弹窗：游戏选卡风格（3 列网格、露 2.5 行、底部淡出）；点卡片加入/移出
+  // 封面 URL 由核心下发（模块项的 cover / 初始状态的 cover_default）：前端不认识
+  // plugins/<id>/resources/ 这类内部路径，换资源加载方式时这里不用动。
+  // 三级回退：专属封面 → 通用默认封面 → 纯渐变底（--gal-fallback-art）。
+  function galleryCellHtml(m) {
+    const inList = state.queue.order.includes(m.id);
+    const meta = metaOf(m.id);
+    const icon = meta ? meta.icon : esc(m.name.slice(0, 1));
+    const cover = m.cover || state.coverDefault || '';
+    return '<button type="button" class="task-gallery-cell' + (inList ? ' task-gallery-cell--selected' : '')
+      + '" data-manage="' + esc(m.id) + '" title="' + (inList ? '点击移出列表' : '点击加入列表') + '">'
+      + (cover ? '<img class="task-gallery-art" alt="" draggable="false" src="' + esc(cover) + '">' : '')
+      + '<i class="task-gallery-scan"></i>'
+      + (m.expired ? '<span class="task-gallery-flag">已过期</span>' : '')
+      + '<span class="task-gallery-banner">'
+      + '<span class="task-gallery-logo" aria-hidden="true">' + icon + '</span>'
+      + '<span class="task-gallery-name">' + esc(m.name) + '</span>'
+      + '</span>'
+      + '<svg class="task-gallery-stroke" aria-hidden="true"></svg>'
+      + '</button>';
+  }
+
   function renderGallery(grid) {
-    let cells = state.modules.map((m) => {
-      const inList = state.queue.order.includes(m.id);
-      const meta = metaOf(m.id);
-      const icon = meta ? meta.icon : esc(m.name.slice(0, 1));
-      const art = meta ? meta.art : FALLBACK_ART;
-      return '<button type="button" class="task-gallery-cell' + (inList ? ' task-gallery-cell--selected' : '')
-        + '" data-manage="' + esc(m.id) + '" title="' + (inList ? '点击移出列表' : '点击加入列表') + '">'
-        + '<span class="task-gallery-art" style="background:' + art + '">' + icon + '</span>'
-        + '<i class="task-gallery-scan"></i>'
-        + (m.expired ? '<span class="task-gallery-flag">已过期</span>' : '')
-        + '<span class="task-gallery-banner">' + esc(m.name) + '</span>'
-        + '</button>';
-    }).join('');
+    let cells = state.modules.map(galleryCellHtml).join('');
     // 空槽位补齐 3×3（无交互、无特效），让网格连续、底部淡出有依托
     for (let i = state.modules.length; i < 9; i++) {
       cells += '<span class="task-gallery-cell task-gallery-cell--empty" aria-hidden="true">'
         + '<span class="task-gallery-empty-plus">＋</span></span>';
     }
     grid.innerHTML = cells;
+    // 曲率连续的拐角与描边路径由几何模块按卡片实际像素生成（CSS 只给半径）
+    if (window.MRAGalleryShape) MRAGalleryShape.paintAll(grid);
   }
 
   function openManageModal() {
     if (state.is_running) return; // 运行中列表锁定（勾选/拖拽/增删同一把锁）
+    // 卡片尺寸随窗口变化：重算描边路径（新建的 path 直接落在当前选中态，不重播生长动画）。
+    // 观察器随弹窗关闭断开——不这么做每开一次弹窗就漏一个。
+    let ro = null;
     const modal = openModal({
       title: '管理模块',
       maxWidth: 880,
@@ -454,9 +460,29 @@
         '<div class="task-gallery-wrap"><div class="task-gallery" id="manage-grid"></div></div>'
         + '<p class="mra-modal-text--sub" style="margin:12px 0 0">点选卡片加入下方运行任务列表（排到末尾）；移除不影响该模块已保存的配置。</p>',
       buttons: [{ text: '完成', primary: true, onClick: (m) => m.close() }],
+      onClose: () => { if (ro) { ro.disconnect(); ro = null; } },
     });
     const grid = modal.card.querySelector('#manage-grid');
     renderGallery(grid);
+    if (typeof ResizeObserver === 'function' && window.MRAGalleryShape) {
+      ro = new ResizeObserver(() => MRAGalleryShape.paintAll(grid));
+      ro.observe(grid);
+    }
+    // 封面加载失败：先换通用默认封面，再失败就退到纯渐变底。
+    // error 不冒泡，所以挂捕获阶段；装饰件出问题不该留下一个空白块。
+    grid.addEventListener('error', (ev) => {
+      const img = ev.target;
+      if (!img || !img.classList || !img.classList.contains('task-gallery-art')) return;
+      const fallback = state.coverDefault || '';
+      if (fallback && !img.dataset.fellBack) {
+        img.dataset.fellBack = '1';
+        img.src = fallback;
+        return;
+      }
+      const cell = img.parentNode;
+      img.remove();
+      if (cell) cell.classList.add('task-gallery-cell--noart');
+    }, true);
     grid.addEventListener('click', async (e) => {
       const cell = e.target.closest('[data-manage]');
       if (!cell) return;

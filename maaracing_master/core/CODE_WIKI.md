@@ -426,7 +426,7 @@
 - **找窗口按进程名，不按标题**：启动器窗口标题同样是「巅峰极速」，标题匹配会认错窗口；同名进程多窗口时取面积最大的。
 - **关闭**：窗口句柄优先（`terminate_process_by_hwnd`），找不到窗口按进程名兜底（`TerminateProcess`），失败只记 WARNING、不抛。
 
-**builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / run(config, stop_event, log)`，只需「跑一次、可被停止」。两个步骤：
+**builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / COVER / run(config, stop_event, log)`，只需「跑一次、可被停止」。`COVER` 是封面文件名（相对 `core/resources/`，见 §1.18）。两个步骤：
 
 | 步骤 | 配置面 | 行为要点 |
 |---|---|---|
@@ -442,6 +442,24 @@
 - 实测：直启 13s 出窗口、39s 登录完成进大厅；启动器窗口本身约 6.6s 出现。默认 120s 超时约 3 倍余量。
 - 参数里带 `-nosound`，游戏本身不出声——「运行时静音游戏」对这个游戏基本没有作用对象（找不到音频会话）。
 
+### 1.18 [covers.py](./covers.py) — 模块封面（声明归模块，解析归核心）
+
+**三方分工**（模块管理弹窗的卡片底图走这条链）：
+
+| 责任方 | 职责 |
+|---|---|
+| 插件模块 | 类属性 `COVER = "cover.jpg"`，相对自己的 `resources/` |
+| 内置步骤 | 同上，但相对 `core/resources/`（步骤属于核心，图也跟着核心走） |
+| 本模块 | 校验声明（拒绝绝对路径与 `..` 越界）、定位文件、解析成 URL |
+| 前端 | 只消费下发的 URL，不认识 `plugins/<id>/resources/` 这类内部路径 |
+
+- **为什么解析权在核心**：插件只声明「我有一张封面」，不声明磁盘位置、更不把绝对路径塞给前端。将来从 `file://` 换到资源服务器，只改这一个文件。
+- **下发字段**：`get_initial_state.modules[].cover`（None = 无专属封面）+ `get_initial_state.cover_default`（通用默认封面）。
+- **缺省即回落**：未声明 / 文件丢失 / 声明非法一律 `None` 并记 WARNING——封面是装饰，不阻断模块运行；前端三级回退（专属 → 默认 → 纯渐变）。
+- **通用默认封面**：`core/resources/cover_default.jpg`，换图只改 `DEFAULT_COVER` 常量。
+- **归属纪律**：模块的图跟着模块目录走（插件整体搬走不丢图），通用图放核心资源目录；发布装配对 `maaracing_master/` 是 `robocopy /E`，所以「图在插件目录内」等价于「随插件进包」，不依赖扩展名白名单。
+- **测试**：`tests/test_module_covers.py`（含「前端不得硬编码插件路径」的静态锁）。
+
 ## 2. 模块依赖与持有关系
 
 ### 2.1 导入关系图
@@ -454,6 +472,7 @@ core/sidecar.py（JSONL RPC handler）
   ├── core.remote_meta（远程元数据校验与外链目标表，§1.12）
   ├── core.perf_contract（性能面板声明校验与取值规范化，§1.15）
   ├── core.thread_probe（线程段：时间/身份/心跳，§1.16）
+  ├── core.covers（封面声明 → URL 解析，§1.18）
   └── core.registry（插件自动扫描注册）
 
 MaaRacingMaster.Shell（C#，不导入 Python）
