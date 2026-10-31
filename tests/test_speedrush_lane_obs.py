@@ -182,6 +182,27 @@ def test_short_gap_coasts_then_relocks():
     assert r["state"] == "RELOCK"
 
 
+def test_blind_coast_stops_extrapolating_after_budget():
+    """盲窗封顶（2026-10-31）：线不可用又无深度锚时，横位只按上次横速外推；
+    超过 COAST_MAX_TICKS 就没有可积的运动证据了，位置必须冻住——旧行为会
+    以恒速一路外推到整道外，随后被新鲜证据整道拽回。"""
+    tr = LineTracker()
+    tr.update([_line(-0.2)], 1, 0.05, anchor=0.0)
+    tr.x_vel = 1.0                       # 人为给一个恒速外推
+    for fid in range(2, 2 + COAST_MAX_TICKS):
+        tr.update([], fid, 0.05, anchor=None)
+    frozen = tr.x_last
+    # 检测拍继续空：位置不动（状态 RELOCK，外推已封顶）
+    for fid in range(2 + COAST_MAX_TICKS, 2 + COAST_MAX_TICKS + 6):
+        r = tr.update([], fid, 0.05, anchor=None)
+        assert r["state"] == "RELOCK"
+        assert r["lost"] >= COAST_MAX_TICKS
+        assert r["x"] == pytest.approx(frozen, abs=1e-9)
+    # 非检测帧同样不再推进
+    r = tr.predict(0.05)
+    assert r["x"] == pytest.approx(frozen, abs=1e-9)
+
+
 def test_coast_anchor_accepts_line_near_prediction():
     """空窗后线在上一横位附近重新可用：按上一横位定 k，重新 TRACK。"""
     tr = LineTracker()

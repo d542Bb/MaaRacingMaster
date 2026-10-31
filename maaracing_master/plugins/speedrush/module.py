@@ -1293,7 +1293,11 @@ class SpeedRushModule(ActivityModule):
                 traffic=(tviews, tevents),
                 road_offset=road_offset,
                 corridor=corridor,
-                position=position_evidence)
+                position=position_evidence,
+                # 位置可信度直供决策：执行层本拍外推（线+深度都无新证据）时
+                # 决策不重建目标——场景全部由 executed 平移，假位置下的选择
+                # 会给出假目标。判据与冻结见 planner.update。
+                state_unverified=planner.state_unverified)
             cfg = chain["cfg"]
             # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
             # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。

@@ -151,6 +151,12 @@ class HeadingObserver:
         self._last_line = -1e9       # 标线横移上次更新时刻（v_line TTL）
         self.v_line: float | None = None
 
+    def psi_age_s(self) -> float:
+        """ψ 距上一次线角证据的秒数；无 ψ 时返回 inf（=不可用于推横速）。"""
+        if self.psi is None:
+            return math.inf
+        return self._t - self._psi_t
+
     def update(self, dt: float, lane_x: float | None, lane_ok: bool,
                theta: float | None, theta_ok: bool, fid: int | None,
                age_ms: float | None, n_locked: int | None = None) -> None:
@@ -474,6 +480,11 @@ class LateralPlanner:
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
         self._heading_stale = False
+        # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
+        # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层保持上一拍
+        # 命令、计划不接管（见 update 与 config.state_blind_s）。
+        self._blind_t = 0.0
+        self.state_unverified = False
 
     def _reset_jump(self) -> None:
         """重置持续大新息判定（正常接受/重基/断供时调用——连续性被打断）。"""
@@ -552,7 +563,11 @@ class LateralPlanner:
              "rr": None if self.head.r is None else round(self.head.r, 3),
              "vmp": self.state.v_mps,
              "vl": round(self.state.v_lat, 3),
-             "rebase": self.last_rebase}
+             "rebase": self.last_rebase,
+             # 位置证据面（2026-10-31）：unver=本拍位置是不可信外推值，
+             # blind=距上一次新鲜位置证据的秒数（0=本拍有测量）。
+             "unver": bool(self.state_unverified),
+             "blind": round(self._blind_t, 2)}
         d.update(self.head.debug())
         return d
 
@@ -574,7 +589,12 @@ class LateralPlanner:
             self.state.heading = h.psi
             self.state.yaw_rate = 0.0 if h.r is None else h.r
         self.state.v_mps = h.v_scale
-        if h.psi is not None and h.v_scale is not None:
+        # ψ 状态可以按 _PSI_STALE_S 保留给控制律，但用它推**横速**要更严：
+        # 旧朝向 × 车速就是一段时间内的位置外推，0.6s 的龄在该窗口里会把
+        # 自车位置推出 0.7~1 道（20261031_104321_p2 137.5s 实测 1.2~1.8 道/s），
+        # 而这段窗口恰好也是线与深度都没新证据的盲窗。横速只认新鲜 ψ。
+        if (h.psi is not None and h.v_scale is not None
+                and h.psi_age_s() <= self.p.heading_vel_max_age_s):
             psi_env = max(-self.p.heading_max_rad,
                           min(self.p.heading_max_rad, h.psi))
             self.state.v_lat = h.v_scale * math.tan(psi_env) / LANE_W
@@ -671,6 +691,30 @@ class LateralPlanner:
                          lane_fid, lane_age_ms, lane_n_locked)
         self._sync_heading_state()
 
+        # 横向位置证据（2026-10-31）：位置证据=真实深度读数（非历史保持值；
+        # 复用拍是同一帧深度的短驻留，仍算证据）或已对账锁线；运动证据=新鲜 ψ
+        # 或新鲜标线横移（v_line，见 _sync_heading_state）。有位置证据就是测量；
+        # 只有运动证据还能按同一套运动学短时外推（「知道车头朝向就能跟住」的
+        # 开环面，台架锁着）；两者都没有才是真盲窗：超过 state_blind_s 就不
+        # 假装知道车在哪，重获时一步重基到新证据。
+        pos_fresh = ((road_offset is not None and not road_offset_hold)
+                     or (lane_ok and self._lane_trusted))
+        motion_fresh = (self.state.v_lat != 0.0
+                        or (self.head.psi is not None
+                            and self.head.psi_age_s()
+                            <= self.p.heading_vel_max_age_s))
+        was_unverified = self.state_unverified
+        self._blind_t = 0.0 if (pos_fresh or motion_fresh) \
+            else self._blind_t + dt_s
+        self.state_unverified = self._blind_t > self.p.state_blind_s
+        if (was_unverified and not self.state_unverified
+                and road_offset is not None and not road_offset_hold
+                and self._stale_t < self.p.anchor_stale_s):
+            # 盲窗在陈旧预算内收尾：当拍重基，不等预算走满。预算已满的
+            # 情况交给 ⑥b 的 stale_reject（同一条重基，诊断面保持原样）。
+            self.last_rebase = "reacquire"
+            self._stale_rebase(road_offset, lane_ok)
+
         # ① 过期判定（valid_until_fid 含边界；第 4 个连续过期拍起按 CONSERVE）
         fresh = current_fid <= decision.valid_until_fid
         self._expired_ticks = 0 if fresh else self._expired_ticks + 1
@@ -716,6 +760,14 @@ class LateralPlanner:
             if self._abort_hold_lane is None:
                 self._abort_hold_lane = self.state.executed_lane
             steer_raw = self._pd(self._abort_hold_lane, gentle=True)
+        elif st is DecisionState.CRUISE and self.state_unverified:
+            # 位置不可信（线+深度都没有新证据，见 update 顶部）：本拍既不知道
+            # 车在哪，也不知道目标相对哪里。保持上一拍已经下发的命令——那
+            # 是最后一条基于测量算出来的指令；换目标/换参考系都是拿假位置
+            # 下判断（20261031_104321_p2 137.5~138.1：状态冻在 +1.39、画面
+            # 已贴左墙，任何按状态算的回带都会往错误方向打杆）。
+            self._abort_hold_lane = None
+            steer_raw = self.state.steer_norm
         elif (st is DecisionState.CRUISE and plan is not None
               and not plan.valid and self._plan_hold_left > 0
               and self._plan_hold_psi is not None
@@ -773,7 +825,8 @@ class LateralPlanner:
         # 交给同一条朝向律执行——计划怎么预测就怎么打杆，没有第二套前馈/跟踪
         # 项，也就没有两套关于「车会怎么动」的说法。承诺并线例外：跟踪决策
         # 目标道（计划候选的视界是 2s，承诺道是决策层的事，不能让它静默换）。
-        if plan is not None and plan.valid and st is DecisionState.CRUISE:
+        if (plan is not None and plan.valid and st is DecisionState.CRUISE
+                and not self.state_unverified):
             merge_commit = (getattr(decision, "phase", "keep") == "merging"
                             and decision.x_target is not None
                             and getattr(plan, "layer", None) == 4)
@@ -804,6 +857,7 @@ class LateralPlanner:
                                 min(self._last_plan_u + lim, steer_raw))
             self._last_plan_u = steer_raw
         elif (plan is not None and st is DecisionState.CRUISE
+              and not self.state_unverified
               and plan.reason == "plan:infeasible_corridor"):
             # 计划判「自车压在走廊边距内」：无效计划选的是"最快脱离侵入"
             # 候选，直接执行它的车头角指令，不套保持死区/维护杆幅
@@ -818,7 +872,8 @@ class LateralPlanner:
         # x += v·tanψ·dt。ψ 是测量量，由观测器每拍更新，这里不再有速度状态。
         alpha = 1.0 - math.exp(-dt_s / max(self.p.tau_steer_s, 1e-3))
         self.state.steer_norm += alpha * (steer_raw - self.state.steer_norm)
-        self.state.executed_lane += self.state.v_lat * dt_s
+        if not self.state_unverified:
+            self.state.executed_lane += self.state.v_lat * dt_s
 
         # ⑥b 路中心连续重锚（step 2.5，V2 复盘主修）：双侧缘距拍给 executed 真反馈。
         #    标准 alpha-beta 滤波器——⑥ 的模型积分是 predict 步，本段是 correct 步：
@@ -838,7 +893,8 @@ class LateralPlanner:
         #    供数黑视期不计数、跳变门收紧后喂入更少，车以 0 杆直开 5.5s 怼进右墙时
         #    阈值还差 9 次。判据从"次数"换成"时间"：距上次被接受修正超 anchor_stale_s
         #    即重基（exec:=ro、anchor:=0），断供同样计时。
-        if road_offset is not None and not road_offset_hold:
+        if road_offset is not None and not road_offset_hold \
+                and not self.state_unverified:
             if self._road_anchor is None:
                 # 形成门外的贴边拍：深度与锁线独立一致（≤`_LANE_BIAS_AGREE`）
                 # 即视为可信，直接建锚并对齐位置。否则断供丢锚后，车在 |ro|>1
@@ -934,7 +990,7 @@ class LateralPlanner:
                                 not self._line_disagrees(road_offset, lane_ok):
                             self.last_rebase = "stale_reject"
                             self._stale_rebase(road_offset, lane_ok)
-        elif self._road_anchor is not None:
+        elif self._road_anchor is not None and not self.state_unverified:
             # 断供/保持计时：黑视本身=漂移温床。历史保持值仍算"有几何"，锚点
             # 保留——否则新鲜大读数回来要先过形成门（|ro|≤anchor_max_off）再
             # 等 1s，白白多一段盲开；超预算则按下面规则重基或丢锚。
@@ -965,6 +1021,13 @@ class LateralPlanner:
                     self._last_corr_sign = None
                     # 计时不清零：断供已计入陈旧预算，下一条新鲜缘读数
                     # 应直接重基，而不是再等一个完整 anchor_stale_s。
+        elif self.state_unverified:
+            # 盲窗：位置冻结（不融合、不积分），但参考帧卫生照常——断供
+            # 超预算的旧锚必须作废，不能留到重获之后去拽新路上的车。
+            self._stale_t += dt_s
+            if self._stale_t >= self.p.anchor_stale_s:
+                self._road_anchor = None
+                self._last_corr_sign = None
 
         # ⑦ 下发链：归一 → 限幅（每 tick 变化上限）→ 死区（<256 归 0，256 保留）
         raw = int(round(self.state.steer_norm * _STICK_FULL))

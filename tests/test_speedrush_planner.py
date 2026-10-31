@@ -480,7 +480,9 @@ def test_hold_offset_is_not_a_position_observation():
     pl.update(_out(x_target=0.0, fid=4 + n_budget, valid=4 + n_budget), DT,
               4 + n_budget, road_offset=1.6)
     assert pl.state.executed_lane == pytest.approx(1.6, abs=1e-6)
-    assert pl.last_rebase == "stale_reject"          # 有锚、持续被拒的陈旧重基
+    # 全程只有保持值=没有新鲜位置/运动证据，这段就是盲窗：重获第一份新鲜
+    # 深度按「重获重基」处理（否则要等 stale 预算走满）
+    assert pl.last_rebase == "reacquire"
 
 
 def test_hold_offset_rebases_when_stale_budget_expires():
@@ -1423,6 +1425,72 @@ def test_lane_move_time_matches_the_bench():
     # 一条道 1.4s+ 与台架一道阶跃（1.5s 落在 1.0 道附近）同量级
     assert 1.2 <= t10 <= 2.0
     assert lane_move_time(0.7, **{**kw, "k_lat_lane_s": 0.0}) == float("inf")
+
+
+def test_stale_heading_stops_producing_lateral_velocity():
+    """ψ 状态按 _PSI_STALE_S 保留给控制律，但用它推横速只能认短龄——0.6s 的
+    旧朝向在 40m/s 上是 0.7~1 道的位置外推，而这段时间恰好也是线+深度都没
+    新证据的盲窗（20261031_104321_p2 137.5s：psi 龄 0.1s 时横速 1.2~1.8 道/s）。"""
+    pl = _planner()
+    pl.head.psi = 0.1
+    pl.head.v_scale = 40.0
+    pl.head._psi_t = pl.head._t
+    pl._sync_heading_state()
+    fresh = pl.state.v_lat
+    assert fresh > 0.5                              # tan(0.1)·40/3.5 ≈ 1.15 道/s
+    pl.head._psi_t = pl.head._t - (P.heading_vel_max_age_s + 0.05)
+    pl._sync_heading_state()
+    assert pl.state.v_lat == pytest.approx(0.0)
+    assert pl.state.heading == pytest.approx(0.1)   # 朝向状态本身仍保留
+
+
+def test_blind_window_freezes_position_and_reacquires_on_fresh_depth():
+    """线+深度都没有新证据 = 位置只剩外推：超 state_blind_s 后冻结并标不可信
+    （决策/计划/执行都不许拿假位置下定论），新鲜深度回来的第一拍重基。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  
+                  )
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.3)
+    x0 = pl.state.executed_lane
+    n = int(P.state_blind_s / DT) + 2
+    for i in range(2, 2 + n):
+        pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i)   # 全断供
+    assert pl.state_unverified
+    assert pl.state.executed_lane == pytest.approx(x0, abs=1e-9)
+    pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99, road_offset=-1.4)
+    assert not pl.state_unverified
+    assert pl.state.executed_lane == pytest.approx(-1.4, abs=1e-6)
+    assert pl.last_rebase == "reacquire"
+
+
+def test_plan_cannot_take_over_while_position_is_unverified():
+    """计划也是按自车位置推的：位置不可信时它的候选没有意义，执行层只能
+    保持上一拍命令（否则就是在错误参考系里按计划打方向）。"""
+    from maaracing_master.plugins.speedrush.motion_plan import MotionPlan
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0,
+                  
+                  )
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1, road_offset=0.0)
+
+    def plan_toward(psi):
+        return MotionPlan(7, True, "plan:ok", 0.0, 30.0, psi, 4,
+                          (True,), 1, 0, (), 0.0, 0.0, 0.0, False)
+
+    left = pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2,
+                     plan=plan_toward(-0.12))
+    assert left.steer_x < 0                          # 计划先给了左打
+    n = int(P.state_blind_s / DT) + 2
+    seen = []
+    for i in range(3, 3 + n):                        # 盲窗：位置不可信
+        seen.append(pl.update(_out(x_target=0.0, fid=i, valid=i), DT, i))
+    assert pl.state_unverified
+    # 判定不可信之后命令就冻住（最后两拍相同）
+    assert seen[-1].steer_x == seen[-2].steer_x
+    right = pl.update(_out(x_target=0.0, fid=99, valid=99), DT, 99,
+                      plan=plan_toward(0.12))
+    assert right.steer_x == seen[-1].steer_x         # 反向计划不得接管
 
 
 def test_lane_move_time_is_speed_invariant_below_heading_cap():

@@ -180,6 +180,14 @@ class Planner:
     # 和"停"之间来回——实测控制来源切换 24~31 次/10s，切换拍杆值跳变约为
     # 普通拍的 2 倍。超过此拍数才交还 PD。
     plan_hold_max_ticks: int = 6
+    # 横向状态「不可信」判据（2026-10-31）：距上一次新鲜位置证据（新深度帧，
+    # 或已对账锁线）超过此秒数，位置就是外推值而不是测量值——模型积分冻结、
+    # 停融合、执行层保持上一拍命令、计划不得接管，等证据回来再按重获重基。
+    state_blind_s: float = 0.4
+    # ψ 龄门：朝向超过此龄仍能推出横速。ψ 无新线角证据时保留 _PSI_STALE_S=0.6s，
+    # 但用 0.6s 的旧朝向推横速等于 0.6s 盲开（实测 1.2~1.8 道/s，半秒虚走
+    # 0.75 道），横速只认更短的龄。
+    heading_vel_max_age_s: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -690,7 +698,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             plan_u_slew_s=_num_def(
                 d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
             plan_hold_max_ticks=_int_def(
-                d, "planner", "plan_hold_max_ticks", 6, lo=0)),
+                d, "planner", "plan_hold_max_ticks", 6, lo=0),
+            state_blind_s=_num_def(
+                d, "planner", "state_blind_s", 0.4, lo=0, lo_open=False),
+            heading_vel_max_age_s=_num_def(
+                d, "planner", "heading_vel_max_age_s", 0.25, lo=0)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),

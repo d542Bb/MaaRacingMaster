@@ -484,12 +484,18 @@ class LineTracker:
             pred = False
         else:
             self.lost += 1
-            vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
-            self.x_last = (self.x_last + float(np.clip(vp, -1.5, 1.5))
-                           * dt)
-            self.state = ("RELOCK" if (fid_jump
-                                       or self.lost > COAST_MAX_TICKS)
-                          else "COAST")
+            # 盲窗封顶（2026-10-31）：线不可用又没有深度锚时，横位只剩「上次
+            # 横速」外推。短断链（≤COAST_MAX_TICKS）这么走是对的；再长就没有
+            # 可积的运动证据了——旧行为会以恒速一路外推到整道外（实测两秒
+            # 飘 2 道后随新鲜证据整道跳回）。超过即冻住：位置保持、状态标
+            # RELOCK，让上游知道这是外推值而不是测量值。
+            if self.lost <= COAST_MAX_TICKS:
+                vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
+                self.x_last = (self.x_last + float(np.clip(vp, -1.5, 1.5))
+                               * dt)
+                self.state = ("RELOCK" if fid_jump else "COAST")
+            else:
+                self.state = "RELOCK"
             x_out = self.x_last
             relock_src = None
             pred = True
@@ -531,26 +537,31 @@ class LineTracker:
         return {"state": self.state, "x": x, "theta": self.last_theta,
                 "n_locked": int(n_locked), "relock_src": relock_src,
                 "n_lines": len(lines), "grid_reject": self.grid_reject,
-                "side_reject": self.side_reject,
+                "side_reject": self.side_reject, "lost": int(self.lost),
                 "anchor_src": anchor_src, "lines": lines, "pred": pred}
 
     def predict(self, dt: float, v_lat: float = 0.0) -> dict:
         """非检测帧：只推进横位；上一帧线保留但标 pred，不再参与绝对位。"""
         if self.x_last is not None:
-            vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
-            self.x_last += float(np.clip(vp, -1.5, 1.5)) * dt
+            self.lost += 1
+            # 与 update 的盲窗同一口径：超过 COAST_MAX_TICKS 的外推不再积分
+            if self.lost <= COAST_MAX_TICKS:
+                vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
+                self.x_last += float(np.clip(vp, -1.5, 1.5)) * dt
             self.state = "COAST"
             return {"state": self.state, "x": round(self.x_last, 3),
                     "theta": self.last_theta, "n_locked": 0,
                     "relock_src": None, "n_lines": 0,
                     "grid_reject": self.grid_reject,
                     "side_reject": self.side_reject,
+                    "lost": int(self.lost),
                     "anchor_src": self.anchor_src,
                     "lines": [dict(c) for c in self.last_lines], "pred": True}
         return {"state": "RELOCK", "x": None, "theta": self.last_theta,
                 "n_locked": 0, "relock_src": None, "n_lines": 0,
                 "grid_reject": self.grid_reject,
-                "side_reject": self.side_reject, "anchor_src": "none",
+                "side_reject": self.side_reject, "lost": int(self.lost),
+                "anchor_src": "none",
                 "lines": [], "pred": True}
 
 

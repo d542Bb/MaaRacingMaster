@@ -334,6 +334,21 @@ def test_output_schema_and_validity_window():
     assert isinstance(out.reason, str) and out.reason
 
 
+def test_unverified_position_holds_target_and_skips_selection():
+    """执行层位置不可信时选择层不重建目标：场景里的车/币绝对位置全部由
+    那个假位置平移而来，假位置下的选择只会给出假目标（20261031 两局：
+    盲窗内目标跟着漂移的状态走，重获证据时整道跳）。"""
+    e = _eng()
+    e.update(_obs(fid=1, presence=True), DT, executed_lane=0.2,
+             corridor=_corridor(-5.0, 5.0))
+    for fid in range(2, 6):                          # 目标 slew 收敛到冻结位
+        out = e.update(_obs(fid=fid, presence=True), DT, executed_lane=0.2,
+                       corridor=_corridor(-5.0, 5.0), state_unverified=True)
+        assert out.reason == "sel:hold:state_unverified"
+        assert e.scene is None                       # 不建场景 → 不出计划
+    assert out.x_target == pytest.approx(0.2, abs=1e-6)
+
+
 def test_engine_reset_clears_everything():
     e = _eng()
     e.update(_good_obs(), DT)

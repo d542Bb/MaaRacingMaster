@@ -1331,6 +1331,19 @@ s1 87s：假路心把场景 ego 拉到 −5.3m，目标跟着往左缘走，车�
 （`plan:infeasible_corridor`）与 CONSERVE/FAULT/ABORT/过期保持不受影响。
 trace 增 `scene` 与 `plan` 列（含 `val/cc` 价值与碰撞成本）。
 
+**横向状态的可信度（`state_blind_s` / `heading_vel_max_age_s`，2026-10-31）**：
+横向位置只有两种证据——**位置证据**（真实深度读数，历史保持值不算；或已对账
+锁线）与**运动证据**（新鲜 ψ，或新鲜标线横移 `v_line`）。有位置证据就是测量；
+只有运动证据时按同一套运动学短时外推（开环面）；**两者都没有**累计超过
+`state_blind_s`（0.4s）即判**位置不可信**：模型积分冻结、线融合与 ⑥b 全部
+停用、执行层保持上一拍命令、决策层清空场景不重建目标（`sel:hold:state_unverified`），
+计划也因此不生成。重获第一份新鲜深度当拍按「重获重基」一步对齐（`lat_ctrl.rebase
+= reacquire`），不等陈旧预算走满。另：ψ 状态仍按 `_PSI_STALE_S`（0.6s）保留给
+控制律，但**由 ψ 推横速**只认 `heading_vel_max_age_s`（0.25s）以内的龄——旧朝向
+乘车速就是位置外推，0.6s 在 40m/s 上是 0.7~1 道。线观测在无锚空窗里也按同一
+口径封顶：超过 `COAST_MAX_TICKS` 不再按恒速外推，横位冻住并标 `RELOCK`。
+trace 观测面：`lane_obs.lost`（连续无证据拍数）、`lat_ctrl.unver/blind`。
+
 **录制对照基建（2026-10-18）**：trace 增 `sel_dbg`（选择帧 ego/中心 c0/cL/
 左右缘/路点/选择器看到的机会）、`scene`（场景快照：ego/走廊年龄/对象
 kind-x-t-枚数-σ-年龄-来源-纵深）；调试图 BEV 叠

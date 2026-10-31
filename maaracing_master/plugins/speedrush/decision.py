@@ -534,6 +534,7 @@ class DecisionEngine:
         self._last_report_ok = True
         self._corridor: Corridor | None = None
         self._reach_goal: float | None = None
+        self._state_unverified = False      # 本拍执行层位置是否可信（planner 直供）
         self._bonus_src = 0                 # 上一拍奖励车源数（cr_bonus_src 观测面）
         self._scene = None
 
@@ -545,7 +546,8 @@ class DecisionEngine:
                               tuple[PassEvent, ...]] | None = None,
                road_offset: float | None = None,
                corridor: Corridor | None = None,
-               position: ArrivalAttribution | None = None) -> DecisionOutput:
+               position: ArrivalAttribution | None = None,
+               state_unverified: bool = False) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
@@ -554,7 +556,12 @@ class DecisionEngine:
         ``road_offset``：保留在签名里兼容既有调用（本层不消费，路心由
         corridor 带给出）。``corridor``：同拍分带走廊，选择层唯一的空间证据；
         None=无路，持守当前横位。``position``：当拍到达位置归因（观测面 +
-        影子到达门；生产默认门关，不影响控制）。"""
+        影子到达门；生产默认门关，不影响控制）。
+
+        ``state_unverified``：执行层横向位置本拍不可信（外推值）。CRUISE 下
+        不重建选择/场景，目标持守上一拍（reason=sel:hold:state_unverified）。"""
+        # 本拍位置可信度先落位：状态机与选择层都要读它
+        self._state_unverified = bool(state_unverified)
         self._position = position
         self._dt_last = dt_s
         self._fid = obs.frame_id
@@ -1015,7 +1022,26 @@ class DecisionEngine:
 
     def _tick_cruise(self, obs: WorldObservation,
                      executed: float | None) -> str:
-        """CRUISE：四层选择器是唯一选择来源。"""
+        """CRUISE：四层选择器是唯一选择来源。
+
+        ``state_unverified``：执行层本拍的位置是不可信外推值（线+深度都
+        没有新证据，见 planner.update）。选择层的全部输入——自车横位、
+        车/币/奖励车的绝对位置——都由这个假位置平移得到，任何新目标都是
+        在错误参考系里做决定。此拍不选目标，持守上一拍意图，等证据回来。
+        """
+        if self._state_unverified:
+            self._reach_goal = None
+            self._exec_branch = "hold"
+            self._scene = None
+            self._sel_report = None
+            self._sel_maneuver = False
+            self._sel_objs = {"reward": [], "car": [], "coin": []}
+            self._sel_dbg = None
+            self._coarse = None
+            self._route_req = None
+            # 路线时钟继续走（deadline 不会因为盲窗被冻结成假宽限）
+            self._tick_route(executed=executed)
+            return "sel:hold:state_unverified"
         return self._tick_cruise_layered(obs, executed)
 
     # ---------- 四层选择（2026-10-18 走廊重建） ----------
