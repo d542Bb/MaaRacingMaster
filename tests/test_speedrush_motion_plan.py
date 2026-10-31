@@ -498,6 +498,54 @@ def _c(idx, value, feasible=True, center=0.0, layer=4, collision=0.0):
                  collision_cost=collision)
 
 
+def _cb(idx, cost, center=0.0, layer=4, collision=0.0):
+    """生产形状的候选键：价值位是按 switch_margin 分桶的整数（motion_plan
+    的键构造），值仍在 _Cand.value（分）。"""
+    value = -cost
+    bucket = int(round(cost / 15.0))
+    key = (False, bucket, 0.0, center, 0.0, 0.0, idx)
+    return _Cand(idx, 0.0, (0.0,), 0.0, 0.0, True, 9.0,
+                 center, 0.0, layer, key, value,
+                 collision_cost=collision)
+
+
+def test_gate_margin_is_points_against_bucketed_key():
+    """门槛单位是分，不是桶：生产键的价值位是分桶整数，拿桶号比 15 分
+    会把门槛放大 15 倍（20 分改善永远等不到）。"""
+    g = PlanGate(switch_margin=15.0, dwell_s=0.1, epsilon=1e-3,
+                 geom_margin=0.03)
+    inc, near = _cb(3, 100.0), _cb(4, 90.0)      # 改善 10 分 < margin
+    assert g.choose([inc], 0.05).idx == 3
+    for _ in range(10):
+        assert g.choose([near, inc], 0.05).idx == 3
+    g2 = PlanGate(switch_margin=15.0, dwell_s=0.1, epsilon=1e-3,
+                  geom_margin=0.03)
+    inc2, better = _cb(3, 100.0), _cb(4, 80.0)   # 改善 20 分 > margin
+    assert g2.choose([inc2], 0.05).idx == 3
+    assert g2.choose([better, inc2], 0.05).idx == 3   # 先计 dwell
+    assert g2.choose([better, inc2], 0.05).idx == 4
+
+
+def test_gate_immediate_is_points_against_bucketed_key():
+    """立即门也按分：120 分改善（避撞）必须首拍切，不能被桶号差 8 挡住。"""
+    g = PlanGate(switch_margin=15.0, dwell_s=0.2, epsilon=1e-3,
+                 geom_margin=0.03, immediate_margin=100.0)
+    inc = _cb(3, 200.0, collision=50.0)
+    best = _cb(4, 80.0, collision=0.0)
+    assert g.choose([inc], 0.05).idx == 3
+    assert g.choose([best, inc], 0.05).idx == 4
+
+
+def test_gate_ignores_candidate_index_difference():
+    """只差候选下标的并列不算更优：下标是排序定序，不是质量分。"""
+    g = PlanGate(switch_margin=15.0, dwell_s=0.05, epsilon=1e-3,
+                 geom_margin=0.03)
+    inc, other = _cb(3, 100.0), _cb(9, 100.0)
+    assert g.choose([inc], 0.05).idx == 3
+    for _ in range(10):
+        assert g.choose([other, inc], 0.05).idx == 3
+
+
 def test_gate_requires_value_margin_and_dwell():
     g = PlanGate(switch_margin=30.0, dwell_s=0.1, epsilon=1e-3,
                  geom_margin=0.03)

@@ -329,7 +329,6 @@ class PlanGate:
         # 立即换会把计划输出打成每拍一个状态。宽限期内保持上一候选。
         self.infeasible_grace = infeasible_grace_s
         self._idx: int | None = None
-        self._key: tuple | None = None
         self._streak = 0.0
         self._last: _Cand | None = None
         self._miss_s = 0.0
@@ -353,11 +352,11 @@ class PlanGate:
 
     def reset(self) -> None:
         """清掉候选时稳记忆（相位切换时用）：门不得把上一相位的候选带进来。"""
-        self._idx, self._key, self._streak = None, None, 0.0
+        self._idx, self._streak = None, 0.0
         self._last, self._miss_s = None, 0.0
 
     def restore(self, idx: int | None, streak: float) -> None:
-        self._idx, self._streak, self._key = idx, float(streak), None
+        self._idx, self._streak = idx, float(streak)
         self._last, self._miss_s = None, 0.0
 
     @staticmethod
@@ -369,7 +368,12 @@ class PlanGate:
         return inc.layer != 4 and best.layer == 4
 
     def choose(self, cands: list[_Cand], dt: float) -> _Cand:
-        """价值差超过 margin 并保持 dwell 才换现任；现任不可行立即让位。"""
+        """价值差超过 margin 并保持 dwell 才换现任；现任不可行立即让位。
+
+        门槛单位是**分数**（value_total）：key 里的价值位是按 switch_margin
+        分桶的整数，只用于「同桶视为同价、交给几何键裁决」；拿桶号去比
+        margin/immediate 会把门槛放大一个 switch_margin 倍（旧实现 15/100
+        分实际变成 225/1500 分，立即切换永不触发）。"""
         best = cands[0]
         inc = next((c for c in cands if c.idx == self._idx and c.feasible),
                    None)
@@ -378,57 +382,57 @@ class PlanGate:
             # 只有连续超过 infeasible_grace 或价值差达到立即门槛才让位。
             if self._last is not None:
                 self._miss_s += dt
-                immediate = (self._key is not None
-                             and best.key[1] < self._key[1] - self.immediate)
+                immediate = (best.value - self._last.value) > self.immediate
                 if not immediate and self._miss_s < self.infeasible_grace:
                     return self._last
-            self._idx, self._key, self._streak = best.idx, self._q(best.key), 0.0
+            self._idx, self._streak = best.idx, 0.0
             self._last, self._miss_s = best, 0.0
             return best
         self._miss_s = 0.0
         kb, ki = self._q(best.key), self._q(inc.key)
+        gain = best.value - inc.value        # >0 = 最优比现任更省成本
         # 立即切换只给「安全类」：更少碰撞风险，或现任得分目标消失（回到
         # 回中/别的层）。新冒出来的得分机会（奖励/擦边/金币，价值 90~240
         # 都高于 immediate=100）不得单帧拽杆——2026-10-30 人工局里计划层
         # 擦边段 36 段有 25 段只活 1 拍、金币段中位 2 拍，杆值跟着一拍一
         # 换；检测闪断不是目标出现。得分类升级改走 dwell（0.2s）确认。
         urgent = self._urgent(best, inc)
-        if kb[1] < ki[1] - self.immediate and urgent:
-            self._idx, self._key, self._streak = best.idx, kb, 0.0
+        if gain > self.immediate and urgent:
+            self._idx, self._streak = best.idx, 0.0
             self._last = best
             return best
-        # 反向同一条：驻留只防「两个都该做」之间的抖动，不防现任自己失效。
-        # 擦边车出窗后，现任满杆候选的价值掉到 0，但 key 里的超限罚仍挂着；
-        # 旧逻辑只等「最佳更好」，于是继续按满杆 0.2~0.3s（20261027 局
-        # 9.1~9.4s 空路左打、12.7~12.9s 目标在右却满左）。现任是得分目标
-        # 而最优已回中（目标消失）/ 现任越限，本拍就让位。
-        demoted = urgent and ki[1] > kb[1] + self.immediate
+        # 现任自己失效：擦边车出窗后，现任满杆候选的价值掉到 0，但 key 里
+        # 的超限罚仍挂着；旧逻辑只等「最佳更好」，于是继续按满杆 0.2~0.3s
+        # （20261027 局 9.1~9.4s 空路左打、12.7~12.9s 目标在右却满左）。
+        # 现任越限本拍就让位（价值方向的失效已由上面的立即门覆盖）。
+        demoted = False
         if len(ki) > 2 and len(kb) > 2 \
                 and isinstance(ki[2], (int, float)) \
                 and isinstance(kb[2], (int, float)) \
                 and ki[2] > kb[2] + 1e-6:
             demoted = True
         if demoted:
-            self._idx, self._key, self._streak = best.idx, kb, 0.0
+            self._idx, self._streak = best.idx, 0.0
             self._last, self._miss_s = best, 0.0
             return best
         better = False
-        if kb[1] < ki[1] - self.margin:
-            better = True                       # 价值显著更高
-        elif abs(kb[1] - ki[1]) <= self.eps:
-            # 同价值时比较几何/动作键；中心修正量级远小于价值分，
+        if gain > self.margin:
+            better = True                       # 价值显著更高（分）
+        elif kb[1] == ki[1]:
+            # 同成本桶视为同价，比较几何/动作键；中心修正量级远小于价值分，
             # 用独立的小门槛，否则车会永远卡在最初的直行候选上。
-            better = kb[2:] < ki[2:] \
-                and self._gap(kb[2:], ki[2:]) > self.geom_margin
+            # 末尾的候选下标只作排序定序，不是质量分——必须排除，否则
+            # 「只差下标」的并列候选也会在 dwell 后被判成更优。
+            better = kb[2:-1] < ki[2:-1] \
+                and self._gap(kb[2:-1], ki[2:-1]) > self.geom_margin
         if better:
             self._streak += dt
             if self._streak >= self.dwell:
-                self._idx, self._key, self._streak = best.idx, kb, 0.0
+                self._idx, self._streak = best.idx, 0.0
                 self._last = best
                 return best
         else:
             self._streak = 0.0
-        self._key = ki
         self._last = inc
         return inc
 
