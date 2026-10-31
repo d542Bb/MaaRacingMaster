@@ -600,12 +600,14 @@ class LineTracker:
                     "side_reject": self.side_reject,
                     "lost": int(self.lost),
                     "anchor_src": self.anchor_src,
+                    "usable": False, "locked": int(self.locked),
                     "lines": [dict(c) for c in self.last_lines], "pred": True}
         return {"state": "RELOCK", "x": None, "theta": self.last_theta,
                 "n_locked": 0, "relock_src": None, "n_lines": 0,
                 "grid_reject": self.grid_reject,
                 "side_reject": self.side_reject, "lost": int(self.lost),
-                "anchor_src": "none",
+                "anchor_src": "none", "usable": False,
+                "locked": int(self.locked),
                 "lines": [], "pred": True}
 
 
@@ -767,27 +769,37 @@ class LaneObsWorker:
                 if not pred:
                     self._last_det_t = t_done
                     self._last_det_fid = int(fid)
-                out = {"fid": fid, "cam_h": round(cam_h, 3),
-                       "pred": bool(res.get("pred", pred)),
-                       "ms": round((t_done - t0) * 1000.0, 1),
-                       "t_done": t_done,
-                       "t_det": self._last_det_t,
-                       "n_lines": res["n_lines"],
-                       "x": None if res["x"] is None else round(res["x"], 3),
-                       "theta": None if res["theta"] is None
-                       else round(res["theta"], 4),
-                       "state": res["state"],
-                       "n_locked": res["n_locked"],
-                       "relock_src": res["relock_src"],
-                       "anchor_src": res.get("anchor_src"),
-                       "grid_reject": res["grid_reject"],
-                       "side_reject": res["side_reject"],
-                       # 线与横位同拍：annotated（k/resid/accepted）由 tracker 给出
-                       "lines": res["lines"]}
+                out = self._snapshot(res, fid, cam_h, t0, t_done, pred)
                 with self._lock:
                     self._latest = out
             except Exception as exc:  # noqa: BLE001 —— 单帧失败只记错误
                 self.error = repr(exc)
+
+    def _snapshot(self, res: dict, fid: int, cam_h: float, t0: float,
+                  t_done: float, pred_fallback: bool) -> dict:
+        """tracker 输出 → 线程对外快照。
+
+        字段必须逐个显式搬运（不是 ``dict(res)``）：上游新增的位置原点判据
+        （usable/locked）若在这里漏搬，消费方永远读到 None——线为主会静默
+        失效且看不出错误。"""
+        return {"fid": fid, "cam_h": round(cam_h, 3),
+                "pred": bool(res.get("pred", pred_fallback)),
+                "ms": round((t_done - t0) * 1000.0, 1),
+                "n_lines": res["n_lines"],
+                "x": None if res["x"] is None else round(res["x"], 3),
+                "theta": None if res["theta"] is None
+                else round(res["theta"], 4),
+                "state": res["state"],
+                "n_locked": res["n_locked"],
+                "relock_src": res["relock_src"],
+                "anchor_src": res.get("anchor_src"),
+                "grid_reject": res["grid_reject"],
+                "side_reject": res["side_reject"],
+                "usable": bool(res.get("usable", False)),
+                "locked": int(res.get("locked", 0)),
+                "t_done": t_done, "t_det": self._last_det_t,
+                # 线与横位同拍：annotated（k/resid/accepted）由 tracker 给出
+                "lines": res["lines"]}
 
     def _run(self, rgb: np.ndarray):
         """DML 走共享锁：只包 run 本体；抢不到即弃帧（latest-only，不排队）。"""

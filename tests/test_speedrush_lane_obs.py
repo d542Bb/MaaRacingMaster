@@ -359,6 +359,31 @@ def test_latest_is_one_consistent_snapshot():
     assert out["det_age_ms"] is not None and out["det_age_ms"] >= 0.0
 
 
+def test_worker_snapshot_carries_line_origin_flags():
+    """线程快照必须搬运 usable/locked：漏搬时消费方永远读 None，线为主
+    静默失效——2026-10-31 实机一局整局没生效的根因就是这里漏了两个键。"""
+    w = LaneObsWorker(LaneObsConfig(enabled=True))
+    res = {"state": "TRACK", "x": 0.4, "theta": 0.01, "n_locked": 2,
+           "relock_src": "line", "n_lines": 2, "grid_reject": 0,
+           "side_reject": 0, "anchor_src": "lines",
+           "usable": True, "locked": 7, "lines": [], "pred": False}
+    snap = w._snapshot(res, 10, 1.28, 0.0, 0.02, False)
+    assert snap["usable"] is True and snap["locked"] == 7
+
+
+def test_predict_marks_usable_false():
+    """滑行预测不是测量：可作位置原点的标志必须为 False，位置交给执行层
+    的短断供预算，而不是把外推值冒充新线。"""
+    tr = LineTracker()
+    lines = [_line(-1.1, "w"), _line(0.9, "w")]
+    r = None
+    for fid in range(1, 7):
+        r = tr.update(lines, fid, 0.05, anchor=0.0)
+    assert r["usable"] is True
+    p = tr.predict(0.05, 0.0)
+    assert p["usable"] is False and p["pred"] is True
+
+
 def test_push_without_throttle_queues_every_tick():
     """hz=0：每拍都推，由队列深度 1 丢旧帧限流。"""
     w = LaneObsWorker(LaneObsConfig(enabled=True, hz=0.0))
