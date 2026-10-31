@@ -440,11 +440,9 @@ def main() -> int:
     if args.keep:
         print(f"\n探针页：{probe}\n截图：{shot}")
     else:
-        for p in (probe, shot):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        # 连目录一起删：只删文件会每跑一次留下一个空的 mra_corner_* 目录
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
     return code
 
 
