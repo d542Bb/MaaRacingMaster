@@ -1269,12 +1269,12 @@ class SpeedRushModule(ActivityModule):
             # 原点保持：线失锁的短断供拍仍用线原点（与 planner 的
             # _LINE_REBUILD_S 同一预算），否则走廊中心会在线与深度之间
             # 来回换，场景参考系跟着抖。
+            line_origin = bool(lane_usable or planner.line_primary)
             corridor = chain["ego_road"].update(
                 dgeo, new=dgeo_new, grid=dgrid, fid=fid,
                 far_extents=(dgeo.far_extents if dgeo is not None else ()),
                 center_override=(-planner.state.executed_lane
-                                 if (lane_usable or planner.line_primary)
-                                 else None),
+                                 if line_origin else None),
                 v_lat=planner.state.v_lat)
             road_offset = None if corridor is None else -corridor.center_lane
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
@@ -1372,12 +1372,17 @@ class SpeedRushModule(ActivityModule):
             if lw is not None:
                 cam_h = (None if dgeo is None or dgeo.coef is None
                          else abs(float(dgeo.coef[2])))
-                # 线观测的绝对锚点=同帧新鲜深度路心（复用/历史拍不给，
+                # 线观测的绝对锚点=同帧新鲜**深度**路心（复用/历史拍不给，
                 # 让线退回上一拍横位做子道细化，不让旧深度冒充新锚）。
+                # 线原点拍不给锚：此时的 road_offset 就是线的输出（走廊中心被
+                # center_override 写成 −exec），喂回去等于让线用自己的估计给
+                # 自己定道号，k 一旦取整错位会自洽地锁住错网格。
+                anchor = (road_offset
+                          if (road_offset_new and not line_origin) else None)
                 lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
                         fid_jump,
                         focal=chain.get("focal_px"),
-                        anchor=road_offset if road_offset_new else None)
+                        anchor=anchor)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,

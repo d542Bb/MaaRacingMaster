@@ -863,6 +863,51 @@ def test_ego_road_physical_limit_allows_edge_rejects_beyond():
     assert _off(o.update(_bnd_clusters(-4.75, -0.65), now=1000.05)) is None
 
 
+def test_lane_anchor_not_fed_back_on_line_origin(_stub_depth, monkeypatch):
+    """线作原点时不把线自己的横位当深度锚喂回线观测。
+
+    线原点拍走廊中心被 center_override 写成 −exec，road_offset 就是线的
+    输出；喂回去等于让线用自己的估计取整道号，错一格会自洽锁住。深度锚
+    只在非线原点拍生效。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+
+    _stub_depth["r"] = _dgeo_lanes(-1.5, 1.5)
+
+    class _Lane:
+        def __init__(self, usable):
+            self.usable = usable
+            self.anchors = []
+
+        def latest(self):
+            return {"state": "TRACK", "x": 0.0, "theta": 0.0,
+                    "n_locked": 2, "usable": self.usable,
+                    "det_age_ms": 5.0, "det_fid": 1, "lines": []}
+
+        def push(self, *args, **kwargs):
+            self.anchors.append(kwargs.get("anchor"))
+
+    def cor(*args, **kwargs):
+        return Corridor((CorridorBand(
+            0.0, 3.0, BandBoundary(-4.2, "measured", 1.0, 1),
+            BandBoundary(4.2, "measured", 1.0, 1)),),
+            0.0, 4.0, "pair", "ok")
+
+    def run(usable):
+        m = _module()
+        chain = m._build_control_chain()
+        lane = _Lane(usable)
+        chain["lane_obs"] = lane
+        monkeypatch.setattr(chain["ego_road"], "update", cor)
+        m._control_tick(chain, StubPad(), None, _perc(1), 1,
+                        50_000_000, 10.0, 1)
+        assert lane.anchors
+        return lane.anchors[-1]
+
+    assert run(True) is None                    # 线原点：不喂回自身横位
+    assert run(False) == pytest.approx(0.0)     # 深度原点：同帧新鲜深度路心
+
+
 # ---------- 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽的中位数 + ±40% 门 ----------
 
 def test_ego_road_width_forms_from_clean_pairs():
