@@ -1372,13 +1372,13 @@ class SpeedRushModule(ActivityModule):
             if lw is not None:
                 cam_h = (None if dgeo is None or dgeo.coef is None
                          else abs(float(dgeo.coef[2])))
-                # 线观测的绝对锚点=同帧新鲜**深度**路心（复用/历史拍不给，
+                # 线观测的绝对锚点=同帧新鲜**独立深度**路心（复用/历史拍不给，
                 # 让线退回上一拍横位做子道细化，不让旧深度冒充新锚）。
-                # 线原点拍不给锚：此时的 road_offset 就是线的输出（走廊中心被
-                # center_override 写成 −exec），喂回去等于让线用自己的估计给
-                # 自己定道号，k 一旦取整错位会自洽地锁住错网格。
-                anchor = (road_offset
-                          if (road_offset_new and not line_origin) else None)
+                # 线作原点时 corridor 的中心是线，不能回喂；但覆盖前的深度
+                # 候选仍在 depth_anchor_lane 里，用它锚道号即可——既不循环，
+                # 也不剥夺线在短断/重锁时的独立参照。
+                anchor = (chain["ego_road"].depth_anchor_lane
+                          if road_offset_new else None)
                 lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
                         fid_jump,
                         focal=chain.get("focal_px"),
@@ -2394,6 +2394,7 @@ class _EgoRoadObserver:
         self._w_samples: deque = deque(maxlen=self.W_KEEP_SAMPLES)
         self._w_center: float | None = None   # 最近一次喂宽读数拍的中点（跳变确认）
         self._center_override: float | None = None  # 线为原点时的走廊中心
+        self.depth_anchor_lane: float | None = None  # 覆盖前的独立深度路心（线观测锚点）
         self._v_lat = 0.0                     # 当拍横速（记忆位移补偿用）
         self._mem: tuple | None = None        # 朝向记忆 (center, width, 时刻)
         self._last_center: float | None = None   # 最近一次采信的路心（跳变门基线）
@@ -2431,6 +2432,8 @@ class _EgoRoadObserver:
             now = time.monotonic()
         self._far_extents = far_extents   # _build 消费（各拼装路径同帧同源）
         self._center_override = center_override  # 线可用时走廊以线为原点
+        # 本拍独立深度路心（覆盖前），供线观测做道号锚点；线回退/保持值不给。
+        self.depth_anchor_lane = None
         self._v_lat = float(v_lat) if math.isfinite(v_lat) else 0.0
         self._frame_gate_used = False
         self._audit = {}                  # 本拍审计面重置（None=本拍无该证据）
@@ -2810,6 +2813,11 @@ class _EgoRoadObserver:
 
     def _build(self, bnd, grid, fid: int | None, center: float,
                width: float, src: str, now: float) -> Corridor:
+        # 线观测的道号锚点必须是**独立深度读数**：覆盖前把候选中心留下来。
+        # 保持值（memory/wall_occl/pair_slot）与线回退（line）不给——前者过期、
+        # 后者就是线自己的输出，拿它取整 k 等于自洽锁住错网格。
+        if src in ("wall", "region", "pair"):
+            self.depth_anchor_lane = float(center)
         # 线为原点时，走廊中心用线的位置（center_override），深度的墙/记忆只
         # 供边界证据与宽度统计；深度来源跳变不再把走廊中心整道拽走。
         if self._center_override is not None:
