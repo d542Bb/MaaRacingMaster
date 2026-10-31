@@ -59,10 +59,10 @@
      border-radius 只能画圆弧——圆弧与直边相切，但曲率在切点从 0 直接跳到 1/r，
      观感是「到这里突然开始转」。corner-shape 让圆角按超椭圆走，切点曲率为 0，
      且 border / 背景 / outline / box-shadow 都跟着这条曲线，不需要裁切整个元素。
-     取值：superellipse(3) 与选卡弹窗的曲率连续拐角最接近（峰值曲率 1.78/r）；
-     更圆用 superellipse(2.5)，更方用 squircle（= superellipse(4)，峰值 2.52/r）。
-     注意：换形状要同时补半径（超椭圆切角更浅），见末尾覆盖块的说明。 */
-  --mra-corner-shape: superellipse(3);
+     取值用 squircle：非圆弧里最圆的一档（等效圆半径 ≈ 0.69 × border-radius）。
+     superellipse(k) 的数字越大越方，2.5 ≈ 0.54、3 ≈ 0.43，别按字面理解。
+     换形状必须同时补半径，倍数见末尾覆盖块的表格。 */
+  --mra-corner-shape: squircle;
 
   /* 字体 */
   /* 中文优先 Noto Sans SC（思源字形，小字号渲染优于雅黑；可变字体，500/600 为真字重），
@@ -1582,24 +1582,32 @@ footer .spacer { flex: 1; }
 /* 现状：全站圆角都是 border-radius 的圆弧。圆弧与直边相切，但曲率在切点从 0 直接跳到
    1/r，观感是「到这里突然开始转」。
 
-   第一版试点只改了主控页卡片、且没动半径，结果很难看：**超椭圆的切角比圆弧「浅」**——
-   半径 8 时圆弧从角上切掉 3.3px，superellipse(3) 只切 2.3px，于是看起来几乎成了方角，
-   而且和其它页面的圆弧卡片摆在一起「各有各的样子」。
+   **半径要按「等效圆」补，不能按几何跨度补。** 超椭圆拐角会贴着边收，肉眼看到的圆润
+   程度远小于它的 border-radius。实测（同一半径下，用拐角缺口面积折算成等效圆半径）：
 
-   这一版按「切深不变、过渡变长」补半径：切深 0.292×R 要回到圆弧的 0.414×R，半径就得
-   乘约 1.4。8 → 12、12 → 18。于是拐角占掉的边长和原来差不多，多出来的长度全变成更长的
-   过渡——这才是「过渡自然」而不是「变方」。
-   覆盖面同时从主控页扩到**全部卡片面**（页面卡片、任务卡、日志卡、弹窗），因为它们会
-   同屏出现，只改一处必然不统一。按钮 / 输入框 / 徽章仍是圆弧（小尺寸下差异不明显，
-   等这套验收后再定）。
+   | 取值 | 等效圆半径 / border-radius |
+   |---|---|
+   | round（圆弧） | 1.00 |
+   | squircle | 0.69 |
+   | superellipse(2.5) | 0.54 |
+   | superellipse(3) | 0.43 |
+
+   前两版就是踩了这个：`superellipse(3)` + 12px 实际只相当于 5.2px 的圆弧，比原来的 8px
+   还小，所以「越改越方」。现在改用 squircle（非圆弧里最圆的一档），并按 1/0.69 ≈ 1.45
+   补半径：16px ≈ 等效 11px、20px ≈ 等效 14px——都比原来的 8/12 更圆。
+
+   覆盖面是**全部卡片面**（页面卡片、关于页头卡、任务卡、日志卡、弹窗）：它们会同屏出现，
+   只改一处必然「各有各的样子」。日志卡是卡片里嵌的小条目，半径按 12（等效 8.3）收一档，
+   形成内外两级、不抢主卡。按钮 / 输入框 / 徽章仍是圆弧（小尺寸下差异不明显，等验收后再定）。
 
    为什么整块包在 @supports 里：corner-shape 仍是实验特性（Chromium 139+ 起提供）。
    不支持的引擎根本不解析这一块，所有面继续走上面的 border-radius 圆弧——降级自动生效，
    不需要另写一套覆盖规则。校验条件写成要用的那个取值本身：属性名存在但取值不认识时
    同样落到降级分支，不会出现「解析了但画不出」的半吊子状态。 */
-@supports (corner-shape: superellipse(3)) {
+@supports (corner-shape: squircle) {
   .card,
-  .task-item,
+  .about-hero,
+  .task-item { border-radius: 16px; corner-shape: var(--mra-corner-shape); }
   .log-section { border-radius: 12px; corner-shape: var(--mra-corner-shape); }
-  .mra-modal-card { border-radius: 18px; corner-shape: var(--mra-corner-shape); }
+  .mra-modal-card { border-radius: 20px; corner-shape: var(--mra-corner-shape); }
 }

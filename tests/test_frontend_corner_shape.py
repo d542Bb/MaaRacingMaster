@@ -66,24 +66,26 @@ def test_corner_shape_appears_only_inside_the_pilot_block():
 
 
 def test_pilot_scope_is_surface_classes_only():
-    """作用域只到「面」类（卡片/任务卡/日志卡/弹窗），不含全站选择器与其它控件。"""
+    """作用域只到「面」类（页面卡片/关于页头卡/任务卡/日志卡/弹窗），不含全站选择器与控件。"""
     block = _pilot_block(STYLE.read_text(encoding="utf-8"))
     body = block[block.index("{") + 1:-1]   # 守卫块内部（可能有多条规则）
-    for want in (".card", ".task-item", ".log-section", ".mra-modal-card"):
+    for want in (".card", ".about-hero", ".task-item", ".log-section", ".mra-modal-card"):
         assert want in body, f"面类 {want} 未纳入，同屏会不统一"
     for forbidden in ("*", "body", ".mra-btn", "input", "textarea", "a "):
         assert forbidden not in body, f"作用域越界: {forbidden}"
 
 
 def test_radius_is_compensated_inside_the_guard():
-    """半径必须一起补：超椭圆的切角比圆弧浅，同半径会看起来像方角。
+    """半径必须按「等效圆」补：非圆弧的拐角会贴边收，肉眼圆润度远小于 border-radius。
 
-    第一版试点就是漏了这条（只换形状不换半径），结果主控页卡片几乎成了方角。
-    切深 0.292×R 要回到圆弧的 0.414×R，半径得乘约 1.4。
+    实测（同一半径，按拐角缺口面积折算等效圆半径）：round 1.00 / squircle 0.69 /
+    superellipse(2.5) 0.54 / superellipse(3) 0.43。
+    前两版就是漏了这条：superellipse(3) + 12px 只相当于 5.2px 圆弧，比原 8px 还小。
     """
     block = _pilot_block(STYLE.read_text(encoding="utf-8"))
-    assert "border-radius: 12px" in block, "8px 面没有把半径补到 12px"
-    assert "border-radius: 18px" in block, "12px 弹窗没有把半径补到 18px"
+    assert "corner-shape: squircle" in block, "应用 squircle（非圆弧里最圆的一档）"
+    assert "border-radius: 16px" in block, "卡片面没把半径补到 16（等效约 11px）"
+    assert "border-radius: 20px" in block, "弹窗没把半径补到 20（等效约 14px）"
 
 
 def test_gallery_stroke_animation_still_drives_its_own_geometry():
