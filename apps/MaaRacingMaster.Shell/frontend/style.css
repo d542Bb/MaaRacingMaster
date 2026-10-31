@@ -55,13 +55,13 @@
   --mra-radius-md: 8px;
   --mra-radius-lg: 10px;
   --mra-radius-xl: 12px;
-  /* 圆角形状（试点，只作用于主控页卡片，见文件末尾的试点块）：
+  /* 圆角形状（作用于所有「面」，见文件末尾的覆盖块）：
      border-radius 只能画圆弧——圆弧与直边相切，但曲率在切点从 0 直接跳到 1/r，
      观感是「到这里突然开始转」。corner-shape 让圆角按超椭圆走，切点曲率为 0，
      且 border / 背景 / outline / box-shadow 都跟着这条曲线，不需要裁切整个元素。
      取值：superellipse(3) 与选卡弹窗的曲率连续拐角最接近（峰值曲率 1.78/r）；
      更圆用 superellipse(2.5)，更方用 squircle（= superellipse(4)，峰值 2.52/r）。
-     改这一个值即可切换，不用碰选择器。 */
+     注意：换形状要同时补半径（超椭圆切角更浅），见末尾覆盖块的说明。 */
   --mra-corner-shape: superellipse(3);
 
   /* 字体 */
@@ -536,21 +536,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   .task-gallery-cell--selected .task-gallery-scan { animation: none; }
 }
 
-/* ---------- 圆角形状试点（仅主控页卡片） ---------- */
-/* 现状：全站圆角都是 border-radius 的圆弧。这次只在主控页两类卡片上试 corner-shape，
-   用来看「曲率连续的拐角」在真实版式里是否更好，不一次铺开全站。
 
-   为什么整块包在 @supports 里：corner-shape 仍是实验特性（Chromium 139+ 起提供）。
-   不支持的引擎根本不解析这一块，卡片继续走上面的 border-radius 圆弧——降级自动生效，
-   不需要另写一套覆盖规则。校验条件写成要用的那个取值本身：属性名存在但取值不认识时
-   同样落到降级分支，不会出现「解析了但画不出」的半吊子状态。
-
-   覆盖面：任务卡（小尺寸、1px 边框、sm 阴影）与主控页通用卡片（大尺寸、overflow 裁切），
-   两种尺寸一起看才能判断过渡长度是否合适。设置页/关于页的卡片不在本次试点内。 */
-@supports (corner-shape: superellipse(3)) {
-  .task-item,
-  #page-control .card { corner-shape: var(--mra-corner-shape); }
-}
 
 /* 模块选项（原主控卡内、现任务卡展开面板；行距/字段样式共用） */
 .module-options-row--stack { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: end; }
@@ -1588,4 +1574,32 @@ footer .spacer { flex: 1; }
   font-size: 11px; color: var(--mra-foreground-muted); line-height: 1.6;
   padding: 8px 12px; margin-bottom: 12px; background: var(--mra-sidebar);
   border: 1px solid var(--mra-border-light); border-radius: var(--mra-radius-md);
+}
+
+/* 圆角形状放在文件末尾：它是「覆盖层」——.log-section / .mra-modal-card 的定义在
+   上面更靠后的位置，同特异性下后写的规则才生效，放中间会被基础半径顶掉。 */
+/* ---------- 圆角形状（corner-shape，作用于所有「面」） ---------- */
+/* 现状：全站圆角都是 border-radius 的圆弧。圆弧与直边相切，但曲率在切点从 0 直接跳到
+   1/r，观感是「到这里突然开始转」。
+
+   第一版试点只改了主控页卡片、且没动半径，结果很难看：**超椭圆的切角比圆弧「浅」**——
+   半径 8 时圆弧从角上切掉 3.3px，superellipse(3) 只切 2.3px，于是看起来几乎成了方角，
+   而且和其它页面的圆弧卡片摆在一起「各有各的样子」。
+
+   这一版按「切深不变、过渡变长」补半径：切深 0.292×R 要回到圆弧的 0.414×R，半径就得
+   乘约 1.4。8 → 12、12 → 18。于是拐角占掉的边长和原来差不多，多出来的长度全变成更长的
+   过渡——这才是「过渡自然」而不是「变方」。
+   覆盖面同时从主控页扩到**全部卡片面**（页面卡片、任务卡、日志卡、弹窗），因为它们会
+   同屏出现，只改一处必然不统一。按钮 / 输入框 / 徽章仍是圆弧（小尺寸下差异不明显，
+   等这套验收后再定）。
+
+   为什么整块包在 @supports 里：corner-shape 仍是实验特性（Chromium 139+ 起提供）。
+   不支持的引擎根本不解析这一块，所有面继续走上面的 border-radius 圆弧——降级自动生效，
+   不需要另写一套覆盖规则。校验条件写成要用的那个取值本身：属性名存在但取值不认识时
+   同样落到降级分支，不会出现「解析了但画不出」的半吊子状态。 */
+@supports (corner-shape: superellipse(3)) {
+  .card,
+  .task-item,
+  .log-section { border-radius: 12px; corner-shape: var(--mra-corner-shape); }
+  .mra-modal-card { border-radius: 18px; corner-shape: var(--mra-corner-shape); }
 }
