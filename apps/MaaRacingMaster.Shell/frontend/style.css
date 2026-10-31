@@ -406,11 +406,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   /* 描边：亮芯 + 红色辉光。品牌红和选中态红光同色，压在上面也糊成一条，
      所以芯色取到接近白的热红，靠辉光把颜色带回来（参照游戏选卡的高亮描边）。 */
   --gal-stroke: #FFA3A6;
-  /* 拐角强度：R 是「最紧处的曲率半径」（峰值曲率 = 1/R），不是拐角跨度。
-     曲率连续的拐角会沿边延伸约 1.5R——这是形状本身的性质，不是参数没调好。
-     形状由 js/gallery-shape.js 按这个半径采样成路径（clip-path + 描边共用一套几何）；
-     border-radius 只作降级：不支持 clip-path:path() 时退回普通圆角。 */
-  --gal-radius: 10px;
+  /* 拐角半径：既是 border-radius，也是 squircle 的角框边长（指数 4 的超椭圆在 R×R 的
+     角框内）。20 不是随手取的——它让 squircle 与原来的 G2@10 轮廓等效（最大偏差
+     0.46px，浏览器实测），所以这次换的是实现而不是观感。
+     形状由 CSS 画（末尾的 corner-shape 覆盖块），描边由 js/gallery-shape.js 按同一条
+     方程生成；不支持 corner-shape 的引擎退回 border-radius 圆弧，JS 同步切到指数 2。 */
+  --gal-radius: 20px;
   /* 封面完全取不到时的兜底底纹（专属封面 → 默认封面 → 这里，三级回退的末级） */
   --gal-fallback-art: linear-gradient(135deg, #232837 0%, #3a4152 60%, #4b5568 100%);
   position: relative; padding: 0; overflow: hidden;
@@ -476,7 +477,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
    层级压在最上面：红光（::before）是品牌红，同色描边叠上去会糊成一片，必须压过它。 */
 .task-gallery-stroke {
   position: absolute; inset: 0; z-index: 3; pointer-events: none;
-  overflow: visible;   /* 允许描边越过卡片边界，由卡片的轮廓裁切切硬边 */
+  overflow: visible;   /* 允许描边越过卡片边界，由卡片的 overflow:hidden 切硬边 */
   /* 辉光分两层：近处一圈紧贴线条收边，远处一圈铺开做氛围；都取红，避免变成粉色光斑 */
   filter: drop-shadow(0 0 2px rgba(255, 70, 76, 0.9)) drop-shadow(0 0 6px rgba(255, 40, 48, 0.5));
 }
@@ -519,7 +520,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   background: rgba(0, 0, 0, 0.55); color: var(--mra-warning-strong);
 }
 /* 空槽位：幽灵虚线（不填色），让留白透气；只为让网格连续、底部淡出有依托。
-   仍是普通圆角：它只有一圈虚线边框、没有照片，clip-path 会把边框的圆角一起裁掉。 */
+   形状跟着基础规则走（同一个类 → 同一个半径与 squircle）。虚线边框是原生 border，
+   corner-shape 会让它沿曲线走，不需要单独处理。 */
 .task-gallery-cell--empty {
   background: transparent; border: 1px dashed var(--mra-border); cursor: default;
   pointer-events: none; display: flex; align-items: center; justify-content: center;
@@ -1610,4 +1612,7 @@ footer .spacer { flex: 1; }
   .task-item { border-radius: 16px; corner-shape: var(--mra-corner-shape); }
   .log-section { border-radius: 12px; corner-shape: var(--mra-corner-shape); }
   .mra-modal-card { border-radius: 20px; corner-shape: var(--mra-corner-shape); }
+  /* 选卡卡片：半径由 --gal-radius 给（20px，与原来的 G2@10 轮廓等效），这里只补形状。
+     描边仍是自算路径（见 js/gallery-shape.js），但轮廓、照片裁切、边框都已回到原生。 */
+  .task-gallery-cell { corner-shape: var(--mra-corner-shape); }
 }
