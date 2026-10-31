@@ -367,6 +367,62 @@ def test_new_line_k_rejected_when_live_lines_disagree():
     assert r["n_locked"] == 0
 
 
+def _warm_lock(tr: LineTracker, lines: list[dict], n: int = 6) -> dict:
+    r = {}
+    for fid in range(1, n + 1):
+        r = tr.update(lines, fid, 0.05, anchor=0.0)
+    assert r["state"] == "TRACK" and r["locked"] >= la.LINE_LOCK_TICKS
+    return r
+
+
+def test_locked_grid_does_not_assign_k_to_new_line():
+    """锁定网格的绝对身份不能被相对票扩展（164953 局 p2 撞右墙的判据）。
+
+    车跨线后线组换新：新线若靠邻居票拿号，横位会整道漂移而单拍连续
+    （锁定不重置），控制器按错误方向追币。锁定期间新线只跟踪、不参选。
+    """
+    tr = LineTracker()
+    both = [_line(-1.1, "w"), _line(0.9, "w")]
+    r = _warm_lock(tr, both)
+    x0 = r["x"]
+    r2 = tr.update([*both, _line(2.0, "w")], 7, 0.05, anchor=None)
+    new = [ln for ln in r2["lines"] if ln["L"] == 2.0][0]
+    assert new["k"] is None
+    assert new["accepted"] is False
+    assert r2["x"] == pytest.approx(x0, abs=1e-9)
+
+
+def test_locked_grid_frozen_across_short_coast():
+    """锁定后短断一拍（COAST）不解除冻结：线回来时新线仍不得补号。"""
+    tr = LineTracker()
+    both = [_line(-1.1, "w"), _line(0.9, "w")]
+    r = _warm_lock(tr, both)
+    x0 = r["x"]
+    coast = tr.update([], 7, 0.05, anchor=None)
+    assert coast["state"] == "COAST" and tr.locked >= la.LINE_LOCK_TICKS
+    r2 = tr.update([*both, _line(2.0, "w")], 8, 0.05, anchor=None)
+    new = [ln for ln in r2["lines"] if ln["L"] == 2.0][0]
+    assert new["k"] is None and new["accepted"] is False
+    assert r2["x"] == pytest.approx(x0, abs=0.2)   # 滑行期允许小量外推
+    # 新鲜深度锚也不能在冻结期改判身份
+    r3 = tr.update([*both, _line(2.0, "w")], 9, 0.05, anchor=0.3)
+    new = [ln for ln in r3["lines"] if ln["L"] == 2.0][0]
+    assert new["k"] is None and new["accepted"] is False
+
+
+def test_relock_allows_anchor_to_assign_k_again():
+    """冻结只在锁定期：跳变/RELOCK 后新线仍由深度锚重新定号。"""
+    tr = LineTracker()
+    _warm_lock(tr, [_line(-1.1, "w"), _line(0.9, "w")])
+    for fid in range(7, 7 + COAST_MAX_TICKS + 2):
+        r = tr.update([], fid, 0.05, anchor=None)
+    assert r["state"] == "RELOCK" and tr.locked == 0
+    r2 = tr.update([_line(-0.2, "w"), _line(0.8, "w")], 20, 0.05,
+                   anchor=0.0)
+    assert [ln["k"] for ln in r2["lines"] if ln["accepted"]] == [0, 1]
+    assert r2["x"] == pytest.approx(0.2, abs=1e-6)
+
+
 def test_theta_weighted_by_lines():
     tr = LineTracker()
     r = tr.update([_line(-1.0, theta=0.1, n=10),

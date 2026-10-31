@@ -11,8 +11,9 @@ push 最新帧并读 `latest()`；推理失败/权重缺失一律返回 None，�
 ``x = k - L``。**k 不再由颜色/黄边界决定**：每拍用深度路心做锚点
 ``k_i = round(anchor + L_i)``，等间距与残差门剔除野线，多条线取残差中值
 还原横位。多线共同证实的新鲜锚点当拍重锚，单线仍等连续两拍；深度空窗里
-新线由所有在期线投票定号，未过门的新线与被拒线都不留道号。颜色只用于
-显示与黄线拟合符号质量门。
+新线由所有在期线投票定号，未过门的新线与被拒线都不留道号。线锁建立后
+网格冻结：新线不再靠相对票补位，只能等跳变/重锁后由深度锚重新定号。颜色
+只用于显示与黄线拟合符号质量门。
 
 状态机：
   TRACK  有通过等间距/残差门的线：输出锚定后的绝对横位；
@@ -65,6 +66,8 @@ COAST_MAX_TICKS = 10
 # 线为主（2026-10-31）：线自身连续稳定这么多拍后，道号不再让新鲜深度改判，
 # 深度也不再能否决线——整道级深度跳变时两根线会"整齐地"支持错误网格，正是
 # 路心整道跳、场景参考系反复否决的来源。
+# 锁定期道号同时冻结：新线只能等重锁后由深度锚定号，不能靠邻居相对票补位
+# （车跨线后线组换新时，相对票会给整道偏移的号且横位保持连续，锁定不重置）。
 LINE_LOCK_TICKS = 5
 LINE_THETA_MAX = 0.35      # 线角（rad）；变道中车头相对道路可达 ~0.2，急变道 0.3+
 LINE_RMS_MAX = 3.0         # 单线拟合残差（px，短段/坏拟合不参与位置原点）
@@ -308,30 +311,30 @@ class LineTracker:
 
     def _assign_k(self, c: dict, x_anchor: float | None,
                   fid: int, strong_anchor: bool = False,
-                  line_locked: bool = False) -> bool:
+                  grid_frozen: bool = False) -> bool:
         """给一条线定/重锚持久道号；False=本拍不能参选横位。
 
-        线已连续锁定时（``line_locked``）：道号只跟持久轨迹/邻居投票，深度
-        锚不参与——深度整道跳变时两根线会整齐地支持错误网格，此时再让锚点
-        改判等于把错网格写成权威。线未锁定（冷启/重锁）：深度新鲜拍是重锚
-        来源——新线直接初始化 k；老线与锚点冲突时，多条线同拍支持新网格
-        （``strong_anchor``）就立即改 k，否则连续 ``ANCHOR_CONFIRM`` 拍同向
-        一致才改，未确认前本拍横位用深度兜底。深度空窗时保留持久 k（线随
-        画面移动继续给绝对横位），新线由所有在期线的整数间距票一致后补位；
-        票分歧不硬定号。没通过门的新线不留 k，被拒线也不更新已有关联轨迹
-        的身份，避免野线把错道号传给下一帧。
+        网格已冻结时（``grid_frozen``：线已连续锁定且未 RELOCK）：道号只跟
+        持久轨迹，**新线不给号**——锁定网格的绝对身份不能被相对票扩展。实测
+        （164953 局 p2）：车跨线后线组整体换新，新线靠邻居票拿到偏移一道的
+        道号，横位随之整道漂移而单拍连续（锁定不重置），控制器按错误方向追币
+        撞上右侧护栏。新线要参与绝对横位，必须等网格重锁（跳变/RELOCK）后由
+        深度锚重新定号；期间它仍被跟踪，只是不参选。
+
+        网格未冻结（冷启/重锁）：深度新鲜拍是重锚来源——新线直接初始化 k；
+        老线与锚点冲突时，多条线同拍支持新网格（``strong_anchor``）就立即改
+        k，否则连续 ``ANCHOR_CONFIRM`` 拍同向一致才改，未确认前本拍横位用深度
+        兜底。深度空窗时保留持久 k（线随画面移动继续给绝对横位），新线由所有
+        在期线的整数间距票一致后补位；票分歧不硬定号。没通过门的新线不留 k，
+        被拒线也不更新已有关联轨迹的身份，避免野线把错道号传给下一帧。
         """
         L = float(c["L"])
         tk = c.get("_track")
-        if line_locked:
+        if grid_frozen:
             if tk is not None and tk.k is not None:
                 c["k"] = tk.k
                 return True
-            k = self._neighbor_k(c, fid)
-            if k is None:
-                return False
-            c["k"] = k
-            return True
+            return False
         if x_anchor is not None:
             k_a = int(round(x_anchor + L))
             resid = x_anchor + L - k_a
@@ -375,8 +378,11 @@ class LineTracker:
                v_lat: float = 0.0, fid_jump: bool = False,
                anchor: float | None = None) -> dict:
         # 线锁：上一拍起线已连续稳定 LINE_LOCK_TICKS 拍 → 本拍道号为权威，
-        # 深度锚只能用于「线丢失后的重建」，不能改判/否决。
-        line_locked = self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS
+        # 深度锚只能用于「线丢失后的重建」，不能改判/否决。冻结覆盖短 COAST
+        # （locked 保留、未 RELOCK）：断一拍不代表身份可改，只有跳变/RELOCK
+        # 才重置 locked。
+        grid_frozen = (self.locked >= LINE_LOCK_TICKS
+                       and self.state != "RELOCK")
         # ① 关联：颜色只作软提示，横位 L 才是身份
         cur = []
         for d in lines:
@@ -429,7 +435,7 @@ class LineTracker:
 
         # ③ 颜色/侧别质量门 + 持久道号分配/重锚
         strong_anchor = False
-        if not line_locked and x_anchor is not None and self.x_last is not None \
+        if not grid_frozen and x_anchor is not None and self.x_last is not None \
                 and abs(x_anchor - self.x_last) <= self.ANCHOR_AGREE_TOL:
             # 只有离当前横位不远的锚点才享受当拍重锚：整道级深度跳变时
             # 两根线会整齐地支持错误网格（残差照样很小），必须仍走两拍确认。
@@ -450,11 +456,11 @@ class LineTracker:
                 self.side_reject += 1
                 continue
             if not self._assign_k(c, x_anchor, fid, strong_anchor,
-                                  line_locked):
+                                  grid_frozen):
                 continue
             xi = float(c["k"]) - L
             c["_xi"] = xi
-            if not line_locked and x_anchor is not None \
+            if not grid_frozen and x_anchor is not None \
                     and abs(xi - x_anchor) > self.ANCHOR_AGREE_TOL:
                 # 持久 k 与新鲜深度冲突：本拍用深度兜底，线不参选
                 c["reject"] = "anchor"
@@ -544,19 +550,22 @@ class LineTracker:
             pred = False
         else:
             self.lost += 1
-            self.locked = 0
-            self.lock_strong = False
             # 盲窗封顶（2026-10-31）：线不可用又没有深度锚时，横位只剩「上次
             # 横速」外推。短断链（≤COAST_MAX_TICKS）这么走是对的；再长就没有
             # 可积的运动证据了——旧行为会以恒速一路外推到整道外（实测两秒
             # 飘 2 道后随新鲜证据整道跳回）。超过即冻住：位置保持、状态标
             # RELOCK，让上游知道这是外推值而不是测量值。
-            if self.lost <= COAST_MAX_TICKS:
+            # 锁/强锁与有锚空窗同一口径：断一拍不清零，只有跳帧或外推预算
+            # 耗尽才作废——否则恢复拍的新线会立刻按相对票补号，身份在断链
+            # 前后被悄悄改写（164953 局 p2 的整道漂移）。
+            if self.lost <= COAST_MAX_TICKS and not fid_jump:
                 vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
                 self.x_last = (self.x_last + float(np.clip(vp, -1.5, 1.5))
                                * dt)
-                self.state = ("RELOCK" if fid_jump else "COAST")
+                self.state = "COAST"
             else:
+                self.locked = 0
+                self.lock_strong = False
                 self.state = "RELOCK"
             x_out = self.x_last
             relock_src = None
