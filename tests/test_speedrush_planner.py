@@ -1462,6 +1462,32 @@ def test_lane_move_time_matches_the_bench():
     assert lane_move_time(0.7, **{**kw, "k_lat_lane_s": 0.0}) == float("inf")
 
 
+def test_heading_starts_at_first_measured_angle():
+    """ψ 初始化取本拍线角，不起 0：阶段切换/重锁后的第一拍车往往是斜的。
+
+    20261031_181046 阶段 2 第一拍 3 条线一致给出 0.13~0.15 rad、车确实在
+    向右并；ψ 起 0 后整段 ψ=θ−0.137，在线车速回归的斜率变负、vsp 失效，
+    控制器把「已向右转」读成「在向左转」，一路右打把车钉在右黄线上。"""
+    h = HeadingObserver(P)
+    for i in range(3):
+        h.update(DT, 0.0, True, 0.14, True, i, 5.0, 3)
+    assert h.psi == pytest.approx(0.14, abs=1e-6)
+
+
+def test_heading_angle_jump_is_rate_limited():
+    """换线跳变按偏航率上限截断，不当成真实角速度。
+
+    同帧两条线的线角差 p90 0.06 rad，线组一换融合角就阶跃；实测隐含速率
+    最高 4.3 rad/s（真车满杆 ≈0.46）。旧口径全积分进 ψ 并灌进 r，控制器
+    按假角速度满舵反打——来回摆的直接来路。"""
+    h = HeadingObserver(P)
+    h.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)
+    h.update(DT, 0.0, True, 0.20, True, 2, 5.0, 3)   # 0.2 rad / 0.05s = 4 rad/s
+    assert abs(h.psi) <= 0.8 * DT + 1e-6              # 只按上限积分
+    assert abs(h.r) <= 0.8 + 1e-6
+    assert h._jumps == 1
+
+
 def test_stale_heading_stops_producing_lateral_velocity():
     """ψ 状态按 _PSI_STALE_S 保留给控制律，但用它推横速只能认短龄——0.6s 的
     旧朝向在 40m/s 上是 0.7~1 道的位置外推，而这段时间恰好也是线+深度都没

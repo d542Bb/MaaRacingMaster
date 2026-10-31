@@ -96,9 +96,11 @@ _R_STALE_S = 0.3            # 角速度 TTL：速率只在短时内有意义
 # 朝向向「横速反解」收敛的时间常数：积分管 0.5s 级的快变，这条管稳态
 # （相机装偏、稳态曲率不会被当成常值朝向攒下来）。
 _PSI_CORR_TAU_S = 0.5
-# 单拍角度速率的物理上限（rad/s ≈115°/s）：真车偏航率在 0.5 rad/s 量级，
-# 越过它的只能是单帧坏角度（换线/误锁），不能让它一步把朝向拽走。
-_HEAD_RATE_MAX = 2.0
+# 线角变化的物理上限（rad/s）：辨识的车模满杆偏航率 ≈0.46 rad/s，线角不可能
+# 比车头转得更快；越过它的只能是换线/拟合跳变或单帧坏角度（同帧两条线差
+# p90 0.06 rad，线组一换融合角就阶跃；实测隐含角速率最高 4.3 rad/s，7% 的
+# 更新拍 >0.6）。0.8 给单帧噪声留余量（0.05s 间隔上噪声可到 ~0.5）。
+_HEAD_RATE_MAX = 0.8
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
 # 证据衰减到下限后，上一次的读数再保留这么久（秒）。比例只能靠**横移**观测：
@@ -144,6 +146,7 @@ class HeadingObserver:
             self._psi_t = -1e9
             self._psi_prev_th: float | None = None
             self._psi_prev_t = -1e9
+            self._jumps = 0              # 线角跳变被物理门截断的累计次数（trace）
             self.r: float | None = None
             self._r_t = -1e9
             self.v_scale: float | None = None
@@ -248,7 +251,12 @@ class HeadingObserver:
         if n_locked is not None and n_locked < _PSI_MIN_LINES:
             return None
         if self.psi is None:
-            self.psi = 0.0
+            # 初始化取本拍线角，不是 0：ψ=0 等于假设「这一刻与车道平行」，
+            # 而阶段切换/重锁后的第一拍车常常是斜的（20261031_181046 阶段 2
+            # 第一拍 3 条线一致给出 0.13~0.15 rad、车确实在向右并；ψ 起 0
+            # 后整段 ψ=θ−0.137，比例回归斜率变负、vsp 恒 None，控制器把
+            # 「已向右转」读成「在向左转」，一路右打把车钉在右黄线上）。
+            self.psi = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th))
             self._psi_t = self._t
             self._psi_prev_th = th
             self._psi_prev_t = self._t
@@ -259,6 +267,11 @@ class HeadingObserver:
             self._psi_prev_th = th
             return self.psi
         rate = (th - self._psi_prev_th) / gap
+        # 物理门：超过满杆偏航率的单拍变化按换线/坏角度处理，截断后不进入
+        # ψ 与 r（基线仍跟到新值）。旧值 2.0 等于没门，跳变全积分成「真实
+        # 偏航」，控制器按假角速度满舵反打——来回摆的直接来路。
+        if abs(rate) > _HEAD_RATE_MAX:
+            self._jumps += 1
         rate = max(-_HEAD_RATE_MAX, min(_HEAD_RATE_MAX, rate))
         self._psi_prev_th = th
         self._psi_prev_t = self._t
@@ -309,6 +322,7 @@ class HeadingObserver:
             "r": None if self.r is None else round(self.r, 3),
             "psi_age": (None if self.psi is None
                         else round((self._t - self._psi_t) * 1000.0, 0)),
+            "jmp": self._jumps,        # 线角跳变被物理门截断的累计次数
             "vsp": None if self.v_scale is None
             else round(self.v_scale, 1),
             "scf": round(self.v_scale_conf, 2),
