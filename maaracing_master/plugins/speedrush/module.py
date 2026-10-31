@@ -417,6 +417,12 @@ class SpeedRushModule(ActivityModule):
         # 性能卡领域项（资源面由 core 采样器供数）：驾驶环拍间隔滑窗 + 事件节流
         self._tick_gaps: deque[float] = deque(maxlen=240)
         self._last_perf_evt = 0.0
+        # 锚点复查计时（2026-10-31 卡顿排查）：复查发生在逐拍 append 之后，
+        # 耗时暂存于此、由下一控制拍的 _row 带走——anchor_fid 记录复查发生时
+        # 的帧号，未复查的拍为 None。450ms 级未记账段的最强嫌疑就是这里的
+        # 图运行，本计时把它与游戏侧停摆区分开。
+        self._anchor_ms: float | None = None
+        self._anchor_fid: int | None = None
 
     @property
     def current_stage(self) -> str | None:
@@ -949,7 +955,13 @@ class SpeedRushModule(ActivityModule):
                     now = time.monotonic()
                     if now >= next_anchor:
                         next_anchor = now + DRIVE_ANCHOR_CHECK_S
-                        if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+                        _t_anchor = time.perf_counter()
+                        anchor_hit = self._graph.run(DRIVE_STAGE_NODE,
+                                                     DRIVE_STAGE_NODE)
+                        # 计时暂存（下一控制拍带走）：与「游戏停摆」同拍对照
+                        self._anchor_ms = (time.perf_counter() - _t_anchor) * 1000.0
+                        self._anchor_fid = fid
+                        if anchor_hit:
                             miss = 0
                         else:
                             miss += 1
@@ -1460,6 +1472,11 @@ class SpeedRushModule(ActivityModule):
             _slow = None
         _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
+            # 锚点复查计时（上一拍内发生的复查）：450ms 级未记账段的归因面；
+            # anchor_fid 是复查发生时的帧号，未复查的拍两列皆 None
+            "anchor_ms": None if self._anchor_ms is None
+            else round(self._anchor_ms, 1),
+            "anchor_fid": self._anchor_fid,
             # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
             # 三模态 33/50/66 的逐拍归因面；首拍无上区间为 None
             "pace_body": None if pace_ms is None else round(pace_ms[0], 1),
@@ -1787,6 +1804,9 @@ class SpeedRushModule(ActivityModule):
         _ts = chain.get("trace_sink")
         if _ts is not None:
             _ts.append(_row)
+        # 锚点复查计时已被本拍 _row 带走（每份只随一行，防重复计账）
+        self._anchor_ms = None
+        self._anchor_fid = None
         # 调试图快照（控制局=debugview 节流写盘；人工局=交录制器渲染叠加图）
         dbg = chain.get("debug")
         hud_rec = chain.get("hud_rec")
