@@ -906,17 +906,6 @@ class LateralPlanner:
         elif not plan_held:
             self._last_plan_u = None
 
-        # 朝向证据陈旧：本拍的车头角只能算「上次的估计」，任何机动都缺
-        # 反馈。贴边逃生（|executed| 超 _WALL_ESCAPE_LANE）除外——那是
-        # 硬约束优先；其余只给维护级杆幅，盲打满舵会把车头角叠到设计上限
-        # 之外（fid 1755~1776 的 0.4s 空窗用它把杆顶到 +0.76）。
-        if (st is DecisionState.CRUISE and self._heading_aged
-                and abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE):
-            lim = self.p.hold_stick_max
-            steer_raw = max(-lim, min(lim, steer_raw))
-            if self._last_plan_u is not None:
-                self._last_plan_u = max(-lim, min(lim, self._last_plan_u))
-
         self.last_steer_raw = steer_raw
         # ⑤ 杆值低通（限速链与滑行预测的起点）；⑥ 横位由**朝向**积分：
         # x += v·tanψ·dt。ψ 是测量量，由观测器每拍更新，这里不再有速度状态。
@@ -1138,7 +1127,17 @@ class LateralPlanner:
 
         退化不是第二套模型：它仍是同一式子对同一目标的解，只是把未知的
         车头角按 0 处理——线断供的拍里至少还按位置误差修，且不会假装知道
-        车头朝哪。"""
+        车头朝哪。
+
+        朝向证据**陈旧**（超过 ``heading_vel_max_age_s``）时不追位置误差：
+        位置误差换出的目标朝向，其符号依赖的正是那个不知道变了多少的车头
+        角。这段只把已知朝向往 0 收，阻尼不受杆幅限制——不能改成整拍限幅：
+        那会把刹车一起截掉（20261031_174717 s2 的 2875~2886，ψ 龄 0.25s+
+        时按 0.375 的旧朝向把杆限在 0.45，车 1.26→1.94）。贴边逃生
+        （|executed| 超 ``_WALL_ESCAPE_LANE``）除外——硬约束优先。"""
+        if self._heading_aged and \
+                abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE:
+            e = 0.0
         return law(e, self.state.heading if not self._heading_stale else 0.0,
                    self.state.yaw_rate if not self._heading_stale else 0.0,
                    self.p, gentle, deadband, cap, self.state.v_mps)
@@ -1146,7 +1145,11 @@ class LateralPlanner:
     def _law_psi(self, psi_des: float, cap: float | None = None) -> float:
         """目标朝向直接入环（计划/决策给出的是车头角时）。
 
-        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子。"""
+        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子；朝向陈旧时不追
+        外部给的目标朝向，只把已知朝向往 0 收（口径同 ``_law``）。"""
+        if self._heading_aged and \
+                abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE:
+            psi_des = 0.0
         if self._heading_stale:
             return stick_of(psi_des, 0.0, 0.0, self.p, False, cap)
         return stick_of(psi_des, self.state.heading, self.state.yaw_rate,

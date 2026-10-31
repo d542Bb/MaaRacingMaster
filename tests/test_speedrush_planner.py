@@ -1500,24 +1500,45 @@ def test_maintenance_cap_only_limits_lane_chase_not_arrest():
     assert pl.last_steer_raw < -P.hold_stick_max
 
 
-def test_aged_heading_caps_authority_until_evidence_returns():
-    """朝向「陈旧」（超过测速同一条龄门）≠「没有」：ψ 仍做阻尼，但只给
-    维护级杆幅。20261031_172015 fid 1755~1776：线重锁空窗 0.4s，ψ 停在
-    −0.035，控制律据此把杆顶到 +0.76，车头角真实已转到 +0.08 才发现。"""
+def test_aged_heading_stops_chasing_target_heading():
+    """朝向「陈旧」（超过测速同一条龄门）≠「没有」：不追位置误差换出的
+    目标朝向，只把已知朝向往 0 收。20261031_172015 fid 1755~1776：线
+    重锁空窗 0.4s，ψ 停在 −0.035，控制律据此把杆顶到 +0.76，车头角真实
+    已转到 +0.08 才发现。"""
     pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
-    pl.head.psi = -0.035
+    pl.head.psi = -0.05
     pl.head.v_scale = 41.5
     pl.head._psi_t = pl.head._t
     pl.state.executed_lane = -0.8
     out = _out(x_target=-0.1, fid=2, valid=2, maneuver=True)
     pl.update(out, DT, 2)
     assert not pl._heading_aged
-    assert abs(pl.last_steer_raw) > P.hold_stick_max   # 新鲜朝向：机动全权
+    assert abs(pl.last_steer_raw) > P.hold_stick_max   # 新鲜朝向：追目标全权
     pl.head._psi_t = pl.head._t - (P.heading_vel_max_age_s + 0.05)
     pl.update(_out(x_target=-0.1, fid=3, valid=3, maneuver=True), DT, 3)
     assert pl._heading_aged
-    assert abs(pl.last_steer_raw) <= P.hold_stick_max + 1e-9
+    # 只剩「把 ψ 收到 0」的阻尼项：k_psi·(−ψ)，不再叠加目标朝向
+    assert pl.last_steer_raw == pytest.approx(P.k_psi * 0.05, abs=1e-6)
+
+
+def test_aged_heading_does_not_starve_arrest():
+    """朝向陈旧时仍拿旧 ψ 做阻尼，且不受维护杆幅限制——车带着 21° 车头角
+    在弯里滑向边线时，限到 0.45 就是放它冲出去（20261031_174717 s2
+    fid 2875~2886：ψ=0.375 龄 0.28~0.58s，杆恒 −0.45，车 1.26→1.94）。"""
+    from maaracing_master.plugins.speedrush.motion_plan import MotionPlan
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.head.psi = 0.15
+    pl.head.r = 0.3
+    pl.head._psi_t = pl.head._t - (P.heading_vel_max_age_s + 0.05)
+    pl.head._r_t = pl.head._t
+    pl.state.executed_lane = 0.0
+    plan = MotionPlan(7, True, "plan:ok", 0.0, 30.0, 0.0, 4,
+                      (True,), 1, 0, (), 0.0, 0.0, 0.0, False)
+    pl.update(_out(x_target=0.0, fid=2, valid=2), DT, 2, plan=plan)
+    assert pl._heading_aged
+    assert pl.last_steer_raw < -P.hold_stick_max
 
 
 def test_blind_window_freezes_position_and_reacquires_on_fresh_depth():
