@@ -38,6 +38,11 @@ LANE_W = 3.5
 VPX = 640.7
 Y_H = 354.2
 DEFAULT_CAM_H = 1.28
+# 车心离路心的物理上限（道）：路缘实测 ≈2.5 道（2026-10-31 帧 0112 目检
+# 车正压右黄线，横位 1.92），留 0.1 道余量。超过即坐标失效（多为路心锚
+# 整道错位/坏平面），不能拿它给线定道号。生产值由 policy.validate.
+# x_lane_abs_max 注入（LaneObsWorker 构造参数），此处只是直构缺省。
+OFF_MAX = 2.6
 # 线角焦距 = gate0 标定的相机焦距（全幅像素），由调用方随帧传入：
 # 线角正切 = 像素偏置 ÷ 焦距。注意它与 MoGe 逐帧 fx 不是同一口径（后者是
 # 点云/框投影的焦距，实测约 670）；拿它代入会把车头角放大 1.2 倍、在线速度
@@ -243,7 +248,6 @@ class LineTracker:
     ``ANCHOR_CONFIRM`` 拍同向一致才换锚。
     """
 
-    OFF_MAX = 3.0
     ANCHOR_AGREE_TOL = 0.5
     ANCHOR_CONFIRM = 2
     RESID_MAX = 0.45
@@ -253,7 +257,8 @@ class LineTracker:
     OUTLIER_TOL = 0.35
     SPREAD_MAX = 0.55
 
-    def __init__(self) -> None:
+    def __init__(self, off_max: float = OFF_MAX) -> None:
+        self.OFF_MAX = float(off_max)
         self.tracks: list[_Track] = []
         self.state = "RELOCK"
         self.x_last: float | None = None
@@ -641,7 +646,7 @@ class LineTracker:
 class LaneObsWorker:
     """后台线观测线程；`latest()` 只读，失败静默返回 None。"""
 
-    def __init__(self, cfg: LaneObsConfig) -> None:
+    def __init__(self, cfg: LaneObsConfig, off_max: float = OFF_MAX) -> None:
         self.cfg = cfg
         self._q: queue.Queue = queue.Queue(maxsize=1)
         self._lock = threading.Lock()
@@ -651,7 +656,7 @@ class LaneObsWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sess = None
-        self._tracker = LineTracker()
+        self._tracker = LineTracker(off_max)
         self._last_fid = -1
         self._last_t = 0.0
         self._n = 0

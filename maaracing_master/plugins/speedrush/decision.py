@@ -664,8 +664,7 @@ class DecisionEngine:
             valid_until_fid=obs.frame_id + self._validity_ticks(),
             maneuver=self._maneuver, intent_lane=intent_lane,
             phase="merging" if merging else "keep", authority=authority,
-            deadline_s=deadline_s,
-            intent_epoch=0 if route is None else route.epoch)
+            deadline_s=deadline_s)
 
     @property
     def maneuver(self) -> bool:
@@ -1497,10 +1496,6 @@ class DecisionEngine:
         self._state = DecisionState.CONSERVE
         self._conserve_t = 0.0
         self._ok_t = 0.0
-
-    def request_conserve(self, reason: str = "external") -> None:
-        """外部安全回执（motion 计划连续不可行）：进入既有 CONSERVE。"""
-        self._enter_conserve()
 
     def _validity_ticks(self) -> int:
         return max(2, int(round(0.1 * self.cfg.control.frame_rate_hz)))

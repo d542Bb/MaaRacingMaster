@@ -94,14 +94,6 @@ class Control:
 @dataclass(frozen=True)
 class Timing:
     tau_resp_s: float
-    lane_change_base_s: float
-    lane_change_k_s_per_lane: float
-    margin_s: float
-
-    def lane_change_duration_s(self, dx_lane: float) -> float:
-        """变道耗时模型（v1 线性起值，[需实测 §7.1] 后只改参数不换式）：
-        起步开销 + 单位位移耗时。dx=0 时为 base——"原地收敛"仍要花时间，非零。"""
-        return self.lane_change_base_s + self.lane_change_k_s_per_lane * abs(dx_lane)
 
 
 @dataclass(frozen=True)
@@ -368,14 +360,11 @@ class MetricBridge:
 
     语义：`enabled` 开闸后，米制 t_meet 缺席的拍（UNKNOWN 五因/有锚估计窗
     未开/丢框保锚）以 rel_approach 纵向行运动桥接 t_meet（同一公式真源
-    t_meet_car_s，免二次标定），桥接段不确定度走 threat 权重与可达裕度
-    （消费面 corridor_reach）；`stay` 是每侧最短驻留（防双源翻脸，与
+    t_meet_car_s，免二次标定）；`stay` 是每侧最短驻留（防双源翻脸，与
     commitment k_stay 同族纪律）。闸关=逐位回今天（桥接行无桥接量）。"""
 
     enabled: bool = False
     stay: int = 2                # 每侧最短驻留（拍）
-    weight: float = 0.5          # 威胁降权初值（碰撞/遮挡时间放大 1/weight）
-    margin_add_s: float = 0.15   # 桥接车可达门裕度放宽量（实机标定候选）
 
 
 @dataclass(frozen=True)
@@ -610,11 +599,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             abort_settle_v_lane_s=_num(d, "control", "abort_settle_v_lane_s",
                                        lo=0, lo_open=False)),
         timing=Timing(
-            tau_resp_s=_num(d, "timing", "tau_resp_s", lo=0, lo_open=False),
-            lane_change_base_s=_num(d, "timing", "lane_change_base_s", lo=0),
-            lane_change_k_s_per_lane=_num(d, "timing", "lane_change_k_s_per_lane",
-                                          lo=0, lo_open=False),
-            margin_s=_num(d, "timing", "margin_s", lo=0, lo_open=False)),
+            tau_resp_s=_num(d, "timing", "tau_resp_s", lo=0, lo_open=False)),
         scoring=Scoring(
             coin_value_per_unit=_num(d, "scoring", "coin_value_per_unit", lo=0),
             coin_group_min_count=_num(d, "scoring", "coin_group_min_count",
@@ -876,11 +861,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             enabled=_bool(d, "metric_cars", "enabled", default=True)),
         metric_bridge=MetricBridge(
             enabled=_bool(d, "metric_bridge", "enabled", default=False),
-            stay=_int_def(d, "metric_bridge", "stay", 2, lo=1),
-            weight=_num_def(d, "metric_bridge", "weight", 0.5,
-                            lo=0, lo_open=False),
-            margin_add_s=_num_def(d, "metric_bridge", "margin_add_s", 0.15,
-                                  lo=0, lo_open=False)),
+            stay=_int_def(d, "metric_bridge", "stay", 2, lo=1)),
         box_bridge=BoxBridge(
             enabled=_bool(d, "box_bridge", "enabled", default=False),
             trace_only=_bool(d, "box_bridge", "trace_only", default=True),

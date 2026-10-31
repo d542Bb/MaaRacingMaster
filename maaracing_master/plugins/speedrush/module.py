@@ -61,7 +61,8 @@ from maaracing_master.plugins.speedrush.depth_geo import (
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import HudObserver
-from maaracing_master.plugins.speedrush.lane_obs import LaneObsWorker
+from maaracing_master.plugins.speedrush.lane_obs import (
+    LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.route import (
@@ -1040,7 +1041,8 @@ class SpeedRushModule(ActivityModule):
         manual = run_dir is not None   # 人工驾驶阶段（语料目录已由录制器建好）
         run_dir = run_dir or _run_dir(stamp or time.strftime("%Y%m%d_%H%M%S"), phase)
         dbg_on = self._debug_enabled()
-        lane_obs = LaneObsWorker(cfg.lane_obs)
+        lane_obs = LaneObsWorker(cfg.lane_obs,
+                                 off_max=cfg.validate.x_lane_abs_max)
         lane_obs.start()
         if lane_obs.error:
             _tlog(self, f"[极速狂飙] 线观测影子未启动：{lane_obs.error}", "WARNING")
@@ -1068,7 +1070,8 @@ class SpeedRushModule(ActivityModule):
                 "ego_road": _EgoRoadObserver(
                     cfg.grid_xcheck, cal.lane_w_m, wt,
                     mem_fallback=cfg.corridor_reach.enabled,
-                    far_ground_supply=cfg.geometry.far_ground_supply),
+                    far_ground_supply=cfg.geometry.far_ground_supply,
+                    off_max=cfg.validate.x_lane_abs_max),
                 # 深度几何观测器（架构裁决 2026-09-24：深度区域当几何主人；同日
                 # 解耦：异步 worker，控制拍只 push+take，observe 成本移出热路径）。
                 # 会话为 None（权重缺失/加载失败）时不起线程、take 恒 None——
@@ -2304,7 +2307,8 @@ class _EgoRoadObserver:
       桥接极短遮挡，并按当拍横速做位移补偿，过期诚实 None。pair/pair_slot
       永不进 master 路心。
     - 门禁：平面尺度门（坏平面整帧不进供数）、来源跳变门（>0.4 道需连续
-      2 拍同向一致）、|center|>OFF_MAX、双侧宽偏离规则路宽超 0.7 道。
+      2 拍同向一致）、|center|>物理横位上限（policy.validate.x_lane_abs_max）、
+      双侧宽偏离规则路宽超 0.7 道。
 
     off/veto 为回放对比保留旧链（pair → wall → pair_slot → region → memory），
     逐位不复用 master 的门禁；W 统计口径也按链分流（master 锚规则先验，
@@ -2316,7 +2320,6 @@ class _EgoRoadObserver:
     """
 
     SLOT_TTL_S = 0.4                 # 有效对保鲜预算（仅回放对比链）
-    OFF_MAX = 3.0                    # 路面半宽级（4 车道 ≈ ±2 道）+ 机动余量
     # 路宽 W 统计（阶段二 §一.3 兜底界）：双侧物理读数宽 (R−L) 的中位数，
     # 车道单位。master 只认双侧墙箱宽与绿区区宽（同一物理语义，不混尺）；
     # 回放链仍吃找边对宽。W 是单侧墙定位走廊中心的先验（wall 路径的 W/2）。
@@ -2364,9 +2367,13 @@ class _EgoRoadObserver:
 
     def __init__(self, xcheck=None, lane_w_m: float | None = None,
                  wall_track=None, mem_fallback: bool = False,
-                 far_ground_supply: bool = True) -> None:
+                 far_ground_supply: bool = True,
+                 off_max: float = LANE_OFF_MAX) -> None:
         self._xc = xcheck            # GridXcheck | None（None/闸关=互证不参与供数）
         self._lane_w_m = lane_w_m
+        # 物理横位上限（道）：车心离路心不可能超过路缘；生产值来自
+        # policy.validate.x_lane_abs_max，与线观测的深度锚门同一条尺。
+        self.OFF_MAX = float(off_max)
         self._wt = wall_track        # WallTrack | None（None=无墙实体路径）
         self._mem_fallback = mem_fallback  # 朝向记忆兜底（闸开才生效）
         self._far_ground_supply = far_ground_supply  # 中远场粗带（coarse_bands）闸

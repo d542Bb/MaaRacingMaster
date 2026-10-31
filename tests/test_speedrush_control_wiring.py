@@ -844,10 +844,23 @@ def test_far_hint_shared_filter_updates_only_on_new_evidence():
 
 
 def test_control_chain_ego_road_gap_semantics():
-    """chain 的 ego_road 即 pair 语义（无分档、无目标锁定机器）。"""
+    """chain 的 ego_road 即 pair 语义（无分档、无目标锁定机器）；物理横位
+    上限只认 policy.validate.x_lane_abs_max 一处，线观测与走廊同一条尺。"""
     m = _module()
-    o = m._build_control_chain()["ego_road"]
-    assert o.OFF_MAX == 3.0 and not hasattr(o, "retarget")
+    chain = m._build_control_chain()
+    o = chain["ego_road"]
+    lim = load_decision().validate.x_lane_abs_max
+    assert o.OFF_MAX == pytest.approx(lim) and not hasattr(o, "retarget")
+    assert chain["lane_obs"]._tracker.OFF_MAX == pytest.approx(lim)
+
+
+def test_ego_road_physical_limit_allows_edge_rejects_beyond():
+    """上限是物理路缘而不是旧 3.0：车心 2.1 道（帧 0112 目检压右黄线）必须
+    供数；抛到路缘外 0.1 道以上（2.7）当垃圾拒，且不进槽。"""
+    o = smod._EgoRoadObserver()
+    assert _off(o.update(_bnd_clusters(-4.15, -0.05), now=1000.0)) == \
+        pytest.approx(2.1)
+    assert _off(o.update(_bnd_clusters(-4.75, -0.65), now=1000.05)) is None
 
 
 # ---------- 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽的中位数 + ±40% 门 ----------

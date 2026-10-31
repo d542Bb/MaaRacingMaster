@@ -79,6 +79,29 @@ def test_no_anchor_stays_relock():
     assert r["n_locked"] == 0
 
 
+def test_anchor_beyond_physical_limit_is_garbage():
+    """深度锚超出物理横位上限（车心离路心 >2.6 道）当垃圾：不能拿它给线
+    定道号（整道错位/坏平面），本拍诚实弃权；上限内照常锚定。"""
+    tr = LineTracker()
+    bad = tr.update([_line(-0.2)], 1, 0.05, anchor=2.7)
+    assert bad["state"] == "RELOCK" and bad["x"] is None
+    assert bad["anchor_src"] == "none"
+    ok = tr.update([_line(-0.2)], 2, 0.05, anchor=2.1)
+    assert ok["state"] == "TRACK" and ok["anchor_src"] == "depth"
+    assert ok["x"] == pytest.approx(2.2, abs=1e-6)
+
+
+def test_worker_injects_off_max_into_tracker():
+    w = LaneObsWorker(LaneObsConfig(enabled=True), off_max=2.6)
+    assert w._tracker.OFF_MAX == pytest.approx(2.6)
+
+
+def test_off_max_default_matches_policy():
+    """直构缺省与 policy 的物理上限同值：防止两条尺子各自漂移。"""
+    assert la.OFF_MAX == pytest.approx(
+        load_decision().validate.x_lane_abs_max)
+
+
 def test_anchor_sets_integer_k_and_sub_lane_x():
     """anchor=0、线在左 0.2 道 → k=0，子道修正给出 x=+0.2。"""
     tr = LineTracker()
