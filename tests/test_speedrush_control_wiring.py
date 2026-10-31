@@ -864,12 +864,17 @@ def test_ego_road_physical_limit_allows_edge_rejects_beyond():
 
 
 def test_lane_anchor_uses_pre_override_depth_center(_stub_depth, monkeypatch):
-    """线作原点时喂给线观测的是覆盖前的独立深度路心，而不是线自身输出，
+    """线作原点时喂给线观测的是覆盖前的独立深度读数，而不是线自身输出，
     也不是干脆不给。
 
     线原点拍走廊中心被 center_override 写成 −exec，road_offset 就是线的
     输出；拿它取整道号会让线用自己的估计自洽锁住。覆盖前的深度候选仍在
-    depth_anchor_lane 里：深度 pair 在 → 锚深度中点；无独立深度 → 不给锚。
+    depth_anchor_ego 里。
+
+    口径：线观测的锚点是**自车横位（右正，与 x=k−L 同号）**，深度读数的
+    center 是路心相对自车，必须取反。非对称对才能看出符号：(-2.0, +1.0)
+    表示自车在路心右侧 0.5 道 → 锚 +0.5；(-1.0, +2.0) 表示自车在左侧
+    0.5 道 → 锚 −0.5（若误喂 center 或覆盖后的 road_offset 会得到 +0.5）。
     """
     class _Lane:
         def __init__(self):
@@ -889,14 +894,15 @@ def test_lane_anchor_uses_pre_override_depth_center(_stub_depth, monkeypatch):
         chain = m._build_control_chain()
         lane = _Lane()
         chain["lane_obs"] = lane
-        # 线原点：走廊中心会被覆盖成 −0.5，深度中点仍是 0.0。
+        # 线原点：走廊中心会被覆盖成 −0.5（执行位 +0.5），与深度读数无关。
         chain["planner"].state.executed_lane = 0.5
         m._control_tick(chain, StubPad(), None, _perc(1), 1,
                         50_000_000, 10.0, 1)
         assert lane.anchors
         return lane.anchors[-1]
 
-    assert run(_dgeo_lanes(-1.5, 1.5)) == pytest.approx(0.0)
+    assert run(_dgeo_lanes(-2.0, 1.0)) == pytest.approx(0.5)
+    assert run(_dgeo_lanes(-1.0, 2.0)) == pytest.approx(-0.5)
     assert run(None) is None
 
 

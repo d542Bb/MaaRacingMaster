@@ -112,6 +112,20 @@ def test_anchor_sets_integer_k_and_sub_lane_x():
     assert r["x"] == pytest.approx(0.2, abs=1e-6)
 
 
+def test_anchor_is_ego_offset_not_road_center():
+    """锚点口径 = 自车横位（右正，与输出 x 同号），不是路心相对自车的位置。
+
+    自车在路心右 0.5 道、两条线分别在其右 0.5 / 左 1.5 道：
+    k=round(0.5+L) → (+1, −1)，x=k−L → +0.5。若把路心位置（−0.5）当锚，
+    会得到 k=(0, −2)、x=−0.5——整张网格反向偏一道。
+    """
+    tr = LineTracker()
+    r = tr.update([_line(0.5, "w"), _line(-1.5, "w")], 1, 0.05, anchor=0.5)
+    assert r["state"] == "TRACK"
+    assert [ln["k"] for ln in r["lines"]] == [1, -1]
+    assert r["x"] == pytest.approx(0.5, abs=1e-6)
+
+
 def test_line_lock_ignores_depth_anchor_disagreement():
     """线连续稳定 5 拍后，深度锚整道跳变不能改判 k、也不能否决线：
     输出仍是线的绝对横位（usable=True）。旧口径会沿锚点把两线同时改号，
