@@ -279,6 +279,11 @@ SITES: list[LogSite] = [
     # ---- core/clicker.py ----
     _s('core/clicker.py', 'Clicker.auto_shoo', '[鉴宝点击] 避让空转：已连续 {} 次导航到 ({},{}) 光标仍压住 [{}]（当前位 ({},{})）——游戏可能不接受该落点，需人工核查', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
+    # ---- core/covers.py ----
+    _s('core/covers.py', '_declared_file', '[covers] {}: COVER 应为字符串，已忽略: {}', 'WARNING', 'state', 'cross', '封面声明非法属插件配置错误：WARNING 不静默但封面是装饰、不阻断模块；解析在 RPC 线程，无业务组可挂。'),
+    _s('core/covers.py', '_declared_file', '[covers] {}: COVER 必须是 resources/ 内的相对路径，已忽略: {}', 'WARNING', 'state', 'cross', '封面声明越界（绝对路径 / ..）：WARNING 不静默并拒绝解析，避免读到插件目录外的文件；解析在 RPC 线程，无业务组可挂。'),
+    _s('core/covers.py', '_declared_file', '[covers] {}: 封面文件不存在，回落默认封面: {}', 'WARNING', 'state', 'cross', '声明了封面但文件丢失：降级到通用默认封面，WARNING 让「图没打进包」可见；解析在 RPC 线程，无业务组可挂。'),
+
     # ---- core/game_process.py ----
     _s('core/game_process.py', 'close_game', '[game] 按窗口关闭失败，改按进程名兜底: {}', 'WARNING', 'state', 'cross', '关闭降级路径：按窗口失败改按进程名，WARNING 不静默；工具函数无组上下文。'),
 
