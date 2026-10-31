@@ -3,9 +3,10 @@
   "schema_version": 1,
   "vpx": 640.7,
   "y_h": 354.2,
+  "focal_px": 807.7,
   "a_x": 0.305,
   "min_denom": 20.0,
   "lane_w_m": 3.5,
   "depth_scale": 0.893,
-  "_notes": "几何标定真源（与 RULES.md 游戏事实、policy/decision.json 行为参数三源分立）。纵向几何（焦距/机位高/地平线/纵向尺度）由 MoGe 逐帧焦距+路面平面给出；gate0 只管横向像素尺子与车道宽换算锚。vpx 场内 MAD 12–19px 是 x_sigma 模型主误差项；min_denom=20 与保险杠地平线同域（约 54m 外归一发散，目标降级为 lane_side 粗方向）。depth_scale 是 MoGe 米制点云的全局缩放（乘在 metric_scale 上），把 cam_h/点云/宽度/目标距离一起拉回真米；lane_w_m 是画线真道宽；a_x 是像素尺，已是画线真尺度，不随 depth_scale 重标。改数=重新标定收杆，不是调参。"
+  "_notes": "几何标定真源（与 RULES.md 游戏事实、policy/decision.json 行为参数三源分立）。纵向几何（点云焦距/机位高/地平线/纵向尺度）由 MoGe 逐帧焦距+路面平面给出；gate0 只管横向像素尺子与车道宽换算锚。**focal_px 是线角几何的相机焦距（全幅像素）**，与 MoGe 逐帧 fx（点云/框投影口径，实测约 670）不是同一个量：线角 tanψ = 像素偏置 ÷ focal_px，按对局 HUD 得分速度（= m/s）反算中位 ≈810，与原线观测标定 807.7 一致；拿 MoGe fx 代入会把车头角放大 1.2 倍、在线速度比例反向压低（实测 vmp/得分速度 0.9→0.62）。vpx 场内 MAD 12–19px 是 x_sigma 模型主误差项；min_denom=20 与保险杠地平线同域（约 54m 外归一发散，目标降级为 lane_side 粗方向）。depth_scale 是 MoGe 米制点云的全局缩放（乘在 metric_scale 上），把 cam_h/点云/宽度/目标距离一起拉回真米；lane_w_m 是画线真道宽；a_x 是像素尺，已是画线真尺度，不随 depth_scale 重标。改数=重新标定收杆，不是调参。"
 }

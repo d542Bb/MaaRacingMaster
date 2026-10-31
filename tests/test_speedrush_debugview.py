@@ -118,7 +118,7 @@ def test_render_hud_bev_grid_limit_dashed_line(frame):
 def test_render_hud_bev_raw_center_c0_drawn(frame):
     """c0=当帧原始路心 (L+R)/2·lane_w_m：与滤波 C 并排可辨（排障面）。
     L=-2/R=+2、ro=0.3 → c0 在自车轴（X=0）、C 在 X=-0.3 道，两线分离。"""
-    cal = Calib(vpx=640.0, y_h=310.0, a_x=1.0,
+    cal = Calib(vpx=640.0, y_h=310.0, focal_px=807.7, a_x=1.0,
                 min_denom=10.0, lane_w_m=2.75, depth_scale=1.0)
     out = render_hud(frame, _snap(frame_shape=(H, W, 3)), cal)
     row = out[200, W:]                       # BEV 绘图区中部横扫

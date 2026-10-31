@@ -1060,6 +1060,8 @@ class SpeedRushModule(ActivityModule):
                                                conf_floor=cfg.scoring.conf_floor),
                 # lane_w_m 供栅格区域读数的米→道换算（world_model 同源锚）
                 "lane_w_m": cal.lane_w_m,
+                # 线角相机的全幅焦距（gate0 标定；不是 MoGe 逐帧 fx 的口径）
+                "focal_px": cal.focal_px,
                 "wall_track": wt,
                 "ego_road": _EgoRoadObserver(
                     cfg.grid_xcheck, cal.lane_w_m, wt,
@@ -1369,7 +1371,7 @@ class SpeedRushModule(ActivityModule):
                 # 让线退回上一拍横位做子道细化，不让旧深度冒充新锚）。
                 lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
                         fid_jump,
-                        focal=None if dgeo is None else dgeo.fx,
+                        focal=chain.get("focal_px"),
                         anchor=road_offset if road_offset_new else None)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True

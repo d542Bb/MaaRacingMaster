@@ -135,6 +135,8 @@ def test_real_sources_load():
     assert CFG.validate.t_recover_s < CFG.validate.t_conserve_max_s
     cal = load_calib()
     assert cal.a_x > 0 and cal.min_denom > 0 and cal.lane_w_m > 0
+    # 线角相机焦距：标定真源，落在全幅相机的合理域内
+    assert 600.0 <= cal.focal_px <= 1200.0
 
 
 # ---------- 校验合取（§四：五信号合取，任何单项不作数） ----------

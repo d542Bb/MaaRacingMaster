@@ -33,9 +33,9 @@ def _synth_line(s, a, y0=560, y1=700, n=15):
             for y in (y0 + i * (y1 - y0) / (n - 1) for i in range(n))]
 
 
-def test_line_theta_uses_per_frame_focal():
-    """线角正切 = 像素偏置 ÷ 焦距：焦距从写死 807.7 换成实测中位 670，
-    线角按反比放大；无焦距只丢线角、不丢横位（不退回写死常量）。"""
+def test_line_theta_uses_given_focal():
+    """线角正切 = 像素偏置 ÷ 调用方给的焦距（标定值）：焦距越小线角越大；
+    无焦距只丢线角、不丢横位（模块内不再有焦距字面量）。"""
     pts = _synth_line(0.05, 520.0)
     a670 = _fit(pts, 1.28, *la.NEAR_Y, 670.0)
     a808 = _fit(pts, 1.28, *la.NEAR_Y, 807.7)

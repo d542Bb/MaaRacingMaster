@@ -46,6 +46,7 @@ class Calib:
 
     vpx: float        # 消失点 x
     y_h: float        # 地平线行
+    focal_px: float   # 线角几何的全幅相机焦距（≠ MoGe 逐帧 fx，见 _notes）
     a_x: float        # 横向尺子：归一量 → 车道单位（保险杠机位重标）
     min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → x_lane=None
     lane_w_m: float   # 一条车道的米制宽（3D 找边的车道量换算锚；出处见 _notes）
@@ -66,7 +67,8 @@ def _read_gate0(path) -> Calib:
     if d.get("schema_version") != 1:
         raise ValueError(f"gate0.json schema_version 非 1：{d.get('schema_version')!r}")
     cal = Calib(
-        vpx=_require(d, "vpx"), y_h=_require(d, "y_h"), a_x=_require(d, "a_x"),
+        vpx=_require(d, "vpx"), y_h=_require(d, "y_h"),
+        focal_px=_require(d, "focal_px"), a_x=_require(d, "a_x"),
         min_denom=_require(d, "min_denom"), lane_w_m=_require(d, "lane_w_m"),
         depth_scale=_require(d, "depth_scale"))
     # 依赖矛盾检查：尺子分母与换算锚都不能退化
