@@ -68,6 +68,12 @@ _LANE_X_MAX = 2.6
 # 短断链内（COAST）的线读数仍作"反证"：平滑值还是最近实测，深度若与它
 # 差超过一致门就不重基。超过此龄视为无对照，深度单独说了算。
 _LANE_BLOCK_AGE_MS = 300.0
+# 线为主（2026-10-31）：线严格可用时它就是位置原点，深度不参与位置修正。
+# 线短暂丢失时先用模型外推这么久，之后才让深度重建——避免单拍线闪断就
+# 把位置交给一个可能错 1 道的深度源。
+_LINE_REBUILD_S = 0.4
+_LINE_POS_GAIN = 0.7       # 线位置修正增益（检测 ~10Hz、每拍同一读数可重复收）
+
 # 贴边逃生门（道）：外车道中心 ±1 再让 0.4；超过即按全权回带（gentle 的
 # 0.45 杆幅在 1.4 道级误差下需要 1s+ 才能回带，期间车停在墙侧）。
 _WALL_ESCAPE_LANE = 1.4
@@ -461,6 +467,9 @@ class LateralPlanner:
         self._lane_relock_seen = False   # 已见 RELOCK，等下一条锁线重置
         self._lane_age_ms: float | None = None
         self._lane_gated = False         # 本拍线读数越出物理范围（按无线处理）
+        # 线为主（2026-10-31）：线曾可作为位置原点时，短断供先模型外推
+        self._line_recent = False
+        self._line_gap_t = 0.0
         # 上一拍低通前杆值（负一~一；trace 标定用，行为不消费）
         self.last_steer_raw = 0.0
         # 本拍**实际执行**的重基分支（trace-only，行为不消费）：⑥b 的几条
@@ -603,6 +612,14 @@ class LateralPlanner:
         else:
             self.state.v_lat = 0.0
 
+    @property
+    def line_primary(self) -> bool:
+        """线是否为位置原点（含 ≤_LINE_REBUILD_S 的短断供保持）。
+
+        供数层据此把走廊中心也锚在线上：线失锁的那一拍若立刻回深度中心，
+        场景参考系会在两个原点间来回换（frame_shift 反复否决）。"""
+        return self._line_recent and self._line_gap_t <= _LINE_REBUILD_S
+
     # ---------- 主入口 ----------
 
     def update(self, decision: DecisionOutput, dt_s: float,
@@ -618,7 +635,8 @@ class LateralPlanner:
                lane_theta_ok: bool = False,
                lane_fid: int | None = None,
                lane_age_ms: float | None = None,
-               lane_n_locked: int | None = None) -> GamepadCommand:
+               lane_n_locked: int | None = None,
+               lane_pos_ok: bool = False) -> GamepadCommand:
         """一个控制 tick。dt_s 非法即 fail-loud（帧号倒退同一纪律：
         静默吞掉病态输入比中断危险——时间基低通会被 0/NaN 污染成永久状态）。
 
@@ -698,6 +716,7 @@ class LateralPlanner:
         # 开环面，台架锁着）；两者都没有才是真盲窗：超过 state_blind_s 就不
         # 假装知道车在哪，重获时一步重基到新证据。
         pos_fresh = ((road_offset is not None and not road_offset_hold)
+                     or (lane_pos_ok and lane_x is not None)
                      or (lane_ok and self._lane_trusted))
         motion_fresh = (self.state.v_lat != 0.0
                         or (self.head.psi is not None
@@ -896,7 +915,38 @@ class LateralPlanner:
         #    供数黑视期不计数、跳变门收紧后喂入更少，车以 0 杆直开 5.5s 怼进右墙时
         #    阈值还差 9 次。判据从"次数"换成"时间"：距上次被接受修正超 anchor_stale_s
         #    即重基（exec:=ro、anchor:=0），断供同样计时。
-        if road_offset is not None and not road_offset_hold \
+        # ⑥b 线为主（2026-10-31）：线严格可用时，它就是车的位置原点——深度
+        # 不再参与位置修正（只在下面「线丢失 ≥_LINE_REBUILD_S」后重建）。
+        # 这条分支必须排在深度之前：旧结构里深度新鲜拍是唯一 correct 步，
+        # 线只在保持拍做次级融合，深度错 1 道时执行位就跟着错 1 道。
+        line_pos = (float(lane_x) + self._lane_bias
+                    if lane_pos_ok and lane_x is not None
+                    and math.isfinite(lane_x)
+                    and abs(lane_x) <= _LANE_X_MAX else None)
+        if line_pos is not None:
+            self._line_recent = True
+            self._line_gap_t = 0.0
+        else:
+            self._line_gap_t += dt_s
+        line_dropout = self._line_recent and self._line_gap_t <= _LINE_REBUILD_S
+        if line_pos is not None:
+            self._lane_trusted = True
+            if was_unverified:
+                # 盲窗由线收尾：直接重基到线的绝对横位（线已连续锁定 ≥5 拍）
+                self.last_rebase = "line_reacquire"
+                self.state.executed_lane = line_pos
+            else:
+                self.state.executed_lane += _LINE_POS_GAIN * (
+                    line_pos - self.state.executed_lane)
+            if self._road_anchor is None:
+                self._road_anchor = 0.0
+            self._stale_t = 0.0
+            self._reset_jump()
+        elif line_dropout:
+            # 线短断（≤_LINE_REBUILD_S）：模型外推，不让深度当拍接管；
+            # 陈旧计时照常推进，超时后落到下面的深度重建分支。
+            self._stale_t += dt_s
+        elif road_offset is not None and not road_offset_hold \
                 and not self.state_unverified:
             if self._road_anchor is None:
                 # 形成门外的贴边拍：深度与锁线独立一致（≤`_LANE_BIAS_AGREE`）

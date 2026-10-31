@@ -350,28 +350,29 @@ def test_master_wall_both_sides_midpoint_and_width():
     assert c.width_lane == pytest.approx(4.0, abs=0.01)
 
 
-def test_master_wall_one_side_air_wall():
-    """单侧新鲜墙 + W 先验 → 墙 ∓ W/2（另一侧是空气墙）。左墙转遮挡、
-    右墙移到 +2.3 道：中心=右墙−W/2=+0.3 道，不是双侧中点 +0.15。"""
+def test_master_single_wall_gives_no_center():
+    """线为主后单侧墙只作该侧边界，不再 ∓W/2 反推路心：只看见右墙 +2.3 道
+    时中心沿用记忆 0，不被单侧墙拽到 +0.3（左右墙交替差 0.7 道，正是
+    memory↔wall_occl 整道跳的来源）。"""
     o = _master_wall_observer()
     c = o.update(_bnd(None, 2.3, edge_pts=_walls(2.3, 2.3)[1:]),
                  now=1001.8, fid=33)
-    assert c is not None and c.src == "wall"
-    assert _off(c) == pytest.approx(-0.3, abs=0.01)      # center=+0.3
-    assert c.width_lane == pytest.approx(4.0, abs=0.01)  # 单侧不更新宽度
+    assert c is not None and c.src == "memory"
+    assert _off(c) == pytest.approx(0.0, abs=0.01)
+    assert c.width_lane == pytest.approx(4.0, abs=0.01)
 
 
 # ---------- 路宽先验=规则事实（4 条等宽车道），宽门锚在它上面 ----------
 
 def test_master_width_prior_is_four_lanes_before_formation():
-    """W 是规则事实不是估计：master 冷启动即 4.0 道，单侧墙第一拍就能反推
-    （回放链保持旧口径：样本不足仍 None）。"""
+    """W 是规则事实不是估计：master 冷启动即 4.0 道，双侧墙第一拍就是
+    4.0 道宽的走廊（回放链保持旧口径：样本不足仍 None）。"""
     o = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL))
     assert o.width == pytest.approx(4.0)
-    c = o.update(_bnd(None, 2.0, edge_pts=_walls(2.0, 2.0)[1:]),
+    c = o.update(_bnd(-2.0, 2.0, edge_pts=_walls(-2.0, 2.0)),
                  now=1000.0, fid=1)
     assert c is not None and c.src == "wall"
-    assert _off(c) == pytest.approx(0.0, abs=0.01)   # 右墙 +2.0 − W/2
+    assert _off(c) == pytest.approx(0.0, abs=0.01)
     assert c.width_lane == pytest.approx(4.0)
 
 
@@ -412,6 +413,28 @@ def test_master_width_learning_requires_two_tick_midpoint_agreement():
     assert len(o._w_samples) == 1
 
 
+def test_line_center_override_wins_over_depth_center():
+    """线为主：center_override 是走廊中心原点，深度候选只供边界/侧效；
+    深度来源仍如实记账（ro_source=wall，ro_origin=line）。"""
+    o = _master_wall_observer()                  # 深度中心 0
+    c = o.update(_bnd(-2.0, 2.0, edge_pts=_walls(-2.0, 2.0)),
+                 now=1001.8, fid=33, center_override=-1.2)
+    assert c is not None and c.center_lane == pytest.approx(-1.2)
+    assert o.last["origin"] == "line"
+    assert o.last["source"] == "wall"
+
+
+def test_line_keeps_corridor_alive_without_depth():
+    """深度无任何候选时线仍给走廊（中心=线，边界落空气墙）——线明明知道
+    车在哪，感知层不能因为深度没候选而整拍弃权。"""
+    o = smod._EgoRoadObserver(_MASTER, LW)
+    c = o.update(None, now=1000.0, fid=1, center_override=-0.8)
+    assert c is not None and c.src == "line"
+    assert c.center_lane == pytest.approx(-0.8)
+    assert o.last["origin"] == "line"
+    assert c.bands[0].left.src == INFERRED
+
+
 def test_master_never_uses_pair_or_slot_as_center():
     """master 下找边对/保鲜槽不得当路心：无墙、无绿区 → 诚实 None
     （旧链在槽 TTL 内会拿上一拍的车位当路心——实拍 ±6m 横摆的根因）。"""
@@ -421,29 +444,33 @@ def test_master_never_uses_pair_or_slot_as_center():
 
 
 def test_master_absolute_memory_short_ttl():
-    """记忆只桥接短暂遮挡：0.6s 内沿用绝对来源路心，超 0.8s 诚实 None
-    （旧 TTL=2s 会把自车横移前的车位当路心）。"""
+    """记忆只桥接极短遮挡：0.15s 内沿用绝对来源路心，超 0.25s 诚实 None；
+    保持期按当拍横速做位移补偿（自车右移 → 路心在自车系左移）。"""
     o = smod._EgoRoadObserver(_MASTER, LW, mem_fallback=True)
     g = _grid(range(2, 10), col_lo=34, col_hi=89)   # 整幅路宽 14m，区宽 4.0 道
     c = o.update(_bnd(-2.0, 2.0), now=1000.0, grid=g, fid=1)
     assert c is not None and c.src == "region"
-    c2 = o.update(None, now=1000.6, fid=2)
+    c2 = o.update(None, now=1000.15, fid=2)
     assert c2 is not None and c2.src == "memory"
     assert _off(c2) == pytest.approx(-1.5 / LW, abs=0.01)
-    assert o.update(None, now=1001.0, fid=3) is None
+    # v_lat=0.4 道/s × 0.15s = 0.06 道：补偿后路心左移，off 相应减小
+    c3 = o.update(None, now=1000.15, fid=3, v_lat=0.4)
+    assert _off(c3) == pytest.approx(-1.5 / LW + 0.06, abs=0.02)
+    assert o.update(None, now=1000.30, fid=4) is None
 
 
-def test_master_ego_at_left_edge_uses_wall_not_pair():
-    """实拍 trace 365~376 回归：车贴左墙、单帧找边对报"正中"（0）、绿区弃权
-    ——master 只认左墙 + W/2，路心必须在车右侧约 1.4 道；找边对不得接棒。"""
+def test_master_single_wall_cannot_steer_the_center():
+    """实拍 trace 365~376 的线为主版本：车贴左墙、单帧找边对报"正中"（0）
+    ——单侧墙只作边界，找边对也不进 master；路心保持记忆值，不被单侧墙
+    拽到 −1.4 道（那正是墙值恢复时的整道跳）。"""
     o = _master_wall_observer()                 # W=4.0 道
     at_edge = _bnd(-1.3, 1.3, edge_pts=[(-1, 8.0, -0.6 * LW)])
-    c1 = o.update(at_edge, now=1001.80, fid=33)
-    assert c1 is not None and c1.src == "memory"   # 跳变门：先沿用记忆
-    assert _off(c1) == pytest.approx(0.0, abs=0.15)  # 不是找边对的 0 道
-    c2 = o.update(at_edge, now=1001.85, fid=34)
-    assert c2 is not None and c2.src == "wall"
-    assert _off(c2) == pytest.approx(-1.4, abs=0.05)  # −(左墙 −0.6 + W/2)
+    c1 = o.update(at_edge, now=1001.70, fid=33)
+    assert c1 is not None and c1.src == "memory"
+    assert _off(c1) == pytest.approx(0.0, abs=0.15)
+    c2 = o.update(at_edge, now=1001.75, fid=34)
+    assert c2 is not None and c2.src == "memory"
+    assert _off(c2) == pytest.approx(0.0, abs=0.15)
 
 
 def test_master_wall_contradictory_pair_abstains_to_memory():
@@ -489,15 +516,15 @@ def test_width_floor_rejects_narrow_pairs():
 
 def test_master_plane_gate_ignores_bad_plane_frame():
     """坏平面拍（cam_h=0.91m，正常 1.26~1.29）的缘点/绿区整帧不进供数：
-    沿用近龄墙箱（src=wall_occl），坏帧分带边界落空气墙、plane_health
-    降级——当拍 ±1 道的假墙不得改写路心。"""
+    墙箱只衰减不算新证据，路心沿用记忆、plane_health 降级——当拍 ±1 道的
+    假墙不得改写路心。"""
     o = _master_wall_observer()
     bad = DepthRoadReading(
         left_edge_lane=None, right_edge_lane=None, left_x=None, right_x=None,
         sides=0, latency_ms=1.0, rejects=(),
         edge_pts=tuple(_walls(-3.0, 1.0)), coef=(0.0, 0.0, 0.91))
     c = o.update(bad, now=1001.8, fid=33)
-    assert c is not None and c.src == "wall_occl"
+    assert c is not None and c.src == "memory"
     assert _off(c) == pytest.approx(0.0, abs=0.01)
     assert o.last["plane_ok"] is False
     assert c.plane_health == "degraded"

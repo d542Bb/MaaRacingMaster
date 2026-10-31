@@ -53,6 +53,34 @@ def test_anchor_sets_integer_k_and_sub_lane_x():
     assert r["x"] == pytest.approx(0.2, abs=1e-6)
 
 
+def test_line_lock_ignores_depth_anchor_disagreement():
+    """线连续稳定 5 拍后，深度锚整道跳变不能改判 k、也不能否决线：
+    输出仍是线的绝对横位（usable=True）。旧口径会沿锚点把两线同时改号，
+    横位整道跳到 1.1。"""
+    tr = LineTracker()
+    lines = [_line(-1.1, "w"), _line(0.9, "w")]
+    for fid in range(1, 6):
+        r = tr.update(lines, fid, 0.05, anchor=0.0)
+        assert r["x"] == pytest.approx(0.1, abs=1e-6)
+    assert r["usable"] is True and r["locked"] >= 5
+    r2 = tr.update(lines, 6, 0.05, anchor=1.0)      # 深度锚整道跳
+    assert r2["state"] == "TRACK"
+    assert r2["x"] == pytest.approx(0.1, abs=1e-6)
+    assert r2["usable"] is True
+    assert [ln["k"] for ln in r2["lines"] if ln.get("accepted")] == [-1, 1]
+
+
+def test_usable_requires_both_sides():
+    """位置原点要求左右两侧都有高质量线；同侧两条只能给相对横位，
+    usable=False（不能当绝对位置）。"""
+    tr = LineTracker()
+    lines = [_line(0.9, "w"), _line(2.9, "w")]
+    for fid in range(1, 7):
+        r = tr.update(lines, fid, 0.05, anchor=0.0)
+    assert r["state"] == "TRACK" and r["n_locked"] == 2
+    assert r["usable"] is False
+
+
 def test_equal_spacing_and_color_independent():
     """同样的 L 集合，颜色互换不改变 k/横位——颜色不再是身份。"""
     lines_a = [_line(-1.1, "y"), _line(0.9, "w")]

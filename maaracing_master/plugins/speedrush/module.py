@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import threading
 import time
 from collections import deque
@@ -1250,11 +1251,24 @@ class SpeedRushModule(ActivityModule):
                     and dgeo.right_edge_lane is not None:
                 edge_off = -((dgeo.left_edge_lane + dgeo.right_edge_lane)
                              / 2.0)   # 找边对心（审计面）
-            corridor = chain["ego_road"].update(dgeo, new=dgeo_new,
-                                                grid=dgrid, fid=fid,
-                                                far_extents=(dgeo.far_extents
-                                                             if dgeo is not None
-                                                             else ()))
+            # 线观测先取（供数也要用）：线严格可用时它就是走廊中心原点，
+            # 深度只填边界/宽度。用上一拍的执行位（本拍 planner.update 还没跑），
+            # 与决策拿到的 executed 同源，场景参考系因此一致。
+            lw = chain.get("lane_obs")
+            lane = lw.latest() if lw is not None else None
+            lane_usable = (lane is not None and bool(lane.get("usable"))
+                           and (lane.get("det_age_ms") or 0.0)
+                           <= LANE_POS_AGE_MS)
+            # 原点保持：线失锁的短断供拍仍用线原点（与 planner 的
+            # _LINE_REBUILD_S 同一预算），否则走廊中心会在线与深度之间
+            # 来回换，场景参考系跟着抖。
+            corridor = chain["ego_road"].update(
+                dgeo, new=dgeo_new, grid=dgrid, fid=fid,
+                far_extents=(dgeo.far_extents if dgeo is not None else ()),
+                center_override=(-planner.state.executed_lane
+                                 if (lane_usable or planner.line_primary)
+                                 else None),
+                v_lat=planner.state.v_lat)
             road_offset = None if corridor is None else -corridor.center_lane
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
@@ -1323,10 +1337,7 @@ class SpeedRushModule(ActivityModule):
             else:
                 chain["last_plan_ego"] = None
             chain["last_plan"] = plan
-            # 线观测先取：保持期要把它的连续横位当运动观测喂给 planner（深度
-            # 保持值冻结时，线是唯一真实的位移来源；模型自走会按打杆量虚走）。
-            lw = chain.get("lane_obs")
-            lane = lw.latest() if lw is not None else None
+            # lane 已在供数前取过（同一对象、同一拍）：这里只判语义门。
             lane_ok = (lane is not None and lane.get("state") == "TRACK"
                        and int(lane.get("n_locked") or 0) >= 1
                        and lane.get("x") is not None)
@@ -1337,6 +1348,7 @@ class SpeedRushModule(ActivityModule):
                                  road_offset_hold=road_offset_hold,
                                  lane_x=None if lane is None else lane.get("x"),
                                  lane_ok=lane_ok,
+                                 lane_pos_ok=lane_usable,
                                  lane_relock=lane_relock,
                                  lane_theta=None if lane is None
                                  else lane.get("theta"),
@@ -1596,6 +1608,9 @@ class SpeedRushModule(ActivityModule):
             # （speed=None 表示没估出来：v_head 不兜底，也不进控制律）。
             "lat_ctrl": planner.ctrl_debug(),
             "ro_source": chain["ego_road"].last.get("source"),
+            # 走廊中心实际原点：line=线为主（深度只供边界），其余=深度来源。
+            # 与 ro_source 分开：线为主时 ro_source 仍显示深度候选的侧效来源。
+            "ro_origin": chain["ego_road"].last.get("origin"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
             # 路心互证审计列（2026-10-06）：同拍栅格 wmid 路心（off 系，右正）
@@ -2168,6 +2183,8 @@ def _record_root() -> Path:
 # 坏帧采样器（三局复盘 2026-09-22 悬案取证：sides==0 占 58% 是场景褪色还是检测参数，
 # 唯一证据=真帧；录制与控制互斥是既有安全不变量，不动它——由控制回路自己按节流存帧，
 # fid 与 trace jsonl 对账。热路径纪律：≥2s 一张、每阶段封顶，写失败即自禁不重试刷屏）
+# 线为位置原点的检测龄上限（ms）：更旧的线值只能做运动观测，不能当位置。
+LANE_POS_AGE_MS = 200.0
 YOLO_MASK_MARGIN = 10             # 检测框外扩（px）：框缘深度过渡带不留在候选区
 BAD_FRAME_MIN_INTERVAL_S = 2.0
 BAD_FRAME_MAX_PER_PHASE = 40
@@ -2270,13 +2287,16 @@ class _EgoRoadObserver:
     trace 365~376：车贴左黄线时 pair_slot/memory 报路心 0，墙实体 −1.75 道，
     目标横摆 ±6m）。绝对路心只认物理边界与宏观先验：
 
-    - wall：双侧同箱新鲜在场且宽与规则路宽相容 → 中点 + 墙到墙宽；单侧 →
-      墙 ± W/2（空气墙反推，W 不足时用规则先验 4.0 道）；双侧宽矛盾或两侧
-      单侧反推矛盾 → 诚实弃权（不猜哪一侧锁错结构），交绿区/记忆；两帧内
-      遮挡墙同单侧规则（src=wall_occl，仅位置）。
+    - line（2026-10-31 起为主）：车道线严格可用时，走廊中心由线给出
+      （``center_override``，等于 −执行层横位）；深度只供边界/宽度，来源
+      跳变不再把中心整道拽走。线断供时深度按下面的链重建。
+    - wall：双侧同箱新鲜在场且宽与规则路宽相容 → 中点 + 墙到墙宽。**单侧
+      墙不再反推中心**（只作该侧边界）；双侧宽矛盾 → 诚实弃权（不猜哪一侧
+      锁错结构），交绿区/记忆。
     - region：绿区物理边界（区弃权/墙未成形时的双侧宏观读数）。
-    - memory：只存绝对来源（wall/region）成功拍，原值保持；TTL 0.8s 内桥接
-      短暂遮挡，过期诚实 None。pair/pair_slot 永不进 master 路心。
+    - memory：只存绝对来源（wall/region）成功拍，原值保持；TTL 0.25s 内
+      桥接极短遮挡，并按当拍横速做位移补偿，过期诚实 None。pair/pair_slot
+      永不进 master 路心。
     - 门禁：平面尺度门（坏平面整帧不进供数）、来源跳变门（>0.4 道需连续
       2 拍同向一致）、|center|>OFF_MAX、双侧宽偏离规则路宽超 0.7 道。
 
@@ -2314,11 +2334,11 @@ class _EgoRoadObserver:
     # W 成形地板（道，仅回放链）：保险杠近场视锥裁切/假缘会给出 2.5~2.7 道的
     # "窄走廊"——不能让它定义整局路宽先验。
     W_MIN_LANE = 3.0
-    # 绝对路心记忆（2026-10-23）：读数在自车系，记忆只能桥接短暂遮挡——
-    # TTL 内自车横移 ≈ 0.2 道（0.8s @ 1m/s 横速），2s 会把旧帧的车位当路心。
-    # 记忆保持最后采信值、不做 EMA：滤波滞后会让墙值恢复时慢半拍，形成
-    # 0.5~1 道的 memory↔wall 来回摆（实拍 p2 91 次 >0.6 道跳变的来源）。
-    MEM_TTL_S = 0.8
+    # 绝对路心记忆（2026-10-31 起线为主）：记忆只桥接「线也断供」的极短窗口。
+    # 0.8s 太长——实测一次变道 1.4 道/s，0.8s 后旧值已错 1 道以上，成了
+    # memory↔单侧墙来回跳的种子；缩到 0.25s，并按当拍横速做位移补偿
+    # （自车右移 Δ → 路心在自车系左移 Δ）。记忆保持最后采信值、不做 EMA。
+    MEM_TTL_S = 0.25
     # 平面尺度门（master）：2026-10-29 尺度修正后 bumper 机位 cam_h≈1.26~1.29m；
     # 离线 0200 帧拟合出 0.81m（正常 1.26~1.29）而质量门未拦——坏平面的缘点/
     # 绿区整帧不进供数。
@@ -2355,6 +2375,8 @@ class _EgoRoadObserver:
         self._win: deque = deque(maxlen=3)    # 近 3 对原始读数（中值滤波窗口）
         self._w_samples: deque = deque(maxlen=self.W_KEEP_SAMPLES)
         self._w_center: float | None = None   # 最近一次喂宽读数拍的中点（跳变确认）
+        self._center_override: float | None = None  # 线为原点时的走廊中心
+        self._v_lat = 0.0                     # 当拍横速（记忆位移补偿用）
         self._mem: tuple | None = None        # 朝向记忆 (center, width, 时刻)
         self._last_center: float | None = None   # 最近一次采信的路心（跳变门基线）
         self._jump_pending: tuple | None = None  # 待确认的跳变 (center, 连续拍数)
@@ -2370,7 +2392,9 @@ class _EgoRoadObserver:
                new: bool = True,
                grid: DrivableGrid | None = None,
                fid: int | None = None,
-               far_extents: tuple = ()) -> Corridor | None:
+               far_extents: tuple = (),
+               center_override: float | None = None,
+               v_lat: float = 0.0) -> Corridor | None:
         """``bnd``：DepthRoadReading（或鸭子同构：sides + 两侧 edge_lane）。
 
         ``new``：本拍读数是否新证据（异步驻留协议 take() 的 is_new）。中值窗、
@@ -2388,6 +2412,8 @@ class _EgoRoadObserver:
         if now is None:
             now = time.monotonic()
         self._far_extents = far_extents   # _build 消费（各拼装路径同帧同源）
+        self._center_override = center_override  # 线可用时走廊以线为原点
+        self._v_lat = float(v_lat) if math.isfinite(v_lat) else 0.0
         self._frame_gate_used = False
         self._audit = {}                  # 本拍审计面重置（None=本拍无该证据）
         if new:
@@ -2603,10 +2629,14 @@ class _EgoRoadObserver:
                               now, grid_off, jump=False, mem_update=False)
 
         def mem_c():
-            if not self._mem_fallback or self._mem is None \
-                    or now - self._mem[2] > self.MEM_TTL_S:
+            if not self._mem_fallback or self._mem is None:
                 return None
-            c, w, _t = self._mem
+            c, w, t = self._mem
+            age = now - t
+            if age > self.MEM_TTL_S:
+                return None
+            # 位移补偿：记忆存的是自车系坐标；自车右移 Δ 后路心在自车系左移 Δ。
+            c = c - self._v_lat * age
             if abs(c) > self.OFF_MAX:
                 return None
             return self._emit(c, w, "memory", bnd, grid, fid, now, grid_off,
@@ -2642,6 +2672,14 @@ class _EgoRoadObserver:
             out = f()
             if out is not None:
                 return out
+        if master and self._center_override is not None:
+            # 线为原点、深度全断：走廊仍要存在（中心=线，边界缺证据落空气墙）。
+            # 否则线明明知道车在哪，感知层却因「深度没有候选」整拍弃权。
+            corr = self._build(bnd, grid, fid, self._center_override,
+                               self.width or self.W_PRIOR_LANE, "line", now)
+            self.last = self._snapshot(now, "line", -self._center_override,
+                                       None, grid_off)
+            return corr
         self.last = self._snapshot(now, "none", None, None, grid_off)
         return None
 
@@ -2685,10 +2723,10 @@ class _EgoRoadObserver:
         - 双侧同箱但与规则路宽差超 0.7 道（回放链：学习中位数的 ±20%）
           → **诚实弃权**：至少一侧锁错结构（实拍：真左墙 + 假右缘宽 2.6 道），
           不猜是哪一侧；交绿区（远行中心）/记忆接棒。
-        - 无同箱双侧 → 单侧墙 ± W/2（master 的 W 不足时直接用规则先验 4.0 道）。
-          两侧各自的单侧反推差超宽门=互相矛盾，同样弃权（左右墙交替选会造成
-          1 道级来回摆）；一致时取 live/高置信的一侧。
-        |center|>OFF_MAX 的远墙假设弃权（单侧墙不冒充完整走廊）。"""
+        - 无同箱双侧 → **不给中心**（单侧墙只作该侧边界）。单侧反推 ∓W/2 的
+          偏置跟方向/遮挡走（实测 0.7 道级），线为主后不再让它当原点；线也
+          丢失时交绿区/记忆/None。
+        |center|>OFF_MAX 的远墙假设弃权。"""
         left = self._wall_candidates(-1, fid)
         right = self._wall_candidates(1, fid)
         formed = self.width
@@ -2710,6 +2748,13 @@ class _EgoRoadObserver:
             return center, w, "wall"
         if common:
             return None              # 同箱双侧对全部矛盾：诚实弃权
+        if self._master:
+            # 线为主（2026-10-31）：单侧墙只作该侧边界（带边界仍由
+            # build_corridor 从墙箱/绿区填），不再 ∓W/2 反推路心——单侧反推
+            # 的偏差跟方向和遮挡状态走（实测左右墙交替差 0.7 道），正是
+            # memory↔wall_occl 来回整道跳的来源。线也丢失时交绿区/记忆/None。
+            return None
+        # 回放链（off/veto）保留旧的单侧墙反推，逐位保持旧行为。
         if formed is None:
             return None
         best: dict[bool, tuple] = {}
@@ -2726,8 +2771,6 @@ class _EgoRoadObserver:
             return None
         if len(best) == 2:
             (ca, la), (cb, lb) = best[False][1], best[True][1]
-            # 只有两侧都当拍在场才做互证：遮挡侧的位置是历史值，不得否决 live。
-            # 容差与宽门同尺（道）；更大的分歧=一侧锁错结构。
             if la and lb and abs(ca - cb) > self._width_tol(formed):
                 return None
         key, (center, live) = min(best.values(), key=lambda kv: kv[0])
@@ -2749,6 +2792,10 @@ class _EgoRoadObserver:
 
     def _build(self, bnd, grid, fid: int | None, center: float,
                width: float, src: str, now: float) -> Corridor:
+        # 线为原点时，走廊中心用线的位置（center_override），深度的墙/记忆只
+        # 供边界证据与宽度统计；深度来源跳变不再把走廊中心整道拽走。
+        if self._center_override is not None:
+            center = self._center_override
         corr = build_corridor(
             bnd, grid, fid,
             center_lane=center, width_lane=width, src=src,
@@ -2849,6 +2896,9 @@ class _EgoRoadObserver:
         pair_w=本拍对宽（与 off_raw 二元定一对）；reject=主候选供数门拒绝
         原因（off_max/width_guard/veto/center_max）——拒绝拍分账审计面。"""
         return {"source": src, "off": off, "off_raw": off_raw,
+                # origin=走廊中心实际用的原点（line=线为主；其余=深度来源）
+                "origin": ("line" if self._center_override is not None
+                           else src),
                 "width": self.width, "grid_off": grid_off, "xcheck": xcheck,
                 "pair_w": pair_w, "reject": reject, "plane_ok": self._plane_ok,
                 "audit": dict(self._audit)}

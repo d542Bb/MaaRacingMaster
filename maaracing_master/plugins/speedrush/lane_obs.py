@@ -51,6 +51,13 @@ PROB_THRESH = 0.30
 TRACK_TOL = 0.15
 TRACK_GAP = 6
 COAST_MAX_TICKS = 10
+# 线为主（2026-10-31）：线自身连续稳定这么多拍后，道号不再让新鲜深度改判，
+# 深度也不再能否决线——整道级深度跳变时两根线会"整齐地"支持错误网格，正是
+# 路心整道跳、场景参考系反复否决的来源。
+LINE_LOCK_TICKS = 5
+LINE_THETA_MAX = 0.30      # 线角（rad）；变道中车头相对道路可达 ~0.2
+LINE_RMS_MAX = 2.5         # 单线拟合残差（px，短段/边缘线不参与位置原点）
+LINE_JUMP_RESET = 0.5      # 线横位单拍跳超此值（道）= 连续性中断，重新锁定
 # 黄边界侧别硬约束：用最靠车头的几个点判画面左右侧，压中线留死区。
 SIDE_NEAR_PTS = 5
 SIDE_DEADBAND_PX = 20.0
@@ -240,6 +247,7 @@ class LineTracker:
         self.x_prev: float | None = None
         self.x_vel = 0.0
         self.lost = 0
+        self.locked = 0            # 连续 TRACK 稳定性拍数（线为主的门）
         self.grid_reject = 0
         self.side_reject = 0
         self.last_theta: float | None = None
@@ -280,18 +288,31 @@ class LineTracker:
         return votes[0]
 
     def _assign_k(self, c: dict, x_anchor: float | None,
-                  fid: int, strong_anchor: bool = False) -> bool:
+                  fid: int, strong_anchor: bool = False,
+                  line_locked: bool = False) -> bool:
         """给一条线定/重锚持久道号；False=本拍不能参选横位。
 
-        深度新鲜拍是唯一的重锚来源：新线直接初始化 k；老线与锚点冲突时，
-        多条线同拍支持新网格（``strong_anchor``）就立即改 k，否则连续
-        ``ANCHOR_CONFIRM`` 拍同向一致才改，未确认前本拍横位用深度兜底。
-        深度空窗时保留持久 k（线随画面移动继续给绝对横位），新线由所有在期
-        线的整数间距票一致后补位；票分歧不硬定号。没通过门的新线不留 k，
-        被拒线也不更新已有关联轨迹的身份，避免野线把错道号传给下一帧。
+        线已连续锁定时（``line_locked``）：道号只跟持久轨迹/邻居投票，深度
+        锚不参与——深度整道跳变时两根线会整齐地支持错误网格，此时再让锚点
+        改判等于把错网格写成权威。线未锁定（冷启/重锁）：深度新鲜拍是重锚
+        来源——新线直接初始化 k；老线与锚点冲突时，多条线同拍支持新网格
+        （``strong_anchor``）就立即改 k，否则连续 ``ANCHOR_CONFIRM`` 拍同向
+        一致才改，未确认前本拍横位用深度兜底。深度空窗时保留持久 k（线随
+        画面移动继续给绝对横位），新线由所有在期线的整数间距票一致后补位；
+        票分歧不硬定号。没通过门的新线不留 k，被拒线也不更新已有关联轨迹
+        的身份，避免野线把错道号传给下一帧。
         """
         L = float(c["L"])
         tk = c.get("_track")
+        if line_locked:
+            if tk is not None and tk.k is not None:
+                c["k"] = tk.k
+                return True
+            k = self._neighbor_k(c, fid)
+            if k is None:
+                return False
+            c["k"] = k
+            return True
         if x_anchor is not None:
             k_a = int(round(x_anchor + L))
             resid = x_anchor + L - k_a
@@ -334,6 +355,9 @@ class LineTracker:
     def update(self, lines: list[dict], fid: int, dt: float,
                v_lat: float = 0.0, fid_jump: bool = False,
                anchor: float | None = None) -> dict:
+        # 线锁：上一拍起线已连续稳定 LINE_LOCK_TICKS 拍 → 本拍道号为权威，
+        # 深度锚只能用于「线丢失后的重建」，不能改判/否决。
+        line_locked = self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS
         # ① 关联：颜色只作软提示，横位 L 才是身份
         cur = []
         for d in lines:
@@ -377,6 +401,7 @@ class LineTracker:
                                  else "none"))
         if x_anchor is None and self.x_last is None:
             self.lost += 1
+            self.locked = 0
             self.state = "RELOCK"
             self._commit_tracks(cur, fid)
             return self._out(None, 0, cur, self.anchor_src,
@@ -384,7 +409,7 @@ class LineTracker:
 
         # ③ 颜色/侧别质量门 + 持久道号分配/重锚
         strong_anchor = False
-        if x_anchor is not None and self.x_last is not None \
+        if not line_locked and x_anchor is not None and self.x_last is not None \
                 and abs(x_anchor - self.x_last) <= self.ANCHOR_AGREE_TOL:
             # 只有离当前横位不远的锚点才享受当拍重锚：整道级深度跳变时
             # 两根线会整齐地支持错误网格（残差照样很小），必须仍走两拍确认。
@@ -404,11 +429,12 @@ class LineTracker:
                 c["reject"] = "side"
                 self.side_reject += 1
                 continue
-            if not self._assign_k(c, x_anchor, fid, strong_anchor):
+            if not self._assign_k(c, x_anchor, fid, strong_anchor,
+                                  line_locked):
                 continue
             xi = float(c["k"]) - L
             c["_xi"] = xi
-            if x_anchor is not None \
+            if not line_locked and x_anchor is not None \
                     and abs(xi - x_anchor) > self.ANCHOR_AGREE_TOL:
                 # 持久 k 与新鲜深度冲突：本拍用深度兜底，线不参选
                 c["reject"] = "anchor"
@@ -455,6 +481,12 @@ class LineTracker:
             for c in keep:
                 c["accepted"] = True
             x_out = float(np.median([c["_xi"] for c in keep]))
+            # 稳定性计数：只有横位连续（单拍不跳 >LINE_JUMP_RESET）才累加；
+            # 跳变=连续性中断，从 1 重新数（线锁的要件）。
+            step = (abs(x_out - self.x_last)
+                    if self.x_last is not None else 0.0)
+            self.locked = (self.locked + 1
+                           if step <= LINE_JUMP_RESET else 1)
             if self.x_prev is not None and dt > 1e-3:
                 dvx = float(np.clip((x_out - self.x_last) / dt, -1.5, 1.5))
                 self.x_vel = 0.6 * self.x_vel + 0.4 * dvx
@@ -476,6 +508,7 @@ class LineTracker:
                 self.x_vel = 0.6 * self.x_vel + 0.4 * dvx
             self.x_prev, self.x_last = self.x_last, x_anchor
             self.lost += 1
+            self.locked = 0          # 绝对位换了来源：线锁作废，重新数
             self.state = ("RELOCK" if (fid_jump
                                        or self.lost > COAST_MAX_TICKS)
                           else "COAST")
@@ -484,6 +517,7 @@ class LineTracker:
             pred = False
         else:
             self.lost += 1
+            self.locked = 0
             # 盲窗封顶（2026-10-31）：线不可用又没有深度锚时，横位只剩「上次
             # 横速」外推。短断链（≤COAST_MAX_TICKS）这么走是对的；再长就没有
             # 可积的运动证据了——旧行为会以恒速一路外推到整道外（实测两秒
@@ -534,11 +568,21 @@ class LineTracker:
         if x is not None:
             x = round(float(x), 3)
         self.last_lines = [dict(c) for c in lines]
+        # 位置原点可用性（严格）：线连续锁定 + 至少两条高质量线 + 左右两侧
+        # 都在 + 线角不过分。上游据此把线当绝对位置；不满足时深度才重建。
+        good = [c for c in lines if c.get("accepted")
+                and (c.get("rms") is None
+                     or float(c["rms"]) <= LINE_RMS_MAX)
+                and abs(float(c.get("theta") or 0.0)) <= LINE_THETA_MAX]
+        sides = {c.get("side") for c in good}
+        usable = (self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS
+                  and len(good) >= 2 and sides == {-1, 1})
         return {"state": self.state, "x": x, "theta": self.last_theta,
                 "n_locked": int(n_locked), "relock_src": relock_src,
                 "n_lines": len(lines), "grid_reject": self.grid_reject,
                 "side_reject": self.side_reject, "lost": int(self.lost),
-                "anchor_src": anchor_src, "lines": lines, "pred": pred}
+                "anchor_src": anchor_src, "lines": lines, "pred": pred,
+                "usable": bool(usable), "locked": int(self.locked)}
 
     def predict(self, dt: float, v_lat: float = 0.0) -> dict:
         """非检测帧：只推进横位；上一帧线保留但标 pred，不再参与绝对位。"""

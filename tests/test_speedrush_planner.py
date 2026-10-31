@@ -591,6 +591,41 @@ def test_lane_fusion_tracks_motion_during_hold():
     assert pl.state.executed_lane > -1.1       # 平滑+收敛滞后，不外推
 
 
+# ---------- 线为主（2026-10-31）：线是位置原点，深度只重建 ----------
+
+def test_line_primary_position_ignores_depth():
+    """线严格可用时执行位跟线走：深度报 0（差 1 道）也不参与修正。
+    旧结构里新鲜深度是唯一 correct 步，线只在保持拍做次级融合。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              road_offset=0.0, lane_x=1.0, lane_ok=True, lane_pos_ok=True)
+    assert pl.state.executed_lane == pytest.approx(0.7, abs=0.05)
+    assert pl.last_rebase is None
+    for i in range(6):
+        pl.update(_out(x_target=0.0, fid=2 + i, valid=2 + i), DT, 2 + i,
+                  road_offset=0.0, lane_x=1.0, lane_ok=True, lane_pos_ok=True)
+    assert pl.state.executed_lane == pytest.approx(1.0, abs=0.02)
+    assert pl._road_anchor == 0.0
+
+
+def test_line_dropout_holds_model_before_depth_rebuild():
+    """线短断（≤0.4s）先模型外推，不让深度当拍接管；超预算后深度重建。"""
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
+              lane_x=1.0, lane_ok=True, lane_pos_ok=True)
+    assert pl.state.executed_lane == pytest.approx(0.7, abs=0.05)
+    for i in range(3):                     # 0.15s 线断：深度不接管
+        pl.update(_out(x_target=0.0, fid=2 + i, valid=2 + i), DT, 2 + i,
+                  road_offset=0.0, lane_ok=False)
+        assert pl.state.executed_lane == pytest.approx(0.7, abs=0.06)
+    for i in range(12):                    # 超 0.4s：深度按 α 重建
+        pl.update(_out(x_target=0.0, fid=8 + i, valid=8 + i), DT, 8 + i,
+                  road_offset=0.0, lane_ok=False)
+    assert abs(pl.state.executed_lane) < 0.1
+
+
 def test_lane_fusion_rejects_depth_outlier():
     """已对账锁线可以否决不一致的新鲜深度（差 0.7 > 0.5）：单帧不拉位置，
     防单侧/绿区坏深度把车从墙边拽回；持续 3 次新证据才重基。"""
