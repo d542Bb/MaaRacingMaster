@@ -1368,7 +1368,9 @@ class SpeedRushModule(ActivityModule):
                 # 线观测的绝对锚点=同帧新鲜深度路心（复用/历史拍不给，
                 # 让线退回上一拍横位做子道细化，不让旧深度冒充新锚）。
                 lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
-                        fid_jump, road_offset if road_offset_new else None)
+                        fid_jump,
+                        focal=None if dgeo is None else dgeo.fx,
+                        anchor=road_offset if road_offset_new else None)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,

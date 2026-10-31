@@ -37,8 +37,13 @@ from maaracing_master.core import dml_lock
 LANE_W = 3.5
 VPX = 640.7
 Y_H = 354.2
-FOCAL = 807.7
 DEFAULT_CAM_H = 1.28
+# 焦距不做常量：RULES 明确「不存在单一真值焦距，感知层逐帧自估」——线角
+# 用同帧深度读数给出的全幅 fx（缺值保持上一次有效估计）。线角正切 = 像素
+# 偏置 ÷ 焦距，写死值偏高 17% 会把车头角、横速比例一起压缩。
+FOCAL_LO = 400.0
+FOCAL_HI = 1400.0
+FOCAL_EMA = 0.25          # 逐帧焦距轻平滑（场景内容会让估计帧间抖 ±10%）
 # 保险杠机位物理高度带（2026-10-29 深度尺度 ×0.893 后重标）；坏平面帧的
 # coef[2] 仍会飙到 3.2~4.5，线几何不能用它。
 CAM_H_LO = 1.12
@@ -184,7 +189,8 @@ def _lane_cam_h(cam_h: float | None) -> tuple[float, bool]:
     return float(cam_h), False
 
 
-def _fit(pts, cam_h: float, y_lo: float, y_hi: float):
+def _fit(pts, cam_h: float, y_lo: float, y_hi: float,
+         focal: float | None = None):
     use = [q for q in pts if y_lo <= 2.0 * q["yc"] <= y_hi]
     if len(use) < 4:
         return None
@@ -196,9 +202,13 @@ def _fit(pts, cam_h: float, y_lo: float, y_hi: float):
     A = np.vstack([ys, np.ones_like(ys)]).T
     s, a = np.linalg.lstsq(A * wt[:, None], xs * wt, rcond=None)[0]
     L = float(s * cam_h / LANE_W)
-    theta = math.atan((VPX - a - L * LANE_W * Y_H / cam_h) / FOCAL)
+    # 无有效焦距只丢线角（横位 L 不依赖焦距，仍可用）；不拿写死值冒充测量。
+    theta = None
+    if focal is not None and math.isfinite(focal) \
+            and FOCAL_LO <= focal <= FOCAL_HI:
+        theta = math.atan((VPX - a - L * LANE_W * Y_H / cam_h) / focal)
     rms = float(np.sqrt(np.average((xs - (s * ys + a)) ** 2, weights=wt)))
-    return {"L": L, "theta": float(theta), "rms": rms,
+    return {"L": L, "theta": None if theta is None else float(theta), "rms": rms,
             "y0": float(ys.min()), "y1": float(ys.max()), "n": len(ys)}
 
 
@@ -645,6 +655,7 @@ class LaneObsWorker:
         self._last_t = 0.0
         self._n = 0
         self._use_dml = False
+        self._focal: float | None = None   # 逐帧全幅焦距（深度读数同源）
         self.busy_skips = 0
         self.hold_ms = 0.0
         self.cam_h_fb = 0
@@ -701,11 +712,13 @@ class LaneObsWorker:
 
     def push(self, rgb: np.ndarray, fid: int, cam_h: float | None,
              v_lat: float, dt: float, fid_jump: bool,
+             focal: float | None = None,
              anchor: float | None = None) -> None:
-        """入队一帧；``anchor`` 是同帧新鲜深度路心（None=复用/缺供）。
+        """入队一帧；``focal`` 是同帧深度读数的全幅焦距（线角用），``anchor``
+        是同帧新鲜深度路心（None=复用/缺供）。
 
-        锚点随帧一起入队，保证线观测用的绝对参照与这条帧同拍——不拿后一帧
-        的深度去锚前一帧的线。"""
+        两者都随帧一起入队，保证线观测用的绝对参照/角度尺度与这条帧同拍——
+        不拿后一帧的深度去锚或定标前一帧的线。"""
         if self._sess is None:
             return
         now = time.perf_counter()
@@ -724,9 +737,21 @@ class LaneObsWorker:
         try:
             self._q.put_nowait((rgb, int(fid), used_h,
                                 float(v_lat), float(dt), bool(fid_jump),
+                                None if focal is None else float(focal),
                                 None if anchor is None else float(anchor)))
         except queue.Full:
             pass
+
+    def _set_focal(self, focal: float | None) -> None:
+        """逐帧焦距：有效值轻平滑；缺值/异常保持上一次有效估计。
+
+        焦距只影响线角（横位不依赖它）；用上次的**测量**值补缺，不退回常量。"""
+        if focal is None or not math.isfinite(focal) \
+                or not (FOCAL_LO <= focal <= FOCAL_HI):
+            return
+        self._focal = (float(focal) if self._focal is None
+                       else self._focal + FOCAL_EMA * (float(focal)
+                                                       - self._focal))
 
     def latest(self) -> dict | None:
         """最新一帧的完整快照（横位/状态/线/锚点同源）。
@@ -761,10 +786,11 @@ class LaneObsWorker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                rgb, fid, cam_h, v_lat, dt, jump, anchor = \
+                rgb, fid, cam_h, v_lat, dt, jump, focal, anchor = \
                     self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
+            self._set_focal(focal)
             beat()          # 心跳：性能面板的「每秒几拍」由 core 差分得出
             t0 = time.perf_counter()
             try:
@@ -776,7 +802,7 @@ class LaneObsWorker:
                     res = self._tracker.predict(dt, v_lat)
                 else:
                     self.det_n += 1
-                    rec = self._infer(rgb, cam_h)
+                    rec = self._infer(rgb, cam_h, self._focal)
                     if rec is None:      # DML 被占：本帧让路，下一帧再来
                         continue
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
@@ -813,6 +839,8 @@ class LaneObsWorker:
                 "side_reject": res["side_reject"],
                 "usable": bool(res.get("usable", False)),
                 "locked": int(res.get("locked", 0)),
+                "focal": None if self._focal is None
+                else round(self._focal, 1),
                 "t_done": t_done, "t_det": self._last_det_t,
                 # 线与横位同拍：annotated（k/resid/accepted）由 tracker 给出
                 "lines": res["lines"]}
@@ -834,7 +862,8 @@ class LaneObsWorker:
             dml_lock.LOCK.release()
         return _prob_from_out(out)
 
-    def _infer(self, rgb: np.ndarray, cam_h: float) -> dict | None:
+    def _infer(self, rgb: np.ndarray, cam_h: float,
+               focal: float | None) -> dict | None:
         prob = self._run(rgb)
         if prob is None:
             return None
@@ -846,13 +875,15 @@ class LaneObsWorker:
             if max(yf, wf) < WHITE_MIN:
                 continue
             color = "y" if yf >= YELLOW_MIN else ("w" if wf >= WHITE_MIN else "?")
-            near = _fit(pts, cam_h, *NEAR_Y)
-            far = _fit(pts, cam_h, *FAR_Y)
+            near = _fit(pts, cam_h, *NEAR_Y, focal)
+            far = _fit(pts, cam_h, *FAR_Y, focal)
             f = near or far
             if f is None:
                 continue
             x_near = _near_x(pts)
-            lines.append({"L": round(f["L"], 3), "theta": round(f["theta"], 4),
+            lines.append({"L": round(f["L"], 3),
+                          "theta": None if f["theta"] is None
+                          else round(f["theta"], 4),
                           "n": f["n"], "rms": round(f["rms"], 2),
                           "y0": int(f["y0"]), "y1": int(f["y1"]),
                           "color": color, "yellow": round(yf, 2),

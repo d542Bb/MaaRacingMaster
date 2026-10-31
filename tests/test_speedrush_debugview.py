@@ -179,11 +179,13 @@ def test_debug_interval_is_10fps():
 def test_lane_line_x_reconstructs_fit():
     """回投公式自洽：由已知斜率/截距反解 L/theta，再逐点还原像素横坐标。"""
     import math
-    cam_h, s, a = 1.469, 0.8, 100.0
+    cam_h, s, a, focal = 1.469, 0.8, 100.0, 670.0
     line = {"L": s * cam_h / dv.LANE_W,
-            "theta": math.atan((dv.VPX - a - s * dv.Y_H) / dv.FOCAL)}
+            "theta": math.atan((dv.VPX - a - s * dv.Y_H) / focal)}
     for y in (500.0, 600.0, 700.0):
-        assert dv._lane_line_x(line, cam_h, y) == pytest.approx(a + s * y)
+        assert dv._lane_line_x(line, cam_h, y, focal) \
+            == pytest.approx(a + s * y)
+    assert dv._lane_line_x(line, cam_h, 600.0, None) is None
 
 
 def test_render_hud_lane_overlay_draws_line(frame):
@@ -191,11 +193,12 @@ def test_render_hud_lane_overlay_draws_line(frame):
     cam_h = 1.469
     line = {"L": 0.5, "theta": 0.0, "color": "y", "side": -1, "k": -2,
             "y0": 550, "y1": 645, "n": 10, "rms": 0.5}
-    snap = {"fid": 1, "phase": 1, "lane": {"cam_h": cam_h, "state": "TRACK",
-                                           "det_age_ms": 20.0, "lines": [line]}}
+    snap = {"fid": 1, "phase": 1,
+            "lane": {"cam_h": cam_h, "state": "TRACK", "focal": 670.0,
+                     "det_age_ms": 20.0, "lines": [line]}}
     out = render_hud(frame, snap, None)
     y = 640
-    x = int(round(dv._lane_line_x(line, cam_h, y)))
+    x = int(round(dv._lane_line_x(line, cam_h, y, 670.0)))
     patch = out[y - 2:y + 3, max(0, x - 2):x + 3].astype(int)
     # 黄边界色 (B,G,R)=(0,220,255)：允许线宽/取整误差，按通道判
     hit = ((patch[..., 0] < 40) & (patch[..., 1] > 180)

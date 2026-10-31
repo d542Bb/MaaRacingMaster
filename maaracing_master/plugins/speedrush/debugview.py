@@ -61,7 +61,7 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     GRID_Z_LO, NEAR_Z, REGION_WIDTH_Z_HI, REGION_Z_HI, ROAD_Z_HI,
     X_MAX_M)
 from maaracing_master.plugins.speedrush.lane_obs import (
-    DEFAULT_CAM_H, FOCAL, LANE_W, VPX, Y_H)
+    DEFAULT_CAM_H, LANE_W, VPX, Y_H)
 from maaracing_master.plugins.speedrush.session_layout import (
     SOURCE_CONTROL,
     build_meta,
@@ -161,17 +161,20 @@ _LANE_BGR = {"y": (0, 220, 255), "w": (235, 235, 235), "?": (255, 0, 255)}
 _BAND_BGR = (18, 18, 18)
 
 
-def _lane_line_x(line: dict, cam_h: float, y: float) -> float:
+def _lane_line_x(line: dict, cam_h: float, y: float,
+                 focal: float | None) -> float | None:
     """按线观测的拟合参数回投全幅像素横坐标。
 
     线方程（lane_obs 同源）：``x_px = a + s*y``，其中 ``s=L*LANE_W/cam_h``，
-    截距由 theta 反解 ``a = VPX - s*Y_H - tan(theta)*FOCAL``。参数齐备，
-    不需要重新推理——图上画的就是观测器实际拟合的那根线。
+    截距由 theta 反解 ``a = VPX - s*Y_H - tan(theta)*focal``。焦距必须用
+    观测器当拍使用的逐帧估计（``lane.focal``）；缺值不猜尺度，返回 None。
     """
+    if focal is None or not math.isfinite(focal):
+        return None
     L = float(line.get("L") or 0.0)
     th = float(line.get("theta") or 0.0)
     s = L * LANE_W / cam_h
-    a = VPX - s * Y_H - math.tan(th) * FOCAL
+    a = VPX - s * Y_H - math.tan(th) * float(focal)
     return a + s * y
 
 
@@ -194,6 +197,11 @@ def _draw_lane_overlay(img: np.ndarray, snap: dict) -> None:
     if not (isinstance(cam_h, (int, float)) and 0.5 <= float(cam_h) <= 3.0):
         cam_h = DEFAULT_CAM_H
     cam_h = float(cam_h)
+    focal = lane.get("focal")
+    if not (isinstance(focal, (int, float))
+            and 400.0 <= float(focal) <= 1400.0):
+        return                       # 无逐帧焦距（旧 trace/深度未就绪）：不画，不猜
+    focal = float(focal)
     # 检测帧与当前控制帧的差：按线的跨帧速度把 L 外推到当前帧再画，
     # 消掉「图上线比车慢一拍」的肉眼延迟（身份/k 仍用检测帧的值）。
     det_fid = lane.get("det_fid")
@@ -218,8 +226,11 @@ def _draw_lane_overlay(img: np.ndarray, snap: dict) -> None:
         use = dict(ln)
         if gap:
             use["L"] = float(ln["L"]) + float(ln.get("v") or 0.0) * gap
-        xa = _lane_line_x(use, cam_h, y0) * sx
-        xb = _lane_line_x(use, cam_h, y1) * sx
+        xa = _lane_line_x(use, cam_h, y0, focal)
+        xb = _lane_line_x(use, cam_h, y1, focal)
+        if xa is None or xb is None:
+            continue
+        xa, xb = xa * sx, xb * sx
         acc = bool(ln.get("accepted", True))
         col = _LANE_BGR.get(ln.get("color"), _LANE_BGR["?"])
         if not acc:

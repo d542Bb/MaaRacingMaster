@@ -7,14 +7,16 @@
 """
 from __future__ import annotations
 
+import math
 import time
 
 import numpy as np
 import pytest
 
+from maaracing_master.plugins.speedrush import lane_obs as la
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.lane_obs import (
-    COAST_MAX_TICKS, LaneObsConfig, LaneObsWorker, LineTracker)
+    COAST_MAX_TICKS, LaneObsConfig, LaneObsWorker, LineTracker, _fit)
 
 
 def _line(L, color="y", n=20, theta=0.0, side=None):
@@ -23,6 +25,40 @@ def _line(L, color="y", n=20, theta=0.0, side=None):
     return {"L": L, "color": color, "n": n, "theta": theta,
             "yellow": 1.0 if color == "y" else 0.0,
             "white": 1.0 if color == "w" else 0.0, "side": side}
+
+
+def _synth_line(s, a, y0=560, y1=700, n=15):
+    """全幅像素直线 x = s·y + a → 模型半分辨率点集（_fit 的输入口径）。"""
+    return [{"yc": y / 2.0, "xc": (s * y + a) / 2.0, "p": 1.0}
+            for y in (y0 + i * (y1 - y0) / (n - 1) for i in range(n))]
+
+
+def test_line_theta_uses_per_frame_focal():
+    """线角正切 = 像素偏置 ÷ 焦距：焦距从写死 807.7 换成实测中位 670，
+    线角按反比放大；无焦距只丢线角、不丢横位（不退回写死常量）。"""
+    pts = _synth_line(0.05, 520.0)
+    a670 = _fit(pts, 1.28, *la.NEAR_Y, 670.0)
+    a808 = _fit(pts, 1.28, *la.NEAR_Y, 807.7)
+    assert a670["L"] == pytest.approx(a808["L"])      # 横位不依赖焦距
+    assert a670["theta"] is not None and a808["theta"] is not None
+    ratio = math.tan(a670["theta"]) / math.tan(a808["theta"])
+    assert ratio == pytest.approx(807.7 / 670.0, rel=1e-9)
+    none = _fit(pts, 1.28, *la.NEAR_Y, None)
+    assert none["theta"] is None
+    assert none["L"] == pytest.approx(a670["L"])
+
+
+def test_worker_focal_holds_last_valid():
+    """缺值/越界焦距保持上一次有效测量（不退回常量）。"""
+    w = LaneObsWorker(LaneObsConfig(enabled=True))
+    w._set_focal(700.0)
+    assert w._focal == pytest.approx(700.0)
+    w._set_focal(None)
+    assert w._focal == pytest.approx(700.0)
+    w._set_focal(800.0)
+    assert w._focal == pytest.approx(700.0 + la.FOCAL_EMA * 100.0)
+    w._set_focal(300.0)                               # 物理带外
+    assert w._focal == pytest.approx(700.0 + la.FOCAL_EMA * 100.0)
 
 
 def test_config_defaults_off_and_detect_every_frame():
@@ -393,8 +429,10 @@ def test_worker_snapshot_carries_line_origin_flags():
            "relock_src": "line", "n_lines": 2, "grid_reject": 0,
            "side_reject": 0, "anchor_src": "lines",
            "usable": True, "locked": 7, "lines": [], "pred": False}
+    w._focal = 671.3
     snap = w._snapshot(res, 10, 1.28, 0.0, 0.02, False)
     assert snap["usable"] is True and snap["locked"] == 7
+    assert snap["focal"] == pytest.approx(671.3)     # 线角尺度可审计
 
 
 def test_predict_marks_usable_false():
