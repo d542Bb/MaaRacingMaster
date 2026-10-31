@@ -96,9 +96,14 @@ _R_STALE_S = 0.3            # 角速度 TTL：速率只在短时内有意义
 # 朝向向「横速反解」收敛的时间常数：积分管 0.5s 级的快变，这条管稳态
 # （相机装偏、稳态曲率不会被当成常值朝向攒下来）。
 _PSI_CORR_TAU_S = 0.5
-# 单拍角度速率的物理上限（rad/s ≈115°/s）：真车偏航率在 0.5 rad/s 量级，
-# 越过它的只能是单帧坏角度（换线/误锁），不能让它一步把朝向拽走。
-_HEAD_RATE_MAX = 2.0
+# 朝向向**线角绝对值**收敛的时间常数：与 kin 并联的最后一道锚。线角是
+# 绝对测量，任何积分/跳变/初始化带来的常值偏置都在这里被收掉；没有它，
+# 一旦在线车速失效（ψ 偏置会让比例回归斜率为负），ψ 就再无任何绝对参照。
+_PSI_ABS_TAU_S = 0.3
+# 线角变化的物理上限（rad/s）：辨识的车模满杆偏航率 ≈0.46 rad/s，线角不可能
+# 比车头转得更快；越过它的只能是换线/拟合跳变（同帧两条线差 p90 0.06 rad，
+# 线组一换融合角就阶跃；实测隐含速率最高 4.3 rad/s）。旧值 2.0 等于没门。
+_HEAD_RATE_MAX = 0.5
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
 # 证据衰减到下限后，上一次的读数再保留这么久（秒）。比例只能靠**横移**观测：
@@ -144,6 +149,7 @@ class HeadingObserver:
             self._psi_t = -1e9
             self._psi_prev_th: float | None = None
             self._psi_prev_t = -1e9
+            self._jumps = 0              # 线角跳变被物理门截断的累计次数（trace）
             self.r: float | None = None
             self._r_t = -1e9
             self.v_scale: float | None = None
@@ -233,22 +239,27 @@ class HeadingObserver:
                 self._scale_accum(psi)
 
     def _head_state(self, th: float, n_locked: int | None) -> float | None:
-        """ψ 与 r：互补滤波——角速率积分管快变、横速反解管稳态。
+        """ψ 与 r：角速率积分管快变，两条绝对锚管稳态。
 
-        两路各自的病：线角里的常值成分（相机装偏、稳态曲率）被 2s 高通吃掉
-        时，持续 1s 的车头角只剩六成、回正段还会先变号（控制器按它判停，
-        实车仍偏，台架冲过目标 0.22 道）；纯积分 θ̇ 没有这个衰减，但稳态
-        曲率会被当成常值朝向攒下来。所以：**本拍角度变化直接入 ψ**（无滤波、
-        无偏），再以 ``_PSI_CORR_TAU_S`` 向「横速 ÷ 在线比例」反解的朝向收敛
-        ——后者来自``v_lat = v·tanψ`` 这条物理关系本身，没有高通、稳态诚实，
-        代价只是 0.6s 斜率窗的滞后。``r`` 仍是低通角速度，只做阻尼。
+        快变：**本拍角度变化直接入 ψ**（无滤波、无偏），单拍速率按满杆偏航率
+        截断（换线跳变不是车的转动）。稳态：① 线角绝对值（``_PSI_ABS_TAU_S``，
+        尺度已标定、恒可用）；②「横速 ÷ 在线比例」反解（``_PSI_CORR_TAU_S``，
+        来自 ``v_lat = v·tanψ``，管相机装偏与稳态曲率，代价是 0.6s 斜率窗的
+        滞后）。只保留 ② 时，ψ 一旦有常值偏置就会把比例回归的斜率推成负值、
+        vsp 失效——锚点和估计互锁，偏置永久留下；① 是断开这个互锁的那条。
+        初始化取第一拍线角，不是 0。``r`` 仍是低通角速度，只做阻尼。
 
         单条线的角度不可用：20261030_171216 fid 1561 只锁到一条短黄线时给出
         0.39 rad（22°）。``n_locked`` 缺省（离线/单测未供）时不加这条门。"""
         if n_locked is not None and n_locked < _PSI_MIN_LINES:
             return None
         if self.psi is None:
-            self.psi = 0.0
+            # 初始化取本拍线角，不是 0：ψ=0 等于假设「这一刻与车道平行」，
+            # 而阶段切换/重锁后的第一拍车常常是斜的（20261031_181046 阶段 2
+            # 第一拍 3 条线一致给出 0.13~0.15 rad、车确实在向右并；ψ 起 0
+            # 后整段 ψ=θ−0.137，控制器把「已向右转」读成「在向左转」，一路
+            # 右打把车钉在右黄线上）。线角的常值偏置仍由下面的 kin 项收敛。
+            self.psi = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th))
             self._psi_t = self._t
             self._psi_prev_th = th
             self._psi_prev_t = self._t
@@ -259,6 +270,12 @@ class HeadingObserver:
             self._psi_prev_th = th
             return self.psi
         rate = (th - self._psi_prev_th) / gap
+        # 物理门：车头角不可能比满杆偏航率变得更快（辨识值 ≈0.46 rad/s）。
+        # 超出的跳变来自线组/拟合换线（同帧两条线差 p90 0.06 rad，线组一换
+        # 融合角就阶跃；实测隐含速率最高 4.3 rad/s，7% 的更新拍 >0.6）。
+        # 按上限积分、基线仍跟到新值：真转动的剩余部分不丢，跳变不攒成朝向。
+        if abs(rate) > _HEAD_RATE_MAX:
+            self._jumps += 1
         rate = max(-_HEAD_RATE_MAX, min(_HEAD_RATE_MAX, rate))
         self._psi_prev_th = th
         self._psi_prev_t = self._t
@@ -269,6 +286,13 @@ class HeadingObserver:
             self.r += a * (rate - self.r)
         self._r_t = self._t
         psi = self.psi + rate * gap
+        # 绝对锚（慢）：线角是车头相对车道的绝对测量（尺度已标定），积分只
+        # 负责 0.5s 级快变。这一项把「换线跳变、初始化偏置、相机常值偏置」
+        # 从 ψ 里收掉。旧口径只锚 kin（横速÷在线比例），而 kin 需要在线
+        # 车速——ψ 一偏，比例回归的斜率变负、vsp 直接失效，锚点与估计互锁：
+        # 20261031_181046 整段 ψ=θ−0.137、vsp=None，车被钉在右黄线。
+        beta = 1.0 - math.exp(-gap / _PSI_ABS_TAU_S)
+        psi += beta * (max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, th)) - psi)
         kin = None
         if (self.v_line is not None and self.v_scale is not None
                 and self.v_scale > 1.0
@@ -309,6 +333,7 @@ class HeadingObserver:
             "r": None if self.r is None else round(self.r, 3),
             "psi_age": (None if self.psi is None
                         else round((self._t - self._psi_t) * 1000.0, 0)),
+            "jmp": self._jumps,        # 线角跳变被物理门截断的累计次数
             "vsp": None if self.v_scale is None
             else round(self.v_scale, 1),
             "scf": round(self.v_scale_conf, 2),

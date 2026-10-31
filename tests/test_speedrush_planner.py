@@ -1479,6 +1479,37 @@ def test_stale_heading_stops_producing_lateral_velocity():
     assert pl.state.heading == pytest.approx(0.1)   # 朝向状态本身仍保留
 
 
+def test_heading_starts_at_first_measured_angle():
+    """ψ 初始化取本拍线角，不起 0：阶段切换/重锁后的第一拍车往往是斜的。
+
+    20261031_181046 阶段 2 第一拍 3 条线一致给出 0.13~0.15 rad、车确实在
+    向右并；ψ 起 0 后整段 ψ=θ−0.137，在线车速回归的斜率变负、vsp 失效
+    （锚点也跟着没了），控制器把「已向右转」读成「在向左转」，一路右打把
+    车钉在右黄线上。"""
+    h = HeadingObserver(P)
+    for i in range(3):
+        h.update(DT, 0.0, True, 0.14, True, i, 5.0, 3)
+    assert h.psi == pytest.approx(0.14, abs=1e-6)
+
+
+def test_heading_angle_jump_is_rate_limited_not_yaw():
+    """换线跳变按偏航率上限积分，不当成真实角速度（也不会一步拽走朝向）。
+
+    同帧两条线的线角差 p90 0.06 rad，线组一换融合角就阶跃；实测隐含速率
+    最高 4.3 rad/s，7% 的更新拍 >0.6（真车满杆 ≈0.46）。旧口径全积分进 ψ
+    并灌进 r，控制器按假角速度满舵反打——来回摆的来路。绝对锚在 0.3s 内
+    把 ψ 收到新线角。"""
+    h = HeadingObserver(P)
+    h.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)
+    h.update(DT, 0.0, True, 0.20, True, 2, 5.0, 3)   # 0.2 rad / 0.05s
+    assert abs(h.psi) < 0.10
+    assert abs(h.r) <= 0.5 + 1e-6
+    assert h._jumps == 1
+    for i in range(3, 20):
+        h.update(DT, 0.0, True, 0.20, True, i, 5.0, 3)
+    assert h.psi == pytest.approx(0.20, abs=0.02)    # 绝对值锚收拢
+
+
 def test_maintenance_cap_only_limits_lane_chase_not_arrest():
     """维护杆幅限的是「追目标朝向」这一项，不是「拿车自己的朝向刹车」。
 

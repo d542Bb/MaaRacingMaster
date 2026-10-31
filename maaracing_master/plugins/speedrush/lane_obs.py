@@ -538,11 +538,26 @@ class LineTracker:
             self.x_prev, self.x_last = self.x_last, x_out
             self.lost = 0
             self.state = "TRACK"
-            ths = [(float(c["theta"]), max(1, int(c.get("n") or 1)))
-                   for c in keep if c.get("theta") is not None]
-            if ths:
-                w = sum(w for _, w in ths)
-                self.last_theta = sum(t * w for t, w in ths) / w
+            # 线角只融合拟合质量达标的线（与「可用」同一把 rms/角度尺），
+            # 按 1/rms² 加权。旧口径把所有 kept 线按点数加权：一条 5px 残差
+            # 的短线与 0.4px 的好线等权，线组一换（短线进/出、换线）融合角
+            # 就阶跃——实测单帧隐含角速率到 4.3 rad/s（真车满杆 ≈0.46）。
+            # 没有达标线时本拍不给线角（None），由朝向观测的龄门接管。
+            ths = []
+            for c in keep:
+                t = c.get("theta")
+                rms = c.get("rms")
+                if t is None:
+                    continue
+                if rms is not None and float(rms) > LINE_RMS_MAX:
+                    continue
+                if abs(float(t)) > LINE_THETA_MAX:
+                    continue
+                ths.append((float(t),
+                            1.0 / max(float(rms or 1.0), 0.5) ** 2))
+            self.last_theta = (
+                sum(t * w for t, w in ths) / sum(w for _, w in ths)
+                if ths else None)
             relock_src = "line"
             pred = False
         elif x_anchor is not None:
