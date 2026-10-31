@@ -670,6 +670,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "planner", "plan_u_slew_s", 4.0, lo=0, lo_open=False),
             plan_hold_max_ticks=_int_def(
                 d, "planner", "plan_hold_max_ticks", 6, lo=0),
+            frame_hold_max_ticks=_int_def(
+                d, "planner", "frame_hold_max_ticks", 25, lo=1),
             state_blind_s=_num_def(
                 d, "planner", "state_blind_s", 0.4, lo=0, lo_open=False),
             heading_vel_max_age_s=_num_def(
@@ -677,6 +679,8 @@ def _read_decision(path: Path) -> DecisionConfig:
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
+            min_width_m=_num_def(d, "traffic", "min_width_m", 1.2, lo=0),
+            max_width_m=_num_def(d, "traffic", "max_width_m", 2.6, lo=0),
             min_obs_ticks=_int(d, "traffic", "min_obs_ticks", lo=1),
             ghost_max_age_ticks=_int(d, "traffic", "ghost_max_age_ticks", lo=2),
             ghost_rel_eps=_num(d, "traffic", "ghost_rel_eps", lo=0),
