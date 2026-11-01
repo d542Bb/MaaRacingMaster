@@ -250,10 +250,11 @@ def test_corridor_stale_uses_band_age():
 
 # ---------- A2 评估器 ----------
 
-def _plan(scene, *, ego=None, motion=None, gate=None, intent_lane=0.0):
+def _plan(scene, *, ego=None, motion=None, gate=None, intent_lane=0.0,
+          selection=None):
     return plan_motion(scene, ego or EgoState(0.0, 0.0, 45.0, 0.0),
-                       motion or CFG.motion, CFG.selection, CFG.planner, gate,
-                       intent_lane=intent_lane)
+                       motion or CFG.motion, selection or CFG.selection,
+                       CFG.planner, gate, intent_lane=intent_lane)
 
 
 def _wide_road():
@@ -832,3 +833,24 @@ def test_value_window_retains_aged_car_but_safety_ignores_it():
     assert car.safety_ok is False
     assert car.sigma_m > CFG.motion.sigma_obj0_m + 0.6 * 0.6
     assert _plan(s) == _plan(_scene())
+
+
+def test_opportunity_params_do_not_change_plan_safety():
+    """机会锁：只改机会参数（瞄准容差/视界/预置/驻留）时，计划的候选集与
+    安全量必须逐位不变；安全常数（车宽/墙距/余量）不在本锁内改。"""
+    scene = _scene(road=_wide_road(),
+                   cars=[CarSource(0.0, 0.5, z_m=8.0, age_ms=0.0,
+                                   src="metric", safety_ok=True),
+                         CarSource(2.0, None, z_m=30.0, age_ms=0.0,
+                                   src="metric", safety_ok=True)])
+    base = _plan(scene)
+    for kw in ({"opportunity_tol_lane": 0.2},
+               {"horizon_s": 2.0, "coin_hold_s": 0.1},
+               {"preposition_enabled": False, "preposition_max_lane": 0.5},
+               {"switch_dwell_s": 0.0}):
+        alt = _plan(scene, selection=replace(CFG.selection, **kw))
+        assert (alt.collision_cost, alt.corridor_viol_m,
+                alt.corridor_soft_viol_m, alt.n_feasible,
+                alt.cand_x) == (base.collision_cost, base.corridor_viol_m,
+                                base.corridor_soft_viol_m, base.n_feasible,
+                                base.cand_x)

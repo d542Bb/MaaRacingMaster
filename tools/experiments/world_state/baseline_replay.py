@@ -124,7 +124,13 @@ def _plan(rows):
     ns = _segments(rows, lambda r: (r.get("plan") or {}).get("reason")
                    == "plan:no_speed")
     nop = _segments(rows, lambda r: r.get("plan") is None)
+    chosen = [r["plan"].get("chosen") for r in present]
+    players = [r["plan"].get("layer") for r in present]
     return {
+        "chosen_switches": sum(1 for a, b in zip(chosen, chosen[1:])
+                               if a != b),
+        "layer_switches": sum(1 for a, b in zip(players, players[1:])
+                              if a != b),
         "rows_with_plan": len(present),
         "valid_rate": _r(sum(1 for r in present if r["plan"].get("valid"))
                          / len(present), 3) if present else None,
