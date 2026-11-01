@@ -129,12 +129,11 @@ DRIVE_MISS_TOLERANCE = 2
 # ---------- 步级重试（大阶段之间的一次 UI 点击） ----------
 # 现状：某个 UI 步 run(node, node) 的 True 只证明「按钮被识别并点了一次」，不含落地页
 # 后置确认；点了没生效只能靠下一步识别不到、白等框架默认 20s 后中止本轮。这里给每个
-# 点击步套 core StepMachine：点击 → 按 STEP_WINDOW_S 轮询落地页确认锚点 → 未落地则有限
-# 重发同一点击（动作节点自带识别闸门，按钮已消失就空跑、不误点）→ 耗尽按现状终止本轮、
-# 停止即退。机器唯一持有计数与时间窗，speedrush 只供给「动作 + 每拍 verdict + 驱动时机」。
-STEP_RETRY_MAX = 3      # 一次点击落地失败后最多重发次数（不含首点）
-STEP_WINDOW_S = 12.0    # 单次尝试「等落地页确认」的时间窗（含转场/匹配耗时，取宽值防误判）
-STEP_POLL_S = 0.5       # 窗内确认探针轮询间隔（ctx.lifecycle.sleep 兼作停止信号）
+# 点击步套 core StepMachine：点击 → 按时间窗轮询落地页确认锚点 → 未落地则有限重发同一
+# 点击（动作节点自带识别闸门，按钮已消失就空跑、不误点）→ 耗尽按现状终止本轮、停止即退。
+# 机器唯一持有计数与时间窗，speedrush 只供给「动作 + 每拍 verdict + 驱动时机」。
+# 剂量（max_retries / window_s / poll_s / 分步覆盖 by_stage）在数据面 decision.json 的
+# step_retry 段——_run_step 每步经 load_decision().step_retry.dose(stage) 取，可按阶段调。
 
 # 每个点击步的落地页确认锚点：由 RULES.md §2 操作路径 + §3 各界面要素逐格推得；确认节点
 # 复用落地页标记的模板（节点名带 __confirm，见 build_truth CONFIRMS 说明）。「确认上阵 →
@@ -724,7 +723,8 @@ class SpeedRushModule(ActivityModule):
         if confirm_node is None:
             # 漏配确认锚点：退回旧的单步语义（不新增行为，也不把整条流程带崩）。
             return self._graph.run(action_node, action_node)
-        machine = StepMachine(max_retries=STEP_RETRY_MAX, window_s=STEP_WINDOW_S,
+        max_retries, window_s, poll_s = load_decision().step_retry.dose(stage)
+        machine = StepMachine(max_retries=max_retries, window_s=window_s,
                               clock=time.monotonic)
         send_click = True
         while self._running and self.ctx.lifecycle.running:
@@ -741,11 +741,11 @@ class SpeedRushModule(ActivityModule):
                 send_click = True                               # 重发同一动作（下一次点击即新窗口）
                 continue
             if cmd is Command.WAIT:
-                if not self.ctx.lifecycle.sleep(STEP_POLL_S):   # 窗内轮询；睡眠兼作停止信号
+                if not self.ctx.lifecycle.sleep(poll_s):        # 窗内轮询；睡眠兼作停止信号
                     break
                 continue
             if cmd is Command.FAIL:
-                _tlog(self, f"[极速狂飙] 步骤「{stage}」重发 {STEP_RETRY_MAX} 次仍未落地"
+                _tlog(self, f"[极速狂飙] 步骤「{stage}」重发 {max_retries} 次仍未落地"
                             f"（确认锚点「{confirm_node}」始终未命中），本轮中止", "WARNING")
                 return False
             return False                                        # ABORT 或未知命令：保守退出

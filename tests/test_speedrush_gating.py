@@ -685,11 +685,14 @@ _STAGE = "寻找对手"
 
 
 def _tight_step(env, monkeypatch, *, retry_max: int = 1):
-    """把步级机收紧到确定性、瞬时：窗 1s、半秒轮询、可控重发上限。"""
+    """把步级机收紧到确定性、瞬时：窗 1s、半秒轮询、可控重发上限。
+
+    剂量已进数据面（decision.json step_retry），故打桩 `load_decision` 喂一个只带
+    `step_retry.dose` 的替身——_run_step 每步从它取 (max_retries, window_s, poll_s)。
+    """
     mod, _, _ = env
-    monkeypatch.setattr(sr, "STEP_RETRY_MAX", retry_max)
-    monkeypatch.setattr(sr, "STEP_WINDOW_S", 1.0)
-    monkeypatch.setattr(sr, "STEP_POLL_S", 0.5)
+    monkeypatch.setattr(sr, "load_decision", lambda: SimpleNamespace(
+        step_retry=SimpleNamespace(dose=lambda _stage: (retry_max, 1.0, 0.5))))
     return mod
 
 

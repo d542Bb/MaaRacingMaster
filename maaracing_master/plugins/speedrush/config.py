@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -514,6 +514,32 @@ class BoxBridge:
 
 
 @dataclass(frozen=True)
+class StepRetry:
+    """大阶段之间一次 UI 点击的步级重试剂量（数据面，可按阶段覆盖）。
+
+    - max_retries：一次点击落地失败后最多重发次数（不含首点）；
+    - window_s：单次尝试「等落地页确认锚点命中」的时间窗（含页面转场/匹配耗时，取宽值
+      防把正常慢转场误判成失败）；
+    - poll_s：窗内确认探针的轮询间隔（由 ctx.lifecycle.sleep 兼作停止信号）；
+    - by_stage：`{阶段名: {max_retries|window_s|poll_s 的任意子集}}` 分步覆盖，缺省项用
+      上面的默认。**接完真机日志后按需填各步差异——没有实测依据不得凭空给某步写更优值**。
+    """
+    max_retries: int = 3
+    window_s: float = 12.0
+    poll_s: float = 0.5
+    by_stage: dict = field(default_factory=dict)
+
+    def dose(self, stage: str) -> tuple[int, float, float]:
+        """返回该阶段生效的 (max_retries, window_s, poll_s)：by_stage 覆盖默认。"""
+        ov = self.by_stage.get(stage) or {}
+        return (
+            int(ov.get("max_retries", self.max_retries)),
+            float(ov.get("window_s", self.window_s)),
+            float(ov.get("poll_s", self.poll_s)),
+        )
+
+
+@dataclass(frozen=True)
 class DecisionConfig:
     mode: Mode
     control: Control
@@ -537,6 +563,7 @@ class DecisionConfig:
     view_guard: ViewGuardConfig = ViewGuardConfig()
     debug_dump: DebugDump = DebugDump()
     lane_obs: LaneObs = LaneObs()
+    step_retry: StepRetry = StepRetry()
 
 
 def _num(d: dict, sec: str, key: str, *, lo: float | None = None,
@@ -967,7 +994,12 @@ def _read_decision(path: Path) -> DecisionConfig:
             hz=_num_def(d, "lane_obs", "hz", 0.0, lo=0, lo_open=False),
             provider=str(d.get("lane_obs", {}).get("provider", "cpu") or "cpu"),
             threads=_int_def(d, "lane_obs", "threads", 4, lo=1),
-            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1)))
+            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1)),
+        step_retry=StepRetry(
+            max_retries=_int_def(d, "step_retry", "max_retries", 3, lo=0),
+            window_s=_num_def(d, "step_retry", "window_s", 12.0, lo=0, lo_open=False),
+            poll_s=_num_def(d, "step_retry", "poll_s", 0.5, lo=0, lo_open=False),
+            by_stage=dict((d.get("step_retry") or {}).get("by_stage") or {})))
 
     # 段间依赖矛盾：单条范围过不了的联合错误，在这里拦
     v = cfg.validate
