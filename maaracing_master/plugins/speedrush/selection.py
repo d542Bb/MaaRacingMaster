@@ -727,6 +727,8 @@ class LayeredSelector:
                 self._layer_dwell_t += dt_s
             if self._layer_dwell_t >= p.switch_dwell_s:
                 return self._adopt(raw)
+            if self._target is None:      # 类型收窄；逻辑上 _layer 非空即有目标
+                return self._adopt(raw)
             held = SelectionReport(
                 self._layer, raw.waypoints, self._target, raw.why,
                 raw.road_ok, raw.maneuver, raw.lane_request)
