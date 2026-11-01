@@ -11,6 +11,7 @@ navkit —— 导航判断逻辑的运行时底座（v4 数据面）。
 - `v4_source` : policy.json → NavSource（DetectionPlan + spec + Policies 装配）
 - `policy`    : P1 决策引擎（rules → PolicyPlan，输入由 v4_source 供）
 - `trace`     : 决策落盘记录器（JSONL 单行追加，按会话目录落盘）
+- `step`      : 统一步循环的重试状态机（计数 / 时间窗 / 耗尽 / 停止，域无关）
 
 约束（不可违反）
 ----------------
@@ -30,6 +31,7 @@ from .v4_source import (
     load_nav_source,
 )
 from .trace import FrameTrace, TraceWriter, json_safe
+from .step import Command, StepExhaustedError, StepMachine, Verdict
 from .policy import (
     ENGINE_CONTRACT_SCHEMA_VER,
     OP_WHITELIST,
@@ -64,6 +66,11 @@ __all__ = [
     "FrameTrace",
     "TraceWriter",
     "json_safe",
+    # step（统一步循环重试状态机；域无关，插件喂 verdict / 收 command）
+    "StepExhaustedError",
+    "Verdict",
+    "Command",
+    "StepMachine",
     # policy（P1；EngineContract = 引擎的域合同，白名单/推导/副作用全来自数据面）
     "POLICIES_SCHEMA_VER",
     "ENGINE_CONTRACT_SCHEMA_VER",
