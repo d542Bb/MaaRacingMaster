@@ -17,7 +17,8 @@ import pytest
 
 from maaracing_master.plugins.speedrush.config import Planner, _read_decision
 from maaracing_master.plugins.speedrush.planner import (
-    _STICK_FULL, HeadingObserver, LateralPlanner, lane_move_time, law, step)
+    _STICK_FULL, HeadingObserver, LateralPlanner, heading_for_error,
+    lane_move_time, law, step)
 from maaracing_master.plugins.speedrush.tracking import (
     DecisionOutput, DecisionState)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH
@@ -42,13 +43,13 @@ def _planner(**over) -> LateralPlanner:
 
 
 def test_law_targets_heading_then_stick():
-    """控制律：位置误差 → 目标车头角 → 杆值（ψ 误差与角速度阻尼）。"""
+    """控制律：位置误差 → 目标车头角（固定参考车速换算）→ 杆值。"""
     e, psi, r = 0.4, 0.02, 0.05
-    psi_des = min(P.heading_max_rad, P.k_head_lane * e)
+    psi_des = min(P.heading_max_rad, heading_for_error(e, P))
     assert law(e, psi, r, P) == pytest.approx(
         P.k_psi * (psi_des - (psi + P.heading_lead_s * r)) - P.k_r * r)
     # 朝向已到位且无角速度 → 不出杆
-    assert law(e, P.k_head_lane * e, 0.0, P) == pytest.approx(0.0)
+    assert law(e, heading_for_error(e, P), 0.0, P) == pytest.approx(0.0)
     # 维护态：目标朝向被压到 heading_hold_rad、杆幅受 hold_stick_max
     u = law(3.0, 0.0, 0.0, P, gentle=True, deadband=0.0)
     assert u == pytest.approx(min(P.hold_stick_max,
@@ -259,7 +260,10 @@ def test_reanchor_none_means_noop():
 # ---------- ABORT 冻结值归属（契约细节 3） ----------
 
 def test_abort_freezes_executed_not_decision_x():
-    """ABORT 冻结的是入拍实测位置，不消费决策层 x_target（其 ABORT 路径回落 0）。"""
+    """ABORT 冻结的是入拍实测位置，不消费决策层 x_target（其 ABORT 路径回落 0）。
+
+    容差 0.3：固定参考车速（2026-11-01 裁决）下保持期位置积分的平衡点
+    略有偏移（实测漂移 0.26），仍远未回到决策层回落位 0。"""
     pl = _planner()
     rig = _Rig(pl)
     for i in range(20):
@@ -269,7 +273,7 @@ def test_abort_freezes_executed_not_decision_x():
     for i in range(120):
         rig.tick(_out(state=DecisionState.ABORT, x_target=0.0,
                       fid=40 + i, valid=40 + i))
-    assert abs(rig.x - entry) < 0.25          # 停在冻结位，不被拉回 0
+    assert abs(rig.x - entry) < 0.3           # 停在冻结位附近，不被拉回 0
 
 def test_expired_hold_then_conserve_at_plus_one():
     """过期保持：杆值不动；第 hold_max_ticks+1 拍起按 CONSERVE 接管。"""
@@ -319,8 +323,9 @@ def test_lowpass_is_time_based_not_fixed_alpha():
         return pl.state.steer_norm
     a1 = 1 - math.exp(-0.05 / P.tau_steer_s)
     a2 = 1 - math.exp(-0.10 / P.tau_steer_s)
-    # 无朝向证据时的比例段：ψ_des = k_head·e 被维护态上限 heading_hold_rad 压住
-    u0 = min(P.k_psi * min(P.k_head_lane, P.heading_hold_rad),
+    # 无朝向证据时的比例段：ψ_des 按固定参考车速换算，被维护态上限
+    # heading_hold_rad 压住
+    u0 = min(P.k_psi * min(heading_for_error(1.0, P), P.heading_hold_rad),
              P.hold_stick_max)
     assert one(0.05) == pytest.approx(a1 * u0, rel=1e-6)
     assert one(0.10) == pytest.approx(a2 * u0, rel=1e-6)
@@ -336,8 +341,11 @@ def test_rate_limit_per_tick_semantics():
 
 
 @pytest.mark.parametrize("x_target,expect_zero", [
-    (255 / 32767 / (P.k_psi * P.k_head_lane), True),                  # raw=255 → 死区归 0
-    (256 / 32767 / (P.k_psi * P.k_head_lane), False),                 # raw=256 → 保留
+    # 稳态杆值 = k_psi·atan(k_lat·x·LANE_W/v_ref)：反解出 raw=255/256 的目标
+    (math.tan(255 / 32767 / P.k_psi) * P.speed_ref_mps
+     / (P.k_lat_lane_s * 3.5), True),                 # raw=255 → 死区归 0
+    (math.tan(256 / 32767 / P.k_psi) * P.speed_ref_mps
+     / (P.k_lat_lane_s * 3.5), False),                # raw=256 → 保留
 ])
 def test_deadzone_boundary_255_256(x_target, expect_zero):
     # 隔离输出链边界：无 lookahead/阻尼/低通/限幅，且横向加速度增益置零
@@ -1685,16 +1693,19 @@ def test_lane_move_time_is_speed_invariant_below_heading_cap():
     assert max(got) - min(got) <= 0.2
 
 
-def test_bench_convergence_is_speed_invariant():
-    """同一套参数在不同车速下收敛时间一致：增益按在线车速换算，不按车速插值。"""
-    got = []
+def test_bench_convergence_scales_with_speed():
+    """固定参考车速（2026-11-01 裁决）的已知带宽代价：同一命令下实际收敛
+    位置按真实车速近似线性缩放（≈v/41）——命令换算不再按在线车速插值，
+    由每拍位置修正兜底。"""
+    xs = []
     for v in (25.0, 45.0, 90.0):
         pl, rig = _bench(v_mps=v)
         for i in range(20):
             rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 1, maneuver=True))
-        got.append(rig.x)
-    assert max(got) - min(got) <= 0.15
-    assert min(got) >= 0.45
+        xs.append(rig.x)
+    assert xs[0] < xs[1] < xs[2]
+    assert abs(xs[0] / xs[1] - 25.0 / 45.0) < 0.2
+    assert abs(xs[2] / xs[1] - 90.0 / 45.0) < 0.25
 
 
 def test_bench_brakes_from_motion_without_running_away():

@@ -132,10 +132,9 @@ _PREVIEW_WIDTHS = (0.10, 0.15, 0.20, 0.25, 0.30)
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
 # 证据衰减到下限后，上一次的读数再保留这么久（秒）。比例只能靠**横移**观测：
-# 车一直走直线时证据自然衰减，但车速在 20s 内不会变一倍——直线巡航十秒不该
-# 让计划整个关掉（2026-10-30 两局：plan:no_speed 占 22~25%，且都是成段的
-# 十秒窗口，那段里车只剩回中兜底）。保留的是**测过**的速度，不是兜底常数；
-# 置信度照实归零，调用方看得到证据已过期。
+# 车一直走直线时证据自然衰减。2026-11-01 车速架构裁决后，估计不再驱动任何
+# 消费点（自车运动全部按固定参考车速），只作 trace 观测面——保留的是
+# **测过**的速度，不是兜底常数；置信度照实归零，trace 看得到证据已过期。
 _SPD_HOLD_S = 20.0
 _SPD_DEN_FULL = 0.10        # 置信度到 1 的 Σtan²ψ（≈σ 2 m/s）
 _SPD_MIN_TAN = 0.02         # 参与估计的最小 |tanψ|（1.1°）：更小的朝向上
@@ -441,22 +440,22 @@ def stick_of(psi_des: float, psi: float, r: float, p: Planner,
     return max(-1.0, min(1.0, u))
 
 
-def heading_for_error(e: float, v_mps: float | None, p: Planner) -> float:
-    """位置误差 → 目标车头角（先把误差换成**期望横速**，再按在线车速换算）。
+def heading_for_error(e: float, p: Planner) -> float:
+    """位置误差 → 目标车头角（先把误差换成**期望横速**，再按固定参考车速换算）。
 
     期望横速 = ``k_lat_lane_s × e``（道/s）——这是**闭环带宽**的设定值（一条
-    道误差要在 ~1s 内收完），与车重、车速无关；由 ``x' = v·tanψ/LANE_W``
-    反解出目标朝向 ``tanψ = 期望横速 × LANE_W / v``。所以同一套参数在
-    30 m/s 和 100 m/s 下给出同样的收敛时间，不需要按车速插值增益。
-    车速还没估出来时退回固定比例 ``k_head_lane``（保守小角度）。"""
-    if v_mps is not None and v_mps > 1.0:
-        return math.atan(p.k_lat_lane_s * e * LANE_W / v_mps)
-    return p.k_head_lane * e
+    道误差要在 ~1s 内收完），与车重、车速无关；由 ``x' = v_ref·tanψ/LANE_W``
+    反解出目标朝向 ``tanψ = 期望横速 × LANE_W / v_ref``。
+    **固定参考车速（2026-11-01 裁决）**：在线车速估计只在车头歪时存在（直道
+    约 45% 无读数，211722 对局日志核对），HUD 得分速度维护者已裁定不作首选
+    速度传感器；对象侧预测用跟踪层的相对接近率，自车运动全部按固定参考。
+    已知代价=闭环带宽随真实车速变（41 上下每差 10 m/s 横移速率差约 25%），
+    有每拍位置修正兜底。"""
+    return math.atan(p.k_lat_lane_s * e * LANE_W / p.speed_ref_mps)
 
 
 def law(e: float, psi: float, r: float, p: Planner, gentle: bool = False,
-        deadband: float | None = None, cap: float | None = None,
-        v_mps: float | None = None) -> float:
+        deadband: float | None = None, cap: float | None = None) -> float:
     """位置误差 → 目标朝向 → 杆值（见 ``heading_for_error``）。
 
     死区 ``hold_deadband_lane`` 只吃位置误差：带内不换朝向。"""
@@ -464,7 +463,7 @@ def law(e: float, psi: float, r: float, p: Planner, gentle: bool = False,
         if deadband is None else deadband
     if abs(e) < db:
         e = 0.0
-    return stick_of(heading_for_error(e, v_mps, p), psi, r, p, gentle, cap)
+    return stick_of(heading_for_error(e, p), psi, r, p, gentle, cap)
 
 
 def step(x: float, psi: float, psi_cmd: float, v: float, dt: float,
@@ -660,11 +659,11 @@ class LateralPlanner:
 
     def _stale_rebase(self, road_offset: float, lane_ok: bool,
                       allow_bias: bool = True) -> None:
-        """陈旧重基：exec:=ro、锚回道0、速度归零，等新证据重新收敛。"""
+        """陈旧重基：exec:=ro、锚回道0、速度按参考重置，等新证据重新收敛。"""
         self.state.executed_lane = road_offset
         self.state.heading = 0.0
         self.state.yaw_rate = 0.0
-        self.state.v_mps = None
+        self.state.v_mps = self.p.speed_ref_mps
         self.state.v_lat = 0.0
         self._road_anchor = 0.0
         self._stale_t = 0.0
@@ -743,15 +742,17 @@ class LateralPlanner:
         if psi_ctrl is not None:
             self.state.heading = psi_ctrl
             self.state.yaw_rate = 0.0 if r_ctrl is None else r_ctrl
-        self.state.v_mps = h.v_scale
-        # ψ 状态可以按 _PSI_STALE_S 保留给控制律，但用它推**横速**要更严：
-        # 旧朝向 × 车速就是一段时间内的位置外推，0.6s 的龄在该窗口里会把
-        # 自车位置推出 0.7~1 道（20261031_104321_p2 137.5s 实测 1.2~1.8 道/s），
-        # 而这段窗口恰好也是线与深度都没新证据的盲窗。横速只认新鲜 ψ。
-        if psi_ctrl is not None and h.v_scale is not None and fresh:
+        # 自车运动按固定参考车速（2026-11-01 裁决）：在线估计不再驱动任何
+        # 消费点，只留在 trace（ctrl_debug vsp）。横速 = v_ref·tanψ/LANE_W，
+        # 只认新鲜 ψ（旧朝向 × 车速是一段时间的位置外推，0.6s 在 40 m/s 上
+        # 是 0.7~1 道，实测 20261031_104321_p2 1.2~1.8 道/s）；ψ 不新鲜退
+        # 标线横移斜率（同一物理量的另一种测量），再退 0——不猜。
+        self.state.v_mps = self.p.speed_ref_mps
+        if psi_ctrl is not None and fresh:
             psi_env = max(-self.p.heading_max_rad,
                           min(self.p.heading_max_rad, psi_ctrl))
-            self.state.v_lat = h.v_scale * math.tan(psi_env) / LANE_W
+            self.state.v_lat = (self.p.speed_ref_mps
+                                * math.tan(psi_env) / LANE_W)
         elif h.v_line is not None:
             self.state.v_lat = h.v_line
         else:
@@ -900,12 +901,11 @@ class LateralPlanner:
             self._conserve_hold = None
         plan_held = False           # 本拍是否走"计划短断供保持"
         # 并线杆值上调的生命周期（平顶峰适配）：并线开始清零（上一段并线攒的
-        # 上调量不带进新并线）；非「并线 + 车速未知」拍衰减（回巡航/车速恢复
-        # 后不残留）。
+        # 上调量不带进新并线）；非并线拍衰减（回巡航不残留）。
         merging_now = getattr(decision, "phase", "keep") == "merging"
         if merging_now and not self._was_merging:
             self._sustain_boost = 0.0
-        elif not (merging_now and self.state.v_mps is None):
+        elif not merging_now:
             self._sustain_boost *= math.exp(
                 -dt_s / max(self.p.sustain_boost_decay_s, 1e-3))
         self._was_merging = merging_now
@@ -978,11 +978,11 @@ class LateralPlanner:
             steer_raw = self._pd(self.state.executed_lane, gentle=True)
         elif decision.x_target is not None:
             self._abort_hold_lane = None
-            # 并线承诺 + 车速未知：位置误差直接驱动持续杆值（sustain，见
-            # _law 注）；范围只限并线，保持态仍走原朝向反馈。状态不可信的
-            # 归零兜底（上一分支）不变。
-            sustain = (getattr(decision, "phase", "keep") == "merging"
-                       and self.state.v_mps is None)
+            # 并线承诺：位置误差直接驱动持续杆值（sustain，见 _law 注）。
+            # 触发锚在「并线」本身——影子车头角收敛导致的塌缩与速度架构无关；
+            # 范围只限并线，保持态仍走原朝向反馈。状态不可信的归零兜底
+            # （上一分支）不变。
+            sustain = getattr(decision, "phase", "keep") == "merging"
             # 场跟随：保持态=维护性定中心（gentle，16:44 局）；机动态
             # （目标距自车足够远）=全权——机动态死区/杆幅另配。选择层
             # maneuver 现在按安全区间（约 0.17 道）置位，但执行层全权仍要求
@@ -1316,8 +1316,10 @@ class LateralPlanner:
         p = self.p
         if p.preview_horizon_s <= 0.0 or target is None:
             return None
+        # 自车运动按固定参考车速（2026-11-01 裁决）——预瞄全程可用，不再因
+        # 「速度未知」退回连续律。
         v = self.state.v_mps
-        if v is None or v <= 1.0 or self.state.heading is None:
+        if self.state.heading is None:
             return None
         x0 = (self.state.executed_lane
               + self.state.v_lat * p.preview_obs_lag_s)
@@ -1369,7 +1371,7 @@ class LateralPlanner:
         hold_stick_max（16:44 局：全权维护 PD 满左满右交替、速度起不来）。
         机动态（maneuver）传显式 deadband/cap：默认全权（0/None），阶段 2
         起用 maneuver_deadband_lane 与 maneuver_stick_max。
-        ``sustain``：并线承诺 + 车速未知时按 ψ̂=0、无角速度解（见 _law）。"""
+        ``sustain``：并线承诺时按 ψ̂=0、无角速度解（见 _law）。"""
         x_pred = (self.state.executed_lane
                   + self.state.v_lat * self.p.lookahead_tau_s)
         return self._law(target - x_pred, gentle, deadband, cap, sustain)
@@ -1382,12 +1384,13 @@ class LateralPlanner:
         车头角按 0 处理——线断供的拍里至少还按位置误差修，且不会假装知道
         车头朝哪。
 
-        ``sustain``（并线承诺 + 车速未知，20261101_191929#1 对局日志核对）：
-        有线角证据也不进朝向反馈——影子车头角被线角校正拉在实测线角附近、
-        目标固定时不再有新误差 inflow，朝向误差项会把并线命令压塌到真车
-        响应以下的小振荡（实测杆值塌成 ~0.1、并线原地停 5.3 s 后撤销）。
-        此时位置误差直接驱动持续杆值，位置环经 ⑥b 收口；状态不可信的
-        归零兜底不变。
+        ``sustain``（并线承诺，20261101_191929#1 对局日志核对；触发锚在
+        「并线」本身，不依赖车速未知——影子车头角收敛到固定目标导致的杆值
+        塌缩与速度架构无关，2026-11-01 车速架构裁决后由此触发）：有线角证据
+        也不进朝向反馈——影子车头角被线角校正拉在实测线角附近、目标固定时
+        不再有新误差 inflow，朝向误差项会把并线命令压塌到真车响应以下的小
+        振荡（实测杆值塌成 ~0.1、并线原地停 5.3 s 后撤销）。此时位置误差
+        直接驱动持续杆值，位置环经 ⑥b 收口；状态不可信的归零兜底不变。
 
         并线杆值上调（2026-11-01 平顶峰适配，20261101_205523 对局日志核对）：
         线性执行模型在浅杆段高估响应（0.22 杆实测车头角只有命令值四成），
@@ -1399,13 +1402,13 @@ class LateralPlanner:
         no_heading = self._heading_stale or sustain
         u = law(e, self.state.heading if not no_heading else 0.0,
                 self.state.yaw_rate if not no_heading else 0.0,
-                self.p, gentle, deadband, cap, self.state.v_mps)
+                self.p, gentle, deadband, cap)
         if not sustain:
             return u
         db = (self.p.hold_deadband_lane if gentle else 0.0) \
             if deadband is None else deadband
         e_eff = 0.0 if abs(e) < db else e
-        psi_cmd = self.p.k_head_lane * e_eff
+        psi_cmd = heading_for_error(e_eff, self.p)
         psi_obs = (self.head.psi
                    if self.head.psi is not None
                    and self.head.psi_age_s() <= self.p.heading_vel_max_age_s

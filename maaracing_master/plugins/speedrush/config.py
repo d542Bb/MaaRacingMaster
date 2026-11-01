@@ -134,7 +134,7 @@ class Planner:
     # —— 航向跟踪律（2026-10-30 架构：杆是航向指令，不是横向加速度）——
     # 位置误差 → 目标车头角 → 杆值，横移由 x' = v·tanψ 给出。旧的横速双积分
     # （a_lat_gain/tau_align 的积分、v_lat_max 饱和、两路横速融合）已删除。
-    k_head_lane: float         # 车速未知时的退化比例（rad/道）
+    speed_ref_mps: float       # 固定参考车速（m/s，自车运动换算单一参考，2026-11-01 裁决）
     k_lat_lane_s: float        # 闭环带宽：期望横速 = 此值 × 车道误差（道/s）
     k_psi: float               # 车头角误差 → 杆值（杆/rad）
     k_r: float                 # 角速度阻尼（杆/(rad/s)）
@@ -310,7 +310,7 @@ class Motion:
     # 有 21 个满杆拍，平均侵入只有 1~10cm）。
     corridor_hard_clearance_m: float = 0.15
     corridor_soft_cost_per_m: float = 120.0
-    # 目标位候选的生成律用生产跟踪律（k_head_lane）：计划怎么预测，控制
+    # 目标位候选的生成律用生产跟踪律（固定参考车速换算）：计划怎么预测，控制
     # 就怎么执行——第二套生成律会让「计划说能到、车到不了」。
     # 半程回正候选的最小档位：低于此值的档位 2s 扫不过一道，回正没意义。
     reverse_min_rad: float = 0.03
@@ -695,7 +695,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             cy_jump_max_px=_num(d, "validate", "cy_jump_max_px", lo=0)),
         planner=Planner(
             lookahead_tau_s=_num(d, "planner", "lookahead_tau_s", lo=0),
-            k_head_lane=_num(d, "planner", "k_head_lane", lo=0),
+            speed_ref_mps=_num(d, "planner", "speed_ref_mps",
+                               lo=1.0, lo_open=True),
             k_lat_lane_s=_num(d, "planner", "k_lat_lane_s", lo=0),
             k_psi=_num(d, "planner", "k_psi", lo=0),
             k_r=_num(d, "planner", "k_r", lo=0, lo_open=False),

@@ -666,10 +666,11 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
         assert k in row, k
     # 选择层影子（trace-only）：两路承诺输入一致时没有差异行
     assert row["sel_shadow"] is None
-    # 横向状态可见面：线观测线程未启动时诚实报 None（不兜底常数）
+    # 横向状态可见面：线观测线程未启动时 ψ/线斜率诚实报 None；
+    # vmp 按固定参考车速（2026-11-01 裁决，不再兜底在线估计）
     assert row["lat_ctrl"]["v_line"] is None
     assert row["lat_ctrl"]["psi"] is None
-    assert row["lat_ctrl"]["vmp"] is None
+    assert row["lat_ctrl"]["vmp"] == 41.0
     assert row["lat_ctrl"]["vl"] == 0.0
     assert row["lat_ctrl"]["rebase"] is None
     # 朝向截面（只读）：列必须齐；无线观测时全部诚实为 None

@@ -480,13 +480,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         return MotionPlan(
             PLAN_SCHEMA, False, "plan:frame_shift", scene.ego_x_m, 0.0, 0.0,
             4, (True,), 0, -1, (), ego.x_lane, 0.0, frame_delta, True)
-    if ego.v_mps is None or ego.v_mps <= 1.0:
-        # 没有车速就没有预测：候选轨迹全都一样（横移 = v·tanψ），比较也没有
-        # 意义。旧实现拿常数兜底，等于假装知道车会怎么动；这里如实交回位置
-        # 环（它不需要车速），等在线比例估出来再接管。
-        return MotionPlan(
-            PLAN_SCHEMA, False, "plan:no_speed", scene.ego_x_m, 0.0, 0.0,
-            4, (True,), 0, -1, (), ego.x_lane, 0.0, frame_delta, True)
+    # 自车运动按固定参考车速（2026-11-01 裁决）：ego.v_mps 恒为参考值，
+    # 「没速度」状态及其保守回退删除——对象的运动预测用跟踪层的相对接近率，
+    # 不依赖自车绝对速度。
     widen = 0.0
     if uncertain:
         widen = min(abs(frame_delta), motion.uncertain_widen_max_m)
@@ -576,7 +572,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         if target is not None:
             cmd0 = max(-plant.heading_max_rad,
                        min(plant.heading_max_rad,
-                           heading_for_error(target - x, v_ego, plant)))
+                           heading_for_error(target - x, plant)))
         cmd = cmd0
         xs_lane = [x]
         vs_lane = [(v_ego * math.tan(psi) / lane_w) if v_ego > 0 else 0.0]
@@ -585,7 +581,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 # 目标位候选：与控制器同一条律（误差 → 期望横速 → 朝向）
                 cmd = max(-plant.heading_max_rad,
                           min(plant.heading_max_rad,
-                              heading_for_error(target - x, v_ego, plant)))
+                              heading_for_error(target - x, plant)))
             elif seq is not None:
                 cmd = seq[k]
             x, psi = step(x, psi, cmd, v_ego, dt, plant)
