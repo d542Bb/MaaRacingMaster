@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import os
@@ -23,9 +24,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from speedrush_trace_reader import iter_rows  # noqa: E402
 
 GAP_S = 0.5                 # 段切分空档（秒）
+# 反向率/杆量的观测窗：并线本身会回正一次，并线前后 2s 也在为机动做准备，
+# 这些反号不是「巡航里左右摇」；混在一起算会让并线多的局反向率必然更高
+# （2026-11-01 审计：并线总数与反向计数相关 0.77）。
+MERGE_GUARD_S = 2.0
+# 大杆值反向门：0.05 死区把零附近的抖动也算一次反号；只看 ≥0.2 的换向，
+# 审计中远离并线的反向率在 0.05/0.2 两档差 ~20%，两档结论不同。
+REV_LARGE = 0.20
+LEAD_NEAR_M = 30.0
 # 以下常量与 2026-11-01 的策略一致（planner / selection 的真源在
 # resources/policy/decision.json）；旧局没有 slack 列时用它们复算。
 LANE_W = 3.5
+LEAD_LANE_M = 0.55 * LANE_W
 K_LAT = 1.2
 TAU = 0.25
 HEADING_MAX = 0.15
@@ -115,6 +125,84 @@ def _dur(rows):
     return sum(_dt(r) for r in rows[1:]) if len(rows) > 1 else 0.0
 
 
+def _curve_demand(row) -> float | None:
+    """路面弯曲需求（m/m）：前 15~18 m 路心相对 3~6 m 路心的横移率。
+
+    相机固定在车头，直道的路心随距离基本不变；弯道越急，远端路心偏得
+    越多。巡航杆量因此天然随赛道变化，跨局比较必须按这一项分桶。"""
+    road = (row.get("scene") or {}).get("road") or {}
+    near = far = None
+    for b in road.get("bands") or ():
+        if len(b) < 4 or b[2] is None or b[3] is None:
+            continue
+        d0 = float(b[0])
+        c = 0.5 * (float(b[2]) + float(b[3]))
+        if 3.0 <= d0 < 6.0:
+            near = c if near is None else 0.5 * (near + c)
+        elif 15.0 <= d0 < 18.0:
+            far = c if far is None else 0.5 * (far + c)
+    if near is None or far is None:
+        return None
+    return abs(far - near) / 12.0
+
+
+def _lead_gap(row) -> float | None:
+    """正前方同车道最近车的纵向距离（m）；无车或无法判定时 None。
+
+    新局走对象表 `otab`（x_lane/x_m + z_m），旧局退到 `mcars`（x + z 米制）。
+    横向门取半道：邻道车不构成「必须用速度预测」的理由。"""
+    ego_m = (row.get("scene") or {}).get("ego_m")
+    best = None
+    for t in (row.get("otab") or {}).get("t") or ():
+        if len(t) < 5 or t[0] != "car":
+            continue
+        if len(t) > 6 and not t[6]:     # 只信本拍可见的位置
+            continue
+        z = t[4]
+        if z is None or z <= 0.0 or z > LEAD_NEAR_M:
+            continue
+        x = t[3]
+        if x is None and t[2] is not None:
+            x = t[2] * LANE_W
+        if x is None or ego_m is None or abs(x - ego_m) > LEAD_LANE_M:
+            continue
+        if best is None or z < best:
+            best = z
+    if best is not None or ego_m is None:
+        return best
+    for m in row.get("mcars") or ():
+        x, z = m.get("x"), m.get("z")
+        if x is None or z is None or z <= 0.0 or z > LEAD_NEAR_M:
+            continue
+        if abs(x - ego_m) <= LEAD_LANE_M and (best is None or z < best):
+            best = z
+    return best
+
+
+def _no_speed_ctx(row) -> str:
+    """no_speed 拍按「速度是否参与决策」分级；重叠时取更该用速度的一类。"""
+    if (row.get("route") or {}).get("ph") == "merging":
+        return "merge"
+    if _lead_gap(row) is not None:
+        return "lead"
+    if (row.get("sel_dbg") or {}).get("req") is not None:
+        return "request"
+    return "cruise"
+
+
+def _merge_near(rows):
+    """并线时刻表 + 判定函数（前后 MERGE_GUARD_S 内算机动窗口）。"""
+    ts = sorted(_ts(r) for r in rows
+                if (r.get("route") or {}).get("ph") == "merging")
+
+    def near(t: float) -> bool:
+        i = bisect.bisect_left(ts, t)
+        return ((i < len(ts) and ts[i] - t <= MERGE_GUARD_S)
+                or (i > 0 and t - ts[i - 1] <= MERGE_GUARD_S))
+
+    return len(ts), near
+
+
 def _plan(rows):
     present = [r for r in rows if r.get("plan")]
     reasons = {}
@@ -126,6 +214,26 @@ def _plan(rows):
     nop = _segments(rows, lambda r: r.get("plan") is None)
     chosen = [r["plan"].get("chosen") for r in present]
     players = [r["plan"].get("layer") for r in present]
+    # 无速度时间按场景拆开：直道巡航里估不出速度是「没横向证据」，不代表
+    # 计划该在干活（审计：no_speed 拍的保持误差中位 0.35 道，其余拍 0.47；
+    # 48 局里 36 局反而更好）。闸门只认并线/近车/请求这些真正用速度的窗口。
+    ctx = {}
+    merge_s = lead_s = 0.0
+    lead_n = lead_ok = 0
+    for r in rows:
+        dt = _dt(r)
+        if (r.get("route") or {}).get("ph") == "merging":
+            merge_s += dt
+        if _lead_gap(r) is not None:
+            lead_s += dt
+            if r.get("plan") is not None:
+                lead_n += 1
+                lead_ok += bool(r["plan"].get("valid"))
+        if (r.get("plan") or {}).get("reason") == "plan:no_speed":
+            k = _no_speed_ctx(r)
+            ctx[k] = ctx.get(k, 0.0) + dt
+    need = ctx.get("merge", 0.0) + ctx.get("lead", 0.0) \
+        + ctx.get("request", 0.0)
     return {
         "chosen_switches": sum(1 for a, b in zip(chosen, chosen[1:])
                                if a != b),
@@ -138,6 +246,13 @@ def _plan(rows):
         "no_speed_segments": [[len(s), _r(_dur(s), 1), s[0].get("fid")]
                               for s in ns],
         "no_speed_s": _r(sum(_dur(s) for s in ns), 1),
+        "no_speed_cruise_s": _r(ctx.get("cruise", 0.0), 1),
+        "no_speed_need_s": _r(need, 1),
+        "no_speed_ctx_s": {k: _r(v, 1) for k, v in sorted(ctx.items())},
+        "merge_ns_frac": _r(ctx.get("merge", 0.0) / merge_s, 3)
+        if merge_s > 0 else None,
+        "lead_s": _r(lead_s, 1),
+        "lead_valid_rate": _r(lead_ok / lead_n, 3) if lead_n else None,
         "no_plan_s": _r(sum(_dur(s) for s in nop), 1),
     }
 
@@ -187,6 +302,9 @@ def _merges(rows):
         segs.append(cur)
     whys, ends, speeds, settle, durations = {}, {}, [], [], []
     overs, overs_in, overs_post = [], [], []
+    # 段内真的走到目标的那几段（不含「只在结束后才到」的 0），中位数只在这
+    # 些段上算；段数一并报出——1~2 段时分位就是最大值。
+    reach_in = []
     for s in segs:
         rs = rows[s["i0"]:s["i1"] + 1]
         why = (rs[0].get("route") or {}).get("why")
@@ -228,6 +346,8 @@ def _merges(rows):
             continue
         oi = max(0.0, max(bin_)) if bin_ else 0.0
         op = max(0.0, max(bpost)) if bpost else 0.0
+        if any(v >= -0.02 for v in bin_):
+            reach_in.append(oi)
         overs_in.append(oi)
         overs_post.append(op)
         overs.append(max(oi, op))
@@ -237,6 +357,12 @@ def _merges(rows):
         "opportunity": whys.get("opportunity", 0),
         "urgent": whys.get("urgent", 0),
         "end": dict(sorted(ends.items(), key=lambda kv: -kv[1])),
+        # 过冲 p90 在 1~3 段时就是最大值，且只统计「真走到目标」的段；跨局
+        # 判读要同时看中位与参与段数，否则一场里的一次擦线就能定胜负。
+        "finish_share": _r(ends.get("finish", 0) / len(segs), 3)
+        if segs else None,
+        "overshoot_in_median": _r(_pct(reach_in, 50)),
+        "overshoot_in_n": len(reach_in),
         "dur_s_median": _r(_pct(durations, 50), 2),
         "v_lat_lane_s_median": _r(_pct(speeds, 50)),
         "overshoot_lane_p90": _r(_pct(overs, 90)),
@@ -285,6 +411,34 @@ def _requests(rows):
             "conversion_any": _r(len(conv_any) / n, 3) if n else None,
             "opportunity_within_1s": len(conv_opp),
             "conversion": _r(len(conv_opp) / n, 3) if n else None}
+
+
+def _route(rows):
+    """承诺道与实测道的一致性 + 6h 承诺道跟随机制的观测面。
+
+    keep 态按 `coarse.ego`（实测）与 `route.ref`（承诺）比较——两者同一粗层
+    帧；>0.5 道算错位（半道内是边界抖动）。承诺道错一条道时选择层会把邻道
+    机会判成本道目标，这是机会请求发不出来的直接原因。
+    `anchor_follow/lane_drift/already_there` 是 6h 开关生效的证据。"""
+    keep = mismatch = drift_ticks = already = anchors = 0
+    for r in rows:
+        rt = r.get("route") or {}
+        co = r.get("coarse") or {}
+        ego, ref = co.get("ego"), rt.get("ref")
+        if rt.get("ph") == "keep" and ego is not None and ref is not None:
+            keep += 1
+            if abs(ego - ref) > 0.5:
+                mismatch += 1
+        if rt.get("vd") == "anchor_follow":
+            anchors += 1
+        if rt.get("why") == "lane_drift":
+            drift_ticks += 1
+        if rt.get("why") == "already_there":
+            already += 1
+    return {"keep_ticks": keep, "mismatch_ticks": mismatch,
+            "mismatch_frac": _r(mismatch / keep) if keep else None,
+            "anchor_events": anchors, "lane_drift_ticks": drift_ticks,
+            "already_there": already}
 
 
 def _source_flips(rows):
@@ -501,23 +655,70 @@ def _obj_rows(row):
 
 
 def _steer(rows):
-    in_band = [abs(r.get("steer_norm") or 0.0) for r in rows
-               if str(r.get("reason") or "").startswith("sel:center")
-               and r.get("maneuver") is False]
+    """控制面：巡航跟踪误差 + 转向平滑度。
+
+    旧的巡航杆量均值同时受赛道弯曲和「车离目标多远」影响（审计：同一低弯
+    桶内跨局 0.06~0.21），不能当跨局比较的主指标；主指标换成**决策目标
+    跟踪误差**（同一目标口径，弯曲不影响「跟没跟上」）。杆量与反向率保留
+    作观测：反向率与并线总数相关 0.77，远离并线的大杆值换向在基线组与
+    新局无显著差，但并线密集局样本只剩几秒，不进门禁。"""
+    in_band, flat, curve = [], [], []
+    track = []
     rev, last = 0, None
-    for r in rows:
-        s = r.get("steer_norm") or 0.0
-        if abs(s) < REV_DEADBAND:
-            continue
-        sign = 1 if s > 0 else -1
-        if last is not None and sign != last:
-            rev += 1
-        last = sign
+    _, near = _merge_near(rows)
+    rev_far = rev_far_large = 0
+    act_far = act_far_large = 0.0
+    last_far = last_far_large = None
     dur = sum(_dt(r) for r in rows)
+    for r in rows:
+        s_raw = r.get("steer_norm") or 0.0
+        s = abs(s_raw)
+        t = _ts(r)
+        merging = (r.get("route") or {}).get("ph") == "merging"
+        if str(r.get("reason") or "").startswith("sel:center") \
+                and r.get("maneuver") is False:
+            in_band.append(s)
+            c = _curve_demand(r)
+            if c is not None and c < 0.05:
+                flat.append(s)
+            elif c is not None and c >= 0.10:
+                curve.append(s)
+        # 目标跟踪误差：决策层给的 x_target 与执行层实测位同单位（道）
+        x, ex = r.get("x_target"), r.get("executed_lane")
+        if x is not None and ex is not None and not merging:
+            track.append(abs(ex - x))
+        if abs(s_raw) >= REV_DEADBAND:
+            sign = 1 if s_raw > 0 else -1
+            if last is not None and sign != last:
+                rev += 1
+            last = sign
+        if merging or near(t):
+            continue
+        sign = 1 if s_raw > 0 else -1
+        if abs(s_raw) >= REV_DEADBAND:
+            act_far += _dt(r)
+            if last_far is not None and sign != last_far:
+                rev_far += 1
+            last_far = sign
+        if abs(s_raw) >= REV_LARGE:
+            act_far_large += _dt(r)
+            if last_far_large is not None and sign != last_far_large:
+                rev_far_large += 1
+            last_far_large = sign
     all_steer = [abs(r.get("steer_norm") or 0.0) for r in rows]
     return {"in_band_abs_mean": _r(sum(in_band) / len(in_band), 4)
             if in_band else None,
+            "in_band_flat": _r(sum(flat) / len(flat), 4) if flat else None,
+            "in_band_curve": _r(sum(curve) / len(curve), 4) if curve else None,
+            "track_err_p50": _r(_pct(track, 50), 3),
+            "track_err_p90": _r(_pct(track, 90), 3),
+            "track_err_over_0_5": _r(sum(1 for e in track if e > 0.5)
+                                     / len(track), 3) if track else None,
             "reverse_per_s": _r(rev / dur, 3) if dur > 0 else None,
+            "reverse_far_per_s": _r(rev_far / act_far, 3)
+            if act_far > 0 else None,
+            "reverse_far_large_per_s": _r(rev_far_large / act_far_large, 3)
+            if act_far_large > 0 else None,
             "saturate_share": _r(sum(1 for s in all_steer if s >= 0.9)
                                  / len(all_steer), 3) if all_steer else None}
 
