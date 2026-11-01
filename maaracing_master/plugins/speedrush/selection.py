@@ -222,6 +222,9 @@ class SelectionParams:
     lane_clearance_lane: float = 0.06
 
 
+_EVENT_REPLAN_STEP_LANE = 0.1   # 无输入事件时同层目标每拍最大修正（道）
+
+
 def _t_move(dx_m: float, p: SelectionParams) -> float:
     """横移直到「已对齐」所需时间——执行层那条闭环律的同一份答案。
 
@@ -726,7 +729,7 @@ class LayeredSelector:
             target = self._target
             d = raw.target_x_m - target
             if abs(d) > 1e-9:
-                step = min(abs(d), 0.1 * p.lane_w_m)
+                step = min(abs(d), _EVENT_REPLAN_STEP_LANE * p.lane_w_m)
                 target += math.copysign(step, d)
                 self._target = target
                 wps = [Waypoint(w.t - dt_s, w.x, w.src)

@@ -360,3 +360,27 @@ def test_new_trace_columns_are_json_serializable():
     assert CFG.selection.dynamic_horizon is False
     assert CFG.selection.layer_dwell is False
     assert CFG.selection.event_replan is False
+
+
+def test_event_replan_engine_small_step_on_target_jump():
+    """引擎级：事件重算开时同层币目标从 0.13 跳到 0.33 道只走 0.1 道/拍。"""
+    def run(event):
+        cfg = replace(CFG, selection=replace(CFG.selection,
+                                             event_replan=event))
+        eng = DecisionEngine(cfg)
+        g, ms = _group(1, x=0.4, rel=2.5)
+        for fid in range(1, 6):
+            x = 0.6 if fid >= 5 else 0.4
+            g = replace(g, x_center=x, first_seen_fid=1, last_seen_fid=fid)
+            ms = tuple(replace(m, x_lane=x - 0.15 * i,
+                               first_seen_fid=1, last_seen_fid=fid,
+                               validity_until_fid=fid + 8)
+                       for i, m in enumerate(ms))
+            eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
+                       executed_lane=0.0, corridor=_corridor())
+        return eng.selection_report.target_x_m / LW
+
+    off = run(False)
+    on = run(True)
+    assert off == pytest.approx(0.33, abs=0.03)
+    assert on == pytest.approx(0.23, abs=0.03)
