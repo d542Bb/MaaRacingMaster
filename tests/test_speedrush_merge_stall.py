@@ -69,16 +69,19 @@ class _Plant:
         return psi, x
 
 
-def _run(n_ticks: int, phase: str = "merging"):
-    """复放主循环：车速未知（不喂速度估计）+ 固定目标 + 弱响应真车。"""
+def _run(n_ticks: int, phase_fn=None):
+    """复放主循环：车速未知（不喂速度估计）+ 固定目标 + 弱响应真车。
+
+    ``phase_fn(i)`` 给第 i 拍的路线相位；缺省全程并线承诺。"""
     pl = LateralPlanner(Planner(**{k: getattr(P, k)
                                    for k in P.__dataclass_fields__}))
     plant = _Plant()
     log = []
     for i in range(n_ticks):
+        ph = phase_fn(i) if phase_fn is not None else "merging"
         psi_m, x_m = plant.tick(pl.state.steer_norm if i else 0.0)
         pl.update(
-            _out(phase=phase, fid=i + 1), DT, current_fid=i + 1,
+            _out(phase=ph, fid=i + 1), DT, current_fid=i + 1,
             road_offset=x_m, lane_x=x_m, lane_ok=True,
             lane_theta=psi_m, lane_theta_ok=True,
             lane_fid=i + 1, lane_age_ms=25.0, lane_n_locked=3,
@@ -89,6 +92,7 @@ def _run(n_ticks: int, phase: str = "merging"):
             "err": abs(TARGET_LANE - pl.state.executed_lane),
             "psi": psi_m,
             "v_scale": pl.head.v_scale,
+            "boost": pl._sustain_boost,
         })
     return log
 
@@ -120,8 +124,45 @@ def test_merge_without_speed_estimator_never_recovers():
 
 def test_keep_phase_v_unknown_unchanged():
     """范围锁：保持态 + 车速未知仍走原朝向反馈（塌缩行为不变，不贪心）。"""
-    log = _run(60, phase="keep")
+    log = _run(60, phase_fn=lambda i: "keep")
     late = log[10:]
     assert max(e["stick"] for e in late) < SUSTAIN_FLOOR, (
         f"保持态杆值应维持原朝向反馈行为（实测峰值 "
         f"{max(e['stick'] for e in late):.3f}）")
+
+
+def test_merge_boost_rises_while_deficit_persists():
+    """平顶峰适配：车头角到不了命令值时杆值随缺口上调（估计=观测，
+    不写死曲线）——真车响应过缓时并线不再爬。"""
+    log = _run(60)
+    early = sum(abs(e["stick"]) for e in log[10:20]) / 10
+    late = sum(abs(e["stick"]) for e in log[40:60]) / 20
+    assert late > early + 0.05, (
+        f"缺口持续时杆值应上调（前段 {early:.3f} → 后段 {late:.3f}）")
+    assert log[-1]["boost"] > 0.05, (
+        f"上调量应为正（实测 {log[-1]['boost']:.3f}）")
+
+
+def test_merge_boost_resets_on_merge_start():
+    """并线开始清零：上一段并线攒的上调量不带进新并线。"""
+    def phases(i):
+        if i < 30:
+            return "merging"
+        if i < 50:
+            return "keep"
+        return "merging"
+    log = _run(60, phase_fn=phases)
+    peak1 = max(abs(e["boost"]) for e in log[:30])
+    assert peak1 > 0.1, f"第一段并线应攒上调量（实测 {peak1:.3f}）"
+    reentry = log[50]  # 重入并线的第一拍
+    assert abs(reentry["boost"]) < 0.02, (
+        f"重入并线应清零（实测 {reentry['boost']:.3f}）")
+
+
+def test_merge_boost_decays_outside_merge():
+    """离开并线衰减：上调量不残留进巡航。"""
+    log = _run(70, phase_fn=lambda i: "merging" if i < 30 else "keep")
+    peak = max(abs(e["boost"]) for e in log[:30])
+    assert peak > 0.1, f"并线期应攒上调量（实测 {peak:.3f}）"
+    assert abs(log[-1]["boost"]) < 0.35 * peak, (
+        f"离开并线应衰减（实测 {log[-1]['boost']:.3f}，峰值 {peak:.3f}）")

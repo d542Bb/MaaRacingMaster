@@ -210,6 +210,14 @@ class Planner:
     preview_eff_w: float = 1.0
     preview_change_w: float = 2.0
     preview_rev_w: float = 2.0
+    # 并线承诺杆值上调（2026-11-01 平顶峰适配）：车速未知时位置误差直接驱动
+    # 持续杆值（sustain），但线性模型在浅杆段高估响应（0.22 杆实测车头角只有
+    # 命令值四成，20261101_205523 对局日志核对，并线爬行）。按「命令车头角 −
+    # 观测车头角」缺口慢速上调杆值（估计=观测、随车随速变、不写死响应曲线）：
+    # 车头角到位即停涨、越过即回吐；并线开始清零、离开并线衰减，上限防饱和。
+    sustain_boost_gain: float = 3.0     # 缺口积分增益（杆/(rad·s)）
+    sustain_boost_max: float = 0.45     # 上调量上限（杆）
+    sustain_boost_decay_s: float = 1.0  # 离开并线持续杆拍后的衰减时间常数
 
 
 @dataclass(frozen=True)
@@ -707,6 +715,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "planner", "preview_change_w", 2.0, lo=0),
             preview_rev_w=_num_def(
                 d, "planner", "preview_rev_w", 2.0, lo=0),
+            sustain_boost_gain=_num_def(
+                d, "planner", "sustain_boost_gain", 3.0, lo=0),
+            sustain_boost_max=_num_def(
+                d, "planner", "sustain_boost_max", 0.45, lo=0),
+            sustain_boost_decay_s=_num_def(
+                d, "planner", "sustain_boost_decay_s", 1.0, lo=0),
             tau_heading_s=_num(d, "planner", "tau_heading_s", lo=0),
             heading_max_rad=_num(d, "planner", "heading_max_rad", lo=0),
             heading_hold_rad=_num(d, "planner", "heading_hold_rad", lo=0),

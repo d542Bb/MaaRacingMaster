@@ -593,6 +593,11 @@ class LateralPlanner:
         self._plan_hold_psi: float | None = None
         self._plan_hold_cap: float | None = None
         self._plan_hold_commit = False
+        # 并线承诺杆值上调（平顶峰适配，2026-11-01）：缺口积分状态 + 并线
+        # 相位沿检测 + 本拍控制时长（_law 内积分用）。
+        self._sustain_boost = 0.0
+        self._was_merging = False
+        self._ctrl_dt_s = 0.0
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
         self._heading_stale = False
@@ -698,7 +703,9 @@ class LateralPlanner:
              "pv": bool(self._preview_active),
              # 4d 驻留面：pcn=计划维护态连续秒数，pcg=驻留后的准入
              "pcn": round(self._plan_center_t, 2),
-             "pcg": bool(self._plan_center_gated)}
+             "pcg": bool(self._plan_center_gated),
+             # 并线杆值上调量（平顶峰适配，trace-only）：缺口积分当前值
+             "mboost": round(self._sustain_boost, 3)}
         d.update(self.head.debug())
         return d
 
@@ -811,6 +818,7 @@ class LateralPlanner:
         # 消费，形成/重基各自清零——见 ⑥b 注
         self._t_vcorr += dt_s
         self.last_rebase = None          # 每拍清：只记本拍实际执行的重基分支
+        self._ctrl_dt_s = dt_s           # 本拍控制时长（并线杆值上调的积分用）
 
         # 线横位平滑（保持期运动观测）：只在锁线拍更新；COAST/无值保持上一值。
         # 重锁后的第一条锁线可能换了线/换了帧：重置平滑并停用融合；线自身
@@ -891,6 +899,16 @@ class LateralPlanner:
         if st is not DecisionState.CONSERVE:
             self._conserve_hold = None
         plan_held = False           # 本拍是否走"计划短断供保持"
+        # 并线杆值上调的生命周期（平顶峰适配）：并线开始清零（上一段并线攒的
+        # 上调量不带进新并线）；非「并线 + 车速未知」拍衰减（回巡航/车速恢复
+        # 后不残留）。
+        merging_now = getattr(decision, "phase", "keep") == "merging"
+        if merging_now and not self._was_merging:
+            self._sustain_boost = 0.0
+        elif not (merging_now and self.state.v_mps is None):
+            self._sustain_boost *= math.exp(
+                -dt_s / max(self.p.sustain_boost_decay_s, 1e-3))
+        self._was_merging = merging_now
         if st is DecisionState.CONSERVE:
             # CONSERVE=**回到并停在路中心**（13:02 局：归零直开弯道怼护栏，badframe
             # fid_2325 侧滑胎烟；13:29 局二次修正：入拍冻结 executed 的"保持车道"
@@ -1369,11 +1387,37 @@ class LateralPlanner:
         目标固定时不再有新误差 inflow，朝向误差项会把并线命令压塌到真车
         响应以下的小振荡（实测杆值塌成 ~0.1、并线原地停 5.3 s 后撤销）。
         此时位置误差直接驱动持续杆值，位置环经 ⑥b 收口；状态不可信的
-        归零兜底不变。"""
+        归零兜底不变。
+
+        并线杆值上调（2026-11-01 平顶峰适配，20261101_205523 对局日志核对）：
+        线性执行模型在浅杆段高估响应（0.22 杆实测车头角只有命令值四成），
+        持续杆值落在真车「平顶峰」响应曲线的浅段，并线 0.05~0.14 道/s 爬行。
+        按「命令车头角 − 观测车头角」缺口慢速上调杆值（估计=观测、随车随速
+        变、不写死响应曲线）：车头角到位即停涨、越过即回吐；并线开始清零、
+        离开并线衰减，上调量上限防饱和。观测只吃线角（观测器），不吃影子
+        ——影子按线性模型推进，会高估缺口已闭合。"""
         no_heading = self._heading_stale or sustain
-        return law(e, self.state.heading if not no_heading else 0.0,
-                   self.state.yaw_rate if not no_heading else 0.0,
-                   self.p, gentle, deadband, cap, self.state.v_mps)
+        u = law(e, self.state.heading if not no_heading else 0.0,
+                self.state.yaw_rate if not no_heading else 0.0,
+                self.p, gentle, deadband, cap, self.state.v_mps)
+        if not sustain:
+            return u
+        db = (self.p.hold_deadband_lane if gentle else 0.0) \
+            if deadband is None else deadband
+        e_eff = 0.0 if abs(e) < db else e
+        psi_cmd = self.p.k_head_lane * e_eff
+        psi_obs = (self.head.psi
+                   if self.head.psi is not None
+                   and self.head.psi_age_s() <= self.p.heading_vel_max_age_s
+                   else None)
+        if psi_obs is not None and self._ctrl_dt_s > 0:
+            self._sustain_boost += self.p.sustain_boost_gain * (
+                psi_cmd - psi_obs) * self._ctrl_dt_s
+            lim = self.p.sustain_boost_max
+            self._sustain_boost = max(-lim, min(lim, self._sustain_boost))
+        cap_u = cap if cap is not None else (
+            self.p.hold_stick_max if gentle else 1.0)
+        return max(-cap_u, min(cap_u, u + self._sustain_boost))
 
     def _law_psi(self, psi_des: float, cap: float | None = None) -> float:
         """目标朝向直接入环（计划/决策给出的是车头角时）。
