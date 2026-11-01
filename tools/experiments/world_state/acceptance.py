@@ -97,6 +97,8 @@ def main(argv=None):
     ap.add_argument("--speed", choices=("v_ego", "hud41", "const"),
                     default="v_ego")
     ap.add_argument("--speed-value", type=float, default=41.0)
+    ap.add_argument("--gate", action="store_true",
+                    help="按方案第 5 期判据逐项判 PASS/FAIL；任一 FAIL 退出 1")
     args = ap.parse_args(argv)
     base = flat(analyze(args.baseline, args.speed, args.speed_value))
     news = {s: flat(analyze(s, args.speed, args.speed_value))
@@ -123,7 +125,44 @@ def main(argv=None):
 
         print(f"{k:30s} {fmt(base[k]):>10s}  " + "  ".join(
             fmt(news[s][k]).rjust(10) for s in news))
+    if args.gate:
+        return _gate(base, news)
     return 0
+
+
+def _gate(base: dict, news: dict) -> int:
+    """方案第 5 期的硬判据；容差只吸收测量噪声，不是放宽目标。"""
+    rules = [
+        ("plan.valid_rate", ">=", -0.03, "计划有效率不降 3pt"),
+        ("plan.no_speed_s", "<=", 1.0, "no_speed 不增 1s"),
+        ("steer.in_band", "<=", 0.02, "巡航目标内杆量不增 0.02"),
+        ("steer.reverse_s", "<=", 0.15, "反向率不增 0.15/s"),
+        ("merges.overshoot_p90", "<=", 0.10, "并线过冲 p90 不增 0.10 道"),
+        ("requests.conversion", ">=", 0.0, "请求→并线转化不低于基线"),
+    ]
+    bad = 0
+    for sess, new in news.items():
+        fails = []
+        for key, op, tol, why in rules:
+            b, n = base.get(key), new.get(key)
+            if b is None or n is None:
+                fails.append(f"{key}: 基线或新局缺值")
+                continue
+            limit = b + tol
+            ok = n <= limit if op == "<=" else n >= limit
+            if not ok:
+                fails.append(f"{key}: {n:.3f} vs 基线 {b:.3f}（{why}）")
+        speed = str(new.get("map.forward_speed") or "")
+        if not speed.startswith("v_ego"):
+            fails.append("map.forward_speed: 新局缺精确 v_ego（不接受代理跑验收）")
+        if fails:
+            bad += 1
+            print(f"[FAIL] {sess}")
+            for f in fails:
+                print("  - " + f)
+        else:
+            print(f"[PASS] {sess}")
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
