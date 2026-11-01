@@ -63,10 +63,31 @@ def _horizon(level):
     return {"open": 3.0, "normal": 2.5, "crowded": 2.0}.get(level, 3.0)
 
 
+def _hit(kind, x, t, ego, commit, c, cars):
+    """直接命中（目标在本道跨度内）是否成立；请求另计。"""
+    if t is None or not (0.0 < t <= c["horizon"]):
+        return False
+    dx = x - ego
+    aim = x
+    if kind == "coin" and abs(dx) > c["ego_half"]:
+        aim = x - (c["ego_half"] if dx > 0 else -c["ego_half"])
+    if R._blocked(cars, aim, t, c):
+        return False
+    if not (R._slack(aim - ego, t, c) is not None
+            and R._slack(aim - ego, t, c) >= 0):
+        return False
+    if commit is None:
+        return abs(x - ego) <= 1.0
+    return abs(aim - commit) <= 0.5
+
+
 def analyze(rows):
     base = R._policy()
     hit = {h: [] for h in HORIZONS}
+    direct = {h: [] for h in HORIZONS}
     levels = {}
+    level_seq = []
+    dt_seq = []
     switch = 0
     prev_level = None
     for row in rows:
@@ -84,17 +105,55 @@ def analyze(rows):
         for h in HORIZONS:
             c = dict(base, horizon=h)
             any_req = False
+            any_hit = False
             for kind, key in (("reward", "rw"), ("coin", "coin")):
                 for e in dbg.get(key) or []:
                     if e and len(e) >= 2:
                         _, nr = R._entry(kind, e[0], e[1], ego, commit, c, cars)
                         any_req = any_req or nr
+                        any_hit = any_hit or _hit(
+                            kind, e[0], e[1], ego, commit, c, cars)
             hit[h].append(bool(any_req))
+            direct[h].append(bool(any_hit))
         lvl = _level(row.get("scene") or {})
         levels[lvl] = levels.get(lvl, 0) + 1
+        level_seq.append(lvl)
+        dt_seq.append(row.get("dt") or 0.05)
         if prev_level is not None and lvl != prev_level:
             switch += 1
         prev_level = lvl
+
+    # 影子视界（带 0.5s 驻留、跨阈 0.5、单次 1s）在旧局开度序列上的行为
+    cur, tgt, dwell = 3.0, None, 0.0
+    dwelled = []
+    h_switch = 0
+    for lvl, dt in zip(level_seq, dt_seq):
+        t = {"open": 3.0, "normal": 2.5, "crowded": 2.0}.get(lvl)
+        if t is None:
+            dwelled.append(cur)
+            continue
+        if tgt is None or abs(t - tgt) > 1e-9:
+            tgt, dwell = t, 0.0
+        else:
+            dwell += dt
+        if abs(tgt - cur) >= 0.5 and dwell >= 0.5:
+            step = max(-1.0, min(1.0, tgt - cur))
+            cur = min(3.0, max(2.0, cur + step))
+            dwell = 0.0
+            h_switch += 1
+        dwelled.append(cur)
+
+    dwelled_ticks = sum(1 for i, h in enumerate(dwelled) if hit[h][i])
+    dropped_dwell = sum(1 for i, h in enumerate(dwelled)
+                        if hit[3.0][i] and not hit[h][i])
+    direct_by_h = {f"{h:.1f}s": sum(1 for v in direct[h] if v)
+                   for h in HORIZONS}
+    direct_shadow = sum(1 for i, h in enumerate(dwelled) if direct[h][i])
+    direct_dropped = sum(1 for i, h in enumerate(dwelled)
+                         if direct[3.0][i] and not direct[h][i])
+    h_ticks = {}
+    for h in dwelled:
+        h_ticks[str(h)] = h_ticks.get(str(h), 0) + 1
 
     def ticks(h):
         return sum(1 for v in hit[h] if v)
@@ -134,6 +193,13 @@ def analyze(rows):
         "request_segments_by_h": {f"{h:.1f}s": segs(h) for h in HORIZONS},
         "proposed_request_ticks": proposed_ticks,
         "dropped_vs_static_3s": dropped,
+        "shadow_horizon_ticks": h_ticks,
+        "shadow_horizon_switches": h_switch,
+        "shadow_request_ticks": dwelled_ticks,
+        "shadow_dropped_vs_static_3s": dropped_dwell,
+        "hit_ticks_by_h": direct_by_h,
+        "shadow_hit_ticks": direct_shadow,
+        "shadow_hit_dropped_vs_static_3s": direct_dropped,
         "note": "机会集合代理：无闭环反馈；开度用旧 scene 宽与车近似，"
                 "未见旧对象按不安全剔除。",
     }
