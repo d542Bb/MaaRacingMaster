@@ -118,6 +118,10 @@ _MODEL_AGE_MAX_S = 0.30
 # 按实机口径补 0.10s（策略文件记的观测链 ≈0.15s，trace 线角龄 0.02~0.07s）。
 _MODEL_DELAY_EXTRA_S = 0.10
 _MODEL_HIST_S = 1.0         # 延迟对齐历史窗
+# 短预瞄控制器候选（2026-11-01）：幅度按归一杆值、宽度按秒。人工局脉冲中位
+# 0.15~0.19s、峰值中位 0.95~0.97；程序旧律持续中位 0.3s、反向 0.6~0.85/s。
+_PREVIEW_AMPS = (0.30, 0.60, 0.90, 1.0)
+_PREVIEW_WIDTHS = (0.10, 0.15, 0.20, 0.25, 0.30)
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
 # 证据衰减到下限后，上一次的读数再保留这么久（秒）。比例只能靠**横移**观测：
@@ -579,6 +583,11 @@ class LateralPlanner:
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
         self._heading_stale = False
+        self._heading_src = "none"       # 本拍控制朝向来源（trace csrc）
+        # 短预瞄控制器（2026-11-01）：上一拍实际发出的杆值，换向/变化惩罚用；
+        # 未接管（并线/安全/影子不新鲜）时置空，重入首拍不罚。
+        self._preview_prev_u: float | None = None
+        self._preview_active = False     # 本拍预瞄是否接管（trace pv）
         # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
         # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层把杆归零
         # （只按朝向回正，不积分旧转杆）、计划不接管（见 update 与
@@ -667,7 +676,11 @@ class LateralPlanner:
              # 位置证据面（2026-10-31）：unver=本拍位置是不可信外推值，
              # blind=距上一次新鲜位置证据的秒数（0=本拍有测量）。
              "unver": bool(self.state_unverified),
-             "blind": round(self._blind_t, 2)}
+             "blind": round(self._blind_t, 2),
+             # 控制朝向来源：model=车模影子、obs=观测器、none=无朝向；
+             # pv=本拍短预瞄是否接管下发杆值
+             "csrc": self._heading_src,
+             "pv": bool(self._preview_active)}
         d.update(self.head.debug())
         return d
 
@@ -684,19 +697,28 @@ class LateralPlanner:
         2400：exec 从 −0.5 冲到 −3.1，随后 plan 判参考系分歧、整段停控）。
         截断只作用于**导出速度**（模型积分的输入），状态里的 ψ 原样保留。"""
         h = self.head
-        self._heading_stale = h.psi is None
-        if h.psi is not None:
-            self.state.heading = h.psi
-            self.state.yaw_rate = 0.0 if h.r is None else h.r
+        # 控制朝向（2026-11-01）：线角新鲜时优先用车模影子 (pm, rm)——它由
+        # 实际发出的杆值按车模推进、只做小增益线角校正，台架/实机高频噪声
+        # 约为观测器的 1/3（0.047→0.014 rad）。线角龄超门或影子未建立时退回
+        # 观测器原口径（盲窗行为不变）；trace `lat_ctrl.csrc` 标明本拍来源。
+        fresh = (h.psi is not None
+                 and h.psi_age_s() <= self.p.heading_vel_max_age_s)
+        use_model = fresh and h.mpsi is not None and h.mr is not None
+        psi_ctrl = h.mpsi if use_model else h.psi
+        r_ctrl = h.mr if use_model else h.r
+        self._heading_src = "model" if use_model else "obs"
+        self._heading_stale = psi_ctrl is None
+        if psi_ctrl is not None:
+            self.state.heading = psi_ctrl
+            self.state.yaw_rate = 0.0 if r_ctrl is None else r_ctrl
         self.state.v_mps = h.v_scale
         # ψ 状态可以按 _PSI_STALE_S 保留给控制律，但用它推**横速**要更严：
         # 旧朝向 × 车速就是一段时间内的位置外推，0.6s 的龄在该窗口里会把
         # 自车位置推出 0.7~1 道（20261031_104321_p2 137.5s 实测 1.2~1.8 道/s），
         # 而这段窗口恰好也是线与深度都没新证据的盲窗。横速只认新鲜 ψ。
-        if (h.psi is not None and h.v_scale is not None
-                and h.psi_age_s() <= self.p.heading_vel_max_age_s):
+        if psi_ctrl is not None and h.v_scale is not None and fresh:
             psi_env = max(-self.p.heading_max_rad,
-                          min(self.p.heading_max_rad, h.psi))
+                          min(self.p.heading_max_rad, psi_ctrl))
             self.state.v_lat = h.v_scale * math.tan(psi_env) / LANE_W
         elif h.v_line is not None:
             self.state.v_lat = h.v_line
@@ -987,8 +1009,6 @@ class LateralPlanner:
         # x += v·tanψ·dt。ψ 是测量量，由观测器每拍更新，这里不再有速度状态。
         alpha = 1.0 - math.exp(-dt_s / max(self.p.tau_steer_s, 1e-3))
         self.state.steer_norm += alpha * (steer_raw - self.state.steer_norm)
-        # 车模影子的输入=实际发出的杆值（低通后的 state.steer_norm）
-        self.head.model_command(self.state.steer_norm)
         if not self.state_unverified:
             self.state.executed_lane += self.state.v_lat * dt_s
 
@@ -1177,6 +1197,41 @@ class LateralPlanner:
                 self._road_anchor = None
                 self._last_corr_sign = None
 
+        # ⑥c 短预瞄接管（2026-11-01）：只换巡航维护态的「怎么打」，不换去哪。
+        # 安全链（回稳/故障/盲窗/过期保持/计划短断供/参考系分歧）、承诺并线、
+        # 计划避让（layer<4 或有碰撞代价）、贴边逃生一律不接管。
+        plan_center = (plan is not None and plan.valid
+                       and getattr(plan, "layer", None) == 4
+                       and getattr(plan, "collision_cost", 0.0) <= 0.0)
+        preview_ok = (
+            st is DecisionState.CRUISE
+            and not self.state_unverified
+            and not stale_hold
+            and not plan_held
+            and not frame_shift
+            and decision.x_target is not None
+            and getattr(decision, "phase", "keep") != "merging"
+            and self._heading_src == "model"
+            and abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE
+            and (plan is None or not plan.valid or plan_center)
+            and not (plan is not None
+                     and getattr(plan, "reason", None) in (
+                         "plan:stale", "plan:frame_shift",
+                         "plan:infeasible_corridor")))
+        if preview_ok:
+            u_pv = self._preview_steer(dt_s, decision.x_target, steer_raw)
+            if u_pv is None:
+                preview_ok = False
+            else:
+                # 预瞄输出直接下发（不再过 0.1s 杆值低通：脉冲形状会被抹平，
+                # 失去「点一下松开」的限冲量作用）；state 同步为实际杆值。
+                self.state.steer_norm = u_pv
+        self._preview_active = preview_ok
+        if not preview_ok:
+            self._preview_prev_u = None
+        # 车模影子的输入=**实际发出的**杆值（预瞄接管后即 u_pv）
+        self.head.model_command(self.state.steer_norm)
+
         # ⑦ 下发链：归一 → 限幅（每 tick 变化上限）→ 死区（<256 归 0，256 保留）
         raw = int(round(self.state.steer_norm * _STICK_FULL))
         max_step = int(round(self.p.rate_limit_raw))
@@ -1185,6 +1240,65 @@ class LateralPlanner:
             raw = 0
         self._last_raw = raw
         return GamepadCommand(steer_x=raw, throttle=self.p.throttle_raw)
+
+    def _preview_steer(self, dt_s: float, target: float,
+                       u_orig: float) -> float | None:
+        """短预瞄转向：候选脉冲剖面滚动预测（巡航维护态替代连续律）。
+
+        实测人工局：有效打杆只占 20~48%，每次脉冲中位 0.15~0.19 s、近满杆，
+        脉冲间松开 0.15~0.29 s 观察，方向反转几乎为 0——人不是「一直按着」，
+        而是在 0.45 s 回路延迟下用短脉冲限冲量、靠车自身回正（τ≈0.2 s）
+        衰减后再看。这里在 0.8 s 视界内用带执行滞后的车模滚每种候选
+        （脉冲宽度×幅度 + 松开），代价=预测横向误差²+转向变化²+换向惩罚，
+        取第一拍执行、下一拍重算；目标仍是决策意图。
+
+        只在影子朝向新鲜且非安全/并线通道时调用；返回 None=不接管。"""
+        p = self.p
+        if p.preview_horizon_s <= 0.0 or target is None:
+            return None
+        v = self.state.v_mps
+        if v is None or v <= 1.0 or self.state.heading is None:
+            return None
+        x0 = (self.state.executed_lane
+              + self.state.v_lat * p.preview_obs_lag_s)
+        psi0 = self.state.heading
+        r0 = self.state.yaw_rate or 0.0
+        n = max(1, int(round(p.preview_horizon_s / dt_s)))
+        prev = 0.0 if self._preview_prev_u is None else self._preview_prev_u
+        a = 1.0 - math.exp(-dt_s / _MODEL_YAW_TAU_S)
+
+        def roll(u0: float, width: float) -> float:
+            r, psi, x = r0, psi0, x0
+            cost = 0.0
+            u_prev = 0.0
+            for k in range(n):
+                u = u0 if k * dt_s < width else 0.0
+                r += a * (_MODEL_YAW_GAIN * u - r)
+                psi += r * dt_s
+                x += v * math.tan(psi) / LANE_W * dt_s
+                cost += p.preview_err_w * (x - target) ** 2
+                cost += p.preview_eff_w * (u - u_prev) ** 2
+                u_prev = u
+            cost += p.preview_term_w * (x - target) ** 2
+            cost += p.preview_change_w * (u0 - prev) ** 2
+            if u0 * prev < 0.0:
+                cost += p.preview_rev_w
+            return cost
+
+        best = roll(0.0, 0.0)                  # 松开观察
+        best_u = 0.0
+        c = roll(u_orig, p.preview_horizon_s)  # 保持现有命令
+        if c < best:
+            best, best_u = c, u_orig
+        for sign in (1.0, -1.0):
+            for amp in _PREVIEW_AMPS:
+                for width in _PREVIEW_WIDTHS:
+                    c = roll(sign * amp, width)
+                    if c < best:
+                        best, best_u = c, sign * amp
+        best_u = max(-1.0, min(1.0, best_u))
+        self._preview_prev_u = best_u
+        return best_u
 
     def _pd(self, target: float, gentle: bool = False,
             deadband: float | None = None,

@@ -191,6 +191,17 @@ class Planner:
     # 0.20 s 会把漂移抬到 0.272，不采用。只在非 gentle（计划/机动）通道
     # 生效；gentle 的 ABORT 冻结与维护保持不加，避免冻结位漂移。
     heading_lead_s: float = 0.0
+    # 短预瞄控制器（2026-11-01）：巡航维护态用「脉冲宽度×幅度 + 松开」候选
+    # 滚动预测，取代连续律。0=关闭（回退连续律）。horizon=0.8s、观测滞后
+    # 0.25s；代价=预测横向误差² + 转向变化² + 终点误差 + 换向惩罚。
+    # 参数见 policy `planner.preview_*`，台架与实机证据见 `_sources`。
+    preview_horizon_s: float = 0.0
+    preview_obs_lag_s: float = 0.25
+    preview_err_w: float = 1.0
+    preview_term_w: float = 20.0
+    preview_eff_w: float = 1.0
+    preview_change_w: float = 2.0
+    preview_rev_w: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -639,6 +650,20 @@ def _read_decision(path: Path) -> DecisionConfig:
             k_r=_num(d, "planner", "k_r", lo=0, lo_open=False),
             heading_lead_s=_num_def(d, "planner", "heading_lead_s", 0.0,
                                     lo=0),
+            preview_horizon_s=_num_def(
+                d, "planner", "preview_horizon_s", 0.0, lo=0),
+            preview_obs_lag_s=_num_def(
+                d, "planner", "preview_obs_lag_s", 0.25, lo=0),
+            preview_err_w=_num_def(
+                d, "planner", "preview_err_w", 1.0, lo=0),
+            preview_term_w=_num_def(
+                d, "planner", "preview_term_w", 20.0, lo=0),
+            preview_eff_w=_num_def(
+                d, "planner", "preview_eff_w", 1.0, lo=0),
+            preview_change_w=_num_def(
+                d, "planner", "preview_change_w", 2.0, lo=0),
+            preview_rev_w=_num_def(
+                d, "planner", "preview_rev_w", 2.0, lo=0),
             tau_heading_s=_num(d, "planner", "tau_heading_s", lo=0),
             heading_max_rad=_num(d, "planner", "heading_max_rad", lo=0),
             heading_hold_rad=_num(d, "planner", "heading_hold_rad", lo=0),

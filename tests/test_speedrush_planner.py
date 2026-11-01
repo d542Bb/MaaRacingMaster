@@ -28,11 +28,11 @@ P = CFG.planner
 
 
 def _out(state=DecisionState.CRUISE, x_target=0.0, fid=1, valid=3,
-         maneuver=False) -> DecisionOutput:
+         maneuver=False, phase="keep") -> DecisionOutput:
     return DecisionOutput(
         schema_version=5, state=state, x_target=x_target,
         reason="test", emitted_fid=fid,
-        valid_until_fid=valid, maneuver=maneuver)
+        valid_until_fid=valid, maneuver=maneuver, phase=phase)
 
 
 def _planner(**over) -> LateralPlanner:
@@ -1525,22 +1525,62 @@ def test_heading_model_shadow_rejects_line_jump():
     assert abs(h.debug()["pmi"]) == pytest.approx(0.5, abs=0.02)
 
 
-def test_heading_model_shadow_does_not_steer(monkeypatch):
-    """影子写坏也影响不到杆值：控制路径不读 pm/rm。"""
+def test_heading_model_shadow_is_the_control_state():
+    """线角新鲜时控制状态取车模影子（csrc=model），观测器只做对照。
+
+    2026-11-01 起影子从 trace-only 升为控制源：台架同延迟/噪声下 ψ 误差
+    0.047→0.014 rad，短预瞄控制器只有用它才不发散。"""
     pl = _planner()
     rig = _Rig(pl)
-    base = [rig.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2)).steer_x
-            for i in range(20)]
-    pl2 = _planner()
-    rig2 = _Rig(pl2)
+    for i in range(10):
+        rig.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2))
+    pl._sync_heading_state()
+    assert pl._heading_src == "model"
+    assert pl.state.heading == pytest.approx(pl.head.mpsi, abs=1e-9)
+    assert pl.state.yaw_rate == pytest.approx(pl.head.mr, abs=1e-9)
 
-    def poisoned(self, th, age_ms=None):
-        self.mpsi, self.mr = 0.5, 0.8
 
-    monkeypatch.setattr(HeadingObserver, "_model_correct", poisoned)
-    got = [rig2.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2)).steer_x
-           for i in range(20)]
-    assert got == base
+def test_heading_state_falls_back_to_observer_without_shadow():
+    """影子不可用时退回观测器原口径，盲窗行为不变。"""
+    pl = _planner()
+    pl.head.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)
+    pl.head.mpsi, pl.head.mr = None, None
+    pl._sync_heading_state()
+    assert pl._heading_src == "obs"
+    assert pl.state.heading == pytest.approx(pl.head.psi, abs=1e-9)
+
+
+def test_preview_steer_disabled_by_zero_horizon():
+    pl = _planner(preview_horizon_s=0.0)
+    pl.state.executed_lane = 0.5
+    pl.state.heading = 0.0
+    pl.state.yaw_rate = 0.0
+    pl.state.v_mps = 45.0
+    assert pl._preview_steer(DT, 0.0, 0.2) is None
+
+
+def test_preview_steer_pulses_toward_target():
+    """目标在左侧（x=+0.8 → 0）：第一拍是左向脉冲，幅度有界。"""
+    pl = _planner()
+    pl.state.executed_lane = 0.8
+    pl.state.heading = 0.0
+    pl.state.yaw_rate = 0.0
+    pl.state.v_mps = 45.0
+    pl.state.v_lat = 0.0
+    u = pl._preview_steer(DT, 0.0, 0.0)
+    assert u is not None and -1.0 <= u <= 1.0
+    assert u < -0.05
+    assert pl._preview_prev_u == pytest.approx(u, abs=1e-9)
+
+
+def test_preview_bypasses_committed_merge():
+    """承诺并线不接管（安全通道保持原 PD）：_preview_prev_u 不被置位。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(6):
+        rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 2,
+                      phase="merging"))
+    assert pl._preview_prev_u is None
 
 
 def test_stale_heading_stops_producing_lateral_velocity():
