@@ -63,11 +63,11 @@ def _obs(fid, *, coin_cy, car_cy):
         coin_groups=(group,), fid_rate_hz=20.0)
 
 
-def _run(switches_on: bool, ticks: int = 120):
+def _run(dynamic: bool, layer: bool, ticks: int = 120):
     cfg = CFG
-    if switches_on:
+    if dynamic or layer:
         cfg = replace(cfg, selection=replace(
-            cfg.selection, dynamic_horizon=True, layer_dwell=True))
+            cfg.selection, dynamic_horizon=dynamic, layer_dwell=layer))
     eng = DecisionEngine(cfg)
     pl = LateralPlanner(cfg.planner)
     x = 0.0
@@ -113,19 +113,26 @@ def _run(switches_on: bool, ticks: int = 120):
 
 
 def test_closed_loop_is_finite_and_bounded_with_switches_on():
-    off = _run(False)
-    on = _run(True)
-    for rep in (off, on):
+    off = _run(False, False)
+    dyn = _run(True, False)
+    lay = _run(False, True)
+    both = _run(True, True)
+    for rep in (off, dyn, lay, both):
         assert all(math.isfinite(v) for v in rep["x"])
         assert max(abs(v) for v in rep["x"]) < 2.0
         assert rep["pl"].state.steer_norm is not None
         assert math.isfinite(rep["pl"].state.steer_norm)
-    # 影子视界在拥挤档真的降到 2.0
-    assert min(on["horizons"]) <= 2.0
-    assert on["horizons"].count(2.0) > 10
-    # 固定 3s：2.8s 到站的币持续可追；2s 视界 + 驻留后不再选它
+    # 影子视界在拥挤档真的降到 2.0（仅动态视界组）
+    for rep in (dyn, both):
+        assert min(rep["horizons"]) <= 2.0
+        assert rep["horizons"].count(2.0) > 10
+    # 固定 3s：2.8s 到站的币持续可追；2s 视界后不再选它
     coin_off = sum(1 for r in off["layers"] if r.startswith("sel:coin"))
-    coin_on = sum(1 for r in on["layers"] if r.startswith("sel:coin"))
+    coin_dyn = sum(1 for r in dyn["layers"] if r.startswith("sel:coin"))
+    coin_both = sum(1 for r in both["layers"] if r.startswith("sel:coin"))
     assert coin_off > 50
-    assert coin_on < coin_off
-    assert max(off["x"]) > max(on["x"]) + 0.05
+    assert coin_dyn < coin_off
+    assert coin_both < coin_off
+    assert max(off["x"]) > max(both["x"]) + 0.05
+    # 只开层驻留不改变视界，横位仍应跟得上（只是切换晚 0.2s）
+    assert max(lay["x"]) > 0.3
