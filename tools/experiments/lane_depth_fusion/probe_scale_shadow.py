@@ -52,7 +52,6 @@ def load_params(lw: float, kin_scale: float = 1.0):
         max_waypoints=s["max_waypoints"], graze_gap_lane=s["graze_gap_lane"],
         center_band_lane=s["center_band_lane"],
         opportunity_tol_lane=s["opportunity_tol_lane"],
-        coin_pick_tol_lane=s["coin_pick_tol_lane"],
         coin_hold_s=s["coin_hold_s"],
         k_lat_lane_s=pl["k_lat_lane_s"] * kin_scale,
         tau_heading_s=pl["tau_heading_s"],
@@ -63,7 +62,6 @@ def load_params(lw: float, kin_scale: float = 1.0):
         wall_margin_lane=s["wall_margin_lane"],
         center_lookahead_m=s["center_lookahead_m"],
         switch_dwell_s=s["switch_dwell_s"],
-        reward_tol_lane=s["reward_tol_lane"],
         car_half_lane=s["car_half_lane"],
         ego_half_lane=s["ego_half_lane"],
         lane_clearance_lane=s["lane_clearance_lane"])

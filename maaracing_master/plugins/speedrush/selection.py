@@ -186,9 +186,9 @@ class SelectionParams:
     graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
     opportunity_tol_lane: float = 0.75
-    # 金币主目标只吃「当前线附近」的组（录制对照：人类不追 0.8 道外的散币）；
+    # 得分机会不再有固定横距门：资格由时间锥（reach_slack）+ 相邻 ±1 请求
+    # 决定——够不够得着是时间问题，不是「只吃 1.2 道内」的距离问题。
     # 选中后组消失仍保持 coin_hold_s，更高层出现立即覆盖。
-    coin_pick_tol_lane: float = 1.2
     coin_hold_s: float = 0.6
     # 横移可达性用执行层同一条闭环律（k_lat / tau_heading / heading_max，
     # 见 ``planner.lane_move_time``）；这里的四个数由配置从执行层抄一份，
@@ -211,7 +211,6 @@ class SelectionParams:
     preposition_max_lane: float = 2.5
     preposition_bias_lane: float = 1.0
     switch_dwell_s: float = 0.2
-    reward_tol_lane: float = 1.5
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
     # 车道内安全区间的车身余量（道）：车心可在车道中心 ±(0.5−半宽−余量)
@@ -331,9 +330,9 @@ def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
     for r in sorted(rewards, key=lambda o: (o.t if o.t is not None else math.inf)):
         if r.t is None or not (0.0 <= r.t <= p.horizon_s):
             continue
+        if commit_x is None and abs(r.x - ego) > p.lane_w_m:
+            continue                    # 无承诺道：只做本道/相邻一道，不跨多道
         x = road.clamp(r.x, p.wall_margin_lane * p.lane_w_m)
-        if abs(r.x - x) > p.reward_tol_lane * p.lane_w_m:
-            continue
         if sp is not None and not _in_interval(r.x, sp):
             # 奖励车在隔壁道：本拍不拽过去（撞它得先站对道），发换道请求
             req_x = _req_lane(r.x, commit_x, p)
@@ -346,7 +345,9 @@ def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
             continue
         if _blocked(cars, x, r.t, p):
             continue
-        return (x, r.t, "reward"), None
+        # 命中拍也把之前挂起的邻道请求带出（另一辆奖励车/币的），
+        # 由调用方按命中类型裁决：安全命中丢弃、得分命中保留。
+        return (x, r.t, "reward"), pending
     return None, pending
 
 
@@ -412,9 +413,10 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
     sp = _lane_span(commit_x, p, road) if commit_x is not None else None
     pending: float | None = None
     for c in cands:
-        # 只吃当前线附近一道左右的组；更远的散币不追（追了会把车拉离
-        # 币线，且 3 秒内也横移不过去）。
-        if abs(c.x - ego) > p.coin_pick_tol_lane * p.lane_w_m:
+        # 资格只由时间锥与相邻请求决定：3 秒内横移不过去的目标会被
+        # _reachable 拒掉，不再先按固定横距门砍一刀。无承诺道（离线/闸关）
+        # 时仍守「本道/相邻一道」——多段换道不在本方案内。
+        if commit_x is None and abs(c.x - ego) > p.lane_w_m:
             continue
         x = road.clamp(_coin_aim(c.x, ego, p),
                        p.wall_margin_lane * p.lane_w_m)
@@ -432,7 +434,7 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
                     _reachable(x, ego, c.t, p):
                 pending = req_x
             continue
-        return (x, c.t, "coin"), None
+        return (x, c.t, "coin"), pending
     return None, pending
 
 
@@ -600,9 +602,13 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
         if hit is not None:
             x, t, why = hit
             layer = 1 if why == "reward" else 2 if why == "pass" else 3
+            # 命中按类型裁决请求：擦边/让位是安全动作，挂起请求本拍丢弃
+            # （路线 pass_hold 也不抢方向）；得分命中把邻道请求带出，继续
+            # 累计确认——否则命中拍会周期性清零，请求永远攒不满。
+            carried = req if why != "pass" else None
             return SelectionReport(
                 layer, _waypoints(layer, x, t, cars, coins, road, ego, p),
-                x, why, True, True)
+                x, why, True, True, carried)
     x, why, maneuver = _center_target(road, ego, p, coarse_lane)
     pre = None if committed else _preposition_target(
         rewards, cars, coins, road, ego, p, commit_x_m)

@@ -79,7 +79,7 @@ def test_coin_not_centered_car_has_width():
 
 
 def test_coin_off_line_not_selected():
-    """超过 1.2 道的散币不追（追了会把车拉离币线，3 秒内也横移不过去）。"""
+    """无承诺道时只做本道/相邻一道：1.5 道外的散币不直接拽。"""
     rep = select(_road(), [], [], [Obj("coin", 1.5 * LW, 3.0)], 0.0, _p())
     assert rep.layer == 4 and rep.why == "center"
 
@@ -396,3 +396,35 @@ def test_unsafe_car_is_ignored_by_safety_consumers():
                            _road(), 0.0, p)
     assert "pass" in [w.src for w in wp_safe]
     assert "pass" not in [w.src for w in wp_unsafe]
+
+
+def test_old_fixed_gate_replaced_by_cone_and_adjacent_rule():
+    """1.4 道外的币：旧 1.2 道固定门会丢；有承诺道时按锥+相邻请求裁决。"""
+    coin = Obj("coin", 1.4 * LW, 2.5)
+    rep = select(_road(), [], [], [coin], 0.0, _p(), commit_x_m=0.0)
+    assert rep.layer == 4 and rep.lane_request == 1.0
+    # 无承诺道：只做本道/相邻一道，不直接拽 1.4 道
+    rep2 = select(_road(), [], [], [coin], 0.0, _p())
+    assert rep2.layer == 4 and rep2.target_x_m == pytest.approx(0.0, abs=0.05)
+
+
+def test_multi_lane_coin_never_requests():
+    """2 道外的币即使时间够，也超出相邻 ±1 请求范围：不请求、不拽。"""
+    rep = select(_road(), [], [], [Obj("coin", 2.0 * LW, 3.0)], 0.0, _p(),
+                 commit_x_m=0.0)
+    assert rep.layer == 4 and rep.lane_request is None
+
+
+def test_scoring_hit_carries_pending_adjacent_request():
+    """命中拍不再吞请求：另一辆邻道奖励车的挂起请求随报告带出。"""
+    rewards = [Obj("reward", 1.0 * LW, 2.2), Obj("reward", 0.1 * LW, 2.5)]
+    rep = select(_road(), rewards, [], [], 0.0, _p(), commit_x_m=0.0)
+    assert rep.layer == 1 and rep.why == "reward"
+    assert rep.lane_request == 1.0
+
+
+def test_safety_hit_discards_pending_request():
+    """擦边/让位命中时挂起请求本拍丢弃（安全动作优先，路线 pass_hold）。"""
+    rep = select(_road(), [Obj("reward", 1.0 * LW, 2.2)],
+                 [Obj("car", 0.0, 2.0)], [], 0.0, _p(), commit_x_m=0.0)
+    assert rep.why == "pass" and rep.lane_request is None

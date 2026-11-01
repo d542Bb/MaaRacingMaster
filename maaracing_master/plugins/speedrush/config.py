@@ -41,7 +41,6 @@ class Selection:
     graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
     opportunity_tol_lane: float = 0.75
-    coin_pick_tol_lane: float = 1.2
     coin_hold_s: float = 0.6
     reaction_s: float = 0.13
     margin_s: float = 0.15
@@ -54,7 +53,6 @@ class Selection:
     preposition_max_lane: float = 2.5
     preposition_bias_lane: float = 1.0
     switch_dwell_s: float = 0.2
-    reward_tol_lane: float = 1.5
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
     lane_clearance_lane: float = 0.06
@@ -826,8 +824,6 @@ def _read_decision(path: Path) -> DecisionConfig:
                                       lo=0),
             opportunity_tol_lane=_num_def(
                 d, "selection", "opportunity_tol_lane", 0.75, lo=0),
-            coin_pick_tol_lane=_num_def(
-                d, "selection", "coin_pick_tol_lane", 1.2, lo=0),
             coin_hold_s=_num_def(d, "selection", "coin_hold_s", 0.6, lo=0),
             reaction_s=_num_def(d, "selection", "reaction_s", 0.13, lo=0),
             margin_s=_num_def(d, "selection", "margin_s", 0.15, lo=0),
@@ -849,8 +845,6 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "preposition_bias_lane", 1.0, lo=0),
             switch_dwell_s=_num_def(
                 d, "selection", "switch_dwell_s", 0.2, lo=0),
-            reward_tol_lane=_num_def(
-                d, "selection", "reward_tol_lane", 1.5, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),
             ego_half_lane=_num_def(d, "selection", "ego_half_lane", 0.27, lo=0),
             lane_clearance_lane=_num_def(

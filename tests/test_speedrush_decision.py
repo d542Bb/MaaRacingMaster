@@ -602,3 +602,17 @@ def test_lane_ttc_map_skips_unsafe_cars():
            safety_ok=True),
     ))
     assert _lane_ttc_map(scene, 0.0, 3.0) == {0: 1.2}
+
+
+def test_coin_group_far_time_is_later_than_near():
+    """长币线：远端（cy_min）到站时间晚于最近一枚，选择层用它提前起意；
+    计分仍用近枚时间。"""
+    ms = _members(1, 1, 3, 0.5, 500, 5)
+    g = CoinGroup(group_id=1, member_ids=tuple(m.id for m in ms),
+                  observed_count=3, estimated_count=3, x_center=0.5,
+                  x_span=0.3, cy_min=500, cy_max=506, conf_min=0.85,
+                  partial_observation=False, first_seen_fid=1,
+                  last_seen_fid=1, validity_until_fid=9)
+    sc = Scorer(CFG, load_calib()).score(g, _obs(groups=(g,), targets=ms))
+    assert sc is not None
+    assert sc.t_far_s > sc.t_miss_s

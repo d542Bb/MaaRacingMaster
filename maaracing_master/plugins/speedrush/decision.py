@@ -81,9 +81,11 @@ class Scored:
 
     group: "CoinGroup | None"
     score: float
-    t_miss_s: float
+    t_miss_s: float               # 最近一枚（cy_max）的到站时间：计分用
     kind: str = "coin"
     car: "CarView | None" = None
+    # 组远端（cy_min）的到站时间：长币线提前起意用。单枚组与 t_miss 相同。
+    t_far_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -233,9 +235,11 @@ class Scorer:
                  * max(g.observed_count, self.c.coin_group_min_count) * conf_factor)
         k = self._flow_k(obs)
         t_miss = math.inf if k is None else self._t_miss_ground_s(g.cy_max, k)
+        t_far = math.inf if k is None else self._t_miss_ground_s(g.cy_min, k)
         life = math.exp(-t_miss / self.c.life_tau_s) if math.isfinite(t_miss) else 0.0
         score = value * life - self.c.shift_cost_per_lane * abs(g.x_center)
-        return Scored(group=g, score=score, t_miss_s=t_miss)
+        return Scored(group=g, score=score, t_miss_s=t_miss,
+                      t_far_s=t_far)
 
     def _flow_k(self, obs: WorldObservation) -> float | None:
         """全场地面流系数（2026-10-02 换基）：静止世界里同一帧的所有地面目标
@@ -422,7 +426,6 @@ class DecisionEngine:
             wall_margin_lane=s.wall_margin_lane,
             center_lookahead_m=s.center_lookahead_m,
             switch_dwell_s=s.switch_dwell_s,
-            reward_tol_lane=s.reward_tol_lane,
             car_half_lane=s.car_half_lane,
             ego_half_lane=s.ego_half_lane,
             lane_clearance_lane=s.lane_clearance_lane))
@@ -749,7 +752,10 @@ class DecisionEngine:
             s = self.scorer.score(g, obs)
             if s is None:
                 continue                        # 置信地板（质量门语义一致）
-            t_raw = s.t_miss_s
+            # 长币线用组远端起意：近枚先到，但远端还在更久之后；按近枚时间
+            # 判可达会系统性晚一拍。收币目标仍是最近一枚（x_center/lead）。
+            t_raw = (s.t_far_s if s.t_far_s is not None
+                     and math.isfinite(s.t_far_s) else s.t_miss_s)
             if not math.isfinite(t_raw):
                 continue
             # 同组时间单调：组里换了更远的一枚时 t 会突增，计划会在

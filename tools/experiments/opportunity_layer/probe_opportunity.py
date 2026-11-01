@@ -35,6 +35,11 @@ sys.path.insert(0, str(ROOT))
 from maaracing_master.plugins.speedrush.selection import (  # noqa: E402
     Obj, RoadBand, RoadFrame, SelectionParams, select)
 
+# 旧固定横距门（2026-11-01 已从选择层移除）：探针保留原值，
+# 只用于复算历史局「被距离门丢掉的机会」。
+COIN_TOL = 1.2
+REWARD_TOL = 1.5
+
 POLICY = ROOT / "maaracing_master/plugins/speedrush/resources/policy/decision.json"
 CALIB = ROOT / "maaracing_master/plugins/speedrush/resources/calibration/gate0.json"
 
@@ -49,7 +54,6 @@ def load_params() -> tuple[SelectionParams, float, dict]:
         graze_gap_lane=s["graze_gap_lane"],
         center_band_lane=s["center_band_lane"],
         opportunity_tol_lane=s["opportunity_tol_lane"],
-        coin_pick_tol_lane=s["coin_pick_tol_lane"],
         coin_hold_s=s["coin_hold_s"],
         k_lat_lane_s=pl["k_lat_lane_s"], tau_heading_s=pl["tau_heading_s"],
         heading_max_rad=pl["heading_max_rad"],
@@ -59,7 +63,6 @@ def load_params() -> tuple[SelectionParams, float, dict]:
         wall_margin_lane=s["wall_margin_lane"],
         center_lookahead_m=s["center_lookahead_m"],
         switch_dwell_s=s["switch_dwell_s"],
-        reward_tol_lane=s["reward_tol_lane"],
         car_half_lane=s["car_half_lane"],
         ego_half_lane=s["ego_half_lane"],
         lane_clearance_lane=s["lane_clearance_lane"])
@@ -201,8 +204,8 @@ def _bump(acc: Acc, dt: float, row: dict, x: dict, free,
         acc.committed_t += dt
         if layer == 4:
             acc.l4_commit_t += dt
-            see = (_visible(x["rw"], x["ego"], p, p.reward_tol_lane)
-                   or _visible(x["coin"], x["ego"], p, p.coin_pick_tol_lane))
+            see = (_visible(x["rw"], x["ego"], p, REWARD_TOL)
+                   or _visible(x["coin"], x["ego"], p, COIN_TOL))
             if see:
                 acc.l4_commit_opp_t += dt
         return
@@ -231,11 +234,11 @@ def _bump(acc: Acc, dt: float, row: dict, x: dict, free,
         dc = [abs(o.x - x["ego"]) / p.lane_w_m for o in win_c]
         dr = [abs(o.x - x["ego"]) / p.lane_w_m for o in win_r]
         near_c = [d for d in dc
-                  if p.coin_pick_tol_lane < d <= p.coin_pick_tol_lane + 1.0]
+                  if COIN_TOL < d <= COIN_TOL + 1.0]
         near_r = [d for d in dr
-                  if p.reward_tol_lane < d <= p.reward_tol_lane + 1.0]
-        if (any(d <= p.coin_pick_tol_lane for d in dc)
-                or any(d <= p.reward_tol_lane for d in dr)):
+                  if REWARD_TOL < d <= REWARD_TOL + 1.0]
+        if (any(d <= COIN_TOL for d in dc)
+                or any(d <= REWARD_TOL for d in dr)):
             acc.none_unreach_t += dt       # 横向够得着：被挡/来不及
         elif near_c or near_r:
             acc.near_coin_t += dt if near_c else 0.0
