@@ -684,7 +684,7 @@ class LateralPlanner:
         d.update(self.head.debug())
         return d
 
-    def _sync_heading_state(self) -> None:
+    def _sync_heading_state(self, merging: bool) -> None:
         """把观测写进状态，并导出横移速度。
 
         横移速度只有一条算式：``v_lat = v·tanψ/LANE_W``。比例还没估出来时
@@ -701,9 +701,20 @@ class LateralPlanner:
         # 实际发出的杆值按车模推进、只做小增益线角校正，台架/实机高频噪声
         # 约为观测器的 1/3（0.047→0.014 rad）。线角龄超门或影子未建立时退回
         # 观测器原口径（盲窗行为不变）；trace `lat_ctrl.csrc` 标明本拍来源。
+        #
+        # 承诺并线例外：车模积分的是**绝对偏航**，可能把车道自身的转角也算进
+        # 朝向——持续转向时它比线角口径高约 0.02~0.03 rad（方向相关；台架把
+        # 车的偏航增益减半即可复现同样的并线变慢）。并线 PD 同时吃朝向误差与
+        # 角速度阻尼，杆量被砍半（20261101_104633 两局：并线段杆量 0.18 vs
+        # 旧版 0.50，长段并线 3.9s 只横移 0.28 道）。线角是相对车道的测量，
+        # 并线段且它新鲜时改用它；不新鲜仍退回影子，别在断线拍停控。
         fresh = (h.psi is not None
                  and h.psi_age_s() <= self.p.heading_vel_max_age_s)
-        use_model = fresh and h.mpsi is not None and h.mr is not None
+        model_ok = h.mpsi is not None and h.mr is not None
+        if merging:
+            use_model = (not fresh) and model_ok
+        else:
+            use_model = fresh and model_ok
         psi_ctrl = h.mpsi if use_model else h.psi
         r_ctrl = h.mr if use_model else h.r
         self._heading_src = "model" if use_model else "obs"
@@ -820,7 +831,8 @@ class LateralPlanner:
         # 横移速度由两者导出（一条算式），决策、计划、控制共用。
         self.head.update(dt_s, lane_x, lane_ok, lane_theta, lane_theta_ok,
                          lane_fid, lane_age_ms, lane_n_locked)
-        self._sync_heading_state()
+        self._sync_heading_state(
+            getattr(decision, "phase", "keep") == "merging")
 
         # 横向位置证据（2026-10-31）：位置证据=真实深度读数（非历史保持值；
         # 复用拍是同一帧深度的短驻留，仍算证据）或已对账锁线；运动证据=新鲜 ψ

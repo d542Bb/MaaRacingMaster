@@ -1534,7 +1534,7 @@ def test_heading_model_shadow_is_the_control_state():
     rig = _Rig(pl)
     for i in range(10):
         rig.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2))
-    pl._sync_heading_state()
+    pl._sync_heading_state(False)
     assert pl._heading_src == "model"
     assert pl.state.heading == pytest.approx(pl.head.mpsi, abs=1e-9)
     assert pl.state.yaw_rate == pytest.approx(pl.head.mr, abs=1e-9)
@@ -1545,9 +1545,38 @@ def test_heading_state_falls_back_to_observer_without_shadow():
     pl = _planner()
     pl.head.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)
     pl.head.mpsi, pl.head.mr = None, None
-    pl._sync_heading_state()
+    pl._sync_heading_state(False)
     assert pl._heading_src == "obs"
     assert pl.state.heading == pytest.approx(pl.head.psi, abs=1e-9)
+
+
+def test_merge_heading_uses_observer_even_with_shadow():
+    """承诺并线取线角口径：车模积分绝对偏航，持续转向时比线角高约 0.03 rad。
+
+    并线 PD 同时吃朝向误差与角速度阻尼，用高估的影子会把杆量砍半
+    （20261101_104633 并线段杆量 0.18 vs 旧版 0.50）。线角新鲜时并线一律
+    用观测器；影子留给维护态与预瞄。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(10):
+        rig.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2))
+    pl.head.mpsi = (pl.head.psi or 0.0) + 0.03
+    pl.head.mr = 0.0
+    pl._sync_heading_state(True)
+    assert pl._heading_src == "obs"
+    assert pl.state.heading == pytest.approx(pl.head.psi, abs=1e-9)
+
+
+def test_merge_heading_falls_back_to_shadow_when_line_stale():
+    """并线拍线角过期时不能停控：退回影子继续给朝向。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(10):
+        rig.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2))
+    pl.head._psi_t = -1e9
+    pl._sync_heading_state(True)
+    assert pl._heading_src == "model"
+    assert pl.state.heading == pytest.approx(pl.head.mpsi, abs=1e-9)
 
 
 def test_preview_steer_disabled_by_zero_horizon():
@@ -1591,11 +1620,11 @@ def test_stale_heading_stops_producing_lateral_velocity():
     pl.head.psi = 0.1
     pl.head.v_scale = 40.0
     pl.head._psi_t = pl.head._t
-    pl._sync_heading_state()
+    pl._sync_heading_state(False)
     fresh = pl.state.v_lat
     assert fresh > 0.5                              # tan(0.1)·40/3.5 ≈ 1.15 道/s
     pl.head._psi_t = pl.head._t - (P.heading_vel_max_age_s + 0.05)
-    pl._sync_heading_state()
+    pl._sync_heading_state(False)
     assert pl.state.v_lat == pytest.approx(0.0)
     assert pl.state.heading == pytest.approx(0.1)   # 朝向状态本身仍保留
 
