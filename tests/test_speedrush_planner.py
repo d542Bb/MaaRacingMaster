@@ -46,7 +46,7 @@ def test_law_targets_heading_then_stick():
     e, psi, r = 0.4, 0.02, 0.05
     psi_des = min(P.heading_max_rad, P.k_head_lane * e)
     assert law(e, psi, r, P) == pytest.approx(
-        P.k_psi * (psi_des - psi) - P.k_r * r)
+        P.k_psi * (psi_des - (psi + P.heading_lead_s * r)) - P.k_r * r)
     # 朝向已到位且无角速度 → 不出杆
     assert law(e, P.k_head_lane * e, 0.0, P) == pytest.approx(0.0)
     # 维护态：目标朝向被压到 heading_hold_rad、杆幅受 hold_stick_max
@@ -1606,3 +1606,22 @@ def test_bench_centering_does_not_limit_cycle():
         xs.append(rig.x)
     assert abs(xs[79]) < 0.2                        # 4s 内到位
     assert max(abs(x) for x in xs[120:]) < 0.15     # 尾段不再来回
+
+
+def test_bench_centering_bounded_under_measured_delay_noise():
+    """实测包线锁（2026-10-31）：观测延迟 0.25s + 角度噪声 0.02 rad +
+    位置噪声 0.05 道（两局 trace 上界；车模自身 0.2s 滞后由 _Rig 的 plant
+    另行承担，合计≈0.45s）。允许尾段保留噪声级摆动，但不得回到整道级
+    极限环或发散。增益下调（如 4/1.5）在实测包线下要么摆幅不降、要么
+    破坏 1s 收道与既有锁，不能作为首选；真正的杠杆在延迟与上游状态。"""
+    pl = _planner()
+    rig = _Rig(pl, delay_s=0.25, noise_psi=0.02, noise_pos=0.05, seed=11)
+    rig.x = 1.0
+    rig._hist = [(0.0, 0.0, 1.0)]
+    xs = []
+    for i in range(300):
+        rig.tick(_out(x_target=0.0, fid=i + 1, valid=i + 1))
+        xs.append(rig.x)
+    tail = xs[-100:]
+    assert (max(tail) - min(tail)) / 2 < 1.0     # 不回到整道级极限环
+    assert abs(xs[-1]) < 0.9                     # 不发散

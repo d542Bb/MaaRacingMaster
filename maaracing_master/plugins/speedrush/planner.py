@@ -100,6 +100,8 @@ _PSI_CORR_TAU_S = 0.5
 # 比车头转得更快；越过它的只能是换线/拟合跳变或单帧坏角度（同帧两条线差
 # p90 0.06 rad，线组一换融合角就阶跃；实测隐含角速率最高 4.3 rad/s，7% 的
 # 更新拍 >0.6）。0.8 给单帧噪声留余量（0.05s 间隔上噪声可到 ~0.5）。
+# 2026-10-31 试过降到物理上限 0.46：闭环台架里真实快转也被截断，朝向估计
+# 滞后、车发散到 −2.35 道（centering/bounded 两锁红），不可用。
 _HEAD_RATE_MAX = 0.8
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
@@ -343,7 +345,8 @@ def stick_of(psi_des: float, psi: float, r: float, p: Planner,
     ``hold_stick_max``。"""
     psi_lim = p.heading_hold_rad if gentle else p.heading_max_rad
     psi_des = max(-psi_lim, min(psi_lim, psi_des))
-    u = p.k_psi * (psi_des - psi) - p.k_r * r
+    lead = 0.0 if gentle else getattr(p, "heading_lead_s", 0.0)
+    u = p.k_psi * (psi_des - (psi + lead * r)) - p.k_r * r
     lim = p.hold_stick_max if gentle else 1.0
     if cap is not None:
         lim = cap
