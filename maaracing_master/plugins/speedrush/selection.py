@@ -104,6 +104,10 @@ class Obj:
     # 车是否可进安全判断（对象表 safety_ok）。只对 kind=car 有意义：擦边、
     # 让位、占用检查读它；预置等价值项不看。
     safe: bool = True
+    # 证据位到站秒（第 7 期得分源平滑）：按对象 EMA 后的到站时间，使
+    # reach_slack(x, ego, t_ev) 等于平滑 slack。None=未平滑（第 6 期行为，
+    # 证据位与动作位同源）。只进请求发出/证据累计；目标与起意仍看 t。
+    t_ev: float | None = None
 
 
 @dataclass(frozen=True)
@@ -112,11 +116,14 @@ class PendingReq:
 
     `live=False`：触发对象本拍没有新鲜读数（闭锁保留的上一份），证据可以
     继续冻结，但不能作为起意拍——起意只认当拍有效来源。
+    `action`：动作位（第 7 期）——本拍**原始** slack 是否可达。False 时证据
+    仍可累计，路线不得起意（等原始可达拍）；第 6 期恒 True（两位同源）。
     """
 
     lane: float
     oid: int | None = None
     live: bool = True
+    action: bool = True
 
 
 @dataclass(frozen=True)
@@ -193,6 +200,9 @@ class SelectionReport:
     # 请求的当拍读数标志与触发身份（6c）：live=False 只能冻结证据、不能起意。
     req_live: bool = True
     req_oid: int | None = None
+    # 请求的动作位（第 7 期）：本拍原始 slack 是否可达；None=未平滑（第 6 期）。
+    # 路线按证据位累计、按动作位起意。
+    req_action: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -361,11 +371,13 @@ def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
             continue                    # 无承诺道：只做本道/相邻一道，不跨多道
         x = road.clamp(r.x, p.wall_margin_lane * p.lane_w_m)
         if sp is not None and not _in_interval(r.x, sp):
-            # 奖励车在隔壁道：本拍不拽过去（撞它得先站对道），发换道请求
+            # 奖励车在隔壁道：本拍不拽过去（撞它得先站对道），发换道请求。
+            # 证据位（平滑）决定请求发出与累计；动作位随请求带出，路线按它起意
             req_x = _req_lane(r.x, commit_x, p)
             if req_x is not None and not _blocked(cars, r.x, r.t, p) \
-                    and _reachable(r.x, ego, r.t, p):
-                cand = PendingReq(req_x, None if r.oid < 0 else r.oid, r.seen)
+                    and _reachable(r.x, ego, _ev_t(r), p):
+                cand = PendingReq(req_x, None if r.oid < 0 else r.oid, r.seen,
+                                  _reachable(r.x, ego, r.t, p))
                 if pending is None or (p.request_hold
                                        and not pending.live and cand.live):
                     pending = cand
@@ -431,6 +443,11 @@ def _coin_aim(coin_x: float, ego: float, p: SelectionParams) -> float:
     return coin_x - math.copysign(band, d)
 
 
+def _ev_t(o: Obj) -> float | None:
+    """证据位到站秒：平滑值优先，未平滑回原始（第 6 期两位同源）。"""
+    return o.t if o.t_ev is None else o.t_ev
+
+
 def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
                road: RoadFrame, ego: float,
                p: SelectionParams,
@@ -452,19 +469,25 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
                        p.wall_margin_lane * p.lane_w_m)
         if abs(c.x - x) > p.opportunity_tol_lane * p.lane_w_m:
             continue
-        if not _reachable(x, ego, c.t, p):
-            continue
-        if _blocked(cars, x, c.t, p):
-            continue
         if sp is not None and not _in_interval(x, sp):
             # 目标点（已按车身带收过）仍在承诺道外：本拍不拽（拽一半停在
-            # 两道中间是这条门的来由），按到站时间发出换道请求
+            # 两道中间是这条门的来由），按到站时间发出换道请求。
+            # 证据位（平滑）决定请求发出与累计；动作位随请求带出，路线按它起意
+            if not _reachable(x, ego, _ev_t(c), p):
+                continue
+            if _blocked(cars, x, c.t, p):
+                continue
             req_x = _req_lane(x, commit_x, p)
             if req_x is not None:
-                cand = PendingReq(req_x, None if c.oid < 0 else c.oid, c.seen)
+                cand = PendingReq(req_x, None if c.oid < 0 else c.oid, c.seen,
+                                  _reachable(x, ego, c.t, p))
                 if pending is None or (p.request_hold
                                        and not pending.live and cand.live):
                     pending = cand
+            continue
+        if not _reachable(x, ego, c.t, p):
+            continue
+        if _blocked(cars, x, c.t, p):
             continue
         return (x, c.t, "coin"), pending
     return None, pending
@@ -646,7 +669,8 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
                 x, why, True, True,
                 None if carried is None else carried.lane,
                 req_live=carried is None or carried.live,
-                req_oid=None if carried is None else carried.oid)
+                req_oid=None if carried is None else carried.oid,
+                req_action=None if carried is None else carried.action)
     x, why, maneuver = _center_target(road, ego, p, coarse_lane)
     pre = None if committed else _preposition_target(
         rewards, cars, coins, road, ego, p, commit_x_m)
@@ -669,7 +693,8 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
                            x, why, True, maneuver,
                            None if req is None else req.lane,
                            req_live=req is None or req.live,
-                           req_oid=None if req is None else req.oid)
+                           req_oid=None if req is None else req.oid,
+                           req_action=None if req is None else req.action)
 
 
 class LayeredSelector:
@@ -754,7 +779,8 @@ class LayeredSelector:
                     held = SelectionReport(
                         3, (Waypoint(0.0, x, "coin_hold"),), x,
                         "coin_hold", True, True, raw.lane_request,
-                        req_live=raw.req_live, req_oid=raw.req_oid)
+                        req_live=raw.req_live, req_oid=raw.req_oid,
+                        req_action=raw.req_action)
                     self.last = held
                     return held
         if self._layer is None:
@@ -779,7 +805,8 @@ class LayeredSelector:
                 held = SelectionReport(
                     raw.layer, tuple(wps), target, raw.why, raw.road_ok,
                     raw.maneuver, raw.lane_request,
-                    req_live=raw.req_live, req_oid=raw.req_oid)
+                    req_live=raw.req_live, req_oid=raw.req_oid,
+                    req_action=raw.req_action)
                 self.last = held
                 return held
         if raw.layer != self._layer:

@@ -527,6 +527,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
                epoch: int,
                request: float | None = None,
                request_live: bool = True,
+               request_action: bool | None = None,
                request_oid: int | None = None,
                arrival: ArrivalAttribution | None = None,
                reject_shift_arrival: bool = False,
@@ -543,6 +544,9 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     冻结）。逐拍刷新，不持久。
     `request_live`：触发源本拍是否有新鲜读数（6c）。False 时只冻结证据、不
     加分、不允许起意；`request_oid` 只作诊断与同道换对象连续性。
+    `request_action`：动作位（第 7 期得分源平滑）——触发源本拍**原始** slack
+    是否可达。False 时证据仍可累计，但不得起意（`no_reach`，等原始可达拍）；
+    None=未平滑（第 6 期，两位同源，不设额外门）。
     `request_hold`（默认关）：开时无读数在 `request_gap_s` 内冻结，超过或意图
     年龄超 `request_intent_age_s` 清零；关时逐位复现旧的泄漏计分。
     **请求计分的生命周期**（与换算同批冻结）：① 只有保持态累计与消费——并线中
@@ -646,7 +650,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
                               reject_shift_arrival, step)
     else:
         st, v = _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch,
-                           lane_ttc, passing)
+                           lane_ttc, passing, request_action)
     return st, replace(v, req_state=st.req_state, req_oid=st.req_oid,
                        req_age_s=st.req_age_s, req_pause_s=st.req_pause_s,
                        req_hold=p.request_hold,
@@ -729,6 +733,7 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                epoch: int,
                lane_ttc: dict[int, float] | None = None,
                passing: bool = False,
+               request_action: bool | None = None,
                ) -> tuple[RouteState, RouteVerdict]:
     """保持态：只有"现任道确认被截"才动，方向是"确实更宽"。
 
@@ -812,6 +817,10 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                    else "scoring")   # 还在攒证据，不是被拒
         elif p.request_hold and s.req_state != "active":
             # 证据够了但没有当拍有效来源：不允许起意（等下一拍可达）
+            why = "no_reach"
+        elif request_action is False:
+            # 第 7 期动作位：证据够了但本拍原始 slack 不可达——平滑不能把
+            # 不可达拍变成起意拍，等原始可达拍（离线 stuck7=0 复算）
             why = "no_reach"
         elif not _clear(cur):
             why = ("pass_hold" if pass_hold

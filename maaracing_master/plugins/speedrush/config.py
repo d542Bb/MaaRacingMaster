@@ -47,6 +47,11 @@ class Selection:
     # 不锁可达性，也不进安全消费点/计划场景。
     eligibility_latch: bool = False
     eligibility_hold_s: float = 0.3
+    # 得分源平滑（第 7 期，独立 go/no-go）：按对象对得分 slack 做短窗 EMA。
+    # 证据位（平滑值）决定请求发出与证据累计；动作位（原始 slack）仍只认
+    # 原始可达——平滑永远不能把不可达拍变成起意拍。不参与安全、碰撞或擦边。
+    score_smooth: bool = False
+    score_smooth_tau_s: float = 0.2
     max_waypoints: int = 4
     graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
@@ -886,6 +891,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "eligibility_latch", default=False),
             eligibility_hold_s=_num_def(
                 d, "selection", "eligibility_hold_s", 0.3, lo=0),
+            score_smooth=_bool(
+                d, "selection", "score_smooth", default=False),
+            score_smooth_tau_s=_num_def(
+                d, "selection", "score_smooth_tau_s", 0.2, lo=0.01),
             max_waypoints=_int_def(d, "selection", "max_waypoints", 4,
                                    lo=1, hi=4),
             graze_gap_lane=_num_def(d, "selection", "graze_gap_lane", 0.68,

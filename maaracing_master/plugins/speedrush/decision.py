@@ -40,7 +40,7 @@ from maaracing_master.plugins.speedrush.motion_plan import build_scene
 from maaracing_master.plugins.speedrush.object_table import ObjectTable
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, LayeredSelector, Obj, RoadBand,
-    RoadFrame, SelectionParams, SelectionReport, reach_slack)
+    RoadFrame, SelectionParams, SelectionReport, _ev_t, reach_slack)
 from maaracing_master.plugins.speedrush.presence_occupancy import (
     OccObs, PresenceOccupancy)
 from maaracing_master.plugins.speedrush.route import (
@@ -314,11 +314,15 @@ def _route_trace(v: RouteVerdict | None) -> dict | None:
 
 
 def _opp_aux(objs, ego_m: float, p: SelectionParams) -> list:
-    """与 `_sel_objs` 同序的 [身份, 光锥余量秒]：负=本拍来不及，None=无到站时间。"""
+    """与 `_sel_objs` 同序的 [身份, 光锥余量秒, 平滑余量秒]：负=本拍来不及，
+    None=无到站时间。第三列是第 7 期平滑证据位（未平滑=与第二列同值）。"""
     rows = []
     for o in objs:
         s = reach_slack(o.x, ego_m, o.t, p)
-        rows.append([o.oid, None if s is None else round(s, 3)])
+        sm = reach_slack(o.x, ego_m, _ev_t(o), p)
+        rows.append([o.oid,
+                     None if s is None else round(s, 3),
+                     None if sm is None else round(sm, 3)])
     return rows
 
 
@@ -501,7 +505,10 @@ class DecisionEngine:
         # 上拍选择层越线请求（道，相对粗层原点）；逐拍刷新，喂 route 裁决
         self._route_req: float | None = None
         self._route_req_live = True      # 6c：触发源本拍是否有新鲜读数
+        self._route_req_action = True    # 7：触发源本拍原始 slack 是否可达
         self._route_req_oid: int | None = None
+        # 第 7 期得分源平滑：按对象身份对得分 slack 做短窗 EMA（oid → 平滑值）
+        self._slack_ema: dict[int, float] = {}
         self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）
         self._ruler_prev: float | None = None   # 上一拍尺子（米，场景帧 z=0）
         self._ruler_exec_prev: float | None = None  # 上一拍 executed（道，右正）
@@ -569,7 +576,9 @@ class DecisionEngine:
         self._position = None
         self._route_req = None
         self._route_req_live = True
+        self._route_req_action = True
         self._route_req_oid = None
+        self._slack_ema.clear()
         self._route_epoch = 0
         self._ruler_prev = None
         self._ruler_exec_prev = None
@@ -1225,6 +1234,7 @@ class DecisionEngine:
             self._coarse = None
             self._route_req = None
             self._route_req_live = True
+            self._route_req_action = True
             self._route_req_oid = None
             # 路线时钟继续走（deadline 不会因为盲窗被冻结成假宽限）
             self._tick_route(executed=executed)
@@ -1302,6 +1312,35 @@ class DecisionEngine:
                          far_hint_lane=self._corridor.far_hint_lane)
         return road, shift - origin, origin
 
+    def _smooth_score(self, objs: list, ego_m: float) -> list:
+        """第 7 期得分源平滑：按对象对得分 slack 做短窗 EMA，写回证据位 t_ev。
+
+        证据位（平滑）进请求发出与证据累计；原始 t 不动——目标与起意仍看
+        原始（两位口径：平滑永远不能把不可达拍变成起意拍）。无身份（oid<0）
+        或开关关时不平滑，两位同源。平滑不参与安全、碰撞或擦边（cars 不进）。
+        EMA 状态按 oid 跨丢检保持（与离线复算同口径）；无读数拍不更新。
+        """
+        if not self.cfg.selection.score_smooth:
+            return objs
+        p = self.selector.p
+        tau = max(self.cfg.selection.score_smooth_tau_s, 1e-3)
+        dt = max(self._dt_last, 0.0)
+        out = []
+        for o in objs:
+            raw = reach_slack(o.x, ego_m, o.t, p)
+            if o.oid < 0 or raw is None:
+                out.append(o)
+                continue
+            prev = self._slack_ema.get(o.oid)
+            if prev is None:
+                sm = raw
+            else:
+                a = 1.0 - math.exp(-dt / tau)
+                sm = prev + a * (raw - prev)
+            self._slack_ema[o.oid] = sm
+            out.append(replace(o, t_ev=o.t + (sm - raw)))
+        return out
+
     def _tick_cruise_layered(self, obs: WorldObservation,
                              executed: float | None) -> str:
         """四层选择器接管 CRUISE：奖励车 > 擦边 > 金币 > 中心带（粗层选道）。"""
@@ -1316,6 +1355,7 @@ class DecisionEngine:
             self._coarse = None
             self._route_req = None
             self._route_req_live = True
+            self._route_req_action = True
             self._route_req_oid = None
             # 无车道级证据拍：路线不推进，时钟继续走
             self._tick_route(executed=executed)
@@ -1332,6 +1372,7 @@ class DecisionEngine:
             self._coarse = None
             self._route_req = None
             self._route_req_live = True
+            self._route_req_action = True
             self._route_req_oid = None
             # 无车道级证据拍：路线不推进，时钟继续走
             self._tick_route(executed=executed)
@@ -1378,6 +1419,18 @@ class DecisionEngine:
                      oid=-1 if c.id is None else c.id,
                      seen=bool(c.seen))
                  for c in coin_sel]
+        # 第 7 期得分源平滑：证据位（平滑）写回 t_ev，原始 t 不动。选择层
+        # 请求发出/证据累计读平滑位，目标与起意仍读原始位。
+        rewards = self._smooth_score(rewards, ego_m)
+        coins = self._smooth_score(coins, ego_m)
+        if self._src_elig is not None:
+            # 第 7 期观测面：平滑前后两列（[身份, 原始余量秒, 平滑余量秒]）
+            self._src_elig["rw_sm"] = [
+                [o.oid] + (_opp_aux([o], ego_m, self.selector.p)[0][1:])
+                for o in rewards if o.oid >= 0]
+            self._src_elig["coin_sm"] = [
+                [o.oid] + (_opp_aux([o], ego_m, self.selector.p)[0][1:])
+                for o in coins if o.oid >= 0]
         corr_ages = [b.age_ms for b in road.bands if b.age_ms is not None]
         lw = self.cal.lane_w_m
         # 选择帧 → 规划器路心帧：选择帧原点已是 master，frame_shift 只需
@@ -1418,7 +1471,8 @@ class DecisionEngine:
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。
         self._tick_route(c0, executed, request=self._route_req,
                          request_live=self._route_req_live,
-                         request_oid=self._route_req_oid)
+                         request_oid=self._route_req_oid,
+                         request_action=self._route_req_action)
         # 并线承诺期：路线已定目标道，选择层只能在这个道上做维护性修正。
         # 机会层（奖励车/擦边/金币）与预置偏移在此关闭——承诺期的目标被
         # 机会改道就是静默换道（契约 §4/§5）。
@@ -1480,6 +1534,8 @@ class DecisionEngine:
                 rewards, cars, coins, ego_m, lw))
         self._route_req = rep.lane_request if self.cfg.route.control else None
         self._route_req_live = bool(rep.req_live)
+        self._route_req_action = bool(rep.req_action) \
+            if rep.req_action is not None else True
         self._route_req_oid = rep.req_oid
         self._sel_report = rep
         self._sel_ego_m = ego_m
@@ -1615,6 +1671,7 @@ class DecisionEngine:
                     executed: float | None = None,
                     request: float | None = None,
                     request_live: bool = True,
+                    request_action: bool | None = None,
                     request_oid: int | None = None) -> None:
         """推进路线一拍。输入只有原始粗层报告、参考系纪元与上拍越线请求
         （边界 B：承诺值不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。
@@ -1633,14 +1690,16 @@ class DecisionEngine:
             self._route, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
             request=request, request_live=request_live,
-            request_oid=request_oid, arrival=self._position,
+            request_action=request_action, request_oid=request_oid,
+            arrival=self._position,
             reject_shift_arrival=self.cfg.route.reject_shift_arrival,
             lane_ttc=lane_ttc, passing=passing)
         self._route_shadow, self._shadow_verdict = tick_route(
             self._route_shadow, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
             request=request, request_live=request_live,
-            request_oid=request_oid, arrival=self._position,
+            request_action=request_action, request_oid=request_oid,
+            arrival=self._position,
             reject_shift_arrival=True, lane_ttc=lane_ttc, passing=passing)
 
     def _lane_for_route(self, route: RouteState | None,

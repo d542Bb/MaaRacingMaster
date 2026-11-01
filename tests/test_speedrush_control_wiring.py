@@ -358,7 +358,7 @@ def test_selection_shadow_diverges_when_shadow_route_stays_merging(
     orig = DecisionEngine._tick_route
 
     def _forced(self, c0=None, executed=None, request=None,
-                request_live=True, request_oid=None):
+                request_live=True, request_action=None, request_oid=None):
         orig(self, c0, executed, request,
              request_live=request_live, request_oid=request_oid)
         if self._route is not None and self._route_verdict is not None:

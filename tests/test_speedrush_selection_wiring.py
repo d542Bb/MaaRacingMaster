@@ -293,9 +293,10 @@ def test_selection_debug_carries_identity_and_cone_slack():
                    executed_lane=0.0, corridor=_corridor())
     dbg = eng.selection_debug
     assert dbg is not None and dbg["coin"]
-    oid, slack = dbg["opp"]["coin"][0]
+    oid, slack, slack_sm = dbg["opp"]["coin"][0]  # 平滑列与原始列同值（未平滑对象/无身份回退）
     assert oid == 1
     assert slack is not None and slack > 0.0    # 良候选：到站预算为正
+    assert slack_sm == slack or slack_sm is not None
     coin = [o for o in eng.scene.objs if o.kind == "coin"][0]
     assert coin.id == 1 and coin.seen is True
 
