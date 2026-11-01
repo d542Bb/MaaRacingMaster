@@ -40,6 +40,7 @@ from maaracing_master.core import xinput
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
+from maaracing_master.core.navkit import Command, StepMachine, Verdict
 from maaracing_master.core.paths import debug_dir
 from maaracing_master.core.perf_sampler import ensure_perf_sampler_started
 from maaracing_master.core.trace_sink import get_trace_sink
@@ -111,12 +112,48 @@ LOOP_START_INDEX = 3
 # 两端分离度极大，阈值取中间，两侧都留足余量。
 DRIVE_STAGE_NODE = "speedrush.驾驶页锚点"
 
+# 进商店横幅锚点节点（图侧纯锚点）。阶段 1 结束前画面中央会弹「进入策略商店 /
+# 即将开始阶段2」横幅（RULES.md §3.6，弹出时机即进商店前），比齿轮锚点消失早到
+# 约 1~2 秒。主循环在锚点复查拍顺带问它一次：命中即判本阶段结束、提前退出——省掉
+# 齿轮消失后「等满 0.5s 复查 × 2 次失配」这段滞后里喂进感知/决策链与录制器的过场帧。
+# 阈值 0.7 为截图自匹配（1.0）起的保守起点，**待真机驾驶帧校准**（口径同齿轮锚点 0.5）。
+STORE_BANNER_NODE = "speedrush.商店横幅锚点"
+
 # 驾驶阶段等待上限。单局（含两阶段）实测一般 3 分钟、耗满可达 6~7 分钟
 # （RULES.md §4.7），取 10 分钟留余量。
 DRIVE_TIMEOUT_S = 600.0
 # 连续多少次识别不到驾驶页锚点才判定「已离开对局」。取 2 是给动态场景下的
 # 偶发失配留一次容错；阈值余量与两端的实测分离度见 DRIVE_STAGE_NODE 的说明。
 DRIVE_MISS_TOLERANCE = 2
+
+# ---------- 步级重试（大阶段之间的一次 UI 点击） ----------
+# 现状：某个 UI 步 run(node, node) 的 True 只证明「按钮被识别并点了一次」，不含落地页
+# 后置确认；点了没生效只能靠下一步识别不到、白等框架默认 20s 后中止本轮。这里给每个
+# 点击步套 core StepMachine：点击 → 按 STEP_WINDOW_S 轮询落地页确认锚点 → 未落地则有限
+# 重发同一点击（动作节点自带识别闸门，按钮已消失就空跑、不误点）→ 耗尽按现状终止本轮、
+# 停止即退。机器唯一持有计数与时间窗，speedrush 只供给「动作 + 每拍 verdict + 驱动时机」。
+STEP_RETRY_MAX = 3      # 一次点击落地失败后最多重发次数（不含首点）
+STEP_WINDOW_S = 12.0    # 单次尝试「等落地页确认」的时间窗（含转场/匹配耗时，取宽值防误判）
+STEP_POLL_S = 0.5       # 窗内确认探针轮询间隔（ctx.lifecycle.sleep 兼作停止信号）
+
+# 每个点击步的落地页确认锚点：由 RULES.md §2 操作路径 + §3 各界面要素逐格推得；确认节点
+# 复用落地页标记的模板（节点名带 __confirm，见 build_truth CONFIRMS 说明）。「确认上阵 →
+# 驾驶页」直接复用现成的驾驶页锚点。key = FLOW 的阶段名；驾驶阶段（node None）不在此表。
+STEP_CONFIRM: dict[str, str] = {
+    "进入比赛页": "speedrush.__confirm.比赛页",
+    "进入娱乐玩法": "speedrush.__confirm.娱乐玩法页",
+    "进入极速狂飙": "speedrush.__confirm.活动页",
+    "开始挑战": "speedrush.__confirm.回合开始页",
+    "寻找对手": "speedrush.__confirm.奖励弹窗",
+    "关闭奖励弹窗": "speedrush.__confirm.策略商店页",
+    "确认上阵": DRIVE_STAGE_NODE,
+    "关闭奖励弹窗2": "speedrush.__confirm.策略商店页",
+    "确认上阵2": DRIVE_STAGE_NODE,
+    "回合结果继续": "speedrush.__confirm.回合开始页",
+    "放弃本轮": "speedrush.__confirm.放弃确认框",
+    "继续放弃": "speedrush.__confirm.段位分结算页",
+    "结算继续": "speedrush.__confirm.活动页",
+}
 
 # ---------- 驾驶主循环节拍 ----------
 
@@ -667,11 +704,52 @@ class SpeedRushModule(ActivityModule):
                     if not self._drive(phase, round_no, round_stamp):
                         _tlog(self, f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return
-                elif not self._graph.run(node, node):
-                    _tlog(self, f"[极速狂飙] 步骤「{stage}」未到位，本轮中止", "WARNING")
+                elif not self._run_step(node, stage):
                     return
                 index += 1
             index = LOOP_START_INDEX
+
+    def _run_step(self, action_node: str, stage: str) -> bool:
+        """发一次 UI 点击并按「落地页确认锚点」做有限重发（步级重试）。
+
+        返回 True = 该步已落地（确认锚点命中）；False = 停止或重发耗尽（调用方中止本轮）。
+
+        speedrush 一步 = 一次尝试：点击是阻塞式完成、没有独立"送达"信号，故整步算一次
+        （点击发出即 `arm`，只重置时间窗）。确认后喂 SUCCESS、未落地喂 PENDING；停止由
+        循环守卫 `self._running / lifecycle.running` 直接退出，不喂 STOP（对应机器"停止能力
+        可选"，treasure 式逐帧自管与 speedrush 式阻塞自管共用同一转移表）。耗尽按现状终止
+        本轮，**不做回合级自动重开**（步失败不证明画面回到可重开处）。
+        """
+        confirm_node = STEP_CONFIRM.get(stage)
+        if confirm_node is None:
+            # 漏配确认锚点：退回旧的单步语义（不新增行为，也不把整条流程带崩）。
+            return self._graph.run(action_node, action_node)
+        machine = StepMachine(max_retries=STEP_RETRY_MAX, window_s=STEP_WINDOW_S,
+                              clock=time.monotonic)
+        send_click = True
+        while self._running and self.ctx.lifecycle.running:
+            if send_click:
+                machine.arm()                                   # 一次尝试发出：只重置窗口、不动计数
+                self._graph.run(action_node, action_node)       # 点击；动作节点自带识别闸门→按钮不在则空跑不误点
+                send_click = False
+            cmd = machine.observe(
+                Verdict.SUCCESS if self._graph.run(confirm_node, confirm_node) else Verdict.PENDING
+            )
+            if cmd is Command.DONE:
+                return True
+            if cmd is Command.RETRY:
+                send_click = True                               # 重发同一动作（下一次点击即新窗口）
+                continue
+            if cmd is Command.WAIT:
+                if not self.ctx.lifecycle.sleep(STEP_POLL_S):   # 窗内轮询；睡眠兼作停止信号
+                    break
+                continue
+            if cmd is Command.FAIL:
+                _tlog(self, f"[极速狂飙] 步骤「{stage}」重发 {STEP_RETRY_MAX} 次仍未落地"
+                            f"（确认锚点「{confirm_node}」始终未命中），本轮中止", "WARNING")
+                return False
+            return False                                        # ABORT 或未知命令：保守退出
+        return False                                            # 停止（_running / lifecycle 已假）
 
     def _drive(self, phase: int, round_no: int = 1,
                stamp: str | None = None) -> bool:
@@ -976,6 +1054,16 @@ class SpeedRushModule(ActivityModule):
                                       f"（{_frame_note(fid, age_ms)}）", "INFO")
                                 self._log_loop_pace(phase, frames, loop_start)
                                 return True
+                        # 阶段 1 结束前弹「进入策略商店」横幅（齿轮仍在、画面还在驾驶）：
+                        # 命中即提前结束本阶段，不等齿轮消失后的失配滞后——省掉那段滞后里
+                        # 喂进感知/决策链与录制器的过场帧。横幅文案专指阶段 2，故只查阶段 1。
+                        if phase == 1 and self._graph.run(STORE_BANNER_NODE,
+                                                          STORE_BANNER_NODE):
+                            _tlog(self,
+                                  f"[极速狂飙] 驾驶阶段 {phase}：检测到进商店横幅，"
+                                  f"提前结束本阶段（{_frame_note(fid, age_ms)}）", "INFO")
+                            self._log_loop_pace(phase, frames, loop_start)
+                            return True
 
                     t_sl = time.perf_counter()
                     rest = DRIVE_TICK_S - (t_sl - t0)

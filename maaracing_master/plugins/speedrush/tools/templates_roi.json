@@ -260,6 +260,27 @@
     ],
     "note": "agent 自裁：替代不稳的 speedrush_stage_label"
   },
+  "speedrush_store_banner": {
+    "template_size": [
+      232,
+      43
+    ],
+    "match_score": 1.0,
+    "frame": "agent-cut from 维护者截图 2026-11-01",
+    "pixel_rect": [
+      526,
+      327,
+      758,
+      370
+    ],
+    "rect": [
+      0.36,
+      0.42,
+      0.64,
+      0.55
+    ],
+    "note": "进商店横幅「进入策略商店」（阶段1 结束信号）；rect 为居中横幅的外扩搜索带"
+  },
   "speedrush_title": {
     "template_size": [
       227,

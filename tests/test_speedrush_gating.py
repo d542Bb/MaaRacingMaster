@@ -93,13 +93,25 @@ class _FakeCtx:
 
 
 class _FakeGraph:
-    """按序列返回锚点命中结果；序列用尽后重复最后一个值。"""
+    """按序列返回锚点命中结果；序列用尽后重复最后一个值。
 
-    def __init__(self, seq: list[bool]) -> None:
+    驾驶主循环每拍问两类锚点：驾驶页齿轮（结束去抖）与进商店横幅（阶段 1 提前结束）。
+    故替身**按节点名分流**——齿轮走 ``seq``、横幅走 ``banner_seq``（默认全程 False，
+    即"这一局没弹进商店横幅"，保持既有各用例只考齿轮失配去抖的原语义）。``calls``
+    只数齿轮调用（既有断言口径），横幅调用另记 ``banner_calls``。
+    """
+
+    def __init__(self, seq: list[bool], banner_seq: list[bool] | None = None) -> None:
         self.seq = list(seq)
+        self.banner_seq = list(banner_seq) if banner_seq is not None else [False]
         self.calls = 0
+        self.banner_calls = 0
 
-    def run(self, entry: str, reached: str | None = None) -> bool:
+    def run(self, entry: str | None = None, reached: str | None = None) -> bool:
+        if entry == sr.STORE_BANNER_NODE:
+            v = self.banner_seq[min(self.banner_calls, len(self.banner_seq) - 1)]
+            self.banner_calls += 1
+            return v
         v = self.seq[min(self.calls, len(self.seq) - 1)]
         self.calls += 1
         return v
@@ -119,8 +131,9 @@ def env(monkeypatch, tmp_path):
     return mod, ctx, clock
 
 
-def _set_graph(mod, seq: list[bool]) -> _FakeGraph:
-    g = _FakeGraph(seq)
+def _set_graph(mod, seq: list[bool],
+               banner_seq: list[bool] | None = None) -> _FakeGraph:
+    g = _FakeGraph(seq, banner_seq)
     mod._graph = g
     return g
 
@@ -195,6 +208,35 @@ def test_loop_times_out(env) -> None:
     mod._running = True
     _set_graph(mod, [True])  # 一直命中 → 永不结束
     assert mod._drive_loop(1, None) is False
+
+
+# ---------- 进商店横幅提前结束（阶段 1） ----------
+
+
+def test_loop_ends_early_on_store_banner_phase1(env) -> None:
+    """阶段 1 齿轮一直命中（未离场），但弹了进商店横幅 → 提前结束本阶段。
+
+    锁的是"横幅=P1 结束信号"这条新判据：命中即返回 True，不必等齿轮消失后的
+    失配去抖（省过场帧）。齿轮全程命中，故只能靠横幅这条路径才会结束。
+    """
+    mod, _, _ = env
+    mod._running = True
+    g = _set_graph(mod, [True], banner_seq=[False, True])  # 第一拍无横幅、第二拍命中
+    assert mod._drive_loop(1, None) is True
+    assert g.banner_calls >= 1  # 确实问过横幅
+
+
+def test_loop_phase2_never_checks_store_banner(env) -> None:
+    """阶段 2 不查进商店横幅：横幅文案专指"即将开始阶段 2"，阶段 2 结束进结算页。
+
+    即便横幅恒命中，阶段 2 也不得据此结束——只走齿轮失配/超时判据（此处齿轮一直
+    命中 → 超时返回 False），且一次都没问横幅。
+    """
+    mod, _, _ = env
+    mod._running = True
+    g = _set_graph(mod, [True], banner_seq=[True])
+    assert mod._drive_loop(2, None) is False
+    assert g.banner_calls == 0  # 阶段 2 连查都不查
 
 
 # ---------- 门控取证的帧锚点 ----------
@@ -612,6 +654,111 @@ def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
     # 否则后一局会写进前一局的目录、把图整批覆盖
     assert stamps[0] == stamps[1]
     assert stamps[2] != stamps[0]
+
+
+# ---------- 步级重试（大阶段之间的 UI 点击 → 落地页确认） ----------
+
+
+class _StepGraph:
+    """按节点名分流：``action_node`` 走动作（点击，恒 ``action_returns``），
+    其余 entry 视为落地页确认探针，按 ``confirm_seq`` 返回（用尽后重复末值）。"""
+
+    def __init__(self, action_node: str, confirm_seq: list[bool],
+                 action_returns: bool = True) -> None:
+        self.action_node = action_node
+        self.confirm_seq = list(confirm_seq)
+        self.action_returns = action_returns
+        self.action_calls = 0
+        self.confirm_calls = 0
+
+    def run(self, entry: str | None = None, reached: str | None = None) -> bool:
+        if entry == self.action_node:
+            self.action_calls += 1
+            return self.action_returns
+        v = self.confirm_seq[min(self.confirm_calls, len(self.confirm_seq) - 1)]
+        self.confirm_calls += 1
+        return v
+
+
+_ACT = "speedrush.点寻找对手"
+_STAGE = "寻找对手"
+
+
+def _tight_step(env, monkeypatch, *, retry_max: int = 1):
+    """把步级机收紧到确定性、瞬时：窗 1s、半秒轮询、可控重发上限。"""
+    mod, _, _ = env
+    monkeypatch.setattr(sr, "STEP_RETRY_MAX", retry_max)
+    monkeypatch.setattr(sr, "STEP_WINDOW_S", 1.0)
+    monkeypatch.setattr(sr, "STEP_POLL_S", 0.5)
+    return mod
+
+
+def test_step_advances_when_confirm_hits(env, monkeypatch) -> None:
+    """落地页确认命中 → 一次点击即 DONE 推进，不重发。"""
+    mod = _tight_step(env, monkeypatch)
+    g = _StepGraph(_ACT, [True])
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is True
+    assert g.action_calls == 1 and g.confirm_calls == 1
+
+
+def test_step_retries_same_click_then_fails_loudly(env, monkeypatch) -> None:
+    """确认始终未命中 → 按上限重发**同一动作**，达上限后再等一窗显式终止本轮（非静默）。"""
+    mod = _tight_step(env, monkeypatch, retry_max=1)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    g = _StepGraph(_ACT, [False])
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is False
+    assert g.action_calls == 2          # 首点 + 1 次重发 = STEP_RETRY_MAX + 1
+    assert sink.texts("仍未落地")        # 耗尽有显式 WARNING，不得静默卡死
+
+
+def test_step_hit_after_miss_advances_without_retry(env, monkeypatch) -> None:
+    """转场慢：首窗内确认未命中→窗内轮询到命中，仍算同一次尝试成功、**不重发**（不误点第二下）。"""
+    mod = _tight_step(env, monkeypatch, retry_max=3)
+    g = _StepGraph(_ACT, [False, False, True])  # 前两次探针未命中、第三次命中（窗内）
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is True
+    assert g.action_calls == 1          # 只在发出首点时点了一次，窗内命中没触发重发
+    assert g.confirm_calls == 3
+
+
+def test_step_exits_on_stop_without_retry_or_fail(env, monkeypatch) -> None:
+    """停止 ≠ 失败：中途收到停止立即退出，既不重发、也不记成"耗尽"。"""
+    mod, ctx, _ = env
+    _tight_step(env, monkeypatch, retry_max=5)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    g = _StepGraph(_ACT, [False])       # 确认永远未命中（若不因停止退出会一路重发到耗尽）
+    mod._graph = g
+    orig_run = g.run
+
+    def run_then_stop(entry=None, reached=None):
+        r = orig_run(entry, reached)
+        if entry != _ACT:               # 首次确认探针后即模拟 stop() 落停止标志
+            mod._running = False
+        return r
+
+    g.run = run_then_stop
+    assert mod._run_step(_ACT, _STAGE) is False
+    assert g.action_calls == 1          # 只点了首下，停止即退，没走重发
+    assert not sink.texts("仍未落地")    # 停止不是耗尽，不得落"耗尽"日志
+
+
+def test_every_click_stage_has_confirm_mapping() -> None:
+    """防漂移：FLOW 里每个点击步都必须有落地页确认映射（驾驶阶段 node None 除外）。"""
+    for stage, node, _phase in sr.FLOW:
+        if node is not None:
+            assert stage in sr.STEP_CONFIRM, f"点击步「{stage}」缺确认锚点映射"
+
+
+def test_step_confirm_nodes_exist_in_pipeline() -> None:
+    """防漂移：STEP_CONFIRM 指向的确认锚点节点都必须在生成的真源里存在。"""
+    graph = json.loads(
+        (Path(sr.PIPELINE_DIR) / "speedrush.json").read_text(encoding="utf-8"))
+    for stage, dest in sr.STEP_CONFIRM.items():
+        assert dest in graph, f"阶段「{stage}」的确认锚点 {dest} 不在真源"
 
 
 # ---------- 路心读数参考系跳变标注（classify_ro_hop，仅记录） ----------

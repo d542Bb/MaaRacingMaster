@@ -60,6 +60,17 @@ NODE_OVERRIDES: dict[str, dict] = {
         # 0.02 量级——两端分离度极大，阈值取中间，两侧都留足余量。
         "threshold": 0.5,
     },
+    "speedrush_store_banner": {
+        # 进商店横幅锚点：主循环在锚点复查拍顺带问一次，命中即提前结束阶段 1。
+        # 节拍同齿轮（零地板、零隐式等待）；超时留极短值——横幅在则首帧即命中，
+        # 未命中时快速收尾不吃满复查间隔。阈值 0.7 系截图自匹配（1.0）起的保守
+        # 起点，**待真机驾驶帧校准**（口径同上齿轮）。
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 50,
+        "threshold": 0.7,
+    },
 }
 
 # (节点名, 模板名, page, 标签)
@@ -86,11 +97,42 @@ ACTIONS: list[tuple[str, str, str, str]] = [
 # ——要用时从本文件历史找回一行重新生成即可（步骤16 落地时同理）。
 ANCHORS: list[tuple[str, str, str, str]] = [
     (f"{MODULE}.驾驶页锚点", "speedrush_drive_gear", "drive", "驾驶页 HUD 齿轮图标（页面感知，module 直驱判定是否在对局中）"),
+    (f"{MODULE}.商店横幅锚点", "speedrush_store_banner", "drive", "驾驶页 进商店横幅（阶段1 结束信号，module 直驱提前结束本阶段）"),
 ]
 
 # 声明「本锚点由模块代码按节点名直驱」——图级引用分析看不见这条消费通道，
 # 真源机检（check_truth validate_graph）凭本声明豁免「孤儿真源」判定。
-MODULE_DRIVEN: frozenset[str] = frozenset({f"{MODULE}.驾驶页锚点"})
+MODULE_DRIVEN: frozenset[str] = frozenset({
+    f"{MODULE}.驾驶页锚点",
+    f"{MODULE}.商店横幅锚点",
+})
+
+# 落地页确认探针（步级重试的"后置条件"）——(确认节点名, 复用模板, 说明)。
+#
+# 为什么确认节点复用**动作节点已在用的模板**却不触发第 6 条「跨锚点重复识别」：
+# 校验器对节点名含 `.__confirm.` 的节点直接豁免该判定（`tools/navkit/check_truth.py`
+# validate_graph 第 6 条）。这是仓库为"确认节点"预留的标准扩展点——确认要认的是
+# "落地页上此刻有哪个标记"，标记往往就是下一步要点的按钮本身（线性流程里第 N 步的
+# 目的地页正显示着第 N+1 步的按钮），复用同图同区最省、也无需另采素材。
+#
+# 参数口径：确认节点是「只识别不点」的快探针（DoNothing），命中即回、未命中走**短超时**
+# 快速返回，真正的"等到落地为止"由模块侧步级状态机的时间窗轮询决定——所以这些节点
+# 不能像动作节点那样吃框架默认 20s 识别等待（那会把每次轮询拖成 20s）。阈值沿用同模板
+# 动作节点的标定值（同图同区），此处不另拍数。`确认上阵 → 驾驶页` 的确认直接用现成的
+# 驾驶页锚点（`speedrush.驾驶页锚点`），不在此列新建。
+CONFIRMS: list[tuple[str, str, str]] = [
+    (f"{MODULE}.__confirm.比赛页", "rank_fun_tab", "点比赛后落地比赛页：左侧「娱乐玩法」tab 在位"),
+    (f"{MODULE}.__confirm.娱乐玩法页", "fun_speedrush_card", "点娱乐玩法后落地娱乐玩法页：「极速狂飙」卡片在位"),
+    (f"{MODULE}.__confirm.活动页", "speedrush_career_award", "进活动页 / 结算继续回活动页：右上「生涯奖励」入口在位"),
+    (f"{MODULE}.__confirm.回合开始页", "speedrush_find_opponent_btn", "开始挑战 / 回合结果继续进回合开始页：「寻找对手」在位"),
+    (f"{MODULE}.__confirm.奖励弹窗", "speedrush_reward_hint", "点寻找对手后弹奖励弹窗：「点击屏幕继续」提示在位"),
+    (f"{MODULE}.__confirm.策略商店页", "speedrush_store_sell_title", "关闭奖励弹窗后落地策略商店页：「售卖区」标题在位"),
+    (f"{MODULE}.__confirm.放弃确认框", "speedrush_giveup_continue_btn", "点放弃本轮后弹确认框：「继续放弃」在位"),
+    (f"{MODULE}.__confirm.段位分结算页", "speedrush_continue_btn", "点继续放弃后落地段位分结算页：「继续」在位"),
+]
+
+# 确认探针的快超时（毫秒）：未命中即快速判否，由模块步级机做真正的等待与重发。
+CONFIRM_PROBE_TIMEOUT_MS = 400
 
 
 def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
@@ -134,6 +176,7 @@ def main() -> None:
         roi = json.load(fh)
 
     missing = [t for _, t, _, _ in ACTIONS + ANCHORS if t not in roi]
+    missing += [t for _, t, _ in CONFIRMS if t not in roi]
     if missing:
         raise SystemExit(f"以下模板缺少 ROI 数据：{missing}")
 
@@ -170,6 +213,20 @@ def main() -> None:
             "action": {"type": "DoNothing", "param": {}},
         }, tpl)
 
+    # 确认探针节点：零路由纯识别容器，快超时 + 无节拍地板；参数**就地赋、不走
+    # NODE_OVERRIDES**——因为确认节点复用的模板正是动作节点在用的模板，NODE_OVERRIDES
+    # 按模板键生效会连带动作节点（动作节点要保留框架默认 20s 识别等待等"晚出现的按钮"，
+    # 不能被探针的短超时污染）。节点名带 `__confirm` 使第 6 条重复识别判定豁免（见 CONFIRMS）。
+    for name, tpl, label in CONFIRMS:
+        graph[name] = {
+            "attach": {"_page": "confirm", "_label": f"落地页确认探针：{label}",
+                       "_owner": MODULE, "_anchor_only": True, "_module_driven": True},
+            "recognition": recog(tpl, roi[tpl]["rect"], _threshold_for(tpl)),
+            "action": {"type": "DoNothing", "param": {}},
+            "rate_limit": 0, "pre_delay": 0, "post_delay": 0,
+            "timeout": CONFIRM_PROBE_TIMEOUT_MS,
+        }
+
     # 汇聚节点：DirectHit 恒命中 → next 全动作表。
     # 出口语义：每个动作节点点完一律回此处重判，由"页面上此刻存在哪个按钮"决定下一步。
     # 需要区分"同一页面在不同时机点击不同按钮"时（回合开始页：首轮点寻找对手、次轮点
@@ -191,8 +248,10 @@ def main() -> None:
         json.dump(graph, fh, ensure_ascii=False, indent=4)
 
     print(f"已写出 {OUT}")
-    print(f"  动作节点 {len(ACTIONS)} / 纯锚点 {len(ANCHORS)} / 汇聚 1 = 共 {len(graph)} 节点")
-    print(f"  绑定模板 {len(ACTIONS) + len(ANCHORS)} 张"
+    print(f"  动作节点 {len(ACTIONS)} / 纯锚点 {len(ANCHORS)} / 确认探针 {len(CONFIRMS)} / "
+          f"汇聚 1 = 共 {len(graph)} 节点")
+    bound = {t for _, t, _, _ in ACTIONS + ANCHORS} | {t for _, t, _ in CONFIRMS}
+    print(f"  绑定模板 {len(bound)} 张"
           f"（默认阈值 {THRESHOLD}，节点级覆盖 {len(NODE_OVERRIDES)} 处）")
 
 
