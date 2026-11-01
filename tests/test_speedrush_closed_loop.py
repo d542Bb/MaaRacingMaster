@@ -10,8 +10,6 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-import pytest
-
 from maaracing_master.plugins.speedrush import DECISION_FILE
 from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.corridor import (
