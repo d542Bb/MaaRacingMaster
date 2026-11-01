@@ -55,6 +55,15 @@ status: active
 地图支撑逐项并排；只列差值，不设通过阈值——判据在方案第 5 步。旧局缺
 `v_ego/otab/map` 的项显示 None，不拿缺列当零。
 
+```bat
+.venv\Scripts\python.exe tools\experiments\world_stateequest_cone.py ^
+    --session 20261101_113145
+```
+
+`request_cone.py` 用旧局 `sel_dbg` 反事实复算「旧 1.2/1.5 道固定门挡住、但
+时间锥+相邻请求会发」的机会。它**不覆盖**长币线远端时间与命中拍请求贯通
+（旧局缺组账/命中上下文），`cone_only` 未计层优先级与确认门，是上界。
+
 ## 结论去向
 
 基线数值与缺口清单进 `docs/plan/world_state_persistence.md`；对象记忆与地图
