@@ -103,6 +103,21 @@ _PSI_CORR_TAU_S = 0.5
 # 2026-10-31 试过降到物理上限 0.46：闭环台架里真实快转也被截断，朝向估计
 # 滞后、车发散到 −2.35 道（centering/bounded 两锁红），不可用。
 _HEAD_RATE_MAX = 0.8
+# 朝向车模影子（2026-11-01）：杆→偏航率一阶模型（两局 trace 最小二乘，
+# R²=0.94：满杆约 0.46 rad/s、τ 约 0.2 s）。ψ/r 由**实际发出的杆值**推进，
+# 线角到达时按龄对齐做小增益校正——先只进 trace（pm/rm/pmi），不参与控制，
+# 用一局真实数据核它的噪声、滞后与弯道偏置，再决定是否接管。
+_MODEL_YAW_GAIN = 0.46      # rad/s（满杆归一值 1.0）
+_MODEL_YAW_TAU_S = 0.2
+_MODEL_CORR_PSI = 0.12      # 每次线角更新对 ψ 的校正增益
+_MODEL_CORR_R = 0.04        # 每次线角更新对 r 的校正增益（rad/s）
+_MODEL_INNOV_MAX = 0.15     # 单次校正的创新截断（rad）：坏线角不整段拖走影子
+_MODEL_AGE_MIN_S = 0.03     # 对齐用的测量龄下限/上限（线角到达时的检测龄）
+_MODEL_AGE_MAX_S = 0.30
+# 线角带的检测龄之外，观测链路（检测→滤波→控制拍）还有一段固定滞后；
+# 按实机口径补 0.10s（策略文件记的观测链 ≈0.15s，trace 线角龄 0.02~0.07s）。
+_MODEL_DELAY_EXTRA_S = 0.10
+_MODEL_HIST_S = 1.0         # 延迟对齐历史窗
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
 _SPD_DEN_MIN = 0.03         # Σtan²ψ 的发布下限（≈0.2 道/s 噪声下 σ≈4 m/s）
 # 证据衰减到下限后，上一次的读数再保留这么久（秒）。比例只能靠**横移**观测：
@@ -157,10 +172,60 @@ class HeadingObserver:
             self._spd_den = 0.0
             self._spd_t = -1e9          # 最近一次收到比例证据的时刻
             self._spd_pub_t = -1e9      # 最近一次发布有效比例的时刻（保留窗口起点）
+            # 车模影子（只进 trace）
+            self.mpsi: float | None = None
+            self.mr: float | None = None
+            self._m_hist: list[tuple[float, float, float]] = []
+            self._m_innov: float | None = None
         self._samples: list[dict] = []
         self._last_fid: int | None = None
         self._last_line = -1e9       # 标线横移上次更新时刻（v_line TTL）
         self.v_line: float | None = None
+        self._m_cmd = 0.0            # 上一拍实际发出的归一杆值（车模输入）
+
+    def model_command(self, u: float) -> None:
+        """给车模影子喂本拍实际发出的杆值（-1..1）。只影响 trace 的 pm/rm。"""
+        self._m_cmd = max(-1.0, min(1.0, float(u)))
+
+    def _model_step(self, dt: float) -> None:
+        """车模影子预测一拍：``r' = (g·u − r)/τ``、``ψ' = r``。"""
+        if self.mpsi is None:
+            return
+        a = 1.0 - math.exp(-dt / _MODEL_YAW_TAU_S)
+        r = (self.mr or 0.0) + a * (_MODEL_YAW_GAIN * self._m_cmd
+                                    - (self.mr or 0.0))
+        psi = self.mpsi + 0.5 * ((self.mr or 0.0) + r) * dt
+        r = max(-_HEAD_RATE_MAX, min(_HEAD_RATE_MAX, r))
+        psi = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, psi))
+        self.mr, self.mpsi = r, psi
+        self._m_hist.append((self._t, psi, r))
+        cut = self._t - _MODEL_HIST_S
+        while self._m_hist and self._m_hist[0][0] < cut:
+            self._m_hist.pop(0)
+
+    def _model_correct(self, th: float, age_ms: float | None) -> None:
+        """线角到达：与模型在 ``t−龄`` 的状态比，小增益回灌（延迟对齐）。"""
+        if self.mpsi is None:
+            self.mpsi = max(-_HEAD_REL_MAX, min(_HEAD_REL_MAX, float(th)))
+            self.mr = 0.0
+            self._m_hist = [(self._t, self.mpsi, 0.0)]
+            self._m_innov = 0.0
+            return
+        age = (_MODEL_AGE_MIN_S if age_ms is None
+               else float(age_ms) / 1000.0 + _MODEL_DELAY_EXTRA_S)
+        age = min(max(age, _MODEL_AGE_MIN_S), _MODEL_AGE_MAX_S)
+        ref = self._m_hist[0]
+        for h in self._m_hist:
+            if h[0] <= self._t - age:
+                ref = h
+            else:
+                break
+        innov = float(th) - ref[1]
+        self._m_innov = innov
+        corr = max(-_MODEL_INNOV_MAX, min(_MODEL_INNOV_MAX, innov))
+        self.mpsi = max(-_HEAD_REL_MAX,
+                        min(_HEAD_REL_MAX, self.mpsi + _MODEL_CORR_PSI * corr))
+        self.mr = (self.mr or 0.0) + _MODEL_CORR_R * corr
 
     def psi_age_s(self) -> float:
         """ψ 距上一次线角证据的秒数；无 ψ 时返回 inf（=不可用于推横速）。"""
@@ -181,6 +246,7 @@ class HeadingObserver:
             self.psi = None
         if self.r is not None and self._t - self._r_t > _R_STALE_S:
             self.r = None
+        self._model_step(dt)
         decay = math.exp(-dt / _SPD_TAU_S)
         self._spd_num *= decay
         self._spd_den *= decay
@@ -236,6 +302,7 @@ class HeadingObserver:
             psi = self._head_state(th, n_locked)
             if psi is not None:
                 self._scale_accum(psi)
+                self._model_correct(th, age_ms)
 
     def _head_state(self, th: float, n_locked: int | None) -> float | None:
         """ψ 与 r：互补滤波——角速率积分管快变、横速反解管稳态。
@@ -322,6 +389,12 @@ class HeadingObserver:
             # 全部只进 trace，不参与控制。
             "psi": None if self.psi is None else round(self.psi, 4),
             "r": None if self.r is None else round(self.r, 3),
+            # 车模影子（只进 trace，不参与控制）：pm=车模 ψ、rm=车模角速度、
+            # pmi=线角到达时未截断的创新（pm 与 psi 的差反映模型偏置）。
+            "pm": None if self.mpsi is None else round(self.mpsi, 4),
+            "rm": None if self.mr is None else round(self.mr, 3),
+            "pmi": (None if self._m_innov is None
+                    else round(self._m_innov, 4)),
             "psi_age": (None if self.psi is None
                         else round((self._t - self._psi_t) * 1000.0, 0)),
             "jmp": self._jumps,        # 线角跳变被物理门截断的累计次数
@@ -914,6 +987,8 @@ class LateralPlanner:
         # x += v·tanψ·dt。ψ 是测量量，由观测器每拍更新，这里不再有速度状态。
         alpha = 1.0 - math.exp(-dt_s / max(self.p.tau_steer_s, 1e-3))
         self.state.steer_norm += alpha * (steer_raw - self.state.steer_norm)
+        # 车模影子的输入=实际发出的杆值（低通后的 state.steer_norm）
+        self.head.model_command(self.state.steer_norm)
         if not self.state_unverified:
             self.state.executed_lane += self.state.v_lat * dt_s
 

@@ -1488,6 +1488,61 @@ def test_heading_angle_jump_is_rate_limited():
     assert h._jumps == 1
 
 
+# ---- 车模影子（只进 trace，2026-11-01）：先核噪/滞后，不参与控制 ----
+
+def test_heading_model_shadow_predicts_from_command():
+    """影子用实际杆值按车模推进：满杆稳态角速度≈0.46 rad/s、ψ 单调涨。
+
+    只读列，控制律不消费；线角断了也继续预测（psi_age 如实反映证据龄）。"""
+    h = HeadingObserver(P)
+    h.model_command(1.0)
+    h.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)      # 初始化 pm=0
+    assert h.mpsi == pytest.approx(0.0, abs=1e-9)
+    for i in range(40):
+        h.update(DT, 0.0, False, None, False, 2 + i, None, 0)
+    assert h.mr == pytest.approx(0.46, abs=0.02)
+    assert h.mpsi > 0.2
+    assert h.debug()["pm"] == pytest.approx(h.mpsi, abs=1e-4)
+    assert h.debug()["rm"] == pytest.approx(h.mr, abs=1e-3)
+
+
+def test_heading_model_shadow_corrects_toward_line_angle():
+    """线角到达时按小增益校正，不直接置位：单拍只走 12% 创新。"""
+    h = HeadingObserver(P)
+    h.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)
+    h.update(DT, 0.0, True, 0.10, True, 2, 50.0, 3)
+    assert 0.0 < h.mpsi < 0.10
+    assert h.mpsi == pytest.approx(0.012, abs=0.004)
+    assert h.debug()["pmi"] == pytest.approx(0.10, abs=0.02)
+
+
+def test_heading_model_shadow_rejects_line_jump():
+    """坏线角的创新按 0.15 rad 截断，不把影子整段拖走。"""
+    h = HeadingObserver(P)
+    h.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)
+    h.update(DT, 0.0, True, 0.5, True, 2, 5.0, 3)      # 假角 28°
+    assert h.mpsi <= 0.15 * 0.12 + 1e-6
+    assert abs(h.debug()["pmi"]) == pytest.approx(0.5, abs=0.02)
+
+
+def test_heading_model_shadow_does_not_steer(monkeypatch):
+    """影子写坏也影响不到杆值：控制路径不读 pm/rm。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    base = [rig.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2)).steer_x
+            for i in range(20)]
+    pl2 = _planner()
+    rig2 = _Rig(pl2)
+
+    def poisoned(self, th, age_ms=None):
+        self.mpsi, self.mr = 0.5, 0.8
+
+    monkeypatch.setattr(HeadingObserver, "_model_correct", poisoned)
+    got = [rig2.tick(_out(x_target=0.3, fid=i + 1, valid=i + 2)).steer_x
+           for i in range(20)]
+    assert got == base
+
+
 def test_stale_heading_stops_producing_lateral_velocity():
     """ψ 状态按 _PSI_STALE_S 保留给控制律，但用它推横速只能认短龄——0.6s 的
     旧朝向在 40m/s 上是 0.7~1 道的位置外推，而这段时间恰好也是线+深度都没
