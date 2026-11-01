@@ -1330,7 +1330,10 @@ class SpeedRushModule(ActivityModule):
                 # 位置可信度直供决策：执行层本拍外推（线+深度都无新证据）时
                 # 决策不重建目标——场景全部由 executed 平移，假位置下的选择
                 # 会给出假目标。判据与冻结见 planner.update。
-                state_unverified=planner.state_unverified)
+                state_unverified=planner.state_unverified,
+                # 持久车道图的时间维：前进/横移预测用执行层在线速度
+                ego_speed_mps=planner.state.v_mps,
+                ego_v_lat_lane_s=planner.state.v_lat)
             cfg = chain["cfg"]
             # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
             # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。
@@ -1547,6 +1550,9 @@ class SpeedRushModule(ActivityModule):
             # 对象表（第 1 期观测面）：身份键/年龄/本拍可见/安全标记与原因；
             # 超龄条目会在这里比 scene 多留一会儿，safety_ok 已失效。
             "otab": eng.object_table_trace(),
+            # 持久车道图（第 2 期观测面）：支撑距离/采样点/预测误差样本；
+            # 本阶段只记录，路线与预置尚未消费。
+            "map": eng.lane_map_trace(),
             # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选
             "plan": None if plan is None else plan.as_trace(),
             # 本拍两层名义视界（秒，观测面）：今天都是常量，分级时域落地后
@@ -1565,6 +1571,10 @@ class SpeedRushModule(ActivityModule):
             "steer_raw": round(planner.last_steer_raw, 4),
             "steer_x": cmd.steer_x,
             "executed_lane": round(planner.state.executed_lane, 4),
+            # 在线前向速度（m/s）：持久车道图的前进预测输入，离线复算同一
+            # 张图要用它；None=估计窗未开（图本拍不前进，只衰减）。
+            "v_ego": None if planner.state.v_mps is None
+            else round(planner.state.v_mps, 3),
             "v_lat": round(planner.state.v_lat, 4),
             "heading": round(planner.state.heading, 4),
             "n_groups": len(obs.coin_groups),

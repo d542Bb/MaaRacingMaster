@@ -31,6 +31,7 @@ from maaracing_master.plugins.speedrush.coarse import (
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import Corridor
 from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
+from maaracing_master.plugins.speedrush.lane_map import LaneMap
 from maaracing_master.plugins.speedrush.motion_plan import build_scene
 from maaracing_master.plugins.speedrush.object_table import ObjectTable
 from maaracing_master.plugins.speedrush.selection import (
@@ -494,6 +495,12 @@ class DecisionEngine:
             safety_age_s=cfg.motion.max_obj_age_s,
             plan_age_s=max(cfg.motion.horizon_s, cfg.motion.max_obj_age_s))
         self._stage: int | None = None
+        # 持久车道图（第 2 期，观测面）：按弧长记忆走廊带，随自车运动预测。
+        # 本阶段只落 trace 与误差样本，不接路线/预置，更不接安全。
+        self._lane_map = LaneMap(self.cal.lane_w_m)
+        self._map_trace: dict | None = None
+        self._ego_speed_mps: float | None = None
+        self._ego_v_lat = 0.0
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
@@ -544,6 +551,8 @@ class DecisionEngine:
         self._coin_t_mem.clear()
         self._objects.reset()
         self._stage = None
+        self._lane_map.reset()
+        self._map_trace = None
         self._conserve_t = 0.0
         self._ok_t = 0.0
         self._abort_next = DecisionState.CRUISE
@@ -566,7 +575,9 @@ class DecisionEngine:
                road_offset: float | None = None,
                corridor: Corridor | None = None,
                position: ArrivalAttribution | None = None,
-               state_unverified: bool = False) -> DecisionOutput:
+               state_unverified: bool = False,
+               ego_speed_mps: float | None = None,
+               ego_v_lat_lane_s: float = 0.0) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
@@ -585,6 +596,8 @@ class DecisionEngine:
         self._dt_last = dt_s
         self._fid = obs.frame_id
         self._fps = obs.fid_rate_hz
+        self._ego_speed_mps = ego_speed_mps
+        self._ego_v_lat = float(ego_v_lat_lane_s or 0.0)
         # 差异行只对本拍有效：没有推进选择层（无路/非巡航）的拍不能回放上一拍。
         self._sel_shadow_trace = None
         self._views, self._events = traffic if traffic is not None else ((), ())
@@ -679,6 +692,7 @@ class DecisionEngine:
             authority = "COMMIT"
         else:
             authority = "GENTLE"
+        self._update_lane_map(obs)
         intent_lane = None
         if route is not None:
             intent_lane = route.lane_target if merging else route.lane_ref
@@ -1484,6 +1498,31 @@ class DecisionEngine:
     def object_table_trace(self) -> dict:
         """上一拍对象表（身份/年龄/可见/安全标记）——trace otab 列。"""
         return self._objects.as_trace()
+
+    def lane_map_trace(self) -> dict | None:
+        """上一拍持久车道图（支撑距离/采样点/预测误差）——trace map 列。"""
+        return self._map_trace
+
+    def _update_lane_map(self, obs: WorldObservation) -> None:
+        """每拍推进一步车道图。无场景拍（非巡航/无路）只做预测与衰减，
+        不喂带——图的时间维不能因为一拍没有选择就清零。"""
+        bands = ()
+        coarse = ()
+        sc = self._scene
+        if sc is not None and sc.fid == obs.frame_id:
+            bands = sc.road.bands
+            cor = self._corridor
+            if cor is not None:
+                coarse = tuple(
+                    RoadBand(b.z0, b.z1, b.left.x_m, b.right.x_m,
+                             src="inferred", age_ms=None, conf=0.0)
+                    for b in cor.coarse_bands
+                    if b.left.x_m is not None and b.right.x_m is not None)
+        res = self._lane_map.update(
+            bands=bands, coarse_bands=coarse,
+            v_mps=self._ego_speed_mps, v_lat_lane_s=self._ego_v_lat,
+            dt_s=self._dt_last)
+        self._map_trace = self._lane_map.as_trace(res)
 
 
     def _tick_abort(self, dt_s: float, executed: float | None) -> str:

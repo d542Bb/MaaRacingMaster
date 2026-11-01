@@ -37,6 +37,15 @@ status: active
 
 `--trace <path>` 可直接给任意 `speedrush.jsonl`。
 
+```bat
+.venv\Scripts\python.exe tools\experiments\world_state\map_support.py ^
+    --session <新局> --json out\map_support.json
+```
+
+`map_support.py` 用 `scene` 带与 `v_ego/v_lat` 复算「预测距离 → 中心误差」与
+车道级支撑距离。**新局才有 `v_ego`**；旧局缺该列时只算同弧长校正误差，
+报告会显式标注，不能当跨距离预测误差。
+
 ## 结论去向
 
 基线数值与缺口清单进 `docs/plan/world_state_persistence.md`；对象记忆与地图
