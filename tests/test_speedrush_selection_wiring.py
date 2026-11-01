@@ -339,3 +339,23 @@ def test_dynamic_horizon_switch_controls_selector_override():
     assert _spy(CFG) is None
     on = replace(CFG, selection=replace(CFG.selection, dynamic_horizon=True))
     assert _spy(on) == pytest.approx(3.0)
+
+
+def test_new_trace_columns_are_json_serializable():
+    """第 1/2/4 期新增列全部可 JSON 序列化，且两个新开关默认关。"""
+    import json
+    eng = DecisionEngine(CFG)
+    g, ms = _group(1, x=0.4, rel=2.5)
+    for fid in (1, 2, 3):
+        g = replace(g, first_seen_fid=1, last_seen_fid=fid)
+        ms = tuple(replace(m, first_seen_fid=1, last_seen_fid=fid,
+                           validity_until_fid=fid + 8) for m in ms)
+        eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
+                   executed_lane=0.0, corridor=_corridor(),
+                   ego_speed_mps=20.0)
+    for v in (eng.object_table_trace(), eng.lane_map_trace(),
+              eng.openness_trace(), eng.anchor_trace(),
+              eng.horizon_trace(), eng.trigger_trace()):
+        json.dumps(v, ensure_ascii=False)
+    assert CFG.selection.dynamic_horizon is False
+    assert CFG.selection.layer_dwell is False
