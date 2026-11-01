@@ -199,15 +199,33 @@ def _resolve(args):
     return base / args.session / "trace" / "speedrush.jsonl"
 
 
-def analyze(rows, session="") -> dict:
+def _speed(row, mode, last, const):
+    """返回 (本拍前进速度, 新 last)；mode=hud41 用得分速度拆底值。"""
+    if mode == "const":
+        return const, last
+    if mode == "v_ego":
+        v = row.get("v_ego")
+        if v is None:
+            return last, last
+        return float(v), float(v)
+    rate = row.get("hud_rate")
+    if not isinstance(rate, (int, float)):
+        return last, last
+    # 得分速度 = 速度底值 + 30k；巡航底值≈41 m/s，早期爬升段 <41 即速度。
+    v = float(rate) if rate < 45.0 else 41.0
+    return v, v
+
+
+def analyze(rows, session="", speed_mode="v_ego", speed_value=41.0) -> dict:
     m = Map()
     buckets = {b: [] for b in BUCKETS}
     supports = []
+    last_v = 0.0
     for row in rows:
         scene = row.get("scene") or {}
         lane_w = scene.get("lane_w") or 3.5
         dt = row.get("dt") or 0.05
-        v = row.get("v_ego") or 0.0
+        v, last_v = _speed(row, speed_mode, last_v, speed_value)
         v_lat = row.get("v_lat") or 0.0
         m.step_map(v, v_lat, lane_w, dt)
         bands = _bands(scene)
@@ -228,11 +246,16 @@ def analyze(rows, session="") -> dict:
         m.expire()
         supports.append(m.support())
     has_speed = any(r.get("v_ego") is not None for r in rows)
+    label = {
+        "v_ego": "v_ego" if has_speed else
+        "missing（旧局无 v_ego：只算同弧长校正误差，不是跨距离预测误差）",
+        "hud41": "hud_rate 代理（<45 取读数、否则按巡航底值 41 m/s；非精确 v_ego）",
+        "const": f"常数 {speed_value} m/s（敏感性对照）",
+    }[speed_mode]
     rep = {
         "session": session,
         "rows": len(rows),
-        "forward_speed": "v_ego" if has_speed else
-        "missing（旧局无 v_ego：只算同弧长校正误差，不是跨距离预测误差）",
+        "forward_speed": label,
         "support_m": {
             "median": round(statistics.median(supports), 1) if supports else 0,
             "p90": round(_pct(supports, 90), 1) if supports else 0,
@@ -259,11 +282,14 @@ def main(argv=None):
     ap.add_argument("--session", default="20261101_113145")
     ap.add_argument("--trace")
     ap.add_argument("--json")
+    ap.add_argument("--speed", choices=("v_ego", "hud41", "const"),
+                    default="v_ego")
+    ap.add_argument("--speed-value", type=float, default=41.0)
     args = ap.parse_args(argv)
     path = _resolve(args)
     rows = list(iter_rows(path))
     name = args.session if not args.trace else Path(args.trace).parent.parent.name
-    rep = analyze(rows, name)
+    rep = analyze(rows, name, args.speed, args.speed_value)
     print(json.dumps(rep, ensure_ascii=False, indent=1))
     if args.json:
         out = Path(args.json)

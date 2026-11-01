@@ -43,8 +43,9 @@ status: active
 ```
 
 `map_support.py` 用 `scene` 带与 `v_ego/v_lat` 复算「预测距离 → 中心误差」与
-车道级支撑距离。**新局才有 `v_ego`**；旧局缺该列时只算同弧长校正误差，
-报告会显式标注，不能当跨距离预测误差。
+车道级支撑距离。**新局才有精确 `v_ego`**；旧局可用 `--speed hud41`，从 HUD
+得分速度拆巡航底值（<45 取读数、否则按 41 m/s，得分加 30k 的代理），报告会
+标注为代理；`--speed const --speed-value 35/45` 做速度敏感性对照。
 
 ```bat
 .venv\Scripts\python.exe tools\experiments\world_statecceptance.py ^
