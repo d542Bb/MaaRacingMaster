@@ -56,13 +56,23 @@ status: active
 `v_ego/otab/map` 的项显示 None，不拿缺列当零。
 
 ```bat
-.venv\Scripts\python.exe tools\experiments\world_stateequest_cone.py ^
+.venv\Scripts\python.exe tools\experiments\world_state
+equest_cone.py ^
     --session 20261101_113145
 ```
 
 `request_cone.py` 用旧局 `sel_dbg` 反事实复算「旧 1.2/1.5 道固定门挡住、但
 时间锥+相邻请求会发」的机会。它**不覆盖**长币线远端时间与命中拍请求贯通
 （旧局缺组账/命中上下文），`cone_only` 未计层优先级与确认门，是上界。
+
+```bat
+.venv\Scripts\python.exe tools\experiments\world_state\horizon_sensitivity.py ^
+    --session 20261101_113145
+```
+
+`horizon_sensitivity.py` 复算同一批选择帧在 2.0/2.5/3.0 s 固定视界下的请求
+机会，再按旧局走廊宽/安全车近似开度给出拟议视界，统计相对 3.0 s 砍掉多少。
+只是机会集合代理，无闭环反馈。
 
 ## 结论去向
 
