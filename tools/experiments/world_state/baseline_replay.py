@@ -365,6 +365,44 @@ def _car_tracks(rows):
             "blind_s": _r(blind_s, 1)}
 
 
+def _group_blind(rows):
+    """币组断检保留：组在 cgroups 里但本拍 obs=0（宽限存续）的连续时长。"""
+    tracks = {}
+    for row in rows:
+        t = _ts(row)
+        fid = row.get("fid")
+        for g in row.get("cgroups") or []:
+            if not isinstance(g, dict) or g.get("id") is None:
+                continue
+            # obs 在宽限存续分支仍是成员数（不是本拍观测数），用 last<fid 判盲
+            blind = g.get("last") is not None and fid is not None                 and int(g["last"]) < int(fid)
+            tracks.setdefault(g["id"], []).append((t, int(blind)))
+    life, blind, over = [], [], 0
+    for pts in tracks.values():
+        if len(pts) < 2:
+            continue
+        life.append(pts[-1][0] - pts[0][0])
+        cur = None
+        for t, obs in pts:
+            if obs == 0:
+                cur = [t, t] if cur is None else [cur[0], t]
+            elif cur is not None:
+                d = cur[1] - cur[0]
+                blind.append(d)
+                over += int(d > 0.6)
+                cur = None
+        if cur is not None:
+            d = cur[1] - cur[0]
+            blind.append(d)
+            over += int(d > 0.6)
+    return {"groups": len(life),
+            "life_s_median": _r(_pct(life, 50), 2),
+            "blind_runs": len(blind),
+            "blind_s_median": _r(_pct(blind, 50), 2),
+            "blind_s_p90": _r(_pct(blind, 90), 2),
+            "blind_over_0_6s": over}
+
+
 def _objects(rows):
     """schema 4：对象遮挡后的保留时长与同 id 重现。"""
     if not any((r.get("scene") or {}).get("schema", 0) >= 4 for r in rows):
@@ -509,6 +547,7 @@ def main(argv=None):
         "opportunities": _opps(rows),
         "objects": _objects(rows),
         "car_tracks": _car_tracks(rows),
+        "group_blind": _group_blind(rows),
         "steer": _steer(rows),
         "map": _map(rows),
     }
