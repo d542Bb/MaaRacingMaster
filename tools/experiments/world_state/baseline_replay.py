@@ -172,7 +172,8 @@ def _merges(rows):
     结束时下一拍的 route.vd 决定归账：finish=位置进中心带且横速落稳；
     cancel/rebuild/epoch_reset/timeout=没到目标就结束（这些段的「收尾误差」
     不是过冲，只报计数）。过冲窗口从并线开始到结束后 1.0 s：车到位后的
-    惯性前送也算——那正是「越过目标」的定义。"""
+    惯性前送也算——那正是「越过目标」的定义。段内与结束后的过冲分开报：
+    结束后窗口会抓到执行横位的观测/模型源切换，不能全算控制过冲。"""
     segs, cur = [], None
     for i, r in enumerate(rows):
         if (r.get("route") or {}).get("ph") == "merging":
@@ -184,7 +185,8 @@ def _merges(rows):
             cur = None
     if cur:
         segs.append(cur)
-    whys, ends, speeds, overs, settle, durations = {}, {}, [], [], [], []
+    whys, ends, speeds, settle, durations = {}, {}, [], [], []
+    overs, overs_in, overs_post = [], [], []
     for s in segs:
         rs = rows[s["i0"]:s["i1"] + 1]
         why = (rs[0].get("route") or {}).get("why")
@@ -218,18 +220,32 @@ def _merges(rows):
         direction = 1.0 if ref > ex[0] else -1.0
         if abs(ref - ex[0]) < 0.05:
             continue
-        beyond = [(x - ref) * direction for x in ex + post]
-        if any(b >= -0.02 for b in beyond):
-            overs.append(max(0.0, max(beyond)))
+        bin_ = [(x - ref) * direction for x in ex]
+        bpost = [(x - ref) * direction for x in post]
+        # 与旧口径一致：只有真的走到/越过目标的段才计入过冲（没走到记
+        # settle_err，不把 0 混进分位）。
+        if not any(v >= -0.02 for v in bin_ + bpost):
+            continue
+        oi = max(0.0, max(bin_)) if bin_ else 0.0
+        op = max(0.0, max(bpost)) if bpost else 0.0
+        overs_in.append(oi)
+        overs_post.append(op)
+        overs.append(max(oi, op))
     return {
         "count": len(segs),
         "why": dict(sorted(whys.items(), key=lambda kv: -kv[1])),
         "opportunity": whys.get("opportunity", 0),
+        "urgent": whys.get("urgent", 0),
         "end": dict(sorted(ends.items(), key=lambda kv: -kv[1])),
         "dur_s_median": _r(_pct(durations, 50), 2),
         "v_lat_lane_s_median": _r(_pct(speeds, 50)),
         "overshoot_lane_p90": _r(_pct(overs, 90)),
         "overshoot_lane_max": _r(max(overs)) if overs else None,
+        "overshoot_in_p90": _r(_pct(overs_in, 90)),
+        "overshoot_in_max": _r(max(overs_in)) if overs_in else None,
+        "overshoot_post_p90": _r(_pct(overs_post, 90)),
+        "overshoot_post_max": _r(max(overs_post)) if overs_post else None,
+        "post_drift_over_0_5": sum(1 for x in overs_post if x > 0.5),
         "settle_err_lane_p90_finished": _r(_pct(settle, 90)),
     }
 
