@@ -187,8 +187,8 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
         unknown_car = False
         if blocker != "space" or free > 0.0:
             for c in cars:
-                if c.kind != "car":
-                    continue
+                if c.kind != "car" or not getattr(c, "safety_ok", True):
+                    continue        # 超龄/退役车不进车道净空判断
                 if c.z_m is not None:
                     cx = c.x_m
                 else:

@@ -39,6 +39,9 @@ class SceneObj:
     # seen=本拍是否见到本人（False=宽限/遮挡存续）；两者都不进价值与安全。
     id: int | None = None
     seen: bool | None = None
+    # 安全资格（对象表 safety_ok）：只有车会为 False 时被安全消费点跳过；
+    # 非车对象保持 True（安全点自己按 kind 过滤）。
+    safety_ok: bool = True
 
 
 @dataclass(frozen=True)
@@ -204,7 +207,8 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             in_corridor=_in_corridor(road, x, z_scene),
             near=bool(getattr(c, "near", False)),
             half_w_m=getattr(c, "half_w_m", None),
-            id=getattr(c, "id", None), seen=getattr(c, "seen", None)))
+            id=getattr(c, "id", None), seen=getattr(c, "seen", None),
+            safety_ok=getattr(c, "safety_ok", True)))
     for c in coins:
         age = getattr(c, "age_ms", 0.0) or 0.0
         if age > max_obj_age_s * 1000.0:
@@ -517,7 +521,9 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
         horizon = n * dt
         shortened = True
 
-    cars = [o for o in scene.objs if o.kind == "car"]
+    # 安全消费点：碰撞/近时迎车/有距无速只用对象表判为安全的车。
+    # 超龄或已退役的车可以留在场景里供价值项，但这里一根都不读。
+    cars = [o for o in scene.objs if o.kind == "car" and o.safety_ok]
     ts = [k * dt for k in range(n + 1)]
     # 候选命令 = **绝对**车头角指令（rad）。档位不随当前朝向平移：偏移量档
     # 在车已经带着 0.05 rad 时给不出「反打到 −0.03」这一档，而回带刹车恰恰

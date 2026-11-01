@@ -61,7 +61,8 @@ def _lane_ttc_map(scene, c0: float, horizon_s: float) -> dict[int, float]:
     out: dict[int, float] = {}
     lw = scene.lane_w_m
     for o in scene.objs:
-        if o.kind != "car" or not o.timed or o.t_arrive_s is None:
+        if o.kind != "car" or not getattr(o, "safety_ok", True) \
+                or not o.timed or o.t_arrive_s is None:
             continue
         if not (0.0 < o.t_arrive_s <= horizon_s):
             continue
@@ -862,6 +863,11 @@ class DecisionEngine:
                   seen: bool | None = None) -> None:
             if x is None or x != x:
                 return
+            # 安全资格来自对象表（同 id）：表里没有该车=身份不明，按不可安全
+            # 处理（fail-closed）；这不会改变今天的输出——表与车源同拍同源。
+            entry = None if tid is None else self._objects.track(KIND_CAR, tid)
+            safe = True if tid is None else (
+                entry.safety_ok if entry is not None else False)
             # 平滑在道路帧（x+off）：自车横移由 off 抵消，目标自身的慢横移
             # 保留；米制 x/z 的逐拍抖动（±1~4m）在这里收敛到擦车带量级以下。
             xr = x + off
@@ -906,7 +912,7 @@ class DecisionEngine:
                                  t_overtake_s=t_ov, bridged=bridged,
                                  z_m=z_m, age_ms=age_ms, src=src,
                                  near=near, half_w_m=half_w_m,
-                                 id=tid, seen=seen))
+                                 id=tid, seen=seen, safety_ok=safe))
 
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
@@ -1193,7 +1199,8 @@ class DecisionEngine:
                         c.z_m - CAM_Z_DATUM_M)
                         if c.z_m is not None else 0.0),
                     c.t_meet_s,
-                    oid=-1 if c.id is None else c.id)
+                    oid=-1 if c.id is None else c.id,
+                    safe=c.safety_ok)
                 for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
                      count=c.observed_count, conf=c.conf,

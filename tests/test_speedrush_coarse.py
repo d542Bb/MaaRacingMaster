@@ -24,6 +24,7 @@ class Car:
     t_arrive_s: float | None = None
     near: bool = False
     kind: str = "car"
+    safety_ok: bool = True
 
 
 def _road(rows, *, l=-6.0, r=6.0):
@@ -220,3 +221,15 @@ def test_far_direction_off_is_bit_identical():
         a = choose_lane(plain, [], ego_lane=0.0, lane_w_m=LW, p=p)
         b = choose_lane(with_coarse, [], ego_lane=0.0, lane_w_m=LW, p=p)
         assert (a.lane, a.direction, a.reason) == (b.lane, b.direction, b.reason)
+
+
+def test_unsafe_car_ignored_by_lane_clearance():
+    """超龄/退役车不进粗层净空判断；新鲜车照旧改变选道。"""
+    clean = choose_lane(_straight(), [], ego_lane=0.0, lane_w_m=LW, p=P)
+    unsafe = choose_lane(_straight(), [Car(0.0, z_m=10.0, safety_ok=False)],
+                         ego_lane=0.0, lane_w_m=LW, p=P)
+    fresh = choose_lane(_straight(), [Car(0.0, z_m=10.0)],
+                        ego_lane=0.0, lane_w_m=LW, p=P)
+    assert (unsafe.lane, unsafe.free_m, unsafe.reason) == \
+        (clean.lane, clean.free_m, clean.reason)
+    assert fresh != clean

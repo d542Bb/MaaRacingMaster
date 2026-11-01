@@ -14,7 +14,8 @@
   旧条目按龄退役；两者不合并、不继承年龄或置信。
 
 **safety_ok 的口径**：安全对象只有车；同时满足
-1. 年龄 ≤ `safety_age_s`（调用方传 motion.max_obj_age_s，与现状一致）；
+1. 横位所用测量的年龄 ≤ `safety_age_s`（调用方传 motion.max_obj_age_s；
+   米制车按锚龄、像素车按观测龄——与场景现有硬删同源）；
 2. 有可用横位（像素横位或米制横位）。
 「新鲜」是**在安全龄内**，不是本拍必须见到：短暂遮挡（跟踪宽限内）仍是
 一条实测过、位置未外推的对象，今天的安全链就用它。上游不再输出（跟踪器
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from maaracing_master.plugins.speedrush.tracking import DistanceSource
 from maaracing_master.plugins.speedrush.world_model import KIND_CAR
 
 SAFETY_OK = "ok"
@@ -53,7 +55,8 @@ class TrackObj:
     src: str                   # metric / pixel / far
     first_seen_fid: int
     last_seen_fid: int
-    age_ms: float
+    age_ms: float              # 观测新鲜度（距最后一次真实读数）
+    src_age_ms: float          # 横位所用测量的年龄（米制=锚龄，像素=观测龄）
     seen: bool                 # 本拍是否真实见到（False=宽限存续）
     safety_ok: bool
     safety_why: str
@@ -92,11 +95,15 @@ def _age_ms(fid: int, last_fid: int, fps: float | None) -> float:
     return max(0, fid - last_fid) / fps * 1000.0
 
 
-def _safety(kind: str, age_ms: float, x_lane: float | None,
+def _safety(kind: str, src_age_ms: float, x_lane: float | None,
             x_m: float | None, safety_age_ms: float) -> tuple[bool, str]:
+    """安全门与场景现有硬删同源：按**横位所用测量**的年龄，不是观测龄。
+
+    米制车的横位/纵深来自锚点，场景一直按锚龄 0.6 s 截断；像素车按观测龄。
+    两套口径混用会让同一辆车在表里安全、在 scene 里已被删。"""
     if kind != KIND_CAR:
         return False, SAFETY_NOT_CAR
-    if age_ms > safety_age_ms:
+    if src_age_ms > safety_age_ms:
         return False, SAFETY_STALE
     if x_lane is None and x_m is None:
         return False, SAFETY_NO_LATERAL
@@ -133,18 +140,26 @@ class ObjectTable:
             view = view_by_id.get(t.id)
             x_m = None if metric is None else metric.x_m
             z_m = None if metric is None else metric.z_m
+            age = _age_ms(fid, t.last_seen_fid, fps)
             if metric is not None and z_m is not None:
-                src = "metric"
+                if metric.source is DistanceSource.BOX_SIZE:
+                    src = "metric_coarse"
+                    src_age = 0.0           # 与 scene 的 BOX_SIZE 入场口径一致
+                else:
+                    src = "metric"
+                    src_age = metric.anchor_age_ms or 0.0
             elif x_lane is not None:
                 src = "pixel"
+                src_age = age
             else:
                 src = "far"
+                src_age = age
             half_w = None
             if view is not None and view.w_m:
                 half_w = view.w_m / 2.0
-            age = _age_ms(fid, t.last_seen_fid, fps)
             seen = t.last_seen_fid == fid
-            ok, why = _safety(t.kind, age, x_lane, x_m, self.safety_age_ms)
+            ok, why = _safety(t.kind, src_age, x_lane, x_m,
+                              self.safety_age_ms)
             key = (t.kind, t.id)
             self._tracks[key] = TrackObj(
                 kind=t.kind, id=t.id, x_lane=x_lane, x_m=x_m,
@@ -153,7 +168,8 @@ class ObjectTable:
                 half_w_m=half_w, conf=t.conf, src=src,
                 first_seen_fid=t.first_seen_fid,
                 last_seen_fid=t.last_seen_fid,
-                age_ms=age, seen=seen, safety_ok=ok, safety_why=why)
+                age_ms=age, src_age_ms=src_age, seen=seen,
+                safety_ok=ok, safety_why=why)
             present.add(key)
         # 已退出跟踪宽限：保留到计划视界，安全标记立即失效（不再更新位置）。
         # 帧率未预热时算不出龄，宁可立即退役也不带着未知年龄进规划。
@@ -198,7 +214,7 @@ class ObjectTable:
                      if e.kind == KIND_CAR and e.safety_ok)
 
     def as_trace(self) -> dict:
-        """紧凑观测面：轨道逐条 10 元组，币组逐组 8 元组。"""
+        """紧凑观测面：轨道逐条 11 元组，币组逐组 8 元组。"""
         return {
             "n": len(self._tracks),
             "nsafe": sum(1 for e in self._tracks.values()
@@ -208,7 +224,7 @@ class ObjectTable:
                    None if e.x_m is None else round(e.x_m, 3),
                    None if e.z_m is None else round(e.z_m, 2),
                    round(e.age_ms, 1), e.seen, e.safety_ok, e.safety_why,
-                   e.src]
+                   e.src, round(e.src_age_ms, 1)]
                   for e in self.tracks],
             "g": [[g.group_id, round(g.x_center, 3), g.cy_max,
                    g.observed_count, round(g.age_ms, 1), g.seen,

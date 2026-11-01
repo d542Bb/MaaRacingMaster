@@ -795,3 +795,15 @@ def test_scene_trace_carries_object_identity_and_visibility():
     assert by_kind["coin"][-2:] == [11, False]
     assert by_kind["car"][-2:] == [None, None]   # 源未带身份：不猜
     assert len(by_kind["reward"]) == 16
+
+
+def test_unsafe_car_does_not_change_plan_safety():
+    """注入一辆不安全车（超龄/退役）：整份计划必须与没有它逐位一致；
+    同一辆车新鲜时允许改变（1b 注入锁）。"""
+    base = _scene()
+    unsafe = _scene(cars=[CarSource(0.0, 1.0, age_ms=0.0,
+                                    safety_ok=False)])
+    safe = _scene(cars=[CarSource(0.0, 1.0, age_ms=0.0, safety_ok=True)])
+    a, b, c = _plan(base), _plan(unsafe), _plan(safe)
+    assert b == a
+    assert c != a

@@ -141,7 +141,7 @@ def test_trace_shape():
     t.step(obs=_obs(1, targets=(_car(1, 0.2),)), fps=FPS)
     tr = t.as_trace()
     assert tr["n"] == 1 and tr["nsafe"] == 1
-    assert len(tr["t"][0]) == 10 and len(tr["g"]) == 0
+    assert len(tr["t"][0]) == 11 and len(tr["g"]) == 0
     assert tr["t"][0][0] == KIND_CAR and tr["t"][0][1] == 1
 
 
@@ -195,3 +195,36 @@ def test_unknown_fps_does_not_retain_retired_track():
     t.step(obs=_obs(1, targets=(_car(1, 0.2),)), fps=FPS)
     t.step(obs=_obs(2), fps=None)
     assert t.track(KIND_CAR, 1) is None
+
+
+def test_metric_anchor_age_is_the_safety_age():
+    """米制车的横位/纵深来自锚点：安全龄按锚龄截断（与场景现有硬删同源），
+    观测再新鲜也不能把 0.6 s 外的锚带进安全判断。"""
+    t = _table()
+    car = _car(5, 0.3, cy=320)
+    old_anchor = MetricCarState(
+        target_id=5, source=DistanceSource.RESCALED_ANCHOR, z_m=40.0,
+        x_m=1.8, v_close_mps=None, t_meet_s=None, anchor_age_ms=700.0)
+    t.step(obs=_obs(1, targets=(car,)), metric_cars=(old_anchor,), fps=FPS)
+    e = t.track(KIND_CAR, 5)
+    assert e.age_ms == 0.0 and e.src_age_ms == 700.0
+    assert e.safety_ok is False and e.safety_why == SAFETY_STALE
+    fresh = MetricCarState(
+        target_id=5, source=DistanceSource.RESCALED_ANCHOR, z_m=40.0,
+        x_m=1.8, v_close_mps=None, t_meet_s=None, anchor_age_ms=100.0)
+    t.step(obs=_obs(2, targets=(_car(5, 0.3, cy=320, last=2),)),
+           metric_cars=(fresh,), fps=FPS)
+    assert t.track(KIND_CAR, 5).safety_ok is True
+
+
+def test_box_size_metric_has_no_anchor_age():
+    """框高粗距离没有锚点：场景按 0 龄收它，表也不得按锚龄误杀。"""
+    t = _table()
+    car = _car(6, 0.3, cy=300)
+    box = MetricCarState(
+        target_id=6, source=DistanceSource.BOX_SIZE, z_m=30.0, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None)
+    t.step(obs=_obs(1, targets=(car,)), metric_cars=(box,), fps=FPS)
+    e = t.track(KIND_CAR, 6)
+    assert e.src == "metric_coarse" and e.src_age_ms == 0.0
+    assert e.safety_ok is True

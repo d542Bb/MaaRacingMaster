@@ -98,6 +98,9 @@ class Obj:
     count: float = 1.0            # 金币枚数（币层排序用）
     conf: float = 1.0
     oid: int = -1
+    # 车是否可进安全判断（对象表 safety_ok）。只对 kind=car 有意义：擦边、
+    # 让位、占用检查读它；预置等价值项不看。
+    safe: bool = True
 
 
 @dataclass(frozen=True)
@@ -149,6 +152,8 @@ class CarSource:
     half_w_m: float | None = None
     id: int | None = None
     seen: bool | None = None
+    # 对象表 safety_ok：False=超龄/退役/无横位，安全消费点跳过；价值项不看。
+    safety_ok: bool = True
 
 
 @dataclass(frozen=True)
@@ -255,6 +260,8 @@ def _blocked(cars: Sequence[Obj], x: float, t: float,
     """目标 x 在 t 时刻是否被另一辆车占住（只查会与自车同时到达的车）。"""
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     for c in cars:
+        if not c.safe:
+            continue                    # 超龄/退役车不进占用判断
         if c.t is None or c.t > t + p.margin_s:
             continue
         if c.t < -0.2:
@@ -363,7 +370,8 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     """
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     cands = [c for c in cars
-             if c.t is not None and 0.0 <= c.t <= p.horizon_s
+             if c.safe
+             and c.t is not None and 0.0 <= c.t <= p.horizon_s
              and abs(c.x - ego) <= half]
     for c in sorted(cands, key=lambda o: o.t):
         x = _pass_x(c, road, p)
@@ -508,7 +516,7 @@ def _waypoints(layer: int, x_p: float, t_p: float,
 
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     for c in sorted([c for c in cars
-                     if c.t is not None and 0.0 < c.t < t_p],
+                     if c.safe and c.t is not None and 0.0 < c.t < t_p],
                     key=lambda o: o.t):
         if abs(c.x - along(c.t)) > half:
             continue
@@ -654,7 +662,8 @@ class LayeredSelector:
         if self._target is None:
             return False
         half = (self.p.car_half_lane + self.p.ego_half_lane) * self.p.lane_w_m
-        return any(c.t is not None and -0.2 <= c.t <= self.p.horizon_s
+        return any(c.safe and c.t is not None
+                   and -0.2 <= c.t <= self.p.horizon_s
                    and abs(c.x - self._target) < half for c in cars)
 
     def update(self, road: RoadFrame, rewards: Sequence[Obj],

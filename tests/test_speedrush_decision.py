@@ -589,3 +589,16 @@ def test_lane_ttc_map_keeps_earliest_per_lane():
         NS(kind="coin", timed=True, t_arrive_s=0.2, x_m=0.0),     # 非车
     ))
     assert _lane_ttc_map(scene, 0.0, 3.0) == {0: 0.8, 1: 1.5}
+
+
+def test_lane_ttc_map_skips_unsafe_cars():
+    """路线时间门只读安全车：超龄/退役车不得制造紧急或阻挡逃生。"""
+    from types import SimpleNamespace as NS
+    from maaracing_master.plugins.speedrush.decision import _lane_ttc_map
+    scene = NS(lane_w_m=3.5, objs=(
+        NS(kind="car", timed=True, t_arrive_s=0.5, x_m=0.0,
+           safety_ok=False),
+        NS(kind="car", timed=True, t_arrive_s=1.2, x_m=0.0,
+           safety_ok=True),
+    ))
+    assert _lane_ttc_map(scene, 0.0, 3.0) == {0: 1.2}

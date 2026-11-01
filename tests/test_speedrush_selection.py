@@ -375,3 +375,24 @@ def test_reach_slack_is_the_same_gate_in_seconds():
             assert (s is not None and s >= 0.0) == _reachable(x, 0.0, t, p)
     assert reach_slack(0.0, 0.0, None, p) is None
     assert reach_slack(0.0, 0.0, 0.1, p) == pytest.approx(0.1 - p.reaction_s)
+
+
+def test_unsafe_car_is_ignored_by_safety_consumers():
+    """对象表判为不安全的车（超龄/退役/无横位）不参与擦边、让位、占用
+    与路点插入；同一辆车新鲜时允许改变结果（1b 注入锁）。"""
+    from maaracing_master.plugins.speedrush.selection import _blocked
+    p = _p()
+    assert _blocked([Obj("car", 0.0, 1.0)], 0.0, 1.0, p) is True
+    assert _blocked([Obj("car", 0.0, 1.0, safe=False)], 0.0, 1.0, p) is False
+    # 擦边层：不安全车不再触发让位
+    rep = select(_road(), [], [Obj("car", 0.0, 2.0, safe=False)], [], 0.0, p)
+    assert rep.layer == 4 and rep.why == "center"
+    # 路点：顺路的擦边点只在车安全时插入
+    from maaracing_master.plugins.speedrush.selection import _waypoints
+    wp_safe = _waypoints(1, 1.5, 4.0, [Obj("car", 0.65, 2.0)], [],
+                         _road(), 0.0, p)
+    wp_unsafe = _waypoints(1, 1.5, 4.0,
+                           [Obj("car", 0.65, 2.0, safe=False)], [],
+                           _road(), 0.0, p)
+    assert "pass" in [w.src for w in wp_safe]
+    assert "pass" not in [w.src for w in wp_unsafe]

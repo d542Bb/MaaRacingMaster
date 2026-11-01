@@ -1711,6 +1711,9 @@ id（`member_ids/lead_id`），不替代成员做位置/速度外推。只做同
 不满足时 `safety_why` 如实给 `not_car/stale/no_lateral`。
 
 **当前接线**：表每拍推进并落 trace `otab`（轨道与币组各一组紧凑元组，形状见
-`ObjectTable.as_trace`，含 `seen/age/safety_ok/safety_why/src`）；**安全消费点
-尚未切到 `safety_cars`**，切换与超龄车注入锁是第 1 期的下一步。在此之前表只读，
-不改变任何决策输出。
+`ObjectTable.as_trace`，含 `seen/age/src_age/safety_ok/safety_why/src`）。
+安全消费点已切到安全子集：计划碰撞/近时迎车/有距无速、粗选道净空、擦边/让位/
+占用/路点、路线时间门（紧急/撤销/目标道）都只读 `safety_ok`；预置等价值项仍读
+全表，留给对象记忆放宽后的降权项。超龄车注入锁覆盖选择层、计划、粗层与路线
+时间表：不安全车不改变任何安全结果，同一辆车新鲜时允许改变。接线前后行为
+逐位一致——`safety_ok` 的年龄门与场景原有硬删同源（米制看锚龄、像素看观测龄）。
