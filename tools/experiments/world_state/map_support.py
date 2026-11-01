@@ -199,13 +199,7 @@ def _resolve(args):
     return base / args.session / "trace" / "speedrush.jsonl"
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--session", default="20261101_113145")
-    ap.add_argument("--trace")
-    ap.add_argument("--json")
-    args = ap.parse_args(argv)
-    rows = list(iter_rows(_resolve(args)))
+def analyze(rows, session="") -> dict:
     m = Map()
     buckets = {b: [] for b in BUCKETS}
     supports = []
@@ -217,7 +211,6 @@ def main(argv=None):
         v_lat = row.get("v_lat") or 0.0
         m.step_map(v, v_lat, lane_w, dt)
         bands = _bands(scene)
-        # 误差：校正前的图 vs 本拍新鲜实测
         for b in bands:
             if b["age"] is not None and b["age"] > 100.0:
                 continue
@@ -236,8 +229,7 @@ def main(argv=None):
         supports.append(m.support())
     has_speed = any(r.get("v_ego") is not None for r in rows)
     rep = {
-        "session": args.session if not args.trace
-        else Path(args.trace).parent.parent.name,
+        "session": session,
         "rows": len(rows),
         "forward_speed": "v_ego" if has_speed else
         "missing（旧局无 v_ego：只算同弧长校正误差，不是跨距离预测误差）",
@@ -259,6 +251,19 @@ def main(argv=None):
             "bias_median": None if not xs else round(
                 statistics.median(xs), 3),
         }
+    return rep
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--session", default="20261101_113145")
+    ap.add_argument("--trace")
+    ap.add_argument("--json")
+    args = ap.parse_args(argv)
+    path = _resolve(args)
+    rows = list(iter_rows(path))
+    name = args.session if not args.trace else Path(args.trace).parent.parent.name
+    rep = analyze(rows, name)
     print(json.dumps(rep, ensure_ascii=False, indent=1))
     if args.json:
         out = Path(args.json)

@@ -46,6 +46,15 @@ status: active
 车道级支撑距离。**新局才有 `v_ego`**；旧局缺该列时只算同弧长校正误差，
 报告会显式标注，不能当跨距离预测误差。
 
+```bat
+.venv\Scripts\python.exe tools\experiments\world_statecceptance.py ^
+    --baseline 20261101_113145 --new <局1> --new <局2>
+```
+
+`acceptance.py` 复用上面两个分析器，把新局与基线的计划/层/并线/请求/杆值/
+地图支撑逐项并排；只列差值，不设通过阈值——判据在方案第 5 步。旧局缺
+`v_ego/otab/map` 的项显示 None，不拿缺列当零。
+
 ## 结论去向
 
 基线数值与缺口清单进 `docs/plan/world_state_persistence.md`；对象记忆与地图
