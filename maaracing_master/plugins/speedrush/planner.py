@@ -111,6 +111,13 @@ _MODEL_YAW_GAIN = 0.46      # rad/s（满杆归一值 1.0）
 _MODEL_YAW_TAU_S = 0.2
 _MODEL_CORR_PSI = 0.12      # 每次线角更新对 ψ 的校正增益
 _MODEL_CORR_R = 0.04        # 每次线角更新对 r 的校正增益（rad/s）
+# 承诺并线时的校正增益倍率：车模只积分绝对偏航，持续转向时比线角口径高
+# 约 0.02~0.03 rad（方向相关），PD 的朝向项与阻尼项都会被砍掉。并线拍把
+# 校正提到 0.30/0.10，让影子跟随相对车道的测量，而不直接换成带噪声的线角
+# 状态（20261101_111635：整段切换后并线左右满杆来回）。台架把车偏航增益
+# 减半：并线 6.0s→2.1s，杆量 0.03（全切观测器为 0.29）；线角噪声 0.02 下
+# 仍稳定；倍率再高（0.5+）噪声占上风，并线反而变慢。
+_MODEL_CORR_BOOST_MERGE = 2.5
 _MODEL_INNOV_MAX = 0.15     # 单次校正的创新截断（rad）：坏线角不整段拖走影子
 _MODEL_AGE_MIN_S = 0.03     # 对齐用的测量龄下限/上限（线角到达时的检测龄）
 _MODEL_AGE_MAX_S = 0.30
@@ -181,6 +188,7 @@ class HeadingObserver:
             self.mr: float | None = None
             self._m_hist: list[tuple[float, float, float]] = []
             self._m_innov: float | None = None
+            self.corr_boost = 1.0        # 校正增益倍率（并线拍由 planner 每拍设）
         self._samples: list[dict] = []
         self._last_fid: int | None = None
         self._last_line = -1e9       # 标线横移上次更新时刻（v_line TTL）
@@ -227,9 +235,11 @@ class HeadingObserver:
         innov = float(th) - ref[1]
         self._m_innov = innov
         corr = max(-_MODEL_INNOV_MAX, min(_MODEL_INNOV_MAX, innov))
+        boost = self.corr_boost
         self.mpsi = max(-_HEAD_REL_MAX,
-                        min(_HEAD_REL_MAX, self.mpsi + _MODEL_CORR_PSI * corr))
-        self.mr = (self.mr or 0.0) + _MODEL_CORR_R * corr
+                        min(_HEAD_REL_MAX,
+                            self.mpsi + _MODEL_CORR_PSI * boost * corr))
+        self.mr = (self.mr or 0.0) + _MODEL_CORR_R * boost * corr
 
     def psi_age_s(self) -> float:
         """ψ 距上一次线角证据的秒数；无 ψ 时返回 inf（=不可用于推横速）。"""
@@ -684,7 +694,7 @@ class LateralPlanner:
         d.update(self.head.debug())
         return d
 
-    def _sync_heading_state(self, merging: bool) -> None:
+    def _sync_heading_state(self) -> None:
         """把观测写进状态，并导出横移速度。
 
         横移速度只有一条算式：``v_lat = v·tanψ/LANE_W``。比例还没估出来时
@@ -702,19 +712,15 @@ class LateralPlanner:
         # 约为观测器的 1/3（0.047→0.014 rad）。线角龄超门或影子未建立时退回
         # 观测器原口径（盲窗行为不变）；trace `lat_ctrl.csrc` 标明本拍来源。
         #
-        # 承诺并线例外：车模积分的是**绝对偏航**，可能把车道自身的转角也算进
-        # 朝向——持续转向时它比线角口径高约 0.02~0.03 rad（方向相关；台架把
-        # 车的偏航增益减半即可复现同样的并线变慢）。并线 PD 同时吃朝向误差与
-        # 角速度阻尼，杆量被砍半（20261101_104633 两局：并线段杆量 0.18 vs
-        # 旧版 0.50，长段并线 3.9s 只横移 0.28 道）。线角是相对车道的测量，
-        # 并线段且它新鲜时改用它；不新鲜仍退回影子，别在断线拍停控。
+        # 承诺并线时提到校正倍率（见 `_MODEL_CORR_BOOST_MERGE`）：车模积分
+        # 绝对偏航，持续转向时比线角口径高约 0.02~0.03 rad；并线 PD 同时吃
+        # 朝向误差与角速度阻尼，杆量会被砍半（20261101_104633 并线段 0.18 vs
+        # 旧版 0.50）。提高校正让影子跟上相对车道的测量；不整段切到线角状态，
+        # 那会把测量噪声直接灌进高增益环（20261101_111635 并线左右满杆）。
         fresh = (h.psi is not None
                  and h.psi_age_s() <= self.p.heading_vel_max_age_s)
         model_ok = h.mpsi is not None and h.mr is not None
-        if merging:
-            use_model = (not fresh) and model_ok
-        else:
-            use_model = fresh and model_ok
+        use_model = fresh and model_ok
         psi_ctrl = h.mpsi if use_model else h.psi
         r_ctrl = h.mr if use_model else h.r
         self._heading_src = "model" if use_model else "obs"
@@ -829,10 +835,12 @@ class LateralPlanner:
 
         # 朝向观测：ψ/r 从标线角度量得，在线比例从「横移 ÷ tanψ」估；
         # 横移速度由两者导出（一条算式），决策、计划、控制共用。
+        self.head.corr_boost = (_MODEL_CORR_BOOST_MERGE
+                                if getattr(decision, "phase", "keep") == "merging"
+                                else 1.0)
         self.head.update(dt_s, lane_x, lane_ok, lane_theta, lane_theta_ok,
                          lane_fid, lane_age_ms, lane_n_locked)
-        self._sync_heading_state(
-            getattr(decision, "phase", "keep") == "merging")
+        self._sync_heading_state()
 
         # 横向位置证据（2026-10-31）：位置证据=真实深度读数（非历史保持值；
         # 复用拍是同一帧深度的短驻留，仍算证据）或已对账锁线；运动证据=新鲜 ψ
