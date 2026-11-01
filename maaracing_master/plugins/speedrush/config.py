@@ -39,6 +39,8 @@ class Selection:
     horizon_s: float = 3.0
     # 分级时域（4b）：开度影子视界接管选择层；默认关，实车两局后再开。
     dynamic_horizon: bool = False
+    # 选择层驻留（4c）：计分层 1/3/4 切换需 switch_dwell_s；层 2/0 永远立即。
+    layer_dwell: bool = False
     max_waypoints: int = 4
     graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
@@ -820,6 +822,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             horizon_s=_num_def(d, "selection", "horizon_s", 3.0, lo=0),
             dynamic_horizon=_bool(
                 d, "selection", "dynamic_horizon", default=False),
+            layer_dwell=_bool(
+                d, "selection", "layer_dwell", default=False),
             max_waypoints=_int_def(d, "selection", "max_waypoints", 4,
                                    lo=1, hi=4),
             graze_gap_lane=_num_def(d, "selection", "graze_gap_lane", 0.68,

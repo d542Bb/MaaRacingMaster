@@ -439,3 +439,28 @@ def test_selector_horizon_override_changes_layer():
     sel.reset()
     rep = sel.update(_road(), [], [], coin, 0.0, 0.05, horizon_s=2.0)
     assert rep.layer == 4        # 2.5s 机会出 2s 视界，只剩预置（x=0）
+
+
+def test_layer_dwell_delays_scoring_layer_but_not_pass():
+    """4c：计分层切换需 0.2s；擦边/让位层永远立即。"""
+    from maaracing_master.plugins.speedrush.selection import LayeredSelector
+    sel = LayeredSelector(_p(layer_dwell=True))
+    reward = [Obj("reward", 0.0, 2.0)]
+    assert sel.update(_road(), reward, [], [], 0.0, 0.05).layer == 1
+    coin = [Obj("coin", 0.0, 1.0)]
+    for _ in range(4):                   # 0.15s（含首拍 0）：仍在旧层
+        assert sel.update(_road(), [], [], coin, 0.0, 0.05).layer == 1
+    assert sel.update(_road(), [], [], coin, 0.0, 0.05).layer == 3
+    # 擦边层立即接管，不等驻留
+    car = [Obj("car", 0.0, 2.0)]
+    assert sel.update(_road(), [], car, [], 0.0, 0.05).layer == 2
+    # 离开擦边层也立即
+    assert sel.update(_road(), reward, [], [], 0.0, 0.05).layer == 1
+
+
+def test_layer_dwell_default_off_switches_immediately():
+    from maaracing_master.plugins.speedrush.selection import LayeredSelector
+    sel = LayeredSelector(_p())
+    sel.update(_road(), [Obj("reward", 0.0, 2.0)], [], [], 0.0, 0.05)
+    assert sel.update(_road(), [], [], [Obj("coin", 0.0, 1.0)],
+                      0.0, 0.05).layer == 3

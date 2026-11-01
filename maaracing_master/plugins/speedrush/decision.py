@@ -430,6 +430,7 @@ class DecisionEngine:
             wall_margin_lane=s.wall_margin_lane,
             center_lookahead_m=s.center_lookahead_m,
             switch_dwell_s=s.switch_dwell_s,
+            layer_dwell=s.layer_dwell,
             car_half_lane=s.car_half_lane,
             ego_half_lane=s.ego_half_lane,
             lane_clearance_lane=s.lane_clearance_lane))

@@ -211,6 +211,7 @@ class SelectionParams:
     preposition_max_lane: float = 2.5
     preposition_bias_lane: float = 1.0
     switch_dwell_s: float = 0.2
+    layer_dwell: bool = False
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
     # 车道内安全区间的车身余量（道）：车心可在车道中心 ±(0.5−半宽−余量)
@@ -649,6 +650,8 @@ class LayeredSelector:
         self._dwell_t = 0.0
         self._coin_hold_t = 0.0
         self._coin_target: float | None = None
+        self._dwell_layer: int | None = None
+        self._layer_dwell_t = 0.0
         self.last: SelectionReport | None = None
 
     def _adopt(self, rep: SelectionReport) -> SelectionReport:
@@ -656,6 +659,8 @@ class LayeredSelector:
         self._target = rep.target_x_m
         self._dwell_x = None
         self._dwell_t = 0.0
+        self._dwell_layer = None
+        self._layer_dwell_t = 0.0
         if rep.layer == 3:
             self._coin_hold_t = self.p.coin_hold_s
             self._coin_target = rep.target_x_m
@@ -709,8 +714,26 @@ class LayeredSelector:
                         "coin_hold", True, True, raw.lane_request)
                     self.last = held
                     return held
-        if self._layer is None or raw.layer != self._layer:
+        if self._layer is None:
             return self._adopt(raw)
+        if raw.layer != self._layer:
+            # 4c：计分层切换驻留；擦边/让位（2）与无路（0）永远立即。
+            if not p.layer_dwell or raw.layer in (0, 2) or self._layer in (0, 2):
+                return self._adopt(raw)
+            if self._dwell_layer != raw.layer:
+                self._dwell_layer = raw.layer
+                self._layer_dwell_t = 0.0
+            else:
+                self._layer_dwell_t += dt_s
+            if self._layer_dwell_t >= p.switch_dwell_s:
+                return self._adopt(raw)
+            held = SelectionReport(
+                self._layer, raw.waypoints, self._target, raw.why,
+                raw.road_ok, raw.maneuver, raw.lane_request)
+            self.last = held
+            return held
+        self._dwell_layer = None
+        self._layer_dwell_t = 0.0
         if raw.layer == 0:
             return self._adopt(raw)
         if self._target is None or self._incumbent_blocked(cars, p):
