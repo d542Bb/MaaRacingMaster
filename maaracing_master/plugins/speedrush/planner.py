@@ -105,8 +105,8 @@ _PSI_CORR_TAU_S = 0.5
 _HEAD_RATE_MAX = 0.8
 # 朝向车模影子（2026-11-01）：杆→偏航率一阶模型（两局 trace 最小二乘，
 # R²=0.94：满杆约 0.46 rad/s、τ 约 0.2 s）。ψ/r 由**实际发出的杆值**推进，
-# 线角到达时按龄对齐做小增益校正——先只进 trace（pm/rm/pmi），不参与控制，
-# 用一局真实数据核它的噪声、滞后与弯道偏置，再决定是否接管。
+# 线角到达时按龄对齐做小增益校正。线角新鲜时它就是控制朝向的来源（观测器
+# 只做兜底与对照）：ψ 误差 0.047→0.014 rad，环路增益不再把观测噪声打进杆。
 _MODEL_YAW_GAIN = 0.46      # rad/s（满杆归一值 1.0）
 _MODEL_YAW_TAU_S = 0.2
 _MODEL_CORR_PSI = 0.12      # 每次线角更新对 ψ 的校正增益
@@ -176,7 +176,7 @@ class HeadingObserver:
             self._spd_den = 0.0
             self._spd_t = -1e9          # 最近一次收到比例证据的时刻
             self._spd_pub_t = -1e9      # 最近一次发布有效比例的时刻（保留窗口起点）
-            # 车模影子（只进 trace）
+            # 车模影子（线角新鲜时的控制朝向来源）
             self.mpsi: float | None = None
             self.mr: float | None = None
             self._m_hist: list[tuple[float, float, float]] = []
@@ -188,7 +188,7 @@ class HeadingObserver:
         self._m_cmd = 0.0            # 上一拍实际发出的归一杆值（车模输入）
 
     def model_command(self, u: float) -> None:
-        """给车模影子喂本拍实际发出的杆值（-1..1）。只影响 trace 的 pm/rm。"""
+        """给车模影子喂本拍实际发出的杆值（-1..1）。影子即下一拍控制朝向。"""
         self._m_cmd = max(-1.0, min(1.0, float(u)))
 
     def _model_step(self, dt: float) -> None:
@@ -388,13 +388,13 @@ class HeadingObserver:
         return {
             "v_line": None if self.v_line is None
             else round(self.v_line, 3),
-            # 朝向影子：psi=相对车道车头角（rad）、r=角速度（rad/s）、
+            # 观测器朝向：psi=相对车道车头角（rad）、r=角速度（rad/s）、
             # vsp=在线比例（m/s）、scf=置信度、pa=ψ 的龄（ms）。
-            # 全部只进 trace，不参与控制。
+            # 影子不可用（线角过期/未建立）时它是控制朝向的来源。
             "psi": None if self.psi is None else round(self.psi, 4),
             "r": None if self.r is None else round(self.r, 3),
-            # 车模影子（只进 trace，不参与控制）：pm=车模 ψ、rm=车模角速度、
-            # pmi=线角到达时未截断的创新（pm 与 psi 的差反映模型偏置）。
+            # 车模影子：pm=车模 ψ、rm=车模角速度、pmi=线角到达时未截断的创新
+            # （pm 与 psi 的差反映模型偏置）。
             "pm": None if self.mpsi is None else round(self.mpsi, 4),
             "rm": None if self.mr is None else round(self.mr, 3),
             "pmi": (None if self._m_innov is None

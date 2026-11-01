@@ -1488,12 +1488,12 @@ def test_heading_angle_jump_is_rate_limited():
     assert h._jumps == 1
 
 
-# ---- 车模影子（只进 trace，2026-11-01）：先核噪/滞后，不参与控制 ----
+# ---- 车模影子（2026-11-01）：控制朝向的来源，观测器兜底 ----
 
 def test_heading_model_shadow_predicts_from_command():
     """影子用实际杆值按车模推进：满杆稳态角速度≈0.46 rad/s、ψ 单调涨。
 
-    只读列，控制律不消费；线角断了也继续预测（psi_age 如实反映证据龄）。"""
+    线角断了也继续预测（psi_age 如实反映证据龄），重获后按新息校正。"""
     h = HeadingObserver(P)
     h.model_command(1.0)
     h.update(DT, 0.0, True, 0.0, True, 1, 5.0, 3)      # 初始化 pm=0
