@@ -116,6 +116,9 @@ def test_field_goal_half_lane_moves_with_realistic_time():
         PerceptionHealth, WorldObservation)
 
     cfg = load_decision()
+    # 本台架只锁横向控制时序；承诺道跟随实测道是路线层的独立开关，固定关，
+    # 避免策略文件里的实验开关改变这里的承诺道。
+    cfg = replace(cfg, route=replace(cfg.route, anchor_follow=False))
     lw = 3.38
     eng = DecisionEngine(cfg)
     pl = LateralPlanner(cfg.planner)

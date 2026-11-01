@@ -187,11 +187,13 @@ def test_adjacent_coin_line_requests_then_merges():
     g, ms = _group(1, x=1.0, rel=1.5)
     seen = []
     for fid in range(1, 40):
-        out = eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
-                         executed_lane=0.0, corridor=_corridor())
+        # 币组本拍可见（seen 判据是 last_seen_fid == frame_id）：读数位先于
+        # 决策更新；请求保持打开后，过期的 last_seen_fid 会让 req_live 恒 False。
         g = replace(g, first_seen_fid=1, last_seen_fid=fid)
         ms = tuple(replace(m, first_seen_fid=1, last_seen_fid=fid,
                            validity_until_fid=fid + 8) for m in ms)
+        out = eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
+                         executed_lane=0.0, corridor=_corridor())
         rt = eng.route_verdict
         seen.append((out.reason, rt.verdict, rt.why, rt.credit,
                      eng.selection_report.lane_request,

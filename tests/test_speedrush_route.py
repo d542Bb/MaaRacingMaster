@@ -44,7 +44,7 @@ P = RouteParams(
     merge_max_s=CFG.route.merge_max_s)
 CLEAR = (24.0, None, False)               # 确认空闲（净空=窗长）
 WINDOW_M = CLEAR[0]
-# 50 ms 节拍下与旧拍数门的等价拍数：0.15/0.30/0.25 s = 3/6/5 拍
+# 50 ms 节拍下与旧拍数门的等价拍数：0.15/0.25/0.25 s = 3/5/5 拍
 URGENT_TICKS = round(P.urgent_confirm_s / DT)
 OPP_TICKS = round(P.opportunity_confirm_s / DT)
 CANCEL_TICKS = round(P.cancel_unsafe_s / DT)
@@ -906,17 +906,17 @@ def test_overtake_merges_early_into_a_clear_lane():
 # ---------- 窗口按秒（第 6 期 6a） ----------
 
 def test_seconds_windows_are_tick_equivalent_at_50ms():
-    """等价锁：50 ms 节拍下 0.15/0.30/0.25 秒与旧 3/6/5 拍逐位相同。"""
-    assert (URGENT_TICKS, OPP_TICKS, CANCEL_TICKS) == (3, 6, 5)
+    """等价锁：50 ms 节拍下 0.15/0.25/0.25 秒与旧 3/5/5 拍逐位相同。"""
+    assert (URGENT_TICKS, OPP_TICKS, CANCEL_TICKS) == (3, 5, 5)
 
 
 def test_confirm_window_counts_time_not_ticks():
-    """62.5 ms 节拍：0.30 s 只需 5 拍（4 拍=0.25 s 不够，5 拍=0.3125 s 够）。
+    """62.5 ms 节拍：0.25 s 只需 4 拍（3 拍=0.1875 s 不够，4 拍=0.25 s 够）。
 
-    按拍数计时会在低节拍下把窗口拉长到 0.375 s，按秒才与真实时间一致。"""
+    按拍数计时会在低节拍下把窗口拉长，按秒才与真实时间一致。"""
     dt = 0.0625
     s, _ = tick_route(None, _rep(0.0, 0.0), P, dt_s=dt, epoch=0)
-    for _ in range(4):
+    for _ in range(3):
         s, v = tick_route(s, _rep(0.0, 0.0), P, dt_s=dt, epoch=0,
                           request=1.0)
         assert v.verdict == "keep" and v.why == "scoring"
@@ -944,7 +944,7 @@ def test_request_hold_freezes_short_dropouts():
         s, v = _tick_hold(s, None)
         assert v.credit == pytest.approx(3 * DT)
         assert v.req_state == "paused" and v.why == "paused"
-    for i in range(3):
+    for _ in range(2):                      # 0.15 + 0.10 = 门槛 0.25
         s, v = _tick_hold(s, 1.0, oid=7)
     assert v.verdict == "merge_start" and v.why == "opportunity"
 
@@ -971,8 +971,7 @@ def test_request_hold_stale_tick_does_not_accumulate_or_start():
     s, v = _tick_hold(s, 1.0, live=False)
     assert v.credit == pytest.approx(4 * DT) and v.req_state == "paused"
     assert v.verdict == "keep"
-    for _ in range(2):
-        s, v = _tick_hold(s, 1.0)
+    s, v = _tick_hold(s, 1.0)               # 0.20 + 0.05 = 门槛 0.25
     assert v.verdict == "merge_start"
 
 
@@ -1001,12 +1000,12 @@ def test_request_hold_resets_on_side_switch():
 def test_request_hold_keeps_credit_across_same_lane_object_switch():
     """同道同向换对象不清零（身份只用于诊断），起意仍需当拍有效来源。"""
     s, _ = _tick_hold(None, None)
-    for _ in range(4):
+    for _ in range(3):
         s, v = _tick_hold(s, 1.0, oid=1)
     s, v = _tick_hold(s, 1.0, oid=2)
-    assert v.credit == pytest.approx(5 * DT) and s.req_oid == 2
+    assert v.credit == pytest.approx(4 * DT) and s.req_oid == 2
     assert v.verdict == "keep"
-    s, v = _tick_hold(s, 1.0, oid=2)
+    s, v = _tick_hold(s, 1.0, oid=2)        # 0.20 + 0.05 = 门槛 0.25
     assert v.verdict == "merge_start" and v.why == "opportunity"
     assert v.req_state == "none"          # 起意即清请求状态
 
@@ -1033,3 +1032,150 @@ def test_request_gap_is_time_based_at_62_5ms():
         assert v.req_state == "paused"
     s, v = _tick_hold(s, None, dt=dt)
     assert v.req_state == "none" and v.credit == 0.0
+
+
+# ---------- 承诺道跟随实测道（6g 归因） ----------
+
+PAF = replace(P, anchor_follow=True)
+AF_TICKS = round(PAF.anchor_follow_s / DT)      # 0.30 s = 6 拍
+
+
+def _tick_af(state, report, request=None, p=PAF, dt=DT):
+    return tick_route(state, report, p, dt_s=dt, epoch=0, request=request)
+
+
+def test_anchor_follow_reanchors_after_dwell():
+    """实测道可行、偏离承诺道超过 0.6 道持续 0.3 s：静默重锚，不是并线。"""
+    rep = _rep(1.4, 1.0)
+    s, _ = _tick_af(None, rep)
+    for _ in range(AF_TICKS - 1):
+        s, v = _tick_af(s, rep)
+        assert v.verdict != "anchor_follow" and s.lane_ref == 0.0
+    s, v = _tick_af(s, rep)
+    assert v.verdict == "anchor_follow" and v.why == "lane_drift"
+    assert s.lane_ref == 1.0 and v.lane_ref == 1.0
+    assert s.phase == PHASE_KEEP and s.cooldown_left_s == 0.0
+
+
+def test_anchor_follow_off_keeps_committed_lane():
+    """开关关：同一读数下承诺道不动（逐位回旧行为）。"""
+    rep = _rep(1.4, 1.0)
+    s, _ = _tick(None, rep)
+    for _ in range(2 * AF_TICKS):
+        s, v = _tick(s, rep)
+    assert s.lane_ref == 0.0 and v.verdict != "anchor_follow"
+
+
+def test_anchor_follow_needs_full_lane_drift():
+    """半道多的偏移仍在防抖带内：不重锚（0.55 < 0.6 道）。"""
+    rep = _rep(0.55, 1.0)
+    s, _ = _tick_af(None, rep)
+    for _ in range(2 * AF_TICKS):
+        s, v = _tick_af(s, rep)
+    assert s.lane_ref == 0.0
+
+
+def test_anchor_follow_follows_car_lane_even_if_space():
+    """车就开在这条道上：走廊单帧判 space 不能阻断跟随（存在即可为落点）。"""
+    rep = _rep(-1.3, 0.0, {-1.0: (0.0, "space", False)})
+    s, _ = _tick_af(None, rep)
+    for _ in range(AF_TICKS):
+        s, v = _tick_af(s, rep)
+    assert s.lane_ref == -1.0 and v.verdict == "anchor_follow"
+
+
+def _rep_shoulder(ego):
+    """外侧 3 m 肩道：space 且没有有效绿区带（width_margin=None）。"""
+    lanes = [CoarseLane(-2.0, 3.0, None, "space", False),
+             CoarseLane(-1.0, 24.0, 1.0, None, False),
+             CoarseLane(0.0, 24.0, 1.0, None, False),
+             CoarseLane(1.0, 24.0, 1.0, None, False),
+             CoarseLane(2.0, 3.0, None, "space", False)]
+    return CoarseReport(ego, -1.0, -1, 24.0, "keep", tuple(lanes))
+
+
+def test_anchor_follow_does_not_follow_shoulder():
+    """车压到无绿区带的肩道：重锚落到最近的真车道，不跟肩道。"""
+    rep = _rep_shoulder(-1.95)
+    s, _ = _tick_af(None, rep)
+    for _ in range(AF_TICKS):
+        s, v = _tick_af(s, rep)
+    assert v.verdict == "anchor_follow" and s.lane_ref == -1.0
+
+
+def test_shoulder_reference_rebuilds_inward():
+    """承诺道落在肩道上：单拍就重建到内侧真车道（不朝墙外打）。"""
+    rep = _rep_shoulder(-1.95)
+    s0 = replace(init_state(0), lane_ref=-2.0, lane_from=-2.0)
+    s, v = _tick_af(s0, rep)
+    assert v.verdict == "rebuild" and s.lane_ref == -1.0
+
+
+def test_anchor_follow_keeps_car_lane_through_space_flicker():
+    """承诺道就是车所在道时，单帧 space 不触发重建（旧行为是推开到邻道）。"""
+    rep = _rep(-1.2, 0.0, {-1.0: (0.0, "space", False)})
+    s0 = replace(init_state(0), lane_ref=-1.0, lane_from=-1.0)
+    s, v = _tick_af(s0, rep)
+    assert s.lane_ref == -1.0 and v.verdict != "rebuild"
+    # 开关关：逐位回旧行为——重建到最近的可行道
+    s, v = _tick(s0, rep)
+    assert v.verdict == "rebuild" and s.lane_ref == 0.0
+
+
+def test_anchor_follow_does_not_interrupt_merge():
+    """并线中车在两道之间是正常过渡：不重锚。"""
+    spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
+    s, _ = _tick_af(None, _rep(0.0, 0.0))
+    for _ in range(URGENT_TICKS):
+        s, v = _tick_af(s, _rep(0.0, 0.0, spec))
+    assert v.verdict == "merge_start" and s.phase == PHASE_MERGING
+    s, v = _tick_af(s, _rep(0.0, 0.0, spec))
+    assert v.verdict != "anchor_follow" and s.phase == PHASE_MERGING
+
+
+def test_anchor_follow_skips_escape_into_current_lane():
+    """车实际在 −1 道且空闲、承诺道 0 被占：先重锚，不向 −1 道空转一次并线。"""
+    rep = _rep(-1.3, -1.0, {0.0: (12.0, "car", False)})
+    s, _ = _tick_af(None, rep)
+    anchored = False
+    for _ in range(AF_TICKS + URGENT_TICKS):
+        s, v = _tick_af(s, rep)
+        assert v.verdict != "merge_start"
+        if v.verdict == "anchor_follow":
+            anchored = True
+            break
+    assert anchored and s.lane_ref == -1.0
+
+
+def test_anchor_follow_off_still_escapes_into_current_lane():
+    """开关关：旧行为原样保留（即使目标是车已经在的 −1 道也起并线）。"""
+    rep = _rep(-1.3, -1.0, {0.0: (12.0, "car", False)})
+    s, _ = _tick(None, rep)
+    for _ in range(URGENT_TICKS):
+        s, v = _tick(s, rep)
+    assert v.verdict == "merge_start" and v.lane_target == -1.0
+
+
+def test_anchor_follow_clears_request_credit():
+    """重锚改承诺道：以旧道为基准攒的请求计分同时作废。"""
+    s = replace(init_state(0), req_lane=1.0, req_credit=0.2, req_side=1)
+    rep = _rep(1.4, 1.0)
+    for _ in range(AF_TICKS):
+        # 请求目标 +2 不合法（非相邻），只累计证据、不起并线，留给重锚清
+        s, v = _tick_af(s, rep, request=2.0)
+    assert v.verdict == "anchor_follow"
+    assert s.req_credit == 0.0 and s.req_state == "none"
+
+
+def test_drift_band_does_not_block_opportunity():
+    """车压在 0.5~0.6 道边界带：既不重锚，也不拦机会并线。
+
+    此前 `_drifted_free` 用半道阈值、重锚用 0.6 道，这一带里请求计分涨到
+    0.53 也起不了意（183241 局机会并线 0 段的直接原因）。"""
+    rep = _rep(0.55, 0.0)
+    s, _ = _tick_af(None, rep)
+    v = None
+    for _ in range(OPP_TICKS):
+        s, v = _tick_af(s, rep, request=1.0)
+    assert v.verdict == "merge_start" and v.why == "opportunity"
+    assert s.lane_ref == 1.0 and s.phase == PHASE_MERGING

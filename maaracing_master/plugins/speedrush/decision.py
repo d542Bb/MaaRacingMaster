@@ -487,7 +487,10 @@ class DecisionEngine:
             overtake_ttc_s=r.overtake_ttc_s,
             request_hold=r.request_hold,
             request_gap_s=r.request_gap_s,
-            request_intent_age_s=r.request_intent_age_s)
+            request_intent_age_s=r.request_intent_age_s,
+            anchor_follow=r.anchor_follow,
+            anchor_follow_s=r.anchor_follow_s,
+            anchor_follow_lane=r.anchor_follow_lane)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
         # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，

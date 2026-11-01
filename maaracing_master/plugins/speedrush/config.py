@@ -443,7 +443,7 @@ class Route:
 
     control: bool = False
     urgent_confirm_s: float = 0.15
-    opportunity_confirm_s: float = 0.3
+    opportunity_confirm_s: float = 0.25
     cancel_unsafe_s: float = 0.25
     cancel_cooldown_s: float = 2.0
     finish_v_tol_lane_s: float = 0.4
@@ -460,6 +460,10 @@ class Route:
     request_hold: bool = False
     request_gap_s: float = 0.2       # 无读数冻结上限（秒）
     request_intent_age_s: float = 1.0  # 同一意图的最长寿命（秒）
+    # 承诺道跟随实测道：重建到邻道后没有回程会让承诺道一直错一条道
+    anchor_follow: bool = False
+    anchor_follow_s: float = 0.3     # 偏离持续时长（秒）
+    anchor_follow_lane: float = 0.6  # 偏离阈值（道）
 
 
 @dataclass(frozen=True)
@@ -893,7 +897,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             urgent_confirm_s=_num_def(d, "route", "urgent_confirm_s",
                                       0.15, lo=0),
             opportunity_confirm_s=_num_def(
-                d, "route", "opportunity_confirm_s", 0.3, lo=0),
+                d, "route", "opportunity_confirm_s", 0.25, lo=0),
             cancel_unsafe_s=_num_def(d, "route", "cancel_unsafe_s",
                                      0.25, lo=0),
             cancel_cooldown_s=_num_def(d, "route", "cancel_cooldown_s", 2.0,
@@ -918,7 +922,13 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "route", "request_gap_s", 0.2, lo=0, lo_open=False),
             request_intent_age_s=_num_def(
                 d, "route", "request_intent_age_s", 1.0, lo=0,
-                lo_open=False)),
+                lo_open=False),
+            anchor_follow=_bool(
+                d, "route", "anchor_follow", default=False),
+            anchor_follow_s=_num_def(
+                d, "route", "anchor_follow_s", 0.3, lo=0, lo_open=False),
+            anchor_follow_lane=_num_def(
+                d, "route", "anchor_follow_lane", 0.6, lo=0)),
         geometry=Geometry(
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),
