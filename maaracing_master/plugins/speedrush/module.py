@@ -42,7 +42,6 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.navkit import Command, StepMachine, Verdict
 from maaracing_master.core.paths import debug_dir
-from maaracing_master.core.perf_sampler import ensure_perf_sampler_started
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_FILE, DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_FILE,
@@ -335,12 +334,9 @@ class SpeedRushModule(ActivityModule):
     # control-route 验收②的分母）。
     DEFAULT_STRAIGHT_MODE = False
 
-    # 性能卡领域项阈值：拍率降级档位 + 拍间隔事件触发线（超线报 core 采样器
-    # 倾倒性能证据窗）与事件节流间隔（持续停摆不逐拍刷事件）
+    # 性能卡领域项阈值：拍率降级档位
     PERF_TICK_WARN_HZ = 15.0
     PERF_TICK_ERROR_HZ = 10.0
-    PERF_TICK_EVENT_GAP_MS = 150.0
-    PERF_EVENT_MIN_INTERVAL_S = 10.0
 
     # 性能面板声明（契约见 core/perf_contract.py）：模块只声明「报哪几行」与
     # 判级阈值，等级由 core 按阈值算——模块不再自定 ok/warn/error。
@@ -452,13 +448,6 @@ class SpeedRushModule(ActivityModule):
         self._trace = get_trace_sink("speedrush")
         # 性能卡领域项（资源面由 core 采样器供数）：驾驶环拍间隔滑窗 + 事件节流
         self._tick_gaps: deque[float] = deque(maxlen=240)
-        self._last_perf_evt = 0.0
-        # 锚点复查计时（2026-10-31 卡顿排查）：复查发生在逐拍 append 之后，
-        # 耗时暂存于此、由下一控制拍的 _row 带走——anchor_fid 记录复查发生时
-        # 的帧号，未复查的拍为 None。450ms 级未记账段的最强嫌疑就是这里的
-        # 图运行，本计时把它与游戏侧停摆区分开。
-        self._anchor_ms: float | None = None
-        self._anchor_fid: int | None = None
 
     @property
     def current_stage(self) -> str | None:
@@ -957,20 +946,12 @@ class SpeedRushModule(ActivityModule):
                         self._pace_body.append(pace_ms[0])
                         self._pace_sleep.append(pace_ms[1])
                         self._pace_wake.append(pace_ms[2])
-                        # 拍间隔滑窗（性能卡 response 项）+ 超阈值性能事件
-                        # （core 采样器据此倾倒前后窗样本；节流防持续停摆刷屏）
+                        # 拍间隔滑窗（性能卡 response 项）。超阈性能事件上报
+                        # 已收（2026-11-01）：游戏场景切换必然造成 ~450ms 拍间隔
+                        # （根因归游戏侧，38/38 实证），事件只会在每局头尾
+                        # 误报，已无异常信号价值。
                         gap_ms = pace_ms[0] + pace_ms[1] + pace_ms[2]
                         self._tick_gaps.append(gap_ms)
-                        if (gap_ms > self.PERF_TICK_EVENT_GAP_MS
-                                and t0 - self._last_perf_evt
-                                >= self.PERF_EVENT_MIN_INTERVAL_S):
-                            self._last_perf_evt = t0
-                            try:
-                                ensure_perf_sampler_started().record_event(
-                                    "speedrush", "tick_gap",
-                                    {"gap_ms": round(gap_ms, 1), "phase": phase})
-                            except Exception:  # noqa: BLE001 —— 观测事件不碰控制环
-                                pass
                     prev_t0 = t0
                     # 取帧走 frame_with_age：录制要的是「帧到达采集回调的时刻」，不是本循环
                     # 读取它的时刻——两者差一个帧龄，直接进训练标签的时序。
@@ -1033,13 +1014,7 @@ class SpeedRushModule(ActivityModule):
                     now = time.monotonic()
                     if now >= next_anchor:
                         next_anchor = now + DRIVE_ANCHOR_CHECK_S
-                        _t_anchor = time.perf_counter()
-                        anchor_hit = self._graph.run(DRIVE_STAGE_NODE,
-                                                     DRIVE_STAGE_NODE)
-                        # 计时暂存（下一控制拍带走）：与「游戏停摆」同拍对照
-                        self._anchor_ms = (time.perf_counter() - _t_anchor) * 1000.0
-                        self._anchor_fid = fid
-                        if anchor_hit:
+                        if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
                             miss = 0
                         else:
                             miss += 1
@@ -1563,11 +1538,6 @@ class SpeedRushModule(ActivityModule):
             _slow = None
         _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
-            # 锚点复查计时（上一拍内发生的复查）：450ms 级未记账段的归因面；
-            # anchor_fid 是复查发生时的帧号，未复查的拍两列皆 None
-            "anchor_ms": None if self._anchor_ms is None
-            else round(self._anchor_ms, 1),
-            "anchor_fid": self._anchor_fid,
             # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
             # 三模态 33/50/66 的逐拍归因面；首拍无上区间为 None
             "pace_body": None if pace_ms is None else round(pace_ms[0], 1),
@@ -1918,9 +1888,6 @@ class SpeedRushModule(ActivityModule):
         _ts = chain.get("trace_sink")
         if _ts is not None:
             _ts.append(_row)
-        # 锚点复查计时已被本拍 _row 带走（每份只随一行，防重复计账）
-        self._anchor_ms = None
-        self._anchor_fid = None
         # 调试图快照（控制局=debugview 节流写盘；人工局=交录制器渲染叠加图）
         dbg = chain.get("debug")
         hud_rec = chain.get("hud_rec")
