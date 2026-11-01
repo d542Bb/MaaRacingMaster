@@ -34,7 +34,7 @@ from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
 from maaracing_master.plugins.speedrush.motion_plan import build_scene
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, LayeredSelector, Obj, RoadBand,
-    RoadFrame, SelectionParams, SelectionReport)
+    RoadFrame, SelectionParams, SelectionReport, reach_slack)
 from maaracing_master.plugins.speedrush.presence_occupancy import (
     OccObs, PresenceOccupancy)
 from maaracing_master.plugins.speedrush.route import (
@@ -300,6 +300,15 @@ def _route_trace(v: RouteVerdict | None) -> dict | None:
     return {"ph": v.phase, "ref": v.lane_ref, "tgt": v.lane_target,
             "vd": v.verdict, "why": v.why, "ep": v.epoch,
             "blkfin": bool(v.blocked_finish)}
+
+
+def _opp_aux(objs, ego_m: float, p: SelectionParams) -> list:
+    """与 `_sel_objs` 同序的 [身份, 光锥余量秒]：负=本拍来不及，None=无到站时间。"""
+    rows = []
+    for o in objs:
+        s = reach_slack(o.x, ego_m, o.t, p)
+        rows.append([o.oid, None if s is None else round(s, 3)])
+    return rows
 
 
 def _sel_objects_trace(rewards, cars, coins, ego_m: float,
@@ -723,7 +732,8 @@ class DecisionEngine:
                 x_m=(g.x_center + executed_lane) * lane_w,
                 observed_count=g.observed_count, conf=g.conf_min,
                 t_miss_s=t_raw,
-                age_ms=self._age_ms(g.lead_fid or g.last_seen_fid)))
+                age_ms=self._age_ms(g.lead_fid or g.last_seen_fid),
+                id=g.group_id, seen=(g.last_seen_fid == obs.frame_id)))
         # 记忆只保留最近 1.5s 出现过的组
         for gid in [k for k, (_, f) in self._coin_t_mem.items()
                     if self._age_ms(f) > 1500.0]:
@@ -751,7 +761,8 @@ class DecisionEngine:
                 bonuses.append(BonusSource(
                     x_m=(b.x_lane + executed_lane) * lane_w,
                     t_miss_s=t_miss, conf=b.conf,
-                    age_ms=self._age_ms(b.last_seen_fid)))
+                    age_ms=self._age_ms(b.last_seen_fid),
+                    id=b.id, seen=(b.last_seen_fid == obs.frame_id)))
             bonuses.extend(self._reach_bonus_far_sources(obs, executed_lane))
         self._bonus_src = len(bonuses)
         return bonuses
@@ -795,7 +806,8 @@ class DecisionEngine:
                 continue                        # 到站仪器无解：不追
             out.append(BonusSource(
                 x_m=(x_coarse + executed_lane) * lane_w,
-                t_miss_s=t_miss, conf=b.conf, src="far"))  # tol_m 缺省=bonus_tol_m（近远场同源）
+                t_miss_s=t_miss, conf=b.conf, src="far",
+                id=b.id, seen=(b.last_seen_fid == obs.frame_id)))  # tol_m 缺省=bonus_tol_m（近远场同源）
         return out
 
     def _reach_car_sources(self, executed_lane: float) -> list[CarSource]:
@@ -830,7 +842,8 @@ class DecisionEngine:
                   age_ms: float = 0.0, src: str = "pixel",
                   tid: int | None = None,
                   near: bool = False,
-                  half_w_m: float | None = None) -> None:
+                  half_w_m: float | None = None,
+                  seen: bool | None = None) -> None:
             if x is None or x != x:
                 return
             # 平滑在道路帧（x+off）：自车横移由 off 抵消，目标自身的慢横移
@@ -876,7 +889,8 @@ class DecisionEngine:
             out.append(CarSource(x_m=xr, t_meet_s=tm,
                                  t_overtake_s=t_ov, bridged=bridged,
                                  z_m=z_m, age_ms=age_ms, src=src,
-                                 near=near, half_w_m=half_w_m))
+                                 near=near, half_w_m=half_w_m,
+                                 id=tid, seen=seen))
 
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
@@ -890,7 +904,8 @@ class DecisionEngine:
                 seen.add(m.target_id)
                 enter(v.x_lane * lane_w, None, None, z_m=None, age_ms=0.0,
                       src="metric_coarse", tid=m.target_id,
-                      near=_near(v, m.z_m), half_w_m=_half_w(v))
+                      near=_near(v, m.z_m), half_w_m=_half_w(v),
+                      seen=(v.last_seen_fid == self._fid))
                 continue
             elif m.z_m is not None:
                 x = m.x_m
@@ -921,7 +936,8 @@ class DecisionEngine:
             enter(x, tm, t_ov, bridged=bridged, z_m=m.z_m,
                   age_ms=(m.anchor_age_ms or 0.0), src="metric",
                   tid=m.target_id, near=_near(v, m.z_m),
-                  half_w_m=_half_w(v))
+                  half_w_m=_half_w(v),
+                  seen=(None if v is None else v.last_seen_fid == self._fid))
         for vid, v in by_id.items():
             if vid in seen:
                 continue                        # 米制路径已入账，不双计
@@ -938,7 +954,8 @@ class DecisionEngine:
                 age_ms = 0.0
             enter(None if x is None else x * lane_w, tm,
                   age_ms=age_ms, tid=vid, near=_near(v, None),
-                  half_w_m=_half_w(v))
+                  half_w_m=_half_w(v),
+                  seen=(v.last_seen_fid == self._fid))
         for k in [k for k in self._car_xf if k not in seen]:
             self._car_xf.pop(k, None)
             self._car_zf.pop(k, None)
@@ -1153,16 +1170,18 @@ class DecisionEngine:
         car_src = self._reach_car_sources(executed)
         coin_src = self._coin_sources(obs, executed)
         rewards = [Obj("reward", b.x_m - origin, b.t_miss_s,
-                       conf=b.conf)
+                       conf=b.conf, oid=-1 if b.id is None else b.id)
                    for b in reward_src]
         cars = [Obj("car",
                     c.x_m - origin - (road.center_at(
                         c.z_m - CAM_Z_DATUM_M)
                         if c.z_m is not None else 0.0),
-                    c.t_meet_s)
+                    c.t_meet_s,
+                    oid=-1 if c.id is None else c.id)
                 for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
-                     count=c.observed_count, conf=c.conf)
+                     count=c.observed_count, conf=c.conf,
+                     oid=-1 if c.id is None else c.id)
                  for c in coin_src]
         corr_ages = [b.age_ms for b in road.bands if b.age_ms is not None]
         lw = self.cal.lane_w_m
@@ -1282,6 +1301,11 @@ class DecisionEngine:
             "rw": self._sel_objs["reward"],
             "car": self._sel_objs["car"],
             "coin": self._sel_objs["coin"],
+            # 与上三列逐项同序的 [身份, 光锥余量秒]（观测面，不参与决策）：
+            # 离线才能回答「这枚币是本来够不着，还是被固定横距门丢了」。
+            "opp": {"rw": _opp_aux(rewards, ego_m, self.selector.p),
+                    "car": _opp_aux(cars, ego_m, self.selector.p),
+                    "coin": _opp_aux(coins, ego_m, self.selector.p)},
         }
         self._reach_goal = rep.target_x_m
         if rep.layer == 0:

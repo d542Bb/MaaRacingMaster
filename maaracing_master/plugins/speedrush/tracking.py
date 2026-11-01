@@ -184,6 +184,9 @@ class CoinGroup:
     # lead=最近一枚（cy 最大）最后一次被看到的帧号；x_center/cy_max 锚在它上面。
     # 0=旧构造未带（消费端回退 last_seen_fid）。
     lead_fid: int = 0
+    # lead 成员的跟踪 id（观测面：组号与轨道号是两个编号空间，join 要它）。
+    # 0=旧构造未带或从未有过 lead。
+    lead_id: int = 0
 
 
 @dataclass(frozen=True)

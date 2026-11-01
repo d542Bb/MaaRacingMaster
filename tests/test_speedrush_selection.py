@@ -361,3 +361,17 @@ def test_committed_emits_no_request():
     rep = select(_road(), [Obj("reward", 2.0 * LW, 2.0)], [], [], 0.0, _p(),
                  committed=True, commit_x_m=0.0)
     assert rep.why == "commit" and rep.lane_request is None
+
+
+def test_reach_slack_is_the_same_gate_in_seconds():
+    """观测面与判据同源：slack≥0 必须逐点等价于原可达门，负值=本拍来不及。"""
+    from maaracing_master.plugins.speedrush.selection import (
+        _reachable, reach_slack)
+    p = _p()
+    for dx_lane in (-2.0, -1.0, -0.4, -0.1, 0.0, 0.1, 0.4, 1.0, 2.0):
+        for t in (0.0, 0.2, 0.5, 1.0, 1.5, 2.0, 3.0):
+            x = dx_lane * LW
+            s = reach_slack(x, 0.0, t, p)
+            assert (s is not None and s >= 0.0) == _reachable(x, 0.0, t, p)
+    assert reach_slack(0.0, 0.0, None, p) is None
+    assert reach_slack(0.0, 0.0, 0.1, p) == pytest.approx(0.1 - p.reaction_s)

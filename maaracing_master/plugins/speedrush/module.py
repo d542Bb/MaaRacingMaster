@@ -1546,6 +1546,10 @@ class SpeedRushModule(ActivityModule):
             "scene": None if eng.scene is None else eng.scene.as_trace(),
             # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选
             "plan": None if plan is None else plan.as_trace(),
+            # 本拍两层名义视界（秒，观测面）：今天都是常量，分级时域落地后
+            # 用同一列看它是否真的在动。
+            "plan_h": round(cfg.motion.horizon_s, 3),
+            "sel_h": round(cfg.selection.horizon_s, 3),
             # 计划输入状态（本拍 planner.update 前）与 gate 状态（离线逐位重放）
             "plan_ego": None if plan is None else [
                 round(chain["last_plan_ego"].x_lane, 6),
@@ -1575,7 +1579,10 @@ class SpeedRushModule(ActivityModule):
             "cgroups": [
                 {"id": g.group_id, "cm": round(g.conf_min, 2),
                  "obs": g.observed_count, "last": g.last_seen_fid,
-                 "part": g.partial_observation}
+                 "part": g.partial_observation,
+                 # 成员轨道 id 与 lead id（2026-11-01，观测面）：组号是聚合
+                 # 编号空间，跨帧对账/拆分合并审计要靠轨道 id 集合。
+                 "mids": list(g.member_ids), "lead": g.lead_id}
                 for g in obs.coin_groups] or None,
             "best_score": None if best is None else round(best[0], 1),
             "best_x": None if best is None else round(best[1], 2),

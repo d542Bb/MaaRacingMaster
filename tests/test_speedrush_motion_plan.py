@@ -780,3 +780,18 @@ def test_heading_levels_resolve_the_pass_band():
     中间必须有 0.05 级落点，否则候选总在「贴包络」和「过远」之间跳。"""
     levels = CFG.motion.heading_levels
     assert 0.05 in levels and -0.05 in levels
+
+def test_scene_trace_carries_object_identity_and_visibility():
+    """schema 4：对象尾部 id/seen 只作观测面，来源缺省时诚实为 None。"""
+    s = _scene(
+        rewards=[BonusSource(1.0, 1.0, 0.9, age_ms=0.0, id=7, seen=True)],
+        coins=[CoinSource(2.0, 3, 0.8, 1.5, age_ms=100.0, id=11,
+                          seen=False)],
+        cars=[CarSource(3.0, 0.5, z_m=5.0, age_ms=0.0, src="metric")])
+    tr = s.as_trace()
+    assert tr["schema"] == 4
+    by_kind = {row[0]: row for row in tr["objs"]}
+    assert by_kind["reward"][-2:] == [7, True]
+    assert by_kind["coin"][-2:] == [11, False]
+    assert by_kind["car"][-2:] == [None, None]   # 源未带身份：不猜
+    assert len(by_kind["reward"]) == 16

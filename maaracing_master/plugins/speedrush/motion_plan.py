@@ -14,7 +14,7 @@ from maaracing_master.plugins.speedrush.planner import heading_for_error, step
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, RoadFrame)
 
-SCENE_SCHEMA = 3
+SCENE_SCHEMA = 4
 PLAN_SCHEMA = 1
 
 
@@ -35,6 +35,10 @@ class SceneObj:
     near: bool = False            # 纵向近（t=None 车当障碍的唯一许可）
     half_w_m: float | None = None  # 车半宽（米，来自跟踪宽度；None=回退标称）
     coarse: bool = False          # 粗源（奖励车远场夹边值等）
+    # 观测面身份：赛道 id（车/奖励车=跟踪 id，金币=组号），None=源未带。
+    # seen=本拍是否见到本人（False=宽限/遮挡存续）；两者都不进价值与安全。
+    id: int | None = None
+    seen: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -64,7 +68,7 @@ class Scene:
         return self.ego_x_m / self.lane_w_m
 
     def as_trace(self) -> dict:
-        """紧凑 trace 面：对象逐条 8 元组。"""
+        """紧凑 trace 面：对象逐条 16 元组（尾部 id/seen 为 schema 4 追加）。"""
         return {
             "schema": self.schema,
             "fid": self.fid,
@@ -97,7 +101,7 @@ class Scene:
                       None if o.z_m is None else round(o.z_m, 2),
                       o.timed, o.depth, o.in_corridor, o.near,
                       None if o.half_w_m is None else round(o.half_w_m, 3),
-                      o.coarse]
+                      o.coarse, o.id, o.seen]
                      for o in self.objs],
         }
 
@@ -179,7 +183,8 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
             age, src, None, timed=t is not None, depth=False,
             in_corridor=_in_corridor(road, x, None),
-            coarse=(src == "far")))
+            coarse=(src == "far"),
+            id=getattr(b, "id", None), seen=getattr(b, "seen", None)))
     for c in cars:
         age = getattr(c, "age_ms", 0.0) or 0.0
         if age > max_obj_age_s * 1000.0:
@@ -198,7 +203,8 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             depth=c.z_m is not None,
             in_corridor=_in_corridor(road, x, z_scene),
             near=bool(getattr(c, "near", False)),
-            half_w_m=getattr(c, "half_w_m", None)))
+            half_w_m=getattr(c, "half_w_m", None),
+            id=getattr(c, "id", None), seen=getattr(c, "seen", None)))
     for c in coins:
         age = getattr(c, "age_ms", 0.0) or 0.0
         if age > max_obj_age_s * 1000.0:
@@ -212,7 +218,8 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             _sigma(age, sigma_obj0_m, sigma_obj_rate_mps),
             age, getattr(c, "src", "group"), None,
             timed=t is not None, depth=False,
-            in_corridor=_in_corridor(road, x, None)))
+            in_corridor=_in_corridor(road, x, None),
+            id=getattr(c, "id", None), seen=getattr(c, "seen", None)))
     stale = corridor_age_ms is not None \
         and corridor_age_ms > corridor_age_max_s * 1000.0
     return shift_scene(

@@ -47,6 +47,7 @@ def test_three_coins_one_group():
     assert g.observed_count == 3 and g.estimated_count == 3
     assert g.x_center == pytest.approx(0.45, abs=1e-6)
     assert g.cy_min == 400 and g.cy_max == 410
+    assert g.lead_id == 3                     # 最近一枚（cy 最大）的轨道 id
 
 
 def test_distant_coin_own_group():
@@ -114,6 +115,7 @@ def test_group_survivor_keeps_lead_position_and_confidence():
     assert g.conf_min == pytest.approx(0.9)
     assert g.cy_max == 400
     assert g.lead_fid == 1
+    assert g.lead_id == 1                     # 宽限存续仍记得 lead 轨道 id
 
 
 def test_lead_not_replaced_by_farther_coin():
@@ -125,6 +127,7 @@ def test_lead_not_replaced_by_farther_coin():
     assert g.cy_max == 400                      # 仍锚在近枚
     assert g.x_center == pytest.approx(-3.05, abs=1e-6)
     assert g.lead_fid == 1
+    assert g.lead_id == 1                       # lead 身份不随后一枚顶替
 
 
 # ---------- 失联宽限与退役 ----------

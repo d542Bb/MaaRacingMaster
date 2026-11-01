@@ -276,3 +276,23 @@ def test_second_hop_resolves_relative_request_on_a_real_commit(monkeypatch):
     # 拍存下的"无请求"）。不清零的话 pre 那 2 分会一路带过来，第 5 拍就起意。
     assert j + 1 == n_confirm + 1
     assert hop2[j][2] == pytest.approx(2.0)  # 绝对 +2，不是 1 更不是 0
+
+
+def test_selection_debug_carries_identity_and_cone_slack():
+    """观测面接线：机会的组号与光锥余量随 selection_debug 落列，场景对象
+    同时带组号与「本拍见过」；这些列不参与任何判定。"""
+    eng = DecisionEngine(CFG)
+    g, ms = _group(1, x=0.4, rel=2.5)
+    for fid in (1, 2, 3):
+        g = replace(g, first_seen_fid=1, last_seen_fid=fid)
+        ms = tuple(replace(m, first_seen_fid=1, last_seen_fid=fid,
+                           validity_until_fid=fid + 8) for m in ms)
+        eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
+                   executed_lane=0.0, corridor=_corridor())
+    dbg = eng.selection_debug
+    assert dbg is not None and dbg["coin"]
+    oid, slack = dbg["opp"]["coin"][0]
+    assert oid == 1
+    assert slack is not None and slack > 0.0    # 良候选：到站预算为正
+    coin = [o for o in eng.scene.objs if o.kind == "coin"][0]
+    assert coin.id == 1 and coin.seen is True

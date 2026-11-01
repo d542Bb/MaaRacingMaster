@@ -102,7 +102,9 @@ class Obj:
 
 @dataclass(frozen=True)
 class CoinSource:
-    """一个金币组（决策边界换算好的米制目标；选择层只读 x/t/枚数/置信）。"""
+    """一个金币组（决策边界换算好的米制目标；选择层只读 x/t/枚数/置信）。
+
+    ``id``/``seen`` 只作观测面：组号与「本拍是否见到成员」，不参与决策。"""
 
     x_m: float
     observed_count: float
@@ -110,6 +112,8 @@ class CoinSource:
     t_miss_s: float | None
     age_ms: float = 0.0
     src: str = "group"
+    id: int | None = None
+    seen: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,8 @@ class BonusSource:
     tol_m: float | None = None
     age_ms: float = 0.0
     src: str = "pixel"
+    id: int | None = None
+    seen: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +147,8 @@ class CarSource:
     # 纵向近（t=None 时可当静态障碍的唯一许可）与真实半宽（米，None=标称）
     near: bool = False
     half_w_m: float | None = None
+    id: int | None = None
+    seen: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -222,13 +230,24 @@ def _t_move(dx_m: float, p: SelectionParams) -> float:
                           settle_lane=p.aligned_lane)
 
 
+def reach_slack(x: float, x0: float, t: float | None,
+                p: SelectionParams) -> float | None:
+    """到站时间减去横移/反应/余量后的剩余预算（秒）；None=无到站时间。
+
+    观测面与判据同一份算式：`_reachable` 即「预算 ≥ 0」。负值=本拍来不及。"""
+    if t is None or not math.isfinite(t) or t <= 0.0:
+        return None
+    if abs(x - x0) <= p.aligned_lane * p.lane_w_m:
+        need = p.reaction_s
+    else:
+        need = _t_move(x - x0, p) + p.reaction_s + p.margin_s
+    return t - need
+
+
 def _reachable(x: float, x0: float, t: float | None,
                p: SelectionParams) -> bool:
-    if t is None or not math.isfinite(t) or t <= 0.0:
-        return False
-    if abs(x - x0) <= p.aligned_lane * p.lane_w_m:
-        return t >= p.reaction_s
-    return t >= _t_move(x - x0, p) + p.reaction_s + p.margin_s
+    slack = reach_slack(x, x0, t, p)
+    return slack is not None and slack >= 0.0
 
 
 def _blocked(cars: Sequence[Obj], x: float, t: float,

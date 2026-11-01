@@ -144,7 +144,7 @@ class CoinGroupAggregator:
                     partial_observation=True,
                     first_seen_fid=g.first_seen, last_seen_fid=g.last_seen,
                     validity_until_fid=g.last_seen + self.p.group_grace,
-                    lead_fid=g.lead_fid))
+                    lead_fid=g.lead_fid, lead_id=g.lead_id or 0))
                 continue
             xs = sorted((m.x_lane for m in ms))
             gaps = [b - a for a, b in zip(xs, xs[1:])]
@@ -180,7 +180,7 @@ class CoinGroupAggregator:
                 partial_observation=partial,
                 first_seen_fid=g.first_seen, last_seen_fid=g.last_seen,
                 validity_until_fid=g.last_seen + self.p.group_grace,
-                lead_fid=lead_fid))
+                lead_fid=lead_fid, lead_id=g.lead_id or 0))
         groups.sort(key=lambda c: -c.cy_max)
         return replace(obs, coin_groups=tuple(groups))
 
