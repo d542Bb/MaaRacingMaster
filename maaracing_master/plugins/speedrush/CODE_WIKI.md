@@ -1650,7 +1650,8 @@ m/modes/since_ms、本拍选择结果和 veto（选择目标仍在被占车道�
   年龄超过 `request_intent_age_s`=1.0 s 清零。**起意只认当拍有效来源**：
   证据够了但 `req_live=False` 报 `no_reach`，不把已过时的机会推成并线。
   关闭时逐位复现旧的泄漏计分（断拍 −dt）。观测面：`route.reqs`（三态）、
-  `route.roid`（身份）、`route.rage`（意图年龄）、`route.rpa`（暂停累计）。
+  `route.roid`（身份）、`route.rage`（意图年龄）、`route.rpa`（暂停累计）、
+  `route.rh`（开关状态，验收时确认本局真的开了）。
 - **并线中只认两件事**：完成（位置进 `selection.center_band_lane` 带内 **且**
   横速 < `finish_v_tol_lane_s`）与撤销（目标道连续 `cancel_unsafe_s`
   （0.25 s）确认被截）。并线期间不评估别的候选。

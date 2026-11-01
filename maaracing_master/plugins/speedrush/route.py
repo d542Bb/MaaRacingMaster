@@ -271,6 +271,7 @@ class RouteVerdict:
     req_oid: int | None = None
     req_age_s: float = 0.0
     req_pause_s: float = 0.0
+    req_hold: bool = False           # 6c 开关状态（trace 验收：确认本局开了）
 
     def as_trace(self) -> dict:
         def _r(x, nd):
@@ -285,7 +286,7 @@ class RouteVerdict:
                 # 6c 请求状态观测面
                 "reqs": self.req_state, "roid": self.req_oid,
                 "rage": _r(self.req_age_s, 2),
-                "rpa": _r(self.req_pause_s, 2)}
+                "rpa": _r(self.req_pause_s, 2), "rh": self.req_hold}
 
 
 def init_state(epoch: int) -> RouteState:
@@ -571,7 +572,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
         st, v = _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch,
                            lane_ttc, passing)
     return st, replace(v, req_state=st.req_state, req_oid=st.req_oid,
-                       req_age_s=st.req_age_s, req_pause_s=st.req_pause_s)
+                       req_age_s=st.req_age_s, req_pause_s=st.req_pause_s,
+                       req_hold=p.request_hold)
 
 
 def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
