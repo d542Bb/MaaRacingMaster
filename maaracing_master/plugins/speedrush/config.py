@@ -438,9 +438,9 @@ class Route:
     0.35 s 迎车门在计划层；目标道 `space` 仍按参考道失去几何重建），false=旧行为。"""
 
     control: bool = False
-    urgent_confirm_ticks: int = 3
-    opportunity_confirm_ticks: int = 6
-    cancel_unsafe_ticks: int = 5
+    urgent_confirm_s: float = 0.15
+    opportunity_confirm_s: float = 0.3
+    cancel_unsafe_s: float = 0.25
     cancel_cooldown_s: float = 2.0
     finish_v_tol_lane_s: float = 0.4
     merge_max_s: float = 4.0
@@ -878,12 +878,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                                 default=False)),
         route=Route(
             control=_bool(d, "route", "control", default=False),
-            urgent_confirm_ticks=_int_def(d, "route", "urgent_confirm_ticks",
-                                          3, lo=1),
-            opportunity_confirm_ticks=_int_def(
-                d, "route", "opportunity_confirm_ticks", 6, lo=1),
-            cancel_unsafe_ticks=_int_def(d, "route", "cancel_unsafe_ticks",
-                                         5, lo=1),
+            urgent_confirm_s=_num_def(d, "route", "urgent_confirm_s",
+                                      0.15, lo=0),
+            opportunity_confirm_s=_num_def(
+                d, "route", "opportunity_confirm_s", 0.3, lo=0),
+            cancel_unsafe_s=_num_def(d, "route", "cancel_unsafe_s",
+                                     0.25, lo=0),
             cancel_cooldown_s=_num_def(d, "route", "cancel_cooldown_s", 2.0,
                                        lo=0, lo_open=False),
             finish_v_tol_lane_s=_num_def(d, "route", "finish_v_tol_lane_s",

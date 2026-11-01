@@ -470,9 +470,9 @@ class DecisionEngine:
             # 门槛/速度类数值全部复用既有真源，不在 [route] 复制一份
             switch_gain_m=c.switch_margin_m,
             proxy_speed_mps=c.range_speed_mps,
-            urgent_confirm_ticks=r.urgent_confirm_ticks,
-            opportunity_confirm_ticks=r.opportunity_confirm_ticks,
-            cancel_unsafe_ticks=r.cancel_unsafe_ticks,
+            urgent_confirm_s=r.urgent_confirm_s,
+            opportunity_confirm_s=r.opportunity_confirm_s,
+            cancel_unsafe_s=r.cancel_unsafe_s,
             cancel_cooldown_s=r.cancel_cooldown_s,
             finish_tol_lane=s.center_band_lane,
             finish_v_tol_lane_s=r.finish_v_tol_lane_s,

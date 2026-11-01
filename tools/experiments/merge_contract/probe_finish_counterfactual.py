@@ -102,9 +102,9 @@ def params_from(cfg) -> R.RouteParams:
     return R.RouteParams(
         switch_gain_m=cfg.coarse.switch_margin_m,
         proxy_speed_mps=cfg.coarse.range_speed_mps,
-        urgent_confirm_ticks=cfg.route.urgent_confirm_ticks,
-        opportunity_confirm_ticks=cfg.route.opportunity_confirm_ticks,
-        cancel_unsafe_ticks=cfg.route.cancel_unsafe_ticks,
+        urgent_confirm_s=cfg.route.urgent_confirm_s,
+        opportunity_confirm_s=cfg.route.opportunity_confirm_s,
+        cancel_unsafe_s=cfg.route.cancel_unsafe_s,
         cancel_cooldown_s=cfg.route.cancel_cooldown_s,
         finish_tol_lane=cfg.selection.center_band_lane,
         finish_v_tol_lane_s=cfg.route.finish_v_tol_lane_s,

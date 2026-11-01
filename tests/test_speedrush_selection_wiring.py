@@ -203,7 +203,7 @@ def test_adjacent_coin_line_requests_then_merges():
     assert max(abs(s[5]) for s in seen[:fired_i]) <= 0.5
     fired = seen[fired_i]
     assert fired[2] == "opportunity"
-    assert fired[3] >= CFG.route.opportunity_confirm_ticks
+    assert fired[3] + 1e-9 >= CFG.route.opportunity_confirm_s
     # 起意之后目标才是那条道（承诺道区间边界：1.0 − 0.17）
     assert seen[-1][0] == "sel:commit" and seen[-1][5] == pytest.approx(
         1.0 - (0.5 - CFG.selection.ego_half_lane
@@ -228,7 +228,7 @@ def test_second_hop_resolves_relative_request_on_a_real_commit(monkeypatch):
     真实，只有粗层横位用假报告与 `executed` 同值渐进（一步跳满一道会触发
     尺子换纪，那不是本锁要验的东西）。"""
     from maaracing_master.plugins.speedrush import decision as dmod
-    n_confirm = CFG.route.opportunity_confirm_ticks
+    n_confirm = round(CFG.route.opportunity_confirm_s / 0.05)
     ego = [0.0]
     monkeypatch.setattr(dmod, "choose_lane",
                         lambda *a, **k: _flat_coarse(ego[0]))

@@ -601,7 +601,7 @@ class LateralPlanner:
         # 未接管（并线/安全/影子不新鲜）时置空，重入首拍不罚。
         self._preview_prev_u: float | None = None
         self._preview_active = False     # 本拍预瞄是否接管（trace pv）
-        self._plan_center_n = 0          # 计划维护态连续拍数（进入驻留）
+        self._plan_center_t = 0.0        # 计划维护态连续时长（秒，进入驻留）
         self._plan_center_gated = False  # 驻留后的维护态（预瞄准入）
         # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
         # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层把杆归零
@@ -696,8 +696,8 @@ class LateralPlanner:
              # pv=本拍短预瞄是否接管下发杆值
              "csrc": self._heading_src,
              "pv": bool(self._preview_active),
-             # 4d 驻留面：pcn=计划维护态连续拍数，pcg=驻留后的准入
-             "pcn": self._plan_center_n,
+             # 4d 驻留面：pcn=计划维护态连续秒数，pcg=驻留后的准入
+             "pcn": round(self._plan_center_t, 2),
              "pcg": bool(self._plan_center_gated)}
         d.update(self.head.debug())
         return d
@@ -1233,12 +1233,11 @@ class LateralPlanner:
                        and getattr(plan, "collision_cost", 0.0) <= 0.0)
         # 4d：计划维护态进入预瞄要连续满足 0.2 s，退出立即。时域一动时
         # 计划层 3/4 来回切，不会逐拍把控制律在 PD 与预瞄之间翻。
-        self._plan_center_n = self._plan_center_n + 1 if plan_center else 0
-        need = (max(1, int(round(_PLAN_CENTER_DWELL_S / dt_s)))
-                if dt_s > 0 else 1)
+        self._plan_center_t = self._plan_center_t + dt_s if plan_center else 0.0
         self._plan_center_gated = bool(
             plan_center and (self._preview_active
-                             or self._plan_center_n >= need))
+                             or self._plan_center_t + 1e-9
+                             >= _PLAN_CENTER_DWELL_S))
         preview_ok = (
             st is DecisionState.CRUISE
             and not self.state_unverified
