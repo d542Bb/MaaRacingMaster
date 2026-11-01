@@ -73,3 +73,39 @@ def test_anchor_filters_time_and_offset():
     assert a.step([_c(2, t=None)], 0.05) is None
     assert a.step([_c(3, x=3.0)], 0.05) is None
     assert a.step([_c(4, x=2.0, t=1.5)], 0.05).id == 4
+
+
+def test_horizon_dwell_and_step_limits():
+    from maaracing_master.plugins.speedrush.horizon import HorizonGovernor
+    h = HorizonGovernor()
+    assert h.step("open", 0.05).current_s == 3.0
+    n = 0
+    while True:                          # 驻留满 0.5 s 才切换
+        st = h.step("crowded", 0.05)
+        n += 1
+        if st.why == "switch":
+            break
+        assert st.current_s == 3.0
+    assert st.current_s == 2.0 and n >= 10
+    n = 0
+    while True:
+        st = h.step("normal", 0.05)
+        n += 1
+        if st.why == "switch":
+            break
+    assert st.current_s == 2.5 and n >= 10
+
+
+def test_trigger_log_records_each_event_once():
+    from maaracing_master.plugins.speedrush.triggers import TriggerLog
+    t = TriggerLog()
+    assert t.step(open_level="open", anchor={"k": "coin", "id": 1},
+                  layer=4, map_support=10.0,
+                  route_phase="keep", route_ref=0.0) == []
+    ev = t.step(open_level="crowded", anchor={"k": "coin", "id": 2},
+                layer=3, map_support=16.0,
+                route_phase="merging", route_ref=1.0)
+    assert set(ev) == {"open", "anchor", "layer", "map", "route"}
+    assert t.step(open_level="crowded", anchor={"k": "coin", "id": 2},
+                  layer=3, map_support=16.0,
+                  route_phase="merging", route_ref=1.0) == []

@@ -302,14 +302,20 @@ def test_engine_exposes_openness_and_anchor():
     """第 4 期观测面接线：开度与 60m 锚随决策拍落列，不参与选择。"""
     eng = DecisionEngine(CFG)
     g, ms = _group(1, x=0.4, rel=2.5)
-    for fid in (1, 2, 3):
+    trig = None
+    for fid in (1, 2, 3, 4, 5):
         g = replace(g, first_seen_fid=1, last_seen_fid=fid)
         ms = tuple(replace(m, first_seen_fid=1, last_seen_fid=fid,
                            validity_until_fid=fid + 8) for m in ms)
         eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
                    executed_lane=0.0, corridor=_corridor())
+        trig = eng.trigger_trace()
     op = eng.openness_trace()
     assert op is not None and op["lvl"] == "open"
     an = eng.anchor_trace()
     assert an is not None and an["k"] == "coin" and an["id"] == 1
     assert eng.selection_report.layer == 3
+    hs = eng.horizon_trace()
+    assert hs is not None and hs["h"] == 3.0
+    assert trig is None                    # 状态稳定后不再触发"
+

@@ -32,8 +32,10 @@ from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import Corridor
 from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
 from maaracing_master.plugins.speedrush.anchor import AnchorTracker, Candidate
+from maaracing_master.plugins.speedrush.horizon import HorizonGovernor
 from maaracing_master.plugins.speedrush.lane_map import LaneMap
 from maaracing_master.plugins.speedrush.openness import assess
+from maaracing_master.plugins.speedrush.triggers import TriggerLog
 from maaracing_master.plugins.speedrush.motion_plan import build_scene
 from maaracing_master.plugins.speedrush.object_table import ObjectTable
 from maaracing_master.plugins.speedrush.selection import (
@@ -510,6 +512,11 @@ class DecisionEngine:
         self._anchor = AnchorTracker()
         self._open_trace: dict | None = None
         self._anchor_trace: dict | None = None
+        # 第 4 期影子：拟议视界与重算触发（只记录，选择层仍用固定视界）
+        self._horizon = HorizonGovernor()
+        self._horizon_trace: dict | None = None
+        self._trig = TriggerLog()
+        self._trig_trace: list | None = None
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
@@ -565,6 +572,10 @@ class DecisionEngine:
         self._anchor.reset()
         self._open_trace = None
         self._anchor_trace = None
+        self._horizon.reset()
+        self._horizon_trace = None
+        self._trig.reset()
+        self._trig_trace = None
         self._conserve_t = 0.0
         self._ok_t = 0.0
         self._abort_next = DecisionState.CRUISE
@@ -709,6 +720,7 @@ class DecisionEngine:
             self._anchor.reset()
             self._anchor_trace = None
         self._update_lane_map(obs)
+        self._update_triggers()
         intent_lane = None
         if route is not None:
             intent_lane = route.lane_target if merging else route.lane_ref
@@ -1532,6 +1544,28 @@ class DecisionEngine:
         """上一拍 60 m 锚——trace anchor 列（只观测）。"""
         return self._anchor_trace
 
+    def horizon_trace(self) -> dict | None:
+        """拟议车道视界（影子）——trace h_shadow 列；选择层仍用固定视界。"""
+        return self._horizon_trace
+
+    def trigger_trace(self) -> list | None:
+        """本拍重算触发事件——trace trig 列（事件触发重选的取证面）。"""
+        return self._trig_trace
+
+    def _update_triggers(self) -> None:
+        rv = self._route_verdict
+        rep = self._sel_report if self._state is DecisionState.CRUISE else None
+        ev = self._trig.step(
+            open_level=None if self._open_trace is None
+            else self._open_trace.get("lvl"),
+            anchor=self._anchor_trace,
+            layer=None if rep is None else rep.layer,
+            map_support=None if self._map_trace is None
+            else self._map_trace.get("sup"),
+            route_phase=None if rv is None else rv.phase,
+            route_ref=None if rv is None else rv.lane_ref)
+        self._trig_trace = ev or None
+
     def _update_openness_anchor(self, rewards, coins, ego_m: float,
                                 origin: float) -> None:
         sc = self._scene
@@ -1540,7 +1574,10 @@ class DecisionEngine:
             self._anchor_trace = None
             return
         cars = [o for o in sc.objs if o.kind == "car" and o.safety_ok]
-        self._open_trace = assess(sc, cars).as_trace()
+        op = assess(sc, cars)
+        self._open_trace = op.as_trace()
+        self._horizon_trace = self._horizon.step(
+            op.level, self._dt_last).as_trace()
         lw = self.cal.lane_w_m
         cands = []
         for b in rewards:

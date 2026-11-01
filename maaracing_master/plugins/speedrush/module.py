@@ -1556,6 +1556,9 @@ class SpeedRushModule(ActivityModule):
             # 开度/密度与 60m 锚（第 4 期观测面）：只记录，分级时域尚未消费。
             "open": eng.openness_trace(),
             "anchor": eng.anchor_trace(),
+            # 拟议视界（影子）与重算触发：只记录；选择层仍用固定视界。
+            "h_shadow": eng.horizon_trace(),
+            "trig": eng.trigger_trace(),
             # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选
             "plan": None if plan is None else plan.as_trace(),
             # 本拍两层名义视界（秒，观测面）：今天都是常量，分级时域落地后
