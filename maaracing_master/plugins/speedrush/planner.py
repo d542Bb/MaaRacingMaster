@@ -540,6 +540,9 @@ class EgoLateralState:
     steer_norm: float = 0.0      # 低通后的当前杆值指令（归一域）
 
 
+_PLAN_CENTER_DWELL_S = 0.2   # 计划维护态进入预瞄的驻留（与计划/选择层 0.2s 同口径）
+
+
 class LateralPlanner:
     """延迟补偿前瞻 PD + 开环积分 + 观测重锚。单线程 owner 使用。"""
 
@@ -598,6 +601,8 @@ class LateralPlanner:
         # 未接管（并线/安全/影子不新鲜）时置空，重入首拍不罚。
         self._preview_prev_u: float | None = None
         self._preview_active = False     # 本拍预瞄是否接管（trace pv）
+        self._plan_center_n = 0          # 计划维护态连续拍数（进入驻留）
+        self._plan_center_gated = False  # 驻留后的维护态（预瞄准入）
         # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
         # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层把杆归零
         # （只按朝向回正，不积分旧转杆）、计划不接管（见 update 与
@@ -690,7 +695,10 @@ class LateralPlanner:
              # 控制朝向来源：model=车模影子、obs=观测器、none=无朝向；
              # pv=本拍短预瞄是否接管下发杆值
              "csrc": self._heading_src,
-             "pv": bool(self._preview_active)}
+             "pv": bool(self._preview_active),
+             # 4d 驻留面：pcn=计划维护态连续拍数，pcg=驻留后的准入
+             "pcn": self._plan_center_n,
+             "pcg": bool(self._plan_center_gated)}
         d.update(self.head.debug())
         return d
 
@@ -1223,6 +1231,14 @@ class LateralPlanner:
         plan_center = (plan is not None and plan.valid
                        and getattr(plan, "layer", None) == 4
                        and getattr(plan, "collision_cost", 0.0) <= 0.0)
+        # 4d：计划维护态进入预瞄要连续满足 0.2 s，退出立即。时域一动时
+        # 计划层 3/4 来回切，不会逐拍把控制律在 PD 与预瞄之间翻。
+        self._plan_center_n = self._plan_center_n + 1 if plan_center else 0
+        need = (max(1, int(round(_PLAN_CENTER_DWELL_S / dt_s)))
+                if dt_s > 0 else 1)
+        self._plan_center_gated = bool(
+            plan_center and (self._preview_active
+                             or self._plan_center_n >= need))
         preview_ok = (
             st is DecisionState.CRUISE
             and not self.state_unverified
@@ -1233,7 +1249,8 @@ class LateralPlanner:
             and getattr(decision, "phase", "keep") != "merging"
             and self._heading_src == "model"
             and abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE
-            and (plan is None or not plan.valid or plan_center)
+            and (plan is None or not plan.valid
+                 or self._plan_center_gated)
             and not (plan is not None
                      and getattr(plan, "reason", None) in (
                          "plan:stale", "plan:frame_shift",

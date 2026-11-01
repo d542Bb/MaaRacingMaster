@@ -1744,3 +1744,24 @@ def test_bench_centering_bounded_under_measured_delay_noise():
     tail = xs[-100:]
     assert (max(tail) - min(tail)) / 2 < 1.0     # 不回到整道级极限环
     assert abs(xs[-1]) < 0.9                     # 不发散
+
+
+def test_preview_plan_maintenance_dwell_enter_and_exit():
+    """4d：计划维护态进入预瞄需连续 0.2s；层一变（非维护）立即退出。"""
+    ok = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=4, value_total=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=0.0)
+    other = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=3, value_total=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=0.0)
+    pl = _planner()
+    rig = _Rig(pl)
+    flags = []
+    for i in range(4):
+        rig.tick(_out(x_target=0.0, fid=i + 1, valid=i + 1), plan=ok)
+        flags.append(pl.ctrl_debug()["pcg"])
+    assert flags == [False, False, False, True]
+    rig.tick(_out(x_target=0.0, fid=5, valid=5), plan=other)
+    assert pl.ctrl_debug()["pcg"] is False
