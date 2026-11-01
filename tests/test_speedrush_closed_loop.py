@@ -63,11 +63,13 @@ def _obs(fid, *, coin_cy, car_cy):
         coin_groups=(group,), fid_rate_hz=20.0)
 
 
-def _run(dynamic: bool, layer: bool, ticks: int = 120):
+def _run(dynamic: bool, layer: bool, ticks: int = 120,
+         event: bool = False):
     cfg = CFG
-    if dynamic or layer:
+    if dynamic or layer or event:
         cfg = replace(cfg, selection=replace(
-            cfg.selection, dynamic_horizon=dynamic, layer_dwell=layer))
+            cfg.selection, dynamic_horizon=dynamic, layer_dwell=layer,
+            event_replan=event))
     eng = DecisionEngine(cfg)
     pl = LateralPlanner(cfg.planner)
     x = 0.0
@@ -117,7 +119,8 @@ def test_closed_loop_is_finite_and_bounded_with_switches_on():
     dyn = _run(True, False)
     lay = _run(False, True)
     both = _run(True, True)
-    for rep in (off, dyn, lay, both):
+    evt = _run(False, False, event=True)
+    for rep in (off, dyn, lay, both, evt):
         assert all(math.isfinite(v) for v in rep["x"])
         assert max(abs(v) for v in rep["x"]) < 2.0
         assert rep["pl"].state.steer_norm is not None

@@ -431,6 +431,7 @@ class DecisionEngine:
             center_lookahead_m=s.center_lookahead_m,
             switch_dwell_s=s.switch_dwell_s,
             layer_dwell=s.layer_dwell,
+            event_replan=s.event_replan,
             car_half_lane=s.car_half_lane,
             ego_half_lane=s.ego_half_lane,
             lane_clearance_lane=s.lane_clearance_lane))
@@ -518,6 +519,7 @@ class DecisionEngine:
         self._horizon_trace: dict | None = None
         self._trig = TriggerLog()
         self._trig_trace: list | None = None
+        self._pre_trig = TriggerLog()   # 选择前输入事件（4c 事件重算门）
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
@@ -577,6 +579,7 @@ class DecisionEngine:
         self._horizon_trace = None
         self._trig.reset()
         self._trig_trace = None
+        self._pre_trig.reset()
         self._conserve_t = 0.0
         self._ok_t = 0.0
         self._abort_next = DecisionState.CRUISE
@@ -1310,6 +1313,17 @@ class DecisionEngine:
         # 用本拍影子视界（已含开度/驻留），生产与影子选择器同值。
         dyn_h = (self._horizon.current
                  if self.cfg.selection.dynamic_horizon else None)
+        pre = self._pre_trig.step(
+            open_level=None if self._open_trace is None
+            else self._open_trace.get("lvl"),
+            anchor=self._anchor_trace, layer=None,
+            map_support=None if self._map_trace is None
+            else self._map_trace.get("sup"),
+            route_phase=None if self._route_verdict is None
+            else self._route_verdict.phase,
+            route_ref=None if self._route_verdict is None
+            else self._route_verdict.lane_ref)
+        replan = bool(pre)
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last,
                                    coarse_lane=coarse_lane,
@@ -1329,7 +1343,7 @@ class DecisionEngine:
         rep_shadow = self._selector_shadow.update(
             road, rewards, cars, coins, ego_m, self._dt_last,
             coarse_lane=sh_coarse, committed=sh_committed,
-            commit_x_m=sh_commit_x, horizon_s=dyn_h)
+            commit_x_m=sh_commit_x, horizon_s=dyn_h, replan=replan)
         self._sel_shadow = rep_shadow
         self._sel_shadow_trace = self._sel_watch.step(
             fid=obs.frame_id, prod=rep, shadow=rep_shadow,

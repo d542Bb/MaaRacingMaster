@@ -212,6 +212,7 @@ class SelectionParams:
     preposition_bias_lane: float = 1.0
     switch_dwell_s: float = 0.2
     layer_dwell: bool = False
+    event_replan: bool = False
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
     # 车道内安全区间的车身余量（道）：车心可在车道中心 ±(0.5−半宽−余量)
@@ -685,13 +686,15 @@ class LayeredSelector:
                *, coarse_lane: float | None = None,
                committed: bool = False,
                commit_x_m: float | None = None,
-               horizon_s: float | None = None) -> SelectionReport:
+               horizon_s: float | None = None,
+               replan: bool = False) -> SelectionReport:
         # 分级时域（4b）：本拍视界覆盖只作用于选择/预置/路点，不改驻留参数
         p = self.p if horizon_s is None else replace(
             self.p, horizon_s=float(horizon_s))
         raw = select(road, rewards, cars, coins, ego, p,
                      coarse_lane=coarse_lane, committed=committed,
                      commit_x_m=commit_x_m)
+        prev = self.last
         self.last = raw
         # 承诺期：目标是路线定的道，驻留/金币短承诺都不参与——拖住或沿用
         # 旧目标都等于在并线中改道。
@@ -716,6 +719,28 @@ class LayeredSelector:
                     return held
         if self._layer is None:
             return self._adopt(raw)
+        # 4c 事件触发重算：无输入事件时同层目标按 0.1 道/拍小步修正；
+        # 请求变化、擦边/让位、层变化都直接采纳（安全与意图优先）。
+        if p.event_replan and not replan and raw.layer == self._layer                 and self._layer not in (0, 2) and self._target is not None                 and raw.lane_request == (None if prev is None
+                                         else prev.lane_request):
+            target = self._target
+            d = raw.target_x_m - target
+            if abs(d) > 1e-9:
+                step = min(abs(d), 0.1 * p.lane_w_m)
+                target += math.copysign(step, d)
+                self._target = target
+                wps = [Waypoint(w.t - dt_s, w.x, w.src)
+                       for w in (prev.waypoints if prev is not None
+                                 else raw.waypoints) if w.t - dt_s > 0]
+                if wps:
+                    wps[-1] = Waypoint(wps[-1].t, target, wps[-1].src)
+                else:
+                    wps = [Waypoint(p.horizon_s, target, raw.why)]
+                held = SelectionReport(
+                    raw.layer, tuple(wps), target, raw.why, raw.road_ok,
+                    raw.maneuver, raw.lane_request)
+                self.last = held
+                return held
         if raw.layer != self._layer:
             # 4c：计分层切换驻留；擦边/让位（2）与无路（0）永远立即。
             if not p.layer_dwell or raw.layer in (0, 2) or self._layer in (0, 2):

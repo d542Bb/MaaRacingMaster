@@ -464,3 +464,21 @@ def test_layer_dwell_default_off_switches_immediately():
     sel.update(_road(), [Obj("reward", 0.0, 2.0)], [], [], 0.0, 0.05)
     assert sel.update(_road(), [], [], [Obj("coin", 0.0, 1.0)],
                       0.0, 0.05).layer == 3
+
+
+def test_event_replan_small_step_and_safety_override():
+    """4c：无输入事件时目标 0.1 道/拍小步修正；replan 与擦边层立即采纳。"""
+    from maaracing_master.plugins.speedrush.selection import LayeredSelector
+    p = _p(event_replan=True, switch_dwell_s=0.0)
+    sel = LayeredSelector(p)
+    r1 = sel.update(_road(), [Obj("reward", 0.0, 2.0)], [], [], 0.0, 0.05)
+    assert r1.layer == 1 and r1.target_x_m == pytest.approx(0.0)
+    r2 = sel.update(_road(), [Obj("reward", 0.8 * LW, 2.0)], [], [],
+                    0.0, 0.05)
+    assert r2.layer == 1
+    assert r2.target_x_m == pytest.approx(0.1 * LW)
+    r3 = sel.update(_road(), [Obj("reward", 0.8 * LW, 2.0)], [], [],
+                    0.0, 0.05, replan=True)
+    assert r3.target_x_m == pytest.approx(0.8 * LW)
+    r4 = sel.update(_road(), [], [Obj("car", 0.0, 2.0)], [], 0.0, 0.05)
+    assert r4.layer == 2            # 擦边层不等事件

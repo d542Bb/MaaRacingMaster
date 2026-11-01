@@ -359,3 +359,4 @@ def test_new_trace_columns_are_json_serializable():
         json.dumps(v, ensure_ascii=False)
     assert CFG.selection.dynamic_horizon is False
     assert CFG.selection.layer_dwell is False
+    assert CFG.selection.event_replan is False
