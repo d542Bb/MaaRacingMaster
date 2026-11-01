@@ -275,3 +275,30 @@ def test_engine_ignores_unsafe_car_end_to_end():
     base = run(None)
     assert run(13) == base          # 650 ms：宽限内但超安全龄，逐位一致
     assert run(0) != base           # 新鲜车触发擦边层，允许改变
+
+
+def test_latch_does_not_change_safety_injection():
+    """6b 资格闭锁只改选择输入，不改变安全注入结果（开/关逐位一致）。"""
+    from dataclasses import replace as _replace
+
+    from maaracing_master.plugins.speedrush import DECISION_FILE
+    from maaracing_master.plugins.speedrush.config import _read_decision
+    from maaracing_master.plugins.speedrush.decision import DecisionEngine
+
+    cfg = _read_decision(DECISION_FILE)
+    cfg_on = _replace(cfg, selection=_replace(cfg.selection,
+                                              eligibility_latch=True))
+
+    def run(c):
+        eng = DecisionEngine(c)
+        outs = []
+        for fid in range(1, 6):
+            coin = _car(500, 0.0, kind=KIND_COIN, last=fid)
+            car = _car(77, 0.0, last=fid - 13)
+            out = eng.update(_obs(fid, targets=(coin, car)), 0.05,
+                             executed_lane=0.0, corridor=_corridor())
+            outs.append((out.reason, out.x_target, out.state,
+                         eng.object_table_trace()["nsafe"]))
+        return outs
+
+    assert run(cfg_on) == run(cfg)

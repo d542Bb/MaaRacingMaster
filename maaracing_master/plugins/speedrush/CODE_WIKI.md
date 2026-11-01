@@ -1308,6 +1308,16 @@ CRUISE 选择来源是严格字典序（奖励车 > 普通车擦边 > 金币 > �
 即逐位回旧路径（机会目标连续拽）。观测面：trace `sel_dbg.req`、`route.crc`、
 `route.why`（请求是否被拒及原因，口径见 §22）。
 
+**资格闭锁（`selection.eligibility_latch`，默认关，6b）**：奖励车/币组的
+得分源在进入选择层前按对象身份保留最近一份可用读数（`eligibility_hold_s`
+=0.3 秒），只处理"暂时没有读数"（横位/到站缺位、组心 nan）；不接近/太年轻/
+置信不足等资格判据过期即移出闭锁。保留源带 `seen=False`，**只进选择输入**，
+不写回计划场景、锚与安全消费点；可达性仍用当拍读数判，不做外推。观测面：
+`sel_dbg.src_elig`（当拍源 `rw_cur/coin_cur`、闭锁后选择输入
+`rw_sel/coin_sel`、拒绝原因 `rw_rej/coin_rej`）。请求同时带
+`req_live`（触发源本拍是否有新鲜读数）与 `req_oid`，供路线层区分
+"证据冻结"与"可起意"。
+
 **⑤ 时空横向轨迹计划（`motion_plan.py`）**：`motion.mode` 三档——`off`
 （只组装场景快照，驾驶逐位同旧链）、`shadow`（计划照算、记录 trace，控制器
 仍走旧目标）、`live`（计划有效时接管杆值，需 `motion.calibrated=true`，否则
@@ -1609,8 +1619,9 @@ m/modes/since_ms、本拍选择结果和 veto（选择目标仍在被占车道�
   累计与消费——并线中机会层不出目标，留着上一跳攒的进度等于让它替这一拍做决定
   （实测 6 拍门会被穿到 4 拍）；② 任何改 `lane_ref` 的路径（`_start_merge`/
   `_rebuild`）随承诺道一起清空请求与计分，换算基准（消费拍的 `lane_ref`）因此始终
-  等于生成拍的；③ 缺车道级证据的拍**清零**，不冻结也不按拍扣分——断供前后两段不
-  连续的证据凑不成一次「机会连续被看见」。解析出的目标道不存在时明确不起意，
+  等于生成拍的；③ 缺**车道级证据**的拍清零，不冻结也不按拍扣分——断供前后两段不
+  连续的证据凑不成一次「机会连续被看见」（对象暂时无读数走 `request_hold`，
+  见下一条）。解析出的目标道不存在时明确不起意，
   **不换成别的道当替补**。起意条件全部满足才动——现任道**确认空闲**
   （被占/无法确认时交给逃生路径的节奏）、请求是**相邻一道**（两号外不是换道
   动作）、该道合格（`_qualified`）、横穿路径空闲、不在撤销冷却的禁入名单里，
@@ -1625,12 +1636,21 @@ m/modes/since_ms、本拍选择结果和 veto（选择目标仍在被占车道�
   `sel_dbg.req`（原始请求）与 `route.why` 的 keep 态原因码——无请求
   `no_request`（现任道未确认空闲时仍报 `blocked_unconfirmed`；确认被截但
   到站时间未到线报 `not_urgent`）、有请求未到
-  门槛 `scoring`、门槛已到但被拒 `current_unconfirmed`（现任道未确认空闲）/
+  门槛 `paused`（无读数冻结）或 `scoring`、证据够但当拍无有效来源
+  `no_reach`、门槛已到但被拒 `current_unconfirmed`（现任道未确认空闲）/
   `same_lane` / `not_adjacent` / `target_missing` / `target_unqualified` /
   `cooldown_ban` / `path_blocked`。离线按请求段统计被拒原因直接读这一列，
   不需要重放判据。换算与生命周期三条各有单元锁，另有一把走完整生产
   接线的两跳锁：0→1 完成之后相对 +1 必须落在绝对 +2，且断供一拍之后重新攒满
   门槛（含请求延迟一拍消费的那一拍）。
+- **请求状态化（`route.request_hold`，默认关，6c）**：请求在保持态按
+  （目标道、方向、触发身份）持有：有效来源拍累计证据；无读数（选择层给
+  `req_live=False`，或当拍没有请求）在 `request_gap_s`=0.2 s 内冻结不减，
+  超过即清零；同道同向换对象不清零（`req_oid` 只作诊断），换道/换向或意图
+  年龄超过 `request_intent_age_s`=1.0 s 清零。**起意只认当拍有效来源**：
+  证据够了但 `req_live=False` 报 `no_reach`，不把已过时的机会推成并线。
+  关闭时逐位复现旧的泄漏计分（断拍 −dt）。观测面：`route.reqs`（三态）、
+  `route.roid`（身份）、`route.rage`（意图年龄）、`route.rpa`（暂停累计）。
 - **并线中只认两件事**：完成（位置进 `selection.center_band_lane` 带内 **且**
   横速 < `finish_v_tol_lane_s`）与撤销（目标道连续 `cancel_unsafe_s`
   （0.25 s）确认被截）。并线期间不评估别的候选。

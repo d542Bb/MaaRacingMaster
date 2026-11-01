@@ -17,6 +17,9 @@
    并线；拒了就维持 keep——目标早已被选择层贴回本道可活动带，永远不会停在两条
    道中间。计分门槛裁决的是「机会真的在那条道上」，不是「这一拍看见了东西」：
    实机一局原始请求 61 段里 40 段只有 1~2 拍（币组检测闪断）。
+   `route.request_hold` 开时请求变成状态（6c）：无读数在 `request_gap_s` 内
+   冻结证据、不得加分；起意只认当拍有效来源（`request_live=True`），
+   证据够了但来源不可达报 `no_reach`。
 3. **并线中只认两件事**：到了没有（位置进目标道中心带 **且** 横速落稳）、
    该不该撤（目标道连续确认被截）。并线期间不评估别的候选——中途改主意就是
    逐拍翻面。
@@ -177,6 +180,10 @@ class RouteParams:
     # 目标始终在本道区间内。按秒而非拍数：实际节拍 17.7~17.85 Hz 时同样的
     # 6 拍会变成 0.34 s，窗口随负载漂移。
     cancel_unsafe_s: float = 0.25    # 撤销判定的连续时长（防单帧野值弃窗）
+    # 6c 请求证据/动作两位：证据按时长累计、丢检冻结，起意只认当拍可达来源。
+    request_hold: bool = False
+    request_gap_s: float = 0.2       # 无读数冻结上限（秒）
+    request_intent_age_s: float = 1.0  # 同一意图的最长寿命（秒）
     cancel_cooldown_s: float = 2.0   # 撤销后冷却：期内不回刚放弃的那条道
     finish_tol_lane: float = 0.3     # 完成的位置容差（同 L4 中心带宽）
     finish_v_tol_lane_s: float = 0.4  # 完成的横速容差：带着横速"完成"正是过冲
@@ -226,6 +233,11 @@ class RouteState:
     req_lane: float | None = None    # 当拍机会换道请求目标道（选择层出界
     # 目标转来的请求；逐拍刷新、不跨帧持有——机会没了请求自然消失）
     req_credit: float = 0.0          # 同侧请求的累计秒数（门槛见 params）
+    req_oid: int | None = None       # 触发身份（诊断/连续性，不参与计分）
+    req_side: int = 0                # 请求方向（+1/−1）
+    req_age_s: float = 0.0           # 同一意图的年龄（秒）
+    req_pause_s: float = 0.0         # 无读数累计（秒）
+    req_state: str = "none"          # active/paused/none（6c）
 
 
 @dataclass(frozen=True)
@@ -239,9 +251,9 @@ class RouteVerdict:
     # cancel/urgent_no_alt/epoch_reset/rebuild/needs_init
     why: str                         # 保持或被拒的第一原因码（keep 态口径见
     # `_request_reject_reason`：无请求 no_request/blocked_unconfirmed/not_urgent，
-    # 未到门槛
-    # scoring，被拒 current_unconfirmed/same_lane/not_adjacent/target_missing/
-    # target_unqualified/cooldown_ban/path_blocked）
+    # 未到门槛 paused/scoring，被拒 current_unconfirmed/same_lane/not_adjacent/
+    # target_missing/target_unqualified/cooldown_ban/path_blocked；证据够但
+    # 当拍无有效来源报 no_reach（6c）
     since_s: float                   # 距上次定案的时间（"多久动一次"的观测面）
     gain_m: float | None             # 当前道与被选替代道的净空差（米）
     t_cur_s: float | None            # 现任道最早占用时刻（代理速度，秒）
@@ -255,6 +267,10 @@ class RouteVerdict:
     # 「为什么还没并线」= 计分未到门槛）
     blocked_finish: bool = False     # 到达门（C）当拍是否拦下了一个本会成立的
     # finish；只作观测/影子，门关时恒 False，不参与其他分支
+    req_state: str = "none"          # 6c 请求三态
+    req_oid: int | None = None
+    req_age_s: float = 0.0
+    req_pause_s: float = 0.0
 
     def as_trace(self) -> dict:
         def _r(x, nd):
@@ -265,7 +281,11 @@ class RouteVerdict:
                 "gain": _r(self.gain_m, 2), "tc": _r(self.t_cur_s, 3),
                 "ev": _r(self.evidence_m, 2), "cd": _r(self.cooldown_left_s, 2),
                 "ep": self.epoch, "blk": self.blocker,
-                "crc": _r(self.credit, 2), "blkfin": self.blocked_finish}
+                "crc": _r(self.credit, 2), "blkfin": self.blocked_finish,
+                # 6c 请求状态观测面
+                "reqs": self.req_state, "roid": self.req_oid,
+                "rage": _r(self.req_age_s, 2),
+                "rpa": _r(self.req_pause_s, 2)}
 
 
 def init_state(epoch: int) -> RouteState:
@@ -277,6 +297,89 @@ def init_state(epoch: int) -> RouteState:
     未完成的动作要保护，落回实测可达道）。"""
     return RouteState(0.0, 0.0, None, PHASE_KEEP, 0.0, 0.0, 0.0, None, 0, 0,
                       epoch, 0.0, 0.0, 0.0)
+
+
+def _clear_req(s: RouteState) -> RouteState:
+    return replace(s, req_lane=None, req_credit=0.0, req_oid=None,
+                   req_side=0, req_age_s=0.0, req_pause_s=0.0,
+                   req_state="none")
+
+
+def _advance_request(s: RouteState, request: float | None, live: bool,
+                     oid: int | None, p: RouteParams,
+                     step: float) -> RouteState:
+    """推进请求证据一拍（6c）。
+
+    `live=True`：本拍触发源有新鲜读数且可达（选择层已按时间锥筛过）。
+    关 `request_hold` 时逐位复现旧的泄漏计分；打开后，无读数拍在
+    `request_gap_s` 内冻结、不累计；证据/动作都在这里分叉：冻结只能保住
+    已攒的证据，起意门另认 `req_state == "active"`。
+    """
+    if s.phase != PHASE_KEEP:
+        return _clear_req(s)
+    if not p.request_hold:
+        # 旧行为：同侧 +dt、断拍 −dt、换侧重置；不做暂停/意图龄
+        if request is None:
+            credit = max(0.0, s.req_credit - step)
+            keep = credit > 0.0
+            return replace(
+                s, req_lane=s.req_lane if keep else None, req_credit=credit,
+                req_oid=s.req_oid if keep else None,
+                req_side=s.req_side if keep else 0,
+                req_age_s=s.req_age_s + step if keep else 0.0,
+                req_pause_s=0.0,
+                req_state="leak" if keep else "none")
+        req_abs = s.lane_ref + float(request)
+        side = 1 if request > 0 else -1
+        same = req_abs == s.req_lane and side == s.req_side
+        return replace(
+            s, req_lane=req_abs,
+            req_credit=s.req_credit + step if same else step,
+            req_oid=s.req_oid if same and s.req_oid is not None else oid,
+            req_side=side,
+            req_age_s=s.req_age_s + step if same else step,
+            req_pause_s=0.0, req_state="active")
+    # request_hold：丢检冻结、不可达清零、意图超龄清零
+    if request is None:
+        if s.req_lane is None or s.req_credit <= 0.0:
+            return _clear_req(s)
+        pause = s.req_pause_s + step
+        age = s.req_age_s + step
+        if pause > p.request_gap_s + 1e-9 \
+                or age > p.request_intent_age_s + 1e-9:
+            return _clear_req(s)
+        return replace(s,
+                       req_credit=min(s.req_credit,
+                                      p.opportunity_confirm_s),
+                       req_pause_s=pause, req_age_s=age,
+                       req_state="paused")
+    req_abs = s.lane_ref + float(request)
+    side = 1 if request > 0 else -1
+    same = req_abs == s.req_lane and side == s.req_side
+    if not same:                       # 换道/换向：新的意图
+        pause = 0.0 if live else step
+        if not live and pause > p.request_gap_s + 1e-9:
+            return _clear_req(s)
+        return replace(s, req_lane=req_abs,
+                       req_credit=step if live else 0.0,
+                       req_oid=oid, req_side=side,
+                       req_age_s=step, req_pause_s=pause,
+                       req_state="active" if live else "paused")
+    if live:
+        credit, pause, state = s.req_credit + step, 0.0, "active"
+    else:
+        pause = s.req_pause_s + step
+        if pause > p.request_gap_s + 1e-9:
+            return _clear_req(s)
+        credit = min(s.req_credit, p.opportunity_confirm_s)
+        state = "paused"
+    age = s.req_age_s + step
+    if age > p.request_intent_age_s + 1e-9:
+        return _clear_req(s)
+    return replace(s, req_lane=req_abs, req_credit=credit,
+                   req_oid=oid if oid is not None else s.req_oid,
+                   req_side=side, req_age_s=age, req_pause_s=pause,
+                   req_state=state)
 
 
 def _avail_s(c: CoarseLane | None, p: RouteParams) -> float | None:
@@ -380,6 +483,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
                p: RouteParams, *, dt_s: float,
                epoch: int,
                request: float | None = None,
+               request_live: bool = True,
+               request_oid: int | None = None,
                arrival: ArrivalAttribution | None = None,
                reject_shift_arrival: bool = False,
                lane_ttc: dict[int, float] | None = None,
@@ -393,6 +498,10 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     `request`：当拍机会换道请求——**选择层出的是相对承诺道的偏移（±1）**，本层
     是相对→绝对的换算边界，状态里 `req_lane` 存**绝对**目标道（2026-10-27 契约
     冻结）。逐拍刷新，不持久。
+    `request_live`：触发源本拍是否有新鲜读数（6c）。False 时只冻结证据、不
+    加分、不允许起意；`request_oid` 只作诊断与同道换对象连续性。
+    `request_hold`（默认关）：开时无读数在 `request_gap_s` 内冻结，超过或意图
+    年龄超 `request_intent_age_s` 清零；关时逐位复现旧的泄漏计分。
     **请求计分的生命周期**（与换算同批冻结）：① 只有保持态累计与消费——并线中
     机会层不出目标，留着旧进度等于让上一道的判断跨状态生效；② 任何改 `lane_ref`
     的路径（`_start_merge`/`_rebuild`）随承诺道一起清空请求与计分，换算基准
@@ -411,8 +520,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
         # 不等于危险解除，也不等于可以随便动
         if state is None:
             return None, _needs_init(state, epoch, 0.0)
-        st = replace(state, elapsed_s=state.elapsed_s + max(dt_s, 0.0),
-                     req_lane=None, req_credit=0.0)
+        st = _clear_req(replace(state,
+                                elapsed_s=state.elapsed_s + max(dt_s, 0.0)))
         return st, _needs_init(st, epoch, 0.0)
     if state is None:
         s = init_state(epoch)
@@ -431,24 +540,10 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     # 生命周期门（①）：并线中一律不累计——承诺期的机会请求没有来源（选择层
     # 关闭机会层），攒到的分属于上一道。只拒绝本拍不够：旧进度会在完成拍带着
     # 跨状态的分数提前起意（实测 6 拍门被穿到 4 拍），所以失效状态清零。
-    if state.phase != PHASE_KEEP:
-        req_lane, credit = None, 0.0
-    elif request is None:
-        credit = max(0.0, state.req_credit - step)
-        req_lane = state.req_lane if credit > 0.0 else None
-    else:
-        # 相对偏移 → 绝对目标道（契约见函数 docstring）。计分比较一律在绝对
-        # 道号上做，否则承诺道非 0 时"相对 +1"会被当成"绝对 +1"= 当前道，
-        # 机会换道结构上永不成立（实跑 20261027_183143 观测到的 0 触发）。
-        req_abs = state.lane_ref + float(request)
-        if req_abs == state.req_lane:
-            req_lane, credit = req_abs, state.req_credit + step
-        else:
-            # 新请求（含旧请求已清零后重新出现）：从本拍时长起计——计分衡量
-            # 的是「这条机会连续被看见多久」，首拍看见就该算一拍。
-            req_lane, credit = req_abs, step
-    s = replace(state, elapsed_s=clock, v_ref=report.ego_lane,
-                v_est_lane_s=v_est, req_lane=req_lane, req_credit=credit,
+    req_s = _advance_request(state, request, request_live, request_oid, p,
+                             step)
+    s = replace(req_s, elapsed_s=clock, v_ref=report.ego_lane,
+                v_est_lane_s=v_est,
                 cooldown_left_s=max(0.0, state.cooldown_left_s - dt_s))
     by = {c.lane: c for c in report.lanes}
     if epoch != s.epoch:
@@ -470,10 +565,13 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     s = replace(s, blocked_s=(s.blocked_s + step
                               if _known_blocked(cur) else 0.0))
     if s.phase == PHASE_MERGING:
-        return _tick_merging(s, by, p, clock, epoch, arrival,
-                             reject_shift_arrival, step)
-    return _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch,
-                      lane_ttc, passing)
+        st, v = _tick_merging(s, by, p, clock, epoch, arrival,
+                              reject_shift_arrival, step)
+    else:
+        st, v = _tick_keep(s, by, cur, _avail_s(cur, p), p, clock, epoch,
+                           lane_ttc, passing)
+    return st, replace(v, req_state=st.req_state, req_oid=st.req_oid,
+                       req_age_s=st.req_age_s, req_pause_s=st.req_pause_s)
 
 
 def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
@@ -484,7 +582,8 @@ def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
     st = replace(s, lane_ref=k, lane_from=k, lane_target=None,
                  phase=PHASE_KEEP, unsafe_s=0.0, cooldown_left_s=0.0,
                  ban_lane=None, epoch=epoch, merge_started_t=clock,
-                 req_lane=None, req_credit=0.0)
+                 req_lane=None, req_credit=0.0, req_oid=None, req_side=0,
+                 req_age_s=0.0, req_pause_s=0.0, req_state="none")
     return st, RouteVerdict(PHASE_KEEP, k, None, verdict, why,
                             max(0.0, clock - st.decided_t), None,
                             _avail_s(by[k], p), None, 0.0, epoch,
@@ -614,7 +713,12 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         # 机会换道请求（选择层出界目标转来）：现任道确认空闲才让机会主导，
         # 现任被占/无法确认时不归请求管——逃生分支按自己的确认节奏裁决。
         if not _reached(s.req_credit, p.opportunity_confirm_s):
-            why = "scoring"          # 还在攒证据，不是被拒
+            # 6c：无读数冻结时计分不再增长，原因如实报 paused
+            why = ("paused" if p.request_hold and s.req_state == "paused"
+                   else "scoring")   # 还在攒证据，不是被拒
+        elif p.request_hold and s.req_state != "active":
+            # 证据够了但没有当拍有效来源：不允许起意（等下一拍可达）
+            why = "no_reach"
         elif not _clear(cur):
             why = ("pass_hold" if pass_hold
                    else "not_urgent" if not_urgent else "current_unconfirmed")
@@ -668,7 +772,8 @@ def _start_merge(s: RouteState, alt: CoarseLane,
                    lane_target=alt.lane, phase=PHASE_MERGING,
                    decided_t=clock, unsafe_s=0.0,
                    merge_started_t=clock, cooldown_left_s=s.cooldown_left_s,
-                   req_lane=None, req_credit=0.0)
+                   req_lane=None, req_credit=0.0, req_oid=None, req_side=0,
+                   req_age_s=0.0, req_pause_s=0.0, req_state="none")
 
 
 def _needs_init(state: RouteState | None, epoch: int,

@@ -98,9 +98,25 @@ class Obj:
     count: float = 1.0            # 金币枚数（币层排序用）
     conf: float = 1.0
     oid: int = -1
+    # 本拍是否有新鲜读数（False=闭锁保留的上一份读数；只影响请求起意，
+    # 不影响可达性/安全判断）。
+    seen: bool = True
     # 车是否可进安全判断（对象表 safety_ok）。只对 kind=car 有意义：擦边、
     # 让位、占用检查读它；预置等价值项不看。
     safe: bool = True
+
+
+@dataclass(frozen=True)
+class PendingReq:
+    """越线请求（相对承诺道 ±1）＋触发身份与当拍读数标志。
+
+    `live=False`：触发对象本拍没有新鲜读数（闭锁保留的上一份），证据可以
+    继续冻结，但不能作为起意拍——起意只认当拍有效来源。
+    """
+
+    lane: float
+    oid: int | None = None
+    live: bool = True
 
 
 @dataclass(frozen=True)
@@ -174,6 +190,9 @@ class SelectionReport:
     # 越界机会目标 → 换道请求（道，相对承诺道；None=无请求）。
     # 给了 commit_x_m 时跨车道线的目标不再直接拽，改发请求。
     lane_request: float | None = None
+    # 请求的当拍读数标志与触发身份（6c）：live=False 只能冻结证据、不能起意。
+    req_live: bool = True
+    req_oid: int | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +232,9 @@ class SelectionParams:
     switch_dwell_s: float = 0.2
     layer_dwell: bool = False
     event_replan: bool = False
+    # 6c）：开时多个候选里优先选有当拍读数的那个，避免闭锁保留源挡住
+    # 同一道上的有效来源；关闭时逐位保持旧的"第一个合格候选"次序。
+    request_hold: bool = False
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
     # 车道内安全区间的车身余量（道）：车心可在车道中心 ±(0.5−半宽−余量)
@@ -325,13 +347,13 @@ def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
                  road: RoadFrame, ego: float,
                  p: SelectionParams,
                  commit_x: float | None = None,
-                 ) -> tuple[tuple[float, float, str] | None, float | None]:
+                 ) -> tuple[tuple[float, float, str] | None, PendingReq | None]:
     """返回 (本拍可执行目标, 换道请求)——**两者可以都为 None**。
 
     出跨度的奖励车只产请求、不占目标位：占着目标位就等于把后面的擦边/让位
     层整拍屏蔽（一辆本拍根本撞不到的邻道奖励车取消掉让位动作＝撞车）。"""
     sp = _lane_span(commit_x, p, road) if commit_x is not None else None
-    pending: float | None = None
+    pending: PendingReq | None = None
     for r in sorted(rewards, key=lambda o: (o.t if o.t is not None else math.inf)):
         if r.t is None or not (0.0 <= r.t <= p.horizon_s):
             continue
@@ -341,9 +363,12 @@ def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
         if sp is not None and not _in_interval(r.x, sp):
             # 奖励车在隔壁道：本拍不拽过去（撞它得先站对道），发换道请求
             req_x = _req_lane(r.x, commit_x, p)
-            if pending is None and req_x is not None and \
-                    not _blocked(cars, r.x, r.t, p) and _reachable(r.x, ego, r.t, p):
-                pending = req_x
+            if req_x is not None and not _blocked(cars, r.x, r.t, p) \
+                    and _reachable(r.x, ego, r.t, p):
+                cand = PendingReq(req_x, None if r.oid < 0 else r.oid, r.seen)
+                if pending is None or (p.request_hold
+                                       and not pending.live and cand.live):
+                    pending = cand
             continue
         if abs(x - ego) > p.reward_aligned_lane * p.lane_w_m \
                 and not _reachable(x, ego, r.t, p):
@@ -410,13 +435,13 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
                road: RoadFrame, ego: float,
                p: SelectionParams,
                commit_x: float | None = None,
-               ) -> tuple[tuple[float, float, str] | None, float | None]:
+               ) -> tuple[tuple[float, float, str] | None, PendingReq | None]:
     """返回 (本拍可执行目标, 换道请求)，口径同 `_pick_reward`。"""
     cands = [c for c in coins
              if c.t is not None and 0.0 <= c.t <= p.horizon_s]
     cands.sort(key=lambda o: (-max(o.count, 3.0) * o.conf, o.t))
     sp = _lane_span(commit_x, p, road) if commit_x is not None else None
-    pending: float | None = None
+    pending: PendingReq | None = None
     for c in cands:
         # 资格只由时间锥与相邻请求决定：3 秒内横移不过去的目标会被
         # _reachable 拒掉，不再先按固定横距门砍一刀。无承诺道（离线/闸关）
@@ -435,9 +460,11 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
             # 目标点（已按车身带收过）仍在承诺道外：本拍不拽（拽一半停在
             # 两道中间是这条门的来由），按到站时间发出换道请求
             req_x = _req_lane(x, commit_x, p)
-            if pending is None and req_x is not None and \
-                    _reachable(x, ego, c.t, p):
-                pending = req_x
+            if req_x is not None:
+                cand = PendingReq(req_x, None if c.oid < 0 else c.oid, c.seen)
+                if pending is None or (p.request_hold
+                                       and not pending.live and cand.live):
+                    pending = cand
             continue
         return (x, c.t, "coin"), pending
     return None, pending
@@ -447,14 +474,14 @@ def _preposition_target(rewards: Sequence[Obj], cars: Sequence[Obj],
                         coins: Sequence[Obj], road: RoadFrame, ego: float,
                         p: SelectionParams,
                         commit_x: float | None = None,
-                        ) -> tuple[float, float | None] | None:
+                        ) -> tuple[float, PendingReq | None] | None:
     """短视界外的机会侧（预置位用）：取层级最高、同层最早到站的一个。"""
     if not p.preposition_enabled:
         return None
     lo, hi = p.horizon_s, p.preposition_horizon_s
     max_off = p.preposition_max_lane * p.lane_w_m
     sp = _lane_span(commit_x, p, road) if commit_x is not None else None
-    best: tuple[int, float, float] | None = None
+    best: tuple[int, float, float, Obj] | None = None
     for layer, objs in ((1, rewards), (2, cars), (3, coins)):
         for o in objs:
             if o.t is None or not math.isfinite(o.t) or not (lo < o.t <= hi):
@@ -466,7 +493,7 @@ def _preposition_target(rewards: Sequence[Obj], cars: Sequence[Obj],
                 continue
             if best is None or layer < best[0] \
                     or (layer == best[0] and o.t < best[1]):
-                best = (layer, o.t, x)
+                best = (layer, o.t, x, o)
     if best is None:
         return None
     x = best[2]
@@ -474,7 +501,10 @@ def _preposition_target(rewards: Sequence[Obj], cars: Sequence[Obj],
     # 在本道位置上，为它并到隔壁道＝跟到一辆车后面排队。
     req = None
     if sp is not None and best[0] != 2 and not _in_interval(x, sp):
-        req = _req_lane(x, commit_x, p)
+        lane = _req_lane(x, commit_x, p)
+        if lane is not None:
+            o = best[3]
+            req = PendingReq(lane, None if o.oid < 0 else o.oid, o.seen)
     return x, req
 
 
@@ -590,7 +620,7 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
     if not road.ok:
         return SelectionReport(0, (), ego, "hold:no_road", False, False)
     iv = _lane_interval(commit_x_m, p, road) if commit_x_m is not None else None
-    req: float | None = None
+    req: PendingReq | None = None
     if not committed:
         # 字典序裁决的是「本拍跟谁」：出跨度的机会只留下请求、不占目标位。
         # 若让它占位，后面的擦边/让位整拍不被调用（一辆本拍撞不到的邻道奖励
@@ -613,7 +643,10 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
             carried = req if why != "pass" else None
             return SelectionReport(
                 layer, _waypoints(layer, x, t, cars, coins, road, ego, p),
-                x, why, True, True, carried)
+                x, why, True, True,
+                None if carried is None else carried.lane,
+                req_live=carried is None or carried.live,
+                req_oid=None if carried is None else carried.oid)
     x, why, maneuver = _center_target(road, ego, p, coarse_lane)
     pre = None if committed else _preposition_target(
         rewards, cars, coins, road, ego, p, commit_x_m)
@@ -626,14 +659,17 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
         x = road.clamp(x, p.wall_margin_lane * p.lane_w_m)
     if iv is not None and req is not None:
         # 越线请求挂着：本拍目标贴向请求侧的区间边界——同向准备、不起程。
-        x = iv[1] if req > 0 else iv[0]
+        x = iv[1] if req.lane > 0 else iv[0]
     if iv is not None:
         x = _edge_of(x, iv)
     if committed:
         return SelectionReport(4, (Waypoint(p.horizon_s, x, "commit"),),
                                x, "commit", True, maneuver)
     return SelectionReport(4, (Waypoint(p.horizon_s, x, "center"),),
-                           x, why, True, maneuver, req)
+                           x, why, True, maneuver,
+                           None if req is None else req.lane,
+                           req_live=req is None or req.live,
+                           req_oid=None if req is None else req.oid)
 
 
 class LayeredSelector:
@@ -717,7 +753,8 @@ class LayeredSelector:
                     self._target = x
                     held = SelectionReport(
                         3, (Waypoint(0.0, x, "coin_hold"),), x,
-                        "coin_hold", True, True, raw.lane_request)
+                        "coin_hold", True, True, raw.lane_request,
+                        req_live=raw.req_live, req_oid=raw.req_oid)
                     self.last = held
                     return held
         if self._layer is None:
@@ -741,7 +778,8 @@ class LayeredSelector:
                     wps = [Waypoint(p.horizon_s, target, raw.why)]
                 held = SelectionReport(
                     raw.layer, tuple(wps), target, raw.why, raw.road_ok,
-                    raw.maneuver, raw.lane_request)
+                    raw.maneuver, raw.lane_request,
+                    req_live=raw.req_live, req_oid=raw.req_oid)
                 self.last = held
                 return held
         if raw.layer != self._layer:
@@ -759,7 +797,8 @@ class LayeredSelector:
                 return self._adopt(raw)
             held = SelectionReport(
                 self._layer, raw.waypoints, self._target, raw.why,
-                raw.road_ok, raw.maneuver, raw.lane_request)
+                raw.road_ok, raw.maneuver, raw.lane_request,
+                req_live=raw.req_live, req_oid=raw.req_oid)
             self.last = held
             return held
         self._dwell_layer = None
@@ -782,5 +821,6 @@ class LayeredSelector:
         # 未到驻留：保持现任目标，路点/层仍用本拍结果（trace 可见）
         held = SelectionReport(raw.layer, raw.waypoints, self._target,
                                raw.why, raw.road_ok, raw.maneuver,
-                               raw.lane_request)
+                               raw.lane_request,
+                               req_live=raw.req_live, req_oid=raw.req_oid)
         return held

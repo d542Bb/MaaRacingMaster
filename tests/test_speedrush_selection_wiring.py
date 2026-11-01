@@ -384,3 +384,79 @@ def test_event_replan_engine_small_step_on_target_jump():
     on = run(True)
     assert off == pytest.approx(0.33, abs=0.03)
     assert on == pytest.approx(0.23, abs=0.03)
+
+
+# ---------- 6b 资格闭锁 / 6c 请求读数位 ----------
+
+def _bonus(fid_seen, *, x=1.4, oid=900):
+    return TrackedTarget(
+        id=oid, kind="bonus", x_lane=x, x_sigma=0.1, cy=500, w=30, h=30,
+        conf=0.99, rel_approach=1.5, first_seen_fid=1,
+        last_seen_fid=fid_seen, validity_until_fid=99)
+
+
+def test_eligibility_latch_holds_a_dropped_reward_for_selection_only():
+    """闭锁只把"暂时没有读数"的奖励车留给选择层，不给场景/计划。"""
+    cfg = replace(CFG, selection=replace(CFG.selection,
+                                         eligibility_latch=True))
+    eng = DecisionEngine(cfg)
+    for fid in range(1, 5):                 # 过 min_obs_ticks=3
+        eng.update(_obs(fid, targets=(_bonus(fid),)), 0.05,
+                   executed_lane=0.0, corridor=_corridor())
+    assert eng.selection_debug["src_elig"]["rw_sel"] == [[900, True, "pixel"]]
+    # 丢检：横位没有读数（no_x），闭锁保留上一份
+    eng.update(_obs(5, targets=(_bonus(5, x=None),)), 0.05,
+               executed_lane=0.0, corridor=_corridor())
+    elig = eng.selection_debug["src_elig"]
+    assert [900, False, "held"] in elig["rw_sel"]
+    assert elig["rw_rej"]["900"] == "no_x"
+    # 保留源不进计划场景（场景只吃当拍源）
+    assert all(o.id != 900 for o in eng.scene.objs)
+    # 超过 0.3 s 释放
+    for fid in range(6, 13):
+        eng.update(_obs(fid, targets=(_bonus(5, x=None),)), 0.05,
+                   executed_lane=0.0, corridor=_corridor())
+    assert not [x for x in eng.selection_debug["src_elig"]["rw_sel"]
+                if x[0] == 900]
+
+
+def test_request_reports_whether_the_source_is_live():
+    """请求带当拍读数位：未见本人的奖励车仍可发请求，但 live=False。"""
+    eng = DecisionEngine(CFG)
+    eng.update(_obs(4, targets=(_bonus(1),)), 0.05,
+               executed_lane=0.0, corridor=_corridor())
+    rep = eng.selection_report
+    assert rep.lane_request == 1.0
+    assert rep.req_live is False and rep.req_oid == 900
+    eng.update(_obs(5, targets=(_bonus(5),)), 0.05,
+               executed_lane=0.0, corridor=_corridor())
+    assert eng.selection_report.req_live is True
+
+
+def test_latch_and_request_hold_confirm_through_dropouts():
+    """每 3 拍丢检的奖励车：闭锁保住证据、请求保持冻结，最终在可达拍起意。"""
+    cfg = replace(CFG,
+                  selection=replace(CFG.selection, eligibility_latch=True),
+                  route=replace(CFG.route, request_hold=True))
+    eng = DecisionEngine(cfg)
+    started = False
+    paused_seen = False
+    for fid in range(1, 31):
+        drop = fid % 3 == 0
+        b = _bonus(fid - 1 if drop else fid, x=None if drop else 1.4)
+        req_live = eng._route_req_live       # 本拍路线将消费的请求读数位
+        eng.update(_obs(fid, targets=(b,)), 0.05,
+                   executed_lane=0.0, corridor=_corridor())
+        rt = eng.route_verdict
+        # 请求延迟一拍消费：丢检拍本身不新增，下一拍看到 paused
+        if rt.req_state == "paused":
+            paused_seen = True
+        if drop and rt.credit:
+            assert [900, False, "held"] in \
+                eng.selection_debug["src_elig"]["rw_sel"]
+        if rt.verdict == "merge_start":
+            assert rt.why == "opportunity"
+            assert req_live is True         # 起意只认当拍有效来源
+            started = True
+            break
+    assert started and paused_seen

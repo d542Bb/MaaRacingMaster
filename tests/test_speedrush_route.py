@@ -922,3 +922,114 @@ def test_confirm_window_counts_time_not_ticks():
         assert v.verdict == "keep" and v.why == "scoring"
     s, v = tick_route(s, _rep(0.0, 0.0), P, dt_s=dt, epoch=0, request=1.0)
     assert v.verdict == "merge_start" and v.why == "opportunity"
+
+
+# ---------- 请求证据/动作两位（第 6 期 6c） ----------
+
+PH = replace(P, request_hold=True)
+
+
+def _tick_hold(state, request, live=True, oid=None, p=PH, dt=DT):
+    return tick_route(state, _rep(0.0, 0.0), p, dt_s=dt, epoch=0,
+                      request=request, request_live=live, request_oid=oid)
+
+
+def test_request_hold_freezes_short_dropouts():
+    """丢检 1~2 拍冻结证据；恢复后接着攒满门槛（不要求重新来一遍）。"""
+    s, _ = _tick_hold(None, None)
+    for _ in range(3):
+        s, v = _tick_hold(s, 1.0, oid=7)
+    assert v.credit == pytest.approx(3 * DT) and v.req_state == "active"
+    for _ in range(2):
+        s, v = _tick_hold(s, None)
+        assert v.credit == pytest.approx(3 * DT)
+        assert v.req_state == "paused" and v.why == "paused"
+    for i in range(3):
+        s, v = _tick_hold(s, 1.0, oid=7)
+    assert v.verdict == "merge_start" and v.why == "opportunity"
+
+
+def test_request_hold_resets_after_gap_exceeds_limit():
+    """无读数超过 request_gap_s 清零：断供前后的证据不拼成一次确认。"""
+    s, _ = _tick_hold(None, None)
+    for _ in range(4):
+        s, v = _tick_hold(s, 1.0)
+    assert v.credit == pytest.approx(4 * DT)
+    for _ in range(4):                  # 0.20 s：仍在上限内
+        s, v = _tick_hold(s, None)
+    assert v.req_state == "paused" and v.credit == pytest.approx(4 * DT)
+    s, v = _tick_hold(s, None)          # 0.25 s：超限
+    assert v.req_state == "none" and v.credit == 0.0 and v.why == "no_request"
+    assert s.req_lane is None
+
+
+def test_request_hold_stale_tick_does_not_accumulate_or_start():
+    """无当拍读数的拍只冻结：不能加分，也不能起意。"""
+    s, _ = _tick_hold(None, None)
+    for _ in range(4):
+        s, v = _tick_hold(s, 1.0)
+    s, v = _tick_hold(s, 1.0, live=False)
+    assert v.credit == pytest.approx(4 * DT) and v.req_state == "paused"
+    assert v.verdict == "keep"
+    for _ in range(2):
+        s, v = _tick_hold(s, 1.0)
+    assert v.verdict == "merge_start"
+
+
+def test_request_hold_blocks_start_without_live_source():
+    """证据已满但本拍无有效来源：报 no_reach，不把旧机会推成并线。"""
+    s = replace(init_state(0), req_lane=1.0,
+                req_credit=PH.opportunity_confirm_s, req_side=1,
+                req_age_s=0.1, req_pause_s=0.05)
+    s, v = _tick_hold(s, 1.0, live=False)
+    assert v.verdict == "keep" and v.why == "no_reach"
+    assert v.req_state == "paused"
+    s, v = _tick_hold(s, 1.0, live=True)
+    assert v.verdict == "merge_start" and v.why == "opportunity"
+
+
+def test_request_hold_resets_on_side_switch():
+    """换向是新意图：左右各攒一半不能拼成一次确认。"""
+    s, _ = _tick_hold(None, None)
+    for _ in range(4):
+        s, v = _tick_hold(s, 1.0)
+    s, v = _tick_hold(s, -1.0)
+    assert v.credit == pytest.approx(DT) and v.req_state == "active"
+    assert s.req_lane == -1.0 and s.req_side == -1
+
+
+def test_request_hold_keeps_credit_across_same_lane_object_switch():
+    """同道同向换对象不清零（身份只用于诊断），起意仍需当拍有效来源。"""
+    s, _ = _tick_hold(None, None)
+    for _ in range(4):
+        s, v = _tick_hold(s, 1.0, oid=1)
+    s, v = _tick_hold(s, 1.0, oid=2)
+    assert v.credit == pytest.approx(5 * DT) and s.req_oid == 2
+    assert v.verdict == "keep"
+    s, v = _tick_hold(s, 1.0, oid=2)
+    assert v.verdict == "merge_start" and v.why == "opportunity"
+    assert v.req_state == "none"          # 起意即清请求状态
+
+
+def test_request_hold_intent_age_caps_stale_evidence():
+    """同一意图超过 request_intent_age_s 清零，即使来源一直可达。"""
+    p = replace(PH, opportunity_confirm_s=1.0, request_intent_age_s=0.3)
+    s, _ = _tick_hold(None, None, p=p)
+    for _ in range(6):
+        s, v = _tick_hold(s, 1.0, p=p)
+        assert v.verdict == "keep"
+    s, v = _tick_hold(s, 1.0, p=p)      # 0.35 s > 0.30 s
+    assert v.req_state == "none" and v.credit == 0.0
+
+
+def test_request_gap_is_time_based_at_62_5ms():
+    """62.5 ms 节拍：3 拍无读数=0.1875 s 冻结，4 拍=0.25 s 清零。"""
+    dt = 0.0625
+    s, _ = _tick_hold(None, None, dt=dt)
+    for _ in range(3):
+        s, v = _tick_hold(s, 1.0, dt=dt)
+    for _ in range(3):
+        s, v = _tick_hold(s, None, dt=dt)
+        assert v.req_state == "paused"
+    s, v = _tick_hold(s, None, dt=dt)
+    assert v.req_state == "none" and v.credit == 0.0

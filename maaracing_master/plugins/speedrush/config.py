@@ -43,6 +43,10 @@ class Selection:
     layer_dwell: bool = False
     # 事件触发重算（4c）：无输入事件时目标 0.1 道/拍小步修正。
     event_replan: bool = False
+    # 资格闭锁（6b）：得分源按对象身份保留最近读数；只处理"暂时没有读数"，
+    # 不锁可达性，也不进安全消费点/计划场景。
+    eligibility_latch: bool = False
+    eligibility_hold_s: float = 0.3
     max_waypoints: int = 4
     graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
@@ -452,6 +456,10 @@ class Route:
     pass_hold: bool = True           # 超车动作进行中不抢方向（见 RouteParams）
     overtake: bool = True            # 提前超车并线（见 RouteParams）
     overtake_ttc_s: float = 2.5      # 提前超车的到站时间上界（秒）
+    # 请求证据/动作两位（6c）：证据按时长累计、丢检冻结，起意只认当拍可达来源。
+    request_hold: bool = False
+    request_gap_s: float = 0.2       # 无读数冻结上限（秒）
+    request_intent_age_s: float = 1.0  # 同一意图的最长寿命（秒）
 
 
 @dataclass(frozen=True)
@@ -828,6 +836,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "layer_dwell", default=False),
             event_replan=_bool(
                 d, "selection", "event_replan", default=False),
+            eligibility_latch=_bool(
+                d, "selection", "eligibility_latch", default=False),
+            eligibility_hold_s=_num_def(
+                d, "selection", "eligibility_hold_s", 0.3, lo=0),
             max_waypoints=_int_def(d, "selection", "max_waypoints", 4,
                                    lo=1, hi=4),
             graze_gap_lane=_num_def(d, "selection", "graze_gap_lane", 0.68,
@@ -899,7 +911,14 @@ def _read_decision(path: Path) -> DecisionConfig:
             pass_hold=_bool(d, "route", "pass_hold", default=True),
             overtake=_bool(d, "route", "overtake", default=True),
             overtake_ttc_s=_num_def(
-                d, "route", "overtake_ttc_s", 2.5, lo=0)),
+                d, "route", "overtake_ttc_s", 2.5, lo=0),
+            request_hold=_bool(
+                d, "route", "request_hold", default=False),
+            request_gap_s=_num_def(
+                d, "route", "request_gap_s", 0.2, lo=0, lo_open=False),
+            request_intent_age_s=_num_def(
+                d, "route", "request_intent_age_s", 1.0, lo=0,
+                lo_open=False)),
         geometry=Geometry(
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),

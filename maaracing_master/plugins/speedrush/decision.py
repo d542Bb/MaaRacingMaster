@@ -24,7 +24,7 @@ CONSERVE 保持+禁变道 / FAULT 纯直行。
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from maaracing_master.plugins.speedrush.coarse import (
     CoarseParams, CoarseReport, choose_lane)
@@ -432,6 +432,7 @@ class DecisionEngine:
             switch_dwell_s=s.switch_dwell_s,
             layer_dwell=s.layer_dwell,
             event_replan=s.event_replan,
+            request_hold=cfg.route.request_hold,
             car_half_lane=s.car_half_lane,
             ego_half_lane=s.ego_half_lane,
             lane_clearance_lane=s.lane_clearance_lane))
@@ -483,7 +484,10 @@ class DecisionEngine:
             merge_safe_ttc_s=r.merge_safe_ttc_s,
             pass_hold=r.pass_hold,
             overtake=r.overtake,
-            overtake_ttc_s=r.overtake_ttc_s)
+            overtake_ttc_s=r.overtake_ttc_s,
+            request_hold=r.request_hold,
+            request_gap_s=r.request_gap_s,
+            request_intent_age_s=r.request_intent_age_s)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
         # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，
@@ -493,6 +497,8 @@ class DecisionEngine:
         self._position: ArrivalAttribution | None = None
         # 上拍选择层越线请求（道，相对粗层原点）；逐拍刷新，喂 route 裁决
         self._route_req: float | None = None
+        self._route_req_live = True      # 6c：触发源本拍是否有新鲜读数
+        self._route_req_oid: int | None = None
         self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）
         self._ruler_prev: float | None = None   # 上一拍尺子（米，场景帧 z=0）
         self._ruler_exec_prev: float | None = None  # 上一拍 executed（道，右正）
@@ -527,6 +533,12 @@ class DecisionEngine:
         self._car_x_hold: dict[int, tuple[float, int]] = {}
         # 金币组到站时间记忆（gid → (t, fid)）：同组只允许时间递减
         self._coin_t_mem: dict[int, tuple[float, int]] = {}
+        # 6b 资格闭锁：按对象身份保留最近一次可用读数（键=(kind,id)）。
+        self._elig_latch: dict[tuple[str, int],
+                               tuple[int, BonusSource | CoinSource]] = {}
+        self._bonus_reasons: dict[int, str | None] = {}
+        self._coin_reasons: dict[int, str | None] = {}
+        self._src_elig: dict | None = None
         self._fid = 0
         self._fps: float | None = None
         self._scene = None
@@ -553,6 +565,8 @@ class DecisionEngine:
         self._shadow_verdict = None
         self._position = None
         self._route_req = None
+        self._route_req_live = True
+        self._route_req_oid = None
         self._route_epoch = 0
         self._ruler_prev = None
         self._ruler_exec_prev = None
@@ -568,6 +582,10 @@ class DecisionEngine:
         self._car_zf.clear()
         self._car_x_hold.clear()
         self._coin_t_mem.clear()
+        self._elig_latch.clear()
+        self._bonus_reasons.clear()
+        self._coin_reasons.clear()
+        self._src_elig = None
         self._objects.reset()
         self._stage = None
         self._lane_map.reset()
@@ -766,26 +784,81 @@ class DecisionEngine:
             return 0.0
         return max(0, self._fid - last_fid) / self._fps * 1000.0
 
+    def _source_fid(self, s, now: int) -> int:
+        """源最近一次有读数的帧号（闭锁龄的起点）。"""
+        if s.seen:
+            return now
+        if self._fps and getattr(s, "age_ms", 0.0):
+            return now - int(round(float(s.age_ms) / 1000.0 * self._fps))
+        return now
+
+    def _latch_sources(self, kind: str, sources, reasons,
+                       obs: WorldObservation) -> list:
+        """6b 资格闭锁：按身份保留最近读数，只处理"暂时没有读数"。
+
+        只给选择层用（不写回场景/计划/安全）；`seen=False` 的保留源仍按最后
+        一份读数参与可达性判断，但请求起意要求当拍有效来源（route 层判）。
+        资格判据本身（不接近/太年轻/置信不足）过期就移出闭锁。
+        """
+        if not self.cfg.selection.eligibility_latch:
+            return sources
+        hold_ms = self.cfg.selection.eligibility_hold_s * 1000.0
+        now = obs.frame_id
+        cur = set()
+        for s in sources:
+            if s.id is None:
+                continue
+            cur.add(s.id)
+            prev = self._elig_latch.get((kind, s.id))
+            # 近场/组源优先于远场粗源：同一身份只留一条
+            if prev is not None and prev[1].src != "far" and s.src == "far":
+                continue
+            self._elig_latch[(kind, s.id)] = (self._source_fid(s, now), s)
+        out = list(sources)
+        holdable = ("no_x", "no_t") if kind == "bonus" else ("nan_x", "no_t")
+        for key, (fid, s) in list(self._elig_latch.items()):
+            k, oid = key
+            if k != kind:
+                continue
+            reason = reasons.get(oid)
+            if reason is not None and reason not in holdable:
+                self._elig_latch.pop(key, None)
+                continue
+            if oid in cur:
+                continue
+            age_ms = self._age_ms(fid)
+            if age_ms > hold_ms + 1e-6:
+                self._elig_latch.pop(key, None)
+                continue
+            out.append(replace(s, seen=False, src="held", age_ms=age_ms))
+        return out
+
     def _coin_sources(self, obs: WorldObservation,
                       executed_lane: float) -> list[CoinSource]:
         """币组 → 选择/收益场源（路心系米）。确认窗与置信地板同源。"""
         lane_w = self.cal.lane_w_m
         coins: list[CoinSource] = []
+        reasons: dict[int, str | None] = {}
         for g in obs.coin_groups:
+            gid = g.group_id
             if g.x_center != g.x_center:
+                reasons.setdefault(gid, "nan_x")
                 continue                        # 存续组 nan 心：不入账
             if self.cfg.corridor_reach.coin_confirm_ticks > 1 \
                     and obs.frame_id - g.first_seen_fid \
                     < self.cfg.corridor_reach.coin_confirm_ticks:
+                reasons.setdefault(gid, "confirm")
                 continue                        # 确认窗内不进场（单帧闪烁自卫）
             s = self.scorer.score(g, obs)
             if s is None:
+                reasons.setdefault(gid, "score")
                 continue                        # 置信地板（质量门语义一致）
             # 长币线用组远端起意：近枚先到，但远端还在更久之后；按近枚时间
             # 判可达会系统性晚一拍。收币目标仍是最近一枚（x_center/lead）。
             t_raw = (s.t_far_s if s.t_far_s is not None
                      and math.isfinite(s.t_far_s) else s.t_miss_s)
             if not math.isfinite(t_raw):
+                reasons.setdefault(gid, "no_t")
                 continue
             # 同组时间单调：组里换了更远的一枚时 t 会突增，计划会在
             # 1.5s/3.0s 之间反复进出视界。沿用旧时间并按经过时间前移。
@@ -794,6 +867,7 @@ class DecisionEngine:
                 mem, t_raw, self._age_ms(mem[1]) / 1000.0 if mem else 0.0,
                 self.cfg.motion.coin_time_jump_tol_s)
             self._coin_t_mem[g.group_id] = (t_raw, obs.frame_id)
+            reasons[gid] = None
             coins.append(CoinSource(
                 x_m=(g.x_center + executed_lane) * lane_w,
                 observed_count=g.observed_count, conf=g.conf_min,
@@ -804,37 +878,47 @@ class DecisionEngine:
         for gid in [k for k, (_, f) in self._coin_t_mem.items()
                     if self._age_ms(f) > 1500.0]:
             self._coin_t_mem.pop(gid, None)
+        self._coin_reasons = reasons
         return coins
 
     def _bonus_sources(self, obs: WorldObservation,
                        executed_lane: float) -> list[BonusSource]:
         """奖励车源（近场 + 远场粗源），闸关=空列表。"""
         bonuses: list[BonusSource] = []
+        reasons: dict[int, str | None] = {}
         if self.cfg.corridor_reach.bonus_value:
             lane_w = self.cal.lane_w_m
             for b in obs.targets:
                 if b.kind != KIND_BONUS:
                     continue
+                oid = b.id
                 if obs.frame_id - b.first_seen_fid < self.cfg.traffic.min_obs_ticks:
+                    reasons.setdefault(oid, "young")
                     continue                    # track 年龄门槛：单帧噪声进不了评分
                 if b.rel_approach <= 0.0:
+                    reasons.setdefault(oid, "not_approach")
                     continue                    # 不接近=永远撞不上
                 if b.x_lane is None or b.x_lane != b.x_lane:
+                    reasons.setdefault(oid, "no_x")
                     continue                    # 横位缺位/存续 nan：不入账
                 t_miss = self.scorer.car_t_meet_s(b.rel_approach, b.cy)
                 if not math.isfinite(t_miss):
+                    reasons.setdefault(oid, "no_t")
                     continue                    # 到站仪器无解：不追
+                reasons[oid] = None
                 bonuses.append(BonusSource(
                     x_m=(b.x_lane + executed_lane) * lane_w,
                     t_miss_s=t_miss, conf=b.conf,
                     age_ms=self._age_ms(b.last_seen_fid),
                     id=b.id, seen=(b.last_seen_fid == obs.frame_id)))
-            bonuses.extend(self._reach_bonus_far_sources(obs, executed_lane))
-        self._bonus_src = len(bonuses)
+            bonuses.extend(self._reach_bonus_far_sources(obs, executed_lane,
+                                                         reasons))
+        self._bonus_reasons = reasons
         return bonuses
 
     def _reach_bonus_far_sources(self, obs: WorldObservation,
-                                 executed_lane: float) -> list[BonusSource]:
+                                 executed_lane: float,
+                                 reasons: dict[int, str | None]) -> list[BonusSource]:
         """远场奖励车粗源（R5 §10.1）：far_targets（横位缺位、弱读带）走
         x_lane_of 同一公式真源读粗横位，夹进走廊 band edges 并集（米→道，
         误差被路宽兜住），到站走 car_t_meet_s 同一仪器链，每源宽容差
@@ -852,24 +936,31 @@ class DecisionEngine:
         for b in obs.far_targets:
             if b.kind != KIND_BONUS:
                 continue
+            oid = b.id
             if obs.frame_id - b.first_seen_fid < self.cfg.traffic.min_obs_ticks:
+                reasons.setdefault(oid, "young")
                 continue                        # track 年龄门槛：同近场源
             if b.rel_approach <= 0.0:
+                reasons.setdefault(oid, "not_approach")
                 continue                        # 不接近=永远撞不上
             d = b.cy - self.cal.y_h
             if d <= 0:
+                reasons.setdefault(oid, "horizon")
                 continue                        # 地平线上：公式分母退化（构造端已弃，防御）
             # 粗横位吃框底边（cy+h/2=地面触点代理）：平台是抬升物体，框中心
             # 比触点更贴地平线，X/H 按 ground 平面投影会系统性放大横位；
             # 到站仍吃框心（与 rel_approach 同一 tracked 点，同近场源）
             x_coarse = x_lane_of(b.cx, b.cy + b.h // 2, self.cal)
             if not math.isfinite(x_coarse):
+                reasons.setdefault(oid, "no_x")
                 continue                        # 粗读无解：不入账
             if span is not None:
                 x_coarse = min(max(x_coarse, span[0]), span[1])   # 夹进走廊路缘
             t_miss = self.scorer.car_t_meet_s(b.rel_approach, b.cy)
             if not math.isfinite(t_miss):
+                reasons.setdefault(oid, "no_t")
                 continue                        # 到站仪器无解：不追
+            reasons[oid] = None
             out.append(BonusSource(
                 x_m=(x_coarse + executed_lane) * lane_w,
                 t_miss_s=t_miss, conf=b.conf, src="far",
@@ -1130,6 +1221,8 @@ class DecisionEngine:
             self._sel_dbg = None
             self._coarse = None
             self._route_req = None
+            self._route_req_live = True
+            self._route_req_oid = None
             # 路线时钟继续走（deadline 不会因为盲窗被冻结成假宽限）
             self._tick_route(executed=executed)
             return "sel:hold:state_unverified"
@@ -1219,6 +1312,8 @@ class DecisionEngine:
             self._sel_dbg = None
             self._coarse = None
             self._route_req = None
+            self._route_req_live = True
+            self._route_req_oid = None
             # 无车道级证据拍：路线不推进，时钟继续走
             self._tick_route(executed=executed)
             return "sel:hold:no_road"
@@ -1233,6 +1328,8 @@ class DecisionEngine:
             self._sel_dbg = None
             self._coarse = None
             self._route_req = None
+            self._route_req_live = True
+            self._route_req_oid = None
             # 无车道级证据拍：路线不推进，时钟继续走
             self._tick_route(executed=executed)
             return "sel:hold:no_road"
@@ -1240,9 +1337,31 @@ class DecisionEngine:
         reward_src = self._bonus_sources(obs, executed)
         car_src = self._reach_car_sources(executed)
         coin_src = self._coin_sources(obs, executed)
+        # 6b 闭锁只改选择输入：场景/计划/安全仍用当拍源，保留源带 seen=False。
+        reward_sel = self._latch_sources("bonus", reward_src,
+                                         self._bonus_reasons, obs)
+        coin_sel = self._latch_sources("coin", coin_src,
+                                       self._coin_reasons, obs)
+        self._bonus_src = len(reward_sel)
+        if self.cfg.selection.eligibility_latch:
+            self._src_elig = {
+                "rw_cur": [b.id for b in reward_src if b.id is not None],
+                "rw_sel": [[b.id, bool(b.seen), b.src]
+                           for b in reward_sel if b.id is not None],
+                "coin_cur": [c.id for c in coin_src if c.id is not None],
+                "coin_sel": [[c.id, bool(c.seen), c.src]
+                             for c in coin_sel if c.id is not None],
+                "rw_rej": {str(k): v for k, v in self._bonus_reasons.items()
+                           if v is not None},
+                "coin_rej": {str(k): v for k, v in self._coin_reasons.items()
+                             if v is not None},
+            }
+        else:
+            self._src_elig = None
         rewards = [Obj("reward", b.x_m - origin, b.t_miss_s,
-                       conf=b.conf, oid=-1 if b.id is None else b.id)
-                   for b in reward_src]
+                       conf=b.conf, oid=-1 if b.id is None else b.id,
+                       seen=bool(b.seen))
+                   for b in reward_sel]
         cars = [Obj("car",
                     c.x_m - origin - (road.center_at(
                         c.z_m - CAM_Z_DATUM_M)
@@ -1253,8 +1372,9 @@ class DecisionEngine:
                 for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
                      count=c.observed_count, conf=c.conf,
-                     oid=-1 if c.id is None else c.id)
-                 for c in coin_src]
+                     oid=-1 if c.id is None else c.id,
+                     seen=bool(c.seen))
+                 for c in coin_sel]
         corr_ages = [b.age_ms for b in road.bands if b.age_ms is not None]
         lw = self.cal.lane_w_m
         # 选择帧 → 规划器路心帧：选择帧原点已是 master，frame_shift 只需
@@ -1293,7 +1413,9 @@ class DecisionEngine:
         # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
         # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。
-        self._tick_route(c0, executed, request=self._route_req)
+        self._tick_route(c0, executed, request=self._route_req,
+                         request_live=self._route_req_live,
+                         request_oid=self._route_req_oid)
         # 并线承诺期：路线已定目标道，选择层只能在这个道上做维护性修正。
         # 机会层（奖励车/擦边/金币）与预置偏移在此关闭——承诺期的目标被
         # 机会改道就是静默换道（契约 §4/§5）。
@@ -1354,6 +1476,8 @@ class DecisionEngine:
             snapshot=lambda: _sel_objects_trace(
                 rewards, cars, coins, ego_m, lw))
         self._route_req = rep.lane_request if self.cfg.route.control else None
+        self._route_req_live = bool(rep.req_live)
+        self._route_req_oid = rep.req_oid
         self._sel_report = rep
         self._sel_ego_m = ego_m
         self._sel_maneuver = rep.maneuver
@@ -1399,6 +1523,8 @@ class DecisionEngine:
             "opp": {"rw": _opp_aux(rewards, ego_m, self.selector.p),
                     "car": _opp_aux(cars, ego_m, self.selector.p),
                     "coin": _opp_aux(coins, ego_m, self.selector.p)},
+            # 6b 资格闭锁观测面：当拍源 / 闭锁后选择输入 / 拒绝原因
+            "src_elig": self._src_elig,
         }
         self._reach_goal = rep.target_x_m
         if rep.layer == 0:
@@ -1484,7 +1610,9 @@ class DecisionEngine:
 
     def _tick_route(self, c0: float | None = None,
                     executed: float | None = None,
-                    request: float | None = None) -> None:
+                    request: float | None = None,
+                    request_live: bool = True,
+                    request_oid: int | None = None) -> None:
         """推进路线一拍。输入只有原始粗层报告、参考系纪元与上拍越线请求
         （边界 B：承诺值不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。
 
@@ -1501,13 +1629,15 @@ class DecisionEngine:
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
-            request=request, arrival=self._position,
+            request=request, request_live=request_live,
+            request_oid=request_oid, arrival=self._position,
             reject_shift_arrival=self.cfg.route.reject_shift_arrival,
             lane_ttc=lane_ttc, passing=passing)
         self._route_shadow, self._shadow_verdict = tick_route(
             self._route_shadow, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
-            request=request, arrival=self._position,
+            request=request, request_live=request_live,
+            request_oid=request_oid, arrival=self._position,
             reject_shift_arrival=True, lane_ttc=lane_ttc, passing=passing)
 
     def _lane_for_route(self, route: RouteState | None,
