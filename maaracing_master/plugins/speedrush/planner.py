@@ -960,6 +960,11 @@ class LateralPlanner:
             steer_raw = self._pd(self.state.executed_lane, gentle=True)
         elif decision.x_target is not None:
             self._abort_hold_lane = None
+            # 并线承诺 + 车速未知：位置误差直接驱动持续杆值（sustain，见
+            # _law 注）；范围只限并线，保持态仍走原朝向反馈。状态不可信的
+            # 归零兜底（上一分支）不变。
+            sustain = (getattr(decision, "phase", "keep") == "merging"
+                       and self.state.v_mps is None)
             # 场跟随：保持态=维护性定中心（gentle，16:44 局）；机动态
             # （目标距自车足够远）=全权——机动态死区/杆幅另配。选择层
             # maneuver 现在按安全区间（约 0.17 道）置位，但执行层全权仍要求
@@ -977,9 +982,10 @@ class LateralPlanner:
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
                     deadband=self.p.maneuver_deadband_lane,
-                    cap=self.p.maneuver_stick_max)
+                    cap=self.p.maneuver_stick_max, sustain=sustain)
             else:
-                steer_raw = self._pd(decision.x_target, gentle=True)
+                steer_raw = self._pd(decision.x_target, gentle=True,
+                                     sustain=sustain)
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
 
@@ -1338,26 +1344,35 @@ class LateralPlanner:
 
     def _pd(self, target: float, gentle: bool = False,
             deadband: float | None = None,
-            cap: float | None = None) -> float:
+            cap: float | None = None, sustain: bool = False) -> float:
         """延迟补偿前瞻 PD（设计稿 §三）：状态外推到 t+τ 再入环，阻尼项反向。
 
         gentle=维护性转向（定中心/保持车道）：误差过死区才发力、杆幅限
         hold_stick_max（16:44 局：全权维护 PD 满左满右交替、速度起不来）。
         机动态（maneuver）传显式 deadband/cap：默认全权（0/None），阶段 2
-        起用 maneuver_deadband_lane 与 maneuver_stick_max。"""
+        起用 maneuver_deadband_lane 与 maneuver_stick_max。
+        ``sustain``：并线承诺 + 车速未知时按 ψ̂=0、无角速度解（见 _law）。"""
         x_pred = (self.state.executed_lane
                   + self.state.v_lat * self.p.lookahead_tau_s)
-        return self._law(target - x_pred, gentle, deadband, cap)
+        return self._law(target - x_pred, gentle, deadband, cap, sustain)
 
     def _law(self, e: float, gentle: bool, deadband: float | None = None,
-             cap: float | None = None) -> float:
+             cap: float | None = None, sustain: bool = False) -> float:
         """位置误差入环：没有线角证据时按 ``ψ̂=0、无角速度`` 的比例段。
 
         退化不是第二套模型：它仍是同一式子对同一目标的解，只是把未知的
         车头角按 0 处理——线断供的拍里至少还按位置误差修，且不会假装知道
-        车头朝哪。"""
-        return law(e, self.state.heading if not self._heading_stale else 0.0,
-                   self.state.yaw_rate if not self._heading_stale else 0.0,
+        车头朝哪。
+
+        ``sustain``（并线承诺 + 车速未知，20261101_191929#1 对局日志核对）：
+        有线角证据也不进朝向反馈——影子车头角被线角校正拉在实测线角附近、
+        目标固定时不再有新误差 inflow，朝向误差项会把并线命令压塌到真车
+        响应以下的小振荡（实测杆值塌成 ~0.1、并线原地停 5.3 s 后撤销）。
+        此时位置误差直接驱动持续杆值，位置环经 ⑥b 收口；状态不可信的
+        归零兜底不变。"""
+        no_heading = self._heading_stale or sustain
+        return law(e, self.state.heading if not no_heading else 0.0,
+                   self.state.yaw_rate if not no_heading else 0.0,
                    self.p, gentle, deadband, cap, self.state.v_mps)
 
     def _law_psi(self, psi_des: float, cap: float | None = None) -> float:
