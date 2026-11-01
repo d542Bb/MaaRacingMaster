@@ -48,7 +48,7 @@ status: active
 标注为代理；`--speed const --speed-value 35/45` 做速度敏感性对照。
 
 ```bat
-.venv\Scripts\python.exe tools\experiments\world_statecceptance.py ^
+.venv\Scripts\python.exe tools\experiments\world_state\acceptance.py ^
     --baseline 20261101_113145 --new <局1> --new <局2>
 ```
 
@@ -60,8 +60,7 @@ status: active
 容差只吸收测量噪声，不是放宽目标。
 
 ```bat
-.venv\Scripts\python.exe tools\experiments\world_state
-equest_cone.py ^
+.venv\Scripts\python.exe tools\experiments\world_state\request_cone.py ^
     --session 20261101_113145
 ```
 
@@ -77,6 +76,18 @@ equest_cone.py ^
 `horizon_sensitivity.py` 复算同一批选择帧在 2.0/2.5/3.0 s 固定视界下的请求
 机会，再按旧局走廊宽/安全车近似开度给出拟议视界，统计相对 3.0 s 砍掉多少。
 只是机会集合代理，无闭环反馈。
+
+```bat
+.venv\Scripts\python.exe tools\experiments\world_state\slack_window.py ^
+    --session 20261101_145701 --session 20261101_151804 --json out\slack_window.json
+```
+
+`slack_window.py` 复算机会窗口的机制量：奖励车轨道丢检段、同身份资格缺口、
+原始/EMA 平滑后的可达段、两种"能累计到确认"的模拟（第 6 期证据=原始 slack；
+第 7 期证据=平滑 slack、起意仍要求原始 slack>=0）、实际请求信号桥接段与源
+切换率（按可见秒归一）。默认 `--tau 0.2 --pause-s 0.2 --confirm-s 0.3
+--intent-age-s 1.0`。模拟假设每个可达对象都会发请求，是**上限估计**，不含
+选道目标切换与车辆占用；用于第 6/7 期的门槛依据，不代表并线次数。
 
 ## 结论去向
 
