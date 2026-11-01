@@ -45,6 +45,7 @@ def analyze(session: str, speed="v_ego", speed_value=41.0) -> dict:
         "layers": B._layers(rows),
         "merges": B._merges(rows),
         "requests": B._requests(rows),
+        "sources": B._source_flips(rows),
         "coins": B._coin_life(rows),
         "car_tracks": B._car_tracks(rows),
         "group_blind": B._group_blind(rows),
@@ -70,11 +71,16 @@ def flat(rep: dict) -> dict:
         "plan.no_speed_s": p["no_speed_s"],
         "layers.switches": ly["switches"],
         "merges.count": m["count"],
+        "merges.opportunity": m["opportunity"],
         "merges.v_lat_median": m["v_lat_lane_s_median"],
         "merges.overshoot_p90": m["overshoot_lane_p90"],
         "merges.settle_p90_finished": m["settle_err_lane_p90_finished"],
         "requests.segments": r["segments"],
+        "requests.life_s_median": r["life_s_median"],
         "requests.conversion": r["conversion"],
+        "requests.conversion_any": r["conversion_any"],
+        "sources.switch_per_s": rep["sources"]["per_s"],
+        "sources.visible_s": rep["sources"]["visible_s"],
         "steer.in_band": s["in_band_abs_mean"],
         "steer.reverse_s": s["reverse_per_s"],
         "coins.life_median": rep["coins"]["life_s_median"],
@@ -142,7 +148,7 @@ def _gate(base: dict, news: dict) -> int:
         ("steer.in_band", "<=", 0.02, "巡航目标内杆量不增 0.02"),
         ("steer.reverse_s", "<=", 0.15, "反向率不增 0.15/s"),
         ("merges.overshoot_p90", "<=", 0.10, "并线过冲 p90 不增 0.10 道"),
-        ("requests.conversion", ">=", 0.0, "请求→并线转化不低于基线"),
+        ("requests.conversion", ">=", 0.0, "请求→并线转化（仅 opportunity）不低于基线"),
     ]
     bad = 0
     for sess, new in news.items():

@@ -11,6 +11,8 @@
     slack<0 立即清零；确认门槛 `--confirm-s`。
   - 第 7 期：证据=平滑 slack（丢检同样冻结），**起意仍要求原始 slack>=0**；
     累计到门槛但没有原始可达拍的，记为"够格但起不了意"。
+- 实际请求段（同向、缺口 ≤ `--pause-s` 视为连续）的寿命（首末拍覆盖时长）
+  与达到确认门槛的段数；
 - 奖励源 0/1 切换次数与按原始可见秒归一后的速率。
 
 口径：**原始 slack 决定能否起意；平滑只影响证据累计（第 7 期）**。模拟只
@@ -35,6 +37,8 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from speedrush_trace_reader import iter_rows  # noqa: E402
+
+import baseline_replay as B  # noqa: E402
 
 
 def _path(session: str) -> Path:
@@ -211,24 +215,19 @@ def analyze(session: str, tau: float, pause_s: float, confirm_s: float,
             continue
         if cur is not None and q == cur["sign"] and cur["gap"] <= pause_s:
             cur["t1"] = t
+            cur["dt1"] = dt
             cur["gap"] = 0.0
         else:
             if cur is not None:
                 spans.append(cur)
-            cur = {"sign": q, "t0": t, "t1": t, "gap": 0.0}
+            cur = {"sign": q, "t0": t, "t1": t, "gap": 0.0, "dt1": dt}
     if cur is not None:
         spans.append(cur)
-    span_len = [round(b["t1"] - b["t0"], 2) for b in spans]
+    # 请求寿命 = 首末拍覆盖时长（末拍加一个 dt），与 acceptance 同口径
+    span_len = [round(b["t1"] - b["t0"] + b["dt1"], 2) for b in spans]
 
     # 5) 奖励源切换率（按原始可见秒归一）
-    flips, visible_s, prev = 0, 0.0, None
-    for r, dt in zip(rows, dts):
-        cur_src = 1 if int(r.get("cr_bonus_src") or 0) > 0 else 0
-        if prev is not None and cur_src != prev:
-            flips += 1
-        prev = cur_src
-        if int(r.get("raw_bonuses") or 0) > 0:
-            visible_s += dt
+    src = B._source_flips(rows)
 
     return {
         "session": session,
@@ -245,10 +244,9 @@ def analyze(session: str, tau: float, pause_s: float, confirm_s: float,
         "request_spans_s": span_len,
         "request_spans_ge_confirm": sum(
             1 for x in span_len if x >= confirm_s),
-        "src_flips": flips,
-        "raw_visible_s": round(visible_s, 1),
-        "src_flips_per_visible_min": round(
-            flips / max(visible_s, 1e-9) * 60.0, 1),
+        "src_flips": src["flips"],
+        "raw_visible_s": src["visible_s"],
+        "src_flips_per_visible_s": src["per_s"],
         "params": {"tau": tau, "pause_s": pause_s, "confirm_s": confirm_s,
                    "intent_age_s": intent_age_s},
     }
@@ -285,7 +283,7 @@ def main(argv=None) -> int:
         print(f"  request_spans_s={x['request_spans_s']} "
               f">=confirm:{x['request_spans_ge_confirm']}")
         print(f"  src_flips={x['src_flips']} raw_visible={x['raw_visible_s']}s "
-              f"per_min={x['src_flips_per_visible_min']}")
+              f"per_s={x['src_flips_per_visible_s']}")
     return 0
 
 

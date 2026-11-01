@@ -224,6 +224,7 @@ def _merges(rows):
     return {
         "count": len(segs),
         "why": dict(sorted(whys.items(), key=lambda kv: -kv[1])),
+        "opportunity": whys.get("opportunity", 0),
         "end": dict(sorted(ends.items(), key=lambda kv: -kv[1])),
         "dur_s_median": _r(_pct(durations, 50), 2),
         "v_lat_lane_s_median": _r(_pct(speeds, 50)),
@@ -234,19 +235,59 @@ def _merges(rows):
 
 
 def _requests(rows):
+    """请求段与转化：转化只认请求窗口内 `why=opportunity` 的并线。
+
+    urgent/overtake 并线本来就会发生，把任何 1 秒内的并线都记成请求转化会让
+    指标虚高（2026-11-01 两局：17/18 次并线是 urgent）。一次并线只归给**最近
+    的一段请求**（同一并线前 1 秒内常有 3~5 段闪检，按段计会把一次转化算成
+    多次）；`conversion_any` 保留旧口径作参照，不进闸门。请求寿命按首末拍
+    覆盖时长计（末拍加一个 dt）。
+    """
     segs = _segments(rows, lambda r: (r.get("sel_dbg") or {}).get("req")
                      is not None)
-    starts = [(_ts(r), r.get("fid")) for r in rows
+    starts = [(_ts(r), (r.get("route") or {}).get("why")) for r in rows
               if (r.get("route") or {}).get("vd") == "merge_start"]
-    conv = 0
-    for s in segs:
-        t0, t1 = _ts(s[0]), _ts(s[-1])
-        if any(t0 <= t <= t1 + 1.0 for t, _ in starts):
-            conv += 1
-    return {"segments": len(segs), "ticks": sum(len(s) for s in segs),
+    spans = [(_ts(s[0]), _ts(s[-1])) for s in segs]
+    conv_any, conv_opp = set(), set()
+    for t, why in starts:
+        hit = [i for i, (t0, t1) in enumerate(spans)
+               if t0 <= t <= t1 + 1.0]
+        if not hit:
+            continue
+        i = max(hit, key=lambda j: spans[j][0])
+        conv_any.add(i)
+        if why == "opportunity":
+            conv_opp.add(i)
+    life = [t1 - t0 + _dt(s[-1]) for s, (t0, t1) in zip(segs, spans)]
+    n = len(segs)
+    return {"segments": n, "ticks": sum(len(s) for s in segs),
             "len_ticks": [len(s) for s in segs],
-            "merge_within_1s": conv,
-            "conversion": _r(conv / len(segs), 3) if segs else None}
+            "life_s": [round(x, 2) for x in life],
+            "life_s_median": _r(_pct(life, 50), 2),
+            "life_s_p90": _r(_pct(life, 90), 2),
+            "merge_within_1s": len(conv_any),
+            "conversion_any": _r(len(conv_any) / n, 3) if n else None,
+            "opportunity_within_1s": len(conv_opp),
+            "conversion": _r(len(conv_opp) / n, 3) if n else None}
+
+
+def _source_flips(rows):
+    """奖励源 0/1 切换率：按原始可见秒归一。
+
+    `cr_bonus_src` 是选择层当拍实际拿到的奖励源数，`raw_bonuses` 是原始检测
+    数。断供拍不算可见时间——否则丢检越多的局分母越大，切换率反而显得更低。
+    """
+    flips, visible_s, prev = 0, 0.0, None
+    for r in rows:
+        cur = 1 if int(r.get("cr_bonus_src") or 0) > 0 else 0
+        if prev is not None and cur != prev:
+            flips += 1
+        prev = cur
+        if int(r.get("raw_bonuses") or 0) > 0:
+            visible_s += _dt(r)
+    per_s = flips / visible_s if visible_s > 0.0 else None
+    return {"flips": flips, "visible_s": round(visible_s, 1),
+            "per_s": _r(per_s)}
 
 
 def _coin_life(rows):
