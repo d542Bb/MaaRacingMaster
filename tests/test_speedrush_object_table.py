@@ -244,3 +244,34 @@ def test_engine_scene_retains_past_safety_age():
     assert obj.age_ms == pytest.approx(900.0)
     assert obj.safety_ok is False
     assert eng.object_table_trace()["nsafe"] == 0
+
+
+def test_engine_ignores_unsafe_car_end_to_end():
+    """端到端安全锁：跟踪宽限内但超安全龄的车不改变引擎输出；新鲜车允许。"""
+    from maaracing_master.plugins.speedrush.traffic import CarView
+
+    def run(age_ticks):
+        eng = _engine()
+        outs = []
+        for fid in range(1, 6):
+            coin = _car(500, 0.0, kind=KIND_COIN, last=fid)
+            targets = (coin,)
+            traffic = None
+            if age_ticks is not None:
+                last = fid - age_ticks
+                car = _car(77, 0.0, last=last)
+                view = CarView(id=77, x_lane=0.0, cy=500, rel_approach=2.0,
+                               d_min=0.0, age_ticks=age_ticks,
+                               last_seen_fid=last)
+                targets = (coin, car)
+                traffic = ((view,), ())
+            out = eng.update(_obs(fid, targets=targets), 0.05,
+                             executed_lane=0.0, corridor=_corridor(),
+                             traffic=traffic)
+            outs.append((out.reason, out.x_target, out.state,
+                         eng.object_table_trace()["nsafe"]))
+        return outs
+
+    base = run(None)
+    assert run(13) == base          # 650 ms：宽限内但超安全龄，逐位一致
+    assert run(0) != base           # 新鲜车触发擦边层，允许改变
