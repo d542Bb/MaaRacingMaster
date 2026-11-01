@@ -428,3 +428,14 @@ def test_safety_hit_discards_pending_request():
     rep = select(_road(), [Obj("reward", 1.0 * LW, 2.2)],
                  [Obj("car", 0.0, 2.0)], [], 0.0, _p(), commit_x_m=0.0)
     assert rep.why == "pass" and rep.lane_request is None
+
+
+def test_selector_horizon_override_changes_layer():
+    """4b 接线：本拍视界覆盖只作用于选择/预置，不改驻留参数。"""
+    from maaracing_master.plugins.speedrush.selection import LayeredSelector
+    sel = LayeredSelector(_p())
+    coin = [Obj("coin", 0.0, 2.5)]
+    assert sel.update(_road(), [], [], coin, 0.0, 0.05).layer == 3
+    sel.reset()
+    rep = sel.update(_road(), [], [], coin, 0.0, 0.05, horizon_s=2.0)
+    assert rep.layer == 4        # 2.5s 机会出 2s 视界，只剩预置（x=0）

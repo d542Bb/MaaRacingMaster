@@ -37,6 +37,8 @@ class Selection:
     （车道内物理余量），``center_band_lane`` 只作带宽上限。"""
 
     horizon_s: float = 3.0
+    # 分级时域（4b）：开度影子视界接管选择层；默认关，实车两局后再开。
+    dynamic_horizon: bool = False
     max_waypoints: int = 4
     graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
@@ -816,6 +818,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                               default=False)),
         selection=Selection(
             horizon_s=_num_def(d, "selection", "horizon_s", 3.0, lo=0),
+            dynamic_horizon=_bool(
+                d, "selection", "dynamic_horizon", default=False),
             max_waypoints=_int_def(d, "selection", "max_waypoints", 4,
                                    lo=1, hi=4),
             graze_gap_lane=_num_def(d, "selection", "graze_gap_lane", 0.68,

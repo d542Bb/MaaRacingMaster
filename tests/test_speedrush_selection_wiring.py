@@ -319,3 +319,23 @@ def test_engine_exposes_openness_and_anchor():
     assert hs is not None and hs["h"] == 3.0
     assert trig is None                    # 状态稳定后不再触发"
 
+
+
+def test_dynamic_horizon_switch_controls_selector_override():
+    """4b 开关关闭时传 None（固定视界），打开时传影子视界；默认关。"""
+    def _spy(cfg):
+        eng = DecisionEngine(cfg)
+        seen = []
+        orig = eng.selector.update
+
+        def spy(*a, **k):
+            seen.append(k.get("horizon_s"))
+            return orig(*a, **k)
+
+        eng.selector.update = spy
+        eng.update(_obs(1), 0.05, executed_lane=0.0, corridor=_corridor())
+        return seen[-1]
+
+    assert _spy(CFG) is None
+    on = replace(CFG, selection=replace(CFG.selection, dynamic_horizon=True))
+    assert _spy(on) == pytest.approx(3.0)

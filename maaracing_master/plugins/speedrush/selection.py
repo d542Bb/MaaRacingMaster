@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 from maaracing_master.plugins.speedrush.planner import lane_move_time
@@ -664,12 +664,14 @@ class LayeredSelector:
             self._coin_target = None
         return rep
 
-    def _incumbent_blocked(self, cars: Sequence[Obj]) -> bool:
+    def _incumbent_blocked(self, cars: Sequence[Obj],
+                           p: SelectionParams | None = None) -> bool:
         if self._target is None:
             return False
-        half = (self.p.car_half_lane + self.p.ego_half_lane) * self.p.lane_w_m
+        p = self.p if p is None else p
+        half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
         return any(c.safe and c.t is not None
-                   and -0.2 <= c.t <= self.p.horizon_s
+                   and -0.2 <= c.t <= p.horizon_s
                    and abs(c.x - self._target) < half for c in cars)
 
     def update(self, road: RoadFrame, rewards: Sequence[Obj],
@@ -677,8 +679,12 @@ class LayeredSelector:
                ego: float, dt_s: float,
                *, coarse_lane: float | None = None,
                committed: bool = False,
-               commit_x_m: float | None = None) -> SelectionReport:
-        raw = select(road, rewards, cars, coins, ego, self.p,
+               commit_x_m: float | None = None,
+               horizon_s: float | None = None) -> SelectionReport:
+        # 分级时域（4b）：本拍视界覆盖只作用于选择/预置/路点，不改驻留参数
+        p = self.p if horizon_s is None else replace(
+            self.p, horizon_s=float(horizon_s))
+        raw = select(road, rewards, cars, coins, ego, p,
                      coarse_lane=coarse_lane, committed=committed,
                      commit_x_m=commit_x_m)
         self.last = raw
@@ -691,7 +697,7 @@ class LayeredSelector:
         # 奖励车/普通车擦边出现仍立即覆盖；目标被车占住也立即放弃。
         if self._layer == 3 and raw.layer == 4 \
                 and self._coin_hold_t > 0.0 and self._coin_target is not None \
-                and not self._incumbent_blocked(cars):
+                and not self._incumbent_blocked(cars, p):
             x = road.clamp(self._coin_target,
                            self.p.wall_margin_lane * self.p.lane_w_m)
             if abs(x - self._coin_target) <= 0.3 * self.p.lane_w_m:
@@ -707,7 +713,7 @@ class LayeredSelector:
             return self._adopt(raw)
         if raw.layer == 0:
             return self._adopt(raw)
-        if self._target is None or self._incumbent_blocked(cars):
+        if self._target is None or self._incumbent_blocked(cars, p):
             return self._adopt(raw)
         d = abs(raw.target_x_m - self._target)
         if d <= 0.5 * self.p.lane_w_m:

@@ -1305,10 +1305,15 @@ class DecisionEngine:
         # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
         # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
         coarse_lane = self.coarse_lane
+        # 分级时域（4b）：开关关闭时 None=固定视界，逐位回旧行为；打开后
+        # 用本拍影子视界（已含开度/驻留），生产与影子选择器同值。
+        dyn_h = (self._horizon.current
+                 if self.cfg.selection.dynamic_horizon else None)
         rep = self.selector.update(road, rewards, cars, coins, ego_m,
                                    self._dt_last,
                                    coarse_lane=coarse_lane,
-                                   committed=committed, commit_x_m=commit_x)
+                                   committed=committed, commit_x_m=commit_x,
+                                   horizon_s=dyn_h)
         # 影子选择器：同一批对象/公路/自车输入，承诺态取影子路线。生产门关或
         # 两路未分叉时两份输入相同，结果必须逐位一致；不一致记 `bug` 取证。
         sh_committed = bool(self.cfg.route.control
@@ -1323,7 +1328,7 @@ class DecisionEngine:
         rep_shadow = self._selector_shadow.update(
             road, rewards, cars, coins, ego_m, self._dt_last,
             coarse_lane=sh_coarse, committed=sh_committed,
-            commit_x_m=sh_commit_x)
+            commit_x_m=sh_commit_x, horizon_s=dyn_h)
         self._sel_shadow = rep_shadow
         self._sel_shadow_trace = self._sel_watch.step(
             fid=obs.frame_id, prod=rep, shadow=rep_shadow,
