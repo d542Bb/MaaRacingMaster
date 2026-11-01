@@ -31,7 +31,9 @@ from maaracing_master.plugins.speedrush.coarse import (
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import Corridor
 from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
+from maaracing_master.plugins.speedrush.anchor import AnchorTracker, Candidate
 from maaracing_master.plugins.speedrush.lane_map import LaneMap
+from maaracing_master.plugins.speedrush.openness import assess
 from maaracing_master.plugins.speedrush.motion_plan import build_scene
 from maaracing_master.plugins.speedrush.object_table import ObjectTable
 from maaracing_master.plugins.speedrush.selection import (
@@ -504,6 +506,10 @@ class DecisionEngine:
         self._map_trace: dict | None = None
         self._ego_speed_mps: float | None = None
         self._ego_v_lat = 0.0
+        # 第 4 期观测面：开度/密度与 60 m 锚。只记录，不接视界/选道。
+        self._anchor = AnchorTracker()
+        self._open_trace: dict | None = None
+        self._anchor_trace: dict | None = None
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
@@ -556,6 +562,9 @@ class DecisionEngine:
         self._stage = None
         self._lane_map.reset()
         self._map_trace = None
+        self._anchor.reset()
+        self._open_trace = None
+        self._anchor_trace = None
         self._conserve_t = 0.0
         self._ok_t = 0.0
         self._abort_next = DecisionState.CRUISE
@@ -695,6 +704,10 @@ class DecisionEngine:
             authority = "COMMIT"
         else:
             authority = "GENTLE"
+        if self._scene is None:
+            self._open_trace = None
+            self._anchor.reset()
+            self._anchor_trace = None
         self._update_lane_map(obs)
         intent_lane = None
         if route is not None:
@@ -1248,6 +1261,8 @@ class DecisionEngine:
             sigma_obj0_m=self.cfg.motion.sigma_obj0_m,
             sigma_obj_rate_mps=self.cfg.motion.sigma_obj_rate_mps,
             cam_z_datum_m=CAM_Z_DATUM_M, frame_shift_m=frame_shift)
+        # 第 4 期观测面：开度/密度 + 60 m 锚（不接视界/选道）
+        self._update_openness_anchor(reward_src, coin_src, ego_m, origin)
         # 粗层：绿区净空 + 2D 占用选方向。迟滞的现任道取上一拍粗层结果。
         # 自车横位与候选道必须同帧：候选道按每带中心线取相对量，自车也
         # 按 scene 的 z=0 中心线算——直接喂 executed（planner 路心系）会
@@ -1508,6 +1523,37 @@ class DecisionEngine:
     def lane_map_trace(self) -> dict | None:
         """上一拍持久车道图（支撑距离/采样点/预测误差）——trace map 列。"""
         return self._map_trace
+
+    def openness_trace(self) -> dict | None:
+        """上一拍开度/拥挤度量——trace open 列（只观测）。"""
+        return self._open_trace
+
+    def anchor_trace(self) -> dict | None:
+        """上一拍 60 m 锚——trace anchor 列（只观测）。"""
+        return self._anchor_trace
+
+    def _update_openness_anchor(self, rewards, coins, ego_m: float,
+                                origin: float) -> None:
+        sc = self._scene
+        if sc is None:
+            self._open_trace = None
+            self._anchor_trace = None
+            return
+        cars = [o for o in sc.objs if o.kind == "car" and o.safety_ok]
+        self._open_trace = assess(sc, cars).as_trace()
+        lw = self.cal.lane_w_m
+        cands = []
+        for b in rewards:
+            cands.append(Candidate(
+                "reward", -1 if b.id is None else b.id,
+                (b.x_m - origin - ego_m) / lw, b.t_miss_s, b.conf))
+        for c in coins:
+            cands.append(Candidate(
+                "coin", -1 if c.id is None else c.id,
+                (c.x_m - origin - ego_m) / lw, c.t_miss_s, c.conf))
+        a = self._anchor.step(cands, self._dt_last)
+        self._anchor_trace = (None if a is None
+                              else {**a.as_trace(), "why": self._anchor.why})
 
     def _update_lane_map(self, obs: WorldObservation) -> None:
         """每拍推进一步车道图。无场景拍（非巡航/无路）只做预测与衰减，

@@ -296,3 +296,20 @@ def test_selection_debug_carries_identity_and_cone_slack():
     assert slack is not None and slack > 0.0    # 良候选：到站预算为正
     coin = [o for o in eng.scene.objs if o.kind == "coin"][0]
     assert coin.id == 1 and coin.seen is True
+
+
+def test_engine_exposes_openness_and_anchor():
+    """第 4 期观测面接线：开度与 60m 锚随决策拍落列，不参与选择。"""
+    eng = DecisionEngine(CFG)
+    g, ms = _group(1, x=0.4, rel=2.5)
+    for fid in (1, 2, 3):
+        g = replace(g, first_seen_fid=1, last_seen_fid=fid)
+        ms = tuple(replace(m, first_seen_fid=1, last_seen_fid=fid,
+                           validity_until_fid=fid + 8) for m in ms)
+        eng.update(_obs(fid, groups=(g,), targets=ms), 0.05,
+                   executed_lane=0.0, corridor=_corridor())
+    op = eng.openness_trace()
+    assert op is not None and op["lvl"] == "open"
+    an = eng.anchor_trace()
+    assert an is not None and an["k"] == "coin" and an["id"] == 1
+    assert eng.selection_report.layer == 3
