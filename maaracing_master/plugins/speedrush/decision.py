@@ -623,13 +623,17 @@ class DecisionEngine:
             t_raw = goal if goal is not None else executed_lane
         if t_raw is None:
             t_raw = 0.0
-        # 并线承诺期不走 slew：目标是路线已定的道，限速只会让实际目标滞后
-        # 承诺道（旧 trace 897 个并线拍里 155 拍目标差 >0.5 道就是这么来的）。
+        # 并线承诺期的目标 slew（2026-10-31）：旧行为是直通（slew=0），
+        # 起手单拍 1.6~1.9 道阶跃直接把车拽向走廊外侧（新局 24/94 拍
+        # 走廊不可行、贴边后 frame_shift）。目标链 A/B：4.0 道/s 把起手
+        # 阶跃 0.85/1.66→0.20/0.25 道，代价是短并线入带晚约 0.2~0.4s。
+        # 路线仍持有承诺道（finish/abort 不受影响），只给控制目标加斜坡。
         route = self._route
         committed = (self.cfg.route.control and route is not None
                      and route.phase == PHASE_MERGING)
-        slew = 0.0 if committed else \
-            self.cfg.hysteresis.target_slew_lane_s * dt_s
+        slew_lane_s = (self.cfg.hysteresis.merge_slew_lane_s if committed
+                       else self.cfg.hysteresis.target_slew_lane_s)
+        slew = slew_lane_s * dt_s
         if self._target_prev is None or slew <= 0.0:
             t_out = t_raw
         else:

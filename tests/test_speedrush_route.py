@@ -558,8 +558,11 @@ def test_soft_car_config_reaches_the_route(monkeypatch):
     assert eng.route_verdict.phase == PHASE_MERGING
 
 
-def test_merge_target_commits_without_slew(monkeypatch):
-    """并线拍目标直接是承诺道带边：承诺期不走 slew，机会层也不参与。"""
+def test_merge_target_slews_at_merge_rate(monkeypatch):
+    """并线拍目标按 4.0 道/s 斜坡到承诺道：不再单拍直通，也不挡路线承诺。
+
+    选择层的目标仍是整道（selection_report.target_x_m），只有交给控制的
+    输出被限速；起手阶跃 1.6~1.9 道是贴边/外侧超调的来源。"""
     from maaracing_master.plugins.speedrush import decision as dmod
     spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
     monkeypatch.setattr(dmod, "choose_lane",
@@ -568,15 +571,20 @@ def test_merge_target_commits_without_slew(monkeypatch):
     cfg = replace(CFG, route=replace(CFG.route, control=True))
     eng = DecisionEngine(cfg)
     out = None
+    targets = []
     for fid in range(1, 10):
         out = eng.update(_obs(fid), DT, executed_lane=0.0,
                          corridor=_corridor())
+        targets.append(out.x_target)
     assert eng.route_verdict.phase == PHASE_MERGING
     assert eng.selection_report.why == "commit"
     assert eng.coarse_lane == 1.0
     assert eng.selection_report.target_x_m == pytest.approx(
         TARGET_1_LANE, abs=0.02)
-    assert out.x_target == pytest.approx(TARGET_1_LANE / LW, abs=0.01)
+    steps = [abs(targets[i] - targets[i - 1]) for i in range(1, len(targets))]
+    assert max(steps) <= 4.0 * DT + 1e-6          # 4.0 道/s 斜坡
+    assert min(targets) < 0.9                     # 首拍没有直通整道
+    assert targets[-1] == pytest.approx(TARGET_1_LANE / LW, abs=0.01)
     assert out.phase == "merging"
 
 

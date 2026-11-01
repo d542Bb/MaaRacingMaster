@@ -112,6 +112,9 @@ class Hysteresis:
     # 输出目标 slew（道/s，0=关）：决策输出每拍变化上限——选择目标单拍跳变
     # 不直接变成打舵指令（阶段 1a，2026-10-18）
     target_slew_lane_s: float = 0.0
+    # 并线承诺期目标 slew（0=旧行为：直通）。4.0 道/s 把起手 1.6~1.9 道的
+    # 单拍阶跃摊成 ~0.4s 斜坡；路线 finish/abort 仍看承诺道。
+    merge_slew_lane_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -181,6 +184,13 @@ class Planner:
     # 但用 0.6s 的旧朝向推横速等于 0.6s 盲开（实测 1.2~1.8 道/s，半秒虚走
     # 0.75 道），横速只认更短的龄。
     heading_vel_max_age_s: float = 0.25
+    # 朝向相位超前（2026-10-31）：ψ_pred = ψ + heading_lead_s·r。实测
+    # 「杆→测得 ψ」总延迟 0.43~0.47 s（车模一阶滞后约 0.2 s + 观测链路
+    # 约 0.25 s）时，给阻尼项补一点相位裕度；0=关闭。实测 0.10 s：1 s
+    # 收道 0.73→0.69（门槛 0.6）、ABORT 冻结漂移 0.222（上限 0.25）；
+    # 0.20 s 会把漂移抬到 0.272，不采用。只在非 gentle（计划/机动）通道
+    # 生效；gentle 的 ABORT 冻结与维护保持不加，避免冻结位漂移。
+    heading_lead_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -612,7 +622,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             life_tau_s=_num(d, "scoring", "life_tau_s", lo=0)),
         hysteresis=Hysteresis(
             target_slew_lane_s=_num_def(d, "hysteresis", "target_slew_lane_s",
-                                        0.0, lo=0)),
+                                        0.0, lo=0),
+            merge_slew_lane_s=_num_def(d, "hysteresis", "merge_slew_lane_s",
+                                       0.0, lo=0)),
         validate=Validate(
             t_empty_s=_num(d, "validate", "t_empty_s", lo=0),
             t_recover_s=_num(d, "validate", "t_recover_s", lo=0),
@@ -625,6 +637,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             k_lat_lane_s=_num(d, "planner", "k_lat_lane_s", lo=0),
             k_psi=_num(d, "planner", "k_psi", lo=0),
             k_r=_num(d, "planner", "k_r", lo=0, lo_open=False),
+            heading_lead_s=_num_def(d, "planner", "heading_lead_s", 0.0,
+                                    lo=0),
             tau_heading_s=_num(d, "planner", "tau_heading_s", lo=0),
             heading_max_rad=_num(d, "planner", "heading_max_rad", lo=0),
             heading_hold_rad=_num(d, "planner", "heading_hold_rad", lo=0),
