@@ -51,6 +51,9 @@ def analyze(session: str, speed="v_ego", speed_value=41.0) -> dict:
         "opps": B._opps(rows),
         "steer": B._steer(rows),
         "map": M.analyze(rows, session, speed, speed_value),
+        "has_new_columns": all(
+            k in rows[-1] for k in
+            ("otab", "map", "open", "anchor", "h_shadow", "trig", "v_ego")),
     }
     return b
 
@@ -86,6 +89,7 @@ def flat(rep: dict) -> dict:
         "map.err_10-20m": e["10-20m"]["abs_median"],
         "map.err_20-30m": e["20-30m"]["abs_median"],
         "map.forward_speed": mp["forward_speed"],
+        "trace.new_columns": rep["has_new_columns"],
     }
 
 
@@ -115,7 +119,7 @@ def main(argv=None):
     print(f"{'metric':30s} {'base':>10s}  " + "  ".join(
         f"{s[-6:]:>10s}" for s in news))
     for k in keys:
-        if k == "map.forward_speed":
+        if k in ("map.forward_speed", "trace.new_columns"):
             print(f"{k:30s} {str(base[k])[:10]:>10s}  " + "  ".join(
                 str(news[s][k])[:10].rjust(10) for s in news))
             continue
@@ -152,6 +156,9 @@ def _gate(base: dict, news: dict) -> int:
             ok = n <= limit if op == "<=" else n >= limit
             if not ok:
                 fails.append(f"{key}: {n:.3f} vs 基线 {b:.3f}（{why}）")
+        if not new.get("trace.new_columns"):
+            fails.append("trace.new_columns: 会话缺 otab/map/open/anchor/"
+                         "h_shadow/trig/v_ego，不是新版本产物")
         speed = str(new.get("map.forward_speed") or "")
         if not speed.startswith("v_ego"):
             fails.append("map.forward_speed: 新局缺精确 v_ego（不接受代理跑验收）")
