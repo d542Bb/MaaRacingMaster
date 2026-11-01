@@ -157,10 +157,14 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
                 coins: list[CoinSource], executed_lane: float, origin: float,
                 lane_w_m: float, frame_age_ms: float,
                 corridor_age_ms: float | None,
-                max_obj_age_s: float, corridor_age_max_s: float,
+                value_age_s: float, corridor_age_max_s: float,
                 sigma_obj0_m: float, sigma_obj_rate_mps: float,
                 cam_z_datum_m: float, frame_shift_m: float = 0.0) -> Scene:
     """把同拍源表换算成场景帧并做年龄/σ 处理。
+
+    ``value_age_s`` 是**规划价值**的保留期（超龄才丢），与安全龄
+    （`motion.max_obj_age_s`）分账：安全消费点读对象表的 `safety_ok`，
+    不读这里的保留期；放宽保留不会把旧对象放进碰撞/选道判断。
 
     ``frame_shift_m`` 把选择帧平移到规划器路心帧：选择帧原点=供数门 master
     路心，残量（master 在带平移系里的位置）由此补齐；不平移会让
@@ -171,10 +175,11 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             return None
         return t - age_ms / 1000.0
 
+    value_age_ms = value_age_s * 1000.0
     objs: list[SceneObj] = []
     for b in rewards:
         age = getattr(b, "age_ms", 0.0) or 0.0
-        if age > max_obj_age_s * 1000.0:
+        if age > value_age_ms:
             continue
         t = _aged_t(b.t_miss_s, age)
         if t is not None and t <= 0.0:
@@ -190,7 +195,7 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             id=getattr(b, "id", None), seen=getattr(b, "seen", None)))
     for c in cars:
         age = getattr(c, "age_ms", 0.0) or 0.0
-        if age > max_obj_age_s * 1000.0:
+        if age > value_age_ms:
             continue
         x = c.x_m - origin
         if c.z_m is not None:
@@ -211,7 +216,7 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             safety_ok=getattr(c, "safety_ok", True)))
     for c in coins:
         age = getattr(c, "age_ms", 0.0) or 0.0
-        if age > max_obj_age_s * 1000.0:
+        if age > value_age_ms:
             continue
         t = _aged_t(c.t_miss_s, age)
         if t is not None and t <= 0.0:

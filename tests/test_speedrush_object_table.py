@@ -228,3 +228,19 @@ def test_box_size_metric_has_no_anchor_age():
     e = t.track(KIND_CAR, 6)
     assert e.src == "metric_coarse" and e.src_age_ms == 0.0
     assert e.safety_ok is True
+
+
+def test_engine_scene_retains_past_safety_age():
+    """1c 引擎接线：0.9 s 的车仍在场景里（规划价值窗=计划视界），
+    但对象表与场景都标不安全；安全消费点看不到它。"""
+    from maaracing_master.plugins.speedrush.traffic import CarView
+    eng = _engine()
+    view = CarView(id=9, x_lane=0.3, cy=500, rel_approach=2.0,
+                   d_min=0.3, age_ticks=19, last_seen_fid=1)
+    eng.update(_obs(19, targets=(_car(9, 0.3, last=1),)), 0.05,
+               executed_lane=0.0, corridor=_corridor(),
+               traffic=((view,), ()))
+    obj = [o for o in eng.scene.objs if o.kind == KIND_CAR][0]
+    assert obj.age_ms == pytest.approx(900.0)
+    assert obj.safety_ok is False
+    assert eng.object_table_trace()["nsafe"] == 0

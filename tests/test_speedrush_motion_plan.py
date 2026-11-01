@@ -37,7 +37,7 @@ def _scene(**kw):
     args = dict(
         fid=10, ego_m=1.0, road=_road(), rewards=[], cars=[], coins=[],
         executed_lane=0.0, origin=0.0, lane_w_m=LW, frame_age_ms=20.0,
-        corridor_age_ms=50.0, max_obj_age_s=0.25, corridor_age_max_s=0.25,
+        corridor_age_ms=50.0, value_age_s=0.25, corridor_age_max_s=0.25,
         sigma_obj0_m=0.15, sigma_obj_rate_mps=0.6, cam_z_datum_m=1.79)
     args.update(kw)
     return build_scene(**args)
@@ -99,14 +99,14 @@ def test_stale_targets_survive_with_decayed_arrival():
     """保鲜窗内：目标保留、到站时间按龄前移；已到站的不再当未来目标。"""
     s = _scene(coins=[CoinSource(5.0, 3, 0.9, 1.5, age_ms=300.0)],
                rewards=[BonusSource(2.0, 1.0, 0.9, age_ms=300.0)],
-               max_obj_age_s=0.6)
+               value_age_s=0.6)
     coin = next(o for o in s.objs if o.kind == "coin")
     reward = next(o for o in s.objs if o.kind == "reward")
     assert coin.t_arrive_s == pytest.approx(1.2)
     assert reward.t_arrive_s == pytest.approx(0.7)
     assert coin.sigma_m == pytest.approx(0.15 + 0.6 * 0.3)
     s2 = _scene(coins=[CoinSource(5.0, 3, 0.9, 0.2, age_ms=300.0)],
-                max_obj_age_s=0.6)
+                value_age_s=0.6)
     assert s2.objs == ()
 
 
@@ -115,20 +115,32 @@ def test_pixel_car_age_is_freshness_not_track_lifetime():
     eng = DecisionEngine(CFG)
     v = CarView(id=9, x_lane=1.0, cy=500, rel_approach=5.0, d_min=1.0,
                 age_ticks=200, last_seen_fid=10)
-    eng.update(_obs(10), 0.05, executed_lane=0.0,
+    t = TrackedTarget(
+        id=9, kind="car", x_lane=1.0, x_sigma=0.1, cy=500, w=30, h=30,
+        conf=0.9, rel_approach=5.0, first_seen_fid=10, last_seen_fid=10,
+        validity_until_fid=25)
+    eng.update(_obs(10, targets=(t,)), 0.05, executed_lane=0.0,
                corridor=_corridor(fid=10, last_fid=10),
                traffic=((v,), ()))
     car = next(o for o in eng.scene.objs if o.kind == "car")
     assert car.age_ms == pytest.approx(0.0)
-    # 10 帧没再看到（20Hz → 500ms）：仍在 0.6s 保鲜窗内，带龄保留
-    eng.update(_obs(20), 0.05, executed_lane=0.0,
+    # 10 帧没再看到（20Hz → 500ms）：仍在安全龄内，带龄保留
+    eng.update(_obs(20, targets=(t,)), 0.05, executed_lane=0.0,
                corridor=_corridor(fid=20, last_fid=20),
                traffic=((v,), ()))
     car = next(o for o in eng.scene.objs if o.kind == "car")
     assert car.age_ms == pytest.approx(500.0)
-    # 20 帧没再看到（1000ms）：超保鲜窗
-    eng.update(_obs(30), 0.05, executed_lane=0.0,
+    assert car.safety_ok is True
+    # 20 帧没再看到（1000ms）：超安全龄但仍在规划价值窗内——保留、安全失效
+    eng.update(_obs(30, targets=(t,)), 0.05, executed_lane=0.0,
                corridor=_corridor(fid=30, last_fid=30),
+               traffic=((v,), ()))
+    car = next(o for o in eng.scene.objs if o.kind == "car")
+    assert car.age_ms == pytest.approx(1000.0)
+    assert car.safety_ok is False
+    # 50 帧没再看到（2500ms）：超过计划视界，场景丢弃
+    eng.update(_obs(60, targets=(t,)), 0.05, executed_lane=0.0,
+               corridor=_corridor(fid=60, last_fid=60),
                traffic=((v,), ()))
     assert not any(o.kind == "car" for o in eng.scene.objs)
 
@@ -807,3 +819,16 @@ def test_unsafe_car_does_not_change_plan_safety():
     a, b, c = _plan(base), _plan(unsafe), _plan(safe)
     assert b == a
     assert c != a
+
+
+def test_value_window_retains_aged_car_but_safety_ignores_it():
+    """1c：规划价值保留期放宽到视界，超安全龄的车仍进场景（带更大 σ 与
+    safety_ok=False），但计划的安全量与无车场景逐位相同。"""
+    s = _scene(cars=[CarSource(0.0, 1.0, age_ms=900.0, safety_ok=False)],
+               value_age_s=2.0)
+    assert len(s.objs) == 1
+    car = s.objs[0]
+    assert car.kind == "car" and car.age_ms == 900.0
+    assert car.safety_ok is False
+    assert car.sigma_m > CFG.motion.sigma_obj0_m + 0.6 * 0.6
+    assert _plan(s) == _plan(_scene())

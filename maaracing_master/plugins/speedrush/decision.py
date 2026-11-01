@@ -1220,7 +1220,10 @@ class DecisionEngine:
             executed_lane=executed, origin=origin, lane_w_m=self.cal.lane_w_m,
             frame_age_ms=obs.frame_age_ms,
             corridor_age_ms=(max(corr_ages) if corr_ages else None),
-            max_obj_age_s=self.cfg.motion.max_obj_age_s,
+            # 规划价值保留期与安全龄分账：场景可留到计划视界，安全消费点
+            # 仍由对象表 safety_ok（0.6 s）把关。
+            value_age_s=max(self.cfg.motion.horizon_s,
+                            self.cfg.motion.max_obj_age_s),
             corridor_age_max_s=self.cfg.motion.corridor_age_max_s,
             sigma_obj0_m=self.cfg.motion.sigma_obj0_m,
             sigma_obj_rate_mps=self.cfg.motion.sigma_obj_rate_mps,
