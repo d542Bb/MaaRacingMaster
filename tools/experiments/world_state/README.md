@@ -54,7 +54,8 @@ status: active
 
 `acceptance.py` 复用上面两个分析器，把新局与基线的计划/层/并线/请求/杆值/
 地图支撑逐项并排；只列差值，不设通过阈值——判据在方案第 5 步。旧局缺
-`v_ego/otab/map` 的项显示 None，不拿缺列当零。
+`v_ego/otab/map` 的项显示 None，不拿缺列当零；旧局对照可加
+`--speed hud41` 用得分速度底值代理跑地图误差。
 
 ```bat
 .venv\Scripts\python.exe tools\experiments\world_state

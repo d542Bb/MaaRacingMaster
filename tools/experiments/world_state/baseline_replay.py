@@ -319,6 +319,52 @@ def _opps(rows):
     }
 
 
+def _car_tracks(rows):
+    """车轨遮挡保留（旧局也能算）：`car_h` 带 id 与 seen=距最后真实读数的 fid 差。
+    逐轨估 fid 率，把 seen 换算成龄；统计遮挡段最大龄、超 0.6s 的段与总时长。"""
+    tracks = {}
+    for row in rows:
+        t = _ts(row)
+        for e in row.get("car_h") or []:
+            if not isinstance(e, dict) or e.get("id") is None                     or e.get("seen") is None:
+                continue
+            tracks.setdefault(e["id"], []).append((t, int(e["seen"])))
+    life, occl, blind_s, over = [], [], 0.0, 0
+    for pts in tracks.values():
+        if len(pts) < 2:
+            continue
+        life.append(pts[-1][0] - pts[0][0])
+        rates = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(pts, pts[1:])
+                 if b[0] > a[0] and b[1] > a[1]]
+        if not rates:
+            continue
+        fps = sorted(rates)[len(rates) // 2]
+        cur, cur_max = False, 0.0
+        for t, seen in pts:
+            age = seen / fps if seen > 0 else 0.0
+            if seen > 0:
+                if not cur:
+                    cur = True
+                cur_max = max(cur_max, age)
+                if age > 0.6:
+                    blind_s += 0.05
+            elif cur:
+                occl.append(cur_max)
+                over += int(cur_max > 0.6)
+                cur, cur_max = False, 0.0
+        if cur:
+            occl.append(cur_max)
+            over += int(cur_max > 0.6)
+    return {"tracks": len(life),
+            "life_s_median": _r(_pct(life, 50), 2),
+            "life_s_p90": _r(_pct(life, 90), 2),
+            "occlusion_runs": len(occl),
+            "occl_max_age_s_median": _r(_pct(occl, 50), 2),
+            "occl_max_age_s_p90": _r(_pct(occl, 90), 2),
+            "runs_over_0_6s": over,
+            "blind_s": _r(blind_s, 1)}
+
+
 def _objects(rows):
     """schema 4：对象遮挡后的保留时长与同 id 重现。"""
     if not any((r.get("scene") or {}).get("schema", 0) >= 4 for r in rows):
@@ -462,6 +508,7 @@ def main(argv=None):
         "coins": _coin_life(rows),
         "opportunities": _opps(rows),
         "objects": _objects(rows),
+        "car_tracks": _car_tracks(rows),
         "steer": _steer(rows),
         "map": _map(rows),
     }

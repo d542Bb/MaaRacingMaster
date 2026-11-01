@@ -36,7 +36,7 @@ def _path(session: str) -> Path:
     return base / session / "trace" / "speedrush.jsonl"
 
 
-def analyze(session: str) -> dict:
+def analyze(session: str, speed="v_ego", speed_value=41.0) -> dict:
     rows = list(iter_rows(_path(session)))
     if not rows:
         raise SystemExit(f"没有数据行：{session}")
@@ -46,9 +46,10 @@ def analyze(session: str) -> dict:
         "merges": B._merges(rows),
         "requests": B._requests(rows),
         "coins": B._coin_life(rows),
+        "car_tracks": B._car_tracks(rows),
         "opps": B._opps(rows),
         "steer": B._steer(rows),
-        "map": M.analyze(rows, session),
+        "map": M.analyze(rows, session, speed, speed_value),
     }
     return b
 
@@ -73,6 +74,9 @@ def flat(rep: dict) -> dict:
         "steer.in_band": s["in_band_abs_mean"],
         "steer.reverse_s": s["reverse_per_s"],
         "coins.life_median": rep["coins"]["life_s_median"],
+        "cars.occl_p90": rep["car_tracks"]["occl_max_age_s_p90"],
+        "cars.occl_over_0.6s": rep["car_tracks"]["runs_over_0_6s"],
+        "cars.blind_s": rep["car_tracks"]["blind_s"],
         "opps.coin_slack_median": rep["opps"]["coin_slack_median"],
         "map.support_median": mp["support_m"]["median"],
         "map.err_0-10m": e["0-10m"]["abs_median"],
@@ -87,9 +91,13 @@ def main(argv=None):
     ap.add_argument("--baseline", default="20261101_113145")
     ap.add_argument("--new", action="append", default=[])
     ap.add_argument("--json")
+    ap.add_argument("--speed", choices=("v_ego", "hud41", "const"),
+                    default="v_ego")
+    ap.add_argument("--speed-value", type=float, default=41.0)
     args = ap.parse_args(argv)
-    base = flat(analyze(args.baseline))
-    news = {s: flat(analyze(s)) for s in args.new}
+    base = flat(analyze(args.baseline, args.speed, args.speed_value))
+    news = {s: flat(analyze(s, args.speed, args.speed_value))
+            for s in args.new}
     rep = {"baseline": args.baseline,
            "baseline_metrics": base,
            "new": {s: v for s, v in news.items()}}
