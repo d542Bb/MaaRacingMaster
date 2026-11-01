@@ -1544,6 +1544,9 @@ class SpeedRushModule(ActivityModule):
             "sel_shadow": eng.selection_shadow_trace,
             # 场景快照（motion_plan 输入面）：自车/走廊年龄/对象年龄与 σ
             "scene": None if eng.scene is None else eng.scene.as_trace(),
+            # 对象表（第 1 期观测面）：身份键/年龄/本拍可见/安全标记与原因；
+            # 超龄条目会在这里比 scene 多留一会儿，safety_ok 已失效。
+            "otab": eng.object_table_trace(),
             # 轨迹计划（shadow/live 才有）：valid/layer/预览/候选
             "plan": None if plan is None else plan.as_trace(),
             # 本拍两层名义视界（秒，观测面）：今天都是常量，分级时域落地后

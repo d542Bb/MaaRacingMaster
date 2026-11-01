@@ -32,6 +32,7 @@ from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import Corridor
 from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
 from maaracing_master.plugins.speedrush.motion_plan import build_scene
+from maaracing_master.plugins.speedrush.object_table import ObjectTable
 from maaracing_master.plugins.speedrush.selection import (
     BonusSource, CarSource, CoinSource, LayeredSelector, Obj, RoadBand,
     RoadFrame, SelectionParams, SelectionReport, reach_slack)
@@ -486,6 +487,12 @@ class DecisionEngine:
         self._ruler_exec_prev: float | None = None  # 上一拍 executed（道，右正）
         # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
         self._metric_cars: tuple = ()
+        # 动态对象表（2026-11-01，第 1 期）：按身份键合并轨道/视图/米制/币组。
+        # 安全龄沿用 motion.max_obj_age_s（与现状一致），规划保留窗取计划视界。
+        self._objects = ObjectTable(
+            safety_age_s=cfg.motion.max_obj_age_s,
+            plan_age_s=max(cfg.motion.horizon_s, cfg.motion.max_obj_age_s))
+        self._stage: int | None = None
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
@@ -534,6 +541,8 @@ class DecisionEngine:
         self._car_zf.clear()
         self._car_x_hold.clear()
         self._coin_t_mem.clear()
+        self._objects.reset()
+        self._stage = None
         self._conserve_t = 0.0
         self._ok_t = 0.0
         self._abort_next = DecisionState.CRUISE
@@ -581,6 +590,13 @@ class DecisionEngine:
         # 车米制状态实例通道（C 线 2026-10-12，闸 metric_cars.enabled）：车源
         # 链消费（米制优先、像素回退）；闸关=空（回退路径）。
         self._metric_cars = obs.metric_cars if self.cfg.metric_cars.enabled else ()
+        # 对象表先于状态机推进：阶段切换时上游轨道已清空（id 不复用），表也
+        # 换账；其余拍按同 id 续命并对超龄条目保留到计划视界。
+        if self._stage is not None and obs.stage != self._stage:
+            self._objects.reset()
+        self._stage = obs.stage
+        self._objects.step(obs=obs, views=self._views,
+                           metric_cars=self._metric_cars, fps=self._fps)
         # 占用影子先于状态机推进：安全状态不随决策状态/距离有效性消失。
         # sel_ego_m 每拍清空，只有本拍 CRUISE 产出了当前选择才计算 veto。
         self._sel_ego_m = None
@@ -1454,6 +1470,10 @@ class DecisionEngine:
     def selection_debug(self) -> dict | None:
         """上一拍选择帧快照（ego/中心/路点/机会）——trace sel_dbg 列。"""
         return self._sel_dbg
+
+    def object_table_trace(self) -> dict:
+        """上一拍对象表（身份/年龄/可见/安全标记）——trace otab 列。"""
+        return self._objects.as_trace()
 
 
     def _tick_abort(self, dt_s: float, executed: float | None) -> str:
