@@ -141,6 +141,7 @@ public sealed class PythonSidecar : IDisposable
         // GUI 无控制台：sidecar stderr 落盘便于排查。固定落用户数据目录
         // （%APPDATA%/MaaRacingMaster/logs，开发/发行一致、不受日志开关控制——框架诊断日志）；
         // APPDATA 不可用时回退工作目录，保证跨机器可移植。
+        // 体积有界：超过上限轮转一份备份后重开，长跑不再无界追加。
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var baseDir = string.IsNullOrEmpty(appData)
             ? (_workDir ?? Environment.CurrentDirectory)
@@ -149,6 +150,7 @@ public sealed class PythonSidecar : IDisposable
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+            RotateIfOversize(logPath);
             using var fs = new StreamWriter(logPath, append: true) { AutoFlush = true };
             string? line;
             while ((line = await _process.StandardError.ReadLineAsync()) is not null)
@@ -159,6 +161,26 @@ public sealed class PythonSidecar : IDisposable
         catch
         {
             // 进程退出后 reader 结束，忽略
+        }
+    }
+
+    /// <summary>stderr 日志上限（字节）：超过即轮转为 .1（只留一份备份）。</summary>
+    private const long StderrLogMaxBytes = 8L * 1024 * 1024;
+
+    /// <summary>超限则把当前 stderr 日志轮转为 .1；失败不抛（不影响日志本身）。</summary>
+    private static void RotateIfOversize(string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length < StderrLogMaxBytes) return;
+            var bak = path + ".1";
+            if (File.Exists(bak)) File.Delete(bak);
+            File.Move(path, bak);
+        }
+        catch
+        {
+            // 轮转失败就继续追加，宁可超限也不丢日志
         }
     }
 

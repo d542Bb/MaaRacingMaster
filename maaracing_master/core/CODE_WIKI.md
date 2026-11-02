@@ -493,6 +493,17 @@
 
 **测试**：`tests/test_dashboard_contract.py`（版本 / block 白名单 / 非法块 / 动作白名单 / 兼容桥 / 路由不建实例）、`tests/test_module_dashboard_contract.py`（资格位、版本 0 占位与列表下发）、`tests/test_frontend_dashboard_center.py`（前端渲染器覆盖全部 block 类型 / 候选集与统一路由）。
 
+### 1.21 [maa_option.py](./maa_option.py) — 框架侧产物开关
+
+**职责**：把 maafw 的 `framework/config/maa_option.json` 挂到 GUI 两项调试开关上，让「两个开关都关 = 框架侧零落盘」成立。
+
+- 映射：`logging` ← 日志记录（关 = 不写 `maafw.log`）；`save_on_error` ← DEBUG 截图（关 = 不写 `framework/debug/on_error/` 失败截图）。`save_draw` / `draw_quality` / `stdout_level` 不由本模块改。
+- 写文件走「临时文件 + 原子替换」：半截 JSON 会让框架回落默认值，等于悄悄把开关又打开。
+- **生效时机**：框架只在 `Toolkit.init_option()` 那一次读配置，故运行中切换只更新文件、**下次启动**才被采用；`sidecar.main()` 在首次 init 之前同步一次（开关随 profile 回读）。
+- 边界：`logs/sidecar_stderr.log` 不在本模块管辖（它是崩溃诊断的最后手段），由 shell 侧按 8MB 上限轮转；`data/`（业务库）与 `evidence/`（C 证据冻结，随日志开关）也不在此。
+
+**测试**：`tests/test_maa_option.py`。
+
 ## 2. 模块依赖与持有关系
 
 ### 2.1 导入关系图
@@ -696,7 +707,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 
 ## 6. 调试操作
 
-1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingMaster/debug/<module>/<会话>/` 目录
+1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 截图与记录"，标注帧按节流保存到 `%APPDATA%/MaaRacingMaster/debug/<module>/<会话>/` 目录（节流密度由模块定，如 speedrush 10Hz）
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，显示精简标注画面（~30fps；窗口由 GUI 侧承担，`debug.py` 不开窗口）
 3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
 4. **MPE Studio**：`tools/navkit/studio.cmd` 起完整工作台（MPE 画布编辑 v4 真源 + ROI 校准台 / 策略表 / 模板截取），见 [tools/navkit/README.md](../../tools/navkit/README.md)
@@ -706,7 +717,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
 - `data/`：结构化业务数据（`data/treasure/treasure.db`）
 - `logs/`：会话记录 `logs/<MaaRM时间戳>/`——运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）与伴随产物 `trace.jsonl`（共用「日志记录」开关）
-- `framework/`：MAA 框架自产物（`maafw.log`、cache）
+- `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——开关由 [maa_option.py](./maa_option.py) 跟随两项调试开关，下次启动生效
 - `debug/`：调试截图会话 `debug/<module>/<会话>/`（DebugStudio 契约）
 
 GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目录管理。

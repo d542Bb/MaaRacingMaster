@@ -1142,10 +1142,10 @@
             <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
               <div class="option-main">
-                <div class="option-title">DEBUG 每帧截图</div>
-                <p class="option-desc">逐帧保存画面用于排查识别问题，约 50–100MB/分钟，仅排查时短时开启</p>
+                <div class="option-title">DEBUG 截图与记录</div>
+                <p class="option-desc">保存调试图、读数与取证画面，约 300MB/分钟，仅排查时短时开启</p>
               </div>
-              <span class="option-note">约占用 50-100MB/分钟磁盘空间</span>
+              <span class="option-note">约占用 300MB/分钟磁盘空间</span>
             </div>
             <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-estop" role="switch" aria-checked="false"></button>
@@ -1159,7 +1159,7 @@
               <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
-                <p class="option-desc">开启后运行日志、玩法流水与性能记录写入会话目录，排查时整个目录发出来即可。关闭时仅保留在界面</p>
+                <p class="option-desc">开启后运行日志、玩法流水与性能记录写入会话目录，框架日志同此开关（重启生效）；关闭时仅保留在界面</p>
               </div>
               <span class="option-note">默认关闭，排查问题时开启</span>
             </div>

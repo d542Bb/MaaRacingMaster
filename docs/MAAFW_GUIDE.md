@@ -595,6 +595,13 @@ class MyAction(CustomAction):
   `logging`(存 maafw\.log)、`save_draw`(存识别可视化到 vision/)、`stdout_level`(0无\~7全)、
   `save_on_error`(失败存图)、`draw_quality`。
 
+  本项目把其中两项挂到 GUI 开关（[`core/maa_option.py`](../maaracing_master/core/maa_option.py)）：
+  `logging` ← 「日志记录」，`save_on_error` ← 「DEBUG 截图与记录」，其余键保持原值。
+  实测（5.12.3）：`logging=false` 时 init 不建 `debug/maafw.log`；`save_on_error=true`
+  时每个识别失败节点落一张全屏 PNG 到 `debug/on_error/`，**框架不轮转**——这也是
+  必须跟随开关的原因（实机一天 2.4GB）。配置只在 init 那一次读入，运行中改文件
+  要等下次启动生效。
+
 - Tasker 全局选项可设 `DebugMode`(所有任务当 focus 产生回调，RecoDetail 含 raw/draws)。
   `raw`/`draws` **只在 DebugMode/SaveDraw 下可得**——诊断代码不得假设 RecoDetail 一定有 draws。
   高频流水线留意 `RecoImageCacheLimit`（识别图像缓存，默认 4096 帧）。

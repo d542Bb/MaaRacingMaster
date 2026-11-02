@@ -8,7 +8,7 @@
     config/     配置类（profile.json、maa_option.json）
     data/       结构化业务数据（data/treasure/treasure.db）
     logs/       会话记录（logs/<会话>/MaaRM_*.log + trace.jsonl，共用「日志记录」开关）
-    framework/  MAA 框架自产物（maafw.log、cache）
+    framework/  MAA 框架自产物（debug/maafw.log、debug/on_error 失败截图，跟随两项调试开关）
     debug/      调试产物与录制语料（debug/<module>/<会话>/，调试台契约）
 
 会话目录命名（logs/ 与 debug/ 同一规则）：`<YYYYMMDD_HHMMSS>[_<标签>]`——时间戳
