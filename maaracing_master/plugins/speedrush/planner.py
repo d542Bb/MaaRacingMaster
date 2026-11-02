@@ -595,6 +595,12 @@ class LateralPlanner:
         # jump_confirm=大新息确认重基；stale_reject=有锚持续被拒的陈旧重基；
         # hold_stale=保持拍陈旧重基。
         self.last_rebase: str | None = None
+        # 逐拍诊断四元组：声明先于首拍 update（ctrl_debug 可先于 update 调用），
+        # 语义见 update() 内的逐拍重置注释。
+        self._branch: str | None = None
+        self._line_gap: float | None = None
+        self._line_veto: bool | None = None
+        self._diag_lane_pos_ok: bool | None = None
         # 上一拍计划前馈命令：换候选时限速用；计划中断后置空，重入首拍不限。
         self._last_plan_u: float | None = None
         # 计划短断供保持（_PLAN_HOLD 段）：最后一条有效航向指令 + 剩余拍数。
@@ -761,7 +767,20 @@ class LateralPlanner:
              "pcn": round(self._plan_center_t, 2),
              "pcg": bool(self._plan_center_gated),
              # 并线杆值上调量（平顶峰适配，trace-only）：缺口积分当前值
-             "mboost": round(self._sustain_boost, 3)}
+             "mboost": round(self._sustain_boost, 3),
+             # 分支归因面（2026-11-02，8750 型跳变）：exec=规划器信念横位
+             # （与链侧 elane 同拍对账）、anch=路观测参考帧、lpok=module 侧
+             # 线可用门、lgap=深度修正的线分歧（道）、lveto=线作证拦下本拍
+             # 深度修正、branch=本拍实际内部分支（lane_follow/depth_follow/
+             # depth_reject/hold/blind）。跳变钉分支靠这组，不再靠纸面推演。
+             "exec": round(self.state.executed_lane, 4),
+             "anch": None if self._road_anchor is None
+             else round(self._road_anchor, 3),
+             "lpok": self._diag_lane_pos_ok,
+             "lgap": None if self._line_gap is None
+             else round(self._line_gap, 3),
+             "lveto": self._line_veto,
+             "branch": self._branch}
         d.update(self.head.debug())
         return d
 
