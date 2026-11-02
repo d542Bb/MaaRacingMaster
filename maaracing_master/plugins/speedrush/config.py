@@ -73,6 +73,15 @@ class Selection:
     # 预置位，不新增计分语义；150 分仍只由 pass 贴近动作产生。闸关=逐位回
     # 今天。
     pass_preposition_enabled: bool = False
+    # 擦边通过质量（2026-11-02）：判定=脱离并排帧中心距 ∈[0.54, 0.77] 道，
+    # 撞过该车 10.5s 内不判。实测交付散布 0.08~1.35 道的病灶=主车丢检层塌
+    # 回中心撤销回避 + t<0 即塌 + 走廊夹取可能夹出碰撞目标。开闸后 pass 候选
+    # 接受 t∈[−hold_s, 视界]、t≤0 免可达/阻挡（保持到脱离）、目标近于
+    # min_gap 即换侧/弃车；配合 eligibility_latch 兜 0.3s 内丢检。
+    # 闸关=逐位回今天。
+    pass_hold_enabled: bool = False
+    pass_hold_s: float = 0.5
+    pass_min_gap_lane: float = 0.6
     switch_dwell_s: float = 0.2
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
@@ -957,6 +966,11 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "preposition_bias_lane", 1.0, lo=0),
             pass_preposition_enabled=_bool(
                 d, "selection", "pass_preposition_enabled", default=False),
+            pass_hold_enabled=_bool(
+                d, "selection", "pass_hold_enabled", default=False),
+            pass_hold_s=_num_def(d, "selection", "pass_hold_s", 0.5, lo=0),
+            pass_min_gap_lane=_num_def(
+                d, "selection", "pass_min_gap_lane", 0.6, lo=0),
             switch_dwell_s=_num_def(
                 d, "selection", "switch_dwell_s", 0.2, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),

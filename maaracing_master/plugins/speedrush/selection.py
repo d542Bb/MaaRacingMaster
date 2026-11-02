@@ -246,6 +246,16 @@ class SelectionParams:
     # 半宽和, 1.5 道]、到站 ∈(0, 视界] → L4 向远车侧安全区间边界起手。预置
     # 位，不新增计分语义；数值真源 decision.json selection 节。
     pass_preposition_enabled: bool = False
+    # 擦边通过质量（2026-11-02）：极限超车判定=对方车脱离并排那一帧，中心距
+    # ∈[两半宽和, 两半宽和+0.8m]≈[0.54, 0.77] 道才值 150 分，撞过该车 10.5s
+    # 内不判——贴太狠=侧刮+自否。实测交付散布 0.08~1.35 道（目标 0.68 在窗
+    # 口内）：主车丢检层塌回中心撤销回避、t<0 即塌。开闸后候选接受
+    # t∈[−hold_s, 视界]（车脱离并排前保持擦边线，t≤0 免可达/阻挡检查——
+    # 并排保持），目标被走廊夹得比 min_gap 近即换侧、两侧都不够即弃。
+    # 闸关=逐位回今天。数值真源 decision.json selection 节。
+    pass_hold_enabled: bool = False
+    pass_hold_s: float = 0.5
+    pass_min_gap_lane: float = 0.6
     switch_dwell_s: float = 0.2
     layer_dwell: bool = False
     event_replan: bool = False
@@ -404,13 +414,22 @@ def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
     return None, pending
 
 
-def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float:
-    """选车心两侧空间更大的一侧作为通过侧。"""
+def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float | None:
+    """选车心两侧空间更大的一侧作为通过侧；开闸后再保最小安全横距。
+
+    走廊夹取可能把目标夹得比 min_gap 更近（车贴路缘时）——那是碰撞目标
+    （<两半宽和即侧刮，极限超车被 10.5s 惩罚自否）：换另一侧，两侧都给
+    不出就弃这辆车。"""
     room_l = (c.x - road.left_m) if road.left_m is not None else 0.0
     room_r = (road.right_m - c.x) if road.right_m is not None else 0.0
     side = 1.0 if room_r >= room_l else -1.0
-    x = road.clamp(c.x + side * p.graze_gap_lane * p.lane_w_m,
-                   p.wall_margin_lane * p.lane_w_m)
+    margin = p.wall_margin_lane * p.lane_w_m
+    x = road.clamp(c.x + side * p.graze_gap_lane * p.lane_w_m, margin)
+    min_gap = p.pass_min_gap_lane * p.lane_w_m if p.pass_hold_enabled else 0.0
+    if min_gap > 0.0 and abs(x - c.x) < min_gap:
+        x = road.clamp(c.x - side * min_gap, margin)
+        if abs(x - c.x) < min_gap:
+            return None
     return x
 
 
@@ -423,18 +442,23 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     区间（0.17 道），0 道上的车只让开 0.17（车半宽 0.27）＝迎面撞上去。
     """
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
+    hold = p.pass_hold_s if p.pass_hold_enabled else 0.0
     cands = [c for c in cars
              if c.safe
-             and c.t is not None and 0.0 <= c.t <= p.horizon_s
+             and c.t is not None and -hold <= c.t <= p.horizon_s
              and abs(c.x - ego) <= half]
-    for c in sorted(cands, key=lambda o: o.t):
+    for c in sorted(cands, key=lambda o: (o.t < 0.0, o.t)):
         x = _pass_x(c, road, p)
+        if x is None:
+            continue
         if abs(x - c.x) < half:
             continue                    # 夹进走廊后仍压在车里：这侧过不去
-        if not _reachable(x, ego, c.t, p):
+        # 并排保持（t≤0，仅开闸可达）：不再谈可达与阻挡——位置保持到脱离
+        inflight = c.t > 0.0 or not p.pass_hold_enabled
+        if inflight and not _reachable(x, ego, c.t, p):
             continue
         others = [o for o in cars if o is not c]
-        if _blocked(others, x, c.t, p):
+        if inflight and _blocked(others, x, c.t, p):
             continue
         return x, c.t, "pass"
     return None

@@ -74,6 +74,10 @@ def test_preposition_params_flow_from_config():
     # 擦边预判闸同一构造处：局 113307 实锤 438 拍满足条件却零触发——
     # 构造漏传让 dataclass 默认 False 一直赢，与配置真源脱钩
     assert p.pass_preposition_enabled == s.pass_preposition_enabled
+    # 擦边通过质量三参数同构造处防再犯
+    assert p.pass_hold_enabled == s.pass_hold_enabled
+    assert p.pass_hold_s == s.pass_hold_s
+    assert p.pass_min_gap_lane == s.pass_min_gap_lane
     # 影子选择器与生产共用同一份参数（预排行为逐位一致）
     assert eng._selector_shadow.p.preposition_horizon_s == 10.0
 

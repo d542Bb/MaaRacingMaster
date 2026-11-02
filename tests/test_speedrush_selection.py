@@ -548,3 +548,45 @@ def test_event_replan_small_step_and_safety_override():
     assert r3.target_x_m == pytest.approx(0.8 * LW)
     r4 = sel.update(_road(), [], [Obj("car", 0.0, 2.0)], [], 0.0, 0.05)
     assert r4.layer == 2            # 擦边层不等事件
+
+
+def test_pass_hold_gate_off_drops_past_car():
+    """闸关：t<0 的车（已并排/略过）不进擦边候选——逐位回现行行为。"""
+    rep = select(_road(), [], [Obj("car", 0.0, -0.3)], [], 0.0, _p())
+    assert rep.layer == 4 and rep.why == "center"
+
+
+def test_pass_hold_keeps_graze_until_clear():
+    """闸开：并排/刚脱离（t∈[−hold,0]）保持擦边目标，免可达/阻挡检查。
+
+    极限超车判定在"脱离并排那一帧"——层提前塌回中心撤销回避，交付
+    横距散布 0.08~1.35 道（窗口 [0.54, 0.77]），就是交付失败的主体。"""
+    rep = select(_road(), [], [Obj("car", 0.0, -0.3)], [], 0.0,
+                 _p(pass_hold_enabled=True))
+    assert rep.layer == 2 and rep.why == "pass"
+    assert abs(rep.target_x_m) == pytest.approx(0.68 * LW, abs=0.05)
+
+
+def test_pass_hold_pending_car_still_beats_past_car():
+    """闸开排序：来得及的未到车（t≥0）优先于已并排的（t<0），不倒挂。"""
+    cars = [Obj("car", 0.0, -0.2), Obj("car", 0.0, 2.5)]
+    rep = select(_road(), [], cars, [], 0.0, _p(pass_hold_enabled=True))
+    assert rep.layer == 2 and rep.why == "pass"
+    wp_t = [w.t for w in rep.waypoints if w.src == "pass"]
+    assert wp_t and wp_t[0] == pytest.approx(2.5)
+
+
+def test_pass_min_gap_rejects_squeeze_band():
+    """闸开：走廊夹取把目标压进 [半宽和, min_gap) 危险带即弃车。
+
+    窄路（1 道）里车偏一侧，另一侧被夹回只剩 0.57 道——闸关时接受
+    （>半宽和合法但离碰撞线只剩 0.03 道，横移噪声 ±0.15 道半数撞上）；
+    闸开时两侧都给不出 0.6 道 → 不擦，回中心。"""
+    car_x = 0.42 * LW
+    rep = select(_road(width_lanes=1.0), [], [Obj("car", car_x, 2.0)],
+                 [], 0.0, _p())
+    assert rep.layer == 2 and rep.why == "pass"
+    assert abs(rep.target_x_m - car_x) == pytest.approx(0.57 * LW, abs=0.02)
+    rep2 = select(_road(width_lanes=1.0), [], [Obj("car", car_x, 2.0)],
+                  [], 0.0, _p(pass_hold_enabled=True))
+    assert rep2.layer == 4 and rep2.why == "center"
