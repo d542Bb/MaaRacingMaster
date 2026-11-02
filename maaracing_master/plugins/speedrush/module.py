@@ -1168,6 +1168,8 @@ class SpeedRushModule(ActivityModule):
                                else run_dir / "depth_debug"),
                     dump=None if cfg.debug_dump.mode == "off" else cfg.debug_dump),
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
+                    # 线↔深度互证闸（货车遮挡防线）：每局一份状态机
+                    "lane_agree": _LaneAgreeGate(),
                     # 到达位置谱系（路心读数序列；影子/未来到达门消费）
                     "pos_lineage": PositionLineage(),
                     # 轨迹计划（motion.mode=off 时恒不调用）：候选时稳门随阶段重建
@@ -1361,6 +1363,19 @@ class SpeedRushModule(ActivityModule):
                                  if line_origin else None),
                 v_lat=planner.state.v_lat)
             road_offset = None if corridor is None else -corridor.center_lane
+            # 线↔深度互证（2026-11-02 货车段）：深度路心家族本拍读数对线
+            # 的新鲜横位；wall 不参与（8750 拍错在 wall）。分歧喂互证闸，
+            # 结果并入 lane_pos_ok——线整体错位时规划器不再 0.7 增益跟随。
+            depth_ro = None
+            road_snap = chain["ego_road"].last or {}
+            if road_snap.get("src") in ("region", "pair_slot", "memory"):
+                depth_ro = road_snap.get("off")
+            ldis = None
+            if lane is not None and lane.get("x") is not None \
+                    and depth_ro is not None:
+                ldis = float(lane.get("x")) - float(depth_ro)
+            lane_pos_ok = bool(lane_usable
+                               and chain["lane_agree"].update(ldis))
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -1442,7 +1457,7 @@ class SpeedRushModule(ActivityModule):
                                  road_offset_hold=road_offset_hold,
                                  lane_x=None if lane is None else lane.get("x"),
                                  lane_ok=lane_ok,
-                                 lane_pos_ok=lane_usable,
+                                 lane_pos_ok=lane_pos_ok,
                                  lane_relock=lane_relock,
                                  lane_theta=None if lane is None
                                  else lane.get("theta"),
@@ -1741,6 +1756,9 @@ class SpeedRushModule(ActivityModule):
             "ro_origin": chain["ego_road"].last.get("origin"),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
+            # 线↔深度路心家族横位分歧（道，线−深度；None=本拍无可比证据）。
+            # 与 lat_ctrl.lpok 同源：lpok=False 且 ldis 持续超阈=互证闸在拦。
+            "ldis": None if ldis is None else round(ldis, 3),
             # 路心互证审计列（2026-10-06）：同拍栅格 wmid 路心（off 系，右正）
             # + 新鲜对互证判定（agree/veto/bypass；复用/闸关/栅格弃权=None）。
             # ro_edge=找边对心（off 系）——master 下找边对只做审计，ro_off
@@ -2317,6 +2335,53 @@ def _record_root() -> Path:
 # fid 与 trace jsonl 对账。热路径纪律：≥2s 一张、每阶段封顶，写失败即自禁不重试刷屏）
 # 线为位置原点的检测龄上限（ms）：更旧的线值只能做运动观测，不能当位置。
 LANE_POS_AGE_MS = 200.0
+
+
+class _LaneAgreeGate:
+    """线位置权威的互证闸（2026-11-02，223948 局货车段实证）。
+
+    大车遮挡会让标线整体错位（左线被挡→最左可见线被当左线，横位读数
+    偏 1.3 道，帧证），而线的可用门只看条数与新鲜度，拦不住。本闸拿
+    线的新鲜横位与深度路心家族（region/pair/memory，不含 wall——8750
+    拍错在 wall）比：持续分歧超阈暂停线的位置权威（lane_pos_ok=False，
+    规划器退深度修正路径，其中已有 0.8 新息门与陈旧重基消化噪声）；贴
+    回（滞回）才恢复。只动位置证据门，不动走廊原点——深度全断时线原
+    点仍供走廊存在（中心=执行位），黑视纪律不变。"""
+
+    ON_LANE = 1.0      # 暂停阈值（道）
+    ON_TICKS = 5       # 持续分歧拍数
+    OFF_LANE = 0.5     # 恢复阈值（滞回）
+    OFF_TICKS = 3      # 持续贴回拍数
+
+    def __init__(self) -> None:
+        self._dis_t = 0        # 连续超阈分歧拍数
+        self._vetoed = False   # 线位置权威当前被暂停
+        self._agree_t = 0      # 暂停中连续贴回拍数
+
+    def update(self, diff: float | None) -> bool:
+        """喂本拍分歧（线横位 − 深度家族横位，道）；None=本拍无可比证据，
+        计数冻结。返回本拍线位置权威是否成立。"""
+        if diff is None:
+            return not self._vetoed
+        if not self._vetoed:
+            if abs(diff) > self.ON_LANE:
+                self._dis_t += 1
+                if self._dis_t >= self.ON_TICKS:
+                    self._vetoed = True
+                    self._dis_t = 0
+                    self._agree_t = 0
+            else:
+                self._dis_t = 0
+        else:
+            if abs(diff) <= self.OFF_LANE:
+                self._agree_t += 1
+                if self._agree_t >= self.OFF_TICKS:
+                    self._vetoed = False
+                    self._agree_t = 0
+                    self._dis_t = 0
+            else:
+                self._agree_t = 0
+        return not self._vetoed
 YOLO_MASK_MARGIN = 10             # 检测框外扩（px）：框缘深度过渡带不留在候选区
 BAD_FRAME_MIN_INTERVAL_S = 2.0
 BAD_FRAME_MAX_PER_PHASE = 40

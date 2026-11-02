@@ -1159,3 +1159,45 @@ def test_ego_road_line_tail_updates_jump_baseline():
     assert c is not None and _off(c) == pytest.approx(-1.9)
     assert o.last["source"] == "line"
     assert o._last_center == pytest.approx(1.9)   # 基线随线走
+
+
+def test_lane_agree_gate_veto_after_sustained_disagreement():
+    """互证闸：持续 >1.0 道分歧 5 拍 → 暂停线位置权威（223948 货车段）。"""
+    g = smod._LaneAgreeGate()
+    for _ in range(4):
+        assert g.update(1.3), "未满持续拍数不拦"
+    assert not g.update(1.3), "第 5 拍持续超阈须拦"
+
+
+def test_lane_agree_gate_tolerance_and_freeze():
+    """0.99 道不拦；分歧间断清零；无可比证据（None）冻结当前状态。"""
+    g = smod._LaneAgreeGate()
+    assert g.update(0.99)
+    for _ in range(10):
+        assert g.update(0.99), "阈内持续再多拍也不拦"
+    g.update(1.3)
+    assert g.update(0.1), "未满持续拍数，回到阈内清零"
+    assert g.update(None) and g.update(None), "无可比证据保持放行"
+
+
+def test_lane_agree_gate_hysteresis_recovery():
+    """恢复须滞回：≤0.5 道连续 3 拍才放行，单拍贴回不恢复。"""
+    g = smod._LaneAgreeGate()
+    for _ in range(5):
+        g.update(1.3)
+    assert not g.update(0.2), "单拍贴回不恢复"
+    assert not g.update(1.2), "贴回被打断重新计"
+    assert not g.update(0.2)
+    assert not g.update(0.2), "第 2 拍贴回仍不放行"
+    assert g.update(0.2), "第 3 拍连续贴回放行"
+    assert g.update(1.3), "放行后回到正常计数（不立即再拦）"
+
+
+def test_control_tick_carries_lane_agree_gate():
+    """接线：互证闸随控制链走，trace 落 ldis 列，lpok 并入闸结果。"""
+    m = _module()
+    chain = m._build_control_chain()
+    assert isinstance(chain["lane_agree"], smod._LaneAgreeGate)
+    pad = StubPad()
+    m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
+    assert "ldis" in chain["trace"][-1]
