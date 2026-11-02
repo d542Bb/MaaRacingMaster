@@ -233,8 +233,10 @@ class SelectionParams:
     reward_aligned_lane: float = 0.2
     wall_margin_lane: float = 0.35
     center_lookahead_m: float = 0.0
-    # 无即时目标时向未来机会侧预置：只看短视界外、车侧 2.5 道内、6 秒内的
-    # 奖励车/普通车/金币，锚点最多偏 1 道（预置位，不追具体目标）。
+    # 无即时目标时向未来机会侧预置（预置位，不追具体目标）：短视界外、
+    # 车侧 preposition_max_lane 道内、preposition_horizon_s 秒内的奖励车/
+    # 普通车/金币，锚点最多偏 preposition_bias_lane 道。数值真源是
+    # decision.json selection 节（horizon 取 10s：币组首检 ~8s + 流积分噪声）。
     preposition_enabled: bool = True
     preposition_horizon_s: float = 6.0
     preposition_max_lane: float = 2.5

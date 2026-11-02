@@ -175,6 +175,29 @@ def test_preposition_disabled_holds_center():
     assert rep.target_x_m == pytest.approx(0.0, abs=0.05)
 
 
+# ---------- 预排视界延长（6→10s，2026-11-02） ----------
+
+def test_preposition_extends_to_long_horizon_coin():
+    """6~10s 带内的币也参与预置（视界延长后）：币组首检 ~8s 到站不再漏预排。"""
+    rep = select(_road(), [], [], [Obj("coin", 1.2 * LW, 8.0)], 0.0,
+                 _p(preposition_horizon_s=10.0))
+    assert rep.layer == 4
+    assert rep.target_x_m == pytest.approx(1.0 * LW, abs=0.05)
+
+
+def test_preposition_beyond_extended_horizon_excluded():
+    rep = select(_road(), [], [], [Obj("coin", 1.2 * LW, 10.5)], 0.0,
+                 _p(preposition_horizon_s=10.0))
+    assert rep.target_x_m == pytest.approx(0.0, abs=0.05)
+
+
+def test_preposition_far_side_gate_holds_in_extended_band():
+    """横距门在延长视界内照旧生效：2.5 道外的币不预置。"""
+    rep = select(_road(), [], [], [Obj("coin", 3.0 * LW, 8.0)], 0.0,
+                 _p(preposition_horizon_s=10.0))
+    assert rep.target_x_m == pytest.approx(0.0, abs=0.05)
+
+
 def test_waypoints_include_pass_and_coin():
     """奖励车在 5s 外，途中有同车道车和顺路币：先擦边、再收币、最后奖励车。"""
     rewards = [Obj("reward", 2.0, 5.0)]

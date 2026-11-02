@@ -61,6 +61,20 @@ def _group(fid, gid=1, n=3, x=0.4, cy=470, rel=2.5, conf=0.85):
     return g, members
 
 
+def test_preposition_params_flow_from_config():
+    """接线锁：预排参数从决策配置进选择器（防回归成死配置）——构造处漏传
+    时选择器拿到的是 dataclass 默认值，与配置真源脱钩（只改配置不生效）。"""
+    eng = DecisionEngine(CFG)
+    p = eng.selector.p
+    s = CFG.selection
+    assert p.preposition_enabled == s.preposition_enabled
+    assert p.preposition_horizon_s == s.preposition_horizon_s == 10.0
+    assert p.preposition_max_lane == s.preposition_max_lane
+    assert p.preposition_bias_lane == s.preposition_bias_lane
+    # 影子选择器与生产共用同一份参数（预排行为逐位一致）
+    assert eng._selector_shadow.p.preposition_horizon_s == 10.0
+
+
 def test_layered_coin_targets_coin_line():
     eng = DecisionEngine(CFG)
     g, ms = _group(1)

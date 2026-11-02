@@ -917,7 +917,7 @@ def _read_decision(path: Path) -> DecisionConfig:
             preposition_enabled=_bool(
                 d, "selection", "preposition_enabled", default=True),
             preposition_horizon_s=_num_def(
-                d, "selection", "preposition_horizon_s", 6.0, lo=0),
+                d, "selection", "preposition_horizon_s", 10.0, lo=0),
             preposition_max_lane=_num_def(
                 d, "selection", "preposition_max_lane", 2.5, lo=0),
             preposition_bias_lane=_num_def(
