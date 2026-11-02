@@ -9,6 +9,7 @@
     mra, $, state, reportError, showError,
     updateModuleOptionsDisabled, refreshModuleOptions, refreshSpeedrushStatus,
     renderModulePages, stashOptionBlocks, openModal,
+    syncDashboardCenter, refreshDashboardRunState,
   } = window.MRA;
 
   // ---------- 模块展示元数据（图标 / 配置摘要） ----------
@@ -316,6 +317,7 @@
       if (state.expanded[mid]) renderBuiltinPanel(mid);
       if (!state.cfg[mid]) ensureConfig(mid).then(() => refreshCard(mid));
     });
+    syncDashboardCenter(); // 队列增删 / 排序后重算看板候选集
   }
 
   // 轻刷单卡动态区（chips / 结果 / 阶段列表 / 状态类），不重建面板——运行中每 250ms
@@ -543,7 +545,7 @@
       }
       refreshModuleOptions(mid);                    // 模块选项块搬入面板 + 读配置
       ensureConfig(mid).then(() => refreshCard(mid)); // 摘要 chips 跟进最新配置
-      renderModulePages(mid);                        // 数据/设置页跟随最后展开的卡片
+      renderModulePages(mid);                        // 设置页与性能卡取当前卡片；看板中心按任务列表
     }
   }
 
@@ -763,6 +765,7 @@
       setStatus('系统就绪', 'ready');
     }
     renderPerfCard(d.perf);
+    refreshDashboardRunState(); // 绿点与页码运行态：只改指示位，不重拉看板
   }
 
   // ---------- 性能卡渲染 ----------

@@ -53,7 +53,13 @@ from maaracing_master.core.builtin_steps import (
     CloseGameStep,
     LaunchGameStep,
 )
+from maaracing_master.core.base import declares_dashboard, overrides_classmethod
 from maaracing_master.core.covers import cover_url_for, default_cover_url
+from maaracing_master.core.dashboard_contract import (
+    DASHBOARD_CONTRACT_VERSION,
+    DashboardContractError,
+    normalize_dashboard,
+)
 from maaracing_master.core.paths import (
     config_dir,
     data_dir,
@@ -459,7 +465,7 @@ HANDLERS = frozenset({
     # 更新与公告
     "check_update", "fetch_announcement",
     # 观测
-    "fetch_logs", "get_today_stats", "get_debug_state",
+    "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
     # 调试与显示开关
     "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
     # 行为开关
@@ -757,6 +763,7 @@ class SidecarService:
         """GUI 任务卡与模块管理弹窗的数据源：内置步骤 + 活动模块。
 
         kind 字段供前端区分（步骤没有阶段与有效期），其余字段同构——前端渲染同一套卡片。
+        has_dashboard 标识模块是否有数据看板；步骤不参与看板中心，恒 False。
         """
         items = [
             {
@@ -767,6 +774,8 @@ class SidecarService:
                 "requires_gamepad_exclusive": False,
                 "expired": False,
                 "valid_until": None,
+                # 步骤只跑一次，没有数据看板
+                "has_dashboard": False,
                 # 封面 URL 由核心解析（None = 未声明/文件缺失，前端回落 cover_default）
                 "cover": cover_url_for(sid),
                 # 默认配置随列表下发：前端「重置」要填回的就是这一份，不在前端另存
@@ -784,6 +793,8 @@ class SidecarService:
                 "requires_gamepad_exclusive": info["requires_gamepad_exclusive"],
                 "expired": info["expired"],
                 "valid_until": info["valid_until"],
+                # 看板资格由模块类声明，核心只下发标志（渲染组件在前端）
+                "has_dashboard": info["has_dashboard"],
                 # 封面 URL 由核心解析（None = 未声明/文件缺失，前端回落 cover_default）
                 "cover": cover_url_for(mid),
             })
@@ -1611,6 +1622,61 @@ class SidecarService:
         if reader is None:
             return (True, {"bucket": None, "summary": None, "games": []}, None)
         return (True, reader(), None)
+
+    def get_module_dashboard(self, params):
+        """数据看板内容路由：统一 block 契约，不持有任何模块业务字段。
+
+        - 新模块：``DASHBOARD_CONTRACT`` + ``read_dashboard()``，载荷经共享 schema 校验；
+        - 旧模块：``HAS_DASHBOARD`` + ``read_today_stats()``，core 包成 ``today_stats``
+          兼容块（冻结的鉴宝走这条，不修改模块代码）；
+        - 内置步骤 / 未声明看板 / 无内容：空 blocks 或明确错误。
+
+        只用类方法，不创建模块实例；单块非法只丢弃该块并记 WARNING。
+        """
+        module_id = params.get("module_id") if isinstance(params, dict) else None
+        if module_id in BUILTIN_STEPS:
+            return (False, None, "内置步骤没有数据看板")
+        cls = MODULE_REGISTRY.get(module_id) if isinstance(module_id, str) else None
+        if cls is None:
+            return (False, None, f"模块不存在: {module_id}")
+
+        contract = getattr(cls, "DASHBOARD_CONTRACT", None)
+        if contract == 0:
+            return (False, None, f"{module_id} 的看板尚未实现（DASHBOARD_CONTRACT=0）")
+        if not declares_dashboard(cls):
+            return (False, None, f"{module_id} 未声明数据看板")
+
+        try:
+            if contract is not None:
+                if contract != DASHBOARD_CONTRACT_VERSION:
+                    return (False, None, f"{module_id} 看板契约版本不支持: {contract!r}")
+                if not overrides_classmethod(cls, "read_dashboard"):
+                    return (False, None, f"{module_id} 声明了看板契约但未实现 read_dashboard")
+                payload = cls.read_dashboard()
+            elif overrides_classmethod(cls, "read_today_stats"):
+                stats = cls.read_today_stats()
+                payload = {
+                    "version": DASHBOARD_CONTRACT_VERSION,
+                    "title": "今日看板",
+                    "blocks": (
+                        [{"type": "today_stats", "data": stats}]
+                        if isinstance(stats, dict) else []
+                    ),
+                }
+            else:
+                payload = {"version": DASHBOARD_CONTRACT_VERSION, "blocks": []}
+        except Exception as exc:  # noqa: BLE001 —— 模块实现失败不得打崩 sidecar
+            return (False, None, f"读看板失败: {exc!r}")
+
+        if payload is None:
+            payload = {"version": DASHBOARD_CONTRACT_VERSION, "blocks": []}
+        try:
+            normalized, warnings = normalize_dashboard(payload)
+        except DashboardContractError as exc:
+            return (False, None, str(exc))
+        for warning in warnings:
+            logger.log(f"[dashboard] {module_id}: {warning}", "WARNING")
+        return (True, normalized, None)
 
     # ---------- 调试页 ----------
 

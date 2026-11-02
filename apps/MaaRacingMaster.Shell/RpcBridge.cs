@@ -33,7 +33,7 @@ internal static class RpcBridge
         "set_registry_optimization",
         "get_optional_dependencies",
         "check_update", "fetch_announcement",
-        "fetch_logs", "get_today_stats", "get_debug_state",
+        "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
         "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
         "set_emergency_stop", "set_click_mode", "set_intent_mode",
         "set_mute_game", "pick_game_exe",

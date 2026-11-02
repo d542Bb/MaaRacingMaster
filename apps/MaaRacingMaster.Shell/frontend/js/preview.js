@@ -71,7 +71,7 @@
     canvas.style.height = Math.floor(h) + 'px';
   }
 
-  // 放大/还原时切换数据页放大态（隐藏左栏 + 今日看板，预览卡独占整页）
+  // 放大/还原时切换数据页放大态（隐藏左栏与右栏其他卡片，预览卡独占整页）
   function setPreviewFsActive(card, active) {
     const pageEl = card.closest('.page');
     if (pageEl) pageEl.classList.toggle('preview-fs-active', active);

@@ -18,7 +18,7 @@
     mra, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
     openModal, setPreviewFloating, peepConsumer,
     bindModuleOptionsUI, refreshModuleOptions, updateModuleOptionsDisabled,
-    renderModulePages, checkRegistryOptimizations, pollTodayBoard,
+    renderModulePages, checkRegistryOptimizations, pollDashboard,
     renderTaskList, pollStatus, setStatus, pollLogs,
   } = window.MRA;
 
@@ -76,7 +76,7 @@
     });
     animatePageIn($('page-' + name), fromRight);
     moveTabSlider(name);
-    if (name === 'data') pollTodayBoard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
+    if (name === 'data') pollDashboard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
     if (name === 'about') fetchAnnouncement(); // 切到关于页重拉公告，避免停留在启动时的旧缓存
     glitchVersionEgg(); // 1% 概率版本号乱码（彩蛋，详见 glitchVersionEgg 注释）
   }
@@ -618,7 +618,7 @@
     checkRegistryOptimizations(); // 注册表权限体检（独立于初始化成败，内部自捕获异常）
     setTimeout(pollStatus, 250);
     setTimeout(pollLogs, 300);
-    setInterval(pollTodayBoard, 3000); // 今日看板（仅数据页可见时刷新）
+    setInterval(pollDashboard, 3000); // 看板中心（仅数据页可见时刷新当前看板）
     peepConsumer.start(500);           // PEEP 预览轮询（peep 开启 + 数据页可见 + 未脱离悬浮窗时 ~10fps）
   }
 

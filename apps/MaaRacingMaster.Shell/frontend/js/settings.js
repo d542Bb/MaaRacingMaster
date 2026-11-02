@@ -1,5 +1,5 @@
 // MaaRM shell 前端 —— 模块专属选项、toggle 开关、环境中心、模块「数据/设置」页
-// 模板渲染与控件绑定、今日看板。跨文件调用经 window.MRA（见文件末尾导出）。
+// 模板渲染与控件绑定、数据页看板中心。跨文件调用经 window.MRA（见文件末尾导出）。
 (function () {
   'use strict';
 
@@ -720,158 +720,329 @@
     });
   }
 
-  // ---------- 模块「数据/设置」页（按当前模块渲染；两模块共用同一套模板，id 带模块前缀，便于以后差异化）----------
-  // 以后给某模块定制页面时，只需把 MODULE_PAGE_DEFS 里该模块的 data/settings 换成专属模板函数。
+  // ---------- 模块「数据/设置」页（两模块共用同一套模板，id 带模块前缀）----------
+  // 数据页的模块差异由看板中心的 block 内容承载；页面骨架不按模块分叉。
 
-  // 数据页默认模板（mid 为模块 id，所有元素 id 加前缀，互不冲突）
-  // 今日看板 card（鉴宝：读 treasure.db 今日统计；由 renderTodayBoard + pollTodayBoard 填充）
-  function todayBoardCard(mid) {
-    return `
-        <!-- 今日看板 -->
-        <div class="card">
-          <div class="card-head">
-            <h3>今日看板</h3>
-            <span class="board-date" id="${mid}-board-date">--</span>
-          </div>
-          <div class="card-body">
-            <div class="board-grid">
-              <div class="board-item">
-                <span class="board-value" id="${mid}-board-coinnet">--</span>
-                <span class="board-label">银币盈亏</span>
-              </div>
-              <div class="board-item">
-                <span class="board-value" id="${mid}-board-egg-total">0</span>
-                <span class="board-label">领取彩蛋</span>
-                <span class="board-eggs">
-                  <b class="board-egg-num board-egg-num--red" id="${mid}-board-egg-red">0</b><b class="board-egg-num board-egg-num--yellow" id="${mid}-board-egg-yellow">0</b><b class="board-egg-num board-egg-num--blue" id="${mid}-board-egg-blue">0</b>
-                </span>
-              </div>
-              <div class="board-item">
-                <span class="board-value" id="${mid}-board-score">--</span>
-                <span class="board-label">今日积分</span>
-              </div>
-              <div class="board-item">
-                <span class="board-value" id="${mid}-board-games">--</span>
-                <span class="board-label" id="${mid}-board-games-wl">场次</span>
-              </div>
-            </div>
-            <div class="board-list" id="${mid}-board-list"></div>
-          </div>
-        </div>`;
+  // ---------- 看板中心 ----------
+  // 候选集 = 任务列表 ∩ 模块看板声明，按任务列表顺序；当前看板是会话内显式选择，
+  // 队列变化只校正被移出的选中项。看板内容统一走 get_module_dashboard 的 block 载荷，
+  // 这里只提供通用渲染器与一个今日统计兼容块。
+
+  let _dashCurrentId = '';
+  let _dashCandidatesSig = null;
+  let _dashPrevIds = [];
+  let _dashReqSeq = 0;
+  let _dashPayloadSig = '';
+
+  function dashboardCandidates() {
+    const byId = new Map();
+    state.modules.forEach((m) => { if (m && m.id) byId.set(m.id, m); });
+    return state.queue.order
+      .map((mid) => byId.get(mid))
+      .filter((m) => !!m && m.kind === 'module' && m.has_dashboard === true);
   }
 
-  // 当前检测 card（非鉴宝模块保留：金币/障碍车/奖励车）
-  function detectCard(mid) {
+  function resolveDashboardSelection(ids) {
+    if (ids.indexOf(_dashCurrentId) !== -1) return;
+    if (!ids.length) { _dashCurrentId = ''; return; }
+    const prevIndex = _dashPrevIds.indexOf(_dashCurrentId);
+    const index = prevIndex >= 0 ? Math.min(prevIndex, ids.length - 1) : 0;
+    _dashCurrentId = ids[index];
+  }
+
+  function dashboardCenterCard() {
     return `
-        <!-- 当前检测 -->
-        <div class="card">
-          <div class="card-head"><h3>当前检测</h3></div>
-          <div class="card-body">
-            <p class="detect-hint">运行中实时更新</p>
-            <div class="detect-grid">
-              <div class="mra-detect-item">
-                <div class="mra-detect-icon mra-detect-icon--coin">
-                  ${MRAIcons.svg('circle-dollar-sign')}
-                </div>
-                <span class="mra-detect-value" id="${mid}-detect-coin">--</span>
-                <span class="mra-detect-label">金币</span>
-              </div>
-              <div class="mra-detect-item">
-                <div class="mra-detect-icon mra-detect-icon--obstacle">
-                  ${MRAIcons.svg('car')}
-                </div>
-                <span class="mra-detect-value" id="${mid}-detect-car">--</span>
-                <span class="mra-detect-label">障碍车</span>
-              </div>
-              <div class="mra-detect-item">
-                <div class="mra-detect-icon mra-detect-icon--bonus">
-                  ${MRAIcons.svg('gift')}
-                </div>
-                <span class="mra-detect-value" id="${mid}-detect-bonus">--</span>
-                <span class="mra-detect-label">奖励车</span>
+        <!-- 看板中心：固定槽位；候选集由任务列表与模块声明共同决定 -->
+        <div class="card dash-card" id="dash-card">
+          <div class="card-head dash-head">
+            <h3>看板中心</h3>
+            <div class="dash-nav">
+              <div class="dash-pager" id="dash-pager">
+                <button class="dash-nav-btn" id="dash-prev" type="button" title="上一个看板" aria-label="上一个看板">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <span class="dash-page" id="dash-page" aria-live="polite"></span>
+                <button class="dash-nav-btn" id="dash-next" type="button" title="下一个看板" aria-label="下一个看板">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
               </div>
             </div>
           </div>
+          <div class="dash-body" id="dash-body">${dashLoadingHtml()}</div>
         </div>`;
   }
 
-  // 今日看板数据填充（sidecar get_today_stats 返回 {bucket, summary, games}）
+  function dashEmptyHtml() {
+    return '<div class="dash-empty">'
+      + '<div class="empty-art" aria-hidden="true"><svg viewBox="0 0 24 24">'
+      + '<rect x="3" y="3" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>'
+      + '<rect x="13" y="3" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>'
+      + '<rect x="3" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>'
+      + '<rect x="13" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>'
+      + '</svg></div>'
+      + '<b>还没有可显示的模块看板</b>'
+      + '<p>任务列表里还没有声明看板的模块。模块接入看板后，这里会显示它的数据；内置步骤不参与看板中心。</p>'
+      + '</div>';
+  }
+
+  function dashLoadingHtml() {
+    return '<div class="dash-empty"><b>读取看板中…</b></div>';
+  }
+
+  function dashErrorHtml(err) {
+    return '<div class="dash-empty"><b>看板读取失败</b><p>'
+      + escHtml((err && err.message) || err) + '</p></div>';
+  }
+
+  function dashStatHtml(item) {
+    const cls = item.tone === 'positive' ? ' class="pos"'
+      : item.tone === 'negative' ? ' class="neg"' : '';
+    const sub = item.sub ? '<span class="stat-sub">' + escHtml(item.sub) + '</span>' : '';
+    const dots = item.dots === true
+      ? '<div class="egg-dots" aria-hidden="true"><i></i><i></i><i></i></div>' : '';
+    return '<div class="stat"><span>' + escHtml(item.label) + '</span>'
+      + '<b' + cls + '>' + escHtml(item.value) + '</b>' + sub + dots + '</div>';
+  }
+
+  function dashRowHtml(row) {
+    const b = row.badge;
+    const badgeCls = b
+      ? (b.tone === 'positive' ? ' board-res--win'
+        : b.tone === 'negative' ? ' board-res--fail'
+        : b.tone === 'warn' ? ' board-res--warn' : '')
+      : '';
+    const badge = b
+      ? '<span class="board-res' + badgeCls + '">' + escHtml(b.text) + '</span>'
+      : '<span class="board-res board-res--empty" aria-hidden="true"></span>';
+    const trailing = row.trailing
+      ? '<span class="board-row-val">' + escHtml(row.trailing) + '</span>' : '';
+    return '<div class="board-row">'
+      + '<span class="board-row-seq">' + escHtml(row.leading || '') + '</span>'
+      + badge
+      + '<span class="board-row-text">' + escHtml(row.text) + '</span>'
+      + trailing
+      + '</div>';
+  }
+
+  // 今日统计兼容块：pre-contract 模块（冻结的鉴宝）的原始 {bucket, summary, games}
+  // 由这个渲染器解释；新模块用 stats / list 标准块表达同一张看板。
+  function todayStatsBlockHtml(d) {
+    if (!d || typeof d !== 'object') return '';
+    const s = (d.summary && typeof d.summary === 'object') ? d.summary : null;
+    const num = (v) => Number(v) || 0;
+    const coinNet = s ? num(s.income_sum) + num(s.egg_coin) : 0;
+    const coinCls = !s ? '' : coinNet > 0 ? ' class="pos"' : coinNet < 0 ? ' class="neg"' : '';
+    const egg = (cls, v) => '<span class="' + cls
+      + (num(v) ? '' : ' is-zero') + '">' + fmtNum(v) + '</span>';
+    const score = s ? num(s.highest_score) + num(s.egg_score) : null;
+    const games = Array.isArray(d.games) ? d.games : [];
+    const rows = games.map((g) => {
+      const res = g.auction_result === 'win'
+        ? '<span class="board-res board-res--win">拍中</span>'
+        : g.auction_result === 'fail'
+          ? '<span class="board-res board-res--fail">未中</span>'
+          : '<span class="board-res">--</span>';
+      const profit = g.auction_result === 'win'
+        ? '<span class="board-row-val">利 ' + fmtNum(g.profit) + '</span>' : '';
+      return '<div class="board-row">'
+        + '<span class="board-row-seq">#' + fmtNum(g.game_seq) + '</span>' + res
+        + '<span class="board-row-text">收 ' + fmtNum(g.income) + '</span>' + profit
+        + '</div>';
+    }).join('');
+    const bucket = typeof d.bucket === 'string' && d.bucket
+      ? '<p class="board-bucket">' + escHtml(d.bucket) + ' 05:00 起</p>' : '';
+    const wl = s
+      ? '<span class="stat-sub">胜 ' + num(s.win) + ' / 负 ' + num(s.fail) + '</span>' : '';
+    return bucket + '<div class="stat-grid">'
+      + '<div class="stat"><span>银币盈亏</span><b' + coinCls + '>'
+      + (s ? fmtNum(coinNet) : '--') + '</b></div>'
+      + '<div class="stat"><span>领取彩蛋</span><b>'
+      + fmtNum(s ? num(s.egg_red) + num(s.egg_yellow) + num(s.egg_blue) : 0)
+      + '</b><div class="stat-eggs">'
+      + egg('egg-red', s && s.egg_red)
+      + egg('egg-yellow', s && s.egg_yellow)
+      + egg('egg-blue', s && s.egg_blue)
+      + '</div></div>'
+      + '<div class="stat"><span>今日积分</span><b>' + fmtNum(score) + '</b></div>'
+      + '<div class="stat"><span>场次</span><b>' + fmtNum(s && s.games) + '</b>' + wl + '</div>'
+      + '</div>'
+      + (games.length
+        ? '<div class="board-list">' + rows + '</div>'
+        : '<p class="board-empty">今日暂无对局记录</p>');
+  }
+
+  function dashBlockHtml(block) {
+    switch (block.type) {
+      case 'stats':
+        return '<div class="stat-grid">' + block.items.map(dashStatHtml).join('') + '</div>';
+      case 'list':
+        return '<div class="board-list">' + block.rows.map(dashRowHtml).join('') + '</div>';
+      case 'text':
+        return '<p class="dash-desc">' + escHtml(block.text) + '</p>';
+      case 'path':
+        return '<div class="path-chip" title="' + escHtml(block.text) + '">'
+          + escHtml(block.text) + '</div>';
+      case 'action':
+        return '<button class="dash-action" type="button" data-dash-action="'
+          + escHtml(block.action) + '">' + escHtml(block.label) + '</button>';
+      case 'today_stats':
+        return todayStatsBlockHtml(block.data);
+      default:
+        return '';
+    }
+  }
+
+  function dashboardPayloadHtml(mod, payload) {
+    const blocks = (payload && Array.isArray(payload.blocks)) ? payload.blocks : [];
+    const title = (payload && typeof payload.title === 'string') ? payload.title : '';
+    const subtitle = (payload && typeof payload.subtitle === 'string') ? payload.subtitle : '';
+    const badge = payload && payload.badge && typeof payload.badge.text === 'string'
+      ? payload.badge : null;
+    const badgeCls = badge
+      ? (badge.tone === 'warn' ? ' kind-chip--warn'
+        : badge.tone === 'positive' ? ' kind-chip--positive'
+        : badge.tone === 'negative' ? ' kind-chip--negative' : '')
+      : '';
+    return '<div class="dash-panel">'
+      + '<div class="dash-panel-head"><div><h4>' + escHtml(mod.name)
+      + (title ? ' · ' + escHtml(title) : '') + '</h4>'
+      + (subtitle ? '<span class="dash-panel-sub">' + escHtml(subtitle) + '</span>' : '')
+      + '</div>'
+      + (badge ? '<span class="kind-chip' + badgeCls + '">' + escHtml(badge.text) + '</span>' : '')
+      + '</div>'
+      + (blocks.length
+        ? blocks.map(dashBlockHtml).join('')
+        : '<p class="dash-none">看板暂无内容</p>')
+      + '</div>';
+  }
+
+  function renderDashboardChrome(cands) {
+    const pager = $('dash-pager');
+    const prev = $('dash-prev');
+    const next = $('dash-next');
+    const ind = $('dash-page');
+    if (!pager || !prev || !next || !ind) return;
+    const list = cands || dashboardCandidates();
+    const count = list.length;
+    pager.hidden = count === 0;
+    const index = list.findIndex((m) => m.id === _dashCurrentId);
+    ind.textContent = count ? (index + 1) + ' / ' + count : '';
+    prev.disabled = index <= 0;
+    next.disabled = index < 0 || index >= count - 1;
+    const runId = (state.queueRun && state.queueRun.current_module) || '';
+    const runIndex = runId ? list.findIndex((m) => m.id === runId) : -1;
+    const currentIsRunning = runIndex >= 0 && runIndex === index;
+    const dir = runIndex < 0 || currentIsRunning ? 0 : (runIndex > index ? 1 : -1);
+    ind.classList.toggle('is-running', currentIsRunning);
+    ind.title = currentIsRunning ? '当前看板正在运行' : '';
+    next.classList.toggle('dash-nav-btn--run', dir === 1);
+    prev.classList.toggle('dash-nav-btn--run', dir === -1);
+    const runName = runIndex >= 0 ? list[runIndex].name : '';
+    next.title = dir === 1 ? '运行中的模块在右侧：' + runName : '下一个看板';
+    prev.title = dir === -1 ? '运行中的模块在左侧：' + runName : '上一个看板';
+    next.setAttribute('aria-label', next.title);
+    prev.setAttribute('aria-label', prev.title);
+  }
+
+  // 只挂载并轮询当前看板；页面不可见时不拉数，切走即停止。
+  async function loadDashboard() {
+    const page = $('page-data');
+    const body = $('dash-body');
+    if (!page || !body) return;
+    const mod = dashboardCandidates().find((m) => m.id === _dashCurrentId);
+    if (!mod) {
+      _dashReqSeq += 1;
+      _dashPayloadSig = '';
+      delete body.dataset.loadedFor;
+      body.innerHTML = dashEmptyHtml();
+      return;
+    }
+    if (page.classList.contains('hidden')) return; // 不可见不拉数；切到数据页立即补拉
+    const seq = ++_dashReqSeq;
+    if (body.dataset.loadedFor !== mod.id) {
+      _dashPayloadSig = '';
+      body.innerHTML = dashLoadingHtml();
+    }
+    try {
+      const payload = await mra.call('get_module_dashboard', { module_id: mod.id });
+      if (seq !== _dashReqSeq) return; // 已切到别的看板：丢弃过期响应
+      const sig = JSON.stringify(payload);
+      if (sig === _dashPayloadSig && body.dataset.loadedFor === mod.id) return;
+      _dashPayloadSig = sig;
+      body.innerHTML = dashboardPayloadHtml(mod, payload);
+      body.dataset.loadedFor = mod.id;
+    } catch (e) {
+      if (seq !== _dashReqSeq) return;
+      _dashPayloadSig = ''; // 失败后下一次成功必须重渲染，不能因旧签名相同而停在错误态
+      body.innerHTML = dashErrorHtml(e);
+      body.dataset.loadedFor = mod.id;
+    }
+  }
+
+  async function pollDashboard() {
+    try {
+      await loadDashboard();
+    } catch (e) { /* 看板轮询失败静默（库未创建 / 尚未跑过），下一次再试 */ }
+  }
+
+  function stepDashboard(delta) {
+    const list = dashboardCandidates();
+    const index = list.findIndex((m) => m.id === _dashCurrentId);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= list.length) return;
+    _dashCurrentId = list[target].id;
+    renderDashboardChrome(list);
+    loadDashboard();
+  }
+
+  // 任务列表变化后重算候选集；选中项仍在就保留，被移出则夹到原位置的相邻项。
+  function syncDashboardCenter() {
+    if (!$('dash-card')) return;
+    const cands = dashboardCandidates();
+    const ids = cands.map((m) => m.id);
+    resolveDashboardSelection(ids);
+    const sig = ids.join('|');
+    const changed = sig !== _dashCandidatesSig;
+    _dashPrevIds = ids;
+    _dashCandidatesSig = sig;
+    renderDashboardChrome(cands);
+    if (changed) loadDashboard();
+  }
+
+  // 运行状态变化只更新指示位，不重拉看板（轮询节奏仍由 pollDashboard 控制）。
+  function refreshDashboardRunState() {
+    if ($('dash-card')) renderDashboardChrome();
+  }
+
+  async function onDashboardAction(action) {
+    if (!action) return;
+    try {
+      await mra.call(action, {});
+    } catch (e) {
+      reportError('toast', '操作失败: ' + (e.message || e));
+    }
+  }
+
+  // 数据页每次重建都会生成新的看板中心 DOM：事件按新节点重绑，无重复监听。
+  function bindDashboardCenter() {
+    const card = $('dash-card');
+    if (!card) return;
+    const prev = $('dash-prev');
+    const next = $('dash-next');
+    if (prev) prev.addEventListener('click', () => stepDashboard(-1));
+    if (next) next.addEventListener('click', () => stepDashboard(1));
+    card.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-dash-action]');
+      if (btn) onDashboardAction(btn.dataset.dashAction);
+    });
+    _dashCandidatesSig = null; // 新 DOM：按当前队列强制重算一次
+    syncDashboardCenter();
+  }
+
+  // 今日统计兼容块的数字口径（旧看板沿用同一套格式化）
   function fmtNum(n) {
     return (n === null || n === undefined || n === '' || isNaN(n)) ? '--' : Number(n).toLocaleString();
   }
-  function renderTodayBoard(d) {
-    if (!d) return;
-    const p = (s) => $('' + MRA.panelModuleId + '-board-' + s);
-    const date = p('date');
-    if (date) date.textContent = (d.bucket || '') + ' 05:00 起';
-    const s = d.summary || {};
-    const setNum = (el, v, cls) => { if (!el) return; el.textContent = fmtNum(v); if (cls) el.className = cls; };
-    const num = (v) => Number(v) || 0;
-    // T0 银币盈亏 = 当日银币净变化 = 我方本场收入（拍中=利润、未拍中=分红）+ 彩蛋任务领取银币。
-    // 依据 RULES §3：未拍中不花钱，中标者亏钱时我方按顺位拿 5/10/15% 分红——分红是真收入，
-    // 只算「拍中场的利润」会把当天赚到的分红整个漏掉（2026-09-17：漏 61,488）。
-    // 逐场收入由落盘侧累加成 daily_summary.income_sum，此处直接读汇总，不在前端重算口径
-    //（前端再算一遍＝第二份真相，两处迟早对不上）。
-    const eggCoin = num(s.egg_coin);
-    const eggScore = num(s.egg_score);
-    const high = num(s.highest_score);
-    const coinNet = num(s.income_sum) + eggCoin;
-    const cn = p('coinnet');
-    if (cn) {
-      cn.textContent = d.summary ? fmtNum(coinNet) : '--';
-      cn.className = 'board-value' + (coinNet > 0 ? ' board-value--pos' : coinNet < 0 ? ' board-value--neg' : '');
-    }
-    // T0 领取彩蛋（红+黄+蓝）；分项以三色读数并入本卡片，零值淡出突出非零
-    setNum(p('egg-total'), num(s.egg_red) + num(s.egg_yellow) + num(s.egg_blue), null);
-    const setEgg = (key, v) => {
-      const el = p(key);
-      if (!el) return;
-      el.textContent = fmtNum(v);
-      el.classList.toggle('board-egg-num--zero', !num(v));
-    };
-    setEgg('egg-red', s.egg_red);
-    setEgg('egg-yellow', s.egg_yellow);
-    setEgg('egg-blue', s.egg_blue);
-    // T1 今日积分 = 最高单场（现有口径）+ 领取积分
-    const scEl = p('score');
-    if (scEl) scEl.textContent = d.summary ? fmtNum(high + eggScore) : '--';
-    // T2 场次：胜负合并进标签（次要信息，不占格）
-    setNum(p('games'), s.games, 'board-value');
-    const wl = p('games-wl');
-    if (wl && d.summary) wl.textContent = '场次 · 胜' + num(s.win) + '/负' + num(s.fail);
-    const list = p('list');
-    if (!list) return;
-    const arr = d.games || [];
-    if (arr.length === 0) {
-      list.innerHTML = '<p class="board-empty">今日暂无对局记录</p>';
-      return;
-    }
-    list.innerHTML = arr.map((g2) => {
-      const res = g2.auction_result === 'win'
-        ? '<span class="board-res board-res--win">拍中</span>'
-        : g2.auction_result === 'fail'
-          ? '<span class="board-res board-res--fail">未中</span>'
-          : '<span class="board-res">--</span>';
-      // 「利」仅在我方拍中（win）时显示（= 我方利润）；fail 场利润是别人的，不展示
-      const profitCell = g2.auction_result === 'win'
-        ? '<span class="board-row-val">利 ' + fmtNum(g2.profit) + '</span>' : '';
-      return '<div class="board-row">' +
-        '<span class="board-row-seq">#' + g2.game_seq + '</span>' + res +
-        '<span class="board-row-val">收 ' + fmtNum(g2.income) + '</span>' + profitCell +
-        '</div>';
-    }).join('');
-  }
-
-  async function pollTodayBoard() {
-    try {
-      const page = $('page-data');
-      if (page && page.classList.contains('hidden')) return; // 数据页不可见不刷新
-      if (MRA.panelModuleId !== 'treasure') return;             // 仅鉴宝有今日看板
-      const d = await mra.call('get_today_stats', { module_id: MRA.panelModuleId });
-      renderTodayBoard(d);
-    } catch (e) { /* 看板轮询失败静默（如库未创建/尚未跑过） */ }
-  }
-
   // 性能卡（通用）：所有模块共用一套模板。
   // 资源面（整机 / 本程序）由 core 采样器供数；模块行由后端按声明下发
   // （perf.rows），前端不认识任何模块——新增模块只声明行，这里零改动。
@@ -914,7 +1085,9 @@
         </div>`;
   }
 
-  function defaultDataCards(mid, rightTopHtml) {
+  // 数据页模板：左列性能监控；右列看板中心 + 实时预览。
+  // 看板中心对所有模块同一套骨架，模块差异只在后端下发的 block 内容里。
+  function defaultDataCards(mid) {
     return `
       <div class="col-left">
         <!-- 性能监控 -->
@@ -922,8 +1095,7 @@
       </div>
 
       <div class="col-right">
-        ${rightTopHtml !== undefined ? rightTopHtml
-          : (mid === 'treasure' ? todayBoardCard(mid) : detectCard(mid))}
+        ${dashboardCenterCard()}
 
         <!-- 实时预览 -->
         <div class="card card-flex preview-card" id="${mid}-preview-card">
@@ -1075,47 +1247,13 @@
       </div>`;
   }
 
-  // 模块 → 页面模板注册表。未登记的模块走 DEFAULT_PAGE_DEFS（默认模板）。
-  // 鉴宝的数据页只换性能卡（其余两栏同构），故把卡片 HTML 作参数传入。
-  function treasureDataCards(mid) {
-    return defaultDataCards(mid);
-  }
-
-  // 驾驶演示数据入口：录制产物（逐帧图+手柄序列）落会话目录，门控日志带帧号可回查。
-  function speedrushDemosCard(mid) {
-    return `
-        <div class="card">
-          <div class="card-head"><h3>驾驶演示数据</h3></div>
-          <div class="card-body">
-            <p class="module-desc">录制开关在「主控」页极速狂飙任务卡的展开面板里。每段驾驶各写一个会话目录
-              （<code>debug/speedrush/manual_时间_p阶段/</code>），含逐帧图与手柄序列；门控判定的日志带帧号
-              （<code>frame=</code>），按它可回查判定时刻的画面。</p>
-            <button class="mra-tool-btn mra-tool-btn--block" id="${mid}-open-demos" style="margin-top:12px;">
-              <span class="mra-tool-btn-label">打开数据目录</span>
-            </button>
-          </div>
-        </div>`;
-  }
-
-  function speedrushDataCards(mid) {
-    return defaultDataCards(mid, speedrushDemosCard(mid));
-  }
-
-  // 未登记模板的模块用默认模板（此前是"回退到 treasure"，那会让合法但未定制的模块
-  // 显示成鉴宝的页面，包括读 treasure.db 的今日看板）
-  const DEFAULT_PAGE_DEFS = { data: (mid) => defaultDataCards(mid), settings: defaultSettingsCards };
-
-  const MODULE_PAGE_DEFS = {
-    treasure: { data: treasureDataCards, settings: defaultSettingsCards },
-    speedrush: { data: speedrushDataCards, settings: defaultSettingsCards },
-  };
-
   // 任务列表为空时，「数据/设置」页的占位内容
   const EMPTY_MODULE_HTML =
     '<div class="card"><div class="card-head"><h3>没有面板模块</h3></div>' +
     '<div class="card-body"><p class="module-desc">请在主控页「运行任务」卡片上展开任意模块，或点右上角 ⚙ 添加模块。</p></div></div>';
 
-  // 按模块渲染「数据/设置」页并绑定当前模块的控件事件（面板跟随最后展开的任务卡）
+  // 按模块渲染「数据/设置」页并绑定控件事件（面板模块只决定性能卡与设置页前缀；
+  // 看板中心的主体来自任务列表）
   function renderModulePages(moduleId) {
     // 无面板模块：两页只放占位内容、不挂模块控件；panelModuleId 置空后，
     // 轮询里所有带模块前缀的取值都会落空并由各自的判空守卫跳过。
@@ -1137,11 +1275,10 @@
       moduleId = first.id;
     }
     MRA.panelModuleId = moduleId;
-    const def = MODULE_PAGE_DEFS[moduleId] || DEFAULT_PAGE_DEFS;
     const dataPage = $('page-data');
     const settingsPage = $('page-settings');
-    if (dataPage) dataPage.innerHTML = def.data(moduleId);
-    if (settingsPage) settingsPage.innerHTML = def.settings(moduleId);
+    if (dataPage) dataPage.innerHTML = defaultDataCards(moduleId);
+    if (settingsPage) settingsPage.innerHTML = defaultSettingsCards(moduleId);
     bindModulePages(moduleId);
     refreshDebugState();
   }
@@ -1168,21 +1305,10 @@
   // 绑定当前模块卡片上的控件事件（渲染后调用；旧节点随 innerHTML 替换一并销毁，无重复绑定）
   function bindModulePages(moduleId) {
     wireSwitchAria($('page-settings')); // 模板重渲染后新开关补接线（幂等）
+    bindDashboardCenter();              // 数据页看板中心：翻页 / 标准动作 / 首次装载
 
     const p = (suffix) => $(moduleId + '-' + suffix);
 
-    // 驾驶数据目录入口（同样置于卫语句前：控件由模块模板决定，缺某个模块的控件不该漏绑）
-    const btnDemos = p('open-demos');
-    if (btnDemos) {
-      btnDemos.addEventListener('click', async () => {
-        try {
-          await mra.call('open_user_data_folder', {});
-        } catch (e) {
-          console.error(e);
-          showError(e.message);
-        }
-      });
-    }
     const tDebug = p('toggle-debug');
     const tEstop = p('toggle-estop');
     if (!tDebug || !tEstop) return;
@@ -1389,7 +1515,9 @@
     refreshSpeedrushStatus,
     renderModulePages,
     checkRegistryOptimizations,
-    pollTodayBoard,
+    pollDashboard,
+    syncDashboardCenter,
+    refreshDashboardRunState,
     refreshDebugState,
     stashOptionBlocks,
   });

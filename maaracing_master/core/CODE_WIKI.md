@@ -479,6 +479,20 @@
 
 **测试**：`tests/test_navkit_step.py`（三 verdict × 五 command 转移表逐链复刻 + 在途 hold 时序锁）。
 
+### 1.20 数据看板：资格声明与内容契约
+
+**资格位（模块自述）**：`ActivityModule.HAS_DASHBOARD` 是显式旧标志，`DASHBOARD_CONTRACT` 是新契约版本（`0` = 已登记但尚未实现，不进入候选集；大于 `0` 的版本才生效），覆盖 `read_today_stats` 是旧模块的今日看板入口；三者任一成立即进入候选集。资格并集由 `base.declares_dashboard()` 单点定义，`get_module_info()`、`get_initial_state.modules[]` 的 `has_dashboard` 与路由共用；内置步骤恒 `False`。
+
+**内容契约（新模块）**：模块置 `DASHBOARD_CONTRACT = 1` 并实现 `read_dashboard()`，返回版本化 block 载荷（`stats` / `list` / `text` / `path` / `action`）。标题、布局、间距、配色、翻页与生命周期归前端看板中心；模块只组合 block 与文本。新增视觉原语时扩展共享 block 词表（[dashboard_contract.py](./dashboard_contract.py) + 前端渲染器），不做模块私有页面。
+
+**统一路由与校验**：`get_module_dashboard(module_id)` 只按 id 分发；`normalize_dashboard()` 校验版本、block 白名单、色调与标准动作（当前 `open_user_data_folder`），非法块丢弃并记 WARNING。动作只走白名单，后端不下发 HTML、不接受任意 RPC/URL。版本 `0` 的占位模块返回「看板尚未实现」的明确错误。
+
+**旧模块兼容桥**：冻结的鉴宝不改代码——它覆盖的 `read_today_stats()` 本身即资格位，core 把返回值包成 `today_stats` 兼容块，前端用对应块渲染器还原今日看板。新模块不走这条路。
+
+**不建实例 / 不持有正文**：看板数据来自持久化或既有 RPC；core 不创建模块实例，也不持有任何模块业务字段。
+
+**测试**：`tests/test_dashboard_contract.py`（版本 / block 白名单 / 非法块 / 动作白名单 / 兼容桥 / 路由不建实例）、`tests/test_module_dashboard_contract.py`（资格位、版本 0 占位与列表下发）、`tests/test_frontend_dashboard_center.py`（前端渲染器覆盖全部 block 类型 / 候选集与统一路由）。
+
 ## 2. 模块依赖与持有关系
 
 ### 2.1 导入关系图
@@ -492,7 +506,8 @@ core/sidecar.py（JSONL RPC handler）
   ├── core.perf_contract（性能面板声明校验与取值规范化，§1.15）
   ├── core.thread_probe（线程段：时间/身份/心跳，§1.16）
   ├── core.covers（封面声明 → URL 解析，§1.18）
-  └── core.registry（插件自动扫描注册）
+  ├── core.registry（插件自动扫描注册）
+  └── core.dashboard_contract（看板 block 校验与兼容桥，§1.20）
 
 MaaRacingMaster.Shell（C#，不导入 Python）
   └── PythonSidecar（stdin/stdout JSONL 通信）

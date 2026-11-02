@@ -321,6 +321,9 @@ class SpeedRushModule(ActivityModule):
     REQUIRED_ASSETS: tuple[str, ...] = (PERCEPTION_MODEL_REL, DEPTH_MODEL_REL)
     # 模块封面（相对本插件 resources/）：只声明，定位与 URL 解析在 core/covers.py
     COVER = "cover.jpg"
+    # 看板尚未实现：0 = 已登记能力位，不进入数据页候选集；
+    # 接入后改为 1 并实现 read_dashboard()（block 契约见 core/dashboard_contract.py）。
+    DASHBOARD_CONTRACT = 0
     # 录制开关的初值（False = 不录制，驾驶阶段只等本阶段结束）
     DEFAULT_RECORD_MODE = False
     # 感知开关的初值（True = 驾驶阶段逐帧跑 YOLO 检测并记账；不操纵车辆，
