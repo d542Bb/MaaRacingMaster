@@ -256,6 +256,10 @@ class SelectionParams:
     pass_hold_enabled: bool = False
     pass_hold_s: float = 0.5
     pass_min_gap_lane: float = 0.6
+    # 并线承诺期擦边放行（闸，2026-11-02）：承诺期安全动作不被并线锁死。
+    pass_in_commit_enabled: bool = False
+    # 擦边候选视界（0=用 horizon_s；>0 放宽）：刹车主车到站爆缩前的窗口。
+    pass_horizon_s: float = 0.0
     switch_dwell_s: float = 0.2
     layer_dwell: bool = False
     event_replan: bool = False
@@ -443,9 +447,14 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     """
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     hold = p.pass_hold_s if p.pass_hold_enabled else 0.0
+    # 擦边候选视界（闸 pass_horizon_s>0，2026-11-02）：主车 3.15s 出头时
+    # 完全来得及（需 1.5s）却被 3.0s 视界排除，下一拍到站爆缩到 1.1s 已经
+    # 不及——192614 帧 #2017→#2027 实锤。放宽由可达性判据把关，不产生
+    # 乱躲（够不着照样拒绝）。
+    horizon = p.pass_horizon_s if p.pass_horizon_s > 0 else p.horizon_s
     cands = [c for c in cars
              if c.safe
-             and c.t is not None and -hold <= c.t <= p.horizon_s
+             and c.t is not None and -hold <= c.t <= horizon
              and abs(c.x - ego) <= half]
     for c in sorted(cands, key=lambda o: (o.t < 0.0, o.t)):
         x = _pass_x(c, road, p)
@@ -746,6 +755,18 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
                 req_oid=None if carried is None else carried.oid,
                 req_action=None if carried is None else carried.action)
     x, why, maneuver = _center_target(road, ego, p, coarse_lane)
+    # 并线承诺期擦边放行（闸 pass_in_commit_enabled，2026-11-02）：承诺期
+    # 1~3 层关闭本为防得分动作改道，但把安全性的擦边/让位也一并锁死——
+    # 192614 帧 #1530/#1533 实锤：承诺道内 0.5s 的出租车在车表、横距合格，
+    # 擦边层不运行，中心保持直行撞上。擦边是安全动作且本就豁免跨线闸
+    # （不动请求、不改道承诺），放行不破坏承诺语义。
+    if committed and p.pass_in_commit_enabled:
+        hit = _pick_pass(cars, road, ego, p)
+        if hit is not None:
+            x, t, _why = hit
+            return SelectionReport(
+                2, _waypoints(2, x, t, cars, coins, road, ego, p),
+                x, "pass", True, True)
     pre = None if committed else _preposition_target(
         rewards, cars, coins, road, ego, p, commit_x_m)
     if pre is not None:

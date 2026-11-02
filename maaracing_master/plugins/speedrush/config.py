@@ -82,6 +82,10 @@ class Selection:
     pass_hold_enabled: bool = False
     pass_hold_s: float = 0.5
     pass_min_gap_lane: float = 0.6
+    # 并线承诺期擦边放行 + 擦边候选视界放宽（2026-11-02，帧级证据见
+    # selection.py 同名注释）。闸关=逐位回今天。
+    pass_in_commit_enabled: bool = False
+    pass_horizon_s: float = 0.0
     switch_dwell_s: float = 0.2
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
@@ -971,6 +975,10 @@ def _read_decision(path: Path) -> DecisionConfig:
             pass_hold_s=_num_def(d, "selection", "pass_hold_s", 0.5, lo=0),
             pass_min_gap_lane=_num_def(
                 d, "selection", "pass_min_gap_lane", 0.6, lo=0),
+            pass_in_commit_enabled=_bool(
+                d, "selection", "pass_in_commit_enabled", default=False),
+            pass_horizon_s=_num_def(
+                d, "selection", "pass_horizon_s", 0.0, lo=0),
             switch_dwell_s=_num_def(
                 d, "selection", "switch_dwell_s", 0.2, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),

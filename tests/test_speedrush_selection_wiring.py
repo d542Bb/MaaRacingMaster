@@ -78,6 +78,8 @@ def test_preposition_params_flow_from_config():
     assert p.pass_hold_enabled == s.pass_hold_enabled
     assert p.pass_hold_s == s.pass_hold_s
     assert p.pass_min_gap_lane == s.pass_min_gap_lane
+    assert p.pass_in_commit_enabled == s.pass_in_commit_enabled
+    assert p.pass_horizon_s == s.pass_horizon_s
     # 影子选择器与生产共用同一份参数（预排行为逐位一致）
     assert eng._selector_shadow.p.preposition_horizon_s == 10.0
 

@@ -590,3 +590,30 @@ def test_pass_min_gap_rejects_squeeze_band():
     rep2 = select(_road(width_lanes=1.0), [], [Obj("car", car_x, 2.0)],
                   [], 0.0, _p(pass_hold_enabled=True))
     assert rep2.layer == 4 and rep2.why == "center"
+
+
+def test_pass_in_commit_gate_off_stays_commit():
+    """闸关：承诺期擦边不运行（现行行为——承诺期 1~3 层关闭）。"""
+    rep = select(_road(), [], [Obj("car", 0.0, 2.0)], [], 0.0, _p(),
+                 commit_x_m=0.0, committed=True)
+    assert rep.layer == 4 and rep.why == "commit"
+
+
+def test_pass_in_commit_dodges_during_merge():
+    """闸开：承诺道内的擦边候选（帧 #1530 实景：出租车在承诺道车表）
+    擦边层放行——安全动作不被并线锁死（2.0s=可达窗口内）。"""
+    rep = select(_road(), [], [Obj("car", 0.0, 2.0)], [], 0.0,
+                 _p(pass_in_commit_enabled=True),
+                 commit_x_m=0.0, committed=True)
+    assert rep.layer == 2 and rep.why == "pass"
+
+
+def test_pass_horizon_extends_candidates():
+    """视界放宽：3.15s 出头的刹车主车（帧 #2017 实景）闸关被 3.0s 排除、
+    闸开进入候选——躲不躲仍由可达性判据把关。"""
+    far = Obj("car", 0.0, 3.15)
+    rep = select(_road(), [], [far], [], 0.0, _p())
+    assert rep.layer == 4 and rep.why == "center"
+    rep2 = select(_road(), [], [Obj("car", 0.0, 3.15)], [], 0.0,
+                  _p(pass_horizon_s=4.5))
+    assert rep2.layer == 2 and rep2.why == "pass"
