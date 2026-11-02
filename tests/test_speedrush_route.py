@@ -1245,15 +1245,20 @@ def test_far_veto_blocks_request_into_collapsed_lane():
 
 
 def test_far_veto_default_off_and_loader():
-    """闸默认关；装载器认 route.far_veto_enabled（接线锚）。"""
-    assert CFG.route.far_veto_enabled is False
+    """装载契约：键缺席=关，显式 true/false 各自生效（闸是验收旋钮，
+    出厂值不锁——随实机验证翻面，测试只锁装载语义）。"""
     import json
     import tempfile
     from pathlib import Path
     raw = json.loads(Path(DECISION_FILE).read_text(encoding="utf-8"))
-    raw["route"]["far_veto_enabled"] = True
+    raw["route"].pop("far_veto_enabled", None)
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "decision.json"
         p.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
-        cfg = _read_decision(p)
-        assert cfg.route.far_veto_enabled is True
+        assert _read_decision(p).route.far_veto_enabled is False
+        raw["route"]["far_veto_enabled"] = True
+        p.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        assert _read_decision(p).route.far_veto_enabled is True
+        raw["route"]["far_veto_enabled"] = False
+        p.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        assert _read_decision(p).route.far_veto_enabled is False
