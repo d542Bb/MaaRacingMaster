@@ -877,6 +877,12 @@ class LateralPlanner:
         self._t_vcorr += dt_s
         self.last_rebase = None          # 每拍清：只记本拍实际执行的重基分支
         self._ctrl_dt_s = dt_s           # 本拍控制时长（并线杆值上调的积分用）
+        # 逐拍诊断（2026-11-02，8750 型跳变的仪器面）：每拍重置，分支处赋值，
+        # 全量落 trace（ctrl_debug）——跳变归因不再靠纸面推演。
+        self._branch = None              # 本拍实际走的内部分支
+        self._line_gap = None            # 深度修正的线分歧（道）
+        self._line_veto = None           # 线作证是否拦了本拍深度修正
+        self._diag_lane_pos_ok = lane_pos_ok   # module 侧线可用门
 
         # 线横位平滑（保持期运动观测）：只在锁线拍更新；COAST/无值保持上一值。
         # 重锁后的第一条锁线可能换了线/换了帧：重置平滑并停用融合；线自身
@@ -1177,6 +1183,7 @@ class LateralPlanner:
             self._line_gap_t += dt_s
         line_dropout = self._line_recent and self._line_gap_t <= _LINE_REBUILD_S
         if line_pos is not None:
+            self._branch = "lane_follow"
             self._lane_trusted = True
             if was_unverified:
                 # 盲窗由线收尾：直接重基到线的绝对横位（线已连续锁定 ≥5 拍）
@@ -1237,12 +1244,18 @@ class LateralPlanner:
                             else None)
                 veto = line_gap is not None and line_gap > _LANE_VETO_LANE
                 if abs(r) <= self.p.obs_jump_max_lane and not veto:
+                    self._branch = "depth_follow"
+                    self._line_gap = line_gap
+                    self._line_veto = veto
                     self.state.executed_lane += self.p.obs_alpha * r
                     self._lane_rebias(obs, lane_ok)
                     self._t_vcorr = 0.0
                     self._stale_t = 0.0
                     self._reset_jump()
                 else:
+                    self._branch = "depth_reject"
+                    self._line_gap = line_gap
+                    self._line_veto = veto
                     # 被跳变门拒绝 ≠ 深度与线不一致：单帧坏检测/参考系跳变
                     # 同样可以校准线帧。20261025 局 p1 206 的坑：深度报 +1.87
                     # 被跳变门拒，线报 +1.32（同帧、差 0.55 道），偏置没更新、
@@ -1291,6 +1304,7 @@ class LateralPlanner:
                             self.last_rebase = "stale_reject"
                             self._stale_rebase(road_offset, lane_ok)
         elif self._road_anchor is not None and not self.state_unverified:
+            self._branch = "hold"
             # 断供/保持计时：黑视本身=漂移温床。历史保持值仍算"有几何"，锚点
             # 保留——否则新鲜大读数回来要先过形成门（|ro|≤anchor_max_off）再
             # 等 1s，白白多一段盲开；超预算则按下面规则重基或丢锚。
@@ -1322,6 +1336,7 @@ class LateralPlanner:
                     # 计时不清零：断供已计入陈旧预算，下一条新鲜缘读数
                     # 应直接重基，而不是再等一个完整 anchor_stale_s。
         elif self.state_unverified:
+            self._branch = "blind"
             # 盲窗：位置冻结（不融合、不积分），但参考帧卫生照常——断供
             # 超预算的旧锚必须作废，不能留到重获之后去拽新路上的车。
             self._stale_t += dt_s
