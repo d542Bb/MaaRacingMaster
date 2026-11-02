@@ -232,3 +232,13 @@ def _per(fid: int, *, cars=()):
     from maaracing_master.plugins.speedrush.perception import PerceptionResult
     return PerceptionResult(frame_id=fid, ts_ns=fid * 33_000_000,
                             cars=list(cars), coins=[], bonuses=[])
+
+
+def test_metric_bridge_gate_flows_from_config():
+    """桥接闸从决策真源装载（2026-11-02 首次实机启用）——正前方碰撞的
+    时间腿：远车锚窗未开段靠桥接到站时间进选择层。防死配置复发。"""
+    from maaracing_master.plugins.speedrush import DECISION_FILE
+    from maaracing_master.plugins.speedrush.config import _read_decision
+    cfg = _read_decision(DECISION_FILE)
+    assert cfg.metric_bridge.enabled is True
+    assert cfg.metric_bridge.stay == 2
