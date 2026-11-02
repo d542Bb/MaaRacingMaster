@@ -241,6 +241,11 @@ class SelectionParams:
     preposition_horizon_s: float = 6.0
     preposition_max_lane: float = 2.5
     preposition_bias_lane: float = 1.0
+    # 擦边预判（2026-11-02 子代理设计，两局审计实锤：中心保持 27% 拍带正余量
+    # 车、请求只有零头——邻道 150 分擦边从未入口）：safe 普通车横距 ∈(两车
+    # 半宽和, 1.5 道]、到站 ∈(0, 视界] → L4 向远车侧安全区间边界起手。预置
+    # 位，不新增计分语义；数值真源 decision.json selection 节。
+    pass_preposition_enabled: bool = False
     switch_dwell_s: float = 0.2
     layer_dwell: bool = False
     event_replan: bool = False
@@ -537,9 +542,40 @@ def _preposition_target(rewards: Sequence[Obj], cars: Sequence[Obj],
     return x, req
 
 
+def _pass_preposition(cars: Sequence[Obj], ego: float,
+                      p: SelectionParams) -> float | None:
+    """擦边预判方向（闸 pass_preposition_enabled）：邻道带来车的远车侧。
+
+    safe 普通车横距 ∈(两车半宽和, 1.5 道]、到站 ∈(0, 视界] → 向**远车侧**
+    偏置（无到站时间的车不触发：t=None 是仪器缺位不是「来得及」；同道贴身
+    归 pass 层）。两侧都有车或都没有不偏：无「更宽一侧」。预判只贡献起手
+    偏置——150 分擦边仍只由 pass 层贴近动作产生，贴太远只有 30 分的取舍
+    由此天然成立。"""
+    if not p.pass_preposition_enabled:
+        return None
+    half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
+    max_off = 1.5 * p.lane_w_m
+    left = right = False
+    for c in cars:
+        if not c.safe or c.t is None or not math.isfinite(c.t) \
+                or not (0.0 < c.t <= p.horizon_s):
+            continue
+        d = c.x - ego
+        if not half < abs(d) <= max_off:
+            continue
+        if d < 0:
+            left = True
+        else:
+            right = True
+    if left == right:                  # 两侧都有车或都没有：不偏
+        return None
+    return 1.0 if left else -1.0       # 车在左 → 向右；车在右 → 向左
+
+
 def _center_target(road: RoadFrame, ego: float,
                    p: SelectionParams,
-                   coarse_lane: float | None = None) -> tuple[float, str, bool]:
+                   coarse_lane: float | None = None,
+                   pp_side: float | None = None) -> tuple[float, str, bool]:
     """L4 回中：目标不是车道中心一个点，而是「车心安全区间」。
 
     区间=车道中心 ±(0.5−车半宽−余量)，再用硬路缘（wall_margin_lane 中心
@@ -559,6 +595,14 @@ def _center_target(road: RoadFrame, ego: float,
         c += coarse_lane * p.lane_w_m
         why = "center:coarse"
     lo, hi = _lane_interval(c, p, road)
+    if pp_side is not None:
+        # 擦边预判（闸 pass_preposition_enabled）：向远车侧的安全区间边界
+        # 起手——车表有邻道车时提前站过去，pass 层接管（车进两车半宽）时
+        # 横移起点从区间另一侧挪到这里，graze_gap 的可达余量转正。预置位：
+        # 仍是车道内位置，不新增计分语义。
+        x = hi if pp_side > 0 else lo
+        x = road.clamp(x, p.wall_margin_lane * p.lane_w_m)
+        return x, "center:pp", abs(x - ego) > 1e-6
     maneuver = not (lo <= ego <= hi)
     x = ego if not maneuver else min(max(ego, lo), hi)
     return road.clamp(x, p.wall_margin_lane * p.lane_w_m), why, maneuver
@@ -687,6 +731,13 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
         cap = p.preposition_bias_lane * p.lane_w_m
         x = x + max(-cap, min(cap, pre_x - x))
         x = road.clamp(x, p.wall_margin_lane * p.lane_w_m)
+    elif req is None and not committed:
+        # 擦边预判（闸 pass_preposition_enabled）：无未来机会目标、无请求
+        # 时，向邻道带来车的远车侧起手。请求挂着让位（路线层裁决优先）。
+        side = _pass_preposition(cars, ego, p)
+        if side is not None:
+            x, why, maneuver = _center_target(road, ego, p, coarse_lane,
+                                              pp_side=side)
     if iv is not None and req is not None:
         # 越线请求挂着：本拍目标贴向请求侧的区间边界——同向准备、不起程。
         x = iv[1] if req.lane > 0 else iv[0]

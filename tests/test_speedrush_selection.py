@@ -175,6 +175,45 @@ def test_preposition_disabled_holds_center():
     assert rep.target_x_m == pytest.approx(0.0, abs=0.05)
 
 
+# ---------- 擦边预判式（2026-11-02，闸 pass_preposition_enabled） ----------
+
+def _pp():
+    return _p(pass_preposition_enabled=True)
+
+
+def test_pass_preposition_biases_away_from_adjacent_car():
+    """0141 复刻：右邻道带来车（1.0 道、1.5s 到站）→ 向远车侧（左）安全
+    区间边界起手，why=center:pp。"""
+    rep = select(_road(), [], [Obj("car", 1.0 * LW, 1.5)], [], 0.0, _pp())
+    assert rep.layer == 4 and rep.why == "center:pp"
+    assert rep.target_x_m == pytest.approx(-0.17 * LW, abs=0.02)
+
+
+def test_pass_preposition_gates_window_side_and_safe():
+    """窗外车/t=None/unsafe 车/两侧都有车：不偏；同道贴身仍归 pass 层。"""
+    far = select(_road(), [], [Obj("car", 1.0 * LW, 3.5)], [], 0.0, _pp())
+    assert far.why == "center"                      # t > horizon
+    no_t = select(_road(), [], [Obj("car", 1.0 * LW, None)], [], 0.0, _pp())
+    assert no_t.why == "center"                     # 仪器缺位不触发
+    unsafe = select(_road(), [],
+                    [Obj("car", 1.0 * LW, 1.5, safe=False)], [], 0.0, _pp())
+    assert unsafe.why == "center"                   # 不可安全不触发
+    both = select(_road(), [], [Obj("car", 1.0 * LW, 1.5),
+                                Obj("car", -1.0 * LW, 1.5)], [], 0.0, _pp())
+    assert both.why == "center"                     # 无「更宽一侧」
+    near = select(_road(), [], [Obj("car", 0.3 * LW, 1.5)], [], 0.0, _pp())
+    assert near.layer == 2                          # 同道贴身仍归 pass 层
+
+
+def test_pass_preposition_gate_off_and_committed():
+    """闸关=逐位回今天；并线承诺期无偏置。"""
+    rep = select(_road(), [], [Obj("car", 1.0 * LW, 1.5)], [], 0.0, _p())
+    assert rep.why == "center"                      # 闸关
+    rep = select(_road(), [], [Obj("car", 1.0 * LW, 1.5)], [], 0.0, _pp(),
+                 committed=True)
+    assert rep.why == "commit"                      # committed 关
+
+
 # ---------- 预排视界延长（6→10s，2026-11-02） ----------
 
 def test_preposition_extends_to_long_horizon_coin():

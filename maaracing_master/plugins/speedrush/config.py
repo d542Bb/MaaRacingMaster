@@ -67,6 +67,12 @@ class Selection:
     preposition_horizon_s: float = 6.0
     preposition_max_lane: float = 2.5
     preposition_bias_lane: float = 1.0
+    # 擦边预判（2026-11-02 子代理设计，两局审计实锤：中心保持 27% 拍带正
+    # 余量车、请求只有零头——邻道 150 分擦边从未入口）：safe 普通车横距
+    # ∈(两车半宽和, 1.5 道]、到站 ∈(0, 视界] → L4 向远车侧安全区间边界起手。
+    # 预置位，不新增计分语义；150 分仍只由 pass 贴近动作产生。闸关=逐位回
+    # 今天。
+    pass_preposition_enabled: bool = False
     switch_dwell_s: float = 0.2
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
@@ -949,6 +955,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "preposition_max_lane", 2.5, lo=0),
             preposition_bias_lane=_num_def(
                 d, "selection", "preposition_bias_lane", 1.0, lo=0),
+            pass_preposition_enabled=_bool(
+                d, "selection", "pass_preposition_enabled", default=False),
             switch_dwell_s=_num_def(
                 d, "selection", "switch_dwell_s", 0.2, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),
