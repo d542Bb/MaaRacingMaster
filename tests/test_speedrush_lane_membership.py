@@ -17,10 +17,15 @@ from maaracing_master.plugins.speedrush.tracking import (
 
 
 def _line(x_at_ref: float, L: float, *, s: float = 0.0, ref_y: float = 500.0,
-          rms: float = 1.0, theta: float = 0.05, accepted: bool = True):
-    """构造一条线：x_at(y) = s·y + a，a 由参考行像素位反推。"""
-    return {"accepted": accepted, "s": s, "a": x_at_ref - s * ref_y,
-            "L": L, "rms": rms, "theta": theta}
+          rms: float = 1.0, theta: float = 0.05, accepted: bool = True,
+          y0: float = 440.0, y1: float = 545.0, fits=None):
+    """构造一条线：x_at(y) = s·y + a（a 由参考行像素位反推）。
+
+    拟合范围 y0~y1 默认远段（实机 FAR_Y）；fits 覆盖时带近/远两段。"""
+    if fits is None:
+        fits = [{"s": s, "a": x_at_ref - s * ref_y, "y0": y0, "y1": y1}]
+    return {"accepted": accepted, "L": L, "rms": rms, "theta": theta,
+            "fits": fits}
 
 
 # ---------- lane_membership 单元 ----------
@@ -37,8 +42,31 @@ def test_membership_evaluates_lines_at_box_bottom_row():
     lines = [_line(350.0, -0.5, s=0.5), _line(1150.0, 0.5, s=0.6)]
     # y_b=500：x1=350, x2=1150；框心 750 → 正中
     assert lane_membership(750.0, 500.0, lines) == pytest.approx(0.0)
-    # 换一行取值不同：y_b=600 → x1=400, x2=1210，框心 805 → 仍近正中
+    # y_b=600 越出远段范围 55px（≤一倍跨度 105）：外推仍可用
     assert lane_membership(805.0, 600.0, lines) == pytest.approx(0.0, abs=0.01)
+
+
+def test_membership_picks_fit_covering_box_bottom():
+    """一条线带近/远两段拟合：吃覆盖框底行的那段（近段不外推）。"""
+    pair = [
+        _line(0.0, -0.5, fits=[
+            {"s": 0.5, "a": 100.0, "y0": 560.0, "y1": 720.0},   # 近段
+            {"s": 0.6, "a": 100.0, "y0": 440.0, "y1": 545.0}]), # 远段
+        _line(0.0, 0.5, fits=[
+            {"s": 0.5, "a": 900.0, "y0": 560.0, "y1": 720.0},
+            {"s": 0.6, "a": 900.0, "y0": 440.0, "y1": 545.0}]),
+    ]
+    # y_b=620 近段覆盖：x1=410, x2=1210，正中 810 → 0.0
+    # （若误用远段 x1=472/x2=1272，正中 872——810 会给 −0.078）
+    assert lane_membership(810.0, 620.0, pair) == pytest.approx(0.0)
+    # y_b=490 远段覆盖：x1=394, x2=1194，正中 794 → 0.0
+    assert lane_membership(794.0, 490.0, pair) == pytest.approx(0.0)
+
+
+def test_membership_abstains_beyond_one_fit_span():
+    """框底行越出拟合范围一倍跨度：外推不可信，弃权。"""
+    lines = [_line(400.0, -0.5), _line(1200.0, 0.5)]   # 远段 440~545
+    assert lane_membership(800.0, 300.0, lines) is None
 
 
 def test_membership_abstains_single_line_and_non_bracketing():

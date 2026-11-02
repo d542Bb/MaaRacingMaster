@@ -233,9 +233,12 @@ def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
 
     免 vpx/a_x/cam_h/Y_H 任何常数：线在 y_b 的像素位置来自各自的 2D 拟合
     （斜率/截距是测量值，不是标定常数），比例里的尺子全部消掉——免疫归一
-    尺（A1，a_x 与线方程理论值差 ~19%）与 cam_h 的尺度争端。线不夹住框心、
-    单线、线角过分/残差超限一律弃权（None）：消费端最坏回到 lane_side 粗
-    方向，无退化路径。"""
+    尺（A1，a_x 与线方程理论值差 ~19%）与 cam_h 的尺度争端。每条线带近/远
+    两段拟合，吃覆盖 y_b 的那一段；越出数据范围允许外推不超过拟合自身跨度
+    （线方程线性，外推一倍跨度 σ 至多翻倍，仍在近场 A1 量级 0.15~0.25 道；
+    远车框底 ~390px 本就在两段范围之外，严格卡范围会把这门修成摆设）。再
+    远弃权。线不夹住框心、单线、线角过分/残差超限一律弃权（None）：消费端
+    最坏回到 lane_side 粗方向，无退化路径。"""
     evals: list[tuple[float, float]] = []
     for c in lines:
         if not c.get("accepted"):
@@ -244,10 +247,21 @@ def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
             continue
         if abs(float(c.get("theta") or 0.0)) > LINE_THETA_MAX:
             continue
-        s, a, L = c.get("s"), c.get("a"), c.get("L")
-        if s is None or a is None or L is None:
+        best = None
+        for ft in c.get("fits") or ():
+            s, a = ft.get("s"), ft.get("a")
+            y0, y1 = ft.get("y0"), ft.get("y1")
+            if s is None or a is None or y0 is None or y1 is None:
+                continue
+            span = y1 - y0
+            if not (y0 - span) <= y_b <= (y1 + span):
+                continue               # 越出拟合范围一倍跨度：外推不可信
+            d = max(y0 - y_b, y_b - y1, 0.0)   # 距数据范围的外推距离
+            if best is None or d < best[0]:
+                best = (d, s, a)
+        if best is None:
             continue
-        evals.append((float(s) * y_b + float(a), float(L)))
+        evals.append((best[1] * y_b + best[2], float(c.get("L"))))
     if len(evals) < 2:
         return None
     evals.sort()
@@ -949,6 +963,11 @@ class LaneObsWorker:
             if f is None:
                 continue
             x_near = _near_x(pts)
+            # 双线同行插值用：每条线的像素位来自各自的 2D 拟合（s·y+a）。
+            # 近/远两段拟合都带（框底行落在哪段就吃哪段，不外推出拟合范围）。
+            fits = [{"s": ft["s"], "a": ft["a"],
+                     "y0": ft["y0"], "y1": ft["y1"]}
+                    for ft in (near, far) if ft is not None]
             lines.append({"L": round(f["L"], 3),
                           "theta": None if f["theta"] is None
                           else round(f["theta"], 4),
@@ -958,5 +977,6 @@ class LaneObsWorker:
                           "white": round(wf, 2),
                           "x_near": None if x_near is None
                           else round(x_near, 1),
-                          "side": _side_from_x(x_near)})
+                          "side": _side_from_x(x_near),
+                          "fits": fits})
         return {"lines": lines}
