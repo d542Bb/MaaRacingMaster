@@ -78,6 +78,17 @@ _LINE_POS_GAIN = 0.7       # 线位置修正增益（检测 ~10Hz、每拍同一
 # 0.45 杆幅在 1.4 道级误差下需要 1s+ 才能回带，期间车停在墙侧）。
 _WALL_ESCAPE_LANE = 1.4
 
+# 计划命令振荡判据（2026-11-02 子代理设计，影子期先跑基线再定终值）：
+# 计划候选是离散绝对车头角档、现任不可行宽限仅 0.1s≈2 拍，供数逐拍闪烁时
+# chosen 1~3 拍一翻，车头角指令跟着翻符号（实机 227/243 翻转拍属计划）。
+# 判据打在「计划命令不可信」边界上，只认有实锤的翻转——饱和杆本身可能是
+# 合法逃生（实测饱和段 ≤0.25s/段），不单独成判据（修在症状）。
+_OSC_WINDOW_S = 0.3     # 滑动窗：车头角指令符号翻转统计窗
+_OSC_FLIP_RAD = 0.05    # 翻转幅度下限（实机风暴翻转幅度 ≥0.05 为主）
+_OSC_FLIPS = 2          # 窗内翻转次数门槛（单次合法换道阶跃不触发）
+_OSC_HOLD_S = 1.0       # 进入后退位置误差驱动的最短驻留（覆盖 1~3 拍一翻）
+_OSC_EXIT_S = 0.5       # 退出需计划连续无翻转的时长
+
 # 朝向与比例（2026-10-30 架构）：横向只有一条律——车头角决定横移。
 # x' = v·tan(ψ)/LANE_W，ψ 由标线角度减慢基线量得，v 只随车/随速慢变、必须
 # 在线估。旧的「杆值→横向加速度」双积分与两路横速融合已删除：它在闭环数据里
@@ -592,6 +603,14 @@ class LateralPlanner:
         self._plan_hold_psi: float | None = None
         self._plan_hold_cap: float | None = None
         self._plan_hold_commit = False
+        # 计划命令振荡（闸 plan_osc_gate，默认关=只算判据落 trace）：滑窗
+        # 翻转统计 + 饱和持续；触发后退 x_target 分支的位置误差驱动。
+        self._osc_clock = 0.0
+        self._osc_hist: list[tuple[float, float]] = []
+        self._osc_flips = 0
+        self._osc_exit_t = 0.0
+        self._osc_hold_left = 0.0
+        self._osc_active = False
         # 并线承诺杆值上调（平顶峰适配，2026-11-01）：缺口积分状态 + 并线
         # 相位沿检测 + 本拍控制时长（_law 内积分用）。
         self._sustain_boost = 0.0
@@ -673,6 +692,39 @@ class LateralPlanner:
         self._lane_trusted = False
         self._lane_rebias(road_offset, lane_ok, allow_bias=allow_bias)
 
+    def _plan_osc_step(self, psi_cmd: float | None, dt_s: float) -> None:
+        """计划命令振荡判据（影子期先跑基线再定终值）。
+
+        滑窗内车头角指令符号翻转（|Δψ|≥幅度下限且反向）达门槛，判
+        「计划命令不可信」。单次合法换道阶跃（一翻后保持）不触发；饱和杆
+        本身可能是合法逃生，不单独成判据。计划缺席拍窗口清空：缺席不是
+        振荡证据，也不抵消。"""
+        self._osc_clock += dt_s
+        if psi_cmd is None:
+            self._osc_hist = []
+            self._osc_flips = 0
+            self._osc_exit_t = 0.0
+        else:
+            self._osc_hist.append((self._osc_clock, psi_cmd))
+            while self._osc_hist and \
+                    self._osc_clock - self._osc_hist[0][0] > _OSC_WINDOW_S:
+                self._osc_hist.pop(0)
+            self._osc_flips = sum(
+                1 for a, b in zip(self._osc_hist, self._osc_hist[1:])
+                if a[1] * b[1] < 0 and abs(b[1] - a[1]) >= _OSC_FLIP_RAD)
+            if self._osc_flips == 0:
+                self._osc_exit_t += dt_s
+            else:
+                self._osc_exit_t = 0.0
+        if self._osc_active:
+            self._osc_hold_left = max(0.0, self._osc_hold_left - dt_s)
+            if self._osc_hold_left <= 0.0 and self._osc_exit_t >= _OSC_EXIT_S:
+                self._osc_active = False
+        elif self._osc_flips >= _OSC_FLIPS:
+            self._osc_active = True
+            self._osc_hold_left = _OSC_HOLD_S
+            self._osc_exit_t = 0.0
+
     def lane_debug(self) -> dict:
         """保持期线融合的可见面（trace）：trusted=偏置是否已对账、bias=深度-
         线帧偏置、sm=线横位平滑值。三者合起来才能离线判断融合是否在工作。"""
@@ -696,6 +748,11 @@ class LateralPlanner:
              # blind=距上一次新鲜位置证据的秒数（0=本拍有测量）。
              "unver": bool(self.state_unverified),
              "blind": round(self._blind_t, 2),
+             # 计划命令振荡判据面（2026-11-02，影子期观测）：a=接管中、
+             # f=窗口翻转数、h=驻留剩余秒。判据不进控制，闸关时只落 trace。
+             "osc_a": self._osc_active,
+             "osc_f": self._osc_flips,
+             "osc_h": round(self._osc_hold_left, 2),
              # 控制朝向来源：model=车模影子、obs=观测器、none=无朝向；
              # pv=本拍短预瞄是否接管下发杆值
              "csrc": self._heading_src,
@@ -1007,10 +1064,20 @@ class LateralPlanner:
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
 
+        # 计划命令振荡判据（影子期先算先落 trace）：计划有效或走廊不可行时
+        # 喂车头角指令，其余拍喂 None（窗口清空）。判据本身不进控制。
+        self._plan_osc_step(
+            plan.psi_feedforward
+            if (plan is not None and st is DecisionState.CRUISE
+                and not self.state_unverified
+                and (plan.valid
+                     or plan.reason == "plan:infeasible_corridor"))
+            else None, dt_s)
         # 计划接管（motion.mode=live 且计划有效）：计划给的是**车头角指令**，
         # 交给同一条朝向律执行——计划怎么预测就怎么打杆，没有第二套前馈/跟踪
         # 项，也就没有两套关于「车会怎么动」的说法。承诺并线例外：跟踪决策
         # 目标道（计划候选的视界是 2s，承诺道是决策层的事，不能让它静默换）。
+        osc_fallback = False
         if (plan is not None and plan.valid and st is DecisionState.CRUISE
                 and not self.state_unverified):
             merge_commit = (getattr(decision, "phase", "keep") == "merging"
@@ -1023,6 +1090,16 @@ class LateralPlanner:
                 # 航向——断供后并线该由 PD 继续跟目标道。
                 self._plan_hold_left = 0
                 self._plan_hold_commit = True
+            elif self.p.plan_osc_gate and self._osc_active:
+                # 计划命令振荡（闸 plan_osc_gate，2026-11-02 子代理设计）：
+                # 「怎么预测就怎么打杆」的前提是命令可信——滑窗翻转/饱和判
+                # 不可信时退回上面 x_target 分支的位置误差驱动；不把本拍
+                # 命令存进短断供保持（防把它捡回），退出首拍不限速。
+                osc_fallback = True
+                self._plan_hold_psi = None
+                self._plan_hold_left = 0
+                self._plan_hold_commit = False
+                self._last_plan_u = None
             else:
                 # 维护层（意图在中心带内）不得用满杆追偏掉的路心；只有真的
                 # 预测到碰撞（collision_cost>0）才放开全权——那是避让。"有距
@@ -1040,18 +1117,21 @@ class LateralPlanner:
                 self._plan_hold_left = self.p.plan_hold_max_ticks
             # 换目标时航向指令会阶跃；相对上一拍计划命令限速，避免方向盘一步
             # 打半圈。首帧/计划重入（None）不限制——那是交接，不是候选抖动。
-            if self._last_plan_u is not None:
+            if not osc_fallback and self._last_plan_u is not None:
                 lim = self.p.plan_u_slew_s * dt_s
                 steer_raw = max(self._last_plan_u - lim,
                                 min(self._last_plan_u + lim, steer_raw))
-            self._last_plan_u = steer_raw
+            if not osc_fallback:
+                self._last_plan_u = steer_raw
         elif (plan is not None and st is DecisionState.CRUISE
               and not self.state_unverified
               and plan.reason == "plan:infeasible_corridor"):
             # 计划判「自车压在走廊边距内」：无效计划选的是"最快脱离侵入"
             # 候选，直接执行它的车头角指令，不套保持死区/维护杆幅
             # （20261026 局 s2#4 21.6s：目标 0.93、车位 1.19、杆 −0.18）。
-            steer_raw = self._law_psi(plan.psi_feedforward)
+            # 饱和杆同属计划命令：振荡判据成立时同一退路（不执行它）。
+            if not (self.p.plan_osc_gate and self._osc_active):
+                steer_raw = self._law_psi(plan.psi_feedforward)
             self._last_plan_u = None
         elif not plan_held:
             self._last_plan_u = None

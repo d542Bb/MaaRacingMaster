@@ -1776,3 +1776,77 @@ def test_preview_plan_maintenance_dwell_enter_and_exit():
     assert flags == [False, False, False, True]
     rig.tick(_out(x_target=0.0, fid=5, valid=5), plan=other)
     assert pl.ctrl_debug()["pcg"] is False
+
+# ---------- 计划命令振荡退位置误差（2026-11-02，闸 plan_osc_gate） ----------
+
+def _plan(psi, *, valid=True, reason="plan:ok", layer=2):
+    return types.SimpleNamespace(valid=valid, reason=reason,
+                                 psi_feedforward=psi, layer=layer,
+                                 collision_cost=0.0)
+
+
+def test_osc_dither_triggers_and_recovers():
+    """±0.1 交替：窗内 2+ 次翻转 → 判不可信；稳定命令走满驻留+静默窗 → 退出。"""
+    pl = _planner()
+    for i in range(6):
+        pl._plan_osc_step(0.1 if i % 2 == 0 else -0.1, DT)
+    assert pl._osc_active and pl._osc_flips >= 2
+    assert pl._osc_hold_left > 0.0
+    for _ in range(30):                    # 1.5s：驻留 1.0 + 静默 0.5
+        pl._plan_osc_step(-0.1, DT)        # 稳定命令
+    assert not pl._osc_active
+
+
+def test_osc_single_step_does_not_trigger():
+    """一翻后保持是合法换道阶跃：不触发。"""
+    pl = _planner()
+    pl._plan_osc_step(0.1, DT)
+    for _ in range(5):
+        pl._plan_osc_step(0.1, DT)
+    assert not pl._osc_active
+
+
+def test_osc_absent_plan_clears_window():
+    pl = _planner()
+    pl._plan_osc_step(0.1, DT)
+    pl._plan_osc_step(-0.1, DT)
+    pl._plan_osc_step(None, DT)
+    assert pl._osc_flips == 0 and not pl._osc_hist
+
+
+def test_osc_gate_switches_drive_source():
+    """闸开+振荡计划：杆退回 x_target 位置误差（不跟振荡的车头角指令）；
+    闸关=逐位回今天（判据照算落 trace，杆仍跟计划命令翻面）。"""
+    def run(gate):
+        pl = _planner(plan_osc_gate=gate)
+        rig = _Rig(pl)
+        out = []
+        for i in range(12):
+            psi = 0.25 if i % 2 == 0 else -0.25
+            out.append(rig.tick(_out(x_target=0.8, fid=1 + i, valid=99),
+                                plan=_plan(psi)))
+        return pl, out
+
+    off_pl, off = run(False)
+    on_pl, on = run(True)
+    assert off_pl._osc_active and on_pl._osc_active   # 判据照算（影子）
+    # 闸开：退位置误差后杆始终朝着 x_target（0.8），不翻面
+    assert all(c.steer_x > -0.01 for c in on[6:])
+    # 闸关：杆继续跟计划命令 chasing 振荡——两跑在后半段分开
+    assert any(abs(a.steer_x - b.steer_x) > 0.05
+               for a, b in zip(off[6:], on[6:]))
+
+
+def test_osc_gate_never_blocks_merge_commit():
+    """并线承诺期本就走 PD：振荡判据成立也不抢方向。"""
+    pl = _planner(plan_osc_gate=True)
+    for i in range(6):
+        pl._plan_osc_step(0.2 if i % 2 == 0 else -0.2, DT)
+    assert pl._osc_active
+    rig = _Rig(pl)
+    cmd = None
+    for i in range(8):
+        cmd = rig.tick(_out(x_target=-1.0, fid=1 + i, valid=99, phase="merging"),
+                       plan=_plan(0.2 if i % 2 == 0 else -0.2))
+    # 承诺并线走 _pd 跟目标道（gentle=False），闸不覆盖
+    assert cmd.steer_x < 0.0

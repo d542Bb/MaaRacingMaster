@@ -197,6 +197,12 @@ class Planner:
     # 但用 0.6s 的旧朝向推横速等于 0.6s 盲开（实测 1.2~1.8 道/s，半秒虚走
     # 0.75 道），横速只认更短的龄。
     heading_vel_max_age_s: float = 0.25
+    # 计划命令振荡退位置误差（2026-11-02 子代理设计，两局审计实锤：93% 拍
+    # 方向盘跟计划的车头角指令、227/243 翻转拍属计划、反打过头后饱和杆）。
+    # 闸开：滑窗翻转/饱和判「计划命令不可信」时退回选择层目标的位置误差
+    # 驱动；并线承诺期本就走 PD、不受闸影响。闸关=只算判据落 trace（影子期
+    # 先跑基线再定终值）。
+    plan_osc_gate: bool = False
     # 朝向相位超前（2026-10-31）：ψ_pred = ψ + heading_lead_s·r。实测
     # 「杆→测得 ψ」总延迟 0.43~0.47 s（车模一阶滞后约 0.2 s + 观测链路
     # 约 0.25 s）时，给阻尼项补一点相位裕度；0=关闭。实测 0.10 s：1 s
@@ -782,7 +788,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             state_blind_s=_num_def(
                 d, "planner", "state_blind_s", 0.4, lo=0, lo_open=False),
             heading_vel_max_age_s=_num_def(
-                d, "planner", "heading_vel_max_age_s", 0.25, lo=0)),
+                d, "planner", "heading_vel_max_age_s", 0.25, lo=0),
+            plan_osc_gate=_bool(
+                d, "planner", "plan_osc_gate", default=False)),
         traffic=Traffic(
             exit_margin_px=_num(d, "traffic", "exit_margin_px", lo=0),            presumed_cy_px=_num(d, "traffic", "presumed_cy_px", lo=0),
             presumed_lane_max=_num(d, "traffic", "presumed_lane_max", lo=0),
