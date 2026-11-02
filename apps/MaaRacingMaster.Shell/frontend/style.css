@@ -294,6 +294,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 #page-control .col-right .card { flex: 1 1 0; min-height: 0; }
 
 /* ---------- 主控页任务列表（每模块一行卡：拖拽排序 / 启用勾选 / 展开面板） ---------- */
+/* 高度随内容自动调节：行数少时卡片就短，不留固定空档（取消 .card-flex 的 240px 兜底）；
+   展开面板或加入更多模块时自然增高，超出视口仍走页面滚动 */
+#page-control .task-card { min-height: 0; }
 .task-card .card-head h3 { margin-right: auto; }
 #task-list {
   list-style: none; margin: 0; padding: 8px;
@@ -356,8 +359,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   background: var(--mra-sidebar); border: 1px solid var(--mra-border-light);
   border-radius: var(--mra-radius-sm); padding: 8px 10px;
 }
-/* 空列表占位 */
-.task-empty { padding: 32px 16px; text-align: center; font-size: 12px; color: var(--mra-foreground-muted); }
+/* 空列表占位：与看板中心空态同一套语言（插图框 + 标题 + 说明，居中），
+   高度由内容决定，不撑固定槽位 */
+.task-empty {
+  list-style: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 28px 16px 32px; text-align: center;
+}
+.task-empty b { font-size: 13px; font-weight: 600; color: var(--mra-foreground-secondary); }
+.task-empty p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--mra-foreground-muted); max-width: 320px; }
 
 /* 展开面板：模块选项（单实例 DOM 搬入）+ 细分阶段 */
 .task-panel { display: none; border-top: 1px solid var(--mra-border-light); padding: 12px; cursor: default; }
@@ -1040,7 +1050,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .perf-row-val--warn { color: var(--mra-warning); }
 .perf-row-val--error { color: var(--mra-danger); }
 
-/* 线程明细：默认折叠。折叠只影响显示，采集与落盘始终全量。 */
+/* 线程明细：默认展开。折叠只影响显示，采集与落盘始终全量。 */
 .perf-threads { display: flex; align-items: center; gap: 6px; width: 100%;
   margin-top: 10px; padding: 9px 0 5px; border: 0;
   border-top: 1px solid var(--mra-border-light); background: transparent;

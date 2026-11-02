@@ -309,7 +309,12 @@
     const ul = $('task-list');
     ul.innerHTML = state.queue.order.map(cardHtml).join('');
     if (!state.queue.order.length) {
-      ul.innerHTML = '<li class="task-empty">列表为空——点右上角 ⚙ 添加要运行的模块</li>';
+      // 空态与看板中心同构：插图框 + 标题 + 一句说明（.empty-art 复用看板中心的样式）
+      ul.innerHTML = '<li class="task-empty">'
+        + '<div class="empty-art" aria-hidden="true">' + MRAIcons.svg('list-plus') + '</div>'
+        + '<b>还没有要运行的模块</b>'
+        + '<p>点右上角的设置按钮把模块加进列表；加入后可拖拽排序、勾选启用，列表顺序就是执行顺序。</p>'
+        + '</li>';
     }
     $('btn-manage').disabled = state.is_running;
     // 步骤：已展开的挂面板，未取过配置的拉一次（摘要 chips 要用）
@@ -866,7 +871,7 @@
     el.appendChild(document.createTextNode(text));
   }
 
-  // 线程明细：默认折叠，折叠只影响显示（采集与落盘始终全量）。
+  // 线程明细：默认展开，折叠只影响显示（采集与落盘始终全量）。
   // 没贴中文别名的线程显示原始线程名——core 不认识业务，不会替它翻译。
   function renderPerfThreads(mid, threads) {
     const rows = (threads && threads.rows) || [];

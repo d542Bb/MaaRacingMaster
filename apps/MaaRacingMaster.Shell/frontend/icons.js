@@ -130,6 +130,13 @@
     'picture-in-picture-2': [
       ['path', { 'd': 'M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4' }],
       ['rect', { 'width': '10', 'height': '7', 'x': '12', 'y': '13', 'rx': '2' }]
+    ],
+    'list-plus': [                               // lucide: list-plus（主控页运行任务空态插图）
+      ['path', { 'd': 'M16 5H3' }],
+      ['path', { 'd': 'M11 12H3' }],
+      ['path', { 'd': 'M16 19H3' }],
+      ['path', { 'd': 'M18 9v6' }],
+      ['path', { 'd': 'M21 12h-6' }]
     ]
   };
 
