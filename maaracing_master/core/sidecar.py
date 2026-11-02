@@ -1789,6 +1789,16 @@ def main() -> None:
         _STDERR.flush()
         os._exit(1)
     service.run()
+    # stdin 读到 EOF = 托管本进程的 shell 已断开。正常关闭走 shutdown handler 的
+    # os._exit 先行退出、到不了这里；能到这里说明 shell 异常终止（崩溃/被不带 /T 杀）。
+    # 此时非 daemon 的 handler 线程可能正卡在原生文件选择框（GetOpenFileNameW）等永不
+    # 返回的用户输入，让进程赖着不退成孤儿 python.exe，连带抢虚拟手柄/框架资源。
+    # best-effort 有界收尾（停 worker + flush 日志，close 内 join 已限 2s）后强制终结。
+    try:
+        service.close(None)
+    except Exception:  # noqa: BLE001 —— 父进程已不在，收尾失败也不能拖住退出
+        pass
+    os._exit(0)
 
 
 if __name__ == "__main__":
