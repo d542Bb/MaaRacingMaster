@@ -112,7 +112,7 @@ class Obj:
 
 @dataclass(frozen=True)
 class PendingReq:
-    """越线请求（相对承诺道 ±1）＋触发身份与当拍读数标志。
+    """越线请求（相对承诺道 ±2）＋触发身份与当拍读数标志。
 
     `live=False`：触发对象本拍没有新鲜读数（闭锁保留的上一份），证据可以
     继续冻结，但不能作为起意拍——起意只认当拍有效来源。
@@ -215,7 +215,7 @@ class SelectionParams:
     graze_gap_lane: float = 0.68
     center_band_lane: float = 0.3
     opportunity_tol_lane: float = 0.75
-    # 得分机会不再有固定横距门：资格由时间锥（reach_slack）+ 相邻 ±1 请求
+    # 得分机会不再有固定横距门：资格由时间锥（reach_slack）+ 相邻 ±2 请求
     # 决定——够不够得着是时间问题，不是「只吃 1.2 道内」的距离问题。
     # 选中后组消失仍保持 coin_hold_s，更高层出现立即覆盖。
     coin_hold_s: float = 0.6
@@ -346,11 +346,15 @@ def _edge_of(x: float, iv: tuple[float, float]) -> float:
 
 def _req_lane(x: float, commit_x: float | None,
               p: SelectionParams) -> float | None:
-    """出界目标所在道（相对承诺道）：只允许相邻 ±1 道，再远不请求。"""
+    """出界目标所在道（相对承诺道）：相邻 ±2 道内都发请求。
+
+    判据是光锥（能不能去，`_reachable`），不是道距——本道前面空荡荡时，
+    隔一条道的币线时间预算够就该去。横穿的中间道由路线层的
+    `_path_clear` 把关（确认空闲才允许起并），这里只按到站时间裁决。"""
     if commit_x is None:
         return None
     k = round((x - commit_x) / p.lane_w_m)
-    return k if abs(k) == 1 else None
+    return k if 1 <= abs(k) <= 2 else None
 
 
 def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],

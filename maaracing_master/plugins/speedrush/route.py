@@ -539,7 +539,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     `report`：当拍**原始**粗层报告（逐道净空/占用三态），不是接控制的道号。
     `epoch`：参考系纪元（尺子跳变时递增）。返回 (新状态, 定案报告)；缺证据时
     给 `needs_init`，**不回退旧坐标**（旧道号在新参考系里没有原意）。
-    `request`：当拍机会换道请求——**选择层出的是相对承诺道的偏移（±1）**，本层
+    `request`：当拍机会换道请求——**选择层出的是相对承诺道的偏移（±2）**，本层
     是相对→绝对的换算边界，状态里 `req_lane` 存**绝对**目标道（2026-10-27 契约
     冻结）。逐拍刷新，不持久。
     `request_live`：触发源本拍是否有新鲜读数（6c）。False 时只冻结证据、不
@@ -855,14 +855,14 @@ def _request_reject_reason(s: RouteState, tgt: float,
     拒了就维持 keep——目标早已被选择层贴回本道可活动带，被拒/撤销的车**不会
     停在两条道中间**（请求逐拍刷新，机会还在下拍还会再来）。冷却期内刚
     放弃的道不回头；`space`/`unknown_car` 不是"更保守"，是"没有判据"。
-    `path_blocked` 今天的生产路径恒真（请求只出相邻 ±1 道，中间道集合为空），
-    留着是契约的守卫：请求口径一旦放宽，它就是唯一挡在占用车前面的门。"""
+    请求口径放宽到相邻 ±2 道（2026-11-02）：判据是光锥（能不能去），
+    横穿的中间道由 `_path_clear` 把关——它是唯一挡在占用车前面的门。"""
     alt = by.get(tgt)
     if tgt == s.lane_ref:
         return "same_lane"
     if alt is None:
         return "target_missing"      # 不能悄悄换成别的道当替补
-    if abs(alt.lane - s.lane_ref) > 1.5:
+    if abs(alt.lane - s.lane_ref) > 2.5:
         return "not_adjacent"
     if not _qualified(alt):
         return "target_unqualified"

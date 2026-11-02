@@ -691,20 +691,38 @@ def test_side_switch_restarts_the_credit():
 
 
 def test_request_rejects_far_blocked_and_current_targets():
-    """两号外、无法确认/走不下、请求=现任道——统统维持 keep，不起意。
+    """三号外、无法确认/走不下、请求=现任道——统统维持 keep，不起意。
 
     每条都带**第一原因码**：离线按段统计「请求为什么没变成并线」直接读
-    `route.why`，不需要重放判据。"""
+    `route.why`，不需要重放判据。请求口径 ±2（2026-11-02）；三号外目标
+    不在粗层候选集（±2）里，第一原因码是 target_missing。"""
     s, v = _first(_rep(0.0, 0.0))
     n = OPP_TICKS + 2
     for req, spec, why in (
-            (2.0, None, "not_adjacent"),
-            (-2.0, None, "not_adjacent"),
+            (3.0, None, "target_missing"),
+            (-3.0, None, "target_missing"),
             (1.0, {1.0: (0.0, "unknown_car", True)}, "target_unqualified"),
             (1.0, {1.0: (0.0, "space", False)}, "target_unqualified"),
             (0.0, None, "same_lane")):
         s2, v2 = _req_run(s, _rep(0.0, 0.0, spec), req, n)
         assert v2.verdict == "keep" and v2.why == why, req
+
+
+def test_request_two_lanes_starts_merge_when_path_clear():
+    """请求口径 ±2（2026-11-02）：隔一条道的够格机会，中间道确认空闲 →
+    起意并线（光锥判据，不是道距）。"""
+    s, v = _first(_rep(0.0, 0.0))
+    s, v = _req_run(s, _rep(0.0, 0.0), 2.0, OPP_TICKS)
+    assert v.verdict == "merge_start" and v.why == "opportunity"
+    assert v.lane_ref == 2.0 and s.phase == PHASE_MERGING
+
+
+def test_request_two_lanes_blocked_by_middle_lane():
+    """±2 请求的守卫：横穿的中间道被占（未确认空闲）→ path_blocked，不起意。"""
+    s, v = _first(_rep(0.0, 0.0))
+    spec = {1.0: (0.0, "car", False)}
+    s, v = _req_run(s, _rep(0.0, 0.0, spec), 2.0, OPP_TICKS + 2)
+    assert v.verdict == "keep" and v.why == "path_blocked"
 
 
 def test_epoch_rebuild_clears_pending_credit():
@@ -1161,8 +1179,8 @@ def test_anchor_follow_clears_request_credit():
     s = replace(init_state(0), req_lane=1.0, req_credit=0.2, req_side=1)
     rep = _rep(1.4, 1.0)
     for _ in range(AF_TICKS):
-        # 请求目标 +2 不合法（非相邻），只累计证据、不起并线，留给重锚清
-        s, v = _tick_af(s, rep, request=2.0)
+        # 请求目标 ±3 不合法（口径 ±2），只累计证据、不起并线，留给重锚清
+        s, v = _tick_af(s, rep, request=3.0)
     assert v.verdict == "anchor_follow"
     assert s.req_credit == 0.0 and s.req_state == "none"
 

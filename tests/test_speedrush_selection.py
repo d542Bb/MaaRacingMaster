@@ -290,12 +290,15 @@ def test_in_lane_coin_keeps_line():
     assert rep.target_x_m == pytest.approx(0.0)
 
 
-def test_far_coin_no_request():
-    """两号外不是换道动作（请求只允许相邻一道）：不发请求也不拽。"""
+def test_two_lane_coin_requests_when_reachable():
+    """请求口径 ±2（2026-11-02）：隔一条道的币时间够（光锥可达）→ 发请求，
+    判据是光锥不是道距；三道外仍不请求。"""
     rep = select(_road(), [], [], [Obj("coin", 2.0 * LW, 3.0)], 0.0, _p(),
                  commit_x_m=0.0)
+    assert rep.layer == 4 and rep.lane_request == 2.0
+    rep = select(_road(), [], [], [Obj("coin", 3.0 * LW, 3.0)], 0.0, _p(),
+                 commit_x_m=0.0)
     assert rep.layer == 4 and rep.lane_request is None
-    assert rep.target_x_m == pytest.approx(0.0, abs=0.02)
 
 
 def test_out_of_lane_reward_becomes_request():
@@ -408,9 +411,10 @@ def test_old_fixed_gate_replaced_by_cone_and_adjacent_rule():
     assert rep2.layer == 4 and rep2.target_x_m == pytest.approx(0.0, abs=0.05)
 
 
-def test_multi_lane_coin_never_requests():
-    """2 道外的币即使时间够，也超出相邻 ±1 请求范围：不请求、不拽。"""
-    rep = select(_road(), [], [], [Obj("coin", 2.0 * LW, 3.0)], 0.0, _p(),
+def test_multi_lane_coin_time_budget_gates_request():
+    """±2 请求的资格是光锥：时间不够（到站 0.5s、横移 2 道来不及）不请求；
+    时间够由 test_two_lane_coin_requests_when_reachable 覆盖。"""
+    rep = select(_road(), [], [], [Obj("coin", 2.0 * LW, 0.5)], 0.0, _p(),
                  commit_x_m=0.0)
     assert rep.layer == 4 and rep.lane_request is None
 
