@@ -196,11 +196,11 @@ def test_rebuild_chain_succeeds_for_persistent_holder(monkeypatch):
     这是修复前**从未成功过**的那条路径：真机上它每次都被租约挡回。
     """
     from maaracing_master.core.capabilities import GamepadAdapter
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
 
     logged: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        __import__("maaracing_master.plugins.treasure.module", fromlist=["logger"]),
+        __import__("maaracing_master.plugins._archive.treasure.module", fromlist=["logger"]),
         "logger", types.SimpleNamespace(log=lambda m, lv="INFO": logged.append((lv, m))))
 
     app = _FakeApp()
@@ -219,11 +219,11 @@ def test_rebuild_chain_succeeds_for_persistent_holder(monkeypatch):
 def test_rebuild_chain_reports_failure_instead_of_crashing(monkeypatch):
     """自愈失败必须留痕且不拖垮主循环（返回 False，交下帧重试）。"""
     from maaracing_master.core.capabilities import GamepadAdapter
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
 
     logged: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        __import__("maaracing_master.plugins.treasure.module", fromlist=["logger"]),
+        __import__("maaracing_master.plugins._archive.treasure.module", fromlist=["logger"]),
         "logger", types.SimpleNamespace(log=lambda m, lv="INFO": logged.append((lv, m))))
 
     app = _FakeApp()
@@ -246,7 +246,7 @@ def test_treasure_v4_binding_never_takes_a_session_lease():
     """
     import inspect
 
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
 
     src = inspect.getsource(TreasureModule)
     assert "gamepad.persistent_adapter()" in src, "v4 绑定应走常驻持有者入口"

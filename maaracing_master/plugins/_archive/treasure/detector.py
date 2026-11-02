@@ -37,7 +37,7 @@ import numpy as np
 from maaracing_master.core.logger import logger
 from maaracing_master.core.navkit import ROUND_PHASE_STAGE
 from maaracing_master.core.template_match import best_match_score, load_template
-from maaracing_master.plugins.treasure import IMAGE_DIR
+from maaracing_master.plugins._archive.treasure import IMAGE_DIR
 
 # 回合族阶段名（本类按回合号实例化）：与 _scan 哨兵分支的生成口径配对。
 _ROUND_STAGE_RE = re.compile(r"^第\d+回合出价$")
@@ -84,7 +84,7 @@ class TreasureStageDetector:
         # 缓存加载；局部导入保持 detector 的运行时依赖不泄漏到纯标准库 navkit 包。
         self.plan = None
         try:
-            from maaracing_master.plugins.treasure import nav_source
+            from maaracing_master.plugins._archive.treasure import nav_source
             nav = nav_source()
             if nav is not None:
                 self.plan = nav.plan

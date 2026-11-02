@@ -60,10 +60,18 @@ def test_builtin_step_cover_resolves_inside_core_resources():
 
 # ---------- 2. 缺省即回落 ----------
 
-def test_module_without_cover_yields_none():
-    """未声明封面的模块（巅峰鉴宝没有专供图）返回 None，由前端回落默认封面。"""
-    assert MODULE_REGISTRY.get("treasure") is not None, "treasure 未注册，测试前提不成立"
-    assert covers.module_cover_url("treasure") is None
+def test_module_without_cover_yields_none(tmp_path, monkeypatch):
+    """已注册但未声明封面的模块返回 None，由前端回落默认封面。"""
+    from maaracing_master.core import registry as reg
+    from maaracing_master.core.base import ActivityModule
+
+    class _NoCover(ActivityModule):
+        NAME = "无封面模块"
+        STAGE_ORDER = ("s1",)
+
+    monkeypatch.setitem(reg.MODULE_REGISTRY, "no_cover", _NoCover)
+    monkeypatch.setitem(reg._PLUGIN_DIRS, "no_cover", tmp_path)
+    assert covers.module_cover_url("no_cover") is None
 
 
 def test_default_cover_exists_and_is_a_file_uri():
@@ -124,9 +132,8 @@ def test_module_list_payload_carries_cover_fields():
         assert item["cover"] is None or item["cover"].startswith("file:///")
 
     by_id = {it["id"]: it for it in items}
-    # 有图的与没图的同时在列表里，才能同时覆盖「显示专属封面」与「回落默认」
+    # 有图的样本：内置步骤声明了专属封面，列表里必须解析成 file URI
     assert by_id["launch_game"]["cover"], "启动游戏应有封面"
-    assert by_id["treasure"]["cover"] is None, "巅峰鉴宝未供图，应为 None（回落默认）"
 
 
 def test_initial_state_carries_default_cover():
@@ -146,7 +153,7 @@ def test_every_cover_lives_under_a_directory_the_assembler_copies():
     """
     script = ASSEMBLE.read_text(encoding="utf-8")
     line = next(
-        (l for l in script.splitlines() if "robocopy" in l and "'maaracing_master'" in l),
+        (ln for ln in script.splitlines() if "robocopy" in ln and "'maaracing_master'" in ln),
         None,
     )
     assert line, "装配脚本里找不到 maaracing_master 的复制行，抽取规则已失效"
@@ -170,7 +177,7 @@ def _strip_js_comments(src: str) -> str:
     """去掉整行 // 注释与 /* */ 块注释：契约说明里提到 plugins/<id>/ 是允许的，
     违规的是代码里真的拼了这条路径。"""
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
-    return "\n".join(l for l in src.splitlines() if not l.strip().startswith("//"))
+    return "\n".join(ln for ln in src.splitlines() if not ln.strip().startswith("//"))
 
 
 def test_frontend_never_hardcodes_plugin_paths():

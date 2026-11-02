@@ -604,7 +604,10 @@ foreach ($rel in @(
         Copy-Item $src $dest -Recurse -Force
     } else { $errors.Add('missing source path: ' + $rel) }
 }
-robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+# 归档区（maaracing_master/plugins/_archive/）整体不进发布包：归档模块已退役，
+# 目录位置即判据，不参与下方按 VALID_UNTIL 的剔除判定（那套只覆盖 plugins/ 顶层现役插件）。
+# 下方 §3.5 末尾有反向守卫：stage 里若出现该目录即报错，防静默带出。
+robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
 
 # ---------- 3.5 活动模块分发剔除（ship-exclusion，全配置执行） ----------
 # 打包时刻已过有效期（manifest VALID_UNTIL）的插件不随包分发。判据复用
@@ -666,6 +669,10 @@ foreach ($k in $keptDirs) {
 }
 if ($keptDirs.Count -eq 0) {
     $errors.Add('SHIP-EXCLUSION-FAIL: 全部活动模块均被剔除，拒绝发出空壳包')
+}
+# 归档区守卫：robocopy 的 /XD _archive 一旦失效（改名、路径变化），退役代码会静默进包
+if (Test-Path (Join-Path $StageRoot 'maaracing_master\plugins\_archive')) {
+    $errors.Add('SHIP-ARCHIVE-FAIL: 归档区 plugins\_archive 出现在 stage，拒绝发布')
 }
 
 # ---------- 4. _version.py ----------

@@ -2,7 +2,7 @@
 """鉴宝落盘库（treasure.db）历史脏数据修复：结算三笔金额与当日汇总。
 
 用途：2026-09-17 之前的版本在结算页有两处读数缺陷，历史行因此存了错值。
-本工具按**游戏规则**（`plugins/treasure/RULES.md`）把可推导的错值改对，
+本工具按**游戏规则**（`plugins/_archive/treasure/RULES.md`）把可推导的错值改对，
 推不出来的只列出来、不猜：
 
 1. `games.settle_profit` — 旧版独立 OCR 利润行且带「不低于 Hmax/20」护栏：

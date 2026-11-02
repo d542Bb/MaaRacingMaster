@@ -24,7 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 try:
-    from maaracing_master.plugins.treasure.module import (
+    from maaracing_master.plugins._archive.treasure.module import (
         ClickRetryExhaustedError,
         TreasureModule,
     )
@@ -36,7 +36,7 @@ pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _OK, reason=f"测试需要完整运行时依赖（maa/…）：{_ERR}"
 )]
 
-_plugin_mod = __import__("maaracing_master.plugins.treasure.module", fromlist=["logger"])
+_plugin_mod = __import__("maaracing_master.plugins._archive.treasure.module", fromlist=["logger"])
 
 
 class _RecordingLogger:

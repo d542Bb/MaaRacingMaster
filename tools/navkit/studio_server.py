@@ -110,12 +110,20 @@ def _discover_pipelines(module: str, res: Path) -> dict[str, Path]:
 
 
 def _configure_module(module_id: str | None = None) -> None:
-    """绑定目标模块与其真源路径；--module 由 main() 传入，缺省取第一个可服务插件。"""
+    """绑定目标模块与其真源路径；--module 由 main() 传入，缺省取第一个可服务插件。
+
+    显式指定时允许落在归档区（`plugins/_archive/<id>/`）：校准台对已退役模块仍需可考古，
+    缺省发现则只认现役顶层模块（`_discover_default_module` 不扫归档区）。
+    """
     global PLUGIN, MODULE, RES, POLICY_FILE, PIPELINE_DIR, TEMPLATE_DIR, PIPELINE_FILES, HASH_KEYS
     MODULE = module_id or _discover_default_module()
     PLUGIN = PLUGINS_DIR / MODULE
     if not PLUGIN.is_dir():
-        raise SystemExit(f"目标模块目录不存在：{PLUGIN}")
+        archived = PLUGINS_DIR / "_archive" / MODULE
+        if archived.is_dir():
+            PLUGIN = archived
+        else:
+            raise SystemExit(f"目标模块目录不存在：{PLUGIN}")
     RES = PLUGIN / "resources"
     POLICY_FILE = _discover_policy(MODULE, RES)
     PIPELINE_DIR = RES / "pipeline"

@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from maaracing_master.core import template_match as tm
-from maaracing_master.plugins.treasure.detector import DetectResult, TreasureStageDetector
+from maaracing_master.plugins._archive.treasure.detector import DetectResult, TreasureStageDetector
 
 
 pytestmark = pytest.mark.retired

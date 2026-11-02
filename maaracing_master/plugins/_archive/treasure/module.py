@@ -39,8 +39,8 @@ import numpy as np
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.cpu_time import logical_core_count, process_cpu_seconds
 from maaracing_master.core.stage_tracker import StageTracker
-from maaracing_master.plugins.treasure.store import TreasureStore
-from maaracing_master.plugins.treasure.strategy import (
+from maaracing_master.plugins._archive.treasure.store import TreasureStore
+from maaracing_master.plugins._archive.treasure.strategy import (
     BALANCE_UNKNOWN,
     BidContext,
     BidStrategy,
@@ -49,7 +49,7 @@ from maaracing_master.plugins.treasure.strategy import (
     STRATEGY_LABEL,
     VAL_COEF,
 )
-from maaracing_master.plugins.treasure.detector import TreasureStageDetector
+from maaracing_master.plugins._archive.treasure.detector import TreasureStageDetector
 from maaracing_master.core.template_match import (
     cursor_box_norm,
     cursor_occlusion_radius_px,
@@ -65,16 +65,16 @@ from maaracing_master.core.navkit import (
     TraceWriter,
     compile_plan,
 )
-from maaracing_master.plugins.treasure.eggs import (
+from maaracing_master.plugins._archive.treasure.eggs import (
     EggRewardRecognizer,
     derive_count_rect,
     parse_count_text,
 )
-from maaracing_master.plugins.treasure.ocr import TreasureOcr
-from maaracing_master.plugins.treasure.renderer import TreasureDebugRenderer
+from maaracing_master.plugins._archive.treasure.ocr import TreasureOcr
+from maaracing_master.plugins._archive.treasure.renderer import TreasureDebugRenderer
 from maaracing_master.core.paths import data_dir, debug_dir
 from maaracing_master.core.logger import logger
-from maaracing_master.plugins.treasure import IMAGE_DIR, POLICY_PATH, nav_source
+from maaracing_master.plugins._archive.treasure import IMAGE_DIR, POLICY_PATH, nav_source
 
 
 class ClickRetryExhaustedError(RuntimeError):
@@ -518,7 +518,7 @@ class TreasureModule(ActivityModule):
 
         表结构、日界与兜底语义在 store（落盘子域）；core 路由只认本钩子，不持有
         本模块的任何 schema 字段。"""
-        from maaracing_master.plugins.treasure.store import read_today_stats
+        from maaracing_master.plugins._archive.treasure.store import read_today_stats
         return read_today_stats()
 
     # 两套点击方式的日志/peep 标签（与 core.clicker.CLICK_MODES 对齐）
@@ -1286,10 +1286,10 @@ class TreasureModule(ActivityModule):
         健康守护——常驻图意外退出时告警并重启。"""
         from pathlib import Path as _Path
         from maaracing_master.core.nav_graph import NavKitV4
-        from maaracing_master.plugins.treasure.policy_bridge import (
+        from maaracing_master.plugins._archive.treasure.policy_bridge import (
             POLICY_ACTION_NAME, PolicyBridge,
         )
-        plugin_root = _Path(__file__).resolve().parent  # module.py 直接父目录 = plugins/treasure
+        plugin_root = _Path(__file__).resolve().parent  # module.py 直接父目录 = plugins/_archive/treasure
         repo_root = plugin_root.parents[2]  # 仓库根：treasure → plugins → 包目录 → 根
         # C 句柄对象（Resource/Tasker/CustomController）全程驻留、跨重启复用：
         # binding __del__ 不等 C++ worker 收摊，模块结束即 GC 会竞态崩溃
@@ -4379,7 +4379,7 @@ class TreasureModule(ActivityModule):
         """medal 类锚点：命中图标框 → 「奖励卡通用几何」推导数字带 → OCR 读 ×N。
 
         与数蛋同一机制（eggs.derive_count_rect：红框外扩找卡描边→框内比例取带，
-        真值校准 plugins/treasure/tools）。medal 模板互斥实测
+        真值校准 plugins/_archive/treasure/tools）。medal 模板互斥实测
         margin≥0.68，不叠色相断言（角标区脆）。无命中/无卡框/无数字 → 0。
         """
         tpl, rect, th, cs = specs[name]

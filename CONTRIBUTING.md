@@ -100,7 +100,7 @@ git checkout -b feat/your-feature origin/master
 **开发约定：**
 
 - 新增模块必须走 `core/registry.py` 的插件发现（扫 `plugins/*/manifest.py`）+ 能力接口，不直接引高权限宿主对象。
-- 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/treasure/CODE_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
+- 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/_archive/treasure/CODE_WIKI.md](maaracing_master/plugins/_archive/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
 - 遵守 [AGENTS.md](AGENTS.md) 的协作守则（面向用户的输出、代码注释与交付文档使用简体中文）；代码风格为 4 空格缩进。
 
 ### 3. 提交与推送

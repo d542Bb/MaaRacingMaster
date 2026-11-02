@@ -12,7 +12,7 @@
 |---|---|---|
 | 项目地图 | **本文** | 分域导航 / 改动去哪 / 约定真源 |
 | 平台核心层 | [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) | controller / 导航光标 / 采集 / 日志 / 调试 / 坑点 / 类索引 |
-| 巅峰鉴宝（**已退役 · 完整示范实现**，见 [RETIRED.md](../maaracing_master/plugins/treasure/RETIRED.md)） | [plugins/treasure/CODE_WIKI.md](../maaracing_master/plugins/treasure/CODE_WIKI.md) | 阶段状态机 / 出价策略 / OCR / 渲染 / 域坑点 |
+| 巅峰鉴宝（**已退役 · 完整示范实现**，见 [RETIRED.md](../maaracing_master/plugins/_archive/treasure/RETIRED.md)） | [plugins/_archive/treasure/CODE_WIKI.md](../maaracing_master/plugins/_archive/treasure/CODE_WIKI.md) | 阶段状态机 / 出价策略 / OCR / 渲染 / 域坑点 |
 | 极速狂飙 | [plugins/speedrush/CODE_WIKI.md](../maaracing_master/plugins/speedrush/CODE_WIKI.md) | 流程编排 / 驾驶门控与节拍 / 演示录制 |
 | MaaFW 协议 | [MAAFW_GUIDE.md](MAAFW_GUIDE.md) | 能力签名 / Pipeline 协议 / Custom 契约 / 真源组织 / 红线 |
 | 架构决策 | [adr/](adr/README.md) | 为什么这么定 + 状态（是否仍生效） |

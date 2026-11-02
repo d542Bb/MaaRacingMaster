@@ -3,7 +3,7 @@
 
 ADR 0001 的机检（check_truth.namespace_checks）只覆盖 pipeline 真源的按名引用；
 Python 层的"core 不 import 业务层"此前无门禁——任何人往 core 加一行
-`from maaracing_master.plugins.treasure import ...` 都不会被 CI 拦住。本文件补上
+`from maaracing_master.plugins._archive.treasure import ...` 都不会被 CI 拦住。本文件补上
 这一条：扫描包内除 plugins/ 外的全部源码 AST，断言无 plugins 子包的 import
 （绝对形态与相对形态都查）。
 

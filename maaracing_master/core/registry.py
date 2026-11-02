@@ -2,6 +2,8 @@
 """活动模块注册表：自动扫描 plugins/*/manifest.py 发现插件，并提供查询与创建。
 
 - 插件 = plugins/ 下每个含 manifest.py 的子目录；
+- `plugins/_archive/` 是归档区，不是插件：已退役模块按目录位置隔离，不注册、不列出
+  （有效期只表达活动窗口，归档由位置表达，两者互不替代；见 `_archive/__init__.py`）；
 - manifest 契约：ID（唯一标识）+ MODULE_CLASS（定位模块类）；
   NAME / STAGE_ORDER / REQUIRES / REQUIRES_GAMEPAD_EXCLUSIVE / REQUIRED_ASSETS /
   HAS_DASHBOARD / DASHBOARD_CONTRACT 从模块类读取（单一来源）；

@@ -2,7 +2,7 @@
 """今日看板契约：读侧在插件（treasure.store.read_today_stats），core 只做路由。
 
 分层（2026-09-19 解耦下沉）：看板的表结构、列名、日界语义全部是鉴宝业务，住在
-plugins/treasure/store.py；core.sidecar.get_today_stats 只按 module_id 分发到
+plugins/_archive/treasure/store.py；core.sidecar.get_today_stats 只按 module_id 分发到
 ActivityModule.read_today_stats 钩子，不持有任何模块的 schema 字段。
 
 背景：daily_summary 新列（egg_coin/egg_score）的 ALTER 迁移由鉴宝模块写侧惰性建连时执行；
@@ -10,8 +10,8 @@ ActivityModule.read_today_stats 钩子，不持有任何模块的 schema 字段�
 `no such column: egg_coin` 并整块空掉。读侧必须按实有列取交集、缺列兜底，
 永不依赖写侧启动时机。
 
-路由分发测试需导入 core.sidecar / plugins.treasure.module（拉 maa/cv2 等重依赖）
-→ 整文件 SKIP；读侧 schema 测试只碰 plugins.treasure.store + core.paths，轻依赖必跑。
+路由分发测试需导入 core.sidecar / plugins._archive.treasure.module（拉 maa/cv2 等重依赖）
+→ 整文件 SKIP；读侧 schema 测试只碰 plugins._archive.treasure.store + core.paths，轻依赖必跑。
 """
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ try:
     from maaracing_master.core import sidecar as sc
     from maaracing_master.core import paths as core_paths
     from maaracing_master.core.sidecar import SidecarService  # noqa: F401
-    from maaracing_master.plugins.treasure.module import TreasureModule
-    from maaracing_master.plugins.treasure.store import read_today_stats
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.store import read_today_stats
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001
     _OK, _ERR = False, str(exc)

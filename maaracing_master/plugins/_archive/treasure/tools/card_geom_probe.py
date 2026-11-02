@@ -6,14 +6,14 @@ debug 帧同规格）
   卡行 5 张（从左到右）：红色彩蛋×2 / 鉴宝积分×30000 / 蓝色彩蛋×2 / 黄色彩蛋×1 / 鉴宝银币×250000
 
 **这是校准仪器，不是一次性探针**：卡布局或「×N」读数区几何变更时重跑它，用下面的
-四步重新量出卡框与数字带比例，再改 `plugins/treasure/eggs.py` 的常量。
+四步重新量出卡框与数字带比例，再改 `plugins/_archive/treasure/eggs.py` 的常量。
 
   1) 「命中图标框 → 外扩找矩形描边」能不能一套轮廓法通吃（蛋卡+银币卡+积分卡）？
   2) 数字行 / 名称行相对卡框的位置比例是否稳定（det=True 拿行级真值）？
   3) 按推导出的数字带做 rec-only OCR，能不能读对全部 5 个 ×N？
 
 用法（任意 CWD 均可，仓库根按本文件位置算）：
-    .venv/Scripts/python.exe maaracing_master/plugins/treasure/tools/card_geom_probe.py
+    .venv/Scripts/python.exe maaracing_master/plugins/_archive/treasure/tools/card_geom_probe.py
 产物写到系统临时目录（`treasure_card_geom/`），不落仓库。
 
 **位置**：放插件自己的 `tools/`，与它校准的对象（`eggs.py` 的卡框常量）同属一个可整体
@@ -34,9 +34,9 @@ sys.path.insert(0, REPO)
 
 # E402：REPO 必须先入 sys.path 才能导入本仓库包（脚本，非包内模块）
 from maaracing_master.core.template_match import load_template, match_template_cs  # noqa: E402
-from maaracing_master.plugins.treasure.eggs import (  # noqa: E402
+from maaracing_master.plugins._archive.treasure.eggs import (  # noqa: E402
     MAX_EGGS, NMS_IOU_THRESHOLD, EggRewardRecognizer, _nms)
-from maaracing_master.plugins.treasure.ocr import TreasureOcr  # noqa: E402
+from maaracing_master.plugins._archive.treasure.ocr import TreasureOcr  # noqa: E402
 
 FRAME = cv2.cvtColor(
     cv2.imread(os.path.join(REPO, "tests", "fixtures", "claim_popup_0609.png")),
@@ -55,13 +55,13 @@ EXPECT = {"红色彩蛋": 2, "鉴宝积分": 30000, "蓝色彩蛋": 2, "黄色�
 def collect_hits():
     hits = []  # (label, (x1,y1,x2,y2) 像素)
     rec = EggRewardRecognizer(REPO)
-    __import__("maaracing_master.plugins.treasure", fromlist=["nav_source"]).nav_source()
+    __import__("maaracing_master.plugins._archive.treasure", fromlist=["nav_source"]).nav_source()
     gray = cv2.cvtColor(FRAME, cv2.COLOR_RGB2GRAY)
     tpl, rect, th = rec._entry
     cands = _nms(rec._match_candidates(gray, tpl, rect, W, H, th), NMS_IOU_THRESHOLD, MAX_EGGS)
     for score, box in cands:
         rgb_c, avg = rec._sample_center_rgb(FRAME, box, W, H)
-        from maaracing_master.plugins.treasure.eggs import _classify_egg_color
+        from maaracing_master.plugins._archive.treasure.eggs import _classify_egg_color
         color = _classify_egg_color(rgb_c)
         if color is None:
             continue

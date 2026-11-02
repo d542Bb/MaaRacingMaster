@@ -58,7 +58,7 @@ class TestUpdatePeep:
         d.update_peep(f)
 
 
-# 本测试锁的是 treasure 的代码形态（源码文本断言），随 treasure 退役（见 plugins/treasure/RETIRED.md）；
+# 本测试锁的是 treasure 的代码形态（源码文本断言），随 treasure 退役（见 plugins/_archive/treasure/RETIRED.md）；
 # 同文件的 TestUpdatePeep 锁的是 core/debug 的公开接口契约，保留。
 @pytest.mark.retired
 def test_treasure_no_private_debug_member_access():
@@ -70,7 +70,7 @@ def test_treasure_no_private_debug_member_access():
     from pathlib import Path
 
     src = Path(__file__).resolve().parent.parent / \
-        "maaracing_master/plugins/treasure/module.py"
+        "maaracing_master/plugins/_archive/treasure/module.py"
     text = src.read_text(encoding="utf-8")
     # 不应再通过 ctx.debug 直接访问私有帧成员（P5 红线）；注释提及不算访问，故只拦访问形态。
     assert "ctx.debug._frame_lock" not in text

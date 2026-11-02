@@ -289,7 +289,7 @@
 
 **职责**：单 ROI 抠图 → 预处理（自适应放大 + 轻度对比度增强）→ RapidOCR 推理 → 交出文本（`OcrText`：逐块 `lines` 与合并 `text` 两种取法）。**抠图边界、引擎调参（关检测/关方向分类/ORT 线程数/绑核）、预处理口径的唯一真源 = 本模块的常量与 docstring**——具体数值不在本文抄录（可机检数值只写指针，见 [docs/README.md](../../docs/README.md)），要改／要核对请直接读 [ocr.py](./ocr.py)。
 
-**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：`plugins/treasure/ocr.py`（业务薄层：识别区真源 + 金额解析）、`tools/navkit/studio_server.py`（ROI 校准台单区识别）；speedrush 的 HUD 读数将接同一入口。
+**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：`plugins/_archive/treasure/ocr.py`（业务薄层：识别区真源 + 金额解析）、`tools/navkit/studio_server.py`（ROI 校准台单区识别）；speedrush 的 HUD 读数将接同一入口。
 
 **分工**：「文本怎么解释」（金额解析、数蛋计数、记分口径）属领域知识，留在各业务层，不上提 core。
 

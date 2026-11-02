@@ -170,8 +170,15 @@ def test_unknown_module_rejected(monkeypatch):
     assert "模块不存在" in err
 
 
-def test_real_treasure_uses_legacy_bridge():
-    """真鉴宝不实现 read_dashboard；路由仍能取到 today_stats 兼容块。"""
+def test_real_treasure_uses_legacy_bridge(monkeypatch):
+    """真鉴宝（已归档）不实现 read_dashboard；路由仍能取到 today_stats 兼容块。
+
+    归档模块不参与自动注册，故显式注入注册表——锁的是路由对旧钩子的兼容，不是发现机制。
+    """
+    from maaracing_master.core import registry as reg
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
+
+    monkeypatch.setitem(reg.MODULE_REGISTRY, "treasure", TreasureModule)
     svc = object.__new__(SidecarService)
     ok, data, err = svc.get_module_dashboard({"module_id": "treasure"})
     assert ok and err is None

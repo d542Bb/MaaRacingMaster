@@ -8,7 +8,7 @@ registry 按 manifest.py 自动发现；整个目录拷走即卸载、放入即�
 from functools import lru_cache
 from pathlib import Path
 
-# 插件根目录（plugins/treasure/）
+# 插件根目录（plugins/_archive/treasure/）
 PLUGIN_DIR = Path(__file__).resolve().parent
 # 资源根与分类目录（模板图 image/、感知/决策真源 policy/、图节点 pipeline/）
 RES_DIR = PLUGIN_DIR / "resources"

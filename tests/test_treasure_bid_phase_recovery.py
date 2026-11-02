@@ -18,7 +18,7 @@ import pytest
 # module 经 core.window_utils 顶层 import maa.toolkit，CI 轻依赖环境下收集期 ERROR
 # 会中断整个 pytest 会话；按仓内既有口径整文件优雅跳过。
 try:
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
 
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001
@@ -153,7 +153,7 @@ def test_submitted_label_never_triggers_s2():
 
 from types import SimpleNamespace  # noqa: E402
 
-from maaracing_master.plugins.treasure.strategy import (  # noqa: E402
+from maaracing_master.plugins._archive.treasure.strategy import (  # noqa: E402
     BALANCE_UNKNOWN, DECISION_TARGET_SECOND, BidContext, BidDecision)
 
 

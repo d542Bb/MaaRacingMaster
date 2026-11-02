@@ -39,7 +39,7 @@ OFFSET_X, OFFSET_Y = 1, 38
 CONTENT_W, CONTENT_H = 1280, 720
 
 # 自检用：treasure 既有模板（来自真正的运行帧）
-SELFCHECK_TPL = "maaracing_master/plugins/treasure/resources/image/hall_peak_appraise_card.png"
+SELFCHECK_TPL = "maaracing_master/plugins/_archive/treasure/resources/image/hall_peak_appraise_card.png"
 SELFCHECK_MIN = 0.99
 
 # 模板名（不含扩展名），与人工裁剪文件名一致

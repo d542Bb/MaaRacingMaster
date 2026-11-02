@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_master.plugins.treasure.strategy import (
+from maaracing_master.plugins._archive.treasure.strategy import (
     BidContext,
     BidDecision,
     BidStrategy,

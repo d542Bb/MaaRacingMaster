@@ -86,10 +86,10 @@ def test_speedrush_reserves_dashboard_with_version_zero():
 
 
 def test_treasure_is_the_reference_dashboard_module():
-    """鉴宝保持冻结：现有今日统计钩子即资格位，元信息据此下发。"""
-    cls = MODULE_REGISTRY["treasure"]
-    assert overrides_classmethod(cls, "read_today_stats") is True
-    assert get_module_info("treasure")["has_dashboard"] is True
+    """鉴宝（已归档）保持冻结：现有今日统计钩子即资格位，示范实现不因归档而改代码。"""
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
+
+    assert overrides_classmethod(TreasureModule, "read_today_stats") is True
 
 
 def test_legacy_today_stats_alone_counts_as_dashboard(monkeypatch):
@@ -149,7 +149,6 @@ def test_module_list_payload_carries_dashboard_flag():
             f"{item['id']} 缺少布尔型 has_dashboard"
         )
 
-    assert by_id["treasure"]["has_dashboard"] is True
     assert by_id["speedrush"]["has_dashboard"] is False
     assert by_id["launch_game"]["has_dashboard"] is False
     assert by_id["close_game"]["has_dashboard"] is False

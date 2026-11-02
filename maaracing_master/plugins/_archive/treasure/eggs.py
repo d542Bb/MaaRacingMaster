@@ -11,7 +11,7 @@
   5) 返回 {red, yellow, blue} 数量 + 命中框（供日志 / 调试台渲染）
 
 奖励卡通用几何（红→蓝→绿，蛋卡与 medal 卡同一机制；校准真值：
-plugins/treasure/tools/card_geom_probe.py，claim_popup_0609.png 5/5）：
+plugins/_archive/treasure/tools/card_geom_probe.py，claim_popup_0609.png 5/5）：
   • 红 = 图标模板命中框；
   • 蓝 = 由红框外扩找到整卡白色描边（Canny+轮廓；命中框中心被包含、宽 ≤1.9× 红框、
     高宽比 ∈[1.2,2.2] 的最小候选——图标卡体边框高宽比≈1.12 被天然排除）；
@@ -37,7 +37,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maaracing_master.plugins.treasure import IMAGE_DIR, nav_source
+from maaracing_master.plugins._archive.treasure import IMAGE_DIR, nav_source
 
 
 MATCH_THRESHOLD = 0.72  # TM_CCOEFF_NORMED（与鉴宝师匹配同一数量级）

@@ -4,14 +4,14 @@
 > 聚焦鉴宝核心：阶段状态机（真源 = `resources/policy/treasure.policy.json` `perception.stages.order`）/ 准星意图 / 出价策略（bid\_strategy）/ 异步 OCR / ROI 三段分类。
 >
 > **信源等级**：L2 —— 可作「鉴宝域现在怎么工作、改它要注意什么」的直接依据；不得作为游戏规则（L0，见 RULES.md）与节点/策略取值（L0，见 `resources/`）的最终依据。
-> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../../AGENTS.md)；本文只补充本域特有约束。
+> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../../../AGENTS.md)；本文只补充本域特有约束。
 >
 > **先读**：[RULES.md](./RULES.md) —— 游戏规则事实（成交条件 / 分红机制 / 计分目标 / 对手行为约束）。
 > 本域一切策略与实现都以游戏规则为前提；**规则与本文冲突时以 RULES.md 为准**，并回头修本文。
 >
 > 配套文档：
 >
-> - 主文档：[docs/CODE\_WIKI.md](../../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
+> - 主文档：[docs/CODE\_WIKI.md](../../../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
 
 ***
 
@@ -100,9 +100,9 @@
 
 - **链内进度写 trace**（`_egg_chain_trace`，事件名 `egg_chain`）：链阻塞在决策段内，`_tick_once` 的帧 trace 在链期间不再产生——不补记则整段领取过程在 trace 里是空白，事后无法回溯「走到哪一步、哪一步失败」。记 `start`（含 `click_mode`/`intent_mode`，可直接回答「为什么没领到」）/ `click` / `click_skipped` / `click_timeout` / `panel_opened` / `claim_done` / `give_up` / `error`。链内失败路径同时收口到统一出口 `_give_up`（日志 + trace + 离场），不再各写各的。PEEP 叠加层同理会被链冻结（`_last_debug_kwargs` 停止发布）——`_egg_chain_refresh_peep` 在 drain/click/wait 三处轮询中浅拷贝刷新两个手柄字段（导航进度 `treasure_gamepad_cursor`、候选快照 `treasure_cursor_cands`），其余字段维持链前快照；链恰是用户最需要看「导航在干嘛」的时段（真机 2026-09-14：链内点击三连失败，PEEP 全程无进度可看）。
 
-- 链路线：屏幕返回键「D」→ 活动页 → 「获取银币」→ 任务抽屉（tab1 找红按钮 → 无则切「彩蛋任务」tab 再找）→ 聚合奖励弹窗 → `EggRewardRecognizer` 数蛋 + `claim_coin_medal`/`claim_score_medal` 匹配后按通用几何取「×N」读银币/积分 → `store.record_egg_claim` 累加落盘 → 点屏幕任意处继续 → 复查轮次 ≤3 → 点左侧空白关抽屉 → 点房子回大厅 → `request_stop()`。总预算 45s 由链入口算成墙钟 deadline、各步等待按剩余预算 clamp（`_egg_chain_wait` 的 `budget_deadline`——此前该常量只出现在日志文案里、各步各自计时，链整体实际无上界），领取循环另有尝试次数上限（轮次上限×2，防红钮常驻＋点击持续失败时 `continue` 空转）；每步超时/异常只记 WARNING 后仍走停止路径——「有就领，没有就结束」，绝不阻塞停止。medal 区分度经真匹配器实测（单币章 vs 币堆章 margin≥0.68，见 `plugins/treasure/tools/`）。
+- 链路线：屏幕返回键「D」→ 活动页 → 「获取银币」→ 任务抽屉（tab1 找红按钮 → 无则切「彩蛋任务」tab 再找）→ 聚合奖励弹窗 → `EggRewardRecognizer` 数蛋 + `claim_coin_medal`/`claim_score_medal` 匹配后按通用几何取「×N」读银币/积分 → `store.record_egg_claim` 累加落盘 → 点屏幕任意处继续 → 复查轮次 ≤3 → 点左侧空白关抽屉 → 点房子回大厅 → `request_stop()`。总预算 45s 由链入口算成墙钟 deadline、各步等待按剩余预算 clamp（`_egg_chain_wait` 的 `budget_deadline`——此前该常量只出现在日志文案里、各步各自计时，链整体实际无上界），领取循环另有尝试次数上限（轮次上限×2，防红钮常驻＋点击持续失败时 `continue` 空转）；每步超时/异常只记 WARNING 后仍走停止路径——「有就领，没有就结束」，绝不阻塞停止。medal 区分度经真匹配器实测（单币章 vs 币堆章 margin≥0.68，见 `plugins/_archive/treasure/tools/`）。
 
-- 「×N」读数区 = **奖励卡通用几何推导**（用户拍板的设计，蛋卡/medal 卡同一套，`eggs.py::find_card_body/CARD_COUNT_BAND`）：红=命中图标框 → 外扩找整卡白色描边（Canny+轮廓，高宽比≥1.2 的最小包含候选；图标卡体内描边≈1.12 被天然排除）→ 蓝框内按比例切数字带（y 0.62–0.805）与名称带（y 0.805–0.985）。**几何参数只在代码常量，真源 policy 不携带偏移参数，Studio 也不做其预览**（校准台只管 ROI 与模板匹配——为推导区单开预览被用户明确否决）。校准与消费端契约：`plugins/treasure/tools/card_geom_probe.py`（5 卡 5/5，含 det=True 行级真值对照）与 `tests/test_treasure_egg_claim.py::test_egg_recognize_golden_frame_counts`（真帧数蛋锁）。教训：计数区若做成「锚点+固定偏移」参数，偏移不可见不可调，历次校准全是猜——上一版交付就栽在未验证的偏移参数上。
+- 「×N」读数区 = **奖励卡通用几何推导**（用户拍板的设计，蛋卡/medal 卡同一套，`eggs.py::find_card_body/CARD_COUNT_BAND`）：红=命中图标框 → 外扩找整卡白色描边（Canny+轮廓，高宽比≥1.2 的最小包含候选；图标卡体内描边≈1.12 被天然排除）→ 蓝框内按比例切数字带（y 0.62–0.805）与名称带（y 0.805–0.985）。**几何参数只在代码常量，真源 policy 不携带偏移参数，Studio 也不做其预览**（校准台只管 ROI 与模板匹配——为推导区单开预览被用户明确否决）。校准与消费端契约：`plugins/_archive/treasure/tools/card_geom_probe.py`（5 卡 5/5，含 det=True 行级真值对照）与 `tests/test_treasure_egg_claim.py::test_egg_recognize_golden_frame_counts`（真帧数蛋锁）。教训：计数区若做成「锚点+固定偏移」参数，偏移不可见不可调，历次校准全是猜——上一版交付就栽在未验证的偏移参数上。
 
 - 惰性锚点真源 = spec 的 `egg_claim_red_btn`/`egg_claim_title`/`egg_panel_tabbar`/`egg_task_tab3`/`act_get_silver_btn`/`hall_back_btn`/`hall_home_btn`/`claim_coin_medal`/`claim_score_medal` 族（= `TreasureModule.EGG_CHAIN_ANCHORS`，测试直接 import 该常量、不再手抄副本），**不进 transitions/stages.active/global\_anchors**（detector 零扫描、不参阶段判定；`tests/test_treasure_egg_claim.py` 机检这条惰性）。链尾确认「已回大厅」另用全局锚点 `EGG_CHAIN_LOBBY_ANCHOR`（`hall_peak_appraise_card`，检测面本就每帧扫描），与惰性清单语义分开、不混。GUI 底部阶段条在收尾期间（约 30s）不更新——链不是阶段，以「\[彩蛋收尾]」日志补偿；日后要可视化按 §10.1 升级路径补 dwell+stage，属独立改动。
 
@@ -140,7 +140,7 @@
 
   - 写侧不变量：io 三项只由观察线程写、ocr/tick 项只由 Tasker 线程写（各为单写者），`read_perf_snapshot` 可被 sidecar handler 线程直读不加锁。回归锁见 `tests/test_treasure_perf_instrument.py`（含变异检验：退回全局口径会恰使两条校准测试变红）。
 
-  - **进程 CPU 占用**：原语在 [core/cpu\_time.py](../../core/cpu_time.py)（ctypes `GetProcessTimes`，零依赖、非 Windows 返回 None），core 只给无状态累计秒数，**差分留在本域仪表**（`_sample_cpu` 每 tick 采一次，相邻差 ÷ 墙钟差 → 滑窗 p50/p95/max；多核可 >100%）。取不到时快照 `cpu.available=False`，GUI 按"无此项"渲染，**绝不拿 0% 冒充空闲**。单位坑（FILETIME tick = 100ns = 1e-7 秒，写成 `100e-7` 会放大 100 倍）由 `tests/test_cpu_time.py` 与 `time.process_time()` 对拍锁住——该文件只依赖标准库，CI 上真实执行（不像鉴宝测试整文件跳过）。
+  - **进程 CPU 占用**：原语在 [core/cpu\_time.py](../../../core/cpu_time.py)（ctypes `GetProcessTimes`，零依赖、非 Windows 返回 None），core 只给无状态累计秒数，**差分留在本域仪表**（`_sample_cpu` 每 tick 采一次，相邻差 ÷ 墙钟差 → 滑窗 p50/p95/max；多核可 >100%）。取不到时快照 `cpu.available=False`，GUI 按"无此项"渲染，**绝不拿 0% 冒充空闲**。单位坑（FILETIME tick = 100ns = 1e-7 秒，写成 `100e-7` 会放大 100 倍）由 `tests/test_cpu_time.py` 与 `time.process_time()` 对拍锁住——该文件只依赖标准库，CI 上真实执行（不像鉴宝测试整文件跳过）。
 
   - 空汇总噪音已消除：场次边界的汇总**只认 OCR 活动**（预热期常只有几帧落盘、OCR 全 0），但计数无条件在边界清零，防串场。
 
@@ -232,7 +232,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 [treasure\_ocr.py](./ocr.py)
 
-**职责**（**业务薄层**：识别引擎的真源在 [core §1.11](../../core/CODE_WIKI.md)，本文件不再持有第二份）：
+**职责**（**业务薄层**：识别引擎的真源在 [core §1.11](../../../core/CODE_WIKI.md)，本文件不再持有第二份）：
 
 - 识别区 `_regions`：读 policy.json `perception.spec` 筛 `kind == "ocr"` 的锚点 rect
 
@@ -242,7 +242,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 - 金额提取加固：千分位逗号优先、重复逗号合并、中文「万」单位、7 位噪点前缀截首、`MIN_AMOUNT` 金额下限（下限值与区间口径见源码常量）
 
-- 抠图 → 预处理 → RapidOCR 推理、以及关检测/关方向分类/ORT 线程数/P-core 绑核那套调参**已上提 core**：插件自包含契约禁止 speedrush import 本模块，故引擎只能住公共层；改参去 [core/ocr.py](../../core/ocr.py)，识别结果的行为不变锁见 `tests/test_core_ocr.py`
+- 抠图 → 预处理 → RapidOCR 推理、以及关检测/关方向分类/ORT 线程数/P-core 绑核那套调参**已上提 core**：插件自包含契约禁止 speedrush import 本模块，故引擎只能住公共层；改参去 [core/ocr.py](../../../core/ocr.py)，识别结果的行为不变锁见 `tests/test_core_ocr.py`
 
 ***
 
@@ -381,6 +381,6 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 | **假下降沿与按钮自愈的判据互斥**（2026-09-15 定稿） | 出价提交成功与否有**两个出口对同一事实各自为政**：「假下降沿」（`module.py:2172`）只看面板——`_bid_player_submitted[我方] is False` 且 1.5s 缓冲期内无任何槽读到报价；「按钮自愈」（`module.py:2232`）只看按钮文字——`"已出价" in label`。两者结论相反时进入**周期振荡**：假下降沿 → `wait_first` → 自愈 → `wait_result` →（`SUBMIT_ANIMATION_BUFFER_MS`=1500ms）→ 假下降沿。实测 `20260915_120953`：12:12:47/48/49/49/51、12:15:14/16/17、12:17:49/51（一圈 ≈2s），该局 19 次假下降沿 vs 14 个 epoch、6 次自愈。代价：每次自愈都把 `_wait_result_entered_ts` / `_wait_result_frames` 归零 → 快照构建被无限推迟；且 `wait_first` **不投递槽 OCR**（投递闸只认 `dec.state` 以 S3 开头或 `_bid_phase == "wait_result"`）→ 整个公开报价窗口空转。**上游诱因**：`_bid_player_submitted` 从不按回合重置（只在构造与 `module.py:1385` 初始化），且空读与被门控丢弃的帧不覆盖它（`module.py:5272` 的守卫是刻意为之）——读数进不来的窗口里该字段就是过期值，而假下降沿恰好依赖它（振荡窗口心跳 #1390 实测 `P2:未读 5/0/0`：消费 5 次、输出 0 次，同帧跨页丢弃 `bid_player1..3`）。**放大器**：`bid_main_btn_label` 旧 ROI 过窄，只在金额短（`已出价：0`）时恰好框得下、长金额（`已出价:353,200`）读成 `价：353,2`，自愈因此时灵时不灵（该局仅成功 6 次）；ROI 加宽后自愈稳定生效，振荡更易被点着。口径：**别让两个出口对同一事实各自为政**——假下降沿判定前应并采按钮文字，或让按钮「已出价」优先于面板三态。待处置  |
 | **观察线程的启动判据**（2026-09-15 定案） | 观察线程（`treasure-observer`）是**阶段判定的唯一生产者**：`_judge_stage_into_slot` 写 `_obs_slot`，决策段 `_consume_stage_slot`（`module.py:4344`）读它并 `set_stage`——这是 `set_stage` 唯一的自动调用者，所以线程不起 = 阶段永不推进。它的启动判据**不得**绑 `debug.enabled` / `peep_enabled`：旧写法 `if debug or peep: _start_io_worker(); _start_observer()` 会让两个出口全关的会话阶段判定彻底停摆（`_obs_slot` 恒 None → 决策段直接 return），与同文件 `_observe_interval_s` 声明的 C6「阶段判定消费者恒在」直接冲突——**节拍判据改了新门，启动判据还守着旧门**。现口径收在 `_start_session_workers()`：观察线程无条件起、IO worker 仍按出口开关起；会话**中途**打开出口由观察循环 `_ensure_io_worker()` 每 tick 补启（否则要重开会话才有帧）。教训一般化：凡「某线程/组件是某职责的唯一生产者」，其启停判据必须盯那个职责，而不是盯历史上顺带服务的出口开关。真机证据 `MaaRM_20260915_173823`（全关会话无「观察通路已启动」行）与 `MaaRM_20260915_173229`（途中开 PEEP 全程无预览）；回归锁 `tests/test_treasure_observer.py` 四条——注意原有七条是**方法级**契约，照不到「线程有没有被启动」这条判据，所以修复前全绿  |
 | **报价槽固化状态必须随场次清空**（2026-09-15 定稿） | 报价槽 `_bid_slots` 的回合级重置只认「回合号变了」（`_consume_ocr_result` 比对 `_bid_slots_round`），于是**新一场的第 1 回合与上一场最后一回合同为 1 时该条件不成立**，槽沿用上一场四槽——本场 R1 的报价一次都不读（`_bid_dynamic_ocr_keys` 已把固化槽剔除），R1 快照直接用上一场数字。真机 `20260915_211002` 实证：第 2 场 R1 开局（21:11:21）四槽仍是第 1 场的 `150900/208800/550000/178000`、`OCR 199次` 冻结不再增长，快照 `epoch#1 R1 H=216,600 我方=150,900 对手=(208800, 550000, 178000)`——H 是本场的、四槽是上一场的；该会话 5 场里第 2、3 场中招，第 3 场打到 R3 后第 4、5 场的 R1 因回合号不等而自行恢复。**教训一般化：「按局内序号重置」这类判据在场次边界会失效**——凡状态机的重置键取自局内序号（回合号 / epoch / 序号），跨场必须由场次边界显式清空，`_reset_round_state` 是那个唯一出口；清的时候复用既有 `_reset_bid_slots()` 而非清成空 dict，维持「四槽恒在」约定（消费侧 `_bid_slots[pid]` 按下标直取）。该缺陷在报价读数可读之前不可达（那时没有任何槽会固化），是随「出价页页面令牌补第二类证据」生效后暴露的既有问题。回归锁 `tests/test_treasure_bid_phase_recovery.py::test_reset_round_state_clears_locked_bid_slots`（已在旧行为下验红：`assert 1 is None`）  |
-| 点击日志的留痕判据（模块侧） | 槽忙跳过按帧节流（`SLOT_BUSY_LOG_EVERY`），每次点击导航仍留 1~2 行（点击与避让各一）——这是**预期行为**不是异常；点击失败按**失败链**判定：某 key 连续失败链首次必记、其后按帧节流、点击成功清链（真机 2026-09-17 帧 24/46 的两次失败曾被纯帧号节流整段吞掉）。帧级日志的产出判据与取证口径见 [core §5.5](../../core/CODE_WIKI.md) |
+| 点击日志的留痕判据（模块侧） | 槽忙跳过按帧节流（`SLOT_BUSY_LOG_EVERY`），每次点击导航仍留 1~2 行（点击与避让各一）——这是**预期行为**不是异常；点击失败按**失败链**判定：某 key 连续失败链首次必记、其后按帧节流、点击成功清链（真机 2026-09-17 帧 24/46 的两次失败曾被纯帧号节流整段吞掉）。帧级日志的产出判据与取证口径见 [core §5.5](../../../core/CODE_WIKI.md) |
 | **结算页金额的定值判据与利润派生**（2026-09-17 定稿） | 结算页四行金额（最终竞拍价/合计/利润/我的收入）是**滚动计数动画**，「连续 N 帧一致」拦不住它：动画值能连稳 ≥3 帧（会话 `20260917_210330` 第 15 场合计 31,013→31,361→320,605、利润 −445,987→−445,639→−156,395）。**定值判据 = 跳过动画后「领取」按钮出现**（用户权威 + 日志双证），代码里即 `_settle_collect_clicked_once`（本就是策略两次点击「跳过动画 ↔ 真领取」的交接点，不新增事实字段）：点击前一律不固化，点击后读数才是真值；`_settle_field_stable` 降为定值之后的第二道去抖。收入同样受此闸——2026-09-16 事故就是动画期收入被读成 `0`（合法终值）而提前点了真领取。**利润是派生量**：`利润 = 拍品总价 − 最终竞拍价`（RULES §3/§7；库内 430/485 场精确相等，且动画期该关系同样成立——利润行只是合计行的函数，不含独立信息）。故不再独立落值，OCR 利润行改为**交叉校验哨兵**（与派生值不符即告警，用于发现 ROI 漂移）。旧护栏「利润绝对值不低于 Hmax/20」前提为假——薄利赢单的利润本就远小于 Hmax/20，真值被当裁位残缺丢弃、动画中间值反而被固化（库内 55 场，当日 #12/#14 两场拍中即由此把 −362,521 写上看板，真值 +146,323）。**配套**：策略侧 `settle_ready_click` 的判据由 `settle_income >= 0` 改为 `neq null`（=「已读出」）——拍中者收入 = 利润可为负（库内 122 场亏本拍中），值域判据会让这些场永远点不出领取，配上定值闸就是死路。**看板口径**：银币盈亏 = `income_sum`（我方本场收入，含未中场分红，RULES §3）+ `egg_coin`；`profit_sum` 只累加我方拍中场的利润（未中场的利润是中标者的钱）。历史脏数据用 `scripts/repair_treasure_settle_data.py` 按同一套规则回填（推不出的不猜）。回归锁 `tests/test_treasure_settle_stability.py`、`tests/test_treasure_store_summary.py`、`tests/test_repair_treasure_settle_data.py` |
 | 帧边界与终止可见化 | `_tick_once` 只是边界壳，帧工作在 `_tick_frame_body`：`ClickRetryExhaustedError` → 一条 ERROR + `ctx.lifecycle.request_stop()`（置 `_frame_abort` 后后续帧不再执行帧工作）；其他异常 → 计数并按 `FRAME_ERROR_LOG_EVERY` 节流记 traceback，**不中断**。快照路径不得触发决策（`_treasure_kwargs` 只读决策段发布的 `_last_intent`），代价是 PEEP 准星滞后一帧 |

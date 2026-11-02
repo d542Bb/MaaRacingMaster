@@ -19,8 +19,8 @@ import pytest
 from maaracing_master.core.logger import Logger
 
 try:
-    from maaracing_master.plugins.treasure import module as mod
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure import module as mod
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
     from maaracing_master.core.navkit import TraceWriter  # noqa: F401
 
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
@@ -28,7 +28,7 @@ except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
 
 # 本文件锁的是 TreasureModule 的 trace 写手管理（_ensure_trace_sink / _close_trace_writer），
-# 随 treasure 退役（见 plugins/treasure/RETIRED.md）。契约本身（模块 trace 与 core 日志开关
+# 随 treasure 退役（见 plugins/_archive/treasure/RETIRED.md）。契约本身（模块 trace 与 core 日志开关
 # 联动）是平台级的，但当前无第二实现者（speedrush 未采用该机制）——未来模块实现此契约时
 # 应在该模块侧补等价测试，而不是复活本文件。
 pytestmark = [

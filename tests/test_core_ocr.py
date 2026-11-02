@@ -2,7 +2,7 @@
 """core OCR 引擎回归锁：固定输入 → 逐字节稳定的文本；抠图边界与通道序可机检。
 
 **为什么锁**：引擎段（关 det/cls、ORT 线程数、P-core 绑核、放大与对比度预处理）
-从 `plugins/treasure/ocr.py` 搬到 [`core/ocr.py`](../maaracing_master/core/ocr.py)、
+从 `plugins/_archive/treasure/ocr.py` 搬到 [`core/ocr.py`](../maaracing_master/core/ocr.py)、
 使 core 成为该引擎的唯一真源时，硬约束是**识别结果逐字节不变**。搬家用一次性
 「重构前/后双跑对拍」证明过（6 张素材 × 23 个 ROI，含退化与越界矩形），此后靠
 本文件守住——单次对拍不构成防线。

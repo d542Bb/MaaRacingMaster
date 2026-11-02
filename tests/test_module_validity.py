@@ -113,7 +113,7 @@ class TestWindowPredicate:
 class TestTreasureManifestWindow:
     """契约锁：treasure 声明的活动窗口 = 2026-08-06 05:00 — 2026-09-23 04:59（UTC+8）。
 
-    随 treasure 退役（见 plugins/treasure/RETIRED.md）：锁的是该活动的声明值本身，
+    随 treasure 退役（见 plugins/_archive/treasure/RETIRED.md）：锁的是该活动的声明值本身，
     活动已下线，此锁失去对象。
     """
 

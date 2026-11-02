@@ -26,7 +26,7 @@ import numpy as np
 from maaracing_master.core.logger import logger
 from maaracing_master.core.ocr import RapidOcrEngine
 
-from maaracing_master.plugins.treasure import nav_source
+from maaracing_master.plugins._archive.treasure import nav_source
 
 
 # 数字提取：千分位格式优先（"1,234,567"），其次纯数字。

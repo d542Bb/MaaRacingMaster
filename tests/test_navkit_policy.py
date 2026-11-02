@@ -32,7 +32,7 @@ from maaracing_master.core.navkit import (
 
 _POLICY_PATH = (
     Path(__file__).resolve().parents[1]
-    / "maaracing_master/plugins/treasure/resources/policy/treasure.policy.json"
+    / "maaracing_master/plugins/_archive/treasure/resources/policy/treasure.policy.json"
 )
 
 
@@ -468,7 +468,7 @@ def test_policies_missing_is_startup_failure(monkeypatch, tmp_path):
     broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
     try:
-        from maaracing_master.plugins.treasure import module as tm
+        from maaracing_master.plugins._archive.treasure import module as tm
     except Exception:
         pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 
@@ -492,7 +492,7 @@ def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
     broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
     try:
-        from maaracing_master.plugins.treasure import module as tm
+        from maaracing_master.plugins._archive.treasure import module as tm
     except Exception:
         pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 

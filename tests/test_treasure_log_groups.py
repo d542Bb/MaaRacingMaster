@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 try:
-    import maaracing_master.plugins.treasure.module as tmod
+    import maaracing_master.plugins._archive.treasure.module as tmod
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时整文件跳过
     _OK, _ERR = False, str(exc)
