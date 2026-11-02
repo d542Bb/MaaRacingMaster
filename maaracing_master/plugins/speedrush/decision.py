@@ -446,7 +446,8 @@ class DecisionEngine:
             preposition_enabled=s.preposition_enabled,
             preposition_horizon_s=s.preposition_horizon_s,
             preposition_max_lane=s.preposition_max_lane,
-            preposition_bias_lane=s.preposition_bias_lane))
+            preposition_bias_lane=s.preposition_bias_lane,
+            pass_preposition_enabled=s.pass_preposition_enabled))
         # 选择层影子（2026-10-28）：与生产同一拍同一批输入，承诺态跟影子路线
         # 走；只落 trace、不接控制。预分歧段两份输入相同，结果必须逐位一致
         # ——这是"影子接线可信"的运行时校验，也是 C 下游差异的可信度门。
