@@ -286,15 +286,21 @@ def far_veto_lanes(coarse_bands, center_lane: float | None,
     """中远场深塌缩道集（单向认证的当拍读数，纯函数）。
 
     判据（2026-11-02 离线定标）：目标道中心在**所有可用宏带**（双侧有读数）
-    的地面包络外 ≥FAR_VETO_MARGIN_LANE 道 → 该道当拍深塌缩。边界与
-    center_lane 同系换算（道，右正，路心=0）：包络边 = x_m/lane_w +
-    center_lane。无可用宏带=空集——无证据≠否决证据（BandBoundary unknown
-    同一口径）。返回扫描窗内（路心 ±3 道）塌缩的绝对道号。"""
+    的地面包络外 ≥FAR_VETO_MARGIN_LANE 道 → 该道当拍深塌缩。坐标：
+    center_lane 是**路心相对自车**（道，右正，原点=车），包络边的路框系
+    坐标 = x_m/lane_w − center_lane（自车在路框的坐标 = −center_lane，
+    与 trace road_offset = −center_lane 同一条换算；2026-11-02 闸首局
+    证伪过 + 号——镜像几何让否决集追着自车偏移翻面，43~55% 拍误触发）。
+    扫描窗=±1 道：离线定标只覆盖 ±1（持续深塌缩 0~0.3% 拍）；±2/±3 道
+    的包络读数受路缘+肩差能见度限制（首局实测当拍塌缩 34%、持续 20%，
+    全在 ±2/±3）——那是"包络够不着"不是"路没了"，不进否决集（无证据
+    不否决，±2 请求因此不认证）。
+    无可用宏带=空集（BandBoundary unknown 同一口径）。返回塌缩道号。"""
     if not coarse_bands or center_lane is None \
             or not lane_w_m or lane_w_m <= 0:
         return frozenset()
-    usable = [(b.left.x_m / lane_w_m + center_lane,
-               b.right.x_m / lane_w_m + center_lane)
+    usable = [(b.left.x_m / lane_w_m - center_lane,
+               b.right.x_m / lane_w_m - center_lane)
               for b in coarse_bands
               if b.left is not None and b.right is not None
               and b.left.x_m is not None and b.right.x_m is not None
@@ -302,7 +308,7 @@ def far_veto_lanes(coarse_bands, center_lane: float | None,
     if not usable:
         return frozenset()
     out = set()
-    for lane in range(-3, 4):
+    for lane in (-1, 0, 1):
         if all(el > lane + FAR_VETO_MARGIN_LANE
                or er < lane - FAR_VETO_MARGIN_LANE for el, er in usable):
             out.add(lane)
