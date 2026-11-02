@@ -13,7 +13,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 FILES = [
     REPO / "maaracing_assistant/core/resources/pipeline/global.json",
-    REPO / "maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json",
+    REPO / "maaracing_assistant/plugins/_archive/treasure/resources/pipeline/treasure.json",
 ]
 
 

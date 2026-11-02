@@ -29,9 +29,9 @@ def main() -> int:
         import maaracing_master  # noqa
         import maaracing_master.core.sidecar  # noqa
         import maaracing_master.core.controller  # noqa
-        import maaracing_master.plugins.treasure.manifest  # noqa
-        import maaracing_master.plugins.treasure.module  # noqa
-        import maaracing_master.plugins.treasure.ocr  # noqa
+        import maaracing_master.plugins._archive.treasure.manifest  # noqa
+        import maaracing_master.plugins._archive.treasure.module  # noqa
+        import maaracing_master.plugins._archive.treasure.ocr  # noqa
         import numpy  # noqa
         import cv2  # noqa
         import onnxruntime  # noqa

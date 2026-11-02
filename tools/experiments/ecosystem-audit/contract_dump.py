@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-POLICY = REPO / "maaracing_assistant/plugins/treasure/resources/policy/treasure.policy.json"
+POLICY = REPO / "maaracing_assistant/plugins/_archive/treasure/resources/policy/treasure.policy.json"
 
 CONTRACT = {
     "facts": [

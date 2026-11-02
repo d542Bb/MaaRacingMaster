@@ -3,7 +3,7 @@
 """B1 官方加载实测：对两真源目录做 Resource.post_pipeline。
 
 复现生产实现 core/nav_graph.py NavKitV4.load 的做法：core/pipeline 与
-plugins/treasure/pipeline 互指，分次 post 先加载者必失败 → 合并临时目录
+plugins/_archive/treasure/pipeline 互指，分次 post 先加载者必失败 → 合并临时目录
 一次 post。结束后清理临时目录。
 
 同时对照：

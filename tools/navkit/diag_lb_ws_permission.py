@@ -126,7 +126,7 @@ def read_until_response(reader, limit=80):
 
 
 def main():
-    in_root = str(Path(__file__).resolve().parents[3] / "maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json")
+    in_root = str(Path(__file__).resolve().parents[3] / "maaracing_assistant/plugins/_archive/treasure/resources/pipeline/treasure.json")
     out_root = r"D:\mpe-poc\workspace\pipeline\treasure.json"
 
     sock, rest = ws_connect()

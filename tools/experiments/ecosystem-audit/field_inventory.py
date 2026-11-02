@@ -15,7 +15,7 @@ from pathlib import Path
 SCHEMA = Path(__file__).resolve().parents[3] / "tools/navkit/schema/pipeline.schema.json"
 FILES = {
     "global": Path(__file__).resolve().parents[3] / "maaracing_assistant/core/resources/pipeline/global.json",
-    "treasure": Path(__file__).resolve().parents[3] / "maaracing_assistant/plugins/treasure/resources/pipeline/treasure.json",
+    "treasure": Path(__file__).resolve().parents[3] / "maaracing_assistant/plugins/_archive/treasure/resources/pipeline/treasure.json",
 }
 
 
