@@ -33,6 +33,7 @@ from enum import Enum, IntEnum
 from typing import Any
 
 from maaracing_master.plugins.speedrush.depth_geo import DepthAnchorSheet
+from maaracing_master.plugins.speedrush.lane_obs import lane_membership
 from maaracing_master.plugins.speedrush.perception import PerceptionResult
 from maaracing_master.plugins.speedrush.world_model import (
     KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, t_meet_car_s,
@@ -140,6 +141,8 @@ class TrackedTarget:
     validity_until_fid: int      # 宽限截止帧号（last_seen + grace）
     # 最近一帧 2D 框 xyxy（trace 与校验层用；空=旧构造未带）
     box: tuple[float, float, float, float] = ()
+    # 车道线插值成员（车道线定道，闸关恒 None）：远车 x 缺席段的主供数候选
+    x_lane_line: float | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,8 @@ class FarTarget:
                                  # 源，_Track 已有直读；0=构造方未供，消费端自决）
     rel_approach: float = 0.0    # px/fid（同 TrackedTarget，全 kind 配对轨都更新；
                                  # 远场粗源的到站仪器输入，正=接近）
+    # 车道线插值成员（车道线定道，闸关恒 None）：与 TrackedTarget 同契约面世
+    x_lane_line: float | None = None
 
 
 @dataclass(frozen=True)
@@ -439,6 +444,7 @@ class _Obs:
     lane_side: int
     det_key: tuple[str, int] = ("", -1)   # (kind, kind 内序号)——深度锚点帧映射表的 key
     box: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)  # 2D 框 xyxy
+    x_lane_line: float | None = None   # 车道线插值成员（车道线定道，闸关恒 None）
 
 
 @dataclass
@@ -458,6 +464,7 @@ class _Track:
     first_seen: int
     last_seen: int
     box: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)  # 最近 2D 框 xyxy
+    x_lane_line: float | None = None   # 最近读数（同 _Obs；遮挡期保持）
     matched: bool = False
     # ---- 混合测距锚点状态（语义见设计稿 §2/§4；C 线 2026-10-13 起为决策供数）----
     anchor_z: float | None = None        # 米制锚点（None=无有效锚；近簇修正+跳变门后的值）
@@ -497,7 +504,8 @@ class Tracker:
                  bridge_stay: int = 2,
                  box_bridge_enabled: bool = False,
                  box_bridge_trace_only: bool = True,
-                 anchor_box_gate_enabled: bool = False):
+                 anchor_box_gate_enabled: bool = False,
+                 lane_line_enabled: bool = False):
         # cal 缺省读几何真源（gate0.json）；三源分立，代码不写标定字面量
         self.cal = cal if cal is not None else load_calib()
         self.p = params
@@ -510,6 +518,9 @@ class Tracker:
         self._box_bridge_on = box_bridge_enabled
         self._box_bridge_trace_only = box_bridge_trace_only
         self._anchor_gate_on = anchor_box_gate_enabled
+        # 车道线定道（双线同行插值，闸 lane_line.enabled，默认关=字段恒 None）：
+        # 闸由 decision.json 传入，配置流向单点在链构建
+        self._lane_line_on = lane_line_enabled
         self._tracks: list[_Track] = []
         self._next_id = 1
         self._last_fid: int | None = None
@@ -539,7 +550,8 @@ class Tracker:
 
     def update(self, per: PerceptionResult, frame_age_ms: float, stage: int,
                geometry_valid: bool = True, stage_transition: bool = False,
-               anchors: DepthAnchorSheet | None = None) -> WorldObservation:
+               anchors: DepthAnchorSheet | None = None,
+               lane: dict | None = None) -> WorldObservation:
         fid = per.frame_id
         if self._last_fid is not None and fid < self._last_fid:
             raise ValueError(f"frame_id 倒退（真乱序输入）：{fid} < {self._last_fid}")
@@ -554,6 +566,12 @@ class Tracker:
         self._last_fid = fid
 
         obs = self._observe(per)
+        # 车道线定道（双线同行插值，闸关=字段恒 None 逐位回今天）：框底行
+        # 夹住的 accepted 线对给出车道成员，远车 x 缺席段的主供数候选。
+        if self._lane_line_on and lane is not None:
+            _lines = lane.get("lines") or []
+            for o in obs:
+                o.x_lane_line = lane_membership(o.cx, o.box[3], _lines)
         for t in self._tracks:
             t.matched = False   # 上一帧的配对结果不作数：本帧重新关联
         matches = self._associate(obs, fid)
@@ -577,6 +595,7 @@ class Tracker:
             t.cy, t.cx = o.cy, o.cx
             t.box = o.box
             t.x_lane, t.x_sigma, t.lane_side = o.x_lane, o.x_sigma, o.lane_side
+            t.x_lane_line = o.x_lane_line
             if o.x_lane is not None:
                 t.x_known = o.x_lane
             # 框高连续性（框高比桥接与锚点一致门共用）：单拍 >35% 相对翻跳
@@ -607,7 +626,7 @@ class Tracker:
                 conf=o.conf, x_lane=o.x_lane, x_known=o.x_lane,
                 x_sigma=o.x_sigma, lane_side=o.lane_side, rel_approach=0.0,
                 first_seen=fid, last_seen=fid, box=o.box, matched=True,
-                prev_box_h=float(o.h)))
+                prev_box_h=float(o.h), x_lane_line=o.x_lane_line))
             frame_map[o.det_key] = self._next_id
             frame_h[self._next_id] = float(o.h)
             self._next_id += 1
@@ -646,14 +665,15 @@ class Tracker:
                     cy=cy_out, w=t.w, h=t.h, conf=t.conf,
                     rel_approach=t.rel_approach, first_seen_fid=t.first_seen,
                     last_seen_fid=t.last_seen, validity_until_fid=valid_until,
-                    box=t.box))
+                    box=t.box, x_lane_line=t.x_lane_line))
             else:
                 fars.append(FarTarget(
                     id=t.id, kind=t.kind, lane_side=t.lane_side, cy=cy_out,
                     conf=t.conf, h=t.h, last_x_lane=t.x_known,
                     first_seen_fid=t.first_seen, last_seen_fid=t.last_seen,
                     validity_until_fid=valid_until,
-                    cx=t.cx, rel_approach=t.rel_approach))
+                    cx=t.cx, rel_approach=t.rel_approach,
+                    x_lane_line=t.x_lane_line))
         targets.sort(key=lambda x: -x.cy)
         fars.sort(key=lambda x: -x.cy)
 

@@ -1131,7 +1131,8 @@ class SpeedRushModule(ActivityModule):
                                    bridge_stay=cfg.metric_bridge.stay,
                                    box_bridge_enabled=cfg.box_bridge.enabled,
                                    box_bridge_trace_only=cfg.box_bridge.trace_only,
-                                   anchor_box_gate_enabled=cfg.box_bridge.anchor_gate),
+                                   anchor_box_gate_enabled=cfg.box_bridge.anchor_gate,
+                                   lane_line_enabled=cfg.lane_line.enabled),
                 "agg": CoinGroupAggregator(),
                 # conf_floor：宽度有效性门的置信地板（真源=scoring.conf_floor，
                 # 传入不抄第二份）
@@ -1317,8 +1318,19 @@ class SpeedRushModule(ActivityModule):
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             if chain.get("view_guard") is not None and gpad is not None:
                 self._tick_view_guard(chain, gpad, dgeo, dgeo_new)
+            # 线观测先取（供数也要用）：线严格可用时它就是走廊中心原点，
+            # 深度只填边界/宽度。用上一拍的执行位（本拍 planner.update 还没跑），
+            # 与决策拿到的 executed 同源，场景参考系因此一致。
+            # 读取前移到 tracker.update 之前（车道线定道 phase 1）：同一拍
+            # 快照供跟踪层做框底行车道成员插值。
+            lw = chain.get("lane_obs")
+            lane = lw.latest() if lw is not None else None
+            lane_usable = (lane is not None and bool(lane.get("usable"))
+                           and (lane.get("det_age_ms") or 0.0)
+                           <= LANE_POS_AGE_MS)
             obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase,
-                                          anchors=anchor_sheet)
+                                          anchors=anchor_sheet,
+                                          lane=lane if lane_usable else None)
             obs = chain["agg"].update(obs)
             planner: LateralPlanner = chain["planner"]
             tviews, tevents = chain["traffic_obs"].update(obs)
@@ -1333,14 +1345,6 @@ class SpeedRushModule(ActivityModule):
                     and dgeo.right_edge_lane is not None:
                 edge_off = -((dgeo.left_edge_lane + dgeo.right_edge_lane)
                              / 2.0)   # 找边对心（审计面）
-            # 线观测先取（供数也要用）：线严格可用时它就是走廊中心原点，
-            # 深度只填边界/宽度。用上一拍的执行位（本拍 planner.update 还没跑），
-            # 与决策拿到的 executed 同源，场景参考系因此一致。
-            lw = chain.get("lane_obs")
-            lane = lw.latest() if lw is not None else None
-            lane_usable = (lane is not None and bool(lane.get("usable"))
-                           and (lane.get("det_age_ms") or 0.0)
-                           <= LANE_POS_AGE_MS)
             # 原点保持：线失锁的短断供拍仍用线原点（与 planner 的
             # _LINE_REBUILD_S 同一预算），否则走廊中心会在线与深度之间
             # 来回换，场景参考系跟着抖。

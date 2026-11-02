@@ -62,6 +62,8 @@ class TrackObj:
     safety_why: str
     v_close_mps: float | None = None   # 锚点链闭速（m/s，正=接近）
     v_lat_lane_s: float | None = None  # 车流视图横速（道/s，右正）
+    # 车道线插值成员（车道线定道，闸关恒 None；None=闸关/弃权）
+    x_lane_line: float | None = None
 
     @property
     def key(self) -> tuple[str, int]:
@@ -169,6 +171,7 @@ class ObjectTable:
                 v_close_mps=None if metric is None else metric.v_close_mps,
                 v_lat_lane_s=None if view is None else view.v_lat,
                 x_sigma=getattr(t, "x_sigma", 0.0),
+                x_lane_line=getattr(t, "x_lane_line", None),
                 half_w_m=half_w, conf=t.conf, src=src,
                 first_seen_fid=t.first_seen_fid,
                 last_seen_fid=t.last_seen_fid,
@@ -230,7 +233,8 @@ class ObjectTable:
                    round(e.age_ms, 1), e.seen, e.safety_ok, e.safety_why,
                    e.src, round(e.src_age_ms, 1),
                    None if e.v_close_mps is None else round(e.v_close_mps, 2),
-                   None if e.v_lat_lane_s is None else round(e.v_lat_lane_s, 3)]
+                   None if e.v_lat_lane_s is None else round(e.v_lat_lane_s, 3),
+                   None if e.x_lane_line is None else round(e.x_lane_line, 3)]
                   for e in self.tracks],
             "g": [[g.group_id, round(g.x_center, 3), g.cy_max,
                    g.observed_count, round(g.age_ms, 1), g.seen,

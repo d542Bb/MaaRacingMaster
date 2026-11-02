@@ -218,7 +218,43 @@ def _fit(pts, cam_h: float, y_lo: float, y_hi: float,
         theta = math.atan((VPX - a - L * LANE_W * Y_H / cam_h) / focal)
     rms = float(np.sqrt(np.average((xs - (s * ys + a)) ** 2, weights=wt)))
     return {"L": L, "theta": None if theta is None else float(theta), "rms": rms,
+            "s": float(s), "a": float(a),
             "y0": float(ys.min()), "y1": float(ys.max()), "n": len(ys)}
+
+
+# 双线夹住框心的最小像素间距（防近重合线插值发散；近场相邻车道线实测
+# 数百 px，60px 只挡退化拟合）
+MEMBERSHIP_SPAN_PX = 60.0
+
+
+def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
+    """双线同行插值（车道线定道）：两条 accepted 线在框底行的像素位置夹住
+    框心时，按线间比例插值出车道成员（道，车心所在的车道坐标）。
+
+    免 vpx/a_x/cam_h/Y_H 任何常数：线在 y_b 的像素位置来自各自的 2D 拟合
+    （斜率/截距是测量值，不是标定常数），比例里的尺子全部消掉——免疫归一
+    尺（A1，a_x 与线方程理论值差 ~19%）与 cam_h 的尺度争端。线不夹住框心、
+    单线、线角过分/残差超限一律弃权（None）：消费端最坏回到 lane_side 粗
+    方向，无退化路径。"""
+    evals: list[tuple[float, float]] = []
+    for c in lines:
+        if not c.get("accepted"):
+            continue
+        if c.get("rms") is not None and float(c["rms"]) > LINE_RMS_MAX:
+            continue
+        if abs(float(c.get("theta") or 0.0)) > LINE_THETA_MAX:
+            continue
+        s, a, L = c.get("s"), c.get("a"), c.get("L")
+        if s is None or a is None or L is None:
+            continue
+        evals.append((float(s) * y_b + float(a), float(L)))
+    if len(evals) < 2:
+        return None
+    evals.sort()
+    for (x1, L1), (x2, L2) in zip(evals, evals[1:]):
+        if x1 <= cx <= x2 and x2 - x1 >= MEMBERSHIP_SPAN_PX:
+            return L1 + (cx - x1) / (x2 - x1) * (L2 - L1)
+    return None
 
 
 def _color(hsv: np.ndarray, pts) -> tuple[float, float]:

@@ -141,7 +141,7 @@ def test_trace_shape():
     t.step(obs=_obs(1, targets=(_car(1, 0.2),)), fps=FPS)
     tr = t.as_trace()
     assert tr["n"] == 1 and tr["nsafe"] == 1
-    assert len(tr["t"][0]) == 13 and len(tr["g"]) == 0
+    assert len(tr["t"][0]) == 14 and len(tr["g"]) == 0   # 第 14 列=车道线成员
     assert tr["t"][0][0] == KIND_CAR and tr["t"][0][1] == 1
 
 
