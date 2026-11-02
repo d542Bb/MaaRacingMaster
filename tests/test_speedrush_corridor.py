@@ -738,20 +738,22 @@ def test_far_veto_lanes_collapsed_and_covered():
         return CorridorBand(16.0, 31.0, BandBoundary(lm, "measured"),
                             BandBoundary(rm, "measured"), n)
 
-    # 扫描窗=±1（定标覆盖范围）；±2/±3 不进否决集——包络够不着≠路没了
-    # 包络 ±7m=±2 道：±1 道全盖
-    assert far_veto_lanes((band(-7.0, 7.0),), 0.0, 3.5) == frozenset()
-    # 包络 [-3.5, 0]m：−1/0 道贴缘不塌；+1 道塌
-    assert far_veto_lanes((band(-3.5, 0.0),), 0.0, 3.5) == frozenset({1})
+    # 扫描窗=±3（语义按 RULES：4 车道、路缘 ±2.0、路外真无路）
+    # 包络 ±7m=±2 道：±2 道贴缘不塌；±3 道塌=路外
+    assert far_veto_lanes((band(-7.0, 7.0),), 0.0, 3.5) == frozenset({-3, 3})
+    # 包络 [-3.5, 0]m：−1/0 道贴缘不塌；±2 起全塌
+    assert far_veto_lanes((band(-3.5, 0.0),), 0.0, 3.5) \
+        == frozenset({-3, -2, 1, 2, 3})
     assert far_veto_lanes((band(-3.5, 0.0), band(-7.0, 7.0)), 0.0, 3.5) \
-        == frozenset()                   # 任一带盖住即不塌
+        == frozenset({-3, 3})            # 任一带盖住即不塌
     # 自车偏移进坐标：路心在自车右 1 道（center_lane=+1，即自车在 −1 道）
-    # 时包络 [0,7]m 的路框坐标 = [−1,+1]，±1 道中心都在包络内
-    assert far_veto_lanes((band(0.0, 7.0),), 1.0, 3.5) == frozenset()
+    # 时包络 [0,7]m 的路框坐标 = [−1,+1]，+1 道中心在包络内
+    assert far_veto_lanes((band(0.0, 7.0),), 1.0, 3.5) \
+        == frozenset({-3, -2, 2, 3})
     # 符号回归锚（2026-11-02 首局证伪 + 号）：路心在自车左 1 道
-    # （center_lane=−1，自车在 +1 道）时同包络盖 +1/+2/+3 道，0/−1 塌
+    # （center_lane=−1，自车在 +1 道）时同包络盖 +1/+2/+3 道
     assert far_veto_lanes((band(0.0, 7.0),), -1.0, 3.5) \
-        == frozenset({-1, 0})
+        == frozenset({-3, -2, -1, 0})
     assert far_veto_lanes((band(None, 7.0),), 0.0, 3.5) == frozenset()
     assert far_veto_lanes((band(-7.0, 7.0, n=0),), 0.0, 3.5) == frozenset()
     assert far_veto_lanes((), 0.0, 3.5) == frozenset()

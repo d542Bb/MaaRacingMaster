@@ -290,12 +290,15 @@ def far_veto_lanes(coarse_bands, center_lane: float | None,
     center_lane 是**路心相对自车**（道，右正，原点=车），包络边的路框系
     坐标 = x_m/lane_w − center_lane（自车在路框的坐标 = −center_lane，
     与 trace road_offset = −center_lane 同一条换算；2026-11-02 闸首局
-    证伪过 + 号——镜像几何让否决集追着自车偏移翻面，43~55% 拍误触发）。
-    扫描窗=±1 道：离线定标只覆盖 ±1（持续深塌缩 0~0.3% 拍）；±2/±3 道
-    的包络读数受路缘+肩差能见度限制（首局实测当拍塌缩 34%、持续 20%，
-    全在 ±2/±3）——那是"包络够不着"不是"路没了"，不进否决集（无证据
-    不否决，±2 请求因此不认证）。
-    无可用宏带=空集（BandBoundary unknown 同一口径）。返回塌缩道号。"""
+    证伪过 + 号——镜像几何让否决集追着自车偏移翻面，43~55% 拍误触发；
+    修复后包络中点（纯深度侧）与 −ro_off 相关 r=+0.841、中位差 0.048 道，
+    反向符号 r=−0.841 且带 0.65 道系统偏差）。
+    扫描窗=±3 道，语义按 RULES 路面事实（[权威]：4 车道、黄实线=路缘、
+    路肩不额外占宽、黄线外一点点即撞墙台阶）：±3 道恒塌缩=路外（真信号，
+    首局实测当拍 34%±全在 ±3——不是伪信号）；±2 塌缩=包络缩进路缘
+    1.5 道内（实测 1.5% 当拍，持续=真异常）；±1 为离线定标范围（持续
+    0~0.3% 拍）。无可用宏带=空集——无证据≠否决证据（BandBoundary
+    unknown 同一口径）。返回塌缩道号。"""
     if not coarse_bands or center_lane is None \
             or not lane_w_m or lane_w_m <= 0:
         return frozenset()
@@ -308,7 +311,7 @@ def far_veto_lanes(coarse_bands, center_lane: float | None,
     if not usable:
         return frozenset()
     out = set()
-    for lane in (-1, 0, 1):
+    for lane in range(-3, 4):
         if all(el > lane + FAR_VETO_MARGIN_LANE
                or er < lane - FAR_VETO_MARGIN_LANE for el, er in usable):
             out.add(lane)
