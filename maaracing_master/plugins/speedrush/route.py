@@ -60,6 +60,11 @@ INF = math.inf
 PHASE_KEEP = "keep"
 PHASE_MERGING = "merging"
 
+# 请求道的合法跨度（道）：选择层只出相邻 ±2，被拒边界 2.5——重锚换基准后
+# 目标超出这个跨度也发不出请求，保留证据没有意义（与 `_request_reject_reason`
+# 同一把尺）。
+REQ_SPAN_LANE = 2.5
+
 
 def _reached(value: float, limit: float) -> bool:
     """按秒累计与门槛的比较：吸收浮点累加误差（0.05×6 不逐位等于 0.3）。"""
@@ -316,6 +321,24 @@ def _clear_req(s: RouteState) -> RouteState:
     return replace(s, req_lane=None, req_credit=0.0, req_oid=None,
                    req_side=0, req_age_s=0.0, req_pause_s=0.0,
                    req_state="none")
+
+
+def _carry_req_across_reanchor(s: RouteState) -> RouteState:
+    """重锚换基准（anchor_follow）：请求证据换基准保留，不清零。
+
+    anchor_follow 把参考道挪到车所在道，不改变道的几何语义——攒到的证据
+    属于「机会真的在那条道上」这个判断，跟着绝对道号走，不跟着参考道走
+    （台架坐实：重锚清掉的多是攒满在即的证据，换基准后同一目标仍落在
+    ±2 请求跨度内，保留就能接着攒）。目标道超出新参考系的请求跨度
+    （绝对差 >2.5 道，±2 也够不着）才清。证据位保留、动作位降级：req_state
+    置 paused，起意仍须下一拍有活请求——保留的是证据，不是当拍可达性。"""
+    if s.req_lane is None or s.req_credit <= 0.0:
+        return _clear_req(s)
+    off = s.req_lane - s.lane_ref
+    if abs(off) > REQ_SPAN_LANE:
+        return _clear_req(s)
+    return replace(s, req_side=1 if off > 0 else -1,
+                   req_state="paused", req_pause_s=0.0)
 
 
 def _advance_request(s: RouteState, request: float | None, live: bool,
@@ -632,8 +655,9 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
         follow = k != s.lane_ref and drift >= p.anchor_follow_lane
         drift_s = s.drift_s + step if follow else 0.0
         if follow and _reached(drift_s, p.anchor_follow_s):
-            st = _clear_req(replace(s, lane_ref=k, lane_from=k,
-                                    lane_target=None, drift_s=0.0))
+            st = _carry_req_across_reanchor(
+                replace(s, lane_ref=k, lane_from=k,
+                        lane_target=None, drift_s=0.0))
             return st, RouteVerdict(
                 PHASE_KEEP, k, None, "anchor_follow", "lane_drift",
                 max(0.0, clock - st.decided_t), None, _avail_s(by[k], p),
@@ -862,7 +886,7 @@ def _request_reject_reason(s: RouteState, tgt: float,
         return "same_lane"
     if alt is None:
         return "target_missing"      # 不能悄悄换成别的道当替补
-    if abs(alt.lane - s.lane_ref) > 2.5:
+    if abs(alt.lane - s.lane_ref) > REQ_SPAN_LANE:
         return "not_adjacent"
     if not _qualified(alt):
         return "target_unqualified"

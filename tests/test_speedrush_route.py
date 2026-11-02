@@ -1174,14 +1174,36 @@ def test_anchor_follow_off_still_escapes_into_current_lane():
     assert v.verdict == "merge_start" and v.lane_target == -1.0
 
 
-def test_anchor_follow_clears_request_credit():
-    """重锚改承诺道：以旧道为基准攒的请求计分同时作废。"""
-    s = replace(init_state(0), req_lane=1.0, req_credit=0.2, req_side=1)
+def test_anchor_follow_carries_request_credit_across_reanchor():
+    """重锚换基准：请求目标道（绝对道号）不变则证据跟着道走，不清零。
+
+    旧契约是重锚同时作废计分；台架坐实清掉的多是攒满在即的证据——
+    换基准不改变道的几何语义，同一目标仍落在 ±2 请求跨度内就保留：
+    证据位保留、动作位降级（paused），起意仍须下一拍活请求。"""
     rep = _rep(1.4, 1.0)
-    for _ in range(AF_TICKS):
-        # 请求目标 ±3 不合法（口径 ±2），只累计证据、不起并线，留给重锚清
+    s, _ = _tick_af(None, rep)
+    for _ in range(AF_TICKS - 1):
+        # 请求目标 ±3 不合法（口径 ±2），只累计证据、不起并线
         s, v = _tick_af(s, rep, request=3.0)
-    assert v.verdict == "anchor_follow"
+        assert v.verdict != "anchor_follow"
+    s, v = _tick_af(s, rep, request=3.0)
+    assert v.verdict == "anchor_follow" and s.lane_ref == 1.0
+    # 目标 3.0 距新参考 1.0 = +2 道，跨度内：证据保留、侧别按新基准重算
+    assert s.req_lane == 3.0 and s.req_credit > 0.0 and s.req_side == 1
+    assert s.req_state == "paused"          # 动作位降级，起意等活请求
+    credit = s.req_credit
+    s, v = _tick_af(s, rep, request=2.0)    # 相对新基准 +2 → 同一绝对道
+    assert s.req_state == "active"          # 活请求把动作位接回来
+    assert s.req_credit == pytest.approx(credit + DT)   # 续上，不重起
+
+
+def test_anchor_follow_clears_request_out_of_new_span():
+    """换基准后目标落在新参考的请求跨度外（绝对差 >2.5 道，±2 也够不着）：清。"""
+    rep = _rep(1.4, 1.0)
+    s, _ = _tick_af(None, rep)
+    for _ in range(AF_TICKS):
+        s, v = _tick_af(s, rep, request=-3.0)
+    assert v.verdict == "anchor_follow" and s.lane_ref == 1.0
     assert s.req_credit == 0.0 and s.req_state == "none"
 
 
