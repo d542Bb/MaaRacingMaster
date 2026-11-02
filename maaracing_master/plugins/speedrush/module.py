@@ -2818,6 +2818,9 @@ class _EgoRoadObserver:
         if master and self._center_override is not None:
             # 线为原点、深度全断：走廊仍要存在（中心=线，边界缺证据落空气墙）。
             # 否则线明明知道车在哪，感知层却因「深度没有候选」整拍弃权。
+            # 基线随线走（2026-11-02，8750 拍实证）：line 路径原不更新
+            # _last_center，跳变门拿陈旧基线比对，wall 错值差得小直接放行。
+            self._last_center = self._center_override
             corr = self._build(bnd, grid, fid, self._center_override,
                                self.width or self.W_PRIOR_LANE, "line", now)
             self.last = self._snapshot(now, "line", -self._center_override,

@@ -1145,3 +1145,17 @@ def test_master_mode_region_abstain_honest_none(monkeypatch):
     assert row["road_offset"] is None, "区弃权拍不供数，找边读数不得顶替"
     assert row["ro_edge"] == pytest.approx(+0.4, abs=0.01), \
         "找边对仍在审计列（降级可见），但不进供数"
+
+
+def test_ego_road_line_tail_updates_jump_baseline():
+    """line 兜底路径补跳变基线：line 路径原不更新 _last_center，跳变门拿
+    陈旧基线比对——8750 拍 wall 错值 −0.23 与陈旧基线差得小直接放行（真值
+    在线 −1.36）。基线随线走后，后续深度读数对着线的位置过门。"""
+    xc = SimpleNamespace(mode="master", tol_lane=1.0, bypass_streak=3)
+    o = smod._EgoRoadObserver(xc)
+    # 深度单侧（wall/region 皆无）→ line 兜底出走廊，中心=线（center_lane 系）
+    c = o.update(_bnd_clusters((1.0,), sides=1), now=1000.0,
+                 center_override=1.9)
+    assert c is not None and _off(c) == pytest.approx(-1.9)
+    assert o.last["source"] == "line"
+    assert o._last_center == pytest.approx(1.9)   # 基线随线走
