@@ -142,6 +142,64 @@ def test_contract_fields_default_none():
         validity_until_fid=9).x_lane_line is None
 
 
+# ---------- 消费接线（phase 2，闸 lane_line.consume） ----------
+
+def _far_target(*, oid=7, x_lane_line=1.0, first=1, last=20, rel=8.0):
+    from maaracing_master.plugins.speedrush.world_model import KIND_CAR
+    return FarTarget(id=oid, kind=KIND_CAR, lane_side=1, cy=400, conf=0.9,
+                     h=30, last_x_lane=None, first_seen_fid=first,
+                     last_seen_fid=last, validity_until_fid=99,
+                     cx=0, rel_approach=rel, x_lane_line=x_lane_line)
+
+
+def _engine(consume: bool):
+    from dataclasses import replace
+    from maaracing_master.plugins.speedrush.config import LaneLine
+    from maaracing_master.plugins.speedrush.decision import DecisionEngine
+    from maaracing_master.plugins.speedrush import DECISION_FILE
+    from maaracing_master.plugins.speedrush.config import _read_decision
+    cfg = replace(_read_decision(DECISION_FILE),
+                  lane_line=LaneLine(enabled=True, consume=consume))
+    e = DecisionEngine(cfg)
+    e._views = ()                      # 直调车源链：无车流视图
+    return e
+
+
+def test_lane_line_far_car_enters_car_sources():
+    """消费闸开：far 轨线成员顶上（第三循环，src=line），到站走地面流同一
+    仪器链。安全沿用现有门（far 条目无横位 → safety_ok=False），语义另行设计。"""
+    e = _engine(consume=True)
+    e._fid = 20
+    src = e._reach_car_sources(0.0, (_far_target(),))
+    assert len(src) == 1
+    s = src[0]
+    assert s.src == "line"
+    assert s.x_m == pytest.approx(1.0 * e.cal.lane_w_m)
+    assert s.t_meet_s is not None and s.t_meet_s > 0.0
+    assert s.safety_ok is False
+
+
+def test_lane_line_consume_gate_off_keeps_far_out():
+    """闸关=逐位回今天：far 轨不进车源（字段有值也不消费）。"""
+    e = _engine(consume=False)
+    e._fid = 20
+    assert e._reach_car_sources(0.0, (_far_target(),)) == []
+
+
+def test_lane_line_far_car_gates_young_and_horizon():
+    """同近场源的年龄门槛与不接近不收；地平线上几何无效不入账。"""
+    e = _engine(consume=True)
+    e._fid = 20
+    assert e._reach_car_sources(0.0, (_far_target(first=18),)) == []  # 年龄不足
+    assert e._reach_car_sources(0.0, (_far_target(rel=0.0),)) == []   # 不接近
+    from maaracing_master.plugins.speedrush.world_model import KIND_CAR
+    horizon = FarTarget(id=9, kind=KIND_CAR, lane_side=1, cy=350, conf=0.9,
+                        h=30, last_x_lane=None, first_seen_fid=1,
+                        last_seen_fid=20, validity_until_fid=99,
+                        cx=0, rel_approach=8.0, x_lane_line=1.0)
+    assert e._reach_car_sources(0.0, (horizon,)) == []               # 地平线上
+
+
 def _per(fid: int, *, cars=()):
     from maaracing_master.plugins.speedrush.perception import PerceptionResult
     return PerceptionResult(frame_id=fid, ts_ns=fid * 33_000_000,

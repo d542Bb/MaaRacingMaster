@@ -1709,11 +1709,15 @@ class SpeedRushModule(ActivityModule):
             # 域外轨无横向数值与接近率（FarTarget 契约如此），如实落 None。
             "car_pos": [
                 {"id": t.id, "x": round(t.x_lane, 3), "cy": t.cy,
-                 "rel": round(t.rel_approach, 2)}
+                 "rel": round(t.rel_approach, 2),
+                 "xl": None if t.x_lane_line is None
+                 else round(t.x_lane_line, 3)}
                 for t in obs.targets if t.kind == KIND_CAR] + [
                 {"id": g.id,
                  "x": None if g.last_x_lane is None else round(g.last_x_lane, 3),
-                 "cy": g.cy, "rel": None}
+                 "cy": g.cy, "rel": None,
+                 "xl": None if g.x_lane_line is None
+                 else round(g.x_lane_line, 3)}
                 for g in obs.far_targets if g.kind == KIND_CAR] or None,
             # road_offset 供数面（路心合成调试）：来源 / 归属读数
             # 与影子参考系同拍消费的是同一个快照（不是事后再取 latest——

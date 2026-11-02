@@ -293,7 +293,8 @@
     },
     "lane_line": {
         "enabled": false,
-        "_note": "车道线定道（双线同行插值，phase 1 观测面）：开闸后每个检测框在框底行对两条 accepted 线求交插值出车道成员（免 vpx/a_x/cam_h 常数——比例里的尺子全部消掉，免疫归一尺 a_x 与线方程理论值差 ~19% 的尺度争端），随 TrackedTarget/FarTarget 的 x_lane_line 列面世；单线/线不夹住框心/线角过分一律弃权（None），最坏回到 lane_side 粗方向。消费接线（选道第三循环）另行闸控。闸关=逐位回今天。"
+        "consume": false,
+        "_note": "车道线定道（双线同行插值，2026-11-02 排定待办 3）：enabled 开闸后每个检测框在框底行对两条 accepted 线求交插值出车道成员（免 vpx/a_x/cam_h 常数——比例里的尺子全部消掉，免疫归一尺 a_x 与线方程理论值差 ~19% 的尺度争端），随 TrackedTarget/FarTarget 的 x_lane_line 列面世；单线/线不夹住框心/线角过分一律弃权（None），最坏回到 lane_side 粗方向。consume 开闸后选道车源消费线成员（A1 弃权段的主供数，源标 line；消费需要有数，enabled 先开）；安全/占用语义另行设计，消费源沿用现有安全门。trace car_pos.xl=逐车线成员（影子面，离线可算反事实）。闸关=逐位回今天。"
     },
     "view_guard": {
         "enabled": true,

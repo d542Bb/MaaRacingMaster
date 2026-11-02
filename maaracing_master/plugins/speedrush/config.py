@@ -528,17 +528,20 @@ class BoxBridge:
 
 @dataclass(frozen=True)
 class LaneLine:
-    """车道线定道（双线同行插值，2026-11-02 排定待办 3 的 phase 1 观测面）。
+    """车道线定道（双线同行插值，2026-11-02 排定待办 3）。
 
     感知根：远车横向 x 缺席约 70% 拍（cy<370 归一发散弃权），选道因此
     「车到眼前还不知道在哪条道」。语义：`enabled` 开闸后 Tracker 每拍对
     每个检测框在框底行对两条 accepted 线求交插值出车道成员（免 vpx/a_x/
     cam_h 常数——比例里的尺子全部消掉），随 TrackedTarget/FarTarget 的
     x_lane_line 列面世；单线/线不夹住框心/线角过分一律弃权（None）。
-    phase 1 只落观测面与 trace，消费接线（选道第三循环）另行闸控。
+    `consume` 开闸后选道车源消费线成员（A1 弃权段的主供数，源标 line）；
+    消费需要有数（enabled 先开）。安全/占用语义（线成员车能否进安全判断）
+    另行设计，当前消费源沿用现有安全门（safety_ok 由对象表现行规则判）。
     闸关=逐位回今天（字段恒 None）。"""
 
     enabled: bool = False
+    consume: bool = False
 
 
 @dataclass(frozen=True)
@@ -1009,7 +1012,8 @@ def _read_decision(path: Path) -> DecisionConfig:
             trace_only=_bool(d, "box_bridge", "trace_only", default=True),
             anchor_gate=_bool(d, "box_bridge", "anchor_gate", default=False)),
         lane_line=LaneLine(
-            enabled=_bool(d, "lane_line", "enabled", default=False)),
+            enabled=_bool(d, "lane_line", "enabled", default=False),
+            consume=_bool(d, "lane_line", "consume", default=False)),
         view_guard=ViewGuardConfig(
             enabled=_bool(d, "view_guard", "enabled", default=False),
             cam_h_lo_m=_num_def(d, "view_guard", "cam_h_lo_m", 1.12,

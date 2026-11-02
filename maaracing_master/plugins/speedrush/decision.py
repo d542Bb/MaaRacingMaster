@@ -414,6 +414,9 @@ class DecisionEngine:
         self.occ = PresenceOccupancy(self.cal.lane_w_m)
         self._occ_snap: dict | None = None
         self._sel_ego_m: float | None = None
+        # 车道线定道消费（闸 lane_line.consume，默认关）：A1 弃权段的车源
+        # 主供数；数据来自跟踪层 fill 闸（enabled），消费闸关=逐位回今天
+        self._lane_line_consume = cfg.lane_line.consume
         self.watch = ValidationWatch(cfg)
         self.scorer = Scorer(cfg, self.cal)
         # 四层选择器（2026-10-18 走廊重建）：唯一选择器。轨迹采样器、收益场
@@ -983,10 +986,13 @@ class DecisionEngine:
                 id=b.id, seen=(b.last_seen_fid == obs.frame_id)))  # tol_m 缺省=bonus_tol_m（近远场同源）
         return out
 
-    def _reach_car_sources(self, executed_lane: float) -> list[CarSource]:
+    def _reach_car_sources(self, executed_lane: float,
+                           far_targets: tuple = ()) -> list[CarSource]:
         """车米制仪器链（与 lane_score.benefits 同一优先级与仪器：米制优先、
         像素回退、已过自车行不占道；路心系米）。出界车不排除——连续坐标下
-        几何归属自然处理远车（lane_score 的出界丢弃是道格覆盖问题，本链没有）。"""
+        几何归属自然处理远车（lane_score 的出界丢弃是道格覆盖问题，本链没有）。
+        `far_targets`：far 轨（A1 归一发散弃权段），车道线定道消费（闸
+        lane_line.consume）的第三循环输入，闸关时逐位回今天。"""
         lane_w = self.cal.lane_w_m
         off = executed_lane * lane_w
         by_id = {v.id: v for v in self._views}
@@ -1138,6 +1144,32 @@ class DecisionEngine:
             self._car_xf.pop(k, None)
             self._car_zf.pop(k, None)
             self._car_x_hold.pop(k, None)
+        # 车道线定道消费（闸 lane_line.consume，2026-11-02 排定待办 3 phase 2）：
+        # far 轨第三循环——A1 归一发散弃权段（约 70% 远车拍 x 缺席）的主供数，
+        # 线插值成员顶上，到站走地面流同一仪器链（car_t_meet_s）。安全/占用
+        # 语义（线成员车能否进安全判断）另行设计：本源沿用现有安全门（far
+        # 条目无横位 → 对象表 safety_ok=False，选择层按不可安全处理）。
+        if self._lane_line_consume:
+            for b in far_targets:
+                if b.kind != KIND_CAR or b.x_lane_line is None:
+                    continue
+                if b.id in seen:
+                    continue                    # 米制/像素路径已入账，不双计
+                if b.rel_approach <= 0.0:
+                    continue                    # 不接近=永远撞不上：同远场粗源
+                if self._fid is None or \
+                        self._fid - b.first_seen_fid \
+                        < self.cfg.traffic.min_obs_ticks:
+                    continue                    # track 年龄门槛：同近场源
+                d = b.cy - self.cal.y_h
+                if d <= 0:
+                    continue                    # 地平线上：几何无效
+                seen.add(b.id)
+                enter(b.x_lane_line * lane_w,
+                      self.scorer.car_t_meet_s(b.rel_approach, b.cy),
+                      age_ms=self._age_ms(b.last_seen_fid), src="line",
+                      tid=b.id, near=False, half_w_m=None,
+                      seen=(b.last_seen_fid == self._fid))
         return out
 
     @property
@@ -1383,7 +1415,7 @@ class DecisionEngine:
             return "sel:hold:no_road"
         road, ego_m, origin = rf
         reward_src = self._bonus_sources(obs, executed)
-        car_src = self._reach_car_sources(executed)
+        car_src = self._reach_car_sources(executed, obs.far_targets)
         coin_src = self._coin_sources(obs, executed)
         # 6b 闭锁只改选择输入：场景/计划/安全仍用当拍源，保留源带 seen=False。
         reward_sel = self._latch_sources("bonus", reward_src,
