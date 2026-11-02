@@ -105,7 +105,7 @@
         "maneuver_deadband_lane": 0.05,
         "maneuver_stick_max": 0.85,
         "maneuver_full_error_lane": 0.3,
-        "plan_osc_gate": false,
+        "plan_osc_gate": true,
         "_note": "航向跟踪律：杆是车头角指令，横向状态只有朝向（ψ），横移 x'=v·tanψ/LANE_W，v 是在线估的比例（随车随速变，不写死）。位置误差→期望横速（k_lat_lane_s）→按在线车速换算目标车头角→杆值（(ψ_des−ψ) 与角速度 r 阻尼）。计划的候选也是车头角指令，滚动用同一个 step，控制层怎么预测就怎么打杆。车速还没估出来时计划如实判 plan:no_speed、交回位置环（不拿常数兜底）。plan_osc_gate（2026-11-02 子代理设计）：计划命令振荡退位置误差——滑窗 0.3s 内车头角指令符号翻转（|Δψ|≥0.05 且反向）≥2 次判「计划命令不可信」，退回选择层目标的位置误差驱动（最短驻留 1.0s、退出需连续 ≥0.5s 无翻转）；并线承诺期本就走 PD、不受闸影响。依据：两局审计 93% 拍方向盘跟计划的车头角指令、227/243 翻转拍属计划；饱和杆本身可能是合法逃生（实测饱和段 ≤0.25s/段），不单独成判据。闸关=只算判据落 trace（lat_ctrl.osc_a/osc_f/osc_h，影子期先跑基线再定终值）。数值与证据见 _sources。"
     },
     "motion": {
@@ -222,7 +222,7 @@
         "preposition_horizon_s": 10.0,
         "preposition_max_lane": 2.5,
         "preposition_bias_lane": 1.0,
-        "pass_preposition_enabled": false,
+        "pass_preposition_enabled": true,
         "switch_dwell_s": 0.2,
         "car_half_lane": 0.27,
         "ego_half_lane": 0.27,
@@ -294,8 +294,8 @@
         "_note": "锚间框高比桥接与锚点框高一致门（2026-10-23 离线探针按测量时刻真值验证，证据 commit 0e3a429）：每拍用 z锚·h锚/h当前 在锚点之间插值，与区间速度外推按 0.7:0.3 融合（框为主），仅 8 m 外替换发布距离（保险杠机位口径：镜头比追尾视角前移约 4 m，旧 12 m 门相当于现在的 8 m 物理间距）；框高单拍翻跳 >35% 或丢框即退出本锚期。anchor_gate=true 时新锚是否可信由框高比残差裁决（≤30% 直接接受，连续两个一致候选锚才重基），替代固定 45 m/s 跳变门——后者会误杀 60~70 m/s 的真实高速接近。无框高证人时退回 80 m/s，120 m/s 为任何证人都不能越过的硬界。trace_only=false 发布 BOX_RATIO；置 true 只写 trace 的 bz 列、发布距离保持锚点口径（离线对照用）。"
     },
     "lane_line": {
-        "enabled": false,
-        "consume": false,
+        "enabled": true,
+        "consume": true,
         "_note": "车道线定道（双线同行插值，2026-11-02 排定待办 3）：enabled 开闸后每个检测框在框底行对两条 accepted 线求交插值出车道成员（免 vpx/a_x/cam_h 常数——比例里的尺子全部消掉，免疫归一尺 a_x 与线方程理论值差 ~19% 的尺度争端），随 TrackedTarget/FarTarget 的 x_lane_line 列面世；单线/线不夹住框心/线角过分一律弃权（None），最坏回到 lane_side 粗方向。consume 开闸后选道车源消费线成员（A1 弃权段的主供数，源标 line；消费需要有数，enabled 先开）；安全/占用语义另行设计，消费源沿用现有安全门。trace car_pos.xl=逐车线成员（影子面，离线可算反事实）。闸关=逐位回今天。"
     },
     "view_guard": {
