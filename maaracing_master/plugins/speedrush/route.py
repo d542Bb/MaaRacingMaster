@@ -343,15 +343,22 @@ def _carry_req_across_reanchor(s: RouteState) -> RouteState:
 
 def _advance_request(s: RouteState, request: float | None, live: bool,
                      oid: int | None, p: RouteParams,
-                     step: float) -> RouteState:
+                     step: float,
+                     veto: frozenset[int] | None = None) -> RouteState:
     """推进请求证据一拍（6c）。
 
     `live=True`：本拍触发源有新鲜读数且可达（选择层已按时间锥筛过）。
     关 `request_hold` 时逐位复现旧的泄漏计分；打开后，无读数拍在
     `request_gap_s` 内冻结、不累计；证据/动作都在这里分叉：冻结只能保住
     已攒的证据，起意门另认 `req_state == "active"`。
+    `veto`：远带持续深塌缩道集（单向认证，闸 route.far_veto_enabled）。
+    塌缩道上的变道请求发不出去——当拍清空（深度作证，标线作图；
+    2026-11-02 离线定标：正常路段该信号 0~0.3% 拍，说话即强证据）。
     """
     if s.phase != PHASE_KEEP:
+        return _clear_req(s)
+    if request is not None and veto \
+            and int(round(s.lane_ref + float(request))) in veto:
         return _clear_req(s)
     if not p.request_hold:
         # 旧行为：同侧 +dt、断拍 −dt、换侧重置；不做暂停/意图龄
@@ -556,6 +563,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
                reject_shift_arrival: bool = False,
                lane_ttc: dict[int, float] | None = None,
                passing: bool = False,
+               far_veto: frozenset[int] | None = None,
                ) -> tuple[RouteState | None, RouteVerdict]:
     """推进一拍。
 
@@ -584,6 +592,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     选择的时间面（2026-10-30）；None=离线/单测未供，逐位保持旧行为。
     `passing`：选择层本拍（上一拍）正在出擦边目标。`pass_hold` 开时路线不抢
     方向，把这 1s 的逃生窗口留给超车动作完成。
+    `far_veto`：远带持续深塌缩道集（单向认证，闸 route.far_veto_enabled）。
+    非空时塌缩道上的变道请求当拍清空（发不出去）；None=闸关，逐位旧行为。
     """
     if report is None or not report.lanes or report.reason == "no_road":
         # 没有车道级证据：时钟继续走，但路线不推进、不判逃生——证据缺席
@@ -614,7 +624,7 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
     # 关闭机会层），攒到的分属于上一道。只拒绝本拍不够：旧进度会在完成拍带着
     # 跨状态的分数提前起意（实测 6 拍门被穿到 4 拍），所以失效状态清零。
     req_s = _advance_request(state, request, request_live, request_oid, p,
-                             step)
+                             step, veto=far_veto)
     s = replace(req_s, elapsed_s=clock, v_ref=report.ego_lane,
                 v_est_lane_s=v_est,
                 cooldown_left_s=max(0.0, state.cooldown_left_s - dt_s))

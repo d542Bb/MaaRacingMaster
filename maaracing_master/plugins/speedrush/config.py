@@ -502,6 +502,9 @@ class Route:
     anchor_follow: bool = False
     anchor_follow_s: float = 0.3     # 偏离持续时长（秒）
     anchor_follow_lane: float = 0.6  # 偏离阈值（道）
+    # 单向认证（2026-11-02）：远带持续深塌缩的道，变道请求发不出去——
+    # 深度作证、标线作图，深度只否决不改写标线模型。默认关。
+    far_veto_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -1036,7 +1039,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             anchor_follow_s=_num_def(
                 d, "route", "anchor_follow_s", 0.3, lo=0, lo_open=False),
             anchor_follow_lane=_num_def(
-                d, "route", "anchor_follow_lane", 0.6, lo=0)),
+                d, "route", "anchor_follow_lane", 0.6, lo=0),
+            far_veto_enabled=_bool(
+                d, "route", "far_veto_enabled", default=False)),
         geometry=Geometry(
             far_ground_supply=_bool(d, "geometry", "far_ground_supply",
                                     default=True)),

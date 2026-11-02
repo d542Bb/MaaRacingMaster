@@ -724,3 +724,49 @@ def test_audit_is_write_only():
         if "self._audit" in ln and not write.search(ln)
         and "self._audit =" not in ln]
     assert reads == ['"audit": dict(self._audit)}'], reads
+
+
+# ---------- 单向认证：深塌缩道集（2026-11-02 离线定标） ----------
+
+def test_far_veto_lanes_collapsed_and_covered():
+    """判据：目标道中心在所有可用宏带包络外 ≥0.5 道=塌缩；任一带盖住=不塌；
+    无证据（带死/无中心/无带宽）=空集——无证据≠否决证据。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, CorridorBand, far_veto_lanes)
+
+    def band(lm, rm, n=30):
+        return CorridorBand(16.0, 31.0, BandBoundary(lm, "measured"),
+                            BandBoundary(rm, "measured"), n)
+
+    # 包络 ±7m=±2 道：路内 ±2 道全盖；±3 道在窗外=塌缩（请求够不着，
+    # 塌缩集如实收录）
+    assert far_veto_lanes((band(-7.0, 7.0),), 0.0, 3.5) == frozenset({-3, 3})
+    # 包络 [-3.5, 0]m：−1/0 道贴缘不塌；+1 起与 −2 以外全塌
+    assert far_veto_lanes((band(-3.5, 0.0),), 0.0, 3.5) \
+        == frozenset({-3, -2, 1, 2, 3})
+    assert far_veto_lanes((band(-3.5, 0.0), band(-7.0, 7.0)), 0.0, 3.5) \
+        == frozenset({-3, 3})            # 任一带盖住即不塌
+    # 自车偏移进坐标：车在 +1 道时包络 [0,7]m 盖 1/2/3 道，0 以左全塌
+    assert far_veto_lanes((band(0.0, 7.0),), 1.0, 3.5) \
+        == frozenset({-3, -2, -1, 0})
+    assert far_veto_lanes((band(None, 7.0),), 0.0, 3.5) == frozenset()
+    assert far_veto_lanes((band(-7.0, 7.0, n=0),), 0.0, 3.5) == frozenset()
+    assert far_veto_lanes((), 0.0, 3.5) == frozenset()
+    assert far_veto_lanes((band(-7.0, 7.0),), None, 3.5) == frozenset()
+    assert far_veto_lanes((band(-7.0, 7.0),), 0.0, None) == frozenset()
+
+
+def test_far_veto_tick_sustains_and_resets():
+    """持续门：连续 ≥3 拍塌缩才进否决集；断拍（不塌缩/无证据）游程清零；
+    塌缩一停否决当拍解除——证据消失不许再拦。"""
+    from maaracing_master.plugins.speedrush.corridor import far_veto_tick
+    runs, veto = far_veto_tick(None, frozenset({1}))
+    assert veto == frozenset()
+    runs, veto = far_veto_tick(runs, frozenset({1}))
+    assert veto == frozenset()                       # 第 2 拍，还差一拍
+    runs, veto = far_veto_tick(runs, frozenset({1, 2}))
+    assert veto == frozenset({1})                    # 1 道满 3 拍；2 道第 1 拍
+    runs, veto = far_veto_tick(runs, frozenset({2}))
+    assert veto == frozenset()                       # 1 道断拍清零，2 道第 2 拍
+    runs, veto = far_veto_tick(runs, frozenset({2}))
+    assert veto == frozenset({2})

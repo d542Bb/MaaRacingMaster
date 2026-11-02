@@ -1219,3 +1219,41 @@ def test_drift_band_does_not_block_opportunity():
         s, v = _tick_af(s, rep, request=1.0)
     assert v.verdict == "merge_start" and v.why == "opportunity"
     assert s.lane_ref == 1.0 and s.phase == PHASE_MERGING
+
+
+# ---------- 单向认证：远带深塌缩否决变道请求（2026-11-02，闸默认关） ----------
+
+def test_far_veto_blocks_request_into_collapsed_lane():
+    """塌缩道上的变道请求发不出去：当拍清空证据不起意；塌缩的是别的道或
+    闸关（None）时逐位旧行为——深度只否决，不改写标线模型。"""
+    s0, _ = _first(_rep(0.0, 0.0))
+    s0, v0, _ = _req_until_merge(s0, _rep(0.0, 0.0), 1.0)
+    assert v0.lane_ref == 1.0                      # 对照基线：无否决照常起意
+    s1, _ = _first(_rep(0.0, 0.0))
+    for _ in range(OPP_TICKS + 3):
+        s1, v1 = tick_route(s1, _rep(0.0, 0.0), P, dt_s=DT, epoch=0,
+                            request=1.0, far_veto=frozenset({1}))
+        assert v1.verdict == "keep" and v1.why != "opportunity"
+        assert s1.req_lane is None and s1.req_credit == 0.0
+    s2, _ = _first(_rep(0.0, 0.0))
+    for i in range(1, 30):
+        s2, v2 = tick_route(s2, _rep(0.0, 0.0), P, dt_s=DT, epoch=0,
+                            request=1.0, far_veto=frozenset({-2, 2}))
+        if v2.verdict == "merge_start":
+            break
+    assert v2.lane_ref == 1.0 and v2.why == "opportunity"
+
+
+def test_far_veto_default_off_and_loader():
+    """闸默认关；装载器认 route.far_veto_enabled（接线锚）。"""
+    assert CFG.route.far_veto_enabled is False
+    import json
+    import tempfile
+    from pathlib import Path
+    raw = json.loads(Path(DECISION_FILE).read_text(encoding="utf-8"))
+    raw["route"]["far_veto_enabled"] = True
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "decision.json"
+        p.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        cfg = _read_decision(p)
+        assert cfg.route.far_veto_enabled is True

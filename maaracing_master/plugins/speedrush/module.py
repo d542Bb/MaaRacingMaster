@@ -50,7 +50,7 @@ from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand, N_BANDS, _band_bounds,
-    build_corridor, far_hint_lane)
+    build_corridor, far_hint_lane, far_veto_lanes, far_veto_tick)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import (
     DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
@@ -1854,6 +1854,10 @@ class SpeedRushModule(ActivityModule):
             else [round(corridor.far_hint_lane, 3),
                   None if corridor.far_hint_age_ms is None
                   else round(corridor.far_hint_age_ms, 1)],
+            # 深塌缩否决道集（单向认证观测列）：当拍持续深塌缩的绝对道号，
+            # 闸消费在路线请求口（route.far_veto_enabled）；本列只供离线回放
+            "cor_veto": None if corridor is None or not corridor.far_veto
+            else sorted(corridor.far_veto),
             # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
             # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
             # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
@@ -2500,6 +2504,8 @@ class _EgoRoadObserver:
         self._far_hint_pending = False   # 新远带证据待消费（滤波只在此时更新）
         self._far_hint: float | None = None   # 共享方向结果（EMA，道，右正）
         self._far_hint_t: float | None = None
+        self._far_veto_runs: dict[int, int] = {}  # 深塌缩游程（道号→连续拍数）
+        self._far_veto: frozenset[int] = frozenset()  # 持续深塌缩否决道集
         self._xc_streak = 0          # 连续互证 veto 计数（达 bypass 预算放行）
         self._master = xcheck is not None and xcheck.mode == "master"
         # 本拍是否 master 链（W 口径按链分流；update 每拍按模式重写）
@@ -2947,7 +2953,16 @@ class _EgoRoadObserver:
             lane_w_m=self._lane_w_m,
             far_extents=self._far_extents,
             far_ground_supply=self._far_ground_supply)
-        return self._far_hint_tick(corr, now)
+        return self._far_veto_to(self._far_hint_tick(corr, now))
+
+    def _far_veto_to(self, corr: Corridor) -> Corridor:
+        """深塌缩持续跟踪：当拍塌缩道集逐拍推进游程（纯函数在 corridor），
+        持续 ≥FAR_VETO_TICKS 拍的道进否决集，随走廊挂出供消费端只读。"""
+        self._far_veto_runs, self._far_veto = far_veto_tick(
+            self._far_veto_runs,
+            far_veto_lanes(corr.coarse_bands, corr.center_lane,
+                           self._lane_w_m))
+        return replace(corr, far_veto=self._far_veto)
 
     def _far_hint_tick(self, corr: Corridor, now: float) -> Corridor:
         """中远场方向共享滤波：新远带证据拍更新一次，其余拍共享同一结果。

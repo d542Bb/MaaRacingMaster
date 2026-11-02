@@ -117,6 +117,8 @@ class Corridor:
     # 最近一条两侧有证据的粗带中点相对该纵深中心线；只在**新远带证据**拍
     # 更新、其余拍共享同一结果（方向级消费的唯一真源，消费端不再各自滤波）
     far_hint_age_ms: float | None = None  # 共享方向结果的龄（ms）
+    far_veto: frozenset[int] = frozenset()  # 深塌缩否决道集（绝对道号；
+                            # 持续跟踪由 module 维护，见 far_veto_tick）
 
 
 def _band_bounds(i: int) -> tuple[float, float]:
@@ -269,6 +271,57 @@ def far_hint_lane(bands, coarse_bands, lane_w_m: float | None) -> float | None:
             return None
         return (0.5 * (b.left.x_m + b.right.x_m) - cen) / lane_w_m
     return None
+
+
+# 深塌缩判据：目标道中心在包络外的最小深度（道）。
+FAR_VETO_MARGIN_LANE = 0.5
+# 深塌缩持续门（拍）：离线三场定标（20261102_173658/192607/195052）——正常
+# 路段持续 ≥3 拍的深塌缩 0~0.3%（192607 仅 3 拍），单拍/浅塌缩是路肩护栏
+# 与遮挡的常态；只有持续深塌缩才配当"路那边没地面"的证据。
+FAR_VETO_TICKS = 3
+
+
+def far_veto_lanes(coarse_bands, center_lane: float | None,
+                   lane_w_m: float | None) -> frozenset[int]:
+    """中远场深塌缩道集（单向认证的当拍读数，纯函数）。
+
+    判据（2026-11-02 离线定标）：目标道中心在**所有可用宏带**（双侧有读数）
+    的地面包络外 ≥FAR_VETO_MARGIN_LANE 道 → 该道当拍深塌缩。边界与
+    center_lane 同系换算（道，右正，路心=0）：包络边 = x_m/lane_w +
+    center_lane。无可用宏带=空集——无证据≠否决证据（BandBoundary unknown
+    同一口径）。返回扫描窗内（路心 ±3 道）塌缩的绝对道号。"""
+    if not coarse_bands or center_lane is None \
+            or not lane_w_m or lane_w_m <= 0:
+        return frozenset()
+    usable = [(b.left.x_m / lane_w_m + center_lane,
+               b.right.x_m / lane_w_m + center_lane)
+              for b in coarse_bands
+              if b.left is not None and b.right is not None
+              and b.left.x_m is not None and b.right.x_m is not None
+              and b.n_pts > 0]
+    if not usable:
+        return frozenset()
+    out = set()
+    for lane in range(-3, 4):
+        if all(el > lane + FAR_VETO_MARGIN_LANE
+               or er < lane - FAR_VETO_MARGIN_LANE for el, er in usable):
+            out.add(lane)
+    return frozenset(out)
+
+
+def far_veto_tick(runs: dict[int, int] | None, collapsed: frozenset[int],
+                  ticks: int = FAR_VETO_TICKS) -> tuple[dict[int, int],
+                                                        frozenset[int]]:
+    """深塌缩持续跟踪（纯函数，module 逐拍调用）。
+
+    当拍塌缩道集推进游程，断拍（不塌缩/无证据）清零；连续 ≥``ticks`` 拍的
+    道进否决集。返回 (新游程表, 否决集)。"""
+    acc: dict[int, int] = {}
+    for lane in set(runs or {}) | set(collapsed):
+        n = (runs or {}).get(lane, 0) + 1 if lane in collapsed else 0
+        if n:
+            acc[lane] = n
+    return acc, frozenset(l for l, n in acc.items() if n >= ticks)
 
 
 def _green_boundary(grid, side: int, z0: float, z1: float) -> BandBoundary | None:

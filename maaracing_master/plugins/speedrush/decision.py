@@ -1728,6 +1728,10 @@ class DecisionEngine:
         # 机会层，正在进行的擦边会被改成并线；一拍延迟可接受）
         passing = (self._sel_report is not None
                    and getattr(self._sel_report, "why", None) == "pass")
+        # 单向认证（闸 route.far_veto_enabled）：走廊层的持续深塌缩道集，
+        # 塌缩道上的变道请求在路线层发不出去；闸关传 None=逐位旧行为。
+        veto = (None if not self.cfg.route.far_veto_enabled or self._corridor
+                is None else self._corridor.far_veto)
         self._route, self._route_verdict = tick_route(
             self._route, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
@@ -1735,14 +1739,15 @@ class DecisionEngine:
             request_action=request_action, request_oid=request_oid,
             arrival=self._position,
             reject_shift_arrival=self.cfg.route.reject_shift_arrival,
-            lane_ttc=lane_ttc, passing=passing)
+            lane_ttc=lane_ttc, passing=passing, far_veto=veto)
         self._route_shadow, self._shadow_verdict = tick_route(
             self._route_shadow, self._coarse, self._route_params,
             dt_s=self._dt_last, epoch=epoch,
             request=request, request_live=request_live,
             request_action=request_action, request_oid=request_oid,
             arrival=self._position,
-            reject_shift_arrival=True, lane_ttc=lane_ttc, passing=passing)
+            reject_shift_arrival=True, lane_ttc=lane_ttc, passing=passing,
+            far_veto=veto)
 
     def _lane_for_route(self, route: RouteState | None,
                         verdict: RouteVerdict | None,
