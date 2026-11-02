@@ -1089,12 +1089,13 @@ class SpeedRushModule(ActivityModule):
     def _debug_enabled(self) -> bool:
         """debug/ 产物面总闸（ctx.debug.enabled；ctx 无该面=关）。
 
-        管整个 debug/speedrush/<会话>/：trace/局汇总（落盘闸，追加点在内存
-        不闸）、raw/hud 叠加图（两种局同一套布局）、hud 读数、badframes 取证、
-        depth_debug 证据包（密度另受 debug_dump 三态闸 off/events/full）。开关
+        管整个 debug/speedrush/<会话>/：raw/hud 叠加图（两种局同一套布局）、
+        hud 读数、badframes 取证、depth_debug 证据包（密度另受 debug_dump
+        三态闸 off/events/full）。流水与局汇总不在此门——它们随「日志记录」
+        开关落 ``logs/<会话>/trace/``（ADR-0010）。开关
         关=调试图与深度证据零产物；**录制语料不受此门**（人工局的原帧与手柄是
-        录制模式的产出，见 _begin_recording）。data/（业务数据 DB）与 logs/（阶段
-        状态）也不受此门。"""
+        录制模式的产出，见 _begin_recording）。data/（业务数据 DB）与 logs/
+        也不受此门。"""
         return bool(getattr(getattr(self.ctx, "debug", None), "enabled", False))
 
     def _build_control_chain(self, phase: int = 0, *,
@@ -1106,7 +1107,8 @@ class SpeedRushModule(ActivityModule):
         阶段间不共享状态（行为稿 §九：阶段信息只进过渡窗判据，两阶段同一决策器），
         新建即天然清空——与 DecisionEngine.reset 的"冷启动"语义一致。
 
-        ``run_dir``：产物目录（trace 证据/坏帧/深度证据包）。人工驾驶阶段由调用方
+        ``run_dir``：产物目录（证据帧/坏帧/深度证据包；逐拍流水在
+        ``logs/<会话>/trace/``，不在此目录）。人工驾驶阶段由调用方
         传入录制会话目录，与语料同家；缺省按时刻新建 ``debug/speedrush/<时刻>_p<N>/``。
         """
         cfg = load_decision()
@@ -3113,10 +3115,12 @@ def _fresh_session_dir(path: Path) -> Path:
 def _run_dir(stamp: str, phase: int) -> Path:
     """一局一产物目录（2026-10-12 布局收口，paths.py 五类契约）：debug/<module>/<会话>/。
 
-    speedrush 运行产物（trace/局汇总/证据包/hud/badframes）全在
+    speedrush 帧证据（证据包/hud/badframes/索引）全在
     ``debug/speedrush/<局前缀>_p<阶段>/``——一局一目录，清当批=删一个目录；
-    ``data/`` 只留结构化业务数据（DB）。整个目录受 debug 开关管辖（关=零
-    产物）；帧证据包密度另受 debug_dump 三态闸（off/events/full）。
+    逐拍流水与局汇总随日志会话走（ADR-0010），在
+    ``logs/<会话>/trace/``。``data/`` 只留结构化业务数据（DB）。整个目录受
+    debug 开关管辖（关=零产物）；帧证据包密度另受 debug_dump 三态闸
+    （off/events/full）。
 
     局前缀由调用方按**局**生成（``_run_flow`` 每轮一个），同一局的两个驾驶阶段
     共用它、不同局必然不同。不能用日志会话编号：它标识的是"一次启动"，同一次
