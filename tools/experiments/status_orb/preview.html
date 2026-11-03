@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>底栏状态球 · 形态预览</title>
+<link rel="stylesheet" href="orb.css">
+<style>
+  /* 复刻 GUI 的 token 与底栏尺寸，只取预览需要的部分；数值与
+     apps/MaaRacingMaster.Shell/frontend/style.css 的 :root 一致 */
+  :root {
+    --mra-background: #F5F6FA;
+    --mra-surface: #FFFFFF;
+    --mra-surface-hover: #F8F9FC;
+    --mra-foreground: #1F2328;
+    --mra-foreground-secondary: #4A5160;
+    --mra-foreground-muted: #8B93A7;
+    --mra-border: #E5E7EB;
+    --mra-border-light: #EEF0F4;
+    --mra-success: #10B981;
+    --mra-warning: #F59E0B;
+    --mra-danger: #EF4444;
+    --mra-primary: #E5484D;
+    --mra-radius-sm: 6px;
+    --mra-radius-lg: 10px;
+    --mra-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--mra-background);
+    color: var(--mra-foreground);
+    font-family: var(--mra-font-sans);
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 28px 32px 40px;
+  }
+  .lab { max-width: 880px; margin: 0 auto; }
+  .lab-head h1 { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .lab-head p { font-size: 13px; color: var(--mra-foreground-secondary); }
+  .lab-head kbd {
+    font-family: inherit; font-size: 12px; padding: 1px 5px; border-radius: 4px;
+    background: var(--mra-surface); border: 1px solid var(--mra-border); color: var(--mra-foreground-secondary);
+  }
+
+  .lab-block { margin-top: 26px; }
+  .lab-block > h2 {
+    font-size: 12px; font-weight: 600; color: var(--mra-foreground-muted);
+    letter-spacing: 0.04em; margin-bottom: 10px;
+  }
+  .panel {
+    background: var(--mra-surface);
+    border: 1px solid var(--mra-border);
+    border-radius: var(--mra-radius-lg);
+    padding: 22px 24px;
+  }
+
+  /* 放大检视：四态并排，96px 看清造型 */
+  .inspect { display: flex; gap: 8px; justify-content: space-between; }
+  .inspect-item { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .inspect-item .mra-orb { --orb-size: 96px; }
+  .inspect-cap { font-size: 12px; color: var(--mra-foreground-secondary); }
+  .inspect-note { font-size: 11px; color: var(--mra-foreground-muted); text-align: center; }
+
+  /* 真实尺寸：按 GUI 底栏 44px 高、白底、上边框复刻 */
+  .stage {
+    border: 1px solid var(--mra-border);
+    border-radius: var(--mra-radius-lg);
+    overflow: hidden;
+    background: var(--mra-background);
+  }
+  .gui-footer {
+    height: 44px; display: flex; align-items: center; gap: 12px;
+    background: var(--mra-surface); border-top: 1px solid var(--mra-border);
+    padding: 0 16px;
+  }
+  .status { display: flex; align-items: center; gap: 8px; }
+  .status-text { font-size: 11px; color: var(--mra-foreground-secondary); }
+  .gui-footer .spacer { flex: 1; }
+  .gui-btn {
+    height: 28px; border-radius: var(--mra-radius-sm); font-size: 12px; font-weight: 500;
+    font-family: inherit; display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; border: 1px solid var(--mra-border); background: var(--mra-surface);
+    color: var(--mra-foreground-secondary); padding: 0 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  .gui-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .gui-btn--stop { width: 100px; }
+  .gui-btn--start {
+    width: 120px; padding: 0; border-color: transparent;
+    background: var(--mra-primary); color: #fff;
+  }
+
+  /* 原指示灯的 8px 圆点，放在一起对比大小 */
+  .mra-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mra-success); flex-shrink: 0; }
+  .compare {
+    display: flex; align-items: center; gap: 14px; margin-top: 14px;
+    font-size: 12px; color: var(--mra-foreground-muted);
+  }
+  .compare .mra-status-dot { width: 8px; height: 8px; }
+  .compare-sep { width: 1px; height: 16px; background: var(--mra-border); }
+
+  /* 控制条 */
+  .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 16px; }
+  .seg { display: inline-flex; gap: 4px; }
+  .seg button {
+    height: 28px; padding: 0 12px; font-family: inherit; font-size: 12px;
+    border: 1px solid var(--mra-border); border-radius: var(--mra-radius-sm);
+    background: var(--mra-surface); color: var(--mra-foreground-secondary); cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+  .seg button:hover { background: var(--mra-surface-hover); }
+  .seg button[aria-pressed="true"] {
+    background: var(--mra-foreground); border-color: var(--mra-foreground); color: #fff;
+  }
+  .size-row { display: flex; align-items: center; gap: 10px; }
+  .size-row label { font-size: 12px; color: var(--mra-foreground-muted); }
+  .size-row input[type="range"] { width: 180px; accent-color: var(--mra-foreground); }
+  .size-val { font-size: 12px; color: var(--mra-foreground-secondary); font-variant-numeric: tabular-nums; min-width: 46px; }
+  .dpad { display: inline-flex; gap: 4px; }
+  .dpad button {
+    width: 28px; height: 28px; padding: 0; border-radius: var(--mra-radius-sm);
+    border: 1px solid var(--mra-border); background: var(--mra-surface);
+    color: var(--mra-foreground-secondary); font-family: inherit; font-size: 13px;
+    line-height: 1; cursor: pointer; transition: background 0.15s ease;
+  }
+  .dpad button:hover { background: var(--mra-surface-hover); }
+  .dpad button:active { background: var(--mra-surface-active); }
+  .hint { margin-top: 14px; font-size: 11px; color: var(--mra-foreground-muted); }
+</style>
+</head>
+<body>
+<div class="lab">
+  <header class="lab-head">
+    <h1>底栏状态球 · 形态预览</h1>
+    <p>把鼠标移到球附近（100px 内）才会激活跟随，眼睛按球面转动——转到侧面会变窄，转到边缘会被球轮廓切掉。离开后眼睛自己四处看，偶尔转回来；静置 2–6 秒眨一次眼。底栏按真实尺寸复刻（44px 高、白底、上边框）。</p>
+  </header>
+
+  <section class="lab-block">
+    <h2>放大检视 · 四种状态</h2>
+    <div class="panel">
+      <div class="inspect" id="inspect"></div>
+    </div>
+  </section>
+
+  <section class="lab-block">
+    <h2>真实尺寸 · 底栏复刻</h2>
+    <div class="stage">
+      <footer class="gui-footer">
+        <div class="status">
+          <div id="status-slot"></div>
+          <span class="status-text" id="status-text">系统就绪</span>
+        </div>
+        <div class="spacer"></div>
+        <button class="gui-btn gui-btn--stop" disabled>停止</button>
+        <button class="gui-btn gui-btn--start">开始运行</button>
+      </footer>
+    </div>
+
+    <div class="compare">
+      <span class="mra-status-dot"></span><span>原指示灯 8px</span>
+      <span class="compare-sep"></span>
+      <span>当前球 <strong id="compare-size">18px</strong></span>
+    </div>
+
+    <div class="controls">
+      <div class="seg" id="state-seg"></div>
+      <div class="size-row">
+        <label for="size-range">直径</label>
+        <input type="range" id="size-range" min="16" max="30" step="1" value="18">
+        <span class="size-val" id="size-val">18 px</span>
+      </div>
+      <div class="size-row">
+        <label for="eye-w-range">眼宽</label>
+        <input type="range" id="eye-w-range" min="5" max="30" step="1" value="18">
+        <span class="size-val" id="eye-w-val">1.8×</span>
+      </div>
+      <div class="size-row">
+        <label for="eye-h-range">眼高</label>
+        <input type="range" id="eye-h-range" min="5" max="30" step="1" value="8">
+        <span class="size-val" id="eye-h-val">0.8×</span>
+      </div>
+      <div class="size-row">
+        <label>视线</label>
+        <div class="dpad" id="dpad">
+          <button type="button" data-dir="up" title="看向上方">↑</button>
+          <button type="button" data-dir="left" title="看向左方">←</button>
+          <button type="button" data-dir="down" title="看向下方">↓</button>
+          <button type="button" data-dir="right" title="看向右方">→</button>
+        </div>
+      </div>
+    </div>
+    <p class="hint">运行态另有回声环与文字扫描光效；本页只演示球的形态，文字光效未复刻。</p>
+  </section>
+</div>
+
+<script src="orb.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var STATES = [
+    { id: 'ready',    label: '就绪',   text: '系统就绪' },
+    { id: 'running',  label: '运行中', text: '运行中 · 当前: 巅峰鉴宝' },
+    { id: 'stopping', label: '停止中', text: '停止中...' },
+    { id: 'error',    label: '错误',   text: '插件资源缺失' }
+  ];
+
+  // 每只眼睛都要被球轮廓裁一次：视线偏到极限时眼睛会移到球边，
+  // 不裁就会露出球外，看起来像贴在圆片旁边的贴纸而不是长在球上。
+  // clipPath 与眼睛一起每球独立，避免多实例互相引用。
+  // 眼睛是空 path：形状（沿球面的弧）与粗细都由 orb.js 每帧按投影写入。
+  var seq = 0;
+  function orbHTML(state) {
+    var cid = 'orb-clip-' + (++seq);
+    var gid = 'orb-glow-' + seq;
+    return '' +
+      '<div class="mra-orb" data-state="' + state + '" aria-hidden="true">' +
+        '<svg class="mra-orb__svg" viewBox="0 0 40 40">' +
+          '<defs>' +
+            '<clipPath id="' + cid + '"><circle cx="20" cy="20" r="17"/></clipPath>' +
+            // 球体自身的径向填充：四档从中心到边缘衰减，全部在球内，不向外扩。
+            // 各档的透明度由状态决定（见 orb.css 的 --orb-a-*）
+            '<radialGradient class="mra-orb__grad" id="' + gid + '">' +
+              '<stop offset="0" class="mra-orb__s-in"/>' +
+              '<stop offset="0.6" class="mra-orb__s-mid"/>' +
+              '<stop offset="0.88" class="mra-orb__s-edge"/>' +
+              '<stop offset="1" class="mra-orb__s-out"/>' +
+            '</radialGradient>' +
+          '</defs>' +
+          '<g class="mra-orb__rings">' +
+            '<circle class="mra-orb__ring" cx="20" cy="20" r="17"/>' +
+            '<circle class="mra-orb__ring mra-orb__ring--lag" cx="20" cy="20" r="17"/>' +
+          '</g>' +
+          '<g class="mra-orb__body">' +
+            '<circle class="mra-orb__sphere" cx="20" cy="20" r="17" fill="url(#' + gid + ')"/>' +
+            '<g clip-path="url(#' + cid + ')">' +
+              '<g class="mra-orb__eye-wrap mra-orb__eye-wrap--l">' +
+                '<g class="mra-orb__blink">' +
+                  '<path class="mra-orb__eye-halo"/>' +
+                  '<path class="mra-orb__eye"/>' +
+                '</g>' +
+              '</g>' +
+              '<g class="mra-orb__eye-wrap mra-orb__eye-wrap--r">' +
+                '<g class="mra-orb__blink">' +
+                  '<path class="mra-orb__eye-halo"/>' +
+                  '<path class="mra-orb__eye"/>' +
+                '</g>' +
+              '</g>' +
+            '</g>' +
+          '</g>' +
+        '</svg>' +
+      '</div>';
+  }
+
+  // ---------- 放大检视：四态并排，各自固定状态 ----------
+  var inspect = document.getElementById('inspect');
+  STATES.forEach(function (s) {
+    var item = document.createElement('div');
+    item.className = 'inspect-item';
+    item.innerHTML = orbHTML(s.id) +
+      '<div class="inspect-cap">' + s.label + '</div>';
+    inspect.appendChild(item);
+    StatusOrb.mount(item.querySelector('.mra-orb'));
+  });
+
+  // ---------- 底栏球：跟随下方按钮切换状态 ----------
+  var slot = document.getElementById('status-slot');
+  slot.innerHTML = orbHTML('ready');
+  var live = StatusOrb.mount(slot.querySelector('.mra-orb'));
+  var textEl = document.getElementById('status-text');
+
+  var seg = document.getElementById('state-seg');
+  STATES.forEach(function (s, i) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = s.label;
+    btn.setAttribute('aria-pressed', i === 0 ? 'true' : 'false');
+    btn.addEventListener('click', function () {
+      live.setState(s.id);
+      textEl.textContent = s.text;
+      Array.prototype.forEach.call(seg.children, function (b) {
+        b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+      });
+    });
+    seg.appendChild(btn);
+  });
+
+  // ---------- 尺寸 ----------
+  var range = document.getElementById('size-range');
+  var sizeVal = document.getElementById('size-val');
+  var compareSize = document.getElementById('compare-size');
+  range.addEventListener('input', function () {
+    var px = range.value + 'px';
+    slot.querySelector('.mra-orb').style.setProperty('--orb-size', px);
+    sizeVal.textContent = range.value + ' px';
+    compareSize.textContent = px;
+  });
+
+  // ---------- 眼宽 ----------
+  // 倍率 1 = 参考组件的原始比例（球半径 17 时眼宽 1.836）。宽与高同步放大，
+  // 细长比例不变。眼睛形状由 orb.js 按投影生成，这里只把倍率传过去。
+  var eyeW = document.getElementById('eye-w-range');
+  var eyeH = document.getElementById('eye-h-range');
+  var eyeWVal = document.getElementById('eye-w-val');
+  var eyeHVal = document.getElementById('eye-h-val');
+
+  function applyEyeSize() {
+    StatusOrb.setEyeSize(eyeW.value / 10, eyeH.value / 10);
+    eyeWVal.textContent = (eyeW.value / 10).toFixed(1) + '×';
+    eyeHVal.textContent = (eyeH.value / 10).toFixed(1) + '×';
+  }
+  eyeW.addEventListener('input', applyEyeSize);
+  eyeH.addEventListener('input', applyEyeSize);
+  applyEyeSize();
+
+  // ---------- 视线方向 ----------
+  // 点箭头等于把指针瞬移到球的对应方向，走的是和真实鼠标完全相同的路径，
+  // 用来确认「眼睛朝哪转」是否符合预期。
+  var DPAD = { up: [0, -60], down: [0, 60], left: [-60, 0], right: [60, 0] };
+  document.getElementById('dpad').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-dir]');
+    if (!btn) return;
+    var off = DPAD[btn.dataset.dir];
+    if (!off) return;
+    var r = slot.querySelector('.mra-orb').getBoundingClientRect();
+    document.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: r.left + r.width / 2 + off[0],
+      clientY: r.top + r.height / 2 + off[1],
+      bubbles: true
+    }));
+  });
+})();
+</script>
+</body>
+</html>
