@@ -12,12 +12,25 @@
 
 用法：python tools/experiments/world_state/encounter_audit.py <session>
 """
-import json, sys, math
+import json, sys, math, os
 
 RATE_BASE = 41.0   # 里程得分增速底值（≈速度）
 RATE_LOW = 38.0    # 低于此为塌陷
 GAP_FID = 15       # 塌陷段切分间隔（帧）
 SKIP_FID = 30      # 轨迹段切分间隔（帧）
+
+# 车道宽（米）从真源 gate0.json 读，不写字面量（数值禁令）
+_GATE0 = os.path.join(os.path.dirname(__file__), '..', '..', '..',
+                      'maaracing_master', 'plugins', 'speedrush',
+                      'resources', 'calibration', 'gate0.json')
+LANE_W_M = json.load(open(_GATE0, encoding='utf-8'))['lane_w_m']
+
+def lane_x(x_lane, x_m):
+    """横向（车道单位）：像素尺子优先，缺时用米制横向换算——远车尺子被
+    域闸挡掉恒 None（20261103_153620 局：9 起盲区嫌疑大半是这个假象）。"""
+    if x_lane is not None:
+        return x_lane
+    return None if x_m is None else x_m / LANE_W_M
 
 def load(sess):
     p = (rf'C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/{sess}'
@@ -50,8 +63,8 @@ def main(sess):
         for t in (r.get('otab') or {}).get('t') or []:
             if t[0] == 'car':
                 tracks.setdefault(t[1], []).append(
-                    (r['fid'], t[2], t[4], r.get('sel_why'),
-                     r.get('executed_lane')))
+                    (r['fid'], lane_x(t[2], t[3] if len(t) > 3 else None),
+                     t[4], r.get('sel_why'), r.get('executed_lane')))
     segs = []
     for tid, tr in tracks.items():
         tr.sort(); cur = [tr[0]]
@@ -63,8 +76,9 @@ def main(sess):
     print(f'{sess}: {len(rows)} 拍，{len(segs)} 段贴身轨迹，{len(dips(rows))} 段速度塌陷')
 
     # ── 速度塌陷事件 ──────────────────────────────────────────
-    car_by_fid = {r['fid']: [(t[1], t[2], t[4]) for t in (r.get('otab') or {}).get('t') or []
-                              if t[0] == 'car'] for r in rows}
+    car_by_fid = {r['fid']: [(t[1], lane_x(t[2], t[3] if len(t) > 3 else None), t[4])
+                             for t in (r.get('otab') or {}).get('t') or []
+                             if t[0] == 'car'] for r in rows}
     print('\n== 速度塌陷事件（撞/压车主判据）==')
     crash_n = same_n = launch_n = blind_n = 0
     first_fid = rows[0]['fid']
