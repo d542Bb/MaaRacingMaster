@@ -632,3 +632,47 @@ def test_coin_group_far_time_is_later_than_near():
     sc = Scorer(CFG, load_calib()).score(g, _obs(groups=(g,), targets=ms))
     assert sc is not None
     assert sc.t_far_s > sc.t_miss_s
+
+
+def test_metric_x_ruler_disagreement_takes_urgent_reading():
+    """米制 x ↔ 尺子互证（20261103 雨 p2 车5 帧证）：米制横位在 16.8m 处
+    报 4-6 道（真值 2-3 道），决策按"路外无关车"放行到重叠前 0.2s。
+    持续分歧 >0.6 道 3 拍 → 按更急的读数入账；贴回 0.3 道 2 拍恢复。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    # 尺子 −1.0 道（邻道逼近），米制 −3.0 道（错得远）：持续 3 拍触发
+    e._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
+    for _ in range(2):
+        e._metric_cars = (MetricCarState(
+            target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
+            v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+        src = e._reach_car_sources(0.0)
+        assert len(src) == 1
+        assert src[0].x_m == pytest.approx(-3.0 * 3.5, abs=0.4), "未满持续拍数不接管"
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
+        v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+    src = e._reach_car_sources(0.0)
+    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), "持续分歧后按更急的尺子读数入账"
+    # 贴回 1 拍不恢复，2 拍恢复
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.05 * 3.5,
+        v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+    assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4)
+    assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.05 * 3.5, abs=0.4), "贴回 2 拍恢复米制"
+
+
+def test_metric_x_agreement_keeps_metric():
+    """双仪器一致（<0.6 道）不接管，正常车不受闸影响。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=1.2, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=20.0, x_m=1.4 * 3.5,
+        v_close_mps=5.0, t_meet_s=4.0, anchor_age_ms=50.0),)
+    for _ in range(6):
+        src = e._reach_car_sources(0.0)
+        assert len(src) == 1
+        assert src[0].x_m == pytest.approx(1.4 * 3.5, abs=0.4)

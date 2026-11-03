@@ -55,6 +55,11 @@ from maaracing_master.plugins.speedrush.world_model import (
 
 _SCHEMA = 5  # v5：删除 move_allowed（无消费者）；v4=maneuver 权限位
 _EPS = 1e-9
+# 米制 x ↔ 像素尺子互证闸（20261103 雨 p2 车5 帧证 + 四局回放 84 次分歧）
+_XDIS_ON_LANE = 0.6    # 触发阈：持续分歧（道）
+_XDIS_ON_TICKS = 3     # 持续拍数
+_XDIS_OFF_LANE = 0.3   # 恢复阈（滞回）
+_XDIS_OFF_TICKS = 2    # 贴回拍数
 
 
 def _lane_ttc_map(scene, c0: float, horizon_s: float) -> dict[int, float]:
@@ -552,6 +557,12 @@ class DecisionEngine:
         # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
         self._car_xf: dict[int, float] = {}
         self._car_zf: dict[int, float] = {}
+        # 米制 x ↔ 像素尺子互证态：id → (连续超阈分歧拍, 尺子接管中)。
+        # 米制 x_m 复合了锚 z 与框心两处误差（20261103 雨 p2 车5 帧证：
+        # 16.8m 处连续报 4-6 道、真值 2-3 道，决策层按"右侧路外无关车"
+        # 放行到重叠前 0.2s——回放四局此类分歧 84 次）。分歧持续超阈按
+        # 更急的读数入账（不确定=按最坏），贴回滞回恢复。
+        self._car_xdis: dict[int, tuple[int, bool]] = {}
         # 米制横位硬跳变保持：id → (last_accepted_x, consecutive_jump_ticks)
         self._car_x_hold: dict[int, tuple[float, int]] = {}
         # 金币组到站时间记忆（gid → (t, fid)）：同组只允许时间递减
@@ -605,6 +616,7 @@ class DecisionEngine:
         self._sel_shadow_trace = None
         self._car_xf.clear()
         self._car_zf.clear()
+        self._car_xdis.clear()
         self._car_x_hold.clear()
         self._coin_t_mem.clear()
         self._elig_latch.clear()
@@ -1114,6 +1126,36 @@ class DecisionEngine:
                 x = m.x_m
                 if x is None and v is not None and v.x_lane is not None:
                     x = v.x_lane * lane_w       # 无同帧焦距：横向回退像素尺子
+                # 米制 x ↔ 像素尺子互证：x_m 复合了锚 z 与框心两处误差，
+                # 雨局车5 在 16.8m 处连续报 4-6 道（尺子 2-3 道，帧证为真），
+                # 决策按"路外无关车"放行到重叠前 0.2s。持续分歧按更急的
+                # 读数入账（不确定=按最坏），贴回滞回恢复；单边缺证冻结态。
+                if x is not None and m.x_m is not None \
+                        and v is not None and v.x_lane is not None and lane_w:
+                    dis = abs(m.x_m / lane_w - v.x_lane)
+                    n, veto = self._car_xdis.get(m.target_id, (0, False))
+                    was_veto = veto
+                    if veto:
+                        if dis <= _XDIS_OFF_LANE:
+                            n += 1
+                            if n >= _XDIS_OFF_TICKS:
+                                n, veto = 0, False
+                        else:
+                            n = 0
+                    elif dis > _XDIS_ON_LANE:
+                        n += 1
+                        veto = n >= _XDIS_ON_TICKS
+                    else:
+                        n = 0
+                    self._car_xdis[m.target_id] = (n, veto)
+                    if veto:
+                        xr = v.x_lane * lane_w
+                        x = xr if abs(xr) <= abs(x) else x   # 更急者入账
+                        if not was_veto:
+                            # 接管瞬间：仪器修正不是真实横移，清平滑基线
+                            # 让硬跳变门按新读数重起（否则修正被 hold 扣住）
+                            self._car_xf.pop(m.target_id, None)
+                            self._car_x_hold.pop(m.target_id, None)
                 tm = self.scorer.metric_t(m, v)
                 # R3 前车仪器（2026-10-16 设计稿 §2.1）：t_overtake 只吃米制
                 # t_meet（z/v_close，单一公式真源 MetricCarState；v_close>0=
