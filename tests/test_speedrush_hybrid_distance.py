@@ -441,7 +441,7 @@ def test_far_track_still_gets_metric_state():
     """地平线退化带住户（denom<min_denom 降级 far 轨）：米制态照产出——
     这正是本次搬家要治的盲区本体，far 不再等于决策不可见。"""
     trk = Tracker()
-    far = _car(cx=660, cy=365)                # denom=365−354.2≈11 < 20：far
+    far = _car(cx=660, cy=365, h=8)           # 框底 denom≈14.8 < 20：far（新口径=框底判路内）
     trk.update(_per(1, cars=[far]), frame_age_ms=10.0, stage=1)
     assert trk.update(_per(2, cars=[far]), frame_age_ms=10.0, stage=1,
                       anchors=replace(_sheet(1, z_m=40.0), fx=700.0)) \

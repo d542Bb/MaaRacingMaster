@@ -64,7 +64,7 @@ class TestFilterAndOrder:
         # 适用域外（分母 < MIN_DENOM）：目标保留（距离序有效），进 far_targets
         # 只给粗方向不给横向数值；域内的进 targets 带 x_lane
         MIN_DENOM = CAL.min_denom
-        far = Detection(cx=700, cy=int(CAL.y_h + MIN_DENOM) - 1, w=10, h=10, conf=0.7)
+        far = Detection(cx=700, cy=int(CAL.y_h + 10), w=10, h=10, conf=0.7)
         near = Detection(cx=700, cy=int(CAL.y_h + MIN_DENOM) + 1, w=10, h=10, conf=0.7)
         obs = _observe(cars=[far, near])
         assert [t.cy for t in obs.targets] == [near.cy]

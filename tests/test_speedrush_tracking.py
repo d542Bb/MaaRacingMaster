@@ -29,9 +29,9 @@ def _per(fid: int, *, cars=(), coins=(), bonuses=()) -> PerceptionResult:
                             cars=list(cars), coins=list(coins), bonuses=list(bonuses))
 
 
-def _near_car(cx=800, cy=500):
+def _near_car(cx=800, cy=500, h=40):
     """cy=500 在域内（denom≈176），x_lane≈正值（cx>vpx）。"""
-    return Detection(cx, cy, 60, 40, 0.9)
+    return Detection(cx, cy, 60, h, 0.9)
 
 
 # ---------- 1 过旧帧 ----------
@@ -59,12 +59,24 @@ def test_empty_frame_presence_false_and_no_targets():
 
 
 def test_above_horizon_dropped():
-    """cy ≤ y_h（地平线以上）几何无效，直接丢（归一发散口径，world_model.x_lane_of 同式）。"""
+    """整框在地平线上方（框底都不接地）几何无效，直接丢（归一发散口径）。
+    路内判据=框底接地（2026-11-03 改）：只压线的中心不再蒸发整框。"""
     trk = Tracker()
-    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 5)]),
+    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 45)]),
                      frame_age_ms=10.0, stage=1)
     assert obs.targets == () and obs.far_targets == ()
     assert obs.health.target_presence is False
+
+
+def test_tall_box_center_on_horizon_kept_with_bottom_anchor():
+    """高架物（限宽门/警示架）框中心压在地平线上、框底接地：不得蒸发，
+    横向尺子退框底锚出读数（20261103_213728 fid3569 路障追尾实锤：
+    yolo_cars=1 而 obs 无目标，躲避层整段无物可躲）。"""
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 5, h=200)]),
+                     frame_age_ms=10.0, stage=1)
+    assert len(obs.targets) == 1, "框底接地的高架物不得被中心闸丢弃"
+    assert obs.targets[0].x_lane is not None, "框底锚应产出横向读数"
 
 
 # ---------- 3 目标短暂遮挡 ----------

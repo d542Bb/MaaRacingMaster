@@ -743,10 +743,20 @@ class Tracker:
         out: list[_Obs] = []
         for kind, attr in _KIND_ATTRS:
             for ki, d in enumerate(getattr(per, attr)):
-                denom = d.cy - self.cal.y_h
+                # 路内判据=框底接地（2026-11-03 改）：高架物（限宽门/警示架）
+                # 框中心可压在地平线上/上，按中心丢弃=整框蒸发（213728 fid
+                # 3569 路障追尾实锤：yolo_cars=1 而 obs 无目标）。框底接地才算
+                # 在路面；横向尺子锚也退到框底——中心退化带（denom<min_denom）
+                # 里中心锚不可用，底锚对高架物只会低估横向偏距（偏保守方向）。
+                denom_c = d.cy - self.cal.y_h
+                cy_b = d.cy + d.h / 2.0
+                anchor_cy, denom = d.cy, denom_c
+                if denom_c < self.cal.min_denom:
+                    anchor_cy, denom = cy_b, cy_b - self.cal.y_h
                 if denom <= 0:
-                    continue  # 地平线以上：几何无效，丢弃（归一发散口径，world_model.x_lane_of 同式）
-                x = x_lane_of(d.cx, d.cy, self.cal) if denom >= self.cal.min_denom else None
+                    continue  # 整框在地平线上方：几何无效，丢弃（world_model 同式）
+                x = (x_lane_of(d.cx, anchor_cy, self.cal)
+                     if denom >= self.cal.min_denom else None)
                 dx = d.cx - self.cal.vpx
                 side = (LaneSide.MID if abs(dx) < self.p.neutral_px
                         else LaneSide.RIGHT if dx > 0 else LaneSide.LEFT)

@@ -102,8 +102,8 @@ _LANE = {"lines": _LINES, "usable": True}
 
 
 def _far_car():
-    """cy=370 在归一发散弃权区（denom<min_denom → x_lane=None）。"""
-    return Detection(800, 370, 60, 40, 0.9)
+    """框底 denom<min_denom（新口径=框底判路内）→ x_lane=None，进 far。"""
+    return Detection(800, 370, 60, 8, 0.9)
 
 
 def test_gate_on_fills_membership_on_far_target():
