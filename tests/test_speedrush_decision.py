@@ -561,15 +561,31 @@ def test_box_size_metric_car_uses_pixel_lateral_and_no_ttc():
     assert s.near is True                                   # 4.5m ≤ near_z_m=6m
 
 
-def test_box_size_metric_car_without_lateral_abstains():
-    """粗距离但没有横向读数（远轨）→ 不入账，不拿 None 乘尺子。"""
+def test_box_size_metric_car_without_lateral_near_enters_as_block():
+    """近距无横位 ≠ 无威胁（2026-11-03 帧 0213 帧证）：补给/事件车 12m 内
+    横位缺位（框心贴地平线过不了尺子门），旧口径整段跳过=避让层视而不见。
+    近距按占本道处理；远轨仍诚实弃权。"""
     from maaracing_master.plugins.speedrush.tracking import (
         DistanceSource, MetricCarState)
     e = _eng()
+    # 近距（z 4.5m ≤ near_z_m）无横位：按占本道入账
     e._views = (CarView(id=1, x_lane=None, cy=620, rel_approach=8.0,
                         d_min=0.0, age_ticks=10),)
     e._metric_cars = (MetricCarState(
         target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    src = e._reach_car_sources(0.0)
+    assert len(src) == 1
+    s = src[0]
+    assert s.src == "metric_coarse"
+    assert s.x_m == pytest.approx(0.0, abs=0.3)   # 占本道（自车系正前）
+    assert s.near is True
+    assert s.t_meet_s is None and s.z_m is None   # 仍不进精确口径
+    # 远轨（z 25m、cy 远）无横位：不入账
+    e._views = (CarView(id=2, x_lane=None, cy=360, rel_approach=8.0,
+                        d_min=0.0, age_ticks=10),)
+    e._metric_cars = (MetricCarState(
+        target_id=2, source=DistanceSource.BOX_SIZE, z_m=25.0, x_m=None,
         v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
     assert e._reach_car_sources(0.0) == []
 

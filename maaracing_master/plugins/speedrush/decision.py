@@ -1089,12 +1089,25 @@ class DecisionEngine:
                 # 无锚框高粗距离（2026-10-23）：只用于近/远与选道，横向仍走
                 # 像素尺子、到站时间弃权（~40% 尾部误差不能进 TTC）；z_m 不喂
                 # enter 的 z EMA/跳变门与路心采样（那是精确米制口径）。
-                if v is None or v.x_lane is None:
-                    continue                    # 无横向读数：诚实弃权（远轨无尺子）
+                if v is None:
+                    continue
+                near = _near(v, m.z_m)
+                if v.x_lane is None:
+                    if not near:
+                        continue                # 远轨无尺子：诚实弃权
+                    # 近距无横位 ≠ 无威胁（2026-11-03 局1 帧 0213 帧证）：
+                    # 补给/事件车 12.7m 内横位始终缺位（框心贴地平线过不了
+                    # 尺子门），旧口径整段跳过 → 避让层视而不见直到追尾。
+                    # 近距 unknown 按占本道处理，逼出换道/减速而不是无视。
+                    enter(0.0, None, None, z_m=None, age_ms=0.0,
+                          src="metric_coarse", tid=m.target_id,
+                          near=True, half_w_m=_half_w(v),
+                          seen=(v.last_seen_fid == self._fid))
+                    continue
                 seen.add(m.target_id)
                 enter(v.x_lane * lane_w, None, None, z_m=None, age_ms=0.0,
                       src="metric_coarse", tid=m.target_id,
-                      near=_near(v, m.z_m), half_w_m=_half_w(v),
+                      near=near, half_w_m=_half_w(v),
                       seen=(v.last_seen_fid == self._fid))
                 continue
             elif m.z_m is not None:
