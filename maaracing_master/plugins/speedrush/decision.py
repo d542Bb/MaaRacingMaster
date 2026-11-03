@@ -1131,8 +1131,10 @@ class DecisionEngine:
                     x = v.x_lane * lane_w       # 无同帧焦距：横向回退像素尺子
                 # 米制 x ↔ 像素尺子互证：x_m 复合了锚 z 与框心两处误差，
                 # 雨局车5 在 16.8m 处连续报 4-6 道（尺子 2-3 道，帧证为真），
-                # 决策按"路外无关车"放行到重叠前 0.2s。持续分歧按更急的
-                # 读数入账（不确定=按最坏），贴回滞回恢复；单边缺证冻结态。
+                # 决策按"路外无关车"放行到重叠前 0.2s。持续分歧按**尺子**
+                # 入账（20261103_125755 车51 二次帧证：米制把 1.0 道的邻道车
+                # 压成 0.14 道幻影、"更急者"恰好选了错的那个——横向 bake-off
+                # 两案尺子全对，米制锚错 2-3 道；贴回滞回恢复，单边缺证冻结态）。
                 if x is not None and m.x_m is not None \
                         and v is not None and v.x_lane is not None and lane_w:
                     dis = abs(m.x_m / lane_w - v.x_lane)
@@ -1152,8 +1154,7 @@ class DecisionEngine:
                         n = 0
                     self._car_xdis[m.target_id] = (n, veto)
                     if veto:
-                        xr = v.x_lane * lane_w
-                        x = xr if abs(xr) <= abs(x) else x   # 更急者入账
+                        x = v.x_lane * lane_w       # 尺子赢（原"更急者"两案一错一对）
                         if not was_veto:
                             # 接管瞬间：仪器修正不是真实横移，清平滑基线
                             # 让硬跳变门按新读数重起（否则修正被 hold 扣住）

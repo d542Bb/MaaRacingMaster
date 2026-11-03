@@ -676,3 +676,21 @@ def test_metric_x_agreement_keeps_metric():
         src = e._reach_car_sources(0.0)
         assert len(src) == 1
         assert src[0].x_m == pytest.approx(1.4 * 3.5, abs=0.4)
+
+
+def test_metric_x_ruler_wins_even_when_metric_urgent():
+    """持续分歧按尺子入账，不按"更急者"（20261103_125755 车51 二次帧证：
+    米制把 1.0 道的邻道车压成 0.14 道幻影——更急的恰是错的那个，邻道车
+    变同车道幻影＝过早躲避的发生器）。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
+    for _ in range(3):
+        e._metric_cars = (MetricCarState(
+            target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-0.14 * 3.5,
+            v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+        src = e._reach_car_sources(0.0)
+        assert len(src) == 1
+    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), \
+        "更急的米制幻影不接管，尺子赢"

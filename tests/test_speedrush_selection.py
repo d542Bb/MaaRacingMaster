@@ -696,3 +696,77 @@ def test_graze_hit_drops_pending_lane_request():
                  [Obj("car", 0.9 * LW, 3.0)], [], 0.0,
                  _p(pass_graze_adjacent_enabled=True), commit_x_m=0.0)
     assert rep.why == "graze" and rep.lane_request is None
+
+
+def _sel_car(oid, x, t, safe=True):
+    return Obj("car", x, t, oid=oid, safe=safe)
+
+
+def test_graze_hold_survives_time_reading_dropout():
+    """贴边保持闩（20261103_125755 车51 帧证）：纵向时间读数拍拍乱跳，
+    贴边一旦成立就按车 id 续住——时间读数丢失/闪断翻负不再 1 拍闪断。"""
+    sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True,
+                             pass_horizon_s=4.5, pass_hold_enabled=True,
+                             pass_hold_s=0.5))
+    road = _road()
+    # 邻道 0.9 道、2.2s：贴边成立
+    rep = sel.update(road, [], [_sel_car(51, 0.9 * LW, 2.2)], [], 0.0, 0.05)
+    assert rep.why == "graze" and rep.hit_oid == 51
+    # 下一拍时间读数丢失（None）：闩续住，目标刷新为车最新横位
+    rep = sel.update(road, [], [_sel_car(51, 0.92 * LW, None)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+    assert rep.target_x_m == pytest.approx(0.92 * LW - 0.68 * LW, abs=0.06)
+    # 时间读数闪断翻负但在保持窗内（−0.4 > −0.5）：闩仍续住
+    rep = sel.update(road, [], [_sel_car(51, 0.92 * LW, -0.4)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+
+
+def test_graze_hold_releases_when_car_gone():
+    """车读数消失超过宽限（1s）闩释放，回中/收币接管。"""
+    sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True,
+                             pass_horizon_s=4.5))
+    road = _road()
+    rep = sel.update(road, [], [_sel_car(51, 0.9 * LW, 2.2)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+    rep = None
+    for _ in range(21):                       # 1.05s 无读数 > 1s 宽限
+        rep = sel.update(road, [], [], [], 0.0, 0.05)
+    assert rep.why != "graze"
+
+
+def test_graze_hold_releases_when_car_passes():
+    """车明确落到身后（t < −hold_s 且持续）：闩释放，不再贴已过的车。"""
+    sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True,
+                             pass_horizon_s=4.5, pass_hold_enabled=True,
+                             pass_hold_s=0.5))
+    road = _road()
+    rep = sel.update(road, [], [_sel_car(51, 0.9 * LW, 2.2)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+    rep = None
+    for _ in range(15):                       # 0.75s 身后 > 0.5s 保持窗
+        rep = sel.update(road, [], [_sel_car(51, 0.9 * LW, -0.6)], [], 0.0, 0.05)
+    assert rep.why != "graze"
+
+
+def test_graze_hold_yields_to_emergency_pass():
+    """紧急躲避（同道贴身车出现）立即接管，闩不硬拖。"""
+    sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True,
+                             pass_horizon_s=4.5))
+    road = _road()
+    rep = sel.update(road, [], [_sel_car(51, 0.9 * LW, 3.0)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+    rep = sel.update(road, [], [_sel_car(51, 0.9 * LW, 3.0),
+                                _sel_car(52, 0.0, 2.0)], [], 0.0, 0.05)
+    assert rep.why == "pass"
+
+
+def test_graze_hold_yields_to_reward_car():
+    """奖励车（更高价值）出现立即接管。"""
+    sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True,
+                             pass_horizon_s=4.5))
+    road = _road()
+    rep = sel.update(road, [], [_sel_car(51, 0.9 * LW, 3.0)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+    rep = sel.update(road, [Obj("reward", 1.0, 2.0)],
+                     [_sel_car(51, 0.9 * LW, 3.0)], [], 0.0, 0.05)
+    assert rep.layer == 1 and rep.why == "reward"

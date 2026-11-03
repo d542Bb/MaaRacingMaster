@@ -203,6 +203,9 @@ class SelectionReport:
     # 请求的动作位（第 7 期）：本拍原始 slack 是否可达；None=未平滑（第 6 期）。
     # 路线按证据位累计、按动作位起意。
     req_action: bool | None = None
+    # 本拍命中对象的身份（擦边/贴边/让位）：贴边保持闩按它跨拍跟车；
+    # None=本拍命中不带身份（奖励/金币/回中）。
+    hit_oid: int | None = None
 
 
 @dataclass(frozen=True)
@@ -423,6 +426,10 @@ def _pick_reward(rewards: Sequence[Obj], cars: Sequence[Obj],
     return None, pending
 
 
+GRAZE_HOLD_MISS_S = 1.0     # 贴边保持闩：目标车读数消失的宽限（0.5s 检测
+                            # 间隙常客，1s 内回来不算丢）
+
+
 def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float | None:
     """选车心两侧空间更大的一侧作为通过侧；开闸后再保最小安全横距。
 
@@ -444,7 +451,7 @@ def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float | None:
 
 def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
                p: SelectionParams, *, allow_adjacent: bool = True
-               ) -> tuple[float, float, str] | None:
+               ) -> tuple[float, float, str, int | None] | None:
     """擦边/让位：逐拍实时的安全动作，**不受跨线闸门约束，也不许被请求屏蔽**。
 
     挤过去所需的横向量（graze_gap 0.68 道）本身就压过车道线——这是「微
@@ -457,7 +464,8 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     靠自车一侧），到站前先贴到位＝150 分极限超车的入口。同道带（≤两车
     半宽）语义不变＝紧急躲避；按到站排序保证同道车优先。
     ``allow_adjacent=False``：承诺期调用位——贴边是得分动作，不改承诺期
-    只紧急躲避的契约。"""
+    只紧急躲避的契约。
+    返回 (目标 x, 到站 s, why, 命中车 oid)——oid 供保持闩跨拍跟车。"""
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     hold = p.pass_hold_s if p.pass_hold_enabled else 0.0
     # 擦边候选视界（闸 pass_horizon_s>0，2026-11-02）：主车 3.15s 出头时
@@ -489,7 +497,7 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
         others = [o for o in cars if o is not c]
         if inflight and _blocked(others, x, c.t, p):
             continue
-        return x, c.t, "graze" if adjacent else "pass"
+        return x, c.t, "graze" if adjacent else "pass", c.oid
     return None
 
 
@@ -768,7 +776,11 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
             if req is None and pend is not None:
                 req = pend
         if hit is not None:
-            x, t, why = hit
+            if len(hit) == 3:              # 奖励/金币命中不带身份
+                x, t, why = hit
+                hit_oid = None
+            else:
+                x, t, why, hit_oid = hit
             layer = 1 if why == "reward" else 2 if why in ("pass", "graze") else 3
             # 命中按类型裁决请求：擦边/让位/贴边是贴身动作，挂起请求本拍
             # 丢弃（路线 pass_hold 也不抢方向）——贴着一辆车的同时再起并线
@@ -780,8 +792,9 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
                 x, why, True, True,
                 None if carried is None else carried.lane,
                 req_live=carried is None or carried.live,
-                req_oid=None if carried is None else carried.oid,
-                req_action=None if carried is None else carried.action)
+                req_oid=carried.oid if carried is not None else None,
+                req_action=carried.action if carried is not None else None,
+                hit_oid=hit_oid)
     x, why, maneuver = _center_target(road, ego, p, coarse_lane)
     # 并线承诺期擦边放行（闸 pass_in_commit_enabled，2026-11-02）：承诺期
     # 1~3 层关闭本为防得分动作改道，但把安全性的擦边/让位也一并锁死——
@@ -801,10 +814,10 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
                 if sp is None or _in_interval(cand[0], sp):
                     hit = cand
         if hit is not None:
-            x, t, gwhy = hit
+            x, t, gwhy, goid = hit
             return SelectionReport(
                 2, _waypoints(2, x, t, cars, coins, road, ego, p),
-                x, gwhy, True, True)
+                x, gwhy, True, True, hit_oid=goid)
     pre = None if committed else _preposition_target(
         rewards, cars, coins, road, ego, p, commit_x_m)
     if pre is not None:
@@ -857,7 +870,68 @@ class LayeredSelector:
         self._coin_target: float | None = None
         self._dwell_layer: int | None = None
         self._layer_dwell_t = 0.0
+        self._graze_oid: int | None = None
+        self._graze_miss_t = 0.0
+        self._graze_x: float | None = None
         self.last: SelectionReport | None = None
+
+    def _graze_hold(self, raw: SelectionReport, prev: SelectionReport | None,
+                    road: RoadFrame,
+                    cars: Sequence[Obj], coins: Sequence[Obj],
+                    ego: float, dt_s: float, p: SelectionParams,
+                    *, commit_x_m: float | None = None
+                    ) -> SelectionReport | None:
+        """贴边保持闩：上一拍是贴边、本拍选择层没认领时，按车 id 续住。
+
+        纵向时间仪器拍拍乱跳（20261103_125755 车51：光锥余量 −0.44 / 0.48
+        / None / 2.18 交替，而尺子横位稳在 1.0 道）——按拍判时的层全部
+        1 拍闪断，贴边永远发展不成整段并行的接近。闩的语义与 coin_hold
+        同构：横向逐拍用尺子读数刷新（车动目标跟动），纵向读数丢失走
+        GRAZE_HOLD_MISS_S 宽限；紧急躲避/让位/无路/奖励车立即接管，
+        明确落到身后（t < −hold）或被别车占位即释放。承诺期只在目标不出
+        承诺道跨度时续住（与承诺期原生贴边同一道闸）。"""
+        if self._graze_oid is None or prev is None or prev.why != "graze":
+            return None
+        if raw.why == "graze" or raw.layer in (0, 2) or raw.why == "reward":
+            return None                    # 新贴边/紧急动作/更高价值接管
+        half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
+        car = next((c for c in cars if c.oid == self._graze_oid
+                    and c.kind == "car"), None)
+        if car is not None and car.safe:
+            x = _pass_x(car, road, p)
+            if x is not None and abs(x - car.x) >= half:
+                self._graze_x = x
+                self._graze_miss_t = GRAZE_HOLD_MISS_S
+            else:
+                self._graze_miss_t -= dt_s
+        else:
+            self._graze_miss_t -= dt_s     # 读数丢失/不安全：宽限倒计时
+        if self._graze_miss_t <= 0.0:
+            self._graze_oid = None
+            return None
+        if car is not None and car.safe and car.t is not None:
+            hold = p.pass_hold_s if p.pass_hold_enabled else 0.0
+            if car.t < -hold:
+                self._graze_oid = None     # 明确越过后释放，回中/收币
+                return None
+        x = road.clamp(self._graze_x, self.p.wall_margin_lane
+                       * self.p.lane_w_m)
+        if commit_x_m is not None:
+            sp = _lane_span(commit_x_m, p, road)
+            if not _in_interval(x, sp):
+                return None
+        if any(c.kind == "car" and c.oid != self._graze_oid and c.safe
+               and c.t is not None and -0.2 <= c.t <= p.horizon_s
+               and abs(c.x - x) < half for c in cars):
+            self._graze_oid = None         # 贴边位被别车占了：不挤缝
+            return None
+        t = car.t if (car is not None and car.safe
+                      and car.t is not None) else 1.0
+        return SelectionReport(
+            2, _waypoints(2, x, t, cars, coins, road, ego, p),
+            x, "graze", raw.road_ok, True, raw.lane_request,
+            req_live=raw.req_live, req_oid=raw.req_oid,
+            req_action=raw.req_action, hit_oid=self._graze_oid)
 
     def _adopt(self, rep: SelectionReport) -> SelectionReport:
         self._layer = rep.layer
@@ -900,6 +974,18 @@ class LayeredSelector:
                      commit_x_m=commit_x_m)
         prev = self.last
         self.last = raw
+        # 贴边保持闩（2026-11-03）：新贴边先武装（承诺期/非承诺期同源），
+        # 之后纵向时间读数闪断不再打断（车51 帧证：余量 −0.44/0.48/None/
+        # 2.18 拍拍乱跳，按拍判时的层全部 1 拍闪断）。
+        if raw.why == "graze" and raw.hit_oid is not None:
+            self._graze_oid = raw.hit_oid
+            self._graze_miss_t = GRAZE_HOLD_MISS_S
+            self._graze_x = raw.target_x_m
+        held = self._graze_hold(raw, prev, road, cars, coins, ego, dt_s, p,
+                                commit_x_m=commit_x_m)
+        if held is not None:
+            self.last = held
+            return held
         # 承诺期：目标是路线定的道，驻留/金币短承诺都不参与——拖住或沿用
         # 旧目标都等于在并线中改道。
         if committed:
