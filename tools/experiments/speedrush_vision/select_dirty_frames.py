@@ -25,7 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"
 TRACES = DATA / "control_traces"
 REVIEW = DATA / "depth_review"

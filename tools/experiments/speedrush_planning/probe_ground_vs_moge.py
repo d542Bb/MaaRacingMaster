@@ -35,7 +35,7 @@ from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
     StreetPerception)
 from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
 
-DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"
 K = 1101.0          # 地面平面常数（probe_ground_plane 标定中位）
 

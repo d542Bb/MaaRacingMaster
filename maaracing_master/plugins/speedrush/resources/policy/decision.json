@@ -256,12 +256,12 @@
   },
   "lane_obs": {
     "enabled": true,
-    "weights": "speedrush/models/plus_small_384x640.onnx",
+    "weights": "models/plus_small_384x640.onnx",
     "provider": "cpu",
     "hz": 0.0,
     "threads": 4,
     "detect_every": 1,
-    "_note": "S1 影子：TwinLiteNet+ Small 线观测，只写 trace lane_obs 列，不接控制。weights 用相对 data/ 的路径（如 speedrush/models/plus_small_384x640.onnx），权重不入库。provider=cpu 走独立线程、不抢 dml_lock（2026-10-24 实机：dml 与深度同锁会相位锁，深度连续丢 95% 帧）；threads=4 实测约 23ms/帧，仍在 50ms 控制拍内。若改 dml，必须确认不与深度抢锁。hz=0 表示每拍推、队列深度 1 丢旧帧；detect_every=1 逐拍检测。道号由同帧新鲜深度路心锚定（k=round(anchor+L)），颜色不参与身份。"
+    "_note": "S1 影子：TwinLiteNet+ Small 线观测，只写 trace lane_obs 列，不接控制。weights 相对生产资源目录解析（resources/models/，.gitignore 不追踪）；data/ 只留用户业务数据，不放派生资产。provider=cpu 走独立线程、不抢 dml_lock（2026-10-24 实机：dml 与深度同锁会相位锁，深度连续丢 95% 帧）；threads=4 实测约 23ms/帧，仍在 50ms 控制拍内。若改 dml，必须确认不与深度抢锁。hz=0 表示每拍推、队列深度 1 丢旧帧；detect_every=1 逐拍检测。道号由同帧新鲜深度路心锚定（k=round(anchor+L)），颜色不参与身份。"
   },
   "route": {
     "control": true,

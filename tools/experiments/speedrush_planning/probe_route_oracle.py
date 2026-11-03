@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"
 
 GRID = np.arange(-4.0, 4.0001, 0.1)

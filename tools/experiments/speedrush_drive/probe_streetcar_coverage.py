@@ -17,7 +17,7 @@ letterbox，走 `core.yolo_detector` 与阶段 B 同一条路），每帧记录 
     .venv/Scripts/python.exe tools/experiments/speedrush_drive/probe_streetcar_coverage.py scan
     .venv/Scripts/python.exe tools/experiments/speedrush_drive/probe_streetcar_coverage.py analyze
 
-输出（数据目录，不入库）：`<APPDATA>/MaaRacingMaster/data/speedrush/streetcar_coverage.jsonl`
+输出（数据目录，不入库）：`tools/experiments/_probe_data/streetcar_coverage.jsonl`
 与终端汇总表。素材目录：同数据目录下 `demos/<session>/frames/*.jpg`（recorder 导出，
 已裁好的 1280×720 客户区帧，无需再裁窗口偏移）。
 """
@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 
 from maaracing_master.core.yolo_detector import YOLODetector  # noqa: E402
 
-_DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+_DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = _DATA / "demos"
 OUT = _DATA / "streetcar_coverage.jsonl"
 MODEL = str(ROOT / "archive" / "racing" / "resources" / "onnx" / "model.onnx")

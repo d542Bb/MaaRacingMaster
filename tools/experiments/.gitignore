@@ -1,0 +1,2 @@
+# 探针输出（gitignored）：读数归各实验 README，文件本身可重跑
+_probe_data/

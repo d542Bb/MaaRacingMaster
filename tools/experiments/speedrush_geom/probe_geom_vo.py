@@ -27,7 +27,7 @@ from maaracing_master.plugins.speedrush import PERCEPTION_MODEL_FILE  # noqa: E4
 from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
     StreetPerception)
 
-DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"
 OUT = DATA / "geom"
 

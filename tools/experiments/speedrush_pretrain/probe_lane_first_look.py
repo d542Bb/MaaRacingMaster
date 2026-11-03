@@ -21,7 +21,7 @@ import numpy as np
 import onnxruntime as ort
 
 ROOT = Path(__file__).resolve().parents[3]
-DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"
 OUT = DATA / "pretrain_look"
 W_MODEL = ROOT / "tools/experiments/speedrush_pretrain/weights/lanenet_multihead.onnx"

@@ -112,7 +112,7 @@ def assemble(stem: Path):
         obj = merged & ~ego
     return pts, fx, fy, ego, obj
 
-DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 TRACES = DATA / "control_traces"
 OUT = DATA / "depth_review" / "blackout_gold"
 

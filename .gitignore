@@ -122,3 +122,6 @@ tools/experiments/**/weights/
 # 探针输出目录（命名约定 *_out/）：一次性报告的落点，读数归实验 README，文件本身可重跑。
 # 上规则的前提是「结论已进 README」——报告里还藏着没写下来的结论时，先补 README 再忽略。
 tools/experiments/**/*_out/
+
+# 线观测影子模型（不入库：派生资产，正式进生产但不追踪）
+maaracing_master/plugins/speedrush/resources/models/

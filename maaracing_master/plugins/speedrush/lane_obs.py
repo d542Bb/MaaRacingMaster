@@ -754,8 +754,10 @@ class LaneObsWorker:
             return
         weights = Path(self.cfg.weights)
         if not weights.is_absolute():
-            from maaracing_master.core.paths import data_dir
-            weights = data_dir() / weights
+            # 权重不入库（.gitignore）：住生产资源目录但不追踪。
+            # data/ 只留用户业务数据（如 SQLite），不放派生资产。
+            weights = (Path(__file__).resolve().parents[2]
+                       / "plugins" / "speedrush" / "resources" / weights)
         if not weights.is_file():
             self.error = f"权重缺失：{weights}"
             return

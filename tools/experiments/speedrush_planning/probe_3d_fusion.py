@@ -41,7 +41,7 @@ from maaracing_master.plugins.speedrush.depth_geo import (  # noqa: E402
 from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
     StreetPerception)
 
-DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"
 OUT_ROOT = DATA / "3d_fusion"
 
