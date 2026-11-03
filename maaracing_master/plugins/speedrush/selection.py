@@ -755,17 +755,18 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
         if pend is not None:
             req = pend
         if hit is None:
-            # 同道紧急躲避先行（原有语义）；主动贴边（邻道带）排在金币之后
-            # ——它是「没有别的机会时的默认姿态」不是高价值目标：字典序放
-            # 金币前面会把币组整体饿死（闭环 sim 实测 sel:coin 0 次），且
-            # 贴身姿态只在无事可做时才值得保持。
+            # 同道紧急躲避先行（原有语义）。
             hit = _pick_pass(cars, road, ego, p, allow_adjacent=False)
+        if hit is None:
+            # 主动贴边压金币（2026-11-03 人工对照定案）：极限超车 150 >
+            # 币组 90 且人工局 55% 超车落 150 分带——「最优解就一个擦边」。
+            # 兜底位（金币之后）实测每拍只有 9/115 拍轮得到：反车层（远离
+            # 预置/净空选道/并线承诺）几乎永远有事可做，兜底=永远不贴。
+            hit = _pick_pass(cars, road, ego, p, allow_adjacent=True)
         if hit is None:
             hit, pend = _pick_coin(coins, cars, road, ego, p, commit_x_m)
             if req is None and pend is not None:
                 req = pend
-        if hit is None:
-            hit = _pick_pass(cars, road, ego, p, allow_adjacent=True)
         if hit is not None:
             x, t, why = hit
             layer = 1 if why == "reward" else 2 if why in ("pass", "graze") else 3
@@ -787,13 +788,23 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
     # 192614 帧 #1530/#1533 实锤：承诺道内 0.5s 的出租车在车表、横距合格，
     # 擦边层不运行，中心保持直行撞上。擦边是安全动作且本就豁免跨线闸
     # （不动请求、不改道承诺），放行不破坏承诺语义。
+    # 主动贴边在承诺期开小口（2026-11-03 人工对照）：承诺期占实跑 30% 拍，
+    # 贴边被整体禁掉＝人工策略 1/3 时间不存在。目标不出承诺道跨度（±半道）
+    # 的贴边不构成改道——只是道内横移，放行不改承诺语义。
     if committed and p.pass_in_commit_enabled:
         hit = _pick_pass(cars, road, ego, p, allow_adjacent=False)
+        if hit is None and p.pass_graze_adjacent_enabled:
+            cand = _pick_pass(cars, road, ego, p, allow_adjacent=True)
+            if cand is not None:
+                sp = (_lane_span(commit_x_m, p, road)
+                      if commit_x_m is not None else None)
+                if sp is None or _in_interval(cand[0], sp):
+                    hit = cand
         if hit is not None:
-            x, t, _why = hit
+            x, t, gwhy = hit
             return SelectionReport(
                 2, _waypoints(2, x, t, cars, coins, road, ego, p),
-                x, "pass", True, True)
+                x, gwhy, True, True)
     pre = None if committed else _preposition_target(
         rewards, cars, coins, road, ego, p, commit_x_m)
     if pre is not None:

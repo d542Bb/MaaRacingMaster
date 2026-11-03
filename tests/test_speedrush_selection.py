@@ -660,13 +660,34 @@ def test_graze_gate_off_keeps_reactive_only():
     assert rep.layer == 4 and rep.why == "center"
 
 
-def test_graze_committed_stays_reactive_only():
-    """承诺期不开贴边（改道契约不动）：邻道车在车表也不得改道。"""
+def test_graze_in_commit_within_span():
+    """承诺期贴边开小口（2026-11-03 人工对照）：承诺期占实跑 30% 拍，贴边
+    被整体禁掉＝人工策略 1/3 时间不存在。目标不出承诺道跨度（±半道）的
+    贴边只是道内横移，不构成改道——放行。"""
     rep = select(_road(), [], [Obj("car", 0.9 * LW, 3.0)], [], 0.0,
                  _p(pass_graze_adjacent_enabled=True,
                     pass_in_commit_enabled=True),
                  commit_x_m=0.0, committed=True)
+    assert rep.layer == 2 and rep.why == "graze"
+    assert rep.target_x_m == pytest.approx(0.9 * LW - 0.68 * LW, abs=0.06)
+
+
+def test_graze_in_commit_out_of_span_stays_commit():
+    """贴边目标出承诺道跨度＝要跨线，承诺语义不动：仍按承诺道回中。"""
+    rep = select(_road(), [], [Obj("car", 1.3 * LW, 3.0)], [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True,
+                    pass_in_commit_enabled=True),
+                 commit_x_m=0.0, committed=True)
     assert rep.layer == 4 and rep.why == "commit"
+
+
+def test_graze_outranks_coin():
+    """贴边压金币（2026-11-03 人工对照）：极限超车 150 > 币组 90，人工局
+    55% 超车落 150 分带——邻道有可贴车时不收币。"""
+    rep = select(_road(), [], [Obj("car", 0.9 * LW, 3.0)],
+                 [Obj("coin", 0.3 * LW, 2.5)], 0.0,
+                 _p(pass_graze_adjacent_enabled=True))
+    assert rep.layer == 2 and rep.why == "graze"
 
 
 def test_graze_hit_drops_pending_lane_request():
