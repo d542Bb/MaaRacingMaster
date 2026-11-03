@@ -1421,6 +1421,9 @@ class SpeedRushModule(ActivityModule):
                 road_offset=road_offset,
                 corridor=corridor,
                 position=position_evidence,
+                # 深占据伪车源（2026-11-03）：YOLO 全盲拍里近距大车按栅格
+                # 路内窄块簇入账，正面撞的主根通道。
+                depth_grid=dgrid,
                 # 位置可信度直供决策：执行层本拍外推（线+深度都无新证据）时
                 # 决策不重建目标——场景全部由 executed 平移，假位置下的选择
                 # 会给出假目标。判据与冻结见 planner.update。

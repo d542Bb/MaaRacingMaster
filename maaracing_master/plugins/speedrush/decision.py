@@ -30,7 +30,8 @@ from maaracing_master.plugins.speedrush.coarse import (
     CoarseParams, CoarseReport, choose_lane)
 from maaracing_master.plugins.speedrush.config import DecisionConfig
 from maaracing_master.plugins.speedrush.corridor import Corridor
-from maaracing_master.plugins.speedrush.depth_geo import CAM_Z_DATUM_M
+from maaracing_master.plugins.speedrush.depth_geo import (
+    CAM_Z_DATUM_M, DrivableGrid)
 from maaracing_master.plugins.speedrush.anchor import AnchorTracker, Candidate
 from maaracing_master.plugins.speedrush.horizon import HorizonGovernor
 from maaracing_master.plugins.speedrush.lane_map import LaneMap
@@ -546,6 +547,7 @@ class DecisionEngine:
         self._lane_map = LaneMap(self.cal.lane_w_m)
         self._map_trace: dict | None = None
         self._ego_speed_mps: float | None = None
+        self._depth_grid = None          # 深占据伪车源（首拍前诚实 None）
         self._ego_v_lat = 0.0
         # 第 4 期观测面：开度/密度与 60 m 锚。只记录，不接视界/选道。
         self._anchor = AnchorTracker()
@@ -662,7 +664,8 @@ class DecisionEngine:
                position: ArrivalAttribution | None = None,
                state_unverified: bool = False,
                ego_speed_mps: float | None = None,
-               ego_v_lat_lane_s: float = 0.0) -> DecisionOutput:
+               ego_v_lat_lane_s: float = 0.0,
+               depth_grid: "DrivableGrid | None" = None) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
@@ -682,6 +685,7 @@ class DecisionEngine:
         self._fid = obs.frame_id
         self._fps = obs.fid_rate_hz
         self._ego_speed_mps = ego_speed_mps
+        self._depth_grid = depth_grid
         self._ego_v_lat = float(ego_v_lat_lane_s or 0.0)
         # 差异行只对本拍有效：没有推进选择层（无路/非巡航）的拍不能回放上一拍。
         self._sel_shadow_trace = None
@@ -1007,6 +1011,51 @@ class DecisionEngine:
                 id=b.id, seen=(b.last_seen_fid == obs.frame_id)))  # tol_m 缺省=bonus_tol_m（近远场同源）
         return out
 
+    def _grid_car_sources(self, off: float) -> list[CarSource]:
+        """深占据伪车源（2026-11-03 帧证）：YOLO 全盲拍 431/2880（最长连续
+        109 拍）里近距大车不出 car 类，语义车表空＝正面撞；同拍深度栅格
+        380 拍红块内缘在读。路内窄块簇按占道障碍入账——与墙（整行宽簇）
+        用簇宽区分。id 负数千位段（与 YOLO/跟踪 id 空间隔离），t=z/在线
+        闭速（静态假设），簇高 ≥2 行（0.5m）滤单行噪声。"""
+        grid = self._depth_grid
+        if grid is None:
+            return []
+        import numpy as np
+        from maaracing_master.plugins.speedrush.depth_geo import (
+            GRID_BLOCKED, GRID_CELL, GRID_X_MAX, GRID_Z_LO)
+        blocked = (grid.state == GRID_BLOCKED)
+        zc = GRID_Z_LO + (np.arange(blocked.shape[0]) + 0.5) * GRID_CELL
+        xc = -GRID_X_MAX + (np.arange(blocked.shape[1]) + 0.5) * GRID_CELL
+        band = (zc >= 3.0) & (zc <= 30.0)
+        v = max(float(self._ego_speed_mps or 0.0), 5.0)
+        out: list[CarSource] = []
+        bands = [(3.0, 6.0, 0), (6.0, 10.0, 1), (10.0, 16.0, 2),
+                 (16.0, 30.0, 3)]
+        for z0, z1, k in bands:
+            rows = blocked[(zc >= z0) & (zc < z1)]
+            if not rows.any():
+                continue
+            cols = np.nonzero(rows.any(axis=0))[0]
+            splits = np.split(cols, np.nonzero(np.diff(cols) > 1)[0] + 1)
+            for ci, cl in enumerate(splits):
+                w_m = (cl[-1] - cl[0] + 1) * GRID_CELL
+                x_m = -GRID_X_MAX + (cl[0] + cl[-1] + 1) / 2.0 * GRID_CELL
+                if w_m > 3.0 or abs(x_m + off) < 0.4:
+                    continue        # 墙（整行宽）与自车格排除
+                h = int(rows[:, cl[0]:cl[-1] + 1].any(axis=1).sum())
+                if h < 2:
+                    continue        # 单行簇：噪声不记账
+                z_mid = 0.5 * (z0 + z1)
+                out.append(CarSource(
+                    x_m=x_m + off, t_meet_s=z_mid / v,
+                    t_overtake_s=None, bridged=False, z_m=z_mid,
+                    age_ms=0.0, src="grid", near=z_mid <= 16.0,
+                    half_w_m=min(0.5 * w_m, 1.2),
+                    id=-3000 - k * 10 - ci, seen=True, safety_ok=True))
+                if len(out) >= 8:
+                    return out
+        return out
+
     def _reach_car_sources(self, executed_lane: float,
                            far_targets: tuple = ()) -> list[CarSource]:
         """车米制仪器链（与 lane_score.benefits 同一优先级与仪器：米制优先、
@@ -1096,6 +1145,8 @@ class DecisionEngine:
                                  z_m=z_m, age_ms=age_ms, src=src,
                                  near=near, half_w_m=half_w_m,
                                  id=tid, seen=seen, safety_ok=safe))
+
+        out.extend(self._grid_car_sources(off))
 
         for m in self._metric_cars:
             v = by_id.get(m.target_id)

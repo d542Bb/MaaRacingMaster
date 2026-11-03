@@ -694,3 +694,34 @@ def test_metric_x_ruler_wins_even_when_metric_urgent():
         assert len(src) == 1
     assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), \
         "更急的米制幻影不接管，尺子赢"
+
+
+def test_depth_grid_blocked_cluster_enters_as_pseudo_car():
+    """深占据通道（20261103_141656 帧证）：YOLO 全盲拍里近距大车不出 car
+    类、车表空＝正面撞；深度栅格路内窄块簇按占道障碍入账（负数千位段 id，
+    与墙按簇宽区分，单行簇滤噪声）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    # 3-6m 带、右邻道（x≈+3.5m → ix≈70）、簇宽 2 格、跨 3 行（≥2 行过噪声门）
+    z_lo_i = int((3.0 - 3.0) / GRID_CELL)      # GRID_Z_LO=3.0 → 第 0 行
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)   # −GRID_X_MAX=−14
+    state[z_lo_i:z_lo_i + 3, ix:ix + 2] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    grid = e._grid_car_sources(0.0)
+    assert len(grid) == 1
+    assert grid[0].id <= -3000 and grid[0].safety_ok
+    assert grid[0].near and grid[0].t_meet_s > 0
+    assert abs(grid[0].z_m - 4.5) < 2.0        # 3-6m 带中心
+    # 整行宽簇（墙）不入账
+    state[:] = 0
+    state[z_lo_i:z_lo_i + 3, 20:90] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(state=state, coef=None,
+                                 counts=np.ones_like(state), dig_cells=0,
+                                 latency_ms=1.0)
+    assert e._grid_car_sources(0.0) == []
