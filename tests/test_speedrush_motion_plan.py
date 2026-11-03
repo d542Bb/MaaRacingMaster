@@ -373,9 +373,13 @@ def test_late_timed_car_blocks_lane_change_toward_it():
 
 
 def test_metric_x_hard_jump_is_held_until_confirmed():
-    """单拍米制横位跳 5m 先拒（真实横移不可能这么快），连续 3 拍才接受。"""
+    """单拍米制横位跳 5m 先拒（真实横移不可能这么快），连续 3 拍才接受。
+
+    尺子读数置 None：与互证闸隔离（错 2-3 道的持续米制读数在第 3 拍会被
+    闸按「更急者入账」接走，那是 70407d6 语义、有专门用例）——本用例只锁
+    无尺子见证时的纯硬跳变保持路径。"""
     eng = DecisionEngine(CFG)
-    view = CarView(id=7, x_lane=0.3, cy=500, rel_approach=5.0, d_min=0.3,
+    view = CarView(id=7, x_lane=None, cy=500, rel_approach=5.0, d_min=0.3,
                    age_ticks=1, last_seen_fid=1)
     m = MetricCarState(target_id=7, source=DistanceSource.ANCHOR,
                        z_m=4.0, x_m=1.0, v_close_mps=None, t_meet_s=None,
@@ -770,9 +774,13 @@ def test_metric_z_large_jump_resets_instead_of_lagging():
 
 
 def test_metric_z_reset_also_unlocks_bad_x_hold():
-    """新近锚点到达时 x 必须从新基线重来，不能被旧远锚的 x 硬跳变门锁死。"""
+    """新近锚点到达时 x 必须从新基线重来，不能被旧远锚的 x 硬跳变门锁死。
+
+    尺子读数置 None 与互证闸隔离（远锚 −18m 起拍就持续错 2-3 道以上，
+    第 3 拍闸会按尺子接走——70407d6 语义另有专门用例）；本用例只锁
+    z 大跳重置 x 基线这一条。"""
     eng = DecisionEngine(CFG)
-    view = CarView(id=9, x_lane=0.3, cy=500, rel_approach=5.0, d_min=0.3,
+    view = CarView(id=9, x_lane=None, cy=500, rel_approach=5.0, d_min=0.3,
                    age_ticks=1, last_seen_fid=1)
     far = MetricCarState(target_id=9, source=DistanceSource.ANCHOR,
                          z_m=20.0, x_m=-18.0, v_close_mps=None,

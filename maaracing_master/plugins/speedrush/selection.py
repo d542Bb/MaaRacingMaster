@@ -260,6 +260,11 @@ class SelectionParams:
     pass_in_commit_enabled: bool = False
     # 擦边候选视界（0=用 horizon_s；>0 放宽）：刹车主车到站爆缩前的窗口。
     pass_horizon_s: float = 0.0
+    # 主动贴边（2026-11-03，帧证+账本见 config 同名注释）：邻道带候选。
+    # 闸关=逐位回今天。数值真源 decision.json selection 节。
+    pass_graze_adjacent_enabled: bool = False
+    pass_reach_lane: float = 1.3
+    pass_lean_min_s: float = 2.0
     switch_dwell_s: float = 0.2
     layer_dwell: bool = False
     event_replan: bool = False
@@ -438,13 +443,21 @@ def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float | None:
 
 
 def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
-               p: SelectionParams) -> tuple[float, float, str] | None:
+               p: SelectionParams, *, allow_adjacent: bool = True
+               ) -> tuple[float, float, str] | None:
     """擦边/让位：逐拍实时的安全动作，**不受跨线闸门约束，也不许被请求屏蔽**。
 
     挤过去所需的横向量（graze_gap 0.68 道）本身就压过车道线——这是「微
     调」不是「变道」：车一过就回中，不会停在两道中间。若把它也夹进安全
     区间（0.17 道），0 道上的车只让开 0.17（车半宽 0.27）＝迎面撞上去。
-    """
+
+    主动贴边（闸 pass_graze_adjacent_enabled，2026-11-03）：邻道带
+    |Δx|∈(两车半宽和, pass_reach_lane]、到站 ≥ pass_lean_min_s 的车也是
+    候选——目标同为 graze_gap（_pass_x 选空间更大的一侧，邻道车天然落在
+    靠自车一侧），到站前先贴到位＝150 分极限超车的入口。同道带（≤两车
+    半宽）语义不变＝紧急躲避；按到站排序保证同道车优先。
+    ``allow_adjacent=False``：承诺期调用位——贴边是得分动作，不改承诺期
+    只紧急躲避的契约。"""
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     hold = p.pass_hold_s if p.pass_hold_enabled else 0.0
     # 擦边候选视界（闸 pass_horizon_s>0，2026-11-02）：主车 3.15s 出头时
@@ -452,11 +465,18 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     # 不及——192614 帧 #2017→#2027 实锤。放宽由可达性判据把关，不产生
     # 乱躲（够不着照样拒绝）。
     horizon = p.pass_horizon_s if p.pass_horizon_s > 0 else p.horizon_s
+    reach = p.pass_reach_lane * p.lane_w_m
     cands = [c for c in cars
              if c.safe
              and c.t is not None and -hold <= c.t <= horizon
-             and abs(c.x - ego) <= half]
+             and abs(c.x - ego) <= (half if not p.pass_graze_adjacent_enabled
+                                    else max(half, reach))]
     for c in sorted(cands, key=lambda o: (o.t < 0.0, o.t)):
+        adjacent = abs(c.x - ego) > half
+        if adjacent and not (allow_adjacent and p.pass_graze_adjacent_enabled):
+            continue
+        if adjacent and c.t < p.pass_lean_min_s:
+            continue                # 邻道贴边要「极为充足」的时间，临时起意=撞车
         x = _pass_x(c, road, p)
         if x is None:
             continue
@@ -469,7 +489,7 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
         others = [o for o in cars if o is not c]
         if inflight and _blocked(others, x, c.t, p):
             continue
-        return x, c.t, "pass"
+        return x, c.t, "graze" if adjacent else "pass"
     return None
 
 
@@ -735,18 +755,25 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
         if pend is not None:
             req = pend
         if hit is None:
-            hit = _pick_pass(cars, road, ego, p)
+            # 同道紧急躲避先行（原有语义）；主动贴边（邻道带）排在金币之后
+            # ——它是「没有别的机会时的默认姿态」不是高价值目标：字典序放
+            # 金币前面会把币组整体饿死（闭环 sim 实测 sel:coin 0 次），且
+            # 贴身姿态只在无事可做时才值得保持。
+            hit = _pick_pass(cars, road, ego, p, allow_adjacent=False)
         if hit is None:
             hit, pend = _pick_coin(coins, cars, road, ego, p, commit_x_m)
             if req is None and pend is not None:
                 req = pend
+        if hit is None:
+            hit = _pick_pass(cars, road, ego, p, allow_adjacent=True)
         if hit is not None:
             x, t, why = hit
-            layer = 1 if why == "reward" else 2 if why == "pass" else 3
-            # 命中按类型裁决请求：擦边/让位是安全动作，挂起请求本拍丢弃
-            # （路线 pass_hold 也不抢方向）；得分命中把邻道请求带出，继续
-            # 累计确认——否则命中拍会周期性清零，请求永远攒不满。
-            carried = req if why != "pass" else None
+            layer = 1 if why == "reward" else 2 if why in ("pass", "graze") else 3
+            # 命中按类型裁决请求：擦边/让位/贴边是贴身动作，挂起请求本拍
+            # 丢弃（路线 pass_hold 也不抢方向）——贴着一辆车的同时再起并线
+            # 正是意图打架的来源；得分命中把邻道请求带出，继续累计确认——
+            # 否则命中拍会周期性清零，请求永远攒不满。
+            carried = req if why in ("reward", "coin") else None
             return SelectionReport(
                 layer, _waypoints(layer, x, t, cars, coins, road, ego, p),
                 x, why, True, True,
@@ -761,7 +788,7 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
     # 擦边层不运行，中心保持直行撞上。擦边是安全动作且本就豁免跨线闸
     # （不动请求、不改道承诺），放行不破坏承诺语义。
     if committed and p.pass_in_commit_enabled:
-        hit = _pick_pass(cars, road, ego, p)
+        hit = _pick_pass(cars, road, ego, p, allow_adjacent=False)
         if hit is not None:
             x, t, _why = hit
             return SelectionReport(

@@ -64,12 +64,21 @@ def _obs(fid, *, coin_cy, car_cy):
 
 
 def _run(dynamic: bool, layer: bool, ticks: int = 120,
-         event: bool = False):
+         event: bool = False, *, graze: bool | None = None):
+    """``graze``：主动贴边闸覆盖（None=跟真源 decision.json）。
+
+    开关效应断言（视界/驻留）需要隔离贴边这个新变量——场景车恰在邻道
+    1.0 道，闸开时贴边目标会主导横移；有界性/有限性断言仍以真源配置跑。
+    """
     cfg = CFG
+    overrides = {}
     if dynamic or layer or event:
-        cfg = replace(cfg, selection=replace(
-            cfg.selection, dynamic_horizon=dynamic, layer_dwell=layer,
-            event_replan=event))
+        overrides.update(dynamic_horizon=dynamic, layer_dwell=layer,
+                         event_replan=event)
+    if graze is not None:
+        overrides["pass_graze_adjacent_enabled"] = graze
+    if overrides:
+        cfg = replace(cfg, selection=replace(cfg.selection, **overrides))
     eng = DecisionEngine(cfg)
     pl = LateralPlanner(cfg.planner)
     x = 0.0
@@ -115,12 +124,15 @@ def _run(dynamic: bool, layer: bool, ticks: int = 120,
 
 
 def test_closed_loop_is_finite_and_bounded_with_switches_on():
-    off = _run(False, False)
-    dyn = _run(True, False)
-    lay = _run(False, True)
-    both = _run(True, True)
-    evt = _run(False, False, event=True)
-    for rep in (off, dyn, lay, both, evt):
+    # 开关效应隔离：贴边闸关（场景车在邻道，闸开会主导横移、混入第三变量）
+    off = _run(False, False, graze=False)
+    dyn = _run(True, False, graze=False)
+    lay = _run(False, True, graze=False)
+    both = _run(True, True, graze=False)
+    evt = _run(False, False, event=True, graze=False)
+    # 真源配置（贴边闸开）也要有限有界：贴边目标不把控制跑飞
+    gz = _run(False, False)
+    for rep in (off, dyn, lay, both, evt, gz):
         assert all(math.isfinite(v) for v in rep["x"])
         assert max(abs(v) for v in rep["x"]) < 2.0
         assert rep["pl"].state.steer_norm is not None

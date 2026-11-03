@@ -86,6 +86,16 @@ class Selection:
     # selection.py 同名注释）。闸关=逐位回今天。
     pass_in_commit_enabled: bool = False
     pass_horizon_s: float = 0.0
+    # 主动贴边（2026-11-03，帧证+账本：整场 8 次超车 6 次横距 0.74~0.92 道
+    # 只拿 30 分——旧擦边层只吃 |Δx|≤两车半宽的同道车＝纯反应躲避，邻道车
+    # 只有 ±0.17 道的预置偏置，150 分极限超车零入口）。开闸后擦边层扩一条
+    # 邻道带：|Δx|∈(两车半宽和, pass_reach_lane 道]、到站 ≥ pass_lean_min_s
+    # （起手要「极为充足」，临时起意贴车=撞车）→ 目标贴到 graze_gap。
+    # 可达/占用/路缘夹取照旧逐拍把关；承诺期不开（改道契约不动）。
+    # 闸关=逐位回今天。
+    pass_graze_adjacent_enabled: bool = False
+    pass_reach_lane: float = 1.3
+    pass_lean_min_s: float = 2.0
     switch_dwell_s: float = 0.2
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
@@ -982,6 +992,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "pass_in_commit_enabled", default=False),
             pass_horizon_s=_num_def(
                 d, "selection", "pass_horizon_s", 0.0, lo=0),
+            pass_graze_adjacent_enabled=_bool(
+                d, "selection", "pass_graze_adjacent_enabled", default=False),
+            pass_reach_lane=_num_def(
+                d, "selection", "pass_reach_lane", 1.3, lo=0),
+            pass_lean_min_s=_num_def(
+                d, "selection", "pass_lean_min_s", 2.0, lo=0),
             switch_dwell_s=_num_def(
                 d, "selection", "switch_dwell_s", 0.2, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),

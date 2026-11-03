@@ -457,7 +457,10 @@ class DecisionEngine:
             pass_hold_s=s.pass_hold_s,
             pass_min_gap_lane=s.pass_min_gap_lane,
             pass_in_commit_enabled=s.pass_in_commit_enabled,
-            pass_horizon_s=s.pass_horizon_s))
+            pass_horizon_s=s.pass_horizon_s,
+            pass_graze_adjacent_enabled=s.pass_graze_adjacent_enabled,
+            pass_reach_lane=s.pass_reach_lane,
+            pass_lean_min_s=s.pass_lean_min_s))
         # 选择层影子（2026-10-28）：与生产同一拍同一批输入，承诺态跟影子路线
         # 走；只落 trace、不接控制。预分歧段两份输入相同，结果必须逐位一致
         # ——这是"影子接线可信"的运行时校验，也是 C 下游差异的可信度门。
@@ -1779,10 +1782,11 @@ class DecisionEngine:
         lane_ttc = (None if self._scene is None or c0 is None
                     else _lane_ttc_map(self._scene, c0,
                                        self.cfg.motion.horizon_s))
-        # 上一拍选择层的超车动作：路线本拍不抢方向（路线的方向指令会关闭
-        # 机会层，正在进行的擦边会被改成并线；一拍延迟可接受）
+        # 上一拍选择层的超车动作（含主动贴边 graze，2026-11-03）：路线本拍
+        # 不抢方向（路线的方向指令会关闭机会层，正在进行的擦边会被改成并线；
+        # 一拍延迟可接受）
         passing = (self._sel_report is not None
-                   and getattr(self._sel_report, "why", None) == "pass")
+                   and getattr(self._sel_report, "why", None) in ("pass", "graze"))
         # 单向认证（闸 route.far_veto_enabled）：走廊层的持续深塌缩道集，
         # 塌缩道上的变道请求在路线层发不出去；闸关传 None=逐位旧行为。
         veto = (None if not self.cfg.route.far_veto_enabled or self._corridor

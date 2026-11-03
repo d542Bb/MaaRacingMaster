@@ -617,3 +617,61 @@ def test_pass_horizon_extends_candidates():
     rep2 = select(_road(), [], [Obj("car", 0.0, 3.15)], [], 0.0,
                   _p(pass_horizon_s=4.5))
     assert rep2.layer == 2 and rep2.why == "pass"
+
+
+def test_graze_adjacent_car_leans_toward_it():
+    """主动贴边（2026-11-03）：邻道 0.9 道的车、3s 到站——不再只回中吃 30
+    分，目标贴到车心近侧 graze_gap（极限超车 150 分的入口）。"""
+    rep = select(_road(), [], [Obj("car", 0.9 * LW, 3.0)], [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True))
+    assert rep.layer == 2 and rep.why == "graze"
+    assert rep.target_x_m == pytest.approx(0.9 * LW - 0.68 * LW, abs=0.06)
+
+
+def test_graze_same_lane_emergency_wins_over_adjacent():
+    """同道贴身车按到站排序先于邻道贴边：躲车（pass）优先于擦车（graze）。
+    邻道车摆在 1.3 道（贴边带外缘）——0.9 道会占住同道车的闪避位（占用
+    否决正确，不是本用例要验的东西）；同道车 2.0s=可达窗口内。"""
+    cars = [Obj("car", 1.3 * LW, 3.0), Obj("car", 0.0, 2.0)]
+    rep = select(_road(), [], cars, [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True))
+    assert rep.layer == 2 and rep.why == "pass"
+
+
+def test_graze_adjacent_needs_ample_time():
+    """时门：邻道车 1s 到站太急（lean_min=2s）不起意贴边——临时起意=撞车，
+    落回中心带（紧急躲避仍由同道带与车进半宽后接管）。"""
+    rep = select(_road(), [], [Obj("car", 0.9 * LW, 1.0)], [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True))
+    assert rep.layer == 4 and rep.why == "center"
+
+
+def test_graze_target_blocked_by_other_car():
+    """贴边位被别车占住（到站相近）时不贴：graze 候选让位，不挤进车缝。"""
+    cars = [Obj("car", 0.9 * LW, 3.0), Obj("car", 0.25 * LW, 3.1)]
+    rep = select(_road(), [], cars, [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True))
+    assert rep.why != "graze"
+
+
+def test_graze_gate_off_keeps_reactive_only():
+    """闸关=逐位回今天：邻道车不进擦边候选，落回中心带。"""
+    rep = select(_road(), [], [Obj("car", 0.9 * LW, 3.0)], [], 0.0, _p())
+    assert rep.layer == 4 and rep.why == "center"
+
+
+def test_graze_committed_stays_reactive_only():
+    """承诺期不开贴边（改道契约不动）：邻道车在车表也不得改道。"""
+    rep = select(_road(), [], [Obj("car", 0.9 * LW, 3.0)], [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True,
+                    pass_in_commit_enabled=True),
+                 commit_x_m=0.0, committed=True)
+    assert rep.layer == 4 and rep.why == "commit"
+
+
+def test_graze_hit_drops_pending_lane_request():
+    """贴边命中拍丢弃挂起请求：贴着一辆车的同时不再起并线（意图打架源）。"""
+    rep = select(_road(), [Obj("reward", 1.5 * LW, 2.5)],
+                 [Obj("car", 0.9 * LW, 3.0)], [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True), commit_x_m=0.0)
+    assert rep.why == "graze" and rep.lane_request is None
