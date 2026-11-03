@@ -738,16 +738,12 @@
   }
 
   function setStatus(text, mode) {
-    const dot = $('status-dot');
     const txt = $('status-text');
     txt.textContent = text;
     // 运行期文字带扫描光效，结束（就绪/停止中/出错）恢复常态；样式见 style.css「通用文字扫描光效」
     txt.classList.toggle('mra-text-scan', mode === 'running');
-    dot.className = 'mra-status-dot' +
-      (mode === 'running' ? ' mra-status-dot--running mra-status-dot--pulse' :
-       mode === 'ready' ? ' mra-status-dot--ready' :
-       mode === 'stopping' ? ' mra-status-dot--stopping' :
-       mode === 'error' ? ' mra-status-dot--error' : '');
+    // 状态球只认状态名，不认文案：四种取值与 renderStatus 的判定分支一一对应
+    if (window.StatusOrb) window.StatusOrb.setState(mode);
   }
 
   function renderStatus(d) {

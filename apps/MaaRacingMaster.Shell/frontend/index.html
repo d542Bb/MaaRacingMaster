@@ -156,7 +156,43 @@
   <!-- ===== 底部操作栏 ===== -->
   <footer>
     <div class="status">
-      <div class="mra-status-dot" id="status-dot"></div>
+      <!-- 状态球：造型与动效见 js/status-orb.js 与 style.css「底栏状态球」。
+           状态由 data-state 驱动（ready / running / stopping / error），旁边有文字同步说明，
+           故对读屏隐藏，避免同一个状态被念两遍。 -->
+      <div class="mra-orb" id="status-dot" data-state="ready" aria-hidden="true">
+        <svg class="mra-orb__svg" viewBox="0 0 40 40">
+          <defs>
+            <clipPath id="status-orb-clip"><circle cx="20" cy="20" r="17"/></clipPath>
+            <radialGradient class="mra-orb__grad" id="status-orb-grad">
+              <stop offset="0" class="mra-orb__s-in"/>
+              <stop offset="0.6" class="mra-orb__s-mid"/>
+              <stop offset="0.88" class="mra-orb__s-edge"/>
+              <stop offset="1" class="mra-orb__s-out"/>
+            </radialGradient>
+          </defs>
+          <g class="mra-orb__rings">
+            <circle class="mra-orb__ring" cx="20" cy="20" r="17"/>
+            <circle class="mra-orb__ring mra-orb__ring--lag" cx="20" cy="20" r="17"/>
+          </g>
+          <g class="mra-orb__body">
+            <circle class="mra-orb__sphere" cx="20" cy="20" r="17" fill="url(#status-orb-grad)"/>
+            <g clip-path="url(#status-orb-clip)">
+              <g class="mra-orb__eye-wrap mra-orb__eye-wrap--l">
+                <g class="mra-orb__blink">
+                  <path class="mra-orb__eye-halo"/>
+                  <path class="mra-orb__eye"/>
+                </g>
+              </g>
+              <g class="mra-orb__eye-wrap mra-orb__eye-wrap--r">
+                <g class="mra-orb__blink">
+                  <path class="mra-orb__eye-halo"/>
+                  <path class="mra-orb__eye"/>
+                </g>
+              </g>
+            </g>
+          </g>
+        </svg>
+      </div>
       <span class="status-text" id="status-text">系统就绪</span>
     </div>
     <div class="spacer"></div>
@@ -235,6 +271,7 @@
   <script src="js/preview.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/gallery-shape.js"></script>
+  <script src="js/status-orb.js"></script>
   <script src="js/run.js"></script>
   <script src="app.js"></script>
 </body>
