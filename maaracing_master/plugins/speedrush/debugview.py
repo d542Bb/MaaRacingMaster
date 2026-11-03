@@ -650,11 +650,33 @@ def _draw_plan_overlay(canvas: np.ndarray, snap: dict,
                           2 if i == plan.chosen else 1)
     px = tx(plan.dt_s * max(1, round(0.2 / max(plan.dt_s, 1e-9))))
     cv2.circle(canvas, (px, yx(plan.x_preview_m / lw)), 3, (0, 255, 0), -1)
+    _draw_sel_cars(canvas, snap, x0, x1, y0, y1, tx, yx)
     _put_text(canvas,
               f"plan:{plan.reason} L{plan.layer}"
               f" v={plan.value_total:.0f} ψ={plan.psi_feedforward:+.3f}",
               (x0 + 2, y0 + 26), scale=0.32,
               color=(0, 220, 0) if plan.valid else (0, 160, 255))
+
+
+def _draw_sel_cars(canvas: np.ndarray, snap: dict,
+                   x0: int, x1: int, y0: int, y1: int, tx, yx) -> None:
+    """选择层车源叠层（2026-11-03）：决策层实际消费的车账画进 d(t) 子带——
+    BEV 上只有原始检测反投影标记，与选择层车源是两套账（伪车/米制车不在
+    BEV 上），对账曾两度被带偏（153620 fid2177、213728 fid3856）。
+    点=(到站 t, 车道 x)；紫=栅格伪车（负 id）、橙=其余；t 缺失画在右缘
+    空心（无到站时间≠不存在）。"""
+    sel = snap.get("sel_dbg") or {}
+    cars = sel.get("car") or []
+    ids = ((sel.get("opp") or {}).get("car") or [])
+    for i, c in enumerate(cars):
+        if not c or c[0] is None:
+            continue
+        tid = ids[i][0] if i < len(ids) and ids[i] else None
+        col = (255, 0, 255) if (tid is not None and tid < 0) else (0, 160, 255)
+        if c[1] is None:                      # 无到站时间：右缘空心
+            cv2.circle(canvas, (x1 - 6, yx(c[0])), 4, col, 1)
+            continue
+        cv2.circle(canvas, (tx(min(c[1], 3.0)), yx(c[0])), 4, col, -1)
 
 
 def _draw_steer_strip(canvas: np.ndarray, snap: dict,
