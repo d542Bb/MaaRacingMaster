@@ -417,10 +417,15 @@ class MaaRacingMasterController:
         时检测到多按键静默跳过，避免「还没启动就满屏 ERROR」。
         开关保持开启（直到用户在 GUI 手动关闭）：触发一次不自动关闭，
         否则"跑完一轮后想再停"会因开关已关而失效（实测教训）。
+        **人工驾驶/录制阶段不检测**：模块声明 manual_input_active 时跳过——键盘
+        驾驶本身就是多键组合，不能当成急停信号（速跑宏录制即此形态）。
         触发后冷却 1s，避免按住不松导致 stop() 连发刷日志。
         """
         while self._emergency_stop_enabled:
             try:
+                if self._manual_input_active():
+                    time.sleep(0.05)
+                    continue
                 if count_pressed_keys() >= 2:
                     if self._running:
                         logger.log("紧急停止：检测到同时按下 ≥2 个按键，立即停止逻辑", "ERROR")
@@ -431,6 +436,17 @@ class MaaRacingMasterController:
             except Exception:
                 pass
             time.sleep(0.05)
+
+    def _manual_input_active(self) -> bool:
+        """当前活动模块是否处于人工驾驶/录制阶段（急停作用域判定，异常按否处理）。"""
+        mod = self._active_module
+        fn = getattr(mod, "manual_input_active", None)
+        if not callable(fn):
+            return False
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001 —— 模块判定异常不得打崩急停线程
+            return False
 
     # ---------- 共享能力 ----------
 

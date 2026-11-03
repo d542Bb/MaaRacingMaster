@@ -957,12 +957,25 @@ class SidecarService:
           - **不创建实例**——读配置是纯数据操作。模块的 ``get_module_config`` 只在
             "该模块正在运行"时被调用（那份带 `_state` 实况），不再为了读默认值建离线段实例；
           - **槽按模块隔离**——切走的模块配置留在自己的槽里，不被后来者覆盖。
+
+        下拉型配置项的可选值由模块的 ``config_choices()`` 静态枚举（不建实例），
+        原样放进 ``_choices``；枚举失败只告警，不影响配置读取。
         """
         view = _module_config_defaults(module_id)
         with self._lock:
             cached = self._module_config_cache.get(module_id)
         if cached:
             view.update(cached)
+        cls = MODULE_REGISTRY.get(module_id)
+        choices_fn = getattr(cls, "config_choices", None) if cls is not None else None
+        if callable(choices_fn):
+            try:
+                choices = choices_fn()
+            except Exception as exc:  # noqa: BLE001 —— 选项枚举失败不阻断配置读取
+                logger.log(f"[模块配置] {module_id} 选项枚举失败: {exc!r}", "WARNING")
+                choices = None
+            if isinstance(choices, dict) and choices:
+                view["_choices"] = choices
         return view
 
     def get_module_config(self, params):

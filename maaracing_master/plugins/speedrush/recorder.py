@@ -39,9 +39,9 @@ from typing import Any, Callable
 
 import cv2
 
-from maaracing_master.core import xinput
 from maaracing_master.core.image_io import write_rgb
 from maaracing_master.core.logger import logger
+from maaracing_master.plugins.speedrush.pad_source import PadSampler
 from maaracing_master.plugins.speedrush.session_layout import (
     SOURCE_MANUAL,
     build_meta,
@@ -62,24 +62,8 @@ _HUD_SNAP_WAIT_S = 0.25
 _PAD_NONE_LIMIT = 5
 # 未读到手柄的告警节流：失败时每秒会过 200 次采样，压到每 5 秒最多一条
 _PAD_WARN_INTERVAL_S = 5.0
-# 槽位探测：摇杆/扳机超过此幅度才算"有明显输入"。虚拟手柄在程序不驱动时恒为
-# 静止全零，用它把物理手柄从多槽位里挑出来。
-_PAD_ACTIVE_THRESHOLD = 2000
-# 多槽位且始终无输入时的兜底等待：超时后锁首个并告警，不无限期不采样本
+# 多槽位且始终无输入时的兜底等待：超时后锁首个并告警（探测规则在 pad_source）
 _PAD_SLOT_PROBE_TIMEOUT_S = 5.0
-
-
-def _pad_active(st: xinput.PadState) -> bool:
-    """该槽位是否出现"明显输入"——多槽位时用它把物理手柄从静止的虚拟手柄里挑出来。
-
-    阈值远低于 XInput 摇杆死区（约 7800），轻微碰杆即算；扳机按 >10 计（0~255），
-    按键非零也算。静止的虚拟设备恒为全零，故不会误判为活跃。
-    """
-    lx, ly = st.left_stick
-    rx, ry = st.right_stick
-    return (abs(lx) > _PAD_ACTIVE_THRESHOLD or abs(ly) > _PAD_ACTIVE_THRESHOLD
-            or abs(rx) > _PAD_ACTIVE_THRESHOLD or abs(ry) > _PAD_ACTIVE_THRESHOLD
-            or st.left_trigger > 10 or st.right_trigger > 10 or st.buttons != 0)
 
 
 class DriveRecorder:
@@ -118,7 +102,7 @@ class DriveRecorder:
         # 派发时刻捕获的业务组号（驾驶阶段卡）；worker 不读线程局部当前组。
         self._group_id = group_id
         # None = 每次采样自动找第一个已连接手柄（适配用户插哪个槽都行）
-        self.pad_slot = pad_slot
+        self._pad_sampler = PadSampler(slot=pad_slot, log=self._log)
         # 场景分层用：本次会话属于哪个驾驶阶段、第几轮
         self.phase = phase
         self.round_no = round_no
@@ -159,6 +143,11 @@ class DriveRecorder:
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def pad_slot(self) -> int | None:
+        """已锁定的手柄槽位（None=尚未锁定/自动探测中）。"""
+        return self._pad_sampler.slot
 
     @property
     def hud_pairs_enabled(self) -> bool:
@@ -373,7 +362,7 @@ class DriveRecorder:
         with (self.out_dir / "pads.jsonl").open("w", encoding="utf-8") as f:
             while not self._stop.is_set():
                 t0 = time.perf_counter()
-                st, countable = self._poll_pad(probe_deadline)
+                st, countable = self._pad_sampler.poll(probe_deadline)
                 if st is not None:
                     self._pad_none_streak = 0
                     f.write(json.dumps({
@@ -403,49 +392,6 @@ class DriveRecorder:
                         break  # 连续读不到即停止采样，不空转刷日志
                 # 扣掉本次采样耗时，避免采样率随调用开销漂移
                 time.sleep(max(0.0, interval - (time.perf_counter() - t0)))
-
-    def _poll_pad(self, probe_deadline: float) -> tuple[xinput.PadState | None, bool]:
-        """读当前该采样的手柄；返回 ``(状态, 是否计入"读不到")``。
-
-        已锁定槽位时只读那一个。未锁定时轮询全部槽位并按证据锁定：
-
-        - 只有一个已连接槽位 → 直接锁定，不必等输入（无歧义）；
-        - 多个槽位 → 锁定**第一个出现明显输入**的。虚拟手柄在程序不驱动时恒为
-          静止全零，永远不满足条件，故不会被误锁——这正是旧实现"锁定第一个能
-          读到的槽位"会踩的坑：上一局控制模式残留的虚拟设备占着 0 号槽时，
-          整局录到的都是全零；
-        - 多槽位且超时仍无任何输入 → 锁首个并告警（XInput 层面无法再区分物理
-          与虚拟，只能留一条可查的痕迹）。
-
-        探测期返回 ``(None, False)``：不写样本（避免同文件里混槽位），也不计入
-        连续失败（否则 5 次探测就把采样线程判死）。
-        """
-        if self.pad_slot is not None:
-            return xinput.read_state(self.pad_slot), True
-        states = [st for st in (xinput.read_state(i) for i in range(4))
-                  if st is not None]
-        if not states:
-            return None, True
-        if len(states) == 1:
-            self.pad_slot = states[0].index
-            self._log(f"[极速狂飙] 手柄槽位锁定 {self.pad_slot}（唯一已连接）", "INFO")
-            return states[0], True
-        active = [st for st in states if _pad_active(st)]
-        if active:
-            self.pad_slot = active[0].index
-            self._log(
-                f"[极速狂飙] 手柄槽位锁定 {self.pad_slot}"
-                f"（{len(states)} 个候选槽位，此槽有输入活动）", "INFO")
-            return active[0], True
-        if time.monotonic() >= probe_deadline:
-            self.pad_slot = states[0].index
-            self._log(
-                f"[极速狂飙] {len(states)} 个手柄槽位在"
-                f" {_PAD_SLOT_PROBE_TIMEOUT_S:.0f}s 内均无输入活动，锁定首个"
-                f" {self.pad_slot}——若本局杆值恒为零，检查是否锁到了虚拟手柄",
-                "WARNING")
-            return states[0], True
-        return None, False
 
     # ---------- 元信息 ----------
 

@@ -19,10 +19,15 @@
   const MODULE_META = {
     speedrush: {
       icon: '🏎️',
-      summary: (cfg) => [
-        '录制: ' + (cfg && cfg.record_mode ? '开' : '关'),
-        '驾驶模式: ' + (cfg && cfg.straight_mode ? '全程直行' : '深度几何'),
-      ],
+      summary: (cfg) => {
+        const mode = (cfg && cfg.macro_mode) ? '宏录制'
+          : ((cfg && cfg.straight_mode) ? '全程直行' : '深度几何');
+        const out = ['录制: ' + (cfg && cfg.record_mode ? '开' : '关'), '驾驶模式: ' + mode];
+        if (cfg && cfg.macro_mode && !cfg.record_mode) {
+          out.push('宏组: ' + (cfg.macro_group || '最新录制的宏'));
+        }
+        return out;
+      },
     },
     treasure: {
       icon: '🏺',

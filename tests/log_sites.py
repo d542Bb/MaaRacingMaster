@@ -348,6 +348,8 @@ SITES: list[LogSite] = [
     _s('core/sidecar.py', 'SidecarService.set_registry_optimization', '[sidecar] 标记优化项 {} 写入失败: {}', 'WARNING', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService._worker_main', '运行异常: {}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
     _s('core/sidecar.py', 'SidecarService.close', '[sidecar] 关闭时模块 worker 在 {}s 内未退出，按有界排空继续收尾（未收尾组记 incomplete）', 'WARNING', 'state', 'cross', '关闭排空超时的跨切面告警：关闭路径无业务组可挂；必须在关日志器前留下故障原因。'),
+    _s('core/sidecar.py', 'SidecarService.get_module_dashboard', '[dashboard] {}: {}', 'WARNING', 'cross', 'cross', 'GUI 数据看板读侧的跨切面事件（RPC 请求线程），无业务组。'),
+    _s('core/sidecar.py', 'SidecarService._module_config_view', '[模块配置] {} 选项枚举失败: {}', 'WARNING', 'cross', 'cross', 'GUI 配置读取侧的跨切面事件（RPC 请求线程），无业务组。'),
 
     # ---- core/template_match.py ----
     _s('core/template_match.py', 'load_template', '模板不存在: {}.png/.jpg（搜索 {} 个目录）', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
@@ -383,6 +385,9 @@ SITES: list[LogSite] = [
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '[极速狂飙] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。请调整为 16:9 后重新开始，模块已终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '[极速狂飙] 录制模式提示：当前点击方式为「后台手柄」，导航步骤会创建虚拟手柄，可能与你的物理手柄冲突（驾驶时手柄可能不响应）。建议在设置页改为「前台鼠标」再录。', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
+    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 宏组名必须是字符串，已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
+    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 非法宏组名 {}（只允许单段目录名），已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
+    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 驾驶模式冲突（宏与直行同时为真），按宏录制生效', 'WARNING', 'cross', 'cross', 'GUI 配置写入的互斥收口告警（RPC 请求线程），无业务组。'),
 
     # ---- plugins/speedrush/recorder.py ----
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._write_meta', '[极速狂飙] 录制 meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),

@@ -500,7 +500,7 @@
 - 映射：`logging` ← 日志记录（关 = 不写 `maafw.log`）；`save_on_error` ← DEBUG 截图（关 = 不写 `framework/debug/on_error/` 失败截图）。`save_draw` / `draw_quality` / `stdout_level` 不由本模块改。
 - 写文件走「临时文件 + 原子替换」：半截 JSON 会让框架回落默认值，等于悄悄把开关又打开。
 - **生效时机**：框架只在 `Toolkit.init_option()` 那一次读配置，故运行中切换只更新文件、**下次启动**才被采用；`sidecar.main()` 在首次 init 之前同步一次（开关随 profile 回读）。
-- 边界：`logs/sidecar_stderr.log` 不在本模块管辖（它是崩溃诊断的最后手段），由 shell 侧按 8MB 上限轮转；`data/`（业务库）与 `evidence/`（C 证据冻结，随日志开关）也不在此。
+- 边界：`logs/sidecar_stderr.log` 不在本模块管辖（它是崩溃诊断的最后手段），由 shell 侧按 8MB 上限轮转；`data/`（业务库与用户资产）与 `evidence/`（C 证据冻结，随日志开关）也不在此。
 
 **测试**：`tests/test_maa_option.py`。
 
@@ -589,7 +589,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `adopt_window(hwnd)` / `forget_window()`       | 采纳已定位的游戏窗口（连接时不再按标题搜）/ 关闭后清掉失效句柄                                       |
 | `request_exit()` / `exit_requested`            | 步骤请求「本轮结束后退出本程序」，sidecar 据此发退出事件                                       |
 | `set_mute_game(enabled)`                       | 运行时静音游戏（音频音量控制）                                                        |
-| `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路）                                                           |
+| `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路；只在程序接管操作期检测按键）                                                   |
 | `gamepad_available()`                          | vgamepad / ViGEmBus 驱动可用性探测（缓存）                                        |
 | `_get_gpad()`                                  | 懒创建并返回虚拟手柄（复用，不销毁重建）                                                   |
 | `_reset_gpad()`                                | 摇杆归零+按钮释放（不销毁）                                                         |
@@ -687,6 +687,12 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
   模块的启动约束声明**（`ActivityModule.requires_exclusive_gamepad(config)`）；模块可因
   运行模式而放宽——如"只采集不控车"的录制模式反而需要物理手柄在位
 
+### 5.3.1 人工接管期与键盘读取
+
+- `ActivityModule.manual_input_active()`（默认 `False`）：模块声明"当前是玩家自己操作、程序不接管输入"。紧急停止（≥2 键即停）只对程序操作期生效——人工驾驶/录制阶段按键是正常操作（键盘驾驶 W+A 就是两键），急停循环据此跳过按键检测。实现见 `controller._emergency_stop_loop` / `_manual_input_active`。
+- `core/key_state.py`：具名键盘按键状态读取（只读 `GetAsyncKeyState`），插件经此读取驾驶键；插件不得直接 import `window_utils`（平台件边界同 §5.3 的 `xinput.py`）。
+- `ActivityModule.config_choices()`（默认 `{}`）：模块为下拉型配置项提供静态可选值；`sidecar._module_config_view` 并入 `_choices` 供 GUI 展示，不创建模块实例，取值合法性仍由模块自行校验。
+
 ### 5.4 MAA Framework API
 
 API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「高频红线/坑」](../../docs/MAAFW_GUIDE.md#9-高频红线坑背下来)（完整签名见其 §3.3 与 §6）。本文不复述。
@@ -715,7 +721,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 **用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
 
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
-- `data/`：结构化业务数据（`data/treasure/treasure.db`）
+- `data/`：运行时数据与用户资产（`data/treasure/treasure.db`、`data/speedrush/macros/` 用户录制的宏、模型权重等）
 - `logs/`：会话记录 `logs/<MaaRM时间戳>/`——运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）与伴随产物 `trace.jsonl`（共用「日志记录」开关）
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——开关由 [maa_option.py](./maa_option.py) 跟随两项调试开关，下次启动生效
 - `debug/`：调试截图会话 `debug/<module>/<会话>/`（DebugStudio 契约）

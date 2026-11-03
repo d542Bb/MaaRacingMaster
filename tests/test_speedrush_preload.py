@@ -92,3 +92,12 @@ def test_record_perception_skips_depth_model(monkeypatch):
     mod._start_preload()
     assert mod._preload_done.wait(2.0)
     assert calls == {"d": 0, "p": 1}
+
+
+def test_macro_mode_skips_preload():
+    """宏模式不加载感知/深度（只剩下手柄与抓帧锚点）。"""
+    mod = _module()
+    mod._macro_mode = True
+    mod._control_mode = True
+    mod._perception_mode = True
+    assert mod._preload_wanted() is False

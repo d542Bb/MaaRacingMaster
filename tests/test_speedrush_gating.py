@@ -380,7 +380,7 @@ def test_record_mode_writes_single_session_dir(env) -> None:
     assert all(r["file"].startswith("raw/") for r in rows)
     # HUD 读数与控制局同一落点
     assert (session / "hud" / "hud.jsonl").is_file()
-    # data/ 只留结构化业务数据：录制不再往那里写
+    # 深度录制只写 debug/：data/ 是用户资产与业务数据（宏、DB），训练语料不进那里
     assert not (sr.debug_dir().parent / "data" / "speedrush").exists()
 
 

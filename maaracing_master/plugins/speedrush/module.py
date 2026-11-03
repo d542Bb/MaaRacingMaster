@@ -60,7 +60,10 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     last_slow_forward)
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
-from maaracing_master.plugins.speedrush.hud import HudObserver
+from maaracing_master.plugins.speedrush.hud import HudObserver, load_hud_regions
+from maaracing_master.plugins.speedrush.macro import (
+    MacroError, MacroPlayer, MacroRecorder, list_groups, load_phase, macro_root,
+    resolve_group, valid_group_name)
 from maaracing_master.plugins.speedrush.lane_obs import (
     LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
@@ -336,6 +339,11 @@ class SpeedRushModule(ActivityModule):
     # 方向归零、油门恒踩，感知与深度都不加载（全程直行基线的测量仪器，
     # control-route 验收②的分母）。
     DEFAULT_STRAIGHT_MODE = False
+    # 宏模式的初值（False = 按深度/直行档跑）。True = 宏录制模式：开录制时采集
+    # 玩家操作到 data/，关录制时回放所选宏。
+    DEFAULT_MACRO_MODE = False
+    # 要回放的宏组（空=最新一组）；只在宏模式且未开录制时生效
+    DEFAULT_MACRO_GROUP = ""
 
     # 性能卡领域项阈值：拍率降级档位
     PERF_TICK_WARN_HZ = 15.0
@@ -366,6 +374,8 @@ class SpeedRushModule(ActivityModule):
         "speedrush-model-preload": "模型预载",
         "speedrush-rec-frames": "录制帧",
         "speedrush-rec-pad": "录制手柄",
+        "speedrush-macro-rec": "宏录制",
+        "speedrush-macro-play": "宏回放",
     }
     # 配置面声明（GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存）
     DEFAULT_MODULE_CONFIG: dict = {
@@ -373,6 +383,8 @@ class SpeedRushModule(ActivityModule):
         "perception_mode": DEFAULT_PERCEPTION_MODE,
         "control_mode": DEFAULT_CONTROL_MODE,
         "straight_mode": DEFAULT_STRAIGHT_MODE,
+        "macro_mode": DEFAULT_MACRO_MODE,
+        "macro_group": DEFAULT_MACRO_GROUP,
     }
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
@@ -401,6 +413,11 @@ class SpeedRushModule(ActivityModule):
             return False
         return cls.REQUIRES_GAMEPAD_EXCLUSIVE
 
+    @classmethod
+    def config_choices(cls) -> dict:
+        """宏组下拉的可选值（空值=最新一组，排在最前）。不创建实例。"""
+        return {"macro_group": [{"value": "", "label": "最新录制的宏"}] + list_groups()}
+
     def __init__(self, ctx: ActivityContext | None) -> None:
         super().__init__(ctx)
         self._graph: NavGraph | None = None
@@ -422,6 +439,13 @@ class SpeedRushModule(ActivityModule):
         self._control_mode = self.DEFAULT_CONTROL_MODE
         # 直行基线档：接管手柄后只踩油门（感知/深度不加载，见类常量注释）
         self._straight_mode = self.DEFAULT_STRAIGHT_MODE
+        # 宏模式：开录制=采玩家操作到 data/；关录制=回放所选宏组
+        self._macro_mode = self.DEFAULT_MACRO_MODE
+        self._macro_group = self.DEFAULT_MACRO_GROUP
+        self._macro_rec: MacroRecorder | None = None
+        self._macro_player: MacroPlayer | None = None
+        # 人工驾驶期标记（紧急停止作用域）：录制阶段按键是正常操作，不能当急停
+        self._manual_drive = False
         # road_offset 证据源=深度几何区读数（v4 几何主人，供数门优先级链见
         # _EgoRoadObserver）；深度几何的 ORT 会话：实例跨阶段复用（模型加载
         # 秒级，一局只付一次）；加载失败置 _depth_failed 后不再重试（降级为
@@ -456,6 +480,18 @@ class SpeedRushModule(ActivityModule):
     def current_stage(self) -> str | None:
         return self._stage_name
 
+    def _resolve_drive_mode(self) -> str:
+        """本次驾驶模式（唯一派生入口）：macro > straight > depth。"""
+        if self._macro_mode:
+            return "macro"
+        if self._straight_mode:
+            return "straight"
+        return "depth"
+
+    def manual_input_active(self) -> bool:
+        """录制阶段人工驾驶：紧急停止的按键检测暂停（急停只对程序操作期生效）。"""
+        return bool(self._manual_drive)
+
     # ---------- 模块配置（GUI 读写；未定义时 RPC 层兜底为占位 dict） ----------
 
     def get_module_config(self) -> dict:
@@ -464,12 +500,16 @@ class SpeedRushModule(ActivityModule):
         stats = rec.stats if rec is not None else None
         hud = self._hud
         hud_stats = hud.stats if hud is not None else None
+        mrec = self._macro_rec
+        mpl = self._macro_player
         lp = self._last_perception
         return {
             "record_mode": bool(self._record_mode),
             "perception_mode": bool(self._perception_mode),
             "control_mode": bool(self._control_mode),
             "straight_mode": bool(self._straight_mode),
+            "macro_mode": bool(self._macro_mode),
+            "macro_group": self._macro_group,
             "_state": {
                 "recording": bool(rec is not None and rec.running),
                 "frames": int(stats["frames_written"]) if stats else 0,
@@ -479,6 +519,11 @@ class SpeedRushModule(ActivityModule):
                 "hud_recording": bool(hud is not None and hud.running),
                 "hud_rows": int(hud_stats["rows_written"]) if hud_stats else 0,
                 "record_dir": str(_record_root()),
+                # 宏模式实况：录制条数 / 回放进度（非宏模式为 None/0）
+                "macro_recording": bool(mrec is not None and mrec.running),
+                "macro_samples": int(mrec.stats["samples"]) if mrec is not None else 0,
+                "macro": mpl.stats if mpl is not None else None,
+                "macro_dir": str(macro_root()),
                 # 感知实况：是否在跑 + 最近一帧的检出与耗时（GUI 展示用）
                 "perception_on": bool(lp is not None and self._perception is not None),
                 "perception_last": None if lp is None else {
@@ -504,6 +549,27 @@ class SpeedRushModule(ActivityModule):
             self._control_mode = bool(config["control_mode"])
         if isinstance(config, dict) and "straight_mode" in config:
             self._straight_mode = bool(config["straight_mode"])
+        if isinstance(config, dict) and "macro_mode" in config:
+            self._macro_mode = bool(config["macro_mode"])
+        if isinstance(config, dict) and "macro_group" in config:
+            group = config["macro_group"]
+            if not isinstance(group, str):
+                logger.log("[极速狂飙] 宏组名必须是字符串，已忽略", "WARNING")
+            elif group == "" or valid_group_name(group):
+                self._macro_group = group
+            else:
+                logger.log(f"[极速狂飙] 非法宏组名 {group!r}（只允许单段目录名），已忽略",
+                           "WARNING")
+        # 互斥收口：本次显式提交的键优先；两者同时为真时宏优先
+        if self._macro_mode and self._straight_mode:
+            if isinstance(config, dict) and "straight_mode" in config \
+                    and "macro_mode" not in config:
+                self._macro_mode = False
+            else:
+                self._straight_mode = False
+                if isinstance(config, dict) and "straight_mode" in config:
+                    logger.log("[极速狂飙] 驾驶模式冲突（宏与直行同时为真），按宏录制生效",
+                               "WARNING")
         return self.get_module_config()
 
     # ---------- 生命周期 ----------
@@ -540,7 +606,8 @@ class SpeedRushModule(ActivityModule):
         # 启动组开在图加载之前：图加载与断点修正也是这次运行的启动正文，不能散成裸行。
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
                         f"·感知{'开' if self._perception_mode else '关'}"
-                        f"·直行{'开' if self._straight_mode else '关'}）", "session")
+                        f"·直行{'开' if self._straight_mode else '关'}"
+                        f"·宏{'开' if self._macro_mode else '关'}）", "session")
         flow_ok = False
         try:
             graph = NavGraph(self.ctx)
@@ -555,6 +622,22 @@ class SpeedRushModule(ActivityModule):
             index = resolve_start_index(start_from)
             if start_from and index == 0:
                 _tlog(self, f"[极速狂飙] 未知断点「{start_from}」，从流程起点开始", "WARNING")
+
+            # 宏回放的前提在校验阶段就检查：组不存在/非法直接终止，不空跑一整轮导航。
+            if self._resolve_drive_mode() == "macro" and not self._record_mode:
+                try:
+                    group_dir = resolve_group(self._macro_group)
+                except MacroError as exc:
+                    _tlog(self, f"[极速狂飙] 宏不可用：{exc}。"
+                                f"请先录制宏，或切回其他驾驶模式", "ERROR")
+                    return
+                missing = [ph for ph in (1, 2)
+                           if not (group_dir / f"p{ph}.jsonl").is_file()]
+                _tlog(self,
+                      f"[极速狂飙] 宏回放组「{group_dir.name}」"
+                      + (f"（阶段 {'/'.join(map(str, missing))} 缺文件，将降级直行）"
+                         if missing else ""),
+                      "WARNING" if missing else "INFO")
 
             flow_ok = True
             self._run_flow(index)
@@ -587,6 +670,13 @@ class SpeedRushModule(ActivityModule):
         if self._hud is not None:
             self._hud.stop("cleanup")
             self._hud = None
+        # 宏回放先停（它持有自己的手柄租约）；宏录制次之
+        if self._macro_player is not None:
+            self._macro_player.stop()
+            self._macro_player = None
+        if self._macro_rec is not None:
+            self._macro_rec.stop("cleanup")
+            self._macro_rec = None
         # 录制器先于图释放：停录制要 drain 帧队列，不应与导航图拆卸竞争
         if self._recorder is not None:
             self._recorder.stop("cleanup")
@@ -747,9 +837,9 @@ class SpeedRushModule(ActivityModule):
                stamp: str | None = None) -> bool:
         """驾驶阶段（phase = 1/2）——驾驶控制方案的接口点。
 
-        当前实现是**采集模式**：不操纵车辆，只等本阶段结束并按需录制演示数据
-        （录制模式下同时起 HUD 读数观察线程，见 ``_begin_hud``）。
-        驾驶控制接入后，本方法内部多一条"正常态交给模型"的分支，对调用方无感。
+        三条驾驶模式共用本入口：深度几何/全程直行（``_resolve_drive_mode``）、
+        宏录制（采集玩家操作）与宏回放（按时间轴下发）。宏模式不加载感知/深度，
+        只保留驾驶页锚点判定；宏录制的 t=0 = 驾驶页就绪时刻。
 
         契约（任何实现都必须满足）：
           - 进入时画面应在驾驶页（可能仍在起步动画，须自行等到就绪）
@@ -764,22 +854,96 @@ class SpeedRushModule(ActivityModule):
         assert self.ctx is not None
         assert self._graph is not None
 
+        mode = self._resolve_drive_mode()
+        macro = mode == "macro"
+        macro_recording = macro and self._record_mode
+        macro_replay = macro and not self._record_mode
+        degraded = False
+        samples: list[dict] | None = None
+        g0: float | None = None
+        group_name = ""
+        if macro_replay:
+            try:
+                group_dir = resolve_group(self._macro_group)
+                group_name = group_dir.name
+                samples, g0 = load_phase(group_dir, phase)
+            except MacroError as exc:
+                degraded = True
+                _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：宏不可用（{exc}），"
+                            f"本阶段降级全程直行", "WARNING")
+
+        # 录制阶段是人工驾驶：急停检测暂停（键盘驾驶 W+A 就是两键）
+        self._manual_drive = bool(self._record_mode)
+        if macro_recording:
+            label = "宏录制"
+        elif macro_replay and not degraded:
+            label = "宏回放"
+        elif degraded:
+            label = "降级直行"
+        elif self._record_mode:
+            label = "录制采集"
+        else:
+            label = "等待阶段结束"
         # 阶段组开在等就绪之前：就绪判定的每条日志都属于这场驾驶（卡片要完整）
-        _open_grp(self, f"[极速狂飙] 驾驶阶段 {phase}"
-                        f"（{'录制采集' if self._record_mode else '等待阶段结束'}）", "phase")
+        _open_grp(self, f"[极速狂飙] 驾驶阶段 {phase}（{label}）", "phase")
         try:
+            if self._record_mode:
+                _tlog(self, "[极速狂飙] 人工驾驶阶段：紧急停止的按键检测暂停", "INFO")
             if not self._wait_drive_ready(phase):
                 return False
 
-            recorder = (self._begin_recording(phase, round_no, stamp)
-                        if self._record_mode else None)
-            # HUD 读数挂在本阶段会话上（人工局=录制会话、控制局=控制会话），
-            # 两模式同一落点：<会话>/hud/（对齐目标=同会话 frames.jsonl）
-            observer = (self._begin_hud(recorder.out_dir / "hud", phase, round_no)
-                        if recorder is not None else None)
+            recorder = None
+            macro_rec = None
+            macro_player = None
+            observer = None
+            hud_clock = None
+            if macro_recording:
+                macro_rec = self._begin_macro_recording(phase, stamp)
+                if macro_rec is None:
+                    degraded = True
+                else:
+                    hud_clock = self._begin_hud_clock(phase, round_no)
+            elif macro_replay and not degraded:
+                hud_clock = self._begin_hud_clock(phase, round_no)
+                clock = ((lambda: self._hud_clock_row(hud_clock))
+                         if hud_clock is not None else None)
+                try:
+                    macro_player = MacroPlayer(
+                        samples or [], g0,
+                        pad_cm=self.ctx.gamepad.acquire,
+                        phase=phase,
+                        group_id=getattr(self._log_grp, "id", None),
+                        clock=clock,
+                    )
+                except Exception as exc:  # noqa: BLE001 —— 构造失败按本阶段降级
+                    degraded = True
+                    _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：宏回放启动失败"
+                                f"（{exc!r}），降级全程直行", "WARNING")
+                else:
+                    self._macro_player = macro_player
+                    macro_player.start()
+            else:
+                recorder = (self._begin_recording(phase, round_no, stamp)
+                            if self._record_mode else None)
+                # HUD 读数挂在本阶段会话上（人工局=录制会话、控制局=控制会话），
+                # 两模式同一落点：<会话>/hud/（对齐目标=同会话 frames.jsonl）
+                observer = (self._begin_hud(recorder.out_dir / "hud", phase, round_no)
+                            if recorder is not None else None)
             try:
-                return self._drive_loop(phase, recorder, round_no, stamp)
+                return self._drive_loop(
+                    phase, recorder, round_no, stamp,
+                    macro_rec=macro_rec, macro_player=macro_player,
+                    hud_clock=hud_clock, degraded_straight=degraded,
+                    macro_group=group_name)
             finally:
+                if macro_player is not None:
+                    macro_player.stop()
+                    self._macro_player = None
+                if macro_rec is not None:
+                    macro_rec.stop("phase_end" if self._running else "stopped")
+                    self._macro_rec = None
+                if hud_clock is not None:
+                    hud_clock.stop("phase_end" if self._running else "stopped")
                 if observer is not None:
                     observer.stop("phase_end" if self._running else "stopped")
                     self._hud = None
@@ -787,6 +951,7 @@ class SpeedRushModule(ActivityModule):
                     recorder.stop("phase_end" if self._running else "stopped")
                     self._recorder = None
         finally:
+            self._manual_drive = False
             # 收口在录制器/HUD 线程都停干净之后（它们的落盘尾行不进组，属跨切面）；
             # 停止信号打断的阶段归 incomplete，正常结束按组内 WARNING/ERROR 自动推导。
             _end_grp(self, "incomplete" if not self._running else None)
@@ -829,7 +994,12 @@ class SpeedRushModule(ActivityModule):
         return False
 
     def _drive_loop(self, phase: int, recorder: DriveRecorder | None,
-                    round_no: int = 1, stamp: str | None = None) -> bool:
+                    round_no: int = 1, stamp: str | None = None, *,
+                    macro_rec: MacroRecorder | None = None,
+                    macro_player: MacroPlayer | None = None,
+                    hud_clock: HudObserver | None = None,
+                    degraded_straight: bool = False,
+                    macro_group: str = "") -> bool:
         """采集/控制主循环：按目标节拍取帧，锚点降频复查阶段是否已结束。
 
         节拍与锚点复查**故意解耦**——锚点识别走框架（单轮耗时不定），若每帧都塞一次
@@ -840,26 +1010,47 @@ class SpeedRushModule(ActivityModule):
         ``frame=``）。读取本身是 WGC 中心缓存的共享引用（帧号不变则不重算），未录制时
         的增量成本可忽略；反过来，缺了它，门控日志就只能记"判定发生了"，记不清
         "判定发生在哪一帧"，校准判据时无从复查。
+
+        宏分支不建控制链、不跑感知；``hud_clock`` 只读倒计时：录制时喂 g0，回放时
+        同时做“计时归零”的阶段结束兜底。
         """
         assert self.ctx is not None
         assert self._graph is not None
         # 本局产物前缀：调用方（_drive）按局传入，同一局两阶段共用；
         # 直接调本方法时退回当前时刻（一阶段一个目录，不与其他局混）。
         stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
-        # 控制接管的前提：非录制模式（录制期人驾，程序不碰车）+ control_mode 开关
-        # 或直行基线档（该档本身就是接管形态）。控制依赖感知产出观测，故正常控制
-        # 隐含逐帧检测（不必另开 perception_mode）；直行档例外——感知/深度都不加载。
-        straight = self._straight_mode and recorder is None
-        control = (self._control_mode or straight) and recorder is None
-        # 录制模式影子观察（2026-10-15 对照臂接线）：人驾期间决策链照跑但不下发
-        # （不接入手柄）——trace 与智能局同列同语义（cr_best=收益场本拍选点、
-        # steer=本应下发的反事实杆值、executed=深度路心观测重锚的人工实际横位），
-        # 人工对照局才有决策面可比。零下发：gpad 不 acquire，车只听人的。
-        shadow = recorder is not None
+        macro = self._resolve_drive_mode() == "macro"
+        if macro:
+            # 宏模式：回放/录制都不进控制链；仅“缺阶段文件”的降级走直行档
+            straight = bool(degraded_straight)
+            control = bool(degraded_straight)
+            shadow = False
+        else:
+            # 控制接管的前提：非录制模式（录制期人驾，程序不碰车）+ control_mode 开关
+            # 或直行基线档（该档本身就是接管形态）。控制依赖感知产出观测，故正常控制
+            # 隐含逐帧检测（不必另开 perception_mode）；直行档例外——感知/深度都不加载。
+            straight = self._straight_mode and recorder is None
+            control = (self._control_mode or straight) and recorder is None
+            # 录制模式影子观察（2026-10-15 对照臂接线）：人驾期间决策链照跑但不下发
+            # （不接入手柄）——trace 与智能局同列同语义（cr_best=收益场本拍选点、
+            # steer=本应下发的反事实杆值、executed=深度路心观测重锚的人工实际横位），
+            # 人工对照局才有决策面可比。零下发：gpad 不 acquire，车只听人的。
+            shadow = recorder is not None
         if recorder is not None:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶"
                   f"（正在录制演示数据，决策链影子观察中）", "INFO")
+        elif macro_rec is not None:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶"
+                  f"（正在录制宏，按 HUD 计时对齐起点）", "INFO")
+        elif macro_player is not None:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：宏回放中"
+                  f"（组 {macro_group}，等待计时对齐后下发）", "INFO")
+        elif degraded_straight:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：宏不可用，本阶段降级全程直行", "WARNING")
         elif straight:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：全程直行基线（感知/深度不加载，只踩油门）",
@@ -919,6 +1110,9 @@ class SpeedRushModule(ActivityModule):
         miss = 0
         frames = 0
         fid, ts_ns, age_ms = 0, 0, 0.0
+        # 宏时钟：只认新的 HUD 样本；计时归零连续三次即判阶段结束（锚点之外的兜底）
+        last_clock_ts = 0
+        zero_hits = 0
         # 手柄租约覆盖整个控制阶段：进入取设备、退出归零归还（摇杆归中+松扳机）。
         # 循环内多处 return/raise 都经 with 收口，不留"退出后车还踩着油门"的尾巴。
         # 数据行随拍进流水汇（异步落盘）；finally 只收阶段边界与局汇总。
@@ -978,6 +1172,22 @@ class SpeedRushModule(ActivityModule):
                             self._infer_times.append(result.infer_ms)
                             self._wait_times.append(result.wait_ms)
                             self._run_times.append(result.run_ms)
+                    if hud_clock is not None:
+                        clk = self._hud_clock_row(hud_clock)
+                        if clk is not None:
+                            if macro_rec is not None:
+                                macro_rec.note_clock(clk[0], clk[1])
+                            if clk[1] != last_clock_ts:
+                                last_clock_ts = clk[1]
+                                if macro_player is not None and clk[0] <= 0:
+                                    zero_hits += 1
+                                    if zero_hits >= 3:
+                                        macro_player.stop()
+                                        _tlog(self,
+                                              f"[极速狂飙] 驾驶阶段 {phase}：HUD 计时归零，"
+                                              f"停止宏回放并松手", "INFO")
+                                elif clk[0] > 0:
+                                    zero_hits = 0
                     if gpad is not None:
                         if straight:
                             self._straight_tick(gpad, fid, ts_ns,
@@ -2181,7 +2391,9 @@ class SpeedRushModule(ActivityModule):
     PRELOAD_GAP_S = 0.3     # 两个模型之间让出 CPU（顺序加载，不并发放大占用）
 
     def _preload_wanted(self) -> bool:
-        """直行档不加载感知/深度；录制且不感知时也不需要。"""
+        """直行档与宏模式都不加载感知/深度；录制且不感知时也不需要。"""
+        if self._macro_mode:
+            return False
         return (not self._straight_mode
                 and (self._control_mode or self._perception_mode))
 
@@ -2328,14 +2540,76 @@ class SpeedRushModule(ActivityModule):
         self._hud = obs
         return obs
 
+    def _begin_macro_recording(self, phase: int,
+                               stamp: str | None = None) -> MacroRecorder | None:
+        """建宏组目录并启动宏录制；失败返回 None（该阶段降级直行）。
+
+        宏落在 ``data/speedrush/macros/<局前缀>/``，与深度录制的 ``debug/`` 分家：
+        它是用户资产，不是可随手清的调试产物。
+        """
+        assert self.ctx is not None
+        try:
+            stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
+            group = _macro_group_dir(stamp)
+            rec = MacroRecorder(
+                group,
+                phase=phase,
+                group_id=getattr(self._log_grp, "id", None),
+                foreground=lambda: self.ctx.window_foreground,
+            )
+            rec.start()
+        except Exception as exc:  # noqa: BLE001 —— 采集失败不阻断流程
+            _tlog(self, f"[极速狂飙] 宏录制启动失败: {exc!r}", "WARNING")
+            return None
+        self._macro_rec = rec
+        return rec
+
+    def _begin_hud_clock(self, phase: int, round_no: int) -> HudObserver | None:
+        """只读 HUD 倒计时的内存时钟（不落盘）：宏回放的对齐与阶段结束兜底。"""
+        assert self.ctx is not None
+        try:
+            timer = load_hud_regions().get("timer")
+            if timer is None:
+                raise ValueError("HUD 区域真源缺少 timer")
+            obs = HudObserver(
+                None,
+                frame_source=self.ctx.capture.frame_with_age,
+                phase=phase,
+                round_no=round_no,
+                regions={"timer": timer},
+                persist=False,
+                group_id=getattr(self._log_grp, "id", None),
+            )
+            obs.start()
+        except Exception as exc:  # noqa: BLE001 —— 时钟不可用只降级，不阻断
+            _tlog(self, f"[极速狂飙] 宏计时读数启动失败（回放退化为纯墙钟）: {exc!r}",
+                  "WARNING")
+            return None
+        return obs
+
+    @staticmethod
+    def _hud_clock_row(observer) -> tuple[float, int] | None:
+        """从 HUD 观察者取最新可信计时：``(剩余秒, 帧时戳)``；无可用样本返回 None。"""
+        if observer is None:
+            return None
+        row = observer.latest()
+        if not row:
+            return None
+        entry = (row.get("fields") or {}).get("timer") or {}
+        value = entry.get("value")
+        ts_ns = row.get("ts_ns")
+        if not entry.get("trusted") or value is None or not ts_ns:
+            return None
+        return float(value), int(ts_ns)
+
 
 def _record_root() -> Path:
     """录制语料根目录：``debug/speedrush/``（与调试产物同家）。
 
     与安装目录解耦、更新不丢数据，也不污染仓库工作树。人工驾驶阶段只产一个
     会话目录（``<局前缀>_manual_p<阶段>``）：原帧、叠加图、索引、HUD 读数与深度
-    证据同家（2026-10-30 起与控制局共用 ``session_layout`` 一套布局），不再写
-    ``data/speedrush/demos/``——``data/`` 只留结构化业务数据。
+    证据同家（2026-10-30 起与控制局共用 ``session_layout`` 一套布局）。宏等用户
+    资产单独落 ``data/speedrush/macros/``，不混进调试目录。
     """
     return debug_dir() / "speedrush"
 
@@ -3189,6 +3463,19 @@ def _ego_hud_readout(hud) -> tuple[float | None, float | None]:
 # 同阶段的目录会被 chain 与 hud 两处先后取用，第二次若重新判重会看到刚建好的
 # 目录、误判"撞名"而多加一个序号后缀，同阶段的产物就分家了。
 _run_dirs: dict[tuple[str, int], Path] = {}
+# 宏组目录：同一局前缀只解析一次——phase 1 建好的组目录若在 phase 2 重新判重，
+# 会被判成"撞名"而分出一个新组，p1/p2 就配不成一组了。
+_macro_groups: dict[str, Path] = {}
+
+
+def _macro_group_dir(stamp: str) -> Path:
+    """本局宏组目录（两个驾驶阶段共用）；同秒连开两局时追加序号。"""
+    hit = _macro_groups.get(stamp)
+    if hit is not None:
+        return hit
+    path = _fresh_session_dir(macro_root() / stamp)
+    _macro_groups[stamp] = path
+    return path
 
 
 def _fresh_session_dir(path: Path) -> Path:
@@ -3214,9 +3501,9 @@ def _run_dir(stamp: str, phase: int) -> Path:
     speedrush 帧证据（证据包/hud/badframes/索引）全在
     ``debug/speedrush/<局前缀>_p<阶段>/``——一局一目录，清当批=删一个目录；
     逐拍流水与局汇总随日志会话走（ADR-0010），在
-    ``logs/<会话>/trace/``。``data/`` 只留结构化业务数据（DB）。整个目录受
-    debug 开关管辖（关=零产物）；帧证据包密度另受 debug_dump 三态闸
-    （off/events/full）。
+    ``logs/<会话>/trace/``。``data/`` 放用户资产与业务数据（宏、DB），不放调试
+    产物。整个目录受 debug 开关管辖（关=零产物）；帧证据包密度另受 debug_dump
+    三态闸（off/events/full）。
 
     局前缀由调用方按**局**生成（``_run_flow`` 每轮一个），同一局的两个驾驶阶段
     共用它、不同局必然不同。不能用日志会话编号：它标识的是"一次启动"，同一次

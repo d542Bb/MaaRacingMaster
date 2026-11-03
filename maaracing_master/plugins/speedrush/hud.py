@@ -346,7 +346,7 @@ class HudObserver:
 
     def __init__(
         self,
-        out_dir: Path,
+        out_dir: Path | None = None,
         *,
         frame_source: FrameSource,
         phase: int | None = None,
@@ -356,11 +356,15 @@ class HudObserver:
         regions: dict[str, list[float]] | None = None,
         regions_path: Path | str | None = None,
         group_id: str | None = None,
+        persist: bool = True,
     ) -> None:
-        self.out_dir = Path(out_dir)
+        self.out_dir = Path(out_dir) if out_dir is not None else None
         self.phase = phase
         self.round_no = round_no
         self.interval_s = max(0.05, float(interval_s))
+        # False = 只做内存时钟（latest() 可用），不建目录、不写 hud.jsonl/meta。
+        # 宏回放的 HUD 只服务时间对齐与阶段结束兜底，不该留下调试产物。
+        self.persist = bool(persist)
         # 派发时刻捕获的业务组号（驾驶阶段卡）；worker 不读线程局部当前组。
         self._group_id = group_id
         self._frame_source = frame_source
@@ -429,20 +433,26 @@ class HudObserver:
     def start(self) -> None:
         if self._running:
             return
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        if self.persist:
+            if self.out_dir is None:
+                raise ValueError("HudObserver: persist=True 需要 out_dir")
+            self.out_dir.mkdir(parents=True, exist_ok=True)
         self._stop.clear()
         self._started_ns = time.perf_counter_ns()
         self._started_iso = datetime.now().isoformat(timespec="seconds")
         self._sample_thread = threading.Thread(
             target=self._sample_worker, name="speedrush-hud-sample", daemon=True)
-        self._write_thread = threading.Thread(
-            target=self._write_worker, name="speedrush-hud-write", daemon=True)
-        self._write_thread.start()
+        if self.persist:
+            self._write_thread = threading.Thread(
+                target=self._write_worker, name="speedrush-hud-write", daemon=True)
+            self._write_thread.start()
         self._sample_thread.start()
         self._running = True
+        where = (f" → {self.out_dir / 'hud.jsonl'}" if self.persist
+                 else "（仅内存时钟，不落盘）")
         self._log(
             f"[极速狂飙] HUD 读数开始（{len(self._regions)} 区域 / 每 {self.interval_s:.2f}s）"
-            f" → {self.out_dir / 'hud.jsonl'}", "INFO")
+            f"{where}", "INFO")
 
     def stop(self, reason: str = "normal") -> None:
         """停止并 flush。幂等；重复调用只写一次 meta。"""
@@ -456,11 +466,13 @@ class HudObserver:
                 th.join(timeout=10.0)
         self._sample_thread = None
         self._write_thread = None
-        self._write_meta(reason)
+        if self.persist:
+            self._write_meta(reason)
+        tail = (f"{self._rows_written} 行（丢 {self._rows_dropped}）"
+                if self.persist else "仅内存时钟（不落盘）")
         self._log(
-            f"[极速狂飙] HUD 读数结束：{self._rows_written} 行"
-            f"（丢 {self._rows_dropped}、"
-            f"缺帧 {self._samples_no_frame}、OCR 无结果 {self._ocr_no_result}）",
+            f"[极速狂飙] HUD 读数结束：{tail}、"
+            f"缺帧 {self._samples_no_frame}、OCR 无结果 {self._ocr_no_result}",
             "INFO" if self._rows_dropped == 0 and self._ocr_no_result == 0 else "WARNING")
 
     # ---------- 采样线程 ----------
@@ -480,6 +492,8 @@ class HudObserver:
 
     def _enqueue(self, rec: dict) -> None:
         """入队（非阻塞）；队满即丢并计数——反压口径照录制器，绝不阻塞采样侧。"""
+        if not self.persist:
+            return
         try:
             self._q.put_nowait(rec)
         except queue.Full:

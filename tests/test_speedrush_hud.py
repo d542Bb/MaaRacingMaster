@@ -726,3 +726,28 @@ class TestModuleWiring:
         state = mod.get_module_config()["_state"]
         assert state["hud_recording"] is True
         assert state["hud_rows"] == 0
+
+
+def test_persist_false_is_memory_clock_only(tmp_path) -> None:
+    """宏回放的 HUD 只做内存时钟：latest() 可用，但不建目录、不写文件。"""
+    eng = _FakeEngine(_texts())
+    obs = hud.HudObserver(
+        None,
+        frame_source=lambda: (_frame(), 1001, 5_000_000, 3.5),
+        engine=eng,
+        regions={"timer": REGIONS["timer"]},
+        persist=False,
+        interval_s=0.05,
+    )
+    obs.start()
+    try:
+        deadline = time.time() + 2.0
+        while time.time() < deadline and obs.latest() is None:
+            time.sleep(0.02)
+    finally:
+        obs.stop()
+    row = obs.latest()
+    assert row is not None
+    assert row["fields"]["timer"]["value"] == 25
+    assert obs.stats["rows_written"] == 0
+    assert list(tmp_path.iterdir()) == []

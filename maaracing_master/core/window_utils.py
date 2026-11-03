@@ -332,6 +332,14 @@ def count_pressed_keys() -> int:
     return n
 
 
+def is_key_down(vk: int) -> bool:
+    """查询单个虚拟键当前是否按下（GetAsyncKeyState，系统级只读）。
+
+    供 ``core.key_state`` 的具名键读取使用；插件不直接 import 本模块。
+    """
+    return bool(_UD.GetAsyncKeyState(int(vk)) & _ASYNC_DOWN)
+
+
 # =====================================================================
 #  窗口比例校验（只读：不调整窗口/分辨率，仅检查客户区宽高比 ≈ 16:9）
 # =====================================================================

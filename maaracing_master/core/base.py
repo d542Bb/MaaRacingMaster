@@ -273,6 +273,29 @@ class ActivityModule(ABC):
         """本次启动是否独占手柄（即：必须断开所有物理手柄）；默认取类属性声明。"""
         return cls.REQUIRES_GAMEPAD_EXCLUSIVE
 
+    # ---------- 人工接管期声明（紧急停止的作用域，可选）----------
+
+    def manual_input_active(self) -> bool:
+        """当前是否处于「玩家自己操作、程序不接管输入」的阶段；默认 False。
+
+        紧急停止（同时按 ≥2 键即停）只对程序操作期生效：人工驾驶/录制阶段按键
+        是正常操作，不能当成急停信号。模块覆盖本方法返回实况即可（例如速跑模块
+        在录制驾驶阶段返回 True）。
+        """
+        return False
+
+    # ---------- GUI 配置项可选值（可选，模块自述）----------
+
+    @classmethod
+    def config_choices(cls) -> dict[str, list[dict]]:
+        """为下拉型配置项提供可选值；默认空。只读静态枚举，不创建实例。
+
+        形状：``{配置键: [{"value": ..., "label": ...}, ...]}``。core 原样并入
+        配置视图的 ``_choices`` 供 GUI 展示；取值合法性仍由模块在 set/start 时
+        自行校验，core 不解释这些值。
+        """
+        return {}
+
     # ---------- GUI 数据看板内容（可选，模块自述）----------
     #
     # 新模块实现 read_dashboard()，返回 core/dashboard_contract.py 定义的 block 载荷；

@@ -592,6 +592,16 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .mra-field-control input[type="text"]:focus { border-color: var(--mra-primary); outline: none; }
 .mra-field-control input[type="text"]::placeholder { color: var(--mra-foreground-dim); }
+/* 下拉框（宏组选择）：与文本框同款 */
+.mra-field-control select {
+  width: 100%; height: 36px; padding: 0 12px;
+  border-radius: var(--mra-radius-sm); border: 1px solid var(--mra-border);
+  background: var(--mra-surface); color: var(--mra-foreground);
+  font-size: 13px; font-family: var(--mra-font-sans);
+  transition: border-color var(--mra-duration-fast);
+}
+.mra-field-control select:focus { border-color: var(--mra-primary); outline: none; }
+.mra-field-control select:disabled { opacity: 0.6; cursor: not-allowed; }
 /* 字段 + 右侧动作按钮（浏览… / 重置）：按钮与输入框等高，视觉上是一整行 */
 .mra-field-control-row { display: flex; align-items: stretch; gap: 8px; }
 .mra-field-control-row .mra-field-control { flex: 1; min-width: 0; }
