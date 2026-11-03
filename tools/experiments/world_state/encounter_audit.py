@@ -80,7 +80,7 @@ def main(sess):
                              for t in (r.get('otab') or {}).get('t') or []
                              if t[0] == 'car'] for r in rows}
     print('\n== 速度塌陷事件（撞/压车主判据）==')
-    crash_n = same_n = launch_n = blind_n = 0
+    crash_n = same_n = launch_n = blind_n = graze_n = 0
     first_fid = rows[0]['fid']
     for f0, f1, rmin, series in dips(rows):
         # 起步/切换：多级渐进爬升（≥3 个递增值，帧证 1100 起步 [0,6,20,27,31]、
@@ -95,10 +95,17 @@ def main(sess):
         near = [(cid, xx, zz) for f in w for cid, xx, zz in car_by_fid[f]
                 if zz is not None and zz < 15]
         same = [n for n in near if n[1] is not None and abs(n[1]) < 0.5]
+        # 浅塌分界（20261103_213728 帧证校准）：rate_min 34-37 且无同道
+        # = 贴身通过的正常速度代价（3150 帧蓝车擦身），不算事故；
+        # 真撞/压 = 深塌（≤32）或同道在场
+        graze_shallow = (rmin > 32 and not same)
         tag = '起步/切换加速' if launch else (
-            '撞/压同道车' if same else '撞车嫌疑（近距无同道车→盲区）')
+            '贴身通过浅塌' if graze_shallow else (
+                '撞/压同道车' if same else '撞车嫌疑（近距无同道车→盲区）'))
         if launch:
             launch_n += 1
+        elif graze_shallow:
+            graze_n += 1
         elif same:
             same_n += 1
         else:
@@ -108,7 +115,7 @@ def main(sess):
               f' 近距车={ids} 同道={len(same)}')
     crash_n = same_n + blind_n
     print(f'塌陷分类：起步/切换 {launch_n}，撞/压同道车 {same_n}，'
-          f'盲区嫌疑 {blind_n} → 撞/压事件合计 {crash_n}')
+          f'盲区嫌疑 {blind_n}，贴身浅塌 {graze_n} → 撞/压事件合计 {crash_n}')
 
     # ── 贴身轨迹标签 ──────────────────────────────────────────
     print('\n== 贴身轨迹标签（横幅×得分跳变×pass 分带）==')
