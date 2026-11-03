@@ -160,22 +160,22 @@ def test_gate_velocity_persisted_on_track_state():
 
 def test_velocity_persists_across_new_anchor():
     """区间速度到锚即发布（2026-10-13 语义修订）：v 的证据在区间完成瞬间成立，
-    不再等锚龄 150ms——旧口径白丢 150ms，快会车整场等不到 v（第三局实测
-    vcls 覆盖骤降的主因之一）。新锚 v_inst=0（z 原地）当拍生效；
-    approach_confirmed 照旧重置。"""
+    不再等锚龄 150ms。相对速度重建（2026-11-03）：v 从近窗锚点史整段估
+    （总位移÷总时间）——z 原地的新锚不再把 v 归零，整段序列仍是接近证据。"""
     trk = Tracker()
     _two_anchor_setup(trk)
     for fid in range(8, 13):
         trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
     assert _dist(trk._last_obs).v_close_mps is not None      # 已落轨
-    # 新锚（z 原地：Δ6<门限，接受）：approach_confirmed 重置 → 回 ANCHOR，
-    # 新区间 v_inst=0 到锚即发布
+    # 新锚（z 原地：Δ6<门限，接受）：整段速度 (50−44)/(11×33ms)≈16.5 到锚即发布，
+    # 仍在接近 → RESCALED 生命周期保持（z 原地新锚不再把 v 归零退出）
     trk.update(_per(13, cars=[_car()]), frame_age_ms=10.0, stage=1,
                anchors=_sheet(12, z_m=44.0))
     d = _dist(trk.update(_per(14, cars=[_car()]), frame_age_ms=10.0, stage=1))
-    assert d.source is DistanceSource.ANCHOR           # 新锚点 = 新生命周期
-    assert d.v_close_mps == pytest.approx(0.0, abs=1e-9)   # 新区间即时生效
-    assert d.metric_distance_m == pytest.approx(44.0)  # ANCHOR=持锚原值
+    v = 6.0 / (11 * NS / 1e9)
+    assert d.source is DistanceSource.RESCALED_ANCHOR  # 整段速度仍超阈：接近中
+    assert d.v_close_mps == pytest.approx(v)           # 整段速度即时生效
+    assert d.metric_distance_m == pytest.approx(44.0 - v * 2 * NS / 1e9)  # RANGE_PROP 外推
 
 
 def test_jump_gate_scales_with_interval():
@@ -198,26 +198,51 @@ def test_jump_gate_scales_with_interval():
     assert d.v_close_mps == pytest.approx(v)               # 区间速度即时发布
 
 
+def test_slope_window_estimate_tempers_single_interval():
+    """相对速度重建（2026-11-03）：区间速度从近窗锚点史整段估（总位移÷总时间），
+    不再依赖单对锚差分——快接近后接一个慢区间时，整段估给出窗口趋势，
+    单对差分会把速度摔到近零（荒值另一形态：真实关速被低估、到站被夸大）。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=60.0))
+    for fid in range(3, 10):
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    # anchor2：快接近 60→50 @0.264s（门限 2+45×0.264=13.9 内，接受）
+    trk.update(_per(10, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(9, z_m=50.0))
+    for fid in range(11, 18):
+        trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    # anchor3：慢区间 50→49 @0.264s——单对差分给 3.8 m/s，整段估 (60−49)/0.528≈20.8
+    trk.update(_per(18, cars=[_car()]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(17, z_m=49.0))
+    obs = trk.update(_per(19, cars=[_car()]), frame_age_ms=10.0, stage=1)
+    d = _dist(obs)
+    assert d.v_close_mps is not None
+    assert d.v_close_mps == pytest.approx(11.0 / (16 * NS / 1e9))  # 整段估
+    assert d.v_close_mps > 10.0                        # 不是单对差分的 3.8
+
+
 def test_new_anchor_resets_rescaled_lifecycle():
     """RESCALED 是锚点生命周期状态：确认后**新锚**重置生命周期（approach_
-    confirmed 清零）——新区间速度低于阈值不再确认，回 ANCHOR 持锚，但区间
-    速度 v_close 照常发布（跨锚保留语义）。（旧 log-h 时代的"gate 退出不回
-    ANCHOR"指同锚生命周期内逐拍回落——v_inst 固定后该场景不复存在。）"""
+    confirmed 清零）——整段速度低于阈值不再确认，回 ANCHOR 持锚，但速度
+    v_close 照常发布（跨锚保留语义）。相对速度重建（2026-11-03）：速度
+    判据从"新区间"变为"近窗锚点史整段"。"""
     trk = Tracker()
     _two_anchor_setup(trk)
     for fid in range(8, 13):
         trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
     assert _dist(trk._last_obs).source is DistanceSource.RESCALED_ANCHOR
-    # 新锚（新区间几乎无接近）：生命周期重置 → ANCHOR 持锚；速度照常发布
+    # 新锚（近窗整段几乎无接近）：生命周期重置 → ANCHOR 持锚；速度照常发布
     trk.update(_per(13, cars=[_car()]), frame_age_ms=10.0, stage=1,
-               anchors=_sheet(12, z_m=43.0))           # v=(44−43)/0.198≈5.1<16
+               anchors=_sheet(12, z_m=44.5))           # v=(50−44.5)/0.363≈15.1<16
     for fid in range(14, 18):                 # fid17 到龄发布
         trk.update(_per(fid, cars=[_car()]), frame_age_ms=10.0, stage=1)
     d = _dist(trk._last_obs)
-    v2 = 1.0 / (6 * NS / 1e9)                          # 锚间 dt=(12−6)×33ms
+    v2 = 5.5 / (11 * NS / 1e9)                         # 整段 (50−44.5)/(12−1)×33ms
     assert d.source is DistanceSource.ANCHOR
-    assert d.v_close_mps == pytest.approx(v2)          # 区间速度跨锚照常发布
-    assert d.metric_distance_m == pytest.approx(43.0)  # ANCHOR=持锚原值
+    assert d.v_close_mps == pytest.approx(v2)          # 整段速度跨锚照常发布
+    assert d.metric_distance_m == pytest.approx(44.5)  # ANCHOR=持锚原值
 
 
 # ---------- 弃权链 ----------

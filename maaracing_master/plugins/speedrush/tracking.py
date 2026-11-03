@@ -28,7 +28,7 @@ WGC 是中心缓存，主循环 ~21Hz 读 30Hz 画面合法地两拍读到同一
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, IntEnum
 from typing import Any
 
@@ -391,6 +391,9 @@ class TrackerParams:
                                  # 15m 的正常锚会被定限误杀，轨道饿到超龄——
                                  # 2026-10-13 第三局 trace 实测覆盖率掉 40%→28%）
     z_jump_mps: float = 45.0     # 丢门的闭速界（m/s）：ego 极速量级；超界=量错不是真动
+    slope_window_s: float = 1.5  # 相对速度重建窗（s）：区间速度从近窗锚点史整段估
+                                 # （总位移÷总时间），单对差分退役为窗内仅 1 锚的
+                                 # 退化形态（用户方向 3D 空间/相对速度，2026-11-03）
     # ---- 框高比桥接 / 锚点框高一致门（2026-10-23 四局离线，证据 commit
     # ---- 0e3a429：锚间误差中位 3.3→2.2m、p90 13→9m）----
     box_bridge_weight: float = 0.7    # 框高比 vs 区间速度外推的权重（框为主：
@@ -425,7 +428,8 @@ class TrackerParams:
                 or not 0.0 < self.anchor_gate_resid < 1.0
                 or self.anchor_gate_rebase < 1
                 or self.anchor_gate_fast_cap_mps <= self.z_jump_mps
-                or self.anchor_gate_hard_mps <= self.anchor_gate_fast_cap_mps):
+                or self.anchor_gate_hard_mps <= self.anchor_gate_fast_cap_mps
+                or self.slope_window_s <= 0):
             raise ValueError(f"跟踪参数非法：{self}")
 
 
@@ -493,6 +497,12 @@ class _Track:
     prev_box_h: float | None = None   # 上一新鲜框高（翻跳判据的参照）
     pending_z: float | None = None    # 被框高比判据拒绝的候选锚（连续一致才重基）
     pending_n: int = 0
+    # ---- 相对速度重建（用户方向：3D 空间/相对速度/空间插值重建）----
+    # 近窗锚点史 (ts_ns, z_m)：区间速度从整段序列估出（总位移÷总时间），
+    # 不再依赖单对锚差分——单对差分把一个跨簇跳变的区间直接放大成荒值
+    # （20261103_143052 车48：76.9→25.8 跨 30m 跳报 61 m/s，整段估 ~40）。
+    # z 的插值重建由 HELD 外推承担（丢框拍按当前速度外推），此处只重建速度。
+    anchor_hist: list = field(default_factory=list)
 
 
 class Tracker:
@@ -812,6 +822,7 @@ class Tracker:
                 t.pending_n = 0
                 t.v_close_mps = None            # 速度与锚点同生命周期
                 t.v_inst = None
+                t.anchor_hist = []              # 锚点史与锚同生命周期
                 t.last_dist_reason = DistanceReason.CLUSTER_SWITCH
                 continue
             rebase = False
@@ -837,18 +848,27 @@ class Tracker:
                 rebased += 1
             if (not rebase and t.anchor_z is not None and dt_s > 0
                     and dt_s * 1000.0 >= self.p.gate_eval_min_ms):
-                # 锚间区间差分 v̂（2026-10-13 换装，替代 log-h 框高式——
-                # 实机生命表证伪：框高在"框头/框全车"间翻，v̂ 荒值 40~70m/s）。
-                # 到锚即发布：速度证据在区间完成瞬间就成立，再等锚龄是旧
-                # 逐帧锚时代的惯性（白丢 150ms，快会车整场等不到 v）
-                t.v_inst = (t.anchor_z - e.z_m) / dt_s
+                # 相对速度重建（用户方向 2026-11-03）：从近窗锚点史整段估
+                # （总位移÷总时间），单对锚差分退役为窗内无更早锚时的退化
+                # 形态——单对差分把跨簇跳变区间直接放大成荒值
+                # （20261103_143052 车48：76.9→25.8 跨 30m 跳报 61 m/s，
+                # 整段估 ~40 与帧证一致）。
+                hist = [p for p in t.anchor_hist
+                        if sheet.ts_ns - p[0] <= self.p.slope_window_s * 1e9]
+                t.v_inst = ((hist[0][1] - e.z_m)
+                            / max((sheet.ts_ns - hist[0][0]) / 1e9, 1e-3)
+                            if hist else (t.anchor_z - e.z_m) / dt_s)
                 t.v_close_mps = t.v_inst
             elif rebase:
                 # 重基=换了基线：旧区间的速度证据对新锚无效
                 t.v_inst = None
                 t.v_close_mps = None
+                t.anchor_hist = []
             t.anchor_z = e.z_m
             t.anchor_fx = sheet.fx              # 同帧焦距（x_m 反投影换算锚）
+            t.anchor_hist = ([p for p in t.anchor_hist
+                              if sheet.ts_ns - p[0] <= self.p.slope_window_s * 1e9]
+                             + [(sheet.ts_ns, e.z_m)])[-8:]
             t.anchor_ts_ns = sheet.ts_ns
             t.anchor_h = float(h_new) if (h_new and h_new > 0) else None
             t.prev_box_h = t.anchor_h
