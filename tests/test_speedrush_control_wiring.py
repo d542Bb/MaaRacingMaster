@@ -1170,12 +1170,12 @@ def test_lane_agree_gate_veto_after_sustained_disagreement():
 
 
 def test_lane_agree_gate_tolerance_and_freeze():
-    """0.99 道不拦；分歧间断清零；无可比证据（None）冻结当前状态。"""
+    """0.65 道不拦（阈 0.7）；分歧间断清零；无可比证据（None）冻结状态。"""
     g = smod._LaneAgreeGate()
-    assert g.update(0.99)
+    assert g.update(0.65)
     for _ in range(10):
-        assert g.update(0.99), "阈内持续再多拍也不拦"
-    g.update(1.3)
+        assert g.update(0.65), "阈内持续再多拍也不拦"
+    g.update(0.8)
     assert g.update(0.1), "未满持续拍数，回到阈内清零"
     assert g.update(None) and g.update(None), "无可比证据保持放行"
 

@@ -608,12 +608,13 @@ def test_line_primary_position_ignores_depth():
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               road_offset=0.0, lane_x=1.0, lane_ok=True, lane_pos_ok=True)
-    assert pl.state.executed_lane == pytest.approx(0.7, abs=0.05)
+    # 追线步长上限 3 道/s：一拍 0.15（旧口径 0.7=14 道/s 已废除）
+    assert pl.state.executed_lane == pytest.approx(0.15, abs=0.02)
     assert pl.last_rebase is None
-    for i in range(6):
+    for i in range(9):
         pl.update(_out(x_target=0.0, fid=2 + i, valid=2 + i), DT, 2 + i,
                   road_offset=0.0, lane_x=1.0, lane_ok=True, lane_pos_ok=True)
-    assert pl.state.executed_lane == pytest.approx(1.0, abs=0.02)
+    assert pl.state.executed_lane == pytest.approx(1.0, abs=0.03)
     assert pl._road_anchor == 0.0
 
 
@@ -623,11 +624,11 @@ def test_line_dropout_holds_model_before_depth_rebuild():
                   rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
     pl.update(_out(x_target=0.0, fid=1, valid=1), DT, 1,
               lane_x=1.0, lane_ok=True, lane_pos_ok=True)
-    assert pl.state.executed_lane == pytest.approx(0.7, abs=0.05)
+    assert pl.state.executed_lane == pytest.approx(0.15, abs=0.02)
     for i in range(3):                     # 0.15s 线断：深度不接管
         pl.update(_out(x_target=0.0, fid=2 + i, valid=2 + i), DT, 2 + i,
                   road_offset=0.0, lane_ok=False)
-        assert pl.state.executed_lane == pytest.approx(0.7, abs=0.06)
+        assert pl.state.executed_lane == pytest.approx(0.15, abs=0.06)
     for i in range(12):                    # 超 0.4s：深度按 α 重建
         pl.update(_out(x_target=0.0, fid=8 + i, valid=8 + i), DT, 8 + i,
                   road_offset=0.0, lane_ok=False)
@@ -1850,3 +1851,17 @@ def test_osc_gate_never_blocks_merge_commit():
                        plan=_plan(0.2 if i % 2 == 0 else -0.2))
     # 承诺并线走 _pd 跟目标道（gentle=False），闸不覆盖
     assert cmd.steer_x < 0.0
+
+
+def test_lane_follow_chase_step_capped():
+    """追线步长物理上限（2026-11-03 局帧证）：1.4 道缺口一拍追近 1 道的
+    信念甩动 = violent swing 发生器。上限 3 道/s 只约束甩动不约束真实机动。"""
+    from maaracing_master.plugins.speedrush.planner import _LINE_CHASE_MAX_LANE_S
+    pl = _planner(lookahead_tau_s=0.0, tau_steer_s=1e-9,
+                  rate_limit_raw=999999.0, stick_deadzone_raw=0.0)
+    pl.state.executed_lane = -1.82
+    pl.update(_out(x_target=-0.17, fid=1, valid=1), DT, 1,
+              road_offset=None, lane_x=-0.4, lane_ok=True, lane_pos_ok=True)
+    step = abs(pl.state.executed_lane - (-1.82))
+    assert step <= _LINE_CHASE_MAX_LANE_S * DT + 1e-9,         f"追线步长 {step:.3f} 超过物理上限 {_LINE_CHASE_MAX_LANE_S * DT:.3f}"
+    assert step > 0.0

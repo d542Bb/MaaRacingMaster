@@ -73,6 +73,10 @@ _LANE_BLOCK_AGE_MS = 300.0
 # 把位置交给一个可能错 1 道的深度源。
 _LINE_REBUILD_S = 0.4
 _LINE_POS_GAIN = 0.7       # 线位置修正增益（检测 ~10Hz、每拍同一读数可重复收）
+# 追线步长物理上限（2026-11-03 局帧证）：恢复段 1.4 道缺口一拍追近 1 道
+# （信念甩动 >3 道/s）= 用户所见 violent swing 的发生器。真实换道 ≤2 道/s，
+# 上限 3 道/s 只约束信念甩动、不约束真实机动。
+_LINE_CHASE_MAX_LANE_S = 3.0
 
 # 贴边逃生门（道）：外车道中心 ±1 再让 0.4；超过即按全权回带（gentle 的
 # 0.45 杆幅在 1.4 道级误差下需要 1s+ 才能回带，期间车停在墙侧）。
@@ -1209,8 +1213,9 @@ class LateralPlanner:
                 self.last_rebase = "line_reacquire"
                 self.state.executed_lane = line_pos
             else:
-                self.state.executed_lane += _LINE_POS_GAIN * (
-                    line_pos - self.state.executed_lane)
+                step = _LINE_POS_GAIN * (line_pos - self.state.executed_lane)
+                _max_step = _LINE_CHASE_MAX_LANE_S * dt_s
+                self.state.executed_lane += max(-_max_step, min(_max_step, step))
             if self._road_anchor is None:
                 self._road_anchor = 0.0
             self._stale_t = 0.0

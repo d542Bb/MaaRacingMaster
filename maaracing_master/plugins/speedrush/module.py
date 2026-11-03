@@ -1371,9 +1371,16 @@ class SpeedRushModule(ActivityModule):
             if road_snap.get("src") in ("region", "pair_slot", "memory"):
                 depth_ro = road_snap.get("off")
             ldis = None
-            if lane is not None and lane.get("x") is not None \
-                    and depth_ro is not None:
-                ldis = float(lane.get("x")) - float(depth_ro)
+            if lane is not None and lane.get("x") is not None:
+                lx = float(lane.get("x"))
+                if depth_ro is not None:
+                    ldis = lx - float(depth_ro)
+                elif dgeo is not None and dgeo.sides == 2 \
+                        and edge_off is not None:
+                    # 家族缺位（src=line 回声段）时的第二见证：找边对心。
+                    # 2026-11-03 局贴墙段帧证：记忆路心被信念横速积分污染
+                    # （说 −0.5，标线 −2.08），只有边对还在独立说话。
+                    ldis = lx - float(edge_off)
             lane_pos_ok = bool(lane_usable
                                and chain["lane_agree"].update(ldis))
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
@@ -2348,7 +2355,7 @@ class _LaneAgreeGate:
     回（滞回）才恢复。只动位置证据门，不动走廊原点——深度全断时线原
     点仍供走廊存在（中心=执行位），黑视纪律不变。"""
 
-    ON_LANE = 1.0      # 暂停阈值（道）
+    ON_LANE = 0.7      # 暂停阈值（道；健康局 p90 0.38、病态段持续 0.75+）
     ON_TICKS = 5       # 持续分歧拍数
     OFF_LANE = 0.5     # 恢复阈值（滞回）
     OFF_TICKS = 3      # 持续贴回拍数
