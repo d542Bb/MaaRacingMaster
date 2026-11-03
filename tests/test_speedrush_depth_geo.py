@@ -919,6 +919,26 @@ def test_async_stale_gate_drops():
         a.stop()
 
 
+def test_async_stale_retain_window():
+    """超龄驻留窗（2026-11-03）：age 超预算不再整包清槽——驻留窗内按复用拍
+    供数（不计 stale、不重复 ingest 锚点），窗尽才诚实清槽。结构性 age 底
+    ~230ms 让旧闸的复用预算只剩 ~2 拍，worker 节奏稍抖即 1-2 拍断供
+    （20261103_153620 fid2177 帧证：躲避层空间参照整拍撤走）。"""
+    stub = _StubObserver([_mk_reading()])
+    a = AsyncDepthRoadObserver(stub, max_age_ms=50.0)  # type: ignore[arg-type]
+    a.start()
+    try:
+        now = _time.perf_counter()
+        a.push(_frame(), frame_ts_ns=int((now - 0.080) * 1e9))   # age 80>50<200
+        assert _wait_until(lambda: a.take()[0] is not None), "驻留窗内应供数"
+        assert a.health()["stale_drops"] == 0, "驻留窗内不得计 stale"
+        assert a.take()[2] is False, "驻留拍是复用不是新证据"
+        assert _wait_until(lambda: a.take() == (None, None, False)
+                           and a.health()["stale_drops"] == 1), "窗尽应清槽计 stale"
+    finally:
+        a.stop()
+
+
 def test_async_age_starts_at_capture():
     """age 起点 = 帧采集回调时刻（2026-10-17）：push 带 frame_ts_ns 时 take 的
     last_age_ms 含「采集→入队」那段 cap，不只是入队后的时间——读数描述的是

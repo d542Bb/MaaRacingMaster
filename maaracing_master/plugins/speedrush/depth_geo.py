@@ -1831,6 +1831,12 @@ class AsyncDepthRoadObserver:
     """
 
     MAX_AGE_MS = 350.0    # 结果时效预算=复用上限：闸内读数才喂控制。**口径含
+    STALE_RETAIN_MS = 150.0   # 超龄驻留窗（2026-11-03）：超龄不再整包清槽——读数
+                              # 与栅格是慢变量，断供把躲避层的空间参照整拍撤走
+                              # （20261103_153620 fid2177 帧证）；结构性 age 底
+                              # ~230ms 让复用预算只剩 ~2 拍，worker 节奏稍抖即赌
+                              # 输。驻留窗内按复用拍供数，窗尽才诚实清槽。
+                          # 结果时效预算=复用上限：闸内读数才喂控制。**口径含
                           # worker 自己的推理时延**（2026-10-01 实测定案）：单帧
                           # 135ms + 排队 ~50ms 下 150ms 闸注定 78% 超龄丢弃（健康
                           # 日志「应用 49/超龄丢弃 176」），road_offset 覆盖率只剩
@@ -2025,6 +2031,11 @@ class AsyncDepthRoadObserver:
                 seg["reason"] = tg.get("reason")   # 分账面随段走（worker 封包→消费面）
                 self.last_segments = seg
         if age_ms > self._max_age_ms:
+            # 超龄驻留窗（2026-11-03）：内容龄超预算不再整包清槽——驻留窗内
+            # 按复用拍供数（is_new=False，锚点清单不重复 ingest），给 worker
+            # 一拍到达余量；窗尽才诚实清槽（同源同拍同命运）。
+            if age_ms <= self._max_age_ms + self.STALE_RETAIN_MS:
+                return reading, grid, False
             with self._lock:   # seq 比对防误删 worker 刚发布的新结果
                 if self._result is not None and self._result[0] == item[0]:
                     self._result = None
