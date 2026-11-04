@@ -228,3 +228,31 @@ def test_open_vigembus_download_ignores_caller_url(opened):
     assert ok and err is None
     assert data["opened"] == EXTERNAL_TARGETS["vigembus"]
     assert opened == [EXTERNAL_TARGETS["vigembus"]]
+
+
+def test_open_user_data_folder_creates_subpath(tmp_path, monkeypatch):
+    """模型安装入口：只开用户数据目录内的子目录，不存在时自动创建。"""
+    calls = []
+    monkeypatch.setattr(sc, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(sc.os, "startfile", lambda p: calls.append(p), raising=False)
+    svc = _service({})
+    ok, data, err = svc.open_user_data_folder({"subpath": "data/speedrush/models"})
+    target = (tmp_path / "data" / "speedrush" / "models").resolve()
+    assert ok and err is None
+    assert target.is_dir()
+    assert data["path"] == str(target)
+    assert calls == [str(target)]
+
+
+@pytest.mark.parametrize("sub", [
+    "../escape", "data/../../escape", "C:\\Windows", "/etc", "",
+])
+def test_open_user_data_folder_rejects_paths_outside_root(tmp_path, monkeypatch, sub):
+    calls = []
+    monkeypatch.setattr(sc, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(sc.os, "startfile", lambda p: calls.append(p), raising=False)
+    svc = _service({})
+    ok, data, err = svc.open_user_data_folder({"subpath": sub})
+    assert not ok and data is None and "子目录" in err
+    assert calls == []
+
