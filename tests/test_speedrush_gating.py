@@ -540,7 +540,7 @@ def test_straight_mode_full_run(env, monkeypatch, tmp_path) -> None:
     """直行基线档 _drive_loop 全程：接管手柄零杆满油门、trace 落盘、
     HUD 读数观察线程起停——HUD 是基线金币率的数据源，缺它基线测不了。"""
     mod, ctx, clock = env
-    mod._straight_mode = True
+    mod._drive_mode = "straight"
     mod._running = True
     _set_graph(mod, [True, False, False])
 
@@ -579,7 +579,7 @@ def test_straight_mode_full_run(env, monkeypatch, tmp_path) -> None:
 def test_straight_mode_skips_perception(env, monkeypatch, tmp_path) -> None:
     """直行档即使 perception_mode 开着也不跑感知——基线度量的是无感知地板。"""
     mod, ctx, clock = env
-    mod._straight_mode = True
+    mod._drive_mode = "straight"
     mod._perception_mode = True
     mod._running = True
     _set_graph(mod, [True, False, False])

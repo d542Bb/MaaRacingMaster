@@ -296,6 +296,15 @@ class ActivityModule(ABC):
         """
         return {}
 
+    @classmethod
+    def normalize_config(cls, config: dict) -> dict:
+        """把旧版配置键折算成当前配置面、施加自身不变量；默认原样返回。
+
+        core 在读回存档与接收 GUI 写入前各调用一次，让"改键名/合并互斥键/档位
+        约束"这类配置面演进留在模块内，核心不必认识任何模块的旧字段。
+        """
+        return config
+
     # ---------- GUI 数据看板内容（可选，模块自述）----------
     #
     # 新模块实现 read_dashboard()，返回 core/dashboard_contract.py 定义的 block 载荷；

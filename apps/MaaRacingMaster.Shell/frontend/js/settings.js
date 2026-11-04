@@ -40,9 +40,8 @@
     host.style.opacity = disabled ? '0.6' : '1';
     host.style.pointerEvents = disabled ? 'none' : 'auto';
   }
-  // 驾驶模式（speedrush 分段控件）：深度几何=正常自动驾驶 | 全程直行=直行基线
-  // （后端 straight_mode 布尔键；不加载感知与深度，只踩油门）| 宏录制=采集/回放
-  // 玩家操作（后端 macro_mode 布尔键；与 straight_mode 互斥，切换时两键同发）
+  // 驾驶模式（speedrush 分段控件，后端单一 drive_mode 键）：
+  // depth=深度几何 | straight=全程直行（直行档不显示录制开关）| macro=宏录制/回放
   const VALID_DRIVE_MODES = new Set(['depth', 'straight', 'macro']);
   function setDriveModeOnUI(val) {
     const host = $('opt-drive-mode');
@@ -64,15 +63,15 @@
     host.style.opacity = disabled ? '0.6' : '1';
     host.style.pointerEvents = disabled ? 'none' : 'auto';
   }
-  // 录制开关的文案随驾驶模式切换：宏模式=录制玩家操作，其余=训练语料
+  // 录制开关的文案随驾驶模式切换：宏档录"可回放的操作时间轴"，深度档录训练语料
   const RECORD_COPY = {
     macro: {
       title: '录制宏',
-      desc: '开启后驾驶阶段只采集你的手柄/键盘操作（请自行驾驶），宏存到 data/speedrush/macros/；关闭则回放所选宏。键盘：A/D 或 ←/→ 满幅转向，W/↑ 右扳机满，S/↓ 左扳机满；键盘只在游戏窗口前台时记录。录制阶段由你驾驶，紧急停止的按键检测会暂停。',
+      desc: '开启后本段只采集你的手柄/键盘操作，录成可回放的宏（存到用户数据目录）；关闭录制则回放所选宏。键盘 A/D 或 ←/→ 满幅转向，W/↑ 右扳机，S/↓ 左扳机。',
     },
     depth: {
       title: '录制演示数据',
-      desc: '开启后驾驶阶段只采集、不操纵车辆（请自行手动驾驶），产出用于训练的数据集。数据落在调试目录的 speedrush/manual_日期_时间_p阶段/ 下（manual 前缀=人工驾驶语料，一段驾驶只写这一个目录）。改动在下次「开始」时生效。建议把设置页的点击方式保持为「前台鼠标」——「后台手柄」会创建虚拟手柄，可能与你的手柄冲突。',
+      desc: '开启后本段只采集画面与手柄数据、不操纵车辆，用于训练语料（存到调试目录）。请自行驾驶；建议点击方式保持「前台鼠标」，避免虚拟手柄与你的手柄冲突。',
     },
   };
   function applyRecordCopy(mode) {
@@ -84,6 +83,11 @@
   }
   function setMacroRowVisible(show) {
     const row = $('opt-macro-row');
+    if (row) row.style.display = show ? '' : 'none';
+  }
+  // 直行档没有录制语义（接管车辆、不采集），整个开关行不显示
+  function setRecordRowVisible(show) {
+    const row = $('opt-record-row');
     if (row) row.style.display = show ? '' : 'none';
   }
   // 宏组下拉：选项来自后端 get_module_config 的 _choices（未运行时静态枚举）
@@ -233,16 +237,16 @@
     );
   }
 
-  // 极速狂飙专属选项（演示数据录制开关 + 驾驶模式 + 宏组）
+  // 极速狂飙专属选项（驾驶模式 + 宏组 + 录制开关）
   async function refreshSpeedrushOptions() {
     const btn = $('opt-record-mode');
     const cfg = await mra.call('get_module_config', { module_id: 'speedrush' });
     if (btn) setToggle(btn, !!(cfg && cfg.record_mode));
-    const mode = (cfg && cfg.macro_mode) ? 'macro'
-      : ((cfg && cfg.straight_mode) ? 'straight' : 'depth');
+    const mode = (cfg && VALID_DRIVE_MODES.has(cfg.drive_mode)) ? cfg.drive_mode : 'depth';
     setDriveModeOnUI(mode);
     fillMacroGroups(cfg);
     setMacroRowVisible(mode === 'macro');
+    setRecordRowVisible(mode !== 'straight');
     applyRecordCopy(mode);
     renderSpeedrushStatus(cfg);
   }
@@ -252,6 +256,12 @@
   function renderSpeedrushStatus(cfg) {
     const st = (cfg && cfg._state) || null;
     const on = !!(cfg && cfg.record_mode);
+    const mode = (cfg && VALID_DRIVE_MODES.has(cfg.drive_mode)) ? cfg.drive_mode : 'depth';
+    if (mode === 'straight') {
+      // 直行档没有录制面，不显示录制相关的实况/提示
+      setOptionsStatus('', '');
+      return;
+    }
     if (st && st.macro_recording) {
       setOptionsStatus(
         `宏录制中：已写 ${st.macro_samples} 条；目录 ${st.macro_dir}`,
@@ -334,7 +344,6 @@
   }
 
   // 驾驶模式切换：只写 sidecar 缓存（下次 start 注入），与录制开关同一姿态。
-  // 三态映射成两个互斥布尔键：每次切换两键同发，后端再做一次收口。
   async function onDriveModePick(value) {
     const host = $('opt-drive-mode');
     if (!host || host.style.pointerEvents === 'none' || _optionsSaving) return;
@@ -346,12 +355,14 @@
     try {
       const resp = await mra.call('set_module_config', {
         module_id: 'speedrush',
-        config: { straight_mode: value === 'straight', macro_mode: value === 'macro' },
+        config: { drive_mode: value },
       });
-      const saved = (resp && resp.macro_mode) ? 'macro'
-        : ((resp && resp.straight_mode) ? 'straight' : 'depth');
+      const saved = (resp && VALID_DRIVE_MODES.has(resp.drive_mode)) ? resp.drive_mode : value;
       setDriveModeOnUI(saved); // 回显后端最终值
+      const recBtn = $('opt-record-mode');
+      if (recBtn) setToggle(recBtn, !!(resp && resp.record_mode)); // 直行档会顺手关录制
       setMacroRowVisible(saved === 'macro');
+      setRecordRowVisible(saved !== 'straight');
       applyRecordCopy(saved);
       fillMacroGroups(resp);
       if (MRA.noteConfigSaved) MRA.noteConfigSaved('speedrush', resp); // 卡片摘要 chips 跟进
@@ -365,6 +376,7 @@
       console.error(e);
       setDriveModeOnUI(prev); // 回滚
       setMacroRowVisible(prev === 'macro');
+      setRecordRowVisible(prev !== 'straight');
       applyRecordCopy(prev);
       reportError('inline', '保存失败: ' + (e.message || e));
     } finally {
@@ -1417,10 +1429,15 @@
       if (!sw || sw.hasAttribute('aria-labelledby') || !sw.id) return; // 无 id 无法建立引用，跳过
       const title = row.querySelector('.option-title');
       if (!title) return;
-      title.id = sw.id + '-label';
+      // 已显式命名的标题/说明保留原 id：文案会被程序改写（如录制开关随模式换说法），
+      // 覆盖 id 会让那些更新函数找不到元素。
+      if (!title.id) title.id = sw.id + '-label';
       sw.setAttribute('aria-labelledby', title.id);
       const desc = row.querySelector('.option-desc');
-      if (desc) { desc.id = sw.id + '-desc'; sw.setAttribute('aria-describedby', desc.id); }
+      if (desc) {
+        if (!desc.id) desc.id = sw.id + '-desc';
+        sw.setAttribute('aria-describedby', desc.id);
+      }
     });
   }
   wireSwitchAria(document); // 静态 HTML 里的开关（如录制演示）脚本加载即接线

@@ -20,10 +20,12 @@
     speedrush: {
       icon: '🏎️',
       summary: (cfg) => {
-        const mode = (cfg && cfg.macro_mode) ? '宏录制'
-          : ((cfg && cfg.straight_mode) ? '全程直行' : '深度几何');
-        const out = ['录制: ' + (cfg && cfg.record_mode ? '开' : '关'), '驾驶模式: ' + mode];
-        if (cfg && cfg.macro_mode && !cfg.record_mode) {
+        const mode = (cfg && cfg.drive_mode) || 'depth';
+        const modeText = ({ depth: '深度几何', straight: '全程直行', macro: '宏录制' })[mode] || '深度几何';
+        const out = [];
+        if (mode !== 'straight') out.push('录制: ' + (cfg && cfg.record_mode ? '开' : '关'));
+        out.push('驾驶模式: ' + modeText);
+        if (mode === 'macro' && cfg && !cfg.record_mode) {
           out.push('宏组: ' + (cfg.macro_group || '最新录制的宏'));
         }
         return out;

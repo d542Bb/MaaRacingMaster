@@ -211,15 +211,17 @@ pytestmark_mod = pytest.mark.skipif(not _OK, reason=f"需要完整运行时依�
 
 
 @pytestmark_mod
-def test_macro_config_mutual_exclusion_and_validation():
+def test_drive_mode_config_roundtrip_and_legacy_migration():
     m = smod.SpeedRushModule(None)
-    out = m.set_module_config({"macro_mode": True, "straight_mode": True})
-    assert out["macro_mode"] is True and out["straight_mode"] is False
-    out = m.set_module_config({"straight_mode": True})
-    assert out["straight_mode"] is True and out["macro_mode"] is False
+    out = m.set_module_config({"drive_mode": "macro"})
+    assert out["drive_mode"] == "macro" and m._resolve_drive_mode() == "macro"
+    out = m.set_module_config({"drive_mode": "straight"})
+    assert out["drive_mode"] == "straight" and m._resolve_drive_mode() == "straight"
+    out = m.set_module_config({"drive_mode": "bogus"})
+    assert out["drive_mode"] == "straight"   # 非法值忽略，保留上一档
+    # 实例直收旧布尔键也折算（宏优先，与旧互斥收口同序）
     out = m.set_module_config({"macro_mode": True})
-    assert out["macro_mode"] is True and out["straight_mode"] is False
-    assert m._resolve_drive_mode() == "macro"
+    assert out["drive_mode"] == "macro" and "macro_mode" not in out
     out = m.set_module_config({"macro_group": "../evil"})
     assert out["macro_group"] == ""
     out = m.set_module_config({"macro_group": "20261103_120000"})
@@ -227,9 +229,26 @@ def test_macro_config_mutual_exclusion_and_validation():
 
 
 @pytestmark_mod
+def test_legacy_boolean_keys_normalize_to_drive_mode():
+    norm = smod.SpeedRushModule.normalize_config
+    assert norm({"straight_mode": True, "macro_mode": True}) == {"drive_mode": "macro"}
+    assert norm({"straight_mode": True}) == {"drive_mode": "straight", "record_mode": False}
+    assert norm({"macro_mode": True}) == {"drive_mode": "macro"}
+    assert norm({"straight_mode": False, "macro_mode": False}) == {"drive_mode": "depth"}
+    # 新键已存在时不被旧键覆盖
+    assert norm({"drive_mode": "straight", "macro_mode": True}) == {
+        "drive_mode": "straight", "record_mode": False}
+    # 直行档不变量：残留的录制开关一律关掉（界面在直行档不显示该开关）
+    assert norm({"drive_mode": "straight", "record_mode": True}) == {
+        "drive_mode": "straight", "record_mode": False}
+    assert norm({"drive_mode": "depth", "record_mode": True}) == {
+        "drive_mode": "depth", "record_mode": True}
+
+
+@pytestmark_mod
 def test_macro_mode_skips_model_preload_and_choices_prepends_latest(monkeypatch):
     m = smod.SpeedRushModule(None)
-    m.set_module_config({"macro_mode": True, "control_mode": True})
+    m.set_module_config({"drive_mode": "macro", "control_mode": True})
     assert m._preload_wanted() is False
     monkeypatch.setattr(smod, "list_groups",
                         lambda: [{"value": "20261103_120000", "label": "x"}])

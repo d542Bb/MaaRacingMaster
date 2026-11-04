@@ -654,9 +654,10 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 读到的是人行道外缘（语义与旧 q20 的"人行道内缘"锚点不同，已记录于回归锁锚点注）。
 时延：推理 ~20ms（折叠口径）+ 后处理 p50 ≈80ms，异步 worker 承载（150ms 窗）。
 
-**驾驶模式档**（module config `straight_mode` / `macro_mode`，默认 False；GUI「驾驶模式」
-分段控件 深度几何/全程直行/宏录制；`straight_mode` 与 `macro_mode` 互斥，宏模式见 §3.1）：
-False/False=正常全链驾驶；`straight_mode=True`=**全程直行基线**——接管手柄后方向归零、
+**驾驶模式档**（module config `drive_mode`，默认 `depth`；GUI「驾驶模式」分段控件
+全程直行/宏录制/深度几何；旧存档的 `straight_mode` / `macro_mode` 两个布尔键由
+`normalize_config` 在读写前折算成单键，宏优先，并顺手关掉直行档残留的录制开关）：
+`depth`=正常全链驾驶；`straight`=**全程直行基线**——接管手柄后方向归零、
 油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
 不起深度 worker，perception_mode 开着也不跑），trace 只记时间轴与常量列（state=STRAIGHT，
 与控制链同走流水汇）。控制两档（智能/直行）都在 `_drive_loop` 内同点起

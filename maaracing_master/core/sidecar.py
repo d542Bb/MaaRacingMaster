@@ -439,6 +439,20 @@ def _step_ids() -> frozenset[str]:
     return frozenset(MODULE_REGISTRY) | frozenset(BUILTIN_STEPS)
 
 
+def _normalize_module_config(module_id: str, config: dict) -> dict:
+    """让模块把旧键折算成当前配置面、并施加档位不变量；失败按原样继续。"""
+    cls = MODULE_REGISTRY.get(module_id)
+    fn = getattr(cls, "normalize_config", None) if cls is not None else None
+    if not callable(fn):
+        return config
+    try:
+        out = fn(dict(config))
+    except Exception as exc:  # noqa: BLE001 —— 归一失败不阻断配置读取/写入
+        logger.log(f"[模块配置] {module_id} 配置归一失败，按原样继续: {exc!r}", "WARNING")
+        return config
+    return out if isinstance(out, dict) else config
+
+
 def _step_name(step_id: str) -> str:
     if step_id in BUILTIN_STEPS:
         return BUILTIN_STEPS[step_id].NAME
@@ -690,6 +704,7 @@ class SidecarService:
             # 内置步骤没有有效期概念，只要 id 在册就收。
             if mid not in _step_ids() or (mid in MODULE_REGISTRY and module_expired(mid)):
                 continue
+            flat = _normalize_module_config(mid, flat)
             allowed = _module_config_defaults(mid)
             kept = {k: flat[k] for k in allowed if k in flat}
             if kept:
@@ -1012,6 +1027,7 @@ class SidecarService:
         if module_id not in _step_ids():
             return (False, None, f"模块不存在: {module_id}")
         # 只收该模块声明过的键（白名单 = DEFAULT_MODULE_CONFIG / 步骤 DEFAULT_CONFIG 的键集）
+        config = _normalize_module_config(module_id, config)
         allowed = _module_config_defaults(module_id)
         try:
             with self._lock:

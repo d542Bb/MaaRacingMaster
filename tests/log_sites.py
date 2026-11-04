@@ -335,6 +335,7 @@ SITES: list[LogSite] = [
     _s('core/sidecar.py', 'SidecarService.set_boost_priority', '性能优先({}): {}', '<dynamic>', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService._migrate_legacy_shutdown', '<dynamic>', 'INFO', 'cross', 'cross', '启动期一次性迁移回显：旧「运行结束后」开关折成任务步骤，发生在构造阶段、无业务组。'),
     _s('core/sidecar.py', '_save_profile', '[sidecar] 偏好落盘失败: {}', 'WARNING', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
+    _s('core/sidecar.py', '_normalize_module_config', '[模块配置] {} 配置归一失败，按原样继续: {}', 'WARNING', 'cross', 'cross', '配置面演进的降级回显：发生在启动回填/RPC 请求线程，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_start_from', '断点模式: {} 将从「{}」开始运行', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.start', '断点模式: 从 {} 开始运行', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService._check_sampler_stall', '[perf] 采样器已 {}s 未更新（采样线程可能卡死），面板数字为陈旧值', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
@@ -387,7 +388,7 @@ SITES: list[LogSite] = [
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '[极速狂飙] 录制模式提示：当前点击方式为「后台手柄」，导航步骤会创建虚拟手柄，可能与你的物理手柄冲突（驾驶时手柄可能不响应）。建议在设置页改为「前台鼠标」再录。', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 宏组名必须是字符串，已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 非法宏组名 {}（只允许单段目录名），已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
-    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 驾驶模式冲突（宏与直行同时为真），按宏录制生效', 'WARNING', 'cross', 'cross', 'GUI 配置写入的互斥收口告警（RPC 请求线程），无业务组。'),
+    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 非法驾驶模式 {}，已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
 
     # ---- plugins/speedrush/recorder.py ----
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._write_meta', '[极速狂飙] 录制 meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),

@@ -692,6 +692,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 - `ActivityModule.manual_input_active()`（默认 `False`）：模块声明"当前是玩家自己操作、程序不接管输入"。紧急停止（≥2 键即停）只对程序操作期生效——人工驾驶/录制阶段按键是正常操作（键盘驾驶 W+A 就是两键），急停循环据此跳过按键检测。实现见 `controller._emergency_stop_loop` / `_manual_input_active`。
 - `core/key_state.py`：具名键盘按键状态读取（只读 `GetAsyncKeyState`），插件经此读取驾驶键；插件不得直接 import `window_utils`（平台件边界同 §5.3 的 `xinput.py`）。
 - `ActivityModule.config_choices()`（默认 `{}`）：模块为下拉型配置项提供静态可选值；`sidecar._module_config_view` 并入 `_choices` 供 GUI 展示，不创建模块实例，取值合法性仍由模块自行校验。
+- `ActivityModule.normalize_config()`（默认原样返回）：模块把旧版配置键折算成当前配置面，并施加自身的不变量（如直行档不许残留录制开关）；sidecar 在读回存档与接收 GUI 写入前各调一次。配置面演进留在模块内，core 不认任何模块的旧字段；归一失败记 WARNING 并按原样继续。
 
 ### 5.4 MAA Framework API
 

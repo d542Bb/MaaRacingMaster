@@ -71,7 +71,7 @@ def test_start_preload_only_once(monkeypatch):
 
 def test_straight_mode_never_preloads():
     mod = _module()
-    mod._straight_mode = True
+    mod._drive_mode = "straight"
     mod._control_mode = True
     assert mod._preload_wanted() is False
 
@@ -97,7 +97,7 @@ def test_record_perception_skips_depth_model(monkeypatch):
 def test_macro_mode_skips_preload():
     """宏模式不加载感知/深度（只剩下手柄与抓帧锚点）。"""
     mod = _module()
-    mod._macro_mode = True
+    mod._drive_mode = "macro"
     mod._control_mode = True
     mod._perception_mode = True
     assert mod._preload_wanted() is False

@@ -378,6 +378,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .task-panel-label:first-child { margin-top: 0; }
 .task-options { display: flex; flex-direction: column; }
 .task-panel .module-options-row + .module-options-row { margin-top: 14px; }
+.task-panel .module-options-row + .option-row { margin-top: 16px; }
 .task-panel .option-row { padding: 0; }
 .bp-hint-breakpoint { font-size: 11px; color: var(--mra-foreground-muted); margin-bottom: 6px; }
 /* 面板里的阶段列表：不带外层 .breakpoint-list 的撑满/滚动语义（列表本身跟随内容） */

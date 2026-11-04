@@ -72,9 +72,10 @@ RPC 层不信任调用方给的地址。
   经 openModal 的弹窗零成本继承；自绘浮层若要做陷阱，参照其实现而不是另起一套。
 - **开关 aria 接线**：`.option-row` 结构里的 `.mra-toggle[role="switch"]` 由
   `wireSwitchAria`（js/settings.js）按结构自动挂 `aria-labelledby`/`aria-describedby`
-  （引用 id 从开关自身 id 派生 `-label`/`-desc`）。**新开关只要按 option-row 既有结构
-  写、开关带 id 即可**，不要手写 aria 属性；函数幂等，静态启动跑一次、模板重渲染在
-  `bindModulePages` 再跑一次。
+  （标题/说明没有 id 时，从开关自身 id 派生 `-label`/`-desc`）。**新开关只要按 option-row
+  既有结构写、开关带 id 即可**，不要手写 aria 属性；标题/说明自带 id 时原样保留——文案若
+  会被程序改写（如录制开关随驾驶模式换说法），那些更新函数要靠这个 id 找人。函数幂等，
+  静态启动跑一次、模板重渲染在 `bindModulePages` 再跑一次。
 
 ## 活动模块下拉（自绘 combobox 投影层）
 

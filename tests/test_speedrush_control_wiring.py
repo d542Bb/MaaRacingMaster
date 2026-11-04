@@ -570,11 +570,11 @@ def test_control_mode_config_roundtrip():
 
 def test_straight_mode_config_roundtrip():
     m = _module()
-    assert m._straight_mode is False             # 默认走正常深度几何驾驶
-    assert smod.SpeedRushModule.DEFAULT_MODULE_CONFIG["straight_mode"] is False
-    out = m.set_module_config({"straight_mode": True})
-    assert out["straight_mode"] is True and m._straight_mode is True
-    assert m.set_module_config({"straight_mode": False})["straight_mode"] is False
+    assert m._drive_mode == "depth"             # 默认走正常深度几何驾驶
+    assert smod.SpeedRushModule.DEFAULT_MODULE_CONFIG["drive_mode"] == "depth"
+    out = m.set_module_config({"drive_mode": "straight"})
+    assert out["drive_mode"] == "straight" and m._drive_mode == "straight"
+    assert m.set_module_config({"drive_mode": "depth"})["drive_mode"] == "depth"
 
 
 def test_straight_tick_zero_steer_full_throttle():

@@ -239,20 +239,13 @@
       </div>
     </div>
     <div id="opt-speedrush-block" style="display:none;">
-      <div class="option-row">
-        <button class="mra-toggle" id="opt-record-mode" role="switch" aria-checked="false"></button>
-        <div class="option-main">
-          <div class="option-title" id="opt-record-title">录制演示数据</div>
-          <p class="option-desc" id="opt-record-desc">开启后驾驶阶段只采集、不操纵车辆（请自行手动驾驶），产出用于训练的数据集。数据落在调试目录的 speedrush/manual_日期_时间_p阶段/ 下（manual 前缀=人工驾驶语料，一段驾驶只写这一个目录）。改动在下次「开始」时生效。建议把设置页的点击方式保持为「前台鼠标」——「后台手柄」会创建虚拟手柄，可能与你的手柄冲突。</p>
-        </div>
-      </div>
       <div class="module-options-row">
         <div class="mra-field">
           <label class="mra-field-label">驾驶模式</label>
           <div class="mra-segmented" id="opt-drive-mode" role="group" aria-label="驾驶模式">
-            <button type="button" class="seg-btn seg-btn--selected" data-value="depth">深度几何</button>
             <button type="button" class="seg-btn" data-value="straight">全程直行</button>
             <button type="button" class="seg-btn" data-value="macro">宏录制</button>
+            <button type="button" class="seg-btn seg-btn--selected" data-value="depth">深度几何</button>
           </div>
         </div>
       </div>
@@ -262,6 +255,13 @@
           <div class="mra-field-control">
             <select id="opt-macro-group"></select>
           </div>
+        </div>
+      </div>
+      <div class="option-row" id="opt-record-row">
+        <button class="mra-toggle" id="opt-record-mode" role="switch" aria-checked="false"></button>
+        <div class="option-main">
+          <div class="option-title" id="opt-record-title">录制演示数据</div>
+          <p class="option-desc" id="opt-record-desc">开启后本段只采集画面与手柄数据、不操纵车辆，用于训练语料（存到调试目录）。请自行驾驶；建议点击方式保持「前台鼠标」，避免虚拟手柄与你的手柄冲突。</p>
         </div>
       </div>
     </div>

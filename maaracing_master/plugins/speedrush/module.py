@@ -335,13 +335,12 @@ class SpeedRushModule(ActivityModule):
     # 控制开关的初值（True = 驾驶阶段跑全链并接管手柄）。默认 False：
     # 接线首启不接管车辆，显式开才动（实机安全边界）。
     DEFAULT_CONTROL_MODE = False
-    # 直行基线档的初值（False = 正常深度几何驾驶）。True = 驾驶阶段接管手柄后
-    # 方向归零、油门恒踩，感知与深度都不加载（全程直行基线的测量仪器，
-    # control-route 验收②的分母）。
-    DEFAULT_STRAIGHT_MODE = False
-    # 宏模式的初值（False = 按深度/直行档跑）。True = 宏录制模式：开录制时采集
-    # 玩家操作到 data/，关录制时回放所选宏。
-    DEFAULT_MACRO_MODE = False
+    # 驾驶模式（唯一档位键）：depth=正常深度几何驾驶 | straight=全程直行基线
+    # （接管手柄后方向归零、油门恒踩，感知与深度都不加载，control-route 验收②
+    # 的分母）| macro=宏录制/回放（开录制采玩家操作到 data/，关录制回放所选宏）。
+    DRIVE_MODES = ("depth", "straight", "macro")
+    DRIVE_LABELS = {"depth": "深度几何", "straight": "全程直行", "macro": "宏录制"}
+    DEFAULT_DRIVE_MODE = "depth"
     # 要回放的宏组（空=最新一组）；只在宏模式且未开录制时生效
     DEFAULT_MACRO_GROUP = ""
 
@@ -382,8 +381,7 @@ class SpeedRushModule(ActivityModule):
         "record_mode": DEFAULT_RECORD_MODE,
         "perception_mode": DEFAULT_PERCEPTION_MODE,
         "control_mode": DEFAULT_CONTROL_MODE,
-        "straight_mode": DEFAULT_STRAIGHT_MODE,
-        "macro_mode": DEFAULT_MACRO_MODE,
+        "drive_mode": DEFAULT_DRIVE_MODE,
         "macro_group": DEFAULT_MACRO_GROUP,
     }
 
@@ -418,6 +416,30 @@ class SpeedRushModule(ActivityModule):
         """宏组下拉的可选值（空值=最新一组，排在最前）。不创建实例。"""
         return {"macro_group": [{"value": "", "label": "最新录制的宏"}] + list_groups()}
 
+    @classmethod
+    def normalize_config(cls, config: dict) -> dict:
+        """旧键折算 + 档位不变量：直行档接管车辆，没有录制面。
+
+        旧存档的直行/宏两个布尔键按「宏优先」折算成单键（与旧互斥收口同序）；
+        直行档残留的录制开关一律关掉——界面上该开关在直行档不显示，留着会
+        让直行档退化成人工录制。
+        """
+        if not isinstance(config, dict):
+            return config
+        out = dict(config)
+        if "drive_mode" not in out and ("straight_mode" in out or "macro_mode" in out):
+            if bool(out.get("macro_mode")):
+                out["drive_mode"] = "macro"
+            elif bool(out.get("straight_mode")):
+                out["drive_mode"] = "straight"
+            else:
+                out["drive_mode"] = "depth"
+        out.pop("straight_mode", None)
+        out.pop("macro_mode", None)
+        if out.get("drive_mode") == "straight":
+            out["record_mode"] = False
+        return out
+
     def __init__(self, ctx: ActivityContext | None) -> None:
         super().__init__(ctx)
         self._graph: NavGraph | None = None
@@ -437,10 +459,8 @@ class SpeedRushModule(ActivityModule):
         self._perception_failed = False
         # 控制模式：驾驶阶段跑全链并接管手柄（V0/V1 由 decision.json 决定，见类常量）
         self._control_mode = self.DEFAULT_CONTROL_MODE
-        # 直行基线档：接管手柄后只踩油门（感知/深度不加载，见类常量注释）
-        self._straight_mode = self.DEFAULT_STRAIGHT_MODE
-        # 宏模式：开录制=采玩家操作到 data/；关录制=回放所选宏组
-        self._macro_mode = self.DEFAULT_MACRO_MODE
+        # 驾驶模式：depth 正常全链 / straight 直行基线 / macro 宏录制回放
+        self._drive_mode = self.DEFAULT_DRIVE_MODE
         self._macro_group = self.DEFAULT_MACRO_GROUP
         self._macro_rec: MacroRecorder | None = None
         self._macro_player: MacroPlayer | None = None
@@ -481,12 +501,8 @@ class SpeedRushModule(ActivityModule):
         return self._stage_name
 
     def _resolve_drive_mode(self) -> str:
-        """本次驾驶模式（唯一派生入口）：macro > straight > depth。"""
-        if self._macro_mode:
-            return "macro"
-        if self._straight_mode:
-            return "straight"
-        return "depth"
+        """本次驾驶模式（唯一派生入口）。"""
+        return self._drive_mode
 
     def manual_input_active(self) -> bool:
         """录制阶段人工驾驶：紧急停止的按键检测暂停（急停只对程序操作期生效）。"""
@@ -507,8 +523,7 @@ class SpeedRushModule(ActivityModule):
             "record_mode": bool(self._record_mode),
             "perception_mode": bool(self._perception_mode),
             "control_mode": bool(self._control_mode),
-            "straight_mode": bool(self._straight_mode),
-            "macro_mode": bool(self._macro_mode),
+            "drive_mode": self._drive_mode,
             "macro_group": self._macro_group,
             "_state": {
                 "recording": bool(rec is not None and rec.running),
@@ -541,16 +556,20 @@ class SpeedRushModule(ActivityModule):
 
         非法值一律静默修正并返回最终值（与 treasure 同约定），不抛给调用方。
         """
+        if isinstance(config, dict):
+            config = type(self).normalize_config(config)
         if isinstance(config, dict) and "record_mode" in config:
             self._record_mode = bool(config["record_mode"])
         if isinstance(config, dict) and "perception_mode" in config:
             self._perception_mode = bool(config["perception_mode"])
         if isinstance(config, dict) and "control_mode" in config:
             self._control_mode = bool(config["control_mode"])
-        if isinstance(config, dict) and "straight_mode" in config:
-            self._straight_mode = bool(config["straight_mode"])
-        if isinstance(config, dict) and "macro_mode" in config:
-            self._macro_mode = bool(config["macro_mode"])
+        if isinstance(config, dict) and "drive_mode" in config:
+            mode = config["drive_mode"]
+            if mode in self.DRIVE_MODES:
+                self._drive_mode = mode
+            else:
+                logger.log(f"[极速狂飙] 非法驾驶模式 {mode!r}，已忽略", "WARNING")
         if isinstance(config, dict) and "macro_group" in config:
             group = config["macro_group"]
             if not isinstance(group, str):
@@ -560,16 +579,6 @@ class SpeedRushModule(ActivityModule):
             else:
                 logger.log(f"[极速狂飙] 非法宏组名 {group!r}（只允许单段目录名），已忽略",
                            "WARNING")
-        # 互斥收口：本次显式提交的键优先；两者同时为真时宏优先
-        if self._macro_mode and self._straight_mode:
-            if isinstance(config, dict) and "straight_mode" in config \
-                    and "macro_mode" not in config:
-                self._macro_mode = False
-            else:
-                self._straight_mode = False
-                if isinstance(config, dict) and "straight_mode" in config:
-                    logger.log("[极速狂飙] 驾驶模式冲突（宏与直行同时为真），按宏录制生效",
-                               "WARNING")
         return self.get_module_config()
 
     # ---------- 生命周期 ----------
@@ -606,8 +615,7 @@ class SpeedRushModule(ActivityModule):
         # 启动组开在图加载之前：图加载与断点修正也是这次运行的启动正文，不能散成裸行。
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
                         f"·感知{'开' if self._perception_mode else '关'}"
-                        f"·直行{'开' if self._straight_mode else '关'}"
-                        f"·宏{'开' if self._macro_mode else '关'}）", "session")
+                        f"·驾驶模式:{self.DRIVE_LABELS[self._drive_mode]}）", "session")
         flow_ok = False
         try:
             graph = NavGraph(self.ctx)
@@ -1029,7 +1037,7 @@ class SpeedRushModule(ActivityModule):
             # 控制接管的前提：非录制模式（录制期人驾，程序不碰车）+ control_mode 开关
             # 或直行基线档（该档本身就是接管形态）。控制依赖感知产出观测，故正常控制
             # 隐含逐帧检测（不必另开 perception_mode）；直行档例外——感知/深度都不加载。
-            straight = self._straight_mode and recorder is None
+            straight = self._drive_mode == "straight" and recorder is None
             control = (self._control_mode or straight) and recorder is None
             # 录制模式影子观察（2026-10-15 对照臂接线）：人驾期间决策链照跑但不下发
             # （不接入手柄）——trace 与智能局同列同语义（cr_best=收益场本拍选点、
@@ -1407,7 +1415,7 @@ class SpeedRushModule(ActivityModule):
                 # 主循环看到后中止本阶段（不是停控滑行）。
                 "view_guard": (ViewGuard(cfg.view_guard, time.perf_counter())
                                if cfg.view_guard.enabled and not self._view_ok
-                               and self._control_mode and not self._straight_mode
+                               and self._control_mode and self._drive_mode != "straight"
                                else None),
                 "abort_phase": False,
                 "prev_ts": None, "disabled": False,
@@ -2392,9 +2400,9 @@ class SpeedRushModule(ActivityModule):
 
     def _preload_wanted(self) -> bool:
         """直行档与宏模式都不加载感知/深度；录制且不感知时也不需要。"""
-        if self._macro_mode:
+        if self._drive_mode == "macro":
             return False
-        return (not self._straight_mode
+        return (self._drive_mode != "straight"
                 and (self._control_mode or self._perception_mode))
 
     def _start_preload(self) -> None:
