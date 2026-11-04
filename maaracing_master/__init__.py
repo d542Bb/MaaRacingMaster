@@ -15,7 +15,8 @@ import sys
 # 注意：__init__.py 自身的 .pyc 会在本行执行前由解释器写出，属正常现象。
 sys.dont_write_bytecode = True
 
-import re  # noqa: E402 —— 上一行的停用字节码副作用须先于一切导入生效
+import json  # noqa: E402 —— 上一行的停用字节码副作用须先于一切导入生效
+import re
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -80,6 +81,40 @@ def _git_describe_version() -> str | None:
     return out
 
 
+def _read_release_marker(git_root: Path) -> str | None:
+    """源码模式版本基线：读随发版提交进仓库的版本标记 docs/latest_release.json。
+
+    squash 发版把 tag 打在稳定线压扁提交上，日常线（保留细粒度历史）的 git describe
+    够不着这些 tag，只能回退到线上最后一个可达旧 tag——显示与更新检查双双算错（真机：
+    dev 线跑源码显示 0.23.0.dev1+1033，实际已到 0.30.0-dev.1）。版本标记按提交版本化、
+    dev/master 内容一致，取它当基线既跟随 checkout（旧提交读到旧标记），又不依赖 tag
+    可达性。取不到（缺文件 / 坏 JSON / 无 version）返回 None，交调用方回退 describe。
+    """
+    try:
+        data = json.loads((git_root / "docs" / "latest_release.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    ver = data.get("version") if isinstance(data, dict) else None
+    return ver.strip() if isinstance(ver, str) and ver.strip() else None
+
+
+def _commits_since(git_root: Path, rel_path: str) -> int | None:
+    """HEAD 距该文件最后一次改动有多少个提交（源码模式领先发布标记的漂移数）。"""
+    try:
+        last = subprocess.check_output(
+            ["git", "log", "-1", "--format=%H", "--", rel_path],
+            cwd=str(git_root), stderr=subprocess.DEVNULL, timeout=2,
+        ).decode("utf-8", "replace").strip()
+        if not last:
+            return None
+        return int(subprocess.check_output(
+            ["git", "rev-list", "--count", f"{last}..HEAD"],
+            cwd=str(git_root), stderr=subprocess.DEVNULL, timeout=2,
+        ).decode("utf-8", "replace").strip())
+    except Exception:
+        return None
+
+
 def _is_source_checkout(pkg_init: Path) -> bool:
     """包本体是否就是所在 git 仓库的工作副本（= 源码直跑）。
 
@@ -113,8 +148,16 @@ def _display_version(version: str, source_mode: bool) -> str:
 # 源码运行（本包即仓库工作副本）时动态推导，覆盖可能过期的构建快照；
 # 打包产物（无 .git，或上层 .git 属于别的仓库）保持读取 _version.py 快照。
 if SOURCE_MODE:
-    _dev_version = _git_describe_version()
-    if _dev_version:
-        __version__ = _dev_version
+    _git_root = _find_git_root(Path(__file__).resolve().parent)
+    _marker = _read_release_marker(_git_root) if _git_root is not None else None
+    if _marker is not None:
+        # 基线取版本标记（不受 squash tag 可达性影响），漂移数取距标记最后一次改动的提交数。
+        _base = _marker.replace("-dev.", ".dev").replace(".dev.", ".dev")
+        _n = _commits_since(_git_root, "docs/latest_release.json") if _git_root is not None else None
+        __version__ = f"{_base}+{_n}" if _n else _base
+    else:
+        _dev_version = _git_describe_version()
+        if _dev_version:
+            __version__ = _dev_version
 
 __display_version__ = _display_version(__version__, SOURCE_MODE)
