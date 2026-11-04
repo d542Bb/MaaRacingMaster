@@ -1391,6 +1391,7 @@ ANCHOR_Z_LO, ANCHOR_Z_HI = 2.0, 90.0   # 测量有效域（米；anchor-age 实�
 # 近簇选择阈值（2026-10-13）：候选 bin 计数须达最密 bin 的此份额才算"有料"——
 # 挡近端散点小计数；起值 [需实测]，过低会抓散点、过高退回最密簇（翻跳复发）
 _NEAR_CLUSTER_FRAC = 0.4
+_BOTTOM_MIN_PTS = 10       # 框底条带最少有效点（不足回退整框近簇）
 
 
 @dataclass(frozen=True)
@@ -1425,16 +1426,15 @@ class DepthAnchorSheet:
 
 
 def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | None:
-    """框内 Z = 直方图**近簇**中位（2026-10-13 修正：原"最密簇"在远车框上
-    会在车身簇/背景簇间翻跳——车箱远框点少，背景（车顶上方越过的远路面）
-    常比车身更密，实机生命表实测逐锚跳 10~15m、t_meet 随之闪现）。
+    """框内 Z = 框底条带中位（2026-11-04 距离突变修正）。
 
-    近簇选择的几何依据：实心物体对背景，框内比车**更近**的只有噪声级散点
-    （框底=车接地面，就在车距）；车身簇永远不晚于背景簇出现。实现：2~98
-    分位域 24bin（分箱口径不变），从近端向远端扫，第一个计数 ≥
-    _NEAR_CLUSTER_FRAC×最密 bin 的 bin 即取（近端散点小计数被阈值挡住）；
-    其中心 ±1bin 收簇取中位。全车近框（无背景混入）时最密簇即车身，行为
-    与旧口径一致。框过小/有效点不足 → None。"""
+    框底=车接地面，就在车距——底部 ~25% 行的中位直接给车距；背景（车顶
+    上方越过的远路面）只落在框的上部行，天然排除。整框直方图近簇（旧口径，
+    2026-10-13）在远框上失效：原生分辨率下远车框仅几十点，车身与背景混成
+    40m 宽斜坡无可分簇，近簇中位被背景拉远 +10~35m、过渡期一步跳变
+    （102658_p1 raw 0084-0087 实测：同一辆车整框口径 57→45→42→34m 乱跳、
+    实机账本 54.6→29.98 一步跳 25m；底带 46.4→45.8→42.1→33.9 单调平滑，
+    P25-P75 ≤3.4m）。底带有效点不足（框过小/无效点多）回退整框近簇。"""
     gh, gw = pts.shape[:2]
     x0 = max(0, int(box[0] * gw / 1280))
     y0 = max(0, int(box[1] * gh / 720))
@@ -1442,6 +1442,11 @@ def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | No
     y1 = min(gh, int(box[3] * gh / 720))
     if x1 - x0 < 3 or y1 - y0 < 3:
         return None
+    yb = y0 + (y1 - y0) * 3 // 4              # 框底条带：底部 25% 行
+    zv = pts[yb:y1, x0:x1, 2]
+    zv = zv[np.isfinite(zv)]
+    if zv.size >= _BOTTOM_MIN_PTS:
+        return float(np.median(zv))
     zv = pts[y0:y1, x0:x1, 2]
     zv = zv[np.isfinite(zv)]
     if zv.size < 10:
@@ -1817,7 +1822,10 @@ class AsyncDepthRoadObserver:
       不是结果——路缘下一拍还会再来）。captured_ts 用 perf_counter（与耗时/时效
       同族时钟；monotonic 在本机粒度 ~16ms 会把 age 量化）。
     - worker：节流窗（INFER_MIN_INTERVAL_S，开工时刻起算——产出间隔=max(窗,
-      observe 耗时)，压 DML 锁占空比）→ pop latest →
+      observe 耗时)，压 DML 锁占空比）→ **错峰**（控制拍在跑时，等它刚放锁的
+      节拍、再等本拍 push 落地才开工——54ms 前向伸进下一拍的余量从 1~54ms
+      收到几何下限 ~19ms）→
+      pop latest →
       同步 observe（run 本体受 core.dml_lock 互斥：与控制拍感知并发 run 会段错误
       杀进程，2026-09-25 实证；抢不到锁抛 Busy → 计 busy_skips 弃本帧，不排队）
       → **非 None 才发布**结果槽（整包替换，不原地改已发布对象）；
@@ -1855,6 +1863,13 @@ class AsyncDepthRoadObserver:
                                   # observe P50 落到 ~86ms，窗仍不咬合（产出间隔
                                   # =observe 耗时）；降窗只是把"窗成为新瓶颈"的
                                   # 门槛让开，当前产出间隔不变
+    STAGGER_FRESH_S = 1.0     # 错峰判据：最近一次控制拍放锁在此之内 = 控制拍在跑，
+                              # 按它的节拍开工；超过则视为没有控制拍（菜单/开局前），
+                              # 不空等（否则 worker 每轮白等一个上限）
+    STAGGER_WAIT_S = 0.2      # 错峰等待上限：拍间隔 50ms 的 4 倍兜底（拍停顿时不卡死）
+    PUSH_WAIT_S = 0.03        # 等拍后再等本拍新帧落地的上限：拍内 push 在感知放锁之后
+                              # ~6~10ms（掩码构建+入队），不等就会取到上一拍的帧——实测
+                              # 队列段 20→47ms、结果年龄反超预算；采集停顿时超时用现有帧
     PERF_WINDOW = 200     # age/duration 滑窗（与 treasure 同族口径：判据只看尾部）
 
     DEBUG_INTERVAL_S = 0.5   # 调试图节流（2026-10-02 从 2.0 收紧：2s 一帧在找边
@@ -2245,6 +2260,38 @@ class AsyncDepthRoadObserver:
             item, self._pending = self._pending, None
             return item
 
+    def _pending_seq(self) -> int | None:
+        with self._lock:
+            return None if self._pending is None else self._pending[0]
+
+    def _stagger_wait(self) -> bool:
+        """等控制拍刚放下 DML 锁的节拍、并等本拍新帧落地后再开工；False=停机。
+
+        前向 54ms 是不可分割的原子、比控制拍 50ms 还长——无论怎么排都会伸进
+        下一拍。自由起跑时伸出量在 1~54ms 之间随机（实测 37~42% 的拍要等锁，
+        其中一大档等满 40~54ms）；从感知刚放锁的瞬间起跑，伸出量压到几何下限
+        ~19ms（前向 54 − 拍内空档 42 + 预处理 7）。等节拍放在取帧之前：弹出的
+        仍是刚采集的帧，不额外增加结果年龄。
+
+        节拍之后还要等本拍的 push 落地：拍内 push 在感知之后约 6~10ms（掩码
+        构建 + 入队），只等节拍会取到**上一拍**的帧——实测队列段 20→47ms，
+        结果年龄 p90 反超 350ms 预算。等的是"push 序号变化"，不是固定延时；
+        采集停顿时按 PUSH_WAIT_S 超时，用现有帧继续。
+        """
+        seq_push = self._pending_seq()
+        beat_seq, t_beat = dml_lock.TICK_BEAT.snapshot()
+        if time.perf_counter() - t_beat <= self.STAGGER_FRESH_S:
+            dml_lock.TICK_BEAT.wait_newer(beat_seq, timeout=self.STAGGER_WAIT_S)
+            if self._stop.is_set():
+                return False
+            if self._pending_seq() == seq_push:
+                t_end = time.perf_counter() + self.PUSH_WAIT_S
+                while not self._stop.is_set() and self._pending_seq() == seq_push:
+                    if time.perf_counter() >= t_end:
+                        break
+                    time.sleep(0.001)
+        return not self._stop.is_set()
+
     def _loop(self) -> None:
         while not self._stop.is_set():
             # 节流窗按「开工时刻」计时（2026-10-06 实测定案）：产出间隔 =
@@ -2259,6 +2306,8 @@ class AsyncDepthRoadObserver:
                 self._wakeup.wait(timeout=rest)
                 self._wakeup.clear()
                 continue
+            if not self._stagger_wait():
+                break
             try:
                 item = self._pop_latest()
                 if item is None:

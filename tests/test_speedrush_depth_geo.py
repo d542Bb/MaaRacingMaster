@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 import time as _time
 from pathlib import Path
 
@@ -899,6 +900,89 @@ def test_async_roundtrip_resident_consume():
         assert a.health()["applied"] == 1, "applied 只计新结果一次"
     finally:
         assert a.stop() is True
+
+
+def test_async_worker_staggers_on_tick_beat_and_still_publishes(monkeypatch):
+    """错峰（2026-11-03）：控制拍在跑时 worker 等一次新节拍再开工，且不得停摆。
+
+    前向 54ms 是不可分割的原子，只在感知刚放锁的瞬间起跑才能把伸进下一拍的
+    余量压到几何下限；等拍放在取帧之前，弹出的仍是新鲜帧。本用例锁死两条：
+    有节拍时照常出结果（不死等）、停机不被节拍等待拖住。
+    """
+    monkeypatch.setattr(dml_lock, "TICK_BEAT", dml_lock._TickBeat())
+    stub = _StubObserver([_mk_reading(), _mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    stop = threading.Event()
+
+    def _tick() -> None:
+        while not stop.is_set():
+            dml_lock.TICK_BEAT.note()
+            _time.sleep(0.02)
+
+    beat_th = threading.Thread(target=_tick, daemon=True)
+    a.start()
+    beat_th.start()
+    try:
+        a.push(_frame())
+        assert _wait_until(lambda: a.take()[0] is not None, timeout=2.0), \
+            "有节拍时 worker 仍须正常出结果"
+        assert stub.calls >= 1
+        assert a.stop() is True, "节拍等待不得拖住停机"
+    finally:
+        stop.set()
+        beat_th.join(1.0)
+        a.stop()
+
+
+class _BlockingStub(_StubObserver):
+    """首轮观察阻塞到外部放行，用于把"上一拍的帧先入槽"的时序钉死。"""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.frames: list = []
+
+    def observe_debug(self, frame, object_mask=None, detections=None,
+                      fid=None, frame_ts_ns=None):
+        self.frames.append(np.array(frame, copy=True))
+        if len(self.frames) == 1:
+            self.entered.set()
+            self.release.wait(2.0)
+        return super().observe_debug(frame, object_mask, detections, fid,
+                                     frame_ts_ns)
+
+
+def test_async_staggers_to_same_tick_push_not_previous_frame(monkeypatch):
+    """等拍之后必须等本拍 push 落地：拍内 push 在感知放锁之后 ~6~10ms，
+    只等节拍会取到**上一拍**的帧（实测队列段 20→47ms、结果年龄反超预算）。"""
+    beat = dml_lock._TickBeat()
+    monkeypatch.setattr(dml_lock, "TICK_BEAT", beat)
+    stub = _BlockingStub([_mk_reading(), _mk_reading(), _mk_reading()])
+    a = AsyncDepthRoadObserver(stub)  # type: ignore[arg-type]
+    f0 = _frame()
+    a.start()
+    try:
+        a.push(f0)
+        assert stub.entered.wait(2.0), "worker 未开工"
+        old = _frame()
+        old.fill(1)
+        a.push(old)          # 上一拍的帧先入槽
+        beat.note()          # 该拍放锁；worker 被首轮阻塞在观察里
+        stub.release.set()
+        _time.sleep(0.05)    # 首轮收尾并进入等拍（已快照到 old 的 push 序号）
+        beat.note()          # 本拍放锁
+        _time.sleep(0.005)   # 节拍之后本拍才 push（拍内顺序）
+        new = _frame()
+        new.fill(2)
+        a.push(new)
+        assert _wait_until(lambda: len(stub.frames) >= 2, timeout=2.0), \
+            "第二轮未开工"
+        assert int(stub.frames[1][0, 0, 0]) == 2, \
+            "必须处理本拍的新帧，不能拿上一拍的帧"
+    finally:
+        stub.release.set()
+        a.stop()
 
 
 def test_async_stale_gate_drops():
@@ -2000,3 +2084,65 @@ def test_region_reading_clip_side_honest():
     assert rr.sides == 1 and rr.left_edge_lane is None
     assert rr.left_clip_frac == pytest.approx(1.0)
     assert dg.region_reading(_xg_grid([]), 2.75).sides == 0
+
+
+# ── 车框锚点：框底条带估计器（2026-11-04 距离突变修正） ─────────────────
+
+def _box_pts(x0, y0, x1, y1, z_bottom, z_upper=None, noise=0.0, seed=7):
+    """合成车框点云 (720,1280,3)：底 25% 行=z_bottom（车身接地面），
+    上部=z_upper（缺省同 z_bottom）；noise 米级高斯。"""
+    pts = np.full((720, 1280, 3), np.nan, np.float32)
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    yb = y0 + (y1 - y0) * 3 // 4
+    rng = np.random.default_rng(seed)
+    lo = yy >= yb
+    up = ~lo
+    pts[yy[lo], xx[lo], 2] = z_bottom + rng.normal(0, noise, int(lo.sum()))
+    if z_upper is not None:
+        z_u = (z_upper if np.isscalar(z_upper)
+               else z_upper[0] + (yy[up] - y0) / max(1, (yb - y0))
+               * (z_upper[1] - z_upper[0]))
+        pts[yy[up], xx[up], 2] = z_u
+    return pts
+
+
+def test_box_anchor_far_car_bottom_strip_beats_background():
+    """远框：底 25% 行=车身接地面（45m，点少——原生分辨率下远框就这点点），
+    上部=背景路面（50→85m 线性斜坡，逐 bin 比车身 bin 密）。整框近簇被
+    40% 门槛把车身 bin 挡掉、落到背景近缘（+5m 级偏差；102658_p1 raw
+    0084 实测 57 vs 真值 46）；底带中位直接给车距，锚不漂。"""
+    pts = np.full((720, 1280, 3), np.nan, np.float32)
+    x0, y0, x1, y1 = 600, 340, 660, 380
+    yb = y0 + (y1 - y0) * 3 // 4
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    lo = yy >= yb
+    rng = np.random.default_rng(7)
+    idx = np.argwhere(lo)
+    pick = rng.choice(len(idx), 20, replace=False)
+    pts[idx[pick, 0] + y0, idx[pick, 1] + x0, 2] = (
+        45.0 + rng.normal(0, 0.15, 20))
+    up = ~lo                                   # 背景：50→85m，密度均匀逐 bin
+    pts[yy[up], xx[up], 2] = 50.0 + (yy[up] - y0) / max(1, (yb - y0)) * 35.0
+    z = dg._box_anchor_z(pts, (x0, y0, x1, y1))
+    assert z is not None and abs(z - 45.0) < 1.0
+
+
+def test_box_anchor_bottom_strip_starved_falls_back_to_cluster():
+    """底 25% 行全无效（遮挡/无效点多）：回退整框近簇（旧口径）——
+    紧簇 30m 读数不漂，回退语义=修正前行为。"""
+    pts = np.full((720, 1280, 3), np.nan, np.float32)
+    yy, xx = np.mgrid[340:380, 600:660]
+    yb = 340 + (380 - 340) * 3 // 4
+    up = yy < yb
+    pts[yy[up], xx[up], 2] = 30.0            # 上部紧簇；底带保持 nan
+    z = dg._box_anchor_z(pts, (600, 340, 660, 380))
+    assert z is not None and abs(z - 30.0) < 0.5
+
+
+def test_box_anchor_small_box_and_starved_box_none():
+    """既有语义保留：框过小（<3px）与整框有效点不足（<10）→ None。"""
+    pts = _box_pts(600, 340, 660, 380, z_bottom=45.0)
+    assert dg._box_anchor_z(pts, (600, 340, 601, 341)) is None
+    starved = np.full((720, 1280, 3), np.nan, np.float32)
+    starved[350:353, 620:622, 2] = 45.0       # 仅 6 点 <10
+    assert dg._box_anchor_z(starved, (610, 340, 650, 380)) is None
