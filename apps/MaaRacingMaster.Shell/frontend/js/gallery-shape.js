@@ -123,7 +123,7 @@
     root.querySelectorAll('.task-gallery-cell[data-manage]').forEach(paint);
   }
 
-  window.MRAGalleryShape = {
+  window.MaaRMGalleryShape = {
     paint,
     paintAll,
     squircle: SQUIRCLE,

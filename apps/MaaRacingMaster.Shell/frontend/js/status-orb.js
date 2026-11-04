@@ -217,24 +217,24 @@
   });
 
   // ---------- 挂载 ----------
-  // root 需内含两个 .mra-orb__eye-wrap（左右各一），每个 wrap 里是
-  // .mra-orb__blink > (.mra-orb__eye-halo + .mra-orb__eye)。骨架见 preview.html。
+  // root 需内含两个 .maarm-orb__eye-wrap（左右各一），每个 wrap 里是
+  // .maarm-orb__blink > (.maarm-orb__eye-halo + .maarm-orb__eye)。骨架见 preview.html。
   function mount(root) {
     if (!root) return null;
     for (let i = 0; i < instances.length; i++) {
       if (instances[i].root === root) return instances[i];
     }
 
-    const wrapL = root.querySelector('.mra-orb__eye-wrap--l');
-    const wrapR = root.querySelector('.mra-orb__eye-wrap--r');
-    const blinks = root.querySelectorAll('.mra-orb__blink');
+    const wrapL = root.querySelector('.maarm-orb__eye-wrap--l');
+    const wrapR = root.querySelector('.maarm-orb__eye-wrap--r');
+    const blinks = root.querySelectorAll('.maarm-orb__blink');
     const pick = (sel) => root.querySelector(sel);
 
     const parts = {
-      haloL: pick('.mra-orb__eye-wrap--l .mra-orb__eye-halo'),
-      eyeL: pick('.mra-orb__eye-wrap--l .mra-orb__eye'),
-      haloR: pick('.mra-orb__eye-wrap--r .mra-orb__eye-halo'),
-      eyeR: pick('.mra-orb__eye-wrap--r .mra-orb__eye')
+      haloL: pick('.maarm-orb__eye-wrap--l .maarm-orb__eye-halo'),
+      eyeL: pick('.maarm-orb__eye-wrap--l .maarm-orb__eye'),
+      haloR: pick('.maarm-orb__eye-wrap--r .maarm-orb__eye-halo'),
+      eyeR: pick('.maarm-orb__eye-wrap--r .maarm-orb__eye')
     };
 
     const inst = {
@@ -424,7 +424,7 @@
       }
     };
 
-    inst.grad = root.querySelector('.mra-orb__grad');
+    inst.grad = root.querySelector('.maarm-orb__grad');
 
     instances.push(inst);
     inst.setState(root.dataset.state || 'ready');
@@ -438,7 +438,7 @@
   // 宿主不存在时静默跳过，模块可被其他页面安全引用。
   function autoMount() {
     const root = document.getElementById('status-dot');
-    if (root && root.classList.contains('mra-orb')) mount(root);
+    if (root && root.classList.contains('maarm-orb')) mount(root);
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', autoMount);

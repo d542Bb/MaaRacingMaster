@@ -1,15 +1,15 @@
 // MaaRM shell 前端 —— 运行控制与任务列表：开始/停止/三秒倒计时、任务卡列表
 // （拖拽排序带 FLIP 让位预览、启用勾选、展开面板 = 模块选项 + 细分阶段断点起点、
-// 模块管理选卡弹窗）、状态轮询与性能卡渲染。跨文件调用经 window.MRA（见文件末尾导出）。
+// 模块管理选卡弹窗）、状态轮询与性能卡渲染。跨文件调用经 window.MaaRM（见文件末尾导出）。
 (function () {
   'use strict';
 
   // 共享物导入（js/rpc.js、js/settings.js、js/modal.js 已先行加载）
   const {
-    mra, $, state, reportError, showError,
+    maarm, $, state, reportError, showError,
     renderModulePages, openModal,
     syncDashboardCenter, refreshDashboardRunState,
-  } = window.MRA;
+  } = window.MaaRM;
 
   // ---------- 模块展示元数据（仅图标） ----------
   // 卡片头图不在这里登记：封面由模块自己声明、核心解析成 URL 随模块列表下发
@@ -81,7 +81,7 @@
       if (f.kind === 'switch') {
         const on = !!cfgValue(mid, f.key);
         return '<div class="option-row">'
-          + '<button class="mra-toggle' + (on ? ' mra-toggle--active' : '') + '" role="switch"'
+          + '<button class="maarm-toggle' + (on ? ' maarm-toggle--active' : '') + '" role="switch"'
           + ' aria-checked="' + on + '" data-key="' + f.key + '" data-kind="switch"></button>'
           + '<div class="option-main"><div class="option-title">' + esc(f.title)
           + (f.note ? '<span class="option-note">' + esc(f.note) + '</span>' : '')
@@ -99,14 +99,14 @@
           ? '<textarea rows="2" spellcheck="false" data-key="' + f.key + '" data-kind="args">' + esc(val == null ? '' : val) + '</textarea>'
           : '<input type="text" data-key="' + f.key + '" data-kind="' + f.kind + '" value="' + esc(val == null ? '' : val) + '">');
       const extra = f.kind === 'path'
-        ? '<button class="mra-btn" type="button" data-act="browse">浏览…</button>'
-        : (f.kind === 'args' ? '<button class="mra-btn" type="button" data-act="reset" hidden>重置</button>' : '');
+        ? '<button class="maarm-btn" type="button" data-act="browse">浏览…</button>'
+        : (f.kind === 'args' ? '<button class="maarm-btn" type="button" data-act="reset" hidden>重置</button>' : '');
       return '<div class="module-options-row module-options-row--stack">'
-        + '<div class="mra-field' + (f.kind === 'number' ? ' mra-field--narrow' : '') + '">'
-        + '<label class="mra-field-label">' + esc(f.label)
+        + '<div class="maarm-field' + (f.kind === 'number' ? ' maarm-field--narrow' : '') + '">'
+        + '<label class="maarm-field-label">' + esc(f.label)
         + (f.hint ? '<span class="field-hint">' + esc(f.hint) + '</span>' : '') + '</label>'
-        + '<div class="mra-field-control-row' + (f.kind === 'args' ? ' mra-field-control-row--multi' : '') + '">'
-        + '<div class="mra-field-control">' + input + '</div>' + extra + '</div>'
+        + '<div class="maarm-field-control-row' + (f.kind === 'args' ? ' maarm-field-control-row--multi' : '') + '">'
+        + '<div class="maarm-field-control">' + input + '</div>' + extra + '</div>'
         + '</div></div>';
     });
     return '<div class="builtin-fields">' + rows.join('') + '</div>';
@@ -115,7 +115,7 @@
   async function saveBuiltinCfg(mid, patch) {
     const cfg = Object.assign({}, state.cfg[mid] || {}, patch);
     try {
-      state.cfg[mid] = await mra.call('set_module_config', { module_id: mid, config: cfg });
+      state.cfg[mid] = await maarm.call('set_module_config', { module_id: mid, config: cfg });
       refreshCard(mid);
     } catch (e) {
       showError(e.message);
@@ -134,8 +134,8 @@
     };
     panel.querySelectorAll('[data-kind="switch"]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const on = !btn.classList.contains('mra-toggle--active');
-        btn.classList.toggle('mra-toggle--active', on);
+        const on = !btn.classList.contains('maarm-toggle--active');
+        btn.classList.toggle('maarm-toggle--active', on);
         btn.setAttribute('aria-checked', String(on));
         saveBuiltinCfg(mid, { [btn.dataset.key]: on });
       });
@@ -153,7 +153,7 @@
     if (browse) {
       browse.addEventListener('click', async () => {
         try {
-          const r = await mra.call('pick_game_exe', {});
+          const r = await maarm.call('pick_game_exe', {});
           if (!r || !r.path) return;
           const el = panel.querySelector('[data-key="path"]');
           if (el) el.value = r.path;
@@ -247,9 +247,9 @@
     m.stages.forEach((s, i) => {
       const isCur = runningThis && state.currentStage === s;
       const isFrom = !runningThis && s === from;
-      html += '<li class="mra-breakpoint-item' + (isCur ? ' mra-breakpoint-item--current' : '')
+      html += '<li class="maarm-breakpoint-item' + (isCur ? ' maarm-breakpoint-item--current' : '')
         + '" data-stage="' + esc(s) + '">'
-        + '<span class="bp-icon">' + (isCur ? MRAIcons.svg('media-play') : '') + '</span>'
+        + '<span class="bp-icon">' + (isCur ? MaaRMIcons.svg('media-play') : '') + '</span>'
         + '<span class="bp-idx">' + (i + 1) + '</span>'
         + '<span class="bp-name">' + esc(s) + '</span>'
         + (isFrom ? '<span class="bp-badge bp-badge--from">从此处开始</span>' : '')
@@ -291,13 +291,13 @@
 
   function renderTaskList() {
     // 列表面板随卡片一起重建：旧表单与其在途请求全部作废（代际校验在 config-panel）
-    if (MRA.configPanel) MRA.configPanel.reset();
+    if (MaaRM.configPanel) MaaRM.configPanel.reset();
     const ul = $('task-list');
     ul.innerHTML = state.queue.order.map(cardHtml).join('');
     if (!state.queue.order.length) {
       // 空态与看板中心同构：插图框 + 标题 + 一句说明（.empty-art 复用看板中心的样式）
       ul.innerHTML = '<li class="task-empty">'
-        + '<div class="empty-art" aria-hidden="true">' + MRAIcons.svg('list-plus') + '</div>'
+        + '<div class="empty-art" aria-hidden="true">' + MaaRMIcons.svg('list-plus') + '</div>'
         + '<b>还没有要运行的模块</b>'
         + '<p>点右上角的设置按钮把模块加进列表；加入后可拖拽排序、勾选启用，列表顺序就是执行顺序。</p>'
         + '</li>';
@@ -338,7 +338,7 @@
   // 配置读取（卡片摘要数据源）：入列/展开/启动后各刷一次
   async function ensureConfig(mid) {
     try {
-      state.cfg[mid] = await mra.call('get_module_config', { module_id: mid });
+      state.cfg[mid] = await maarm.call('get_module_config', { module_id: mid });
     } catch (e) {
       console.error(e); // 读不到就按缺省摘要显示，不打扰
     }
@@ -347,7 +347,7 @@
   // 活动模块配置面板：按后端下发的 schema 通用渲染（模块自述，前端不认识字段）
   function renderConfigPanel(mid) {
     const cfg = state.cfg[mid];
-    if (cfg && MRA.configPanel) MRA.configPanel.render(mid, cfg);
+    if (cfg && MaaRM.configPanel) MaaRM.configPanel.render(mid, cfg);
   }
 
   // 配置保存后回调：更新摘要数据源并轻刷对应卡
@@ -377,12 +377,12 @@
       };
       const modal = openModal({
         title: '模块已过期',
-        titleColor: 'var(--mra-warning,#F59E0B)',
+        titleColor: 'var(--maarm-warning,#F59E0B)',
         bodyHtml:
-          '<p class="mra-modal-text">' +
+          '<p class="maarm-modal-text">' +
           '此模块已过期，可能无法正常使用！</p>' +
           (until
-            ? '<p class="mra-modal-text--sub">' +
+            ? '<p class="maarm-modal-text--sub">' +
               '声明有效期至 ' + until + '。</p>'
             : ''),
         buttons: [
@@ -397,7 +397,7 @@
   }
 
   async function pushQueue(order, enabled, force) {
-    const resp = await mra.call('set_run_queue', { order, enabled, force: !!force });
+    const resp = await maarm.call('set_run_queue', { order, enabled, force: !!force });
     state.queue = resp;
     renderTaskList();
     return resp;
@@ -455,7 +455,7 @@
     }
     grid.innerHTML = cells;
     // 曲率连续的拐角与描边路径由几何模块按卡片实际像素生成（CSS 只给半径）
-    if (window.MRAGalleryShape) MRAGalleryShape.paintAll(grid);
+    if (window.MaaRMGalleryShape) MaaRMGalleryShape.paintAll(grid);
   }
 
   function openManageModal() {
@@ -468,14 +468,14 @@
       maxWidth: 880,
       bodyHtml:
         '<div class="task-gallery-wrap"><div class="task-gallery" id="manage-grid"></div></div>'
-        + '<p class="mra-modal-text--sub" style="margin:12px 0 0">点选卡片加入下方运行任务列表（排到末尾）；移除不影响该模块已保存的配置。</p>',
+        + '<p class="maarm-modal-text--sub" style="margin:12px 0 0">点选卡片加入下方运行任务列表（排到末尾）；移除不影响该模块已保存的配置。</p>',
       buttons: [{ text: '完成', primary: true, onClick: (m) => m.close() }],
       onClose: () => { if (ro) { ro.disconnect(); ro = null; } },
     });
     const grid = modal.card.querySelector('#manage-grid');
     renderGallery(grid);
-    if (typeof ResizeObserver === 'function' && window.MRAGalleryShape) {
-      ro = new ResizeObserver(() => MRAGalleryShape.paintAll(grid));
+    if (typeof ResizeObserver === 'function' && window.MaaRMGalleryShape) {
+      ro = new ResizeObserver(() => MaaRMGalleryShape.paintAll(grid));
       ro.observe(grid);
     }
     // 封面加载失败：先换通用默认封面，再失败就退到纯渐变底。
@@ -514,7 +514,7 @@
         delete enabled[mid];
       }
       try {
-        state.queue = await mra.call('set_run_queue', { order, enabled, force });
+        state.queue = await maarm.call('set_run_queue', { order, enabled, force });
         renderTaskList();
         // 就地切类（不重建网格）：重建会让节点一出生就是终态，色带涌起与头图推近的过渡就没了
         const inList = state.queue.order.includes(mid);
@@ -530,7 +530,7 @@
   async function onPickBreakpoint(mid, stage) {
     if (state.is_running) return; // 运行中断点不可改（后端同拒）
     try {
-      const resp = await mra.call('set_start_from', { module_id: mid, stage });
+      const resp = await maarm.call('set_start_from', { module_id: mid, stage });
       state.breakpoints = resp.breakpoints || {};
       const item = $('task-list').querySelector('[data-id="' + mid + '"]');
       if (item) item.querySelector('[data-stages]').innerHTML = stageListHtml(mid);
@@ -618,7 +618,7 @@
     if (!wasDragging || !finalOrder) return;
     if (finalOrder.join() === state.queue.order.join()) return;
     try {
-      state.queue = await mra.call('set_run_queue', { order: finalOrder, enabled: state.queue.enabled });
+      state.queue = await maarm.call('set_run_queue', { order: finalOrder, enabled: state.queue.enabled });
       renderTaskList();
     } catch (e) {
       showError('保存排序失败: ' + e.message);
@@ -698,14 +698,14 @@
 
   async function pollStatus() {
     try {
-      const d = await mra.call('get_status');
+      const d = await maarm.call('get_status');
       _pollFails = 0;
       _offline = false;
       renderStatus(d);
       const runState = !!(d.is_running || d.worker_active);
       if (runState !== state._lastRunState) {
         state._lastRunState = runState;
-        if (MRA.configPanel) MRA.configPanel.setLocked(runState);
+        if (MaaRM.configPanel) MaaRM.configPanel.setLocked(runState);
         if (runState) {
           // 轮次受理：断点已被后端消费、上一轮结局清零——卡片切到 排队中/运行中 形态
           state.breakpoints = {};
@@ -718,14 +718,14 @@
       // 运行状态每秒刷一次：进度类数字在涨，只在跳变时刷看不出变化。
       // 只刷当前运行模块且其卡片已展开的面板；不存在模块专属分支。
       const runningMid = runState && d.current_module;
-      if (runningMid && state.expanded[runningMid] && MRA.configPanel
-          && MRA.configPanel.has(runningMid)
+      if (runningMid && state.expanded[runningMid] && MaaRM.configPanel
+          && MaaRM.configPanel.has(runningMid)
           && Date.now() - state._lastRecRefresh >= 1000) {
         state._lastRecRefresh = Date.now();
-        mra.call('get_module_config', { module_id: runningMid })
+        maarm.call('get_module_config', { module_id: runningMid })
           .then((cfg) => {
-            if (cfg && MRA.configPanel && MRA.configPanel.has(runningMid)) {
-              MRA.configPanel.updateLive(runningMid, cfg);
+            if (cfg && MaaRM.configPanel && MaaRM.configPanel.has(runningMid)) {
+              MaaRM.configPanel.updateLive(runningMid, cfg);
             }
           })
           .catch((e) => console.error(e));
@@ -753,7 +753,7 @@
     const txt = $('status-text');
     txt.textContent = text;
     // 运行期文字带扫描光效，结束（就绪/停止中/出错）恢复常态；样式见 style.css「通用文字扫描光效」
-    txt.classList.toggle('mra-text-scan', mode === 'running');
+    txt.classList.toggle('maarm-text-scan', mode === 'running');
     // 状态球只认状态名，不认文案：四种取值与 renderStatus 的判定分支一一对应
     if (window.StatusOrb) window.StatusOrb.setState(mode);
   }
@@ -935,7 +935,7 @@
   }
 
   function renderPerfCard(perf) {
-    const mid = MRA.panelModuleId;
+    const mid = MaaRM.panelModuleId;
     const c = (perf && perf.cpu) || {};
     const sys = (perf && perf.sys) || {};
     const rows = (perf && perf.rows) || [];
@@ -969,7 +969,7 @@
   }
 
   // ---------- 运行控制 ----------
-  // 三秒倒计时：按钮双层内容形变（样式见 style.css 的 mra-start-* 区块），JS 只切类与编排；
+  // 三秒倒计时：按钮双层内容形变（样式见 style.css 的 maarm-start-* 区块），JS 只切类与编排；
   // 数字滚动是纯 CSS 数列，3s 与其 animation 周期配对，改一处必须同步另一处。
   let _startCountdownTimer = null;
 
@@ -979,21 +979,21 @@
       _startCountdownTimer = null;
     }
     const btn = $('btn-start');
-    btn.classList.remove('mra-start--counting');
+    btn.classList.remove('maarm-start--counting');
     btn.removeAttribute('aria-label');
   }
 
   async function _doStart() {
     try {
-      await mra.call('start', {});
+      await maarm.call('start', {});
       // 断点消费即清（与后端同口径）：本次计划的起点已用掉，下次回从头跑
       state.breakpoints = {};
     } catch (e) {
       console.error(e);
       // 缺少 ViGEmBus 驱动：弹出下载引导（而非仅 toast）
-      // （showVigemDialog 在 app.js 定义、晚于本文件加载，故经 MRA 延迟取用）
+      // （showVigemDialog 在 app.js 定义、晚于本文件加载，故经 MaaRM 延迟取用）
       if (e && e.message && e.message.indexOf('VIGEM_BUS_MISSING') !== -1) {
-        MRA.showVigemDialog(e.message);
+        MaaRM.showVigemDialog(e.message);
         return;
       }
       reportError('toast', '启动失败: ' + e.message);
@@ -1008,11 +1008,11 @@
       return;
     }
     const btn = $('btn-start');
-    btn.classList.add('mra-start--counting');
+    btn.classList.add('maarm-start--counting');
     btn.setAttribute('aria-label', '即将启动，倒计时 3 秒，再点一次取消');
     _startCountdownTimer = setTimeout(() => {
       _startCountdownTimer = null;
-      btn.classList.remove('mra-start--counting');
+      btn.classList.remove('maarm-start--counting');
       btn.removeAttribute('aria-label');
       _doStart(); // 倒计时结束才真正启动
     }, 3000);
@@ -1020,15 +1020,15 @@
 
   $('btn-stop').onclick = async () => {
     try {
-      await mra.call('stop');
+      await maarm.call('stop');
     } catch (e) {
       console.error(e);
       showError('后台已断开，停止指令没能送达');
     }
   };
 
-  // ---------- 导出到 window.MRA ----------
-  Object.assign(window.MRA, {
+  // ---------- 导出到 window.MaaRM ----------
+  Object.assign(window.MaaRM, {
     renderTaskList, pollStatus, setStatus, noteConfigSaved,
   });
 })();

@@ -1,17 +1,17 @@
 // MaaRM shell 前端 —— 运行日志：fetch_logs 轮询 + 事件驱动渲染（契约 §8 第 9 步终态：
 // 卡片只来自组事件，无组散行=裸行；SECTION_ANCHORS/KW_RULES/前端状态推导已全部退役，
 // 卡头徽章由 group_start/group_end 的 outcome 驱动，前端不再按行数自行推导）。
-// 日志按钮：清空/复制/回顶。跨文件调用经 window.MRA（见文件末尾导出）。
+// 日志按钮：清空/复制/回顶。跨文件调用经 window.MaaRM（见文件末尾导出）。
 // 一切动态文本经 textContent 落 DOM，无 innerHTML 注入面。
 (function () {
   'use strict';
 
   // 共享物导入（js/rpc.js 已先行加载）
-  const { mra, $, showError } = window.MRA;
+  const { maarm, $, showError } = window.MaaRM;
 
   async function pollLogs() {
     try {
-      const d = await mra.call('fetch_logs');
+      const d = await maarm.call('fetch_logs');
       if (d && d.schema_version && Array.isArray(d.events)) {
         // 结构化通道在场即唯一事实源（legacy lines 是同数据的派生投影，不再双吃）
         if (d.events.length || d.truncated) renderEvents(d.events, d.truncated);
@@ -291,7 +291,7 @@
   // 复制反馈：图标弹簧形变（morph-icon 换图标即形变，与预览卡放大按钮同款手法）——
   // 成功 copy→check、失败 copy→x，停 1.2s 滚回；失败文案与空日志提示走 toast
   // （错误协议：日志卡无行内落点，保持 toast）。
-  const COPY_ICON = MRAIcons.node('copy');
+  const COPY_ICON = MaaRMIcons.node('copy');
   const copyMorphEl = document.querySelector('#btn-log-copy morph-icon');
   let _copyRevertTimer = null;
   function _flashCopyIcon(nodes) {
@@ -314,14 +314,14 @@
     }
     try {
       await navigator.clipboard.writeText(text);
-      _flashCopyIcon(MRAIcons.node('check'));
+      _flashCopyIcon(MaaRMIcons.node('check'));
     } catch (e) {
       console.error(e);
-      _flashCopyIcon(MRAIcons.node('x'));
+      _flashCopyIcon(MaaRMIcons.node('x'));
       showError('复制失败: ' + (e.message || e));
     }
   });
 
-  // ---------- 导出到 window.MRA ----------
-  Object.assign(window.MRA, { pollLogs });
+  // ---------- 导出到 window.MaaRM ----------
+  Object.assign(window.MaaRM, { pollLogs });
 })();

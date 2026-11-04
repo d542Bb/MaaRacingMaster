@@ -11,8 +11,8 @@
 (function () {
   'use strict';
 
-  var MRA = window.MRA;
-  var ST = window.MRAConfigPanelState;
+  var MaaRM = window.MaaRM;
+  var ST = window.MaaRMConfigPanelState;
   var entries = new Map();
   var generation = 0;
   var locked = false;
@@ -73,7 +73,7 @@
 
   function buildSwitch(entry, field) {
     var wrap = el('div', 'option-row');
-    var sw = el('button', 'mra-toggle');
+    var sw = el('button', 'maarm-toggle');
     sw.type = 'button';
     sw.id = domId(entry, field, 'switch');
     sw.setAttribute('role', 'switch');
@@ -105,11 +105,11 @@
 
   function buildSegmented(entry, field) {
     var wrap = el('div', 'module-options-row');
-    var box = el('div', 'mra-field');
-    var label = el('label', 'mra-field-label');
+    var box = el('div', 'maarm-field');
+    var label = el('label', 'maarm-field-label');
     label.textContent = field.label;
     if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var seg = el('div', 'mra-segmented');
+    var seg = el('div', 'maarm-segmented');
     seg.setAttribute('role', 'group');
     seg.setAttribute('aria-label', field.label);
     var buttons = (field.options || []).map(function (option, index) {
@@ -140,11 +140,11 @@
 
   function buildSelect(entry, field) {
     var wrap = el('div', 'module-options-row');
-    var box = el('div', 'mra-field');
-    var label = el('label', 'mra-field-label');
+    var box = el('div', 'maarm-field');
+    var label = el('label', 'maarm-field-label');
     label.textContent = field.label;
     if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var control = el('div', 'mra-field-control');
+    var control = el('div', 'maarm-field-control');
     var select = el('select');
     select.id = domId(entry, field, 'select');
     label.setAttribute('for', select.id);
@@ -162,7 +162,7 @@
       var option = select.options[select.selectedIndex];
       if (!option) return;
       var patch = {};
-      patch[field.key] = option._mraValue;
+      patch[field.key] = option._maarmValue;
       savePatch(entry.mid, patch);
     });
     return {
@@ -173,11 +173,11 @@
 
   function buildNumber(entry, field) {
     var wrap = el('div', 'module-options-row');
-    var box = el('div', 'mra-field');
-    var label = el('label', 'mra-field-label');
+    var box = el('div', 'maarm-field');
+    var label = el('label', 'maarm-field-label');
     label.textContent = field.label;
     if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var control = el('div', 'mra-field-control');
+    var control = el('div', 'maarm-field-control');
     var input = el('input');
     input.type = 'number';
     input.id = domId(entry, field, 'number');
@@ -217,11 +217,11 @@
 
   function buildText(entry, field) {
     var wrap = el('div', 'module-options-row');
-    var box = el('div', 'mra-field');
-    var label = el('label', 'mra-field-label');
+    var box = el('div', 'maarm-field');
+    var label = el('label', 'maarm-field-label');
     label.textContent = field.label;
     if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var control = el('div', 'mra-field-control');
+    var control = el('div', 'maarm-field-control');
     var input = el('input');
     input.type = 'text';
     input.id = domId(entry, field, 'text');
@@ -283,7 +283,7 @@
       node.select.textContent = '';
       options.forEach(function (option) {
         var item = el('option', null, option.label);
-        item._mraValue = option.value;
+        item._maarmValue = option.value;
         node.select.appendChild(item);
       });
       node.optSig = sig;
@@ -291,13 +291,13 @@
     var value = cfg ? cfg[node.field.key] : undefined;
     var found = false;
     Array.prototype.forEach.call(node.select.options, function (item) {
-      var hit = sameValue(item._mraValue, value);
+      var hit = sameValue(item._maarmValue, value);
       item.selected = hit;
       if (hit) found = true;
     });
     if (!found && value !== undefined && value !== null && value !== '') {
       var missing = el('option', null, String(value) + '（已不存在）');
-      missing._mraValue = value;
+      missing._maarmValue = value;
       node.select.appendChild(missing);
       missing.selected = true;
     }
@@ -310,7 +310,7 @@
     var value = cfg ? cfg[field.key] : undefined;
     if (node.sw) {
       var on = !!value;
-      node.sw.classList.toggle('mra-toggle--active', on);
+      node.sw.classList.toggle('maarm-toggle--active', on);
       node.sw.setAttribute('aria-checked', String(on));
     } else if (node.buttons) {
       node.buttons.forEach(function (btn, index) {
@@ -338,7 +338,7 @@
     var note = entry.nodes.note;
     var text = cfg && cfg._ui_note;
     note.textContent = text || '';
-    note.classList.toggle('mra-status--warn', !!text);
+    note.classList.toggle('maarm-status--warn', !!text);
     note.style.display = text ? '' : 'none';
   }
 
@@ -356,7 +356,7 @@
 
   function setStatus(entry, text, level) {
     if (!entry.nodes || !entry.nodes.status) return;
-    MRA.setInlineStatus(entry.nodes.status, text, level);
+    MaaRM.setInlineStatus(entry.nodes.status, text, level);
   }
 
   function renderStatus(entry) {
@@ -445,8 +445,8 @@
     var before = entry.cfg && entry.cfg._summary;
     entry.cfg = Object.assign({}, entry.cfg || {}, cfg);
     // 只有摘要变化才轻刷卡片；状态行每秒更新不值得重建 chips/阶段列表
-    if (JSON.stringify(before) !== JSON.stringify(cfg._summary) && MRA.noteConfigSaved) {
-      MRA.noteConfigSaved(mid, cfg);
+    if (JSON.stringify(before) !== JSON.stringify(cfg._summary) && MaaRM.noteConfigSaved) {
+      MaaRM.noteConfigSaved(mid, cfg);
     }
     renderStatus(entry);
   }
@@ -486,7 +486,7 @@
     applyOptimistic(entry, patch);
     showSaving(entry);
     try {
-      var resp = await MRA.mra.call('set_module_config', {
+      var resp = await MaaRM.maarm.call('set_module_config', {
         module_id: mid,
         config: patch,
       });
@@ -495,7 +495,7 @@
       entry.cfg = resp;
       applyNote(entry, resp);
       applyAll(entry, resp);
-      if (MRA.noteConfigSaved) MRA.noteConfigSaved(mid, resp);
+      if (MaaRM.noteConfigSaved) MaaRM.noteConfigSaved(mid, resp);
       flashStatus(entry, '已保存', 'ok', 1600);
     } catch (e) {
       if (!ST.isAlive(entry, generation)) return;
@@ -503,7 +503,7 @@
       entry.cfg = snapshot;
       applyNote(entry, snapshot);
       applyAll(entry, snapshot);
-      MRA.reportError('inline', '保存失败: ' + (e.message || e),
+      MaaRM.reportError('inline', '保存失败: ' + (e.message || e),
         { el: entry.nodes && entry.nodes.status });
     } finally {
       if (ST.isAlive(entry, generation)) {
@@ -529,7 +529,7 @@
     runSave(entry, patch);
   }
 
-  Object.assign(MRA, {
+  Object.assign(MaaRM, {
     configPanel: {
       render: render,
       updateLive: updateLive,

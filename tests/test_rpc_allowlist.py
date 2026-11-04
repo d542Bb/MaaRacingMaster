@@ -2,7 +2,7 @@
 """RPC 信任边界三方一致性回归锁。
 
 sidecar.py HANDLERS（Python 白名单）、RpcBridge.cs AllowedMethods（C# 前置闸）、
-SidecarService 公开 handler、前端 mra.call 字面量四处必须同集合演进：
+SidecarService 公开 handler、前端 maarm.call 字面量四处必须同集合演进：
 
 - HANDLERS ⊆ SidecarService 公开方法（表内方法必须真存在，防幽灵条目）
 - AllowedMethods == HANDLERS - {shutdown, close}（shell 生命周期通道不对前端开放）
@@ -71,7 +71,7 @@ def test_cs_allowlist_matches_python_handlers():
 
 
 def test_frontend_calls_within_allowlist():
-    """前端所有 mra.call('name') 字面量必须在 C# 白名单内。
+    """前端所有 maarm.call('name') 字面量必须在 C# 白名单内。
 
     必须递归扫 frontend/：前端按 js/ 子目录分模块后，非递归 glob 只覆盖根层
     文件，子目录里的调用点会静默脱离看护（实测从 28 处掉到 10 处）。
@@ -85,10 +85,10 @@ def test_frontend_calls_within_allowlist():
     allowed = set(re.findall(r'"([a-z_]+)"', m.group(1)))
     called: set[str] = set()
     for js in FRONTEND_DIR.rglob("*.js"):
-        called.update(re.findall(r"mra\.call\(\s*'([a-z_]+)'", js.read_text(encoding="utf-8")))
-        called.update(re.findall(r'mra\.call\(\s*"([a-z_]+)"', js.read_text(encoding="utf-8")))
+        called.update(re.findall(r"maarm\.call\(\s*'([a-z_]+)'", js.read_text(encoding="utf-8")))
+        called.update(re.findall(r'maarm\.call\(\s*"([a-z_]+)"', js.read_text(encoding="utf-8")))
     # 空过防护：抽取规则或扫描范围失效时报错，而不是静默通过
-    assert called, "未抽到任何 mra.call 字面量，扫描范围或抽取规则已失效"
+    assert called, "未抽到任何 maarm.call 字面量，扫描范围或抽取规则已失效"
     rogue = called - allowed
     assert not rogue, f"前端调用了白名单外方法：{sorted(rogue)}"
 

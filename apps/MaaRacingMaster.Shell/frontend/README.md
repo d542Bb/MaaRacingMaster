@@ -24,13 +24,13 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
 - `index.html` 里 `data-link` 的属性值**就是目标名**。新增外链入口必须同时在 `EXTERNAL_TARGETS`
   里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
 
-理由：前端持有 `mra.call()` RPC 能力，远程数据一旦能形成 XSS，就会顺着 RPC 放大成
+理由：前端持有 `maarm.call()` RPC 能力，远程数据一旦能形成 XSS，就会顺着 RPC 放大成
 「可信程序替攻击者打开任意站点」。两层防线各自独立成立——渲染层不把数据当标记解析，
 RPC 层不信任调用方给的地址。
 
 ## 图标规范
 
-- **唯一真源是 `icons.js`**（`window.MRAIcons`）。数据格式为 IconNode
+- **唯一真源是 `icons.js`**（`window.MaaRMIcons`）。数据格式为 IconNode
   （`[标签, 属性]` 元组数组，与 Lucide / morphicons 兼容）。
 - **UI 图标一律来自 Lucide**（当前锁定 v1.45.0，ISC 许可，声明见仓库根
   `THIRD_PARTY_LICENSES.md`）。新增图标：到 <https://lucide.dev> 找同名图标，
@@ -38,16 +38,16 @@ RPC 层不信任调用方给的地址。
   **禁止脱离真源随手画**。Lucide 确无对应图标时，放入 `CUSTOM` 分区，须按 Lucide 规格
   绘制（24×24 网格、`fill="none"`、stroke-width 2、round linecap/linejoin），并注明来历。
 - **渲染方式**：
-  - 静态 HTML：写占位 `<i data-icon="图标名" ...>`，app.js 启动时 `MRAIcons.hydrate()`
+  - 静态 HTML：写占位 `<i data-icon="图标名" ...>`，app.js 启动时 `MaaRMIcons.hydrate()`
     替换为真 `<svg>`（占位元素上的 style/class 会搬到 svg 上）。
-  - JS 动态模板：`${MRAIcons.svg('图标名'[, {class: '...'}])}`。
-  - 变形动画：`MRAIcons.node('图标名')` 取 IconNode 喂给 `<morph-icon>`。
+  - JS 动态模板：`${MaaRMIcons.svg('图标名'[, {class: '...'}])}`。
+  - 变形动画：`MaaRMIcons.node('图标名')` 取 IconNode 喂给 `<morph-icon>`。
 - **不属于图标系统的两类图形**（刻意排除，勿迁入 icons.js）：
   - 窗口标题栏 chrome（最小化/最大化/关闭，自绘 10×10，模拟 Windows 原生标题栏度量），
     留在 `index.html` 原位；
   - 性能走势图（`perf-spark` 内联 polyline），是数据可视化不是图标。
 - **实心媒体图标**（`media-play/pause/stop`，实心是媒体控件惯例画法）不参与变形动画，
-  `MRAIcons.node()` 对其直接抛错。
+  `MaaRMIcons.node()` 对其直接抛错。
 
 ## 图标动画（morphicons）
 
@@ -55,7 +55,7 @@ RPC 层不信任调用方给的地址。
   ESM chunk 机械合并为经典脚本挂 `window.MorphIcons`，未改动函数体。摊平是必须的——
   上游是相对 import 的多 chunk ESM，`file://` 页面下模块静态 import 会被拦截。
   **升级时重新摊平，勿手改本文件函数体**。
-- 用法：`<morph-icon reduced-motion="user">` + `el.icon = MRAIcons.node(...)`
+- 用法：`<morph-icon reduced-motion="user">` + `el.icon = MaaRMIcons.node(...)`
   （换 icon 即弹簧变形）；`defineMorphIcon()` 已由 rpc.js 启动时调用。
 - 现成用例：数据页「实时预览」放大/还原按钮（scan ↔ shrink）；
   主控页日志复制按钮的结果反馈（copy ↔ check / x，见 `js/log.js`）。
@@ -63,14 +63,14 @@ RPC 层不信任调用方给的地址。
 
 ## 键盘可达性（免维护约定）
 
-- **焦点环**：style.css 顶部一条全局 `:focus-visible { outline: 2px solid var(--mra-primary) }`
+- **焦点环**：style.css 顶部一条全局 `:focus-visible { outline: 2px solid var(--maarm-primary) }`
   覆盖所有交互元素；`:focus-visible` 只在键盘/程序化导航时命中，鼠标点击不出环，
   所以**控件类里不要再写 `outline: none`**（旧四处已删）。特例只允许改偏移：
   窗控按钮贴屏幕边缘用 `outline-offset: -2px` 内收。
 - **模态焦点陷阱**：`openModal`（js/modal.js）自带——开卡聚焦卡内第一个可聚焦元素、
   Tab/Shift+Tab 卡内回环、关闭归还焦点、`role=dialog + aria-modal + aria-labelledby`。
   经 openModal 的弹窗零成本继承；自绘浮层若要做陷阱，参照其实现而不是另起一套。
-- **开关 aria 接线**：`.option-row` 结构里的 `.mra-toggle[role="switch"]` 由
+- **开关 aria 接线**：`.option-row` 结构里的 `.maarm-toggle[role="switch"]` 由
   `wireSwitchAria`（js/settings.js）按结构自动挂 `aria-labelledby`/`aria-describedby`
   （标题/说明没有 id 时，从开关自身 id 派生 `-label`/`-desc`）。**新开关只要按 option-row
   既有结构写、开关带 id 即可**，不要手写 aria 属性；标题/说明自带 id 时原样保留——文案若
@@ -101,39 +101,39 @@ RPC 层不信任调用方给的地址。
 视觉语言 = OriginUI Select（shadcn/Radix 家族），实现在 `js/select.js` + `.msel-*` 样式。
 **值真源是隐藏的原生 `<select id="module-select">`**——app.js 填充 options、run.js 读
 value、settings.js 切 disabled、`onModuleChange` 撤销回写，本层一律不碰，避免第二份真相。
-改这几处时必须跟着调 `MRA.syncModuleSelect()`（现有四个调用点：renderModuleSelect 末尾、
+改这几处时必须跟着调 `MaaRM.syncModuleSelect()`（现有四个调用点：renderModuleSelect 末尾、
 onModuleChange 两处撤销回写、settings.js 运行锁定）——程序化赋值不派发 change，
 用户路径的 change 则由 select.js 派发到原生 select 上，过期确认弹窗等监听零改动。
 键盘：Enter/Space/方向键开合、↑↓/Home/End/typeahead、Enter 选中、Esc 归还焦点；
 `aria-expanded`/`aria-activedescendant`/`aria-disabled` 随状态挂。过期项渲染层剥掉
 「（已过期）」后缀改挂「已过期」小标签（数据仍来自 option 文本，不复制一份清单）。
 
-## 文字扫描光效（`.mra-text-scan`）
+## 文字扫描光效（`.maarm-text-scan`）
 
-给任意文字元素加 `.mra-text-scan` 即生效，无需额外 DOM。两层背景裁进文字：底层铺基色、
+给任意文字元素加 `.maarm-text-scan` 即生效，无需额外 DOM。两层背景裁进文字：底层铺基色、
 上层是一条高光带，动画只平移高光带的 `background-position`；默认 6s 周期里前 1.8s 扫过一次、
 其余静止，速度与频率刻意压低，供长时间驻留的提示文字使用。`prefers-reduced-motion: reduce`
 下退化为静态文字。
 
 - 现成用例：底栏状态文字——`app.js` 的 `setStatus` 在运行中挂类、结束时摘掉。
-- 现成变体：`.mra-text-scan--rave`（动态彩虹字 + 白光束 + 色相流转），默认不启用，加类即用。
+- 现成变体：`.maarm-text-scan--rave`（动态彩虹字 + 白光束 + 色相流转），默认不启用，加类即用。
 
 可调项（全是 CSS 变量，元素内联或派生类覆写）：
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `--mra-scan-base` | `currentColor` | 基色，默认继承元素自身文字色 |
-| `--mra-scan-beam` | `#FFFFFF` | 光带色 |
-| `--mra-scan-angle` | `100deg` | 光带倾角 |
-| `--mra-scan-half` | `5%` | 光带半宽（相对光带层） |
-| `--mra-scan-span` | `250%` | 光带层宽度倍数：越大光带越细，≥200% 才扫得完 |
-| `--mra-scan-cycle` | `6s` | 周期时长 |
-| `--mra-scan-timing` | `linear(0, 1 30%, 1 100%)` | 周期内节律：前 30% 走完行程、其余静止 |
-| `--mra-scan-hue-cycle` | `6s` | 附加动效「色相流转」的周期 |
-| `--mra-scan-anim` | 只有扫描光带 | 动效清单，要叠加附加动效就覆写它 |
-| `--mra-scan-base-layer` / `--mra-scan-layer` | 由上面几项合成 | 底层 / 光带层的整层渐变，换配色写到这一层 |
-| `--mra-scan-rainbow-l` / `--mra-scan-rainbow-c` | `0.7` / `0.16`（仅 `--rave`） | 彩虹字的 OKLCH 感知亮度 / 彩度 |
-| `--mra-scan-weight` | `600`（仅 `--rave`） | 字重，小字号彩色字的可读性靠它 |
+| `--maarm-scan-base` | `currentColor` | 基色，默认继承元素自身文字色 |
+| `--maarm-scan-beam` | `#FFFFFF` | 光带色 |
+| `--maarm-scan-angle` | `100deg` | 光带倾角 |
+| `--maarm-scan-half` | `5%` | 光带半宽（相对光带层） |
+| `--maarm-scan-span` | `250%` | 光带层宽度倍数：越大光带越细，≥200% 才扫得完 |
+| `--maarm-scan-cycle` | `6s` | 周期时长 |
+| `--maarm-scan-timing` | `linear(0, 1 30%, 1 100%)` | 周期内节律：前 30% 走完行程、其余静止 |
+| `--maarm-scan-hue-cycle` | `6s` | 附加动效「色相流转」的周期 |
+| `--maarm-scan-anim` | 只有扫描光带 | 动效清单，要叠加附加动效就覆写它 |
+| `--maarm-scan-base-layer` / `--maarm-scan-layer` | 由上面几项合成 | 底层 / 光带层的整层渐变，换配色写到这一层 |
+| `--maarm-scan-rainbow-l` / `--maarm-scan-rainbow-c` | `0.7` / `0.16`（仅 `--rave`） | 彩虹字的 OKLCH 感知亮度 / 彩度 |
+| `--maarm-scan-weight` | `600`（仅 `--rave`） | 字重，小字号彩色字的可读性靠它 |
 
 ### 彩虹配色走 OKLCH 的原因
 
@@ -158,8 +158,8 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 明度抖动又被请回来。动态改用注册过的自定义属性承载色相角：
 
 ```css
-@property --mra-scan-hue { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
-@keyframes mra-text-scan-hue { from { --mra-scan-hue: 0deg; } to { --mra-scan-hue: 360deg; } }
+@property --maarm-scan-hue { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes maarm-text-scan-hue { from { --maarm-scan-hue: 0deg; } to { --maarm-scan-hue: 360deg; } }
 ```
 
 色相角写进渐变色标，动画每帧重算彩虹，明度与彩度不动（各相位实测恒为 0.024）。未注册的自定义
@@ -178,7 +178,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 ```css
 .my-scan-rainbow {
-  --mra-scan-layer: linear-gradient(100deg, transparent 42%,
+  --maarm-scan-layer: linear-gradient(100deg, transparent 42%,
     oklch(0.70 0.16 20) 46%, oklch(0.70 0.16 90) 50%,
     oklch(0.70 0.16 200) 54%, transparent 58%);
 }
@@ -267,7 +267,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   比原来的 8px 还小，这就是「越改越方」的原因。
 - **位置**：`style.css` 末尾的 `@supports (corner-shape: squircle)` 块，作用于
   `.card`（页面卡片）、`.about-hero`（关于页头卡）、`.task-item`（任务卡）、
-  `.log-section`（日志卡）、`.mra-modal-card`（弹窗），以及
+  `.log-section`（日志卡）、`.maarm-modal-card`（弹窗），以及
   `.task-gallery-cell`（选卡卡片，半径走 `--gal-radius`）。
 - **降级**：不支持的引擎整块不解析，所有面继续用 `border-radius` 圆弧，不需要另写覆盖规则。
 - **未纳入**：按钮、输入框、徽章、选项卡仍是圆弧（小尺寸下差异不明显）。
@@ -296,7 +296,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 ## 环境中心（设置页）
 
-设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.mra-tool-btn--block` 不另设视觉）
+设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.maarm-tool-btn--block` 不另设视觉）
 打开 `js/settings.js` `openOptimizerCenter()`：双 tab 弹层，tab 视觉对齐顶部导航
 （文字 + 主色下划线，`.env-tabs` / `.env-pane`）。
 
@@ -324,7 +324,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 - **员工守则**：连点 10 次（2s 内）弹出。结构 = 池 12 条每次抽 8（编号 1-8）+ 第 9 条固定
   （修订声明，给抽样一个"官方解释"）+ 第 10 条幽灵行——**每次打开条目不同**。条目逐条
   渐现（内联 animation-delay，reduced-motion 退化直显）；标题字距呼吸
-  （`.mra-modal-title--egg`）；守则列表滚动条隐藏（滚动保留）。文案锚点全部取 GUI 真实
+  （`.maarm-modal-title--egg`）；守则列表滚动条隐藏（滚动保留）。文案锚点全部取 GUI 真实
   元素，数字母题（清点/数错）贯穿首尾。
 - **第 10 条幽灵行**：数字「10.」与正文默认整行隐形；悬停时数字乱码解码落定
   （`scrambleNumber`，40ms×20 帧自左向右锁定；DecryptedText 手法自实现）+ 正文显影，
@@ -344,7 +344,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 无构建链也能验证：仓库根起临时 HTTP 服务指向本目录，浏览器打开
 （app.js 通信层会因无 WebView2 桥报预期错误，不影响图标层验证）；
 或在 node 里 `global.window={}; require('./icons.js')` 后逐个
-`MRAIcons.svg(name)` 渲染检查。
+`MaaRMIcons.svg(name)` 渲染检查。
 
 样式与动效（纯 CSS 部分）可用无头 Edge 定格取帧，不必靠截图撞运气：
 

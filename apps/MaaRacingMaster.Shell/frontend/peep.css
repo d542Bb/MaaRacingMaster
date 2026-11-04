@@ -8,8 +8,8 @@ html, body { height: 100%; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--mra-surface);
-  border: 1px solid var(--mra-border);
+  background: var(--maarm-surface);
+  border: 1px solid var(--maarm-border);
 }
 
 /* ---------- 常驻状态标题栏 ---------- */
@@ -20,7 +20,7 @@ html, body { height: 100%; }
   align-items: center;
   gap: 8px;
   padding: 0 4px 0 10px;
-  border-bottom: 1px solid var(--mra-border);
+  border-bottom: 1px solid var(--maarm-border);
 }
 .peep-status { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .peep-status .status-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

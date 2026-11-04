@@ -1,22 +1,22 @@
-// MaaRM shell 前端 —— 通信层（WebView2 ↔ C# ↔ Python sidecar）+ window.MRA 共享命名空间。
-// 本文件必须最先加载：共享物（mra / $ / state / showError / reportError / setInlineStatus /
+// MaaRM shell 前端 —— 通信层（WebView2 ↔ C# ↔ Python sidecar）+ window.MaaRM 共享命名空间。
+// 本文件必须最先加载：共享物（maarm / $ / state / showError / reportError / setInlineStatus /
 // mkEl / appendIcon / postWindowAction / currentModuleId）只在此处定义一次，其余模块经
-// window.MRA 取用；各文件内部私有函数保持文件级作用域，跨文件要用的在各自文件末尾挂上 MRA。
-// 通信层对 HTML 只暴露 mra.call，不暴露 JSONL/Python 存在。
+// window.MaaRM 取用；各文件内部私有函数保持文件级作用域，跨文件要用的在各自文件末尾挂上 MaaRM。
+// 通信层对 HTML 只暴露 maarm.call，不暴露 JSONL/Python 存在。
 //
 // 错误反馈通道协议（三级；统一入口 reportError(level, message, opts)，同一失败只报一个
 // 通道，禁止「行内红字 + toast」双报）：
 //   toast  系统级失败：初始化失败、RPC/连接不可达、启动失败等——toast 4s 自动消失。
 //   inline 操作级失败：选项/配置保存失败等——行内状态红字并停留；opts.el 指定落点
 //          （配置面板传自己的状态行）；未传或落点不在页面上时回退 toast（错误不得被吞）。
-//   modal  需用户决策/确认的场景——经 MRA.openModal 弹窗（modal.js 晚于本文件加载，
-//          调用时经 MRA 延迟取用；启动早期 modal 尚未就绪时回退 toast）。
+//   modal  需用户决策/确认的场景——经 MaaRM.openModal 弹窗（modal.js 晚于本文件加载，
+//          调用时经 MaaRM 延迟取用；启动早期 modal 尚未就绪时回退 toast）。
 // 非错误的行内反馈（保存中/已保存/运行实况）不走 reportError，由各模块自己的 status 函数处理。
-window.MRA = (function () {
+window.MaaRM = (function () {
   'use strict';
 
   // ---------- 通信层（WebView2 ↔ C# ↔ Python sidecar） ----------
-  const mra = (() => {
+  const maarm = (() => {
     let nextCallId = 1;
     const pending = new Map();
 
@@ -51,12 +51,12 @@ window.MRA = (function () {
     bootBridge();
     return { call, onNativeMessage };
   })();
-  window.mra = mra;
+  window.maarm = maarm;
 
   // 静态 HTML 的 <i data-icon> 占位替换为真源 SVG（icons.js 先于本文件加载）。
-  // 覆盖对象是 index.html 静态骨架；模块动态内容经 MRAIcons.svg / appendIcon 自取，
+  // 覆盖对象是 index.html 静态骨架；模块动态内容经 MaaRMIcons.svg / appendIcon 自取，
   // 不依赖此处时序。
-  MRAIcons.hydrate(document);
+  MaaRMIcons.hydrate(document);
   // 注册 <morph-icon> 自定义元素（vendor.morphicons.js 先于本文件加载；幂等）
   if (window.MorphIcons) MorphIcons.defineMorphIcon();
 
@@ -105,10 +105,10 @@ window.MRA = (function () {
   function setInlineStatus(el, text, level) {
     if (!el) return;
     el.textContent = text || '';
-    el.classList.remove('mra-status--ok', 'mra-status--warn', 'mra-status--error');
-    if (level === 'ok') el.classList.add('mra-status--ok');
-    else if (level === 'warn') el.classList.add('mra-status--warn');
-    else if (level === 'error') el.classList.add('mra-status--error');
+    el.classList.remove('maarm-status--ok', 'maarm-status--warn', 'maarm-status--error');
+    if (level === 'ok') el.classList.add('maarm-status--ok');
+    else if (level === 'warn') el.classList.add('maarm-status--warn');
+    else if (level === 'error') el.classList.add('maarm-status--error');
   }
 
   // 错误反馈统一入口（三级协议与归类规则见文件头注释）
@@ -118,13 +118,13 @@ window.MRA = (function () {
       const el = (opts && opts.el) || null;
       if (el) { setInlineStatus(el, text, 'error'); return; }
       // 行内落点不可用（页面未渲染等）：回退 toast，错误不得被吞
-    } else if (level === 'modal' && typeof MRA.openModal === 'function') {
+    } else if (level === 'modal' && typeof MaaRM.openModal === 'function') {
       // 消息转义后落地：错误串可能带异常/远程内容，不进 HTML 解析通道
       const esc = text.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
-      MRA.openModal({
+      MaaRM.openModal({
         title: (opts && opts.title) || '出错了',
         maxWidth: opts && opts.maxWidth,
-        bodyHtml: '<p class="mra-modal-text mra-modal-text--flush">' + esc + '</p>',
+        bodyHtml: '<p class="maarm-modal-text maarm-modal-text--flush">' + esc + '</p>',
         buttons: [{ text: '知道了', primary: true, onClick: (m) => m.close() }],
       });
       return;
@@ -146,11 +146,11 @@ window.MRA = (function () {
   // 据此把「远程字段 + innerHTML」的组合钉死在这一处之外。
   function appendIcon(node, name) {
     const tpl = document.createElement('template');
-    tpl.innerHTML = MRAIcons.svg(name);
+    tpl.innerHTML = MaaRMIcons.svg(name);
     node.appendChild(tpl.content.firstElementChild);
   }
 
-  // 窗口动作出口（minimize/maximize/close/peep-float）：非 RPC 的 postMessage，与 mra
+  // 窗口动作出口（minimize/maximize/close/peep-float）：非 RPC 的 postMessage，与 maarm
   // 同属通信层。app.js 的窗口控制按钮与 settings.js 的预览悬浮按钮共用；放本文件是
   // 因为它先于两个使用方加载。
   function postWindowAction(action) {
@@ -160,14 +160,14 @@ window.MRA = (function () {
   }
 
   // 面板模块 id（可变共享状态）：任务卡展开时指向该模块，性能卡与设置页据此渲染；
-  // 数据页的看板中心由任务列表独立决定，不读这个值。一律经 MRA.panelModuleId 读写，
+  // 数据页的看板中心由任务列表独立决定，不读这个值。一律经 MaaRM.panelModuleId 读写，
   // 保证唯一真源在本文件。初始为空（无面板）——真实值由展开/初始化按任务列表写入。
   let panelModuleId = '';
 
-  const MRA = { mra, $, state, showError, reportError, setInlineStatus, mkEl, appendIcon, postWindowAction };
-  Object.defineProperty(MRA, 'panelModuleId', {
+  const MaaRM = { maarm, $, state, showError, reportError, setInlineStatus, mkEl, appendIcon, postWindowAction };
+  Object.defineProperty(MaaRM, 'panelModuleId', {
     get: () => panelModuleId,
     set: (v) => { panelModuleId = v; },
   });
-  return MRA;
+  return MaaRM;
 })();

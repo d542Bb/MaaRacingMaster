@@ -2,7 +2,7 @@
 // 职责：tab 切换、窗口控制、模块下拉、关于页、init 装配与全局事件绑定入口。
 // 通信层与共享 state 在 js/rpc.js；弹窗在 js/modal.js；日志在 js/log.js；预览在
 // js/preview.js；模块选项/优化中心/模块页面在 js/settings.js；运行控制在 js/run.js。
-// 共享物一律经 window.MRA 传递（下方导入清单）。
+// 共享物一律经 window.MaaRM 传递（下方导入清单）。
 //
 // 关于页「检查更新 / 公告」与 ViGEmBus 引导弹窗保留在本文件：
 // tests/test_frontend_remote_render.py 静态锁按函数签名从本文件抽取
@@ -15,11 +15,11 @@
 
   // 共享物导入（js/ 各模块已先行加载）
   const {
-    mra, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
+    maarm, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
     openModal, setPreviewFloating, peepConsumer,
     renderModulePages, checkRegistryOptimizations, pollDashboard,
     renderTaskList, pollStatus, setStatus, pollLogs,
-  } = window.MRA;
+  } = window.MaaRM;
 
   // ---------- ViGEmBus 驱动缺失引导弹框 ----------
   // 外链一律只报**逻辑目标名**（home / issue / docs / announcement / download / vigembus），
@@ -30,9 +30,9 @@
   function showVigemDialog(detailMsg) {
     openModal({
       title: '缺少 ViGEmBus 驱动',
-      titleColor: 'var(--mra-danger,#ef4444)',
+      titleColor: 'var(--maarm-danger,#ef4444)',
       bodyHtml:
-        '<p class="mra-modal-text">' +
+        '<p class="maarm-modal-text">' +
         '需要虚拟手柄（vgamepad）控制的模块，底层依赖 <b>ViGEmBus</b> 内核驱动。它无法随解压包分发，需在本机安装一次。</p>',
       buttons: [
         { text: '手动打开下载页', asLink: true, href: VIGEM_DL_URL },
@@ -40,7 +40,7 @@
           text: '下载并安装 ViGEmBus 驱动', primary: true,
           onClick: async (modal) => {
             try {
-              await mra.call('open_vigembus_download', {});
+              await maarm.call('open_vigembus_download', {});
             } catch (err) {
               // 后端打开失败：前端兜底新开标签页
               window.open(VIGEM_DL_URL, '_blank');
@@ -54,11 +54,11 @@
     });
     void detailMsg;
   }
-  // run.js 的 _doStart 先于本文件加载，经 MRA 延迟取用
-  Object.assign(window.MRA, { showVigemDialog });
+  // run.js 的 _doStart 先于本文件加载，经 MaaRM 延迟取用
+  Object.assign(window.MaaRM, { showVigemDialog });
 
   // ---------- Tab 切换 ----------
-  const tabButtons = Array.from(document.querySelectorAll('.mra-tab'));
+  const tabButtons = Array.from(document.querySelectorAll('.maarm-tab'));
   const TAB_ORDER = ['control', 'data', 'settings', 'about'];
   let _curTabIdx = 0; // 初始即主控 tab（HTML 默认激活），防止首次点当前 tab 误触发切换动画
   function switchTab(name) {
@@ -68,7 +68,7 @@
     _curTabIdx = nextIdx;
     const fromRight = nextIdx > prevIdx; // 前进：新页从右滑入；后退：从左滑入
     tabButtons.forEach((btn) => {
-      btn.classList.toggle('mra-tab--active', btn.dataset.tab === name);
+      btn.classList.toggle('maarm-tab--active', btn.dataset.tab === name);
     });
     TAB_ORDER.forEach((p) => {
       $('page-' + p).classList.toggle('hidden', p !== name);
@@ -122,7 +122,7 @@
       const target = btn.dataset.link;
       if (!target) return;
       try {
-        await mra.call('open_external_url', { target });
+        await maarm.call('open_external_url', { target });
       } catch (e) {
         showError('打开链接失败: ' + e.message);
       }
@@ -133,7 +133,7 @@
   // 打开外部目标：只传逻辑目标名，地址由 sidecar 侧白名单给出（前端不传 URL）。
   function openTarget(target) {
     if (!target) return;
-    mra.call('open_external_url', { target }).catch((e) => showError('打开链接失败: ' + e.message));
+    maarm.call('open_external_url', { target }).catch((e) => showError('打开链接失败: ' + e.message));
   }
 
   // 渲染「版本与更新」卡状态：cls 决定配色，text 只作纯文本落地。
@@ -155,7 +155,7 @@
     renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
     releaseEl.style.display = 'none';
     try {
-      const d = await mra.call('check_update');
+      const d = await maarm.call('check_update');
       if (d.error) {
         renderUpdateStatus(statusEl, 'ver-status--err', d.error);
       } else if (d.status === 'no_release') {
@@ -169,7 +169,7 @@
         info.appendChild(mkEl('div', 'nr-sub',
           (d.published_at ? '发布于 ' + d.published_at + ' · ' : '') + '建议更新到最新版本'));
         releaseEl.appendChild(info);
-        const goBtn = mkEl('button', 'mra-btn mra-btn--primary', '前往下载');
+        const goBtn = mkEl('button', 'maarm-btn maarm-btn--primary', '前往下载');
         goBtn.id = 'btn-go-download';
         goBtn.type = 'button';
         appendIcon(goBtn, 'arrow-up-right');
@@ -192,7 +192,7 @@
     if (!bodyEl) return;
     bodyEl.textContent = '';
     try {
-      const d = await mra.call('fetch_announcement');
+      const d = await maarm.call('fetch_announcement');
       if (!d || d.level === 'none' || !d.title) {
         bodyEl.appendChild(mkEl('div', 'about-announce-empty', '暂无公告'));
         return;
@@ -264,9 +264,9 @@
   function blinkStatusDot() {
     const dot = $('status-dot');
     if (!dot) return;
-    dot.classList.remove('mra-dot-blink');
+    dot.classList.remove('maarm-dot-blink');
     void dot.offsetWidth; // 重置动画：摘类→强制回流→再挂
-    dot.classList.add('mra-dot-blink');
+    dot.classList.add('maarm-dot-blink');
   }
 
   // 离开按钮的 DodgeField [v6]：躲避场 = 整张弹层卡，按钮二维逃跑（能扑到正文上）。
@@ -280,9 +280,9 @@
   const EGG_CATCH_LINES = ['抓不到', '差一点', '太慢了', '别追了', '你为什么执意要走', '好吧。你走吧。'];
   function wireEggDodge(modal, chase) {
     const field = modal.card;
-    const btn = field.querySelector('.mra-modal-btn');
+    const btn = field.querySelector('.maarm-modal-btn');
     if (!field || !btn) return null;
-    btn.classList.add('mra-modal-btn--egg');
+    btn.classList.add('maarm-modal-btn--egg');
     // 抓到 = 亮下一句：pointerdown 无条件挂（按下瞬间即判定，逃跑中也能抓到）。
     // 躲避受环境门控可缺席（reduced-motion/触屏/远桌面下 media query 不匹配），
     // 但交互不能跟着缺席——否则按钮成死按钮，用户被困在弹层里。
@@ -425,14 +425,14 @@
     }
     const rows = [];
     picked.forEach((r, i) => {
-      rows.push('<p class="mra-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
-        + '<b class="mra-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
+      rows.push('<p class="maarm-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
+        + '<b class="maarm-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
     });
-    rows.push('<p class="mra-modal-rule" style="animation-delay:' + (picked.length * 100) + 'ms">'
-      + '<b class="mra-modal-rule-num">9.</b><span>' + EGG_RULE_META + '</span></p>');
-    rows.push('<p class="mra-modal-rule mra-modal-rule--ghost" style="animation-delay:'
-      + (picked.length * 100 + 150) + 'ms"><b class="mra-modal-rule-num" data-final="10.">10.</b>'
-      + '<span class="mra-modal-rule-secret">' + EGG_RULE_LAST + '</span></p>');
+    rows.push('<p class="maarm-modal-rule" style="animation-delay:' + (picked.length * 100) + 'ms">'
+      + '<b class="maarm-modal-rule-num">9.</b><span>' + EGG_RULE_META + '</span></p>');
+    rows.push('<p class="maarm-modal-rule maarm-modal-rule--ghost" style="animation-delay:'
+      + (picked.length * 100 + 150) + 'ms"><b class="maarm-modal-rule-num" data-final="10.">10.</b>'
+      + '<span class="maarm-modal-rule-secret">' + EGG_RULE_LAST + '</span></p>');
     const chase = { catches: 0, gave: false };
     let cleanupDodge = null;
     let scrTimer = null;
@@ -440,9 +440,9 @@
       title: '员工守则',
       maxWidth: 580,
       bodyHtml:
-        '<div class="mra-modal-rules">' +
-        '<img class="mra-modal-rules-icon" src="../../../assets/icon.ico" alt="">' +
-        '<div class="mra-modal-rules-list">' + rows.join('') + '</div>' +
+        '<div class="maarm-modal-rules">' +
+        '<img class="maarm-modal-rules-icon" src="../../../assets/icon.ico" alt="">' +
+        '<div class="maarm-modal-rules-list">' + rows.join('') + '</div>' +
         '</div>',
       closeOnOverlay: false, // 不给逃课出口：点空白不关（Esc 仍可）
       onClose: () => {
@@ -454,14 +454,14 @@
         { text: '确定要退出吗？', primary: true },
       ],
     });
-    const title = modal.card.querySelector('.mra-modal-title');
-    if (title) title.classList.add('mra-modal-title--egg');
+    const title = modal.card.querySelector('.maarm-modal-title');
+    if (title) title.classList.add('maarm-modal-title--egg');
     // 第 10 条：整行（序号+正文）默认隐形；悬停时序号乱码解码 + 正文显影，移出复隐
-    const ghost = modal.card.querySelector('.mra-modal-rule--ghost');
+    const ghost = modal.card.querySelector('.maarm-modal-rule--ghost');
     if (ghost) {
       ghost.addEventListener('mouseenter', () => {
         ghost.classList.add('revealed');
-        const num = ghost.querySelector('.mra-modal-rule-num');
+        const num = ghost.querySelector('.maarm-modal-rule-num');
         if (scrTimer) clearInterval(scrTimer);
         scrTimer = scrambleNumber(num, '10.');
       });
@@ -569,7 +569,7 @@
     $('btn-win-min').addEventListener('click', () => postWindowAction('minimize'));
     $('btn-win-max').addEventListener('click', () => postWindowAction('maximize'));
     $('btn-win-close').addEventListener('click', () => postWindowAction('close'));
-    mra.onNativeMessage((msg) => {
+    maarm.onNativeMessage((msg) => {
       // PEEP 悬浮窗开/关：预览卡与占位符互换，帧消费权交接
       if (msg.type === 'peep-floating') {
         setPreviewFloating(Boolean(msg.value));
@@ -589,7 +589,7 @@
   // ---------- 主控 ----------
   async function init() {
     try {
-      const data = await mra.call('get_initial_state');
+      const data = await maarm.call('get_initial_state');
       $('app-version').textContent = 'v' + data.version;
       $('about-version').textContent = 'v' + data.version;
       const verCur = $('about-ver-current');
@@ -600,7 +600,7 @@
       state.moduleAssets = data.module_assets || {};
       state.coverDefault = data.cover_default || '';
       // 初始就按运行状态锁定（重连/刷新时可能已有轮次在跑）
-      MRA.configPanel.setLocked(!!data.is_running);
+      MaaRM.configPanel.setLocked(!!data.is_running);
       renderTaskList();
       // 「数据/设置」页跟随初始面板：第一个启用项，否则列表第一项，否则注册表第一个
       const initialMid = state.queue.order.find((m) => state.queue.enabled[m])

@@ -173,7 +173,7 @@ def test_announcement_missing_url_text_defaults():
 
 @pytest.mark.parametrize("payload_text", [
     '<img src=x onerror=alert(1)>',
-    '<script>mra.call("open_external_url",{target:"home"})</script>',
+    '<script>maarm.call("open_external_url",{target:"home"})</script>',
     '"><svg onload=alert(1)>',
 ])
 def test_announcement_html_like_text_passes_through_verbatim(payload_text):

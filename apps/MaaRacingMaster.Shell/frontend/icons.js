@@ -166,7 +166,7 @@
   // extraAttrs 可覆写 svg 根属性（如 { class: 'icon-play' } 供状态切换 CSS 选择）。
   function svg(name, extraAttrs) {
     var def = ICONS[name];
-    if (!def) throw new Error('MRAIcons: 未知图标 ' + name);
+    if (!def) throw new Error('MaaRMIcons: 未知图标 ' + name);
     var base = def.solid ? SOLID_SVG : BASE_SVG;
     if (extraAttrs) base = Object.assign({}, base, extraAttrs);
     var root = attrsToStr(base);
@@ -180,8 +180,8 @@
   // 返回的是内部数组引用，调用方不得修改）。
   function node(name) {
     var def = ICONS[name];
-    if (!def) throw new Error('MRAIcons: 未知图标 ' + name);
-    if (def.solid) throw new Error('MRAIcons: 实心图标 ' + name + ' 不支持变形动画');
+    if (!def) throw new Error('MaaRMIcons: 未知图标 ' + name);
+    if (def.solid) throw new Error('MaaRMIcons: 实心图标 ' + name + ' 不支持变形动画');
     return def.nodes;
   }
 
@@ -200,5 +200,5 @@
     });
   }
 
-  window.MRAIcons = { svg: svg, node: node, hydrate: hydrate };
+  window.MaaRMIcons = { svg: svg, node: node, hydrate: hydrate };
 })();

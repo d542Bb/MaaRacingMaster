@@ -68,5 +68,5 @@
     finishSave: finishSave,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  if (typeof window !== 'undefined') window.MRAConfigPanelState = api;
+  if (typeof window !== 'undefined') window.MaaRMConfigPanelState = api;
 })();

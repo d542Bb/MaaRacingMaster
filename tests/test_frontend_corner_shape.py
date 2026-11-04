@@ -56,7 +56,7 @@ def test_pilot_is_guarded_by_supports():
     css = STYLE.read_text(encoding="utf-8")
     block = _pilot_block(css)
     assert block.startswith("@supports (corner-shape:"), block[:80]
-    assert "corner-shape: var(--mra-corner-shape)" in block
+    assert "corner-shape: var(--maarm-corner-shape)" in block
 
 
 def test_corner_shape_appears_only_inside_the_pilot_block():
@@ -64,7 +64,7 @@ def test_corner_shape_appears_only_inside_the_pilot_block():
     css = STYLE.read_text(encoding="utf-8")
     block = _pilot_block(css)
     outside = css.replace(block, "")
-    # 允许：变量定义 --mra-corner-shape（它不是属性声明）
+    # 允许：变量定义 --maarm-corner-shape（它不是属性声明）
     offenders = re.findall(r"(?<!-)\bcorner-shape\s*:", outside)
     assert not offenders, f"试点块外出现 corner-shape 声明: {offenders}"
 
@@ -75,9 +75,9 @@ def test_pilot_scope_is_surface_classes_only():
     body = block[block.index("{") + 1:-1]   # 守卫块内部（可能有多条规则）
     body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)   # 注释不是选择器，先剥掉
     for want in (".card", ".about-hero", ".task-item", ".log-section",
-                 ".mra-modal-card", ".task-gallery-cell"):
+                 ".maarm-modal-card", ".task-gallery-cell"):
         assert want in body, f"面类 {want} 未纳入，同屏会不统一"
-    for forbidden in ("*", "body", ".mra-btn", "input", "textarea", "a "):
+    for forbidden in ("*", "body", ".maarm-btn", "input", "textarea", "a "):
         assert forbidden not in body, f"作用域越界: {forbidden}"
 
 

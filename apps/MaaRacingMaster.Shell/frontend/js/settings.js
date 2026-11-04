@@ -1,14 +1,14 @@
 // MaaRM shell 前端 —— 设置页控件、环境中心、模块「数据/设置」页、数据页看板中心。
-// 配置面板由插件声明、js/config-panel.js 通用渲染。跨文件调用经 window.MRA（见文件末尾导出）。
+// 配置面板由插件声明、js/config-panel.js 通用渲染。跨文件调用经 window.MaaRM（见文件末尾导出）。
 (function () {
   'use strict';
 
   // 共享物导入（js/rpc.js、js/modal.js、js/preview.js 已先行加载）
   const {
-    mra, $, state, showError, reportError, postWindowAction,
+    maarm, $, state, showError, reportError, postWindowAction,
     openModal, showGamepadNotice,
     setPreviewPlayState, enterPreviewFullscreen, exitPreviewFullscreen,
-  } = window.MRA;
+  } = window.MaaRM;
 
   // ---------- 注册表权限优化（启动体检 + 环境中心「权限优化」tab） ----------
   // 渲染单个优化项（三态行式卡片）：available===false→无需处理；optimized→已优化；否则待优化。
@@ -64,7 +64,7 @@
   // 写入单个优化项，返回错误信息（null = 成功）
   async function applyOptimization(id, value) {
     try {
-      await mra.call('set_registry_optimization', { id: id, value: value });
+      await maarm.call('set_registry_optimization', { id: id, value: value });
       return null;
     } catch (e) {
       return e.message;
@@ -74,7 +74,7 @@
   // 设置单个优化项的启动提醒忽略状态（true=忽略，false=恢复），返回错误信息
   async function applyPromptIgnore(id, ignored) {
     try {
-      await mra.call('set_optimization_prompt_ignored', { id: id, ignored: ignored });
+      await maarm.call('set_optimization_prompt_ignored', { id: id, ignored: ignored });
       return null;
     } catch (e) {
       return e.message;
@@ -128,10 +128,10 @@
   async function renderDepList(depEl) {
     let items;
     try {
-      const d = await mra.call('get_optional_dependencies');
+      const d = await maarm.call('get_optional_dependencies');
       items = d.items || [];
     } catch (e) {
-      depEl.innerHTML = '<p class="mra-modal-error">读取可选依赖失败: ' + e.message + '</p>';
+      depEl.innerHTML = '<p class="maarm-modal-error">读取可选依赖失败: ' + e.message + '</p>';
       return;
     }
     let fontReady = false;
@@ -171,7 +171,7 @@
   async function openDataUsage() {
     let d;
     try {
-      d = await mra.call('get_data_usage');
+      d = await maarm.call('get_data_usage');
     } catch (e) {
       showError('读取目录占用失败: ' + e.message);
       return;
@@ -186,12 +186,12 @@
       if (bytes <= 0 || total <= 0) return;
       const from = (acc / total) * 360;
       acc += bytes;
-      stops.push('var(--mra-usage-' + x.key + ', var(--mra-foreground-dim)) '
+      stops.push('var(--maarm-usage-' + x.key + ', var(--maarm-foreground-dim)) '
         + from.toFixed(2) + 'deg ' + (acc / total * 360).toFixed(2) + 'deg');
     });
     const donut = stops.length
       ? 'background: conic-gradient(from -90deg, ' + stops.join(', ') + ');'
-      : 'background: var(--mra-border);';
+      : 'background: var(--maarm-border);';
     const rows = dirs.map((x) => {
       const key = USAGE_KEY_RE.test(String(x.key)) ? x.key : 'unknown';
       return '<li class="space-row">'
@@ -220,7 +220,7 @@
           primary: true,
           onClick: async (modal) => {
             try {
-              await mra.call('open_user_data_folder', {});
+              await maarm.call('open_user_data_folder', {});
               modal.close();
             } catch (e) {
               showError('打开文件夹失败: ' + e.message);
@@ -237,7 +237,7 @@
   async function openOptimizerCenter() {
     let items;
     try {
-      const d = await mra.call('get_registry_optimizations');
+      const d = await maarm.call('get_registry_optimizations');
       items = d.items || [];
     } catch (e) {
       showError('读取优化项失败: ' + e.message);
@@ -279,12 +279,12 @@
     }
     async function refresh() {
       try {
-        const d = await mra.call('get_registry_optimizations');
+        const d = await maarm.call('get_registry_optimizations');
         const its = d.items || [];
         renderSummary(its);
         listEl.innerHTML = its.map(optimizerItemHtml).join('');
       } catch (e) {
-        listEl.innerHTML = '<p class="mra-modal-error">刷新失败: ' + e.message + '</p>';
+        listEl.innerHTML = '<p class="maarm-modal-error">刷新失败: ' + e.message + '</p>';
       }
     }
     // 事件委托到 modal.card：覆盖 tab 切换、依赖引导、汇总条(一键全部)与列表(单项)，
@@ -299,7 +299,7 @@
       const guideBtn = ev.target.closest('.dep-guide');
       if (guideBtn) {
         try {
-          await mra.call('open_external_url', { target: guideBtn.dataset.target });
+          await maarm.call('open_external_url', { target: guideBtn.dataset.target });
         } catch (e) {
           showError('打开链接失败: ' + e.message);
         }
@@ -308,7 +308,7 @@
       const applyAllBtn = ev.target.closest('.opt-apply-all');
       if (applyAllBtn) {
         applyAllBtn.disabled = true;
-        const its = ((await mra.call('get_registry_optimizations')).items) || [];
+        const its = ((await maarm.call('get_registry_optimizations')).items) || [];
         const todo = its.filter((it) => it.available !== false && !it.optimized);
         const fails = [];
         for (const it of todo) {
@@ -341,7 +341,7 @@
   async function checkRegistryOptimizations() {
     let pending;
     try {
-      const d = await mra.call('get_registry_optimizations');
+      const d = await maarm.call('get_registry_optimizations');
       // available === false = 目标应用已安装、该项无需处理，不进体检提醒
       pending = (d.items || []).filter((it) => !it.optimized && !it.prompt_ignored && it.available !== false);
     } catch (e) {
@@ -351,11 +351,11 @@
     if (!pending.length) return;
     openModal({
       title: '检测到 ' + pending.length + ' 项系统权限可优化',
-      titleColor: 'var(--mra-warning,#f59e0b)',
+      titleColor: 'var(--maarm-warning,#f59e0b)',
       bodyHtml: pending.map((it) =>
-        '<p class="mra-modal-text">'
+        '<p class="maarm-modal-text">'
         + '<b>' + it.name + '</b>：' + it.effect + '</p>').join('')
-        + '<p class="mra-modal-text--sub">'
+        + '<p class="maarm-modal-text--sub">'
         + '详情与手动调整见 设置 → 运行环境。</p>',
       buttons: [
         {
@@ -634,7 +634,7 @@
       body.innerHTML = dashLoadingHtml();
     }
     try {
-      const payload = await mra.call('get_module_dashboard', { module_id: mod.id });
+      const payload = await maarm.call('get_module_dashboard', { module_id: mod.id });
       if (seq !== _dashReqSeq) return; // 已切到别的看板：丢弃过期响应
       const sig = JSON.stringify(payload);
       if (sig === _dashPayloadSig && body.dataset.loadedFor === mod.id) return;
@@ -687,7 +687,7 @@
   async function onDashboardAction(action) {
     if (!action) return;
     try {
-      await mra.call(action, {});
+      await maarm.call(action, {});
     } catch (e) {
       reportError('toast', '操作失败: ' + (e.message || e));
     }
@@ -777,14 +777,14 @@
             <h3>实时预览</h3>
             <div class="log-head-actions">
               <button class="icon-btn" id="${mid}-btn-preview-float" type="button" title="悬浮窗显示（脱离主界面）">
-                ${MRAIcons.svg('picture-in-picture-2')}
+                ${MaaRMIcons.svg('picture-in-picture-2')}
               </button>
               <button class="icon-btn" id="${mid}-btn-preview-max" type="button" title="全屏">
                 <morph-icon reduced-motion="user"></morph-icon>
               </button>
               <button class="icon-btn" id="${mid}-btn-preview-toggle" type="button" title="开始预览">
-                ${MRAIcons.svg('media-play', {class: 'icon-play'})}
-                ${MRAIcons.svg('media-pause', {class: 'icon-pause'})}
+                ${MaaRMIcons.svg('media-play', {class: 'icon-play'})}
+                ${MaaRMIcons.svg('media-pause', {class: 'icon-pause'})}
               </button>
             </div>
           </div>
@@ -792,7 +792,7 @@
             <div class="preview-canvas">
               <img class="preview-img" id="${mid}-preview-img" alt="PEEP 实时预览">
               <div class="preview-empty" id="${mid}-preview-empty">
-                ${MRAIcons.svg('camera')}
+                ${MaaRMIcons.svg('camera')}
                 <span>PEEP 开启后显示实时画面</span>
               </div>
             </div>
@@ -810,7 +810,7 @@
           <div class="card-head"><h3>调试选项</h3></div>
           <div class="card-body card-body--col">
             <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
+              <button class="maarm-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">DEBUG 截图与记录</div>
                 <p class="option-desc">保存调试图、读数与取证画面，约 300MB/分钟，仅排查时短时开启</p>
@@ -818,7 +818,7 @@
               <span class="option-note">约占用 300MB/分钟磁盘空间</span>
             </div>
             <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-estop" role="switch" aria-checked="false"></button>
+              <button class="maarm-toggle" id="${mid}-toggle-estop" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">紧急停止快捷键</div>
                 <p class="option-desc">程序接管操作时，同时按下键盘任意 2 个及以上按键立即停止运行逻辑；人工驾驶/录制阶段不检测（否则键盘驾驶会被误触发）</p>
@@ -826,7 +826,7 @@
               <span class="option-note">紧急安全阀，运行中建议开启</span>
             </div>
             <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
+              <button class="maarm-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
                 <p class="option-desc">开启后运行日志、玩法流水与性能记录写入会话目录；关闭时仅保留在界面</p>
@@ -834,7 +834,7 @@
               <span class="option-note">默认关闭，排查问题时开启</span>
             </div>
             <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-intent" role="switch" aria-checked="false"></button>
+              <button class="maarm-toggle" id="${mid}-toggle-intent" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">仅显示意图</div>
                 <p class="option-desc">打开后程序只把光标/手柄导航到目标位置，<strong>不执行点击</strong>，由你自己按下/确认；关闭时按选中的点击方式自动点击</p>
@@ -849,7 +849,7 @@
           <div class="card-head"><h3>运行选项</h3></div>
           <div class="card-body card-body--col">
             <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-mutegame" role="switch" aria-checked="false"></button>
+              <button class="maarm-toggle" id="${mid}-toggle-mutegame" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">运行时静音游戏</div>
                 <p class="option-desc">运行期间把游戏音量静音（方便听别的），停止/结束后自动恢复游戏音量为 100%</p>
@@ -857,7 +857,7 @@
               <span class="option-note">结束自动恢复 100%</span>
             </div>
             <div class="option-row">
-              <button class="mra-toggle" id="${mid}-toggle-boostprio" role="switch" aria-checked="false"></button>
+              <button class="maarm-toggle" id="${mid}-toggle-boostprio" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">性能优先</div>
                 <p class="option-desc">提高本程序进程的 CPU 优先级，感知与控制在系统繁忙时少排队；立即生效，重启后保持</p>
@@ -872,18 +872,18 @@
           <div class="card-head"><h3>点击方式</h3></div>
           <div class="card-body">
             <div class="radio-grid">
-              <div class="mra-radio-card mra-radio-card--selected" data-clickmode="real">
+              <div class="maarm-radio-card maarm-radio-card--selected" data-clickmode="real">
                 <div class="radio-inner">
-                  <div class="mra-radio-dot"></div>
+                  <div class="maarm-radio-dot"></div>
                   <div class="option-main">
                     <div class="radio-title"><strong>前台(鼠标)</strong><span class="badge-recommend">推荐</span></div>
                     <p class="radio-desc">光标移到目标后 SendInput 点击；需游戏在前台</p>
                   </div>
                 </div>
               </div>
-              <div class="mra-radio-card" data-clickmode="gamepad">
+              <div class="maarm-radio-card" data-clickmode="gamepad">
                 <div class="radio-inner">
-                  <div class="mra-radio-dot"></div>
+                  <div class="maarm-radio-dot"></div>
                   <div class="option-main">
                     <div class="radio-title"><strong>后台(手柄)</strong></div>
                     <p class="radio-desc">手柄光标导航到目标后按 A 键确认，游戏可留在后台；需 ViGEmBus 虚拟手柄</p>
@@ -903,13 +903,13 @@
           <div class="card-head"><h3>快捷工具</h3></div>
           <div class="card-body">
             <div class="tool-grid">
-              <button class="mra-tool-btn" data-tool="folder">
-                ${MRAIcons.svg('folder-open', {class: 'mra-tool-btn-icon'})}
-                <span class="mra-tool-btn-label">调试文件夹</span>
+              <button class="maarm-tool-btn" data-tool="folder">
+                ${MaaRMIcons.svg('folder-open', {class: 'maarm-tool-btn-icon'})}
+                <span class="maarm-tool-btn-label">调试文件夹</span>
               </button>
-              <button class="mra-tool-btn" data-tool="env">
-                ${MRAIcons.svg('settings', {class: 'mra-tool-btn-icon'})}
-                <span class="mra-tool-btn-label">运行环境</span>
+              <button class="maarm-tool-btn" data-tool="env">
+                ${MaaRMIcons.svg('settings', {class: 'maarm-tool-btn-icon'})}
+                <span class="maarm-tool-btn-label">运行环境</span>
               </button>
             </div>
           </div>
@@ -928,7 +928,7 @@
     // 无面板模块：两页只放占位内容、不挂模块控件；panelModuleId 置空后，
     // 轮询里所有带模块前缀的取值都会落空并由各自的判空守卫跳过。
     if (!moduleId) {
-      MRA.panelModuleId = '';
+      MaaRM.panelModuleId = '';
       const dataHost = $('page-data');
       const settingsHost = $('page-settings');
       if (dataHost) dataHost.innerHTML = EMPTY_MODULE_HTML;
@@ -944,7 +944,7 @@
       if (!first) return;
       moduleId = first.id;
     }
-    MRA.panelModuleId = moduleId;
+    MaaRM.panelModuleId = moduleId;
     const dataPage = $('page-data');
     const settingsPage = $('page-settings');
     if (dataPage) dataPage.innerHTML = defaultDataCards(moduleId);
@@ -954,13 +954,13 @@
   }
 
   // ---------- switch aria 通用接线（免维护：约定优于配置） ----------
-  // .option-row 结构里的 .mra-toggle[role=switch] 自动关联同排 .option-title（名称）
+  // .option-row 结构里的 .maarm-toggle[role=switch] 自动关联同排 .option-title（名称）
   // 与 .option-desc（描述），引用 id 从开关自身 id 派生（<开关id>-label / -desc）。
   // 新开关按既有结构写即自动获得读屏播报，无需逐实例手写 aria 属性；
   // hasAttribute 守卫幂等，可对同一子树重复调用。
   function wireSwitchAria(root) {
     (root || document).querySelectorAll('.option-row').forEach((row) => {
-      const sw = row.querySelector('.mra-toggle[role="switch"]');
+      const sw = row.querySelector('.maarm-toggle[role="switch"]');
       if (!sw || sw.hasAttribute('aria-labelledby') || !sw.id) return; // 无 id 无法建立引用，跳过
       const title = row.querySelector('.option-title');
       if (!title) return;
@@ -992,7 +992,7 @@
       const on = !toggleState(tDebug);
       setToggle(tDebug, on); // 先翻转视觉状态
       try {
-        await mra.call('set_debug_mode', { enabled: on });
+        await maarm.call('set_debug_mode', { enabled: on });
       } catch (e) {
         console.error(e);
         showError(e.message);
@@ -1004,7 +1004,7 @@
       const on = !toggleState(tEstop);
       setToggle(tEstop, on); // 先翻转视觉状态
       try {
-        await mra.call('set_emergency_stop', { enabled: on });
+        await maarm.call('set_emergency_stop', { enabled: on });
       } catch (e) {
         console.error(e);
         showError(e.message);
@@ -1019,7 +1019,7 @@
         const on = !toggleState(tFilelog);
         setToggle(tFilelog, on); // 先翻转视觉状态
         try {
-          await mra.call('set_file_logging', { enabled: on });
+          await maarm.call('set_file_logging', { enabled: on });
         } catch (e) {
           console.error(e);
           showError(e.message);
@@ -1035,7 +1035,7 @@
         const on = !toggleState(tIntent);
         setToggle(tIntent, on); // 先翻转视觉状态
         try {
-          await mra.call('set_intent_mode', { enabled: on });
+          await maarm.call('set_intent_mode', { enabled: on });
         } catch (e) {
           console.error(e);
           showError(e.message);
@@ -1051,7 +1051,7 @@
         const on = !toggleState(tMuteGame);
         setToggle(tMuteGame, on); // 先翻转视觉状态
         try {
-          await mra.call('set_mute_game', { enabled: on });
+          await maarm.call('set_mute_game', { enabled: on });
         } catch (e) {
           console.error(e);
           showError(e.message);
@@ -1066,7 +1066,7 @@
         const on = !toggleState(tBoostPrio);
         setToggle(tBoostPrio, on); // 先翻转视觉状态
         try {
-          await mra.call('set_boost_priority', { enabled: on });
+          await maarm.call('set_boost_priority', { enabled: on });
         } catch (e) {
           console.error(e);
           showError(e.message);
@@ -1082,7 +1082,7 @@
     const previewCard = p('preview-card');
     if (previewMax) {
       const morphEl = previewMax.querySelector('morph-icon');
-      if (morphEl) morphEl.icon = MRAIcons.node('scan'); // mount 后首个 icon 直接绘制不动画
+      if (morphEl) morphEl.icon = MaaRMIcons.node('scan'); // mount 后首个 icon 直接绘制不动画
     }
 
     if (previewToggle) {
@@ -1090,7 +1090,7 @@
         const on = !state.peepEnabled;
         setPreviewPlayState(on);      // 先翻转视觉状态
         try {
-          await PeepConsumer.setPeep(mra, on);
+          await PeepConsumer.setPeep(maarm, on);
           state.peepEnabled = on;
         } catch (e) {
           console.error(e);
@@ -1118,16 +1118,16 @@
     }
 
     // 点击方式：每个 .radio-grid 是一组单选，组内互斥、组间独立
-    // （共用 .mra-radio-card 样式，选中态不能全页互斥，否则点一组会清掉另一组的选中）
+    // （共用 .maarm-radio-card 样式，选中态不能全页互斥，否则点一组会清掉另一组的选中）
     document.querySelectorAll('.radio-grid').forEach((grid) => {
-      grid.querySelectorAll('.mra-radio-card').forEach((card) => {
+      grid.querySelectorAll('.maarm-radio-card').forEach((card) => {
         card.addEventListener('click', async () => {
-          grid.querySelectorAll('.mra-radio-card').forEach((c) => c.classList.remove('mra-radio-card--selected'));
-          card.classList.add('mra-radio-card--selected');
+          grid.querySelectorAll('.maarm-radio-card').forEach((c) => c.classList.remove('maarm-radio-card--selected'));
+          card.classList.add('maarm-radio-card--selected');
           try {
             if (card.dataset.clickmode) {
               if (card.dataset.clickmode === 'gamepad') showGamepadNotice();
-              await mra.call('set_click_mode', { mode: card.dataset.clickmode });
+              await maarm.call('set_click_mode', { mode: card.dataset.clickmode });
             }
           } catch (e) {
             console.error(e);
@@ -1138,7 +1138,7 @@
     });
 
     // 快捷工具：folder → 目录占用面板（面板内再跳资源管理器）；env → 环境中心
-    document.querySelectorAll('.mra-tool-btn[data-tool]').forEach((btn) => {
+    document.querySelectorAll('.maarm-tool-btn[data-tool]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (btn.dataset.tool === 'folder') openDataUsage();
         else if (btn.dataset.tool === 'env') openOptimizerCenter();
@@ -1148,10 +1148,10 @@
 
   // 从后端回填当前模块的调试开关状态（切换模块后丢弃过期回填）
   async function refreshDebugState() {
-    const mid = MRA.panelModuleId;
+    const mid = MaaRM.panelModuleId;
     try {
-      const d = await mra.call('get_debug_state');
-      if (!d || MRA.panelModuleId !== mid) return; // 已切模块：丢弃
+      const d = await maarm.call('get_debug_state');
+      if (!d || MaaRM.panelModuleId !== mid) return; // 已切模块：丢弃
       // 判空防护：设置页 DOM 尚未渲染（或模板差异）时跳过对应回填，避免 null.classList 崩溃
       const safeToggle = (suffix, on) => { const el = $(mid + '-' + suffix); if (el) setToggle(el, on); };
       safeToggle('toggle-debug', !!d.debug_mode);
@@ -1163,9 +1163,9 @@
       safeToggle('toggle-boostprio', !!d.boost_priority);
       safeToggle('toggle-intent', !!d.intent_mode);
       // 点击方式选中态
-      document.querySelectorAll('.mra-radio-card').forEach((card) => {
+      document.querySelectorAll('.maarm-radio-card').forEach((card) => {
         if (card.dataset.clickmode) {
-          card.classList.toggle('mra-radio-card--selected', card.dataset.clickmode === d.click_mode);
+          card.classList.toggle('maarm-radio-card--selected', card.dataset.clickmode === d.click_mode);
         }
       });
     } catch (e) {
@@ -1175,15 +1175,15 @@
   }
 
   function toggleState(el) {
-    return el.classList.contains('mra-toggle--active');
+    return el.classList.contains('maarm-toggle--active');
   }
   function setToggle(el, on) {
-    el.classList.toggle('mra-toggle--active', on);
+    el.classList.toggle('maarm-toggle--active', on);
     el.setAttribute('aria-checked', String(on));
   }
 
-  // ---------- 导出到 window.MRA ----------
-  Object.assign(window.MRA, {
+  // ---------- 导出到 window.MaaRM ----------
+  Object.assign(window.MaaRM, {
     renderModulePages,
     checkRegistryOptimizations,
     pollDashboard,

@@ -100,13 +100,13 @@ def test_no_remote_field_interpolated_into_html():
 def test_open_external_url_callers_pass_target_not_url():
     """前端调用外链 RPC 时只能给逻辑目标名，不得再传 URL。"""
     src = APP_JS.read_text(encoding="utf-8")
-    calls = re.findall(r"mra\.call\(\s*'open_external_url'\s*,\s*\{([^}]*)\}", src)
+    calls = re.findall(r"maarm\.call\(\s*'open_external_url'\s*,\s*\{([^}]*)\}", src)
     assert calls, "未抽到任何 open_external_url 调用点，静态锁会空过"
     for args in calls:
         assert "target" in args, f"open_external_url 调用未给逻辑目标名: {{{args.strip()}}}"
         assert "url" not in args, f"open_external_url 调用又传了 URL: {{{args.strip()}}}"
 
-    vigem = re.findall(r"mra\.call\(\s*'open_vigembus_download'\s*,\s*\{([^}]*)\}", src)
+    vigem = re.findall(r"maarm\.call\(\s*'open_vigembus_download'\s*,\s*\{([^}]*)\}", src)
     assert vigem, "未抽到 open_vigembus_download 调用点，静态锁会空过"
     for args in vigem:
         assert "url" not in args, f"open_vigembus_download 调用又传了 URL: {{{args.strip()}}}"

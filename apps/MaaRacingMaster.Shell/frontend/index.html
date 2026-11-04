@@ -15,10 +15,10 @@
     </div>
     <nav class="tabs">
       <span class="tab-slider" id="tab-slider"></span>
-      <button class="mra-tab mra-tab--active" data-tab="control">主控</button>
-      <button class="mra-tab" data-tab="data">数据</button>
-      <button class="mra-tab" data-tab="settings">设置</button>
-      <button class="mra-tab" data-tab="about">关于</button>
+      <button class="maarm-tab maarm-tab--active" data-tab="control">主控</button>
+      <button class="maarm-tab" data-tab="data">数据</button>
+      <button class="maarm-tab" data-tab="settings">设置</button>
+      <button class="maarm-tab" data-tab="about">关于</button>
     </nav>
     <div class="win-controls" id="win-controls">
       <button class="win-btn" id="btn-win-min" type="button" aria-label="最小化" title="最小化">
@@ -106,7 +106,7 @@
 
         <div class="card">
           <div class="card-head"><h3>版本与更新</h3>
-            <button class="mra-btn" id="btn-check-update" type="button">
+            <button class="maarm-btn" id="btn-check-update" type="button">
               <i data-icon="rotate-cw"></i>
               检查更新
             </button>
@@ -136,15 +136,15 @@
         </div>
 
         <div class="about-links">
-          <button class="mra-btn" data-link="home">
+          <button class="maarm-btn" data-link="home">
             <i data-icon="github"></i>
             项目主页
           </button>
-          <button class="mra-btn" data-link="issue">
+          <button class="maarm-btn" data-link="issue">
             <i data-icon="bot"></i>
             报告问题
           </button>
-          <button class="mra-btn" data-link="docs">
+          <button class="maarm-btn" data-link="docs">
             <i data-icon="book-open"></i>
             使用文档
           </button>
@@ -159,34 +159,34 @@
       <!-- 状态球：造型与动效见 js/status-orb.js 与 style.css「底栏状态球」。
            状态由 data-state 驱动（ready / running / stopping / error），旁边有文字同步说明，
            故对读屏隐藏，避免同一个状态被念两遍。 -->
-      <div class="mra-orb" id="status-dot" data-state="ready" aria-hidden="true">
-        <svg class="mra-orb__svg" viewBox="0 0 40 40">
+      <div class="maarm-orb" id="status-dot" data-state="ready" aria-hidden="true">
+        <svg class="maarm-orb__svg" viewBox="0 0 40 40">
           <defs>
             <clipPath id="status-orb-clip"><circle cx="20" cy="20" r="17"/></clipPath>
-            <radialGradient class="mra-orb__grad" id="status-orb-grad">
-              <stop offset="0" class="mra-orb__s-in"/>
-              <stop offset="0.6" class="mra-orb__s-mid"/>
-              <stop offset="0.88" class="mra-orb__s-edge"/>
-              <stop offset="1" class="mra-orb__s-out"/>
+            <radialGradient class="maarm-orb__grad" id="status-orb-grad">
+              <stop offset="0" class="maarm-orb__s-in"/>
+              <stop offset="0.6" class="maarm-orb__s-mid"/>
+              <stop offset="0.88" class="maarm-orb__s-edge"/>
+              <stop offset="1" class="maarm-orb__s-out"/>
             </radialGradient>
           </defs>
-          <g class="mra-orb__rings">
-            <circle class="mra-orb__ring" cx="20" cy="20" r="17"/>
-            <circle class="mra-orb__ring mra-orb__ring--lag" cx="20" cy="20" r="17"/>
+          <g class="maarm-orb__rings">
+            <circle class="maarm-orb__ring" cx="20" cy="20" r="17"/>
+            <circle class="maarm-orb__ring maarm-orb__ring--lag" cx="20" cy="20" r="17"/>
           </g>
-          <g class="mra-orb__body">
-            <circle class="mra-orb__sphere" cx="20" cy="20" r="17" fill="url(#status-orb-grad)"/>
+          <g class="maarm-orb__body">
+            <circle class="maarm-orb__sphere" cx="20" cy="20" r="17" fill="url(#status-orb-grad)"/>
             <g clip-path="url(#status-orb-clip)">
-              <g class="mra-orb__eye-wrap mra-orb__eye-wrap--l">
-                <g class="mra-orb__blink">
-                  <path class="mra-orb__eye-halo"/>
-                  <path class="mra-orb__eye"/>
+              <g class="maarm-orb__eye-wrap maarm-orb__eye-wrap--l">
+                <g class="maarm-orb__blink">
+                  <path class="maarm-orb__eye-halo"/>
+                  <path class="maarm-orb__eye"/>
                 </g>
               </g>
-              <g class="mra-orb__eye-wrap mra-orb__eye-wrap--r">
-                <g class="mra-orb__blink">
-                  <path class="mra-orb__eye-halo"/>
-                  <path class="mra-orb__eye"/>
+              <g class="maarm-orb__eye-wrap maarm-orb__eye-wrap--r">
+                <g class="maarm-orb__blink">
+                  <path class="maarm-orb__eye-halo"/>
+                  <path class="maarm-orb__eye"/>
                 </g>
               </g>
             </g>
@@ -196,19 +196,19 @@
       <span class="status-text" id="status-text">系统就绪</span>
     </div>
     <div class="spacer"></div>
-    <button class="mra-btn" id="btn-stop" disabled>
+    <button class="maarm-btn" id="btn-stop" disabled>
       <i data-icon="media-stop"></i>
       停止
     </button>
-    <button class="mra-btn mra-btn--start" id="btn-start">
-      <span class="mra-start-layer mra-start-layer--idle">
+    <button class="maarm-btn maarm-btn--start" id="btn-start">
+      <span class="maarm-start-layer maarm-start-layer--idle">
         <i data-icon="media-play"></i>
         开始运行
       </span>
-      <span class="mra-start-layer mra-start-layer--armed" aria-hidden="true">
+      <span class="maarm-start-layer maarm-start-layer--armed" aria-hidden="true">
         <i data-icon="x"></i>
         再点取消
-        <span class="mra-start-digits" aria-hidden="true"><span class="mra-start-digit-col"><span>3</span><span>2</span><span>1</span></span></span>
+        <span class="maarm-start-digits" aria-hidden="true"><span class="maarm-start-digit-col"><span>3</span><span>2</span><span>1</span></span></span>
       </span>
     </button>
   </footer>
@@ -217,8 +217,8 @@
   <script src="icons.js"></script>
   <script src="vendor.morphicons.js"></script>
   <script src="peep-consumer.js"></script>
-  <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MRA 共享命名空间（必须最先），
-       app.js 是启动装配入口（必须最后）；中间模块只经 window.MRA 互相取用。 -->
+  <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MaaRM 共享命名空间（必须最先），
+       app.js 是启动装配入口（必须最后）；中间模块只经 window.MaaRM 互相取用。 -->
   <script src="js/rpc.js"></script>
   <script src="js/modal.js"></script>
   <script src="js/log.js"></script>

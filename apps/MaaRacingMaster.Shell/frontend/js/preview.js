@@ -1,44 +1,44 @@
 // MaaRM shell 前端 —— PEEP 实时预览（三态：内嵌 / 全屏 / 悬浮窗）。
 // 帧消费实现来自 peep-consumer.js（与悬浮窗共用同一份代码，不重复实现）。
 // 消费者互斥：悬浮窗打开期间本页不拉帧，卡片退化为占位符（见 setPreviewFloating）。
-// 跨文件调用经 window.MRA（见文件末尾导出）。
+// 跨文件调用经 window.MaaRM（见文件末尾导出）。
 (function () {
   'use strict';
 
   // 共享物导入（js/rpc.js 已先行加载）
-  const { mra, $, state } = window.MRA;
+  const { maarm, $, state } = window.MaaRM;
 
   let previewMode = 'normal'; // 'normal' | 'fullscreen' | 'floating'
 
-  const peepConsumer = PeepConsumer.create(mra, {
+  const peepConsumer = PeepConsumer.create(maarm, {
     isActive: () => {
       if (previewMode === 'floating') return false; // 消费权已交给悬浮窗
       const page = $('page-data');
       if (!state.peepEnabled || !page || page.classList.contains('hidden')) return false;
       // 当前模块得有预览卡才拉帧：没有卡（如 speedrush）时拉了也没处显示，
       // 白白让后端每帧编码一次 base64
-      return !!(MRA.panelModuleId && $(MRA.panelModuleId + '-preview-img'));
+      return !!(MaaRM.panelModuleId && $(MaaRM.panelModuleId + '-preview-img'));
     },
-    img: () => $(MRA.panelModuleId + '-preview-img'),
-    empty: () => $(MRA.panelModuleId + '-preview-empty')
+    img: () => $(MaaRM.panelModuleId + '-preview-img'),
+    empty: () => $(MaaRM.panelModuleId + '-preview-empty')
   });
 
   /** 悬浮窗开关（C# 广播）：卡片与占位符互换，并把帧消费权交出去 / 收回来。 */
   function setPreviewFloating(floating) {
     if (floating === (previewMode === 'floating')) return;
     previewMode = floating ? 'floating' : 'normal';
-    const card = $(MRA.panelModuleId + '-preview-card');
+    const card = $(MaaRM.panelModuleId + '-preview-card');
     if (card) card.classList.toggle('preview-card--floating', floating);
     // 收回消费权：PEEP 开关可能已在悬浮窗里改过，回填一次
-    // （refreshDebugState 在 js/settings.js 定义、晚于本文件加载，故经 MRA 延迟取用）
-    if (!floating) MRA.refreshDebugState();
+    // （refreshDebugState 在 js/settings.js 定义、晚于本文件加载，故经 MaaRM 延迟取用）
+    if (!floating) MaaRM.refreshDebugState();
   }
 
   // ---------- 实时预览：播放/暂停图标状态 ----------
   // on=true 显示「暂停」图标（表示正在预览）；off 显示「播放」图标（预览已停）。
   // title 即悬停提示（暂停预览 / 开始预览），与悬浮窗上的同名按钮语义一致。
   function setPreviewPlayState(on) {
-    const btn = $(MRA.panelModuleId + '-btn-preview-toggle');
+    const btn = $(MaaRM.panelModuleId + '-btn-preview-toggle');
     if (!btn) return;
     const play = btn.querySelector('.icon-play');
     const pause = btn.querySelector('.icon-pause');
@@ -79,10 +79,10 @@
 
   // 全屏/还原共用一个图标按钮：morph-icon 在 scan ↔ shrink 间弹簧变形，title 同步切换
   function setPreviewMaxState(fs) {
-    const btn = $(MRA.panelModuleId + '-btn-preview-max');
+    const btn = $(MaaRM.panelModuleId + '-btn-preview-max');
     if (!btn) return;
     const morphEl = btn.querySelector('morph-icon');
-    if (morphEl) morphEl.icon = MRAIcons.node(fs ? 'shrink' : 'scan');
+    if (morphEl) morphEl.icon = MaaRMIcons.node(fs ? 'shrink' : 'scan');
     btn.title = fs ? '还原' : '全屏';
   }
 
@@ -109,8 +109,8 @@
     _previewFsCard = null;
   }
 
-  // ---------- 导出到 window.MRA ----------
-  Object.assign(window.MRA, {
+  // ---------- 导出到 window.MaaRM ----------
+  Object.assign(window.MaaRM, {
     peepConsumer,
     setPreviewFloating,
     setPreviewPlayState,
