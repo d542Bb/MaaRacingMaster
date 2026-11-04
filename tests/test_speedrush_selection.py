@@ -770,3 +770,38 @@ def test_graze_hold_yields_to_reward_car():
     rep = sel.update(road, [Obj("reward", 1.0, 2.0)],
                      [_sel_car(51, 0.9 * LW, 3.0)], [], 0.0, 0.05)
     assert rep.layer == 1 and rep.why == "reward"
+
+
+def test_pass_window_queue_blocks_van_type_target():
+    """通过时窗占用（20261104 局2 f3605 帧证）：同道慢车前方、贴边线上
+    有更晚到达的排队车——点判据（到站+margin）看不见它，时窗判据拦截。
+    目标 2.2s 到站、收拢 15m/s（并排 0.67s），排队车 2.5s 压上贴边线：
+    无 v_close 逐位回今天（放行），有 v_close 拒贴。"""
+    target = Obj("car", 0.0, 2.2, v_close=15.0)
+    queue = Obj("car", 0.68 * LW, 2.5)      # 恰在贴边线上（邻道带）
+    rep = select(_road(), [], [target], [], 0.0, _p())
+    assert rep.layer == 2 and rep.why == "pass"
+    rep2 = select(_road(), [], [target, queue], [], 0.0, _p())
+    assert rep2.why != "pass" and rep2.why != "graze"
+
+
+def test_pass_window_slow_target_long_alongside():
+    """速度近同的目标并排段最长（f3775 磨车 4.8s 形态）：收拢 2m/s 时
+    并排 5s，horizon 外（4s）才到贴边线的车也在窗内——拒绝贴边。"""
+    target = Obj("car", 0.0, 2.5, v_close=2.0)
+    late = Obj("car", 0.68 * LW, 4.0)
+    rep = select(_road(), [], [target, late], [], 0.0, _p())
+    assert rep.why != "pass" and rep.why != "graze"
+    rep2 = select(_road(), [], [Obj("car", 0.0, 2.5)], [], 0.0, _p())
+    assert rep2.layer == 2 and rep2.why == "pass"
+
+
+def test_pass_hold_beside_rejects_occupied_window():
+    """并排保持（t≤0 免可达）不再免占用：贴边线前方通过窗内被别的车
+    占住就不保持（追尾慢车后夹停滞的入口封死）。无 v_close 逐位回今天
+    （test_pass_hold_keeps_graze_until_clear 锁无条件保持）。"""
+    beside = Obj("car", 0.0, -0.3, v_close=0.5)
+    queue = Obj("car", 0.68 * LW, 1.0)
+    rep = select(_road(), [], [beside, queue], [], 0.0,
+                 _p(pass_hold_enabled=True))
+    assert rep.why != "pass" and rep.layer != 2

@@ -461,7 +461,10 @@ class DecisionEngine:
             pass_horizon_s=s.pass_horizon_s,
             pass_graze_adjacent_enabled=s.pass_graze_adjacent_enabled,
             pass_reach_lane=s.pass_reach_lane,
-            pass_lean_min_s=s.pass_lean_min_s))
+            pass_lean_min_s=s.pass_lean_min_s,
+            pass_clear_len_m=s.pass_clear_len_m,
+            pass_min_closing_mps=s.pass_min_closing_mps,
+            pass_alongside_cap_s=s.pass_alongside_cap_s))
         # 选择层影子（2026-10-28）：与生产同一拍同一批输入，承诺态跟影子路线
         # 走；只落 trace、不接控制。预分歧段两份输入相同，结果必须逐位一致
         # ——这是"影子接线可信"的运行时校验，也是 C 下游差异的可信度门。
@@ -1092,7 +1095,8 @@ class DecisionEngine:
                   tid: int | None = None,
                   near: bool = False,
                   half_w_m: float | None = None,
-                  seen: bool | None = None) -> None:
+                  seen: bool | None = None,
+                  v_close: float | None = None) -> None:
             if x is None or x != x:
                 return
             # 安全资格来自对象表（同 id）：表里没有该车=身份不明，按不可安全
@@ -1144,7 +1148,8 @@ class DecisionEngine:
                                  t_overtake_s=t_ov, bridged=bridged,
                                  z_m=z_m, age_ms=age_ms, src=src,
                                  near=near, half_w_m=half_w_m,
-                                 id=tid, seen=seen, safety_ok=safe))
+                                 id=tid, seen=seen, safety_ok=safe,
+                                 v_close_mps=v_close))
 
         out.extend(self._grid_car_sources(off))
 
@@ -1236,7 +1241,7 @@ class DecisionEngine:
             enter(x, tm, t_ov, bridged=bridged, z_m=m.z_m,
                   age_ms=(m.anchor_age_ms or 0.0), src="metric",
                   tid=m.target_id, near=_near(v, m.z_m),
-                  half_w_m=_half_w(v),
+                  half_w_m=_half_w(v), v_close=m.v_close_mps,
                   seen=(None if v is None else v.last_seen_fid == self._fid))
         for vid, v in by_id.items():
             if vid in seen:
@@ -1564,7 +1569,8 @@ class DecisionEngine:
                         if c.z_m is not None else 0.0),
                     c.t_meet_s,
                     oid=-1 if c.id is None else c.id,
-                    safe=c.safety_ok)
+                    safe=c.safety_ok,
+                    v_close=c.v_close_mps)
                 for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
                      count=c.observed_count, conf=c.conf,

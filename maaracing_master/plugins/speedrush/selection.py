@@ -98,6 +98,9 @@ class Obj:
     count: float = 1.0            # 金币枚数（币层排序用）
     conf: float = 1.0
     oid: int = -1
+    # 接近速度（米/秒，透传自 CarSource.v_close_mps）：贴边通过时窗判据
+    # 估并排段时长用。None=缺位——时窗判据逐位回今天行为。
+    v_close: float | None = None
     # 本拍是否有新鲜读数（False=闭锁保留的上一份读数；只影响请求起意，
     # 不影响可达性/安全判断）。
     seen: bool = True
@@ -168,6 +171,9 @@ class CarSource:
     t_overtake_s: float | None = None
     bridged: bool = False
     z_m: float | None = None
+    # 接近速度（米/秒，>0=在收拢）：并排段估时的原料（通过时窗判据）。
+    # None=仪器缺位（像素回退/网格伪车/线成员）——时窗判据对它逐位回今天。
+    v_close_mps: float | None = None
     age_ms: float = 0.0
     src: str = "pixel"
     # 纵向近（t=None 时可当静态障碍的唯一许可）与真实半宽（米，None=标称）
@@ -268,6 +274,15 @@ class SelectionParams:
     pass_graze_adjacent_enabled: bool = False
     pass_reach_lane: float = 1.3
     pass_lean_min_s: float = 2.0
+    # 通过时窗占用（2026-11-04，帧证 20261104_085659 局2 f3605：全速追尾
+    # 刹车慢车后被夹停滞）：贴边通过不是「到站瞬间」的事——从到站到脱离
+    # 目标车尾的整段里，通过线被别的车占住=这个通过不可行。并排段时长=
+    # 清空长度（两车长+余量）÷ 收拢速度，速度缺位=不扩窗（逐位回今天）；
+    # 收拢低于下限按地板速收拢（速度近同的目标并排最久，恰是 20261104
+    # 局2 f3775 磨车 4.8s 的形态），估时再封顶防无限窗冻死所有贴边。
+    pass_clear_len_m: float = 10.0
+    pass_min_closing_mps: float = 1.5
+    pass_alongside_cap_s: float = 6.0
     switch_dwell_s: float = 0.2
     layer_dwell: bool = False
     event_replan: bool = False
@@ -330,6 +345,38 @@ def _blocked(cars: Sequence[Obj], x: float, t: float,
         if c.t is None or c.t > t + p.margin_s:
             continue
         if c.t < -0.2:
+            continue
+        if abs(c.x - x) < half:
+            return True
+    return False
+
+
+def _pass_alongside_s(v_close: float | None, p: SelectionParams) -> float:
+    """并排段估时（秒）：清空长度 ÷ 收拢速度——目标越慢并排越久。
+
+    v_close 缺位 → 0=不扩窗（诚实：没数据不加重判据，逐位回今天）；
+    收拢低于下限按地板速（速度近同的目标并排最久）；再封顶防无限窗。"""
+    if v_close is None:
+        return 0.0
+    return min(p.pass_clear_len_m / max(v_close, p.pass_min_closing_mps),
+               p.pass_alongside_cap_s)
+
+
+def _pass_window_blocked(cars: Sequence[Obj], x: float, t_target: float,
+                         alongside: float, p: SelectionParams) -> bool:
+    """通过全程走廊占用：从到站（或已并排）到脱离目标车尾的整段里，
+    通过线上有没有别的车到达。
+
+    点判据（_blocked）只看「与目标同时到达」的车——慢目标/刹车目标的
+    并排段远长于 margin，前方排队车恰在这段里压上通过线（20261104
+    局2 f3605 帧证：追尾刹车慢车后被夹停滞）。alongside=0 时窗缩回
+    点判据同界（[−0.2, t+margin]），无 v_close 的对象行为不变。"""
+    t_end = max(t_target, 0.0) + alongside + p.margin_s
+    half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
+    for c in cars:
+        if not c.safe:
+            continue
+        if c.t is None or c.t > t_end or c.t < -0.2:
             continue
         if abs(c.x - x) < half:
             return True
@@ -490,12 +537,17 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
             continue
         if abs(x - c.x) < half:
             continue                    # 夹进走廊后仍压在车里：这侧过不去
-        # 并排保持（t≤0，仅开闸可达）：不再谈可达与阻挡——位置保持到脱离
+        # 并排保持（t≤0，仅开闸可达）：不再谈可达与阻挡——位置保持到脱离。
+        # 但「免可达」不等于「免占用」：慢目标/刹车目标的并排段里，前方
+        # 排队车会压上通过线（20261104 局2 f3605 追尾后被夹停滞帧证）——
+        # 有 v_close 就按通过时窗查占用；无 v_close 逐位回今天（t≤0 免检）。
         inflight = c.t > 0.0 or not p.pass_hold_enabled
         if inflight and not _reachable(x, ego, c.t, p):
             continue
         others = [o for o in cars if o is not c]
-        if inflight and _blocked(others, x, c.t, p):
+        alongside = _pass_alongside_s(c.v_close, p)
+        if (alongside > 0.0 or inflight) \
+                and _pass_window_blocked(others, x, c.t, alongside, p):
             continue
         return x, c.t, "graze" if adjacent else "pass", c.oid
     return None
@@ -920,8 +972,15 @@ class LayeredSelector:
             sp = _lane_span(commit_x_m, p, road)
             if not _in_interval(x, sp):
                 return None
+        # 贴边位占用窗：固定 horizon 封顶之外，按被保持目标的收拢速度扩
+        # 并排段（慢目标保持期长，前方排队车在 horizon 外也会压上通过线）。
+        # 无 v_close 逐位回今天（horizon 封顶）。
+        t_end = p.horizon_s
+        if car is not None and car.safe and car.t is not None:
+            t_end = max(t_end, max(car.t, 0.0)
+                        + _pass_alongside_s(car.v_close, p) + p.margin_s)
         if any(c.kind == "car" and c.oid != self._graze_oid and c.safe
-               and c.t is not None and -0.2 <= c.t <= p.horizon_s
+               and c.t is not None and -0.2 <= c.t <= t_end
                and abs(c.x - x) < half for c in cars):
             self._graze_oid = None         # 贴边位被别车占了：不挤缝
             return None

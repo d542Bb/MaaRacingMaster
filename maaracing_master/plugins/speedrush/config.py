@@ -96,6 +96,11 @@ class Selection:
     pass_graze_adjacent_enabled: bool = False
     pass_reach_lane: float = 1.3
     pass_lean_min_s: float = 2.0
+    # 通过时窗占用（2026-11-04 帧证与判据见 selection.SelectionParams 同名
+    # 注释）：贴边通过全程（到站→脱离车尾）通过线被占=不可行。
+    pass_clear_len_m: float = 10.0
+    pass_min_closing_mps: float = 1.5
+    pass_alongside_cap_s: float = 6.0
     switch_dwell_s: float = 0.2
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
@@ -998,6 +1003,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "pass_reach_lane", 1.3, lo=0),
             pass_lean_min_s=_num_def(
                 d, "selection", "pass_lean_min_s", 2.0, lo=0),
+            pass_clear_len_m=_num_def(
+                d, "selection", "pass_clear_len_m", 10.0, lo=0),
+            pass_min_closing_mps=_num_def(
+                d, "selection", "pass_min_closing_mps", 1.5, lo=0),
+            pass_alongside_cap_s=_num_def(
+                d, "selection", "pass_alongside_cap_s", 6.0, lo=0),
             switch_dwell_s=_num_def(
                 d, "selection", "switch_dwell_s", 0.2, lo=0),
             car_half_lane=_num_def(d, "selection", "car_half_lane", 0.27, lo=0),
