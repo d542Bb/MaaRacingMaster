@@ -7,10 +7,8 @@
 // 错误反馈通道协议（三级；统一入口 reportError(level, message, opts)，同一失败只报一个
 // 通道，禁止「行内红字 + toast」双报）：
 //   toast  系统级失败：初始化失败、RPC/连接不可达、启动失败等——toast 4s 自动消失。
-//   inline 操作级失败：选项/配置保存失败等——行内状态红字并停留；默认落主控页「模块选项」
-//          状态行 #module-options-status，opts.el 可指定其他元素；落点不可用时回退 toast
-//          （错误不得被吞）。设置/数据页暂无行内落点，该页操作失败保持 toast——新增落点
-//          属视觉变更，不在本协议范围。
+//   inline 操作级失败：选项/配置保存失败等——行内状态红字并停留；opts.el 指定落点
+//          （配置面板传自己的状态行）；未传或落点不在页面上时回退 toast（错误不得被吞）。
 //   modal  需用户决策/确认的场景——经 MRA.openModal 弹窗（modal.js 晚于本文件加载，
 //          调用时经 MRA 延迟取用；启动早期 modal 尚未就绪时回退 toast）。
 // 非错误的行内反馈（保存中/已保存/运行实况）不走 reportError，由各模块自己的 status 函数处理。
@@ -117,7 +115,7 @@ window.MRA = (function () {
   function reportError(level, message, opts) {
     const text = String(message);
     if (level === 'inline') {
-      const el = (opts && opts.el) || $('module-options-status');
+      const el = (opts && opts.el) || null;
       if (el) { setInlineStatus(el, text, 'error'); return; }
       // 行内落点不可用（页面未渲染等）：回退 toast，错误不得被吞
     } else if (level === 'modal' && typeof MRA.openModal === 'function') {

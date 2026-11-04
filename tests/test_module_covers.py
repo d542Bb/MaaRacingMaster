@@ -182,7 +182,8 @@ def _strip_js_comments(src: str) -> str:
 
 def test_frontend_never_hardcodes_plugin_paths():
     """前端不得出现 plugins/<id>/resources 这类内部路径——那是核心的解析职责。"""
-    for rel in ("js/run.js", "js/gallery-shape.js", "js/rpc.js", "app.js"):
+    for rel in ("js/run.js", "js/gallery-shape.js", "js/rpc.js", "js/config-panel.js",
+                "js/config-panel-state.js", "app.js"):
         src = _strip_js_comments((FRONTEND / rel).read_text(encoding="utf-8"))
         assert "plugins/" not in src and "plugins\\\\" not in src, f"{rel} 里出现了插件目录路径"
         assert "resources/" not in src, f"{rel} 里出现了插件资源路径"

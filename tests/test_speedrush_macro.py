@@ -284,3 +284,55 @@ def test_hud_clock_row_only_trusted():
     assert smod.SpeedRushModule._hud_clock_row(trusted) == (34.0, 123)
     assert smod.SpeedRushModule._hud_clock_row(untrusted) is None
     assert smod.SpeedRushModule._hud_clock_row(None) is None
+
+
+# ---------- 配置表单声明 / 摘要 / 状态行（宿主通用渲染的输入） ----------
+
+@pytestmark_mod
+def test_config_ui_declaration_is_valid():
+    from maaracing_master.core.config_ui_contract import UI_OK, normalize_config_ui
+    res = normalize_config_ui(
+        smod.SpeedRushModule, set(smod.SpeedRushModule.DEFAULT_MODULE_CONFIG))
+    assert res.state == UI_OK and res.warnings == ()
+    fields = res.schema["groups"][0]["fields"]
+    assert [f["key"] for f in fields] == ["drive_mode", "macro_group", "record_mode"]
+    macro_row = fields[1]
+    assert macro_row["choices"] == "macro_group"
+    assert macro_row["visible_if"] == {"key": "drive_mode", "op": "equals", "value": "macro"}
+    record = fields[2]
+    assert record["visible_if"] == {"key": "drive_mode", "op": "not_equals", "value": "straight"}
+    assert record["variants"][0]["label"] == "录制宏"
+
+
+@pytestmark_mod
+def test_config_summary_tracks_drive_mode():
+    summary = smod.SpeedRushModule.config_summary
+    assert summary({"drive_mode": "depth", "record_mode": False}) == [
+        "录制: 关", "驾驶模式: 深度几何"]
+    assert summary({"drive_mode": "straight", "record_mode": True}) == ["驾驶模式: 全程直行"]
+    assert summary({"drive_mode": "macro", "record_mode": False,
+                    "macro_group": "20261103_120000"}) == [
+        "录制: 关", "驾驶模式: 宏录制", "宏组: 20261103_120000"]
+    assert summary({"drive_mode": "macro", "record_mode": False,
+                    "macro_group": ""})[-1] == "宏组: 最新录制的宏"
+
+
+@pytestmark_mod
+def test_config_status_covers_recording_and_replay():
+    from types import SimpleNamespace
+
+    m = smod.SpeedRushModule(None)
+    assert m.config_status() is None
+    m._running = True
+    assert "运行中" in m.config_status()["text"]
+    m._record_mode = True
+    assert "录制已开启" in m.config_status()["text"]
+    m._record_mode = False
+    m._macro_player = SimpleNamespace(stats={
+        "state": "playing", "sent": 46, "total": 120, "align_offset_ms": 12.0})
+    assert "宏回放：回放中 · 46/120" in m.config_status()["text"]
+    m._macro_player = None
+    m._macro_rec = SimpleNamespace(
+        running=True, stats={"samples": 213})
+    status = m.config_status()
+    assert "宏录制中：已写 213 条" in status["text"] and status["level"] == "ok"

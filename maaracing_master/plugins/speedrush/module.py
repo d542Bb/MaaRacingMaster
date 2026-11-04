@@ -49,14 +49,14 @@ from maaracing_master.plugins.speedrush import (
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
-    BandBoundary, Corridor, CorridorBand, N_BANDS, _band_bounds,
+    Corridor,
     build_corridor, far_hint_lane, far_veto_lanes, far_veto_tick)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import (
     DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    blocked_inner_reading, load_session, region_reading, CAM_Z_DATUM_M,
+    blocked_inner_reading, load_session, region_reading,
     last_slow_forward)
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
@@ -384,6 +384,43 @@ class SpeedRushModule(ActivityModule):
         "drive_mode": DEFAULT_DRIVE_MODE,
         "macro_group": DEFAULT_MACRO_GROUP,
     }
+    # 配置表单（契约见 core/config_ui_contract.py）：默认值/动态候选分别来自
+    # DEFAULT_MODULE_CONFIG 与 config_choices()，这里只描述「怎么呈现」。
+    CONFIG_UI_CONTRACT = 1
+    CONFIG_UI = {
+        "groups": [{
+            "fields": [
+                {
+                    "key": "drive_mode", "type": "segmented", "label": "驾驶模式",
+                    "options": [
+                        {"value": "straight", "label": "全程直行"},
+                        {"value": "macro", "label": "宏录制"},
+                        {"value": "depth", "label": "深度几何"},
+                    ],
+                },
+                {
+                    "key": "macro_group", "type": "select", "label": "回放宏",
+                    "description": "关闭「录制」时生效；缺阶段文件的那一段会降级为全程直行",
+                    "choices": "macro_group",
+                    "visible_if": {"key": "drive_mode", "op": "equals", "value": "macro"},
+                },
+                {
+                    "key": "record_mode", "type": "switch", "label": "录制演示数据",
+                    "description": "开启后本段只采集画面与手柄数据、不操纵车辆，用于训练语料"
+                                   "（存到调试目录）。请自行驾驶；建议点击方式保持「前台鼠标」，"
+                                   "避免虚拟手柄与你的手柄冲突。",
+                    "visible_if": {"key": "drive_mode", "op": "not_equals", "value": "straight"},
+                    "variants": [{
+                        "when": {"key": "drive_mode", "op": "equals", "value": "macro"},
+                        "label": "录制宏",
+                        "description": "开启后本段只采集你的手柄/键盘操作，录成可回放的宏"
+                                       "（存到用户数据目录）；关闭录制则回放所选宏。"
+                                       "键盘 A/D 或 ←/→ 满幅转向，W/↑ 右扳机，S/↓ 左扳机。",
+                    }],
+                },
+            ],
+        }],
+    }
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
 
@@ -415,6 +452,53 @@ class SpeedRushModule(ActivityModule):
     def config_choices(cls) -> dict:
         """宏组下拉的可选值（空值=最新一组，排在最前）。不创建实例。"""
         return {"macro_group": [{"value": "", "label": "最新录制的宏"}] + list_groups()}
+
+    @classmethod
+    def config_summary(cls, config: dict) -> list[str]:
+        """任务卡摘要：录制开关只在非直行档有意义；宏档未录制时补一行回放组。"""
+        mode = config.get("drive_mode")
+        mode_text = cls.DRIVE_LABELS.get(mode, "深度几何")
+        out: list[str] = []
+        if mode != "straight":
+            out.append("录制: " + ("开" if config.get("record_mode") else "关"))
+        out.append("驾驶模式: " + mode_text)
+        if mode == "macro" and not config.get("record_mode"):
+            out.append("宏组: " + str(config.get("macro_group") or "最新录制的宏"))
+        return out
+
+    def config_status(self) -> dict | None:
+        """面板状态行：宏录制/回放、演示录制的实时进度；未运行返回 None。"""
+        mrec = self._macro_rec
+        if mrec is not None and mrec.running:
+            samples = int(mrec.stats["samples"])
+            return {"text": f"宏录制中：已写 {samples} 条；目录 {macro_root()}",
+                    "level": "ok" if samples > 0 else ""}
+        mpl = self._macro_player
+        if mpl is not None:
+            m = mpl.stats
+            total = int(m.get("total") or 0)
+            sent = int(m.get("sent") or 0)
+            pct = (sent * 100 // total) if total else 0
+            states = {"waiting": "等待计时对齐", "playing": "回放中",
+                      "finished": "已播完", "stopped": "已停止"}
+            text = (f"宏回放：{states.get(m.get('state'), str(m.get('state')))}"
+                    f" · {sent}/{total}（{pct}%）")
+            offset = m.get("align_offset_ms")
+            if offset:
+                text += f"；对齐偏移 {round(offset)}ms"
+            return {"text": text, "level": "ok"}
+        rec = self._recorder
+        if rec is not None and rec.running:
+            st = rec.stats
+            return {"text": f"录制中：已写 {st['frames_written']} 帧 · 丢帧 "
+                            f"{st['frames_dropped']} · 手柄样本 {st['pad_samples']}；"
+                            f"目录 {_record_root()}", "level": "ok"}
+        if self._running:
+            if self._record_mode:
+                return {"text": "运行中：录制已开启，进入驾驶阶段后开始写入", "level": ""}
+            return {"text": "运行中：本次未开启录制（开关改动在下次「开始」时生效）",
+                    "level": "warn"}
+        return None
 
     @classmethod
     def normalize_config(cls, config: dict) -> dict:

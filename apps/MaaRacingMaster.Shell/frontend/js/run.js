@@ -7,42 +7,22 @@
   // 共享物导入（js/rpc.js、js/settings.js、js/modal.js 已先行加载）
   const {
     mra, $, state, reportError, showError,
-    updateModuleOptionsDisabled, refreshModuleOptions, refreshSpeedrushStatus,
-    renderModulePages, stashOptionBlocks, openModal,
+    renderModulePages, openModal,
     syncDashboardCenter, refreshDashboardRunState,
   } = window.MRA;
 
-  // ---------- 模块展示元数据（图标 / 配置摘要） ----------
+  // ---------- 模块展示元数据（仅图标） ----------
   // 卡片头图不在这里登记：封面由模块自己声明、核心解析成 URL 随模块列表下发
-  // （见 core/covers.py），前端只消费。未声明或加载失败的模块回落通用默认封面。
-  // 图标仍是纯展示信息（插件不声明 emoji），未登记模块回落名称首字——新增模块不必改前端。
+  // （见 core/covers.py），前端只消费。摘要文案来自模块声明的 `_summary`（后端下发），
+  // 前端不认识任何配置键。图标仍是纯展示信息（插件不声明 emoji），未登记模块回落
+  // 名称首字——新增模块不必改前端。
   const MODULE_META = {
-    speedrush: {
-      icon: '🏎️',
-      summary: (cfg) => {
-        const mode = (cfg && cfg.drive_mode) || 'depth';
-        const modeText = ({ depth: '深度几何', straight: '全程直行', macro: '宏录制' })[mode] || '深度几何';
-        const out = [];
-        if (mode !== 'straight') out.push('录制: ' + (cfg && cfg.record_mode ? '开' : '关'));
-        out.push('驾驶模式: ' + modeText);
-        if (mode === 'macro' && cfg && !cfg.record_mode) {
-          out.push('宏组: ' + (cfg.macro_group || '最新录制的宏'));
-        }
-        return out;
-      },
-    },
-    treasure: {
-      icon: '🏺',
-      summary: (cfg) => [
-        '刷到第 ' + ((cfg && Number.isFinite(cfg.max_daily_loops)) ? cfg.max_daily_loops : 50) + ' 场',
-        '目标场次: ' + ({ intern: '实习场', expert: '专家场', master: '大师场' }[(cfg && cfg.target_session) || 'master']),
-      ],
-    },
+    speedrush: { icon: '🏎️' },
+    treasure: { icon: '🏺' },
   };
   // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标
   MODULE_META.launch_game = { icon: '🚀' };
   MODULE_META.close_game = { icon: '🛑' };
-  const SESSION_LABELS = { intern: '实习场', expert: '专家场', master: '大师场' };
   const modOf = (mid) => state.modules.find((m) => m.id === mid) || null;
   const metaOf = (mid) => MODULE_META[mid] || null;
   // 名字/阶段/配置值出自插件注册表（本仓库可信数据），与 settings.js 模板同一纪律：
@@ -50,7 +30,7 @@
   const esc = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 
   // ---------- 内置步骤（启动游戏 / 关闭游戏） ----------
-  // 步骤没有插件那套「单实例 DOM 选项块」，字段少且固定，面板由这张表生成。
+  // 步骤没有插件那套 schema 配置面板，字段少且固定，面板由这张表生成。
   // 默认值一律来自后端（get_initial_state 的 config_defaults），前端不另存一份。
   const BUILTIN_FIELDS = {
     launch_game: [
@@ -227,9 +207,9 @@
 
   function summaryChips(mid) {
     if (isBuiltin(mid)) return builtinChips(mid);
-    const meta = metaOf(mid);
-    if (!meta || !meta.summary) return '';
-    return meta.summary(state.cfg[mid]).map((s) => chipHtml(s)).join('');
+    const cfg = state.cfg[mid];
+    const chips = cfg && Array.isArray(cfg._summary) ? cfg._summary : [];
+    return chips.map((s) => chipHtml(s)).join('');
   }
 
   // 徽章：过期 / 插件资源缺失（数据源 = modules 注册表 + get_status.module_assets）
@@ -310,9 +290,8 @@
   }
 
   function renderTaskList() {
-    // 选项块是单实例 DOM（index.html 暂存区 ↔ 任务卡面板间搬移）：
-    // 重建列表前先搬回暂存区，防 innerHTML 连带销毁已挂绑定的控件
-    stashOptionBlocks();
+    // 列表面板随卡片一起重建：旧表单与其在途请求全部作废（代际校验在 config-panel）
+    if (MRA.configPanel) MRA.configPanel.reset();
     const ul = $('task-list');
     ul.innerHTML = state.queue.order.map(cardHtml).join('');
     if (!state.queue.order.length) {
@@ -329,6 +308,9 @@
       if (state.expanded[mid]) renderBuiltinPanel(mid);
       if (!state.cfg[mid]) ensureConfig(mid).then(() => refreshCard(mid));
     });
+    // 活动模块：已展开的卡片重新按配置绘制面板（列表 innerHTML 已把它们销毁）
+    state.queue.order.filter((mid) => !isBuiltin(mid) && state.expanded[mid])
+      .forEach((mid) => ensureConfig(mid).then(() => renderConfigPanel(mid)));
     syncDashboardCenter(); // 队列增删 / 排序后重算看板候选集
   }
 
@@ -355,7 +337,13 @@
     }
   }
 
-  // settings.js 保存配置后回调：更新摘要数据源并轻刷对应卡
+  // 活动模块配置面板：按后端下发的 schema 通用渲染（模块自述，前端不认识字段）
+  function renderConfigPanel(mid) {
+    const cfg = state.cfg[mid];
+    if (cfg && MRA.configPanel) MRA.configPanel.render(mid, cfg);
+  }
+
+  // 配置保存后回调：更新摘要数据源并轻刷对应卡
   function noteConfigSaved(mid, cfg) {
     if (cfg) state.cfg[mid] = cfg;
     refreshCard(mid);
@@ -555,9 +543,11 @@
         ensureConfig(mid).then(() => { renderBuiltinPanel(mid); refreshCard(mid); });
         return;
       }
-      refreshModuleOptions(mid);                    // 模块选项块搬入面板 + 读配置
-      ensureConfig(mid).then(() => refreshCard(mid)); // 摘要 chips 跟进最新配置
-      renderModulePages(mid);                        // 设置页与性能卡取当前卡片；看板中心按任务列表
+      ensureConfig(mid).then(() => {
+        renderConfigPanel(mid);   // 按模块 schema 通用渲染配置面板
+        refreshCard(mid);         // 摘要 chips 跟进最新配置
+      });
+      renderModulePages(mid);    // 设置页与性能卡取当前卡片；看板中心按任务列表
     }
   }
 
@@ -708,7 +698,7 @@
       const runState = !!(d.is_running || d.worker_active);
       if (runState !== state._lastRunState) {
         state._lastRunState = runState;
-        updateModuleOptionsDisabled(runState);
+        if (MRA.configPanel) MRA.configPanel.setLocked(runState);
         if (runState) {
           // 轮次受理：断点已被后端消费、上一轮结局清零——卡片切到 排队中/运行中 形态
           state.breakpoints = {};
@@ -717,13 +707,21 @@
         } else {
           renderTaskList(); // 轮次结束：各卡显示结局标记
         }
-        if (MRA.panelModuleId) refreshModuleOptions(MRA.panelModuleId);
       }
-      // 录制实况每秒刷一次：帧数在涨，只在状态跳变时刷是看不出进度的
-      if (runState && MRA.panelModuleId === 'speedrush'
+      // 运行状态每秒刷一次：进度类数字在涨，只在跳变时刷看不出变化。
+      // 只刷当前运行模块且其卡片已展开的面板；不存在模块专属分支。
+      const runningMid = runState && d.current_module;
+      if (runningMid && state.expanded[runningMid] && MRA.configPanel
+          && MRA.configPanel.has(runningMid)
           && Date.now() - state._lastRecRefresh >= 1000) {
         state._lastRecRefresh = Date.now();
-        refreshSpeedrushStatus();
+        mra.call('get_module_config', { module_id: runningMid })
+          .then((cfg) => {
+            if (cfg && MRA.configPanel && MRA.configPanel.has(runningMid)) {
+              MRA.configPanel.updateLive(runningMid, cfg);
+            }
+          })
+          .catch((e) => console.error(e));
       }
       // 运行中当前模块/阶段变化 → 轻刷新对应卡（不重建面板，不打断选项编辑）
       if (runState && d.queue_run) {

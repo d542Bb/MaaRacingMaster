@@ -642,6 +642,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .module-options-status.mra-status--ok { color: var(--mra-success-strong); }
 .module-options-status.mra-status--warn { color: var(--mra-warning-strong); }
 .module-options-status.mra-status--error { color: var(--mra-danger-strong); }
+/* 通用配置面板（插件声明 schema、宿主渲染）：字段间距与旧专属块保持一致 */
+.config-panel { display: flex; flex-direction: column; padding: 0; }
+.config-panel > * + * { margin-top: 14px; }
+.config-panel .option-row { padding: 0; }
+.config-panel-note { margin: 0 0 4px; }
 
 /* 断点列表 */
 .breakpoint-hint { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--mra-foreground-muted); }

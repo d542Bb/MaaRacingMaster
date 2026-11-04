@@ -17,7 +17,6 @@
   const {
     mra, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
     openModal, setPreviewFloating, peepConsumer,
-    bindModuleOptionsUI, refreshModuleOptions, updateModuleOptionsDisabled,
     renderModulePages, checkRegistryOptimizations, pollDashboard,
     renderTaskList, pollStatus, setStatus, pollLogs,
   } = window.MRA;
@@ -601,9 +600,7 @@
       state.moduleAssets = data.module_assets || {};
       state.coverDefault = data.cover_default || '';
       // 初始就按运行状态锁定（重连/刷新时可能已有轮次在跑）
-      updateModuleOptionsDisabled(!!data.is_running);
-      // 初始化模块专属选项控件（各模块自述配置面，见 settings.js 的模块页定义表）
-      bindModuleOptionsUI();
+      MRA.configPanel.setLocked(!!data.is_running);
       renderTaskList();
       // 「数据/设置」页跟随初始面板：第一个启用项，否则列表第一项，否则注册表第一个
       const initialMid = state.queue.order.find((m) => state.queue.enabled[m])
