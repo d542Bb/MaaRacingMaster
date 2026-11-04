@@ -17,7 +17,7 @@ from maaracing_master.plugins.speedrush import module as smod
 from maaracing_master.plugins.speedrush.corridor import (
     INFERRED, UNKNOWN, Corridor, build_corridor)
 from maaracing_master.plugins.speedrush.depth_geo import (
-    GRID_DRIVABLE, GRID_UNKNOWN, GRID_X_MAX, DepthRoadReading)
+    GRID_DRIVABLE, GRID_UNKNOWN, GRID_X_MAX, CAM_Z_DATUM_M, DepthRoadReading)
 from maaracing_master.plugins.speedrush.wall_track import OCCLUDED, WallTrack
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
@@ -164,7 +164,7 @@ def test_far_band_edge_pts_measured():
     c = build_corridor(bnd, None, fid=21,
                        center_lane=0.0, width_lane=4.0, src="pair", lane_w_m=LW)
     b5 = c.bands[5]                            # 相机系 18~21m（含 zc=18 箱）
-    assert b5.z0 == pytest.approx(18.0 - smod.CAM_Z_DATUM_M)  # 保险杠：相机系=车头系
+    assert b5.z0 == pytest.approx(18.0 - CAM_Z_DATUM_M)  # 保险杠：相机系=车头系
     assert b5.right.src == "measured"
     assert b5.right.x_m == pytest.approx(4.5)  # 最靠路心者，外侧检出不当边界
     assert b5.right.conf == pytest.approx(0.5)
@@ -563,14 +563,14 @@ def test_far_coarse_ground_supply_inferred():
     assert len(c.bands) == 9                        # 3m 带不动
     assert len(c.coarse_bands) == 2
     b0 = c.coarse_bands[0]
-    assert b0.z0 == pytest.approx(16.0 - smod.CAM_Z_DATUM_M)  # 保险杠：相机系=车头系
-    assert b0.z1 == pytest.approx(31.0 - smod.CAM_Z_DATUM_M)
+    assert b0.z0 == pytest.approx(16.0 - CAM_Z_DATUM_M)  # 保险杠：相机系=车头系
+    assert b0.z1 == pytest.approx(31.0 - CAM_Z_DATUM_M)
     assert b0.left.src == INFERRED and b0.right.src == INFERRED
     assert b0.left.x_m == pytest.approx(-6.8)
     assert b0.right.x_m == pytest.approx(6.73)
     assert b0.left.last_fid == 42
     assert b0.n_pts == 500
-    assert c.coarse_bands[1].z0 == pytest.approx(31.0 - smod.CAM_Z_DATUM_M)
+    assert c.coarse_bands[1].z0 == pytest.approx(31.0 - CAM_Z_DATUM_M)
 
 
 def test_far_coarse_switch_off_empty():
