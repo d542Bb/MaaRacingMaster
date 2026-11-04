@@ -245,6 +245,8 @@ class YOLODetector:
             t_run = time.perf_counter()
             raw_outputs = self.session.run(None, {self.input_name: blob})
             self.last_run_ms = (time.perf_counter() - t_run) * 1000.0
+        # 错峰节拍：深度 worker 据此把 54ms 前向排在感知放锁之后（见 dml_lock）。
+        dml_lock.TICK_BEAT.note()
         outputs = raw_outputs[0]
         assert isinstance(outputs, np.ndarray), f"ONNX 返回非数组: {type(outputs)}"
         preds = outputs[0].transpose(1, 0)

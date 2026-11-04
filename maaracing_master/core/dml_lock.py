@@ -14,14 +14,49 @@ moge2 q4f16，锁协议不变）各建一个 DML 会话——
 ——感知不能跳拍。
 
 持锁范围只圈 ``session.run`` 本体：前后处理不碰 GPU，留在锁外。
+
+**错峰节拍**（``TICK_BEAT``，2026-11-03）：一次深度前向 54ms 是不可分割的原子，
+比控制拍 50ms 还长——无论怎么排都会伸进下一拍。自由起跑时伸出量在 1~54ms 之间
+随机（实测 37~42% 的拍要等锁，其中一大档等满 40~54ms）；从感知刚放锁的瞬间
+起跑，伸出量压到几何下限 ~19ms。所以感知每次放锁记一拍，深度 worker 只在
+一拍之后开工（见 speedrush.depth_geo 的 ``_stagger_wait``）。
 """
 
 from __future__ import annotations
 
 import threading
+import time
 
 LOCK = threading.Lock()
 
 
 class Busy(RuntimeError):
     """DML 已被其他线程占用；调用方应放弃本次推理（让锁），不得等待。"""
+
+
+class _TickBeat:
+    """控制拍「跑完感知、放下锁」的节拍：序号 + 时刻 + 等待者唤醒。"""
+
+    def __init__(self) -> None:
+        self._cv = threading.Condition()
+        self._seq = 0
+        self._t = float("-inf")
+
+    def note(self) -> None:
+        with self._cv:
+            self._seq += 1
+            self._t = time.perf_counter()
+            self._cv.notify_all()
+
+    def snapshot(self) -> tuple[int, float]:
+        """(序号, 最近一次节拍时刻)；从未有过节拍时时刻为 -inf。"""
+        with self._cv:
+            return self._seq, self._t
+
+    def wait_newer(self, seq: int, timeout: float) -> bool:
+        """等下一次节拍（序号变化）；超时返回 False。"""
+        with self._cv:
+            return self._cv.wait_for(lambda: self._seq != seq, timeout=timeout)
+
+
+TICK_BEAT = _TickBeat()
