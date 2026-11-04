@@ -596,7 +596,7 @@ if (-not (Test-Path (Join-Path $appDir 'MaaRacingMaster.Shell.exe'))) {
 foreach ($rel in @(
     'pyproject.toml', 'LICENSE', 'THIRD_PARTY_LICENSES.md',
     'assets\icon.ico',
-    'assets\mra_icon.png', 'assets\config', 'apps\MaaRacingMaster.Shell\frontend')) {
+    'assets\maarm_icon.png', 'assets\config', 'apps\MaaRacingMaster.Shell\frontend')) {
     $src = Join-Path $RepoRoot $rel
     if (Test-Path $src) {
         $dest = Join-Path $StageRoot $rel

@@ -744,7 +744,7 @@ class WgcapController(CustomController):
         return True
 
     def request_uuid(self):
-        return "mra-navkit-v4"
+        return "maarm-navkit-v4"
 
     def start_app(self, intent):
         return True

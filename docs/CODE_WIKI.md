@@ -34,9 +34,9 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
   → sidecar 初始化 Controller，等待 stdin JSONL RPC
 ```
 
-前端经 `mra.call(method, params)` 与 sidecar 通信；独立调试 sidecar（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`。
+前端经 `maarm.call(method, params)` 与 sidecar 通信；独立调试 sidecar（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`。
 
-「开始」之后的内部编排不在此复述，按需查真源：窗口连接与 `start_module` 分发见 [core/CODE_WIKI.md §3.1](../maaracing_master/core/CODE_WIKI.md)（连接幂等、超时保护、窗口统一、屏幕内校验）；前端 `mra.call` → C# → sidecar handler 的跨进程跳转见壳工程 [README](../apps/MaaRacingMaster.Shell/README.md)（`RpcBridge.cs` 与 sidecar transport 契约）；模块内断点解析、主循环与资源释放见各域 `CODE_WIKI.md`（主控只做生命周期与能力门面，不编排活动流程）。
+「开始」之后的内部编排不在此复述，按需查真源：窗口连接与 `start_module` 分发见 [core/CODE_WIKI.md §3.1](../maaracing_master/core/CODE_WIKI.md)（连接幂等、超时保护、窗口统一、屏幕内校验）；前端 `maarm.call` → C# → sidecar handler 的跨进程跳转见壳工程 [README](../apps/MaaRacingMaster.Shell/README.md)（`RpcBridge.cs` 与 sidecar transport 契约）；模块内断点解析、主循环与资源释放见各域 `CODE_WIKI.md`（主控只做生命周期与能力门面，不编排活动流程）。
 
 ***
 

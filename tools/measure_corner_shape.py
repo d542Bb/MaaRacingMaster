@@ -210,7 +210,7 @@ def capture(url: str, out_png: Path, width: int, height: int) -> str:
     """用 CDP 抓渲染器输出（不是抓屏），返回引擎版本串。"""
     exe = find_browser()
     port = 9411
-    profile = Path(tempfile.gettempdir()) / "mra_corner_measure_profile"
+    profile = Path(tempfile.gettempdir()) / "maarm_corner_measure_profile"
     proc = subprocess.Popen(
         [exe, f"--user-data-dir={profile}", f"--remote-debugging-port={port}",
          "--no-first-run", "--no-default-browser-check", "--disable-extensions",
@@ -377,7 +377,7 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="保留探针页与截图")
     args = ap.parse_args()
 
-    work = Path(tempfile.mkdtemp(prefix="mra_corner_"))
+    work = Path(tempfile.mkdtemp(prefix="maarm_corner_"))
     probe = work / "probe.html"
     shot = work / "probe.png"
     build_probe(probe)
@@ -440,7 +440,7 @@ def main() -> int:
     if args.keep:
         print(f"\n探针页：{probe}\n截图：{shot}")
     else:
-        # 连目录一起删：只删文件会每跑一次留下一个空的 mra_corner_* 目录
+        # 连目录一起删：只删文件会每跑一次留下一个空的 maarm_corner_* 目录
         import shutil
         shutil.rmtree(work, ignore_errors=True)
     return code

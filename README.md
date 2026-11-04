@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mra_icon.png" width="128" alt="MaaRacingMaster logo">
+  <img src="assets/maarm_icon.png" width="128" alt="MaaRacingMaster logo">
 </p>
 
 <h1 align="center">MaaRacingMaster</h1>

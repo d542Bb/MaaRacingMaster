@@ -7,7 +7,7 @@ plugins/_archive/treasure/pipeline 互指，分次 post 先加载者必失败 �
 一次 post。结束后清理临时目录。
 
 同时对照：
-  A. 只注册 MRA_Template/MRA_Click 后加载（生产姿势）
+  A. 只注册 MaaRM_Template/MaaRM_Click 后加载（生产姿势）
   B. 不注册任何 Custom 直接加载（判断框架是否校验 custom 名）
   C. 分次 post（验证"先加载者必失败"的已知坑是否仍成立）
 """
@@ -52,14 +52,14 @@ def merge(dirs: list[Path]) -> Path:
 
 def main() -> int:
     print("=" * 70)
-    print("B1-A  合并临时目录一次性 post（生产姿势：先注册 MRA_Template/MRA_Click）")
+    print("B1-A  合并临时目录一次性 post（生产姿势：先注册 MaaRM_Template/MaaRM_Click）")
     print("=" * 70)
     tmp = merge([CORE_PIPE, TREASURE_PIPE])
     try:
         res = Resource()
-        res.register_custom_recognition("MRA_Template", _StubReco())
-        res.register_custom_action("MRA_Click", _StubAction())
-        res.register_custom_action("MRA_Policy", _StubAction())
+        res.register_custom_recognition("MaaRM_Template", _StubReco())
+        res.register_custom_action("MaaRM_Click", _StubAction())
+        res.register_custom_action("MaaRM_Policy", _StubAction())
         job = res.post_pipeline(str(tmp)).wait()
         print(f"  job.failed = {job.failed}  job.succeeded = {job.succeeded}")
         print(f"  job.status = {job.status}")
@@ -89,9 +89,9 @@ def main() -> int:
     print("B1-C  分次 post（验证互指目录的已知坑）")
     print("=" * 70)
     res3 = Resource()
-    res3.register_custom_recognition("MRA_Template", _StubReco())
-    res3.register_custom_action("MRA_Click", _StubAction())
-    res3.register_custom_action("MRA_Policy", _StubAction())
+    res3.register_custom_recognition("MaaRM_Template", _StubReco())
+    res3.register_custom_action("MaaRM_Click", _StubAction())
+    res3.register_custom_action("MaaRM_Policy", _StubAction())
     j1 = res3.post_pipeline(str(CORE_PIPE)).wait()
     print(f"  post(core/pipeline)      failed={j1.failed}")
     j2 = res3.post_pipeline(str(TREASURE_PIPE)).wait()
@@ -105,9 +105,9 @@ def main() -> int:
     tmp = merge([CORE_PIPE, TREASURE_PIPE])
     try:
         res4 = Resource()
-        res4.register_custom_recognition("MRA_Template", _StubReco())
-        res4.register_custom_action("MRA_Click", _StubAction())
-        res4.register_custom_action("MRA_Policy", _StubAction())
+        res4.register_custom_recognition("MaaRM_Template", _StubReco())
+        res4.register_custom_action("MaaRM_Click", _StubAction())
+        res4.register_custom_action("MaaRM_Policy", _StubAction())
         res4.post_pipeline(str(tmp)).wait()
         for name in ("treasure.__boot.dwell", "treasure.第1回合出价.dwell",
                      "treasure.policy_loop"):

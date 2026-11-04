@@ -39,7 +39,7 @@ class Attriber:
         if relp.startswith("assets"):
             return "assets"
         if relp.startswith("maaracing_master"):
-            return "mra-sidecar"
+            return "maarm-sidecar"
         if relp.startswith("runtime"):
             return "runtime-shell"
         return "other"

@@ -158,7 +158,7 @@ def _top_pkg_of(rel: str) -> str:
         tail = rel.split("runtime/python/packages/")[1]
         return tail.split("/")[0]
     if rel.startswith("maaracing_master"):
-        return "mra-sidecar"
+        return "maarm-sidecar"
     if rel.startswith("app"):
         return "app(.NET/WinUI)"
     return ""

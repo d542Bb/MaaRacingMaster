@@ -47,9 +47,9 @@ def main() -> int:
             shutil.copy2(f, dest)
     try:
         res = Resource()
-        res.register_custom_recognition("MRA_Template", _StubReco())
-        res.register_custom_action("MRA_Click", _StubAction())
-        res.register_custom_action("MRA_Policy", _StubAction())
+        res.register_custom_recognition("MaaRM_Template", _StubReco())
+        res.register_custom_action("MaaRM_Click", _StubAction())
+        res.register_custom_action("MaaRM_Policy", _StubAction())
         job = res.post_pipeline(str(tmp)).wait()
         print(f"post_pipeline failed={job.failed}")
 
