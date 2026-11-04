@@ -829,7 +829,7 @@
               <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
-                <p class="option-desc">开启后运行日志、玩法流水与性能记录写入会话目录，框架日志同此开关（重启生效）；关闭时仅保留在界面</p>
+                <p class="option-desc">开启后运行日志、玩法流水与性能记录写入会话目录；关闭时仅保留在界面</p>
               </div>
               <span class="option-note">默认关闭，排查问题时开启</span>
             </div>

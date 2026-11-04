@@ -493,13 +493,15 @@
 
 **测试**：`tests/test_dashboard_contract.py`（版本 / block 白名单 / 非法块 / 动作白名单 / 兼容桥 / 路由不建实例）、`tests/test_module_dashboard_contract.py`（资格位、版本 0 占位与列表下发）、`tests/test_frontend_dashboard_center.py`（前端渲染器覆盖全部 block 类型 / 候选集与统一路由）。
 
-### 1.21 [maa_option.py](./maa_option.py) — 框架侧产物开关
+### 1.21 [maa_option.py](./maa_option.py) — 框架侧落盘策略
 
-**职责**：把 maafw 的 `framework/config/maa_option.json` 挂到 GUI 两项调试开关上，让「两个开关都关 = 框架侧零落盘」成立。
+**职责**：在启动时把 maafw 的 `framework/config/maa_option.json` 固定为「文本日志开（含框架自带 7 天回收）、失败截图关」，与界面两项调试开关解耦——那两个开关只管应用自己的调试语料与会话日志。
 
-- 映射：`logging` ← 日志记录（关 = 不写 `maafw.log`）；`save_on_error` ← DEBUG 截图（关 = 不写 `framework/debug/on_error/` 失败截图）。`save_draw` / `draw_quality` / `stdout_level` 不由本模块改。
-- 写文件走「临时文件 + 原子替换」：半截 JSON 会让框架回落默认值，等于悄悄把开关又打开。
-- **生效时机**：框架只在 `Toolkit.init_option()` 那一次读配置，故运行中切换只更新文件、**下次启动**才被采用；`sidecar.main()` 在首次 init 之前同步一次（开关随 profile 回读）。
+- 固定值：`logging=true`（写持续文本日志，所有级别；每次启动在后台删除 `framework/debug/` 下超过 7 天的 `.log`/`.jpg`/`.png`）、`save_on_error=false`（不落失败截图）。`save_draw` / `draw_quality` / `stdout_level` 不由本模块改。
+- 为什么关失败截图：框架的「出错」口径是**一次节点执行到超时都没有命中**（动作失败、节点无效同样算），包括模块有意做的负向探针（驾驶中每 0.5 秒问一次横幅在不在）；这类图实测约 2.3GB/天、95% 以上是噪声。视觉证据由应用的 DEBUG 开关按需提供。
+- 成本（实测 5.12.3 + 驾驶流程）：文本约 183MB/天。`maafw.log` 满 16MB 复制为 `maafw.bak.<时间>.log` 后清空当前文件，备份不按数量轮转；只靠框架 7 天回收会到 ~1.25GB，故启动时 `prune_log_backups()` 把备份总量压到 256MB，文本部分稳定在 ~272MB（备份 + 当前文件）。
+- 写文件走「临时文件 + 原子替换」：半截 JSON 会让框架回落默认值。
+- **生效时机**：框架只在 `Toolkit.init_option()` 那一次读配置，故启动时写一次；运行中改界面开关不重写。
 - 边界：`logs/sidecar_stderr.log` 不在本模块管辖（它是崩溃诊断的最后手段），由 shell 侧按 8MB 上限轮转；`data/`（业务库与用户资产）与 `evidence/`（C 证据冻结，随日志开关）也不在此。
 
 **测试**：`tests/test_maa_option.py`。
@@ -726,7 +728,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
 - `data/`：运行时数据与用户资产（`data/treasure/treasure.db`、`data/speedrush/macros/` 用户录制的宏、模型权重等）
 - `logs/`：会话记录 `logs/<MaaRM时间戳>/`——运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）与伴随产物 `trace.jsonl`（共用「日志记录」开关）
-- `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——开关由 [maa_option.py](./maa_option.py) 跟随两项调试开关，下次启动生效
+- `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
 - `debug/`：调试截图会话 `debug/<module>/<会话>/`（DebugStudio 契约）
 
 GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目录管理。

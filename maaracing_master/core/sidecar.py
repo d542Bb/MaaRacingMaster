@@ -388,20 +388,20 @@ def _save_profile(partial: dict) -> None:
                     pass
 
 
-def _sync_framework_options() -> dict | None:
-    """把 GUI 两项调试开关同步给框架侧产物（`maa_option.json`），返回写入内容。
+def _apply_framework_policy() -> None:
+    """启动时写入框架侧固定落盘策略，并把文本日志的轮转备份压到体积上限。
 
-    框架侧有两类产物原先不受任何开关管辖、也不轮转：`maafw.log`（框架日志）与
-    `on_error/`（识别失败截图，实机一天 2.4GB）。这里让它们跟随开关：日志记录
-    → `logging`，DEBUG 截图 → `save_on_error`。两个都关即框架侧零落盘。
-
-    写入即返回；框架只在 `Toolkit.init_option()` 时读一次配置，故**下次启动**
-    才生效（调用方的日志措辞据此如实说明）。
+    与界面两项调试开关无关：那两个开关只管应用自己的调试语料与会话日志。策略
+    须在首次 `Toolkit.init_option()` 之前写好；写失败只记一笔，不拦启动。
     """
-    dbg = _load_profile().get("debug")
-    dbg = dbg if isinstance(dbg, dict) else {}
-    return maa_option.sync(bool(dbg.get("debug_mode", False)),
-                           bool(dbg.get("file_logging", False)))
+    if maa_option.apply_policy() is None:
+        logger.log("框架落盘策略写入失败，框架按既有配置运行", "WARNING")
+    try:
+        removed, freed = maa_option.prune_log_backups()
+    except Exception:  # noqa: BLE001 —— 清理尽力而为，不拦启动
+        return
+    if removed:
+        logger.log(f"框架日志备份清理：删除 {removed} 个文件，释放 {freed // (1024 ** 2)}MB", "INFO")
 
 
 def _parse_module_config_slots(mc: object) -> dict[str, dict]:
@@ -1861,7 +1861,6 @@ class SidecarService:
         cur = cur if isinstance(cur, dict) else {}
         cur["debug_mode"] = bool(enabled)
         _save_profile({"debug": cur})
-        _sync_framework_options()   # 框架失败截图（on_error/）随此开关，下次启动生效
         logger.log(f"调试截图模式: {'开启' if enabled else '关闭'}")
         return (True, {"debug_mode": enabled}, None)
 
@@ -1873,7 +1872,6 @@ class SidecarService:
         cur = cur if isinstance(cur, dict) else {}
         cur["file_logging"] = bool(enabled)
         _save_profile({"debug": cur})
-        _sync_framework_options()   # 框架日志（maafw.log）随此开关，下次启动生效
         logger.log(f"日志记录(写盘): {'开启' if enabled else '关闭'}")
         return (True, {"file_logging": enabled}, None)
 
@@ -2007,9 +2005,9 @@ def main() -> None:
     # 构造前应用，让启动初期的日志也遵守开关状态
     _dbg = _load_profile().get("debug")
     logger.set_file_logging(bool(isinstance(_dbg, dict) and _dbg.get("file_logging", False)))
-    # 框架侧产物（maafw.log / on_error 失败截图）按同一组开关落盘：须在任何
-    # Toolkit.init_option 之前写好，否则框架读到的是上一次的开关。
-    _sync_framework_options()
+    # 框架侧落盘策略与界面开关无关（固定为「只在识别失败时留现场」）：须在任何
+    # Toolkit.init_option 之前写好，否则框架读到的是上一次的配置。
+    _apply_framework_policy()
     # 性能采样器常驻（随主进程起停；会话落盘随日志开关联动）
     ensure_perf_sampler_started()
     protocol_stdout = sys.stdout

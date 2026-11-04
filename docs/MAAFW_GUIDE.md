@@ -595,12 +595,18 @@ class MyAction(CustomAction):
   `logging`(存 maafw\.log)、`save_draw`(存识别可视化到 vision/)、`stdout_level`(0无\~7全)、
   `save_on_error`(失败存图)、`draw_quality`。
 
-  本项目把其中两项挂到 GUI 开关（[`core/maa_option.py`](../maaracing_master/core/maa_option.py)）：
-  `logging` ← 「日志记录」，`save_on_error` ← 「DEBUG 截图与记录」，其余键保持原值。
-  实测（5.12.3）：`logging=false` 时 init 不建 `debug/maafw.log`；`save_on_error=true`
-  时每个识别失败节点落一张全屏 PNG 到 `debug/on_error/`，**框架不轮转**——这也是
-  必须跟随开关的原因（实机一天 2.4GB）。配置只在 init 那一次读入，运行中改文件
-  要等下次启动生效。
+  [`core/maa_option.py`](../maaracing_master/core/maa_option.py) 在启动时把其中两项写成
+  固定策略，与界面开关解耦：`logging=true`（写持续日志，并启用框架自带回收）、
+  `save_on_error=false`（不落失败截图），其余键保持原值。实测（5.12.3）：`logging=false`
+  时 init 不建 `debug/maafw.log`；`save_on_error=true` 时**一次节点执行到超时都没有命中**
+  （动作失败、节点无效同样算）落一张全屏 PNG 到 `debug/on_error/`，模块有意做的负向探针
+  也算——这是本项目关掉它的原因。配置只在 init 那一次读入，故策略在启动时写一次；
+  运行中改文件要等下次启动生效。
+
+  框架自带的回收只在 `logging=true` 时发生：每次启动在后台删除 `debug/` 下超过 7 天的
+  `.log`/`.jpg`/`.png`；`maafw.log` 满 16MB 复制为 `maafw.bak.<时间>.log` 后清空当前文件，
+  备份不按数量轮转。`logging=false` 时这轮清理也不会发生。只靠 7 天回收，本项目实测
+  文本日志稳态约 1.25GB，故启动时另把 `maafw.bak.*.log` 总量压到 256MB。
 
 - Tasker 全局选项可设 `DebugMode`(所有任务当 focus 产生回调，RecoDetail 含 raw/draws)。
   `raw`/`draws` **只在 DebugMode/SaveDraw 下可得**——诊断代码不得假设 RecoDetail 一定有 draws。
