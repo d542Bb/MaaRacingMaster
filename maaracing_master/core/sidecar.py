@@ -1655,15 +1655,18 @@ class SidecarService:
     # GitHub raw / GitHub API 兜底。公告同理 CNB raw 优先。
     # 所有源都只是「取字节」；「这些字节能不能信」由 remote_meta 的校验器统一判定。
     _CNB_RAW_BASE = "https://cnb.cool/MaaRacingMaster/MAIN/-/git/raw/master"
+    _CNB_RELEASE_URL = f"{_CNB_RAW_BASE}/docs/latest_release.json"
+    _GITHUB_RELEASE_URL = f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json"
+    _GITHUB_API_RELEASE_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
     _RELEASE_URLS = (
-        f"{_CNB_RAW_BASE}/docs/latest_release.json",
-        f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json",
-        f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+        _CNB_RELEASE_URL,
+        _GITHUB_RELEASE_URL,
+        _GITHUB_API_RELEASE_URL,
     )
     # 显式选 GitHub 时不回退 CNB：更新源按钮是用户选择，不能悄悄换源。
     _RELEASE_URLS_GITHUB = (
-        f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json",
-        f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+        _GITHUB_RELEASE_URL,
+        _GITHUB_API_RELEASE_URL,
     )
     _ANNOUNCEMENT_URLS = (
         f"{_CNB_RAW_BASE}/docs/announcement.json",
@@ -1702,7 +1705,7 @@ class SidecarService:
             try:
                 rel = parse_release(json.loads(self._http_get(url)))
             except HTTPError as exc:
-                if exc.code == 404 and url.startswith("https://api.github.com"):
+                if exc.code == 404 and url == self._GITHUB_API_RELEASE_URL:
                     # 仅 GitHub 官方 API 的 404 权威判定「仓库无 release」；CNB raw 404
                     # 只说明标记文件尚未生成（发版前），继续尝试后续源。
                     return (True, {"has_update": False, "error": None,
@@ -1715,7 +1718,7 @@ class SidecarService:
             latest = rel["tag"]
             published = rel["published_at"]
             download_url = rel["download_url"] or EXTERNAL_TARGETS["release"]
-            used = "cnb" if url.startswith("https://cnb.cool") else "github"
+            used = "cnb" if url == self._CNB_RELEASE_URL else "github"
             break
         if latest is None:
             return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试",
