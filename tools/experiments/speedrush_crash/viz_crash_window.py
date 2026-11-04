@@ -2,7 +2,7 @@
 """离线可视化：碰撞窗口的原始帧 + 程序视角俯视图（撞车复盘实验 2/8 佐证）。
 
 只读 debug 帧与 trace，不接控制。输出到
-tools/experiments/_probe_data/crash_viz/：
+_probe_data/crash_viz/：
   crash_frames.jpg   —— 1550/1563/1578 三张 HUD 帧 + 当拍程序数字
   crash_bev.jpg      —— 1550/1554/1556/1563/1568 五拍俯视图（保持影子）
 

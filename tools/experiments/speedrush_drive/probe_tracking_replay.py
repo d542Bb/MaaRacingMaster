@@ -18,7 +18,7 @@
     .venv/Scripts/python.exe tools/experiments/speedrush_drive/probe_tracking_replay.py scan [--only 20260921] [--limit 0]
     .venv/Scripts/python.exe tools/experiments/speedrush_drive/probe_tracking_replay.py replay [--only 20260921]
 
-输出（数据目录，不入库）：`tools/experiments/_probe_data/tracking_scan.jsonl`
+输出（数据目录，不入库）：`_probe_data/tracking_scan.jsonl`
 与终端汇总表。
 """
 

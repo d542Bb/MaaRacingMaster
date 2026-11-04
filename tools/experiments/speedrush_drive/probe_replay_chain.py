@@ -15,7 +15,7 @@ frames.jsonl 的真实 ts_ns 差算 dt_s（到场轮 ≈15.8Hz 行率），engin
 
 用法（仓库根）：
     .venv/Scripts/python.exe tools/experiments/speedrush_drive/probe_replay_chain.py [--only 20260921_17] [--limit 0]
-输出（数据目录，不入库）：`tools/experiments/_probe_data/replay_chain.jsonl`
+输出（数据目录，不入库）：`_probe_data/replay_chain.jsonl`
 """
 
 from __future__ import annotations
