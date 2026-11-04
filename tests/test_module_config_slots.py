@@ -84,6 +84,8 @@ def _svc(monkeypatch, selected="fake_a", cache=None, live=None):
     svc._controller.active_module = live
     svc._selected_module = selected
     svc._module_config_cache = dict(cache or {})
+    svc._module_config_rev = {}
+    svc._config_meta_notes = {}
     svc.saved_profiles = []
     monkeypatch.setattr(sc, "_save_profile", lambda partial: svc.saved_profiles.append(partial))
     return svc

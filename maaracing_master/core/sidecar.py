@@ -54,6 +54,11 @@ from maaracing_master.core.builtin_steps import (
     LaunchGameStep,
 )
 from maaracing_master.core.base import declares_dashboard, overrides_classmethod
+from maaracing_master.core.config_ui_contract import (
+    normalize_config_ui,
+    normalize_status,
+    normalize_summary,
+)
 from maaracing_master.core.covers import cover_url_for, default_cover_url
 from maaracing_master.core.dashboard_contract import (
     DASHBOARD_CONTRACT_VERSION,
@@ -453,6 +458,19 @@ def _normalize_module_config(module_id: str, config: dict) -> dict:
     return out if isinstance(out, dict) else config
 
 
+def _project_config(module_id: str, config: dict) -> dict:
+    """有效配置投影：默认值 ∪ 归一结果 → 只保留该模块声明的键。
+
+    摘要等派生信息只认这份数据（旧键已折算、未知键已剔除、默认值已补齐）。
+    """
+    base = _module_config_defaults(module_id)
+    eff = _normalize_module_config(module_id, dict(config))
+    merged = dict(base)
+    if isinstance(eff, dict):
+        merged.update({k: eff[k] for k in base if k in eff})
+    return merged
+
+
 def _step_name(step_id: str) -> str:
     if step_id in BUILTIN_STEPS:
         return BUILTIN_STEPS[step_id].NAME
@@ -600,6 +618,10 @@ class SidecarService:
         # 槽里只放纯配置数据，**绝不放模块实例**——实例持有线程/文件句柄等资源，
         # 缓存若持有实例，等于把"已经切走的模块"留在内存里继续活着。
         self._module_config_cache: dict[str, dict] = {}
+        # 配置修订号：每次 set 成功 +1，前端据此丢弃过期的轮询响应（进程内，不落盘）。
+        self._module_config_rev: dict[str, int] = {}
+        # 配置派生问题的日志去重：同一模块的同一种问题只记一次（轮询不刷屏）。
+        self._config_meta_notes: dict[tuple[str, str], str] = {}
         # 性能优先开关的进程内状态（sidecar 自有，不经 controller；_restore_profile 回放）
         self._boost_priority_enabled = False
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
@@ -965,6 +987,103 @@ class SidecarService:
 
     # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------
 
+    def _note_config_meta(self, module_id: str, kind: str, message: str) -> None:
+        """同一种配置派生问题只记一次：配置视图会被 1s 轮询反复读取，不能刷屏。"""
+        key = (module_id, kind)
+        with self._lock:
+            if self._config_meta_notes.get(key) == message:
+                return
+            self._config_meta_notes[key] = message
+        logger.log(message, "WARNING")
+
+    def _attach_config_meta(self, module_id: str, payload: dict,
+                            live: Any = None, rev: int | None = None) -> dict:
+        """给配置响应补表单元数据、摘要与（运行中的）状态行。
+
+        静态视图与 live 路径共用。只认通用形状：表单结构、字符串列表、{text,level}；
+        业务文案全部由模块自己产出，core 不做解释。``rev`` 由调用方在读取配置的同一
+        锁区内取好传入，保证「配置内容与修订号」出自同一时刻。
+        """
+        cls = MODULE_REGISTRY.get(module_id)
+        if rev is None:
+            with self._lock:
+                rev = self._module_config_rev.get(module_id, 0)
+        payload["_rev"] = rev
+
+        # 1) 表单契约：none/ok/partial/invalid/unsupported_version 四态可区分
+        ui = normalize_config_ui(cls, set(_module_config_defaults(module_id)))
+        payload["_ui_state"] = ui.state
+        if ui.schema is not None:
+            payload["_ui"] = ui.schema
+        else:
+            payload.pop("_ui", None)
+        if ui.note:
+            payload["_ui_note"] = ui.note
+        else:
+            payload.pop("_ui_note", None)
+        if ui.warnings:
+            self._note_config_meta(
+                module_id, "ui",
+                f"[模块配置] {module_id} 配置面板可用性变化：{ui.state}；"
+                + "；".join(ui.warnings))
+
+        # 2) 下拉候选：模块静态枚举，不建实例
+        choices_fn = getattr(cls, "config_choices", None) if cls is not None else None
+        if callable(choices_fn):
+            try:
+                choices = choices_fn()
+            except Exception as exc:  # noqa: BLE001 —— 选项枚举失败不阻断配置读取
+                logger.log(f"[模块配置] {module_id} 选项枚举失败: {exc!r}", "WARNING")
+                choices = None
+            if isinstance(choices, dict) and choices:
+                payload["_choices"] = choices
+            else:
+                payload.pop("_choices", None)
+        else:
+            payload.pop("_choices", None)
+
+        # 3) 摘要：入参是投影后的有效配置（默认值已合并、旧键已折算、无 _ 元数据）
+        summary_fn = getattr(cls, "config_summary", None) if cls is not None else None
+        chips: list[str] = []
+        if callable(summary_fn):
+            eff = _project_config(
+                module_id, {k: v for k, v in payload.items() if not k.startswith("_")})
+            try:
+                raw_summary = summary_fn(eff)
+            except Exception as exc:  # noqa: BLE001 —— 摘要失败不阻断配置读取
+                self._note_config_meta(
+                    module_id, "summary",
+                    f"[模块配置] {module_id} 摘要计算失败，已省略: {exc!r}")
+            else:
+                chips, problem = normalize_summary(raw_summary)
+                if problem:
+                    self._note_config_meta(
+                        module_id, "summary",
+                        f"[模块配置] {module_id} 摘要不可用，已省略: {problem}")
+        payload["_summary"] = chips
+
+        # 4) 运行状态行：只有活实例能提供；异常与非法形状都只让状态行缺席
+        if live is not None:
+            status_fn = getattr(live, "config_status", None)
+            if callable(status_fn):
+                try:
+                    raw_status = status_fn()
+                except Exception as exc:  # noqa: BLE001 —— 状态失败不影响配置读取
+                    self._note_config_meta(
+                        module_id, "status",
+                        f"[模块配置] {module_id} 运行状态计算失败，已省略: {exc!r}")
+                else:
+                    status, problem = normalize_status(raw_status)
+                    if problem:
+                        self._note_config_meta(
+                            module_id, "status",
+                            f"[模块配置] {module_id} 运行状态不可用，已省略: {problem}")
+                    if status is not None:
+                        payload["_status"] = status
+            if "_status" not in payload:
+                payload.pop("_status", None)
+        return payload
+
     def _module_config_view(self, module_id: str) -> dict:
         """某模块的配置视图（未运行时）：模块声明的默认值 ← 该模块自己的缓存槽。
 
@@ -974,24 +1093,15 @@ class SidecarService:
           - **槽按模块隔离**——切走的模块配置留在自己的槽里，不被后来者覆盖。
 
         下拉型配置项的可选值由模块的 ``config_choices()`` 静态枚举（不建实例），
-        原样放进 ``_choices``；枚举失败只告警，不影响配置读取。
+        与表单元数据、摘要一起由 ``_attach_config_meta`` 附加。
         """
         view = _module_config_defaults(module_id)
         with self._lock:
             cached = self._module_config_cache.get(module_id)
+            rev = self._module_config_rev.get(module_id, 0)
         if cached:
             view.update(cached)
-        cls = MODULE_REGISTRY.get(module_id)
-        choices_fn = getattr(cls, "config_choices", None) if cls is not None else None
-        if callable(choices_fn):
-            try:
-                choices = choices_fn()
-            except Exception as exc:  # noqa: BLE001 —— 选项枚举失败不阻断配置读取
-                logger.log(f"[模块配置] {module_id} 选项枚举失败: {exc!r}", "WARNING")
-                choices = None
-            if isinstance(choices, dict) and choices:
-                view["_choices"] = choices
-        return view
+        return self._attach_config_meta(module_id, view, rev=rev)
 
     def get_module_config(self, params):
         module_id = params.get("module_id")
@@ -1000,7 +1110,10 @@ class SidecarService:
             return (False, None, "缺少 module_id")
         live = self._controller.active_module
         if live is not None and getattr(live, "ID", None) == module_id:
-            # 运行中：实例权威——同 id 的运行实例是唯一知道实况（_state）的地方
+            # 运行中：实例权威——同 id 的运行实例是唯一知道实况（_state）的地方。
+            # 修订号在读取实例前取好：之后若有配置写入，本次响应按旧版本被前端丢弃。
+            with self._lock:
+                rev = self._module_config_rev.get(module_id, 0)
             getter: Any = getattr(live, "get_module_config", None)
             if not callable(getter):
                 return (True, {}, None)
@@ -1012,8 +1125,9 @@ class SidecarService:
             # 不让一个写错的模块把 GUI 的配置读取整条打断。
             if not isinstance(raw, dict):
                 return (True, {}, None)
+            raw = dict(raw)  # 别把 _ui/_summary 等元数据写回模块自己的返回对象
             raw.setdefault("module_id", module_id)
-            return (True, raw, None)
+            return (True, self._attach_config_meta(module_id, raw, live=live, rev=rev), None)
         # 未运行：默认值 ∪ 缓存（GUI 改过但还没 start 的值）
         view = self._module_config_view(module_id)
         view.setdefault("module_id", module_id)
@@ -1034,6 +1148,7 @@ class SidecarService:
                 target = dict(self._module_config_cache.get(module_id) or {})
                 target.update({k: v for k, v in config.items() if k in allowed})
                 self._module_config_cache[module_id] = target
+                self._module_config_rev[module_id] = self._module_config_rev.get(module_id, 0) + 1
                 snapshot = {mid: dict(cfg) for mid, cfg in self._module_config_cache.items() if cfg}
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"写模块配置失败: {exc!r}")

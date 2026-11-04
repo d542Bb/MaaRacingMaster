@@ -350,7 +350,8 @@ SITES: list[LogSite] = [
     _s('core/sidecar.py', 'SidecarService._worker_main', '运行异常: {}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
     _s('core/sidecar.py', 'SidecarService.close', '[sidecar] 关闭时模块 worker 在 {}s 内未退出，按有界排空继续收尾（未收尾组记 incomplete）', 'WARNING', 'state', 'cross', '关闭排空超时的跨切面告警：关闭路径无业务组可挂；必须在关日志器前留下故障原因。'),
     _s('core/sidecar.py', 'SidecarService.get_module_dashboard', '[dashboard] {}: {}', 'WARNING', 'cross', 'cross', 'GUI 数据看板读侧的跨切面事件（RPC 请求线程），无业务组。'),
-    _s('core/sidecar.py', 'SidecarService._module_config_view', '[模块配置] {} 选项枚举失败: {}', 'WARNING', 'cross', 'cross', 'GUI 配置读取侧的跨切面事件（RPC 请求线程），无业务组。'),
+    _s('core/sidecar.py', 'SidecarService._attach_config_meta', '[模块配置] {} 选项枚举失败: {}', 'WARNING', 'cross', 'cross', 'GUI 配置读取侧的跨切面事件（RPC 请求线程），无业务组。'),
+    _s('core/sidecar.py', 'SidecarService._note_config_meta', '<dynamic>', 'WARNING', 'cross', 'cross', '配置派生问题（表单契约/摘要/状态）的去重告警：RPC 请求线程，无业务组。'),
 
     # ---- core/template_match.py ----
     _s('core/template_match.py', 'load_template', '模板不存在: {}.png/.jpg（搜索 {} 个目录）', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),

@@ -235,6 +235,15 @@ class ActivityModule(ABC):
     # 只放"用户可设置"的项；运行实况（进度、计数等）走 get_module_config 的 _state。
     DEFAULT_MODULE_CONFIG: dict = {}
 
+    # 配置表单契约（细则见 core/config_ui_contract.py）：模块声明「面板有哪些字段、
+    # 用什么控件」，宿主通用渲染，core 不认识任何模块的字段语义。
+    #   CONFIG_UI_CONTRACT：契约版本；不声明 = 无面板（默认无）
+    #   CONFIG_UI         ：{"groups": [{"title"?, "fields": [...]}]}
+    # 字段键必须在本模块的 DEFAULT_MODULE_CONFIG 里；默认值与动态候选分别由
+    # DEFAULT_MODULE_CONFIG / config_choices() 提供，不在表单声明里重复。
+    CONFIG_UI_CONTRACT: int | None = None
+    CONFIG_UI: dict | None = None
+
     # 性能面板契约（细则见 core/perf_contract.py）：模块声明「自己会报哪几行」，
     # core 只认格子（kind / 阈值 / 分类），不认识业务。三个都是可选的——
     # 不声明就只显示资源面（整机 / 本程序），不报错。
@@ -304,6 +313,24 @@ class ActivityModule(ABC):
         约束"这类配置面演进留在模块内，核心不必认识任何模块的旧字段。
         """
         return config
+
+    @classmethod
+    def config_summary(cls, config: dict) -> list[str]:
+        """任务卡摘要文案（可选）；默认空。只读、纯函数，不创建实例。
+
+        入参是宿主投影后的有效配置：默认值已合并、旧键已折算、只含
+        ``DEFAULT_MODULE_CONFIG`` 里的键，不含 ``_choices`` / ``_state`` 等元数据。
+        返回字符串列表；宿主统一做类型与长度校验。
+        """
+        return []
+
+    def config_status(self) -> dict | None:
+        """配置面板下的运行状态行（可选）；默认 None。
+
+        仅运行中的实例会被调用；形状 ``{"text": str, "level": ""|"ok"|"warn"|"error"}``。
+        异常由宿主隔离，不影响配置读取。
+        """
+        return None
 
     # ---------- GUI 数据看板内容（可选，模块自述）----------
     #
