@@ -68,6 +68,19 @@ def test_host_files_carry_no_module_field_names_or_summary():
     assert "_summary" in RUN.read_text(encoding="utf-8")
 
 
+def test_summary_chips_render_without_expanding_card():
+    """任务卡摘要 chips 与展开态无关：列表渲染时就取配置。
+
+    chips 的数据源是 get_module_config 的 `_summary`；若只在展开时拉取，收起卡片的
+    标题一直空着，点开才补上。
+    """
+    body = _js_function_body(RUN.read_text(encoding="utf-8"), "function renderTaskList")
+    assert "!isBuiltin(mid) && state.expanded[mid]" not in body, \
+        "活动模块取配置又被展开态挡住了：收起卡片的摘要 chips 会缺席"
+    assert "!state.cfg[mid] || state.expanded[mid]" in body
+    assert "ensureConfig(mid)" in body
+
+
 def test_panel_renders_text_only_and_guards_revisions():
     src = PANEL.read_text(encoding="utf-8")
     assert "innerHTML" not in src

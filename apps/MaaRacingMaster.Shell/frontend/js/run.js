@@ -308,9 +308,16 @@
       if (state.expanded[mid]) renderBuiltinPanel(mid);
       if (!state.cfg[mid]) ensureConfig(mid).then(() => refreshCard(mid));
     });
-    // 活动模块：已展开的卡片重新按配置绘制面板（列表 innerHTML 已把它们销毁）
-    state.queue.order.filter((mid) => !isBuiltin(mid) && state.expanded[mid])
-      .forEach((mid) => ensureConfig(mid).then(() => renderConfigPanel(mid)));
+    // 活动模块：摘要 chips 的数据源（_summary）与展开无关——收起卡片同样要显示，
+    // 所以未取过配置就拉一次；已展开的再按最新配置重绘面板（列表 innerHTML 已把它们销毁）
+    state.queue.order.filter((mid) => !isBuiltin(mid)).forEach((mid) => {
+      if (!state.cfg[mid] || state.expanded[mid]) {
+        ensureConfig(mid).then(() => {
+          refreshCard(mid);
+          if (state.expanded[mid]) renderConfigPanel(mid);
+        });
+      }
+    });
     syncDashboardCenter(); // 队列增删 / 排序后重算看板候选集
   }
 
