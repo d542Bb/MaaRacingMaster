@@ -660,6 +660,21 @@ def test_graze_gate_off_keeps_reactive_only():
     assert rep.layer == 4 and rep.why == "center"
 
 
+def test_graze_hold_state_traced():
+    """保持闩观测面（2026-11-04 补，只读）：命中带 hit_oid、闩状态 [车 id,
+    宽限余量秒] 随选择器面世——贴车段为什么断离线可回答（新局 120417
+    0 段并行 >0.35s，闩是否啮合/何时释放无从判断）。"""
+    sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True))
+    car = Obj("car", 0.9 * LW, 3.0, oid=7)
+    rep = sel.update(_road(), [], [car], [], 0.0, 0.05)
+    assert rep.why == "graze" and rep.hit_oid == 7
+    oid, miss = sel.hold_state
+    assert oid == 7 and miss > 0.0
+    sel2 = LayeredSelector(_p())
+    sel2.update(_road(), [], [], [], 0.0, 0.05)
+    assert sel2.hold_state == (None, 0.0)
+
+
 def test_graze_in_commit_within_span():
     """承诺期贴边开小口（2026-11-03 人工对照）：承诺期占实跑 30% 拍，贴边
     被整体禁掉＝人工策略 1/3 时间不存在。目标不出承诺道跨度（±半道）的

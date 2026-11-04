@@ -927,6 +927,14 @@ class LayeredSelector:
         self._graze_x: float | None = None
         self.last: SelectionReport | None = None
 
+    @property
+    def hold_state(self) -> tuple[int | None, float]:
+        """贴边保持闩观测面（trace 用，不参与决策）：[保持中的车 id, 宽限
+        余量秒]。2026-11-04 补：11-03 设计注记写「graze 命中带 hit_oid 随
+        trace 面世」实际未落，贴车段为什么断离线不可回答（新局 120417
+        0 段并行 >0.35s vs 旧局 13 段，闩是否啮合/何时释放无从判断）。"""
+        return self._graze_oid, self._graze_miss_t
+
     def _graze_hold(self, raw: SelectionReport, prev: SelectionReport | None,
                     road: RoadFrame,
                     cars: Sequence[Obj], coins: Sequence[Obj],

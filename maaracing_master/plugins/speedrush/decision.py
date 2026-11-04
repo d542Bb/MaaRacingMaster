@@ -1742,6 +1742,13 @@ class DecisionEngine:
                     "coin": _opp_aux(coins, ego_m, self.selector.p)},
             # 6b 资格闭锁观测面：当拍源 / 闭锁后选择输入 / 拒绝原因
             "src_elig": self._src_elig,
+            # 贴边保持闩观测面（2026-11-04 补，只读）：命中车 id（raw/held
+            # 同源）与闩状态 [保持中的车 id, 宽限余量秒]——离线回答「贴车段
+            # 为什么断」（新局 120417 0 段并行 >0.35s，闩是否啮合无从判断）。
+            "hit_oid": rep.hit_oid,
+            "graze_hold": [None if self.selector.hold_state[0] is None
+                           else self.selector.hold_state[0],
+                           round(self.selector.hold_state[1], 2)],
         }
         self._reach_goal = rep.target_x_m
         if rep.layer == 0:
