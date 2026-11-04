@@ -23,9 +23,9 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
   的 `EXTERNAL_TARGETS`）；前端不持有、也不传递可打开的 URL。
 - `index.html` 里 `data-link` 的属性值**就是目标名**。新增外链入口必须同时在 `EXTERNAL_TARGETS`
   里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
-- **更新源是偏好，不是 URL**：关于页 CNB / GitHub 两个按钮只向 `check_update` 传 `source`
-  枚举（默认 `cnb`），实际地址仍由 sidecar 决定；显式选 GitHub 时只查 GitHub 两源，
-  不悄悄回退 CNB。GitHub 图标复用 `icons.js` 的品牌路径，CNB 图标 `cnb.svg` 取自
+- **更新源是偏好，不是 URL**：关于页单个来源按钮展开 CNB / GitHub 菜单，只向 `check_update` 传 `source`
+  枚举（默认 `cnb`，选择存 `localStorage`），实际地址仍由 sidecar 决定；显式选 GitHub 时只查 GitHub 两源，
+  不悄悄回退 CNB。GitHub 图标复用 `icons.js` 的品牌路径（实心版），CNB 图标 `cnb.svg` 取自
   CNB 官方站点 favicon，仅作来源标识。
 
 理由：前端持有 `maarm.call()` RPC 能力，远程数据一旦能形成 XSS，就会顺着 RPC 放大成
@@ -99,18 +99,6 @@ RPC 层不信任调用方给的地址。
 - 安全：动态文本一律 `textContent`，渲染器不拼 HTML；契约的白名单重建在校验侧完成，前端
   不再二次解释模块内容。
 - 内置步骤（启动 / 关闭游戏）仍由 `js/run.js` 的 `BUILTIN_FIELDS` 渲染，不走本面板。
-
-## 活动模块下拉（自绘 combobox 投影层）
-
-视觉语言 = OriginUI Select（shadcn/Radix 家族），实现在 `js/select.js` + `.msel-*` 样式。
-**值真源是隐藏的原生 `<select id="module-select">`**——app.js 填充 options、run.js 读
-value、settings.js 切 disabled、`onModuleChange` 撤销回写，本层一律不碰，避免第二份真相。
-改这几处时必须跟着调 `MaaRM.syncModuleSelect()`（现有四个调用点：renderModuleSelect 末尾、
-onModuleChange 两处撤销回写、settings.js 运行锁定）——程序化赋值不派发 change，
-用户路径的 change 则由 select.js 派发到原生 select 上，过期确认弹窗等监听零改动。
-键盘：Enter/Space/方向键开合、↑↓/Home/End/typeahead、Enter 选中、Esc 归还焦点；
-`aria-expanded`/`aria-activedescendant`/`aria-disabled` 随状态挂。过期项渲染层剥掉
-「（已过期）」后缀改挂「已过期」小标签（数据仍来自 option 文本，不复制一份清单）。
 
 ## 文字扫描光效（`.maarm-text-scan`）
 

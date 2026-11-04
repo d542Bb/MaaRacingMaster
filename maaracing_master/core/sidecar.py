@@ -1648,9 +1648,10 @@ class SidecarService:
     # ---------- 关于页：检查更新 / 公告 ----------
 
     _GITHUB_REPO = GITHUB_REPO  # 唯一真源在 remote_meta（与官方域白名单同源，避免两处副本漂移）
-    # CNB 镜像仓库（cnb.cool/MaaRacingMaster/MAIN）：只做 git 同步（mirror-to-cnb.yml），
-    # 无发布包与匿名 releases API。「检测更新」改读版本标记文件 docs/latest_release.json
-    # （release.yml 打 tag 时自动生成并回写 master，镜像随之同步）——CNB 优先（国内快），
+    # CNB 镜像仓库（cnb.cool/MaaRacingMaster/MAIN）：git 由 mirror-to-cnb.yml 同步，
+    # Release 资产由 release.yml 的 cnb-release 推送，但没有匿名 releases API。
+    # 「检测更新」改读版本标记文件 docs/latest_release.json
+    # （由发版提交携带、随 tag 落点入库；master 受分支保护，CI 不回写）——CNB 优先（国内快），
     # GitHub raw / GitHub API 兜底。公告同理 CNB raw 优先。
     # 所有源都只是「取字节」；「这些字节能不能信」由 remote_meta 的校验器统一判定。
     _CNB_RAW_BASE = "https://cnb.cool/MaaRacingMaster/MAIN/-/git/raw/master"
@@ -1682,7 +1683,7 @@ class SidecarService:
         """查最新版本与当前版本比较。仅手动触发（GUI 按钮）。
 
         多源顺序（CNB 优先，2026-09-04）：CNB raw 版本标记 → GitHub raw 版本标记 →
-        GitHub API releases/latest。前两者读 release.yml 生成的 docs/latest_release.json
+        GitHub API releases/latest。前两者读发版提交携带的 docs/latest_release.json
         （{tag, version, published_at, download_url}）；最后回退官方 API 原生字段。
         `params.source` 可选 `cnb`（默认）或 `github`：选 GitHub 时只查 GitHub 两源，
         不悄悄回退 CNB；返回值带 `source` 说明实际命中的源。

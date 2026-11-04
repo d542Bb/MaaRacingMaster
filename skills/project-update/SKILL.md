@@ -6,7 +6,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 # 项目更新助手（MaaRacingMaster 发版流程）
 
 为 MaaRacingMaster 项目执行发布前的完整准备流程。本文件反映**当前实际发布模式**
-（2026-10 复核）：**双分支模型——日常 commit 落个人开发分支（命名自定），
+（2026-11 复核）：**双分支模型——日常 commit 落个人开发分支（命名自定），
 稳定线（默认分支 master）只经沉淀 PR 收入，发版打 tag 触发 CI**。
 
 ## 权威定义与安装
@@ -89,7 +89,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 
 ### ② 确定版本号
 
-**当前实际模式（2026-08 复核，git tag 历史）：**
+**当前实际模式（2026-11 复核，git tag 历史）：**
 
 - 每次 minor 升级后开新 dev 系列：`v0.X.0-dev.1`、`-dev.2` …（如 `v0.15.0-dev.1` → `v0.15.0-dev.8`）
 
@@ -158,7 +158,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 3. 本地创建 tag：`git tag v0.x.y-dev.N`（0.x 阶段通常为 pre-release）或 `git tag vX.Y.Z`（正式版）。本仓库自 v0.12 起统一用**轻量 tag**（`git cat-file -t refs/tags/<上一个>` 可验类型），沿用即可
 4. push tag：`git push origin <tag>`（tag 在稳定线上——若本地 HEAD 停在开发分支，先 `git fetch origin master` 后对远端稳定线打 tag：`git tag <tag> origin/master`，避免在共享检出里切分支）
 5. **push 前必须向用户确认**（发版动作不可逆）
-6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release + sdist/wheel + 校验 setuptools-scm 版本一致）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip/7z + sha256 补传 Release）→ `cnb-release`（同步到 CNB）
+6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release + sdist/wheel + 校验 setuptools-scm 版本一致）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip/7z + sha256，并生成可选模型包，一并补传 Release）→ `cnb-release`（同步 zip/7z/模型包到 CNB）
 7. **tag 触发的工作流与 master push 的工作流 checkout 语义不同**：前者完整历史（拿得到 tag），后者 `--no-tags` 浅克隆。因此「master 的 Test 红、Release gate 绿」可以同时成立，排查时先分清是哪条流水线
 
 ### ⑥ 本地打包验证（可选）
@@ -174,11 +174,15 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - 注意 `-HostPython` 必须为 3.11（cp311）以匹配 embedded runtime；`-SkipPublish` 仅当 GUI 源指纹一致时复用缓存
 
+- 默认包不含深度/线观测权重（约 82MB），由可选模型包分发；要出离线全量包加 `-WithModels`
+
+- 本步需要 MSVC（编译 native Launcher）。没有本机 MSVC 时改用云端 `package-test.yml` 验证同一脚本（Windows runner + `mlocati/setup-msvc`），产物只上 artifact、不发布
+
 ***
 
 ### 不发版模式（不动程序代码 → 不 tag，方案 C）
 
-**适用：** 本次改动只涉及文档 / CI / 元数据，**不触碰运行时程序代码**——此时不需要新的安装包，**不打 tag、不触发 release**，只 commit + push master（push master 只会跑 `test.yml` 单测，不会触发 release 流水线）。
+**适用：** 本次改动只涉及文档 / CI / 元数据，**不触碰运行时程序代码**——此时不需要新的安装包，**不打 tag、不触发 release**；改动先落日常分支，随下次沉淀 PR 进稳定线（稳定线受规则集保护，不能直推）。
 
 **判定"是否动程序代码"：** 用 `git diff --name-only` 检查本次即将提交的文件，凡落入下列**程序路径**即视为「需要出包」：
 
@@ -186,7 +190,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - `apps/**`（C# / XAML GUI）
 
-- `assets/model/**`（模型权重）、`assets/resource/**`（模板资源）
+- `maaracing_master/plugins/*/resources/models/**`（模型权重）、`maaracing_master/**/resources/**`（识别资源与模板）
 
 - `config/**`、`requirements*.txt`、`scripts/release/requirements-runtime-lock.txt`
 
@@ -237,6 +241,8 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - **本地打包脚本：** `scripts/release/assemble.ps1`
 
+- **云端打包验证：** `.github/workflows/package-test.yml`（push `dev/**-pkgtest` 或手动触发，只上传 artifact，不创建 Release；版本号读 `docs/latest_release.json`）
+
 - **项目规范：** `AGENTS.md`
 
 - **README：** `README.md`
@@ -263,5 +269,5 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - 不用 `git reset --hard` / `git clean -f` 等破坏性命令；同步 master 用 `git pull --rebase origin master` 或仅在用户明确要求时操作
 
-- push / 打 tag / merge 前必须向用户确认
+- 稳定线写入（push / 开合 PR）、打 tag、merge、发布前必须向用户确认；日常线（`dev/**`）push 与历史改写已授权，不需逐次确认
 
