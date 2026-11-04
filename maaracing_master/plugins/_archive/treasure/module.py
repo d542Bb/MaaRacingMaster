@@ -730,6 +730,40 @@ class TreasureModule(ActivityModule):
         "max_daily_loops": DEFAULT_MAX_DAILY_LOOPS,
         "target_session": DEFAULT_TARGET_SESSION,
     }
+    # 配置表单（契约见 core/config_ui_contract.py）：面板随归档目录自包含，
+    # 壳不再保留鉴宝专属块（归档插件不注册，此声明由退役测试直接校验）。
+    CONFIG_UI_CONTRACT = 1
+    CONFIG_UI = {
+        "groups": [{
+            "fields": [
+                {
+                    "key": "max_daily_loops", "type": "number", "label": "刷到第几场",
+                    "hint": "今日刷到第 N 场为止，0=不指定，按游戏默认 50",
+                    "min": 0, "max": 50, "step": 1, "suffix": "场",
+                },
+                {
+                    "key": "target_session", "type": "segmented", "label": "目标场次",
+                    "hint": "每次回大厅先点对应场次标签，再点「开始匹配」",
+                    "options": [
+                        {"value": "intern", "label": "实习场"},
+                        {"value": "expert", "label": "专家场"},
+                        {"value": "master", "label": "大师场"},
+                    ],
+                },
+            ],
+        }],
+    }
+
+    @classmethod
+    def config_summary(cls, config: dict) -> list[str]:
+        """任务卡摘要：循环上限 + 目标场次（文案与旧 GUI 一致）。"""
+        loops = config.get("max_daily_loops")
+        if not isinstance(loops, int) or isinstance(loops, bool):
+            loops = cls.DEFAULT_MAX_DAILY_LOOPS
+        session = config.get("target_session")
+        if session not in TARGET_SESSION_OPTIONS:
+            session = DEFAULT_TARGET_SESSION
+        return [f"刷到第 {loops} 场", f"目标场次: {TARGET_SESSION_OPTIONS[session][1]}"]
     # 到限自动停止防抖：连续 N 帧在鉴宝大厅且判定到限，才视为可信并自动停止模块。
     # 防止单帧 OCR 误读（如「日已参与 X/50」瞬时多读）或阶段抖动造成提前停机。
     DAILY_LIMIT_STOP_STABLE_FRAMES = 3

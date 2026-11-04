@@ -654,16 +654,17 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 读到的是人行道外缘（语义与旧 q20 的"人行道内缘"锚点不同，已记录于回归锁锚点注）。
 时延：推理 ~20ms（折叠口径）+ 后处理 p50 ≈80ms，异步 worker 承载（150ms 窗）。
 
-**驾驶模式档**（module config `drive_mode`，默认 `depth`；GUI「驾驶模式」分段控件
-全程直行/宏录制/深度几何；旧存档的 `straight_mode` / `macro_mode` 两个布尔键由
-`normalize_config` 在读写前折算成单键，宏优先，并顺手关掉直行档残留的录制开关）：
-`depth`=正常全链驾驶；`straight`=**全程直行基线**——接管手柄后方向归零、
+**驾驶模式档**（module config `drive_mode`，默认 `depth`；旧存档的 `straight_mode` /
+`macro_mode` 两个布尔键由 `normalize_config` 在读写前折算成单键，宏优先，并顺手关掉
+直行档残留的录制开关）：`depth`=正常全链驾驶；`straight`=**全程直行基线**——接管手柄后方向归零、
 油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
 不起深度 worker，perception_mode 开着也不跑），trace 只记时间轴与常量列（state=STRAIGHT，
 与控制链同走流水汇）。控制两档（智能/直行）都在 `_drive_loop` 内同点起
 HUD 读数观察线程（目录跟随 run_dir 命名 `<局前缀>_p<阶段>/hud/hud.jsonl`，按 fid/ts_ns
 与 trace 对齐）——分数流是验收②「智能 vs 直行基线」对比的数据面。
 弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人）的语义不变。
+GUI 的驾驶模式分段、宏组下拉显隐、录制开关按档换文案、任务卡摘要与运行状态行全部由本模块
+声明（`CONFIG_UI` / `config_summary` / `config_status`），壳按契约通用渲染（ADR-0016）。
 
 **坑点**：
 - **ego 掩码已退役**（2026-10-10 挖除缝合并）：挖除=自车 3D 框（|X|<1.3 &

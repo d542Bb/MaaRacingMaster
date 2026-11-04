@@ -56,6 +56,7 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
 | 想改什么 | 去哪 |
 |---|---|
 | 某个活动的流程 / 策略 / 按钮 | `plugins/<id>/`（模块实现 + `resources/pipeline` 图 + `policy` 数据面），域知识见其 `CODE_WIKI.md` |
+| 模块配置面板 / 任务卡摘要 / 面板状态行 | 插件类声明 `CONFIG_UI` + `config_summary` / `config_status`，契约与渲染见 `core/config_ui_contract.py` 与 ADR-0016；宿主通用渲染器在 `frontend/js/config-panel.js` |
 | 活动怎么运转（游戏规则） | `plugins/<id>/RULES.md`（外部事实，修改须人工复核） |
 | 主控生命周期、能力门面、点击方式 | `core/controller.py` + [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) |
 | 光标导航 / 虚拟手柄 | `core/gamepad_cursor.py` + `core/resources/stick_speed_model.json` |

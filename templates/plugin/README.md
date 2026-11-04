@@ -58,6 +58,15 @@ templates/plugin/
 | `start(start_from)` | ✅ | 模块入口（独立线程）：`ctx.connect()` → 断点解析 → 主循环 |
 | `stop()` | ✅ | `ctx.lifecycle.request_stop()`，主循环 100ms 级响应 |
 | `cleanup()` | ✅ | 释放模块自有资源；`enter_context` 登记的资源由 Context 统一释放 |
+| `DEFAULT_MODULE_CONFIG` | ❌ | 用户可设置配置项的键与默认值；同时是存档回填白名单 |
+| `CONFIG_UI_CONTRACT` / `CONFIG_UI` | ❌ | 配置面板声明（控件、文案、显隐、按值换文案）；宿主通用渲染，不声明=无面板 |
+| `config_choices()` | ❌ | 下拉型字段的动态候选；表单里只写引用键，不复制候选清单 |
+| `config_summary(config)` / `config_status()` | ❌ | 任务卡摘要 / 面板运行状态行（文本由模块产出，宿主只校验与渲染） |
+
+配置面板的契约与字段白名单见 `core/config_ui_contract.py`，决策背景见
+[ADR-0016](../../docs/adr/0016-模块配置面板由插件声明宿主渲染.md)，完整示例见
+`plugins/speedrush/module.py` 的 `CONFIG_UI`。插件**不提供**自带 HTML/JS——不够用就扩
+控件类型并升契约版本。
 
 **主循环铁律**：每帧检查 `ctx.lifecycle.running`；睡眠一律 `ctx.lifecycle.sleep()`，
 禁止 `time.sleep`（无法响应停止）；单帧异常自行兜底，不要让一帧失败杀死整个模块。

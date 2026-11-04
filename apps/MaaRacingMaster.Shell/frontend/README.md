@@ -76,6 +76,25 @@ RPC 层不信任调用方给的地址。
   既有结构写、开关带 id 即可**，不要手写 aria 属性；标题/说明自带 id 时原样保留——文案若
   会被程序改写（如录制开关随驾驶模式换说法），那些更新函数要靠这个 id 找人。函数幂等，
   静态启动跑一次、模板重渲染在 `bindModulePages` 再跑一次。
+- 配置面板里由 `js/config-panel.js` 动态生成的开关不走上面的模板接线，渲染器自己生成
+  唯一 id 挂 aria（见下节）。
+
+## 模块配置面板（插件声明、宿主渲染）
+
+- 面板内容来自 `get_module_config` 的 `_ui`：插件类声明有序分组字段（开关 / 分段 / 下拉 /
+  数字 / 文本），`config-panel.js` 按类型通用渲染；壳不认识任何模块字段。契约、字段白名单
+  与状态机（`none/ok/partial/invalid/unsupported_version`）见 `core/config_ui_contract.py`
+  与 ADR-0016。
+- `partial`：渲染可用字段，顶部一行「部分配置项声明无效，详见日志」；`invalid` /
+  `unsupported_version`：只显示宿主提示、不渲染控件；`none`：面板区留空（按设计）。
+- 数据约定：`_choices` 填下拉（表单里的 `choices` 只是引用键）、`_summary` 是任务卡 chips、
+  `_status` 是面板状态行、`_rev` 是配置修订号——比已应用版本旧的响应一律丢弃。
+- 时序：同卡保存串行，保存中再改合并成 pending；列表重建时 `configPanel.reset()` 递增代际，
+  旧卡在途回调作废、不写已卸载节点。纯逻辑在 `js/config-panel-state.js`，由
+  `tests/js/config_panel_state.test.mjs`（node --test）覆盖。
+- 安全：动态文本一律 `textContent`，渲染器不拼 HTML；契约的白名单重建在校验侧完成，前端
+  不再二次解释模块内容。
+- 内置步骤（启动 / 关闭游戏）仍由 `js/run.js` 的 `BUILTIN_FIELDS` 渲染，不走本面板。
 
 ## 活动模块下拉（自绘 combobox 投影层）
 
