@@ -38,6 +38,9 @@ else:
 
     _UD = _SHcore = _K32 = _UnavailableWinDll()
 
+# Linux CI 只做收集/单测：WINFUNCTYPE 是 Windows 专有，跨平台回退到 CFUNCTYPE。
+_WINFUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+
 _GWL_STYLE = -16
 _GWL_EXSTYLE = -20
 # GWL_STYLE 返回值是 32 位 LONG（64 位进程下 GetWindowLongW 语义不变）
@@ -123,7 +126,7 @@ _UD.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 _UD.ShowWindow.restype = wintypes.BOOL
 _UD.EnumDisplayMonitors.argtypes = [
     wintypes.HDC, ctypes.POINTER(wintypes.RECT),
-    ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+    _WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
                        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM),
     wintypes.LPARAM,
 ]
@@ -307,7 +310,7 @@ def is_window_on_screen(hwnd: int) -> bool:
 
     monitors: list[tuple[int, int, int, int]] = []
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+    @_WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
                         ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
     def _cb(_hmon, _hdc, lprc, _lparam):
         m = lprc.contents
@@ -453,7 +456,7 @@ def hwnd_from_pid(pid: int) -> int:
     user32 = ctypes.windll.user32
     _cache = {}
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    @_WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def callback(hwnd, _):
         if not user32.IsWindowVisible(hwnd):
             return True
