@@ -10,6 +10,7 @@ import ctypes
 import subprocess
 import time
 from ctypes import wintypes
+from typing import Any
 
 from maa.toolkit import Toolkit
 
@@ -17,9 +18,25 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.paths import framework_dir
 
 # ---- Win32 常量 ----
-_UD = ctypes.windll.user32
-_SHcore = ctypes.windll.shcore
-_K32 = ctypes.windll.kernel32
+# 应用只在 Windows 运行；Linux CI 只做收集/单测，需要模块可导入而不能触达 Win32。
+# 非 Windows 平台给同名占位对象：argtypes/restype 赋值照常吞下，真调用才报错。
+if hasattr(ctypes, "windll"):
+    _UD = ctypes.windll.user32
+    _SHcore = ctypes.windll.shcore
+    _K32 = ctypes.windll.kernel32
+else:
+    class _UnavailableWinFunc:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, *args, **kwargs):
+            raise OSError("Windows API is unavailable on this platform")
+
+    class _UnavailableWinDll:
+        def __getattr__(self, name):
+            return _UnavailableWinFunc()
+
+    _UD = _SHcore = _K32 = _UnavailableWinDll()
 
 _GWL_STYLE = -16
 _GWL_EXSTYLE = -20
