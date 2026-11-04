@@ -11,9 +11,6 @@ on:
       - 'dev/**-pkgtest'
   workflow_dispatch:
 
-env:
-  VER: 0.30.0-dev.1
-
 jobs:
   package:
     name: 云端打包验证（不发布）
@@ -27,6 +24,17 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+
+      - name: 读取版本标记
+        # 版本号只有 docs/latest_release.json 一份真源，避免 workflow 里的副本随发版过期
+        id: version
+        shell: pwsh
+        run: |
+          $ver = (Get-Content "${{ github.workspace }}\docs\latest_release.json" -Raw | ConvertFrom-Json).version
+          if ($ver -notmatch '^\d+\.\d+\.\d+(-[\w.]+)?$') { throw "版本标记不合法: $ver" }
+          "VER=$ver" >> $env:GITHUB_ENV
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "验证版本: $ver"
 
       - name: 设置 Python 3.11
         uses: actions/setup-python@v5
@@ -92,13 +100,13 @@ jobs:
       - name: 上传验证产物（不创建 Release）
         uses: actions/upload-artifact@v4
         with:
-          name: MaaRacingMaster-${{ env.VER }}-pkgtest
+          name: MaaRacingMaster-${{ steps.version.outputs.version }}-pkgtest
           if-no-files-found: error
           retention-days: 7
           path: |
-            build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip
-            build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip.sha256
-            build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z
-            build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z.sha256
-            build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip
-            build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip.sha256
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.zip
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.zip.sha256
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.7z
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.7z.sha256
+            build/release/MaaRacingMaster-speedrush-models-${{ steps.version.outputs.version }}.zip
+            build/release/MaaRacingMaster-speedrush-models-${{ steps.version.outputs.version }}.zip.sha256
