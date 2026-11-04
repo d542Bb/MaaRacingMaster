@@ -47,8 +47,19 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _PROCESS_TERMINATE = 0x0001
 _TH32CS_SNAPPROCESS = 0x00000002
 
-_user32 = ctypes.WinDLL("user32", use_last_error=True)
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+if hasattr(ctypes, "WinDLL"):
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+else:
+    # Linux CI 只做收集/单测；Windows 专有入口在真调用时才报错。
+    class _UnavailableWinDll:
+        def __getattr__(self, name):
+            def _unavailable(*args, **kwargs):
+                raise OSError("Windows API is unavailable on this platform")
+
+            return _unavailable
+
+    _user32 = _kernel32 = _UnavailableWinDll()
 
 
 # --------------------------------------------------------------------------
