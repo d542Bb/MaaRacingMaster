@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import pytest
 
@@ -32,9 +34,10 @@ ASSEMBLE = REPO / "scripts" / "release" / "assemble.ps1"
 
 
 def _url_to_path(url: str) -> Path:
-    """file:// URI → 本地路径（Windows 上去掉前导斜杠）。"""
-    assert url.startswith("file:///"), f"封面 URL 应为 file URI，实际: {url}"
-    return Path(url[len("file:///"):].replace("/", "\\"))
+    """file:// URI → 本地路径（按当前平台的 URL 规则还原，Windows/Linux 通用）。"""
+    parsed = urlparse(url)
+    assert parsed.scheme == "file", f"封面 URL 应为 file URI，实际: {url}"
+    return Path(url2pathname(parsed.path))
 
 
 # ---------- 1. 声明权归模块：解析落在模块自己的 resources/ ----------
