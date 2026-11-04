@@ -27,7 +27,7 @@ class Car:
     safety_ok: bool = True
 
 
-def _road(rows, *, l=-6.0, r=6.0):
+def _road(rows, *, left=-6.0, right=6.0):
     """rows: [(z0, z1, left, right)]；缺省两侧 ±6m。"""
     bands = tuple(RoadBand(z0, z1, left, right, src="measured",
                            age_ms=0.0, conf=1.0)
@@ -37,8 +37,8 @@ def _road(rows, *, l=-6.0, r=6.0):
     return RoadFrame(bands, right0 - left0, left0, right0, True)
 
 
-def _straight(*, l=-6.0, r=6.0, n=8, step=3.0):
-    return _road([(i * step, (i + 1) * step, l, r) for i in range(n)])
+def _straight(*, left=-6.0, right=6.0, n=8, step=3.0):
+    return _road([(i * step, (i + 1) * step, left, right) for i in range(n)])
 
 
 def test_empty_road_returns_to_center_from_right_edge():
@@ -64,8 +64,8 @@ def test_region_width_controls_adjacent_lane_escape():
     3~6m 近行时宽度掉到 2.4 道，±1 道候选被 space 整段截断、前车当前道
     只能跟着；宽度恢复 4.4 道（3~16m 远行）后同一场景能并到空侧。"""
     car = Car(x_m=0.0, z_m=5.0 + DATUM)
-    narrow = _straight(l=-1.2 * LW, r=1.2 * LW)
-    wide = _straight(l=-2.2 * LW, r=2.2 * LW)
+    narrow = _straight(left=-1.2 * LW, right=1.2 * LW)
+    wide = _straight(left=-2.2 * LW, right=2.2 * LW)
     rep_n = choose_lane(narrow, [car], ego_lane=0.0, lane_w_m=LW, p=P)
     assert rep_n.lane == 0.0
     for c in rep_n.lanes:

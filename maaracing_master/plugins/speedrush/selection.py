@@ -496,6 +496,19 @@ def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float | None:
     return x
 
 
+def _t_of(o: Obj) -> float:
+    """到站秒：调用方已按 ``t is not None`` 过滤，这里只做类型收窄。"""
+    t = o.t
+    assert t is not None
+    return t
+
+
+def _pass_key(o: Obj) -> tuple[bool, float]:
+    """擦边候选排序键：并排（t≤0）在前，同组按到站秒。"""
+    t = _t_of(o)
+    return (t < 0.0, t)
+
+
 def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
                p: SelectionParams, *, allow_adjacent: bool = True
                ) -> tuple[float, float, str, int | None] | None:
@@ -526,7 +539,8 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
              and c.t is not None and -hold <= c.t <= horizon
              and abs(c.x - ego) <= (half if not p.pass_graze_adjacent_enabled
                                     else max(half, reach))]
-    for c in sorted(cands, key=lambda o: (o.t < 0.0, o.t)):
+    for c in sorted(cands, key=_pass_key):
+        assert c.t is not None       # 列表已按 t is not None 过滤
         adjacent = abs(c.x - ego) > half
         if adjacent and not (allow_adjacent and p.pass_graze_adjacent_enabled):
             continue
@@ -584,6 +598,7 @@ def _pick_coin(coins: Sequence[Obj], cars: Sequence[Obj],
     sp = _lane_span(commit_x, p, road) if commit_x is not None else None
     pending: PendingReq | None = None
     for c in cands:
+        assert c.t is not None       # 列表已按 t is not None 过滤
         # 资格只由时间锥与相邻请求决定：3 秒内横移不过去的目标会被
         # _reachable 拒掉，不再先按固定横距门砍一刀。无承诺道（离线/闸关）
         # 时仍守「本道/相邻一道」——多段换道不在本方案内。
@@ -740,10 +755,12 @@ def _waypoints(layer: int, x_p: float, t_p: float,
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     for c in sorted([c for c in cars
                      if c.safe and c.t is not None and 0.0 < c.t < t_p],
-                    key=lambda o: o.t):
+                    key=_t_of):
+        assert c.t is not None       # 列表已按 t is not None 过滤
         if abs(c.x - along(c.t)) > half:
             continue
         x = _pass_x(c, road, p)
+        assert x is not None         # 两侧都挤不出最小间距时 _pass_x 返回 None
         if abs(x - c.x) < half:
             continue
         # 擦边是安全动作：不要求与主目标同向（为躲车短暂反向是必要的）
@@ -751,7 +768,8 @@ def _waypoints(layer: int, x_p: float, t_p: float,
 
     for c in sorted([c for c in coins
                      if c.t is not None and 0.0 < c.t < t_p],
-                    key=lambda o: o.t):
+                    key=_t_of):
+        assert c.t is not None       # 列表已按 t is not None 过滤
         if abs(c.x - along(c.t)) > p.opportunity_tol_lane * p.lane_w_m:
             continue
         x = road.clamp(c.x, p.wall_margin_lane * p.lane_w_m)
@@ -974,6 +992,7 @@ class LayeredSelector:
             if car.t < -hold:
                 self._graze_oid = None     # 明确越过后释放，回中/收币
                 return None
+        assert self._graze_x is not None   # 闩臂武装（_graze_oid 非空）时同拍写入
         x = road.clamp(self._graze_x, self.p.wall_margin_lane
                        * self.p.lane_w_m)
         if commit_x_m is not None:
@@ -1063,6 +1082,8 @@ class LayeredSelector:
         if self._layer == 3 and raw.layer == 4 \
                 and self._coin_hold_t > 0.0 and self._coin_target is not None \
                 and not self._incumbent_blocked(cars, p):
+            # 方法调用后成员收窄失效，这里显式重述上面的非 None 分支
+            assert self._coin_target is not None
             x = road.clamp(self._coin_target,
                            self.p.wall_margin_lane * self.p.lane_w_m)
             if abs(x - self._coin_target) <= 0.3 * self.p.lane_w_m:

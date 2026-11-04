@@ -175,6 +175,7 @@ def validate_rows(rows: Any, *, module_id: str = "",
         if label_err:
             rejected.append((tag, label_err))
             continue
+        assert label is not None  # 无拒绝原因即校验通过，label 必已取到
         if label in seen_labels:
             rejected.append((tag, "label 同模块重复"))
             continue

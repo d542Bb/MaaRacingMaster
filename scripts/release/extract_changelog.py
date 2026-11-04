@@ -56,6 +56,9 @@ def extract(log_text, version):
 
 
 def main(argv=None):
+    # Windows 控制台/管道默认 GBK，小节里的 emoji 会直接抛 UnicodeEncodeError。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="抽取 docs/update_log.md 中指定版本小节作为 Release 正文"
     )

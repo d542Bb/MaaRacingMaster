@@ -8,9 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
-import pytest
-
 from maaracing_master.plugins.speedrush.wall_track import (
     CONF_CAP, OCCLUDED, TOL_M, WallTrack)
 from maaracing_master.plugins.speedrush.world_model import load_calib

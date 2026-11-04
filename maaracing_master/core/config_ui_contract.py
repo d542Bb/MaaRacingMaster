@@ -31,9 +31,16 @@ MAX_DESCRIPTION = 240
 MAX_HINT = 120
 MAX_SUFFIX = 8
 MAX_PLACEHOLDER = 60
+MAX_BADGE = 4
+MAX_NOTICE = 160
+MAX_NOTICE_ACTIONS = 2
+MAX_SUBPATH = 120
 MAX_SUMMARY_CHIPS = 4
 MAX_SUMMARY_CHIP = 80
 MAX_STATUS = 320
+
+# 提示行里的动作只允许宿主已实现的固定语义，插件不能声明任意 RPC。
+NOTICE_ACTIONS = frozenset({"download_release", "open_user_data_folder"})
 
 UI_NONE = "none"
 UI_OK = "ok"
@@ -92,7 +99,74 @@ def _normalize_cond(raw) -> tuple[dict | None, str | None]:
     return {"key": key, "op": op, "value": value}, None
 
 
-def _normalize_options(raw) -> tuple[list[dict], list[str]]:
+def _normalize_badge(raw) -> tuple[dict | None, str | None]:
+    """选项徽章：{text, level}；只用于分段控件。"""
+    if not isinstance(raw, dict):
+        return None, "徽章必须是对象"
+    text = _text(raw.get("text"), MAX_BADGE)
+    if not text:
+        return None, "徽章缺少 text"
+    level = raw.get("level", "")
+    if level not in STATUS_LEVELS:
+        return None, f"徽章等级不受支持: {level!r}"
+    return {"text": text, "level": level}, None
+
+
+def _safe_subpath(value) -> str | None:
+    """用户数据目录内的相对子路径；拒绝绝对路径、盘符与 ..。"""
+    text = _text(value, MAX_SUBPATH)
+    if not text:
+        return None
+    norm = text.replace("\\", "/").strip("/")
+    parts = [part for part in norm.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." or ":" in part for part in parts):
+        return None
+    return "/".join(parts)
+
+
+def _normalize_notice(raw) -> tuple[dict | None, list[str]]:
+    """字段内联提示：{text, level, actions:[{label, action, subpath?}]}。"""
+    warnings: list[str] = []
+    if not isinstance(raw, dict):
+        return None, ["提示必须是对象"]
+    text = _text(raw.get("text"), MAX_NOTICE)
+    if not text:
+        return None, ["提示缺少 text"]
+    level = raw.get("level", "")
+    if level not in STATUS_LEVELS:
+        return None, [f"提示等级不受支持: {level!r}"]
+    notice: dict = {"text": text, "level": level}
+    actions_raw = raw.get("actions")
+    if actions_raw is None:
+        return notice, warnings
+    if not isinstance(actions_raw, (list, tuple)):
+        return notice, ["提示动作必须是数组"]
+    actions: list[dict] = []
+    for item in actions_raw[:MAX_NOTICE_ACTIONS]:
+        if not isinstance(item, dict):
+            warnings.append("提示动作必须是对象")
+            continue
+        label = _text(item.get("label"), MAX_LABEL)
+        action = item.get("action")
+        if not label or action not in NOTICE_ACTIONS:
+            warnings.append(f"提示动作无效: {item!r}")
+            continue
+        entry: dict = {"label": label, "action": action}
+        if action == "open_user_data_folder" and "subpath" in item:
+            subpath = _safe_subpath(item["subpath"])
+            if subpath is None:
+                warnings.append("提示动作 subpath 必须是用户数据目录内的相对路径，已忽略")
+            else:
+                entry["subpath"] = subpath
+        actions.append(entry)
+    if len(actions_raw) > MAX_NOTICE_ACTIONS:
+        warnings.append(f"提示动作超过上限 {MAX_NOTICE_ACTIONS}，多余项已丢弃")
+    if actions:
+        notice["actions"] = actions
+    return notice, warnings
+
+
+def _normalize_options(raw, allow_badge: bool = False) -> tuple[list[dict], list[str]]:
     warnings: list[str] = []
     if not isinstance(raw, (list, tuple)) or not raw:
         return [], ["选项列表为空"]
@@ -112,7 +186,17 @@ def _normalize_options(raw) -> tuple[list[dict], list[str]]:
             warnings.append(f"选项值重复: {value!r}")
             continue
         seen.add(token)
-        out.append({"value": value, "label": label})
+        option: dict = {"value": value, "label": label}
+        if "badge" in item:
+            if not allow_badge:
+                warnings.append(f"选项徽章只支持分段控件: {value!r}，已忽略")
+            else:
+                badge, problem = _normalize_badge(item["badge"])
+                if problem:
+                    warnings.append(f"选项徽章无效（{problem}）: {value!r}")
+                else:
+                    option["badge"] = badge
+        out.append(option)
     if len(raw) > MAX_OPTIONS:
         warnings.append(f"选项超过上限 {MAX_OPTIONS}，多余项已丢弃")
     if not out:
@@ -162,7 +246,7 @@ def _normalize_field(raw, allowed_keys: set[str], seen: set[str],
         if choices:
             warnings.append(f"{key}: 分段控件不支持动态候选，choices 已忽略")
             choices = None
-        options, opt_warns = _normalize_options(options_raw)
+        options, opt_warns = _normalize_options(options_raw, allow_badge=True)
         warnings.extend(f"{key}: {w}" for w in opt_warns)
         if not options:
             return None
@@ -244,6 +328,13 @@ def _normalize_field(raw, allowed_keys: set[str], seen: set[str],
                 warnings.append(f"{key}: 变体超过上限 {MAX_VARIANTS}，多余项已丢弃")
             if variants:
                 field["variants"] = variants
+
+    if "notice" in raw:
+        notice, notice_warns = _normalize_notice(raw["notice"])
+        warnings.extend(f"{key}: {w}" for w in notice_warns)
+        if notice is not None:
+            field["notice"] = notice
+
     seen.add(key)
     return field
 

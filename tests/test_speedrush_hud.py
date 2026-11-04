@@ -682,6 +682,7 @@ class TestModuleWiring:
         ctx = _FakeCtx(clock)
         mod = sr.SpeedRushModule(ctx)  # type: ignore[arg-type]
         mod._running = True
+        mod._drive_mode = "depth"   # 本组测深度档的 HUD 接线，不依赖默认档
         mod._graph = _FakeGraph([True, True, True, False, False])
         return mod, ctx
 

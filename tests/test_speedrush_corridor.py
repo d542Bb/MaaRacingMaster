@@ -15,10 +15,10 @@ import pytest
 
 from maaracing_master.plugins.speedrush import module as smod
 from maaracing_master.plugins.speedrush.corridor import (
-    INFERRED, UNKNOWN, Corridor, build_corridor)
+    INFERRED, UNKNOWN, build_corridor)
 from maaracing_master.plugins.speedrush.depth_geo import (
     GRID_DRIVABLE, GRID_UNKNOWN, GRID_X_MAX, CAM_Z_DATUM_M, DepthRoadReading)
-from maaracing_master.plugins.speedrush.wall_track import OCCLUDED, WallTrack
+from maaracing_master.plugins.speedrush.wall_track import WallTrack
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
 CAL = load_calib()

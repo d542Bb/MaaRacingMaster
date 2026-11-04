@@ -48,9 +48,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tools.experiments.speedrush_vision import moge2_post as mp  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
-DEPTH_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/onnx/depth"
+DEPTH_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models/depth"
               / "moge2_vits_static_336x598_t1032_q4f16.onnx")
-YOLO_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/onnx/perception"
+YOLO_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models/perception"
              / "model.onnx")
 GATE0_FILE = (REPO / "maaracing_master/plugins/speedrush/resources/calibration"
               / "gate0.json")

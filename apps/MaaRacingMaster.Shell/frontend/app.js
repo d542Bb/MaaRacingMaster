@@ -130,6 +130,59 @@
   });
 
   // ---------- 关于页：检查更新 / 公告 ----------
+  // 更新源默认 CNB（国内直连）；选择只影响手动检查，不改下载页兜底。
+  const UPDATE_SOURCE_KEY = 'maarm.updateSource';
+  let updateSource = 'cnb';
+  try {
+    if (localStorage.getItem(UPDATE_SOURCE_KEY) === 'github') updateSource = 'github';
+  } catch (e) { /* file:// 或隐私模式禁用存储时保持默认 */ }
+
+  function updateSourceLabel(source) {
+    return source === 'github' ? 'GitHub' : 'CNB';
+  }
+
+  function renderUpdateSource() {
+    const github = updateSource === 'github';
+    const label = $('update-source-label');
+    if (label) label.textContent = updateSourceLabel(updateSource);
+    const cnbIcon = $('update-source-icon-cnb');
+    const ghIcon = $('update-source-icon-github');
+    if (cnbIcon) cnbIcon.hidden = github;
+    if (ghIcon) ghIcon.hidden = !github;
+    document.querySelectorAll('#update-source-menu .update-source-item').forEach((item) => {
+      const active = item.dataset.source === updateSource;
+      item.classList.toggle('is-active', active);
+      item.setAttribute('aria-selected', String(active));
+    });
+  }
+
+  function closeUpdateSourceMenu() {
+    const menu = $('update-source-menu');
+    const trigger = $('btn-update-source');
+    if (menu) menu.hidden = true;
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
+
+  function openUpdateSourceMenu() {
+    const menu = $('update-source-menu');
+    const trigger = $('btn-update-source');
+    if (!menu || !trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    menu.style.top = Math.round(rect.bottom + 6) + 'px';
+    menu.style.right = Math.max(8, Math.round(window.innerWidth - rect.right)) + 'px';
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    const active = menu.querySelector('.update-source-item.is-active');
+    if (active) active.focus();
+  }
+
+  function setUpdateSource(source) {
+    updateSource = source === 'github' ? 'github' : 'cnb';
+    try { localStorage.setItem(UPDATE_SOURCE_KEY, updateSource); } catch (e) { /* 同上 */ }
+    renderUpdateSource();
+    closeUpdateSourceMenu();
+  }
+
   // 打开外部目标：只传逻辑目标名，地址由 sidecar 侧白名单给出（前端不传 URL）。
   function openTarget(target) {
     if (!target) return;
@@ -152,16 +205,23 @@
     const releaseEl = $('about-new-release');
     if (!btn || !statusEl) return;
     btn.disabled = true;
-    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
+    const sourceBtn = $('btn-update-source');
+    if (sourceBtn) sourceBtn.disabled = true;
+    closeUpdateSourceMenu();
+    const requested = updateSourceLabel(updateSource);
+    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…（' + requested + '）',
+      { spinner: true });
     releaseEl.style.display = 'none';
     try {
-      const d = await maarm.call('check_update');
+      const d = await maarm.call('check_update', { source: updateSource });
+      const used = updateSourceLabel(d.source || updateSource);
       if (d.error) {
-        renderUpdateStatus(statusEl, 'ver-status--err', d.error);
+        renderUpdateStatus(statusEl, 'ver-status--err', d.error + '（' + requested + '）');
       } else if (d.status === 'no_release') {
-        renderUpdateStatus(statusEl, 'ver-status--ok', '暂无发布版本');
+        renderUpdateStatus(statusEl, 'ver-status--ok', '暂无发布版本（' + used + '）');
       } else if (d.has_update) {
-        renderUpdateStatus(statusEl, 'ver-status--new', '发现新版本 v' + d.latest_tag);
+        renderUpdateStatus(statusEl, 'ver-status--new',
+          '发现新版本 v' + d.latest_tag + '（' + used + '）');
         releaseEl.style.display = 'flex';
         releaseEl.textContent = '';
         const info = mkEl('div', 'nr-info');
@@ -176,13 +236,14 @@
         goBtn.addEventListener('click', () => openTarget('download'));
         releaseEl.appendChild(goBtn);
       } else {
-        renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本');
+        renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本（' + used + '）');
       }
     } catch (e) {
       console.error(e);
       renderUpdateStatus(statusEl, 'ver-status--err', '检查失败：' + e.message);
     } finally {
       btn.disabled = false;
+      if (sourceBtn) sourceBtn.disabled = false;
     }
   }
 
@@ -224,6 +285,28 @@
   function initAbout() {
     const btn = $('btn-check-update');
     if (btn) btn.addEventListener('click', checkUpdate);
+    const trigger = $('btn-update-source');
+    const menu = $('update-source-menu');
+    if (trigger && menu) {
+      trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (menu.hidden) openUpdateSourceMenu(); else closeUpdateSourceMenu();
+      });
+      menu.querySelectorAll('.update-source-item').forEach((item) => {
+        item.addEventListener('click', () => setUpdateSource(item.dataset.source));
+      });
+      document.addEventListener('click', (event) => {
+        if (menu.hidden) return;
+        if (menu.contains(event.target) || trigger.contains(event.target)) return;
+        closeUpdateSourceMenu();
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !menu.hidden) closeUpdateSourceMenu();
+      });
+      window.addEventListener('resize', closeUpdateSourceMenu);
+      window.addEventListener('scroll', closeUpdateSourceMenu, true);
+    }
+    renderUpdateSource();
     fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
   }
   initAbout();

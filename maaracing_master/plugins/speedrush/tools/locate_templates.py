@@ -79,8 +79,9 @@ def selfcheck(frames: list[str]) -> None:
         print("自检跳过：未找到参照模板")
         return
     best = max(
-        (cv2.matchTemplate(load_content(f), tpl, cv2.TM_CCOEFF_NORMED).max(), f)
+        (cv2.matchTemplate(content, tpl, cv2.TM_CCOEFF_NORMED).max(), f)
         for f in frames
+        if (content := load_content(f)) is not None
     )
     ok = best[0] >= SELFCHECK_MIN
     print(f"自检：treasure 参照模板最高匹配分={best[0]:.4f} → {'偏移正确 ✓' if ok else '偏移可疑 ✗'}")
@@ -93,6 +94,7 @@ def main() -> None:
     if not frames:
         raise SystemExit("未找到真机截帧，检查 FRAME_GLOB")
     raw = cv2.imread(frames[0], cv2.IMREAD_COLOR)
+    assert raw is not None, f"截帧读取失败：{frames[0]}"
     print(f"截帧数={len(frames)}  原始尺寸={raw.shape[1]}x{raw.shape[0]}  "
           f"内容区偏移=({OFFSET_X},{OFFSET_Y}) → {CONTENT_W}x{CONTENT_H}")
     selfcheck(frames)
@@ -108,6 +110,7 @@ def main() -> None:
             print(f"{name:34s}   源文件缺失")
             continue
         tpl = cv2.imread(src, cv2.IMREAD_COLOR)  # 丢弃 alpha，统一 3 通道
+        assert tpl is not None, f"模板读取失败：{src}"
         th, tw = tpl.shape[:2]
         os.makedirs(DST_DIR, exist_ok=True)
         cv2.imwrite(f"{DST_DIR}/{name}.png", tpl)

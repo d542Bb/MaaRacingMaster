@@ -88,6 +88,19 @@ def test_render_paths_contain_no_innerHTML():
         )
 
 
+def test_update_source_defaults_to_cnb_and_is_passed_to_rpc():
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "let updateSource = 'cnb'" in src
+    body = _js_function_body(src, "async function checkUpdate()")
+    assert "{ source: updateSource }" in body
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="btn-update-source"' in html
+    assert 'id="update-source-menu"' in html
+    assert 'id="update-source-label"' in html
+    assert 'src="cnb.svg"' in html
+    assert 'data-icon="github-solid"' in html
+
+
 def test_no_remote_field_interpolated_into_html():
     """全文件兜底：任何一处 innerHTML 都不得与远程字段出现在同一行。"""
     offenders = []

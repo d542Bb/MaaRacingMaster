@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
+from typing import Any
 
 from maaracing_master.plugins.speedrush.planner import heading_for_error, step
 from maaracing_master.plugins.speedrush.selection import (
@@ -349,12 +350,12 @@ class PlanGate:
         self._last: _Cand | None = None
         self._miss_s = 0.0
 
-    def _q(self, key: tuple) -> tuple:
+    def _q(self, key: tuple[Any, ...]) -> tuple[Any, ...]:
         return tuple(round(v / self.eps) * self.eps
                      if isinstance(v, float) else v for v in key)
 
     @staticmethod
-    def _gap(a: tuple, b: tuple) -> float:
+    def _gap(a: tuple[Any, ...], b: tuple[Any, ...]) -> float:
         for x, y in zip(a, b):
             if x == y:
                 continue
@@ -422,10 +423,13 @@ class PlanGate:
         # （20261027 局 9.1~9.4s 空路左打、12.7~12.9s 目标在右却满左）。
         # 现任越限本拍就让位（价值方向的失效已由上面的立即门覆盖）。
         demoted = False
-        if len(ki) > 2 and len(kb) > 2 \
-                and isinstance(ki[2], (int, float)) \
-                and isinstance(kb[2], (int, float)) \
-                and ki[2] > kb[2] + 1e-6:
+        # 长度与元素判据在副本上做：按 len() 分支收窄会把原名字的元组长度
+        # 拆成若干固定长度分支，后续按下标比较便落到空元组那一支上。
+        kb_chk, ki_chk = kb, ki
+        if len(ki_chk) > 2 and len(kb_chk) > 2 \
+                and isinstance(ki_chk[2], (int, float)) \
+                and isinstance(kb_chk[2], (int, float)) \
+                and ki_chk[2] > kb_chk[2] + 1e-6:
             demoted = True
         if demoted:
             self._idx, self._streak = best.idx, 0.0
@@ -573,6 +577,7 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             cmd0 = max(-plant.heading_max_rad,
                        min(plant.heading_max_rad,
                            heading_for_error(target - x, plant)))
+        assert cmd0 is not None  # 只有目标位候选的初始杆值为空，那一支已按目标重算
         cmd = cmd0
         xs_lane = [x]
         vs_lane = [(v_ego * math.tan(psi) / lane_w) if v_ego > 0 else 0.0]

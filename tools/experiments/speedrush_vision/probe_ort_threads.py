@@ -15,7 +15,7 @@ import onnxruntime as ort
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from probe_thread_cpu import snapshot_threads  # noqa: E402
 
-PERCEPTION = "maaracing_master/plugins/speedrush/resources/onnx/perception/model.onnx"
+PERCEPTION = "maaracing_master/plugins/speedrush/resources/models/perception/model.onnx"
 
 
 def snapshot_mine() -> dict:

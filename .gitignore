@@ -63,7 +63,7 @@ docs/trae-dsh-config-share.md
 # 归档（被 sidecar + WinUI3 取代的旧 GUI、历史 spike）
 archive/
 
-# 插件模型权重随包分发入库（各权重许可与来源声明见对应插件 resources/onnx/
+# 插件模型权重随包分发入库（各权重许可与来源声明见对应插件 resources/models/
 # README 与 THIRD_PARTY_LICENSES.md「模型权重」节）
 
 # WinUI 3 / .NET 构建产物（apps/MaaRacingMaster.Shell）
@@ -116,12 +116,12 @@ tools/navkit/out/
 tools/navkit/frontend/
 
 # 实验区的待试权重：来源与许可未声明、体积大，一律不入库（实验 README 注明取法）。
-# 插件正式分发的权重不在此列——它们在 plugins/*/resources/onnx/ 随包入库。
+# 插件正式分发的权重不在此列——它们在 plugins/*/resources/models/ 随包入库。
 tools/experiments/**/weights/
 
 # 探针输出目录（命名约定 *_out/）：一次性报告的落点，读数归实验 README，文件本身可重跑。
 # 上规则的前提是「结论已进 README」——报告里还藏着没写下来的结论时，先补 README 再忽略。
 tools/experiments/**/*_out/
 
-# 线观测影子模型（不入库：派生资产，正式进生产但不追踪）
-maaracing_master/plugins/speedrush/resources/models/
+# 线观测模型随可选模型包分发并入库；适用 models/LICENSE-BDD100K.txt
+# （教育/科研/非营利可分发，商业用途需另行授权）

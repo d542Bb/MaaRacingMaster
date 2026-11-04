@@ -476,6 +476,9 @@ class NavGraph:
         """
         if self._loaded:
             return True
+        # 句柄只在 shutdown 里置空，而 _loaded 置真后不复位：能走到这里的加载
+        # 必然发生在销毁之前，两个句柄都还在。
+        assert self._resource is not None and self._tasker is not None
         if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "跳转图",
                                      group_id=self._log_gid):
             return False
@@ -588,6 +591,7 @@ class NavGraph:
         """
         if not self.load():
             return False
+        assert self._tasker is not None  # load() 成功即执行器已就位且未被销毁
         # 手柄租约只在跑图期间持有：结束立刻归还，模块外层的 reset_device()
         # （销毁手柄复位）才不会被「有活跃租约禁止断开设备」这条不变量挡住。
         with ExitStack() as stack:
@@ -825,6 +829,9 @@ class NavKitV4:
         """
         if self._loaded:
             return True
+        # 同 NavGraph.load：句柄只在 shutdown 里置空，而 _loaded 置真后不复位。
+        assert self._resource is not None and self._tasker is not None \
+            and self._controller is not None
         if not _post_pipeline_merged(self._resource, self._pipeline_dirs, "v4",
                                      group_id=self._graph._log_gid):
             return False
@@ -838,6 +845,7 @@ class NavKitV4:
         """起跑常驻图（dwell 循环由框架自驱）。已起跑时幂等返回 True。"""
         if not self.load():
             return False
+        assert self._tasker is not None  # load() 成功即执行器已就位且未被销毁
         if self._job is not None and not self._job.status.done:
             return True
         self._graph._log(f"[v4] 起跑「{entry}」")

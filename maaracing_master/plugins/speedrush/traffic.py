@@ -173,6 +173,7 @@ class TrafficObserver:
             memb = rec.memb
             w_m, w_m_age = rec.w_m, None
             if w_m is not None:
+                assert rec.w_m_fid is not None   # w_m 与 w_m_fid 同拍写入
                 age = fid - rec.w_m_fid
                 # TTL 过期显式转 unknown（不得冒充有效）；账本保留，重捕后
                 # 新有效读数刷新即恢复
@@ -214,7 +215,7 @@ class TrafficObserver:
             return
         dec = self.p.lane_vote_decay
         lane = math.floor(t.x_lane + 0.5)
-        votes = {l: w * dec for l, w in rec.votes.items()}
+        votes = {lane0: w * dec for lane0, w in rec.votes.items()}
         votes[lane] = votes.get(lane, 0.0) + 1.0
         rec.votes = votes
         best_lane, best_w = max(votes.items(), key=lambda kv: kv[1])

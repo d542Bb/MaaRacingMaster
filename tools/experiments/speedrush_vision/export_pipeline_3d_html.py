@@ -362,7 +362,7 @@ def main():
     d = Path(a.dir)
     wf = Path(a.weights) if a.weights else \
         Path(__file__).resolve().parents[3] / \
-        "maaracing_master/plugins/speedrush/resources/onnx/depth" / \
+        "maaracing_master/plugins/speedrush/resources/models/depth" / \
         "moge2_vits_static_336x598_t1032_q4f16.onnx"
     sess = dg.load_session(wf)
     cal = load_calib()

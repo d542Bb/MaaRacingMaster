@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 DASHBOARD_CONTRACT_VERSION = 1
 
@@ -117,7 +117,7 @@ def _stats(block: dict, warnings: list[str]) -> dict | None:
         value = _text(item.get("value"), f"stats[{index}].value", MAX_VALUE, warnings)
         if label is None or value is None:
             continue
-        entry = {
+        entry: dict[str, Any] = {
             "label": label,
             "value": value,
             "tone": _tone(item.get("tone"), f"stats[{index}].tone", warnings),
@@ -148,7 +148,8 @@ def _list(block: dict, warnings: list[str]) -> dict | None:
             continue
         leading = _text(row.get("leading"), f"list[{index}].leading", MAX_LABEL, warnings, required=False)
         trailing = _text(row.get("trailing"), f"list[{index}].trailing", MAX_VALUE, warnings, required=False)
-        entry = {"leading": leading or "", "text": text, "trailing": trailing or ""}
+        entry: dict[str, Any] = {
+            "leading": leading or "", "text": text, "trailing": trailing or ""}
         badge = _badge(row.get("badge"), warnings)
         if badge is not None:
             entry["badge"] = badge
@@ -214,7 +215,8 @@ def normalize_dashboard(payload: Any) -> tuple[dict, tuple[str, ...]]:
             warnings.append(f"blocks[{index}] 不是对象")
             continue
         kind = block.get("type")
-        normalizer = _BLOCK_NORMALIZERS.get(kind)
+        # 非字符串 type 查白名单同样命不中（get 返回 None），只做类型收窄。
+        normalizer = _BLOCK_NORMALIZERS.get(cast(str, kind))
         if normalizer is None:
             warnings.append(f"blocks[{index}] 未知类型: {kind!r}")
             continue

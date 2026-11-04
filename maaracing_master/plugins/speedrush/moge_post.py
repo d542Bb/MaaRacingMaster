@@ -191,15 +191,18 @@ def _iobinding_for(sess, image_input: np.ndarray, num_tokens: int):
     if bind is None:
         return None
     xbuf = entry["xbuf"]
+    if xbuf is None:
+        return None   # 无输入缓冲（不可绑定会话）：该帧走普通 run
     if xbuf.shape != image_input.shape:
         return None   # 输入形状漂移（产线不应发生）：该帧走普通 run
     np.copyto(xbuf, image_input)
     bind.bind_input(entry["in_name"], "cpu", 0, xbuf.dtype, xbuf.shape,
                     xbuf.ctypes.data)
-    if entry["tbuf"] is not None:
-        entry["tbuf"][...] = num_tokens
-        bind.bind_input("num_tokens", "cpu", 0, entry["tbuf"].dtype,
-                        entry["tbuf"].shape, entry["tbuf"].ctypes.data)
+    tbuf = entry["tbuf"]
+    if tbuf is not None:
+        tbuf[...] = num_tokens
+        bind.bind_input("num_tokens", "cpu", 0, tbuf.dtype,
+                        tbuf.shape, tbuf.ctypes.data)
     return bind
 
 

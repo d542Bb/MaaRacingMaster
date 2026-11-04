@@ -147,14 +147,14 @@ class PresenceOccupancy:
         ids = sorted(tid for tid, s in self.slots.items() if s.occ)
         if not ids:
             return None
-        since_vals = [self.slots[tid].since for tid in ids
-                      if self.slots[tid].since is not None]
+        since_vals = [v for tid in ids
+                      if (v := self.slots[tid].since) is not None]
         since = min(since_vals) if since_vals else ts
         return {
             "blocked": True,
             "ids": ids,
-            "m": {tid: (None if self.slots[tid].m is None
-                        else round(self.slots[tid].m, 2)) for tid in ids},
+            "m": {tid: (None if (m := self.slots[tid].m) is None
+                        else round(m, 2)) for tid in ids},
             "modes": {tid: self.slots[tid].mode for tid in ids},
             "since_ms": int((ts - since) * 1000.0),
         }

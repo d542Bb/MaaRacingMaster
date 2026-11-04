@@ -206,7 +206,7 @@ class ActivityModule(ABC):
     # 示例：REQUIRES = frozenset({"capture", "gamepad"})
     REQUIRES: frozenset[str] = frozenset()
 
-    # 声明插件自带的必需资源（相对插件目录的路径，如 "resources/onnx/model.onnx"）。
+    # 声明插件自带的必需资源（相对插件目录的路径，如 "resources/models/model.onnx"）。
     # 启动前由 sidecar 逐项检查存在性，缺失时拦截并给出插件内具体路径。
     REQUIRED_ASSETS: tuple[str, ...] = ()
 

@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""S1 影子：轻量车道线观测（TwinLiteNet+ Small）的推理、跟踪与状态机。
+"""轻量车道线观测（TwinLiteNet+ Small）的推理、跟踪与状态机。
 
-**只写 trace，不接控制**。生产者：`LaneObsWorker` 在独立线程跑
-（默认 provider=cpu，不抢 GPU 锁——实测 dml 与深度共用锁会相位锁，把深度
-饿到只剩 5% 帧；dml 仍可选，但要自证不与深度争锁），队列深度 1，控制拍只
-push 最新帧并读 `latest()`；推理失败/权重缺失一律返回 None，不抛进控制环。
+线可用时是生产供数链的位置原点（`line_primary`），也供车道成员插值；
+不可用时控制链退回深度/墙，不抛进控制环。模型随可选模型包分发：缺失时
+worker 不启动并返回 None，深度档本身不受影响。
+
+生产者：`LaneObsWorker` 在独立线程跑（默认 provider=cpu，不抢 GPU 锁——
+实测 dml 与深度共用锁会相位锁，把深度饿到只剩 5% 帧；dml 仍可选，但要
+自证不与深度争锁），队列深度 1，控制拍只 push 最新帧并读 `latest()`。
 
 坐标系与离线 gold 同源：地面线满足 ``x_px = VPX + L*LANE_W*(y-Y_H)/cam_h``，
 线的横向偏移 ``L = slope*cam_h/LANE_W``（与道号无关）；自车横位
@@ -34,6 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from maaracing_master.core import dml_lock
+from maaracing_master.plugins.speedrush import model_assets
 
 LANE_W = 3.5
 VPX = 640.7
@@ -258,7 +262,7 @@ def _line_evals(y_b: float, lines: list[dict]) -> list[tuple[float, float]]:
                 best = (d, s, a)
         if best is None:
             continue
-        evals.append((best[1] * y_b + best[2], float(c.get("L"))))
+        evals.append((best[1] * y_b + best[2], float(c["L"])))
     return evals
 
 
@@ -630,6 +634,7 @@ class LineTracker:
             self.locked = (self.locked + 1
                            if step <= LINE_JUMP_RESET else 1)
             if self.x_prev is not None and dt > 1e-3:
+                assert self.x_last is not None   # x_prev 就是上一拍的 x_last
                 dvx = float(np.clip((x_out - self.x_last) / dt, -1.5, 1.5))
                 self.x_vel = 0.6 * self.x_vel + 0.4 * dvx
             self.x_prev, self.x_last = self.x_last, x_out
@@ -672,6 +677,8 @@ class LineTracker:
             # 锁/强锁与有锚空窗同一口径：断一拍不清零，只有跳帧或外推预算
             # 耗尽才作废——否则恢复拍的新线会立刻按相对票补号，身份在断链
             # 前后被悄悄改写（164953 局 p2 的整道漂移）。
+            # 无深度锚且无历史横位的拍已在 ② 提前返回，本分支 x_last 必有值
+            assert self.x_last is not None
             if self.lost <= COAST_MAX_TICKS and not fid_jump:
                 vp = 0.5 * self.x_vel + 0.5 * float(v_lat)
                 self.x_last = (self.x_last + float(np.clip(vp, -1.5, 1.5))
@@ -795,19 +802,28 @@ class LaneObsWorker:
         self.drop_n = 0
         self.error: str | None = None
         self.note: str | None = None
+        # 可选模型包未安装（不是故障）：模块按 INFO 记录，不按 WARNING 刷屏
+        self.optional_missing = False
 
     def start(self) -> None:
         if not self.cfg.enabled:
             return
-        weights = Path(self.cfg.weights)
-        if not weights.is_absolute():
-            # 权重不入库（.gitignore）：住生产资源目录但不追踪。
-            # data/ 只留用户业务数据（如 SQLite），不放派生资产。
-            weights = (Path(__file__).resolve().parents[2]
-                       / "plugins" / "speedrush" / "resources" / weights)
-        if not weights.is_file():
-            self.error = f"权重缺失：{weights}"
+        if not self.cfg.weights:
+            self.error = "未配置线观测权重"
             return
+        raw = Path(self.cfg.weights)
+        if raw.is_absolute():
+            weights: Path | None = raw
+            if not weights.is_file():
+                self.error = f"权重缺失：{weights}"
+                self.optional_missing = True
+                return
+        else:
+            weights, err = model_assets.select(self.cfg.weights)
+            if weights is None:
+                self.error = err
+                self.optional_missing = bool(err and "缺少" in err)
+                return
         try:
             import onnxruntime as ort
             avail = set(ort.get_available_providers())
@@ -978,6 +994,7 @@ class LaneObsWorker:
 
     def _run(self, rgb: np.ndarray):
         """DML 走共享锁：只包 run 本体；抢不到即弃帧（latest-only，不排队）。"""
+        assert self._sess is not None   # 线程只在 session 建好后才起
         inp = self._sess.get_inputs()[0].name
         feed = {inp: _letterbox(rgb)}
         if not self._use_dml:

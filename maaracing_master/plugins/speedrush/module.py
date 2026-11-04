@@ -32,6 +32,7 @@ import time
 from collections import deque
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Any, Callable, cast
 
 import cv2
 import numpy as np
@@ -44,8 +45,8 @@ from maaracing_master.core.navkit import Command, StepMachine, Verdict
 from maaracing_master.core.paths import debug_dir
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
-    DEPTH_MODEL_FILE, DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_FILE,
-    PERCEPTION_MODEL_REL, PIPELINE_DIR)
+    DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_REL, PIPELINE_DIR)
+from maaracing_master.plugins.speedrush import model_assets
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
@@ -65,7 +66,7 @@ from maaracing_master.plugins.speedrush.macro import (
     MacroError, MacroPlayer, MacroRecorder, list_groups, load_phase, macro_root,
     resolve_group, valid_group_name)
 from maaracing_master.plugins.speedrush.lane_obs import (
-    LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
+    LaneObsConfig, LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.route import (
@@ -310,6 +311,57 @@ def _sync_log_group(self) -> None:
         sync(gid)
 
 
+def _build_config_ui(models_ready: bool) -> dict:
+    """配置表单：深度权重缺失时给选项加下载徽章，并在字段下方挂安装提示。"""
+    depth_option: dict = {"value": "depth", "label": "深度几何"}
+    drive_field: dict = {
+        "key": "drive_mode", "type": "segmented", "label": "驾驶模式",
+        "options": [
+            {"value": "straight", "label": "全程直行"},
+            {"value": "macro", "label": "宏录制"},
+            depth_option,
+        ],
+    }
+    if not models_ready:
+        depth_option["badge"] = {"text": "↓", "level": "warn"}
+        drive_field["notice"] = {
+            "text": "深度模型未安装：安装包不含权重，下载后解压到 data/speedrush/models/",
+            "level": "warn",
+            "actions": [
+                {"label": "下载模型包", "action": "download_release"},
+                {"label": "打开数据目录", "action": "open_user_data_folder",
+                 "subpath": "data/speedrush/models"},
+            ],
+        }
+    return {
+        "groups": [{
+            "fields": [
+                drive_field,
+                {
+                    "key": "macro_group", "type": "select", "label": "回放宏",
+                    "description": "关闭「录制」时生效；缺阶段文件的那一段会降级为全程直行",
+                    "choices": "macro_group",
+                    "visible_if": {"key": "drive_mode", "op": "equals", "value": "macro"},
+                },
+                {
+                    "key": "record_mode", "type": "switch", "label": "录制演示数据",
+                    "description": "开启后本段只采集画面与手柄数据、不操纵车辆，用于训练语料"
+                                   "（存到调试目录）。请自行驾驶；建议点击方式保持「前台鼠标」，"
+                                   "避免虚拟手柄与你的手柄冲突。",
+                    "visible_if": {"key": "drive_mode", "op": "not_equals", "value": "straight"},
+                    "variants": [{
+                        "when": {"key": "drive_mode", "op": "equals", "value": "macro"},
+                        "label": "录制宏",
+                        "description": "开启后本段只采集你的手柄/键盘操作，录成可回放的宏"
+                                       "（存到用户数据目录）；关闭录制则回放所选宏。"
+                                       "键盘 A/D 或 ←/→ 满幅转向，W/↑ 右扳机，S/↓ 左扳机。",
+                    }],
+                },
+            ],
+        }],
+    }
+
+
 class SpeedRushModule(ActivityModule):
     """极速狂飙：地铁跑酷式车道选择玩法。"""
 
@@ -320,8 +372,9 @@ class SpeedRushModule(ActivityModule):
     # 驾驶阶段全程占用手柄（油门常踩 + 横向连续转向）
     REQUIRES_GAMEPAD_EXCLUSIVE = True
     REQUIRES: frozenset[str] = frozenset({"capture", "gamepad"})
-    # 插件自带必需资源：两模型权重（sidecar 启动前检查，缺失拦截并给出具体路径）
-    REQUIRED_ASSETS: tuple[str, ...] = (PERCEPTION_MODEL_REL, DEPTH_MODEL_REL)
+    # 深度权重是可选模型包（发布包默认不带）：模块级资产门禁不再要求它们，
+    # 启动时按驾驶模式校验；直行/宏录制不依赖任何权重。
+    REQUIRED_ASSETS: tuple[str, ...] = ()
     # 模块封面（相对本插件 resources/）：只声明，定位与 URL 解析在 core/covers.py
     COVER = "cover.jpg"
     # 看板尚未实现：0 = 已登记能力位，不进入数据页候选集；
@@ -340,7 +393,9 @@ class SpeedRushModule(ActivityModule):
     # 的分母）| macro=宏录制/回放（开录制采玩家操作到 data/，关录制回放所选宏）。
     DRIVE_MODES = ("depth", "straight", "macro")
     DRIVE_LABELS = {"depth": "深度几何", "straight": "全程直行", "macro": "宏录制"}
-    DEFAULT_DRIVE_MODE = "depth"
+    # 默认直行：发布包默认不带深度权重，首启不能让默认档直接撞缺模型。
+    # 装好模型包的用户可自行切到深度；旧存档里的显式选择不受影响。
+    DEFAULT_DRIVE_MODE = "straight"
     # 要回放的宏组（空=最新一组）；只在宏模式且未开录制时生效
     DEFAULT_MACRO_GROUP = ""
 
@@ -387,40 +442,7 @@ class SpeedRushModule(ActivityModule):
     # 配置表单（契约见 core/config_ui_contract.py）：默认值/动态候选分别来自
     # DEFAULT_MODULE_CONFIG 与 config_choices()，这里只描述「怎么呈现」。
     CONFIG_UI_CONTRACT = 1
-    CONFIG_UI = {
-        "groups": [{
-            "fields": [
-                {
-                    "key": "drive_mode", "type": "segmented", "label": "驾驶模式",
-                    "options": [
-                        {"value": "straight", "label": "全程直行"},
-                        {"value": "macro", "label": "宏录制"},
-                        {"value": "depth", "label": "深度几何"},
-                    ],
-                },
-                {
-                    "key": "macro_group", "type": "select", "label": "回放宏",
-                    "description": "关闭「录制」时生效；缺阶段文件的那一段会降级为全程直行",
-                    "choices": "macro_group",
-                    "visible_if": {"key": "drive_mode", "op": "equals", "value": "macro"},
-                },
-                {
-                    "key": "record_mode", "type": "switch", "label": "录制演示数据",
-                    "description": "开启后本段只采集画面与手柄数据、不操纵车辆，用于训练语料"
-                                   "（存到调试目录）。请自行驾驶；建议点击方式保持「前台鼠标」，"
-                                   "避免虚拟手柄与你的手柄冲突。",
-                    "visible_if": {"key": "drive_mode", "op": "not_equals", "value": "straight"},
-                    "variants": [{
-                        "when": {"key": "drive_mode", "op": "equals", "value": "macro"},
-                        "label": "录制宏",
-                        "description": "开启后本段只采集你的手柄/键盘操作，录成可回放的宏"
-                                       "（存到用户数据目录）；关闭录制则回放所选宏。"
-                                       "键盘 A/D 或 ←/→ 满幅转向，W/↑ 右扳机，S/↓ 左扳机。",
-                    }],
-                },
-            ],
-        }],
-    }
+    CONFIG_UI = _build_config_ui(not model_assets.missing())
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------
 
@@ -456,8 +478,11 @@ class SpeedRushModule(ActivityModule):
     @classmethod
     def config_summary(cls, config: dict) -> list[str]:
         """任务卡摘要：录制开关只在非直行档有意义；宏档未录制时补一行回放组。"""
-        mode = config.get("drive_mode")
+        mode_raw = config.get("drive_mode")
+        mode = mode_raw if isinstance(mode_raw, str) else ""
         mode_text = cls.DRIVE_LABELS.get(mode, "深度几何")
+        if mode == "depth" and model_assets.missing():
+            mode_text += "（模型未安装）"
         out: list[str] = []
         if mode != "straight":
             out.append("录制: " + ("开" if config.get("record_mode") else "关"))
@@ -467,7 +492,7 @@ class SpeedRushModule(ActivityModule):
         return out
 
     def config_status(self) -> dict | None:
-        """面板状态行：宏录制/回放、演示录制的实时进度；未运行返回 None。"""
+        """面板状态行：宏录制/回放、演示录制进度；无内容返回 None。"""
         mrec = self._macro_rec
         if mrec is not None and mrec.running:
             samples = int(mrec.stats["samples"])
@@ -481,7 +506,8 @@ class SpeedRushModule(ActivityModule):
             pct = (sent * 100 // total) if total else 0
             states = {"waiting": "等待计时对齐", "playing": "回放中",
                       "finished": "已播完", "stopped": "已停止"}
-            text = (f"宏回放：{states.get(m.get('state'), str(m.get('state')))}"
+            state_text = str(m.get("state"))
+            text = (f"宏回放：{states.get(state_text, state_text)}"
                     f" · {sent}/{total}（{pct}%）")
             offset = m.get("align_offset_ms")
             if offset:
@@ -670,6 +696,13 @@ class SpeedRushModule(ActivityModule):
     def start(self, start_from: str | None = None) -> None:
         """启动流程（阻塞；由外层 worker 线程调用）。"""
         assert self.ctx is not None, "离线模式（ctx=None）不可调用 start()"
+        # 深度模式先过模型包校验：缺失/损坏在连窗口之前就明确终止，
+        # 不把用户带进一局没有几何供数的驾驶。
+        if self._resolve_drive_mode() == "depth":
+            pack_error = model_assets.check_pack()
+            if pack_error:
+                _tlog(self, f"[极速狂飙] 深度模式无法启动：{pack_error}", "ERROR")
+                return
         if not self.ctx.connect():
             logger.log("[极速狂飙] 窗口连接失败，模块终止", "ERROR")
             return
@@ -809,7 +842,8 @@ class SpeedRushModule(ActivityModule):
 
     def _decision_text(self, cl: dict) -> str:
         """把「状态枚举 + 原因码」翻成一句话；未知原因码保留原码。"""
-        state = self._STATE_TEXT.get(cl.get("state"), str(cl.get("state")))
+        state_raw = cl.get("state")
+        state = self._STATE_TEXT.get(str(state_raw), str(state_raw))
         raw = str(cl.get("reason") or "")
         reason = self._REASON_TEXT.get(raw)
         if reason is None and raw:
@@ -893,6 +927,8 @@ class SpeedRushModule(ActivityModule):
         可选"，treasure 式逐帧自管与 speedrush 式阻塞自管共用同一转移表）。耗尽按现状终止
         本轮，**不做回合级自动重开**（步失败不证明画面回到可重开处）。
         """
+        assert self._graph is not None      # 调用方 _run_flow 已建图
+        assert self.ctx is not None         # 运行期编排层总是注入实 ctx
         confirm_node = STEP_CONFIRM.get(stage)
         if confirm_node is None:
             # 漏配确认锚点：退回旧的单步语义（不新增行为，也不把整条流程带崩）。
@@ -1282,6 +1318,7 @@ class SpeedRushModule(ActivityModule):
                                     zero_hits = 0
                     if gpad is not None:
                         if straight:
+                            assert straight_chain is not None   # straight 档恒建 stub chain
                             self._straight_tick(gpad, fid, ts_ns,
                                                 straight_chain,
                                                 straight_throttle)
@@ -1289,6 +1326,7 @@ class SpeedRushModule(ActivityModule):
                             # cap 段内段原料：拍内时间戳链（拾取/录制/检测），
                             # 掩码段与拷贝段在 _control_tick/push 内补齐——
                             # 同钟伸缩 Σ内段 ≡ cap（见 depth_geo._timing_segments）
+                            assert chain is not None   # control 档恒建控制链
                             self._control_tick(
                                 chain, gpad, frame, result, fid, ts_ns, age_ms,
                                 phase, pace_ms=pace_ms,
@@ -1297,6 +1335,7 @@ class SpeedRushModule(ActivityModule):
                     elif shadow and result is not None:
                         # 影子拍：同链不接入手柄（gpad=None→tick 内不下发），
                         # trace 记反事实杆值与 cr_best——对照局的决策数据面
+                        assert chain is not None       # shadow 档恒建控制链
                         self._control_tick(
                             chain, None, frame, result, fid, ts_ns, age_ms,
                             phase, pace_ms=pace_ms,
@@ -1423,13 +1462,18 @@ class SpeedRushModule(ActivityModule):
         manual = run_dir is not None   # 人工驾驶阶段（语料目录已由录制器建好）
         run_dir = run_dir or _run_dir(stamp or time.strftime("%Y%m%d_%H%M%S"), phase)
         dbg_on = self._debug_enabled()
-        lane_obs = LaneObsWorker(cfg.lane_obs,
-                                 off_max=cfg.validate.x_lane_abs_max)
+        lane_obs = LaneObsWorker(
+            # config.LaneObs 与 lane_obs.LaneObsConfig 字段同构（worker 只读
+            # enabled/weights/hz/provider/threads/detect_every），两份配置类
+            # 各自独立声明，故此处按契约收窄
+            cast(LaneObsConfig, cfg.lane_obs),
+            off_max=cfg.validate.x_lane_abs_max)
         lane_obs.start()
         if lane_obs.error:
-            _tlog(self, f"[极速狂飙] 线观测影子未启动：{lane_obs.error}", "WARNING")
+            level = "INFO" if lane_obs.optional_missing else "WARNING"
+            _tlog(self, f"[极速狂飙] 线观测未启动：{lane_obs.error}", level)
         elif lane_obs.note:
-            _tlog(self, f"[极速狂飙] 线观测影子：{lane_obs.note}", "WARNING")
+            _tlog(self, f"[极速狂飙] 线观测：{lane_obs.note}", "WARNING")
         return {"cfg": cfg,
                 "lane_obs": lane_obs,
                 # 速度像素桥（闸 metric_bridge.enabled，默认关=逐位回今天）：
@@ -1872,6 +1916,7 @@ class SpeedRushModule(ActivityModule):
             chain["slow_seen_ns"] = _slow["ts_ns"]
         else:
             _slow = None
+        _plan_ego = chain.get("last_plan_ego")   # plan 非 None 时必为本拍 EgoState
         _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
             # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
@@ -1960,10 +2005,10 @@ class SpeedRushModule(ActivityModule):
             "plan_h": round(cfg.motion.horizon_s, 3),
             "sel_h": round(cfg.selection.horizon_s, 3),
             # 计划输入状态（本拍 planner.update 前）与 gate 状态（离线逐位重放）
-            "plan_ego": None if plan is None else [
-                round(chain["last_plan_ego"].x_lane, 6),
-                round(chain["last_plan_ego"].heading, 6),
-                round(chain["last_plan_ego"].steer_norm, 6)],
+            "plan_ego": None if plan is None or _plan_ego is None else [
+                round(_plan_ego.x_lane, 6),
+                round(_plan_ego.heading, 6),
+                round(_plan_ego.steer_norm, 6)],
             "plan_gate": None if plan is None else list(
                 chain["gate"].snapshot()),
             "maneuver": out.maneuver,
@@ -2438,7 +2483,10 @@ class SpeedRushModule(ActivityModule):
                 return self._perception
             try:
                 t0 = time.monotonic()
-                self._perception = StreetPerception(str(PERCEPTION_MODEL_FILE))
+                path, err = model_assets.select(PERCEPTION_MODEL_REL)
+                if path is None:
+                    raise RuntimeError(err)
+                self._perception = StreetPerception(str(path))
                 _tlog(self, f"[极速狂飙] 感知模型就绪（{time.monotonic() - t0:.1f}s）",
                       "INFO")
             except Exception as exc:  # noqa: BLE001 —— 感知故障不阻断对局流程
@@ -2455,7 +2503,7 @@ class SpeedRushModule(ActivityModule):
     def _ensure_depth_session(self, soft: bool = False):
         """懒加载深度几何的 ORT 会话（模式同 _ensure_perception）。
 
-        权重随包分发入库（MoGe q4f16，Apache-2.0）；缺失/加载失败时深度层
+        权重来自可选模型包（用户数据目录优先，安装包兜底；缺失/加载失败时深度层
         禁用、road_offset 走纯模型积分（几何主人缺席=无供数，不回退 2D——
         黄线链路已随 v4 换装整体退役）。``soft`` 语义同感知预加载。
         """
@@ -2464,7 +2512,10 @@ class SpeedRushModule(ActivityModule):
                 return self._depth_sess
             try:
                 t0 = time.monotonic()
-                self._depth_sess = load_session(DEPTH_MODEL_FILE)
+                path, err = model_assets.select(DEPTH_MODEL_REL)
+                if path is None:
+                    raise RuntimeError(err)
+                self._depth_sess = load_session(path)
                 _tlog(self, f"[极速狂飙] 深度几何模型就绪（{time.monotonic() - t0:.1f}s）",
                       "INFO")
             except Exception as exc:  # noqa: BLE001 —— 深度故障不阻断对局流程
@@ -2474,7 +2525,8 @@ class SpeedRushModule(ActivityModule):
                     return None
                 self._depth_failed = True
                 _tlog(self, f"[极速狂飙] 深度几何初始化失败，road_offset 退纯模型积分"
-                            f"（权重: {DEPTH_MODEL_FILE}）: {exc!r}", "WARNING")
+                            f"（权重: {model_assets.pack_path(DEPTH_MODEL_REL)}）: {exc!r}",
+                      "WARNING")
             return self._depth_sess
 
     # ---------- 模型预加载（UI 阶段空档，2026-10-23） ----------
@@ -2592,12 +2644,14 @@ class SpeedRushModule(ActivityModule):
             # 阶段后缀：一局两个驾驶阶段各成一个会话，便于按阶段筛数据
             session = session.with_name(f"{session.name}_p{phase}")
             session = _fresh_session_dir(session)
-            hud_render = None
+            hud_render: Callable[[Any, dict], Any] | None = None
             if self._debug_enabled():
                 cal = load_calib()
 
-                def hud_render(frame, snap):
+                def _render_hud(frame, snap):
                     return render_hud(frame, snap, cal)
+
+                hud_render = _render_hud
             rec = DriveRecorder(session, phase=phase, round_no=round_no,
                                 group_id=getattr(self._log_grp, "id", None),
                                 hud_render=hud_render,
@@ -2640,6 +2694,7 @@ class SpeedRushModule(ActivityModule):
         它是用户资产，不是可随手清的调试产物。
         """
         assert self.ctx is not None
+        ctx = self.ctx   # 闭包按局部名读：assert 收窄对 lambda 不生效
         try:
             stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
             group = _macro_group_dir(stamp)
@@ -2647,7 +2702,7 @@ class SpeedRushModule(ActivityModule):
                 group,
                 phase=phase,
                 group_id=getattr(self._log_grp, "id", None),
-                foreground=lambda: self.ctx.window_foreground,
+                foreground=lambda: ctx.window_foreground,
             )
             rec.start()
         except Exception as exc:  # noqa: BLE001 —— 采集失败不阻断流程
@@ -2838,14 +2893,21 @@ class _NoPlaneView:
     """平面尺度门拒绝帧的鸭子面：坏平面上的缘点/绿区整帧不进走廊表示。
 
     中心走墙/记忆保持，分带边界落空气墙（center±W/2）；coef=None 让
-    plane_health=degraded，坏帧不冒充健康几何。"""
+    plane_health=degraded，坏帧不冒充健康几何。
 
-    __slots__ = ("edge_pts", "coef", "rejects")
+    ``sides``/``left_edge_lane``/``right_edge_lane`` 与 DepthRoadReading 同形，
+    恒取"没有可信对"（0/None）——本视图不供对读数，供数链走墙/记忆。"""
+
+    __slots__ = ("edge_pts", "coef", "rejects",
+                 "sides", "left_edge_lane", "right_edge_lane")
 
     def __init__(self) -> None:
         self.edge_pts = ()
         self.coef = None
         self.rejects = ("平面尺度门拒绝",)
+        self.sides = 0
+        self.left_edge_lane: float | None = None
+        self.right_edge_lane: float | None = None
 
 
 class _EgoRoadObserver:
@@ -3026,7 +3088,8 @@ class _EgoRoadObserver:
         # master：绝对路心链（墙 → 绿区 → 绝对记忆），pair/slot 不接棒
         if master:
             pair = None
-            if new and self._plane_ok and grid is not None:
+            if new and self._plane_ok and grid is not None \
+                    and self._lane_w_m is not None:
                 reg = region_reading(grid, self._lane_w_m)
                 self._audit = {"l_clip": round(float(reg.left_clip_frac), 3),
                                "r_clip": round(float(reg.right_clip_frac), 3),
@@ -3038,10 +3101,9 @@ class _EgoRoadObserver:
                     pair = (reg.left_edge_lane, reg.right_edge_lane)
             return self._fallback(now, grid, bnd, fid, master=True, new=new,
                                   grid_off=grid_off, region_pair=pair)
-        ok = (bnd is not None and bnd.sides == 2
-              and bnd.left_edge_lane is not None
-              and bnd.right_edge_lane is not None)
-        if new and ok:
+        if (new and bnd is not None and bnd.sides == 2
+                and bnd.left_edge_lane is not None
+                and bnd.right_edge_lane is not None):
             return self._pair_tick(bnd.left_edge_lane, bnd.right_edge_lane,
                                    now, grid_off, "pair", bnd, grid, fid)
         return self._fallback(now, grid, bnd, fid, master=master, new=new,
@@ -3196,7 +3258,7 @@ class _EgoRoadObserver:
     def _fallback(self, now: float, grid, bnd, fid: int | None,
                   master: bool, new: bool = True,
                   grid_off: float | None = None,
-                  region_pair: tuple | None = None) -> Corridor | None:
+                  region_pair: tuple[float, float] | None = None) -> Corridor | None:
         """候选链（候选缺席/复用拍）：master=墙（绝对）→ 绿区（新鲜双侧）
         → 绝对记忆；回放链=墙 → 保鲜槽 → 区兜底（只在新鲜拍）→ 记忆。
         链尾记忆 TTL 内按 EMA 延伸，超时诚实 None。复用拍的栅格是旧证据，

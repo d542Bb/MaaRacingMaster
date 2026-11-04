@@ -11,6 +11,7 @@
 #   -SourceRuntimeDir       reuse an existing verified runtime (skip download+pip) for local re-verify
 #   -KeepGoing              continue on error (local debug); default fail-fast
 #   -SevenZ                 additionally build .7z primary artifact (solid LZMA2 256M, per C1-C bench) + .7z.sha256; zip always built as fallback
+#   -WithModels             include depth-mode ONNX weights (~82MB) in the package; default excludes them (optional model pack)
 #   -SevenZPath             7za.exe path (default: scripts\release\tools\7za.exe -> build\7z\extra\x64\7za.exe; missing => zip-only fallback, non-fatal)
 #   -ExcludeModules         人工兜底：在自动判定之外按 plugins/<目录名> 追加剔除（逗号分隔）
 #                           自动剔除：打包时刻已过 manifest VALID_UNTIL 的活动模块不随包分发，
@@ -34,6 +35,7 @@ param(
     [switch]$KeepGoing,
     [string]$ExcludeModules = '',  # 人工兜底：按 plugins/<目录名> 追加剔除（逗号分隔）；自动剔除见 §3.5
     [switch]$SevenZ,        # 额外产出 .7z 主推档（solid LZMA2 256M, 参数同 C1-C 基准）+ .7z.sha256；zip 保底始终产出
+    [switch]$WithModels,    # 离线全量包：把深度模式权重（约 82MB）也打进包；默认不带（由可选模型包提供）
     [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MaaRM zero usage)
     [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MaaRM zero usage)
@@ -607,7 +609,18 @@ foreach ($rel in @(
 # 归档区（maaracing_master/plugins/_archive/）整体不进发布包：归档模块已退役，
 # 目录位置即判据，不参与下方按 VALID_UNTIL 的剔除判定（那套只覆盖 plugins/ 顶层现役插件）。
 # 下方 §3.5 末尾有反向守卫：stage 里若出现该目录即报错，防静默带出。
-robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive .mimosa /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+
+# 深度模式权重默认不进包：两个 ONNX 只服务深度档，由独立模型包分发
+# （用户数据目录优先，见 model_assets.py）。-WithModels 产出离线全量包。
+$modelDir = Join-Path $StageRoot 'maaracing_master\plugins\speedrush\resources\models'
+# 默认包不带可选权重；-WithModels 的全量离线包保留三个权重
+if (-not $WithModels) {
+    foreach ($sub in @('lane', 'perception', 'depth')) {
+        $p = Join-Path $modelDir $sub
+        if (Test-Path $p) { Remove-Item $p -Recurse -Force }
+    }
+}
 
 # ---------- 3.5 活动模块分发剔除（ship-exclusion，全配置执行） ----------
 # 打包时刻已过有效期（manifest VALID_UNTIL）的插件不随包分发。判据复用
@@ -800,6 +813,21 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
             $errors.Add('DEV-TREE-LEAK: 校准台目录入包 -> ' +
                 $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
         }
+    # 本机 harness 状态目录（.mimosa/）只存在于开发工作树，不得随包发出
+    Get-ChildItem $StageRoot -Recurse -Directory -Filter '.mimosa' -EA SilentlyContinue |
+        ForEach-Object {
+            $errors.Add('DEV-TREE-LEAK: harness 状态目录入包 -> ' +
+                $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
+        }
+    # 默认包不得含深度权重（由可选模型包分发）；排除逻辑失效时当场失败
+    if (-not $WithModels) {
+        Get-ChildItem (Join-Path $StageRoot 'maaracing_master\plugins\speedrush\resources\models') `
+            -Recurse -File -Filter '*.onnx' -EA SilentlyContinue |
+            ForEach-Object {
+                $errors.Add('MODEL-LEAK: 默认包不得包含模型权重 -> ' +
+                    $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
+            }
+    }
     $consoleMarkers = @('mpe.cmd', 'policy_server.py', 'check_truth.py')
     Get-ChildItem $StageRoot -Recurse -File -EA SilentlyContinue |
         Where-Object { $consoleMarkers -contains $_.Name } |

@@ -398,10 +398,14 @@
 首帧 ~115ms 是 DML kernel 预热，进驾驶页的倒计时窗口吸收。`_log_loop_pace` 每阶段
 出口报感知 P50/P95（验收判据 §二.3 的记账要求，已内置）。
 
-**资产与开关**：模型权重 `resources/onnx/perception/model.onnx`（AGPL-3.0 衍生，
-**随包分发入库**，来源/许可声明见 `resources/onnx/README.md` 与 THIRD_PARTY_LICENSES
-「模型权重」节）；`REQUIRED_ASSETS` 声明 + sidecar 启动前检查（speedrush 是该机制
-第一个真实使用者，2026-09-24 起声明感知+深度两份权重）。
+**资产与开关**：模型权重 `resources/models/perception/model.onnx`（AGPL-3.0 衍生）与
+`resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx`（Apache-2.0）——
+**发布包默认不带**，由可选模型包提供；运行时用户数据目录优先、安装包兜底
+（`model_assets.py`：尺寸 + SHA256 校验），来源/许可声明见 `resources/models/README.md`
+与 THIRD_PARTY_LICENSES「模型权重」节。线观测权重 `resources/models/lane/plus_small_384x640.onnx`
+也随同一可选模型包分发；它不参与深度档启动门禁，缺失时线观测跳过、供数退回深度/墙。
+模块级 `REQUIRED_ASSETS` 已清空；深度模式启动前校验 perception+depth，缺失/损坏在连接
+游戏前终止，直行/宏录制不依赖权重。
 配置键 `perception_mode`（默认 False，profile 白名单已加）：开启后驾驶阶段逐帧检测、
 结果存 `_last_perception` 并经 `get_module_config._state.perception_last` 透出 GUI；
 初始化失败自动禁用、不阻断对局（与录制器同一姿态）。
@@ -654,7 +658,7 @@ road_offset 相关 0.43~0.64、零相位滞后；帧间跳变在弯道局高于 
 读到的是人行道外缘（语义与旧 q20 的"人行道内缘"锚点不同，已记录于回归锁锚点注）。
 时延：推理 ~20ms（折叠口径）+ 后处理 p50 ≈80ms，异步 worker 承载（150ms 窗）。
 
-**驾驶模式档**（module config `drive_mode`，默认 `depth`；旧存档的 `straight_mode` /
+**驾驶模式档**（module config `drive_mode`，默认 `straight`；旧存档的 `straight_mode` /
 `macro_mode` 两个布尔键由 `normalize_config` 在读写前折算成单键，宏优先，并顺手关掉
 直行档残留的录制开关）：`depth`=正常全链驾驶；`straight`=**全程直行基线**——接管手柄后方向归零、
 油门恒踩（`throttle_raw` 读 decision.json 单一真源），感知与深度都不加载（不建控制链、
@@ -665,14 +669,16 @@ HUD 读数观察线程（目录跟随 run_dir 命名 `<局前缀>_p<阶段>/hud/
 弃权拍 road_offset=None → planner 退纯模型积分（一个 job 一个主人）的语义不变。
 GUI 的驾驶模式分段、宏组下拉显隐、录制开关按档换文案、任务卡摘要与运行状态行全部由本模块
 声明（`CONFIG_UI` / `config_summary` / `config_status`），壳按契约通用渲染（ADR-0016）。
+深度权重缺失时，深度选项带「↓」徽章，字段下方挂安装提示与「下载模型包 / 打开数据目录」
+两个固定动作；提示文本指向 `data/speedrush/models/`，装好后重启即消失。
 
 **坑点**：
 - **ego 掩码已退役**（2026-10-10 挖除缝合并）：挖除=自车 3D 框（|X|<1.3 &
   Z<10）∪ 物体候选区，逐点 × 剃本体刀（hgt>0.15），`_dig_3d_mask` 一条缝供
   找边/栅格/质量门共用——跳坡/换车自动适应（车与相机刚性连接，Z 域不变），
   不再需要换车重算；ego_mask.json 资产已删。
-- 权重缺失/推理异常 → observe 恒 None，深度层静默禁用（WARNING 一次），控制链
-  不因感知停摆（与 perception 同一姿态）。
+- 权重缺失/校验失败 → 深度模式在连接游戏前终止；运行期加载异常 → observe 恒 None，
+  深度层静默禁用（WARNING 一次），控制链不因感知停摆（与 perception 同一姿态）。
 - 旧 q20 消费算法（全局逐行 q20 基线+固定相对门+双守卫）已被金标重考证伪，
   不得回退——过程与证据在 git 历史（ef5a42d~5f83a84 一代）与本区 README。
 
@@ -682,7 +688,7 @@ GUI 的驾驶模式分段、宏组下拉显隐、录制开关按档换文案、�
 commit `32ba962`/`2dd53b0`；历史小节留档，勿按其口径理解现行为）：
 
 - **几何真源统一**：帧 → MoGe-2 q4f16 折叠静态图（权重
-  `resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx`，DA-S 权重
+  `resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx`，DA-S 权重
   已删除）→ 点图 336×598 线性升采样全幅 → **逐帧自估焦距**（官方
   recover_focal_shift 链路，后处理 `moge_post.py`：公式链对齐官方，shift 求解
   用模式搜索替代 scipy——demo 帧与 LM 解一致 <1e-5 且快 30~100 倍）。静态内参
@@ -1422,6 +1428,11 @@ trace 观测面：`lane_obs.lost`（连续无证据拍数）、`lane_obs.usable/
 `lane_obs.focal`（线角用的逐帧全幅焦距）、`lat_ctrl.unver/blind`、
 `ro_origin`（走廊中心实际原点：line / 深度来源）。
 
+**线观测模型与降级**：线模型随可选模型包分发（`lane/plus_small_384x640.onnx`），
+训练自 BDD100K，随可选模型包按非商业/科研许可分发（完整条款随包）。模型缺失或校验失败时 worker
+不启动，`lane` 恒 None，供数退回深度/墙；深度档启动不受影响。日志按 INFO 记
+「线观测未启动」，不按故障刷警告。
+
 **线观测的绝对位与线锁（lane_obs，2026-10-31）**：线道号默认由新鲜深度锚
 初始化；线连续稳定 `LINE_LOCK_TICKS`（5）拍后进入**线锁**——深度锚不再改判
 道号、也不再否决线（整道级深度跳变时两根线会整齐地支持错误网格）。线锁只在
@@ -1444,8 +1455,8 @@ kind-x-t-枚数-σ-年龄-来源-纵深/身份）；调试图 BEV 叠
 中心带，下区两条子带：选择层（机会/路点/目标/自车，横轴 3s）与
 转向力度-时间（最近 6s 杆量，上=R 下=L）；`probe_selection_calib.py` 读一局
 录制 trace，输出层翻转、中心带内是否仍修正、机会目标与人工横位差、人工
-0.5/1 道变道用时（行为对照；现役可达性由运动学推导，不用人工节奏）。游戏日志
-`E:\DFJS\g112\Saved\Logs\g112.log` 的 `Round stat flush` 提供
+0.5/1 道变道用时（行为对照；现役可达性由运动学推导，不用人工节奏）。对局日志
+的 `Round stat flush` 提供
 `overtake/collect_coin/destroy_car/mileage_cm` 对账（人类录制局 45~52 币，
 控制局同源口径仅 3 币）。
 

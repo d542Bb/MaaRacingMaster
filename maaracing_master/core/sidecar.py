@@ -1411,10 +1411,25 @@ class SidecarService:
     def open_user_data_folder(self, params):
         """用资源管理器打开用户数据目录（%APPDATA%/MaaRacingMaster）。
 
+        可选 ``subpath`` 指向目录内的子目录（如模型安装位置）；只接受相对路径，
+        拒绝绝对路径、盘符与 ``..``，解析后再次确认仍在用户数据目录内。
         目录不存在时自动创建，避免首次运行即报错。os.startfile 是 Windows
         原生调起关联程序的方式，比 subprocess.Popen(['explorer', path]) 更稳。
         """
-        path = user_data_dir()
+        root = user_data_dir()
+        path = root
+        sub = params.get("subpath") if isinstance(params, dict) else None
+        if sub is not None:
+            if not isinstance(sub, str) or not sub.strip():
+                return (False, None, "子目录必须是非空相对路径")
+            rel = Path(sub.strip())
+            if rel.is_absolute() or (rel.parts and ":" in rel.parts[0]) or ".." in rel.parts:
+                return (False, None, "子目录必须位于用户数据目录内")
+            path = (root / rel).resolve()
+            try:
+                path.relative_to(root.resolve())
+            except ValueError:
+                return (False, None, "子目录必须位于用户数据目录内")
         try:
             path.mkdir(parents=True, exist_ok=True)
             os.startfile(str(path))  # type: ignore[attr-defined]  # Windows 特有
@@ -1644,6 +1659,11 @@ class SidecarService:
         f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json",
         f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
     )
+    # 显式选 GitHub 时不回退 CNB：更新源按钮是用户选择，不能悄悄换源。
+    _RELEASE_URLS_GITHUB = (
+        f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json",
+        f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+    )
     _ANNOUNCEMENT_URLS = (
         f"{_CNB_RAW_BASE}/docs/announcement.json",
         f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/announcement.json",
@@ -1664,22 +1684,28 @@ class SidecarService:
         多源顺序（CNB 优先，2026-09-04）：CNB raw 版本标记 → GitHub raw 版本标记 →
         GitHub API releases/latest。前两者读 release.yml 生成的 docs/latest_release.json
         （{tag, version, published_at, download_url}）；最后回退官方 API 原生字段。
+        `params.source` 可选 `cnb`（默认）或 `github`：选 GitHub 时只查 GitHub 两源，
+        不悄悄回退 CNB；返回值带 `source` 说明实际命中的源。
 
         每个源都过同一个校验器（`remote_meta.parse_release`）：tag 不合规的源按
         「该源不可用」跳过、继续 fallback。`download_url` 只接受官方域，不合规即回退
         官方 release 页——远程数据不得决定把用户带去哪个站点。
         """
+        source = "github" if isinstance(params, dict) and params.get("source") == "github" else "cnb"
+        urls = self._RELEASE_URLS_GITHUB if source == "github" else self._RELEASE_URLS
         latest: str | None = None
         published = ""
         download_url = ""
-        for url in self._RELEASE_URLS:
+        used = source
+        for url in urls:
             try:
                 rel = parse_release(json.loads(self._http_get(url)))
             except HTTPError as exc:
                 if exc.code == 404 and url.startswith("https://api.github.com"):
                     # 仅 GitHub 官方 API 的 404 权威判定「仓库无 release」；CNB raw 404
                     # 只说明标记文件尚未生成（发版前），继续尝试后续源。
-                    return (True, {"has_update": False, "error": None, "status": "no_release"}, None)
+                    return (True, {"has_update": False, "error": None,
+                                   "status": "no_release", "source": used}, None)
                 continue
             except (URLError, TimeoutError, OSError, ValueError, TypeError):
                 continue
@@ -1688,10 +1714,11 @@ class SidecarService:
             latest = rel["tag"]
             published = rel["published_at"]
             download_url = rel["download_url"] or EXTERNAL_TARGETS["release"]
+            used = "cnb" if url.startswith("https://cnb.cool") else "github"
             break
         if latest is None:
             return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试",
-                           "status": "network"}, None)
+                           "status": "network", "source": source}, None)
 
         with self._lock:
             self._remote_urls["download"] = download_url
@@ -1704,6 +1731,7 @@ class SidecarService:
             "download_url": download_url,
             "error": None,
             "status": "ok",
+            "source": used,
         }, None)
 
     def fetch_announcement(self, params):
@@ -1966,7 +1994,7 @@ class SidecarService:
         _save_profile({"debug": cur})
         action = "提级" if enabled else "恢复"
         logger.log(f"性能优先({action}): {process_priority.describe(applied)}",
-                   None if enabled else "DEBUG")
+                   "INFO" if enabled else "DEBUG")
         return (True, {"boost_priority": enabled}, None)
 
     def close(self, params):

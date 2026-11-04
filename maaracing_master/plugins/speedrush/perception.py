@@ -2,7 +2,8 @@
 """阶段 B 物品感知层：驾驶帧 → 候选框流（街车 / 金币 / 奖励车）。
 
 **分层归属**：类别语义（car/coin/bonus_car 的名字、阈值、模型资产）是**本插件**的业务
-声明——模型由本插件自带（``resources/onnx/model.onnx``，许可声明见该目录 README），
+声明——模型由本插件提供（源码树内为 ``resources/models/perception/model.onnx``；
+发布包默认不带，走可选模型包，见 ``model_assets``），
 推理复用 ``core.yolo_detector``（方向 plugin→core，红线 1）。core 不知道任何类别名。
 
 **输出契约**（供世界模型层消费，control-route §一 分层表「物品感知」行）：
@@ -28,7 +29,7 @@ import numpy as np
 
 from maaracing_master.core.yolo_detector import YOLODetector
 
-# 模型类别语义（与 resources/onnx/model.onnx 的 names 元数据一致；
+# 模型类别语义（与 resources/models/perception/model.onnx 的 names 元数据一致；
 # 构造时校验，防止换模型后静默错映射）
 CLASS_CARS = "car"
 CLASS_COINS = "coin"

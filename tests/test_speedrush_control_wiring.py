@@ -570,8 +570,8 @@ def test_control_mode_config_roundtrip():
 
 def test_straight_mode_config_roundtrip():
     m = _module()
-    assert m._drive_mode == "depth"             # 默认走正常深度几何驾驶
-    assert smod.SpeedRushModule.DEFAULT_MODULE_CONFIG["drive_mode"] == "depth"
+    assert m._drive_mode == "straight"           # 默认直行：发布包不带深度权重
+    assert smod.SpeedRushModule.DEFAULT_MODULE_CONFIG["drive_mode"] == "straight"
     out = m.set_module_config({"drive_mode": "straight"})
     assert out["drive_mode"] == "straight" and m._drive_mode == "straight"
     assert m.set_module_config({"drive_mode": "depth"})["drive_mode"] == "depth"
@@ -741,8 +741,8 @@ def test_control_last_shape():
 
 def _bnd_clusters(*clusters, sides=2):
     """update() 的鸭子消费面：sides + 两侧 edge_lane（DepthRoadReading 形状）。"""
-    l, r = (clusters[0], clusters[-1]) if len(clusters) >= 2 else (None, None)
-    return SimpleNamespace(sides=sides, left_edge_lane=l, right_edge_lane=r)
+    left, right = (clusters[0], clusters[-1]) if len(clusters) >= 2 else (None, None)
+    return SimpleNamespace(sides=sides, left_edge_lane=left, right_edge_lane=right)
 
 
 def _off(c):

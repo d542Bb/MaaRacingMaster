@@ -176,17 +176,17 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
             cen = _rel_center(road, zc)
             if cen is None:
                 continue
-            l = (b.left - cen) + wall_margin
-            r = (b.right - cen) - wall_margin
-            if l > r:
+            left = (b.left - cen) + wall_margin
+            right = (b.right - cen) - wall_margin
+            if left > right:
                 free = min(free, max(0.0, b.z0))
                 blocker = "space"
                 break
-            if x_rel < l or x_rel > r:
+            if x_rel < left or x_rel > right:
                 free = min(free, max(0.0, b.z0))
                 blocker = "space"
                 break
-            m = min(x_rel - l, r - x_rel)
+            m = min(x_rel - left, right - x_rel)
             width_margin = m if width_margin is None else min(width_margin, m)
         # 2) 2D/米制占用：只截断该车道，不改变别的车道。
         unknown_car = False

@@ -36,7 +36,7 @@ Z_BINS = [(4, 8), (8, 14), (14, 20), (20, 30), (30, 40), (40, 50)]
 
 def main() -> None:
     wpath = (Path(__file__).resolve().parents[3]
-             / "maaracing_master/plugins/speedrush/resources/onnx/depth"
+             / "maaracing_master/plugins/speedrush/resources/models/depth"
              / "moge2_vits_static_336x598_t1032_q4f16.onnx")
     sess = cds._moge_session(0, wpath=wpath)
     for label, path in FRAMES:

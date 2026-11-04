@@ -1,6 +1,6 @@
 """旧检测模型在**新录帧**上的可用性探针（不改生产，只做一次测量）。
 
-**要回答什么**：`archive/racing/resources/onnx/model.onnx`（旧赛车栈的 YOLO11n，3 类
+**要回答什么**：`archive/racing/resources/models/model.onnx`（旧赛车栈的 YOLO11n，3 类
 `coin/car/bonus_car`）今天还能不能用——即新版本的画面是否还在它的域内。这是收益模型
 （`docs/plan/speedrush-control-route.md` 阶段 C）之前的必答题：目标识别不出来，收益表就是空谈。
 
@@ -199,7 +199,7 @@ def main() -> None:
     ap.add_argument("--limit-tiles", type=int, default=6)
     args = ap.parse_args()
     if not Path(args.model).exists():
-        raise SystemExit(f"模型不存在：{args.model}（旧栈权重在 archive/racing/resources/onnx/）")
+        raise SystemExit(f"模型不存在：{args.model}（旧栈权重在 archive/racing/resources/models/）")
     (cmd_stats if args.mode == "stats" else cmd_sheet)(args)
 
 

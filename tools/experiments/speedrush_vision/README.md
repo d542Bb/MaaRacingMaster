@@ -14,7 +14,7 @@ status: active
 
 ## 素材与方法
 
-- **模型**：`archive/racing/resources/onnx/model.onnx`（旧赛车栈的 **YOLO11n**，2026-07-21 训，
+- **模型**：`archive/racing/resources/models/model.onnx`（旧赛车栈的 **YOLO11n**，2026-07-21 训，
   3 类 `coin / car / bonus_car`，输入 640 letterbox，ONNX 元信息里有 `names`）。构建产物里也随包分发。
 
 - **帧**：`data/speedrush/demos/` 的新录帧（1280×720），4 个会话 × 15 帧（掐掉首尾 10%）。
@@ -1455,7 +1455,7 @@ conv559 被拒）、金标层 obstacle 坏率 44%、wall/curve 层块形态劣�
 2. **门重标对症**：q4f16\@336 G=0.05 主场景（弯道连续层）dev −5/12px，优于 @518 参照
    （−24/27px，n 级相同）；预测的补偿点（0.052）附近成立。
 3. **裁决与生产切换**：`GATE=0.05`、`DEFAULT_SHORT=336`、权重 `depth_small_q4f16.onnx`
-   **入库** `resources/onnx/`（19MB，Apache-2.0，随包分发）；时延 p95 24.7ms 满足 30fps
+   **入库** `resources/models/`（19MB，Apache-2.0，随包分发）；时延 p95 24.7ms 满足 30fps
    预算。@518 降为质量上限参照档。
 4. **如实代价**：kerb 弱台阶层、贴墙窗（437 R 被本底守卫拦——@336 本底抬升使门半失效）、
    骑缘窗在场率降（straddle L 7/37、R 11/37）——这些场景在本档**弃权退纯模型积分**

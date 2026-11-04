@@ -11,7 +11,7 @@ import dataclasses
 
 import pytest
 
-from maaracing_master.plugins.speedrush.config import Traffic, load_decision
+from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.traffic import (
     OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, OUTCOME_PRESUMED_PASS,
     TrafficObserver)

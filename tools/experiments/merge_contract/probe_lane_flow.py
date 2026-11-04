@@ -59,9 +59,9 @@ from maaracing_master.plugins.speedrush.lane_obs import (  # noqa: E402
 DEFAULT_DEBUG = os.path.join(os.environ.get(
     "MAA_DEBUG", r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug"),
     "speedrush")
-DEFAULT_WEIGHTS = os.path.join(os.environ.get(
-    "MAA_DATA", r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data"),
-    "speedrush", "models", "plus_small_384x640.onnx")
+DEFAULT_WEIGHTS = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "maaracing_master", "plugins",
+    "speedrush", "resources", "models", "lane", "plus_small_384x640.onnx"))
 
 VPX_HALF = VPX / 2.0
 LR_GATE_LANE = 0.25           # 左右位移差门

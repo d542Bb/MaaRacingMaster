@@ -96,7 +96,7 @@ KIND_BONUS = "bonus"
 IMAGE_H = 720
 
 
-def x_lane_of(cx: int, cy: int, cal: Calib) -> float:
+def x_lane_of(cx: float, cy: float, cal: Calib) -> float:
     """A1 归一尺子（保险杠机位，无自车项；公式见本模块 docstring）。公开供
     tracking 层复用——同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
     return (cx - cal.vpx) / (cy - cal.y_h) * cal.a_x

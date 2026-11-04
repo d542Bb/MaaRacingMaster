@@ -106,10 +106,24 @@
 
         <div class="card">
           <div class="card-head"><h3>版本与更新</h3>
-            <button class="maarm-btn" id="btn-check-update" type="button">
-              <i data-icon="rotate-cw"></i>
-              检查更新
-            </button>
+            <div class="ver-head-actions">
+              <button class="maarm-btn update-source-trigger" id="btn-update-source" type="button"
+                      aria-haspopup="listbox" aria-expanded="false" aria-controls="update-source-menu"
+                      title="选择更新源">
+                <span class="update-source-icon" id="update-source-icon-cnb">
+                  <img src="cnb.svg" alt="">
+                </span>
+                <span class="update-source-icon" id="update-source-icon-github" hidden>
+                  <i data-icon="github-solid"></i>
+                </span>
+                <span id="update-source-label">CNB</span>
+                <i data-icon="chevron-down"></i>
+              </button>
+              <button class="maarm-btn" id="btn-check-update" type="button">
+                <i data-icon="rotate-cw"></i>
+                检查更新
+              </button>
+            </div>
           </div>
           <div class="card-body">
             <div class="ver-row"><span class="ver-label">当前版本</span><span class="ver-value" id="about-ver-current">--</span></div>
@@ -214,6 +228,22 @@
   </footer>
 
   <div id="error-toast"></div>
+
+  <!-- 固定定位，挂 body 下避免被卡片 overflow 裁切 -->
+  <div class="update-source-menu" id="update-source-menu" role="listbox"
+       aria-label="更新源" hidden>
+    <button class="update-source-item is-active" type="button" role="option"
+            data-source="cnb" aria-selected="true">
+      <img src="cnb.svg" alt=""><span>CNB</span>
+      <i data-icon="check" class="update-source-check"></i>
+    </button>
+    <button class="update-source-item" type="button" role="option"
+            data-source="github" aria-selected="false">
+      <i data-icon="github-solid"></i><span>GitHub</span>
+      <i data-icon="check" class="update-source-check"></i>
+    </button>
+  </div>
+
   <script src="icons.js"></script>
   <script src="vendor.morphicons.js"></script>
   <script src="peep-consumer.js"></script>

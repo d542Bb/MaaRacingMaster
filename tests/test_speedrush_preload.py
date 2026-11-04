@@ -78,6 +78,7 @@ def test_straight_mode_never_preloads():
 
 def test_record_perception_skips_depth_model(monkeypatch):
     mod = _module()
+    mod._drive_mode = "depth"
     mod._control_mode = False
     mod._perception_mode = True
     calls = {"d": 0, "p": 0}

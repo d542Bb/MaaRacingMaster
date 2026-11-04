@@ -128,6 +128,7 @@ def env(monkeypatch, tmp_path):
     ctx = _FakeCtx(clock)
     mod = sr.SpeedRushModule(ctx)  # type: ignore[arg-type]
     mod._running = True  # 默认为"已启动"；需停机的用例自行覆盖
+    mod._drive_mode = "depth"   # 本组测深度档循环/门控，不依赖默认档
     return mod, ctx, clock
 
 

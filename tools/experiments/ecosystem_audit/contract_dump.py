@@ -7,7 +7,7 @@ algo_fields/decision_sources/effects/wait_keys/tuning_keys/fallback）、_effect
 effect_required_conditions）、DecisionFacts.freeze 硬编码推导（derived/
 derived_sources）。与 commit 174c87a 的 policy.py 常量逐字段一致。
 
-运行：.venv python tools/experiments/ecosystem-audit/contract_dump.py
+运行：.venv python tools/experiments/ecosystem_audit/contract_dump.py
 幂等：每次以本文件常量整体重建 engine_contract 段（round-trip 制式写回）。
 """
 from __future__ import annotations

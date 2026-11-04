@@ -695,7 +695,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 - `core/key_state.py`：具名键盘按键状态读取（只读 `GetAsyncKeyState`），插件经此读取驾驶键；插件不得直接 import `window_utils`（平台件边界同 §5.3 的 `xinput.py`）。
 - `ActivityModule.config_choices()`（默认 `{}`）：模块为下拉型配置项提供静态可选值；`sidecar._module_config_view` 并入 `_choices` 供 GUI 展示，不创建模块实例，取值合法性仍由模块自行校验。
 - `ActivityModule.normalize_config()`（默认原样返回）：模块把旧版配置键折算成当前配置面，并施加自身的不变量（如直行档不许残留录制开关）；sidecar 在读回存档与接收 GUI 写入前各调一次。配置面演进留在模块内，core 不认任何模块的旧字段；归一失败记 WARNING 并按原样继续。
-- `ActivityModule.CONFIG_UI_CONTRACT` / `CONFIG_UI`（默认未声明 = 无面板）：模块用有序分组声明配置面板（控件类型、标签、说明、静态选项、动态候选引用、数字约束、单条件显隐、按值换文案）；字段键必须在本模块 `DEFAULT_MODULE_CONFIG` 内。契约与状态机见 `core/config_ui_contract.py`（`none/ok/partial/invalid/unsupported_version`），宿主只做重建式白名单与通用渲染，见 ADR-0016。侧通道：`config_summary(config)` 产任务卡摘要（入参是宿主投影后的有效配置），`config_status()` 产面板状态行（仅运行中实例，`{text, level}`）。
+- `ActivityModule.CONFIG_UI_CONTRACT` / `CONFIG_UI`（默认未声明 = 无面板）：模块用有序分组声明配置面板（控件类型、标签、说明、静态选项、动态候选引用、数字约束、单条件显隐、按值换文案；分段选项可带徽章，字段可挂内联提示与宿主固定动作 `download_release` / `open_user_data_folder`）；字段键必须在本模块 `DEFAULT_MODULE_CONFIG` 内。契约与状态机见 `core/config_ui_contract.py`（`none/ok/partial/invalid/unsupported_version`），宿主只做重建式白名单与通用渲染，见 ADR-0016。侧通道：`config_summary(config)` 产任务卡摘要（入参是宿主投影后的有效配置），`config_status()` 产面板状态行（仅运行中实例，`{text, level}`）。
 - 配置响应附加元数据（`_ui/_ui_state/_ui_note/_choices/_summary/_status/_rev`）由 `sidecar._attach_config_meta` 在静态视图与 live 两路统一注入；`_rev` 每次 `set_module_config` 成功 +1，前端据此丢弃过期的轮询响应。
 
 ### 5.4 MAA Framework API

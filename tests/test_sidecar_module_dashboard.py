@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import pytest
 
+from maaracing_master.core.base import ActivityModule
+
 try:
     from maaracing_master.core import sidecar as sc
-    from maaracing_master.core.base import ActivityModule
     from maaracing_master.core.dashboard_contract import DASHBOARD_CONTRACT_VERSION
     from maaracing_master.core.sidecar import SidecarService
     _OK, _ERR = True, ""

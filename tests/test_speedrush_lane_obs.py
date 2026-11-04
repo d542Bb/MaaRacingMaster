@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""S1 影子线观测：等间距 + 深度锚定、颜色无关、锚跳变确认与降级。
+"""线观测：等间距 + 深度锚定、颜色无关、锚跳变确认与降级。
 
 2026-10-24 重写后，道号不再由黄边界/颜色决定：每拍用新鲜深度路心做锚点，
 ``k=round(anchor+L)``，线只负责等间距约束与子道残差修正。本文件锁住这条
@@ -499,6 +499,21 @@ def test_worker_missing_weights_degrades():
     assert w.error is not None
     assert w.latest() is None
     w.stop()
+
+
+def test_worker_missing_pack_is_optional_not_fault(monkeypatch):
+    """线模型随可选模型包分发：缺包应标记为可选缺失（INFO），校验失败才算故障。"""
+    rel = "resources/models/lane/plus_small_384x640.onnx"
+    monkeypatch.setattr(la.model_assets, "select", lambda _rel: (None, f"缺少 {rel}"))
+    w = LaneObsWorker(LaneObsConfig(enabled=True, weights=rel))
+    w.start()
+    assert w.optional_missing is True and w.latest() is None
+
+    monkeypatch.setattr(la.model_assets, "select",
+                        lambda _rel: (None, f"{rel} 校验失败（文件损坏）"))
+    w = LaneObsWorker(LaneObsConfig(enabled=True, weights=rel))
+    w.start()
+    assert w.optional_missing is False and w.latest() is None
 
 
 def test_dml_busy_skips_without_calling_model(monkeypatch):

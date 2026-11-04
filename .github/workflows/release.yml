@@ -30,11 +30,12 @@ jobs:
         run: python tools/navkit/check_truth.py
 
       - name: 安装 pytest 与轻量测试依赖
-        # 同 test.yml：不采用 `.[test]`（会连带安装 Windows-only 主依赖，Linux runner 装不上），
-        # 只装 pytest + 测试需要的轻量依赖（numpy / opencv-headless，均有 Linux wheel）。
+        # 同 test.yml：不采用 `.[test]`（会连带安装 Windows-only 主依赖，Linux runner
+        # 装不上）。只装跨平台依赖：pytest / numpy / opencv-headless / onnxruntime(CPU) /
+        # MaaFw——后两者被生产模块顶层 import，缺了会在收集阶段直接失败。
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest>=7.0" numpy opencv-python-headless
+          pip install "pytest>=7.0" numpy opencv-python-headless "onnxruntime==1.24.4" "MaaFw==5.12.3"
 
       - name: 运行单元测试
         run: python -m pytest tests -v
@@ -146,6 +147,7 @@ jobs:
             ${{ steps.changelog.outputs.log }}
 
             ---
+            > **深度几何与线观测需要额外下载模型包**：`MaaRacingMaster-speedrush-models-${{ steps.version.outputs.version }}.zip`（同页资产）；直行与宏录制不需要下载。
             > 版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/) 规范
           files: |
             dist/*.tar.gz
@@ -248,7 +250,18 @@ jobs:
           if (-not (Test-Path $sevenz)) { throw "7z 未生成: $sevenz" }
           Get-Item $zip, $sevenz | Select-Object Name, Length
 
-      - name: 补传 zip + 7z 到 Release
+      - name: 生成可选模型包（深度 + 线观测）
+        shell: pwsh
+        run: |
+          # 主包默认不带权重；模型包单独作为 Release 资产分发（用户按 models/README 安装）
+          python scripts/release/make_model_pack.py `
+            --version "$env:VER" `
+            --out "${{ github.workspace }}\build\release"
+          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-speedrush-models-$env:VER.zip"
+          if (-not (Test-Path $mp)) { throw "模型包未生成: $mp" }
+          Get-Item $mp, "$mp.sha256" | Select-Object Name, Length
+
+      - name: 补传 zip + 7z + 模型包到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAGNAME }}
@@ -257,6 +270,8 @@ jobs:
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip.sha256
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z.sha256
+            ${{ github.workspace }}/build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip
+            ${{ github.workspace }}/build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip.sha256
 
   # CNB（cnb.cool）Release 资产同步：把 GitHub Release 的 zip/sha256 推到 CNB 仓库的
   # 同名 Release。CNB 构建节点只有 Linux 容器（无 Windows），无法自行构建本项目发布包，
@@ -286,13 +301,14 @@ jobs:
           VER="${TAG#v}"
           ZIP="MaaRacingMaster-${VER}-win-x64.zip"
           SZ7="MaaRacingMaster-${VER}-win-x64.7z"
+          MODELS="MaaRacingMaster-speedrush-models-${VER}.zip"
 
-          # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）：zip 保底 + 7z 主推，各带 sha256
-          for f in "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256"; do
+          # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）：zip 保底 + 7z 主推 + 深度模型包，各带 sha256
+          for f in "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256" "$MODELS" "${MODELS}.sha256"; do
             curl -fsSL --retry 3 -o "$f" \
               "https://github.com/${GH_REPO}/releases/download/${TAG}/${f}"
           done
-          ls -lh "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256"
+          ls -lh "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256" "$MODELS" "${MODELS}.sha256"
 
           # 2) 确保 CNB 上存在同名 Release（镜像只同步 git refs，不同步 Release 元数据）
           # CNB API 的 GET 必须带 Accept: application/json，缺失返回 406（实测）
@@ -336,4 +352,6 @@ jobs:
           upload_asset "${ZIP}.sha256"
           upload_asset "$SZ7"
           upload_asset "${SZ7}.sha256"
+          upload_asset "$MODELS"
+          upload_asset "${MODELS}.sha256"
           echo "CNB Release 同步完成: https://cnb.cool/${CNB_PATH}/-/releases"

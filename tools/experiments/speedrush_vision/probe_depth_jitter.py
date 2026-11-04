@@ -41,9 +41,9 @@ from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
 from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
-MOGE_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/onnx/depth"
+MOGE_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models/depth"
              / "moge2_vits_static_336x598_t1032_q4f16.onnx")
-YOLO_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/onnx/perception"
+YOLO_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models/perception"
              / "model.onnx")
 EGO_MASK_FILE = (REPO / "maaracing_master/plugins/speedrush/resources/calibration"
                  / "ego_mask.json")

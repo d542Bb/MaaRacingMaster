@@ -122,6 +122,66 @@ def test_option_contracts_and_unknown_members_are_rebuilt():
     assert result.state == C.UI_PARTIAL
 
 
+def test_option_badge_and_field_notice_are_normalized():
+    class _Mod:
+        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI = {"groups": [{"fields": [{
+            "key": "mode", "type": "segmented", "label": "模式",
+            "options": [
+                {"value": "a", "label": "A"},
+                {"value": "b", "label": "B", "badge": {"text": "↓", "level": "warn"}},
+                {"value": "c", "label": "C", "badge": {"text": "", "level": "warn"}},
+            ],
+            "notice": {
+                "text": "缺少权重", "level": "warn",
+                "actions": [
+                    {"label": "下载", "action": "download_release"},
+                    {"label": "打开", "action": "open_user_data_folder",
+                     "subpath": "data/speedrush/models"},
+                ],
+            },
+        }, {
+            "key": "mode2", "type": "segmented", "label": "模式2",
+            "options": [{"value": "a", "label": "A"}],
+            "notice": {"text": "坏提示", "actions": [
+                {"label": "坏动作", "action": "rm -rf"},
+            ]},
+        }]}]}
+
+    result = C.normalize_config_ui(_Mod, {"mode", "mode2"})
+    field = result.schema["groups"][0]["fields"][0]
+    assert "badge" not in field["options"][0]
+    assert field["options"][1]["badge"] == {"text": "↓", "level": "warn"}
+    assert "badge" not in field["options"][2]
+    assert field["notice"]["actions"] == [
+        {"label": "下载", "action": "download_release"},
+        {"label": "打开", "action": "open_user_data_folder",
+         "subpath": "data/speedrush/models"},
+    ]
+    assert any("提示动作无效" in w for w in result.warnings)
+
+
+def test_badge_is_segmented_only_and_unsafe_subpath_is_dropped():
+    class _Mod:
+        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI = {"groups": [{"fields": [
+            {"key": "pick", "type": "select", "label": "选",
+             "options": [{"value": "a", "label": "A", "badge": {"text": "↓"}}]},
+            {"key": "mode", "type": "segmented", "label": "模式",
+             "options": [{"value": "a", "label": "A"}],
+             "notice": {"text": "提示", "actions": [
+                 {"label": "打开", "action": "open_user_data_folder", "subpath": "../outside"},
+             ]}},
+        ]}]}
+
+    result = C.normalize_config_ui(_Mod, {"pick", "mode"})
+    fields = result.schema["groups"][0]["fields"]
+    assert "badge" not in fields[0]["options"][0]
+    action = fields[1]["notice"]["actions"][0]
+    assert "subpath" not in action
+    assert any("subpath" in w for w in result.warnings)
+
+
 def test_empty_declaration_is_invalid_not_none():
     class _Mod:
         CONFIG_UI_CONTRACT = 1

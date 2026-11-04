@@ -757,7 +757,9 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
     的 0.35 s 迎车门做物理否决；普通车擦撞只是时间成本（RULES §4.3）。
     到达门（C）只否决 `finish`：归因为 SHIFT_HELD 时本会成立的完成不成立，
     继续并线；撤销分支在它之前、超时分支照常。"""
-    tgt = by.get(s.lane_target)
+    lane_target = s.lane_target
+    assert lane_target is not None   # 并线态不变量：目标道在起意时写入
+    tgt = by.get(lane_target)
     t_tgt = _avail_s(tgt, p)
     since = max(0.0, clock - s.decided_t)
     unsafe = s.unsafe_s + dt_s if _cancel_blocked(tgt, p) else 0.0
@@ -775,13 +777,13 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
     blocked = bool(reject_shift_arrival and arrival is not None
                    and arrival.kind == ATTR_SHIFT_HELD)
     arrived = (not blocked
-               and abs(s.v_ref - s.lane_target) <= p.finish_tol_lane
+               and abs(s.v_ref - lane_target) <= p.finish_tol_lane
                and abs(s.v_est_lane_s) <= p.finish_v_tol_lane_s)
     timeout = clock - s.merge_started_t >= p.merge_max_s
     if arrived or timeout:
         # 超时落回**实测所在道**：车可能停在半道，硬判"完成"会把命令位钉在
         # 车根本没到的道上。超时是独立结局，不冒充 finish。
-        k = float(s.lane_target) if arrived else _drivable_lane(s.v_ref, by)
+        k = float(lane_target) if arrived else _drivable_lane(s.v_ref, by)
         st = replace(s, lane_ref=k, lane_from=k, lane_target=None,
                      phase=PHASE_KEEP, decided_t=clock, unsafe_s=unsafe,
                      merge_started_t=clock)

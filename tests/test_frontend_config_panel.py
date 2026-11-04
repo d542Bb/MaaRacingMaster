@@ -92,6 +92,14 @@ def test_panel_renders_text_only_and_guards_revisions():
         assert token in state_src
 
 
+def test_panel_renders_option_badges_and_notice_actions():
+    src = PANEL.read_text(encoding="utf-8")
+    for token in ("seg-badge", "field-notice", "download_release",
+                  "open_user_data_folder", "subpath"):
+        assert token in src, f"配置面板缺少 {token} 渲染/动作分支"
+    assert "innerHTML" not in src
+
+
 def test_switch_aria_keeps_explicit_title_and_desc_ids():
     body = _js_function_body(SETTINGS.read_text(encoding="utf-8"), "function wireSwitchAria")
     assert "if (!title.id)" in body

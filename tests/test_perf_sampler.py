@@ -13,7 +13,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import pytest
 
 from maaracing_master.core.perf_sampler import (
     PerfSampler, build_perf_payload)

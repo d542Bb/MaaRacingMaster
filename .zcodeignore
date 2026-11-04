@@ -66,7 +66,7 @@ docs/design/validation-report.json
 # 归档（被 sidecar + WinUI3 取代的旧 GUI、历史 spike）
 archive/
 
-# 插件模型权重随包分发入库（各权重许可与来源声明见对应插件 resources/onnx/
+# 插件模型权重随包分发入库（各权重许可与来源声明见对应插件 resources/models/
 # README 与 THIRD_PARTY_LICENSES.md「模型权重」节）
 
 # WinUI 3 / .NET 构建产物（apps/MaaRacingMaster.Shell）

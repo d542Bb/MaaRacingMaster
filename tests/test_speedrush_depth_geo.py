@@ -629,7 +629,8 @@ def test_moge_shift_solver_beats_shallow_valley_trap():
     """浅谷场景（step 迈得过真谷的形态）：模式搜索不得停在 x0=0 的假极小。"""
     # R(s) = (s + 0.05)² + 0.1·s² 的单谷函数，谷在 s = -1/22 ≈ -0.04545：
     # 大步长两侧试探都回升的形态（历史 frame 0 实证）——求解器必须走到真谷。
-    r = lambda s: (s + 0.05) ** 2 + 0.1 * s * s
+    def r(s):
+        return (s + 0.05) ** 2 + 0.1 * s * s
     x = moge_post._minimize_local(r, step=0.5)
     assert abs(x + 0.05 / 1.1) < 1e-4, f"{x}"
 
@@ -766,7 +767,6 @@ class _FakeBinding:
 
 def test_forward_binding_caches_and_overwrites_input():
     """binding 只建一次（会话级缓存），新帧内容覆写进同一固定缓冲。"""
-    import ctypes
     moge_post._BINDINGS.clear()
     sess = _BindableSess()
     img1 = np.zeros((1, 3, 720, 1280), np.float32)

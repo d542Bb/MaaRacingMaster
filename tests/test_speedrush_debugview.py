@@ -408,7 +408,7 @@ def test_writer_index_skips_throttled_and_keeps_seq_aligned(tmp_path, frame):
     except Exception:
         w.stop()
         raise
-    rows = [json.loads(l) for l in (tmp_path / "sess" / "frames.jsonl")
+    rows = [json.loads(line) for line in (tmp_path / "sess" / "frames.jsonl")
             .read_text(encoding="utf-8").splitlines()]
     assert len(rows) == w.saved == 1
     assert rows[0]["seq"] == 1 and rows[0]["file"] == "raw/0001_raw.jpg"
@@ -426,7 +426,7 @@ def test_writer_index_rows_carry_their_own_frame(tmp_path, frame):
     except Exception:
         w.stop()
         raise
-    rows = [json.loads(l) for l in (tmp_path / "sess" / "frames.jsonl")
+    rows = [json.loads(line) for line in (tmp_path / "sess" / "frames.jsonl")
             .read_text(encoding="utf-8").splitlines()]
     assert len(rows) == w.saved >= 1
     assert [r["seq"] for r in rows] == list(range(1, len(rows) + 1))

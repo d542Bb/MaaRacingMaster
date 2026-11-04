@@ -152,7 +152,7 @@ mcars/car_views/passes/cgroups/n_groups/best_*/occ/coarse/sel_dbg`；旧局回�
 
 - **不迁移旧探针本体**：历史文件不动，旧探针对旧数据照常可用（实验区纪律：
   探针钉的是当时的会话，证据随 commit）。
-- **统一读取器**：`tools/experiments/speedrush_trace_reader.py`——枚举三种旧
+- **统一读取器**：`tools/experiments/speedrush_trace/speedrush_trace_reader.py`——枚举三种旧
   布局 + 新布局、只产出数据行（跳过协议行）、按 stage 切分/过滤、p1/p2 配对、
   新布局行内 run_id/stage_id ↔ 旧布局目录名对齐。新探针一律经读取器取数；
   旧探针下次动用时换读取器入口。

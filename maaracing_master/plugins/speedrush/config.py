@@ -524,11 +524,11 @@ class Route:
 
 @dataclass(frozen=True)
 class LaneObs:
-    """S1 影子：轻量车道线观测（TwinLiteNet+ Small）。
+    """轻量车道线观测（TwinLiteNet+ Small）。
 
-    enabled=闸：false 时不建线程、零开销；true 时在独立 CPU 线程跑，
-    **只写 trace 的 lane_obs 列，不接控制**。weights 指向外部 ONNX
-    （不入库：权重训练自 BDD100K，分发条款需单独核对）；hz 是推送节流上限
+    enabled=闸：false 时不建线程、零开销；true 时在独立 CPU 线程跑。线可用时
+    作为供数链的位置原点并供车道成员插值，不可用时退回深度/墙。weights 指向
+    可选模型包内的 ONNX（训练自 BDD100K，适用非商业/科研许可）；hz 是推送节流上限
     （0=每拍推；队列深度 1 丢旧帧，真正的处理节拍由 worker 吞吐决定），
     detect_every 决定处理帧里做完整检测的比例。二者相乘才是检测频率。"""
 

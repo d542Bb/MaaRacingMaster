@@ -1,6 +1,6 @@
 """speedrush 驾驶感知可行性探针：旧 racing YOLO 模型在 speedrush 真机帧上的表现。
 
-**要回答的问题**（C 类：外部系统行为，禁止靠猜）：`archive/racing/resources/onnx/model.onnx`
+**要回答的问题**（C 类：外部系统行为，禁止靠猜）：`archive/racing/resources/models/model.onnx`
 是在 racing 画面训练出的 3 类检测器（coin/car/bonus_car）。speedrush 的车辆外观、金币
 形态、视角、光照是否与 racing 相近到**可直接复用**，此前无任何证据。本探针用真机帧实测。
 

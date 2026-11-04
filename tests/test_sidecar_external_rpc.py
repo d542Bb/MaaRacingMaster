@@ -105,6 +105,26 @@ def test_check_update_falls_back_to_next_source_on_bad_tag():
     assert ok and data["latest_tag"] == "1.2.3"
 
 
+def test_check_update_github_source_skips_cnb():
+    """显式选 GitHub 时不能悄悄用 CNB 的结果；返回值要标明实际来源。"""
+    urls = sc.SidecarService._RELEASE_URLS
+    gh = sc.SidecarService._RELEASE_URLS_GITHUB
+    svc = _service({
+        urls[0]: json.dumps({"tag": "v9.9.9"}),
+        gh[0]: json.dumps({"tag": "v1.2.3"}),
+    })
+    ok, data, _ = svc.check_update({"source": "github"})
+    assert ok and data["latest_tag"] == "1.2.3"
+    assert data["source"] == "github"
+
+
+def test_check_update_default_source_is_cnb():
+    urls = sc.SidecarService._RELEASE_URLS
+    svc = _service({urls[0]: json.dumps({"tag": "v9.9.9"})})
+    ok, data, _ = svc.check_update({})
+    assert ok and data["source"] == "cnb"
+
+
 def test_check_update_reports_network_failure_when_no_source_usable():
     svc = _service({})
     ok, data, _ = svc.check_update({})

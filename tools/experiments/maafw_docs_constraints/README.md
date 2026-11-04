@@ -1,4 +1,4 @@
-# maafw-docs-constraints — 官方文档论断在 5.12.3 的实测校准
+# maafw_docs_constraints — 官方文档论断在 5.12.3 的实测校准
 
 status: active
 
@@ -8,7 +8,7 @@ status: active
 
 ## v1\_duplicate\_register.py — Custom 注册命名空间
 
-复现：`& .venv\Scripts\python.exe tools/experiments/maafw-docs-constraints/v1_duplicate_register.py`（离线，假控制器黑帧，约 3s）
+复现：`& .venv\Scripts\python.exe tools/experiments/maafw_docs_constraints/v1_duplicate_register.py`（离线，假控制器黑帧，约 3s）
 
 **文档口径（2.2，v5.13 起写明）**：识别与动作共享一个区分大小写的命名空间；
 空名或重名 → 返回 false 且**保留已有注册**；替换须先 unregister。

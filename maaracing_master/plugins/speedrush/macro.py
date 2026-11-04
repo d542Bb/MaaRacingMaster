@@ -352,6 +352,7 @@ class MacroRecorder:
     def _run(self) -> None:
         interval = 1.0 / self.poll_hz
         probe_deadline = time.monotonic() + PAD_SLOT_PROBE_TIMEOUT_S
+        assert self._file is not None   # start() 建线程前已打开文件
         while not self._stop.is_set():
             t0 = time.perf_counter()
             st, _countable = self._pad.poll(probe_deadline)
@@ -516,6 +517,7 @@ class MacroPlayer:
                     self._correct_drift(float(clk[0]), int(clk[1]))
             if self._stop.is_set():
                 break
+            assert self._t0_ns is not None   # 上面 _align 成功即已写入起点
             elapsed_ms = (now - self._t0_ns) / 1e6
             i = bisect_right(self._ts_ms, elapsed_ms) - 1
             if i >= 0 and i != last_i:

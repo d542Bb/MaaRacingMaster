@@ -59,6 +59,7 @@ import queue
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 import cv2
 import numpy as np
@@ -457,6 +458,13 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
         valid = cv2.resize(res["valid"].astype(np.float32), (MOGE_IN_W, MOGE_IN_H),
                            interpolation=cv2.INTER_NEAREST).astype(bool)
     else:
+        if with_evidence:
+            evidence = {"pts": pts, "valid": res["valid"],
+                        "fx": res["fx"], "fy": res["fy"],
+                        "ms": float(ms_applied), "ms_raw": float(metric_scale),
+                        "scale": float(scale), "solver": res["solver"]}
+            # 下面要原地写 nan：证据包持有原对象，工作副本另拷
+            pts = np.array(pts, copy=True)
         valid = res["valid"]
     LAST_STAGE_MS["upsize"] = (time.perf_counter() - t_up) * 1000.0
     # np.stack / np.array(copy=True) 产物独占（无别名持有；with_evidence 持有的是
@@ -939,7 +947,9 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
     X, Y, Z = pts[y0:y1, :, 0], pts[y0:y1, :, 1], pts[y0:y1, :, 2]
     t_p = time.perf_counter()
     if coef is None:
-        coef = _fit_road_plane(X, Y, Z, fy=fy_d)
+        fit = _fit_road_plane(X, Y, Z, fy=fy_d)
+        coef = (None if fit is None
+                else (float(fit[0]), float(fit[1]), float(fit[2])))
         LAST_STAGE_MS["plane"] = (time.perf_counter() - t_p) * 1000.0
     if coef is None:
         return _ret(None, None, None, None, ["平面拟合失败"])
@@ -1069,7 +1079,9 @@ def drivable_grid_from_points(pts: np.ndarray, fx: float, fy: float,
     y0, y1 = _band_rows(pts.shape[0])
     Xb, Yb, Zb = pts[y0:y1, :, 0], pts[y0:y1, :, 1], pts[y0:y1, :, 2]
     if coef is None:
-        coef = _fit_road_plane(Xb, Yb, Zb, fy=float(fy) / ds)
+        fit = _fit_road_plane(Xb, Yb, Zb, fy=float(fy) / ds)
+        coef = (None if fit is None
+                else (float(fit[0]), float(fit[1]), float(fit[2])))
     # 质量门对两种 coef 来源同判（共享 coef 也判——2026-10-10 实机 d00048
     # 实证：门只挂在自拟合分支时，共享路径把被 reading 拒掉的坏平面喂进了
     # 栅格，弯道横坡帧栅格满图假可走而 reading 已弃权，两路判定脱钩）。
@@ -1175,11 +1187,17 @@ def ground_far_extents(pts: np.ndarray,
         xb, zb, hb = X[m], Z[m], H[m]
         # 带内地面参照按侧分开（低分位=该侧路面高度）：跨断面地形有高差时
         # 单一带参照会把高一侧的路面格误判抬升独占（离线 d00009 左缘塌缩实证）
-        ref_l = np.percentile(hb[xb < 0], FAR_GROUND_REF_PCT) if (xb < 0).any() else None
-        ref_r = np.percentile(hb[xb >= 0], FAR_GROUND_REF_PCT) if (xb >= 0).any() else None
+        ref_l = (float(np.percentile(hb[xb < 0], FAR_GROUND_REF_PCT))
+                 if (xb < 0).any() else None)
+        ref_r = (float(np.percentile(hb[xb >= 0], FAR_GROUND_REF_PCT))
+                 if (xb >= 0).any() else None)
+        # 带内点数已过 FAR_MIN_GROUND_PTS，两侧参照至少有一侧可用（缺一侧时
+        # 另一侧兜底，见下面 ref 的取式）
+        ref_any = ref_l if ref_l is not None else ref_r
+        assert ref_any is not None
         ref = np.where(xb < 0,
-                       ref_l if ref_l is not None else ref_r,
-                       ref_r if ref_r is not None else ref_l)
+                       ref_l if ref_l is not None else ref_any,
+                       ref_r if ref_r is not None else ref_any)
         iz = (zb - z0).astype(np.int64)          # 1m 纵格（带内）
         ix = np.minimum((xb + GRID_X_MAX).astype(np.int64), nxc - 1)
         env = np.full((nxc, int(np.ceil(z1 - z0))), np.inf)
@@ -1527,10 +1545,14 @@ class DepthRoadObserver:
             return None, None
         t0 = time.perf_counter()
         try:
-            pts, fx, fy, evid = infer_points(self._sess, frame_rgb,
-                                             with_evidence=True,
-                                             native=NATIVE_GEO,
-                                             scale=self._cal.depth_scale)
+            # with_evidence=True 时三个分支都产出证据包；类型上仍标 Optional，
+            # 只因 infer_points 内 evidence 以 None 初始化。
+            pts, fx, fy, evid = cast(
+                "tuple[np.ndarray, float, float, dict]",
+                infer_points(self._sess, frame_rgb,
+                             with_evidence=True,
+                             native=NATIVE_GEO,
+                             scale=self._cal.depth_scale))
         except dml_lock.Busy:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
@@ -1567,7 +1589,9 @@ class DepthRoadObserver:
         y0, y1 = _band_rows(pts_g.shape[0])
         X, Y, Z = pts_g[y0:y1, :, 0], pts_g[y0:y1, :, 1], pts_g[y0:y1, :, 2]
         t_p = time.perf_counter()
-        coef = _fit_road_plane(X, Y, Z, fy=fy / ds)
+        fit = _fit_road_plane(X, Y, Z, fy=fy / ds)
+        coef = (None if fit is None
+                else (float(fit[0]), float(fit[1]), float(fit[2])))
         stage["plane"] = LAST_STAGE_MS["plane"] = \
             (time.perf_counter() - t_p) * 1000.0
         t_g = time.perf_counter()
@@ -1780,8 +1804,11 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
         return body
     # 决策带：消费端一拍快照（state/reason/杆/喂入路心/来源/帧龄）。
     band = np.full((56, w, 3), 30, np.uint8)
-    st = note.get("state", "?"); rs = note.get("reason", "?")
-    sn = note.get("steer"); ro = note.get("ro"); el = note.get("elane")
+    st = note.get("state", "?")
+    rs = note.get("reason", "?")
+    sn = note.get("steer")
+    ro = note.get("ro")
+    el = note.get("elane")
 
     def _f(v):
         return f"{v:+.2f}" if isinstance(v, (int, float)) else "-"
@@ -1913,9 +1940,11 @@ class AsyncDepthRoadObserver:
         self._lock = threading.Lock()
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None,
                              dict | None, int | None,
-                             tuple | None, int | None] | None = None
+                             tuple | None, int | None,
+                             dict | None] | None = None
         self._result: tuple[int, DepthRoadReading, DrivableGrid | None,
-                            float, dict, DepthAnchorSheet | None] | None = None
+                            float, dict, DepthAnchorSheet | None,
+                            int | None] | None = None
         self.last_sheet: DepthAnchorSheet | None = None   # 最近一次**新证据**拍的锚点清单（take 内写，同 last_segments 口径）
         self._last_seq = -1               # 消费端已见结果序号（仅主线程触碰）
         self._pushed = 0
@@ -2155,9 +2184,11 @@ class AsyncDepthRoadObserver:
         reading = payload["reading"]
         object_mask = payload["mask"]
         note = payload["note"]
-        self._debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_dir = self._debug_dir
+        assert debug_dir is not None   # writer 只在配了调试目录时起
+        debug_dir.mkdir(parents=True, exist_ok=True)
         self._debug_seq += 1
-        stem = self._debug_dir / f"d{self._debug_seq:05d}"
+        stem = debug_dir / f"d{self._debug_seq:05d}"
         img = render_depth_debug(frame, evid, reading, object_mask, note,
                                  grid=evid.get("grid") if evid else None)
         cv2.imwrite(str(stem) + ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
@@ -2199,12 +2230,15 @@ class AsyncDepthRoadObserver:
         note_d = note or {}
         if note_d.get("state") == "CONSERVE":
             ring = self._dump_ring
+            assert ring is not None   # events 模式才建 ring（本方法只在该模式被调）
             while ring:
                 self._dump_stem(ring.popleft())
             self._event_left = max(0, self._event_window - 1)
             self._dump_stem(payload)
             return
-        self._dump_ring.append(payload)
+        ring = self._dump_ring
+        assert ring is not None
+        ring.append(payload)
 
     def _encode_debug_payload(self, frame, evid, reading, object_mask,
                               note=None) -> dict | None:
@@ -2243,9 +2277,11 @@ class AsyncDepthRoadObserver:
     def _dump_stem(self, payload: dict) -> None:
         """顺序落一帧证据包（events 模式；文件名协议与 full 同构）。"""
         try:
-            self._debug_dir.mkdir(parents=True, exist_ok=True)
+            debug_dir = self._debug_dir
+            assert debug_dir is not None   # 同 _dbg_write：无调试目录不落盘
+            debug_dir.mkdir(parents=True, exist_ok=True)
             self._debug_seq += 1
-            stem = self._debug_dir / f"d{self._debug_seq:05d}"
+            stem = debug_dir / f"d{self._debug_seq:05d}"
             (Path(str(stem) + ".jpg")).write_bytes(payload["img.jpg"])
             (Path(str(stem) + "_frame.jpg")).write_bytes(payload["frame.jpg"])
             (Path(str(stem) + "_evid.npz")).write_bytes(payload["evid.npz"])
@@ -2255,7 +2291,9 @@ class AsyncDepthRoadObserver:
             pass
 
     def _pop_latest(self) -> tuple[int, np.ndarray, float, np.ndarray | None,
-                                   dict | None, int | None] | None:
+                                   dict | None, int | None,
+                                   tuple | None, int | None,
+                                   dict | None] | None:
         with self._lock:
             item, self._pending = self._pending, None
             return item

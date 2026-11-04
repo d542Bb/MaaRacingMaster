@@ -97,7 +97,7 @@ templates/plugin/
   当前未接线（无生产实例化点），留作把跳转图交给框架跑的备选实现。
 - **MAA Pipeline 任务驱动**：`Resource.post_bundle(RES_DIR)` + 自定义
   `CustomAction`（参考 `core/nav_graph.py` 的桥实现与 docs/MAAFW_GUIDE.md）。
-- **目标检测**：`core/yolo_detector.py`（模型放 `resources/onnx/`，进 `REQUIRED_ASSETS`）。
+- **目标检测**：`core/yolo_detector.py`（模型放 `resources/models/`，进 `REQUIRED_ASSETS`）。
 - **调试 HUD**：参考 `core/debug.py` 的渲染分支；`ctx.debug` 会话落盘。
 
 ## 打包与分发

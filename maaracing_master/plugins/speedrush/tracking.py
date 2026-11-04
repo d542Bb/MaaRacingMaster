@@ -141,7 +141,7 @@ class TrackedTarget:
     last_seen_fid: int
     validity_until_fid: int      # 宽限截止帧号（last_seen + grace）
     # 最近一帧 2D 框 xyxy（trace 与校验层用；空=旧构造未带）
-    box: tuple[float, float, float, float] = ()
+    box: tuple[float, ...] = ()
     # 车道线插值成员（车道线定道，闸关恒 None）：远车 x 缺席段的主供数候选
     x_lane_line: float | None = None
 
@@ -161,7 +161,7 @@ class FarTarget:
     first_seen_fid: int
     last_seen_fid: int
     validity_until_fid: int
-    cx: int = 0                  # 像素位（R5 §10 契约加法：远场粗横向的 bearing
+    cx: float = 0.0              # 像素位（R5 §10 契约加法：远场粗横向的 bearing
                                  # 源，_Track 已有直读；0=构造方未供，消费端自决）
     rel_approach: float = 0.0    # px/fid（同 TrackedTarget，全 kind 配对轨都更新；
                                  # 远场粗源的到站仪器输入，正=接近）
@@ -740,6 +740,9 @@ class Tracker:
         """当前采集帧率估计（预热未达标 = None）。"""
         if self._fid_hz_n < self._FID_HZ_WARM_N or self._rate_ts_ns is None:
             return None
+        # 预热达标即说明首拍已记（_rate_fid/_rate_ts_ns/_last_*_seen 同拍写入）
+        assert self._rate_fid is not None and self._last_fid_seen is not None \
+            and self._last_ts_seen is not None
         dt = self._last_ts_seen - self._rate_ts_ns
         if dt <= 0:
             return None

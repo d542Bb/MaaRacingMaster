@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 
 MODEL = Path(r"D:\maaracing_assistant\maaracing_master\plugins\speedrush"
-             r"\resources\onnx\depth\moge2_vits_static_336x598_t1032_q4f16.onnx")
+             r"\resources\models\depth\moge2_vits_static_336x598_t1032_q4f16.onnx")
 MOGE_IN_H, MOGE_IN_W = 720, 1280   # 与 depth_geo.load_session 同口径
 
 

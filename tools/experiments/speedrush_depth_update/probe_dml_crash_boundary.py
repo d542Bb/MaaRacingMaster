@@ -21,8 +21,8 @@ import numpy as np
 import onnxruntime as ort
 
 REPO = "D:/maaracing_assistant"
-MOGE = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx")
-YOLO = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/onnx/perception/model.onnx")
+MOGE = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx")
+YOLO = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/models/perception/model.onnx")
 PROV = ["DmlExecutionProvider", "CPUExecutionProvider"]
 
 

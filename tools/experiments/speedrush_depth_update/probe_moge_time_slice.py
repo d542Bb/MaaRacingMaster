@@ -16,7 +16,7 @@ from onnx import shape_inference, utils as onnx_utils
 import onnxruntime as ort
 
 REPO = r"D:/maaracing_assistant"
-MODEL = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx")
+MODEL = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx")
 # 可回放的 debug 会话（raw 帧）；不存在则自动挑一个有 raw/ 的会话
 DEBUG_SESS = r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/speedrush/20261103_153632_p1/raw"
 TMP = r"C:/Users/yomen/.qoder/tmp"

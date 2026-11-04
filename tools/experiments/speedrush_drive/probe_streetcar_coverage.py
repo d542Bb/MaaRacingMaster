@@ -1,6 +1,6 @@
 """街车检测充分性重测：旧 racing 模型在全部 speedrush demo 素材上的覆盖率/稳定性。
 
-**要回答的问题**（C 类）：阶段 B 感知是否可直接复用 `archive/racing/resources/onnx/model.onnx`
+**要回答的问题**（C 类）：阶段 B 感知是否可直接复用 `archive/racing/resources/models/model.onnx`
 的 `car` 类，还是需要重训。speedrush_vision 实验（2026-09-18）只给了 60 帧的"能不能认"
 初判（car 最高分中位 0.765）；本探针回答另一半——**画面里有街车时是否稳定认得出、
 跨场次是否一致**。

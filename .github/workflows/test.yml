@@ -34,20 +34,29 @@ jobs:
         # clone / 每一次 CNB 镜像分发。项目规范禁止改写已推送历史，故无法事后补救，
         # 唯一防线是在首次合入前拦住。阈值 5 MB 远低于 GitHub 的 100 MB 硬拒线，
         # 留出余量给后续版本的增量 blob。
+        # 例外：resources/models/** 下的运行时模型是随包分发的既定产品资产
+        # （见 maaracing_master/plugins/speedrush/resources/models/README.md），
+        # 单文件上限放宽到 100 MB；其余路径仍按 5 MB 拦截。
         # 口径用 git ls-tree -l 的对象大小：文本按 .gitattributes 归一（LF）后的
         # 实际入库体积计，不受 runner 上 core.autocrlf 影响。
         run: |
           LIMIT=$((5 * 1024 * 1024))
+          MODEL_LIMIT=$((100 * 1024 * 1024))
           git ls-tree -r -l HEAD \
-            | awk -v max="$LIMIT" '$4 ~ /^[0-9]+$/ && $4+0 > max { printf "%12d  %s\n", $4, $NF }' \
+            | awk -v max="$LIMIT" -v mmax="$MODEL_LIMIT" '
+                $4 ~ /^[0-9]+$/ {
+                  model = ($NF ~ /^maaracing_master\/plugins\/speedrush\/resources\/models\/.*\.onnx$/)
+                  limit = model ? mmax : max
+                  if ($4 + 0 > limit) printf "%12d  %s\n", $4, $NF
+                }' \
             > big-files.txt
           if [ -s big-files.txt ]; then
-            echo "::error::以下跟踪文件超过 5 MB，请改为忽略（用生成脚本 + 锁文件重建）、或走 Git LFS / Release 附件承载："
+            echo "::error::以下跟踪文件超过体积上限（普通文件 5 MB / 运行时模型 100 MB），请改为忽略（用生成脚本 + 锁文件重建）、或走 Git LFS / Release 附件承载："
             cat big-files.txt
             exit 1
           fi
           COUNT=$(git ls-files | wc -l)
-          echo "✓ ${COUNT} 个跟踪文件均 ≤ 5 MB"
+          echo "✓ ${COUNT} 个跟踪文件均在体积上限内"
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -65,12 +74,15 @@ jobs:
 
       - name: 安装 pytest 与轻量测试依赖
         # 注：不采用 `pip install -e .[test]`——会连带安装主依赖（onnxruntime-directml /
-        # windows-capture 等仅 Windows 有 wheel），Linux runner 装不上。故只装 pytest +
-        # 测试实际需要的轻量依赖（numpy：capabilities 顶层 import；opencv-headless：
-        # 生产模块 detector/clicker 等顶层 import cv2——均有 Linux wheel）。
+        # windows-capture 等仅 Windows 有 wheel），Linux runner 装不上。故只装测试实际
+        # 需要、且 Linux 有 wheel 的跨平台依赖：
+        #   numpy / opencv-headless：生产模块顶层 import；
+        #   onnxruntime（CPU）：speedrush 深度几何与 YOLO 检测器顶层 import，
+        #     Linux 用 CPU 版即可，测试不跑 DirectML；
+        #   MaaFw：core.controller / nav_graph 顶层 import，官方提供 manylinux wheel。
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest>=7.0" numpy opencv-python-headless
+          pip install "pytest>=7.0" numpy opencv-python-headless "onnxruntime==1.24.4" "MaaFw==5.12.3"
 
       - name: 静态检查（ruff：错误级 + Pyflakes）
         # 规则集与存量清零口径见 pyproject.toml [tool.ruff]——E4/E7/E9/F 全仓 0 违规，

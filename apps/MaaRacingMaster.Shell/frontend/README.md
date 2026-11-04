@@ -23,6 +23,10 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
   的 `EXTERNAL_TARGETS`）；前端不持有、也不传递可打开的 URL。
 - `index.html` 里 `data-link` 的属性值**就是目标名**。新增外链入口必须同时在 `EXTERNAL_TARGETS`
   里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
+- **更新源是偏好，不是 URL**：关于页 CNB / GitHub 两个按钮只向 `check_update` 传 `source`
+  枚举（默认 `cnb`），实际地址仍由 sidecar 决定；显式选 GitHub 时只查 GitHub 两源，
+  不悄悄回退 CNB。GitHub 图标复用 `icons.js` 的品牌路径，CNB 图标 `cnb.svg` 取自
+  CNB 官方站点 favicon，仅作来源标识。
 
 理由：前端持有 `maarm.call()` RPC 能力，远程数据一旦能形成 XSS，就会顺着 RPC 放大成
 「可信程序替攻击者打开任意站点」。两层防线各自独立成立——渲染层不把数据当标记解析，

@@ -58,7 +58,7 @@ from maaracing_master.core.debug import _put_text
 from maaracing_master.plugins.speedrush.depth_geo import (
     ANCHOR_Z_HI, CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE,
     GRID_NX, GRID_NZ, GRID_UNKNOWN, GRID_X_MAX, GRID_Z_HI,
-    GRID_Z_LO, NEAR_Z, REGION_WIDTH_Z_HI, REGION_Z_HI, ROAD_Z_HI,
+    GRID_Z_LO, REGION_WIDTH_Z_HI, REGION_Z_HI, ROAD_Z_HI,
     X_MAX_M)
 from maaracing_master.plugins.speedrush.lane_obs import (
     DEFAULT_CAM_H, LANE_W, VPX, Y_H)
@@ -495,6 +495,8 @@ def _draw_bev(canvas: np.ndarray, snap: dict, cal: Calib) -> None:
                 if not (plot_x0 <= xp <= plot_x1):
                     continue
                 col = _COR_SRC_BGR.get(bb.src)
+                if col is None:            # 未配色的来源不画（同 unknown 口径）
+                    continue
                 if bb.src == "measured":
                     cv2.line(canvas, (xp, y_top), (xp, y_bot), col, 2)
                 else:                      # occluded/inferred=半可信：虚线

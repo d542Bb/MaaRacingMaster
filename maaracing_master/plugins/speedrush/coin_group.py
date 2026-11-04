@@ -157,6 +157,7 @@ class CoinGroupAggregator:
             if hold:
                 # 近枚这帧没看到、只看到后面的币：保留近枚的位置与时间，
                 # 由消费端按 lead_fid 的龄衰减——不被后一枚顶替。
+                assert g.lead_x is not None and g.lead_cy is not None  # hold 判据
                 lead_x, lead_cy = g.lead_x, g.lead_cy
                 lead_conf, lead_fid = g.lead_conf, g.lead_fid
                 x_f = g.x_f if g.x_f is not None else lead_x

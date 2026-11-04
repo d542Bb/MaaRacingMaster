@@ -64,7 +64,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from maaracing_master.core.logger import logger
 from maaracing_master.plugins.speedrush import HUD_REGIONS_FILE
@@ -448,7 +448,8 @@ class HudObserver:
             self._write_thread.start()
         self._sample_thread.start()
         self._running = True
-        where = (f" → {self.out_dir / 'hud.jsonl'}" if self.persist
+        # persist=True 时 out_dir 必非空（上面已校验）
+        where = (f" → {cast(Path, self.out_dir) / 'hud.jsonl'}" if self.persist
                  else "（仅内存时钟，不落盘）")
         self._log(
             f"[极速狂飙] HUD 读数开始（{len(self._regions)} 区域 / 每 {self.interval_s:.2f}s）"
@@ -683,7 +684,7 @@ class HudObserver:
         被排空、后续读数全部丢失，而这些只在事件结束时才被发现——计数与 WARNING 至少要
         留下"丢在哪一步"的痕迹。
         """
-        path = self.out_dir / "hud.jsonl"
+        path = cast(Path, self.out_dir) / "hud.jsonl"   # persist=True 才起本线程
         with path.open("w", encoding="utf-8") as f:
             while True:
                 try:
@@ -731,7 +732,7 @@ class HudObserver:
             "stop_reason": reason,
         }
         try:
-            (self.out_dir / "hud_meta.json").write_text(
+            (cast(Path, self.out_dir) / "hud_meta.json").write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001 —— meta 写失败不该抛给调用方
             logger.log(f"[极速狂飙] HUD meta 写入失败: {exc!r}", "WARNING")

@@ -11,7 +11,7 @@ status: active
   1281×759 窗口截图，裁出 720p 客户区（`x=1 / y=38` 偏移，见 `docs/CODE_WIKI.md` §9.7）。
 - 驾驶帧定位：以驾驶页独有的档位图标 `speedrush_drive_gear.png` 做模板匹配，
   >0.85 判为驾驶页。**16 帧中仅 2 帧是驾驶页**（gear 分 1.0000 / 0.9788）。
-- 模型：`archive/racing/resources/onnx/model.onnx`（racing 时代 3 类微调，coin/car/bonus_car）。
+- 模型：`archive/racing/resources/models/model.onnx`（racing 时代 3 类微调，coin/car/bonus_car）。
 - 探针：`probe_legacy_model.py`。
 
 ## 结果

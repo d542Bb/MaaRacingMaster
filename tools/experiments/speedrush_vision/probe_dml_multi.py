@@ -14,8 +14,8 @@ import numpy as np  # noqa: E402
 import onnxruntime as ort  # noqa: E402
 from probe_thread_cpu import snapshot_threads  # noqa: E402
 
-PERC = "maaracing_master/plugins/speedrush/resources/onnx/perception/model.onnx"
-DEPTH = "maaracing_master/plugins/speedrush/resources/onnx/depth/moge2_vits_static_336x598_t1032_q4f16.onnx"
+PERC = "maaracing_master/plugins/speedrush/resources/models/perception/model.onnx"
+DEPTH = "maaracing_master/plugins/speedrush/resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx"
 
 
 def mine():

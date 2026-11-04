@@ -363,6 +363,7 @@ class HeadingObserver:
         if gap <= 1e-3:
             self._psi_prev_th = th
             return self.psi
+        assert self._psi_prev_th is not None   # psi 非空即已初始化上一拍线角
         rate = (th - self._psi_prev_th) / gap
         # 物理门：超过满杆偏航率的单拍变化按换线/坏角度处理，截断后不进入
         # ψ 与 r（基线仍跟到新值）。旧值 2.0 等于没门，跳变全积分成「真实
@@ -1112,6 +1113,7 @@ class LateralPlanner:
             merge_commit = (getattr(decision, "phase", "keep") == "merging"
                             and decision.x_target is not None)
             if merge_commit:
+                assert decision.x_target is not None   # merge_commit 蕴含非 None
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
                     cap=self.p.maneuver_stick_max)
@@ -1291,6 +1293,7 @@ class LateralPlanner:
                     # 150/227 拍是 hold，旧逻辑每遇一次就把 streak 清零，1 道级
                     # 偏移永远等不到 3 拍确认，控制器以为已在目标带）。
                     same = (self._jump_sign is not None
+                            and self._jump_last_r is not None
                             and (r > 0) == self._jump_sign
                             and abs(r - self._jump_last_r) <= _JUMP_SAME_TOL_LANE)
                     if road_offset_new:
@@ -1398,6 +1401,7 @@ class LateralPlanner:
                          "plan:stale", "plan:frame_shift",
                          "plan:infeasible_corridor")))
         if preview_ok:
+            assert decision.x_target is not None   # preview_ok 蕴含非 None
             u_pv = self._preview_steer(dt_s, decision.x_target, steer_raw)
             if u_pv is None:
                 preview_ok = False
@@ -1438,6 +1442,7 @@ class LateralPlanner:
         # 自车运动按固定参考车速（2026-11-01 裁决）——预瞄全程可用，不再因
         # 「速度未知」退回连续律。
         v = self.state.v_mps
+        assert v is not None   # 每拍按参考车速写回，None 只是未初始化前的空档
         if self.state.heading is None:
             return None
         x0 = (self.state.executed_lane

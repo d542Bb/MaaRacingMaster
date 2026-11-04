@@ -132,6 +132,8 @@
 3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
 4. 若所用插件依赖虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；插件对依赖的要求见其自述文档。
 
+> **深度几何与线观测需要额外下载模型包：** 主包默认只带「全程直行 / 宏录制」；要用「深度几何」，从同一 Release 下载 `MaaRacingMaster-speedrush-models-<版本>.zip`，解压到用户数据目录的 `data/speedrush/models/`，重启后在任务卡里切换。线观测模型也在同一包内；缺包时线观测自动退回深度/墙。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/speedrush/resources/models/README.md)。
+
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
 
 ***
@@ -205,7 +207,7 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 
 - **改 Python / pipeline JSON / policy 存盘即生效**，不必重新打包；只有改 C# 或前端资源才需要编译，脚本按文件时间戳自行判断。
 
-- 源码模式下左上角版本号形如 `v0.21.0.dev2+102（源码模式）`：基线取最近的 tag，`+102` 是距该 tag 领先的 commit 数。打包版显示的是包内固化的版本号，不带此后缀。
+- 源码模式下左上角版本号形如 `v0.30.0.dev1+12（源码模式）`：基线取最近的 tag，`+12` 是距该 tag 领先的 commit 数。打包版显示的是包内固化的版本号，不带此后缀。
 
 - 判断"这次跑的到底是哪份代码"看输出末尾 `[verify]`：`源码模式 ✓` 表示后端来自仓库 `.venv`；若打印成其它目录下的 `runtime\python\python.exe`，则说明起的是打包产物。
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
+from typing import Any, cast
 
 from maaracing_master.plugins.speedrush.coarse import (
     CoarseParams, CoarseReport, choose_lane)
@@ -288,6 +289,12 @@ def _monotonic_coin_t(prev: tuple[float, int] | None, raw_t: float,
     if raw_t > expected + tol_s:
         return max(expected, 0.0)
     return raw_t
+
+
+def _center_at0(road: RoadFrame, z: float) -> float:
+    """中心线在 z 处；无带帧按 0 计（与选择层回中的兜底同一口径）。"""
+    c = road.center_at(z)
+    return 0.0 if c is None else c
 
 
 def _sel_report_key(rep: SelectionReport) -> tuple:
@@ -801,6 +808,7 @@ class DecisionEngine:
             intent_lane = route.lane_target if merging else route.lane_ref
         deadline_s = None
         if merging:
+            assert route is not None   # merging 蕴含 route is not None
             deadline_s = max(
                 0.0, route.merge_started_t + self._route_params.merge_max_s
                 - route.elapsed_s)
@@ -1034,8 +1042,6 @@ class DecisionEngine:
             GRID_BLOCKED, GRID_CELL, GRID_X_MAX, GRID_Z_LO)
         blocked = (grid.state == GRID_BLOCKED)
         zc = GRID_Z_LO + (np.arange(blocked.shape[0]) + 0.5) * GRID_CELL
-        xc = -GRID_X_MAX + (np.arange(blocked.shape[1]) + 0.5) * GRID_CELL
-        band = (zc >= 3.0) & (zc <= 30.0)
         v = max(float(self._ego_speed_mps or 0.0), 5.0)
         out: list[CarSource] = []
         bands = [(3.0, 6.0, 0), (6.0, 10.0, 1), (10.0, 16.0, 2),
@@ -1148,6 +1154,7 @@ class DecisionEngine:
                     if z_reset:
                         self._car_zf[tid] = z_m
                     else:
+                        assert pz is not None   # z_reset False 且 z_m 有效 ⇒ pz 有值
                         z_m = pz + az * (z_m - pz)
                         self._car_zf[tid] = z_m
             out.append(CarSource(x_m=xr, t_meet_s=tm,
@@ -1443,11 +1450,11 @@ class DecisionEngine:
         origin = (_at(0.0, lambda b, k: 0.5 * (b[2] + b[3]))
                   if master is None else (master + executed) * lane_w)
         bands = []
-        for z0, z1, l, r, lb, rb in raw:
+        for z0, z1, left, right, lb, rb in raw:
             ages = [a for a in (self._age_ms(lb.last_fid),
                                 self._age_ms(rb.last_fid)) if a is not None]
             bands.append(RoadBand(
-                z0, z1, l - origin, r - origin,
+                z0, z1, left - origin, right - origin,
                 src=(lb.src if lb.src == rb.src else "mixed"),
                 age_ms=(max(ages) if ages else None),
                 conf=min(lb.conf, rb.conf)))
@@ -1570,9 +1577,8 @@ class DecisionEngine:
                        seen=bool(b.seen))
                    for b in reward_sel]
         cars = [Obj("car",
-                    c.x_m - origin - (road.center_at(
-                        c.z_m - CAM_Z_DATUM_M)
-                        if c.z_m is not None else 0.0),
+                    c.x_m - origin - (_center_at0(road, c.z_m - CAM_Z_DATUM_M)
+                                      if c.z_m is not None else 0.0),
                     c.t_meet_s,
                     oid=-1 if c.id is None else c.id,
                     safe=c.safety_ok,
@@ -1626,8 +1632,12 @@ class DecisionEngine:
         c0 = self._scene.road.center_at(0.0)
         coarse_ego = (executed if c0 is None else
                       (self._scene.ego_x_m - c0) / self._scene.lane_w_m)
+        # 无带帧（c0=None）按 0 计：与上面 coarse_ego 的兜底同一口径
+        c0_m = 0.0 if c0 is None else c0
+        # SceneObj 是冻结 dataclass（只读属性），coarse._Car 协议声明的是可写
+        # 属性：形状不符、运行时是同一批对象，这里只做类型层转换。
         self._coarse = choose_lane(
-            self._scene.road, self._scene.objs, coarse_ego,
+            self._scene.road, cast(Any, self._scene.objs), coarse_ego,
             self._scene.lane_w_m, self._coarse_params,
             current_lane=None if self._coarse is None else self._coarse.lane)
         # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
@@ -1647,7 +1657,7 @@ class DecisionEngine:
         # 闸关逐位回旧行为（机会连续拽）。并线期目标本来就是承诺道，不喂。
         commit_x = None
         if self.cfg.route.control and self._route is not None and not committed:
-            commit_x = self._route.lane_ref * self.cal.lane_w_m + c0
+            commit_x = self._route.lane_ref * self.cal.lane_w_m + c0_m
         # 粗层（2026-10-20 接控制）：只接管 L4 回中兜底——细层没有奖励车/
         # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
         # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
@@ -1682,7 +1692,7 @@ class DecisionEngine:
         sh_commit_x = None
         if self.cfg.route.control and self._route_shadow is not None \
                 and not sh_committed:
-            sh_commit_x = self._route_shadow.lane_ref * lw + c0
+            sh_commit_x = self._route_shadow.lane_ref * lw + c0_m
         rep_shadow = self._selector_shadow.update(
             road, rewards, cars, coins, ego_m, self._dt_last,
             coarse_lane=sh_coarse, committed=sh_committed,

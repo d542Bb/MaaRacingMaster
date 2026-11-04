@@ -1,4 +1,4 @@
-# ecosystem-audit — MaaFw 生态对拍（管线真值 dump/load）
+# ecosystem_audit — MaaFw 生态对拍（管线真值 dump/load）
 
 status: active
 

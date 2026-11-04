@@ -113,7 +113,13 @@
     seg.setAttribute('role', 'group');
     seg.setAttribute('aria-label', field.label);
     var buttons = (field.options || []).map(function (option, index) {
-      var btn = el('button', 'seg-btn', option.label);
+      var btn = el('button', 'seg-btn');
+      btn.appendChild(el('span', 'seg-label', option.label));
+      if (option.badge && option.badge.text) {
+        var badge = el('span', 'seg-badge', option.badge.text);
+        if (option.badge.level) badge.classList.add('seg-badge--' + option.badge.level);
+        btn.appendChild(badge);
+      }
       btn.type = 'button';
       btn.addEventListener('click', function () {
         if (locked || entry.locked) return;
@@ -247,6 +253,40 @@
     };
   }
 
+  function runNoticeAction(entry, action) {
+    var call;
+    if (action.action === 'download_release') {
+      call = MaaRM.maarm.call('open_external_url', { target: 'download' });
+    } else if (action.action === 'open_user_data_folder') {
+      var params = action.subpath ? { subpath: action.subpath } : {};
+      call = MaaRM.maarm.call('open_user_data_folder', params);
+    } else {
+      return;
+    }
+    Promise.resolve(call).catch(function (err) {
+      var text = err && err.message ? err.message : String(err);
+      flashStatus(entry, '打开失败: ' + text, 'error', 3000);
+    });
+  }
+
+  function buildNotice(entry, notice) {
+    var row = el('div', 'field-notice');
+    if (notice.level) row.classList.add('field-notice--' + notice.level);
+    row.appendChild(el('span', 'field-notice-text', notice.text));
+    var actions = Array.isArray(notice.actions) ? notice.actions : [];
+    if (actions.length) {
+      var box = el('div', 'field-notice-actions');
+      actions.forEach(function (action) {
+        var btn = el('button', 'field-notice-btn', action.label);
+        btn.type = 'button';
+        btn.addEventListener('click', function () { runNoticeAction(entry, action); });
+        box.appendChild(btn);
+      });
+      row.appendChild(box);
+    }
+    return row;
+  }
+
   function buildField(entry, field) {
     switch (field.type) {
       case 'switch': return buildSwitch(entry, field);
@@ -305,7 +345,9 @@
 
   function applyField(node, cfg) {
     var field = node.field;
-    node.wrap.style.display = evalCond(field.visible_if, cfg) ? '' : 'none';
+    var visible = evalCond(field.visible_if, cfg);
+    node.wrap.style.display = visible ? '' : 'none';
+    if (node.noticeEl) node.noticeEl.style.display = visible ? '' : 'none';
     applyText(node, field, cfg);
     var value = cfg ? cfg[field.key] : undefined;
     if (node.sw) {
@@ -399,8 +441,10 @@
         group.fields.forEach(function (field) {
           var node = buildField(entry, field);
           if (!node) return;
-          nodes.fields.set(field.key, node);
           root.appendChild(node.wrap);
+          node.noticeEl = field.notice ? buildNotice(entry, field.notice) : null;
+          if (node.noticeEl) root.appendChild(node.noticeEl);
+          nodes.fields.set(field.key, node);
         });
       });
     }

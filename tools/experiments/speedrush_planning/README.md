@@ -23,7 +23,7 @@ status: active
 
 ## 方法与口径
 
-- **素材**：旧检测模型（`archive/racing/resources/onnx/model.onnx`，3 类）+ 演示录像
+- **素材**：旧检测模型（`archive/racing/resources/models/model.onnx`，3 类）+ 演示录像
   （`frames.jsonl` 帧 + `pads.jsonl` 的 `lx` 转向量，200 Hz）+ `hud.jsonl` 读数为旁证。
 - **在图像空间做，不做米制标定**：只需**序关系**与**相对时间**。
 - **时间轴**：金币的 y 与其 y 速率 → 到达本车所在行的剩余秒数（透视模型，见下）。

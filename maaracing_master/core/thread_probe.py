@@ -145,7 +145,9 @@ class ThreadProbe:
         self._labels_hit: set[str] = set()
         self._first_seen: dict[int, float] = {}
         self._prev_cpu: dict[int, tuple[int, float]] = {}
-        self._prev_beats: dict[int, tuple[int, int]] = {}
+        # 创建时间取不到时（线程在读的瞬间退出）基线按 None 记，下一次身份比对
+        # 必然不等，自然作废——所以这里如实允许 None，不伪装成某个刻度值。
+        self._prev_beats: dict[int, tuple[int | None, int]] = {}
         self._prev_mono: float | None = None
 
     def set_labels(self, labels: dict[str, str] | None) -> None:
@@ -208,6 +210,7 @@ class ThreadProbe:
             identity_ok = True
             if times is not None and prev is not None and dt and dt > 0:
                 if prev[0] == creation:
+                    assert cpu_s is not None  # times 读到了，cpu_s 必非空
                     delta = cpu_s - prev[1]
                     if delta < 0:
                         # 心跳差分出负值说明身份判定漏了（同一刻度内换线程）：
@@ -218,7 +221,7 @@ class ThreadProbe:
                 else:
                     identity_ok = False       # 复用：旧基线作废
             if times is not None:
-                self._prev_cpu[tid] = (creation, cpu_s)
+                self._prev_cpu[tid] = times
 
             hz = None
             count = beat_count(tid)

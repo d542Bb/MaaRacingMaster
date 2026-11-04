@@ -202,6 +202,9 @@ def _coarse_bands(far_extents, fid: int | None, *, center_lane, width_lane,
         sides = {}
         for side in (-1, 1):
             if gate:
+                # gate 只在上面 ref/left/right 及其 x_m 全部非 None 时才成立
+                assert ref is not None and ref.left is not None \
+                    and ref.right is not None
                 rb = ref.left if side < 0 else ref.right
                 b = (BandBoundary(rb.x_m, INFERRED, 0.0, rb.last_fid)
                      if rb.x_m is not None else BandBoundary(None, UNKNOWN))
@@ -330,7 +333,7 @@ def far_veto_tick(runs: dict[int, int] | None, collapsed: frozenset[int],
         n = (runs or {}).get(lane, 0) + 1 if lane in collapsed else 0
         if n:
             acc[lane] = n
-    return acc, frozenset(l for l, n in acc.items() if n >= ticks)
+    return acc, frozenset(lane for lane, n in acc.items() if n >= ticks)
 
 
 def _green_boundary(grid, side: int, z0: float, z1: float) -> BandBoundary | None:
