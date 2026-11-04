@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """RapidOCR 文字识别引擎（core 公共层）：单 ROI 抠图识别 + 硬测出来的引擎调参。
 
-**为什么住在 core**：这是插件间共享的识别底座——plugins/treasure 的出价/结算读数、
-`tools/navkit/studio_server.py` 的 ROI 校准台都要用它，后续 speedrush 的 HUD 读数也要。
-插件自包含契约禁止插件互相 import（见 `plugins/treasure/__init__.py`），故公共层只能在 core。
+**为什么住在 core**：这是插件间共享的识别底座——speedrush 的 HUD 读数、treasure 的出价/结算
+读数（该活动已退役，见 `plugins/_archive/treasure/RETIRED.md`）、`tools/navkit/studio_server.py` 的 ROI
+校准台都在用它。插件自包含契约禁止插件互相 import（见 `plugins/_archive/treasure/__init__.py`），
+故公共层只能在 core。
 **本模块是这套调参的唯一真源**：出现第二份副本，ORT 线程数与绑核那套实测定下的值就会分叉。
 
 **本模块只做引擎**：抠图 → 预处理 → 推理 → 交出文本。
@@ -57,9 +58,14 @@ USE_DET = False
 # （每 ROI 多 1 次方向分类推理；关闭后 18 ROI 每帧省 30~50ms）。保留开关便于回滚。
 USE_CLS = False
 
-# onnxruntime 推理线程数。实测 CPU 多核并行对 rec 小模型无收益反而变慢
-# （default 用满 12 核 → 9-ROI 一轮 ~515ms；intra_op=4 → ~105ms）。固定合理值护系统稳定。
-OCR_INTRA_OP_THREADS = 4
+# onnxruntime 推理线程数。档位重标定（2026-10-08，真实 HUD ROI × 产线预处理链
+# 受控复现，2Hz 节奏 30 轮）：一轮墙钟 P50 = 229 / 132 / 86ms（intra=1/2/4），
+# 全程平均核数 = 0.38 / 1.28 / 3.12——多档收益差全部来自 ORT 线程池在两次识别
+# 之间的自旋（识别期真工作量三档同为 ~0.4 核级）。HUD 2Hz 预算 500ms，取
+# intra=1：轮时长 229ms 落在产线预期区间（0.1~0.3s，见 hud.py 代价注释），
+# 释放 ~2.7 核给深度/感知。旧注（default 12 核 9-ROI 515ms / intra=4 105ms）
+# 为早期口径，已被本轮真 ROI 数据取代。
+OCR_INTRA_OP_THREADS = 1
 OCR_INTER_OP_THREADS = 1
 
 # --------- CPU 亲和性（本机混合架构优化） ---------

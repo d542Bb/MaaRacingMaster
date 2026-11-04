@@ -24,7 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 try:
-    from maaracing_master.plugins.treasure.module import (
+    from maaracing_master.plugins._archive.treasure.module import (
         ClickRetryExhaustedError,
         TreasureModule,
     )
@@ -32,11 +32,11 @@ try:
 except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时整文件跳过
     _OK, _ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _OK, reason=f"测试需要完整运行时依赖（maa/…）：{_ERR}"
-)
+)]
 
-_plugin_mod = __import__("maaracing_master.plugins.treasure.module", fromlist=["logger"])
+_plugin_mod = __import__("maaracing_master.plugins._archive.treasure.module", fromlist=["logger"])
 
 
 class _RecordingLogger:

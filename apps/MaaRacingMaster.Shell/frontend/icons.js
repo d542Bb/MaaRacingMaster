@@ -60,6 +60,10 @@
       ['path', { 'd': 'M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8' }],
       ['path', { 'd': 'M21 3v5h-5' }]
     ],
+    'settings': [                                // lucide: settings（主控页「管理模块」入口）
+      ['path', { 'd': 'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z' }],
+      ['circle', { 'cx': '12', 'cy': '12', 'r': '3' }]
+    ],
     'bot': [
       ['path', { 'd': 'M12 8V4H8' }],
       ['rect', { 'width': '16', 'height': '12', 'x': '4', 'y': '8', 'rx': '2' }],
@@ -126,6 +130,13 @@
     'picture-in-picture-2': [
       ['path', { 'd': 'M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4' }],
       ['rect', { 'width': '10', 'height': '7', 'x': '12', 'y': '13', 'rx': '2' }]
+    ],
+    'list-plus': [                               // lucide: list-plus（主控页运行任务空态插图）
+      ['path', { 'd': 'M16 5H3' }],
+      ['path', { 'd': 'M11 12H3' }],
+      ['path', { 'd': 'M16 19H3' }],
+      ['path', { 'd': 'M18 9v6' }],
+      ['path', { 'd': 'M21 12h-6' }]
     ]
   };
 
@@ -134,6 +145,9 @@
       ['path', { 'd': 'M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4' }],
       ['path', { 'd': 'M9 18c-4.51 2-5-2-7-2' }]
     ],
+    'github-solid': [                           // GitHub 官方 mark（实心；更新源按钮用）
+      ['path', { 'd': 'M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12' }]
+    ],
     'media-play': [['polygon', { 'points': '6 3 20 12 6 21 6 3' }]],
     'media-pause': [
       ['rect', { 'width': '4', 'height': '16', 'x': '6', 'y': '4' }],
@@ -141,7 +155,7 @@
     ],
     'media-stop': [['rect', { 'width': '14', 'height': '14', 'x': '5', 'y': '5', 'rx': '2' }]]
   };
-  var SOLID = { 'media-play': 1, 'media-pause': 1, 'media-stop': 1 };
+  var SOLID = { 'github-solid': 1, 'media-play': 1, 'media-pause': 1, 'media-stop': 1 };
 
   var ICONS = {};
   Object.keys(LUCIDE).forEach(function (name) { ICONS[name] = { nodes: LUCIDE[name], solid: false }; });
@@ -155,7 +169,7 @@
   // extraAttrs 可覆写 svg 根属性（如 { class: 'icon-play' } 供状态切换 CSS 选择）。
   function svg(name, extraAttrs) {
     var def = ICONS[name];
-    if (!def) throw new Error('MRAIcons: 未知图标 ' + name);
+    if (!def) throw new Error('MaaRMIcons: 未知图标 ' + name);
     var base = def.solid ? SOLID_SVG : BASE_SVG;
     if (extraAttrs) base = Object.assign({}, base, extraAttrs);
     var root = attrsToStr(base);
@@ -169,8 +183,8 @@
   // 返回的是内部数组引用，调用方不得修改）。
   function node(name) {
     var def = ICONS[name];
-    if (!def) throw new Error('MRAIcons: 未知图标 ' + name);
-    if (def.solid) throw new Error('MRAIcons: 实心图标 ' + name + ' 不支持变形动画');
+    if (!def) throw new Error('MaaRMIcons: 未知图标 ' + name);
+    if (def.solid) throw new Error('MaaRMIcons: 实心图标 ' + name + ' 不支持变形动画');
     return def.nodes;
   }
 
@@ -189,5 +203,5 @@
     });
   }
 
-  window.MRAIcons = { svg: svg, node: node, hydrate: hydrate };
+  window.MaaRMIcons = { svg: svg, node: node, hydrate: hydrate };
 })();

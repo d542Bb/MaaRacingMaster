@@ -34,11 +34,21 @@ SERVER_SCRIPT = Path(s.__file__)
 # ----------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _bind_module():
+    """本文件锁的是 studio 对**具体模块真源**的投影与校验，故显式绑定 treasure——
+    缺省模块随 plugins/ 字母序变化，不该让断言跟着漂。参数化本身另由 TestModuleParam 验证。"""
+    s._configure_module("treasure")
+    yield
+    s._configure_module()          # 恢复缺省，避免污染同进程的其他测试
+
+
 @pytest.fixture(scope="module")
 def proj():
     return s.project_rois()
 
 
+@pytest.mark.retired
 class TestProjection:
     def test_spec_group_counts(self, proj):
         """分类取 kind：template 32 / point 15 / ocr 18（五分类制废除）。
@@ -110,6 +120,7 @@ class TestProjection:
             assert item["node"] == node
 
 
+@pytest.mark.retired
 class TestMirrorAnchors:
     def test_mirror_list_matches_actual_pairs(self, proj):
         """清单必须是「实际两面同值锚点」的精确集合——漂移即联动对象出错。"""
@@ -361,3 +372,30 @@ class TestIdleExit:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=10)
+
+
+# ----------------------------------------------------------------------
+# 模块参数化（--module / _configure_module）
+# ----------------------------------------------------------------------
+
+
+class TestModuleParam:
+    """参数化：目标模块与其真源由 plugins/ 目录发现，不再硬编码单模块。"""
+
+    def test_explicit_module_binds_its_sources(self):
+        s._configure_module("speedrush")
+        try:
+            assert s.MODULE == "speedrush"
+            assert s.PLUGIN.name == "speedrush"
+            assert s.POLICY_FILE.parent.name == "policy" and s.POLICY_FILE.is_file()
+            # HASH_KEYS = policy + 各 pipeline；pipeline 的 key 由文件名派生
+            assert s.HASH_KEYS[0] == "policy"
+            assert set(s.HASH_KEYS) == {"policy", *s.PIPELINE_FILES}
+            assert set(s.base_hashes()) == set(s.HASH_KEYS)
+        finally:
+            s._configure_module("treasure")      # 复原，供同模块后续用例
+
+    def test_unknown_module_rejected(self):
+        with pytest.raises(SystemExit):
+            s._configure_module("__no_such_module__")
+        s._configure_module("treasure")

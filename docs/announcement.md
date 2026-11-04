@@ -1,7 +1,7 @@
 # 公告规范（docs/announcement.json）
 
 > 公告是「用户可感知变化」的通知卡，展示于关于页内嵌卡片（info=公告 / warn=重要）。
-> 更新方式：编辑 `docs/announcement.json` 并推送 master。客户端按 CNB raw（主源）→ GitHub raw →
+> 更新方式：编辑 `docs/announcement.json`，经 PR 合入 master（master 受规则集保护，直接 push 会被远端拒绝）。客户端按 CNB raw（主源）→ GitHub raw →
 > jsdelivr CDN（回退）依次拉取，推送后约分钟级生效；网络异常、字段不合规或已过期时前端显示
 > 「暂无公告」，不影响启动。
 

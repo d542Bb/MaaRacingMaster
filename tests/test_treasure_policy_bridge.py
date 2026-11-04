@@ -9,8 +9,8 @@ import pytest
 # module 经 core.window_utils 顶层 import maa.toolkit，CI 轻依赖环境下收集期 ERROR
 # 会中断整个 pytest 会话；按仓内既有口径整文件优雅跳过。
 try:
-    from maaracing_master.plugins.treasure.module import TreasureModule
-    from maaracing_master.plugins.treasure.policy_bridge import (
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.policy_bridge import (
         MIN_FRAME_INTERVAL_MS,
         POLICY_ACTION_NAME,
         PolicyBridge,
@@ -20,9 +20,9 @@ try:
 except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
-)
+)]
 
 
 def _stub_module() -> MagicMock:

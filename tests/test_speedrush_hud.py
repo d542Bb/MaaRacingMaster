@@ -583,6 +583,21 @@ class _Clock:
     def monotonic(self) -> float:
         return self.t
 
+    def perf_counter(self) -> float:
+        # pacing 全线 perf_counter（2026-10-06）后驱动环也读细钟——委托受控值
+        return self.t
+
+    def time(self) -> float:
+        # 录制影子接线后 _build_control_chain 也读 time.time（run_dir 命名锚）
+        return self.t
+
+    def strftime(self, fmt, t=None):
+        # _run_dir 产物目录名由此确定（恒定值保测试确定性）
+        return "20000101_000000"
+
+    def localtime(self, t=None):
+        return t
+
 
 class _FakeLifecycle:
     def __init__(self, clock: _Clock) -> None:
@@ -662,10 +677,12 @@ class TestModuleWiring:
     def env(self, monkeypatch, tmp_path):
         clock = _Clock()
         monkeypatch.setattr(sr, "time", clock)
-        monkeypatch.setattr(sr, "data_dir", lambda: tmp_path / "data")
+        # 录制语料与调试产物同家（debug/speedrush/）：整局重定向到 tmp，别写真实 %APPDATA%
+        monkeypatch.setattr(sr, "debug_dir", lambda: tmp_path / "debug")
         ctx = _FakeCtx(clock)
         mod = sr.SpeedRushModule(ctx)  # type: ignore[arg-type]
         mod._running = True
+        mod._drive_mode = "depth"   # 本组测深度档的 HUD 接线，不依赖默认档
         mod._graph = _FakeGraph([True, True, True, False, False])
         return mod, ctx
 
@@ -678,9 +695,10 @@ class TestModuleWiring:
         assert len(_spy.instances) == 1
         obs = _spy.instances[0]
         assert obs.started and obs.stopped_reason == "phase_end"
-        # 与录制器同一会话目录（对齐目标就是同会话的 frames.jsonl）
-        assert obs.out_dir.parent == sr.data_dir() / "speedrush" / "demos"
-        assert (obs.out_dir / "frames.jsonl").is_file()
+        # 与控制局同一落点：<会话>/hud/（对齐目标=同会话 frames.jsonl）
+        assert obs.out_dir.name == "hud"
+        assert obs.out_dir.parent.parent == sr.debug_dir() / "speedrush"
+        assert (obs.out_dir.parent / "frames.jsonl").is_file()
         # 取帧走 frame_with_age（帧号/采集时刻的唯一来源），不是 screenshot
         assert obs.kw["frame_source"].__self__ is ctx.capture
         assert obs.kw["phase"] == 1 and obs.kw["round_no"] == 1
@@ -694,7 +712,7 @@ class TestModuleWiring:
         assert mod._drive(1) is True
         assert _spy.instances == []
         assert mod._hud is None
-        assert not (sr.data_dir() / "speedrush" / "demos").exists()
+        assert not (sr.debug_dir() / "speedrush").exists()
 
     def test_state_exposes_hud_recording(self, env) -> None:
         """``_state`` 按录制器的既有做法暴露是否在记录。"""
@@ -709,3 +727,28 @@ class TestModuleWiring:
         state = mod.get_module_config()["_state"]
         assert state["hud_recording"] is True
         assert state["hud_rows"] == 0
+
+
+def test_persist_false_is_memory_clock_only(tmp_path) -> None:
+    """宏回放的 HUD 只做内存时钟：latest() 可用，但不建目录、不写文件。"""
+    eng = _FakeEngine(_texts())
+    obs = hud.HudObserver(
+        None,
+        frame_source=lambda: (_frame(), 1001, 5_000_000, 3.5),
+        engine=eng,
+        regions={"timer": REGIONS["timer"]},
+        persist=False,
+        interval_s=0.05,
+    )
+    obs.start()
+    try:
+        deadline = time.time() + 2.0
+        while time.time() < deadline and obs.latest() is None:
+            time.sleep(0.02)
+    finally:
+        obs.stop()
+    row = obs.latest()
+    assert row is not None
+    assert row["fields"]["timer"]["value"] == 25
+    assert obs.stats["rows_written"] == 0
+    assert list(tmp_path.iterdir()) == []

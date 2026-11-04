@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """P4c 对拍：detector/内联匹配 灰度引擎 vs template_match rgb 引擎（真机录帧离线回放）。
 
+**已过时（2026-10-12）**：脚本内路径与 import 仍指向旧包名 `maaracing_assistant`
+（包已更名 `maaracing_master`）与硬编码的 treasure 资源，直接运行会失败；其结论已兑现
+（见 git 历史），保留仅为溯源。
+
 目的（v4-p4-retire.md §2 P4c 风险缓解条款）：
   A. 逐锚点分数对照——灰度→rgb 后每个模板锚点的最高分分布、命中翻转清单
      （gray 命中而 rgb 未命中 = 需要调阈/换图的红线信号）；

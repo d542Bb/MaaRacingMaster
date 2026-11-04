@@ -10,6 +10,7 @@ import ctypes
 import subprocess
 import time
 from ctypes import wintypes
+from typing import Any
 
 from maa.toolkit import Toolkit
 
@@ -17,9 +18,28 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.paths import framework_dir
 
 # ---- Win32 常量 ----
-_UD = ctypes.windll.user32
-_SHcore = ctypes.windll.shcore
-_K32 = ctypes.windll.kernel32
+# 应用只在 Windows 运行；Linux CI 只做收集/单测，需要模块可导入而不能触达 Win32。
+# 非 Windows 平台给同名占位对象：argtypes/restype 赋值照常吞下，真调用才报错。
+if hasattr(ctypes, "windll"):
+    _UD = ctypes.windll.user32
+    _SHcore = ctypes.windll.shcore
+    _K32 = ctypes.windll.kernel32
+else:
+    class _UnavailableWinFunc:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, *args, **kwargs):
+            raise OSError("Windows API is unavailable on this platform")
+
+    class _UnavailableWinDll:
+        def __getattr__(self, name):
+            return _UnavailableWinFunc()
+
+    _UD = _SHcore = _K32 = _UnavailableWinDll()
+
+# Linux CI 只做收集/单测：WINFUNCTYPE 是 Windows 专有，跨平台回退到 CFUNCTYPE。
+_WINFUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
 
 _GWL_STYLE = -16
 _GWL_EXSTYLE = -20
@@ -106,7 +126,7 @@ _UD.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 _UD.ShowWindow.restype = wintypes.BOOL
 _UD.EnumDisplayMonitors.argtypes = [
     wintypes.HDC, ctypes.POINTER(wintypes.RECT),
-    ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+    _WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
                        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM),
     wintypes.LPARAM,
 ]
@@ -290,7 +310,7 @@ def is_window_on_screen(hwnd: int) -> bool:
 
     monitors: list[tuple[int, int, int, int]] = []
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+    @_WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
                         ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
     def _cb(_hmon, _hdc, lprc, _lparam):
         m = lprc.contents
@@ -330,6 +350,14 @@ def count_pressed_keys() -> int:
             if n >= 2:
                 return n
     return n
+
+
+def is_key_down(vk: int) -> bool:
+    """查询单个虚拟键当前是否按下（GetAsyncKeyState，系统级只读）。
+
+    供 ``core.key_state`` 的具名键读取使用；插件不直接 import 本模块。
+    """
+    return bool(_UD.GetAsyncKeyState(int(vk)) & _ASYNC_DOWN)
 
 
 # =====================================================================
@@ -382,12 +410,20 @@ def ensure_window_restored(hwnd: int) -> bool:
         return False
 
 
-def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720) -> bool:
+def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720,
+                            *, group_id: str | None = None) -> bool:
     """把游戏窗口客户区调整为 1280×720（720p），保持左上角位置不变。等幂：已是目标尺寸则跳过。
 
     各模块启动（connect）前统一调用，保证截图帧 / 模板 / ROI 均落在 720p 客户区，
     避免多尺寸适配前的识别错位。返回是否成功；窗口无效或已是最佳尺寸同样视为成功返回 True。
+    group_id 非空时过程日志归入该组（调用方显式捕获的组号）。
     """
+    def _lg(msg: str, level: str = "INFO") -> None:
+        if group_id is not None:
+            logger.log(msg, level, group_id=group_id)
+        else:
+            logger.log(msg, level)
+
     size = window_client_size(hwnd)
     if size is not None and size[0] == client_w and size[1] == client_h:
         return True
@@ -409,10 +445,10 @@ def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | _SWP_FRAMECHANGED,
         ))
         if ok:
-            logger.log(f"[坐标] 已将游戏窗口客户区调整为 {client_w}x{client_h}（720p）")
+            _lg(f"[坐标] 已将游戏窗口客户区调整为 {client_w}x{client_h}（720p）")
         return ok
     except Exception:
-        logger.log("[坐标] 调整窗口尺寸失败", "WARNING")
+        _lg("[坐标] 调整窗口尺寸失败", "WARNING")
         return False
 
 
@@ -420,7 +456,7 @@ def hwnd_from_pid(pid: int) -> int:
     user32 = ctypes.windll.user32
     _cache = {}
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    @_WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def callback(hwnd, _):
         if not user32.IsWindowVisible(hwnd):
             return True

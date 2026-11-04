@@ -4,7 +4,7 @@
 > 直接复用本文档的**可复用范式**，避免从头查文档/从零写代码。
 > 信息基于 MaaFramework 官方文档（2.2–4.2 全节，2026-09-10 校核）+ **本项目** **`.venv`** **锁定的
 > MaaFw 5.12.3** binding 源码与运行时实测核对——文档站跟随 main（v5.13+），凡行为论断以
-> 实测为准（差异处文中显式标注版本口径）。研究底稿：`tools/experiments/maafw-docs-constraints/`。
+> 实测为准（差异处文中显式标注版本口径）。研究底稿：`tools/experiments/maafw_docs_constraints/`。
 > 官方全套文档：<https://maafw.com/docs/>（中文）；仓库：<https://github.com/MaaXYZ/MaaFramework>；
 > 社区经验信源：MaaHub <https://hub.maafw.com/>（Skills/Customs/Experiences）、
 > MaaPracticeBoilerplate、create-maa-project、M9A 仓库内规范。
@@ -13,7 +13,7 @@
 > **本文是什么**：MaaFramework 的能力签名、Pipeline 协议口径、Custom 契约与本项目协议红线——项目内 MaaFW 用法的直接依据。
 > **本文不是什么**：不是官方文档的替代品（行为论断以官方文档与实测为准，差异处已标版本口径）；不是项目架构决策（见 [docs/adr/](adr/README.md)）；不是活动域知识（见 `plugins/<id>/CODE_WIKI.md`）。
 > **信源等级**：L2（其中协议事实为 L0 的项目内副本）—— 可作「MaaFW 怎么用、什么不能做」的直接依据；协议行为与官方文档冲突时**以官方文档为准**并回头修本文。
-> **真源路由**：签名与行为 = 官方文档 + `.venv` 锁定版本的 binding 源码与实测（底稿见 `tools/experiments/maafw-docs-constraints/`）；节点与锚点取值 = `plugins/*/resources/**`。
+> **真源路由**：签名与行为 = 官方文档 + `.venv` 锁定版本的 binding 源码与实测（底稿见 `tools/experiments/maafw_docs_constraints/`）；节点与锚点取值 = `plugins/*/resources/**`。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)。
 
 ***
@@ -520,7 +520,7 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
 | `"action": "DoNothing"`                                                       | 可整键省略（框架默认 `DoNothing`）或 `{"type":"DoNothing","param":{}}`                                       |
 | —                                                                             | `param` 键本身可省略：v2 里 parser 会退回用 `recognition` 对象当参数容器                                            |
 
-**形态风险点不在新字段，在 And/Or 子项**：官方 PipelineDumper 曾产出自己 parser 读不回来的子项形（`failed to parse sub recognition in 'all_of'`，maafw 5.10.0b2，样本 1364 task 中 116 个≈8.5% 受影响），由 [issue #1314](https://github.com/MaaXYZ/MaaFramework/issues/1314) → [PR #1423](https://github.com/MaaXYZ/MaaFramework/pull/1423) 修复。本项目有 7 个 `Or` 节点（起跑汇聚 + 回合 dwell），升 MaaFw 版本时**必须重跑** **`tools/experiments/ecosystem-audit/load_truth.py`**（含 `get_node_data` 回读对照）而不是只看加载成功。未取证项：v1 平铺下 And/Or 子项的完整合法写法（官方"算法类型"章节原文未取到）。
+**形态风险点不在新字段，在 And/Or 子项**：官方 PipelineDumper 曾产出自己 parser 读不回来的子项形（`failed to parse sub recognition in 'all_of'`，maafw 5.10.0b2，样本 1364 task 中 116 个≈8.5% 受影响），由 [issue #1314](https://github.com/MaaXYZ/MaaFramework/issues/1314) → [PR #1423](https://github.com/MaaXYZ/MaaFramework/pull/1423) 修复。本项目有 7 个 `Or` 节点（起跑汇聚 + 回合 dwell），升 MaaFw 版本时**必须重跑** **`tools/experiments/ecosystem_audit/load_truth.py`**（含 `get_node_data` 回读对照）而不是只看加载成功。未取证项：v1 平铺下 And/Or 子项的完整合法写法（官方"算法类型"章节原文未取到）。
 
 ***
 
@@ -562,7 +562,7 @@ class MyAction(CustomAction):
 `"action": "Custom", "custom_action": "MyAction"`。
 项目现有示例见 `core/nav_graph.py` 的 `ClickAction`（继承 `CustomAction`，经 `register_custom_action` 注册）。
 
-**注册命名空间（文档口径 vs 5.12.3 实测，实验见** **`tools/experiments/maafw-docs-constraints/`）**：
+**注册命名空间（文档口径 vs 5.12.3 实测，实验见** **`tools/experiments/maafw_docs_constraints/`）**：
 
 | 行为                    | v5.13 文档口径         | **5.12.3 实测（本项目在用）**              |
 | --------------------- | ------------------ | --------------------------------- |
@@ -594,6 +594,19 @@ class MyAction(CustomAction):
 - `Toolkit.init_option(path)`（maafw 5.12.3 起第二参可省，binding 把 `None` 归一为 `{}`；旧版 binding 需显式传空串 `""`）读取/生成 `config/maa_option.json`：
   `logging`(存 maafw\.log)、`save_draw`(存识别可视化到 vision/)、`stdout_level`(0无\~7全)、
   `save_on_error`(失败存图)、`draw_quality`。
+
+  [`core/maa_option.py`](../maaracing_master/core/maa_option.py) 在启动时把其中两项写成
+  固定策略，与界面开关解耦：`logging=true`（写持续日志，并启用框架自带回收）、
+  `save_on_error=false`（不落失败截图），其余键保持原值。实测（5.12.3）：`logging=false`
+  时 init 不建 `debug/maafw.log`；`save_on_error=true` 时**一次节点执行到超时都没有命中**
+  （动作失败、节点无效同样算）落一张全屏 PNG 到 `debug/on_error/`，模块有意做的负向探针
+  也算——这是本项目关掉它的原因。配置只在 init 那一次读入，故策略在启动时写一次；
+  运行中改文件要等下次启动生效。
+
+  框架自带的回收只在 `logging=true` 时发生：每次启动在后台删除 `debug/` 下超过 7 天的
+  `.log`/`.jpg`/`.png`；`maafw.log` 满 16MB 复制为 `maafw.bak.<时间>.log` 后清空当前文件，
+  备份不按数量轮转。`logging=false` 时这轮清理也不会发生。只靠 7 天回收，本项目实测
+  文本日志稳态约 1.25GB，故启动时另把 `maafw.bak.*.log` 总量压到 256MB。
 
 - Tasker 全局选项可设 `DebugMode`(所有任务当 focus 产生回调，RecoDetail 含 raw/draws)。
   `raw`/`draws` **只在 DebugMode/SaveDraw 下可得**——诊断代码不得假设 RecoDetail 一定有 draws。
@@ -629,6 +642,54 @@ class MyAction(CustomAction):
   行为相反）。binding 与 C API 表面对不上时按 4.2 封装原则理解（SetOption 拆独立方法、
   Job 封装异步 id），**不要**绕过 binding 直接 ctypes。
 
+### 7.1 收尾析构安全与停止请求去重（2026-10-26 实测，本项目）
+
+**问题**：GUI 点停止后界面永远停在「停止中...」，但游戏动作确实停了；系统事件日志在停止后 1 秒
+记 `python3.11.exe` 崩溃、出错模块 `MaaFramework.dll`、`0xC0000005`（近七天 6 次，偏移集中在
+两个相邻地址），运行日志停在收尾阶段的「虚拟手柄已销毁」——紧随其后正是 `gc.collect()`。
+
+**判据**：子进程退出码（`0` 正常 / `0xC0000005` = −1073741819 即复现），不采信被测代码自报
+状态；两组对照 `gc`（对象留给回收）vs `explicit`（先有序销毁再回收）。
+
+| 组 | 停止方式 | 销毁方式 | 崩溃 |
+|---|---|---|---|
+| `race` | 不停，任务仍在跑 | 交给回收器 | **10/10** |
+| `gc` | `post_stop` + 等任务 | 交给回收器 | 0/20 |
+| `gc --settle-ms 0/50/200` | 同上 | 同上 | 0/10 各 |
+| `stop-only` | 只等停止请求 | 交给回收器 | 0/10 |
+| `explicit` | `post_stop` + 等任务 | 有序显式销毁 | 0/30 |
+
+**结论**：
+
+1. 框架 worker 仍在活动时销毁 C 句柄 → **必然** `0xC0000005`，出错模块 `MaaFramework.dll`
+   （与真机崩溃同模块、同异常码）。
+2. 停止请求完成后任务句柄同步结束；此后销毁稳定，与收摊宽限无关（0 / 50 / 200 ms 无差异）
+   ——**关键是「等停止完成」，不是「多睡一会」**。
+3. 在「已停止」前提下，销毁顺序（交给回收器 vs 有序显式）都安全，差别只在时机可控性。
+
+**未复现**：真机偶发（约 10%）的具体触发条件——真机链路比最小模型多出双跑图器、虚拟手柄、
+WGC 原生采集、模块线程与自定义回调图，回收顺序与时刻都更不可控。故修复按「消除机制」落地：
+销毁时机与顺序由代码显式控制，不再交给收尾阶段的全堆回收。
+
+**修复落地**：`nav_graph.py` 的 `NavGraph` / `NavKitV4` 停止时同时等停止请求与任务句柄，
+`shutdown()` 在销毁前先停、再按序置空句柄；`treasure` 模块 cleanup 补上跑图器释放；前端连续
+轮询失败到阈值即明说「后台已断开」并禁用按钮。
+
+**第二轮：停止请求被重复投递（同日修复后暴露）**。修复上线后真机日志出现新告警：点停止后
+10 秒才出现「停止请求超时未完成」，且位置在收尾完成之后。最小模型复现不出「句柄不推进」——
+任务停止后再发请求（间隔 0 / 0.5 / 2 / 5 / 10 s）均 0.01~0.03 s 完成，两线程 barrier 并发
+同发也均 0.02~0.03 s 完成。定位靠日志的**位置**：收尾各步（停止截图、恢复音量、手动停止判定）
+都在同一秒完成、10 秒超时出现在其后 → 卡住的等待不在收尾线程，而在点停止的请求线程
+（模块停止路径 → 跑图器停止 → 等收摊）。结论：**停止请求会被两处并发触发**（GUI 请求线程 +
+跑图线程中断路径），真机复杂图下其中一次的句柄不推进，白等满一个超时。修复两条：① 每轮只
+投递一次停止请求（锁内去重），任务已结束时不再投递；② 模块停止路径只投递、不等待——等待交给
+跑图线程的中断路径，避免占住请求线程。
+**未验证**：最小模型未复现「重复投递导致句柄不推进」，此条由真机日志的时序位置推出。
+
+> **可复跑**：两轮实验的探针与原始表格见 commit `9fc13a5`（该实验目录已按四步退役，过程留
+> 提交历史）；换 MaaFw 版本或改收尾链路时，从该 commit 检出 `probe.py` 重跑 `--mode gc` /
+> `--mode explicit` 即可。
+
 ***
 
 ## 8. 本项目可复用结论（速查）
@@ -642,6 +703,7 @@ class MyAction(CustomAction):
 | 通用 GUI / 可视化调试            | 需要时写 `interface.json`（清单见 §8.1），接通用 UI 生态              |
 | 节点元数据承载位                  | **只放** **`attach`**（§5.2 定案；顶层 `_xxx` 被框架丢弃）           |
 | 目录结构定位                    | 本项目是"宿主 App 内嵌 MaaFW"形态（非 Bundle 分发），资源布局自洽即可，PI 属对外契约 |
+| 收尾销毁 / 停止请求               | **等停止完成再销毁**（worker 活动时销毁 C 句柄必崩 0xC0000005）；停止请求锁内去重、只投递一次、不等待（§7.1） |
 
 ### 8.1 interface.json（PI v2）补写时的验收清单（定案：暂不建，用到再落）
 
@@ -689,7 +751,7 @@ class MyAction(CustomAction):
 12. **`override_next`** **两侧语义相反**：Resource 侧"节点不存在也创建"，Context 侧
     "节点不存在返回 false"。运行时改路由先想清楚拿的是哪一侧。
 13. **Custom 注册替换先 unregister**（5.12.3 同名注册实测=覆盖生效、与 v5.13 文档"保留旧注册"
-    相反；升版前重跑 `tools/experiments/maafw-docs-constraints/` 实验）；空名注册返回 True
+    相反；升版前重跑 `tools/experiments/maafw_docs_constraints/` 实验）；空名注册返回 True
     但未注册——返回值不可全信。
 14. **默认值在节点首次加载时冻结**——多真源目录必须合并单次 post（`_post_pipeline_merged`），
     否则"后到的 default\_pipeline.json 不影响已加载节点"会形成加载顺序耦合。

@@ -22,9 +22,12 @@ from __future__ import annotations
 import pytest
 
 
+pytestmark = pytest.mark.retired
+
+
 def _load():
     try:
-        from maaracing_master.plugins.treasure import module as mod
+        from maaracing_master.plugins._archive.treasure import module as mod
     except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时跳过
         pytest.skip(f"需要完整运行时依赖（maa/…）：{exc}")
     return mod

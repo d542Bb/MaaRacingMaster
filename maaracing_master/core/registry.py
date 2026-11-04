@@ -2,8 +2,11 @@
 """活动模块注册表：自动扫描 plugins/*/manifest.py 发现插件，并提供查询与创建。
 
 - 插件 = plugins/ 下每个含 manifest.py 的子目录；
+- `plugins/_archive/` 是归档区，不是插件：已退役模块按目录位置隔离，不注册、不列出
+  （有效期只表达活动窗口，归档由位置表达，两者互不替代；见 `_archive/__init__.py`）；
 - manifest 契约：ID（唯一标识）+ MODULE_CLASS（定位模块类）；
-  NAME / STAGE_ORDER / REQUIRES / REQUIRES_GAMEPAD_EXCLUSIVE / REQUIRED_ASSETS 从模块类读取（单一来源）；
+  NAME / STAGE_ORDER / REQUIRES / REQUIRES_GAMEPAD_EXCLUSIVE / REQUIRED_ASSETS /
+  HAS_DASHBOARD / DASHBOARD_CONTRACT 从模块类读取（单一来源）；
 - 可选的活动有效期：manifest 里的 VALID_FROM / VALID_UNTIL（ISO 8601，两端均含，
   未声明 = 永久有效）。过期模块照常注册（GUI 仍需列出并置灰），只是不再自动选中，
   显式选择必须带 force；
@@ -17,7 +20,7 @@ import importlib
 from datetime import datetime
 from pathlib import Path
 
-from maaracing_master.core.base import ActivityContext, ActivityModule
+from maaracing_master.core.base import ActivityContext, ActivityModule, declares_dashboard
 from maaracing_master.core.logger import logger
 from maaracing_master.core.module_validity import in_window, is_expired, parse_endpoint
 
@@ -103,7 +106,7 @@ def first_available_module_id(now: datetime | None = None) -> str | None:
 
 
 def get_module_info(module_id: str) -> dict:
-    """获取模块元信息（含声明有效期与当前过期判定），模块不存在时抛出 KeyError(module_id)"""
+    """获取模块元信息（声明有效期、过期判定与看板资格），模块不存在时抛出 KeyError(module_id)"""
     cls = MODULE_REGISTRY[module_id]
     valid_from, valid_until = module_validity(module_id)
     return {
@@ -113,6 +116,8 @@ def get_module_info(module_id: str) -> dict:
         "requires": sorted(cls.REQUIRES),
         "requires_gamepad_exclusive": cls.REQUIRES_GAMEPAD_EXCLUSIVE,
         "required_assets": tuple(getattr(cls, "REQUIRED_ASSETS", ())),
+        # 资格位：显式 HAS_DASHBOARD / 新契约（版本 > 0） / 旧今日统计钩子。
+        "has_dashboard": declares_dashboard(cls),
         "valid_from": valid_from.isoformat() if valid_from else None,
         "valid_until": valid_until.isoformat() if valid_until else None,
         "expired": module_expired(module_id),

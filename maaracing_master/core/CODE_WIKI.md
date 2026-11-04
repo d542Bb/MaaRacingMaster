@@ -15,6 +15,8 @@
 | 日志级别、通道与落盘形态 | [`core/logger.py`](./logger.py) |
 | 能力窄接口与契约 | [`core/capabilities.py`](./capabilities.py) |
 | 用户数据目录结构 | [`core/paths.py`](./paths.py) |
+| 游戏进程启停（定位安装、直启、等窗口、关闭） | [`core/game_process.py`](./game_process.py)（§1.17） |
+| 内置步骤（启动游戏 / 关闭游戏） | [`core/builtin_steps.py`](./builtin_steps.py)（§1.17） |
 | 游戏分辨率 720p | [`core/window_utils.py`](./window_utils.py) `resize_game_window_720p`（连接时统一窗口，各插件 ROI / 按钮据此归一化） |
 | 文字识别引擎（跨插件共享） | [`core/ocr.py`](./ocr.py)（§1.11：调参、抠图边界与预处理口径的唯一真源） |
 | 远程元数据信任边界（公告/版本标记校验、外链目标白名单） | [`core/remote_meta.py`](./remote_meta.py)（§1.12） |
@@ -36,7 +38,7 @@
 
 - 点击方式（`real` 前台鼠标 / `background` 后台手柄导航+A / `intent` 仅意图）与独立真实点击开关
 
-- 运行时静音游戏（audio_volume）、运行结束自动关游戏/退出程序、急停循环
+- 运行时静音游戏（audio_volume）、急停循环；启动/关闭游戏与「关闭后退出程序」是任务列表里的内置步骤（见 §1.17），不在这里按开关收尾
 
 - 虚拟手柄租约管理（`_get_gpad` 懒创建 / `_reset_gpad` / `_destroy_gpad` ctypes 从总线拔除）
 
@@ -139,7 +141,7 @@
 
 - GUI 增量读取用**单调序列号游标**（`get_lines_since(seq, ...)`），环形回绕后不重不漏、落后过多时返回 `truncated`
 
-- 落盘**单流全量**：一次开启新建一个**会话目录** `logs/<MaaRM时间戳>/`，日志落其中的 `MaaRM_<ts>.log`，各级别按发生顺序写入；伴随产物（鉴宝决策流水 `trace.jsonl`）**共用同一个开关、同放该目录**（模块侧取 `logger.session_dir`，取到 `None` 即表示本次不落盘）。按大小轮转（`MAX_BYTES`/`BACKUP_COUNT`）+ 启动时按会话保留清理（`KEEP_SESSIONS`，会话目录整目录回收，旧版平铺的 `MaaRM_<8位日期>_<6位时间>` 文件同样归组回收）。**不按级别分档**——诊断是顺序的（「失败之前发生了什么」），按级别切分会切断时序且不可逆：切出的两份文件各自都读不通（DEBUG 档无业务锚点、INFO 档无诊断细节）。级别过滤只发生在读侧（GUI）与导出侧
+- 落盘**单流全量**：一次开启新建一个**会话目录** `logs/<时间戳>/`（同秒重名才加序号），日志落其中的 `MaaRM_<token>.log`，各级别按发生顺序写入；伴随产物（玩法流水 `trace/<模块>.jsonl`、性能流 `perf.jsonl`、鉴宝 `trace.jsonl`）**共用同一个开关、同放该目录**（玩法/性能写手以会话生命周期监听器跟随开合，模块侧取 `logger.session_dir`，取到 `None` 即表示本次不落盘）。单文件按大小轮转（`MAX_BYTES`/`BACKUP_COUNT`）；**会话目录只增不删**，占用由用户看设置页「调试文件夹」面板的统计后自行清理。**不按级别分档**——诊断是顺序的（「失败之前发生了什么」），按级别切分会切断时序且不可逆：切出的两份文件各自都读不通（DEBUG 档无业务锚点、INFO 档无诊断细节）。级别过滤只发生在读侧（GUI）与导出侧
 
 - 5个日志级别：TRACE < DEBUG < INFO < WARNING < ERROR
 
@@ -148,6 +150,8 @@
 - **通道机制**：`log(channel=...)` 支持按子系统调级（`set_channel_level`/`clear_channel_level`）；`channel=None` 回落 `DEFAULT_CHANNEL`（app）。通道名是不透明字符串，core 不枚举/校验（红线 I7）
 
 - 线程安全：写盘持单句柄 + `Lock`；`close()` 关句柄 flush 尾部
+
+- **会话生命周期协议**（ADR-0010）：开关切换经独立生命周期锁串行（`OPEN→CLOSING→CLOSED`）；关闭先让伴随写手有界排空（`SESSION_DRAIN_TIMEOUT_S`，超时终态化）再关主日志；最近数次收尾状态内存可查（`last_session_close_status`）；`add_session_listener` 注册跟随会话的写手（回调在记录锁外执行，回调内可安全 log）
 
 **全局单例**：`logger = Logger(logs_dir)`
 
@@ -177,7 +181,9 @@
 - **双投影**：文件=全事件流，组以 GH 风格 `::group:: 标题` / `::endgroup:: outcome` 标记（`%`→`%25`、`:`→`%3A`、换行→`%0A`）；GUI 文本行=仅 `log` 事件（`fetch_logs` 过渡期同返 `lines` 与 `events`，含 `next_seq/truncated/gap/schema_version/session_id`）。
 - **fields 先净化后入库**：JSON 标量、≤16 键 / 键 32 字符 / 串 200 字符、NaN/Inf→None、敏感键（password/token/secret/api_?key/cookie/authorization）剔除；违规只进 `internal_counters` 不记日志（防递归）、不向业务线程抛异常。
 - **channel 是写闸不是组归属**：组事件豁免级别门（结构完整性 > 体量控制，防无头组）；被门掉的行不参与终态推导。
-- **插件用法**：模块级 `_tlog/_open_grp/_end_grp` 三函数 + 类上薄包装 + `_log_grp` 句柄槽（照抄 treasure 形态）；跨切面日志有意保持无组。结构锁：`tests/test_treasure_log_groups.py`、`tests/test_speedrush_log_groups.py`（裸 INFO 注入必红）。
+- **插件用法**：模块级 `_tlog/_open_grp/_end_grp` 三函数 + 类上薄包装 + `_log_grp` 句柄槽（照抄 treasure 形态）；`_open_grp/_end_grp` 同时把当前组号同步给 nav 图动作桥与常驻图（派发时刻快照），worker 不读线程局部当前组。跨切面日志（启动前提 / worker 生命周期 / 落盘失败）保持无组，但**必须登记**。
+- **归属强制（ADR-0012）**：全仓 INFO+ 的直接日志调用要么显式带 `group_id`，要么命中 [`tests/log_sites.py`](../../tests/log_sites.py) 的站点登记表；登记单元是「文件 + 限定函数 + 消息模板 + 级别」，逐条带理由与内容类别（`phase` / `state` / `cross`），`group_id=None` 显式传参判红。`(级别, 模板)` 在登记表内唯一，作为运行时「级别 + 消息模板」身份的对应前提。机检：`tests/test_log_attribution.py`（含别名 / 循环体 / 新增目录的注入矩阵）。
+- **降级分项**：未知或已收尾组号的 `log()` / `end_group()` 仍降级为无组事件并进聚合计数；同时按调用点分项进 `degraded_sites`（跳过 `WRAPPER_FUNCS` 包装器帧，落到首个业务调用点；跳不出时回落「包装器 + 消息前缀」）。只在低频错误路径做帧捕获，热路径零增量。`sidecar.close()` 关闭序：拒绝新任务 → 停止信号 → 有界 join 模块 worker（超时复查仍存活即写 WARNING）→ 关 logger。
 
 ***
 
@@ -283,7 +289,7 @@
 
 **职责**：单 ROI 抠图 → 预处理（自适应放大 + 轻度对比度增强）→ RapidOCR 推理 → 交出文本（`OcrText`：逐块 `lines` 与合并 `text` 两种取法）。**抠图边界、引擎调参（关检测/关方向分类/ORT 线程数/绑核）、预处理口径的唯一真源 = 本模块的常量与 docstring**——具体数值不在本文抄录（可机检数值只写指针，见 [docs/README.md](../../docs/README.md)），要改／要核对请直接读 [ocr.py](./ocr.py)。
 
-**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：`plugins/treasure/ocr.py`（业务薄层：识别区真源 + 金额解析）、`tools/navkit/studio_server.py`（ROI 校准台单区识别）；speedrush 的 HUD 读数将接同一入口。
+**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：`plugins/_archive/treasure/ocr.py`（业务薄层：识别区真源 + 金额解析）、`tools/navkit/studio_server.py`（ROI 校准台单区识别）；speedrush 的 HUD 读数将接同一入口。
 
 **分工**：「文本怎么解释」（金额解析、数蛋计数、记分口径）属领域知识，留在各业务层，不上提 core。
 
@@ -330,7 +336,175 @@
 最终有没有被交给浏览器）、[`tests/test_frontend_remote_render.py`](../../tests/test_frontend_remote_render.py)
 （前端渲染路径静态锁）。
 
+### 1.13 [trace_sink.py](./trace_sink.py) — 玩法流水汇（ADR-0010）
+
+**职责**：模块声明的异步 JSONL 写手，落点随日志会话目录（`trace/<模块>.jsonl`）。
+
+- 模块面：`get_trace_sink("<模块>")` 注册一次；`set_run_id` / `begin_stage` / `append(row)` / `end_stage` / `flush`。append 不做文件 I/O（序列化 + 尺寸判定 + 有界入队）；接线形态见 speedrush `_build_control_chain`
+- 序号在会话生命周期内单调（`run_id` 变更不重置、换会话归零）；丢弃以带内 `gap` 行表达（非连续拆多区间、按逻辑序定位）；阶段边界为受保护控制行（满员合并「结束→开始」或显式拒收）；`flush`/`close` 是纯同步屏障不占序号
+- 关闭由会话生命周期屏障驱动（不走队列、不可被拒收）；超时/IO 失败终态化，文件尾三态 `end`/`close_incomplete`/无标记；硬杀损失=最后写入位置+未落队列
+- `validate_trace_file(path)`：离线校验器（序号连续性/gap 语义/头尾规则），验收与探针共用
+
+### 1.14 [perf_sampler.py](./perf_sampler.py) — 性能采样器（ADR-0010）
+
+**职责**：系统/进程资源快照的常驻采集与落盘（`logs/<会话>/perf.jsonl`，日志开关管辖）。
+
+- 三方供数：core 采样器→资源面（系统/受管进程 CPU/内存——自身 + 模拟器家族进程嗅探；GPU 走 nvidia-smi 子进程带超时，ok/timeout/unavailable/解析错误显式区分，读数带龄期）；模块→领域行（按 `PERF_ROWS` 声明上报，取值口 `read_perf_snapshot` 只给值、不自判等级，校验与判级见 §1.15）；sidecar→聚合（`build_perf_payload`，`schema_version=3`：领域面是**行数组**而非模块自定义字典；载荷带 `sample_id`，面板据此只在采样号变化时推进走势图，避免 4Hz 轮询把 1Hz 采样塞成平线；不可用显式 `available=False`）
+- **领域面取值口**：`set_domain_reader(reader)` 由 sidecar 在整轮运行期间注册、结束注销；采样器只持一个可调用对象，**不认识任何模块**（分层红线）。每拍读一次引用（换模块自动跟随），取值口违约抛异常 → 样本记 `domain_error`、资源面照常；单拍取值超 `DOMAIN_SLOW_MS`（5ms）告警并 60 秒节流——契约要求取值纯读常数时间，超线说明模块在采样线程里干了别的事。
+- **样本三面各自计时**：`sample_id` 与时间戳取 tick 开始那一刻，`cost_ms{sys,procs,gpu,domain,threads,total}` 记各面耗时——三面不是同一瞬间的快照，记偏移才能判断「这一拍慢在哪一面」，而不是把时间差当采样误差。
+- **线程段**（§1.16）：每拍带 `threads{rows,total_pct,unattributed_pct,hidden}`，标签由 `set_thread_labels` 随模块走。`unattributed_pct` = 进程占用 − 清单合计，**不是采样误差**，是生命周期短于采样周期的线程与原生线程池在采样粒度上不可归因的那部分；面板不解释，样本里留着供排查。
+- 落盘三档：低频背景（每 N 样本）/ 事件倾倒（模块 `record_event` 报事件，前后窗样本补落，每样本只写一次——sample_id 唯一、重叠窗口去重；窗口被会话关闭中断记 incomplete）/ 收尾全量（可配关）
+- **写盘失败状态机**：失败记待补区间（相邻区间合并）+ 累计/连续计数；下一拍**优先**补写 `persist_gap` 标记，标记成功后**继续写当前样本**（只补标记就收工会留下「状态已恢复、样本凭空消失」的假象）；收尾最后试一次，仍失败则关闭摘要 `ok=False` 并带区间。计数经 `stats()` 暴露。
+- **断档可见**：`snapshot()` 带 `age_s`（距最新样本秒数）与 `stalled`（`STALL_TICKS`＝3 拍没更新）；sidecar 每轮读快照时判，进入/退出各报一条日志，不按 4Hz 刷屏。判据只能由**外部观察者**做——卡住的采样线程喊不出「我卡住了」，自己写的告警也发不出去。只在「本该在采」时判：会话关闭后不再更新是正常的。恢复后的第一条样本自带 `gap_ms`（缺口时长）——时间轴有洞必须自己说，否则事后按样本号等距推算会得出「那段时间很平稳」的错误结论，其实是根本没采。
+- `ensure_perf_sampler_started()`：幂等启动 + 绑定会话生命周期（sidecar 主入口与事件消费方共用）；环随会话切换重置，关闸期样本不进新会话文件
+- psutil `cpu_percent` 启动即基线初始化（首个非阻塞读数无意义）；单拍指标构建异常降级为带 error 的样本，不拖垮采样线程
+- **已知代价：GPU 采样子进程会阻塞这一拍**。`nvidia-smi` 每 `gpu_every` 拍跑一次，真机实测单次 78–94ms——那一拍整体推迟，`cost_ms["gpu"]` 就是这个值。采样周期 1s 时占比 <10%，不影响读数；若要更细的周期，得先把 GPU 采样改成独立线程或异步取上次结果。
+
+### 1.15 [perf_contract.py](./perf_contract.py) — 性能面板契约（声明校验与取值规范化）
+
+**职责**：把「模块报什么」与「core 怎么认」分开——模块在类上声明行，core 按声明校验、判级、格式化。纯函数、无状态、**不认识任何模块**（分层红线：通用层不指向业务）。
+
+**声明面**（模块类属性，空默认定义在 `base.ActivityModule`）：
+
+| 属性 | 作用 |
+|---|---|
+| `PERF_CONTRACT` | 声明契约版本；与 core 的版本不等 → 领域面整体不显示（资源面照常），不猜旧格式 |
+| `PERF_ROWS` | 行声明：`key` / `label` / `kind` / `stat` / `category` / `precision` / 阈值 / `hint` |
+| `THREAD_LABELS` | 线程名 → 中文别名；**线程本身由 core 嗅探**，模块只能贴标签 |
+
+闭集：`kind` 五值（rate / ratio / duration / count / state）锁死单位与合法域，模块不能自带单位串；`stat` 两值（`instant` / `p50_gap_inverse`）只对 rate，非 rate 声明即整行拒绝；`category` 两档（player 常显 / diagnostic 默认收起，**两者都常驻采集与落盘**）。
+
+**两层校验**：
+
+- 声明期 `validate_rows`：不合规**整行拒绝**并给出原因——key 严格 snake_case 正则（拒 `tick__rate`/`tick_rate_`）、label 四步（类型 → 含中文 → 截断 8 字 → **截断后复核仍含中文**）、阈值成对且方向与 kind 一致、`stat` 必填/禁用、core 保留名、行数上限（player 3 / diagnostic 8）。`precision` 越界与 `hint` 超长**只降级不拒绝**（只影响显示）。
+- 运行期 `normalize`：五道闸——类型（拒布尔与非 `Real`，用 `numbers.Real` 而非 `(int, float)` 以接纳 numpy 标量）→ 有限（拒 NaN/±inf；**NaN 的真实危害是判级**：`nan < 阈值` 恒 False，会一路判成 ok）→ 合法域（越界**拒绝不夹紧**，夹紧会把「单位错了」伪装成「满载」）→ 判级 → 显示。逐行异常隔离：单行任何意外只让该行 `invalid`，不牵连同批。
+
+**缺失即缺失**：没给值 → `value=None` + `reason`，面板一律显示「—」，不填 0、不夹紧、不复用上一次的值。原因闭集四值（`REASONS`）：`not_reported`（声明了本轮没给）/ `invalid`（类型不对、非有限、状态文本无效）/ `out_of_range`（越界）/ `read_error`（取值口抛异常）。四者都显示「—」，但日志里可区分「模块没数据」与「监控没取到」。
+
+**保留名**：`RESERVED_KEYS = cpu / sys / gpu / procs / threads / meta`——core 资源面的键，模块声明即整行拒绝。行数上限 player 3 / diagnostic 8。
+
+**判级权二分**：数值类归 core（阈值来自声明；**两个阈值都不给 = 不判级**，恒 ok、不染色、不进卡片右上角健康度——逼没有好坏之分的量编阈值，假阈值会触发假告警）；状态类归模块（业务语义阈值表达不了），但 `state` **不参与跨模块健康聚合**（core 验证不了自报等级）。
+
+`state.text` 五步不可换序：类型 → 换行/控制字符折空格 → 截断 24 字 → **对规范化后的结果**查非空非纯空白 → 保留。第 4 步放在后面是关键：`"\x00\x01"` 原始不算空白、折完却成空白，校验对象必须与显示对象是同一个。文本无效整条失效（等级坏了文本还在能读，文本没了只剩空徽章比「—」更误导）。
+
+**开发期强制力**：模块测试直接 import `validate_rows` 断言自己的声明，不合规在提交前就红——这是唯一不依赖「core 认识某个模块」的强制手段。三轮审查的结论已折入本节；过程记录不入库。
+
+**面板只读采样器快照**：`get_status` 不再直接问模块，取 `perf_sampler.snapshot()` 的 `domain` 段——面板看到的与 `perf.jsonl` 记下的是同一份数据（单一采集时钟、单一写手）。代价是数字最多滞后一个采样周期，换的是「看到的＝记下的」。
+
+### 1.16 [thread_probe.py](./thread_probe.py) — 线程段（时间、身份、心跳）
+
+**职责**：给性能样本供线程清单——每个线程的 CPU 占用、心跳频率、中文别名。纯统计，不认识任何业务模块（标签由外部塞进来）。
+
+**为什么直调 Win32**：psutil 的线程接口本机实测一轮 60–90 毫秒，且**不释放 GIL**——按秒采集会把同进程其它 Python 线程一起冻住（60Hz 心跳出现 90ms 空档）。直调 `GetThreadTimes` 一轮 0.05 毫秒（10 线程），心跳抖动 <1ms。先例见 §1.13 `cpu_time.py`。
+
+**身份 = `(tid, 创建时间)`**：线程名会重名、tid 会被系统复用，两者都不是身份。创建时间取 `GetThreadTimes` 的第一个出参——与 CPU 时间同一次调用，零额外开销。创建时间变了即判为新线程，旧基线作废、不继承历史。
+
+**清单三条过滤**（否则面板会被噪声淹没）：
+
+| 规则 | 理由 |
+|---|---|
+| `Thread-N` 默认名不收 | 解释器起的名字不是模块起的，进清单只是噪声 |
+| 只收活过一个采样周期的线程 | 每帧新建即退的并行计算线程（深度链找边/栅格）存活几毫秒，1 秒采样见不到第二次，天然被挡；首次看到只记基线不输出 |
+| 上限 10 条，按占用排序 | 超出的合并为 `hidden` 计数，面板显示「其余 N 个未列出」 |
+
+**心跳**：模块工作线程每转一圈调 `beat()`（无参、无锁、无分配），core 按 `(tid, 创建时间)` 差分算 Hz。没调过的线程给 `None`（显示「—」）而不是 0——0 的含义是「调过但现在停了」，两者诊断意义不同。
+
+**已知边界**：同一 tid 若在同一个时钟刻度内退出又新建，会被判为同一身份。这类情形**检测不到**，只能靠下游信号发现——心跳差分出负值时把该线程降级为「身份未知」（不绑标签、不算频率），而不是修正数字硬算。
+
+**已知盲区：原生线程池看不见**。没有 Python 线程名的线程（onnxruntime 推理池、OpenCV 工作线程）不在 `threading.enumerate()` 里，清单天然看不到它们。真机一局实测：运行期间 Python 线程合计 189%，进程实际占用 525%，**未归因 335%（占 64%）——大头正是推理线程池**。所以「未归因占用」不是噪声指标，它现在是最大的那块开销的唯一痕迹。补它需要独立线程低频扫系统线程表（`Toolhelp32Snapshot` 单次 58ms，放采样线程里会把采样卡住），属另案。
+
+非 Windows：`thread_times` 恒返回 `None`，清单里线程只有名字没有占用，不崩。
+
 ***
+
+### 1.17 [game_process.py](./game_process.py) + [builtin_steps.py](./builtin_steps.py) — 游戏进程与内置步骤（ADR-0013）
+
+**game_process.py（进程原语）**：
+
+- **定位安装**：读官方启动器的 `%LOCALAPPDATA%\RacingMaster\CN\config\config.ini` 的 `game_dir`，拼出主程序 `g112/Binaries/Win64/g112-Win64-Shipping.exe`；只读别人的配置、不猜多个候选路径——猜出来的路径填进界面比留空更糟。
+- **直启**：参数与官方启动器实测命令行逐字一致（`-nosound -nohmd --MuMuLauncher -noexceptionhandler -Hdd -force_load_content`）；默认 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`，游戏不挂在本程序进程树下。
+- **找窗口按进程名，不按标题**：启动器窗口标题同样是「巅峰极速」，标题匹配会认错窗口；同名进程多窗口时取面积最大的。
+- **关闭**：窗口句柄优先（`terminate_process_by_hwnd`），找不到窗口按进程名兜底（`TerminateProcess`），失败只记 WARNING、不抛。
+
+**builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / COVER / run(config, stop_event, log)`，只需「跑一次、可被停止」。`COVER` 是封面文件名（相对 `core/resources/`，见 §1.18）。两个步骤：
+
+| 步骤 | 配置面 | 行为要点 |
+|---|---|---|
+| `launch_game` | `path`（空=自动探测）、`args`、`timeout_s`、`skip_if_running`、`detached`、`fallback_launcher` | 已在运行则跳过并接管现有窗口；等窗口超时且开了回退时改走官方启动器再等一轮；失败时把「进程在不在、窗口有没有」写进日志 |
+| `close_game` | `exit_app` | 关进程后清掉窗口句柄（下次运行重新定位）；`exit_app` 请求本轮结束后退出本程序 |
+
+**为什么不是插件、也不是活动模块**：见 [ADR-0013](../../docs/adr/0013-内置步骤与游戏进程归属.md)。一句话——活动模块的契约（阶段/断点/有效期/性能行/自带资源）这两件事一样都没有；而进程启停不属于任何玩法。
+
+**坑**：
+
+- 步骤与模块共用任务列表，所以队列 id 校验、配置槽、断点拒绝、资源徽标都要按「两种种类」分支；断点对步骤直接拒绝（没有阶段可断）。
+- 步骤启动会清 `stop_event`（与 `start_module` 同理）：上一轮模块"到限自动停止"也会置位它，不清的话步骤一进门就判成被停止。
+- 实测：直启 13s 出窗口、39s 登录完成进大厅；启动器窗口本身约 6.6s 出现。默认 120s 超时约 3 倍余量。
+- 参数里带 `-nosound`，游戏本身不出声——「运行时静音游戏」对这个游戏基本没有作用对象（找不到音频会话）。
+
+### 1.18 [covers.py](./covers.py) — 模块封面（声明归模块，解析归核心）
+
+**三方分工**（模块管理弹窗的卡片底图走这条链）：
+
+| 责任方 | 职责 |
+|---|---|
+| 插件模块 | 类属性 `COVER = "cover.jpg"`，相对自己的 `resources/` |
+| 内置步骤 | 同上，但相对 `core/resources/`（步骤属于核心，图也跟着核心走） |
+| 本模块 | 校验声明（拒绝绝对路径与 `..` 越界）、定位文件、解析成 URL |
+| 前端 | 只消费下发的 URL，不认识 `plugins/<id>/resources/` 这类内部路径 |
+
+- **为什么解析权在核心**：插件只声明「我有一张封面」，不声明磁盘位置、更不把绝对路径塞给前端。将来从 `file://` 换到资源服务器，只改这一个文件。
+- **下发字段**：`get_initial_state.modules[].cover`（None = 无专属封面）+ `get_initial_state.cover_default`（通用默认封面）。
+- **缺省即回落**：未声明 / 文件丢失 / 声明非法一律 `None` 并记 WARNING——封面是装饰，不阻断模块运行；前端三级回退（专属 → 默认 → 纯渐变）。
+- **通用默认封面**：`core/resources/cover_default.jpg`，换图只改 `DEFAULT_COVER` 常量。
+- **归属纪律**：模块的图跟着模块目录走（插件整体搬走不丢图），通用图放核心资源目录；发布装配对 `maaracing_master/` 是 `robocopy /E`，所以「图在插件目录内」等价于「随插件进包」，不依赖扩展名白名单。
+- **测试**：`tests/test_module_covers.py`（含「前端不得硬编码插件路径」的静态锁）。
+
+### 1.19 [navkit/step.py](./navkit/step.py) — 统一步循环的重试状态机（ADR-0014）
+
+**职责**：一次「发动作 → 等后置条件 → 有限重发 → 耗尽/停止」这类**大阶段/步层的编排**，其**状态转移**（计数、时间窗、到期重发、显式失败、停止取消）的唯一解释者。调用方只喂 `Verdict`（后置条件此刻达成 / 未达成 / 用户停止）、收 `Command`（等待 / 重发 / 完成 / 耗尽 / 取消），不得再各自保留一份重试计数或时间状态——单一真源。归属决策见 [ADR-0014](../../docs/adr/0014-步级重试状态转移归core拥有.md)。
+
+**接口现状**：`StepMachine(max_retries, window_s, clock=time.monotonic)`；`arm()` 标记一次尝试发出 / 送达（只重置时间窗、不动计数）；`observe(verdict) → Command`。`Verdict` / `Command` / `StepExhaustedError` 的成员以 [step.py](./navkit/step.py) 为真源，时钟可注入供测试喂假钟。
+
+**时序语义（须逐条成立）**：
+- `count++` 只在窗口到期决定重发时发生、且每窗一次（窗内每拍 `PENDING` 不重复计、慢送达不多耗预算）；`arm()` 永不 `++`。
+- 一次到期 `RETRY` 置「重发在途」：未送达期间每拍仍返回 `RETRY`（令调用方的重发资格持续，不靠每拍重新决策）；送达时 `arm()` 折叠在途、把窗口基准挪到送达点。
+- 耗尽 = 到上限后**再等一个完整窗口**仍 `PENDING` 才 `FAIL`；故 `max_retries` 取「**不含首点的重发上限**」。
+- `STOP → ABORT` 是**能力非强制**：外层已自管停止的调用方可不喂 STOP，机器只见 SUCCESS/PENDING——两种接法共用同一转移表。
+- 「什么算一次尝试、何时 `arm`、用阻塞循环还是逐帧回调驱动」全部归调用方，这是各家差异的唯一来源。
+
+**域无关（红线）**：不出现阶段名 / 节点名 / 玩法语义，节点名由调用方传入（`check_truth` 的 namespace 校验守引用方向）。纯标准库，可进 CI 轻量依赖集。
+
+**消费者**：speedrush `_run_flow` 的每个 UI 点击步（落地页确认走 `__confirm` 只识别探针，剂量在 `decision.json` 的 `step_retry` 段，接入细节见 [plugins/speedrush/CODE_WIKI.md](../plugins/speedrush/CODE_WIKI.md)）；`treasure`（已退役）的三条点击重试链是其计数 / 时序语义的行为参照。
+
+**测试**：`tests/test_navkit_step.py`（三 verdict × 五 command 转移表逐链复刻 + 在途 hold 时序锁）。
+
+### 1.20 数据看板：资格声明与内容契约
+
+**资格位（模块自述）**：`ActivityModule.HAS_DASHBOARD` 是显式旧标志，`DASHBOARD_CONTRACT` 是新契约版本（`0` = 已登记但尚未实现，不进入候选集；大于 `0` 的版本才生效），覆盖 `read_today_stats` 是旧模块的今日看板入口；三者任一成立即进入候选集。资格并集由 `base.declares_dashboard()` 单点定义，`get_module_info()`、`get_initial_state.modules[]` 的 `has_dashboard` 与路由共用；内置步骤恒 `False`。
+
+**内容契约（新模块）**：模块置 `DASHBOARD_CONTRACT = 1` 并实现 `read_dashboard()`，返回版本化 block 载荷（`stats` / `list` / `text` / `path` / `action`）。标题、布局、间距、配色、翻页与生命周期归前端看板中心；模块只组合 block 与文本。新增视觉原语时扩展共享 block 词表（[dashboard_contract.py](./dashboard_contract.py) + 前端渲染器），不做模块私有页面。
+
+**统一路由与校验**：`get_module_dashboard(module_id)` 只按 id 分发；`normalize_dashboard()` 校验版本、block 白名单、色调与标准动作（当前 `open_user_data_folder`），非法块丢弃并记 WARNING。动作只走白名单，后端不下发 HTML、不接受任意 RPC/URL。版本 `0` 的占位模块返回「看板尚未实现」的明确错误。
+
+**旧模块兼容桥**：冻结的鉴宝不改代码——它覆盖的 `read_today_stats()` 本身即资格位，core 把返回值包成 `today_stats` 兼容块，前端用对应块渲染器还原今日看板。新模块不走这条路。
+
+**不建实例 / 不持有正文**：看板数据来自持久化或既有 RPC；core 不创建模块实例，也不持有任何模块业务字段。
+
+**测试**：`tests/test_dashboard_contract.py`（版本 / block 白名单 / 非法块 / 动作白名单 / 兼容桥 / 路由不建实例）、`tests/test_module_dashboard_contract.py`（资格位、版本 0 占位与列表下发）、`tests/test_frontend_dashboard_center.py`（前端渲染器覆盖全部 block 类型 / 候选集与统一路由）。
+
+### 1.21 [maa_option.py](./maa_option.py) — 框架侧落盘策略
+
+**职责**：在启动时把 maafw 的 `framework/config/maa_option.json` 固定为「文本日志开（含框架自带 7 天回收）、失败截图关」，与界面两项调试开关解耦——那两个开关只管应用自己的调试语料与会话日志。
+
+- 固定值：`logging=true`（写持续文本日志，所有级别；每次启动在后台删除 `framework/debug/` 下超过 7 天的 `.log`/`.jpg`/`.png`）、`save_on_error=false`（不落失败截图）。`save_draw` / `draw_quality` / `stdout_level` 不由本模块改。
+- 为什么关失败截图：框架的「出错」口径是**一次节点执行到超时都没有命中**（动作失败、节点无效同样算），包括模块有意做的负向探针（驾驶中每 0.5 秒问一次横幅在不在）；这类图实测约 2.3GB/天、95% 以上是噪声。视觉证据由应用的 DEBUG 开关按需提供。
+- 成本（实测 5.12.3 + 驾驶流程）：文本约 183MB/天。`maafw.log` 满 16MB 复制为 `maafw.bak.<时间>.log` 后清空当前文件，备份不按数量轮转；只靠框架 7 天回收会到 ~1.25GB，故启动时 `prune_log_backups()` 把备份总量压到 256MB，文本部分稳定在 ~272MB（备份 + 当前文件）。
+- 写文件走「临时文件 + 原子替换」：半截 JSON 会让框架回落默认值。
+- **生效时机**：框架只在 `Toolkit.init_option()` 那一次读配置，故启动时写一次；运行中改界面开关不重写。
+- 边界：`logs/sidecar_stderr.log` 不在本模块管辖（它是崩溃诊断的最后手段），由 shell 侧按 8MB 上限轮转；`data/`（业务库与用户资产）与 `evidence/`（C 证据冻结，随日志开关）也不在此。
+
+**测试**：`tests/test_maa_option.py`。
 
 ## 2. 模块依赖与持有关系
 
@@ -342,7 +516,11 @@ core/sidecar.py（JSONL RPC handler）
   ├── core.logger.logger
   ├── core.window_utils.has_physical_controller
   ├── core.remote_meta（远程元数据校验与外链目标表，§1.12）
-  └── core.registry（插件自动扫描注册）
+  ├── core.perf_contract（性能面板声明校验与取值规范化，§1.15）
+  ├── core.thread_probe（线程段：时间/身份/心跳，§1.16）
+  ├── core.covers（封面声明 → URL 解析，§1.18）
+  ├── core.registry（插件自动扫描注册）
+  └── core.dashboard_contract（看板 block 校验与兼容桥，§1.20）
 
 MaaRacingMaster.Shell（C#，不导入 Python）
   └── PythonSidecar（stdin/stdout JSONL 通信）
@@ -409,10 +587,11 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）                                    |
 | `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
 | `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                               |
-| `set_auto_shutdown(close_game, exit_mra)`      | 运行结束后自动关游戏 / 退出程序（仅自然完成时）                                              |
+| `run_builtin_step(step_id, config)`            | 跑一个内置步骤（启动游戏 / 关闭游戏），不连接窗口、不装配模块能力                                     |
+| `adopt_window(hwnd)` / `forget_window()`       | 采纳已定位的游戏窗口（连接时不再按标题搜）/ 关闭后清掉失效句柄                                       |
+| `request_exit()` / `exit_requested`            | 步骤请求「本轮结束后退出本程序」，sidecar 据此发退出事件                                       |
 | `set_mute_game(enabled)`                       | 运行时静音游戏（音频音量控制）                                                        |
-| `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路）                                                           |
-| `set_auto_close_game` / `set_auto_exit`        | 自动收尾开关                                                                 |
+| `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路；只在程序接管操作期检测按键）                                                   |
 | `gamepad_available()`                          | vgamepad / ViGEmBus 驱动可用性探测（缓存）                                        |
 | `_get_gpad()`                                  | 懒创建并返回虚拟手柄（复用，不销毁重建）                                                   |
 | `_reset_gpad()`                                | 摇杆归零+按钮释放（不销毁）                                                         |
@@ -510,6 +689,15 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
   模块的启动约束声明**（`ActivityModule.requires_exclusive_gamepad(config)`）；模块可因
   运行模式而放宽——如"只采集不控车"的录制模式反而需要物理手柄在位
 
+### 5.3.1 人工接管期与键盘读取
+
+- `ActivityModule.manual_input_active()`（默认 `False`）：模块声明"当前是玩家自己操作、程序不接管输入"。紧急停止（≥2 键即停）只对程序操作期生效——人工驾驶/录制阶段按键是正常操作（键盘驾驶 W+A 就是两键），急停循环据此跳过按键检测。实现见 `controller._emergency_stop_loop` / `_manual_input_active`。
+- `core/key_state.py`：具名键盘按键状态读取（只读 `GetAsyncKeyState`），插件经此读取驾驶键；插件不得直接 import `window_utils`（平台件边界同 §5.3 的 `xinput.py`）。
+- `ActivityModule.config_choices()`（默认 `{}`）：模块为下拉型配置项提供静态可选值；`sidecar._module_config_view` 并入 `_choices` 供 GUI 展示，不创建模块实例，取值合法性仍由模块自行校验。
+- `ActivityModule.normalize_config()`（默认原样返回）：模块把旧版配置键折算成当前配置面，并施加自身的不变量（如直行档不许残留录制开关）；sidecar 在读回存档与接收 GUI 写入前各调一次。配置面演进留在模块内，core 不认任何模块的旧字段；归一失败记 WARNING 并按原样继续。
+- `ActivityModule.CONFIG_UI_CONTRACT` / `CONFIG_UI`（默认未声明 = 无面板）：模块用有序分组声明配置面板（控件类型、标签、说明、静态选项、动态候选引用、数字约束、单条件显隐、按值换文案；分段选项可带徽章，字段可挂内联提示与宿主固定动作 `download_release` / `open_user_data_folder`）；字段键必须在本模块 `DEFAULT_MODULE_CONFIG` 内。契约与状态机见 `core/config_ui_contract.py`（`none/ok/partial/invalid/unsupported_version`），宿主只做重建式白名单与通用渲染，见 ADR-0016。侧通道：`config_summary(config)` 产任务卡摘要（入参是宿主投影后的有效配置），`config_status()` 产面板状态行（仅运行中实例，`{text, level}`）。
+- 配置响应附加元数据（`_ui/_ui_state/_ui_note/_choices/_summary/_status/_rev`）由 `sidecar._attach_config_meta` 在静态视图与 live 两路统一注入；`_rev` 每次 `set_module_config` 成功 +1，前端据此丢弃过期的轮询响应。
+
 ### 5.4 MAA Framework API
 
 API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「高频红线/坑」](../../docs/MAAFW_GUIDE.md#9-高频红线坑背下来)（完整签名见其 §3.3 与 §6）。本文不复述。
@@ -530,7 +718,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 
 ## 6. 调试操作
 
-1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingMaster/debug/<module>/<会话>/` 目录
+1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 截图与记录"，标注帧按节流保存到 `%APPDATA%/MaaRacingMaster/debug/<module>/<会话>/` 目录（节流密度由模块定，如 speedrush 10Hz）
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，显示精简标注画面（~30fps；窗口由 GUI 侧承担，`debug.py` 不开窗口）
 3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
 4. **MPE Studio**：`tools/navkit/studio.cmd` 起完整工作台（MPE 画布编辑 v4 真源 + ROI 校准台 / 策略表 / 模板截取），见 [tools/navkit/README.md](../../tools/navkit/README.md)
@@ -538,9 +726,9 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 **用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
 
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
-- `data/`：结构化业务数据（`data/treasure/treasure.db`）
+- `data/`：运行时数据与用户资产（`data/treasure/treasure.db`、`data/speedrush/macros/` 用户录制的宏、模型权重等）
 - `logs/`：会话记录 `logs/<MaaRM时间戳>/`——运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）与伴随产物 `trace.jsonl`（共用「日志记录」开关）
-- `framework/`：MAA 框架自产物（`maafw.log`、cache）
+- `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
 - `debug/`：调试截图会话 `debug/<module>/<会话>/`（DebugStudio 契约）
 
 GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目录管理。

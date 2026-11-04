@@ -21,7 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from maaracing_master.plugins.treasure.store import TreasureStore
+from maaracing_master.plugins._archive.treasure.store import TreasureStore
+
+
+pytestmark = pytest.mark.retired
 
 
 class _FakeModule:

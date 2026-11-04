@@ -1,0 +1,249 @@
+# -*- coding: utf-8 -*-
+"""MoGe-2 官方 ONNX 的 numpy 后处理：focal/shift 恢复 + 点图重建。
+
+官方 ONNX 只有 raw forward（输入 image fp32 RGB[0,1]（+动态版 num_tokens），
+输出 points/normal/mask/metric_scale 仿射点图）；官方 infer() 在模型外做
+recover_focal_shift → z 加 shift → force_projection 重投影 → ×metric_scale。
+本模块按 microsoft/MoGe geometry_numpy.py / geometry_torch.py / v2.py 的
+公式复刻该链路（公式链逐字对齐官方，出处核对记录 2026-10-01）。
+
+公式出处：
+- normalized_view_plane_uv: span_x = ar/√(1+ar²), span_y = 1/√(1+ar²)
+  （半对角归一），uv ∈ [-span·(n-1)/n, +span·(n-1)/n]，v 随行号向下递增。
+- recover_focal_shift: uv/points 各自 masked 最近邻下采样到 64×64，
+  solve_optimal_focal_shift：xy_proj = xy/(z+shift)，
+  f = <xy_proj,uv>/<xy_proj,xy_proj>，残差 = f·xy_proj − uv，
+  对 shift 做一维最小二乘解，focal 闭式回代；给定 focal 时退化为
+  solve_optimal_shift。返回 (focal, shift)。
+- fx = focal/2·√(1+ar²)/ar，fy = focal/2·√(1+ar²)；归一化内参 cx=cy=0.5。
+- 重投影：Z = points_z+shift，X=(u−0.5)·Z/fx，Y=(v−0.5)·Z/fy，全体 ×metric_scale。
+
+**shift 求解器**：官方用 scipy least_squares(method='lm', x0=0)（局部极小）。
+产线不引 scipy（运行时依赖表没有它），用模式搜索替代：从 0 起步、两侧试探
+下降、走不动半步——**找离 0 最近的局部极小**，与 LM(x0=0) 同盆地（残差在
+远处存在 f→0 的退化盆地，全局法会掉进去，实跑实证）。demo 帧上 shift/fx
+与 scipy 解一致性验证通过（本机实跑，相对差 <1e-5）。逐字复刻红线只在
+公式链；求解器是数值实现细节，精度由测试锁。
+"""
+
+from __future__ import annotations
+
+import weakref
+
+import cv2
+import numpy as np
+
+DOWN = 64  # 官方 recover_focal_shift 的下采样网格 (width, height)
+
+# 会话级 IO binding 缓存（key=sess 弱引用，见 _iobinding_for）
+_BINDINGS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def normalized_view_plane_uv(width: int, height: int) -> np.ndarray:
+    """官方 geometry_numpy.normalized_view_plane_uv_numpy。"""
+    ar = width / height
+    span_x = ar / (1 + ar**2) ** 0.5
+    span_y = 1 / (1 + ar**2) ** 0.5
+    u = np.linspace(-span_x * (width - 1) / width, span_x * (width - 1) / width,
+                    width, dtype=np.float32)
+    v = np.linspace(-span_y * (height - 1) / height, span_y * (height - 1) / height,
+                    height, dtype=np.float32)
+    u, v = np.meshgrid(u, v, indexing="xy")
+    return np.stack([u, v], axis=-1)
+
+
+def _masked_nearest_resize(a: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """utils3d.masked_nearest_resize 的近似：窗口内取首个有效像素（官方按窗内最近有效）。"""
+    H, W = mask.shape
+    oh, ow = min(DOWN, H), min(DOWN, W)
+    ys = (np.arange(oh) * (H / oh)).astype(int)
+    xs = (np.arange(ow) * (W / ow)).astype(int)
+    m = mask[np.ix_(ys, xs)]
+    out = a[np.ix_(ys, xs)]
+    return out, m
+
+
+def _minimize_local(fn, step: float) -> float:
+    """从 0 出发的模式搜索下山：步长 step 起步，两侧试探下降，走不动则半步，
+    到 step 1e-9 收敛。**找的是离 0 最近的局部极小**——残差在远处有 f→0 的
+    退化盆地（实跑 frame 0/401 实证：全局扫描会掉进去，focal≈0 的平凡解），
+    官方 LM(x0=0) 的语义就是局部解，本器走同一盆地。"""
+    x, r = 0.0, fn(0.0)
+    h = step
+    while h > 1e-9 * step:
+        xm, xp = fn(x - h), fn(x + h)
+        if xm < r:
+            x, r = x - h, xm
+        elif xp < r:
+            x, r = x + h, xp
+        else:
+            h *= 0.5
+    return x
+
+
+def _solve_shift(uv: np.ndarray, xy: np.ndarray, z: np.ndarray,
+                 focal: float | None, diag: dict | None = None) -> tuple[float, float | None]:
+    """solve_optimal_focal_shift / solve_optimal_shift 的产线实现。
+
+    focal=None 时先在 shift=0 处闭式回代 focal（官方先解 focal 再解 shift 的
+    联合格局等价于：对每个 shift 取内层闭式 focal 后的最小残差）。
+
+    ``diag`` 传入 dict 时填求解器诊断（尺度审计 2026-10-10：焦距逐帧漂移的
+    治理先落盘可见——n=参与样本数、z_med/step0=搜索尺度、evals=残差求值次数、
+    resid/resid_mean=终解残差平方和与逐样本均值（uv² 归一单位））。"""
+    if uv.shape[0] < 2:
+        return 0.0, focal
+
+    evals = 0
+
+    def _focal_at(s: float) -> float:
+        xy_proj = xy / (z + s)[:, None]
+        return float((xy_proj * uv).sum() / np.square(xy_proj).sum())
+
+    def resid(s: float) -> float:
+        nonlocal evals
+        evals += 1
+        xy_proj = xy / (z + s)[:, None]
+        f = (xy_proj * uv).sum() / np.square(xy_proj).sum()
+        d = f * xy_proj - uv
+        return float((d * d).sum())
+
+    z_med = float(np.median(z[np.isfinite(z) & (z > 0)])) or 1.0
+    step0 = 0.05 * z_med
+    shift = _minimize_local(resid, step=step0)
+    if focal is None:
+        focal = _focal_at(shift)
+    if diag is not None:
+        r_final = resid(shift)
+        diag.update(n=int(uv.shape[0]), z_med=z_med, step0=step0,
+                    evals=evals, shift=float(shift), focal=float(focal),
+                    resid=r_final, resid_mean=r_final / max(1, uv.shape[0]))
+    return shift, focal
+
+
+def recover_focal_shift(points: np.ndarray, mask: np.ndarray,
+                        focal: float | None = None, diag: dict | None = None):
+    """官方 infer 的 focal/shift 恢复，返回 (focal, shift)。``diag`` 见 _solve_shift。"""
+    H, W = points.shape[:2]
+    uv_full = normalized_view_plane_uv(W, H)
+    uv, m = _masked_nearest_resize(uv_full, mask)
+    pts, _ = _masked_nearest_resize(points, mask)
+    sel = m
+    uv_s = uv[sel]
+    pts_s = pts[sel]
+    if uv_s.shape[0] < 2:
+        return (1.0, 0.0) if focal is None else (focal, 0.0)
+    xy = pts_s[..., :2].astype(np.float64)
+    z = pts_s[..., 2].astype(np.float64)
+    z = np.maximum(z, 1e-6)          # z+shift 的极点防护（官方靠 LM 域约束隐式承担）
+    shift, focal_out = _solve_shift(uv_s.astype(np.float64), xy, z, focal, diag)
+    return (focal_out if focal_out is not None else 1.0), shift
+
+
+def focal_to_normalized_intrinsics(focal: float, W: int, H: int):
+    """官方: fx = focal/2·√(1+ar²)/ar，fy = focal/2·√(1+ar²)，cx=cy=0.5。"""
+    ar = W / H
+    fx = focal / 2 * (1 + ar**2) ** 0.5 / ar
+    fy = focal / 2 * (1 + ar**2) ** 0.5
+    return float(fx), float(fy)
+
+
+def preprocess(img_rgb_u8: np.ndarray, W: int, H: int) -> np.ndarray:
+    """RGB u8 → (1,3,H,W) fp32 [0,1]；归一化(mean/std)在模型内部，勿重复。"""
+    im = cv2.resize(img_rgb_u8, (W, H), interpolation=cv2.INTER_AREA)
+    x = im.astype(np.float32) / 255.0
+    return x.transpose(2, 0, 1)[None]
+
+
+def _iobinding_for(sess, image_input: np.ndarray, num_tokens: int):
+    """取/建会话级 IO binding（固定 CPU 输入缓冲 + CPU 输出绑定）。
+
+    **为什么必须固定缓冲**（2026-10-01 性能解剖定案）：显存吃紧时 ORT 默认 run
+    的临时输出分配与读回会触发显存分页，实测 8GB 卡水位逼近物理上限时单帧
+    59→136ms 且随溢出加深持续恶化；固定缓冲路径全水位恒定 ~48ms。新帧内容
+    原地覆写进预缓冲，run 间零临时分配。
+
+    **每帧必须重调 bind_input**（2026-10-02 实测）：DML 在 bind_input 那一刻
+    取走输入，此后原地覆写缓冲内容它看不见——只覆写不重绑时每次 run 都返回
+    第一帧的结果（同一会话连喂三帧不同画面，输出逐位相同；普通 run 与每帧
+    重绑两路都逐帧正确，时延同为 ~47ms）。故缓冲仍固定，但每帧按同一指针
+    重绑一次，代价可忽略。
+
+    返回 None = 会话不可绑定（测试桩，负缓存不再重试）或输入形状变化，
+    调用方走普通 run。"""
+    entry = _BINDINGS.get(sess)
+    if entry is None:
+        try:
+            b = sess.io_binding()
+            inputs = sess.get_inputs()
+            in_name = inputs[0].name
+            xbuf = np.ascontiguousarray(image_input)
+            tbuf = None
+            if any(i.name == "num_tokens" for i in inputs):
+                tbuf = np.array(num_tokens, np.int64)
+            for o in sess.get_outputs():
+                b.bind_output(o.name, "cpu", 0)
+            entry = {"bind": b, "in_name": in_name, "xbuf": xbuf, "tbuf": tbuf}
+        except Exception:
+            entry = {"bind": None}   # 负缓存：不可绑定会话（测试桩）不再重试
+        _BINDINGS[sess] = entry
+    bind = entry["bind"]
+    if bind is None:
+        return None
+    xbuf = entry["xbuf"]
+    if xbuf is None:
+        return None   # 无输入缓冲（不可绑定会话）：该帧走普通 run
+    if xbuf.shape != image_input.shape:
+        return None   # 输入形状漂移（产线不应发生）：该帧走普通 run
+    np.copyto(xbuf, image_input)
+    bind.bind_input(entry["in_name"], "cpu", 0, xbuf.dtype, xbuf.shape,
+                    xbuf.ctypes.data)
+    tbuf = entry["tbuf"]
+    if tbuf is not None:
+        tbuf[...] = num_tokens
+        bind.bind_input("num_tokens", "cpu", 0, tbuf.dtype,
+                        tbuf.shape, tbuf.ctypes.data)
+    return bind
+
+
+def forward(sess, image_input: np.ndarray, num_tokens: int):
+    """raw forward（动态/静态会话自适应）。返回 points(H,W,3)、mask(H,W)、metric_scale。
+
+    可绑定会话走 IO binding（固定缓冲，抗显存分页，见 _iobinding_for），
+    其余（测试桩/形状漂移）走普通 run，输出语义两路一致。"""
+    bind = _iobinding_for(sess, image_input, num_tokens)
+    if bind is not None:
+        sess.run_with_iobinding(bind, None)
+        out = bind.copy_outputs_to_cpu()
+    else:
+        feed = {"image": image_input}
+        if any(i.name == "num_tokens" for i in sess.get_inputs()):
+            feed["num_tokens"] = np.array(num_tokens, np.int64)
+        out = sess.run(None, feed)
+    points, mask, metric_scale = out[0][0], out[2][0], float(out[3][0])
+    mask = (mask > 0.5) & np.isfinite(points).all(-1)
+    return points.astype(np.float32), mask, metric_scale
+
+
+def reconstruct(points: np.ndarray, mask: np.ndarray, metric_scale: float,
+                focal: float | None = None):
+    """官方 infer 的 force_projection 链路。
+
+    focal=None 自行恢复。返回 dict：pts(H,W,3) 点图、depth(H,W)、focal、shift、
+    fx、fy、valid、solver（求解器诊断 dict，见 _solve_shift；观测面只写不读）。
+    X/Y/Z 同为「向下/向右为正」的相机系。"""
+    H, W = points.shape[:2]
+    solver: dict = {}
+    focal_, shift = recover_focal_shift(points, mask, focal=focal, diag=solver)
+    fx, fy = focal_to_normalized_intrinsics(focal_, W, H)
+    z = points[..., 2] + shift
+    valid = mask & (z > 0)
+    u = (np.arange(W, dtype=np.float32) + 0.5) / W
+    v = (np.arange(H, dtype=np.float32) + 0.5) / H
+    X = (u[None, :] - 0.5) * z / fx
+    Y = (v[:, None] - 0.5) * z / fy
+    pts = np.stack([X, Y, z], -1) * metric_scale
+    return {"pts": pts.astype(np.float32),
+            "depth": (z * metric_scale).astype(np.float32),
+            "focal": focal_, "shift": shift, "fx": fx, "fy": fy, "valid": valid,
+            "solver": solver}

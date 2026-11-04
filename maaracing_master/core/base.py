@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from contextlib import ExitStack
 from pathlib import Path
@@ -205,9 +206,25 @@ class ActivityModule(ABC):
     # 示例：REQUIRES = frozenset({"capture", "gamepad"})
     REQUIRES: frozenset[str] = frozenset()
 
-    # 声明插件自带的必需资源（相对插件目录的路径，如 "resources/onnx/model.onnx"）。
+    # 声明插件自带的必需资源（相对插件目录的路径，如 "resources/models/model.onnx"）。
     # 启动前由 sidecar 逐项检查存在性，缺失时拦截并给出插件内具体路径。
     REQUIRED_ASSETS: tuple[str, ...] = ()
+
+    # 声明模块封面的文件名（相对插件 resources/，如 "cover.jpg"）。
+    # 只是「我有一张封面」的声明，不含磁盘位置：定位与 URL 解析在 core/covers.py，
+    # 前端只消费解析结果。未声明 = 用通用默认封面（装饰件，缺失不阻断模块运行）。
+    COVER: str = ""
+
+    # 声明模块是否有「数据看板」（GUI 数据页看板中心的候选资格）。
+    # HAS_DASHBOARD / DASHBOARD_CONTRACT（版本 > 0）/ 覆盖 read_today_stats 任一成立
+    # 即进入候选集。新模块用 DASHBOARD_CONTRACT + read_dashboard；覆盖
+    # read_today_stats 的旧模块由 core 包成 today_stats 兼容块（当前为冻结的鉴宝）。
+    HAS_DASHBOARD: bool = False
+
+    # 看板内容契约版本（见 core/dashboard_contract.py）。
+    # None = 不提供看板；0 = 已登记能力位但尚未实现（不进入候选集）；
+    # 正整数 = 实现版本，read_dashboard() 必须返回同版本的载荷。
+    DASHBOARD_CONTRACT: int | None = None
 
     # 声明模块配置面的**键集合与默认值**（GUI 配置项的唯一真源）。
     # 两个用途：
@@ -217,6 +234,25 @@ class ActivityModule(ABC):
     #      否则它不会被保存（core 不再持有任何模块的字段名）。
     # 只放"用户可设置"的项；运行实况（进度、计数等）走 get_module_config 的 _state。
     DEFAULT_MODULE_CONFIG: dict = {}
+
+    # 配置表单契约（细则见 core/config_ui_contract.py）：模块声明「面板有哪些字段、
+    # 用什么控件」，宿主通用渲染，core 不认识任何模块的字段语义。
+    #   CONFIG_UI_CONTRACT：契约版本；不声明 = 无面板（默认无）
+    #   CONFIG_UI         ：{"groups": [{"title"?, "fields": [...]}]}
+    # 字段键必须在本模块的 DEFAULT_MODULE_CONFIG 里；默认值与动态候选分别由
+    # DEFAULT_MODULE_CONFIG / config_choices() 提供，不在表单声明里重复。
+    CONFIG_UI_CONTRACT: int | None = None
+    CONFIG_UI: dict | None = None
+
+    # 性能面板契约（细则见 core/perf_contract.py）：模块声明「自己会报哪几行」，
+    # core 只认格子（kind / 阈值 / 分类），不认识业务。三个都是可选的——
+    # 不声明就只显示资源面（整机 / 本程序），不报错。
+    #   PERF_CONTRACT：声明契约版本，与 core 的 PERF_CONTRACT_VERSION 不等 → 领域面不显示
+    #   PERF_ROWS    ：声明行（key / label / kind / stat / category / 阈值 …）
+    #   THREAD_LABELS：线程名 → 中文别名；线程本身由 core 嗅探，模块只贴标签
+    PERF_CONTRACT: int | None = None
+    PERF_ROWS: tuple[dict, ...] = ()
+    THREAD_LABELS: dict[str, str] = {}
 
     def __init__(self, ctx: ActivityContext | None):
         # ctx=None 为离线形态（registry.create_module 的公开契约：只读默认配置，
@@ -246,15 +282,81 @@ class ActivityModule(ABC):
         """本次启动是否独占手柄（即：必须断开所有物理手柄）；默认取类属性声明。"""
         return cls.REQUIRES_GAMEPAD_EXCLUSIVE
 
-    # ---------- GUI 今日看板（可选，模块自述）----------
+    # ---------- 人工接管期声明（紧急停止的作用域，可选）----------
+
+    def manual_input_active(self) -> bool:
+        """当前是否处于「玩家自己操作、程序不接管输入」的阶段；默认 False。
+
+        紧急停止（同时按 ≥2 键即停）只对程序操作期生效：人工驾驶/录制阶段按键
+        是正常操作，不能当成急停信号。模块覆盖本方法返回实况即可（例如速跑模块
+        在录制驾驶阶段返回 True）。
+        """
+        return False
+
+    # ---------- GUI 配置项可选值（可选，模块自述）----------
+
+    @classmethod
+    def config_choices(cls) -> dict[str, list[dict]]:
+        """为下拉型配置项提供可选值；默认空。只读静态枚举，不创建实例。
+
+        形状：``{配置键: [{"value": ..., "label": ...}, ...]}``。core 原样并入
+        配置视图的 ``_choices`` 供 GUI 展示；取值合法性仍由模块在 set/start 时
+        自行校验，core 不解释这些值。
+        """
+        return {}
+
+    @classmethod
+    def normalize_config(cls, config: dict) -> dict:
+        """把旧版配置键折算成当前配置面、施加自身不变量；默认原样返回。
+
+        core 在读回存档与接收 GUI 写入前各调用一次，让"改键名/合并互斥键/档位
+        约束"这类配置面演进留在模块内，核心不必认识任何模块的旧字段。
+        """
+        return config
+
+    @classmethod
+    def config_summary(cls, config: dict) -> list[str]:
+        """任务卡摘要文案（可选）；默认空。只读、纯函数，不创建实例。
+
+        入参是宿主投影后的有效配置：默认值已合并、旧键已折算、只含
+        ``DEFAULT_MODULE_CONFIG`` 里的键，不含 ``_choices`` / ``_state`` 等元数据。
+        返回字符串列表；宿主统一做类型与长度校验。
+        """
+        return []
+
+    def config_status(self) -> dict | None:
+        """配置面板下的运行状态行（可选）；默认 None。
+
+        仅运行中的实例会被调用；形状 ``{"text": str, "level": ""|"ok"|"warn"|"error"}``。
+        异常由宿主隔离，不影响配置读取。
+        """
+        return None
+
+    # ---------- GUI 数据看板内容（可选，模块自述）----------
     #
+    # 新模块实现 read_dashboard()，返回 core/dashboard_contract.py 定义的 block 载荷；
+    # 旧模块的 read_today_stats 会被 core 包成 today_stats 兼容块（鉴宝冻结桥）。
+    # 看板数据不得依赖模块实例：读持久化数据或既有 RPC。
+
+    @classmethod
+    def read_dashboard(cls) -> dict | None:
+        """返回版本化看板载荷；默认 None = 本模块不提供看板内容。
+
+        载荷形状与 block 白名单见 core/dashboard_contract.py。"""
+        return None
+
+    # ---------- GUI 今日看板数据（旧模块兼容）----------
+    #
+    # 覆盖本方法即视为旧模块声明了看板资格；core 会把返回值包成 today_stats 兼容块。
+    # 新模块请用 read_dashboard / DASHBOARD_CONTRACT。
     # 看板读什么表、哪些列、日界语义全部是模块业务（与 DEFAULT_MODULE_CONFIG 的
     # "配置面由模块自述"同理）——core 只持有通用路由，不出现任何模块的 schema 字段。
 
     @classmethod
     def read_today_stats(cls) -> dict | None:
-        """读取本模块的今日看板数据；默认 None = 本模块无看板。
+        """读取本模块的今日统计；默认 None = 本模块无今日统计。
 
+        覆盖后自动成为看板候选（旧模块兼容桥）。
         返回 {"bucket": 日界字符串, "summary": 汇总行或 None, "games": 明细列表}；
         库不存在/读取失败由实现自行兜底为空看板，不抛错（GUI 显示空态）。"""
         return None
@@ -275,3 +377,26 @@ class ActivityModule(ABC):
     @abstractmethod
     def cleanup(self) -> None:
         """释放模块自身拥有的资源并归还共享资源"""
+
+
+def overrides_classmethod(cls: type, name: str) -> bool:
+    """模块类是否覆盖了 ActivityModule 的某个 classmethod（静态比较，不触发执行）。"""
+    base = inspect.getattr_static(ActivityModule, name)
+    return inspect.getattr_static(cls, name) is not base
+
+
+def declares_dashboard(cls: type) -> bool:
+    """模块是否进入数据页看板候选集。
+
+    ``DASHBOARD_CONTRACT = 0`` 是「已登记、尚未实现」的占位，不参与候选；
+    其余非零版本与旧资格位（``HAS_DASHBOARD`` / 覆盖 ``read_today_stats``）
+    任一成立即可。资格判定只在这里定义一次，元信息与路由都走它。
+    """
+    contract = getattr(cls, "DASHBOARD_CONTRACT", None)
+    if contract == 0:
+        return False
+    return bool(
+        getattr(cls, "HAS_DASHBOARD", False)
+        or contract is not None
+        or overrides_classmethod(cls, "read_today_stats")
+    )

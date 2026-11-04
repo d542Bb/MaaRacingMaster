@@ -6,10 +6,15 @@
 
 目录结构（五类各归其位）：
     config/     配置类（profile.json、maa_option.json）
-    data/       结构化业务数据（data/treasure/treasure.db）
+    data/       运行时数据与用户资产（data/treasure/ 业务库、data/speedrush/macros/ 用户宏、模型权重）
     logs/       会话记录（logs/<会话>/MaaRM_*.log + trace.jsonl，共用「日志记录」开关）
-    framework/  MAA 框架自产物（maafw.log、cache）
-    debug/      调试截图会话（debug/<module>/<会话>/，调试台契约）
+    framework/  MAA 框架自产物（debug/maafw.log、debug/on_error 失败截图，跟随两项调试开关）
+    debug/      调试产物与录制语料（debug/<module>/<会话>/，调试台契约）
+
+会话目录命名（logs/ 与 debug/ 同一规则）：`<YYYYMMDD_HHMMSS>[_<标签>]`——时间戳
+恒在最前，标签按「用途 → 阶段」追加（`20261028_220635`、`20261028_220635_manual_p2`）。
+同一场运行的日志目录与调试目录同名：调试侧取 `logger.session_token` 作前缀，
+所以排查时两边一眼能对上。
 """
 
 from __future__ import annotations
@@ -32,7 +37,10 @@ def config_dir() -> Path:
 
 
 def data_dir() -> Path:
-    """结构化业务数据目录：各模块 SQLite 等（data/<module>/）。"""
+    """运行时数据与用户资产目录（data/<module>/）：业务库、用户录制内容、模型权重等。
+
+    与 debug/（调试产物，可随手清）分家：这里放用户需要保留、或被生产代码读取的东西。
+    """
     return user_data_dir() / "data"
 
 

@@ -15,7 +15,7 @@ frames.jsonl 的真实 ts_ns 差算 dt_s（到场轮 ≈15.8Hz 行率），engin
 
 用法（仓库根）：
     .venv/Scripts/python.exe tools/experiments/speedrush_drive/probe_replay_chain.py [--only 20260921_17] [--limit 0]
-输出（数据目录，不入库）：`<APPDATA>/MaaRacingMaster/data/speedrush/replay_chain.jsonl`
+输出（数据目录，不入库）：`_probe_data/replay_chain.jsonl`
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine  # noqa: 
 from maaracing_master.plugins.speedrush.perception import StreetPerception  # noqa: E402
 from maaracing_master.plugins.speedrush.tracking import Tracker, to_jsonable  # noqa: E402
 
-_DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+_DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = _DATA / "demos"
 OUT = _DATA / "replay_chain.jsonl"
 MODEL = ROOT / "maaracing_master" / "plugins" / "speedrush" / "resources" / "onnx" / "model.onnx"

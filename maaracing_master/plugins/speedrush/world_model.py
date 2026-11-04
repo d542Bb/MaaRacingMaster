@@ -6,12 +6,13 @@
 框**按 x 排横向**（A1 透视归一尺子，CODE_WIKI §6 定档口径）。
 收益/风险/迟滞属决策层，金币组聚合属 §7#3 `[需实测]` 结掉之后——本层不做、不预置。
 
-**归一口径**（与 trick ②c 预注册判据同族，证据 commit `3847fae`）：
+**归一口径**（保险杠机位；标定样本见 gate0 `_source`/`_notes`）：
 
-    x_lane = ( (cx − vpx)/(cy − y_h) − (ego_cx − vpx)/(v_ego − y_h) ) × a_x
+    x_lane = (cx − vpx)/(cy − y_h) × a_x
 
-即"目标与本车的横向差，以消失点为原点、按行归一、换算成车道单位"。
-未经本式归一的像素横向差**禁止**当距离用（§6 锁的纪律，trick 首轮撤回的直接教训）。
+即"目标相对道路消失点方向、按行归一、换算成车道单位"。相机装在车头且钉在
+自车中心，自车横向原点就是消失点列，式内不需要自车行项。未经本式归一的
+像素横向差**禁止**当距离用（§6 锁的纪律，trick 首轮撤回的直接教训）。
 
 **几何真源**：常数全部住 `resources/calibration/gate0.json`（三源分立：游戏事实
 RULES / 几何标定 gate0 / 行为参数 decision），经 `load_calib()` fail-loud 读取，
@@ -27,11 +28,11 @@ RULES / 几何标定 gate0 / 行为参数 decision），经 `load_calib()` fail-
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 
 from maaracing_master.plugins.speedrush import GATE0_FILE
-from maaracing_master.plugins.speedrush.perception import PerceptionResult
 
 
 @dataclass(frozen=True)
@@ -45,10 +46,11 @@ class Calib:
 
     vpx: float        # 消失点 x
     y_h: float        # 地平线行
-    a_x: float        # 横向尺子：归一量 → 车道单位（A1 globalL 冻结）
-    v_ego: float      # 自车接地点行（②c 主档）
-    ego_cx: float     # 追车相机自车列（trick 硬事实：自车钉画面中央）
+    focal_px: float   # 线角几何的全幅相机焦距（≠ MoGe 逐帧 fx，见 _notes）
+    a_x: float        # 横向尺子：归一量 → 车道单位（保险杠机位重标）
     min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → x_lane=None
+    lane_w_m: float   # 一条车道的米制宽（3D 找边的车道量换算锚；出处见 _notes）
+    depth_scale: float  # MoGe 米制点云全局缩放（metric_scale × 此值）
 
 
 def _require(d: dict, key: str) -> float:
@@ -65,14 +67,14 @@ def _read_gate0(path) -> Calib:
     if d.get("schema_version") != 1:
         raise ValueError(f"gate0.json schema_version 非 1：{d.get('schema_version')!r}")
     cal = Calib(
-        vpx=_require(d, "vpx"), y_h=_require(d, "y_h"), a_x=_require(d, "a_x"),
-        v_ego=_require(d, "v_ego"), ego_cx=_require(d, "ego_cx"),
-        min_denom=_require(d, "min_denom"))
-    # 依赖矛盾检查：尺子分母与自车项都不能退化
-    if not (cal.a_x > 0 and cal.min_denom > 0 and cal.vpx > 0 and cal.ego_cx > 0):
+        vpx=_require(d, "vpx"), y_h=_require(d, "y_h"),
+        focal_px=_require(d, "focal_px"), a_x=_require(d, "a_x"),
+        min_denom=_require(d, "min_denom"), lane_w_m=_require(d, "lane_w_m"),
+        depth_scale=_require(d, "depth_scale"))
+    # 依赖矛盾检查：尺子分母与换算锚都不能退化
+    if not (cal.a_x > 0 and cal.min_denom > 0 and cal.vpx > 0
+            and cal.lane_w_m > 0 and cal.depth_scale > 0):
         raise ValueError(f"gate0.json 数值非法：{cal}")
-    if cal.v_ego - cal.y_h <= 0:
-        raise ValueError(f"自车行 v_ego={cal.v_ego} 必须低于地平线 y_h={cal.y_h}（ego 项分母退化）")
     return cal
 
 
@@ -81,53 +83,49 @@ def load_calib() -> Calib:
     return _read_gate0(GATE0_FILE)
 
 
-@dataclass(frozen=True)
-class WorldTarget:
-    """一个候选横向目标：观测量齐备，收益/风险由决策层叠加。"""
-
-    kind: str            # "coin" | "car" | "bonus"
-    x_lane: float | None # 归一横向（车道单位，本车=0，右为正）；适用域外=None
-    cy: int              # 距离代理：行越大越近（设计决定 6）
-    w: int
-    h: int
-    conf: float
-
-
-# 类别名唯一真源在此（感知层 PerceptionResult 字段 ↔ 域内 kind 字符串），
-# tracking.py 与测试一律从这里取，不再各自写字面量。
+# 类别名唯一真源在此（感知层 Detection 类别 ↔ 域内 kind 字符串），
+# tracking/plan/coin_group 一律从这里取，不再各自写字面量。
 KIND_COIN = "coin"
 KIND_CAR = "car"
 KIND_BONUS = "bonus"
 
-_KINDS = ((KIND_COIN, "coins"), (KIND_CAR, "cars"), (KIND_BONUS, "bonuses"))
+# 捕获几何（WGC 固定 1280×720）。行率到站仪器的终点改用**画面下缘**而不是
+# 追车机位的自车接地点行：保险杠相机在车头，自车不在画面里，自车行不是可
+# 观测几何；下缘是相机无关的边界（该行地面约在相机前 3m，像素粗仪器的固有
+# 偏置，只作无深度锚目标的粗回退）。
+IMAGE_H = 720
 
 
-def x_lane_of(cx: int, cy: int, cal: Calib) -> float:
-    """A1 归一尺子（本模块 docstring 的公式）。公开供 tracking 层复用——
-    同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
-    return ((cx - cal.vpx) / (cy - cal.y_h)
-            - (cal.ego_cx - cal.vpx) / (cal.v_ego - cal.y_h)) * cal.a_x
+def x_lane_of(cx: float, cy: float, cal: Calib) -> float:
+    """A1 归一尺子（保险杠机位，无自车项；公式见本模块 docstring）。公开供
+    tracking 层复用——同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
+    return (cx - cal.vpx) / (cy - cal.y_h) * cal.a_x
 
 
-def build_world(per: PerceptionResult, cal: Calib | None = None) -> list[WorldTarget]:
-    """感知结果 → 候选目标列表，按距离**由近及远**排序（cy 降序）。
-    cal 缺省读几何真源（gate0.json）。
+def t_meet_car_s(rel_px_per_fid: float, cy: float, cal: Calib,
+                 fid_rate_hz: float) -> float:
+    """车流到画面下缘的秒数（地面流积分式，2026-10-11 V0 归因后 cars 换基；
+    2026-10-23 保险杠机位终点从自车行改为画面下缘——自车不在画面里）。
 
-    两档处理（§6 适用域纪律）：
-    - cy ≤ y_h（地平线以上）：几何无效，直接丢弃；
-    - y_h < cy 且分母 (cy − y_h) < min_denom（远处）：目标保留（距离序仍有效），
-      但 **x_lane=None**——归一量发散，禁止带病数值参与横向选择（②c by>380 同族）。
-    """
-    if cal is None:
-        cal = load_calib()
-    out: list[WorldTarget] = []
-    for kind, attr in _KINDS:
-        for d in getattr(per, attr):
-            denom = d.cy - cal.y_h
-            if denom <= 0:
-                continue
-            x = x_lane_of(d.cx, d.cy, cal) if denom >= cal.min_denom else None
-            out.append(WorldTarget(
-                kind=kind, x_lane=x, cy=d.cy, w=d.w, h=d.h, conf=d.conf))
-    out.sort(key=lambda t: -t.cy)
-    return out
+    线性行率式 (D−cy)/(rel·hz) 有两处契约错误：① rel 单位是 px/fid
+    不是 px/tick（fid 率 ≠ 控制拍率，消费偏差恒定高估 TTC）；② 行速率随
+    行号二次增长（针孔投影下恒定相对纵向速度的必然形状 r ∝ (cy−y_h)²），
+    线性式把剩余行程当匀速，远车到站时间虚高一个量级。本式对 1/r 沿行
+    积分：k = rel/(cy−y_h)²（**per-car**——rel 本就是相对接近率，他车非
+    静止的修正天然在内，他车加减速经 EMA 在数拍内进入 k），
+
+        t = ∫ dy/(k(y−y_h)²) = (1/d − 1/D)/k = d(D−d)/(D·rel·f_fid)
+
+    其中 d=cy−y_h、D=IMAGE_H−y_h、f_fid=采集帧率（px/fid→秒的换算锚，
+    由 Tracker 逐拍在线估计随 obs 下发）。不接近（rel≤0）或已到下缘
+    （cy≥IMAGE_H 积分为负）→ 0/inf 语义与旧式一致；fid_rate_hz 必须>0
+    （供数缺位时调用方自决退路，本函数不代作主张）。"""
+    if fid_rate_hz <= 0:
+        raise ValueError(f"fid_rate_hz={fid_rate_hz} 非正（px/fid→秒无换算锚）")
+    d = cy - cal.y_h
+    if rel_px_per_fid <= 0 or d <= 0:
+        return math.inf if rel_px_per_fid <= 0 else 0.0
+    D = IMAGE_H - cal.y_h
+    t_fid = d * (D - d) / (D * rel_px_per_fid)
+    return max(0.0, t_fid) / fid_rate_hz
+

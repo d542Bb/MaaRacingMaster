@@ -26,14 +26,14 @@ from __future__ import annotations
 import pytest
 
 try:
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时整文件跳过
     _OK, _ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _OK, reason=f"测试需要完整运行时依赖（maa/…）：{_ERR}"
-)
+)]
 
 
 class _Self:
@@ -115,7 +115,7 @@ def test_policy_accepts_zero_income_so_gate_must_live_upstream():
     """
     import pathlib
     import re
-    policy = pathlib.Path("maaracing_master/plugins/treasure/resources/policy/"
+    policy = pathlib.Path("maaracing_master/plugins/_archive/treasure/resources/policy/"
                           "treasure.policy.json").read_text(encoding="utf-8")
     m = re.search(r'"id":\s*"settle_ready_click".*?"when":\s*\{(.*?)\}',
                   policy, re.S)

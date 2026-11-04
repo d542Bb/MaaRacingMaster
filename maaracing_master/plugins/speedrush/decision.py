@@ -1,52 +1,102 @@
 # -*- coding: utf-8 -*-
-"""行为决策层（v1 = coin-only 保守基线；v2 = 超车候选并秤，阶段 C 设计稿 §二/§四）。
+"""行为决策层（2026-10-18 走廊重建：四层字典序）。
 
-`mode.allow_overtake`（默认 false）关闸时行为与 v1 **逐拍相同**（兼容性红线，
-test_overtake_gate_closed 上锁）；开闸后超车与金币两类候选同一分式形状比较
-（期望分×时间折扣−横向代价），完成判据按 kind 分派——金币走需求/死区收敛路，
-超车走 pass 事件落定路（移动目标永不到"正中间"，维护者口径第 4 条）。
+**它是什么**：每 tick 吃 `WorldObservation`（+ tick 时长 + 执行回执 + 车流 +
+走廊），把目标换算进选择层坐标，交给 `selection.select` 做严格分层：
 
-**输入输出**：每 tick 吃 `WorldObservation`（+ tick 时长 + 可选规划层横向反馈），
-吐 `DecisionOutput`（D1：只吃结构化契约；D3：reason/valid_until 齐备可回放）。
+    奖励车（撞） > 普通车（擦边） > 金币（落线） > 走廊中心带（带内不修正；
+    无机会时由粗层选连续净空最长的车道）
+
+层与层之间不求和；主目标之后最多插 3 个 3 秒路点，把顺路的金币和必须错开
+的车带上。输出过 slew 限速后交给 planner。
+
+**已删除**（2026-10-18）：走廊收益场加性打分、轨迹候选集与采样器否决、
+栅格绝对否决、场目标迟滞三件套、承诺制/目标锁定/legacy 目标链、车道号
+成员投票。它们不是被调参压住，而是被「分层选择 + 中心带」取代。
+
+**FSM**：CRUISE 选择跟场 / ABORT 有界回稳（fatal 信号触发）/
+CONSERVE 保持+禁变道 / FAULT 纯直行。
+
+**输入输出**：每 tick 吐 `DecisionOutput`（reason/valid_until 齐备可回放）。
 时钟用 tick 累计（`time.monotonic` 不进本模块——回放与实机同一确定性）。
-
-**FSM**（§二矩阵；转移优先级在 `_priority_order` 注释处落实）：
-CRUISE 选道 / CHANGE 移动 / ABORT_CHANGE 有界回稳 / CONSERVE 保持+禁变道 / FAULT 纯直行。
-- 进保守态前必先经 ABORT_CHANGE 收尾（fatal 打断 CHANGE 时），CONSERVE **不强制回中**
-  （回中只在边界余量对称时由规划层做——本层 v1 连 boundary 都不消费其数值）；
-- CONSERVE 出口清空目标、迟滞、低通、冷却（§二重置面）；
-- 停止/阶段结束归 module 层（engine.reset() 供接线）。
-
-**v1 降级路径（如实声明，不是遗漏）**：
-- 无规划反馈（`executed_lane=None`，step 6 才有真值）时 CHANGE 完成判据降级为
-  "目标组 x 读数连续 ≥2 tick 进死区"，另有 `t_change_max_s` 超时兜底强制落位——
-  审查 §二.2 反对的"裸目标 x_lane"在此只作为**无反馈下的代理 + 超时保险**双件用，
-  有反馈时完成判据走反馈路（executed ≥ demand×(1−ε) 且目标在场）。
-- 移动中改判走 §三加性切换门（更优 + margin 才换目标；换"去哪"不换"动不动"），
-  "取消进行中的移动"仅由失联/越界/致命信号触发。
-- 直道信号（boundary）v1 未接主循环，校验器只对**已可得**的三路信号（帧过旧/
-  枯竭合取/距离序倒挂）作致命判定。
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any, cast
 
+from maaracing_master.plugins.speedrush.coarse import (
+    CoarseParams, CoarseReport, choose_lane)
 from maaracing_master.plugins.speedrush.config import DecisionConfig
+from maaracing_master.plugins.speedrush.corridor import Corridor
+from maaracing_master.plugins.speedrush.depth_geo import (
+    CAM_Z_DATUM_M, DrivableGrid)
+from maaracing_master.plugins.speedrush.anchor import AnchorTracker, Candidate
+from maaracing_master.plugins.speedrush.horizon import HorizonGovernor
+from maaracing_master.plugins.speedrush.lane_map import LaneMap
+from maaracing_master.plugins.speedrush.openness import assess
+from maaracing_master.plugins.speedrush.triggers import TriggerLog
+from maaracing_master.plugins.speedrush.motion_plan import build_scene
+from maaracing_master.plugins.speedrush.object_table import ObjectTable
+from maaracing_master.plugins.speedrush.selection import (
+    BonusSource, CarSource, CoinSource, LayeredSelector, Obj, RoadBand,
+    RoadFrame, SelectionParams, SelectionReport, _ev_t, reach_slack)
+from maaracing_master.plugins.speedrush.presence_occupancy import (
+    OccObs, PresenceOccupancy)
+from maaracing_master.plugins.speedrush.route import (
+    ArrivalAttribution, PHASE_MERGING, RouteParams, RouteState, RouteVerdict,
+    tick_route)
 from maaracing_master.plugins.speedrush.traffic import (
-    OUTCOME_PASS, CarView, PassEvent)
+    CarView, PassEvent, OUTCOME_PASS, OUTCOME_PRESUMED_PASS)
 from maaracing_master.plugins.speedrush.tracking import (
-    CoinGroup, DecisionOutput, DecisionState, WorldObservation)
-from maaracing_master.plugins.speedrush.world_model import Calib, load_calib
+    CoinGroup, DecisionOutput, DecisionState, DistanceSource, WorldObservation)
+from maaracing_master.plugins.speedrush.world_model import (
+    IMAGE_H, KIND_BONUS, KIND_CAR, Calib, load_calib, t_meet_car_s, x_lane_of)
 
-_SCHEMA = 2  # v2：DecisionOutput.reanchor_lane（planner 设计稿 §二，2026-09-22 用户裁定）
-# 阶段 C step 2 **不再升 schema**：超车能力扩的是决策层内部（Scored/选择/完成判据分派）
-# 与入参通道（traffic= 关键字，默认 None 旧调用零扰动），DecisionOutput 出口契约不变。
+_SCHEMA = 5  # v5：删除 move_allowed（无消费者）；v4=maneuver 权限位
 _EPS = 1e-9
+# 米制 x ↔ 像素尺子互证闸（20261103 雨 p2 车5 帧证 + 四局回放 84 次分歧）
+_XDIS_ON_LANE = 0.6    # 触发阈：持续分歧（道）
+_XDIS_ON_TICKS = 3     # 持续拍数
+_XDIS_OFF_LANE = 0.3   # 恢复阈（滞回）
+_XDIS_OFF_TICKS = 2    # 贴回拍数
 
-KIND_CAND_COIN = "coin"
-KIND_CAND_OVERTAKE = "overtake"
+
+def _lane_ttc_map(scene, c0: float, horizon_s: float) -> dict[int, float]:
+    """整数道 → 最早到站时间（秒）：车道冲突的时间面（路线层消费）。
+
+    场景对象 x 已是路心系米；c0 是同一帧 z=0 处路心。按整道（±0.5 道）
+    归属，只收有到站时间且在视界内的车——到站时间已含相对速度，这是路线
+    层唯一能区分「24m 内有个同速车」和「1s 后真撞上」的量。"""
+    out: dict[int, float] = {}
+    lw = scene.lane_w_m
+    for o in scene.objs:
+        if o.kind != "car" or not getattr(o, "safety_ok", True) \
+                or not o.timed or o.t_arrive_s is None:
+            continue
+        if not (0.0 < o.t_arrive_s <= horizon_s):
+            continue
+        k = int(round((o.x_m - c0) / lw))
+        t = out.get(k)
+        if t is None or o.t_arrive_s < t:
+            out[k] = o.t_arrive_s
+    return out
+
+
+@dataclass(frozen=True)
+class Scored:
+    """一次金币候选评定（原 plan.py 住户，选择域退役随迁本模块；场只消费
+    t_miss_s，score 字段为审计面）。"""
+
+    group: "CoinGroup | None"
+    score: float
+    t_miss_s: float               # 最近一枚（cy_max）的到站时间：计分用
+    kind: str = "coin"
+    car: "CarView | None" = None
+    # 组远端（cy_min）的到站时间：长币线提前起意用。单枚组与 t_miss 相同。
+    t_far_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -57,13 +107,27 @@ class ValidationReport:
     reasons: tuple[str, ...] = ()
 
 
+def _iou2(a: tuple, b: tuple) -> float:
+    if not a or not b:
+        return 0.0
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    if inter <= 0.0:
+        return 0.0
+    ua = ((a[2] - a[0]) * (a[3] - a[1])
+          + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+    return inter / ua if ua > 0 else 0.0
+
+
 class ValidationWatch:
     """§四 致命信号器：只做信号与合取，不做状态转移。"""
 
     def __init__(self, cfg: DecisionConfig):
         self.v = cfg.validate
         self._empty_t = 0.0
-        self._last_cy: dict[int, tuple[int, int]] = {}   # id → (fid, cy) 真实观测
+        # id → (fid, cy, box)；真实观测。box 用于区分“快车逼近”与“身份互换”。
+        self._last_cy: dict[int, tuple[int, int, tuple]] = {}
 
     def reset(self) -> None:
         self._empty_t = 0.0
@@ -77,51 +141,37 @@ class ValidationWatch:
         # 信号·目标流枯竭：五信号**合取**才计时（空旷路面/过渡/半死不活都不算）
         conj = (h.perception_alive and h.frame_fresh and h.geometry_valid
                 and not h.stage_transition)
-        if conj and not h.target_presence:
+        # 只有“画面有车、跟踪却没输出”才算目标流枯竭；画面本来没车
+        # （raw=False）是空旷路面，不是故障（2026-10-19 局 213750_p1 空街
+        # 误停 5.4s）。币/奖励是机会面、天然闪断，不参与本判据（2026-10-20
+        # 阶段 1：画面有币、跟踪空，旧判据冻结 1.8s 错过整组币）。
+        if conj and not h.target_presence and h.raw_vehicle_presence:
             self._empty_t += dt_s
             if self._empty_t >= self.v.t_empty_s:
                 return ValidationReport("target_empty")
         else:
             self._empty_t = 0.0
-        # 信号·距离序倒挂：同 id 真实观测间 cy 跳变超物理上限（按失联 tick 数放大）
+        # 信号·距离序倒挂：同 id 真实观测间 cy 跳变超物理上限（按失联 tick 数
+        # 放大）。逼近的大车会在 1~2 拍内跨过 90px；只要 2D 框仍连续
+        # （IoU≥0.3），就是同一台车在动，不是身份互换。
         for t in obs.targets:
             if t.last_seen_fid != obs.frame_id:
                 continue  # 保持输出不比（外推值天然"跳"）
             prev = self._last_cy.get(t.id)
             if prev is not None:
                 span = max(obs.frame_id - prev[0], 1)
-                if abs(t.cy - prev[1]) > self.v.cy_jump_max_px * span:
+                if abs(t.cy - prev[1]) > self.v.cy_jump_max_px * span \
+                        and _iou2(getattr(t, "box", ()), prev[2]) < 0.3:
                     return ValidationReport("cy_jump")
-            self._last_cy[t.id] = (obs.frame_id, t.cy)
+            self._last_cy[t.id] = (obs.frame_id, t.cy,
+                                   getattr(t, "box", ()))
         for g in obs.far_targets:
             if g.last_seen_fid == obs.frame_id:
-                self._last_cy[g.id] = (obs.frame_id, g.cy)
+                self._last_cy[g.id] = (obs.frame_id, g.cy, ())
         reasons: list[str] = []
         if obs.boundary is None:
             reasons.append("straight_check_inactive")  # v1 边界未接线：如实注记
         return ValidationReport(None, tuple(reasons))
-
-
-@dataclass(frozen=True)
-class Scored:
-    """一次评分的完整依据（reason 码与迟滞比较都要它）。
-
-    阶段 C step 2：候选泛化为两类——coin（group=CoinGroup）与 overtake
-    （car=CarView，group=None）；`kind` 判别，两类的 score 同一分式形状产出
-    （期望分×时间折扣−横向代价），min_score/switch_margin 的绝对分语义不变。"""
-
-    group: CoinGroup | None
-    score: float
-    t_miss_s: float
-    kind: str = KIND_CAND_COIN
-    car: CarView | None = None
-
-    @property
-    def cand_id(self) -> int:
-        """跨类统一的候选标识（coin=组号 / overtake=track_id，两 id 空间由 kind 分隔）。"""
-        if self.kind == KIND_CAND_COIN:
-            return self.group.group_id
-        return self.car.id
 
 
 class Scorer:
@@ -133,38 +183,46 @@ class Scorer:
 
     def __init__(self, cfg: DecisionConfig, cal: Calib):
         self.c = cfg.scoring
-        self.ov = cfg.overtake
         self.cal = cal
         self.hz = cfg.control.frame_rate_hz
-        # P̂_limit 在计划贴窗 d̂_min=d_hold 处取值（step 2 计划保证值暂替，
-        # 真实 plant 前推留 planner §十一）：对全体候选是常数，排序由 t/偏移决定。
-        self._p_hold = 1.0 / (1.0 + math.exp(
-            (cfg.overtake.d_hold_lane - cfg.overtake.p_center_lane)
-            / cfg.overtake.p_scale_lane))
-        self._e_overtake = self.ov.value_base + self._p_hold * self.ov.value_limit
+        # 采集帧率（Hz，fid 时基）：引擎逐拍从 obs.fid_rate_hz 喂入（单线程
+        # owner 实例通道纪律，与 _views/_events 同族）；None=预热未达/旧供数，
+        # car_t_meet_s 退回旧行率式（已知 TTC 高估方向的旧消费口径，行为不
+        # 静默换式）
+        self.fid_hz: float | None = None
 
-    def score_car(self, view: CarView) -> Scored | None:
-        """超车候选评分（阶段 C §二）：E(超车+极限期望)×时间折扣 − 内贴横向代价。
+    def car_t_meet_s(self, rel: float, cy: float) -> float:
+        """车流到画面下缘秒数（地面流积分式，world_model.t_meet_car_s 单一
+        公式真源；前置三件套①）。保险杠机位（2026-10-23）终点是画面下缘，
+        不是追车机位的自车行——自车不在画面里。rel 单位 px/fid，换算秒吃
+        self.fid_hz；供数缺位（None）退回旧行率式——单位/时间基准契约检查属
+        回放验收（计划 §2①），换式不把旧单位错误带进新式。"""
+        if self.fid_hz is None:
+            rate = rel * self.hz
+            return max(0.0, IMAGE_H - cy) / rate if rate > _EPS \
+                else math.inf
+        return t_meet_car_s(rel, cy, self.cal, self.fid_hz)
 
-        候选带/接近方向自卫见 §四：本车道车（|x|<band_lo）与掠过中（<下沿）不作候选；
-        d̂_min<窗下沿的"更贴"不奖励——窗中心是唯一目标（硬地板语义，设计稿 §〇.1）。"""
-        ax = abs(view.x_lane)
-        if not (self.ov.lane_band_lo <= ax < self.ov.lane_band_hi) \
-                or view.rel_approach <= _EPS:
+    def metric_t(self, m, v) -> float | None:
+        """米制到站时刻（分流语义见 MetricCarState docstring）：
+        v_close>0 → z/v_close；v_close≤0 → None（掠过/远离=占用）；
+        v_close None（锚新估计窗未开）→ 桥接值（闸 metric_bridge.enabled）
+        → 像素回退（有视图才退得动）。原 lane_score 住户，20261015 退役随迁
+        （走廊收益场接线同源消费）。"""
+        if m.v_close_mps is not None:
+            return m.t_meet_s
+        if getattr(m, "bridged", False) and m.t_meet_s is not None:
+            return m.t_meet_s
+        if v is None:
             return None
-        rate = view.rel_approach * self.hz          # px/s（rel_approach 为 px/tick）
-        t_meet = max(0.0, self.cal.v_ego - view.cy) / rate
-        life = math.exp(-t_meet / self.c.life_tau_s)
-        goal = self.hug_goal(view.x_lane)
-        score = self._e_overtake * life \
-            - self.c.shift_cost_per_lane * abs(goal)
-        return Scored(group=None, score=score, t_miss_s=t_meet,
-                      kind=KIND_CAND_OVERTAKE, car=view)
+        return self.car_t_meet_s(v.rel_approach, v.cy) \
+            if v.rel_approach > 0 else None
 
-    def hug_goal(self, x_lane: float) -> float:
-        """内贴目标（§四裁定）：σ 在选中拍锁定，此后目标只跟车不翻边。"""
-        sigma = 1.0 if x_lane >= 0 else -1.0
-        return x_lane - sigma * self.ov.d_hold_lane
+    def pixel_instruments(self, v) -> tuple[float, float | None]:
+        """像素仪器（回退路径）：连续横位 + 地面流 t_meet（pacing=非正 rel
+        → None=占用）。不再有车道成员投票：x_lane 就是连续读数。"""
+        return v.x_lane, (self.car_t_meet_s(v.rel_approach, v.cy)
+                          if v.rel_approach > 0 else None)
 
     def score(self, g: CoinGroup, obs: WorldObservation) -> Scored | None:
         if g.conf_min <= _EPS:
@@ -179,19 +237,183 @@ class Scorer:
         else:
             conf_factor = ((g.conf_min - self.c.conf_floor)
                            / (self.c.conf_hi - self.c.conf_floor))
-        value = self.c.coin_value_per_unit * g.observed_count * conf_factor
-        rate = self._approach_rate_px_s(g, obs)
-        t_miss = math.inf if rate <= _EPS else max(0.0, self.cal.v_ego - g.cy_max) / rate
+        # 组下限（RULES 2026-10-14 定案）：观测 1~2 枚是残缺视图（距离/遮挡/置信
+        # 门削剩的头部），价值按整组 ≥3 枚计，不按观测枚数折算——n=1 的组按 30
+        # 分基值再被车道惩罚一压连选分门槛都过不了（20261014 实测 score 拒
+        # 106~119 次/局，金币候选 ok 每局 1 拍）。残缺半空组按 90 计（组内无
+        # 空/地标志，宁可低估）。
+        value = (self.c.coin_value_per_unit
+                 * max(g.observed_count, self.c.coin_group_min_count) * conf_factor)
+        k = self._flow_k(obs)
+        t_miss = math.inf if k is None else self._t_miss_ground_s(g.cy_max, k)
+        t_far = math.inf if k is None else self._t_miss_ground_s(g.cy_min, k)
         life = math.exp(-t_miss / self.c.life_tau_s) if math.isfinite(t_miss) else 0.0
         score = value * life - self.c.shift_cost_per_lane * abs(g.x_center)
-        return Scored(group=g, score=score, t_miss_s=t_miss)
+        return Scored(group=g, score=score, t_miss_s=t_miss,
+                      t_far_s=t_far)
 
-    def _approach_rate_px_s(self, g: CoinGroup, obs: WorldObservation) -> float:
-        by_id = {t.id: t for t in obs.targets}
-        rs = [by_id[i].rel_approach for i in g.member_ids if i in by_id]
-        if not rs:
-            return 0.0
-        return (sum(rs) / len(rs)) * self.hz
+    def _flow_k(self, obs: WorldObservation) -> float | None:
+        """全场地面流系数（2026-10-02 换基）：静止世界里同一帧的所有地面目标
+        共享行速率场 r(cy) = k·(cy−y_h)²——针孔投影下恒速前进的必然形状，
+        不是近似选择。k 取全体健康 track（有速率测量、行号在归一适用域内）
+        的中位：单个 coin track 的断链/换 id 只伤它自己的时间累积账，伤不了
+        全场横截面这本账；磁暴提速时 k 逐帧重估自动跟变。本帧无任何健康
+        测量 → None，调用方按无限远折扣（与逐轨断供同一安全默认）。"""
+        hs = []
+        for t in obs.targets:
+            d = t.cy - self.cal.y_h
+            if t.rel_approach > _EPS and d >= self.cal.min_denom:
+                hs.append(t.rel_approach * self.hz / (d * d))
+        if not hs:
+            return None
+        hs.sort()
+        return hs[len(hs) // 2]
+
+    def _t_miss_ground_s(self, cy: float, k: float) -> float:
+        """地面目标行 cy → 到画面下缘的恒速到站时间（流模型积分式）。
+
+        线性式 (D−cy)/r(cy) 会低估不到站时间的一半量级——行速率随行号
+        二次增长，越近越快，剩余行程不是匀速的；对 1/r 沿行积分才是真时间。
+        保险杠机位（2026-10-23）终点是画面下缘，不是追车机位的自车行。"""
+        a = 1.0 / (cy - self.cal.y_h)
+        b = 1.0 / (IMAGE_H - self.cal.y_h)
+        return max(0.0, (a - b) / k)
+
+
+def _monotonic_coin_t(prev: tuple[float, int] | None, raw_t: float,
+                      elapsed_s: float, tol_s: float) -> float:
+    """同组金币到站时间只允许按时间递减；突增=换成了组里更远的一枚。"""
+    if prev is None or not math.isfinite(prev[0]):
+        return raw_t
+    expected = prev[0] - elapsed_s
+    if raw_t > expected + tol_s:
+        return max(expected, 0.0)
+    return raw_t
+
+
+def _center_at0(road: RoadFrame, z: float) -> float:
+    """中心线在 z 处；无带帧按 0 计（与选择层回中的兜底同一口径）。"""
+    c = road.center_at(z)
+    return 0.0 if c is None else c
+
+
+def _sel_report_key(rep: SelectionReport) -> tuple:
+    """选择层报告比对键：只含接控制/接路线请求的语义字段。"""
+    return (rep.layer, rep.why, round(rep.target_x_m, 6),
+            rep.lane_request, bool(rep.maneuver),
+            tuple((round(w.t, 6), round(w.x, 6), w.src)
+                  for w in rep.waypoints))
+
+
+def _sel_report_trace(rep: SelectionReport) -> dict:
+    return {"l": rep.layer, "why": rep.why, "x": round(rep.target_x_m, 3),
+            "req": rep.lane_request, "man": bool(rep.maneuver),
+            "nwp": len(rep.waypoints)}
+
+
+def _sel_in_trace(inp: tuple) -> dict:
+    coarse, committed, commit_x = inp
+    return {"coarse": None if coarse is None else round(coarse, 6),
+            "commit": bool(committed),
+            "cx": None if commit_x is None else round(commit_x, 6)}
+
+
+def _route_trace(v: RouteVerdict | None) -> dict | None:
+    if v is None:
+        return None
+    return {"ph": v.phase, "ref": v.lane_ref, "tgt": v.lane_target,
+            "vd": v.verdict, "why": v.why, "ep": v.epoch,
+            "blkfin": bool(v.blocked_finish)}
+
+
+def _opp_aux(objs, ego_m: float, p: SelectionParams) -> list:
+    """与 `_sel_objs` 同序的 [身份, 光锥余量秒, 平滑余量秒]：负=本拍来不及，
+    None=无到站时间。第三列是第 7 期平滑证据位（未平滑=与第二列同值）。"""
+    rows = []
+    for o in objs:
+        s = reach_slack(o.x, ego_m, o.t, p)
+        sm = reach_slack(o.x, ego_m, _ev_t(o), p)
+        rows.append([o.oid,
+                     None if s is None else round(s, 3),
+                     None if sm is None else round(sm, 3)])
+    return rows
+
+
+def _sel_objects_trace(rewards, cars, coins, ego_m: float,
+                       lw: float) -> dict:
+    """取证面：选择层当拍对象的完整输入（含金币排序用的枚数/置信度）。"""
+    def rows(objs):
+        return [[round(o.x / lw, 3),
+                 None if o.t is None else round(o.t, 3),
+                 round(float(o.count), 2), round(float(o.conf), 3)]
+                for o in objs]
+    return {"ego": round(ego_m / lw, 3), "rw": rows(rewards),
+            "car": rows(cars), "coin": rows(coins)}
+
+
+class SelectionShadowWatch:
+    """选择层影子的比对与取证（只记录，不参与控制）。
+
+    预分歧：两份路线给选择层的承诺输入相同，选择结果必须逐位一致；不一致
+    记 `bug` 并保留首次不一致的两边报告、输入与路线状态（不归因于 C）。
+    首次输入分歧：影子路线开始走不同的承诺态，此后结果不同是预期；记 `div`
+    并保留首次分歧的完整现场。此后只在结果仍不同时记紧凑行。
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.diverged = False
+        self.first_div: dict | None = None
+        self.first_mismatch: dict | None = None
+        self.mismatch_ticks = 0
+
+    def step(self, *, fid: int, prod: SelectionReport,
+             shadow: SelectionReport, prod_in: tuple, shadow_in: tuple,
+             prod_route: RouteVerdict | None,
+             shadow_route: RouteVerdict | None, snapshot) -> dict | None:
+        same_in = _sel_in_trace(prod_in) == _sel_in_trace(shadow_in)
+        same_out = _sel_report_key(prod) == _sel_report_key(shadow)
+        if same_in and same_out:
+            return None
+        if same_in:
+            # 输入完全一致却选择不同：影子接线/初始化问题，或选择器非确定性。
+            self.mismatch_ticks += 1
+            rec: dict = {"bug": 1, "n": self.mismatch_ticks}
+            if self.first_mismatch is None:
+                self.first_mismatch = {
+                    "fid": fid,
+                    "prod": _sel_report_trace(prod),
+                    "shadow": _sel_report_trace(shadow),
+                    "in": _sel_in_trace(prod_in),
+                    "route": {"prod": _route_trace(prod_route),
+                              "shadow": _route_trace(shadow_route)},
+                    "objects": snapshot(),
+                }
+                rec["first"] = self.first_mismatch
+        else:
+            if same_out and self.diverged:
+                return None       # 已分叉但本拍选择回到一致：窗口闭合，安静
+            if not self.diverged:
+                self.diverged = True
+                self.first_div = {
+                    "fid": fid,
+                    "prod": _sel_report_trace(prod),
+                    "shadow": _sel_report_trace(shadow),
+                    "in": {"prod": _sel_in_trace(prod_in),
+                           "shadow": _sel_in_trace(shadow_in)},
+                    "route": {"prod": _route_trace(prod_route),
+                              "shadow": _route_trace(shadow_route)},
+                    "objects": snapshot(),
+                }
+                rec = {"div": 1, "first": self.first_div}
+            else:
+                # 分歧窗口内每拍都带对象快照：机会层本会看到什么、按什么排序
+                # （金币枚数/置信度）——窗口很短，取证成本可忽略。
+                rec = {"div": 1, "objects": snapshot()}
+        rec.update(_sel_report_trace(shadow))
+        return rec
 
 
 class DecisionEngine:
@@ -200,57 +422,319 @@ class DecisionEngine:
     def __init__(self, cfg: DecisionConfig, cal: Calib | None = None):
         self.cfg = cfg
         self.cal = cal if cal is not None else load_calib()
+        # 存在性占用影子（2026-10-22，只读观测）：每拍推进，trace 读 occ_snap；
+        # 不改变选择/规划输出。
+        self.occ = PresenceOccupancy(self.cal.lane_w_m)
+        self._occ_snap: dict | None = None
+        self._sel_ego_m: float | None = None
+        # 车道线定道消费（闸 lane_line.consume，默认关）：A1 弃权段的车源
+        # 主供数；数据来自跟踪层 fill 闸（enabled），消费闸关=逐位回今天
+        self._lane_line_consume = cfg.lane_line.consume
         self.watch = ValidationWatch(cfg)
         self.scorer = Scorer(cfg, self.cal)
+        # 四层选择器（2026-10-18 走廊重建）：唯一选择器。轨迹采样器、收益场
+        # 加性打分、栅格否决已删除——它们不是被调参压住，而是被分层规则取代。
+        s = cfg.selection
+        self.selector = LayeredSelector(SelectionParams(
+            lane_w_m=self.cal.lane_w_m,
+            horizon_s=s.horizon_s, max_waypoints=s.max_waypoints,
+            graze_gap_lane=s.graze_gap_lane,
+            center_band_lane=s.center_band_lane,
+            opportunity_tol_lane=s.opportunity_tol_lane,
+            # 可达性复用执行层的闭环律（同一组增益/滞后/限幅）：一份数值
+            # 真源，避免选择层再拍一个换道时间与底层打架。
+            k_lat_lane_s=cfg.planner.k_lat_lane_s,
+            tau_heading_s=cfg.planner.tau_heading_s,
+            heading_max_rad=cfg.planner.heading_max_rad,
+            reaction_s=s.reaction_s, margin_s=s.margin_s,
+            wall_margin_lane=s.wall_margin_lane,
+            center_lookahead_m=s.center_lookahead_m,
+            switch_dwell_s=s.switch_dwell_s,
+            layer_dwell=s.layer_dwell,
+            event_replan=s.event_replan,
+            request_hold=cfg.route.request_hold,
+            car_half_lane=s.car_half_lane,
+            ego_half_lane=s.ego_half_lane,
+            lane_clearance_lane=s.lane_clearance_lane,
+            preposition_enabled=s.preposition_enabled,
+            preposition_horizon_s=s.preposition_horizon_s,
+            preposition_max_lane=s.preposition_max_lane,
+            preposition_bias_lane=s.preposition_bias_lane,
+            pass_preposition_enabled=s.pass_preposition_enabled,
+            pass_hold_enabled=s.pass_hold_enabled,
+            pass_hold_s=s.pass_hold_s,
+            pass_min_gap_lane=s.pass_min_gap_lane,
+            pass_in_commit_enabled=s.pass_in_commit_enabled,
+            pass_horizon_s=s.pass_horizon_s,
+            pass_graze_adjacent_enabled=s.pass_graze_adjacent_enabled,
+            pass_reach_lane=s.pass_reach_lane,
+            pass_lean_min_s=s.pass_lean_min_s,
+            pass_clear_len_m=s.pass_clear_len_m,
+            pass_min_closing_mps=s.pass_min_closing_mps,
+            pass_alongside_cap_s=s.pass_alongside_cap_s))
+        # 选择层影子（2026-10-28）：与生产同一拍同一批输入，承诺态跟影子路线
+        # 走；只落 trace、不接控制。预分歧段两份输入相同，结果必须逐位一致
+        # ——这是"影子接线可信"的运行时校验，也是 C 下游差异的可信度门。
+        self._selector_shadow = LayeredSelector(self.selector.p)
+        self._sel_watch = SelectionShadowWatch()
+        self._sel_shadow: SelectionReport | None = None
+        self._sel_shadow_trace: dict | None = None
+        self._sel_report: SelectionReport | None = None
+        self._sel_maneuver = False
+        self._sel_objs: dict = {"reward": [], "car": [], "coin": []}
+        self._sel_dbg: dict | None = None
+        # 粗层选道（2026-10-19 影子期）：绿区净空 + 2D 占用，只落 trace。
+        c = cfg.coarse
+        self._coarse_params = CoarseParams(
+            lookahead_m=c.lookahead_m,
+            max_offset_lane=c.max_offset_lane,
+            collision_margin_m=c.collision_margin_m,
+            range_speed_mps=c.range_speed_mps,
+            switch_margin_m=c.switch_margin_m,
+            align_tol_lane=c.align_tol_lane,
+            wall_margin_lane=s.wall_margin_lane,
+            ego_half_lane=s.ego_half_lane,
+            car_half_lane=s.car_half_lane,
+            cam_z_datum_m=CAM_Z_DATUM_M,
+            far_direction=c.far_direction)
+        self._coarse: CoarseReport | None = None
+        # 路线承诺层（2026-10-23 V1）：横向意图的跨帧持有者。每拍用**原始**粗层
+        # 报告推进（闸关时也推进——那是影子对照面，量"承诺拦掉哪些翻面"）；
+        # 只有 route.control 开时它的参考道才接控制。不回读 coarse_lane 属性：
+        # 承诺值喂回候选评估会让迟滞语义在两层之间漂移。
+        r = cfg.route
+        self._route_params = RouteParams(
+            # 门槛/速度类数值全部复用既有真源，不在 [route] 复制一份
+            switch_gain_m=c.switch_margin_m,
+            proxy_speed_mps=c.range_speed_mps,
+            urgent_confirm_s=r.urgent_confirm_s,
+            opportunity_confirm_s=r.opportunity_confirm_s,
+            cancel_unsafe_s=r.cancel_unsafe_s,
+            cancel_cooldown_s=r.cancel_cooldown_s,
+            finish_tol_lane=s.center_band_lane,
+            finish_v_tol_lane_s=r.finish_v_tol_lane_s,
+            merge_max_s=r.merge_max_s,
+            soft_car=r.soft_car,
+            urgent_ttc_s=r.urgent_ttc_s,
+            urgent_blind_m=r.urgent_blind_m,
+            merge_safe_ttc_s=r.merge_safe_ttc_s,
+            pass_hold=r.pass_hold,
+            overtake=r.overtake,
+            overtake_ttc_s=r.overtake_ttc_s,
+            request_hold=r.request_hold,
+            request_gap_s=r.request_gap_s,
+            request_intent_age_s=r.request_intent_age_s,
+            anchor_follow=r.anchor_follow,
+            anchor_follow_s=r.anchor_follow_s,
+            anchor_follow_lane=r.anchor_follow_lane,
+            # 穿越时间门（2026-11-04）：余量门限从选择参数真源算（两车半宽
+            # 和），运动学常数与执行层同一套（policy planner.*，不另立真源）
+            car_clear_lane=s.car_half_lane + s.ego_half_lane,
+            k_lat_lane_s=cfg.planner.k_lat_lane_s,
+            tau_heading_s=cfg.planner.tau_heading_s,
+            heading_max_rad=cfg.planner.heading_max_rad)
+        self._route: RouteState | None = None
+        self._route_verdict: RouteVerdict | None = None
+        # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，
+        # 不接控制。生产路线用配置门（默认关），影子恒开；两份状态各自推进。
+        self._route_shadow: RouteState | None = None
+        self._shadow_verdict: RouteVerdict | None = None
+        self._position: ArrivalAttribution | None = None
+        # 上拍选择层越线请求（道，相对粗层原点）；逐拍刷新，喂 route 裁决
+        self._route_req: float | None = None
+        self._route_req_live = True      # 6c：触发源本拍是否有新鲜读数
+        self._route_req_action = True    # 7：触发源本拍原始 slack 是否可达
+        self._route_req_oid: int | None = None
+        # 第 7 期得分源平滑：按对象身份对得分 slack 做短窗 EMA（oid → 平滑值）
+        self._slack_ema: dict[int, float] = {}
+        self._route_epoch = 0            # 参考系纪元（尺子跳变时 +1）
+        self._ruler_prev: float | None = None   # 上一拍尺子（米，场景帧 z=0）
+        self._ruler_exec_prev: float | None = None  # 上一拍 executed（道，右正）
+        # 车米制状态实例通道（C 线；update 每拍刷新，reset 清——与 _views 同族）
+        self._metric_cars: tuple = ()
+        # 动态对象表（2026-11-01，第 1 期）：按身份键合并轨道/视图/米制/币组。
+        # 安全龄沿用 motion.max_obj_age_s（与现状一致），规划保留窗取计划视界。
+        self._objects = ObjectTable(
+            safety_age_s=cfg.motion.max_obj_age_s,
+            plan_age_s=max(cfg.motion.horizon_s, cfg.motion.max_obj_age_s))
+        self._stage: int | None = None
+        # 持久车道图（第 2 期，观测面）：按弧长记忆走廊带，随自车运动预测。
+        # 本阶段只落 trace 与误差样本，不接路线/预置，更不接安全。
+        self._lane_map = LaneMap(self.cal.lane_w_m)
+        self._map_trace: dict | None = None
+        self._ego_speed_mps: float | None = None
+        self._depth_grid = None          # 深占据伪车源（首拍前诚实 None）
+        self._ego_v_lat = 0.0
+        # 第 4 期观测面：开度/密度与 60 m 锚。只记录，不接视界/选道。
+        self._anchor = AnchorTracker()
+        self._open_trace: dict | None = None
+        self._anchor_trace: dict | None = None
+        # 第 4 期影子：拟议视界与重算触发（只记录，选择层仍用固定视界）
+        self._horizon = HorizonGovernor()
+        self._horizon_trace: dict | None = None
+        self._trig = TriggerLog()
+        self._trig_trace: list | None = None
+        self._pre_trig = TriggerLog()   # 选择前输入事件（4c 事件重算门）
+        # 车位时间平滑（滚出道路帧，避免自车横移被当成目标横移）
+        self._car_xf: dict[int, float] = {}
+        self._car_zf: dict[int, float] = {}
+        # 米制 x ↔ 像素尺子互证态：id → (连续超阈分歧拍, 尺子接管中)。
+        # 米制 x_m 复合了锚 z 与框心两处误差（20261103 雨 p2 车5 帧证：
+        # 16.8m 处连续报 4-6 道、真值 2-3 道，决策层按"右侧路外无关车"
+        # 放行到重叠前 0.2s——回放四局此类分歧 84 次）。分歧持续超阈按
+        # 更急的读数入账（不确定=按最坏），贴回滞回恢复。
+        self._car_xdis: dict[int, tuple[int, bool]] = {}
+        # 米制横位硬跳变保持：id → (last_accepted_x, consecutive_jump_ticks)
+        self._car_x_hold: dict[int, tuple[float, int]] = {}
+        # 金币组到站时间记忆（gid → (t, fid)）：同组只允许时间递减
+        self._coin_t_mem: dict[int, tuple[float, int]] = {}
+        # 6b 资格闭锁：按对象身份保留最近一次可用读数（键=(kind,id)）。
+        self._elig_latch: dict[tuple[str, int],
+                               tuple[int, BonusSource | CoinSource]] = {}
+        self._bonus_reasons: dict[int, str | None] = {}
+        self._coin_reasons: dict[int, str | None] = {}
+        self._src_elig: dict | None = None
+        self._fid = 0
+        self._fps: float | None = None
+        self._scene = None
         self.reset()
 
     def reset(self) -> None:
-        """阶段切换/保守态出口/接线重入（重置面见 §二：全清，id 语义归上游）。"""
+        """阶段切换/保守态出口/接线重入（重置面：全清，id 语义归上游）。"""
         self.watch.reset()
         self._state = DecisionState.CRUISE
-        self._target_gid: int | None = None
-        self._target_kind: str | None = None
         self._boundary = None
-        self._done_pass_ids: set[int] = set()   # 本阶段已落定 pass 的车（防重选中）；
-        # track id 每阶段由新 Tracker 重卷，阶段边界随 reset 清空，语义自洽
-        self._cur_score = -math.inf
-        self._demand_lane = 0.0
-        self._x_smooth = 0.0
-        self._cool_t = 0.0
-        self._change_t = 0.0
+        # 输出连续性：上一拍下发目标（None=首拍直通；CONSERVE/ABORT/FAULT 清空）
+        self._target_prev: float | None = None
+        # 可观测面：执行分支
+        self._exec_branch = "follow"
+        self._maneuver = False
+        self._sel_report = None
+        self._sel_maneuver = False
+        self._sel_objs = {"reward": [], "car": [], "coin": []}
+        self._sel_dbg = None
+        self._coarse = None
+        self._route = None
+        self._route_verdict = None
+        self._route_shadow = None
+        self._shadow_verdict = None
+        self._position = None
+        self._route_req = None
+        self._route_req_live = True
+        self._route_req_action = True
+        self._route_req_oid = None
+        self._slack_ema.clear()
+        self._route_epoch = 0
+        self._ruler_prev = None
+        self._ruler_exec_prev = None
+        self.occ.reset()
+        self._occ_snap = None
+        self._sel_ego_m = None
+        self.selector.reset()
+        self._selector_shadow.reset()
+        self._sel_watch.reset()
+        self._sel_shadow = None
+        self._sel_shadow_trace = None
+        self._car_xf.clear()
+        self._car_zf.clear()
+        self._car_xdis.clear()
+        self._car_x_hold.clear()
+        self._coin_t_mem.clear()
+        self._elig_latch.clear()
+        self._bonus_reasons.clear()
+        self._coin_reasons.clear()
+        self._src_elig = None
+        self._objects.reset()
+        self._stage = None
+        self._lane_map.reset()
+        self._map_trace = None
+        self._anchor.reset()
+        self._open_trace = None
+        self._anchor_trace = None
+        self._horizon.reset()
+        self._horizon_trace = None
+        self._trig.reset()
+        self._trig_trace = None
+        self._pre_trig.reset()
         self._conserve_t = 0.0
         self._ok_t = 0.0
-        self._deadzone_ticks = 0
         self._abort_next = DecisionState.CRUISE
         self._abort_ref: float | None = None   # ABORT 速率落稳参考（_enter_abort 重置）
+        self._dt_last: float = 0.05            # 上一拍 dt（慢拍计时基；reset 兜底值）
         self._fault = False
         self._last_report_ok = True
-        self._reanchor_pending: float | None = None
+        self._corridor: Corridor | None = None
+        self._reach_goal: float | None = None
+        self._state_unverified = False      # 本拍执行层位置是否可信（planner 直供）
+        self._bonus_src = 0                 # 上一拍奖励车源数（cr_bonus_src 观测面）
+        self._scene = None
 
     # ---------- 主入口 ----------
 
     def update(self, obs: WorldObservation, dt_s: float,
                executed_lane: float | None = None,
                traffic: tuple[tuple[CarView, ...],
-                              tuple[PassEvent, ...]] | None = None) -> DecisionOutput:
+                              tuple[PassEvent, ...]] | None = None,
+               road_offset: float | None = None,
+               corridor: Corridor | None = None,
+               position: ArrivalAttribution | None = None,
+               state_unverified: bool = False,
+               ego_speed_mps: float | None = None,
+               ego_v_lat_lane_s: float = 0.0,
+               depth_grid: "DrivableGrid | None" = None) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
-        缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容性红线）。
-        逐拍视图放实例通道（单线程 owner 纪律，与 _log_grp 同族）——helper 签名不扩散。"""
+        缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
+        逐拍视图放实例通道（单线程 owner 纪律，与 _log_grp 同族）——helper 签名不扩散。
+
+        ``road_offset``：保留在签名里兼容既有调用（本层不消费，路心由
+        corridor 带给出）。``corridor``：同拍分带走廊，选择层唯一的空间证据；
+        None=无路，持守当前横位。``position``：当拍到达位置归因（观测面 +
+        影子到达门；生产默认门关，不影响控制）。
+
+        ``state_unverified``：执行层横向位置本拍不可信（外推值）。CRUISE 下
+        不重建选择/场景，目标持守上一拍（reason=sel:hold:state_unverified）。"""
+        # 本拍位置可信度先落位：状态机与选择层都要读它
+        self._state_unverified = bool(state_unverified)
+        self._position = position
+        self._dt_last = dt_s
+        self._fid = obs.frame_id
+        self._fps = obs.fid_rate_hz
+        self._ego_speed_mps = ego_speed_mps
+        self._depth_grid = depth_grid
+        self._ego_v_lat = float(ego_v_lat_lane_s or 0.0)
+        # 差异行只对本拍有效：没有推进选择层（无路/非巡航）的拍不能回放上一拍。
+        self._sel_shadow_trace = None
         self._views, self._events = traffic if traffic is not None else ((), ())
+        # 车米制状态实例通道（C 线 2026-10-12，闸 metric_cars.enabled）：车源
+        # 链消费（米制优先、像素回退）；闸关=空（回退路径）。
+        self._metric_cars = obs.metric_cars if self.cfg.metric_cars.enabled else ()
+        # 对象表先于状态机推进：阶段切换时上游轨道已清空（id 不复用），表也
+        # 换账；其余拍按同 id 续命并对超龄条目保留到计划视界。
+        if self._stage is not None and obs.stage != self._stage:
+            self._objects.reset()
+        self._stage = obs.stage
+        self._objects.step(obs=obs, views=self._views,
+                           metric_cars=self._metric_cars, fps=self._fps)
+        # 占用影子先于状态机推进：安全状态不随决策状态/距离有效性消失。
+        # sel_ego_m 每拍清空，只有本拍 CRUISE 产出了当前选择才计算 veto。
+        self._sel_ego_m = None
+        self._update_occ(obs, executed_lane)
+        # 采集帧率逐拍喂入评分器（car_t_meet_s 的 px/fid→秒换算锚；None=
+        # 预热未达，评分器自决退回旧口径）
+        self.scorer.fid_hz = obs.fid_rate_hz
         self._boundary = obs.boundary
-        # 优先级（§二矩阵）：致命信号 > ABORT/收敛/超时 > 选择。本 tick 先处理转移，
+        self._corridor = corridor
+        # 优先级：致命信号 > ABORT/保守/故障 > 选择层。本 tick 先处理转移，
         # 再按落定的状态发输出。
         report = self.watch.check(obs, dt_s)
         # 恢复计数以"上一报告非致命"为健康面之一（保守/故障出口读它，不再重算）
         self._last_report_ok = report.fatal is None
-        if self._cool_t > 0:
-            self._cool_t = max(0.0, self._cool_t - dt_s)
         reason = "hold"
 
         if report.fatal is not None:
-            # D2：致命信号一票否决——有移动计划先有界回稳，无计划直进保守态
-            if self._state in (DecisionState.CHANGE, DecisionState.ABORT_CHANGE):
+            # D2：致命信号一票否决——先有界回稳，无移动直进保守态
+            if self._state is DecisionState.ABORT:
                 self._enter_abort(f"validate_fail:{report.fatal}")
                 self._abort_next = DecisionState.CONSERVE
             else:
@@ -260,124 +744,1274 @@ class DecisionEngine:
             reason = self._tick_fault(obs, dt_s)
         elif self._state is DecisionState.CONSERVE:
             reason = self._tick_conserve(dt_s, obs)
-        elif self._state is DecisionState.ABORT_CHANGE:
+        elif self._state is DecisionState.ABORT:
             reason = self._tick_abort(dt_s, executed_lane)
-        elif self._state is DecisionState.CHANGE:
-            reason = self._tick_change(obs, dt_s, executed_lane)
         else:  # CRUISE
-            reason = self._tick_cruise(obs)
+            reason = self._tick_cruise(obs, executed_lane)
 
-        # 输出目标：保持/移动路都指向当前组的横向中心；无目标回落自车道 0
-        goal = self._current_goal(obs)
-        alpha = 1.0 - math.exp(-dt_s / self.cfg.hysteresis.tau_filter_s)
-        self._x_smooth += alpha * (goal - self._x_smooth)
-        move_allowed = self._state in (DecisionState.CRUISE, DecisionState.CHANGE)
-        if not self.cfg.mode.allow_all_moves:
-            move_allowed = False
-        reanchor = self._reanchor_pending
-        self._reanchor_pending = None      # 一次性：只在完成拍携带
-        return DecisionOutput(
-            schema_version=_SCHEMA, state=self._state, target_id=self._target_gid,
-            x_target=self._x_smooth if self._state is not DecisionState.CONSERVE else None,
-            move_allowed=move_allowed, reason=reason, emitted_fid=obs.frame_id,
-            valid_until_fid=obs.frame_id + self._validity_ticks(),
-            reanchor_lane=reanchor)
+        if self._state is not DecisionState.CRUISE:
+            # 非巡航态：选择层目标不生效，观测列如实清空（不把陈旧值当本拍）
+            self._exec_branch = "hold"
+            self._scene = None
 
-    # ---------- 状态处理 ----------
-
-    def _tick_cruise(self, obs: WorldObservation) -> str:
-        cand = self._select(obs, current=None)
-        if cand is None:
-            self._target_gid = None
-            self._target_kind = None
-            return "hold:no_candidate" if not self._cool_t else "hold:cooling"
-        if cand.kind == KIND_CAND_COIN \
-                and cand.group.validity_until_fid <= obs.frame_id:
-            return "hold:no_candidate"
-        self._target_gid = cand.cand_id
-        self._target_kind = cand.kind
-        self._cur_score = cand.score
-        # 有符号需求（planner §二：反向不得过门）；超车候选的需求=选中拍内贴目标，
-        # 但超车完成走 pass 事件不走 demand 门（§四换轴），demand 只服务回执/trace
-        self._demand_lane = (cand.group.x_center if cand.kind == KIND_CAND_COIN
-                             else self.scorer.hug_goal(cand.car.x_lane))
-        self._change_t = 0.0
-        self._deadzone_ticks = 0
-        self._state = DecisionState.CHANGE
-        return "select:score_win"
-
-    def _tick_change(self, obs: WorldObservation, dt_s: float,
-                     executed: float | None) -> str:
-        if self._target_kind == KIND_CAND_OVERTAKE:
-            return self._tick_change_overtake(obs, dt_s)
-        self._change_t += dt_s
-        g = self._group_of(obs)
-        if g is None or g.validity_until_fid <= obs.frame_id:
-            # 目标失联过宽限（组级）：取消计划，有界回稳（§二消失语义）
-            self._enter_abort("target_lost")
-            return "cancel:target_lost"
-        # 移动中改判（§三加性切换门生效处）：更优组超过 当前分+margin 才换目标，
-        # 换的是"去哪"（x_goal/需求重捕），不是重新起变道——迟滞防的就是拉扯。
-        better = self._select(obs, current=self._cur_score)
-        if better is not None and \
-                (better.kind, better.cand_id) != (KIND_CAND_COIN, self._target_gid):
-            self._target_gid = better.cand_id
-            self._target_kind = better.kind
-            self._cur_score = better.score
-            self._demand_lane = (better.group.x_center if better.kind == KIND_CAND_COIN
-                                 else self.scorer.hug_goal(better.car.x_lane))
-            self._deadzone_ticks = 0
-            return "switch:score_win"
-        if executed is not None:
-            # 反馈路完成判据（有符号）：executed 与需求同向且幅度吃掉需求×(1−ε) 且目标在场
-            # ——反向移动不得借绝对值过门（planner 设计稿 §二，2026-09-22 用户裁定）
-            if self._demand_consumed(executed):
-                return self._finish_change("converged:feedback", reanchor=g.x_center)
-            # 越界复核（对当前目标）：归一发散现形 → 取消
-            if abs(g.x_center) + g.x_span >= self.cfg.validate.x_lane_abs_max:
-                self._enter_abort("x_bound")
-                return "cancel:x_bound"
-            return "moving:feedback"
-        # v1 无反馈降级：目标 x 读数连续 2 tick 进死区视为收敛，超时强制落位
-        if abs(g.x_center) <= self.cfg.hysteresis.dead_zone_lane:
-            self._deadzone_ticks += 1
-            if self._deadzone_ticks >= 2:
-                return self._finish_change("converged:proxy", reanchor=g.x_center)
+        # 输出目标：选择层已给出本拍唯一目标；目标缺席时对齐自车当前位。
+        # 输出再过 slew 限速，单拍层切换不直接变成打舵指令。
+        goal = (self._reach_goal / self.cal.lane_w_m
+                if self._reach_goal is not None else None)
+        if self._state is not DecisionState.CRUISE:
+            t_raw = executed_lane if executed_lane is not None else goal
+            self._target_prev = None       # 保守/回稳/故障出口：恢复拍直通
+        elif self._exec_branch == "hold":
+            t_raw = goal if goal is not None else executed_lane
         else:
-            self._deadzone_ticks = 0
-        if self._change_t >= self.cfg.control.t_change_max_s:
-            return self._finish_change("change_timeout", reanchor=g.x_center)
-        return "moving:proxy"
+            t_raw = goal if goal is not None else executed_lane
+        if t_raw is None:
+            t_raw = 0.0
+        # 并线承诺期的目标 slew（2026-10-31）：旧行为是直通（slew=0），
+        # 起手单拍 1.6~1.9 道阶跃直接把车拽向走廊外侧（新局 24/94 拍
+        # 走廊不可行、贴边后 frame_shift）。目标链 A/B：4.0 道/s 把起手
+        # 阶跃 0.85/1.66→0.20/0.25 道，代价是短并线入带晚约 0.2~0.4s。
+        # 路线仍持有承诺道（finish/abort 不受影响），只给控制目标加斜坡。
+        route = self._route
+        committed = (self.cfg.route.control and route is not None
+                     and route.phase == PHASE_MERGING)
+        slew_lane_s = (self.cfg.hysteresis.merge_slew_lane_s if committed
+                       else self.cfg.hysteresis.target_slew_lane_s)
+        slew = slew_lane_s * dt_s
+        if self._target_prev is None or slew <= 0.0:
+            t_out = t_raw
+        else:
+            t_out = self._target_prev + max(
+                -slew, min(slew, t_raw - self._target_prev))
+        if self._state is DecisionState.CRUISE:
+            self._target_prev = t_out
+        x_out = t_out
+        self._maneuver = bool(self._state is DecisionState.CRUISE
+                              and self._sel_maneuver)
+        # 行为契约观测面（阶段 0）：只推导并记录，不改变控制。权限按相位
+        # 给：非巡航/HOLD；并线或机动/COMMIT；其余/GENTLE。
+        merging = route is not None and route.phase == PHASE_MERGING
+        if self._state is not DecisionState.CRUISE:
+            authority = "HOLD"
+        elif merging or self._maneuver:
+            authority = "COMMIT"
+        else:
+            authority = "GENTLE"
+        if self._scene is None:
+            self._open_trace = None
+            self._anchor.reset()
+            self._anchor_trace = None
+        self._update_lane_map(obs)
+        self._update_triggers()
+        intent_lane = None
+        if route is not None:
+            intent_lane = route.lane_target if merging else route.lane_ref
+        deadline_s = None
+        if merging:
+            assert route is not None   # merging 蕴含 route is not None
+            deadline_s = max(
+                0.0, route.merge_started_t + self._route_params.merge_max_s
+                - route.elapsed_s)
+        return DecisionOutput(
+            schema_version=_SCHEMA, state=self._state,
+            x_target=x_out if self._state is not DecisionState.CONSERVE else None,
+            reason=reason, emitted_fid=obs.frame_id,
+            valid_until_fid=obs.frame_id + self._validity_ticks(),
+            maneuver=self._maneuver, intent_lane=intent_lane,
+            phase="merging" if merging else "keep", authority=authority,
+            deadline_s=deadline_s)
 
-    def _tick_change_overtake(self, obs: WorldObservation, dt_s: float) -> str:
-        """超车计划路（阶段 C §三/§四）：完成=pass 事件落定（车已出画），
-        失联/lost/ghost=ABORT 有界回稳；t_pass_max 兜底（车滞留不落的异常场）。
-        不走 demand 收敛与死区代理——移动目标永远"走不到正中间"（维护者口径第 4 条）。"""
-        self._change_t += dt_s
-        v = next((x for x in self._views if x.id == self._target_gid), None)
-        if v is None:
-            ev = next((e for e in self._events if e.track_id == self._target_gid), None)
-            if ev is not None and ev.outcome == OUTCOME_PASS:
-                self._done_pass_ids.add(ev.track_id)
-                # reanchor=None：超车完成拍没有"目标读数"可锚（车已出画）——
-                # executed_lane 走路中心连续重锚（step 2.5），不吃事件锚
-                return self._finish_change(
-                    "overtake_pass", cool_s=self.cfg.overtake.t_cool_pass_s)
-            self._enter_abort("target_lost")
-            return "cancel:overtake_lost"
-        better = self._select(obs, current=self._cur_score)
-        if better is not None and \
-                (better.kind, better.cand_id) != (KIND_CAND_OVERTAKE, self._target_gid):
-            self._target_gid = better.cand_id
-            self._target_kind = better.kind
-            self._cur_score = better.score
-            self._demand_lane = (better.group.x_center if better.kind == KIND_CAND_COIN
-                                 else self.scorer.hug_goal(better.car.x_lane))
-            self._deadzone_ticks = 0
-            return "switch:score_win"
-        if self._change_t >= self.cfg.overtake.t_pass_max_s:
-            return self._finish_change("pass_timeout")
-        return "moving:overtake"
+    @property
+    def maneuver(self) -> bool:
+        """上一拍机动权限位（trace/GUI 观测面）。"""
+        return self._maneuver
+
+    @property
+    def goal(self) -> float | None:
+        """上一拍输出用目标（路心系道）。"""
+        return (None if self._reach_goal is None
+                else self._reach_goal / self.cal.lane_w_m)
+
+    @property
+    def exec_branch(self) -> str:
+        """上一拍执行分支：follow / hold。"""
+        return self._exec_branch
+
+
+
+    def _age_ms(self, last_fid: int | None) -> float:
+        """帧号差 → 毫秒（帧率未预热时=0，不臆造年龄）。"""
+        if last_fid is None or not self._fps or self._fps <= 0:
+            return 0.0
+        return max(0, self._fid - last_fid) / self._fps * 1000.0
+
+    def _source_fid(self, s, now: int) -> int:
+        """源最近一次有读数的帧号（闭锁龄的起点）。"""
+        if s.seen:
+            return now
+        if self._fps and getattr(s, "age_ms", 0.0):
+            return now - int(round(float(s.age_ms) / 1000.0 * self._fps))
+        return now
+
+    def _latch_sources(self, kind: str, sources, reasons,
+                       obs: WorldObservation) -> list:
+        """6b 资格闭锁：按身份保留最近读数，只处理"暂时没有读数"。
+
+        只给选择层用（不写回场景/计划/安全）；`seen=False` 的保留源仍按最后
+        一份读数参与可达性判断，但请求起意要求当拍有效来源（route 层判）。
+        资格判据本身（不接近/太年轻/置信不足）过期就移出闭锁。
+        """
+        if not self.cfg.selection.eligibility_latch:
+            return sources
+        hold_ms = self.cfg.selection.eligibility_hold_s * 1000.0
+        now = obs.frame_id
+        cur = set()
+        for s in sources:
+            if s.id is None:
+                continue
+            cur.add(s.id)
+            prev = self._elig_latch.get((kind, s.id))
+            # 近场/组源优先于远场粗源：同一身份只留一条
+            if prev is not None and prev[1].src != "far" and s.src == "far":
+                continue
+            self._elig_latch[(kind, s.id)] = (self._source_fid(s, now), s)
+        out = list(sources)
+        holdable = ("no_x", "no_t") if kind == "bonus" else ("nan_x", "no_t")
+        for key, (fid, s) in list(self._elig_latch.items()):
+            k, oid = key
+            if k != kind:
+                continue
+            reason = reasons.get(oid)
+            if reason is not None and reason not in holdable:
+                self._elig_latch.pop(key, None)
+                continue
+            if oid in cur:
+                continue
+            age_ms = self._age_ms(fid)
+            if age_ms > hold_ms + 1e-6:
+                self._elig_latch.pop(key, None)
+                continue
+            out.append(replace(s, seen=False, src="held", age_ms=age_ms))
+        return out
+
+    def _coin_sources(self, obs: WorldObservation,
+                      executed_lane: float) -> list[CoinSource]:
+        """币组 → 选择/收益场源（路心系米）。确认窗与置信地板同源。"""
+        lane_w = self.cal.lane_w_m
+        coins: list[CoinSource] = []
+        reasons: dict[int, str | None] = {}
+        for g in obs.coin_groups:
+            gid = g.group_id
+            if g.x_center != g.x_center:
+                reasons.setdefault(gid, "nan_x")
+                continue                        # 存续组 nan 心：不入账
+            if self.cfg.corridor_reach.coin_confirm_ticks > 1 \
+                    and obs.frame_id - g.first_seen_fid \
+                    < self.cfg.corridor_reach.coin_confirm_ticks:
+                reasons.setdefault(gid, "confirm")
+                continue                        # 确认窗内不进场（单帧闪烁自卫）
+            s = self.scorer.score(g, obs)
+            if s is None:
+                reasons.setdefault(gid, "score")
+                continue                        # 置信地板（质量门语义一致）
+            # 长币线用组远端起意：近枚先到，但远端还在更久之后；按近枚时间
+            # 判可达会系统性晚一拍。收币目标仍是最近一枚（x_center/lead）。
+            t_raw = (s.t_far_s if s.t_far_s is not None
+                     and math.isfinite(s.t_far_s) else s.t_miss_s)
+            if not math.isfinite(t_raw):
+                reasons.setdefault(gid, "no_t")
+                continue
+            # 同组时间单调：组里换了更远的一枚时 t 会突增，计划会在
+            # 1.5s/3.0s 之间反复进出视界。沿用旧时间并按经过时间前移。
+            mem = self._coin_t_mem.get(g.group_id)
+            t_raw = _monotonic_coin_t(
+                mem, t_raw, self._age_ms(mem[1]) / 1000.0 if mem else 0.0,
+                self.cfg.motion.coin_time_jump_tol_s)
+            self._coin_t_mem[g.group_id] = (t_raw, obs.frame_id)
+            reasons[gid] = None
+            coins.append(CoinSource(
+                x_m=(g.x_center + executed_lane) * lane_w,
+                observed_count=g.observed_count, conf=g.conf_min,
+                t_miss_s=t_raw,
+                age_ms=self._age_ms(g.lead_fid or g.last_seen_fid),
+                id=g.group_id, seen=(g.last_seen_fid == obs.frame_id)))
+        # 记忆只保留最近 1.5s 出现过的组
+        for gid in [k for k, (_, f) in self._coin_t_mem.items()
+                    if self._age_ms(f) > 1500.0]:
+            self._coin_t_mem.pop(gid, None)
+        self._coin_reasons = reasons
+        return coins
+
+    def _bonus_sources(self, obs: WorldObservation,
+                       executed_lane: float) -> list[BonusSource]:
+        """奖励车源（近场 + 远场粗源），闸关=空列表。"""
+        bonuses: list[BonusSource] = []
+        reasons: dict[int, str | None] = {}
+        if self.cfg.corridor_reach.bonus_value:
+            lane_w = self.cal.lane_w_m
+            for b in obs.targets:
+                if b.kind != KIND_BONUS:
+                    continue
+                oid = b.id
+                if obs.frame_id - b.first_seen_fid < self.cfg.traffic.min_obs_ticks:
+                    reasons.setdefault(oid, "young")
+                    continue                    # track 年龄门槛：单帧噪声进不了评分
+                if b.rel_approach <= 0.0:
+                    reasons.setdefault(oid, "not_approach")
+                    continue                    # 不接近=永远撞不上
+                if b.x_lane is None or b.x_lane != b.x_lane:
+                    reasons.setdefault(oid, "no_x")
+                    continue                    # 横位缺位/存续 nan：不入账
+                t_miss = self.scorer.car_t_meet_s(b.rel_approach, b.cy)
+                if not math.isfinite(t_miss):
+                    reasons.setdefault(oid, "no_t")
+                    continue                    # 到站仪器无解：不追
+                reasons[oid] = None
+                bonuses.append(BonusSource(
+                    x_m=(b.x_lane + executed_lane) * lane_w,
+                    t_miss_s=t_miss, conf=b.conf,
+                    age_ms=self._age_ms(b.last_seen_fid),
+                    id=b.id, seen=(b.last_seen_fid == obs.frame_id)))
+            bonuses.extend(self._reach_bonus_far_sources(obs, executed_lane,
+                                                         reasons))
+        self._bonus_reasons = reasons
+        return bonuses
+
+    def _reach_bonus_far_sources(self, obs: WorldObservation,
+                                 executed_lane: float,
+                                 reasons: dict[int, str | None]) -> list[BonusSource]:
+        """远场奖励车粗源（R5 §10.1）：far_targets（横位缺位、弱读带）走
+        x_lane_of 同一公式真源读粗横位，夹进走廊 band edges 并集（米→道，
+        误差被路宽兜住），到站走 car_t_meet_s 同一仪器链，每源宽容差
+        bonus_far_tol_m。门同式：年龄门槛/不接近不收/到站有限。"""
+        lane_w = self.cal.lane_w_m
+        edges: list[float] = []
+        if self._corridor is not None:
+            for band in self._corridor.bands:
+                if band.left.x_m is not None:
+                    edges.append(band.left.x_m)
+                if band.right.x_m is not None:
+                    edges.append(band.right.x_m)
+        span = (min(edges) / lane_w, max(edges) / lane_w) if edges else None
+        out: list[BonusSource] = []
+        for b in obs.far_targets:
+            if b.kind != KIND_BONUS:
+                continue
+            oid = b.id
+            if obs.frame_id - b.first_seen_fid < self.cfg.traffic.min_obs_ticks:
+                reasons.setdefault(oid, "young")
+                continue                        # track 年龄门槛：同近场源
+            if b.rel_approach <= 0.0:
+                reasons.setdefault(oid, "not_approach")
+                continue                        # 不接近=永远撞不上
+            d = b.cy - self.cal.y_h
+            if d <= 0:
+                reasons.setdefault(oid, "horizon")
+                continue                        # 地平线上：公式分母退化（构造端已弃，防御）
+            # 粗横位吃框底边（cy+h/2=地面触点代理）：平台是抬升物体，框中心
+            # 比触点更贴地平线，X/H 按 ground 平面投影会系统性放大横位；
+            # 到站仍吃框心（与 rel_approach 同一 tracked 点，同近场源）
+            x_coarse = x_lane_of(b.cx, b.cy + b.h // 2, self.cal)
+            if not math.isfinite(x_coarse):
+                reasons.setdefault(oid, "no_x")
+                continue                        # 粗读无解：不入账
+            if span is not None:
+                x_coarse = min(max(x_coarse, span[0]), span[1])   # 夹进走廊路缘
+            t_miss = self.scorer.car_t_meet_s(b.rel_approach, b.cy)
+            if not math.isfinite(t_miss):
+                reasons.setdefault(oid, "no_t")
+                continue                        # 到站仪器无解：不追
+            reasons[oid] = None
+            out.append(BonusSource(
+                x_m=(x_coarse + executed_lane) * lane_w,
+                t_miss_s=t_miss, conf=b.conf, src="far",
+                id=b.id, seen=(b.last_seen_fid == obs.frame_id)))  # tol_m 缺省=bonus_tol_m（近远场同源）
+        return out
+
+    def _grid_car_sources(self, off: float) -> list[CarSource]:
+        """深占据伪车源（2026-11-03 帧证）：YOLO 全盲拍 431/2880（最长连续
+        109 拍）里近距大车不出 car 类，语义车表空＝正面撞；同拍深度栅格
+        380 拍红块内缘在读。路内窄块簇按占道障碍入账——与墙（整行宽簇）
+        用簇宽区分。id 负数千位段（与 YOLO/跟踪 id 空间隔离），t=z/在线
+        闭速（静态假设），簇高 ≥2 行（0.5m）滤单行噪声。"""
+        grid = self._depth_grid
+        if grid is None:
+            return []
+        import numpy as np
+        from maaracing_master.plugins.speedrush.depth_geo import (
+            GRID_BLOCKED, GRID_CELL, GRID_X_MAX, GRID_Z_LO)
+        blocked = (grid.state == GRID_BLOCKED)
+        zc = GRID_Z_LO + (np.arange(blocked.shape[0]) + 0.5) * GRID_CELL
+        v = max(float(self._ego_speed_mps or 0.0), 5.0)
+        out: list[CarSource] = []
+        bands = [(3.0, 6.0, 0), (6.0, 10.0, 1), (10.0, 16.0, 2),
+                 (16.0, 30.0, 3)]
+        for z0, z1, k in bands:
+            rows = blocked[(zc >= z0) & (zc < z1)]
+            if not rows.any():
+                continue
+            cols = np.nonzero(rows.any(axis=0))[0]
+            splits = np.split(cols, np.nonzero(np.diff(cols) > 1)[0] + 1)
+            for ci, cl in enumerate(splits):
+                w_m = (cl[-1] - cl[0] + 1) * GRID_CELL
+                x_m = -GRID_X_MAX + (cl[0] + cl[-1] + 1) / 2.0 * GRID_CELL
+                if w_m > 3.0 or abs(x_m + off) < 0.4:
+                    continue        # 墙（整行宽）与自车格排除
+                h = int(rows[:, cl[0]:cl[-1] + 1].any(axis=1).sum())
+                if h < 2:
+                    continue        # 单行簇：噪声不记账
+                z_mid = 0.5 * (z0 + z1)
+                out.append(CarSource(
+                    x_m=x_m + off, t_meet_s=z_mid / v,
+                    t_overtake_s=None, bridged=False, z_m=z_mid,
+                    age_ms=0.0, src="grid", near=z_mid <= 16.0,
+                    half_w_m=min(0.5 * w_m, 1.2),
+                    id=-3000 - k * 10 - ci, seen=True, safety_ok=True))
+                if len(out) >= 8:
+                    return out
+        return out
+
+    def _reach_car_sources(self, executed_lane: float,
+                           far_targets: tuple = ()) -> list[CarSource]:
+        """车米制仪器链（与 lane_score.benefits 同一优先级与仪器：米制优先、
+        像素回退、已过自车行不占道；路心系米）。出界车不排除——连续坐标下
+        几何归属自然处理远车（lane_score 的出界丢弃是道格覆盖问题，本链没有）。
+        `far_targets`：far 轨（A1 归一发散弃权段），车道线定道消费（闸
+        lane_line.consume）的第三循环输入，闸关时逐位回今天。"""
+        lane_w = self.cal.lane_w_m
+        off = executed_lane * lane_w
+        by_id = {v.id: v for v in self._views}
+        seen: set[int] = set()
+        out: list[CarSource] = []
+
+        ax = self.cfg.traffic.metric_x_ema_alpha
+        az = self.cfg.traffic.metric_z_ema_alpha
+        near_cy = IMAGE_H - self.cfg.motion.near_cy_margin_px
+
+        def _near(v, z: float | None) -> bool:
+            """纵向近：有纵深看 z（米制锚或框高粗距离），无纵深才看行号
+            （保险杠机位以画面下缘为界，自车行不是可观测几何）。"""
+            if z is not None:
+                return z <= self.cfg.motion.near_z_m
+            return v is not None and v.cy >= near_cy
+
+        def _half_w(v) -> float | None:
+            w = getattr(v, "w_m", None) if v is not None else None
+            return None if not w or w <= 0 else w / 2.0
+
+        def enter(x: float | None, tm: float | None,
+                  t_ov: float | None = None,
+                  bridged: bool = False,
+                  z_m: float | None = None,
+                  age_ms: float = 0.0, src: str = "pixel",
+                  tid: int | None = None,
+                  near: bool = False,
+                  half_w_m: float | None = None,
+                  seen: bool | None = None,
+                  v_close: float | None = None) -> None:
+            if x is None or x != x:
+                return
+            # 安全资格来自对象表（同 id）：表里没有该车=身份不明，按不可安全
+            # 处理（fail-closed）；这不会改变今天的输出——表与车源同拍同源。
+            entry = None if tid is None else self._objects.track(KIND_CAR, tid)
+            safe = True if tid is None else (
+                entry.safety_ok if entry is not None else False)
+            # 平滑在道路帧（x+off）：自车横移由 off 抵消，目标自身的慢横移
+            # 保留；米制 x/z 的逐拍抖动（±1~4m）在这里收敛到擦车带量级以下。
+            xr = x + off
+            if tid is not None:
+                # 纵深大跳变 = 新锚点/真实通过：x 也必须从新基线重来。
+                # 否则 x 的硬跳变门会把旧的坏横位锁死——一条远锚的 x=-18m
+                # 在近锚 x=-2.7m 到达后仍被“hold”三拍，车被当成 15m 外
+                # （2026-10-19 局 215826_p2 4065 拍）。
+                pz = self._car_zf.get(tid)
+                z_reset = (z_m is not None and z_m == z_m
+                           and (pz is None or abs(z_m - pz) >
+                                self.cfg.traffic.metric_z_jump_max_m))
+                prev = self._car_xf.get(tid)
+                if z_reset:
+                    self._car_xf[tid] = xr
+                    self._car_x_hold[tid] = (xr, 0)
+                else:
+                    xr = xr if prev is None else prev + ax * (xr - prev)
+                    # 硬跳变门：真实横移单拍不可能 >1.5m（20Hz 下 30m/s 横速）；
+                    # 先拒，连续 hold_ticks 拍仍在新位置才接受。
+                    jmax = self.cfg.traffic.metric_x_jump_max_m
+                    hold = self._car_x_hold.get(tid)
+                    if hold is not None and jmax > 0.0 \
+                            and abs(xr - hold[0]) > jmax:
+                        n_jump = hold[1] + 1
+                        if n_jump < self.cfg.traffic.metric_x_jump_hold_ticks:
+                            xr = hold[0]
+                            self._car_x_hold[tid] = (hold[0], n_jump)
+                        else:
+                            self._car_x_hold[tid] = (xr, 0)
+                    else:
+                        self._car_x_hold[tid] = (xr, 0)
+                    self._car_xf[tid] = xr
+                if z_m is not None and z_m == z_m:
+                    # 大跳变=真实通过/换锚，直接重置；只有小抖动才走 EMA。
+                    if z_reset:
+                        self._car_zf[tid] = z_m
+                    else:
+                        assert pz is not None   # z_reset False 且 z_m 有效 ⇒ pz 有值
+                        z_m = pz + az * (z_m - pz)
+                        self._car_zf[tid] = z_m
+            out.append(CarSource(x_m=xr, t_meet_s=tm,
+                                 t_overtake_s=t_ov, bridged=bridged,
+                                 z_m=z_m, age_ms=age_ms, src=src,
+                                 near=near, half_w_m=half_w_m,
+                                 id=tid, seen=seen, safety_ok=safe,
+                                 v_close_mps=v_close))
+
+        out.extend(self._grid_car_sources(off))
+
+        for m in self._metric_cars:
+            v = by_id.get(m.target_id)
+            bridged = getattr(m, "bridged", False)
+            if m.source is DistanceSource.BOX_SIZE:
+                # 无锚框高粗距离（2026-10-23）：只用于近/远与选道，横向仍走
+                # 像素尺子、到站时间弃权（~40% 尾部误差不能进 TTC）；z_m 不喂
+                # enter 的 z EMA/跳变门与路心采样（那是精确米制口径）。
+                if v is None:
+                    continue
+                near = _near(v, m.z_m)
+                if v.x_lane is None:
+                    if not near:
+                        continue                # 远轨无尺子：诚实弃权
+                    # 近距无横位 ≠ 无威胁（2026-11-03 局1 帧 0213 帧证）：
+                    # 补给/事件车 12.7m 内横位始终缺位（框心贴地平线过不了
+                    # 尺子门），旧口径整段跳过 → 避让层视而不见直到追尾。
+                    # 近距 unknown 按占本道处理，逼出换道/减速而不是无视。
+                    enter(0.0, None, None, z_m=None, age_ms=0.0,
+                          src="metric_coarse", tid=m.target_id,
+                          near=True, half_w_m=_half_w(v),
+                          seen=(v.last_seen_fid == self._fid))
+                    continue
+                seen.add(m.target_id)
+                enter(v.x_lane * lane_w, None, None, z_m=None, age_ms=0.0,
+                      src="metric_coarse", tid=m.target_id,
+                      near=near, half_w_m=_half_w(v),
+                      seen=(v.last_seen_fid == self._fid))
+                continue
+            elif m.z_m is not None:
+                x = m.x_m
+                if x is None and v is not None and v.x_lane is not None:
+                    x = v.x_lane * lane_w       # 无同帧焦距：横向回退像素尺子
+                # 米制 x ↔ 像素尺子互证：x_m 复合了锚 z 与框心两处误差，
+                # 雨局车5 在 16.8m 处连续报 4-6 道（尺子 2-3 道，帧证为真），
+                # 决策按"路外无关车"放行到重叠前 0.2s。持续分歧按**尺子**
+                # 入账（20261103_125755 车51 二次帧证：米制把 1.0 道的邻道车
+                # 压成 0.14 道幻影、"更急者"恰好选了错的那个——横向 bake-off
+                # 两案尺子全对，米制锚错 2-3 道；贴回滞回恢复，单边缺证冻结态）。
+                if x is not None and m.x_m is not None \
+                        and v is not None and v.x_lane is not None and lane_w:
+                    dis = abs(m.x_m / lane_w - v.x_lane)
+                    n, veto = self._car_xdis.get(m.target_id, (0, False))
+                    was_veto = veto
+                    if veto:
+                        if dis <= _XDIS_OFF_LANE:
+                            n += 1
+                            if n >= _XDIS_OFF_TICKS:
+                                n, veto = 0, False
+                        else:
+                            n = 0
+                    elif dis > _XDIS_ON_LANE:
+                        n += 1
+                        veto = n >= _XDIS_ON_TICKS
+                    else:
+                        n = 0
+                    self._car_xdis[m.target_id] = (n, veto)
+                    if veto:
+                        x = v.x_lane * lane_w       # 尺子赢（原"更急者"两案一错一对）
+                        if not was_veto:
+                            # 接管瞬间：仪器修正不是真实横移，清平滑基线
+                            # 让硬跳变门按新读数重起（否则修正被 hold 扣住）
+                            self._car_xf.pop(m.target_id, None)
+                            self._car_x_hold.pop(m.target_id, None)
+                tm = self.scorer.metric_t(m, v)
+                # R3 前车仪器（2026-10-16 设计稿 §2.1）：t_overtake 只吃米制
+                # t_meet（z/v_close，单一公式真源 MetricCarState；v_close>0=
+                # 被接近的前车——设计稿原文 v_close<0 系符号笔误，与 L0 契约
+                # 及实机 trace 对账（符号一致率 70.8%、近距离车 87% 为正）均
+                # v>0=接近，数值同为 z/|v_close|）。**不走 tm**（metric_t 在
+                # 估计窗未开时回退像素，估计窗未开=弃权不追）；t≤0（z 已过
+                # datum）/v_close 缺位/桥接段=None=仪器缺位弃权
+                t_ov = m.t_meet_s if (m.t_meet_s is not None
+                                      and m.t_meet_s > 0.0
+                                      and not bridged) else None
+            elif v is not None:
+                x, tm = self.scorer.pixel_instruments(v)
+                t_ov = None                     # 像素回退车无米制锚：旧错身项
+                x = None if x is None else x * lane_w
+                # 速度像素桥（闸 metric_bridge.enabled）：桥接 t 与像素同式
+                # 真源，优先取桥接值（携带 bridged 标记供不确定度分权）
+                if bridged and m.t_meet_s is not None:
+                    tm = m.t_meet_s
+            else:
+                continue                        # 无视图的远轨必有锚
+            seen.add(m.target_id)
+            enter(x, tm, t_ov, bridged=bridged, z_m=m.z_m,
+                  age_ms=(m.anchor_age_ms or 0.0), src="metric",
+                  tid=m.target_id, near=_near(v, m.z_m),
+                  half_w_m=_half_w(v), v_close=m.v_close_mps,
+                  seen=(None if v is None else v.last_seen_fid == self._fid))
+        for vid, v in by_id.items():
+            if vid in seen:
+                continue                        # 米制路径已入账，不双计
+            x, tm = self.scorer.pixel_instruments(v)
+            seen.add(vid)
+            # 新鲜度=距最后一次真实读数的帧数；旧构造没有 last_seen_fid 时
+            # 才退回轨道生命期（age_ticks 不能当新鲜度，否则持续被检出的车
+            # 会在 0.25s 后从场景蒸发）。
+            if self._fps:
+                fresh = (self._fid - v.last_seen_fid
+                         if v.last_seen_fid else v.age_ticks)
+                age_ms = max(0.0, fresh / self._fps * 1000.0)
+            else:
+                age_ms = 0.0
+            enter(None if x is None else x * lane_w, tm,
+                  age_ms=age_ms, tid=vid, near=_near(v, None),
+                  half_w_m=_half_w(v),
+                  seen=(v.last_seen_fid == self._fid))
+        for k in [k for k in self._car_xf if k not in seen]:
+            self._car_xf.pop(k, None)
+            self._car_zf.pop(k, None)
+            self._car_x_hold.pop(k, None)
+        # 车道线定道消费（闸 lane_line.consume，2026-11-02 排定待办 3 phase 2）：
+        # far 轨第三循环——A1 归一发散弃权段（约 70% 远车拍 x 缺席）的主供数，
+        # 线插值成员顶上，到站走地面流同一仪器链（car_t_meet_s）。安全/占用
+        # 语义（线成员车能否进安全判断）另行设计：本源沿用现有安全门（far
+        # 条目无横位 → 对象表 safety_ok=False，选择层按不可安全处理）。
+        if self._lane_line_consume:
+            for b in far_targets:
+                if b.kind != KIND_CAR or b.x_lane_line is None:
+                    continue
+                if b.id in seen:
+                    continue                    # 米制/像素路径已入账，不双计
+                if b.rel_approach <= 0.0:
+                    continue                    # 不接近=永远撞不上：同远场粗源
+                if self._fid is None or \
+                        self._fid - b.first_seen_fid \
+                        < self.cfg.traffic.min_obs_ticks:
+                    continue                    # track 年龄门槛：同近场源
+                d = b.cy - self.cal.y_h
+                if d <= 0:
+                    continue                    # 地平线上：几何无效
+                seen.add(b.id)
+                enter(b.x_lane_line * lane_w,
+                      self.scorer.car_t_meet_s(b.rel_approach, b.cy),
+                      age_ms=self._age_ms(b.last_seen_fid), src="line",
+                      tid=b.id, near=False, half_w_m=None,
+                      seen=(b.last_seen_fid == self._fid))
+        return out
+
+    @property
+    def bonus_src_count(self) -> int:
+        """上一拍奖励车源数（近场+远场粗源之和；0=源为空——R5 漏斗观测面）。"""
+        return self._bonus_src
+
+    def _update_occ(self, obs: WorldObservation,
+                    executed_lane: float | None) -> None:
+        """把本拍目标/距离/掠过事件喂给占用影子（只读，不做决策）。"""
+        dist = {d.target_id: d for d in obs.distances}
+
+        def _m(d) -> float | None:
+            # 锚龄 600ms 硬顶外的米制值不再作为“可信近距”证人；框/接地行
+            # 仍可独立建占，所以过期距离只会少一条证人，不会清空占用。
+            if d is None or d.metric_distance_m is None:
+                return None
+            if d.anchor_age_ms is not None and d.anchor_age_ms > 600.0:
+                return None
+            return d.metric_distance_m
+
+        passed = {e.track_id for e in self._events
+                  if e.outcome in (OUTCOME_PASS, OUTCOME_PRESUMED_PASS)}
+        rows: list[OccObs] = []
+        for t in obs.targets:
+            if t.kind != KIND_CAR:
+                continue
+            rows.append(OccObs(
+                t.id, t.h, t.cy, t.x_lane, _m(dist.get(t.id)),
+                t.last_seen_fid == obs.frame_id))
+        for t in obs.far_targets:
+            if t.kind != KIND_CAR:
+                continue
+            rows.append(OccObs(
+                t.id, t.h, t.cy, t.last_x_lane, _m(dist.get(t.id)),
+                t.last_seen_fid == obs.frame_id))
+        self._occ_snap = self.occ.update(
+            obs.ts_ns / 1e9, rows, executed_lane, passed)
+
+    def occ_snap(self) -> dict | None:
+        """trace 观测面：占用快照 + 本拍选择是否落在被占车道（veto）。"""
+        snap = self._occ_snap
+        if not snap:
+            return None
+        out = dict(snap)
+        rep = self._sel_report
+        ego = self._sel_ego_m
+        if rep is not None and ego is not None:
+            out["sel_layer"] = rep.layer
+            out["sel_why"] = rep.why
+            out["sel_x"] = round(rep.target_x_m, 2)
+            out["veto"] = bool(
+                abs(rep.target_x_m - ego) < 0.5 * self.cal.lane_w_m)
+        else:
+            out["veto"] = False
+        return out
+
+    @property
+    def metric_cars_snap(self) -> list[dict]:
+        """上一拍车米制状态快照（观测面，trace mcars 列数据源；R3 归因面）：
+        逐车横向位/纵向距/到站/接近速/锚龄——机会漏点（可达门 vs 碰撞判据）
+        的离线复算输入。t_ov 沿 _reach_car_sources 同式（≤0/桥接段=仪器缺位
+        弃权）。b/bwhy=速度像素桥标记与进入原因（闸 metric_bridge.enabled，
+        默认关恒 False/None）。bz=锚间框高比桥接值（闸 box_bridge；
+        trace_only 时只观测、z 仍是发布口径）。空表=metric_cars 关或无车。"""
+        return [{"id": m.target_id, "src": m.source.value,
+                 "x": None if m.x_m is None else round(m.x_m, 2),
+                 "z": None if m.z_m is None else round(m.z_m, 2),
+                 "t_ov": None if (m.t_meet_s is None or m.t_meet_s <= 0.0
+                                  or getattr(m, "bridged", False))
+                 else round(m.t_meet_s, 3),
+                 "v": None if m.v_close_mps is None else round(m.v_close_mps, 2),
+                 "age": None if m.anchor_age_ms is None
+                 else round(m.anchor_age_ms, 1),
+                 "bz": None if m.box_bridge_z_m is None
+                 else round(m.box_bridge_z_m, 2),
+                 "b": bool(getattr(m, "bridged", False)),
+                 "bwhy": getattr(m, "bridge_reason", None)}
+                for m in self._metric_cars]
+
+    def _tick_cruise(self, obs: WorldObservation,
+                     executed: float | None) -> str:
+        """CRUISE：四层选择器是唯一选择来源。
+
+        ``state_unverified``：执行层本拍的位置是不可信外推值（线+深度都
+        没有新证据，见 planner.update）。选择层的全部输入——自车横位、
+        车/币/奖励车的绝对位置——都由这个假位置平移得到，任何新目标都是
+        在错误参考系里做决定。此拍不选目标，持守上一拍意图，等证据回来。
+        """
+        if self._state_unverified:
+            self._reach_goal = None
+            self._exec_branch = "hold"
+            self._scene = None
+            self._sel_report = None
+            self._sel_maneuver = False
+            self._sel_objs = {"reward": [], "car": [], "coin": []}
+            self._sel_dbg = None
+            self._coarse = None
+            self._route_req = None
+            self._route_req_live = True
+            self._route_req_action = True
+            self._route_req_oid = None
+            # 路线时钟继续走（deadline 不会因为盲窗被冻结成假宽限）
+            self._tick_route(executed=executed)
+            return "sel:hold:state_unverified"
+        return self._tick_cruise_layered(obs, executed)
+
+    # ---------- 四层选择（2026-10-18 走廊重建） ----------
+
+    def _road_frame(self, executed: float, fid: int):
+        """走廊分带 → 选择层帧（中心在自车站为 0，米）+ 自车横位。
+
+        origin 一次平移：把「自车系 + executed 平移」的走廊带、目标和自车
+        都换到同一个以走廊中心为原点的坐标，避免下游再各自换算。返回
+        (RoadFrame, ego_m, origin)；无双侧带=None。
+        """
+        if self._corridor is None:
+            return None
+        lane_w = self.cal.lane_w_m
+        shift = executed * lane_w
+        raw: list[tuple] = []
+        for b in self._corridor.bands:
+            if b.left.x_m is None or b.right.x_m is None:
+                continue
+            raw.append((b.z0, b.z1, b.left.x_m + shift, b.right.x_m + shift,
+                        b.left, b.right))
+        if not raw:
+            return None
+
+        def _at(z: float, pick) -> float:
+            best = min(raw, key=lambda b: 0.0 if b[0] <= z <= b[1]
+                       else min(abs(z - b[0]), abs(z - b[1])))
+            if best[0] <= z <= best[1] and best[1] > best[0]:
+                w = (z - best[0]) / (best[1] - best[0])
+                return pick(best, 0.0) + (pick(best, 1.0) - pick(best, 0.0)) * w
+            return pick(best, 0.0 if z < best[0] else 1.0)
+
+        # 车道原点是供数门 master 绝对路心（墙/空气墙/绿区物理边界），不是
+        # 分带不对称中点：带中点会被墙箱/单侧绿区拽偏（2026-10-20 实机 0.86
+        # 道分歧），选择目标因此整体偏移。带边界仍按原样供宽度/包络。
+        # A 系（带已加 executed 平移）里 master 位于 center+executed 道——
+        # 两者互相抵消（executed≈−center）时原点≈0，目标道号与 planner 同帧。
+        master = self._corridor.center_lane
+        origin = (_at(0.0, lambda b, k: 0.5 * (b[2] + b[3]))
+                  if master is None else (master + executed) * lane_w)
+        bands = []
+        for z0, z1, left, right, lb, rb in raw:
+            ages = [a for a in (self._age_ms(lb.last_fid),
+                                self._age_ms(rb.last_fid)) if a is not None]
+            bands.append(RoadBand(
+                z0, z1, left - origin, right - origin,
+                src=(lb.src if lb.src == rb.src else "mixed"),
+                age_ms=(max(ages) if ages else None),
+                conf=min(lb.conf, rb.conf)))
+        bands = tuple(bands)
+        # 中远场粗带换算进选择坐标（x + shift − origin，src 统一 inferred）：
+        # 方向级消费（coarse.far_direction 开关）读不对称性，不进 bands。
+        # 必须与 3m 带同一条平移（先加 executed、再减 origin）——只减 origin
+        # 会让 executed 漏进远带中点，执行车道一跳就伪造出远场方向（p2
+        # 2796→2799 实拍：远带与中心线未动，executed 翻 1.47 道，hint 从
+        # −0.92 翻到 +0.55）。
+        coarse_bands = tuple(
+            RoadBand(bd.z0, bd.z1,
+                     None if bd.left is None or bd.left.x_m is None
+                     else bd.left.x_m + shift - origin,
+                     None if bd.right is None or bd.right.x_m is None
+                     else bd.right.x_m + shift - origin,
+                     src="inferred")
+            for bd in self._corridor.coarse_bands)
+        left0 = _at(0.0, lambda b, k: b[2]) - origin
+        right0 = _at(0.0, lambda b, k: b[3]) - origin
+        width = (right0 - left0) if right0 > left0 else (
+            self._corridor.width_lane * lane_w
+            if self._corridor.width_lane else None)
+        road = RoadFrame(bands, width, left0, right0, True, coarse_bands,
+                         far_hint_lane=self._corridor.far_hint_lane)
+        return road, shift - origin, origin
+
+    def _smooth_score(self, objs: list, ego_m: float) -> list:
+        """第 7 期得分源平滑：按对象对得分 slack 做短窗 EMA，写回证据位 t_ev。
+
+        证据位（平滑）进请求发出与证据累计；原始 t 不动——目标与起意仍看
+        原始（两位口径：平滑永远不能把不可达拍变成起意拍）。无身份（oid<0）
+        或开关关时不平滑，两位同源。平滑不参与安全、碰撞或擦边（cars 不进）。
+        EMA 状态按 oid 跨丢检保持（与离线复算同口径）；无读数拍不更新。
+        """
+        if not self.cfg.selection.score_smooth:
+            return objs
+        p = self.selector.p
+        tau = max(self.cfg.selection.score_smooth_tau_s, 1e-3)
+        dt = max(self._dt_last, 0.0)
+        out = []
+        for o in objs:
+            raw = reach_slack(o.x, ego_m, o.t, p)
+            if o.oid < 0 or raw is None:
+                out.append(o)
+                continue
+            prev = self._slack_ema.get(o.oid)
+            if prev is None:
+                sm = raw
+            else:
+                a = 1.0 - math.exp(-dt / tau)
+                sm = prev + a * (raw - prev)
+            self._slack_ema[o.oid] = sm
+            out.append(replace(o, t_ev=o.t + (sm - raw)))
+        return out
+
+    def _tick_cruise_layered(self, obs: WorldObservation,
+                             executed: float | None) -> str:
+        """四层选择器接管 CRUISE：奖励车 > 擦边 > 金币 > 中心带（粗层选道）。"""
+        if executed is None or self._corridor is None:
+            self._reach_goal = None
+            self._exec_branch = "hold"
+            self._scene = None
+            self._sel_report = None
+            self._sel_maneuver = False
+            self._sel_objs = {"reward": [], "car": [], "coin": []}
+            self._sel_dbg = None
+            self._coarse = None
+            self._route_req = None
+            self._route_req_live = True
+            self._route_req_action = True
+            self._route_req_oid = None
+            # 无车道级证据拍：路线不推进，时钟继续走
+            self._tick_route(executed=executed)
+            return "sel:hold:no_road"
+        rf = self._road_frame(executed, obs.frame_id)
+        if rf is None:
+            self._reach_goal = None
+            self._exec_branch = "hold"
+            self._scene = None
+            self._sel_report = None
+            self._sel_maneuver = False
+            self._sel_objs = {"reward": [], "car": [], "coin": []}
+            self._sel_dbg = None
+            self._coarse = None
+            self._route_req = None
+            self._route_req_live = True
+            self._route_req_action = True
+            self._route_req_oid = None
+            # 无车道级证据拍：路线不推进，时钟继续走
+            self._tick_route(executed=executed)
+            return "sel:hold:no_road"
+        road, ego_m, origin = rf
+        reward_src = self._bonus_sources(obs, executed)
+        car_src = self._reach_car_sources(executed, obs.far_targets)
+        coin_src = self._coin_sources(obs, executed)
+        # 6b 闭锁只改选择输入：场景/计划/安全仍用当拍源，保留源带 seen=False。
+        reward_sel = self._latch_sources("bonus", reward_src,
+                                         self._bonus_reasons, obs)
+        coin_sel = self._latch_sources("coin", coin_src,
+                                       self._coin_reasons, obs)
+        self._bonus_src = len(reward_sel)
+        if self.cfg.selection.eligibility_latch:
+            self._src_elig = {
+                "rw_cur": [b.id for b in reward_src if b.id is not None],
+                "rw_sel": [[b.id, bool(b.seen), b.src]
+                           for b in reward_sel if b.id is not None],
+                "coin_cur": [c.id for c in coin_src if c.id is not None],
+                "coin_sel": [[c.id, bool(c.seen), c.src]
+                             for c in coin_sel if c.id is not None],
+                "rw_rej": {str(k): v for k, v in self._bonus_reasons.items()
+                           if v is not None},
+                "coin_rej": {str(k): v for k, v in self._coin_reasons.items()
+                             if v is not None},
+            }
+        else:
+            self._src_elig = None
+        rewards = [Obj("reward", b.x_m - origin, b.t_miss_s,
+                       conf=b.conf, oid=-1 if b.id is None else b.id,
+                       seen=bool(b.seen))
+                   for b in reward_sel]
+        cars = [Obj("car",
+                    c.x_m - origin - (_center_at0(road, c.z_m - CAM_Z_DATUM_M)
+                                      if c.z_m is not None else 0.0),
+                    c.t_meet_s,
+                    oid=-1 if c.id is None else c.id,
+                    safe=c.safety_ok,
+                    v_close=c.v_close_mps)
+                for c in car_src]
+        coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
+                     count=c.observed_count, conf=c.conf,
+                     oid=-1 if c.id is None else c.id,
+                     seen=bool(c.seen))
+                 for c in coin_sel]
+        # 第 7 期得分源平滑：证据位（平滑）写回 t_ev，原始 t 不动。选择层
+        # 请求发出/证据累计读平滑位，目标与起意仍读原始位。
+        rewards = self._smooth_score(rewards, ego_m)
+        coins = self._smooth_score(coins, ego_m)
+        if self._src_elig is not None:
+            # 第 7 期观测面：平滑前后两列（[身份, 原始余量秒, 平滑余量秒]）
+            self._src_elig["rw_sm"] = [
+                [o.oid] + (_opp_aux([o], ego_m, self.selector.p)[0][1:])
+                for o in rewards if o.oid >= 0]
+            self._src_elig["coin_sm"] = [
+                [o.oid] + (_opp_aux([o], ego_m, self.selector.p)[0][1:])
+                for o in coins if o.oid >= 0]
+        corr_ages = [b.age_ms for b in road.bands if b.age_ms is not None]
+        lw = self.cal.lane_w_m
+        # 选择帧 → 规划器路心帧：选择帧原点已是 master，frame_shift 只需
+        # 补齐「master 在带平移系里的位置」（两者对齐时≈0）；不平移会让
+        # frame_delta 常年超阈值、走廊按差额加宽到失效。
+        center_lane = self._corridor.center_lane
+        frame_shift = 0.0 if center_lane is None else \
+            (-center_lane * lw) - ego_m
+        self._scene = build_scene(
+            fid=obs.frame_id, ego_m=ego_m, road=road,
+            rewards=reward_src, cars=car_src, coins=coin_src,
+            executed_lane=executed, origin=origin, lane_w_m=self.cal.lane_w_m,
+            frame_age_ms=obs.frame_age_ms,
+            corridor_age_ms=(max(corr_ages) if corr_ages else None),
+            # 规划价值保留期与安全龄分账：场景可留到计划视界，安全消费点
+            # 仍由对象表 safety_ok（0.6 s）把关。
+            value_age_s=max(self.cfg.motion.horizon_s,
+                            self.cfg.motion.max_obj_age_s),
+            corridor_age_max_s=self.cfg.motion.corridor_age_max_s,
+            sigma_obj0_m=self.cfg.motion.sigma_obj0_m,
+            sigma_obj_rate_mps=self.cfg.motion.sigma_obj_rate_mps,
+            cam_z_datum_m=CAM_Z_DATUM_M, frame_shift_m=frame_shift)
+        # 第 4 期观测面：开度/密度 + 60 m 锚（不接视界/选道）
+        self._update_openness_anchor(reward_src, coin_src, ego_m, origin)
+        # 粗层：绿区净空 + 2D 占用选方向。迟滞的现任道取上一拍粗层结果。
+        # 自车横位与候选道必须同帧：候选道按每带中心线取相对量，自车也
+        # 按 scene 的 z=0 中心线算——直接喂 executed（planner 路心系）会
+        # 把「带中心线 vs 路心」的残差带进方向判定。
+        c0 = self._scene.road.center_at(0.0)
+        coarse_ego = (executed if c0 is None else
+                      (self._scene.ego_x_m - c0) / self._scene.lane_w_m)
+        # 无带帧（c0=None）按 0 计：与上面 coarse_ego 的兜底同一口径
+        c0_m = 0.0 if c0 is None else c0
+        # SceneObj 是冻结 dataclass（只读属性），coarse._Car 协议声明的是可写
+        # 属性：形状不符、运行时是同一批对象，这里只做类型层转换。
+        self._coarse = choose_lane(
+            self._scene.road, cast(Any, self._scene.objs), coarse_ego,
+            self._scene.lane_w_m, self._coarse_params,
+            current_lane=None if self._coarse is None else self._coarse.lane)
+        # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
+        # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
+        # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。
+        self._tick_route(c0, executed, request=self._route_req,
+                         request_live=self._route_req_live,
+                         request_oid=self._route_req_oid,
+                         request_action=self._route_req_action)
+        # 并线承诺期：路线已定目标道，选择层只能在这个道上做维护性修正。
+        # 机会层（奖励车/擦边/金币）与预置偏移在此关闭——承诺期的目标被
+        # 机会改道就是静默换道（契约 §4/§5）。
+        committed = (self.cfg.route.control and self._route is not None
+                     and self._route.phase == PHASE_MERGING)
+        # 跨线唯一入口（2026-10-27）：闸开且保持态时把承诺道中心喂给选择层——
+        # 出本道安全区间的机会目标回夹区间边界，越线意图改发路线请求；
+        # 闸关逐位回旧行为（机会连续拽）。并线期目标本来就是承诺道，不喂。
+        commit_x = None
+        if self.cfg.route.control and self._route is not None and not committed:
+            commit_x = self._route.lane_ref * self.cal.lane_w_m + c0_m
+        # 粗层（2026-10-20 接控制）：只接管 L4 回中兜底——细层没有奖励车/
+        # 擦边/金币目标时，去净空最长的车道，而不是贴回中心线。机会层不受
+        # 影响；走廊陈旧（scene.stale）时退回纯回中，不用旧边界选道。
+        coarse_lane = self.coarse_lane
+        # 分级时域（4b）：开关关闭时 None=固定视界，逐位回旧行为；打开后
+        # 用本拍影子视界（已含开度/驻留），生产与影子选择器同值。
+        dyn_h = (self._horizon.current
+                 if self.cfg.selection.dynamic_horizon else None)
+        pre = self._pre_trig.step(
+            open_level=None if self._open_trace is None
+            else self._open_trace.get("lvl"),
+            anchor=self._anchor_trace, layer=None,
+            map_support=None if self._map_trace is None
+            else self._map_trace.get("sup"),
+            route_phase=None if self._route_verdict is None
+            else self._route_verdict.phase,
+            route_ref=None if self._route_verdict is None
+            else self._route_verdict.lane_ref)
+        replan = bool(pre)
+        rep = self.selector.update(road, rewards, cars, coins, ego_m,
+                                   self._dt_last,
+                                   coarse_lane=coarse_lane,
+                                   committed=committed, commit_x_m=commit_x,
+                                   horizon_s=dyn_h)
+        # 影子选择器：同一批对象/公路/自车输入，承诺态取影子路线。生产门关或
+        # 两路未分叉时两份输入相同，结果必须逐位一致；不一致记 `bug` 取证。
+        sh_committed = bool(self.cfg.route.control
+                            and self._route_shadow is not None
+                            and self._route_shadow.phase == PHASE_MERGING)
+        sh_coarse = self._lane_for_route(
+            self._route_shadow, self._shadow_verdict, self.cfg.route.control)
+        sh_commit_x = None
+        if self.cfg.route.control and self._route_shadow is not None \
+                and not sh_committed:
+            sh_commit_x = self._route_shadow.lane_ref * lw + c0_m
+        rep_shadow = self._selector_shadow.update(
+            road, rewards, cars, coins, ego_m, self._dt_last,
+            coarse_lane=sh_coarse, committed=sh_committed,
+            commit_x_m=sh_commit_x, horizon_s=dyn_h, replan=replan)
+        self._sel_shadow = rep_shadow
+        self._sel_shadow_trace = self._sel_watch.step(
+            fid=obs.frame_id, prod=rep, shadow=rep_shadow,
+            prod_in=(coarse_lane, committed, commit_x),
+            shadow_in=(sh_coarse, sh_committed, sh_commit_x),
+            prod_route=self._route_verdict,
+            shadow_route=self._shadow_verdict,
+            snapshot=lambda: _sel_objects_trace(
+                rewards, cars, coins, ego_m, lw))
+        self._route_req = rep.lane_request if self.cfg.route.control else None
+        self._route_req_live = bool(rep.req_live)
+        self._route_req_action = bool(rep.req_action) \
+            if rep.req_action is not None else True
+        self._route_req_oid = rep.req_oid
+        self._sel_report = rep
+        self._sel_ego_m = ego_m
+        self._sel_maneuver = rep.maneuver
+
+        self._sel_objs = {
+            "reward": [(round(o.x / lw, 3),
+                        None if o.t is None else round(o.t, 3))
+                       for o in rewards],
+            "car": [(round(o.x / lw, 3),
+                     None if o.t is None else round(o.t, 3))
+                    for o in cars],
+            "coin": [(round(o.x / lw, 3),
+                      None if o.t is None else round(o.t, 3))
+                     for o in coins],
+        }
+        c0 = road.center_at(0.0)
+        c8 = road.center_at(self.cfg.selection.center_lookahead_m)
+        self._sel_dbg = {
+            "ego": round(ego_m / lw, 3),
+            "target": round(rep.target_x_m / lw, 3),
+            # 越线请求（道，相对承诺道）：trace 观测面，离线复算
+            # 「为什么并线/为什么没并」从这一列起
+            "req": rep.lane_request,
+            # 帧合成审计项：origin=走廊中心@0，shift=自车横位平移，
+            # fshift=带中心帧→规划器路心帧的平移。车米制 x 与场景 x 的
+            # 多米分歧只能靠这三项定位（2026-10-19 局 214717_p1）。
+            "origin": round(origin, 3),
+            "shift": round(executed * lw, 3),
+            "fshift": round(frame_shift, 3),
+            "c0": None if c0 is None else round(c0 / lw, 3),
+            "c8": None if c8 is None else round(c8 / lw, 3),
+            "left": None if road.left_m is None else round(road.left_m / lw, 3),
+            "right": None if road.right_m is None else round(road.right_m / lw, 3),
+            "band": self.cfg.selection.center_band_lane,
+            "look": self.cfg.selection.center_lookahead_m,
+            "wp": [[round(w.t, 3), round(w.x / lw, 3), w.src]
+                   for w in rep.waypoints],
+            "rw": self._sel_objs["reward"],
+            "car": self._sel_objs["car"],
+            "coin": self._sel_objs["coin"],
+            # 与上三列逐项同序的 [身份, 光锥余量秒]（观测面，不参与决策）：
+            # 离线才能回答「这枚币是本来够不着，还是被固定横距门丢了」。
+            "opp": {"rw": _opp_aux(rewards, ego_m, self.selector.p),
+                    "car": _opp_aux(cars, ego_m, self.selector.p),
+                    "coin": _opp_aux(coins, ego_m, self.selector.p)},
+            # 6b 资格闭锁观测面：当拍源 / 闭锁后选择输入 / 拒绝原因
+            "src_elig": self._src_elig,
+            # 贴边保持闩观测面（2026-11-04 补，只读）：命中车 id（raw/held
+            # 同源）与闩状态 [保持中的车 id, 宽限余量秒]——离线回答「贴车段
+            # 为什么断」（新局 120417 0 段并行 >0.35s，闩是否啮合无从判断）。
+            "hit_oid": rep.hit_oid,
+            "graze_hold": [None if self.selector.hold_state[0] is None
+                           else self.selector.hold_state[0],
+                           round(self.selector.hold_state[1], 2)],
+        }
+        self._reach_goal = rep.target_x_m
+        if rep.layer == 0:
+            self._exec_branch = "hold"
+            return "sel:hold:no_road"
+        self._exec_branch = "follow"
+        return f"sel:{rep.why}"
+
+    @property
+    def scene(self):
+        """上一拍场景快照（CRUISE+有路才有；None=无路/非巡航）。"""
+        return self._scene
+
+    @property
+    def selection_report(self) -> SelectionReport | None:
+        """上一拍四层选择结果（trace 观测面）。"""
+        return self._sel_report
+
+    @property
+    def coarse_report(self) -> CoarseReport | None:
+        """上一拍粗层选道结果（trace 观测面；闸开时它是**原始候选评估**，
+        不再等于接控制的那条道）。"""
+        return self._coarse
+
+    @property
+    def route_verdict(self) -> RouteVerdict | None:
+        """上一拍路线定案结果（trace route 列数据源；离线复算为什么放行/被拒）。"""
+        return self._route_verdict
+
+    @property
+    def route_shadow_verdict(self) -> RouteVerdict | None:
+        """上一拍到达门影子定案（trace route_shadow 列；不接控制）。"""
+        return self._shadow_verdict
+
+    @property
+    def position_evidence(self) -> ArrivalAttribution | None:
+        """上一拍到达位置归因（trace attribution 列；只读观测）。"""
+        return self._position
+
+    @property
+    def selection_shadow_report(self) -> SelectionReport | None:
+        """上一拍影子选择结果（只读观测；不接控制、不进路线请求）。"""
+        return self._sel_shadow
+
+    @property
+    def selection_shadow_trace(self) -> dict | None:
+        """上一拍选择影子差异行（None=与生产一致；bug=同输入不一致）。"""
+        return self._sel_shadow_trace
+
+    @property
+    def selection_shadow_first_mismatch(self) -> dict | None:
+        """本段首次"同输入不同结果"的现场（None=没发生过）。"""
+        return self._sel_watch.first_mismatch
+
+    RULER_TOL_LANE = 0.5    # 尺子单拍跳变超过半道 = 参考系重基
+
+    def _ruler_epoch(self, c0: float | None,
+                     executed: float | None = None) -> int:
+        """参考系纪元。两个跳变源，任一崩过半道即 +1：
+
+        ① 尺子 = **场景 z=0 分带中心线**——粗层道号相对它取，它单拍跳变超过
+        半道即换义。**不跟绝对路心走**：20261024_p2 实测绝对路心在「记忆 ↔
+        遮挡墙」之间每 ~0.85 s 摆 0.4~1.7 道（换源造成），而同一局的尺子
+        p90 只动 0.09 道；按绝对路心换纪会把路线每秒作废一次（38/50 次并线
+        被打断），承诺名存实亡。
+        ② **执行层重锚**（executed 单拍跳变过半道）：深度路心翻面被 ⑥b 确认
+        重基后，`executed` 一步换掉一道以上——道号语义跟着换，旧承诺指的道
+        已不是车所在的道。20261027_154626_1 s1 13.3s：executed −1.38→+0.58
+        后路线仍守 −1，空路上满舵左打 1.4 道。`executed` 经过 ⑥b 的跳变门/
+        确认门，只在真重锚时跳（实测 5~9 次/局），不重现 0.85 s 摆动。"""
+        lw = self.cal.lane_w_m
+        if c0 is not None and lw > 0:
+            tol = self.RULER_TOL_LANE * lw
+            if self._ruler_prev is not None and abs(c0 - self._ruler_prev) > tol:
+                self._route_epoch += 1
+            self._ruler_prev = c0
+        if executed is not None:
+            if self._ruler_exec_prev is not None and \
+                    abs(executed - self._ruler_exec_prev) > self.RULER_TOL_LANE:
+                self._route_epoch += 1
+            self._ruler_exec_prev = executed
+        return self._route_epoch
+
+    def _tick_route(self, c0: float | None = None,
+                    executed: float | None = None,
+                    request: float | None = None,
+                    request_live: bool = True,
+                    request_action: bool | None = None,
+                    request_oid: int | None = None) -> None:
+        """推进路线一拍。输入只有原始粗层报告、参考系纪元与上拍越线请求
+        （边界 B：承诺值不喂回候选评估），输出经 `coarse_lane` 单一接缝接控制。
+
+        同拍再推一份**到达门影子**（C）：同报告/纪元/请求，门恒开；影子状态
+        独立推进，只落 trace，不接控制。生产路线的门读配置（默认关）。"""
+        epoch = self._ruler_epoch(c0, executed)
+        lane_ttc = (None if self._scene is None or c0 is None
+                    else _lane_ttc_map(self._scene, c0,
+                                       self.cfg.motion.horizon_s))
+        # 上一拍选择层的超车动作（含主动贴边 graze，2026-11-03）：路线本拍
+        # 不抢方向（路线的方向指令会关闭机会层，正在进行的擦边会被改成并线；
+        # 一拍延迟可接受）
+        passing = (self._sel_report is not None
+                   and getattr(self._sel_report, "why", None) in ("pass", "graze"))
+        # 单向认证（闸 route.far_veto_enabled）：走廊层的持续深塌缩道集，
+        # 塌缩道上的变道请求在路线层发不出去；闸关传 None=逐位旧行为。
+        veto = (None if not self.cfg.route.far_veto_enabled or self._corridor
+                is None else self._corridor.far_veto)
+        self._route, self._route_verdict = tick_route(
+            self._route, self._coarse, self._route_params,
+            dt_s=self._dt_last, epoch=epoch,
+            request=request, request_live=request_live,
+            request_action=request_action, request_oid=request_oid,
+            arrival=self._position,
+            reject_shift_arrival=self.cfg.route.reject_shift_arrival,
+            lane_ttc=lane_ttc, passing=passing, far_veto=veto)
+        self._route_shadow, self._shadow_verdict = tick_route(
+            self._route_shadow, self._coarse, self._route_params,
+            dt_s=self._dt_last, epoch=epoch,
+            request=request, request_live=request_live,
+            request_action=request_action, request_oid=request_oid,
+            arrival=self._position,
+            reject_shift_arrival=True, lane_ttc=lane_ttc, passing=passing,
+            far_veto=veto)
+
+    def _lane_for_route(self, route: RouteState | None,
+                        verdict: RouteVerdict | None,
+                        committed: bool) -> float | None:
+        """按给定路线状态取本拍接控制道（生产与影子共用同一套前置门）。"""
+        c = self._coarse
+        if not self.cfg.coarse.control or c is None or c.reason == "no_road":
+            return None
+        if self._scene is None or self._scene.stale:
+            return None
+        if not committed:
+            return c.lane
+        if route is None or verdict is None \
+                or verdict.verdict == "needs_init":
+            return None
+        return route.lane_ref
+
+    def _lane_for(self, committed: bool) -> float | None:
+        """生产路线版 `_lane_for_route`（影子用同一函数换一套状态）。"""
+        return self._lane_for_route(self._route, self._route_verdict, committed)
+
+    @property
+    def coarse_lane(self) -> float | None:
+        """本拍接控制的横向意图道；None=纯中心带（闸关/无路/走廊陈旧/缺锚点）。
+
+        路线闸开时给**承诺后的参考道**（选择器与轨迹层读同一个值），闸关时
+        逐位回今天的粗层自选道。"""
+        return self._lane_for(self.cfg.route.control)
+
+    @property
+    def selection_objects(self) -> dict:
+        """上一拍选择器看到的机会（道，右正；t 秒）——调试图渲染面。"""
+        return self._sel_objs
+
+    @property
+    def selection_debug(self) -> dict | None:
+        """上一拍选择帧快照（ego/中心/路点/机会）——trace sel_dbg 列。"""
+        return self._sel_dbg
+
+    def object_table_trace(self) -> dict:
+        """上一拍对象表（身份/年龄/可见/安全标记）——trace otab 列。"""
+        return self._objects.as_trace()
+
+    def lane_map_trace(self) -> dict | None:
+        """上一拍持久车道图（支撑距离/采样点/预测误差）——trace map 列。"""
+        return self._map_trace
+
+    def openness_trace(self) -> dict | None:
+        """上一拍开度/拥挤度量——trace open 列（只观测）。"""
+        return self._open_trace
+
+    def anchor_trace(self) -> dict | None:
+        """上一拍 60 m 锚——trace anchor 列（只观测）。"""
+        return self._anchor_trace
+
+    def horizon_trace(self) -> dict | None:
+        """拟议车道视界（影子）——trace h_shadow 列；选择层仍用固定视界。"""
+        return self._horizon_trace
+
+    def trigger_trace(self) -> list | None:
+        """本拍重算触发事件——trace trig 列（事件触发重选的取证面）。"""
+        return self._trig_trace
+
+    def _update_triggers(self) -> None:
+        rv = self._route_verdict
+        rep = self._sel_report if self._state is DecisionState.CRUISE else None
+        ev = self._trig.step(
+            open_level=None if self._open_trace is None
+            else self._open_trace.get("lvl"),
+            anchor=self._anchor_trace,
+            layer=None if rep is None else rep.layer,
+            map_support=None if self._map_trace is None
+            else self._map_trace.get("sup"),
+            route_phase=None if rv is None else rv.phase,
+            route_ref=None if rv is None else rv.lane_ref)
+        self._trig_trace = ev or None
+
+    def _update_openness_anchor(self, rewards, coins, ego_m: float,
+                                origin: float) -> None:
+        sc = self._scene
+        if sc is None:
+            self._open_trace = None
+            self._anchor_trace = None
+            return
+        cars = [o for o in sc.objs if o.kind == "car" and o.safety_ok]
+        op = assess(sc, cars)
+        self._open_trace = op.as_trace()
+        self._horizon_trace = self._horizon.step(
+            op.level, self._dt_last).as_trace()
+        lw = self.cal.lane_w_m
+        cands = []
+        for b in rewards:
+            cands.append(Candidate(
+                "reward", -1 if b.id is None else b.id,
+                (b.x_m - origin - ego_m) / lw, b.t_miss_s, b.conf))
+        for c in coins:
+            cands.append(Candidate(
+                "coin", -1 if c.id is None else c.id,
+                (c.x_m - origin - ego_m) / lw, c.t_miss_s, c.conf))
+        a = self._anchor.step(cands, self._dt_last)
+        self._anchor_trace = (None if a is None
+                              else {**a.as_trace(), "why": self._anchor.why})
+
+    def _update_lane_map(self, obs: WorldObservation) -> None:
+        """每拍推进一步车道图。无场景拍（非巡航/无路）只做预测与衰减，
+        不喂带——图的时间维不能因为一拍没有选择就清零。"""
+        bands = ()
+        coarse = ()
+        sc = self._scene
+        if sc is not None and sc.fid == obs.frame_id:
+            bands = sc.road.bands
+            cor = self._corridor
+            if cor is not None:
+                coarse = tuple(
+                    RoadBand(b.z0, b.z1, b.left.x_m, b.right.x_m,
+                             src="inferred", age_ms=None, conf=0.0)
+                    for b in cor.coarse_bands
+                    if b.left.x_m is not None and b.right.x_m is not None)
+        res = self._lane_map.update(
+            bands=bands, coarse_bands=coarse,
+            v_mps=self._ego_speed_mps, v_lat_lane_s=self._ego_v_lat,
+            dt_s=self._dt_last)
+        self._map_trace = self._lane_map.as_trace(res)
+
 
     def _tick_abort(self, dt_s: float, executed: float | None) -> str:
         # 有界完成：无反馈 1 tick 即认为回稳发出（v1）；有反馈等横向速率归零信号
@@ -400,9 +2034,6 @@ class DecisionEngine:
                 self._enter_conserve()
                 return "abort:settled_conserve"
             self._state = DecisionState.CRUISE
-            self._target_gid = None
-            self._target_kind = None
-            self._cool_t = self.cfg.hysteresis.t_cool_s
             return "abort:settled"
         return "aborting"
 
@@ -436,129 +2067,20 @@ class DecisionEngine:
 
     # ---------- 选择与辅助 ----------
 
-    def _select(self, obs: WorldObservation, current):
-        """候选=金币组（+ allow_overtake 时的超车机会）；门=最低分 + 切换加性阈 +
-        时机成立（§三公式；阶段 C §二：两类分数同分式形状，直接同秤比较）。"""
-        if self._cool_t > 0 or not self.cfg.mode.allow_all_moves:
-            return None
-        best: Scored | None = None
-        for g in obs.coin_groups:
-            s = self.scorer.score(g, obs)
-            if s is None or s.score < self.cfg.hysteresis.min_score:
-                continue
-            # 时机：变道耗时 + 响应延迟 + 余量 < 错过时间
-            need = self.cfg.timing.lane_change_duration_s(g.x_center)
-            if need + self.cfg.timing.tau_resp_s + self.cfg.timing.margin_s >= s.t_miss_s:
-                continue
-            if best is None or s.score > best.score:
-                best = s
-        if self.cfg.mode.allow_overtake:
-            for v in self._views:
-                if v.id in self._done_pass_ids:
-                    continue
-                s = self.scorer.score_car(v)
-                if s is None or s.score < self.cfg.hysteresis.min_score:
-                    continue
-                # 可行性门（19:44 复盘补装，与金币路同形）：贴邻横移耗时+响应+余量
-                # 必须 < 相对接近时间——此前只挡掠过带，"来不及贴"的车照追，
-                # 产出远距离白超（d_min 中位 1.11 的主犯）
-                need = self.cfg.timing.lane_change_duration_s(
-                    abs(self.scorer.hug_goal(v.x_lane)))
-                if (need + self.cfg.timing.tau_resp_s
-                        + self.cfg.timing.margin_s) >= s.t_miss_s:
-                    continue
-                # 空间闸门（维护者裁定 2026-09-22）：决策默认左右对称，禁用某方向
-                # 必须有"那侧没空间"的显式证据（缘距读数）；证据不足=两侧都放行。
-                if not self._side_has_space(v.x_lane):
-                    continue
-                if best is None or s.score > best.score:
-                    best = s
-        if best is None:
-            return None
-        if current is not None and best.score < current + self.cfg.hysteresis.switch_margin:
-            return None
-        return best
-
-    def _side_has_space(self, x_lane: float) -> bool:
-        """候选侧的路缘空间检查。左缘读数 left_edge_lane（负值，|·|=左缘距）、
-        右缘 right_edge_lane。None=该侧无证据 → **不否决**（对称默认）。
-        贴邻目标在候选的内侧（|hug|<|x|），但车本身占位，闸门按候选侧缘距判。"""
-        b = None
-        # boundary 摘要只在观测层有双侧稳定时给缘距；单侧 None 自动放行
-        if self._boundary is not None:
-            b = self._boundary
-        edge = (b.right_edge_lane if x_lane >= 0 else b.left_edge_lane) \
-            if b is not None else None
-        if edge is None:
-            return True
-        need = self.cfg.overtake.d_hold_lane + self.cfg.overtake.space_margin_lane
-        return abs(edge) >= need
-
     def _degraded(self, obs: WorldObservation) -> bool:
         """恢复判定：与致命信号同一合取的"健康面"——alive+fresh+presence 或过渡。"""
         h = obs.health
         return not (h.perception_alive and h.frame_fresh)
 
     def _enter_abort(self, why: str) -> None:
-        self._state = DecisionState.ABORT_CHANGE
+        self._state = DecisionState.ABORT
         self._change_t = 0.0
         self._abort_ref = None      # 速率参考从 ABORT 首拍重新起算
-        self._abort_reason = why
 
     def _enter_conserve(self) -> None:
         self._state = DecisionState.CONSERVE
         self._conserve_t = 0.0
         self._ok_t = 0.0
-        self._target_gid = None
-        self._target_kind = None
-        self._cur_score = -math.inf
-
-    def _demand_consumed(self, executed: float) -> bool:
-        """有符号完成判据：executed 与需求同向、幅度吃掉 |demand|×(1−ε) 减死区。
-        需求≈0（原地起变道）时退化为 |executed| ≤ 死区。"""
-        dz = self.cfg.hysteresis.dead_zone_lane
-        d = self._demand_lane
-        if abs(d) <= dz:
-            return abs(executed) <= dz
-        return executed * d > 0 and abs(executed) >= abs(d) * (1 - 1e-6) - dz
-
-    def _finish_change(self, why: str, reanchor: float | None = None,
-                       cool_s: float | None = None) -> str:
-        self._state = DecisionState.CRUISE
-        # 完成也要冷却（§三：三收尾同权）；超车 pass 落定用短冷却（19:44 复盘：
-        # pass 高频事件，一律 1s 烧掉 ~30% 对局时间且诱发左右横跳）
-        self._cool_t = self.cfg.hysteresis.t_cool_s if cool_s is None else cool_s
-        self._target_gid = None
-        self._target_kind = None
-        self._cur_score = -math.inf
-        self._reanchor_pending = reanchor   # 完成拍携带有符号目标读数（契约 v2）
-        return f"done:{why}"
-
-    def _group_of(self, obs: WorldObservation) -> CoinGroup | None:
-        if self._target_gid is None:
-            return None
-        for g in obs.coin_groups:
-            if g.group_id == self._target_gid:
-                return g
-        return None
-
-    def _current_goal(self, obs: WorldObservation) -> float:
-        if self._state in (DecisionState.CRUISE, DecisionState.CHANGE):
-            if self._target_kind == KIND_CAND_OVERTAKE:
-                v = next((x for x in self._views if x.id == self._target_gid), None)
-                if v is not None:
-                    return self.scorer.hug_goal(v.x_lane)   # 时变轨迹（§四内贴）
-                if self._state is DecisionState.CHANGE:
-                    return self._x_smooth                    # 落定拍前不外插假读数
-                return 0.0
-            g = self._group_of(obs)
-            if g is not None and not math.isnan(g.x_center):
-                return g.x_center
-            # 组转存续态（本帧无成员观测，x_center=nan）：CHANGE 中保持最后 goal
-            # （= 当前平滑值），不外插 nan——回放抓到 nan 污染 x_smooth 的缺陷。
-            if self._state is DecisionState.CHANGE:
-                return self._x_smooth
-        return 0.0
 
     def _validity_ticks(self) -> int:
         return max(2, int(round(0.1 * self.cfg.control.frame_rate_hz)))

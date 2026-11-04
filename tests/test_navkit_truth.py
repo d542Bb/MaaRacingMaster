@@ -18,6 +18,9 @@ REPO = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = REPO / "tools" / "navkit" / "schema"
 
 
+pytestmark = pytest.mark.retired
+
+
 def _load(p: Path) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 

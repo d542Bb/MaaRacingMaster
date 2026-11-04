@@ -2,9 +2,11 @@
 
 两类用例都要有（守则：回归锁不得只覆盖失败例）：
   - 正常态：干净树绿、真实仓库在基线内绿；
-  - 失败态：缺 README / 缺 status / 正式文档引用实验路径 / 死引用，各被对应规则抓到。
+  - 失败态：缺 README / 缺 status / 正式文档引用实验路径 / 死引用 / plan 缺头部三行，
+    各被对应规则抓到。
 
-本文件自身是 R4 的扫描对象——测试夹具里的实验路径一律用 `_EP` 拼接构造，不留字面量。
+本文件在 R4 的扫描对象之外（`CODE_EXCLUDE`）：`_mk` 要在 tmp_path 里搭出真实形状的
+假树，路径必然是分段拼的。夹具仍沿用 `_EP` 拼接，免得哪天排除失效时满屏自指。
 """
 from __future__ import annotations
 
@@ -19,6 +21,15 @@ _spec.loader.exec_module(chk)
 
 _EP = "tools/" + "experiments/"          # 防 R4 自引用
 
+_GOOD_PLAN = (
+    "# 演示方案\n\n"
+    "> **状态**：active\n"
+    "> **更新**：2026-10-28\n"
+    "> **归属去向**：docs/adr/ADR-9999\n"
+    "> **退役条件**：实现合入且 ADR 落地后删除\n\n"
+    "## 行为契约\n"
+)
+
 
 def _mk(tmp: Path) -> Path:
     """最小合法树：一个带 status: active 的主题 + 只含占位符引用的 AGENTS.md。"""
@@ -29,6 +40,14 @@ def _mk(tmp: Path) -> Path:
     (tmp / "AGENTS.md").write_text(
         f"实验记录 → `{_EP}<主题>/`。\n", encoding="utf-8")
     return tmp
+
+
+def _plan(tmp: Path, body: str, name: str = "demo-plan.md") -> Path:
+    d = tmp / "docs" / "plan"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text(body, encoding="utf-8")
+    return p
 
 
 def test_clean_tree_passes(tmp_path):
@@ -61,6 +80,54 @@ def test_formal_doc_topic_reference_flagged(tmp_path):
     assert "R2|AGENTS.md|demo-topic" in viol
 
 
+def test_topic_reference_without_trailing_slash_flagged(tmp_path):
+    """主题名不带尾斜杠也算引用——只认带斜杠的写法会漏掉一整类引用。"""
+    _mk(tmp_path)
+    (tmp_path / "AGENTS.md").write_text(
+        f"实测见 `{_EP}demo-topic` 一节。\n", encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R2|AGENTS.md|demo-topic" in viol
+
+
+def test_area_own_file_reference_not_flagged(tmp_path):
+    """指向区内文件（本区 README、索引、读取器）是类别指针，不是主题路径。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / "README.md").write_text(
+        "# 本区\n", encoding="utf-8")
+    (tmp_path / "tools" / "experiments" / "trace_reader.py").write_text(
+        '"""区内读取器。"""\n', encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        f"规则见 `{_EP}README.md`，读取器 `{_EP}trace_reader.py`。\n", encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R2|AGENTS.md")]
+
+
+def test_code_segmented_path_flagged(tmp_path):
+    """生产/测试代码分段拼出的实验路径也是运行依赖——字面量匹配看不见它。"""
+    _mk(tmp_path)
+    d = tmp_path / "scripts"
+    d.mkdir()
+    (d / "runner.py").write_text(
+        'REPO = ROOT\nP = REPO / "tools" / "experiments" / "demo-topic" / "probe.py"\n',
+        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R4|scripts/runner.py" in viol
+
+
+def test_code_category_pointer_not_flagged(tmp_path):
+    """类别指针不算依赖：docstring 里写「由 tools/experiments/ 的探针另行判定」是说明
+    分工，没有具体主题名。R4 只认「目录 + 名字」，与 R2 同口径（历史误报：
+    tests/test_core_ocr.py 的这句被当成运行依赖挂进基线）。"""
+    _mk(tmp_path)
+    d = tmp_path / "tests"
+    d.mkdir()
+    (d / "test_x.py").write_text(
+        f'"""识别率优劣由 `{_EP}` 的探针另行判定，别在此处顺手纠正。"""\n',
+        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R4|tests/test_x.py" not in viol
+
+
 def test_dead_reference_flagged(tmp_path):
     _mk(tmp_path)
     rd = tmp_path / "tools" / "experiments" / "demo-topic" / "README.md"
@@ -78,6 +145,74 @@ def test_plan_reference_flagged(tmp_path):
     assert any(v.startswith("R3|docs/CODE_WIKI.md|") for v in viol)
 
 
+def test_plan_head_ok_passes(tmp_path):
+    """合规头部（状态 / 归属去向 / 退役条件三行齐）不该被 R6 误伤。"""
+    _mk(tmp_path)
+    _plan(tmp_path, _GOOD_PLAN)
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert viol == set()
+
+
+def test_plan_missing_status_flagged(tmp_path):
+    _mk(tmp_path)
+    _plan(tmp_path, "# 演示\n\n> **归属去向**：docs/adr/ADR-9999\n> **退役条件**：y\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R6|docs/plan/demo-plan.md|缺状态行（> **状态**：active）" in viol
+
+
+def test_plan_status_out_of_set_flagged(tmp_path):
+    """自述「已实施」却留在树里，正是本区要抓的形态——完成不是状态，删除才是。"""
+    _mk(tmp_path)
+    _plan(tmp_path, _GOOD_PLAN.replace("**状态**：active", "**状态**：已实施（2026-10-21）"))
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any(v.startswith("R6|docs/plan/demo-plan.md|状态值不在闭集") for v in viol)
+
+
+def test_plan_missing_home_and_condition_flagged(tmp_path):
+    """只有状态行不够：不知道结论去哪、何时能删，就必然烂在树里。"""
+    _mk(tmp_path)
+    _plan(tmp_path, "# 演示\n\n> **状态**：active\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any("缺归属去向行" in v for v in viol)
+    assert any("缺退役条件行" in v for v in viol)
+
+
+def test_plan_placeholder_not_filled_flagged(tmp_path):
+    """直接复制模板不填，等于没写——占位符原样留着要红。"""
+    _mk(tmp_path)
+    _plan(tmp_path, "# 演示\n\n> **状态**：active\n"
+                    "> **归属去向**：<结论最终住哪>\n"
+                    "> **退役条件**：<一句可判定的话>\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any("仍是模板占位符" in v for v in viol)
+
+
+def test_plan_status_value_tolerates_suffix(tmp_path):
+    """手写 `retiring（日期）` 这类后缀不该被误判。"""
+    _mk(tmp_path)
+    _plan(tmp_path, _GOOD_PLAN.replace("**状态**：active", "**状态**：retiring（2026-10-28）"))
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert viol == set()
+
+
+def test_plan_ledger_lists_files_with_days(tmp_path):
+    """台账只呈现不判红：状态与未动天数都要读得到。"""
+    _mk(tmp_path)
+    _plan(tmp_path, _GOOD_PLAN)
+    rows = chk.Checker(tmp_path).plan_ledger()
+    assert len(rows) == 1
+    days, st, rel = rows[0]
+    assert st == "active" and rel == "docs/plan/demo-plan.md" and days >= 0
+
+
+def test_plan_ledger_marks_mtime_fallback(tmp_path):
+    """无更新日期时回退 mtime，状态带 ~ 提醒这个天数会被补头等动作刷新。"""
+    _mk(tmp_path)
+    _plan(tmp_path, "# 演示\n\n> **状态**：active\n> **归属去向**：x\n> **退役条件**：y\n")
+    rows = chk.Checker(tmp_path).plan_ledger()
+    assert rows[0][1] == "active~"
+
+
 def test_real_repo_violations_all_baselined():
     """真实仓库当前态：不得有基线外违规（CI 同口径，防本地绿/CI 红漂移）。"""
     viol, baseline = chk.Checker(ROOT).scan()
@@ -86,9 +221,9 @@ def test_real_repo_violations_all_baselined():
 
 
 def test_baseline_file_exists_and_key_format():
-    """基线文件在树、键格式合法（R1~R5|对象|标识可选）；空基线=全部退役完成，也合法。"""
+    """基线文件在树、键格式合法（R1~R6|对象|标识可选）；空基线=全部退役完成，也合法。"""
     bl = ROOT / "tools" / "repo_hygiene_baseline.txt"
     assert bl.exists()
     keys = [ln.strip() for ln in bl.read_text(encoding="utf-8").splitlines()
             if ln.strip() and not ln.startswith("#")]
-    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5"} and "|" in k for k in keys)
+    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6"} and "|" in k for k in keys)

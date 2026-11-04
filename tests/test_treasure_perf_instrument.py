@@ -16,7 +16,7 @@ import sys
 # module 顶层 import maa.toolkit，CI 轻依赖环境下收集期 ERROR 会中断整个会话；
 # 按仓内既有口径整文件优雅跳过。
 try:
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
 
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001
@@ -34,9 +34,9 @@ except Exception as exc:  # noqa: BLE001
 
 IS_WINDOWS = sys.platform.startswith("win")
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
-)
+)]
 
 
 def _mk(*, applied=0, stale=0, expired=0, wr_applied=0, wr_stale=0, wr_expired=0, ages=()):
@@ -166,7 +166,7 @@ class TestSessionBoundaryReset:
         m._strategy = None
         seen: list[str] = []
 
-        from maaracing_master.plugins.treasure import module as mod
+        from maaracing_master.plugins._archive.treasure import module as mod
 
         real_log = mod.logger.log
 
@@ -187,7 +187,7 @@ class TestSessionBoundaryReset:
         m = _mk()
         m._io_enqueued, m._io_dropped = 38, 0
         seen: list[str] = []
-        from maaracing_master.plugins.treasure import module as mod
+        from maaracing_master.plugins._archive.treasure import module as mod
 
         real_log = mod.logger.log
         mod.logger.log = lambda text, level="INFO", *_a, **_k: seen.append(text)
@@ -214,7 +214,7 @@ class TestLevelCalibration:
         assert _mk().read_perf_snapshot()["response"]["level"] == "idle"
 
     def test_load_is_normalized_by_core_count(self, monkeypatch):
-        import maaracing_master.plugins.treasure.module as mod
+        import maaracing_master.plugins._archive.treasure.module as mod
 
         monkeypatch.setattr(mod, "logical_core_count", lambda: 8)
         m = _mk(applied=10)
@@ -228,7 +228,7 @@ class TestLevelCalibration:
         assert m.read_perf_snapshot()["cpu"]["level"] == "error"
 
     def test_unavailable_cpu_is_idle_not_zero_load(self, monkeypatch):
-        import maaracing_master.plugins.treasure.module as mod
+        import maaracing_master.plugins._archive.treasure.module as mod
 
         monkeypatch.setattr(mod, "process_cpu_seconds", lambda: None)
         c = _mk(applied=10).read_perf_snapshot()["cpu"]
@@ -302,7 +302,7 @@ class TestCpuSampling:
         assert len(m._cpu_pct_win) == 0
 
     def test_delta_over_wall_clock_becomes_percentage(self, monkeypatch):
-        import maaracing_master.plugins.treasure.module as mod
+        import maaracing_master.plugins._archive.treasure.module as mod
 
         seq = iter([10.0, 10.5])
         monkeypatch.setattr(mod, "process_cpu_seconds", lambda: next(seq))
@@ -312,7 +312,7 @@ class TestCpuSampling:
         assert m._cpu_pct_win and m._cpu_pct_win[-1] == pytest.approx(100.0, abs=1.0)
 
     def test_unavailable_source_leaves_window_empty(self, monkeypatch):
-        import maaracing_master.plugins.treasure.module as mod
+        import maaracing_master.plugins._archive.treasure.module as mod
 
         monkeypatch.setattr(mod, "process_cpu_seconds", lambda: None)
         m = _mk()

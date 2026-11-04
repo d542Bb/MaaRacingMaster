@@ -2,8 +2,8 @@
 """speedrush 真源「可由生成器复算」的回归锁。
 
 真源（``plugins/speedrush/resources/pipeline/speedrush.json``）是**生成**出来的：
-模板与 ROI 规格在 ``tools/experiments/speedrush_templates/templates_roi.json``，
-节点装配在 ``build_truth.py``。这条链一旦断掉——有人手工改真源，或生成器漏掉某个
+模板与 ROI 规格在真源首版 d0b46dc 引入的 ``templates_roi.json``（``build_truth.py``
+装配）。这条链一旦断掉——有人手工改真源，或生成器漏掉某个
 字段——下一次生成就会把改动静默抹掉。
 
 **实测过一次**（2026-09-16）：驾驶页锚点的阈值与节拍（0.5 / rate_limit 0 /
@@ -25,13 +25,13 @@ import importlib.util
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-TPL_DIR = REPO / "tools" / "experiments" / "speedrush_templates"
+TPL_DIR = REPO / "maaracing_master" / "plugins" / "speedrush" / "tools"
 TRUTH = (REPO / "maaracing_master" / "plugins" / "speedrush"
          / "resources" / "pipeline" / "speedrush.json")
 
 
 def _builder():
-    """按路径加载生成器脚本（它不在包内，只能这样取）。"""
+    """按路径加载生成器脚本（插件内工具位，不是模块；按路径取可避免 import 副作用）。"""
     spec = importlib.util.spec_from_file_location(
         "speedrush_build_truth", TPL_DIR / "build_truth.py")
     assert spec is not None and spec.loader is not None

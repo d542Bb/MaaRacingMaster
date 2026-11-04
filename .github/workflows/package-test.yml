@@ -1,0 +1,112 @@
+# =============================================================================
+# 手动打包验证 — 只产出 zip/7z/模型包 artifact，不创建 Release、不打 tag、不推 CNB
+# 触发：push 到 dev/**-pkgtest 分支（或手动 workflow_dispatch）
+# 用途：在没有本机 MSVC 的环境里，用云端 Windows runner 验证 assemble.ps1 全链路
+# =============================================================================
+name: Package Test
+
+on:
+  push:
+    branches:
+      - 'dev/**-pkgtest'
+  workflow_dispatch:
+
+jobs:
+  package:
+    name: 云端打包验证（不发布）
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: 读取版本标记
+        # 版本号只有 docs/latest_release.json 一份真源，避免 workflow 里的副本随发版过期
+        id: version
+        shell: pwsh
+        run: |
+          $ver = (Get-Content "${{ github.workspace }}\docs\latest_release.json" -Raw | ConvertFrom-Json).version
+          if ($ver -notmatch '^\d+\.\d+\.\d+(-[\w.]+)?$') { throw "版本标记不合法: $ver" }
+          "VER=$ver" >> $env:GITHUB_ENV
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "验证版本: $ver"
+
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 设置 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 设置 MSVC（编译 native Launcher）
+        uses: mlocati/setup-msvc@v1
+        with:
+          architecture: x64
+          vs-version: latest
+
+      - name: 缓存 NuGet 包
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj', 'apps/MaaRacingMaster.Shell/NuGet.Config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: 缓存 runtime 依赖
+        uses: actions/cache@v4
+        with:
+          path: build/runtime-cache
+          key: ${{ runner.os }}-rtcache-${{ hashFiles('scripts/release/requirements-runtime-lock.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-rtcache-
+
+      - name: 组装解压即用包
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\scripts\release\assemble.ps1" `
+            -Version "$env:VER" `
+            -RepoRoot "${{ github.workspace }}" `
+            -OutRoot "${{ github.workspace }}\build\release" `
+            -SevenZ
+
+      - name: 校验产物
+        shell: pwsh
+        run: |
+          $zip = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip"
+          $sevenz = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.7z"
+          if (-not (Test-Path $zip))    { throw "zip 未生成: $zip" }
+          if (-not (Test-Path $sevenz)) { throw "7z 未生成: $sevenz" }
+          Get-Item $zip, $sevenz | Select-Object Name, Length
+
+      - name: 生成可选模型包
+        shell: pwsh
+        run: |
+          python scripts/release/make_model_pack.py `
+            --version "$env:VER" `
+            --out "${{ github.workspace }}\build\release"
+          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-speedrush-models-$env:VER.zip"
+          if (-not (Test-Path $mp)) { throw "模型包未生成: $mp" }
+          Get-Item $mp, "$mp.sha256" | Select-Object Name, Length
+
+      - name: 上传验证产物（不创建 Release）
+        uses: actions/upload-artifact@v4
+        with:
+          name: MaaRacingMaster-${{ steps.version.outputs.version }}-pkgtest
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.zip
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.zip.sha256
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.7z
+            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.7z.sha256
+            build/release/MaaRacingMaster-speedrush-models-${{ steps.version.outputs.version }}.zip
+            build/release/MaaRacingMaster-speedrush-models-${{ steps.version.outputs.version }}.zip.sha256

@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """进程 CPU 时间原语（Win32 GetProcessTimes，零依赖）。
 
-为什么自己写而不引 psutil：psutil 不在本项目依赖里，且「进程累计 CPU 时间」在
-Windows 上就是 GetProcessTimes 一次调用；core/ 下的 wgcap.py 同类 Win32 调用
+为什么用 Win32 而不是 psutil：psutil 已是本项目正式依赖（requirements.txt，
+OCR 绑核引入），但「进程累计 CPU 时间」在 Windows 上就是 GetProcessTimes 一次
+调用，无需为此经 psutil 绕一层；core/ 下的 wgcap.py 同类 Win32 调用
 也一律走 ctypes，口径一致。
 
 分层：本模块只给**无状态原语**（累计秒数），不做占用率差分——占用率需要「两次
-采样 + 墙钟差」，那是消费者的节奏问题。目前唯一使用者是鉴宝性能仪表
-（plugins/treasure/module.py 的 read_perf_snapshot）；等第二个模块真要做负载显示
-时再抽差分，避免把首个使用者的私货固化进通用层。
+采样 + 墙钟差」，那是消费者的节奏问题。首个（也是当前唯一）使用者是鉴宝性能仪表
+（plugins/_archive/treasure/module.py 的 read_perf_snapshot；该活动已退役，见
+plugins/_archive/treasure/RETIRED.md）；等第二个模块真要做负载显示时再抽差分，避免把首个
+使用者的私货固化进通用层。
 
 非 Windows 平台返回 None（CI 只装 pytest 跑纯逻辑单测，导入本模块不得炸）。
 """

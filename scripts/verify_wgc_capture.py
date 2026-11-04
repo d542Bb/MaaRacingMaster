@@ -34,7 +34,7 @@ def _find_game_hwnd() -> int:
     import tempfile
 
     try:
-        Toolkit.init_option(tempfile.mkdtemp(prefix="mra_wgc_"))
+        Toolkit.init_option(tempfile.mkdtemp(prefix="maarm_wgc_"))
     except Exception:
         pass
     windows = Toolkit.find_desktop_windows()

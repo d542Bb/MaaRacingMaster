@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mra_icon.png" width="128" alt="MaaRacingMaster logo">
+  <img src="assets/maarm_icon.png" width="128" alt="MaaRacingMaster logo">
 </p>
 
 <h1 align="center">MaaRacingMaster</h1>
@@ -28,7 +28,7 @@
 >
 > 本仓库为**个人开发者在业余时间维护的开源项目**，**不提供长期维护承诺**，也不对未来兼容性、稳定性或功能演进做任何保证。
 >
-> - **打 tag 即出正式 Release 包**；未打 tag 的改动仅提交到 master，可能尚未打包或有中途变化。
+> - **打 tag 即出正式 Release 包**；未打 tag 的改动在开发分支（`dev/d542Bb`）上，稳定收口后经 PR 合入 master——master 上每个提交都是一个已收口主题，可能尚未打包。
 >
 > - 遇到问题请优先提交 [Issue](https://github.com/d542Bb/MaaRacingMaster/issues)；修复取决于个人时间与精力，**不保证响应与修复时限（无 SLA）**。
 >
@@ -54,11 +54,11 @@
 > 请严格遵守游戏规则与相关法律法规；若未获得游戏官方授权，请勿将本项目用于对应游戏。
 
 > \[!IMPORTANT]
-> 🚧 **开发状态**
+> 🚧 **当前内容**
 >
-> 项目处于积极开发中：当前内置活动插件见 [maaracing\_master/plugins/](maaracing_master/plugins/)，
-> 各插件的功能细节与完成度以其自述文档为准。
-> 如遇异常，请提交 Issue 或参考开发文档自诊。
+> 现役活动插件为 **极速狂飙**（`speedrush`），支持全程直行、深度几何与宏录制三种驾驶方式；
+> 此前的 **巅峰鉴宝** 已随活动结束归档（`plugins/_archive/`），不再随安装包分发。
+> 各插件的功能细节与完成度以其自述文档为准；如遇异常，请提交 Issue 或参考开发文档自诊。
 
 ***
 
@@ -68,25 +68,23 @@
 
 ## 简介
 
-**MaaRacingMaster** 是一款模块化游戏自动化平台。
+**MaaRacingMaster** 是一款面向《巅峰极速》的模块化游戏自动化工具。
 
-基于图像识别与模拟输入，把游戏中重复的日常劳作交给电脑！
+基于画面识别与模拟输入，自动完成活动流程：启动游戏 → 匹配 → 驾驶 → 结算 → 关闭游戏，可循环执行。
 
-每个活动是一个独立插件，放入即装、删除即卸。
+每个活动是一个独立插件，放入即用、删除即卸。现役插件是「极速狂飙」，提供全程直行、深度几何与宏录制三种驾驶方式；需要深度几何时，按提示下载可选的模型包即可。
 
 ## 演示
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/9bf47361-2773-447c-9900-bdf70d4b2af0" width="640" controls muted></video>
-  <br>
-  <em>无人值守自动运行：实时预览 → 智能决策 → 结算收尾</em>
-</p>
-
 ### 界面截图
 
-| GUI 主控                              | 今日看板                                  | PEEP 实时预览                        |
-| ----------------------------------- | ------------------------------------- | -------------------------------- |
-| ![主控](assets/demo/shot_control.png) | ![看板](assets/demo/shot_dashboard.png) | ![预览](assets/demo/shot_peep.png) |
+| 主控（任务卡与运行日志） | 数据（性能监控与看板） |
+| --- | --- |
+| ![主控](https://github.com/user-attachments/assets/d6428f44-dfe2-494d-8d1f-9d27e5082768) | ![数据](https://github.com/user-attachments/assets/b212b56e-a9c9-4a62-8cf0-6c58d89c79bb) |
+
+| 设置（调试与环境中心） | 关于（版本与更新源） |
+| --- | --- |
+| ![设置](https://github.com/user-attachments/assets/75f35cb8-4a16-4c12-a8a0-bb68ee481597) | ![关于](https://github.com/user-attachments/assets/76c6bc13-d526-41a5-8963-24a8e105f48a) |
 
 ***
 
@@ -99,19 +97,16 @@
 
 ## 亮点功能
 
-- **活动全链路自动化**：进入活动 → 完成玩法 → 领取奖励，一站到底
-
-- **多模态识别**：模板匹配 / OCR / 目标检测，按活动需求组合
-
+- **活动全链路自动化**：启动游戏 → 匹配 → 驾驶 → 结算 → 关闭游戏，可循环执行
+- **三种驾驶方式**：全程直行（默认）、深度几何（识别赛道并自动选道、避车、超车）、宏录制（录制并回放手柄 / 键盘操作）
+- **轻量主包 + 可选模型包**：安装包不含大体积权重；需要深度几何时从 Release 下载模型包，按提示放入数据目录即可
+- **多模态识别**：模板匹配 / OCR / 目标检测 / 单目深度 / 车道线观测，按活动需求组合
+- **任务队列与断点**：多个任务顺序执行，可从任意阶段起步，卡片实时显示排队与进度
+- **PEEP 实时预览**：不打断运行，实时观察画面与决策
 - **可视化调试台**：ROI 校准、结构树、决策流水回放（NavKit）
-
-- **PEEP 实时预览**：无需打断运行，实时观察每一步识别与决策
-
-- **断点续跑**：从任意阶段开始，分阶段调试
-
-- **插件化架构**：一活动 = 一自包含目录，复制即装、删除即卸
-
+- **插件化架构**：一个活动 = 一个自包含目录，复制即装、删除即卸
 - **解压即用**：发行包自带 Python 运行时与全部依赖，无需配置环境
+- **更新源自选**：关于页可在 CNB / GitHub 之间选择「检查更新」的来源
 
 ***
 
@@ -127,12 +122,14 @@
 
 ### 下载即用包（普通用户，无需编译）
 
-1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingMaster/releases) 下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**。
+1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**（或 `.7z`）。
 2. 用资源管理器把它**解压到任意本地目录**。
 3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
-4. 若所用插件依赖虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；插件对依赖的要求见其自述文档。
+4. 若使用后台点击或虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；也可在「设置 → 环境中心 → 可选依赖」里检测并打开下载页。
 
-> 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
+> **深度几何需要额外下载模型包：** 主包默认只带「全程直行 / 宏录制」；要用「深度几何」，从同一 Release 下载 `MaaRacingMaster-speedrush-models-<版本>.zip`，解压到用户数据目录的 `data/speedrush/models/`，重启后在任务卡里切换。线观测模型也在同一包内；缺包时线观测自动退回深度/墙。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/speedrush/resources/models/README.md)。
+
+> 成功标志：GUI 窗口出现，主控页任务卡正常加载，底栏状态球显示「系统就绪」（后端已连接）。
 
 ***
 
@@ -186,7 +183,7 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 
 编译成功后，运行编译产物 **`apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`** 启动 GUI（exe manifest `requireAdministrator` 会自动弹出 UAC 提权）。
 
-> 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，活动模块列表正常加载（后端已连接）。
+> 成功标志：GUI 窗口出现，主控页任务卡正常加载，底栏状态球显示「系统就绪」（后端已连接）。
 
 **独立调试 sidecar**（不经 GUI，等待 stdin JSONL RPC）：`python -u -m maaracing_master.core.sidecar`。
 
@@ -205,7 +202,7 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 
 - **改 Python / pipeline JSON / policy 存盘即生效**，不必重新打包；只有改 C# 或前端资源才需要编译，脚本按文件时间戳自行判断。
 
-- 源码模式下左上角版本号形如 `v0.21.0.dev2+102（源码模式）`：基线取最近的 tag，`+102` 是距该 tag 领先的 commit 数。打包版显示的是包内固化的版本号，不带此后缀。
+- 源码模式下左上角版本号形如 `v<最近 tag>.devN+<领先提交数>（源码模式）`：基线取最近的 tag，`+N` 是距该 tag 领先的 commit 数。打包版显示的是包内固化的版本号，不带此后缀。
 
 - 判断"这次跑的到底是哪份代码"看输出末尾 `[verify]`：`源码模式 ✓` 表示后端来自仓库 `.venv`；若打印成其它目录下的 `runtime\python\python.exe`，则说明起的是打包产物。
 
@@ -227,7 +224,10 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 
 1. 打开游戏到主界面（分辨率 **1280×720**）
 2. 运行解压根目录的 `MaaRacingMaster.exe`（启动时自动请求管理员权限）
-3. 选择活动模块与起始阶段（支持断点），点击「开始运行」
+3. 在主控页用任务卡编排执行顺序（如：启动游戏 → 极速狂飙 → 关闭游戏）；点卡片展开可设置驾驶模式、宏与起始阶段
+4. 点击「开始运行」；勾选多个任务时按列表顺序连续执行
+
+> **驾驶方式**：默认「全程直行」；「深度几何」需要先安装模型包；「宏录制」先在卡片里录制或选择宏。缺少依赖时，设置页的「环境中心」会给出检测与下载引导。
 
 > **调试功能**：PEEP 实时预览调试帧；DEBUG 存盘模式将标注截图保存至用户数据目录。
 
@@ -248,22 +248,20 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ```
 MaaRacingMaster/
 ├── pyproject.toml                 # 项目配置（setuptools-scm 版本推导）
-├── maaracing_master/           # 📦 Python 应用包
-│   ├── core/                      # 主程序：应用编排 + 共享能力
-│   │   ├── controller.py          # 总控编排（生命周期 + 能力门面 ActivityContext）
-│   │   ├── sidecar.py             # JSONL RPC 业务后端
-│   │   ├── registry.py            # 插件自动扫描注册表
-│   │   ├── capabilities.py        # 能力 Protocol + adapter
-│   │   ├── base.py                # ActivityContext / ActivityModule 基类
-│   │   ├── yolo_detector.py / wgcap.py / window_utils.py / debug.py
-│   │   └── logger.py / paths.py / ...
-│   └── plugins/                   # 🧩 活动插件（一活动 = 一自包含目录，各含 CODE_WIKI.md）
-├── apps/MaaRacingMaster.Shell/                # 🖥️ WinUI 3 图形界面（含 .sln）
+├── requirements.txt               # 源码运行的依赖范围
+├── dev-shell.cmd                  # 源码模式一键编译 + 启动 GUI
+├── maaracing_master/              # 📦 Python 应用包
+│   ├── core/                      # 应用编排、JSONL RPC、识别与日志等共享能力
+│   └── plugins/
+│       ├── speedrush/             # 现役插件：极速狂飙（含模型清单、策略与文档）
+│       └── _archive/              # 已退役插件（不随安装包分发）
+├── apps/MaaRacingMaster.Shell/    # 🖥️ WinUI 3 壳 + WebView2 前端
 ├── templates/plugin/              # 🧪 插件开发样板（复制到 plugins/ 即成新模块）
-├── assets/                        # 应用图标 / 演示素材 / 配置
-├── tools/                         # 辅助开发工具（NavKit 调试台/训练/审计）
+├── assets/                        # 应用图标与运行资源
+├── tools/                         # NavKit 调试台、训练与审计工具
 ├── tests/                         # 单元测试
-├── scripts/                       # 发布打包脚本
+├── scripts/release/               # 打包、模型包与发布脚本
+├── skills/                        # 协作与发版流程说明
 └── docs/                          # 架构 / Wiki / 更新日志
 ```
 
@@ -273,16 +271,22 @@ MaaRacingMaster/
 | ---- | ---------------------------------------------------------------------- | ------------------ |
 | 流程编排 | [MAA Framework](https://github.com/MaaAssistantArknights/MaaFramework) | 窗口截图 + Pipeline 驱动 |
 | 视觉识别 | YOLO + ONNX Runtime (DirectML)                                         | 实时目标检测             |
+| 深度与车道 | MoGe-2 / TwinLiteNet+（可选模型包）                                           | 单目深度几何与车道线观测       |
 | 文字识别 | RapidOCR                                                               | 游戏内数字/文本识别         |
 | 虚拟手柄 | vgamepad                                                               | Xbox 360 手柄模拟      |
-| 图像处理 | OpenCV 4.x                                                             | 模板匹配 / 可视化         |
-| GUI  | WinUI 3（Windows App SDK）                                               | 原生窗口 + HTML 前端     |
+| 图像处理 | OpenCV 5.x                                                             | 模板匹配 / 可视化         |
+| GUI  | WinUI 3（Windows App SDK）+ WebView2                                     | 原生窗口 + HTML 前端     |
+| 运行时  | Python 3.11（发行包内嵌）                                                    | 应用后端               |
 
 ***
 
 ## 开发指南
 
 - **开发新活动插件**：从 [templates/plugin/](templates/plugin/README.md) 样板开始，复制即装
+
+- **极速狂飙域**：规则事实见 [RULES.md](maaracing_master/plugins/speedrush/RULES.md)，实现与坑点见 [CODE_WIKI.md](maaracing_master/plugins/speedrush/CODE_WIKI.md)
+
+- **模型权重与安装**：[模型说明](maaracing_master/plugins/speedrush/resources/models/README.md)
 
 - 快速诊断环境/依赖问题：[docs/SELF\_CHECK.md](docs/SELF_CHECK.md)
 
@@ -294,14 +298,15 @@ MaaRacingMaster/
 
 - 更新说明（每个版本改了什么）：[docs/update\_log.md](docs/update_log.md)
 
+- 提交纪律与发版流程：[skills/project-update/SKILL.md](skills/project-update/SKILL.md)
+
 ***
 
 ## 许可证
 
-本项目源码采用 [Apache-2.0](LICENSE) © ZRY。
+本项目源码采用 [Apache-2.0](LICENSE) © ZRY。本项目为非营利开源项目，不提供商业授权。
 
-> 分层许可说明：项目源码为 Apache-2.0（宽松许可）；当前版本不随包分发模型权重，若启用的插件自带 YOLO 等模型，
-> 其权重单独沿用 AGPL-3.0；运行时依赖各自保留其许可证
-> （含 LGPL-3.0 的 MaaFramework）。详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md)。
+> 分层许可说明：项目源码为 Apache-2.0；模型权重按文件边界各自沿用上游许可——物品感知为 AGPL-3.0 衍生，深度几何为 Apache-2.0，线观测按 BDD100K 非商业/科研许可分发。主安装包不携带权重，模型包内随附完整许可与来源说明。运行依赖各自保留其许可证（含 LGPL-3.0 的 MaaFramework）。
+> 详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md) 与 [模型权重说明](maaracing_master/plugins/speedrush/resources/models/README.md)。
 
 <br />

@@ -88,6 +88,19 @@ def test_render_paths_contain_no_innerHTML():
         )
 
 
+def test_update_source_defaults_to_cnb_and_is_passed_to_rpc():
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "let updateSource = 'cnb'" in src
+    body = _js_function_body(src, "async function checkUpdate()")
+    assert "{ source: updateSource }" in body
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="btn-update-source"' in html
+    assert 'id="update-source-menu"' in html
+    assert 'id="update-source-label"' in html
+    assert 'src="cnb.svg"' in html
+    assert 'data-icon="github-solid"' in html
+
+
 def test_no_remote_field_interpolated_into_html():
     """全文件兜底：任何一处 innerHTML 都不得与远程字段出现在同一行。"""
     offenders = []
@@ -100,13 +113,13 @@ def test_no_remote_field_interpolated_into_html():
 def test_open_external_url_callers_pass_target_not_url():
     """前端调用外链 RPC 时只能给逻辑目标名，不得再传 URL。"""
     src = APP_JS.read_text(encoding="utf-8")
-    calls = re.findall(r"mra\.call\(\s*'open_external_url'\s*,\s*\{([^}]*)\}", src)
+    calls = re.findall(r"maarm\.call\(\s*'open_external_url'\s*,\s*\{([^}]*)\}", src)
     assert calls, "未抽到任何 open_external_url 调用点，静态锁会空过"
     for args in calls:
         assert "target" in args, f"open_external_url 调用未给逻辑目标名: {{{args.strip()}}}"
         assert "url" not in args, f"open_external_url 调用又传了 URL: {{{args.strip()}}}"
 
-    vigem = re.findall(r"mra\.call\(\s*'open_vigembus_download'\s*,\s*\{([^}]*)\}", src)
+    vigem = re.findall(r"maarm\.call\(\s*'open_vigembus_download'\s*,\s*\{([^}]*)\}", src)
     assert vigem, "未抽到 open_vigembus_download 调用点，静态锁会空过"
     for args in vigem:
         assert "url" not in args, f"open_vigembus_download 调用又传了 URL: {{{args.strip()}}}"

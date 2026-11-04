@@ -121,3 +121,61 @@ class TestModelDrivenContract:
         assert set(by_class) == {"coin", "car", "bonus_car"}
         assert all(isinstance(v, list) for v in by_class.values())
         assert isinstance(dets, list) and isinstance(raw, list)
+
+
+class TestNmsPerClass:
+    """NMS 框格式回归锁：cv2.dnn.NMSBoxes 只认 [x,y,w,h]，喂 xyxy 会把
+    x2/y2 当宽高算 IoU，横向错位不大的两辆真车互相误压（2026-10-07
+    0068 帧实拍：conf 0.57 的车被 0.63 框误吞，两行复现定案）。"""
+
+    def _run(self, xyxy: list[list[float]], scores: list[float]) -> list[int]:
+        det = _bare_detector({0: "car"})
+        det.iou = 0.45
+        xyxy = np.asarray(xyxy, float)
+        scores = np.asarray(scores, float)
+        classes = np.zeros(len(scores), int)
+        mask = np.ones(len(scores), bool)
+        return det._nms_per_class(xyxy, scores, classes, mask,
+                                  0, 0, 1.0, 0, 0, 1280, 720)
+
+    def test_keeps_disjoint_nearby_boxes(self):
+        # 0068 帧实例坐标：真框不重叠，误判格式下 IoU≈0.88 被误压
+        keep = self._run([[596, 319, 613, 334], [624, 319, 637, 333]],
+                         [0.63, 0.57])
+        assert sorted(keep) == [0, 1]
+
+    def test_still_collapses_duplicates(self):
+        # 原本正常场景：同车近重复框仍须压到 1 个
+        keep = self._run([[596, 319, 613, 334], [598, 319, 611, 334]],
+                         [0.77, 0.75])
+        assert len(keep) == 1
+
+
+class TestDmlLock:
+    """DML 互斥（core.dml_lock）：两个 DML 会话并发 run 会段错误杀进程
+    （2026-09-25 实机 + 双线程复现），本会话的 run 必须在锁内。"""
+
+    def test_call_holds_dml_lock_during_run(self):
+        from types import SimpleNamespace
+
+        from maaracing_master.core import dml_lock
+
+        det = YOLODetector.__new__(YOLODetector)   # 裸实例：不加载真模型
+        det.classes = {0: "coin"}
+        det._conf_by_id = {0: 0.5}
+        det.conf, det.iou, det.input_size = 0.5, 0.45, 640
+        det._call_count = 0
+        det._class_dim_checked = True
+
+        class _LockedSess:
+            def get_inputs(self):
+                return [SimpleNamespace(name="images")]
+
+            def run(self, _names, _feeds):
+                assert dml_lock.LOCK.locked(), "session.run 期间必须持有 DML 锁"
+                return [np.zeros((1, 5, 8400), np.float32)]   # 4 box + 1 cls，全零
+
+        det.session = _LockedSess()
+        det.input_name = "images"
+        by_class, dets, raw = det(np.zeros((720, 1280, 3), dtype=np.uint8))
+        assert by_class == {"coin": []} and dets == [] and raw == []

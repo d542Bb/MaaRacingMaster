@@ -46,7 +46,7 @@ from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
 from maaracing_master.plugins.speedrush.world_model import (  # noqa: E402
     load_calib, x_lane_of)
 
-_DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+_DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = _DATA / "demos"
 SCAN = _DATA / "lane_scan.jsonl"
 MODEL = (ROOT / "maaracing_master" / "plugins" / "speedrush"

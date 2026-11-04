@@ -26,7 +26,7 @@ import os
 from collections import Counter, defaultdict
 from pathlib import Path
 
-_DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+_DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 CHAIN = _DATA / "replay_chain.jsonl"
 DEMOS = _DATA / "demos"
 RISE_HI, RISE_LO, HOLD_MIN_S = 20000, 3000, 0.25

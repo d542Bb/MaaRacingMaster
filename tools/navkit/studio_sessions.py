@@ -10,7 +10,7 @@
 - raw 帧文件名必须是 `NNNN_raw.{png,jpg,jpeg,webp}`（只认 png 会让 jpg 帧全黑——历史坑）。
 - 一切路径解析均以 `is_relative_to` 严格限定在会话 raw 目录内，防同前缀目录绕过 / 目录穿越。
 
-帧库根由调用方注入（`maaracing_master.core.paths.debug_dir()/"treasure"`），本模块不硬编码路径。
+帧库根由调用方注入（`maaracing_master.core.paths.debug_dir()/<目标模块>`），本模块不硬编码路径。
 """
 from __future__ import annotations
 

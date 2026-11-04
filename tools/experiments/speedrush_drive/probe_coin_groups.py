@@ -33,7 +33,7 @@ from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
     Detection, PerceptionResult)
 from maaracing_master.plugins.speedrush.tracking import Tracker  # noqa: E402
 
-_DATA = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush"
+_DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 SCAN = _DATA / "tracking_scan.jsonl"
 
 MAX_DX = 0.3      # 设计稿 §三起值（本测验证对象）

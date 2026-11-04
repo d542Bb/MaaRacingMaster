@@ -2,7 +2,7 @@
 """core OCR 引擎回归锁：固定输入 → 逐字节稳定的文本；抠图边界与通道序可机检。
 
 **为什么锁**：引擎段（关 det/cls、ORT 线程数、P-core 绑核、放大与对比度预处理）
-从 `plugins/treasure/ocr.py` 搬到 [`core/ocr.py`](../maaracing_master/core/ocr.py)、
+从 `plugins/_archive/treasure/ocr.py` 搬到 [`core/ocr.py`](../maaracing_master/core/ocr.py)、
 使 core 成为该引擎的唯一真源时，硬约束是**识别结果逐字节不变**。搬家用一次性
 「重构前/后双跑对拍」证明过（6 张素材 × 23 个 ROI，含退化与越界矩形），此后靠
 本文件守住——单次对拍不构成防线。
@@ -26,7 +26,7 @@ import pytest
 from maaracing_master.core import ocr as core_ocr
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-FIXTURE = REPO / "tools" / "experiments" / "egg-claim-coin-read" / "claim_popup_0609.png"
+FIXTURE = REPO / "tests" / "fixtures" / "claim_popup_0609.png"
 
 # {ROI 名: (归一化 rect, 实测文本)}；rect 抄自 treasure.policy.json 的 ocr 锚点
 GOLDEN = {
@@ -47,8 +47,7 @@ def test_core_ocr_recognize_golden_on_real_frame():
     pytest.importorskip("rapidocr")
     from maaracing_master.core.image_io import read_rgb
 
-    if not FIXTURE.exists():
-        pytest.skip("实验真帧 fixtures 未入库")
+    assert FIXTURE.is_file(), f"真帧素材缺失（正式资产应随仓库入库）：{FIXTURE}"
     frame = read_rgb(FIXTURE)
     assert frame is not None, "真帧解码失败"
 
@@ -67,7 +66,9 @@ def test_core_ocr_engine_params_locked():
     这些数值的实测依据在 core/ocr.py 的常量注释里，不在本文重复；本文只做机检。
     """
     assert (core_ocr.USE_DET, core_ocr.USE_CLS) == (False, False)
-    assert (core_ocr.OCR_INTRA_OP_THREADS, core_ocr.OCR_INTER_OP_THREADS) == (4, 1)
+    # intra=1：真 HUD ROI×产线预处理链重标定（2026-10-08，一轮 229/132/86ms
+    # × 全程 0.38/1.28/3.12 核 @ intra 1/2/4，多档收益差全部来自线程池自旋）
+    assert (core_ocr.OCR_INTRA_OP_THREADS, core_ocr.OCR_INTER_OP_THREADS) == (1, 1)
     assert core_ocr.PIN_P_CORE_AFFINITY == list(range(8))
     assert (core_ocr.TARGET_ROI_HEIGHT, core_ocr.UPSCALE_MAX,
             core_ocr.UPSCALE_HQ_THRESHOLD, core_ocr.CONTRAST_GAMMA) == (96, 6.0, 3.0, 1.15)

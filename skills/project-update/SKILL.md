@@ -6,7 +6,8 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 # 项目更新助手（MaaRacingMaster 发版流程）
 
 为 MaaRacingMaster 项目执行发布前的完整准备流程。本文件反映**当前实际发布模式**
-（2026-08 复核）：**直接 commit master + 打 dev tag + push 触发 CI**。
+（2026-11 复核）：**双分支模型——日常 commit 落个人开发分支（命名自定），
+稳定线（默认分支 master）只经沉淀 PR 收入，发版打 tag 触发 CI**。
 
 ## 权威定义与安装
 
@@ -20,14 +21,22 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 
 ## 提交纪律（任何会写远端历史的操作都适用）
 
-本节是**操作手册**——口径细则在此，[AGENTS.md](../../AGENTS.md) 只保留红线声明。适用于**任何会写远端历史的操作**：push 分支、push master、打 tag、开 / 合 PR、发布，不限于发版。
+本节是**操作手册**——口径细则在此，[AGENTS.md](../../AGENTS.md) 只保留红线声明。适用于**任何会写远端历史的操作**：push 分支、push 稳定线、打 tag、开 / 合 PR、发布，不限于发版。
+
+### 分支模型（稳定线 / 日常线）
+
+- **稳定线**（默认分支 `master`）只收**沉淀**：一个主题收口（实现+回归+验收齐了）才经 PR 合入，合并时 CI 自动全量测试——稳定线上每个点都可运行、可发布。稳定线受 **GitHub 规则集（`stable-master-pr-only`）保护**：直接 push 一律被远端拒绝，只允许 **squash 压扁合并**（每个主题恰好一个 commit，master 历史保持一行主题列表），**任何人（含仓库所有者）不可绕过**。2026-10-17 重构前的完整开发历史保留在 master 祖先里，此后的 master 历史每个点是一个收口主题。
+- **日常线**：日常开发分支，**命名自定**（个人名/主题名皆可，本仓库实例为 `dev/d542Bb`）。进行中的工作、实验、细碎提交全部落这里，保留全部详细历史；多条日常线并存合法。日常线**允许 agent 直接推送**（云端智能体独立提交与审查，不需逐次确认），也**允许对已推送历史改写**（`rebase` / squash / force push，一律 `--force-with-lease`）——只限日常线自身，永不触碰稳定线；改写优先走独立 worktree 或远端操作，不掀共享检出里并行会话的工作树（见「共享检出目录」）。
+- **共享检出目录（并行会话）下**：所有会话的 HEAD 停在同一份工作树的日常线上，日常提交照常直提；**禁止在共享检出里切稳定线**（切分支改写工作区文件会掀他人未提交内容）。需要动稳定线时走远端（push 日常线 → GitHub 开 PR），不经本地 checkout。
+- 发版顺序随之固定：**先沉淀（PR 合入稳定线）→ 再在稳定线上打 tag**。tag 必须打在稳定线含全部改动的那份上（见发版节）。
 
 ### commit 粒度
 
 - **一个 commit 是一个有意义的历史节点**：能独立解释、能独立回滚即可；开发期允许细粒度提交以便回溯、Review 与实验。
 - **交付面**（tag、`docs/update_log.md` 小节、Release 正文）才要求语义完整。
-- **push 是历史整理的不可逆分界**：未推送的本地提交可自由 `rebase -i` 归并 / 重排成语义节点——凡意图发布干净的共享历史，**归并必须发生在 push 之前（先整理、后推送）**；绝不可把细碎提交原样推上去再想收拾，那时唯一出路只剩被禁止的 force-push。
-- **禁止对已推送历史 rebase / squash / force push**（AGENTS.md 红线），修正一律新 commit 前进。
+- **稳定线 push 是历史整理的不可逆分界**：进稳定线（沉淀 PR）的内容必须语义完整，**归并发生在开 PR 之前（先整理、后沉淀）**；稳定线合并由规则集锁定为压扁，历史天然一个主题一个 commit。
+- **稳定线禁止对已推送历史 rebase / squash / force push**（AGENTS.md 红线），修正一律新 commit 前进。
+- **日常线不受上述限制**：允许 agent 直接推送；允许对已推送的日常线历史 rebase / squash / force push（`--force-with-lease`），改写只落日常线，不触碰稳定线。
 
 ### amend 的边界
 
@@ -44,7 +53,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 
 ### 对外动作先取得确认
 
-push、打 tag、开 / 改 issue、发布、改远端配置一律先向用户确认（AGENTS.md 红线）；发版动作不可逆。
+稳定线写入（开 / 合沉淀 PR）、打 tag、发布、改远端配置一律先向用户确认（AGENTS.md 红线）；发版动作不可逆。**已授权豁免**：日常线（`dev/**`）push 与历史改写 agent 可直接执行、不需逐次确认（AGENTS.md「对外可见的动作」豁免条款）。
 
 ***
 
@@ -57,7 +66,7 @@ push、打 tag、开 / 改 issue、发布、改远端配置一律先向用户确
 | ① 清理临时文件             | 删除 `__pycache__`、`*.pyc`、`*.egg-info`、`build/`、`dist/`、`.pytest_cache/` 等（**不含** `debug/` 调试截图） |
 | ② 确定版本号              | 按「当前 dev 系列顺延 / minor 升级开新系列」规则计算，**用户指定优先**                                                    |
 | ③ 更新文档               | 更新 `docs/update_log.md` 添加新版本条目（README 如需一并更新）                                                  |
-| ④ 提交改动               | 直接 commit 到 master（当前实际模式）；仅当远程有 PR 保护时才走 `release/vX.Y.Z` 分支 + PR                              |
+| ④ 提交改动               | commit 到个人开发分支（命名自定）；稳定线只经沉淀 PR 收入，见「分支模型」                      |
 | ⑤ 更新版本标记 + 打 Tag 并推送 | 更新 `docs/latest_release.json`，创建 `vX.Y.Z[-dev.N]` tag 并 push，触发 CI/CD Release                   |
 | ⑥ 本地打包验证（可选）         | 跑 `scripts/release/assemble.ps1` 生成 zip+sha256 本地校验                                             |
 | ⑦ 全部执行               | 按 ①→②→③→④→⑤ 顺序（⑥ 可选插入 ⑤ 前）                                                                      |
@@ -80,7 +89,7 @@ push、打 tag、开 / 改 issue、发布、改远端配置一律先向用户确
 
 ### ② 确定版本号
 
-**当前实际模式（2026-08 复核，git tag 历史）：**
+**当前实际模式（2026-11 复核，git tag 历史）：**
 
 - 每次 minor 升级后开新 dev 系列：`v0.X.0-dev.1`、`-dev.2` …（如 `v0.15.0-dev.1` → `v0.15.0-dev.8`）
 
@@ -129,26 +138,27 @@ push、打 tag、开 / 改 issue、发布、改远端配置一律先向用户确
 
 ### ④ 提交改动
 
-**当前实际模式（v0.14/v0.15 起）：直接 commit 到 master 并 push**，不再走 PR。
+**当前实际模式（2026-10 起）：日常 commit 落个人开发分支**（命名自定，本仓库实例 `dev/d542Bb`），稳定线只经沉淀 PR 收入。
 
 1. `git status --short` 查看未提交改动；`git add <具体文件>`（按文件名添加，避免误入敏感/大文件）
 2. `git commit -m "标题" -m "正文"`（PowerShell 不支持 heredoc，用 `-m` 参数）
-3. `git push origin master`
+3. push 日常分支：`git push origin <日常分支>`——push 只同步/备份，不触发 CI（test 镜像只盯稳定线）
 
-**备选（仅当远程开启 PR 保护 / 用户要求）：**
+**沉淀（稳定线收入，用户认定主题收口时）：**
 
-- 基于最新 master 建 `release/vX.Y.Z` 分支 → commit → push → `gh pr create --base master --head release/vX.Y.Z`（body 多行先写临时文件用 `--body-file`）→ `gh pr merge <N> --squash --subject ... --body ...` → 清理远程/本地分支（`git push origin --delete` + `git branch -D` + `git remote prune origin`）
-
-- 冲突提示用户手动解决，不自动解决
+1. push 日常分支后 `gh pr create --base master --head <日常分支>`（body 多行先写临时文件用 `--body-file`）
+2. 合并走 `gh pr merge <N> --squash --subject ... --body ...`——合并进稳定线即触发 CI 全量测试；规则集只允许压扁合并（`--merge` / `--rebase` 会被远端拒绝），master 上一个主题恰好一个 commit
+3. 冲突提示用户手动解决，不自动解决
+4. **沉淀是稳定线写入的唯一通道**：不在共享检出里 checkout 稳定线本地操作（见「分支模型」）
 
 ### ⑤ 更新版本标记 + 打 Tag 并推送（触发 CI/CD）
 
 1. **更新** **`docs/latest_release.json`**（程序内「检查更新」的唯一信源）：`tag`、`version`、`published_at` 三项指向本次版本，`download_url` 保持不变。CI **不回写此文件**（master 受分支保护），漏写会造成「Release 页面已有新版，但玩家软件里永远收不到更新提示」的错位。该改动必须作为 commit 落在 **tag 之前**——tag 落点那份代码要同时含 changelog 小节与此标记文件（Release 正文由 `extract_changelog.py` 从 tag 那份 `docs/update_log.md` 抽取，改文案必须与 tag 落点一起前移）。
-2. 确认工作区干净（`git status --porcelain` 无输出）；确认当前在 master 且已含全部改动
+2. 确认工作区干净（`git status --porcelain` 无输出）；确认待发内容**已沉淀进稳定线**（PR 已合入 master、CI 绿），tag 打在稳定线上
 3. 本地创建 tag：`git tag v0.x.y-dev.N`（0.x 阶段通常为 pre-release）或 `git tag vX.Y.Z`（正式版）。本仓库自 v0.12 起统一用**轻量 tag**（`git cat-file -t refs/tags/<上一个>` 可验类型），沿用即可
-4. push tag：`git push origin <tag>`
+4. push tag：`git push origin <tag>`（tag 在稳定线上——若本地 HEAD 停在开发分支，先 `git fetch origin master` 后对远端稳定线打 tag：`git tag <tag> origin/master`，避免在共享检出里切分支）
 5. **push 前必须向用户确认**（发版动作不可逆）
-6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release + sdist/wheel + 校验 setuptools-scm 版本一致）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip/7z + sha256 补传 Release）→ `cnb-release`（同步到 CNB）
+6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release + sdist/wheel + 校验 setuptools-scm 版本一致）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip/7z + sha256，并生成可选模型包，一并补传 Release）→ `cnb-release`（同步 zip/7z/模型包到 CNB）
 7. **tag 触发的工作流与 master push 的工作流 checkout 语义不同**：前者完整历史（拿得到 tag），后者 `--no-tags` 浅克隆。因此「master 的 Test 红、Release gate 绿」可以同时成立，排查时先分清是哪条流水线
 
 ### ⑥ 本地打包验证（可选）
@@ -164,11 +174,15 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - 注意 `-HostPython` 必须为 3.11（cp311）以匹配 embedded runtime；`-SkipPublish` 仅当 GUI 源指纹一致时复用缓存
 
+- 默认包不含深度/线观测权重（约 82MB），由可选模型包分发；要出离线全量包加 `-WithModels`
+
+- 本步需要 MSVC（编译 native Launcher）。没有本机 MSVC 时改用云端 `package-test.yml` 验证同一脚本（Windows runner + `mlocati/setup-msvc`），产物只上 artifact、不发布
+
 ***
 
 ### 不发版模式（不动程序代码 → 不 tag，方案 C）
 
-**适用：** 本次改动只涉及文档 / CI / 元数据，**不触碰运行时程序代码**——此时不需要新的安装包，**不打 tag、不触发 release**，只 commit + push master（push master 只会跑 `test.yml` 单测，不会触发 release 流水线）。
+**适用：** 本次改动只涉及文档 / CI / 元数据，**不触碰运行时程序代码**——此时不需要新的安装包，**不打 tag、不触发 release**；改动先落日常分支，随下次沉淀 PR 进稳定线（稳定线受规则集保护，不能直推）。
 
 **判定"是否动程序代码"：** 用 `git diff --name-only` 检查本次即将提交的文件，凡落入下列**程序路径**即视为「需要出包」：
 
@@ -176,7 +190,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - `apps/**`（C# / XAML GUI）
 
-- `assets/model/**`（模型权重）、`assets/resource/**`（模板资源）
+- `maaracing_master/plugins/*/resources/models/**`（模型权重）、`maaracing_master/**/resources/**`（识别资源与模板）
 
 - `config/**`、`requirements*.txt`、`scripts/release/requirements-runtime-lock.txt`
 
@@ -184,10 +198,10 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 **不发版模式流程：**
 
-1. commit 到 master
+1. commit 到个人开发分支
 2. **不写 update_log**——纯文档 / CI / 元数据改动玩家感知不到，按收录判据一律不进（过程已在 commit message）
-3. `git push origin master`（若需同步远程；只触发 test.yml 单测）
-4. **不打 tag、不触发 release**
+3. `git push origin <日常分支>`（若需同步远程；push 日常分支不触发 CI）
+4. **不打 tag、不触发 release**；文档类改动随下次沉淀 PR 自然进稳定线
 
 **技术背景：** GitHub Actions 的 `push` tag 事件**不支持** **`paths`** **/** **`paths-ignore`** **过滤**，无法在 trigger 声明层区分「纯文档 tag」与「程序 tag」，故本项目用\*\*流程约定（方案 C）\*\*而非 workflow 自动检测——纯文档改动一律不 tag，只有程序代码有实质改动、需要新产物时才走完整发版（① 清理 → ② 定版本 → ③ 日志 → ④ 提交 → ⑤ tag → push）。
 
@@ -205,7 +219,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - **Git Tag 是唯一信源**：禁止手动改源码版本号，`setuptools-scm` 从 tag 自动推导（写入 `maaracing_master/_version.py`）
 
-- **发布模式**：直接 commit master → 打 tag → push tag 触发 CI/CD（不再走 PR，除非远程有 PR 保护）
+- **发布模式**：日常 commit 落个人开发分支（命名自定）→ 主题收口经 PR 沉淀进稳定线 → 在稳定线上打 tag → push tag 触发 CI/CD（见「分支模型」）
 
 - tag 触发 CI 时 `test` 会先跑 pytest，测试失败不发布
 
@@ -226,6 +240,8 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 - **CNB 镜像：** `.github/workflows/mirror-to-cnb.yml`（master push 自动 git 镜像同步到 cnb.cool）
 
 - **本地打包脚本：** `scripts/release/assemble.ps1`
+
+- **云端打包验证：** `.github/workflows/package-test.yml`（push `dev/**-pkgtest` 或手动触发，只上传 artifact，不创建 Release；版本号读 `docs/latest_release.json`）
 
 - **项目规范：** `AGENTS.md`
 
@@ -253,5 +269,5 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - 不用 `git reset --hard` / `git clean -f` 等破坏性命令；同步 master 用 `git pull --rebase origin master` 或仅在用户明确要求时操作
 
-- push / 打 tag / merge 前必须向用户确认
+- 稳定线写入（push / 开合 PR）、打 tag、merge、发布前必须向用户确认；日常线（`dev/**`）push 与历史改写已授权，不需逐次确认
 

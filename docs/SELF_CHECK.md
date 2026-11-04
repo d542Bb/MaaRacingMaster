@@ -161,7 +161,7 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 | 日志出现「窗口连接失败」 | 游戏未开 / 未前台 / 游戏窗口标题不符 → 确认游戏已到主界面 |
 | 日志频繁「前台校验失败」 | 游戏窗口不在前台（安全策略不抢前台）→ 把游戏切到前台 |
 | OCR 心跳正常、阶段正常流转 | 截图 + 识别链路健康 |
-| 模块中途静默退出 | 参考 [鉴宝文档 CODE_WIKI](../maaracing_master/plugins/treasure/CODE_WIKI.md) 遗留问题与坑点 |
+| 模块中途静默退出 | 参考 [鉴宝文档 CODE_WIKI](../maaracing_master/plugins/_archive/treasure/CODE_WIKI.md) 遗留问题与坑点 |
 
 > 单帧异常已被主循环兜底（忽略并继续），只有连续多帧系统性问题才会终止——若持续异常，请收集 `Debug` 存盘截图 + 日志后提 Issue。
 

@@ -84,6 +84,8 @@ def _svc(monkeypatch, selected="fake_a", cache=None, live=None):
     svc._controller.active_module = live
     svc._selected_module = selected
     svc._module_config_cache = dict(cache or {})
+    svc._module_config_rev = {}
+    svc._config_meta_notes = {}
     svc.saved_profiles = []
     monkeypatch.setattr(sc, "_save_profile", lambda partial: svc.saved_profiles.append(partial))
     return svc
@@ -231,10 +233,13 @@ def test_read_and_write_never_construct_module(monkeypatch, fake_registry):
     assert svc.get_module_config({"module_id": "fake_b"})[0]
 
 
-def test_set_without_selected_module_is_rejected(monkeypatch, fake_registry):
+def test_set_without_module_id_is_rejected(monkeypatch, fake_registry):
+    """任务列表化后没有「当前选中模块」可兜底：读/写谁的配置必须点名。"""
     svc = _svc(monkeypatch, selected=None)
     ok, _, err = svc.set_module_config({"config": {"alpha": 1}})
-    assert not ok and "未选择活动模块" in err
+    assert not ok and "缺少 module_id" in err
+    ok2, _, err2 = svc.get_module_config({})
+    assert not ok2 and "缺少 module_id" in err2
 
 
 def test_set_unknown_module_is_rejected(monkeypatch, fake_registry):
@@ -279,22 +284,56 @@ def test_other_module_running_does_not_hijack_read(monkeypatch, fake_registry):
     assert cfg["gamma"] is True and "alpha" not in cfg
 
 
-def test_merge_prefers_start_params_over_cached_slot():
-    """start 合并优先级：本次带参覆盖缓存槽，缓存槽里其它键保留。"""
-    merged = sc._merge_module_config({"alpha": 1, "beta": "old"}, {"beta": "new"})
-    assert merged == {"alpha": 1, "beta": "new"}
+# ---------- 配置面迁移（旧键折算留给模块，core 不认模块字段）----------
+
+class _FakeLegacy(_NoInstantiateModule):
+    """旧存档键 macro_mode 折算成当前 drive_mode。"""
+
+    ID = "fake_legacy"
+    DEFAULT_MODULE_CONFIG = {"drive_mode": "depth"}
+
+    def __init__(self, ctx=None):  # pragma: no cover
+        raise AssertionError("迁移不得构造模块实例")
+
+    @classmethod
+    def normalize_config(cls, config):
+        out = dict(config)
+        if "macro_mode" in out:
+            out["drive_mode"] = "macro" if out.pop("macro_mode") else "depth"
+        return out
 
 
-def test_merge_handles_missing_sides():
-    assert sc._merge_module_config(None, {"alpha": 1}) == {"alpha": 1}
-    assert sc._merge_module_config({"alpha": 1}, None) == {"alpha": 1}
-    assert sc._merge_module_config(None, None) == {}
+def test_base_normalize_config_is_identity():
+    from maaracing_master.core.base import ActivityModule
+    cfg = {"any": 1}
+    assert ActivityModule.normalize_config(cfg) is cfg
+
+
+def test_restore_profile_migrates_legacy_keys(monkeypatch):
+    monkeypatch.setattr(sc, "MODULE_REGISTRY", {_FakeLegacy.ID: _FakeLegacy})
+    monkeypatch.setattr(sc, "module_expired", lambda mid: False)
+    monkeypatch.setattr(sc, "_load_profile", lambda: {
+        "module_config": {_FakeLegacy.ID: {"macro_mode": True}},
+    })
+    svc = _svc(monkeypatch, selected=_FakeLegacy.ID)
+    svc._restore_profile()
+    assert svc._module_config_cache == {_FakeLegacy.ID: {"drive_mode": "macro"}}
+
+
+def test_set_config_migrates_legacy_keys(monkeypatch):
+    monkeypatch.setattr(sc, "MODULE_REGISTRY", {_FakeLegacy.ID: _FakeLegacy})
+    svc = _svc(monkeypatch, selected=_FakeLegacy.ID)
+    ok, cfg, err = svc.set_module_config({
+        "module_id": _FakeLegacy.ID, "config": {"macro_mode": True},
+    })
+    assert ok and err is None
+    assert cfg["drive_mode"] == "macro" and "macro_mode" not in cfg
 
 
 # ---------- 真实模块的回归锁（缺插件注册时跳过）----------
 
 @pytest.mark.skipif(
-    not (_OK and "speedrush" in sc.MODULE_REGISTRY and "treasure" in sc.MODULE_REGISTRY),
+    not (_OK and "speedrush" in sc.MODULE_REGISTRY),
     reason="真实插件未注册（依赖缺失时 registry 会跳过该插件）",
 )
 def test_real_modules_declare_their_config_surface():
@@ -304,17 +343,16 @@ def test_real_modules_declare_their_config_surface():
     """
     from maaracing_master.core.registry import MODULE_REGISTRY as real_registry
     speedrush = real_registry["speedrush"]
-    treasure = real_registry["treasure"]
 
     sr = dict(speedrush.DEFAULT_MODULE_CONFIG)
     assert "record_mode" in sr and sr["record_mode"] is False
     # 配置面的键与模块实际接受/返回的键必须一致（不多不少）
     # perception_mode：阶段 B 感知开关（2026-09-21 接线）；
     # control_mode：实机闭环接管开关（2026-09-22 planner §九 step 3，默认关）；
-    # geo_master：闭环 A/B 换尺开关（2026-09-24 架构裁决，默认 depth，GUI 可切）。
+    # drive_mode：驾驶模式单键（depth/straight/macro，2026-11-04 由直行/宏两个
+    #   互斥布尔键收敛而来；旧存档经 normalize_config 折算）；
+    # macro_group：宏录制模式的回放宏组（2026-11-03）；
+    # geo_master 已删（2026-09-28 v3：黄线簇为唯一供数，A/B 换尺档废弃）。
     keys = set(sc._module_config_defaults("speedrush"))
-    assert keys == {"record_mode", "perception_mode", "control_mode", "geo_master"}
-
-    tr = set(sc._module_config_defaults("treasure"))
-    assert tr == {"max_daily_loops", "target_session"}
-    assert tr <= set(treasure.DEFAULT_MODULE_CONFIG)
+    assert keys == {"record_mode", "perception_mode", "control_mode",
+                    "drive_mode", "macro_group"}

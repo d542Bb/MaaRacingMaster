@@ -5,6 +5,9 @@
 ③ 右侧·近 ④ 右侧·远 → 按类别键 → [d 有障碍] → Enter 保存。
 类别键：w=墙/护栏  c=抬升路缘  x=该侧无可见边界（开阔）。
 点的位置 = "车不能再往那边去"的那条线的外沿（贴线走，不点线上方的墙身）。
+坐标 = 标注底图的像素（n=近点 f=远点；WINDOW_NORMAL 下回调即图像系，本机
+实测判决）；底图分辨率随包不同（半幅 640×360 / 全幅 1280×720），消费端按
+path 底图实寸折算。
 u=重标本帧  q=退出。断点续标：已在 labels CSV 的帧自动跳过。
 
 用法（仓库根 .venv）：
@@ -80,6 +83,8 @@ def main() -> None:
 
     def on_mouse(ev, x, y, _f, _p):
         if ev == cv2.EVENT_LBUTTONDOWN and None in st["pts"]:
+            # WINDOW_NORMAL 下回调即图像系坐标（本机实测判决：9 条标注 36 值全部
+            # 落在底图 640×360 值域内、右缘 637/638 贴边——若为窗口系应达 1280）
             st["pts"][st["pts"].index(None)] = (int(x), int(y))
 
     cv2.setMouseCallback(win, on_mouse)
@@ -134,6 +139,9 @@ def main() -> None:
                         st["pts"][2] = st["pts"][3] = (0, 0)
             elif k == 13 and n == 4 and all(st["cls"]):
                 ln, lf, rn, rf = st["pts"]
+                # 像素坐标落盘（与 gold_score 的像素契约同口径，YS 带即全幅系）；
+                # 底图分辨率随包不同（半幅老包 640×360 / 全幅新包 1280×720），
+                # 消费端按 path 底图实寸折算——不在存储端归一化，避免双口径
                 rows[p] = [p, s, ln[0], ln[1], lf[0], lf[1], st["cls"][0],
                            rn[0], rn[1], rf[0], rf[1], st["cls"][1], int(st["obs"])]
                 save()

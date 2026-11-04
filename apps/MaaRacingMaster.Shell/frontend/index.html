@@ -15,10 +15,10 @@
     </div>
     <nav class="tabs">
       <span class="tab-slider" id="tab-slider"></span>
-      <button class="mra-tab mra-tab--active" data-tab="control">主控</button>
-      <button class="mra-tab" data-tab="data">数据</button>
-      <button class="mra-tab" data-tab="settings">设置</button>
-      <button class="mra-tab" data-tab="about">关于</button>
+      <button class="maarm-tab maarm-tab--active" data-tab="control">主控</button>
+      <button class="maarm-tab" data-tab="data">数据</button>
+      <button class="maarm-tab" data-tab="settings">设置</button>
+      <button class="maarm-tab" data-tab="about">关于</button>
     </nav>
     <div class="win-controls" id="win-controls">
       <button class="win-btn" id="btn-win-min" type="button" aria-label="最小化" title="最小化">
@@ -38,98 +38,43 @@
   <main>
     <!-- ===== 主控 ===== -->
     <section class="page" id="page-control">
-      <div class="col-left">
-        <div class="card">
-          <div class="card-head"><h3>活动模块</h3></div>
-          <div class="card-body">
-            <!-- 值真源 = 隐藏原生 select（app.js 填充/run.js 取值/settings.js 禁用），
-                 自绘 combobox 投影层见 js/select.js -->
-            <div class="msel" id="msel">
-              <select id="module-select" class="msel-native" aria-hidden="true"></select>
-              <button type="button" class="msel-trigger" id="msel-trigger"
-                      role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="msel-list">
-                <span class="msel-label" id="msel-label"></span>
-                <svg class="msel-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      <!-- 两列包一层内容高度容器：日志卡 sticky 的包含块必须与左列内容等高
+           （直接挂在 .page 下时包含块只有视口高，滚动时日志卡没有行程可钉住） -->
+      <div class="control-cols">
+        <div class="col-left">
+          <div class="card card-flex task-card">
+            <div class="card-head">
+              <h3>运行任务</h3>
+              <button class="icon-btn" id="btn-manage" title="管理模块（加入 / 移出）">
+                <i data-icon="settings"></i>
               </button>
-              <div class="msel-list" id="msel-list" role="listbox" tabindex="-1"></div>
             </div>
-            <p class="module-desc" id="module-desc"></p>
-            <!-- 模块专属选项：按当前模块显示对应块，其余模块整块隐藏（见 app.js refreshModuleOptions）。
-                 两行结构避免拥挤：
-                 • treasure（鉴宝）第1行（整行）：刷到第几场；第2行（整行）：目标场次（互斥单选）
-                 • speedrush（极速狂飙）第1行：演示数据录制开关（驾驶阶段只采集、由用户手动驾驶）；
-                   第2行：几何尺切换（道路横向定位证据源，闭环 A/B 换尺） -->
-            <div class="module-options" id="module-options" style="display:none;">
-              <div id="opt-treasure-block" style="display:none;">
-                <div class="module-options-row module-options-row--stack">
-                  <div class="mra-field">
-                    <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
-                    <div class="mra-field-control">
-                      <input id="opt-max-loops" type="number" min="0" max="50" step="1" value="50">
-                      <span class="field-suffix">场</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="module-options-row">
-                  <div class="mra-field">
-                    <label class="mra-field-label">目标场次<span class="field-hint">（每次回大厅先点对应场次标签，再点「开始匹配」）</span></label>
-                    <div class="mra-segmented" id="opt-target-session" role="group" aria-label="目标场次">
-                      <button type="button" class="seg-btn" data-value="intern"><span class="seg-dot seg-dot--intern"></span>实习场</button>
-                      <button type="button" class="seg-btn" data-value="expert"><span class="seg-dot seg-dot--expert"></span>专家场</button>
-                      <button type="button" class="seg-btn seg-btn--selected" data-value="master"><span class="seg-dot seg-dot--master"></span>大师场</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div id="opt-speedrush-block" style="display:none;">
-                <div class="option-row">
-                  <button class="mra-toggle" id="opt-record-mode" role="switch" aria-checked="false"></button>
-                  <div class="option-main">
-                    <div class="option-title">录制演示数据</div>
-                    <p class="option-desc">开启后驾驶阶段只采集、不操纵车辆（请自行手动驾驶），产出用于训练的数据集。改动在下次「开始」时生效。建议把设置页的点击方式保持为「前台鼠标」——「后台手柄」会创建虚拟手柄，可能与你的手柄冲突。</p>
-                  </div>
-                </div>
-                <div class="module-options-row">
-                  <div class="mra-field">
-                    <label class="mra-field-label">几何尺<span class="field-hint">（车辆横向定位的证据源；改动在下次「开始」时生效，运行日志与 trace 记录本局所用）</span></label>
-                    <div class="mra-segmented" id="opt-geo-master" role="group" aria-label="几何尺">
-                      <button type="button" class="seg-btn seg-btn--selected" data-value="depth">深度几何</button>
-                      <button type="button" class="seg-btn" data-value="hsv">黄线（对照）</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <p class="module-options-status" id="module-options-status"></p>
-            </div>
+            <!-- 任务列表：每模块一张行卡（拖拽手柄 / 启用勾选 / 摘要 / 展开），由 js/run.js 渲染；
+                 列表里有哪些模块由设置按钮的选卡弹窗管理，顺序即执行顺序 -->
+            <ul id="task-list"></ul>
           </div>
         </div>
-        <div class="card card-flex">
-          <div class="card-head">
-            <h3>当前阶段</h3>
-          </div>
-          <div class="breakpoint-list" id="stage-list"></div>
-        </div>
-      </div>
-      <div class="col-right">
-        <div class="card card-flex log-card">
-          <div class="card-head">
-            <h3>运行日志</h3>
-            <div class="log-head-actions">
-              <button class="icon-btn" id="btn-log-clear" title="清空">
-                <i data-icon="trash"></i>
-              </button>
-              <button class="icon-btn" id="btn-log-copy" title="复制">
-                <morph-icon reduced-motion="user"></morph-icon>
-              </button>
+        <div class="col-right">
+          <div class="card card-flex log-card">
+            <div class="card-head">
+              <h3>运行日志</h3>
+              <div class="log-head-actions">
+                <button class="icon-btn" id="btn-log-clear" title="清空">
+                  <i data-icon="trash"></i>
+                </button>
+                <button class="icon-btn" id="btn-log-copy" title="复制">
+                  <morph-icon reduced-motion="user"></morph-icon>
+                </button>
+              </div>
             </div>
+            <div class="log-area" id="log-area"></div>
+            <!-- 回顶按钮：随滚动位置换向——贴底时去最旧（顶部），翻上去时回最新（底部）；
+                 内容不溢出时隐藏。图标两枚，CSS 按 --down 类切换。 -->
+            <button class="log-top-btn" id="btn-log-top" hidden aria-label="回到顶部（最旧日志）">
+              <svg class="log-top-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+              <svg class="log-top-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+            </button>
           </div>
-          <div class="log-area" id="log-area"></div>
-          <!-- 回顶按钮：随滚动位置换向——贴底时去最旧（顶部），翻上去时回最新（底部）；
-               内容不溢出时隐藏。图标两枚，CSS 按 --down 类切换。 -->
-          <button class="log-top-btn" id="btn-log-top" hidden aria-label="回到顶部（最旧日志）">
-            <svg class="log-top-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
-            <svg class="log-top-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-          </button>
         </div>
       </div>
     </section>
@@ -161,10 +106,24 @@
 
         <div class="card">
           <div class="card-head"><h3>版本与更新</h3>
-            <button class="mra-btn" id="btn-check-update" type="button">
-              <i data-icon="rotate-cw"></i>
-              检查更新
-            </button>
+            <div class="ver-head-actions">
+              <button class="maarm-btn update-source-trigger" id="btn-update-source" type="button"
+                      aria-haspopup="listbox" aria-expanded="false" aria-controls="update-source-menu"
+                      title="选择更新源">
+                <span class="update-source-icon" id="update-source-icon-cnb">
+                  <img src="cnb.svg" alt="">
+                </span>
+                <span class="update-source-icon" id="update-source-icon-github" hidden>
+                  <i data-icon="github-solid"></i>
+                </span>
+                <span id="update-source-label">CNB</span>
+                <i data-icon="chevron-down"></i>
+              </button>
+              <button class="maarm-btn" id="btn-check-update" type="button">
+                <i data-icon="rotate-cw"></i>
+                检查更新
+              </button>
+            </div>
           </div>
           <div class="card-body">
             <div class="ver-row"><span class="ver-label">当前版本</span><span class="ver-value" id="about-ver-current">--</span></div>
@@ -191,15 +150,15 @@
         </div>
 
         <div class="about-links">
-          <button class="mra-btn" data-link="home">
+          <button class="maarm-btn" data-link="home">
             <i data-icon="github"></i>
             项目主页
           </button>
-          <button class="mra-btn" data-link="issue">
+          <button class="maarm-btn" data-link="issue">
             <i data-icon="bot"></i>
             报告问题
           </button>
-          <button class="mra-btn" data-link="docs">
+          <button class="maarm-btn" data-link="docs">
             <i data-icon="book-open"></i>
             使用文档
           </button>
@@ -211,39 +170,94 @@
   <!-- ===== 底部操作栏 ===== -->
   <footer>
     <div class="status">
-      <div class="mra-status-dot" id="status-dot"></div>
+      <!-- 状态球：造型与动效见 js/status-orb.js 与 style.css「底栏状态球」。
+           状态由 data-state 驱动（ready / running / stopping / error），旁边有文字同步说明，
+           故对读屏隐藏，避免同一个状态被念两遍。 -->
+      <div class="maarm-orb" id="status-dot" data-state="ready" aria-hidden="true">
+        <svg class="maarm-orb__svg" viewBox="0 0 40 40">
+          <defs>
+            <clipPath id="status-orb-clip"><circle cx="20" cy="20" r="17"/></clipPath>
+            <radialGradient class="maarm-orb__grad" id="status-orb-grad">
+              <stop offset="0" class="maarm-orb__s-in"/>
+              <stop offset="0.6" class="maarm-orb__s-mid"/>
+              <stop offset="0.88" class="maarm-orb__s-edge"/>
+              <stop offset="1" class="maarm-orb__s-out"/>
+            </radialGradient>
+          </defs>
+          <g class="maarm-orb__rings">
+            <circle class="maarm-orb__ring" cx="20" cy="20" r="17"/>
+            <circle class="maarm-orb__ring maarm-orb__ring--lag" cx="20" cy="20" r="17"/>
+          </g>
+          <g class="maarm-orb__body">
+            <circle class="maarm-orb__sphere" cx="20" cy="20" r="17" fill="url(#status-orb-grad)"/>
+            <g clip-path="url(#status-orb-clip)">
+              <g class="maarm-orb__eye-wrap maarm-orb__eye-wrap--l">
+                <g class="maarm-orb__blink">
+                  <path class="maarm-orb__eye-halo"/>
+                  <path class="maarm-orb__eye"/>
+                </g>
+              </g>
+              <g class="maarm-orb__eye-wrap maarm-orb__eye-wrap--r">
+                <g class="maarm-orb__blink">
+                  <path class="maarm-orb__eye-halo"/>
+                  <path class="maarm-orb__eye"/>
+                </g>
+              </g>
+            </g>
+          </g>
+        </svg>
+      </div>
       <span class="status-text" id="status-text">系统就绪</span>
     </div>
     <div class="spacer"></div>
-    <button class="mra-btn" id="btn-stop" disabled>
+    <button class="maarm-btn" id="btn-stop" disabled>
       <i data-icon="media-stop"></i>
       停止
     </button>
-    <button class="mra-btn mra-btn--start" id="btn-start">
-      <span class="mra-start-layer mra-start-layer--idle">
+    <button class="maarm-btn maarm-btn--start" id="btn-start">
+      <span class="maarm-start-layer maarm-start-layer--idle">
         <i data-icon="media-play"></i>
         开始运行
       </span>
-      <span class="mra-start-layer mra-start-layer--armed" aria-hidden="true">
+      <span class="maarm-start-layer maarm-start-layer--armed" aria-hidden="true">
         <i data-icon="x"></i>
         再点取消
-        <span class="mra-start-digits" aria-hidden="true"><span class="mra-start-digit-col"><span>3</span><span>2</span><span>1</span></span></span>
+        <span class="maarm-start-digits" aria-hidden="true"><span class="maarm-start-digit-col"><span>3</span><span>2</span><span>1</span></span></span>
       </span>
     </button>
   </footer>
 
   <div id="error-toast"></div>
+
+  <!-- 固定定位，挂 body 下避免被卡片 overflow 裁切 -->
+  <div class="update-source-menu" id="update-source-menu" role="listbox"
+       aria-label="更新源" hidden>
+    <button class="update-source-item is-active" type="button" role="option"
+            data-source="cnb" aria-selected="true">
+      <img src="cnb.svg" alt=""><span>CNB</span>
+      <i data-icon="check" class="update-source-check"></i>
+    </button>
+    <button class="update-source-item" type="button" role="option"
+            data-source="github" aria-selected="false">
+      <i data-icon="github-solid"></i><span>GitHub</span>
+      <i data-icon="check" class="update-source-check"></i>
+    </button>
+  </div>
+
   <script src="icons.js"></script>
   <script src="vendor.morphicons.js"></script>
   <script src="peep-consumer.js"></script>
-  <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MRA 共享命名空间（必须最先），
-       app.js 是启动装配入口（必须最后）；中间模块只经 window.MRA 互相取用。 -->
+  <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MaaRM 共享命名空间（必须最先），
+       app.js 是启动装配入口（必须最后）；中间模块只经 window.MaaRM 互相取用。 -->
   <script src="js/rpc.js"></script>
-  <script src="js/select.js"></script>
   <script src="js/modal.js"></script>
   <script src="js/log.js"></script>
   <script src="js/preview.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/config-panel-state.js"></script>
+  <script src="js/config-panel.js"></script>
+  <script src="js/gallery-shape.js"></script>
+  <script src="js/status-orb.js"></script>
   <script src="js/run.js"></script>
   <script src="app.js"></script>
 </body>

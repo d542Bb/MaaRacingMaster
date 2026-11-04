@@ -18,9 +18,12 @@ STAGE = "鉴宝大厅(选择场次)"
 HIT = [(0, "session_start_match_btn", 0.95, 0.85, 0.80)]
 
 
+pytestmark = pytest.mark.retired
+
+
 def _load_module_class():
     try:
-        from maaracing_master.plugins.treasure.module import TreasureModule
+        from maaracing_master.plugins._archive.treasure.module import TreasureModule
     except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时跳过
         pytest.skip(f"需要完整运行时依赖（maa/…）：{exc}")
     return TreasureModule

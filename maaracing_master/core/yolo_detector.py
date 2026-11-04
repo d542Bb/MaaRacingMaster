@@ -10,11 +10,13 @@ YOLO 目标检测模块：基于 ONNX Runtime 的 YOLOv8 推理封装
 from __future__ import annotations
 
 import ast
+import time
 
 import numpy as np
 import cv2
 import onnxruntime as ort
 
+from maaracing_master.core import dml_lock
 from maaracing_master.core.logger import logger
 
 
@@ -95,7 +97,8 @@ class YOLODetector:
                 sess_options=sess_opts,
                 providers=["DmlExecutionProvider", "CPUExecutionProvider"]
             )
-            logger.log("YOLO 使用 GPU (DirectML)")
+            # 加载判定只写文件、不上面板（面板降噪）：设备与缓存路径属加载细节。
+            logger.log("YOLO 使用 GPU (DirectML)", "DEBUG")
         except Exception:
             try:
                 self.session = ort.InferenceSession(
@@ -103,16 +106,16 @@ class YOLODetector:
                     sess_options=sess_opts,
                     providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
                 )
-                logger.log("YOLO 使用 GPU (CUDA)")
+                logger.log("YOLO 使用 GPU (CUDA)", "DEBUG")
             except Exception:
                 self.session = ort.InferenceSession(
                     model_path,
                     sess_options=sess_opts,
                     providers=["CPUExecutionProvider"]
                 )
-                logger.log("YOLO 使用 CPU (GPU 不可用)")
+                logger.log("YOLO 使用 CPU (GPU 不可用)", "DEBUG")
 
-        logger.log(f"ONNX 缓存: {cache_dir}")
+        logger.log(f"ONNX 缓存: {cache_dir}", "DEBUG")
         self.input_name = self.session.get_inputs()[0].name
         self.conf = conf
         self.iou = iou
@@ -131,6 +134,10 @@ class YOLODetector:
             self._conf_by_id = _resolve_conf_by_id(meta, class_conf)
         # 模型输出类别维与类别表不一致时只告警一次（避免静默错映射）
         self._class_dim_checked = False
+        # 最近一次推理的分段耗时（等 DML 锁 / run 本体，ms）——时序归因插桩，
+        # 调用方单线程，无跨线程竞争
+        self.last_wait_ms = 0.0
+        self.last_run_ms = 0.0
 
     def _empty_by_class(self) -> dict[str, list]:
         """按类别表建空结果容器（每个已声明类别都有键，值为空列表）"""
@@ -182,7 +189,11 @@ class YOLODetector:
             cls_mask = classes_arr == cls
             # cls_local[j] = 第 j 个属于该类别的元素在 masked 数组中的位置
             cls_local = np.where(cls_mask)[0]
-            cls_boxes = xyxy[mask][cls_mask].tolist()
+            b = xyxy[mask][cls_mask]
+            # NMSBoxes 只认 [x,y,w,h]：直接喂 xyxy 会把 x2/y2 当宽高算 IoU，
+            # 横向错位不大的两辆真车互相误压（2026-10-07 0068 帧实拍 + 两行复现）
+            cls_boxes = np.stack([b[:, 0], b[:, 1],
+                                  b[:, 2] - b[:, 0], b[:, 3] - b[:, 1]], 1).tolist()
             cls_scores = scores[mask][cls_mask].tolist()
             if not cls_boxes:
                 continue
@@ -224,7 +235,18 @@ class YOLODetector:
         padded[pad_y: pad_y + nh, pad_x: pad_x + nw] = cv2.resize(orig, (nw, nh), interpolation=cv2.INTER_LINEAR)
         blob = padded.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
 
-        raw_outputs = self.session.run(None, {self.input_name: blob})
+        # DML 互斥（core.dml_lock）：控制拍感知是锁的阻塞持有方——本会话 run 与
+        # 其他 DML 会话（如深度 worker）并发 run 会段错误杀进程（2026-09-25
+        # 双线程复现），必须串行；感知不能跳拍，故阻塞等锁而非让锁。
+        # 等锁与 run 分段计时：环频归因要分得清「锁等出来的」和「run 本身慢」。
+        t_wait = time.perf_counter()
+        with dml_lock.LOCK:
+            self.last_wait_ms = (time.perf_counter() - t_wait) * 1000.0
+            t_run = time.perf_counter()
+            raw_outputs = self.session.run(None, {self.input_name: blob})
+            self.last_run_ms = (time.perf_counter() - t_run) * 1000.0
+        # 错峰节拍：深度 worker 据此把 54ms 前向排在感知放锁之后（见 dml_lock）。
+        dml_lock.TICK_BEAT.note()
         outputs = raw_outputs[0]
         assert isinstance(outputs, np.ndarray), f"ONNX 返回非数组: {type(outputs)}"
         preds = outputs[0].transpose(1, 0)

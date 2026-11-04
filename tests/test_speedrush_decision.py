@@ -10,17 +10,18 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
 from maaracing_master.plugins.speedrush.config import _read_decision
 from maaracing_master.plugins.speedrush.decision import (
     DecisionEngine, Scorer, ValidationWatch)
-from maaracing_master.plugins.speedrush.traffic import (
-    OUTCOME_GHOST, OUTCOME_LOST, OUTCOME_PASS, CarView, PassEvent)
+from maaracing_master.plugins.speedrush.traffic import CarView
 from maaracing_master.plugins.speedrush.tracking import (
     CoinGroup, DecisionState, PerceptionHealth, TrackedTarget, WorldObservation)
-from maaracing_master.plugins.speedrush.world_model import _read_gate0, load_calib
+from maaracing_master.plugins.speedrush.world_model import (
+    IMAGE_H, _read_gate0, load_calib, t_meet_car_s)
 from maaracing_master.plugins.speedrush import DECISION_FILE as CFG_PATH, GATE0_FILE as GATE0_PATH
 
 DT = 0.05          # 20Hz 名义 tick
@@ -32,14 +33,20 @@ CFG = _read_decision(
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
-         geometry=True, transition=False, boundary=None):
+         geometry=True, transition=False, boundary=None, fid_hz=None, raw=None,
+         raw_coins=0):
     if presence is None:
         presence = bool(groups or targets)
+    if raw is None:
+        raw = presence
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000, frame_age_ms=10.0,
         stage=1,
-        health=PerceptionHealth(alive, fresh, geometry, presence, transition),
-        boundary=boundary, targets=targets, far_targets=(), coin_groups=groups)
+        health=PerceptionHealth(alive, fresh, geometry, presence, transition,
+                                raw_cars=int(bool(raw)),
+                                raw_coins=raw_coins),
+        boundary=boundary, targets=targets, far_targets=(), coin_groups=groups,
+        fid_rate_hz=fid_hz)
 
 
 def _members(fid, gid, n, x, cy, rel, conf=0.85):
@@ -60,10 +67,12 @@ def _group(gid, fid, n, x, cy, rel, conf=0.85):
     return g, tuple(ms)
 
 
-# 场景 A（默认"良候选"）：n=3 conf=0.85 x=0.5 cy=500 rel=10
-#   value=30·3·0.6=54；t_miss=(716−502)/200=1.07s；life=e^−1.07/5=0.81 → 43.7
-#   −shift 5 = 38.7 ≥ min 20 ✓；need=0.3+0.4·0.5+0.13+0.15=0.78 < 1.07 ✓可行
-GOOD = dict(gid=1, n=3, x=0.5, cy=500, rel=10)
+# 场景 A（默认"良候选"）：n=3 conf=0.85 x=0.5 cy=500 rel=5
+#   流口径（全场 k 中位 = rel·hz/(cy−y_h)²）：k=100/178²≈3.16e-3；
+#   t_miss=∫=(1/k)·(1/181.8−1/391.8)≈0.93s；life=e^−0.93/5≈0.83
+#   value=30·3·0.6=54 → 44.8 −shift 5 ≈ 39.8 ≥ min 20 ✓；
+#   need=0.3+0.4·0.5+0.13+0.15=0.78 < 0.93 ✓可行
+GOOD = dict(gid=1, n=3, x=0.5, cy=500, rel=5)
 
 
 def _good_obs(fid=1, **kw):
@@ -81,22 +90,21 @@ def _decision_dict():
 
 @pytest.mark.parametrize("mutate,frag", [
     (lambda d: d.pop("schema_version"), "schema_version"),
-    (lambda d: d["hysteresis"].pop("switch_margin"), "switch_margin"),
     (lambda d: d["validate"].update(t_recover_s=99.0), "t_conserve_max"),
-    (lambda d: d["hysteresis"].update(dead_zone_lane=3.0), "死区"),
     (lambda d: d["mode"].update(allow_car_graze=True), "allow_car_graze"),
-    (lambda d: d["mode"].update(allow_all_moves="true"), "非布尔"),
     (lambda d: d["scoring"].update(conf_floor=1.5), "越界"),
     (lambda d: d["scoring"].update(conf_floor=0.9), "折扣区倒置"),
     (lambda d: d["control"].update(frame_rate_hz=0), "越界"),
     (lambda d: d.pop("planner"), "planner"),
     (lambda d: d["planner"].update(lookahead_tau_s=0.05), "lookahead"),
     (lambda d: d["planner"].update(rate_limit_raw=99999.0), "限幅"),
-    (lambda d: d.pop("overtake"), "overtake"),
-    (lambda d: d["overtake"].update(value_limit=10.0), "倒置"),
-    (lambda d: d["overtake"].update(d_hold_lane=0.8), "矛盾"),
     (lambda d: d["control"].pop("abort_settle_v_lane_s"), "abort_settle"),
-    (lambda d: d["overtake"].pop("t_cool_pass_s"), "t_cool_pass"),
+    (lambda d: d["planner"].update(maneuver_stick_max=0.0), "maneuver_stick_max"),
+    (lambda d: d["planner"].update(k_lat_lane_s=-1.0), "k_lat_lane_s"),
+    (lambda d: d["traffic"].pop("v_lat_ema_alpha"), "v_lat_ema"),
+    (lambda d: d["motion"].update(preview_s=3.0), "preview_s"),
+    (lambda d: d["motion"].update(mode="live", calibrated=False),
+     "calibrated"),
 ])
 def test_decision_fail_loud(tmp_path, mutate, frag):
     d = _decision_dict()
@@ -111,7 +119,6 @@ def test_decision_fail_loud(tmp_path, mutate, frag):
 @pytest.mark.parametrize("mutate,frag", [
     (lambda d: d.pop("a_x"), "a_x"),
     (lambda d: d.update(schema_version=2), "schema_version"),
-    (lambda d: d.update(v_ego=300.0), "分母退化"),        # v_ego < y_h
     (lambda d: d.update(y_h="地平线"), "非数值"),
 ])
 def test_gate0_fail_loud(tmp_path, mutate, frag):
@@ -127,7 +134,9 @@ def test_gate0_fail_loud(tmp_path, mutate, frag):
 def test_real_sources_load():
     assert CFG.validate.t_recover_s < CFG.validate.t_conserve_max_s
     cal = load_calib()
-    assert cal.v_ego - cal.y_h > 0 and cal.min_denom > 0
+    assert cal.a_x > 0 and cal.min_denom > 0 and cal.lane_w_m > 0
+    # 线角相机焦距：标定真源，落在全幅相机的合理域内
+    assert 600.0 <= cal.focal_px <= 1200.0
 
 
 # ---------- 校验合取（§四：五信号合取，任何单项不作数） ----------
@@ -150,17 +159,17 @@ def test_watch_empty_needs_conjunction():
         assert w.check(_obs(presence=False, geometry=False), DT).fatal is None
     # 合取恢复后从头计时（旧账不追溯）
     for i in range(int(CFG.validate.t_empty_s / DT) - 1):
-        assert w.check(_obs(presence=False), DT).fatal is None
-    assert w.check(_obs(presence=False), DT).fatal == "target_empty"
+        assert w.check(_obs(presence=False, raw=True), DT).fatal is None
+    assert w.check(_obs(presence=False, raw=True), DT).fatal == "target_empty"
 
 
 def test_watch_target_presence_resets_timer():
     w = ValidationWatch(CFG)
     for _ in range(10):
-        w.check(_obs(presence=False), DT)
+        w.check(_obs(presence=False, raw=True), DT)
     assert w.check(_good_obs(), DT).fatal is None      # 有目标：清零
     for _ in range(int(CFG.validate.t_empty_s / DT) - 1):
-        assert w.check(_obs(presence=False), DT).fatal is None
+        assert w.check(_obs(presence=False, raw=True), DT).fatal is None
 
 
 def test_watch_cy_jump_reversal():
@@ -185,8 +194,39 @@ def test_score_monotone_in_count():
     assert _score(n=4).score > _score(n=3).score
 
 
+def test_score_group_floor_partial_view():
+    """组下限（RULES 2026-10-14 定案）：观测 1~2 枚是残缺视图（距离/遮挡/置信
+    门削剩的头部），价值按整组 ≥3 枚计，不按观测枚数折算——n=1 组按 30 分
+    基值再被车道惩罚一压连 min_score 都过不了（20261014 实机 score 拒
+    106~119 次/局、金币候选 ok 每局 1 拍）。锁：同几何下 n=1 与 n=3 同值
+    （残缺视图按整组计）且过 min_score；n=4 仍严格更高（test_monotone 已锁）。"""
+    def _g_with(n):
+        ms = _members(1, 1, n, 0.5, 500, 5)
+        g = CoinGroup(group_id=1, member_ids=tuple(m.id for m in ms),
+                      observed_count=n, estimated_count=n, x_center=0.5,
+                      x_span=0.0, cy_min=500, cy_max=500, conf_min=0.85,
+                      partial_observation=False,
+                      first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
+        return g, ms
+
+    s = Scorer(CFG, load_calib())
+    g1, ms1 = _g_with(1)
+    g3, ms3 = _g_with(3)
+    s1 = s.score(g1, _obs(groups=(g1,), targets=ms1))
+    s3 = s.score(g3, _obs(groups=(g3,), targets=ms3))
+    assert s1 is not None and s3 is not None
+    # 组值项逐值同（max(1,3)=3）；t_miss 的全场 k 随组员集中位略差，放宽到 2%
+    assert s1.score == pytest.approx(s3.score, rel=0.02)
+    assert s1.score > 0                          # 完整整组值，未被折扣归零
+
+
 def test_score_monotone_in_distance():
-    assert _score(cy=620).score > _score(cy=500).score > _score(cy=420).score
+    # 流口径下速率随行号二次增长，远行目标必须配按场一致的 rel（同一 k）——
+    # rel(cy) ∝ (cy−y_h)²，锚定 GOOD(cy=500, rel=5)；锁「越远时间越多」的序
+    def _rel(cy):
+        return 5.0 * (cy - load_calib().y_h) ** 2 / (500 - load_calib().y_h) ** 2
+    assert _score(cy=620, rel=_rel(620)).score \
+        > _score(cy=500).score > _score(cy=420, rel=_rel(420)).score
 
 
 def test_score_penalizes_lateral_shift():
@@ -195,7 +235,11 @@ def test_score_penalizes_lateral_shift():
 
 def test_score_conf_ramp_and_floor():
     assert _score(conf=0.99).score > _score(conf=0.7).score
-    assert _score(conf=0.4) is None          # 地板下不低信决策
+    # 20261017 教训：地板降到检测门槛 0.35（日落逆光场景 conf 帧间 0.42~0.83
+    # 剧烈跳，0.5 切在区间正中把肉眼可见的币整组拒掉）——0.4 进低权坡度不拒
+    assert _score(conf=0.4) is not None      # 低权计入（折扣代替拒收）
+    assert _score(conf=0.4).score < _score(conf=0.7).score
+    assert _score(conf=0.34) is None         # 地板（=检测门槛）下不低信决策
     held = CoinGroup(group_id=9, member_ids=(1,), observed_count=1, estimated_count=1,
                      x_center=0.5, x_span=0, cy_min=500, cy_max=500, conf_min=0.0,
                      partial_observation=True, first_seen_fid=0, last_seen_fid=0,
@@ -206,114 +250,38 @@ def test_score_conf_ramp_and_floor():
 def test_score_rejects_receding_target():
     """rel≤0（远离）：机会视为无限远 → 分数被折扣压到不可选（−cost）。"""
     s = _score(rel=-5)
-    assert s is None or s.score < CFG.hysteresis.min_score
+    assert s is None or s.score < 1.0            # 折扣归零（−位移代价）
+
+
+def test_score_survives_member_id_churn_via_field_flow():
+    """换基主锁（2026-10-02）：组员 id 全断（不在 targets 里，逐轨账本旧法
+    必然饿死成 life=0）但场内另有健康 track——地面流是全场属性，k 从横截面
+    拟合出来，金币照常可选。旧逐轨实现下此锁必红。"""
+    g, _ = _group(7, 1, 3, x=0.5, cy=500, rel=0.0)     # 组员 rel=0 且不在 targets
+    # 场内两个健康 track（行号不同、速率按同一 k=100/178² 流场自洽）
+    flow = [TrackedTarget(
+        id=90 + i, kind="coin", x_lane=-0.8 + 1.6 * i, x_sigma=0.1,
+        cy=cy, w=20, h=20, conf=0.9,
+        rel_approach=100.0 * (cy - load_calib().y_h) ** 2 / (500 - load_calib().y_h) ** 2
+        / CFG.control.frame_rate_hz,
+        first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
+        for i, cy in enumerate((600, 450))]
+    s = Scorer(CFG, load_calib()).score(g, _obs(targets=flow))
+    assert s is not None and s.score > 0
+
+
+def test_score_blackout_keeps_failsafe_discount():
+    """全场无任何速率测量（断供黑视）：无限远折扣 → 不可选——安全默认与
+    逐轨断供时代同形，不许在无证据时臆造可达性。"""
+    g, _ = _group(7, 1, 3, x=0.5, cy=500, rel=0.0)
+    s = Scorer(CFG, load_calib()).score(g, _obs(targets=()))
+    assert s is not None and s.score < 1.0
 
 
 # ---------- FSM 全转移矩阵（§二优先级逐格） ----------
 
 def _eng(**over):
-    import dataclasses
-    # allow_all_moves / allow_overtake 是**部署开关**（V0/V1/V2），不是测试夹具：
-    # 基座一律强制"横向开、超车关"（矩阵测试需能进 CHANGE，但超车默认关），
-    # 与 decision.json 当前态解耦；no_moves→V0、overtake→V2 显式翻转。
-    cfg = dataclasses.replace(CFG, mode=dataclasses.replace(
-        CFG.mode, allow_all_moves=True, allow_overtake=False))
-    if over.get("no_moves"):
-        cfg = dataclasses.replace(cfg, mode=dataclasses.replace(
-            cfg.mode, allow_all_moves=False))
-    if over.get("overtake"):
-        cfg = dataclasses.replace(cfg, mode=dataclasses.replace(
-            cfg.mode, allow_overtake=True))
-    if over.get("t_pass_max_s") is not None:
-        cfg = dataclasses.replace(cfg, overtake=dataclasses.replace(
-            cfg.overtake, t_pass_max_s=over["t_pass_max_s"]))
-    return DecisionEngine(cfg)
-
-
-def test_cruise_selects_feasible_candidate():
-    e = _eng()
-    out = e.update(_good_obs(), DT)
-    assert out.state is DecisionState.CHANGE and out.reason == "select:score_win"
-    assert out.move_allowed is True and out.target_id == 1
-
-
-def test_cruise_low_score_holds():
-    e = _eng()
-    out = e.update(_good_obs(conf=0.52), DT)      # 折扣后 < min_score
-    assert out.state is DecisionState.CRUISE and "no_candidate" in out.reason
-
-
-def test_cruise_infeasible_timing_holds():
-    e = _eng()
-    # 近处大横移：t_miss=(716−656)/(50×20)=0.06s ≪ need=0.3+0.88+0.28=1.46s
-    out = e.update(_good_obs(x=2.2, cy=650, rel=50), DT)
-    assert out.state is DecisionState.CRUISE
-
-
-def test_change_timeout_finishes_with_cooling():
-    """无反馈降级路：不进死区 → t_change_max 超时落位 + 冷却。"""
-    e = _eng()
-    e.update(_good_obs(), DT)                     # → CHANGE
-    f = 2
-    out = e.update(_good_obs(fid=f), DT)          # x 恒定 0.5，不进死区
-    while not out.reason.startswith("done") and f < 200:
-        f += 1
-        out = e.update(_good_obs(fid=f), DT)
-    assert out.state is DecisionState.CRUISE and out.reason == "done:change_timeout"
-    nxt = e.update(_good_obs(fid=f + 1), DT)
-    assert "cooling" in nxt.reason                # 冷却拒绝再起新变道
-
-
-def test_change_converges_by_deadzone_proxy():
-    e = _eng()
-    o1 = _good_obs(fid=1)
-    e.update(o1, DT)                              # → CHANGE demand=0.5
-    for f in (2, 3):
-        out = e.update(_good_obs(fid=f, x=0.1), DT)   # 目标 x 进死区（0.1<0.15 不严格…用 0.05）
-    # x=0.05 才稳进死区；x=0.1 也在 0.15 内——两 tick 即收敛
-    assert out.state is DecisionState.CRUISE and "converged:proxy" in out.reason
-
-
-def test_change_converges_by_feedback():
-    e = _eng()
-    e.update(_good_obs(fid=1), DT)
-    out = e.update(_good_obs(fid=2), DT, executed_lane=0.45)  # demand 0.5−死区0.15=0.35 已过
-    assert "converged:feedback" in out.reason
-
-
-def test_change_target_lost_aborts_then_cruise():
-    e = _eng()
-    e.update(_good_obs(fid=1), DT)                # CHANGE，组 validity=9
-    out = e.update(_obs(fid=10, presence=True), DT)   # 组消失（过宽限）
-    assert out.state is DecisionState.ABORT_CHANGE and out.reason == "cancel:target_lost"
-    out = e.update(_obs(fid=11, presence=True), DT)   # 无反馈 1 tick 落稳
-    assert out.state is DecisionState.CRUISE and out.reason == "abort:settled"
-
-
-def test_change_fatal_goes_abort_to_conserve():
-    e = _eng()
-    e.update(_good_obs(fid=1), DT)                # CHANGE
-    out = e.update(_obs(fid=2, fresh=False), DT)  # 帧过旧（1 tick 即致命）
-    assert out.state is DecisionState.ABORT_CHANGE
-    assert out.reason == "validate_fail:frame_stale"
-    out = e.update(_obs(fid=3, presence=True), DT)
-    assert out.state is DecisionState.CONSERVE    # 回稳落定后进保守
-
-
-def test_change_retargets_only_beyond_margin():
-    e = _eng()
-    gA1, msA1 = _group(1, 1, n=3, x=0.5, cy=500, rel=10)
-    e.update(_obs(fid=1, groups=(gA1,), targets=msA1), DT)   # CHANGE A score≈38.7
-    # fid2：A 在场、B 更优过 margin（67 ≥ 38.7+15）→ 改判换目标
-    gA2, msA2 = _group(1, 2, n=3, x=0.5, cy=500, rel=10)
-    gB2, msB2 = _group(2, 2, n=6, x=0.3, cy=500, rel=10)
-    out = e.update(_obs(fid=2, groups=(gA2, gB2), targets=msA2 + msB2), DT)
-    assert out.reason == "switch:score_win" and out.target_id == 2
-    # fid3：不足 margin 的组合（C≈51.9 < 67.2+15）与自身回落都不触发再改判
-    gB3, msB3 = _group(2, 3, n=6, x=0.3, cy=500, rel=10)
-    gC3, msC3 = _group(3, 3, n=4, x=0.4, cy=500, rel=10)
-    out = e.update(_obs(fid=3, groups=(gB3, gC3), targets=msB3 + msC3), DT)
-    assert "switch" not in out.reason and out.target_id == 2
+    return DecisionEngine(CFG)
 
 
 def test_conserve_output_holds_and_forbids_moves():
@@ -321,22 +289,24 @@ def test_conserve_output_holds_and_forbids_moves():
     e._enter_conserve()                            # 直接进态（矩阵其余路径另有锁）
     out = e.update(_obs(fid=5, presence=True), DT)
     assert out.state is DecisionState.CONSERVE
-    assert out.x_target is None and out.move_allowed is False   # 保持≠回中（§二）
+    assert out.x_target is None                    # 保持≠回中（§二）
 
 
 def test_conserve_recovers_with_full_reset():
     e = _eng()
-    e.update(_good_obs(fid=1), DT)                 # CHANGE
-    e.update(_obs(fid=2, fresh=False), DT)         # abort
-    e.update(_obs(fid=3, presence=True), DT)       # CONSERVE
+    e._enter_conserve()                            # fatal 触发保守态（直接进入）
+    e.update(_obs(fid=2, fresh=False), DT)         # 过旧拍：保守态续留
+    e.update(_obs(fid=3, presence=True), DT)
     f = 4
     out = e.update(_obs(fid=f, presence=True, geometry=True), DT)
     while out.reason != "conserve_recovered" and f < 200:
         f += 1
         out = e.update(_obs(fid=f, presence=True, geometry=True), DT)
     assert out.state is DecisionState.CRUISE
-    assert f - 3 >= int(CFG.validate.t_recover_s / DT)   # 不早于 T_recover（不许秒回）
-    assert e._x_smooth == 0.0 and e._cool_t == 0.0 and e._target_gid is None  # 重置面
+    # 首个非致命拍=fid 3：恢复计数从这拍起，不许秒回
+    assert f - 2 >= int(CFG.validate.t_recover_s / DT)
+    e.reset()
+    assert e._target_prev is None                       # 重置面
 
 
 def test_conserve_escalates_to_fault_and_back():
@@ -353,82 +323,39 @@ def test_conserve_escalates_to_fault_and_back():
     while out.reason != "fault_recovered" and f < 600:
         f += 1
         out = e.update(_obs(fid=f, presence=True), DT)   # 健康帧：双 T_recover 降回
-    assert out.state is DecisionState.CRUISE and e._x_smooth == 0.0
-
-
-def test_v0_straight_baseline_gate():
-    """allow_all_moves=false（V0 直行基线）：永不进 CHANGE，x 恒 0（§〇 验收 V0）。"""
-    e = _eng(no_moves=True)
-    for f in range(1, 10):
-        out = e.update(_good_obs(fid=f), DT)
-        assert out.state is DecisionState.CRUISE and out.move_allowed is False
-    assert out.x_target == pytest.approx(0.0)
+    assert out.state is DecisionState.CRUISE
+    e.reset()
+    assert e._target_prev is None                       # 重置面（恢复后冷启动）
 
 
 def test_output_schema_and_validity_window():
     e = _eng()
     out = e.update(_good_obs(), DT)
-    assert out.schema_version == 2                 # v2：reanchor_lane 契约
+    assert out.schema_version == 5                 # v5：删除 move_allowed
     assert out.valid_until_fid > out.emitted_fid
     assert isinstance(out.reason, str) and out.reason
-    assert out.reanchor_lane is None               # 非完成拍不携带
 
 
-def test_signed_completion_rejects_reverse():
-    """有符号完成判据（planner 设计稿 §二，维护者裁定 2026-09-22）：
-    demand=+0.5 时反方向 executed=−0.45 绝对值够大也不得过收敛门。"""
+def test_unverified_position_holds_target_and_skips_selection():
+    """执行层位置不可信时选择层不重建目标：场景里的车/币绝对位置全部由
+    那个假位置平移而来，假位置下的选择只会给出假目标（20261031 两局：
+    盲窗内目标跟着漂移的状态走，重获证据时整道跳）。"""
     e = _eng()
-    e.update(_good_obs(fid=1), DT)                 # CHANGE demand=+0.5
-    out = e.update(_good_obs(fid=2), DT, executed_lane=-0.45)
-    assert "converged" not in out.reason
-    assert out.state is DecisionState.CHANGE
-    out = e.update(_good_obs(fid=3), DT, executed_lane=0.45)   # 同向才吃门
-    assert "converged:feedback" in out.reason
-
-
-def test_reanchor_lane_carried_once_signed():
-    """完成拍携带有符号目标读数（非裸 bool）；下一拍即清（一次性）。"""
-    e = _eng()
-    e.update(_good_obs(fid=1), DT)
-    out = e.update(_good_obs(fid=2), DT, executed_lane=0.45)
-    assert out.reanchor_lane == pytest.approx(0.5)  # g.x_center 有符号
-    out = e.update(_obs(fid=3, presence=True), DT)
-    assert out.reanchor_lane is None
-
-
-def test_lowpass_is_time_based():
-    """同目标不同 dt：大 dt 一步更靠近目标（α=1−exp(−dt/τ)，§五）。"""
-    obs1 = _good_obs(fid=1)
-    e_fast, e_slow = _eng(), _eng()
-    e_fast.update(obs1, 0.2)                       # 快 tick 大 dt
-    e_slow.update(obs1, 0.02)
-    assert abs(e_fast._x_smooth) > abs(e_slow._x_smooth)
+    e.update(_obs(fid=1, presence=True), DT, executed_lane=0.2,
+             corridor=_corridor(-5.0, 5.0))
+    for fid in range(2, 6):                          # 目标 slew 收敛到冻结位
+        out = e.update(_obs(fid=fid, presence=True), DT, executed_lane=0.2,
+                       corridor=_corridor(-5.0, 5.0), state_unverified=True)
+        assert out.reason == "sel:hold:state_unverified"
+        assert e.scene is None                       # 不建场景 → 不出计划
+    assert out.x_target == pytest.approx(0.2, abs=1e-6)
 
 
 def test_engine_reset_clears_everything():
     e = _eng()
     e.update(_good_obs(), DT)
     e.reset()
-    assert e._state is DecisionState.CRUISE and e._x_smooth == 0.0
-
-def test_change_surviving_group_does_not_poison_x_target():
-    """回放抓到的缺陷：CHANGE 中组转存续态（x_center=nan）曾把 x_smooth 污染成
-    nan 直达输出——存续时保持最后 goal，不外插 nan。"""
-    import math
-    e = _eng()
-    e.update(_good_obs(fid=1), DT)                 # → CHANGE，x_smooth 开始爬向 0.5
-    assert not math.isnan(e.update(_good_obs(fid=2), DT).x_target)
-    # 组进存续：成员不在 targets、conf_min=0、x_center=nan（同聚合器真实输出形态）
-    held = CoinGroup(group_id=1, member_ids=(100, 101, 102), observed_count=3,
-                     estimated_count=3, x_center=float("nan"), x_span=0.3,
-                     cy_min=500, cy_max=506, conf_min=0.0, partial_observation=True,
-                     first_seen_fid=1, last_seen_fid=2, validity_until_fid=10)
-    out = e.update(_obs(fid=3, groups=(held,), presence=True), DT)
-    assert not math.isnan(out.x_target)            # 核心断言：nan 不得穿透
-    assert out.state is DecisionState.CHANGE       # 存续≠取消（宽限内继续计划）
-
-
-# ---------- 阶段 C step 2：超车候选（allow_overtake=V2） ----------
+    assert e._state is DecisionState.CRUISE and e._target_prev is None
 
 def _cv(tid=5, x=1.1, cy=500, rel=10.0):
     return CarView(id=tid, x_lane=x, cy=cy, rel_approach=rel,
@@ -439,197 +366,362 @@ def _traffic(views=(), events=()):
     return (tuple(views), tuple(events))
 
 
-def _pass_ev(tid=5, d=0.63, fid=3):
-    return PassEvent(track_id=tid, outcome=OUTCOME_PASS, settled_fid=fid,
-                     d_min=d, age_ticks=30)
-
-
-def test_overtake_gate_closed_ignores_traffic():
-    """关闸（默认）：喂车流观测也不成候选——V0/V1 兼容性红线的行为锁。"""
-    e = _eng()   # allow_overtake=False
-    out = e.update(_obs(presence=True), DT, traffic=_traffic([_cv()]))
-    assert out.state is DecisionState.CRUISE and "no_candidate" in out.reason
-
-
-def test_overtake_select_track_and_pass_done():
-    e = _eng(overtake=True)
-    out = e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
-    assert out.state is DecisionState.CHANGE and out.reason == "select:score_win"
-    assert out.target_id == 5 and out.x_target > 0        # 右车内贴=向右小幅
-    # 在途：goal 跟车滚动（车横向读数变小，贴邻目标随之收缩）
-    out = e.update(_obs(fid=2, presence=True), DT,
-                   traffic=_traffic([_cv(x=0.8)]))
-    assert out.state is DecisionState.CHANGE and "moving:overtake" in out.reason
-    # pass 落定：done + 冷却；reanchor=None（超车完成拍无目标读数可锚，§六裁定）
-    out = e.update(_obs(fid=3, presence=True), DT,
-                   traffic=_traffic([], [_pass_ev()]))
-    assert out.state is DecisionState.CRUISE and "done:overtake_pass" in out.reason
-    assert out.reanchor_lane is None
-
-
-def test_overtake_lost_or_ghost_aborts():
-    for ev in (_pass_ev(fid=3).__class__(track_id=5, outcome=OUTCOME_LOST,
-                                         settled_fid=3, d_min=None, age_ticks=30),
-               _pass_ev(fid=3).__class__(track_id=5, outcome=OUTCOME_GHOST,
-                                         settled_fid=3, d_min=None, age_ticks=99)):
-        e = _eng(overtake=True)
-        e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
-        out = e.update(_obs(fid=3, presence=True), DT, traffic=_traffic([], [ev]))
-        assert out.state is DecisionState.ABORT_CHANGE             and out.reason == "cancel:overtake_lost"
-
-
-def test_overtake_vanish_without_event_aborts():
-    """车从视图消失且无落定事件（traffic 断供/异常）：保守走 ABORT 不硬猜 pass。"""
-    e = _eng(overtake=True)
-    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
-    out = e.update(_obs(fid=2, presence=True), DT, traffic=_traffic())
-    assert out.state is DecisionState.ABORT_CHANGE
-
-
-def test_passed_car_not_reselected_fresh_car_can():
-    e = _eng(overtake=True)
-    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
-    e.update(_obs(fid=2, presence=True), DT, traffic=_traffic([], [_pass_ev(fid=2)]))
-    for i in range(3, 30):                    # 过冷却窗（t_cool=1.0s=20 拍）
-        e.update(_obs(fid=i, presence=True), DT, traffic=_traffic())
-    out = e.update(_obs(fid=30, presence=True), DT, traffic=_traffic([_cv()]))
-    assert "no_candidate" in out.reason       # 同 track id 已落定，不重选
-    out = e.update(_obs(fid=31, presence=True),
-                   DT, traffic=_traffic([_cv(tid=6)]))
-    assert out.state is DecisionState.CHANGE  # 新车照常成候选
-
-
-def test_overtake_timeout_forces_done():
-    e = _eng(overtake=True, t_pass_max_s=0.2)
-    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv()]))
-    reasons = []
-    for i in range(2, 8):
-        out = e.update(_obs(fid=i, presence=True), DT,
-                       traffic=_traffic([_cv(cy=650)]))
-        reasons.append(out.reason)
-    assert any("done:pass_timeout" in r for r in reasons)   # 兜底强制落定
-    assert "moving:overtake" in reasons[0]                  # 落定前确在计划路上
-
-
-def test_hug_goal_inner_side_both_signs():
-    e = _eng(overtake=True)
-    d = CFG.overtake.d_hold_lane
-    assert e.scorer.hug_goal(1.1) == pytest.approx(1.1 - d)    # 右车从内侧贴
-    assert e.scorer.hug_goal(-1.2) == pytest.approx(-1.2 + d)  # 左车镜像
-
-
-def test_overtake_score_partial_order():
-    s = _eng(overtake=True).scorer
-    near = s.score_car(_cv(tid=1, cy=650))
-    far = s.score_car(_cv(tid=2, cy=450))
-    assert near.score > far.score                              # 同车越近越值
-    assert s.score_car(_cv(x=0.3)) is None                     # 本车道车不作候选
-    assert s.score_car(_cv(x=1.9)) is None                     # 带外杂框自卫
-    assert s.score_car(_cv(tid=3, x=-1.1, rel=0.0)) is None    # 不接近（等速在前）
-    left = s.score_car(_cv(tid=4, x=-1.1))
-    right = s.score_car(_cv(tid=5, x=1.1))
-    assert left.score == pytest.approx(right.score)            # 左右对称
-
-
 # ---------- 对称性原则（维护者裁定 2026-09-22：决策默认左右对称，禁用方向需显式证据） ----------
 
-def _bnd(left_edge=None, right_edge=None):
-    from maaracing_master.plugins.speedrush.tracking import BoundarySummary
-    return BoundarySummary(schema_version=2, left_x=300.0, right_x=980.0,
-                           road_width=680.0, straight_residual=0.1, vp_row=None,
-                           validity=True, uncertainty=1.0, sides=2,
-                           left_edge_lane=left_edge, right_edge_lane=right_edge)
+def _corridor(left_m=None, right_m=None):
+    """单带走廊（_side_has_space 消费面）：米制入参，obs.boundary 通道
+    v4 恒 None 已退役（第 6 步侧别检查改吃走廊带）。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand, UNKNOWN)
+    band = CorridorBand(
+        z0=3.0, z1=6.0,
+        left=BandBoundary(left_m, "measured") if left_m is not None
+        else BandBoundary(None, UNKNOWN),
+        right=BandBoundary(right_m, "measured") if right_m is not None
+        else BandBoundary(None, UNKNOWN))
+    return Corridor((band,), None, None, "pair", "ok")
 
 
-def test_mirror_symmetry_engine_and_planner():
-    """观测整体镜像喂入 → 决策输出与规划杆值必须严格镜像（对称性机检锁）。"""
-    from maaracing_master.plugins.speedrush.planner import LateralPlanner
-    e1, e2 = _eng(overtake=True), _eng(overtake=True)
-    p1, p2 = LateralPlanner(CFG.planner), LateralPlanner(CFG.planner)
-    for fid in range(1, 13):
-        x = 1.1 + 0.03 * fid
-        o1 = e1.update(_obs(fid=fid, presence=True), DT,
-                       traffic=_traffic([_cv(tid=5, x=x)]))
-        o2 = e2.update(_obs(fid=fid, presence=True), DT,
-                       traffic=_traffic([_cv(tid=5, x=-x)]))
-        assert o1.state is o2.state and o1.reason == o2.reason
-        assert o1.x_target == pytest.approx(-(o2.x_target or 0.0), abs=1e-12)
-        c1 = p1.update(o1, DT, fid)
-        c2 = p2.update(o2, DT, fid)
-        assert c1.steer_x == -c2.steer_x and c1.throttle == c2.throttle
-
-
-def test_space_gate_disables_only_with_evidence():
-    ov = CFG.overtake
-    tight = ov.d_hold_lane + ov.space_margin_lane - 0.05
-    # 左缘只剩 tight 的空间 → 左候选被禁、右候选照常
-    e = _eng(overtake=True)
-    out = e.update(_obs(fid=1, presence=True, boundary=_bnd(left_edge=-tight,
-                                                             right_edge=2.0)),
-                   DT, traffic=_traffic([_cv(tid=9, x=-1.1)]))
-    assert "no_candidate" in out.reason
-    out = e.update(_obs(fid=2, presence=True, boundary=_bnd(left_edge=-tight,
-                                                             right_edge=2.0)),
-                   DT, traffic=_traffic([_cv(tid=9, x=1.1)]))
-    assert out.state is DecisionState.CHANGE
-    # 证据不足（缘距 None）→ 两侧都放行（对称默认，不得无证据禁方向）
-    e2 = _eng(overtake=True)
-    out = e2.update(_obs(fid=1, presence=True, boundary=_bnd(None, None)), DT,
-                    traffic=_traffic([_cv(tid=9, x=-1.1)]))
-    assert out.state is DecisionState.CHANGE
-    e3 = _eng(overtake=True)
-    out = e3.update(_obs(fid=1, presence=True), DT,
-                    traffic=_traffic([_cv(tid=9, x=-1.1)]))
-    assert out.state is DecisionState.CHANGE
-
-
-# ---------- 19:44 复盘三刀：可行性门 / pass 短冷却 / ABORT 速率落稳 ----------
-
-def test_overtake_feasibility_gate():
-    """来不及贴的车不追：t_meet < 贴邻耗时+响应+余量 → 不成候选。"""
-    e = _eng(overtake=True)
-    near = _cv(tid=1, cy=650)          # t_meet=(716−650)/200=0.33s < ~0.77s
-    out = e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([near]))
-    assert "no_candidate" in out.reason
-    far = _cv(tid=2, cy=400)           # t_meet=1.58s > 0.77s
-    out = e.update(_obs(fid=2, presence=True), DT, traffic=_traffic([far]))
-    assert out.state is DecisionState.CHANGE
-
-
-def test_overtake_pass_short_cooling():
-    """pass 落定后短冷却（0.2s）：第 6 拍（0.3s）新车已可再选；旧 1s 口径下还在 cooling。"""
-    e = _eng(overtake=True)
-    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([_cv(tid=5, cy=400)]))
-    out = e.update(_obs(fid=2, presence=True), DT,
-                   traffic=_traffic([], [_pass_ev(tid=5, fid=2)]))
-    assert "done:overtake_pass" in out.reason
-    out = e.update(_obs(fid=3, presence=True), DT,
-                   traffic=_traffic([_cv(tid=6, x=1.2, cy=400)]))
-    assert "cooling" in out.reason                # 0.05s：短冷却内，不误开
-    for i in range(4, 8):                          # 递减过 0.2s 窗尾（浮点尾差需多一拍）
-        out = e.update(_obs(fid=i, presence=True), DT,
-                       traffic=_traffic([_cv(tid=6, x=1.2, cy=400)]))
-    assert out.state is DecisionState.CHANGE       # 0.2s 窗过即重开（旧 1s 口径仍在 cooling）
 
 
 def test_abort_settles_on_velocity_zero():
     """有反馈 ABORT：executed 停住（速率≤界）即落稳，不再一律冻满 2s。"""
-    e = _eng()
-    e.update(_good_obs(fid=1), DT)                     # → CHANGE
-    e.update(_obs(fid=10, presence=True), DT)          # 组消失 → ABORT（executed None？）
-    # 上一拍 executed=None 直接落稳（v1 路）——本锁走有反馈路：
     e2 = _eng()
-    e2.update(_good_obs(fid=1), DT, executed_lane=0.1)
-    out = e2.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)  # 进 ABORT
-    assert out.state is DecisionState.ABORT_CHANGE
-    out = e2.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)  # 首拍立参考
-    assert out.state is DecisionState.ABORT_CHANGE
-    out = e2.update(_obs(fid=12, presence=True), DT, executed_lane=0.2)  # v=0 → 落稳
+    e2._enter_abort("test")                                # fatal 路径外直接进入
+    out = e2.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)  # 首拍立参考
+    assert out.state is DecisionState.ABORT
+    out = e2.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)  # v=0 → 落稳
     assert out.state is DecisionState.CRUISE and "abort:settled" in out.reason
     # 仍在横移：不落稳
     e3 = _eng()
-    e3.update(_good_obs(fid=1), DT, executed_lane=0.1)
-    e3.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)
-    e3.update(_obs(fid=11, presence=True), DT, executed_lane=0.2)          # 立参考
-    out = e3.update(_obs(fid=12, presence=True), DT, executed_lane=0.35)   # v=3>0.3
-    assert out.state is DecisionState.ABORT_CHANGE
+    e3._enter_abort("test")
+    out = e3.update(_obs(fid=10, presence=True), DT, executed_lane=0.2)  # 立参考
+    assert out.state is DecisionState.ABORT
+    out = e3.update(_obs(fid=11, presence=True), DT, executed_lane=0.35)   # v=3>0.3
+    assert out.state is DecisionState.ABORT
+
+
+
+
+
+# ---------- 前置三件套①：车流 t_meet 地面流化（2026-10-11 V0 归因） ----------
+
+def test_car_t_meet_ground_flow_and_fallback():
+    """fid 率有供=地面流积分式（对 1/r 沿行积分的闭式对账）；缺供=退回旧
+    行率式（已知 TTC 高估方向的旧消费口径，行为不静默换式）。"""
+    cal = load_calib()
+    d, D, rel, f = 200.0, IMAGE_H - cal.y_h, 4.0, 30.0
+    assert t_meet_car_s(rel, cal.y_h + d, cal, f) == \
+        pytest.approx(d * (D - d) / (D * rel) / f)
+    assert math.isinf(t_meet_car_s(-1.0, 500.0, cal, f))   # 不接近→永不到站
+    assert t_meet_car_s(4.0, IMAGE_H + 5, cal, f) == 0.0  # 已到下缘
+    with pytest.raises(ValueError):
+        t_meet_car_s(4.0, 500.0, cal, 0.0)
+    e = _eng()
+    v = _cv(tid=1, cy=cal.y_h + d, rel=rel)
+    e.update(_obs(fid=1, presence=True), DT, traffic=_traffic([v]))
+    # 缺供退路=旧线性式（rel 按 px/tick 消费），与三件套①前的行为逐位同
+    assert e.scorer.car_t_meet_s(rel, cal.y_h + d) == \
+        pytest.approx((IMAGE_H - cal.y_h - d) / (rel * 20.0))
+    # 引擎逐拍喂 fid 率后换积分式
+    e.update(_obs(fid=2, presence=True, fid_hz=f), DT, traffic=_traffic([v]))
+    assert e.scorer.fid_hz == f
+    assert e.scorer.car_t_meet_s(rel, cal.y_h + d) == \
+        pytest.approx(d * (D - d) / (D * rel) / f)
+
+
+
+
+# ---------- 目标流枯竭：空街不是故障 ----------
+
+def test_empty_road_does_not_trip_target_empty():
+    w = ValidationWatch(CFG)
+    for fid in range(1, 12):
+        rep = w.check(_obs(fid=fid, presence=False, raw=False), 0.5)
+        assert rep.fatal is None
+
+
+def test_raw_detections_without_tracks_trip_target_empty():
+    w = ValidationWatch(CFG)
+    fatal = None
+    for fid in range(1, 12):
+        fatal = w.check(_obs(fid=fid, presence=False, raw=True), 0.5).fatal
+    assert fatal == "target_empty"
+
+
+def test_raw_coins_without_tracks_do_not_trip_target_empty():
+    """画面只有币/奖励、跟踪为空：机会面闪断不是感知故障，不冻结决策。"""
+    w = ValidationWatch(CFG)
+    for fid in range(1, 12):
+        rep = w.check(_obs(fid=fid, presence=False, raw=False, raw_coins=3),
+                      0.5)
+        assert rep.fatal is None
+
+
+def _car_t(tid, fid, cy, box):
+    return TrackedTarget(
+        id=tid, kind="car", x_lane=0.0, x_sigma=0.1, cy=cy, w=100, h=100,
+        conf=0.9, rel_approach=0.0, first_seen_fid=1, last_seen_fid=fid,
+        validity_until_fid=fid + 8, box=box)
+
+
+def test_fast_approach_cy_jump_with_continuous_box_is_not_fatal():
+    """大车逼近 1 拍跨 150px 是物理的；2D 框仍重叠就不是身份互换。"""
+    w = ValidationWatch(CFG)
+    a = _car_t(1, 1, 500, (100, 400, 220, 560))
+    b = _car_t(1, 2, 650, (100, 460, 220, 700))
+    assert w.check(_obs(fid=1, targets=(a,)), 0.05).fatal is None
+    assert w.check(_obs(fid=2, targets=(b,)), 0.05).fatal is None
+
+
+def test_cy_jump_without_box_overlap_is_fatal():
+    w = ValidationWatch(CFG)
+    a = _car_t(1, 1, 500, (100, 400, 200, 500))
+    b = _car_t(1, 2, 650, (700, 600, 800, 700))
+    assert w.check(_obs(fid=1, targets=(a,)), 0.05).fatal is None
+    assert w.check(_obs(fid=2, targets=(b,)), 0.05).fatal == "cy_jump"
+
+
+# ---------- 远场粗带的坐标口径（方向级消费，2026-10-21） ----------
+
+def test_far_hint_is_shared_and_not_recomputed_in_selection_frame():
+    """方向结果由走廊层共享：选择帧换算（executed/原点）不得重算或平移它。
+    实拍证据：p2 2796→2799 远带与中心线未动，executed 翻 1.47 道；共享结果
+    在原始坐标算好，消费端只读。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand, far_hint_lane)
+
+    e = _eng()
+    lw = e.cal.lane_w_m
+    bands = tuple(
+        CorridorBand(float(z), float(z + 3.0),
+                     BandBoundary(-8.0, "measured", 1.0),
+                     BandBoundary(8.0, "measured", 1.0))
+        for z in range(-3, 30, 3))
+    coarse = (CorridorBand(
+        11.0, 26.0,
+        BandBoundary(-9.0, "inferred"),
+        BandBoundary(5.0, "inferred")),)
+    e._corridor = Corridor(bands, 0.0, 16.0, "pair", "ok", coarse,
+                           far_hint_lane=0.42)
+    assert far_hint_lane(bands, coarse, lw) == pytest.approx(-2.0 / lw)
+    for executed in (-1.0, 0.0, 1.0):
+        road, _, _ = e._road_frame(executed, 1)
+        assert road.far_hint_lane == pytest.approx(0.42)
+
+
+def test_selection_reachability_uses_plant_kinematics():
+    """横移可达性 = 执行层同一条闭环律：0.7 道约 1.4 秒（台架实测同量级）。
+
+    旧口径「恒加速到横速上限」把 0.7 道估成 0.5 秒，比实车快一倍多——
+    决策敢在车到眼前才起意，执行层按真实车判到不了。"""
+    from maaracing_master.plugins.speedrush.selection import (
+        SelectionParams, _reachable, _t_move)
+
+    p = SelectionParams(lane_w_m=3.4)
+    assert _t_move(0.7 * 3.4, p) == pytest.approx(1.42, abs=0.06)
+    assert _t_move(1.0 * 3.4, p) == pytest.approx(1.58, abs=0.06)
+    assert _t_move(0.2 * 3.4, p) < _t_move(0.7 * 3.4, p)
+    # 反应时 + 余量之外还要整段横移时间：1.0 秒不够 0.7 道
+    assert not _reachable(0.7 * 3.4, 0.0, 1.0, p)
+    assert _reachable(0.7 * 3.4, 0.0, 1.8, p)
+    assert not _reachable(3.0 * 3.4, 0.0, 1.8, p)
+    # 已对齐只留反应时间
+    assert _reachable(0.05 * 3.4, 0.0, 0.2, p)
+    assert not _reachable(0.05 * 3.4, 0.0, 0.1, p)
+
+
+def test_selection_kinematics_share_planner_source():
+    """选择层的横移能力直接读 planner 的闭环律参数，不另存一份换道时间。"""
+    e = _eng()
+    assert e.selector.p.k_lat_lane_s == pytest.approx(
+        e.cfg.planner.k_lat_lane_s)
+    assert e.selector.p.tau_heading_s == pytest.approx(
+        e.cfg.planner.tau_heading_s)
+    assert e.selector.p.heading_max_rad == pytest.approx(
+        e.cfg.planner.heading_max_rad)
+
+
+def test_box_size_metric_car_uses_pixel_lateral_and_no_ttc():
+    """无锚框高粗距离（2026-10-23）：横向走像素尺子、到站时间弃权、
+    z 不喂精确米制口径；近/远判断吃粗距离。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-1.2, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    src = e._reach_car_sources(0.0)
+    assert len(src) == 1
+    s = src[0]
+    assert s.src == "metric_coarse"
+    assert s.x_m == pytest.approx(-1.2 * e.cal.lane_w_m)   # 横向=像素尺子
+    assert s.t_meet_s is None and s.z_m is None             # 粗距离不进精确口径
+    assert s.near is True                                   # 4.5m ≤ near_z_m=6m
+
+
+def test_box_size_metric_car_without_lateral_near_enters_as_block():
+    """近距无横位 ≠ 无威胁（2026-11-03 帧 0213 帧证）：补给/事件车 12m 内
+    横位缺位（框心贴地平线过不了尺子门），旧口径整段跳过=避让层视而不见。
+    近距按占本道处理；远轨仍诚实弃权。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    # 近距（z 4.5m ≤ near_z_m）无横位：按占本道入账
+    e._views = (CarView(id=1, x_lane=None, cy=620, rel_approach=8.0,
+                        d_min=0.0, age_ticks=10),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    src = e._reach_car_sources(0.0)
+    assert len(src) == 1
+    s = src[0]
+    assert s.src == "metric_coarse"
+    assert s.x_m == pytest.approx(0.0, abs=0.3)   # 占本道（自车系正前）
+    assert s.near is True
+    assert s.t_meet_s is None and s.z_m is None   # 仍不进精确口径
+    # 远轨（z 25m、cy 远）无横位：不入账
+    e._views = (CarView(id=2, x_lane=None, cy=360, rel_approach=8.0,
+                        d_min=0.0, age_ticks=10),)
+    e._metric_cars = (MetricCarState(
+        target_id=2, source=DistanceSource.BOX_SIZE, z_m=25.0, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    assert e._reach_car_sources(0.0) == []
+
+
+def test_lane_ttc_map_keeps_earliest_per_lane():
+    """车道到站时间表：同一道多车取最早；无到站时间/视界外的车不进表；
+    道号按 ±0.5 道就近归属（路线层的时间面真源）。"""
+    from types import SimpleNamespace as NS
+    from maaracing_master.plugins.speedrush.decision import _lane_ttc_map
+    lw = 3.5
+    scene = NS(lane_w_m=lw, objs=(
+        NS(kind="car", timed=True, t_arrive_s=2.0, x_m=0.2),      # 道 0
+        NS(kind="car", timed=True, t_arrive_s=0.8, x_m=-0.3),     # 道 0 更近
+        NS(kind="car", timed=True, t_arrive_s=1.5, x_m=3.4),      # 道 1
+        NS(kind="car", timed=True, t_arrive_s=9.0, x_m=-6.9),     # 视界外
+        NS(kind="car", timed=False, t_arrive_s=None, x_m=7.0),    # 无时间
+        NS(kind="coin", timed=True, t_arrive_s=0.2, x_m=0.0),     # 非车
+    ))
+    assert _lane_ttc_map(scene, 0.0, 3.0) == {0: 0.8, 1: 1.5}
+
+
+def test_lane_ttc_map_skips_unsafe_cars():
+    """路线时间门只读安全车：超龄/退役车不得制造紧急或阻挡逃生。"""
+    from types import SimpleNamespace as NS
+    from maaracing_master.plugins.speedrush.decision import _lane_ttc_map
+    scene = NS(lane_w_m=3.5, objs=(
+        NS(kind="car", timed=True, t_arrive_s=0.5, x_m=0.0,
+           safety_ok=False),
+        NS(kind="car", timed=True, t_arrive_s=1.2, x_m=0.0,
+           safety_ok=True),
+    ))
+    assert _lane_ttc_map(scene, 0.0, 3.0) == {0: 1.2}
+
+
+def test_coin_group_far_time_is_later_than_near():
+    """长币线：远端（cy_min）到站时间晚于最近一枚，选择层用它提前起意；
+    计分仍用近枚时间。"""
+    ms = _members(1, 1, 3, 0.5, 500, 5)
+    g = CoinGroup(group_id=1, member_ids=tuple(m.id for m in ms),
+                  observed_count=3, estimated_count=3, x_center=0.5,
+                  x_span=0.3, cy_min=500, cy_max=506, conf_min=0.85,
+                  partial_observation=False, first_seen_fid=1,
+                  last_seen_fid=1, validity_until_fid=9)
+    sc = Scorer(CFG, load_calib()).score(g, _obs(groups=(g,), targets=ms))
+    assert sc is not None
+    assert sc.t_far_s > sc.t_miss_s
+
+
+def test_metric_x_ruler_disagreement_takes_urgent_reading():
+    """米制 x ↔ 尺子互证（20261103 雨 p2 车5 帧证）：米制横位在 16.8m 处
+    报 4-6 道（真值 2-3 道），决策按"路外无关车"放行到重叠前 0.2s。
+    持续分歧 >0.6 道 3 拍 → 按更急的读数入账；贴回 0.3 道 2 拍恢复。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    # 尺子 −1.0 道（邻道逼近），米制 −3.0 道（错得远）：持续 3 拍触发
+    e._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
+    for _ in range(2):
+        e._metric_cars = (MetricCarState(
+            target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
+            v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+        src = e._reach_car_sources(0.0)
+        assert len(src) == 1
+        assert src[0].x_m == pytest.approx(-3.0 * 3.5, abs=0.4), "未满持续拍数不接管"
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
+        v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+    src = e._reach_car_sources(0.0)
+    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), "持续分歧后按更急的尺子读数入账"
+    # 贴回 1 拍不恢复，2 拍恢复
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.05 * 3.5,
+        v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+    assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4)
+    assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.05 * 3.5, abs=0.4), "贴回 2 拍恢复米制"
+
+
+def test_metric_x_agreement_keeps_metric():
+    """双仪器一致（<0.6 道）不接管，正常车不受闸影响。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=1.2, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=20.0, x_m=1.4 * 3.5,
+        v_close_mps=5.0, t_meet_s=4.0, anchor_age_ms=50.0),)
+    for _ in range(6):
+        src = e._reach_car_sources(0.0)
+        assert len(src) == 1
+        assert src[0].x_m == pytest.approx(1.4 * 3.5, abs=0.4)
+
+
+def test_metric_x_ruler_wins_even_when_metric_urgent():
+    """持续分歧按尺子入账，不按"更急者"（20261103_125755 车51 二次帧证：
+    米制把 1.0 道的邻道车压成 0.14 道幻影——更急的恰是错的那个，邻道车
+    变同车道幻影＝过早躲避的发生器）。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
+    for _ in range(3):
+        e._metric_cars = (MetricCarState(
+            target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-0.14 * 3.5,
+            v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+        src = e._reach_car_sources(0.0)
+        assert len(src) == 1
+    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), \
+        "更急的米制幻影不接管，尺子赢"
+
+
+def test_depth_grid_blocked_cluster_enters_as_pseudo_car():
+    """深占据通道（20261103_141656 帧证）：YOLO 全盲拍里近距大车不出 car
+    类、车表空＝正面撞；深度栅格路内窄块簇按占道障碍入账（负数千位段 id，
+    与墙按簇宽区分，单行簇滤噪声）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    # 3-6m 带、右邻道（x≈+3.5m → ix≈70）、簇宽 2 格、跨 3 行（≥2 行过噪声门）
+    z_lo_i = int((3.0 - 3.0) / GRID_CELL)      # GRID_Z_LO=3.0 → 第 0 行
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)   # −GRID_X_MAX=−14
+    state[z_lo_i:z_lo_i + 3, ix:ix + 2] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    grid = e._grid_car_sources(0.0)
+    assert len(grid) == 1
+    assert grid[0].id <= -3000 and grid[0].safety_ok
+    assert grid[0].near and grid[0].t_meet_s > 0
+    assert abs(grid[0].z_m - 4.5) < 2.0        # 3-6m 带中心
+    # 整行宽簇（墙）不入账
+    state[:] = 0
+    state[z_lo_i:z_lo_i + 3, 20:90] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(state=state, coef=None,
+                                 counts=np.ones_like(state), dig_cells=0,
+                                 latency_ms=1.0)
+    assert e._grid_car_sources(0.0) == []

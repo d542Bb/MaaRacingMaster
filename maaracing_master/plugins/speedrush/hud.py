@@ -49,8 +49,8 @@
 的末位读掉（实测 8500→850）或把图标读进来。**身份先判、再按身份选题框**——判色带（``pair_*``）
 与读数框分开正是为此：判色不能依赖身份，否则就成了循环依赖（见 ``pair_sides``）。
 
-**敌我判据搬自实验探针**（``tools/experiments/speedrush_scoring/probe_hud_ocr.py`` 的
-``pair_sides()``）：口径一致；探针按实验自包含约定自带一份代码副本（它不 import 本模块），
+**敌我判据搬自实验探针**（HUD 记分观测探针 f927757 的 ``pair_sides()``）：
+口径一致；探针按实验自包含约定自带一份代码副本（它不 import 本模块），
 只有区域**数据**是单一真源。
 """
 
@@ -64,7 +64,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from maaracing_master.core.logger import logger
 from maaracing_master.plugins.speedrush import HUD_REGIONS_FILE
@@ -346,7 +346,7 @@ class HudObserver:
 
     def __init__(
         self,
-        out_dir: Path,
+        out_dir: Path | None = None,
         *,
         frame_source: FrameSource,
         phase: int | None = None,
@@ -355,11 +355,18 @@ class HudObserver:
         engine: Any | None = None,
         regions: dict[str, list[float]] | None = None,
         regions_path: Path | str | None = None,
+        group_id: str | None = None,
+        persist: bool = True,
     ) -> None:
-        self.out_dir = Path(out_dir)
+        self.out_dir = Path(out_dir) if out_dir is not None else None
         self.phase = phase
         self.round_no = round_no
         self.interval_s = max(0.05, float(interval_s))
+        # False = 只做内存时钟（latest() 可用），不建目录、不写 hud.jsonl/meta。
+        # 宏回放的 HUD 只服务时间对齐与阶段结束兜底，不该留下调试产物。
+        self.persist = bool(persist)
+        # 派发时刻捕获的业务组号（驾驶阶段卡）；worker 不读线程局部当前组。
+        self._group_id = group_id
         self._frame_source = frame_source
         # 引擎与区域都可注入（测试注入假引擎，不加载真模型）；注入 None 时按真源懒加载
         self._engine = engine
@@ -384,12 +391,17 @@ class HudObserver:
         self._started_ns = 0
         self._started_iso = ""
         self._running = False
+        self._latest: dict | None = None   # 最新成功采样行（latest() 消费；调试图读数面）
 
     # ---------- 生命周期 ----------
 
     @property
     def running(self) -> bool:
         return self._running
+
+    def _log(self, msg: str, level: str = "INFO") -> None:
+        """阶段正文日志：派发时捕获的组号在 worker 线程里显式透传。"""
+        logger.log(msg, level, group_id=self._group_id)
 
     @property
     def regions(self) -> dict[str, list[float]]:
@@ -407,23 +419,41 @@ class HudObserver:
             "write_errors": self._write_errors,
         }
 
+    def latest(self) -> dict | None:
+        """最新一次成功采样的行（行与 fields 都浅拷隔离；None=尚无样本）。
+        调试图叠加读数用——行由采样线程整条替换、发布后不再改动，消费方拿
+        快照即可，改快照不污染采样侧。"""
+        rec = self._latest
+        if rec is None:
+            return None
+        snap = dict(rec)
+        snap["fields"] = dict(rec.get("fields") or {})
+        return snap
+
     def start(self) -> None:
         if self._running:
             return
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        if self.persist:
+            if self.out_dir is None:
+                raise ValueError("HudObserver: persist=True 需要 out_dir")
+            self.out_dir.mkdir(parents=True, exist_ok=True)
         self._stop.clear()
         self._started_ns = time.perf_counter_ns()
         self._started_iso = datetime.now().isoformat(timespec="seconds")
         self._sample_thread = threading.Thread(
             target=self._sample_worker, name="speedrush-hud-sample", daemon=True)
-        self._write_thread = threading.Thread(
-            target=self._write_worker, name="speedrush-hud-write", daemon=True)
-        self._write_thread.start()
+        if self.persist:
+            self._write_thread = threading.Thread(
+                target=self._write_worker, name="speedrush-hud-write", daemon=True)
+            self._write_thread.start()
         self._sample_thread.start()
         self._running = True
-        logger.log(
+        # persist=True 时 out_dir 必非空（上面已校验）
+        where = (f" → {cast(Path, self.out_dir) / 'hud.jsonl'}" if self.persist
+                 else "（仅内存时钟，不落盘）")
+        self._log(
             f"[极速狂飙] HUD 读数开始（{len(self._regions)} 区域 / 每 {self.interval_s:.2f}s）"
-            f" → {self.out_dir / 'hud.jsonl'}", "INFO")
+            f"{where}", "INFO")
 
     def stop(self, reason: str = "normal") -> None:
         """停止并 flush。幂等；重复调用只写一次 meta。"""
@@ -437,11 +467,13 @@ class HudObserver:
                 th.join(timeout=10.0)
         self._sample_thread = None
         self._write_thread = None
-        self._write_meta(reason)
-        logger.log(
-            f"[极速狂飙] HUD 读数结束：{self._rows_written} 行"
-            f"（丢 {self._rows_dropped}、"
-            f"缺帧 {self._samples_no_frame}、OCR 无结果 {self._ocr_no_result}）",
+        if self.persist:
+            self._write_meta(reason)
+        tail = (f"{self._rows_written} 行（丢 {self._rows_dropped}）"
+                if self.persist else "仅内存时钟（不落盘）")
+        self._log(
+            f"[极速狂飙] HUD 读数结束：{tail}、"
+            f"缺帧 {self._samples_no_frame}、OCR 无结果 {self._ocr_no_result}",
             "INFO" if self._rows_dropped == 0 and self._ocr_no_result == 0 else "WARNING")
 
     # ---------- 采样线程 ----------
@@ -456,10 +488,13 @@ class HudObserver:
             rec = self._sample_once()
             if rec is None:
                 continue
+            self._latest = rec        # 最新行槽（调试图读数面；整条替换不改旧对象）
             self._enqueue(rec)
 
     def _enqueue(self, rec: dict) -> None:
         """入队（非阻塞）；队满即丢并计数——反压口径照录制器，绝不阻塞采样侧。"""
+        if not self.persist:
+            return
         try:
             self._q.put_nowait(rec)
         except queue.Full:
@@ -470,7 +505,7 @@ class HudObserver:
         try:
             frame, frame_id, ts_ns, age_ms = self._frame_source()
         except Exception as exc:  # noqa: BLE001 —— 取帧异常按缺帧处理，不终止观察
-            logger.log(f"[极速狂飙] HUD 取帧异常: {exc!r}", "DEBUG")
+            self._log(f"[极速狂飙] HUD 取帧异常: {exc!r}", "DEBUG")
             self._samples_no_frame += 1
             return None
         if frame is None:
@@ -598,7 +633,7 @@ class HudObserver:
         except Exception as exc:  # noqa: BLE001 —— 单格异常按"该格读不出"处理
             self._read_errors += 1
             level = "WARNING" if self._read_errors == 1 else "DEBUG"
-            logger.log(
+            self._log(
                 f"[极速狂飙] HUD 单格读数异常（{name}，累计 {self._read_errors}）: {exc!r}", level)
             entry: dict = {"text": None, "value": None, "trusted": False,
                            "note": ["read_error"]}
@@ -617,7 +652,7 @@ class HudObserver:
         except Exception as exc:  # noqa: BLE001 —— 单格识别异常不该终止整条观察
             self._ocr_errors += 1
             level = "WARNING" if self._ocr_errors == 1 else "DEBUG"
-            logger.log(f"[极速狂飙] HUD 识别异常({self._ocr_errors}): {exc!r}", level)
+            self._log(f"[极速狂飙] HUD 识别异常({self._ocr_errors}): {exc!r}", level)
             return None
 
     def _get_engine(self) -> Any | None:
@@ -636,7 +671,7 @@ class HudObserver:
             self._engine = RapidOcrEngine()
         except Exception as exc:  # noqa: BLE001 —— 引擎不可用即降级，不抛给调用方
             self._engine_failed = True
-            logger.log(f"[极速狂飙] HUD 读数引擎不可用({exc!r})，本阶段不产出读数", "WARNING")
+            self._log(f"[极速狂飙] HUD 读数引擎不可用({exc!r})，本阶段不产出读数", "WARNING")
             return None
         return self._engine
 
@@ -649,7 +684,7 @@ class HudObserver:
         被排空、后续读数全部丢失，而这些只在事件结束时才被发现——计数与 WARNING 至少要
         留下"丢在哪一步"的痕迹。
         """
-        path = self.out_dir / "hud.jsonl"
+        path = cast(Path, self.out_dir) / "hud.jsonl"   # persist=True 才起本线程
         with path.open("w", encoding="utf-8") as f:
             while True:
                 try:
@@ -697,7 +732,7 @@ class HudObserver:
             "stop_reason": reason,
         }
         try:
-            (self.out_dir / "hud_meta.json").write_text(
+            (cast(Path, self.out_dir) / "hud_meta.json").write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001 —— meta 写失败不该抛给调用方
             logger.log(f"[极速狂飙] HUD meta 写入失败: {exc!r}", "WARNING")

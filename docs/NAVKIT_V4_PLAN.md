@@ -30,7 +30,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 ### 0.3 继承 vs 废弃
 
-**继承（资产不废）**：模板图、ROI、OCR 逻辑、策略规则、wgcap 中心采集器、clicker、gamepad\_cursor、nav\_graph.py 的 MRA\_Template / MRA\_Click 桥、校准数据、preview/base\_hash 原子落盘管线。
+**继承（资产不废）**：模板图、ROI、OCR 逻辑、策略规则、wgcap 中心采集器、clicker、gamepad\_cursor、nav\_graph.py 的 MaaRM\_Template / MaaRM\_Click 桥、校准数据、preview/base\_hash 原子落盘管线。
 
 **废弃**：五段概念（anchors/stages/routes/transitions/policies 作为 schema）、编译器、graph\_api、E/P 校验系列、auto\_shoo 避让补丁、detector 灰度匹配与 module.py 内联匹配、parity 测试（实际拓扑=先接线后删，拆 a/b/c/d 四步）。
 
@@ -65,7 +65,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
       "_label": "大厅 → 鉴宝入口",
       "_page": "hall",
       "recognition": "Custom",                    // 自定义识别必须走 Custom + custom_recognition
-      "custom_recognition": "MRA_Template",       // （MaaFW 官方协议方案二；MPE 对类型值
+      "custom_recognition": "MaaRM_Template",       // （MaaFW 官方协议方案二；MPE 对类型值
       "custom_recognition_param": {               //   做严格枚举白名单，直写自定义名导入即抛，
         "templates": ["hall_peak_appraise_card.png"], //  P0 实测）
         "roi": [0.76, 0.80, 0.90, 0.89],
@@ -76,7 +76,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
         "max_occlusion": 0.4
       },
       "action": "Custom",
-      "custom_action": "MRA_Click",
+      "custom_action": "MaaRM_Click",
       "_park": [0.5, 0.05],                       // L2 驻留点（缺省引擎按候选 ROI 自动算）
       "critical": true,
       "next": ["treasure.hall"],
@@ -101,7 +101,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 - **编辑器产物跳过**：`$__mpe_config_*` 伪节点与节点内 `$__mpe_code`（内嵌方案的布局字段）加载器必须容忍并跳过；MaaFW 官方 schema 的根节点正则为 `^(?!\$).*`（`$` 开头 root field 官方不解析，schema 层背书），运行时同样行为**仍留 P2a 实机确认一次**。
 
-- **Schema 工具链**：`tools/navkit/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MRA\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/navkit/migrate_v4.py` 的校验器承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
+- **Schema 工具链**：`tools/navkit/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/navkit/migrate_v4.py` 的校验器承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
 
 关键语义：
 
@@ -134,7 +134,7 @@ v3 的 `anchors / stages / transitions / routes / policies` 五段、`<id>_asset
 
 ### 4.1 引擎
 
-- **首选 MaaFramework Pipeline + CustomController**：nav\_graph.py 的识别/动作桥（MRA\_Template / MRA\_Click）成为唯一路径；`screencap()` 实现为"读 wgcap 缓存"。
+- **首选 MaaFramework Pipeline + CustomController**：nav\_graph.py 的识别/动作桥（MaaRM\_Template / MaaRM\_Click）成为唯一路径；`screencap()` 实现为"读 wgcap 缓存"。
 
 - **降级自研 mini 引擎**（\~250 行）：截图→识别→动作→走边循环。因为真源是 schema 而非引擎，此选择可逆，业务零改动。
 
@@ -252,7 +252,7 @@ E 级不落盘闸门逻辑保留。
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P0  | **MPE 选型验证**：`_` 字段 round-trip、param 透传、LocalBridge 对接 wgcap、iframe 嵌入可行性；schema v4 定稿 + JSON Schema 文件                                                               | 验证项全绿 + schema 评审                      | **验证三项全绿（2026-09-09）**；JSON Schema 文件与映射细则随 P1 落地                                                                                                                                                                                                                                                                                                                 |
 | P1  | v3→v4 迁移器（treasure + global），策略段拆表；继承 v3 资产（模板/ROI/OCR/策略规则/wgcap/clicker/gamepad\_cursor/nav\_graph 桥）                                                               | 生成图逐节点核对 ROI / next                    | **完成（2026-09-09）**：M0-M4 全绿，迁移器 + 真源图（global 7 + treasure 24）+ schema 三件套（commit 6bfb7f0）                                                                                                                                                                                                                                                                         |
-| P2a | 引擎接线：MaaFW 成唯一执行路径，CustomController 读 wgcap，MRA 桥落地遮挡 L1/L2/L3 + rgb\_strict + color\_assert                                                                          | 离线等价回放一致 + `$__mpe` 容忍与 `$` 字段忽略范围实机确认 | **完成（2026-09-09）**：Q1-Q5 全绿，全仓 464 测试                                                                                                                                                                                                                                                                                              |
+| P2a | 引擎接线：MaaFW 成唯一执行路径，CustomController 读 wgcap，MaaRM 桥落地遮挡 L1/L2/L3 + rgb\_strict + color\_assert                                                                          | 离线等价回放一致 + `$__mpe` 容忍与 `$` 字段忽略范围实机确认 | **完成（2026-09-09）**：Q1-Q5 全绿，全仓 464 测试                                                                                                                                                                                                                                                                                              |
 | P2b | 真机性能验收（帧预算/CPU/导航线程不被饿）+ 光标与颜色真机调参                                                                                                                                    | 指标达标                                   | **完成（2026-09-09 用户真机验收）**：完整局端到端通过（寻路/出价/快照/落盘/结算全链），决策帧率实测优于 v3（OCR 108ms/13 区、帧间隔 \~125ms）；排障九炸记录于当期运行日志（过程材料已清）。L2 `_park` 标定依赖 P3 可视化，随 P3 落地                                                                                                                                                                                                          |
 | P3  | Studio：**C 形态 = MPE 即 Studio**（无壳）——`studio.cmd` 起 mpelb+开 MPE 满幅；`policy_server.py` 策略表独立薄页；真源目录 `pipeline/` 生态惯例；rgb\_strict 评估收口（13 节点全 gray 足够）。主 GUI/sidecar 零改动 | 编辑→保存→运行闭环（round-trip 保真已证）            | **完成（2026-09-09）**：P3a 实证（mpelb/MPE 保真）+ P3b 闭环 + P3c 策略表薄页 + P3d 交集归零                                                                                                                                                                                                                                                               |
 | P4  | **删除**：v3 解析器、编译器、E/P 校验、graph\_api、旧 trace、auto\_shoo、detector 灰度匹配与 module.py 内联匹配、parity 测试                                                                        | 仓库搜不到 v3                               | **完成（2026-09-10）**：默认通路切 v4（6621107）；P4a 整删批（b9e3b3f，-18757 行）；P4b 数据源切换（c963836，双跑对拍等价、金标直过、迁移器退役、check\_truth 接管 CI 闸门）；P4c 匹配收敛与遮挡替代（576e757：单一 template\_match 引擎+按锚点 colorspace，shoo 全家退役，859 帧同政策直跑 99.9% 一致；真机完整局验收通过）；P4d 开关删除与终局验收（NAVKIT\_SOURCE 本体+v3 主循环死路径+v2 回退常量清除，执行通路唯一；trace 经生态核查后用户拍板保留设施、删 plan\_version 字段；全仓去 v3 措辞，终局 grep 零活代码命中，243 全绿） |

@@ -29,9 +29,9 @@ def _per(fid: int, *, cars=(), coins=(), bonuses=()) -> PerceptionResult:
                             cars=list(cars), coins=list(coins), bonuses=list(bonuses))
 
 
-def _near_car(cx=800, cy=500):
+def _near_car(cx=800, cy=500, h=40):
     """cy=500 在域内（denom≈176），x_lane≈正值（cx>vpx）。"""
-    return Detection(cx, cy, 60, 40, 0.9)
+    return Detection(cx, cy, 60, h, 0.9)
 
 
 # ---------- 1 过旧帧 ----------
@@ -59,12 +59,24 @@ def test_empty_frame_presence_false_and_no_targets():
 
 
 def test_above_horizon_dropped():
-    """cy ≤ y_h（地平线以上）几何无效，直接丢——与 build_world 同口径。"""
+    """整框在地平线上方（框底都不接地）几何无效，直接丢（归一发散口径）。
+    路内判据=框底接地（2026-11-03 改）：只压线的中心不再蒸发整框。"""
     trk = Tracker()
-    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 5)]),
+    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 45)]),
                      frame_age_ms=10.0, stage=1)
     assert obs.targets == () and obs.far_targets == ()
     assert obs.health.target_presence is False
+
+
+def test_tall_box_center_on_horizon_kept_with_bottom_anchor():
+    """高架物（限宽门/警示架）框中心压在地平线上、框底接地：不得蒸发，
+    横向尺子退框底锚出读数（20261103_213728 fid3569 路障追尾实锤：
+    yolo_cars=1 而 obs 无目标，躲避层整段无物可躲）。"""
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 5, h=200)]),
+                     frame_age_ms=10.0, stage=1)
+    assert len(obs.targets) == 1, "框底接地的高架物不得被中心闸丢弃"
+    assert obs.targets[0].x_lane is not None, "框底锚应产出横向读数"
 
 
 # ---------- 3 目标短暂遮挡 ----------
@@ -170,6 +182,49 @@ def test_lateral_jump_beyond_gate_is_new_track():
     assert new.x_lane == pytest.approx(x_lane_of(1100, 500, CAL))
 
 
+def test_large_box_growth_keeps_id_when_cy_jump_exceeds_old_gate():
+    """逼近的大车：纵向跳变会超旧 cy 门（80px），但框本身连续——身份必须
+    跟框走，不能因为变大/变快就新建轨道（2026-10-19 局 204308_p1 根因）。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(800, 450, 100, 120, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[Detection(800, 550, 120, 150, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 1
+    assert b.targets[0].id == a.targets[0].id
+    assert b.targets[0].first_seen_fid == 1
+
+
+def test_box_growth_across_lateral_shift_keeps_id():
+    """横向位移叠加扩框：2D 框仍连续，不得换身份。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(800, 500, 200, 100, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[Detection(700, 560, 220, 120, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 1
+    assert b.targets[0].id == a.targets[0].id
+
+
+def test_adjacent_cars_do_not_swap_identities():
+    """2D 匹配按框位置 1:1，左右两车不得因为 cy 相近而互换身份。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(500, 500, 100, 80, 0.9),
+                                 Detection(800, 500, 100, 80, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    by_cx_a = {round(t.x_lane, 3): t.id for t in a.targets}
+    b = trk.update(_per(2, cars=[Detection(510, 505, 100, 80, 0.9),
+                                 Detection(790, 505, 100, 80, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 2
+    by_cx_b = {round(t.x_lane, 3): t.id for t in b.targets}
+    assert set(by_cx_b.values()) == set(by_cx_a.values())
+    # 左车 id 与左车 id 对、右车对右车（不交叉）
+    left_a = next(t.id for t in a.targets if t.x_lane < 0)
+    left_b = next(t.id for t in b.targets if t.x_lane < 0)
+    assert left_a == left_b
+
+
 # ---------- 7 弯道 / 几何无效输入 ----------
 
 def test_geometry_invalid_passthrough_not_gated():
@@ -242,7 +297,7 @@ def test_x_sigma_matches_error_note_order():
     obs = trk.update(_per(1, cars=[_near_car(cy=cy)]), frame_age_ms=10.0, stage=1)
     t = obs.targets[0]
     assert t.x_lane is not None                 # 分母 30 ≥ MIN_DENOM：域内
-    assert 0.2 <= t.x_sigma <= 0.6              # 15×0.587/30 ≈ 0.29
+    assert 0.1 <= t.x_sigma <= 0.3              # 15×0.305/30 ≈ 0.15（保险杠尺子）
     assert t.kind == KIND_CAR
 
 
@@ -263,14 +318,13 @@ def test_observation_is_json_serializable():
 def test_decision_output_contract_shape():
     """DecisionOutput 生产者属 step 4，但契约形状与枚举值现在锁死。"""
     d = DecisionOutput(schema_version=SCHEMA_VERSION, state=DecisionState.CONSERVE,
-                       target_id=None, x_target=0.0, move_allowed=False,
+                       x_target=0.0,
                        reason="validate_fail:frame_stale",
                        emitted_fid=42, valid_until_fid=44)
     j = to_jsonable(d)
     assert j["state"] == "CONSERVE"          # Enum → value，回放侧读的是码串
-    assert set(DecisionState) == {DecisionState.CRUISE, DecisionState.CHANGE,
-                                  DecisionState.ABORT_CHANGE, DecisionState.CONSERVE,
-                                  DecisionState.FAULT}
+    assert set(DecisionState) == {DecisionState.CRUISE, DecisionState.ABORT,
+                                  DecisionState.CONSERVE, DecisionState.FAULT}
 
 
 def test_boundary_is_none_until_layer_lands():
@@ -307,3 +361,28 @@ def test_different_kinds_never_associate():
     assert len(b.targets) == 2                    # 旧车进宽限 + 新金币
     coin = [t for t in b.targets if t.kind == KIND_COIN][0]
     assert coin.id != a.targets[0].id
+
+
+# ---------- 采集帧率估计（2026-10-11 车流 t_meet 换基的时基锚） ----------
+
+def test_fid_rate_estimator_warms_up_and_converges():
+    """_per 的 ts 节律 = 33ms/fid（30.3Hz）：预热未达样本数 obs 带 None，
+    达标后聚合比率收敛真值；重复 fid 拍（WGC 合法重发）不投毒。"""
+    trk = Tracker()
+    obs = None
+    for fid in range(1, 13):
+        obs = trk.update(_per(fid, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+        if fid < Tracker._FID_HZ_WARM_N:
+            assert obs.fid_rate_hz is None        # 预热期不外供半熟估计
+    assert obs.fid_rate_hz == pytest.approx(30.3, rel=0.01)
+    dup = trk.update(_per(12, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    assert dup.fid_rate_hz == obs.fid_rate_hz     # 同 fid 重发：估计不动
+
+
+def test_fid_rate_survives_stage_reset():
+    """fid 率是采集流属性：阶段切换重卷轨迹不清估计。"""
+    trk = Tracker()
+    for fid in range(1, 13):
+        trk.update(_per(fid), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(20), frame_age_ms=10.0, stage=2)   # 阶段切换
+    assert obs.targets == () and obs.fid_rate_hz == pytest.approx(30.3, rel=0.05)

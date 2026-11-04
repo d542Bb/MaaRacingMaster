@@ -11,14 +11,14 @@
 
   /**
    * 创建帧消费者。
-   * @param {object} mra 通信层，需提供 call(method, params)
+   * @param {object} maarm 通信层，需提供 call(method, params)
    * @param {object} opts
    *   opts.isActive() → 当前是否应当拉帧（唯一门控）
    *   opts.img()      → 画面 <img> 元素（未挂载时返回 null 即可）
    *   opts.empty()    → 占位层元素（同上）
    *   opts.onFrame    → 可选：(base64|null) => void
    */
-  function create(mra, opts) {
+  function create(maarm, opts) {
     let running = false;
     let timer = null;
 
@@ -43,7 +43,7 @@
       const active = !!opts.isActive();
       if (active) {
         try {
-          const d = await mra.call('get_peep_frame');
+          const d = await maarm.call('get_peep_frame');
           render(d && d.frame);
         } catch (e) { /* 预览轮询失败静默：与既有行为一致，不打扰用户 */ }
       }
@@ -67,8 +67,8 @@
   }
 
   /** 切换 PEEP 开关。真源是后端 profile 的 peep_enabled，前端只负责发起（失败由调用方回滚视觉）。 */
-  function setPeep(mra, on) {
-    return mra.call('set_peep', { enabled: !!on });
+  function setPeep(maarm, on) {
+    return maarm.call('set_peep', { enabled: !!on });
   }
 
   window.PeepConsumer = {

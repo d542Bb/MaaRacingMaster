@@ -29,9 +29,11 @@ class _FakeApp:
 
 
 def _sleep_wallclock(lc: LifecycleAdapter, seconds: float) -> tuple[bool, float]:
-    t0 = time.monotonic()
+    # 计时必须用 perf_counter：monotonic 在 Windows 步长 ~15.6ms（GetTickCount64），
+    # 睡满 50ms 会被量化读成 47ms，制造"睡眠不足"假红（2026-10-06 实证）。
+    t0 = time.perf_counter()
     ret = lc.sleep(seconds)
-    return ret, time.monotonic() - t0
+    return ret, time.perf_counter() - t0
 
 
 def test_sleep_sub_granularity_meets_wall_clock():
@@ -73,3 +75,16 @@ def test_sleep_zero_and_negative_return_immediately():
     assert ret is True and elapsed < 0.05
     ret, elapsed = _sleep_wallclock(lc, -1.0)
     assert ret is True and elapsed < 0.05
+
+
+def test_sleep_quantization_floor():
+    """高分辨率等待：36ms 请求（控制拍 rest 的典型值）过冲 <8ms。
+
+    旧量化形态：time.sleep 落在 OS 定时器网格（~15.6ms 台阶），36ms 实睡
+    46.8ms（过冲 10.8ms）——控制拍 33/50/66ms 三模态的根子。本断言在默认
+    定时器实现下必红（46.8 > 44），高分辨率定时器下绿（~36.5ms）。
+    负载极重的机器可能假红——语义测试（上面四条）在任何环境都必须绿。"""
+    ret, elapsed = _sleep_wallclock(LifecycleAdapter(_FakeApp()), 0.036)
+    assert ret is True
+    assert elapsed < 0.036 + 0.008, \
+        f"sleep(0.036) 实睡 {elapsed*1000:.1f}ms——OS 定时器量化回潮"

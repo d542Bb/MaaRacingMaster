@@ -160,6 +160,10 @@ def test_self_judging_caller_still_gets_miss_log(rec):
 class _GraphStub:
     image_dirs: list = []
 
+    def _log(self, msg, level="INFO"):
+        """动作桥的组挂靠日志入口：桩环境无组可挂，直接落模块 logger。"""
+        nav_mod.logger.log(msg, level)
+
 
 def test_nav_recognizer_miss_log_is_edge_triggered(rec, monkeypatch):
     """逐节点聚合未命中：连续帧只记一次；命中后清位可再记。"""

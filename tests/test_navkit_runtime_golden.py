@@ -16,18 +16,18 @@ import pytest
 # 完整运行时依赖（module 经 core.capabilities 拉 maa/vgamepad 等，ocr/eggs 需 cv2）。
 # conftest 约定 CI 尽量避开这些重依赖：任一缺失则整文件 SKIP（不误红），dev（.venv 全依赖）全跑。
 try:
-    from maaracing_master.plugins.treasure import POLICY_PATH  # noqa: E402
-    from maaracing_master.plugins.treasure import module as tm  # noqa: E402
-    from maaracing_master.plugins.treasure import ocr as toc  # noqa: E402
-    from maaracing_master.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
-    from maaracing_master.plugins.treasure.eggs import EggRewardRecognizer  # noqa: E402
+    from maaracing_master.plugins._archive.treasure import POLICY_PATH  # noqa: E402
+    from maaracing_master.plugins._archive.treasure import module as tm  # noqa: E402
+    from maaracing_master.plugins._archive.treasure import ocr as toc  # noqa: E402
+    from maaracing_master.plugins._archive.treasure.detector import TreasureStageDetector  # noqa: E402
+    from maaracing_master.plugins._archive.treasure.eggs import EggRewardRecognizer  # noqa: E402
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"运行时金标测试需要完整依赖（maa/cv2/…）：{_RUNTIME_ERR}"
-)
+)]
 
 _PROJ = POLICY_PATH.parent.parent if _RUNTIME_OK else None  # resources 目录
 TOL = 1e-4  # 金标为历代一致值（6dp 记录），容差仅吸收浮点噪声，足以抓真实漂移

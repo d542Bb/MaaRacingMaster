@@ -24,16 +24,16 @@ import pytest
 try:
     from maaracing_master.core.navkit import ROUND_PHASE_STAGE
     from maaracing_master.core.navkit.v4_source import load_nav_source
-    from maaracing_master.plugins.treasure.detector import TreasureStageDetector
-    from maaracing_master.plugins.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.detector import TreasureStageDetector
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
 
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001
     _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
-)
+)]
 
 _POLICY_PATH = (
     Path(__file__).resolve().parents[1]

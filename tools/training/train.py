@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 YOLO11n 训练脚本：自动训练并导出 ONNX 到 speedrush 插件的感知权重位
-（plugins/speedrush/resources/onnx/perception/model.onnx——插件自包含：
+（plugins/speedrush/resources/models/perception/model.onnx——插件自包含：
 模块自己用的东西住自己目录，本脚本只是往那个真源位覆盖产物）。
 
 许可证注意：本脚本用 Ultralytics 官方预训练权重 yolo11n.pt 微调导出，

@@ -14,11 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from maaracing_master.plugins.treasure.store import TreasureStore
+from maaracing_master.plugins._archive.treasure.store import TreasureStore
 
 POLICY_PATH = (Path(__file__).resolve().parents[1]
                / "maaracing_master" / "plugins" / "treasure"
                / "resources" / "policy" / "treasure.policy.json")
+
+
+pytestmark = pytest.mark.retired
 
 
 def _load_module_class():
@@ -31,7 +34,7 @@ def _load_module_class():
     skip，不把本文件其余纯数据面用例一并拖下水。
     """
     try:
-        from maaracing_master.plugins.treasure.module import TreasureModule
+        from maaracing_master.plugins._archive.treasure.module import TreasureModule
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"需要完整运行时依赖（maa/…）：{exc}")
     return TreasureModule
@@ -138,7 +141,7 @@ def test_egg_anchor_repointed_to_claim_popup():
     """数蛋锚点已搬到聚合奖励弹窗（§9「搬家」）：rect 覆盖弹窗蛋卡行而非旧结算弹窗区。
 
     计数区几何不再进真源——由代码常量按「奖励卡通用几何」从命中框推导
-    （plugins/treasure/eggs.py::CARD_COUNT_BAND，校准 tools/experiments/egg-claim-coin-read）。
+    （plugins/_archive/treasure/eggs.py::CARD_COUNT_BAND，校准 plugins/_archive/treasure/tools）。
     """
     doc = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     spec = doc["perception"]["spec"]
@@ -162,7 +165,7 @@ def test_reward_card_geometry_on_synthetic_card():
     """
     cv2 = pytest.importorskip("cv2")
     import numpy as np
-    from maaracing_master.plugins.treasure.eggs import (
+    from maaracing_master.plugins._archive.treasure.eggs import (
         CARD_COUNT_BAND, band_rect_norm, find_card_body, parse_count_text,
     )
     frame = np.zeros((720, 1281, 3), dtype=np.uint8)          # 暗背景
@@ -190,19 +193,16 @@ def test_reward_card_geometry_on_synthetic_card():
 def test_egg_recognize_golden_frame_counts():
     """真帧端到端契约（第一阶段交付的教训：锚点参数必须过真帧，不再口头遵守）。
 
-    fixtures = tests/fixtures/claim_popup_0609.png
-    （实验校准资产，缺失即 skip；期望值来自 card_geom_probe.py 实测 5/5）。
+    fixtures = tests/fixtures/claim_popup_0609.png（正式资产；期望值来自 card_geom_probe.py 实测 5/5）。
     只验数蛋通路（含 OCR）；medal 读金额与其同机制，链路上还需实机帧。
     """
     cv2 = pytest.importorskip("cv2")
     pytest.importorskip("rapidocr")
-    from maaracing_master.plugins.treasure.eggs import EggRewardRecognizer
-    from maaracing_master.plugins.treasure.ocr import TreasureOcr
+    from maaracing_master.plugins._archive.treasure.eggs import EggRewardRecognizer
+    from maaracing_master.plugins._archive.treasure.ocr import TreasureOcr
 
-    fixture = (Path(__file__).resolve().parents[1]
-               / "tools" / "experiments" / "egg-claim-coin-read" / "claim_popup_0609.png")
-    if not fixture.exists():
-        pytest.skip("实验真帧 fixtures 未入库")
+    fixture = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "claim_popup_0609.png"
+    assert fixture.is_file(), f"真帧素材缺失（正式资产应随仓库入库）：{fixture}"
     frame = cv2.cvtColor(cv2.imread(str(fixture)), cv2.COLOR_BGR2RGB)
     rec = EggRewardRecognizer(Path(__file__).resolve().parents[1],
                               ocr=TreasureOcr(Path(__file__).resolve().parents[1]))

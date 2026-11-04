@@ -38,16 +38,18 @@
 
 ---
 
-## 二、模型权重（随包分发，真源在各插件目录内）
+## 二、模型权重（随可选模型包分发，真源在各插件目录内）
 
-插件自带权重随插件目录入库、随发布包分发；**每个权重的来源、上游与许可细节只写
+插件自带权重随插件目录入库；**发布包默认不带，用户从 Release 下载模型包后按插件
+README 安装**（lane 的完整 BDD100K 条款随模型包分发）。每个权重的来源、上游与许可细节只写
 在插件目录内的许可 README（真源），本文件仅做随包许可的登记与指向**（登记行不含
 细节，细节改动不需要同步本文件）：
 
 | 权重文件（插件内相对路径） | 许可证 | 声明真源 |
 |---|---|---|
-| speedrush `resources/onnx/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/speedrush/resources/onnx/README.md](maaracing_master/plugins/speedrush/resources/onnx/README.md) |
-| speedrush `resources/onnx/depth/depth_small_q4f16.onnx` | Apache-2.0 | 同上 |
+| speedrush `resources/models/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/speedrush/resources/models/README.md](maaracing_master/plugins/speedrush/resources/models/README.md) |
+| speedrush `resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx` | Apache-2.0 | 同上 |
+| speedrush `resources/models/lane/plus_small_384x640.onnx` | BDD100K 非商业/科研许可（TwinLiteNet+ 代码 MIT；商业仅限 BDD/BAIR 成员） | [LICENSE-BDD100K.txt](maaracing_master/plugins/speedrush/resources/models/LICENSE-BDD100K.txt) |
 
 AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0；
 发布包保留本文件与插件内声明文件，义务即满足。

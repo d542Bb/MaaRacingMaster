@@ -29,11 +29,15 @@
 
 `studio_server.py` 一个进程承载三页，浏览器只开 `http://127.0.0.1:26530/`：
 
+> **目标模块**由 `--module <活动模块 id>` 指定，缺省取 `plugins/` 下第一个可服务的插件
+> （含 `manifest.py` 与 `resources/`）。模块的 policy / pipeline 真源**按目录发现**，不靠
+> 命名约定——各模块命名不统一（treasure 用 `<id>.policy.json`，speedrush 用 `decision.json`）。
+
 | 路径         | 页                                                          |
 | ---------- | ---------------------------------------------------------- |
 | `/`        | 壳页（统一标签栏 + iframe 切三页，ROI 页未保存点显示在标签上）                      |
 | `/roi`     | ROI 校准台：离线回放会话帧 + 拖框选区 + 单帧测分 / 跨帧分布 / OCR 识别 / 裁剪模板           |
-| `/policy`  | 策略表：表格编辑 `treasure.policy.json` 的 `policy.rules`，原子落盘             |
+| `/policy`  | 策略表：表格编辑目标模块策略表真源的 `policy.rules`，原子落盘             |
 | `/cropper` | 模板截取：静态只读服务 `tools/template_cropper/index.html`              |
 
 ROI 校准台的数据面（`/api/rois` 读写）以 **v4 真源**为准：
@@ -41,7 +45,7 @@ ROI 校准台的数据面（`/api/rois` 读写）以 **v4 真源**为准：
 - 读面 flat 投影 = spec 三组（`template` / `point` / `ocr`，按 `kind` 分组）+ `nodes` 组（pipeline 两文件逐处 `rect`，含 `mirrors` 与 colorspace 现值）+ `tuning` 组（`policy.tuning.perception` 的第 54 个 rect）+ `_meta`；
 - 写面管线：`base_hash` 比对(409) → 内存合并 → 结构校验 → `check_truth` 各闸（图自洽/分层红线/交叉互洽/几何/页面清单等集/页面归属闭合 `page_checks`）→ preview 回 diff/report 不落盘 → 逐文件原子替换；
 - 11 个两面同值锚点在 `nodes` 组编辑时默认同步写 spec 同名锚点（UI 提供「仅改此面」逃生口）；colorspace 两面各自维护（语义独立，台内如实呈现各自现值）；
-- 测分/跨帧/OCR 走**生产同源**引擎（`core.template_match.find_any_cs`、`plugins.treasure.ocr.TreasureOcr.recognize_single`）。
+- 测分/跨帧/OCR 走**生产同源**引擎（`core.template_match.find_any_cs`、目标模块的插件级 OCR；模块无 `ocr.py` 时该能力降级）。
 
 ## 目录
 
@@ -60,13 +64,13 @@ tools/navkit/
 
 ## 真源
 
-- `maaracing_master/plugins/treasure/resources/pipeline/treasure.json` —— 鉴宝对局图
+- `maaracing_master/plugins/_archive/treasure/resources/pipeline/treasure.json` —— 鉴宝对局图
 
-- `maaracing_master/plugins/treasure/resources/pipeline/treasure.entry.json` —— 鉴宝大厅入口链与页面锚点（游戏大厅/活动页面 dwell + 两个入口锚点 + `hall_to_treasure` 链；2026-09-10 自 core 归位）
+- `maaracing_master/plugins/_archive/treasure/resources/pipeline/treasure.entry.json` —— 鉴宝大厅入口链与页面锚点（游戏大厅/活动页面 dwell + 两个入口锚点 + `hall_to_treasure` 链；2026-09-10 自 core 归位）
 
 - `maaracing_master/core/resources/pipeline/` —— 跨模块共用链目录，**当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `check_truth.namespace_checks` 与 MAAFW\_GUIDE §5.6）
 
-- `maaracing_master/plugins/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
+- `maaracing_master/plugins/_archive/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
 
 校验（CI 同款）：`python tools/navkit/check_truth.py`
 
@@ -160,7 +164,7 @@ https://github.com/kqcoxn/MaaPipelineEditor/releases/download/v<版本>/mpelb-wi
 
 ```powershell
 # 基线：记下真源当前的修改状态
-git status --short -- maaracing_master/plugins/treasure/resources/pipeline
+git status --short -- maaracing_master/plugins/_archive/treasure/resources/pipeline
 # ① 只打开文件、什么都不动，等几分钟后重跑上面那条——无变化 = 不存在纯定时自动保存
 # ② 在画布上拖动一个节点（不改任何字段），再查后端日志：
 Select-String -Path "$env:APPDATA\MaaPipelineEditor\LocalBridge\logs\lb-*.log" -Pattern '文件已保存'

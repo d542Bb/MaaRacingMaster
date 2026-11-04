@@ -7,8 +7,8 @@
   const $ = (id) => document.getElementById(id);
   const body = $('peep-body');
 
-  // ---------- 通信层（与 app.js 的 mra 同构：同一协议、同一后端） ----------
-  const mra = (() => {
+  // ---------- 通信层（与 app.js 的 maarm 同构：同一协议、同一后端） ----------
+  const maarm = (() => {
     let nextCallId = 1;
     const pending = new Map();
 
@@ -33,10 +33,10 @@
     return { call };
   })();
 
-  MRAIcons.hydrate(document);
+  MaaRMIcons.hydrate(document);
 
   // ---------- 帧消费（本窗口独占；无帧时显示占位层） ----------
-  const consumer = PeepConsumer.create(mra, {
+  const consumer = PeepConsumer.create(maarm, {
     isActive: () => true, // 悬浮窗存在即代表自己是唯一消费者，无需额外门控
     img: () => $('peep-img'),
     empty: () => $('peep-empty')
@@ -57,7 +57,7 @@
     const on = !peepEnabled;
     setPlayState(on); // 先翻转视觉状态
     try {
-      await PeepConsumer.setPeep(mra, on);
+      await PeepConsumer.setPeep(maarm, on);
     } catch (e) {
       setPlayState(!on); // 失败回滚
     }
@@ -75,19 +75,19 @@
     if (!dot || !txt) return;
     if (d.current_stage) {
       txt.textContent = '运行中 · 当前: ' + d.current_stage;
-      dot.className = 'mra-status-dot mra-status-dot--running mra-status-dot--pulse';
+      dot.className = 'maarm-status-dot maarm-status-dot--running maarm-status-dot--pulse';
     } else if (d.is_running || d.worker_active) {
       txt.textContent = '停止中...';
-      dot.className = 'mra-status-dot mra-status-dot--stopping';
+      dot.className = 'maarm-status-dot maarm-status-dot--stopping';
     } else {
       txt.textContent = '系统就绪';
-      dot.className = 'mra-status-dot mra-status-dot--ready';
+      dot.className = 'maarm-status-dot maarm-status-dot--ready';
     }
   }
 
   async function pollStatus() {
     try {
-      const d = await mra.call('get_status');
+      const d = await maarm.call('get_status');
       renderStatus(d);
     } catch (e) { /* 状态轮询失败静默 */ }
     finally { setTimeout(pollStatus, 250); }
@@ -96,7 +96,7 @@
   // ---------- 启动：回填 PEEP 开关状态，再起状态轮询 ----------
   (async () => {
     try {
-      const d = await mra.call('get_debug_state');
+      const d = await maarm.call('get_debug_state');
       setPlayState(!!d.peep_enabled);
     } catch (e) { /* 后端未就绪：保持默认（未播放）态 */ }
     pollStatus();

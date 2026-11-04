@@ -23,14 +23,18 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
   的 `EXTERNAL_TARGETS`）；前端不持有、也不传递可打开的 URL。
 - `index.html` 里 `data-link` 的属性值**就是目标名**。新增外链入口必须同时在 `EXTERNAL_TARGETS`
   里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
+- **更新源是偏好，不是 URL**：关于页单个来源按钮展开 CNB / GitHub 菜单，只向 `check_update` 传 `source`
+  枚举（默认 `cnb`，选择存 `localStorage`），实际地址仍由 sidecar 决定；显式选 GitHub 时只查 GitHub 两源，
+  不悄悄回退 CNB。GitHub 图标复用 `icons.js` 的品牌路径（实心版），CNB 图标 `cnb.svg` 取自
+  CNB 官方站点 favicon，仅作来源标识。
 
-理由：前端持有 `mra.call()` RPC 能力，远程数据一旦能形成 XSS，就会顺着 RPC 放大成
+理由：前端持有 `maarm.call()` RPC 能力，远程数据一旦能形成 XSS，就会顺着 RPC 放大成
 「可信程序替攻击者打开任意站点」。两层防线各自独立成立——渲染层不把数据当标记解析，
 RPC 层不信任调用方给的地址。
 
 ## 图标规范
 
-- **唯一真源是 `icons.js`**（`window.MRAIcons`）。数据格式为 IconNode
+- **唯一真源是 `icons.js`**（`window.MaaRMIcons`）。数据格式为 IconNode
   （`[标签, 属性]` 元组数组，与 Lucide / morphicons 兼容）。
 - **UI 图标一律来自 Lucide**（当前锁定 v1.45.0，ISC 许可，声明见仓库根
   `THIRD_PARTY_LICENSES.md`）。新增图标：到 <https://lucide.dev> 找同名图标，
@@ -38,16 +42,16 @@ RPC 层不信任调用方给的地址。
   **禁止脱离真源随手画**。Lucide 确无对应图标时，放入 `CUSTOM` 分区，须按 Lucide 规格
   绘制（24×24 网格、`fill="none"`、stroke-width 2、round linecap/linejoin），并注明来历。
 - **渲染方式**：
-  - 静态 HTML：写占位 `<i data-icon="图标名" ...>`，app.js 启动时 `MRAIcons.hydrate()`
+  - 静态 HTML：写占位 `<i data-icon="图标名" ...>`，app.js 启动时 `MaaRMIcons.hydrate()`
     替换为真 `<svg>`（占位元素上的 style/class 会搬到 svg 上）。
-  - JS 动态模板：`${MRAIcons.svg('图标名'[, {class: '...'}])}`。
-  - 变形动画：`MRAIcons.node('图标名')` 取 IconNode 喂给 `<morph-icon>`。
+  - JS 动态模板：`${MaaRMIcons.svg('图标名'[, {class: '...'}])}`。
+  - 变形动画：`MaaRMIcons.node('图标名')` 取 IconNode 喂给 `<morph-icon>`。
 - **不属于图标系统的两类图形**（刻意排除，勿迁入 icons.js）：
   - 窗口标题栏 chrome（最小化/最大化/关闭，自绘 10×10，模拟 Windows 原生标题栏度量），
     留在 `index.html` 原位；
   - 性能走势图（`perf-spark` 内联 polyline），是数据可视化不是图标。
 - **实心媒体图标**（`media-play/pause/stop`，实心是媒体控件惯例画法）不参与变形动画，
-  `MRAIcons.node()` 对其直接抛错。
+  `MaaRMIcons.node()` 对其直接抛错。
 
 ## 图标动画（morphicons）
 
@@ -55,7 +59,7 @@ RPC 层不信任调用方给的地址。
   ESM chunk 机械合并为经典脚本挂 `window.MorphIcons`，未改动函数体。摊平是必须的——
   上游是相对 import 的多 chunk ESM，`file://` 页面下模块静态 import 会被拦截。
   **升级时重新摊平，勿手改本文件函数体**。
-- 用法：`<morph-icon reduced-motion="user">` + `el.icon = MRAIcons.node(...)`
+- 用法：`<morph-icon reduced-motion="user">` + `el.icon = MaaRMIcons.node(...)`
   （换 icon 即弹簧变形）；`defineMorphIcon()` 已由 rpc.js 启动时调用。
 - 现成用例：数据页「实时预览」放大/还原按钮（scan ↔ shrink）；
   主控页日志复制按钮的结果反馈（copy ↔ check / x，见 `js/log.js`）。
@@ -63,57 +67,65 @@ RPC 层不信任调用方给的地址。
 
 ## 键盘可达性（免维护约定）
 
-- **焦点环**：style.css 顶部一条全局 `:focus-visible { outline: 2px solid var(--mra-primary) }`
+- **焦点环**：style.css 顶部一条全局 `:focus-visible { outline: 2px solid var(--maarm-primary) }`
   覆盖所有交互元素；`:focus-visible` 只在键盘/程序化导航时命中，鼠标点击不出环，
   所以**控件类里不要再写 `outline: none`**（旧四处已删）。特例只允许改偏移：
   窗控按钮贴屏幕边缘用 `outline-offset: -2px` 内收。
 - **模态焦点陷阱**：`openModal`（js/modal.js）自带——开卡聚焦卡内第一个可聚焦元素、
   Tab/Shift+Tab 卡内回环、关闭归还焦点、`role=dialog + aria-modal + aria-labelledby`。
   经 openModal 的弹窗零成本继承；自绘浮层若要做陷阱，参照其实现而不是另起一套。
-- **开关 aria 接线**：`.option-row` 结构里的 `.mra-toggle[role="switch"]` 由
+- **开关 aria 接线**：`.option-row` 结构里的 `.maarm-toggle[role="switch"]` 由
   `wireSwitchAria`（js/settings.js）按结构自动挂 `aria-labelledby`/`aria-describedby`
-  （引用 id 从开关自身 id 派生 `-label`/`-desc`）。**新开关只要按 option-row 既有结构
-  写、开关带 id 即可**，不要手写 aria 属性；函数幂等，静态启动跑一次、模板重渲染在
-  `bindModulePages` 再跑一次。
+  （标题/说明没有 id 时，从开关自身 id 派生 `-label`/`-desc`）。**新开关只要按 option-row
+  既有结构写、开关带 id 即可**，不要手写 aria 属性；标题/说明自带 id 时原样保留——文案若
+  会被程序改写（如录制开关随驾驶模式换说法），那些更新函数要靠这个 id 找人。函数幂等，
+  静态启动跑一次、模板重渲染在 `bindModulePages` 再跑一次。
+- 配置面板里由 `js/config-panel.js` 动态生成的开关不走上面的模板接线，渲染器自己生成
+  唯一 id 挂 aria（见下节）。
 
-## 活动模块下拉（自绘 combobox 投影层）
+## 模块配置面板（插件声明、宿主渲染）
 
-视觉语言 = OriginUI Select（shadcn/Radix 家族），实现在 `js/select.js` + `.msel-*` 样式。
-**值真源是隐藏的原生 `<select id="module-select">`**——app.js 填充 options、run.js 读
-value、settings.js 切 disabled、`onModuleChange` 撤销回写，本层一律不碰，避免第二份真相。
-改这几处时必须跟着调 `MRA.syncModuleSelect()`（现有四个调用点：renderModuleSelect 末尾、
-onModuleChange 两处撤销回写、settings.js 运行锁定）——程序化赋值不派发 change，
-用户路径的 change 则由 select.js 派发到原生 select 上，过期确认弹窗等监听零改动。
-键盘：Enter/Space/方向键开合、↑↓/Home/End/typeahead、Enter 选中、Esc 归还焦点；
-`aria-expanded`/`aria-activedescendant`/`aria-disabled` 随状态挂。过期项渲染层剥掉
-「（已过期）」后缀改挂「已过期」小标签（数据仍来自 option 文本，不复制一份清单）。
+- 面板内容来自 `get_module_config` 的 `_ui`：插件类声明有序分组字段（开关 / 分段 / 下拉 /
+  数字 / 文本），`config-panel.js` 按类型通用渲染；壳不认识任何模块字段。契约、字段白名单
+  与状态机（`none/ok/partial/invalid/unsupported_version`）见 `core/config_ui_contract.py`
+  与 ADR-0016。
+- `partial`：渲染可用字段，顶部一行「部分配置项声明无效，详见日志」；`invalid` /
+  `unsupported_version`：只显示宿主提示、不渲染控件；`none`：面板区留空（按设计）。
+- 数据约定：`_choices` 填下拉（表单里的 `choices` 只是引用键）、`_summary` 是任务卡 chips、
+  `_status` 是面板状态行、`_rev` 是配置修订号——比已应用版本旧的响应一律丢弃。
+- 时序：同卡保存串行，保存中再改合并成 pending；列表重建时 `configPanel.reset()` 递增代际，
+  旧卡在途回调作废、不写已卸载节点。纯逻辑在 `js/config-panel-state.js`，由
+  `tests/js/config_panel_state.test.mjs`（node --test）覆盖。
+- 安全：动态文本一律 `textContent`，渲染器不拼 HTML；契约的白名单重建在校验侧完成，前端
+  不再二次解释模块内容。
+- 内置步骤（启动 / 关闭游戏）仍由 `js/run.js` 的 `BUILTIN_FIELDS` 渲染，不走本面板。
 
-## 文字扫描光效（`.mra-text-scan`）
+## 文字扫描光效（`.maarm-text-scan`）
 
-给任意文字元素加 `.mra-text-scan` 即生效，无需额外 DOM。两层背景裁进文字：底层铺基色、
+给任意文字元素加 `.maarm-text-scan` 即生效，无需额外 DOM。两层背景裁进文字：底层铺基色、
 上层是一条高光带，动画只平移高光带的 `background-position`；默认 6s 周期里前 1.8s 扫过一次、
 其余静止，速度与频率刻意压低，供长时间驻留的提示文字使用。`prefers-reduced-motion: reduce`
 下退化为静态文字。
 
 - 现成用例：底栏状态文字——`app.js` 的 `setStatus` 在运行中挂类、结束时摘掉。
-- 现成变体：`.mra-text-scan--rave`（动态彩虹字 + 白光束 + 色相流转），默认不启用，加类即用。
+- 现成变体：`.maarm-text-scan--rave`（动态彩虹字 + 白光束 + 色相流转），默认不启用，加类即用。
 
 可调项（全是 CSS 变量，元素内联或派生类覆写）：
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `--mra-scan-base` | `currentColor` | 基色，默认继承元素自身文字色 |
-| `--mra-scan-beam` | `#FFFFFF` | 光带色 |
-| `--mra-scan-angle` | `100deg` | 光带倾角 |
-| `--mra-scan-half` | `5%` | 光带半宽（相对光带层） |
-| `--mra-scan-span` | `250%` | 光带层宽度倍数：越大光带越细，≥200% 才扫得完 |
-| `--mra-scan-cycle` | `6s` | 周期时长 |
-| `--mra-scan-timing` | `linear(0, 1 30%, 1 100%)` | 周期内节律：前 30% 走完行程、其余静止 |
-| `--mra-scan-hue-cycle` | `6s` | 附加动效「色相流转」的周期 |
-| `--mra-scan-anim` | 只有扫描光带 | 动效清单，要叠加附加动效就覆写它 |
-| `--mra-scan-base-layer` / `--mra-scan-layer` | 由上面几项合成 | 底层 / 光带层的整层渐变，换配色写到这一层 |
-| `--mra-scan-rainbow-l` / `--mra-scan-rainbow-c` | `0.7` / `0.16`（仅 `--rave`） | 彩虹字的 OKLCH 感知亮度 / 彩度 |
-| `--mra-scan-weight` | `600`（仅 `--rave`） | 字重，小字号彩色字的可读性靠它 |
+| `--maarm-scan-base` | `currentColor` | 基色，默认继承元素自身文字色 |
+| `--maarm-scan-beam` | `#FFFFFF` | 光带色 |
+| `--maarm-scan-angle` | `100deg` | 光带倾角 |
+| `--maarm-scan-half` | `5%` | 光带半宽（相对光带层） |
+| `--maarm-scan-span` | `250%` | 光带层宽度倍数：越大光带越细，≥200% 才扫得完 |
+| `--maarm-scan-cycle` | `6s` | 周期时长 |
+| `--maarm-scan-timing` | `linear(0, 1 30%, 1 100%)` | 周期内节律：前 30% 走完行程、其余静止 |
+| `--maarm-scan-hue-cycle` | `6s` | 附加动效「色相流转」的周期 |
+| `--maarm-scan-anim` | 只有扫描光带 | 动效清单，要叠加附加动效就覆写它 |
+| `--maarm-scan-base-layer` / `--maarm-scan-layer` | 由上面几项合成 | 底层 / 光带层的整层渐变，换配色写到这一层 |
+| `--maarm-scan-rainbow-l` / `--maarm-scan-rainbow-c` | `0.7` / `0.16`（仅 `--rave`） | 彩虹字的 OKLCH 感知亮度 / 彩度 |
+| `--maarm-scan-weight` | `600`（仅 `--rave`） | 字重，小字号彩色字的可读性靠它 |
 
 ### 彩虹配色走 OKLCH 的原因
 
@@ -138,8 +150,8 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 明度抖动又被请回来。动态改用注册过的自定义属性承载色相角：
 
 ```css
-@property --mra-scan-hue { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
-@keyframes mra-text-scan-hue { from { --mra-scan-hue: 0deg; } to { --mra-scan-hue: 360deg; } }
+@property --maarm-scan-hue { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes maarm-text-scan-hue { from { --maarm-scan-hue: 0deg; } to { --maarm-scan-hue: 360deg; } }
 ```
 
 色相角写进渐变色标，动画每帧重算彩虹，明度与彩度不动（各相位实测恒为 0.024）。未注册的自定义
@@ -158,7 +170,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 ```css
 .my-scan-rainbow {
-  --mra-scan-layer: linear-gradient(100deg, transparent 42%,
+  --maarm-scan-layer: linear-gradient(100deg, transparent 42%,
     oklch(0.70 0.16 20) 46%, oklch(0.70 0.16 90) 50%,
     oklch(0.70 0.16 200) 54%, transparent 58%);
 }
@@ -193,9 +205,90 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   `{type:'call',callId,method}`、异步派发 `{type:'response',callId,ok,data}`）+ 脚本化
   `fetch_logs` 批次，即可用真 `rpc.js`/`log.js` 渲染审计（探针手法同 `冒烟验证` 节）。
 
+## 模块管理弹窗（选卡网格）
+
+主控页「管理模块」弹窗是游戏选卡风格：3 列、露 2.5 行、底部淡出，点卡片加入/移出任务列表。
+渲染在 `js/run.js`（`galleryCellHtml` / `renderGallery` / `openManageModal`），形状在
+`js/gallery-shape.js`，样式在 `style.css` 的 `task-gallery-*` 块。几条别改坏的：
+
+- **封面由核心下发，前端不认识插件目录**：卡片底图取 `modules[].cover`（核心
+  `core/covers.py` 把插件声明解析成 URL），缺省回落初始状态的 `cover_default`。
+  前端**不得**拼 `plugins/<id>/resources/...` 这类路径（静态锁 `tests/test_module_covers.py`）。
+  换资源加载方式（file:// → 资源服务器）只改核心那一处。
+- **三级回退**：专属封面 → 通用默认封面 → 纯渐变底（`--gal-fallback-art`）。封面是 `<img>`
+  而不是 `background-image`，因为要能感知加载失败：`error` 事件不冒泡，监听挂在网格的
+  捕获阶段。
+- **拐角是 squircle（指数 4 的超椭圆），由 CSS 画**：`border-radius: 20px` +
+  `corner-shape: squircle`。半径 20 不是随手取的——它让 squircle 与原 G2@10 的轮廓等效
+  （最大偏差 0.46px，浏览器实测），所以这次换的是**实现**不是观感。照片、红光、压暗层、
+  描边越界的那 1px 全部由卡片自带的 `overflow:hidden` 原生裁切，**不再用 clip-path**
+  （clip-path 会把 border / box-shadow 一起裁掉，且每改一次半径就要重算一遍路径）。
+- **描边是画出来的，不是 border**：CSS 没有「从底边中点长到顶边中点」的能力，所以路径
+  由 `js/gallery-shape.js` 按同一条方程生成（指数 4；引擎不支持 `corner-shape` 时降到
+  指数 2 的圆弧，保证描边与卡片仍是同一条曲线）。可见 2.5px、实际画 3.5px，多出的 1px
+  压在卡片外由 `overflow` 切掉——描边若正好落在边界，那圈像素是半覆盖的（底图会透上来，
+  看着像没贴紧）。生长动画是 `stroke-dashoffset` 1→0（`pathLength="1"` 归一，不用量
+  周长），从底边中点向两侧长、在顶边中点会合，缓入缓出无回弹。
+- **只有图片动**：选中时底图推近（放大带一次过冲、缩小平顺）、红光从底部涌起、扫描带扫过；
+  卡片本身不缩放、文字不做任何动画（整块跟着弹会像果冻，缩放最终态还会让文字长期处于
+  非整数倍拉伸而发虚）。
+- **尺寸观察器随弹窗关闭断开**：`ResizeObserver` 用来在窗口缩放时重算路径，挂在 `onClose`
+  上 `disconnect()`——否则每开一次弹窗漏一个。
+- **空槽位与卡片同一个类**，半径与形状自动跟随；虚线边框是原生 `border`，
+  `corner-shape` 会让它沿曲线走，不需要单独处理。
+
+## 圆角形状（corner-shape，作用于所有「面」）
+
+`border-radius` 只能画圆弧：它与直边相切，但曲率在切点从 0 直接跳到 1/r，观感是
+「到这里突然开始转」。`corner-shape` 让圆角按超椭圆走，切点曲率为 0，而且 border、
+背景、outline、box-shadow 都跟着这条曲线——不需要裁切整个元素（裁切会把阴影一起吃掉）。
+
+- **半径要按「等效圆」补，不能按几何跨度补**。非圆弧的拐角会贴着边收，肉眼圆润度远小于
+  它的 border-radius。实测（同一半径，按拐角缺口面积折算成等效圆半径）：
+
+  | 取值 | 等效圆半径 / border-radius |
+  |---|---|
+  | `round`（圆弧） | 1.00 |
+  | `squircle` | 0.69 |
+  | `superellipse(2.5)` | 0.54 |
+  | `superellipse(3)` | 0.43 |
+
+  所以按 1/0.69 ≈ 1.45 补：卡片面 **16px**（等效 11px）、弹窗 **20px**（等效 14px）、
+  日志条目 **12px**（等效 8.3px——它是卡片里嵌的小条目，收一档形成内外两级）。
+  **只看 border-radius 的数值会误判**：`superellipse(3)` 配 12px 实际只有 5.2px 的圆润度，
+  比原来的 8px 还小，这就是「越改越方」的原因。
+- **位置**：`style.css` 末尾的 `@supports (corner-shape: squircle)` 块，作用于
+  `.card`（页面卡片）、`.about-hero`（关于页头卡）、`.task-item`（任务卡）、
+  `.log-section`（日志卡）、`.maarm-modal-card`（弹窗），以及
+  `.task-gallery-cell`（选卡卡片，半径走 `--gal-radius`）。
+- **降级**：不支持的引擎整块不解析，所有面继续用 `border-radius` 圆弧，不需要另写覆盖规则。
+- **未纳入**：按钮、输入框、徽章、选项卡仍是圆弧（小尺寸下差异不明显）。
+- **边界**：静态锁 `tests/test_frontend_corner_shape.py`——必须在 `@supports` 内、半径
+  必须按等效圆补、不得出现全站选择器、选卡描边必须仍是自算路径且不得自己裁轮廓。
+- **漂移复测**：`tools/measure_corner_shape.py`。它把 CSS 渲染的轮廓与理论超椭圆逐点
+  比对（垂直距离 < 0.5px、面积比 1±0.05）。浏览器升级后跑一次就知道形状有没有变；
+  指数一旦不是 4，`js/gallery-shape.js` 的 `EXPONENT` 必须跟着改，否则描边会漂离边缘。
+
+## 数据页看板中心
+
+数据页右栏固定为「看板中心 + 实时预览」。看板中心的主体由任务列表决定：
+
+- **候选集**：`state.queue.order` 中 `kind === 'module'` 且 `has_dashboard === true` 的模块，按任务列表顺序排列；内置步骤永不入列，未加入列表的模块不出现。
+- **选中**：会话内显式状态，由左右箭头翻页；队列增删/排序只校正被移出的选中项（夹到原位置的相邻项），不隐式切换。
+- **边界**：只有一个看板时左右箭头保留并置灰（1 / 1）；没有候选时槽位显示空态，下方实时预览保持原位。
+- **运行态**：运行中的模块若在候选集内，通往它的箭头上打绿点；当前看板就是运行中模块时，页码前打绿点并转绿。
+- **生命周期**：只挂载并轮询当前看板；数据页不可见时不拉数，切换看板即丢弃在途响应。
+
+内容统一走 `get_module_dashboard` 的版本化 block 载荷（`stats` / `list` / `text` / `path` / `action`）。
+`dashBlockHtml` 是唯一渲染入口，所有文本经 `escHtml` 转义；标准动作按钮只把后端白名单里的动作名交回 RPC。
+冻结的鉴宝使用 `today_stats` 兼容块，由同一入口的 `todayStatsBlockHtml` 解释其原始今日统计。
+
+前端渲染器与后端 `BLOCK_TYPES` 的对齐、候选集口径与统一路由由
+`tests/test_frontend_dashboard_center.py` 静态锁定。
+
 ## 环境中心（设置页）
 
-设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.mra-tool-btn--block` 不另设视觉）
+设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.maarm-tool-btn--block` 不另设视觉）
 打开 `js/settings.js` `openOptimizerCenter()`：双 tab 弹层，tab 视觉对齐顶部导航
 （文字 + 主色下划线，`.env-tabs` / `.env-pane`）。
 
@@ -223,7 +316,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 - **员工守则**：连点 10 次（2s 内）弹出。结构 = 池 12 条每次抽 8（编号 1-8）+ 第 9 条固定
   （修订声明，给抽样一个"官方解释"）+ 第 10 条幽灵行——**每次打开条目不同**。条目逐条
   渐现（内联 animation-delay，reduced-motion 退化直显）；标题字距呼吸
-  （`.mra-modal-title--egg`）；守则列表滚动条隐藏（滚动保留）。文案锚点全部取 GUI 真实
+  （`.maarm-modal-title--egg`）；守则列表滚动条隐藏（滚动保留）。文案锚点全部取 GUI 真实
   元素，数字母题（清点/数错）贯穿首尾。
 - **第 10 条幽灵行**：数字「10.」与正文默认整行隐形；悬停时数字乱码解码落定
   （`scrambleNumber`，40ms×20 帧自左向右锁定；DecryptedText 手法自实现）+ 正文显影，
@@ -243,7 +336,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 无构建链也能验证：仓库根起临时 HTTP 服务指向本目录，浏览器打开
 （app.js 通信层会因无 WebView2 桥报预期错误，不影响图标层验证）；
 或在 node 里 `global.window={}; require('./icons.js')` 后逐个
-`MRAIcons.svg(name)` 渲染检查。
+`MaaRMIcons.svg(name)` 渲染检查。
 
 样式与动效（纯 CSS 部分）可用无头 Edge 定格取帧，不必靠截图撞运气：
 

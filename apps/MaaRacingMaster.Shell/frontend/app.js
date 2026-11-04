@@ -2,7 +2,7 @@
 // 职责：tab 切换、窗口控制、模块下拉、关于页、init 装配与全局事件绑定入口。
 // 通信层与共享 state 在 js/rpc.js；弹窗在 js/modal.js；日志在 js/log.js；预览在
 // js/preview.js；模块选项/优化中心/模块页面在 js/settings.js；运行控制在 js/run.js。
-// 共享物一律经 window.MRA 传递（下方导入清单）。
+// 共享物一律经 window.MaaRM 传递（下方导入清单）。
 //
 // 关于页「检查更新 / 公告」与 ViGEmBus 引导弹窗保留在本文件：
 // tests/test_frontend_remote_render.py 静态锁按函数签名从本文件抽取
@@ -15,12 +15,11 @@
 
   // 共享物导入（js/ 各模块已先行加载）
   const {
-    mra, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
+    maarm, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
     openModal, setPreviewFloating, peepConsumer,
-    bindModuleOptionsUI, refreshModuleOptions, updateModuleOptionsDisabled,
-    renderModulePages, checkRegistryOptimizations, pollTodayBoard,
-    renderStageList, pollStatus, setStatus, pollLogs,
-  } = window.MRA;
+    renderModulePages, checkRegistryOptimizations, pollDashboard,
+    renderTaskList, pollStatus, setStatus, pollLogs,
+  } = window.MaaRM;
 
   // ---------- ViGEmBus 驱动缺失引导弹框 ----------
   // 外链一律只报**逻辑目标名**（home / issue / docs / announcement / download / vigembus），
@@ -31,9 +30,9 @@
   function showVigemDialog(detailMsg) {
     openModal({
       title: '缺少 ViGEmBus 驱动',
-      titleColor: 'var(--mra-danger,#ef4444)',
+      titleColor: 'var(--maarm-danger,#ef4444)',
       bodyHtml:
-        '<p class="mra-modal-text">' +
+        '<p class="maarm-modal-text">' +
         '需要虚拟手柄（vgamepad）控制的模块，底层依赖 <b>ViGEmBus</b> 内核驱动。它无法随解压包分发，需在本机安装一次。</p>',
       buttons: [
         { text: '手动打开下载页', asLink: true, href: VIGEM_DL_URL },
@@ -41,7 +40,7 @@
           text: '下载并安装 ViGEmBus 驱动', primary: true,
           onClick: async (modal) => {
             try {
-              await mra.call('open_vigembus_download', {});
+              await maarm.call('open_vigembus_download', {});
             } catch (err) {
               // 后端打开失败：前端兜底新开标签页
               window.open(VIGEM_DL_URL, '_blank');
@@ -55,11 +54,11 @@
     });
     void detailMsg;
   }
-  // run.js 的 _doStart 先于本文件加载，经 MRA 延迟取用
-  Object.assign(window.MRA, { showVigemDialog });
+  // run.js 的 _doStart 先于本文件加载，经 MaaRM 延迟取用
+  Object.assign(window.MaaRM, { showVigemDialog });
 
   // ---------- Tab 切换 ----------
-  const tabButtons = Array.from(document.querySelectorAll('.mra-tab'));
+  const tabButtons = Array.from(document.querySelectorAll('.maarm-tab'));
   const TAB_ORDER = ['control', 'data', 'settings', 'about'];
   let _curTabIdx = 0; // 初始即主控 tab（HTML 默认激活），防止首次点当前 tab 误触发切换动画
   function switchTab(name) {
@@ -69,14 +68,14 @@
     _curTabIdx = nextIdx;
     const fromRight = nextIdx > prevIdx; // 前进：新页从右滑入；后退：从左滑入
     tabButtons.forEach((btn) => {
-      btn.classList.toggle('mra-tab--active', btn.dataset.tab === name);
+      btn.classList.toggle('maarm-tab--active', btn.dataset.tab === name);
     });
     TAB_ORDER.forEach((p) => {
       $('page-' + p).classList.toggle('hidden', p !== name);
     });
     animatePageIn($('page-' + name), fromRight);
     moveTabSlider(name);
-    if (name === 'data') pollTodayBoard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
+    if (name === 'data') pollDashboard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
     if (name === 'about') fetchAnnouncement(); // 切到关于页重拉公告，避免停留在启动时的旧缓存
     glitchVersionEgg(); // 1% 概率版本号乱码（彩蛋，详见 glitchVersionEgg 注释）
   }
@@ -123,7 +122,7 @@
       const target = btn.dataset.link;
       if (!target) return;
       try {
-        await mra.call('open_external_url', { target });
+        await maarm.call('open_external_url', { target });
       } catch (e) {
         showError('打开链接失败: ' + e.message);
       }
@@ -131,10 +130,63 @@
   });
 
   // ---------- 关于页：检查更新 / 公告 ----------
+  // 更新源默认 CNB（国内直连）；选择只影响手动检查，不改下载页兜底。
+  const UPDATE_SOURCE_KEY = 'maarm.updateSource';
+  let updateSource = 'cnb';
+  try {
+    if (localStorage.getItem(UPDATE_SOURCE_KEY) === 'github') updateSource = 'github';
+  } catch (e) { /* file:// 或隐私模式禁用存储时保持默认 */ }
+
+  function updateSourceLabel(source) {
+    return source === 'github' ? 'GitHub' : 'CNB';
+  }
+
+  function renderUpdateSource() {
+    const github = updateSource === 'github';
+    const label = $('update-source-label');
+    if (label) label.textContent = updateSourceLabel(updateSource);
+    const cnbIcon = $('update-source-icon-cnb');
+    const ghIcon = $('update-source-icon-github');
+    if (cnbIcon) cnbIcon.hidden = github;
+    if (ghIcon) ghIcon.hidden = !github;
+    document.querySelectorAll('#update-source-menu .update-source-item').forEach((item) => {
+      const active = item.dataset.source === updateSource;
+      item.classList.toggle('is-active', active);
+      item.setAttribute('aria-selected', String(active));
+    });
+  }
+
+  function closeUpdateSourceMenu() {
+    const menu = $('update-source-menu');
+    const trigger = $('btn-update-source');
+    if (menu) menu.hidden = true;
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
+
+  function openUpdateSourceMenu() {
+    const menu = $('update-source-menu');
+    const trigger = $('btn-update-source');
+    if (!menu || !trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    menu.style.top = Math.round(rect.bottom + 6) + 'px';
+    menu.style.right = Math.max(8, Math.round(window.innerWidth - rect.right)) + 'px';
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    const active = menu.querySelector('.update-source-item.is-active');
+    if (active) active.focus();
+  }
+
+  function setUpdateSource(source) {
+    updateSource = source === 'github' ? 'github' : 'cnb';
+    try { localStorage.setItem(UPDATE_SOURCE_KEY, updateSource); } catch (e) { /* 同上 */ }
+    renderUpdateSource();
+    closeUpdateSourceMenu();
+  }
+
   // 打开外部目标：只传逻辑目标名，地址由 sidecar 侧白名单给出（前端不传 URL）。
   function openTarget(target) {
     if (!target) return;
-    mra.call('open_external_url', { target }).catch((e) => showError('打开链接失败: ' + e.message));
+    maarm.call('open_external_url', { target }).catch((e) => showError('打开链接失败: ' + e.message));
   }
 
   // 渲染「版本与更新」卡状态：cls 决定配色，text 只作纯文本落地。
@@ -153,16 +205,23 @@
     const releaseEl = $('about-new-release');
     if (!btn || !statusEl) return;
     btn.disabled = true;
-    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
+    const sourceBtn = $('btn-update-source');
+    if (sourceBtn) sourceBtn.disabled = true;
+    closeUpdateSourceMenu();
+    const requested = updateSourceLabel(updateSource);
+    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…（' + requested + '）',
+      { spinner: true });
     releaseEl.style.display = 'none';
     try {
-      const d = await mra.call('check_update');
+      const d = await maarm.call('check_update', { source: updateSource });
+      const used = updateSourceLabel(d.source || updateSource);
       if (d.error) {
-        renderUpdateStatus(statusEl, 'ver-status--err', d.error);
+        renderUpdateStatus(statusEl, 'ver-status--err', d.error + '（' + requested + '）');
       } else if (d.status === 'no_release') {
-        renderUpdateStatus(statusEl, 'ver-status--ok', '暂无发布版本');
+        renderUpdateStatus(statusEl, 'ver-status--ok', '暂无发布版本（' + used + '）');
       } else if (d.has_update) {
-        renderUpdateStatus(statusEl, 'ver-status--new', '发现新版本 v' + d.latest_tag);
+        renderUpdateStatus(statusEl, 'ver-status--new',
+          '发现新版本 v' + d.latest_tag + '（' + used + '）');
         releaseEl.style.display = 'flex';
         releaseEl.textContent = '';
         const info = mkEl('div', 'nr-info');
@@ -170,20 +229,21 @@
         info.appendChild(mkEl('div', 'nr-sub',
           (d.published_at ? '发布于 ' + d.published_at + ' · ' : '') + '建议更新到最新版本'));
         releaseEl.appendChild(info);
-        const goBtn = mkEl('button', 'mra-btn mra-btn--primary', '前往下载');
+        const goBtn = mkEl('button', 'maarm-btn maarm-btn--primary', '前往下载');
         goBtn.id = 'btn-go-download';
         goBtn.type = 'button';
         appendIcon(goBtn, 'arrow-up-right');
         goBtn.addEventListener('click', () => openTarget('download'));
         releaseEl.appendChild(goBtn);
       } else {
-        renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本');
+        renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本（' + used + '）');
       }
     } catch (e) {
       console.error(e);
       renderUpdateStatus(statusEl, 'ver-status--err', '检查失败：' + e.message);
     } finally {
       btn.disabled = false;
+      if (sourceBtn) sourceBtn.disabled = false;
     }
   }
 
@@ -193,7 +253,7 @@
     if (!bodyEl) return;
     bodyEl.textContent = '';
     try {
-      const d = await mra.call('fetch_announcement');
+      const d = await maarm.call('fetch_announcement');
       if (!d || d.level === 'none' || !d.title) {
         bodyEl.appendChild(mkEl('div', 'about-announce-empty', '暂无公告'));
         return;
@@ -225,6 +285,28 @@
   function initAbout() {
     const btn = $('btn-check-update');
     if (btn) btn.addEventListener('click', checkUpdate);
+    const trigger = $('btn-update-source');
+    const menu = $('update-source-menu');
+    if (trigger && menu) {
+      trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (menu.hidden) openUpdateSourceMenu(); else closeUpdateSourceMenu();
+      });
+      menu.querySelectorAll('.update-source-item').forEach((item) => {
+        item.addEventListener('click', () => setUpdateSource(item.dataset.source));
+      });
+      document.addEventListener('click', (event) => {
+        if (menu.hidden) return;
+        if (menu.contains(event.target) || trigger.contains(event.target)) return;
+        closeUpdateSourceMenu();
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !menu.hidden) closeUpdateSourceMenu();
+      });
+      window.addEventListener('resize', closeUpdateSourceMenu);
+      window.addEventListener('scroll', closeUpdateSourceMenu, true);
+    }
+    renderUpdateSource();
     fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
   }
   initAbout();
@@ -265,9 +347,9 @@
   function blinkStatusDot() {
     const dot = $('status-dot');
     if (!dot) return;
-    dot.classList.remove('mra-dot-blink');
+    dot.classList.remove('maarm-dot-blink');
     void dot.offsetWidth; // 重置动画：摘类→强制回流→再挂
-    dot.classList.add('mra-dot-blink');
+    dot.classList.add('maarm-dot-blink');
   }
 
   // 离开按钮的 DodgeField [v6]：躲避场 = 整张弹层卡，按钮二维逃跑（能扑到正文上）。
@@ -281,9 +363,9 @@
   const EGG_CATCH_LINES = ['抓不到', '差一点', '太慢了', '别追了', '你为什么执意要走', '好吧。你走吧。'];
   function wireEggDodge(modal, chase) {
     const field = modal.card;
-    const btn = field.querySelector('.mra-modal-btn');
+    const btn = field.querySelector('.maarm-modal-btn');
     if (!field || !btn) return null;
-    btn.classList.add('mra-modal-btn--egg');
+    btn.classList.add('maarm-modal-btn--egg');
     // 抓到 = 亮下一句：pointerdown 无条件挂（按下瞬间即判定，逃跑中也能抓到）。
     // 躲避受环境门控可缺席（reduced-motion/触屏/远桌面下 media query 不匹配），
     // 但交互不能跟着缺席——否则按钮成死按钮，用户被困在弹层里。
@@ -426,14 +508,14 @@
     }
     const rows = [];
     picked.forEach((r, i) => {
-      rows.push('<p class="mra-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
-        + '<b class="mra-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
+      rows.push('<p class="maarm-modal-rule" style="animation-delay:' + (i * 100) + 'ms">'
+        + '<b class="maarm-modal-rule-num">' + (i + 1) + '.</b><span>' + r + '</span></p>');
     });
-    rows.push('<p class="mra-modal-rule" style="animation-delay:' + (picked.length * 100) + 'ms">'
-      + '<b class="mra-modal-rule-num">9.</b><span>' + EGG_RULE_META + '</span></p>');
-    rows.push('<p class="mra-modal-rule mra-modal-rule--ghost" style="animation-delay:'
-      + (picked.length * 100 + 150) + 'ms"><b class="mra-modal-rule-num" data-final="10.">10.</b>'
-      + '<span class="mra-modal-rule-secret">' + EGG_RULE_LAST + '</span></p>');
+    rows.push('<p class="maarm-modal-rule" style="animation-delay:' + (picked.length * 100) + 'ms">'
+      + '<b class="maarm-modal-rule-num">9.</b><span>' + EGG_RULE_META + '</span></p>');
+    rows.push('<p class="maarm-modal-rule maarm-modal-rule--ghost" style="animation-delay:'
+      + (picked.length * 100 + 150) + 'ms"><b class="maarm-modal-rule-num" data-final="10.">10.</b>'
+      + '<span class="maarm-modal-rule-secret">' + EGG_RULE_LAST + '</span></p>');
     const chase = { catches: 0, gave: false };
     let cleanupDodge = null;
     let scrTimer = null;
@@ -441,9 +523,9 @@
       title: '员工守则',
       maxWidth: 580,
       bodyHtml:
-        '<div class="mra-modal-rules">' +
-        '<img class="mra-modal-rules-icon" src="../../../assets/icon.ico" alt="">' +
-        '<div class="mra-modal-rules-list">' + rows.join('') + '</div>' +
+        '<div class="maarm-modal-rules">' +
+        '<img class="maarm-modal-rules-icon" src="../../../assets/icon.ico" alt="">' +
+        '<div class="maarm-modal-rules-list">' + rows.join('') + '</div>' +
         '</div>',
       closeOnOverlay: false, // 不给逃课出口：点空白不关（Esc 仍可）
       onClose: () => {
@@ -455,14 +537,14 @@
         { text: '确定要退出吗？', primary: true },
       ],
     });
-    const title = modal.card.querySelector('.mra-modal-title');
-    if (title) title.classList.add('mra-modal-title--egg');
+    const title = modal.card.querySelector('.maarm-modal-title');
+    if (title) title.classList.add('maarm-modal-title--egg');
     // 第 10 条：整行（序号+正文）默认隐形；悬停时序号乱码解码 + 正文显影，移出复隐
-    const ghost = modal.card.querySelector('.mra-modal-rule--ghost');
+    const ghost = modal.card.querySelector('.maarm-modal-rule--ghost');
     if (ghost) {
       ghost.addEventListener('mouseenter', () => {
         ghost.classList.add('revealed');
-        const num = ghost.querySelector('.mra-modal-rule-num');
+        const num = ghost.querySelector('.maarm-modal-rule-num');
         if (scrTimer) clearInterval(scrTimer);
         scrTimer = scrambleNumber(num, '10.');
       });
@@ -570,7 +652,7 @@
     $('btn-win-min').addEventListener('click', () => postWindowAction('minimize'));
     $('btn-win-max').addEventListener('click', () => postWindowAction('maximize'));
     $('btn-win-close').addEventListener('click', () => postWindowAction('close'));
-    mra.onNativeMessage((msg) => {
+    maarm.onNativeMessage((msg) => {
       // PEEP 悬浮窗开/关：预览卡与占位符互换，帧消费权交接
       if (msg.type === 'peep-floating') {
         setPreviewFloating(Boolean(msg.value));
@@ -590,21 +672,24 @@
   // ---------- 主控 ----------
   async function init() {
     try {
-      const data = await mra.call('get_initial_state');
+      const data = await maarm.call('get_initial_state');
       $('app-version').textContent = 'v' + data.version;
       $('about-version').textContent = 'v' + data.version;
       const verCur = $('about-ver-current');
       if (verCur) verCur.textContent = 'v' + data.version;
-      renderModuleSelect(data.modules, data.selected_module);
-      // 初始就按运行状态锁定（重连/刷新时可能已有模块在跑）
-      updateModuleOptionsDisabled(!!data.is_running);
-      state.stages = data.stages || [];
-      renderStageList();
-      // 初始化模块选项（仅 treasure 展示）
-      bindModuleOptionsUI();
-      refreshModuleOptions(data.selected_module);
-      // 按当前模块渲染「数据/设置」页卡片
-      renderModulePages(data.selected_module);
+      state.modules = Array.isArray(data.modules) ? data.modules : [];
+      state.queue = data.queue || { order: [], enabled: {} };
+      state.breakpoints = data.breakpoints || {};
+      state.moduleAssets = data.module_assets || {};
+      state.coverDefault = data.cover_default || '';
+      // 初始就按运行状态锁定（重连/刷新时可能已有轮次在跑）
+      MaaRM.configPanel.setLocked(!!data.is_running);
+      renderTaskList();
+      // 「数据/设置」页跟随初始面板：第一个启用项，否则列表第一项，否则注册表第一个
+      const initialMid = state.queue.order.find((m) => state.queue.enabled[m])
+        || state.queue.order[0]
+        || (state.modules[0] && state.modules[0].id) || '';
+      renderModulePages(initialMid);
       if (!data.model_ok) setStatus('插件资源缺失', 'error');
     } catch (e) {
       console.error(e);
@@ -613,132 +698,8 @@
     checkRegistryOptimizations(); // 注册表权限体检（独立于初始化成败，内部自捕获异常）
     setTimeout(pollStatus, 250);
     setTimeout(pollLogs, 300);
-    setInterval(pollTodayBoard, 3000); // 今日看板（仅数据页可见时刷新）
+    setInterval(pollDashboard, 3000); // 看板中心（仅数据页可见时刷新当前看板）
     peepConsumer.start(500);           // PEEP 预览轮询（peep 开启 + 数据页可见 + 未脱离悬浮窗时 ~10fps）
-  }
-
-  // 「（空）」选项：不选择任何活动模块（无可用模块 / 用户主动清空）时的合法状态，
-  // value 为空串，避免空下拉栏取值报错。
-  const EMPTY_MODULE_LABEL = '（空）';
-
-  // 有效期端点（manifest 声明的 ISO 8601）→「YYYY-MM-DD HH:MM」原样展示：
-  // 端点本就是游戏服时间，不做时区换算；格式不符时原样返回。
-  function formatValidity(iso) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso || ''));
-    return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : String(iso || '');
-  }
-
-  function renderModuleSelect(modules, selectedId) {
-    const sel = $('module-select');
-    state.modules = Array.isArray(modules) ? modules : [];
-    sel.innerHTML = '';
-    state.modules.forEach((m) => {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      opt.textContent = m.expired ? `${m.id} — ${m.name}（已过期）` : `${m.id} — ${m.name}`;
-      // 到期时间给自绘下拉投影层算倒计时徽章（js/select.js）；缺省 = 永久
-      if (m.valid_until) opt.dataset.validUntil = m.valid_until;
-      if (m.expired) {
-        // 置灰只是视觉提示：仍然可选中，选中时由 onModuleChange 弹窗确认
-        opt.dataset.expired = '1';
-        opt.style.color = 'var(--mra-foreground-secondary,#4A5160)';
-      }
-      if (m.id === selectedId) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    const blank = document.createElement('option');
-    blank.value = '';
-    blank.textContent = EMPTY_MODULE_LABEL;
-    if (!selectedId) blank.selected = true;
-    sel.appendChild(blank);
-    sel.onchange = onModuleChange;
-    updateModuleDesc(selectedId);
-    if (MRA.syncModuleSelect) MRA.syncModuleSelect(); // 自绘下拉投影跟进（js/select.js）
-  }
-
-  function updateModuleDesc(moduleId) {
-    const el = $('module-desc');
-    if (!el) return;
-    if (!moduleId) {
-      el.textContent = '未选择活动模块';
-      return;
-    }
-    // 描述优先取本表（更通俗的叫法），没有则回落到后端注册表给的模块名
-    // ——模块名只有一处真源（模块类的 NAME），前端不另抄一份。
-    const descs = { treasure: '寻宝模式' };
-    const m = state.modules.find((x) => x.id === moduleId);
-    const parts = [descs[moduleId] || (m && m.name) || ''];
-    if (m && m.expired) {
-      parts.push('已过期' + (m.valid_until ? `（有效期至 ${formatValidity(m.valid_until)}）` : ''));
-    }
-    el.textContent = parts.filter(Boolean).join(' · ');
-  }
-
-  // 过期模块的强制选择确认：确认后按 force 下发，取消/点空白处一律撤销选项。
-  // 复用通用模态（openModal），Promise 化以便 onModuleChange 顺序处理。
-  function confirmExpiredModule(moduleId) {
-    const m = state.modules.find((x) => x.id === moduleId);
-    const until = (m && m.valid_until) ? formatValidity(m.valid_until) : '';
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (ok, modal) => {
-        if (settled) return;
-        settled = true;
-        if (modal) modal.close();
-        resolve(ok);
-      };
-      const modal = openModal({
-        title: '模块已过期',
-        titleColor: 'var(--mra-warning,#F59E0B)',
-        bodyHtml:
-          '<p class="mra-modal-text">' +
-          '此模块已过期，可能无法正常使用！</p>' +
-          (until
-            ? '<p class="mra-modal-text--sub">' +
-              '声明有效期至 ' + until + '。</p>'
-            : ''),
-        buttons: [
-          { text: '取消', onClick: (mm) => finish(false, mm) },
-          { text: '仍然选择', primary: true, onClick: (mm) => finish(true, mm) },
-        ],
-      });
-      // 点空白关闭是 openModal 内置行为：一并视为取消（close 在点击时才取值，可安全包一层）
-      const origClose = modal.close;
-      modal.close = function () { finish(false, null); origClose(); };
-    });
-  }
-
-  async function onModuleChange() {
-    const sel = $('module-select');
-    const mid = sel.value;
-    const opt = sel.options[sel.selectedIndex];
-    let force = false;
-    if (mid && opt && opt.dataset.expired === '1') {
-      const confirmed = await confirmExpiredModule(mid);
-      if (!confirmed) {
-        sel.value = MRA.currentModuleId || ''; // 撤销选择：回到当前生效模块
-        if (MRA.syncModuleSelect) MRA.syncModuleSelect();
-        return;
-      }
-      force = true;
-    }
-    try {
-      const data = await mra.call('select_module', { module_id: mid, force: force });
-      const applied = data.module_id || '';
-      state.stages = data.stages || [];
-      state.selected_index = 0;
-      renderStageList();
-      updateModuleDesc(applied);
-      // 模块切换后：重新刷新模块专属选项（显示/隐藏 + 配置回读）
-      refreshModuleOptions(applied);
-      // 数据/设置页卡片跟随模块切换
-      renderModulePages(applied);
-    } catch (e) {
-      console.error(e);
-      showError(e.message);
-      sel.value = MRA.currentModuleId || ''; // 后端拒绝时同样撤销显示值，避免前后端不一致
-      if (MRA.syncModuleSelect) MRA.syncModuleSelect();
-    }
   }
 
   // ---------- 启动 ----------

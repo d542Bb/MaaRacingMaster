@@ -6,7 +6,7 @@
    box(x1y1x2y2)→中心/宽高的换算正确、类别过滤正确、frame_id/ts_ns 透传；
 2. **类别表校验**——模型缺必需类别（car/coin/bonus_car）时构造即报错，
    防止换模型后静默错映射（街车重测/阈值复测的结论都挂在这三个名字上）；
-3. **插件声明面**——REQUIRED_ASSETS 与 perception_mode 配置键在位
+3. **插件声明面**——深度权重是可选模型包（MODEL_MANIFEST），perception_mode 配置键在位
    （profile 白名单机制：不加进 DEFAULT_MODULE_CONFIG 就不会被保存）。
 
 感知 import 依赖 onnxruntime（core.yolo_detector 顶层 import），CI 轻量依赖集缺失时
@@ -35,6 +35,9 @@ class FakeDetector:
         self.classes = classes
         self._dets = dets
         self.calls = []
+        # 分段计时插桩（与 YOLODetector 契约对齐）：等锁 / run 本体
+        self.last_wait_ms = 0.0
+        self.last_run_ms = 0.0
 
     def __call__(self, img_rgb, roi=None):
         self.calls.append((img_rgb.shape, roi))
@@ -98,11 +101,16 @@ class TestPluginDeclarations:
         m = importlib.import_module("maaracing_master.plugins.speedrush.module")
         return m.SpeedRushModule
 
-    def test_required_assets_declares_model(self):
+    def test_depth_models_are_optional_pack(self):
         pytest.importorskip("maa")
-        assert self._module().REQUIRED_ASSETS == (
-            "resources/onnx/perception/model.onnx",
-            "resources/onnx/depth/depth_small_q4f16.onnx")
+        from maaracing_master.plugins.speedrush import model_assets
+        # 默认发布包不带权重：模块级门禁不再要求它们，由启动时的模式级校验兜底
+        assert self._module().REQUIRED_ASSETS == ()
+        assert set(model_assets.DEPTH_MANIFEST) == {
+            "resources/models/perception/model.onnx",
+            "resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx",
+        }
+        assert model_assets.LANE_MODEL_REL in model_assets.MODEL_MANIFEST
 
     def test_perception_mode_in_config_whitelist(self):
         pytest.importorskip("maa")

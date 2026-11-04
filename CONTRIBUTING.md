@@ -100,7 +100,7 @@ git checkout -b feat/your-feature origin/master
 **开发约定：**
 
 - 新增模块必须走 `core/registry.py` 的插件发现（扫 `plugins/*/manifest.py`）+ 能力接口，不直接引高权限宿主对象。
-- 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/treasure/CODE_WIKI.md](maaracing_master/plugins/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
+- 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/_archive/treasure/CODE_WIKI.md](maaracing_master/plugins/_archive/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
 - 遵守 [AGENTS.md](AGENTS.md) 的协作守则（面向用户的输出、代码注释与交付文档使用简体中文）；代码风格为 4 空格缩进。
 
 ### 3. 提交与推送
@@ -117,7 +117,7 @@ git push -u origin feat/your-feature
 
 - 改动相关的 `pytest` + 改动文件的 `ruff`；
 - 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/navkit/check_truth.py`；
-- 动到 `tools/experiments/`、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6；基线只减不增，退役四步见 [tools/experiments/README.md](tools/experiments/README.md)）；
+- 动到 `tools/experiments/`、`docs/plan/`（新建或改动工作台文件）、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6；基线只减不增；实验退役四步见 [tools/experiments/README.md](tools/experiments/README.md)，plan 头部三行与退役四步见 [docs/README.md](docs/README.md)）；
 - 改到**跨模块共享契约**（core 能力接口、RPC 白名单、分层边）时建议自愿加跑全仓——影响面跨模块，早发现比等 CI 划算。
 - 新增了抽象（core 目录、共用 pipeline、通用协议、新通路 / 新页面）时，先答一句「**第二个使用者是谁、今天是否真实存在**」——判据见 [AGENTS.md](AGENTS.md)「作业纪律与提交红线」中「抽公共层」那一条；答不出就不抽。
 

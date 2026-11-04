@@ -25,17 +25,19 @@ internal static class RpcBridge
     /// </summary>
     private static readonly HashSet<string> AllowedMethods = new(StringComparer.Ordinal)
     {
-        "get_initial_state", "select_module", "get_status", "start", "stop",
+        "get_initial_state", "set_run_queue", "set_start_from", "get_status", "start", "stop",
         "get_module_config", "set_module_config",
         "open_vigembus_download", "open_external_url", "open_user_data_folder",
+        "get_data_usage",
         "get_registry_optimizations", "set_optimization_prompt_ignored",
         "set_registry_optimization",
         "get_optional_dependencies",
         "check_update", "fetch_announcement",
-        "fetch_logs", "get_today_stats", "get_debug_state",
+        "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
         "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
         "set_emergency_stop", "set_click_mode", "set_intent_mode",
-        "set_auto_close_game", "set_auto_exit_mra", "set_mute_game",
+        "set_mute_game", "pick_game_exe",
+        "set_boost_priority",
     };
 
     private static PythonSidecar? s_sidecar;

@@ -2,7 +2,7 @@
 """今日看板契约：读侧在插件（treasure.store.read_today_stats），core 只做路由。
 
 分层（2026-09-19 解耦下沉）：看板的表结构、列名、日界语义全部是鉴宝业务，住在
-plugins/treasure/store.py；core.sidecar.get_today_stats 只按 module_id 分发到
+plugins/_archive/treasure/store.py；core.sidecar.get_today_stats 只按 module_id 分发到
 ActivityModule.read_today_stats 钩子，不持有任何模块的 schema 字段。
 
 背景：daily_summary 新列（egg_coin/egg_score）的 ALTER 迁移由鉴宝模块写侧惰性建连时执行；
@@ -10,8 +10,8 @@ ActivityModule.read_today_stats 钩子，不持有任何模块的 schema 字段�
 `no such column: egg_coin` 并整块空掉。读侧必须按实有列取交集、缺列兜底，
 永不依赖写侧启动时机。
 
-路由分发测试需导入 core.sidecar / plugins.treasure.module（拉 maa/cv2 等重依赖）
-→ 整文件 SKIP；读侧 schema 测试只碰 plugins.treasure.store + core.paths，轻依赖必跑。
+路由分发测试需导入 core.sidecar / plugins._archive.treasure.module（拉 maa/cv2 等重依赖）
+→ 整文件 SKIP；读侧 schema 测试只碰 plugins._archive.treasure.store + core.paths，轻依赖必跑。
 """
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ try:
     from maaracing_master.core import sidecar as sc
     from maaracing_master.core import paths as core_paths
     from maaracing_master.core.sidecar import SidecarService  # noqa: F401
-    from maaracing_master.plugins.treasure.module import TreasureModule
-    from maaracing_master.plugins.treasure.store import read_today_stats
+    from maaracing_master.plugins._archive.treasure.module import TreasureModule
+    from maaracing_master.plugins._archive.treasure.store import read_today_stats
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001
     _OK, _ERR = False, str(exc)
@@ -79,6 +79,7 @@ def _read():
     return payload
 
 
+@pytest.mark.retired
 def test_board_survives_old_schema_without_new_columns(tmp_path, monkeypatch):
     """旧库（无 egg_coin/egg_score）→ 不抛错，缺列按 0 兜底，已有列原样返回。"""
     _make_db(
@@ -95,6 +96,7 @@ def test_board_survives_old_schema_without_new_columns(tmp_path, monkeypatch):
     assert s["egg_coin"] == 0 and s["egg_score"] == 0
 
 
+@pytest.mark.retired
 def test_board_full_with_new_schema(tmp_path, monkeypatch):
     _make_db(
         tmp_path, monkeypatch,
@@ -107,6 +109,7 @@ def test_board_full_with_new_schema(tmp_path, monkeypatch):
     assert s["egg_coin"] == 250000 and s["egg_score"] == 30000
 
 
+@pytest.mark.retired
 def test_board_games_rows_survive_missing_optional_columns(tmp_path, monkeypatch):
     """games 缺 strategy_mode → 该行照返回，字段为 None（不连坐整表）。"""
     _make_db(
@@ -125,6 +128,7 @@ def test_board_games_rows_survive_missing_optional_columns(tmp_path, monkeypatch
     assert g["total_price"] is None
 
 
+@pytest.mark.retired
 def test_board_missing_db_is_empty(tmp_path, monkeypatch):
     _make_db(tmp_path, monkeypatch, summary_cols=["games"], summary_vals=[0])
     (tmp_path / "treasure" / "treasure.db").unlink()
@@ -134,6 +138,7 @@ def test_board_missing_db_is_empty(tmp_path, monkeypatch):
 
 # ---------- core 路由分发（读法由模块自述，core 不持 schema） ----------
 
+@pytest.mark.retired
 def test_module_declares_today_stats_hook():
     """契约接线锁：TreasureModule 必须覆写看板钩子——core 路由靠它分发，
     漏写 = GUI 看板静默空掉（无 schema 机检可依，靠本锁）。"""
@@ -141,18 +146,20 @@ def test_module_declares_today_stats_hook():
     assert TreasureModule.read_today_stats is not ActivityModule.read_today_stats
 
 
-def test_route_dispatches_to_module_reader(tmp_path, monkeypatch):
-    """路由按 module_id 分发到注册表中该模块的 read_today_stats 钩子。"""
-    _make_db(tmp_path, monkeypatch, summary_cols=["games"], summary_vals=[6])
+def test_route_dispatches_to_module_reader(monkeypatch):
+    """路由按 module_id 分发到注册表中该模块的 read_today_stats 钩子。
 
+    用假模块而非真实插件：本测试锁的是 core 的分发机制（core 不持任何模块的 schema），
+    与具体模块的读侧实现无关。
+    """
     class _Stub:
         @classmethod
         def read_today_stats(cls):
-            return read_today_stats()
+            return {"bucket": "2026-01-01", "summary": {"games": 6}, "games": []}
 
-    monkeypatch.setitem(sc.MODULE_REGISTRY, "treasure", _Stub)
+    monkeypatch.setitem(sc.MODULE_REGISTRY, "probe", _Stub)
     svc = object.__new__(SidecarService)  # 只测纯路由，不拉完整服务
-    ok, payload, err = SidecarService.get_today_stats(svc, {"module_id": "treasure"})
+    ok, payload, err = SidecarService.get_today_stats(svc, {"module_id": "probe"})
     assert ok and err is None
     assert payload["summary"]["games"] == 6
 

@@ -77,7 +77,7 @@ def test_rgb_strict_rejects_same_structure_wrong_color(tpl_dir):
     # 真命中帧（同构红棋盘）的 strict 分恒为 +1.0——反相帧必须明显更低
     true_frame = _frame_with(TPL)
     _, true_score = tm.match_template_cs(true_frame, TPL, colorspace="rgb_strict", threshold=0.0)
-    assert true_score == pytest.approx(1.0)
+    assert true_score == pytest.approx(1.0, abs=1e-4)  # OpenCV 版本的 float32 NCC 末位差异
     assert strict_score < true_score  # 颜色错在 strict 下达不到真命中分
     assert strict_score < 0.8 or strict_box is None
 

@@ -3,13 +3,13 @@
 
 ADR 0001 的机检（check_truth.namespace_checks）只覆盖 pipeline 真源的按名引用；
 Python 层的"core 不 import 业务层"此前无门禁——任何人往 core 加一行
-`from maaracing_master.plugins.treasure import ...` 都不会被 CI 拦住。本文件补上
+`from maaracing_master.plugins._archive.treasure import ...` 都不会被 CI 拦住。本文件补上
 这一条：扫描包内除 plugins/ 外的全部源码 AST，断言无 plugins 子包的 import
 （绝对形态与相对形态都查）。
 
 合法方向（业务层 → 通用层）不在本闸范围：插件 import core 由生态契约与
-registry 加载顺序保证。模块 id 的字符串引用（如 sidecar 的默认模块常量）也
-不在本闸——那是"可接受的引用"（有守卫与回退），红线针对的是代码级依赖。
+registry 加载顺序保证。模块 id 的字符串引用也不在本闸——那是"可接受的引用"
+（按 id 查注册表、带存在性守卫与回退），红线针对的是代码级依赖。
 """
 
 from __future__ import annotations

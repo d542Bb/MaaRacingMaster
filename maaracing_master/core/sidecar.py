@@ -14,7 +14,8 @@ MaaRM Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
     response    → stdout 带写锁
 
 方法（JSONL RPC，供 MaaRacingMaster.Shell.exe 前端调用）：
-    get_initial_state / select_module / get_status / start / stop / fetch_logs / close / shutdown
+    get_initial_state / set_run_queue / set_start_from / get_status / start / stop
+    / fetch_logs / close / shutdown
     get_debug_state / set_debug_mode / set_peep / set_click_mode（调试页）
     get_registry_optimizations / set_registry_optimization（启动体检：注册表权限优化中心）
     set_optimization_prompt_ignored（按项忽略/恢复启动提醒，profile 持久化）
@@ -28,6 +29,7 @@ import json
 import os
 import sys
 import threading
+import time
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -38,6 +40,7 @@ from maaracing_master import __display_version__, __version__
 from maaracing_master.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
 from maaracing_master.core.controller import MaaRacingMasterController
 from maaracing_master.core.logger import Logger, logger
+from maaracing_master.core import process_priority
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
@@ -45,7 +48,36 @@ from maaracing_master.core.registry import (
     get_module_info,
     module_expired,
 )
-from maaracing_master.core.paths import config_dir, user_data_dir
+from maaracing_master.core.builtin_steps import (
+    BUILTIN_STEPS,
+    CloseGameStep,
+    LaunchGameStep,
+)
+from maaracing_master.core.base import declares_dashboard, overrides_classmethod
+from maaracing_master.core.config_ui_contract import (
+    normalize_config_ui,
+    normalize_status,
+    normalize_summary,
+)
+from maaracing_master.core.covers import cover_url_for, default_cover_url
+from maaracing_master.core.dashboard_contract import (
+    DASHBOARD_CONTRACT_VERSION,
+    DashboardContractError,
+    normalize_dashboard,
+)
+from maaracing_master.core import maa_option
+from maaracing_master.core.paths import (
+    config_dir,
+    data_dir,
+    debug_dir,
+    framework_dir,
+    logs_dir,
+    user_data_dir,
+)
+from maaracing_master.core.perf_contract import (
+    all_missing, normalize, rows_for)
+from maaracing_master.core.perf_sampler import (
+    build_perf_payload, ensure_perf_sampler_started, perf_sampler)
 from maaracing_master.core.remote_meta import (
     EXTERNAL_TARGETS,
     GITHUB_REPO,
@@ -65,8 +97,9 @@ _STDERR = cast(TextIO, sys.__stderr__)
 # 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
 # --------------------------------------------------------------------------
 _PROFILE_FILENAME = "profile.json"
-# 默认选中模块 id（仅作 id 引用，不直接 import 插件包；GUI 进入默认展示鉴宝）
-_DEFAULT_MODULE_ID = "treasure"
+# 默认选中模块：**不硬编码任何具体模块 id**——预选注册顺序里第一个仍在有效期内的模块，
+# 全部不可用时不预选（GUI「（空）」承担该状态）。写死某个活动会把该活动固化成特权模块，
+# 且它退役后常量即悬空；core 也不得出现模块 id 字面量。
 # 模块配置的键白名单不在这里定义：它由各模块类的 DEFAULT_MODULE_CONFIG 声明
 # （配置面由模块自述，见 ActivityModule 的契约）。core 不得出现任何模块的字段名
 # ——否则每加一个配置项都要回头改这里。
@@ -246,6 +279,48 @@ def _appx_package_registered(package_id_prefix: str) -> bool:
     return False
 
 
+# 设置页「调试文件夹」面板的统计对象：键 / 中文说明 / 路径解析函数。
+# 顺序即面板显示顺序；路径一律经 paths 模块取，不在这里拼字符串——目录真源只有一处。
+_USER_DATA_CATEGORIES = (
+    ("debug", "调试截图与录制语料", debug_dir),
+    ("data", "业务数据与数据库", data_dir),
+    ("framework", "MAA 框架日志与缓存", framework_dir),
+    ("logs", "会话日志", logs_dir),
+    ("config", "偏好与选项", config_dir),
+)
+
+
+def _dir_usage(path: Path) -> tuple:
+    """统计目录占用，返回 (字节数, 文件数)。
+
+    必须用 scandir 的 entry.stat()：Windows 目录枚举本身就把文件大小一起返回，
+    entry.stat() 直接读这份数据、不再发起系统调用。换成 os.walk + os.path.getsize
+    等于「枚举一遍 + 每个文件再问一次大小」，本机 3.6 万个文件从 0.06s 涨到 4.5s
+    （实测，2026-10-26）。符号链接与目录联接跳过，避免重复统计或绕圈。
+    目录缺失、不可读一律按 0 计：面板只做展示，不为统计失败弹错。
+    """
+    total = 0
+    files = 0
+    stack = [str(path)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_symlink():
+                            continue
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                            files += 1
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total, files
+
+
 def _get_ignored_prompt_ids() -> list:
     """已忽略启动提醒的优化项 id 列表（profile 持久化）。按项忽略：新增优化项不受影响。"""
     ids = _load_profile().get("ignored_optimization_prompts")
@@ -271,22 +346,62 @@ def _load_profile() -> dict:
         return {}
 
 
+# 落盘互斥：GUI 的每个请求都在自己的线程里跑，拖排序/改配置/切开关可能同时在写
+# 同一份 profile。共用同一个临时文件时，后写者会撞上前写者未关闭的句柄
+# （Windows 报「另一个程序正在使用此文件」），表现为「改了没保存」。
+_PROFILE_WRITE_LOCK = threading.Lock()
+
+
 def _save_profile(partial: dict) -> None:
     """原子写 profile：仅更新 partial 提供的段，其余段（含未知键）原样保留。
 
-    写失败不抛异常（只记警告），避免干扰主流程。
+    - **串行化**：所有写入走同一把锁，临时文件名再带线程号——并发写不再互相踩；
+    - **重试**：杀软/索引服务偶发占用目标文件，短暂退避后重试几次；
+    - 写失败不抛异常（只记警告），避免干扰主流程。
     """
+    path = _profile_path()
+    tmp = None
+    with _PROFILE_WRITE_LOCK:
+        try:
+            merged = _load_profile()            # 先并合再写，避免覆盖其它写入的数据
+            merged.update(partial)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(merged, f, ensure_ascii=False, indent=2)
+            last: Exception | None = None
+            for _ in range(5):
+                try:
+                    tmp.replace(path)           # 原子替换，防半写文件
+                    return
+                except PermissionError as exc:
+                    last = exc
+                    time.sleep(0.05)
+            raise last if last else RuntimeError("replace failed")
+        except Exception as exc:  # noqa: BLE001
+            logger.log(f"[sidecar] 偏好落盘失败: {exc!r}", "WARNING")
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+def _apply_framework_policy() -> None:
+    """启动时写入框架侧固定落盘策略，并把文本日志的轮转备份压到体积上限。
+
+    与界面两项调试开关无关：那两个开关只管应用自己的调试语料与会话日志。策略
+    须在首次 `Toolkit.init_option()` 之前写好；写失败只记一笔，不拦启动。
+    """
+    if maa_option.apply_policy() is None:
+        logger.log("框架落盘策略写入失败，框架按既有配置运行", "WARNING")
     try:
-        merged = _load_profile()            # 先并合再写，避免覆盖其它写入的数据
-        merged.update(partial)
-        path = _profile_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(merged, f, ensure_ascii=False, indent=2)
-        tmp.replace(path)                   # 原子替换，防半写文件
-    except Exception as exc:  # noqa: BLE001
-        logger.log(f"[sidecar] 偏好落盘失败: {exc!r}", "WARNING")
+        removed, freed = maa_option.prune_log_backups()
+    except Exception:  # noqa: BLE001 —— 清理尽力而为，不拦启动
+        return
+    if removed:
+        logger.log(f"框架日志备份清理：删除 {removed} 个文件，释放 {freed // (1024 ** 2)}MB", "INFO")
 
 
 def _parse_module_config_slots(mc: object) -> dict[str, dict]:
@@ -313,21 +428,53 @@ def _module_config_defaults(module_id: str) -> dict:
     **静态读取，不创建实例**：读配置不得执行模块代码——否则"看一眼配置"就会跑一遍
     模块的 ``__init__``，而"构造函数里有副作用（起线程、开文件）"本身是合理的事。
     键白名单取自这里，所以新增配置项只要写进模块的声明就自动可持久化。
+
+    内置步骤（启动游戏 / 关闭游戏）同样在这里给出配置面：任务列表里两种步骤共用
+    一套配置读写通路，前端不需要为"步骤"另开一条分支。
     """
+    if module_id in BUILTIN_STEPS:
+        return dict(BUILTIN_STEPS[module_id].DEFAULT_CONFIG)
     cls = MODULE_REGISTRY.get(module_id)
     defaults = getattr(cls, "DEFAULT_MODULE_CONFIG", None)
     return dict(defaults) if isinstance(defaults, dict) else {}
 
 
-def _merge_module_config(cache_cfg: dict | None, param_cfg: dict | None) -> dict:
-    """start 时的配置合并：缓存槽 ← 本次带参（带参优先）。
+def _step_ids() -> frozenset[str]:
+    """任务列表允许出现的全部 id：活动模块 + 内置步骤。"""
+    return frozenset(MODULE_REGISTRY) | frozenset(BUILTIN_STEPS)
 
-    单独成函数是为了让"配置来源的优先级"只有一个落点、可被直接验证，
-    不然它散在 start 的启动流程里，只能靠跑整条 start 才间接覆盖。
+
+def _normalize_module_config(module_id: str, config: dict) -> dict:
+    """让模块把旧键折算成当前配置面、并施加档位不变量；失败按原样继续。"""
+    cls = MODULE_REGISTRY.get(module_id)
+    fn = getattr(cls, "normalize_config", None) if cls is not None else None
+    if not callable(fn):
+        return config
+    try:
+        out = fn(dict(config))
+    except Exception as exc:  # noqa: BLE001 —— 归一失败不阻断配置读取/写入
+        logger.log(f"[模块配置] {module_id} 配置归一失败，按原样继续: {exc!r}", "WARNING")
+        return config
+    return out if isinstance(out, dict) else config
+
+
+def _project_config(module_id: str, config: dict) -> dict:
+    """有效配置投影：默认值 ∪ 归一结果 → 只保留该模块声明的键。
+
+    摘要等派生信息只认这份数据（旧键已折算、未知键已剔除、默认值已补齐）。
     """
-    merged: dict = dict(cache_cfg or {})
-    merged.update(param_cfg or {})
+    base = _module_config_defaults(module_id)
+    eff = _normalize_module_config(module_id, dict(config))
+    merged = dict(base)
+    if isinstance(eff, dict):
+        merged.update({k: eff[k] for k in base if k in eff})
     return merged
+
+
+def _step_name(step_id: str) -> str:
+    if step_id in BUILTIN_STEPS:
+        return BUILTIN_STEPS[step_id].NAME
+    return get_module_info(step_id)["name"]
 
 
 class _StdoutGuard:
@@ -351,12 +498,14 @@ class _StdoutGuard:
 # （apps/MaaRacingMaster.Shell/RpcBridge.cs AllowedMethods）。
 HANDLERS = frozenset({
     # 生命周期与模块
-    "get_initial_state", "select_module", "get_status", "start", "stop",
-    "close", "shutdown",
+    "get_initial_state", "set_run_queue", "set_start_from", "get_status",
+    "start", "stop", "close", "shutdown",
     # 模块配置
     "get_module_config", "set_module_config",
     # 外部资源与下载引导
     "open_vigembus_download", "open_external_url", "open_user_data_folder",
+    # 用户数据目录占用（设置页「调试文件夹」面板）
+    "get_data_usage",
     # 注册表优化建议
     "get_registry_optimizations", "set_optimization_prompt_ignored",
     "set_registry_optimization",
@@ -365,12 +514,13 @@ HANDLERS = frozenset({
     # 更新与公告
     "check_update", "fetch_announcement",
     # 观测
-    "fetch_logs", "get_today_stats", "get_debug_state",
+    "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
     # 调试与显示开关
     "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
     # 行为开关
     "set_emergency_stop", "set_click_mode", "set_intent_mode",
-    "set_auto_close_game", "set_auto_exit_mra", "set_mute_game",
+    "set_mute_game", "pick_game_exe",
+    "set_boost_priority",
 })
 
 # 在途请求并发上限：stdin reader 永不阻塞是协议铁律，超限直接拒（前端按
@@ -378,8 +528,56 @@ HANDLERS = frozenset({
 _MAX_INFLIGHT = 16
 
 
+def _pick_exe_dialog(title: str = "选择游戏主程序") -> str:
+    """弹系统「打开文件」对话框，返回所选路径；取消返回空串。
+
+    在 sidecar 侧弹窗：对话框属于本进程自己的 UI，不需要给 WebView 开放任何文件系统
+    能力（前端只说"用户点了浏览"，拿不到任意路径读取权）。
+    """
+    import ctypes
+    import ctypes.wintypes as wt
+
+    class OPENFILENAMEW(ctypes.Structure):
+        _fields_ = [
+            ("lStructSize", wt.DWORD), ("hwndOwner", wt.HWND), ("hInstance", wt.HINSTANCE),
+            ("lpstrFilter", wt.LPCWSTR), ("lpstrCustomFilter", wt.LPWSTR),
+            ("nMaxCustFilter", wt.DWORD), ("nFilterIndex", wt.DWORD),
+            ("lpstrFile", wt.LPWSTR), ("nMaxFile", wt.DWORD),
+            ("lpstrFileTitle", wt.LPWSTR), ("nMaxFileTitle", wt.DWORD),
+            ("lpstrInitialDir", wt.LPCWSTR), ("lpstrTitle", wt.LPCWSTR),
+            ("Flags", wt.DWORD), ("nFileOffset", wt.WORD), ("nFileExtension", wt.WORD),
+            ("lpstrDefExt", wt.LPCWSTR), ("lCustData", wt.LPARAM), ("lpfnHook", wt.LPVOID),
+            ("lpTemplateName", wt.LPCWSTR), ("pvReserved", wt.LPVOID),
+            ("dwReserved", wt.DWORD), ("FlagsEx", wt.DWORD),
+        ]
+
+    OFN_FILEMUSTEXIST = 0x00001000
+    OFN_PATHMUSTEXIST = 0x00000800
+    OFN_NOCHANGEDIR = 0x00000008
+    OFN_EXPLORER = 0x00080000
+    filter_str = "可执行文件 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0\0"
+
+    buf = ctypes.create_unicode_buffer(2048)
+    ofn = OPENFILENAMEW()
+    ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
+    ofn.lpstrFilter = filter_str
+    ofn.lpstrFile = ctypes.cast(buf, wt.LPWSTR)
+    ofn.nMaxFile = len(buf)
+    ofn.lpstrTitle = title
+    ofn.lpstrDefExt = "exe"
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER
+    if not ctypes.WinDLL("comdlg32").GetOpenFileNameW(ctypes.byref(ofn)):
+        return ""
+    return buf.value
+
+
 class SidecarService:
     """业务 dispatch 层：线程安全（复用 bridge.py 的 _lock/_worker 语义）。"""
+
+    # 关闭时等模块 worker 收摊的上限（与 logger 的伴随写手排空同阶）。无上限 join
+    # 会把「关不掉的 worker」放大成「关不掉的进程」——超时照常收尾，由 incomplete
+    # 组与降级分项计数留痕。
+    WORKER_JOIN_TIMEOUT_S = 2.0
 
     def __init__(self, protocol_stdout):
         self._out = protocol_stdout
@@ -387,19 +585,30 @@ class SidecarService:
         self._controller = MaaRacingMasterController()
         self._lock = threading.RLock()
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
-        # 默认选中鉴宝模块（GUI 进入即默认展示鉴宝；未注册或已过期时回退到第一个
-        # 仍在有效期内的模块；全部不可用则不预选，由 GUI「（空）」承担该状态）。
-        # 以模块 id 常量引用，避免 sidecar 耦合具体插件包。
-        self._selected_module = (
-            _DEFAULT_MODULE_ID
-            if _DEFAULT_MODULE_ID in MODULE_REGISTRY and not module_expired(_DEFAULT_MODULE_ID)
-            else first_available_module_id()
-        )
-        try:
-            self._stages = get_module_info(self._selected_module)["stages"] if self._selected_module else []
-        except KeyError:
-            self._stages = []
+        # 运行任务列表（数组序 = 执行序）与启用勾选。默认 = 注册表全量按注册序排列、
+        # 勾选第一个仍可用模块（对齐旧单选语义的迁移起点，profile 有存档则以存档为准）。
+        # 不硬编码任何模块 id（见文件头说明）；set_run_queue 校验后整体覆写。
+        # 默认编排 = 启动游戏 → 活动模块 → 关闭游戏：步骤与模块同列，用户可增删排序。
+        self._queue_order: list[str] = [
+            LaunchGameStep.ID, *MODULE_REGISTRY, CloseGameStep.ID,
+        ]
+        first = first_available_module_id()
+        self._queue_enabled: dict[str, bool] = {
+            sid: True for sid in (LaunchGameStep.ID, CloseGameStep.ID)
+        }
+        if first:
+            self._queue_enabled[first] = True
+        # 断点起点（模块 id → 阶段名）：**仅内存**，start 时消费即清——断点不跨会话记忆。
+        self._start_from: dict[str, str] = {}
+        # 运行实况 {index, total, current_module}（worker 持有期间非 None）与
+        # 上一轮各模块结局 {mid: ok|fail|stopped|skip}（None = 本次启动后还没跑完整轮）。
+        self._queue_run: dict | None = None
+        self._round_result: dict[str, str] | None = None
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
+        # 已告警过的「未声明键」（每会话首次，避免 4Hz 轮询刷屏）
+        self._perf_unknown_warned: set[str] = set()
+        # 采样停摆：只在进入/退出时各报一次，不按轮询刷屏
+        self._perf_stalled = False
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
         # 远程数据里**已校验通过**的可打开地址（公告详情 / 下载页）：前端只按逻辑目标名
         # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
@@ -409,6 +618,12 @@ class SidecarService:
         # 槽里只放纯配置数据，**绝不放模块实例**——实例持有线程/文件句柄等资源，
         # 缓存若持有实例，等于把"已经切走的模块"留在内存里继续活着。
         self._module_config_cache: dict[str, dict] = {}
+        # 配置修订号：每次 set 成功 +1，前端据此丢弃过期的轮询响应（进程内，不落盘）。
+        self._module_config_rev: dict[str, int] = {}
+        # 配置派生问题的日志去重：同一模块的同一种问题只记一次（轮询不刷屏）。
+        self._config_meta_notes: dict[tuple[str, str], str] = {}
+        # 性能优先开关的进程内状态（sidecar 自有，不经 controller；_restore_profile 回放）
+        self._boost_priority_enabled = False
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
         self._restore_profile()
 
@@ -483,14 +698,6 @@ class SidecarService:
             dm = dbg.get("debug_mode")
             if isinstance(dm, bool):
                 self._controller.set_debug_mode(dm)
-            acg = dbg.get("auto_close_game")
-            aem = dbg.get("auto_exit_mra")
-            if isinstance(acg, bool) or isinstance(aem, bool):
-                # 运行结束自动关闭开关（GUI「运行结束后」卡片），单独恢复不串扰
-                self._controller.set_auto_shutdown(
-                    close_game=acg if isinstance(acg, bool) else None,
-                    exit_mra=aem if isinstance(aem, bool) else None,
-                )
             cm = dbg.get("click_mode")
             if isinstance(cm, str):
                 try:
@@ -503,17 +710,91 @@ class SidecarService:
             mg = dbg.get("mute_game")
             if isinstance(mg, bool):
                 self._controller.set_mute_game(mg)
+            bp = dbg.get("boost_priority")
+            if isinstance(bp, bool):
+                # 性能优先：sidecar 进程级开关，重放=按开关方向重新应用（值来自
+                # profile，不回写落盘）；不真改 controller，状态自持
+                applied = (process_priority.apply_boost() if bp
+                           else process_priority.revert())
+                self._boost_priority_enabled = bp
+                logger.log(f"性能优先({'提级' if bp else '恢复'}): "
+                           f"{process_priority.describe(applied)}", "DEBUG")
         # 2) 模块配置 → 按模块分槽回填；键白名单由各模块的 DEFAULT_MODULE_CONFIG 声明
         slots: dict[str, dict] = {}
         for mid, flat in _parse_module_config_slots(data.get("module_config")).items():
-            # 未注册（模块已被剥离）或已过有效期的模块不收：留下的槽没有生效路径
-            if mid not in MODULE_REGISTRY or module_expired(mid):
+            # 未注册（模块已被剥离）或已过有效期的模块不收：留下的槽没有生效路径。
+            # 内置步骤没有有效期概念，只要 id 在册就收。
+            if mid not in _step_ids() or (mid in MODULE_REGISTRY and module_expired(mid)):
                 continue
+            flat = _normalize_module_config(mid, flat)
             allowed = _module_config_defaults(mid)
             kept = {k: flat[k] for k in allowed if k in flat}
             if kept:
                 slots[mid] = kept
         self._module_config_cache = slots
+        # 3) 运行任务列表：order 取已知模块 id 的去重序列（未知 id 丢弃），enabled
+        #    只收已知 id 的布尔值。文件里没有该段 → 保留 __init__ 的默认编排。
+        rq = data.get("run_queue")
+        if isinstance(rq, dict):
+            order = rq.get("order")
+            if isinstance(order, list):
+                seen: set[str] = set()
+                cleaned: list[str] = []
+                for mid in order:
+                    if isinstance(mid, str) and mid in _step_ids() and mid not in seen:
+                        seen.add(mid)
+                        cleaned.append(mid)
+                if cleaned:
+                    self._queue_order = cleaned
+            en = rq.get("enabled")
+            if isinstance(en, dict):
+                self._queue_enabled = {
+                    k: bool(v) for k, v in en.items()
+                    if isinstance(k, str) and k in _step_ids()
+                }
+        # 4) 旧「运行结束后」开关迁移（跑一次即清键）
+        self._migrate_legacy_shutdown(data.get("debug"))
+
+    def _migrate_legacy_shutdown(self, dbg: object) -> None:
+        """把旧的两个开关折成「关闭游戏」步骤，然后清掉旧键。
+
+        - auto_close_game → 队列末尾补一个关闭游戏步骤（已在列表里就不重复加）；
+        - auto_exit_mra   → 该步骤打开「关闭后退出本程序」。
+
+        幂等：迁完把两个键从 profile 里删掉，下次启动不再进入本分支。
+        """
+        if not isinstance(dbg, dict):
+            return
+        acg = dbg.get("auto_close_game")
+        aem = dbg.get("auto_exit_mra")
+        if not isinstance(acg, bool) and not isinstance(aem, bool):
+            return
+        with self._lock:
+            if acg is True or aem is True:
+                if CloseGameStep.ID not in self._queue_order:
+                    self._queue_order.append(CloseGameStep.ID)
+                self._queue_enabled[CloseGameStep.ID] = True
+            if aem is True:
+                slot = dict(self._module_config_cache.get(CloseGameStep.ID) or {})
+                slot["exit_app"] = True
+                self._module_config_cache[CloseGameStep.ID] = slot
+            snapshot = self._queue_snapshot()
+            cfg_snapshot = {mid: dict(cfg) for mid, cfg in self._module_config_cache.items() if cfg}
+        migrated = []
+        if acg is True:
+            migrated.append("关闭游戏")
+        if aem is True:
+            migrated.append("关闭后退出本程序")
+        dbg.pop("auto_close_game", None)
+        dbg.pop("auto_exit_mra", None)
+        _save_profile({
+            "debug": dbg,
+            "run_queue": snapshot,
+            "module_config": cfg_snapshot,
+        })
+        logger.log(
+            "旧「运行结束后」开关已迁移到任务列表: " + ("、".join(migrated) if migrated else "（原本都关着）")
+        )
 
     def get_initial_state(self, params):
         return (True, {
@@ -521,100 +802,287 @@ class SidecarService:
             # 版本比较另用 _version_tuple()（内部仍取干净基线，不受此后缀影响）
             "version": __display_version__,
             "modules": self._module_list(),
-            "selected_module": self._selected_module,
-            "stages": list(self._stages),
-            "model_ok": self._selected_module_assets_ok(),
+            # 通用默认封面：前端在「模块无专属封面 / 封面加载失败」时回落到它，
+            # 由核心解析成 URL 下发（前端不认识插件目录结构）
+            "cover_default": default_cover_url(),
+            "queue": self._queue_snapshot(),
+            # 断点起点（仅内存，不落盘）：GUI 展示「从此处开始」用
+            "breakpoints": dict(self._start_from),
+            "module_assets": self._module_assets_map(),
+            "model_ok": self._enabled_assets_ok(),
             "is_running": self._controller.module_active,
         }, None)
 
     def _module_list(self) -> list:
-        """GUI 下拉栏数据源：含声明有效期与过期标记（过期项前端置灰、不自动选中）。"""
-        return [
+        """GUI 任务卡与模块管理弹窗的数据源：内置步骤 + 活动模块。
+
+        kind 字段供前端区分（步骤没有阶段与有效期），其余字段同构——前端渲染同一套卡片。
+        has_dashboard 标识模块是否有数据看板；步骤不参与看板中心，恒 False。
+        """
+        items = [
             {
+                "id": sid,
+                "name": cls.NAME,
+                "stages": [],
+                "kind": "builtin",
+                "requires_gamepad_exclusive": False,
+                "expired": False,
+                "valid_until": None,
+                # 步骤只跑一次，没有数据看板
+                "has_dashboard": False,
+                # 封面 URL 由核心解析（None = 未声明/文件缺失，前端回落 cover_default）
+                "cover": cover_url_for(sid),
+                # 默认配置随列表下发：前端「重置」要填回的就是这一份，不在前端另存
+                "config_defaults": dict(cls.DEFAULT_CONFIG),
+            }
+            for sid, cls in BUILTIN_STEPS.items()
+        ]
+        for mid in MODULE_REGISTRY:
+            info = get_module_info(mid)
+            items.append({
                 "id": mid,
                 "name": info["name"],
                 "stages": info["stages"],
+                "kind": "module",
                 "requires_gamepad_exclusive": info["requires_gamepad_exclusive"],
                 "expired": info["expired"],
                 "valid_until": info["valid_until"],
-            }
-            for mid, info in (
-                (mid, get_module_info(mid)) for mid in MODULE_REGISTRY
-            )
-        ]
+                # 看板资格由模块类声明，核心只下发标志（渲染组件在前端）
+                "has_dashboard": info["has_dashboard"],
+                # 封面 URL 由核心解析（None = 未声明/文件缺失，前端回落 cover_default）
+                "cover": cover_url_for(mid),
+            })
+        return items
 
-    def _selected_module_assets_ok(self) -> bool:
-        """当前选中模块的插件自带资源（REQUIRED_ASSETS）是否齐全。
+    def _queue_snapshot(self) -> dict:
+        with self._lock:
+            return {"order": list(self._queue_order), "enabled": dict(self._queue_enabled)}
 
-        未选中模块时不告警（True）；模块被剥离/未注册时同样不告警，由启动校验兜底。
-        """
-        if not self._selected_module:
-            return True
-        try:
-            return not check_required_assets(self._selected_module)
-        except KeyError:
-            return True
+    def _enabled_ids(self) -> list[str]:
+        """启用勾选的模块 id，按列表顺序（= 执行顺序）。"""
+        with self._lock:
+            return [mid for mid in self._queue_order if self._queue_enabled.get(mid)]
 
-    def select_module(self, params):
-        """切换活动模块。
+    def _module_assets_map(self) -> dict:
+        """任务列表内各模块的插件资源齐备状态（REQUIRED_ASSETS 缺失检测，几个 stat 调用）。"""
+        out = {}
+        for mid in self._queue_order:
+            try:
+                out[mid] = not check_required_assets(mid)
+            except KeyError:
+                out[mid] = True  # 模块已剥离/未注册：不告警，由启动校验兜底
+        return out
 
-        - **运行中一律拒绝**：所选模块与正在跑的模块必须始终一致。运行中切换会让
-          GUI 的阶段列表、当前阶段高亮、配置面板全部指向另一个模块，而跑着的仍是旧模块
-          ——界面与实况对不上，用户会照着错的阶段名读日志。判据用 worker 槽（从 start
-          受理到 worker 结束）而非模块自身的 running 标志，把"启动中/停止中"也一并拦住。
-        - module_id 为空 = GUI「（空）」选项：清空选择并正常返回（无模块可用时的合法状态）；
-        - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝；
-        - 未知 id 仍返回「模块不存在」。
+    def _enabled_assets_ok(self) -> bool:
+        """启用模块的插件资源是否全部齐备（状态栏「插件资源缺失」提示的数据源）。"""
+        return all(self._module_assets_map().get(mid, True) for mid in self._enabled_ids())
+
+    def set_run_queue(self, params):
+        """覆写运行任务列表（数组序 = 执行序）与启用勾选，落盘持久化。
+
+        - **运行中一律拒绝**：队列是本次运行的编排依据，运行中改会让「排队中」
+          卡片与实况对不上；
+        - order 必须是已知模块 id 的列表（未知 id 拒绝而非静默丢弃——前端传错要让它
+          看得见）；enabled 只收已知 id 的布尔值；
+        - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝。
         """
         with self._lock:
             busy = self._worker is not None
         if busy:
-            return (False, None, "运行中不允许切换活动模块，请先停止")
-        module_id = params.get("module_id")
-        if not module_id:
-            with self._lock:
-                self._selected_module = None
-                self._stages = []
-            logger.log("活动模块已清空选择")
-            return (True, {"stages": [], "module_id": None}, None)
-        try:
-            info = get_module_info(module_id)
-        except KeyError:
-            return (False, None, f"模块不存在: {module_id}")
-        if info["expired"] and not params.get("force"):
-            return (False, None, f"模块已过期，需确认后才能选择: {module_id}")
+            return (False, None, "运行中不允许修改任务列表，请先停止")
+        order = params.get("order")
+        enabled = params.get("enabled")
+        if not isinstance(order, list) or not all(isinstance(m, str) for m in order):
+            return (False, None, "order 必须为模块 id 字符串列表")
+        known = _step_ids()
+        unknown = [m for m in order if m not in known]
+        if unknown:
+            return (False, None, f"模块不存在: {', '.join(unknown)}")
+        if len(set(order)) != len(order):
+            return (False, None, "order 中存在重复模块")
+        if not isinstance(enabled, dict) or not all(isinstance(k, str) for k in enabled):
+            return (False, None, "enabled 必须为「模块 id → 是否启用」映射")
+        unknown_en = [k for k in enabled if k not in known]
+        if unknown_en:
+            return (False, None, f"模块不存在: {', '.join(unknown_en)}")
+        # 启用且在列表里的过期模块须确认（force）；仅存在于列表但未勾选的不拦——
+        # 不跑的模块没有「使用」发生
+        force = bool(params.get("force"))
+        expired_on = [
+            m for m in order
+            if enabled.get(m) and m in MODULE_REGISTRY and module_expired(m)
+        ]
+        if expired_on and not force:
+            return (False, None, f"模块已过期，需确认后才能加入: {', '.join(expired_on)}")
         with self._lock:
-            self._selected_module = module_id
-            self._stages = info["stages"]
-        logger.log(f"活动模块已切换: {module_id}")
-        return (True, {"stages": info["stages"], "module_id": module_id}, None)
+            self._queue_order = list(order)
+            # 启用位收敛为「只挂在列表内的模块」：移出列表的模块连带清掉启用位，
+            # profile 里不残留悬空键（再入列时由前端显式给值）
+            self._queue_enabled = {k: bool(v) for k, v in enabled.items() if k in self._queue_order}
+            snapshot = self._queue_snapshot()
+        _save_profile({"run_queue": snapshot})
+        # 回显只写文件、不上面板（面板降噪）：GUI 勾选态本身就是操作提示，回显冗余。
+        logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}", "DEBUG")
+        return (True, snapshot, None)
+
+    def set_start_from(self, params):
+        """设置某模块的断点起点（仅内存，start 消费即清，不跨会话记忆）。
+
+        stage 传 None/缺省 = 清除断点（回到从头跑）。运行中拒绝：断点属「下一次
+        启动」的编排，运行中的轮次已经成型。
+        """
+        with self._lock:
+            busy = self._worker is not None
+        if busy:
+            return (False, None, "运行中不允许设置断点，请先停止")
+        module_id = params.get("module_id")
+        if module_id in BUILTIN_STEPS:
+            return (False, None, "内置步骤没有细分阶段，不能设断点")
+        if module_id not in MODULE_REGISTRY:
+            return (False, None, f"模块不存在: {module_id}")
+        stage = params.get("stage")
+        if stage is not None:
+            try:
+                stages = get_module_info(module_id)["stages"]
+            except KeyError:
+                return (False, None, f"模块不存在: {module_id}")
+            if stage not in stages:
+                return (False, None, f"断点 {stage} 不属于模块 {module_id} 的阶段")
+        with self._lock:
+            if stage is None:
+                self._start_from.pop(module_id, None)
+            else:
+                self._start_from[module_id] = stage
+            breakpoints = dict(self._start_from)
+        if stage:
+            logger.log(f"断点模式: {module_id} 将从「{stage}」开始运行")
+        return (True, {"breakpoints": breakpoints}, None)
 
     def get_status(self, params):
         with self._lock:
             worker = self._worker
-            selected = self._selected_module
-        # 性能快照按鸭子类型取：谁实现了 read_perf_snapshot 就带谁的数据，
-        # core 不点名任何活动模块（方向红线：通用层不指向模块）。模块没实现 /
-        # 未运行 → perf=None，前端据此渲染"无数据"，不猜默认值。
-        perf = None
-        reader = getattr(self._controller.active_module, "read_perf_snapshot", None)
-        if callable(reader):
-            try:
-                perf = reader()
-            except Exception as exc:  # noqa: BLE001 —— 仪表读数失败绝不影响状态轮询
-                logger.log(f"[sidecar] 性能快照读取失败: {exc}", "DEBUG")
+            queue_run = dict(self._queue_run) if self._queue_run else None
+            round_result = dict(self._round_result) if self._round_result is not None else None
+        # 性能载荷**只读采样器快照**，不再直接问模块：面板看到的和 perf.jsonl
+        # 记下的是同一份数据（采样器是唯一采集时钟与唯一写手）。代价是数字最多
+        # 滞后一个采样周期（1s），换的是「看到的＝记下的」。
+        snap = perf_sampler.snapshot()
+        self._check_sampler_stall(snap)
+        perf = build_perf_payload(snap.get("domain"), snap)
         return (True, {
             "is_running": self._controller.module_active,
             "current_stage": self._controller.current_stage,
+            "current_module": self._controller.current_module_id,
             "worker_active": worker is not None and worker.is_alive(),
-            "selected_module": selected,
-            # 资源齐备状态随轮询持续下发（前端闲置态据此维持「插件资源缺失」提示）；
-            # 实现只是几个 stat 调用，4Hz 轮询无压力
-            "model_ok": self._selected_module_assets_ok(),
+            # 运行实况：第几个/共几个、正在跑哪个模块（前端据此点亮对应任务卡）
+            "queue_run": queue_run,
+            # 上一轮各模块结局（ok|fail|stopped|skip；None = 启动后尚未跑完整轮）
+            "round_result": round_result,
+            # 资源齐备状态随轮询持续下发（前端闲置态据此维持「插件资源缺失」提示，
+            # 并在任务卡上标出具体缺资源的模块）；实现只是几个 stat 调用，4Hz 轮询无压力
+            "module_assets": self._module_assets_map(),
+            "model_ok": self._enabled_assets_ok(),
             "perf": perf,
         }, None)
 
     # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------
+
+    def _note_config_meta(self, module_id: str, kind: str, message: str) -> None:
+        """同一种配置派生问题只记一次：配置视图会被 1s 轮询反复读取，不能刷屏。"""
+        key = (module_id, kind)
+        with self._lock:
+            if self._config_meta_notes.get(key) == message:
+                return
+            self._config_meta_notes[key] = message
+        logger.log(message, "WARNING")
+
+    def _attach_config_meta(self, module_id: str, payload: dict,
+                            live: Any = None, rev: int | None = None) -> dict:
+        """给配置响应补表单元数据、摘要与（运行中的）状态行。
+
+        静态视图与 live 路径共用。只认通用形状：表单结构、字符串列表、{text,level}；
+        业务文案全部由模块自己产出，core 不做解释。``rev`` 由调用方在读取配置的同一
+        锁区内取好传入，保证「配置内容与修订号」出自同一时刻。
+        """
+        cls = MODULE_REGISTRY.get(module_id)
+        if rev is None:
+            with self._lock:
+                rev = self._module_config_rev.get(module_id, 0)
+        payload["_rev"] = rev
+
+        # 1) 表单契约：none/ok/partial/invalid/unsupported_version 四态可区分
+        ui = normalize_config_ui(cls, set(_module_config_defaults(module_id)))
+        payload["_ui_state"] = ui.state
+        if ui.schema is not None:
+            payload["_ui"] = ui.schema
+        else:
+            payload.pop("_ui", None)
+        if ui.note:
+            payload["_ui_note"] = ui.note
+        else:
+            payload.pop("_ui_note", None)
+        if ui.warnings:
+            self._note_config_meta(
+                module_id, "ui",
+                f"[模块配置] {module_id} 配置面板可用性变化：{ui.state}；"
+                + "；".join(ui.warnings))
+
+        # 2) 下拉候选：模块静态枚举，不建实例
+        choices_fn = getattr(cls, "config_choices", None) if cls is not None else None
+        if callable(choices_fn):
+            try:
+                choices = choices_fn()
+            except Exception as exc:  # noqa: BLE001 —— 选项枚举失败不阻断配置读取
+                logger.log(f"[模块配置] {module_id} 选项枚举失败: {exc!r}", "WARNING")
+                choices = None
+            if isinstance(choices, dict) and choices:
+                payload["_choices"] = choices
+            else:
+                payload.pop("_choices", None)
+        else:
+            payload.pop("_choices", None)
+
+        # 3) 摘要：入参是投影后的有效配置（默认值已合并、旧键已折算、无 _ 元数据）
+        summary_fn = getattr(cls, "config_summary", None) if cls is not None else None
+        chips: list[str] = []
+        if callable(summary_fn):
+            eff = _project_config(
+                module_id, {k: v for k, v in payload.items() if not k.startswith("_")})
+            try:
+                raw_summary = summary_fn(eff)
+            except Exception as exc:  # noqa: BLE001 —— 摘要失败不阻断配置读取
+                self._note_config_meta(
+                    module_id, "summary",
+                    f"[模块配置] {module_id} 摘要计算失败，已省略: {exc!r}")
+            else:
+                chips, problem = normalize_summary(raw_summary)
+                if problem:
+                    self._note_config_meta(
+                        module_id, "summary",
+                        f"[模块配置] {module_id} 摘要不可用，已省略: {problem}")
+        payload["_summary"] = chips
+
+        # 4) 运行状态行：只有活实例能提供；异常与非法形状都只让状态行缺席
+        if live is not None:
+            status_fn = getattr(live, "config_status", None)
+            if callable(status_fn):
+                try:
+                    raw_status = status_fn()
+                except Exception as exc:  # noqa: BLE001 —— 状态失败不影响配置读取
+                    self._note_config_meta(
+                        module_id, "status",
+                        f"[模块配置] {module_id} 运行状态计算失败，已省略: {exc!r}")
+                else:
+                    status, problem = normalize_status(raw_status)
+                    if problem:
+                        self._note_config_meta(
+                            module_id, "status",
+                            f"[模块配置] {module_id} 运行状态不可用，已省略: {problem}")
+                    if status is not None:
+                        payload["_status"] = status
+            if "_status" not in payload:
+                payload.pop("_status", None)
+        return payload
 
     def _module_config_view(self, module_id: str) -> dict:
         """某模块的配置视图（未运行时）：模块声明的默认值 ← 该模块自己的缓存槽。
@@ -623,21 +1091,29 @@ class SidecarService:
           - **不创建实例**——读配置是纯数据操作。模块的 ``get_module_config`` 只在
             "该模块正在运行"时被调用（那份带 `_state` 实况），不再为了读默认值建离线段实例；
           - **槽按模块隔离**——切走的模块配置留在自己的槽里，不被后来者覆盖。
+
+        下拉型配置项的可选值由模块的 ``config_choices()`` 静态枚举（不建实例），
+        与表单元数据、摘要一起由 ``_attach_config_meta`` 附加。
         """
         view = _module_config_defaults(module_id)
         with self._lock:
             cached = self._module_config_cache.get(module_id)
+            rev = self._module_config_rev.get(module_id, 0)
         if cached:
             view.update(cached)
-        return view
+        return self._attach_config_meta(module_id, view, rev=rev)
 
     def get_module_config(self, params):
-        module_id = params.get("module_id") or self._selected_module
+        module_id = params.get("module_id")
         if not module_id:
-            return (True, {}, None)
+            # 任务列表化之后没有「当前选中模块」可兜底：读谁的配置必须点名
+            return (False, None, "缺少 module_id")
         live = self._controller.active_module
         if live is not None and getattr(live, "ID", None) == module_id:
-            # 运行中：实例权威——同 id 的运行实例是唯一知道实况（_state）的地方
+            # 运行中：实例权威——同 id 的运行实例是唯一知道实况（_state）的地方。
+            # 修订号在读取实例前取好：之后若有配置写入，本次响应按旧版本被前端丢弃。
+            with self._lock:
+                rev = self._module_config_rev.get(module_id, 0)
             getter: Any = getattr(live, "get_module_config", None)
             if not callable(getter):
                 return (True, {}, None)
@@ -649,8 +1125,9 @@ class SidecarService:
             # 不让一个写错的模块把 GUI 的配置读取整条打断。
             if not isinstance(raw, dict):
                 return (True, {}, None)
+            raw = dict(raw)  # 别把 _ui/_summary 等元数据写回模块自己的返回对象
             raw.setdefault("module_id", module_id)
-            return (True, raw, None)
+            return (True, self._attach_config_meta(module_id, raw, live=live, rev=rev), None)
         # 未运行：默认值 ∪ 缓存（GUI 改过但还没 start 的值）
         view = self._module_config_view(module_id)
         view.setdefault("module_id", module_id)
@@ -658,18 +1135,20 @@ class SidecarService:
 
     def set_module_config(self, params):
         config = params.get("config") or {}
-        module_id = params.get("module_id") or self._selected_module
+        module_id = params.get("module_id")
         if not module_id:
-            return (False, None, "未选择活动模块，配置无处可存")
-        if module_id not in MODULE_REGISTRY:
+            return (False, None, "缺少 module_id，配置无处可存")
+        if module_id not in _step_ids():
             return (False, None, f"模块不存在: {module_id}")
-        # 只收该模块声明过的键（白名单 = DEFAULT_MODULE_CONFIG 的键集），未知键丢弃
+        # 只收该模块声明过的键（白名单 = DEFAULT_MODULE_CONFIG / 步骤 DEFAULT_CONFIG 的键集）
+        config = _normalize_module_config(module_id, config)
         allowed = _module_config_defaults(module_id)
         try:
             with self._lock:
                 target = dict(self._module_config_cache.get(module_id) or {})
                 target.update({k: v for k, v in config.items() if k in allowed})
                 self._module_config_cache[module_id] = target
+                self._module_config_rev[module_id] = self._module_config_rev.get(module_id, 0) + 1
                 snapshot = {mid: dict(cfg) for mid, cfg in self._module_config_cache.items() if cfg}
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"写模块配置失败: {exc!r}")
@@ -681,77 +1160,187 @@ class SidecarService:
         return (True, result, None)
 
     def start(self, params):
-        """快速响应 + worker 线程跑 controller；stop/get_status 在运行期间必须仍可处理。"""
-        start_from = params.get("start_from")
-        with self._lock:
-            module_id = self._selected_module
-            stages = list(self._stages)
-            # 组装：start_params.module_config（本次 start 带参）∪ 该模块自己的缓存槽
-            # （GUI 先改后 start 的值）。槽按模块 id 取，不存在"老模块缓存污染新模块"。
-            param_cfg = params.get("module_config") if isinstance(params.get("module_config"), dict) else {}
-            cache_cfg = dict(self._module_config_cache.get(module_id) or {}) if module_id else {}
-            merged_cfg = _merge_module_config(cache_cfg, param_cfg)
-            start_module_config = merged_cfg or None
-            # 本次带参并入该模块的槽（下一次 get_module_config 回读一致）
-            if start_module_config and module_id:
-                self._module_config_cache[module_id] = dict(merged_cfg)
-        if module_id is None:
-            return (False, None, "未选择活动模块")
-        if start_from is not None and start_from not in stages:
-            return (False, None, f"断点 {start_from} 不属于模块 {module_id} 的阶段")
-        if module_id not in MODULE_REGISTRY:
-            return (False, None, f"模块不存在: {module_id}")
-        module_cls = MODULE_REGISTRY[module_id]
-        # 启动约束按**本次配置**求值：模块可因模式不同放宽。比如 speedrush 的演示录制模式
-        # 不操纵车辆（不创建虚拟设备），而维护者正要用物理手柄驾驶——不能要求他断开手柄。
-        if module_cls.requires_exclusive_gamepad(start_module_config) and has_physical_controller():
-            return (False, None, "请断开所有物理手柄后再运行")
+        """快速响应 + worker 线程按队列顺序逐个跑启用的模块。
 
-        # 插件自带资源校验（REQUIRED_ASSETS，如 racing 的 YOLO 模型）：
-        # 模型已随插件自包含（plugins/<id>/resources/），缺失时拦截并给出插件内具体路径。
-        missing_assets = check_required_assets(module_id)
-        if missing_assets:
-            return (False, None, "插件资源缺失: " + ", ".join(missing_assets))
-
-        # 启动阶段检测：依赖虚拟手柄的模块在 ViGEmBus 驱动缺失时提前拦下，
-        # 返回结构化错误码 VIGEM_BUS_MISSING，供前端弹「下载并安装 ViGEmBus 驱动」引导。
-        # 同样按本次配置求值（录制模式不需要手柄能力，无驱动也该能跑）。
-        if ("gamepad" in module_cls.required_capabilities(start_module_config)
-                and not self._controller.gamepad_available()):
-            return (False, None, (
-                "VIGEM_BUS_MISSING: 检测到缺少 ViGEmBus 驱动，无法创建虚拟手柄。"
-                "请先点击「下载并安装 ViGEmBus 驱动」完成安装后重试。"
-            ))
-
+        启动校验对**每个启用模块**按其本次配置逐个过一遍，任何一个不满足都整批
+        拒绝（fail-fast，报错点名模块）——「中止整轮」的失败策略从受理前就开始：
+        跑一半才发现手柄没断，前面模块的成果就被浪费了。断点起点在组装计划时
+        消费即清（不跨轮记忆，更不跨会话）。
+        """
+        del params  # 计划完全由任务列表 + 配置槽 + 断点表组成，start 不带参
         with self._lock:
             if self._closed:
                 return (False, None, "正在关闭")
             if self._worker is not None:  # slot 已占用，不以 is_alive() 判断
                 return (False, None, "已在运行")
+            enabled = self._enabled_ids()
+            if not enabled:
+                return (False, None, "任务列表没有启用的模块")
+            plan: list[dict] = []
+            for module_id in enabled:
+                # 组装：该模块自己的缓存槽（GUI 先改后 start 的值）。槽按模块 id 取，
+                # 不存在"老模块缓存污染新模块"。
+                merged_cfg = dict(self._module_config_cache.get(module_id) or {})
+                if merged_cfg:
+                    self._module_config_cache[module_id] = dict(merged_cfg)
+                cfg = merged_cfg or None
+                # 内置步骤：没有阶段、断点、插件资源与手柄约束，只按顺序跑一次
+                if module_id in BUILTIN_STEPS:
+                    plan.append({"kind": "builtin", "id": module_id,
+                                 "start_from": None, "config": cfg})
+                    continue
+                # 断点消费即清：本计划用掉后即回到从头跑（断点不跨轮记忆）
+                start_from = self._start_from.pop(module_id, None)
+                try:
+                    stages = get_module_info(module_id)["stages"]
+                except KeyError:
+                    return (False, None, f"模块不存在: {module_id}")
+                if start_from is not None and start_from not in stages:
+                    return (False, None, f"断点 {start_from} 不属于模块 {module_id} 的阶段")
+                module_cls = MODULE_REGISTRY[module_id]
+                # 启动约束按**本次配置**求值：模块可因模式不同放宽。比如 speedrush 的演示录制
+                # 模式不操纵车辆（不创建虚拟设备），而维护者正要用物理手柄驾驶——不能要求
+                # 他断开手柄。
+                if module_cls.requires_exclusive_gamepad(cfg) and has_physical_controller():
+                    return (False, None, f"{module_id}: 请断开所有物理手柄后再运行")
+                # 插件自带资源校验（REQUIRED_ASSETS）：缺失时拦截并给出插件内具体路径。
+                missing_assets = check_required_assets(module_id)
+                if missing_assets:
+                    return (False, None, f"{module_id}: 插件资源缺失: " + ", ".join(missing_assets))
+                # 依赖虚拟手柄的模块在 ViGEmBus 驱动缺失时提前拦下，返回结构化错误码
+                # VIGEM_BUS_MISSING，供前端弹「下载并安装 ViGEmBus 驱动」引导。
+                if ("gamepad" in module_cls.required_capabilities(cfg)
+                        and not self._controller.gamepad_available()):
+                    return (False, None, (
+                        f"{module_id}: VIGEM_BUS_MISSING: 检测到缺少 ViGEmBus 驱动，"
+                        "无法创建虚拟手柄。请先点击「下载并安装 ViGEmBus 驱动」完成安装后重试。"
+                    ))
+                plan.append({"kind": "module", "id": module_id,
+                             "start_from": start_from, "config": cfg})
+            self._round_result = None
+            self._queue_run = {"index": 0, "total": len(plan), "current_module": plan[0]["id"]}
             worker = threading.Thread(
                 target=self._worker_main,
-                args=(module_id, start_from, start_module_config),
+                args=(plan,),
                 daemon=True,
                 name="module-worker",
             )
             self._worker = worker
             worker.start()
-
-        if start_from is not None and start_from != (stages[0] if stages else None):
-            logger.log(f"断点模式: 从「{start_from}」开始运行")
+        breakpoints_used = [it["start_from"] for it in plan if it["start_from"]]
+        if breakpoints_used:
+            logger.log(f"断点模式: 从 {breakpoints_used} 开始运行")
         return (True, None, None)
 
-    def _worker_main(self, module_id: str, start_from, module_config: dict | None) -> None:
+    def _check_sampler_stall(self, snap: dict) -> None:
+        """断档可见：采样线程卡死时，面板会一直显示陈旧数字且毫无异样。
+
+        只能由**外部观察者**（本服务 250ms 轮询线程）发现——卡住的线程喊不出
+        「我卡住了」，自己写的告警也发不出去。进入/退出各报一次，不刷屏。
+        """
+        stalled = bool(snap.get("stalled"))
+        if stalled and not self._perf_stalled:
+            logger.log(f"[perf] 采样器已 {snap.get('age_s')}s 未更新（采样线程"
+                       f"可能卡死），面板数字为陈旧值", "WARNING")
+        elif not stalled and self._perf_stalled:
+            logger.log("[perf] 采样器恢复更新", "INFO")
+        self._perf_stalled = stalled
+
+    # ---------- 性能领域行取值口（注册给采样器） ----------
+
+    def _make_perf_reader(self):
+        """构造领域行取值口：闭包内每次取当前活动模块，换模块自动跟随。
+
+        契约要求取值**纯读、常数时间、不抛异常**——异常在这里就地转成
+        `read_error` 行，采样线程不会被模块拖住。
+        """
+        def read() -> list[dict]:
+            module = self._controller.active_module
+            # 线程标签随模块走：每拍整体替换（9 条 dict 复制，1Hz 可忽略），
+            # 换模块自动跟上；线程本身由采样器嗅探，模块只贴标签
+            perf_sampler.set_thread_labels(
+                getattr(module, "THREAD_LABELS", None) if module else None)
+            declared = rows_for(module)
+            if not declared:
+                return []
+            reader = getattr(module, "read_perf_snapshot", None)
+            if not callable(reader):
+                return all_missing(declared, "not_reported")
+            try:
+                rows, unknown = normalize(declared, reader())
+            except Exception as exc:  # noqa: BLE001 —— 读数失败不拖垮采样线程
+                logger.log(f"[sidecar] 性能取值失败: {exc}", "DEBUG")
+                return all_missing(declared, "read_error")
+            for k in unknown:
+                if k not in self._perf_unknown_warned:
+                    self._perf_unknown_warned.add(k)
+                    logger.log(f"[perf] 模块返回了未声明的键 {k!r}，已丢弃",
+                               "WARNING")
+            return rows
+        return read
+
+    def _worker_main(self, plan: list[dict]) -> None:
+        """按计划顺序逐个跑（活动模块 / 内置步骤）；失败或手动停止即中止整轮。
+
+        判定表（每一项结束后）：
+          - 抛异常 / 自然完成不成立 → 该项 fail，中止（报错退出）；
+          - manual_stop=True → 该项 stopped，中止（用户停止）；
+          - 步骤请求退出本程序（「关闭游戏」里的选项）→ 该项 ok，剩余项 skip；
+          - 其余（自然跑完，含模块到限自动停止）→ ok，继续下一个。
+        注意不能在启动下一项**之后**才查停止信号——启动入口会清 stop_event，
+        事后查永远看不到上一轮的停止；必须在循环里、调启动之前依据上一轮的结局判据
+        决定去留。
+        """
+        results: dict[str, str] = {}
+        all_natural = True
+        total = len(plan)
+        # 领域行取值口在整轮期间有效（内部按当前活动模块取值），结束后注销
+        perf_sampler.set_domain_reader(self._make_perf_reader())
         try:
-            # 模块配置注入：在 start_module 内部 create_module 之后、module.start() 之前调用 set_module_config
-            self._controller.start_module(module_id, start_from, module_config=module_config)
-        except Exception as exc:
-            logger.log(f"运行异常: {exc}", "ERROR")
+            for i, item in enumerate(plan):
+                step_id = item["id"]
+                with self._lock:
+                    self._queue_run = {"index": i, "total": total, "current_module": step_id}
+                try:
+                    if item["kind"] == "builtin":
+                        self._controller.run_builtin_step(step_id, item.get("config"))
+                    else:
+                        # 模块配置注入：在 start_module 内部 create_module 之后、module.start() 之前
+                        self._controller.start_module(
+                            step_id, item.get("start_from"), module_config=item.get("config"))
+                except Exception as exc:
+                    logger.log(f"运行异常: {exc}", "ERROR")
+                    results[step_id] = "fail"
+                    all_natural = False
+                    break
+                # 手动停止先判：步骤被停止时它同样"没跑完"，但那是用户按的停止，
+                # 不是失败——顺序反过来会把「已停止」显示成「失败」。
+                if self._controller.manual_stop_requested:
+                    results[step_id] = "stopped"
+                    all_natural = False
+                    break
+                if not self._controller.last_run_natural:
+                    # 内部吞掉的执行异常（已记 ERROR 日志）：自然完成不成立
+                    results[step_id] = "fail"
+                    all_natural = False
+                    break
+                results[step_id] = "ok"
+                if self._controller.exit_requested:
+                    # 步骤明确要求退出本程序：后面的项按中止处理，不再执行
+                    break
         finally:
-            # 运行结束自动退出程序：与「关闭游戏」同源判定（last_run_natural），
-            # 仅"正常完成"生效，报错/手动停止不触发。发 auto_exit 事件 → shell 关闭窗口优雅退出。
-            if self._controller.last_run_natural and self._controller.auto_exit_mra:
+            # 中止时剩余未跑的项标记 skip（前端显示「已中止」）
+            for item in plan:
+                results.setdefault(item["id"], "skip")
+            with self._lock:
+                self._queue_run = None
+                self._round_result = results
+            # 「关闭后退出本程序」由「关闭游戏」步骤发起：整轮自然完成且步骤要过退出才发
+            # auto_exit 事件 → shell 关闭窗口优雅退出（保证 worker 收尾先于窗口关闭）。
+            if all_natural and self._controller.exit_requested:
                 self.send({"type": "event", "event": "auto_exit"})
+            perf_sampler.set_domain_reader(None)
+            perf_sampler.set_thread_labels(None)
             with self._lock:
                 if self._worker is threading.current_thread():
                     self._worker = None
@@ -822,16 +1411,45 @@ class SidecarService:
     def open_user_data_folder(self, params):
         """用资源管理器打开用户数据目录（%APPDATA%/MaaRacingMaster）。
 
+        可选 ``subpath`` 指向目录内的子目录（如模型安装位置）；只接受相对路径，
+        拒绝绝对路径、盘符与 ``..``，解析后再次确认仍在用户数据目录内。
         目录不存在时自动创建，避免首次运行即报错。os.startfile 是 Windows
         原生调起关联程序的方式，比 subprocess.Popen(['explorer', path]) 更稳。
         """
-        path = user_data_dir()
+        root = user_data_dir()
+        path = root
+        sub = params.get("subpath") if isinstance(params, dict) else None
+        if sub is not None:
+            if not isinstance(sub, str) or not sub.strip():
+                return (False, None, "子目录必须是非空相对路径")
+            rel = Path(sub.strip())
+            if rel.is_absolute() or (rel.parts and ":" in rel.parts[0]) or ".." in rel.parts:
+                return (False, None, "子目录必须位于用户数据目录内")
+            path = (root / rel).resolve()
+            try:
+                path.relative_to(root.resolve())
+            except ValueError:
+                return (False, None, "子目录必须位于用户数据目录内")
         try:
             path.mkdir(parents=True, exist_ok=True)
             os.startfile(str(path))  # type: ignore[attr-defined]  # Windows 特有
             return (True, {"path": str(path)}, None)
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"打开文件夹失败: {exc}")
+
+    def get_data_usage(self, params):
+        """用户数据目录五类的占用与文件数（设置页「调试文件夹」面板用）。
+
+        同步统计：本机 3.6 万个文件合计约 0.08s（口径见 _dir_usage），不必异步或缓存。
+        目录不存在时该行按 0 计，前端仍照常显示五项。
+        """
+        dirs = []
+        total = 0
+        for key, label, path_of in _USER_DATA_CATEGORIES:
+            size, files = _dir_usage(path_of())
+            dirs.append({"key": key, "label": label, "bytes": size, "files": files})
+            total += size
+        return (True, {"root": str(user_data_dir()), "total": total, "dirs": dirs}, None)
 
     def get_registry_optimizations(self, params):
         """读取全部注册表优化项的当前状态（启动体检 + 设置页优化中心共用）。
@@ -972,7 +1590,7 @@ class SidecarService:
                     else:
                         _delete_protocol_shell_tree(opt["hive"], path)
             except OSError as exc:
-                logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+                logger.log(f"[sidecar] 协议优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
                 return (False, None, f"写入注册表失败: {exc}")
             if value == 0:
                 confirmed = all(_protocol_command_exists(opt["hive"], p) for p in opt["paths"])
@@ -996,7 +1614,7 @@ class SidecarService:
                             except FileNotFoundError:
                                 pass  # 已不存在 = 目标状态，幂等
             except OSError as exc:
-                logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+                logger.log(f"[sidecar] 标记优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
                 return (False, None, f"写入注册表失败: {exc}")
             if value == 0:
                 confirmed = all(
@@ -1009,7 +1627,7 @@ class SidecarService:
             if not confirmed:
                 return (False, None, f"写入后回读异常（{opt['value_name']} 未达目标状态）")
             state = "已优化" if value == opt["optimized"] else "已恢复系统默认"
-            logger.log(f"注册表优化项 {opt_id} {state}（{opt['value_name']}={value}）", "INFO")
+            logger.log(f"注册表优化项 {opt_id} {state}（标记 {opt['value_name']}={value}）", "INFO")
             return (True, {"id": opt_id, "value": value, "optimized": value == opt["optimized"]}, None)
         # dword 型：CreateKey 补建 + 写值 + 回读确认
         try:
@@ -1017,7 +1635,7 @@ class SidecarService:
                 winreg.SetValueEx(key, opt["value_name"], 0, winreg.REG_DWORD, value)
                 confirm, _vtype = winreg.QueryValueEx(key, opt["value_name"])
         except OSError as exc:
-            logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+            logger.log(f"[sidecar] 数值优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
             if opt["needs_admin"] and getattr(exc, "winerror", None) == 5:
                 return (False, None, "该项位于 HKLM，需要管理员权限（请以管理员身份运行程序后重试）")
             return (False, None, f"写入注册表失败: {exc}")
@@ -1030,16 +1648,25 @@ class SidecarService:
     # ---------- 关于页：检查更新 / 公告 ----------
 
     _GITHUB_REPO = GITHUB_REPO  # 唯一真源在 remote_meta（与官方域白名单同源，避免两处副本漂移）
-    # CNB 镜像仓库（cnb.cool/MaaRacingMaster/MAIN）：只做 git 同步（mirror-to-cnb.yml），
-    # 无发布包与匿名 releases API。「检测更新」改读版本标记文件 docs/latest_release.json
-    # （release.yml 打 tag 时自动生成并回写 master，镜像随之同步）——CNB 优先（国内快），
+    # CNB 镜像仓库（cnb.cool/MaaRacingMaster/MAIN）：git 由 mirror-to-cnb.yml 同步，
+    # Release 资产由 release.yml 的 cnb-release 推送，但没有匿名 releases API。
+    # 「检测更新」改读版本标记文件 docs/latest_release.json
+    # （由发版提交携带、随 tag 落点入库；master 受分支保护，CI 不回写）——CNB 优先（国内快），
     # GitHub raw / GitHub API 兜底。公告同理 CNB raw 优先。
     # 所有源都只是「取字节」；「这些字节能不能信」由 remote_meta 的校验器统一判定。
     _CNB_RAW_BASE = "https://cnb.cool/MaaRacingMaster/MAIN/-/git/raw/master"
+    _CNB_RELEASE_URL = f"{_CNB_RAW_BASE}/docs/latest_release.json"
+    _GITHUB_RELEASE_URL = f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json"
+    _GITHUB_API_RELEASE_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
     _RELEASE_URLS = (
-        f"{_CNB_RAW_BASE}/docs/latest_release.json",
-        f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json",
-        f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+        _CNB_RELEASE_URL,
+        _GITHUB_RELEASE_URL,
+        _GITHUB_API_RELEASE_URL,
+    )
+    # 显式选 GitHub 时不回退 CNB：更新源按钮是用户选择，不能悄悄换源。
+    _RELEASE_URLS_GITHUB = (
+        _GITHUB_RELEASE_URL,
+        _GITHUB_API_RELEASE_URL,
     )
     _ANNOUNCEMENT_URLS = (
         f"{_CNB_RAW_BASE}/docs/announcement.json",
@@ -1059,24 +1686,30 @@ class SidecarService:
         """查最新版本与当前版本比较。仅手动触发（GUI 按钮）。
 
         多源顺序（CNB 优先，2026-09-04）：CNB raw 版本标记 → GitHub raw 版本标记 →
-        GitHub API releases/latest。前两者读 release.yml 生成的 docs/latest_release.json
+        GitHub API releases/latest。前两者读发版提交携带的 docs/latest_release.json
         （{tag, version, published_at, download_url}）；最后回退官方 API 原生字段。
+        `params.source` 可选 `cnb`（默认）或 `github`：选 GitHub 时只查 GitHub 两源，
+        不悄悄回退 CNB；返回值带 `source` 说明实际命中的源。
 
         每个源都过同一个校验器（`remote_meta.parse_release`）：tag 不合规的源按
         「该源不可用」跳过、继续 fallback。`download_url` 只接受官方域，不合规即回退
         官方 release 页——远程数据不得决定把用户带去哪个站点。
         """
+        source = "github" if isinstance(params, dict) and params.get("source") == "github" else "cnb"
+        urls = self._RELEASE_URLS_GITHUB if source == "github" else self._RELEASE_URLS
         latest: str | None = None
         published = ""
         download_url = ""
-        for url in self._RELEASE_URLS:
+        used = source
+        for url in urls:
             try:
                 rel = parse_release(json.loads(self._http_get(url)))
             except HTTPError as exc:
-                if exc.code == 404 and url.startswith("https://api.github.com"):
+                if exc.code == 404 and url == self._GITHUB_API_RELEASE_URL:
                     # 仅 GitHub 官方 API 的 404 权威判定「仓库无 release」；CNB raw 404
                     # 只说明标记文件尚未生成（发版前），继续尝试后续源。
-                    return (True, {"has_update": False, "error": None, "status": "no_release"}, None)
+                    return (True, {"has_update": False, "error": None,
+                                   "status": "no_release", "source": used}, None)
                 continue
             except (URLError, TimeoutError, OSError, ValueError, TypeError):
                 continue
@@ -1085,10 +1718,11 @@ class SidecarService:
             latest = rel["tag"]
             published = rel["published_at"]
             download_url = rel["download_url"] or EXTERNAL_TARGETS["release"]
+            used = "cnb" if url == self._CNB_RELEASE_URL else "github"
             break
         if latest is None:
             return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试",
-                           "status": "network"}, None)
+                           "status": "network", "source": source}, None)
 
         with self._lock:
             self._remote_urls["download"] = download_url
@@ -1101,6 +1735,7 @@ class SidecarService:
             "download_url": download_url,
             "error": None,
             "status": "ok",
+            "source": used,
         }, None)
 
     def fetch_announcement(self, params):
@@ -1181,6 +1816,61 @@ class SidecarService:
             return (True, {"bucket": None, "summary": None, "games": []}, None)
         return (True, reader(), None)
 
+    def get_module_dashboard(self, params):
+        """数据看板内容路由：统一 block 契约，不持有任何模块业务字段。
+
+        - 新模块：``DASHBOARD_CONTRACT`` + ``read_dashboard()``，载荷经共享 schema 校验；
+        - 旧模块：``HAS_DASHBOARD`` + ``read_today_stats()``，core 包成 ``today_stats``
+          兼容块（冻结的鉴宝走这条，不修改模块代码）；
+        - 内置步骤 / 未声明看板 / 无内容：空 blocks 或明确错误。
+
+        只用类方法，不创建模块实例；单块非法只丢弃该块并记 WARNING。
+        """
+        module_id = params.get("module_id") if isinstance(params, dict) else None
+        if module_id in BUILTIN_STEPS:
+            return (False, None, "内置步骤没有数据看板")
+        cls = MODULE_REGISTRY.get(module_id) if isinstance(module_id, str) else None
+        if cls is None:
+            return (False, None, f"模块不存在: {module_id}")
+
+        contract = getattr(cls, "DASHBOARD_CONTRACT", None)
+        if contract == 0:
+            return (False, None, f"{module_id} 的看板尚未实现（DASHBOARD_CONTRACT=0）")
+        if not declares_dashboard(cls):
+            return (False, None, f"{module_id} 未声明数据看板")
+
+        try:
+            if contract is not None:
+                if contract != DASHBOARD_CONTRACT_VERSION:
+                    return (False, None, f"{module_id} 看板契约版本不支持: {contract!r}")
+                if not overrides_classmethod(cls, "read_dashboard"):
+                    return (False, None, f"{module_id} 声明了看板契约但未实现 read_dashboard")
+                payload = cls.read_dashboard()
+            elif overrides_classmethod(cls, "read_today_stats"):
+                stats = cls.read_today_stats()
+                payload = {
+                    "version": DASHBOARD_CONTRACT_VERSION,
+                    "title": "今日看板",
+                    "blocks": (
+                        [{"type": "today_stats", "data": stats}]
+                        if isinstance(stats, dict) else []
+                    ),
+                }
+            else:
+                payload = {"version": DASHBOARD_CONTRACT_VERSION, "blocks": []}
+        except Exception as exc:  # noqa: BLE001 —— 模块实现失败不得打崩 sidecar
+            return (False, None, f"读看板失败: {exc!r}")
+
+        if payload is None:
+            payload = {"version": DASHBOARD_CONTRACT_VERSION, "blocks": []}
+        try:
+            normalized, warnings = normalize_dashboard(payload)
+        except DashboardContractError as exc:
+            return (False, None, str(exc))
+        for warning in warnings:
+            logger.log(f"[dashboard] {module_id}: {warning}", "WARNING")
+        return (True, normalized, None)
+
     # ---------- 调试页 ----------
 
     def get_debug_state(self, params):
@@ -1192,9 +1882,8 @@ class SidecarService:
             "intent_mode": self._controller.intent_mode,
             "emergency_stop_enabled": bool(getattr(self._controller, "_emergency_stop_enabled", False)),
             "file_logging": logger.file_logging,
-            "auto_close_game": bool(self._controller.auto_close_game),
-            "auto_exit_mra": bool(self._controller.auto_exit_mra),
             "mute_game": bool(self._controller.mute_game_enabled),
+            "boost_priority": bool(self._boost_priority_enabled),
         }, None)
 
     def set_debug_mode(self, params):
@@ -1272,25 +1961,13 @@ class SidecarService:
         logger.log(f"仅显示意图: {'开启' if enabled else '关闭'}")
         return (True, {"intent_mode": enabled}, None)
 
-    def set_auto_close_game(self, params):
-        enabled = bool(params.get("enabled", False))
-        self._controller.set_auto_shutdown(close_game=enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["auto_close_game"] = enabled
-        _save_profile({"debug": cur})
-        logger.log(f"运行结束后自动关闭游戏: {'开启' if enabled else '关闭'}")
-        return (True, {"auto_close_game": enabled}, None)
-
-    def set_auto_exit_mra(self, params):
-        enabled = bool(params.get("enabled", False))
-        self._controller.set_auto_shutdown(exit_mra=enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["auto_exit_mra"] = enabled
-        _save_profile({"debug": cur})
-        logger.log(f"运行结束后自动退出程序: {'开启' if enabled else '关闭'}")
-        return (True, {"auto_exit_mra": enabled}, None)
+    def pick_game_exe(self, params):
+        """弹系统文件选择框挑游戏主程序（前端「浏览…」按钮用）。取消返回空串。"""
+        try:
+            path = _pick_exe_dialog()
+        except Exception as exc:  # noqa: BLE001 —— 弹窗失败不能拖垮整个服务
+            return (False, None, f"打开文件选择框失败: {exc!r}")
+        return (True, {"path": path}, None)
 
     def set_mute_game(self, params):
         """「运行选项」运行时静音游戏开关：运行期间静音游戏，结束后恢复 100%。
@@ -1307,13 +1984,43 @@ class SidecarService:
         logger.log(f"运行时静音游戏: {'开启' if enabled else '关闭'}")
         return (True, {"mute_game": enabled}, None)
 
+    def set_boost_priority(self, params):
+        """「运行选项」性能优先开关：对本进程（sidecar）提 CPU/IO/内存优先级。
+
+        立即生效（进程常驻，与运行时序解耦）；GPU 无公开优先级旋钮，显存争用
+        由推理侧缓冲固定另行解决（见 core/process_priority.py 模块注）。"""
+        enabled = bool(params.get("enabled", False))
+        applied = process_priority.apply_boost() if enabled else process_priority.revert()
+        self._boost_priority_enabled = enabled
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["boost_priority"] = enabled
+        _save_profile({"debug": cur})
+        action = "提级" if enabled else "恢复"
+        logger.log(f"性能优先({action}): {process_priority.describe(applied)}",
+                   "INFO" if enabled else "DEBUG")
+        return (True, {"boost_priority": enabled}, None)
+
     def close(self, params):
-        """shell 关闭前的业务清理：置 _closed + 停止 worker + 关写盘句柄。"""
+        """shell 关闭前的业务清理：置 _closed + 停止 worker + 有界排空 + 关写盘句柄。
+
+        关闭顺序（契约 N8）：拒绝新任务（`_closed=True`，start 入口据此拒绝）→
+        停止信号 → 有界 join 模块 worker（其 finally 会停掉模块自己的常驻 worker
+        并收尾业务组）→ 最后关 logger。超时不阻塞退出，但必须在关日志器前
+        留下「worker 未退出」的明确告警——否则只剩 incomplete 组，分不清是
+        正常中断还是关闭卡死。
+        """
         with self._lock:
             self._closed = True
             worker = self._worker
         if worker is not None and worker.is_alive():
             self._controller.stop()
+            if worker is not threading.current_thread():
+                worker.join(timeout=self.WORKER_JOIN_TIMEOUT_S)
+                if worker.is_alive():
+                    logger.log(
+                        f"[sidecar] 关闭时模块 worker 在 {self.WORKER_JOIN_TIMEOUT_S:.1f}s "
+                        "内未退出，按有界排空继续收尾（未收尾组记 incomplete）", "WARNING")
         logger.log("sidecar 业务已停止", "DEBUG")
         logger.close()  # 关写盘句柄，flush 尾部（进程退出路径）
         return (True, None, None)
@@ -1330,8 +2037,11 @@ def main() -> None:
     # 构造前应用，让启动初期的日志也遵守开关状态
     _dbg = _load_profile().get("debug")
     logger.set_file_logging(bool(isinstance(_dbg, dict) and _dbg.get("file_logging", False)))
-    # 启动时执行一次旧会话保留清理（不依赖本次是否启用写盘）
-    logger.prune_sessions()
+    # 框架侧落盘策略与界面开关无关（固定为「只在识别失败时留现场」）：须在任何
+    # Toolkit.init_option 之前写好，否则框架读到的是上一次的配置。
+    _apply_framework_policy()
+    # 性能采样器常驻（随主进程起停；会话落盘随日志开关联动）
+    ensure_perf_sampler_started()
     protocol_stdout = sys.stdout
     sys.stdout = _StdoutGuard(protocol_stdout)  # 后续一切 print 都走 stderr，协议通道纯净
     try:
@@ -1341,6 +2051,16 @@ def main() -> None:
         _STDERR.flush()
         os._exit(1)
     service.run()
+    # stdin 读到 EOF = 托管本进程的 shell 已断开。正常关闭走 shutdown handler 的
+    # os._exit 先行退出、到不了这里；能到这里说明 shell 异常终止（崩溃/被不带 /T 杀）。
+    # 此时非 daemon 的 handler 线程可能正卡在原生文件选择框（GetOpenFileNameW）等永不
+    # 返回的用户输入，让进程赖着不退成孤儿 python.exe，连带抢虚拟手柄/框架资源。
+    # best-effort 有界收尾（停 worker + flush 日志，close 内 join 已限 2s）后强制终结。
+    try:
+        service.close(None)
+    except Exception:  # noqa: BLE001 —— 父进程已不在，收尾失败也不能拖住退出
+        pass
+    os._exit(0)
 
 
 if __name__ == "__main__":
