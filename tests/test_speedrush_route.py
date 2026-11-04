@@ -41,7 +41,13 @@ P = RouteParams(
     cancel_cooldown_s=CFG.route.cancel_cooldown_s,
     finish_tol_lane=CFG.selection.center_band_lane,
     finish_v_tol_lane_s=CFG.route.finish_v_tol_lane_s,
-    merge_max_s=CFG.route.merge_max_s)
+    merge_max_s=CFG.route.merge_max_s,
+    # 穿越时间门（2026-11-04）：余量门限从选择参数真源算（两车半宽和），
+    # 运动学常数与执行层同一套（policy planner.*）
+    car_clear_lane=CFG.selection.car_half_lane + CFG.selection.ego_half_lane,
+    k_lat_lane_s=CFG.planner.k_lat_lane_s,
+    tau_heading_s=CFG.planner.tau_heading_s,
+    heading_max_rad=CFG.planner.heading_max_rad)
 CLEAR = (24.0, None, False)               # 确认空闲（净空=窗长）
 WINDOW_M = CLEAR[0]
 # 50 ms 节拍下与旧拍数门的等价拍数：0.15/0.25/0.25 s = 3/5/5 拍
@@ -52,16 +58,18 @@ CANCEL_TICKS = round(P.cancel_unsafe_s / DT)
 
 # ---------- 原始粗层报告 helper ----------
 
-def _rep(ego=0.0, chosen=0.0, spec=None):
+def _rep(ego=0.0, chosen=0.0, spec=None, blocker_x=None):
     """五条候选道（±2，与粗层同集合）的原始报告。
 
     `spec`：{道号: (净空米, 截断来源, 无法确认)}；未列出的道=确认空闲。截断
-    来源沿用粗层语义：None=空闲、"car"/"space"=确认被占、"unknown_car"=无法确认。"""
+    来源沿用粗层语义：None=空闲、"car"/"space"=确认被占、"unknown_car"=无法确认。
+    `blocker_x`：{道号: 堵车横向位（道）}——穿越时间门用（2026-11-04）。"""
     spec = spec or {}
     lanes = []
     for k in (-2.0, -1.0, 0.0, 1.0, 2.0):
         free, blocker, unknown = spec.get(k, CLEAR)
-        lanes.append(CoarseLane(k, free, 1.0, blocker, unknown))
+        bx = None if blocker is None else (blocker_x or {}).get(k)
+        lanes.append(CoarseLane(k, free, 1.0, blocker, unknown, bx))
     return CoarseReport(ego, chosen, 0, WINDOW_M, "keep", tuple(lanes))
 
 
@@ -216,6 +224,70 @@ def test_merge_cannot_cross_an_occupied_lane():
         seen.append((v.verdict, v.lane_ref))
     assert ("merge_start", 0.0) in seen and \
         all(ref != -1.0 for _, ref in seen)
+
+
+# ---------- 穿越时间门（2026-11-04） ----------
+
+def test_overtake_blocked_when_blocker_hugs_shared_boundary():
+    """并道穿越时间门：当前道堵车贴在共享道界上时，它到站前自车让不出
+    ≥两车半宽和的余量就不起并——留在本道从另一侧过。102448 f8340 白车
+    侧刮 + 122133 承诺期 21 次碰撞贴过的形态：堵车 −0.39 道、自车 +0.48、
+    1.5s 到站，并向 −1 要横移 1.41 道（清障 ~2.2s > 1.5s）＝到站时还压在
+    它的区间里。相邻道并道的中间道集合为空（_path_clear 空转通过），
+    当前道自己的堵车是唯一没被占用检查盖住的横穿险。"""
+    spec = {0.0: (12.0, "car", False), -1.0: CLEAR,
+            1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    rep = _rep(0.48, 0.0, spec, blocker_x={0.0: -0.39})
+    s, _ = tick_route(None, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 1.5})
+    seen = []
+    for _ in range(URGENT_TICKS + 2):
+        s, v = tick_route(s, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 1.5})
+        seen.append((v.verdict, v.lane_ref))
+    assert all(ref != -1.0 for _, ref in seen)     # 全程不得向堵车侧起并
+    assert not any(ver == "merge_start" for ver, _ in seen)
+
+
+def test_overtake_allows_away_from_blocker_and_long_ttc():
+    """同一堵车几何：向堵车另一侧并道（已在余量之外）放行；到站时间充足
+    （≥清障时间）也放行——门只拦「到不了」的横穿，不拦合理并道。"""
+    spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False),
+            1.0: CLEAR, 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    rep = _rep(0.48, 0.0, spec, blocker_x={0.0: -0.39})
+    s, _ = tick_route(None, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 1.5})
+    seen = []
+    for _ in range(URGENT_TICKS + 2):
+        s, v = tick_route(s, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 1.5})
+        seen.append((v.verdict, v.lane_ref))
+    # −1 被走廊判走不下 → 逃生/超车方向只剩 +1（堵车另一侧，已在余量外）
+    assert ("merge_start", 1.0) in seen
+    assert all(ref != -1.0 for _, ref in seen)
+    # 堵车贴界但到站时间充足：向 −1 的横移在它到站前完成
+    spec2 = {0.0: (12.0, "car", False), -1.0: CLEAR,
+             1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+             -2.0: (0.0, "space", False)}
+    rep2 = _rep(0.48, 0.0, spec2, blocker_x={0.0: -0.39})
+    s2, _ = tick_route(None, rep2, P, dt_s=DT, epoch=0, lane_ttc={0: 2.4})
+    seen2 = []
+    for _ in range(URGENT_TICKS + 2):
+        s2, v2 = tick_route(s2, rep2, P, dt_s=DT, epoch=0, lane_ttc={0: 2.4})
+        seen2.append((v2.verdict, v2.lane_ref))
+    assert ("merge_start", -1.0) in seen2
+
+
+def test_cross_gate_off_without_blocker_x():
+    """堵车无横向位（旧数据/缺供）：门空转，逐位回今天。"""
+    spec = {0.0: (12.0, "car", False), -1.0: CLEAR,
+            1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    rep = _rep(0.48, 0.0, spec)            # 无 blocker_x
+    s, _ = tick_route(None, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 1.5})
+    seen = []
+    for _ in range(URGENT_TICKS + 2):
+        s, v = tick_route(s, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 1.5})
+        seen.append((v.verdict, v.lane_ref))
+    assert ("merge_start", -1.0) in seen
 
 
 def test_unknown_lane_is_never_a_destination():

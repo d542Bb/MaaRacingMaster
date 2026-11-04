@@ -54,6 +54,7 @@ import math
 from dataclasses import dataclass, replace
 
 from maaracing_master.plugins.speedrush.coarse import CoarseLane, CoarseReport
+from maaracing_master.plugins.speedrush.planner import lane_move_time
 
 INF = math.inf
 
@@ -224,6 +225,17 @@ class RouteParams:
     anchor_follow: bool = False
     anchor_follow_s: float = 0.3     # 偏离持续时长（秒）
     anchor_follow_lane: float = 0.6  # 偏离阈值（道）：超过半道且留 0.1 道防抖
+    # —— 并道穿越时间门（2026-11-04）——
+    # 当前道堵车贴在并道路径的区间上时，它到站前自车必须让出 ≥car_clear_lane
+    # 的横向余量。122133 局承诺期 21 次碰撞带贴过（中位横距 0.12 道）全是
+    # 这个形态：对齐了才横移。人工局分界在横向关系不在时间（20261103_124129
+    # 19 事件签名：150 分带起手横距中位 1.27 道 vs 碰撞带 0.15 道）。
+    car_clear_lane: float = 0.54     # 到站时与堵车中心的最小余量（道）
+    # =两车半宽和（选择参数真源 car_half+ego_half，decision.py 随配置注入）；
+    # 150 分带下限（0.54~0.77 道带）。
+    k_lat_lane_s: float = 1.2        # 清障时间用执行层同一套运动学（缺省=
+    tau_heading_s: float = 0.2       # 2026-10-30 策略值；生产由 decision.py
+    heading_max_rad: float = 0.46    # 随 policy planner.* 注入，不另立真源）
 
 
 @dataclass(frozen=True)
@@ -540,6 +552,31 @@ def _target_time_ok(alt: CoarseLane, p: RouteParams,
     return t is None or t >= p.merge_safe_ttc_s
 
 
+def _cross_clear_ok(s: RouteState, alt: CoarseLane, cur: CoarseLane | None,
+                    cur_ttc: float | None, p: RouteParams) -> bool:
+    """并道穿越时间门（2026-11-04）：当前道堵车贴在并道路径的区间上时，
+    它到站前自车必须让出 ≥car_clear_lane 的横向余量——执行层同一套运动学
+    （lane_move_time）算清障时间，到不了就不起并（留在本道从另一侧过）。
+
+    相邻道并道的中间道集合为空（_path_clear 空转通过），当前道自己的堵车
+    是唯一没被占用检查盖住的横穿险。人工局有效超车的分界在起手时与堵车的
+    横向关系：150 分带起手横距中位 1.27 道 vs 碰撞带 0.15 道（20261103_
+    124129 19 事件签名）；程序失败的并道（102448 f8340 白车侧刮 + 122133
+    承诺期 21 次碰撞贴过，中位横距 0.12 道）正是对齐了才横移。门只拦
+    「到不了」的横穿：向堵车另一侧并道、已在余量之外、清障时间够、堵车
+    无横向位（旧数据）都放行。"""
+    if cur_ttc is None or cur is None or cur.blocker_x_lanes is None:
+        return True
+    d = 1.0 if alt.lane > s.v_ref else -1.0
+    goal = cur.blocker_x_lanes + d * p.car_clear_lane
+    if (goal - s.v_ref) * d <= 0.0:
+        return True            # 已在余量之外/正在离开：不用清
+    need = lane_move_time(abs(goal - s.v_ref), k_lat_lane_s=p.k_lat_lane_s,
+                          tau_heading_s=p.tau_heading_s,
+                          heading_max_rad=p.heading_max_rad)
+    return need <= cur_ttc
+
+
 def _drivable_lane(ego_lane: float, by: dict) -> float:
     """重建落点：离实测横位最近的**可行驶**候选道。
 
@@ -795,11 +832,13 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         elif not _urgent_time_ok(s, cur, p, lane_ttc):
             not_urgent = True        # 确认被截，但车还不到线上：留在本道过
         else:
+            cur_ttc = _cur_ttc(s, lane_ttc)
             feas = [c for c in alts
                     if (c.blocker is None
                         or c.free_m >= cur.free_m + p.switch_gain_m)
                     and _path_clear(s, c, by)
-                    and _target_time_ok(c, p, lane_ttc)]
+                    and _target_time_ok(c, p, lane_ttc)
+                    and _cross_clear_ok(s, c, cur, cur_ttc, p)]
             if p.anchor_follow:
                 # 车已经在的目标道不是逃生方向（并在那儿是空转）
                 feas = [c for c in feas if not _already_in(s.v_ref, c.lane)]
@@ -827,7 +866,8 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         cur_ttc = _cur_ttc(s, lane_ttc)
         if cur_ttc is not None \
                 and p.urgent_ttc_s < cur_ttc <= p.overtake_ttc_s:
-            feas = [c for c in alts if _clear(c) and _path_clear(s, c, by)]
+            feas = [c for c in alts if _clear(c) and _path_clear(s, c, by)
+                    and _cross_clear_ok(s, c, cur, cur_ttc, p)]
             if p.anchor_follow:
                 feas = [c for c in feas if not _already_in(s.v_ref, c.lane)]
             if feas:

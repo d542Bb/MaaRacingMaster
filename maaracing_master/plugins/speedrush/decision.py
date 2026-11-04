@@ -519,7 +519,13 @@ class DecisionEngine:
             request_intent_age_s=r.request_intent_age_s,
             anchor_follow=r.anchor_follow,
             anchor_follow_s=r.anchor_follow_s,
-            anchor_follow_lane=r.anchor_follow_lane)
+            anchor_follow_lane=r.anchor_follow_lane,
+            # 穿越时间门（2026-11-04）：余量门限从选择参数真源算（两车半宽
+            # 和），运动学常数与执行层同一套（policy planner.*，不另立真源）
+            car_clear_lane=s.car_half_lane + s.ego_half_lane,
+            k_lat_lane_s=cfg.planner.k_lat_lane_s,
+            tau_heading_s=cfg.planner.tau_heading_s,
+            heading_max_rad=cfg.planner.heading_max_rad)
         self._route: RouteState | None = None
         self._route_verdict: RouteVerdict | None = None
         # 到达门影子（2026-10-28）：同拍同输入再跑一份带门的路线，只落 trace，

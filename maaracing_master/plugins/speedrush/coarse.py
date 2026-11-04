@@ -70,6 +70,9 @@ class CoarseLane:
     width_margin_m: float | None  # 全段最小单侧余量（米）；None=绿区无有效带
     blocker: str | None          # 截断来源：space / car / unknown_car / None
     unknown_car: bool = False    # 有车但缺纵深/时间，净空按窗末截断
+    blocker_x_lanes: float | None = None   # 最近堵车的横向位（道，c0 系）：
+    # 并道穿越时间门用（2026-11-04，102448 f8340 白车侧刮的标定锚）——
+    # 路线层判「横穿它的区间能否在它到站前让开」需要堵车的横向关系。
 
 
 @dataclass(frozen=True)
@@ -93,7 +96,9 @@ class CoarseReport:
             "cand": [[round(c.lane, 3), round(c.free_m, 2),
                       None if c.width_margin_m is None
                       else round(c.width_margin_m, 2),
-                      c.blocker, c.unknown_car]
+                      c.blocker, c.unknown_car,
+                      None if c.blocker_x_lanes is None
+                      else round(c.blocker_x_lanes, 3)]
                      for c in self.lanes],
         }
 
@@ -185,6 +190,7 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
             width_margin = m if width_margin is None else min(width_margin, m)
         # 2) 2D/米制占用：只截断该车道，不改变别的车道。
         unknown_car = False
+        blocker_x = None
         if blocker != "space" or free > 0.0:
             for c in cars:
                 if c.kind != "car" or not getattr(c, "safety_ok", True):
@@ -203,7 +209,9 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
                     free = d
                     blocker = "unknown_car" if approx else "car"
                     unknown_car = approx
-        lanes.append(CoarseLane(k, free, width_margin, blocker, unknown_car))
+                    blocker_x = cx / lane_w_m   # 最近堵车的横向位（道，c0 系）
+        lanes.append(CoarseLane(k, free, width_margin, blocker, unknown_car,
+                                blocker_x))
 
     if not lanes:
         return CoarseReport(ego_lane, ego_lane, 0, 0.0, "no_road", ())
