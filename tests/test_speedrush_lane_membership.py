@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_master.plugins.speedrush.lane_obs import lane_membership
+from maaracing_master.plugins.speedrush.lane_obs import (
+    lane_membership, lane_pos_nearest)
 from maaracing_master.plugins.speedrush.object_table import ObjectTable
 from maaracing_master.plugins.speedrush.perception import Detection
 from maaracing_master.plugins.speedrush.tracking import (
@@ -93,6 +94,54 @@ def test_membership_abstains_degenerate_span():
     """两线近重合（像素间距过小）：插值发散，弃权。"""
     lines = [_line(795.0, -0.5), _line(800.0, 0.5)]
     assert lane_membership(797.0, 500.0, lines) is None
+
+
+# ---------- lane_pos_nearest 最近线回退（2026-11-04 供货修正） ----------
+
+def test_nearest_outside_bracket_still_supplies():
+    """夹逼在远场框底行的失效形态（102658_p1 实测 72 远车样本供货 4/72）：
+    线几何收敛后同车道车的框心距最近线只差几个像素，噪声一动出夹。最近线
+    回退不要求夹住：框心在两线左侧仍按最近线的带符号偏移换车道量。"""
+    lines = [_line(400.0, -0.5), _line(1200.0, 0.5)]
+    assert lane_membership(200.0, 500.0, lines) is None          # 夹逼弃权
+    # 实测尺度 = (1200−400)px / (0.5−(−0.5))道 = 800px/道；−0.5 + (200−400)/800
+    assert lane_pos_nearest(200.0, 500.0, lines) == pytest.approx(-0.75)
+
+
+def test_nearest_matches_membership_inside_bracket():
+    """夹逼可用的行（近场）两法一致：最近线回退不改变原口径。"""
+    lines = [_line(400.0, -0.5), _line(1200.0, 0.5)]
+    for cx in (500.0, 800.0, 1100.0):
+        assert lane_pos_nearest(cx, 500.0, lines) == \
+            pytest.approx(lane_membership(cx, 500.0, lines))
+
+
+def test_nearest_scale_prefers_measured_pairs():
+    """尺子优先实测线距（同帧线对），不用标定常数：cam_h 再离谱也不影响。"""
+    lines = [_line(400.0, -0.5), _line(1200.0, 0.5)]
+    assert lane_pos_nearest(600.0, 500.0, lines, cam_h=10.0) == \
+        pytest.approx(-0.25)
+
+
+def test_nearest_single_line_uses_geometry_scale():
+    """只有一条线到框底行：尺子回退标定几何（灭点/机位高已核对吻合）。"""
+    lines = [_line(400.0, -0.5, s=0.3)]
+    # 几何尺 = LANE_W·(y_b−Y_H)/cam_h = 3.5·145.8/1.28 ≈ 398.8px/道
+    assert lane_pos_nearest(500.0, 500.0, lines) == pytest.approx(-0.249,
+                                                                  abs=0.01)
+
+
+def test_nearest_abstains_horizon_and_bad_lines():
+    """地平线上几何无效；无可用线弃权；坏线不参选——与夹逼同口径。"""
+    lines = [_line(400.0, -0.5), _line(1200.0, 0.5)]
+    assert lane_pos_nearest(800.0, 350.0, lines) is None          # 地平线上
+    assert lane_pos_nearest(800.0, 500.0, []) is None             # 无线
+    bad_rms = [_line(400.0, -0.5, rms=9.0), _line(1200.0, 0.5, rms=9.0)]
+    assert lane_pos_nearest(200.0, 500.0, bad_rms) is None        # 全部残差超限
+    rejected = [_line(400.0, -0.5, accepted=False),
+                _line(1200.0, 0.5, accepted=False)]
+    assert lane_pos_nearest(200.0, 500.0, rejected) is None       # 全部未过门
+    assert lane_pos_nearest(800.0, 300.0, lines) is None          # 越出一倍跨度
 
 
 # ---------- 跟踪层接线（闸开/闸关） ----------

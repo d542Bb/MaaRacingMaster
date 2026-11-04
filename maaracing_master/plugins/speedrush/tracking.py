@@ -33,7 +33,8 @@ from enum import Enum, IntEnum
 from typing import Any
 
 from maaracing_master.plugins.speedrush.depth_geo import DepthAnchorSheet
-from maaracing_master.plugins.speedrush.lane_obs import lane_membership
+from maaracing_master.plugins.speedrush.lane_obs import (
+    lane_membership, lane_pos_nearest)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult
 from maaracing_master.plugins.speedrush.world_model import (
     KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, t_meet_car_s,
@@ -576,12 +577,17 @@ class Tracker:
         self._last_fid = fid
 
         obs = self._observe(per)
-        # 车道线定道（双线同行插值，闸关=字段恒 None 逐位回今天）：框底行
-        # 夹住的 accepted 线对给出车道成员，远车 x 缺席段的主供数候选。
+        # 车道线定道（闸关=字段恒 None 逐位回今天）：框底行夹住的 accepted
+        # 线对给出车道成员；夹逼在远场框底行系统性失效（线几何收敛后不夹
+        # 框心/缺线/线对退化，102658_p1 实测供货 4/72）——最近线 + 米制尺度
+        # 回退顶上，尺子优先同帧实测线距、缺对回退地面线几何。
         if self._lane_line_on and lane is not None:
             _lines = lane.get("lines") or []
             for o in obs:
                 o.x_lane_line = lane_membership(o.cx, o.box[3], _lines)
+                if o.x_lane_line is None:
+                    o.x_lane_line = lane_pos_nearest(o.cx, o.box[3], _lines,
+                                                     lane.get("cam_h"))
         for t in self._tracks:
             t.matched = False   # 上一帧的配对结果不作数：本帧重新关联
         matches = self._associate(obs, fid)

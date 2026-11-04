@@ -225,20 +225,17 @@ def _fit(pts, cam_h: float, y_lo: float, y_hi: float,
 # 双线夹住框心的最小像素间距（防近重合线插值发散；近场相邻车道线实测
 # 数百 px，60px 只挡退化拟合）
 MEMBERSHIP_SPAN_PX = 60.0
+# 实测线距尺的道差下限：|ΔL| 更小的线对（近重合/重复道号）不参与定尺
+SCALE_MIN_DL = 0.5
 
 
-def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
-    """双线同行插值（车道线定道）：两条 accepted 线在框底行的像素位置夹住
-    框心时，按线间比例插值出车道成员（道，车心所在的车道坐标）。
+def _line_evals(y_b: float, lines: list[dict]) -> list[tuple[float, float]]:
+    """框底行处各 accepted 线的像素位与横向量（夹逼与最近线回退共用）。
 
-    免 vpx/a_x/cam_h/Y_H 任何常数：线在 y_b 的像素位置来自各自的 2D 拟合
-    （斜率/截距是测量值，不是标定常数），比例里的尺子全部消掉——免疫归一
-    尺（A1，a_x 与线方程理论值差 ~19%）与 cam_h 的尺度争端。每条线带近/远
-    两段拟合，吃覆盖 y_b 的那一段；越出数据范围允许外推不超过拟合自身跨度
-    （线方程线性，外推一倍跨度 σ 至多翻倍，仍在近场 A1 量级 0.15~0.25 道；
-    远车框底 ~390px 本就在两段范围之外，严格卡范围会把这门修成摆设）。再
-    远弃权。线不夹住框心、单线、线角过分/残差超限一律弃权（None）：消费端
-    最坏回到 lane_side 粗方向，无退化路径。"""
+    接受门/残差门/线角门/拟合覆盖一倍跨度同口径：每条线带近/远两段拟合，
+    吃覆盖 y_b 的那一段；越出数据范围允许外推不超过拟合自身跨度（线方程
+    线性，外推一倍跨度 σ 至多翻倍，仍在近场 A1 量级 0.15~0.25 道；远车
+    框底 ~390px 本就在两段范围之外，严格卡范围会把这门修成摆设）。"""
     evals: list[tuple[float, float]] = []
     for c in lines:
         if not c.get("accepted"):
@@ -262,6 +259,21 @@ def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
         if best is None:
             continue
         evals.append((best[1] * y_b + best[2], float(c.get("L"))))
+    return evals
+
+
+def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
+    """双线夹住框心（车道线定道）：两条 accepted 线在框底行的像素位置夹住
+    框心时，按线间比例插值出车道成员（道，车心所在的车道坐标）。
+
+    免 vpx/a_x/cam_h/Y_H 常数：线在 y_b 的像素位置来自各自的 2D 拟合
+    （斜率/截距是测量值，不是标定常数），比例里的尺子全部消掉——免疫归一
+    尺（A1，a_x 与线方程理论值差 ~19%）与 cam_h 的尺度争端。线不夹住框心、
+    单线、线角过分/残差超限一律弃权（None）：消费端最坏回到 lane_side 粗
+    方向，无退化路径。远场框底行（~380px）线几何收敛后夹逼系统性失效
+    （102658_p1 实测 72 远车样本供货 4/72：不夹框心 44%、缺线 35%、线对
+    退化 15%）——夹逼留给近场，远场由 lane_pos_nearest 回退顶上。"""
+    evals = _line_evals(y_b, lines)
     if len(evals) < 2:
         return None
     evals.sort()
@@ -269,6 +281,41 @@ def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
         if x1 <= cx <= x2 and x2 - x1 >= MEMBERSHIP_SPAN_PX:
             return L1 + (cx - x1) / (x2 - x1) * (L2 - L1)
     return None
+
+
+def lane_pos_nearest(cx: float, y_b: float, lines: list[dict],
+                     cam_h: float | None = None) -> float | None:
+    """最近线 + 米制尺度（2026-11-04 供货修正）：夹逼插值在远场框底行
+    失效后的回退——框心相对最近 accepted 线的带符号像素偏移，按像素每道
+    换成车道量 ``L_i + (cx − x_i)/像素每道``。
+
+    尺子优先同帧实测线距（横向量不同的线对，中位像素间距 ÷ 道差，免
+    vpx/Y_H/cam_h 常数）；缺对回退地面线几何（``LANE_W·(y_b−Y_H)/cam_h``，
+    灭点/地平线 2026-11-04 真帧核对吻合、投影偏差中位 +5px）。不要求两线
+    夹住框心：远场线距收敛到 ~76px/道后夹逼边界外就是同车道车，噪声一动
+    出夹（失效形态见 lane_membership）。接受门/残差门/线角门/拟合覆盖与
+    夹逼同口径（_line_evals）；地平线上（y_b ≤ Y_H）几何无效弃权。真帧
+    验证（102658_p1，64 远车样本）：供货 64/64，车道量聚在自车 ±0.5 与
+    邻道 ±1 附近；白车正前帧读 −0.14~−0.47 道（远场拟合噪声 ~±0.2 道内，
+    够决策用）。"""
+    if y_b <= Y_H:
+        return None
+    evals = _line_evals(y_b, lines)
+    if not evals:
+        return None
+    scales = []
+    for i in range(len(evals)):
+        for j in range(i + 1, len(evals)):
+            dL = abs(evals[j][1] - evals[i][1])
+            if dL >= SCALE_MIN_DL:
+                scales.append(abs(evals[j][0] - evals[i][0]) / dL)
+    if scales:
+        px_per_lane = float(np.median(scales))
+    else:
+        used_h, _fb = _lane_cam_h(cam_h)
+        px_per_lane = LANE_W * (y_b - Y_H) / used_h
+    x_i, L_i = min(evals, key=lambda e: abs(e[0] - cx))
+    return L_i + (cx - x_i) / px_per_lane
 
 
 def _color(hsv: np.ndarray, pts) -> tuple[float, float]:
