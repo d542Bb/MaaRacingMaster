@@ -714,8 +714,42 @@
     return (n === null || n === undefined || n === '' || isNaN(n)) ? '--' : Number(n).toLocaleString();
   }
   // 性能卡（通用）：所有模块共用一套模板。
-  // 资源面（整机 / 本程序）由 core 采样器供数；模块行由后端按声明下发
+  // 资源面（CPU / GPU）由 core 采样器供数；模块行由后端按声明下发
   // （perf.rows），前端不认识任何模块——新增模块只声明行，这里零改动。
+  //
+  // 形态：一块磁贴就是一张图。右上角是器件大字与型号（弱装饰），左上角是器件图标，
+  // 左下角是读数，曲线与渐变面积铺满整格。数字带白色晕影，曲线穿过时仍可读。
+  function perfKpiTile(mid, kind, label, icon) {
+    const grad = (tone, from) => `
+                    <linearGradient id="${mid}-perf-${kind}-${tone}-grad" gradientUnits="userSpaceOnUse"
+                                    x1="0" y1="0" x2="0" y2="26">
+                      <stop offset="0%" stop-color="${from}" stop-opacity="${tone === 'total' ? '0.20' : '0.24'}"></stop>
+                      <stop offset="55%" stop-color="${from}" stop-opacity="${tone === 'total' ? '0.06' : '0.07'}"></stop>
+                      <stop offset="100%" stop-color="${from}" stop-opacity="0"></stop>
+                    </linearGradient>`;
+    return `
+            <div class="perf-kpi">
+              ${MaaRMIcons.svg(icon, {class: 'perf-kpi-icon'})}
+              <div class="perf-kpi-mark">
+                <span class="perf-kpi-word" aria-hidden="true">${label}</span>
+                <span class="perf-kpi-sub" id="${mid}-perf-${kind}-sub"></span>
+              </div>
+              <svg class="perf-kpi-spark" id="${mid}-perf-${kind}-spark" viewBox="0 0 100 26"
+                   preserveAspectRatio="none" aria-hidden="true">
+                <defs>${grad('total', '#8B93A7')}${grad('prog', '#E5484D')}
+                </defs>
+                <path id="${mid}-perf-${kind}-total-area" fill="url(#${mid}-perf-${kind}-total-grad)" d=""></path>
+                <path id="${mid}-perf-${kind}-prog-area" fill="url(#${mid}-perf-${kind}-prog-grad)" d=""></path>
+                <path class="spark-line spark-line--total" id="${mid}-perf-${kind}-total-line" d=""></path>
+                <path class="spark-line spark-line--prog" id="${mid}-perf-${kind}-prog-line" d=""></path>
+              </svg>
+              <div class="perf-kpi-nums">
+                <span class="num num--total"><b id="${mid}-perf-${kind}">--</b><em>%</em></span>
+                <span class="num num--prog"><b id="${mid}-perf-${kind}-prog">--</b><em>%</em></span>
+              </div>
+            </div>`;
+  }
+
   function perfCard(mid) {
     return `
         <div class="card card-flex perf-card">
@@ -724,19 +758,7 @@
             <span class="perf-health" id="${mid}-perf-health"></span>
           </div>
           <div class="card-body">
-            <div class="perf-kpis">
-              <div class="perf-kpi">
-                <div class="perf-kpi-label" id="${mid}-perf-host-label">整机占用</div>
-                <div class="perf-kpi-num"><b id="${mid}-perf-host">--</b><span>%</span></div>
-                <svg class="perf-kpi-spark" id="${mid}-perf-host-spark"
-                     viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true"></svg>
-              </div>
-              <div class="perf-kpi">
-                <div class="perf-kpi-label">本程序</div>
-                <div class="perf-kpi-num"><b id="${mid}-perf-self">--</b><span>%</span></div>
-                <svg class="perf-kpi-spark" id="${mid}-perf-self-spark"
-                     viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true"></svg>
-              </div>
+            <div class="perf-kpis">${perfKpiTile(mid, 'cpu', 'CPU', 'cpu')}${perfKpiTile(mid, 'gpu', 'GPU', 'gpu')}
             </div>
             <div class="perf-rows" id="${mid}-perf-rows"></div>
             <button class="perf-threads" id="${mid}-perf-threads" type="button"
@@ -823,7 +845,7 @@
                 <div class="option-title">紧急停止快捷键</div>
                 <p class="option-desc">程序接管操作时，同时按下键盘任意 2 个及以上按键立即停止运行逻辑；人工驾驶/录制阶段不检测（否则键盘驾驶会被误触发）</p>
               </div>
-              <span class="option-note">紧急安全阀，运行中建议开启</span>
+              <span class="option-note">仅本次启动有效，重启后需重开</span>
             </div>
             <div class="option-row">
               <button class="maarm-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
@@ -852,9 +874,9 @@
               <button class="maarm-toggle" id="${mid}-toggle-mutegame" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">运行时静音游戏</div>
-                <p class="option-desc">运行期间把游戏音量静音（方便听别的），停止/结束后自动恢复游戏音量为 100%</p>
+                <p class="option-desc">运行期间把游戏音量静音（方便听别的），停止/结束后自动恢复运行前的音量</p>
               </div>
-              <span class="option-note">结束自动恢复 100%</span>
+              <span class="option-note">结束恢复原音量</span>
             </div>
             <div class="option-row">
               <button class="maarm-toggle" id="${mid}-toggle-boostprio" role="switch" aria-checked="false"></button>

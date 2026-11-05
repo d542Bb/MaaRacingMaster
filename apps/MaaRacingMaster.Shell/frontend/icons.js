@@ -41,6 +41,11 @@
   };
 
   var LUCIDE = {
+    'cpu': [                                   // 性能卡 CPU 磁贴
+      ['rect', { 'width': '16', 'height': '16', 'x': '4', 'y': '4', 'rx': '2' }],
+      ['rect', { 'width': '6', 'height': '6', 'x': '9', 'y': '9', 'rx': '1' }],
+      ['path', { 'd': 'M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2' }]
+    ],
     'chevron-down': [['path', { 'd': 'm6 9 6 6 6-6' }]],
     'trash': [
       ['path', { 'd': 'M10 11v6' }],
@@ -153,7 +158,14 @@
       ['rect', { 'width': '4', 'height': '16', 'x': '6', 'y': '4' }],
       ['rect', { 'width': '4', 'height': '16', 'x': '14', 'y': '4' }]
     ],
-    'media-stop': [['rect', { 'width': '14', 'height': '14', 'x': '5', 'y': '5', 'rx': '2' }]]
+    'media-stop': [['rect', { 'width': '14', 'height': '14', 'x': '5', 'y': '5', 'rx': '2' }]],
+    // lucide 只有 cpu / microchip，没有显卡图标：按 lucide 规格自绘（24 网格、描边 2、
+    // 圆角端点），用于性能卡 GPU 磁贴的器件标识。
+    'gpu': [
+      ['rect', { 'x': '2', 'y': '6.5', 'width': '20', 'height': '11', 'rx': '2' }],
+      ['circle', { 'cx': '7.5', 'cy': '12', 'r': '2.2' }],
+      ['path', { 'd': 'M13 10.5h5M13 13.5h5' }]
+    ]
   };
   var SOLID = { 'github-solid': 1, 'media-play': 1, 'media-pause': 1, 'media-stop': 1 };
 

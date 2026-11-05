@@ -350,7 +350,8 @@
 
 **职责**：系统/进程资源快照的常驻采集与落盘（`logs/<会话>/perf.jsonl`，日志开关管辖）。
 
-- 三方供数：core 采样器→资源面（系统/受管进程 CPU/内存——自身 + 模拟器家族进程嗅探；GPU 走 nvidia-smi 子进程带超时，ok/timeout/unavailable/解析错误显式区分，读数带龄期）；模块→领域行（按 `PERF_ROWS` 声明上报，取值口 `read_perf_snapshot` 只给值、不自判等级，校验与判级见 §1.15）；sidecar→聚合（`build_perf_payload`，`schema_version=3`：领域面是**行数组**而非模块自定义字典；载荷带 `sample_id`，面板据此只在采样号变化时推进走势图，避免 4Hz 轮询把 1Hz 采样塞成平线；不可用显式 `available=False`）
+- 三方供数：core 采样器→资源面（系统/受管进程 CPU/内存——自身 + 模拟器家族进程嗅探；GPU 见下条）；模块→领域行（按 `PERF_ROWS` 声明上报，取值口 `read_perf_snapshot` 只给值、不自判等级，校验与判级见 §1.15）；sidecar→聚合（`build_perf_payload`，`schema_version=3`：领域面是**行数组**而非模块自定义字典；载荷带 `sample_id`，面板据此只在采样号变化时推进走势图，避免 4Hz 轮询把 1Hz 采样塞成平线；不可用显式 `available=False`）
+- **GPU 两个来源**：主源是系统 GPU 引擎计数器（[`gpu_counters.py`](./gpu_counters.py)，PDH `\GPU Engine(*)\Utilization Percentage`，ctypes 直调零依赖）——与厂商无关（NVIDIA / AMD / Intel 核显都有实例），每拍读一次，给出 `util_pct`（每个引擎把所有进程求和后取最忙的那个，引擎并行不能相加）与 `prog_pct`（本进程各引擎之和，截到 100）；`nvidia-smi` 降级为补充源，每 `gpu_every` 拍跑一次只为拿显卡名与显存，其 `util_pct` 在计数器不可用时兜底。计数器建不起来就永久放弃（`_gpu_counters_dead`），不影响其余采样面；注入点 `gpu_counters`（传对象即用它、传 `False` 关闭）供单测隔离本机硬件。
 - **领域面取值口**：`set_domain_reader(reader)` 由 sidecar 在整轮运行期间注册、结束注销；采样器只持一个可调用对象，**不认识任何模块**（分层红线）。每拍读一次引用（换模块自动跟随），取值口违约抛异常 → 样本记 `domain_error`、资源面照常；单拍取值超 `DOMAIN_SLOW_MS`（5ms）告警并 60 秒节流——契约要求取值纯读常数时间，超线说明模块在采样线程里干了别的事。
 - **样本三面各自计时**：`sample_id` 与时间戳取 tick 开始那一刻，`cost_ms{sys,procs,gpu,domain,threads,total}` 记各面耗时——三面不是同一瞬间的快照，记偏移才能判断「这一拍慢在哪一面」，而不是把时间差当采样误差。
 - **线程段**（§1.16）：每拍带 `threads{rows,total_pct,unattributed_pct,hidden}`，标签由 `set_thread_labels` 随模块走。`unattributed_pct` = 进程占用 − 清单合计，**不是采样误差**，是生命周期短于采样周期的线程与原生线程池在采样粒度上不可归因的那部分；面板不解释，样本里留着供排查。
@@ -359,7 +360,7 @@
 - **断档可见**：`snapshot()` 带 `age_s`（距最新样本秒数）与 `stalled`（`STALL_TICKS`＝3 拍没更新）；sidecar 每轮读快照时判，进入/退出各报一条日志，不按 4Hz 刷屏。判据只能由**外部观察者**做——卡住的采样线程喊不出「我卡住了」，自己写的告警也发不出去。只在「本该在采」时判：会话关闭后不再更新是正常的。恢复后的第一条样本自带 `gap_ms`（缺口时长）——时间轴有洞必须自己说，否则事后按样本号等距推算会得出「那段时间很平稳」的错误结论，其实是根本没采。
 - `ensure_perf_sampler_started()`：幂等启动 + 绑定会话生命周期（sidecar 主入口与事件消费方共用）；环随会话切换重置，关闸期样本不进新会话文件
 - psutil `cpu_percent` 启动即基线初始化（首个非阻塞读数无意义）；单拍指标构建异常降级为带 error 的样本，不拖垮采样线程
-- **已知代价：GPU 采样子进程会阻塞这一拍**。`nvidia-smi` 每 `gpu_every` 拍跑一次，真机实测单次 78–94ms——那一拍整体推迟，`cost_ms["gpu"]` 就是这个值。采样周期 1s 时占比 <10%，不影响读数；若要更细的周期，得先把 GPU 采样改成独立线程或异步取上次结果。
+- **已知代价：GPU 驱动查询会阻塞这一拍**。`nvidia-smi` 每 `gpu_every` 拍跑一次，真机实测单次 78–94ms——那一拍整体推迟，`cost_ms["gpu"]` 就是这个值。采样周期 1s 时占比 <10%，不影响读数。计数器那一路是本地 API（真机约 600 个实例、单次几毫秒），不构成瓶颈。
 
 ### 1.15 [perf_contract.py](./perf_contract.py) — 性能面板契约（声明校验与取值规范化）
 
@@ -523,6 +524,17 @@
 - 边界：`logs/sidecar_stderr.log` 不在本模块管辖（它是崩溃诊断的最后手段），由 shell 侧按 8MB 上限轮转；`data/`（业务库与用户资产）与 `evidence/`（C 证据冻结，随日志开关）也不在此。
 
 **测试**：`tests/test_maa_option.py`。
+
+### 1.22 [gpu_counters.py](./gpu_counters.py) — GPU 引擎计数器（PDH）
+
+**职责**：读 Windows 自带的 GPU 引擎性能计数器，给性能面板提供**跨厂商**的整卡占用与**按进程**的占用（`perf_sampler` 的主源，见 §1.14）。
+
+- 零依赖：系统 `pdh.dll` 经 ctypes 直调（`PdhOpenQueryW` / `PdhAddEnglishCounterW` / `PdhCollectQueryData` / `PdhGetFormattedCounterArrayW`），不引 pywin32、不起子进程。
+- 实例名 `pid_10576_luid_0x00000000_0x00011E0F_phys_0_eng_0_engtype_3D` 拆出 pid / 显卡 LUID / 引擎类型；`aggregate()` 给两条口径：整卡 = 每个引擎把所有进程求和后取最忙的那个（引擎并行，不能相加），本进程 = 该 pid 各引擎之和，均截到 100。
+- 值是「距上一拍这段区间」的平均占用，所以首次 `read()` 必然无数据（返回 `None`），常驻句柄每拍读一次。
+- 为什么不用现成的库：`GPUtil` / `gpuinfo` / `pynvml` 都是 `nvidia-smi` 的包装（只覆盖 NVIDIA、拿不到按进程算力），`pyadl` 停在 2017 年且只管 AMD 还要带驱动 DLL。
+
+**测试**：`tests/test_gpu_counters.py`（只锁解析与聚合；PDH 调用依赖本机硬件，不进单测）。
 
 ## 2. 模块依赖与持有关系
 

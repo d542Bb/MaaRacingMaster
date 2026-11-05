@@ -64,7 +64,7 @@ DEFAULT_WATCH_PATTERNS = (
     "hd-player", "bluestacks", # 蓝叠系
 )
 
-_GPU_QUERY = ["--query-gpu=utilization.gpu,memory.used,memory.total",
+_GPU_QUERY = ["--query-gpu=name,utilization.gpu,memory.used,memory.total",
               "--format=csv,noheader,nounits"]
 
 
@@ -82,7 +82,8 @@ class PerfSampler:
                  keep_every: int = 5, scan_every: int = 10,
                  watch_patterns: tuple[str, ...] = DEFAULT_WATCH_PATTERNS,
                  dump_on_close: bool = True,
-                 gpu_runner: Callable[[float], str] | None = None):
+                 gpu_runner: Callable[[float], str] | None = None,
+                 gpu_counters: Any = None):
         self._interval_s = interval_s
         self._ring_cap = ring_cap
         self._gpu_every = max(1, gpu_every)
@@ -115,9 +116,14 @@ class PerfSampler:
         self._last_scan = -1e9
         self._tick_count = 0
         self._gpu: dict = {"status": "unavailable", "util_pct": None,
+                           "prog_pct": None, "name": None,
                            "mem_used_mb": None, "mem_total_mb": None,
                            "ts_mono": None}
         self._gpu_dead = False
+        # 系统 GPU 引擎计数器（跨厂商、给得出按进程占用）；建不起来就永久放弃。
+        # gpu_counters 是注入点：传对象即用它（测试），传 False 关闭这条来源。
+        self._gpu_counters = gpu_counters if gpu_counters not in (None, False) else None
+        self._gpu_counters_dead = gpu_counters is False
         self._status_error: str | None = None
         # 领域行取值口（sidecar 在模块启动/停止时登记，采样器只持一个可调用对象，
         # 不认识任何模块——分层红线：通用层不指向业务）
@@ -479,6 +485,7 @@ class PerfSampler:
         t0 = time.perf_counter()
         if sid % self._gpu_every == 0:
             self._refresh_gpu()
+        self._refresh_gpu_counters()
         gpu = dict(self._gpu)
         ts = gpu.get("ts_mono")
         gpu["age_s"] = None if ts is None else round(time.monotonic() - ts, 1)
@@ -574,6 +581,30 @@ class PerfSampler:
         except psutil.Error:
             pass
 
+    def _refresh_gpu_counters(self) -> None:
+        """每拍读系统 GPU 引擎计数器：整卡占用 + 本进程占用。
+
+        比 ``nvidia-smi`` 便宜（本地计数器，不起子进程），而且跨厂商、
+        给得出按进程的占用——显卡名与显存仍由驱动查询补。
+        任何异常都只放弃这一条来源，不影响其余采样面。
+        """
+        if self._gpu_counters_dead:
+            return
+        try:
+            if self._gpu_counters is None:
+                from maaracing_master.core.gpu_counters import GpuCounters
+                self._gpu_counters = GpuCounters()
+            data = self._gpu_counters.read()
+        except Exception:  # noqa: BLE001 —— 计数器不可用不是采样失败
+            self._gpu_counters_dead = True
+            self._gpu_counters = None
+            return
+        if not data:
+            return
+        self._gpu.update({"status": "ok", "util_pct": data["util_pct"],
+                          "prog_pct": data["prog_pct"],
+                          "ts_mono": time.monotonic()})
+
     def _refresh_gpu(self) -> None:
         if self._gpu_dead:
             return
@@ -582,6 +613,7 @@ class PerfSampler:
         except (_GpuUnavailable, FileNotFoundError):
             self._gpu_dead = True
             self._gpu = {"status": "unavailable", "util_pct": None,
+                         "prog_pct": self._gpu.get("prog_pct"), "name": None,
                          "mem_used_mb": None, "mem_total_mb": None,
                          "ts_mono": None}
             return
@@ -593,8 +625,11 @@ class PerfSampler:
             return
         try:
             parts = [x.strip() for x in out.strip().splitlines()[0].split(",")]
-            util, used, total = (int(float(x)) for x in parts[:3])
+            name = parts[0] or None
+            util, used, total = (int(float(x)) for x in parts[1:4])
             self._gpu = {"status": "ok", "util_pct": util,
+                         "prog_pct": self._gpu.get("prog_pct"),
+                         "name": name,
                          "mem_used_mb": used, "mem_total_mb": total,
                          "ts_mono": time.monotonic()}
         except (ValueError, IndexError):
