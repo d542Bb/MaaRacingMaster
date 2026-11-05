@@ -21,11 +21,16 @@ from maaracing_master.core.capabilities import LifecycleAdapter  # noqa: E402
 
 
 class _FakeApp:
-    """最小宿主：只给 LifecycleAdapter 读的两个属性。"""
+    """最小宿主：只给 LifecycleAdapter 读的三个属性。"""
 
     def __init__(self):
         self._running = True
         self.stop_event = threading.Event()
+
+    @property
+    def execution_active(self) -> bool:
+        # 与真控制器同口径：有执行体在跑（模块或内置步骤）才允许真正睡眠。
+        return self._running
 
 
 def _sleep_wallclock(lc: LifecycleAdapter, seconds: float) -> tuple[bool, float]:

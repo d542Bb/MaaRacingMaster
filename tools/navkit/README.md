@@ -70,6 +70,8 @@ tools/navkit/
 
 - `maaracing_master/core/resources/pipeline/` —— 跨模块共用链目录，**当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `check_truth.namespace_checks` 与 MAAFW\_GUIDE §5.6）
 
+- `maaracing_master/core/resources/startup/` —— **启动步骤自有链**（`pipeline.json` + `image/`）。有终点、有业务归属，由 `LaunchGameStep` 显式加载，**不进**上面那个共用目录（否则会被所有模块的导航图一起并入）。它同样在 `check_truth` 的发现范围与分层红线之内：节点前缀 `startup.`，不得占用或引用 `<module>.`。终点节点用 `attach._end` 声明，豁免「无出口」告警。规则见该目录下的 `README.md`，决策见 ADR-0018
+
 - `maaracing_master/plugins/_archive/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
 
 校验（CI 同款）：`python tools/navkit/check_truth.py`

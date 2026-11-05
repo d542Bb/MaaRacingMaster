@@ -1365,7 +1365,14 @@ class SidecarService:
                     results[step_id] = "fail"
                     all_natural = False
                     break
-                results[step_id] = "ok"
+                # 步骤按运行模式主动跳过（如仅显示意图时不进大厅）：日志已经写了
+                # 原因，队列里记「已跳过」而不是「已完成」——不能把没验证过的状态
+                # 报成已验证。整轮继续跑，与 intent 的既有语义一致。
+                if (item["kind"] == "builtin"
+                        and self._controller.last_step_outcome == "skipped"):
+                    results[step_id] = "skipped"
+                else:
+                    results[step_id] = "ok"
                 if self._controller.exit_requested:
                     # 步骤明确要求退出本程序：后面的项按中止处理，不再执行
                     break

@@ -42,6 +42,7 @@ class _FakeController:
         self.builtin_calls: list[tuple[str, object]] = []
         self.exit_requested = False
         self.last_run_natural = False
+        self.last_step_outcome = None
         self._manual_stop = False
 
     def start_module(self, module_id, start_from=None, module_config=None):
@@ -71,6 +72,7 @@ class _FakeController:
         if outcome == "stopped":
             self._manual_stop = True   # 步骤执行期间用户按下了停止
             return False
+        self.last_step_outcome = "skipped" if outcome == "skipped" else "completed"
         self.last_run_natural = True
         if outcome == "exit":
             self.exit_requested = True  # 「关闭游戏」步骤里勾了「关闭后退出本程序」
@@ -298,6 +300,20 @@ def test_event_best_effort_does_not_swallow_cleanup_failure(monkeypatch):
     monkeypatch.setattr(sc, "perf_sampler", _FailingUnregister())
     with pytest.raises(RuntimeError, match="sampler unregister failed"):
         svc._worker_main([{"kind": "module", "id": "a", "start_from": None, "config": None}])
+
+
+def test_step_skipped_continues_round_and_is_not_reported_ok():
+    """步骤按模式主动跳过（仅显示意图）：记「已跳过」而不是「完成」，整轮继续。"""
+    controller = _FakeController({"launch_game": "skipped"})
+    svc, sent = _svc(controller)
+    t = _spawn(svc, [
+        {"kind": "builtin", "id": "launch_game", "start_from": None, "config": None},
+        {"kind": "module", "id": "a", "start_from": None, "config": None},
+    ])
+    _wait(t)
+    assert svc._round_result == {"launch_game": "skipped", "a": "ok"}
+    assert controller.calls == [("a", None, None)]   # 跳过后仍继续下一项
+    assert not sent
 
 
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):

@@ -66,9 +66,78 @@ def _clog(grp, msg: str, level: str = "INFO") -> None:
         logger.log(msg, level)
 
 
+TEARDOWN_FAILED_MSG = "上次收尾未完成（框架线程未退出），已保留资源；请重启程序后再运行"
+
+
+class StepSession:
+    """内置步骤的执行会话：只独占导航图，宿主资源交还控制器回收。
+
+    所有权分三层（ADR-0018）：
+      - **控制器**：窗口连接、WGC 采集器、虚拟手柄设备、ActivityContext——跨任务
+        共享，由控制器按自己的生命周期回收，会话只请求启动；
+      - **会话**：导航图及其框架句柄——本会话独占，结束即销毁；
+      - **租约**：手柄导航期间向 ctx.gamepad 借、跑图结束即归还。归还租约不等于
+        可以销毁设备：设备由控制器按「谁创建」决定销毁时机，避免拆掉别的消费者
+        还要复用的共享对象。
+
+    失败路径：`start()` 半途失败（连接成功但采集没起来等）不自清，统一由
+    `close()` 走同一出口——否则会留下半开资源或漏关。
+    """
+
+    def __init__(self, app, needs, grp=None):
+        self._app = app
+        self.needs = frozenset(needs)
+        self._grp = grp
+        self._graph = None
+        self._touched = False  # 是否动过宿主资源（含半初始化）
+        self._closed = False
+
+    def start(self) -> bool:
+        """按需建立游戏链路（幂等）；空需求恒成功。失败不自清，交给 close()。"""
+        if not self.needs or self._touched:
+            return True
+        self._touched = True
+        if "game_link" in self.needs and not self._app.connect(grp=self._grp):
+            _clog(self._grp, "游戏窗口连接失败，无法进入大厅", "ERROR")
+            return False
+        if "wgc_capture" in self.needs:
+            self._app._start_wgc_capture(grp=self._grp)
+            cap = getattr(self._app, "_wgc_capture", None)
+            if cap is None or not cap.is_running:
+                _clog(self._grp, "截图采集未就绪，无法进入大厅", "ERROR")
+                return False
+        return True
+
+    def graph(self, pipeline, image_dir):
+        """建导航图并登记所有权（会话独占）。图与模板目录由步骤自己指定。"""
+        from maaracing_master.core.nav_graph import NavGraph
+
+        g = NavGraph(self._app.ctx)
+        g.set_log_group(self._grp.id if self._grp is not None else None)
+        g.add_plugin(Path(pipeline), Path(image_dir))
+        self._graph = g
+        return g
+
+    def close(self) -> bool:
+        """回收（幂等、不抛）。返回 False = 框架未收摊：此时既不复用也不释放宿主资源。"""
+        if self._closed:
+            return True
+        self._closed = True
+        if self._graph is not None:
+            graph, self._graph = self._graph, None
+            try:
+                if not graph.shutdown():
+                    return False
+            except Exception as exc:  # noqa: BLE001 —— 按未收摊处理，宁可泄漏
+                _clog(self._grp, f"导航图收尾异常，按未收摊处理: {exc!r}", "ERROR")
+                return False
+        if self._touched:
+            self._app.release_step_session(grp=self._grp)
+        return True
+
+
 class MaaRacingMasterController:
     """主控制器（AppController）：生命周期编排 + 共享能力提供，活动流程已迁入模块"""
-
     def __init__(self):
         # DPI awareness：进程级语义，须在创建窗口 / 初始化坐标 API 前显式建立（不继承 shell 配置）
         ensure_dpi_aware()
@@ -82,6 +151,7 @@ class MaaRacingMasterController:
         self._click_mode = "real"  # 点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)
         self._intent_mode = False  # 意图开关（仅显示意图）：只导航不确认，由用户自己按
         self._running = False  # 模块运行标志（start_module 生命周期内为 True）
+        self._step_active = False  # 内置步骤执行中（与 _running 并列，互不赋值）
         self._active_module = None  # 当前活动模块实例（生命周期由 start_module 管理）
         self._ctx = None  # ActivityContext 懒创建
         self.stop_event = threading.Event()  # 停止信号（唯一 clear 位置在 start_module）
@@ -94,6 +164,9 @@ class MaaRacingMasterController:
         # 由步骤按队列位置执行（见 core/builtin_steps.py）。这里只留一个本轮退出标志。
         self._exit_requested = False   # 步骤请求「本轮结束后退出本程序」
         self._last_run_natural = False  # 上次 start_module 是否正常跑完（非报错、非手动停止）
+        self._last_step_outcome = None  # 上次内置步骤的业务结果（completed/skipped/stopped/failed）
+        self._gpad_owner: str | None = None  # 虚拟手柄由谁创建（module / step），决定销毁时机
+        self._teardown_failed = False  # 上次收尾未完成（框架 worker 未退出）：拒绝下一轮启动
         self._mute_game_enabled = False  # 「运行选项」运行时静音游戏（结束恢复 100%）
         self._wgc_capture = None  # WGC 中心采集器（单生产者，全模块读缓存；运行期存在）
 
@@ -170,6 +243,20 @@ class MaaRacingMasterController:
         """是否有活动模块正在运行（start_module 生命周期内为 True）"""
         return self._running and self._active_module is not None
 
+    @property
+    def execution_active(self) -> bool:
+        """是否有执行体在跑（活动模块或内置步骤）。
+
+        `sleep` 是否真的睡、急停是否生效，都只看这一个判据——不借用 `_running`：
+        那个字段的语义是「有模块在跑」，`module_active` 与 GUI 的运行显示依赖它。
+        """
+        return self._running or self._step_active
+
+    @property
+    def last_step_outcome(self) -> str | None:
+        """上次内置步骤的业务结果：completed / skipped / stopped / failed。"""
+        return self._last_step_outcome
+
     def start_module(self, module_id: str, start_from: str | None = None,
                      module_config: dict | None = None):
         """GUI 唯一入口：创建并运行指定活动模块（阻塞，运行于 worker 线程）
@@ -179,6 +266,11 @@ class MaaRacingMasterController:
         这批行在 GUI 不再散作裸行。启动段异常路径把「运行启动」组以 failure 收尾；
         「模块执行异常」保持裸 ERROR 行（发生即红，不并入收尾组——收尾组卡建在其后）。
         """
+        if self._teardown_failed:
+            # 上一轮收尾时框架线程没有退出：句柄还活着，任何新任务都会与它抢同一批
+            # C 资源。只报错不尝试恢复——恢复手段是重启程序。
+            raise RuntimeError(TEARDOWN_FAILED_MSG)
+
         g = _run_group("运行启动")
         try:
             with self._lifecycle_lock:
@@ -286,8 +378,13 @@ class MaaRacingMasterController:
     def run_builtin_step(self, step_id: str, step_config: dict | None = None) -> bool:
         """运行一个内置步骤（启动游戏 / 关闭游戏），阻塞，运行于 worker 线程。
 
-        与 start_module 的区别：不连接窗口、不开 WGC、不装配模块能力，也不参与阶段与
-        断点——步骤只跑一次，日志归入以步骤名命名的组。
+        与 start_module 的区别：不装配模块能力、不参与阶段与断点——步骤只跑一次，
+        日志归入以步骤名命名的组。**需要游戏链路的步骤**（启动游戏的「进入大厅」）
+        通过 `required_resources()` 按**本次配置**声明需求：资源需求只回答「要不要
+        准备资源」，业务结果（completed/skipped/stopped/failed）由步骤自己判定。
+
+        所有权：窗口连接、截图采集、虚拟手柄设备、ActivityContext 归控制器；会话
+        （`StepSession`）只独占导航图。收尾未完成时保留资源并标记污染，拒绝下一轮。
 
         停止信号：与 start_module 同理，进入时复位并清 stop_event——上一轮模块"到限
         自动停止"也会置位它，不清的话步骤会一进门就判成被停止。
@@ -297,16 +394,40 @@ class MaaRacingMasterController:
         cls = BUILTIN_STEPS.get(step_id)
         if cls is None:
             raise KeyError(f"未知的内置步骤: {step_id}")
+        if self._teardown_failed:
+            raise RuntimeError(TEARDOWN_FAILED_MSG)
 
         g = _run_group(cls.NAME, kind="step")
         self._manual_stop = False
         self.stop_event.clear()
         self._last_run_natural = False
+        self._last_step_outcome = "failed"
+        cfg = dict(step_config or {})
+        step = cls(self, grp=g)
+        session = StepSession(self, step.required_resources(cfg), grp=g)
+
+        step_ok = False
+        teardown_ok = True
+        self._step_active = True
         try:
-            ok = bool(cls(self).run(dict(step_config or {}), self.stop_event, g.log))
-        except Exception:
+            step_ok = bool(step.run(cfg, self.stop_event, g.log, session))
+            self._last_step_outcome = step.last_outcome
+        except BaseException:
             g.end("failure")
             raise
+        finally:
+            try:
+                teardown_ok = session.close()
+            except Exception as exc:  # noqa: BLE001 —— close 约定不抛，这里只防御
+                teardown_ok = False
+                g.log(f"会话收尾异常: {exc!r}", "ERROR")
+            self._step_active = False
+
+        if not teardown_ok:
+            # 框架 worker 未退出：资源已保留，后续启动一律拒绝（宁可泄漏一个进程周期）
+            self._teardown_failed = True
+            g.log(TEARDOWN_FAILED_MSG, "ERROR")
+        ok = step_ok and teardown_ok
         self._last_run_natural = ok
         g.end()
         return ok
@@ -508,6 +629,25 @@ class MaaRacingMasterController:
             except Exception:
                 pass
 
+    def release_step_session(self, grp=None) -> None:
+        """回收内置步骤会话占用的宿主资源。
+
+        只回收**会话期间启动/创建**的那部分：Context 关闭并置空（与 start_module
+        的收尾同一条规则）、按 owner 决定是否销毁虚拟手柄、停采集器。窗口连接
+        （`controller` / `_hwnd`）是跨任务共享状态，不在这里清理——见 ADR-0018。
+        """
+        if self._ctx is not None:
+            try:
+                self._ctx.close()
+            except Exception as exc:  # noqa: BLE001
+                _clog(grp, f"Context 关闭异常: {exc}", "ERROR")
+            self._ctx = None
+        # 设备归控制器，但只有当它是本次步骤创建的时候才销毁：
+        # 模块先建好的设备可能还要复用于后续模块。
+        if self._gpad_owner == "step":
+            self._destroy_gpad(grp=grp)
+        self._stop_wgc_capture()
+
     def connect(self, grp=None) -> bool:
         """幂等窗口连接：仅创建 Win32Controller 并保存句柄，MAA 资源归活动模块创建。
 
@@ -590,9 +730,14 @@ class MaaRacingMasterController:
         return self._gp_avail
 
     def _get_gpad(self) -> "Any":  # vg 为懒加载代理（vgamepad_lazy），类型经 Any 传递
-        """获取虚拟手柄（懒创建 + 保持复用，不销毁重建）"""
+        """获取虚拟手柄（懒创建 + 保持复用，不销毁重建）。
+
+        创建时记下消费者类型：设备归控制器所有，但**销毁**只在「谁创建谁负责」
+        的范围内发生——步骤用完不会拆掉模块已经建好、后续还要复用的设备。
+        """
         if self._gpad is None:
             self._gpad = vg.VX360Gamepad()
+            self._gpad_owner = "step" if self._step_active else "module"
             self._gpad.reset()
             self._gpad.update()
             time.sleep(0.2)
@@ -635,6 +780,7 @@ class MaaRacingMasterController:
         except Exception as e:  # noqa: BLE001 —— 驱动缺失/已移除等场景不阻塞收尾
             _clog(grp, f"虚拟手柄销毁异常（可能驱动未装或已移除）: {e}", "DEBUG")
         self._gpad = None
+        self._gpad_owner = None
         import gc
         # 回收窗口的边界日志：这一带的崩溃只能靠日志断点定位（收尾无其它输出），
         # 有头有尾才能判断崩溃落在回收内还是回收之后。

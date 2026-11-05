@@ -330,6 +330,7 @@ def _controller_env(tmp_path, monkeypatch, start):
     c._manual_stop = False
     c._mute_game_enabled = False
     c._last_run_natural = False
+    c._teardown_failed = False  # 构造器被绕过：收尾失败态默认关（ADR-0018）
     c._hwnd = 12345
     c._ctx = None
     c._wgc_capture = None

@@ -265,7 +265,8 @@
 
 - **模块段** = `plugins/<id>/resources/pipeline/<id>*.json`（对局图 + 本模块的入口链与页面锚点，按业务域分文件：鉴宝 = `treasure.json` + `treasure.entry.json`）+ `plugins/<id>/resources/policy/<id>.policy.json`（感知/决策数据面）。
 
-- **共用段** = `core/resources/pipeline/*.json`，**当前为空目录不存在**；出现真跨模块链（如"任何模块开工前先回游戏大厅"）时再建。它能承载的只有**无出口的公共锚点**（一份识别规格）与**公共动作节点**（识别 + 动作、不带出口），由各模块在自己的 `next`/`any_of` 里引用；它**不指向任何模块节点**，"回哪个模块"这条边永远由模块自己声明。
+- **共用段** = `core/resources/pipeline/*.json`，**当前为空目录不存在**。它能承载的只有**无出口的公共锚点**（一份识别规格）与**公共动作节点**（识别 + 动作、不带出口），由各模块在自己的 `next`/`any_of` 里引用；它**不指向任何模块节点**，"回哪个模块"这条边永远由模块自己声明。
+- **宿主自有链** = `core/resources/startup/`（启动步骤的启动链）。它**不是**共用段：有明确终点与业务归属，由 `LaunchGameStep` 显式加载，不并入任何模块的图（ADR-0018）。判据是「谁的生命周期负责它」——启动步骤负责把游戏交付到可用状态，这条链就跟着启动步骤走。
 
 **分界线**：这个元素**是否跨玩法长期共享**（爆炸半径）——是则归 `core/`，否则归 `plugins/<id>/`。与"某个玩法是否从这个按钮进入"无关：鉴宝入口卡片是鉴宝专属知识，即使它物理上长在大厅里。
 
@@ -417,7 +418,7 @@
 
 ***
 
-### 1.17 [game_process.py](./game_process.py) + [builtin_steps.py](./builtin_steps.py) — 游戏进程与内置步骤（ADR-0013）
+### 1.17 [game_process.py](./game_process.py) + [builtin_steps.py](./builtin_steps.py) — 游戏进程与内置步骤（ADR-0013 / ADR-0018）
 
 **game_process.py（进程原语）**：
 
@@ -426,12 +427,22 @@
 - **找窗口按进程名，不按标题**：启动器窗口标题同样是「巅峰极速」，标题匹配会认错窗口；同名进程多窗口时取面积最大的。
 - **关闭**：窗口句柄优先（`terminate_process_by_hwnd`），找不到窗口按进程名兜底（`TerminateProcess`），失败只记 WARNING、不抛。
 
-**builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / COVER / run(config, stop_event, log)`，只需「跑一次、可被停止」。`COVER` 是封面文件名（相对 `core/resources/`，见 §1.18）。两个步骤：
+**builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / COVER / required_resources(config) / run(config, stop_event, log, session)`，只需「跑一次、可被停止」。`COVER` 是封面文件名（相对 `core/resources/`，见 §1.18）。两个步骤：
 
 | 步骤 | 配置面 | 行为要点 |
 |---|---|---|
-| `launch_game` | `path`（空=自动探测）、`args`、`timeout_s`、`skip_if_running`、`detached`、`fallback_launcher` | 已在运行则跳过并接管现有窗口；等窗口超时且开了回退时改走官方启动器再等一轮；失败时把「进程在不在、窗口有没有」写进日志 |
+| `launch_game` | `path`（空=自动探测）、`args`、`timeout_s`、`skip_if_running`、`detached`、`fallback_launcher`、`wait_hall`、`hall_timeout_s` | 已在运行则跳过并接管现有窗口；等窗口超时且开了回退时改走官方启动器再等一轮；随后（默认）加载启动链走到可交付的大厅状态 |
 | `close_game` | `exit_app` | 关进程后清掉窗口句柄（下次运行重新定位）；`exit_app` 请求本轮结束后退出本程序 |
+
+**启动链**（ADR-0018）：真源 `core/resources/startup/pipeline.json` + `image/`，由启动步骤**显式加载**，不进 `core/resources/pipeline/`（那个目录会被所有模块的导航图自动并入）。入口 `startup.boot`、终点 `startup.done`；汇聚与三个确认节点的候选表都是「已知弹窗 → 登录页 → 下一个确认」，因此确认窗口内弹窗优先规则持续生效。完成判据是「已知覆盖层清理后的大厅状态」连续三轮，不保证识别未知覆盖层。节点表与阈值以真源为准，本文不复述。
+
+**三条路径由业务配置决定，不能用资源集反推**：
+
+| 条件 | 行为 | 步骤结果 |
+|---|---|---|
+| `wait_hall=false` | 旧语义：窗口交付即完成，不建连接/不开采集/不加载图 | `completed` |
+| `wait_hall=true` + 仅显示意图 | 不执行大厅链路 | `skipped`（队列显示「已跳过」） |
+| `wait_hall=true` | 跑启动链 | 按导航结局映射为 `completed` / `stopped` / `failed` |
 
 **为什么不是插件、也不是活动模块**：见 [ADR-0013](../../docs/adr/0013-内置步骤与游戏进程归属.md)。一句话——活动模块的契约（阶段/断点/有效期/性能行/自带资源）这两件事一样都没有；而进程启停不属于任何玩法。
 
@@ -439,7 +450,11 @@
 
 - 步骤与模块共用任务列表，所以队列 id 校验、配置槽、断点拒绝、资源徽标都要按「两种种类」分支；断点对步骤直接拒绝（没有阶段可断）。
 - 步骤启动会清 `stop_event`（与 `start_module` 同理）：上一轮模块"到限自动停止"也会置位它，不清的话步骤一进门就判成被停止。
-- 实测：直启 13s 出窗口、39s 登录完成进大厅；启动器窗口本身约 6.6s 出现。默认 120s 超时约 3 倍余量。
+- **`execution_active` 不是 `_running`**：步骤执行期置 `_step_active`（`run_builtin_step` 的 try/finally），`sleep` 与急停看两者的或。`_running` 与 `module_active` 的语义不变——借用它会让 GUI 运行显示与看板错位。这条对**所有**内置步骤生效。
+- **资源所有权三层**（ADR-0018 §5）：窗口连接 / 截图采集 / 虚拟手柄设备 / ActivityContext 归控制器，会话（`StepSession`）只独占导航图；手柄借的是租约，归还租约不等于允许销毁设备。
+- **收尾失败不许销毁**：`NavGraph.shutdown()` 返回 False 表示框架 worker 未按时退出，此时保留句柄、置控制器污染态、拒绝下一轮启动。销毁仍在被原生线程使用的对象会崩在 `MaaFramework.dll`（`MAAFW_GUIDE §7.1`）。
+- **`on_error` 会吞动作失败**：协议里「识别命中但动作失败」也走 `on_error`，所以基础设施故障必须走 `report_fatal()` 通道，不能靠图结构兜底；`run()` 在 job 结束后还要复查一次 fatal。
+- 实测基线已更新：窗口 13s 出现只是"能连"，资源更新日要 1 分 51 秒才到干净大厅；`hall_timeout_s` 默认 300 秒。
 - 参数里带 `-nosound`，游戏本身不出声——「运行时静音游戏」对这个游戏基本没有作用对象（找不到音频会话）。
 
 ### 1.18 [covers.py](./covers.py) — 模块封面（声明归模块，解析归核心）
@@ -587,7 +602,9 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）                                    |
 | `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
 | `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                               |
-| `run_builtin_step(step_id, config)`            | 跑一个内置步骤（启动游戏 / 关闭游戏），不连接窗口、不装配模块能力                                     |
+| `run_builtin_step(step_id, config)`            | 跑一个内置步骤；按 `required_resources(config)` 建会话（窗口连接 / 截图 / 手柄），`finally` 统一回收                         |
+| `execution_active` / `last_step_outcome`       | 「有执行体在跑」（模块或步骤，sleep 与急停的唯一判据）/ 上次步骤的业务结果                                      |
+| `release_step_session(grp)`                    | 回收步骤会话的宿主资源：Context → 按 owner 销毁手柄 → 停采集（窗口连接不在此列）                                  |
 | `adopt_window(hwnd)` / `forget_window()`       | 采纳已定位的游戏窗口（连接时不再按标题搜）/ 关闭后清掉失效句柄                                       |
 | `request_exit()` / `exit_requested`            | 步骤请求「本轮结束后退出本程序」，sidecar 据此发退出事件                                       |
 | `set_mute_game(enabled)`                       | 运行时静音游戏（音频音量控制）                                                        |

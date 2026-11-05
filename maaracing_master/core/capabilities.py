@@ -261,7 +261,10 @@ class LifecycleAdapter:
         import time
         deadline = time.perf_counter() + max(seconds, 0.0)
         while True:
-            if not self._app._running or self._app.stop_event.is_set():
+            # 判据是「有执行体在跑」而不是「有模块在跑」：内置步骤执行期间
+            # （run_builtin_step 置 _step_active）也要真正睡眠，否则动作后的
+            # wait_after_ms 全部退化为零，弹窗会被同一帧连点。
+            if not self._app.execution_active or self._app.stop_event.is_set():
                 return False
             remaining = deadline - time.perf_counter()
             if remaining <= 0:

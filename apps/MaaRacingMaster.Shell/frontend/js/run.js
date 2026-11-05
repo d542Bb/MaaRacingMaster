@@ -40,6 +40,8 @@
       { key: 'skip_if_running', kind: 'switch', title: '已在运行则跳过', desc: '检测到游戏窗口已经在时不再启动，避免拉起第二个进程', note: '推荐开启' },
       { key: 'detached', kind: 'switch', title: '独立进程', desc: '游戏不挂在本程序进程树下：本程序退出或被结束时，游戏照常运行' },
       { key: 'fallback_launcher', kind: 'switch', title: '启动失败时回退到启动器', desc: '等窗口超时仍未出现时，改走官方启动器（会先做版本校验与更新）。平时不会弹出启动器窗口', note: '推荐开启' },
+      { key: 'wait_hall', kind: 'switch', title: '进入游戏大厅', desc: '一路处理登录页与启动弹窗，确认游戏停在大厅后才算完成。关闭后回到旧行为：窗口出现即完成', note: '推荐开启' },
+      { key: 'hall_timeout_s', kind: 'number', label: '等待进入大厅', hint: '（超时则中止本轮；游戏停在对局中时也会超时）', suffix: '秒', min: 30, max: 900, step: 30 },
     ],
     close_game: [
       { key: 'exit_app', kind: 'switch', title: '关闭后退出本程序', desc: '这一步完成后关闭 MaaRM；排在队尾时就是「跑完自动退出」。后面的步骤不再执行', note: '默认关闭' },
@@ -67,6 +69,7 @@
     if (mid === 'launch_game') {
       const out = [chipHtml('等待窗口 ' + (cfgValue(mid, 'timeout_s') || 120) + 's')];
       if (cfgValue(mid, 'skip_if_running')) out.push(chipHtml('已运行则跳过'));
+      if (cfgValue(mid, 'wait_hall')) out.push(chipHtml('进入大厅 ≤' + (cfgValue(mid, 'hall_timeout_s') || 300) + 's'));
       return out.join('');
     }
     if (mid === 'close_game' && cfgValue(mid, 'exit_app')) return chipHtml('关闭后退出');
@@ -182,6 +185,7 @@
     fail: ['task-result--fail', '失败'],
     stopped: ['task-result--skip', '已停止'],
     skip: ['task-result--skip', '已中止'],
+    skipped: ['task-result--skip', '已跳过'],
   };
 
   function chipHtml(text, cls) {

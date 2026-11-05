@@ -1,0 +1,352 @@
+{
+    "startup.boot": {
+        "attach": {
+            "_entry": true,
+            "_boot": true,
+            "_label": "启动链汇聚：弹窗优先、登录次之、大厅最后；未知画面原样等着"
+        },
+        "recognition": {"type": "DirectHit", "param": {}},
+        "action": {"type": "DoNothing", "param": {}},
+        "next": [
+            "startup.popup.claim_daily",
+            "startup.popup.claim_signin",
+            "startup.popup.continue",
+            "startup.popup.close_reward",
+            "startup.popup.close_marketing",
+            "startup.login.engine_start",
+            "startup.hall.confirm.1"
+        ],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": -1,
+        "rate_limit": 600
+    },
+    "startup.anchor.hall_race": {
+        "attach": {
+            "_anchor_only": true,
+            "_label": "大厅判据：右下角「比赛」按钮（贴边，弹窗居中时不被盖住）"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.8914, 0.8222, 0.9656, 0.9083],
+                    "templates": ["startup_hall_race_btn.png"],
+                    "threshold": 0.9
+                }
+            }
+        },
+        "action": {"type": "DoNothing", "param": {}},
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 200,
+        "rate_limit": 0
+    },
+    "startup.anchor.hall_manager": {
+        "attach": {
+            "_anchor_only": true,
+            "_label": "大厅判据：左上「车队经理模式」图标（与比赛按钮成 Or，任一命中即可）"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.2516, 0.0111, 0.3023, 0.0958],
+                    "templates": ["startup_hall_manager_icon.png"],
+                    "threshold": 0.9
+                }
+            }
+        },
+        "action": {"type": "DoNothing", "param": {}},
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 200,
+        "rate_limit": 0
+    },
+    "startup.popup.claim_daily": {
+        "attach": {
+            "_label": "每日福利：点「领取奖励」。领取类排在关闭类之前——先点 X 会把领取一起关掉"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.5219, 0.65, 0.7125, 0.7583],
+                    "templates": ["startup_popup_claim_daily.png"],
+                    "threshold": 0.85
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 1200}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
+    "startup.popup.claim_signin": {
+        "attach": {
+            "_label": "经典回响签到：点「立即领取」"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.4609, 0.6181, 0.6797, 0.7361],
+                    "templates": ["startup_popup_claim_signin.png"],
+                    "threshold": 0.85
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 1200}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
+    "startup.popup.continue": {
+        "attach": {
+            "_label": "奖励结算页：认「奖励」标题并点它（该页任意位置点击都继续）"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.4578, 0.2472, 0.5422, 0.3528],
+                    "templates": ["startup_popup_continue.png"],
+                    "threshold": 0.85
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 1000}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
+    "startup.popup.close_reward": {
+        "attach": {
+            "_label": "签到/奖励页右上角 X（领取完按钮变「前往活动」，只能靠 X 关）"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.7734, 0.25, 0.8242, 0.3403],
+                    "templates": ["startup_popup_close_reward.png"],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 800}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
+    "startup.popup.close_marketing": {
+        "attach": {
+            "_label": "营销整屏弹窗右上角 X（位置随弹窗尺寸浮动，靠模板认不写死坐标）"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.825, 0.1583, 0.8656, 0.2306],
+                    "templates": ["startup_popup_close_marketing.png"],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 800}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
+    "startup.login.engine_start": {
+        "attach": {
+            "_label": "登录页「引擎启动」：手柄模式按 Y（焦点默认在按钮上，不做光标导航），鼠标模式点识别框"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.4547, 0.6944, 0.5437, 0.8472],
+                    "templates": ["startup_login_engine_start.png"],
+                    "threshold": 0.85
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "gamepad_button": "Y",
+                    "wait_after_ms": 2500
+                }
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
+    "startup.hall.confirm.1": {
+        "attach": {
+            "_label": "大厅确认 1/3：这一轮仍先查弹窗与登录页，弹窗插进来就回汇聚节点重新计数"
+        },
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "startup.anchor.hall_race",
+                    "startup.anchor.hall_manager"
+                ]
+            }
+        },
+        "action": {"type": "DoNothing", "param": {}},
+        "next": [
+            "startup.popup.claim_daily",
+            "startup.popup.claim_signin",
+            "startup.popup.continue",
+            "startup.popup.close_reward",
+            "startup.popup.close_marketing",
+            "startup.login.engine_start",
+            "startup.hall.confirm.2"
+        ],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 1000,
+        "timeout": 1500,
+        "rate_limit": 300
+    },
+    "startup.hall.confirm.2": {
+        "attach": {
+            "_label": "大厅确认 2/3"
+        },
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "startup.anchor.hall_race",
+                    "startup.anchor.hall_manager"
+                ]
+            }
+        },
+        "action": {"type": "DoNothing", "param": {}},
+        "next": [
+            "startup.popup.claim_daily",
+            "startup.popup.claim_signin",
+            "startup.popup.continue",
+            "startup.popup.close_reward",
+            "startup.popup.close_marketing",
+            "startup.login.engine_start",
+            "startup.hall.confirm.3"
+        ],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 1000,
+        "timeout": 1500,
+        "rate_limit": 300
+    },
+    "startup.hall.confirm.3": {
+        "attach": {
+            "_label": "大厅确认 3/3：连续约 3 秒都在大厅且没有已知覆盖层，才判交付完成"
+        },
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "startup.anchor.hall_race",
+                    "startup.anchor.hall_manager"
+                ]
+            }
+        },
+        "action": {"type": "DoNothing", "param": {}},
+        "next": [
+            "startup.popup.claim_daily",
+            "startup.popup.claim_signin",
+            "startup.popup.continue",
+            "startup.popup.close_reward",
+            "startup.popup.close_marketing",
+            "startup.login.engine_start",
+            "startup.done"
+        ],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 1000,
+        "timeout": 500,
+        "rate_limit": 300
+    },
+    "startup.done": {
+        "attach": {
+            "_end": true,
+            "_label": "交付完成：图的终点，run() 用 reached 校验它真的执行过"
+        },
+        "recognition": {"type": "DirectHit", "param": {}},
+        "action": {"type": "DoNothing", "param": {}},
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 0,
+        "rate_limit": 0
+    }
+}

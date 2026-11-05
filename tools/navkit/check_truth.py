@@ -46,6 +46,9 @@ PACK = REPO / "maaracing_master"
 # 单插件退役都不需要回头改本文件。分层面（policy 表）是模块可选物：只对本域有
 # policy 表的插件做两面交叉校验（如 speedrush 的线性玩法无 policy，只进图侧校验）。
 CORE_PIPELINE_DIR = PACK / "core" / "resources" / "pipeline"
+# 启动步骤自有的导航链（ADR-0018）：不并入所有模块的图，由启动步骤显式加载。
+# 但它仍然是 core 侧真源，分层红线与引用闭合一样要机检。
+STARTUP_DIR = PACK / "core" / "resources" / "startup"
 PLUGINS_DIR = PACK / "plugins"
 
 
@@ -84,7 +87,7 @@ def att(n: dict) -> dict:
 
 def pipeline_files() -> list[Path]:
     files: list[Path] = []
-    for d in [CORE_PIPELINE_DIR, *PLUGIN_PIPELINE_DIRS]:
+    for d in [CORE_PIPELINE_DIR, STARTUP_DIR, *PLUGIN_PIPELINE_DIRS]:
         if d.is_dir():
             files += sorted(p for p in d.rglob("*.json") if not p.name.startswith("."))
     return files
@@ -126,7 +129,7 @@ def namespace_checks(graph: dict, origin: dict) -> list[str]:
     """
     problems: list[str] = []
     for name, f in origin.items():
-        if CORE_PIPELINE_DIR not in f.parents:
+        if CORE_PIPELINE_DIR not in f.parents and STARTUP_DIR not in f.parents:
             continue
         ns = name.split(".", 1)[0]
         if ns in MODULE_NS:
@@ -356,7 +359,8 @@ def validate_graph(full: dict) -> tuple[list[str], list[str]]:
         if a.get("_anchor_only"):
             continue
         if (not n.get("next") and not n.get("on_error")
-                and not a.get("_dwell") and not a.get("_policy_loop")):
+                and not a.get("_dwell") and not a.get("_policy_loop")
+                and not a.get("_end")):
             problems.append(f"WARN 无出口节点: {name}")
     # 第 6 条：疑似重复识别——**不同基锚**共用同一模板集才报（链复制/dwell 信号
     # 内联与基节点同模板属结构性复制，去基名后自然合并，不告警）。
