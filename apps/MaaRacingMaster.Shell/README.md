@@ -17,6 +17,8 @@
 | `PeepWindow.xaml(.cs)` | PEEP 悬浮窗（工具窗 + 置顶 + 无系统边框，标题栏 HTML 自绘） |
 | `RpcBridge.cs` | HTML ↔ C# ↔ sidecar 的 RPC 转发（主窗口与 PEEP 窗**共用**：回发按 `sender.CoreWebView2` 定位，不依赖窗口实例字段，故各窗互不串台） |
 | `PythonSidecar.cs` | JSONL transport（见下） |
+| `TaskbarProgress.cs` | 任务栏进度（`ITaskbarList3`）：运行期不确定进度，结束/关窗熄灭；失败只降级本能力 |
+| `AppNotifications.cs` | 系统通知：Windows 老版 Toast 通道，只显示、不注册点击激活 |
 | `app.manifest` | UAC 提权声明（一次提权，child 继承） |
 | `NuGet.Config` | 项目级包源（见「NuGet 网络坑」） |
 
@@ -80,6 +82,21 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 - **单实例互斥**：`AcquireSingleInstance()` 用命名 Mutex（`Global\MaaRM_SingleInstance`，权限异常降级会话级）检测已有实例 → `MessageBoxW` 询问「启动新进程（`taskkill /T` 连 sidecar 杀旧进程）或取消保留旧进程」；旧进程被强杀后接管 Mutex 需捕获 `AbandonedMutexException`。
 - Snap Layout hover 不出现（按钮由 HTML 承担，系统不在其上弹 SnapAssist，未深究）。
 
+## 运行期反馈（任务栏 / 系统通知）
+
+轮次的亮点与提示由壳侧四态驱动：`NoRound`（本进程还没跑过轮次）/ `Running`（收到开始、未收到结束）/ `Settled`（收到结束）/ `Closing`（已进入关窗或主动关停）。状态只由事件通道迁移，不读前端 250ms 轮询。
+
+| 能力 | 实现 |
+|---|---|
+| 任务栏进度 | `ITaskbarList3`：轮次开始置不确定进度，轮次结束/后端退出/进入关窗即熄灭；不设百分比。初始化失败整体降级；运行中单次设置失败只记诊断，不改变轮次状态 |
+| 系统通知 | Windows 老版 Toast 通道（两行文本，首行加粗）。应用身份由 `HKCU\Software\Classes\AppUserModelId\MaaRacingMaster.Shell`（显示名/图标）+ 进程级 AUMID 承载；不建开始菜单快捷方式 |
+| 通知口径 | 正常完成、运行失败、后端进程异常退出提示；用户主动停止、主动关窗不提示；启动前校验失败不提示（工作线程未启动，没有轮次事件） |
+| 点击通知 | 不唤起主窗口：通知标为 `background` 激活、不写 `launch`、不注册后台任务/激活器；身份注册不产生可启动目标 |
+| 提权形态 | 壳以管理员权限运行；Windows App SDK 的通知接口在提权进程下被禁用，故改用老版 Toast（其显示路径不含该闸门） |
+| 自动退出 | 收到 `auto_exit` 后延迟约 1.8s 再关窗，给通知投递留时间；用户主动点关闭仍立即关闭 |
+
+通知文案由 Python 组装（结局 + 步骤名 + 固定文案），壳不认识业务；取不到步骤名时退回标识，不阻断收尾。通知初始化或显示失败只记 stderr 诊断，不阻塞启动与轮次状态。
+
 ## 构建坑
 
 | 坑点 | 解决 |
@@ -95,17 +112,33 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 | 唯一 stdout reader | 一个常驻 `ReaderLoopAsync`，按 `response.id` 匹配 `ConcurrentDictionary<ulong, TCS>` |
 | stdin 串行 | `SemaphoreSlim` 写锁 |
 | 超时 | `Task.WaitAsync(timeout)`，超时清理 pending，只影响单请求 |
-| backend 断开 | reader EOF → 所有 pending 立即抛 `BackendDisconnectedException` |
+| backend 断开 | reader EOF → 所有 pending 立即抛 `BackendDisconnectedException`；非主动关闭再发 `BackendExited(exitCode)` |
+| 主动关闭 | `ShutdownAsync` / `Dispose` 置位；此后的 EOF 不再报后端异常退出 |
 | malformed stdout | 忽略并记 stderr，不 crash 整个 IPC |
 | stderr drain | 独立 task 持续读，防 OS pipe 填满卡死 Python |
 | shutdown | `ShutdownAsync(grace)`：发 shutdown → 等进程自退 → 超时 `Kill(entireProcessTree:true)`；返回退出码，不 Dispose |
 | 防孤儿 | `Dispose()` 对存活进程 KillTree |
 
+### sidecar 事件
+
+| 事件 | 负载 | 壳侧动作 |
+|---|---|---|
+| `round_started` | `{total, first_step}` | 任务栏置不确定进度，轮次状态 → `Running` |
+| `round_ended` | `{outcome: completed\|failed\|stopped, step, title, body}` | 任务栏熄灭，状态 → `Settled`；完成/失败弹通知，停止只灭不弹 |
+| `auto_exit` | — | 进入 `Closing`，延迟约 1.8s 关窗 |
+
+- 事件负载是 `data` 字段；取用时必须 `Clone()`（解析文档在 reader 循环末释放）。
+- `round_started` 在工作线程内发出（与收尾块对称）；`round_ended` 在写完结局之后、`auto_exit` 之前发出，因此壳侧先拿到结局再进入关窗。
+- 事件写出失败（壳已断开）只记日志，不影响结局归约、采样器注销与线程槽释放——否则下一轮会被「已在运行」拒绝。
+- 后端退出提示按**退出原因**判定（非主动关闭的 EOF），不按退出码；退出码只作诊断信息。轮次状态 `Running` 报「运行中断」，`Settled` / `NoRound` 报「后端进程异常退出」且不提本轮结果；`Closing` 一律不提示。同一进程世代最多一条死亡通知。
+
 ### 契约坑点（必记）
 
 | 坑点 | 说明 |
 |---|---|
-| `JsonDocument` 生命周期 | reader 中 `using var doc` 循环末释放，`SetResult` 必须传 `root.Clone()`（深拷贝），否则调用方访问即 `ObjectDisposedException` |
+| `JsonDocument` 生命周期 | reader 中 `using var doc` 循环末释放，`SetResult` 必须传 `root.Clone()`（深拷贝），否则调用方访问即 `ObjectDisposedException`；事件负载同理 |
+| 老版 Toast 身份 | 未打包程序可用 `HKCU\Software\Classes\AppUserModelId\<AUMID>` + 进程级 AUMID 建立身份（本机实测可显示，无需开始菜单快捷方式）；`ToastNotifier.Setting` 在第一条通知发出前会抛「元素未找到」，不能当可用性门槛 |
+| 通知点击 | 只标 `activationType="background"`、不建快捷方式、不注册后台任务/激活器，点击才真正无响应 |
 | Python worker 线程退出 | `sys.exit()` 在非主线程只抛 `SystemExit` 不退出进程，必须 `os._exit(n)` |
 | Dispose 后访问 Process | `_process.Dispose()` 后访问属性抛「No process is associated」；验证进程存活用 `ProcessId` + `Process.GetProcessById(pid)` 捕获 `ArgumentException` |
 | Python 侧 handler 线程 | 必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失；入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr），见 [`core/sidecar.py`](../../maaracing_master/core/sidecar.py) |

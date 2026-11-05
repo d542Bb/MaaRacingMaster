@@ -477,6 +477,30 @@ def _step_name(step_id: str) -> str:
     return get_module_info(step_id)["name"]
 
 
+def _step_display_name(step_id: str) -> str:
+    """通知里用的步骤名：取不到就退回标识，不允许因取名失败拖垮收尾。"""
+    try:
+        return _step_name(step_id)
+    except Exception:  # noqa: BLE001 —— 通知文案是尽力而为，不是业务判据
+        return step_id
+
+
+def _round_ended_payload(results: dict[str, str]) -> dict:
+    """把本轮结局归约为壳侧可直接展示的通知文案（失败 > 停止 > 完成）。"""
+    failed = next((sid for sid, state in results.items() if state == "fail"), None)
+    if failed is not None:
+        name = _step_display_name(failed)
+        return {"outcome": "failed", "step": failed,
+                "title": "运行失败", "body": f"「{name}」执行失败"}
+    stopped = next((sid for sid, state in results.items() if state == "stopped"), None)
+    if stopped is not None:
+        name = _step_display_name(stopped)
+        return {"outcome": "stopped", "step": stopped,
+                "title": "已停止", "body": f"「{name}」已停止"}
+    return {"outcome": "completed", "step": None,
+            "title": "运行完成", "body": "本轮任务已完成"}
+
+
 class _StdoutGuard:
     """把一切误写 stdout 的输出（第三方库 print 等）转移到 stderr，保证协议通道纯净。"""
 
@@ -634,6 +658,17 @@ class SidecarService:
         with self._out_lock:
             self._out.write(line + "\n")
             self._out.flush()
+
+    def _send_event_best_effort(self, obj: dict) -> None:
+        """尽力发送壳侧事件：管道断开只记日志，绝不上抛。
+
+        保护范围**只包住写这一句**：收尾里的结局归约、采样器注销、线程槽归零
+        若自身出错，仍应照常抛出，不能被这里吞掉。
+        """
+        try:
+            self.send(obj)
+        except Exception as exc:  # noqa: BLE001 —— 壳已断开时写管道必然失败
+            logger.log(f"[sidecar] 事件发送失败（已忽略）: {exc!r}", "WARNING")
 
     def _respond(self, rid, ok: bool, data=None, error=None) -> None:
         self.send({"type": "response", "id": rid, "ok": ok, "data": data, "error": error})
@@ -1294,6 +1329,12 @@ class SidecarService:
         results: dict[str, str] = {}
         all_natural = True
         total = len(plan)
+        # 轮次开始放在工作线程内（而非 start 受理接口），与收尾块对称：
+        # 受理成功但线程没起来时，壳侧不会空亮。
+        self._send_event_best_effort({
+            "type": "event", "event": "round_started",
+            "data": {"total": total, "first_step": plan[0]["id"] if plan else None},
+        })
         # 领域行取值口在整轮期间有效（内部按当前活动模块取值），结束后注销
         perf_sampler.set_domain_reader(self._make_perf_reader())
         try:
@@ -1335,10 +1376,15 @@ class SidecarService:
             with self._lock:
                 self._queue_run = None
                 self._round_result = results
+            # 轮次结束先于自动退出：壳侧拿到结局后再进入关窗，避免通知被关窗流程吞掉。
+            self._send_event_best_effort({
+                "type": "event", "event": "round_ended",
+                "data": _round_ended_payload(results),
+            })
             # 「关闭后退出本程序」由「关闭游戏」步骤发起：整轮自然完成且步骤要过退出才发
-            # auto_exit 事件 → shell 关闭窗口优雅退出（保证 worker 收尾先于窗口关闭）。
+            # auto_exit 事件 → shell 延迟关窗优雅退出（保证 worker 收尾先于窗口关闭）。
             if all_natural and self._controller.exit_requested:
-                self.send({"type": "event", "event": "auto_exit"})
+                self._send_event_best_effort({"type": "event", "event": "auto_exit"})
             perf_sampler.set_domain_reader(None)
             perf_sampler.set_thread_labels(None)
             with self._lock:
