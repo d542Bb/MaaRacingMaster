@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>性能监控 · CPU + GPU 双线形态预览</title>
+<style>
+/* 试验区预览：token 与卡片语汇取自 apps/MaaRacingMaster.Shell/frontend/style.css，
+   不引用生产代码、不接生产数据。样式为浅色（应用自身主题），与 IDE 主题无关。 */
+:root {
+  --maarm-primary: #E5484D;
+  --maarm-primary-soft: rgba(229, 72, 77, 0.1);
+  --maarm-background: #F5F6FA;
+  --maarm-surface: #FFFFFF;
+  --maarm-foreground: #1F2328;
+  --maarm-foreground-secondary: #4A5160;
+  --maarm-foreground-muted: #8B93A7;
+  --maarm-foreground-dim: #B0B7C3;
+  --maarm-border: #E5E7EB;
+  --maarm-border-light: #EEF0F4;
+  --maarm-warning: #F59E0B;
+  --maarm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --maarm-radius-md: 8px;
+  --maarm-duration-fast: 0.15s;
+  --maarm-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  background: var(--maarm-background); color: var(--maarm-foreground);
+  font-family: var(--maarm-font-sans); font-size: 14px; line-height: 1.5;
+  padding: 28px 24px 48px; -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 预览壳（不属于面板本体） ---------- */
+.stage { max-width: 760px; margin: 0 auto; }
+.stage-head { display: flex; align-items: center; justify-content: space-between;
+  gap: 24px; margin-bottom: 18px; flex-wrap: wrap; }
+.stage-head h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.stage-ctl { display: flex; align-items: center; gap: 14px; }
+.seg { display: flex; background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  border-radius: 6px; padding: 2px; gap: 2px; }
+.seg button { border: 0; background: transparent; font: inherit; font-size: 12px;
+  color: var(--maarm-foreground-secondary); padding: 5px 10px; border-radius: 4px;
+  cursor: pointer; transition: background var(--maarm-duration-fast) ease, color var(--maarm-duration-fast) ease; }
+.seg button:hover { background: #F8F9FC; }
+.seg button.on { background: var(--maarm-primary-soft); color: var(--maarm-primary); font-weight: 500; }
+.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px;
+  color: var(--maarm-foreground-muted); cursor: pointer; user-select: none; }
+.chk input { accent-color: var(--maarm-primary); }
+.stage-body { display: flex; justify-content: center; }
+
+/* ---------- 卡片（正式语汇） ---------- */
+.card { width: 592px; background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  border-radius: var(--maarm-radius-md); box-shadow: var(--maarm-shadow-sm);
+  display: flex; flex-direction: column; overflow: hidden; }
+.card-head { padding: 12px 16px; min-height: 53px; display: flex; align-items: center;
+  justify-content: space-between; border-bottom: 1px solid var(--maarm-border-light); }
+.card-head h3 { font-size: 14px; font-weight: 600; }
+.card-body { padding: 16px; }
+
+.perf-health { display: flex; align-items: center; gap: 5px; font-size: 11px;
+  font-weight: 500; line-height: 1; white-space: nowrap; }
+.perf-health--ok { color: var(--maarm-foreground-muted); }
+.perf-health--warn { color: var(--maarm-warning); }
+.perf-health--idle { color: var(--maarm-foreground-dim); }
+.perf-health-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* ---------- 资源磁贴：整块就是走势，数字压在上面 ---------- */
+.perf-kpis { display: grid; grid-template-columns: 1fr 1fr; column-gap: 40px; margin-bottom: 10px; }
+/* 磁贴是一张海报：右上角是大字+型号，左上角是器件图标，数字压在左下，曲线浮在最上层 */
+.perf-kpi { position: relative; height: 96px; min-width: 0; overflow: hidden; }
+
+.perf-kpi-icon { position: absolute; left: 10px; top: 2px; width: 24px; height: 24px;
+  color: var(--maarm-foreground-secondary); opacity: 0.45; z-index: 3; pointer-events: none; }
+
+.perf-kpi-mark { position: absolute; right: 10px; top: -2px; display: flex; flex-direction: column;
+  align-items: flex-end; pointer-events: none; user-select: none; z-index: 2; }
+.perf-kpi-word { font-size: 64px; font-weight: 800; line-height: 0.82; letter-spacing: -0.06em;
+  color: var(--maarm-foreground); opacity: 0.06; }
+.perf-kpi-sub { font-size: 10px; line-height: 1; letter-spacing: 0.01em;
+  color: var(--maarm-foreground-muted); opacity: 0.45; margin-top: -2px;
+  /* 曲线会从这行字上穿过，白晕让字始终读得出来 */
+  text-shadow: 0 0 3px #fff, 0 0 6px #fff; }
+
+.perf-kpi-spark { position: absolute; inset: 0 10px auto 10px; display: block;
+  width: calc(100% - 20px); height: 100%; overflow: hidden; z-index: 1; }
+.perf-kpi-spark .spark-line { fill: none; vector-effect: non-scaling-stroke;
+  stroke-linejoin: round; stroke-linecap: round; }
+.spark-line--total { stroke: var(--maarm-foreground-muted); stroke-width: 1.2; }
+.spark-line--prog { stroke: var(--maarm-primary); stroke-width: 1.4; }
+
+.perf-kpi-nums { position: absolute; left: 10px; bottom: 10px; display: flex; align-items: baseline;
+  gap: 8px; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; z-index: 3;
+  /* 曲线会从数字上穿过：白色晕影把字托起来，比描边柔和 */
+  text-shadow: 0 0 3px #fff, 0 0 7px #fff, 0 0 2px #fff; }
+.perf-kpi-nums .num { display: flex; align-items: baseline; gap: 1px; }
+.perf-kpi-nums .num b { font-weight: 600; line-height: 1; }
+.perf-kpi-nums .num em { font-style: normal; font-size: 11px; font-weight: 500;
+  color: var(--maarm-foreground-muted); margin-left: 1px; }
+.perf-kpi-nums .num--total b { font-size: 32px; }
+.perf-kpi-nums .num--prog { color: var(--maarm-primary); }
+.perf-kpi-nums .num--prog b { font-size: 13px; }
+.perf-kpi-nums .num--prog em { color: var(--maarm-primary); opacity: 0.7; }
+
+/* GPU 不可用：只留水印与一行说明，不画空曲线 */
+.perf-kpi--off .perf-kpi-word { opacity: 0.04; }
+.perf-kpi-off-note { position: absolute; left: 10px; bottom: 10px; font-size: 11px;
+  color: var(--maarm-foreground-dim); z-index: 3; }
+
+/* ---------- 模块行 + 线程明细（沿用现状，用来核对卡片整体比例） ---------- */
+.perf-rows { border-top: 1px solid var(--maarm-border-light); padding-top: 5px; }
+.perf-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 0; }
+.perf-row-label { font-size: 12.5px; color: var(--maarm-foreground-secondary); }
+.perf-row-val { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.perf-threads { display: flex; align-items: center; gap: 6px; width: 100%;
+  margin-top: 10px; padding: 9px 0 5px; border: 0; border-top: 1px solid var(--maarm-border-light);
+  background: transparent; color: var(--maarm-foreground-muted); font: inherit; font-size: 11px; cursor: pointer; }
+.perf-threads:hover { color: var(--maarm-foreground-secondary); }
+.perf-caret { width: 10px; height: 10px; flex: none;
+  transition: transform var(--maarm-duration-fast) ease; }
+.perf-threads[aria-expanded="true"] .perf-caret { transform: rotate(90deg); }
+.perf-threads-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+.perf-trow { display: grid; grid-template-columns: 1fr 54px 38px 50px;
+  align-items: center; gap: 10px; padding: 5px 0; }
+.perf-tname { font-size: 11.5px; color: var(--maarm-foreground-secondary); }
+.perf-tbar { height: 3px; border-radius: 2px; background: var(--maarm-border-light); overflow: hidden; }
+.perf-tbar i { display: block; height: 100%; border-radius: 2px; background: var(--maarm-foreground-dim); }
+.perf-tnum { font-size: 11px; text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--maarm-foreground-secondary); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <header class="stage-head">
+    <h1>性能监控 · CPU + GPU 双线</h1>
+    <div class="stage-ctl">
+      <div class="seg" id="state-seg">
+        <button type="button" data-state="run" class="on">运行中</button>
+        <button type="button" data-state="idle">待运行</button>
+        <button type="button" data-state="dual">核显+独显</button>
+        <button type="button" data-state="nogpu">无 GPU 数据</button>
+        <button type="button" data-state="hot">高负载</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="fixed-scale" checked> 固定 0–100 标尺</label>
+    </div>
+  </header>
+
+  <div class="stage-body">
+    <div class="card">
+      <div class="card-head">
+        <h3>性能监控</h3>
+        <span class="perf-health perf-health--ok" id="health"><span class="perf-health-dot"></span>运行正常</span>
+      </div>
+      <div class="card-body">
+        <div class="perf-kpis">
+          <div class="perf-kpi" id="kpi-cpu">
+            <svg class="perf-kpi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="5" y="5" width="14" height="14" rx="2"></rect>
+              <rect x="9.5" y="9.5" width="5" height="5" rx="1"></rect>
+              <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"></path>
+            </svg>
+            <div class="perf-kpi-mark">
+              <span class="perf-kpi-word" aria-hidden="true">CPU</span>
+              <span class="perf-kpi-sub" id="cpu-sub">12 核</span>
+            </div>
+            <svg class="perf-kpi-spark" id="cpu-spark" viewBox="0 0 100 26"
+                 preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="cpu-total-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="26">
+                  <stop offset="0%" stop-color="#8B93A7" stop-opacity="0.20"></stop>
+                  <stop offset="55%" stop-color="#8B93A7" stop-opacity="0.06"></stop>
+                  <stop offset="100%" stop-color="#8B93A7" stop-opacity="0"></stop>
+                </linearGradient>
+                <linearGradient id="cpu-prog-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="26">
+                  <stop offset="0%" stop-color="#E5484D" stop-opacity="0.24"></stop>
+                  <stop offset="55%" stop-color="#E5484D" stop-opacity="0.07"></stop>
+                  <stop offset="100%" stop-color="#E5484D" stop-opacity="0"></stop>
+                </linearGradient>
+              </defs>
+              <path id="cpu-total-area" fill="url(#cpu-total-grad)" d=""></path>
+              <path id="cpu-prog-area" fill="url(#cpu-prog-grad)" d=""></path>
+              <path class="spark-line spark-line--total" id="cpu-total-line" d=""></path>
+              <path class="spark-line spark-line--prog" id="cpu-prog-line" d=""></path>
+            </svg>
+            <div class="perf-kpi-nums">
+              <span class="num num--total"><b id="cpu-total">--</b><em>%</em></span>
+              <span class="num num--prog"><b id="cpu-prog">--</b><em>%</em></span>
+            </div>
+          </div>
+
+          <div class="perf-kpi" id="kpi-gpu">
+            <svg class="perf-kpi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="6.5" width="20" height="11" rx="2"></rect>
+              <circle cx="7.5" cy="12" r="2.2"></circle>
+              <path d="M13 10.5h5M13 13.5h5"></path>
+            </svg>
+            <div class="perf-kpi-mark">
+              <span class="perf-kpi-word" aria-hidden="true">GPU</span>
+              <span class="perf-kpi-sub" id="gpu-sub">RTX 3060</span>
+            </div>
+            <svg class="perf-kpi-spark" id="gpu-spark" viewBox="0 0 100 26"
+                 preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="gpu-total-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="26">
+                  <stop offset="0%" stop-color="#8B93A7" stop-opacity="0.20"></stop>
+                  <stop offset="55%" stop-color="#8B93A7" stop-opacity="0.06"></stop>
+                  <stop offset="100%" stop-color="#8B93A7" stop-opacity="0"></stop>
+                </linearGradient>
+                <linearGradient id="gpu-prog-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="26">
+                  <stop offset="0%" stop-color="#E5484D" stop-opacity="0.24"></stop>
+                  <stop offset="55%" stop-color="#E5484D" stop-opacity="0.07"></stop>
+                  <stop offset="100%" stop-color="#E5484D" stop-opacity="0"></stop>
+                </linearGradient>
+              </defs>
+              <path id="gpu-total-area" fill="url(#gpu-total-grad)" d=""></path>
+              <path id="gpu-prog-area" fill="url(#gpu-prog-grad)" d=""></path>
+              <path class="spark-line spark-line--total" id="gpu-total-line" d=""></path>
+              <path class="spark-line spark-line--prog" id="gpu-prog-line" d=""></path>
+            </svg>
+            <div class="perf-kpi-nums" id="gpu-nums">
+              <span class="num num--total"><b id="gpu-total">--</b><em>%</em></span>
+              <span class="num num--prog"><b id="gpu-prog">--</b><em>%</em></span>
+            </div>
+            <div class="perf-kpi-off-note" id="gpu-off-note" hidden>未取到 GPU 数据</div>
+          </div>
+        </div>
+
+        <div class="perf-rows">
+          <div class="perf-row"><span class="perf-row-label">识别耗时 p50</span><span class="perf-row-val">18 ms</span></div>
+          <div class="perf-row"><span class="perf-row-label">帧率</span><span class="perf-row-val">30 /秒</span></div>
+        </div>
+
+        <button class="perf-threads" type="button" aria-expanded="true">
+          <svg class="perf-caret" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M3.5 1.5 L7 5 L3.5 8.5" fill="none" stroke="currentColor"
+                  stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+          <span>线程明细</span>
+          <span class="perf-threads-meta">1 个</span>
+        </button>
+        <div class="perf-trow">
+          <span class="perf-tname">MainThread</span>
+          <span class="perf-tbar"><i style="width:0%"></i></span>
+          <span class="perf-tnum">0%</span>
+          <span class="perf-tnum">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const HIST_MAX = 46;          // 46 点 ≈ 46 秒窗口，1Hz 采样
+  const VB_W = 100;             // viewBox 宽
+  const VB_BASE = 26;           // viewBox 底边
+  const VB_PLOT = 25;           // 曲线基线：比磁贴底边高 1 个单位（约 4px），贴边会被裁掉
+  const $ = (id) => document.getElementById(id);
+
+  const hist = { cpuTotal: [], cpuProg: [], gpuTotal: [], gpuProg: [] };
+
+  // 各状态的取样中心与抖动幅度（模拟值，只为看形态）
+  const PROFILES = {
+    run:   { cpuTotal: [30, 12], cpuProg: [11, 3],  gpuTotal: [22, 10], gpuProg: [8, 4],
+             health: ['ok', '运行正常'], gpu: 'ok', gpuSub: 'RTX 3060' },
+    idle:  { cpuTotal: [9, 5],   cpuProg: [0, 0.4], gpuTotal: [3, 2],   gpuProg: [0, 0.3],
+             health: ['idle', '待运行'], gpu: 'ok', gpuSub: 'RTX 3060' },
+    hot:   { cpuTotal: [82, 8],  cpuProg: [68, 6],  gpuTotal: [91, 5],  gpuProg: [84, 6],
+             health: ['warn', '偏高'], gpu: 'ok', gpuSub: 'RTX 3060' },
+    // 笔记本双适配器：游戏跑在独显上，磁贴显示本程序占用最高的那块
+    dual:  { cpuTotal: [34, 12], cpuProg: [12, 3],  gpuTotal: [38, 14], gpuProg: [31, 8],
+             health: ['ok', '运行正常'], gpu: 'ok', gpuSub: 'RTX 3060 · 2 卡' },
+    nogpu: { cpuTotal: [30, 12], cpuProg: [11, 3],  gpuTotal: [0, 0],   gpuProg: [0, 0],
+             health: ['ok', '运行正常'], gpu: 'off', gpuSub: '' },
+  };
+
+  let stateKey = 'run';
+  let fixedScale = true;
+
+  function walk(cur, spec) {
+    const [center, spread] = spec;
+    const base = (cur === null || cur === undefined) ? center : cur;
+    const next = base + (Math.random() - 0.5) * spread * 0.9 + (center - base) * 0.45;
+    return Math.max(0, Math.min(100, next));
+  }
+
+  const last = (arr) => (arr.length ? arr[arr.length - 1] : null);
+
+  function push(key, spec) {
+    hist[key].push(walk(last(hist[key]), spec));
+    if (hist[key].length > HIST_MAX) hist[key].shift();
+  }
+
+  // 单调三次 Hermite（Fritsch–Carlson）：平滑但不过冲，
+  // 负载曲线不会因为插值出现负值或凭空冒尖。x 步长固定，新点从右侧进入。
+  function smoothPaths(arr, top) {
+    const n = arr.length;
+    if (n < 2) return { line: '', area: '', topY: VB_PLOT };
+    const dx = VB_W / (HIST_MAX - 1);
+    const xs = arr.map((_, i) => i * dx);
+    const ys = arr.map((v) => VB_PLOT - Math.min(1, Math.max(0, v / top)) * (VB_PLOT - 2));
+
+    const d = [];
+    for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / dx);
+    const m = new Array(n);
+    m[0] = d[0];
+    m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) m[i] = (d[i - 1] + d[i]) / 2;
+    for (let i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+      const a = m[i] / d[i];
+      const b = m[i + 1] / d[i];
+      const s = a * a + b * b;
+      if (s > 9) {
+        const t = 3 / Math.sqrt(s);
+        m[i] = t * a * d[i];
+        m[i + 1] = t * b * d[i];
+      }
+    }
+
+    let line = 'M' + xs[0].toFixed(2) + ',' + ys[0].toFixed(2);
+    for (let i = 0; i < n - 1; i++) {
+      const c1x = xs[i] + dx / 3;
+      const c1y = ys[i] + (m[i] * dx) / 3;
+      const c2x = xs[i + 1] - dx / 3;
+      const c2y = ys[i + 1] - (m[i + 1] * dx) / 3;
+      line += 'C' + c1x.toFixed(2) + ',' + c1y.toFixed(2)
+        + ' ' + c2x.toFixed(2) + ',' + c2y.toFixed(2)
+        + ' ' + xs[i + 1].toFixed(2) + ',' + ys[i + 1].toFixed(2);
+    }
+    const area = line
+      + 'L' + xs[n - 1].toFixed(2) + ',' + VB_BASE
+      + 'L' + xs[0].toFixed(2) + ',' + VB_BASE + 'Z';
+    return { line, area, topY: Math.min.apply(null, ys) };
+  }
+
+  function drawSeries(ids, totalArr, progArr, on) {
+    if (!on) {
+      ['line', 'area'].forEach((kind) => {
+        $(ids.total + '-' + kind).setAttribute('d', '');
+        $(ids.prog + '-' + kind).setAttribute('d', '');
+      });
+      return;
+    }
+    // 自适应标尺带地板值：负载很低时不把 2% 撑满整格（撑满等于说谎）
+    const top = fixedScale
+      ? 100
+      : Math.max(20, totalArr.concat(progArr).reduce((a, b) => (b > a ? b : a), 0) * 1.15);
+    const total = smoothPaths(totalArr, top);
+    const prog = smoothPaths(progArr, top);
+    $(ids.total + '-area').setAttribute('d', total.area);
+    $(ids.total + '-line').setAttribute('d', total.line);
+    $(ids.prog + '-area').setAttribute('d', prog.area);
+    $(ids.prog + '-line').setAttribute('d', prog.line);
+    // 渐变从各自曲线峰顶开始衰减，否则低负载时面积几乎透明
+    const tg = $(ids.total + '-grad');
+    tg.setAttribute('y1', String(total.topY));
+    tg.setAttribute('y2', String(VB_BASE));
+    const pg = $(ids.prog + '-grad');
+    pg.setAttribute('y1', String(prog.topY));
+    pg.setAttribute('y2', String(VB_BASE));
+  }
+
+  function setNum(id, value, on) {
+    $(id).textContent = on && Number.isFinite(value) ? String(Math.round(value)) : '--';
+  }
+
+  function render() {
+    const p = PROFILES[stateKey];
+    const gpuOff = p.gpu === 'off';
+
+    $('health').className = 'perf-health perf-health--' + p.health[0];
+    $('health').innerHTML = '<span class="perf-health-dot"></span>' + p.health[1];
+
+    setNum('cpu-total', last(hist.cpuTotal) || 0, true);
+    setNum('cpu-prog', last(hist.cpuProg) || 0, true);
+    setNum('gpu-total', last(hist.gpuTotal) || 0, !gpuOff);
+    setNum('gpu-prog', last(hist.gpuProg) || 0, !gpuOff);
+
+    $('gpu-sub').textContent = gpuOff ? '' : (p.gpuSub || '');
+
+    $('kpi-gpu').classList.toggle('perf-kpi--off', gpuOff);
+    $('gpu-spark').hidden = gpuOff;
+    $('gpu-nums').hidden = gpuOff;
+    $('gpu-off-note').hidden = !gpuOff;
+
+    drawSeries({ total: 'cpu-total', prog: 'cpu-prog' }, hist.cpuTotal, hist.cpuProg, true);
+    drawSeries({ total: 'gpu-total', prog: 'gpu-prog' }, hist.gpuTotal, hist.gpuProg, !gpuOff);
+  }
+
+  function tick() {
+    const p = PROFILES[stateKey];
+    push('cpuTotal', p.cpuTotal);
+    push('cpuProg', p.cpuProg);
+    if (p.gpu !== 'off') {
+      push('gpuTotal', p.gpuTotal);
+      push('gpuProg', p.gpuProg);
+    }
+    render();
+  }
+
+  // 预填一段历史，打开页面就有走势可看；切状态时重铺，避免看到上一档的过渡尾巴
+  function reseed() {
+    Object.keys(hist).forEach((k) => { hist[k].length = 0; });
+    for (let i = 0; i < HIST_MAX; i++) tick();
+  }
+
+  reseed();
+  setInterval(tick, 1000);
+
+  // 支持 ?state=nogpu 直接落到某个状态（评审/截图用，免去手点）
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('state') && PROFILES[qs.get('state')]) {
+    stateKey = qs.get('state');
+    document.querySelectorAll('#state-seg button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.state === stateKey);
+    });
+    reseed();
+  }
+
+  document.querySelectorAll('#state-seg button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      stateKey = btn.dataset.state;
+      document.querySelectorAll('#state-seg button').forEach((b) => b.classList.toggle('on', b === btn));
+      reseed();
+    });
+  });
+
+  $('fixed-scale').addEventListener('change', (ev) => {
+    fixedScale = ev.target.checked;
+    render();
+  });
+})();
+</script>
+</body>
+</html>
