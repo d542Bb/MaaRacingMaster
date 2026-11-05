@@ -68,12 +68,12 @@ def test_screencap_injects_rgb_as_bgr(pure_maa):
     assert ctrl.last_frame_id == 7
 
 
-def test_stale_frame_raises(pure_maa):
+def test_stale_frame_is_reused(pure_maa):
+    """WGC 对静止画面不出新帧：帧龄超限只告警，继续复用最后一帧。"""
     cap = _FakeCapture()
     ctrl = ng.WgcapController(cap, stale_ms=100.0)
     cap.age = 100.1
-    with pytest.raises(FrameStaleError):
-        ctrl.screencap()
+    assert ctrl.screencap() is not None
     cap.age = 99.9
     assert ctrl.screencap() is not None  # 阈值内正常
 

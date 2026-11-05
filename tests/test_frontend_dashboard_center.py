@@ -57,3 +57,15 @@ def test_data_page_uses_unified_dashboard_route():
     body = _js_function_body(src, "async function loadDashboard() {")
     assert "'get_module_dashboard'" in body, "看板内容必须走统一的 get_module_dashboard 路由"
     assert "module_id" in body, "读看板必须点名模块，不能依赖隐式的当前模块"
+
+
+def test_list_renderer_supports_parts_groups_and_paging():
+    """行内着色、日期组头与分页是 list 的共享能力；缺一处前端会静默退化。"""
+    src = SETTINGS_JS.read_text(encoding="utf-8")
+    assert "row.parts" in src
+    assert "board-item" in src
+    assert "board-date" in src
+    assert "data-page-size" in src
+    assert "bindDashboardLists" in src
+    body = _js_function_body(src, "async function loadDashboard() {")
+    assert "bindDashboardLists(body)" in body

@@ -1,7 +1,7 @@
 # NavKit v4 工具链
 
 > **本文是什么**：NavKit v4 工具链的使用与流程——入口命令、Studio 三页、真源文件位置、**模板图采集工作流**、校验器护栏、MPE 排错。
-> **本文不是什么**：不是真源组织的规则与理由（见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向) / [ADR-0001](../../docs/adr/0001-分层靠引用方向不靠目录.md)）；不是引擎侧装配契约（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是节点 schema 定义（见 [NAVKIT_V4_PLAN.md §2](../../docs/NAVKIT_V4_PLAN.md)）。
+> **本文不是什么**：不是真源组织的规则与理由（见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向) / [ADR-0001](../../docs/adr/0001-arch-global-分层靠引用方向不靠目录.md)）；不是引擎侧装配契约（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是节点 schema 定义（见 [NAVKIT_V4_PLAN.md §2](../../docs/NAVKIT_V4_PLAN.md)）。
 > **信源等级**：L2 —— 可作「工具怎么用、资产怎么采、校验怎么跑」的直接依据；不得作为真源规则（L1）与节点/锚点取值（L0）的最终依据。
 > **真源路由**：节点与策略真源 = `plugins/*/resources/**`（本文只写位置，不复制取值）；校验项 = [`check_truth.py`](./check_truth.py)。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
@@ -69,6 +69,8 @@ tools/navkit/
 - `maaracing_master/plugins/_archive/treasure/resources/pipeline/treasure.entry.json` —— 鉴宝大厅入口链与页面锚点（游戏大厅/活动页面 dwell + 两个入口锚点 + `hall_to_treasure` 链；2026-09-10 自 core 归位）
 
 - `maaracing_master/core/resources/pipeline/` —— 跨模块共用链目录，**当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `check_truth.namespace_checks` 与 MAAFW\_GUIDE §5.6）
+
+- `maaracing_master/core/resources/startup/` —— **启动步骤自有链**（`pipeline.json` + `image/`）。有终点、有业务归属，由 `LaunchGameStep` 显式加载，**不进**上面那个共用目录（否则会被所有模块的导航图一起并入）。它同样在 `check_truth` 的发现范围与分层红线之内：节点前缀 `startup.`，不得占用或引用 `<module>.`。终点节点用 `attach._end` 声明，豁免「无出口」告警。规则见该目录下的 `README.md`，决策见 ADR-0018
 
 - `maaracing_master/plugins/_archive/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
 

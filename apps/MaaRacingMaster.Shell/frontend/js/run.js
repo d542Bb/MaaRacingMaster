@@ -37,9 +37,7 @@
       { key: 'path', kind: 'path', label: '程序路径', hint: '（游戏主程序；留空则从启动器配置自动探测）' },
       { key: 'args', kind: 'args', label: '启动参数', hint: '（与启动器实测命令行一致）' },
       { key: 'timeout_s', kind: 'number', label: '等待游戏窗口', hint: '（超时则中止本轮）', suffix: '秒', min: 10, max: 600, step: 10 },
-      { key: 'skip_if_running', kind: 'switch', title: '已在运行则跳过', desc: '检测到游戏窗口已经在时不再启动，避免拉起第二个进程', note: '推荐开启' },
-      { key: 'detached', kind: 'switch', title: '独立进程', desc: '游戏不挂在本程序进程树下：本程序退出或被结束时，游戏照常运行' },
-      { key: 'fallback_launcher', kind: 'switch', title: '启动失败时回退到启动器', desc: '等窗口超时仍未出现时，改走官方启动器（会先做版本校验与更新）。平时不会弹出启动器窗口', note: '推荐开启' },
+      { key: 'hall_timeout_s', kind: 'number', label: '等待进入大厅', hint: '（超时则中止本轮；游戏停在对局中时也会超时）', suffix: '秒', min: 30, max: 900, step: 30 },
     ],
     close_game: [
       { key: 'exit_app', kind: 'switch', title: '关闭后退出本程序', desc: '这一步完成后关闭 MaaRM；排在队尾时就是「跑完自动退出」。后面的步骤不再执行', note: '默认关闭' },
@@ -65,8 +63,8 @@
 
   function builtinChips(mid) {
     if (mid === 'launch_game') {
-      const out = [chipHtml('等待窗口 ' + (cfgValue(mid, 'timeout_s') || 120) + 's')];
-      if (cfgValue(mid, 'skip_if_running')) out.push(chipHtml('已运行则跳过'));
+      const out = [chipHtml('等待窗口 ' + (cfgValue(mid, 'timeout_s') || 120) + 's'),
+                   chipHtml('进入大厅 ≤' + (cfgValue(mid, 'hall_timeout_s') || 300) + 's')];
       return out.join('');
     }
     if (mid === 'close_game' && cfgValue(mid, 'exit_app')) return chipHtml('关闭后退出');
@@ -182,6 +180,7 @@
     fail: ['task-result--fail', '失败'],
     stopped: ['task-result--skip', '已停止'],
     skip: ['task-result--skip', '已中止'],
+    skipped: ['task-result--skip', '已跳过'],
   };
 
   function chipHtml(text, cls) {
@@ -732,14 +731,20 @@
       }
       // 运行中当前模块/阶段变化 → 轻刷新对应卡（不重建面板，不打断选项编辑）
       if (runState && d.queue_run) {
-        const key = d.current_module + '|' + d.current_stage + '|' + d.queue_run.index;
+        // 用队列当前项做高亮身份：内置步骤的 current_module 为空，
+        // 拿它当 prev 会漏撤上一张卡的「运行中」，出现两张卡同时运行。
+        const liveId = d.queue_run.current_module || '';
+        const key = liveId + '|' + d.current_stage + '|' + d.queue_run.index;
         if (key !== state._lastLiveKey) {
           state._lastLiveKey = key;
           const prev = state._lastLiveModule;
-          refreshCard(d.current_module);
-          if (prev && prev !== d.current_module) refreshCard(prev); // 上一张卡从「运行中」换回「排队中」
-          state._lastLiveModule = d.current_module;
+          refreshCard(liveId);
+          if (prev && prev !== liveId) refreshCard(prev); // 上一张卡从「运行中」换回「排队中」
+          state._lastLiveModule = liveId;
         }
+      } else if (!runState) {
+        state._lastLiveKey = '';
+        state._lastLiveModule = '';
       }
     } catch (e) {
       console.error(e);
@@ -767,9 +772,12 @@
     if (d.round_result !== undefined) state.roundResult = d.round_result;
     $('btn-start').disabled = d.is_running || d.worker_active;
     $('btn-stop').disabled = !(d.is_running || d.worker_active);
-    if (d.current_stage) {
-      setStatus('运行中 · 当前: ' + d.current_stage, 'running');
-    } else if (d.is_running || d.worker_active) {
+    // 内置步骤没有 current_stage：用调试流归属（步骤名/阶段）兜底，
+    // 否则整个启动链会显示成「停止中...」。
+    const activeLabel = d.current_stage || d.debug_stage || d.debug_label || d.debug_owner || '';
+    if (activeLabel) {
+      setStatus('运行中 · 当前: ' + activeLabel, 'running');
+    } else if (d.queue_run || d.is_running || d.worker_active) {
       setStatus('停止中...', 'stopping');
     } else if (d.model_ok === false) {
       // 资源缺失由轮询字段持续点亮（get_status.model_ok），资源恢复后自然回到就绪
@@ -800,21 +808,78 @@
     if (h.length > state.PERF_HIST_MAX) h.shift();
   }
 
-  function drawSpark(id, hist, floor) {
-    const svg = $(id);
-    if (!svg) return;
-    if (hist.length < 2) { svg.textContent = ''; return; }
-    const top = Math.max(floor || 1, hist.reduce((a, b) => (b > a ? b : a), 0));
-    let pts = '';
-    for (let i = 0; i < hist.length; i++) {
-      const x = (i / (hist.length - 1)) * 100;
-      const y = 24 - Math.min(1, hist[i] / top) * 22;
-      pts += x.toFixed(2) + ',' + y.toFixed(2) + ' ';
+  // 走势：固定 0–100 标尺（两格之间可以直接比大小），窗口固定 120 点、新点贴右缘进入。
+  // 平滑用单调三次 Hermite（Fritsch–Carlson）：曲线平滑但不过冲，
+  // 负载不会被插值画成负数或凭空冒尖。
+  const PERF_VB_W = 100;
+  const PERF_VB_BASE = 26;
+  const PERF_VB_PLOT = 25;   // 曲线基线：离底边 1 个单位（约 4px），贴边会被裁掉
+
+  function perfPath(arr) {
+    const n = arr.length;
+    if (n < 2) return { line: '', area: '', topY: PERF_VB_PLOT };
+    const dx = PERF_VB_W / (state.PERF_HIST_MAX - 1);
+    const xs = [];
+    const ys = [];
+    for (let i = 0; i < n; i++) {
+      xs.push(PERF_VB_W - (n - 1 - i) * dx);
+      ys.push(PERF_VB_PLOT
+        - (Math.min(100, Math.max(0, arr[i])) / 100) * (PERF_VB_PLOT - 2));
     }
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-    line.setAttribute('points', pts.trim());
-    svg.textContent = '';
-    svg.appendChild(line);
+
+    const d = [];
+    for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / dx);
+    const m = new Array(n);
+    m[0] = d[0];
+    m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) m[i] = (d[i - 1] + d[i]) / 2;
+    for (let i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+      const a = m[i] / d[i];
+      const b = m[i + 1] / d[i];
+      const s2 = a * a + b * b;
+      if (s2 > 9) {
+        const t = 3 / Math.sqrt(s2);
+        m[i] = t * a * d[i];
+        m[i + 1] = t * b * d[i];
+      }
+    }
+
+    let line = 'M' + xs[0].toFixed(2) + ',' + ys[0].toFixed(2);
+    for (let i = 0; i < n - 1; i++) {
+      line += 'C' + (xs[i] + dx / 3).toFixed(2) + ',' + (ys[i] + (m[i] * dx) / 3).toFixed(2)
+        + ' ' + (xs[i + 1] - dx / 3).toFixed(2) + ',' + (ys[i + 1] - (m[i + 1] * dx) / 3).toFixed(2)
+        + ' ' + xs[i + 1].toFixed(2) + ',' + ys[i + 1].toFixed(2);
+    }
+    const area = line
+      + 'L' + xs[n - 1].toFixed(2) + ',' + PERF_VB_BASE
+      + 'L' + xs[0].toFixed(2) + ',' + PERF_VB_BASE + 'Z';
+    return { line, area, topY: Math.min.apply(null, ys) };
+  }
+
+  function setPath(id, d) {
+    const el = $(id);
+    if (el) el.setAttribute('d', d || '');
+  }
+
+  function drawPerfSpark(mid, kind, totalArr, progArr) {
+    const total = perfPath(totalArr);
+    setPath(mid + '-perf-' + kind + '-total-line', total.line);
+    setPath(mid + '-perf-' + kind + '-total-area', total.area);
+    const tg = $(mid + '-perf-' + kind + '-total-grad');
+    if (tg && total.line) {
+      tg.setAttribute('y1', String(total.topY));
+      tg.setAttribute('y2', String(PERF_VB_BASE));
+    }
+    // 没有程序负载数据时不留空曲线（GPU 目前取不到按进程占用）
+    const prog = progArr.length >= 2 ? perfPath(progArr) : null;
+    setPath(mid + '-perf-' + kind + '-prog-line', prog && prog.line);
+    setPath(mid + '-perf-' + kind + '-prog-area', prog && prog.area);
+    const pg = $(mid + '-perf-' + kind + '-prog-grad');
+    if (pg && prog) {
+      pg.setAttribute('y1', String(prog.topY));
+      pg.setAttribute('y2', String(PERF_VB_BASE));
+    }
   }
 
   // 模块行：结构由声明决定（一次会话内不变），只在 key 序列变化时重建 DOM。
@@ -934,34 +999,54 @@
     }
   }
 
+  function pctText(v) {
+    return Number.isFinite(v) ? String(Math.round(v)) : '--';
+  }
+
   function renderPerfCard(perf) {
     const mid = MaaRM.panelModuleId;
     const c = (perf && perf.cpu) || {};
     const sys = (perf && perf.sys) || {};
+    const gpu = (perf && perf.gpu) || {};
     const rows = (perf && perf.rows) || [];
 
-    // 资源面磁贴（整机 / 本程序）
-    const hostRaw = sys.cpu_pct;
-    const hostPct = (typeof hostRaw === 'number' && Number.isFinite(hostRaw))
-      ? hostRaw : NaN;
-    setPerfText(mid + '-perf-host',
-      Number.isFinite(hostPct) ? String(Math.round(hostPct)) : '--');
-    const selfPct = perf && c.available ? (c.load_p50 || 0) * 100 : NaN;
-    setPerfText(mid + '-perf-self',
-      Number.isFinite(selfPct) ? String(Math.round(selfPct)) : '--');
-    if (Number.isFinite(c.cores)) {
-      setPerfText(mid + '-perf-host-label', '整机占用 · ' + c.cores + ' 核');
+    const cpuTotal = Number.isFinite(sys.cpu_pct) ? sys.cpu_pct : NaN;
+    const cpuProg = (c.available && Number.isFinite(c.load_p50)) ? c.load_p50 * 100 : NaN;
+    const gpuOk = gpu.status === 'ok' && Number.isFinite(gpu.util_pct);
+    const gpuTotal = gpuOk ? gpu.util_pct : NaN;
+    // 按进程的 GPU 占用要等采样器补上（Windows GPU 引擎计数器），没有就留空
+    const gpuProg = (gpuOk && Number.isFinite(gpu.prog_pct)) ? gpu.prog_pct : NaN;
+
+    setPerfText(mid + '-perf-cpu', pctText(cpuTotal));
+    setPerfText(mid + '-perf-cpu-prog', pctText(cpuProg));
+    setPerfText(mid + '-perf-gpu', pctText(gpuTotal));
+    setPerfText(mid + '-perf-gpu-prog', pctText(gpuProg));
+
+    setPerfText(mid + '-perf-cpu-sub', Number.isFinite(c.cores) ? c.cores + ' 核' : '');
+    let gpuSub = '';
+    if (gpuOk) {
+      if (gpu.name) {
+        gpuSub = gpu.name;
+      } else if (Number.isFinite(gpu.mem_total_mb)) {
+        gpuSub = (gpu.mem_used_mb / 1024).toFixed(1)
+          + ' / ' + Math.round(gpu.mem_total_mb / 1024) + ' GB';
+      }
+    } else if (gpu.status) {
+      gpuSub = '无数据';
     }
+    setPerfText(mid + '-perf-gpu-sub', gpuSub);
 
     // 走势只在采样号变化时推进：4Hz 轮询 / 1Hz 采样，否则同一个值被塞四次，曲线被拉平
     const sid = perf ? perf.sample_id : null;
     if (sid !== null && sid !== undefined && sid !== _perfSampleId) {
       _perfSampleId = sid;
-      pushPerfHist('host', hostPct);
-      pushPerfHist('self', selfPct);
+      pushPerfHist('cpuTotal', cpuTotal);
+      pushPerfHist('cpuProg', cpuProg);
+      pushPerfHist('gpuTotal', gpuTotal);
+      pushPerfHist('gpuProg', gpuProg);
     }
-    drawSpark(mid + '-perf-host-spark', state.perfHist.host, 20);
-    drawSpark(mid + '-perf-self-spark', state.perfHist.self, 10);
+    drawPerfSpark(mid, 'cpu', state.perfHist.cpuTotal, state.perfHist.cpuProg);
+    drawPerfSpark(mid, 'gpu', state.perfHist.gpuTotal, state.perfHist.gpuProg);
 
     renderPerfRows(mid, rows);
     renderPerfHealth(mid, rows);

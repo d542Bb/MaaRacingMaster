@@ -46,6 +46,20 @@ def test_schema_version_field_unified(log):
     assert "log_protocol_version" not in rec
 
 
+def test_records_carry_run_identity_and_dual_clocks(log):
+    """时间轴身份：记录带当前运行编号 + 墙钟/单调钟纳秒；空闲时运行编号为空。"""
+    log.set_run_id("20261105_120000_r1")
+    log.log("x")
+    rec = _records(log)[0]
+    assert rec["run_id"] == "20261105_120000_r1"
+    assert isinstance(rec["ts_wall_ns"], int) and rec["ts_wall_ns"] > 0
+    assert isinstance(rec["ts_mono_ns"], int) and rec["ts_mono_ns"] > 0
+
+    log.set_run_id(None)
+    log.log("y")
+    assert _records(log)[1]["run_id"] is None
+
+
 # ---------- 生命周期 ----------
 def test_group_lifecycle_auto_outcome_success(log):
     g = log.group("拍品观察", kind="phase", channel="treasure")

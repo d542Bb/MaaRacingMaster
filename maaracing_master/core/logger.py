@@ -175,7 +175,8 @@ class Logger:
         self._lifecycle_lock = Lock()
         self._lifecycle_state = "closed"          # closed / open / closing
         self._listeners: list = []                # 会话生命周期回调（流水汇/采样器）
-        self._session_token: str | None = None    # 磁盘会话 token（= 目录名，也是本场运行编号）
+        self._session_token: str | None = None    # 磁盘会话 token（= 目录名）
+        self._run_id: str | None = None           # 当前队列轮次的运行编号（无运行时为 None）
         self._close_status = deque(maxlen=8)      # 最近数次会话收尾状态（诊断）
         # ---- 分组状态（全部在 _lock 下读写） ----
         # session_id：进程内日志流的身份；WebView 重连/新旧侧对账用。
@@ -213,6 +214,18 @@ class Logger:
     def session_token(self) -> str | None:
         """当前磁盘会话 token（logs/ 下目录名，同时是本场运行编号）；未启用写盘时为 None。"""
         return self._session_token
+
+    @property
+    def current_run_id(self) -> str | None:
+        """当前队列轮次的运行编号；无运行（空闲/项间）时为 None。
+
+        与 session_token 不同：一个会话可跨多轮，运行编号只在轮次内有效。
+        """
+        return self._run_id
+
+    def set_run_id(self, run_id: str | None) -> None:
+        """由侧车在轮次开始/结束时设置；记录只消费，不各自生成第二份身份。"""
+        self._run_id = run_id
 
     @property
     def lifecycle_state(self) -> str:
@@ -456,14 +469,18 @@ class Logger:
     def _make_record(self, event_type, *, channel, level, message=None, title=None,
                      kind=None, group_id=None, fields=None, outcome=None,
                      has_warning=None, has_error=None, duration_ms=None, seq=None):
-        ts = datetime.now().strftime("%H:%M:%S")
+        wall_ns = time.time_ns()
+        ts = datetime.fromtimestamp(wall_ns / 1_000_000_000).strftime("%H:%M:%S")
         return {
             "schema_version": self.SCHEMA_VERSION,
             "seq": seq,
             "event_type": event_type,
             "group_id": group_id,
             "session_id": self._session_id,
-            "ts": ts,
+            "run_id": self._run_id,
+            "ts": ts,                      # 显示投影（秒级）
+            "ts_wall_ns": wall_ns,         # 墙钟：跨文件/对外对表
+            "ts_mono_ns": time.monotonic_ns(),  # 单调钟：算间隔
             "channel": channel,
             "level": level,
             "kind": kind,

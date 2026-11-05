@@ -64,7 +64,7 @@ templates/plugin/
 | `config_summary(config)` / `config_status()` | ❌ | 任务卡摘要 / 面板运行状态行（文本由模块产出，宿主只校验与渲染） |
 
 配置面板的契约与字段白名单见 `core/config_ui_contract.py`，决策背景见
-[ADR-0016](../../docs/adr/0016-模块配置面板由插件声明宿主渲染.md)，完整示例见
+[ADR-0016](../../docs/adr/0016-contract-core-模块配置面板由插件声明宿主渲染.md)，完整示例见
 `plugins/speedrush/module.py` 的 `CONFIG_UI`。插件**不提供**自带 HTML/JS——不够用就扩
 控件类型并升契约版本。
 

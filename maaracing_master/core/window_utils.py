@@ -56,6 +56,8 @@ _UD.SetWindowPos.restype = wintypes.BOOL
 _UD.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 _UD.SetCursorPos.restype = wintypes.BOOL
 _UD.GetForegroundWindow.restype = wintypes.HWND
+_UD.IsWindow.argtypes = [wintypes.HWND]
+_UD.IsWindow.restype = wintypes.BOOL
 _UD.GetAsyncKeyState.argtypes = [ctypes.c_int]
 _UD.GetAsyncKeyState.restype = ctypes.c_short
 
@@ -296,6 +298,18 @@ def activate_window(hwnd: int) -> bool:
         return False
 
 
+def is_window_valid(hwnd: int) -> bool:
+    """句柄是否仍指向一个存在的窗口。
+
+    用户手动关掉游戏后 ``_hwnd`` 会变成失效句柄；connect() 的幂等短路若只看
+    ``controller is not None``，下一轮会假成功，随后整轮无帧。
+    """
+    try:
+        return bool(hwnd and _UD.IsWindow(hwnd))
+    except Exception:  # noqa: BLE001 —— 平台不可用时按失效处理
+        return False
+
+
 def is_window_on_screen(hwnd: int) -> bool:
     """窗口是否完整落在显示器可视范围内（任一角超出屏幕 → False）。
 
@@ -510,10 +524,23 @@ def has_physical_controller() -> bool:
         return False
 
 
-def find_game_hwnd(group_id: str | None = None) -> int:
-    """查找游戏窗口句柄。group_id 非空时过程日志归入该组（契约方案 A：显式捕获，
-    调用方决定归属；默认无组散行，行为与旧一致）。"""
+def find_game_hwnd(group_id: str | None = None, *, verbose: bool = True) -> int:
+    """按**窗口标题关键词**查找游戏窗口句柄——这是定位的最后一级回退，不是首选。
+
+    启动器窗口与游戏窗口标题相同，按标题取第一个匹配存在认错窗口的风险；正常运行
+    用 `controller.locate_game_hwnd()`，它会先试已接管的句柄与进程名。本函数只在
+    两者都认不出时才被走到（画面由模拟器进程承载的环境里，窗口不属于游戏主程序进程，
+    标题是那里唯一的线索）。
+
+    group_id 非空时过程日志归入该组（契约方案 A：显式捕获，
+    调用方决定归属；默认无组散行，行为与旧一致）。
+
+    verbose=False 供**轮询重试**使用：游戏尚未启动时每次都会失败，逐次打印完整
+    窗口列表会淹没日志；重试方只在最终放弃时自己记一条。
+    """
     def _lg(msg: str, level: str = "INFO") -> None:
+        if not verbose:
+            return
         if group_id is not None:
             logger.log(msg, level, group_id=group_id)
         else:

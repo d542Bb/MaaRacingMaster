@@ -174,3 +174,28 @@ def test_navkitv4_shutdown_idempotent(pure_maa, tmp_path):
     nav.shutdown()
     nav.shutdown()
     assert nav._tasker is None
+
+
+# ---------------------------------------------------------------------------
+#  收尾失败态（ADR-0018）：未确认 worker 退出时，宁可泄漏也不销毁
+# ---------------------------------------------------------------------------
+
+def test_shutdown_returns_true_after_workers_settle(pure_maa):
+    graph = ng.NavGraph(_Ctx())
+    graph._tasker.post_stop.return_value = _FakeJob()
+    graph._job = _FakeJob()
+
+    assert graph.shutdown() is True
+    assert graph._tasker is None and graph._resource is None
+
+
+def test_shutdown_keeps_handles_when_workers_never_settle(pure_maa, monkeypatch):
+    """停止超时 = 框架可能仍在活动：销毁会撞 0xC0000005，必须原样保留。"""
+    monkeypatch.setattr(ng, "STOP_SETTLE_TIMEOUT_S", 0.02)
+    graph = ng.NavGraph(_Ctx())
+    graph._tasker.post_stop.return_value = _FakeJob(done=False)
+    graph._job = _FakeJob(done=False)
+
+    assert graph.shutdown() is False
+    assert graph._tasker is not None, "未收摊时不得销毁执行器"
+    assert graph._resource is not None, "未收摊时不得销毁资源"

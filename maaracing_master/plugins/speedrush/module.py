@@ -31,6 +31,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import asdict, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -39,6 +40,7 @@ import numpy as np
 
 from maaracing_master.core import xinput
 from maaracing_master.core.base import ActivityContext, ActivityModule
+from maaracing_master.core.dashboard_contract import DASHBOARD_CONTRACT_VERSION
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.navkit import Command, StepMachine, Verdict
@@ -46,7 +48,7 @@ from maaracing_master.core.paths import debug_dir
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_REL, PIPELINE_DIR)
-from maaracing_master.plugins.speedrush import model_assets
+from maaracing_master.plugins.speedrush import dashboard_store, model_assets
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
@@ -61,7 +63,8 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     last_slow_forward)
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
-from maaracing_master.plugins.speedrush.hud import HudObserver, load_hud_regions
+from maaracing_master.plugins.speedrush.hud import (
+    HudObserver, load_hud_regions, read_hud_scores)
 from maaracing_master.plugins.speedrush.macro import (
     MacroError, MacroPlayer, MacroRecorder, list_groups, load_phase, macro_root,
     resolve_group, valid_group_name)
@@ -377,9 +380,10 @@ class SpeedRushModule(ActivityModule):
     REQUIRED_ASSETS: tuple[str, ...] = ()
     # 模块封面（相对本插件 resources/）：只声明，定位与 URL 解析在 core/covers.py
     COVER = "cover.jpg"
-    # 看板尚未实现：0 = 已登记能力位，不进入数据页候选集；
-    # 接入后改为 1 并实现 read_dashboard()（block 契约见 core/dashboard_contract.py）。
-    DASHBOARD_CONTRACT = 0
+    # 帧证据走本模块的取证目录（raw + 双联图），统一调试流只记段边界（契约 I7）
+    DEBUG_SAVE = "self"
+    # 回合战绩看板：读本地战绩库（dashboard_store），类方法、不建实例。
+    DASHBOARD_CONTRACT = 1
     # 录制开关的初值（False = 不录制，驾驶阶段只等本阶段结束）
     DEFAULT_RECORD_MODE = False
     # 感知开关的初值（True = 驾驶阶段逐帧跑 YOLO 检测并记账；不操纵车辆，
@@ -525,6 +529,26 @@ class SpeedRushModule(ActivityModule):
             return {"text": "运行中：本次未开启录制（开关改动在下次「开始」时生效）",
                     "level": "warn"}
         return None
+
+    @classmethod
+    def read_dashboard(cls) -> dict:
+        """回合战绩看板：只读本地库，不创建模块实例。
+
+        列表行用短模式名（深度/直行/人工/宏）；胜场按终盘比分比较。读库失败
+        返回 warn 态兜底，不把异常抛给 sidecar 的轮询。
+        """
+        labels = {"depth": "深度", "straight": "直行", "manual": "人工",
+                  "macro": "宏", "control": "自动", "unknown": "—"}
+        try:
+            return dashboard_store.read_dashboard_payload(labels)
+        except Exception as exc:  # noqa: BLE001 —— 轮询入口不得打崩数据页
+            logger.log(f"[极速狂飙] 读取回合战绩失败: {exc!r}", "DEBUG")
+            return {
+                "version": DASHBOARD_CONTRACT_VERSION,
+                "title": "回合战绩",
+                "badge": {"text": "读取失败", "tone": "warn"},
+                "blocks": [{"type": "text", "text": "稍后自动重试。"}],
+            }
 
     @classmethod
     def normalize_config(cls, config: dict) -> dict:
@@ -727,8 +751,10 @@ class SpeedRushModule(ActivityModule):
 
         self._running = True
         # 本次运行的身份（流水行头 run_id；一局内各阶段共享，跨 run 不重置序号）。
-        # 取日志会话 token = 产物目录编号，流水与目录因此同名可互查。
-        self._trace.set_run_id(logger.session_token or time.strftime("%Y%m%d_%H%M%S"))
+        # 优先用队列轮次的运行编号：与日志、调试目录、性能样本同源，可按时间对齐。
+        self._trace.set_run_id(logger.current_run_id
+                               or logger.session_token
+                               or time.strftime("%Y%m%d_%H%M%S"))
         # 启动组开在图加载之前：图加载与断点修正也是这次运行的启动正文，不能散成裸行。
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
                         f"·感知{'开' if self._perception_mode else '关'}"
@@ -1032,7 +1058,8 @@ class SpeedRushModule(ActivityModule):
                 else:
                     hud_clock = self._begin_hud_clock(phase, round_no)
             elif macro_replay and not degraded:
-                hud_clock = self._begin_hud_clock(phase, round_no)
+                # 回放要记入战绩库：计时之外再读双方比分（只读内存）。
+                hud_clock = self._begin_hud_clock(phase, round_no, with_scores=True)
                 clock = ((lambda: self._hud_clock_row(hud_clock))
                          if hud_clock is not None else None)
                 try:
@@ -1146,6 +1173,8 @@ class SpeedRushModule(ActivityModule):
         assert self._graph is not None
         # 本局产物前缀：调用方（_drive）按局传入，同一局两阶段共用；
         # 直接调本方法时退回当前时刻（一阶段一个目录，不与其他局混）。
+        # record_round 只认调用方显式给的前缀：测试/离线直调不落用户战绩库。
+        stamp_given = stamp is not None
         stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
         macro = self._resolve_drive_mode() == "macro"
         if macro:
@@ -1164,6 +1193,20 @@ class SpeedRushModule(ActivityModule):
             # steer=本应下发的反事实杆值、executed=深度路心观测重锚的人工实际横位），
             # 人工对照局才有决策面可比。零下发：gpad 不 acquire，车只听人的。
             shadow = recorder is not None
+        if recorder is not None:
+            run_mode = "manual"
+        elif degraded_straight:
+            run_mode = "straight"      # 宏不可用降级：实际驾驶形态是直行
+        elif macro:
+            run_mode = "macro"
+        elif straight:
+            run_mode = "straight"
+        else:
+            run_mode = "depth"
+        # 战绩库写自动控制局：深度几何、全程直行、宏回放。人工录制与宏录制不进统计。
+        macro_replay = macro and macro_player is not None and not degraded_straight
+        record_round = stamp_given and (
+            run_mode in ("depth", "straight") or macro_replay)
         if recorder is not None:
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：请开始手动驾驶"
@@ -1204,6 +1247,9 @@ class SpeedRushModule(ActivityModule):
         chain = self._build_control_chain(phase, run_dir=run_dir,
                                           round_no=round_no, stamp=stamp) \
             if ((control and not straight) or shadow) else None
+        if chain is not None:
+            chain["drive_mode"] = run_mode
+            chain["record_round"] = record_round
         # 人工局的程序叠加图由录制器自己落（同一份原帧 + 同一拍快照），链路只
         # 负责把快照交回；控制局仍走 DebugPairWriter（chain["debug"]）。
         if chain is not None and recorder is not None \
@@ -1215,23 +1261,38 @@ class SpeedRushModule(ActivityModule):
         # 直行档 trace（stub chain 与控制链同协议：行进流水汇 + 阶段收尾汇总）；
         # 油门取 decision.json 的 throttle_raw 单一真源，不另抄数值。
         straight_chain = ({"trace": [], "trace_sink": self._trace,
-                           "t_start": time.time(), "bad_frames": {}}
+                           "t_start": time.time(), "bad_frames": {},
+                           "round_no": round_no or 1, "round_stamp": stamp,
+                           "drive_mode": run_mode, "record_round": record_round,
+                           "hud_ref": None}
                           if straight else None)
+        # 宏回放：控制链不跑，但用 HUD 读数在每拍记一条结果行，阶段收尾走
+        # 同一套 summary/战绩库落盘（模式=宏）。宏录制（人驾）不建本链。
+        macro_chain = ({"trace": [], "trace_sink": self._trace,
+                        "t_start": time.time(), "bad_frames": {},
+                        "round_no": round_no or 1, "round_stamp": stamp,
+                        "drive_mode": "macro", "record_round": record_round,
+                        "hud_ref": hud_clock}
+                       if macro_replay else None)
         straight_throttle = load_decision().planner.throttle_raw if straight else 0
         # 控制两档（智能/直行）同点起 HUD 读数：分数流是验收②「智能 vs 直行基线」
-        # 对比的数据面。目录与 trace 同时刻命名，事后按 fid/ts_ns 对齐（见
-        # _begin_hud）。失败降级为无读数，不阻断。
+        # 对比的数据面。**读数与 debug 落盘解耦**：读数始终跑（战绩库要末分与
+        # 对手分），debug 只决定要不要把 hud.jsonl/meta 写进调试目录。失败降级
+        # 为无读数，不阻断。
         drive_hud = None
-        if control and self._debug_enabled():
-            # HUD 读数落 run_dir/hud（debug/ 产物面，受 debug 开关；局结局
-            # 取数面随之受闸——用户裁决 2026-10-12，trace/hud 同开关）
-            hud_dir = _run_dir(stamp, phase) / "hud"
-            drive_hud = self._begin_hud(hud_dir, phase, round_no)
+        if control:
+            debug_on = self._debug_enabled()
+            hud_dir = _run_dir(stamp, phase) / "hud" if debug_on else None
+            drive_hud = self._begin_hud(hud_dir, phase, round_no, persist=debug_on)
             if chain is not None:
                 chain["hud_ref"] = drive_hud   # 调试图读数带吃 HUD 最新行
+            elif straight_chain is not None:
+                straight_chain["hud_ref"] = drive_hud
         # 阶段边界入流水（受保护通道）：无论接管与否，每阶段起止各一条
         self._trace.begin_stage(phase)
 
+        # 只有两个正常出口置 True；停止/超时/视角未确认/异常一律 False。
+        completed = False
         deadline = time.monotonic() + DRIVE_TIMEOUT_S
         loop_start = time.monotonic()
         next_anchor = 0.0
@@ -1316,6 +1377,17 @@ class SpeedRushModule(ActivityModule):
                                               f"停止宏回放并松手", "INFO")
                                 elif clk[0] > 0:
                                     zero_hits = 0
+                    if macro_chain is not None:
+                        # 宏回放不跑控制链：每拍从 HUD 取一次双方比分，作为
+                        # 阶段结果行；阶段收尾与自动局走同一套 summary/战绩库。
+                        h_score, h_rate = _ego_hud_readout(hud_clock)
+                        _note_hud_scores(macro_chain)
+                        row = {"fid": fid, "ts_ns": ts_ns, "state": "MACRO",
+                               "hud_score": h_score, "hud_rate": h_rate}
+                        macro_chain["trace"].append(row)
+                        sink = macro_chain.get("trace_sink")
+                        if sink is not None:
+                            sink.append(row)
                     if gpad is not None:
                         if straight:
                             assert straight_chain is not None   # straight 档恒建 stub chain
@@ -1372,6 +1444,7 @@ class SpeedRushModule(ActivityModule):
                                       f"[极速狂飙] 驾驶阶段 {phase}：已离开对局"
                                       f"（{_frame_note(fid, age_ms)}）", "INFO")
                                 self._log_loop_pace(phase, frames, loop_start)
+                                completed = True
                                 return True
                         # 阶段 1 结束前弹「进入策略商店」横幅（齿轮仍在、画面还在驾驶）：
                         # 命中即提前结束本阶段，不等齿轮消失后的失配滞后——省掉那段滞后里
@@ -1382,6 +1455,7 @@ class SpeedRushModule(ActivityModule):
                                   f"[极速狂飙] 驾驶阶段 {phase}：检测到进商店横幅，"
                                   f"提前结束本阶段（{_frame_note(fid, age_ms)}）", "INFO")
                             self._log_loop_pace(phase, frames, loop_start)
+                            completed = True
                             return True
 
                     t_sl = time.perf_counter()
@@ -1402,17 +1476,20 @@ class SpeedRushModule(ActivityModule):
                 dbg = chain.get("debug")
                 if dbg is not None:
                     dbg.stop("chain_end")
-                self._flush_control_trace(chain, phase)
+                self._flush_control_trace(chain, phase, completed=completed)
                 self._stop_depth_observer(chain, phase)
             elif straight and straight_chain is not None:
-                self._flush_control_trace(straight_chain, phase)
+                self._flush_control_trace(straight_chain, phase,
+                                          completed=completed)
             elif shadow and chain is not None:
                 # 影子链收口与控制链同协议：调试图/深度观察器停干净再 flush
                 dbg = chain.get("debug")
                 if dbg is not None:
                     dbg.stop("chain_end")
-                self._flush_control_trace(chain, phase)
+                self._flush_control_trace(chain, phase, completed=completed)
                 self._stop_depth_observer(chain, phase)
+            elif macro_chain is not None:
+                self._flush_control_trace(macro_chain, phase, completed=completed)
             if drive_hud is not None:
                 drive_hud.stop("phase_end" if self._running else "stopped")
                 self._hud = None
@@ -1554,6 +1631,8 @@ class SpeedRushModule(ActivityModule):
                 # 产物目录的唯一真源：坏帧/证据包都按它落，不各自再算一遍时刻目录
                 # （否则人工驾驶阶段会另建一个非 manual_ 目录，等于又落一份）
                 "run_dir": run_dir,
+                "round_no": round_no or 1,
+                "round_stamp": stamp,
                 "t_start": t_start}
 
     # ---------- 开局视角守卫（2026-10-23） ----------
@@ -1894,6 +1973,7 @@ class SpeedRushModule(ActivityModule):
         blk = (blocked_inner_reading(dgrid, chain["lane_w_m"])
                if dgrid is not None else None)
         h_score, h_rate = _ego_hud_readout(chain.get("hud_ref"))
+        _note_hud_scores(chain)
         # 卡顿归因（2026-10-22）：本拍墙钟拆成 取帧等待/录制/检测/掩码/控制剩余。
         # 与 pace_body 同拍对照，区分“游戏/采集停摆”与“决策链阻塞”。
         _cap = cap_ts or {}
@@ -2325,31 +2405,36 @@ class SpeedRushModule(ActivityModule):
         """直行基线一拍：方向归零、油门恒踩（V0 语义：决策禁动恒 x_target=0）。
 
         感知与深度都不进本路径——基线要度量的正是"无驾驶智能"的地板收益
-        （control-route 验收②的分母）。trace 只记时间轴与常量列：事后把 HUD
-        分数事件按 fid/ts_ns 对齐到拍，金币率才有分母。
+        （control-route 验收②的分母）。trace 记时间轴与常量列，另带本拍 HUD
+        读数：战绩库与局汇总都从这列取末分，直行局因此也有得分。
         """
         gpad.left_joystick(x_value=0, y_value=0)
         gpad.right_trigger(value=throttle_raw)
         gpad.update()
+        h_score, h_rate = _ego_hud_readout(chain.get("hud_ref"))
+        _note_hud_scores(chain)
         row = {"fid": fid, "ts_ns": ts_ns, "state": "STRAIGHT",
-               "x_target": 0.0, "steer_x": 0, "throttle": throttle_raw}
+               "x_target": 0.0, "steer_x": 0, "throttle": throttle_raw,
+               "hud_score": h_score, "hud_rate": h_rate}
         chain["trace"].append(row)
         ts = chain.get("trace_sink")
         if ts is not None:
             ts.append(row)
 
-    def _flush_control_trace(self, chain: dict, phase: int) -> None:
-        """阶段收尾：数据行已随拍进流水汇，这里只落局汇总一行（日志闸管辖）。
+    def _flush_control_trace(self, chain: dict, phase: int, *,
+                             completed: bool = False) -> None:
+        """阶段收尾：流水已随拍进汇，这里落局汇总与回合战绩。
 
-        局汇总与流水同家（logs/<会话>/trace/speedrush_summary.jsonl）：日志
-        记录开关未开或空 trace 时跳过；失败只记 WARNING——汇总缺失不该中止
-        对局收尾（与录制器同一姿态）。
+        局汇总随日志开关（与流水同家）；战绩库独立落盘，人工/宏由
+        ``chain['record_round']`` 排除。两条落盘各自兜底，互不阻断对局收尾。
         """
         rows = chain.get("trace") or []
         if not rows:
             return
+        stats = dashboard_store.summarize_trace_rows(rows)
+        self._record_round_phase(chain, phase, stats, completed)
         try:
-            self._write_game_summary(chain, phase, rows)
+            self._write_game_summary(chain, phase, rows, stats=stats)
             _tlog(self,
                   f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍"
                   f"（流水汇{'会话内' if self._trace.stats()['token'] else '未开写盘'}）",
@@ -2396,28 +2481,53 @@ class SpeedRushModule(ActivityModule):
                   f"[极速狂飙] 驾驶阶段 {phase}：C 事件证据冻结失败: "
                   f"{res['error']}", "WARNING")
 
-    def _write_game_summary(self, chain: dict, phase: int,
-                            rows: list[dict]) -> None:
+    def _record_round_phase(self, chain: dict, phase: int,
+                            stats: dashboard_store.PhaseStats,
+                            completed: bool) -> None:
+        """自动控制局的阶段结果写战绩库；人工/宏不写（record_round=False）。
+
+        与日志、debug 两个开关解耦：只要 record_round 为真就落库；失败只记
+        WARNING，不阻断对局收尾。对手分取本阶段最后一对可信读数。
+        """
+        if not chain.get("record_round") or not chain.get("round_stamp"):
+            return
+        try:
+            t_start = chain.get("t_start")
+            started = (
+                datetime.fromtimestamp(t_start).isoformat(timespec="seconds")
+                if t_start else datetime.now().isoformat(timespec="seconds")
+            )
+            opponent = dashboard_store.pick_opponent(
+                chain.get("hud_pairs") or [], stats.score)
+            err = dashboard_store.write_phase(
+                session_token=getattr(logger, "session_token", None) or "",
+                round_stamp=str(chain["round_stamp"]),
+                round_no=int(chain.get("round_no") or 1),
+                drive_mode=str(chain.get("drive_mode") or "unknown"),
+                phase=phase,
+                stats=stats,
+                completed=completed,
+                opponent=opponent,
+                started_at=started,
+                ended_at=datetime.now().isoformat(timespec="seconds"),
+            )
+        except Exception as exc:  # noqa: BLE001 —— 落库失败不阻断对局收尾
+            err = repr(exc)
+        if err:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：回合战绩落库失败: {err}",
+                  "WARNING")
+
+    def _write_game_summary(self, chain: dict, phase: int, rows: list[dict],
+                            *, stats: dashboard_store.PhaseStats | None = None) -> None:
         """局汇总一行/阶段，追加写会话目录 ``trace/speedrush_summary.jsonl``。
 
-        消费者=局级验收/A/B：得分/得分速度/时长/事件计数程序化取数——
-        2026-10-12 4v4 分析实证主指标要翻 20+ 帧人工 OCR，收口后由 hud_score/
-        hud_rate 末值直接给。血量格 HudObserver 未读、胜负=回合结束屏，均不
-        在此列（另案）。失败只记 WARNING——汇总缺失不该中止收尾。"""
+        消费者=局级验收/A/B：得分/得分速度/时长/事件计数程序化取数。
+        血量格 HudObserver 未读、胜负=回合结束屏，均不在此列。失败只记
+        WARNING——汇总缺失不该中止收尾。"""
         try:
-            score = rate = None
-            conserve = cons_segments = 0
-            for r in rows:
-                if r["state"] == "CONSERVE":
-                    if conserve == 0:
-                        cons_segments += 1
-                    conserve += 1
-                else:
-                    conserve = 0
-                if r.get("hud_score") is not None:
-                    score = r["hud_score"]
-                if r.get("hud_rate") is not None:
-                    rate = r["hud_rate"]
+            if stats is None:
+                stats = dashboard_store.summarize_trace_rows(rows)
             root = logger.session_dir
             if root is None:
                 return      # 日志记录开关未开：无会话目录，汇总不落（与流水同闸）
@@ -2426,10 +2536,9 @@ class SpeedRushModule(ActivityModule):
             rec = {
                 "ts": time.strftime("%Y%m%d_%H%M%S",
                                     time.localtime(chain["t_start"])),
-                "phase": phase, "ticks": len(rows), "score": score,
-                "rate": rate,
-                "dur_s": round((rows[-1]["ts_ns"] - rows[0]["ts_ns"]) / 1e9, 1),
-                "conserve_segments": cons_segments,
+                "phase": phase, "ticks": stats.ticks, "score": stats.score,
+                "rate": stats.rate, "dur_s": stats.dur_s,
+                "conserve_segments": stats.conserve_segments,
             }
             with open(root / "speedrush_summary.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -2663,12 +2772,14 @@ class SpeedRushModule(ActivityModule):
         self._recorder = rec
         return rec
 
-    def _begin_hud(self, out_dir: Path, phase: int, round_no: int) -> HudObserver | None:
-        """在指定目录起 HUD 读数观察线程；失败返回 None（读数失败不该中止对局）。
+    def _begin_hud(self, out_dir: Path | None, phase: int, round_no: int,
+                   *, persist: bool = True) -> HudObserver | None:
+        """起 HUD 读数观察线程；失败返回 None（读数失败不该中止对局）。
 
-        两个调用形态，取帧源同一（``frame_with_age``，fid/ts_ns 对齐链路不变），
-        落点也同一：会话目录下的 ``hud/``（对齐目标=同会话 ``frames.jsonl``）——
-        人工局挂录制会话、控制两档挂控制会话（``_run_dir`` 命名）。
+        取帧源同一（``frame_with_age``，fid/ts_ns 对齐链路不变）。``persist``
+        只决定要不要落 ``hud.jsonl``/meta：人工局写录制会话目录；控制两档在
+        debug 开时写 ``_run_dir`` 的 ``hud/``，debug 关时只读内存——战绩库的
+        比分与对手分不随 debug 开关丢失。
         """
         assert self.ctx is not None
         try:
@@ -2678,6 +2789,7 @@ class SpeedRushModule(ActivityModule):
                 phase=phase,
                 round_no=round_no,
                 group_id=getattr(self._log_grp, "id", None),
+                persist=persist,
             )
             obs.start()
         except Exception as exc:  # noqa: BLE001 —— 读数启动失败不阻断流程
@@ -2711,8 +2823,13 @@ class SpeedRushModule(ActivityModule):
         self._macro_rec = rec
         return rec
 
-    def _begin_hud_clock(self, phase: int, round_no: int) -> HudObserver | None:
-        """只读 HUD 倒计时的内存时钟（不落盘）：宏回放的对齐与阶段结束兜底。"""
+    def _begin_hud_clock(self, phase: int, round_no: int, *,
+                         with_scores: bool = False) -> HudObserver | None:
+        """只读内存的 HUD 时钟（不落盘）。
+
+        ``with_scores=False`` 只读倒计时：宏录制用它对齐 g0；``True`` 读完整
+        HUD：宏回放除计时外还要双方比分，作为战绩库的阶段结果。
+        """
         assert self.ctx is not None
         try:
             timer = load_hud_regions().get("timer")
@@ -2723,7 +2840,7 @@ class SpeedRushModule(ActivityModule):
                 frame_source=self.ctx.capture.frame_with_age,
                 phase=phase,
                 round_no=round_no,
-                regions={"timer": timer},
+                regions=None if with_scores else {"timer": timer},
                 persist=False,
                 group_id=getattr(self._log_grp, "id", None),
             )
@@ -3583,34 +3700,47 @@ def _started_async_depth(obs: DepthRoadObserver,
     return a
 
 
-def _ego_hud_readout(hud) -> tuple[float | None, float | None]:
+def _ego_hud_readout(hud) -> tuple[int | None, int | None]:
     """HUD 读数的本机（蓝卡）得分与得分速度（局结局程序化取数面）。
 
-    rate 行只在本机卡上识别（hud.py v4 判据：对手侧只有背景假读），故
-    「有 rate 的槽位」即本机槽位——按槽位本身猜会在换位拍静默读错。
-    rate 缺失拍不臆造归属（诚实 None）。None 输入=未挂载/无样本；对象缺
-    latest()（读数线程退化的鸭子）同样返回 None——本函数在控制拍热路径，
-    不得因读数侧异常炸驾驶循环。"""
+    判据与 ``hud.read_hud_scores`` 同源：有 rate 的槽位才是本机槽位；rate
+    缺失拍不臆造归属（诚实 None）。None 输入=未挂载/无样本；对象缺 latest()
+    （读数线程退化的鸭子）同样返回 None——本函数在控制拍热路径，不得因
+    读数侧异常炸驾驶循环。"""
     if hud is None:
         return None, None
     latest_fn = getattr(hud, "latest", None)
     if latest_fn is None:
         return None, None
     try:
-        latest = latest_fn()
-        fields = latest.get("fields") or {}
-
-        def _v(name: str):
-            cell = fields.get(name)
-            return cell.get("value") if isinstance(cell, dict) else None
-
-        if _v("rate_a") is not None:
-            return _v("score_a"), _v("rate_a")
-        if _v("rate_b") is not None:
-            return _v("score_b"), _v("rate_b")
-        return None, None
+        latest = latest_fn() or {}
+        scores = read_hud_scores(latest.get("fields") or {})
+        return scores.ego_score, scores.ego_rate
     except Exception:  # noqa: BLE001 —— 读数侧异常不炸驾驶循环（诚实 None）
         return None, None
+
+
+def _note_hud_scores(chain: dict) -> None:
+    """把本拍可读的（我方, 对手）比分对收进本阶段的小环。
+
+    速度行缺失即弃权（第二局段 1 那条双方 trusted 但串位的假读没有速度行）。
+    假读不在这里猜：阶段收尾时以汇总末分为锚，选「我方分不超过末分 + 一个
+    采样余量」的最大一对——串位虚高的比分（实测 4878 / 888）自然被排除。
+    """
+    hud = chain.get("hud_ref")
+    if hud is None:
+        return
+    try:
+        latest = hud.latest() or {}
+        scores = read_hud_scores(latest.get("fields") or {})
+    except Exception:  # noqa: BLE001 —— 读数侧异常不炸驾驶循环
+        return
+    if scores.ego_score is None or scores.opponent_score is None:
+        return
+    chain.setdefault("hud_pairs", deque(maxlen=64)).append(
+        (scores.ego_score, scores.opponent_score))
+
+
 
 
 # 一局内固定产物目录：同一 (局前缀, 阶段) 只解析一次。缓存是必须的——

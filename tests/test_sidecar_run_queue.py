@@ -6,7 +6,8 @@
   - manual_stop=True → 该项 stopped，中止整轮（用户停止）；
   - 内置步骤请求退出本程序 → 该项 ok，剩余项 skip；
   - 自然跑完（含模块到限自动停止）→ ok，继续下一个。
-  中止时剩余项标 skip。auto_exit 事件只在整轮全部自然完成且步骤请求退出时发出。
+  中止时剩余项标 skip。轮次开始/结束事件在 worker 线程内发出；auto_exit 只在
+  整轮全部自然完成且步骤请求退出时发出。
 
 注意不能在启动下一个模块之后才查停止信号——start_module 会清 stop_event（★ 唯一
 clear 位置），事后查永远看不到上一轮的停止；实现必须在循环里、调用之前依据上一轮
@@ -41,6 +42,7 @@ class _FakeController:
         self.builtin_calls: list[tuple[str, object]] = []
         self.exit_requested = False
         self.last_run_natural = False
+        self.last_step_outcome = None
         self._manual_stop = False
 
     def start_module(self, module_id, start_from=None, module_config=None):
@@ -70,6 +72,7 @@ class _FakeController:
         if outcome == "stopped":
             self._manual_stop = True   # 步骤执行期间用户按下了停止
             return False
+        self.last_step_outcome = "skipped" if outcome == "skipped" else "completed"
         self.last_run_natural = True
         if outcome == "exit":
             self.exit_requested = True  # 「关闭游戏」步骤里勾了「关闭后退出本程序」
@@ -109,8 +112,12 @@ def _wait(thread):
     assert not thread.is_alive()
 
 
+def _event_names(sent):
+    return [m.get("event") for m in sent]
+
+
 def test_round_runs_enabled_order_and_finishes_naturally():
-    """全部自然完成：按序执行、断点与配置按模块传入、结局全 ok、auto_exit 发出。"""
+    """全部自然完成：按序执行、断点与配置按模块传入、结局全 ok、事件顺序固定。"""
     controller = _FakeController({"close_game": "exit"})
     svc, sent = _svc(controller)
     t = _spawn(svc, [
@@ -125,11 +132,34 @@ def test_round_runs_enabled_order_and_finishes_naturally():
     assert controller.builtin_calls == [("close_game", {"exit_app": True})]
     assert svc._round_result == {"a": "ok", "b": "ok", "close_game": "ok"}
     assert svc._queue_run is None
-    assert any(m.get("event") == "auto_exit" for m in sent)
+    assert _event_names(sent) == ["round_started", "round_ended", "auto_exit"]
+    ended = sent[1]["data"]
+    assert ended["outcome"] == "completed"
+    assert ended["step"] is None
+    assert ended["title"] and ended["body"]
+
+
+def test_round_events_carry_run_identity_and_clocks():
+    """轮次事件带运行编号与双时钟：壳侧通知/任务栏能落到同一条时间轴。"""
+    controller = _FakeController({})
+    svc, sent = _svc(controller)
+    t = threading.Thread(
+        target=svc._worker_main,
+        args=([{"kind": "builtin", "id": "launch", "start_from": None, "config": None}],
+              "20261105_120000_r1"),
+        daemon=True)
+    svc._worker = t
+    t.start()
+    _wait(t)
+    started, ended = sent[0]["data"], sent[1]["data"]
+    assert started["run_id"] == ended["run_id"] == "20261105_120000_r1"
+    for d in (started, ended):
+        assert isinstance(d["ts_wall_ns"], int) and d["ts_wall_ns"] > 0
+        assert isinstance(d["ts_mono_ns"], int) and d["ts_mono_ns"] > 0
 
 
 def test_exception_aborts_round_and_marks_rest_skip():
-    """模块抛异常 → 该模块 fail、剩余 skip、不发 auto_exit。"""
+    """模块抛异常 → 该模块 fail、剩余 skip、只有结束事件、不发 auto_exit。"""
     controller = _FakeController({"a": "raise"})
     svc, sent = _svc(controller)
     t = _spawn(svc, [
@@ -139,7 +169,11 @@ def test_exception_aborts_round_and_marks_rest_skip():
     _wait(t)
     assert [c[0] for c in controller.calls] == ["a"]               # b 不再启动
     assert svc._round_result == {"a": "fail", "b": "skip"}
-    assert not sent
+    assert _event_names(sent) == ["round_started", "round_ended"]
+    ended = sent[1]["data"]
+    assert ended["outcome"] == "failed"
+    assert ended["step"] == "a"
+    assert "失败" in ended["title"]
 
 
 def test_swallowed_failure_aborts_round():
@@ -152,11 +186,12 @@ def test_swallowed_failure_aborts_round():
     ])
     _wait(t)
     assert svc._round_result == {"a": "fail", "b": "skip"}
-    assert not sent
+    assert _event_names(sent) == ["round_started", "round_ended"]
+    assert sent[1]["data"]["outcome"] == "failed"
 
 
 def test_manual_stop_aborts_round_and_skips_auto_exit():
-    """用户停止 → 当前模块 stopped、剩余 skip、不触发 auto_exit。"""
+    """用户停止 → 当前模块 stopped、剩余 skip、轮次结束事件为 stopped、不触发 auto_exit。"""
     controller = _FakeController({"a": "stopped"})
     svc, sent = _svc(controller)
     t = _spawn(svc, [
@@ -165,7 +200,10 @@ def test_manual_stop_aborts_round_and_skips_auto_exit():
     ])
     _wait(t)
     assert svc._round_result == {"a": "stopped", "b": "skip"}
-    assert not sent
+    assert _event_names(sent) == ["round_started", "round_ended"]
+    ended = sent[1]["data"]
+    assert ended["outcome"] == "stopped"
+    assert ended["step"] == "a"
 
 
 def test_step_manual_stop_reports_stopped_not_fail():
@@ -178,7 +216,123 @@ def test_step_manual_stop_reports_stopped_not_fail():
     ])
     _wait(t)
     assert svc._round_result == {"launch_game": "stopped", "a": "skip"}
-    assert not sent
+    assert _event_names(sent) == ["round_started", "round_ended"]
+    assert sent[1]["data"]["outcome"] == "stopped"
+    assert sent[1]["data"]["step"] == "launch_game"
+    assert "启动游戏" in sent[1]["data"]["body"]
+
+
+def test_rejected_start_emits_no_round_events():
+    """启动前校验拒绝：工作线程没起来，连轮次开始事件都不该有（不发通知的正向证据）。"""
+    controller = _FakeController({})
+    svc, sent = _svc(controller)
+    svc._closed = False
+    svc._queue_order = []
+    svc._queue_enabled = {}
+    svc._start_from = {}
+    svc._module_config_cache = {}
+    ok, _, err = svc.start({})
+    assert not ok and "没有启用" in err
+    assert sent == []
+    assert svc._worker is None
+
+
+def _patch_fake_module(monkeypatch):
+    """让 start 能受理一个假模块（不改真实注册表）。"""
+    monkeypatch.setattr(sc, "has_physical_controller", lambda: False)
+    monkeypatch.setattr(sc, "check_required_assets", lambda mid: [])
+    monkeypatch.setattr(
+        sc, "get_module_info",
+        lambda mid: {"id": mid, "name": mid, "stages": [], "expired": False},
+    )
+    cls = type("A", (), {
+        "ID": "a",
+        "required_capabilities": classmethod(lambda cls, cfg=None: frozenset()),
+        "requires_exclusive_gamepad": classmethod(lambda cls, cfg=None: False),
+    })
+    monkeypatch.setattr(sc, "MODULE_REGISTRY", {"a": cls})
+
+
+class _FakePerfSampler:
+    def __init__(self):
+        self.calls = []
+
+    def set_domain_reader(self, value):
+        self.calls.append(("domain", value))
+
+    def set_thread_labels(self, value):
+        self.calls.append(("labels", value))
+
+
+@pytest.mark.parametrize("write_error", [
+    ValueError("I/O operation on closed file"),   # 输出流已关
+    BrokenPipeError("pipe closed"),               # 壳正在关
+    OSError("backend exited"),                    # 后端已退出
+])
+def test_event_write_failure_does_not_break_round(monkeypatch, write_error):
+    """断管时事件写出失败只吞这一句：结局、采样器注销、线程槽归零照常完成。"""
+    _patch_fake_module(monkeypatch)
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._closed = False
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {}
+    svc._module_config_cache = {}
+    perf = _FakePerfSampler()
+    monkeypatch.setattr(sc, "perf_sampler", perf)
+
+    def broken_send(_obj):
+        raise write_error
+
+    svc.send = broken_send
+    t = _spawn(svc, [{"kind": "module", "id": "a", "start_from": None, "config": None}])
+    _wait(t)
+    assert svc._round_result == {"a": "ok"}
+    assert svc._queue_run is None
+    assert svc._worker is None
+    assert ("domain", None) in perf.calls
+    assert ("labels", None) in perf.calls
+
+    # 线程槽已归零：下一轮不会被「已在运行」拒绝
+    ok, _, err = svc.start({})
+    assert ok and err is None, err
+    t2 = svc._worker
+    if t2 is not None:
+        _wait(t2)
+    assert svc._round_result == {"a": "ok"}
+
+
+def test_event_best_effort_does_not_swallow_cleanup_failure(monkeypatch):
+    """保护范围只包住写：采样器注销失败必须照常抛出，不能被尽力发送吞掉。"""
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+
+    class _FailingUnregister:
+        def set_domain_reader(self, value):
+            if value is None:
+                raise RuntimeError("sampler unregister failed")
+
+        def set_thread_labels(self, value):
+            pass
+
+    monkeypatch.setattr(sc, "perf_sampler", _FailingUnregister())
+    with pytest.raises(RuntimeError, match="sampler unregister failed"):
+        svc._worker_main([{"kind": "module", "id": "a", "start_from": None, "config": None}])
+
+
+def test_step_skipped_continues_round_and_is_not_reported_ok():
+    """步骤按模式主动跳过（仅显示意图）：记「已跳过」而不是「完成」，整轮继续。"""
+    controller = _FakeController({"launch_game": "skipped"})
+    svc, sent = _svc(controller)
+    t = _spawn(svc, [
+        {"kind": "builtin", "id": "launch_game", "start_from": None, "config": None},
+        {"kind": "module", "id": "a", "start_from": None, "config": None},
+    ])
+    _wait(t)
+    assert svc._round_result == {"launch_game": "skipped", "a": "ok"}
+    assert controller.calls == [("a", None, None)]   # 跳过后仍继续下一项
+    assert not any(m.get("event") == "auto_exit" for m in sent)
 
 
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):

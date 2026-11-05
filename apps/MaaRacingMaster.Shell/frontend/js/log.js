@@ -1,6 +1,6 @@
 // MaaRM shell 前端 —— 运行日志：fetch_logs 轮询 + 事件驱动渲染（契约 §8 第 9 步终态：
-// 卡片只来自组事件，无组散行=裸行；SECTION_ANCHORS/KW_RULES/前端状态推导已全部退役，
-// 卡头徽章由 group_start/group_end 的 outcome 驱动，前端不再按行数自行推导）。
+// SECTION_ANCHORS/KW_RULES/前端状态推导已全部退役，组卡徽章由 group_start/group_end 的
+// outcome 驱动，前端不按行数自行推导；无组散行收进「其他日志」容器卡，承载规则见 ADR-0017）。
 // 日志按钮：清空/复制/回顶。跨文件调用经 window.MaaRM（见文件末尾导出）。
 // 一切动态文本经 textContent 落 DOM，无 innerHTML 注入面。
 (function () {
@@ -166,23 +166,34 @@
     return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_PX;
   }
 
-  // ---------- 无组散行 = 裸行（级别色挂整行；旧 sidecar 兼容路径也走这里） ----------
+  // ---------- 无组散行 → 「其他日志」容器卡（旧 sidecar 兼容路径同走此路） ----------
+  // 容器不承载生命周期：不给徽章、不按内容推导状态（组卡徽章仍只吃 outcome）。
+  // 默认展开：散行多为告警与异常，折叠会把「发生即红」藏进卡体。
+  // 相邻即合并：开出任何组卡（含无头组匿名卡）即作废当前容器，散行不跨组卡串联。
+  const BARE_TITLE = '其他日志';
+  let _bareSec = null;
+  function _bareSection(ts) {
+    if (!_bareSec) {
+      _bareSec = _makeSection('session', ts, BARE_TITLE, '', null);
+      _bareSec.classList.add('log-section--open');
+    }
+    return _bareSec;
+  }
+
   function appendLogs(lines) {
     const area = $('log-area');
     const followBottom = isNearBottom(area); // 整批共用一次判定
     lines.forEach((raw) => {
-      const div = document.createElement('div');
       const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\] \[(\w+)\] /);
-      div.className = 'log-line' + (m && levelClassMap[m[2]] ? ' log-line--' + m[2] : '');
-      div.dataset.raw = raw;
-      div.textContent = raw;
-      area.appendChild(div);
+      const lvl = m && levelClassMap[m[2]] ? m[2] : 'INFO';
+      addRow(_bareSection(m ? m[1] : ''),
+             _makeRow(lvl, m ? raw.slice(m[0].length) : raw, raw));
     });
     if (followBottom) area.scrollTop = area.scrollHeight;
     _syncTopBtn();
   }
 
-  // ---------- 结构化管线：组事件开合卡，组内行进卡体，无组行落裸行 ----------
+  // ---------- 结构化管线：组事件开合卡，组内行进卡体，无组行收进容器卡 ----------
   function _fieldsSuffix(fields) {
     if (!fields) return '';
     return Object.keys(fields).map((k) => ' · ' + k + ': ' + fields[k]).join('');
@@ -191,10 +202,8 @@
     const area = $('log-area');
     const followBottom = isNearBottom(area);
     if (truncated) {
-      const hint = document.createElement('div');
-      hint.className = 'log-line';
-      hint.textContent = '[!!] 日志界面因落后过多已自动截断，以下为最新日志';
-      area.appendChild(hint);
+      const hint = '[!!] 日志界面因落后过多已自动截断，以下为最新日志';
+      addRow(_bareSection(events.length ? events[0].ts : ''), _makeRow('INFO', hint, hint));
     }
     events.forEach((rec) => {
       _remember(rec);
@@ -205,6 +214,7 @@
         const sec = _makeSection(kind, rec.ts, title,
                                  '[' + rec.ts + '] [INFO] ' + title, 'run');
         _openGroups.set(rec.group_id, { sec });
+        _bareSec = null; // 组卡在场即断开散行序列，后续散行另起容器
         return;
       }
       if (rec.event_type === 'group_end') {
@@ -220,11 +230,12 @@
         // 无头组：组开事件已被环形缓冲冲出——建匿名卡收正文，不丢行
         g = { sec: _makeSection('session', rec.ts, '…（更早的组头已截断）', '', null) };
         _openGroups.set(rec.group_id, g);
+        _bareSec = null;
       }
       const lvl = levelClassMap[rec.level] ? rec.level : 'INFO';
       const suffix = _fieldsSuffix(rec.fields);
       const rawText = '[' + rec.ts + '] [' + rec.level + '] ' + (rec.message || '') + suffix;
-      if (!g) { appendLogs([rawText]); return; }
+      if (!g) { addRow(_bareSection(rec.ts), _makeRow(lvl, (rec.message || '') + suffix, rawText)); return; }
       addRow(g.sec, _makeRow(lvl, (rec.message || '') + suffix, rawText));
     });
     fitTitles();
@@ -285,6 +296,7 @@
   $('btn-log-clear').addEventListener('click', () => {
     $('log-area').innerHTML = '';
     _openGroups.clear(); // 开组表随 DOM 一起作废
+    _bareSec = null;     // 散行容器卡同样作废（否则新散行会挂进已删除的节点）
     _records.length = 0; // 复制事实源同步作废（清空即「不留可导出的历史」）
     _syncTopBtn();
   });
@@ -306,7 +318,7 @@
     // 旧 sidecar（无 events）回退 DOM 原始行。
     const text = _records.length
       ? _copyText()
-      : Array.from($('log-area').querySelectorAll('.log-line'))
+      : Array.from($('log-area').querySelectorAll('.log-section-body .log-line'))
           .map((d) => d.dataset.raw || d.textContent).join('\n');
     if (!text) {
       showError('暂无日志可复制');

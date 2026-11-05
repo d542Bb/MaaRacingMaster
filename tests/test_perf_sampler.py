@@ -19,8 +19,10 @@ from maaracing_master.core.perf_sampler import (
 
 
 def make_sampler(tmp_path, **kw) -> PerfSampler:
+    kw.setdefault("gpu_counters", False)   # 单测默认不碰本机真实计数器
     s = PerfSampler(interval_s=0.01, gpu_every=1, keep_every=5,
-                    scan_every=10_000, gpu_runner=lambda t: "50, 3000, 8192",
+                    scan_every=10_000,
+                    gpu_runner=lambda t: "RTX 3060, 50, 3000, 8192",
                     **kw)
     s._sample_system = lambda: {"cpu_pct": 12.0, "mem_pct": 50.0,
                                 "mem_used_gb": 8.0, "mem_total_gb": 16.0}
@@ -62,7 +64,7 @@ def test_gpu_states_explicit(tmp_path):
         FileNotFoundError("nvidia-smi"))
     s.tick_once()
     assert s._gpu["status"] == "unavailable"
-    s._gpu_runner = lambda t: calls.append(1) or "1, 2, 3"
+    s._gpu_runner = lambda t: calls.append(1) or "RTX, 1, 2, 3"
     s.tick_once()
     assert s._gpu["status"] == "unavailable" and not calls   # 粘住不重试
     # 解析失败
@@ -75,6 +77,23 @@ def test_gpu_states_explicit(tmp_path):
     s2.on_session_closing(time.monotonic() + 1)
     s.stop()
     s2.stop()
+
+
+def test_gpu_counters_override_driver_reading(tmp_path):
+    """计数器可用时，整卡与程序占用以它为准（跨厂商、按进程）。"""
+
+    class FakeCounters:
+        def read(self):
+            return {"util_pct": 77.0, "prog_pct": 12.5, "instances": 3}
+
+    s = make_sampler(tmp_path, gpu_counters=FakeCounters())
+    s.on_session_open(tmp_path, "t_3")
+    sample = s.tick_once()
+    assert sample["gpu"]["util_pct"] == 77.0
+    assert sample["gpu"]["prog_pct"] == 12.5
+    assert sample["gpu"]["name"] == "RTX 3060"
+    s.on_session_closing(time.monotonic() + 1)
+    s.stop()
 
 
 def test_bg_tier_and_close_flush_unique(tmp_path):

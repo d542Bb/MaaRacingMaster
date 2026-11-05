@@ -40,7 +40,7 @@ import shutil
 import tempfile
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from maa.custom_action import CustomAction
@@ -76,6 +76,11 @@ RUN_POLL_MAX_S = 0.02
 # 停止后等框架收摊的上限：binding 的 Job.wait() 无超时参数，框架一旦卡住就是
 # 「停止中」永远不结束。宁可超时后照常收尾（并留 WARNING 供定位），也不无限等。
 STOP_SETTLE_TIMEOUT_S = 10.0
+
+# 画面静止的告警阈值：WGC 按内容变化出帧，加载页/后台暂停时画面可以长时间
+# 不变、帧龄持续增长——这不是采集坏了。只有 frame=None（采集器已停/未启动）
+# 才是基础设施故障；静止帧继续复用，由步骤总时限兜底。
+FRAME_STATIC_WARN_MS = 2000.0
 
 
 def _wait_job_settled(job, timeout_s: float | None = None) -> bool:
@@ -155,6 +160,7 @@ class TemplateRecognizer(CustomRecognition):
             return self.AnalyzeResult(box=None, detail={"error": "截图失败"})
         import cv2
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # 注入帧为 BGR（框架契约）
+        self._graph._last_frame = frame
         H, W = rgb.shape[:2]
 
         names = [n for n in p.get("templates", []) if isinstance(n, str) and n]
@@ -178,6 +184,7 @@ class TemplateRecognizer(CustomRecognition):
             thresholds=arb, roi=roi)
         if box is None:
             name = argv.node_name
+            self._graph._publish_nav(name, phase="miss", score=float(score))
             if name not in self._miss_nodes:
                 # 边沿触发：只在进入「未命中」时记一次（常驻图里未被命中的节点
                 # 每帧都会到这里，逐帧打属稳态重复）。命中后清位，便于下次再记。
@@ -216,6 +223,8 @@ class TemplateRecognizer(CustomRecognition):
                     return self.AnalyzeResult(box=None, detail={"blocked_by": "cursor",
                                                                 "occlusion": round(ratio, 2)})
 
+        self._graph._publish_nav(argv.node_name, phase="hit", template=hit_name,
+                                 score=float(score), box=box)
         return self.AnalyzeResult(
             # MaaFW rect 契约 = (x, y, w, h)（框架按此归一/裁剪，越界会 clip）；
             # 内部匹配全程 (x1,y1,x2,y2)，只在框架边界转换。
@@ -227,8 +236,11 @@ class ClickAction(CustomAction):
     """动作桥：识别框中心 → Clicker 点击（前台鼠标 / 后台手柄导航+A / 意图）。
 
     节点参数：
-        wait_after_ms  800    点击后的停顿（页面动画）
-        timeout_s      20.0   手柄导航到位的等待上限（超时算失败，走 on_error）
+        wait_after_ms    800    点击后的停顿（页面动画）
+        timeout_s        20.0   手柄导航到位的等待上限（超时算失败，走 on_error）
+        gamepad_button   —      手柄模式下改按这个键，不做光标导航。用于登录页这类
+                                「光标不可导航、某个键等于点它」的画面；real 模式忽略
+                                （鼠标照样点识别框中心），intent 模式不动作。
     """
 
     def __init__(self, graph: "NavGraph"):
@@ -252,18 +264,34 @@ class ClickAction(CustomAction):
             self._graph.frame()
             W, H = self._graph.frame_size()
         if W <= 0 or H <= 0:
-            self._graph._log(f"[跳转图] 节点「{argv.node_name}」拿不到帧尺寸，点击放弃", "WARNING")
+            # 拿不到帧尺寸 = 截图链路已经不工作了，不是「这一帧没认出来」。
+            self._graph.report_fatal("取不到截图帧尺寸，采集链路中断")
             return False
         cx, cy = (rx + rw / 2) / W, (ry + rh / 2) / H
         box_norm = (rw / W, rh / H)
+        self._graph._publish_intent(argv.node_name, rx + rw / 2, ry + rh / 2,
+                                    "pending")
         self._graph._log(f"[v4] 「{argv.node_name}」点击 rect=({rx},{ry},{rw},{rh}) "
                          f"帧 {W}x{H} 归一化=({cx:.3f},{cy:.3f})", "DEBUG")
 
-        ok = self._graph.click(cx, cy, box_norm,
-                               timeout_s=float(p.get("timeout_s", 20.0)))
+        ok = self._graph.click(
+            cx, cy, box_norm,
+            timeout_s=float(p.get("timeout_s", 20.0)),
+            gamepad_button=p.get("gamepad_button"),
+            duration=float(p.get("duration", 0.15)),
+        )
+        self._graph._publish_intent(argv.node_name, rx + rw / 2, ry + rh / 2,
+                                    "ok" if ok else "failed")
         self._graph.ctx.lifecycle.sleep(float(p.get("wait_after_ms", 800)) / 1000.0)
         if not ok:
+            reason = self._graph.last_click_error
+            if reason == "gamepad_unbound":
+                # 模式是 gamepad 却拿不到绑定：点击通路整体不可用，重试没有意义。
+                self._graph.report_fatal("手柄未绑定而点击方式为 gamepad")
+            # 模板逐字保留（日志归属机检锁定了这句），原因单独一行便于定位。
             self._graph._log(f"[跳转图] 节点「{argv.node_name}」点击未到位", "WARNING")
+            if reason:
+                self._graph._log(f"[跳转图] 节点「{argv.node_name}」点击失败原因: {reason}", "DEBUG")
         return ok
 
 
@@ -445,6 +473,20 @@ class NavGraph:
         # 本图当前挂靠的业务组号：由插件在开组/收组时同步（派发时刻快照），
         # core 不自己开组（ADR-0007 决策 2）；None = 无组可挂，日志按跨切面散行。
         self._log_gid: str | None = None
+        # 基础设施故障通道：动作桥判定为「不是视觉没命中、而是执行环境坏了」时
+        # 记在这里，轮询循环与收尾各查一次。MaaFW 的 on_error 会把动作失败与
+        # 识别未命中混在一起（协议 3.1：动作失败 → on_error），所以故障不能靠
+        # on_error 传播，必须有一条越过图结构的旁路。
+        self._fatal: str | None = None
+        self._fatal_lock = threading.Lock()
+        self._outcome: str | None = None  # 上次 run 的结局（见 run 的 docstring）
+        self._last_click_error: str = ""  # 上一次 click 的失败原因（供动作桥分类）
+        self._last_static_warn = 0.0  # 画面静止告警节流（不是故障）
+        # 调试流：导航段的状态快照（节点/模板/分数/框/意图），由 core 自己的
+        # 执行器提供给调试流；模块不需要为导航绘制写任何代码。
+        self._nav_state: dict = {}
+        self._nav_lock = threading.Lock()
+        self._dbg_seg = None  # 当前导航段句柄（publish 时同步阶段标注）
 
     def set_log_group(self, group_id: str | None) -> None:
         """同步本图日志挂靠的业务组号（插件在组开/关时调用，不跨线程读隐式当前组）。"""
@@ -455,6 +497,126 @@ class NavGraph:
             logger.log(msg, level, group_id=self._log_gid)
         else:
             logger.log(msg, level)
+
+    @property
+    def last_outcome(self) -> str | None:
+        """上次 run 的结局：reached / stopped / deadline / task_failed / load_failed。
+
+        `skipped` 不在这里——它是步骤层的业务判定，导航图根本没参与。
+        """
+        return self._outcome
+
+    @property
+    def last_click_error(self) -> str:
+        """上一次 click 的失败原因：gamepad_unbound / not_foreground / submit /
+        timeout / stopped / bad_button / button_failed；空串表示成功。"""
+        return self._last_click_error
+
+    def report_fatal(self, reason: str) -> None:
+        """上报基础设施故障（截图链路、手柄绑定、桥内异常）。
+
+        只记第一次：后续故障多半是第一个的连锁反应，重复记录会把真正的起因
+        埋在噪音里。轮询循环与 run 收尾各查一次，见 run()。
+        """
+        with self._fatal_lock:
+            if self._fatal is not None:
+                return
+            self._fatal = reason
+
+    def _check_frame_health(self) -> None:
+        """截图链路健康度：只有「完全没有帧」才算基础设施故障。
+
+        WGC 按画面变化出帧：加载页/后台暂停时画面可以长时间不变，帧龄持续增长
+        但缓存里仍有最后一帧——这不是采集坏了，继续用最后一帧识别，由步骤总时限
+        兜底。只有 frame=None（采集器已停/未启动）才判故障。
+        """
+        cap = getattr(self.ctx, "capture", None)
+        if cap is None:
+            return
+        try:
+            res = cap.frame_with_age()
+        except Exception:  # noqa: BLE001 —— 取帧失败不构成判断依据
+            return
+        if not isinstance(res, tuple) or not res:
+            return
+        frame = res[0]
+        age = res[3] if len(res) >= 4 else None
+        if frame is None:
+            self.report_fatal("截图链路中断：无可用帧（采集已停）")
+            return
+        if isinstance(age, (int, float)) and age > FRAME_STATIC_WARN_MS:
+            now = time.monotonic()
+            if now - self._last_static_warn >= 10.0:
+                self._last_static_warn = now
+                self._log(f"[跳转图] 画面已 {age:.0f}ms 无更新（加载页/后台暂停），"
+                          "继续使用最后一帧等待", "WARNING")
+
+    # ---------- 调试流：导航段的状态与指针快照 ----------
+
+    def _publish_nav(self, node: str, *, phase: str, template=None,
+                     score=None, box=None) -> None:
+        with self._nav_lock:
+            self._nav_state["nav"] = {
+                "node": str(node or ""), "phase": phase,
+                "template": template, "score": score, "box": box,
+            }
+        # 当前节点即导航段的阶段标注（B4/A2：预览要能说出"现在在哪一步"）
+        seg = self._dbg_seg
+        if seg is not None:
+            try:
+                seg.set_stage(node)
+            except Exception:  # noqa: BLE001 —— 标注失败不影响导航
+                pass
+
+    def _publish_intent(self, node: str, cx_px: float, cy_px: float,
+                        status: str = "pending") -> None:
+        with self._nav_lock:
+            self._nav_state["intent"] = {
+                "point": (float(cx_px), float(cy_px)),
+                "label": str(node or ""), "status": status,
+                "ts": time.monotonic(),
+            }
+
+    def _debug_state(self) -> dict:
+        with self._nav_lock:
+            return dict(self._nav_state)
+
+    def _debug_pointer(self):
+        """PEEP 指针层数据：手柄光标位与年龄（real 模式无游戏内光标，返回 None）。"""
+        clicker = self._clicker
+        if clicker is None:
+            return None
+        try:
+            pos = clicker.gamepad_cursor_pos()
+            if pos is None:
+                return None
+            return {"pos": pos, "age_s": clicker.gamepad_cursor_age_s()}
+        except Exception:  # noqa: BLE001 —— 诊断读取失败不影响导航
+            return None
+
+    @contextmanager
+    def _debug_scope(self, entry: str):
+        """跑图期间压一个导航段：启动链与模块的 UI 步骤共享同一套基线视图。"""
+        dbg = getattr(self.ctx, "debug", None)
+        seg = None
+        if dbg is not None:
+            try:
+                seg = dbg.open_segment(
+                    "nav", entry, source="pull",
+                    pointer=self._debug_pointer,
+                    state_provider=self._debug_state)
+            except Exception:  # noqa: BLE001 —— 调试流不得阻断导航
+                seg = None
+        try:
+            self._dbg_seg = seg
+            yield seg
+        finally:
+            self._dbg_seg = None
+            if seg is not None and dbg is not None:
+                try:
+                    dbg.close_segment(seg, self._outcome or "failed")
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ---------- 装配 ----------
 
@@ -528,20 +690,35 @@ class NavGraph:
             return None
         return (pos[0] / W, pos[1] / H)
 
-    def click(self, cx: float, cy: float, box_norm, timeout_s: float) -> bool:
-        """执行一次点击并等到位。模式与意图每次同步（设置页可热切）。"""
+    def click(self, cx: float, cy: float, box_norm, timeout_s: float,
+              gamepad_button=None, duration: float = 0.15) -> bool:
+        """执行一次点击并等到位。模式与意图每次同步（设置页可热切）。
+
+        gamepad_button：手柄模式下改按这个键（不做光标导航），real 模式忽略，
+        intent 模式不动作。用于登录页这类「光标不可导航、某个键等于点它」的画面。
+
+        失败原因写入 `last_click_error`，动作桥据此区分可重试（前台守卫、导航超时）
+        与基础设施故障（手柄未绑定）——后者不能靠 on_error 重试掩盖。
+        """
+        self._last_click_error = ""
         clicker = self._ensure_clicker()
         clicker.set_mode(self.ctx.click_mode)
         clicker.set_intent(self.ctx.intent_mode)
         if clicker.mode == "gamepad" and not clicker.gamepad_bound:
             # v4 手柄租约只在模块启动时按当时模式绑定；运行中热切到 gamepad
             # 不重绑——不拦会静默 submit False，这里给可诊断的告警。
+            self._last_click_error = "gamepad_unbound"
             self._log("[v4] 点击方式已热切为 gamepad 但手柄未绑定：请重启模块生效", "WARNING")
             return False
+        if clicker.mode == "gamepad" and gamepad_button:
+            if self.ctx.intent_mode:
+                return True  # 仅显示意图：只导航不确认，这里连导航都不需要
+            return self._press_key(str(gamepad_button), duration)
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
             # 前台(鼠标)模式不抢前台护栏：游戏不在
             # 前台时 SendInput 会点到该屏幕位置最上的其他窗口（落点看似「完全
             # 不对」）。取消本次点击，节点走 on_error 回 dwell 按 rate_limit 重试。
+            self._last_click_error = "not_foreground"
             now = time.monotonic()
             if now - self._last_fg_warn >= self.FOREGROUND_WARN_S:
                 self._last_fg_warn = now
@@ -549,18 +726,44 @@ class NavGraph:
                           "可切后台(手柄)方式或把游戏带到前台）", "WARNING")
             return False
         if not clicker.submit_click(cx, cy, box=box_norm):
+            self._last_click_error = "submit"
             return False
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if not self.ctx.lifecycle.running:
                 clicker.cancel()
+                self._last_click_error = "stopped"
                 return False
             res = clicker.consume_result()
             if res is not None:
-                return bool(res.get("ok"))
+                ok = bool(res.get("ok"))
+                if not ok:
+                    self._last_click_error = "navigate"
+                return ok
             time.sleep(self.CLICK_POLL_S)
         clicker.cancel()
+        self._last_click_error = "navigate"
         return False
+
+    def _press_key(self, name: str, duration: float) -> bool:
+        """只按一个手柄键，不做光标导航（登录页的「确认」原语）。"""
+        key = name.upper()
+        attr = GAMEPAD_BUTTONS.get(key)
+        if attr is None:
+            self._last_click_error = "bad_button"
+            self._log(f"[v4] 未知的手柄按键 {name!r}（可选 {'/'.join(GAMEPAD_BUTTONS)}）", "ERROR")
+            return False
+        from maaracing_master.core.vgamepad_lazy import vg
+        try:
+            btn = getattr(vg.XUSB_BUTTON, attr)  # 懒代理：无驱动机器在这里抛
+        except Exception as exc:  # noqa: BLE001 —— 驱动缺失是基础设施故障
+            self._last_click_error = "gamepad_unbound"
+            self._log(f"[v4] 按 {key} 失败：虚拟手柄不可用（{exc}）→ 需安装 ViGEmBus 驱动",
+                      "ERROR")
+            return False
+        ok = self.press_gamepad_button(btn, duration=duration)
+        self._last_click_error = "" if ok else "gamepad_unbound"
+        return ok
 
     def _ensure_clicker(self) -> Clicker:
         if self._clicker is None:
@@ -580,21 +783,45 @@ class NavGraph:
 
     # ---------- 跑图 ----------
 
-    def run(self, entry: str, reached: str | None = None) -> bool:
-        """跑一条以 entry 为起点的图，阻塞到图结束（终点节点无 next）或失败。
+    def run(self, entry: str, reached: str | None = None, *,
+            deadline_s: float | None = None) -> bool:
+        """跑一条以 entry 为起点的图，阻塞到图结束、失败、停止或超时。
 
         reached：终点确认节点名。图"跑完"不等于"跑对"——中间节点超时后框架
         也可能正常收尾，所以要求那个确认页面的识别节点真的 completed 才算到位。
 
+        deadline_s：整轮总时限（秒）。汇聚节点的 `timeout: -1` 表示永不放弃，
+        没有这个上限时一次卡死就会永久占住 worker 线程。
+
+        结局写入 `last_outcome`，判定顺序（确定性，不依赖线程调度）：
+          1. 已记录 fatal            → task_failed（job 的成功状态不能覆盖它）
+          2. 图加载失败               → load_failed
+          3. 先观测到用户停止         → stopped
+          4. 先观测到总时限到期       → deadline
+          5. 任务成功且终点节点完成   → reached
+          6. 其余                     → task_failed
+        停止与时限在同一轮轮询里同时成立时取 stopped（用户显式动作优先于计时器）。
+
         手柄租约只在跑图期间持有：跑图结束立刻归还，模块外层的
         reset_device()（销毁手柄复位）才不会被租约不变量挡住。
         """
+        self._outcome = None
+        with self._fatal_lock:
+            self._fatal = None
         if not self.load():
+            self._outcome = "load_failed"
+            self._log(f"[跳转图] 图加载失败：「{entry}」未起跑", "ERROR")
             return False
         assert self._tasker is not None  # load() 成功即执行器已就位且未被销毁
+        deadline_at = None
+        if deadline_s is not None:
+            deadline_at = time.perf_counter() + max(0.0, float(deadline_s))
+        interrupted: str | None = None  # fatal / stopped / deadline
+        last_health = 0.0
         # 手柄租约只在跑图期间持有：结束立刻归还，模块外层的 reset_device()
         # （销毁手柄复位）才不会被「有活跃租约禁止断开设备」这条不变量挡住。
         with ExitStack() as stack:
+            stack.enter_context(self._debug_scope(entry))
             if self.ctx.click_mode == "gamepad":
                 from maaracing_master.core.capabilities import BUTTON_A
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
@@ -610,21 +837,50 @@ class NavGraph:
             # 立刻返回，长图靠退避上限兜住 CPU。中断检查每轮都做，语义不变。
             delay = RUN_POLL_MIN_S
             while not job.status.done:
+                now = time.perf_counter()
+                if now - last_health >= 0.5:
+                    last_health = now
+                    self._check_frame_health()
+                if self._fatal is not None:
+                    interrupted = "fatal"
+                    break
+                # 先判停止再判时限：同一轮同时成立时取 stopped（显式动作优先于计时器）。
                 if not self.ctx.lifecycle.running:
-                    # 停止请求完成 ≠ 任务句柄结束：两者都确认后再返回。调用方
-                    # 紧接着就进模块收尾，若此时框架 worker 仍在收摊，随后销毁
-                    # C 句柄会撞上仍在活动的回调（0xC0000005，MaaFramework.dll）。
-                    self._stop_framework("run-abort")
-                    self._log("[跳转图] 收到停止信号，已中断跑图")
-                    return False
+                    interrupted = "stopped"
+                    break
+                if deadline_at is not None and now >= deadline_at:
+                    interrupted = "deadline"
+                    break
                 time.sleep(delay)
                 delay = min(delay * 2, RUN_POLL_MAX_S)
+            if interrupted is not None:
+                # 停止请求完成 ≠ 任务句柄结束：两者都确认后再返回。调用方
+                # 紧接着就进收尾，若此时框架 worker 仍在收摊，随后销毁
+                # C 句柄会撞上仍在活动的回调（0xC0000005，MaaFramework.dll）。
+                self._stop_framework(f"run-{interrupted}")
+            # job 已结束也要复查 fatal：动作桥可能在最后一刻记录故障，
+            # 不能让 job 的成功状态把它盖掉。
+            fatal = self._fatal
+            if fatal is not None:
+                self._outcome = "task_failed"
+                self._log(f"[跳转图] 基础设施故障，终止跑图: {fatal}", "ERROR")
+                return False
+            if interrupted == "stopped":
+                self._outcome = "stopped"
+                self._log("[跳转图] 收到停止信号，已中断跑图")
+                return False
+            if interrupted == "deadline":
+                self._outcome = "deadline"
+                lim = f" {float(deadline_s):.0f}s" if deadline_s is not None else ""
+                self._log(f"[跳转图] 超过总时限{lim}，停止导航", "ERROR")
+                return False
             ok = bool(job.succeeded)
             if ok and reached:
                 node = self._tasker.get_latest_node(reached)
                 ok = bool(node and node.completed)
                 if not ok:
                     self._log(f"[跳转图] 终点确认节点「{reached}」未命中，判为未到位", "WARNING")
+            self._outcome = "reached" if ok else "task_failed"
             self._log(f"[跳转图] 「{entry}」{'完成' if ok else '失败'}", "DEBUG")
             return ok
 
@@ -654,47 +910,63 @@ class NavGraph:
         except Exception:  # noqa: BLE001 —— 未起跑时停止是正常路径
             return None
 
-    def _stop_framework(self, reason: str = "stop") -> None:
+    def _stop_framework(self, reason: str = "stop") -> bool:
         """发停止请求并等两个句柄收摊（有界）。销毁 C 句柄前必须走到这里。
 
         停止请求完成 ≠ 任务结束。后续 cleanup 会销毁句柄，销毁时必须确保框架
         worker 已收摊，否则撞上仍在活动的回调（0xC0000005，MaaFramework.dll）。
         等待带期限：无限等会把「停止中」变成永不结束。
 
+        返回值 = **是否确认收摊**。False 表示等待超时、worker 可能仍在活动，
+        调用方据此决定「不销毁」（见 shutdown）。
+
         两条免发条件——停止请求只对**正在跑的任务**有意义：
           - 任务已结束（或从未起跑）：没有可停的东西，请求发出去也没人消费；
           - 本轮已发过：停止会从模块停止路径与跑图线程两处并发触发，重复投递
             的句柄不会推进，只会白等满一个超时（真机日志实测 10s）。
         """
+        settled = True
         stop_job = self._send_stop_request()
         job = self._job
         # 请求可能是别的线程投递的（模块停止路径），这里同样要等任务收摊：
         # 销毁 C 句柄的前提是框架 worker 已经退出，与谁发的请求无关。
         if job is not None and not job.done and not _wait_job_settled(job):
             self._log(f"[跳转图] 任务句柄超时未结束（来源 {reason}），仍继续收尾", "WARNING")
+            settled = False
         if stop_job is not None and not _wait_job_settled(stop_job):
             self._log(f"[跳转图] 停止请求超时未完成（来源 {reason}），仍继续收尾", "WARNING")
+            settled = False
+        return settled
 
-    def stop(self) -> None:
-        """中断在跑的图并等框架收摊（模块 stop 里调用）。幂等。"""
-        self._stop_framework("module-stop")
+    def stop(self) -> bool:
+        """中断在跑的图并等框架收摊（模块 stop 里调用）。幂等。
 
-    def shutdown(self) -> None:
-        """释放点击器并显式销毁框架句柄（模块 cleanup 里调用）。
+        返回 False = 框架 worker 未在期限内退出。
+        """
+        return self._stop_framework("module-stop")
+
+    def shutdown(self) -> bool:
+        """释放点击器并显式销毁框架句柄（模块 cleanup / 步骤会话收尾里调用）。
 
         销毁时机必须由这里定，不能留给垃圾回收：这些是 C 句柄对象，析构时
         调 MaaFramework 的 destroy，而 destroy 不等框架内部 worker 收摊。
         留给收尾阶段的全堆回收时，回收顺序与时刻都由回收器决定——任务执行器、
         资源、控制器谁先被收、当时 worker 还在不在，全不可控 → 0xC0000005
         （MaaFramework.dll）。顺序固定为「任务执行器 → 资源」，置空即析构。
+
+        **返回 False 表示框架没能在期限内收摊，此时一律不销毁**：销毁仍在被原生
+        线程使用的对象比泄漏更糟。调用方据此把状态标成污染并拒绝后续任务。
         """
         # 先停框架任务：停完不会再有动作回调进点击器，随后关导航线程才无并发；
         # 顺序颠倒的话，销毁句柄时可能正撞上仍在活动的框架 worker。
-        self.stop()
+        if not self.stop():
+            self._log("[跳转图] 框架未收摊，保留句柄不销毁（需重启程序）", "ERROR")
+            return False
         if self._clicker is not None:
             self._clicker.shutdown()
             self._clicker = None
         self._destroy_framework()
+        return True
 
     def _destroy_framework(self) -> None:
         """按序销毁框架句柄（先销毁依赖者）。幂等。"""
@@ -719,23 +991,32 @@ class FrameStaleError(RuntimeError):
 class WgcapController(CustomController):
     """v4 帧注入控制器（宪法 6：帧只从中心缓存来，引擎永不自截帧）。
 
-    screencap() 读 CaptureAdapter 的 WGC 缓存帧（RGB→BGR 适配框架契约），
-    帧龄超过 stale_ms 抛 FrameStaleError。点击/按键等动作一律成功返回——
-    真实动作走 MaaRM_Click → Clicker（手柄导航协议），不经框架输入通道。
+    screencap() 读 CaptureAdapter 的 WGC 缓存帧（RGB→BGR 适配框架契约）。
+    只有帧缺失（采集器未运行）才抛 FrameStaleError；帧龄超限只告警并复用最后
+    一帧——WGC 对静止画面不出新帧，加载页/后台暂停时这是正常状态。
+    点击/按键等动作一律成功返回——真实动作走 MaaRM_Click → Clicker（手柄导航
+    协议），不经框架输入通道。
     """
 
     def __init__(self, capture, *, stale_ms: float = STALE_FRAME_MS):
         super().__init__()
         self._capture = capture
         self._stale_ms = float(stale_ms)
+        self._stale_warn_at = 0.0
         self.last_frame_id = 0
 
     def screencap(self):
         import numpy as np
 
         frame, fid, _ts, age = self._capture.frame_with_age()
-        if frame is None or age > self._stale_ms:
-            raise FrameStaleError(f"帧缺失或过期：age={age:.0f}ms > {self._stale_ms:.0f}ms")
+        if frame is None:
+            raise FrameStaleError("帧缺失：采集器未运行")
+        if age > self._stale_ms:
+            now = time.monotonic()
+            if now - self._stale_warn_at >= 10.0:
+                self._stale_warn_at = now
+                logger.log(f"[跳转图] 画面已 {age:.0f}ms 无更新（加载页/后台暂停），"
+                           "继续使用最后一帧", "WARNING")
         self.last_frame_id = int(fid)
         return np.ascontiguousarray(frame[:, :, ::-1])  # RGB → BGR（框架契约）
 

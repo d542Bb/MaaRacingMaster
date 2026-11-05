@@ -215,6 +215,10 @@ class ActivityModule(ABC):
     # 前端只消费解析结果。未声明 = 用通用默认封面（装饰件，缺失不阻断模块运行）。
     COVER: str = ""
 
+    # 统一调试流的存盘声明：on=写运行目录（默认） | self=模块自有取证，
+    # 统一流只记段边界与指向，不复制帧 | off=不存盘。PEEP 预览不受影响。
+    DEBUG_SAVE: str = "on"
+
     # 声明模块是否有「数据看板」（GUI 数据页看板中心的候选资格）。
     # HAS_DASHBOARD / DASHBOARD_CONTRACT（版本 > 0）/ 覆盖 read_today_stats 任一成立
     # 即进入候选集。新模块用 DASHBOARD_CONTRACT + read_dashboard；覆盖
