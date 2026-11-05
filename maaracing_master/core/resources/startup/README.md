@@ -3,7 +3,7 @@
 「启动游戏」步骤专用的导航链。**不属于模块共用资源**：不放在
 `core/resources/pipeline/`（那个目录会被所有模块的导航图自动并入），由
 `LaunchGameStep` 经 `StepSession.graph()` 显式加载。决策与边界见
-[ADR-0018](../../../../docs/adr/0018-启动步骤的完成判据与自有资源.md)。
+[ADR-0018](../../../../docs/adr/0018-criteria-core-启动步骤的完成判据与自有资源.md)。
 
 ## 文件
 

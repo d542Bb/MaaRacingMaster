@@ -1,7 +1,7 @@
 # MaaRacingMaster.Shell — GUI 壳工程（WinUI 3 + WebView2）
 
 > **本文件是什么**：壳工程与 sidecar transport 的**施工事实**——锁定版本、窗口形态与其取舍理由、WinUI 3 API 细节、构建坑、IPC 契约。
-> **本文件不是什么**：不是宿主选型的理由（见 [ADR-0004](../../docs/adr/0004-GUI宿主定案.md)；决策收录粒度见 [ADR-0006](../../docs/adr/0006-决策粒度只收跨模块约束.md)）、不是启动流程与进程模型（见 [docs/CODE_WIKI.md §4 运行流程](../../docs/CODE_WIKI.md)）、不是前端与图标规范（见 [frontend/README.md](./frontend/README.md)）。
+> **本文件不是什么**：不是宿主选型的理由（见 [ADR-0004](../../docs/adr/0004-choice-shell-GUI宿主定案.md)；决策收录粒度见 [ADR-0006](../../docs/adr/0006-meta-adr-决策粒度只收跨模块约束.md)）、不是启动流程与进程模型（见 [docs/CODE_WIKI.md §4 运行流程](../../docs/CODE_WIKI.md)）、不是前端与图标规范（见 [frontend/README.md](./frontend/README.md)）。
 > **信源等级**：L2 —— 可作「壳工程怎么构建、IPC 契约是什么、窗口形态怎么实现与其为什么这么定」的直接依据；不得作为宿主选型（L1，见 ADR-0004）与业务实现（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）的依据。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
 
@@ -43,7 +43,7 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 
 ## 窗口形态与标题栏（决策与施工）
 
-> **本节是本形态与取舍理由的唯一住户**（原 [ADR-0005](../../docs/adr/0005-GUI标题栏移除系统标题栏.md)，2026-09-18 按 [ADR-0006](../../docs/adr/0006-决策粒度只收跨模块约束.md) 迁入：子系统内部形态不进 ADR）。
+> **本节是本形态与取舍理由的唯一住户**（原 [ADR-0005](../../docs/adr/0005-choice-shell-GUI标题栏移除系统标题栏.md)，2026-09-18 按 [ADR-0006](../../docs/adr/0006-meta-adr-决策粒度只收跨模块约束.md) 迁入：子系统内部形态不进 ADR）。
 
 **决策（2026-08-31，`ddc1504`）**：**保留系统边框（可缩放），移除系统标题栏与 —□× 按钮，窗口控制由 HTML 自绘。**
 
@@ -54,7 +54,7 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 3. **非客户区双区域**：`InputNonClientPointerSource` 注册两类——`Draggable` = 整条标题栏带（`SetDragRectangles`，空白处由系统处理拖动与双击最大化）、`Passthrough` = `.brand` / `.tabs` / `.win-controls` 的精确矩形（输入穿透交给 HTML）。**Passthrough 优先于 drag rects**，故交互区之间的空白仍可拖拽。
 4. **置灰联动整体删除**：自绘按钮是 HTML 元素，模态遮罩天然覆盖，不需要任何按钮状态同步。
 
-**为什么（取舍理由）**：定案 WinUI 3 宿主时，标题栏原取「HTML 自绘视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型与判负记录见 [ADR-0004](../../docs/adr/0004-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）。该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动。改自绘后模态与按钮的一致性由 DOM 层叠天然保证。
+**为什么（取舍理由）**：定案 WinUI 3 宿主时，标题栏原取「HTML 自绘视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型与判负记录见 [ADR-0004](../../docs/adr/0004-choice-shell-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）。该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动。改自绘后模态与按钮的一致性由 DOM 层叠天然保证。
 
 **代价与约束**：
 
@@ -65,7 +65,7 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 **被否方案**：
 
 - **native caption buttons overlay**——系统按钮与 HTML 模态层无法自动协同，需常驻一套置灰状态同步（已随本决策删除）；
-- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线，判负记录见 [ADR-0004](../../docs/adr/0004-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；现行形态的拖动仍由系统在 `Draggable` 区处理。
+- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线，判负记录见 [ADR-0004](../../docs/adr/0004-choice-shell-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；现行形态的拖动仍由系统在 `Draggable` 区处理。
 
 ### API 细节与坑
 

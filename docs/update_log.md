@@ -217,7 +217,7 @@
 - **新增：** 全新图形界面（WinUI 3）——控制面板 / 调试 / 关于三页，纯 CSS 无 CDN，离线可用；自定义标题栏与窗口最小尺寸
 - **改进：** 进程模型拆分为「界面壳 + 业务后端」（两者以 JSONL 通信），为后续稳定性打底
 - **修复：** UAC 提权后中文乱码（强制 UTF-8）；关闭窗口卡死
-- **说明：** 界面宿主经四候选实测选型——Tauri v2 与 WPF WindowChrome 判负（WebView2 层级遮挡、Windows 无 Overlay 实现），WinUI 3 通过全部能力验证。选型理由与被否方案见 [ADR-0004](adr/0004-GUI宿主定案.md)。
+- **说明：** 界面宿主经四候选实测选型——Tauri v2 与 WPF WindowChrome 判负（WebView2 层级遮挡、Windows 无 Overlay 实现），WinUI 3 通过全部能力验证。选型理由与被否方案见 [ADR-0004](adr/0004-choice-shell-GUI宿主定案.md)。
 
 ## 2026-08-11
 

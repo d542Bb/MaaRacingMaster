@@ -1,9 +1,9 @@
-# ADR-0017：无组散行收进「其他日志」容器卡
+# ADR-0017（arch-shell）：无组散行收进「其他日志」容器卡
 
 - **状态**：`accepted`
 - **日期**：2026-11-05
 - **决策者**：用户（承载形态拍板）· AI 落实施
-- **相关**：[ADR-0007](0007-日志记录为唯一事实源双投影.md) 决策 3 · [ADR-0012](0012-日志归属强制与内容定界.md) 决策 1/4/6 · [壳工程 README](../../apps/MaaRacingMaster.Shell/frontend/README.md)「运行日志卡片」
+- **相关**：[ADR-0007](0007-contract-log-日志记录为唯一事实源双投影.md) 决策 3 · [ADR-0012](0012-contract-log-日志归属强制与内容定界.md) 决策 1/4/6 · [壳工程 README](../../apps/MaaRacingMaster.Shell/frontend/README.md)「运行日志卡片」
 
 ## 背景
 

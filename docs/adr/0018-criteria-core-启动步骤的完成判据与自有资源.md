@@ -1,9 +1,9 @@
-# ADR-0018：启动步骤的完成判据与自有资源
+# ADR-0018（criteria-core）：启动步骤的完成判据与自有资源
 
 - **状态**：`accepted`
 - **日期**：2026-11-05
 - **决策者**：用户（拍板「到可交付的大厅才算完成」「登录页按手柄 Y」「大厅判据用比赛按钮与车队经理图标」）· AI 落实施
-- **相关**：[ADR-0013](0013-内置步骤与游戏进程归属.md)（局部取代）· [ADR-0001](0001-分层靠引用方向不靠目录.md) · [ADR-0003](0003-运行时拓扑硬约束.md) · [core/CODE_WIKI.md §1.17](../../maaracing_master/core/CODE_WIKI.md) · [MAAFW_GUIDE §5.2/§7.1](../MAAFW_GUIDE.md)
+- **相关**：[ADR-0013](0013-ownership-core-内置步骤与游戏进程归属.md)（局部取代）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md) · [ADR-0003](0003-arch-core-运行时拓扑硬约束.md) · [core/CODE_WIKI.md §1.17](../../maaracing_master/core/CODE_WIKI.md) · [MAAFW_GUIDE §5.2/§7.1](../MAAFW_GUIDE.md)
 
 ## 背景
 

@@ -11,7 +11,7 @@
 |---|---|
 | 主控生命周期与能力门面 | [`core/controller.py`](./controller.py) |
 | 光标识别、趋近与速度模型 | [`core/gamepad_cursor.py`](./gamepad_cursor.py) + [`core/resources/stick_speed_model.json`](./resources/stick_speed_model.json) |
-| 帧采集（单生产者） | [`core/wgcap.py`](./wgcap.py)（拓扑为何如此见 [ADR-0003](../../docs/adr/0003-运行时拓扑硬约束.md)） |
+| 帧采集（单生产者） | [`core/wgcap.py`](./wgcap.py)（拓扑为何如此见 [ADR-0003](../../docs/adr/0003-arch-core-运行时拓扑硬约束.md)） |
 | 日志级别、通道与落盘形态 | [`core/logger.py`](./logger.py) |
 | 能力窄接口与契约 | [`core/capabilities.py`](./capabilities.py) |
 | 用户数据目录结构 | [`core/paths.py`](./paths.py) |
@@ -280,7 +280,7 @@
 
 - **版本化用时间表**，不给每个资源挂版本号（`activity_window` / `schedule.json`），与 MAA `activity_pool` 同构。
 
-> 归属由命名空间前缀表达、引用方向红线、"引用"的完整口径与协议为何没有命名空间——权威版见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)；决策与状态见 [ADR-0001](../../docs/adr/0001-分层靠引用方向不靠目录.md)。
+> 归属由命名空间前缀表达、引用方向红线、"引用"的完整口径与协议为何没有命名空间——权威版见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)；决策与状态见 [ADR-0001](../../docs/adr/0001-arch-global-分层靠引用方向不靠目录.md)。
 
 **回归护栏（校验器）与编辑入口**：见 [tools/navkit/README.md](../../tools/navkit/README.md)。
 
@@ -444,7 +444,7 @@
 | `wait_hall=true` + 仅显示意图 | 不执行大厅链路 | `skipped`（队列显示「已跳过」） |
 | `wait_hall=true` | 跑启动链 | 按导航结局映射为 `completed` / `stopped` / `failed` |
 
-**为什么不是插件、也不是活动模块**：见 [ADR-0013](../../docs/adr/0013-内置步骤与游戏进程归属.md)。一句话——活动模块的契约（阶段/断点/有效期/性能行/自带资源）这两件事一样都没有；而进程启停不属于任何玩法。
+**为什么不是插件、也不是活动模块**：见 [ADR-0013](../../docs/adr/0013-ownership-core-内置步骤与游戏进程归属.md)。一句话——活动模块的契约（阶段/断点/有效期/性能行/自带资源）这两件事一样都没有；而进程启停不属于任何玩法。
 
 **坑**：
 
@@ -477,7 +477,7 @@
 
 ### 1.19 [navkit/step.py](./navkit/step.py) — 统一步循环的重试状态机（ADR-0014）
 
-**职责**：一次「发动作 → 等后置条件 → 有限重发 → 耗尽/停止」这类**大阶段/步层的编排**，其**状态转移**（计数、时间窗、到期重发、显式失败、停止取消）的唯一解释者。调用方只喂 `Verdict`（后置条件此刻达成 / 未达成 / 用户停止）、收 `Command`（等待 / 重发 / 完成 / 耗尽 / 取消），不得再各自保留一份重试计数或时间状态——单一真源。归属决策见 [ADR-0014](../../docs/adr/0014-步级重试状态转移归core拥有.md)。
+**职责**：一次「发动作 → 等后置条件 → 有限重发 → 耗尽/停止」这类**大阶段/步层的编排**，其**状态转移**（计数、时间窗、到期重发、显式失败、停止取消）的唯一解释者。调用方只喂 `Verdict`（后置条件此刻达成 / 未达成 / 用户停止）、收 `Command`（等待 / 重发 / 完成 / 耗尽 / 取消），不得再各自保留一份重试计数或时间状态——单一真源。归属决策见 [ADR-0014](../../docs/adr/0014-ownership-core-步级重试状态转移归core拥有.md)。
 
 **接口现状**：`StepMachine(max_retries, window_s, clock=time.monotonic)`；`arm()` 标记一次尝试发出 / 送达（只重置时间窗、不动计数）；`observe(verdict) → Command`。`Verdict` / `Command` / `StepExhaustedError` 的成员以 [step.py](./navkit/step.py) 为真源，时钟可注入供测试喂假钟。
 
@@ -587,7 +587,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
                     └── resource: Resource
 ```
 
-> MAA 对象（`Tasker` / `Resource`）由**活动模块实例**创建并持有，主控不再持有；模块经 `ActivityContext` 窄接口访问 capture / gamepad / debug\_renderer 等能力。拓扑约束（帧从中心缓存来、动作从队列走）见 [ADR-0003](../../docs/adr/0003-运行时拓扑硬约束.md)。
+> MAA 对象（`Tasker` / `Resource`）由**活动模块实例**创建并持有，主控不再持有；模块经 `ActivityContext` 窄接口访问 capture / gamepad / debug\_renderer 等能力。拓扑约束（帧从中心缓存来、动作从队列走）见 [ADR-0003](../../docs/adr/0003-arch-core-运行时拓扑硬约束.md)。
 
 ***
 

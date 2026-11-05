@@ -1,13 +1,13 @@
-# ADR-0006：ADR 只收「跨模块约束」——子系统形态归子系统文档
+# ADR-0006（meta-adr）：ADR 只收「跨模块约束」——子系统形态归子系统文档
 
 - **状态**：`accepted`
 - **日期**：2026-09-18（维护者拍板：形式上新写粒度规则，实质上把越界条目搬回子系统 README）
 - **决策者**：用户拍板，AI 落实施
-- **相关**：[本目录准入条件](README.md) 第 3 条 · [ADR-0005](0005-GUI标题栏移除系统标题栏.md)（迁出的实例） · [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)（迁入的住户）
+- **相关**：[本目录准入条件](README.md) 第 3 条 · [ADR-0005](0005-choice-shell-GUI标题栏移除系统标题栏.md)（迁出的实例） · [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)（迁入的住户）
 
 ## 背景
 
-准入条件第 3 条一直写着"**架构级** —— 影响跨模块结构、分层、协议或运行时拓扑；**实现细节与域内坑点不收**（归对应 `CODE_WIKI`）"，但**缺一条可自检的判据**——收录时实际是按"这决策听起来重要吗"在判，于是 [ADR-0005](0005-GUI标题栏移除系统标题栏.md) 进来了：它记的是 GUI 壳**内部**的窗口形态（`SetBorderAndTitleBar(true, false)`、`win-controls` 消息、`InputNonClientPointerSource` 矩形上报、置灰联动删除），约束对象是"前端与 C# 怎么对接"，管不到任何别的模块；而它正文自己又把 `apps/MaaRacingMaster.Shell/README.md` 列为"施工事实"——**同一形态在一份 ADR 与一份子系统 README 两处讲，正是本目录立项时要防的第二份真源**。
+准入条件第 3 条一直写着"**架构级** —— 影响跨模块结构、分层、协议或运行时拓扑；**实现细节与域内坑点不收**（归对应 `CODE_WIKI`）"，但**缺一条可自检的判据**——收录时实际是按"这决策听起来重要吗"在判，于是 [ADR-0005](0005-choice-shell-GUI标题栏移除系统标题栏.md) 进来了：它记的是 GUI 壳**内部**的窗口形态（`SetBorderAndTitleBar(true, false)`、`win-controls` 消息、`InputNonClientPointerSource` 矩形上报、置灰联动删除），约束对象是"前端与 C# 怎么对接"，管不到任何别的模块；而它正文自己又把 `apps/MaaRacingMaster.Shell/README.md` 列为"施工事实"——**同一形态在一份 ADR 与一份子系统 README 两处讲，正是本目录立项时要防的第二份真源**。
 
 维护者 2026-09-18 指出这点（"ADR 怎么把所有业务层级都包含了，这不对吧"），并裁定按"彻底"档处置。
 
@@ -54,5 +54,5 @@
 
 - **准入条件原文**：[本目录 README](README.md)「准入条件」第 3 条（架构级 / 实现细节与域内坑点不收）。
 - **知识路由**：[AGENTS.md](../../AGENTS.md) —— 「子系统施工事实（GUI 壳、前端、工具链）→ 该子系统的 `README.md`」。
-- **越界实例**：[ADR-0005](0005-GUI标题栏移除系统标题栏.md) 全文（四条形态全为壳内实现细节），及其自指"施工事实"的指针。
+- **越界实例**：[ADR-0005](0005-choice-shell-GUI标题栏移除系统标题栏.md) 全文（四条形态全为壳内实现细节），及其自指"施工事实"的指针。
 - **维护者裁定**：2026-09-18（三选项中选"彻底"档）。

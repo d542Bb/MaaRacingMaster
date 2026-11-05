@@ -1,9 +1,9 @@
-# ADR-0014：大阶段/步的重试状态转移归 core 拥有，插件只喂 verdict、收 command
+# ADR-0014（ownership-core）：大阶段/步的重试状态转移归 core 拥有，插件只喂 verdict、收 command
 
 - **状态**：`accepted`
 - **日期**：2026-11-01
 - **决策者**：用户
-- **相关**：宪法 §4「机制归引擎、策略归数据」（[NAVKIT_V4_PLAN.md](../NAVKIT_V4_PLAN.md)）· [ADR-0001](0001-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) navkit 步循环件）· commit `71441c0` / `46df995` / `f8add47`
+- **相关**：宪法 §4「机制归引擎、策略归数据」（[NAVKIT_V4_PLAN.md](../NAVKIT_V4_PLAN.md)）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) navkit 步循环件）· commit `71441c0` / `46df995` / `f8add47`
 
 ## 背景
 
@@ -14,7 +14,7 @@
 以下规则可被机检或人工判定：
 
 1. 步级重试的**状态转移**——计数、时间窗、到期重发、耗尽、停止取消——由 core `StepMachine` **唯一解释**。迁移/接入后，插件侧与 `policy.json` 都不得再各自保留一份重试计数或时间状态（单一真源；否则即假统一）。
-2. `StepMachine` 只认 `Verdict`（SUCCESS/PENDING/STOP）与 `Command`（WAIT/RETRY/DONE/FAIL/ABORT），**不出现阶段名、节点名、玩法语义**——遵守 [ADR-0001](0001-分层靠引用方向不靠目录.md) 的引用方向红线；节点名由插件传入。
+2. `StepMachine` 只认 `Verdict`（SUCCESS/PENDING/STOP）与 `Command`（WAIT/RETRY/DONE/FAIL/ABORT），**不出现阶段名、节点名、玩法语义**——遵守 [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md) 的引用方向红线；节点名由插件传入。
 3. **"什么算一次尝试、何时 `arm`、用什么方式驱动"** 归插件（阻塞逐帧循环里喂，或逐帧回调里喂）。两家的差异只体现在调用 `arm` 的时机与是否喂 STOP，不体现在改机器语义。
 4. 统一只到**大阶段/步**这一层。插件内小状态（指纹边沿锁、出价子状态、弹窗分类、回合哨兵）不进 core；**不做回合级自动重开**、**不把页面确认 / 阶段识别塞进 core**。
 

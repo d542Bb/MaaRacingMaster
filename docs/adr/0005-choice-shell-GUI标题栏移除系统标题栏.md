@@ -1,13 +1,13 @@
-# ADR-0005：GUI 标题栏——移除系统标题栏，窗口控制由 HTML 自绘
+# ADR-0005（choice-shell）：GUI 标题栏——移除系统标题栏，窗口控制由 HTML 自绘
 
-- **状态**：`deprecated` —— **ADR 条目本身**：本条的规范性内容（四条形态、被否方案与其理由）已按 [ADR-0006](0006-决策粒度只收跨模块约束.md) 迁入 [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)「窗口形态与标题栏」一节；**形态仍在生效**，下文保留仅为历史记录，**勿据以实施**
+- **状态**：`deprecated` —— **ADR 条目本身**：本条的规范性内容（四条形态、被否方案与其理由）已按 [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md) 迁入 [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)「窗口形态与标题栏」一节；**形态仍在生效**，下文保留仅为历史记录，**勿据以实施**
 - **日期**：2026-08-31（`ddc1504`）/ 2026-09-18（按 ADR-0006 迁出本目录）
 - **决策者**：用户拍板，AI 落实施
-- **相关**：取代 [ADR-0004](0004-GUI宿主定案.md) 的「系统 caption buttons」部分 · [ADR-0006](0006-决策粒度只收跨模块约束.md)（迁出依据） · [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)（现行住户） · commit `ddc1504`
+- **相关**：取代 [ADR-0004](0004-choice-shell-GUI宿主定案.md) 的「系统 caption buttons」部分 · [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（迁出依据） · [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)（现行住户） · commit `ddc1504`
 
 ## 背景
 
-[ADR-0004](0004-GUI宿主定案.md) 定案 WinUI 3 宿主时，标题栏取「HTML 自绘标题栏视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型过程见 [归档方案](../plan/archive/titlebar-convergence-plan.md)）：保留系统 —□× 按钮，前端只画标题栏背景与内容。
+[ADR-0004](0004-choice-shell-GUI宿主定案.md) 定案 WinUI 3 宿主时，标题栏取「HTML 自绘标题栏视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型过程见 [归档方案](../plan/archive/titlebar-convergence-plan.md)）：保留系统 —□× 按钮，前端只画标题栏背景与内容。
 
 该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动（动机与改动清单以 `ddc1504` 为据）。
 

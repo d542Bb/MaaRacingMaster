@@ -1,7 +1,7 @@
 # NavKit v4 工具链
 
 > **本文是什么**：NavKit v4 工具链的使用与流程——入口命令、Studio 三页、真源文件位置、**模板图采集工作流**、校验器护栏、MPE 排错。
-> **本文不是什么**：不是真源组织的规则与理由（见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向) / [ADR-0001](../../docs/adr/0001-分层靠引用方向不靠目录.md)）；不是引擎侧装配契约（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是节点 schema 定义（见 [NAVKIT_V4_PLAN.md §2](../../docs/NAVKIT_V4_PLAN.md)）。
+> **本文不是什么**：不是真源组织的规则与理由（见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向) / [ADR-0001](../../docs/adr/0001-arch-global-分层靠引用方向不靠目录.md)）；不是引擎侧装配契约（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是节点 schema 定义（见 [NAVKIT_V4_PLAN.md §2](../../docs/NAVKIT_V4_PLAN.md)）。
 > **信源等级**：L2 —— 可作「工具怎么用、资产怎么采、校验怎么跑」的直接依据；不得作为真源规则（L1）与节点/锚点取值（L0）的最终依据。
 > **真源路由**：节点与策略真源 = `plugins/*/resources/**`（本文只写位置，不复制取值）；校验项 = [`check_truth.py`](./check_truth.py)。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。

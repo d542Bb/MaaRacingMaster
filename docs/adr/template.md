@@ -1,4 +1,4 @@
-# ADR-NNNN：<一句话决策标题>
+# ADR-NNNN（<性质>-<影响模块>）：<一句话决策标题>
 
 - **状态**：`accepted` | `superseded by ADR-NNNN` | `deprecated`
 - **日期**：YYYY-MM-DD

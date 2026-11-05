@@ -1814,7 +1814,7 @@ id（`member_ids/lead_id`），不替代成员做位置/速度外推。只做同
 
 ## 17. 大阶段之间的点击步级重试与落地页确认（本域）
 
-**住户**：状态转移在 `core/navkit/step.py` 的 `StepMachine`（详见 [core/CODE_WIKI.md](../../core/CODE_WIKI.md) navkit 步循环件）；接线在 `module.py::_run_step`；落地页确认锚点节点在 `tools/build_truth.py` 的 `CONFIRMS`；剂量在 `resources/policy/decision.json` 的 `step_retry` 段。归属决策 [ADR-0014](../../../docs/adr/0014-步级重试状态转移归core拥有.md)。
+**住户**：状态转移在 `core/navkit/step.py` 的 `StepMachine`（详见 [core/CODE_WIKI.md](../../core/CODE_WIKI.md) navkit 步循环件）；接线在 `module.py::_run_step`；落地页确认锚点节点在 `tools/build_truth.py` 的 `CONFIRMS`；剂量在 `resources/policy/decision.json` 的 `step_retry` 段。归属决策 [ADR-0014](../../../docs/adr/0014-ownership-core-步级重试状态转移归core拥有.md)。
 
 **为什么需要**：UI 步此前用 `graph.run(node, node)`——返回 True 只证明「按钮被识别并点了一次」，不含「页面真的切过去了」；点了没生效只能靠下一步识别不到、白等框架默认 20s 再中止整轮（§4「`点继续` 识别未命中驻留重试」即这一缺口的表现）。现在每个点击步：发出点击 → 对**落地页确认锚点**做只识别探针轮询，命中才判该步成功并前进；未命中按上限有限重发同一点击、达上限后再等一窗显式终止本轮；收到停止立即退出（停止 ≠ 失败）。
 
