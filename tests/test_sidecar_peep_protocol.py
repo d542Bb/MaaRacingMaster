@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 sc = pytest.importorskip("maaracing_master.core.sidecar")
-from maaracing_master.core.debug import NavigationDebugger
+from maaracing_master.core.debug import NavigationDebugger  # noqa: E402 —— importorskip 须先于被门模块导入生效
 
 
 def _service(tmp_path):

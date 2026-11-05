@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 ng = pytest.importorskip("maaracing_master.core.nav_graph")
-from maaracing_master.core.debug import NavigationDebugger
+from maaracing_master.core.debug import NavigationDebugger  # noqa: E402 —— importorskip 须先于被门模块导入生效
 
 
 def _graph(tmp_path):

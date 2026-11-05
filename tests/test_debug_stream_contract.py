@@ -13,7 +13,6 @@ import json
 import time
 
 import numpy as np
-import pytest
 
 from maaracing_master.core.debug import (
     NavigationDebugger,

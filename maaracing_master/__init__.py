@@ -16,7 +16,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import json  # noqa: E402 —— 上一行的停用字节码副作用须先于一切导入生效
-import re
+import re  # noqa: E402
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 

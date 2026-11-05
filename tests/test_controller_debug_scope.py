@@ -8,7 +8,7 @@ import types
 import pytest
 
 ctl = pytest.importorskip("maaracing_master.core.controller")
-from maaracing_master.core.debug import NavigationDebugger
+from maaracing_master.core.debug import NavigationDebugger  # noqa: E402 —— importorskip 须先于被门模块导入生效
 
 
 class _Recorder:
