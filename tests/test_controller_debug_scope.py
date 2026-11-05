@@ -67,6 +67,7 @@ def _controller(monkeypatch, tmp_path, order):
     c._step_active = False
     c._hwnd = 12345
     c.controller = object()
+    monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
     c._destroy_gpad = lambda grp=None: None
     c._stop_wgc_capture = lambda: order.append("stop_capture")
     c._start_wgc_capture = lambda grp=None: None

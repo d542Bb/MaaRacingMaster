@@ -95,6 +95,27 @@ def wired(monkeypatch):
     return _ctl()
 
 
+def test_connect_short_circuit_requires_live_window(monkeypatch):
+    """手动关游戏后旧句柄失效：幂等短路不能假成功，必须重新定位并如实失败。"""
+    c = _ctl()
+    c.controller = object()
+    c._hwnd = 123
+    monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: False)
+    monkeypatch.setattr(ctl, "find_game_hwnd", lambda **kw: 0)
+
+    assert c.connect() is False
+    assert c.controller is None
+    assert c._hwnd == 0
+
+
+def test_connect_short_circuit_keeps_live_window(monkeypatch):
+    c = _ctl()
+    c.controller = object()
+    c._hwnd = 123
+    monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
+    assert c.connect() is True
+
+
 def test_execution_active_covers_module_and_step_without_touching_running():
     c = _ctl()
     module = object()

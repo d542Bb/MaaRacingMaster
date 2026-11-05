@@ -56,6 +56,8 @@ _UD.SetWindowPos.restype = wintypes.BOOL
 _UD.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 _UD.SetCursorPos.restype = wintypes.BOOL
 _UD.GetForegroundWindow.restype = wintypes.HWND
+_UD.IsWindow.argtypes = [wintypes.HWND]
+_UD.IsWindow.restype = wintypes.BOOL
 _UD.GetAsyncKeyState.argtypes = [ctypes.c_int]
 _UD.GetAsyncKeyState.restype = ctypes.c_short
 
@@ -293,6 +295,18 @@ def activate_window(hwnd: int) -> bool:
             time.sleep(0.02)
         return False
     except Exception:
+        return False
+
+
+def is_window_valid(hwnd: int) -> bool:
+    """句柄是否仍指向一个存在的窗口。
+
+    用户手动关掉游戏后 ``_hwnd`` 会变成失效句柄；connect() 的幂等短路若只看
+    ``controller is not None``，下一轮会假成功，随后整轮无帧。
+    """
+    try:
+        return bool(hwnd and _UD.IsWindow(hwnd))
+    except Exception:  # noqa: BLE001 —— 平台不可用时按失效处理
         return False
 
 

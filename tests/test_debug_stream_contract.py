@@ -106,6 +106,32 @@ class TestBindingAndOrder:
             d.end_run()
 
 
+class TestStorageLayout:
+    def test_groups_by_scope_and_executor_without_order_prefix(self, tmp_path):
+        """目录只表达模块/执行器；顺序与时间在索引里，不靠数字前缀。"""
+        d = _hub(tmp_path)
+        try:
+            scope = d.open_scope("speedrush", "极速狂飙")
+            nav = d.open_segment("nav", "点比赛", peep_fps=1000, save_fps=1000)
+            nav.offer(_frame(1))
+            _wait(d)
+            nav.close("reached")
+            _wait(d)
+            own = d.open_segment("speedrush", "控制", peep_fps=1000, save_fps=1000)
+            own.offer(_frame(2))
+            _wait(d)
+            own.close("completed")
+            d.close_segment(scope, "completed")
+            _wait(d)
+
+            files = [x["file"] for x in _index_lines(tmp_path) if x["type"] == "frame"]
+            assert files[0].startswith("speedrush/nav/")
+            assert files[1].startswith("speedrush/control/")
+            assert all("/00_" not in f and "/01_" not in f for f in files)
+        finally:
+            d.end_run()
+
+
 class TestPreviewContinuity:
     def test_inner_segment_switch_keeps_last_frame(self, tmp_path):
         """同一运行项内换导航步骤不清预览：否则每个 UI 步骤都会闪成空卡片。"""

@@ -25,6 +25,7 @@ from maaracing_master.core.window_utils import (
     ensure_dpi_aware,
     find_game_hwnd,
     is_window_on_screen,
+    is_window_valid,
     resize_game_window_720p,
 )
 from maaracing_master.core.logger import logger
@@ -815,7 +816,11 @@ class MaaRacingMasterController:
         grp 非空时连接过程日志归入该组（运行启动生命周期组）。
         """
         if self.controller is not None:
-            return True
+            # 幂等短路只对“句柄仍然有效”成立：用户手动关游戏后旧句柄会失效，
+            # 直接返回 True 会让下一轮假成功、随后整轮无帧。
+            if is_window_valid(self._hwnd):
+                return True
+            self.forget_window()
 
         # 启动步骤已按进程名认准窗口时直接用它的句柄：启动器窗口与游戏窗口同名，
         # 再按标题搜一次有认错窗口的风险。

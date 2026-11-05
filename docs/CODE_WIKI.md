@@ -44,7 +44,7 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
 
 | 约定 | 真源 |
 |---|---|
-| 游戏分辨率 | `core/window_utils.py` `resize_game_window_720p`（连接时统一窗口）+ `core/module_config.py` `reference_size`；各插件 ROI / 按钮据此归一化 |
+| 游戏分辨率 | `core/window_utils.py` `resize_game_window_720p`（连接时统一窗口）+ `core/roi_config.py` `reference_size`；各插件 ROI / 按钮据此归一化 |
 | 截图通道 | WGC 中心缓存唯一、无回退通道，见 [ADR-0003](adr/0003-运行时拓扑硬约束.md) |
 | 业务数值（ROI / 阈值 / 仲裁） | 各插件 `resources/policy/` 目录（命名不统一：treasure 为 `<id>.policy.json`，speedrush 为 `decision.json` / `hud_regions.json`） |
 | 版本号 | git tag 为唯一信源，规则见 [AGENTS.md](../AGENTS.md) 与 [skills/project-update/SKILL.md](../skills/project-update/SKILL.md) |

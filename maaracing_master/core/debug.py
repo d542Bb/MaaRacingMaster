@@ -68,6 +68,7 @@ class _StreamItem:
     seq: int
     segment_id: int | None = None
     owner: str = ""
+    scope: str = ""               # 外层运行项（模块/步骤）：帧的落盘目录按它分组
     label: str = ""
     stage: str = ""
     depth: int = 0
@@ -711,6 +712,8 @@ class NavigationDebugger:
             seq = self._next_seq_locked()
             item = _StreamItem(
                 kind="frame", seq=seq, segment_id=seg.id, owner=seg.owner,
+                # 栈底是外层作用域（模块/步骤）；帧按它分组，执行器再分一层
+                scope=self._stack[0].owner if self._stack else seg.owner,
                 label=seg.label, stage=seg.stage, depth=len(self._stack) - 1,
                 frame=frame, fid=int(fid or 0), ts_ns=int(ts_ns or 0),
                 age_ms=float(age_ms or 0.0),
@@ -884,7 +887,11 @@ class NavigationDebugger:
         if run_dir is None:
             return None
         try:
-            seg_dir = run_dir / f"{int(item.segment_id):02d}_{_safe_name(item.owner)}"
+            # 目录只表达“哪个模块、哪个执行器”：顺序与时间都在索引里，
+            # 不再加 00_/01_ 前缀（增加维护负担且没有信息量）。
+            scope = _safe_name(item.scope or item.owner)
+            executor = _safe_name("control" if item.owner == scope else item.owner)
+            seg_dir = run_dir / scope / executor
             seg_dir.mkdir(parents=True, exist_ok=True)
             path = seg_dir / f"{int(item.seq):06d}.jpg"
             if not cv2.imwrite(str(path), full, [cv2.IMWRITE_JPEG_QUALITY, 90]):

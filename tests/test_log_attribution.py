@@ -336,6 +336,7 @@ def _controller_env(tmp_path, monkeypatch, start):
     c._wgc_capture = None
     # 已连接哨兵：connect() 幂等短路，用例不走真实窗口连接
     c.controller = object()
+    monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
     c._destroy_gpad = lambda grp=None: None
     c._stop_wgc_capture = lambda: None
     c._start_wgc_capture = lambda grp=None: None

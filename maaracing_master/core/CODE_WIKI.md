@@ -562,8 +562,8 @@ core/ocr.py（§1.11，插件间共享的识别引擎）
   ├── core.logger.logger
   └── rapidocr（函数内延迟导入，不在模块导入期拉重依赖）
 
-core/debug.py / core/debug_io.py
-  └── （纯 OpenCV/numpy，IO worker 生产-消费者）
+core/debug.py
+  └── （纯 OpenCV/numpy，单 IO 线程生产-消费者）
 
 core/window_utils.py
   ├── maa.toolkit.Toolkit
@@ -598,7 +598,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | 方法                                             | 说明                                                                     |
 | ---------------------------------------------- | ---------------------------------------------------------------------- |
 | `__init__()`                                   | 初始化能力门面、点击方式、急停等（截图通道唯一，无后端选择项）                                        |
-| `connect()`                                    | 幂等窗口连接：仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验 |
+| `connect()`                                    | 幂等窗口连接：短路前先校验句柄仍有效（手动关游戏后旧句柄失效则重连）；仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验 |
 | `begin_run()` / `end_run()`                    | 运行边界：清手动停止/停止信号/退出请求并获取全局性质；收尾恢复用户原音量（侧车按队列轮次调用） |
 | `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）                                    |
 | `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
@@ -751,7 +751,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 - `data/`：运行时数据与用户资产（`data/treasure/treasure.db`、`data/speedrush/macros/` 用户录制的宏、模型权重等）
 - `logs/`：会话记录 `logs/<MaaRM时间戳>/`——运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）与伴随产物 `trace.jsonl`（共用「日志记录」开关）
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
-- `debug/`：运行级调试时间线 `debug/<运行编号>/`（`index.jsonl` 与按段目录）；模块自有取证语料仍按自己的目录（如 `debug/speedrush/`），索引以段记录指向它
+- `debug/`：运行级调试时间线 `debug/<运行编号>/`（`index.jsonl` 与 `<模块>/<执行器>/` 两级目录，帧文件用运行内全局序号；不加排序前缀，顺序与时间看索引）；模块自有取证语料仍按自己的目录（如 `debug/speedrush/`），索引以段记录指向它
 
 GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目录管理。
 
