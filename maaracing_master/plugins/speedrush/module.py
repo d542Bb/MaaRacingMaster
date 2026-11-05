@@ -377,6 +377,8 @@ class SpeedRushModule(ActivityModule):
     REQUIRED_ASSETS: tuple[str, ...] = ()
     # 模块封面（相对本插件 resources/）：只声明，定位与 URL 解析在 core/covers.py
     COVER = "cover.jpg"
+    # 帧证据走本模块的取证目录（raw + 双联图），统一调试流只记段边界（契约 I7）
+    DEBUG_SAVE = "self"
     # 看板尚未实现：0 = 已登记能力位，不进入数据页候选集；
     # 接入后改为 1 并实现 read_dashboard()（block 契约见 core/dashboard_contract.py）。
     DASHBOARD_CONTRACT = 0
@@ -727,8 +729,10 @@ class SpeedRushModule(ActivityModule):
 
         self._running = True
         # 本次运行的身份（流水行头 run_id；一局内各阶段共享，跨 run 不重置序号）。
-        # 取日志会话 token = 产物目录编号，流水与目录因此同名可互查。
-        self._trace.set_run_id(logger.session_token or time.strftime("%Y%m%d_%H%M%S"))
+        # 优先用队列轮次的运行编号：与日志、调试目录、性能样本同源，可按时间对齐。
+        self._trace.set_run_id(logger.current_run_id
+                               or logger.session_token
+                               or time.strftime("%Y%m%d_%H%M%S"))
         # 启动组开在图加载之前：图加载与断点修正也是这次运行的启动正文，不能散成裸行。
         _open_grp(self, f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
                         f"·感知{'开' if self._perception_mode else '关'}"

@@ -1099,8 +1099,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .perf-note { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 6px; }
 
 /* 实时预览 */
-.preview-wrap { flex: 1; padding: 12px; display: flex; flex-direction: column; min-height: 0; }
-.preview-canvas {
+.preview-wrap { flex: 1; padding: 12px; display: flex; flex-direction: column; min-height: 0; }.preview-canvas {
   aspect-ratio: 16 / 9; width: 100%; min-height: 0;
   border-radius: 6px; background: #1a1a2e;
   position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center;
@@ -1123,7 +1122,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .preview-card--floating .preview-away { display: flex; }
 .preview-card--floating .card-head,
-.preview-card--floating .preview-wrap { display: none; }
+.preview-card--floating .preview-wrap,
+.preview-card--floating .preview-meta { display: none; }
 
 /* 实时预览：播放/暂停图标（默认播放态，由 JS 按 peep 状态切换） */
 #page-data .preview-card .icon-play { display: block; }

@@ -373,6 +373,7 @@ SITES: list[LogSite] = [
     # ---- core/nav_graph.py ----
     _s('core/nav_graph.py', '_post_pipeline_merged._lg', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：启动段未接组时回落散行。'),
     _s('core/nav_graph.py', 'NavGraph._log', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：图未被插件接组时（测试/独立使用）回落散行。'),
+    _s('core/nav_graph.py', 'WgcapController.screencap', '[跳转图] 画面已 {}ms 无更新（加载页/后台暂停），继续使用最后一帧', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；WGC 静止画面不出新帧，发生在导航轮询线程，无业务组。'),
 
     # ---- core/yolo_detector.py ----
     # __init__ 的设备/缓存加载判定已降为 DEBUG（面板降噪，见 test_panel_noise_lines_are_file_only）。

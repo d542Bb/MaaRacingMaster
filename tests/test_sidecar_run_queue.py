@@ -139,6 +139,25 @@ def test_round_runs_enabled_order_and_finishes_naturally():
     assert ended["title"] and ended["body"]
 
 
+def test_round_events_carry_run_identity_and_clocks():
+    """轮次事件带运行编号与双时钟：壳侧通知/任务栏能落到同一条时间轴。"""
+    controller = _FakeController({})
+    svc, sent = _svc(controller)
+    t = threading.Thread(
+        target=svc._worker_main,
+        args=([{"kind": "builtin", "id": "launch", "start_from": None, "config": None}],
+              "20261105_120000_r1"),
+        daemon=True)
+    svc._worker = t
+    t.start()
+    _wait(t)
+    started, ended = sent[0]["data"], sent[1]["data"]
+    assert started["run_id"] == ended["run_id"] == "20261105_120000_r1"
+    for d in (started, ended):
+        assert isinstance(d["ts_wall_ns"], int) and d["ts_wall_ns"] > 0
+        assert isinstance(d["ts_mono_ns"], int) and d["ts_mono_ns"] > 0
+
+
 def test_exception_aborts_round_and_marks_rest_skip():
     """模块抛异常 → 该模块 fail、剩余 skip、只有结束事件、不发 auto_exit。"""
     controller = _FakeController({"a": "raise"})

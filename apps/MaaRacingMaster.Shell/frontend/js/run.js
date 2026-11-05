@@ -736,14 +736,20 @@
       }
       // 运行中当前模块/阶段变化 → 轻刷新对应卡（不重建面板，不打断选项编辑）
       if (runState && d.queue_run) {
-        const key = d.current_module + '|' + d.current_stage + '|' + d.queue_run.index;
+        // 用队列当前项做高亮身份：内置步骤的 current_module 为空，
+        // 拿它当 prev 会漏撤上一张卡的「运行中」，出现两张卡同时运行。
+        const liveId = d.queue_run.current_module || '';
+        const key = liveId + '|' + d.current_stage + '|' + d.queue_run.index;
         if (key !== state._lastLiveKey) {
           state._lastLiveKey = key;
           const prev = state._lastLiveModule;
-          refreshCard(d.current_module);
-          if (prev && prev !== d.current_module) refreshCard(prev); // 上一张卡从「运行中」换回「排队中」
-          state._lastLiveModule = d.current_module;
+          refreshCard(liveId);
+          if (prev && prev !== liveId) refreshCard(prev); // 上一张卡从「运行中」换回「排队中」
+          state._lastLiveModule = liveId;
         }
+      } else if (!runState) {
+        state._lastLiveKey = '';
+        state._lastLiveModule = '';
       }
     } catch (e) {
       console.error(e);
@@ -771,9 +777,12 @@
     if (d.round_result !== undefined) state.roundResult = d.round_result;
     $('btn-start').disabled = d.is_running || d.worker_active;
     $('btn-stop').disabled = !(d.is_running || d.worker_active);
-    if (d.current_stage) {
-      setStatus('运行中 · 当前: ' + d.current_stage, 'running');
-    } else if (d.is_running || d.worker_active) {
+    // 内置步骤没有 current_stage：用调试流归属（步骤名/阶段）兜底，
+    // 否则整个启动链会显示成「停止中...」。
+    const activeLabel = d.current_stage || d.debug_stage || d.debug_label || d.debug_owner || '';
+    if (activeLabel) {
+      setStatus('运行中 · 当前: ' + activeLabel, 'running');
+    } else if (d.queue_run || d.is_running || d.worker_active) {
       setStatus('停止中...', 'stopping');
     } else if (d.model_ok === false) {
       // 资源缺失由轮询字段持续点亮（get_status.model_ok），资源恢复后自然回到就绪

@@ -38,7 +38,7 @@
 
 - 点击方式（`real` 前台鼠标 / `background` 后台手柄导航+A / `intent` 仅意图）与独立真实点击开关
 
-- 运行时静音游戏（audio_volume）、急停循环；启动/关闭游戏与「关闭后退出程序」是任务列表里的内置步骤（见 §1.17），不在这里按开关收尾
+- 运行时静音游戏（audio_volume）、急停循环；静音按**运行边界**获取与恢复：整轮只静音一次、记录用户原音量、结束统一恢复，内置步骤与活动模块之间不恢复/再静音。启动/关闭游戏与「关闭后退出程序」仍是任务列表里的内置步骤（见 §1.17），不在这里按开关收尾
 
 - 虚拟手柄租约管理（`_get_gpad` 懒创建 / `_reset_gpad` / `_destroy_gpad` ctypes 从总线拔除）
 
@@ -104,21 +104,19 @@
 
 **职责**：
 
-- 两套渲染模式：全量存盘（enabled）/ 精简 PEEP 预览（peep\_enabled）
+- **运行级调试流**：一次运行（队列一轮）共享一条时间线。控制器按运行项开外层作用域，执行器（跳转图 / 模块控制循环）在内部压/弹段；帧序号跨段不重置，段与段之间允许空档。预览不跨**运行项**残留：作用域边界清空；同一运行项内的导航步骤切换保留最后一帧，避免逐段闪空。
+- **两档输出**：存盘全量图（DEBUG 开关）/ PEEP 最小集（画面 + 指针 + 意图 + 段/阶段/帧龄）。两者可独立开关；索引在运行中首次开启 DEBUG 时建立，之后写到运行结束——关开关只停收新帧，已在途的存盘帧仍落索引行，保证文件数 = 索引帧行数。
+- **存盘归属由模块声明**：`DEBUG_SAVE`（`on` 默认 / `self` 模块自有取证 / `off`）；`save=self` 时统一流只记段边界，帧仍写模块自己的取证目录（如极速狂飙），不复制第二份。
+- **单一 FIFO 承载帧与控制事件**：帧在入队时绑定所属段、阶段与开关状态；控制事件不参与淘汰，队列满只丢最旧的帧；段结束事件排在它所有帧之后，处理到它时清预览。
+- **序号与计数口径**：帧序号在运行内从 1 起、跨段不重置；到期计数在真正处理时记（入队后被淘汰/排空丢弃的帧不算到期），闭合恒等式 `frames_due_* = 成功 + 失败` 恒成立。排空超时的剩余帧计入 `pending_at_close` 并写进段结束事件。
+- **静止画面**：同一采集帧号不按节拍重复渲染；段切换（开段/弹回外层）后允许同一帧再入队一次，避免静止画面下新段一直停在 gap。
+- **单 IO 线程**完成渲染、JPEG 编码与写盘；RPC 只读缓存帧，不重编码；前端按序号去重。
+- **索引时间轴**：每条索引事件（帧 / 段边界 / 阶段 / 开关）带 `ts_wall_ns` 与 `ts_mono_ns`；帧行的 `ts_ns` 是采集时刻，事件时间另用双时钟。
+- **导航基线**：当前节点、命中模板与分数、命中框、点击意图、手柄指针、帧龄。由跳转图执行器提供，启动游戏进大厅与模块的 UI 步骤共享同一套视图。
+- **渲染器只追加**：模块可安装 `render_full` 视图叠加在基线之上；PEEP 不调用模块渲染器，模块不需要为实时预览写代码。
+- 旧入口 `save_frame` / `start_session` 保留给归档模块，不再是活跃通路。
 
-- PEEP 产出为 JPEG 交 GUI 侧渲染（`update_peep` 写与 `get_peep_jpeg` 读共用一把锁防撕裂；主界面预览卡与独立 PEEP 悬浮窗互斥消费）——本模块不开窗口
-
-- 渲染器可被模块安装替换（renderer token）：模块自带 `render_full` / `render_peep`，未安装时回落内置默认视图
-
-- 导航标注：光标 / 候选（入围、拉黑、被过滤）/ 按钮目标 / 模板匹配框
-
-- 检测框：调用方传 `detections` 时绘制（core 不认识类别语义，类别配色由模块渲染器自定）
-
-- 同类别重叠框去重（避免虚线框堆叠）
-
-- 文字带黑色阴影描边（保证任何背景可读性）
-
-**核心类**：`NavigationDebugger`
+**核心类**：`NavigationDebugger`（流调度 + 基线与旧视图）、`DebugSegment`（段句柄）、`_StreamQueue`（帧/控制事件 FIFO）
 
 **颜色约定（导航侧，BGR）**：
 
@@ -140,6 +138,8 @@
 - 内存+文件双写日志；内存缓冲为**有界环形 deque**（`BUFFER_CAPACITY=5000`），长跑不随日志量增长
 
 - GUI 增量读取用**单调序列号游标**（`get_lines_since(seq, ...)`），环形回绕后不重不漏、落后过多时返回 `truncated`
+
+- **记录头带时间轴身份**：每条记录含 `run_id`（当前队列轮次，由侧车设置；空闲为 `None`）、`ts`（秒级显示投影）、`ts_wall_ns`（跨文件/对外对表）与 `ts_mono_ns`（算间隔）。运行编号与调试目录、玩法流水、性能样本同源，不各自生成第二份。
 
 - 落盘**单流全量**：一次开启新建一个**会话目录** `logs/<时间戳>/`（同秒重名才加序号），日志落其中的 `MaaRM_<token>.log`，各级别按发生顺序写入；伴随产物（玩法流水 `trace/<模块>.jsonl`、性能流 `perf.jsonl`、鉴宝 `trace.jsonl`）**共用同一个开关、同放该目录**（玩法/性能写手以会话生命周期监听器跟随开合，模块侧取 `logger.session_dir`，取到 `None` 即表示本次不落盘）。单文件按大小轮转（`MAX_BYTES`/`BACKUP_COUNT`）；**会话目录只增不删**，占用由用户看设置页「调试文件夹」面板的统计后自行清理。**不按级别分档**——诊断是顺序的（「失败之前发生了什么」），按级别切分会切断时序且不可逆：切出的两份文件各自都读不通（DEBUG 档无业务锚点、INFO 档无诊断细节）。级别过滤只发生在读侧（GUI）与导出侧
 
@@ -191,7 +191,7 @@
 
 **职责**：
 
-- `find_game_hwnd()`: 查找游戏窗口（优先UnrealWindow类名 → 标题关键词 → PID）
+- `find_game_hwnd(group_id=None, *, verbose=True)`: 查找游戏窗口（优先UnrealWindow类名 → 标题关键词 → PID）；`verbose=False` 供轮询重试使用（不逐次打印完整窗口列表，避免启动等待期刷屏）
 
 - `has_physical_controller()`: XInput API 检测物理手柄（xinput1\_4/1\_3/9\_1\_0）
 
@@ -245,7 +245,7 @@
 
 **架构决策（v4 截图收敛：只留 WGC，无回退通道）**：
 
-- **唯一截图通道 = WGC 中心缓存**（宪法 6「帧只从中心缓存来，引擎永不自截帧」）。`capture.screenshot()` 与 `capture.frame_with_age()` 都只读 `WgcCapture`；采集器未就绪/读帧异常一律返回 None，调用方按"采集链路故障"处理，**不再回退 MAA 同步截图**（回退会造成双时间线：消费者各持不同时刻的帧，且回退路径在调用线程内阻塞等截图）。
+- **唯一截图通道 = WGC 中心缓存**（宪法 6「帧只从中心缓存来，引擎永不自截帧」）。`capture.screenshot()` 与 `capture.frame_with_age()` 都只读 `WgcCapture`；采集器未就绪/读帧异常一律返回 None，调用方按"采集链路故障"处理，**不再回退 MAA 同步截图**（回退会造成双时间线：消费者各持不同时刻的帧，且回退路径在调用线程内阻塞等截图）。**有帧但帧龄增长 ≠ 采集故障**：WGC 按画面变化出帧，加载页/后台暂停时画面静止，导航继续复用最后一帧并由步骤总时限兜底；只有 None（采集器已停）才判故障。
 
 - `Win32Controller`（`screencap_method=FramePool`）**仅保留连接校验用途**（`connect()` 里的 `post_connection()`），不再作为任何取帧来源；`ctx.bind_tasker()` 给插件绑的是 `WgcapController`（帧注入控制器），插件侧不得持有同步截图通道。
 
@@ -449,8 +449,8 @@
 **坑**：
 
 - 步骤与模块共用任务列表，所以队列 id 校验、配置槽、断点拒绝、资源徽标都要按「两种种类」分支；断点对步骤直接拒绝（没有阶段可断）。
-- 步骤启动会清 `stop_event`（与 `start_module` 同理）：上一轮模块"到限自动停止"也会置位它，不清的话步骤一进门就判成被停止。
-- **`execution_active` 不是 `_running`**：步骤执行期置 `_step_active`（`run_builtin_step` 的 try/finally），`sleep` 与急停看两者的或。`_running` 与 `module_active` 的语义不变——借用它会让 GUI 运行显示与看板错位。这条对**所有**内置步骤生效。
+- **停止信号按运行边界清**：`begin_run()` 清手动停止/停止信号/退出请求；项入口只在没有手动停止时清 `stop_event`。这样上一项"到限自动停止"不会泄漏到下一项，而两项之间按下的手动停止会保留到整轮结束（侧车在下一项启动前中止）。
+- **`execution_active` 不是 `_running`**：步骤执行期置 `_step_active`（`run_builtin_step` 的 try/finally），`sleep`、急停与 GUI“运行中”判据都看两者的或。`_running` 与 `module_active` 的语义不变——借用它会让看板语义错位。这条对**所有**内置步骤生效。
 - **资源所有权三层**（ADR-0018 §5）：窗口连接 / 截图采集 / 虚拟手柄设备 / ActivityContext 归控制器，会话（`StepSession`）只独占导航图；手柄借的是租约，归还租约不等于允许销毁设备。
 - **收尾失败不许销毁**：`NavGraph.shutdown()` 返回 False 表示框架 worker 未按时退出，此时保留句柄、置控制器污染态、拒绝下一轮启动。销毁仍在被原生线程使用的对象会崩在 `MaaFramework.dll`（`MAAFW_GUIDE §7.1`）。
 - **`on_error` 会吞动作失败**：协议里「识别命中但动作失败」也走 `on_error`，所以基础设施故障必须走 `report_fatal()` 通道，不能靠图结构兜底；`run()` 在 job 结束后还要复查一次 fatal。
@@ -599,6 +599,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | ---------------------------------------------- | ---------------------------------------------------------------------- |
 | `__init__()`                                   | 初始化能力门面、点击方式、急停等（截图通道唯一，无后端选择项）                                        |
 | `connect()`                                    | 幂等窗口连接：仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验 |
+| `begin_run()` / `end_run()`                    | 运行边界：清手动停止/停止信号/退出请求并获取全局性质；收尾恢复用户原音量（侧车按队列轮次调用） |
 | `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）                                    |
 | `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
 | `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                               |
@@ -607,7 +608,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `release_step_session(grp)`                    | 回收步骤会话的宿主资源：Context → 按 owner 销毁手柄 → 停采集（窗口连接不在此列）                                  |
 | `adopt_window(hwnd)` / `forget_window()`       | 采纳已定位的游戏窗口（连接时不再按标题搜）/ 关闭后清掉失效句柄                                       |
 | `request_exit()` / `exit_requested`            | 步骤请求「本轮结束后退出本程序」，sidecar 据此发退出事件                                       |
-| `set_mute_game(enabled)`                       | 运行时静音游戏（音频音量控制）                                                        |
+| `set_mute_game(enabled)`                       | 运行时静音游戏；运行中切换立即生效（关=恢复原值，开=重新静音）                                                  |
 | `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路；只在程序接管操作期检测按键）                                                   |
 | `gamepad_available()`                          | vgamepad / ViGEmBus 驱动可用性探测（缓存）                                        |
 | `_get_gpad()`                                  | 懒创建并返回虚拟手柄（复用，不销毁重建）                                                   |
@@ -629,12 +630,15 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 
 | 方法                                 | 说明                     |
 | ---------------------------------- | ---------------------- |
-| `__init__(proj_dir)`               | 初始化                    |
-| `enable_peep()` / `disable_peep()` | 开关 PEEP 预览（置 `peep_enabled`；窗口由 GUI 侧承担）   |
-| `start_session(label)`             | 开始一次调试会话（创建存盘子目录）      |
-| `save_frame(img, **kwargs)`        | 统一入口：存盘全量绘制 + PEEP精简绘制 |
-| `_render_full(img, **kw)`          | 全量标注绘制（存盘用）            |
-| `_render_peep(img, **kw)`          | 精简绘制（PEEP用）            |
+| `begin_run(run_id)` / `end_run()`  | 开/关一次运行的时间线（侧车按队列轮次调用） |
+| `open_scope(owner, label, save=...)` / `close_segment(scope)` | 控制器按运行项开外层作用域（`save` 取模块的 `DEBUG_SAVE` 声明）；关作用域前先排空 |
+| `open_segment(owner, label, ...)` / `DebugSegment.close()` | 执行器压/弹段（跳转图自动；模块控制段在 P2） |
+| `set_frame_source(fn)`             | 登记中心缓存取帧口，返回 `(rgb, fid, ts_ns, age_ms)` |
+| `get_peep_frame(after_seq)`        | 预览帧 + 元数据；序号未变返回 `state=same`，不重编码 |
+| `status()`                         | 运行编号、当前段/阶段、序号、降级标志与分项计数 |
+| `enabled` / `peep_enabled`         | 运行级开关；切换作为有序事件入队 |
+| `update_peep()` / `get_peep_jpeg()` | 旧入口（归档模块 / 旧测试），不参与新协议 |
+| `save_frame(img, **kwargs)`        | 旧入口：存盘全量绘制 + PEEP 精简绘制 |
 
 ### 3.4 基础工具方法速查（core 共享）
 
@@ -657,7 +661,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `ActivityModule` / `ActivityContext` | core/base.py                                                                              | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期）    |
 | `Registry`                           | core/registry.py                                                                          | 插件自动扫描注册（扫 `plugins/*/manifest.py`；含有效期门与自动选中过滤）  |
 | `Sidecar`                            | core/sidecar.py                                                                           | JSONL RPC 业务后端（Shell 托管）        |
-| `NavigationDebugger`                 | core/debug.py                                                                             | PEEP预览、截图标注（存盘走 debug\_io IO worker） |
+| `NavigationDebugger`                 | core/debug.py                                                                             | 运行级调试流（帧+控制事件 FIFO、单 IO 线程、PEEP 与索引）与旧视图     |
 | `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志；会话目录 `logs/<ts>/`（日志 + 伴随产物同放）    |
 | `RapidOcrEngine` / `OcrText`         | core/ocr.py                                                                               | 单 ROI 文字识别（懒加载 + 失败降级）；逐块/合并两种文本取法（§1.11） |
 
@@ -735,10 +739,11 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 
 ## 6. 调试操作
 
-1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 截图与记录"，标注帧按节流保存到 `%APPDATA%/MaaRacingMaster/debug/<module>/<会话>/` 目录（节流密度由模块定，如 speedrush 10Hz）
-2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，显示精简标注画面（~30fps；窗口由 GUI 侧承担，`debug.py` 不开窗口）
-3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
-4. **MPE Studio**：`tools/navkit/studio.cmd` 起完整工作台（MPE 画布编辑 v4 真源 + ROI 校准台 / 策略表 / 模板截取），见 [tools/navkit/README.md](../../tools/navkit/README.md)
+1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 截图与记录"（控制页常驻预览卡或模块设置页均可）。标注帧按运行时间线写入 `%APPDATA%/MaaRacingMaster/debug/<运行编号>/<段>/`，同目录 `index.jsonl` 记录帧行、段边界、阶段变化与分项计数。运行编号 = 日志会话编号（未开写盘时取时间戳）+ `_r<本轮序号>`。
+2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，显示最小集画面（游戏画面 + 指针 + 意图 + 段/阶段/帧龄，约 10fps；归属与阶段直接画在帧内信息条上）。数据页预览卡与悬浮窗共用同一份消费实现，同一时刻只有一个消费者拉帧；后端只在新帧时编码，前端按序号去重。
+3. **入口复用现有页面**：只跑内置步骤时，数据页预览卡与设置页的 DEBUG / PEEP 开关仍然可用（内置步骤本身就是一个面板项），不新增重复的预览卡或开关。
+4. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
+5. **MPE Studio**：`tools/navkit/studio.cmd` 起完整工作台（MPE 画布编辑 v4 真源 + ROI 校准台 / 策略表 / 模板截取），见 [tools/navkit/README.md](../../tools/navkit/README.md)
 
 **用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
 
@@ -746,7 +751,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 - `data/`：运行时数据与用户资产（`data/treasure/treasure.db`、`data/speedrush/macros/` 用户录制的宏、模型权重等）
 - `logs/`：会话记录 `logs/<MaaRM时间戳>/`——运行日志 `MaaRM_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）与伴随产物 `trace.jsonl`（共用「日志记录」开关）
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
-- `debug/`：调试截图会话 `debug/<module>/<会话>/`（DebugStudio 契约）
+- `debug/`：运行级调试时间线 `debug/<运行编号>/`（`index.jsonl` 与按段目录）；模块自有取证语料仍按自己的目录（如 `debug/speedrush/`），索引以段记录指向它
 
 GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目录管理。
 

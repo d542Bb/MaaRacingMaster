@@ -147,6 +147,7 @@ class MaaRacingMasterController:
         self._gpad = None  # 虚拟手柄，首次使用时创建，不复位不销毁
         self._gp_avail = None  # vgamepad 可用性缓存（None=未探测）
         self.debug = NavigationDebugger(debug_dir())
+        self.debug.set_frame_source(self._debug_frame_source)
         self._debug_mode = False  # 调试模式开关（由 GUI 控制）
         self._click_mode = "real"  # 点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)
         self._intent_mode = False  # 意图开关（仅显示意图）：只导航不确认，由用户自己按
@@ -154,7 +155,7 @@ class MaaRacingMasterController:
         self._step_active = False  # 内置步骤执行中（与 _running 并列，互不赋值）
         self._active_module = None  # 当前活动模块实例（生命周期由 start_module 管理）
         self._ctx = None  # ActivityContext 懒创建
-        self.stop_event = threading.Event()  # 停止信号（唯一 clear 位置在 start_module）
+        self.stop_event = threading.Event()  # 停止信号（运行开始清；手动停止保留到整轮结束）
         self._manual_stop = False  # 本次运行是否被用户手动停止（区分"模块自然跑完"如到限自动停止）
         self._lifecycle_lock = threading.Lock()  # 生命周期互斥锁
         # 紧急停止快捷键开关：开启后同时按下任意 ≥2 个按键 → 立即停止逻辑
@@ -167,10 +168,67 @@ class MaaRacingMasterController:
         self._last_step_outcome = None  # 上次内置步骤的业务结果（completed/skipped/stopped/failed）
         self._gpad_owner: str | None = None  # 虚拟手柄由谁创建（module / step），决定销毁时机
         self._teardown_failed = False  # 上次收尾未完成（框架 worker 未退出）：拒绝下一轮启动
-        self._mute_game_enabled = False  # 「运行选项」运行时静音游戏（结束恢复 100%）
+        self._mute_game_enabled = False  # 「运行选项」运行时静音游戏（运行边界获取/恢复原值）
+        self._run_muted = False  # 本轮是否已成功静音（结束据此恢复）
+        self._mute_original: list[float] | None = None  # 静音前的用户原音量（按会话）
+        self._mute_gen = 0  # 运行代际：迟到的静音线程不得跨轮生效
+        self._mute_started_gen = -1  # 本代是否已起静音重试线程
+        self._mute_lock = threading.Lock()
+        self._mute_thread: threading.Thread | None = None
         self._wgc_capture = None  # WGC 中心采集器（单生产者，全模块读缓存；运行期存在）
 
     # ---------- 模块生命周期 ----------
+
+    def _debug_frame_source(self):
+        """调试流取帧口：只读 WGC 中心缓存（契约 I1），采集未运行时返回无帧。"""
+        wgc = self._wgc_capture
+        if wgc is None or not getattr(wgc, "is_running", False):
+            return (None, 0, 0, float("inf"))
+        try:
+            return wgc.get_latest_rgb()
+        except Exception:  # noqa: BLE001 —— 读帧失败按无帧处理
+            return (None, 0, 0, float("inf"))
+
+    def _open_debug_scope(self, owner: str, label: str, *, save: str = "on"):
+        debug = getattr(self, "debug", None)
+        if debug is None:
+            return None
+        try:
+            return debug.open_scope(owner, label, save=save)
+        except Exception as exc:  # noqa: BLE001 —— 调试流不得阻断执行
+            logger.log(f"[debug] 打开调试作用域失败: {exc!r}", "DEBUG")
+            return None
+
+    def _close_debug_scope(self, scope, outcome: str) -> None:
+        if scope is None:
+            return
+        debug = getattr(self, "debug", None)
+        if debug is None:
+            return
+        try:
+            debug.close_segment(scope, outcome)
+        except Exception as exc:  # noqa: BLE001
+            logger.log(f"[debug] 关闭调试作用域失败: {exc!r}", "DEBUG")
+
+    # ---------- 运行边界：全局性质按轮获取与释放 ----------
+
+    def begin_run(self) -> None:
+        """队列一轮开始：清运行级请求，并在边界获取全局性质（静音）。
+
+        运行项入口不再各自清手动停止/退出请求——两项之间的停止必须保留到整轮结束。
+        """
+        self._manual_stop = False
+        self.stop_event.clear()
+        self._exit_requested = False
+        self._last_run_natural = False
+        self._last_step_outcome = None
+        # 上一轮若因异常没走到恢复，先兜底再开始本轮
+        self._restore_run_mute()
+        self._start_run_mute()
+
+    def end_run(self) -> None:
+        """队列一轮结束：释放运行级全局性质（恢复用户原音量）。"""
+        self._restore_run_mute()
 
     @property
     def active_module(self):
@@ -205,7 +263,7 @@ class MaaRacingMasterController:
 
     @property
     def manual_stop_requested(self) -> bool:
-        """本次运行是否被用户手动停止（stop() 置位，start_module 复位）。
+        """本次运行是否被用户手动停止（stop() 置位，运行开始复位）。
 
         运行队列据此区分「用户停止 → 中止整轮」与「模块自然结束 → 跑下一个」；
         不以 stop_event 判定——模块到限自动停止也会置位它（见 stop() 注释）。
@@ -272,12 +330,15 @@ class MaaRacingMasterController:
             raise RuntimeError(TEARDOWN_FAILED_MSG)
 
         g = _run_group("运行启动")
+        scope = None
         try:
             with self._lifecycle_lock:
                 if self.active_module is not None:
                     raise RuntimeError("已有模块在运行")
-                self.stop_event.clear()          # ★ 唯一 clear 位置
-                self._manual_stop = False
+                # 上一项到限自动停止会置位 stop_event；手动停止则保留到整轮结束，
+                # 由侧车在下一项启动前中止（不再被项入口清掉）。
+                if not self._manual_stop:
+                    self.stop_event.clear()
                 module = create_module(module_id, self.ctx)
                 if start_from and start_from not in module.STAGE_ORDER:
                     raise ValueError(f"断点 {start_from} 不属于模块 {module_id} 的阶段")
@@ -300,22 +361,20 @@ class MaaRacingMasterController:
                         except Exception as exc:  # noqa: BLE001
                             g.log(f"[controller] 模块{module_id!r}配置注入失败: {exc}", "WARNING")
                 self.active_module = module
+            # 调试作用域：段收尾必须早于 ctx.close（渲染器租约与最后几帧）。
+            # 存盘归属由模块声明：save=self 的模块（如极速狂飙）只写索引段行，
+            # 帧仍走自己的取证目录，统一流不复制第二份（契约 I7）。
+            scope = self._open_debug_scope(
+                module_id, module_id, save=getattr(module, "DEBUG_SAVE", "on"))
             self._running = True
             self._last_run_natural = False
-            self._exit_requested = False  # 退出请求按轮计，不跨轮残留
-            # 「运行选项」运行时静音游戏：每次启动都静音（结束由 finally 统一恢复 100%）。
-            # 必须放在这里而非 connect()：connect 幂等（第二次启动直接短路返回），
-            # 放 connect 会导致"停止后再开始不再静音"（2026-09-01 实测 bug）。
-            # hwnd 取 self._hwnd（二次运行复用上次句柄）或 find_game_hwnd 兜底（首次运行）。
-            if self._mute_game_enabled:
-                self._apply_game_volume(0.0, "运行开始：静音游戏", verify=True, grp=g)
             # WGC 中心采集器前置条件：_hwnd 与 MAA 连接由 connect() 建立（幂等：已连接
             # 即短路返回）。这里不按 `self._hwnd` 设守卫：「启动游戏」只采纳句柄、不建
             # 连接，守卫会把真实连接推给模块自己发起的无组那次，窗口连接行即散成裸行。
             # 注意：不能把 connect 塞进 _start_wgc_capture——那是 WGC 生命周期函数，
             # 职责只负责"假定 HWND 已存在后启动采集"；窗口连接归 connect() 所有。
             # conn_ok=False 时跳过 WGC 与模块启动，但仍走 finally 统一清理
-            # （active_module/ctx/_running/音量恢复），避免裸 return 残留状态。
+            # （active_module/ctx/_running），避免裸 return 残留状态。
             conn_ok = True
             if not self.connect(grp=g):
                 g.log("窗口连接失败，模块终止", "ERROR")
@@ -344,9 +403,11 @@ class MaaRacingMasterController:
                 # 断开栈帧引用：module 局部变量钉住 模块→点击器→手柄对象 整条链，
                 # 不置 None 的话 _destroy_gpad 里的 gc.collect() 回收不到它们。
                 module = None
-                # 释放模块期间 Context 登记的所有资源（renderer 等）。
-                # close() 调用权只在编排层；close 后置空，下次 start_module 新建全新 Context/ExitStack，
-                # 保证重复启停不累积 renderer/gamepad ownership。
+                # 先收调试作用域，再释放 Context / 采集（契约 5.1）
+                self._close_debug_scope(
+                    scope,
+                    "stopped" if self._manual_stop
+                    else ("completed" if self._last_run_natural else "failed"))
                 if self._ctx is not None:
                     try:
                         self._ctx.close()
@@ -362,9 +423,6 @@ class MaaRacingMasterController:
                 # 此时模块主循环已退出（含停止信号中止的手柄导航），无并发使用，销毁安全。
                 self._destroy_gpad(grp=cg)
                 self._stop_wgc_capture()  # 运行结束停止 WGC 中心采集（资源不常驻，下次运行再启动）
-                # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
-                if self._mute_game_enabled:
-                    self._apply_game_volume(1.0, "运行结束：恢复游戏音量为 100%", grp=cg)
                 # 运行结束后行为已改为任务列表里的步骤（关闭游戏 / 关闭后退出本程序）：
                 # 这里不再按开关自动关游戏或退出——步骤按队列位置执行，语义在界面上，
                 # 不在这里的特判里。
@@ -386,8 +444,8 @@ class MaaRacingMasterController:
         所有权：窗口连接、截图采集、虚拟手柄设备、ActivityContext 归控制器；会话
         （`StepSession`）只独占导航图。收尾未完成时保留资源并标记污染，拒绝下一轮。
 
-        停止信号：与 start_module 同理，进入时复位并清 stop_event——上一轮模块"到限
-        自动停止"也会置位它，不清的话步骤会一进门就判成被停止。
+        停止信号：项入口只在没有手动停止时清 stop_event——上一项"到限自动停止"也会
+        置位它；手动停止保留到整轮结束，由侧车中止后续项。
         """
         from maaracing_master.core.builtin_steps import BUILTIN_STEPS
 
@@ -398,13 +456,15 @@ class MaaRacingMasterController:
             raise RuntimeError(TEARDOWN_FAILED_MSG)
 
         g = _run_group(cls.NAME, kind="step")
-        self._manual_stop = False
-        self.stop_event.clear()
+        # 上一项到限自动停止会置位 stop_event；手动停止保留到整轮结束
+        if not self._manual_stop:
+            self.stop_event.clear()
         self._last_run_natural = False
         self._last_step_outcome = "failed"
         cfg = dict(step_config or {})
         step = cls(self, grp=g)
         session = StepSession(self, step.required_resources(cfg), grp=g)
+        scope = self._open_debug_scope(step_id, cls.NAME)
 
         step_ok = False
         teardown_ok = True
@@ -417,6 +477,8 @@ class MaaRacingMasterController:
             raise
         finally:
             try:
+                # 先收调试作用域，再释放会话（Context / 手柄 / 采集）
+                self._close_debug_scope(scope, self._last_step_outcome or "failed")
                 teardown_ok = session.close()
             except Exception as exc:  # noqa: BLE001 —— close 约定不抛，这里只防御
                 teardown_ok = False
@@ -480,8 +542,17 @@ class MaaRacingMasterController:
         return self._mute_game_enabled
 
     def set_mute_game(self, enabled: bool) -> None:
-        """设置「运行时静音游戏」开关。运行期间由 start_module/finally 执行静音与恢复。"""
-        self._mute_game_enabled = bool(enabled)
+        """设置「运行时静音游戏」开关；运行中切换立即生效（关=恢复原值，开=重新静音）。"""
+        enabled = bool(enabled)
+        if enabled == self._mute_game_enabled:
+            return
+        self._mute_game_enabled = enabled
+        if not self.execution_active:
+            return
+        if enabled:
+            self._start_run_mute()
+        else:
+            self._restore_run_mute()
 
     def _apply_game_volume(self, level: float, label: str, verify: bool = False,
                            grp=None) -> None:
@@ -493,7 +564,7 @@ class MaaRacingMasterController:
         try:
             from maaracing_master.core.audio_volume import get_game_volume, set_game_volume
             hwnd = self._hwnd or find_game_hwnd(
-                group_id=grp.id if grp is not None else None)
+                group_id=grp.id if grp is not None else None, verbose=False)
             if not hwnd:
                 _clog(grp, f"{label}：未能定位游戏窗口，跳过音量设置", "WARNING")
                 return
@@ -511,6 +582,96 @@ class MaaRacingMasterController:
             _clog(grp, f"{label}（游戏音量 {level:.0%}，会话×{n}）", "INFO")
         except Exception as e:  # noqa: BLE001
             _clog(grp, f"{label}：音量设置异常: {e}", "WARNING")
+
+    def _try_game_volume(self, level: float) -> int:
+        """静默尝试设置音量，返回受影响会话数（0 = 暂无可设置的会话）。"""
+        try:
+            from maaracing_master.core.audio_volume import set_game_volume
+            hwnd = self._hwnd or find_game_hwnd(verbose=False)
+            if not hwnd:
+                return 0
+            return int(set_game_volume(hwnd, level))
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _try_capture_volume(self) -> list[float] | None:
+        """静默读取游戏进程当前各音频会话音量；无窗口/无会话返回 None。"""
+        try:
+            from maaracing_master.core.audio_volume import get_game_volume
+            hwnd = self._hwnd or find_game_hwnd(verbose=False)
+            if not hwnd:
+                return None
+            vols = [float(v) for v in get_game_volume(hwnd)]
+            return vols or None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _start_run_mute(self, grp=None) -> None:
+        """运行开始后静音一次：窗口/音频会话晚到时有界重试。
+
+        原音量在设置 0 之前读取并保留，运行结束按原值恢复（L2）。
+        代际号保证运行中关闭开关或进入下一轮后，迟到的线程不会再把游戏静音。
+        """
+        if not getattr(self, "_mute_game_enabled", False):
+            return
+        lock = getattr(self, "_mute_lock", None)
+        if lock is None:
+            return
+        with lock:
+            if self._run_muted or self._mute_started_gen == self._mute_gen:
+                return
+            gen = self._mute_gen
+            self._mute_started_gen = gen
+
+        def _run():
+            # 冷启动可能几分钟才出现窗口/音频会话：重试覆盖整轮上限，
+            # 运行结束（代际变化）会立即让线程退出，不会泄漏。
+            deadline = time.monotonic() + 300.0
+            while time.monotonic() < deadline:
+                with lock:
+                    if self._mute_gen != gen or not self._mute_game_enabled:
+                        return
+                vols = self._try_capture_volume()
+                if vols:
+                    n = self._try_game_volume(0.0)
+                    if n:
+                        with lock:
+                            if self._mute_gen != gen or not self._mute_game_enabled:
+                                return
+                            self._mute_original = vols
+                            self._run_muted = True
+                        uniq = sorted({round(v, 2) for v in vols})
+                        note = ("" if len(uniq) <= 1
+                                else f"，原会话音量不一致 {uniq}，结束按中位数恢复")
+                        _clog(grp, f"运行开始：静音游戏（原音量 {vols[0]:.0%}，"
+                                   f"会话×{n}{note}）")
+                        return
+                time.sleep(0.5)
+            _clog(grp, "运行开始：未找到游戏音频会话，静音未生效", "WARNING")
+
+        t = threading.Thread(target=_run, daemon=True, name="run-mute")
+        self._mute_thread = t
+        t.start()
+
+    def _restore_run_mute(self, grp=None) -> None:
+        """运行结束（含关闭开关）恢复用户原音量；没静过音则不动。"""
+        lock = getattr(self, "_mute_lock", None)
+        if lock is None:
+            return
+        with lock:
+            self._mute_gen += 1
+            original = self._mute_original
+            muted = self._run_muted
+            self._run_muted = False
+            self._mute_original = None
+            self._mute_started_gen = -1
+        if not muted:
+            return
+        if original:
+            level = sorted(original)[len(original) // 2]
+        else:
+            level = 1.0
+        self._apply_game_volume(level, f"运行结束：恢复游戏音量（原 {level:.0%}）", grp=grp)
 
     # ---------- 紧急停止快捷键（GUI 调试选项卡开关控制）----------
 
@@ -548,7 +709,7 @@ class MaaRacingMasterController:
                     time.sleep(0.05)
                     continue
                 if count_pressed_keys() >= 2:
-                    if self._running:
+                    if self.execution_active:
                         logger.log("紧急停止：检测到同时按下 ≥2 个按键，立即停止逻辑", "ERROR")
                         self.stop()
                     # 无论是否运行：冷却 1s，避免按住不松时反复触发

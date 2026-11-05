@@ -793,7 +793,7 @@
               <img class="preview-img" id="${mid}-preview-img" alt="PEEP 实时预览">
               <div class="preview-empty" id="${mid}-preview-empty">
                 ${MaaRMIcons.svg('camera')}
-                <span>PEEP 开启后显示实时画面</span>
+                <span data-peep-empty-text>PEEP 开启后显示实时画面</span>
               </div>
             </div>
           </div>

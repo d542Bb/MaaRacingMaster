@@ -628,6 +628,7 @@ class SidecarService:
         # 上一轮各模块结局 {mid: ok|fail|stopped|skip}（None = 本次启动后还没跑完整轮）。
         self._queue_run: dict | None = None
         self._round_result: dict[str, str] | None = None
+        self._round_seq = 0  # 本进程内第几轮（调试运行编号后缀）
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
         # 已告警过的「未声明键」（每会话首次，避免 4Hz 轮询刷屏）
         self._perf_unknown_warned: set[str] = set()
@@ -845,7 +846,8 @@ class SidecarService:
             "breakpoints": dict(self._start_from),
             "module_assets": self._module_assets_map(),
             "model_ok": self._enabled_assets_ok(),
-            "is_running": self._controller.module_active,
+            "is_running": self._controller.execution_active,
+            "module_active": self._controller.module_active,
         }, None)
 
     def _module_list(self) -> list:
@@ -1004,15 +1006,27 @@ class SidecarService:
         snap = perf_sampler.snapshot()
         self._check_sampler_stall(snap)
         perf = build_perf_payload(snap.get("domain"), snap)
+        dbg = self._controller.debug.status()
         return (True, {
-            "is_running": self._controller.module_active,
+            # 执行活跃：模块与内置步骤共用同一把“运行中”判据（前后端锁定/高亮同源）
+            "is_running": self._controller.execution_active,
+            "module_active": self._controller.module_active,
             "current_stage": self._controller.current_stage,
             "current_module": self._controller.current_module_id,
             "worker_active": worker is not None and worker.is_alive(),
             # 运行实况：第几个/共几个、正在跑哪个模块（前端据此点亮对应任务卡）
             "queue_run": queue_run,
+            # 运行身份：日志/调试/流水/性能共用（空闲时为 None）
+            "run_id": logger.current_run_id,
             # 上一轮各模块结局（ok|fail|stopped|skip；None = 启动后尚未跑完整轮）
             "round_result": round_result,
+            # 调试流归属：内置步骤没有 current_module/current_stage，状态行用它兜底
+            "debug_owner": dbg.get("owner"),
+            "debug_label": dbg.get("label"),
+            "debug_stage": dbg.get("stage"),
+            "debug_seq": dbg.get("seq"),
+            "peep_state": dbg.get("peep_state"),
+            "debug_degraded": bool(dbg.get("degraded")),
             # 资源齐备状态随轮询持续下发（前端闲置态据此维持「插件资源缺失」提示，
             # 并在任务卡上标出具体缺资源的模块）；实现只是几个 stat 调用，4Hz 轮询无压力
             "module_assets": self._module_assets_map(),
@@ -1254,9 +1268,14 @@ class SidecarService:
                              "start_from": start_from, "config": cfg})
             self._round_result = None
             self._queue_run = {"index": 0, "total": len(plan), "current_module": plan[0]["id"]}
+            self._round_seq = getattr(self, "_round_seq", 0) + 1
+            base = logger.session_token or time.strftime("%Y%m%d_%H%M%S")
+            run_id = f"{base}_r{self._round_seq}"
+            # 运行身份的唯一生成点：日志/调试/流水/性能/壳事件都消费它
+            logger.set_run_id(run_id)
             worker = threading.Thread(
                 target=self._worker_main,
-                args=(plan,),
+                args=(plan, run_id),
                 daemon=True,
                 name="module-worker",
             )
@@ -1314,7 +1333,7 @@ class SidecarService:
             return rows
         return read
 
-    def _worker_main(self, plan: list[dict]) -> None:
+    def _worker_main(self, plan: list[dict], run_id: str | None = None) -> None:
         """按计划顺序逐个跑（活动模块 / 内置步骤）；失败或手动停止即中止整轮。
 
         判定表（每一项结束后）：
@@ -1329,17 +1348,34 @@ class SidecarService:
         results: dict[str, str] = {}
         all_natural = True
         total = len(plan)
+        # 运行边界：清手动停止/退出请求/停止信号，并获取运行级全局性质（静音）
+        try:
+            self._controller.begin_run()
+        except Exception:  # noqa: BLE001 —— 运行级初始化故障不得阻断执行
+            pass
+        # 运行级调试流：整轮共享一个运行编号；段由各执行器在项内压/弹。
+        try:
+            self._controller.debug.begin_run(run_id)
+        except Exception:  # noqa: BLE001 —— 调试流故障不得阻断运行
+            pass
         # 轮次开始放在工作线程内（而非 start 受理接口），与收尾块对称：
         # 受理成功但线程没起来时，壳侧不会空亮。
         self._send_event_best_effort({
             "type": "event", "event": "round_started",
-            "data": {"total": total, "first_step": plan[0]["id"] if plan else None},
+            "data": {"total": total, "first_step": plan[0]["id"] if plan else None,
+                     "run_id": run_id, "ts_wall_ns": time.time_ns(),
+                     "ts_mono_ns": time.monotonic_ns()},
         })
         # 领域行取值口在整轮期间有效（内部按当前活动模块取值），结束后注销
         perf_sampler.set_domain_reader(self._make_perf_reader())
         try:
             for i, item in enumerate(plan):
                 step_id = item["id"]
+                # 两项之间按下的停止：下一项不再启动（项入口不会清手动停止）
+                if self._controller.manual_stop_requested:
+                    results[step_id] = "stopped"
+                    all_natural = False
+                    break
                 with self._lock:
                     self._queue_run = {"index": i, "total": total, "current_module": step_id}
                 try:
@@ -1384,9 +1420,11 @@ class SidecarService:
                 self._queue_run = None
                 self._round_result = results
             # 轮次结束先于自动退出：壳侧拿到结局后再进入关窗，避免通知被关窗流程吞掉。
+            ended = _round_ended_payload(results)
+            ended.update({"run_id": run_id, "ts_wall_ns": time.time_ns(),
+                          "ts_mono_ns": time.monotonic_ns()})
             self._send_event_best_effort({
-                "type": "event", "event": "round_ended",
-                "data": _round_ended_payload(results),
+                "type": "event", "event": "round_ended", "data": ended,
             })
             # 「关闭后退出本程序」由「关闭游戏」步骤发起：整轮自然完成且步骤要过退出才发
             # auto_exit 事件 → shell 延迟关窗优雅退出（保证 worker 收尾先于窗口关闭）。
@@ -1394,6 +1432,17 @@ class SidecarService:
                 self._send_event_best_effort({"type": "event", "event": "auto_exit"})
             perf_sampler.set_domain_reader(None)
             perf_sampler.set_thread_labels(None)
+            # 排空调试流、关闭运行目录；必须在 worker 置空前完成
+            try:
+                self._controller.debug.end_run()
+            except Exception:  # noqa: BLE001
+                pass
+            # 运行级全局性质收尾：恢复用户原音量等
+            try:
+                self._controller.end_run()
+            except Exception:  # noqa: BLE001
+                pass
+            logger.set_run_id(None)
             with self._lock:
                 if self._worker is threading.current_thread():
                     self._worker = None
@@ -1928,6 +1977,7 @@ class SidecarService:
 
     def get_debug_state(self, params):
         debug = self._controller.debug
+        status = debug.status()
         return (True, {
             "debug_mode": bool(getattr(self._controller, "_debug_mode", False)),
             "peep_enabled": bool(debug.peep_enabled),
@@ -1937,6 +1987,15 @@ class SidecarService:
             "file_logging": logger.file_logging,
             "mute_game": bool(self._controller.mute_game_enabled),
             "boost_priority": bool(self._boost_priority_enabled),
+            # 运行级调试流元数据：前端状态行/预览标注用
+            "debug_run": status.get("run_id"),
+            "debug_owner": status.get("owner"),
+            "debug_label": status.get("label"),
+            "debug_stage": status.get("stage"),
+            "debug_seq": status.get("seq"),
+            "peep_state": status.get("peep_state"),
+            "debug_degraded": bool(status.get("degraded")),
+            "debug_counters": status.get("counters") or {},
         }, None)
 
     def set_debug_mode(self, params):
@@ -1947,7 +2006,9 @@ class SidecarService:
         cur["debug_mode"] = bool(enabled)
         _save_profile({"debug": cur})
         logger.log(f"调试截图模式: {'开启' if enabled else '关闭'}")
-        return (True, {"debug_mode": enabled}, None)
+        return (True, {"debug_mode": enabled,
+                       "effective_seq": getattr(self._controller.debug,
+                                                "last_toggle_seq", 0)}, None)
 
     def set_file_logging(self, params):
         """日志记录开关：开启后才把日志写入磁盘（user_data_dir/logs，每次开启新建文件）。"""
@@ -1968,15 +2029,27 @@ class SidecarService:
         else:
             self._controller.debug.disable_peep()
         logger.log(f"PEEP 实时预览: {'开启' if enabled else '关闭'}")
-        return (True, {"peep_enabled": enabled}, None)
+        return (True, {"peep_enabled": enabled,
+                       "effective_seq": getattr(self._controller.debug,
+                                                "last_toggle_seq", 0)}, None)
 
     def get_peep_frame(self, params):
-        """取最新 PEEP 预览帧（JPEG base64），供前端数据页内嵌显示。未开启/无帧时返回 frame=None。"""
+        """取最新 PEEP 帧与元数据。
+
+        请求可带 `after_seq`：与最新序号相同时返回 `state=same`、不重编码。
+        帧由调试流 IO 线程编码，本方法只做 base64 与元数据透传。
+        """
         import base64
-        data = self._controller.debug.get_peep_jpeg()
-        if data is None:
-            return (True, {"frame": None}, None)
-        return (True, {"frame": base64.b64encode(data).decode("ascii")}, None)
+        after = params.get("after_seq")
+        try:
+            after = int(after) if after is not None else None
+        except (TypeError, ValueError):
+            after = None
+        data = dict(self._controller.debug.get_peep_frame(after))
+        frame = data.get("frame")
+        data["frame"] = (base64.b64encode(frame).decode("ascii")
+                         if isinstance(frame, (bytes, bytearray)) else None)
+        return (True, data, None)
 
     def set_emergency_stop(self, params):
         enabled = bool(params.get("enabled", False))

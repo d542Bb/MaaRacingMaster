@@ -40,7 +40,7 @@ import shutil
 import tempfile
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from maa.custom_action import CustomAction
@@ -77,10 +77,10 @@ RUN_POLL_MAX_S = 0.02
 # 「停止中」永远不结束。宁可超时后照常收尾（并留 WARNING 供定位），也不无限等。
 STOP_SETTLE_TIMEOUT_S = 10.0
 
-# 帧龄超过这个值即判「截图链路失效」（不是某一帧过期，而是缓存不再更新）。
-# WGC 以 60fps 供给，正常运行期帧龄是个位数毫秒；2 秒意味着采集线程已经停了
-# 或窗口不再产生画面，此时继续识别只是在读同一张旧图。
-FRAME_STALE_FATAL_MS = 2000.0
+# 画面静止的告警阈值：WGC 按内容变化出帧，加载页/后台暂停时画面可以长时间
+# 不变、帧龄持续增长——这不是采集坏了。只有 frame=None（采集器已停/未启动）
+# 才是基础设施故障；静止帧继续复用，由步骤总时限兜底。
+FRAME_STATIC_WARN_MS = 2000.0
 
 
 def _wait_job_settled(job, timeout_s: float | None = None) -> bool:
@@ -160,6 +160,7 @@ class TemplateRecognizer(CustomRecognition):
             return self.AnalyzeResult(box=None, detail={"error": "截图失败"})
         import cv2
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # 注入帧为 BGR（框架契约）
+        self._graph._last_frame = frame
         H, W = rgb.shape[:2]
 
         names = [n for n in p.get("templates", []) if isinstance(n, str) and n]
@@ -183,6 +184,7 @@ class TemplateRecognizer(CustomRecognition):
             thresholds=arb, roi=roi)
         if box is None:
             name = argv.node_name
+            self._graph._publish_nav(name, phase="miss", score=float(score))
             if name not in self._miss_nodes:
                 # 边沿触发：只在进入「未命中」时记一次（常驻图里未被命中的节点
                 # 每帧都会到这里，逐帧打属稳态重复）。命中后清位，便于下次再记。
@@ -221,6 +223,8 @@ class TemplateRecognizer(CustomRecognition):
                     return self.AnalyzeResult(box=None, detail={"blocked_by": "cursor",
                                                                 "occlusion": round(ratio, 2)})
 
+        self._graph._publish_nav(argv.node_name, phase="hit", template=hit_name,
+                                 score=float(score), box=box)
         return self.AnalyzeResult(
             # MaaFW rect 契约 = (x, y, w, h)（框架按此归一/裁剪，越界会 clip）；
             # 内部匹配全程 (x1,y1,x2,y2)，只在框架边界转换。
@@ -265,6 +269,8 @@ class ClickAction(CustomAction):
             return False
         cx, cy = (rx + rw / 2) / W, (ry + rh / 2) / H
         box_norm = (rw / W, rh / H)
+        self._graph._publish_intent(argv.node_name, rx + rw / 2, ry + rh / 2,
+                                    "pending")
         self._graph._log(f"[v4] 「{argv.node_name}」点击 rect=({rx},{ry},{rw},{rh}) "
                          f"帧 {W}x{H} 归一化=({cx:.3f},{cy:.3f})", "DEBUG")
 
@@ -274,6 +280,8 @@ class ClickAction(CustomAction):
             gamepad_button=p.get("gamepad_button"),
             duration=float(p.get("duration", 0.15)),
         )
+        self._graph._publish_intent(argv.node_name, rx + rw / 2, ry + rh / 2,
+                                    "ok" if ok else "failed")
         self._graph.ctx.lifecycle.sleep(float(p.get("wait_after_ms", 800)) / 1000.0)
         if not ok:
             reason = self._graph.last_click_error
@@ -473,6 +481,12 @@ class NavGraph:
         self._fatal_lock = threading.Lock()
         self._outcome: str | None = None  # 上次 run 的结局（见 run 的 docstring）
         self._last_click_error: str = ""  # 上一次 click 的失败原因（供动作桥分类）
+        self._last_static_warn = 0.0  # 画面静止告警节流（不是故障）
+        # 调试流：导航段的状态快照（节点/模板/分数/框/意图），由 core 自己的
+        # 执行器提供给调试流；模块不需要为导航绘制写任何代码。
+        self._nav_state: dict = {}
+        self._nav_lock = threading.Lock()
+        self._dbg_seg = None  # 当前导航段句柄（publish 时同步阶段标注）
 
     def set_log_group(self, group_id: str | None) -> None:
         """同步本图日志挂靠的业务组号（插件在组开/关时调用，不跨线程读隐式当前组）。"""
@@ -509,27 +523,100 @@ class NavGraph:
                 return
             self._fatal = reason
 
-    def _frame_age_ms(self) -> float | None:
-        """当前中心缓存帧的帧龄（毫秒）；取不到返回 None（测试桩/无采集时）。"""
+    def _check_frame_health(self) -> None:
+        """截图链路健康度：只有「完全没有帧」才算基础设施故障。
+
+        WGC 按画面变化出帧：加载页/后台暂停时画面可以长时间不变，帧龄持续增长
+        但缓存里仍有最后一帧——这不是采集坏了，继续用最后一帧识别，由步骤总时限
+        兜底。只有 frame=None（采集器已停/未启动）才判故障。
+        """
         cap = getattr(self.ctx, "capture", None)
         if cap is None:
-            return None
+            return
         try:
             res = cap.frame_with_age()
-            age = res[3] if isinstance(res, tuple) and len(res) >= 4 else None
-            return float(age) if isinstance(age, (int, float)) else None
-        except Exception:  # noqa: BLE001 —— 取帧龄失败不构成判断依据
+        except Exception:  # noqa: BLE001 —— 取帧失败不构成判断依据
+            return
+        if not isinstance(res, tuple) or not res:
+            return
+        frame = res[0]
+        age = res[3] if len(res) >= 4 else None
+        if frame is None:
+            self.report_fatal("截图链路中断：无可用帧（采集已停）")
+            return
+        if isinstance(age, (int, float)) and age > FRAME_STATIC_WARN_MS:
+            now = time.monotonic()
+            if now - self._last_static_warn >= 10.0:
+                self._last_static_warn = now
+                self._log(f"[跳转图] 画面已 {age:.0f}ms 无更新（加载页/后台暂停），"
+                          "继续使用最后一帧等待", "WARNING")
+
+    # ---------- 调试流：导航段的状态与指针快照 ----------
+
+    def _publish_nav(self, node: str, *, phase: str, template=None,
+                     score=None, box=None) -> None:
+        with self._nav_lock:
+            self._nav_state["nav"] = {
+                "node": str(node or ""), "phase": phase,
+                "template": template, "score": score, "box": box,
+            }
+        # 当前节点即导航段的阶段标注（B4/A2：预览要能说出"现在在哪一步"）
+        seg = self._dbg_seg
+        if seg is not None:
+            try:
+                seg.set_stage(node)
+            except Exception:  # noqa: BLE001 —— 标注失败不影响导航
+                pass
+
+    def _publish_intent(self, node: str, cx_px: float, cy_px: float,
+                        status: str = "pending") -> None:
+        with self._nav_lock:
+            self._nav_state["intent"] = {
+                "point": (float(cx_px), float(cy_px)),
+                "label": str(node or ""), "status": status,
+                "ts": time.monotonic(),
+            }
+
+    def _debug_state(self) -> dict:
+        with self._nav_lock:
+            return dict(self._nav_state)
+
+    def _debug_pointer(self):
+        """PEEP 指针层数据：手柄光标位与年龄（real 模式无游戏内光标，返回 None）。"""
+        clicker = self._clicker
+        if clicker is None:
+            return None
+        try:
+            pos = clicker.gamepad_cursor_pos()
+            if pos is None:
+                return None
+            return {"pos": pos, "age_s": clicker.gamepad_cursor_age_s()}
+        except Exception:  # noqa: BLE001 —— 诊断读取失败不影响导航
             return None
 
-    def _check_frame_health(self) -> None:
-        """截图链路健康度：帧龄超限即基础设施故障。
-
-        不依赖框架是否抛 FrameStaleError——采集线程停了但框架还在拿同一张旧帧
-        识别，是比抛异常更隐蔽的形态。
-        """
-        age = self._frame_age_ms()
-        if age is not None and age > FRAME_STALE_FATAL_MS:
-            self.report_fatal(f"截图帧龄 {age:.0f}ms 超过 {FRAME_STALE_FATAL_MS:.0f}ms，采集可能已停")
+    @contextmanager
+    def _debug_scope(self, entry: str):
+        """跑图期间压一个导航段：启动链与模块的 UI 步骤共享同一套基线视图。"""
+        dbg = getattr(self.ctx, "debug", None)
+        seg = None
+        if dbg is not None:
+            try:
+                seg = dbg.open_segment(
+                    "nav", entry, source="pull",
+                    pointer=self._debug_pointer,
+                    state_provider=self._debug_state)
+            except Exception:  # noqa: BLE001 —— 调试流不得阻断导航
+                seg = None
+        try:
+            self._dbg_seg = seg
+            yield seg
+        finally:
+            self._dbg_seg = None
+            if seg is not None:
+                try:
+                    dbg.close_segment(seg, self._outcome or "failed")
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ---------- 装配 ----------
 
@@ -734,6 +821,7 @@ class NavGraph:
         # 手柄租约只在跑图期间持有：结束立刻归还，模块外层的 reset_device()
         # （销毁手柄复位）才不会被「有活跃租约禁止断开设备」这条不变量挡住。
         with ExitStack() as stack:
+            stack.enter_context(self._debug_scope(entry))
             if self.ctx.click_mode == "gamepad":
                 from maaracing_master.core.capabilities import BUTTON_A
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
@@ -902,23 +990,32 @@ class FrameStaleError(RuntimeError):
 class WgcapController(CustomController):
     """v4 帧注入控制器（宪法 6：帧只从中心缓存来，引擎永不自截帧）。
 
-    screencap() 读 CaptureAdapter 的 WGC 缓存帧（RGB→BGR 适配框架契约），
-    帧龄超过 stale_ms 抛 FrameStaleError。点击/按键等动作一律成功返回——
-    真实动作走 MaaRM_Click → Clicker（手柄导航协议），不经框架输入通道。
+    screencap() 读 CaptureAdapter 的 WGC 缓存帧（RGB→BGR 适配框架契约）。
+    只有帧缺失（采集器未运行）才抛 FrameStaleError；帧龄超限只告警并复用最后
+    一帧——WGC 对静止画面不出新帧，加载页/后台暂停时这是正常状态。
+    点击/按键等动作一律成功返回——真实动作走 MaaRM_Click → Clicker（手柄导航
+    协议），不经框架输入通道。
     """
 
     def __init__(self, capture, *, stale_ms: float = STALE_FRAME_MS):
         super().__init__()
         self._capture = capture
         self._stale_ms = float(stale_ms)
+        self._stale_warn_at = 0.0
         self.last_frame_id = 0
 
     def screencap(self):
         import numpy as np
 
         frame, fid, _ts, age = self._capture.frame_with_age()
-        if frame is None or age > self._stale_ms:
-            raise FrameStaleError(f"帧缺失或过期：age={age:.0f}ms > {self._stale_ms:.0f}ms")
+        if frame is None:
+            raise FrameStaleError("帧缺失：采集器未运行")
+        if age > self._stale_ms:
+            now = time.monotonic()
+            if now - self._stale_warn_at >= 10.0:
+                self._stale_warn_at = now
+                logger.log(f"[跳转图] 画面已 {age:.0f}ms 无更新（加载页/后台暂停），"
+                           "继续使用最后一帧", "WARNING")
         self.last_frame_id = int(fid)
         return np.ascontiguousarray(frame[:, :, ::-1])  # RGB → BGR（框架契约）
 

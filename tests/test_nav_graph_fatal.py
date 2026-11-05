@@ -7,10 +7,12 @@ run 收尾各查一次。这里锁三件事：
 
 1. **job 成功后仍要复查 fatal**：动作桥可能在最后一刻记录故障，不能被成功状态覆盖；
 2. 总时限到期先停框架再返回，结局是 deadline；
-3. 截图帧龄超限本身就算基础设施故障（采集停了，框架可能还在读同一张旧帧）。
+3. **只有「完全没有帧」才算基础设施故障**：WGC 对静止画面不出新帧（加载页/后台
+   暂停），帧龄增长是正常状态，继续复用最后一帧等待。
 """
 from __future__ import annotations
 
+import math
 import time
 from unittest.mock import MagicMock
 
@@ -82,12 +84,22 @@ def test_fatal_recorded_during_run_wins_over_job_success(pure_maa):
     assert g.last_outcome == "task_failed", "job 成功不得覆盖已记录的 fatal"
 
 
-def test_fatal_from_stale_frame_terminates_run(pure_maa):
-    ctx = _Ctx(frame_age_ms=ng.FRAME_STALE_FATAL_MS + 1000)
+def test_fatal_from_missing_frame_terminates_run(pure_maa):
+    ctx = _Ctx()
+    ctx.capture.frame_with_age.return_value = (None, 0, 0, math.inf)
     g = _graph(ctx, _Job(done=False))
 
     assert g.run("startup.boot", deadline_s=2.0) is False
     assert g.last_outcome == "task_failed"
+
+
+def test_stale_frame_is_not_fatal(pure_maa):
+    """WGC 静止画面不出新帧：帧龄增长只告警、继续等，不判采集故障。"""
+    ctx = _Ctx(frame_age_ms=ng.FRAME_STATIC_WARN_MS + 1000)
+    g = _graph(ctx, _Job(done=False))
+
+    assert g.run("startup.boot", deadline_s=0.8) is False
+    assert g.last_outcome == "deadline"
 
 
 def test_deadline_stops_framework_and_reports(pure_maa):
@@ -139,6 +151,9 @@ class _BridgeGraph:
 
     def report_fatal(self, reason):
         self.fatal.append(reason)
+
+    def _publish_intent(self, *args, **kwargs):
+        pass
 
     def _log(self, msg, level="INFO"):
         self.lines.append((level, msg))

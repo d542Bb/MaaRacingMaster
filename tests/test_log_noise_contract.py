@@ -160,6 +160,10 @@ def test_self_judging_caller_still_gets_miss_log(rec):
 class _GraphStub:
     image_dirs: list = []
 
+    def _publish_nav(self, *args, **kwargs):
+        """识别桥的调试状态发布：桩环境无绘制需求，空实现。"""
+        pass
+
     def _log(self, msg, level="INFO"):
         """动作桥的组挂靠日志入口：桩环境无组可挂，直接落模块 logger。"""
         nav_mod.logger.log(msg, level)

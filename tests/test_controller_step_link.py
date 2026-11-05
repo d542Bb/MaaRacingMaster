@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -37,6 +38,7 @@ def _ctl() -> ctl.MaaRacingMasterController:
     c._active_module = None
     c._manual_stop = False
     c.stop_event = threading.Event()
+    c._exit_requested = False
     c._last_run_natural = False
     c._last_step_outcome = None
     c._teardown_failed = False
@@ -44,13 +46,20 @@ def _ctl() -> ctl.MaaRacingMasterController:
     c._gpad_owner = None
     c._ctx = None
     c._wgc_capture = None
+    c._mute_game_enabled = False
+    c._run_muted = False
+    c._mute_original = None
+    c._mute_gen = 0
+    c._mute_started_gen = -1
+    c._mute_lock = threading.Lock()
+    c._mute_thread = None
     return c
 
 
 class _Step:
     NAME = "假步骤"
     seen_active = None
-
+    seen_stop = None
     def __init__(self, app, grp=None):
         self.app = app
         self.last_outcome = "failed"
@@ -60,6 +69,7 @@ class _Step:
 
     def run(self, cfg, stop_event, log, session):
         _Step.seen_active = self.app._step_active
+        _Step.seen_stop = stop_event.is_set()
         self.last_outcome = cfg.get("outcome", "completed")
         return cfg.get("ok", True)
 
@@ -80,6 +90,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(bs, "BUILTIN_STEPS", {"fake": _Step})
     monkeypatch.setattr(ctl, "StepSession", _Session)
     _Step.seen_active = None
+    _Step.seen_stop = None
     _Session.close_ok = True
     return _ctl()
 
@@ -166,3 +177,82 @@ def test_release_closes_context_before_gpad_and_capture():
     c.release_step_session()
     assert order == ["ctx", "gpad", "wgc"]
     assert c._ctx is None, "Context 关闭后必须置空，否则下次复用已关闭的实例"
+
+
+def test_begin_run_resets_run_requests():
+    """运行边界清手动停止/停止信号/退出请求；项入口不再各自清。"""
+    c = _ctl()
+    c._manual_stop = True
+    c.stop_event.set()
+    c._exit_requested = True
+    c.begin_run()
+    assert c._manual_stop is False
+    assert c.stop_event.is_set() is False
+    assert c._exit_requested is False
+
+
+def test_manual_stop_is_not_cleared_by_item_entry(wired):
+    """两项之间按下的停止必须保留：下一项不能把手动停止清掉后继续跑。"""
+    wired._manual_stop = True
+    wired.stop_event.set()
+    wired.run_builtin_step("fake", {})
+    assert _Step.seen_stop is True
+    assert wired.stop_event.is_set() is True
+
+
+def test_item_auto_stop_is_cleared_for_next_item(wired):
+    """上一项到限自动停止会置位 stop_event，但不得泄漏到下一项。"""
+    wired._manual_stop = False
+    wired.stop_event.set()
+    wired.run_builtin_step("fake", {})
+    assert _Step.seen_stop is False
+    assert wired.stop_event.is_set() is False
+
+
+def test_run_mute_retries_until_audio_appears(monkeypatch):
+    """窗口先出现、音频会话后出现：运行级静音重试到会话可用为止。"""
+    c = _ctl()
+    c._mute_game_enabled = True
+    attempts = []
+    monkeypatch.setattr(c, "_try_capture_volume", lambda: [0.35])
+    monkeypatch.setattr(c, "_try_game_volume",
+                        lambda level: (attempts.append(level), 2 if len(attempts) >= 3 else 0)[1])
+
+    c._start_run_mute(grp=_Grp())
+    for _ in range(400):
+        if c._run_muted:
+            break
+        time.sleep(0.01)
+    assert c._run_muted is True
+    assert c._mute_original == [0.35]
+    assert len(attempts) >= 3
+
+
+def test_run_restore_uses_original_volume(monkeypatch):
+    """恢复写回用户原音量，不写死 100%；没静过音则不动。"""
+    c = _ctl()
+    c._run_muted = True
+    c._mute_original = [0.35, 0.35]
+    calls = []
+    monkeypatch.setattr(c, "_apply_game_volume",
+                        lambda level, label, **kw: calls.append(level))
+
+    c._restore_run_mute()
+    assert calls == [0.35]
+    assert c._run_muted is False
+
+    c._restore_run_mute()
+    assert calls == [0.35]
+
+
+def test_mute_toggle_mid_run_restores_and_restarts(monkeypatch):
+    c = _ctl()
+    c._step_active = True
+    started, restored = [], []
+    monkeypatch.setattr(c, "_start_run_mute", lambda grp=None: started.append(grp))
+    monkeypatch.setattr(c, "_restore_run_mute", lambda grp=None: restored.append(grp))
+
+    c.set_mute_game(True)
+    assert started == [None]
+    c.set_mute_game(False)
+    assert restored == [None]

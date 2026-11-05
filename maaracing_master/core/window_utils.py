@@ -510,10 +510,16 @@ def has_physical_controller() -> bool:
         return False
 
 
-def find_game_hwnd(group_id: str | None = None) -> int:
+def find_game_hwnd(group_id: str | None = None, *, verbose: bool = True) -> int:
     """查找游戏窗口句柄。group_id 非空时过程日志归入该组（契约方案 A：显式捕获，
-    调用方决定归属；默认无组散行，行为与旧一致）。"""
+    调用方决定归属；默认无组散行，行为与旧一致）。
+
+    verbose=False 供**轮询重试**使用：游戏尚未启动时每次都会失败，逐次打印完整
+    窗口列表会淹没日志；重试方只在最终放弃时自己记一条。
+    """
     def _lg(msg: str, level: str = "INFO") -> None:
+        if not verbose:
+            return
         if group_id is not None:
             logger.log(msg, level, group_id=group_id)
         else:
