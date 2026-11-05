@@ -691,7 +691,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 /* 日志卡：回顶按钮的定位上下文 */
 .log-card { position: relative; }
 
-/* 组卡（契约 §8 终态：卡片只来自组事件，无组散行=裸行）。
+/* 卡片（组卡来自组事件；无组散行收进「其他日志」容器卡，承载规则见 ADR-0017）。
    下内衬为展开正文预留，仅 --open 时出现——折叠卡底边不「胖」。
    入场动画只在建卡瞬间播（CSS 动画随元素插入触发）。 */
 .log-section {
@@ -769,8 +769,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .log-section--open .log-section-body { height: auto; }
 
-/* 日志行（卡内正文行与无组裸行）：级别由文字色承载，无彩点无关键词着色
-   ——一个位置一种承载（卡头看词=徽章，正文看色）。裸行级别色挂整行自身。 */
+/* 日志行（组卡正文行与散行容器卡正文行）：级别由文字色承载，无彩点无关键词着色
+   ——一个位置一种承载（卡头看词=徽章，正文看色）。 */
 .log-line {
   display: flex; align-items: flex-start; gap: 8px;
   padding: 2px 0 2px 10px; word-break: break-all;
