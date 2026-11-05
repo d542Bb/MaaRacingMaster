@@ -1,7 +1,7 @@
 # MaaRacingMaster.Shell — GUI 壳工程（WinUI 3 + WebView2）
 
 > **本文件是什么**：壳工程与 sidecar transport 的**施工事实**——锁定版本、窗口形态与其取舍理由、WinUI 3 API 细节、构建坑、IPC 契约。
-> **本文件不是什么**：不是宿主选型的理由（见 [ADR-0004](../../docs/adr/0004-GUI宿主定案.md)；决策收录粒度见 [ADR-0006](../../docs/adr/0006-决策粒度只收跨模块约束.md)）、不是启动流程与进程模型（见 [docs/CODE_WIKI.md §4 运行流程](../../docs/CODE_WIKI.md)）、不是前端与图标规范（见 [frontend/README.md](./frontend/README.md)）。
+> **本文件不是什么**：不是宿主选型的理由（见 [ADR-0004](../../docs/adr/0004-choice-shell-GUI宿主定案.md)；决策收录粒度见 [ADR-0006](../../docs/adr/0006-meta-adr-决策粒度只收跨模块约束.md)）、不是启动流程与进程模型（见 [docs/CODE_WIKI.md §4 运行流程](../../docs/CODE_WIKI.md)）、不是前端与图标规范（见 [frontend/README.md](./frontend/README.md)）。
 > **信源等级**：L2 —— 可作「壳工程怎么构建、IPC 契约是什么、窗口形态怎么实现与其为什么这么定」的直接依据；不得作为宿主选型（L1，见 ADR-0004）与业务实现（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）的依据。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
 
@@ -17,10 +17,12 @@
 | `PeepWindow.xaml(.cs)` | PEEP 悬浮窗（工具窗 + 置顶 + 无系统边框，标题栏 HTML 自绘） |
 | `RpcBridge.cs` | HTML ↔ C# ↔ sidecar 的 RPC 转发（主窗口与 PEEP 窗**共用**：回发按 `sender.CoreWebView2` 定位，不依赖窗口实例字段，故各窗互不串台） |
 | `PythonSidecar.cs` | JSONL transport（见下） |
+| `TaskbarProgress.cs` | 任务栏进度（`ITaskbarList3`）：运行期不确定进度，结束/关窗熄灭；失败只降级本能力 |
+| `AppNotifications.cs` | 系统通知：Windows 老版 Toast 通道，只显示、不注册点击激活 |
 | `app.manifest` | UAC 提权声明（一次提权，child 继承） |
 | `NuGet.Config` | 项目级包源（见「NuGet 网络坑」） |
 
-PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为占位符并停止拉帧，帧消费唯一由该窗口承担（共用实现 `frontend/peep-consumer.js`）；不记忆位置/尺寸，随主窗口退出连带销毁。
+PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用 `frontend/peep-consumer.js`。互斥由「数据页是否可见 + 悬浮窗是否打开」决定，同一时刻只有一处真正拉帧；悬浮窗存在期间主界面卡片退化为占位符。悬浮窗不记忆位置/尺寸，随主窗口退出连带销毁。
 
 ## 锁定版本与依赖
 
@@ -41,7 +43,7 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 
 ## 窗口形态与标题栏（决策与施工）
 
-> **本节是本形态与取舍理由的唯一住户**（原 [ADR-0005](../../docs/adr/0005-GUI标题栏移除系统标题栏.md)，2026-09-18 按 [ADR-0006](../../docs/adr/0006-决策粒度只收跨模块约束.md) 迁入：子系统内部形态不进 ADR）。
+> **本节是本形态与取舍理由的唯一住户**（原 [ADR-0005](../../docs/adr/0005-choice-shell-GUI标题栏移除系统标题栏.md)，2026-09-18 按 [ADR-0006](../../docs/adr/0006-meta-adr-决策粒度只收跨模块约束.md) 迁入：子系统内部形态不进 ADR）。
 
 **决策（2026-08-31，`ddc1504`）**：**保留系统边框（可缩放），移除系统标题栏与 —□× 按钮，窗口控制由 HTML 自绘。**
 
@@ -52,7 +54,7 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 3. **非客户区双区域**：`InputNonClientPointerSource` 注册两类——`Draggable` = 整条标题栏带（`SetDragRectangles`，空白处由系统处理拖动与双击最大化）、`Passthrough` = `.brand` / `.tabs` / `.win-controls` 的精确矩形（输入穿透交给 HTML）。**Passthrough 优先于 drag rects**，故交互区之间的空白仍可拖拽。
 4. **置灰联动整体删除**：自绘按钮是 HTML 元素，模态遮罩天然覆盖，不需要任何按钮状态同步。
 
-**为什么（取舍理由）**：定案 WinUI 3 宿主时，标题栏原取「HTML 自绘视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型与判负记录见 [ADR-0004](../../docs/adr/0004-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）。该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动。改自绘后模态与按钮的一致性由 DOM 层叠天然保证。
+**为什么（取舍理由）**：定案 WinUI 3 宿主时，标题栏原取「HTML 自绘视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型与判负记录见 [ADR-0004](../../docs/adr/0004-choice-shell-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）。该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动。改自绘后模态与按钮的一致性由 DOM 层叠天然保证。
 
 **代价与约束**：
 
@@ -63,7 +65,7 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 **被否方案**：
 
 - **native caption buttons overlay**——系统按钮与 HTML 模态层无法自动协同，需常驻一套置灰状态同步（已随本决策删除）；
-- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线，判负记录见 [ADR-0004](../../docs/adr/0004-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；现行形态的拖动仍由系统在 `Draggable` 区处理。
+- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线，判负记录见 [ADR-0004](../../docs/adr/0004-choice-shell-GUI%E5%AE%BF%E4%B8%BB%E5%AE%9A%E6%A1%88.md)）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；现行形态的拖动仍由系统在 `Draggable` 区处理。
 
 ### API 细节与坑
 
@@ -80,6 +82,21 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 - **单实例互斥**：`AcquireSingleInstance()` 用命名 Mutex（`Global\MaaRM_SingleInstance`，权限异常降级会话级）检测已有实例 → `MessageBoxW` 询问「启动新进程（`taskkill /T` 连 sidecar 杀旧进程）或取消保留旧进程」；旧进程被强杀后接管 Mutex 需捕获 `AbandonedMutexException`。
 - Snap Layout hover 不出现（按钮由 HTML 承担，系统不在其上弹 SnapAssist，未深究）。
 
+## 运行期反馈（任务栏 / 系统通知）
+
+轮次的亮点与提示由壳侧四态驱动：`NoRound`（本进程还没跑过轮次）/ `Running`（收到开始、未收到结束）/ `Settled`（收到结束）/ `Closing`（已进入关窗或主动关停）。状态只由事件通道迁移，不读前端 250ms 轮询。
+
+| 能力 | 实现 |
+|---|---|
+| 任务栏进度 | `ITaskbarList3`：轮次开始置不确定进度，轮次结束/后端退出/进入关窗即熄灭；不设百分比。初始化失败整体降级；运行中单次设置失败只记诊断，不改变轮次状态 |
+| 系统通知 | Windows 老版 Toast 通道（两行文本，首行加粗）。应用身份由 `HKCU\Software\Classes\AppUserModelId\MaaRacingMaster.Shell`（显示名/图标）+ 进程级 AUMID 承载；不建开始菜单快捷方式 |
+| 通知口径 | 正常完成、运行失败、后端进程异常退出提示；用户主动停止、主动关窗不提示；启动前校验失败不提示（工作线程未启动，没有轮次事件） |
+| 点击通知 | 不唤起主窗口：通知标为 `background` 激活、不写 `launch`、不注册后台任务/激活器；身份注册不产生可启动目标 |
+| 提权形态 | 壳以管理员权限运行；Windows App SDK 的通知接口在提权进程下被禁用，故改用老版 Toast（其显示路径不含该闸门） |
+| 自动退出 | 收到 `auto_exit` 后延迟约 1.8s 再关窗，给通知投递留时间；用户主动点关闭仍立即关闭 |
+
+通知文案由 Python 组装（结局 + 步骤名 + 固定文案），壳不认识业务；取不到步骤名时退回标识，不阻断收尾。通知初始化或显示失败只记 stderr 诊断，不阻塞启动与轮次状态。
+
 ## 构建坑
 
 | 坑点 | 解决 |
@@ -95,17 +112,33 @@ PEEP 悬浮窗的消费互斥：本窗口存在期间主界面预览卡退化为
 | 唯一 stdout reader | 一个常驻 `ReaderLoopAsync`，按 `response.id` 匹配 `ConcurrentDictionary<ulong, TCS>` |
 | stdin 串行 | `SemaphoreSlim` 写锁 |
 | 超时 | `Task.WaitAsync(timeout)`，超时清理 pending，只影响单请求 |
-| backend 断开 | reader EOF → 所有 pending 立即抛 `BackendDisconnectedException` |
+| backend 断开 | reader EOF → 所有 pending 立即抛 `BackendDisconnectedException`；非主动关闭再发 `BackendExited(exitCode)` |
+| 主动关闭 | `ShutdownAsync` / `Dispose` 置位；此后的 EOF 不再报后端异常退出 |
 | malformed stdout | 忽略并记 stderr，不 crash 整个 IPC |
 | stderr drain | 独立 task 持续读，防 OS pipe 填满卡死 Python |
 | shutdown | `ShutdownAsync(grace)`：发 shutdown → 等进程自退 → 超时 `Kill(entireProcessTree:true)`；返回退出码，不 Dispose |
 | 防孤儿 | `Dispose()` 对存活进程 KillTree |
 
+### sidecar 事件
+
+| 事件 | 负载 | 壳侧动作 |
+|---|---|---|
+| `round_started` | `{total, first_step}` | 任务栏置不确定进度，轮次状态 → `Running` |
+| `round_ended` | `{outcome: completed\|failed\|stopped, step, title, body}` | 任务栏熄灭，状态 → `Settled`；完成/失败弹通知，停止只灭不弹 |
+| `auto_exit` | — | 进入 `Closing`，延迟约 1.8s 关窗 |
+
+- 事件负载是 `data` 字段；取用时必须 `Clone()`（解析文档在 reader 循环末释放）。
+- `round_started` 在工作线程内发出（与收尾块对称）；`round_ended` 在写完结局之后、`auto_exit` 之前发出，因此壳侧先拿到结局再进入关窗。
+- 事件写出失败（壳已断开）只记日志，不影响结局归约、采样器注销与线程槽释放——否则下一轮会被「已在运行」拒绝。
+- 后端退出提示按**退出原因**判定（非主动关闭的 EOF），不按退出码；退出码只作诊断信息。轮次状态 `Running` 报「运行中断」，`Settled` / `NoRound` 报「后端进程异常退出」且不提本轮结果；`Closing` 一律不提示。同一进程世代最多一条死亡通知。
+
 ### 契约坑点（必记）
 
 | 坑点 | 说明 |
 |---|---|
-| `JsonDocument` 生命周期 | reader 中 `using var doc` 循环末释放，`SetResult` 必须传 `root.Clone()`（深拷贝），否则调用方访问即 `ObjectDisposedException` |
+| `JsonDocument` 生命周期 | reader 中 `using var doc` 循环末释放，`SetResult` 必须传 `root.Clone()`（深拷贝），否则调用方访问即 `ObjectDisposedException`；事件负载同理 |
+| 老版 Toast 身份 | 未打包程序可用 `HKCU\Software\Classes\AppUserModelId\<AUMID>` + 进程级 AUMID 建立身份（本机实测可显示，无需开始菜单快捷方式）；`ToastNotifier.Setting` 在第一条通知发出前会抛「元素未找到」，不能当可用性门槛 |
+| 通知点击 | 只标 `activationType="background"`、不建快捷方式、不注册后台任务/激活器，点击才真正无响应 |
 | Python worker 线程退出 | `sys.exit()` 在非主线程只抛 `SystemExit` 不退出进程，必须 `os._exit(n)` |
 | Dispose 后访问 Process | `_process.Dispose()` 后访问属性抛「No process is associated」；验证进程存活用 `ProcessId` + `Process.GetProcessById(pid)` 捕获 `ArgumentException` |
 | Python 侧 handler 线程 | 必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失；入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr），见 [`core/sidecar.py`](../../maaracing_master/core/sidecar.py) |

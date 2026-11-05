@@ -709,6 +709,51 @@ def test_game_summary_lands_in_session_trace(tmp_path, monkeypatch):
     assert rec["phase"] == 1 and rec["ticks"] == 2 and rec["dur_s"] == 5.0
 
 
+def test_flush_writes_round_record_only_for_program(tmp_path, monkeypatch):
+    """给程序控制局（含宏回放）落战绩库；无名前缀的链不写。"""
+    from maaracing_master.plugins.speedrush import dashboard_store
+
+    monkeypatch.setattr(dashboard_store, "db_path",
+                        lambda: tmp_path / "speedrush.db")
+    monkeypatch.setattr(smod, "logger", _stub_logger(tmp_path))
+    m = _module()
+    chain = {
+        "trace": [{"ts_ns": 0, "state": "GO", "hud_score": 100, "hud_rate": 40},
+                  {"ts_ns": 5_000_000_000, "state": "GO",
+                   "hud_score": 5693, "hud_rate": 42}],
+        "t_start": 0.0, "record_round": True,
+        "round_stamp": "20261105_195502", "round_no": 1,
+        "drive_mode": "depth",
+        "hud_pairs": [(5000, 7800), (5693, 7858)],
+    }
+    m._flush_control_trace(chain, 2, completed=True)
+    rows = dashboard_store.read_rows()
+    assert len(rows) == 1
+    assert rows[0]["phase2_score"] == 5693
+    assert rows[0]["phase2_opponent"] == 7858
+    assert rows[0]["phase2_ok"] == 1
+
+    macro_chain = {
+        "trace": [{"ts_ns": 0, "state": "MACRO", "hud_score": 3900, "hud_rate": 40},
+                  {"ts_ns": 5_000_000_000, "state": "MACRO",
+                   "hud_score": 4000, "hud_rate": 42}],
+        "t_start": 0.0, "record_round": True,
+        "round_stamp": "macro1", "round_no": 2, "drive_mode": "macro",
+        "hud_pairs": [(3900, 4100), (4000, 4200)],
+    }
+    m._flush_control_trace(macro_chain, 2, completed=True)
+    rows = dashboard_store.read_rows()
+    assert len(rows) == 2
+    macro = next(row for row in rows if row["drive_mode"] == "macro")
+    assert macro["phase2_score"] == 4000
+    assert macro["phase2_opponent"] == 4200
+
+    chain["record_round"] = False
+    chain["round_stamp"] = "other"
+    m._flush_control_trace(chain, 2, completed=True)
+    assert len(dashboard_store.read_rows()) == 2
+
+
 def test_control_trace_empty_writes_nothing(tmp_path, monkeypatch):
     """空 trace 或无会话目录：不落任何文件（开关关=受控三流零新增落盘）。"""
     monkeypatch.setattr(smod, "logger", _stub_logger(tmp_path))

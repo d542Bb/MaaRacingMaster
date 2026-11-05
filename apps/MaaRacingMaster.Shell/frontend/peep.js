@@ -73,10 +73,11 @@
     const dot = $('peep-status-dot');
     const txt = $('peep-status-text');
     if (!dot || !txt) return;
-    if (d.current_stage) {
-      txt.textContent = '运行中 · 当前: ' + d.current_stage;
+    const label = d.current_stage || d.debug_stage || d.debug_label || d.debug_owner || '';
+    if (label) {
+      txt.textContent = '运行中 · 当前: ' + label;
       dot.className = 'maarm-status-dot maarm-status-dot--running maarm-status-dot--pulse';
-    } else if (d.is_running || d.worker_active) {
+    } else if (d.queue_run || d.is_running || d.worker_active) {
       txt.textContent = '停止中...';
       dot.className = 'maarm-status-dot maarm-status-dot--stopping';
     } else {

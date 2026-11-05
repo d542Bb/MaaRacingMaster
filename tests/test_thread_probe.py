@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,13 +104,17 @@ def test_thread_without_beat_shows_none(monkeypatch):
 
 
 def test_identity_change_invalidates_baseline(monkeypatch):
-    """验收 14：同一 tid 换创建时间 → 旧基线作废、不继承历史、不出负差分。"""
+    """验收 14：同一 tid 换创建时间 → 旧基线作废、不继承历史、不出负差分。
+
+    墙钟也换成假时钟：只把 `_prev_mono` 往回挪一秒，实际差分是 1.0+ε（ε 是挪完之后
+    到下一次取样之间真实走过的那点时间），500% 这类整数断言就会随负载抖。
+    """
     _patch(monkeypatch, [(1, "worker")], {1: [(100, 0.0), (100, 5.0), (200, 0.0)]})
+    ticks = iter((0.0, 1.0, 2.0))   # 每次 sample 恰好走一整秒（sample 只读一次 monotonic）
+    monkeypatch.setattr(tp, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     p = ThreadProbe(min_age_s=0)
     p.sample(None)                                  # 基线（creation=100, cpu=0）
-    monkeypatch.setattr(p, "_prev_mono", p._prev_mono - 1.0)
     assert p.sample(None)["rows"][0]["cpu_pct"] == pytest.approx(500.0)
-    monkeypatch.setattr(p, "_prev_mono", p._prev_mono - 1.0)
     row = p.sample(None)["rows"][0]                 # creation 变 200
     assert row["identity_ok"] is False
     assert row["cpu_pct"] is None                   # 不给继承来的数字

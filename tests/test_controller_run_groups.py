@@ -93,10 +93,14 @@ def env(monkeypatch):
     c._manual_stop = False
     c._mute_game_enabled = False
     c._last_run_natural = False
-    c._hwnd = 12345          # 跳过真实 connect 路径
+    c._teardown_failed = False  # 构造器被绕过：收尾失败态默认关（ADR-0018）
+    c._hwnd = 12345
     c._ctx = None
     c._wgc_capture = None
-    c.controller = None
+    # 已连接哨兵：connect() 幂等短路，用例默认不走真实窗口连接（需要走的路径自行置 None）
+    c.controller = object()
+    # 桩句柄不是真实窗口：短路校验按“仍有效”处理，用例只关心日志归属
+    monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
     c._destroy_gpad = lambda grp=None: None
     c._stop_wgc_capture = lambda: None
     c._start_wgc_capture = lambda grp=None: rec.log(
@@ -150,7 +154,8 @@ def test_connect_failure_lines_in_start_group(env, monkeypatch):
     c, rec, mod = env
     c._hwnd = 0
     c.controller = None
-    monkeypatch.setattr(ctl, "find_game_hwnd", lambda group_id=None: 0)
+    monkeypatch.setattr(ctl.game_process, "find_window_by_process", lambda: 0)
+    monkeypatch.setattr(ctl, "find_game_hwnd", lambda **kw: 0)
     c.start_module("fake")
     # 未找到窗口 ERROR 在启动组内 → 组终态自动落 failure，模块不启动
     assert ("log", "g-1", "ERROR", "未找到游戏窗口") in rec.events
@@ -159,6 +164,26 @@ def test_connect_failure_lines_in_start_group(env, monkeypatch):
     assert not any(call[0] == "start" for call in mod.calls)
     # 收尾组照常存在（资源清理不受启动失败豁免）
     assert ("group_start", "g-2", "session", "运行收尾") in rec.events
+
+
+def test_connect_runs_in_start_group_when_hwnd_adopted(env, monkeypatch):
+    """「启动游戏」只采纳句柄不建连接：_hwnd 有值而 controller 为空时，连接仍须由
+    启动组发起——旧写法 `if not self._hwnd` 会跳过它，把真实连接推给模块侧的无组
+    那次，"已连接窗口"即散成裸行（真机反馈）。"""
+    c, rec, _ = env
+    c.controller = None
+    calls = []
+
+    def fake_connect(self, grp=None):
+        calls.append(grp)
+        grp.log(f"已连接窗口 (hWnd={self._hwnd})")
+        return True
+
+    monkeypatch.setattr(type(c), "connect", fake_connect)
+    c.start_module("fake")
+    assert calls and calls[0] is not None, "start_module 未把启动组交给 connect()"
+    assert ("log", "g-1", "INFO", "已连接窗口 (hWnd=12345)") in rec.events
+    assert [e for e in rec.events if e[0] == "log" and e[1] is None] == []
 
 
 def test_manual_stop_line_grouped(env):

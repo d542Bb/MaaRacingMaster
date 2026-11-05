@@ -62,9 +62,10 @@ import queue
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable, Mapping, cast
 
 from maaracing_master.core.logger import logger
 from maaracing_master.plugins.speedrush import HUD_REGIONS_FILE
@@ -75,7 +76,11 @@ __all__ = [
     "SAMPLE_INTERVAL_S",
     "SCHEMA_VERSION",
     "SIDE_FIELDS",
+    "SIDE_EGO",
+    "SIDE_OPPONENT",
     "SIDE_PAIR_MIN_DELTA",
+    "HudScores",
+    "read_hud_scores",
     "SKIPPED_FIELDS",
     "band_blue_bias",
     "load_hud_regions",
@@ -113,6 +118,9 @@ _QUEUE_MAX = 8
 # 比分面板：**位置会上下互换，故这两格是「槽位」而不是敌我**——a = 上档、b = 下档。
 # 敌我由块色成对判（见 ``pair_sides``）写进每格 ``side``；消费方按 ``side`` 取、不按槽位取。
 SIDE_FIELDS: tuple[str, ...] = ("score_a", "score_b")
+# 归属的两种取值（成对判的产物）。消费方只认这两个字符串，故收成常量。
+SIDE_EGO = "本机(蓝)"
+SIDE_OPPONENT = "对手(红)"
 # 得分速度读数（与同槽位的比分格配对：``rate_a`` 恒在 ``score_a`` 上方）。
 # **它只为本方显示**（实测本机侧 100% 有读数、对手侧只有零星几处——那是背景的假读）：
 # 故只识别"本槽是蓝"的那一格，另一格连识别都不做（读到的是面板背景/空区）。
@@ -130,7 +138,7 @@ _SLOTS: tuple[str, ...] = tuple(n.rsplit("_", 1)[1] for n in SIDE_FIELDS)
 # 速度行只在本机卡上出现三重佐证），故可以进真源的键名——"名字不得承载**未验证**的语义假设"
 # 这条判据管的是未验证的假设，不是已验证的事实（见 CODE_WIKI §5）。
 _CARD_TOKENS: tuple[str, ...] = ("blue", "red")
-_CARD_OF_SIDE: dict[str, str] = {"本机(蓝)": "blue", "对手(红)": "red"}
+_CARD_OF_SIDE: dict[str, str] = {SIDE_EGO: "blue", SIDE_OPPONENT: "red"}
 # 真源里属于"读数框"的键全集：比分两色 × 两槽，速度只在本机卡上（对手没有那一行）。
 _CARD_RECTS: tuple[str, ...] = tuple(
     f"score_{c}_{s}" for c in _CARD_TOKENS for s in _SLOTS
@@ -305,8 +313,54 @@ def pair_sides(frame_rgb: Any, rect_a, rect_b) -> tuple[str, str]:
     if a is None or b is None or abs(a - b) < SIDE_PAIR_MIN_DELTA:
         return "?", "?"
     if a > b:
-        return "本机(蓝)", "对手(红)"
-    return "对手(红)", "本机(蓝)"
+        return SIDE_EGO, SIDE_OPPONENT
+    return SIDE_OPPONENT, SIDE_EGO
+
+
+@dataclass(frozen=True)
+class HudScores:
+    """一行 HUD 读数的双方比分与本方速度（不可读字段为 None）。"""
+
+    ego_score: int | None
+    ego_rate: int | None
+    opponent_score: int | None
+
+
+def read_hud_scores(fields: Mapping[str, Any] | None) -> HudScores:
+    """从一行 HUD 字段读本方/对手比分；本方槽位由速度行判定。
+
+    速度行只在本机卡上出现（对手侧是背景假读），故"有 rate 的槽位 = 本机槽位"
+    与 ``_ego_hud_readout`` 同一判据。速度行缺失即整拍弃权：2026-11-05 第二局
+    段 1 实测到一条双方 ``score`` 都 ``trusted`` 但串位的假读（我方 283 /
+    对手 22840），那一条正好没有速度行；按槽位猜会把假分写进战绩库。
+
+    对手格只读另一槽的 ``score_*``，要求 ``trusted`` 且 ``side`` 为对手；
+    不满足即 None，不猜。
+    """
+    if not isinstance(fields, Mapping):
+        return HudScores(None, None, None)
+
+    def _cell(name: str) -> Mapping[str, Any]:
+        cell = fields.get(name)
+        return cell if isinstance(cell, Mapping) else {}
+
+    ego_slot = next(
+        (slot for slot in _SLOTS if _cell(f"rate_{slot}").get("value") is not None),
+        None,
+    )
+    if ego_slot is None:
+        return HudScores(None, None, None)
+    other = next(slot for slot in _SLOTS if slot != ego_slot)
+    ego_score = _cell(f"score_{ego_slot}").get("value")
+    ego_rate = _cell(f"rate_{ego_slot}").get("value")
+    opp_cell = _cell(f"score_{other}")
+    opponent = (
+        opp_cell.get("value")
+        if opp_cell.get("trusted") is True
+        and opp_cell.get("side") == SIDE_OPPONENT
+        else None
+    )
+    return HudScores(ego_score, ego_rate, opponent)
 
 
 def parse_int(text: str | None) -> int | None:
@@ -450,7 +504,7 @@ class HudObserver:
         self._running = True
         # persist=True 时 out_dir 必非空（上面已校验）
         where = (f" → {cast(Path, self.out_dir) / 'hud.jsonl'}" if self.persist
-                 else "（仅内存时钟，不落盘）")
+                 else "（仅内存，不落盘）")
         self._log(
             f"[极速狂飙] HUD 读数开始（{len(self._regions)} 区域 / 每 {self.interval_s:.2f}s）"
             f"{where}", "INFO")
@@ -470,7 +524,7 @@ class HudObserver:
         if self.persist:
             self._write_meta(reason)
         tail = (f"{self._rows_written} 行（丢 {self._rows_dropped}）"
-                if self.persist else "仅内存时钟（不落盘）")
+                if self.persist else "仅内存（不落盘）")
         self._log(
             f"[极速狂飙] HUD 读数结束：{tail}、"
             f"缺帧 {self._samples_no_frame}、OCR 无结果 {self._ocr_no_result}",

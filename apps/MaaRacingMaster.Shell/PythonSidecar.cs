@@ -37,11 +37,17 @@ public sealed class PythonSidecar : IDisposable
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ConcurrentDictionary<ulong, TaskCompletionSource<JsonElement>> _pending = new();
     private ulong _nextId;
-    private bool _backendDown;
+    private volatile bool _backendDown;
+    private volatile bool _closing;
+    private bool _deathReported; // 同一进程世代最多一条死亡事件（随实例创建归零）
     private bool _disposed;
 
-    /// <summary>sidecar 主动推送的事件名（type=event）。由 shell 侧订阅并按需响应，如运行结束自动退出（auto_exit）。</summary>
-    public event Action<string>? SidecarEvent;
+    /// <summary>sidecar 主动推送的事件（type=event）：事件名 + 数据负载（可为 Undefined）。
+    /// 由 shell 侧订阅并按需响应，如轮次开始/结束、运行结束自动退出（auto_exit）。</summary>
+    public event Action<string, JsonElement>? SidecarEvent;
+
+    /// <summary>后端进程退出（读到 stdout 末尾且非本壳主动关闭）。退出码可能未知。</summary>
+    public event Action<int?>? BackendExited;
 
     /// <summary>便捷构造：脚本直跑（契约测试用）。</summary>
     public PythonSidecar(string pythonExe, string scriptPath)
@@ -82,58 +88,105 @@ public sealed class PythonSidecar : IDisposable
 
     private async Task ReaderLoopAsync()
     {
-        string? line;
-        while ((line = await _stdout.ReadLineAsync()) is not null)
+        try
         {
-            try
+            string? line;
+            while ((line = await _stdout.ReadLineAsync()) is not null)
             {
-                using var doc = JsonDocument.Parse(line);
-                var root = doc.RootElement;
-                if (root.TryGetProperty("type", out var t) && t.GetString() == "response")
+                try
                 {
-                    var id = root.GetProperty("id").GetUInt64();
-                    if (_pending.TryRemove(id, out var tcs))
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("type", out var t) && t.GetString() == "response")
                     {
-                        bool ok = root.GetProperty("ok").GetBoolean();
-                        if (ok)
+                        var id = root.GetProperty("id").GetUInt64();
+                        if (_pending.TryRemove(id, out var tcs))
                         {
-                            // Clone()：JsonElement 深拷贝，脱离 JsonDocument 生命周期
-                            tcs.SetResult(root.Clone());
+                            bool ok = root.GetProperty("ok").GetBoolean();
+                            if (ok)
+                            {
+                                // Clone()：JsonElement 深拷贝，脱离 JsonDocument 生命周期
+                                tcs.SetResult(root.Clone());
+                            }
+                            else
+                            {
+                                var err = root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String
+                                    ? e.GetString() ?? "rpc error"
+                                    : "rpc error";
+                                tcs.SetException(new RpcErrorException(err));
+                            }
                         }
-                        else
+                        // 未知 id 的 response：忽略（可能已超时移除）
+                    }
+                    // type=event：sidecar 主动推送事件（作为 response 分支的 else），上抛给 shell 订阅方处理
+                    else
+                    {
+                        var evtName = root.TryGetProperty("event", out var ev) &&
+                                      ev.ValueKind == JsonValueKind.String
+                            ? ev.GetString()
+                            : null;
+                        if (evtName is not null)
                         {
-                            var err = root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String
-                                ? e.GetString() ?? "rpc error"
-                                : "rpc error";
-                            tcs.SetException(new RpcErrorException(err));
+                            // 数据负载必须深拷贝：解析文档在循环末释放，跨线程访问即抛已释放异常
+                            JsonElement payload = default;
+                            if (root.TryGetProperty("data", out var d) && d.ValueKind != JsonValueKind.Null)
+                                payload = d.Clone();
+                            try { SidecarEvent?.Invoke(evtName, payload); }
+                            catch (Exception evEx) { Console.Error.WriteLine($"[sidecar] event handler error: {evEx.Message}"); }
                         }
                     }
-                    // 未知 id 的 response：忽略（可能已超时移除）
                 }
-                // type=event：sidecar 主动推送事件（作为 response 分支的 else），上抛给 shell 订阅方处理
-                else
+                catch (JsonException ex)
                 {
-                    var evtName = root.TryGetProperty("event", out var ev) &&
-                                  ev.ValueKind == JsonValueKind.String
-                        ? ev.GetString()
-                        : null;
-                    if (evtName is not null)
-                    {
-                        try { SidecarEvent?.Invoke(evtName); }
-                        catch (Exception evEx) { Console.Error.WriteLine($"[sidecar] event handler error: {evEx.Message}"); }
-                    }
+                    // malformed stdout：记录并继续，不 crash
+                    Console.Error.WriteLine($"[sidecar] malformed stdout line ignored: {ex.Message}");
                 }
-            }
-            catch (JsonException ex)
-            {
-                // malformed stdout：记录并继续，不 crash
-                Console.Error.WriteLine($"[sidecar] malformed stdout line ignored: {ex.Message}");
             }
         }
+        catch (Exception ex) when (ex is ObjectDisposedException or IOException)
+        {
+            // 主动 Dispose / 关窗竞态：流被本壳关闭，不当作后端异常
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[sidecar] stdout reader error: {ex.Message}");
+        }
+        finally
+        {
+            // EOF = Python 进程退出 → 所有 pending 立即 disconnected
+            FailAllPending(new BackendDisconnectedException(SafeExitCode()));
+            _backendDown = true;
 
-        // EOF = Python 进程退出 → 所有 pending 立即 disconnected
-        FailAllPending(new BackendDisconnectedException(_process.HasExited ? _process.ExitCode : null));
-        _backendDown = true;
+            // 只有非主动关闭的 EOF 才是后端死亡：正常关窗/主动关停不报
+            if (!_closing && !_deathReported)
+            {
+                _deathReported = true;
+                var exitCode = WaitForExitCode();
+                try { BackendExited?.Invoke(exitCode); }
+                catch (Exception ex) { Console.Error.WriteLine($"[sidecar] backend exited handler error: {ex.Message}"); }
+            }
+        }
+    }
+
+    /// <summary>读退出码；进程已释放/不可访问时返回 null（退出码只作诊断，不参与判定）。</summary>
+    private int? SafeExitCode()
+    {
+        try { return _process.HasExited ? _process.ExitCode : null; }
+        catch { return null; }
+    }
+
+    /// <summary>EOF 后短暂等进程真正退出，尽量给死亡通知带上退出码。</summary>
+    private int? WaitForExitCode()
+    {
+        try
+        {
+            if (_process.WaitForExit(500)) return _process.ExitCode;
+            return SafeExitCode();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private async Task DrainStderrAsync()
@@ -242,6 +295,7 @@ public sealed class PythonSidecar : IDisposable
     /// <summary>graceful shutdown：发 shutdown → 等进程自退（grace 内）→ 超时 Kill 整个进程树。不 Dispose。</summary>
     public async Task<int?> ShutdownAsync(TimeSpan grace, CancellationToken ct = default)
     {
+        _closing = true; // 本壳主动关停：随后的 EOF 不再报后端异常退出
         if (!_process.HasExited)
         {
             try
@@ -285,6 +339,7 @@ public sealed class PythonSidecar : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _closing = true; // Dispose 会关流并 KillTree，随后的 EOF 不是后端异常退出
         try { _stdin.Dispose(); } catch { }
         try { _stdout.Dispose(); } catch { }
         try { _writeLock.Dispose(); } catch { }

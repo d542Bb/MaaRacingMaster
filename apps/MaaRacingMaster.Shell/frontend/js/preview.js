@@ -25,6 +25,7 @@
 
   /** 悬浮窗开关（C# 广播）：卡片与占位符互换，并把帧消费权交出去 / 收回来。 */
   function setPreviewFloating(floating) {
+    MaaRM.peepFloating = !!floating;
     if (floating === (previewMode === 'floating')) return;
     previewMode = floating ? 'floating' : 'normal';
     const card = $(MaaRM.panelModuleId + '-preview-card');

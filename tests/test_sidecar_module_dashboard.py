@@ -128,12 +128,30 @@ def test_zero_contract_reports_not_implemented(monkeypatch):
     assert "尚未实现" in err
 
 
-def test_real_speedrush_dashboard_is_reserved(monkeypatch):
-    """真极速狂飙当前停在版本 0：路由拒绝，前端候选集不会包含它。"""
+def test_real_speedrush_dashboard_is_served(monkeypatch, tmp_path):
+    """真极速狂飙已接入：路由返回回合战绩载荷，读的是本地战绩库。"""
+    from maaracing_master.plugins.speedrush import dashboard_store
+
+    monkeypatch.setattr(dashboard_store, "db_path",
+                        lambda: tmp_path / "speedrush.db")
+    err = dashboard_store.write_phase(
+        session_token="t",
+        round_stamp="20261105_195502",
+        round_no=1,
+        drive_mode="depth",
+        phase=1,
+        stats=dashboard_store.PhaseStats(10, 2579, 312, 37.0),
+        completed=True,
+        opponent=2919,
+        started_at="2026-11-05T19:55:32",
+        ended_at="2026-11-05T19:56:09",
+    )
+    assert err is None
     svc = object.__new__(SidecarService)
     ok, data, err = svc.get_module_dashboard({"module_id": "speedrush"})
-    assert not ok and data is None
-    assert "尚未实现" in err
+    assert ok and err is None
+    assert data["title"] == "回合战绩"
+    assert [block["type"] for block in data["blocks"]] == ["stats", "list", "text"]
 
 
 def test_unsupported_contract_version_rejected(monkeypatch):

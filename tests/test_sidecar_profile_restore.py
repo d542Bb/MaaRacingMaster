@@ -113,7 +113,8 @@ def test_set_peep_does_not_persist(monkeypatch):
     svc = _svc(monkeypatch, {"debug": {"debug_mode": False}})
     ok, data, err = svc.set_peep({"enabled": True})
     assert ok is True and err is None
-    assert data == {"peep_enabled": True}
+    assert data["peep_enabled"] is True
+    assert data["effective_seq"] == 0   # 无运行时的开关立即生效，没有队列位置
     assert svc._controller.debug.enabled is True
     assert svc.saved_profiles == []  # 一次落盘都不发生
 

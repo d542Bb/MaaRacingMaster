@@ -107,3 +107,55 @@ def test_invalid_tones_fall_back_to_neutral():
     assert normalized["blocks"][0]["items"][0]["tone"] == "neutral"
     assert normalized["blocks"][1]["rows"][0]["badge"]["tone"] == "neutral"
     assert any("非法" in warning for warning in warnings)
+
+
+def test_list_parts_group_and_page_size_are_kept():
+    normalized, warnings = normalize_dashboard(_payload({
+        "type": "list",
+        "page_size": 5,
+        "rows": [{
+            "leading": "19:57",
+            "group": "今日",
+            "parts": [
+                {"text": "深度 · ", "tone": "muted"},
+                {"text": "6,899", "tone": "info"},
+                {"text": " / ", "tone": "muted"},
+                {"text": "8,929", "tone": "negative"},
+            ],
+            "trailing": "负 -2,030",
+        }],
+    }))
+    assert warnings == ()
+    block = normalized["blocks"][0]
+    assert block["page_size"] == 5
+    row = block["rows"][0]
+    assert row["group"] == "今日"
+    assert row["parts"][1] == {"text": "6,899", "tone": "info"}
+
+
+def test_list_requires_text_or_parts():
+    normalized, warnings = normalize_dashboard(_payload({
+        "type": "list",
+        "rows": [{"leading": "19:57"}],
+    }))
+    assert normalized["blocks"] == []
+    assert any("text/parts" in warning for warning in warnings)
+
+
+def test_list_invalid_page_size_is_dropped():
+    normalized, warnings = normalize_dashboard(_payload({
+        "type": "list",
+        "page_size": 0,
+        "rows": [{"text": "x"}],
+    }))
+    assert "page_size" not in normalized["blocks"][0]
+    assert any("page_size" in warning for warning in warnings)
+
+
+def test_info_tone_is_kept_on_badge():
+    normalized, warnings = normalize_dashboard(_payload({
+        "type": "list",
+        "rows": [{"text": "x", "badge": {"text": "本方", "tone": "info"}}],
+    }))
+    assert warnings == ()
+    assert normalized["blocks"][0]["rows"][0]["badge"]["tone"] == "info"

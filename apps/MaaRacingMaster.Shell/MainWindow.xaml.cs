@@ -77,6 +77,20 @@ public sealed partial class MainWindow : Window
 
     private readonly PythonSidecar? _sidecar;
 
+    /// <summary>壳侧轮次状态：轮次事件的亮灭/通知只以这四态为准。</summary>
+    private enum RoundState
+    {
+        NoRound,   // 本进程还没跑过轮次
+        Running,   // 已收到轮次开始、未收到轮次结束
+        Settled,   // 已收到轮次结束
+        Closing,   // 已进入关窗或主动关停（全局压制通知与任务栏）
+    }
+
+    private RoundState _roundState = RoundState.NoRound;
+    private bool _closeScheduled;
+    private bool _windowClosed;
+    private TaskbarProgress? _taskbar;
+
     // WM_GETMINMAXINFO 拦截（Win32 subclass，保证最小尺寸在系统级生效）
     private const int WM_GETMINMAXINFO = 0x0024;
     private const int GWLP_WNDPROC = -4;
@@ -109,6 +123,7 @@ public sealed partial class MainWindow : Window
 
         _appWindow = AppWindow;
         _appWindow.Changed += AppWindow_Changed;
+        _appWindow.Closing += AppWindow_Closing;
 
         // 非客户区指针源：Draggable 空白区系统处理拖动/双击最大化，Passthrough 交互区穿透给 HTML
         _inputNonClientPointerSource = InputNonClientPointerSource.GetForWindowId(AppWindow.Id);
@@ -118,6 +133,9 @@ public sealed partial class MainWindow : Window
         var hwnd = WindowNative.GetWindowHandle(this);
         _wndProcHook = WndProc;
         _oldWndProc = SetWindowLongPtr(hwnd, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(_wndProcHook));
+
+        // 任务栏进度（ITaskbarList3）：初始化失败只降级本能力，不影响窗口
+        _taskbar = new TaskbarProgress(hwnd);
 
         // 启动尺寸：以最小安全尺寸启动（= MinWindowWidth/Height，物理像素按 DPI 换算，
         // 与 WndProc 的 MINMAXINFO 同一套换算；避免默认尺寸偏大导致低分辨率屏溢出）
@@ -146,8 +164,9 @@ public sealed partial class MainWindow : Window
             try
             {
                 _sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_master.core.sidecar", projectRoot);
-                // 运行结束自动退出：sidecar 推 auto_exit → shell 关闭主窗口优雅退出
+                // 轮次开始/结束 → 任务栏与通知；自动退出 → 延迟关窗；EOF → 后端死亡提示
                 _sidecar.SidecarEvent += OnSidecarEvent;
+                _sidecar.BackendExited += OnBackendExited;
                 // RPC 转发层绑定后端：主窗口与 PEEP 悬浮窗共用（回发按 sender 定位）
                 RpcBridge.Attach(_sidecar);
             }
@@ -308,15 +327,129 @@ public sealed partial class MainWindow : Window
         else p.Maximize();
     }
 
-    private void CloseWindow() => Close();
-
-    // sidecar 主动事件（type=event）。当前仅支持"运行结束自动退出"。
-    private void OnSidecarEvent(string evt)
+    private void CloseWindow()
     {
-        if (evt != "auto_exit") return;
-        // 事件来自侧car reader 线程：封回 UI 线程再关主窗口，走 OnClosed 优雅关 sidecar
-        DispatcherQueue.TryEnqueue(() => Close());
+        EnterClosing(); // 先进入关窗态，再关：迟到的轮次事件不会再弹通知
+        Close();
     }
+
+    // ---------- sidecar 事件 → 壳侧轮次状态机 ----------
+
+    // 事件来自读流线程：一律封回 UI 线程再动任务栏/通知/窗口
+    private void OnSidecarEvent(string evt, JsonElement data)
+    {
+        DispatcherQueue.TryEnqueue(() => HandleSidecarEvent(evt, data));
+    }
+
+    private void OnBackendExited(int? exitCode)
+    {
+        DispatcherQueue.TryEnqueue(() => HandleBackendExited(exitCode));
+    }
+
+    private void HandleSidecarEvent(string evt, JsonElement data)
+    {
+        switch (evt)
+        {
+            case "round_started":
+                HandleRoundStarted();
+                break;
+            case "round_ended":
+                HandleRoundEnded(data);
+                break;
+            case "auto_exit":
+                HandleAutoExit();
+                break;
+        }
+    }
+
+    private void HandleRoundStarted()
+    {
+        if (_roundState == RoundState.Closing) return; // 关窗后迟到的开始事件不重新点亮
+        _roundState = RoundState.Running;
+        _taskbar?.SetRunning();
+    }
+
+    private void HandleRoundEnded(JsonElement data)
+    {
+        if (_roundState == RoundState.Closing) return; // 用户主动关窗/关停：一律不提示
+        _roundState = RoundState.Settled;
+        _taskbar?.Clear();
+
+        var outcome = TryGetString(data, "outcome");
+        // 停止是用户主动行为：只灭任务栏，不弹通知
+        if (outcome is not ("completed" or "failed")) return;
+        var title = TryGetString(data, "title");
+        if (string.IsNullOrEmpty(title)) return;
+        App.Notifications?.Show(title!, TryGetString(data, "body") ?? string.Empty);
+    }
+
+    private void HandleBackendExited(int? exitCode)
+    {
+        if (_roundState == RoundState.Closing) return; // 我们自己关的
+        // 同一进程世代只发一次死亡事件，闸门在传输层实例上（PythonSidecar._exitReported）
+        _taskbar?.Clear();
+
+        string title;
+        string body;
+        if (_roundState == RoundState.Running)
+        {
+            // 轮次被截断，且不会再有轮次结束通知来补位
+            title = "运行中断";
+            body = exitCode == 0 ? "后端进程已退出（退出码 0）" : "后端异常退出" + FormatExitCode(exitCode);
+        }
+        else
+        {
+            // Settled / NoRound：本轮结局（若有）已单独报过，这里只报进程死亡这一件新事
+            title = exitCode == 0 ? "后端进程已退出" : "后端进程异常退出";
+            body = exitCode.HasValue ? $"退出码 {exitCode.Value}" : "与界面的连接已断开";
+        }
+        App.Notifications?.Show(title, body);
+    }
+
+    private static string FormatExitCode(int? exitCode)
+        => exitCode.HasValue ? $"（退出码 {exitCode.Value}）" : string.Empty;
+
+    private static string? TryGetString(JsonElement data, string name)
+        => data.ValueKind == JsonValueKind.Object &&
+           data.TryGetProperty(name, out var p) &&
+           p.ValueKind == JsonValueKind.String
+            ? p.GetString()
+            : null;
+
+    // 自动退出属于主动关停：延迟只为把刚发出的通知交给系统，之后不再有通知
+    private void HandleAutoExit()
+    {
+        if (_roundState == RoundState.Closing) return;
+        EnterClosing();
+        if (_closeScheduled) return;
+        _closeScheduled = true;
+        var dispatcher = DispatcherQueue; // 先取：延迟期间窗口可能已关，避免在线程池访问已销毁窗口属性
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1.8));
+            dispatcher.TryEnqueue(() =>
+            {
+                try
+                {
+                    if (!_windowClosed) Close();
+                }
+                catch (Exception ex)
+                {
+                    // 关窗竞态（用户已手动关闭）：不再重复关
+                    Console.Error.WriteLine($"[shell] 自动退出关窗失败: {ex.Message}");
+                }
+            });
+        });
+    }
+
+    private void EnterClosing()
+    {
+        _roundState = RoundState.Closing;
+        _taskbar?.Clear();
+    }
+
+    // 系统关闭（Alt+F4 等）先于 Closed 触发：进入关窗态，压制迟到的轮次/死亡通知
+    private void AppWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args) => EnterClosing();
 
     // Presenter 变化（最大化/还原）→ 通知前端切换最大化/还原图标；
     // 尺寸变化（拖拽缩放）→ 重算非客户区 Draggable/Passthrough 区域。
@@ -412,6 +545,9 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        _windowClosed = true;
+        EnterClosing();
+
         // 0. 悬浮窗连带销毁：主窗口退出后它不再有可依附的后端，留下来只会是黑窗
         try
         {
@@ -441,5 +577,8 @@ public sealed partial class MainWindow : Window
             _sidecar.Dispose();
             RpcBridge.Attach(null); // 解绑后端：此后任何窗口的 RPC 一律回 backend unavailable
         }
+
+        _taskbar?.Dispose();
+        _taskbar = null;
     }
 }

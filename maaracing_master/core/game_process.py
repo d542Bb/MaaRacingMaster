@@ -190,6 +190,17 @@ def find_window_by_exe(exe_name: str) -> int:
     return best[1]
 
 
+def find_window_by_process() -> int:
+    """按游戏主程序进程名找窗口，不需要知道安装路径；找不到返回 0。
+
+    给"游戏不是本程序起的"这条路径用：用户手动开的游戏，安装路径没配、启动器配置
+    也读不到时，进程名仍然认得出。匹配的是默认发行渠道的主程序包名，非标准安装或
+    别的渠道会在这里落空——那是调用方回退到按标题找的场景，不代表游戏没开。同理，
+    画面由模拟器进程承载时窗口不属于游戏主程序进程，也走那条回退。
+    """
+    return find_window_by_exe(_GAME_EXE_REL.name)
+
+
 def game_running(exe_name: str) -> bool:
     """游戏主程序是否已在运行（按进程名，不依赖窗口是否已出现）。"""
     class PROCESSENTRY32W(ctypes.Structure):
@@ -260,16 +271,18 @@ def terminate_by_exe(exe_name: str) -> int:
 # 启动 / 等待 / 关闭
 # --------------------------------------------------------------------------
 
-def spawn(exe: Path, args: list[str], detached: bool = True) -> subprocess.Popen:
-    """拉起进程。detached=True 时脱离本进程树（本程序退出不带走游戏）。"""
-    flags = 0
-    if detached:
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP：不共享控制台、不受本进程退出牵连
-        flags = 0x00000008 | 0x00000200
+def spawn(exe: Path, args: list[str]) -> subprocess.Popen:
+    """拉起进程：不共享控制台、不收本进程的 Ctrl+Break。
+
+    这两个标志只管控制台与进程组归属，**不改父子关系**：壳侧关停后端超时后会强杀
+    整棵进程树，这里拉起的进程照样在树里被带走。别把「游戏在本程序被结束后还活着」
+    当成这两个标志能兑现的承诺。
+    """
     return subprocess.Popen(
         [str(exe), *args],
         cwd=str(exe.parent),
-        creationflags=flags,
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        creationflags=0x00000008 | 0x00000200,
         close_fds=True,
     )
 

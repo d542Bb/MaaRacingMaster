@@ -521,8 +521,8 @@ class _StraightPadLease:
 def _hud_stub(created: list):
     class _Hud:
         def __init__(self, out_dir, frame_source=None, phase=0, round_no=0,
-                     group_id=None):
-            created.append(Path(out_dir))
+                     group_id=None, persist=True):
+            created.append(None if out_dir is None else Path(out_dir))
             self.running = False
 
         def start(self):
@@ -621,6 +621,56 @@ def test_control_mode_also_records_hud(env, monkeypatch, tmp_path) -> None:
     assert len(created) == 1
     assert created[0] == tmp_path / "hud"  # hud 落 run_dir 子目录（布局收口）
     assert mod._hud is None  # 退出释放引用
+
+
+def test_macro_replay_hud_clock_reads_full_scores(env, monkeypatch) -> None:
+    """宏回放要记分：时钟观察器读完整 HUD；宏录制仍只读倒计时。"""
+    mod, ctx, clock = env
+    seen: list[dict] = []
+
+    class _Hud:
+        def __init__(self, out_dir, *, frame_source=None, phase=0, round_no=0,
+                     group_id=None, persist=True, regions=None):
+            seen.append({"out_dir": out_dir, "persist": persist,
+                         "regions": regions})
+            self.running = False
+
+        def start(self):
+            self.running = True
+
+        def stop(self, reason="normal"):
+            self.running = False
+
+        def latest(self):
+            return None
+
+    monkeypatch.setattr(sr, "HudObserver", _Hud)
+    assert mod._begin_hud_clock(1, 1, with_scores=True) is not None
+    assert seen[0]["out_dir"] is None
+    assert seen[0]["persist"] is False
+    assert seen[0]["regions"] is None          # 全区域：计时 + 比分 + 速度
+    assert mod._begin_hud_clock(1, 1) is not None
+    assert seen[1]["regions"] and "timer" in seen[1]["regions"]
+
+
+def test_control_hud_readout_runs_with_debug_off(env, monkeypatch, tmp_path) -> None:
+    """debug 关只停落盘，不停读数：战绩库要末分与对手分。"""
+    mod, ctx, clock = env
+    mod._control_mode = True
+    mod._running = True
+    _set_graph(mod, [True, False, False])
+
+    ctx.gamepad = SimpleNamespace(acquire=lambda: _StraightPadLease())
+    ctx.debug.enabled = False
+    monkeypatch.setattr(sr, "time", _FakeTimeFull(clock))
+    monkeypatch.setattr(sr, "_run_dir", lambda *a, **k: tmp_path)
+    created: list = []
+    monkeypatch.setattr(sr, "HudObserver", _hud_stub(created))
+    monkeypatch.setattr(sr, "load_session", lambda w: None)  # 深度会话桩：不碰 GPU
+
+    assert mod._drive_loop(1, None) is True
+    assert created == [None]  # 只读内存：不建调试目录、不落 hud.jsonl
+    assert mod._hud is None
 
 
 # ---------- 场边界 ----------

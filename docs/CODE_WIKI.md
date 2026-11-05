@@ -44,8 +44,8 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
 
 | 约定 | 真源 |
 |---|---|
-| 游戏分辨率 | `core/window_utils.py` `resize_game_window_720p`（连接时统一窗口）+ `core/module_config.py` `reference_size`；各插件 ROI / 按钮据此归一化 |
-| 截图通道 | WGC 中心缓存唯一、无回退通道，见 [ADR-0003](adr/0003-运行时拓扑硬约束.md) |
+| 游戏分辨率 | `core/window_utils.py` `resize_game_window_720p`（连接时统一窗口）+ `core/roi_config.py` `reference_size`；各插件 ROI / 按钮据此归一化 |
+| 截图通道 | WGC 中心缓存唯一、无回退通道，见 [ADR-0003](adr/0003-arch-core-运行时拓扑硬约束.md) |
 | 业务数值（ROI / 阈值 / 仲裁） | 各插件 `resources/policy/` 目录（命名不统一：treasure 为 `<id>.policy.json`，speedrush 为 `decision.json` / `hud_regions.json`） |
 | 版本号 | git tag 为唯一信源，规则见 [AGENTS.md](../AGENTS.md) 与 [skills/project-update/SKILL.md](../skills/project-update/SKILL.md) |
 
@@ -60,7 +60,7 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
 | 活动怎么运转（游戏规则） | `plugins/<id>/RULES.md`（外部事实，修改须人工复核） |
 | 主控生命周期、能力门面、点击方式 | `core/controller.py` + [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) |
 | 光标导航 / 虚拟手柄 | `core/gamepad_cursor.py` + `core/resources/stick_speed_model.json` |
-| 截图采集 / 帧通路 | `core/wgcap.py`（拓扑约束见 [ADR-0003](adr/0003-运行时拓扑硬约束.md)，不得新起截图通路） |
+| 截图采集 / 帧通路 | `core/wgcap.py`（拓扑约束见 [ADR-0003](adr/0003-arch-core-运行时拓扑硬约束.md)，不得新起截图通路） |
 | 日志级别 / 通道 / 落盘 | `core/logger.py` + [core/CODE_WIKI.md §1.5](../maaracing_master/core/CODE_WIKI.md) |
 | 模板图与锚点（采集 / ROI） | [tools/navkit/README.md](../tools/navkit/README.md)（采集工作流 + 校验器） |
 | 文字识别（OCR）引擎与调参 | `core/ocr.py`（跨插件共享底座的唯一真源）+ [core/CODE_WIKI.md §1.11](../maaracing_master/core/CODE_WIKI.md)；插件侧只留「文本怎么解释」的领域口径 |
