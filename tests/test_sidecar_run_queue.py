@@ -313,7 +313,7 @@ def test_step_skipped_continues_round_and_is_not_reported_ok():
     _wait(t)
     assert svc._round_result == {"launch_game": "skipped", "a": "ok"}
     assert controller.calls == [("a", None, None)]   # 跳过后仍继续下一项
-    assert not sent
+    assert not any(m.get("event") == "auto_exit" for m in sent)
 
 
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):

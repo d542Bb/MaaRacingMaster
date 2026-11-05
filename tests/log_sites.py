@@ -333,6 +333,7 @@ SITES: list[LogSite] = [
     _s('core/sidecar.py', 'SidecarService.set_intent_mode', '仅显示意图: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_mute_game', '运行时静音游戏: {}', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_boost_priority', '性能优先({}): {}', '<dynamic>', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
+    _s('core/sidecar.py', 'SidecarService._send_event_best_effort', '[sidecar] 事件发送失败（已忽略）: {}', 'WARNING', 'state', 'cross', '壳侧已断开时的降级路径：WARNING 让「事件没送到」可见但不上抛；收尾线程无业务组可挂。'),
     _s('core/sidecar.py', 'SidecarService._migrate_legacy_shutdown', '<dynamic>', 'INFO', 'cross', 'cross', '启动期一次性迁移回显：旧「运行结束后」开关折成任务步骤，发生在构造阶段、无业务组。'),
     _s('core/sidecar.py', '_save_profile', '[sidecar] 偏好落盘失败: {}', 'WARNING', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', '_normalize_module_config', '[模块配置] {} 配置归一失败，按原样继续: {}', 'WARNING', 'cross', 'cross', '配置面演进的降级回显：发生在启动回填/RPC 请求线程，无业务组。'),
