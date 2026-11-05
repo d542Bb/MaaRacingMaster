@@ -2498,7 +2498,7 @@ class SpeedRushModule(ActivityModule):
                 if t_start else datetime.now().isoformat(timespec="seconds")
             )
             opponent = dashboard_store.pick_opponent(
-                chain.get("hud_pairs"), stats.score)
+                chain.get("hud_pairs") or [], stats.score)
             err = dashboard_store.write_phase(
                 session_token=getattr(logger, "session_token", None) or "",
                 round_stamp=str(chain["round_stamp"]),

@@ -74,7 +74,7 @@ class _StreamItem:
     depth: int = 0
     event: str = ""               # segment_start / segment_end / stage_change / toggle
     payload: dict | None = None
-    frame: object | None = None
+    frame: np.ndarray | None = None   # 帧项携带的 RGB 帧；control 项恒为 None
     fid: int = 0
     ts_ns: int = 0
     age_ms: float = 0.0
@@ -743,6 +743,11 @@ class NavigationDebugger:
             self._process_control(item)
             return
         seg_id = item.segment_id
+        frame_rgb = item.frame
+        if frame_rgb is None:
+            # 入队侧已挡空帧（见 _maybe_sample）：无帧的帧项不处理也不计数，
+            # 计数了就会多算一笔，frames_due_* 与成功+失败的闭合恒等式随之断掉。
+            return
         self._bump(seg_id, "frames_processed")
         # 到期计数在“真正处理”时记：入队后被淘汰/收尾丢弃的帧不算到期，
         # 否则 frames_due_* = 成功 + 失败 的闭合恒等式会断。
@@ -751,9 +756,9 @@ class NavigationDebugger:
         if item.due_save:
             self._bump(seg_id, "frames_due_save")
         try:
-            frame_bgr = cv2.cvtColor(item.frame, cv2.COLOR_RGB2BGR)
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         except Exception:  # noqa: BLE001
-            frame_bgr = item.frame
+            frame_bgr = frame_rgb
         base = self._render_baseline(frame_bgr, item)
         if item.due_save:
             full = base
@@ -790,8 +795,10 @@ class NavigationDebugger:
                 "label": item.label, "depth": item.depth,
                 "stage": item.stage, "payload": item.payload})
         elif ev == "segment_end":
+            counters = _new_counters()
             with self._lock:
-                counters = dict(self._counters.get(item.segment_id, _new_counters()))
+                if item.segment_id is not None:
+                    counters = dict(self._counters.get(item.segment_id, _new_counters()))
                 remaining = bool(self._stack)
             payload = dict(item.payload or {})
             self._index({

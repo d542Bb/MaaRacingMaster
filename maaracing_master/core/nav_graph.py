@@ -612,7 +612,7 @@ class NavGraph:
             yield seg
         finally:
             self._dbg_seg = None
-            if seg is not None:
+            if seg is not None and dbg is not None:
                 try:
                     dbg.close_segment(seg, self._outcome or "failed")
                 except Exception:  # noqa: BLE001
@@ -871,7 +871,8 @@ class NavGraph:
                 return False
             if interrupted == "deadline":
                 self._outcome = "deadline"
-                self._log(f"[跳转图] 超过总时限 {float(deadline_s):.0f}s，停止导航", "ERROR")
+                lim = f" {float(deadline_s):.0f}s" if deadline_s is not None else ""
+                self._log(f"[跳转图] 超过总时限{lim}，停止导航", "ERROR")
                 return False
             ok = bool(job.succeeded)
             if ok and reached:
