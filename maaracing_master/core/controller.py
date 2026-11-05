@@ -217,17 +217,17 @@ class MaaRacingMasterController:
             # hwnd 取 self._hwnd（二次运行复用上次句柄）或 find_game_hwnd 兜底（首次运行）。
             if self._mute_game_enabled:
                 self._apply_game_volume(0.0, "运行开始：静音游戏", verify=True, grp=g)
-            # WGC 中心采集器前置条件：确保 _hwnd 已由 connect() 建立（connect 幂等，
-            # 二次运行直接短路返回；首次运行在此完成窗口连接生命周期）。
+            # WGC 中心采集器前置条件：_hwnd 与 MAA 连接由 connect() 建立（幂等：已连接
+            # 即短路返回）。这里不按 `self._hwnd` 设守卫：「启动游戏」只采纳句柄、不建
+            # 连接，守卫会把真实连接推给模块自己发起的无组那次，窗口连接行即散成裸行。
             # 注意：不能把 connect 塞进 _start_wgc_capture——那是 WGC 生命周期函数，
             # 职责只负责"假定 HWND 已存在后启动采集"；窗口连接归 connect() 所有。
             # conn_ok=False 时跳过 WGC 与模块启动，但仍走 finally 统一清理
             # （active_module/ctx/_running/音量恢复），避免裸 return 残留状态。
             conn_ok = True
-            if not self._hwnd:
-                if not self.connect(grp=g):
-                    g.log("窗口连接失败，模块终止", "ERROR")
-                    conn_ok = False
+            if not self.connect(grp=g):
+                g.log("窗口连接失败，模块终止", "ERROR")
+                conn_ok = False
             if conn_ok:
                 self._start_wgc_capture(grp=g)  # WGC 中心采集器（启动失败回退 MAA 截图，不阻断）
         except BaseException:
