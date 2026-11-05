@@ -188,6 +188,8 @@
   `tools/experiments/speedrush_gating/export_gating_marks.py`。
 - 帧文件名是**序号**（`raw/000001_raw.jpg` 起，`seq` 从 1 递增），不是帧号；`frame_id`
   只在 `frames.jsonl` 里，两者的桥是那份索引的 `file` 字段。
+- 回合战绩库落 `data/speedrush/speedrush.db`（用户资产，不受 debug/日志清理影响）；
+  结构、写入闸门与读取见 §26。
 
 ## 3.1 宏录制 / 回放（用户操作录制，2026-11-03）
 
@@ -346,6 +348,20 @@
   `meta.json` 分文件，避免两个线程写同一文件。
 - `timer` 是 `mm:ss` 倒计时，它的 `value` 按**秒**记（`parse_value`）；通用取整会把 `04:46`
   读成 4，看上去像"剩 4 秒"——读数对而解释错正是本记录要防的一类。其余格子取第一个整数。
+
+### 5.1 对手分读取口径（回合战绩库消费，2026-11-05）
+
+- **本机槽位由速度行判**：`read_hud_scores` 取 `rate_a/rate_b` 中有值的那个槽位为本机；
+  对手分取另一槽，要求 `trusted` 且 `side` 为对手。速度行缺失即整拍弃权。
+- **两类实测假读**：① 双方 `score` 都 `trusted` 但串位、且没有速度行（283 / 22840）；
+  ② 速度行存在、我方虚高、对手回落（4878 / 888）。前者由速度行判据挡住，后者由
+  **末分锚选**挡住：阶段收尾取汇总末分，选「我方分 ≤ 末分 + 余量」里最大的一对
+  （余量按采样间隔与最高得分速度定，见常量 `OPPONENT_MARGIN`）。线上写库与历史回填
+  共用 `dashboard_store.pick_opponent`。
+- **读取不因 debug 关而停**：控制局的 HUD 读数线程始终启动；debug 只决定
+  `hud.jsonl`/meta 是否落盘（`persist`）。故关闭 debug 与日志落盘时，战绩库仍有比分与胜负。
+- 人工录制与宏录制不写战绩库（人驾输入）；宏回放按程序控制局计入（模式「宏」），
+  回放阶段的完整 HUD 读数只留内存，供阶段结果落库。
 
 ***
 
@@ -1823,3 +1839,47 @@ id（`member_ids/lead_id`），不替代成员做位置/速度外推。只做同
 **剂量（`step_retry`）**：`max_retries`（不含首点）/ `window_s`（单次尝试等落地确认的时间窗）/ `poll_s`（窗内轮询间隔）为全局默认，`by_stage` 按 FLOW 阶段名覆盖任意子集。**当前 `by_stage` 为空（全用默认）**——含页面转场 / 匹配耗时的步（如 `寻找对手 → 奖励弹窗`）可能需更宽窗，各步窗口应据真机日志再分步定，无实测依据不凭空写更优值。
 
 **待复核**：确认锚点阈值沿用同模板动作节点的标定值（探针与点击认的是同图同区）；驾驶阶段（`node is None`）仍由 `_drive` 自身的就绪 / 结束判据处理，不套步级机。真机跑一轮后需复核各确认锚点在真实帧上的命中率，以及含匹配的步会不会因正常慢转场被误判重发。测试：`tests/test_speedrush_gating.py` 的步级重发用例（假钟；覆盖命中前进 / 窗内命中不重发 / 未命中重发到显式终止 / 停止不记耗尽 / 映射完整性与确认节点在真源存在）。
+
+## 26. 回合战绩看板与本地库（本域）
+
+**定位**：数据页「回合战绩」看板 + 本地战绩库。看板只组合 `stats` / `list` / `text`
+标准 block；列表行的着色分段用 `parts`、日期组头用 `group`、分页用 block 的
+`page_size`。前端渲染在 `settings.js` 的 `dashRowHtml` / `bindDashboardLists`；
+契约与校验仍在 `core/dashboard_contract.py`，不新增 block 类型。
+
+**住户**：结构与读写 `dashboard_store.py`；写入接线
+`module._flush_control_trace` / `_record_round_phase`；看板入口
+`SpeedRushModule.read_dashboard`（类方法，不建实例）；历史回填
+`tools/import_rounds.py`。
+
+**写入**：
+- 阶段收尾写「一回合一行」，阶段 1/2 各 upsert 自己的列；同一 `round_key` 不重复。
+  行内是筛选后的回合结果，不是逐拍 HUD 副本。
+- 写入程序控制局：深度几何、全程直行、宏回放。`chain['record_round']` 在
+  `_drive_loop` 按有效形态与调用方显式给的前缀置位；人工录制与宏录制不写。
+  宏回放不跑控制链，但每拍从 HUD 取一次双方比分，阶段收尾走同一套 summary/写库。
+- 与日志、debug 两个开关解耦：日志只影响 summary/流水；debug 只影响 HUD 证据落盘；
+  HUD 读数为库提供末分与对手分（见 §5.1）。失败只记 WARNING，不阻断收尾。
+
+**读取**：
+- `read_dashboard()` 只读打开库；库不存在给空态，版本过新/读失败给 warn 态，
+  轮询入口不抛异常。
+- 统计卡：今日回合、今日胜场、总回合数、总胜场。今日按本地日历日；胜场只在阶段 2
+  正常结束且双方末分可读时计（我方分高即胜）。
+- 列表按回合开始时间倒序；行显示回合开始时刻（不是阶段 2 开始）、模式、我方分（蓝）/
+  对手分（红）、胜负与分差；日期组头「今日」/「MM-DD」；按 payload 的 `page_size`
+  分页，滚到底续下一页，滚动条隐藏。
+- 口径：回合总分取最后一个已记录阶段的累计分，不把两段相加；分差只表示终盘比分差；
+  血量未读取；对手分不可读时显示未记录，不拿 0 冒充。
+
+**历史回填**：
+- `import_rounds.py` 扫段汇总与调试 meta，按「阶段 + 开始时刻」匹配；只收
+  `meta.source == "control"`；重复运行幂等，`live` 行不被覆盖。
+- 驾驶形态由同会话流水的阶段状态判（全 `STRAIGHT` = 直行，否则深度）；对手分按
+  §5.1 的末分锚选。
+- 旧会话补进库后看板即可显示；之后新局由阶段收尾实时写入。
+
+**测试**：`tests/test_speedrush_dashboard_store.py`、`test_speedrush_import_rounds.py`、
+`test_speedrush_hud_scores.py`、`test_speedrush_control_wiring.py`（写库闸门）、
+`test_speedrush_gating.py`（debug 关读数仍起）、`test_frontend_dashboard_center.py`
+（parts/group/page_size/binder 静态锁）。

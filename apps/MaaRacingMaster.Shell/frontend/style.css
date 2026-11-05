@@ -817,6 +817,27 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   border-top: 1px dashed var(--maarm-border-light); padding-top: 8px;
   max-height: 200px; overflow-y: auto;
 }
+/* 分页列表：一屏约 5 行（含日期组头）；滚动到底由 JS 续下一页；滚动条隐藏 */
+.board-list[data-page-size] {
+  max-height: 184px;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.board-list[data-page-size]::-webkit-scrollbar { display: none; }
+.board-item + .board-item { border-top: 1px solid var(--maarm-border-light); }
+.board-item[hidden] { display: none !important; }
+.board-date {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 2px 2px; font-size: 10px; color: var(--maarm-foreground-muted);
+}
+.board-date::after {
+  content: ''; flex: 1; height: 1px; background: var(--maarm-border-light);
+}
+.row-part--info { color: var(--maarm-info); }
+.row-part--negative { color: var(--maarm-danger); }
+.row-part--muted { color: var(--maarm-foreground-muted); }
+.row-part--positive { color: var(--maarm-success-strong); }
+.row-part--warn { color: var(--maarm-warning-strong); }
+.board-sentinel { height: 1px; }
 .board-empty { font-size: 12px; color: var(--maarm-foreground-muted); text-align: center; padding: 8px 0; }
 .board-row {
   display: flex; align-items: center; gap: 8px; font-size: 12px;

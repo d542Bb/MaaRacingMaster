@@ -78,11 +78,11 @@ def test_zero_contract_is_reserved_not_candidate(monkeypatch):
     assert reg.get_module_info("reserved")["has_dashboard"] is False
 
 
-def test_speedrush_reserves_dashboard_with_version_zero():
-    """极速狂飙的看板尚未实现：契约版本停在 0，元信息不下发看板资格。"""
+def test_speedrush_declares_dashboard():
+    """极速狂飙接入回合战绩看板：契约版本 1，元信息下发看板资格。"""
     cls = MODULE_REGISTRY["speedrush"]
-    assert cls.DASHBOARD_CONTRACT == 0
-    assert get_module_info("speedrush")["has_dashboard"] is False
+    assert cls.DASHBOARD_CONTRACT == DASHBOARD_CONTRACT_VERSION
+    assert get_module_info("speedrush")["has_dashboard"] is True
 
 
 def test_treasure_is_the_reference_dashboard_module():
@@ -149,7 +149,7 @@ def test_module_list_payload_carries_dashboard_flag():
             f"{item['id']} 缺少布尔型 has_dashboard"
         )
 
-    assert by_id["speedrush"]["has_dashboard"] is False
+    assert by_id["speedrush"]["has_dashboard"] is True
     assert by_id["launch_game"]["has_dashboard"] is False
     assert by_id["close_game"]["has_dashboard"] is False
 

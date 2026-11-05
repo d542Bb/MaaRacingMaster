@@ -27,7 +27,8 @@ DASHBOARD_CONTRACT_VERSION = 1
 BLOCK_TYPES = frozenset({"stats", "list", "text", "path", "action", "today_stats"})
 
 # 色调只影响前端样式，不允许任意类名/内联样式。
-TONES = frozenset({"neutral", "positive", "negative", "muted", "warn"})
+# info = 蓝（本体/本方），negative = 红；两者不表达好坏，只表达归属。
+TONES = frozenset({"neutral", "positive", "negative", "muted", "warn", "info"})
 
 # 标准动作白名单：模块只能引用这些能力，不能自带 RPC 名或 URL。
 ACTIONS = frozenset({"open_user_data_folder"})
@@ -42,6 +43,9 @@ MAX_LABEL = 60
 MAX_VALUE = 64
 MAX_SUB = 80
 MAX_TEXT = 2000
+MAX_PARTS = 8
+MAX_GROUP = 24
+MAX_PAGE_SIZE = 50
 
 # 允许换行与制表；其余控制字符拒绝（避免布局/日志被破坏）。
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -131,6 +135,28 @@ def _stats(block: dict, warnings: list[str]) -> dict | None:
     return {"type": "stats", "items": out} if out else None
 
 
+def _parts(value: Any, field: str, warnings: list[str]) -> list[dict] | None:
+    """行内分段（可着色）：``[{"text", "tone"}]``；文本与色调各自校验，非法段丢弃。"""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        warnings.append(f"{field} 不是列表")
+        return None
+    if len(value) > MAX_PARTS:
+        warnings.append(f"{field} 超过 {MAX_PARTS} 段，已截断")
+    out: list[dict] = []
+    for index, part in enumerate(value[:MAX_PARTS]):
+        if not isinstance(part, dict):
+            warnings.append(f"{field}[{index}] 不是对象")
+            continue
+        text = _text(part.get("text"), f"{field}[{index}].text", MAX_VALUE, warnings)
+        if text is None:
+            continue
+        out.append({"text": text,
+                    "tone": _tone(part.get("tone"), f"{field}[{index}].tone", warnings)})
+    return out or None
+
+
 def _list(block: dict, warnings: list[str]) -> dict | None:
     rows = block.get("rows")
     if not isinstance(rows, list):
@@ -143,18 +169,36 @@ def _list(block: dict, warnings: list[str]) -> dict | None:
         if not isinstance(row, dict):
             warnings.append(f"list[{index}] 不是对象")
             continue
-        text = _text(row.get("text"), f"list[{index}].text", MAX_TEXT, warnings)
-        if text is None:
+        text = _text(row.get("text"), f"list[{index}].text", MAX_TEXT,
+                     warnings, required=False)
+        parts = _parts(row.get("parts"), f"list[{index}].parts", warnings)
+        if text is None and parts is None:
+            warnings.append(f"list[{index}] 缺少 text/parts")
             continue
         leading = _text(row.get("leading"), f"list[{index}].leading", MAX_LABEL, warnings, required=False)
         trailing = _text(row.get("trailing"), f"list[{index}].trailing", MAX_VALUE, warnings, required=False)
         entry: dict[str, Any] = {
-            "leading": leading or "", "text": text, "trailing": trailing or ""}
+            "leading": leading or "", "text": text or "", "trailing": trailing or ""}
+        if parts is not None:
+            entry["parts"] = parts
+        group = _text(row.get("group"), f"list[{index}].group", MAX_GROUP,
+                      warnings, required=False)
+        if group is not None:
+            entry["group"] = group
         badge = _badge(row.get("badge"), warnings)
         if badge is not None:
             entry["badge"] = badge
         out.append(entry)
-    return {"type": "list", "rows": out} if out else None
+    if not out:
+        return None
+    result: dict[str, Any] = {"type": "list", "rows": out}
+    page_size = block.get("page_size")
+    if page_size is not None:
+        if type(page_size) is int and 1 <= page_size <= MAX_PAGE_SIZE:
+            result["page_size"] = page_size
+        else:
+            warnings.append(f"list.page_size 非法: {page_size!r}")
+    return result
 
 
 def _plain_text(block: dict, kind: str, warnings: list[str]) -> dict | None:
@@ -245,6 +289,7 @@ __all__ = [
     "BLOCK_TYPES",
     "TONES",
     "ACTIONS",
+    "MAX_PAGE_SIZE",
     "DashboardContractError",
     "normalize_dashboard",
 ]

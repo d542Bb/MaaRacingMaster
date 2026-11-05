@@ -474,6 +474,15 @@
       + '<b' + cls + '>' + escHtml(item.value) + '</b>' + sub + dots + '</div>';
   }
 
+  const ROW_PART_TONES = {
+    neutral: '',
+    positive: ' row-part--positive',
+    negative: ' row-part--negative',
+    muted: ' row-part--muted',
+    warn: ' row-part--warn',
+    info: ' row-part--info'
+  };
+
   function dashRowHtml(row) {
     const b = row.badge;
     const badgeCls = b
@@ -486,10 +495,14 @@
       : '<span class="board-res board-res--empty" aria-hidden="true"></span>';
     const trailing = row.trailing
       ? '<span class="board-row-val">' + escHtml(row.trailing) + '</span>' : '';
+    const body = Array.isArray(row.parts) && row.parts.length
+      ? row.parts.map((part) => '<span class="row-part'
+        + (ROW_PART_TONES[part.tone] || '') + '">' + escHtml(part.text) + '</span>').join('')
+      : escHtml(row.text);
     return '<div class="board-row">'
       + '<span class="board-row-seq">' + escHtml(row.leading || '') + '</span>'
       + badge
-      + '<span class="board-row-text">' + escHtml(row.text) + '</span>'
+      + '<span class="board-row-text">' + body + '</span>'
       + trailing
       + '</div>';
   }
@@ -545,8 +558,21 @@
     switch (block.type) {
       case 'stats':
         return '<div class="stat-grid">' + block.items.map(dashStatHtml).join('') + '</div>';
-      case 'list':
-        return '<div class="board-list">' + block.rows.map(dashRowHtml).join('') + '</div>';
+      case 'list': {
+        const rows = Array.isArray(block.rows) ? block.rows : [];
+        const pageSize = Number(block.page_size) > 0 ? Number(block.page_size) : 0;
+        const pageAttr = pageSize ? ' data-page-size="' + pageSize + '"' : '';
+        let lastGroup = null;
+        const items = rows.map((row) => {
+          const showGroup = row.group && row.group !== lastGroup;
+          lastGroup = row.group || lastGroup;
+          return '<div class="board-item">'
+            + (showGroup ? '<div class="board-date">' + escHtml(row.group) + '</div>' : '')
+            + dashRowHtml(row)
+            + '</div>';
+        }).join('');
+        return '<div class="board-list"' + pageAttr + '>' + items + '</div>';
+      }
       case 'text':
         return '<p class="dash-desc">' + escHtml(block.text) + '</p>';
       case 'path':
@@ -560,6 +586,49 @@
       default:
         return '';
     }
+  }
+
+  // 列表分页：每页 page_size 条，滚到底自动续下一页；滚动条由 CSS 隐藏。
+  // 分页单位是 .board-item（含日期组头），组头随首行一起显隐。
+  function bindDashboardLists(root) {
+    if (!root) return;
+    const lists = root.querySelectorAll('.board-list[data-page-size]');
+    if (typeof IntersectionObserver !== 'function') {
+      lists.forEach((list) => {
+        list.querySelectorAll('.board-item[hidden]').forEach((item) => {
+          item.hidden = false;
+        });
+      });
+      return;
+    }
+    lists.forEach((list) => {
+      const size = Math.max(1, Number(list.dataset.pageSize) || 5);
+      const items = Array.from(list.querySelectorAll('.board-item'));
+      if (items.length <= size) return;
+      items.forEach((item, index) => { item.hidden = index >= size; });
+      let shown = size;
+      const sentinel = document.createElement('div');
+      sentinel.className = 'board-sentinel';
+      list.appendChild(sentinel);
+      let observer = null;
+      const reveal = () => {
+        if (shown >= items.length) return;
+        items.slice(shown, shown + size).forEach((item) => { item.hidden = false; });
+        shown = Math.min(items.length, shown + size);
+        if (shown >= items.length) {
+          if (observer) observer.disconnect();
+          sentinel.remove();
+          return;
+        }
+        requestAnimationFrame(() => {
+          if (list.scrollHeight <= list.clientHeight + 8) reveal();
+        });
+      };
+      observer = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) reveal();
+      }, { root: list, rootMargin: '0px 0px 32px 0px' });
+      observer.observe(sentinel);
+    });
   }
 
   function dashboardPayloadHtml(mod, payload) {
@@ -640,6 +709,7 @@
       if (sig === _dashPayloadSig && body.dataset.loadedFor === mod.id) return;
       _dashPayloadSig = sig;
       body.innerHTML = dashboardPayloadHtml(mod, payload);
+      bindDashboardLists(body);
       body.dataset.loadedFor = mod.id;
     } catch (e) {
       if (seq !== _dashReqSeq) return;

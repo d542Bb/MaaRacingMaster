@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>极速狂飙 · 回合战绩看板预览</title>
+<style>
+  :root {
+    --maarm-primary: #E5484D;
+    --maarm-background: #F5F6FA;
+    --maarm-surface: #FFFFFF;
+    --maarm-surface-hover: #F8F9FC;
+    --maarm-surface-active: #F0F2F8;
+    --maarm-foreground: #1F2328;
+    --maarm-foreground-secondary: #4A5160;
+    --maarm-foreground-muted: #8B93A7;
+    --maarm-border: #E5E7EB;
+    --maarm-border-light: #EEF0F4;
+    --maarm-success: #10B981;
+    --maarm-success-bg: rgba(16, 185, 129, 0.1);
+    --maarm-success-strong: #15803d;
+    --maarm-warning: #F59E0B;
+    --maarm-warning-bg: rgba(245, 158, 11, 0.12);
+    --maarm-warning-strong: #b45309;
+    --maarm-danger: #EF4444;
+    --maarm-danger-bg: rgba(239, 68, 68, 0.1);
+    --maarm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+    --maarm-radius-md: 8px;
+    --maarm-radius-sm: 6px;
+    --maarm-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    --maarm-font-mono: "Consolas", "JetBrains Mono", "Cascadia Code", "SF Mono", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--maarm-background);
+    color: var(--maarm-foreground);
+    font-family: var(--maarm-font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 24px 28px 40px;
+  }
+  .lab-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 24px; max-width: 760px; margin: 0 auto 10px;
+  }
+  .lab-head h1 { font-size: 16px; font-weight: 600; letter-spacing: .01em; }
+  .lab-head p { color: var(--maarm-foreground-muted); font-size: 12px; margin-top: 2px; }
+  .state-switch {
+    display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px;
+    border: 1px solid var(--maarm-border); border-radius: 999px;
+    background: var(--maarm-surface); box-shadow: var(--maarm-shadow-sm); flex: none;
+  }
+  .state-switch button {
+    border: 0; background: transparent; color: var(--maarm-foreground-secondary);
+    font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 999px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .state-switch button:hover { background: var(--maarm-surface-active); }
+  .state-switch button.on {
+    background: var(--maarm-primary); color: #fff;
+    box-shadow: 0 1px 2px rgba(229, 72, 77, .24);
+  }
+  .state-note {
+    max-width: 760px; margin: 0 auto 14px;
+    color: var(--maarm-foreground-muted); font-size: 12px;
+  }
+  .stage {
+    max-width: 760px; margin: 0 auto;
+    display: flex; justify-content: center;
+  }
+  .card {
+    width: 420px; max-width: 100%;
+    background: var(--maarm-surface);
+    border: 1px solid var(--maarm-border); border-radius: var(--maarm-radius-md);
+    box-shadow: var(--maarm-shadow-sm);
+    overflow: hidden;
+  }
+  .dash-body { padding: 14px 16px; }
+
+  /* ---- 正式前端看板样式（与本目录外的 style.css 同源快照） ---- */
+  .dash-panel { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+  .dash-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .dash-panel-head h4 { font-size: 13px; font-weight: 600; color: var(--maarm-foreground); }
+  .kind-chip {
+    flex: none; font-size: 10px; line-height: 18px; padding: 0 7px;
+    border-radius: 999px; color: var(--maarm-foreground-muted);
+    background: var(--maarm-surface-active);
+  }
+  .kind-chip--warn { color: var(--maarm-warning-strong); background: var(--maarm-warning-bg); }
+
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat {
+    position: relative; min-height: 58px; padding: 8px 11px;
+    border: 1px solid var(--maarm-border-light); border-radius: var(--maarm-radius-md);
+    background: var(--maarm-surface-hover);
+  }
+  .stat > span { display: block; font-size: 11px; color: var(--maarm-foreground-muted); }
+  .stat > b {
+    display: inline-block; margin-top: 2px;
+    font-size: 19px; font-weight: 600; line-height: 1.2; letter-spacing: -.01em;
+  }
+
+  .board-list {
+    border-top: 1px dashed var(--maarm-border-light); padding-top: 6px;
+    max-height: 200px; overflow-y: auto;
+    scrollbar-width: none; -ms-overflow-style: none;
+  }
+  .board-list::-webkit-scrollbar { display: none; }
+  .board-list[data-page-size] { max-height: 184px; }
+  .board-item + .board-item { border-top: 1px solid var(--maarm-border-light); }
+  .board-item[hidden] { display: none !important; }
+  .board-date {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 2px 2px; font-size: 10px; color: var(--maarm-foreground-muted);
+  }
+  .board-date::after {
+    content: ''; flex: 1; height: 1px; background: var(--maarm-border-light);
+  }
+  .board-row {
+    display: flex; align-items: center; gap: 8px; font-size: 12px;
+    padding: 4px 2px; color: var(--maarm-foreground-secondary);
+  }
+  .board-row-seq {
+    width: 38px; flex-shrink: 0; color: var(--maarm-foreground-muted);
+    font-family: var(--maarm-font-mono);
+  }
+  .board-res {
+    flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+    background: var(--maarm-border-light); color: var(--maarm-foreground-muted);
+  }
+  .board-res--warn { background: var(--maarm-warning-bg); color: var(--maarm-warning-strong); }
+  .board-res--empty { visibility: hidden; }
+  .board-row-val { margin-left: auto; flex-shrink: 0; font-family: var(--maarm-font-mono); }
+  .board-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-part--info { color: var(--maarm-info); }
+  .row-part--negative { color: var(--maarm-danger); }
+  .row-part--muted { color: var(--maarm-foreground-muted); }
+  .row-part--positive { color: var(--maarm-success-strong); }
+  .row-part--warn { color: var(--maarm-warning-strong); }
+  .board-sentinel { height: 1px; }
+
+  .dash-desc { font-size: 12px; line-height: 1.7; color: var(--maarm-foreground-secondary); }
+  .dash-none { font-size: 12px; color: var(--maarm-foreground-muted); padding: 4px 0; }
+
+  details {
+    max-width: 760px; margin: 16px auto 0;
+    background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+    border-radius: var(--maarm-radius-md); padding: 10px 14px;
+  }
+  details summary { cursor: pointer; font-size: 12px; color: var(--maarm-foreground-secondary); }
+  details pre {
+    margin-top: 10px; padding: 12px; overflow-x: auto;
+    background: #FAFBFC; border: 1px solid var(--maarm-border-light); border-radius: 6px;
+    font-family: var(--maarm-font-mono); font-size: 11px; line-height: 1.6;
+    color: var(--maarm-foreground-secondary); white-space: pre;
+  }
+  details ul { margin: 8px 0 0; padding-left: 18px; color: var(--maarm-foreground-secondary); font-size: 12px; }
+  details li + li { margin-top: 3px; }
+  @media (max-width: 720px) {
+    .lab-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .card { width: 100%; }
+  }
+</style>
+</head>
+<body>
+  <header class="lab-head">
+    <div>
+      <h1>看板预览</h1>
+      <p>数据页右栏 · 420px</p>
+    </div>
+    <div class="state-switch" id="state-switch">
+      <button type="button" data-state="data" class="on">有数据</button>
+      <button type="button" data-state="empty">空态</button>
+      <button type="button" data-state="no_opponent">缺对手分</button>
+      <button type="button" data-state="phase1_only">仅阶段 1</button>
+      <button type="button" data-state="error">读取失败</button>
+      <button type="button" data-state="many">长列表</button>
+    </div>
+  </header>
+  <main class="stage">
+    <div class="card">
+      <div class="dash-body" id="dash-body"></div>
+    </div>
+  </main>
+
+  <details>
+    <summary>验收点</summary>
+    <ul>
+      <li>4 项统计在 420px 右栏可读，回合列表在第一屏可见。</li>
+      <li>列表每次 5 条，滚到底自动续 5 条。</li>
+      <li>胜负按终盘比分判断，统计与列表使用同一口径。</li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>当前状态的原始 payload</summary>
+    <pre id="raw-json"></pre>
+  </details>
+
+<script src="payload.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const MOD_NAME = '极速狂飙';
+  const $ = (id) => document.getElementById(id);
+  const escHtml = (value) => String(value == null ? '' : value)
+    .replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+  function dashStatHtml(item) {
+    return '<div class="stat"><span>' + escHtml(item.label) + '</span>'
+      + '<b>' + escHtml(item.value) + '</b></div>';
+  }
+
+  const PART_TONES = {
+    neutral: '',
+    positive: ' row-part--positive',
+    negative: ' row-part--negative',
+    muted: ' row-part--muted',
+    warn: ' row-part--warn',
+    info: ' row-part--info'
+  };
+
+  function dashRowHtml(row) {
+    const b = row.badge;
+    const badgeCls = b && b.tone === 'warn' ? ' board-res--warn' : '';
+    const badge = b
+      ? '<span class="board-res' + badgeCls + '">' + escHtml(b.text) + '</span>'
+      : '<span class="board-res board-res--empty" aria-hidden="true"></span>';
+    const trailing = row.trailing
+      ? '<span class="board-row-val">' + escHtml(row.trailing) + '</span>' : '';
+    const body = Array.isArray(row.parts) && row.parts.length
+      ? row.parts.map((part) => '<span class="row-part'
+        + (PART_TONES[part.tone] || '') + '">' + escHtml(part.text) + '</span>').join('')
+      : escHtml(row.text);
+    return '<div class="board-row">'
+      + '<span class="board-row-seq">' + escHtml(row.leading || '') + '</span>'
+      + badge
+      + '<span class="board-row-text">' + body + '</span>'
+      + trailing
+      + '</div>';
+  }
+
+  function dashBlockHtml(block) {
+    switch (block.type) {
+      case 'stats':
+        return '<div class="stat-grid">' + block.items.map(dashStatHtml).join('') + '</div>';
+      case 'list': {
+        const pageSize = Number(block.page_size) > 0 ? Number(block.page_size) : 0;
+        const attr = pageSize ? ' data-page-size="' + pageSize + '"' : '';
+        let lastGroup = null;
+        const items = block.rows.map((row) => {
+          const showGroup = row.group && row.group !== lastGroup;
+          lastGroup = row.group || lastGroup;
+          return '<div class="board-item">'
+            + (showGroup ? '<div class="board-date">' + escHtml(row.group) + '</div>' : '')
+            + dashRowHtml(row)
+            + '</div>';
+        }).join('');
+        return '<div class="board-list"' + attr + '>' + items + '</div>';
+      }
+      case 'text':
+        return '<p class="dash-desc">' + escHtml(block.text) + '</p>';
+      default:
+        return '';
+    }
+  }
+
+  function dashboardPayloadHtml(payload) {
+    const blocks = (payload && Array.isArray(payload.blocks)) ? payload.blocks : [];
+    const title = (payload && typeof payload.title === 'string') ? payload.title : '';
+    const badge = payload && payload.badge && typeof payload.badge.text === 'string' ? payload.badge : null;
+    const badgeCls = badge && badge.tone === 'warn' ? ' kind-chip--warn' : '';
+    return '<div class="dash-panel">'
+      + '<div class="dash-panel-head"><h4>' + escHtml(MOD_NAME)
+      + (title ? ' · ' + escHtml(title) : '') + '</h4>'
+      + (badge ? '<span class="kind-chip' + badgeCls + '">' + escHtml(badge.text) + '</span>' : '')
+      + '</div>'
+      + (blocks.length
+        ? blocks.map(dashBlockHtml).join('')
+        : '<p class="dash-none">看板暂无内容</p>')
+      + '</div>';
+  }
+
+  // 列表每次展示 page_size 条；滚到列表底部时自动续下一批。
+  function bindLazyLists(root) {
+    root.querySelectorAll('.board-list[data-page-size]').forEach((list) => {
+      const size = Math.max(1, Number(list.dataset.pageSize) || 5);
+      const items = Array.from(list.querySelectorAll('.board-item'));
+      if (items.length <= size) return;
+      items.forEach((item, index) => { item.hidden = index >= size; });
+      let shown = size;
+      const sentinel = document.createElement('div');
+      sentinel.className = 'board-sentinel';
+      list.appendChild(sentinel);
+      let observer = null;
+      const reveal = () => {
+        if (shown >= items.length) return;
+        items.slice(shown, shown + size).forEach((item) => { item.hidden = false; });
+        shown = Math.min(items.length, shown + size);
+        if (shown >= items.length) {
+          if (observer) observer.disconnect();
+          sentinel.remove();
+          return;
+        }
+        requestAnimationFrame(() => {
+          if (list.scrollHeight <= list.clientHeight + 8) reveal();
+        });
+      };
+      observer = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) reveal();
+      }, { root: list, rootMargin: '0px 0px 32px 0px' });
+      observer.observe(sentinel);
+    });
+  }
+
+  function setState(key) {
+    const payload = window.SPEEDRUSH_PAYLOADS[key];
+    if (!payload) return;
+    const body = $('dash-body');
+    body.innerHTML = dashboardPayloadHtml(payload);
+    bindLazyLists(body);
+    $('raw-json').textContent = JSON.stringify(payload, null, 2);
+    document.querySelectorAll('#state-switch button').forEach((btn) => {
+      btn.classList.toggle('on', btn.dataset.state === key);
+    });
+  }
+
+  document.querySelectorAll('#state-switch button').forEach((btn) => {
+    btn.addEventListener('click', () => setState(btn.dataset.state));
+  });
+
+  setState('data');
+})();
+</script>
+</body>
+</html>
