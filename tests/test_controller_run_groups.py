@@ -154,7 +154,8 @@ def test_connect_failure_lines_in_start_group(env, monkeypatch):
     c, rec, mod = env
     c._hwnd = 0
     c.controller = None
-    monkeypatch.setattr(ctl, "find_game_hwnd", lambda group_id=None: 0)
+    monkeypatch.setattr(ctl.game_process, "find_window_by_process", lambda: 0)
+    monkeypatch.setattr(ctl, "find_game_hwnd", lambda **kw: 0)
     c.start_module("fake")
     # 未找到窗口 ERROR 在启动组内 → 组终态自动落 failure，模块不启动
     assert ("log", "g-1", "ERROR", "未找到游戏窗口") in rec.events

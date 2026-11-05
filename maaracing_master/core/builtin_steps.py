@@ -217,7 +217,8 @@ class LaunchGameStep(BuiltinStep):
             return False
         if outcome == "deadline":
             log(f"{timeout_s:.0f}s 内未进入游戏大厅：可能停在登录页、未识别的弹窗或"
-                "对局中。不需要等待大厅时，可在步骤设置里关闭「进入大厅」", "ERROR")
+                "对局中。界面改版导致这里过不去时，临时把本步骤移出任务列表——手动把"
+                "游戏点进大厅后，后续模块照常从大厅起跑", "ERROR")
         elif outcome == "load_failed":
             log("启动链加载失败：检查 core/resources/startup 下的真源与模板是否完整", "ERROR")
         else:

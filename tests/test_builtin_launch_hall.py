@@ -121,7 +121,7 @@ def test_deadline_maps_to_failed_with_actionable_log(window_ready):
     assert ok is False
     assert step.last_outcome == "failed"
     assert any(lv == "ERROR" and "未进入游戏大厅" in m for lv, m in logs)
-    assert any("关闭「进入大厅」" in m for _lv, m in logs)
+    assert any("把本步骤移出任务列表" in m for _lv, m in logs)
 
 
 def test_stopped_maps_to_warning_not_error(window_ready):

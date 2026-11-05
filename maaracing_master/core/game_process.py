@@ -190,6 +190,16 @@ def find_window_by_exe(exe_name: str) -> int:
     return best[1]
 
 
+def find_window_by_process() -> int:
+    """按游戏主程序进程名找窗口，不需要知道安装路径；找不到返回 0。
+
+    给"游戏不是本程序起的"这条路径用：用户手动开的游戏，安装路径没配、启动器配置
+    也读不到时，进程名仍然认得出。返回 0 不代表游戏没开——画面由模拟器进程承载的
+    环境里窗口不属于游戏主程序进程，这种情况由调用方回退到按标题找。
+    """
+    return find_window_by_exe(_GAME_EXE_REL.name)
+
+
 def game_running(exe_name: str) -> bool:
     """游戏主程序是否已在运行（按进程名，不依赖窗口是否已出现）。"""
     class PROCESSENTRY32W(ctypes.Structure):

@@ -30,6 +30,7 @@ from maaracing_master.core.window_utils import (
 )
 from maaracing_master.core.logger import logger
 from maaracing_master.core.base import ActivityContext, ModuleDependencyError
+from maaracing_master.core import game_process
 from maaracing_master.core.registry import create_module
 
 
@@ -526,6 +527,22 @@ class MaaRacingMasterController:
         self._hwnd = 0
         self.controller = None
 
+    def locate_game_hwnd(self, grp=None, *, verbose: bool = True) -> int:
+        """定位游戏窗口的唯一顺序：已接管的句柄 → 按进程名 → 按标题关键词。
+
+        顺序不许反。启动器窗口与游戏窗口标题相同，按标题找会认错窗口，所以本程序
+        起过游戏时一律用启动步骤交来的句柄；没起过（用户手动开的游戏）时先按进程名
+        认，认不出才退回标题——画面由模拟器进程承载的环境里窗口不属于游戏主程序进程，
+        按进程名必然落空，标题是那里唯一的线索。
+        """
+        if self._hwnd and is_window_valid(self._hwnd):
+            return self._hwnd
+        hwnd = game_process.find_window_by_process()
+        if hwnd:
+            return hwnd
+        return find_game_hwnd(group_id=grp.id if grp is not None else None,
+                              verbose=verbose)
+
     def request_exit(self) -> None:
         """请求本轮结束后退出本程序（由「关闭游戏」步骤的选项发起）。"""
         self._exit_requested = True
@@ -564,8 +581,7 @@ class MaaRacingMasterController:
         """
         try:
             from maaracing_master.core.audio_volume import get_game_volume, set_game_volume
-            hwnd = self._hwnd or find_game_hwnd(
-                group_id=grp.id if grp is not None else None, verbose=False)
+            hwnd = self.locate_game_hwnd(grp=grp, verbose=False)
             if not hwnd:
                 _clog(grp, f"{label}：未能定位游戏窗口，跳过音量设置", "WARNING")
                 return
@@ -588,7 +604,7 @@ class MaaRacingMasterController:
         """静默尝试设置音量，返回受影响会话数（0 = 暂无可设置的会话）。"""
         try:
             from maaracing_master.core.audio_volume import set_game_volume
-            hwnd = self._hwnd or find_game_hwnd(verbose=False)
+            hwnd = self.locate_game_hwnd(verbose=False)
             if not hwnd:
                 return 0
             return int(set_game_volume(hwnd, level))
@@ -599,7 +615,7 @@ class MaaRacingMasterController:
         """静默读取游戏进程当前各音频会话音量；无窗口/无会话返回 None。"""
         try:
             from maaracing_master.core.audio_volume import get_game_volume
-            hwnd = self._hwnd or find_game_hwnd(verbose=False)
+            hwnd = self.locate_game_hwnd(verbose=False)
             if not hwnd:
                 return None
             vols = [float(v) for v in get_game_volume(hwnd)]
@@ -822,9 +838,7 @@ class MaaRacingMasterController:
                 return True
             self.forget_window()
 
-        # 启动步骤已按进程名认准窗口时直接用它的句柄：启动器窗口与游戏窗口同名，
-        # 再按标题搜一次有认错窗口的风险。
-        hwnd = self._hwnd or find_game_hwnd(group_id=grp.id if grp is not None else None)
+        hwnd = self.locate_game_hwnd(grp=grp)
         if hwnd == 0:
             _clog(grp, "未找到游戏窗口", "ERROR")
             return False

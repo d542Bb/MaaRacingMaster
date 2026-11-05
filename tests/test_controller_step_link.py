@@ -101,11 +101,45 @@ def test_connect_short_circuit_requires_live_window(monkeypatch):
     c.controller = object()
     c._hwnd = 123
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: False)
+    monkeypatch.setattr(ctl.game_process, "find_window_by_process", lambda: 0)
     monkeypatch.setattr(ctl, "find_game_hwnd", lambda **kw: 0)
 
     assert c.connect() is False
     assert c.controller is None
     assert c._hwnd == 0
+
+
+def test_locate_prefers_process_over_title(monkeypatch):
+    """没有接管句柄时先按进程名认，认不出才退回按标题：启动器窗口与游戏窗口同名，
+    标题是最后一级线索，不能排在前面。"""
+    c = _ctl()
+    c._hwnd = 0
+    seen: list[str] = []
+    monkeypatch.setattr(ctl.game_process, "find_window_by_process",
+                        lambda: seen.append("exe") or 0)
+    monkeypatch.setattr(ctl, "find_game_hwnd",
+                        lambda **kw: seen.append("title") or 0)
+    assert c.locate_game_hwnd() == 0
+    assert seen == ["exe", "title"]
+
+
+def test_locate_stops_at_process_hit(monkeypatch):
+    c = _ctl()
+    c._hwnd = 0
+    monkeypatch.setattr(ctl.game_process, "find_window_by_process", lambda: 4321)
+    monkeypatch.setattr(ctl, "find_game_hwnd",
+                        lambda **kw: pytest.fail("进程名已认出不该再按标题搜"))
+    assert c.locate_game_hwnd() == 4321
+
+
+def test_locate_uses_adopted_handle(monkeypatch):
+    """启动步骤交来的句柄优先：两种搜索都不该被走到。"""
+    c = _ctl()
+    c._hwnd = 1234
+    monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
+    monkeypatch.setattr(ctl.game_process, "find_window_by_process",
+                        lambda: pytest.fail("已有接管句柄不该再找窗口"))
+    assert c.locate_game_hwnd() == 1234
 
 
 def test_connect_short_circuit_keeps_live_window(monkeypatch):
