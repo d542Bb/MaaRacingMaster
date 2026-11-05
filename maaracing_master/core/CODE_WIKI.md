@@ -191,7 +191,7 @@
 
 **职责**：
 
-- `find_game_hwnd(group_id=None, *, verbose=True)`: 查找游戏窗口（优先UnrealWindow类名 → 标题关键词 → PID）；`verbose=False` 供轮询重试使用（不逐次打印完整窗口列表，避免启动等待期刷屏）
+- `find_game_hwnd(group_id=None, *, verbose=True)`: 按**窗口标题关键词**找游戏窗口——这是定位的最后一级回退，正常运行走 `controller.locate_game_hwnd()`（接管句柄 → 进程名 → 标题）；`verbose=False` 供轮询重试使用（不逐次打印完整窗口列表，避免启动等待期刷屏）
 
 - `has_physical_controller()`: XInput API 检测物理手柄（xinput1\_4/1\_3/9\_1\_0）
 
@@ -423,7 +423,7 @@
 **game_process.py（进程原语）**：
 
 - **定位安装**：读官方启动器的 `%LOCALAPPDATA%\RacingMaster\CN\config\config.ini` 的 `game_dir`，拼出主程序 `g112/Binaries/Win64/g112-Win64-Shipping.exe`；只读别人的配置、不猜多个候选路径——猜出来的路径填进界面比留空更糟。
-- **直启**：参数与官方启动器实测命令行逐字一致（`-nosound -nohmd --MuMuLauncher -noexceptionhandler -Hdd -force_load_content`）；默认 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`，游戏不挂在本程序进程树下。
+- **直启**：参数与官方启动器实测命令行逐字一致（`-nosound -nohmd --MuMuLauncher -noexceptionhandler -Hdd -force_load_content`）；拉起时带 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`——这两个标志只管控制台与进程组归属，**不改父子关系**，壳侧强杀后端进程树时这里拉起的进程照样在树里被带走。
 - **找窗口按进程名，不按标题**：启动器窗口标题同样是「巅峰极速」，标题匹配会认错窗口；同名进程多窗口时取面积最大的。
 - **关闭**：窗口句柄优先（`terminate_process_by_hwnd`），找不到窗口按进程名兜底（`TerminateProcess`），失败只记 WARNING、不抛。
 
@@ -431,18 +431,21 @@
 
 | 步骤 | 配置面 | 行为要点 |
 |---|---|---|
-| `launch_game` | `path`（空=自动探测）、`args`、`timeout_s`、`skip_if_running`、`detached`、`fallback_launcher`、`wait_hall`、`hall_timeout_s` | 已在运行则跳过并接管现有窗口；等窗口超时且开了回退时改走官方启动器再等一轮；随后（默认）加载启动链走到可交付的大厅状态 |
+| `launch_game` | `path`（空=自动探测）、`args`、`timeout_s`、`hall_timeout_s` | 已在运行则不拉第二个进程，接管现有窗口（进程在而窗口未到时等到超时，不放行无窗口状态）；等窗口超时改走官方启动器再等一轮；随后加载启动链走到可交付的大厅状态 |
 | `close_game` | `exit_app` | 关进程后清掉窗口句柄（下次运行重新定位）；`exit_app` 请求本轮结束后退出本程序 |
+
+**配置面只放用户能决定的事**（ADR-0020）：怎么起进程、起不来时怎么办、窗口怎么认，都是步骤自己的实现，不进面板；面板上只有路径、参数与两个时限。
 
 **启动链**（ADR-0018）：真源 `core/resources/startup/pipeline.json` + `image/`，由启动步骤**显式加载**，不进 `core/resources/pipeline/`（那个目录会被所有模块的导航图自动并入）。入口 `startup.boot`、终点 `startup.done`；汇聚与三个确认节点的候选表都是「已知弹窗 → 登录页 → 下一个确认」，因此确认窗口内弹窗优先规则持续生效。完成判据是「已知覆盖层清理后的大厅状态」连续三轮，不保证识别未知覆盖层。节点表与阈值以真源为准，本文不复述。
 
-**三条路径由业务配置决定，不能用资源集反推**：
+**两条路径，都不由配置决定**：
 
 | 条件 | 行为 | 步骤结果 |
 |---|---|---|
-| `wait_hall=false` | 旧语义：窗口交付即完成，不建连接/不开采集/不加载图 | `completed` |
-| `wait_hall=true` + 仅显示意图 | 不执行大厅链路 | `skipped`（队列显示「已跳过」） |
-| `wait_hall=true` | 跑启动链 | 按导航结局映射为 `completed` / `stopped` / `failed` |
+| 仅显示意图 | 起进程、交窗口，但不建连接/不开采集/不加载图 | `skipped`（队列显示「已跳过」） |
+| 其余 | 跑启动链 | 按导航结局映射为 `completed` / `stopped` / `failed` |
+
+资源需求与业务结果分开判定，不互相推导：仅显示意图既得到空资源集，也不算完成。
 
 **为什么不是插件、也不是活动模块**：见 [ADR-0013](../../docs/adr/0013-ownership-core-内置步骤与游戏进程归属.md)。一句话——活动模块的契约（阶段/断点/有效期/性能行/自带资源）这两件事一样都没有；而进程启停不属于任何玩法。
 
@@ -606,7 +609,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `run_builtin_step(step_id, config)`            | 跑一个内置步骤；按 `required_resources(config)` 建会话（窗口连接 / 截图 / 手柄），`finally` 统一回收                         |
 | `execution_active` / `last_step_outcome`       | 「有执行体在跑」（模块或步骤，sleep 与急停的唯一判据）/ 上次步骤的业务结果                                      |
 | `release_step_session(grp)`                    | 回收步骤会话的宿主资源：Context → 按 owner 销毁手柄 → 停采集（窗口连接不在此列）                                  |
-| `adopt_window(hwnd)` / `forget_window()`       | 采纳已定位的游戏窗口（连接时不再按标题搜）/ 关闭后清掉失效句柄                                       |
+| `adopt_window(hwnd)` / `forget_window()` / `locate_game_hwnd()` | 采纳已定位的游戏窗口 / 关闭后清掉失效句柄 / 定位窗口的唯一顺序（接管句柄 → 进程名 → 标题）              |
 | `request_exit()` / `exit_requested`            | 步骤请求「本轮结束后退出本程序」，sidecar 据此发退出事件                                       |
 | `set_mute_game(enabled)`                       | 运行时静音游戏；运行中切换立即生效（关=恢复原值，开=重新静音）                                                  |
 | `set_emergency_stop(enabled)`                  | 急停开关（后台轮询回路；只在程序接管操作期检测按键）                                                   |

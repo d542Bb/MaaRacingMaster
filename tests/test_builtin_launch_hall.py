@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""启动步骤的三条路径与结局映射（ADR-0018）。
+"""启动步骤的路径与结局映射（ADR-0018 / ADR-0020）。
 
-三条路径由**业务配置**决定，不能用"资源集为空"反推：
-  wait_hall=false      → 照旧完成（进程起了、窗口交付了，只是不等大厅）
-  wait_hall=true + intent → skipped（没连、没认、没清弹窗，不能说"已完成"）
-  正常运行              → 按导航结局映射为 completed / stopped / failed
+两条路径：
+  正常运行            → 起进程、交窗口、跑启动链，按导航结局映射为 completed / stopped / failed
+  仅显示意图          → 不执行大厅链路，skipped（没连、没认、没清弹窗，不能说"已完成"）
+资源需求与业务结果分开判定，不互相推导。
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def window_ready(monkeypatch):
                         lambda: Path("g112-Win64-Shipping.exe"))
     monkeypatch.setattr(bs.game_process, "game_running", lambda name: False)
     monkeypatch.setattr(bs.game_process, "spawn",
-                        lambda exe, args, detached=True: types.SimpleNamespace(pid=1))
+                        lambda exe, args: types.SimpleNamespace(pid=1))
     monkeypatch.setattr(bs.game_process, "wait_for_window",
                         lambda name, timeout, stop: 1234)
 
@@ -90,12 +90,73 @@ def _run(cfg=None, app=None, session=None, logs=None):
     return ok, step, session, logs
 
 
-def test_wait_hall_off_keeps_old_semantics(window_ready):
-    """关掉大厅等待 = 旧行为：窗口交付即完成，不建任何游戏链路。"""
-    ok, step, session, _ = _run({"wait_hall": False})
-    assert ok is True
-    assert step.last_outcome == "completed"
-    assert session.started is False and session.graph_calls == 0
+def test_running_game_is_adopted_not_relaunched(monkeypatch):
+    """游戏已在运行时不拉第二个进程，直接接管现有窗口交给连接层。"""
+    spawned: list = []
+    monkeypatch.setattr(bs.game_process, "detect_game_exe",
+                        lambda: Path("g112-Win64-Shipping.exe"))
+    monkeypatch.setattr(bs.game_process, "game_running", lambda name: True)
+    monkeypatch.setattr(bs.game_process, "find_window_by_exe", lambda name: 5678)
+    monkeypatch.setattr(bs.game_process, "spawn",
+                        lambda exe, args: spawned.append(exe) or types.SimpleNamespace(pid=1))
+    app = _App()
+    ok, step, _s, logs = _run({}, app=app, session=_Session())
+    assert ok is True and step.last_outcome == "completed"
+    assert spawned == []
+    assert app.hwnd == 5678
+    assert any("已在运行" in m for _lv, m in logs)
+
+
+def test_running_game_without_window_waits_for_it(monkeypatch):
+    """进程在但窗口还没出（刚双击完、还在加载）：等一轮再交给连接层。"""
+    spawned: list = []
+    monkeypatch.setattr(bs.game_process, "detect_game_exe",
+                        lambda: Path("g112-Win64-Shipping.exe"))
+    monkeypatch.setattr(bs.game_process, "game_running", lambda name: True)
+    monkeypatch.setattr(bs.game_process, "find_window_by_exe", lambda name: 0)
+    monkeypatch.setattr(bs.game_process, "spawn",
+                        lambda exe, args: spawned.append(exe) or types.SimpleNamespace(pid=1))
+    monkeypatch.setattr(bs.game_process, "wait_for_window",
+                        lambda name, timeout, stop: 7777)
+    app = _App()
+    ok, step, _s, logs = _run({}, app=app, session=_Session())
+    assert ok is True and step.last_outcome == "completed"
+    assert app.hwnd == 7777 and spawned == []
+    assert any("已在运行" in m for _lv, m in logs)
+
+
+def test_running_game_without_window_never_fakes_completion(monkeypatch):
+    """等到超时还是没有窗口 → 本步骤失败并说清真因，不能放行让下游报「链路建立失败」。"""
+    monkeypatch.setattr(bs.game_process, "detect_game_exe",
+                        lambda: Path("g112-Win64-Shipping.exe"))
+    monkeypatch.setattr(bs.game_process, "game_running", lambda name: True)
+    monkeypatch.setattr(bs.game_process, "find_window_by_exe", lambda name: 0)
+    monkeypatch.setattr(bs.game_process, "wait_for_window",
+                        lambda name, timeout, stop: 0)
+    app = _App()
+    session = _Session()
+    ok, step, _s, logs = _run({}, app=app, session=session)
+    assert ok is False and step.last_outcome == "failed"
+    assert app.hwnd == 0 and session.started is False
+    assert any(lv == "ERROR" and "未等到游戏窗口" in m for lv, m in logs)
+
+
+def test_window_timeout_falls_back_to_launcher(monkeypatch):
+    """等窗口超时改走官方启动器再等一轮，不在第一跳就判失败。"""
+    launched: list = []
+    monkeypatch.setattr(bs.game_process, "detect_game_exe",
+                        lambda: Path("g112-Win64-Shipping.exe"))
+    monkeypatch.setattr(bs.game_process, "game_running", lambda name: False)
+    monkeypatch.setattr(bs.game_process, "spawn",
+                        lambda exe, args: launched.append(exe.name) or types.SimpleNamespace(pid=1))
+    monkeypatch.setattr(bs.game_process, "detect_launcher_exe", lambda: Path("Launcher.exe"))
+    remaining = [0, 4321]  # 第一轮超时，回退后第二轮拿到窗口
+    monkeypatch.setattr(bs.game_process, "wait_for_window",
+                        lambda name, timeout, stop: remaining.pop(0))
+    ok, step, _s, logs = _run({})
+    assert ok is True and step.last_outcome == "completed"
+    assert launched == ["g112-Win64-Shipping.exe", "Launcher.exe"]
+    assert any("改走官方启动器" in m for _lv, m in logs)
 
 
 def test_intent_mode_reports_skipped_not_completed(window_ready):
@@ -146,15 +207,10 @@ def test_session_start_failure_fails_without_running_graph(window_ready):
     assert any(lv == "ERROR" and "游戏链路建立失败" in m for lv, m in logs)
 
 
-def test_required_resources_follow_config():
-    step = bs.LaunchGameStep(_App(mode="gamepad"))
-    assert step.required_resources({"wait_hall": False}) == frozenset()
-    assert step.required_resources({"wait_hall": True}) == frozenset(
+def test_required_resources_follow_click_mode():
+    """资源需求只由点击方式与运行模式决定，配置面里没有能改它的项。"""
+    assert bs.LaunchGameStep(_App(mode="gamepad")).required_resources({}) == frozenset(
         {"game_link", "wgc_capture", "gamepad"})
-
-    real = bs.LaunchGameStep(_App(mode="real"))
-    assert real.required_resources({"wait_hall": True}) == frozenset(
+    assert bs.LaunchGameStep(_App(mode="real")).required_resources({}) == frozenset(
         {"game_link", "wgc_capture"})
-
-    intent = bs.LaunchGameStep(_App(intent=True))
-    assert intent.required_resources({"wait_hall": True}) == frozenset()
+    assert bs.LaunchGameStep(_App(intent=True)).required_resources({}) == frozenset()

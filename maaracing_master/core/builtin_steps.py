@@ -14,9 +14,11 @@
 
 **启动链（ADR-0018）**：「启动游戏」的完成判据不是"窗口出现"，而是"游戏被交付到可
 用状态"。真源住 `core/resources/startup/`，由本步骤显式加载——不放进
-`core/resources/pipeline/`，那个目录会被所有模块的导航图自动并入。资源需求按**本次
-配置**声明（`required_resources`），业务结果由本步骤自己判定，两者不互相推导：
-关掉大厅等待是"照旧完成"，不是"跳过"。
+`core/resources/pipeline/`，那个目录会被所有模块的导航图自动并入。资源需求由本步骤
+自己声明（`required_resources`），业务结果由本步骤自己判定，两者不互相推导。
+
+**配置面只放用户能决定的事**：怎么起进程、起不来时怎么办、窗口怎么认，这些是步骤
+自己的实现，不进面板；面板上留路径、参数与两个时限。
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ class BuiltinStep:
         """本次执行需要宿主准备哪些资源（game_link / wgc_capture / gamepad）。
 
         空集 = 不建立任何游戏链路。**只回答"要不要准备资源"**，不决定业务结果：
-        关闭大厅等待与仅显示意图都会得到空集，但前者照旧完成、后者才算跳过。
+        仅显示意图既不建链路，也不算完成。
         """
         return frozenset()
 
@@ -78,7 +80,7 @@ class BuiltinStep:
 
 
 class LaunchGameStep(BuiltinStep):
-    """启动游戏：直接拉起游戏主程序，并（默认）一路导航到可交付的大厅状态。"""
+    """启动游戏：拉起游戏主程序，再一路导航到可交付的大厅状态。"""
 
     ID = "launch_game"
     NAME = "启动游戏"
@@ -87,10 +89,6 @@ class LaunchGameStep(BuiltinStep):
         "path": "",                                   # 空 = 从启动器配置自动探测
         "args": " ".join(game_process.DEFAULT_ARGS),  # 与官方启动器实测命令行一致
         "timeout_s": 120,                             # 等游戏窗口的上限
-        "skip_if_running": True,                      # 已在运行就不再拉第二个
-        "detached": True,                             # 脱离本程序进程树
-        "fallback_launcher": True,                    # 等窗口超时后改走官方启动器
-        "wait_hall": True,                            # 等到可交付的大厅状态才算完成
         "hall_timeout_s": 300,                        # 进入大厅的总时限
     }
 
@@ -106,12 +104,12 @@ class LaunchGameStep(BuiltinStep):
             log("未能定位游戏主程序：请填写程序路径，或先用官方启动器安装一次游戏", "ERROR")
         return exe
 
-    def _hall_enabled(self, cfg: dict) -> bool:
+    def _hall_enabled(self) -> bool:
         """本次是否要执行大厅链路。资源声明与结果判定共用这一个判据，防两处漂移。"""
-        return bool(cfg.get("wait_hall", True)) and not self.app.intent_mode
+        return not self.app.intent_mode
 
     def required_resources(self, cfg: dict) -> frozenset[str]:
-        if not self._hall_enabled(cfg):
+        if not self._hall_enabled():
             return frozenset()
         need = {"game_link", "wgc_capture"}
         if self.app.click_mode == "gamepad":
@@ -131,12 +129,7 @@ class LaunchGameStep(BuiltinStep):
             self.last_outcome = "failed"
             return False
 
-        # 关掉大厅等待 = 回到旧语义：窗口交付即完成。它**不是**"跳过步骤"——进程
-        # 起了、窗口也交给连接层了，只是不再等游戏把自己准备好。
-        if not bool(cfg.get("wait_hall", True)):
-            self.last_outcome = "completed"
-            return True
-        if self.app.intent_mode:
+        if not self._hall_enabled():
             log("仅显示意图不会自动确认，已跳过进入大厅", "WARNING")
             self.last_outcome = "skipped"
             return True
@@ -147,35 +140,16 @@ class LaunchGameStep(BuiltinStep):
     def _ensure_window(self, cfg: dict, exe: Path, timeout_s: float,
                        stop_event, log) -> bool:
         """把游戏窗口准备好并交给连接层。返回 False = 窗口没拿到。"""
-        if bool(cfg.get("skip_if_running")) and game_process.game_running(exe.name):
-            hwnd = game_process.find_window_by_exe(exe.name)
-            log("游戏已在运行，跳过启动")
-            if hwnd:
-                self.app.adopt_window(hwnd)
-                log(f"已接管现有游戏窗口 (hWnd={hwnd})")
-            return True
-
-        args = _split_args(str(cfg.get("args") or ""))
         t0 = time.monotonic()
-        try:
-            proc = game_process.spawn(exe, args, detached=bool(cfg.get("detached", True)))
-        except OSError as exc:
-            log(f"启动失败: {exc}", "ERROR")
-            return False
-        log(f"已拉起 {exe.name} (pid={proc.pid})，等待游戏窗口（最长 {timeout_s:.0f}s）…")
-
-        hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
-        if not hwnd and bool(cfg.get("fallback_launcher")):
-            launcher = game_process.detect_launcher_exe()
-            if launcher is None:
-                log("未找到官方启动器，无法回退", "WARNING")
-            else:
-                log(f"等窗口超时，改走官方启动器（会先做版本校验与更新）: {launcher}")
-                try:
-                    game_process.spawn(launcher, [], detached=bool(cfg.get("detached", True)))
-                except OSError as exc:
-                    log(f"启动器拉起失败: {exc}", "ERROR")
+        if game_process.game_running(exe.name):
+            log("游戏已在运行，跳过启动")
+            hwnd = game_process.find_window_by_exe(exe.name)
+            if not hwnd:
+                # 进程在但窗口还没出（刚双击完、还在加载）：等一轮再交给连接层，
+                # 否则下一步只报「链路建立失败」，看不出真因是没有窗口。
                 hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
+        else:
+            hwnd = self._launch_and_wait(cfg, exe, timeout_s, stop_event, log)
 
         if stop_event is not None and stop_event.is_set():
             log("已停止，放弃等待游戏窗口", "WARNING")
@@ -187,6 +161,32 @@ class LaunchGameStep(BuiltinStep):
         self.app.adopt_window(hwnd)
         log(f"已找到游戏窗口 (hWnd={hwnd})，用时 {time.monotonic() - t0:.0f}s")
         return True
+
+    def _launch_and_wait(self, cfg: dict, exe: Path, timeout_s: float,
+                         stop_event, log) -> int:
+        """直启主程序并等窗口；超时改走官方启动器再等一轮。返回 hwnd（0 = 没拿到）。"""
+        args = _split_args(str(cfg.get("args") or ""))
+        try:
+            proc = game_process.spawn(exe, args)
+        except OSError as exc:
+            log(f"启动失败: {exc}", "ERROR")
+            return 0
+        log(f"已拉起 {exe.name} (pid={proc.pid})，等待游戏窗口（最长 {timeout_s:.0f}s）…")
+
+        hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
+        if not hwnd:
+            # 直启跳过了版本校验：游戏更新后首次可能起不来，这一跳由官方启动器补上
+            launcher = game_process.detect_launcher_exe()
+            if launcher is None:
+                log("未找到官方启动器，无法回退", "WARNING")
+            else:
+                log(f"等窗口超时，改走官方启动器（会先做版本校验与更新）: {launcher}")
+                try:
+                    game_process.spawn(launcher, [])
+                except OSError as exc:
+                    log(f"启动器拉起失败: {exc}", "ERROR")
+                hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
+        return hwnd
 
     def _enter_hall(self, session, timeout_s: float, stop_event, log) -> bool:
         """跑启动链到终点。结局映射见 ADR-0018「结果分层」。"""
