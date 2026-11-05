@@ -2052,6 +2052,8 @@ class SidecarService:
         return (True, data, None)
 
     def set_emergency_stop(self, params):
+        # 防呆：不写 profile——沿用上次的开启态会让「两键即停」在用户没预期时触发，
+        # 安全阀每次启动由本人重新拧开。
         enabled = bool(params.get("enabled", False))
         self._controller.set_emergency_stop(enabled)
         return (True, {"emergency_stop_enabled": enabled}, None)
