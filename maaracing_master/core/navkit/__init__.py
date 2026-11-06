@@ -8,9 +8,12 @@ navkit —— 导航判断逻辑的运行时底座（v4 数据面）。
 
 子模块
 ------
-- `v4_source` : policy.json → NavSource（DetectionPlan + spec + Policies 装配）
-- `policy`    : P1 决策引擎（rules → PolicyPlan，输入由 v4_source 供）
+- `v4_source` : policy.json → NavSource（DetectionPlan + spec + Policies 装配）——**已过时**
+- `policy`    : P1 决策引擎（rules → PolicyPlan，输入由 v4_source 供）——**已过时**
 - `step`      : 统一步循环的重试状态机（计数 / 时间窗 / 耗尽 / 停止，域无关）
+
+`v4_source` / `policy` 随策略表于 2026-11-06 标过时：无现役消费者，仅供归档鉴宝
+与开发校验链参考。新模块接入导航只使用节点 JSON + `step`。
 
 约束（不可违反）
 ----------------

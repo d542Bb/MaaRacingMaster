@@ -3,6 +3,10 @@
 """
 navkit v4 数据面 loader——policy.json → 运行时消费对象（P4b 引入）。
 
+**状态：已过时（2026-11-06）。** 随策略表一并标记：无现役消费者；调用方只剩归档
+鉴宝与开发校验链。新代码不得依赖；复活条件同 `policy.py`。
+
+
 运行时感知/决策数据的唯一真源：
 
 - `perception.{spec,stages,transitions,match}` → `DetectionPlan`

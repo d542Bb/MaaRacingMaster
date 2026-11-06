@@ -28,9 +28,11 @@ v3 真源是 anchors / stages / transitions / routes / policies 五套概念 + �
 
 MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且已有成熟的可视化编辑器 **MaaPipelineEditor (MPE)**（MIT 协议，react-flow，在线/自部署，LocalBridge 本地能力协议，2026-09-04 v1.9.3）。V4 = 回归标准 + 把力气花在别人给不了的地方。
 
+> **策略表状态（2026-11-06）**：策略表是鉴宝时期的本地扩展，不是生态规范；随鉴宝退役已无现役消费者，标记过时。新逻辑只走节点 JSON 与自定义识别/动作。
+
 ### 0.3 继承 vs 废弃
 
-**继承（资产不废）**：模板图、ROI、OCR 逻辑、策略规则、wgcap 中心采集器、clicker、gamepad\_cursor、nav\_graph.py 的 MaaRM\_Template / MaaRM\_Click 桥、校准数据、preview/base\_hash 原子落盘管线。
+**继承（资产不废）**：模板图、ROI、OCR 逻辑、策略规则（已过时，仅归档参考）、wgcap 中心采集器、clicker、gamepad\_cursor、nav\_graph.py 的 MaaRM\_Template / MaaRM\_Click 桥、校准数据、preview/base\_hash 原子落盘管线。
 
 **废弃**：五段概念（anchors/stages/routes/transitions/policies 作为 schema）、编译器、graph\_api、E/P 校验系列、auto\_shoo 避让补丁、detector 灰度匹配与 module.py 内联匹配、parity 测试（实际拓扑=先接线后删，拆 a/b/c/d 四步）。
 
@@ -40,11 +42,11 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 ## 1. 宪法（六条不变量）
 
-1. **真源单一**：逻辑只存在于节点 JSON（+ 策略表文件）。生成物禁止落盘再被运行时读取，只允许内存临时存在。
+1. **真源单一**：逻辑只存在于节点 JSON。策略表（`*.policy.json`）是鉴宝时期的本地扩展，已随该插件退役标过时——不得新增使用者，现存实现只作归档参考。生成物禁止落盘再被运行时读取，只允许内存临时存在。
 2. **零中间层**：禁止编译器、禁止投影层。加载时内存内透传映射可以，落盘转换不行。
-3. **加逻辑 = 加节点 / 改连线 / 改策略表**，不写 Python。写 Python 仅限引擎能力本身（新识别、新动作），且引擎代码永远不感知业务语义。
+3. **加逻辑 = 加节点 / 改连线**，不写 Python。策略表已过时，不再作为新增逻辑的承载物；写 Python 仅限引擎能力本身（新识别、新动作），且引擎代码永远不感知业务语义。
 4. **机制归引擎，策略归数据**：重试、超时、截图、点击是引擎的事；页面怎么走、点什么是数据的事。
-5. **新概念准入制**：任何人想引入"节点/策略表"以外的概念，必须写清它替代什么、何时能删。
+5. **新概念准入制**：任何人想引入"节点"以外的概念，必须写清它替代什么、何时能删。
 6. **运行时拓扑硬约束**：帧只从中心缓存来（WGC 单生产者），动作只从队列走（submit/结果槽协议），引擎只做调度。引擎永不自截帧、永不直连手柄。
 
 ***
@@ -57,7 +59,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 | ------- | ---------------------------------------------------------------------------------------------------- |
 | **节点**  | 识别（模板/OCR/坐标点/DirectHit）+ 动作（点击/按键/DoNothing/Custom）+ 出口（next / on\_error）+ 节奏（rate\_limit）+ 遮挡/颜色参数 |
 | **边**   | next（有序多选一，命中即走）、on\_error（失败出口）、JumpBack（循环/重试）                                                     |
-| **策略表** | 局内复杂决策 = 一个 `action: "Custom"` 节点指向 `<module>.policy.json`，表格编辑                                      |
+| ~~**策略表**~~（已过时） | 鉴宝时期的本地扩展：局内复杂决策 = 一个 `action: "Custom"` 节点指向 `<module>.policy.json`。2026-11-06 起标过时，不得新增使用者 |
 
 ```jsonc
 {
@@ -120,7 +122,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 ```
 core/resources/nav/          global.json          # 大厅骨架节点（共享）
 plugins/<id>/resources/nav/  <id>.json            # 模块节点（真源）
-plugins/<id>/resources/policy/<id>.policy.json    # 策略表（可选）——禁止与 nav/ 同目录
+plugins/<id>/resources/policy/<id>.policy.json    # 策略表（已过时；仅鉴宝归档参考）——禁止与 nav/ 同目录
                              <id>.mpe.json        # 画布坐标/视口（MPE 分离方案的编辑器配置）
 ```
 
