@@ -111,7 +111,7 @@ def test_policy_loop_wired_into_every_dwell(truth):
 def test_spec_colorspace_contract(truth):
     """P4c 数据面契约：colorspace 三值合法；灰度豁免集 = 帧预算标定的声明集。
 
-    灰度集依据对拍报告 commit `0554f58`（脚本现居 tools/navkit/colorspace_audit/；rgb 2.3~2.8× 成本、
+    灰度集依据对拍报告 commit `0554f58`（脚本与报告见 commit `0554f58`；rgb 2.3~2.8× 成本、
     selected_check 彩图松判、session_start_match_btn 边界翻转）；改这里=改帧率
     与识别行为，须重跑对拍。其余锚点缺省 rgb（宪法 §6 默认彩色）。
     """

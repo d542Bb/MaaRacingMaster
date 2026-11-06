@@ -210,7 +210,7 @@
 
 - 按优先级（`stage_priority`）扫描 policy.json `perception` 数据面编译的 `DetectionPlan.detect_anchors`
 
-- 同 ROI 多模板聚合匹配——统一走 `core.template_match`（TM\_CCOEFF\_NORMED 多尺度，默认阈值 0.75），**色彩空间按锚点声明**（`spec.<锚点>.colorspace`：默认 rgb；round\_big\_banner/result\_banner 等高成本锚点声明 gray，标定依据对拍报告 commit `0554f58`，脚本 `tools/navkit/colorspace_audit/`）
+- 同 ROI 多模板聚合匹配——统一走 `core.template_match`（TM\_CCOEFF\_NORMED 多尺度，默认阈值 0.75），**色彩空间按锚点声明**（`spec.<锚点>.colorspace`：默认 rgb；round\_big\_banner/result\_banner 等高成本锚点声明 gray，标定依据对拍报告 commit `0554f58`，脚本与其报告见 commit `0554f58`）
 
 - 匹配强度弱告警节流（同 ROI 每 30s 一次）
 

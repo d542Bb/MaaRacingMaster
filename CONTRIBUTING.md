@@ -125,6 +125,13 @@ git push -u origin feat/your-feature
 
 全仓 `ruff` / `pyright` / 全量 `pytest` **不在提交路径上**：CI（`test.yml`，push 与 PR 触发）与发版（`release.yml` 发布前 gate）已经是全仓门禁，本地重跑一遍只是把等待时间翻倍。
 
+**跳过（skip）的口径**：CI 不按跳过数量设门槛，`pytest -ra` 会逐条打印原因。两类跳过是预期内的：
+
+- `local_asset` 标记：依赖本机金标数据、模型权重或硬件的用例，资产缺失即跳过，不计入 CI 保护面；
+- 依赖上限：Windows-only 能力、`node`、`rapidocr` 等可选依赖缺失时的 `skipif`。
+
+新增跳过必须二选一：打 `local_asset` 标记，或在 `skipif(..., reason=...)` 里写清缺失的是哪一项。没有标记、没有原因的静默跳过视为测试写坏。
+
 ### 4. 提 PR
 
 - 使用 **PR 模板**，说明改动内容、动机、验证方式。
