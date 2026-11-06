@@ -4,7 +4,7 @@
 > **本文不是什么**：不是架构与实现说明（见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)）；不是 AI 协作守则（见 [AGENTS.md](AGENTS.md)）。
 > **信源等级**：L3（导航与摘要）—— 可作「怎么参与」的依据；架构与规则细节一律回到其 home。
 
-欢迎来到 **MaaRacingMaster** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **巅峰鉴宝**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
+欢迎来到 **MaaRacingMaster** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **极速狂飙**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
 
 在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与信源路由见 [AGENTS.md](AGENTS.md)。
 
@@ -18,7 +18,7 @@
 | 方向 | 说明 | 适合谁 |
 |------|------|--------|
 | 🐛 报 Bug | 使用中遇到异常，先查 [已知问题](https://github.com/d542Bb/MaaRacingMaster/issues) 是否已有报告 | 所有用户 |
-| 💡 提需求 | 描述你想要的鉴宝 / 平台能力，说明使用场景 | 所有用户 |
+| 💡 提需求 | 描述你想要的活动 / 平台能力，说明使用场景 | 所有用户 |
 | 🧹 修 Bug | 认领 Issue，修复后提 PR | 初级贡献者 |
 | 🧩 新模块 | 复用能力接口（capability）开发新活动模块 | 进阶贡献者 |
 | 📝 文档 | 完善 README / CODE_WIKI / 快速开始指南 | 所有贡献者 |
@@ -100,7 +100,7 @@ git checkout -b feat/your-feature origin/master
 **开发约定：**
 
 - 新增模块必须走 `core/registry.py` 的插件发现（扫 `plugins/*/manifest.py`）+ 能力接口，不直接引高权限宿主对象。
-- 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/_archive/treasure/CODE_WIKI.md](maaracing_master/plugins/_archive/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
+- 涉及活动流程逻辑，先阅读对应域文档（极速狂飙见 [speedrush/CODE_WIKI.md](maaracing_master/plugins/speedrush/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
 - 遵守 [AGENTS.md](AGENTS.md) 的协作守则（面向用户的输出、代码注释与交付文档使用简体中文）；代码风格为 4 空格缩进。
 
 ### 3. 提交与推送
@@ -117,7 +117,7 @@ git push -u origin feat/your-feature
 
 - 改动相关的 `pytest` + 改动文件的 `ruff`；
 - 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/navkit/check_truth.py`；
-- 动到 `tools/experiments/`、`docs/plan/`（新建或改动工作台文件）、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6；基线只减不增；实验退役四步见 [tools/experiments/README.md](tools/experiments/README.md)，plan 头部三行与退役四步见 [docs/README.md](docs/README.md)）；
+- 动到 `tools/experiments/`、`docs/plan/`（新建或改动工作台文件）、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6 与红线 4 隐私扫描；基线只减不增；实验退役四步见 [tools/experiments/README.md](tools/experiments/README.md)，plan 头部三行与退役四步见 [docs/README.md](docs/README.md)）；
 - 改到**跨模块共享契约**（core 能力接口、RPC 白名单、分层边）时建议自愿加跑全仓——影响面跨模块，早发现比等 CI 划算。
 - 新增了抽象（core 目录、共用 pipeline、通用协议、新通路 / 新页面）时，先答一句「**第二个使用者是谁、今天是否真实存在**」——判据见 [AGENTS.md](AGENTS.md)「作业纪律与提交红线」中「抽公共层」那一条；答不出就不抽。
 
