@@ -49,7 +49,7 @@
 
 - **启动链放进 `core/resources/pipeline/`**：看似「共用」，实际把启动专用的节点与模板变成所有模块的全局依赖，且模板目录会进入所有模块的首搜路径。
 - **用类属性声明资源需求**：控制器看不到本次配置，`wait_hall=false` 时仍会建连接、开采集，与「关闭即回旧行为」的承诺直接矛盾。
-- **用 `pipeline_override` 在运行时改登录动作**：真源与运行行为分叉，`check_truth` 看不见，且两种点击方式下图上都是错的。
+- **用 `pipeline_override` 在运行时改登录动作**：真源与运行行为分叉，`truth` 看不见，且两种点击方式下图上都是错的。
 - **把 `execution_active` 塞进大厅功能的回滚承诺**：它影响全部内置步骤，属于独立决策。
 - **用固定坐标点登录按钮**：违反「目标坐标来自识别框」的既有定案，且登录页布局随版本漂移。
 
@@ -58,4 +58,4 @@
 - **实证（录像，2026-11-05，1280×720 / 116s）**：0:00 出窗口；0:02–1:18 资源检查/合并/清理/适配；1:21 登录页（右侧功能图标列 + 「引擎启动」）；1:29 确认；1:35 大厅 UI；1:36–1:50 连续弹窗；1:51 干净大厅。ADR-0013 的「39s 无人工登录」是缓存全热的最好情况。
 - **匹配器行为实测**（本仓 `template_match`，7 档多尺度 `TM_CCOEFF_NORMED`）：同一帧亮度 ×0.5 后大厅锚点分数仍为 1.000；高斯 3px 降至 0.741/0.758，7px 降至 0.647/0.640。→ 压暗不能作为「非大厅」的判据，只有模糊 + 阈值可以；大厅锚点阈值因此取 0.90（干净帧 0.989/0.994，弹窗帧最高 0.826）。
 - **一手协议**：MaaFramework `docs/zh_cn/3.1-任务流水线协议.md` 第 42–44 行（动作失败 → `on_error`）；`MAAFW_GUIDE §5.2`（入口节点识别自己不命中则任务失败）、§7.1（worker 活动时销毁 C 句柄必崩 `0xC0000005`）。
-- **机检**：`python tools/navkit/check_truth.py`（34 节点、0 error 0 warn）；`tests/test_startup_truth.py`（真源形态与排序）；`tests/test_startup_confirm_window.py`（确认窗口内弹窗优先、清理后重新计数）；`tests/test_builtin_launch_hall.py`（三条路径）；`tests/test_controller_step_link.py`（执行态与资源所有权）；`tests/test_nav_graph_fatal.py`（fatal 收尾复查与时限）；`tests/test_nav_graph_teardown.py`（收尾失败态不销毁）。
+- **机检**：`python tools/navkit/truth.py`（34 节点、0 error 0 warn）；`tests/test_startup_truth.py`（真源形态与排序）；`tests/test_startup_confirm_window.py`（确认窗口内弹窗优先、清理后重新计数）；`tests/test_builtin_launch_hall.py`（三条路径）；`tests/test_controller_step_link.py`（执行态与资源所有权）；`tests/test_nav_graph_fatal.py`（fatal 收尾复查与时限）；`tests/test_nav_graph_teardown.py`（收尾失败态不销毁）。

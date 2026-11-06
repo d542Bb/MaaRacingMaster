@@ -1,62 +1,53 @@
-# NavKit v4 工具链
+# NavKit 工具链（v5 会话布局）
 
-> **本文是什么**：NavKit v4 工具链的使用与流程——入口命令、Studio 三页、真源文件位置、**模板图采集工作流**、校验器护栏、MPE 排错。
+> **本文是什么**：NavKit 工具链的使用与流程——入口命令、Studio 两页、真源文件位置、模板图采集工作流、校验器护栏、MPE 排错。
 > **本文不是什么**：不是真源组织的规则与理由（见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向) / [ADR-0001](../../docs/adr/0001-arch-global-分层靠引用方向不靠目录.md)）；不是引擎侧装配契约（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是节点 schema 定义（见 [NAVKIT_V4_PLAN.md §2](../../docs/NAVKIT_V4_PLAN.md)）。
 > **信源等级**：L2 —— 可作「工具怎么用、资产怎么采、校验怎么跑」的直接依据；不得作为真源规则（L1）与节点/锚点取值（L0）的最终依据。
-> **真源路由**：节点与策略真源 = `plugins/*/resources/**`（本文只写位置，不复制取值）；校验项 = [`check_truth.py`](./check_truth.py)。
-> **继承**：通用协作与信源规则见 [`AGENTS.md`](../../AGENTS.md)。
+> **真源路由**：节点真源 = `plugins/*/resources/pipeline/**` 与 `core/resources/**`（本文只写位置，不复制取值）；校验项 = [`truth.py`](./truth.py)。
 
-> 画布编辑由 MPE 承担（round-trip 保真已实证）；ROI 校准台 / 策略表 / 模板截取由单进程单端口的 `studio_server.py` 承担（统一标签栏互切）。
+> 画布编辑由 MPE 承担（round-trip 保真已实证）；回放预览与 ROI 调整由 `tools/navkit/studio/` 的单端口两页服务承担。
 
 ## 入口
 
-| 目的                                          | 命令                            |
-| ------------------------------------------- | ----------------------------- |
-| 打开完整工作台（MPE + ROI 校准台 / 策略表 / 模板截取，零控制台弹窗） | `tools/navkit/studio.cmd`     |
-| 只开 MPE（附起 Studio 服务）                          | `tools/navkit/mpe.cmd`        |
-| 停 MPE 的本地桥                                   | `tools/navkit/mpe.cmd --stop` |
-| 停 mpelb + Studio 服务                          | `tools/navkit/studio.cmd --stop` |
+| 目的 | 命令 |
+| --- | --- |
+| 打开完整工作台（MPE + 回放 / ROI，零控制台弹窗） | `tools/navkit/studio.cmd` |
+| 只开 MPE（附起 Studio 服务） | `tools/navkit/mpe.cmd` |
+| 停 MPE 的本地桥 | `tools/navkit/mpe.cmd --stop` |
+| 停 mpelb + Studio 服务 | `tools/navkit/studio.cmd --stop` |
 
-`studio.cmd` 流程：探测 `mpelb.exe`（`--mpelb` > `dev/mpelb.exe` > PATH > `%APPDATA%`）→ 隐藏窗口起 LocalBridge（仓库根为 root，端口 26521）→ 隐藏窗口起 `studio_server.py`（端口 26530，优先 `pythonw.exe`）→ 轮询两端口真 LISTENING → 开浏览器两标签（MPE 满幅 + Studio 壳页）。`--stop` 把 mpelb 与 Studio 服务一并停掉。
+`studio.cmd` 流程：探测 `mpelb.exe`（`--mpelb` > `dev/mpelb.exe` > PATH > `%APPDATA%`）→ 隐藏窗口起 LocalBridge（仓库根为 root，端口 26521）→ 隐藏窗口起 Studio 服务（端口 26530）→ 轮询两端口真 LISTENING → 开浏览器两标签（MPE 满幅 + Studio）。`--stop` 把两者一并停掉。
 
-关闭浏览器页面后，Studio 服务在 `--idle-exit` 秒（默认 15）内自动退出：页面开着一条 SSE 保活连接（`/api/events`），关页签即断连，计数归零后延迟收摊；期间刷新或重开页面会取消退出。脚本/curl 直接调 API 时不会建立该连接，服务保持常驻（CI 与验收脚本不受影响）；需要服务一直挂着就加 `--idle-exit 0`。
-
-`mpe.cmd` 流程：探测 mpelb → 起 LocalBridge（26521）→ 起 `studio_server.py`（26530，端口已占用则跳过）→ 等端口真 LISTENING 后打开 MPE 与 Studio 壳页两个标签。mpelb 二进制是本地开发工具，放 `dev/`（gitignore），不入库。
+Studio 服务在页面心跳停止 `--idle-exit` 秒（默认 15）后自动退出；脚本/curl 直接调 API 时每次请求都会续期，需要常驻就传 `--idle-exit 0`。
 
 **编辑真源请优先在 MPE 里做**；agent/脚本直改 JSON + 跑校验同样是合法路径（见 `skills/mpe-pipeline-edit.md`）。
 
-## Studio 三页
+## Studio 两页
 
-`studio_server.py` 一个进程承载三页，浏览器只开 `http://127.0.0.1:26530/`：
+`python -m tools.navkit.studio.server` 一个进程承载两页，浏览器只开 `http://127.0.0.1:26530/`：
 
-> **目标模块**由 `--module <活动模块 id>` 指定，缺省取 `plugins/` 下第一个可服务的插件
-> （含 `manifest.py` 与 `resources/`）。模块的 policy / pipeline 真源**按目录发现**，不靠
-> 命名约定——各模块命名不统一（treasure 用 `<id>.policy.json`，speedrush 用 `decision.json`）。
+| 路径 | 页 |
+| --- | --- |
+| `/` | 壳页：会话 / 行为 / 帧导航 + 回放 / ROI 两个标签 |
+| `/api/replay/*` | 只读 v5 会话：`debug/<会话>/<模块>/<行为>/manifest.json` + 帧索引 |
+| `/api/roi/*` | 节点归一化矩形读写；保存前后跑 `truth.py` 的图侧校验 |
 
-| 路径         | 页                                                          |
-| ---------- | ---------------------------------------------------------- |
-| `/`        | 壳页（统一标签栏 + iframe 切三页，ROI 页未保存点显示在标签上）                      |
-| `/roi`     | ROI 校准台：离线回放会话帧 + 拖框选区 + 单帧测分 / 跨帧分布 / OCR 识别 / 裁剪模板           |
-| `/policy`  | 策略表：表格编辑目标模块策略表真源的 `policy.rules`，原子落盘             |
-| `/cropper` | 模板截取：静态只读服务 `tools/template_cropper/index.html`              |
+**回放**：按会话枚举行为目录，读清单与最小帧索引（序号、单调时刻、相对路径），显示帧与元数据；不解析模块私有格式。
 
-ROI 校准台的数据面（`/api/rois` 读写）以 **v4 真源**为准：
-
-- 读面 flat 投影 = spec 三组（`template` / `point` / `ocr`，按 `kind` 分组）+ `nodes` 组（pipeline 两文件逐处 `rect`，含 `mirrors` 与 colorspace 现值）+ `tuning` 组（`policy.tuning.perception` 的第 54 个 rect）+ `_meta`；
-- 写面管线：`base_hash` 比对(409) → 内存合并 → 结构校验 → `check_truth` 各闸（图自洽/分层红线/交叉互洽/几何/页面清单等集/页面归属闭合 `page_checks`）→ preview 回 diff/report 不落盘 → 逐文件原子替换；
-- 11 个两面同值锚点在 `nodes` 组编辑时默认同步写 spec 同名锚点（UI 提供「仅改此面」逃生口）；colorspace 两面各自维护（语义独立，台内如实呈现各自现值）；
-- 测分/跨帧/OCR 走**生产同源**引擎（`core.template_match.find_any_cs`、目标模块的插件级 OCR；模块无 `ocr.py` 时该能力降级）。
+**ROI**：只编辑节点 JSON 里 `recognition.param.custom_recognition_param.rect`（[0,1] 归一化、x1<x2、y1<y2）。保存走文本替换，只改目标字面量，缩进 / 换行 / 键序 / 其它数字原样保留；保存后重跑图校验，出现保存前没有的新错误就回滚原字节。
 
 ## 目录
 
 ```
 tools/navkit/
-├── studio.cmd           # 完整工作台入口（mpelb + studio_server 均隐藏窗口；必须 ASCII+CRLF）
-├── studio_server.py     # 单进程三页服务（ROI 校准台 / 策略表 / 模板截取，端口 26530）
-├── studio_sessions.py   # 帧库（会话/帧/模板名白名单 + 目录穿越防护）
-├── static/              # ROI 校准台前端（shell.html + calibrator.html + app.js + history.js + style.css）
-├── mpe.cmd              # MPE 入口（起 mpelb + studio_server；必须 ASCII+CRLF，见文件头 NOTE）
-├── check_truth.py       # 真源自洽校验（图闭合+数据面装配+交叉互洽+几何+分层红线；CI 同款）
+├── studio.cmd           # 完整工作台入口（mpelb + Studio 均隐藏窗口；必须 ASCII+CRLF）
+├── mpe.cmd              # MPE 入口（必须 ASCII+CRLF，见文件头 NOTE）
+├── truth.py             # 真源自洽校验（图闭合/分层红线/几何；CI 同款）
+├── studio/
+│   ├── server.py        # 单端口两页服务（回放 + ROI，端口 26530）
+│   ├── replay.py        # v5 会话清单/帧索引读取器
+│   ├── nodes.py         # 节点矩形索引与文本替换写盘 + 校验回滚
+│   └── static/          # 壳页与两个标签（index.html / app.js / style.css）
 ├── schema/              # pipeline / custom action / custom recognition JSON Schema 三件套
 ├── skills/              # agent 操作规范（mpe-pipeline-edit.md）
 └── dev/                 # 本地工具二进制（mpelb.exe 等，gitignore）
@@ -64,33 +55,18 @@ tools/navkit/
 
 ## 真源
 
-- `maaracing_master/plugins/_archive/treasure/resources/pipeline/treasure.json` —— 鉴宝对局图
+- 活动插件：`plugins/<id>/resources/pipeline/*.json` —— 节点图与锚点
+- 跨模块共用链：`maaracing_master/core/resources/pipeline/` —— **当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `truth.namespace_checks` 与 MAAFW_GUIDE §5.6）
+- 启动步骤自有链：`maaracing_master/core/resources/startup/` —— （`pipeline.json` + `image/`）。有终点、有业务归属，由 `LaunchGameStep` 显式加载，**不进**共用目录（否则会被所有模块的导航图一起并入）。规则见该目录下的 `README.md`，决策见 ADR-0018
+- 归档鉴宝的图与策略表仍在 `plugins/_archive/treasure/resources/`；默认发现不扫归档区
 
-- `maaracing_master/plugins/_archive/treasure/resources/pipeline/treasure.entry.json` —— 鉴宝大厅入口链与页面锚点（游戏大厅/活动页面 dwell + 两个入口锚点 + `hall_to_treasure` 链；2026-09-10 自 core 归位）
+校验（CI 同款）：`python tools/navkit/truth.py`
 
-- `maaracing_master/core/resources/pipeline/` —— 跨模块共用链目录，**当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `check_truth.namespace_checks` 与 MAAFW\_GUIDE §5.6）
-
-- `maaracing_master/core/resources/startup/` —— **启动步骤自有链**（`pipeline.json` + `image/`）。有终点、有业务归属，由 `LaunchGameStep` 显式加载，**不进**上面那个共用目录（否则会被所有模块的导航图一起并入）。它同样在 `check_truth` 的发现范围与分层红线之内：节点前缀 `startup.`，不得占用或引用 `<module>.`。终点节点用 `attach._end` 声明，豁免「无出口」告警。规则见该目录下的 `README.md`，决策见 ADR-0018
-
-- `maaracing_master/plugins/_archive/treasure/resources/policy/treasure.policy.json` —— 策略表 + **感知执行规格** + **引擎契约**（`perception.spec/stages/transitions/match` 是 detector/OCR/模板装载器的运行时唯一真源，P4b 起；`engine_contract` 段供决策引擎消费域白名单/推导/副作用形——接入新模块写新数据面，不改 core；编辑后与图节点同权）
-
-校验（CI 同款）：`python tools/navkit/check_truth.py`
-
-> 真源数值等价性的历史对拍记录见 commit `24d831a`。
-
-### 校验器护栏（CI 同款）
-
-`check_truth.py` 的校验项：next/on\_error 引用闭合（含 **And/Or 按名子项**——框架只校验 `next`/`on_error`，子项拼错要到运行期才 `Bad sub ref` 静默失败）、入口可达、疑似重复识别告警、policy 数据面可装配、图↔spec 交叉互洽、方向红线（`namespace_checks`）、**两面同图**（templates 相同的图侧参数与 spec 锚点逐字段比对 `rect`/`threshold`/`arbitration`/`mode↔kind`/`colorspace`，任一面不等即拦）。
-
-配套 [`tests/test_navkit_truth.py`](../../tests/test_navkit_truth.py)：锁归位形态（真源全在模块命名空间、core 侧零节点、plugin 文件集）、锁**红线活性**（合成违规图必须报错，防校验退化成装饰）、图↔spec 交叉见证与节点/锚点计数见证防漂。
-
-颜色口径定案：**默认 gray，灰度拉不开差距才转 rgb**（2026-09-11 两面统一；依据 = 检测面 detector 早已按 `spec.arbitration.margin` 做领先判定，P4C 对拍 812 帧两引擎命中数相等、零翻转，gray 快 2.8 倍）。
-
-模板文件缺失由运行时 `load_template` 返回 None 降级 + 装载器 WARNING 暴露。**体积账**：单张 5\~60KB、全部模板预期 <1MB（对比 rapidocr 模型 30MB、onnx 12MB 不成量级）——要防的是"图死"（孤儿图定期对照 spec/节点引用清一次）不是"图多"。
+> **纯锚点形态**：`attach._anchor_only` 的节点必须被引用或声明模块直驱；节点名全城唯一、无命名空间，core/plugin 的分离靠引用方向单向守住。
 
 ## 模板图采集工作流（2026-09-07 定案，v4 载体沿用）
 
-> 适用：为图节点 / policy `perception.spec` 锚点采集模板图。分工：**人工截图+裁剪标注 → 导出 regions.json + PNG → 工具侧换算入库**（rect 归一化/JSON/校验/提交均为工具侧职责）。
+> 适用：为图节点锚点采集模板图。分工：**人工截图+裁剪标注 → 导出 regions.json + PNG → 工具侧换算入库**（rect 归一化/JSON/校验/提交均为工具侧职责）。
 
 **来源纪律**：只从 1280×720 运行帧截图裁剪（启动即统一 720p），1:1 像素裁剪、**永不缩放**（模板与运行帧同尺度，匹配单尺度 1.0）。
 
@@ -106,7 +82,7 @@ tools/navkit/
 
 **位置跟 owner 走**：global 锚点 → `core/resources/image/`；模块锚点 → `plugins/<id>/resources/image/`。归属与物理位置矛盾由编辑评审盯。
 
-**回传**：标注工具导出 regions.json（像素区域 x/y/w/h）+ PNG → 换算归一化 rect（外扩 15% 宽 / 25% 高、4 位小数）写入真源。**JSON 真源由 MPE 画布 / Studio 工具链维护，人工不手改裸文件**；agent/脚本直改 JSON 后跑 `check_truth.py` 机检 + 提交。
+**回传**：标注工具导出 regions.json（像素区域 x/y/w/h）+ PNG → 换算归一化 rect（外扩 15% 宽 / 25% 高、4 位小数）写入真源。**JSON 真源由 MPE 画布 / Studio 工具链维护，人工不手改裸文件**；agent/脚本直改 JSON 后跑 `truth.py` 机检 + 提交。
 
 > **ROI 是「这个按钮可能出现在哪里」，不是「它上次出现在哪」**：一个节点服务多页时，ROI 必须覆盖各页位置的**并集**再留余量——按单帧模板外扩算出的 rect 会在同一按钮的另一页失配（2026-09-16 speedrush 结算页实证，见其域文档 §4）。
 

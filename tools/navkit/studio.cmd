@@ -3,7 +3,7 @@ rem ============================================================================
 rem  NavKit v4 Studio - one-shot launcher: LocalBridge (mpelb) + Studio server.
 rem  Both background processes start windowless (no console popup); the browser
 rem  opens two tabs: MPE (auto-connects LocalBridge) and the Studio shell
-rem  (ROI calibrator / policy table / template cropper on one port).
+rem  (Replay + ROI on one port).
 rem  Usage:
 rem    studio.cmd                              defaults (root=repo, lb=26521, studio=26530)
 rem    studio.cmd --root <dir> --port <n>      override root / LocalBridge port
@@ -55,7 +55,7 @@ if not exist "%STUDIO_PY%" (
   echo [studio] python not found under %ROOT%\.venv\Scripts\
   goto usage
 )
-set "STUDIO_SCRIPT=%ROOT%\tools\navkit\studio_server.py"
+set "STUDIO_MODULE=tools.navkit.studio.server"
 
 echo [studio] mpelb  : %MPELB%
 echo [studio] root   : %ROOT%
@@ -67,7 +67,7 @@ taskkill /f /im mpelb.exe >nul 2>&1
 
 rem windowless start for both processes (Start-Process -WindowStyle Hidden)
 powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%MPELB%' -ArgumentList '--root','%ROOT%','--port','%LB_PORT%','--log-level','INFO' -WindowStyle Hidden" >nul 2>&1
-powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%STUDIO_PY%' -ArgumentList '%STUDIO_SCRIPT%','--port','%STUDIO_PORT%' -WindowStyle Hidden" >nul 2>&1
+powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%STUDIO_PY%' -ArgumentList '-m','%STUDIO_MODULE%','--port','%STUDIO_PORT%' -WorkingDirectory '%ROOT%' -WindowStyle Hidden" >nul 2>&1
 
 rem wait until BOTH ports are actually LISTENING (max ~20s), then open the tabs
 set "TRIES=0"

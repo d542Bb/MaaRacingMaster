@@ -1,0 +1,43 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #1f2933;
+  background: #f4f6f8;
+}
+header {
+  position: sticky; top: 0; z-index: 5;
+  padding: 10px 16px; background: #fff; border-bottom: 1px solid #dde3e8;
+}
+h1 { display: inline-block; margin: 0 18px 0 0; font-size: 18px; }
+h2 { margin: 16px 0 6px; font-size: 14px; color: #52606d; }
+.bar, nav, .frame-tools, .rect-grid { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.bar { display: inline-flex; }
+nav { margin-top: 10px; gap: 6px; }
+.tab {
+  border: 1px solid #cbd2d9; background: #fff; border-radius: 6px 6px 0 0;
+  padding: 5px 16px; cursor: pointer;
+}
+.tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+main { padding: 14px 16px 30px; }
+.pane { display: none; }
+.pane.active { display: block; }
+select, input, button { font: inherit; }
+select, input[type="number"] { padding: 4px 6px; border: 1px solid #cbd2d9; border-radius: 4px; background: #fff; }
+button { padding: 5px 12px; border: 1px solid #1f6feb; background: #1f6feb; color: #fff; border-radius: 4px; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+.viewport-wrap { display: flex; gap: 16px; align-items: flex-start; margin-top: 10px; }
+.viewport { position: relative; flex: 0 1 auto; min-width: 320px; background: #000; line-height: 0; }
+.viewport img { width: 100%; max-width: 960px; display: block; user-select: none; }
+.viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.meta { flex: 1 1 300px; min-width: 260px; background: #fff; border: 1px solid #dde3e8; border-radius: 6px; padding: 4px 14px 14px; }
+.meta dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+.meta dt { color: #7b8794; }
+.meta dd { margin: 0; word-break: break-all; }
+pre { white-space: pre-wrap; word-break: break-all; background: #f8fafc; border: 1px solid #e4e7eb; padding: 8px; max-height: 320px; overflow: auto; }
+.status { color: #7b8794; }
+.hint { color: #7b8794; font-size: 12px; }
+.rect-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.rect-grid label { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.rect-grid input { width: 96px; }
+details { margin-top: 16px; }

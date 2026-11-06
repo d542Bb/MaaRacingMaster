@@ -22,7 +22,7 @@ MaaFramework 的 Pipeline 协议**没有命名空间**：一个 `pipeline` 目�
 1. **core 真源不得占用 `<module>.` 前缀**（模块命名空间由 `plugins/*/module.py` 自动发现）；
 2. **core 真源一切"按名字指人"的位置都不得引用 `<module>.` 节点。**
 
-「引用」的口径 = `next`/`on_error` + And/Or 按名子项 + `anchor` 对象 value（收口在 `check_truth.all_name_refs`）。
+「引用」的口径 = `next`/`on_error` + And/Or 按名子项 + `anchor` 对象 value（收口在 `truth.all_name_refs`）。
 **唯一合法方向 = 业务层引用通用层锚点**；通用层不指向任何模块节点（机检零例外，无白名单）。
 
 补充判据：**抽公共层前先回答"第二个使用者是谁、今天是否真实存在"**——答不出就不抽。
@@ -45,7 +45,7 @@ MaaFramework 的 Pipeline 协议**没有命名空间**：一个 `pipeline` 目�
 ## 证据
 
 - **协议事实（一手）**：MAAFW_GUIDE §5.6「真源组织与分层」——节点名全城唯一、无命名空间、互指须合并单次 post。
-- **机检**：[`tools/navkit/check_truth.py`](../../tools/navkit/check_truth.py) `namespace_checks`（校验器第 7 条）。
+- **机检**：[`tools/navkit/truth.py`](../../tools/navkit/truth.py) `namespace_checks`（校验器第 7 条）。
 - **机检活性测试**：[`maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py`](../../maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py) —— 合成违规图必须报错、盘上真源必须零报（防校验退化成装饰）。
 - **实证案例**：`core/resources/pipeline/global.json` 归位（2026-09-10），完整叙事见 MAAFW_GUIDE §5.6「过早抽象同样是债」。
 - **实施 commit**：`5d6c320` refactor(navkit): 真源归位 plugin、协议形态统一 v2、分层红线入机检。

@@ -24,7 +24,7 @@
 
 **代价与约束**：
 - 未来任何活动插件做"大阶段之间的一次 UI 点击"的重试，**必须**走 core `StepMachine`，**不得**自存计数/时间。
-- core 必须**保持域无关**——`navkit` 不得出现 `<module>.` 节点名（`check_truth` namespace 校验守此）。
+- core 必须**保持域无关**——`navkit` 不得出现 `<module>.` 节点名（`truth` namespace 校验守此）。
 - "统一调度"**不等于"core 来跑循环"**：逐帧决策（`PolicyBridge`）与阻塞步循环各留插件，进 core 的只有状态转移记账。禁止借本决策合并执行模型、下探到逐帧循环或感知层。
 
 **被否方案**：
@@ -34,7 +34,7 @@
 
 ## 证据
 
-- 机检：`tools/navkit/check_truth.py`——图自洽、`__confirm` 确认锚点零「跨锚点重复识别」告警；`tools/check_repo_hygiene.py` 通过。
+- 机检：`tools/navkit/truth.py`——图自洽、`__confirm` 确认锚点零「跨锚点重复识别」告警；`tools/check_repo_hygiene.py` 通过。
 - 测试：`tests/test_step_machine.py`（三 verdict × 五 command 转移表，逐链复刻 treasure 计数表：重发上限不含首点、耗尽为"达上限后再等一窗"、计时在重发/送达时重置、在途 RETRY 持续到送达且每窗只计一次）；`tests/test_speedrush_gating.py`（步级重发、窗内命中不重发、停止不记耗尽）。
 - 一手核查：极速狂飙操作路径与各界面要素 [plugins/speedrush/RULES.md](../../maaracing_master/plugins/speedrush/RULES.md) §2 / §3；treasure 三条重试链计数表（见 commit `71441c0` 的 core 单测对照）。
 - 落地：commit `71441c0`（core `StepMachine`）、`46df995`（speedrush 步级重试 + `__confirm` 确认锚点）、`f8add47`（重试剂量搬到 `decision.json`，可分步覆盖）。

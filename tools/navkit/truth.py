@@ -1,36 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""NavKit v4 真源自洽校验（CI 闸门，P4b 起承担图/数据面全部机检）。
+"""节点真源自洽校验（CI 闸门；纯标准库）。
 
-读盘三件套真源并校验：
-1. 图自洽（校验器第 1/5/6 条）：next/on_error 引用闭合、**And/Or 按名子项引用闭合**、
-   入口可达、无出口告警、跨锚点重复识别告警——1/5/6 逻辑自 migrate_v4.validate_graph
-   原样迁移，And/Or 闭合是 2026-09-11 新增（协议侧只给 next/on_error 做加载期闭合校验，
-   And/Or 子项写错名字要到运行期才 `Bad sub ref` 静默判失败，见 and_or_refs 注释）；
-2. 数据面可加载：policy.json 经 v4_source 装配（结构性错误 P01-P09 fail-fast）；
-3. 两面交叉一致：图 dwell `attach._signals` 引用的锚点、policy spec 里
-   stages/transitions 引用的名字必须互洽（编辑任一面时的防脱钩机械检）；
-   并且**同一条识别规格在两面必须是同一张照片**——templates 集合相同的图侧参数与
-    spec 锚点，逐字段比对 rect/threshold/arbitration/mode↔kind/colorspace
-    （anchor_face_checks，2026-09-11 新增）；
-4. 几何合法（校验器第 3 条）：两面一切 rect/roi/box 值域 [0,1] 且有序；
-5. 分层红线（校验器第 7 条）：core 真源不得占用、也不得引用模块命名空间的
-   节点名——协议层节点名全城唯一（无命名空间），"core/plugin 分离"只能靠
-   引用方向单向守住，不靠文件摆放位置。"引用"的口径 = 节点里一切按名字指人的
-   位置（next/on_error + And/Or 子项 + anchor 对象 value），只堵 next 会留后门。
-6. 输入通道（校验器第 8 条）：真源不得用框架内置输入 action（Click/Swipe/Key…）——
-   v4 控制器的输入接口全是成功占位，内置 action 会假成功而屏幕上什么都不发生。
-7. 纯锚点形态（attach._anchor_only）：豁免「入口不可达」「无出口节点」两条 WARN，
-   但必须零路由且被消费——图内按名引用，或声明 attach._module_driven（模块代码
-   按节点名直驱）；两样皆无判孤儿真源。
-8. 页面清单等集（stage_face_checks）：dwell 顶层 focus ↔ policy stages.order ↔
-   stages.definitions 三方互为等集，且 focus 全局唯一——显示态真源已收敛到「当前
-   节点」，这三处是同一事实的三个面，协议层不校验一致，漏改即静默漂移。
-9. 页面归属闭合（page_checks）：spec 锚点与 stage definitions 的 page 非空，且
-   被阶段表/转移引用的锚点 page 不得逃逸出 stage page 集——page 是 Studio 编辑器
-   侧分组真源，运行时归属真源是 definitions[*].active/ocr，两者都不得写了没人验。
+主入口校验四组硬约束：
+1. 图自洽：next/on_error 引用闭合、**And/Or 按名子项引用闭合**、入口可达、无出口告警、
+   跨锚点重复识别告警；纯锚点（attach._anchor_only）豁免不可达/无出口，但必须被引用
+   或声明 attach._module_driven；
+2. 输入通道：真源不得用框架内置输入 action（Click/Swipe/Key…）——控制器输入接口是
+   成功占位，内置 action 会假成功而屏幕上什么都不发生；
+3. 几何合法：一切 rect/roi/box 为 4 元数值、值域 [0,1] 且 x1<x2、y1<y2；
+4. 分层红线：core 真源不得占用或引用模块命名空间的节点名——节点名全城唯一、无命名
+   空间，core/plugin 的分离只能靠引用方向单向守住。"引用"包括 next/on_error、
+   And/Or 子项与 anchor 对象 value。
 
-用法：python tools/navkit/check_truth.py    （纯标准库，CI 零依赖直接运行）
+归档鉴宝时期的 policy 交叉校验助手（cross_checks / anchor_face_checks /
+stage_face_checks / page_checks）保留给离线工具做历史数据核对，主入口不再扫描策略表。
+
+用法：python tools/navkit/truth.py    （纯标准库，CI 零依赖直接运行）
 """
 from __future__ import annotations
 
@@ -650,7 +636,7 @@ def main() -> int:
         print(f"[error] {e}")
     if errors:
         return 1
-    print(f"[check_truth] OK：图 {len(graph)} 节点自洽")
+    print(f"[truth] OK：图 {len(graph)} 节点自洽")
     return 0
 
 

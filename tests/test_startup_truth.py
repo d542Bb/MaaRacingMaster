@@ -2,7 +2,7 @@
 """启动链真源的静态闸（ADR-0018）。
 
 看护四件事：
-1. 真源本身能过 check_truth（引用闭合、rect 归一、分层红线）；
+1. 真源本身能过 truth（引用闭合、rect 归一、分层红线）；
 2. 汇聚与确认链的候选顺序：弹窗 → 登录 → 大厅，且四处前缀逐字一致
    （MaaFW 无节点继承，同一份前缀只能重复四遍，漏改一处就是静默丢一条弹窗）；
 3. 终点节点有 `_end` 且被引用——成功条件必须是可审计的图结构；
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.navkit import check_truth as ct
+from tools.navkit import truth as ct
 
 REPO = Path(__file__).resolve().parents[1]
 STARTUP_DIR = REPO / "maaracing_master" / "core" / "resources" / "startup"
@@ -62,7 +62,7 @@ def test_truth_passes_checker():
 def test_nodes_are_startup_scoped_and_complete():
     graph, origin = _graph()
     nodes = _startup_nodes(graph, origin)
-    assert nodes, "启动链节点未被 check_truth 发现（发现范围失效？）"
+    assert nodes, "启动链节点未被 truth 发现（发现范围失效？）"
     assert all(n.startswith("startup.") for n in nodes)
 
 

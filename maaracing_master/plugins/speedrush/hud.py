@@ -170,7 +170,7 @@ FrameSource = Callable[[], "tuple[Any, int, int, float]"]
 def load_hud_regions(path: Path | str | None = None) -> dict[str, list[float]]:
     """读并校验区域真源，返回 ``{字段名: [x1, y1, x2, y2]}``（归一化）。
 
-    校验口径与 ``tools/navkit/check_truth.py`` 的 ``rect_checks()`` 一致：4 元数值数组、
+    校验口径与 ``tools/navkit/truth.py`` 的 ``rect_checks()`` 一致：4 元数值数组、
     值域 [0,1]、``x1<x2`` 且 ``y1<y2``——越界 rect 会静默读错区域，是最难发现的一类
     数据错误。**额外要求**：不得有 ``_`` 前缀键（真源是纯数据、不放说明）；角色的键必须齐备
     ——判色带 ``PAIR_FIELDS``、读数框 ``_CARD_RECTS``（缺一个都只能整段弃权）；且不得出现

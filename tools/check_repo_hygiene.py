@@ -131,7 +131,7 @@ NON_REPO_PREFIXES = ("framework/", "runtime/", "packages/", "app/", "config/", "
                      "logs/", "debug/", "RacingMaster/", "docs/zh_cn/", "maa/",
                      "maafw/", "site-packages/", "ch_ppocr", "depth_anything", "dinov2/",
                      "ultralytics/", "Roguelike/", "M9A/")
-# 「子系统根相对」写法基准：`js/log.js`、`studio_server.py`、`core/wgcap.py` 这类
+# 「子系统根相对」写法基准：`js/log.js`、`studio/server.py`、`core/wgcap.py` 这类
 # 按宿主根书引用是本仓库既有口径（各 CODE_WIKI 通篇如此），不是新约定。试得开即存在；
 # 换不来的是真被删掉的东西——它在任何基准下都不存在。
 LINK_BASES = ("maaracing_master", "apps/MaaRacingMaster.Shell",

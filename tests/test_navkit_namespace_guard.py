@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.navkit import check_truth as ct
+from tools.navkit import truth as ct
 
 
 def _fake_core(file_name: str) -> Path:

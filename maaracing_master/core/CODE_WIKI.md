@@ -289,7 +289,7 @@
 
 **职责**：单 ROI 抠图 → 预处理（自适应放大 + 轻度对比度增强）→ RapidOCR 推理 → 交出文本（`OcrText`：逐块 `lines` 与合并 `text` 两种取法）。**抠图边界、引擎调参（关检测/关方向分类/ORT 线程数/绑核）、预处理口径的唯一真源 = 本模块的常量与 docstring**——具体数值不在本文抄录（可机检数值只写指针，见 [docs/README.md](../../docs/README.md)），要改／要核对请直接读 [ocr.py](./ocr.py)。
 
-**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：`tools/navkit/studio_server.py`（ROI 校准台单区识别）与 speedrush 的 HUD 读数。
+**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：speedrush 的 HUD 读数与插件自带离线探针。
 
 **分工**：「文本怎么解释」（金额解析、数蛋计数、记分口径）属领域知识，留在各业务层，不上提 core。
 
@@ -491,7 +491,7 @@
 - `STOP → ABORT` 是**能力非强制**：外层已自管停止的调用方可不喂 STOP，机器只见 SUCCESS/PENDING——两种接法共用同一转移表。
 - 「什么算一次尝试、何时 `arm`、用阻塞循环还是逐帧回调驱动」全部归调用方，这是各家差异的唯一来源。
 
-**域无关（红线）**：不出现阶段名 / 节点名 / 玩法语义，节点名由调用方传入（`check_truth` 的 namespace 校验守引用方向）。纯标准库，可进 CI 轻量依赖集。
+**域无关（红线）**：不出现阶段名 / 节点名 / 玩法语义，节点名由调用方传入（`truth` 的 namespace 校验守引用方向）。纯标准库，可进 CI 轻量依赖集。
 
 **消费者**：speedrush `_run_flow` 的每个 UI 点击步（落地页确认走 `__confirm` 只识别探针，剂量在 `decision.json` 的 `step_retry` 段，接入细节见 [plugins/speedrush/CODE_WIKI.md](../plugins/speedrush/CODE_WIKI.md)）。
 
@@ -755,7 +755,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，显示最小集画面（游戏画面 + 指针 + 意图 + 段/阶段/帧龄，约 10fps；归属与阶段直接画在帧内信息条上）。数据页预览卡与悬浮窗共用同一份消费实现，同一时刻只有一个消费者拉帧；后端只在新帧时编码，前端按序号去重。
 3. **入口复用现有页面**：只跑内置步骤时，数据页预览卡与设置页的 DEBUG / PEEP 开关仍然可用（内置步骤本身就是一个面板项），不新增重复的预览卡或开关。
 4. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
-5. **MPE Studio**：`tools/navkit/studio.cmd` 起完整工作台（MPE 画布编辑 v4 真源 + ROI 校准台 / 策略表 / 模板截取），见 [tools/navkit/README.md](../../tools/navkit/README.md)
+5. **MPE Studio**：`tools/navkit/studio.cmd` 起工作台（MPE 画布编辑节点 JSON + Studio 回放 / ROI 两页），见 [tools/navkit/README.md](../../tools/navkit/README.md)
 
 **用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
 

@@ -633,7 +633,7 @@ if (-not $WithModels) {
 # 打包时刻已过有效期（manifest VALID_UNTIL）的插件不随包分发。判据复用
 # core/module_validity（与运行期 registry 置灰同一口径，不建第二真相）；工具按目录
 # 发现插件并容错：端点非法/非字面量按「未声明」= 随包 + warning，宁可多分发不静默吞模块。
-# 仓库树保留全部插件——源码开发与 CI 门禁（check_truth / pytest）不受分发剔除影响。
+# 仓库树保留全部插件——源码开发与 CI 门禁（truth / pytest）不受分发剔除影响。
 # VALID_FROM 在未来（活动未开放）不构成剔除：照常随包，运行期按窗口置灰。
 $ShipTool     = Join-Path $PSScriptRoot 'list_ship_excluded_modules.py'
 $PluginsSrc   = Join-Path $RepoRoot 'maaracing_master\plugins'
@@ -841,7 +841,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
             $errors.Add('CONFIG-SEED-LEAK: 包内不得含无人读取的框架选项副本 -> ' + $seed)
         }
     }
-    $consoleMarkers = @('mpe.cmd', 'policy_server.py', 'check_truth.py')
+    $consoleMarkers = @('mpe.cmd', 'studio.cmd', 'truth.py', 'mpelb.exe')
     Get-ChildItem $StageRoot -Recurse -File -EA SilentlyContinue |
         Where-Object { $consoleMarkers -contains $_.Name } |
         ForEach-Object {

@@ -93,7 +93,7 @@ templates/plugin/
 - **导航真源（v4）**：`resources/pipeline/<图>.json` —— 节点 JSON 即真源，编辑器与引擎
   同读一份，中间没有编译层；局内复杂决策与感知执行规格放 `resources/policy/<表>.json`，
   由图里的 `action: "Custom"` 节点指向。图闭合、数据面装配与分层红线由
-  `tools/navkit/check_truth.py` 机检（CI 同款），编辑与 ROI 校准台见
+  `tools/navkit/truth.py` 机检（CI 同款），编辑与 ROI 校准台见
   [tools/navkit/README.md](../../tools/navkit/README.md)；真源组织口径见
   [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md)。
 - **MAA Pipeline 执行通路**：`core/nav_graph.py`（`NavGraph` + `MaaRM_Template`/`MaaRM_Click` 桥），

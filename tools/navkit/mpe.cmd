@@ -53,14 +53,16 @@ taskkill /f /im mpelb.exe >nul 2>&1
 
 start "MaaRacingMaster MPE LB" "%MPELB%" --root "%ROOT%" --port %PORT% --log-level INFO
 
-rem ---- P4d: policy table merged into the Studio server (single port; see studio.cmd) ----
+rem ---- Studio v5 (replay + ROI) opens beside MPE on one port ----
 set "POLICY_PORT=26530"
 set "VENV_PY=%ROOT%\.venv\Scripts\python.exe"
 if not exist "%VENV_PY%" goto skip_studio
-if not exist "%~dp0studio_server.py" goto skip_studio
+if not exist "%~dp0studio\server.py" goto skip_studio
 netstat -ano | findstr /r /c:":%POLICY_PORT% .*LISTENING" >nul 2>&1
 if not errorlevel 1 goto skip_studio
-start "MaaRacingMaster MPE policy" "%VENV_PY%" "%~dp0studio_server.py" --port %POLICY_PORT%
+pushd "%ROOT%"
+start "MaaRacingMaster MPE studio" "%VENV_PY%" -m tools.navkit.studio.server --port %POLICY_PORT%
+popd
 :skip_studio
 
 rem wait until mpelb WebSocket port is actually listening (max ~20s),
@@ -81,7 +83,7 @@ start "" "http://127.0.0.1:%POLICY_PORT%/"
 
 echo.
 echo [MPE] Opened MPE connecting LB on port %PORT%.
-echo [MPE] Opened Studio shell on http://127.0.0.1:%POLICY_PORT%/ (policy table + ROI calibrator).
+echo [MPE] Opened Studio on http://127.0.0.1:%POLICY_PORT%/ (replay + ROI).
 echo [MPE] Use "mpe.cmd --stop" to stop the LocalBridge.
 exit /b 0
 

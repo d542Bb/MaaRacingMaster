@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.navkit import check_truth as ct
+from tools.navkit import truth as ct
 
 REPO = Path(__file__).resolve().parents[5]
 SCHEMA_DIR = REPO / "tools" / "navkit" / "schema"

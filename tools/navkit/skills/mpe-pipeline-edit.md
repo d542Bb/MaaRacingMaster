@@ -24,7 +24,7 @@
 | 决策策略表   | `maaracing_master/plugins/_archive/treasure/resources/policy/treasure.policy.json`  |
 
 - **分层红线**：节点名前缀 = 归属命名空间，全部真源现住 `treasure.*`；core 侧不得新增
-  引用模块节点名的图（`check_truth.namespace_checks` 机检）。想加"跨模块共用链"先读
+  引用模块节点名的图（`truth.namespace_checks` 机检）。想加"跨模块共用链"先读
   MAAFW\_GUIDE §5.6——只有一个使用者时不该有 core 图。
 
 - **目录必须叫** **`pipeline`**：mpelb / MSE / MaaMCP 等生态工具按 ProjectInterface 惯例
@@ -35,7 +35,7 @@
 ## 2. agent 编辑真源的正确姿势
 
 1. 直接改 JSON（用文件编辑，注意 UTF-8、`\n`、有序键——键序人读友好，migrate\_v4 已对齐 MPE 序）。
-2. 改完跑校验：`.venv\Scripts\python.exe tools\navkit\check_truth.py`
+2. 改完跑校验：`.venv\Scripts\python.exe tools\navkit\truth.py`
 3. 需要运行时态确认时：`NavKitV4.load`（见 tests / experiments），节点数基线=21。
 4. 约定字段：
 

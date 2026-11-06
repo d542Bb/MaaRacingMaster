@@ -61,7 +61,7 @@
 
 - **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/policy/treasure.policy.json`（`perception.spec` 锚点 + `policy` 段），detector/module/ocr/eggs 一律读它。插件以 `__init__.py` 的 `IMAGE_DIR`/`PIPELINE_DIR`/`POLICY_PATH`/`nav_source()` 统一引用，不依赖主程序 `assets/`。
 
-- **NavKit 底座**：本插件 `core/` 内含 v4 数据面 loader（v4\_source：policy.json → NavSource/DetectionPlan）+ 决策引擎（policy.py）+ trace 落盘记录器；原 navkit 包已随本插件归档拆解。`tools/navkit` 是 MPE 桥入口 + 策略表薄页 + check\_truth 校验闸门。固定坐标点击件不强制配模板，必须由 spec 锚点 `guarded_by` 担保（D2）。
+- **NavKit 底座**：本插件 `core/` 内含 v4 数据面 loader（v4\_source：policy.json → NavSource/DetectionPlan）+ 决策引擎（policy.py）+ trace 落盘记录器；原 navkit 包已随本插件归档拆解。`tools/navkit` 是 MPE 桥入口 + 回放 / ROI 工作台 + 真源校验闸门（策略表页已随 v5 下线）。固定坐标点击件不强制配模板，必须由 spec 锚点 `guarded_by` 担保（D2）。
 
 **阶段链路（policy.json** **`perception.stages`** **序，仍与** **`STAGE_ORDER`** **保持 GUI 断点兼容）**：
 
@@ -270,9 +270,9 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 - **策略表**：`mpe.cmd` 同批打开 Studio 壳页（127.0.0.1:26530），切到「策略表」标签编辑 `resources/policy/treasure.policy.json`。
 
-- **ROI 校准台 / 模板截取**：`tools/navkit/studio.cmd` 一次起 mpelb + Studio 服务（两者均隐藏窗口，零控制台弹窗），壳页三标签互切——ROI 校准台离线回放会话帧（`debug/treasure/<ts>/raw/`），拖框改 spec 锚点 rect / pipeline 节点 rect / `tuning` rect，保存时 `check_truth` 各闸（图自洽/分层红线/交叉互洽/几何/页面清单等集/页面归属闭合 `page_checks`）随管线执行；锚点 `page` 是 Studio 侧视觉页分组真源（分组展示 + E09 新增校验），闭合性由 `page_checks` 机检（惰性锚点如 egg\_task 族可用独立页面，被阶段表/转移引用的不得逃逸）；模板截取页从截图裁模板图落 `resources/image/`。
+- **ROI 工作台（v5）**：`tools/navkit/studio.cmd` 一次起 mpelb + Studio 服务（两者均隐藏窗口），Studio 只保留回放与 ROI 两页——回放只读 v5 会话清单与帧索引，ROI 直接改写节点 JSON 的 `custom_recognition_param.rect` 并在保存前后跑同一图校验器；策略表页、模板截取页与旧保存管线已随 v5 下线。归档鉴宝的旧会话不参与 v5 回放，需要样本时重录。
 
-- **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；决策引擎消费的域白名单、推导与副作用形收在同文件 `engine_contract` 段（改鉴宝事实/等待 key/tuning 键 = 改契约段，不改本插件 `core/policy.py`）；编辑后用 `tools/navkit/check_truth.py` 机检。
+- **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；决策引擎消费的域白名单、推导与副作用形收在同文件 `engine_contract` 段（改鉴宝事实/等待 key/tuning 键 = 改契约段，不改本插件 `core/policy.py`）；编辑后用 `tools/navkit/truth.py` 机检。
 
 - **校准截图来源**：`debug/treasure/<ts>/raw/`（GUI debug 图落盘），匹配行为离线验证可用 `tools/experiments/` 系列脚本。两条离线判据留在这一层：① **模板区分力必须两个口径都看**——收紧 ROI 与整幅画面各量一次，ROI 决定区分力（实例：聊天框不限 ROI 时大厅误命中 0.963），大厅三张模板（待机位聊天图标 / 控制器指引面板 / 弹窗关闭 X）的裁法与入册见 commit `a1a6424`；② **锚点误命中要逐帧看分**——逐帧打出该节点（含 Or 引用的锚点节点）的最高匹配分，与「这帧会被判成哪个页面」的回放工具分工：一个答「判成什么」，一个答「为什么、差多少」，据此重选区或加守卫（commit `01a4a6e`）。
 

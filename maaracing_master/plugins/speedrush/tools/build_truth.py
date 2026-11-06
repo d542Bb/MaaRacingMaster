@@ -10,7 +10,7 @@
       - 动作节点：识别（MaaRM_Template）+ 点击（MaaRM_Click），点完一律 next 回汇聚
       - 纯锚点节点：`_anchor_only`，零路由，页面感知规格——消费通道分两种：被模块
         代码按节点名直驱的标 `_module_driven`（真源机检承认的第二条消费通道）；
-        无人消费的不许入表（孤儿真源会被 check_truth 当场拦下）
+        无人消费的不许入表（孤儿真源会被 truth 当场拦下）
     出口方向统一为"回到 __boot 重判"，不各自维护下一跳（符合项目"入口锚点点击后
     一律交汇聚重判"的既有纪律）。
 
@@ -101,7 +101,7 @@ ANCHORS: list[tuple[str, str, str, str]] = [
 ]
 
 # 声明「本锚点由模块代码按节点名直驱」——图级引用分析看不见这条消费通道，
-# 真源机检（check_truth validate_graph）凭本声明豁免「孤儿真源」判定。
+# 真源机检（truth validate_graph）凭本声明豁免「孤儿真源」判定。
 MODULE_DRIVEN: frozenset[str] = frozenset({
     f"{MODULE}.驾驶页锚点",
     f"{MODULE}.商店横幅锚点",
@@ -110,7 +110,7 @@ MODULE_DRIVEN: frozenset[str] = frozenset({
 # 落地页确认探针（步级重试的"后置条件"）——(确认节点名, 复用模板, 说明)。
 #
 # 为什么确认节点复用**动作节点已在用的模板**却不触发第 6 条「跨锚点重复识别」：
-# 校验器对节点名含 `.__confirm.` 的节点直接豁免该判定（`tools/navkit/check_truth.py`
+# 校验器对节点名含 `.__confirm.` 的节点直接豁免该判定（`tools/navkit/truth.py`
 # validate_graph 第 6 条）。这是仓库为"确认节点"预留的标准扩展点——确认要认的是
 # "落地页上此刻有哪个标记"，标记往往就是下一步要点的按钮本身（线性流程里第 N 步的
 # 目的地页正显示着第 N+1 步的按钮），复用同图同区最省、也无需另采素材。

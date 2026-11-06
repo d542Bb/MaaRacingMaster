@@ -32,9 +32,9 @@
 ## 校验
 
 ```bash
-python tools/navkit/check_truth.py
+python tools/navkit/truth.py
 pytest tests/test_startup_truth.py
 ```
 
-`check_truth` 把本目录纳入发现范围与命名空间检查：本目录节点名不得占用模块命名
+`truth` 把本目录纳入发现范围与命名空间检查：本目录节点名不得占用模块命名
 空间，也不得引用 `<module>.` 节点。

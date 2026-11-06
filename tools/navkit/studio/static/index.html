@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>MaaRacingMaster Studio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Studio</h1>
+  <div class="bar">
+    <label>会话 <select id="session"></select></label>
+    <label>行为 <select id="behavior"></select></label>
+    <button id="reload" type="button">刷新</button>
+    <span id="status" class="status"></span>
+  </div>
+  <nav>
+    <button class="tab active" data-tab="replay" type="button">回放</button>
+    <button class="tab" data-tab="roi" type="button">ROI</button>
+  </nav>
+</header>
+
+<main>
+  <section id="pane-replay" class="pane active">
+    <div class="frame-tools">
+      <button id="prev" type="button">上一帧</button>
+      <input id="scrub" type="range" min="0" max="0" value="0">
+      <button id="next" type="button">下一帧</button>
+      <span id="frame-pos" class="status"></span>
+    </div>
+    <div class="viewport-wrap">
+      <div id="viewport" class="viewport">
+        <img id="frame" alt="会话帧">
+        <canvas id="overlay"></canvas>
+      </div>
+      <aside class="meta">
+        <h2>帧元数据</h2>
+        <dl id="frame-meta"></dl>
+        <h2>行为清单</h2>
+        <pre id="manifest"></pre>
+      </aside>
+    </div>
+    <details>
+      <summary>会话时间线</summary>
+      <pre id="timeline"></pre>
+    </details>
+  </section>
+
+  <section id="pane-roi" class="pane">
+    <div class="frame-tools">
+      <label>节点 <select id="node"></select></label>
+      <span id="node-info" class="status"></span>
+    </div>
+    <div class="viewport-wrap">
+      <div id="roi-viewport" class="viewport">
+        <img id="roi-frame" alt="会话帧">
+        <canvas id="roi-overlay"></canvas>
+      </div>
+      <aside class="meta">
+        <h2>归一化矩形</h2>
+        <div class="rect-grid">
+          <label>x1 <input id="rx1" type="number" step="0.0001" min="0" max="1"></label>
+          <label>y1 <input id="ry1" type="number" step="0.0001" min="0" max="1"></label>
+          <label>x2 <input id="rx2" type="number" step="0.0001" min="0" max="1"></label>
+          <label>y2 <input id="ry2" type="number" step="0.0001" min="0" max="1"></label>
+        </div>
+        <button id="save" type="button">保存到节点 JSON</button>
+        <p class="hint">在画面上拖框，或直接改数值；保存后自动跑图校验。</p>
+        <pre id="save-result"></pre>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

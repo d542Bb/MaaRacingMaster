@@ -359,7 +359,7 @@ tasker.post_task("日常清理").wait()
 
 - 节点级附加配置**只放** **`attach`**（3.1 唯一文档化扩展位；dict merge、框架保留、
   `get_node_data` 可回读）。本项目节点元数据（`_entry/_dwell/_signals/_stage/_page/_label` 等）
-  统一承载于 `attach` 内，键名保留 `_` 前缀标识项目私有语义，由 `check_truth` 机检引用闭合。
+  统一承载于 `attach` 内，键名保留 `_` 前缀标识项目私有语义，由 `truth` 机检引用闭合。
   **实测教训**：顶层 `_xxx` 键会被框架解析器**静默丢弃**（5.12.3 probe 实锤）——放错位置
   的元数据对经框架接口读数据的工具（MPE 高级用法、自研 Inspector）是不可见的。
 
@@ -451,12 +451,12 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
    引用闭合，分次 post 时先加载者必失败。本项目由 `nav_graph._post_pipeline_merged`
    承担（多目录→临时目录→一次 post，同名文件冲突直接拒绝）。
 3. **所以"core/plugin 分离"的唯一可实现形态 = 引用方向单向**。本项目定案红线两条，
-   由 `check_truth.namespace_checks`（校验器第 7 条）机检：
+   由 `truth.namespace_checks`（校验器第 7 条）机检：
 
    - core 真源**不得占用** `<module>.` 前缀（模块命名空间由 `plugins/*/module.py` 自动发现）；
 
    - core 真源**一切"按名字指人"的位置**都**不得引用** `<module>.` 节点。口径 =
-     `next`/`on_error` + And/Or 按名子项 + `anchor` 对象 value（`check_truth.all_name_refs`）。
+     `next`/`on_error` + And/Or 按名子项 + `anchor` 对象 value（`truth.all_name_refs`）。
      只堵 `next`/`on_error` 会留后门：And/Or 的字符串子项是**真引用**——5.12.3 实测
      运行期取被引用节点的识别定义对当前帧重跑（且只跑识别、不执行其动作），所以公共层
      靠 `any_of: ["<module>.x"]` 就能借走模块的识别规格，等价于间接点名业务层。
@@ -492,7 +492,7 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
   **`And`/`Or` 按节点名引用子条件**（v5.7；实测=运行期取被引节点的**识别定义**对当前帧
   重跑、只跑识别不执行其动作、可嵌套传递，是"引用而不复制识别规格"的唯一原生通路。
   代价：框架**不校验**这些名字，拼错要到运行期才 `Bad sub ref` 静默判该 Or 未命中，
-  且 `[Anchor]名` 在子项里同样按字面节点名解析=死引用 → 闭合由 `check_truth` 补）；
+  且 `[Anchor]名` 在子项里同样按字面节点名解析=死引用 → 闭合由 `truth` 补）；
   `default_pipeline.json`（参数下沉，四级优先级，`attach` 走 dict merge）、
   `pipeline_override`（节点级补丁；`PipelineResMgr` 重解析时以**已加载的同名节点**为
   default，这是协议内唯一"改一处而不重写整节点"的形态）、`interface.json` 的
@@ -585,7 +585,7 @@ class MyAction(CustomAction):
 1. **替换注册一律先** **`unregister_custom_*`** **再** **`register_custom_*`**，不依赖同名覆盖——
    升级 MaaFw 前重跑 `v1_duplicate_register.py` 校准。
 2. 注册名必须是非空字面量/常量（空名失败不经返回值暴露）；注册名与 pipeline 引用名的
-   一致性由 `check_truth` 机检兜底。
+   一致性由 `truth` 机检兜底。
 3. binding 的 `_custom_{action,recognition}_holder` 负责防 GC（4.2 约定）——**不要**绕过
    binding 直接 ctypes 注册，也不要注册后丢弃实例假定安全。
 4. Custom 动作要拿"任意区域"用节点 `target`/`target_offset` 声明（会以 `box` 传给
@@ -772,7 +772,7 @@ WGC 原生采集、模块线程与自定义回调图，回收顺序与时刻都�
 16. **文档口径 ≠ 当前版本行为**：maafw\.com 跟随 main（v5.13+），本项目锁 5.12.3——凡引用
     文档论断作设计依据，先做最小实验校准当前安装版本（本条由 V-1 注册语义反转实证）。
 17. **协议无命名空间 ⇒ 分层靠引用方向，不靠目录**：节点名全城唯一，core 真源不得占用
-    也不得引用 `<module>.` 节点（`check_truth.namespace_checks` 机检）；"引用"= 一切按名字
+    也不得引用 `<module>.` 节点（`truth.namespace_checks` 机检）；"引用"= 一切按名字
     指人的位置（`next`/`on_error`、And/Or 按名子项、`anchor` 对象 value），通用层不指向任何
     模块节点，需要被使用时由业务层自行声明那条边。互指即须合并单次 post（见 §5.6）。
 

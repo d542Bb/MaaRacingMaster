@@ -28,7 +28,7 @@ v3 真源是 anchors / stages / transitions / routes / policies 五套概念 + �
 
 MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且已有成熟的可视化编辑器 **MaaPipelineEditor (MPE)**（MIT 协议，react-flow，在线/自部署，LocalBridge 本地能力协议，2026-09-04 v1.9.3）。V4 = 回归标准 + 把力气花在别人给不了的地方。
 
-> **策略表状态（2026-11-06）**：策略表是鉴宝时期的本地扩展，不是生态规范；随鉴宝退役已无现役消费者，标记过时。新逻辑只走节点 JSON 与自定义识别/动作。策略引擎、装配器与阶段追踪器已随鉴宝归档于 `plugins/_archive/treasure/core/`；核心层只保留步进状态机（`core/step_machine.py`）。
+> **策略表状态（2026-11-06）**：策略表是鉴宝时期的本地扩展，不是生态规范；随鉴宝退役已无现役消费者，标记过时。新逻辑只走节点 JSON 与自定义识别/动作。策略引擎、装配器与阶段追踪器已随鉴宝归档于 `plugins/_archive/treasure/core/`；核心层只保留步进状态机（`core/step_machine.py`）。Studio 的策略表页、模板截取页与旧保存管线已随 v5 下线，工作台只保留回放与 ROI。
 
 ### 0.3 继承 vs 废弃
 
@@ -103,7 +103,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 - **编辑器产物跳过**：`$__mpe_config_*` 伪节点与节点内 `$__mpe_code`（内嵌方案的布局字段）加载器必须容忍并跳过；MaaFW 官方 schema 的根节点正则为 `^(?!\$).*`（`$` 开头 root field 官方不解析，schema 层背书），运行时同样行为**仍留 P2a 实机确认一次**。
 
-- **Schema 工具链**：`tools/navkit/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/navkit/check_truth.py` 承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
+- **Schema 工具链**：`tools/navkit/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/navkit/truth.py` 承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
 
 关键语义：
 
@@ -296,13 +296,13 @@ E 级不落盘闸门逻辑保留。
   3. 各页面 `_park` 驻留点标定（Studio 画布可视化标点）。
 
   - 验收：录屏回放对拍"改前/改后"逐节点命中差异清单（谁从放行变拒绝、拒绝得对不对）；
-    `check_truth` 与 `pytest` 全绿；差异清单归档 `tools/experiments/`。
+    `truth` 与 `pytest` 全绿；差异清单归档 `tools/experiments/`。
 
   - ~~光标贴图尺寸入引擎常量~~ 已落（2026-09-11：`CURSOR_SIZE_NORM` +
     `cursor_occlusion_radius_px()`，避让侧不再自标魔数）。**注意该函数本轮还要再改一次**
     （见第 1 件），当前形态是"乘帧宽"，形状修正后不再乘。
 
-- ~~颜色：逐节点评估 gray → rgb\_strict~~ 定案收口（2026-09-11）：**默认 gray，灰度拉不开差距才转 rgb**，两面（图节点 / policy spec）由 `check_truth.anchor_face_checks` 锁成 error 级、盘上零分叉。依据 = 检测面 `detector` 早已按 `spec.arbitration.margin` 做领先判定，P4C 对拍 812 帧两引擎命中数相等、零翻转，gray 快 2.8 倍。
+- ~~颜色：逐节点评估 gray → rgb\_strict~~ 定案收口（2026-09-11）：**默认 gray，灰度拉不开差距才转 rgb**，两面（图节点 / policy spec）由 `truth.anchor_face_checks` 锁成 error 级、盘上零分叉。依据 = 检测面 `detector` 早已按 `spec.arbitration.margin` 做领先判定，P4C 对拍 812 帧两引擎命中数相等、零翻转，gray 快 2.8 倍。
 
 - 迁移校图：P1 生成物逐节点核对。
 

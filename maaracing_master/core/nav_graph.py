@@ -19,13 +19,13 @@
         plugins/<id>/resources/policy/<id>.policy.json          感知规格+决策规则+执行资产
         core/resources/pipeline/*.json                          跨模块共用段（**当前无内容**，
             目录按存在性纳入；出现真共用链时再建，见下"分层红线"）
-    分层红线（check_truth 校验器第 7 条机检）：协议层节点名全城唯一、没有命名空间，
+    分层红线（truth 校验器第 7 条机检）：协议层节点名全城唯一、没有命名空间，
     所以 core 与 plugin 的"分离"只能靠**引用方向单向**守住——core 不得占用也不得
     引用 `<module>.` 节点名，业务层的边由业务层自己声明。把通用知识放进 core 是
     抽象，把某个模块的入口链放进 core 是过早抽象（本项目曾因此让 core 抄了三份
     同一张"全页面清单"，2026-09-10 归位）。
     图节点经 MaaFW Resource 原生执行；数据面由各插件在 Python 侧自行装载（归档鉴宝仍用
-    其插件内 `core/v4_source.load_nav_source`）。校验走 `tools/navkit/check_truth.py`。
+    其插件内 `core/v4_source.load_nav_source`）。校验走 `tools/navkit/truth.py`。
 
 本文件提供 MAA Pipeline 执行通路（`Resource.post_pipeline` + 自定义识别/动作桥）
 与 `NavGraph` 跳转图宿主；v4 常驻图宿主已随鉴宝插件下沉到归档区。
