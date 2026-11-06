@@ -25,13 +25,13 @@ def nav_source():
     - 文件缺失或加载异常 → 返回 ``None``；调用方以 None 触发既有降级路径
       （detector 检测跳过 / 模板装载器回代码常量）。
     - N-3 冷生效：改真源下次启动生效，故缓存不失效。
-    - `core.navkit.v4_source` 为纯标准库底座，函数内延迟导入，
+    - 本插件 `core.v4_source` 为纯标准库底座，函数内延迟导入，
       不在包导入期引入任何重依赖。
     """
     if not POLICY_PATH.exists():
         return None
     try:
-        from maaracing_master.core.navkit.v4_source import load_nav_source
+        from maaracing_master.plugins._archive.treasure.core.v4_source import load_nav_source
         return load_nav_source(POLICY_PATH)
     except Exception:
         return None

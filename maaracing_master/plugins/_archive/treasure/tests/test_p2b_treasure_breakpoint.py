@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""断点换算 → StageTracker 的等价性单测（core/stage_tracker 契约）。
+"""断点换算 → StageTracker 的等价性单测（归档 core 契约）。
 
 统一底座 StageTracker 必须保留「先 in STAGE_ORDER 判断、非法/None 回退 0」的旧观测语义。
 本测试用中性阶段清单做 before/after 比对，满足「同输入下观测一致」不变量——样本与任何
@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_master.core.stage_tracker import StageTracker
+from maaracing_master.plugins._archive.treasure.core.stage_tracker import StageTracker
 
 # 中性阶段清单：本文件锁的是 StageTracker 的断点换算语义（core 契约），与任何具体活动的
 # 阶段名无关。core 的契约锁不应依赖已退役模块的资源。
 STAGE_ORDER = ["s1", "s2", "s3", "s4", "s5"]
+
+pytestmark = pytest.mark.retired
 
 
 def _legacy_skip(start_from: str | None):

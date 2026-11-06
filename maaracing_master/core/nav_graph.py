@@ -24,8 +24,8 @@
     引用 `<module>.` 节点名，业务层的边由业务层自己声明。把通用知识放进 core 是
     抽象，把某个模块的入口链放进 core 是过早抽象（本项目曾因此让 core 抄了三份
     同一张"全页面清单"，2026-09-10 归位）。
-    图节点经 MaaFW Resource 原生执行；数据面经 `core/navkit/v4_source.load_nav_source`
-    在 Python 侧直读（detector/决策栈/模板装载器共用）。校验走 `tools/navkit/check_truth.py`。
+    图节点经 MaaFW Resource 原生执行；数据面由各插件在 Python 侧自行装载（归档鉴宝仍用
+    其插件内 `core/v4_source.load_nav_source`）。校验走 `tools/navkit/check_truth.py`。
 
 本文件提供 MAA Pipeline 执行通路（`Resource.post_pipeline` + 自定义识别/动作桥）
 与 `NavGraph` 跳转图宿主；v4 常驻图宿主已随鉴宝插件下沉到归档区。

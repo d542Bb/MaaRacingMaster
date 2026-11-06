@@ -67,8 +67,6 @@ RETIRED_MODULE_NS = frozenset({"treasure"})
 KNOWN_MODULE_NS = MODULE_NS | RETIRED_MODULE_NS
 PLUGIN_PIPELINE_DIRS = [d / "resources" / "pipeline" for d in _module_dirs()
                         if (d / "resources" / "pipeline").is_dir()]
-PLUGIN_POLICY_FILES = sorted(f for d in _module_dirs()
-                             for f in (d / "resources" / "policy").glob("*.policy.json"))
 
 
 def module_policy_path(module: str, plugins_dir: Path = PLUGINS_DIR) -> Path:
@@ -640,58 +638,19 @@ def page_checks(policy: dict) -> list[str]:
     return problems
 
 
-def policy_checks(graph: dict, origin: dict, policy_path: Path) -> tuple[list[str], list[str]]:
-    """单个模块 policy 数据面的两面交叉校验。
-
-    图侧按 origin 圈定到该插件目录内的节点：节点名全城唯一，但各模块的面互不相干
-    ——模板集比对（anchor_face_checks）、页面等集（stage_face_checks）、spec 引用
-    （cross_checks）拿别的模块的节点来比只会产出无意义的红。几何（rect_checks）
-    的 policy 侧在此按模块过，图侧已在 main 全量过。"""
-    plugin_dir = policy_path.parents[2]
-    scope = scope_by_plugin(graph, origin, plugin_dir)
-    errors: list[str] = []
-    warns: list[str] = []
-    policy_doc = None
-    try:
-        policy_doc = _load(policy_path)
-        errors += cross_checks(scope, policy_doc)
-        face_errors, face_warns = anchor_face_checks(scope, policy_doc)
-        errors += face_errors
-        warns += face_warns
-        errors += rect_checks({}, policy_doc)
-        errors += stage_face_checks(scope, policy_doc)
-        errors += page_checks(policy_doc)
-    except (KeyError, TypeError) as exc:
-        errors.append(f"{policy_path.name} 段结构非法: {exc}")
-    if policy_doc is not None:
-        sys.path.insert(0, str(REPO))
-        try:
-            from maaracing_master.core.navkit.v4_source import load_nav_source
-            load_nav_source(policy_path)
-        except Exception as exc:  # noqa: BLE001 —— 装配失败原因各异，原文即诊断
-            errors.append(f"{policy_path.name} 数据面装配失败: {exc}")
-    return errors, warns
-
-
 def main() -> int:
     graph, origin = load_graph()
     errors, warns = validate_graph(graph)
     errors += action_checks(graph)
     errors += namespace_checks(graph, origin)
     errors += rect_checks(graph)    # 图侧几何全量（含无 policy 的模块）
-    for policy_path in PLUGIN_POLICY_FILES:
-        p_errors, p_warns = policy_checks(graph, origin, policy_path)
-        errors += p_errors
-        warns += p_warns
     for w in warns:
         print(f"[warn] {w}")
     for e in errors:
         print(f"[error] {e}")
     if errors:
         return 1
-    n_policies = len(PLUGIN_POLICY_FILES)
-    print(f"[check_truth] OK：图 {len(graph)} 节点自洽，"
-          f"{n_policies} 份 policy 数据面可装配且交叉互洽")
+    print(f"[check_truth] OK：图 {len(graph)} 节点自洽")
     return 0
 
 

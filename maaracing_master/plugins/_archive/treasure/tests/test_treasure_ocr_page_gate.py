@@ -22,8 +22,8 @@ import numpy as np
 import pytest
 
 try:
-    from maaracing_master.core.navkit import ROUND_PHASE_STAGE
-    from maaracing_master.core.navkit.v4_source import load_nav_source
+    from maaracing_master.plugins._archive.treasure.core.v4_source import ROUND_PHASE_STAGE
+    from maaracing_master.plugins._archive.treasure.core.v4_source import load_nav_source
     from maaracing_master.plugins._archive.treasure.detector import TreasureStageDetector
     from maaracing_master.plugins._archive.treasure.module import TreasureModule
 

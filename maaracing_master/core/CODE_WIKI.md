@@ -478,11 +478,11 @@
 - **归属纪律**：模块的图跟着模块目录走（插件整体搬走不丢图），通用图放核心资源目录；发布装配对 `maaracing_master/` 是 `robocopy /E`，所以「图在插件目录内」等价于「随插件进包」，不依赖扩展名白名单。
 - **测试**：`tests/test_module_covers.py`（含「前端不得硬编码插件路径」的静态锁）。
 
-### 1.19 [navkit/step.py](./navkit/step.py) — 统一步循环的重试状态机（ADR-0014）
+### 1.19 [step_machine.py](./step_machine.py) — 统一步循环的重试状态机（ADR-0014）
 
 **职责**：一次「发动作 → 等后置条件 → 有限重发 → 耗尽/停止」这类**大阶段/步层的编排**，其**状态转移**（计数、时间窗、到期重发、显式失败、停止取消）的唯一解释者。调用方只喂 `Verdict`（后置条件此刻达成 / 未达成 / 用户停止）、收 `Command`（等待 / 重发 / 完成 / 耗尽 / 取消），不得再各自保留一份重试计数或时间状态——单一真源。归属决策见 [ADR-0014](../../docs/adr/0014-ownership-core-步级重试状态转移归core拥有.md)。
 
-**接口现状**：`StepMachine(max_retries, window_s, clock=time.monotonic)`；`arm()` 标记一次尝试发出 / 送达（只重置时间窗、不动计数）；`observe(verdict) → Command`。`Verdict` / `Command` / `StepExhaustedError` 的成员以 [step.py](./navkit/step.py) 为真源，时钟可注入供测试喂假钟。
+**接口现状**：`StepMachine(max_retries, window_s, clock=time.monotonic)`；`arm()` 标记一次尝试发出 / 送达（只重置时间窗、不动计数）；`observe(verdict) → Command`。`Verdict` / `Command` / `StepExhaustedError` 的成员以 [step_machine.py](./step_machine.py) 为真源，时钟可注入供测试喂假钟。
 
 **时序语义（须逐条成立）**：
 - `count++` 只在窗口到期决定重发时发生、且每窗一次（窗内每拍 `PENDING` 不重复计、慢送达不多耗预算）；`arm()` 永不 `++`。
@@ -495,7 +495,9 @@
 
 **消费者**：speedrush `_run_flow` 的每个 UI 点击步（落地页确认走 `__confirm` 只识别探针，剂量在 `decision.json` 的 `step_retry` 段，接入细节见 [plugins/speedrush/CODE_WIKI.md](../plugins/speedrush/CODE_WIKI.md)）。
 
-**测试**：`tests/test_navkit_step.py`（三 verdict × 五 command 转移表逐链复刻 + 在途 hold 时序锁）。
+**测试**：`tests/test_step_machine.py`（三 verdict × 五 command 转移表逐链复刻 + 在途 hold 时序锁）。
+
+> navkit 原包已拆：步进即本文件；策略引擎、策略装配器与阶段追踪器只服务归档鉴宝，已随插件沉到 `plugins/_archive/treasure/core/`，核心层不再提供。
 
 ### 1.20 数据看板：资格声明与内容契约
 

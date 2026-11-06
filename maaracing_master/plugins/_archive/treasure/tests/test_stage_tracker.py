@@ -3,16 +3,21 @@
 
 覆盖：构造、current_stage 记录、set_stage 合法/非法校验、resolve_start_from 断点
 解析（None / 合法 / 非法）、与 ROIConfig.stage_order 的衔接、next_stage 纯查询。
-只依赖 core.stage_tracker + core.roi_config，不拉入重依赖。
+只依赖本插件的 stage_tracker 模块 + core.roi_config，不拉入重依赖。
 """
 from __future__ import annotations
 
 import pytest
 
 from maaracing_master.core.roi_config import ROIConfig
-from maaracing_master.core.stage_tracker import InvalidStageError, StageTracker
+from maaracing_master.plugins._archive.treasure.core.stage_tracker import (
+    InvalidStageError,
+    StageTracker,
+)
 
 _ORDER = ["大厅", "选择", "第1回合", "第2回合"]
+
+pytestmark = pytest.mark.retired
 
 
 # ---------------- 构造 ----------------

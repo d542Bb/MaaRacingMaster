@@ -43,7 +43,7 @@ from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.dashboard_contract import DASHBOARD_CONTRACT_VERSION
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
-from maaracing_master.core.navkit import Command, StepMachine, Verdict
+from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.core.paths import debug_dir
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (

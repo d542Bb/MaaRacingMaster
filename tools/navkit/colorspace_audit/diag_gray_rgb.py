@@ -38,7 +38,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_assistant.core.navkit.v4_source import load_nav_source  # noqa: E402
+from maaracing_master.plugins._archive.treasure.core.v4_source import load_nav_source  # noqa: E402
 from maaracing_assistant.core.gamepad_cursor import detect_cursor  # noqa: E402
 
 POLICY_PATH = ROOT / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"

@@ -28,7 +28,7 @@ v3 真源是 anchors / stages / transitions / routes / policies 五套概念 + �
 
 MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且已有成熟的可视化编辑器 **MaaPipelineEditor (MPE)**（MIT 协议，react-flow，在线/自部署，LocalBridge 本地能力协议，2026-09-04 v1.9.3）。V4 = 回归标准 + 把力气花在别人给不了的地方。
 
-> **策略表状态（2026-11-06）**：策略表是鉴宝时期的本地扩展，不是生态规范；随鉴宝退役已无现役消费者，标记过时。新逻辑只走节点 JSON 与自定义识别/动作。
+> **策略表状态（2026-11-06）**：策略表是鉴宝时期的本地扩展，不是生态规范；随鉴宝退役已无现役消费者，标记过时。新逻辑只走节点 JSON 与自定义识别/动作。策略引擎、装配器与阶段追踪器已随鉴宝归档于 `plugins/_archive/treasure/core/`；核心层只保留步进状态机（`core/step_machine.py`）。
 
 ### 0.3 继承 vs 废弃
 

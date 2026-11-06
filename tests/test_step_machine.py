@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_master.core.navkit import Command, StepExhaustedError, StepMachine, Verdict
-from maaracing_master.core.navkit.step import at
+from maaracing_master.core.step_machine import Command, StepExhaustedError, StepMachine, Verdict
+from maaracing_master.core.step_machine import at
 
 W = 1.0  # 统一测试窗口（秒）
 

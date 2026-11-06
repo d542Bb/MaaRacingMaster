@@ -41,7 +41,7 @@ from maaracing_master.plugins._archive.treasure.core.cpu_time import (
     logical_core_count,
     process_cpu_seconds,
 )
-from maaracing_master.core.stage_tracker import StageTracker
+from maaracing_master.plugins._archive.treasure.core.stage_tracker import StageTracker
 from maaracing_master.plugins._archive.treasure.store import TreasureStore
 from maaracing_master.plugins._archive.treasure.strategy import (
     BALANCE_UNKNOWN,
@@ -59,8 +59,8 @@ from maaracing_master.core.template_match import (
     load_template,
     match_template_cs,
 )
-from maaracing_master.core.navkit import (
-    ROUND_PHASE_STAGE,
+from maaracing_master.plugins._archive.treasure.core.v4_source import ROUND_PHASE_STAGE
+from maaracing_master.plugins._archive.treasure.core.policy import (
     DecisionFacts,
     DecisionSnapshot,
     StateSnapshot,

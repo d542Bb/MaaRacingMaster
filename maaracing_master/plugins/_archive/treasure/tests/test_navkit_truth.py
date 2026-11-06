@@ -8,7 +8,7 @@
 本身属归档区，故本套件保持 `retired`——现役真源门禁由 CI 的 `check_truth` 扫描
 `plugins/` 顶层插件承担；考古时显式跑：
 
-    .venv/Scripts/python.exe -m pytest tests/test_navkit_truth.py -m retired
+    .venv/Scripts/python.exe -m pytest maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py -m retired
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import pytest
 
 from tools.navkit import check_truth as ct
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[5]
 SCHEMA_DIR = REPO / "tools" / "navkit" / "schema"
 
 
@@ -208,7 +208,7 @@ def test_page_gate(truth):
     import copy
     from dataclasses import fields
 
-    from maaracing_master.core.navkit.v4_source import Anchor
+    from maaracing_master.plugins._archive.treasure.core.v4_source import Anchor
 
     full, policy = truth
     assert ct.page_checks(policy) == []
@@ -629,7 +629,7 @@ def test_cross_truth_gates_pass(truth):
     errors, _ = ct.validate_graph(full)
     assert errors == []
     assert ct.cross_checks(full, policy) == []
-    from maaracing_master.core.navkit.v4_source import load_nav_source
+    from maaracing_master.plugins._archive.treasure.core.v4_source import load_nav_source
     nav = load_nav_source(ct.module_policy_path("treasure", ct.PLUGINS_DIR / "_archive"))
     assert len(nav.plan.spec) == 65
     assert nav.plan.detect_anchors and len(nav.policies.rules) == 24

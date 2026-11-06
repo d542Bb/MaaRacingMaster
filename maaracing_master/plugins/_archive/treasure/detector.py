@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 from maaracing_master.core.logger import logger
-from maaracing_master.core.navkit import ROUND_PHASE_STAGE
+from maaracing_master.plugins._archive.treasure.core.v4_source import ROUND_PHASE_STAGE
 from maaracing_master.core.template_match import best_match_score, load_template
 from maaracing_master.plugins._archive.treasure import IMAGE_DIR
 

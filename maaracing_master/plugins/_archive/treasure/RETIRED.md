@@ -46,10 +46,9 @@
 
 本插件仍在 import 的 core 能力**不因本插件退役而删除**。按「是否为 treasure 而生」重新归位：
 
-- **随插件下沉**：`cpu_time`、`trace`——仅本插件使用，已移入本目录 `core/`，不再占 core 的维护面。
-- **有意预留的公共骨架**：`core/stage_tracker.py`——docstring 写明「等第二个使用者」的设计意图，**当前无第二消费者不等于该下沉**。
+- **随插件下沉**：`cpu_time`、`trace`、`stage_tracker`、`policy`、`v4_source`——仅本插件使用，已移入本目录 `core/`，不再占 core 的维护面。
 - **有第二消费者**：`core/ocr.py`、`core/paths.py`、`core/nav_graph.py`、`core/debug.py`、`core/logger.py`、`core/base.py`（speedrush 在用）。
-- **core 内部消费者**：无。`core/navkit` 的调用方只有本插件与 `tools/navkit/check_truth.py`（开发链）。
+- **core 内部消费者**：无。策略引擎、装配器与阶段追踪器的唯一调用方就是本插件；原 navkit 包已拆解。
 - **通用能力**：`core/template_match.py`、`core/capabilities.py`、`core/clicker.py`。
 
 完整依赖清单以本插件源码的 import 语句为准（L0 真源）；本节只记判据与易误删项，不复制清单。

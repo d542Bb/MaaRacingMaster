@@ -28,7 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..roi_config import ROIConfig
+from maaracing_master.core.roi_config import ROIConfig
 from .policy import Policies, parse_engine_contract, parse_policies
 
 __all__ = [

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from maaracing_master.core.navkit import (
+from maaracing_master.plugins._archive.treasure.core.policy import (
     DecisionFacts,
     DecisionSnapshot,
     EngineContract,
@@ -35,7 +35,7 @@ from maaracing_master.core.navkit import (
 
 _POLICY_PATH = (
     Path(__file__).resolve().parents[1]
-    / "maaracing_master/plugins/_archive/treasure/resources/policy/treasure.policy.json"
+    / "resources/policy/treasure.policy.json"
 )
 
 
@@ -44,7 +44,7 @@ pytestmark = pytest.mark.retired
 
 def _load_nav():
     """policy.json 数据面（P4b 起本套件的唯一输入源）。"""
-    from maaracing_master.core.navkit.v4_source import load_nav_source
+    from maaracing_master.plugins._archive.treasure.core.v4_source import load_nav_source
 
     return load_nav_source(_POLICY_PATH)
 
@@ -475,7 +475,7 @@ def test_policies_missing_is_startup_failure(monkeypatch, tmp_path):
     except Exception:
         pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 
-    from maaracing_master.core.navkit.v4_source import load_nav_source
+    from maaracing_master.plugins._archive.treasure.core.v4_source import load_nav_source
     monkeypatch.setattr(tm, "nav_source", lambda: load_nav_source(broken))
     tm._policy_tuning.cache_clear()
     m = tm.TreasureModule(None)
@@ -499,7 +499,7 @@ def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
     except Exception:
         pytest.skip("需完整运行时依赖（maa/cv2 等），CI 轻依赖环境下跳过")
 
-    from maaracing_master.core.navkit.v4_source import load_nav_source
+    from maaracing_master.plugins._archive.treasure.core.v4_source import load_nav_source
     monkeypatch.setattr(tm, "nav_source", lambda: load_nav_source(broken))
     tm._policy_tuning.cache_clear()
     m = tm.TreasureModule(None)
