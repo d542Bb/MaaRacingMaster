@@ -47,6 +47,8 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
+- **运行时依赖版本范围的唯一人写点是 `requirements.txt`**（逐件带「下一 major」上界，理由写在该文件头部注释）。打包元数据与本地可编辑安装在构建时读取这份文件，不在别处另写范围——两处各写一遍会漂出不同的许可范围，而漂出来的那一份随 wheel/sdist 元数据对外发布。新增或调整运行时依赖只改这里；只在训练、门禁、测试里用的包走可选依赖段。
+
 - 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
 - 独立调试 sidecar（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`
 - 调试工具位于 `tools/`（训练 / 分析 / 调试分类）

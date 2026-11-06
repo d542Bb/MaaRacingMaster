@@ -4,20 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maaracing-master"
-dynamic = ["version"]
+dynamic = ["version", "dependencies"]
 description = "模块化游戏自动化平台 — MAA Framework + YOLOv8 ONNX + vgamepad，主打极速狂飙"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "numpy",
-    "opencv-python",
-    "onnxruntime-directml",
-    "rapidocr>=3.9.2,<4",
-    "psutil>=5.9.0,<8",
-    "vgamepad",
-    "windows-capture",
-    "MaaFw",
-]
+
+# 运行时依赖范围的唯一人写点是 requirements.txt：上界策略（「按下一 major 收口」）与它的
+# 理由同处维护，构建时按原样读入。两处各写一遍必然漂出不同的许可范围，而漂出来的那一份
+# 会随 wheel/sdist 元数据对外发布。
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [project.optional-dependencies]
 # CI（test.yml / release.yml）不直接采用本 extra：安装 [test] 会连带安装主依赖，
