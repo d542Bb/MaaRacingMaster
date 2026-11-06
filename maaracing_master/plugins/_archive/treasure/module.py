@@ -1321,7 +1321,7 @@ class TreasureModule(ActivityModule):
         `_tick_once`，帧节律 = policy_loop.rate_limit=300ms），本线程退化为
         健康守护——常驻图意外退出时告警并重启。"""
         from pathlib import Path as _Path
-        from maaracing_master.core.nav_graph import NavKitV4
+        from maaracing_master.plugins._archive.treasure.core.nav_kit_v4 import NavKitV4
         from maaracing_master.plugins._archive.treasure.policy_bridge import (
             POLICY_ACTION_NAME, PolicyBridge,
         )

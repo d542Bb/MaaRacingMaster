@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""P2a-Q4：WgcapController（帧注入/新鲜度守卫）与 NavKitV4 装配契约。
+"""P2a-Q4：WgcapController（帧注入/新鲜度守卫）与图执行节拍。
 
 注意：maa binding 的 C 句柄对象（CustomController/Tasker/Resource）不能在
 pytest 进程内反复构造/回收（GC 顺序触发 C 层悬空回调 → 0xC0000005 崩溃），
@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -88,86 +87,6 @@ def test_missing_frame_raises(pure_maa):
 
 def test_default_threshold_matches_plan():
     assert STALE_FRAME_MS == 500.0  # plan §4.2 帧新鲜度守卫
-
-
-def test_navkit_v4_assembles_dirs_and_idempotent_start(pure_maa, tmp_path):
-    """装配契约：真源目录持有、模板目录进桥宿主搜索根、start 幂等、poll 判健康。"""
-    nav = tmp_path / "nav"
-    nav.mkdir()
-    (nav / "t.json").write_text(
-        json.dumps({"t": {"recognition": "DirectHit", "action": "DoNothing"}}),
-        encoding="utf-8")
-    (tmp_path / "img").mkdir()
-    ctx = MagicMock()
-    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
-    v4 = ng.NavKitV4(ctx, pipeline_dirs=[nav], image_dirs=[tmp_path / "img"])
-    v4._resource.post_pipeline.return_value.wait.return_value.failed = False
-    v4._tasker.post_task.return_value.status.done = True  # 起跑后立即"完成"（桩）
-    assert [str(d) for d in v4._pipeline_dirs] == [str(nav)]
-    assert str(tmp_path / "img") in [str(d) for d in v4._graph.image_dirs]
-    assert v4.poll() is False  # 未起跑
-    assert v4.load() is True  # 桩 Resource：post_pipeline 直接成功
-    assert v4.load() is True  # 幂等
-    assert v4.start("t") is True
-    assert v4.start("t") is True  # 起跑幂等
-    v4.stop()
-    v4.shutdown()
-
-
-def _stub_post_recording(calls: list):
-    """post 桩：记录每次 post 的目标目录内文件名，并返回成功 job。"""
-
-    def _post(path):
-        calls.append(sorted(p.name for p in Path(path).iterdir()))
-        job = MagicMock()
-        job.failed = False
-        job.wait = MagicMock(return_value=job)
-        return job
-
-    return _post
-
-
-def _make_nav_dir(root, name, nodes):
-    d = root / name
-    d.mkdir()
-    (d / f"{name}.json").write_text(json.dumps(nodes, ensure_ascii=False), encoding="utf-8")
-    return d
-
-
-def test_navkit_v4_merges_crossref_dirs_into_single_post(pure_maa, tmp_path):
-    """互指真源（core 骨架 ↔ 模块图）必须合并为一次 post：框架按 post 校验
-    节点引用存在性，分次 post 时先加载者必然失败（P2b 真机首炸根因）。"""
-    d1 = _make_nav_dir(tmp_path, "core", {"a.hall": {"next": "t.anchor"}})
-    d2 = _make_nav_dir(tmp_path, "plugin", {"t.anchor": {"next": "a.hall"}})
-    ctx = MagicMock()
-    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
-    v4 = ng.NavKitV4(ctx, pipeline_dirs=[d1, d2], image_dirs=[])
-    calls: list = []
-    v4._resource.post_pipeline.side_effect = _stub_post_recording(calls)
-    assert v4.load() is True
-    assert len(calls) == 1  # 一次 post
-    assert calls[0] == ["core.json", "plugin.json"]  # 两目录内容合并到同一树
-
-
-def test_navkit_v4_rejects_filename_conflict(pure_maa, tmp_path):
-    """合并目录遇同名真源文件时拒绝加载（静默覆盖会悄悄换图）。"""
-    d1 = _make_nav_dir(tmp_path, "x", {"n1": {}})
-    d2 = _make_nav_dir(tmp_path, "y", {"n2": {}})
-    (d2 / "x.json").write_text("{}", encoding="utf-8")  # 与 d1 同名
-    ctx = MagicMock()
-    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
-    v4 = ng.NavKitV4(ctx, pipeline_dirs=[d1, d2], image_dirs=[])
-    v4._resource.post_pipeline.side_effect = AssertionError("冲突应拒绝 post")
-    assert v4.load() is False
-
-
-def test_navkit_v4_rejects_missing_pipeline_dir(pure_maa, tmp_path):
-    """真源目录不存在直接拒绝（可诊断），不进 post。"""
-    ctx = MagicMock()
-    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
-    v4 = ng.NavKitV4(ctx, pipeline_dirs=[tmp_path / "nope"], image_dirs=[])
-    v4._resource.post_pipeline.side_effect = AssertionError("缺失应拒绝 post")
-    assert v4.load() is False
 
 
 def test_click_action_uses_xywh_rect_contract(pure_maa):
@@ -323,15 +242,11 @@ def _nav_with_job(pure_maa, tmp_path, job):
     (tmp_path / "img").mkdir()
     ctx = MagicMock()
     ctx.capture.frame_with_age = _FakeCapture().frame_with_age
-    v4 = ng.NavKitV4(ctx, pipeline_dirs=[nav], image_dirs=[tmp_path / "img"])
-    v4._resource.post_pipeline.return_value.wait.return_value.failed = False
-    # NavKitV4 与它内部的 NavGraph **各有各的 Tasker/Resource**（构造里各自 new），
-    # run() 走 NavGraph 那一套——桩要打在它身上，否则测的是另一个对象。
-    graph = v4._graph
+    graph = ng.NavGraph(ctx)
+    graph.add_plugin(nav, tmp_path / "img")
     graph._resource.post_pipeline.return_value.wait.return_value.failed = False
     graph._tasker.post_task.return_value = job
-    assert v4.load() is True
-    return v4
+    return graph
 
 
 def test_run_returns_promptly_when_graph_finishes_fast(pure_maa, tmp_path):
@@ -339,18 +254,18 @@ def test_run_returns_promptly_when_graph_finishes_fast(pure_maa, tmp_path):
 
     这是本轮修复的**回归锁**——用旧的固定 `sleep(0.2)` 时本用例必红（至少 200ms）。
     """
-    v4 = _nav_with_job(pure_maa, tmp_path, _LateJob(0.02))
+    graph = _nav_with_job(pure_maa, tmp_path, _LateJob(0.02))
     t0 = time.monotonic()
-    assert v4._graph.run("t") is True
+    assert graph.run("t") is True
     elapsed = time.monotonic() - t0
     assert elapsed < 0.1, f"快图被空等：{elapsed * 1000:.0f}ms（应 <100ms）"
 
 
 def test_run_still_completes_grader_that_takes_several_polls(pure_maa, tmp_path):
     """原本正常的场景也要在锁里：需要多轮轮询才完成的图，仍须正确等到并返回真。"""
-    v4 = _nav_with_job(pure_maa, tmp_path, _LateJob(0.12))
+    graph = _nav_with_job(pure_maa, tmp_path, _LateJob(0.12))
     t0 = time.monotonic()
-    assert v4._graph.run("t") is True
+    assert graph.run("t") is True
     elapsed = time.monotonic() - t0
     # 下界不可靠：_LateJob 的计时从构造开始，run 前的装配也消耗墙钟（实测 93ms
     # 完成并不代表没等）。这里只防空转/无限等待；毫秒级返回由 fast 用例看护。
@@ -360,12 +275,12 @@ def test_run_still_completes_grader_that_takes_several_polls(pure_maa, tmp_path)
 def test_run_still_interrupts_on_lifecycle_stop(pure_maa, tmp_path):
     """中断语义不得被节拍改动破坏：未完成 + 已停止 → 发 post_stop 并返回假。"""
     job = _LateJob(5.0)
-    v4 = _nav_with_job(pure_maa, tmp_path, job)
+    graph = _nav_with_job(pure_maa, tmp_path, job)
     # 停止请求会让框架立即结束任务（真机实测毫秒级），桩要模拟这一点：否则测的是
     # 「中断后仍等图自然跑完」，与实际语义不符——中断路径等的是收摊，不是等图跑完。
-    v4._graph._tasker.post_stop.side_effect = lambda: job.status.finish_now()
-    v4.ctx.lifecycle.running = False
+    graph._tasker.post_stop.side_effect = lambda: job.status.finish_now()
+    graph.ctx.lifecycle.running = False
     t0 = time.monotonic()
-    assert v4._graph.run("t") is False
+    assert graph.run("t") is False
     assert time.monotonic() - t0 < 0.1, "中断路径也不该空等"
-    assert v4._graph._tasker.post_stop.called
+    assert graph._tasker.post_stop.called

@@ -69,7 +69,7 @@ class _FakeJob:
 
 
 class _Ctx:
-    """NavGraph/NavKitV4 只用到 ctx 的少量属性。"""
+    """NavGraph 只用到 ctx 的少量属性。"""
 
     def __init__(self):
         self.capture = MagicMock()
@@ -138,22 +138,6 @@ def test_navgraph_shutdown_idempotent(pure_maa):
     assert graph._tasker is None and graph._resource is None
 
 
-def test_navkitv4_shutdown_destroys_handles(pure_maa, tmp_path):
-    """常驻图通路：任务执行器 / 帧注入控制器 / 资源都要显式销毁。"""
-    nav = ng.NavKitV4(_Ctx(), pipeline_dirs=[tmp_path])
-    tasker = nav._tasker
-    stop_job = _FakeJob()
-    tasker.post_stop.return_value = stop_job
-    nav._job = _FakeJob()
-
-    nav.shutdown()
-
-    assert stop_job.probes > 0
-    assert nav._tasker is None
-    assert nav._controller is None
-    assert nav._resource is None
-
-
 def test_stop_does_not_hang_when_framework_never_settles(pure_maa, monkeypatch):
     """框架卡住时按期限放弃等待——否则「停止中」永不结束（本次现象的另一来源）。"""
     monkeypatch.setattr(ng, "STOP_SETTLE_TIMEOUT_S", 0.05)
@@ -167,13 +151,6 @@ def test_stop_does_not_hang_when_framework_never_settles(pure_maa, monkeypatch):
 
     assert elapsed < 2.0            # 有界：没有无限等
     assert graph._tasker is not None  # 超时不影响停止路径本身
-
-
-def test_navkitv4_shutdown_idempotent(pure_maa, tmp_path):
-    nav = ng.NavKitV4(_Ctx(), pipeline_dirs=[tmp_path])
-    nav.shutdown()
-    nav.shutdown()
-    assert nav._tasker is None
 
 
 # ---------------------------------------------------------------------------

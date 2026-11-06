@@ -99,7 +99,7 @@ def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
     （回归：插件根曾少推导一级，真机拼出 plugins/resources/nav 而炸）。"""
     from pathlib import Path
 
-    from maaracing_master.core import nav_graph as _ng
+    from maaracing_master.plugins._archive.treasure.core import nav_kit_v4
 
     captured: dict = {}
 
@@ -120,7 +120,7 @@ def test_v4_loop_assembles_existing_source_dirs(monkeypatch):
         def stop(self):
             captured["stopped"] = True
 
-    monkeypatch.setattr(_ng, "NavKitV4", _StubRunner)
+    monkeypatch.setattr(nav_kit_v4, "NavKitV4", _StubRunner)
     m = _stub_module()
     m._V4_ENTRY = TreasureModule._V4_ENTRY
     m._v4_runner = None            # 无驻留 runner → 走构造分支
