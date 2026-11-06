@@ -17,10 +17,11 @@ from pathlib import Path
 
 import pytest
 
-_REPO = Path(__file__).resolve().parents[1]
-POLICY_PATH = _REPO / "maaracing_master" / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"
-IMAGE_DIR = _REPO / "maaracing_master" / "plugins" / "treasure" / "resources" / "image"
-FIXTURE = _REPO / "tests" / "fixtures" / "dialog_crop.jpg"
+_PLUGIN = Path(__file__).resolve().parents[1]
+_REPO = Path(__file__).resolve().parents[5]
+POLICY_PATH = _PLUGIN / "resources" / "policy" / "treasure.policy.json"
+IMAGE_DIR = _PLUGIN / "resources" / "image"
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "dialog_crop.jpg"
 
 try:
     import cv2

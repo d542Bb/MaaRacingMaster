@@ -1923,7 +1923,7 @@ class SidecarService:
 
         - 新模块：``DASHBOARD_CONTRACT`` + ``read_dashboard()``，载荷经共享 schema 校验；
         - 旧模块：``HAS_DASHBOARD`` + ``read_today_stats()``，core 包成 ``today_stats``
-          兼容块（冻结的鉴宝走这条，不修改模块代码）；
+          兼容块（旧钩子模块走这条，不改模块代码）；
         - 内置步骤 / 未声明看板 / 无内容：空 blocks 或明确错误。
 
         只用类方法，不创建模块实例；单块非法只丢弃该块并记 WARNING。

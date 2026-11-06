@@ -22,8 +22,8 @@
 `our_bids` 也是空的，无从推导 → 只列出、不猜（发明数据比留着错值更糟）。
 
 用法（先 dry-run 看清单，再 --apply）：
-    .venv\\Scripts\\python.exe scripts/repair_treasure_settle_data.py
-    .venv\\Scripts\\python.exe scripts/repair_treasure_settle_data.py --apply
+    .venv\\Scripts\\python.exe maaracing_master/plugins/_archive/treasure/tools/repair_treasure_settle_data.py
+    .venv\\Scripts\\python.exe maaracing_master/plugins/_archive/treasure/tools/repair_treasure_settle_data.py --apply
 
 落盘前强制备份到 `<db>.bak-<时间戳>`（含 -wal/-shm）；修复在单事务内完成。
 执行前请**关闭 GUI/自动化**（SQLite 单写者，边跑边改会互相干扰）。

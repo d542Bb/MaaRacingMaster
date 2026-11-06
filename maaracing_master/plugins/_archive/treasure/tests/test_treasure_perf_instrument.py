@@ -236,7 +236,7 @@ class TestLevelCalibration:
 
 
 class TestSidecarPassthrough:
-    """get_status 把快照带出去这一段是 GUI 唯一数据通道，且不得因仪表而炸轮询。"""
+    """get_status 把采样器快照带出去——GUI 唯一数据通道，不得因采样不可用而炸轮询。"""
 
     pytestmark = pytest.mark.skipif(
         not _SIDECAR_OK,
@@ -244,51 +244,65 @@ class TestSidecarPassthrough:
     )
 
     @staticmethod
-    def _service(active_module):
+    def _service():
         from maaracing_master.core.sidecar import SidecarService
         import threading
 
         svc = SidecarService.__new__(SidecarService)      # 绕开真实 controller 装配
         svc._lock = threading.Lock()
         svc._worker = None
-        svc._selected_module = "treasure"
+        svc._queue_run = None
+        svc._round_result = None
+        svc._perf_stalled = False
         svc._controller = SimpleNamespace(
-            module_active=False, current_stage=None, active_module=active_module)
+            module_active=False, current_stage=None, active_module=None,
+            execution_active=False, current_module_id=None,
+            debug=SimpleNamespace(status=lambda: {}))
+        svc._module_assets_map = lambda: {}
+        svc._enabled_assets_ok = lambda: True
         return svc
 
-    def test_perf_flows_through_get_status(self):
-        m = _mk(applied=10, ages=[200])
-        ok, payload, err = TestSidecarPassthrough._service(m).get_status({})
+    @staticmethod
+    def _patch_snapshot(monkeypatch, snap):
+        from maaracing_master.core import sidecar as sc
+        monkeypatch.setattr(sc.perf_sampler, "snapshot", lambda: snap)
+
+    def test_perf_flows_through_get_status(self, monkeypatch):
+        rows = [{"key": "ocr", "display": "10 次/秒", "level": "ok"}]
+        self._patch_snapshot(monkeypatch, {
+            "available": True, "stalled": False, "age_s": 0.1, "sample_id": 7,
+            "domain": rows, "procs": [{"name": "self", "cpu_pct": 25.0}],
+        })
+        ok, payload, err = self._service().get_status({})
         assert ok and err is None
-        assert payload["perf"]["ocr"]["applied"] == 10
-        assert {"response", "cpu", "health"} <= set(payload["perf"])
+        assert payload["perf"]["rows"] == rows
+        assert payload["perf"]["sample_id"] == 7
+        assert payload["perf"]["cpu"]["available"] is True
 
-    def test_module_without_instrument_yields_none_perf(self):
-        class _Bare:
-            pass
+    def test_unavailable_sampler_yields_no_cpu(self, monkeypatch):
+        self._patch_snapshot(monkeypatch, {"available": False, "stalled": False})
+        ok, payload, err = self._service().get_status({})
+        assert ok and err is None
+        assert payload["perf"]["cpu"] == {"available": False}
+        assert payload["perf"]["sampler_available"] is False
 
-        ok, payload, _ = TestSidecarPassthrough._service(_Bare()).get_status({})
-        assert ok and payload["perf"] is None
-
-    def test_model_ok_in_get_status_payload(self):
+    def test_model_ok_in_get_status_payload(self, monkeypatch):
         # 结构锁：前端闲置态靠这个字段维持「插件资源缺失」提示，字段被删会静默回退
-        class _Bare:
-            pass
-
-        _, payload, _ = TestSidecarPassthrough._service(_Bare()).get_status({})
+        self._patch_snapshot(monkeypatch, {"available": False, "stalled": False})
+        _, payload, _ = self._service().get_status({})
         assert isinstance(payload.get("model_ok"), bool)
 
-    def test_no_active_module_yields_none_perf(self):
-        ok, payload, _ = TestSidecarPassthrough._service(None).get_status({})
-        assert ok and payload["perf"] is None
+    def test_no_active_module_still_reports_status(self, monkeypatch):
+        self._patch_snapshot(monkeypatch, {"available": False, "stalled": False})
+        ok, payload, _ = self._service().get_status({})
+        assert ok and payload["module_active"] is False
+        assert "perf" in payload
 
-    def test_instrument_failure_must_not_break_polling(self):
-        class _Boom:
-            def read_perf_snapshot(self):
-                raise RuntimeError("仪表内部炸了")
-
-        ok, payload, _ = TestSidecarPassthrough._service(_Boom()).get_status({})
-        assert ok and payload["perf"] is None
+    def test_sampler_unavailable_does_not_break_polling(self, monkeypatch):
+        self._patch_snapshot(monkeypatch, {"available": False, "stalled": False})
+        ok, payload, err = self._service().get_status({})
+        assert ok and err is None
+        assert payload["perf"]["rows"] == []
 
 
 class TestCpuSampling:

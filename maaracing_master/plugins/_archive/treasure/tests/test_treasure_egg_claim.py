@@ -16,9 +16,9 @@ import pytest
 
 from maaracing_master.plugins._archive.treasure.store import TreasureStore
 
-POLICY_PATH = (Path(__file__).resolve().parents[1]
-               / "maaracing_master" / "plugins" / "treasure"
-               / "resources" / "policy" / "treasure.policy.json")
+_PLUGIN = Path(__file__).resolve().parents[1]
+_REPO = Path(__file__).resolve().parents[5]
+POLICY_PATH = _PLUGIN / "resources" / "policy" / "treasure.policy.json"
 
 
 pytestmark = pytest.mark.retired
@@ -201,11 +201,10 @@ def test_egg_recognize_golden_frame_counts():
     from maaracing_master.plugins._archive.treasure.eggs import EggRewardRecognizer
     from maaracing_master.plugins._archive.treasure.ocr import TreasureOcr
 
-    fixture = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "claim_popup_0609.png"
+    fixture = _REPO / "tests" / "fixtures" / "claim_popup_0609.png"
     assert fixture.is_file(), f"真帧素材缺失（正式资产应随仓库入库）：{fixture}"
     frame = cv2.cvtColor(cv2.imread(str(fixture)), cv2.COLOR_BGR2RGB)
-    rec = EggRewardRecognizer(Path(__file__).resolve().parents[1],
-                              ocr=TreasureOcr(Path(__file__).resolve().parents[1]))
+    rec = EggRewardRecognizer(_PLUGIN, ocr=TreasureOcr(_PLUGIN))
     res = rec.recognize(frame)
     assert res is not None and rec.configured
     assert res["counts"] == {"red": 2, "yellow": 1, "blue": 2}, f"真帧数蛋漂移 {res}"

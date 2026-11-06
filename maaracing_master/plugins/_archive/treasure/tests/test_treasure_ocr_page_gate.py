@@ -37,9 +37,6 @@ pytestmark = [pytest.mark.retired, pytest.mark.skipif(
 
 _POLICY_PATH = (
     Path(__file__).resolve().parents[1]
-    / "maaracing_master"
-    / "plugins"
-    / "treasure"
     / "resources"
     / "policy"
     / "treasure.policy.json"
@@ -313,9 +310,7 @@ def test_round_family_token_drives_page_gate(plan):
 # 标志锚点派生（真 detector + 真 policy，不依赖图像）
 # --------------------------------------------------------------------------
 
-_PLUGIN_DIR = (
-    Path(__file__).resolve().parents[1] / "maaracing_master" / "plugins" / "treasure"
-)
+_PLUGIN_DIR = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="module")

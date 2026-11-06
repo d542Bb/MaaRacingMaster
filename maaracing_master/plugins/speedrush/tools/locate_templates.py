@@ -8,7 +8,7 @@
 x=1 / y=38（x=0 是左边框，0~37 行是标题栏）。模板必须先在内容区坐标系里定位，
 否则 ROI 会整体偏 38 像素、运行期全部失配。
 
-自检：脚本启动时用 treasure 既有模板（来自真正的 720p 运行帧）在内容区匹配，
+自检：脚本启动时用 speedrush 既有模板（来自真正的 720p 运行帧）在内容区匹配，
 分数应达 ~1.0000，以此确认偏移量正确。
 
 输入：模板 PNG 目录 + 真机截帧目录——经环境变量提供（MAAR_TPL_SRC / MAAR_TPL_FRAMES，
@@ -39,8 +39,8 @@ OUT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates_r
 OFFSET_X, OFFSET_Y = 1, 38
 CONTENT_W, CONTENT_H = 1280, 720
 
-# 自检用：treasure 既有模板（来自真正的运行帧）
-SELFCHECK_TPL = "maaracing_master/plugins/_archive/treasure/resources/image/hall_peak_appraise_card.png"
+# 自检用：speedrush 既有模板（来自真正的 720p 运行帧）
+SELFCHECK_TPL = "maaracing_master/plugins/speedrush/resources/image/hall_race_btn.png"
 SELFCHECK_MIN = 0.99
 
 # 模板名（不含扩展名），与人工裁剪文件名一致
@@ -74,7 +74,7 @@ def load_content(path: str):
 
 
 def selfcheck(frames: list[str]) -> None:
-    """用 treasure 运行帧模板校验内容区偏移是否正确。"""
+    """用 speedrush 运行帧模板校验内容区偏移是否正确。"""
     tpl = cv2.imread(SELFCHECK_TPL, cv2.IMREAD_COLOR)
     if tpl is None:
         print("自检跳过：未找到参照模板")
@@ -85,7 +85,7 @@ def selfcheck(frames: list[str]) -> None:
         if (content := load_content(f)) is not None
     )
     ok = best[0] >= SELFCHECK_MIN
-    print(f"自检：treasure 参照模板最高匹配分={best[0]:.4f} → {'偏移正确 ✓' if ok else '偏移可疑 ✗'}")
+    print(f"自检：speedrush 参照模板最高匹配分={best[0]:.4f} → {'偏移正确 ✓' if ok else '偏移可疑 ✗'}")
     if not ok:
         raise SystemExit("内容区偏移校验失败，先修正 OFFSET 再继续")
 

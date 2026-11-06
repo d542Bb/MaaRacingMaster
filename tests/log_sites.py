@@ -206,9 +206,14 @@ def iter_calls(path: Path) -> list[CallSite]:
 
 
 def scan_package(root: Path = PACKAGE) -> list[CallSite]:
-    """按目录发现（插件增删自动伸缩），不依赖 cwd。"""
+    """按目录发现（插件增删自动伸缩），不依赖 cwd。
+
+    归档区（`_archive/`）不是活跃树：已退役插件冻结，不参与日志归属门禁。
+    """
     out: list[CallSite] = []
     for path in sorted(Path(root).rglob("*.py")):
+        if "_archive" in path.parts:
+            continue
         out.extend(iter_calls(path))
     return out
 
@@ -399,43 +404,6 @@ SITES: list[LogSite] = [
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._write_meta', '[极速狂飙] 录制 meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧返回失败（累计 {}） seq={}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧失败（累计 {}） seq={}: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
-
-    # ---- plugins/_archive/treasure/detector.py ----
-    _s('plugins/_archive/treasure/detector.py', 'TreasureStageDetector.__init__', '[鉴宝检测器] 无可用 v4 DetectionPlan（policy.json 缺失/损坏），阶段检测跳过', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/detector.py', 'TreasureStageDetector.__init__', '[鉴宝检测器] v4 DetectionPlan 加载失败: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/detector.py', 'TreasureStageDetector._match_score', '[鉴宝检测器] ROI 尺寸不足（{}/{} 搜索区 {}×{}），该模板永远无法命中，请调大 ROI', 'WARNING', 'state', 'cross', '配置缺陷（ROI 过小）按节流告警：是状态变化而非逐帧读数；检测 worker 无组可挂。'),
-
-    # ---- plugins/_archive/treasure/module.py ----
-    _s('plugins/_archive/treasure/module.py', '_open_grp', '<dynamic>', 'INFO', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/module.py', '_load_action_centers', '[鉴宝] policy 感知锚点 rect 读取失败: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。请将游戏窗口调整为 16:9 后重新开始，模块已终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载到动作按钮 rect，准星模式将不可用', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载任何鉴宝师头像模板（选择鉴宝师阶段将用点中心兜底）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载「开始匹配」按钮模板（降级：始终先点目标场次 badge，再点开始匹配位置）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载智能出价按钮模板（面板已开判定降级：依赖主按钮 OCR 兜底）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载放弃确认弹窗模板（pass 二级确认将无法自动处置）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule._init_policy_stack', '[鉴宝] policies 编译失败：{}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.cleanup', '[鉴宝][v4] 跑图器释放异常: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule._io_worker_loop', '[鉴宝] IO worker 异常: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule._ocr_worker_loop', '[鉴宝] OCR worker 异常: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-
-    # ---- plugins/_archive/treasure/ocr.py ----
-    _s('plugins/_archive/treasure/ocr.py', 'TreasureOcr._load_regions', '[鉴宝OCR] policy.json 真源不可用，识别区为空', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-
-    # ---- plugins/_archive/treasure/store.py ----
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._mlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/store.py', 'read_today_stats', '读取今日看板数据失败: {}', 'WARNING', 'cross', 'cross', 'GUI 今日看板读侧的跨切面事件（RPC 请求线程），无业务组。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._conn', '[鉴宝落盘] SQLite 初始化失败（数据不记录，不影响自动化）: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.close_db', '[鉴宝落盘] 关闭连接失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.flush_game_record', '[鉴宝落盘] 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.record_egg_claim', '[鉴宝落盘] 领取数含负值，拒写: {} coin={} score={}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.record_egg_claim', '[鉴宝落盘] 领取蛋数写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.log_session_summary', '<dynamic>', 'INFO', 'state', 'cross', '测试桩无 _open_grp 时的 legacy 逐行回退：正式模块走组句柄，不走这里。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._conn', '[鉴宝落盘] games 表迁移失败（strategy_mode 列缺失）: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._conn', '[鉴宝落盘] daily_summary 迁移失败（egg_coin/egg_score 列）: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
 ]
 
 # 迁到玩法流水的站点：key（四元组）→ (流水模块, 判别字段, 所属阶段)。

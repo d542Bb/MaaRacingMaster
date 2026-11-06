@@ -85,11 +85,15 @@ def test_speedrush_declares_dashboard():
     assert get_module_info("speedrush")["has_dashboard"] is True
 
 
-def test_treasure_is_the_reference_dashboard_module():
-    """鉴宝（已归档）保持冻结：现有今日统计钩子即资格位，示范实现不因归档而改代码。"""
-    from maaracing_master.plugins._archive.treasure.module import TreasureModule
+def test_legacy_hook_override_is_detected():
+    """旧钩子覆盖是看板资格位的一部分：覆盖 read_today_stats 即算，基类不算。"""
+    class _ReferenceModule(ActivityModule):
+        @classmethod
+        def read_today_stats(cls):
+            return {"bucket": "2026-11-02", "summary": None, "games": []}
 
-    assert overrides_classmethod(TreasureModule, "read_today_stats") is True
+    assert overrides_classmethod(_ReferenceModule, "read_today_stats") is True
+    assert overrides_classmethod(ActivityModule, "read_today_stats") is False
 
 
 def test_legacy_today_stats_alone_counts_as_dashboard(monkeypatch):

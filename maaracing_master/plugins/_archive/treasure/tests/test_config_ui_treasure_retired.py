@@ -19,7 +19,7 @@ try:
 except Exception as exc:  # noqa: BLE001 —— 归档模块依赖重，缺依赖时跳过
     _OK, _ERR = False, str(exc)
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[5]
 FRONTEND = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend"
 
 pytestmark = [

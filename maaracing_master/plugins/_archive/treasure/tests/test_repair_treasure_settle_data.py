@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""鉴宝历史脏数据修复工具（scripts/repair_treasure_settle_data.py）的口径锁。
+"""鉴宝历史脏数据修复工具（plugins/_archive/treasure/tools/repair_treasure_settle_data.py）的口径锁。
 
 修的是 2026-09-17 之前版本在结算页留下的错值，判据全部来自 `RULES.md`
 （利润 = 拍品总价 − 最终竞拍价；拍中者收入 = 利润；中标者未亏则无分红），
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "repair_treasure_settle_data.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "repair_treasure_settle_data.py"
 
 try:
     _spec = importlib.util.spec_from_file_location("_repair_tool", _SCRIPT)

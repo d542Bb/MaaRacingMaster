@@ -9,15 +9,15 @@
 
 已退役，**归档于 `plugins/_archive/treasure/`**，保留在仓库树内作为完整示范实现。
 
-归档状态由**目录位置**表达（`plugins/` 顶层只放现役插件），三处消费者按同一位置判据工作：
+归档状态由**目录位置**表达（`plugins/` 顶层只放现役插件），四处消费者按同一位置判据工作：
 
 - **运行期**：`core/registry` 只扫描 `plugins/` 的直接子目录，本模块不注册、不出现在模块列表，也不再有置灰项。[manifest.py](./manifest.py) 的 `VALID_UNTIL` 保留为「移回顶层后按活动窗口置灰」的兜底判据，不再是归档判据。
 - **分发**：`assemble.ps1` 的 robocopy 以 `/XD _archive` 整目录排除，并在剔除段末尾带反向守卫（stage 里出现该目录即拒绝发布）；不依赖有效期判定。
-- **仓库树**：代码、资源、测试全部保留；真源机检（`check_truth`）照常覆盖。
-- **测试**：回归锁保留但带 `retired` 标记，`pytest` 默认跳过（`pyproject.toml` 的
-  `addopts = -m 'not retired'`），需要时 `pytest -m retired` 显式跑。理由见该标记的
-  说明：避免死模块的回归锁反向约束 core 演进。**这不是「照常覆盖」**——复活时若不
-  摘标记，回归锁会静默不跑。
+- **仓库树**：代码、资源、测试、修复脚本全部保留；`check_truth` 的插件扫描面只含 `plugins/` 顶层带 `module.py` 的目录，本插件归档后不在其内——真源文件仍在树内，复活时随目录回迁重新纳入。
+- **测试**：回归锁位于本插件 `tests/` 目录，带 `retired` 标记；默认收集（`testpaths = ["tests"]`）不含归档目录，考古时显式运行：
+  `.venv\Scripts\python.exe -m pytest maaracing_master/plugins/_archive/treasure/tests -m retired`。
+  理由见该标记的说明：避免死模块的回归锁反向约束 core 演进。**复活时若不摘标记，回归锁会静默不跑**。
+- **修复脚本**：脏数据修复工具在 `tools/repair_treasure_settle_data.py`。
 
 > **为什么归档区仍是一个可导入的包**：`pytest` 在收集阶段就会导入测试模块，退役用例的
 > import 若失效，`-m 'not retired'` 也救不了——整个默认测试会以收集错误告终。故
@@ -57,8 +57,7 @@
 1. 把本目录整体移回 `plugins/treasure/`（归档区不参与注册与分发，移回即恢复发现）。
 2. 改 [manifest.py](./manifest.py) 的 `VALID_UNTIL` 到新的活动窗口（或删除该行 = 永久有效）。
 3. 确认 GUI 默认模块不再硬编码本插件（见 `core/sidecar.py` 的默认模块常量）。
-4. 摘掉测试的 `retired` 标记（`pytest -m retired` 能跑不等于会被跑），再跑 `pytest`
-   与分层机检——否则回归锁静默跳过，复活后第一轮就没有防线。
+4. 把本插件的 `tests/` 移回仓库 `tests/`、`tools/repair_treasure_settle_data.py` 移回仓库 `scripts/`，摘掉测试的 `retired` 标记（`pytest -m retired` 能跑不等于会被跑），再跑 `pytest` 与分层机检——否则回归锁静默跳过，复活后第一轮就没有防线。
 5. 全仓搜索 `plugins._archive.treasure` / `plugins/_archive/treasure`，改回顶层路径
    （测试导入、工具脚本、文档指针都已按归档路径写死）。
 
