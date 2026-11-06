@@ -13,12 +13,13 @@
     python tools/experiments/world_state/branch_pin.py 20261102_223948
 """
 
+import os
 import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-LOG_ROOT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs")
+LOG_ROOT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/logs"))
 
 
 def load(session):

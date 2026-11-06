@@ -10,7 +10,7 @@
 
 用法：
     .venv/Scripts/python.exe tools/experiments/speedrush_drive/probe_legacy_model.py <帧通配>
-    # 例：... probe_legacy_model.py "D:/frames/*.png"
+    # 例：... probe_legacy_model.py "<帧目录>/*.png"
 
 输入：speedrush 驾驶窗口截图（1281×759，需裁出 720p 客户区）。帧目录由命令行给出，
 不入库本机路径。输出：逐帧各类检测数与最高置信度。

@@ -20,7 +20,7 @@ import sys, os, time, threading, subprocess, statistics as st
 import numpy as np
 import onnxruntime as ort
 
-REPO = "D:/maaracing_assistant"
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 MOGE = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx")
 YOLO = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/models/perception/model.onnx")
 PROV = ["DmlExecutionProvider", "CPUExecutionProvider"]

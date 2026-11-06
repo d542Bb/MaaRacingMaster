@@ -17,6 +17,7 @@
 - 归因：负肩差拍 vs 当拍该侧邻道有车（YOLO 挖除假缩假设）
 """
 
+import os
 import json
 import math
 import sys
@@ -28,7 +29,7 @@ MIN_GROUND_PTS = 30         # depth_geo.FAR_MIN_GROUND_PTS
 MACRO_Z0, MACRO_Z1 = 15.0, 46.0   # corridor.FAR_MACRO_Z_LO/HI
 Z_MARGIN = 0.5              # 闸草案：目标道半宽外再留的认证余量（道）
 
-LOG_ROOT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs")
+LOG_ROOT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/logs"))
 
 
 def load_rows(session: str):

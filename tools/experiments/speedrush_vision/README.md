@@ -2788,7 +2788,7 @@ ro_hw 收敛曲线、yolo_cars>0 拍的 dgeo_rejects 变化。
 
 ### 标定常量钉定（`probe_metric_calib.py` / `probe_hw_diag.py`）
 
-金标 54 帧 UniDepth fp32 场（D:\ud_test\cache）+ car_boxes 实测：
+金标 54 帧 UniDepth fp32 场（本机 UniDepth 缓存，路径经 `MAAR_UD_CACHE` 提供）+ car_boxes 实测：
 
 - **内参**：UniDepth 自估 fx 逐帧漂 18.2% 不可钉，但 **fx/fy 比值仅 4.1%**——产码
   钉 FY=851.4、FX_FY=1.006、主点 (643.2, 360.5)（中位）。fx 绝对误差被逐帧 W_REF

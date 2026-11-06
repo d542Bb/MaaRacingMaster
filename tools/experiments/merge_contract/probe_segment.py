@@ -38,7 +38,7 @@ WIN_S = 2.0               # 相似检索窗口
 STRIDE_S = 0.5
 DEBUG_ROOT = os.environ.get(
     "SPEEDRUSH_DEBUG",
-    r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/speedrush")
+    os.path.join(os.environ["APPDATA"], "MaaRacingMaster", "debug", "speedrush"))
 
 
 def debug_dir_for(stage_row):

@@ -50,8 +50,8 @@ def split_races(rows):
     return races
 
 def load(sess):
-    p = (rf'C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/{sess}'
-         r'/trace/speedrush.jsonl')
+    p = os.path.expandvars(rf'%APPDATA%/MaaRacingMaster/logs/{sess}'
+                           r'/trace/speedrush.jsonl')
     return [json.loads(l) for l in open(p, encoding='utf-8') if l.strip()]
 
 def dips(rows):

@@ -22,6 +22,7 @@
 （逐帧验证板：原图叠加[车身轴/缘线] + BEV 放大[车簇/轴线/缘样本/路面方向] + 迹线）。
 """
 from __future__ import annotations
+import os
 
 import argparse
 import json
@@ -38,8 +39,8 @@ from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
 from tools.experiments.speedrush_vision import export_pointcloud_html as eph  # noqa: E402
 from tools.experiments.speedrush_vision import probe_boundary3d as pb  # noqa: E402
 
-DEMO_ROOT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/demos")
-OUT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/depth_review")
+DEMO_ROOT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/speedrush/demos"))
+OUT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/speedrush/depth_review"))
 RECT = (335, 555, 470, 810)   # 搜索先验区 y0,y1,x0,x1（只限搜索范围，不挖点）
 WIN = 2                       # 稳定性半窗（帧）；全窗 = 2*WIN+1 ≈ 0.25s
 HSEP = 0.25                   # 车体/贴地分离阈：高出路面(m)

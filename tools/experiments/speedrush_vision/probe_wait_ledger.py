@@ -18,13 +18,14 @@ None，如实标注）：
   （90 分，conf 折前 76.5——用 cr_scores max 分布对比）。
 """
 from __future__ import annotations
+import os
 
 import json
 import statistics
 from collections import defaultdict
 from pathlib import Path
 
-DB = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug\speedrush")
+DB = Path(os.path.expandvars(r"%APPDATA%\MaaRacingMaster\debug\speedrush"))
 GAMES = {
     "程序A": ["20261016_130735_p1", "20261016_130819_p2"],
     "程序B": ["20261016_135024_p1", "20261016_135108_p2"],

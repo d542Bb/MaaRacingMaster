@@ -11,7 +11,7 @@
 另用标定工程的独立车道间距 L=583px 在自车行 v_ego 换算一份米制车道宽对表。
 
 用法（仓库根 .venv）：python tools/experiments/speedrush_vision/probe_units_check.py
-数据：depth_review/gold_labels.csv + D:/ud_test/cache（UniDepth fp32 场）。
+数据：depth_review/gold_labels.csv + %MAAR_UD_CACHE%（UniDepth fp32 场）。
 """
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ if str(_root) not in sys.path:
 from maaracing_master.plugins.speedrush.world_model import load_calib, x_lane_of  # noqa: E402
 
 OUT = Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster" / "data" / "speedrush" / "depth_review"
-CACHE = Path(r"D:\ud_test\cache")
-CARS = json.loads(Path(r"D:\ud_test\car_boxes.json").read_text(encoding="utf-8"))
+CACHE = Path(os.path.expandvars(r"%MAAR_UD_CACHE%"))
+CARS = json.loads(Path(os.path.expandvars(r"%MAAR_UD_CACHE%\car_boxes.json")).read_text(encoding="utf-8"))
 TOL_LOW, TOL_OFF = 0.02, 0.30
 VS = (520, 560, 600, 640, 680)
 L_LANES = 583.0            # 标定工程四场收敛车道间距 px（格阵口径，CV 0.2%）

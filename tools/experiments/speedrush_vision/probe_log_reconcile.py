@@ -14,7 +14,7 @@ import os
 import re
 from pathlib import Path
 
-LOG = Path("E:/DFJS/g112/Saved/Logs/g112.log")
+LOG = Path(os.environ.get("MAAR_G112_LOG", "g112.log"))
 R = Path(os.environ["APPDATA"]) / "MaaRacingMaster"
 DBG = R / "debug" / "speedrush"
 DEMOS = R / "data" / "speedrush" / "demos"

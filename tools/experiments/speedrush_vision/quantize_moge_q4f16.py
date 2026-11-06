@@ -19,6 +19,7 @@ fp16（上限 65504）溢出 → inf → NaN。这些原语不在 ORT 默认 fp1
     ... <src.onnx> --no-quant    # → <src>_fp16.onnx
 """
 from __future__ import annotations
+import os
 
 import argparse
 from pathlib import Path
@@ -27,7 +28,7 @@ import onnx
 from onnxruntime.transformers import float16 as f16
 from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
 
-W = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\data\speedrush\depth_review\weights")
+W = Path(os.path.expandvars(r"%APPDATA%\MaaRacingMaster\data\speedrush\depth_review\weights"))
 DEFAULT_SRC = W / "moge2_vits_static_720x1280_t1032.onnx"
 
 # LayerNorm 方差链（激活平方会破 fp16 上限 65504）保持 fp32；

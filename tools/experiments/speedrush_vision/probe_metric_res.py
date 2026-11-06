@@ -9,6 +9,7 @@
     python tools/experiments/speedrush_vision/probe_metric_res.py [--frames 000906,001220]
 """
 from __future__ import annotations
+import os
 
 import argparse
 import csv
@@ -34,7 +35,7 @@ from probe_metric_swap import halo_ring_r  # noqa: E402
 
 CAL = load_calib()
 EGO = dg.DepthRoadObserver._load_ego_mask()
-W = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\data\speedrush\depth_review\weights")
+W = Path(os.path.expandvars(r"%APPDATA%\MaaRacingMaster\data\speedrush\depth_review\weights"))
 RES = (336, 448, 518)
 ROWS = (dg.Y0, dg.DIAG_Y1)
 

@@ -18,6 +18,7 @@ MatMulNBits 4-bit block32、对称量化无 zero_points；Resize 留 fp32；IO f
     <da2_ft2 venv>/python.exe tools/experiments/speedrush_vision/quantize_metric_q4f16.py
 """
 from __future__ import annotations
+import os
 
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ import onnx
 from onnxruntime.transformers import float16 as f16
 from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
 
-W = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\data\speedrush\depth_review\weights")
+W = Path(os.path.expandvars(r"%APPDATA%\MaaRacingMaster\data\speedrush\depth_review\weights"))
 
 BLOCK = set(f16.DEFAULT_OP_BLOCK_LIST) | {"Resize"}
 

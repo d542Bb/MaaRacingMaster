@@ -9,12 +9,13 @@
 4. 转向质量：真打舵率（双侧幅度 ≥0.05）、osc_a 峰值段
 """
 
+import os
 import json
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-LOG_ROOT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs")
+LOG_ROOT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/logs"))
 
 
 def load(session):

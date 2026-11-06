@@ -5,11 +5,12 @@ v2 修正：closing 用同 id 相邻拍差分（v1 误存上一拍距离）；�
 （同道/邻道/远道/未知）；可超车拍 = 邻/同道 且闭合>1m/s；归因只对程序局
 （人工局 best_x 是影子引擎意志，不代表人），用 cr_coins 区分"瞄准币"。
 """
+import os
 import json
 import statistics
 from pathlib import Path
 
-DB = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug\speedrush")
+DB = Path(os.path.expandvars(r"%APPDATA%\MaaRacingMaster\debug\speedrush"))
 GAMES = {
     "程序A": [("p1", "20261016_130735_p1"), ("p2", "20261016_130819_p2")],
     "程序B": [("p1", "20261016_135024_p1"), ("p2", "20261016_135108_p2")],

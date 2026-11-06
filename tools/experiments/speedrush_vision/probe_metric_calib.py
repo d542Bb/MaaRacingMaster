@@ -11,16 +11,17 @@
 用法: probe_metric_calib.py   （数据路径写死，仅本机金标环境可跑）
 输出: 三个常量的中位/离散度 + 按分层(stratum)的半宽分布（半宽是否场景常数的判据）。
 """
+import os
 import csv
 import json
 from pathlib import Path
 
 import numpy as np
 
-OUT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/depth_review")
+OUT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/speedrush/depth_review"))
 NPY = OUT / "npy"
-CACHE = Path(r"D:/ud_test/cache")
-CARS = json.loads(Path(r"D:/ud_test/car_boxes.json").read_text(encoding="utf-8"))
+CACHE = Path(os.path.expandvars(r"%MAAR_UD_CACHE%"))
+CARS = json.loads(Path(os.path.expandvars(r"%MAAR_UD_CACHE%/car_boxes.json")).read_text(encoding="utf-8"))
 
 ABOVE = 0.15
 TOL_LOW, TOL_OFF = 0.02, 0.30

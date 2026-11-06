@@ -11,11 +11,12 @@
 
 用法（仓库根 .venv）：
     python tools/experiments/speedrush_vision/export_debug_cloud.py \
-        --dir "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/control_traces/depth_debug_20261002_162102" \
+        --dir "%APPDATA%/MaaRacingMaster/data/speedrush/control_traces/depth_debug_20261002_162102" \
         --d 3 8 10
     （--d 是 nargs="+" 多值旗标，重复 --d 会被 argparse 覆盖只留最后一个）
 """
 from __future__ import annotations
+import os
 
 import argparse
 import base64

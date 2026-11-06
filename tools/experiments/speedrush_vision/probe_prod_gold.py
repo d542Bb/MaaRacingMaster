@@ -17,6 +17,7 @@
 用法（仓库根，.venv）：python tools/experiments/speedrush_vision/probe_prod_gold.py
 """
 from __future__ import annotations
+import os
 
 import argparse
 import csv
@@ -33,8 +34,8 @@ from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
 from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
 from tools.experiments.speedrush_vision import export_pointcloud_html as eph  # noqa: E402
 
-GOLD = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/"
-            r"depth_review/gold_labels.csv")
+GOLD = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/speedrush/"
+            r"depth_review/gold_labels.csv"))
 
 
 def pick_frames(rows, dedup_class: bool = False):

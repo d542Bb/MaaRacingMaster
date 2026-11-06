@@ -9,12 +9,13 @@
    ——lines 低时 override 是否缺席
 """
 
+import os
 import json
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-LOG_ROOT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs")
+LOG_ROOT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/logs"))
 
 
 def load(session):

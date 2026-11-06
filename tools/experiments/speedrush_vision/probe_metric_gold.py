@@ -10,6 +10,7 @@
         [--gold-run 000260,000340,000420,000500] [--burst 000260,000280,000300]
 """
 from __future__ import annotations
+import os
 
 import argparse
 import csv
@@ -36,7 +37,7 @@ from probe_metric_res import ROWS, rel_map, pct  # noqa: E402
 
 CAL = load_calib()
 EGO = dg.DepthRoadObserver._load_ego_mask()
-W = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\data\speedrush\depth_review\weights")
+W = Path(os.path.expandvars(r"%APPDATA%\MaaRacingMaster\data\speedrush\depth_review\weights"))
 SHORT = 336
 
 _K0 = (CAL.ego_cx - CAL.vpx) / (CAL.v_ego - CAL.y_h)

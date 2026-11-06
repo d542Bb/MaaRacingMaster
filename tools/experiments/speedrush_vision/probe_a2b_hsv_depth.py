@@ -14,6 +14,7 @@
         [--demo 20260922_113724_p1] [--stride 3]
 """
 from __future__ import annotations
+import os
 
 import argparse
 import json
@@ -34,7 +35,7 @@ from maaracing_master.plugins.speedrush.module import _EgoRoadObserver  # noqa: 
 from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
 from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE  # noqa: E402
 
-DEMOS = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/demos")
+DEMOS = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/speedrush/demos"))
 
 
 def corr(a: list[float], b: list[float]) -> float:

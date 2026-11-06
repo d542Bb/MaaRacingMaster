@@ -57,7 +57,7 @@ from maaracing_master.plugins.speedrush.lane_obs import (  # noqa: E402
     _side_from_x, _near_x)
 
 DEFAULT_DEBUG = os.path.join(os.environ.get(
-    "MAA_DEBUG", r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug"),
+    "MAA_DEBUG", os.path.join(os.environ["APPDATA"], "MaaRacingMaster", "debug")),
     "speedrush")
 DEFAULT_WEIGHTS = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "maaracing_master", "plugins",

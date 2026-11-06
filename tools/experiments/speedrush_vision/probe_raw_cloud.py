@@ -6,7 +6,7 @@
 
 用法（仓库根，.venv）：
     .venv/Scripts/python.exe tools/experiments/speedrush_vision/probe_raw_cloud.py \
-        "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/speedrush/20261010_212349_p2/raw/0119_raw.jpg"
+        "%APPDATA%/MaaRacingMaster/debug/speedrush/20261010_212349_p2/raw/0119_raw.jpg"
 """
 from __future__ import annotations
 

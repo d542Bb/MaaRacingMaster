@@ -6,6 +6,7 @@ curve_cont2 2.98，同为弯道层却差 1.8 倍）。本探针回答「半宽�
 米制（UniDepth 平面 X）与旧 a_x 车道单位（x_lane_of）逐帧并排——谁稳定，逐帧尺度
 自标定就锚在谁上。
 """
+import os
 import csv
 import json
 import sys
@@ -14,9 +15,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-OUT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/depth_review")
-CACHE = Path(r"D:/ud_test/cache")
-CARS = json.loads(Path(r"D:/ud_test/car_boxes.json").read_text(encoding="utf-8"))
+OUT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/speedrush/depth_review"))
+CACHE = Path(os.path.expandvars(r"%MAAR_UD_CACHE%"))
+CARS = json.loads(Path(os.path.expandvars(r"%MAAR_UD_CACHE%/car_boxes.json")).read_text(encoding="utf-8"))
 ABOVE, TOL_LOW, TOL_OFF, GAP = 0.15, 0.02, 0.30, 1.5
 ZB = (5.0, 9.0)  # 单一参考带
 

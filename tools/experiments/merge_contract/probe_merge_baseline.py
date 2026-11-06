@@ -32,7 +32,7 @@ from collections import Counter, defaultdict
 
 DEFAULT_DATA = os.environ.get(
     "SPEEDRUSH_DEBUG",
-    r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/speedrush",
+    os.path.join(os.environ["APPDATA"], "MaaRacingMaster", "debug", "speedrush"),
 )
 DEFAULT_LOGS = os.environ.get(
     "SPEEDRUSH_LOGS",

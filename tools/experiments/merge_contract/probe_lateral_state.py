@@ -41,7 +41,8 @@ DEFAULT_LOGS = os.path.join(
     os.path.dirname(os.path.dirname(
         os.environ.get(
             "SPEEDRUSH_DEBUG",
-            r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/speedrush"))),
+            os.path.join(os.environ["APPDATA"], "MaaRacingMaster",
+                         "debug", "speedrush")))),
     "logs")
 
 

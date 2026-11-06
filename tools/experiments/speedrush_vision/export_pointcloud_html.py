@@ -2,7 +2,7 @@
 """把一帧深度点云导成**单文件交互式 HTML**（零依赖：canvas-2D 软渲染，无 WebGPU/无 CDN）。
 
 两种数据源，同一个查看器：
-- **离线**（默认）：`--stem 000100`，读 UniDepth 米制点云缓存 `D:/ud_test/cache`。
+- **离线**（默认）：`--stem 000100`，读 UniDepth 米制点云缓存 `%MAAR_UD_CACHE%`。
 - **运行时**：`--runtime-dir <depth_debug_dir>`，读实机落的 `d*_band.npy`（生产 DA-S
   q4f16 视差带）+ `_ego/_mask.npy` + `<stem>.jpg`（原帧）。点云按**生产 depth_geo 口径**
   复算（_cloud_band + 逐帧尺度自标定），验证「生产眼睛看到的」而不是离线高精度场。
@@ -18,6 +18,7 @@
 """
 
 from __future__ import annotations
+import os
 
 import argparse
 import base64
@@ -33,13 +34,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE  # noqa: E402
 from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
 
-GOLD = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/"
-            r"speedrush/depth_review/gold_labels.csv")
-CACHE = Path(r"D:/ud_test/cache")
-OUT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/"
-           r"speedrush/depth_review/pc3d")
-DEMO_OUT = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/"
-                r"speedrush/depth_review/pc3d_demo")
+GOLD = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/"
+            r"speedrush/depth_review/gold_labels.csv"))
+CACHE = Path(os.path.expandvars(r"%MAAR_UD_CACHE%"))
+OUT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/"
+           r"speedrush/depth_review/pc3d"))
+DEMO_OUT = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/"
+                r"speedrush/depth_review/pc3d_demo"))
 Z_MAX = 60.0          # 远场截断（天空/远景不进画）
 STEP = 4              # 抽稀步长（720×1280 → 180×320 ≈ 5.8 万点）
 

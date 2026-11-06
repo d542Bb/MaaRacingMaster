@@ -13,7 +13,7 @@
 
 用法：
     python probe_heading_replay.py
-    python probe_heading_replay.py --root D:/data/MaaRacingMaster --runs 3
+    python probe_heading_replay.py --root <数据根目录> --runs 3
 """
 from __future__ import annotations
 

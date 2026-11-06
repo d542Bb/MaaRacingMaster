@@ -16,7 +16,7 @@
 
 用法：
     python probe_manual_heading.py
-    python probe_manual_heading.py --root D:/data/MaaRacingMaster
+    python probe_manual_heading.py --root <数据根目录>
 """
 from __future__ import annotations
 

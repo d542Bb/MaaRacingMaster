@@ -2,18 +2,19 @@
 """正确性人工抽检图（临时）：离线重放 debug 包的找边读数，把每个检出缘
 (side, zc, x_m) 反投回游戏帧画圈标米数——维护者人眼验收"程序看的护栏/路缘
 位置对不对"。左=标注帧，右=当帧产线 debug 渲染（BEV+热图）。用完即清或转正。"""
+import os
 import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-sys.path.insert(0, r"D:\maaracing_assistant")
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from maaracing_master.plugins.speedrush import depth_geo as dg
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
-ROOT = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\data\speedrush")
+ROOT = Path(os.environ["APPDATA"]) / "MaaRacingMaster" / "data" / "speedrush"
 OUT = ROOT / "depth_review"
 
 CASES = [  # (run, seq) —— 覆盖巡航/弯道/近墙/远墙/低 fx 高 fx 各形态

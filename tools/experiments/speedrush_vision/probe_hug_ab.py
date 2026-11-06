@@ -19,7 +19,7 @@ import os
 import re
 from pathlib import Path
 
-LOG = Path("E:/DFJS/g112/Saved/Logs/g112.log")
+LOG = Path(os.environ.get("MAAR_G112_LOG", "g112.log"))
 DBG = Path(os.environ["APPDATA"]) / "MaaRacingMaster" / "debug" / "speedrush"
 
 # (label, 局内 P1, P2)；基线 A=0.15 期、B=0.35 期（均 R3-off）

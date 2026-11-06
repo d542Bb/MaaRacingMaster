@@ -12,7 +12,7 @@
 | `MaaRacingMaster.Shell.exe` | GUI（WinUI3 + WebView2），sidecar 生命周期 | **elevated** | 否 |
 | `python3.11.exe` / `python.exe` | **sidecar**：`-u -m maaracing_master.core.sidecar`，**全部图像处理在此进程内** | **elevated**（继承自 Shell） | **是** |
 | `MuMuVMMHeadless.exe` / `MuMuNx*.exe` | MuMu 安卓模拟器 | 否 | 是（渲染游戏画面） |
-| `g112-Win64-Shipping.exe` | 游戏本体（`E:\DFJS\g112\...`，`--MuMuLauncher`） | elevated（OpenProcessToken err=5） | 是 |
+| `g112-Win64-Shipping.exe` | 游戏本体（由 MuMu 启动器拉起，`--MuMuLauncher`） | elevated（OpenProcessToken err=5） | 是 |
 
 sidecar 内与图像相关的线程：主控制拍、深度 worker、HUD 采样 + 写线程、WGC 原生回调、MaaFW 框架（锚点复查）。
 

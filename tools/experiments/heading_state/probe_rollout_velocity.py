@@ -16,7 +16,7 @@
 
 用法：
     python probe_rollout_velocity.py
-    python probe_rollout_velocity.py --root D:/data/MaaRacingMaster
+    python probe_rollout_velocity.py --root <数据根目录>
 """
 from __future__ import annotations
 

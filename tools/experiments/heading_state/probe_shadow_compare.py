@@ -13,7 +13,7 @@
 
 用法：
     python probe_shadow_compare.py            # 只跑含影子列的会话
-    python probe_shadow_compare.py --root D:/data/MaaRacingMaster
+    python probe_shadow_compare.py --root <数据根目录>
 """
 from __future__ import annotations
 

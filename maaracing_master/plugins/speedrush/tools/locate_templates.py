@@ -11,14 +11,15 @@ x=1 / y=38（x=0 是左边框，0~37 行是标题栏）。模板必须先在内�
 自检：脚本启动时用 treasure 既有模板（来自真正的 720p 运行帧）在内容区匹配，
 分数应达 ~1.0000，以此确认偏移量正确。
 
-输入：模板 PNG（Downloads 目录） + 真机截帧（image-cache 目录）
+输入：模板 PNG 目录 + 真机截帧目录——经环境变量提供（MAAR_TPL_SRC / MAAR_TPL_FRAMES，
+本机取值见 AGENTS.local.md），不写死在本文件里（红线 4：入库文件不带本机路径）
 输出：控制台报告 + templates_roi.json，并把模板复制进插件资源目录
 
 用法（任意 CWD 均可，输出表按本文件位置算）：
     .venv/Scripts/python.exe maaracing_master/plugins/speedrush/tools/locate_templates.py
 
-注意：本脚本是**标定期一次性素材生成器**（输入是本机下载目录与截图缓存，见下方
-常量），不是可复跑的仪器；它产出的 templates_roi.json 才是真源输入表。
+注意：本脚本是**标定期一次性素材生成器**（输入目录经环境变量提供，见下方常量），
+不是可复跑的仪器；它产出的 templates_roi.json 才是真源输入表。
 """
 
 from __future__ import annotations
@@ -29,9 +30,9 @@ import os
 
 import cv2
 
-SRC_DIR = "C:/Users/yomen/Downloads"
+SRC_DIR = os.environ.get("MAAR_TPL_SRC", "Downloads")
 DST_DIR = "maaracing_master/plugins/speedrush/resources/image"
-FRAME_GLOB = "C:/Users/yomen/.zcode/cli/image-cache/sess_b4ad42bf-3e3c-49e5-a3a7-f1f753355af3/*.png"
+FRAME_GLOB = os.environ.get("MAAR_TPL_FRAMES", "frames/*.png")
 OUT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates_roi.json")
 
 # 内容区偏移与尺寸（实测：窗口截图 → 720p 客户区）
@@ -92,7 +93,7 @@ def selfcheck(frames: list[str]) -> None:
 def main() -> None:
     frames = sorted(glob.glob(FRAME_GLOB))
     if not frames:
-        raise SystemExit("未找到真机截帧，检查 FRAME_GLOB")
+        raise SystemExit("未找到真机截帧，检查环境变量 MAAR_TPL_FRAMES")
     raw = cv2.imread(frames[0], cv2.IMREAD_COLOR)
     assert raw is not None, f"截帧读取失败：{frames[0]}"
     print(f"截帧数={len(frames)}  原始尺寸={raw.shape[1]}x{raw.shape[0]}  "

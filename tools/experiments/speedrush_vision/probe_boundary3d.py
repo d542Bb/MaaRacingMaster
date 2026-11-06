@@ -30,6 +30,7 @@
 高度剖面）+ stdout 对质表。
 """
 from __future__ import annotations
+import os
 
 import csv
 import sys
@@ -47,8 +48,8 @@ from maaracing_master.plugins.speedrush import moge_post as mp  # noqa: E402
 from tools.experiments.speedrush_vision import compare_depth_sources as cds  # noqa: E402
 from tools.experiments.speedrush_vision import export_pointcloud_html as eph  # noqa: E402
 
-GOLD = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/data/speedrush/"
-            r"depth_review/gold_labels.csv")
+GOLD = Path(os.path.expandvars(r"%APPDATA%/MaaRacingMaster/data/speedrush/"
+            r"depth_review/gold_labels.csv"))
 OUT = eph.OUT.parent / "boundary3d"
 
 # 找边常量反向引用产线（深度几何 v4 换装后阈值真源在 depth_geo 常量区；

@@ -19,13 +19,14 @@ episode 目标 id 在 target_id 列（reach 目标为 null），pass track_id �
     .venv/Scripts/python.exe tools/experiments/speedrush_vision/probe_r1_time.py
 """
 from __future__ import annotations
+import os
 
 import json
 import statistics
 from collections import defaultdict
 from pathlib import Path
 
-DB = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug\speedrush")
+DB = Path(os.path.expandvars(r"%APPDATA%\MaaRacingMaster\debug\speedrush"))
 GAMES = {
     "程序A": ["20261016_130735_p1", "20261016_130819_p2"],
     "程序B": ["20261016_135024_p1", "20261016_135108_p2"],

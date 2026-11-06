@@ -5,21 +5,22 @@
 自包含：只依赖 onnx / onnxruntime / cv2 / numpy，**不 import maaracing_master 业务码**
 （试验区硬约束）。需要复刻的极小能力（preprocess、帧读取）在本脚本内自建。
 
-跑法：D:/maaracing_assistant/.venv/Scripts/python.exe probe_moge_time_slice.py
+跑法：.venv/Scripts/python.exe probe_moge_time_slice.py（仓库根）
 """
 from __future__ import annotations
-import os, sys, time, math, statistics
+import os, sys, time, math, statistics, tempfile
 import numpy as np
 import cv2
 import onnx
 from onnx import shape_inference, utils as onnx_utils
 import onnxruntime as ort
 
-REPO = r"D:/maaracing_assistant"
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 MODEL = os.path.join(REPO, "maaracing_master/plugins/speedrush/resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx")
 # 可回放的 debug 会话（raw 帧）；不存在则自动挑一个有 raw/ 的会话
-DEBUG_SESS = r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/speedrush/20261103_153632_p1/raw"
-TMP = r"C:/Users/yomen/.qoder/tmp"
+DEBUG_SESS = os.path.join(os.environ["APPDATA"], "MaaRacingMaster", "debug",
+                          "speedrush", "20261103_153632_p1", "raw")
+TMP = os.environ.get("TMP") or tempfile.gettempdir()
 N_FRAMES = 40          # 回放帧数
 SPLIT_FRACTION = 0.5   # 沿节点拓扑在 ~50% 处切
 
