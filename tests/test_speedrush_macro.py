@@ -75,6 +75,15 @@ def _row(t_ms, **over):
     return base
 
 
+def _meta(phases: dict) -> dict:
+    return {"schema": macro.SCHEMA_VERSION, "phases": phases}
+
+
+def _done(reason: str = "phase_end") -> dict:
+    """一段录完的元数据记录：正常收尾 + 时长（时长不再进标签，只留作内容）。"""
+    return {"stop_reason": reason, "samples": 10, "duration_ms": 32000}
+
+
 def test_load_phase_roundtrip_and_g0(tmp_path):
     d = _write_group(tmp_path, "20261103_120000", [_row(0, rt=255), _row(16.6, lx=-100)],
                      meta={"phases": {"1": {"g0": 34.5}}})
@@ -96,19 +105,47 @@ def test_load_phase_rejects_bad_files(tmp_path):
             macro.load_phase(bad, 1)
 
 
-def test_group_listing_and_latest(tmp_path):
+def test_group_listing_requires_recording_record(tmp_path):
+    """没有收尾记录的目录不列（半截产物不冒充素材）；只录了一半的列出并标不完整。"""
+    _write_group(tmp_path, "20261104_090000", [_row(0)])          # 崩溃留下的一半
     _write_group(tmp_path, "20261103_120000", [_row(0)],
-                 meta={"phases": {"1": {"duration_ms": 32000}}})
-    _write_group(tmp_path, "20261104_090000", [_row(0)])
+                 meta=_meta({"1": _done()}))                       # 缺阶段 2
     groups = macro.list_groups(tmp_path)
-    assert [g["value"] for g in groups] == ["20261104_090000", "20261103_120000"]
-    assert "p1 32s" in groups[1]["label"]
-    assert macro.resolve_group("", tmp_path).name == "20261104_090000"
-    assert macro.resolve_group("20261103_120000", tmp_path).name == "20261103_120000"
+    assert [g["value"] for g in groups] == ["20261103_120000"]
+    assert groups[0]["label"] == "2026-11-03 12:00:00（不完整）"
+    assert macro.resolve_group("", tmp_path).name == "20261103_120000"
+    with pytest.raises(macro.MacroError):
+        macro.resolve_group("20261104_090000", tmp_path)
     with pytest.raises(macro.MacroError):
         macro.resolve_group("../evil", tmp_path)
     with pytest.raises(macro.MacroError):
         macro.resolve_group("missing", tmp_path)
+
+
+def test_group_listing_labels_seconds_and_collision_suffix(tmp_path):
+    """标签给到秒；同秒撞名的序号要显出来，否则两组在下拉里长得一样。"""
+    _write_group(tmp_path, "20261103_142233", [_row(0)],
+                 meta=_meta({"1": _done(), "2": _done()}))
+    _write_group(tmp_path, "20261103_142233_2", [_row(0)],
+                 meta=_meta({"1": _done("stopped"), "2": _done()}))
+    groups = macro.list_groups(tmp_path)
+    assert [g["label"] for g in groups] == [
+        "2026-11-03 14:22:33 (2)（不完整）", "2026-11-03 14:22:33"]
+
+
+def test_group_listing_skips_non_token_dirs(tmp_path):
+    """目录名不合会话编号格式的（人工改过、别的用途）不进下拉。"""
+    _write_group(tmp_path, "hand_named", [_row(0)], meta=_meta({"1": _done()}))
+    _write_group(tmp_path, "20261103_120000", [_row(0)], meta=_meta({"1": _done()}))
+    assert [g["value"] for g in macro.list_groups(tmp_path)] == ["20261103_120000"]
+
+
+def test_choice_label_covers_latest_locked_and_stale():
+    assert macro.choice_label("", []) == "无"
+    items = [{"value": "20261103_120000", "label": "2026-11-03 12:00:00"}]
+    assert macro.choice_label(None, items) == "最新 · 2026-11-03 12:00:00"
+    assert macro.choice_label("20261103_120000", items) == "2026-11-03 12:00:00"
+    assert macro.choice_label("20260101_000000", items) == "无（原选项已失效）"
 
 
 # ---------- 录制器 ----------
@@ -246,15 +283,20 @@ def test_legacy_boolean_keys_normalize_to_drive_mode():
 
 
 @pytestmark_mod
-def test_macro_mode_skips_model_preload_and_choices_prepends_latest(monkeypatch):
+def test_macro_mode_skips_model_preload_and_choices_label_latest(monkeypatch):
     m = smod.SpeedRushModule(None)
     m.set_module_config({"drive_mode": "macro", "control_mode": True})
     assert m._preload_wanted() is False
     monkeypatch.setattr(smod, "list_groups",
-                        lambda: [{"value": "20261103_120000", "label": "x"}])
+                        lambda: [{"value": "20261103_120000",
+                                  "label": "2026-11-03 12:00:00"}])
     choices = smod.SpeedRushModule.config_choices()["macro_group"]
-    assert choices[0]["value"] == ""
+    # 首项是「跟随最新」，但标签直接把那一局的时间戳写出来，不再只说「最新录制的宏」
+    assert choices[0] == {"value": "", "label": "最新 · 2026-11-03 12:00:00"}
     assert choices[1]["value"] == "20261103_120000"
+    monkeypatch.setattr(smod, "list_groups", lambda: [])
+    assert smod.SpeedRushModule.config_choices()["macro_group"] == [
+        {"value": "", "label": "无"}]
 
 
 @pytestmark_mod
@@ -305,16 +347,20 @@ def test_config_ui_declaration_is_valid():
 
 
 @pytestmark_mod
-def test_config_summary_tracks_drive_mode():
+def test_config_summary_tracks_drive_mode(monkeypatch):
+    monkeypatch.setattr(smod, "list_groups",
+                        lambda: [{"value": "20261103_120000",
+                                  "label": "2026-11-03 12:00:00"}])
     summary = smod.SpeedRushModule.config_summary
     assert summary({"drive_mode": "depth", "record_mode": False}) == [
         "录制: 关", "驾驶模式: 深度几何"]
     assert summary({"drive_mode": "straight", "record_mode": True}) == ["驾驶模式: 全程直行"]
+    # 摘要与下拉同一套写法：给人看的是时间戳，不是裸目录名
     assert summary({"drive_mode": "macro", "record_mode": False,
                     "macro_group": "20261103_120000"}) == [
-        "录制: 关", "驾驶模式: 宏录制", "宏组: 20261103_120000"]
+        "录制: 关", "驾驶模式: 宏录制", "宏组: 2026-11-03 12:00:00"]
     assert summary({"drive_mode": "macro", "record_mode": False,
-                    "macro_group": ""})[-1] == "宏组: 最新录制的宏"
+                    "macro_group": ""})[-1] == "宏组: 最新 · 2026-11-03 12:00:00"
 
 
 @pytestmark_mod
@@ -324,7 +370,8 @@ def test_config_status_covers_recording_and_replay():
     m = smod.SpeedRushModule(None)
     assert m.config_status() is None
     m._running = True
-    assert "运行中" in m.config_status()["text"]
+    # 没开录制属于正常状态，不占状态行（显示侧只报阶段进度与影响结果的异常）
+    assert m.config_status() is None
     m._record_mode = True
     assert "录制已开启" in m.config_status()["text"]
     m._record_mode = False

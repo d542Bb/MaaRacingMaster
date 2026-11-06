@@ -35,6 +35,10 @@ from typing import Callable
 from maaracing_master.core import xinput
 from maaracing_master.core.logger import logger
 from maaracing_master.core.paths import data_dir
+from maaracing_master.core.session_layout import (
+    SESSION_TOKEN_RE,
+    session_token_label,
+)
 from maaracing_master.plugins.speedrush.pad_source import (
     PAD_SLOT_PROBE_TIMEOUT_S,
     PadSampler,
@@ -77,6 +81,46 @@ def valid_group_name(name: str) -> bool:
     return not any(c in name for c in ("/", "\\", "\x00")) and name.strip() == name
 
 
+def _group_dirs(base: Path) -> list[Path]:
+    """按编号逆序列出宏组目录；只认会话编号形态的目录名（与 core 同一套格式）。"""
+    if not base.is_dir():
+        return []
+    return sorted((p for p in base.iterdir()
+                   if p.is_dir() and SESSION_TOKEN_RE.match(p.name)),
+                  key=lambda p: p.name, reverse=True)
+
+
+def _phases_of(path: Path) -> dict:
+    """组元数据里的阶段记录；读不出返回空——半成品不冒充素材。"""
+    try:
+        meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 —— meta 缺失/损坏都按无记录处理
+        return {}
+    phases = meta.get("phases") if isinstance(meta, dict) else None
+    return phases if isinstance(phases, dict) else {}
+
+
+# 正常收尾的结束原因：阶段自然结束（实机）与显式正常停止（测试桩与工具）
+_DONE_REASONS = frozenset({"phase_end", "normal"})
+
+
+def _phase_done(phases: dict, phase: str) -> bool:
+    info = phases.get(phase)
+    return isinstance(info, dict) and info.get("stop_reason") in _DONE_REASONS
+
+
+def is_usable_group(path: Path) -> bool:
+    """至少有一段带收尾记录的宏才可用；没有元数据的历史目录一律不可用。"""
+    phases = _phases_of(path)
+    return any(isinstance(phases.get(ph), dict) for ph in ("1", "2"))
+
+
+def is_complete_group(path: Path) -> bool:
+    """两个阶段都有记录且都正常收尾；被提前中止或整段没录的都算不完整。"""
+    phases = _phases_of(path)
+    return all(_phase_done(phases, ph) for ph in ("1", "2"))
+
+
 def resolve_group(group: str | None, root: Path | None = None) -> Path:
     """解析宏组目录；空组名 = 最新一组。不可用时抛 MacroError。"""
     base = root or macro_root()
@@ -86,52 +130,45 @@ def resolve_group(group: str | None, root: Path | None = None) -> Path:
         path = base / group
         if not path.is_dir():
             raise MacroError(f"宏组不存在: {group}")
+        if not is_usable_group(path):
+            raise MacroError(f"宏组 {group} 没有录制收尾的记录，不能回放")
         return path
-    groups = [p for p in base.iterdir() if p.is_dir()] if base.is_dir() else []
-    if not groups:
-        raise MacroError("还没有录制过宏")
-    return max(groups, key=lambda p: p.name)
+    for path in _group_dirs(base):
+        if is_usable_group(path):
+            return path
+    raise MacroError("还没有录制过宏")
 
 
 def list_groups(root: Path | None = None) -> list[dict]:
-    """供 GUI 下拉用的宏组列表（含 value/label）；读不出 meta 也照常列出。"""
-    base = root or macro_root()
-    if not base.is_dir():
-        return []
+    """供 GUI 下拉用的宏组列表（含 value/label），按编号逆序。
+
+    没有录制收尾记录的目录不列（半截产物不该出现在选择里）；只录了一半或
+    被提前中止的组照常列出，标签带「不完整」——缺的那一段回放时降级直行。
+    """
     out: list[dict] = []
-    for path in sorted((p for p in base.iterdir() if p.is_dir()),
-                       key=lambda p: p.name, reverse=True):
-        phases: dict = {}
-        try:
-            meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
-            phases = meta.get("phases") or {}
-        except Exception:  # noqa: BLE001 —— meta 坏了不影响宏文件本身
-            phases = {}
-        parts: list[str] = []
-        for ph in ("1", "2"):
-            info = phases.get(ph) if isinstance(phases, dict) else None
-            dur = info.get("duration_ms") if isinstance(info, dict) else None
-            if isinstance(dur, (int, float)):
-                parts.append(f"p{ph} {dur / 1000.0:.0f}s")
-            elif (path / f"p{ph}.jsonl").is_file():
-                parts.append(f"p{ph}")
-        label = _stamp_label(path.name)
-        if parts:
-            label += " · " + " / ".join(parts)
+    for path in _group_dirs(root or macro_root()):
+        if not is_usable_group(path):
+            continue
+        label = session_token_label(path.name)
+        if not is_complete_group(path):
+            label += "（不完整）"
         out.append({"value": path.name, "label": label})
     return out
 
 
-def _stamp_label(name: str) -> str:
-    """``20261103_142233`` → ``2026-11-03 14:22``；不符合格式（含撞名后缀）就原样返回。"""
-    try:
-        head, tail = name.split("_", 1)
-        if len(head) != 8 or len(tail) < 4 or not head.isdigit() or not tail[:4].isdigit():
-            return name
-        return (f"{head[0:4]}-{head[4:6]}-{head[6:8]} "
-                f"{tail[0:2]}:{tail[2:4]}")
-    except Exception:  # noqa: BLE001 —— 人工改过的目录名照常展示
-        return name
+def choice_label(group: str | None, items: list[dict] | None = None) -> str:
+    """配置值 → 给人看的宏组标签：空值取最新一组并标注，无宏可放时给「无」。
+
+    ``items`` 传 ``list_groups()`` 的结果可避免重复枚举目录。"""
+    entries = list_groups() if items is None else items
+    if not entries:
+        return "无"
+    if not group:
+        return "最新 · " + entries[0]["label"]
+    for item in entries:
+        if item["value"] == group:
+            return item["label"]
+    return "无（原选项已失效）"
 
 
 def merge_sample(pad: xinput.PadState | None, keys: dict[str, bool]) -> dict:

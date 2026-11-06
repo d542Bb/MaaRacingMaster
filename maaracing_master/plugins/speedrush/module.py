@@ -45,6 +45,10 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
 from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.core.paths import debug_dir
+from maaracing_master.core.session_layout import (
+    SESSION_TOKEN_FMT,
+    fresh_session_dir,
+)
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_REL, PIPELINE_DIR)
@@ -68,8 +72,8 @@ from maaracing_master.plugins.speedrush.wall_track import (
 from maaracing_master.plugins.speedrush.hud import (
     HudObserver, load_hud_regions, read_hud_scores)
 from maaracing_master.plugins.speedrush.macro import (
-    MacroError, MacroPlayer, MacroRecorder, list_groups, load_phase, macro_root,
-    resolve_group, valid_group_name)
+    MacroError, MacroPlayer, MacroRecorder, choice_label, list_groups, load_phase,
+    macro_root, resolve_group, valid_group_name)
 from maaracing_master.plugins.speedrush.lane_obs import (
     LaneObsConfig, LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
@@ -347,6 +351,20 @@ def _build_config_ui(models_ready: bool) -> dict:
                     "description": "关闭「录制」时生效；缺阶段文件的那一段会降级为全程直行",
                     "choices": "macro_group",
                     "visible_if": {"key": "drive_mode", "op": "equals", "value": "macro"},
+                    # 下拉是原生控件，选项里塞不进徽章（契约的徽章只给分段用）——
+                    # 「跟随最新」和「锁定这一局」的差别改由说明行按所选值换文案讲清。
+                    "variants": [
+                        {
+                            "when": {"key": "macro_group", "op": "equals", "value": ""},
+                            "description": "跟随最新一局：录完新一局会自动改成回放那一局。"
+                                           "想固定住某一份，直接在列表里选它的时间点。",
+                        },
+                        {
+                            "when": {"key": "macro_group", "op": "not_equals", "value": ""},
+                            "description": "固定回放这一局，录了新局也不会改。"
+                                           "关闭「录制」时生效；缺阶段文件的那一段会降级为全程直行。",
+                        },
+                    ],
                 },
                 {
                     "key": "record_mode", "type": "switch", "label": "录制演示数据",
@@ -478,8 +496,13 @@ class SpeedRushModule(ActivityModule):
 
     @classmethod
     def config_choices(cls) -> dict:
-        """宏组下拉的可选值（空值=最新一组，排在最前）。不创建实例。"""
-        return {"macro_group": [{"value": "", "label": "最新录制的宏"}] + list_groups()}
+        """宏组下拉的可选值（不创建实例）。
+
+        首项空值=跟随最新一局，标签直接把那一局的时间戳写出来；一组都没有就给
+        「无」。用户显式选过的那一份存的是组名，此后不再随新录的宏漂移。"""
+        groups = list_groups()
+        return {"macro_group": [{"value": "", "label": choice_label("", groups)}]
+                + groups}
 
     @classmethod
     def config_summary(cls, config: dict) -> list[str]:
@@ -494,11 +517,15 @@ class SpeedRushModule(ActivityModule):
             out.append("录制: " + ("开" if config.get("record_mode") else "关"))
         out.append("驾驶模式: " + mode_text)
         if mode == "macro" and not config.get("record_mode"):
-            out.append("宏组: " + str(config.get("macro_group") or "最新录制的宏"))
+            out.append("宏组: " + choice_label(str(config.get("macro_group") or ""),
+                                              list_groups()))
         return out
 
     def config_status(self) -> dict | None:
-        """面板状态行：宏录制/回放、演示录制进度；无内容返回 None。"""
+        """面板状态行：宏录制/回放、演示录制进度；无内容返回 None。
+
+        这一行只留给「执行到哪了」——影响本次结果的异常由字段内联提示与卡片徽章
+        承载，没开录制这类正常状态不占行（任务卡摘要已经写了录制开/关），也不染警告色。"""
         mrec = self._macro_rec
         if mrec is not None and mrec.running:
             samples = int(mrec.stats["samples"])
@@ -525,11 +552,8 @@ class SpeedRushModule(ActivityModule):
             return {"text": f"录制中：已写 {st['frames_written']} 帧 · 丢帧 "
                             f"{st['frames_dropped']} · 手柄样本 {st['pad_samples']}；"
                             f"目录 {_record_root()}", "level": "ok"}
-        if self._running:
-            if self._record_mode:
-                return {"text": "运行中：录制已开启，进入驾驶阶段后开始写入", "level": ""}
-            return {"text": "运行中：本次未开启录制（开关改动在下次「开始」时生效）",
-                    "level": "warn"}
+        if self._running and self._record_mode:
+            return {"text": "运行中：录制已开启，进入驾驶阶段后开始写入", "level": ""}
         return None
 
     @classmethod
@@ -917,7 +941,7 @@ class SpeedRushModule(ActivityModule):
             # 不同局必然不同。日志会话编号只标识"一次启动"，同一次启动连跑多局时
             # 它会重复，后一局因此覆盖前一局的图（2026-10-30 实机踩到）。
             # 目录名格式不变，仍是 <前缀>_p<阶段>，历史会话照旧可读。
-            round_stamp = time.strftime("%Y%m%d_%H%M%S")
+            round_stamp = time.strftime(SESSION_TOKEN_FMT)
             if round_stamp == last_stamp:
                 # 同秒内连开两局（快速重开、系统时间回拨）：加序号，不让两局共前缀
                 stamp_dup += 1
@@ -3772,20 +3796,19 @@ def _macro_group_dir(stamp: str) -> Path:
 
 
 def _fresh_session_dir(path: Path) -> Path:
-    """已存在且非空的目录换一个带序号的名字，绝不给既有会话续写。
+    """已存在的目录换一个带序号的名字，绝不给既有会话续写。
 
     目录名按局前缀生成，正常不会重名；同秒重启、或人工改过系统时间时仍可能撞。
     撞上时**换名**而不是复用：复用会让新一局覆盖旧图、索引被追加成两局混合
-    （2026-10-30 实机踩到，第一局的图被第二局整批覆盖）。"""
-    if not path.exists() or not any(path.iterdir()):
-        return path
-    for i in range(2, 100):
-        cand = path.with_name(f"{path.name}_{i}")
-        if not cand.exists() or not any(cand.iterdir()):
-            logger.log(f"[极速狂飙] 会话目录 {path.name} 已存在且非空，"
-                       f"改写到 {cand.name}", "WARNING")
-            return cand
-    raise RuntimeError(f"会话目录 {path.name} 的重名后缀已用尽")
+    （2026-10-30 实机踩到，第一局的图被第二局整批覆盖）。编号格式与序号规则
+    由 core 的会话布局契约给出，与 logs/debug 会话目录同一套；换名记一笔
+    WARNING，不静默。"""
+    target = Path(path)
+    picked = fresh_session_dir(target.parent, target.name)
+    if picked != target:
+        logger.log(f"[极速狂飙] 会话目录 {target.name} 已存在，改写到 {picked.name}",
+                   "WARNING")
+    return picked
 
 
 def _run_dir(stamp: str, phase: int) -> Path:

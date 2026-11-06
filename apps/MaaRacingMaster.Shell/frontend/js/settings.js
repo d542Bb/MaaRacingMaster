@@ -315,8 +315,8 @@
           const err = await applyOptimization(it.id, it.optimized_value);
           if (err) fails.push(it.name + '：' + err);
         }
+        // 成功不播报：列表刷新后各项状态自己会说话；只有失败才需要打扰
         if (fails.length) showError('部分优化失败：' + fails.join('；'));
-        else showError('已完成 ' + todo.length + ' 项权限优化');
         await refresh();
         return;
       }
@@ -367,7 +367,6 @@
               if (err) fails.push(it.name + '：' + err);
             }
             if (fails.length) showError('部分优化失败：' + fails.join('；'));
-            else showError('已完成 ' + pending.length + ' 项权限优化');
             modal.close();
           }
         },
@@ -380,8 +379,8 @@
               const err = await applyPromptIgnore(it.id, true);
               if (err) fails.push(it.name + '：' + err);
             }
+            // 关闭弹窗即反馈；恢复入口在 设置 → 运行环境 各项的「恢复启动提醒」按钮上
             if (fails.length) showError('部分忽略失败：' + fails.join('；'));
-            else showError('已忽略启动提醒，可随时在 设置 → 运行环境 中心重新开启');
             modal.close();
           }
         },

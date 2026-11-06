@@ -167,16 +167,13 @@
   }
 
   // ---------- 无组散行 → 「其他日志」容器卡（旧 sidecar 兼容路径同走此路） ----------
-  // 容器不承载生命周期：不给徽章、不按内容推导状态（组卡徽章仍只吃 outcome）。
-  // 默认展开：散行多为告警与异常，折叠会把「发生即红」藏进卡体。
+  // 容器不承载生命周期：不给徽章、不按内容推导状态（组卡徽章仍只吃 outcome，ADR-0017）。
+  // 默认收起：散行里既有影响结果的异常，也有可继续的降级，整卡展开等于拿小失误刷屏。
   // 相邻即合并：开出任何组卡（含无头组匿名卡）即作废当前容器，散行不跨组卡串联。
   const BARE_TITLE = '其他日志';
   let _bareSec = null;
   function _bareSection(ts) {
-    if (!_bareSec) {
-      _bareSec = _makeSection('session', ts, BARE_TITLE, '', null);
-      _bareSec.classList.add('log-section--open');
-    }
+    if (!_bareSec) _bareSec = _makeSection('session', ts, BARE_TITLE, '', null);
     return _bareSec;
   }
 

@@ -336,7 +336,7 @@
       if (hit) found = true;
     });
     if (!found && value !== undefined && value !== null && value !== '') {
-      var missing = el('option', null, String(value) + '（已不存在）');
+      var missing = el('option', null, '无（原选项已失效）');
       missing._maarmValue = value;
       node.select.appendChild(missing);
       missing.selected = true;
@@ -540,7 +540,9 @@
       applyNote(entry, resp);
       applyAll(entry, resp);
       if (MaaRM.noteConfigSaved) MaaRM.noteConfigSaved(mid, resp);
-      flashStatus(entry, '已保存', 'ok', 1600);
+      // 成功不刷回执：状态行回落到模块自己的运行实况（界面只报阶段进度与影响结果的异常），
+      // 失败仍走行内红字停留。这里必须解锁，否则状态行会停在「保存中」。
+      entry.localStatus = false;
     } catch (e) {
       if (!ST.isAlive(entry, generation)) return;
       failed = true;

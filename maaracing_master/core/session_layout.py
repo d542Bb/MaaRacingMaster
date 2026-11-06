@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 SESSION_SCHEMA_VERSION = 5
+SESSION_TOKEN_FMT = "%Y%m%d_%H%M%S"
 SESSION_TOKEN_RE = re.compile(r"^\d{8}_\d{6}(?:_\d+)?$")
 BEHAVIOR_RE = re.compile(r"^[a-z0-9_-]+$")
 MODULE_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -36,15 +37,55 @@ MANIFEST_NAME = "manifest.json"
 FRAMES_INDEX_NAME = "frames.jsonl"
 
 
+def _suffixed(base: str, seq: int) -> str:
+    return base if seq <= 1 else f"{base}_{seq}"
+
+
+def _token_base(token: str) -> str:
+    """编号的未撞名部分：`20261103_142233_2` → `20261103_142233`；不合规则原样返回。"""
+    parts = token.split("_")
+    return "_".join(parts[:2]) if SESSION_TOKEN_RE.match(token) else token
+
+
 def new_session_token(logs_root: Path, debug_root: Path) -> str:
     """生成进程会话编号；同秒撞上既有日志或调试目录时追加 `_2`、`_3`。"""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    token = ts
+    ts = datetime.now().strftime(SESSION_TOKEN_FMT)
     seq = 1
-    while (Path(logs_root) / token).exists() or (Path(debug_root) / token).exists():
+    while True:
+        token = _suffixed(ts, seq)
+        if not (Path(logs_root) / token).exists() \
+                and not (Path(debug_root) / token).exists():
+            return token
         seq += 1
-        token = f"{ts}_{seq}"
-    return token
+
+
+def fresh_session_dir(root: Path, token: str) -> Path:
+    """在 root 下为会话编号换一个不撞名的目录，撞名一律**换名**、不给既有会话续写。
+
+    复用会让新一批产物覆盖旧的、索引被追加成两批混合（2026-10-30 实机踩过）。
+    编号自带撞名后缀时从基础编号重数，不叠后缀（`..._142233_2` 撞上 → `..._142233_3`）。
+    """
+    base = _token_base(str(token))
+    seq = 1
+    while True:
+        path = Path(root) / _suffixed(base, seq)
+        if not path.exists():
+            return path
+        seq += 1
+
+
+def session_token_label(token: str) -> str:
+    """会话编号 → 给人看的 `2026-11-03 14:22:33`；带撞名后缀时追加 ` (2)`。
+
+    不合规的编号（人工改过、带阶段后缀）原样返回——宁可给难读的真名，不猜内容。
+    """
+    name = str(token or "")
+    if not SESSION_TOKEN_RE.match(name):
+        return name
+    day, clock, *rest = name.split("_")
+    label = (f"{day[0:4]}-{day[4:6]}-{day[6:8]} "
+             f"{clock[0:2]}:{clock[2:4]}:{clock[4:6]}")
+    return f"{label} ({rest[0]})" if rest else label
 
 
 def _check_part(value: str, pattern: re.Pattern, what: str) -> str:

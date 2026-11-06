@@ -765,6 +765,8 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
 - `debug/`：会话优先的取证布局 `debug/<会话>/<模块>/<行为>/`（行为目录内 `manifest.json` + `frames.jsonl`；会话根 `index.jsonl` 只记段/阶段/开关）。会话编号进程启动即存在，日志与调试两个开关只决定有没有文件
 
-GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目录管理。
+**会话编号契约**（[session_layout.py](./session_layout.py) 单点）：格式 `%Y%m%d_%H%M%S`，同秒撞名一律**换名**追加 `_2`、`_3`（不复用、不叠后缀），人类可读标签到秒并把撞名序号显式写出。任何按时刻命名的落盘目录（`logs/`、`debug/`、宏组、局产物）都取用它的 `fresh_session_dir()` / `session_token_label()`，不各自再写一套防撞规则——换名这件事发生在调用方，日志级别与归属也由调用方定。
+
+GUI 只显示 INFO 及以上；界面反馈只承载阶段进度与会让本次运行达不到预期的异常（成功回执不占通道、无组散行容器默认收起），判据见 [ADR-0022](../../docs/adr/0022-arch-shell-界面反馈只承载阶段进度与影响结果的异常.md)。记录数据（历史 CSV）同随用户数据目录管理。
 
 **独立调试 sidecar**（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`（等待 stdin JSONL RPC）。
