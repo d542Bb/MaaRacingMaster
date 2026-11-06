@@ -5,7 +5,7 @@
 八炸、P2b 节拍与起跑汇聚）逐条保留，fixture 直读盘上文件。
 
 样本是已归档活动（treasure）的完整真源：navkit 检查器与这些契约仍在维护，但样本
-本身属归档区，故本套件保持 `retired`——现役真源门禁由 CI 的 `check_truth` 扫描
+本身属归档区，故本套件保持 `retired`——现役真源门禁由 CI 的 `truth` 扫描
 `plugins/` 顶层插件承担；考古时显式跑：
 
     .venv/Scripts/python.exe -m pytest maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py -m retired
@@ -132,7 +132,7 @@ def test_spec_colorspace_contract(truth):
 
 
 def _tpls_of(node) -> set[str]:
-    """节点识别模板集（v1 平铺 / v2 嵌套 / Or 分支全兼容，口径同 check_truth）。"""
+    """节点识别模板集（v1 平铺 / v2 嵌套 / Or 分支全兼容，口径同 truth）。"""
     return {t for p in ct.custom_reco_params(node) for t in p.get("templates") or []}
 
 

@@ -224,7 +224,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 **结算后弹窗链的区分口径**：领取分红后可能依次弹出 ①今日最高积分上涨 ②鉴宝等级提升 ③奖励结算（彩蛋），弹几个是随机的（也可能一个不弹）。弹窗会遮满全屏 → 弹窗存在期间检测器一定匹配不到大厅，弹窗全关后大厅才可见，因此"看到大厅"就是"弹窗已关"的可靠证据。三者中只有 ①② 有 ROI，**具体是哪个弹窗由 detector 的** **`_last_hit_roi_key`** **区分**：`daily_high_banner`=今日最高 / `egg_reward_title`=彩蛋 / 无命中=等级提升盲点。这三页在阶段表里合并为单一「结算弹窗」，`_accept_stage` 为此放行「结算弹窗→大厅」的回退。
 
-**结算双阶段 = 同一视觉页的两个状态**（2026-09-15 定案，勿再按"配置错误"处理）：「中标结算」与「领取分红」在 policy 里的感知集与 OCR 集**完全相等**（active 同为 settle\_title/result\_banner/daily\_high\_banner/egg\_reward\_title，ocr 同为 settle\_\* 四个金额信号）——结算页是一块连续画面，阶段语义由本帧命中的转移锚点裁决（`result_banner`（竞拍结果横幅）命中 → 中标结算；`settle_title`（结算页标题）命中 → 领取分红，判定归 detector 优先级扫描，两页切换由 transitions 表 `stage` 列约束）。**调共用锚点的 rect/阈值 = 同时改两页**，标定前两侧画面都要复验。锚点与阶段的 `page` 字段（如 settle/payout）只是 ROI Studio 的**视觉页分组真源**（分组展示 + E09 新增校验 + `check_truth.page_checks` 闭合机检），不参与运行时归属——「哪个阶段扫哪些信号/锚点」唯一真源 = `stages.definitions[*].active/ocr`（ADR-0002），代码中不得另存第二份。
+**结算双阶段 = 同一视觉页的两个状态**（2026-09-15 定案，勿再按"配置错误"处理）：「中标结算」与「领取分红」在 policy 里的感知集与 OCR 集**完全相等**（active 同为 settle\_title/result\_banner/daily\_high\_banner/egg\_reward\_title，ocr 同为 settle\_\* 四个金额信号）——结算页是一块连续画面，阶段语义由本帧命中的转移锚点裁决（`result_banner`（竞拍结果横幅）命中 → 中标结算；`settle_title`（结算页标题）命中 → 领取分红，判定归 detector 优先级扫描，两页切换由 transitions 表 `stage` 列约束）。**调共用锚点的 rect/阈值 = 同时改两页**，标定前两侧画面都要复验。锚点与阶段的 `page` 字段（如 settle/payout）只是 ROI Studio 的**视觉页分组真源**（分组展示 + E09 新增校验 + `truth.page_checks` 闭合机检），不参与运行时归属——「哪个阶段扫哪些信号/锚点」唯一真源 = `stages.definitions[*].active/ocr`（ADR-0002），代码中不得另存第二份。
 
 ***
 

@@ -498,7 +498,7 @@ class TreasureModule(ActivityModule):
     REQUIRES = frozenset({"capture"})
 
     # 阶段清单与显示顺序：真源 = policy.json 的 perception.stages.order（与图 dwell 的
-    # attach._stage 声明、stages.definitions 三方等集，由 check_truth.stage_face_checks 机检）。
+    # attach._stage 声明、stages.definitions 三方等集，由 truth.stage_face_checks 机检）。
     # 代码不再手抄第二份——漂移实证：commit a1a6424 新增「待机」「控制器指引弹窗」两条
     # dwell 时阶段表仍是 13 项，新页面在 GUI 无处可显。
     # 类定义期取不到真源即失败（fail-closed），与 detector「plan 缺失不做常量兜底」同调；

@@ -63,7 +63,7 @@ class PolicyBridge(CustomAction):
     def run(self, context: Any, argv: Any) -> bool:
         # `custom_action_param.table`（treasure.policy.json#policy）的引用由
         # module 侧持有：决策栈在 start() 编译（policy 段缺失 = 启动失败，P1e），
-        # 值由 test_navkit_truth + check_truth 双向锁——桥不做二次解析，
+        # 值由 test_navkit_truth + truth 双向锁——桥不做二次解析，
         # 只前置断言编译事实（未编译 = 装配违序，尽早暴露）。
         assert getattr(self._module, "_policy_plan", None) is not None, \
             "MaaRM_Policy 前置未满足：决策栈未编译"

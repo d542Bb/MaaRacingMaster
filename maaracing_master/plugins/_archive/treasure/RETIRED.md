@@ -13,7 +13,7 @@
 
 - **运行期**：`core/registry` 只扫描 `plugins/` 的直接子目录，本模块不注册、不出现在模块列表，也不再有置灰项。[manifest.py](./manifest.py) 的 `VALID_UNTIL` 保留为「移回顶层后按活动窗口置灰」的兜底判据，不再是归档判据。
 - **分发**：`assemble.ps1` 的 robocopy 以 `/XD _archive` 整目录排除，并在剔除段末尾带反向守卫（stage 里出现该目录即拒绝发布）；不依赖有效期判定。
-- **仓库树**：代码、资源、测试、修复脚本全部保留；`check_truth` 的插件扫描面只含 `plugins/` 顶层带 `module.py` 的目录，本插件归档后不在其内——真源文件仍在树内，复活时随目录回迁重新纳入。
+- **仓库树**：代码、资源、测试、修复脚本全部保留；`truth` 的插件扫描面只含 `plugins/` 顶层带 `module.py` 的目录，本插件归档后不在其内——真源文件仍在树内，复活时随目录回迁重新纳入。
 - **测试**：回归锁位于本插件 `tests/` 目录，带 `retired` 标记；默认收集（`testpaths = ["tests"]`）不含归档目录，考古时显式运行：
   `.venv\Scripts\python.exe -m pytest maaracing_master/plugins/_archive/treasure/tests -m retired`。
   理由见该标记的说明：避免死模块的回归锁反向约束 core 演进。**复活时若不摘标记，回归锁会静默不跑**。
