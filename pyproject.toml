@@ -45,6 +45,7 @@ testpaths = ["tests"]
 addopts = "-ra -m 'not retired'"
 markers = [
     "retired: 已退役活动模块的回归锁，CI 默认不跑",
+    "local_asset: 依赖本机金标数据/模型/硬件的用例，资产缺失即跳过，不计入 CI 保护面",
 ]
 python_files = ["test_*.py", "*_test.py"]
 

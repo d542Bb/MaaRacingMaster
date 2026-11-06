@@ -48,7 +48,6 @@ def proj():
     return s.project_rois()
 
 
-@pytest.mark.retired
 class TestProjection:
     def test_spec_group_counts(self, proj):
         """分类取 kind：template 32 / point 15 / ocr 18（五分类制废除）。
@@ -120,7 +119,6 @@ class TestProjection:
             assert item["node"] == node
 
 
-@pytest.mark.retired
 class TestMirrorAnchors:
     def test_mirror_list_matches_actual_pairs(self, proj):
         """清单必须是「实际两面同值锚点」的精确集合——漂移即联动对象出错。"""

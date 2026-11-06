@@ -21,7 +21,13 @@ import pytest
 from tools.navkit import studio_server as s
 
 
-pytestmark = pytest.mark.retired
+@pytest.fixture(scope="module", autouse=True)
+def _bind_module():
+    """保存管线契约测的是 Studio 本体的写盘语义，与哪个模块在跑无关；
+    这里显式绑定归档模块，因为它是当前唯一完整的 v4 策略表样本。"""
+    s._configure_module("treasure")
+    yield
+    s._configure_module()
 
 
 @pytest.fixture

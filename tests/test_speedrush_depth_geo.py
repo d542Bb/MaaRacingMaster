@@ -1345,6 +1345,7 @@ def _anchor_rows():
     ("000906", -3.6, -2.6, 2.66, 2.96),
     ("000340", -3.14, -2.85, 1.2, 2.2),
 ])
+@pytest.mark.local_asset
 def test_anchor_clean_straight_frames(stem, l_lo, l_hi, r_lo, r_hi):
     if not NPY.exists():
         pytest.skip(f"离线点云缓存缺失：{NPY}")
@@ -1876,6 +1877,7 @@ def _evid_or_skip(dirname: str, seq: int) -> Path:
     return stem
 
 
+@pytest.mark.local_asset
 def test_drivable_grid_frame_anchor_dug_all_unknown():
     """175855/d00055（雨天超车帧）：刀挖格全灰——0 误判锁。
 
@@ -1889,6 +1891,7 @@ def test_drivable_grid_frame_anchor_dug_all_unknown():
     assert (g.state[g.dig_mask] == dg.GRID_UNKNOWN).all(), "挖除格出现非未知态"
 
 
+@pytest.mark.local_asset
 def test_drivable_grid_frame_anchor_clean_frame_baseline():
     """140930/d00009（晴天宽路帧）：近场不可走格数不超基线——防恶化锁。"""
     stem = _evid_or_skip("depth_debug_20261004_140930", 9)

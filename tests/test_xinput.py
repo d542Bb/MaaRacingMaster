@@ -80,6 +80,7 @@ def test_read_state_rejects_out_of_range_slot() -> None:
         assert xinput.read_state(bad) is None
 
 
+@pytest.mark.local_asset
 def test_read_state_returns_none_or_valid_snapshot() -> None:
     """真实调用：无手柄应为 None；有手柄则各字段须落在协议值域内。
 

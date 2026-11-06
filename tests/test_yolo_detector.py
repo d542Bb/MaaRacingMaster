@@ -83,6 +83,7 @@ class TestToDets:
 _KEEP_ALIVE: list = []
 
 
+@pytest.mark.local_asset
 @needs_model
 class TestModelDrivenContract:
     @pytest.fixture(scope="module")
