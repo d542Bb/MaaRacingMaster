@@ -8,7 +8,7 @@ status: active
 ## 素材与方法
 
 - 帧源：维护者提供的 speedrush 真机窗口截图（15 张进入流程 + 2 张驾驶），
-  1281×759 窗口截图，裁出 720p 客户区（`x=1 / y=38` 偏移，见 `docs/CODE_WIKI.md` §9.7）。
+  1281×759 窗口截图，裁出 720p 客户区（`x=1 / y=38` 偏移，见 [`tools/navkit/README.md`](../../navkit/README.md) 的坐标系换算）。
 - 驾驶帧定位：以驾驶页独有的档位图标 `speedrush_drive_gear.png` 做模板匹配，
   >0.85 判为驾驶页。**16 帧中仅 2 帧是驾驶页**（gear 分 1.0000 / 0.9788）。
 - 模型：`archive/racing/resources/models/model.onnx`（racing 时代 3 类微调，coin/car/bonus_car）。
