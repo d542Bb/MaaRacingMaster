@@ -31,7 +31,7 @@ ts_wall_ns/ts_mono_ns`；gap 与控制行带 `type` 键可与数据行区分）�
 |---|---|---|
 | `select_blackout_frames.TRACES` / `SEQ2FID` | speedrush_vision L115-116/L58 起 | 指向布局 B；`probe_s2b_falsify`（L41 导入，L182/187 使用）、`gold_blackout_score`（L38）消费 |
 | `replay_plan.load_rows/scene_of` | speedrush_plan L36-46 | 逐行 json.loads + **按 fid 排序**；`intent_shadow` L30 使用；`scene` 嵌套列结构敏感 |
-| `HudOcr/DEFAULT_RECTS` | speedrush_scoring/probe_hud_ocr.py | HUD 横幅 OCR helper（`probe_extreme_events` L35、`speedrush_geom/probe_repeat_and_flow` 消费），非 trace 加载器 |
+| `HudOcr/DEFAULT_RECTS` | plugins/speedrush/tools/probe_hud_ocr.py | HUD 横幅 OCR helper（`probe_extreme_events` L40、`speedrush_geom/probe_repeat_and_flow` L54 消费），非 trace 加载器 |
 | 布局 A 通用范式 | speedrush_crash 系 | `_resolve(session)`=debug/speedrush+`<session>/trace_*.jsonl` glob 取第一（如 probe_anchor_funnel L34-39）；或 `_load(name)`=`<root>/<name>/trace_<name>.jsonl` 精确名（如 probe_anchor_attribution L42-46）；多数另接受 `.jsonl` 直传 |
 
 ## 汇总表（79 项全量）

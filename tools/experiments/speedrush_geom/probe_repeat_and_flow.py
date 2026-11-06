@@ -49,7 +49,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools" / "experiments" / "speedrush_scoring"))
+sys.path.insert(0, str(ROOT / "maaracing_master" / "plugins" / "speedrush" / "tools"))
 
 from probe_hud_ocr import HudOcr, field_on_dark  # noqa: E402
 from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE  # noqa: E402

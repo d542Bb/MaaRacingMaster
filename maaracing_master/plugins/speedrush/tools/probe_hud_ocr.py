@@ -16,22 +16,20 @@
 **为什么关 det**：ROI 是固定 HUD 文字框，det 属冗余计算（treasure 侧实测单 ROI 从
 ~1062ms 降到 ~12ms）。
 
-**本脚本自包含**（`tools/experiments/README.md` 的目录约定）：不 import `maaracing_master`
-任何代码——OCR 引擎在脚本内最小自建（`HudOcr`），读盘走 PIL（标准像素序），demos 目录
+**本脚本自包含**：不 import `maaracing_master` 任何代码——OCR 引擎在脚本内最小自建（`HudOcr`），读盘走 PIL（标准像素序），demos 目录
 按 `--demos` 或环境变量推导。这样它既不依赖待验证对象，也不受插件自包含契约的牵连。
 
-**区域真源例外：它已不属本目录**（2026-09-17 实时读数落地后搬进插件，见
-`maaracing_master/plugins/speedrush/resources/policy/hud_regions.json`）——插件侧
-`hud.py` 与探针必须读同一份，否则两个消费者各带一份 rect 就会各自漂移。`--rects`
+**区域真源在本插件内**：`resources/policy/hud_regions.json`——插件侧
+`hud.py` 与本探针必须读同一份，否则两个消费者各带一份 rect 就会各自漂移。`--rects`
 默认值即指向那份，仍可用 `--rects` 覆盖。脚本内**代码**（读数判据）保持自包含，
 那份最小引擎副本只服务离线复核，不构成生产口径的第二真源（调参需跟 core 走）。
 
 用法：
-    python tools/experiments/speedrush_scoring/probe_hud_ocr.py scan [--per-session 8]
-    python tools/experiments/speedrush_scoring/probe_hud_ocr.py dump --frame <jpg>
-    python tools/experiments/speedrush_scoring/probe_hud_ocr.py overlay
-    python tools/experiments/speedrush_scoring/probe_hud_ocr.py timeline --session <会话目录>
-    python tools/experiments/speedrush_scoring/probe_hud_ocr.py formula
+    python maaracing_master/plugins/speedrush/tools/probe_hud_ocr.py scan [--per-session 8]
+    python maaracing_master/plugins/speedrush/tools/probe_hud_ocr.py dump --frame <jpg>
+    python maaracing_master/plugins/speedrush/tools/probe_hud_ocr.py overlay
+    python maaracing_master/plugins/speedrush/tools/probe_hud_ocr.py timeline --session <会话目录>
+    python maaracing_master/plugins/speedrush/tools/probe_hud_ocr.py formula
 （`--rects` 缺省 = 插件内区域真源；要试别的区域集时才显式传）
 """
 
@@ -52,7 +50,7 @@ DEMOS = DEFAULT_DEMOS
 
 # 区域真源 = 插件内那份（唯一真源；插件侧 hud.py 读同一文件，见模块 docstring）。
 # 本探针不 import 插件代码，故按仓库相对路径推导。
-DEFAULT_RECTS = (Path(__file__).resolve().parents[3] / "maaracing_master" / "plugins"
+DEFAULT_RECTS = (Path(__file__).resolve().parents[4] / "maaracing_master" / "plugins"
                  / "speedrush" / "resources" / "policy" / "hud_regions.json")
 
 # OCR 前预处理：PP-OCR rec 输入高固定 48px，先超采样到冗余像素再让它降采样，识别率更优；

@@ -5,7 +5,7 @@ status: active
 两个脚本都不产新结论，是两条**已定案**结论的取证 / 量测工具；补这份 README 是因为此前
 目录无索引，脚本只在 docstring 里说明问什么（2026-10-28）。
 
-## `export_gating_marks.py` — 判定落在什么画面上
+## `plugins/speedrush/tools/export_gating_marks.py` — 判定落在什么画面上
 
 把门控日志里的判定帧号导成可直接看的画面拼图，回答「这次判定判早了还是判晚了」。
 

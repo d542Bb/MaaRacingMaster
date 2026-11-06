@@ -14,7 +14,8 @@
 自车道位与目标横位的变化幅度、选择层分布、占用影子在场拍。分成「触发极限」
 与「未触发」两组给分位数，判据差异从对照里读，不预设阈值。
 
-依赖 `probe_hud_ocr.py` 的最小 OCR 引擎与区域真源（同目录，插件 `hud_regions.json`）。
+依赖 `plugins/speedrush/tools/probe_hud_ocr.py` 的最小 OCR 引擎与区域真源
+（`resources/policy/hud_regions.json`）。
 
 用法：
     python tools/experiments/speedrush_scoring/probe_extreme_events.py \
@@ -33,7 +34,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_TOOLS = (Path(__file__).resolve().parents[3] / "maaracing_master"
+          / "plugins" / "speedrush" / "tools")
+sys.path.insert(0, str(_TOOLS))
 from probe_hud_ocr import DEFAULT_RECTS, HudOcr  # noqa: E402
 
 ROOT = (Path(os.environ.get("APPDATA", ".")) / "MaaRacingMaster"

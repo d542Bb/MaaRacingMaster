@@ -38,8 +38,7 @@ FRAME_W, FRAME_H = 320, 180
 # 旧（实验目录）区域真源路径：搬走后任何消费者都不得再引用它
 _STALE_REGION_PATH = "experiments/speedrush_scoring/hud_regions.json"
 _REGION_CONSUMERS = (
-    REPO / "tools" / "experiments" / "speedrush_scoring" / "probe_hud_ocr.py",
-    REPO / "tools" / "experiments" / "speedrush_scoring" / "README.md",
+    REPO / "maaracing_master" / "plugins" / "speedrush" / "tools" / "probe_hud_ocr.py",
     REPO / "tools" / "navkit" / "studio_server.py",
     REPO / "tools" / "navkit" / "README.md",
     REPO / "tools" / "navkit" / "static" / "app.js",

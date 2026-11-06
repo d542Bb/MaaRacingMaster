@@ -24,15 +24,15 @@
     `trusted=True`，靠行内标志是拦不住的）。
 违例点因此有两种解释：读数假了，或规则不成立。工具把它们**都列出来**，不替调用方选。
 
-**本脚本自包含**（实验目录约定，见 `tools/experiments/README.md`）：不 import
-`maaracing_master`。区域真源仍在插件内（唯一的区域真源），本工具只从 `hud_meta.json`
+**本脚本不 import `maaracing_master`**：复盘的标尺必须独立于被复核的实现——判读若复用
+生产代码，工具就只会重复生产侧的错，核对等于没核。区域真源仍在插件内（唯一的区域真源），本工具只从 `hud_meta.json`
 读其指纹用于核对，不复制 rect；出图所需的框在此仅作**裁剪视图**用，不参与判读。
 
 用法：
-    python tools/experiments/speedrush_scoring/review_run.py check --last 2
-    python tools/experiments/speedrush_scoring/review_run.py timeline --session 20260917_200445_p1
-    python tools/experiments/speedrush_scoring/review_run.py windows
-    python tools/experiments/speedrush_scoring/review_run.py sheet --session 20260917_200445_p1
+    python maaracing_master/plugins/speedrush/tools/review_run.py check --last 2
+    python maaracing_master/plugins/speedrush/tools/review_run.py timeline --session 20260917_200445_p1
+    python maaracing_master/plugins/speedrush/tools/review_run.py windows
+    python maaracing_master/plugins/speedrush/tools/review_run.py sheet --session 20260917_200445_p1
 """
 
 from __future__ import annotations

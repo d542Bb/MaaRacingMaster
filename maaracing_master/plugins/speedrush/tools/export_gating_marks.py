@@ -12,7 +12,7 @@
 或复查间隔需要调。**标记帧前后各若干帧的变化过程**比单帧更能说明问题。
 
 用法：
-    .venv/Scripts/python.exe tools/experiments/speedrush_gating/export_gating_marks.py \
+    .venv/Scripts/python.exe maaracing_master/plugins/speedrush/tools/export_gating_marks.py \
         --session "<录制会话目录>" [--log <日志文件>] [--context 4] [--out <输出目录>]
 
 `--session` 指 `data/speedrush/demos/<时间戳>_p<N>/`（含 frames.jsonl 与 frames/）。
@@ -34,7 +34,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 from maaracing_master.core import opencv_utf8_patch  # noqa: F401,E402 —— 中文路径 IO，须先于 cv2 文件操作

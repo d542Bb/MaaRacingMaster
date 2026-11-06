@@ -17,7 +17,7 @@ status: active
 
 - **素材**：`data/speedrush/demos/` 下的已录会话（一轮两阶段各一段，1280×720）。录制帧含完整
   HUD，故**规则实测不必等新实机**——离线即可读数。
-- **读数链路**：`probe_hud_ocr.py`。标定用 `discover`/`scan`（带文本检测，先定位再定 ROI），
+- **读数链路**：`plugins/speedrush/tools/probe_hud_ocr.py`。标定用 `discover`/`scan`（带文本检测，先定位再定 ROI），
   生产口径用 `read`/`timeline`/`formula`（关文本检测，与 treasure OCR 同口径：固定 HUD
   文字框下 det 是冗余计算）。**复盘链路**：`review_run.py`——实时读数落地后，「分从哪来」
   从落盘的 `hud.jsonl` 复算，不再重跑 OCR（同一帧识别两次会给出两个答案）。
@@ -364,32 +364,7 @@ status: active
 里面只有金币金盘与小的紧凑黄块。故要么**并非每个得分事件都弹浮字**，要么浮字短于 15 fps 的采样
 （早期实测单斑只活 **0.13~0.4 s**）。**把这一条判开就是下一件识别工作**，也是提高召回的唯一前置。
 
-## 复核路线（按条目，给维护者逐条核对用）
-
-> **这是派生索引，不是真源**：规则本身归 `RULES.md`（带 `·待复核` 后缀的条目就是待核对的那批），
-> 本节只回答"看哪张图 / 跑哪条命令 / 怎么快速证伪"。核对通过后去掉 `RULES.md` 里的 `·待复核` 即可。
->
-> 下表的命令一律读**插件内**区域真源（探针 `--rects` 缺省即指向它）；凡"要连续序列"的行，
-> 现场入口是实时读数 `hud.jsonl`（`plugins/speedrush/hud.py`，录制会话内，与 `frames.jsonl`
-> 按 `frame_id` 对齐）——它把"面板一出现就连着采"这件事自动化了，不必再用稀疏帧手工复核。
-
-| RULES 条目 | 证据在哪 | 怎么快速证伪 |
-|---|---|---|
-| §4.7 计时器是倒计时、两阶段不对称 | `timeline` 的计时列 + 单调性检验块 | 跑 `timeline`，看计时列递减、违例为 0；阶段 2 段首看它从约 5 分钟往下走 |
-| §4.8 **合计 = 里程 + 30 × 超车** | `formula` 的档位表与残差；`review_run check` 的「公式」列 | 跑 `formula`，看超车 0/1/3/4/5 时「合计−里程」是否为 0/30/90/120/150；跑 `review_run check`，看**定值点**上违例是否为 0 |
-| §4.8 卡片约每 10 秒出现一次、且会淡入（"矮版变体"是误读） | `review_run windows` 的窗口表；`review_run sheet` 的图（爬升行半透明无合计行、定值行实心三行齐） | 跑 `review_run windows`，看周期是否 9~10 秒、跨窗定值是否同量级；跑 `sheet` 看爬升行与定值行的面板形态差别 |
-| §4.8 里程是**该窗口**的量（H2），不是跨窗累计（H1） | 结论 2；`review_run windows` 的「窗内各格 爬升 → 定值」与汇总行 | 跑 `review_run windows`：若各窗定值同量级 → 窗口量；若逐窗递增 → 累计。旧的稀疏帧读数（338 vs 272）不能判（分不清定值/爬升） |
-| §4.8 右上两块面板**会上下互换**，且归属必须**成对判** | 逐帧颜色判定的分段（25–43 / 49–85 / 91–391 / 397–565）；结论 9 | 跑 `overlay`，看两格比分的 `[本机(蓝)]`/`[对手(红)]` 标注是否与画面门牌颜色一致（现在标的是**成对判**的结果，两块必为互补）；`review_run check` 会报"两块同判"这类异常 |
-| §4.8 **「得分速度」只为本方显示** | `review_run timeline` 的速度列与归属列并列 | 跑 `timeline`，看速度列只在本机那一行有值；或在 `overlay` 图上比对两块：对手那一块的速度格是空的（零星小数字是空区假读） |
-| §4.8 左侧合计与右上分数**不可互相换算** | 结论 2、3；`formula` 的「合计 < 里程」假读清单 | 同帧比对左侧合计与右上分数，看两者是否同量级变化。实时读数已把「合计 < 里程」这条过滤器落实并**标记**在行上（`flags` 与字段 `note`，行照旧落盘），消费方按标记剔除即可 |
-| §4.8 浮字**随车移动、不固定** | `find` 的命中坐标（横向跨 x 0.38–0.59） | 跑 `find --window 0.12,0.20,0.92,0.95 --match '\+\s?\d+'`，看命中位置是否分散 |
-| §4.8 事件横幅是**持续显示的连击计数** | `find` 的横幅序列（阶段 2 内 `极限超车` → ×6） | 跑 `find --window 0,0.30,0.45,0.70 --match '极限\|连击'`，看是否连续存在且计数递增 |
-| §4.9 `N米` 是对手车距离、对决策无用 | 维护者口径（2026-09-17） | 你的确认即可；画面证据只到"它随分数差变化" |
-
-`RULES.md` §7 那一批 `[需实测]` 是**尚未测出**的未知项（连击清零条件、极限超车触发、金币车道分布、
-段的边界等），核对方式与素材缺口列在下方缺口表。
-
-## 复盘工具 `review_run.py`（读实时读数，不跑 OCR）
+## 复盘工具 `plugins/speedrush/tools/review_run.py`（读实时读数，不跑 OCR）
 
 探针的 `timeline`/`formula` 是**离线重识别**（读帧、跑 OCR），它只能给稀疏样本；实时读数落地后，
 "这一局的分从哪来"应该从**落盘的读数**复算——同一帧识别两次会给出两个答案，复盘不能再造一次判读。
@@ -453,8 +428,8 @@ OCR 引擎，而 `speedrush` **不能** import `treasure.ocr`（插件自包含�
 ## 复跑
 
 ```bash
-P=tools/experiments/speedrush_scoring/probe_hud_ocr.py
-R=tools/experiments/speedrush_scoring/review_run.py
+P=maaracing_master/plugins/speedrush/tools/probe_hud_ocr.py
+R=maaracing_master/plugins/speedrush/tools/review_run.py
 # 区域集缺省 = 插件内真源（plugins/speedrush/resources/policy/hud_regions.json）
 python $P scan       # 区域候选（带 det，按位置统计）
 python $P dump       --frame <jpg>                 # 框内到底有几块字

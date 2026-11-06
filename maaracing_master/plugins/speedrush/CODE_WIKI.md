@@ -184,7 +184,7 @@
   的读取经实验区统一读取器；HUD/raw/坏帧等帧证据仍在 `debug/speedrush/`（调试总开关）。
 - 门控判定日志带 `frame=`，与 `frames.jsonl` 的 `frame_id` 对齐（日志墙钟只到秒，帧号才是
   可靠的共同坐标）。导出判定时刻的画面用
-  `tools/experiments/speedrush_gating/export_gating_marks.py`。
+  `maaracing_master/plugins/speedrush/tools/export_gating_marks.py`。
 - 帧文件名是**序号**（`raw/000001_raw.jpg` 起，`seq` 从 1 递增），不是帧号；`frame_id`
   只在 `frames.jsonl` 里，两者的桥是那份索引的 `file` 字段。
 - 回合战绩库落 `data/speedrush/speedrush.db`（用户资产，不受 debug/日志清理影响）；
@@ -299,7 +299,7 @@
 （`合计 < 里程`、单字面板读数）是**卡片专用**的形态，随停读一并下线。
 
 **区域真源**：`resources/policy/hud_regions.json`（纯数据、无注释）。它自本模块落地起
-**只此一份**：离线探针 `tools/experiments/speedrush_scoring/probe_hud_ocr.py` 的 `--rects`
+**只此一份**：离线探针 `maaracing_master/plugins/speedrush/tools/probe_hud_ocr.py` 的 `--rects`
 缺省读它——两份 rect 会各自漂移。`load_hud_regions()` 按 `check_truth.rect_checks()` 的同一
 口径校验（4 元数值、[0,1]、`x1<x2`、`y1<y2`），并额外要求**角色的键齐备**（判色带 `pair_*`、
 读数框 `score_{色}_{槽}` / `rate_blue_{槽}`）、且**没有多余的比分/速度键**——半改名的真源
@@ -488,7 +488,7 @@ kind 常量，tracking 复用不复制（禁止第二份真相）。
 
 **边界的免费强判据**（旧栈没有、我们有）：透视正确时直道路缘经 A1 归一后 x_lane
 沿行**恒定**（路缘是过 VP 的直线）——`straight_residual` 就是逐行 x_lane 的散布度，
-弯道帧系统性漂。HSV 黄色范围与形态学沿用旧栈（`archive/racing/loop.py` 口径），
+弯道帧系统性漂。HSV 黄色范围与形态学沿用旧栈口径，
 Hough 整套不要了。扫描带 y_h+30…+230 每 4 行，实测亚毫秒/帧。
 **未验证域如实**：隧道/夜雨黄线褪色未测，validity 只报"检到与否一致"，阈值起值。
 
@@ -957,7 +957,7 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
   `stale_reject`（有锚持续被拒的陈旧重基）/ `hold_stale`（保持拍陈旧重基），
   `None`=未重基。同拍可能有多个候选条件成立，但只有一条分支真正执行，所以记
   执行分支、不记条件布尔；只写 trace，不参与控制。用途是离线归因「横位为什么
-  一步换道」，旧 trace 无此列时只能靠供数证据（见 `tools/experiments/merge_contract`）。
+  一步换道」，旧 trace 无此列时只能靠供数证据（取证见 commit `4637f1a`）。
 - **到达位置归因与到达门影子（2026-10-28）**：trace `attribution` 记录本拍完成
   位置来自哪份路心读数（`NORMAL`/`SHIFT_HELD`/`OTHER`/`UNKNOWN` + 原因、新鲜
   读数 fid/hop、与它的差），`route_shadow` 是同拍同输入再跑一份带到达门的路线
