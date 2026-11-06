@@ -5,6 +5,10 @@
   - 失败态：缺 README / 缺 status / 正式文档引用实验路径 / 死引用 / plan 缺头部三行 /
     隐私（本机绝对路径、本地词表命中），各被对应规则抓到。
 
+R3~R10 的引用完整性按「成对」写：每条新判据至少一条红用例 + 一组合法书写不红的用例
+（包根相对、外部信源、运行期落点、通配与占位符、会话产物样式）——只有失败例的闸门
+会把误报洗成「大家都习惯忽略的那条红」。
+
 本文件在 R4 的扫描对象之外（`CODE_EXCLUDE`）：`_mk` 要在 tmp_path 里搭出真实形状的
 假树，路径必然是分段拼的。夹具仍沿用 `_EP` 拼接，免得哪天排除失效时满屏自指。
 """
@@ -134,6 +138,161 @@ def test_dead_reference_flagged(tmp_path):
     rd.write_text(f"status: active\n\n续作见 {_EP}gone-topic/。\n", encoding="utf-8")
     viol, _ = chk.Checker(tmp_path).scan()
     assert f"R5|{_EP}demo-topic/README.md|gone-topic" in viol
+
+
+# ---- R3 扩面：相对拼写与代码面 ------------------------------------------------
+# 立规实例：ADR-0005 三处 `../plan/…` 指向已清空的工作台文件，只认字面 `docs/plan/`
+# 的检查器一直是绿的；归档插件代码里的 plan 引用同理从不被计过。
+
+def test_plan_reference_relative_spelling_flagged(tmp_path):
+    _mk(tmp_path)
+    d = tmp_path / "docs" / "adr"
+    d.mkdir(parents=True)
+    (d / "0001-choice-x.md").write_text("定案过程见 [方案](../plan/gone-note.md)。\n",
+                                        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any(v.startswith("R3|docs/adr/0001-choice-x.md|") for v in viol)
+
+
+def test_plan_reference_in_code_flagged(tmp_path):
+    _mk(tmp_path)
+    d = tmp_path / "maaracing_master" / "core"
+    d.mkdir(parents=True)
+    (d / "thing.py").write_text('# 口径见 docs/plan/split-note.md\nX = 1\n', encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R3|maaracing_master/core/thing.py|docs/plan/split-note.md" in viol
+
+
+# ---- R8 路径可解析（成对：死路径红 / 各种合法书写不红）------------------------
+
+def _doc(tmp: Path, rel: str, body: str) -> Path:
+    p = tmp / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+def test_dead_markdown_link_flagged(tmp_path):
+    _mk(tmp_path)
+    (tmp_path / "tests").mkdir()
+    _doc(tmp_path, "docs/CODE_WIKI.md", "回归锁见 [tests](../tests/test_gone.py)。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R8|docs/CODE_WIKI.md|../tests/test_gone.py" in viol
+
+
+def test_dead_backtick_path_flagged(tmp_path):
+    _mk(tmp_path)
+    (tmp_path / "tests").mkdir()
+    _doc(tmp_path, "AGENTS.md", "证据在 `tests/test_gone.py`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R8|AGENTS.md|tests/test_gone.py" in viol
+
+
+def test_relative_link_missing_one_level_flagged(tmp_path):
+    """少写一级：换个基准就凑得开，所以显式相对写法只按本文档目录解析。"""
+    _mk(tmp_path)
+    real = tmp_path / "maaracing_master" / "plugins" / "speedrush"
+    real.mkdir(parents=True)
+    (real / "CODE_WIKI.md").write_text("# 现状\n", encoding="utf-8")
+    _doc(tmp_path, "docs/adr/0009-criteria-x.md",
+         "现状见 [CODE_WIKI](../maaracing_master/plugins/speedrush/CODE_WIKI.md)。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R8|docs/adr/0009-criteria-x.md|../maaracing_master/plugins/speedrush/CODE_WIKI.md" in viol
+
+
+def test_live_and_styled_paths_clean(tmp_path):
+    """合法态成对覆盖：现存路径、包根相对写法、外部信源、运行期落点、通配与占位符、
+    会话产物样式——都不该被 R8 误伤（误报会把闸门训成噪音源）。"""
+    _mk(tmp_path)
+    (tmp_path / "tests" / "real.py").parent.mkdir(parents=True)
+    (tmp_path / "tests" / "real.py").write_text("X = 1\n", encoding="utf-8")
+    (tmp_path / "maaracing_master" / "core").mkdir(parents=True)
+    (tmp_path / "maaracing_master" / "core" / "wgcap.py").write_text("X = 2\n", encoding="utf-8")
+    _doc(tmp_path, "docs/CODE_WIKI.md",
+         "现存 `tests/real.py`；包根相对 `core/wgcap.py`；官方文档 `docs/zh_cn/3.1-协议.md`；"
+         "运行期 `framework/config/maa_option.json` 与 `%APPDATA%/MaaRacingMaster/`；"
+         "通配 `plugins/*/module.py`；占位符 `plugins/<id>/resources/policy/x.json`；"
+         "会话产物 `hud/hud_meta.json` 与 `raw/000001_raw.jpg`；目录种类 `resources/`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R8|")], viol
+
+
+# ---- R9 本机不入库面：盘上存在也不合法 ----------------------------------------
+
+def test_local_only_dir_reference_flagged(tmp_path):
+    """`archive/` 在盘上凑巧存在，存在性检查会放行——这一类要靠字面禁令兜住。"""
+    _mk(tmp_path)
+    (tmp_path / "archive" / "racing").mkdir(parents=True)
+    (tmp_path / "archive" / "racing" / "loop.py").write_text("X = 1\n", encoding="utf-8")
+    _doc(tmp_path, "maaracing_master/plugins/speedrush/CODE_WIKI.md",
+         "旧实现在 `archive/racing/loop.py` 里。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R9|maaracing_master/plugins/speedrush/CODE_WIKI.md|archive/racing/loop.py" in viol
+
+
+def test_build_dir_as_code_output_clean(tmp_path):
+    """代码把不入库目录当输出落点是合法用法（build/ 本就是产物根），R9 不判代码面。"""
+    _mk(tmp_path)
+    d = tmp_path / "scripts"
+    d.mkdir()
+    (d / "pack.py").write_text('OUT = REPO / "build" / "release" / "stage"\n', encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R9|")], viol
+
+
+def test_scripts_doc_local_only_reference_flagged(tmp_path):
+    """脚本目录的文档也进 R9 面：那最爱拿本机产物根当证据引用（立规时真实命中）。"""
+    _mk(tmp_path)
+    _doc(tmp_path, "scripts/release/policy.md", "数据源：`build/release/size-report.md`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R9|scripts/release/policy.md|build/release/size-report.md" in viol
+
+
+def test_scripts_doc_backslash_spelling_flagged(tmp_path):
+    """反斜杠拼写同判：Windows 手写文档就用这个，只认斜杠会让禁令在最该抓的写法上空手。"""
+    _mk(tmp_path)
+    _doc(tmp_path, "scripts/release/policy.md", "数据源：`build\\_c1_extract\\bench.json`（已清理）。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R9|scripts/release/policy.md|build/_c1_extract/bench.json" in viol
+
+
+def test_vendored_third_party_docs_not_scanned(tmp_path):
+    """第三方 vendored 文档不进 R8/R9 面：纳入的实测代价是一堆别人家 README 的噪音，
+    闸门一旦常年响在别人的文件上，就没人再看自己仓库的那几条。"""
+    _mk(tmp_path)
+    _doc(tmp_path, "tools/navkit/frontend/node_modules/debug/README.md",
+         "示例见 `examples/node/app.js`，产物在 `build/lib/x.js`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith(("R8|", "R9|"))], viol
+
+
+# ---- R10 脚手架退役世代：只判插件脚手架 ----------------------------------------
+
+def test_scaffold_retired_generation_flagged(tmp_path):
+    _mk(tmp_path)
+    _doc(tmp_path, "templates/plugin/README.md",
+         "导航真源：`plugins/<id>/resources/config/<id>_assets.json`，运行期经 `Assets.load` 直读。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R10|templates/plugin/README.md|Assets.load" in viol
+    assert any(v.startswith("R10|templates/plugin/README.md|_assets.json") for v in viol)
+
+
+def test_retired_word_in_adr_history_clean(tmp_path):
+    """ADR 背景章提退役世代是合法的历史叙述，不在 R10 面内。"""
+    _mk(tmp_path)
+    _doc(tmp_path, "docs/adr/0002-arch-global-x.md", "## 背景\n\nv3 有 `*_assets.json` 与 `global_assets`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R10|")], viol
+
+
+# ---- R1 口径：区内下划线目录不是实验主题 --------------------------------------
+
+def test_intra_area_dir_not_topic(tmp_path):
+    """`_probe_data/` 是区内工作目录，没有 README 不该被判缺入口护栏。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / "_probe_data").mkdir()
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if "R1|_probe_data" in v], viol
 
 
 def test_plan_reference_flagged(tmp_path):
@@ -272,10 +431,10 @@ def test_real_repo_violations_all_baselined():
 
 
 def test_baseline_file_exists_and_key_format():
-    """基线文件在树、键格式合法（R1~R7|对象|标识可选）；空基线=全部退役完成，也合法。"""
+    """基线文件在树、键格式合法（R1~R10|对象|标识可选）；空基线=全部退役完成，也合法。"""
     bl = ROOT / "tools" / "repo_hygiene_baseline.txt"
     assert bl.exists()
     keys = [ln.strip() for ln in bl.read_text(encoding="utf-8").splitlines()
             if ln.strip() and not ln.startswith("#")]
-    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7"}
+    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"}
                and "|" in k for k in keys)
