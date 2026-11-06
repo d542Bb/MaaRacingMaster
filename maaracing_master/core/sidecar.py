@@ -1034,7 +1034,7 @@ class SidecarService:
             "perf": perf,
         }, None)
 
-    # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------
+    # ---------- 活动模块配置（接口为通用 module_config 路由，配置条目随现役插件）----------
 
     def _note_config_meta(self, module_id: str, kind: str, message: str) -> None:
         """同一种配置派生问题只记一次：配置视图会被 1s 轮询反复读取，不能刷屏。"""

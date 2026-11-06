@@ -378,7 +378,7 @@ class Clicker:
                         self._shoo_repeat_count += 1
                         if self._shoo_repeat_count == self.SHOO_REPEAT_WARN_AFTER:
                             logger.log(
-                                f"[鉴宝点击] 避让空转：已连续 {self._shoo_repeat_count} 次导航到 "
+                                f"避让空转：已连续 {self._shoo_repeat_count} 次导航到 "
                                 f"({px_:.2f},{py_:.2f}) 光标仍压住 [{hit_key}]（当前位 "
                                 f"({nx:.2f},{ny:.2f})）——游戏可能不接受该落点，需人工核查",
                                 "WARNING")

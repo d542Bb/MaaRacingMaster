@@ -277,7 +277,7 @@ def _s(file, func, template, level, klass, attribution, reason) -> LogSite:
 
 SITES: list[LogSite] = [
     # ---- core/clicker.py ----
-    _s('core/clicker.py', 'Clicker.auto_shoo', '[鉴宝点击] 避让空转：已连续 {} 次导航到 ({},{}) 光标仍压住 [{}]（当前位 ({},{})）——游戏可能不接受该落点，需人工核查', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/clicker.py', 'Clicker.auto_shoo', '避让空转：已连续 {} 次导航到 ({},{}) 光标仍压住 [{}]（当前位 ({},{})）——游戏可能不接受该落点，需人工核查', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- core/covers.py ----
     _s('core/covers.py', '_declared_file', '[covers] {}: COVER 应为字符串，已忽略: {}', 'WARNING', 'state', 'cross', '封面声明非法属插件配置错误：WARNING 不静默但封面是装饰、不阻断模块；解析在 RPC 线程，无业务组可挂。'),
@@ -316,7 +316,7 @@ SITES: list[LogSite] = [
     _s('core/perf_sampler.py', 'PerfSampler.on_session_closing', '[perf] 线程标签声明未兑现（整场没匹配到线程）：{}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- core/pipeline_logger.py ----
-    _s('core/pipeline_logger.py', 'PipelineLogger.on_node_action', '[Pipeline] {}({}) → 动作❌失败', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/pipeline_logger.py', 'PipelineLogger.on_node_action', '[Pipeline] {} → 动作❌失败', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- core/registry.py ----
     _s('core/registry.py', '_parse_validity', '[registry] 插件 {}: {}，按未声明处理', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),

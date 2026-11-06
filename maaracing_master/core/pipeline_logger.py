@@ -36,25 +36,13 @@ class PipelineLogger(ContextEventSink):
     def _task_name(detail) -> str:
         return getattr(detail, "name", str(detail))
 
-    @staticmethod
-    def _task_desc(name: str) -> str:
-        """给任务名加上中文描述"""
-        descs = {
-            "回合1比赛": "YOLO 赛车控制",
-            "回合1结束": '找"继续"',
-            "回合2准备": '找"放弃本轮"',
-            "确认放弃": '找"继续放弃"',
-        }
-        return descs.get(name, name)
-
     def on_node_recognition(self, context, noti_type, detail):
         ts = NotificationType(noti_type).name
         name = self._task_name(detail)
-        desc = self._task_desc(name)
         hit = getattr(detail, "hit", None)
         if ts == "Succeeded" and hit is not None:
             self._miss_nodes.discard(name)
-            logger.log(f"[Pipeline] {name}({desc}) → 识别{'✅命中' if hit else '未找到'}", "DEBUG")
+            logger.log(f"[Pipeline] {name} → 识别{'✅命中' if hit else '未找到'}", "DEBUG")
         elif ts == "Succeeded":
             # 有结果但没带 hit 细节（如 Custom 识别器的驻留节点）：无结论信息，不记
             self._miss_nodes.discard(name)
@@ -62,16 +50,15 @@ class PipelineLogger(ContextEventSink):
             # Custom 识别器未命中（box=None）即发 Failed → 边沿触发，只记一次
             if name not in self._miss_nodes:
                 self._miss_nodes.add(name)
-                logger.log(f"[Pipeline] {name}({desc}) → 识别未命中（驻留重试）", "DEBUG")
+                logger.log(f"[Pipeline] {name} → 识别未命中（驻留重试）", "DEBUG")
 
     def on_node_action(self, context, noti_type, detail):
         ts = NotificationType(noti_type).name
         name = self._task_name(detail)
-        desc = self._task_desc(name)
         success = getattr(detail, "success", None)
         if ts == "Succeeded" and success is False:
-            logger.log(f"[Pipeline] {name}({desc}) → 动作❌失败", "WARNING")
+            logger.log(f"[Pipeline] {name} → 动作❌失败", "WARNING")
         elif ts == "Succeeded" and success is not None:
-            logger.log(f"[Pipeline] {name}({desc}) → 动作✅成功", "DEBUG")
+            logger.log(f"[Pipeline] {name} → 动作✅成功", "DEBUG")
         # 其余（Starting、无 success 结论的 Succeeded，如 Custom 动作桥）不记：
         # 它们只说明「节点在跑」，不带结果。
