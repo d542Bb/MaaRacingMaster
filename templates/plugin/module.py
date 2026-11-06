@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
-from maaracing_master.core.stage_tracker import StageTracker
 
 
 class SampleModule(ActivityModule):
@@ -41,7 +40,6 @@ class SampleModule(ActivityModule):
 
     def __init__(self, ctx: ActivityContext):
         super().__init__(ctx)
-        self._stage_tracker = StageTracker(self.STAGE_ORDER)
         self._current_stage: str | None = None
 
     # ------------------------------------------------------------------
@@ -60,14 +58,15 @@ class SampleModule(ActivityModule):
             logger.log(f"[{self.NAME}] 窗口连接失败，模块终止", "ERROR")
             return
 
-        # 2. 断点解析：start_from 为 None 从头跑；非法值抛 InvalidStageError
-        #    （GUI 断点下拉只提供合法值，这里让错误显式暴露）
-        if start_from is not None:
-            skip_until = self._stage_tracker.resolve_start_from(start_from)
-            self._current_stage = self.STAGE_ORDER[skip_until]
+        # 2. 断点解析：start_from 为 None 从头跑；非法值显式抛错。controller 启动前会按
+        #    STAGE_ORDER 拦一道，这里仍不静默忽略——模块被别的路径直接调用时错误要看得见
+        if start_from is None:
+            self._current_stage = self.STAGE_ORDER[0]
+        elif start_from in self.STAGE_ORDER:
+            self._current_stage = start_from
             logger.log(f"[{self.NAME}] 从断点开始: 「{self._current_stage}」")
         else:
-            self._current_stage = self.STAGE_ORDER[0]
+            raise ValueError(f"[{self.ID}] 未知断点「{start_from}」，合法值见 STAGE_ORDER")
 
         # 3. 能力取用示例（按需删减）：
         #    frame = self.ctx.capture.screenshot()      # 截图（RGB ndarray，失败返回 None）

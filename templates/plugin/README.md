@@ -21,8 +21,8 @@ templates/plugin/
 ├── module.py            # SampleModule：ActivityModule 最小完整实现
 └── resources/           # 插件专属资源（自包含，随插件分发）
     ├── image/           # 模板图（导航/阶段判定用）
-    ├── pipeline/        # MAA Pipeline JSON（可选，任务驱动型活动）
-    └── config/          # ROI / 资产配置（可选，建议对齐 NavKit schema v3）
+    ├── pipeline/        # 导航图真源：MAA Pipeline 节点 JSON（v4，编辑器与引擎同读一份）
+    └── policy/          # 策略表与感知执行规格真源（`action: "Custom"` 节点指向它）
 ```
 
 ## 启用步骤（复制即装）
@@ -90,9 +90,12 @@ templates/plugin/
 按活动类型从样板增补，均为现成基建：
 
 - **模板匹配 / 归一化 ROI**：`core/template_match.py`、`core/roi_config.py`。
-- **导航真源**：NavKit v3 资产 —— `plugins/<id>/resources/config/<id>_assets.json`（模块段）
-  + `core/resources/config/global_assets.json`（跨模块共用段=大厅骨架），由 `core/navkit`
-  校验与编译，运行期在 Python 侧经 `Assets.load` 直读执行；ROI/资产校准台见 `tools/navkit/`。
+- **导航真源（v4）**：`resources/pipeline/<图>.json` —— 节点 JSON 即真源，编辑器与引擎
+  同读一份，中间没有编译层；局内复杂决策与感知执行规格放 `resources/policy/<表>.json`，
+  由图里的 `action: "Custom"` 节点指向。图闭合、数据面装配与分层红线由
+  `tools/navkit/check_truth.py` 机检（CI 同款），编辑与 ROI 校准台见
+  [tools/navkit/README.md](../../tools/navkit/README.md)；真源组织口径见
+  [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md)。
 - **MAA Pipeline 执行通路**：`core/nav_graph.py`（`NavGraph` + `MaaRM_Template`/`MaaRM_Click` 桥），
   当前未接线（无生产实例化点），留作把跳转图交给框架跑的备选实现。
 - **MAA Pipeline 任务驱动**：`Resource.post_bundle(RES_DIR)` + 自定义
