@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from maaracing_master.core.navkit import FrameTrace, TraceWriter, json_safe
+from maaracing_master.plugins._archive.treasure.core.trace import (
+    FrameTrace,
+    TraceWriter,
+    json_safe,
+)
+
+pytestmark = pytest.mark.retired
 
 
 def test_frame_trace_has_reconstruction_fields():

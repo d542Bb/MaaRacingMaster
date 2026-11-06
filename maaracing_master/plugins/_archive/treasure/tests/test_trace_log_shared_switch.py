@@ -21,7 +21,7 @@ from maaracing_master.core.logger import Logger
 try:
     from maaracing_master.plugins._archive.treasure import module as mod
     from maaracing_master.plugins._archive.treasure.module import TreasureModule
-    from maaracing_master.core.navkit import TraceWriter  # noqa: F401
+    from maaracing_master.plugins._archive.treasure.core.trace import TraceWriter  # noqa: F401
 
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""core/cpu_time.py 平台原语锁定。
+"""归档鉴宝的 CPU 时间原语锁定（随插件下沉，默认不跑）。
 
-只依赖标准库，因此在 CI（只装 pytest、无 maa/opencv）里也会**真实执行**，
-不像鉴宝模块的测试那样整文件跳过。
+只依赖标准库，显式考古时可在任意平台真实执行：
+
+    pytest maaracing_master/plugins/_archive/treasure/tests -m retired
 
 这里锁的是一个具体事故：FILETIME 的 tick 是 100 纳秒，把它写成 `100e-7` 秒
 （= 1e-5）会让 CPU 秒数放大 100 倍，而放大后的数字依然"看着像回事"——
@@ -15,7 +16,12 @@ import time
 
 import pytest
 
-from maaracing_master.core.cpu_time import IS_WINDOWS, process_cpu_seconds
+from maaracing_master.plugins._archive.treasure.core.cpu_time import (
+    IS_WINDOWS,
+    process_cpu_seconds,
+)
+
+pytestmark = pytest.mark.retired
 
 
 def test_module_imports_on_any_platform():

@@ -100,7 +100,7 @@ def _pin_to_p_cores() -> None:
         # 必须 WARNING：这里曾记 DEBUG，导致「绑核从未生效」静默存在了近一个月
         # （psutil 当时不在依赖里 → 每个跑 OCR 的会话都失败一次而无人看见）。
         # 后果：E-core 漂移防护缺位，OCR 尾部耗时在高负载下更易被拉爆；
-        # 兜底消除方式：按 core/cpu_time.py 的口径改走无依赖实现。
+        # 兜底消除方式：按既有的 Win32 直调口径（零依赖）实现。
         logger.log(
             f"[OCR] CPU 亲和性未生效({e})——E-core 漂移防护缺位，"
             "OCR 尾部耗时可能偏高", "WARNING")

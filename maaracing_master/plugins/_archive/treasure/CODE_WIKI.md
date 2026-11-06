@@ -140,7 +140,7 @@
 
   - 写侧不变量：io 三项只由观察线程写、ocr/tick 项只由 Tasker 线程写（各为单写者），`read_perf_snapshot` 可被 sidecar handler 线程直读不加锁。回归锁见 `tests/test_treasure_perf_instrument.py`（含变异检验：退回全局口径会恰使两条校准测试变红）。
 
-  - **进程 CPU 占用**：原语在 [core/cpu\_time.py](../../../core/cpu_time.py)（ctypes `GetProcessTimes`，零依赖、非 Windows 返回 None），core 只给无状态累计秒数，**差分留在本域仪表**（`_sample_cpu` 每 tick 采一次，相邻差 ÷ 墙钟差 → 滑窗 p50/p95/max；多核可 >100%）。取不到时快照 `cpu.available=False`，GUI 按"无此项"渲染，**绝不拿 0% 冒充空闲**。单位坑（FILETIME tick = 100ns = 1e-7 秒，写成 `100e-7` 会放大 100 倍）由 `tests/test_cpu_time.py` 与 `time.process_time()` 对拍锁住——该文件只依赖标准库，CI 上真实执行（不像鉴宝测试整文件跳过）。
+  - **进程 CPU 占用**：原语在 [core/cpu\_time.py](./core/cpu_time.py)（ctypes `GetProcessTimes`，零依赖、非 Windows 返回 None），模块只给无状态累计秒数，**差分留在本域仪表**（`_sample_cpu` 每 tick 采一次，相邻差 ÷ 墙钟差 → 滑窗 p50/p95/max；多核可 >100%）。取不到时快照 `cpu.available=False`，GUI 按"无此项"渲染，**绝不拿 0% 冒充空闲**。单位坑（FILETIME tick = 100ns = 1e-7 秒，写成 `100e-7` 会放大 100 倍）由 `tests/test_cpu_time.py` 与 `time.process_time()` 对拍锁住——该测试随插件归档，默认不跑，考古时显式执行。
 
   - 空汇总噪音已消除：场次边界的汇总**只认 OCR 活动**（预热期常只有几帧落盘、OCR 全 0），但计数无条件在边界清零，防串场。
 

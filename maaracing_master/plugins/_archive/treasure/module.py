@@ -37,7 +37,10 @@ import cv2
 import numpy as np
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
-from maaracing_master.core.cpu_time import logical_core_count, process_cpu_seconds
+from maaracing_master.plugins._archive.treasure.core.cpu_time import (
+    logical_core_count,
+    process_cpu_seconds,
+)
 from maaracing_master.core.stage_tracker import StageTracker
 from maaracing_master.plugins._archive.treasure.store import TreasureStore
 from maaracing_master.plugins._archive.treasure.strategy import (
@@ -60,11 +63,10 @@ from maaracing_master.core.navkit import (
     ROUND_PHASE_STAGE,
     DecisionFacts,
     DecisionSnapshot,
-    FrameTrace,
     StateSnapshot,
-    TraceWriter,
     compile_plan,
 )
+from maaracing_master.plugins._archive.treasure.core.trace import FrameTrace, TraceWriter
 from maaracing_master.plugins._archive.treasure.eggs import (
     EggRewardRecognizer,
     derive_count_rect,

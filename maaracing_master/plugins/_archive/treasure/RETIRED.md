@@ -18,6 +18,7 @@
   `.venv\Scripts\python.exe -m pytest maaracing_master/plugins/_archive/treasure/tests -m retired`。
   理由见该标记的说明：避免死模块的回归锁反向约束 core 演进。**复活时若不摘标记，回归锁会静默不跑**。
 - **修复脚本**：脏数据修复工具在 `tools/repair_treasure_settle_data.py`。
+- **随插件下沉的 core 小件**：`core/cpu_time.py`、`core/trace.py`——二者原先在 `maaracing_master/core/`，使用者只有本插件，故随归档按类下沉；复活时随目录回迁，或按需改回 core。
 
 > **为什么归档区仍是一个可导入的包**：`pytest` 在收集阶段就会导入测试模块，退役用例的
 > import 若失效，`-m 'not retired'` 也救不了——整个默认测试会以收集错误告终。故
@@ -43,11 +44,12 @@
 
 ## 依赖边界（护栏）
 
-本插件 import 的 core 能力**都不可因本插件退役而删除**。判据不是「谁在用」，而是**「它是否为 treasure 而生」——都不是**；本插件只是它们各自的第一个使用者。易被误判为「treasure 专属」而误删的：
+本插件仍在 import 的 core 能力**不因本插件退役而删除**。按「是否为 treasure 而生」重新归位：
 
-- **有意预留的公共骨架**：`core/stage_tracker.py`、`core/cpu_time.py`——二者 docstring 均写明「等第二个使用者」的设计意图，**当前无第二消费者不等于该下沉**。
+- **随插件下沉**：`cpu_time`、`trace`——仅本插件使用，已移入本目录 `core/`，不再占 core 的维护面。
+- **有意预留的公共骨架**：`core/stage_tracker.py`——docstring 写明「等第二个使用者」的设计意图，**当前无第二消费者不等于该下沉**。
 - **有第二消费者**：`core/ocr.py`、`core/paths.py`、`core/nav_graph.py`、`core/debug.py`、`core/logger.py`、`core/base.py`（speedrush 在用）。
-- **有 core 内部消费者**：`core/navkit`（被 `core/nav_graph.py` 引用）。
+- **core 内部消费者**：无。`core/navkit` 的调用方只有本插件与 `tools/navkit/check_truth.py`（开发链）。
 - **通用能力**：`core/template_match.py`、`core/capabilities.py`、`core/clicker.py`。
 
 完整依赖清单以本插件源码的 import 语句为准（L0 真源）；本节只记判据与易误删项，不复制清单。

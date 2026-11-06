@@ -9,7 +9,7 @@ policy.json：`policy` 段声明「当前事实满足条件 → 输出哪个意�
 （EngineContract——接入新模块 = 写新数据面，不改本文件）。
 上游算事实的匹配/策略算法、下游状态副作用的更新逻辑一律留各 plugin。
 
-本模块保持纯标准库，与 v4_source/trace 同级，职责边界：
+本模块保持纯标准库，与 v4_source 同级，职责边界：
 
 - 契约（P0-6 / P0-7）：`EngineContract`（引擎的域合同）、`StateSnapshot`
   （白名单投影）、`DecisionFacts`（冻结快照，PolicyPlan.decide 全程只读）、
