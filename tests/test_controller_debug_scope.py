@@ -2,13 +2,11 @@
 """控制器接入运行级调试流（P0）：作用域必须在上下文/会话释放之前收口。"""
 from __future__ import annotations
 
-import threading
 import types
 
 import pytest
 
 ctl = pytest.importorskip("maaracing_master.core.controller")
-from maaracing_master.core.debug import NavigationDebugger  # noqa: E402 —— importorskip 须先于被门模块导入生效
 
 
 class _Recorder:
@@ -54,18 +52,9 @@ class _FakeModule:
 def _controller(monkeypatch, tmp_path, order):
     rec = _Recorder()
     monkeypatch.setattr(ctl, "logger", rec)
-    c = object.__new__(ctl.MaaRacingMasterController)
-    c._lifecycle_lock = threading.Lock()
-    c.stop_event = threading.Event()
-    c._active_module = None
-    c._running = False
-    c._manual_stop = False
-    c._mute_game_enabled = False
-    c._last_run_natural = False
-    c._last_step_outcome = None
-    c._teardown_failed = False
-    c._step_active = False
-    c._hwnd = 12345
+    monkeypatch.setattr(ctl, "debug_dir", lambda: tmp_path)
+    c = ctl.MaaRacingMasterController()
+    c.adopt_window(12345)
     c.controller = object()
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
     c._destroy_gpad = lambda grp=None: None
@@ -75,7 +64,6 @@ def _controller(monkeypatch, tmp_path, order):
     monkeypatch.setattr(ctl, "create_module", lambda mid, ctx: _FakeModule())
     monkeypatch.setattr(type(c), "ctx",
                         property(lambda self: types.SimpleNamespace(capabilities=set())))
-    c.debug = NavigationDebugger(tmp_path)
     c.debug.begin_run("ctl_test")
     orig_close = c.debug.close_segment
 

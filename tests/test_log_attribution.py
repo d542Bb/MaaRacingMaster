@@ -322,18 +322,8 @@ def _controller_env(tmp_path, monkeypatch, start):
 
     monkeypatch.setattr(ctl, "logger", lg)
     monkeypatch.setattr(ctl, "create_module", lambda mid, ctx: _Module())
-    c = object.__new__(ctl.MaaRacingMasterController)
-    c._lifecycle_lock = threading.Lock()
-    c.stop_event = threading.Event()
-    c._active_module = None
-    c._running = False
-    c._manual_stop = False
-    c._mute_game_enabled = False
-    c._last_run_natural = False
-    c._teardown_failed = False  # 构造器被绕过：收尾失败态默认关（ADR-0018）
-    c._hwnd = 12345
-    c._ctx = None
-    c._wgc_capture = None
+    c = ctl.MaaRacingMasterController()
+    c.adopt_window(12345)
     # 已连接哨兵：connect() 幂等短路，用例不走真实窗口连接
     c.controller = object()
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)

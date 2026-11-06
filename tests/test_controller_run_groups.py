@@ -5,12 +5,11 @@
 行散作裸行。定案：controller 以 session 组收拢两段生命周期，异常路径组以 failure
 收尾（契约 §8 终态：卡片只来自组，散行只剩有意无组的跨切面行）。
 
-手段：object.__new__ 绕开构造器 + 记录桩 logger（带 group()）+ 打桩外设
+手段：构造真实控制器 + 记录桩 logger（带 group()）+ 打桩外设
 （create_module/wgc/手柄/音量），只断言分组形状与顺序，不测各子系统行为。
 """
 from __future__ import annotations
 
-import threading
 import types
 
 import pytest
@@ -85,18 +84,8 @@ class _FakeModule:
 def env(monkeypatch):
     rec = _Recorder()
     monkeypatch.setattr(ctl, "logger", rec)
-    c = object.__new__(ctl.MaaRacingMasterController)
-    c._lifecycle_lock = threading.Lock()
-    c.stop_event = threading.Event()
-    c._active_module = None
-    c._running = False
-    c._manual_stop = False
-    c._mute_game_enabled = False
-    c._last_run_natural = False
-    c._teardown_failed = False  # 构造器被绕过：收尾失败态默认关（ADR-0018）
-    c._hwnd = 12345
-    c._ctx = None
-    c._wgc_capture = None
+    c = ctl.MaaRacingMasterController()
+    c.adopt_window(12345)
     # 已连接哨兵：connect() 幂等短路，用例默认不走真实窗口连接（需要走的路径自行置 None）
     c.controller = object()
     # 桩句柄不是真实窗口：短路校验按“仍有效”处理，用例只关心日志归属
