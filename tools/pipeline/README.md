@@ -15,6 +15,8 @@
 | 只开 MPE（附起 Studio 服务） | `tools/pipeline/mpe.cmd` |
 | 停 MPE 的本地桥 | `tools/pipeline/mpe.cmd --stop` |
 | 停 mpelb + Studio 服务 | `tools/pipeline/studio.cmd --stop` |
+| 查看本地/最新 mpelb | `tools/pipeline/mpe.cmd --check` |
+| 安装/更新项目内 mpelb | `tools/pipeline/mpe.cmd --update` |
 
 `studio.cmd` 流程：探测 `mpelb.exe`（`--mpelb` > `dev/mpelb.exe` > PATH > `%APPDATA%`）→ 隐藏窗口起 LocalBridge（仓库根为 root，端口 26521）→ 隐藏窗口起 Studio 服务（端口 26530）→ 轮询两端口真 LISTENING → 开浏览器两标签（MPE 满幅 + Studio）。`--stop` 把两者一并停掉。
 
@@ -50,7 +52,9 @@ tools/pipeline/
 │   └── static/          # 壳页与两个标签（index.html / app.js / style.css）
 ├── schema/              # pipeline / custom action / custom recognition JSON Schema 三件套
 ├── guides/              # agent 操作规范（mpe-pipeline-edit.md）
-└── dev/                 # 本地工具二进制（mpelb.exe 等，gitignore）
+├── mpelb_update.py      # 按官方 release 清单安装/更新 dev/mpelb.exe（--check / --update）
+├── mpelb_update.cmd     # 更新入口（优先 .venv，缺省回退系统 Python 3）
+└── dev/                 # 本地工具二进制（gitignore；上一版留 mpelb.previous.exe）
 ```
 
 ## 真源
@@ -90,9 +94,9 @@ tools/pipeline/
 
 ## MPE 常见疑惑与排错
 
-面向第一次用 Studio 的开发者。口径：mpelb **1.10.0** + MPE 在线 stable（**两者必须同代**，
-版本号对齐即可，见下方「协议版本不匹配」条）；机器本地配置在
-`%APPDATA%\MaaPipelineEditor\LocalBridge\`（**重装 mpelb 即丢，换机器要重设**）。
+面向第一次用 Studio 的开发者。口径：mpelb 与 MPE 在线 stable **必须同代**；项目内用
+`mpe.cmd --check` 看本地与官方最新、用 `mpe.cmd --update` 更新，不在文档里写死版本号。
+机器本地配置在 `%APPDATA%\MaaPipelineEditor\LocalBridge\`（**重装 mpelb 即丢，换机器要重设**）。
 原理与机检口径见 `guides/mpe-pipeline-edit.md` §5，这里只给能照抄的处置。
 
 **打开 MPE 没几秒 LocalBridge 自己退出了**
@@ -105,13 +109,18 @@ level=error   msg="检测到前后端协议版本不一致，当前前端需求:
 level=error   msg="请更新 MaaPipelineEditor 或 Local Bridge 后重试，后端即将主动退出"
 ```
 
-处置：把 mpelb 升到与 MPE 同版本号。`dev/` 下的 mpelb 是本地工具（gitignore，不入库），
-按 release tag 取对应平台二进制即可（Windows x64 用 `mpelb-windows-amd64.exe`，重命名为
-`mpelb.exe` 放 `dev/`）：
+处置：项目内直接运行 `tools\pipeline\mpe.cmd --update`（或 `studio.cmd --update`）。它读取
+官方 release 清单 `mpe-manifest.json`，校验 SHA256；干净检出没有二进制时直接安装，已安装时
+先把上一版留成 `dev\mpelb.previous.exe`（只留一份）再替换。`--check` 只看不换。更新会先停掉
+正在运行的 mpelb。首次安装只要求机器有 Python 3（仓库开发环境按 CONTRIBUTING 建 `.venv`）。
 
+官方的全局安装/更新（会同时准备 MaaFramework/OCR 运行时并加入 PATH）仍然可用：
+
+```powershell
+irm https://raw.githubusercontent.com/kqcoxn/MaaPipelineEditor/main/scripts/install/install.ps1 | iex
 ```
-https://github.com/kqcoxn/MaaPipelineEditor/releases/download/v<版本>/mpelb-windows-amd64.exe
-```
+
+`raw.githubusercontent.com` 不可达时用项目内 `--update`；它走 GitHub release 资产，不依赖 raw 域。
 
 自检：起 `mpe.cmd` 后看 LocalBridge 的 `lb-*.log`；没有“协议版本不匹配”告警即正常。
 

@@ -78,6 +78,11 @@
 配置与日志都在 `%APPDATA%\MaaPipelineEditor\LocalBridge\`（`config/config.json`、`logs/lb-*.log`），
 **不在仓库内**，换机器/重装要重设一遍：
 
+- **安装/更新 mpelb**：项目内用 `tools\pipeline\mpe.cmd --update`（或 `studio.cmd --update`）。
+  干净检出没有二进制时直接安装；已安装时先把上一版留成 `dev\mpelb.previous.exe`（只留一份）
+  再替换。它读取官方 release 清单并校验 SHA256，`--check` 只看不换。官方全局安装/更新会另外
+  准备 MaaFramework/OCR 运行时，按需使用。
+
 - **MaaFramework 库路径**（不设则 MFW 侧功能不可用，文件编辑不受影响）：
   `tools\pipeline\dev\mpelb.exe config set-lib "<repo>\.venv\Lib\site-packages\maa\bin"`
   （该 bin 目录含 `MaaFramework.dll`，版本随 `.venv`；`set-lib` 会同时置 `maafw.enabled=true`）。

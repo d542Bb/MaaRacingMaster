@@ -8,6 +8,8 @@ rem    mpe.cmd                          defaults (root=repo, port=26521)
 rem    mpe.cmd --root <dir> --port <n>  override root / port
 rem    mpe.cmd --mpelb <exe>            explicit mpelb path
 rem    mpe.cmd --stop                   kill mpelb started by this tool
+rem    mpe.cmd --check                  show local vs latest mpelb
+rem    mpe.cmd --update                 download, verify and replace dev\mpelb.exe
 rem  mpelb lookup: --mpelb > tools/pipeline/dev/mpelb.exe > PATH > %APPDATA%
 rem  NOTE: keep this file ASCII-only with CRLF line endings. cmd's batch
 rem  parser byte-seeks and garbles the script when non-ASCII bytes mix with
@@ -21,6 +23,8 @@ set "OVERRIDE="
 
 :parse
 if "%~1"=="" goto done_parse
+if /i "%~1"=="--check"  ( set "MPELB_ACTION=check"  & goto mpelb_action )
+if /i "%~1"=="--update" ( set "MPELB_ACTION=update" & goto mpelb_action )
 if /i "%~1"=="--root"  ( set "ROOT=%~2"         & shift )
 if /i "%~1"=="--port"  ( set "PORT=%~2"         & shift )
 if /i "%~1"=="--mpelb" ( set "OVERRIDE=%~2"     & shift )
@@ -87,6 +91,10 @@ echo [MPE] Opened Studio on http://127.0.0.1:%POLICY_PORT%/ (replay + ROI).
 echo [MPE] Use "mpe.cmd --stop" to stop the LocalBridge.
 exit /b 0
 
+:mpelb_action
+call "%~dp0mpelb_update.cmd" --%MPELB_ACTION%
+exit /b %ERRORLEVEL%
+
 :stop_only
 echo [MPE] stopping mpelb...
 taskkill /f /im mpelb.exe >nul 2>&1
@@ -95,5 +103,5 @@ exit /b 0
 
 :usage
 echo.
-echo Usage: mpe.cmd [--root ^<dir^>] [--port ^<n^>] [--mpelb ^<exe^>] [--stop]
+echo Usage: mpe.cmd [--root ^<dir^>] [--port ^<n^>] [--mpelb ^<exe^>] [--check^|--update] [--stop]
 exit /b 1

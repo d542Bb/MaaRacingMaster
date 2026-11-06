@@ -10,6 +10,8 @@ rem    studio.cmd --root <dir> --port <n>      override root / LocalBridge port
 rem    studio.cmd --studio-port <n>            override Studio server port
 rem    studio.cmd --mpelb <exe>                explicit mpelb path
 rem    studio.cmd --stop                       kill mpelb AND the studio server
+rem    studio.cmd --check                      show local vs latest mpelb
+rem    studio.cmd --update                     download, verify and replace dev\mpelb.exe
 rem  mpelb lookup: --mpelb > tools/pipeline/dev/mpelb.exe > PATH > %APPDATA%
 rem  NOTE: keep this file ASCII-only with CRLF line endings. cmd's batch
 rem  parser byte-seeks and garbles the script when non-ASCII bytes mix with
@@ -24,6 +26,8 @@ set "OVERRIDE="
 
 :parse
 if "%~1"=="" goto done_parse
+if /i "%~1"=="--check"  ( set "MPELB_ACTION=check"  & goto mpelb_action )
+if /i "%~1"=="--update" ( set "MPELB_ACTION=update" & goto mpelb_action )
 if /i "%~1"=="--root"        ( set "ROOT=%~2"        & shift )
 if /i "%~1"=="--port"        ( set "LB_PORT=%~2"     & shift )
 if /i "%~1"=="--studio-port" ( set "STUDIO_PORT=%~2" & shift )
@@ -92,6 +96,10 @@ echo [studio] Opened Studio shell on http://127.0.0.1:%STUDIO_PORT%/
 echo [studio] Use "studio.cmd --stop" to stop mpelb and the studio server.
 exit /b 0
 
+:mpelb_action
+call "%~dp0mpelb_update.cmd" --%MPELB_ACTION%
+exit /b %ERRORLEVEL%
+
 :stop_only
 echo [studio] stopping mpelb...
 taskkill /f /im mpelb.exe >nul 2>&1
@@ -102,5 +110,5 @@ exit /b 0
 
 :usage
 echo.
-echo Usage: studio.cmd [--root ^<dir^>] [--port ^<n^>] [--studio-port ^<n^>] [--mpelb ^<exe^>] [--stop]
+echo Usage: studio.cmd [--root ^<dir^>] [--port ^<n^>] [--studio-port ^<n^>] [--mpelb ^<exe^>] [--check^|--update] [--stop]
 exit /b 1
