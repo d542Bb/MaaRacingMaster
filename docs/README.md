@@ -1,7 +1,7 @@
 # docs — 信源文档根
 
 > **本文是什么**：`docs/` 的目录索引与**文档写作规范**——有哪些文档、各是什么信源等级、新文档怎么写（文档头 / 指针纪律 / 数值禁令 / plan 规范）。
-> **本文不是什么**：不是项目导航（见 [CODE_WIKI.md](./CODE_WIKI.md)）；不是协作守则与信源路由（见 [AGENTS.md](../AGENTS.md)）；不是架构决策的理由（见 [adr/](./adr/README.md)）。
+> **本文不是什么**：不是项目导航（见 [CODE_WIKI.md](./CODE_WIKI.md)）；不是协作守则与知识路由（见 [AGENTS.md](../AGENTS.md)）；不是架构决策的理由（见 [adr/](./adr/README.md)）。
 > **信源等级**：L1（写作规范部分）/ L3（索引部分）—— 可作「文档怎么写、该放哪」的直接依据；不得作为技术事实的依据（回其 home）。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)；本文只补充文档写作特有的约束。
 
@@ -11,13 +11,12 @@
 |---|---|---|
 | [CODE_WIKI.md](./CODE_WIKI.md) | L3 | 项目地图与导航（含「我要改 X，应该去哪里」） |
 | [MAAFW_GUIDE.md](./MAAFW_GUIDE.md) | L2 | MaaFW 能力签名、协议口径与红线 |
-| [NAVKIT_V4_PLAN.md](./NAVKIT_V4_PLAN.md) | §1 = L1；§9–§12 = L4 | 版本宪法（最高规则）+ v4 规格 + 迁移史 |
+| [NAVKIT_V4_PLAN.md](./NAVKIT_V4_PLAN.md) | §1 = L1；§0、§9–§12 = L4 | 版本宪法（最高规则）+ v4 规格 + 迁移史 |
 | [SELF_CHECK.md](./SELF_CHECK.md) | L3 | 环境与启动的分步验收清单 |
 | [adr/](./adr/README.md) | L1 | 架构决策与状态（准入条件、状态机见其 README） |
 | [announcement.md](./announcement.md) | L1 | 公告通知卡规范 |
 | [update_log.md](./update_log.md) | L4 | 面向玩家的更新说明（Release 正文由此抽取） |
 | [plan/](./plan/) | — | 一次性**工作台**（gitignore 不入库；只能向上产出，禁止被正式文档引用；完成即删） |
-| [design/](./design/) | — | 前端设计稿（pages / token） |
 
 项目级导航（跨 `docs/`、`apps/`、`tools/` 的入口）见 [CODE_WIKI.md](./CODE_WIKI.md)；等级定义与冲突判据唯一载于 [AGENTS.md](../AGENTS.md)「知识路由」。
 

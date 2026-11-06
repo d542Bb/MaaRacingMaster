@@ -12,6 +12,8 @@ dependencies = [
     "numpy",
     "opencv-python",
     "onnxruntime-directml",
+    "rapidocr>=3.9.2,<4",
+    "psutil>=5.9.0,<8",
     "vgamepad",
     "windows-capture",
     "MaaFw",

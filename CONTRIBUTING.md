@@ -6,7 +6,7 @@
 
 欢迎来到 **MaaRacingMaster** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **极速狂飙**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
 
-在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与信源路由见 [AGENTS.md](AGENTS.md)。
+在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与知识路由见 [AGENTS.md](AGENTS.md)。
 
 > **⚠️ 合规红线（必须遵守）**
 > 本项目为游戏自动化技术研究与学习项目，**严禁**用于代练、外挂、作弊、刷榜或任何影响游戏公平与服务器排名的用途。所有贡献必须服务于"技术学习与个人效率工具"这一定位。详见 [README 免责声明](README.md#免责与合规声明)。
@@ -47,7 +47,7 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
-- 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
+- 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
 - 独立调试 sidecar（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`
 - 调试工具位于 `tools/`（训练 / 分析 / 调试分类）
 
