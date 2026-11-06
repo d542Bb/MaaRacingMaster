@@ -4,7 +4,7 @@
 YOLO 预标脚本：用现有模型自动生成标签文件（.txt），再手动补漏
 
 用法：
-    python tools/training/auto_label.py
+    python maaracing_master/plugins/speedrush/tools/training/auto_label.py
 
 输出：在图片同目录下生成同名的 .txt 标签文件
       格式：class_id x_center y_center width height（归一化 0~1）
@@ -16,17 +16,18 @@ import sys
 from pathlib import Path
 
 # 把项目根目录加入 path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+repo_root = Path(__file__).resolve().parents[5]
+sys.path.insert(0, str(repo_root))
 
-import cv2
-from maaracing_master.core.yolo_detector import YOLODetector
+import cv2  # noqa: E402
+from maaracing_master.core.yolo_detector import YOLODetector  # noqa: E402
 
 
 def main():
     # ── 配置 ──
-    img_dir = Path(__file__).resolve().parent.parent.parent / "training"
-    model_path = (Path(__file__).resolve().parent.parent.parent
-                  / "archive" / "racing" / "resources" / "onnx" / "model.onnx")
+    img_dir = repo_root / "training"
+    model_path = (repo_root / "maaracing_master" / "plugins" / "speedrush"
+                  / "resources" / "models" / "perception" / "model.onnx")
 
     if not model_path.exists():
         print(f"模型不存在: {model_path}")

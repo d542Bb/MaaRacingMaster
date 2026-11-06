@@ -16,7 +16,7 @@
 归档鉴宝时期的 policy 交叉校验助手（cross_checks / anchor_face_checks /
 stage_face_checks / page_checks）保留给离线工具做历史数据核对，主入口不再扫描策略表。
 
-用法：python tools/navkit/truth.py    （纯标准库，CI 零依赖直接运行）
+用法：python tools/pipeline/truth.py    （纯标准库，CI 零依赖直接运行）
 """
 from __future__ import annotations
 

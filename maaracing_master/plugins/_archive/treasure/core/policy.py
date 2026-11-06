@@ -21,7 +21,7 @@ policy.json：`policy` 段声明「当前事实满足条件 → 输出哪个意�
 - 数据与执行：`Policies`（schema 解析）、`PolicyPlan`（启动编译的不可变索引，
   运行时禁止 json lookup / 表达式解析，规则匹配复杂度 O(#rules)）。
 - 校验：P01-P09（结构性错误硬阻断，语义告警可配置）；真源自洽互洽
-  由 `tools/navkit/truth.py`（CI 闸门）承担。
+  由 `tools/pipeline/truth.py`（CI 闸门）承担。
 """
 from __future__ import annotations
 

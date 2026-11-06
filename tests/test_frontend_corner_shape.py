@@ -17,7 +17,7 @@
    同时锁住「JS 不再自己裁轮廓」——卡片轮廓必须来自 CSS，否则阴影/边框又会被裁掉。
 
 局限：源码文本断言只能证明「写法没越界」，不证明观感。观感由
-``tools/measure_corner_shape.py`` 量（面积比、轮廓偏差），再由人开一次真机确认。
+``apps/MaaRacingMaster.Shell/tools/measure_corner_shape.py`` 量（面积比、轮廓偏差），再由人开一次真机确认。
 """
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def test_gallery_radius_is_the_measured_equivalent():
     """选卡卡片半径 20px 是与原 G2@10 等效的实测值，不是随手取的。
 
     面积解 20.3、45° 切深解 21.1、完整轮廓最优 20.5 —— 取整到 20，实测轮廓偏差
-    0.46px。改这个数就等于改观感，必须重跑 tools/measure_corner_shape.py。
+    0.46px。改这个数就等于改观感，必须重跑 apps/MaaRacingMaster.Shell/tools/measure_corner_shape.py。
     """
     css = STYLE.read_text(encoding="utf-8")
     assert "--gal-radius: 20px" in css, "选卡半径被改动，需重跑轮廓等效测量"

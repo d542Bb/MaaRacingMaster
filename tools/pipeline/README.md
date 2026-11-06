@@ -1,30 +1,30 @@
-# NavKit 工具链（v5 会话布局）
+# Pipeline 工具链（MPE + Studio + 校验）
 
-> **本文是什么**：NavKit 工具链的使用与流程——入口命令、Studio 两页、真源文件位置、模板图采集工作流、校验器护栏、MPE 排错。
+> **本文是什么**：pipeline 真源的编辑与取证工具——入口命令、Studio 两页、真源文件位置、模板图采集工作流、校验器护栏、MPE 排错。
 > **本文不是什么**：不是真源组织的规则与理由（见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向) / [ADR-0001](../../docs/adr/0001-arch-global-分层靠引用方向不靠目录.md)）；不是引擎侧装配契约（见 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md)）；不是节点 schema 定义（见 [NAVKIT_V4_PLAN.md §2](../../docs/NAVKIT_V4_PLAN.md)）。
 > **信源等级**：L2 —— 可作「工具怎么用、资产怎么采、校验怎么跑」的直接依据；不得作为真源规则（L1）与节点/锚点取值（L0）的最终依据。
 > **真源路由**：节点真源 = `plugins/*/resources/pipeline/**` 与 `core/resources/**`（本文只写位置，不复制取值）；校验项 = [`truth.py`](./truth.py)。
 
-> 画布编辑由 MPE 承担（round-trip 保真已实证）；回放预览与 ROI 调整由 `tools/navkit/studio/` 的单端口两页服务承担。
+> 画布编辑由 MPE 承担（round-trip 保真已实证）；回放预览与 ROI 调整由 `tools/pipeline/studio/` 的单端口两页服务承担。
 
 ## 入口
 
 | 目的 | 命令 |
 | --- | --- |
-| 打开完整工作台（MPE + 回放 / ROI，零控制台弹窗） | `tools/navkit/studio.cmd` |
-| 只开 MPE（附起 Studio 服务） | `tools/navkit/mpe.cmd` |
-| 停 MPE 的本地桥 | `tools/navkit/mpe.cmd --stop` |
-| 停 mpelb + Studio 服务 | `tools/navkit/studio.cmd --stop` |
+| 打开完整工作台（MPE + 回放 / ROI，零控制台弹窗） | `tools/pipeline/studio.cmd` |
+| 只开 MPE（附起 Studio 服务） | `tools/pipeline/mpe.cmd` |
+| 停 MPE 的本地桥 | `tools/pipeline/mpe.cmd --stop` |
+| 停 mpelb + Studio 服务 | `tools/pipeline/studio.cmd --stop` |
 
 `studio.cmd` 流程：探测 `mpelb.exe`（`--mpelb` > `dev/mpelb.exe` > PATH > `%APPDATA%`）→ 隐藏窗口起 LocalBridge（仓库根为 root，端口 26521）→ 隐藏窗口起 Studio 服务（端口 26530）→ 轮询两端口真 LISTENING → 开浏览器两标签（MPE 满幅 + Studio）。`--stop` 把两者一并停掉。
 
 Studio 服务在页面心跳停止 `--idle-exit` 秒（默认 15）后自动退出；脚本/curl 直接调 API 时每次请求都会续期，需要常驻就传 `--idle-exit 0`。
 
-**编辑真源请优先在 MPE 里做**；agent/脚本直改 JSON + 跑校验同样是合法路径（见 `skills/mpe-pipeline-edit.md`）。
+**编辑真源请优先在 MPE 里做**；agent/脚本直改 JSON + 跑校验同样是合法路径（见 `guides/mpe-pipeline-edit.md`）。
 
 ## Studio 两页
 
-`python -m tools.navkit.studio.server` 一个进程承载两页，浏览器只开 `http://127.0.0.1:26530/`：
+`python -m tools.pipeline.studio.server` 一个进程承载两页，浏览器只开 `http://127.0.0.1:26530/`：
 
 | 路径 | 页 |
 | --- | --- |
@@ -39,7 +39,7 @@ Studio 服务在页面心跳停止 `--idle-exit` 秒（默认 15）后自动退�
 ## 目录
 
 ```
-tools/navkit/
+tools/pipeline/
 ├── studio.cmd           # 完整工作台入口（mpelb + Studio 均隐藏窗口；必须 ASCII+CRLF）
 ├── mpe.cmd              # MPE 入口（必须 ASCII+CRLF，见文件头 NOTE）
 ├── truth.py             # 真源自洽校验（图闭合/分层红线/几何；CI 同款）
@@ -49,7 +49,7 @@ tools/navkit/
 │   ├── nodes.py         # 节点矩形索引与文本替换写盘 + 校验回滚
 │   └── static/          # 壳页与两个标签（index.html / app.js / style.css）
 ├── schema/              # pipeline / custom action / custom recognition JSON Schema 三件套
-├── skills/              # agent 操作规范（mpe-pipeline-edit.md）
+├── guides/              # agent 操作规范（mpe-pipeline-edit.md）
 └── dev/                 # 本地工具二进制（mpelb.exe 等，gitignore）
 ```
 
@@ -60,7 +60,7 @@ tools/navkit/
 - 启动步骤自有链：`maaracing_master/core/resources/startup/` —— （`pipeline.json` + `image/`）。有终点、有业务归属，由 `LaunchGameStep` 显式加载，**不进**共用目录（否则会被所有模块的导航图一起并入）。规则见该目录下的 `README.md`，决策见 ADR-0018
 - 归档鉴宝的图与策略表仍在 `plugins/_archive/treasure/resources/`；默认发现不扫归档区
 
-校验（CI 同款）：`python tools/navkit/truth.py`
+校验（CI 同款）：`python tools/pipeline/truth.py`
 
 > **纯锚点形态**：`attach._anchor_only` 的节点必须被引用或声明模块直驱；节点名全城唯一、无命名空间，core/plugin 的分离靠引用方向单向守住。
 
@@ -93,7 +93,7 @@ tools/navkit/
 面向第一次用 Studio 的开发者。口径：mpelb **1.10.0** + MPE 在线 stable（**两者必须同代**，
 版本号对齐即可，见下方「协议版本不匹配」条）；机器本地配置在
 `%APPDATA%\MaaPipelineEditor\LocalBridge\`（**重装 mpelb 即丢，换机器要重设**）。
-原理与机检口径见 `skills/mpe-pipeline-edit.md` §5，这里只给能照抄的处置。
+原理与机检口径见 `guides/mpe-pipeline-edit.md` §5，这里只给能照抄的处置。
 
 **打开 MPE 没几秒 LocalBridge 自己退出了**
 先怀疑**协议版本不匹配**：MPE 在线版每次大版本更新都会抬高 LocalBridge 协议要求，本地 mpelb
@@ -113,13 +113,7 @@ level=error   msg="请更新 MaaPipelineEditor 或 Local Bridge 后重试，后�
 https://github.com/kqcoxn/MaaPipelineEditor/releases/download/v<版本>/mpelb-windows-amd64.exe
 ```
 
-自检（起隔离端口 + WS 握手，不碰正在用的实例）：
-
-```powershell
-.venv\Scripts\python.exe tools\experiments\v4-p3-studio\diag_lb_protocol_handshake.py
-```
-
-期望输出 `协议版本: 本地=1.5.0 要求=1.5.0 success=True -> 匹配` 与 `mpelb 进程存活: True`。
+自检：起 `mpe.cmd` 后看 LocalBridge 的 `lb-*.log`；没有“协议版本不匹配”告警即正常。
 
 **首次打开弹"新手引导"答题，挡住工作面**
 在浏览器控制台执行 `mpedev("skipNewcomer")` 即可跳过。答过一次后 MPE 自己会提供跳过入口
@@ -127,7 +121,7 @@ https://github.com/kqcoxn/MaaPipelineEditor/releases/download/v<版本>/mpelb-wi
 
 **打开 MPE 不会自动定位到文件，得手动在文件面板里点**
 正常行为：mpelb 只负责把真源**列进**文件面板，不会自动打开任何一个；MPE 会按浏览器本地记录
-恢复"上次成功打开的文件"。所以**手点一次** `treasure.entry.json`（或 `treasure.json`），
+恢复"上次成功打开的文件"。所以**手点一次**你要编辑的真源（例如 speedrush 的图或归档鉴宝的入口图），
 之后自动定位就恢复并记住它。无痕窗口、换浏览器、IDE 内嵌 simple browser 的新会话都留不下这条记录。
 
 **"我明明没点保存，文件怎么被 MPE 改了？"**
@@ -142,7 +136,7 @@ https://github.com/kqcoxn/MaaPipelineEditor/releases/download/v<版本>/mpelb-wi
 
 ```powershell
 # 基线：记下真源当前的修改状态
-git status --short -- maaracing_master/plugins/_archive/treasure/resources/pipeline
+git status --short -- maaracing_master/plugins
 # ① 只打开文件、什么都不动，等几分钟后重跑上面那条——无变化 = 不存在纯定时自动保存
 # ② 在画布上拖动一个节点（不改任何字段），再查后端日志：
 Select-String -Path "$env:APPDATA\MaaPipelineEditor\LocalBridge\logs\lb-*.log" -Pattern '文件已保存'
@@ -173,16 +167,16 @@ Select-String -Path "$env:APPDATA\MaaPipelineEditor\LocalBridge\logs\lb-*.log" -
 只影响在 MPE 里直接跑识别/调试，文件编辑不受影响。要消掉：
 
 ```powershell
-tools\navkit\dev\mpelb.exe config set-lib "<仓库根>\.venv\Lib\site-packages\maa\bin"
+tools\pipeline\dev\mpelb.exe config set-lib "<仓库根>\.venv\Lib\site-packages\maa\bin"
 ```
 
 该目录含 `MaaFramework.dll`，版本随 `.venv`（maafw 5.12.3）。`set-lib` 会顺带置 `maafw.enabled=true`。
 OCR 资源路径按需另配 `config set-resource`——`.venv` 的 maa 包里没有 `resource/` 目录，
 不配则原生 OCR 不可用（MPE 前端 OCR 仍可用），日志那句 WARN 也这么写。
 
-**文件面板里混进退役图（工作树根下那个未入库的旧归档目录里的图）**
+**文件面板里混进退役图**
 mpelb 只索引 `pipeline` 目录下的 json，而它的 `file.exclude` 默认**不含** **`archive`**。已在
-`config.json` 里加上，现在索引 2 个文件 = 两个真源。自己机器上没加过的话补一下。
+`config.json` 里加上；自己机器上没加过的话补一下。索引文件数随真源变化，不在这里记。
 
 **改完** **`config.json`** **后 mpelb 直接起不来、端口不监听**
 先怀疑写进了 **UTF-8 BOM**（其次是 JSON 语法被改坏）：mpelb（Go/viper）遇 BOM 静默退出，只留一句
@@ -199,10 +193,9 @@ if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { [IO.File]::WriteAl
 
 **想知道配置/日志在哪**
 不用手翻目录：`mpelb config open`（配置）、`mpelb config open-log`（日志）、`mpelb info`（路径）。
-日志 INFO 级**不打请求路径**，要查越界的具体路径就 `--log-level DEBUG` 重起，
-或自连 WS 探（可复用 `tools/navkit/diag_lb_ws_permission.py` 里的
-`ws_connect` / `ws_send` / `FrameReader` / `read_until_response`）。
+日志 INFO 级**不打请求路径**，要查越界的具体路径就 `--log-level DEBUG` 重起，复现一次后
+按返回码判断；需要自连 WS 时，客户端逻辑可从 git 历史里的旧诊断脚本取回。
 
 **只想起 LocalBridge 不起 Studio 服务**
-`mpe.cmd` 会一并起两者（26521 / 26530）。只要文件管理就直接跑 `dev\mpelb.exe --root <仓库根> --port 26521`；
+`mpe.cmd` 会一并起两者（26521 / 26530）。只要文件管理就直接跑 `tools\pipeline\dev\mpelb.exe --root <仓库根> --port 26521`；
 停服务用 `mpe.cmd --stop`（只停 mpelb）或 `studio.cmd --stop`（mpelb + Studio 服务一起停）。

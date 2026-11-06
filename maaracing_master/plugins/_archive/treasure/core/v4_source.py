@@ -67,7 +67,7 @@ class Anchor:
     """policy.json `perception.spec` 单条锚点的内存形态。"""
 
     # 注：policy JSON 里锚点的 `page` 字段是 ROI Studio 编辑器侧的视觉页分组
-    # （分组展示 + E09 校验消费，机检见 tools/navkit/truth.page_checks），
+    # （分组展示 + E09 校验消费，机检见 tools/pipeline/truth.page_checks），
     # 不是运行时归属真源——「阶段 → 信号/锚点」唯一真源是 definitions[*].active/ocr，
     # 故此处不解析进内存对象（ADR-0002 真源单一）。
     name: str

@@ -8,13 +8,13 @@
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../../AGENTS.md)；本文只补充本域特有约束。
 >
 > **先读**：[RULES.md](./RULES.md) —— 游戏规则事实（操作路径 / 界面 / 结算 / 驾驶画面）。
-> 主文档：[docs/CODE_WIKI.md](../../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 调试 / GUI）；模板采集通用纪律见 [tools/navkit/README.md](../../../tools/navkit/README.md)。
+> 主文档：[docs/CODE_WIKI.md](../../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 调试 / GUI）；模板采集通用纪律见 [tools/pipeline/README.md](../../../tools/pipeline/README.md)。
 
 ***
 
 ## 1. 驾驶页锚点：齿轮图标与偏移校正
 
-通用采集纪律（半透明元素、裁剪、命名、坐标系换算）见 [`tools/navkit/README.md`](../../../tools/navkit/README.md)；**本域的具体证据与数据
+通用采集纪律（半透明元素、裁剪、命名、坐标系换算）见 [`tools/pipeline/README.md`](../../../tools/pipeline/README.md)；**本域的具体证据与数据
 在此，采集纪律文档不复述**。
 
 **不要用 HUD 上的半透明文字作锚点。** 它压在动态画布上，像素逐帧与背景混合——两种天光下
@@ -43,7 +43,7 @@
 2. **"半透明不行 → 换不透明图标"只解决了半个问题。** 背景会从"颜色"这一侧回到分数里；
    只换图标而不改匹配口径或标定方式，同一个病会再犯。
 
-**当前缺口**：只有单锚点。可选兜底（未实施）是多锚点 Or 组合（采集纪律见 [`tools/navkit/README.md`](../../../tools/navkit/README.md)），或直接读 HUD 上的 `阶段:N`
+**当前缺口**：只有单锚点。可选兜底（未实施）是多锚点 Or 组合（采集纪律见 [`tools/pipeline/README.md`](../../../tools/pipeline/README.md)），或直接读 HUD 上的 `阶段:N`
 文字——那是**事实**而非推断，但它半透明，只能走 OCR，不能走模板匹配。
 
 ## 2. 驾驶阶段门控与循环节拍

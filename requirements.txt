@@ -10,7 +10,7 @@ numpy>=2.4.6,<3
 windows-capture>=2.0.1,<3
 psutil>=5.9.0,<8
 # 注意：
-# 1. ultralytics 已移出运行时依赖（仅 tools/training/ 训练用，见 pyproject [project.optional-dependencies].train），
+# 1. ultralytics 已移出运行时依赖（仅 plugins/speedrush/tools/training/ 训练用，见 pyproject [project.optional-dependencies].train），
 #    避免在发布包中拉入 torch 等训练期依赖，大幅减小体积。
 # 2. strenum 是 maafw 的运行时依赖，勿删。
 # 3. psutil 供 OCR 的 P-core 亲和性绑定（core/ocr.py PIN_P_CORE_AFFINITY），

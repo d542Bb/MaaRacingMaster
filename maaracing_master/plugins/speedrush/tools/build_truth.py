@@ -1,6 +1,6 @@
 """speedrush 导航图真源生成器。
 
-把 templates_roi.json 里的模板与 ROI 规格，装配成 NavKit v4 的 pipeline 真源
+把 templates_roi.json 里的模板与 ROI 规格，装配成 pipeline 真源
 （`plugins/speedrush/resources/pipeline/speedrush.json`）。
 
 架构取舍（与 treasure 的差异，2026-09-16）：
@@ -110,7 +110,7 @@ MODULE_DRIVEN: frozenset[str] = frozenset({
 # 落地页确认探针（步级重试的"后置条件"）——(确认节点名, 复用模板, 说明)。
 #
 # 为什么确认节点复用**动作节点已在用的模板**却不触发第 6 条「跨锚点重复识别」：
-# 校验器对节点名含 `.__confirm.` 的节点直接豁免该判定（`tools/navkit/truth.py`
+# 校验器对节点名含 `.__confirm.` 的节点直接豁免该判定（`tools/pipeline/truth.py`
 # validate_graph 第 6 条）。这是仓库为"确认节点"预留的标准扩展点——确认要认的是
 # "落地页上此刻有哪个标记"，标记往往就是下一步要点的按钮本身（线性流程里第 N 步的
 # 目的地页正显示着第 N+1 步的按钮），复用同图同区最省、也无需另采素材。

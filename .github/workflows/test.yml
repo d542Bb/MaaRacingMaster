@@ -66,7 +66,7 @@ jobs:
       - name: 校验节点真源自洽（图闭合 + 几何 + 分层红线）
         # truth 为纯标准库工具，本步骤零依赖直接运行；
         # 运行时读取路径由金标测试（test_navkit_v2_v3_runtime_equiv）看护。
-        run: python tools/navkit/truth.py
+        run: python tools/pipeline/truth.py
 
       - name: 仓库卫生检查（实验/计划生命周期契约，AGENTS 红线 6）
         # 棘轮语义：存量违规在基线豁免，新增违规即红；基线只减不增。纯标准库，零依赖。

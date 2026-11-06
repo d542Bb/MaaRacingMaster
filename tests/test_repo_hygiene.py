@@ -289,7 +289,7 @@ def test_vendored_third_party_docs_not_scanned(tmp_path):
     """第三方 vendored 文档不进 R8/R9 面：纳入的实测代价是一堆别人家 README 的噪音，
     闸门一旦常年响在别人的文件上，就没人再看自己仓库的那几条。"""
     _mk(tmp_path)
-    _doc(tmp_path, "tools/navkit/frontend/node_modules/debug/README.md",
+    _doc(tmp_path, "tools/pipeline/studio/static/node_modules/debug/README.md",
          "示例见 `examples/node/app.js`，产物在 `build/lib/x.js`。\n")
     viol, _ = chk.Checker(tmp_path).scan()
     assert not [v for v in viol if v.startswith(("R8|", "R9|"))], viol

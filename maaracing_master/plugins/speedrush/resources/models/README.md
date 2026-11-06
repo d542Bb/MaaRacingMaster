@@ -39,7 +39,7 @@ models/
 ## perception/model.onnx —— 物品感知（AGPL-3.0）
 
 - **来源**：由 Ultralytics 官方预训练权重 `yolo11n.pt` + Ultralytics 训练代码
-  在自有标注数据上微调导出（见根目录 `tools/training/train.py`）。
+  在自有标注数据上微调导出（见 `maaracing_master/plugins/speedrush/tools/training/train.py`）。
 - **许可**：按 Ultralytics 的立场，本微调模型视为 AGPL-3.0 衍生作品，随发布包
   再分发需遵循 [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html)。
 - **运行时不含 Ultralytics 代码**：YOLO 推理仅通过 ONNX Runtime 加载本 ONNX 图，

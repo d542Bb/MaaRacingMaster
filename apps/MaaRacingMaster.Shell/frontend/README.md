@@ -268,7 +268,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 - **未纳入**：按钮、输入框、徽章、选项卡仍是圆弧（小尺寸下差异不明显）。
 - **边界**：静态锁 `tests/test_frontend_corner_shape.py`——必须在 `@supports` 内、半径
   必须按等效圆补、不得出现全站选择器、选卡描边必须仍是自算路径且不得自己裁轮廓。
-- **漂移复测**：`tools/measure_corner_shape.py`。它把 CSS 渲染的轮廓与理论超椭圆逐点
+- **漂移复测**：`apps/MaaRacingMaster.Shell/tools/measure_corner_shape.py`。它把 CSS 渲染的轮廓与理论超椭圆逐点
   比对（垂直距离 < 0.5px、面积比 1±0.05）。浏览器升级后跑一次就知道形状有没有变；
   指数一旦不是 4，`js/gallery-shape.js` 的 `EXPONENT` 必须跟着改，否则描边会漂离边缘。
 

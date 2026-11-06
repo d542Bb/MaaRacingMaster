@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-SCHEMA = REPO / "tools/navkit/schema/pipeline.schema.json"
+SCHEMA = REPO / "tools/pipeline/schema/pipeline.schema.json"
 FILES = {
     "startup": REPO / "maaracing_master/core/resources/startup/pipeline.json",
     "speedrush": REPO / "maaracing_master/plugins/speedrush/resources/pipeline/speedrush.json",

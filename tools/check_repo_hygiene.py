@@ -135,18 +135,18 @@ NON_REPO_PREFIXES = ("framework/", "runtime/", "packages/", "app/", "config/", "
 # 按宿主根书引用是本仓库既有口径（各 CODE_WIKI 通篇如此），不是新约定。试得开即存在；
 # 换不来的是真被删掉的东西——它在任何基准下都不存在。
 LINK_BASES = ("maaracing_master", "apps/MaaRacingMaster.Shell",
-              "apps/MaaRacingMaster.Shell/frontend", "tools/navkit")
+              "apps/MaaRacingMaster.Shell/frontend", "tools/pipeline")
 # 判定面限「带已知扩展名的位置声明」：裸目录提及（尾斜杠、无扩展名）不参与存在性判定——
 # 目录种类的说法太多（会话产物布局、产物根、退役世代结构），扫它只会把闸门训成噪音源。
 
 # R9：没有任何入库文件的顶层目录 = 本机面，指向它的人必然打不开（盘上凑巧存在也不合法）。
 LOCAL_ONLY_DIRS_DEFAULT = {"archive", "build", "dataset", "training"}
-# 目录名集合随树变（tracked 为准），故按模板现拼正则；前置边界避免 `tools/training/`
-# 这类仓库内同名子目录被误判成根级本机面。
+# 目录名集合随树变（tracked 为准），故按模板现拼正则；前置边界避免
+# `plugins/*/tools/training/` 这类仓库内同名子目录被误判成根级本机面。
 LOCAL_ONLY_TEMPLATE = (r"(?:^|[\s`'\"(【（，。；:])({})/[\w.\-]+(?:/[\w.\-]+)*/?(?![\w.\-])")
 # R9 的面比 R8 宽：脚本与工具目录的文档最容易把本机产物根（build/）当证据引用。
 # R8 的面刻意不扩——实测纳入这两处会命中 29 条，其中 26 条是打包时带进来的第三方库
-# 自带 README（`tools/navkit/frontend/node_modules/**`），那是噪音不是债务。
+# 自带 README（例如第三方包的 `node_modules/**`），那是噪音不是债务。
 R9_EXTRA_GLOBS = ["scripts/**/*.md", "tools/**/*.md"]
 R9_SKIP_MARKERS = ("/node_modules/", "/experiments/", "/plan/")
 

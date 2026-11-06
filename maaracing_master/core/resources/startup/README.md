@@ -32,7 +32,7 @@
 ## 校验
 
 ```bash
-python tools/navkit/truth.py
+python tools/pipeline/truth.py
 pytest tests/test_startup_truth.py
 ```
 

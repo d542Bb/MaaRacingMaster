@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.navkit import truth as ct
+from tools.pipeline import truth as ct
 
 REPO = Path(__file__).resolve().parents[1]
 STARTUP_DIR = REPO / "maaracing_master" / "core" / "resources" / "startup"

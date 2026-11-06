@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================================
-rem  NavKit v4 Studio - one-shot launcher: LocalBridge (mpelb) + Studio server.
+rem  Pipeline Studio - one-shot launcher: LocalBridge (mpelb) + Studio server.
 rem  Both background processes start windowless (no console popup); the browser
 rem  opens two tabs: MPE (auto-connects LocalBridge) and the Studio shell
 rem  (Replay + ROI on one port).
@@ -10,7 +10,7 @@ rem    studio.cmd --root <dir> --port <n>      override root / LocalBridge port
 rem    studio.cmd --studio-port <n>            override Studio server port
 rem    studio.cmd --mpelb <exe>                explicit mpelb path
 rem    studio.cmd --stop                       kill mpelb AND the studio server
-rem  mpelb lookup: --mpelb > tools/navkit/dev/mpelb.exe > PATH > %APPDATA%
+rem  mpelb lookup: --mpelb > tools/pipeline/dev/mpelb.exe > PATH > %APPDATA%
 rem  NOTE: keep this file ASCII-only with CRLF line endings. cmd's batch
 rem  parser byte-seeks and garbles the script when non-ASCII bytes mix with
 rem  a mid-script chcp codepage switch.
@@ -55,7 +55,7 @@ if not exist "%STUDIO_PY%" (
   echo [studio] python not found under %ROOT%\.venv\Scripts\
   goto usage
 )
-set "STUDIO_MODULE=tools.navkit.studio.server"
+set "STUDIO_MODULE=tools.pipeline.studio.server"
 
 echo [studio] mpelb  : %MPELB%
 echo [studio] root   : %ROOT%

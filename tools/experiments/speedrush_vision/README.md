@@ -1903,7 +1903,7 @@ SegFormer-b0/ADE20K，3.7M 参数，road=6/wall=0/building=1）
    生产入库前必须人工核 NVIDIA Open Model License 条款）；ADE20K 真实域先验在本作
    黄昏/湿面帧有渗色。
 4. **下一分叉（待裁，不自动执行）**：a) 本作封闭域微调一个 b0 级小模型（训练基建
-   tools/training 已有，标注成本=刷路肩/墙基边界）；b) 先用现成 b0 做 R2 门组的
+   plugins/speedrush/tools/training 已有，标注成本=刷路肩/墙基边界）；b) 先用现成 b0 做 R2 门组的
    离线验证器跑通判决链，再决定要不要训。
 
 ## 道路范围替代测试（2026-09-23，维护者关键事实修正驱动）

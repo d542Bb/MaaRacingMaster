@@ -95,7 +95,7 @@
 存活 session `run()` 即段错误（CPU provider 无此问题）；多 detector 测试须全部保活至
 进程结束（见 `tests/test_yolo_detector.py` 的 `_KEEP_ALIVE`）。生产单实例常驻不触发。
 
-**模型训练 / 导出**：`tools/training/train.py`（Ultralytics yolo11n 微调 → ONNX），`dataset.yaml` 配类别、`auto_label.py` 自动标注。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
+**模型训练 / 导出**：`maaracing_master/plugins/speedrush/tools/training/train.py`（Ultralytics yolo11n 微调 → ONNX），`dataset.yaml` 配类别、`auto_label.py` 自动标注。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
 
 ***
 
@@ -281,7 +281,7 @@
 
 > 归属由命名空间前缀表达、引用方向红线、"引用"的完整口径与协议为何没有命名空间——权威版见 [MAAFW_GUIDE §5.6](../../docs/MAAFW_GUIDE.md#56-真源组织与分层协议没有命名空间分离只能靠引用方向)；决策与状态见 [ADR-0001](../../docs/adr/0001-arch-global-分层靠引用方向不靠目录.md)。
 
-**回归护栏（校验器）与编辑入口**：见 [tools/navkit/README.md](../../tools/navkit/README.md)。
+**回归护栏（校验器）与编辑入口**：见 [tools/pipeline/README.md](../../tools/pipeline/README.md)。
 
 ***
 
@@ -755,7 +755,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，显示最小集画面（游戏画面 + 指针 + 意图 + 段/阶段/帧龄，约 10fps；归属与阶段直接画在帧内信息条上）。数据页预览卡与悬浮窗共用同一份消费实现，同一时刻只有一个消费者拉帧；后端只在新帧时编码，前端按序号去重。
 3. **入口复用现有页面**：只跑内置步骤时，数据页预览卡与设置页的 DEBUG / PEEP 开关仍然可用（内置步骤本身就是一个面板项），不新增重复的预览卡或开关。
 4. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
-5. **MPE Studio**：`tools/navkit/studio.cmd` 起工作台（MPE 画布编辑节点 JSON + Studio 回放 / ROI 两页），见 [tools/navkit/README.md](../../tools/navkit/README.md)
+5. **MPE Studio**：`tools/pipeline/studio.cmd` 起工作台（MPE 画布编辑节点 JSON + Studio 回放 / ROI 两页），见 [tools/pipeline/README.md](../../tools/pipeline/README.md)
 
 **用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
 

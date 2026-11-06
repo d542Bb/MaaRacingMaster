@@ -112,10 +112,8 @@ cursor_refactor/captures/
 cursor_refactor/models/
 cursor_refactor/__pycache__/
 
-# NavKit 本地工具与历史产物目录（mpelb 二进制 / MPE dist / 旧控制台缓存等；不入库）
-tools/navkit/dev/
-tools/navkit/out/
-tools/navkit/frontend/
+# pipeline 工具的本机二进制（mpelb 等；不入库）
+tools/pipeline/dev/
 
 # 实验区的待试权重：来源与许可未声明、体积大，一律不入库（实验 README 注明取法）。
 # 插件正式分发的权重不在此列——它们在 plugins/*/resources/models/ 随包入库。

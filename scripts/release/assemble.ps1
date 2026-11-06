@@ -805,21 +805,14 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     }
 
     # ---------- 5.6 开发工具链不得入包（反向守卫）----------
-    # 白名单只 robocopy maaracing_master/，tools\（NavKit 校准台：HTTP server + 前端
-    # 构建产物，开发树 ~180MB）、tests\、docs\ 本就不该出现。此处反向断言：白名单一旦被
-    # 放宽、或有人把开发工具挪进源码包，构建当场失败，而不是静默发给用户。
-    # 注意区分：maaracing_master\core\navkit\ 是运行期数据面 loader + 决策引擎，必须随包。
+    # 白名单只 robocopy maaracing_master/，tools\（pipeline 工具链与开发工具）、tests\、
+    # docs\ 本就不该出现。此处反向断言：白名单一旦被放宽、或有人把开发工具挪进源码包，
+    # 构建当场失败，而不是静默发给用户。
     foreach ($rel in @('tools', 'tests', 'docs', '.github', 'scripts')) {
         if (Test-Path (Join-Path $StageRoot $rel)) {
             $errors.Add("DEV-TREE-LEAK: '$rel' must not be shipped")
         }
     }
-    Get-ChildItem $StageRoot -Recurse -Directory -Filter 'navkit' -EA SilentlyContinue |
-        Where-Object { $_.FullName -notmatch '\\core\\navkit$' } |
-        ForEach-Object {
-            $errors.Add('DEV-TREE-LEAK: 校准台目录入包 -> ' +
-                $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
-        }
     # 本机 harness 状态目录（.mimosa/）只存在于开发工作树，不得随包发出
     Get-ChildItem $StageRoot -Recurse -Directory -Filter '.mimosa' -EA SilentlyContinue |
         ForEach-Object {

@@ -34,8 +34,8 @@
 
 用法
 ----
-    python tools/measure_corner_shape.py            # 跑验收，打印表格
-    python tools/measure_corner_shape.py --keep     # 保留探针页与截图（排查用）
+    python apps/MaaRacingMaster.Shell/tools/measure_corner_shape.py            # 跑验收，打印表格
+    python apps/MaaRacingMaster.Shell/tools/measure_corner_shape.py --keep     # 保留探针页与截图（排查用）
 """
 from __future__ import annotations
 

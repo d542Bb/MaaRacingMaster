@@ -5,7 +5,7 @@
 
 >
 > **本文是什么**：NavKit v4 的**版本宪法（§1 六条不变量）**与 v4 规格——节点模型（§2）、文件布局（§3）、运行时（§4）、校验器（§8）与迁移路线（§9）。
-> **本文不是什么**：不是当前实现说明（见 [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) 与各域文档）；不是决策记录与状态（见 [docs/adr/](adr/README.md)）；不是工具用法（见 [tools/navkit/README.md](../tools/navkit/README.md)）。
+> **本文不是什么**：不是当前实现说明（见 [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) 与各域文档）；不是决策记录与状态（见 [docs/adr/](adr/README.md)）；不是工具用法（见 [tools/pipeline/README.md](../tools/pipeline/README.md)）。
 > **信源等级**：**§1 = L1（本项目最高规则）**；§2–§8 为 v4 规格（L1/L2）；**§0 与 §9–§12 为迁移过程与历史（L4）**——历史章节不等于当前形态。
 > **真源路由**：不变量 = 本文 §1（其他文档引用它，不复制）；节点与策略取值 = `plugins/*/resources/**`；
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)。
@@ -103,7 +103,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 - **编辑器产物跳过**：`$__mpe_config_*` 伪节点与节点内 `$__mpe_code`（内嵌方案的布局字段）加载器必须容忍并跳过；MaaFW 官方 schema 的根节点正则为 `^(?!\$).*`（`$` 开头 root field 官方不解析，schema 层背书），运行时同样行为**仍留 P2a 实机确认一次**。
 
-- **Schema 工具链**：`tools/navkit/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/navkit/truth.py` 承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
+- **Schema 工具链**：`tools/pipeline/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/pipeline/truth.py` 承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
 
 关键语义：
 

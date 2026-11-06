@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================================
-rem  NavKit v4 MPE - C form entry (P3b): MPE IS the MPE, no shell.
+rem  Pipeline MPE - C form entry (P3b): MPE IS the MPE, no shell.
 rem  Start mpelb (root=repo root, indexes pipeline/ truth-source) then open MPE
 rem  fullscreen in browser (auto-connects LocalBridge).
 rem  Usage:
@@ -8,7 +8,7 @@ rem    mpe.cmd                          defaults (root=repo, port=26521)
 rem    mpe.cmd --root <dir> --port <n>  override root / port
 rem    mpe.cmd --mpelb <exe>            explicit mpelb path
 rem    mpe.cmd --stop                   kill mpelb started by this tool
-rem  mpelb lookup: --mpelb > tools/navkit/dev/mpelb.exe > PATH > %APPDATA%
+rem  mpelb lookup: --mpelb > tools/pipeline/dev/mpelb.exe > PATH > %APPDATA%
 rem  NOTE: keep this file ASCII-only with CRLF line endings. cmd's batch
 rem  parser byte-seeks and garbles the script when non-ASCII bytes mix with
 rem  a mid-script chcp codepage switch.
@@ -61,7 +61,7 @@ if not exist "%~dp0studio\server.py" goto skip_studio
 netstat -ano | findstr /r /c:":%POLICY_PORT% .*LISTENING" >nul 2>&1
 if not errorlevel 1 goto skip_studio
 pushd "%ROOT%"
-start "MaaRacingMaster MPE studio" "%VENV_PY%" -m tools.navkit.studio.server --port %POLICY_PORT%
+start "MaaRacingMaster MPE studio" "%VENV_PY%" -m tools.pipeline.studio.server --port %POLICY_PORT%
 popd
 :skip_studio
 

@@ -51,7 +51,7 @@ pip install -r requirements.txt
 
 - 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
 - 独立调试 sidecar（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`
-- 调试工具位于 `tools/`（训练 / 分析 / 调试分类）
+- 工具按归属放：跨插件现役工具 → `tools/`；单插件工具 → `plugins/<id>/tools/`；应用/子系统专用 → `apps/<app>/tools/`；活跃实验 → `tools/experiments/<主题>/`（README 标 `status: active`）。退役即删，历史由 git 保存；本机二进制与草稿走 gitignore，不入库。
 
 ---
 
@@ -118,7 +118,7 @@ git push -u origin feat/your-feature
 **提交前跑什么（跑触碰面，不跑全仓）：**
 
 - 改动相关的 `pytest` + 改动文件的 `ruff`；
-- 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/navkit/truth.py`；
+- 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/pipeline/truth.py`；
 - 动到 `tools/experiments/`、`docs/plan/`（新建或改动工作台文件）、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6 与红线 4 隐私扫描；基线只减不增；实验退役四步见 [tools/experiments/README.md](tools/experiments/README.md)，plan 头部三行与退役四步见 [docs/README.md](docs/README.md)）；
 - 改到**跨模块共享契约**（core 能力接口、RPC 白名单、分层边）时建议自愿加跑全仓——影响面跨模块，早发现比等 CI 划算。
 - 新增了抽象（core 目录、共用 pipeline、通用协议、新通路 / 新页面）时，先答一句「**第二个使用者是谁、今天是否真实存在**」——判据见 [AGENTS.md](AGENTS.md)「作业纪律与提交红线」中「抽公共层」那一条；答不出就不抽。

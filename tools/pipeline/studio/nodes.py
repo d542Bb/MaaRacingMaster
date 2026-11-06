@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from tools.navkit import truth
+from tools.pipeline import truth
 
 RECT_PATH = ("recognition", "param", "custom_recognition_param", "rect")
 

@@ -25,7 +25,7 @@
     抽象，把某个模块的入口链放进 core 是过早抽象（本项目曾因此让 core 抄了三份
     同一张"全页面清单"，2026-09-10 归位）。
     图节点经 MaaFW Resource 原生执行；数据面由各插件在 Python 侧自行装载（归档鉴宝仍用
-    其插件内 `core/v4_source.load_nav_source`）。校验走 `tools/navkit/truth.py`。
+    其插件内 `core/v4_source.load_nav_source`）。校验走 `tools/pipeline/truth.py`。
 
 本文件提供 MAA Pipeline 执行通路（`Resource.post_pipeline` + 自定义识别/动作桥）
 与 `NavGraph` 跳转图宿主；v4 常驻图宿主已随鉴宝插件下沉到归档区。
@@ -123,7 +123,7 @@ def _parse(raw: str) -> dict:
 class TemplateRecognizer(CustomRecognition):
     """识别桥（v4 参数面）：MaaRM_Template 的引擎实现，编排 template_match 引擎件。
 
-    节点参数（迁移器产出，契约见 tools/navkit/schema/custom.recognition.schema.json）：
+    节点参数（迁移器产出，契约见 tools/pipeline/schema/custom.recognition.schema.json）：
         mode           template | point（point 识别走 guard 模板，点击走 target）
         rect           [x0,y0,x1,y1] 归一化搜索区
         templates      ["x.png"] 主模板（point 无此键）

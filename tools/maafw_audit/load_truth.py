@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """MaaFw 生态审计：对 core startup 与活动插件的真源目录做 Resource.post_pipeline。
 
-复现生产实现 core/nav_graph.py NavKitV4.load 的做法：core startup 与插件
+复现生产实现 core/nav_graph.py 的合并加载做法：core startup 与插件
 pipeline 互指，分次 post 先加载者必失败 → 合并临时目录一次 post。结束后清理
 临时目录。
 

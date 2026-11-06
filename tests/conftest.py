@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """pytest 全局配置。
 
-把项目根加入 sys.path，使 `tools.navkit...` 等仓库内导入在 CI（`pytest` 不带
+把项目根加入 sys.path，使 `tools.pipeline...` 等仓库内导入在 CI（`pytest` 不带
 `python -m`）下也可导入——cwd 非 project root 时不自动在 sys.path。
 
 插件代码的测试一律走绝对包路径导入（maaracing_master.plugins.<id>.…）：
@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 
 _PROJ = Path(__file__).resolve().parent.parent
 
-# 把项目根加入 sys.path，使 `from tools.navkit...`（P3）在 CI（`pytest` 不带
+# 把项目根加入 sys.path，使 `from tools.pipeline...`（P3）在 CI（`pytest` 不带
 # `python -m`）下也可导入——cwd 非 project root 时不自动在 sys.path。
 if str(_PROJ) not in sys.path:
     sys.path.insert(0, str(_PROJ))

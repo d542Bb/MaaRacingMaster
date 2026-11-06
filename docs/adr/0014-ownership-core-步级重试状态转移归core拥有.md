@@ -34,7 +34,7 @@
 
 ## 证据
 
-- 机检：`tools/navkit/truth.py`——图自洽、`__confirm` 确认锚点零「跨锚点重复识别」告警；`tools/check_repo_hygiene.py` 通过。
+- 机检：`tools/pipeline/truth.py`——图自洽、`__confirm` 确认锚点零「跨锚点重复识别」告警；`tools/check_repo_hygiene.py` 通过。
 - 测试：`tests/test_step_machine.py`（三 verdict × 五 command 转移表，逐链复刻 treasure 计数表：重发上限不含首点、耗尽为"达上限后再等一窗"、计时在重发/送达时重置、在途 RETRY 持续到送达且每窗只计一次）；`tests/test_speedrush_gating.py`（步级重发、窗内命中不重发、停止不记耗尽）。
 - 一手核查：极速狂飙操作路径与各界面要素 [plugins/speedrush/RULES.md](../../maaracing_master/plugins/speedrush/RULES.md) §2 / §3；treasure 三条重试链计数表（见 commit `71441c0` 的 core 单测对照）。
 - 落地：commit `71441c0`（core `StepMachine`）、`46df995`（speedrush 步级重试 + `__confirm` 确认锚点）、`f8add47`（重试剂量搬到 `decision.json`，可分步覆盖）。

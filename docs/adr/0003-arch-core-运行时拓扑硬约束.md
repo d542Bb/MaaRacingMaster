@@ -47,7 +47,7 @@ v4 把执行权交给 MaaFramework Tasker 后，运行时有**三条物理资源
 ## 证据
 
 - **宪法原文**：[docs/NAVKIT_V4_PLAN.md](../NAVKIT_V4_PLAN.md) §1 第 6 条 + §4.2「线程拓扑」。
-- **机检**：[`tools/navkit/truth.py`](../../tools/navkit/truth.py) `action_checks`（校验器第 8 条）——真源出现框架内置输入 action 即报错。
+- **机检**：[`tools/pipeline/truth.py`](../../tools/pipeline/truth.py) `action_checks`（校验器第 8 条）——真源出现框架内置输入 action 即报错。
 - **协议依据**：MAAFW_GUIDE §9 第 15 条——`FramePool/PrintWindow` 的伪最小化会改写目标窗口样式，与自研窗口管理是同一批状态的写入方，不得混用。
 - **实证（帧供给解耦）**：A7 真机验收——鉴宝 GUI 大厅静置，新会话 raw 从 0 增至 95 张/15 秒（约 158ms/帧，与 `OBSERVE_INTERVAL_MS=150` 吻合）；关键结论「厅类 dwell 不挂 `policy_loop` 时存图仍正常」正是本次拆分要解决的问题。
 - **帧源复用实证**：彩蛋收尾链（`_run_egg_claim_chain`）轮询复用 `ctx.capture.screenshot` 的 WGC 中心缓存，不新起截图通路。

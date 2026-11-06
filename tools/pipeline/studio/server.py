@@ -6,7 +6,7 @@
 `custom_recognition_param.rect`，保存前后跑同一校验器。
 
 用法：
-    .venv\\Scripts\\python.exe -m tools.navkit.studio.server [--port 26530] [--idle-exit 15]
+    .venv\\Scripts\\python.exe -m tools.pipeline.studio.server [--port 26530] [--idle-exit 15]
 """
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from tools.navkit.studio.nodes import NodeIndex
-from tools.navkit.studio.replay import ReplayIndex
+from tools.pipeline.studio.nodes import NodeIndex
+from tools.pipeline.studio.replay import ReplayIndex
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 

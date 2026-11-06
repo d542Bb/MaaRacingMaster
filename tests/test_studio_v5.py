@@ -10,9 +10,9 @@ import urllib.request
 
 import pytest
 
-from tools.navkit.studio.nodes import NodeIndex, normalize_rect
-from tools.navkit.studio.replay import ReplayIndex
-from tools.navkit.studio.server import StudioApp, make_server
+from tools.pipeline.studio.nodes import NodeIndex, normalize_rect
+from tools.pipeline.studio.replay import ReplayIndex
+from tools.pipeline.studio.server import StudioApp, make_server
 
 
 def _session(root):
@@ -109,7 +109,7 @@ def test_node_index_lists_custom_rect(tmp_path):
 
 def test_save_text_replacement_is_surgical(tmp_path, monkeypatch):
     lib, path = _pipeline(tmp_path, newline="\r\n", indent=4)
-    from tools.navkit import truth
+    from tools.pipeline import truth
     monkeypatch.setattr(truth, "REPO", tmp_path)
     before = path.read_bytes()
     index = NodeIndex(extra_dirs=(lib,), validator=lambda: [])
@@ -126,7 +126,7 @@ def test_save_text_replacement_is_surgical(tmp_path, monkeypatch):
 
 def test_save_rolls_back_when_validator_reports_new_error(tmp_path, monkeypatch):
     lib, path = _pipeline(tmp_path)
-    from tools.navkit import truth
+    from tools.pipeline import truth
     monkeypatch.setattr(truth, "REPO", tmp_path)
     before = path.read_bytes()
 
@@ -143,7 +143,7 @@ def test_save_rolls_back_when_validator_reports_new_error(tmp_path, monkeypatch)
 def test_http_endpoints_and_save(tmp_path, monkeypatch):
     sess = _session(tmp_path / "debug")
     lib, path = _pipeline(tmp_path)
-    from tools.navkit import truth
+    from tools.pipeline import truth
     monkeypatch.setattr(truth, "REPO", tmp_path)
     replay = ReplayIndex(tmp_path / "debug")
     nodes = NodeIndex(extra_dirs=(lib,), validator=lambda: [])

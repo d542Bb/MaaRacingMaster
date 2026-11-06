@@ -27,7 +27,7 @@ dev-lint = [
     "ruff==0.16.7",
     "pyright==1.1.411",
 ]
-# 训练/导出模型所用（tools/training/train.py）。运行时推理走 onnxruntime-directml，
+# 训练/导出模型所用（plugins/speedrush/tools/training/train.py）。运行时推理走 onnxruntime-directml，
 # 不依赖 ultralytics/torch，故作为可选 extra 避免发布包拽入 torch。
 train = [
     "ultralytics>=8.4.92",

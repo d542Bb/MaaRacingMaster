@@ -19,7 +19,7 @@ CORE = PACK / "core" / "resources" / "startup"
 PLUGIN = PACK / "plugins" / "speedrush" / "resources" / "pipeline"
 POLICY = PACK / "plugins" / "speedrush" / "resources" / "policy" / "decision.json"
 
-tmp = Path(tempfile.mkdtemp(prefix="navkit-audit-redline-"))
+tmp = Path(tempfile.mkdtemp(prefix="pipeline-audit-redline-"))
 try:
     for f in CORE.glob("*.json"):
         shutil.copy2(f, tmp / f.name)

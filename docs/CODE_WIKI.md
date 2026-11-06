@@ -18,7 +18,7 @@
 | 版本宪法 | [NAVKIT_V4_PLAN.md](NAVKIT_V4_PLAN.md) | §1 六条不变量（最高规则）+ 节点模型与迁移史 |
 | GUI 壳工程 | [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md) | 锁定版本 / WinUI 3 API / 构建坑 / IPC 契约 / 宿主选型硬约束 |
 | 前端与图标 | [apps/MaaRacingMaster.Shell/frontend/README.md](../apps/MaaRacingMaster.Shell/frontend/README.md) | 图标真源 / file:// 约束 / 前端规范 |
-| NavKit 工具链 | [tools/navkit/README.md](../tools/navkit/README.md) | 入口命令（`--module` 按活动模块参数化）/ 模板采集工作流 / 校验器护栏 |
+| Pipeline 工具链 | [tools/pipeline/README.md](../tools/pipeline/README.md) | Studio 回放/ROI、MPE 入口、模板采集工作流、校验器护栏 |
 | 环境自检 | [SELF_CHECK.md](SELF_CHECK.md) | 分步验收清单（新环境 / 跨机器） |
 | 更新说明 | [update_log.md](update_log.md) | 面向玩家的更新说明（Release 正文由此抽取） |
 
@@ -61,9 +61,9 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
 | 光标导航 / 虚拟手柄 | `core/gamepad_cursor.py` + `core/resources/stick_speed_model.json` |
 | 截图采集 / 帧通路 | `core/wgcap.py`（拓扑约束见 [ADR-0003](adr/0003-arch-core-运行时拓扑硬约束.md)，不得新起截图通路） |
 | 日志级别 / 通道 / 落盘 | `core/logger.py` + [core/CODE_WIKI.md §1.5](../maaracing_master/core/CODE_WIKI.md) |
-| 模板图与锚点（采集 / ROI） | [tools/navkit/README.md](../tools/navkit/README.md)（采集工作流 + 校验器） |
+| 模板图与锚点（采集 / ROI） | [tools/pipeline/README.md](../tools/pipeline/README.md)（采集工作流 + 校验器） |
 | 文字识别（OCR）引擎与调参 | `core/ocr.py`（跨插件共享底座的唯一真源）+ [core/CODE_WIKI.md §1.11](../maaracing_master/core/CODE_WIKI.md)；插件侧只留「文本怎么解释」的领域口径 |
-| 页面图节点 / 连线 | `plugins/<id>/resources/pipeline/*.json`，用 MPE 编辑（入口见 navkit README） |
+| 页面图节点 / 连线 | `plugins/<id>/resources/pipeline/*.json`，用 MPE 编辑（入口见 pipeline README） |
 | GUI 窗口 / 前端 / 图标 | [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md) 与其 [frontend/README.md](../apps/MaaRacingMaster.Shell/frontend/README.md) |
 | MaaFW 用法 / 协议行为 | [MAAFW_GUIDE.md](MAAFW_GUIDE.md)；冲突时以官方文档为准 |
 | 新活动模块 | [templates/plugin/](../templates/plugin/README.md) 样板起步 |

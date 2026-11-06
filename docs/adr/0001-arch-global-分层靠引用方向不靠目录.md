@@ -45,7 +45,7 @@ MaaFramework 的 Pipeline 协议**没有命名空间**：一个 `pipeline` 目�
 ## 证据
 
 - **协议事实（一手）**：MAAFW_GUIDE §5.6「真源组织与分层」——节点名全城唯一、无命名空间、互指须合并单次 post。
-- **机检**：[`tools/navkit/truth.py`](../../tools/navkit/truth.py) `namespace_checks`（校验器第 7 条）。
+- **机检**：[`tools/pipeline/truth.py`](../../tools/pipeline/truth.py) `namespace_checks`（校验器第 7 条）。
 - **机检活性测试**：[`maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py`](../../maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py) —— 合成违规图必须报错、盘上真源必须零报（防校验退化成装饰）。
 - **实证案例**：`core/resources/pipeline/global.json` 归位（2026-09-10），完整叙事见 MAAFW_GUIDE §5.6「过早抽象同样是债」。
 - **实施 commit**：`5d6c320` refactor(navkit): 真源归位 plugin、协议形态统一 v2、分层红线入机检。
