@@ -195,11 +195,23 @@ class Checker:
         return {d.name for d in self.exper.iterdir() if d.is_dir() and not d.name.startswith("_")}
 
     def intra_dirs(self) -> set[str]:
-        """区内目录名（主题 + 下划线工作目录）——R5 判「引用还在不在」用它：
-        `_probe_data/` 这类目录确实存在，把它当死引用报错是检查器自己的错。"""
-        if not self.exper.is_dir():
-            return set()
-        return {d.name for d in self.exper.iterdir() if d.is_dir()}
+        """区内目录名（主题 + 下划线工作目录）——R5 判「引用还在不在」用它。
+
+        下划线工作目录**不入库**（`_probe_data`、`_probe_scripts` 在干净检出里根本不存在），
+        只看盘上有什么就会「本地绿、CI 红」——实证：干净检出里 R5 把
+        `speedrush_planning/README.md` 对 `_probe_data` 的正常引用报成死引用。
+        所以除盘上目录外，再认区内 `.gitignore` 里声明过的那些名字：声明是入库的，
+        名字打错仍然会红，覆盖不降级。"""
+        out: set[str] = set()
+        if self.exper.is_dir():
+            out = {d.name for d in self.exper.iterdir() if d.is_dir()}
+        gi = self.exper / ".gitignore"
+        if gi.is_file():
+            for ln in gi.read_text(encoding="utf-8", errors="replace").splitlines():
+                name = ln.strip().rstrip("/")
+                if name.startswith("_") and "/" not in name:
+                    out.add(name)
+        return out
 
     def hits(self, text: str) -> list[str]:
         """文本里出现的实验主题名。

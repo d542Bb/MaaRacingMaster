@@ -295,6 +295,30 @@ def test_intra_area_dir_not_topic(tmp_path):
     assert not [v for v in viol if "R1|_probe_data" in v], viol
 
 
+def test_declared_area_dir_clean_off_disk(tmp_path):
+    """干净检出里不入库的区内目录不在盘上：区内 .gitignore 声明过它就不算死引用。
+    只看盘上有什么会「本地绿、CI 红」——真实踩过：模拟 CI 检出里 R5 报
+    speedrush_planning 对 `_probe_data` 的正常引用。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / ".gitignore").write_text(
+        "_probe_data/\n_probe_scripts/\n", encoding="utf-8")
+    (tmp_path / "tools" / "experiments" / "demo-topic" / "README.md").write_text(
+        f"status: active\n\n读数落 `{_EP}_probe_data/`，文件可重跑。\n", encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R5|")], viol
+
+
+def test_undeclared_area_dir_still_dead(tmp_path):
+    """名字打错仍然红：豁免认的是入库声明，不是「凡是下划线开头都放过」。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / ".gitignore").write_text(
+        "_probe_data/\n", encoding="utf-8")
+    (tmp_path / "tools" / "experiments" / "demo-topic" / "README.md").write_text(
+        f"status: active\n\n读数落 `{_EP}_probe_dat/`。\n", encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any(v.startswith("R5|") and "_probe_dat" in v for v in viol), viol
+
+
 def test_plan_reference_flagged(tmp_path):
     _mk(tmp_path)
     (tmp_path / "docs").mkdir()
