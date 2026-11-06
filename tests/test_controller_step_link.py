@@ -10,8 +10,10 @@
 """
 from __future__ import annotations
 
-import threading
+import tempfile
 import time
+from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -32,28 +34,11 @@ class _Grp:
 
 
 def _ctl() -> ctl.MaaRacingMasterController:
-    c = object.__new__(ctl.MaaRacingMasterController)
-    c._running = False
-    c._step_active = False
-    c._active_module = None
-    c._manual_stop = False
-    c.stop_event = threading.Event()
-    c._exit_requested = False
-    c._last_run_natural = False
-    c._last_step_outcome = None
-    c._teardown_failed = False
-    c._gpad = None
-    c._gpad_owner = None
-    c._ctx = None
-    c._wgc_capture = None
-    c._mute_game_enabled = False
-    c._run_muted = False
-    c._mute_original = None
-    c._mute_gen = 0
-    c._mute_started_gen = -1
-    c._mute_lock = threading.Lock()
-    c._mute_thread = None
-    return c
+    """构造真实控制器：初始化契约由构造函数自己负责，测试不再手工复刻字段。"""
+    with mock.patch.object(
+            ctl, "debug_dir",
+            lambda: Path(tempfile.gettempdir()) / "maar-test-debug"):
+        return ctl.MaaRacingMasterController()
 
 
 class _Step:
@@ -99,7 +84,7 @@ def test_connect_short_circuit_requires_live_window(monkeypatch):
     """手动关游戏后旧句柄失效：幂等短路不能假成功，必须重新定位并如实失败。"""
     c = _ctl()
     c.controller = object()
-    c._hwnd = 123
+    c.adopt_window(123)
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: False)
     monkeypatch.setattr(ctl.game_process, "find_window_by_process", lambda: 0)
     monkeypatch.setattr(ctl, "find_game_hwnd", lambda **kw: 0)
@@ -113,7 +98,6 @@ def test_locate_prefers_process_over_title(monkeypatch):
     """没有接管句柄时先按进程名认，认不出才退回按标题：启动器窗口与游戏窗口同名，
     标题是最后一级线索，不能排在前面。"""
     c = _ctl()
-    c._hwnd = 0
     seen: list[str] = []
     monkeypatch.setattr(ctl.game_process, "find_window_by_process",
                         lambda: seen.append("exe") or 0)
@@ -125,7 +109,6 @@ def test_locate_prefers_process_over_title(monkeypatch):
 
 def test_locate_stops_at_process_hit(monkeypatch):
     c = _ctl()
-    c._hwnd = 0
     monkeypatch.setattr(ctl.game_process, "find_window_by_process", lambda: 4321)
     monkeypatch.setattr(ctl, "find_game_hwnd",
                         lambda **kw: pytest.fail("进程名已认出不该再按标题搜"))
@@ -135,7 +118,7 @@ def test_locate_stops_at_process_hit(monkeypatch):
 def test_locate_uses_adopted_handle(monkeypatch):
     """启动步骤交来的句柄优先：两种搜索都不该被走到。"""
     c = _ctl()
-    c._hwnd = 1234
+    c.adopt_window(1234)
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
     monkeypatch.setattr(ctl.game_process, "find_window_by_process",
                         lambda: pytest.fail("已有接管句柄不该再找窗口"))
@@ -145,7 +128,7 @@ def test_locate_uses_adopted_handle(monkeypatch):
 def test_connect_short_circuit_keeps_live_window(monkeypatch):
     c = _ctl()
     c.controller = object()
-    c._hwnd = 123
+    c.adopt_window(123)
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: True)
     assert c.connect() is True
 
@@ -237,9 +220,8 @@ def test_release_closes_context_before_gpad_and_capture():
 def test_begin_run_resets_run_requests():
     """运行边界清手动停止/停止信号/退出请求；项入口不再各自清。"""
     c = _ctl()
-    c._manual_stop = True
-    c.stop_event.set()
-    c._exit_requested = True
+    c.stop()
+    c.request_exit()
     c.begin_run()
     assert c._manual_stop is False
     assert c.stop_event.is_set() is False
@@ -248,8 +230,7 @@ def test_begin_run_resets_run_requests():
 
 def test_manual_stop_is_not_cleared_by_item_entry(wired):
     """两项之间按下的停止必须保留：下一项不能把手动停止清掉后继续跑。"""
-    wired._manual_stop = True
-    wired.stop_event.set()
+    wired.stop()
     wired.run_builtin_step("fake", {})
     assert _Step.seen_stop is True
     assert wired.stop_event.is_set() is True
@@ -257,7 +238,6 @@ def test_manual_stop_is_not_cleared_by_item_entry(wired):
 
 def test_item_auto_stop_is_cleared_for_next_item(wired):
     """上一项到限自动停止会置位 stop_event，但不得泄漏到下一项。"""
-    wired._manual_stop = False
     wired.stop_event.set()
     wired.run_builtin_step("fake", {})
     assert _Step.seen_stop is False
@@ -267,7 +247,7 @@ def test_item_auto_stop_is_cleared_for_next_item(wired):
 def test_run_mute_retries_until_audio_appears(monkeypatch):
     """窗口先出现、音频会话后出现：运行级静音重试到会话可用为止。"""
     c = _ctl()
-    c._mute_game_enabled = True
+    c.set_mute_game(True)
     attempts = []
     monkeypatch.setattr(c, "_try_capture_volume", lambda: [0.35])
     monkeypatch.setattr(c, "_try_game_volume",
