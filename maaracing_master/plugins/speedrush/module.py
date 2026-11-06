@@ -49,6 +49,8 @@ from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush import dashboard_store, model_assets
+from maaracing_master.plugins.speedrush.session_layout import (
+    drive_behavior_dir, rebuild_drive_index, upsert_drive_segment)
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
@@ -1476,6 +1478,8 @@ class SpeedRushModule(ActivityModule):
                 dbg = chain.get("debug")
                 if dbg is not None:
                     dbg.stop("chain_end")
+                    _finish_drive_segment(_run_dir(stamp, phase), stamp, phase,
+                                          round_no)
                 self._flush_control_trace(chain, phase, completed=completed)
                 self._stop_depth_observer(chain, phase)
             elif straight and straight_chain is not None:
@@ -1486,6 +1490,8 @@ class SpeedRushModule(ActivityModule):
                 dbg = chain.get("debug")
                 if dbg is not None:
                     dbg.stop("chain_end")
+                    _finish_drive_segment(_run_dir(stamp, phase), stamp, phase,
+                                          round_no)
                 self._flush_control_trace(chain, phase, completed=completed)
                 self._stop_depth_observer(chain, phase)
             elif macro_chain is not None:
@@ -1537,8 +1543,11 @@ class SpeedRushModule(ActivityModule):
         wt = WallTrack(cal)  # 墙实体（第 5 步）：逐箱跨帧假设，ego_road 持有
         t_start = time.time()
         manual = run_dir is not None   # 人工驾驶阶段（语料目录已由录制器建好）
-        run_dir = run_dir or _run_dir(stamp or time.strftime("%Y%m%d_%H%M%S"), phase)
+        stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
+        run_dir = run_dir or _run_dir(stamp, phase)
         dbg_on = self._debug_enabled()
+        if dbg_on and not manual:
+            _register_drive_segment(run_dir, stamp, phase, round_no)
         lane_obs = LaneObsWorker(
             # config.LaneObs 与 lane_obs.LaneObsConfig 字段同构（worker 只读
             # enabled/weights/hz/provider/threads/detect_every），两份配置类
@@ -3780,25 +3789,57 @@ def _fresh_session_dir(path: Path) -> Path:
 
 
 def _run_dir(stamp: str, phase: int) -> Path:
-    """一局一产物目录（2026-10-12 布局收口，paths.py 五类契约）：debug/<module>/<会话>/。
+    """一局一阶段产物目录：`debug/<会话>/speedrush/drive/<局前缀>_p<阶段>/`。
 
-    speedrush 帧证据（证据包/hud/badframes/索引）全在
-    ``debug/speedrush/<局前缀>_p<阶段>/``——一局一目录，清当批=删一个目录；
-    逐拍流水与局汇总随日志会话走（ADR-0010），在
-    ``logs/<会话>/trace/``。``data/`` 放用户资产与业务数据（宏、DB），不放调试
-    产物。整个目录受 debug 开关管辖（关=零产物）；帧证据包密度另受 debug_dump
-    三态闸（off/events/full）。
+    帧证据（证据包/hud/badframes/索引）全在行为目录的子段里；行为清单
+    ``drive/manifest.json`` 列出每局每阶段的目录与起止。逐拍流水与局汇总随
+    日志会话走（ADR-0010），在 ``logs/<会话>/trace/``。``data/`` 放用户资产与
+    业务数据（宏、DB），不放调试产物。整个目录受 debug 开关管辖（关=零产物）；
+    帧证据包密度另受 debug_dump 三态闸（off/events/full）。
 
     局前缀由调用方按**局**生成（``_run_flow`` 每轮一个），同一局的两个驾驶阶段
-    共用它、不同局必然不同。不能用日志会话编号：它标识的是"一次启动"，同一次
-    启动连跑多局时重复，后一局会覆盖前一局的图。"""
-    key = (stamp, phase)
+    共用它、不同局必然不同。不能用会话编号代替：它标识"一次启动"，同一次启动
+    连跑多局时重复，后一局会覆盖前一局的图。"""
+    session = logger.session_token or time.strftime("%Y%m%d_%H%M%S")
+    key = (session, stamp, phase)
     hit = _run_dirs.get(key)
     if hit is not None:
         return hit
-    path = _fresh_session_dir(debug_dir() / "speedrush" / f"{stamp}_p{phase}")
+    path = _fresh_session_dir(
+        drive_behavior_dir(debug_dir() / session) / f"{stamp}_p{phase}")
     _run_dirs[key] = path
     return path
+
+
+def _register_drive_segment(run_dir: Path, stamp: str, phase: int,
+                            round_no: int | None) -> None:
+    """debug 开启时登记本阶段段：建行为目录清单，回放据此列局与阶段。"""
+    behavior = drive_behavior_dir(run_dir.parents[2])
+    try:
+        upsert_drive_segment(behavior, round_no=int(round_no or 0),
+                             phase=phase, stamp=stamp)
+    except Exception as exc:  # noqa: BLE001 —— 取证清单失败不阻断驾驶
+        logger.log(f"[极速狂飙] 驾驶取证清单登记失败: {exc!r}", "WARNING")
+
+
+def _finish_drive_segment(run_dir: Path, stamp: str, phase: int,
+                          round_no: int | None) -> None:
+    """阶段收尾：从 meta 取结束时刻并重建行为级帧索引。无清单时静默跳过。"""
+    behavior = drive_behavior_dir(run_dir.parents[2])
+    if not (behavior / "manifest.json").is_file():
+        return
+    ended = None
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        ended = meta.get("ended_at")
+    except (OSError, ValueError):
+        pass
+    try:
+        upsert_drive_segment(behavior, round_no=int(round_no or 0), phase=phase,
+                             stamp=stamp, ended_at=ended)
+        rebuild_drive_index(behavior)
+    except Exception as exc:  # noqa: BLE001
+        logger.log(f"[极速狂飙] 驾驶取证清单收尾失败: {exc!r}", "WARNING")
 
 
 def resolve_start_index(start_from: str | None) -> int:

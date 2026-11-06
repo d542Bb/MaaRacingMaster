@@ -1273,6 +1273,7 @@ class SidecarService:
             run_id = f"{base}_r{self._round_seq}"
             # 运行身份的唯一生成点：日志/调试/流水/性能/壳事件都消费它
             logger.set_run_id(run_id)
+            logger.set_round(self._round_seq)
             worker = threading.Thread(
                 target=self._worker_main,
                 args=(plan, run_id),
@@ -1443,6 +1444,7 @@ class SidecarService:
             except Exception:  # noqa: BLE001
                 pass
             logger.set_run_id(None)
+            logger.set_round(None)
             with self._lock:
                 if self._worker is threading.current_thread():
                     self._worker = None

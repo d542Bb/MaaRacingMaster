@@ -45,6 +45,7 @@ from maaracing_master.plugins.speedrush.pad_source import PadSampler
 from maaracing_master.plugins.speedrush.session_layout import (
     SOURCE_MANUAL,
     build_meta,
+    current_session_token,
     hud_relpath,
     raw_relpath,
 )
@@ -417,6 +418,7 @@ class DriveRecorder:
             pad_poll_hz=self.pad_poll_hz,
             pad_samples=self._pad_samples,
             stop_reason=reason,
+            session=current_session_token(),
         )
         try:
             (self.out_dir / "meta.json").write_text(

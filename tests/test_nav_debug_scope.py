@@ -41,7 +41,7 @@ def test_publish_state_and_scope_lifecycle(tmp_path):
             assert d.status()["stage"] == "startup.boot"
         assert d.status()["depth"] == 0
         assert d._wait_drain(2.0)
-        lines = (tmp_path / "nav_test" / "index.jsonl").read_text(encoding="utf-8")
+        lines = (tmp_path / "index.jsonl").read_text(encoding="utf-8")
         assert "segment_start" in lines and "segment_end" in lines
         end = [json.loads(x) for x in lines.splitlines() if '"segment_end"' in x][-1]
         assert end["owner"] == "nav"

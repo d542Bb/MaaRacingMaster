@@ -38,7 +38,7 @@ def _wait(d: NavigationDebugger, timeout: float = 3.0) -> None:
 
 
 def _index_lines(tmp_path) -> list[dict]:
-    path = tmp_path / "run_test" / "index.jsonl"
+    path = tmp_path / "index.jsonl"
     return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
 
 
@@ -225,7 +225,7 @@ class TestRatesAndCounters:
                 c["peep_encoded"] + c["peep_render_failed"] + c["peep_encode_failed"])
             d.close_segment(seg, "completed")
             _wait(d)
-            files = list((tmp_path / "run_test").rglob("*.jpg"))
+            files = list(tmp_path.rglob("*.jpg"))
             frames = [x for x in _index_lines(tmp_path) if x["type"] == "frame"]
             assert len(files) == c["save_written"] == len(frames)
         finally:
@@ -288,7 +288,7 @@ class TestToggleBoundary:
             c = d.status()["counters"]
             assert c["save_written"] == 1
             # 在途帧照常落盘，索引也要有行：文件数 = 索引帧行数
-            files = list((tmp_path / "run_test").rglob("*.jpg"))
+            files = list(tmp_path.rglob("*.jpg"))
             frames = [x for x in _index_lines(tmp_path) if x["type"] == "frame"]
             assert len(files) == len(frames) == 1
         finally:

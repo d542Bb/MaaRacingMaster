@@ -444,7 +444,8 @@ def test_listener_logging_during_close_no_deadlock(tmp_path):
     assert lg.lifecycle_state == "closed"
 
 
-def test_same_second_reopen_isolates_tokens(tmp_path):
+def test_reopen_reuses_session_identity(tmp_path):
+    """v5：一次启动一个会话；中途再开日志回到同一目录，不新开会话。"""
     lg = Logger(tmp_path)
     mgr = TraceSinkManager()
     lg.add_session_listener(mgr)
@@ -452,14 +453,19 @@ def test_same_second_reopen_isolates_tokens(tmp_path):
     lg.set_file_logging(True)
     tok1 = lg.session_token
     sink.append({"x": 1})
-    lg.set_file_logging(True)                        # 同秒再开 = 换会话
-    tok2 = lg.session_token
-    assert tok1 != tok2
-    assert (tmp_path / tok1).is_dir() and (tmp_path / tok2).is_dir()
-    # 旧会话经完整关闭流程：文件有 end 标记
-    rows1 = _read(tmp_path / tok1 / "trace" / "demo.jsonl")
-    assert rows1[-1]["type"] == "end"
     lg.set_file_logging(False)
+    lg.set_file_logging(True)                        # 中途再开 = 同一会话
+    tok2 = lg.session_token
+    assert tok1 == tok2
+    assert sorted(p.name for p in tmp_path.iterdir()) == [tok1]
+    # 同一文件接着写：第一段有 end，第二段 begin 序号继续，不倒退
+    rows = _read(tmp_path / tok1 / "trace" / "demo.jsonl")
+    assert rows[0]["type"] == "session_begin"
+    begins = [r for r in rows if r.get("type") == "session_begin"]
+    assert len(begins) == 2
+    assert begins[1]["seq"] > 0
+    lg.set_file_logging(False)
+    assert validate_trace_file(tmp_path / tok1 / "trace" / "demo.jsonl") == []
 
 
 def test_open_during_closing_waits(tmp_path):
@@ -480,7 +486,7 @@ def test_open_during_closing_waits(tmp_path):
     t_open.join(3.0)
     assert not t_open.is_alive()
     assert lg.lifecycle_state == "open"
-    assert lg.session_token != closing_token
+    assert lg.session_token == closing_token
     lg.set_file_logging(False)
 
 

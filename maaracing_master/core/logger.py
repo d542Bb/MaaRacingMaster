@@ -61,7 +61,8 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
-from maaracing_master.core.paths import logs_dir
+from maaracing_master.core.paths import debug_dir, logs_dir
+from maaracing_master.core.session_layout import new_session_token
 
 
 class _TierFile:
@@ -175,8 +176,11 @@ class Logger:
         self._lifecycle_lock = Lock()
         self._lifecycle_state = "closed"          # closed / open / closing
         self._listeners: list = []                # 会话生命周期回调（流水汇/采样器）
-        self._session_token: str | None = None    # 磁盘会话 token（= 目录名）
+        # 会话编号在进程启动时生成一次，与日志/调试开关无关：开关只决定
+        # `logs/<会话>/` 与 `debug/<会话>/` 下有没有文件，不改变身份。
+        self._session_token: str = new_session_token(self._log_dir, debug_dir())
         self._run_id: str | None = None           # 当前队列轮次的运行编号（无运行时为 None）
+        self._round_no: int | None = None         # 当前队列轮次序号（身份字段，不进路径）
         self._close_status = deque(maxlen=8)      # 最近数次会话收尾状态（诊断）
         # ---- 分组状态（全部在 _lock 下读写） ----
         # session_id：进程内日志流的身份；WebView 重连/新旧侧对账用。
@@ -212,7 +216,10 @@ class Logger:
 
     @property
     def session_token(self) -> str | None:
-        """当前磁盘会话 token（logs/ 下目录名，同时是本场运行编号）；未启用写盘时为 None。"""
+        """本进程的会话编号（`logs/` 与 `debug/` 共用）；进程启动即存在。
+
+        日志开关只决定 `logs/<会话>/` 下有没有文件，不改变这个值。
+        """
         return self._session_token
 
     @property
@@ -223,9 +230,18 @@ class Logger:
         """
         return self._run_id
 
+    @property
+    def current_round(self) -> int | None:
+        """当前队列轮次序号（身份字段，不参与任何路径）。"""
+        return self._round_no
+
     def set_run_id(self, run_id: str | None) -> None:
         """由侧车在轮次开始/结束时设置；记录只消费，不各自生成第二份身份。"""
         self._run_id = run_id
+
+    def set_round(self, round_no: int | None) -> None:
+        """由侧车设置当前轮次序号；记录只消费，不进入路径。"""
+        self._round_no = round_no
 
     @property
     def lifecycle_state(self) -> str:
@@ -304,11 +320,11 @@ class Logger:
     def set_file_logging(self, enabled: bool) -> None:
         """开关磁盘写入（会话生命周期入口，转换经独立生命周期锁串行）。
 
-        开启：新建会话目录 `logs/<YYYYMMDD_HHMMSS>/`（同秒重名才加序号）与日志文件（单流
-        全量），通知伴随写手绑定；已在开启态再次开启 = 先按关闭流程收旧会话再开新。
-        关闭：进入 CLOSING → 通知伴随写手有界排空（SESSION_DRAIN_TIMEOUT_S）→
-        关主日志与句柄 → CLOSED；已写文件保留，内存缓冲继续累积，GUI 显示不受
-        影响，会话目录引用一并清空。
+        开启：在**本进程会话编号**下建目录与日志文件（单流全量），通知伴随写手
+        绑定；已在开启态再次开启 = 幂等，不换会话。关闭：进入 CLOSING → 通知
+        伴随写手有界排空（SESSION_DRAIN_TIMEOUT_S）→ 关主日志与句柄 → CLOSED；
+        已写文件保留，内存缓冲继续累积，GUI 显示不受影响。中途再开回到同一
+        会话目录，不新建会话。
         """
         if enabled:
             self._open_session()
@@ -318,23 +334,14 @@ class Logger:
 
     def _open_session(self) -> None:
         with self._lifecycle_lock:
-            if self._file_enabled or self._session_dir is not None:
-                # 已开启再开启 = 换会话：先按关闭流程收旧（含伴随写手排空）
-                self._close_session_locked(self.SESSION_DRAIN_TIMEOUT_S)
+            if self._file_enabled and self._session_dir is not None:
+                return  # 已在本会话写盘：幂等
             try:
-                # 会话目录名 = 纯时间戳；只有同一秒内反复开关、目录已存在时才加序号。
-                # 这个 token 同时是「一场运行的编号」：调试侧（截图/录制/流水）的目录名
-                # 以它开头，日志与调试产物因此一眼能对上。
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                token = ts
-                seq = 1
-                while (self._log_dir / token).exists():
-                    seq += 1
-                    token = f"{ts}_{seq}"
+                # 目录名 = 进程会话编号；同秒冲突已在构造时解决。
+                token = self._session_token
                 session_dir = self._log_dir / token
                 session_dir.mkdir(parents=True, exist_ok=True)
                 self._session_dir = session_dir
-                self._session_token = token
                 self.log_file = session_dir / f"MaaRM_{token}.log"
                 # 注意：传字符串路径用内置 open（buffering=1 行缓冲；本环境 open 的
                 # line_buffering 关键字被拦截，故用等价的标准 buffering=1）。
@@ -346,7 +353,6 @@ class Logger:
                 self.log_file = None
                 self._tier = None
                 self._session_dir = None
-                self._session_token = None
                 self._lifecycle_state = "closed"
                 return
             self._lifecycle_state = "open"
@@ -395,7 +401,6 @@ class Logger:
         with self._lock:
             self._close_tier()
         self._session_dir = None
-        self._session_token = None
         self._file_enabled = False
         self._lifecycle_state = "closed"
 

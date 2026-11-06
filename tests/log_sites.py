@@ -392,6 +392,8 @@ SITES: list[LogSite] = [
     _s('plugins/speedrush/module.py', '_open_grp', '<dynamic>', 'INFO', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
     _s('plugins/speedrush/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
     _s('plugins/speedrush/module.py', '_fresh_session_dir', '[极速狂飙] 会话目录 {} 已存在且非空，改写到 {}', 'WARNING', 'cross', 'cross', '建目录先于业务组开启：撞名换名是异常但可恢复的降级，WARNING 不静默；工具函数无组上下文。'),
+    _s('plugins/speedrush/module.py', '_register_drive_segment', '[极速狂飙] 驾驶取证清单登记失败: {}', 'WARNING', 'cross', 'cross', '取证清单是离线回放入口；写失败属可恢复降级，发生在驾驶阶段组内但由工具函数统一上报。'),
+    _s('plugins/speedrush/module.py', '_finish_drive_segment', '[极速狂飙] 驾驶取证清单收尾失败: {}', 'WARNING', 'cross', 'cross', '阶段收尾的清单/索引重建；失败不阻断驾驶，WARNING 不静默。'),
     _s('plugins/speedrush/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '[极速狂飙] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。请调整为 16:9 后重新开始，模块已终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),

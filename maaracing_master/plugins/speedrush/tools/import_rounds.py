@@ -4,7 +4,7 @@
 
 数据源（只读）：
 - ``logs/<token>/trace/speedrush_summary.jsonl``
-- ``debug/speedrush/<局前缀>_p<阶段>/meta.json`` 与 ``hud/hud.jsonl``
+- ``debug/<会话>/speedrush/drive/<局前缀>_p<阶段>/meta.json`` 与 ``hud/hud.jsonl``
 - ``logs/<token>/trace/speedrush.jsonl``（判 深度几何 / 全程直行）
 
 只导入 ``meta.source == "control"`` 的回合；人工录制与宏不写入。重复运行
@@ -105,7 +105,7 @@ def _load_summaries(logs_root: Path) -> list[dict[str, Any]]:
 
 def _load_metas(debug_root: Path) -> list[dict[str, Any]]:
     metas: list[dict[str, Any]] = []
-    for path in sorted(debug_root.glob("*/meta.json")):
+    for path in sorted(debug_root.glob("*/speedrush/drive/*/meta.json")):
         try:
             meta = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -273,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         db = args.db.expanduser().resolve()
         dashboard_store.db_path = lambda: db
     logs_root = args.logs_root or logs_dir()
-    debug_root = args.debug_root or (debug_dir() / "speedrush")
+    debug_root = args.debug_root or debug_dir()
 
     rounds = build_rounds(logs_root, debug_root)
     if not rounds:

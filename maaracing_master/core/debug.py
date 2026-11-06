@@ -14,6 +14,7 @@ MaaRacingMaster — 调试可视化模块
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections import deque
@@ -23,6 +24,14 @@ import cv2
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+
+from maaracing_master.core.session_layout import (
+    append_frame_row,
+    behavior_dir,
+    read_manifest,
+    update_manifest,
+    write_manifest,
+)
 
 # 运行级调试流的节拍与容量（契约见 ADR-0019 与 core/CODE_WIKI.md §1.4）
 RUN_SAMPLE_HZ = 10.0
@@ -244,6 +253,7 @@ class DebugSegment:
         self._hub = hub
         self.id = int(seg_id)
         self.owner = owner or "?"
+        self.scope = self.owner       # 外层运行项（模块/步骤）；帧与清单按它分组
         self.label = label or owner or "?"
         self.kind = kind
         self.source = source
@@ -373,7 +383,8 @@ class NavigationDebugger:
     """
 
     def __init__(self, debug_root: Path):
-        self.debug_root = Path(debug_root)  # 调试存图根：user_data_dir()/debug（开发/发行一致）
+        # 本对象只服务一个会话：debug_root = `debug/<会话>/`，运行编号不再进路径。
+        self.debug_root = Path(debug_root)
         self.session_dir: Path | None = None
         self.frame_count = 0
 
@@ -454,6 +465,7 @@ class NavigationDebugger:
         self._frame_source = fn
 
     def begin_run(self, run_id: str | None = None) -> str:
+        """登记一次运行身份。目录不随之切换：同一会话的多轮共用一个 debug 根。"""
         run_id = run_id or time.strftime("%Y%m%d_%H%M%S")
         with self._lock:
             if self._run_id == run_id:
@@ -462,7 +474,6 @@ class NavigationDebugger:
             self.end_run()
         with self._lock:
             self._run_id = run_id
-            self._seq = 0
             self._seg_id = 0
             self._stack.clear()
             self._counters.clear()
@@ -532,6 +543,7 @@ class NavigationDebugger:
                 save=save, peep_fps=peep_fps, save_fps=save_fps,
                 pointer=pointer, state_provider=state_provider, stage=stage)
             self._stack.append(seg)
+            seg.scope = self._stack[0].owner if self._stack else seg.owner
             self._counters[seg_id] = _new_counters()
             # 段切换后允许同一采集帧再入队一次：WGC 对静止画面不出新帧，
             # 不去重会让新段一直停在 gap（A1/A2 的“连续有画面”）。
@@ -540,7 +552,7 @@ class NavigationDebugger:
         self._ensure_worker()
         self._q.put_control(_StreamItem(
             kind="control", seq=seq, segment_id=seg_id, owner=seg.owner,
-            label=seg.label, stage=seg.stage, depth=depth,
+            scope=seg.scope, label=seg.label, stage=seg.stage, depth=depth,
             event="segment_start",
             payload={"kind": kind, "source": source, "save": save}))
         # 只在运行项边界清预览：同一项内的执行器切换（导航步骤之间）保留最后一帧，
@@ -592,7 +604,7 @@ class NavigationDebugger:
             seq = self._next_seq_locked()
         self._q.put_control(_StreamItem(
             kind="control", seq=seq, segment_id=seg.id, owner=seg.owner,
-            label=seg.label, stage=stage, event="stage_change"))
+            scope=seg.scope, label=seg.label, stage=stage, event="stage_change"))
 
     def _enqueue_end(self, seg: DebugSegment, outcome: str,
                      drained: bool, pending: int) -> None:
@@ -600,7 +612,7 @@ class NavigationDebugger:
             seq = self._next_seq_locked()
         self._q.put_control(_StreamItem(
             kind="control", seq=seq, segment_id=seg.id, owner=seg.owner,
-            label=seg.label, stage=seg.stage, event="segment_end",
+            scope=seg.scope, label=seg.label, stage=seg.stage, event="segment_end",
             payload={"outcome": outcome, "drained": drained, "pending": pending}))
 
     # ---------- 线程与采样 ----------
@@ -778,7 +790,8 @@ class NavigationDebugger:
                         "type": "frame", "seq": item.seq, "segment": seg_id,
                         "owner": item.owner, "label": item.label,
                         "stage": item.stage, "fid": item.fid,
-                        "ts_ns": item.ts_ns,
+                        "ts_ns": item.ts_ns, "run_id": self._run_id,
+                        "behavior": self._behavior_of(item),
                         "age_ms": round(float(item.age_ms), 1), "file": rel})
                 else:
                     self._bump(seg_id, "save_write_failed")
@@ -792,6 +805,7 @@ class NavigationDebugger:
             self._index({
                 "type": "segment_start", "seq": item.seq,
                 "segment": item.segment_id, "owner": item.owner,
+                "run_id": self._run_id, "behavior": self._behavior_of(item),
                 "label": item.label, "depth": item.depth,
                 "stage": item.stage, "payload": item.payload})
         elif ev == "segment_end":
@@ -804,18 +818,24 @@ class NavigationDebugger:
             self._index({
                 "type": "segment_end", "seq": item.seq,
                 "segment": item.segment_id, "owner": item.owner,
+                "run_id": self._run_id, "behavior": self._behavior_of(item),
                 "label": item.label, "stage": item.stage,
                 "outcome": payload.get("outcome"),
                 "drained": payload.get("drained"),
                 "pending": payload.get("pending"),
                 "counters": counters})
+            bpath = self._behavior_path(item)
+            if bpath is not None:
+                update_manifest(
+                    bpath, ended_at=datetime.now().isoformat(timespec="seconds"))
             # 外层作用域还在：保留最后一帧直到外层/下一段出新帧；清掉会闪空。
             if not remaining:
                 self._clear_peep("idle")
         elif ev == "stage_change":
             self._index({
                 "type": "stage", "seq": item.seq, "segment": item.segment_id,
-                "owner": item.owner, "stage": item.stage})
+                "owner": item.owner, "stage": item.stage,
+                "run_id": self._run_id, "behavior": self._behavior_of(item)})
         elif ev == "toggle":
             payload = dict(item.payload or {})
             self._index({"type": "toggle", "seq": item.seq,
@@ -888,21 +908,48 @@ class NavigationDebugger:
         _put_text(frame_bgr, head, (10, frame_bgr.shape[0] - 10), 0.5, (230, 230, 230))
         return frame_bgr
 
+    def _behavior_of(self, item: _StreamItem) -> str:
+        """行为目录的相对路径：`<模块>/<行为>`（模块 = 外层运行项，行为 = 执行器）。"""
+        scope = _safe_name(item.scope or item.owner)
+        executor = _safe_name("control" if item.owner == scope else item.owner)
+        return f"{scope}/{executor}"
+
+    def _behavior_path(self, item: _StreamItem) -> Path | None:
+        scope = _safe_name(item.scope or item.owner)
+        executor = _safe_name("control" if item.owner == scope else item.owner)
+        try:
+            return behavior_dir(self.debug_root, scope, executor)
+        except ValueError:
+            return None
+
     def _save_full(self, item: _StreamItem, full: np.ndarray) -> str | None:
         with self._lock:
             run_dir = self._run_dir
         if run_dir is None:
             return None
         try:
-            # 目录只表达“哪个模块、哪个执行器”：顺序与时间都在索引里，
-            # 不再加 00_/01_ 前缀（增加维护负担且没有信息量）。
+            # 目录只表达“哪个模块、哪个行为”：顺序与时间都在索引里。
             scope = _safe_name(item.scope or item.owner)
             executor = _safe_name("control" if item.owner == scope else item.owner)
-            seg_dir = run_dir / scope / executor
+            seg_dir = behavior_dir(run_dir, scope, executor)
             seg_dir.mkdir(parents=True, exist_ok=True)
             path = seg_dir / f"{int(item.seq):06d}.jpg"
             if not cv2.imwrite(str(path), full, [cv2.IMWRITE_JPEG_QUALITY, 90]):
                 return None
+            now = datetime.now().isoformat(timespec="seconds")
+            if read_manifest(seg_dir) is None:
+                write_manifest(
+                    run_dir, scope, executor, started_at=now,
+                    runs=[self._run_id] if self._run_id else None)
+            append_frame_row(seg_dir, {
+                "seq": int(item.seq),
+                "ts_mono_ns": int(item.ts_ns or time.monotonic_ns()),
+                "ts_wall_ns": time.time_ns(),
+                "file": path.name,
+                "fid": int(item.fid or 0),
+                "stage": item.stage,
+                "run_id": self._run_id,
+            })
             return str(path.relative_to(run_dir)).replace("\\", "/")
         except Exception:  # noqa: BLE001
             return None
@@ -974,7 +1021,7 @@ class NavigationDebugger:
                 or self._index_f is not None):
             return
         try:
-            self._run_dir = self.debug_root / self._run_id
+            self._run_dir = self.debug_root
             self._run_dir.mkdir(parents=True, exist_ok=True)
             self._index_f = open(self._run_dir / "index.jsonl", "a", encoding="utf-8")
         except Exception:  # noqa: BLE001
@@ -985,6 +1032,10 @@ class NavigationDebugger:
         # 每条事件都带双时钟：段边界/阶段/开关行过去只有运行内序号，无法落到时间轴
         record.setdefault("ts_wall_ns", time.time_ns())
         record.setdefault("ts_mono_ns", time.monotonic_ns())
+        record.setdefault("session", self.debug_root.name)
+        if "round" not in record:
+            m = re.search(r"_r(\d+)$", self._run_id or "")
+            record["round"] = int(m.group(1)) if m else None
         with self._lock:
             # 索引文件一旦开过就写到运行结束：运行中关 DEBUG 只停“新帧”，
             # 已在途的存盘帧仍要落索引行，否则文件数会大于索引行数（A5/A11）。

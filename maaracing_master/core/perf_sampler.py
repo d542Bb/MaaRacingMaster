@@ -55,6 +55,14 @@ def _current_run_id() -> str | None:
     except Exception:  # noqa: BLE001 —— 身份缺失不拖垮采样
         return None
 
+
+def _current_round() -> int | None:
+    try:
+        from maaracing_master.core.logger import logger
+        return logger.current_round
+    except Exception:  # noqa: BLE001
+        return None
+
 # 受管进程嗅探：模拟器家族的可执行名子串（小写匹配）。这是环境级进程清单，
 # 与任何玩法模块无关；命中即纳入逐秒 CPU/内存读数。
 DEFAULT_WATCH_PATTERNS = (
@@ -460,6 +468,7 @@ class PerfSampler:
         self._last_tick_mono = t_tick
         sample = {
             "v": SCHEMA_VERSION, "type": "sample", "sample_id": sid,
+            "session": self._session_token, "round": _current_round(),
             "run_id": _current_run_id(),
             "ts_wall_ns": time.time_ns(), "ts_mono_ns": time.monotonic_ns(),
             "_p": False,

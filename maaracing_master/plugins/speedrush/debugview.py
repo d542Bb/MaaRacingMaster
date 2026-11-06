@@ -65,6 +65,7 @@ from maaracing_master.plugins.speedrush.lane_obs import (
 from maaracing_master.plugins.speedrush.session_layout import (
     SOURCE_CONTROL,
     build_meta,
+    current_session_token,
     hud_relpath,
     raw_relpath,
 )
@@ -969,6 +970,7 @@ class DebugPairWriter:
             pad_poll_hz=None,
             pad_samples=None,
             stop_reason=reason,
+            session=current_session_token(),
         )
         try:
             self._dir.mkdir(parents=True, exist_ok=True)

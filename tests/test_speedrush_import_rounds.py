@@ -78,7 +78,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     session = logs / "sess1"
     trace_dir = session / "trace"
     trace_dir.mkdir(parents=True)
-    debug = tmp_path / "debug" / "speedrush"
+    debug = tmp_path / "debug"
+    drive = debug / "sess1" / "speedrush" / "drive"
 
     starts = [_at(19, 55, 32), _at(19, 56, 17), _at(19, 57, 37), _at(19, 58, 20)]
     ends = [_at(19, 56, 9), _at(19, 57, 3), _at(19, 58, 15), _at(19, 59, 10)]
@@ -110,14 +111,14 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8")
 
     # 局 1：段 1 混入一条「虚高 4878 / 对手 888」的假读；段 2 末对 5693 / 7858
-    p1 = _write_meta(debug, "20261105_195502", 1, starts[0], ends[0], 1)
+    p1 = _write_meta(drive, "20261105_195502", 1, starts[0], ends[0], 1)
     _write_hud(p1, [(100, 90), (2579, 2919)], false_spike=(4878, 888))
-    p2 = _write_meta(debug, "20261105_195502", 2, starts[1], ends[1], 1)
+    p2 = _write_meta(drive, "20261105_195502", 2, starts[1], ends[1], 1)
     _write_hud(p2, [(2792, 3079), (5693, 7858)])
     # 局 2：段 1 混入一条「无速度行的串位」假读；段 2 末对 6899 / 8929
-    p1 = _write_meta(debug, "20261105_195714", 1, starts[2], ends[2], 2)
+    p1 = _write_meta(drive, "20261105_195714", 1, starts[2], ends[2], 2)
     _write_hud(p1, [(27, 15), (2233, 2797)], false_no_rate=(283, 22840))
-    p2 = _write_meta(debug, "20261105_195714", 2, starts[3], ends[3], 2)
+    p2 = _write_meta(drive, "20261105_195714", 2, starts[3], ends[3], 2)
     _write_hud(p2, [(2587, 3059), (6899, 8929)])
     return logs, debug
 
@@ -138,6 +139,7 @@ def test_build_rounds_matches_two_rounds_and_rejects_false_reads(db, tmp_path):
 
 def test_manual_round_is_not_imported(db, tmp_path):
     logs, debug = _fixture(tmp_path)
+    drive = debug / "sess1" / "speedrush" / "drive"
     extra = _at(21, 0, 0)
     trace_dir = logs / "sess1" / "trace"
     with (trace_dir / "speedrush_summary.jsonl").open("a", encoding="utf-8") as f:
@@ -146,7 +148,7 @@ def test_manual_round_is_not_imported(db, tmp_path):
             "ticks": 10, "score": 100, "rate": 10, "dur_s": 10.0,
             "conserve_segments": 0,
         }) + "\n")
-    _write_meta(debug, "20261105_210000", 1, extra,
+    _write_meta(drive, "20261105_210000", 1, extra,
                 _at(21, 0, 10), 3, source="manual")
 
     rounds = ir.build_rounds(logs, debug)

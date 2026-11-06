@@ -148,7 +148,8 @@ class MaaRacingMasterController:
         self._hwnd = 0  # 已连接的游戏窗口句柄（未连接为 0）
         self._gpad = None  # 虚拟手柄，首次使用时创建，不复位不销毁
         self._gp_avail = None  # vgamepad 可用性缓存（None=未探测）
-        self.debug = NavigationDebugger(debug_dir())
+        session = getattr(logger, "session_token", None) or time.strftime("%Y%m%d_%H%M%S")
+        self.debug = NavigationDebugger(debug_dir() / str(session))
         self.debug.set_frame_source(self._debug_frame_source)
         self._debug_mode = False  # 调试模式开关（由 GUI 控制）
         self._click_mode = "real"  # 点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)
