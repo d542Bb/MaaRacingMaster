@@ -45,8 +45,11 @@ status: active
 
 ## 探针索引（2026-10-28 补）
 
-带 ◆ 的三个同时登记在根级 `speedrush_trace_consumers.md`（#23-25，含迁移破坏点）；
-其余只在本目录使用。
+带 ◆ 的三个同时登记在 [`speedrush_trace_consumers.md`](../speedrush_trace/speedrush_trace_consumers.md)
+（#23-25，含迁移破坏点）；其余只在本目录使用。
+
+`probe_repeat_and_flow` 复用 [`speedrush_scoring`](../speedrush_scoring/probe_hud_ocr.py) 的
+`HudOcr`（实验内依赖）；退役 scoring 前要先处理这条链。
 
 **第一批——`RESULTS.md` 的数就是从这两个来的**
 - `probe_geom_vo`：几何链本体（IPM 逆透视 + 亮度相位相关 + LSD 二次拟合 + 框底点测距），

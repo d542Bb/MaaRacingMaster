@@ -144,6 +144,5 @@ status: active
 
 ## 结论去向
 
-基线数值与缺口清单进 `docs/plan/world_state_persistence.md`；对象记忆与地图
-保留的事实落地后，结论归 `maaracing_master/plugins/speedrush/CODE_WIKI.md`，
-本目录随退役四步删除。
+基线数值与缺口清单留在本目录的 git 历史；对象记忆与地图保留的事实落地后，
+结论归 `maaracing_master/plugins/speedrush/CODE_WIKI.md`，本目录随退役四步删除。

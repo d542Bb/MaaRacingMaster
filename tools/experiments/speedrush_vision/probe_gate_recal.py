@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """门控重标定探针（trace-only）：估计接近速度 Z×Δlog h 的有效性验证与阈值标定。
 
-**背景**（刀一实机首验，docs/plan/speedrush-hybrid-ranging-design.md §8.1）：
+**背景**（刀一实机首验）：
 Δlog h 门控（T=0.046/拍，近距标定）在远距接近段全部漏报——looming 率≈接近速度/
 距离，是距离相关的量。刀二候选门控量 = Z_anchor × Δlog h / dt（m/s，距离无关）。
 

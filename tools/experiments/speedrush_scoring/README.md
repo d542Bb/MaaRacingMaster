@@ -3,7 +3,7 @@ status: active
 # speedrush 记分观测与规则实测（C 类实验，2026-09-17）
 
 > **本文是什么**：驾驶页 HUD 的读数链路、**每格 ROI 的复核结论**与**记分规则实测结论**——各加分项折算多少分、分数以什么形态出现、能否从录制数据事后复算。
-> **本文不是什么**：不是游戏规则的真源（外部事实归 [`RULES.md`](../../../maaracing_master/plugins/speedrush/RULES.md)，本文只提供实测证据供其回填复核）；不是控制方案（见本机 `docs/plan/speedrush-control-route.md`）。
+> **本文不是什么**：不是游戏规则的真源（外部事实归 [`RULES.md`](../../../maaracing_master/plugins/speedrush/RULES.md)，本文只提供实测证据供其回填复核）；不是控制方案（决策层口径见 [`plugins/speedrush/CODE_WIKI.md`](../../../maaracing_master/plugins/speedrush/CODE_WIKI.md)）。
 > **信源等级**：L4（过程与证据）—— 可作「这个事实当时怎么验的、结论与复现命令」的依据；结论经维护者复核回填 `RULES.md` 后才升为 L0。
 > **继承**：实验规范见 [`tools/experiments/README.md`](../README.md)（C 类两条硬约束、资产分界、目录约定）。
 

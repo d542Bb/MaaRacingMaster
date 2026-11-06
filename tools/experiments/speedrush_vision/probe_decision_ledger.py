@@ -2,7 +2,7 @@
 """决策门账本分析（2026-10-11，只读）：no_candidate 的逐门归因 + 错身壳距原料
 + 前置三件套验收三节。
 
-问（docs/plan/speedrush-score-routing §2/§4）：视野有车的 hold 拍里，候选
+问：视野有车的 hold 拍里，候选
 究竟死在哪道门（band/approach/score/feas/veto/side/done_pass）？账本列
 （trace `ledger`，decision.gate_ledger 产出）逐拍逐车落了判定读数，本脚本
 聚合成账目：
