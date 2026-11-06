@@ -33,7 +33,7 @@ from maaracing_master.core.session_layout import (
     write_manifest,
 )
 
-# 运行级调试流的节拍与容量（契约见 ADR-0019 与 core/CODE_WIKI.md §1.4）
+# 运行级调试流的节拍与容量（分段/预览契约见 ADR-0019，目录见 ADR-0021 与 core/CODE_WIKI.md §1.4）
 RUN_SAMPLE_HZ = 10.0
 MAX_SAMPLE_HZ = 20.0
 FRAME_QUEUE_MAX = 30          # 约 3 秒 @10Hz
