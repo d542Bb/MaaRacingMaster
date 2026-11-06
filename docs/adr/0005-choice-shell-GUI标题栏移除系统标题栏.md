@@ -7,7 +7,7 @@
 
 ## 背景
 
-[ADR-0004](0004-choice-shell-GUI宿主定案.md) 定案 WinUI 3 宿主时，标题栏取「HTML 自绘标题栏视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类，选型过程见 [归档方案](../plan/archive/titlebar-convergence-plan.md)）：保留系统 —□× 按钮，前端只画标题栏背景与内容。
+[ADR-0004](0004-choice-shell-GUI宿主定案.md) 定案 WinUI 3 宿主时，标题栏取「HTML 自绘标题栏视觉 + **native caption buttons overlay**」形态（Electron `titleBarOverlay` 类）：保留系统 —□× 按钮，前端只画标题栏背景与内容。
 
 该形态的运行成本是**系统按钮不认识 HTML 模态层**：系统 caption buttons 画在非客户区，模态遮罩覆盖不到它们，必须由应用自己置灰——为此维护了一整套状态同步（C# `SetCaptionButtonsDimmed` 与 `CaptionBg*` / `DimBg*` 常量、JS `notifyModalState` / `modalOpenCount`、HTML `header-spacer` 占位），且每新增一个弹窗都要接入这套联动（动机与改动清单以 `ddc1504` 为据）。
 
@@ -36,11 +36,11 @@
 
 **被否方案**：
 - **native caption buttons overlay**——系统按钮与 HTML 模态层无法自动协同，需常驻一套置灰状态同步（ADR-0004 定案时的形态，已随本决策删除）；
-- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线，见[归档方案](../plan/archive/titlebar-convergence-plan.md)）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；本决策不采用该路线，拖动仍由系统在 `Draggable` 区处理。
+- **客户区内自绘并自管拖动**（更早的 frameless + JS `begin_window_drag` 路线）——失去系统拖动 / 双击最大化 / Snap 与 DWM 动画；本决策不采用该路线，拖动仍由系统在 `Draggable` 区处理。
 
 ## 证据
 
 - **实施 commit**：`ddc1504`（2026-08-31）「自绘标题栏窗口控制按钮，移除系统标题栏与置灰联动」——含上述四条形态与置灰联动的删除清单（`SetCaptionButtonsDimmed` / `modalOpenCount` / `header-spacer`）。
 - **代码（当前真源）**：[`MainWindow.xaml.cs`](../../apps/MaaRacingMaster.Shell/MainWindow.xaml.cs)——`SetBorderAndTitleBar(true, false)`、`InputNonClientPointerSource.SetRegionRects(NonClientRegionKind.Passthrough, …)`、`minimize` / `maximize` / `close` 消息分支；前端 [`index.html`](../../apps/MaaRacingMaster.Shell/frontend/index.html) `#win-controls` 与 [`app.js`](../../apps/MaaRacingMaster.Shell/frontend/app.js) 的交互区矩形上报。
 - **施工事实**：[apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)。
-- **旧形态（供对照，勿据以实施）**：ADR-0004 正文；归档选型 [titlebar-convergence-plan.md](../plan/archive/titlebar-convergence-plan.md)。
+- **旧形态（供对照，勿据以实施）**：ADR-0004 正文。

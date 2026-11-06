@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-10-19
 - **决策者**：用户
-- **相关**：[speedrush CODE_WIKI §19](../maaracing_master/plugins/speedrush/CODE_WIKI.md)、局 `20261019_204308_p1`、`tests/test_speedrush_tracking.py`、`tests/test_speedrush_hybrid_distance.py`、`tests/test_speedrush_motion_plan.py`
+- **相关**：[speedrush CODE_WIKI §19](../../maaracing_master/plugins/speedrush/CODE_WIKI.md)、局 `20261019_204308_p1`、`tests/test_speedrush_tracking.py`、`tests/test_speedrush_hybrid_distance.py`、`tests/test_speedrush_motion_plan.py`
 
 ## 背景
 

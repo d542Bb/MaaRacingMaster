@@ -29,6 +29,6 @@
 
 - 契约与校验：`maaracing_master/core/config_ui_contract.py`；机检 `tests/test_config_ui_contract.py`（状态矩阵、字段/条件降级、版本不符、摘要输入边界、`_rev` 单调）。
 - 接线：`core/sidecar.py` `_attach_config_meta`（静态与 live 两路统一附加）；`core/base.py` 四个可选钩子。
-- 迁移：`plugins/speedrush/module.py`（三档分段、宏组显隐、录制开关按档换文案）；`plugins/_archive/treasure/module.py`（归档目录自包含，退役测试 `tests/test_config_ui_treasure_retired.py` 直接导入校验）。
+- 迁移：`plugins/speedrush/module.py`（三档分段、宏组显隐、录制开关按档换文案）；`plugins/_archive/treasure/module.py`（归档目录自包含，退役测试 `plugins/_archive/treasure/tests/test_config_ui_treasure_retired.py` 直接导入校验）。
 - 前端：`frontend/js/config-panel.js`（按卡渲染、按 rev / 代际守卫）、`config-panel-state.js`（纯逻辑，`tests/js/config_panel_state.test.mjs` 用 node --test 覆盖旧响应、保存串行与代际作废）；静态锁 `tests/test_frontend_config_panel.py`。
 - 外部参照：MaaFramework ProjectInterface V2（option / case / input 词汇）、VS Code `contributes.configuration`（声明式字段 + 宿主渲染）、JSON Forms（数据与 UI 两层分离、规则式显隐）。

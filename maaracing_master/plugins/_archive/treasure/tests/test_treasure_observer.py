@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """观察通路（帧供给与决策段解耦）行为锁定。
 
-契约出处：docs/plan/observe-split-plan.md。要钉死的是四件事——
+契约出处：commit `bc21495`。要钉死的是四件事——
   I1 观察线程不产生第二个大脑：不得调 `_treasure_kwargs()`（内含决策入口
      `_resolve_action_target()`），也不碰检测/OCR/状态机。
   I2 帧号只有一个主人 = 观察线程；决策段 `_tick_once` 只发布 HUD 快照引用。

@@ -204,7 +204,7 @@ tools\navkit\dev\mpelb.exe config set-lib "<仓库根>\.venv\Lib\site-packages\m
 OCR 资源路径按需另配 `config set-resource`——`.venv` 的 maa 包里没有 `resource/` 目录，
 不配则原生 OCR 不可用（MPE 前端 OCR 仍可用），日志那句 WARN 也这么写。
 
-**文件面板里混进退役图（`archive/racing/...`）**
+**文件面板里混进退役图（工作树根下那个未入库的旧归档目录里的图）**
 mpelb 只索引 `pipeline` 目录下的 json，而它的 `file.exclude` 默认**不含** **`archive`**。已在
 `config.json` 里加上，现在索引 2 个文件 = 两个真源。自己机器上没加过的话补一下。
 

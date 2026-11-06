@@ -101,7 +101,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 - **编辑器产物跳过**：`$__mpe_config_*` 伪节点与节点内 `$__mpe_code`（内嵌方案的布局字段）加载器必须容忍并跳过；MaaFW 官方 schema 的根节点正则为 `^(?!\$).*`（`$` 开头 root field 官方不解析，schema 层背书），运行时同样行为**仍留 P2a 实机确认一次**。
 
-- **Schema 工具链**：`tools/navkit/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/navkit/migrate_v4.py` 的校验器承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
+- **Schema 工具链**：`tools/navkit/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/navkit/check_truth.py` 承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
 
 关键语义：
 

@@ -537,7 +537,7 @@ class TreasureModule(ActivityModule):
                                    # 验证完 OCR 尖峰修复后再考虑瘦身（如恢复 20 帧一次）
     FRAME_ERROR_LOG_EVERY = 50     # 帧边界非 fatal 异常的重记节流：首个异常全量记录，此后每 N 帧一条
     SLOT_BUSY_LOG_EVERY   = 10     # 槽忙跳过（点击/避让）的节流：每 N 帧一条（与前台校验告警同口径）
-    # 观察通路节律（与决策段解耦；见 docs/plan/observe-split-plan.md）：存图挡取 150ms 是为
+    # 观察通路节律（与决策段解耦；见 commit `bc21495`）：存图挡取 150ms 是为
     # 了与拆分前真机观测密度（~150ms/帧）一致，零观感回归；仅预览时可提到 20fps——不写盘，
     # 队列满自然丢帧降密（IO_QUEUE_MAX），不需要额外降挡逻辑。
     OBSERVE_INTERVAL_MS   = 150.0
@@ -4772,7 +4772,7 @@ class TreasureModule(ActivityModule):
         # --------- 2+3. 发布 HUD 状态快照（产帧与落盘已移交观察通路） ---------
         # 帧号唯一主人 = 观察线程（_observe_tick_once）。决策段在此只把「当帧状态」固化成
         # 一份新建 dict 并整体替换引用发布：观察线程只读引用、不迭代活容器，两侧无需加锁
-        # （不变量 I2，见 docs/plan/observe-split-plan.md）。
+        # （不变量 I2，见 commit `bc21495`）。
         # 快照内的帧号由观察线程覆盖；厅类阶段没有决策帧时，观察线程用最小快照照常出图。
         self._last_debug_kwargs = self._treasure_kwargs(
             extra_note=("画面变化" if significant_change else ""))

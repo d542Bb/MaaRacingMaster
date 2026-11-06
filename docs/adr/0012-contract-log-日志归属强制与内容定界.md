@@ -50,6 +50,6 @@ GUI 日志面板有两条渲染路径：带组号的记录进卡片，不带组�
 ## 证据
 
 - 机检真源：[`tests/log_sites.py`](../../tests/log_sites.py)（站点登记表 + AST 扫描器）· [`tests/test_log_attribution.py`](../../tests/test_log_attribution.py)（登记完备、站点唯一、core 开组、循环上下文、运行时兜底、降级分项、关闭时序）。
-- 行为锁：[`tests/test_treasure_log_groups.py`](../../tests/test_treasure_log_groups.py) · [`tests/test_speedrush_log_groups.py`](../../tests/test_speedrush_log_groups.py)（组终态、线性组链、桩回退）· [`tests/test_logger_records.py`](../../tests/test_logger_records.py)（组生命周期与并发语义）· [`tests/test_controller_run_groups.py`](../../tests/test_controller_run_groups.py)（生命周期组收口）。
+- 行为锁：[`plugins/_archive/treasure/tests/test_treasure_log_groups.py`](../../maaracing_master/plugins/_archive/treasure/tests/test_treasure_log_groups.py) · [`tests/test_speedrush_log_groups.py`](../../tests/test_speedrush_log_groups.py)（组终态、线性组链、桩回退）· [`tests/test_logger_records.py`](../../tests/test_logger_records.py)（组生命周期与并发语义）· [`tests/test_controller_run_groups.py`](../../tests/test_controller_run_groups.py)（生命周期组收口）。
 - 实现：`maaracing_master/core/logger.py`（降级分项与包装器清单）· `core/controller.py` / `core/window_utils.py` / `core/nav_graph.py`（组号透传）· `core/sidecar.py`（有界排空）· `plugins/speedrush/{module,hud,recorder}.py` / `plugins/_archive/treasure/module.py`（插件归组与逐帧降级）。
 - 内容分界：逐拍/逐帧读数已由 ADR-0010 的流水（treasure `trace.jsonl`、speedrush `trace/<模块>.jsonl`、HUD `hud.jsonl`、录制 `frames.jsonl`）承载；本条的审计未发现仍需从日志迁往流水的 INFO+ 站点，剩下的是状态变化与在册跨切面事件。
