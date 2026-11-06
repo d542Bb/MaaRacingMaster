@@ -39,6 +39,11 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 - **稳定线禁止对已推送历史 rebase / squash / force push**（AGENTS.md 红线），修正一律新 commit 前进。
 - **日常线不受上述限制**：允许 agent 直接推送；允许对已推送的日常线历史 rebase / squash / force push（`--force-with-lease`），改写只落日常线，不触碰稳定线。
 
+### 退役、改名、目录瘦身类提交
+
+提交前全仓 grep 旧名——模块名、节点前缀、章节号、目录名都算。旧名残留会以幽灵登记（日志站点、注册表条目、文档指针）的形式继续被机检当真，或让指向虚空的指针静默通过。grep 范围含生产代码、测试、工具与 L1~L3 文档；L4 历史记录（ADR、`update_log.md`）按定义保留旧名。
+
+
 ### amend 的边界
 
 仅当**三条同时成立**才可 `git commit --amend` 并入上一提交：① 修改仍属于该提交同一逻辑任务的补充 / 修正；② 该提交**未推送**；③ **无并行会话**。其余情形一律新 commit 前进。
