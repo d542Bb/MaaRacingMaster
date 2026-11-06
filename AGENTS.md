@@ -76,7 +76,7 @@
 
 ## 版本交付与协作
 
-- **No Negative Echo**：最终产物及其包装（标题、文件名、正文、注释、commit、PR、交付说明）只描述最终采用的状态，假设读者没看过本次会话——被否方案、中间尝试、"无 X"式声明不得成为命名或叙述中心；保留真实基线变化与必要诊断。细则见 [`skills/no-negative-echo/SKILL.md`](skills/no-negative-echo/SKILL.md)。
+- **No Negative Echo**：最终产物及其包装（标题、文件名、正文、注释、commit、PR、交付说明）**按最终状态整面生成**，不逐词删改被否措辞；假设读者没看过本次会话——被否方案、中间尝试、"无 X"式声明不得成为命名或叙述中心；保留真实基线变化与必要诊断。落笔与提炼时机见细则指针的 doc-state-gate，收尾与交付细则见 [`skills/no-negative-echo/SKILL.md`](skills/no-negative-echo/SKILL.md)。
 - 对外变更记录在 `docs/update_log.md` 对应版本小节——**面向玩家的更新说明**（收录判据见 [docs/README.md](docs/README.md)「update_log 收录判据」；Release 正文由 `scripts/release/extract_changelog.py` 抽取）。
 - 先沟通对齐再输出，关键决策必须确认；确定要动的地方直接动手，不做多余读取。兼容性优先、性能次之；不了解的技术先暂停调查。
 - **方向裁决口径**：用户在对话中明确确认实施方向后，视为该方向已完成对齐——后续审查（含 challenger 与反例复核）发现的可处理事项一律转为实施任务，不构成重复征求方向确认的理由。仅当发现违反绝对红线、方向所依赖的关键事实被证伪、**新出现的足以改变原取舍的重大风险**（须说明新证据、影响与为何改变原取舍），或存在尚未授权的不可逆动作时，才重新暂停并给出具体证据；不得以「方案仍可完善」「迁移尚未完成」为由续问。用户对某个判断的纠正（「这个不对」）是待处理的意见，不是方向裁决：前者认真处理，后者服从。
@@ -87,7 +87,7 @@
 |---|---|
 | 提交前跑什么、维护者台账、协作流程 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | 文档怎么写（文档头 / 指针纪律 / 数值禁令 / plan 规范） | [docs/README.md](docs/README.md) |
-| 写/改项目文档时的落笔自查（现状 vs 过程、变更史与阶段残留不入正文） | [`skills/doc-state-gate/SKILL.md`](skills/doc-state-gate/SKILL.md) |
+| 写/改项目文档、起草 plan 与模板时的落笔自查（现状 vs 过程、变更史与元叙述不入正文） | [`skills/doc-state-gate/SKILL.md`](skills/doc-state-gate/SKILL.md) |
 | A / B / C 问题分级、C 类实验两条硬约束、实验资产边界 | [tools/experiments/README.md](tools/experiments/README.md) |
 | 发版流程、版本号与 tag、changelog 抽取、**提交纪律**（commit 粒度 / amend 边界 / 并行会话） | [`skills/project-update/SKILL.md`](skills/project-update/SKILL.md) |
 | ADR 准入条件与状态机 | [docs/adr/README.md](docs/adr/README.md) |

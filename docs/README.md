@@ -91,4 +91,4 @@ L3 / L4 导航型文档可省去「真源路由」一行。**只声明与指向�
 - **只能向上产出**：plan → ADR / CODE_WIKI / 指南 / 实验 / issue / 生产实现。长期价值只存在于被提炼的产出里；plan 本身不是任何知识的住户。
 - **禁止反向引用**：正式文档（L0~L3）与生产/运维代码不得引用 `docs/plan/` 下的具体文件（机检 R3）；实验引用 plan 只作过程指针、不作事实依据。
 - **不设 `plan/archive/`**：gitignored 的"归档"既不可追溯又暗示"仍属项目知识"，是第二个垃圾场；plan 的历史若重要，应把结果留在它产出的 issue / commit / 最终文档里。
-- 较大改动的 plan 以行为契约开头：依次写「目标行为 / 不变量 / 验收条件」，先定行为再谈技术方案；跨层、新模块、并发与资源类改动必写。
+- 较大改动的 plan 以行为契约开头：先定行为再谈技术方案，段次、骨架与每格准入判据见 [`templates/plan/BEHAVIOR_CONTRACT_TEMPLATE.md`](../templates/plan/BEHAVIOR_CONTRACT_TEMPLATE.md)；跨层、新模块、并发与资源类改动必写。
