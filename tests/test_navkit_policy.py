@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NavKit P1 决策策略层单测（纯标准库，CI 只装 pytest 即可运行）。
+NavKit 策略层单测（纯标准库，CI 只装 pytest 即可运行）。
 
-覆盖 docs/plan/NAVKIT_P1_PLAN.md 的契约：
-- P0-6 DecisionFacts 冻结快照 / 派生事实（retry_elapsed_ms / reward_elapsed / skip_cycle）
-- P0-7 StateSnapshot 封闭白名单投影（未知字段 fail-closed）
-- §4 schema：parse_policies 结构错误（P01-P05）
-- §4.3 PolicyPlan 行为语义：各阶段决策/兜底/透传/冷却边界（单轨绝对断言）
-- §4.2 validate_policy_document：P06/P07/P09 告警与 strict 升级
-- §5.1 P1e fail-closed：policies 缺失/非法 = 启动失败
+覆盖：
+- DecisionFacts 冻结快照 / 派生事实（retry_elapsed_ms / reward_elapsed / skip_cycle）
+- StateSnapshot 封闭白名单投影（未知字段 fail-closed）
+- 策略 schema：parse_policies 结构错误（P01-P05）
+- PolicyPlan 行为语义：各阶段决策/兜底/透传/冷却边界（单轨绝对断言）
+- validate_policy_document：P06/P07/P09 告警与 strict 升级
+- P1e fail-closed：policies 缺失/非法 = 启动失败
+
+样本是已归档活动的 policy 文档（当前唯一完整的策略真源）。navkit 策略引擎继续维护，
+本套件保持 retired；若将来出现现役活动的等价样本，应改用它，不再新增对归档插件的依赖。
 """
 from __future__ import annotations
 

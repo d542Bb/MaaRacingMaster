@@ -2,8 +2,13 @@
 """NavKit v4 盘上真源契约测试。
 
 本套件看护 **落盘真源三件套本身** 的形态与行为契约——历史定案（真机五/七/
-八炸、P2b 节拍与起跑汇聚）逐条保留，fixture 直读盘上文件；等价性对拍记录见
-commit `24d831a`。
+八炸、P2b 节拍与起跑汇聚）逐条保留，fixture 直读盘上文件。
+
+样本是已归档活动（treasure）的完整真源：navkit 检查器与这些契约仍在维护，但样本
+本身属归档区，故本套件保持 `retired`——现役真源门禁由 CI 的 `check_truth` 扫描
+`plugins/` 顶层插件承担；考古时显式跑：
+
+    .venv/Scripts/python.exe -m pytest tests/test_navkit_truth.py -m retired
 """
 from __future__ import annotations
 
@@ -25,13 +30,14 @@ def _load(p: Path) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-TREASURE_DIR = REPO / "maaracing_master" / "plugins" / "treasure"
+TREASURE_DIR = REPO / "maaracing_master" / "plugins" / "_archive" / "treasure"
 
 
 @pytest.fixture(scope="module")
 def origin_graph():
-    """合并图 + origin（节点 → 来源文件）：多模块真源的加载口径与 CI 闸门一致。"""
-    return ct.load_graph()
+    """合并图 + origin（节点 → 来源文件）：多模块真源的加载口径与 CI 闸门一致，
+    额外并入归档样本的 pipeline 目录。"""
+    return ct.load_graph(extra_dirs=(TREASURE_DIR / "resources" / "pipeline",))
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +45,8 @@ def truth(origin_graph):
     """treasure 子图 + treasure policy：本文件绝大多数锁是 treasure 域契约，
     按插件圈定后模块增删不影响这些断言的语义（合并图级断言见 origin_graph 系）。"""
     graph, origin = origin_graph
-    return ct.scope_by_plugin(graph, origin, TREASURE_DIR), _load(ct.module_policy_path("treasure"))
+    return (ct.scope_by_plugin(graph, origin, TREASURE_DIR),
+            _load(ct.module_policy_path("treasure", ct.PLUGINS_DIR / "_archive")))
 
 
 def test_graph_clean_and_shaped(truth):
@@ -372,8 +379,14 @@ def test_namespace_partition(origin_graph):
     # 节点前缀与文件归属一致，跨模块"寄居"声明当场现形
     for n, f in origin.items():
         assert ct.CORE_PIPELINE_DIR not in f.parents, n
-        assert n.split(".", 1)[0] == f.parents[2].name, \
-            f"{n}: 节点前缀与来源插件 {f.parents[2].name} 不一致"
+        if "plugins" not in f.parts:
+            continue
+        parts = f.parts
+        i = parts.index("plugins")
+        rest = parts[i + 1:]
+        plugin_name = rest[1] if rest[0] == "_archive" else rest[0]
+        assert n.split(".", 1)[0] == plugin_name, \
+            f"{n}: 节点前缀与来源插件 {plugin_name} 不一致"
 
 
 def test_root_dollar_keys_never_become_nodes():
@@ -617,7 +630,7 @@ def test_cross_truth_gates_pass(truth):
     assert errors == []
     assert ct.cross_checks(full, policy) == []
     from maaracing_master.core.navkit.v4_source import load_nav_source
-    nav = load_nav_source(ct.module_policy_path("treasure"))
+    nav = load_nav_source(ct.module_policy_path("treasure", ct.PLUGINS_DIR / "_archive"))
     assert len(nav.plan.spec) == 65
     assert nav.plan.detect_anchors and len(nav.policies.rules) == 24
     # 待机的判定信号必须进 global_anchors：否则只有已判为待机时才扫它，而阶段又由它定

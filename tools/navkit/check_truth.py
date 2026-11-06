@@ -61,15 +61,19 @@ def _module_dirs() -> list[Path]:
 
 
 MODULE_NS = frozenset(p.name for p in _module_dirs())
+# 退役插件命名空间冻结名单：归档区不参与默认扫描，但其命名空间仍属「业务层」——
+# core 真源占用或点名这些前缀同样是分层红线违规。随插件退役/复活维护。
+RETIRED_MODULE_NS = frozenset({"treasure"})
+KNOWN_MODULE_NS = MODULE_NS | RETIRED_MODULE_NS
 PLUGIN_PIPELINE_DIRS = [d / "resources" / "pipeline" for d in _module_dirs()
                         if (d / "resources" / "pipeline").is_dir()]
 PLUGIN_POLICY_FILES = sorted(f for d in _module_dirs()
                              for f in (d / "resources" / "policy").glob("*.policy.json"))
 
 
-def module_policy_path(module: str) -> Path:
+def module_policy_path(module: str, plugins_dir: Path = PLUGINS_DIR) -> Path:
     """模块 policy 表路径约定：<plugins>/<module>/resources/policy/<module>.policy.json。"""
-    return PLUGINS_DIR / module / "resources" / "policy" / f"{module}.policy.json"
+    return plugins_dir / module / "resources" / "policy" / f"{module}.policy.json"
 
 
 def scope_by_plugin(graph: dict, origin: dict, plugin_dir: Path) -> dict:
@@ -85,15 +89,15 @@ def att(n: dict) -> dict:
     return n.get("attach") or {}
 
 
-def pipeline_files() -> list[Path]:
+def pipeline_files(extra_dirs: tuple[Path, ...] = ()) -> list[Path]:
     files: list[Path] = []
-    for d in [CORE_PIPELINE_DIR, STARTUP_DIR, *PLUGIN_PIPELINE_DIRS]:
+    for d in [CORE_PIPELINE_DIR, STARTUP_DIR, *PLUGIN_PIPELINE_DIRS, *extra_dirs]:
         if d.is_dir():
             files += sorted(p for p in d.rglob("*.json") if not p.name.startswith("."))
     return files
 
 
-def load_graph() -> tuple[dict, dict]:
+def load_graph(extra_dirs: tuple[Path, ...] = ()) -> tuple[dict, dict]:
     """合并全部 pipeline 真源 → (节点表, 节点→来源文件)。
 
     同名节点出现在两个文件 = 双真源，直接失败（协议层节点名全城唯一，静默覆盖
@@ -106,7 +110,7 @@ def load_graph() -> tuple[dict, dict]:
     """
     graph: dict = {}
     origin: dict = {}
-    for f in pipeline_files():
+    for f in pipeline_files(extra_dirs):
         for name, node in _load(f).items():
             if name.startswith("$"):
                 continue
@@ -132,10 +136,10 @@ def namespace_checks(graph: dict, origin: dict) -> list[str]:
         if CORE_PIPELINE_DIR not in f.parents and STARTUP_DIR not in f.parents:
             continue
         ns = name.split(".", 1)[0]
-        if ns in MODULE_NS:
-            problems.append(f"core 真源占用模块命名空间: {name}（{f.name}）→ 应迁往 plugins/{ns}/")
+        if ns in KNOWN_MODULE_NS:
+            problems.append(f"core 真源占用模块命名空间: {name}（{f.name}）→ 不得占用 {ns}")
         for ref in all_name_refs(graph[name]):
-            if ref.split(".", 1)[0] in MODULE_NS:
+            if ref.split(".", 1)[0] in KNOWN_MODULE_NS:
                 problems.append(
                     f"core 真源引用模块节点: {name} → {ref}（{f.name}）"
                     f"→ 通用层不得点名业务层，改由模块侧声明该边")
