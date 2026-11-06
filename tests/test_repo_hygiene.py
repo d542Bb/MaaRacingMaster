@@ -188,6 +188,16 @@ def test_dead_backtick_path_flagged(tmp_path):
     assert "R8|AGENTS.md|tests/test_gone.py" in viol
 
 
+def test_dead_asset_type_link_flagged(tmp_path):
+    """资产类型也要进判定面：图标与预置 wheel 这类死引用曾因类型不在表内被当成"非声明"。"""
+    _mk(tmp_path)
+    (tmp_path / "assets").mkdir()
+    _doc(tmp_path, "README.md", "图标见 [logo](assets/logo.svg)，包在 `scripts/wheels/x.whl`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R8|README.md|assets/logo.svg" in viol
+    assert "R8|README.md|scripts/wheels/x.whl" in viol
+
+
 def test_relative_link_missing_one_level_flagged(tmp_path):
     """少写一级：换个基准就凑得开，所以显式相对写法只按本文档目录解析。"""
     _mk(tmp_path)
@@ -228,6 +238,25 @@ def test_local_only_dir_reference_flagged(tmp_path):
          "旧实现在 `archive/racing/loop.py` 里。\n")
     viol, _ = chk.Checker(tmp_path).scan()
     assert "R9|maaracing_master/plugins/speedrush/CODE_WIKI.md|archive/racing/loop.py" in viol
+
+
+def test_local_only_dir_flagged_when_absent_from_disk(tmp_path):
+    """干净检出里 `build/` 目录不存在，禁令仍然生效：名单取入库声明，不取盘上有什么。
+    否则这条只在开发机红、CI 整条空转——已提交的 build/ 类回归恰恰要靠 CI 拦。"""
+    _mk(tmp_path)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    _doc(tmp_path, "docs/CODE_WIKI.md", "本轮实测数据源：`build/release/report.md`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R9|docs/CODE_WIKI.md|build/release/report.md" in viol
+
+
+def test_runtime_data_dir_reference_clean(tmp_path):
+    """用户数据目录那几类与本机不入库目录同名时说的是运行期落点，不该被 R9 误伤。"""
+    _mk(tmp_path)
+    (tmp_path / ".gitignore").write_text("logs/\ndata/\n", encoding="utf-8")
+    _doc(tmp_path, "docs/CODE_WIKI.md", "会话记录在 `logs/<会话>/x.jsonl`，宏在 `data/y.json`。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R9|")], viol
 
 
 def test_build_dir_as_code_output_clean(tmp_path):

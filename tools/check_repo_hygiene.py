@@ -97,7 +97,7 @@ PLAN_UPDATE = re.compile(r"^>\s*\*\*更新\*\*\s*[:：]\s*(\d{4})-(\d{1,2})-(\d{
 # 模板占位符：`<...>` 原样留着等于没填
 PLAN_PLACEHOLDER = re.compile(r"^<.*>$")
 
-FORMAL_GLOBS = ["AGENTS.md", "CONTRIBUTING.md", "docs/*.md", "docs/adr/*.md",
+FORMAL_GLOBS = ["AGENTS.md", "CONTRIBUTING.md", "README.md", "docs/*.md", "docs/adr/*.md",
                 "maaracing_master/**/*.md", "apps/**/*.md"]
 # docs/README 自身要描述本规则——豁免；update_log 面向玩家、不引实验路径，同受引用纪律约束
 FORMAL_EXCLUDE = {"docs/README.md"}
@@ -112,9 +112,15 @@ CODE_EXCLUDE = {"tests/test_repo_hygiene.py"}
 # 与占位符句式都不构成「本仓库的某个位置」这一声明。
 MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s#]+)")
 BACKTICK_PATH = re.compile(r"`([^`\s]+)`")
-LINK_SUFFIXES = {".py", ".md", ".json", ".yaml", ".yml", ".cs", ".ts", ".js", ".mjs",
-                 ".toml", ".txt", ".csv", ".tsv", ".html", ".css", ".cmd", ".ps1",
-                 ".sh", ".ini", ".cfg", ".xml", ".onnx", ".ico", ".png", ".jpg"}
+# 类型表按「仓库里存在过的源码与资产类型」定。2026-11-06 对抗复核补了 svg/whl/xaml/
+# sln/rc/mjs/ico/jsonl/tsx/jsx：当时探针证实 `…/logo.svg`、`…-0.1.0.whl` 这类死引用
+# 因类型不在表内被判成「不是声明」而溜走；补齐后对现有仓库零新增命中。
+# 刻意不收 .log .db .npy .zip .7z .exe .dll——它们说的是运行期落点、下载来的模型包与
+# 构建产物，文档提到它们不构成「仓库里某个位置」的声明。
+LINK_SUFFIXES = {".py", ".md", ".json", ".jsonl", ".yaml", ".yml", ".cs", ".ts", ".tsx",
+                 ".js", ".jsx", ".mjs", ".toml", ".txt", ".csv", ".tsv", ".html", ".css",
+                 ".cmd", ".ps1", ".sh", ".ini", ".cfg", ".xml", ".onnx", ".ico", ".png",
+                 ".jpg", ".jpeg", ".webp", ".svg", ".whl", ".xaml", ".sln", ".rc", ".manifest"}
 # 以顶层目录名起头 = 声明「仓库根相对」，只按仓库根与本文档目录解析；不这么限的话，
 # `tests/test_x.py` 只要在任何子树里同名就算存在，恰好放走本条要抓的那一类漂移。
 REPO_TOP_DIRS = {"apps", "archive", "assets", "build", "dataset", "docs", "scripts",
@@ -341,13 +347,32 @@ class Checker:
 
     def local_only_dirs(self) -> set[str]:
         """树里没有任何入库文件的顶层目录（红线 6 的「本机不入库面」）。
-        git 不可用（测试假树）时回退缺省集合，与 R7 的回退口径一致。"""
+
+        名单来源必须是**入库声明**而不是盘上有什么：干净检出里 `build/`、`archive/`
+        这些目录根本不存在，只看盘就把本条在 CI 上整条空转（2026-11-06 对抗复核实证：
+        本地红、CI 不红），而「已提交的 build/ 类回归」恰恰需要 CI 拦。
+        判据取根 `.gitignore` 里声明过的顶层目录名 ∪ 盘上顶层目录，再减去有入库文件的
+        那些；git 不可用（测试假树）时回退缺省集合，与 R7 的回退口径一致。"""
+        declared: set[str] = set()
+        gi = self.root / ".gitignore"
+        if gi.is_file():
+            for ln in gi.read_text(encoding="utf-8", errors="replace").splitlines():
+                ln = ln.strip()
+                # 只认目录声明（以 / 结尾）：`docs/trae-dsh-config-share.md` 这类
+                # 文件级忽略项不是目录，取它首段会把 docs/ 整个变成"本机目录"，
+                # 于是所有指向 docs 的正常引用集体误报（模拟检出于 2026-11-06 抓到）。
+                if not ln or ln.startswith("#") or ln.startswith("!") or not ln.endswith("/"):
+                    continue
+                head = ln.lstrip("/").split("/")[0].rstrip("/")
+                if head and not head.startswith(".") and "*" not in head:
+                    declared.add(head)
         tracked = self._tracked_files()
         if not tracked:
-            return set(LOCAL_ONLY_DIRS_DEFAULT)
+            return declared | set(LOCAL_ONLY_DIRS_DEFAULT)
         tracked_tops = {t.split("/")[0] for t in tracked if "/" in t}
-        return {p.name for p in self.root.iterdir()
-                if p.is_dir() and not p.name.startswith(".") and p.name not in tracked_tops}
+        on_disk = {p.name for p in self.root.iterdir()
+                   if p.is_dir() and not p.name.startswith(".")}
+        return (declared | on_disk) - tracked_tops
 
     def r9_docs(self) -> list[Path]:
         """R9 的扫描面：R8 的面 + 脚本与工具目录的文档（第三方 vendored 文档、
@@ -364,7 +389,16 @@ class Checker:
         if not dirs:
             return []
         rx = re.compile(LOCAL_ONLY_TEMPLATE.format("|".join(sorted(dirs))))
-        return [m.group(0).lstrip(" \t`'\"(【（，。；:") for m in rx.finditer(text)]
+        out = []
+        for m in rx.finditer(text):
+            hit = m.group(0).lstrip(" \t`'\"(【（，。；:")
+            # 用户数据目录那几类（logs/ data/ debug/ config/ framework/…）与根级
+            # 不入库目录同名时，说的是运行期落点，不是「仓库里的本机目录」——与 R8
+            # 的豁免表同口径，否则两条规则会互相打脸。
+            if hit.startswith(NON_REPO_PREFIXES):
+                continue
+            out.append(hit)
+        return out
 
     @staticmethod
     def head_text(p: Path) -> str:
