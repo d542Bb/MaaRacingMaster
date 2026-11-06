@@ -6,7 +6,7 @@
   实验关闭走四步：结论迁 home → 仪器提升 → 拔引用 → 删目录。
   历史证据的指针语法 = commit（短 SHA 展示），正式文档不得引用具体实验路径或 plan 文件。
 
-五条规则：
+七条规则：
   R1 入口护栏：每个主题目录必须有 README.md 且含 `status: active` 行。
      （status 是给 agent 与检查器看的入口护栏，不是生命周期数据库——在树里即 active，
       退役即删除；不存在 "closed 但留在树里" 的状态。）
@@ -24,6 +24,11 @@
      与 R1 同构：状态是入口护栏不是生命周期数据库——不存在 done / 已完成 / archived，
      plan 的"完成"就是删除；写了"已实施"却留在树里即本区唯一的病。
      另打印台账（未动天数，不影响退出码），让"没人删"持续可见而不是静默豁免。
+  R7 隐私扫描（红线 4 的机检，2026-11-06 立规）：入库文件不得含本机绝对路径、
+     用户名目录、会话 ID。模式刻意收窄防误报；本机不入库面（AGENTS.local.md、
+     docs/plan/、archive/、build/、实验区 _out/ 与 weights/ 等）不扫。另支持本地
+     词表 `tools/repo_privacy_terms.local.txt`（gitignore，每行一个正则）：只允许
+     留在本机的词（逆向来源等）放那里——词表本身入库就违背了它的目的。
 
 棘手机制：`tools/repo_hygiene_baseline.txt` 记录立规之日的存量违规（legacy，按触碰面
 逐个分诊，见 tools/experiments/README.md）。基线**只减不增**——新违规直接红；
@@ -37,7 +42,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -71,6 +78,34 @@ CODE_GLOBS = ["maaracing_master/**/*.py", "scripts/**/*.py", "tests/**/*.py",
 # 检查器自己的测试在 tmp_path 里搭假树（`tmp_path / "tools" / "experiments" / …`），
 # 那不是运行依赖，是测试素材；排除以免自指。
 CODE_EXCLUDE = {"tests/test_repo_hygiene.py"}
+
+# R7 隐私扫描（红线 4 机检）：只抓「无歧义的本机指纹」——盘符路径 / 用户名目录 /
+# 会话 ID，模式收窄防误报。盘符路径放行系统标准安装位置（Windows / Program Files /
+# PerfLogs / VS 安装根——人人的机器都长这样，不构成身份指纹），且根盘符后必须有
+# 实质内容（根盘符后无内容不算）。红线 4 管的是「入库」，追踪面由 git 决定，这里按目录
+# 近似：本机不入库面（AGENTS.local.md、docs/plan/、archive/、build/、实验区的
+# _out/ 与 weights/ 与 _probe_data/、各 harness 目录）不扫，新增不入库目录要同步扩。
+PRIVACY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("盘符绝对路径", re.compile(
+        r"""\b[A-Za-z]:[\\/](?!(?:Windows|Program Files(?: \(x86\))?|PerfLogs|Microsoft Visual Studio)(?:[\\/]|$))"""
+        r"""[^\\/\s"'<>|*?\[\]()][^\s"'<>|*?\[\]()]*""")),
+    ("用户名目录", re.compile(r"\bUsers[\\/][\w.\- ]+")),
+    ("会话ID", re.compile(r"\bsess_[0-9a-fA-F][0-9a-fA-F-]{15,}")),
+]
+PRIVACY_SUFFIXES = {".py", ".md", ".json", ".txt", ".cs", ".js", ".ts", ".html",
+                    ".css", ".cmd", ".bat", ".ps1", ".yml", ".yaml", ".toml",
+                    ".cfg", ".ini", ".xml", ".csv"}
+PRIVACY_SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", "build",
+                     "archive", "dataset", "training", "logs", "bin", "obj",
+                     ".zcode", ".workbuddy-ai", ".trae", ".trae-cn", ".claude",
+                     ".cursor", ".qoder", ".windsurf", ".codeium", ".gemini",
+                     ".continue", ".junie", ".mimosa", ".idea", ".vscode"}
+# 自指与本机不入库文件豁免：检查器测试在用例里写假路径（素材非依赖）；词表文件
+# 本身含敏感词不能自扫；AGENTS.local.md 与 trae 配置分享是本机文件（gitignore）。
+PRIVACY_EXCLUDE_FILES = {"tests/test_repo_hygiene.py", "AGENTS.local.md",
+                         "tools/repo_privacy_terms.local.txt",
+                         "docs/trae-dsh-config-share.md"}
+PRIVACY_TERMS_FILE = "tools/repo_privacy_terms.local.txt"
 
 
 class Checker:
@@ -165,6 +200,62 @@ class Checker:
             rows.append((days, st, self.rel(p)))
         return sorted(rows, key=lambda r: (-r[0], r[2]))
 
+    def privacy_terms(self) -> list[tuple[int, re.Pattern[str]]]:
+        """本地词表（gitignore，不入库）：每行一个正则，`#` 起头为注释。"""
+        f = self.root / PRIVACY_TERMS_FILE
+        if not f.exists():
+            return []
+        out = []
+        for i, ln in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            ln = ln.strip()
+            if ln and not ln.startswith("#"):
+                out.append((i, re.compile(ln)))
+        return out
+
+    def _tracked_files(self) -> set[str] | None:
+        """入库文件清单（git ls-files）；git 不可用（测试假树）返回 None。"""
+        try:
+            r = subprocess.run(["git", "ls-files", "-z"], cwd=self.root,
+                               capture_output=True, timeout=60)
+        except Exception:
+            return None
+        if r.returncode != 0:
+            return None
+        return {s.decode("utf-8", "replace") for s in r.stdout.split(b"\0") if s}
+
+    def privacy_files(self) -> list[Path]:
+        """R7 扫描面：入库的文本文件。
+
+        追踪面用 `git ls-files` 精确圈定——红线 4 管的是「入库」，未入库的本机
+        刮擦产物（_probe_data/_probe_scripts、obj/bin、AGENTS.local.md 等）天然
+        出局。git 不可用时回退全量走目录近似排除（PRIVACY_SKIP_DIRS 等三组）。
+        """
+        tracked = self._tracked_files()
+        out = []
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            here = Path(dirpath)
+            rel = here.relative_to(self.root)
+            in_exper = rel.parts[:2] == ("tools", "experiments")
+            dirnames[:] = [d for d in dirnames
+                           if d not in PRIVACY_SKIP_DIRS
+                           and not d.startswith(".aider")
+                           and not (in_exper and (d.endswith("_out") or d == "weights"
+                                                  or d == "_probe_data" or d == "_probe_scripts"))]
+            if rel.parts[:2] == ("docs", "plan"):
+                dirnames[:] = []
+                continue
+            for fn in filenames:
+                p = here / fn
+                if p.suffix.lower() not in PRIVACY_SUFFIXES:
+                    continue
+                r = self.rel(p)
+                if r in PRIVACY_EXCLUDE_FILES:
+                    continue
+                if tracked is not None and r not in tracked:
+                    continue
+                out.append(p)
+        return sorted(out)
+
     def scan(self) -> tuple[set[str], set[str]]:
         viol: set[str] = set()
         topics = self.topics()
@@ -213,6 +304,16 @@ class Checker:
                     viol.add(f"R6|{r}|缺{label}行")
                 elif PLAN_PLACEHOLDER.match(mm.group(1).strip()):
                     viol.add(f"R6|{r}|{label}仍是模板占位符，未填")
+
+        for p in self.privacy_files():                              # R7
+            r = self.rel(p)
+            text = p.read_text(encoding="utf-8", errors="replace")
+            for name, rx in PRIVACY_PATTERNS:
+                if rx.search(text):
+                    viol.add(f"R7|{r}|{name}")
+            for i, rx in self.privacy_terms():
+                if rx.search(text):
+                    viol.add(f"R7|{r}|本地词表#{i}")
 
         baseline: set[str] = set()
         if self.baseline_path.exists():

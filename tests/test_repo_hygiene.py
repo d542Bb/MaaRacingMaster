@@ -2,8 +2,8 @@
 
 两类用例都要有（守则：回归锁不得只覆盖失败例）：
   - 正常态：干净树绿、真实仓库在基线内绿；
-  - 失败态：缺 README / 缺 status / 正式文档引用实验路径 / 死引用 / plan 缺头部三行，
-    各被对应规则抓到。
+  - 失败态：缺 README / 缺 status / 正式文档引用实验路径 / 死引用 / plan 缺头部三行 /
+    隐私（本机绝对路径、本地词表命中），各被对应规则抓到。
 
 本文件在 R4 的扫描对象之外（`CODE_EXCLUDE`）：`_mk` 要在 tmp_path 里搭出真实形状的
 假树，路径必然是分段拼的。夹具仍沿用 `_EP` 拼接，免得哪天排除失效时满屏自指。
@@ -213,6 +213,57 @@ def test_plan_ledger_marks_mtime_fallback(tmp_path):
     assert rows[0][1] == "active~"
 
 
+def test_privacy_absolute_path_flagged(tmp_path):
+    """R7：入库文件里的盘符绝对路径与会话 ID 都要被抓住。"""
+    _mk(tmp_path)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "NOTE.md").write_text(
+        "输出在 C:/Users/someone/Downloads 下，帧取自 sess_0123456789abcdef0123 缓存。\n",
+        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R7|docs/NOTE.md|盘符绝对路径" in viol
+    assert "R7|docs/NOTE.md|会话ID" in viol
+
+
+def test_privacy_env_derived_code_clean(tmp_path):
+    """R7：路径从环境变量推导（APPDATA 等）不算本机指纹，不该误伤。"""
+    _mk(tmp_path)
+    d = tmp_path / "scripts"
+    d.mkdir()
+    (d / "probe.py").write_text(
+        'from pathlib import Path\n'
+        'import os\n'
+        'LOG = Path(os.environ["APPDATA"]) / "MaaRacingMaster" / "logs"\n',
+        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R7|")]
+
+
+def test_privacy_local_terms_flagged(tmp_path):
+    """R7：本地词表（不入库文件）里的正则命中也要红；键只带行号不带词本身。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "repo_privacy_terms.local.txt").write_text(
+        "# 注释行\n本地来源词\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("素材来源见 本地来源词 目录。\n", encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any(v.startswith("R7|README.md|本地词表#2") for v in viol)
+
+
+def test_privacy_canonical_system_path_clean(tmp_path):
+    """R7：系统标准安装位置与裸根盘符不是本机指纹，不该误伤（测试素材同款）。"""
+    _mk(tmp_path)
+    d = tmp_path / "scripts"
+    d.mkdir()
+    (d / "probe.py").write_text(
+        'A = "C:\\Windows\\win.ini"\n'
+        'B = "C:/Windows/System32/calc.exe"\n'
+        'C = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community"\n'
+        'D = "C:\\"\n',
+        encoding="utf-8")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R7|")]
+
+
 def test_real_repo_violations_all_baselined():
     """真实仓库当前态：不得有基线外违规（CI 同口径，防本地绿/CI 红漂移）。"""
     viol, baseline = chk.Checker(ROOT).scan()
@@ -221,9 +272,10 @@ def test_real_repo_violations_all_baselined():
 
 
 def test_baseline_file_exists_and_key_format():
-    """基线文件在树、键格式合法（R1~R6|对象|标识可选）；空基线=全部退役完成，也合法。"""
+    """基线文件在树、键格式合法（R1~R7|对象|标识可选）；空基线=全部退役完成，也合法。"""
     bl = ROOT / "tools" / "repo_hygiene_baseline.txt"
     assert bl.exists()
     keys = [ln.strip() for ln in bl.read_text(encoding="utf-8").splitlines()
             if ln.strip() and not ln.startswith("#")]
-    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6"} and "|" in k for k in keys)
+    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7"}
+               and "|" in k for k in keys)

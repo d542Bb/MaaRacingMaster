@@ -39,6 +39,8 @@ debug.txt
 .zcode/
 .workbuddy-ai/
 AGENTS.local.md
+# 隐私扫描本地词表（check_repo_hygiene R7 的补充正则；只留本机，不上云）
+tools/repo_privacy_terms.local.txt
 .trae/
 .trae-cn/
 .claude/
