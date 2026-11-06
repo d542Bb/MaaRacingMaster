@@ -2,7 +2,7 @@
 # Output: <OutRoot>/MaaRacingMaster-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
 #   <name>/{ MaaRacingMaster.Shell.exe + WinUI/.NET dlls, pyproject.toml,
-#          maaracing_master/, assets/ (含 config/), apps/MaaRacingMaster.Shell/frontend/,
+#          maaracing_master/, assets/, apps/MaaRacingMaster.Shell/frontend/,
 #          runtime/python/{python.exe, python311._pth, packages/, vcruntime140*.dll} }
 # Usage: powershell -File assemble.ps1 -Version 1.0.0 -Configuration Release
 #   -Configuration          Release (default, all SAFE pruning on) | Experimental (no pruning)
@@ -594,11 +594,14 @@ if (-not (Test-Path (Join-Path $appDir 'MaaRacingMaster.Shell.exe'))) {
 
 # ---------- 3. whitelist ----------
 # 模型已随插件自包含（maaracing_master/plugins/*/resources/，经下方 robocopy 整包带出），
-# assets/ 仅保留应用级资产（图标/演示图/框架配置）。
+# assets/ 仅保留应用级资产（图标 / 演示图）。框架选项文件不在包内：运行期由
+# core/maa_option.apply_policy() 在用户数据目录的框架路径下生成并写策略，随后才
+# Toolkit.init_option()（见 core/sidecar.py 的启动时序）——实测无包内副本时框架自建
+# 的默认项与旧副本逐键一致，包内那两份没有任何读取者。
 foreach ($rel in @(
     'pyproject.toml', 'LICENSE', 'THIRD_PARTY_LICENSES.md',
     'assets\icon.ico',
-    'assets\maarm_icon.png', 'assets\config', 'apps\MaaRacingMaster.Shell\frontend')) {
+    'assets\maarm_icon.png', 'apps\MaaRacingMaster.Shell\frontend')) {
     $src = Join-Path $RepoRoot $rel
     if (Test-Path $src) {
         $dest = Join-Path $StageRoot $rel
@@ -831,6 +834,12 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
                 $errors.Add('MODEL-LEAK: 默认包不得包含模型权重 -> ' +
                     $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
             }
+    }
+    # 包内不得带框架选项副本：运行期落点在用户数据目录，由 core/maa_option 生成与写策略
+    foreach ($seed in @('assets\config\maa_option.json', 'maaracing_master\config\maa_option.json')) {
+        if (Test-Path (Join-Path $StageRoot $seed)) {
+            $errors.Add('CONFIG-SEED-LEAK: 包内不得含无人读取的框架选项副本 -> ' + $seed)
+        }
     }
     $consoleMarkers = @('mpe.cmd', 'policy_server.py', 'check_truth.py')
     Get-ChildItem $StageRoot -Recurse -File -EA SilentlyContinue |
