@@ -4,7 +4,7 @@
 > 直接复用本文档的**可复用范式**，避免从头查文档/从零写代码。
 > 信息基于 MaaFramework 官方文档（2.2–4.2 全节，2026-09-10 校核）+ **本项目** **`.venv`** **锁定的
 > MaaFw 5.12.3** binding 源码与运行时实测核对——文档站跟随 main（v5.13+），凡行为论断以
-> 实测为准（差异处文中显式标注版本口径）。研究底稿：`tools/experiments/maafw_docs_constraints/`。
+> 实测为准（差异处文中显式标注版本口径）。审计工具：`tools/maafw_audit/`。
 > 官方全套文档：<https://maafw.com/docs/>（中文）；仓库：<https://github.com/MaaXYZ/MaaFramework>；
 > 社区经验信源：MaaHub <https://hub.maafw.com/>（Skills/Customs/Experiences）、
 > MaaPracticeBoilerplate、create-maa-project、M9A 仓库内规范。
@@ -13,7 +13,7 @@
 > **本文是什么**：MaaFramework 的能力签名、Pipeline 协议口径、Custom 契约与本项目协议红线——项目内 MaaFW 用法的直接依据。
 > **本文不是什么**：不是官方文档的替代品（行为论断以官方文档与实测为准，差异处已标版本口径）；不是项目架构决策（见 [docs/adr/](adr/README.md)）；不是活动域知识（见 `plugins/<id>/CODE_WIKI.md`）。
 > **信源等级**：L2（其中协议事实为 L0 的项目内副本）—— 可作「MaaFW 怎么用、什么不能做」的直接依据；协议行为与官方文档冲突时**以官方文档为准**并回头修本文。
-> **真源路由**：签名与行为 = 官方文档 + `.venv` 锁定版本的 binding 源码与实测（底稿见 `tools/experiments/maafw_docs_constraints/`）；节点与锚点取值 = `plugins/*/resources/**`。
+> **真源路由**：签名与行为 = 官方文档 + `.venv` 锁定版本的 binding 源码与实测（审计工具见 `tools/maafw_audit/`）；节点与锚点取值 = `plugins/*/resources/**`。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)。
 
 ***
@@ -528,7 +528,7 @@ Custom 名，M9A 用 PascalCase，MAA 用中文名）。据此本项目定案：
 | `"action": "DoNothing"`                                                       | 可整键省略（框架默认 `DoNothing`）或 `{"type":"DoNothing","param":{}}`                                       |
 | —                                                                             | `param` 键本身可省略：v2 里 parser 会退回用 `recognition` 对象当参数容器                                            |
 
-**形态风险点不在新字段，在 And/Or 子项**：官方 PipelineDumper 曾产出自己 parser 读不回来的子项形（`failed to parse sub recognition in 'all_of'`，maafw 5.10.0b2，样本 1364 task 中 116 个≈8.5% 受影响），由 [issue #1314](https://github.com/MaaXYZ/MaaFramework/issues/1314) → [PR #1423](https://github.com/MaaXYZ/MaaFramework/pull/1423) 修复。本项目有 7 个 `Or` 节点（起跑汇聚 + 回合 dwell），升 MaaFw 版本时**必须重跑** **`tools/experiments/ecosystem_audit/load_truth.py`**（含 `get_node_data` 回读对照）而不是只看加载成功。未取证项：v1 平铺下 And/Or 子项的完整合法写法（官方"算法类型"章节原文未取到）。
+**形态风险点不在新字段，在 And/Or 子项**：官方 PipelineDumper 曾产出自己 parser 读不回来的子项形（`failed to parse sub recognition in 'all_of'`，maafw 5.10.0b2，样本 1364 task 中 116 个≈8.5% 受影响），由 [issue #1314](https://github.com/MaaXYZ/MaaFramework/issues/1314) → [PR #1423](https://github.com/MaaXYZ/MaaFramework/pull/1423) 修复。当前 active pipeline 无 `Or` 节点；引入 And/Or 子项时，升 MaaFw 版本**必须重跑** **`tools/maafw_audit/load_truth.py`**（含 `get_node_data` 回读对照）而不是只看加载成功。未取证项：v1 平铺下 And/Or 子项的完整合法写法（官方"算法类型"章节原文未取到）。
 
 ***
 
@@ -570,7 +570,7 @@ class MyAction(CustomAction):
 `"action": "Custom", "custom_action": "MyAction"`。
 项目现有示例见 `core/nav_graph.py` 的 `ClickAction`（继承 `CustomAction`，经 `register_custom_action` 注册）。
 
-**注册命名空间（文档口径 vs 5.12.3 实测，实验见** **`tools/experiments/maafw_docs_constraints/`）**：
+**注册命名空间（文档口径 vs 5.12.3 实测，脚本见** **`tools/maafw_audit/v1_duplicate_register.py`）**：
 
 | 行为                    | v5.13 文档口径         | **5.12.3 实测（本项目在用）**              |
 | --------------------- | ------------------ | --------------------------------- |
@@ -762,7 +762,7 @@ WGC 原生采集、模块线程与自定义回调图，回收顺序与时刻都�
 12. **`override_next`** **两侧语义相反**：Resource 侧"节点不存在也创建"，Context 侧
     "节点不存在返回 false"。运行时改路由先想清楚拿的是哪一侧。
 13. **Custom 注册替换先 unregister**（5.12.3 同名注册实测=覆盖生效、与 v5.13 文档"保留旧注册"
-    相反；升版前重跑 `tools/experiments/maafw_docs_constraints/` 实验）；空名注册返回 True
+    相反；升版前重跑 `tools/maafw_audit/v1_duplicate_register.py`）；空名注册返回 True
     但未注册——返回值不可全信。
 14. **默认值在节点首次加载时冻结**——多真源目录必须合并单次 post（`_post_pipeline_merged`），
     否则"后到的 default\_pipeline.json 不影响已加载节点"会形成加载顺序耦合。

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""B1 官方加载实测：对两真源目录做 Resource.post_pipeline。
+"""MaaFw 生态审计：对 core startup 与活动插件的真源目录做 Resource.post_pipeline。
 
-复现生产实现 core/nav_graph.py NavKitV4.load 的做法：core/pipeline 与
-plugins/_archive/treasure/pipeline 互指，分次 post 先加载者必失败 → 合并临时目录
-一次 post。结束后清理临时目录。
+复现生产实现 core/nav_graph.py NavKitV4.load 的做法：core startup 与插件
+pipeline 互指，分次 post 先加载者必失败 → 合并临时目录一次 post。结束后清理
+临时目录。
 
 同时对照：
   A. 只注册 MaaRM_Template/MaaRM_Click 后加载（生产姿势）
@@ -18,15 +18,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from maa.custom_action import CustomAction  # noqa: E402
 from maa.custom_recognition import CustomRecognition  # noqa: E402
 from maa.resource import Resource  # noqa: E402
 
-CORE_PIPE = REPO / "maaracing_assistant" / "core" / "resources" / "pipeline"
-TREASURE_PIPE = REPO / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "pipeline"
+PACK = REPO / "maaracing_master"
+CORE_PIPE = PACK / "core" / "resources" / "startup"
+PLUGIN_PIPE = PACK / "plugins" / "speedrush" / "resources" / "pipeline"
 
 
 class _StubReco(CustomRecognition):
@@ -54,7 +55,7 @@ def main() -> int:
     print("=" * 70)
     print("B1-A  合并临时目录一次性 post（生产姿势：先注册 MaaRM_Template/MaaRM_Click）")
     print("=" * 70)
-    tmp = merge([CORE_PIPE, TREASURE_PIPE])
+    tmp = merge([CORE_PIPE, PLUGIN_PIPE])
     try:
         res = Resource()
         res.register_custom_recognition("MaaRM_Template", _StubReco())
@@ -75,7 +76,7 @@ def main() -> int:
     print("=" * 70)
     print("B1-B  不注册任何 Custom 直接加载（看框架是否校验 custom 名）")
     print("=" * 70)
-    tmp = merge([CORE_PIPE, TREASURE_PIPE])
+    tmp = merge([CORE_PIPE, PLUGIN_PIPE])
     try:
         res2 = Resource()
         job2 = res2.post_pipeline(str(tmp)).wait()
@@ -93,24 +94,23 @@ def main() -> int:
     res3.register_custom_action("MaaRM_Click", _StubAction())
     res3.register_custom_action("MaaRM_Policy", _StubAction())
     j1 = res3.post_pipeline(str(CORE_PIPE)).wait()
-    print(f"  post(core/pipeline)      failed={j1.failed}")
-    j2 = res3.post_pipeline(str(TREASURE_PIPE)).wait()
-    print(f"  post(treasure/pipeline)  failed={j2.failed}")
+    print(f"  post(core/startup)       failed={j1.failed}")
+    j2 = res3.post_pipeline(str(PLUGIN_PIPE)).wait()
+    print(f"  post(plugin/pipeline)  failed={j2.failed}")
     print(f"  框架可见节点数 = {len(res3.node_list)}")
 
     print()
     print("=" * 70)
-    print("B1-D  检查 Or/any_of 对象形态节点是否被框架接受")
+    print("B1-D  检查 get_node_data 回读（取前 3 个节点）")
     print("=" * 70)
-    tmp = merge([CORE_PIPE, TREASURE_PIPE])
+    tmp = merge([CORE_PIPE, PLUGIN_PIPE])
     try:
         res4 = Resource()
         res4.register_custom_recognition("MaaRM_Template", _StubReco())
         res4.register_custom_action("MaaRM_Click", _StubAction())
         res4.register_custom_action("MaaRM_Policy", _StubAction())
         res4.post_pipeline(str(tmp)).wait()
-        for name in ("treasure.__boot.dwell", "treasure.第1回合出价.dwell",
-                     "treasure.policy_loop"):
+        for name in sorted(res4.node_list)[:3]:
             try:
                 data = res4.get_node_data(name)
                 print(f"  {name} -> {str(data)[:220]}")

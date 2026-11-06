@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""生态审计 B2：真源逐节点字段清点，对照官方 pipeline.schema.json 快照。
+"""MaaFw 生态审计：真源逐节点字段清点，对照官方 pipeline.schema.json 快照。
 
 口径：
 - 官方字段全集 = 遍历 schema 快照所有 properties 键名并集（含算法专属字段）；
@@ -12,10 +12,11 @@
 import json
 from pathlib import Path
 
-SCHEMA = Path(__file__).resolve().parents[3] / "tools/navkit/schema/pipeline.schema.json"
+REPO = Path(__file__).resolve().parents[2]
+SCHEMA = REPO / "tools/navkit/schema/pipeline.schema.json"
 FILES = {
-    "global": Path(__file__).resolve().parents[3] / "maaracing_assistant/core/resources/pipeline/global.json",
-    "treasure": Path(__file__).resolve().parents[3] / "maaracing_assistant/plugins/_archive/treasure/resources/pipeline/treasure.json",
+    "startup": REPO / "maaracing_master/core/resources/startup/pipeline.json",
+    "speedrush": REPO / "maaracing_master/plugins/speedrush/resources/pipeline/speedrush.json",
 }
 
 

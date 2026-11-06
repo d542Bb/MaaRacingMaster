@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""生态审计 B2/校验器第2条：真源引用的模板文件存在性 + 未引用模板清单。"""
+"""MaaFw 生态审计：真源引用的模板文件存在性 + 未引用模板清单。"""
 import json
 import re
 from pathlib import Path
 
-PACK = Path(__file__).resolve().parents[3] / "maaracing_assistant"
+REPO = Path(__file__).resolve().parents[2]
+PACK = REPO / "maaracing_master"
 IMG_DIRS = [PACK / "core" / "resources" / "image",
-            PACK / "plugins" / "treasure" / "resources" / "image"]
-FILES = [PACK / "core" / "resources" / "pipeline" / "global.json",
-         PACK / "plugins" / "treasure" / "resources" / "pipeline" / "treasure.json",
-         PACK / "plugins" / "treasure" / "resources" / "policy" / "treasure.policy.json"]
+            PACK / "core" / "resources" / "startup" / "image",
+            PACK / "plugins" / "speedrush" / "resources" / "image"]
+FILES = [PACK / "core" / "resources" / "startup" / "pipeline.json",
+         PACK / "plugins" / "speedrush" / "resources" / "pipeline" / "speedrush.json",
+         PACK / "plugins" / "speedrush" / "resources" / "policy" / "decision.json",
+         PACK / "plugins" / "speedrush" / "resources" / "policy" / "hud_regions.json"]
 
 used: set[str] = set()
 for f in FILES:
