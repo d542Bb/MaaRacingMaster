@@ -476,6 +476,107 @@ def test_privacy_canonical_system_path_clean(tmp_path):
     assert not [v for v in viol if v.startswith("R7|")]
 
 
+# ---- R11 契约文档正文腐化（成对：腐化指纹红 / 合法书写不红 / 棘轮）--------------
+
+def _wiki(tmp: Path, body: str, rel: str = "docs/CODE_WIKI.md") -> Path:
+    return _doc(tmp, rel, body)
+
+
+def test_r11_date_flagged(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n模型预加载（2026-10-23）落地。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R11|docs/CODE_WIKI.md|日期|2026-10-23" in viol
+
+
+def test_r11_session_stamp_flagged(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n取证见 20261006_141159 局。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R11|docs/CODE_WIKI.md|会话戳|20261006_141159" in viol
+
+
+def test_r11_round_number_flagged(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n第八轮取证换装定案。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R11|docs/CODE_WIKI.md|轮次|第八轮" in viol
+
+
+def test_r11_phase_code_flagged(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n阶段 B 第二块契约落地。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R11|docs/CODE_WIKI.md|阶段代号|阶段 B" in viol
+
+
+def test_r11_step_number_flagged(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\nstep 5 离线链路一起接。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R11|docs/CODE_WIKI.md|step编号|step 5" in viol
+
+
+def test_r11_migration_phase_flagged(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\nP4a 整删批后清干净。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R11|docs/CODE_WIKI.md|迁移期号|P4a" in viol
+
+
+def test_r11_count_snapshot_flagged(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n全仓 21 passed，21 节点零差异。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert "R11|docs/CODE_WIKI.md|计数快照|21 passed" in viol
+    assert "R11|docs/CODE_WIKI.md|计数快照|21 节点" in viol
+
+
+def test_r11_commit_pointer_and_threshold_clean(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n证据见 commit `9fc13a5`，阈值 conf=0.35、帧预算 33ms。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R11|")]
+
+
+def test_r11_percentile_and_game_stage_clean(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\nP50/P95 见 perf；驾驶阶段 1 与阶段 2 各跑一段。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R11|")]
+
+
+def test_r11_archive_wiki_exempt(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 历史\n\n归档（2026-10-23）。\n",
+          rel="maaracing_master/plugins/_archive/treasure/CODE_WIKI.md")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R11|")]
+
+
+def test_r11_non_wiki_doc_exempt(tmp_path):
+    _mk(tmp_path)
+    _doc(tmp_path, "docs/adr/0001-x.md", "# 决策\n\n日期：2026-10-23。\n")
+    _doc(tmp_path, "docs/update_log.md", "## v1\n\n2026-10-23 发布。\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert not [v for v in viol if v.startswith("R11|")]
+
+
+def test_r11_new_hit_fails_ci(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n（2026-10-23）落地。\n")
+    assert chk.main([], root=tmp_path) == 1
+
+
+def test_r11_baselined_hit_passes_ci(tmp_path):
+    _mk(tmp_path)
+    _wiki(tmp_path, "# 现状\n\n（2026-10-23）落地。\n")
+    (tmp_path / "tools").mkdir(exist_ok=True)
+    (tmp_path / "tools" / "repo_hygiene_baseline.txt").write_text(
+        "R11|docs/CODE_WIKI.md|日期|2026-10-23\n", encoding="utf-8")
+    assert chk.main([], root=tmp_path) == 0
+
+
 def test_real_repo_violations_all_baselined():
     """真实仓库当前态：不得有基线外违规（CI 同口径，防本地绿/CI 红漂移）。"""
     viol, baseline = chk.Checker(ROOT).scan()
@@ -484,10 +585,10 @@ def test_real_repo_violations_all_baselined():
 
 
 def test_baseline_file_exists_and_key_format():
-    """基线文件在树、键格式合法（R1~R10|对象|标识可选）；空基线=全部退役完成，也合法。"""
+    """基线文件在树、键格式合法（R1~R11|对象|标识可选）；空基线=全部退役完成，也合法。"""
     bl = ROOT / "tools" / "repo_hygiene_baseline.txt"
     assert bl.exists()
     keys = [ln.strip() for ln in bl.read_text(encoding="utf-8").splitlines()
             if ln.strip() and not ln.startswith("#")]
-    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"}
+    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11"}
                and "|" in k for k in keys)

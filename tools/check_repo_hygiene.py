@@ -53,6 +53,12 @@
      与 API 字样（`_assets.json` 结尾的文件名、`Assets.load`、`global_assets`、
      `generated/pipeline`）。判据限插件脚手架：`templates/plan` 是方案模板、不描述数据面，
      ADR 背景/证据章与宪法历史章提退役世代是合法的历史叙述，都不在本条面内。
+  R11 契约文档正文腐化（issue #9，2026-11-07 立规）：现役 CODE_WIKI（docs 与
+     maaracing_master 下，归档区除外）正文不得含过程指纹——日期 / 会话戳 / 轮次（第N轮）/
+     阶段代号（阶段 B）/ step 编号 / 迁移期号（P4a）/ 计数快照（N passed、N 节点）。这些是
+     「写作当时有意义、日后变噪音」的过程残留，历史证据应指向 commit。模式刻意收窄防误报：
+     commit SHA、配置阈值、P50/P95 分位、游戏阶段数字（阶段 1/2）都不命中。ADR 日期字段、
+     update_log 与宪法历史章不在本条面内（合法历史叙述）。走棘轮：存量入基线、新增即红。
 
 棘手机制：`tools/repo_hygiene_baseline.txt` 记录立规之日的存量违规（legacy，按触碰面
 逐个分诊，见 tools/experiments/README.md）。基线**只减不增**——新违规直接红；
@@ -154,6 +160,22 @@ R9_SKIP_MARKERS = ("/node_modules/", "/experiments/", "/plan/")
 # ADR 背景与宪法历史章提退役世代是合法叙述，同样不在本条面内）。
 RETIRED_TERMS = ("_assets.json", "Assets.load", "global_assets", "generated/pipeline")
 TEMPLATE_PLUGIN_GLOBS = ["templates/plugin/**/*.md", "templates/plugin/**/*.py"]
+
+# R11 契约文档正文腐化（issue #9）：现役 CODE_WIKI 正文的过程指纹，面排除归档区
+# （历史快照）。模式收窄防误报——迁移期号只认小写字母尾（P4a 命中、P50/P95 分位不命中），
+# 阶段代号只认大写字母（阶段 B 命中、游戏阶段 1/2 不命中）；可选空白用 [ \t] 不用 \s，
+# 避免跨行匹配把换行带进基线键。
+R11_GLOBS = ["docs/CODE_WIKI.md", "maaracing_master/**/CODE_WIKI.md"]
+R11_PATTERNS = [
+    ("日期", re.compile(r"\b\d{4}-\d{2}-\d{2}\b")),
+    ("会话戳", re.compile(r"\b\d{8}_\d{6}\b")),
+    ("轮次", re.compile(r"第[ \t]*[0-9一二三四五六七八九十]+[ \t]*轮")),
+    ("阶段代号", re.compile(r"阶段[ \t]*[A-Z]\b")),
+    ("step编号", re.compile(r"\bstep[ \t]*[0-9]+\b", re.I)),
+    ("迁移期号", re.compile(r"\bP[0-9]+[a-z]\b")),
+    ("计数快照", re.compile(r"\b\d+[ \t]*passed\b")),
+    ("计数快照", re.compile(r"\b\d+[ \t]*节点")),
+]
 
 # R7 隐私扫描（红线 4 机检）：只抓「无歧义的本机指纹」——盘符路径 / 用户名目录 /
 # 会话 ID，模式收窄防误报。盘符路径放行系统标准安装位置（Windows / Program Files /
@@ -552,6 +574,16 @@ class Checker:
                 for term in RETIRED_TERMS:
                     if term in text:
                         viol.add(f"R10|{self.rel(p)}|{term}")
+
+        for g in R11_GLOBS:                                       # R11 正文腐化
+            for p in self.root.glob(g):
+                r = self.rel(p)
+                if not p.is_file() or "/_archive/" in r:
+                    continue
+                text = p.read_text(encoding="utf-8", errors="replace")
+                for name, rx in R11_PATTERNS:
+                    for m in rx.finditer(text):
+                        viol.add(f"R11|{r}|{name}|{m.group(0)}")
 
         if self.exper.is_dir():                                     # R5
             area = self.topics() | self.intra_dirs()

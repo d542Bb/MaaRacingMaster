@@ -41,6 +41,9 @@ L3 / L4 导航型文档可省去「真源路由」一行。**只声明与指向�
 
 凡能被 JSON / 代码单向算出的值（阶段数、计数、清单长度），prose 只写**指向真源的路径**，不写数值本身；枚举清单同样换成指向，写指针时也不带数量。手抄数字没有守卫就必然腐坏。
 机检形态：[`tests/test_doc_no_copied_numbers.py`](../tests/test_doc_no_copied_numbers.py)。
+CODE_WIKI 正文的过程残留（日期 / 会话戳 / 轮次 / 阶段代号 / step / 迁移期号 / 计数快照）另由
+[`tools/check_repo_hygiene.py`](../tools/check_repo_hygiene.py) **R11** 棘轮守卫：存量入基线、
+新增即红，历史证据指向 commit。归档区 CODE_WIKI（历史快照）与 ADR / update_log 的合法历史叙述不在面内。
 
 ### Why 归属
 
