@@ -107,7 +107,8 @@ class _FakeGraph:
         self.calls = 0
         self.banner_calls = 0
 
-    def run(self, entry: str | None = None, reached: str | None = None) -> bool:
+    def run(self, entry: str | None = None, reached: str | None = None,
+            *, save: str | None = None) -> bool:
         if entry == sr.STORE_BANNER_NODE:
             v = self.banner_seq[min(self.banner_calls, len(self.banner_seq) - 1)]
             self.banner_calls += 1
@@ -115,6 +116,15 @@ class _FakeGraph:
         v = self.seq[min(self.calls, len(self.seq) - 1)]
         self.calls += 1
         return v
+
+    def probe(self, node: str, **kwargs):
+        """只读页面查询：驾驶主循环改调它（`run` 仍用于就绪判据与导航）。
+
+        计数口径不变——probe 内部复用 run 的分流逻辑，`calls` / `banner_calls`
+        仍是「该节点被问了几次」。
+        """
+        hit = self.run(node, node)
+        return sr.ProbeOutcome.HIT if hit else sr.ProbeOutcome.MISS
 
 
 @pytest.fixture
@@ -169,6 +179,34 @@ def test_ready_returns_false_when_stopped(env) -> None:
     _set_graph(mod, [False])
     mod._running = False
     assert mod._wait_drive_ready(1) is False
+
+
+def test_ready_confirmed_skips_recognition_entirely(env) -> None:
+    """上一步刚用同一锚点确认过落地页 → 入口**一次识别都不跑**，直接进控制链。
+
+    两次之间只有函数返回、没有点击或转场，画面不可能跳走；而起步倒计时期间
+    车辆已可接受输入，再查一次就是白扔起步时间。
+    """
+    mod, _, _ = env
+    g = _set_graph(mod, [False])          # 桩恒失配：若还查图，必然判不就绪
+    assert mod._wait_drive_ready(1, confirmed=True) is True
+    assert g.calls == 0
+
+
+def test_ready_without_confirm_still_debounces(env) -> None:
+    """断点续跑（无前置确认）仍要走完整去抖：两次连续命中才算就绪。"""
+    mod, _, _ = env
+    g = _set_graph(mod, [True, True])
+    assert mod._wait_drive_ready(1) is True
+    assert g.calls == sr.DRIVE_READY_HITS
+
+
+def test_ready_without_confirm_restarts_on_miss(env) -> None:
+    """去抖语义不变：中间一次失配就重新计数。"""
+    mod, _, _ = env
+    g = _set_graph(mod, [True, False, True, True])
+    assert mod._wait_drive_ready(1) is True
+    assert g.calls == 4
 
 
 # ---------- 结束判据 ----------
@@ -687,7 +725,7 @@ def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
     seen: list[tuple[int, bool]] = []
     stamps: list[str] = []
 
-    def drive(phase, round_no=1, stamp=None):
+    def drive(phase, round_no=1, stamp=None, *, ready_confirmed=False):
         seen.append((round_no, mod._view_ok))
         stamps.append(stamp)
         mod._view_ok = True
@@ -722,7 +760,8 @@ class _StepGraph:
         self.action_calls = 0
         self.confirm_calls = 0
 
-    def run(self, entry: str | None = None, reached: str | None = None) -> bool:
+    def run(self, entry: str | None = None, reached: str | None = None,
+            *, save: str | None = None) -> bool:
         if entry == self.action_node:
             self.action_calls += 1
             return self.action_returns
@@ -788,8 +827,8 @@ def test_step_exits_on_stop_without_retry_or_fail(env, monkeypatch) -> None:
     mod._graph = g
     orig_run = g.run
 
-    def run_then_stop(entry=None, reached=None):
-        r = orig_run(entry, reached)
+    def run_then_stop(entry=None, reached=None, **kwargs):
+        r = orig_run(entry, reached, **kwargs)
         if entry != _ACT:               # 首次确认探针后即模拟 stop() 落停止标志
             mod._running = False
         return r
@@ -813,6 +852,135 @@ def test_step_confirm_nodes_exist_in_pipeline() -> None:
         (Path(sr.PIPELINE_DIR) / "speedrush.json").read_text(encoding="utf-8"))
     for stage, dest in sr.STEP_CONFIRM.items():
         assert dest in graph, f"阶段「{stage}」的确认锚点 {dest} 不在真源"
+
+
+def test_action_nodes_skip_framework_default_pace() -> None:
+    """动作节点不得吃框架默认节拍（1s 地板 + 前后各 200ms 隐式等待）。
+
+    2026-11-06 实机日志里 p1→p2 两次点击步分别耗 4s / 2s，按默认值推算其中
+    约 2.4s 是这三项固定等待。rate_limit 取 100ms 而不是 0：0 会让「按钮晚出现」
+    时框架在 20s 超时内全速截图找图（不失败，但白烧 CPU 与日志）。timeout 未动：
+    按官方协议它约束的是 next 列表识别超时，不是等按钮出现。
+    """
+    graph = json.loads(
+        (Path(sr.PIPELINE_DIR) / "speedrush.json").read_text(encoding="utf-8"))
+    for stage, node, _phase in sr.FLOW:
+        if node is None:
+            continue
+        data = graph[node]
+        assert data.get("rate_limit") == 100, f"「{stage}」吃回框架默认节拍或全速空转"
+        assert data.get("pre_delay") == 0, f"「{stage}」带隐式前置等待"
+        assert data.get("post_delay") == 0, f"「{stage}」带隐式后置等待"
+        assert "timeout" not in data, f"「{stage}」不该自带短超时"
+
+
+def test_action_settle_spec_is_same_source_as_recognition() -> None:
+    """点击后条件等待的判据必须与节点 recognition 同源。
+
+    2026-11-06 实机（nav 帧 894→895）：按钮 ROI 分数 0.814→0.250 与驾驶页齿轮
+    0.882 出现在同一帧，检测零滞后；滞后来自点击后固定的 800ms 睡眠让节点挂着。
+    条件等待用「源按钮认不出来」当边沿判据，规格直接复制 recognition——阈值若
+    两处漂移，判据会在按钮还在时提前收工或按钮已走时白等。
+    """
+    graph = json.loads(
+        (Path(sr.PIPELINE_DIR) / "speedrush.json").read_text(encoding="utf-8"))
+    for stage, node, _phase in sr.FLOW:
+        if node is None:
+            continue
+        param = graph[node]["action"]["param"]
+        assert param["custom_action"] == "MaaRM_Click", f"「{stage}」不是点击节点"
+        reco = graph[node]["recognition"]["param"]["custom_recognition_param"]
+        settle = param["custom_action_param"]["settle"]
+        for key in ("rect", "templates", "threshold", "colorspace"):
+            assert settle[key] == reco[key], f"「{stage}」settle.{key} 与识别规格漂移"
+        assert 0.0 < settle["threshold"] <= 1.0
+
+
+def test_step_retry_dose_not_traded_for_speed() -> None:
+    """提速不得靠缩窗口 / 缩轮询 / 减重发上限换：实机最长落地 9s，12s 窗只剩 3s 余量。
+
+    点击变快（固定 800ms → 条件等待最快几十毫秒）只是把时间还给等待窗口，
+    不推进 StepMachine 的计数；真正吃次数的是 window_s 变短。这里用同一台机器
+    模拟两种点击耗时 × 三种落地耗时，锁住「余量只增不减」。
+    """
+    from maaracing_master.core.step_machine import Command, StepMachine, Verdict
+
+    policy = json.loads((Path(sr.__file__).parent / "resources" / "policy"
+                         / "decision.json").read_text(encoding="utf-8"))
+    dose = policy["step_retry"]
+    assert dose["max_retries"] >= 3
+    assert dose["window_s"] >= 12.0
+    assert dose["poll_s"] >= 0.5
+    assert dose["by_stage"] == {}, "别为提速给某一步偷偷缩窗"
+
+    def simulate(click_s: float, land_s: float) -> int:
+        """返回重发次数；-1 = 判失败。纯假钟，不依赖真实等待。"""
+        now = [0.0]
+        machine = StepMachine(max_retries=dose["max_retries"],
+                              window_s=dose["window_s"],
+                              clock=lambda: now[0])
+        machine.arm()                       # 点击发出：只重置窗口、不动计数
+        now[0] += click_s
+        resends = 0
+        for _ in range(10000):
+            landed = now[0] >= land_s
+            cmd = machine.observe(Verdict.SUCCESS if landed else Verdict.PENDING)
+            if cmd is Command.DONE:
+                return resends
+            if cmd is Command.FAIL:
+                return -1
+            if cmd is Command.RETRY:
+                resends += 1
+                now[0] += click_s
+                machine.arm()
+            else:
+                now[0] += dose["poll_s"]
+        return -2
+
+    for click_s in (0.8, 0.05):           # 旧固定睡 / 条件等待提前返回
+        for land_s in (9.0, 12.0):       # 实机最长落地 9s + 窗口边界
+            assert simulate(click_s, land_s) == 0, (
+                f"点击 {click_s}s、落地 {land_s}s 不该消耗重发次数")
+        assert 0 <= simulate(click_s, 15.0) <= 1  # 超窗才允许一次重发
+
+
+# ---------- 阶段切换：落地确认只复用紧邻的那一次 ----------
+
+
+def _flow_probe(env, monkeypatch, start_from: str):
+    """跑一小段 FLOW，记录驾驶入口拿到的 ready_confirmed。"""
+    mod, _, _ = env
+    monkeypatch.setattr(sr, "_open_grp", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "_start_preload", lambda: None)
+    _set_graph(mod, [True])
+    seen = []
+
+    def fake_step(node, stage):
+        seen.append(("step", stage))
+        return True
+
+    def fake_drive(phase, round_no=1, stamp=None, *, ready_confirmed=False):
+        seen.append(("drive", phase, ready_confirmed))
+        mod._running = False
+        return True
+
+    monkeypatch.setattr(mod, "_run_step", fake_step)
+    monkeypatch.setattr(mod, "_drive", fake_drive)
+    mod._run_flow(sr.resolve_start_index(start_from))
+    return seen
+
+
+def test_flow_reuses_adjacent_drive_confirm(env, monkeypatch) -> None:
+    """紧邻上一步的落地确认锚点就是驾驶页锚点 → 驾驶入口复用它。"""
+    seen = _flow_probe(env, monkeypatch, "确认上阵2")
+    assert ("step", "确认上阵2") in seen
+    assert ("drive", 2, True) in seen
+
+
+def test_flow_starting_at_drive_stage_debounces(env, monkeypatch) -> None:
+    """断点续跑直接落在驾驶阶段时没有前置确认 → 仍走完整去抖。"""
+    seen = _flow_probe(env, monkeypatch, "驾驶阶段2")
+    assert seen and seen[0] == ("drive", 2, False)
 
 
 # ---------- 路心读数参考系跳变标注（classify_ro_hop，仅记录） ----------

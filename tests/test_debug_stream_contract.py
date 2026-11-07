@@ -231,6 +231,33 @@ class TestRatesAndCounters:
         finally:
             d.end_run()
 
+    def test_save_self_writes_no_save_frames_but_keeps_peep(self, tmp_path):
+        """A1b：`save="self"` 只关存盘路径，PEEP 预览按既有契约保留。
+
+        契约 I1 要的是「模块自有取证时不复制帧」，不是「统一流完全不读帧」：
+        `_output_on` 里 `peep_on` 不看 `seg.save` 是设计意图。所以判据是
+        `frames_due_save` 零增长、无存盘帧入队，而不是「采样函数没跑」。
+        """
+        d = _hub(tmp_path)
+        try:
+            d._q._frame_cap = 1000
+            scope = d.open_scope("speedrush", "speedrush", save="self")
+            seg = d.open_segment("nav", "x", peep_fps=1000, save_fps=1000,
+                                 save="self")
+            for i in range(20):
+                seg.offer(_frame(i), fid=i)
+            _wait(d)
+            c = d.status()["counters"]
+            assert c["frames_due_save"] == 0
+            assert c["save_written"] == 0
+            assert c["frames_due_peep"] > 0      # 预览仍在采样
+            d.close_segment(seg, "completed")
+            d.close_segment(scope, "completed")
+            _wait(d)
+            assert list(tmp_path.rglob("*.jpg")) == []
+        finally:
+            d.end_run()
+
     def test_evicted_frames_do_not_break_due_closure(self, tmp_path):
         """队列满丢旧帧时，被丢帧不能继续算“到期”——否则 due = 成功 + 失败 断裂。"""
         d = _hub(tmp_path)

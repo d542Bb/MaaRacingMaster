@@ -521,6 +521,20 @@ class NavigationDebugger:
         if self._thread is None:
             self._degraded = False
 
+    def scope_save(self) -> str | None:
+        """读**栈底作用域**的存盘策略（`"on"` / `"self"` / `"off"`），栈空返回 None。
+
+        给内层段（执行器压的 nav 段）继承用：模块在运行项级声明 `DEBUG_SAVE`，
+        控制器把它传给栈底 scope；内层段若不继承，就会吃 `open_segment` 的默认
+        `"on"`，把模块的 `self` 声明架空。
+
+        **查的是栈底 scope，不是栈顶段**——栈顶正是要按这个值开的新段。
+        返回 None 表示「当前没有上层声明」，调用方应走显式分支，不要把 None
+        当作 `"on"` 静默传下去。
+        """
+        with self._lock:
+            return self._stack[0].save if self._stack else None
+
     def open_scope(self, owner: str, label: str, *, save: str = "on") -> DebugSegment:
         if self._run_id is None:
             self.begin_run()

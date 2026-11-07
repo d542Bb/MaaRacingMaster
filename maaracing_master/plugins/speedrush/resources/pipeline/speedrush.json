@@ -29,9 +29,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.893,
+                            0.8153,
+                            0.9625,
+                            0.9139
+                        ],
+                        "templates": [
+                            "hall_race_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点娱乐玩法": {
         "attach": {
@@ -63,9 +81,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.0008,
+                            0.6861,
+                            0.1359,
+                            0.7875
+                        ],
+                        "templates": [
+                            "rank_fun_tab.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点极速狂飙卡片": {
         "attach": {
@@ -97,9 +133,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.2211,
+                            0.3264,
+                            0.5742,
+                            0.4292
+                        ],
+                        "templates": [
+                            "fun_speedrush_card.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点开始挑战": {
         "attach": {
@@ -131,9 +185,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.7883,
+                            0.8514,
+                            0.9164,
+                            0.9361
+                        ],
+                        "templates": [
+                            "speedrush_start_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点寻找对手": {
         "attach": {
@@ -165,9 +237,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.6914,
+                            0.6931,
+                            0.9156,
+                            0.8097
+                        ],
+                        "templates": [
+                            "speedrush_find_opponent_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点放弃本轮": {
         "attach": {
@@ -199,9 +289,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.8594,
+                            0.0236,
+                            0.9828,
+                            0.1042
+                        ],
+                        "templates": [
+                            "speedrush_giveup_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.关闭奖励弹窗": {
         "attach": {
@@ -233,9 +341,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.4516,
+                            0.9194,
+                            0.5484,
+                            0.9611
+                        ],
+                        "templates": [
+                            "speedrush_reward_hint.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点确认上阵": {
         "attach": {
@@ -267,9 +393,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.7086,
+                            0.8681,
+                            0.9398,
+                            0.9944
+                        ],
+                        "templates": [
+                            "speedrush_store_confirm_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点继续": {
         "attach": {
@@ -301,9 +445,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.8594,
+                            0.85,
+                            0.95,
+                            0.9806
+                        ],
+                        "templates": [
+                            "speedrush_continue_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.点继续放弃": {
         "attach": {
@@ -335,9 +497,27 @@
         "action": {
             "type": "Custom",
             "param": {
-                "custom_action": "MaaRM_Click"
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.5695,
+                            0.5917,
+                            0.8008,
+                            0.7167
+                        ],
+                        "templates": [
+                            "speedrush_giveup_continue_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    }
+                }
             }
-        }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0
     },
     "speedrush.驾驶页锚点": {
         "attach": {

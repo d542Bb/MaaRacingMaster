@@ -45,6 +45,34 @@
                                     { "type": "number", "minimum": 0, "maximum": 1 },
                                     { "type": "number", "minimum": 0, "maximum": 1 }
                                 ]
+                            },
+                            "wait_after_ms": {
+                                "description": "点击后停顿上限（毫秒，缺省 800）。给了 settle 时只作为兜底上限，画面切走即提前返回",
+                                "type": "number",
+                                "minimum": 0
+                            },
+                            "settle": {
+                                "description": "可选；点击后条件等待的判据规格，与节点 recognition 同源。源按钮在 ROI 内认不出来即提前收工，最长不超过 wait_after_ms",
+                                "type": "object",
+                                "properties": {
+                                    "rect": {
+                                        "description": "归一化搜索区 [x0,y0,x1,y1]",
+                                        "type": "array",
+                                        "prefixItems": [
+                                            { "type": "number" }, { "type": "number" },
+                                            { "type": "number" }, { "type": "number" }
+                                        ],
+                                        "items": false
+                                    },
+                                    "templates": {
+                                        "description": "源按钮模板名列表",
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "threshold": { "type": "number" },
+                                    "colorspace": { "type": "string" }
+                                },
+                                "required": ["rect", "templates", "threshold"]
                             }
                         }
                     }

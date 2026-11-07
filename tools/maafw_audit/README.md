@@ -14,6 +14,7 @@
 | `template_exist.py` | 真源引用的模板是否都在磁盘上；磁盘上是否有未被引用的模板 |
 | `policy_in_pipeline_test.py` | 布局红线实证：policy 数据混进 pipeline 目录时，递归加载是否整目录失败 |
 | `v1_duplicate_register.py` | 自定义识别/动作命名空间的实际行为（当前按安装版本实测，升版后重跑） |
+| `probe_a0/` | `Context.run_recognition(节点, 帧)` 只读链路的放行验证：override 传参形态、传帧是否生效、通道契约、桥异常与停止语义、与框架识别轮的同帧等价性。用 `CustomController` 喂录制帧，注册现役 `TemplateRecognizer` |
 
 ## 用法
 
@@ -23,7 +24,8 @@
 .venv/Scripts/python.exe tools/maafw_audit/template_exist.py
 .venv/Scripts/python.exe tools/maafw_audit/policy_in_pipeline_test.py
 .venv/Scripts/python.exe tools/maafw_audit/v1_duplicate_register.py
+.venv/Scripts/python.exe tools/maafw_audit/probe_a0/step4_equivalence.py 880 900
 ```
 
-`load_truth.py` 与 `policy_in_pipeline_test.py` 需要 `.venv` 内的 MaaFw；其余只读文件、
-可直接运行。
+`load_truth.py`、`policy_in_pipeline_test.py` 与 `probe_a0/` 需要 `.venv` 内的 MaaFw；
+`probe_a0/` 另需会话 `20261106_185832` 的 nav 调试帧；其余只读文件、可直接运行。

@@ -630,10 +630,16 @@ class _FakeGraph:
         self.seq = list(seq)
         self.calls = 0
 
-    def run(self, entry: str, reached: str | None = None) -> bool:
+    def run(self, entry: str, reached: str | None = None,
+            *, save: str | None = None) -> bool:
         v = self.seq[min(self.calls, len(self.seq) - 1)]
         self.calls += 1
         return v
+
+    def probe(self, node: str, **kwargs):
+        """驾驶主循环的只读页面查询；计数口径与 run 一致。"""
+        hit = self.run(node, node)
+        return sr.ProbeOutcome.HIT if hit else sr.ProbeOutcome.MISS
 
 
 class _SpyObserver:

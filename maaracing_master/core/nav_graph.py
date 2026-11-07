@@ -40,7 +40,9 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import ExitStack, contextmanager
+from enum import Enum
 from pathlib import Path
 
 from maa.custom_action import CustomAction
@@ -57,6 +59,8 @@ from maaracing_master.core.template_match import (
     color_assert_ok,
     cursor_box_norm,
     find_any_cs,
+    load_template,
+    match_template_cs,
     occlusion_ratio,
     strip_ext,
 )
@@ -73,6 +77,10 @@ CORE_RES_DIR = Path(__file__).resolve().parent / "resources"
 RUN_POLL_MIN_S = 0.001
 RUN_POLL_MAX_S = 0.02
 
+# 点击后「条件等待」的轮询间隔（秒）。只在 wait_after_ms 上限内生效，最多约
+# 800/50=16 次单 ROI 模板匹配；不是「等按钮出现」的地板，那是框架 rate_limit 的事。
+CLICK_SETTLE_POLL_S = 0.05
+
 # 停止后等框架收摊的上限：binding 的 Job.wait() 无超时参数，框架一旦卡住就是
 # 「停止中」永远不结束。宁可超时后照常收尾（并留 WARNING 供定位），也不无限等。
 STOP_SETTLE_TIMEOUT_S = 10.0
@@ -81,6 +89,31 @@ STOP_SETTLE_TIMEOUT_S = 10.0
 # 不变、帧龄持续增长——这不是采集坏了。只有 frame=None（采集器已停/未启动）
 # 才是基础设施故障；静止帧继续复用，由步骤总时限兜底。
 FRAME_STATIC_WARN_MS = 2000.0
+
+# 导航段（`run` 压的 nav 段）的**存盘**采样频率（Hz）。
+#
+# 为什么与 `RUN_SAMPLE_HZ` 分开：默认 10Hz 是「调试流整体采样率」，对启动链这种
+# 几十秒的长段够用；但模块的 UI 导航一局有几十段、每段一两秒，10Hz 会落出上千张
+# 图。3Hz 足够看清「按钮在不在、页面切没切」，体量降到约三分之一。
+# **只作用于 save（落盘）**，`peep_fps` 仍取默认——面板预览要跟手，不受此限。
+NAV_SAVE_FPS = 3.0
+
+# 只读页面识别（`NavGraph.probe`）的入口与期限。
+#
+# 入口节点不落真源：用 `post_task(entry, pipeline_override)` 现建一个恒命中节点
+# （A0 实测：override 可以创建未注册节点，且 `custom_action_param` 必须传 dict，
+# 传字符串会被二次编码）。这样导航图里不会多出一个与业务无关的节点。
+PROBE_ENTRY = "MaaRM_Probe.Entry"
+PROBE_ACTION_NAME = "MaaRM_Probe"
+
+# 一次只读识别的等待上限（秒）。离线实测单次中位 437ms，主要开销在框架任务
+# 调度而不是模板匹配本身；取 1.0s 给慢帧留余量。**这是保守初值，待 A6 实机
+# 标定**——它直接决定最坏情况下主循环被占多久。
+PROBE_BUDGET_S = 1.0
+
+# 超时后等框架收摊的上限（秒）。不能用 `STOP_SETTLE_TIMEOUT_S`（10s）：那会把
+# 一次查询的超时变成十秒级停顿，正好踩中「别把重试次数耗光」的底线。
+PROBE_SETTLE_TIMEOUT_S = 2.0
 
 
 def _wait_job_settled(job, timeout_s: float | None = None) -> bool:
@@ -107,6 +140,33 @@ def _wait_job_settled(job, timeout_s: float | None = None) -> bool:
 
 RECOGNIZER_NAME = "MaaRM_Template"
 ACTION_NAME = "MaaRM_Click"
+
+
+class ProbeOutcome(str, Enum):
+    """只读页面识别的三态结果。
+
+    `NOT_READY` 必须与「未命中」分开：框架在停止收摊期间会**忽略**新任务，
+    把它当 miss 会让上层把「查不了」误读成「页面不在」，进而空耗步级重试次数。
+    """
+
+    HIT = "hit"
+    MISS = "miss"
+    NOT_READY = "not_ready"
+
+
+class _ProbeRecord:
+    """一次只读识别的结果记录（按 probe_id 索引）。
+
+    状态机只有三条边：pending → completed（桥提交）、pending → stale（超时失效）。
+    `stale` 记录是墓碑：桥的迟到回写会因状态不符被丢弃，绝不重建、绝不覆盖。
+    """
+
+    __slots__ = ("status", "hit", "error")
+
+    def __init__(self) -> None:
+        self.status = "pending"
+        self.hit = False
+        self.error = ""
 # 输入原语：固定坐标点击 / 手柄按键——识别框帮不上的两种场合（唤醒点、页面回退）。
 INPUT_ACTION_NAME = "MaaRM_Input"
 
@@ -232,11 +292,59 @@ class TemplateRecognizer(CustomRecognition):
             detail={"template": hit_name, "score": round(score, 3), "name": argv.node_name})
 
 
+class ProbeAction(CustomAction):
+    """只读识别桥：`MaaRM_Probe` 的实现。
+
+    与 `MaaRM_Click` 的关键差别——它**不点、不导航、不开调试段、不持手柄租约**，
+    只做「取一帧 → 用框架原生 `Context.run_recognition(节点, 该帧)` → 按 id 回传」。
+
+    节点参数（由 `NavGraph.probe` 经 pipeline_override 注入）：
+        probe_id    本次调用的唯一标识（结果按它索引，迟到回写据此丢弃）
+        node        要识别的真源节点名
+    """
+
+    def __init__(self, graph: "NavGraph"):
+        super().__init__()
+        self._graph = graph
+
+    def run(self, context, argv):
+        p = _parse(argv.custom_action_param)
+        pid = str(p.get("probe_id") or "")
+        node = str(p.get("node") or "")
+        if not pid or not node:
+            # 参数缺失不抛异常：框架会把桥异常吞成 succeeded=True（A0 实测），
+            # 抛出去也换不来一次失败状态，只会污染日志。
+            self._graph._log("[只读识别] 桥参数缺失（probe_id/node），本次按无结果", "WARNING")
+            return True
+        if context is None:
+            self._graph._commit_probe(pid, error="context 缺失")
+            return True
+        try:
+            frame = self._graph.probe_frame()
+            if frame is None:
+                self._graph._commit_probe(pid, error="截图失败")
+                return True
+            detail = context.run_recognition(node, frame)
+            hit = bool(detail.hit) if detail is not None else False
+            self._graph._commit_probe(pid, hit=hit)
+        except Exception as exc:  # noqa: BLE001 —— 桥异常只能自己记账，框架不传播
+            self._graph._commit_probe(pid, error=f"{type(exc).__name__}: {exc}")
+        return True
+
+
 class ClickAction(CustomAction):
     """动作桥：识别框中心 → Clicker 点击（前台鼠标 / 后台手柄导航+A / 意图）。
 
     节点参数：
-        wait_after_ms    800    点击后的停顿（页面动画）
+        wait_after_ms    800    点击后的停顿**上限**（页面动画）
+        settle           —      可选。给了就改为条件等待：按 CLICK_SETTLE_POLL_S
+                                轮询当前帧，源按钮在它的 ROI 里认不出来（分数低于
+                                threshold）即认定画面已切走、立即收工；任何情况下
+                                都不超过 wait_after_ms。规格与节点 recognition 同源
+                                （真源生成器复制同一份 rect/templates/threshold/
+                                colorspace），判据只答「当前页是否已离开」——落地页
+                                到没到位仍由模块侧确认探针 + 步级重试窗口裁决。
+                                不给 settle = 旧的固定 sleep（startup / 归档真源照旧）。
         timeout_s        20.0   手柄导航到位的等待上限（超时算失败，走 on_error）
         gamepad_button   —      手柄模式下改按这个键，不做光标导航。用于登录页这类
                                 「光标不可导航、某个键等于点它」的画面；real 模式忽略
@@ -282,7 +390,7 @@ class ClickAction(CustomAction):
         )
         self._graph._publish_intent(argv.node_name, rx + rw / 2, ry + rh / 2,
                                     "ok" if ok else "failed")
-        self._graph.ctx.lifecycle.sleep(float(p.get("wait_after_ms", 800)) / 1000.0)
+        self._wait_after_click(p, argv.node_name)
         if not ok:
             reason = self._graph.last_click_error
             if reason == "gamepad_unbound":
@@ -293,6 +401,80 @@ class ClickAction(CustomAction):
             if reason:
                 self._graph._log(f"[跳转图] 节点「{argv.node_name}」点击失败原因: {reason}", "DEBUG")
         return ok
+
+    def _wait_after_click(self, p: dict, node_name: str) -> None:
+        """点击后停顿：有 settle 规格则「画面切走即返回」，否则固定 sleep。
+
+        2026-11-06 实机（会话 20261106_185832，nav 帧 894→895）：确认上阵按钮
+        ROI 分数 0.814→0.250 与驾驶页齿轮 0.882 出现在同一帧，识别零滞后；旧的
+        固定 800ms 让动作节点在画面已切走后仍挂着，节点标注比画面晚 0.75~0.85s。
+        这里只把「固定睡」换成**有上限**的条件等待，不改步级重试的窗口、轮询与
+        重发上限；条件不满足（点了没反应、按钮还在）时行为与旧版完全一致。
+        """
+        graph = self._graph
+        budget_s = max(0.0, float(p.get("wait_after_ms", 800)) / 1000.0)
+        settle = p.get("settle")
+        if budget_s <= 0 or not isinstance(settle, dict) or not settle.get("templates"):
+            graph.ctx.lifecycle.sleep(budget_s)
+            return
+
+        names = [strip_ext(n) for n in settle["templates"] if isinstance(n, str) and n]
+        # 模板缺失会让「认不出来」恒真 → 等于静默删掉 800ms 兜底。先证实模板都在，
+        # 缺一个就退回旧的固定睡，并把故障留在日志里。
+        try:
+            tpls = [load_template(n, graph.image_dirs) for n in names] if names else []
+        except Exception as exc:  # noqa: BLE001 —— 模板目录异常同样不得改写点击结果
+            graph._log(f"[v4] 「{node_name}」settle 模板加载异常（{exc!r}），退回固定停顿",
+                       "WARNING")
+            tpls = []
+        if not tpls or any(t is None for t in tpls):
+            graph._log(f"[v4] 「{node_name}」settle 模板不可用，退回固定停顿", "WARNING")
+            graph.ctx.lifecycle.sleep(budget_s)
+            return
+
+        rect = settle.get("rect") or (0, 0, 1, 1)
+        threshold = float(settle.get("threshold", 0.8))
+        colorspace = settle.get("colorspace", "rgb")
+        deadline = time.monotonic() + budget_s
+        started = time.monotonic()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                graph._log(f"[v4] 「{node_name}」点击后 {budget_s * 1000:.0f}ms 内"
+                           "按钮仍在，按兜底收工", "DEBUG")
+                return
+            try:
+                frame = graph.frame()
+            except Exception:  # noqa: BLE001 —— 取帧异常按「这一轮没帧」处理
+                frame = None
+            if frame is not None:
+                try:
+                    H, W = frame.shape[:2]
+                    x1, y1, x2, y2 = rect
+                    roi = (int(x1 * W), int(y1 * H),
+                           int((x2 - x1) * W), int((y2 - y1) * H))
+                    best, visible = 0.0, False
+                    for tpl in tpls:
+                        box, val = match_template_cs(
+                            frame, tpl, colorspace=colorspace,
+                            threshold=threshold, roi=roi)
+                        best = max(best, val)
+                        if box is not None:
+                            visible = True
+                            break
+                except Exception as exc:  # noqa: BLE001 —— 匹配异常不得改写点击结果
+                    graph._log(f"[v4] 「{node_name}」settle 匹配异常（{exc!r}），"
+                               "退回固定停顿", "WARNING")
+                    graph.ctx.lifecycle.sleep(max(0.0, deadline - time.monotonic()))
+                    return
+                if not visible:
+                    graph._log(f"[v4] 「{node_name}」点击后 "
+                               f"{(time.monotonic() - started) * 1000:.0f}ms 按钮已不可见"
+                               f"（ROI 最高分 {best:.3f} < {threshold:.3f}），提前收工",
+                               "DEBUG")
+                    return
+            if not graph.ctx.lifecycle.sleep(min(CLICK_SETTLE_POLL_S, remaining)):
+                return  # 停止信号：不再等，也不影响已发出的点击结果
 
 
 # 真源里可写的按钮名 → vgamepad 按钮位（一手核对：vgamepad/win/vigem_commons.py）。
@@ -464,8 +646,13 @@ class NavGraph:
             RECOGNIZER_NAME, TemplateRecognizer(self, cursor_pos_provider=self.cursor_pos))
         self._resource.register_custom_action(ACTION_NAME, ClickAction(self))
         self._resource.register_custom_action(INPUT_ACTION_NAME, InputAction(self))
+        self._resource.register_custom_action(PROBE_ACTION_NAME, ProbeAction(self))
         self._clicker: Clicker | None = None
         self._job = None          # 当前在跑的图任务句柄（stop/shutdown 要等它收摊）
+        # 只读识别（probe）的结果容器：按 probe_id 索引，锁只保护状态转换与结果写入，
+        # 不覆盖 post_task / 等待 / 停止。**调用串行是调用方契约**，这里不加串行锁。
+        self._probe_records: dict[str, _ProbeRecord] = {}
+        self._probe_lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._stop_requested = False  # 本轮是否已投递停止请求（两处并发触发时去重）
         self._loaded = False
@@ -595,16 +782,38 @@ class NavGraph:
             return None
 
     @contextmanager
-    def _debug_scope(self, entry: str):
-        """跑图期间压一个导航段：启动链与模块的 UI 步骤共享同一套基线视图。"""
+    def _debug_scope(self, entry: str, *, save: str | None = None):
+        """跑图期间压一个导航段：启动链与模块的 UI 步骤共享同一套基线视图。
+
+        **存盘策略的优先级**：调用方显式传入的 ``save`` 最高；没传才继承栈底
+        scope 的声明（模块在运行项级声明 `DEBUG_SAVE`，控制器把它传给栈底）。
+        内层段若不继承就会吃 `open_segment` 的默认 `"on"`，让模块的 `self`
+        声明形同虚设——驾驶时段就会出现 nav 与模块 writer 双写。
+
+        显式覆盖存在的理由：模块可能「UI 导航要图、驾驶不要图」。驾驶侧靠
+        `probe()` 不开段天然没有图；UI 侧则用 ``run(..., save="on")`` 声明。
+        覆盖必须由调用方显式给出，不能来自默认值——否则「无声明」和「显式 on」
+        就无法区分，模块的归属声明又会被架空。
+        """
         dbg = getattr(self.ctx, "debug", None)
         seg = None
         if dbg is not None:
             try:
+                if save is None:
+                    # None = 没有上层声明：沿用 open_segment 的既有默认，并留 DEBUG
+                    # 记录，不把 None 当 "on" 传进去（那会让两者无法区分）。
+                    save = dbg.scope_save()
+                    kwargs = {} if save is None else {"save": save}
+                    if save is None:
+                        self._log("[跳转图] 无上层存盘声明，导航段按默认策略", "DEBUG")
+                else:
+                    kwargs = {"save": save}
                 seg = dbg.open_segment(
                     "nav", entry, source="pull",
+                    save_fps=NAV_SAVE_FPS,
                     pointer=self._debug_pointer,
-                    state_provider=self._debug_state)
+                    state_provider=self._debug_state,
+                    **kwargs)
             except Exception:  # noqa: BLE001 —— 调试流不得阻断导航
                 seg = None
         try:
@@ -659,6 +868,38 @@ class NavGraph:
         反复喂同一张旧帧，页面真切换了也看不出来，只能干等到 timeout。"""
         self._last_frame = self.ctx.capture.screenshot()
         return self._last_frame
+
+    def probe_frame(self):
+        """只读取帧：走带帧标识的入口，**转成 BGR** 后交给框架识别。
+
+        两个理由，都是实测出来的：
+          1. `capture.frame_with_age()` 返回 RGB，而 `TemplateRecognizer.analyze`
+             对 `argv.image` **无条件** `BGR→RGB`（框架注入帧的契约是 BGR）。直接
+             喂 RGB 会二次错色；A0 在这两个锚点上恰好判定不变，但不能依赖巧合。
+          2. 用 `frame_with_age` 而不是 `screenshot`：一次调用同时拿到帧、帧号、
+             采集时刻，识别与事后对齐用的是**同一帧**（A0-2 等价性的前提）。
+        """
+        rgb, _fid, _ts, _age = self.ctx.capture.frame_with_age()
+        if rgb is None:
+            return None
+        import cv2
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    def _commit_probe(self, probe_id: str, *, hit: bool = False, error: str = "") -> bool:
+        """提交一次识别结果。**只接受仍为 pending 的记录**。
+
+        这是迟到回写的唯一闸门：超时把记录置 `stale` 后，在途回调再来提交会因
+        状态不符被丢弃。只标记不检查等于没标记——A0 实测：无检查时迟到回写能把
+        `stale` 复活成 `completed`。
+        """
+        with self._probe_lock:
+            rec = self._probe_records.get(probe_id)
+            if rec is None or rec.status != "pending":
+                return False
+            rec.hit = hit
+            rec.error = error
+            rec.status = "completed"
+            return True
 
     def frame_size(self) -> tuple[int, int]:
         """识别帧尺寸：动作桥用它把像素框换算成 Clicker 要的归一化坐标。"""
@@ -783,8 +1024,95 @@ class NavGraph:
 
     # ---------- 跑图 ----------
 
+    def probe(self, node: str, *, budget_s: float | None = None) -> ProbeOutcome:
+        """只读页面识别：**不点、不导航、不开调试段、不持手柄租约**。
+
+        与 `run()` 的分工是调用语义，不是性能开关：`run()` 表达「执行一段导航」，
+        `probe()` 表达「问一句页面在不在」。同一个真源节点两边都能跑，但只有
+        `run()` 会进 `_debug_scope`（开 nav 段、按段策略落盘）。
+
+        三态返回见 `ProbeOutcome`。`NOT_READY` 与 `MISS` 必须分开处理——前者是
+        「框架还在收摊、这次没查成」，后者是「查了、页面不在」。
+
+        串行前提：同一实例上 `run()` / `probe()` 不得重叠，由调用方保证（模块
+        单线程驾驶流程）。这里不加串行锁，锁只保护结果记录的状态转换。
+        """
+        if not self.load():
+            return ProbeOutcome.NOT_READY
+        tasker = self._tasker
+        if tasker is None:
+            return ProbeOutcome.NOT_READY
+        # 入口硬门控：stopping 期间框架会**忽略**新任务（A0 实测 `ignore new post`）。
+        # 这时若仍「建记录 → 提交 → 等待 → 超时」，只是把已知的框架行为包装成一次
+        # 无意义的任务尝试，还会让上层误以为「查了但没查到」。故直接拒绝，不建记录。
+        if bool(getattr(tasker, "stopping", False)):
+            return ProbeOutcome.NOT_READY
+        if budget_s is None:
+            budget_s = PROBE_BUDGET_S
+
+        probe_id = uuid.uuid4().hex
+        with self._probe_lock:
+            # 能走到这里说明 stopping 已为 False：确认框架空闲，清掉上一次留下的墓碑。
+            dead = [k for k, v in self._probe_records.items() if v.status == "stale"]
+            for k in dead:
+                del self._probe_records[k]
+            self._probe_records[probe_id] = _ProbeRecord()
+
+        override = {PROBE_ENTRY: {
+            "recognition": {"type": "DirectHit"},
+            "action": {"type": "Custom", "param": {
+                "custom_action": PROBE_ACTION_NAME,
+                # 必须传 dict：传 json 字符串会被框架二次编码（A0 实测）
+                "custom_action_param": {"probe_id": probe_id, "node": node},
+            }},
+            "rate_limit": 0,
+            # **pre/post_delay 必须显式归零**：不写就吃框架默认各 200ms，
+            # 一次「只读看一眼」白等 400ms。实测这会把驾驶主循环从 20Hz
+            # 压到 1.1Hz（每拍两次查询 = 800ms），进而让深度帧 100% 超龄、
+            # 视角确认失败。真源里的锚点节点同样是显式零节拍。
+            "pre_delay": 0,
+            "post_delay": 0,
+            "timeout": 1000,
+        }}
+        try:
+            job = tasker.post_task(PROBE_ENTRY, pipeline_override=override)
+        except Exception as exc:  # noqa: BLE001 —— 提交失败按未就绪，不抛给驾驶主循环
+            with self._probe_lock:
+                self._probe_records.pop(probe_id, None)
+            self._log(f"[只读识别] 提交失败（{node}）：{type(exc).__name__}: {exc}", "WARNING")
+            return ProbeOutcome.NOT_READY
+        self._job = job  # stop()/shutdown() 要能等到它收摊
+
+        if _wait_job_settled(job, budget_s):
+            with self._probe_lock:
+                rec = self._probe_records.pop(probe_id, None)
+            if rec is None or rec.status != "completed":
+                # 桥没提交：任务失败、节点未命中到入口，或桥被框架丢弃
+                return ProbeOutcome.MISS
+            if rec.error:
+                self._log(f"[只读识别] 桥异常（{node}）：{rec.error}", "DEBUG")
+                return ProbeOutcome.MISS
+            return ProbeOutcome.HIT if rec.hit else ProbeOutcome.MISS
+
+        # 超时：先失效（让在途回调的提交作废），再收摊。顺序不可换。
+        with self._probe_lock:
+            rec = self._probe_records.get(probe_id)
+            if rec is not None:
+                rec.status = "stale"
+        self._stop_requested = False  # 新一轮任务：允许投递一次停止请求
+        settled = self._stop_framework("probe-timeout", settle_timeout_s=PROBE_SETTLE_TIMEOUT_S)
+        still_stopping = bool(getattr(tasker, "stopping", False))
+        if settled and not still_stopping:
+            with self._probe_lock:
+                self._probe_records.pop(probe_id, None)
+            return ProbeOutcome.MISS
+        # 收摊没确认：墓碑保留（不删），等下一次确认空闲时清；上层按未就绪处理，
+        # 不得当作 miss 去重试——重试只会被框架忽略。
+        self._log(f"[只读识别] 框架未收摊（{node}），本次未取得结果", "WARNING")
+        return ProbeOutcome.NOT_READY
+
     def run(self, entry: str, reached: str | None = None, *,
-            deadline_s: float | None = None) -> bool:
+            deadline_s: float | None = None, save: str | None = None) -> bool:
         """跑一条以 entry 为起点的图，阻塞到图结束、失败、停止或超时。
 
         reached：终点确认节点名。图"跑完"不等于"跑对"——中间节点超时后框架
@@ -792,6 +1120,10 @@ class NavGraph:
 
         deadline_s：整轮总时限（秒）。汇聚节点的 `timeout: -1` 表示永不放弃，
         没有这个上限时一次卡死就会永久占住 worker 线程。
+
+        save：本次导航段的存盘策略（`"on"` / `"self"` / `"off"`）。**不传 = 继承
+        栈底 scope 的模块声明**；显式传才覆盖。用途是让模块做到「UI 导航要图、
+        驾驶不要图」——驾驶侧走 `probe()`（不开段，天然无图），UI 侧在这里声明。
 
         结局写入 `last_outcome`，判定顺序（确定性，不依赖线程调度）：
           1. 已记录 fatal            → task_failed（job 的成功状态不能覆盖它）
@@ -821,7 +1153,7 @@ class NavGraph:
         # 手柄租约只在跑图期间持有：结束立刻归还，模块外层的 reset_device()
         # （销毁手柄复位）才不会被「有活跃租约禁止断开设备」这条不变量挡住。
         with ExitStack() as stack:
-            stack.enter_context(self._debug_scope(entry))
+            stack.enter_context(self._debug_scope(entry, save=save))
             if self.ctx.click_mode == "gamepad":
                 from maaracing_master.core.capabilities import BUTTON_A
                 gpad = stack.enter_context(self.ctx.gamepad.acquire())
@@ -910,7 +1242,8 @@ class NavGraph:
         except Exception:  # noqa: BLE001 —— 未起跑时停止是正常路径
             return None
 
-    def _stop_framework(self, reason: str = "stop") -> bool:
+    def _stop_framework(self, reason: str = "stop", *,
+                        settle_timeout_s: float | None = None) -> bool:
         """发停止请求并等两个句柄收摊（有界）。销毁 C 句柄前必须走到这里。
 
         停止请求完成 ≠ 任务结束。后续 cleanup 会销毁句柄，销毁时必须确保框架
@@ -919,6 +1252,9 @@ class NavGraph:
 
         返回值 = **是否确认收摊**。False 表示等待超时、worker 可能仍在活动，
         调用方据此决定「不销毁」（见 shutdown）。
+
+        settle_timeout_s：等收摊的上限（秒），缺省 `STOP_SETTLE_TIMEOUT_S`。
+        `probe()` 传更短的值——一次页面查询的超时不该变成十秒级停顿。
 
         两条免发条件——停止请求只对**正在跑的任务**有意义：
           - 任务已结束（或从未起跑）：没有可停的东西，请求发出去也没人消费；
@@ -930,10 +1266,10 @@ class NavGraph:
         job = self._job
         # 请求可能是别的线程投递的（模块停止路径），这里同样要等任务收摊：
         # 销毁 C 句柄的前提是框架 worker 已经退出，与谁发的请求无关。
-        if job is not None and not job.done and not _wait_job_settled(job):
+        if job is not None and not job.done and not _wait_job_settled(job, settle_timeout_s):
             self._log(f"[跳转图] 任务句柄超时未结束（来源 {reason}），仍继续收尾", "WARNING")
             settled = False
-        if stop_job is not None and not _wait_job_settled(stop_job):
+        if stop_job is not None and not _wait_job_settled(stop_job, settle_timeout_s):
             self._log(f"[跳转图] 停止请求超时未完成（来源 {reason}），仍继续收尾", "WARNING")
             settled = False
         return settled

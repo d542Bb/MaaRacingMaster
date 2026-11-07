@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -128,6 +129,103 @@ def test_click_action_rejects_zero_box(pure_maa):
     argv.box = (0, 0, 0, 0)
     assert act.run(None, argv) is False
     graph.click.assert_not_called()
+
+
+# ---------- 点击后条件等待（settle）----------
+#
+# 2026-11-06 实机（会话 20261106_185832，nav 帧 894→895）：确认上阵按钮 ROI 分数
+# 0.814→0.250 与驾驶页齿轮 0.882 出现在同一帧，识别零滞后；节点比画面晚 0.75~0.85s
+# 是点击后固定 800ms 睡眠造成的。这里把固定睡改成「源按钮认不出来即返回、最长仍
+# 800ms」，用纯 Python 桩锁住四种边界；真模板匹配与 C 句柄一律不进测试进程。
+
+_SETTLE = {
+    "rect": [0.7086, 0.8681, 0.9398, 0.9944],
+    "templates": ["speedrush_store_confirm_btn.png"],
+    "threshold": 0.8,
+    "colorspace": "rgb",
+}
+
+
+def _settle_env(monkeypatch, *, box=None, score=0.25, template_ok=True,
+                sleep_ok=True):
+    graph = MagicMock()
+    graph.frame_size.return_value = (1280, 720)
+    graph.click.return_value = True
+    graph.image_dirs = []
+    graph.frame.return_value = np.zeros((720, 1280, 3), dtype=np.uint8)
+    clock = {"t": 0.0}
+
+    def sleep(seconds):
+        clock["t"] += seconds
+        return sleep_ok
+
+    graph.ctx.lifecycle.sleep.side_effect = sleep
+    # 假钟替掉整个 time 名字（不污染全局 time 模块）；条件等待只读 monotonic。
+    monkeypatch.setattr(ng, "time", SimpleNamespace(
+        monotonic=lambda: clock["t"], perf_counter=lambda: clock["t"],
+        sleep=lambda _s: None))
+    monkeypatch.setattr(ng, "load_template",
+                        lambda _n, _dirs: (np.zeros((4, 4, 3), dtype=np.uint8)
+                                          if template_ok else None))
+    monkeypatch.setattr(ng, "match_template_cs", lambda *a, **k: (box, score))
+    argv = MagicMock()
+    argv.node_name = "speedrush.点确认上阵"
+    argv.box = (100, 100, 40, 40)
+    return graph, argv, clock
+
+
+def _run_settle(graph, argv, *, wait_ms=800, settle=_SETTLE):
+    p = {"wait_after_ms": wait_ms}
+    if settle is not None:
+        p["settle"] = settle
+    argv.custom_action_param = json.dumps(p)
+    return ng.ClickAction(graph).run(None, argv)
+
+
+def test_click_settle_returns_early_when_button_gone(pure_maa, monkeypatch):
+    """按钮 ROI 认不出来 = 画面已切走：立即收工，不再睡满 800ms。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=None, score=0.250)
+    assert _run_settle(graph, argv) is True
+    assert graph.ctx.lifecycle.sleep.call_count == 0
+    assert clock["t"] == 0.0
+    log = " ".join(str(c) for c in graph._log.call_args_list)
+    assert "提前收工" in log and "0.250" in log  # 分数留痕，供下局 ROI 复核
+
+
+def test_click_settle_waits_full_budget_when_button_stays(pure_maa, monkeypatch):
+    """点了没反应、按钮还在 → 与旧版一样等满 800ms，绝不缩窗口或提前失败。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=(10, 10, 20, 20), score=0.928)
+    assert _run_settle(graph, argv) is True
+    assert clock["t"] >= 0.8
+    assert "按兜底收工" in " ".join(str(c) for c in graph._log.call_args_list)
+
+
+def test_click_without_settle_keeps_fixed_sleep(pure_maa, monkeypatch):
+    """没给 settle（startup / 归档真源）= 旧路径：一次固定 sleep，连帧都不取。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=None)
+    assert _run_settle(graph, argv, settle=None) is True
+    assert graph.ctx.lifecycle.sleep.call_count == 1
+    assert clock["t"] == pytest.approx(0.8)
+    graph.frame.assert_not_called()
+
+
+def test_click_settle_honours_stop_signal(pure_maa, monkeypatch):
+    """停止信号一到立刻退出条件等待，点击结果不受影响。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=(1, 1, 2, 2), score=0.93,
+                                     sleep_ok=False)
+    assert _run_settle(graph, argv) is True
+    assert clock["t"] == pytest.approx(ng.CLICK_SETTLE_POLL_S)
+    assert graph.frame.call_count == 1
+
+
+def test_click_settle_missing_template_falls_back(pure_maa, monkeypatch):
+    """模板缺失时「认不出来」会恒真——必须退回固定兜底，不能静默删掉 800ms。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=None, template_ok=False)
+    assert _run_settle(graph, argv) is True
+    assert graph.ctx.lifecycle.sleep.call_count == 1
+    assert clock["t"] == pytest.approx(0.8)
+    assert "模板不可用" in " ".join(str(c) for c in graph._log.call_args_list)
+    graph.frame.assert_not_called()
 
 
 def test_input_action_point_goes_through_click_with_no_box(pure_maa):

@@ -73,6 +73,23 @@ NODE_OVERRIDES: dict[str, dict] = {
     },
 }
 
+# 动作节点的节拍覆盖：框架默认 rate_limit=1000ms、pre/post_delay 各 200ms
+# （官方 3.1 任务流水线协议；本机 maafw 5.12.3 的 JPipelineData 同值），是
+# 「每轮识别最低消耗」与进出节点的隐式等待，不是「等按钮出现」的时间。原子动作
+# 节点识别命中即点一下收图，这层地板纯属固定开销：2026-11-06 实机日志里 p1→p2
+# 两次点击步分别耗 4s / 2s，按默认值推算其中约 2.4s 落在这三项上。
+# **timeout 没动**：官方协议里它约束的是「当前节点 next 列表识别的超时」，不是本
+# 节点 recognition 的等待时间；本项目动作节点零路由、next 为空，等按钮晚出现由
+# 入口识别循环与 Python 侧步级重试窗口承担，不靠这个字段。保留框架默认 20s，
+# 不引入未经实机校准的新数值。
+# **rate_limit 为什么是 100 而不是 0**：0 会把「按钮晚出现」场景变成框架在 20s
+# 超时里全速截图找图（不失败，但白烧 CPU 与日志）。100ms 既去掉 1s 地板，又给
+# 识别循环留出节流；相对游戏转场（实测 ≥1s）可忽略，不改变落地耗时或重发次数。
+# pre/post_delay 保持 0：它们是进出节点的纯固定开销，没有空转风险。
+# 就地赋、不进 NODE_OVERRIDES：那是按模板键生效的例外表，而这里是一整类节点的
+# 共同节拍；确认探针与动作节点复用同一批模板，按模板写会把两者绑在一起。
+ACTION_NODE_PACE = {"rate_limit": 100, "pre_delay": 0, "post_delay": 0}
+
 # (节点名, 模板名, page, 标签)
 ACTIONS: list[tuple[str, str, str, str]] = [
     (f"{MODULE}.点比赛", "hall_race_btn", "hall", "游戏大厅 → 点击比赛按钮"),
@@ -152,6 +169,28 @@ def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
     }
 
 
+def settle_from(reco: dict) -> dict:
+    """点击后条件等待的判据规格 = 本节点 recognition 规格的**同源副本**。
+
+    core 的 MaaRM_Click 拿它在 wait_after_ms 上限内轮询：「源按钮在它自己的 ROI 里
+    认不出来」= 画面已切走，立即收工；始终不超过 800ms 兜底。判据只答「当前页是否
+    已离开」，落地页是否到位仍由 __confirm 探针 + 步级重试窗口裁决。
+
+    为什么不另写一张「动作节点 → 落地页标记」映射：那会和 module.py 的
+    STEP_CONFIRM 形成第二份真源，且每个按钮都要人工配一次。按钮消失与页面切换在
+    同一帧发生（2026-11-06 实机 nav 帧 894→895：按钮 0.814→0.250、齿轮 0.882），
+    用现成的识别规格当边沿判据既零滞后也零维护。规格从 reco 复制，阈值改一处
+    两边同步，不给「手工改一处忘了另一处」留缝。
+    """
+    spec = reco["param"]["custom_recognition_param"]
+    return {
+        "rect": spec["rect"],
+        "templates": spec["templates"],
+        "threshold": spec["threshold"],
+        "colorspace": spec.get("colorspace", "rgb"),
+    }
+
+
 def _overrides(tpl: str) -> dict:
     return NODE_OVERRIDES.get(tpl) or {}
 
@@ -191,6 +230,7 @@ def main() -> None:
     # 借此豁免机检的「无出口节点」告警——告警本身不 fail，但十个节点一起报会淹没
     # CI 输出。语义注释见 _label。
     for name, tpl, page, label in ACTIONS:
+        reco = recog(tpl, roi[tpl]["rect"], _threshold_for(tpl))
         graph[name] = _with_overrides({
             "attach": {
                 "_page": page,
@@ -198,8 +238,12 @@ def main() -> None:
                 "_owner": MODULE,
                 "_anchor_only": True,
             },
-            "recognition": recog(tpl, roi[tpl]["rect"], _threshold_for(tpl)),
-            "action": {"type": "Custom", "param": {"custom_action": "MaaRM_Click"}},
+            "recognition": reco,
+            "action": {"type": "Custom", "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"settle": settle_from(reco)},
+            }},
+            **ACTION_NODE_PACE,
         }, tpl)
 
     # 纯锚点节点：零路由，页面感知规格；模块直驱的按声明补 _module_driven

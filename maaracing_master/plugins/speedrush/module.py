@@ -42,7 +42,7 @@ from maaracing_master.core import xinput
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.dashboard_contract import DASHBOARD_CONTRACT_VERSION
 from maaracing_master.core.logger import logger
-from maaracing_master.core.nav_graph import NavGraph
+from maaracing_master.core.nav_graph import NavGraph, ProbeOutcome
 from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.core.paths import debug_dir
 from maaracing_master.core.session_layout import (
@@ -130,6 +130,19 @@ DRIVE_STAGE_NODE = "speedrush.驾驶页锚点"
 # 齿轮消失后「等满 0.5s 复查 × 2 次失配」这段滞后里喂进感知/决策链与录制器的过场帧。
 # 阈值 0.7 为截图自匹配（1.0）起的保守起点，**待真机驾驶帧校准**（口径同齿轮锚点 0.5）。
 STORE_BANNER_NODE = "speedrush.商店横幅锚点"
+
+# UI 导航段的存盘策略：**导航要图、驾驶不要图**。
+#
+# 驾驶侧靠 `probe()` 不开调试段，天然没有图（控制链的取证走模块自己的
+# `DebugPairWriter`，10Hz，不受这里影响）；UI 侧（点击步、落地确认、驾驶入口
+# 就绪判据）用 `run(..., save=NAV_SAVE)` 显式声明要图——这些画面正是排查
+# 「按钮在不在、有没有弹窗、页面切没切」的直接证据。
+#
+# 为什么要显式传而不是改 `DEBUG_SAVE`：`DEBUG_SAVE` 是**运行项级**声明（整局
+# 一个值，控制器开 scope 时读一次），改成 `"on"` 会让驾驶期间栈顶的 scope 也
+# 落图，既污染取证又和 writer 双写。落盘频率不在这里定——core 的
+# `NAV_SAVE_FPS`（3Hz）统一管所有 nav 段。
+NAV_SAVE = "on"
 
 # 驾驶阶段等待上限。单局（含两阶段）实测一般 3 分钟、耗满可达 6~7 分钟
 # （RULES.md §4.7），取 10 分钟留余量。
@@ -935,6 +948,11 @@ class SpeedRushModule(ActivityModule):
         round_no = 0
         last_stamp = ""
         stamp_dup = 0
+        # 上一步是否刚用「驾驶页锚点」确认过落地页：确认过就不必在驾驶入口
+        # 从零再数两次连击——两处判据隔着一次点击/转场，本就是两次独立识别。
+        # 只随实际执行过的步骤更新：从中间起跑（start_from 直接落在驾驶阶段）
+        # 时没有前置确认，仍走完整就绪等待。
+        drive_ready_confirmed = False
         while self._running:
             round_no += 1  # 场景分层用：录制 meta 要记"这一帧属于第几轮"
             # 每局一个产物前缀：同一局的两个驾驶阶段共用它（p1/p2 才能配对），
@@ -960,13 +978,20 @@ class SpeedRushModule(ActivityModule):
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
                 if node is None:
-                    if not self._drive(phase, round_no, round_stamp):
+                    ok = self._drive(phase, round_no, round_stamp,
+                                     ready_confirmed=drive_ready_confirmed)
+                    drive_ready_confirmed = False   # 一次性证据，消费即清
+                    if not ok:
                         _tlog(self, f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return
-                elif not self._run_step(node, stage):
-                    return
+                else:
+                    if not self._run_step(node, stage):
+                        return
+                    drive_ready_confirmed = (
+                        STEP_CONFIRM.get(stage) == DRIVE_STAGE_NODE)
                 index += 1
             index = LOOP_START_INDEX
+            drive_ready_confirmed = False
 
     def _run_step(self, action_node: str, stage: str) -> bool:
         """发一次 UI 点击并按「落地页确认锚点」做有限重发（步级重试）。
@@ -984,7 +1009,7 @@ class SpeedRushModule(ActivityModule):
         confirm_node = STEP_CONFIRM.get(stage)
         if confirm_node is None:
             # 漏配确认锚点：退回旧的单步语义（不新增行为，也不把整条流程带崩）。
-            return self._graph.run(action_node, action_node)
+            return self._graph.run(action_node, action_node, save=NAV_SAVE)
         max_retries, window_s, poll_s = load_decision().step_retry.dose(stage)
         machine = StepMachine(max_retries=max_retries, window_s=window_s,
                               clock=time.monotonic)
@@ -992,10 +1017,10 @@ class SpeedRushModule(ActivityModule):
         while self._running and self.ctx.lifecycle.running:
             if send_click:
                 machine.arm()                                   # 一次尝试发出：只重置窗口、不动计数
-                self._graph.run(action_node, action_node)       # 点击；动作节点自带识别闸门→按钮不在则空跑不误点
+                self._graph.run(action_node, action_node, save=NAV_SAVE)  # 点击；动作节点自带识别闸门→按钮不在则空跑不误点
                 send_click = False
             cmd = machine.observe(
-                Verdict.SUCCESS if self._graph.run(confirm_node, confirm_node) else Verdict.PENDING
+                Verdict.SUCCESS if self._graph.run(confirm_node, confirm_node, save=NAV_SAVE) else Verdict.PENDING
             )
             if cmd is Command.DONE:
                 return True
@@ -1014,8 +1039,12 @@ class SpeedRushModule(ActivityModule):
         return False                                            # 停止（_running / lifecycle 已假）
 
     def _drive(self, phase: int, round_no: int = 1,
-               stamp: str | None = None) -> bool:
+               stamp: str | None = None, *,
+               ready_confirmed: bool = False) -> bool:
         """驾驶阶段（phase = 1/2）——驾驶控制方案的接口点。
+
+        ``ready_confirmed``：紧邻的上一 UI 步已用驾驶页锚点确认过落地页，
+        入口不必再从零数两次连击（见 _wait_drive_ready）。
 
         三条驾驶模式共用本入口：深度几何/全程直行（``_resolve_drive_mode``）、
         宏录制（采集玩家操作）与宏回放（按时间轴下发）。宏模式不加载感知/深度，
@@ -1069,7 +1098,7 @@ class SpeedRushModule(ActivityModule):
         try:
             if self._record_mode:
                 _tlog(self, "[极速狂飙] 人工驾驶阶段：紧急停止的按键检测暂停", "INFO")
-            if not self._wait_drive_ready(phase):
+            if not self._wait_drive_ready(phase, confirmed=ready_confirmed):
                 return False
 
             recorder = None
@@ -1137,26 +1166,41 @@ class SpeedRushModule(ActivityModule):
             # 停止信号打断的阶段归 incomplete，正常结束按组内 WARNING/ERROR 自动推导。
             _end_grp(self, "incomplete" if not self._running else None)
 
-    def _wait_drive_ready(self, phase: int) -> bool:
-        """等到驾驶页稳定出现；连续命中 ``DRIVE_READY_HITS`` 次才算就绪（去抖）。
+    def _wait_drive_ready(self, phase: int, *, confirmed: bool = False) -> bool:
+        """等到驾驶页出现；``confirmed`` 时**直接放行**，其余情况连续命中去抖。
+
+        ``confirmed``=紧邻的上一 UI 步刚用同一锚点（`DRIVE_STAGE_NODE`）确认过落地页，
+        两次之间只有函数返回、没有点击或转场，画面不可能跳走——再查一次是纯重复确认。
+        而起步倒计时期间车辆**已经可以接受输入**（玩家实测），多等一次识别就是白扔
+        起步时间，所以这里不查、直接进控制链。
+
+        从中间起跑（`start_from` 直接落在驾驶阶段）没有这份前置证据，仍按
+        ``DRIVE_READY_HITS`` 次连续命中判定，并受 ``DRIVE_READY_TIMEOUT_S`` 兜底。
 
         每次轮询都取一次帧（只为拿帧号，不落盘）：判定成立/超时的日志里带 ``frame=``，
         事后才能在录制帧里复查"判早了还是判晚了"。
         """
         assert self.ctx is not None
         assert self._graph is not None
+        if confirmed:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页"
+                  f"（复用上步落地确认，跳过就绪判据）", "INFO")
+            return True
+        hits_needed = DRIVE_READY_HITS
         _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：等待进入驾驶页", "INFO")
         hits = 0
         deadline = time.monotonic() + DRIVE_READY_TIMEOUT_S
         fid, age_ms = 0, 0.0
         while self._running and time.monotonic() < deadline:
             _, fid, _, age_ms = self.ctx.capture.frame_with_age()
-            if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+            if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE, save=NAV_SAVE):
                 hits += 1
-                if hits >= DRIVE_READY_HITS:
+                if hits >= hits_needed:
                     _tlog(self,
                           f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页"
-                          f"（{_frame_note(fid, age_ms)}）", "INFO")
+                          f"（{_frame_note(fid, age_ms)}"
+                          f"{'，复用上步落地确认' if confirmed else ''}）", "INFO")
                     return True
             else:
                 if hits:
@@ -1456,8 +1500,16 @@ class SpeedRushModule(ActivityModule):
                     now = time.monotonic()
                     if now >= next_anchor:
                         next_anchor = now + DRIVE_ANCHOR_CHECK_S
-                        if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+                        # 只读页面查询：不进导航动作路径、不开 nav 调试段（本段取证
+                        # 归 DebugPairWriter）。NOT_READY 表示框架还在收摊、这一拍
+                        # 没查成——不计失配，否则连续几次未就绪会被误判成「离开对局」。
+                        anchor = self._graph.probe(DRIVE_STAGE_NODE)
+                        if anchor is ProbeOutcome.HIT:
                             miss = 0
+                        elif anchor is ProbeOutcome.NOT_READY:
+                            logger.log(
+                                f"[极速狂飙] 驾驶阶段 {phase}：锚点复查未就绪，本拍跳过"
+                                f"（{_frame_note(fid, age_ms)}）", "DEBUG")
                         else:
                             miss += 1
                             # 每次失配都记（DEBUG）：连续的失配序列正是"过场动画被误判为结束"
@@ -1475,8 +1527,8 @@ class SpeedRushModule(ActivityModule):
                         # 阶段 1 结束前弹「进入策略商店」横幅（齿轮仍在、画面还在驾驶）：
                         # 命中即提前结束本阶段，不等齿轮消失后的失配滞后——省掉那段滞后里
                         # 喂进感知/决策链与录制器的过场帧。横幅文案专指阶段 2，故只查阶段 1。
-                        if phase == 1 and self._graph.run(STORE_BANNER_NODE,
-                                                          STORE_BANNER_NODE):
+                        if phase == 1 and self._graph.probe(
+                                STORE_BANNER_NODE) is ProbeOutcome.HIT:
                             _tlog(self,
                                   f"[极速狂飙] 驾驶阶段 {phase}：检测到进商店横幅，"
                                   f"提前结束本阶段（{_frame_note(fid, age_ms)}）", "INFO")
