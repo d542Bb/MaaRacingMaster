@@ -80,11 +80,11 @@
 
 | 主控（任务卡与运行日志） | 数据（性能监控与看板） |
 | --- | --- |
-| ![主控](https://github.com/user-attachments/assets/d6428f44-dfe2-494d-8d1f-9d27e5082768) | ![数据](https://github.com/user-attachments/assets/b212b56e-a9c9-4a62-8cf0-6c58d89c79bb) |
+| ![主控](https://github.com/user-attachments/assets/cca769b4-c157-4abd-82d0-ea4e9d81fd7e) | ![数据](https://github.com/user-attachments/assets/5309fa5f-e0f8-4c66-94c5-9aaaab9d3876) |
 
 | 设置（调试与环境中心） | 关于（版本与更新源） |
 | --- | --- |
-| ![设置](https://github.com/user-attachments/assets/75f35cb8-4a16-4c12-a8a0-bb68ee481597) | ![关于](https://github.com/user-attachments/assets/76c6bc13-d526-41a5-8963-24a8e105f48a) |
+| ![设置](https://github.com/user-attachments/assets/9259e411-b3ea-4806-9403-c2f7f81ef71c) | ![关于](https://github.com/user-attachments/assets/dd09fa60-b742-4ea1-94fa-beac9132b75e) |
 
 ***
 
