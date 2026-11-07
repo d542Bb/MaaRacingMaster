@@ -35,27 +35,33 @@ class Busy(RuntimeError):
 
 
 class _RunWatch:
-    """在飞 DML run 的心拍标记：run 进出打点，停顿哨（GpuProbe）读取。
+    """在飞 DML 调用记账：按线程登记，停顿哨（GpuProbe）取最久的一条。
 
     覆盖范围 = 等锁 + run 本体——两者膨胀都是停顿现场的一部分。
+
+    必须按线程记账而非单槽：感知阻塞等锁时深度/车道仍在飞是生产常态，单槽下
+    后来者覆盖前者、先结束者把仍在飞的那条一并清掉，停顿哨恰好在争抢最凶的拍
+    上失明。
     """
 
     def __init__(self) -> None:
         self._lk = threading.Lock()
-        self._since: float | None = None   # 本次在飞的 perf_counter 起点
-        self._who = ""
+        self._inflight: dict[int, tuple[float, str]] = {}
 
     def enter(self, who: str) -> None:
         with self._lk:
-            self._since, self._who = time.perf_counter(), who
+            self._inflight[threading.get_ident()] = (time.perf_counter(), who)
 
     def exit(self) -> None:
         with self._lk:
-            self._since, self._who = None, ""
+            self._inflight.pop(threading.get_ident(), None)
 
     def snapshot(self) -> tuple[float | None, str]:
+        """最久在飞的 (perf_counter 起点, 调用方)；无在飞时 (None, "")。"""
         with self._lk:
-            return self._since, self._who
+            if not self._inflight:
+                return None, ""
+            return min(self._inflight.values(), key=lambda entry: entry[0])
 
 
 RUN_WATCH = _RunWatch()

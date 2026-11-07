@@ -384,6 +384,9 @@ SITES: list[LogSite] = [
     # __init__ 的设备/缓存加载判定已降为 DEBUG（面板降噪，见 test_panel_noise_lines_are_file_only）。
     _s('core/yolo_detector.py', 'YOLODetector.__call__', '模型输出类别维 {} ≠ 声明类别数 {}，请核对 classes 参数', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
+    # ---- plugins/speedrush/gpu_probe.py ----
+    _s('plugins/speedrush/gpu_probe.py', 'GpuProbe._dump_scene', '[GpuProbe] 停顿抓拍失败: {}', 'WARNING', 'cross', 'cross', '常驻 daemon 取证线程的跨切面事件：无稳定业务组可挂；抓拍失败不阻断采样主路。'),
+
     # ---- plugins/speedrush/hud.py ----
     _s('plugins/speedrush/hud.py', 'HudObserver._write_meta', '[极速狂飙] HUD meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
     _s('plugins/speedrush/hud.py', 'HudObserver._write_worker', '[极速狂飙] HUD 落盘失败（累计 {}）: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),

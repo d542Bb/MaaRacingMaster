@@ -1002,11 +1002,13 @@ class LaneObsWorker:
         if not dml_lock.LOCK.acquire(blocking=False):
             self.busy_skips += 1
             return None
+        dml_lock.RUN_WATCH.enter("lane")
         try:
             t = time.perf_counter()
             out = self._sess.run(None, feed)
             self.hold_ms = round((time.perf_counter() - t) * 1000.0, 1)
         finally:
+            dml_lock.RUN_WATCH.exit()
             dml_lock.LOCK.release()
         return _prob_from_out(out)
 

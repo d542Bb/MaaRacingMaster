@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""显卡状态探针——驾驶阶段逐 0.5s 采样 nvidia-smi，行进独立流水汇（模块名 "gpu"）。
+"""显卡状态探针——驾驶阶段逐 0.5s 采样 nvidia-smi（独立流水汇 "gpu"），
+DML 调用卡住时抓拍停顿现场。
 
-背景（2026-11-07 离线复现实验，commit 3dc0f8b）：8GB 卡显存近上限时的大块分配
-突发会触发驱动级停摆 0.4~2s——本进程全部 GPU 上下文（DML 会话、WGC 采集）冻结，
-生产停顿验证靠本探针：停顿时刻若显存 >7.4GB 或利用率塌 0，即实锤触发源。
+两条取证面：
+- 常规采样：利用率 / 显存 / 温度 / SM 频率 / 功耗，外加 ``call_ms``——单次
+  外部调用时长本身是信号，驱动停摆时 nvidia-smi 会被一起卡住；
+- 现场抓拍：在飞 DML 调用超 ``STALL_MARK_S`` 即落 ``trace/stall_*.txt``，
+  内容为我方全线程栈 + 节流原因位 + 每进程 GPU 引擎占用。
 
-设计要点：
-- 子进程轮询 nvidia-smi（零新增依赖）；**单次调用时长本身是信号**——驱动停摆
-  时外部采样会被一起卡住，``call_ms`` 飙高 + 行间隔拉大就是停摆窗口；
-- 无日志会话不采样（单元测试与无会话场景零开销）；nvidia-smi 不存在直接放弃；
-- 超时 5s 兜底：驱动挂死时不至永久阻塞，停不动的线程是 daemon 不拦退出。
+线程划分由「外部调用会被停摆卡住」决定：盯梢（纯进程内，50ms）、常规采样
+（0.5s）、抓拍各走一条线程，任一条被驱动卡住都不拖累其余取证。无日志会话
+不采样（单元测试与旁路调用零开销）；无 nvidia-smi 直接放弃。
 """
 
 from __future__ import annotations
@@ -32,6 +33,20 @@ _CALL_TIMEOUT_S = 5.0
 # 在飞 run 超过该时长即视为停顿现场，抓拍一次（生产实测停顿 0.8~1.2s，
 # 正常 run 8ms——0.2s 阈值不会误触）
 STALL_MARK_S = 0.2
+# 现场的外部取证：节流原因位答「哪种节流」，每进程占用答「是否他进程占卡」
+_SCENE_QUERIES = (
+    ("节流原因位（nvidia-smi -q -d PERFORMANCE）",
+     ["nvidia-smi", "-q", "-d", "PERFORMANCE"]),
+    ("每进程 GPU 引擎占用（nvidia-smi pmon -c 1）",
+     ["nvidia-smi", "pmon", "-c", "1"]),
+)
+
+
+def _inflight_desc() -> str:
+    since, who = dml_lock.RUN_WATCH.snapshot()
+    if since is None:
+        return "无（run 已结束）"
+    return f"{who} 已 {(time.perf_counter() - since) * 1000.0:.1f}ms"
 
 
 def _cmd_output(cmd: list[str]) -> str:
@@ -51,19 +66,22 @@ def _num(text: str) -> float | None:
 
 
 class GpuProbe:
-    """nvidia-smi 采样线程：start/stop 成对；行进 "gpu" 流水汇。
+    """显卡探针：start/stop 成对；行进 "gpu" 流水汇。
 
-    行字段：util（%）、vram_mib / vram_total_mib、temp、clock_sm（MHz）、
+    采样行字段：util（%）、vram_mib / vram_total_mib、temp、clock_sm（MHz）、
     power_w、call_ms（本次外部调用时长，停摆哨）、err（调用失败原因）。
-    协议头时间戳由流水汇补齐，与 speedrush 流水同钟可离线对齐。
+    抓派发一行 {stall_dump（现场文件名主干）, run_who, run_ms_so_far} 作时间线
+    锚点。协议头时间戳由流水汇补齐，与 speedrush 流水同钟可离线对齐。
     """
 
     def __init__(self, interval_s: float = 0.5):
         self._interval_s = interval_s
         self._sink = get_trace_sink("gpu")
         self._stop = threading.Event()
-        self._th: threading.Thread | None = None
-        self._dumped: float | None = None     # 已抓拍的在飞 run 起点（去重）
+        self._th: threading.Thread | None = None           # 盯梢
+        self._sample_th: threading.Thread | None = None    # 常规采样
+        self._dump_th: threading.Thread | None = None      # 现场抓拍
+        self._dumped: float | None = None     # 已抓拍的在飞起点（去重）
         self._trace_dir: Path | None = None
 
     def start(self) -> None:
@@ -74,18 +92,25 @@ class GpuProbe:
         self._trace_dir = Path(logger.session_dir) / "trace"
         self._trace_dir.mkdir(parents=True, exist_ok=True)
         self._stop.clear()
-        self._th = threading.Thread(target=self._run, daemon=True,
+        self._th = threading.Thread(target=self._watch_loop, daemon=True,
                                     name="gpu-probe")
+        self._sample_th = threading.Thread(target=self._sample_loop, daemon=True,
+                                           name="gpu-sample")
         self._th.start()
+        self._sample_th.start()
         logger.log("[GpuProbe] 显卡采样已启动（0.5s）", "DEBUG")
 
     def stop(self) -> None:
-        th = self._th
+        th, sample_th = self._th, self._sample_th
         if th is None:
             return
-        self._th = None
+        self._th = self._sample_th = None
         self._stop.set()
-        th.join(timeout=self._interval_s + _CALL_TIMEOUT_S + 1.0)
+        th.join(timeout=1.0)
+        if sample_th is not None:
+            sample_th.join(timeout=_CALL_TIMEOUT_S + 1.0)
+        # 抓拍线程不 join：它可能正卡在停摆期的 nvidia-smi 上（最长 2×5s），
+        # 交给 daemon 写完；会话目录还在，文件不会被截走。
         self._sink.flush(1.0)
         logger.log("[GpuProbe] 显卡采样已停止", "DEBUG")
 
@@ -96,45 +121,60 @@ class GpuProbe:
             return False
         return True
 
-    def _run(self) -> None:
-        # 内环 50ms 盯在飞 run（抓案发中现场）；外环 interval 采常规状态
-        next_gpu = 0.0
+    def _watch_loop(self) -> None:
         while not self._stop.is_set():
-            now = time.perf_counter()
-            self._watch(now)
-            if now >= next_gpu:
-                t0 = time.monotonic()
-                row = self._sample()
-                row["call_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
-                self._sink.append(row)
-                next_gpu = now + self._interval_s
+            self._watch(time.perf_counter())
             self._stop.wait(0.05)
 
+    def _sample_loop(self) -> None:
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            row = self._sample()
+            spent = time.monotonic() - t0
+            row["call_ms"] = round(spent * 1000.0, 1)
+            self._sink.append(row)
+            self._stop.wait(max(0.0, self._interval_s - spent))
+
     def _watch(self, now: float) -> None:
-        """在飞 run 超 200ms 即抓现场（每火一次，去重键 = run 起点）。"""
+        """在飞 DML 调用超阈即起一条抓拍线程（去重键 = 在飞起点）。"""
         since, who = dml_lock.RUN_WATCH.snapshot()
         if since is None or now - since < STALL_MARK_S or self._dumped == since:
             return
+        if self._dump_th is not None and self._dump_th.is_alive():
+            return          # 上一份现场还在落盘，下一轮再试，事件不丢
         self._dumped = since
-        stamp = time.strftime("%H%M%S")
+        wall = time.time()      # 单一时源取秒+毫秒：同一秒内两次停顿不得互相覆盖
+        stamp = (time.strftime("%H%M%S", time.localtime(wall))
+                 + f"_{int(wall * 1000) % 1000:03d}")
         elapsed_ms = round((now - since) * 1000.0, 1)
         self._sink.append({"stall_dump": stamp, "run_who": who,
                            "run_ms_so_far": elapsed_ms})
+        self._dump_th = threading.Thread(
+            target=self._dump_scene, args=(stamp, who, elapsed_ms),
+            daemon=True, name="gpu-stall-dump")
+        self._dump_th.start()
+
+    def _dump_scene(self, stamp: str, who: str, elapsed_ms: float) -> None:
         if self._trace_dir is None:
             return
         path = self._trace_dir / f"stall_{stamp}_{who}.txt"
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(f"停顿现场 {stamp} who={who} 在飞已 {elapsed_ms}ms\n")
-                # ① 节流原因位：直接回答「哪种节流」（功耗/温度/调度/空闲降频）
-                f.write("\n===== nvidia-smi -q -d PERFORMANCE =====\n")
-                f.write(_cmd_output(["nvidia-smi", "-q", "-d", "PERFORMANCE"]))
-                # ② 每进程 GPU 引擎占用：回答「是不是别的进程占着独显」
-                f.write("\n===== nvidia-smi pmon -c 1 =====\n")
-                f.write(_cmd_output(["nvidia-smi", "pmon", "-c", "1"]))
-                # ③ 全线程栈：回答「我们自己的线程都停在哪」
-                f.write("\n===== faulthandler 全线程栈 =====\n")
+                f.write(f"停顿现场 {stamp} who={who} 检出时在飞已 {elapsed_ms}ms\n")
+                # 我方线程栈先落：停摆期外部 nvidia-smi 自己会被卡住（生产实测
+                # 844ms），排在它后面等于拍恢复后的空栈，白丢「我方卡点」这一问。
+                f.write(f"栈抓拍时在飞: {_inflight_desc()}\n")
+                f.write("\n===== 我方全线程栈（faulthandler）=====\n")
+                f.flush()       # faulthandler 直写 fd，缓冲文本须先落地
                 faulthandler.dump_traceback(f, all_threads=True)
+                for title, cmd in _SCENE_QUERIES:
+                    t0 = time.monotonic()
+                    out = _cmd_output(cmd)
+                    f.write(f"\n===== {title}（耗时 "
+                            f"{(time.monotonic() - t0) * 1000.0:.1f}ms）=====\n")
+                    f.write(out)
+                # 外部取证可能跨过恢复点：记下结束时是否仍在飞，判读节流位用
+                f.write(f"\n外部取证结束时在飞: {_inflight_desc()}\n")
         except Exception as exc:                   # 落盘失败不影响采样主路
             logger.log(f"[GpuProbe] 停顿抓拍失败: {exc!r}", "WARNING")
 
