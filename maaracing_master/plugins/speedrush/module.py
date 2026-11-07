@@ -2517,6 +2517,13 @@ class SpeedRushModule(ActivityModule):
         if not rows:
             return
         stats = dashboard_store.summarize_trace_rows(rows)
+        gates = chain.get("hud_score_gates")
+        pair_rejected = gates[1].rejected if gates else 0
+        if stats.gate_rejected or pair_rejected:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：比分合理性门拒假读"
+                  f"（我方 {stats.gate_rejected} / 对手 {pair_rejected}），"
+                  "原始值留在 hud 证据里", "WARNING")
         self._record_round_phase(chain, phase, stats, completed)
         try:
             self._write_game_summary(chain, phase, rows, stats=stats)
@@ -3809,8 +3816,11 @@ def _note_hud_scores(chain: dict) -> None:
     """把本拍可读的（我方, 对手）比分对收进本阶段的小环。
 
     速度行缺失即弃权（第二局段 1 那条双方 trusted 但串位的假读没有速度行）。
-    假读不在这里猜：阶段收尾时以汇总末分为锚，选「我方分不超过末分 + 一个
-    采样余量」的最大一对——串位虚高的比分（实测 4878 / 888）自然被排除。
+    单步假读（实测单样本 21 万的尖峰）由 ``dashboard_store.ScoreGate`` 在此
+    拦下：我方/对手各一道门，任一道拒了整对不收——对手锚选面拿到的对都已是
+    序列合理的。被拒原始值留在 hud.jsonl 与 trace 行里，此处只计数（阶段收尾
+    统一留痕）。假读不在这里猜：阶段收尾时以汇总末分为锚，选「我方分不超过
+    末分 + 一个采样余量」的最大一对。
     """
     hud = chain.get("hud_ref")
     if hud is None:
@@ -3822,8 +3832,13 @@ def _note_hud_scores(chain: dict) -> None:
         return
     if scores.ego_score is None or scores.opponent_score is None:
         return
-    chain.setdefault("hud_pairs", deque(maxlen=64)).append(
-        (scores.ego_score, scores.opponent_score))
+    gates = chain.setdefault("hud_score_gates", dashboard_store.new_pair_gates())
+    ts_ns = int(latest.get("ts_ns") or 0)
+    ego_ok = gates[0].feed(ts_ns, scores.ego_score)
+    opp_ok = gates[1].feed(ts_ns, scores.opponent_score)
+    if ego_ok and opp_ok:
+        chain.setdefault("hud_pairs", deque(maxlen=64)).append(
+            (scores.ego_score, scores.opponent_score))
 
 
 

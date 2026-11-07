@@ -195,11 +195,20 @@ def _stage_for(row: dict[str, Any], walls: list[int]) -> int | None:
 
 
 def _opponent(meta_dir: Path, ego_final: int | None) -> int | None:
-    """以段汇总末分为锚选对手末分；与线上写库共用同一选择函数。"""
+    """以段汇总末分为锚选对手末分；与线上写库共用同一选择函数。
+
+    读数对先过 ``ScoreGate``（与线上采集同参）：hud.jsonl 里的单步假读
+    （实测 214,760 / 414,920 的尖峰）不进锚选面。
+    """
+    gates = dashboard_store.new_pair_gates()
     pairs: list[tuple[int, int]] = []
     for rec in _jsonl(meta_dir / "hud" / "hud.jsonl"):
         scores = read_hud_scores(rec.get("fields") or {})
         if scores.ego_score is None or scores.opponent_score is None:
+            continue
+        ts_ns = int(rec.get("ts_ns") or 0)
+        if not (gates[0].feed(ts_ns, scores.ego_score)
+                and gates[1].feed(ts_ns, scores.opponent_score)):
             continue
         pairs.append((scores.ego_score, scores.opponent_score))
     return dashboard_store.pick_opponent(pairs, ego_final)

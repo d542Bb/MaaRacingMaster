@@ -24,6 +24,22 @@ MAX_LIST_ROWS = 50
 # 对手末分锚选余量：HUD 比流水最多快一个采样（0.5s × 最高得分速度）。
 OPPONENT_MARGIN = 600
 
+# ---------------- 比分合理性门 ----------------
+# 单步增幅上限（分/秒）。2026-11-07 用 11 份会话 1027 个步进全量回放校准：
+# 真实单步增幅我方最高 ≈330/秒、对手最高 ≈910/秒（对手突进显著更快，用户亦确认
+# 「对手有时很快，但不至于半秒一万」）——故两套上限分开定，对手放宽到 4 倍于我方。
+# 假读是**单样本尖峰/塌坑**（下一拍回落原轨迹；首位并位虚高、掉首位塌低，双向都有），
+# 折算速率我方最小 ≈700/秒、对手最小 ≈15000/秒，与真值之间留有倍数空隙。
+EGO_RATE_CAP = 500.0
+OPP_RATE_CAP = 2000.0
+# 步进时长钳制（秒）：下限防采样抖动把真步进算短（上限变小而误拒）；上限防读数
+# 长时间平台（OCR 断读/显示冻结）把允许增量抬到假读也能过。
+_STEP_MIN_S = 0.3
+_STEP_MAX_S = 3.0
+# 立基线后连续被拒达到此数，视为**真电平跃迁**（实测一拍 +581、871/秒的真突进会被
+# 上限拒绝）——以最新读数重新引导。宁可失明两拍，也不把基线焊死在旧电平。
+_UNSTICK_REJECTS = 2
+
 _CREATE_ROUNDS = """
 CREATE TABLE IF NOT EXISTS rounds (
     round_key       TEXT PRIMARY KEY,
@@ -73,6 +89,107 @@ class PhaseStats:
     rate: float | None
     dur_s: float | None
     conserve_segments: int = 0
+    # 合理性门在本阶段拒掉的比分读数条数（诊断面；0=无假读或旧口径）
+    gate_rejected: int = 0
+
+
+class ScoreGate:
+    """比分序列的单步合理性门：把「跳变不合理」的读数挡在战绩口径之外。
+
+    判据三条，全部来自回合内比分的物理性质（回合内累计、只增不减、增速有上界）
+    与全量回放校准（见 ``EGO_RATE_CAP`` 注）：
+
+    - **只增不减**：读数低于基线即拒、基线不动——实测 12 处下降步进全部是假读
+      （掉首位或敌我串位），下一拍真值自然接上（回落步进相对基线变回小增量）；
+    - **增幅有上界**：增量超过 ``rate_cap × 步进时长`` 即拒，单样本尖峰都在此列；
+      零增量（平台）采纳但**不推进基线时刻**——平台越久允许的下一跳越大，但被
+      ``_STEP_MAX_S`` 钳住；
+    - **引导 + 解卡**：头两拍互证（第二拍落在第一拍的合法增量内）才立基线，防
+      首拍即假读把基线带歪；互证失败以最新读数滚动重引导。立基线后连续
+      ``_UNSTICK_REJECTS`` 拍被拒视为真电平跃迁，同样重新引导。
+
+    去重分工：同一 HUD 样本会被逐拍流水重复携带——读数对侧用样本时刻去重（本门
+    ``feed`` 内建），阶段汇总侧的行时刻随控制拍前进、须由调用方按「值不变即同一
+    样本」去重后再喂。被拒读数只在本门计数：原始值留在 hud.jsonl 与 trace 行里
+    （证据层忠实留痕），本门只裁决「什么值有资格代表这一阶段的比分」。
+    """
+
+    __slots__ = ("_cap", "_base", "_cand", "_reject_run",
+                 "_last_ts", "_last_value", "_last_ok", "rejected")
+
+    def __init__(self, rate_cap: float = EGO_RATE_CAP) -> None:
+        self._cap = float(rate_cap)
+        self._base: tuple[int, int] | None = None   # (值, 首见 ts_ns)
+        self._cand: tuple[int, int] | None = None   # 引导候选
+        self._reject_run = 0
+        self._last_ts = 0
+        self._last_value: int | None = None
+        self._last_ok = False
+        self.rejected = 0
+
+    def _allow(self, dt_s: float) -> float:
+        step = min(max(dt_s, _STEP_MIN_S), _STEP_MAX_S)
+        return self._cap * step
+
+    def feed(self, ts_ns: int, value: int) -> bool:
+        """喂入一次读数；返回是否采纳（采纳即基线前移到该值）。
+
+        同一时刻同一值的重复喂入（逐拍流水携带同一 HUD 样本）按缓存判定返回，
+        不重复计数、不重复推动状态。
+        """
+        ts_ns = int(ts_ns)
+        value = int(value)
+        if ts_ns == self._last_ts and value == self._last_value:
+            return self._last_ok
+        ok = self._judge(ts_ns, value)
+        self._last_ts = ts_ns
+        self._last_value = value
+        self._last_ok = ok
+        return ok
+
+    def _judge(self, ts_ns: int, value: int) -> bool:
+        if self._base is None:
+            if self._cand is None:
+                self._cand = (value, ts_ns)
+                return False
+            cand_v, cand_ts = self._cand
+            dt = (ts_ns - cand_ts) / 1e9
+            if value >= cand_v and value - cand_v <= self._allow(dt):
+                self._base = (value, ts_ns)
+                self._cand = None
+                self._reject_run = 0
+                return True
+            # 互证失败：以最新读数滚动重引导（首拍假高/假低都在下一拍被纠正）
+            self._cand = (value, ts_ns)
+            self.rejected += 1
+            return False
+        base_v, base_ts = self._base
+        dt = (ts_ns - base_ts) / 1e9
+        if value >= base_v and value - base_v <= self._allow(dt):
+            if value != base_v:
+                self._base = (value, ts_ns)   # 零增量不推进时刻：平台不放大限额
+            self._reject_run = 0
+            return True
+        self.rejected += 1
+        self._reject_run += 1
+        if self._reject_run >= _UNSTICK_REJECTS:
+            self._base = None
+            self._cand = (value, ts_ns)
+            self._reject_run = 0
+        return False
+
+    @property
+    def accepted(self) -> int | None:
+        """当前有资格代表阶段比分的值：已立基线取基线；否则取引导候选
+        （超短阶段整场只出现一拍时，退化回旧的「读到即认」口径）。"""
+        if self._base is not None:
+            return self._base[0]
+        return self._cand[0] if self._cand is not None else None
+
+
+def new_pair_gates() -> tuple[ScoreGate, ScoreGate]:
+    """读数对（我方, 对手）用的两道门：我方严、对手宽，参数见常量注。"""
+    return ScoreGate(EGO_RATE_CAP), ScoreGate(OPP_RATE_CAP)
 
 
 def db_path() -> Path:
@@ -81,11 +198,19 @@ def db_path() -> Path:
 
 
 def summarize_trace_rows(rows: Sequence[Mapping[str, Any]]) -> PhaseStats:
-    """从逐拍行算阶段汇总；口径与 ``module._write_game_summary`` 逐字一致。"""
-    score: int | None = None
+    """从逐拍行算阶段汇总；口径与 ``module._write_game_summary`` 逐字一致。
+
+    末分**不是我方读数的最后一条非空值**——那是「读到即认」，一拍 OCR 假读
+    （实测 214,760）恰好落在最后一拍就会定稿入库。这里沿时间轴过
+    ``ScoreGate``（我方上限）：行值不变视为同一 HUD 样本不重复喂，假读被拒后
+    末分保持最近一次被采纳的值；拒了几个只进 ``gate_rejected`` 诊断面，原始
+    序列照旧留在 trace 行里。
+    """
+    gate = ScoreGate(EGO_RATE_CAP)
     rate: float | None = None
     conserve = 0
     cons_segments = 0
+    prev_value: int | None = None
     for row in rows:
         if row.get("state") == "CONSERVE":
             if conserve == 0:
@@ -93,15 +218,22 @@ def summarize_trace_rows(rows: Sequence[Mapping[str, Any]]) -> PhaseStats:
             conserve += 1
         else:
             conserve = 0
-        if row.get("hud_score") is not None:
-            score = row["hud_score"]
+        value = row.get("hud_score")
+        if value is not None:
+            value = int(value)
+            if value != prev_value:
+                ts = row.get("ts_ns")
+                if ts is not None:
+                    gate.feed(int(ts), value)
+            prev_value = value
         if row.get("hud_rate") is not None:
             rate = row["hud_rate"]
     dur_s = None
     if rows and rows[0].get("ts_ns") is not None \
             and rows[-1].get("ts_ns") is not None:
         dur_s = round((rows[-1]["ts_ns"] - rows[0]["ts_ns"]) / 1e9, 1)
-    return PhaseStats(len(rows), score, rate, dur_s, cons_segments)
+    return PhaseStats(len(rows), gate.accepted, rate, dur_s, cons_segments,
+                      gate.rejected)
 
 
 def pick_opponent(pairs: Sequence[tuple[int, int]],
@@ -111,6 +243,8 @@ def pick_opponent(pairs: Sequence[tuple[int, int]],
 
     实测假读有两种：无速度行的串位（283 / 22840）、有速度行但虚高回落
     （4878 / 888）。前者在 ``hud.read_hud_scores`` 弃权；后者超出余量，落选。
+    传入的读数对**应当已过 ``ScoreGate``**（读数对侧的假读在采集/导入处被拒），
+    本函数的余量是锚选面的第二道防线，不重复承担序列判伪。
     """
     if ego_final is None or not pairs:
         return None
@@ -420,6 +554,10 @@ __all__ = [
     "SCHEMA_VERSION",
     "StoreError",
     "PhaseStats",
+    "ScoreGate",
+    "EGO_RATE_CAP",
+    "OPP_RATE_CAP",
+    "new_pair_gates",
     "db_path",
     "summarize_trace_rows",
     "pick_opponent",

@@ -168,3 +168,163 @@ def test_newer_schema_is_rejected(db):
         conn.execute("PRAGMA user_version=99")
     with pytest.raises(dashboard_store.StoreError):
         _payload()
+
+
+# ---------------- 比分合理性门（ScoreGate / summarize 走闸） ----------------
+# 判据与参数的校准依据见 dashboard_store 常量注；这里锁行为：
+# 正常序列（含对手快突进）零误拒，单样本尖峰/塌坑（双向）全部被拒且自愈。
+
+_NS = 650_000_000  # 采样间隔：实测节奏 0.63~0.68s（真步进 ≈ 速率 × 此时长）
+
+
+def _feed(gate, values, *, start_ns=1_000_000_000, step_ns=_NS):
+    """顺序喂入序列，返回每次判定结果；dt 可用列表逐项覆盖。"""
+    outs = []
+    for i, v in enumerate(values):
+        outs.append(gate.feed(start_ns + i * step_ns, v))
+    return outs
+
+
+def _rows_from_samples(samples, *, ticks_per_sample=10, tick_ns=50_000_000):
+    """HUD 样本序列 → 逐拍流水行（同一样本值重复多拍，同 summarize 真实输入）。"""
+    rows = []
+    for ts, value in samples:
+        for k in range(ticks_per_sample):
+            rows.append({"ts_ns": ts + k * tick_ns, "state": "DRIVE",
+                         "hud_score": value})
+    return rows
+
+
+def test_gate_clean_growth_accepts_all_and_lands_on_last():
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    outs = _feed(gate, [1, 51, 101, 151, 201, 251, 301, 351, 401, 451, 501])
+    assert outs[-1] is True
+    assert gate.accepted == 501
+    assert gate.rejected == 0
+
+
+def test_gate_rejects_single_sample_spike_at_end():
+    """实测 214,760：尖峰是最后一拍时，末分保持最近被采纳值（本次修复的回归锁）。"""
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    _feed(gate, [1824, 2083, 2341, 2600, 2860, 3120, 3380, 3640, 3900, 4160,
+                 4420, 4709])
+    assert gate.feed(1_000_000_000 + 11 * _NS, 214_760) is False
+    assert gate.accepted == 4709
+    assert gate.rejected == 1
+
+
+def test_gate_rejects_single_sample_dip_and_self_heals():
+    """实测 6948 → 719 → 6992：塌坑被拒，真值从原轨迹继续。"""
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    _feed(gate, [6898, 6930, 6948])
+    assert gate.feed(1_000_000_000 + 3 * _NS, 719) is False
+    assert gate.accepted == 6948
+    assert gate.feed(1_000_000_000 + 4 * _NS, 6992) is True
+    assert gate.accepted == 6992
+
+
+def test_gate_bootstrap_corrects_inflated_first_read():
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    outs = _feed(gate, [214_760, 30, 60, 90])
+    assert outs[0] is False
+    assert outs[-1] is True
+    assert gate.accepted == 90
+
+
+def test_gate_bootstrap_corrects_deflated_first_read():
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    outs = _feed(gate, [719, 6970, 6990])
+    assert outs[0] is False
+    assert outs[-1] is True
+    assert gate.accepted == 6990
+
+
+def test_gate_opponent_fast_burst_not_rejected():
+    """对手实测单步 +574（912/秒）是真突进——用户口径的回归锁：闸不得误杀。"""
+    gate = dashboard_store.ScoreGate(dashboard_store.OPP_RATE_CAP)
+    outs = _feed(gate, [1092, 1143, 1177, 1751, 1770, 1825])
+    assert outs[0] is False          # 首拍是引导候选，按设计不采纳
+    assert all(outs[1:])
+    assert gate.accepted == 1825
+
+
+def test_gate_opponent_huge_spike_rejected():
+    gate = dashboard_store.ScoreGate(dashboard_store.OPP_RATE_CAP)
+    _feed(gate, [5061, 5121, 5272, 5352, 5487])
+    assert gate.feed(1_000_000_000 + 5 * _NS, 414_920) is False
+    assert gate.accepted == 5487
+
+
+def test_gate_level_shift_re_establishment():
+    """实测 1102 → 1683（871/秒）的真跃迁：第二拍起基线跟上，不焊死在旧电平。"""
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    _feed(gate, [1064, 1083, 1102])
+    assert gate.feed(1_000_000_000 + 3 * _NS, 1683) is False
+    # 基线时刻不随拒绝推进，间隔累计后允许增量自然覆盖跃迁；即使仍被拒，
+    # 连续两拍被拒也走解卡重新引导——两条路都落到「跟上新电平」。
+    gate.feed(1_000_000_000 + 4 * _NS, 1704)
+    gate.feed(1_000_000_000 + 5 * _NS, 1724)
+    assert gate.feed(1_000_000_000 + 6 * _NS, 1796) is True
+    assert gate.accepted == 1796
+
+
+def test_gate_plateau_does_not_widen_allowance():
+    """长平台把允许增量钳在 _STEP_MAX_S 内：冻结期混入的假读仍然出不去。"""
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    _feed(gate, [5000, 5021], step_ns=_NS)
+    # 平台 10 秒后一笔 +8000：按 500/秒 × 钳制 3 秒 = 1500，拒
+    assert gate.feed(1_000_000_000 + 2 * _NS + 10_000_000_000, 13021) is False
+    assert gate.accepted == 5021
+
+
+def test_gate_same_sample_repeat_feed_is_cached():
+    gate = dashboard_store.ScoreGate(dashboard_store.EGO_RATE_CAP)
+    _feed(gate, [1000, 1021])
+    ts = 1_000_000_000 + 2 * _NS
+    assert gate.feed(ts, 214_760) is False
+    assert gate.feed(ts, 214_760) is False   # 同样本重复喂不重复计数
+    assert gate.rejected == 1
+
+
+def test_summarize_trace_rows_gated_final():
+    rows = _rows_from_samples([
+        (1_000_000_000, 1824), (1_650_000_000, 2083), (2_300_000_000, 2341),
+        (2_950_000_000, 2600), (3_600_000_000, 2860), (4_250_000_000, 3120),
+        (4_900_000_000, 3380), (5_550_000_000, 3640), (6_200_000_000, 3900),
+        (6_850_000_000, 4160), (7_500_000_000, 4420), (8_150_000_000, 4709),
+        (8_800_000_000, 214_760),
+    ])
+    stats = dashboard_store.summarize_trace_rows(rows)
+    assert stats.score == 4709
+    assert stats.gate_rejected == 1
+
+
+def test_summarize_trace_rows_clean_series_unchanged():
+    """回归锁：干净序列的末分与旧口径（最后一条非空值）逐字一致。"""
+    samples = [(1_000_000_000 + i * _NS, v)
+               for i, v in enumerate([2873, 2966, 3060, 3154, 3248, 3342])]
+    rows = _rows_from_samples(samples)
+    stats = dashboard_store.summarize_trace_rows(rows)
+    assert stats.score == 3342
+    assert stats.gate_rejected == 0
+
+
+def test_summarize_trace_rows_without_scores_stays_none():
+    rows = [{"ts_ns": 1_000_000_000, "state": "DRIVE", "hud_score": None}]
+    stats = dashboard_store.summarize_trace_rows(rows)
+    assert stats.score is None
+    assert stats.gate_rejected == 0
+
+
+def test_pick_opponent_with_gated_pairs_ignores_spike_pair():
+    """尖峰对（214,760 / 7,881）不入锚选面后，余量锚选回到真实末对。"""
+    gates = dashboard_store.new_pair_gates()
+    raw_pairs = [(4455, 7400), (4667, 7708), (4709, 7881), (214_760, 7881)]
+    ts = 1_000_000_000
+    pairs = []
+    for ego, opp in raw_pairs:
+        if gates[0].feed(ts, ego) and gates[1].feed(ts, opp):
+            pairs.append((ego, opp))
+        ts += _NS
+    assert (214_760, 7881) not in pairs
+    assert dashboard_store.pick_opponent(pairs, 4709) == 7881
