@@ -253,7 +253,8 @@ def test_run_mute_retries_until_audio_appears(monkeypatch):
     monkeypatch.setattr(c, "_try_game_volume",
                         lambda level: (attempts.append(level), 2 if len(attempts) >= 3 else 0)[1])
 
-    c._start_run_mute(grp=_Grp())
+    grp = _Grp()
+    c._start_run_mute(grp=grp)
     for _ in range(400):
         if c._run_muted:
             break
@@ -261,6 +262,9 @@ def test_run_mute_retries_until_audio_appears(monkeypatch):
     assert c._run_muted is True
     assert c._mute_original == [0.35]
     assert len(attempts) >= 3
+    # 措辞即归属（ADR-0017）：静音行以裸行进「其他日志」，前缀标明整轮边界，
+    # 不得与「运行收尾」等生命周期组卡头撞名
+    assert any("本轮开始：静音游戏" in msg for _, msg in grp.lines)
 
 
 def test_run_restore_uses_original_volume(monkeypatch):
@@ -270,24 +274,29 @@ def test_run_restore_uses_original_volume(monkeypatch):
     c._mute_original = [0.35, 0.35]
     calls = []
     monkeypatch.setattr(c, "_apply_game_volume",
-                        lambda level, label, **kw: calls.append(level))
+                        lambda level, label, **kw: calls.append((level, label)))
 
     c._restore_run_mute()
-    assert calls == [0.35]
+    assert calls == [(0.35, "本轮结束：恢复游戏音量（原 35%）")]
     assert c._run_muted is False
 
-    c._restore_run_mute()
-    assert calls == [0.35]
+    c._run_muted = True  # 重新武装：默认路径没静过音则不动，第二段验证自定时机措辞
+    c._mute_original = [0.35, 0.35]
+    c._restore_run_mute(context="运行中关闭")
+    assert calls[-1][1].startswith("运行中关闭：")
+    assert calls[-1][0] == 0.35
 
 
 def test_mute_toggle_mid_run_restores_and_restarts(monkeypatch):
     c = _ctl()
     c._step_active = True
     started, restored = [], []
-    monkeypatch.setattr(c, "_start_run_mute", lambda grp=None: started.append(grp))
-    monkeypatch.setattr(c, "_restore_run_mute", lambda grp=None: restored.append(grp))
+    monkeypatch.setattr(c, "_start_run_mute",
+                        lambda grp=None, context=None: started.append(context))
+    monkeypatch.setattr(c, "_restore_run_mute",
+                        lambda grp=None, context=None: restored.append(context))
 
     c.set_mute_game(True)
-    assert started == [None]
+    assert started == ["运行中开启"]
     c.set_mute_game(False)
-    assert restored == [None]
+    assert restored == ["运行中关闭"]

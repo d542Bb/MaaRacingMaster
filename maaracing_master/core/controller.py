@@ -225,8 +225,9 @@ class MaaRacingMasterController:
         self._exit_requested = False
         self._last_run_natural = False
         self._last_step_outcome = None
-        # 上一轮若因异常没走到恢复，先兜底再开始本轮
-        self._restore_run_mute()
+        # 上一轮若因异常没走到恢复，先兜底再开始本轮——补恢复单独标「上一轮遗留」，
+        # 不冒充正常结束路径的「本轮结束」（措辞即归属：两处都会以裸行进「其他日志」）
+        self._restore_run_mute(context="上一轮遗留")
         self._start_run_mute()
 
     def end_run(self) -> None:
@@ -572,9 +573,9 @@ class MaaRacingMasterController:
         if not self.execution_active:
             return
         if enabled:
-            self._start_run_mute()
+            self._start_run_mute(context="运行中开启")
         else:
-            self._restore_run_mute()
+            self._restore_run_mute(context="运行中关闭")
 
     def _apply_game_volume(self, level: float, label: str, verify: bool = False,
                            grp=None) -> None:
@@ -627,11 +628,13 @@ class MaaRacingMasterController:
         except Exception:  # noqa: BLE001
             return None
 
-    def _start_run_mute(self, grp=None) -> None:
-        """运行开始后静音一次：窗口/音频会话晚到时有界重试。
+    def _start_run_mute(self, grp=None, context: str = "本轮开始") -> None:
+        """按 context 标明静音时机（本轮开始/运行中开启）后静音一次：窗口/音频
+        会话晚到时有界重试。
 
         原音量在设置 0 之前读取并保留，运行结束按原值恢复（L2）。
         代际号保证运行中关闭开关或进入下一轮后，迟到的线程不会再把游戏静音。
+        措辞即归属：这批行以裸行进「其他日志」，前缀不得与生命周期组卡头撞名。
         """
         if not getattr(self, "_mute_game_enabled", False):
             return
@@ -664,18 +667,19 @@ class MaaRacingMasterController:
                         uniq = sorted({round(v, 2) for v in vols})
                         note = ("" if len(uniq) <= 1
                                 else f"，原会话音量不一致 {uniq}，结束按中位数恢复")
-                        _clog(grp, f"运行开始：静音游戏（原音量 {vols[0]:.0%}，"
+                        _clog(grp, f"{context}：静音游戏（原音量 {vols[0]:.0%}，"
                                    f"会话×{n}{note}）")
                         return
                 time.sleep(0.5)
-            _clog(grp, "运行开始：未找到游戏音频会话，静音未生效", "WARNING")
+            _clog(grp, f"{context}：未找到游戏音频会话，静音未生效", "WARNING")
 
         t = threading.Thread(target=_run, daemon=True, name="run-mute")
         self._mute_thread = t
         t.start()
 
-    def _restore_run_mute(self, grp=None) -> None:
-        """运行结束（含关闭开关）恢复用户原音量；没静过音则不动。"""
+    def _restore_run_mute(self, grp=None, context: str = "本轮结束") -> None:
+        """按 context 标明恢复时机（本轮结束/运行中关闭/上一轮遗留）恢复用户原音量；
+        没静过音则不动。措辞即归属：裸行进「其他日志」，不冒充「运行收尾」组的行。"""
         lock = getattr(self, "_mute_lock", None)
         if lock is None:
             return
@@ -692,7 +696,7 @@ class MaaRacingMasterController:
             level = sorted(original)[len(original) // 2]
         else:
             level = 1.0
-        self._apply_game_volume(level, f"运行结束：恢复游戏音量（原 {level:.0%}）", grp=grp)
+        self._apply_game_volume(level, f"{context}：恢复游戏音量（原 {level:.0%}）", grp=grp)
 
     # ---------- 紧急停止快捷键（GUI 调试选项卡开关控制）----------
 
