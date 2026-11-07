@@ -53,6 +53,7 @@ from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush import dashboard_store, model_assets
+from maaracing_master.plugins.speedrush.gpu_probe import GpuProbe
 from maaracing_master.plugins.speedrush.session_layout import (
     drive_behavior_dir, rebuild_drive_index, upsert_drive_segment)
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
@@ -1360,6 +1361,10 @@ class SpeedRushModule(ActivityModule):
                 straight_chain["hud_ref"] = drive_hud
         # 阶段边界入流水（受保护通道）：无论接管与否，每阶段起止各一条
         self._trace.begin_stage(phase)
+        # 显卡采样（0.5s/拍 → "gpu" 流水汇）：停顿归因面（dml_stall_repro 定案：
+        # 驱动级停摆窗口内显存/利用率/外部采样时长是第一判据）
+        gpu_probe = GpuProbe()
+        gpu_probe.start()
 
         # 只有两个正常出口置 True；停止/超时/视角未确认/异常一律 False。
         completed = False
@@ -1547,6 +1552,8 @@ class SpeedRushModule(ActivityModule):
                         # 偏移，混用会把睡眠读成负值、空隙虚高同量级（首局实证）
                         prev_sleep = time.perf_counter() - t_sl
         finally:
+            # 显卡采样先停（尾行入队并 flush），再收流水阶段边界
+            gpu_probe.stop()
             # 阶段收边界（先于其余收口：此后不再有数据行）
             self._trace.end_stage(phase)
             self._trace.flush(1.0)
