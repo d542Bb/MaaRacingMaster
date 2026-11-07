@@ -1,9 +1,11 @@
 # MaaRacingMaster — Code Wiki · 鉴宝域
 
+> ⚠️ **历史快照**：本插件已退役归档（`plugins/_archive/treasure/`），本文保留归档时的实现描述，不作为现役知识依据。当前状态、依赖边界与复活步骤见 [RETIRED.md](./RETIRED.md)。
+
 > 《巅峰极速》"巅峰鉴宝"活动 —— **出价 / 估值 / OCR 全自动模块（treasure\_\*）** 专属文档。
 > 聚焦鉴宝核心：阶段状态机（真源 = `resources/policy/treasure.policy.json` `perception.stages.order`）/ 准星意图 / 出价策略（bid\_strategy）/ 异步 OCR / ROI 三段分类。
 >
-> **信源等级**：L2 —— 可作「鉴宝域现在怎么工作、改它要注意什么」的直接依据；不得作为游戏规则（L0，见 RULES.md）与节点/策略取值（L0，见 `resources/`）的最终依据。
+> **信源等级**：L4（历史快照）—— 描述归档时的形态，不作现役依据；游戏规则见 RULES.md，节点/策略取值见 `resources/`。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../../../AGENTS.md)；本文只补充本域特有约束。
 >
 > **先读**：[RULES.md](./RULES.md) —— 游戏规则事实（成交条件 / 分红机制 / 计分目标 / 对手行为约束）。

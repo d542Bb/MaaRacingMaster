@@ -69,7 +69,7 @@ RPC 层不信任调用方给的地址。
 
 - **焦点环**：style.css 顶部一条全局 `:focus-visible { outline: 2px solid var(--maarm-primary) }`
   覆盖所有交互元素；`:focus-visible` 只在键盘/程序化导航时命中，鼠标点击不出环，
-  所以**控件类里不要再写 `outline: none`**（旧四处已删）。特例只允许改偏移：
+  所以**控件类里不要再写 `outline: none`**。特例只允许改偏移：
   窗控按钮贴屏幕边缘用 `outline-offset: -2px` 内收。
 - **模态焦点陷阱**：`openModal`（js/modal.js）自带——开卡聚焦卡内第一个可聚焦元素、
   Tab/Shift+Tab 卡内回环、关闭归还焦点、`role=dialog + aria-modal + aria-labelledby`。
@@ -228,7 +228,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   捕获阶段。
 - **拐角是 squircle（指数 4 的超椭圆），由 CSS 画**：`border-radius: 20px` +
   `corner-shape: squircle`。半径 20 不是随手取的——它让 squircle 与原 G2@10 的轮廓等效
-  （最大偏差 0.46px，浏览器实测），所以这次换的是**实现**不是观感。照片、红光、压暗层、
+  （最大偏差 0.46px，浏览器实测）。照片、红光、压暗层、
   描边越界的那 1px 全部由卡片自带的 `overflow:hidden` 原生裁切，**不再用 clip-path**
   （clip-path 会把 border / box-shadow 一起裁掉，且每改一次半径就要重算一遍路径）。
 - **描边是画出来的，不是 border**：CSS 没有「从底边中点长到顶边中点」的能力，所以路径
@@ -263,8 +263,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
   所以按 1/0.69 ≈ 1.45 补：卡片面 **16px**（等效 11px）、弹窗 **20px**（等效 14px）、
   日志条目 **12px**（等效 8.3px——它是卡片里嵌的小条目，收一档形成内外两级）。
-  **只看 border-radius 的数值会误判**：`superellipse(3)` 配 12px 实际只有 5.2px 的圆润度，
-  比原来的 8px 还小，这就是「越改越方」的原因。
+  **只看 border-radius 的数值会误判**：`superellipse(3)` 配 12px 实际只有 5.2px 的圆润度。
 - **位置**：`style.css` 末尾的 `@supports (corner-shape: squircle)` 块，作用于
   `.card`（页面卡片）、`.about-hero`（关于页头卡）、`.task-item`（任务卡）、
   `.log-section`（日志卡）、`.maarm-modal-card`（弹窗），以及
@@ -376,7 +375,7 @@ msedge.exe --headless=new --screenshot=out.png --window-size=900,240 "file:///�
   （多条动画用逗号对齐顺序，如 `-3s, -2s` 分别钉光束与色相），页面一加载就停在该相位。
 - **量化颜色**：把同一套类与变量铺成实心条带（`background-clip: border-box` 覆盖），
   逐列做 sRGB→OKLab 换算后统计感知亮度极差／彩度均值，用数字判断「明度是否真的平」，
-  比目视可靠——本次彩虹配色就是这么从 RGB／HSL 换到 OKLCH 的。
+  比目视可靠。
 - **查语法与特性支持**：`--dump-dom` 跑一个用 `CSS.supports()` 逐条打印结果的页面，
   拿到的是当前引擎的真实判定（比猜版本号可靠）。
 
@@ -397,4 +396,4 @@ msedge.exe --headless=new --screenshot=out.png --window-size=900,240 "file:///�
 - **读法**：payload 在卡片 `innerHTML` 里应呈现为 `&lt;img …&gt;`（转义文本）、`__xss`
   保持 undefined、外链调用只有 `open_external_url {"target":"…"}` 形态。
 
-探针是临时验证产物，**用完即移出仓库**（见 [`AGENTS.md`](../../../AGENTS.md) 红线 4）。
+探针是临时验证产物，**用完即移出仓库**（见 [`AGENTS.md`](../../../AGENTS.md) 作业纪律 2）。

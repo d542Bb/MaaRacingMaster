@@ -77,7 +77,7 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 | 依赖 | 缺失时的现象 |
 |------|--------------|
 | `maafw` | 截图/窗口连接不可用 |
-| `rapidocr` | 鉴宝金额识别失效 |
+| `rapidocr` | 文字识别（OCR）失效（如 speedrush HUD 读数） |
 | `onnxruntime-directml` | YOLO 推理能力不可用（供含检测的插件使用） |
 | `vgamepad` | 虚拟手柄能力不可用（供需要手柄的插件使用） |
 
@@ -89,7 +89,7 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 
 | 文件 | 路径 | 缺失后果 |
 |------|------|---------|
-| 模型权重 | 各插件自带（真源：插件 `resources/` 内许可 README 与 `REQUIRED_ASSETS` 声明，sidecar 启动前机检存在性） | 按插件各自的降级口径（speedrush：感知缺失启动拦截；深度缺失 road_offset 退纯模型积分，不阻断驾驶） |
+| 模型权重 | 各插件自带（真源：插件 `resources/` 内许可 README 与 `REQUIRED_ASSETS` 声明，sidecar 启动前机检存在性） | 按插件各自的降级口径（speedrush：深度模式缺感知/深度权重在连接游戏前终止；直行与宏录制不依赖权重） |
 
 > speedrush 感知权重训练导出见 `maaracing_master/plugins/speedrush/tools/training/train.py`（产物直接落插件目录）。
 
@@ -101,9 +101,9 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 .venv\Scripts\python.exe -m pytest tests -q
 ```
 
-预期：`==== 21 passed, 0 failed ====` 之类（以 `0 failed` 为准）。
+预期：`0 failed`（通过数随测试面增长，不在此抄录）。
 
-- 只测纯逻辑模块（出价策略等），不拉入 maa/opencv 重依赖，秒级完成。
+- 覆盖 core 与各插件的逻辑/契约用例；依赖本机资产、硬件或可选重依赖的用例按标记跳过（口径见 [CONTRIBUTING](../CONTRIBUTING.md)「跳过的口径」）。
 - 失败时若有断言信息，基本可判断是刻意的行为基线变化，请提交 Issue 并附失败用例。
 
 ---
@@ -129,10 +129,10 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 编译成功后，双击根目录 **`MaaRacingMaster.lnk`**（若存在，本机快捷方式，指向编译产物路径，`.gitignore` 排除），或在命令行：
 
 ```bash
-start apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe
+start apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe
 ```
 
-预期：exe 自身 manifest `requireAdministrator` 自动触发 UAC 提权；GUI 左上角显示版本号，后端连接成功后「巅峰鉴宝」模块与阶段列表正常加载。
+预期：exe 自身 manifest `requireAdministrator` 自动触发 UAC 提权；GUI 左上角显示版本号，后端连接成功后「极速狂飙」模块与阶段列表正常加载。
 
 > 该快捷方式指向**本机**编译产物路径，仅本地使用（`.gitignore` 排除）；仓库迁移后需按上述命令重建。
 
@@ -154,14 +154,14 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 
 ## F. 运行期自诊
 
-启动 GUI → 选择「巅峰鉴宝」→ 开始运行，观察：
+启动 GUI → 选择「极速狂飙」→ 开始运行，观察：
 
 | 现象 | 说明 / 判断 |
 |------|-------------|
 | 日志出现「窗口连接失败」 | 游戏未开 / 未前台 / 游戏窗口标题不符 → 确认游戏已到主界面 |
 | 日志频繁「前台校验失败」 | 游戏窗口不在前台（安全策略不抢前台）→ 把游戏切到前台 |
 | OCR 心跳正常、阶段正常流转 | 截图 + 识别链路健康 |
-| 模块中途静默退出 | 参考 [鉴宝文档 CODE_WIKI](../maaracing_master/plugins/_archive/treasure/CODE_WIKI.md) 遗留问题与坑点 |
+| 模块中途静默退出 | 参考 [极速狂飙文档 CODE_WIKI](../maaracing_master/plugins/speedrush/CODE_WIKI.md) 的坑点与调试 |
 
 > 单帧异常已被主循环兜底（忽略并继续），只有连续多帧系统性问题才会终止——若持续异常，请收集 `Debug` 存盘截图 + 日志后提 Issue。
 
@@ -175,10 +175,10 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 | `pip install` 网络失败 | 代理 / 镜像问题 | 换国内镜像 `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt` |
 | pytest 报 `No module named pytest` | 未装 test 依赖 | `pip install "pytest>=7.0"` |
 | GUI 版本号一直不出现 / 后端 unavailable | 仓库根 `.venv` 缺失或不在仓库根 | 见 B2 警告 | 
-| 鉴宝一直「等待」、阶段不动 | 前台校验失败或窗口未就绪 | 切游戏到前台；确认分辨率 1280×720 |
+| 模块一直「等待」、阶段不动 | 前台校验失败或窗口未就绪 | 切游戏到前台；确认分辨率 1280×720 |
 
 ---
 
 ## 自动化回归（CI 已接入）
 
-本仓库在 GitHub Actions 上对 `push`（master / release）与 `pull_request` 自动跑 D 步单测（Python 3.11）；发布流程前置测试 gate——**打 tag 发布前必须单测通过**。本地无需重复配置，C 步的 pytest 命令与 CI 完全一致。
+本仓库在 GitHub Actions 上对 `push`（master / release）与 `pull_request` 自动跑 D 步单测（Python 3.11）；发布流程前置测试 gate——**打 tag 发布前必须单测通过**。本地无需重复配置，D 步的 pytest 命令与 CI 完全一致。

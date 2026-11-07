@@ -66,20 +66,22 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
   "hall.enter_treasure": {
       "_label": "大厅 → 鉴宝入口",
       "_page": "hall",
-      "recognition": "Custom",                    // 自定义识别必须走 Custom + custom_recognition
-      "custom_recognition": "MaaRM_Template",       // （MaaFW 官方协议方案二；MPE 对类型值
-      "custom_recognition_param": {               //   做严格枚举白名单，直写自定义名导入即抛，
-        "templates": ["hall_peak_appraise_card.png"], //  P0 实测）
-        "roi": [0.76, 0.80, 0.90, 0.89],
-        "threshold": 0.8,
-        "colorspace": "rgb_strict",               // gray | rgb | rgb_strict
-        "color_assert": {"rect": [0.1,0.1,0.3,0.3], "hue": [35,60]},
-        "mask_cursor": true,
-        "max_occlusion": 0.4
-      },
-      "action": "Custom",
-      "custom_action": "MaaRM_Click",
-      "_park": [0.5, 0.05],                       // L2 驻留点（缺省引擎按候选 ROI 自动算）
+      // 自定义识别/动作走 v2 归一形：type=Custom + param 黑盒透传注册名与参数
+      // （MPE 对类型值做严格枚举白名单，直写自定义名导入即抛）
+      "recognition": {"type": "Custom", "param": {
+        "custom_recognition": "MaaRM_Template",
+        "custom_recognition_param": {
+          "templates": ["hall_peak_appraise_card.png"],
+          "roi": [0.76, 0.80, 0.90, 0.89],
+          "threshold": 0.8,
+          "colorspace": "rgb_strict",               // gray | rgb | rgb_strict
+          "color_assert": {"rect": [0.1,0.1,0.3,0.3], "hue": [35,60]},
+          "mask_cursor": true,
+          "max_occlusion": 0.4
+        }
+      }},
+      "action": {"type": "Custom", "param": {"custom_action": "MaaRM_Click"}},
+      "_park": [0.5, 0.05],                       // L2 驻留点（字段保留，当前不激活）
       "critical": true,
       "next": ["treasure.hall"],
       "on_error": "hall.recover",
@@ -97,11 +99,11 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 - **根级扩展字段双向无损**：节点根级的未知字段（含 `_` 前缀）由 MPE `extras` 机制原样保留并导出散回；`custom_recognition_param` / `custom_action_param` 内容整体黑盒透传。**扩展字段禁止写进标准字段的 param 深处**（那里 MPE 会丢未知键）。
 
-- **协议形态 = v2 归一（2026-09-10 定案，取代旧"v1 优先"）**：依据不是"v1 被废弃"（源码否证：`PipelineParser` 唯一废弃硬报错是 `is_sub`/`interrupt`，且 v1/v2 共用同一套参数解析路径，新字段两边同时生效），而是 **v2 是框架内部的规范表示**——`get_node_data`（官方 PipelineDumper）只吐 v2 并补齐默认值，MPE 保存亦产 v2；强制 v1 = 每次画布存盘与工具对赌、diff 反复翻转。2026-09-10 已把两真源 44 个槽位一次性归一为 v2，**语义等价由"框架回读快照转换前后逐字段全等"证明**（21 节点零差异）。机检：`test_truth_source_normalized_to_v2` 锁仓库形态，`custom_recognitions()` + `test_custom_recognitions_covers_all_protocol_shapes` 锁读取面双形态兼容（人手写/历史文件/官方示例仍可能是 v1，框架都吃，故兼容不许删）。
+- **协议形态 = v2 归一**：`get_node_data`（官方 PipelineDumper）只吐 v2 并补齐默认值，MPE 保存亦产 v2；强制 v1 = 每次画布存盘与工具对赌、diff 反复翻转。v1 平铺协议框架仍合法（`PipelineParser` 唯一废弃硬报错是 `is_sub`/`interrupt`，v1/v2 共用同一套参数解析路径，新字段两边同时生效），读取面双形态兼容不许删（人手写/历史文件/官方示例仍可能是 v1）。真源自洽由 `tools/pipeline/truth.py`（CI）看护；speedrush 另有生成器回归锁 `tests/test_speedrush_truth.py`（生成器输出 == 入库真源）。
 
 - **默认值省写**：`DirectHit`/`DoNothing` 等协议默认值 MPE 会省略导出，加载器按 MaaFW 默认值语义补齐即可，不算数据丢失。
 
-- **编辑器产物跳过**：`$__mpe_config_*` 伪节点与节点内 `$__mpe_code`（内嵌方案的布局字段）加载器必须容忍并跳过；MaaFW 官方 schema 的根节点正则为 `^(?!\$).*`（`$` 开头 root field 官方不解析，schema 层背书），运行时同样行为**仍留 P2a 实机确认一次**。
+- **编辑器产物跳过**：`$__mpe_config_*` 伪节点与节点内 `$__mpe_code`（内嵌方案的布局字段）加载器必须容忍并跳过；MaaFW 官方 schema 的根节点正则为 `^(?!\$).*`（`$` 开头 root field 官方不解析，schema 层背书），运行时同样行为。
 
 - **Schema 工具链**：`tools/pipeline/schema/pipeline.schema.json`（官方快照）+ `custom.recognition.schema.json` / `custom.action.schema.json`（MaaRM\_\* 参数契约，官方扩展槽格式）。编辑器侧按 MaaFW 官方"连同 custom.\* 一起复制"姿势挂接；CI 机检由 `tools/pipeline/truth.py` 承担（不引 jsonschema/Node 依赖），round-trip 自动机检归 P3 薄壳。
 
@@ -162,19 +164,17 @@ v3 的 `anchors / stages / transitions / routes / policies` 五段、`<id>_asset
 
 ***
 
-## 5. 光标遮挡三层防线（替代 auto\_shoo 全家桶）
+## 5. 光标遮挡防线（按通路分治）
 
-核心转念：光标是**已知遮挡物**（位置由我们移动，图案固定渲染），不做反应式躲避，而是评分扣除 + 偶发握手。
+光标是**已知遮挡物**（位置由我们移动，图案固定渲染）。遮挡处理按识别通路分治（真源：`core/clicker.py` 与 `core/nav_graph.py`，坑点见 [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) §5.2）：
 
-| 层                 | 机制                                               | 生效时机              |
-| ----------------- | ------------------------------------------------ | ----------------- |
-| L1 掩膜评分（默认）       | 识别时从匹配区扣除当前光标矩形，用剩余区域打分                          | 每轮识别，零协商          |
-| L2 驻留握手（critical） | 节点标 `critical` → 请求导航线程停到 `_park` 点 → 收到 ACK 再识别 | 阶段转换、结算读数等必须满置信识别 |
-| L3 挪开重拍（兜底）       | 被遮面积 > max\_occlusion 时挪一次再拍                     | 罕见                |
+| 通路 | 机制 | 状态 |
+| --- | --- | --- |
+| 图侧模板识别 | `MaaRM_Template` 的 `mask_cursor` 遮挡拒绝（`gamepad_cursor_pos` 提供光标真值，命中框被遮占比超 `max_occlusion` 即拒） | 现役 |
+| OCR 读数 / 决策段内联匹配 | 反应式避让 `Clicker.auto_shoo`（异步 `submit_move` 不点击）+ 消费侧遮挡剔除 / 锚点防抖兜底 | 现役 |
+| L2 驻留握手（`critical` / `_park`） | 节点标 `critical` → 请求导航线程停到 `_park` 点 → 收到 ACK 再识别 | 字段保留，当前不激活 |
 
-- **删除清单**：`auto_shoo`、`SHOO_COOLDOWN_S / SHOO_TOL_PX / SHOO_SKIP_MISS_STREAK / SHOO_DIRECTIONS`、避让冷却、"避让丢失不触发重建"特例。
-
-- 引擎分得清"观察"和"动作"：acting 相位时目标 ROI 天然移出守卫集；转移信号识别走 L1 掩膜，光标压着也照常识别——"点击后避让窗口漏检"问题类直接消失。
+- `mask_cursor` 只装在图内节点上，OCR 通路无遮挡处理会被读脏——故 OCR / 内联匹配必须走 `auto_shoo`，两者不可互相替代（曾以 `mask_cursor` 替代全部避让，实机读脏后重接，见 §0.3）。
 
 - 掩膜走自研"光标矩形像素扣除后评分"（OpenCV mask 参数只支持 SQDIFF/CCORR，不依赖）。
 
@@ -234,17 +234,16 @@ plugins/*/resources/pipeline/*.json · core/resources/startup/（真源）
 
 ***
 
-## 8. 校验器（7 条）
+## 8. 校验器
 
-1. next / on\_error 引用闭合；
-2. 模板文件存在（附未引用模板清单）；
-3. ROI ∈ \[0,1] 合法；
-4. 纯坐标点击必须有 guard 模板（保险丝）；
-5. 死胡同 / 不可达节点 / 无出口环；
-6. 疑似重复识别（同模板不同 ROI）告警；
-7. **编辑器往返（round-trip）**：真源文件必须能被 MPE 解析器无损导入再导出（逻辑字段等价），且无键侵入 MaaFW 协议保留字段——此条进 CI，用 Node 直调 `core/parser` 纯函数固化。
+CI 闸门 = `tools/pipeline/truth.py`（纯标准库），主入口四组硬约束：
 
-E 级不落盘闸门逻辑保留。
+1. **图自洽**：`next`/`on_error` 与 And/Or 按名子项、`anchor` value 引用闭合；入口可达、无出口环告警；纯锚点（`attach._anchor_only`）豁免路由但必须被引用或声明 `attach._module_driven`；跨锚点重复识别告警。
+2. **输入通道**（`action_checks`）：真源不得用框架内置输入 action（Click/Swipe/Key…）——控制器里是成功占位，会假成功而屏幕无动作。
+3. **几何合法**（`rect_checks`）：一切 rect/roi/box 为 4 元数值、值域 \[0,1] 且 x1<x2、y1<y2。
+4. **分层红线**（`namespace_checks`）：core 真源不得占用或引用 `<module>.` 节点名（口径见 MAAFW_GUIDE §5.6）。
+
+模板文件存在性由 `tools/maafw_audit/template_exist.py` 单独审计；编辑器 round-trip 保真由 MPE 金样实证（§7.2），不进 truth.py。
 
 ***
 

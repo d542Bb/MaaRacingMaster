@@ -78,7 +78,7 @@
 > **退役条件**：ADR-0002 落地且全仓 grep 无 v3 活代码后删除
 ```
 
-1. 结论迁 home：契约那句「仓库中不存在 v3 专属代码、真源（`*_assets.json`、`generated/`）、工具链」与验收「仓库搜不到 v3」写进 ADR 的证据节，指针是 P4a 整删的 commit。
+1. 结论迁 home：契约那句「仓库中不存在 v3 专属代码、真源（`*_assets.json`、`generated/`）、工具链」与验收「仓库搜不到 v3」写进 ADR 的证据节，指针是整删批次的 commit（写 SHA，如 `b9e3b3f`，不用阶段代号）。
 2. 资产提升：迁移器与校验器被生产与 CI 消费 → 移入 `tools/` 正式位并改好引用；只对这次对拍有用的一次性脚本随 plan 删除。
 3. 拔引用：`python tools/check_repo_hygiene.py` 的 R3 零命中。
 4. 删除：走回收站。

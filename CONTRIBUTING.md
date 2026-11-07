@@ -9,7 +9,7 @@
 在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与知识路由见 [AGENTS.md](AGENTS.md)。
 
 > **⚠️ 合规红线（必须遵守）**
-> 本项目为游戏自动化技术研究与学习项目，**严禁**用于代练、外挂、作弊、刷榜或任何影响游戏公平与服务器排名的用途。所有贡献必须服务于"技术学习与个人效率工具"这一定位。详见 [README 免责声明](README.md#免责与合规声明)。
+> 本项目为游戏自动化技术研究与学习项目，**严禁**用于代练、外挂、作弊、刷榜或任何影响游戏公平与服务器排名的用途。所有贡献必须服务于"技术学习与个人效率工具"这一定位。详见 [README 免责与合规声明](README.md)。
 
 ---
 
@@ -62,8 +62,6 @@ pip install -r requirements.txt
 - **模块经能力接口（capability）接触宿主**：模块只能通过 `capture` / `gamepad` / `debug_renderer` 等窄接口办事，**无法获得高权限宿主对象**。
 - **资源所有权统一治理**：虚拟手柄用租约（`with ctx.gamepad.acquire()`）表达借还；渲染器由 `ActivityContext` 的 `ExitStack` 托管生命周期，退出（含异常）自动释放。
 - **克制不滥用抽象**：高权限对象必须隔离、有生命周期的资源必须治理；稳定纯函数直接依赖即可。
-
-关键文件位置：
 
 关键文件位置（完整导航见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md) 的「我要改 X，应该去哪里」）：
 

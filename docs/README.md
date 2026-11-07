@@ -15,6 +15,7 @@
 | [SELF_CHECK.md](./SELF_CHECK.md) | L3 | 环境与启动的分步验收清单 |
 | [adr/](./adr/README.md) | L1 | 架构决策与状态（准入条件、状态机见其 README） |
 | [announcement.md](./announcement.md) | L1 | 公告通知卡规范 |
+| [latest_release.json](./latest_release.json) | L0 | 版本标记投放数据（客户端更新源之一；字段口径见 `core/remote_meta.py` `parse_release`） |
 | [update_log.md](./update_log.md) | L4 | 面向玩家的更新说明（Release 正文由此抽取） |
 | [plan/](./plan/) | — | 一次性**工作台**（gitignore 不入库；只能向上产出，禁止被正式文档引用；完成即删） |
 

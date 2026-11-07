@@ -179,7 +179,7 @@ Select-String -Path "$env:APPDATA\MaaPipelineEditor\LocalBridge\logs\lb-*.log" -
 tools\pipeline\dev\mpelb.exe config set-lib "<仓库根>\.venv\Lib\site-packages\maa\bin"
 ```
 
-该目录含 `MaaFramework.dll`，版本随 `.venv`（maafw 5.12.3）。`set-lib` 会顺带置 `maafw.enabled=true`。
+该目录含 `MaaFramework.dll`，版本随 `.venv`。`set-lib` 会顺带置 `maafw.enabled=true`。
 OCR 资源路径按需另配 `config set-resource`——`.venv` 的 maa 包里没有 `resource/` 目录，
 不配则原生 OCR 不可用（MPE 前端 OCR 仍可用），日志那句 WARN 也这么写。
 
