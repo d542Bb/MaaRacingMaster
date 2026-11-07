@@ -468,6 +468,45 @@ def test_reopen_reuses_session_identity(tmp_path):
     assert validate_trace_file(tmp_path / tok1 / "trace" / "demo.jsonl") == []
 
 
+class _OpenSessionView:
+    """喂 _ensure_bound 的只读会话视图：替代真单例（会话已开）。"""
+
+    def __init__(self, lg):
+        self.session_dir = lg.session_dir
+        self.session_token = lg.session_token
+
+    def add_session_listener(self, cb) -> None:
+        pass
+
+
+def test_mid_session_registration_binds_current_session(tmp_path, monkeypatch):
+    """会话开启后才注册的汇必须补绑当前会话。
+
+    2026-11-07 实证：_ensure_bound 首个汇注册后早退，中途注册的显卡汇整个
+    会话零落盘（生产首驾 gpu.jsonl 缺失）。回归锁：早退分支删除后，
+    beta（会话中注册）必须与 alpha（会话前注册）同会话同语义落盘。
+    """
+    lg = Logger(tmp_path)
+    mgr = TraceSinkManager()
+    lg.add_session_listener(mgr)
+    early = mgr.get("alpha")                         # 会话开启前注册
+    lg.set_file_logging(True)
+    early.append({"x": 1})
+    monkeypatch.setattr("maaracing_master.core.logger.logger",
+                        _OpenSessionView(lg))
+    late = mgr.get("beta")                           # 会话进行中注册 → 必须补绑
+    late.append({"x": 2})
+    lg.set_file_logging(False)
+    for name, v in (("alpha", 1), ("beta", 2)):
+        p = (tmp_path / lg.last_session_close_status[-1]["token"]
+             / "trace" / f"{name}.jsonl")
+        rows = _read(p)
+        assert rows[0]["type"] == "session_begin"
+        assert any("type" not in r and r.get("x") == v for r in rows)
+        assert rows[-1]["type"] == "end"
+        assert validate_trace_file(p) == []
+
+
 def test_open_during_closing_waits(tmp_path):
     lg = Logger(tmp_path)
     rec = _Recorder(lg)

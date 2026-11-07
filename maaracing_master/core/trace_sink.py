@@ -325,6 +325,13 @@ class TraceSink:
 
     # ---------- 会话生命周期（管理器调用面，非模块面） ----------
 
+    def bind_if_unbound(self, session_dir: Path, token: str) -> None:
+        """中途注册补绑：仅当本汇尚无活动会话时绑定（不打断已在写的会话）。"""
+        with self._lk:
+            if self._session is not None:
+                return
+        self.bind_session(session_dir, token)
+
     def bind_session(self, session_dir: Path, token: str) -> None:
         """会话开启：建 trace/<模块>.jsonl 并起 worker（不可被拒绝）。"""
         with self._lk:
@@ -657,17 +664,18 @@ class TraceSinkManager:
         return sink
 
     def _ensure_bound(self) -> None:
-        if self._bound:
-            return
         from maaracing_master.core.logger import logger
-        logger.add_session_listener(self)
-        self._bound = True
-        # 模块中途注册：当前已有会话则立即补绑
+        if not self._bound:
+            logger.add_session_listener(self)
+            self._bound = True
+        # 模块中途注册：当前已有会话则立即补绑。幂等（bind_if_unbound 只补
+        # 尚未绑定的汇），每次注册都查——首个汇注册后本方法早退分支曾让
+        # 后续中途注册永远错过补绑（2026-11-07 显卡汇首驾零行实证）。
         if logger.session_dir is not None and logger.session_token:
             with self._lk:
                 sinks = list(self._sinks.values())
             for s in sinks:
-                s.bind_session(logger.session_dir, logger.session_token)
+                s.bind_if_unbound(logger.session_dir, logger.session_token)
 
     # ---- 会话生命周期回调（logger 生命周期锁内、记录锁外执行） ----
 
