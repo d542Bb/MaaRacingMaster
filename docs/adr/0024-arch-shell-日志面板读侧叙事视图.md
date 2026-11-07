@@ -45,4 +45,4 @@
 
 - 实现：[`js/log.js`](../../apps/MaaRacingMaster.Shell/frontend/js/log.js)（容器缓冲与渲染门槛、渲染即展开、outcome 驱动自动展开、`_bareDrop` 断开锚点）· [`style.css`](../../apps/MaaRacingMaster.Shell/frontend/style.css) 无新增（复用 `--open`/`--expandable`）。
 - 机检：桥桩探针（手法同壳 README「浏览器侧验证」节）混合批次断言——纯 INFO 容器不落 DOM、含告警容器渲染即展开且含缓冲行、warning/failure 组卡自动展开、success 保持折叠、空身 incomplete 卡不展开、纯家务容器被组卡断开后不再出现；[`tests/test_log_attribution.py`](../../tests/test_log_attribution.py)、[`tests/test_speedrush_log_groups.py`](../../tests/test_speedrush_log_groups.py)、[`tests/test_frontend_remote_render.py`](../../tests/test_frontend_remote_render.py) 等回归锁全绿。
-- 真机：待一轮实跑核对（会话号后补）。
+- 真机：2026-11-07 实跑反馈即 [ADR-0025](0025-arch-shell-自动展开收窄为真异常.md) 的起因与验收输入——自动展开范围不达预期，由其收窄；其余断言在该轮实跑中未见异常报告。
