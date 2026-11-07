@@ -27,12 +27,9 @@ from maa.custom_action import CustomAction
 from maa.resource import Resource
 from maa.tasker import Tasker
 
-REPO = Path("D:/maaracing_assistant")
+REPO = Path(__file__).resolve().parents[3]
 CORE_PIPELINE = REPO / "maaracing_master/core/resources/pipeline"
 SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/speedrush/resources/pipeline"
-NAV_DIR = Path(
-    r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug\20261106_185832\speedrush\nav"
-)
 
 RESULTS: dict[str, dict] = {}
 TRACE: list[str] = []

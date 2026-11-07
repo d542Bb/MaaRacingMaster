@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -25,15 +26,17 @@ from maa.custom_action import CustomAction
 from maa.resource import Resource
 from maa.tasker import Tasker
 
-sys.path.insert(0, "D:/maaracing_assistant")
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from maaracing_master.core.nav_graph import TemplateRecognizer  # noqa: E402
 
-REPO = Path("D:/maaracing_assistant")
+REPO = Path(__file__).resolve().parents[3]
 CORE_PIPELINE = REPO / "maaracing_master/core/resources/pipeline"
 SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/speedrush/resources/pipeline"
 IMAGE_DIRS = [REPO / "maaracing_master/plugins/speedrush/resources/image",
               REPO / "maaracing_master/core/resources/image"]
-NAV = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug\20261106_185832\speedrush\nav")
+NAV = Path(os.environ.get("MAAR_A0_NAV")
+         or Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+         / "MaaRacingMaster" / "debug" / "20261106_185832" / "speedrush" / "nav")
 
 EVENTS: list[str] = []
 EV_LOCK = threading.Lock()

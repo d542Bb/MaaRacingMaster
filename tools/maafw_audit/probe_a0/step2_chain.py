@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -26,7 +27,7 @@ from maa.custom_action import CustomAction
 from maa.resource import Resource
 from maa.tasker import Tasker
 
-REPO = Path("D:/maaracing_assistant")
+REPO = Path(__file__).resolve().parents[3]
 CORE_PIPELINE = REPO / "maaracing_master/core/resources/pipeline"
 SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/speedrush/resources/pipeline"
 
@@ -184,9 +185,9 @@ def run_once(tag: str, node: str, cap_frame: np.ndarray, bridge_frame: np.ndarra
 
 
 def main() -> None:
-    nav = Path(
-        r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug\20261106_185832\speedrush\nav"
-    )
+    nav = Path(os.environ.get("MAAR_A0_NAV")
+               or Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+               / "MaaRacingMaster" / "debug" / "20261106_185832" / "speedrush" / "nav")
     drive = cv2.imread(str(nav / "000895.jpg"), cv2.IMREAD_COLOR)   # 驾驶画面
     store = cv2.imread(str(nav / "000894.jpg"), cv2.IMREAD_COLOR)   # 商店页
     print(f"[frame] drive={drive.shape} store={store.shape}")

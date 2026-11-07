@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,14 +19,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, "D:/maaracing_assistant")
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from maaracing_master.core.nav_graph import NavGraph, ProbeOutcome, WgcapController  # noqa: E402
 
-REPO = Path("D:/maaracing_assistant")
+REPO = Path(__file__).resolve().parents[3]
 SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/speedrush/resources/pipeline"
 SPEEDRUSH_IMAGE = REPO / "maaracing_master/plugins/speedrush/resources/image"
-NAV = Path(r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug\20261106_185832\speedrush\nav")
+NAV = Path(os.environ.get("MAAR_A0_NAV")
+         or Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+         / "MaaRacingMaster" / "debug" / "20261106_185832" / "speedrush" / "nav")
 
 
 class Capture:
