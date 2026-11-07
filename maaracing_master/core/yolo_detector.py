@@ -240,11 +240,15 @@ class YOLODetector:
         # 双线程复现），必须串行；感知不能跳拍，故阻塞等锁而非让锁。
         # 等锁与 run 分段计时：环频归因要分得清「锁等出来的」和「run 本身慢」。
         t_wait = time.perf_counter()
-        with dml_lock.LOCK:
-            self.last_wait_ms = (time.perf_counter() - t_wait) * 1000.0
-            t_run = time.perf_counter()
-            raw_outputs = self.session.run(None, {self.input_name: blob})
-            self.last_run_ms = (time.perf_counter() - t_run) * 1000.0
+        dml_lock.RUN_WATCH.enter("yolo")
+        try:
+            with dml_lock.LOCK:
+                self.last_wait_ms = (time.perf_counter() - t_wait) * 1000.0
+                t_run = time.perf_counter()
+                raw_outputs = self.session.run(None, {self.input_name: blob})
+                self.last_run_ms = (time.perf_counter() - t_run) * 1000.0
+        finally:
+            dml_lock.RUN_WATCH.exit()
         # 错峰节拍：深度 worker 据此把 54ms 前向排在感知放锁之后（见 dml_lock）。
         dml_lock.TICK_BEAT.note()
         outputs = raw_outputs[0]

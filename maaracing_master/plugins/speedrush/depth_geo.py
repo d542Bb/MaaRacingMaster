@@ -413,6 +413,7 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     LAST_STAGE_MS["pre"] = (time.perf_counter() - t_pre) * 1000.0
     if not dml_lock.LOCK.acquire(blocking=False):
         raise dml_lock.Busy("DML 被感知推理占用，本帧放弃（latest-only 下一帧再来）")
+    dml_lock.RUN_WATCH.enter("moge")
     try:
         t_fwd = time.perf_counter()
         points, mask, metric_scale = moge_post.forward(sess, blob, 1032)
@@ -425,6 +426,7 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
                 "pre_ms": round(LAST_STAGE_MS.get("pre", 0.0), 1),
             }
     finally:
+        dml_lock.RUN_WATCH.exit()
         dml_lock.LOCK.release()
     t_rec = time.perf_counter()
     # 2026-10-29 重新标定：MoGe 米制偏大约 1.12（画线金标），在唯一入口

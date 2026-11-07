@@ -34,6 +34,33 @@ class Busy(RuntimeError):
     """DML 已被其他线程占用；调用方应放弃本次推理（让锁），不得等待。"""
 
 
+class _RunWatch:
+    """在飞 DML run 的心拍标记：run 进出打点，停顿哨（GpuProbe）读取。
+
+    覆盖范围 = 等锁 + run 本体——两者膨胀都是停顿现场的一部分。
+    """
+
+    def __init__(self) -> None:
+        self._lk = threading.Lock()
+        self._since: float | None = None   # 本次在飞的 perf_counter 起点
+        self._who = ""
+
+    def enter(self, who: str) -> None:
+        with self._lk:
+            self._since, self._who = time.perf_counter(), who
+
+    def exit(self) -> None:
+        with self._lk:
+            self._since, self._who = None, ""
+
+    def snapshot(self) -> tuple[float | None, str]:
+        with self._lk:
+            return self._since, self._who
+
+
+RUN_WATCH = _RunWatch()
+
+
 class _TickBeat:
     """控制拍「跑完感知、放下锁」的节拍：序号 + 时刻 + 等待者唤醒。"""
 
