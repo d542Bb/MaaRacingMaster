@@ -1361,8 +1361,6 @@ class SpeedRushModule(ActivityModule):
                 straight_chain["hud_ref"] = drive_hud
         # 阶段边界入流水（受保护通道）：无论接管与否，每阶段起止各一条
         self._trace.begin_stage(phase)
-        # 显卡采样（0.5s/拍 → "gpu" 流水汇）：停顿归因面（dml_stall_repro 定案：
-        # 驱动级停摆窗口内显存/利用率/外部采样时长是第一判据）
         gpu_probe = GpuProbe()
         gpu_probe.start()
 

@@ -139,6 +139,18 @@ P95 ≤100 ms）；故不启用"取帧入录解耦到独立定时线程"那一�
   字段，阶段由行内 stage 控制 行表达——ADR-0010）。局汇总一行/阶段落同目录
   `trace/speedrush_summary.jsonl`。历史布局（`debug/speedrush/<会话>_p<N>/trace_*.jsonl`）
   的读取经实验区统一读取器；HUD/raw/坏帧等帧证据仍在 `debug/speedrush/`（调试总开关）。
+- **显卡流水汇**（`logs/<会话>/trace/gpu.jsonl`）：`gpu_probe.py::GpuProbe` 随驾驶阶段起停，
+  定时采 nvidia-smi（利用率/显存/温度/SM 频率/功耗，外加 `call_ms` 本次外部调用时长——
+  驱动停摆时外部采样会被一起卡住，它本身就是信号），与玩法流水同钟可离线对齐；无
+  nvidia-smi 或无日志会话即不采样。常规采样拍不到案发中，故另有现场抓拍：持锁 DML 调用
+  按线程登记在飞（`core/dml_lock.py::RUN_WATCH`，覆盖等锁 + run 本体），最久一条超阈即
+  另起线程落 `trace/stall_<时刻>_<调用方>.txt`——我方全线程栈先落，再取节流原因位与每进程
+  GPU 引擎占用，并在显卡流水发一行 `stall_dump` 作时间线锚点。盯梢、采样、抓拍各走一条
+  线程：任一条被驱动卡住都不拖累其余取证。
+- **现场判读两条**：文件自带「栈抓拍时 / 外部取证结束时是否仍在飞」，据此区分案发中证据与
+  恢复后状态（节流原因位里的 Idle 在无负载时本就 Active，跨过恢复点取到的不算案发证据）；
+  深度总耗时 `dgeo_ms` 含锁外前后处理，判前向停顿看 `dgeo_seg.stages.forward` 或慢 forward
+  锁存 `dgeo_slow`，不能拿 `dgeo_ms` 当判据。
 - 门控判定日志带 `frame=`，与 `frames.jsonl` 的 `frame_id` 对齐（日志墙钟只到秒，帧号才是
   可靠的共同坐标）。导出判定时刻的画面用
   `maaracing_master/plugins/speedrush/tools/export_gating_marks.py`。
