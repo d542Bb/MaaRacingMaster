@@ -1,6 +1,6 @@
 # ADR-0013（ownership-core）：游戏进程归 core，启动/关闭作为内置步骤
 
-- **状态**：`superseded by ADR-0018`（**仅**「启动成功 = 窗口出现」与「步骤不连接窗口 / 不开 WGC」两点；决策 1/3/4/5 仍有效，正文保留不改写）
+- **状态**：`amended by ADR-0018`（**仅**「启动成功 = 窗口出现」与「步骤不连接窗口 / 不开 WGC」两点；决策 1/3/4/5 仍有效，正文保留不改写）
 - **日期**：2026-10-29
 - **决策者**：用户（拍板「静默启动游戏主程序」「退出并入关闭游戏卡」）· AI 落实施
 - **相关**：[core/CODE_WIKI.md §1.17](../../maaracing_master/core/CODE_WIKI.md) · [AGENTS.md](../../AGENTS.md) 绝对红线 1（分层靠引用方向）· [core/registry.py](../../maaracing_master/core/registry.py) · [core/builtin_steps.py](../../maaracing_master/core/builtin_steps.py) · [core/game_process.py](../../maaracing_master/core/game_process.py)

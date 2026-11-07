@@ -1,6 +1,6 @@
 # ADR-0005（choice-shell）：GUI 标题栏——移除系统标题栏，窗口控制由 HTML 自绘
 
-- **状态**：`deprecated` —— **ADR 条目本身**：本条的规范性内容（四条形态、被否方案与其理由）已按 [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md) 迁入 [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)「窗口形态与标题栏」一节；**形态仍在生效**，下文保留仅为历史记录，**勿据以实施**
+- **状态**：`archived` —— **ADR 条目**按 [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md) 迁出本目录，不再是本目录的现行约束；**决策仍生效**，规范性内容（四条形态、被否方案与其理由）现载于 [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)「窗口形态与标题栏」；下文保留为历史记录，**勿据以实施**
 - **日期**：2026-08-31（`ddc1504`）/ 2026-09-18（按 ADR-0006 迁出本目录）
 - **决策者**：用户拍板，AI 落实施
 - **相关**：取代 [ADR-0004](0004-choice-shell-GUI宿主定案.md) 的「系统 caption buttons」部分 · [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（迁出依据） · [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)（现行住户） · commit `ddc1504`

@@ -1,6 +1,6 @@
 # ADR-NNNN（<性质>-<影响模块>）：<一句话决策标题>
 
-- **状态**：`accepted` | `superseded by ADR-NNNN` | `deprecated`
+- **状态**：`accepted` | `amended by ADR-NNNN` | `superseded by ADR-NNNN` | `deprecated` | `archived` | `merged into ADR-NNNN`（取值含义见 [README](README.md)「状态机」）
 - **日期**：YYYY-MM-DD
 - **决策者**：<角色或姓名；用户拍板的写"用户"">
 - **相关**：<宪法条款 / CODE_WIKI 小节 / issue / commit>
