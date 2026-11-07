@@ -5,8 +5,8 @@
 # 的字节完全一致。v4 真源（pipeline/*.json、policy/*.json）的 round-trip 保真与
 # 内容哈希比对依赖该不变量：行尾若按平台默认（core.autocrlf）漂移，MPE 保存等
 # 真源改动的 diff 会被行尾噪音淹没。
-# 例外：tools/navkit/*.cmd 必须 CRLF+ASCII（cmd 批处理解析器对 LF/非 ASCII 会
-# 错位碎裂，实证见 v4-p3-studio plan）。
+# 例外：Windows 批处理（*.cmd / *.bat）必须 CRLF——cmd 解析器对 LF-only 的
+# 标签/续行会错位碎裂；仓库入口脚本同时保持纯 ASCII。
 #
 # 生效方式：改本文件只影响后续 checkout/normalize，已存在的工作副本需执行一次
 # 归一（见 git add --renormalize 或等价的工作区行尾重写）才会落到位。

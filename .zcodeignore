@@ -113,10 +113,8 @@ cursor_refactor/captures/
 cursor_refactor/models/
 cursor_refactor/__pycache__/
 
-# NavKit 本地工具与历史产物目录（mpelb 二进制 / MPE dist / 旧控制台缓存等；不入库）
-tools/navkit/dev/
-tools/navkit/out/
-tools/navkit/frontend/
+# pipeline 工具的本机二进制（mpelb 等；不入库）
+tools/pipeline/dev/
 
 # ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
 .git/

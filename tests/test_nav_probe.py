@@ -7,7 +7,7 @@
   - 只标记 stale 不够 → 提交侧必须检查记录仍为 `pending`。
 
 maafw 的 C 句柄对象不能在 pytest 进程内反复构造，本文件沿用
-`test_navkit_v4_runner.py` 的口径：把 maa 工厂换成纯 Python 桩，只测 Python 逻辑。
+`test_nav_graph_runner.py` 的口径：把 maa 工厂换成纯 Python 桩，只测 Python 逻辑。
 """
 from __future__ import annotations
 

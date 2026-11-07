@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-11-01
 - **决策者**：用户
-- **相关**：宪法 §4「机制归引擎、策略归数据」（[NAVKIT_V4_PLAN.md](../NAVKIT_V4_PLAN.md)）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) navkit 步循环件）· commit `71441c0` / `46df995` / `f8add47`
+- **相关**：宪法 §4「机制归引擎、策略归数据」（[NAVKIT_V4_PLAN.md](../NAVKIT_V4_PLAN.md)）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) 步循环件）· commit `71441c0` / `46df995` / `f8add47`
 
 ## 背景
 
@@ -24,7 +24,7 @@
 
 **代价与约束**：
 - 未来任何活动插件做"大阶段之间的一次 UI 点击"的重试，**必须**走 core `StepMachine`，**不得**自存计数/时间。
-- core 必须**保持域无关**——`navkit` 不得出现 `<module>.` 节点名（`truth` namespace 校验守此）。
+- core 必须**保持域无关**——core 真源不得出现 `<module>.` 节点名（`truth` namespace 校验守此）。
 - "统一调度"**不等于"core 来跑循环"**：逐帧决策（`PolicyBridge`）与阻塞步循环各留插件，进 core 的只有状态转移记账。禁止借本决策合并执行模型、下探到逐帧循环或感知层。
 
 **被否方案**：

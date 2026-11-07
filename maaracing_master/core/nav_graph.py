@@ -584,7 +584,7 @@ def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str,
         target = dirs[0]
         merged_dir: Path | None = None
     else:
-        merged_tmp = Path(tempfile.mkdtemp(prefix="navkit-pipeline-"))
+        merged_tmp = Path(tempfile.mkdtemp(prefix="pipeline-graph-"))
         try:
             seen: dict[str, Path] = {}
             for d in dirs:
@@ -1365,7 +1365,7 @@ class WgcapController(CustomController):
         return True
 
     def request_uuid(self):
-        return "maarm-navkit-v4"
+        return "maarm-nav-graph-v4"
 
     def start_app(self, intent):
         return True

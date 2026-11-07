@@ -1,10 +1,10 @@
-# NavKit V4 改造方案
+# Pipeline v4 宪法
 
 > 状态：已评审通过（2026-09-08）；**P0–P4 全部完成（2026-09-10）**——v4 为唯一执行通路，v3 全家已退役（各期明细见 §9 表）。遗留人工补齐项见 §10。
-> 一句话：**真源只有一种——节点 JSON；Studio 画布编辑它，引擎直接跑它，中间什么都没有。**
+> 一句话：**真源只有一种——节点 JSON；MPE 画布编辑它，引擎直接跑它，中间什么都没有。**
 
 >
-> **本文是什么**：NavKit v4 的**版本宪法（§1 六条不变量）**与 v4 规格——节点模型（§2）、文件布局（§3）、运行时（§4）、校验器（§8）与迁移路线（§9）。
+> **本文是什么**：pipeline v4 的**版本宪法（§1 六条不变量）**与 v4 规格——节点模型（§2）、文件布局（§3）、运行时（§4）、校验器（§8）与迁移路线（§9）。
 > **本文不是什么**：不是当前实现说明（见 [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) 与各域文档）；不是决策记录与状态（见 [docs/adr/](adr/README.md)）；不是工具用法（见 [tools/pipeline/README.md](../tools/pipeline/README.md)）。
 > **信源等级**：**§1 = L1（本项目最高规则）**；§2–§8 为 v4 规格（L1/L2）；**§0 与 §9–§12 为迁移过程与历史（L4）**——历史章节不等于当前形态。
 > **真源路由**：不变量 = 本文 §1（其他文档引用它，不复制）；节点与策略取值 = `plugins/*/resources/**`；
@@ -113,20 +113,20 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 - **策略节点**：图上一个框，内部是自带的帧循环闭环（帧计数/冷却/OCR 读数/仲裁），出口只有一种：带着结果退出到 next。这是与 MAA 的本质区别——我们的节点可以是一个闭环。
 
-- **画布坐标分离**：采用 MPE 官方**分离持久化方案**（LocalBridge `SaveSeparatedRequest`，pipeline 与编辑器配置双文件；官方 README"集成与分离两种方案"）——排版永不污染逻辑 diff，机制不自造。
+- **画布元数据内嵌**：MPE 把布局/视口回写为节点内 `$__mpe_code` 与根级 `$__mpe_config_*` / `$__mpe_external_*`；`$` 前缀根级字段不被框架解析，加载器跳过。不用「分离导出」（`.xxx.mpe.json` 不在 pipeline 目录、不被加载）。
 
 ***
 
 ## 3. 文件布局
 
 ```
-core/resources/nav/          global.json          # 大厅骨架节点（共享）
-plugins/<id>/resources/nav/  <id>.json            # 模块节点（真源）
-plugins/<id>/resources/policy/<id>.policy.json    # 策略表（已过时；仅鉴宝归档参考）——禁止与 nav/ 同目录
-                             <id>.mpe.json        # 画布坐标/视口（MPE 分离方案的编辑器配置）
+core/resources/startup/pipeline.json + image/   # 启动步骤自有链（有终点、有业务归属）
+core/resources/image/                           # 全局模板（如有）
+plugins/<id>/resources/pipeline/<id>.json       # 模块节点（真源）
+plugins/<id>/resources/image/                   # 模块模板
 ```
 
-> **布局红线（P2a-Q1 实验实证）**：`nav/` 目录会被 `Resource.post_pipeline` 递归加载，目录内**只能放节点图**；策略表/编辑器配置放这里会被 MaaFW 当 pipeline 解析，**整目录加载失败**。policy 表由运行时/桥按文件名显式读取，不进加载根。
+> **布局红线（P2a-Q1 实验实证）**：目录必须叫 `pipeline`（生态工具按此索引），且会被 `Resource.post_pipeline` 递归加载，目录内**只能放节点图**；策略表/编辑器配置放这里会被 MaaFW 当 pipeline 解析，**整目录加载失败**。策略表已随鉴宝归档，不进现役加载根。
 
 v3 的 `anchors / stages / transitions / routes / policies` 五段、`<id>_assets.json`、`generated/pipeline/` 全部退役。
 
@@ -202,35 +202,35 @@ v3 的 `anchors / stages / transitions / routes / policies` 五段、`<id>_asset
 
 ***
 
-## 7. Studio V4：嵌入 MPE + 薄壳
+## 7. Studio 与 MPE：画布归 MPE，取证归 Studio
 
-**不魔改 MPE**。MPE 官方支持被集成（Iframe 模块、前后端完全分离、LocalBridge 本地能力协议、内置识别小工具与流程化调试）。默认路线：自研薄壳 + LocalBridge 插件，fork 只当保险。
+**不魔改 MPE**。MPE 是官方画布（在线 stable / 自部署），本地桥用官方 `mpelb`；我们只补它看不见的两块：会话回放与自定义归一化矩形 ROI。策略表编辑器、模板截取页与旧保存管线已随 v5 下线。
 
 ### 7.1 集成堆栈
 
 ```
-NavKit Studio（自研薄壳）
-├── 画布区        iframe 嵌入 MPE（自部署 stable）
-├── 策略表编辑器   policy.json 表格
-└── 回放 / 校准    trace 叠加层
-        │ LocalBridge 协议
-NavKit LocalBridge 服务端（自研）
-  wgcap 帧源 · 点击器 · 文件读写 · 校验 · 引擎桥
+MPE（官方画布）── LocalBridge 协议 ── mpelb（官方本地桥）
+        │ 编辑 pipeline 节点 JSON
+Studio（tools/pipeline/studio）
+├── 回放   只读 v5 会话清单与帧索引
+└── ROI    只写节点 JSON 的 custom_recognition_param.rect，保存前后跑 truth
         │
-nodes.json · policy.json（真源）
+plugins/*/resources/pipeline/*.json · core/resources/startup/（真源）
 ```
 
 ### 7.2 `_` 字段 round-trip 策略（P0 已判结）
 
 **实测结论：对策 1 成立**——根级 `_` 字段与 custom 参数黑盒均无损往返（MPE `extras` 机制，源码 + v1.9.3 在线实例金样双证），**零 fork**。约束转写为 schema 规则（见 §2 字段规则）：扩展字段只放节点根级或 `custom_*_param` 黑盒，不进标准字段 param 深处。fork 保险条款保留：若未来 MPE 行为回退，优先提 ISSUE/PR（作者活跃、接需求），合不进去再谈浅 fork。
 
-### 7.3 能力分工（P0 协议面实证）
+### 7.3 能力分工（当前）
 
-- **iframe embed 协议（mpe-embed 1.4.0）** 管编辑链路：`mpe:loadPipeline / mpe:save / saveResult`，内置文档冲突状态机（`document_changed` + canForce，与 v3 base\_hash 乐观锁同构思路）与 dirty 管理；在线实例无 X-Frame-Options/CSP 嵌入限制（实测）。
+- **MPE**：图结构、标准字段、模板裁剪与打分；以独立标签页打开，不嵌入 Studio。
 
-- **LocalBridge 协议**（`{path, data}` WebSocket + `/system/handshake` 版本协商）管本地能力：file（含 watcher 与 `ContentHash` 乐观锁、`SaveFileRequest` 保字段序、`SaveSeparatedRequest` 分离保存）、utility（截图/裁剪←wgcap 帧源）、mfw/debug（运行与流程化调试，命令面大，P2a/P3 按需实现）。
+- **Studio**：会话回放（只读 v5 清单/帧索引）与 ROI（只写 `custom_recognition_param.rect`）；保存前后跑同一 `truth` 校验。
 
-- **MaaMCP**（MAA-AI，AGPL-3.0）定位是"agent 执行运维 pipeline"标准件（connect/screencap/run\_pipeline 等），不进编辑与解析链路；P2b 真机调试阶段可挂载使用，**AGPL 传染性要求独立进程隔离**。
+- **LocalBridge**：官方 `mpelb`；项目内用 `tools/pipeline/mpelb_update.py` 按官方 release 清单安装/更新。
+
+- **MaaMCP**（MAA-AI，AGPL-3.0）：agent 执行运维 pipeline 的标准件，不进编辑与解析链路；**AGPL 传染性要求独立进程隔离**。
 
 ***
 

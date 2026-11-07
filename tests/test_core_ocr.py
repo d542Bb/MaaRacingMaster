@@ -12,8 +12,8 @@
 
 **素材来源**：`tests/fixtures/claim_popup_0609.png` 是仓库里
 仅有的入库真帧（720p 录屏帧），既有测试（`test_treasure_egg_claim`）已按「缺失即
-skip」用它；ROI 取生产 policy 的 ocr 锚点 rect（值抄自 `treasure.policy.json`，
-漂移锁另见 `test_navkit_runtime_golden`）。故本文件不新造任何资产。
+skip」用它；ROI 取生产 policy 的 ocr 锚点 rect（值抄自归档鉴宝的
+`treasure.policy.json`，搬迁时固化）。故本文件不新造任何资产。
 """
 from __future__ import annotations
 
