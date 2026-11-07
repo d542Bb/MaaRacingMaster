@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-09-08（宪法定稿）/ 2026-09-13（帧供给独立于决策段）
 - **决策者**：用户拍板，AI 落实施
-- **相关**：[宪法 §1](../NAVKIT_V4_PLAN.md) 第 6 条 · MAAFW_GUIDE §9 第 15 条
+- **相关**：[宪法 §1](../PIPELINE_V4.md) 第 6 条 · MAAFW_GUIDE §9 第 15 条
 
 ## 背景
 
@@ -46,7 +46,7 @@ v4 把执行权交给 MaaFramework Tasker 后，运行时有**三条物理资源
 
 ## 证据
 
-- **宪法原文**：[docs/NAVKIT_V4_PLAN.md](../NAVKIT_V4_PLAN.md) §1 第 6 条 + §4.2「线程拓扑」。
+- **宪法原文**：[docs/PIPELINE_V4.md](../PIPELINE_V4.md) §1 第 6 条 + §4.2「线程拓扑」。
 - **机检**：[`tools/pipeline/truth.py`](../../tools/pipeline/truth.py) `action_checks`——真源出现框架内置输入 action 即报错。
 - **协议依据**：MAAFW_GUIDE §9 第 15 条——`FramePool/PrintWindow` 的伪最小化会改写目标窗口样式，与自研窗口管理是同一批状态的写入方，不得混用。
 - **实证（帧供给解耦）**：A7 真机验收——鉴宝 GUI 大厅静置，新会话 raw 从 0 增至 95 张/15 秒（约 158ms/帧，与 `OBSERVE_INTERVAL_MS=150` 吻合）；关键结论「厅类 dwell 不挂 `policy_loop` 时存图仍正常」正是本次拆分要解决的问题。

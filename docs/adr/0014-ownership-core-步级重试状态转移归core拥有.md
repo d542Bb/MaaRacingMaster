@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-11-01
 - **决策者**：用户
-- **相关**：宪法 §4「机制归引擎、策略归数据」（[NAVKIT_V4_PLAN.md](../NAVKIT_V4_PLAN.md)）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) 步循环件）· commit `71441c0` / `46df995` / `f8add47`
+- **相关**：宪法 §4「机制归引擎、策略归数据」（[PIPELINE_V4.md](../PIPELINE_V4.md)）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) 步循环件）· commit `71441c0` / `46df995` / `f8add47`
 
 ## 背景
 

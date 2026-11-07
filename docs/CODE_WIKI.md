@@ -15,7 +15,7 @@
 | 极速狂飙 | [plugins/speedrush/CODE_WIKI.md](../maaracing_master/plugins/speedrush/CODE_WIKI.md) | 流程编排 / 驾驶门控与节拍 / 演示录制 |
 | MaaFW 协议 | [MAAFW_GUIDE.md](MAAFW_GUIDE.md) | 能力签名 / Pipeline 协议 / Custom 契约 / 真源组织 / 红线 |
 | 架构决策 | [adr/](adr/README.md) | 为什么这么定 + 状态（是否仍生效） |
-| 版本宪法 | [NAVKIT_V4_PLAN.md](NAVKIT_V4_PLAN.md) | §1 六条不变量（最高规则）+ 节点模型与迁移史 |
+| 版本宪法 | [PIPELINE_V4.md](PIPELINE_V4.md) | §1 六条不变量（最高规则）+ 节点模型与迁移史 |
 | GUI 壳工程 | [apps/MaaRacingMaster.Shell/README.md](../apps/MaaRacingMaster.Shell/README.md) | 锁定版本 / WinUI 3 API / 构建坑 / IPC 契约 / 宿主选型硬约束 |
 | 前端与图标 | [apps/MaaRacingMaster.Shell/frontend/README.md](../apps/MaaRacingMaster.Shell/frontend/README.md) | 图标真源 / file:// 约束 / 前端规范 |
 | Pipeline 工具链 | [tools/pipeline/README.md](../tools/pipeline/README.md) | Studio 回放/ROI、MPE 入口、模板采集工作流、校验器护栏 |

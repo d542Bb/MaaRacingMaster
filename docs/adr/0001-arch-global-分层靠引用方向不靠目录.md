@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-09-10（定性）/ 2026-09-11（机检口径补全）
 - **决策者**：用户拍板，AI 落实施
-- **相关**：[宪法 §1](../NAVKIT_V4_PLAN.md) 第 1/2 条 · [MAAFW_GUIDE §5.6](../MAAFW_GUIDE.md) · commit `5d6c320`
+- **相关**：[宪法 §1](../PIPELINE_V4.md) 第 1/2 条 · [MAAFW_GUIDE §5.6](../MAAFW_GUIDE.md) · commit `5d6c320`
 
 ## 背景
 

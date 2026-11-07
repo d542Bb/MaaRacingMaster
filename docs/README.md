@@ -11,7 +11,7 @@
 |---|---|---|
 | [CODE_WIKI.md](./CODE_WIKI.md) | L3 | 项目地图与导航（含「我要改 X，应该去哪里」） |
 | [MAAFW_GUIDE.md](./MAAFW_GUIDE.md) | L2 | MaaFW 能力签名、协议口径与红线 |
-| [NAVKIT_V4_PLAN.md](./NAVKIT_V4_PLAN.md) | §1 = L1；§0、§9–§12 = L4 | 版本宪法（最高规则）+ v4 规格 + 迁移史 |
+| [PIPELINE_V4.md](./PIPELINE_V4.md) | §1 = L1；§0、§9–§12 = L4 | 版本宪法（最高规则）+ v4 规格 + 迁移史 |
 | [SELF_CHECK.md](./SELF_CHECK.md) | L3 | 环境与启动的分步验收清单 |
 | [adr/](./adr/README.md) | L1 | 架构决策与状态（准入条件、状态机见其 README） |
 | [announcement.md](./announcement.md) | L1 | 公告通知卡规范 |
