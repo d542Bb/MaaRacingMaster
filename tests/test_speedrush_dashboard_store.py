@@ -71,6 +71,8 @@ def test_round_upsert_uses_last_phase_score(db):
     assert row["group"] == "今日"
     assert [p["text"] for p in row["parts"]] == ["深度 · ", "5,693", " / ", "7,858"]
     assert row["trailing"] == "负 -2,165"     # 5693 - 7858，不是两段相加
+    assert payload["subtitle"] == date.today().isoformat() + " 00:00 起"
+    assert [block["type"] for block in payload["blocks"]] == ["stats", "list"]
     assert payload["blocks"][1]["page_size"] == 5
     normalized, warnings = normalize_dashboard(payload)
     assert warnings == ()

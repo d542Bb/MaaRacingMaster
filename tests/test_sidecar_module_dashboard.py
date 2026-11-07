@@ -151,7 +151,8 @@ def test_real_speedrush_dashboard_is_served(monkeypatch, tmp_path):
     ok, data, err = svc.get_module_dashboard({"module_id": "speedrush"})
     assert ok and err is None
     assert data["title"] == "回合战绩"
-    assert [block["type"] for block in data["blocks"]] == ["stats", "list", "text"]
+    assert data["subtitle"].endswith(" 00:00 起")
+    assert [block["type"] for block in data["blocks"]] == ["stats", "list"]
 
 
 def test_unsupported_contract_version_rejected(monkeypatch):

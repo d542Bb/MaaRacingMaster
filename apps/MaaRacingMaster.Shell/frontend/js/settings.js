@@ -425,6 +425,7 @@
         <div class="card dash-card" id="dash-card">
           <div class="card-head dash-head">
             <h3>看板中心</h3>
+            <span class="kind-chip dash-module-chip" id="dash-module-chip" hidden></span>
             <div class="dash-nav">
               <div class="dash-pager" id="dash-pager">
                 <button class="dash-nav-btn" id="dash-prev" type="button" title="上一个看板" aria-label="上一个看板">
@@ -463,14 +464,22 @@
       + escHtml((err && err.message) || err) + '</p></div>';
   }
 
+  // 统计窄条：一行四列；label/value/sub 是共享结构，模块不参与排版。
+  function dashStatCell(label, valueHtml, extraHtml, valueCls) {
+    return '<div class="dash-stat">'
+      + '<span class="dash-stat-label">' + escHtml(label) + '</span>'
+      + '<b class="dash-stat-value' + (valueCls || '') + '">' + valueHtml + '</b>'
+      + (extraHtml || '')
+      + '</div>';
+  }
+
   function dashStatHtml(item) {
-    const cls = item.tone === 'positive' ? ' class="pos"'
-      : item.tone === 'negative' ? ' class="neg"' : '';
-    const sub = item.sub ? '<span class="stat-sub">' + escHtml(item.sub) + '</span>' : '';
+    const cls = item.tone === 'positive' ? ' pos'
+      : item.tone === 'negative' ? ' neg' : '';
+    const sub = item.sub ? '<span class="dash-stat-sub">' + escHtml(item.sub) + '</span>' : '';
     const dots = item.dots === true
       ? '<div class="egg-dots" aria-hidden="true"><i></i><i></i><i></i></div>' : '';
-    return '<div class="stat"><span>' + escHtml(item.label) + '</span>'
-      + '<b' + cls + '>' + escHtml(item.value) + '</b>' + sub + dots + '</div>';
+    return dashStatCell(item.label, escHtml(item.value), sub + dots, cls);
   }
 
   const ROW_PART_TONES = {
@@ -482,71 +491,61 @@
     info: ' row-part--info'
   };
 
+  function dashBadgeHtml(badge) {
+    if (!badge) return '';
+    const cls = badge.tone === 'positive' ? ' board-res--win'
+      : badge.tone === 'negative' ? ' board-res--fail'
+      : badge.tone === 'warn' ? ' board-res--warn' : '';
+    return '<span class="board-res' + cls + '">' + escHtml(badge.text) + '</span>';
+  }
+
   function dashRowHtml(row) {
-    const b = row.badge;
-    const badgeCls = b
-      ? (b.tone === 'positive' ? ' board-res--win'
-        : b.tone === 'negative' ? ' board-res--fail'
-        : b.tone === 'warn' ? ' board-res--warn' : '')
-      : '';
-    const badge = b
-      ? '<span class="board-res' + badgeCls + '">' + escHtml(b.text) + '</span>'
-      : '<span class="board-res board-res--empty" aria-hidden="true"></span>';
-    const trailing = row.trailing
-      ? '<span class="board-row-val">' + escHtml(row.trailing) + '</span>' : '';
     const body = Array.isArray(row.parts) && row.parts.length
       ? row.parts.map((part) => '<span class="row-part'
         + (ROW_PART_TONES[part.tone] || '') + '">' + escHtml(part.text) + '</span>').join('')
       : escHtml(row.text);
-    return '<div class="board-row">'
-      + '<span class="board-row-seq">' + escHtml(row.leading || '') + '</span>'
-      + badge
-      + '<span class="board-row-text">' + body + '</span>'
-      + trailing
+    return '<div class="dash-row">'
+      + '<span class="dash-row-time">' + escHtml(row.leading || '') + '</span>'
+      + '<span class="dash-row-text">' + body + '</span>'
+      + '<span class="dash-row-badge">' + dashBadgeHtml(row.badge) + '</span>'
+      + '<span class="dash-row-value">' + (row.trailing ? escHtml(row.trailing) : '') + '</span>'
       + '</div>';
   }
 
   // 今日统计兼容块：pre-contract 模块（冻结的鉴宝）的原始 {bucket, summary, games}
-  // 由这个渲染器解释；新模块用 stats / list 标准块表达同一张看板。
+  // 由这个渲染器解释；bucket 由 dashboardPayloadHtml 提升为顶部日期说明。
   function todayStatsBlockHtml(d) {
     if (!d || typeof d !== 'object') return '';
     const s = (d.summary && typeof d.summary === 'object') ? d.summary : null;
     const num = (v) => Number(v) || 0;
     const coinNet = s ? num(s.income_sum) + num(s.egg_coin) : 0;
-    const coinCls = !s ? '' : coinNet > 0 ? ' class="pos"' : coinNet < 0 ? ' class="neg"' : '';
+    const coinCls = !s ? '' : coinNet > 0 ? ' pos' : coinNet < 0 ? ' neg' : '';
     const egg = (cls, v) => '<span class="' + cls
       + (num(v) ? '' : ' is-zero') + '">' + fmtNum(v) + '</span>';
     const score = s ? num(s.highest_score) + num(s.egg_score) : null;
     const games = Array.isArray(d.games) ? d.games : [];
-    const rows = games.map((g) => {
-      const res = g.auction_result === 'win'
-        ? '<span class="board-res board-res--win">拍中</span>'
+    const rows = games.map((g) => dashRowHtml({
+      leading: '#' + fmtNum(g.game_seq),
+      badge: g.auction_result === 'win'
+        ? { text: '拍中', tone: 'positive' }
         : g.auction_result === 'fail'
-          ? '<span class="board-res board-res--fail">未中</span>'
-          : '<span class="board-res">--</span>';
-      const profit = g.auction_result === 'win'
-        ? '<span class="board-row-val">利 ' + fmtNum(g.profit) + '</span>' : '';
-      return '<div class="board-row">'
-        + '<span class="board-row-seq">#' + fmtNum(g.game_seq) + '</span>' + res
-        + '<span class="board-row-text">收 ' + fmtNum(g.income) + '</span>' + profit
-        + '</div>';
-    }).join('');
-    const bucket = typeof d.bucket === 'string' && d.bucket
-      ? '<p class="board-bucket">' + escHtml(d.bucket) + ' 05:00 起</p>' : '';
+          ? { text: '未中', tone: 'negative' } : null,
+      text: '收 ' + fmtNum(g.income),
+      trailing: g.auction_result === 'win' ? '利 ' + fmtNum(g.profit) : '',
+    })).join('');
     const wl = s
-      ? '<span class="stat-sub">胜 ' + num(s.win) + ' / 负 ' + num(s.fail) + '</span>' : '';
-    return bucket + '<div class="stat-grid">'
-      + '<div class="stat"><span>银币盈亏</span><b' + coinCls + '>'
-      + (s ? fmtNum(coinNet) : '--') + '</b></div>'
-      + '<div class="stat"><span>领取彩蛋</span><b>'
-      + fmtNum(s ? num(s.egg_red) + num(s.egg_yellow) + num(s.egg_blue) : 0)
-      + '</b><div class="stat-eggs">'
-      + egg('egg-red', s && s.egg_red)
-      + egg('egg-yellow', s && s.egg_yellow)
-      + egg('egg-blue', s && s.egg_blue)
-      + '</div></div>'
-      + '<div class="stat"><span>今日积分</span><b>' + fmtNum(score) + '</b></div>'
-      + '<div class="stat"><span>场次</span><b>' + fmtNum(s && s.games) + '</b>' + wl + '</div>'
+      ? '<span class="dash-stat-sub">胜 ' + num(s.win) + ' / 负 ' + num(s.fail) + '</span>' : '';
+    return '<div class="dash-stats">'
+      + dashStatCell('银币盈亏', s ? fmtNum(coinNet) : '--', '', coinCls)
+      + dashStatCell('领取彩蛋',
+        fmtNum(s ? num(s.egg_red) + num(s.egg_yellow) + num(s.egg_blue) : 0),
+        '<div class="stat-eggs">'
+        + egg('egg-red', s && s.egg_red)
+        + egg('egg-yellow', s && s.egg_yellow)
+        + egg('egg-blue', s && s.egg_blue)
+        + '</div>')
+      + dashStatCell('今日积分', fmtNum(score), '')
+      + dashStatCell('场次', fmtNum(s && s.games), wl)
       + '</div>'
       + (games.length
         ? '<div class="board-list">' + rows + '</div>'
@@ -556,7 +555,7 @@
   function dashBlockHtml(block) {
     switch (block.type) {
       case 'stats':
-        return '<div class="stat-grid">' + block.items.map(dashStatHtml).join('') + '</div>';
+        return '<div class="dash-stats">' + block.items.map(dashStatHtml).join('') + '</div>';
       case 'list': {
         const rows = Array.isArray(block.rows) ? block.rows : [];
         const pageSize = Number(block.page_size) > 0 ? Number(block.page_size) : 0;
@@ -573,7 +572,7 @@
         return '<div class="board-list"' + pageAttr + '>' + items + '</div>';
       }
       case 'text':
-        return '<p class="dash-desc">' + escHtml(block.text) + '</p>';
+        return '<p class="dash-note">' + escHtml(block.text) + '</p>';
       case 'path':
         return '<div class="path-chip" title="' + escHtml(block.text) + '">'
           + escHtml(block.text) + '</div>';
@@ -630,9 +629,10 @@
     });
   }
 
-  function dashboardPayloadHtml(mod, payload) {
+  // 主体：顶部一行日期说明（新契约取 subtitle，旧兼容块取其 bucket），
+  // 下面是模块下发的 block。模块身份只在卡头胶囊里，不再重复一遍标题。
+  function dashboardPayloadHtml(payload) {
     const blocks = (payload && Array.isArray(payload.blocks)) ? payload.blocks : [];
-    const title = (payload && typeof payload.title === 'string') ? payload.title : '';
     const subtitle = (payload && typeof payload.subtitle === 'string') ? payload.subtitle : '';
     const badge = payload && payload.badge && typeof payload.badge.text === 'string'
       ? payload.badge : null;
@@ -641,13 +641,18 @@
         : badge.tone === 'positive' ? ' kind-chip--positive'
         : badge.tone === 'negative' ? ' kind-chip--negative' : '')
       : '';
+    const todayBlock = blocks.find((block) => block.type === 'today_stats'
+      && block.data && typeof block.data.bucket === 'string' && block.data.bucket);
+    const caption = subtitle
+      || (todayBlock ? todayBlock.data.bucket + ' 05:00 起' : '');
+    const captionRow = (caption || badge)
+      ? '<div class="dash-caption-row">'
+        + '<span class="dash-caption">' + escHtml(caption) + '</span>'
+        + (badge ? '<span class="kind-chip' + badgeCls + '">' + escHtml(badge.text) + '</span>' : '')
+        + '</div>'
+      : '';
     return '<div class="dash-panel">'
-      + '<div class="dash-panel-head"><div><h4>' + escHtml(mod.name)
-      + (title ? ' · ' + escHtml(title) : '') + '</h4>'
-      + (subtitle ? '<span class="dash-panel-sub">' + escHtml(subtitle) + '</span>' : '')
-      + '</div>'
-      + (badge ? '<span class="kind-chip' + badgeCls + '">' + escHtml(badge.text) + '</span>' : '')
-      + '</div>'
+      + captionRow
       + (blocks.length
         ? blocks.map(dashBlockHtml).join('')
         : '<p class="dash-none">看板暂无内容</p>')
@@ -659,17 +664,27 @@
     const prev = $('dash-prev');
     const next = $('dash-next');
     const ind = $('dash-page');
+    const chip = $('dash-module-chip');
     if (!pager || !prev || !next || !ind) return;
     const list = cands || dashboardCandidates();
     const count = list.length;
-    pager.hidden = count === 0;
     const index = list.findIndex((m) => m.id === _dashCurrentId);
-    ind.textContent = count ? (index + 1) + ' / ' + count : '';
-    prev.disabled = index <= 0;
-    next.disabled = index < 0 || index >= count - 1;
     const runId = (state.queueRun && state.queueRun.current_module) || '';
     const runIndex = runId ? list.findIndex((m) => m.id === runId) : -1;
     const currentIsRunning = runIndex >= 0 && runIndex === index;
+    if (chip) {
+      const mod = index >= 0 ? list[index] : null;
+      chip.textContent = mod ? mod.name : '';
+      chip.hidden = !mod;
+      // 单看板没有翻页器，运行态改由胶囊上的绿点提示。
+      chip.classList.toggle('dash-module-chip--run', currentIsRunning && count <= 1);
+      chip.title = currentIsRunning && count <= 1 ? '当前看板正在运行' : '';
+    }
+    // 只有一个看板时没有可翻的页：翻页器整体隐藏，卡头高度不变。
+    pager.hidden = count <= 1;
+    ind.textContent = count ? (index + 1) + ' / ' + count : '';
+    prev.disabled = index <= 0;
+    next.disabled = index < 0 || index >= count - 1;
     const dir = runIndex < 0 || currentIsRunning ? 0 : (runIndex > index ? 1 : -1);
     ind.classList.toggle('is-running', currentIsRunning);
     ind.title = currentIsRunning ? '当前看板正在运行' : '';
@@ -707,7 +722,7 @@
       const sig = JSON.stringify(payload);
       if (sig === _dashPayloadSig && body.dataset.loadedFor === mod.id) return;
       _dashPayloadSig = sig;
-      body.innerHTML = dashboardPayloadHtml(mod, payload);
+      body.innerHTML = dashboardPayloadHtml(payload);
       bindDashboardLists(body);
       body.dataset.loadedFor = mod.id;
     } catch (e) {

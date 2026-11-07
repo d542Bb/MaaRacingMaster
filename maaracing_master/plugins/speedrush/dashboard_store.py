@@ -403,10 +403,10 @@ def read_dashboard_payload(labels: Mapping[str, str]) -> dict[str, Any]:
     return {
         "version": 1,
         "title": "回合战绩",
+        "subtitle": f"{today.isoformat()} 00:00 起",
         "blocks": [
             stats,
             {"type": "list", "page_size": 5, "rows": list_rows},
-            {"type": "text", "text": "胜负按终盘比分判断。"},
         ],
     }
 
