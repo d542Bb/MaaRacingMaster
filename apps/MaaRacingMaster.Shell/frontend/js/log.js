@@ -137,6 +137,9 @@
     head.dataset.bound = '1';
     head.addEventListener('click', (ev) => {
       ev.preventDefault();
+      // 空卡不展开：可点承诺只在首条正文落卡体时给出（--expandable 同源判据，
+      // README「可点性与内容一致」）——无正文的卡头点击不得产生任何视觉变化。
+      if (!sec.classList.contains('log-section--expandable')) return;
       sec.classList.toggle('log-section--open');
       _syncTopBtn(); // 展开改变内容高度，回顶按钮的可见性要跟上
     });
