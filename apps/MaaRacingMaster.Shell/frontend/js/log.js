@@ -171,8 +171,8 @@
 
   // ---------- 无组散行 → 「其他日志」容器卡（旧 sidecar 兼容路径同走此路） ----------
   // 容器不承载生命周期：不给徽章、不按内容推导状态（组卡徽章仍只吃 outcome，ADR-0017）。
-  // 叙事视图（ADR-0024）：纯 INFO 容器不落 DOM——家务行只进复制与文件；卡体收到
-  // 首条 WARNING/ERROR（或截断提示）那一刻，整卡连同此前缓冲行按原时序插入。
+  // 叙事视图（ADR-0024/0025）：纯 INFO 容器不落 DOM——家务行只进复制与文件；卡体
+  // 收到首条 WARNING+ 时整卡连同此前缓冲行按原时序插入，ERROR（或截断提示）才展开。
   // 相邻即合并：开出任何组卡（含无头组匿名卡）即作废当前容器，散行不跨组卡串联。
   const BARE_TITLE = '其他日志';
   let _bareSec = null;     // 当前容器（可能已渲染，也可能还在缓冲）
@@ -197,9 +197,11 @@
     const sec = _bareSection(ts, force);
     addRow(sec, rowEl);
     if (force || lvl === 'WARNING' || lvl === 'ERROR') {
-      _bareRender();
-      sec.classList.add('log-section--open'); // 告警必显（ADR-0024）：渲染即展开
-      _syncTopBtn();
+      _bareRender(); // 渲染门槛（ADR-0024）：WARNING+ 才落 DOM
+      if (force || lvl === 'ERROR') {
+        sec.classList.add('log-section--open'); // 真异常才展开（ADR-0025）
+        _syncTopBtn();
+      }
     }
   }
   function _bareDrop() {
@@ -251,10 +253,11 @@
         const pill = { success: 'ok', warning: 'warn', failure: 'err',
                        incomplete: 'part' }[rec.outcome] || 'ok';
         setPill(g.sec, pill);
-        // 叙事视图（ADR-0024）：非成功结局的卡自动展开——中止原因与告警正文
-        // 是用户当下要看的；由 outcome 驱动，前端不读正文内容。空身卡不展开，
-        // 与「可点性=内容存在」同口径（没有可看的东西就不给展开态）。
-        if (pill !== 'ok' && g.sec.classList.contains('log-section--expandable')) {
+        // 叙事视图（ADR-0025）：只有真异常（failure）自动展开——警告与未完成
+        // 由卡头徽章承载信号（手动停止的原因用户自己刚按下），展开是留给异常
+        // 的信号，多数情况保持折叠。由 outcome 驱动，前端不读正文内容；空身卡
+        // 不展开，与「可点性=内容存在」同口径（没有可看的东西就不给展开态）。
+        if (rec.outcome === 'failure' && g.sec.classList.contains('log-section--expandable')) {
           g.sec.classList.add('log-section--open');
           _syncTopBtn();
         }
