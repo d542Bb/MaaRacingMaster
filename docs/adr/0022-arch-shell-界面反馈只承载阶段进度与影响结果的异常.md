@@ -1,6 +1,6 @@
 # ADR-0022（arch-shell）：界面反馈只承载阶段进度与影响结果的异常
 
-- **状态**：`accepted`
+- **状态**：`accepted`（被否方案④的适用范围由 [ADR-0024](0024-arch-shell-日志面板读侧叙事视图.md) 划界：按叙事/家务收敛且告警必显的读侧分层，不属「按级别裁剪」）
 - **日期**：2026-11-06
 - **决策者**：用户（拍板「显示不对称」：成功回执整句删除、散行容器默认收起、警告色只留给影响结果的事）· AI 落实施
 - **相关**：[ADR-0017](0017-arch-shell-无组散行收进其他日志容器卡.md)（取代其决策 3 与「不能把散行折叠起来」那条代价，其余仍生效）· [ADR-0016](0016-contract-core-模块配置面板由插件声明宿主渲染.md) 决策 4 · [ADR-0012](0012-contract-log-日志归属强制与内容定界.md) · [壳工程 README](../../apps/MaaRacingMaster.Shell/frontend/README.md)「模块配置面板」「运行日志卡片」· [`js/rpc.js`](../../apps/MaaRacingMaster.Shell/frontend/js/rpc.js) 错误通道协议

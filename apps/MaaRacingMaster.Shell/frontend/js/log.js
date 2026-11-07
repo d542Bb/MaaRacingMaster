@@ -171,13 +171,40 @@
 
   // ---------- 无组散行 → 「其他日志」容器卡（旧 sidecar 兼容路径同走此路） ----------
   // 容器不承载生命周期：不给徽章、不按内容推导状态（组卡徽章仍只吃 outcome，ADR-0017）。
-  // 默认收起：散行里既有影响结果的异常，也有可继续的降级，整卡展开等于拿小失误刷屏。
+  // 叙事视图（ADR-0024）：纯 INFO 容器不落 DOM——家务行只进复制与文件；卡体收到
+  // 首条 WARNING/ERROR（或截断提示）那一刻，整卡连同此前缓冲行按原时序插入。
   // 相邻即合并：开出任何组卡（含无头组匿名卡）即作废当前容器，散行不跨组卡串联。
   const BARE_TITLE = '其他日志';
-  let _bareSec = null;
-  function _bareSection(ts) {
-    if (!_bareSec) _bareSec = _makeSection('session', ts, BARE_TITLE, '', null);
+  let _bareSec = null;     // 当前容器（可能已渲染，也可能还在缓冲）
+  let _bareAnchor = null;  // 缓冲时的插入锚：开缓冲那一刻 log-area 的末元素
+  function _bareSection(ts, force) {
+    if (!_bareSec) {
+      const area = $('log-area');
+      _bareAnchor = area.lastElementChild; // 锚先取：_makeSection 建卡即落 DOM
+      _bareSec = _makeSection('session', ts, BARE_TITLE, '', null);
+      _bareSec.remove(); // 缓冲卡摘离 DOM，过渲染门槛（首条 WARNING+）再按锚挂回
+    }
+    if (force) _bareRender();
     return _bareSec;
+  }
+  function _bareRender() {
+    if (!_bareSec || _bareSec.isConnected) return;
+    const area = $('log-area');
+    area.insertBefore(_bareSec, _bareAnchor ? _bareAnchor.nextSibling : null);
+    _bareAnchor = null;
+  }
+  function _bareAdd(ts, lvl, rowEl, force) {
+    const sec = _bareSection(ts, force);
+    addRow(sec, rowEl);
+    if (force || lvl === 'WARNING' || lvl === 'ERROR') {
+      _bareRender();
+      sec.classList.add('log-section--open'); // 告警必显（ADR-0024）：渲染即展开
+      _syncTopBtn();
+    }
+  }
+  function _bareDrop() {
+    _bareSec = null;
+    _bareAnchor = null;
   }
 
   function appendLogs(lines) {
@@ -186,8 +213,8 @@
     lines.forEach((raw) => {
       const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\] \[(\w+)\] /);
       const lvl = m && levelClassMap[m[2]] ? m[2] : 'INFO';
-      addRow(_bareSection(m ? m[1] : ''),
-             _makeRow(lvl, m ? raw.slice(m[0].length) : raw, raw));
+      _bareAdd(m ? m[1] : '', lvl,
+               _makeRow(lvl, m ? raw.slice(m[0].length) : raw, raw));
     });
     if (followBottom) area.scrollTop = area.scrollHeight;
     _syncTopBtn();
@@ -203,7 +230,8 @@
     const followBottom = isNearBottom(area);
     if (truncated) {
       const hint = '[!!] 日志界面因落后过多已自动截断，以下为最新日志';
-      addRow(_bareSection(events.length ? events[0].ts : ''), _makeRow('INFO', hint, hint));
+      _bareAdd(events.length ? events[0].ts : '', 'INFO',
+               _makeRow('INFO', hint, hint), true); // 系统级提示：无条件可见
     }
     events.forEach((rec) => {
       _remember(rec);
@@ -214,13 +242,22 @@
         const sec = _makeSection(kind, rec.ts, title,
                                  '[' + rec.ts + '] [INFO] ' + title, 'run');
         _openGroups.set(rec.group_id, { sec });
-        _bareSec = null; // 组卡在场即断开散行序列，后续散行另起容器
+        _bareDrop(); // 组卡在场即断开散行序列，后续散行另起容器
         return;
       }
       if (rec.event_type === 'group_end') {
         const g = _openGroups.get(rec.group_id);
         if (!g) return; // 无头组的 end 先到（start 被环形冲出）：正文行会建匿名卡，这里静默
-        setPill(g.sec, { success: 'ok', warning: 'warn', failure: 'err', incomplete: 'part' }[rec.outcome] || 'ok');
+        const pill = { success: 'ok', warning: 'warn', failure: 'err',
+                       incomplete: 'part' }[rec.outcome] || 'ok';
+        setPill(g.sec, pill);
+        // 叙事视图（ADR-0024）：非成功结局的卡自动展开——中止原因与告警正文
+        // 是用户当下要看的；由 outcome 驱动，前端不读正文内容。空身卡不展开，
+        // 与「可点性=内容存在」同口径（没有可看的东西就不给展开态）。
+        if (pill !== 'ok' && g.sec.classList.contains('log-section--expandable')) {
+          g.sec.classList.add('log-section--open');
+          _syncTopBtn();
+        }
         _openGroups.delete(rec.group_id);
         return;
       }
@@ -230,12 +267,12 @@
         // 无头组：组开事件已被环形缓冲冲出——建匿名卡收正文，不丢行
         g = { sec: _makeSection('session', rec.ts, '…（更早的组头已截断）', '', null) };
         _openGroups.set(rec.group_id, g);
-        _bareSec = null;
+        _bareDrop();
       }
       const lvl = levelClassMap[rec.level] ? rec.level : 'INFO';
       const suffix = _fieldsSuffix(rec.fields);
       const rawText = '[' + rec.ts + '] [' + rec.level + '] ' + (rec.message || '') + suffix;
-      if (!g) { addRow(_bareSection(rec.ts), _makeRow(lvl, (rec.message || '') + suffix, rawText)); return; }
+      if (!g) { _bareAdd(rec.ts, lvl, _makeRow(lvl, (rec.message || '') + suffix, rawText)); return; }
       addRow(g.sec, _makeRow(lvl, (rec.message || '') + suffix, rawText));
     });
     fitTitles();
@@ -296,7 +333,7 @@
   $('btn-log-clear').addEventListener('click', () => {
     $('log-area').innerHTML = '';
     _openGroups.clear(); // 开组表随 DOM 一起作废
-    _bareSec = null;     // 散行容器卡同样作废（否则新散行会挂进已删除的节点）
+    _bareDrop();         // 散行容器卡（含缓冲态与插入锚）同样作废，否则会挂进已删除节点
     _records.length = 0; // 复制事实源同步作废（清空即「不留可导出的历史」）
     _syncTopBtn();
   });
